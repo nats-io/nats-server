@@ -3992,7 +3992,7 @@ func TestJWTTimeExpiration(t *testing.T) {
 		t.Run("simple expiration "+l, func(t *testing.T) {
 			start := time.Now()
 			creds := createUserWithLimit(t, kp, doNotExpire, func(j *jwt.UserPermissionLimits) {
-				if l == "" {
+				if l == _EMPTY_ {
 					j.Times = []jwt.TimeRange{newTimeRange(start, validFor)}
 				} else {
 					loc, err := time.LoadLocation(l)
@@ -6698,4 +6698,51 @@ func TestServerOperatorModeNoAuthRequired(t *testing.T) {
 	defer nc.Close()
 
 	require_True(t, nc.AuthRequired())
+}
+
+func TestServerOperatorModeUserInfoExpiration(t *testing.T) {
+	_, spub := createKey(t)
+	sysClaim := jwt.NewAccountClaims(spub)
+	sysClaim.Name = "$SYS"
+	sysJwt, err := sysClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	akp, apub := createKey(t)
+	accClaim := jwt.NewAccountClaims(apub)
+	accClaim.Name = "TEST"
+	accJwt, err := accClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		operator: %s
+		system_account: %s
+		resolver: MEM
+		resolver_preload: {
+			%s: %s
+			%s: %s
+		}
+    `, ojwt, spub, apub, accJwt, spub, sysJwt)))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	expires := time.Now().Add(time.Minute)
+	creds := createUserWithLimit(t, akp, expires, func(j *jwt.UserPermissionLimits) {})
+
+	nc := natsConnect(t, s.ClientURL(), nats.UserCredentials(creds))
+	defer nc.Close()
+
+	resp, err := nc.Request("$SYS.REQ.USER.INFO", nil, time.Second)
+	require_NoError(t, err)
+	now := time.Now()
+
+	response := ServerAPIResponse{Data: &UserInfo{}}
+	err = json.Unmarshal(resp.Data, &response)
+	require_NoError(t, err)
+
+	userInfo := response.Data.(*UserInfo)
+	require_True(t, userInfo.Expires != 0)
+	require_True(t, expires.Sub(now).Truncate(time.Second) == userInfo.Expires)
 }

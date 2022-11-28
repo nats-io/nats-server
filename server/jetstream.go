@@ -2584,7 +2584,7 @@ func friendlyBytes(bytes int64) string {
 }
 
 func isValidName(name string) bool {
-	if name == "" {
+	if name == _EMPTY_ {
 		return false
 	}
 	return !strings.ContainsAny(name, " \t\r\n\f.*>")

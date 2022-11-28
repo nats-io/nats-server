@@ -904,7 +904,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		}
 	case "store_dir", "storedir":
 		// Check if JetStream configuration is also setting the storage directory.
-		if o.StoreDir != "" {
+		if o.StoreDir != _EMPTY_ {
 			*errors = append(*errors, &configErr{tk, "Duplicate 'store_dir' configuration"})
 			return
 		}
@@ -1127,8 +1127,8 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			}
 		case map[string]interface{}:
 			del := false
-			dir := ""
-			dirType := ""
+			dir := _EMPTY_
+			dirType := _EMPTY_
 			limit := int64(0)
 			ttl := time.Duration(0)
 			sync := time.Duration(0)
@@ -1169,7 +1169,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 				*errors = append(*errors, &configErr{tk, err.Error()})
 				return
 			}
-			if dir == "" {
+			if dir == _EMPTY_ {
 				*errors = append(*errors, &configErr{tk, "dir has no value and needs to point to a directory"})
 				return
 			}
@@ -1817,7 +1817,7 @@ func getStorageSize(v interface{}) (int64, error) {
 		return 0, fmt.Errorf("must be int64 or string")
 	}
 
-	if s == "" {
+	if s == _EMPTY_ {
 		return 0, nil
 	}
 
@@ -2856,7 +2856,7 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 			*errors = append(*errors, &configErr{tk, msg})
 			continue
 		}
-		if stream.pre != "" {
+		if stream.pre != _EMPTY_ {
 			if err := stream.acc.AddStreamImport(ta, stream.sub, stream.pre); err != nil {
 				msg := fmt.Sprintf("Error adding stream import %q: %v", stream.sub, err)
 				*errors = append(*errors, &configErr{tk, msg})
@@ -3310,16 +3310,16 @@ func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*impo
 				*errors = append(*errors, err)
 				continue
 			}
-			if accountName == "" || subject == "" {
+			if accountName == _EMPTY_ || subject == _EMPTY_ {
 				err := &configErr{tk, "Expect an account name and a subject"}
 				*errors = append(*errors, err)
 				continue
 			}
 			curStream = &importStream{an: accountName, sub: subject}
-			if to != "" {
+			if to != _EMPTY_ {
 				curStream.to = to
 			}
-			if pre != "" {
+			if pre != _EMPTY_ {
 				curStream.pre = pre
 			}
 		case "service":
@@ -3340,13 +3340,13 @@ func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*impo
 				*errors = append(*errors, err)
 				continue
 			}
-			if accountName == "" || subject == "" {
+			if accountName == _EMPTY_ || subject == _EMPTY_ {
 				err := &configErr{tk, "Expect an account name and a subject"}
 				*errors = append(*errors, err)
 				continue
 			}
 			curService = &importService{an: accountName, sub: subject}
-			if to != "" {
+			if to != _EMPTY_ {
 				curService.to = to
 			} else {
 				curService.to = subject
@@ -3364,7 +3364,7 @@ func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*impo
 			}
 			if curStream != nil {
 				curStream.to = to
-				if curStream.pre != "" {
+				if curStream.pre != _EMPTY_ {
 					err := &configErr{tk, "Stream import can not have a 'prefix' and a 'to' property"}
 					*errors = append(*errors, err)
 					continue
@@ -3541,7 +3541,7 @@ func parseUsers(mv interface{}, opts *Options, errors *[]error, warnings *[]erro
 		// Place perms if we have them.
 		if perms != nil {
 			// nkey takes precedent.
-			if nkey.Nkey != "" {
+			if nkey.Nkey != _EMPTY_ {
 				nkey.Permissions = perms
 			} else {
 				user.Permissions = perms
@@ -3549,15 +3549,15 @@ func parseUsers(mv interface{}, opts *Options, errors *[]error, warnings *[]erro
 		}
 
 		// Check to make sure we have at least an nkey or username <password> defined.
-		if nkey.Nkey == "" && user.Username == "" {
+		if nkey.Nkey == _EMPTY_ && user.Username == _EMPTY_ {
 			return nil, nil, &configErr{tk, "User entry requires a user"}
-		} else if nkey.Nkey != "" {
+		} else if nkey.Nkey != _EMPTY_ {
 			// Make sure the nkey a proper public nkey for a user..
 			if !nkeys.IsValidPublicUserKey(nkey.Nkey) {
 				return nil, nil, &configErr{tk, "Not a valid public nkey for a user"}
 			}
 			// If we have user or password defined here that is an error.
-			if user.Username != "" || user.Password != "" {
+			if user.Username != _EMPTY_ || user.Password != _EMPTY_ {
 				return nil, nil, &configErr{tk, "Nkey users do not take usernames or passwords"}
 			}
 			keys = append(keys, nkey)
@@ -4259,11 +4259,11 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 	}
 
 	switch {
-	case tc.CertFile != "" && tc.KeyFile == "":
+	case tc.CertFile != _EMPTY_ && tc.KeyFile == _EMPTY_:
 		return nil, fmt.Errorf("missing 'key_file' in TLS configuration")
-	case tc.CertFile == "" && tc.KeyFile != "":
+	case tc.CertFile == _EMPTY_ && tc.KeyFile != _EMPTY_:
 		return nil, fmt.Errorf("missing 'cert_file' in TLS configuration")
-	case tc.CertFile != "" && tc.KeyFile != "":
+	case tc.CertFile != _EMPTY_ && tc.KeyFile != _EMPTY_:
 		// Now load in cert and private key
 		cert, err := tls.LoadX509KeyPair(tc.CertFile, tc.KeyFile)
 		if err != nil {
@@ -4281,7 +4281,7 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 		config.ClientAuth = tls.RequireAndVerifyClientCert
 	}
 	// Add in CAs if applicable.
-	if tc.CaFile != "" {
+	if tc.CaFile != _EMPTY_ {
 		rootPEM, err := os.ReadFile(tc.CaFile)
 		if err != nil || rootPEM == nil {
 			return nil, err
@@ -4312,28 +4312,28 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	if flagOpts.Port != 0 {
 		opts.Port = flagOpts.Port
 	}
-	if flagOpts.Host != "" {
+	if flagOpts.Host != _EMPTY_ {
 		opts.Host = flagOpts.Host
 	}
 	if flagOpts.DontListen {
 		opts.DontListen = flagOpts.DontListen
 	}
-	if flagOpts.ClientAdvertise != "" {
+	if flagOpts.ClientAdvertise != _EMPTY_ {
 		opts.ClientAdvertise = flagOpts.ClientAdvertise
 	}
-	if flagOpts.Username != "" {
+	if flagOpts.Username != _EMPTY_ {
 		opts.Username = flagOpts.Username
 	}
-	if flagOpts.Password != "" {
+	if flagOpts.Password != _EMPTY_ {
 		opts.Password = flagOpts.Password
 	}
-	if flagOpts.Authorization != "" {
+	if flagOpts.Authorization != _EMPTY_ {
 		opts.Authorization = flagOpts.Authorization
 	}
 	if flagOpts.HTTPPort != 0 {
 		opts.HTTPPort = flagOpts.HTTPPort
 	}
-	if flagOpts.HTTPBasePath != "" {
+	if flagOpts.HTTPBasePath != _EMPTY_ {
 		opts.HTTPBasePath = flagOpts.HTTPBasePath
 	}
 	if flagOpts.Debug {
@@ -4345,19 +4345,19 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	if flagOpts.Logtime {
 		opts.Logtime = true
 	}
-	if flagOpts.LogFile != "" {
+	if flagOpts.LogFile != _EMPTY_ {
 		opts.LogFile = flagOpts.LogFile
 	}
-	if flagOpts.PidFile != "" {
+	if flagOpts.PidFile != _EMPTY_ {
 		opts.PidFile = flagOpts.PidFile
 	}
-	if flagOpts.PortsFileDir != "" {
+	if flagOpts.PortsFileDir != _EMPTY_ {
 		opts.PortsFileDir = flagOpts.PortsFileDir
 	}
 	if flagOpts.ProfPort != 0 {
 		opts.ProfPort = flagOpts.ProfPort
 	}
-	if flagOpts.Cluster.ListenStr != "" {
+	if flagOpts.Cluster.ListenStr != _EMPTY_ {
 		opts.Cluster.ListenStr = flagOpts.Cluster.ListenStr
 	}
 	if flagOpts.Cluster.NoAdvertise {
@@ -4366,10 +4366,10 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	if flagOpts.Cluster.ConnectRetries != 0 {
 		opts.Cluster.ConnectRetries = flagOpts.Cluster.ConnectRetries
 	}
-	if flagOpts.Cluster.Advertise != "" {
+	if flagOpts.Cluster.Advertise != _EMPTY_ {
 		opts.Cluster.Advertise = flagOpts.Cluster.Advertise
 	}
-	if flagOpts.RoutesStr != "" {
+	if flagOpts.RoutesStr != _EMPTY_ {
 		mergeRoutes(&opts, flagOpts)
 	}
 	if flagOpts.JetStream {
@@ -4485,10 +4485,10 @@ func getInterfaceIPs() ([]net.IP, error) {
 
 func setBaselineOptions(opts *Options) {
 	// Setup non-standard Go defaults
-	if opts.Host == "" {
+	if opts.Host == _EMPTY_ {
 		opts.Host = DEFAULT_HOST
 	}
-	if opts.HTTPHost == "" {
+	if opts.HTTPHost == _EMPTY_ {
 		// Default to same bind from server if left undefined
 		opts.HTTPHost = opts.Host
 	}
@@ -4514,7 +4514,7 @@ func setBaselineOptions(opts *Options) {
 		opts.AuthTimeout = getDefaultAuthTimeout(opts.TLSConfig, opts.TLSTimeout)
 	}
 	if opts.Cluster.Port != 0 {
-		if opts.Cluster.Host == "" {
+		if opts.Cluster.Host == _EMPTY_ {
 			opts.Cluster.Host = DEFAULT_HOST
 		}
 		if opts.Cluster.TLSTimeout == 0 {
@@ -4525,7 +4525,7 @@ func setBaselineOptions(opts *Options) {
 		}
 	}
 	if opts.LeafNode.Port != 0 {
-		if opts.LeafNode.Host == "" {
+		if opts.LeafNode.Host == _EMPTY_ {
 			opts.LeafNode.Host = DEFAULT_HOST
 		}
 		if opts.LeafNode.TLSTimeout == 0 {
@@ -4539,7 +4539,7 @@ func setBaselineOptions(opts *Options) {
 	for _, r := range opts.LeafNode.Remotes {
 		if r != nil {
 			for _, u := range r.URLs {
-				if u.Port() == "" {
+				if u.Port() == _EMPTY_ {
 					u.Host = net.JoinHostPort(u.Host, strconv.Itoa(DEFAULT_LEAFNODE_PORT))
 				}
 			}
@@ -4573,7 +4573,7 @@ func setBaselineOptions(opts *Options) {
 		opts.LameDuckGracePeriod = DEFAULT_LAME_DUCK_GRACE_PERIOD
 	}
 	if opts.Gateway.Port != 0 {
-		if opts.Gateway.Host == "" {
+		if opts.Gateway.Host == _EMPTY_ {
 			opts.Gateway.Host = DEFAULT_HOST
 		}
 		if opts.Gateway.TLSTimeout == 0 {
@@ -4590,12 +4590,12 @@ func setBaselineOptions(opts *Options) {
 		opts.ReconnectErrorReports = DEFAULT_RECONNECT_ERROR_REPORTS
 	}
 	if opts.Websocket.Port != 0 {
-		if opts.Websocket.Host == "" {
+		if opts.Websocket.Host == _EMPTY_ {
 			opts.Websocket.Host = DEFAULT_HOST
 		}
 	}
 	if opts.MQTT.Port != 0 {
-		if opts.MQTT.Host == "" {
+		if opts.MQTT.Host == _EMPTY_ {
 			opts.MQTT.Host = DEFAULT_HOST
 		}
 		if opts.MQTT.TLSTimeout == 0 {
@@ -4643,13 +4643,13 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.BoolVar(&showHelp, "help", false, "Show this message.")
 	fs.IntVar(&opts.Port, "port", 0, "Port to listen on.")
 	fs.IntVar(&opts.Port, "p", 0, "Port to listen on.")
-	fs.StringVar(&opts.ServerName, "n", "", "Server name.")
-	fs.StringVar(&opts.ServerName, "name", "", "Server name.")
-	fs.StringVar(&opts.ServerName, "server_name", "", "Server name.")
-	fs.StringVar(&opts.Host, "addr", "", "Network host to listen on.")
-	fs.StringVar(&opts.Host, "a", "", "Network host to listen on.")
-	fs.StringVar(&opts.Host, "net", "", "Network host to listen on.")
-	fs.StringVar(&opts.ClientAdvertise, "client_advertise", "", "Client URL to advertise to other servers.")
+	fs.StringVar(&opts.ServerName, "n", _EMPTY_, "Server name.")
+	fs.StringVar(&opts.ServerName, "name", _EMPTY_, "Server name.")
+	fs.StringVar(&opts.ServerName, "server_name", _EMPTY_, "Server name.")
+	fs.StringVar(&opts.Host, "addr", _EMPTY_, "Network host to listen on.")
+	fs.StringVar(&opts.Host, "a", _EMPTY_, "Network host to listen on.")
+	fs.StringVar(&opts.Host, "net", _EMPTY_, "Network host to listen on.")
+	fs.StringVar(&opts.ClientAdvertise, "client_advertise", _EMPTY_, "Client URL to advertise to other servers.")
 	fs.BoolVar(&opts.Debug, "D", false, "Enable Debug logging.")
 	fs.BoolVar(&opts.Debug, "debug", false, "Enable Debug logging.")
 	fs.BoolVar(&opts.Trace, "V", false, "Enable Trace logging.")
@@ -4659,49 +4659,49 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.BoolVar(&dbgAndTrcAndVerboseTrc, "DVV", false, "Enable Debug and Verbose Trace logging. (Traces system account as well)")
 	fs.BoolVar(&opts.Logtime, "T", true, "Timestamp log entries.")
 	fs.BoolVar(&opts.Logtime, "logtime", true, "Timestamp log entries.")
-	fs.StringVar(&opts.Username, "user", "", "Username required for connection.")
-	fs.StringVar(&opts.Password, "pass", "", "Password required for connection.")
-	fs.StringVar(&opts.Authorization, "auth", "", "Authorization token required for connection.")
+	fs.StringVar(&opts.Username, "user", _EMPTY_, "Username required for connection.")
+	fs.StringVar(&opts.Password, "pass", _EMPTY_, "Password required for connection.")
+	fs.StringVar(&opts.Authorization, "auth", _EMPTY_, "Authorization token required for connection.")
 	fs.IntVar(&opts.HTTPPort, "m", 0, "HTTP Port for /varz, /connz endpoints.")
 	fs.IntVar(&opts.HTTPPort, "http_port", 0, "HTTP Port for /varz, /connz endpoints.")
 	fs.IntVar(&opts.HTTPSPort, "ms", 0, "HTTPS Port for /varz, /connz endpoints.")
 	fs.IntVar(&opts.HTTPSPort, "https_port", 0, "HTTPS Port for /varz, /connz endpoints.")
-	fs.StringVar(&configFile, "c", "", "Configuration file.")
-	fs.StringVar(&configFile, "config", "", "Configuration file.")
+	fs.StringVar(&configFile, "c", _EMPTY_, "Configuration file.")
+	fs.StringVar(&configFile, "config", _EMPTY_, "Configuration file.")
 	fs.BoolVar(&opts.CheckConfig, "t", false, "Check configuration and exit.")
-	fs.StringVar(&signal, "sl", "", "Send signal to nats-server process (stop, quit, reopen, reload).")
-	fs.StringVar(&signal, "signal", "", "Send signal to nats-server process (stop, quit, reopen, reload).")
-	fs.StringVar(&opts.PidFile, "P", "", "File to store process pid.")
-	fs.StringVar(&opts.PidFile, "pid", "", "File to store process pid.")
-	fs.StringVar(&opts.PortsFileDir, "ports_file_dir", "", "Creates a ports file in the specified directory (<executable_name>_<pid>.ports).")
-	fs.StringVar(&opts.LogFile, "l", "", "File to store logging output.")
-	fs.StringVar(&opts.LogFile, "log", "", "File to store logging output.")
+	fs.StringVar(&signal, "sl", _EMPTY_, "Send signal to nats-server process (stop, quit, reopen, reload).")
+	fs.StringVar(&signal, "signal", _EMPTY_, "Send signal to nats-server process (stop, quit, reopen, reload).")
+	fs.StringVar(&opts.PidFile, "P", _EMPTY_, "File to store process pid.")
+	fs.StringVar(&opts.PidFile, "pid", _EMPTY_, "File to store process pid.")
+	fs.StringVar(&opts.PortsFileDir, "ports_file_dir", _EMPTY_, "Creates a ports file in the specified directory (<executable_name>_<pid>.ports).")
+	fs.StringVar(&opts.LogFile, "l", _EMPTY_, "File to store logging output.")
+	fs.StringVar(&opts.LogFile, "log", _EMPTY_, "File to store logging output.")
 	fs.Int64Var(&opts.LogSizeLimit, "log_size_limit", 0, "Logfile size limit being auto-rotated")
 	fs.BoolVar(&opts.Syslog, "s", false, "Enable syslog as log method.")
 	fs.BoolVar(&opts.Syslog, "syslog", false, "Enable syslog as log method.")
-	fs.StringVar(&opts.RemoteSyslog, "r", "", "Syslog server addr (udp://127.0.0.1:514).")
-	fs.StringVar(&opts.RemoteSyslog, "remote_syslog", "", "Syslog server addr (udp://127.0.0.1:514).")
+	fs.StringVar(&opts.RemoteSyslog, "r", _EMPTY_, "Syslog server addr (udp://127.0.0.1:514).")
+	fs.StringVar(&opts.RemoteSyslog, "remote_syslog", _EMPTY_, "Syslog server addr (udp://127.0.0.1:514).")
 	fs.BoolVar(&showVersion, "version", false, "Print version information.")
 	fs.BoolVar(&showVersion, "v", false, "Print version information.")
 	fs.IntVar(&opts.ProfPort, "profile", 0, "Profiling HTTP port.")
-	fs.StringVar(&opts.RoutesStr, "routes", "", "Routes to actively solicit a connection.")
-	fs.StringVar(&opts.Cluster.ListenStr, "cluster", "", "Cluster url from which members can solicit routes.")
-	fs.StringVar(&opts.Cluster.ListenStr, "cluster_listen", "", "Cluster url from which members can solicit routes.")
-	fs.StringVar(&opts.Cluster.Advertise, "cluster_advertise", "", "Cluster URL to advertise to other servers.")
+	fs.StringVar(&opts.RoutesStr, "routes", _EMPTY_, "Routes to actively solicit a connection.")
+	fs.StringVar(&opts.Cluster.ListenStr, "cluster", _EMPTY_, "Cluster url from which members can solicit routes.")
+	fs.StringVar(&opts.Cluster.ListenStr, "cluster_listen", _EMPTY_, "Cluster url from which members can solicit routes.")
+	fs.StringVar(&opts.Cluster.Advertise, "cluster_advertise", _EMPTY_, "Cluster URL to advertise to other servers.")
 	fs.BoolVar(&opts.Cluster.NoAdvertise, "no_advertise", false, "Advertise known cluster IPs to clients.")
 	fs.IntVar(&opts.Cluster.ConnectRetries, "connect_retries", 0, "For implicit routes, number of connect retries.")
-	fs.StringVar(&opts.Cluster.Name, "cluster_name", "", "Cluster Name, if not set one will be dynamically generated.")
+	fs.StringVar(&opts.Cluster.Name, "cluster_name", _EMPTY_, "Cluster Name, if not set one will be dynamically generated.")
 	fs.BoolVar(&showTLSHelp, "help_tls", false, "TLS help.")
 	fs.BoolVar(&opts.TLS, "tls", false, "Enable TLS.")
 	fs.BoolVar(&opts.TLSVerify, "tlsverify", false, "Enable TLS with client verification.")
-	fs.StringVar(&opts.TLSCert, "tlscert", "", "Server certificate file.")
-	fs.StringVar(&opts.TLSKey, "tlskey", "", "Private key for server certificate.")
-	fs.StringVar(&opts.TLSCaCert, "tlscacert", "", "Client certificate CA for verification.")
+	fs.StringVar(&opts.TLSCert, "tlscert", _EMPTY_, "Server certificate file.")
+	fs.StringVar(&opts.TLSKey, "tlskey", _EMPTY_, "Private key for server certificate.")
+	fs.StringVar(&opts.TLSCaCert, "tlscacert", _EMPTY_, "Client certificate CA for verification.")
 	fs.IntVar(&opts.MaxTracedMsgLen, "max_traced_msg_len", 0, "Maximum printable length for traced messages. 0 for unlimited.")
 	fs.BoolVar(&opts.JetStream, "js", false, "Enable JetStream.")
 	fs.BoolVar(&opts.JetStream, "jetstream", false, "Enable JetStream.")
-	fs.StringVar(&opts.StoreDir, "sd", "", "Storage directory.")
-	fs.StringVar(&opts.StoreDir, "store_dir", "", "Storage directory.")
+	fs.StringVar(&opts.StoreDir, "sd", _EMPTY_, "Storage directory.")
+	fs.StringVar(&opts.StoreDir, "store_dir", _EMPTY_, "Storage directory.")
 
 	// The flags definition above set "default" values to some of the options.
 	// Calling Parse() here will override the default options with any value
@@ -4852,7 +4852,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 				flagErr = overrideCluster(opts)
 			case "routes":
 				// Keep in mind that the flag has updated opts.RoutesStr at this point.
-				if opts.RoutesStr == "" {
+				if opts.RoutesStr == _EMPTY_ {
 					// Set routes array to nil since routes string is empty
 					opts.Routes = nil
 					return
@@ -4877,7 +4877,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	// If we don't have cluster defined in the configuration
 	// file and no cluster listen string override, but we do
 	// have a routes override, we need to report misconfiguration.
-	if opts.RoutesStr != "" && opts.Cluster.ListenStr == "" && opts.Cluster.Host == "" && opts.Cluster.Port == 0 {
+	if opts.RoutesStr != _EMPTY_ && opts.Cluster.ListenStr == _EMPTY_ && opts.Cluster.Host == _EMPTY_ && opts.Cluster.Port == 0 {
 		return nil, errors.New("solicited routes require cluster capabilities, e.g. --cluster")
 	}
 
@@ -4897,10 +4897,10 @@ func normalizeBasePath(p string) string {
 
 // overrideTLS is called when at least "-tls=true" has been set.
 func overrideTLS(opts *Options) error {
-	if opts.TLSCert == "" {
+	if opts.TLSCert == _EMPTY_ {
 		return errors.New("TLS Server certificate must be present and valid")
 	}
-	if opts.TLSKey == "" {
+	if opts.TLSKey == _EMPTY_ {
 		return errors.New("TLS Server private key must be present and valid")
 	}
 
@@ -4920,7 +4920,7 @@ func overrideTLS(opts *Options) error {
 // has explicitly be set in the command line. If it is set to empty string, it will
 // clear the Cluster options.
 func overrideCluster(opts *Options) error {
-	if opts.Cluster.ListenStr == "" {
+	if opts.Cluster.ListenStr == _EMPTY_ {
 		// This one is enough to disable clustering.
 		opts.Cluster.Port = 0
 		return nil
@@ -4963,8 +4963,8 @@ func overrideCluster(opts *Options) error {
 	} else {
 		// Since we override from flag and there is no user/pwd, make
 		// sure we clear what we may have gotten from config file.
-		opts.Cluster.Username = ""
-		opts.Cluster.Password = ""
+		opts.Cluster.Username = _EMPTY_
+		opts.Cluster.Password = _EMPTY_
 	}
 
 	return nil
@@ -5004,9 +5004,9 @@ func homeDir() (string, error) {
 		userProfile := os.Getenv("USERPROFILE")
 
 		home := filepath.Join(homeDrive, homePath)
-		if homeDrive == "" || homePath == "" {
-			if userProfile == "" {
-				return "", errors.New("nats: failed to get home dir, require %HOMEDRIVE% and %HOMEPATH% or %USERPROFILE%")
+		if homeDrive == _EMPTY_ || homePath == _EMPTY_ {
+			if userProfile == _EMPTY_ {
+				return _EMPTY_, errors.New("nats: failed to get home dir, require %HOMEDRIVE% and %HOMEPATH% or %USERPROFILE%")
 			}
 			home = userProfile
 		}
@@ -5015,8 +5015,8 @@ func homeDir() (string, error) {
 	}
 
 	home := os.Getenv("HOME")
-	if home == "" {
-		return "", errors.New("failed to get home dir, require $HOME")
+	if home == _EMPTY_ {
+		return _EMPTY_, errors.New("failed to get home dir, require $HOME")
 	}
 	return home, nil
 }
@@ -5030,7 +5030,7 @@ func expandPath(p string) (string, error) {
 
 	home, err := homeDir()
 	if err != nil {
-		return "", err
+		return _EMPTY_, err
 	}
 
 	return filepath.Join(home, p[1:]), nil

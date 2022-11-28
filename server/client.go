@@ -250,6 +250,7 @@ type client struct {
 	darray     []string
 	pcd        map[*client]struct{}
 	atmr       *time.Timer
+	expires    time.Time
 	ping       pinfo
 	msgb       [msgScratchSize]byte
 	last       time.Time
@@ -958,6 +959,61 @@ func (c *client) setPermissions(perms *Permissions) {
 		c.opts.Import = perms.Subscribe
 		c.opts.Export = perms.Publish
 	}
+}
+
+// Build public permissions from internal ones.
+// Used for user info requests.
+func (c *client) publicPermissions() *Permissions {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.perms == nil {
+		return nil
+	}
+	perms := &Permissions{
+		Publish:   &SubjectPermission{},
+		Subscribe: &SubjectPermission{},
+	}
+
+	_subs := [32]*subscription{}
+
+	// Publish
+	if c.perms.pub.allow != nil {
+		subs := _subs[:0]
+		c.perms.pub.allow.All(&subs)
+		for _, sub := range subs {
+			perms.Publish.Allow = append(perms.Publish.Allow, string(sub.subject))
+		}
+	}
+	if c.perms.pub.deny != nil {
+		subs := _subs[:0]
+		c.perms.pub.deny.All(&subs)
+		for _, sub := range subs {
+			perms.Publish.Deny = append(perms.Publish.Deny, string(sub.subject))
+		}
+	}
+	// Subsribe
+	if c.perms.sub.allow != nil {
+		subs := _subs[:0]
+		c.perms.sub.allow.All(&subs)
+		for _, sub := range subs {
+			perms.Subscribe.Allow = append(perms.Subscribe.Allow, string(sub.subject))
+		}
+	}
+	if c.perms.sub.deny != nil {
+		subs := _subs[:0]
+		c.perms.sub.deny.All(&subs)
+		for _, sub := range subs {
+			perms.Subscribe.Deny = append(perms.Subscribe.Deny, string(sub.subject))
+		}
+	}
+	// Responses.
+	if c.perms.resp != nil {
+		rp := *c.perms.resp
+		perms.Response = &rp
+	}
+
+	return perms
 }
 
 type denyType int
@@ -4656,7 +4712,21 @@ func (c *client) awaitingAuth() bool {
 func (c *client) setExpirationTimer(d time.Duration) {
 	c.mu.Lock()
 	c.atmr = time.AfterFunc(d, c.authExpired)
+	// This is an JWT expiration.
+	if c.flags.isSet(connectReceived) {
+		c.expires = time.Now().Add(d).Truncate(time.Second)
+	}
 	c.mu.Unlock()
+}
+
+// Return when this client expires via a claim, or 0 if not set.
+func (c *client) claimExpiration() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.expires.IsZero() {
+		return 0
+	}
+	return time.Until(c.expires).Truncate(time.Second)
 }
 
 // Possibly flush the connection and then close the low level connection.
@@ -5302,16 +5372,16 @@ func (c *client) doTLSHandshake(typ string, solicit bool, url *url.URL, tlsConfi
 // Lock should be held.
 func (c *client) getRawAuthUser() string {
 	switch {
-	case c.opts.Nkey != "":
+	case c.opts.Nkey != _EMPTY_:
 		return c.opts.Nkey
-	case c.opts.Username != "":
+	case c.opts.Username != _EMPTY_:
 		return c.opts.Username
-	case c.opts.JWT != "":
+	case c.opts.JWT != _EMPTY_:
 		return c.pubKey
-	case c.opts.Token != "":
+	case c.opts.Token != _EMPTY_:
 		return c.opts.Token
 	default:
-		return ""
+		return _EMPTY_
 	}
 }
 
@@ -5319,12 +5389,14 @@ func (c *client) getRawAuthUser() string {
 // Lock should be held.
 func (c *client) getAuthUser() string {
 	switch {
-	case c.opts.Nkey != "":
+	case c.opts.Nkey != _EMPTY_:
 		return fmt.Sprintf("Nkey %q", c.opts.Nkey)
-	case c.opts.Username != "":
+	case c.opts.Username != _EMPTY_:
 		return fmt.Sprintf("User %q", c.opts.Username)
-	case c.opts.JWT != "":
+	case c.opts.JWT != _EMPTY_:
 		return fmt.Sprintf("JWT User %q", c.pubKey)
+	case c.opts.Token != _EMPTY_:
+		return fmt.Sprintf("Token %q", c.opts.Token)
 	default:
 		return `User "N/A"`
 	}

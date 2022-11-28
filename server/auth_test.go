@@ -294,19 +294,26 @@ func TestUserConnectionDeadline(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 
-	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("valid", ""), nats.NoReconnect(), nats.ErrorHandler(func(nc *nats.Conn, _ *nats.Subscription, err error) {
-		dcerr = err
-		cancel()
-	}))
+	nc, err := nats.Connect(
+		s.ClientURL(),
+		nats.UserInfo("valid", _EMPTY_),
+		nats.NoReconnect(),
+		nats.ErrorHandler(func(nc *nats.Conn, _ *nats.Subscription, err error) {
+			dcerr = err
+			cancel()
+		}))
 	if err != nil {
 		t.Fatalf("Expected client to connect, got: %s", err)
 	}
 
 	<-ctx.Done()
 
-	if nc.IsConnected() {
-		t.Fatalf("Expected to be disconnected")
-	}
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		if nc.IsConnected() {
+			return fmt.Errorf("Expected to be disconnected")
+		}
+		return nil
+	})
 
 	if dcerr == nil || dcerr.Error() != "nats: authentication expired" {
 		t.Fatalf("Expected a auth expired error: got: %v", dcerr)
