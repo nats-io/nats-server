@@ -1,4 +1,4 @@
-// Copyright 2017-2021 The NATS Authors
+// Copyright 2017-2022 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -66,7 +66,7 @@ func newOptionsFromContent(t *testing.T, content []byte) (*Options, string) {
 
 func createConfFile(t testing.TB, content []byte) string {
 	t.Helper()
-	conf := createTempFile(t, "")
+	conf := createTempFile(t, _EMPTY_)
 	fName := conf.Name()
 	conf.Close()
 	if err := os.WriteFile(fName, content, 0666); err != nil {

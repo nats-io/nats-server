@@ -262,7 +262,7 @@ func (s *Server) configureAuthorization() {
 	} else if opts.Nkeys != nil || opts.Users != nil {
 		s.nkeys, s.users = s.buildNkeysAndUsersFromOptions(opts.Nkeys, opts.Users)
 		s.info.AuthRequired = true
-	} else if opts.Username != "" || opts.Authorization != "" {
+	} else if opts.Username != _EMPTY_ || opts.Authorization != _EMPTY_ {
 		s.info.AuthRequired = true
 	} else {
 		s.users = nil
@@ -274,6 +274,27 @@ func (s *Server) configureAuthorization() {
 	s.wsConfigAuth(&opts.Websocket)
 	// And for mqtt config
 	s.mqttConfigAuth(&opts.MQTT)
+
+	// Check for server configured auth callouts.
+	if opts.AuthCallout != nil {
+		// Make sure we have a valid account and auth_users.
+		_, err := s.lookupAccount(opts.AuthCallout.Account)
+		if err != nil {
+			s.Errorf("Authorization callout account %q not valid", opts.AuthCallout.Account)
+		}
+		for _, u := range opts.AuthCallout.AuthUsers {
+			// Check for user in users and nkeys since this is server config.
+			var found bool
+			if len(s.users) > 0 {
+				_, found = s.users[u]
+			} else if len(s.nkeys) > 0 && !found {
+				_, found = s.nkeys[u]
+			}
+			if !found {
+				s.Errorf("Authorization callout user %q not valid: %v", u, err)
+			}
+		}
+	}
 }
 
 // Takes the given slices of NkeyUser and User options and build
@@ -547,7 +568,7 @@ func processUserPermissionsTemplate(lim jwt.UserPermissionLimits, ujwt *jwt.User
 	return lim, nil
 }
 
-func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) bool {
+func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (authorized bool) {
 	var (
 		nkey *NkeyUser
 		juc  *jwt.UserClaims
@@ -557,6 +578,54 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 		err  error
 		ao   bool // auth override
 	)
+
+	// Check if we have auth callouts enabled at the server level or in the bound account.
+	defer func() {
+		// No-op
+		if juc == nil && opts.AuthCallout == nil {
+			return
+		}
+		// We have a juc defined here, check account.
+		if juc != nil && !acc.hasExternalAuth() {
+			return
+		}
+
+		// We have auth callout set here.
+		var skip bool
+		// Check if we are on the list of auth_users.
+		userID := c.getRawAuthUser()
+		if juc != nil {
+			skip = acc.isExternalAuthUser(userID)
+		} else {
+			for _, u := range opts.AuthCallout.AuthUsers {
+				if userID == u {
+					skip = true
+					break
+				}
+			}
+		}
+
+		// If we are here we have an auth callout defined and we have failed auth so far
+		// so we will callout to our auth backend for processing.
+		if !skip {
+			authorized = s.processClientOrLeafCallout(c, opts)
+		}
+		// Check if we are authorized and in the auth callout account, and if so add in deny publish permissions for the auth subject.
+		if authorized {
+			var authAccountName string
+			if juc == nil && opts.AuthCallout != nil {
+				authAccountName = opts.AuthCallout.Account
+			} else if juc != nil {
+				authAccountName = acc.Name
+			}
+			c.mu.Lock()
+			if c.acc != nil && c.acc.Name == authAccountName {
+				c.mergeDenyPermissions(pub, []string{AuthCalloutSubject})
+			}
+			c.mu.Unlock()
+		}
+	}()
+
 	s.mu.Lock()
 	authRequired := s.info.AuthRequired
 	if !authRequired {
@@ -812,7 +881,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 			return false
 		}
 		if juc.BearerToken && acc.failBearer() {
-			c.Debugf("Account does not allow bearer token")
+			c.Debugf("Account does not allow bearer tokens")
 			return false
 		}
 		// skip validation of nonce when presented with a bearer token

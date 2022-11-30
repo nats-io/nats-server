@@ -193,7 +193,7 @@ type ClientInfo struct {
 	Start      *time.Time    `json:"start,omitempty"`
 	Host       string        `json:"host,omitempty"`
 	ID         uint64        `json:"id,omitempty"`
-	Account    string        `json:"acc"`
+	Account    string        `json:"acc,omitempty"`
 	Service    string        `json:"svc,omitempty"`
 	User       string        `json:"user,omitempty"`
 	Name       string        `json:"name,omitempty"`
@@ -211,6 +211,7 @@ type ClientInfo struct {
 	Kind       string        `json:"kind,omitempty"`
 	ClientType string        `json:"client_type,omitempty"`
 	MQTTClient string        `json:"client_id,omitempty"` // This is the MQTT client ID
+	Nonce      string        `json:"nonce,omitempty"`
 }
 
 // ServerStats hold various statistics that we will periodically send out.

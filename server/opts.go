@@ -202,6 +202,19 @@ type JSLimitOpts struct {
 	Duplicates      time.Duration
 }
 
+// And AuthCallout option used to map external AuthN to NATS based AuthZ.
+type AuthCallout struct {
+	// Must be a public account Nkey.
+	Issuer string
+	// Account to be used for sending requests.
+	Account string
+	// Users that will bypass auth_callout and be used for the auth service itself.
+	AuthUsers []string
+	// XKey is a public xkey for the authorization service.
+	// This will enable encryption for server requests and the authorization service responses.
+	XKey string
+}
+
 // Options block for nats-server.
 // NOTE: This structure is no longer used for monitoring endpoints
 // and json tags are deprecated and may be removed in the future.
@@ -233,6 +246,7 @@ type Options struct {
 	Username              string        `json:"-"`
 	Password              string        `json:"-"`
 	Authorization         string        `json:"-"`
+	AuthCallout           *AuthCallout  `json:"-"`
 	PingInterval          time.Duration `json:"ping_interval"`
 	MaxPingsOut           int           `json:"ping_max"`
 	HTTPHost              string        `json:"http_host"`
@@ -554,6 +568,8 @@ type authorization struct {
 	users              []*User
 	timeout            float64
 	defaultPermissions *Permissions
+	// Auth Callouts
+	callout *AuthCallout
 }
 
 // TLSConfigOpts holds the parsed tls config information,
@@ -810,6 +826,8 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		o.Password = auth.pass
 		o.Authorization = auth.token
 		o.AuthTimeout = auth.timeout
+		o.AuthCallout = auth.callout
+
 		if (auth.user != _EMPTY_ || auth.pass != _EMPTY_) && auth.token != _EMPTY_ {
 			err := &configErr{tk, "Cannot have a user/pass and token"}
 			*errors = append(*errors, err)
@@ -1501,6 +1519,12 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 				*errors = append(*errors, err)
 				continue
 			}
+			if auth.callout != nil {
+				err := &configErr{tk, "Cluster authorization does not support callouts"}
+				*errors = append(*errors, err)
+				continue
+			}
+
 			opts.Cluster.Username = auth.user
 			opts.Cluster.Password = auth.pass
 			opts.Cluster.AuthTimeout = auth.timeout
@@ -1664,6 +1688,12 @@ func parseGateway(v interface{}, o *Options, errors *[]error, warnings *[]error)
 				*errors = append(*errors, err)
 				continue
 			}
+			if auth.callout != nil {
+				err := &configErr{tk, "Gateway authorization does not support callouts"}
+				*errors = append(*errors, err)
+				continue
+			}
+
 			o.Gateway.Username = auth.user
 			o.Gateway.Password = auth.pass
 			o.Gateway.AuthTimeout = auth.timeout
@@ -3453,6 +3483,13 @@ func parseAuthorization(v interface{}, opts *Options, errors *[]error, warnings 
 				continue
 			}
 			auth.defaultPermissions = permissions
+		case "auth_callout", "auth_hook":
+			ac, err := parseAuthCallout(tk, errors, warnings)
+			if err != nil {
+				*errors = append(*errors, err)
+				continue
+			}
+			auth.callout = ac
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
@@ -3579,6 +3616,66 @@ func parseAllowedConnectionTypes(tk token, lt *token, mv interface{}, errors *[]
 		*errors = append(*errors, &configErr{tk, err.Error()})
 	}
 	return m
+}
+
+// Helper function to parse auth callouts.
+func parseAuthCallout(mv interface{}, errors, warnings *[]error) (*AuthCallout, error) {
+	var (
+		tk token
+		lt token
+		ac = &AuthCallout{}
+	)
+	defer convertPanicToErrorList(&lt, errors)
+
+	tk, mv = unwrapValue(mv, &lt)
+	pm, ok := mv.(map[string]interface{})
+	if !ok {
+		return nil, &configErr{tk, fmt.Sprintf("Expected authorization callout to be a map/struct, got %+v", mv)}
+	}
+	for k, v := range pm {
+		tk, mv = unwrapValue(v, &lt)
+
+		switch strings.ToLower(k) {
+		case "issuer":
+			ac.Issuer = mv.(string)
+			if !nkeys.IsValidPublicAccountKey(ac.Issuer) {
+				return nil, &configErr{tk, fmt.Sprintf("Expected callout user to be a valid public account nkey, got %q", ac.Issuer)}
+			}
+		case "account", "acc":
+			ac.Account = mv.(string)
+		case "auth_users", "users":
+			aua, ok := mv.([]interface{})
+			if !ok {
+				return nil, &configErr{tk, fmt.Sprintf("Expected auth_users field to be an array, got %T", v)}
+			}
+			for _, uv := range aua {
+				_, uv = unwrapValue(uv, &lt)
+				ac.AuthUsers = append(ac.AuthUsers, uv.(string))
+			}
+		case "xkey", "key":
+			ac.XKey = mv.(string)
+			if !nkeys.IsValidPublicCurveKey(ac.XKey) {
+				return nil, &configErr{tk, fmt.Sprintf("Expected callout xkey to be a valid public xkey, got %q", ac.XKey)}
+			}
+		default:
+			if !tk.IsUsedVariable() {
+				err := &configErr{tk, fmt.Sprintf("Unknown field %q parsing authorization callout", k)}
+				*errors = append(*errors, err)
+			}
+		}
+	}
+	// Make sure we have all defined. All fields are required.
+	// If no account specified, selet $G.
+	if ac.Account == _EMPTY_ {
+		ac.Account = globalAccountName
+	}
+	if ac.Issuer == _EMPTY_ {
+		return nil, &configErr{tk, "Authorization callouts require an issuer to be specified"}
+	}
+	if len(ac.AuthUsers) == 0 {
+		return nil, &configErr{tk, "Authorization callouts require authorized users to be specified"}
+	}
+	return ac, nil
 }
 
 // Helper function to parse user/account permissions
