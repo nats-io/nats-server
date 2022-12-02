@@ -140,10 +140,10 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 		numSubjects int
 		minMessages int
 	}{
-		{1, 1, 10, 1, 1_000_000}, // Single node, 10B messages, ~10MB minimum
-		{1, 1, 1024, 1, 500_000}, // Single node, 1KB messages, ~500MB minimum
-		{3, 3, 10, 1, 500_000},   // 3-nodes cluster, R=3, 10B messages, ~5MB minimum
-		{3, 3, 1024, 1, 100_000}, // 3-nodes cluster, R=3, 10B messages, ~100MB minimum
+		{1, 1, 10, 1, 100_000}, // Single node, 10B messages, ~1MB minimum
+		{1, 1, 1024, 1, 1_000}, // Single node, 1KB messages, ~1MB minimum
+		{3, 3, 10, 1, 100_000}, // 3-nodes cluster, R=3, 10B messages, ~1MB minimum
+		{3, 3, 1024, 1, 1_000}, // 3-nodes cluster, R=3, 10B messages, ~1MB minimum
 	}
 
 	// All the cases above are run with each of the publisher cases below
