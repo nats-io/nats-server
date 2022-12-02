@@ -256,10 +256,10 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 		messageSize int
 		minMessages int
 	}{
-		{1, 1, 10, 1_000_000}, // Single node, 10B messages, ~10MiB minimum
-		{1, 1, 1024, 100_000}, // Single node, 1KB messages, ~100MiB minimum
-		{3, 3, 10, 1_000_000}, // Cluster, R3, 10B messages, ~10MiB minimum
-		{3, 3, 1024, 100_000}, // Cluster, R3, 1KB messages, ~100MiB minimum
+		{1, 1, 10, 100_000}, // Single node, 10B messages, ~1MiB minimum
+		{1, 1, 1024, 1_000}, // Single node, 1KB messages, ~1MiB minimum
+		{3, 3, 10, 100_000}, // Cluster, R3, 10B messages, ~1MiB minimum
+		{3, 3, 1024, 1_000}, // Cluster, R3, 1KB messages, ~1MiB minimum
 	}
 
 	//Each of the cases above is run with each of the consumer types

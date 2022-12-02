@@ -31,7 +31,7 @@ func BenchmarkJetStreamKV(b *testing.B) {
 		kvNamePrefix = "B_"
 		keyPrefix    = "K_"
 		seed         = 12345
-		minOps       = 100_000
+		minOps       = 1_000
 	)
 
 	runKVGet := func(b *testing.B, kvs []nats.KeyValue, keys []string) int {
