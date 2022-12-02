@@ -843,7 +843,7 @@ func (c *client) RegisterUser(user *User) {
 
 	// if a deadline time stamp is set we start a timer to disconnect the user at that time
 	if !user.ConnectionDeadline.IsZero() {
-		c.atmr = time.AfterFunc(time.Until(user.ConnectionDeadline), c.authExpired)
+		c.setExpirationTimerUnlocked(time.Until(user.ConnectionDeadline))
 	}
 
 	c.mu.Unlock()
@@ -4711,12 +4711,17 @@ func (c *client) awaitingAuth() bool {
 // We will lock on entry.
 func (c *client) setExpirationTimer(d time.Duration) {
 	c.mu.Lock()
+	c.setExpirationTimerUnlocked(d)
+	c.mu.Unlock()
+}
+
+// This will set the atmr for the JWT expiration time. client lock should be held before call
+func (c *client) setExpirationTimerUnlocked(d time.Duration) {
 	c.atmr = time.AfterFunc(d, c.authExpired)
 	// This is an JWT expiration.
 	if c.flags.isSet(connectReceived) {
 		c.expires = time.Now().Add(d).Truncate(time.Second)
 	}
-	c.mu.Unlock()
 }
 
 // Return when this client expires via a claim, or 0 if not set.
