@@ -1353,7 +1353,6 @@ func (o *consumer) deleteNotActive() {
 			// Check to make sure we went away.
 			// Don't think this needs to be a monitored go routine.
 			go func() {
-				var fs bool
 				ticker := time.NewTicker(time.Second)
 				defer ticker.Stop()
 				for range ticker.C {
@@ -1361,11 +1360,8 @@ func (o *consumer) deleteNotActive() {
 					ca := js.consumerAssignment(acc, stream, name)
 					js.mu.RUnlock()
 					if ca != nil {
-						if fs {
-							s.Warnf("Consumer assignment not cleaned up, retrying")
-							meta.ForwardProposal(removeEntry)
-						}
-						fs = true
+						s.Warnf("Consumer assignment for '%s > %s > %s' not cleaned up, retrying", acc, stream, name)
+						meta.ForwardProposal(removeEntry)
 					} else {
 						return
 					}
