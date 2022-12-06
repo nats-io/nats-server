@@ -1730,17 +1730,25 @@ func TestJetStreamClusterReplacementPolicyAfterPeerRemove(t *testing.T) {
 	// Remove a peer and select replacement 5 times to avoid false good
 	for i := 0; i < 5; i++ {
 		// Remove 1 peer replica (this will be random cloud region as initial placement was randomized ordering)
-		_, err = nc.Request("$JS.API.STREAM.PEER.REMOVE.TEST", []byte(`{"peer":"`+osi.Cluster.Replicas[0].Name+`"}`), time.Second*10)
+		// After each successful iteration, osi will reflect the current RG peers
+
+		toRemove := osi.Cluster.Replicas[0].Name
+		_, err = nc.Request("$JS.API.STREAM.PEER.REMOVE.TEST", []byte(`{"peer":"`+toRemove+`"}`), time.Second*10)
 		require_NoError(t, err)
 
 		sc.waitOnStreamLeader(globalAccountName, "TEST")
 
-		var osi *nats.StreamInfo
 		checkFor(t, time.Second, 200*time.Millisecond, func() error {
 			osi, err = jsc.StreamInfo("TEST")
 			require_NoError(t, err)
 			if len(osi.Cluster.Replicas) != 2 {
 				return fmt.Errorf("expected R3, got R%d", len(osi.Cluster.Replicas)+1)
+			}
+			// STREAM.PEER.REMOVE is asynchronous command; make sure remove has occurred by retrying
+			for _, replica := range osi.Cluster.Replicas {
+				if replica.Name == toRemove {
+					return fmt.Errorf("expected replaced replica, old replica still present")
+				}
 			}
 			return nil
 		})
@@ -1854,18 +1862,17 @@ func TestJetStreamClusterReplacementPolicyAfterPeerRemoveNoPlace(t *testing.T) {
 	_, err = nc.Request("$JS.API.STREAM.PEER.REMOVE.TEST", []byte(`{"peer":"`+osi.Cluster.Replicas[0].Name+`"}`), time.Second*10)
 	require_NoError(t, err)
 
-	// Need to give some time for new any new placement to finalize
-	time.Sleep(1500 * time.Millisecond)
-
 	sc.waitOnStreamLeader(globalAccountName, "TEST")
 
-	osi, err = jsc.StreamInfo("TEST")
-	require_NoError(t, err)
-
 	// Verify R2 since no eligible peer can replace the removed peer without braking unique constraint
-	if len(osi.Cluster.Replicas) != 1 {
-		t.Fatalf("expected R2, got R%d", len(osi.Cluster.Replicas)+1)
-	}
+	checkFor(t, time.Second, 200*time.Millisecond, func() error {
+		osi, err = jsc.StreamInfo("TEST")
+		require_NoError(t, err)
+		if len(osi.Cluster.Replicas) != 1 {
+			return fmt.Errorf("expected R2, got R%d", len(osi.Cluster.Replicas)+1)
+		}
+		return nil
+	})
 
 	// Validate that remaining members still honor unique tags
 	uTags = make(map[string]struct{}) //reset
