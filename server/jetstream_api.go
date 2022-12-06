@@ -759,7 +759,7 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, sub
 	jsub := rr.psubs[0]
 
 	// If this is directly from a client connection ok to do in place.
-	if c.kind != ROUTER && c.kind != GATEWAY {
+	if c.kind != ROUTER && c.kind != GATEWAY && c.kind != LEAF {
 		start := time.Now()
 		jsub.icb(sub, c, acc, subject, reply, rmsg)
 		if dur := time.Since(start); dur >= readLoopReportThreshold {
@@ -768,7 +768,7 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, sub
 		return
 	}
 
-	// If we are here we have received this request over a non client connection.
+	// If we are here we have received this request over a non-client connection.
 	// We need to make sure not to block. We will send the request to a long-lived
 	// go routine.
 
