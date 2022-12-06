@@ -205,6 +205,7 @@ type ConsumerState struct {
 	Redelivered map[uint64]uint64 `json:"redelivered,omitempty"`
 }
 
+// Encode consumer state.
 func encodeConsumerState(state *ConsumerState) []byte {
 	var hdr [seqsHdrSize]byte
 	var buf []byte
@@ -238,7 +239,7 @@ func encodeConsumerState(state *ConsumerState) []byte {
 
 	// These are optional, but always write len. This is to avoid a truncate inline.
 	if len(state.Pending) > 0 {
-		// To save space we will use now rounded to seconds to be base timestamp.
+		// To save space we will use now rounded to seconds to be our base timestamp.
 		mints := time.Now().Round(time.Second).Unix()
 		// Write minimum timestamp we found from above.
 		n += binary.PutVarint(buf[n:], mints)
@@ -248,7 +249,7 @@ func encodeConsumerState(state *ConsumerState) []byte {
 			n += binary.PutUvarint(buf[n:], v.Sequence-adflr)
 			// Downsample to seconds to save on space.
 			// Subsecond resolution not needed for recovery etc.
-			ts := v.Timestamp / 1_000_000_000
+			ts := v.Timestamp / int64(time.Second)
 			n += binary.PutVarint(buf[n:], mints-ts)
 		}
 	}

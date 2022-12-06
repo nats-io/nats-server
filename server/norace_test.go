@@ -5879,3 +5879,23 @@ func TestJetStreamLargeNumConsumersPerfImpact(t *testing.T) {
 	fmt.Printf("\n1000 consumers time is %v\n", tt)
 	fmt.Printf("%.0f msgs/sec\n", float64(toSend)/tt.Seconds())
 }
+
+// Bug when we encode a timestamp that upon decode causes an error which causes server to panic.
+// This can happen on consumer redelivery since they adjusted timstamps can be in the future, and result
+// in a negative encoding. If that encoding was exactly -1 seconds, would cause decodeConsumerState to fail
+// and the server to panic.
+func TestNoRaceEncodeConsumerStateBug(t *testing.T) {
+	for i := 0; i < 200_000; i++ {
+		// Pretend we redelivered and updated the timestamp to reflect the new start time for expiration.
+		// The bug will trip when time.Now() rounded to seconds in encode is 1 second below the truncated version
+		// of pending.
+		pending := Pending{Sequence: 1, Timestamp: time.Now().Add(time.Second).UnixNano()}
+		state := ConsumerState{
+			Delivered: SequencePair{Consumer: 1, Stream: 1},
+			Pending:   map[uint64]*Pending{1: &pending},
+		}
+		buf := encodeConsumerState(&state)
+		_, err := decodeConsumerState(buf)
+		require_NoError(t, err)
+	}
+}
