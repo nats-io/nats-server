@@ -5748,7 +5748,8 @@ func (fs *fileStore) Snapshot(deadline time.Duration, checkMsgs, includeConsumer
 	}
 
 	// We can add to our stream while snapshotting but not delete anything.
-	state := fs.State()
+	var state StreamState
+	fs.FastState(&state)
 
 	// Stream in separate Go routine.
 	go fs.streamSnapshot(pw, &state, includeConsumers)

@@ -1466,6 +1466,178 @@ func TestJetStreamClusterPullConsumerAcksExtendInactivityThreshold(t *testing.T)
 	require_Error(t, err, nats.ErrConsumerNotFound)
 }
 
+// https://github.com/nats-io/nats-server/issues/3677
+func TestJetStreamParallelStreamCreation(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	np := 20
+
+	startCh := make(chan bool)
+	errCh := make(chan error, np)
+
+	wg := sync.WaitGroup{}
+	wg.Add(np)
+	for i := 0; i < np; i++ {
+		go func() {
+			defer wg.Done()
+
+			// Individual connection
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			// Make them all fire at once.
+			<-startCh
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"common.*.*"},
+				Replicas: 3,
+			})
+			if err != nil {
+				errCh <- err
+			}
+		}()
+	}
+
+	close(startCh)
+	wg.Wait()
+
+	if len(errCh) > 0 {
+		t.Fatalf("Expected no errors, got %d", len(errCh))
+	}
+}
+
+// In addition to test above, if streams were attempted to be created in parallel
+// it could be that multiple raft groups would be created for the same asset.
+func TestJetStreamParallelStreamCreationDupeRaftGroups(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	np := 20
+
+	startCh := make(chan bool)
+	wg := sync.WaitGroup{}
+	wg.Add(np)
+	for i := 0; i < np; i++ {
+		go func() {
+			defer wg.Done()
+
+			// Individual connection
+			nc, _ := jsClientConnect(t, c.randomServer())
+			js, _ := nc.JetStream(nats.MaxWait(time.Second))
+			defer nc.Close()
+
+			// Make them all fire at once.
+			<-startCh
+
+			// Ignore errors in this test, care about raft group and metastate.
+			js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"common.*.*"},
+				Replicas: 3,
+			})
+		}()
+	}
+
+	close(startCh)
+	wg.Wait()
+
+	// Restart a server too.
+	s := c.randomServer()
+	s.Shutdown()
+	s = c.restartServer(s)
+	c.waitOnLeader()
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	// Check that this server has only two active raft nodes after restart.
+	if nrn := s.numRaftNodes(); nrn != 2 {
+		t.Fatalf("Expected only two active raft nodes, got %d", nrn)
+	}
+
+	// Make sure we only have 2 unique raft groups for all servers.
+	// One for meta, one for stream.
+	expected := 2
+	rg := make(map[string]struct{})
+	for _, s := range c.servers {
+		s.mu.RLock()
+		for _, ni := range s.raftNodes {
+			n := ni.(*raft)
+			rg[n.Group()] = struct{}{}
+		}
+		s.mu.RUnlock()
+	}
+	if len(rg) != expected {
+		t.Fatalf("Expected only %d distinct raft groups for all servers, go %d", expected, len(rg))
+	}
+}
+
+func TestJetStreamParallelConsumerCreation(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"common.*.*"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	np := 20
+
+	startCh := make(chan bool)
+	errCh := make(chan error, np)
+
+	wg := sync.WaitGroup{}
+	wg.Add(np)
+	for i := 0; i < np; i++ {
+		go func() {
+			defer wg.Done()
+
+			// Individual connection
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			// Make them all fire at once.
+			<-startCh
+
+			_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+				Durable:  "dlc",
+				Replicas: 3,
+			})
+			if err != nil {
+				errCh <- err
+			}
+		}()
+	}
+
+	close(startCh)
+	wg.Wait()
+
+	if len(errCh) > 0 {
+		t.Fatalf("Expected no errors, got %d", len(errCh))
+	}
+
+	// Make sure we only have 3 unique raft groups for all servers.
+	// One for meta, one for stream, one for consumer.
+	expected := 3
+	rg := make(map[string]struct{})
+	for _, s := range c.servers {
+		s.mu.RLock()
+		for _, ni := range s.raftNodes {
+			n := ni.(*raft)
+			rg[n.Group()] = struct{}{}
+		}
+		s.mu.RUnlock()
+	}
+	if len(rg) != expected {
+		t.Fatalf("Expected only %d distinct raft groups for all servers, go %d", expected, len(rg))
+	}
+
+}
+
 func TestJetStreamClusterReplacementPolicyAfterPeerRemove(t *testing.T) {
 	// R3 scenario where there is a redundant node in each unique cloud so removing a peer should result in
 	// an immediate replacement also preserving cloud uniqueness.
