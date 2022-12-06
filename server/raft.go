@@ -25,6 +25,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -951,12 +952,32 @@ func (n *raft) InstallSnapshot(data []byte) error {
 		return errCatchupsRunning
 	}
 
+	// We don't store snapshotsnfor memory based WALs.
+	if _, ok := n.wal.(*memStore); ok {
+		n.Unlock()
+		return nil
+	}
+
 	var state StreamState
 	n.wal.FastState(&state)
 
 	if n.snapfile != _EMPTY_ && state.FirstSeq >= n.applied {
 		n.Unlock()
 		return nil
+	}
+
+	if len(data) == 0 {
+		if strings.HasPrefix(n.group, "C-") {
+			fmt.Printf("\n\n%v state is %+v, n.applied is %d, n.snapfile is %q\n", n.group, state, n.applied, n.snapfile)
+			for index := state.FirstSeq; index <= state.LastSeq; index++ {
+				ae, _ := n.loadEntry(index)
+				for _, e := range ae.entries {
+					fmt.Printf("Entry %+v\n", e)
+				}
+			}
+			n.Unlock()
+			panic("XXX")
+		}
 	}
 
 	n.debug("Installing snapshot of %d bytes", len(data))
@@ -1081,8 +1102,10 @@ func (n *raft) setupLastSnapshot() {
 	n.snapfile = latest
 	snap, err := n.loadLastSnapshot()
 	if err != nil {
-		os.Remove(n.snapfile)
-		n.snapfile = _EMPTY_
+		if n.snapfile != _EMPTY_ {
+			os.Remove(n.snapfile)
+			n.snapfile = _EMPTY_
+		}
 	} else {
 		n.pindex = snap.lastIndex
 		n.pterm = snap.lastTerm
