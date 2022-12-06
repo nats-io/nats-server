@@ -1436,6 +1436,7 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 	ocfg := mset.cfg
 	s := mset.srv
 	mset.mu.RUnlock()
+
 	cfg, err := mset.jsa.configUpdateCheck(&ocfg, config, s)
 	if err != nil {
 		return NewJSStreamInvalidConfigError(err, Unless(err))
