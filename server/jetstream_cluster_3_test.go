@@ -1561,17 +1561,17 @@ func TestJetStreamClusterReplacementPolicyAfterPeerRemove(t *testing.T) {
 		_, err = nc.Request("$JS.API.STREAM.PEER.REMOVE.TEST", []byte(`{"peer":"`+osi.Cluster.Replicas[0].Name+`"}`), time.Second*10)
 		require_NoError(t, err)
 
-		// Need to give some time for the new peer to spin up, otherwise we'll get momentary R2 back
-		time.Sleep(1500 * time.Millisecond)
-
 		sc.waitOnStreamLeader(globalAccountName, "TEST")
 
-		osi, err = jsc.StreamInfo("TEST")
-		require_NoError(t, err)
-
-		if len(osi.Cluster.Replicas) != 2 {
-			t.Fatalf("expected R3, got R%d", len(osi.Cluster.Replicas)+1)
-		}
+		var osi *nats.StreamInfo
+		checkFor(t, time.Second, 200*time.Millisecond, func() error {
+			osi, err = jsc.StreamInfo("TEST")
+			require_NoError(t, err)
+			if len(osi.Cluster.Replicas) != 2 {
+				return fmt.Errorf("expected R3, got R%d", len(osi.Cluster.Replicas)+1)
+			}
+			return nil
+		})
 
 		// Validate that replacement with new peer still honors
 		uTags = make(map[string]struct{}) //reset
