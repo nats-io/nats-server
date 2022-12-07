@@ -1731,10 +1731,13 @@ func TestJetStreamClusterReplacementPolicyAfterPeerRemove(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		// Remove 1 peer replica (this will be random cloud region as initial placement was randomized ordering)
 		// After each successful iteration, osi will reflect the current RG peers
-
 		toRemove := osi.Cluster.Replicas[0].Name
-		_, err = nc.Request("$JS.API.STREAM.PEER.REMOVE.TEST", []byte(`{"peer":"`+toRemove+`"}`), time.Second*10)
+		resp, err := nc.Request(fmt.Sprintf(JSApiStreamRemovePeerT, "TEST"), []byte(`{"peer":"`+toRemove+`"}`), time.Second)
 		require_NoError(t, err)
+		var rpResp JSApiStreamRemovePeerResponse
+		err = json.Unmarshal(resp.Data, &rpResp)
+		require_NoError(t, err)
+		require_True(t, rpResp.Success)
 
 		sc.waitOnStreamLeader(globalAccountName, "TEST")
 
@@ -1744,7 +1747,8 @@ func TestJetStreamClusterReplacementPolicyAfterPeerRemove(t *testing.T) {
 			if len(osi.Cluster.Replicas) != 2 {
 				return fmt.Errorf("expected R3, got R%d", len(osi.Cluster.Replicas)+1)
 			}
-			// STREAM.PEER.REMOVE is asynchronous command; make sure remove has occurred by retrying
+			// STREAM.PEER.REMOVE is asynchronous command; make sure remove has occurred by
+			// checking that the toRemove peer is gone.
 			for _, replica := range osi.Cluster.Replicas {
 				if replica.Name == toRemove {
 					return fmt.Errorf("expected replaced replica, old replica still present")
