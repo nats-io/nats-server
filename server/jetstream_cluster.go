@@ -2741,20 +2741,9 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) bool {
 	// Check if this is for us..
 	if isMember {
 		js.processClusterCreateStream(acc, sa)
-	} else {
-		// Check if we have a raft node running, meaning we are no longer part of the group but were.
-		js.mu.Lock()
-		if node := sa.Group.node; node != nil {
-			if node.Leader() {
-				node.UpdateKnownPeers(sa.Group.Peers)
-				node.StepDown()
-			}
-			node.ProposeRemovePeer(ourID)
-			didRemove = true
-		}
-		sa.Group.node = nil
-		sa.err = nil
-		js.mu.Unlock()
+	} else if mset, _ := acc.lookupStream(sa.Config.Name); mset != nil {
+		// We have one here even though we are not a member. This can happen on re-assignment.
+		s.removeStream(ourID, mset, sa)
 	}
 
 	// If this stream assignment does not have a sync subject (bug) set that the meta-leader should check when elected.
@@ -2838,19 +2827,29 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 		js.processClusterUpdateStream(acc, osa, sa)
 	} else if mset, _ := acc.lookupStream(sa.Config.Name); mset != nil {
 		// We have one here even though we are not a member. This can happen on re-assignment.
-		s.Debugf("JetStream removing stream '%s > %s' from this server", sa.Client.serviceAccount(), sa.Config.Name)
-		if node := mset.raftNode(); node != nil {
-			if node.Leader() {
-				node.StepDown(sa.Group.Preferred)
-			}
-			node.ProposeRemovePeer(ourID)
-			// shut down monitor by shutting down raft
-			node.Delete()
-		}
-		// wait for monitor to be shut down
-		mset.monitorWg.Wait()
-		mset.stop(true, false)
+		s.removeStream(ourID, mset, sa)
 	}
+}
+
+// Common function to remove ourself from this server.
+// This can happen on re-assignment, move, etc
+func (s *Server) removeStream(ourID string, mset *stream, nsa *streamAssignment) {
+	if mset == nil {
+		return
+	}
+	// Make sure to use the new stream assignment, not our own.
+	s.Debugf("JetStream removing stream '%s > %s' from this server", nsa.Client.serviceAccount(), nsa.Config.Name)
+	if node := mset.raftNode(); node != nil {
+		if node.Leader() {
+			node.StepDown(nsa.Group.Preferred)
+		}
+		node.ProposeRemovePeer(ourID)
+		// shut down monitor by shutting down raft
+		node.Delete()
+	}
+	// wait for monitor to be shut down
+	mset.monitorWg.Wait()
+	mset.stop(true, false)
 }
 
 // processClusterUpdateStream is called when we have a stream assignment that
