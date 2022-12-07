@@ -1703,3 +1703,258 @@ func TestJetStreamGhostEphemeralsAfterRestart(t *testing.T) {
 		return nil
 	})
 }
+
+func TestJetStreamClusterReplacementPolicyAfterPeerRemove(t *testing.T) {
+	// R3 scenario where there is a redundant node in each unique cloud so removing a peer should result in
+	// an immediate replacement also preserving cloud uniqueness.
+
+	sc := createJetStreamClusterExplicit(t, "PR9", 9)
+	sc.waitOnPeerCount(9)
+
+	reset := func(s *Server) {
+		s.mu.Lock()
+		rch := s.sys.resetCh
+		s.mu.Unlock()
+		if rch != nil {
+			rch <- struct{}{}
+		}
+		s.sendStatszUpdate()
+	}
+
+	tags := []string{"cloud:aws", "cloud:aws", "cloud:aws", "cloud:gcp", "cloud:gcp", "cloud:gcp", "cloud:az", "cloud:az", "cloud:az"}
+
+	var serverUTags = make(map[string]string)
+
+	for i, s := range sc.servers {
+		s.optsMu.Lock()
+		serverUTags[s.Name()] = tags[i]
+		s.opts.Tags.Add(tags[i])
+		s.opts.JetStreamUniqueTag = "cloud"
+		s.optsMu.Unlock()
+		reset(s)
+	}
+
+	ml := sc.leader()
+	js := ml.getJetStream()
+	require_True(t, js != nil)
+	js.mu.RLock()
+	cc := js.cluster
+	require_True(t, cc != nil)
+
+	// Walk and make sure all tags are registered.
+	expires := time.Now().Add(10 * time.Second)
+	for time.Now().Before(expires) {
+		allOK := true
+		for _, p := range cc.meta.Peers() {
+			si, ok := ml.nodeToInfo.Load(p.ID)
+			require_True(t, ok)
+			ni := si.(nodeInfo)
+			if len(ni.tags) == 0 {
+				allOK = false
+				reset(sc.serverByName(ni.name))
+			}
+		}
+		if allOK {
+			break
+		}
+	}
+	js.mu.RUnlock()
+	defer sc.shutdown()
+
+	sc.waitOnClusterReadyWithNumPeers(9)
+
+	s := sc.leader()
+	nc, jsc := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := jsc.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	sc.waitOnStreamLeader(globalAccountName, "TEST")
+
+	osi, err := jsc.StreamInfo("TEST")
+	require_NoError(t, err)
+
+	// Double check original placement honors unique_tag
+	var uTags = make(map[string]struct{})
+
+	uTags[serverUTags[osi.Cluster.Leader]] = struct{}{}
+	for _, replica := range osi.Cluster.Replicas {
+		evalTag := serverUTags[replica.Name]
+		if _, exists := uTags[evalTag]; !exists {
+			uTags[evalTag] = struct{}{}
+			continue
+		} else {
+			t.Fatalf("expected initial placement to honor unique_tag")
+		}
+	}
+
+	// Remove a peer and select replacement 5 times to avoid false good
+	for i := 0; i < 5; i++ {
+		// Remove 1 peer replica (this will be random cloud region as initial placement was randomized ordering)
+		// After each successful iteration, osi will reflect the current RG peers
+		toRemove := osi.Cluster.Replicas[0].Name
+		resp, err := nc.Request(fmt.Sprintf(JSApiStreamRemovePeerT, "TEST"), []byte(`{"peer":"`+toRemove+`"}`), time.Second)
+		require_NoError(t, err)
+		var rpResp JSApiStreamRemovePeerResponse
+		err = json.Unmarshal(resp.Data, &rpResp)
+		require_NoError(t, err)
+		require_True(t, rpResp.Success)
+
+		sc.waitOnStreamLeader(globalAccountName, "TEST")
+
+		checkFor(t, time.Second, 200*time.Millisecond, func() error {
+			osi, err = jsc.StreamInfo("TEST")
+			require_NoError(t, err)
+			if len(osi.Cluster.Replicas) != 2 {
+				return fmt.Errorf("expected R3, got R%d", len(osi.Cluster.Replicas)+1)
+			}
+			// STREAM.PEER.REMOVE is asynchronous command; make sure remove has occurred by
+			// checking that the toRemove peer is gone.
+			for _, replica := range osi.Cluster.Replicas {
+				if replica.Name == toRemove {
+					return fmt.Errorf("expected replaced replica, old replica still present")
+				}
+			}
+			return nil
+		})
+
+		// Validate that replacement with new peer still honors
+		uTags = make(map[string]struct{}) //reset
+
+		uTags[serverUTags[osi.Cluster.Leader]] = struct{}{}
+		for _, replica := range osi.Cluster.Replicas {
+			evalTag := serverUTags[replica.Name]
+			if _, exists := uTags[evalTag]; !exists {
+				uTags[evalTag] = struct{}{}
+				continue
+			} else {
+				t.Fatalf("expected new peer and revised placement to honor unique_tag")
+			}
+		}
+	}
+}
+
+func TestJetStreamClusterReplacementPolicyAfterPeerRemoveNoPlace(t *testing.T) {
+	// R3 scenario where there are exactly three unique cloud nodes, so removing a peer should NOT
+	// result in a new peer
+
+	sc := createJetStreamClusterExplicit(t, "threeup", 3)
+	sc.waitOnPeerCount(3)
+
+	reset := func(s *Server) {
+		s.mu.Lock()
+		rch := s.sys.resetCh
+		s.mu.Unlock()
+		if rch != nil {
+			rch <- struct{}{}
+		}
+		s.sendStatszUpdate()
+	}
+
+	tags := []string{"cloud:aws", "cloud:gcp", "cloud:az"}
+
+	var serverUTags = make(map[string]string)
+
+	for i, s := range sc.servers {
+		s.optsMu.Lock()
+		serverUTags[s.Name()] = tags[i]
+		s.opts.Tags.Add(tags[i])
+		s.opts.JetStreamUniqueTag = "cloud"
+		s.optsMu.Unlock()
+		reset(s)
+	}
+
+	ml := sc.leader()
+	js := ml.getJetStream()
+	require_True(t, js != nil)
+	js.mu.RLock()
+	cc := js.cluster
+	require_True(t, cc != nil)
+
+	// Walk and make sure all tags are registered.
+	expires := time.Now().Add(10 * time.Second)
+	for time.Now().Before(expires) {
+		allOK := true
+		for _, p := range cc.meta.Peers() {
+			si, ok := ml.nodeToInfo.Load(p.ID)
+			require_True(t, ok)
+			ni := si.(nodeInfo)
+			if len(ni.tags) == 0 {
+				allOK = false
+				reset(sc.serverByName(ni.name))
+			}
+		}
+		if allOK {
+			break
+		}
+	}
+	js.mu.RUnlock()
+	defer sc.shutdown()
+
+	sc.waitOnClusterReadyWithNumPeers(3)
+
+	s := sc.leader()
+	nc, jsc := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := jsc.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	sc.waitOnStreamLeader(globalAccountName, "TEST")
+
+	osi, err := jsc.StreamInfo("TEST")
+	require_NoError(t, err)
+
+	// Double check original placement honors unique_tag
+	var uTags = make(map[string]struct{})
+
+	uTags[serverUTags[osi.Cluster.Leader]] = struct{}{}
+	for _, replica := range osi.Cluster.Replicas {
+		evalTag := serverUTags[replica.Name]
+		if _, exists := uTags[evalTag]; !exists {
+			uTags[evalTag] = struct{}{}
+			continue
+		} else {
+			t.Fatalf("expected initial placement to honor unique_tag")
+		}
+	}
+
+	// Remove 1 peer replica (this will be random cloud region as initial placement was randomized ordering)
+	_, err = nc.Request("$JS.API.STREAM.PEER.REMOVE.TEST", []byte(`{"peer":"`+osi.Cluster.Replicas[0].Name+`"}`), time.Second*10)
+	require_NoError(t, err)
+
+	sc.waitOnStreamLeader(globalAccountName, "TEST")
+
+	// Verify R2 since no eligible peer can replace the removed peer without braking unique constraint
+	checkFor(t, time.Second, 200*time.Millisecond, func() error {
+		osi, err = jsc.StreamInfo("TEST")
+		require_NoError(t, err)
+		if len(osi.Cluster.Replicas) != 1 {
+			return fmt.Errorf("expected R2, got R%d", len(osi.Cluster.Replicas)+1)
+		}
+		return nil
+	})
+
+	// Validate that remaining members still honor unique tags
+	uTags = make(map[string]struct{}) //reset
+
+	uTags[serverUTags[osi.Cluster.Leader]] = struct{}{}
+	for _, replica := range osi.Cluster.Replicas {
+		evalTag := serverUTags[replica.Name]
+		if _, exists := uTags[evalTag]; !exists {
+			uTags[evalTag] = struct{}{}
+			continue
+		} else {
+			t.Fatalf("expected revised placement to honor unique_tag")
+		}
+	}
+}
