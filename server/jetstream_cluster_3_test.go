@@ -1259,6 +1259,10 @@ func TestJetStreamClusterScaleDownWhileNoQuorum(t *testing.T) {
 		return fmt.Errorf("stream still has a leader")
 	})
 
+	// Make sure if meta leader was on same server as stream leader we make sure
+	// it elects new leader to receive update request.
+	c.waitOnLeader()
+
 	// Now try to edit the stream by making it an R1. In some case we get
 	// a context deadline error, in some no error. So don't check the returned error.
 	js.UpdateStream(&nats.StreamConfig{
@@ -1635,5 +1639,67 @@ func TestJetStreamParallelConsumerCreation(t *testing.T) {
 	if len(rg) != expected {
 		t.Fatalf("Expected only %d distinct raft groups for all servers, go %d", expected, len(rg))
 	}
+}
 
+func TestJetStreamGhostEphemeralsAfterRestart(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Add in 100 memory based ephemerals.
+	for i := 0; i < 100; i++ {
+		_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+			Replicas:          1,
+			InactiveThreshold: time.Second,
+			MemoryStorage:     true,
+		})
+		require_NoError(t, err)
+	}
+
+	// Grab random server.
+	rs := c.randomServer()
+	// Now shutdown cluster.
+	c.stopAll()
+
+	// Let the consumers all expire.
+	time.Sleep(2 * time.Second)
+
+	// Restart first and wait so that we know it will try cleanup without a metaleader.
+	c.restartServer(rs)
+	time.Sleep(time.Second)
+
+	c.restartAll()
+	c.waitOnLeader()
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	nc, _ = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	subj := fmt.Sprintf(JSApiConsumerListT, "TEST")
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		m, err := nc.Request(subj, nil, time.Second)
+		if err != nil {
+			return err
+		}
+		var resp JSApiConsumerListResponse
+		err = json.Unmarshal(m.Data, &resp)
+		require_NoError(t, err)
+		if len(resp.Consumers) != 0 {
+			return fmt.Errorf("Still have %d consumers", len(resp.Consumers))
+		}
+		if len(resp.Missing) != 0 {
+			return fmt.Errorf("Still have %d missing consumers", len(resp.Missing))
+		}
+
+		return nil
+	})
 }
