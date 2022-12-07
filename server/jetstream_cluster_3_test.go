@@ -1259,6 +1259,10 @@ func TestJetStreamClusterScaleDownWhileNoQuorum(t *testing.T) {
 		return fmt.Errorf("stream still has a leader")
 	})
 
+	// Make sure if meta leader was on same server as stream leader we make sure
+	// it elects new leader to receive update request.
+	c.waitOnLeader()
+
 	// Now try to edit the stream by making it an R1. In some case we get
 	// a context deadline error, in some no error. So don't check the returned error.
 	js.UpdateStream(&nats.StreamConfig{
