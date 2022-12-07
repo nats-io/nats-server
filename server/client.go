@@ -4608,19 +4608,20 @@ func (c *client) processPingTimer() {
 
 	var sendPing bool
 
-	// If we have had activity within the PingInterval then
-	// there is no need to send a ping. This can be client data
-	// or if we received a ping from the other side.
 	pingInterval := c.srv.getOpts().PingInterval
 	if c.kind == GATEWAY {
 		pingInterval = adjustPingIntervalForGateway(pingInterval)
-		sendPing = true
 	}
 	now := time.Now()
 	needRTT := c.rtt == 0 || now.Sub(c.rttStart) > DEFAULT_RTT_MEASUREMENT_INTERVAL
 
-	// Do not delay PINGs for GATEWAY connections.
-	if c.kind != GATEWAY {
+	// Do not delay PINGs for GATEWAY or spoke LEAF connections.
+	if c.kind == GATEWAY || c.isSpokeLeafNode() {
+		sendPing = true
+	} else {
+		// If we have had activity within the PingInterval then
+		// there is no need to send a ping. This can be client data
+		// or if we received a ping from the other side.
 		if delta := now.Sub(c.last); delta < pingInterval && !needRTT {
 			c.Debugf("Delaying PING due to client activity %v ago", delta.Round(time.Second))
 		} else if delta := now.Sub(c.ping.last); delta < pingInterval && !needRTT {
@@ -4629,6 +4630,7 @@ func (c *client) processPingTimer() {
 			sendPing = true
 		}
 	}
+
 	if sendPing {
 		// Check for violation
 		if c.ping.out+1 > c.srv.getOpts().MaxPingsOut {
