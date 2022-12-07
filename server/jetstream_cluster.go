@@ -2741,20 +2741,9 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) bool {
 	// Check if this is for us..
 	if isMember {
 		js.processClusterCreateStream(acc, sa)
-	} else {
-		// Check if we have a raft node running, meaning we are no longer part of the group but were.
-		js.mu.Lock()
-		if node := sa.Group.node; node != nil {
-			if node.Leader() {
-				node.UpdateKnownPeers(sa.Group.Peers)
-				node.StepDown()
-			}
-			node.ProposeRemovePeer(ourID)
-			didRemove = true
-		}
-		sa.Group.node = nil
-		sa.err = nil
-		js.mu.Unlock()
+	} else if mset, _ := acc.lookupStream(sa.Config.Name); mset != nil {
+		// We have one here even though we are not a member. This can happen on re-assignment.
+		s.removeStream(ourID, mset, sa)
 	}
 
 	// If this stream assignment does not have a sync subject (bug) set that the meta-leader should check when elected.
@@ -2838,19 +2827,29 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 		js.processClusterUpdateStream(acc, osa, sa)
 	} else if mset, _ := acc.lookupStream(sa.Config.Name); mset != nil {
 		// We have one here even though we are not a member. This can happen on re-assignment.
-		s.Debugf("JetStream removing stream '%s > %s' from this server", sa.Client.serviceAccount(), sa.Config.Name)
-		if node := mset.raftNode(); node != nil {
-			if node.Leader() {
-				node.StepDown(sa.Group.Preferred)
-			}
-			node.ProposeRemovePeer(ourID)
-			// shut down monitor by shutting down raft
-			node.Delete()
-		}
-		// wait for monitor to be shut down
-		mset.monitorWg.Wait()
-		mset.stop(true, false)
+		s.removeStream(ourID, mset, sa)
 	}
+}
+
+// Common function to remove ourself from this server.
+// This can happen on re-assignment, move, etc
+func (s *Server) removeStream(ourID string, mset *stream, nsa *streamAssignment) {
+	if mset == nil {
+		return
+	}
+	// Make sure to use the new stream assignment, not our own.
+	s.Debugf("JetStream removing stream '%s > %s' from this server", nsa.Client.serviceAccount(), nsa.Config.Name)
+	if node := mset.raftNode(); node != nil {
+		if node.Leader() {
+			node.StepDown(nsa.Group.Preferred)
+		}
+		node.ProposeRemovePeer(ourID)
+		// shut down monitor by shutting down raft
+		node.Delete()
+	}
+	// wait for monitor to be shut down
+	mset.monitorWg.Wait()
+	mset.stop(true, false)
 }
 
 // processClusterUpdateStream is called when we have a stream assignment that
@@ -4620,41 +4619,25 @@ func (js *jetStream) processLeaderChange(isLeader bool) {
 
 // Lock should be held.
 func (cc *jetStreamCluster) remapStreamAssignment(sa *streamAssignment, removePeer string) bool {
-	// Need to select a replacement peer
-	s, now, cluster := cc.s, time.Now(), sa.Client.Cluster
-	if sa.Config.Placement != nil && sa.Config.Placement.Cluster != _EMPTY_ {
-		cluster = sa.Config.Placement.Cluster
+	// Invoke placement algo passing RG peers that stay (existing) and the peer that is being removed (ignore)
+	var retain, ignore []string
+	for _, v := range sa.Group.Peers {
+		if v == removePeer {
+			ignore = append(ignore, v)
+		} else {
+			retain = append(retain, v)
+		}
 	}
-	ourID := cc.meta.ID()
 
-	for _, p := range cc.meta.Peers() {
-		// If it is not in our list it's probably shutdown, so don't consider.
-		if si, ok := s.nodeToInfo.Load(p.ID); !ok || si.(nodeInfo).offline {
-			continue
-		}
-		// Make sure they are active and current and not already part of our group.
-		current, lastSeen := p.Current, now.Sub(p.Last)
-		// We do not track activity of ourselves so ignore.
-		if p.ID == ourID {
-			lastSeen = 0
-		}
-		if !current || lastSeen > lostQuorumInterval || sa.Group.isMember(p.ID) {
-			continue
-		}
-		// Make sure the correct cluster.
-		if s.clusterNameForNode(p.ID) != cluster {
-			continue
-		}
-		// If we are here we have our candidate replacement, swap out the old one.
-		for i, peer := range sa.Group.Peers {
-			if peer == removePeer {
-				sa.Group.Peers[i] = p.ID
-				// Don't influence preferred leader.
-				sa.Group.Preferred = _EMPTY_
-				return true
-			}
-		}
+	newPeers, placementError := cc.selectPeerGroup(len(sa.Group.Peers), sa.Group.Cluster, sa.Config, retain, 0, ignore)
+
+	if placementError == nil {
+		sa.Group.Peers = newPeers
+		// Don't influence preferred leader.
+		sa.Group.Preferred = _EMPTY_
+		return true
 	}
+
 	// If we are here let's remove the peer at least.
 	for i, peer := range sa.Group.Peers {
 		if peer == removePeer {
@@ -4738,7 +4721,7 @@ func (e *selectPeerError) accumulate(eAdd *selectPeerError) {
 
 // selectPeerGroup will select a group of peers to start a raft group.
 // when peers exist already the unique tag prefix check for the replaceFirstExisting will be skipped
-func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamConfig, existing []string, replaceFirstExisting int) ([]string, *selectPeerError) {
+func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamConfig, existing []string, replaceFirstExisting int, ignore []string) ([]string, *selectPeerError) {
 	if cluster == _EMPTY_ || cfg == nil {
 		return nil, &selectPeerError{misc: true}
 	}
@@ -4814,6 +4797,15 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 		}
 	}
 
+	// Map ignore
+	var ip map[string]struct{}
+	if li := len(ignore); li > 0 {
+		ip = make(map[string]struct{})
+		for _, p := range ignore {
+			ip[p] = struct{}{}
+		}
+	}
+
 	maxHaAssets := s.getOpts().JetStreamLimits.MaxHAAssets
 
 	// An error is a result of multiple individual placement decisions.
@@ -4842,11 +4834,14 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 			continue
 		}
 
+		// If ignore skip
+		if _, ok := ip[p.ID]; ok {
+			continue
+		}
+
 		// If existing also skip, we will add back in to front of the list when done.
-		if ep != nil {
-			if _, ok := ep[p.ID]; ok {
-				continue
-			}
+		if _, ok := ep[p.ID]; ok {
+			continue
 		}
 
 		if ni.tags.Contains(jsExcludePlacement) {
@@ -5021,7 +5016,7 @@ func (js *jetStream) createGroupForStream(ci *ClientInfo, cfg *StreamConfig) (*r
 	// Need to create a group here.
 	errs := &selectPeerError{}
 	for _, cn := range clusters {
-		peers, err := cc.selectPeerGroup(replicas, cn, cfg, nil, 0)
+		peers, err := cc.selectPeerGroup(replicas, cn, cfg, nil, 0, nil)
 		if len(peers) < replicas {
 			errs.accumulate(err)
 			continue
@@ -5387,7 +5382,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	if isReplicaChange {
 		// We are adding new peers here.
 		if newCfg.Replicas > len(rg.Peers) {
-			peers, err := cc.selectPeerGroup(newCfg.Replicas, rg.Cluster, newCfg, rg.Peers, 0)
+			peers, err := cc.selectPeerGroup(newCfg.Replicas, rg.Cluster, newCfg, rg.Peers, 0, nil)
 			if err != nil {
 				resp.Error = NewJSClusterNoPeersError(err)
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
