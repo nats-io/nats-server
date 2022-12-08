@@ -65,18 +65,17 @@ func TestMultipleUserAuth(t *testing.T) {
 const testToken = "$2a$05$3sSWEVA1eMCbV0hWavDjXOx.ClBjI6u1CuUdLqf22cbJjXsnzz8/."
 
 func TestTokenInConfig(t *testing.T) {
-	confFileName := "test.conf"
-	defer removeFile(t, confFileName)
 	content := `
 	listen: 127.0.0.1:4567
 	authorization={
 		token: ` + testToken + `
 		timeout: 5
 	}`
-	if err := os.WriteFile(confFileName, []byte(content), 0666); err != nil {
+	confFile := createConfFile(t, []byte(content))
+	if err := os.WriteFile(confFile, []byte(content), 0666); err != nil {
 		t.Fatalf("Error writing config file: %v", err)
 	}
-	s, opts := RunServerWithConfig(confFileName)
+	s, opts := RunServerWithConfig(confFile)
 	defer s.Shutdown()
 
 	url := fmt.Sprintf("nats://test@%s:%d/", opts.Host, opts.Port)

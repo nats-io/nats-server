@@ -100,30 +100,26 @@ func TestJetStreamLeafNodeUniqueServerNameCrossJSDomain(t *testing.T) {
 		}
     `
 	t.Run("same-domain", func(t *testing.T) {
-		confA := createConfFile(t, []byte(fmt.Sprintf(tmplA, name, createDir(t, JetStreamStoreDir))))
-		defer removeFile(t, confA)
+		confA := createConfFile(t, []byte(fmt.Sprintf(tmplA, name, t.TempDir())))
 		sA, oA := RunServerWithConfig(confA)
 		defer sA.Shutdown()
 		// using same domain as sA
-		confL := createConfFile(t, []byte(fmt.Sprintf(tmplL, name, createDir(t, JetStreamStoreDir), "hub",
+		confL := createConfFile(t, []byte(fmt.Sprintf(tmplL, name, t.TempDir(), "hub",
 			fmt.Sprintf("nats://y:p@127.0.0.1:%d", oA.LeafNode.Port),
 			fmt.Sprintf("nats://admin:s3cr3t!@127.0.0.1:%d", oA.LeafNode.Port))))
-		defer removeFile(t, confL)
 		sL, _ := RunServerWithConfig(confL)
 		defer sL.Shutdown()
 		// as server name uniqueness is violates, sL.ID() is the expected value
 		test(sA, sL.ID(), sA, sL)
 	})
 	t.Run("different-domain", func(t *testing.T) {
-		confA := createConfFile(t, []byte(fmt.Sprintf(tmplA, name, createDir(t, JetStreamStoreDir))))
-		defer removeFile(t, confA)
+		confA := createConfFile(t, []byte(fmt.Sprintf(tmplA, name, t.TempDir())))
 		sA, oA := RunServerWithConfig(confA)
 		defer sA.Shutdown()
 		// using different domain as sA
-		confL := createConfFile(t, []byte(fmt.Sprintf(tmplL, name, createDir(t, JetStreamStoreDir), "spoke",
+		confL := createConfFile(t, []byte(fmt.Sprintf(tmplL, name, t.TempDir(), "spoke",
 			fmt.Sprintf("nats://y:p@127.0.0.1:%d", oA.LeafNode.Port),
 			fmt.Sprintf("nats://admin:s3cr3t!@127.0.0.1:%d", oA.LeafNode.Port))))
-		defer removeFile(t, confL)
 		sL, _ := RunServerWithConfig(confL)
 		defer sL.Shutdown()
 		checkLeafNodeConnectedCount(t, sL, 2)
@@ -156,12 +152,9 @@ func TestJetStreamLeafNodeJwtPermsAndJSDomains(t *testing.T) {
 		j.Sub.Deny.Add("subdeny")
 		j.Pub.Deny.Add("pubdeny")
 	})
-	defer removeFile(t, lnCreds)
 	unlimitedCreds := createUserWithLimit(t, accKp, noExpiration, nil)
-	defer removeFile(t, unlimitedCreds)
 
 	sysCreds := createUserWithLimit(t, sysKp, noExpiration, nil)
-	defer removeFile(t, sysCreds)
 
 	tmplA := `
 operator: %s
@@ -204,14 +197,12 @@ leafnodes:{
 
 	confA := createConfFile(t, []byte(fmt.Sprintf(tmplA, ojwt, sysPub,
 		sysPub, sysJwt, accPub, accJwt,
-		createDir(t, JetStreamStoreDir))))
-	defer removeFile(t, confA)
+		t.TempDir())))
 	sA, _ := RunServerWithConfig(confA)
 	defer sA.Shutdown()
 
-	confL := createConfFile(t, []byte(fmt.Sprintf(tmplL, createDir(t, JetStreamStoreDir),
+	confL := createConfFile(t, []byte(fmt.Sprintf(tmplL, t.TempDir(),
 		sA.opts.LeafNode.Port, lnCreds, sA.opts.LeafNode.Port, sysCreds)))
-	defer removeFile(t, confL)
 	sL, _ := RunServerWithConfig(confL)
 	defer sL.Shutdown()
 
@@ -411,17 +402,13 @@ leafnodes:{
 		{false, true},
 		{false, false}} {
 		t.Run(fmt.Sprintf("%t-%t", testCase.same, testCase.leafFunctionPreJoin), func(t *testing.T) {
-			sd1 := createDir(t, JetStreamStoreDir)
-			defer os.RemoveAll(sd1)
+			sd1 := t.TempDir()
 			confA := createConfFile(t, []byte(fmt.Sprintf(tmplA, sd1)))
-			defer removeFile(t, confA)
 			sA, _ := RunServerWithConfig(confA)
 			defer sA.Shutdown()
 
-			sd2 := createDir(t, JetStreamStoreDir)
-			defer os.RemoveAll(sd2)
+			sd2 := t.TempDir()
 			confB := createConfFile(t, []byte(fmt.Sprintf(tmplB, sd2)))
-			defer removeFile(t, confB)
 			sB, _ := RunServerWithConfig(confB)
 			defer sB.Shutdown()
 
@@ -444,19 +431,15 @@ leafnodes:{
 				hint = fmt.Sprintf("extension_hint: %s", strings.ToUpper(jsNoExtend))
 			}
 
-			sd3 := createDir(t, JetStreamStoreDir)
-			defer os.RemoveAll(sd3)
+			sd3 := t.TempDir()
 			// deliberately pick server sA and proxy
 			confLA := createConfFile(t, []byte(fmt.Sprintf(tmplLA, sd3, hint, sA.opts.LeafNode.Port, lPort)))
-			defer removeFile(t, confLA)
 			sLA, _ := RunServerWithConfig(confLA)
 			defer sLA.Shutdown()
 
-			sd4 := createDir(t, JetStreamStoreDir)
-			defer os.RemoveAll(sd4)
+			sd4 := t.TempDir()
 			// deliberately pick server sA and proxy
 			confLB := createConfFile(t, []byte(fmt.Sprintf(tmplLB, sd4, hint, sA.opts.LeafNode.Port, lPort)))
-			defer removeFile(t, confLB)
 			sLB, _ := RunServerWithConfig(confLB)
 			defer sLB.Shutdown()
 
@@ -673,22 +656,17 @@ cluster: { name: clustL }
 				jsDisabledDomainString = "extension_hint: will_extend"
 			}
 
-			sd1 := createDir(t, JetStreamStoreDir)
-			defer os.RemoveAll(sd1)
+			sd1 := t.TempDir()
 			confA := createConfFile(t, []byte(fmt.Sprintf(tmplA, jsEnabledDomainString, sd1)))
-			defer removeFile(t, confA)
 			sA, _ := RunServerWithConfig(confA)
 			defer sA.Shutdown()
 
-			sd2 := createDir(t, JetStreamStoreDir)
-			defer os.RemoveAll(sd2)
+			sd2 := t.TempDir()
 			confB := createConfFile(t, []byte(fmt.Sprintf(tmplB, jsEnabledDomainString, sd2)))
-			defer removeFile(t, confB)
 			sB, _ := RunServerWithConfig(confB)
 			defer sB.Shutdown()
 
 			confC := createConfFile(t, []byte(fmt.Sprintf(tmplC, jsDisabledDomainString)))
-			defer removeFile(t, confC)
 			sC, _ := RunServerWithConfig(confC)
 			defer sC.Shutdown()
 
@@ -696,11 +674,9 @@ cluster: { name: clustL }
 			c := cluster{t: t, servers: []*Server{sA, sB, sC}}
 			c.waitOnPeerCount(2)
 
-			sd3 := createDir(t, JetStreamStoreDir)
-			defer os.RemoveAll(sd3)
+			sd3 := t.TempDir()
 			// deliberately pick server sC (no JS) to connect to
 			confLA := createConfFile(t, []byte(fmt.Sprintf(tmplLA, jsEnabledDomainString, sd3, sC.opts.LeafNode.Port, sC.opts.LeafNode.Port)))
-			defer removeFile(t, confLA)
 			sLA, _ := RunServerWithConfig(confLA)
 			defer sLA.Shutdown()
 
@@ -776,11 +752,9 @@ leafnodes:{
 		pl.Sub.Deny.Add(jsAllAPI)
 	})
 
-	sd := createDir(t, JetStreamStoreDir)
-	defer os.RemoveAll(sd)
+	sd := t.TempDir()
 
 	confL := createConfFile(t, []byte(fmt.Sprintf(tmplL, sd, creds, creds)))
-	defer removeFile(t, confL)
 	opts := LoadConfig(confL)
 	sL, err := NewServer(opts)
 	require_NoError(t, err)
@@ -852,7 +826,6 @@ leafnodes: {
 
 	test := func(domain string, sysShared bool) {
 		confHub := createConfFile(t, []byte(fmt.Sprintf(tmplHub, -1, "disabled", "disabled", -1, "")))
-		defer removeFile(t, confHub)
 		sHub, _ := RunServerWithConfig(confHub)
 		defer sHub.Shutdown()
 
@@ -866,10 +839,8 @@ leafnodes: {
 			sys = fmt.Sprintf(`{url:nats://s1:s1@127.0.0.1:%d, account: SYS}`, sHub.opts.LeafNode.Port)
 		}
 
-		sdLeaf := createDir(t, JetStreamStoreDir)
-		defer os.RemoveAll(sdLeaf)
+		sdLeaf := t.TempDir()
 		confL := createConfFile(t, []byte(fmt.Sprintf(tmplL, domain, sdLeaf, sHub.opts.LeafNode.Port, sys, noDomainFix)))
-		defer removeFile(t, confL)
 		sLeaf, _ := RunServerWithConfig(confL)
 		defer sLeaf.Shutdown()
 
@@ -910,8 +881,7 @@ leafnodes: {
 		require_NoError(t, err)
 
 		// Enable jetstream in hub.
-		sdHub := createDir(t, JetStreamStoreDir)
-		defer os.RemoveAll(sdHub)
+		sdHub := t.TempDir()
 		jsEnabled := fmt.Sprintf(`{ domain: "%s", store_dir: '%s', max_mem: 100Mb, max_file: 100Mb }`, domain, sdHub)
 		require_NoError(t, os.WriteFile(confHub, []byte(fmt.Sprintf(tmplHub,
 			sHubUpd1.opts.Port,
@@ -1012,21 +982,17 @@ leafnodes: {
 		sysKp, syspub := createKey(t)
 		sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
 		sysCreds := newUser(t, sysKp)
-		defer removeFile(t, sysCreds)
 
 		aKp, aPub := createKey(t)
 		aClaim := jwt.NewAccountClaims(aPub)
 		aJwt := encodeClaim(t, aClaim, aPub)
 		aCreds := newUser(t, aKp)
-		defer removeFile(t, aCreds)
 
 		confHub := createConfFile(t, []byte(fmt.Sprintf(tmplHub, -1, ojwt, syspub, syspub, sysJwt, aPub, aJwt, -1, "")))
-		defer removeFile(t, confHub)
 		sHub, _ := RunServerWithConfig(confHub)
 		defer sHub.Shutdown()
 
-		sdLeaf := createDir(t, JetStreamStoreDir)
-		defer os.RemoveAll(sdLeaf)
+		sdLeaf := t.TempDir()
 		confL := createConfFile(t, []byte(fmt.Sprintf(tmplL,
 			domain,
 			sdLeaf,
@@ -1035,7 +1001,6 @@ leafnodes: {
 			sHub.opts.LeafNode.Port,
 			sysCreds,
 			noDomainFix)))
-		defer removeFile(t, confL)
 		sLeaf, _ := RunServerWithConfig(confL)
 		defer sLeaf.Shutdown()
 
@@ -1151,17 +1116,13 @@ leafnodes: {
 default_js_domain: {B:"DHUB"}
 `
 
-	sd1 := createDir(t, JetStreamStoreDir)
-	defer os.RemoveAll(sd1)
+	sd1 := t.TempDir()
 	confHub1 := createConfFile(t, []byte(fmt.Sprintf(tmplHub1, sd1)))
-	defer removeFile(t, confHub1)
 	sHub1, _ := RunServerWithConfig(confHub1)
 	defer sHub1.Shutdown()
 
-	sd2 := createDir(t, JetStreamStoreDir)
-	defer os.RemoveAll(sd2)
+	sd2 := t.TempDir()
 	confHub2 := createConfFile(t, []byte(fmt.Sprintf(tmplHub2, sd2)))
-	defer removeFile(t, confHub2)
 	sHub2, _ := RunServerWithConfig(confHub2)
 	defer sHub2.Shutdown()
 
@@ -1169,17 +1130,12 @@ default_js_domain: {B:"DHUB"}
 	c1 := cluster{t: t, servers: []*Server{sHub1, sHub2}}
 	c1.waitOnPeerCount(2)
 
-	sd3 := createDir(t, JetStreamStoreDir)
-	defer os.RemoveAll(sd3)
+	sd3 := t.TempDir()
 	confLeaf1 := createConfFile(t, []byte(fmt.Sprintf(tmplL1, sd3, sHub1.getOpts().LeafNode.Port, sHub1.getOpts().LeafNode.Port)))
-	defer removeFile(t, confLeaf1)
 	sLeaf1, _ := RunServerWithConfig(confLeaf1)
 	defer sLeaf1.Shutdown()
 
-	sd4 := createDir(t, JetStreamStoreDir)
-	defer os.RemoveAll(sd4)
 	confLeaf2 := createConfFile(t, []byte(fmt.Sprintf(tmplL2, sd3, sHub1.getOpts().LeafNode.Port, sHub1.getOpts().LeafNode.Port)))
-	defer removeFile(t, confLeaf2)
 	sLeaf2, _ := RunServerWithConfig(confLeaf2)
 	defer sLeaf2.Shutdown()
 
@@ -1264,7 +1220,7 @@ func TestJetStreamLeafNodeSvcImportExportCycle(t *testing.T) {
 			}
 		]
 	}
-	`, accounts, createDir(t, JetStreamStoreDir), o.LeafNode.Port)))
+	`, accounts, t.TempDir(), o.LeafNode.Port)))
 	defer os.Remove(lconf)
 	sl, so := RunServerWithConfig(lconf)
 	defer sl.Shutdown()

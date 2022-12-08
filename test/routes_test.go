@@ -1101,11 +1101,10 @@ func TestRouteBasicPermissions(t *testing.T) {
 
 func createConfFile(t testing.TB, content []byte) string {
 	t.Helper()
-	conf := createFile(t, "")
+	conf := createTempFile(t, "")
 	fName := conf.Name()
 	conf.Close()
 	if err := os.WriteFile(fName, content, 0666); err != nil {
-		removeFile(t, fName)
 		t.Fatalf("Error writing conf file: %v", err)
 	}
 	return fName
@@ -1151,7 +1150,6 @@ func TestRoutesOnlyImportOrExport(t *testing.T) {
 				}
 			}
 		`, c)))
-		defer removeFile(t, cf)
 		s, _ := RunServerWithConfig(cf)
 		s.Shutdown()
 	}

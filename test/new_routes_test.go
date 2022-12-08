@@ -1676,7 +1676,6 @@ func TestNewRouteLeafNodeOriginSupport(t *testing.T) {
 	no_sys_acc: true
 	`
 	conf := createConfFile(t, []byte(content))
-	defer removeFile(t, conf)
 
 	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()
@@ -1690,7 +1689,6 @@ func TestNewRouteLeafNodeOriginSupport(t *testing.T) {
 	no_sys_acc: true
 	`
 	lconf := createConfFile(t, []byte(fmt.Sprintf(lcontent, opts.LeafNode.Port)))
-	defer removeFile(t, lconf)
 
 	ln, _ := RunServerWithConfig(lconf)
 	defer ln.Shutdown()

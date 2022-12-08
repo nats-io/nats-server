@@ -2592,7 +2592,6 @@ func TestClientAuthRequiredNoAuthUser(t *testing.T) {
 		}
 		no_auth_user: user
 	`))
-	defer removeFile(t, conf)
 
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()

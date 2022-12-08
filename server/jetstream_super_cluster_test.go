@@ -444,13 +444,13 @@ func TestJetStreamSuperClusterInterestOnlyMode(t *testing.T) {
 			gateways = [{name: %s, urls: ["nats://127.0.0.1:%d"]}]
 		}
 	`
-	storeDir1 := createDir(t, JetStreamStoreDir)
+	storeDir1 := t.TempDir()
 	conf1 := createConfFile(t, []byte(fmt.Sprintf(template,
 		"S1", storeDir1, "", 23222, "A", 23222, "A", 11222, "B", 11223)))
 	s1, o1 := RunServerWithConfig(conf1)
 	defer s1.Shutdown()
 
-	storeDir2 := createDir(t, JetStreamStoreDir)
+	storeDir2 := t.TempDir()
 	conf2 := createConfFile(t, []byte(fmt.Sprintf(template,
 		"S2", storeDir2, "", 23223, "B", 23223, "B", 11223, "A", 11222)))
 	s2, o2 := RunServerWithConfig(conf2)
@@ -2275,7 +2275,6 @@ func TestJetStreamSuperClusterImportConsumerStreamSubjectRemap(t *testing.T) {
 				password: pwd
 			}
 		`, scl.getOpts().LeafNode.Port)))
-			defer removeFile(t, cf)
 			s, _ := RunServerWithConfig(cf)
 			defer s.Shutdown()
 			checkLeafNodeConnected(t, scl)
@@ -2310,7 +2309,6 @@ func TestJetStreamSuperClusterImportConsumerStreamSubjectRemap(t *testing.T) {
 				},
 			}
 		`, scl.getOpts().LeafNode.Port)))
-			defer removeFile(t, cf)
 			s, _ := RunServerWithConfig(cf)
 			defer s.Shutdown()
 			checkLeafNodeConnected(t, scl)

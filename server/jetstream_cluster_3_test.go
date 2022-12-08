@@ -467,10 +467,7 @@ func TestJetStreamClusterDeleteConsumerWhileServerDown(t *testing.T) {
 }
 
 func TestJetStreamClusterNegativeReplicas(t *testing.T) {
-	s := RunBasicJetStreamServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
+	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
@@ -526,10 +523,7 @@ func TestJetStreamClusterNegativeReplicas(t *testing.T) {
 }
 
 func TestJetStreamClusterUserGivenConsName(t *testing.T) {
-	s := RunBasicJetStreamServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
+	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
@@ -735,7 +729,7 @@ func TestJetStreamClusterMirrorCrossDomainOnLeadnodeNoSystemShare(t *testing.T) 
 func TestJetStreamClusterFirstSeqMismatch(t *testing.T) {
 	c := createJetStreamClusterWithTemplateAndModHook(t, jsClusterTempl, "C", 3,
 		func(serverName, clusterName, storeDir, conf string) string {
-			tf := createFile(t, "")
+			tf := createTempFile(t, "")
 			logName := tf.Name()
 			tf.Close()
 			return fmt.Sprintf("%s\nlogfile: '%s'", conf, logName)
@@ -813,10 +807,7 @@ func TestJetStreamClusterFirstSeqMismatch(t *testing.T) {
 func TestJetStreamClusterConsumerInactiveThreshold(t *testing.T) {
 	// Create a standalone, a cluster, and a super cluster
 
-	s := RunBasicJetStreamServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
+	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
@@ -1055,10 +1046,7 @@ func TestJetStreamClusterSignalPullConsumersOnDelete(t *testing.T) {
 
 // https://github.com/nats-io/nats-server/issues/3559
 func TestJetStreamClusterSourceWithOptStartTime(t *testing.T) {
-	s := RunBasicJetStreamServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
+	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
 	c := createJetStreamClusterExplicit(t, "R3S", 3)

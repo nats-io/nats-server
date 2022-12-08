@@ -124,8 +124,7 @@ func TestJetStreamJWTLimits(t *testing.T) {
 	userJwt, err := uclaim.Encode(akp)
 	require_NoError(t, err)
 	userCreds := genCredsFile(t, userJwt, uSeed)
-	dir := createDir(t, "srv")
-	defer removeDir(t, dir)
+	dir := t.TempDir()
 	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
 		jetstream: {max_mem_store: 10Mb, max_file_store: 10Mb}
@@ -136,7 +135,6 @@ func TestJetStreamJWTLimits(t *testing.T) {
 		}
 		system_account: %s
     `, ojwt, dir, sysPub)))
-	defer removeFile(t, conf)
 	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()
 	port := opts.Port
@@ -182,7 +180,6 @@ func TestJetStreamJWTLimits(t *testing.T) {
 		}
 		system_account: %s
     `, port, ojwt, dir, sysPub)))
-	defer removeFile(t, conf)
 	s, _ = RunServerWithConfig(conf)
 	defer s.Shutdown()
 	c.Flush() // force client to discover the disconnect
@@ -199,7 +196,6 @@ func TestJetStreamJWTLimits(t *testing.T) {
 		}
 		system_account: %s
     `, port, ojwt, dir, sysPub)))
-	defer removeFile(t, conf)
 	s, _ = RunServerWithConfig(conf)
 	defer s.Shutdown()
 	c.Flush() // force client to discover the disconnect
@@ -215,7 +211,6 @@ func TestJetStreamJWTDisallowBearer(t *testing.T) {
 	sysKp, syspub := createKey(t)
 	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
 	sysCreds := newUser(t, sysKp)
-	defer removeFile(t, sysCreds)
 
 	accKp, err := nkeys.CreateAccount()
 	require_NoError(t, err)
@@ -234,8 +229,7 @@ func TestJetStreamJWTDisallowBearer(t *testing.T) {
 	uc.BearerToken = false
 	uOpt2 := createUserCredsEx(t, uc, accKp)
 
-	dir := createDir(t, "srv")
-	defer removeDir(t, dir)
+	dir := t.TempDir()
 	cf := createConfFile(t, []byte(fmt.Sprintf(`
 		port: -1
 		operator = %s
@@ -248,7 +242,6 @@ func TestJetStreamJWTDisallowBearer(t *testing.T) {
 			%s : "%s"
 		}
 		`, ojwt, syspub, dir, syspub, sysJwt)))
-	defer removeFile(t, cf)
 	s, _ := RunServerWithConfig(cf)
 	defer s.Shutdown()
 
@@ -286,7 +279,6 @@ func TestJetStreamJWTMove(t *testing.T) {
 	sysKp, syspub := createKey(t)
 	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
 	sysCreds := newUser(t, sysKp)
-	defer removeFile(t, sysCreds)
 
 	accKp, aExpPub := createKey(t)
 
@@ -294,7 +286,6 @@ func TestJetStreamJWTMove(t *testing.T) {
 		accClaim.Name = "acc"
 		accJwt := encodeClaim(t, accClaim, aExpPub)
 		accCreds := newUser(t, accKp)
-		defer removeFile(t, accCreds)
 
 		tmlp := `
 			listen: 127.0.0.1:-1
@@ -423,8 +414,7 @@ func TestJetStreamJWTMove(t *testing.T) {
 func TestJetStreamJWTClusteredTiers(t *testing.T) {
 	sysKp, syspub := createKey(t)
 	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
-	sysCreds := newUser(t, sysKp)
-	defer removeFile(t, sysCreds)
+	newUser(t, sysKp)
 
 	accKp, aExpPub := createKey(t)
 	accClaim := jwt.NewAccountClaims(aExpPub)
@@ -579,7 +569,6 @@ func TestJetStreamJWTClusteredTiersChange(t *testing.T) {
 	sysKp, syspub := createKey(t)
 	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
 	sysCreds := newUser(t, sysKp)
-	defer removeFile(t, sysCreds)
 
 	accKp, aExpPub := createKey(t)
 	accClaim := jwt.NewAccountClaims(aExpPub)
@@ -665,7 +654,6 @@ func TestJetStreamJWTClusteredDeleteTierWithStreamAndMove(t *testing.T) {
 	sysKp, syspub := createKey(t)
 	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
 	sysCreds := newUser(t, sysKp)
-	defer removeFile(t, sysCreds)
 
 	accKp, aExpPub := createKey(t)
 	accClaim := jwt.NewAccountClaims(aExpPub)
@@ -933,10 +921,8 @@ func TestJetStreamExpiredAccountNotCountedTowardLimits(t *testing.T) {
 
 	var syspub, sysjwt, sysCreds string
 	createAccountAndUser(&syspub, &sysjwt, &sysCreds)
-	defer removeFile(t, sysCreds)
 
-	dirSrv := createDir(t, "srv")
-	defer removeDir(t, dirSrv)
+	dirSrv := t.TempDir()
 	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
 		operator: %s
@@ -949,7 +935,6 @@ func TestJetStreamExpiredAccountNotCountedTowardLimits(t *testing.T) {
 			timeout: "500ms"
 		}
     `, opJwt, syspub, dirSrv)))
-	defer removeFile(t, conf)
 
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
@@ -959,7 +944,6 @@ func TestJetStreamExpiredAccountNotCountedTowardLimits(t *testing.T) {
 
 	var apub, ajwt1, aCreds1 string
 	createAccountAndUser(&apub, &ajwt1, &aCreds1)
-	defer removeFile(t, aCreds1)
 	// push jwt (for full resolver)
 	updateJwt(t, s.ClientURL(), sysCreds, ajwt1, 1)
 
@@ -979,7 +963,6 @@ func TestJetStreamExpiredAccountNotCountedTowardLimits(t *testing.T) {
 
 	var apub2, ajwt2, aCreds2 string
 	createAccountAndUser(&apub2, &ajwt2, &aCreds2)
-	defer removeFile(t, aCreds2)
 	// push jwt (for full resolver)
 	updateJwt(t, s.ClientURL(), sysCreds, ajwt2, 1)
 
@@ -1034,10 +1017,8 @@ func TestJetStreamDeletedAccountDoesNotLeakSubscriptions(t *testing.T) {
 
 	var syspub, sysjwt, sysCreds string
 	createAccountAndUser(&syspub, &sysjwt, &sysCreds)
-	defer removeFile(t, sysCreds)
 
-	dirSrv := createDir(t, "srv")
-	defer removeDir(t, dirSrv)
+	dirSrv := t.TempDir()
 	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
 		operator: %s
@@ -1050,7 +1031,6 @@ func TestJetStreamDeletedAccountDoesNotLeakSubscriptions(t *testing.T) {
 			timeout: "500ms"
 		}
 	`, opJwt, dirSrv, syspub, dirSrv)))
-	defer removeFile(t, conf)
 
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
@@ -1085,7 +1065,6 @@ func TestJetStreamDeletedAccountDoesNotLeakSubscriptions(t *testing.T) {
 
 		var apub, ajwt1, aCreds1 string
 		createAccountAndUser(&apub, &ajwt1, &aCreds1)
-		defer removeFile(t, aCreds1)
 		// push jwt (for full resolver)
 		updateJwt(t, s.ClientURL(), sysCreds, ajwt1, 1)
 
@@ -1159,10 +1138,8 @@ func TestJetStreamDeletedAccountIsReEnabled(t *testing.T) {
 	// admin user
 	var syspub, sysjwt, sysCreds string
 	createAccountAndUser(&syspub, &sysjwt, &sysCreds)
-	defer removeFile(t, sysCreds)
 
-	dirSrv := createDir(t, "srv")
-	defer removeDir(t, dirSrv)
+	dirSrv := t.TempDir()
 	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
 		operator: %s
@@ -1175,7 +1152,6 @@ func TestJetStreamDeletedAccountIsReEnabled(t *testing.T) {
 			timeout: "500ms"
 		}
 	`, opJwt, dirSrv, syspub, dirSrv)))
-	defer removeFile(t, conf)
 
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
@@ -1206,7 +1182,6 @@ func TestJetStreamDeletedAccountIsReEnabled(t *testing.T) {
 	ujwt1, err := uclaim.Encode(kp)
 	require_NoError(t, err)
 	aCreds1 = genCredsFile(t, ujwt1, seed)
-	defer removeFile(t, aCreds1)
 
 	// push user account
 	updateJwt(t, s.ClientURL(), sysCreds, ajwt1, 1)
