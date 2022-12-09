@@ -3966,7 +3966,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 		switch err {
 		case ErrMaxMsgs, ErrMaxBytes, ErrMaxMsgsPerSubject, ErrMsgTooLarge:
-			s.Debugf("JetStream failed to store a msg on stream '%s > %s': %v", accName, name, err)
+			s.RateLimitDebugf("JetStream failed to store a msg on stream '%s > %s': %v", accName, name, err)
 		case ErrStoreClosed:
 		default:
 			s.Errorf("JetStream failed to store a msg on stream '%s > %s': %v", accName, name, err)
