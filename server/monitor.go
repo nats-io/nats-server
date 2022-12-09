@@ -2631,8 +2631,8 @@ type JSzOptions struct {
 
 // HealthzOptions are options passed to Healthz
 type HealthzOptions struct {
-	JSEnabled    bool `json:"js-enabled,omitempty"`
-	JSServerOnly bool `json:"js-server-only,omitempty"`
+	JSEnabledOnly bool `json:"js-enabled-only,omitempty"`
+	JSServerOnly  bool `json:"js-server-only,omitempty"`
 }
 
 type StreamDetail struct {
@@ -2972,14 +2972,21 @@ func (s *Server) HandleHealthz(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	if jsEnabled {
+		s.Warnf("Healthcheck: js-enabled deprecated, use js-enabled-only instead")
+	}
+	jsEnabledOnly, err := decodeBool(w, r, "js-enabled-only")
+	if err != nil {
+		return
+	}
 	jsServerOnly, err := decodeBool(w, r, "js-server-only")
 	if err != nil {
 		return
 	}
 
 	hs := s.healthz(&HealthzOptions{
-		JSEnabled:    jsEnabled,
-		JSServerOnly: jsServerOnly,
+		JSEnabledOnly: jsEnabledOnly || jsEnabled,
+		JSServerOnly:  jsServerOnly,
 	})
 	if hs.Error != _EMPTY_ {
 		s.Warnf("Healthcheck failed: %q", hs.Error)
@@ -3008,15 +3015,23 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 		return health
 	}
 
-	// Check JetStream
+	sopts := s.getOpts()
+
+	// If JS is not enabled in the config, we stop.
+	if !sopts.JetStream {
+		return health
+	}
+
+	// Access the Jetstream state to perform additional checks.
 	js := s.getJetStream()
-	if js == nil {
-		// If JetStream should be enabled then return error status.
-		if opts.JSEnabled {
-			health.Status = "unavailable"
-			health.Error = NewJSNotEnabledError().Error()
-			return health
-		}
+
+	if !js.isEnabled() {
+		health.Status = "unavailable"
+		health.Error = NewJSNotEnabledError().Error()
+		return health
+	}
+	// Only check if JS is enabled, skip meta and asset check.
+	if opts.JSEnabledOnly {
 		return health
 	}
 
