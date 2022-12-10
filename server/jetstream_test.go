@@ -17365,14 +17365,19 @@ func TestJetStreamWorkQueueSourceNamingRestart(t *testing.T) {
 }
 
 func TestJetStreamDisabledHealthz(t *testing.T) {
-	s := RunRandClientPortServer()
+	s := RunBasicJetStreamServer()
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
 	defer s.Shutdown()
 
-	if s.JetStreamEnabled() {
-		t.Fatalf("Expected JetStream to be disabled")
+	if !s.JetStreamEnabled() {
+		t.Fatalf("Expected JetStream to be enabled")
 	}
 
-	hs := s.healthz(&HealthzOptions{JSEnabled: true})
+	s.DisableJetStream()
+
+	hs := s.healthz(&HealthzOptions{JSEnabledOnly: true})
 	if hs.Status == "unavailable" && hs.Error == NewJSNotEnabledError().Error() {
 		return
 	}

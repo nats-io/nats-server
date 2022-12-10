@@ -2178,7 +2178,7 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 		{"JSZ", nil, &JSzOptions{}, []string{"now", "disabled"}},
 
 		{"HEALTHZ", nil, &JSzOptions{}, []string{"status"}},
-		{"HEALTHZ", &HealthzOptions{JSEnabled: true}, &JSzOptions{}, []string{"status"}},
+		{"HEALTHZ", &HealthzOptions{JSEnabledOnly: true}, &JSzOptions{}, []string{"status"}},
 		{"HEALTHZ", &HealthzOptions{JSServerOnly: true}, &JSzOptions{}, []string{"status"}},
 	}
 
