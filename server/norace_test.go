@@ -5715,6 +5715,26 @@ func TestNoRaceJetStreamDeleteConsumerWithInterestStreamAndHighSeqs(t *testing.T
 	}
 }
 
+// Bug when we encode a timestamp that upon decode causes an error which causes server to panic.
+// This can happen on consumer redelivery since they adjusted timstamps can be in the future, and result
+// in a negative encoding. If that encoding was exactly -1 seconds, would cause decodeConsumerState to fail
+// and the server to panic.
+func TestNoRaceEncodeConsumerStateBug(t *testing.T) {
+	for i := 0; i < 200_000; i++ {
+		// Pretend we redelivered and updated the timestamp to reflect the new start time for expiration.
+		// The bug will trip when time.Now() rounded to seconds in encode is 1 second below the truncated version
+		// of pending.
+		pending := Pending{Sequence: 1, Timestamp: time.Now().Add(time.Second).UnixNano()}
+		state := ConsumerState{
+			Delivered: SequencePair{Consumer: 1, Stream: 1},
+			Pending:   map[uint64]*Pending{1: &pending},
+		}
+		buf := encodeConsumerState(&state)
+		_, err := decodeConsumerState(buf)
+		require_NoError(t, err)
+	}
+}
+
 // Performance impact on stream ingress with large number of consumers.
 func TestJetStreamLargeNumConsumersPerfImpact(t *testing.T) {
 	skip(t)
@@ -5807,22 +5827,134 @@ func TestJetStreamLargeNumConsumersPerfImpact(t *testing.T) {
 	fmt.Printf("%.0f msgs/sec\n", float64(toSend)/tt.Seconds())
 }
 
-// Bug when we encode a timestamp that upon decode causes an error which causes server to panic.
-// This can happen on consumer redelivery since they adjusted timstamps can be in the future, and result
-// in a negative encoding. If that encoding was exactly -1 seconds, would cause decodeConsumerState to fail
-// and the server to panic.
-func TestNoRaceEncodeConsumerStateBug(t *testing.T) {
-	for i := 0; i < 200_000; i++ {
-		// Pretend we redelivered and updated the timestamp to reflect the new start time for expiration.
-		// The bug will trip when time.Now() rounded to seconds in encode is 1 second below the truncated version
-		// of pending.
-		pending := Pending{Sequence: 1, Timestamp: time.Now().Add(time.Second).UnixNano()}
-		state := ConsumerState{
-			Delivered: SequencePair{Consumer: 1, Stream: 1},
-			Pending:   map[uint64]*Pending{1: &pending},
-		}
-		buf := encodeConsumerState(&state)
-		_, err := decodeConsumerState(buf)
+// Performance impact on large number of consumers but sparse delivery.
+func TestJetStreamLargeNumConsumersSparseDelivery(t *testing.T) {
+	skip(t)
+
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"ID.*"},
+	})
+	require_NoError(t, err)
+
+	// Now add in ~10k consumers on different subjects.
+	for i := 3; i <= 10_000; i++ {
+		_, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+			Durable:       fmt.Sprintf("d-%d", i),
+			FilterSubject: fmt.Sprintf("ID.%d", i),
+			AckPolicy:     nats.AckNonePolicy,
+		})
 		require_NoError(t, err)
+	}
+
+	toSend := 100_000
+
+	// Bind a consumer to ID.2.
+	var received int
+	done := make(chan bool)
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	mh := func(m *nats.Msg) {
+		received++
+		if received >= toSend {
+			close(done)
+		}
+	}
+	_, err = js.Subscribe("ID.2", mh)
+	require_NoError(t, err)
+
+	last := make(chan bool)
+	_, err = js.Subscribe("ID.1", func(_ *nats.Msg) { close(last) })
+	require_NoError(t, err)
+
+	nc, _ = jsClientConnect(t, s)
+	defer nc.Close()
+	js, err = nc.JetStream(nats.PublishAsyncMaxPending(8 * 1024))
+	require_NoError(t, err)
+
+	start := time.Now()
+	for i := 0; i < toSend; i++ {
+		js.PublishAsync("ID.2", []byte("ok"))
+	}
+	// Check latency for this one message.
+	// This will show the issue better than throughput which can bypass signal processing.
+	js.PublishAsync("ID.1", []byte("ok"))
+
+	select {
+	case <-done:
+		break
+	case <-time.After(10 * time.Second):
+		t.Fatalf("Failed to receive all messages: %d of %d\n", received, toSend)
+	}
+
+	tt := time.Since(start)
+	fmt.Printf("Took %v to receive %d msgs\n", tt, toSend)
+	fmt.Printf("%.0f msgs/s\n", float64(toSend)/tt.Seconds())
+
+	select {
+	case <-last:
+		break
+	case <-time.After(30 * time.Second):
+		t.Fatalf("Failed to receive last message\n")
+	}
+	lt := time.Since(start)
+
+	fmt.Printf("Took %v to receive last msg\n", lt)
+}
+
+func TestNoRaceJetStreamEndToEndLatency(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	var sent time.Time
+	var max time.Duration
+	next := make(chan struct{})
+
+	mh := func(m *nats.Msg) {
+		received := time.Now()
+		tt := received.Sub(sent)
+		if max == 0 || tt > max {
+			max = tt
+		}
+		next <- struct{}{}
+	}
+	sub, err := js.Subscribe("foo", mh)
+	require_NoError(t, err)
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	toSend := 50_000
+	for i := 0; i < toSend; i++ {
+		sent = time.Now()
+		js.Publish("foo", []byte("ok"))
+		<-next
+	}
+	sub.Unsubscribe()
+
+	if max > 250*time.Millisecond {
+		t.Fatalf("Expected max latency to be < 250ms, got %v", max)
 	}
 }
