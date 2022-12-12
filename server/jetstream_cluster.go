@@ -178,8 +178,8 @@ const (
 
 // Returns information useful in mixed mode.
 func (s *Server) trackedJetStreamServers() (js, total int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if !s.running || !s.eventsEnabled() {
 		return -1, -1
 	}
@@ -195,10 +195,10 @@ func (s *Server) trackedJetStreamServers() (js, total int) {
 }
 
 func (s *Server) getJetStreamCluster() (*jetStream, *jetStreamCluster) {
-	s.mu.Lock()
+	s.mu.RLock()
 	shutdown := s.shutdown
 	js := s.js
-	s.mu.Unlock()
+	s.mu.RUnlock()
 
 	if shutdown || js == nil {
 		return nil, nil
@@ -2847,6 +2847,13 @@ func (s *Server) removeStream(ourID string, mset *stream, nsa *streamAssignment)
 		// shut down monitor by shutting down raft
 		node.Delete()
 	}
+
+	// Make sure this node is no longer attached to our stream assignment.
+	js, _ := s.getJetStreamCluster()
+	js.mu.Lock()
+	nsa.Group.node = nil
+	js.mu.Unlock()
+
 	// wait for monitor to be shut down
 	mset.monitorWg.Wait()
 	mset.stop(true, false)
