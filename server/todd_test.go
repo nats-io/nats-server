@@ -3,9 +3,10 @@ package server
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/nats-io/nats.go"
 	"testing"
 	"time"
+
+	"github.com/nats-io/nats.go"
 )
 
 func snapRGSet(pFlag bool, banner string, osi *nats.StreamInfo) *map[string]struct{} {
@@ -68,7 +69,7 @@ func TestJetStreamClusterAfterPeerRemoveZeroState(t *testing.T) {
 	// Load up 10000
 	toSend := 10000
 	for i := 1; i <= toSend; i++ {
-		msg := []byte(fmt.Sprintf("Hello World"))
+		msg := []byte("Hello World")
 		if _, err = jsc.Publish("foo.a", msg); err != nil {
 			t.Fatalf("Unexpected publish error: %v", err)
 		}
