@@ -16,6 +16,7 @@ package server
 import (
 	"archive/tar"
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -222,11 +223,12 @@ type stream struct {
 	// For republishing.
 	tr *transform
 
-	// For processing consumers as a list without main stream lock.
+	// For processing consumers without main stream lock.
 	clsMu sync.RWMutex
 	cList []*consumer
 	sch   chan struct{}
 	sigq  *ipQueue // of *cMsg
+	csl   *Sublist
 
 	// TODO(dlc) - Hide everything below behind two pointers.
 	// Clustered mode.
@@ -4054,22 +4056,15 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	// Signal consumers for new messages.
 	if numConsumers > 0 {
-		if numConsumers > consumerSignalThreshold {
-			mset.sigq.push(newCMsg(subject, seq))
-			select {
-			case mset.sch <- struct{}{}:
-			default:
-			}
-		} else {
-			mset.signalConsumers(subject, seq)
+		mset.sigq.push(newCMsg(subject, seq))
+		select {
+		case mset.sch <- struct{}{}:
+		default:
 		}
 	}
 
 	return nil
 }
-
-// Number of consumers to consider offloading signal processing.
-const consumerSignalThreshold = 10
 
 // Used to signal inbound message to registered consumers.
 type cMsg struct {
@@ -4134,19 +4129,21 @@ func (mset *stream) signalConsumers(subj string, seq uint64) {
 	mset.clsMu.RLock()
 	defer mset.clsMu.RUnlock()
 
-	for _, o := range mset.cList {
-		o.mu.Lock()
-		if o.isLeader() && o.isFilteredMatch(subj) {
-			if seq > o.npcm {
-				o.npc++
-			}
-			if o.mset != nil {
-				if o.isPushMode() && o.active || o.isPullMode() && !o.waiting.isEmpty() {
-					o.signalNewMessages()
-				}
-			}
-		}
-		o.mu.Unlock()
+	if mset.csl == nil {
+		return
+	}
+
+	r := mset.csl.Match(subj)
+	if len(r.psubs) == 0 {
+		return
+	}
+	// Encode the sequence here.
+	var eseq [8]byte
+	var le = binary.LittleEndian
+	le.PutUint64(eseq[:], seq)
+	msg := eseq[:]
+	for _, sub := range r.psubs {
+		sub.icb(sub, nil, nil, subj, _EMPTY_, msg)
 	}
 }
 
@@ -4408,7 +4405,7 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 		obs = append(obs, o)
 	}
 	mset.clsMu.Lock()
-	mset.consumers, mset.cList = nil, nil
+	mset.consumers, mset.cList, mset.csl = nil, nil, nil
 	mset.clsMu.Unlock()
 
 	// Check if we are a mirror.
@@ -4589,17 +4586,6 @@ func (mset *stream) numConsumers() int {
 	return len(mset.consumers)
 }
 
-// Lock should be held
-// Don't expect this to be called at high rates.
-func (mset *stream) updateConsumerList() {
-	mset.clsMu.Lock()
-	defer mset.clsMu.Unlock()
-	mset.cList = make([]*consumer, 0, len(mset.consumers))
-	for _, o := range mset.consumers {
-		mset.cList = append(mset.cList, o)
-	}
-}
-
 // Lock should be held.
 func (mset *stream) setConsumer(o *consumer) {
 	mset.consumers[o.name] = o
@@ -4610,7 +4596,9 @@ func (mset *stream) setConsumer(o *consumer) {
 		mset.directs++
 	}
 	// Now update consumers list as well
-	mset.updateConsumerList()
+	mset.clsMu.Lock()
+	mset.cList = append(mset.cList, o)
+	mset.clsMu.Unlock()
 }
 
 // Lock should be held.
@@ -4621,9 +4609,42 @@ func (mset *stream) removeConsumer(o *consumer) {
 	if o.cfg.Direct && mset.directs > 0 {
 		mset.directs--
 	}
-	delete(mset.consumers, o.name)
-	// Now update consumers list as well
-	mset.updateConsumerList()
+	if mset.consumers != nil {
+		delete(mset.consumers, o.name)
+		// Now update consumers list as well
+		mset.clsMu.Lock()
+		for i, ol := range mset.cList {
+			if ol == o {
+				mset.cList = append(mset.cList[:i], mset.cList[i+1:]...)
+				break
+			}
+		}
+		// Always remove from the leader sublist.
+		if mset.csl != nil {
+			mset.csl.Remove(o.signalSub())
+		}
+		mset.clsMu.Unlock()
+	}
+}
+
+// Set the consumer as a leader. This will update signaling sublist.
+func (mset *stream) setConsumerAsLeader(o *consumer) {
+	mset.clsMu.Lock()
+	defer mset.clsMu.Unlock()
+
+	if mset.csl == nil {
+		mset.csl = NewSublistWithCache()
+	}
+	mset.csl.Insert(o.signalSub())
+}
+
+// Remove the consumer as a leader. This will update signaling sublist.
+func (mset *stream) removeConsumerAsLeader(o *consumer) {
+	mset.clsMu.Lock()
+	defer mset.clsMu.Unlock()
+	if mset.csl != nil {
+		mset.csl.Remove(o.signalSub())
+	}
 }
 
 // lookupConsumer will retrieve a consumer by name.
