@@ -1602,7 +1602,6 @@ func TestConfigCheck(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			conf := createConfFile(t, []byte(test.config))
-			defer removeFile(t, conf)
 			err := checkConfig(conf)
 			var expectedErr error
 

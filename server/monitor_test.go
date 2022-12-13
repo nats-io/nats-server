@@ -2632,7 +2632,6 @@ func TestMonitorClusterURLs(t *testing.T) {
 		}
 	`
 	conf := createConfFile(t, []byte(fmt.Sprintf(template, "nats://"+s2ClusterHostPort, "")))
-	defer removeFile(t, conf)
 	s1, _ := RunServerWithConfig(conf)
 	defer s1.Shutdown()
 
@@ -3249,7 +3248,6 @@ func TestMonitorGatewayzAccounts(t *testing.T) {
 		}
 		no_sys_acc = true
 	`, accounts)))
-	defer removeFile(t, bConf)
 
 	sb, ob := RunServerWithConfig(bConf)
 	defer sb.Shutdown()
@@ -3274,7 +3272,6 @@ func TestMonitorGatewayzAccounts(t *testing.T) {
 		}
 		no_sys_acc = true
 	`, accounts, sb.GatewayAddr().Port)))
-	defer removeFile(t, aConf)
 
 	sa, oa := RunServerWithConfig(aConf)
 	defer sa.Shutdown()
@@ -3651,7 +3648,6 @@ func TestMonitorOpJWT(t *testing.T) {
 	resolver = MEMORY
 	`
 	conf := createConfFile(t, []byte(content))
-	defer removeFile(t, conf)
 	sa, _ := RunServerWithConfig(conf)
 	defer sa.Shutdown()
 
@@ -3692,7 +3688,6 @@ func TestMonitorLeafz(t *testing.T) {
 	}
 	`
 	conf := createConfFile(t, []byte(content))
-	defer removeFile(t, conf)
 	sb, ob := RunServerWithConfig(conf)
 	defer sb.Shutdown()
 
@@ -3711,9 +3706,7 @@ func TestMonitorLeafz(t *testing.T) {
 		return acc, creds
 	}
 	acc1, mycreds1 := createAcc(t)
-	defer removeFile(t, mycreds1)
 	acc2, mycreds2 := createAcc(t)
-	defer removeFile(t, mycreds2)
 
 	content = `
 		port: -1
@@ -3751,7 +3744,6 @@ func TestMonitorLeafz(t *testing.T) {
 		acc1.Name, ob.LeafNode.Port, mycreds1,
 		acc2.Name, ob.LeafNode.Port, mycreds2)
 	conf = createConfFile(t, []byte(config))
-	defer removeFile(t, conf)
 	sa, oa := RunServerWithConfig(conf)
 	defer sa.Shutdown()
 
@@ -4092,8 +4084,7 @@ func TestMonitorJsz(t *testing.T) {
 		{7500, 7501, 7502, 5502},
 		{5500, 5501, 5502, 7502},
 	} {
-		tmpDir := createDir(t, fmt.Sprintf("srv_%d", test.port))
-		defer removeDir(t, tmpDir)
+		tmpDir := t.TempDir()
 		cf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:%d
 		http: 127.0.0.1:%d
@@ -4123,7 +4114,6 @@ func TestMonitorJsz(t *testing.T) {
 			routes: [nats-route://127.0.0.1:%d]
 		}
 		server_name: server_%d `, test.port, test.mport, tmpDir, test.cport, test.routed, test.port)))
-		defer removeFile(t, cf)
 
 		s, _ := RunServerWithConfig(cf)
 		defer s.Shutdown()
@@ -4412,7 +4402,6 @@ func TestMonitorReloadTLSConfig(t *testing.T) {
 	conf := createConfFile(t, []byte(fmt.Sprintf(template,
 		"../test/configs/certs/server-noip.pem",
 		"../test/configs/certs/server-key-noip.pem")))
-	defer removeFile(t, conf)
 
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()

@@ -1603,10 +1603,9 @@ func TestConnectErrorReports(t *testing.T) {
 		t.Fatalf("Expected default value to be %v, got %v", DEFAULT_CONNECT_ERROR_REPORTS, ra)
 	}
 
-	tmpFile := createFile(t, "")
+	tmpFile := createTempFile(t, "")
 	log := tmpFile.Name()
 	tmpFile.Close()
-	defer removeFile(t, log)
 
 	remoteURLs := RoutesFromStr("nats://127.0.0.1:1234")
 
@@ -1755,10 +1754,9 @@ func TestReconnectErrorReports(t *testing.T) {
 		t.Fatalf("Expected default value to be %v, got %v", DEFAULT_RECONNECT_ERROR_REPORTS, ra)
 	}
 
-	tmpFile := createFile(t, "")
+	tmpFile := createTempFile(t, "")
 	log := tmpFile.Name()
 	tmpFile.Close()
-	defer removeFile(t, log)
 
 	csOpts := DefaultOptions()
 	csOpts.Cluster.Port = -1
@@ -1941,17 +1939,13 @@ func TestReconnectErrorReports(t *testing.T) {
 }
 
 func TestServerLogsConfigurationFile(t *testing.T) {
-	tmpDir := createDir(t, "_nats-server")
-	defer removeDir(t, tmpDir)
-
-	file := createFileAtDir(t, tmpDir, "nats_server_log_")
+	file := createTempFile(t, "nats_server_log_")
 	file.Close()
 
 	conf := createConfFile(t, []byte(fmt.Sprintf(`
 	port: -1
 	logfile: '%s'
 	`, file.Name())))
-	defer removeFile(t, conf)
 
 	o := LoadConfig(conf)
 	o.ConfigFile = file.Name()

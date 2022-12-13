@@ -184,7 +184,7 @@ func BenchmarkJetStreamKV(b *testing.B) {
 							}
 							var connectURL string
 							if bc.clusterSize == 1 {
-								s := RunBasicJetStreamServer()
+								s := RunBasicJetStreamServer(b)
 								defer s.Shutdown()
 								connectURL = s.ClientURL()
 							} else {
