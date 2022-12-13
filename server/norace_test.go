@@ -5831,10 +5831,7 @@ func TestJetStreamLargeNumConsumersPerfImpact(t *testing.T) {
 func TestJetStreamLargeNumConsumersSparseDelivery(t *testing.T) {
 	skip(t)
 
-	s := RunBasicJetStreamServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
+	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
 	// Client for API requests.
@@ -5915,12 +5912,9 @@ func TestJetStreamLargeNumConsumersSparseDelivery(t *testing.T) {
 }
 
 func TestNoRaceJetStreamEndToEndLatency(t *testing.T) {
-	// skip(t)
+	skip(t)
 
-	s := RunBasicJetStreamServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
+	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
 	// Client for API requests.
