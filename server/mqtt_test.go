@@ -311,7 +311,7 @@ func testMQTTRunServer(t testing.TB, o *Options) *Server {
 	t.Helper()
 	o.NoLog = false
 	if o.StoreDir == _EMPTY_ {
-		o.StoreDir = createDir(t, "mqtt_js")
+		o.StoreDir = t.TempDir()
 	}
 	s, err := NewServer(o)
 	if err != nil {
@@ -365,7 +365,6 @@ func TestMQTTServerNameRequired(t *testing.T) {
 			port: -1
 		}
 	`))
-	defer removeFile(t, conf)
 	o, err := ProcessConfigFile(conf)
 	if err != nil {
 		t.Fatalf("Error processing config file: %v", err)
@@ -386,7 +385,6 @@ func TestMQTTStandaloneRequiresJetStream(t *testing.T) {
 			}
 		}
 	`))
-	defer removeFile(t, conf)
 	o, err := ProcessConfigFile(conf)
 	if err != nil {
 		t.Fatalf("Error processing config file: %v", err)
@@ -408,7 +406,6 @@ func TestMQTTConfig(t *testing.T) {
 			}
 		}
 	`))
-	defer removeFile(t, conf)
 	s, o := RunServerWithConfig(conf)
 	defer testMQTTShutdownServer(s)
 	if o.MQTT.TLSConfig == nil {
@@ -582,7 +579,6 @@ func TestMQTTParseOptions(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf := createConfFile(t, []byte(test.content))
-			defer removeFile(t, conf)
 			o, err := ProcessConfigFile(conf)
 			if test.err != _EMPTY_ {
 				if err == nil || !strings.Contains(err.Error(), test.err) {
@@ -3211,7 +3207,7 @@ func TestMQTTLeafnodeWithoutJSToClusterWithJSNoSharedSysAcc(t *testing.T) {
 		if len(lno.Accounts) > 0 {
 			lno.JetStream = true
 			lno.JetStreamDomain = "OTHER"
-			lno.StoreDir = createDir(t, "mqtt_js_ln")
+			lno.StoreDir = t.TempDir()
 		}
 
 		// Use RoutesFromStr() to make an array of urls
@@ -3730,7 +3726,6 @@ func TestMQTTWillRetainPermViolation(t *testing.T) {
 		}
 	`
 	conf := createConfFile(t, []byte(fmt.Sprintf(template, "foo")))
-	defer removeFile(t, conf)
 
 	s, o := RunServerWithConfig(conf)
 	defer testMQTTShutdownServer(s)
@@ -4969,7 +4964,6 @@ func TestMQTTConfigReload(t *testing.T) {
 		}
 	`
 	conf := createConfFile(t, []byte(fmt.Sprintf(template, `"5s"`, `10000`)))
-	defer removeFile(t, conf)
 
 	s, o := RunServerWithConfig(conf)
 	defer testMQTTShutdownServer(s)
@@ -5099,7 +5093,6 @@ func TestMQTTWebsocketToMQTTPort(t *testing.T) {
 			no_tls: true
 		}
 	`))
-	defer removeFile(t, conf)
 	s, o := RunServerWithConfig(conf)
 	defer testMQTTShutdownServer(s)
 
@@ -5143,7 +5136,6 @@ func TestMQTTWebsocket(t *testing.T) {
 		}
 	`
 	s, o, conf := runReloadServerWithContent(t, []byte(fmt.Sprintf(template, jwt.ConnectionTypeMqtt, "")))
-	defer removeFile(t, conf)
 	defer testMQTTShutdownServer(s)
 
 	cisub := &mqttConnInfo{clientID: "sub", user: "mqtt", pass: "pwd", ws: true}
@@ -5206,7 +5198,6 @@ func TestMQTTPartial(t *testing.T) {
 			no_tls: true
 		}
 	`))
-	defer removeFile(t, conf)
 	s, o := RunServerWithConfig(conf)
 	defer testMQTTShutdownServer(s)
 
@@ -5262,7 +5253,6 @@ func TestMQTTWebsocketTLS(t *testing.T) {
 			}
 		}
 	`))
-	defer removeFile(t, conf)
 	s, o := RunServerWithConfig(conf)
 	defer testMQTTShutdownServer(s)
 
@@ -5693,7 +5683,6 @@ func TestMQTTStreamReplicasConfigReload(t *testing.T) {
 		}
 	`
 	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, 3)))
-	defer removeFile(t, conf)
 	s, o := RunServerWithConfig(conf)
 	defer testMQTTShutdownServer(s)
 
@@ -5874,7 +5863,6 @@ func TestMQTTConsumerReplicasReload(t *testing.T) {
 		}
 	`
 	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, 3, "false")))
-	defer removeFile(t, conf)
 	s, o := RunServerWithConfig(conf)
 	defer testMQTTShutdownServer(s)
 
@@ -6037,7 +6025,6 @@ func TestMQTTConsumerInactiveThreshold(t *testing.T) {
 		accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
 	`
 	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, "0.2s")))
-	defer removeFile(t, conf)
 	s, o := RunServerWithConfig(conf)
 	defer testMQTTShutdownServer(s)
 
@@ -6084,7 +6071,6 @@ func TestMQTTSubjectMapping(t *testing.T) {
 			listen: 127.0.0.1:-1
 		}
 	`))
-	defer removeFile(t, conf)
 	s, o := RunServerWithConfig(conf)
 	defer testMQTTShutdownServer(s)
 
@@ -6203,7 +6189,6 @@ func TestMQTTSubjectMappingWithImportExport(t *testing.T) {
 			listen: 127.0.0.1:-1
 		}
 	`))
-	defer removeFile(t, conf)
 	s, o := RunServerWithConfig(conf)
 	defer testMQTTShutdownServer(s)
 

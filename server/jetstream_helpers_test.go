@@ -412,7 +412,7 @@ func createJetStreamSuperClusterWithTemplateAndModHook(t *testing.T, tmpl string
 		routeConfig := strings.Join(routes, ",")
 
 		for si := 0; si < numServersPer; si++ {
-			storeDir := createDir(t, JetStreamStoreDir)
+			storeDir := t.TempDir()
 			sn := fmt.Sprintf("%s-S%d", cn, si+1)
 			bconf := fmt.Sprintf(tmpl, sn, storeDir, cn, cp+si, routeConfig)
 			conf := fmt.Sprintf(jsSuperClusterTempl, bconf, cn, gp, gwconf)
@@ -639,7 +639,7 @@ func createMixedModeCluster(t testing.TB, tmpl string, clusterName, snPre string
 	c := &cluster{servers: make([]*Server, 0, numServers), opts: make([]*Options, 0, numServers), name: clusterName}
 
 	for cp := startClusterPort; cp < startClusterPort+numServers; cp++ {
-		storeDir := createDir(t, JetStreamStoreDir)
+		storeDir := t.TempDir()
 
 		sn := fmt.Sprintf("%sS-%d", snPre, cp-startClusterPort+1)
 		conf := fmt.Sprintf(tmpl, sn, storeDir, clusterName, cp, routeConfig)
@@ -724,7 +724,7 @@ func createJetStreamClusterAndModHook(t testing.TB, tmpl string, clusterName, sn
 	c := &cluster{servers: make([]*Server, 0, numServers), opts: make([]*Options, 0, numServers), name: clusterName}
 
 	for cp := portStart; cp < portStart+numServers; cp++ {
-		storeDir := createDir(t, JetStreamStoreDir)
+		storeDir := t.TempDir()
 		sn := fmt.Sprintf("%sS-%d", snPre, cp-portStart+1)
 		conf := fmt.Sprintf(tmpl, sn, storeDir, clusterName, cp, routeConfig)
 		if modify != nil {
@@ -748,7 +748,7 @@ func createJetStreamClusterAndModHook(t testing.TB, tmpl string, clusterName, sn
 func (c *cluster) addInNewServer() *Server {
 	c.t.Helper()
 	sn := fmt.Sprintf("S-%d", len(c.servers)+1)
-	storeDir, _ := os.MkdirTemp(tempRoot, JetStreamStoreDir)
+	storeDir := c.t.TempDir()
 	seedRoute := fmt.Sprintf("nats-route://127.0.0.1:%d", c.opts[0].Cluster.Port)
 	conf := fmt.Sprintf(jsClusterTempl, sn, storeDir, c.name, -1, seedRoute)
 	s, o := RunServerWithConfig(createConfFile(c.t, []byte(conf)))
@@ -764,7 +764,7 @@ func (c *cluster) createSingleLeafNodeNoSystemAccount() *Server {
 	lno := as.getOpts().LeafNode
 	ln1 := fmt.Sprintf("nats://one:p@%s:%d", lno.Host, lno.Port)
 	ln2 := fmt.Sprintf("nats://two:p@%s:%d", lno.Host, lno.Port)
-	conf := fmt.Sprintf(jsClusterSingleLeafNodeTempl, createDir(c.t, JetStreamStoreDir), ln1, ln2)
+	conf := fmt.Sprintf(jsClusterSingleLeafNodeTempl, c.t.TempDir(), ln1, ln2)
 	s, o := RunServerWithConfig(createConfFile(c.t, []byte(conf)))
 	c.servers = append(c.servers, s)
 	c.opts = append(c.opts, o)
@@ -788,7 +788,7 @@ func (c *cluster) createSingleLeafNodeNoSystemAccountAndEnablesJetStreamWithDoma
 	as := c.randomServer()
 	lno := as.getOpts().LeafNode
 	ln := fmt.Sprintf("nats://%s:p@%s:%d", user, lno.Host, lno.Port)
-	conf := fmt.Sprintf(tmpl, createDir(c.t, JetStreamStoreDir), ln)
+	conf := fmt.Sprintf(tmpl, c.t.TempDir(), ln)
 	s, o := RunServerWithConfig(createConfFile(c.t, []byte(conf)))
 	c.servers = append(c.servers, s)
 	c.opts = append(c.opts, o)
@@ -930,7 +930,7 @@ func (c *cluster) createLeafNode(extend bool) *Server {
 func (c *cluster) createLeafNodeWithTemplate(name, template string) *Server {
 	c.t.Helper()
 	tmpl := c.createLeafSolicit(template)
-	conf := fmt.Sprintf(tmpl, name, createDir(c.t, JetStreamStoreDir))
+	conf := fmt.Sprintf(tmpl, name, c.t.TempDir())
 	s, o := RunServerWithConfig(createConfFile(c.t, []byte(conf)))
 	c.servers = append(c.servers, s)
 	c.opts = append(c.opts, o)
@@ -940,7 +940,7 @@ func (c *cluster) createLeafNodeWithTemplate(name, template string) *Server {
 func (c *cluster) createLeafNodeWithTemplateNoSystem(name, template string) *Server {
 	c.t.Helper()
 	tmpl := c.createLeafSolicitNoSystem(template)
-	conf := fmt.Sprintf(tmpl, name, createDir(c.t, JetStreamStoreDir))
+	conf := fmt.Sprintf(tmpl, name, c.t.TempDir())
 	s, o := RunServerWithConfig(createConfFile(c.t, []byte(conf)))
 	c.servers = append(c.servers, s)
 	c.opts = append(c.opts, o)

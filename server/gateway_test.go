@@ -6339,7 +6339,6 @@ func TestGatewayTLSConfigReload(t *testing.T) {
 		}
 	`
 	confA := createConfFile(t, []byte(fmt.Sprintf(template, "")))
-	defer removeFile(t, confA)
 
 	srvA, optsA := RunServerWithConfig(confA)
 	defer srvA.Shutdown()
@@ -6392,7 +6391,6 @@ func TestGatewayTLSConfigReloadForRemote(t *testing.T) {
 		}
 	`
 	confB := createConfFile(t, []byte(fmt.Sprintf(template, optsA.Gateway.Port, "")))
-	defer removeFile(t, confB)
 
 	srvB, _ := RunServerWithConfig(confB)
 	defer srvB.Shutdown()
@@ -6419,7 +6417,6 @@ func TestGatewayAuthDiscovered(t *testing.T) {
 			authorization: { user: gwuser, password: changeme }
 		}
 	`))
-	defer removeFile(t, confA)
 	srvA, optsA := RunServerWithConfig(confA)
 	defer srvA.Shutdown()
 
@@ -6434,7 +6431,6 @@ func TestGatewayAuthDiscovered(t *testing.T) {
 			]
 		}
 	`, optsA.Gateway.Port)))
-	defer removeFile(t, confB)
 	srvB, _ := RunServerWithConfig(confB)
 	defer srvB.Shutdown()
 
@@ -6454,8 +6450,7 @@ func TestTLSGatewaysCertificateImplicitAllowFail(t *testing.T) {
 
 func testTLSGatewaysCertificateImplicitAllow(t *testing.T, pass bool) {
 	// Base config for the servers
-	cfg := createFile(t, "cfg")
-	defer removeFile(t, cfg.Name())
+	cfg := createTempFile(t, "cfg")
 	cfg.WriteString(fmt.Sprintf(`
 		gateway {
 		  tls {

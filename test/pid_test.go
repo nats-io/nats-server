@@ -22,10 +22,7 @@ import (
 func TestPidFile(t *testing.T) {
 	opts := DefaultTestOptions
 
-	tmpDir := createDir(t, "_nats-server")
-	defer removeDir(t, tmpDir)
-
-	file := createFileAtDir(t, tmpDir, "nats-server:pid_")
+	file := createTempFile(t, "nats-server:pid_")
 	file.Close()
 	opts.PidFile = file.Name()
 

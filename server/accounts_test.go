@@ -337,7 +337,6 @@ func TestAccountIsolationExportImport(t *testing.T) {
 			`,
 				c.exp, c.imp,
 			)))
-			defer removeFile(t, cf)
 			s, _ := RunServerWithConfig(cf)
 			defer s.Shutdown()
 
@@ -381,7 +380,6 @@ func TestMultiAccountsIsolation(t *testing.T) {
 			]
 		}
 	}`))
-	defer removeFile(t, conf)
 
 	s, _ := RunServerWithConfig(conf)
 	if config := s.JetStreamConfig(); config != nil {
@@ -472,7 +470,6 @@ func TestNewAccountAndRequireNewAlwaysError(t *testing.T) {
 			B: { users: [ {user: ub, password: pb} ] },
 		}
 	`))
-	defer removeFile(t, conf)
 
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
@@ -536,8 +533,11 @@ func accountNameExists(name string, accounts []*Account) bool {
 }
 
 func TestAccountSimpleConfig(t *testing.T) {
-	confFileName := createConfFile(t, []byte(`accounts = [foo, bar]`))
-	defer removeFile(t, confFileName)
+	cfg1 := `
+		accounts = [foo, bar]
+	`
+
+	confFileName := createConfFile(t, []byte(cfg1))
 	opts, err := ProcessConfigFile(confFileName)
 	if err != nil {
 		t.Fatalf("Received an error processing config file: %v", err)
@@ -552,9 +552,12 @@ func TestAccountSimpleConfig(t *testing.T) {
 		t.Fatal("Expected a 'bar' account")
 	}
 
+	cfg2 := `
+		accounts = [foo, foo]
+	`
+
 	// Make sure double entries is an error.
-	confFileName = createConfFile(t, []byte(`accounts = [foo, foo]`))
-	defer removeFile(t, confFileName)
+	confFileName = createConfFile(t, []byte(cfg2))
 	_, err = ProcessConfigFile(confFileName)
 	if err == nil {
 		t.Fatalf("Expected an error with double account entries")
@@ -578,7 +581,6 @@ func TestAccountParseConfig(t *testing.T) {
       }
     }
     `))
-	defer removeFile(t, confFileName)
 	opts, err := ProcessConfigFile(confFileName)
 	if err != nil {
 		t.Fatalf("Received an error processing config file: %v", err)
@@ -628,7 +630,6 @@ func TestAccountParseConfigDuplicateUsers(t *testing.T) {
       }
     }
     `))
-	defer removeFile(t, confFileName)
 	_, err := ProcessConfigFile(confFileName)
 	if err == nil {
 		t.Fatalf("Expected an error with double user entries")
@@ -736,7 +737,6 @@ func TestImportExportConfigFailures(t *testing.T) {
       }
     }
     `))
-	defer removeFile(t, cf)
 	if _, err := ProcessConfigFile(cf); err == nil {
 		t.Fatalf("Expected an error with import from unknown account")
 	}
@@ -748,7 +748,6 @@ func TestImportExportConfigFailures(t *testing.T) {
       }
     }
     `))
-	defer removeFile(t, cf)
 	if _, err := ProcessConfigFile(cf); err == nil {
 		t.Fatalf("Expected an error with import of a service with no account")
 	}
@@ -760,7 +759,6 @@ func TestImportExportConfigFailures(t *testing.T) {
       }
     }
     `))
-	defer removeFile(t, cf)
 	if _, err := ProcessConfigFile(cf); err == nil {
 		t.Fatalf("Expected an error with import of a service with wildcard subject")
 	}
@@ -772,7 +770,6 @@ func TestImportExportConfigFailures(t *testing.T) {
       }
     }
     `))
-	defer removeFile(t, cf)
 	if _, err := ProcessConfigFile(cf); err == nil {
 		t.Fatalf("Expected an error with export with unknown keyword")
 	}
@@ -784,7 +781,6 @@ func TestImportExportConfigFailures(t *testing.T) {
       }
     }
     `))
-	defer removeFile(t, cf)
 	if _, err := ProcessConfigFile(cf); err == nil {
 		t.Fatalf("Expected an error with import with unknown keyword")
 	}
@@ -796,7 +792,6 @@ func TestImportExportConfigFailures(t *testing.T) {
       }
     }
     `))
-	defer removeFile(t, cf)
 	if _, err := ProcessConfigFile(cf); err == nil {
 		t.Fatalf("Expected an error with export with account")
 	}
@@ -1024,7 +1019,6 @@ func TestStreamImportLengthBug(t *testing.T) {
 	  }
 	}
 	`))
-	defer removeFile(t, cf)
 	if _, err := ProcessConfigFile(cf); err == nil {
 		t.Fatalf("Expected an error with import with wildcard prefix")
 	}
@@ -2196,7 +2190,6 @@ func TestAccountMapsUsers(t *testing.T) {
       }
     }
     `))
-	defer removeFile(t, confFileName)
 	opts, err := ProcessConfigFile(confFileName)
 	if err != nil {
 		t.Fatalf("Unexpected error parsing config file: %v", err)
@@ -2306,7 +2299,6 @@ func TestAccountGlobalDefault(t *testing.T) {
 
 	// Make sure we can not define one in a config file either.
 	confFileName := createConfFile(t, []byte(`accounts { $G {} }`))
-	defer removeFile(t, confFileName)
 
 	if _, err := ProcessConfigFile(confFileName); err == nil {
 		t.Fatalf("Expected an error parsing config file with reserved account")
@@ -2834,13 +2826,13 @@ func TestAccountMultiWeightedRouteMappings(t *testing.T) {
 
 func TestGlobalAccountRouteMappingsConfiguration(t *testing.T) {
 	cf := createConfFile(t, []byte(`
+	port: -1
 	mappings = {
 		foo: bar
 		foo.*: [ { dest: bar.v1.$1, weight: 40% }, { destination: baz.v2.$1, weight: 20 } ]
 		bar.*.*: RAB.$2.$1
     }
     `))
-	defer removeFile(t, cf)
 
 	s, _ := RunServerWithConfig(cf)
 	defer s.Shutdown()
@@ -2884,6 +2876,7 @@ func TestGlobalAccountRouteMappingsConfiguration(t *testing.T) {
 
 func TestAccountRouteMappingsConfiguration(t *testing.T) {
 	cf := createConfFile(t, []byte(`
+	port: -1
 	accounts {
 		synadia {
 			users = [{user: derek, password: foo}]
@@ -2895,7 +2888,6 @@ func TestAccountRouteMappingsConfiguration(t *testing.T) {
 		}
 	}
     `))
-	defer removeFile(t, cf)
 
 	s, _ := RunServerWithConfig(cf)
 	defer s.Shutdown()
@@ -2920,12 +2912,12 @@ func TestAccountRouteMappingsConfiguration(t *testing.T) {
 
 func TestAccountRouteMappingsWithLossInjection(t *testing.T) {
 	cf := createConfFile(t, []byte(`
+	port: -1
 	mappings = {
 		foo: { dest: foo, weight: 80% }
 		bar: { dest: bar, weight: 0% }
     }
     `))
-	defer removeFile(t, cf)
 
 	s, _ := RunServerWithConfig(cf)
 	defer s.Shutdown()
@@ -2958,11 +2950,11 @@ func TestAccountRouteMappingsWithLossInjection(t *testing.T) {
 
 func TestAccountRouteMappingsWithOriginClusterFilter(t *testing.T) {
 	cf := createConfFile(t, []byte(`
+	port: -1
 	mappings = {
 		foo: { dest: bar, cluster: SYN, weight: 100% }
     }
     `))
-	defer removeFile(t, cf)
 
 	s, _ := RunServerWithConfig(cf)
 	defer s.Shutdown()
@@ -2996,6 +2988,7 @@ func TestAccountRouteMappingsWithOriginClusterFilter(t *testing.T) {
 
 func TestAccountServiceImportWithRouteMappings(t *testing.T) {
 	cf := createConfFile(t, []byte(`
+	port: -1
     accounts {
       foo {
         users = [{user: derek, password: foo}]
@@ -3007,7 +3000,6 @@ func TestAccountServiceImportWithRouteMappings(t *testing.T) {
       }
     }
     `))
-	defer removeFile(t, cf)
 
 	s, opts := RunServerWithConfig(cf)
 	defer s.Shutdown()
@@ -3039,6 +3031,7 @@ func TestAccountServiceImportWithRouteMappings(t *testing.T) {
 
 func TestAccountImportsWithWildcardSupport(t *testing.T) {
 	cf := createConfFile(t, []byte(`
+	port: -1
     accounts {
       foo {
         users = [{user: derek, password: foo}]
@@ -3058,7 +3051,6 @@ func TestAccountImportsWithWildcardSupport(t *testing.T) {
       }
     }
     `))
-	defer removeFile(t, cf)
 
 	s, opts := RunServerWithConfig(cf)
 	defer s.Shutdown()
@@ -3134,6 +3126,7 @@ func TestAccountImportsWithWildcardSupport(t *testing.T) {
 // duplicates TestJWTAccountImportsWithWildcardSupport (jwt_test.go) in config
 func TestAccountImportsWithWildcardSupportStreamAndService(t *testing.T) {
 	cf := createConfFile(t, []byte(`
+	port: -1
     accounts {
       foo {
         users = [{user: derek, password: foo}]
@@ -3151,7 +3144,6 @@ func TestAccountImportsWithWildcardSupportStreamAndService(t *testing.T) {
       }
     }
     `))
-	defer removeFile(t, cf)
 
 	s, opts := RunServerWithConfig(cf)
 	defer s.Shutdown()
@@ -3346,7 +3338,6 @@ func TestAccountSystemPermsWithGlobalAccess(t *testing.T) {
 			$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
 		}
 	`))
-	defer removeFile(t, conf)
 
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
@@ -3389,7 +3380,6 @@ accounts: {
 
 func TestImportSubscriptionPartialOverlapWithPrefix(t *testing.T) {
 	cf := createConfFile(t, []byte(fmt.Sprintf(importSubscriptionOverlapTemplate, ">", ">", "prefix: myprefix")))
-	defer removeFile(t, cf)
 
 	s, opts := RunServerWithConfig(cf)
 	defer s.Shutdown()
@@ -3418,7 +3408,6 @@ func TestImportSubscriptionPartialOverlapWithPrefix(t *testing.T) {
 
 func TestImportSubscriptionPartialOverlapWithTransform(t *testing.T) {
 	cf := createConfFile(t, []byte(fmt.Sprintf(importSubscriptionOverlapTemplate, "*.*.>", "*.*.>", "to: myprefix.$2.$1.>")))
-	defer removeFile(t, cf)
 
 	s, opts := RunServerWithConfig(cf)
 	defer s.Shutdown()
@@ -3451,6 +3440,7 @@ func TestImportSubscriptionPartialOverlapWithTransform(t *testing.T) {
 
 func TestAccountLimitsServerConfig(t *testing.T) {
 	cf := createConfFile(t, []byte(`
+	port: -1
 	max_connections: 10
 	accounts {
 		MAXC {
@@ -3464,7 +3454,6 @@ func TestAccountLimitsServerConfig(t *testing.T) {
 		}
 	}
     `))
-	defer removeFile(t, cf)
 
 	s, _ := RunServerWithConfig(cf)
 	defer s.Shutdown()
@@ -3506,7 +3495,6 @@ func TestAccountUserSubPermsWithQueueGroups(t *testing.T) {
 		}
 	]}
     `))
-	defer removeFile(t, cf)
 
 	s, _ := RunServerWithConfig(cf)
 	defer s.Shutdown()
@@ -3554,7 +3542,6 @@ func TestAccountImportCycle(t *testing.T) {
 	}
 	`
 	cf := createConfFile(t, []byte(fmt.Sprintf(tmpl, _EMPTY_, _EMPTY_)))
-	defer removeFile(t, cf)
 	s, _ := RunServerWithConfig(cf)
 	defer s.Shutdown()
 	ncCp, err := nats.Connect(s.ClientURL(), nats.UserInfo("cp", "cp"))
@@ -3606,7 +3593,6 @@ func TestAccountImportOwnExport(t *testing.T) {
 			}
 		}
 	`))
-	defer removeFile(t, conf)
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
 

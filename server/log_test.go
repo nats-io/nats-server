@@ -16,6 +16,7 @@ package server
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -99,9 +100,7 @@ func TestReOpenLogFile(t *testing.T) {
 	dl.CheckContent(t, "File log re-open ignored, not a file logger")
 
 	// Set a File log
-	s.opts.LogFile = "test.log"
-	defer removeFile(t, s.opts.LogFile)
-	defer removeFile(t, s.opts.LogFile+".bak")
+	s.opts.LogFile = filepath.Join(t.TempDir(), "test.log")
 	fileLog := logger.NewFileLogger(s.opts.LogFile, s.opts.Logtime, s.opts.Debug, s.opts.Trace, true)
 	s.SetLogger(fileLog, false, false)
 	// Add some log
@@ -141,9 +140,7 @@ func TestReOpenLogFile(t *testing.T) {
 }
 
 func TestFileLoggerSizeLimitAndReopen(t *testing.T) {
-	tmpDir := createDir(t, "nats-server")
-	defer removeDir(t, tmpDir)
-	file := createFileAtDir(t, tmpDir, "log_")
+	file := createTempFile(t, "log_")
 	file.Close()
 
 	s := &Server{opts: &Options{}}

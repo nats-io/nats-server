@@ -41,8 +41,6 @@ var (
 	// This matches ./configs/nkeys/op.jwt
 	ojwt = "eyJ0eXAiOiJqd3QiLCJhbGciOiJlZDI1NTE5In0.eyJhdWQiOiJURVNUUyIsImV4cCI6MTg1OTEyMTI3NSwianRpIjoiWE5MWjZYWVBIVE1ESlFSTlFPSFVPSlFHV0NVN01JNVc1SlhDWk5YQllVS0VRVzY3STI1USIsImlhdCI6MTU0Mzc2MTI3NSwiaXNzIjoiT0NBVDMzTVRWVTJWVU9JTUdOR1VOWEo2NkFIMlJMU0RBRjNNVUJDWUFZNVFNSUw2NU5RTTZYUUciLCJuYW1lIjoiU3luYWRpYSBDb21tdW5pY2F0aW9ucyBJbmMuIiwibmJmIjoxNTQzNzYxMjc1LCJzdWIiOiJPQ0FUMzNNVFZVMlZVT0lNR05HVU5YSjY2QUgyUkxTREFGM01VQkNZQVk1UU1JTDY1TlFNNlhRRyIsInR5cGUiOiJvcGVyYXRvciIsIm5hdHMiOnsic2lnbmluZ19rZXlzIjpbIk9EU0tSN01ZRlFaNU1NQUo2RlBNRUVUQ1RFM1JJSE9GTFRZUEpSTUFWVk40T0xWMllZQU1IQ0FDIiwiT0RTS0FDU1JCV1A1MzdEWkRSVko2NTdKT0lHT1BPUTZLRzdUNEhONk9LNEY2SUVDR1hEQUhOUDIiLCJPRFNLSTM2TFpCNDRPWTVJVkNSNlA1MkZaSlpZTVlXWlZXTlVEVExFWjVUSzJQTjNPRU1SVEFCUiJdfX0.hyfz6E39BMUh0GLzovFfk3wT4OfualftjdJ_eYkLfPvu5tZubYQ_Pn9oFYGCV_6yKy3KMGhWGUCyCdHaPhalBw"
 	oKp  nkeys.KeyPair
-
-	tempRoot = filepath.Join(os.TempDir(), "nats-server")
 )
 
 func init() {
@@ -1583,7 +1581,6 @@ func TestJWTAccountURLResolver(t *testing.T) {
 				}
 			`
 			conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, ojwt, ts.URL)))
-			defer removeFile(t, conf)
 
 			s, opts := RunServerWithConfig(conf)
 			pub, _ := kp.PublicKey()
@@ -1629,7 +1626,6 @@ func TestJWTAccountURLResolverTimeout(t *testing.T) {
 		resolver: URL("%s%s")
     `
 	conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, ts.URL, basePath)))
-	defer removeFile(t, conf)
 
 	s, opts := RunServerWithConfig(conf)
 	pub, _ := kp.PublicKey()
@@ -1666,7 +1662,6 @@ func TestJWTAccountURLResolverNoFetchOnReload(t *testing.T) {
 		resolver: URL("%s/ngs/v1/accounts/jwt/")
     `
 	conf := createConfFile(t, []byte(fmt.Sprintf(confTemplate, ojwt, ts.URL)))
-	defer removeFile(t, conf)
 
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
@@ -1773,7 +1768,6 @@ func TestJWTAccountURLResolverFetchFailureInServer1(t *testing.T) {
 		operator: %s
 		resolver: URL("%s/A/")
     `, ojwt, ts.URL)))
-	defer removeFile(t, confA)
 	sA := RunServer(LoadConfig(confA))
 	defer sA.Shutdown()
 	// server observed one fetch on startup
@@ -1871,7 +1865,6 @@ func TestJWTAccountURLResolverFetchFailurePushReorder(t *testing.T) {
 		resolver: URL("%s/A/")
 		system_account: %s
     `, ojwt, ts.URL, syspub)))
-	defer removeFile(t, confA)
 	sA := RunServer(LoadConfig(confA))
 	defer sA.Shutdown()
 	// server observed one fetch on startup
@@ -1972,7 +1965,6 @@ func TestJWTAccountURLResolverPermanentFetchFailure(t *testing.T) {
 		resolver: URL("%s/A/")
 		system_account: %s
     `, ojwt, ts.URL, syspub)))
-	defer removeFile(t, confA)
 	o := LoadConfig(confA)
 	sA := RunServer(o)
 	defer sA.Shutdown()
@@ -2059,7 +2051,6 @@ func TestJWTAccountURLResolverFetchFailureInCluster(t *testing.T) {
 		t.Fatalf("Error generating user JWT: %v", err)
 	}
 	creds := genCredsFile(t, uJwt, uSeed)
-	defer removeFile(t, creds)
 	// Simulate an account server that drops the first request to /B/acc
 	chanImpA := make(chan struct{}, 4)
 	defer close(chanImpA)
@@ -2110,7 +2101,6 @@ func TestJWTAccountURLResolverFetchFailureInCluster(t *testing.T) {
 			listen: 127.0.0.1:-1
 		}
     `, ojwt, ts.URL)))
-	defer removeFile(t, confA)
 	sA := RunServer(LoadConfig(confA))
 	defer sA.Shutdown()
 	// Create Server B (using no_advertise to prevent failover)
@@ -2127,7 +2117,6 @@ func TestJWTAccountURLResolverFetchFailureInCluster(t *testing.T) {
 			]
 		}
     `, ojwt, ts.URL, sA.opts.Cluster.Port)))
-	defer removeFile(t, confB)
 	sB := RunServer(LoadConfig(confB))
 	defer sB.Shutdown()
 	// startup cluster
@@ -2215,7 +2204,6 @@ func TestJWTAccountURLResolverReturnDifferentOperator(t *testing.T) {
 		t.Fatalf("Error generating user JWT: %v", err)
 	}
 	creds := genCredsFile(t, uJwt, uSeed)
-	defer removeFile(t, creds)
 	// Simulate an account server that was hijacked/mis configured
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(ajwt))
@@ -2227,7 +2215,6 @@ func TestJWTAccountURLResolverReturnDifferentOperator(t *testing.T) {
 		operator: %s
 		resolver: URL("%s/A/")
     `, ojwt, ts.URL)))
-	defer removeFile(t, confA)
 	sA, _ := RunServerWithConfig(confA)
 	defer sA.Shutdown()
 	// Create first client, directly connects to A
@@ -3154,11 +3141,10 @@ func TestJWTBearerWithBadIssuerToken(t *testing.T) {
 func TestJWTExpiredUserCredentialsRenewal(t *testing.T) {
 	createTmpFile := func(t *testing.T, content []byte) string {
 		t.Helper()
-		conf := createFile(t, "")
+		conf := createTempFile(t, "")
 		fName := conf.Name()
 		conf.Close()
 		if err := os.WriteFile(fName, content, 0666); err != nil {
-			removeFile(t, fName)
 			t.Fatalf("Error writing conf file: %v", err)
 		}
 		return fName
@@ -3212,7 +3198,6 @@ func TestJWTExpiredUserCredentialsRenewal(t *testing.T) {
 		t.Fatalf("Error encoding credentials: %v", err)
 	}
 	chainedFile := createTmpFile(t, creds)
-	defer removeFile(t, chainedFile)
 
 	rch := make(chan bool)
 
@@ -3321,25 +3306,10 @@ func require_JWTEqual(t *testing.T, dir string, pub string, jwt string) {
 	require_Equal(t, string(content), jwt)
 }
 
-func createDir(t testing.TB, prefix string) string {
+func createTempFile(t testing.TB, prefix string) *os.File {
 	t.Helper()
-	err := os.MkdirAll(tempRoot, 0700)
-	require_NoError(t, err)
-	dir, err := os.MkdirTemp(tempRoot, prefix)
-	require_NoError(t, err)
-	return dir
-}
-
-func createFile(t testing.TB, prefix string) *os.File {
-	t.Helper()
-	err := os.MkdirAll(tempRoot, 0700)
-	require_NoError(t, err)
-	return createFileAtDir(t, tempRoot, prefix)
-}
-
-func createFileAtDir(t testing.TB, dir, prefix string) *os.File {
-	t.Helper()
-	f, err := os.CreateTemp(dir, prefix)
+	tempDir := t.TempDir()
+	f, err := os.CreateTemp(tempDir, prefix)
 	require_NoError(t, err)
 	return f
 }
@@ -3459,18 +3429,10 @@ func TestJWTAccountNATSResolverFetch(t *testing.T) {
 	for i := 0; i < cap(doneChan); i++ {
 		<-doneChan
 	}
-	defer removeFile(t, sysCreds)
-	defer removeFile(t, aCreds)
-	defer removeFile(t, bCreds)
-	defer removeFile(t, cCreds)
-	defer removeFile(t, dCreds)
 	// Create one directory for each server
-	dirA := createDir(t, "srv-a")
-	defer removeDir(t, dirA)
-	dirB := createDir(t, "srv-b")
-	defer removeDir(t, dirB)
-	dirC := createDir(t, "srv-c")
-	defer removeDir(t, dirC)
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	dirC := t.TempDir()
 	// simulate a restart of the server by storing files in them
 	// Server A/B will completely sync, so after startup each server
 	// will contain the union off all stored/configured jwt
@@ -3499,7 +3461,6 @@ func TestJWTAccountNATSResolverFetch(t *testing.T) {
 			no_advertise: true
 		}
     `, ojwt, syspub, dirA, cpub, cjwt1)))
-	defer removeFile(t, confA)
 	sA, _ := RunServerWithConfig(confA)
 	defer sA.Shutdown()
 	// during startup resolver_preload causes the directory to contain data
@@ -3526,7 +3487,6 @@ func TestJWTAccountNATSResolverFetch(t *testing.T) {
 			]
 		}
     `, ojwt, syspub, dirB, sA.opts.Cluster.Port)))
-	defer removeFile(t, confB)
 	sB, _ := RunServerWithConfig(confB)
 	defer sB.Shutdown()
 	// Create Server C (using no_advertise to prevent fail over)
@@ -3551,9 +3511,7 @@ func TestJWTAccountNATSResolverFetch(t *testing.T) {
 		}
     `
 	confClongTTL := createConfFile(t, []byte(fmt.Sprintf(fmtC, ojwt, syspub, dirC, 10000, sA.opts.Cluster.Port)))
-	defer removeFile(t, confClongTTL)
 	confCshortTTL := createConfFile(t, []byte(fmt.Sprintf(fmtC, ojwt, syspub, dirC, 1000, sA.opts.Cluster.Port)))
-	defer removeFile(t, confCshortTTL)
 	sC, _ := RunServerWithConfig(confClongTTL) // use long ttl to assure it is not kicking
 	defer sC.Shutdown()
 	// startup cluster
@@ -3703,18 +3661,11 @@ func TestJWTAccountNATSResolverCrossClusterFetch(t *testing.T) {
 	for i := 0; i < cap(doneChan); i++ {
 		<-doneChan
 	}
-	defer removeFile(t, sysCreds)
-	defer removeFile(t, aCreds)
-	defer removeFile(t, bCreds)
 	// Create one directory for each server
-	dirAA := createDir(t, "srv-a-a")
-	defer removeDir(t, dirAA)
-	dirAB := createDir(t, "srv-a-b")
-	defer removeDir(t, dirAB)
-	dirBA := createDir(t, "srv-b-a")
-	defer removeDir(t, dirBA)
-	dirBB := createDir(t, "srv-b-b")
-	defer removeDir(t, dirBB)
+	dirAA := t.TempDir()
+	dirAB := t.TempDir()
+	dirBA := t.TempDir()
+	dirBB := t.TempDir()
 	// simulate a restart of the server by storing files in them
 	// Server AA & AB will completely sync
 	// Server BA & BB will completely sync
@@ -3742,7 +3693,6 @@ func TestJWTAccountNATSResolverCrossClusterFetch(t *testing.T) {
 			no_advertise: true
 		}
     `, ojwt, syspub, dirAA)))
-	defer removeFile(t, confAA)
 	sAA, _ := RunServerWithConfig(confAA)
 	defer sAA.Shutdown()
 	// Create Server B (using no_advertise to prevent fail over)
@@ -3769,7 +3719,6 @@ func TestJWTAccountNATSResolverCrossClusterFetch(t *testing.T) {
 			]
 		}
     `, ojwt, syspub, dirAB, sAA.opts.Cluster.Port)))
-	defer removeFile(t, confAB)
 	sAB, _ := RunServerWithConfig(confAB)
 	defer sAB.Shutdown()
 	// Create Server C (using no_advertise to prevent fail over)
@@ -3796,7 +3745,6 @@ func TestJWTAccountNATSResolverCrossClusterFetch(t *testing.T) {
 			no_advertise: true
 		}
     `, ojwt, syspub, dirBA, sAA.opts.Gateway.Port)))
-	defer removeFile(t, confBA)
 	sBA, _ := RunServerWithConfig(confBA)
 	defer sBA.Shutdown()
 	// Create Sever BA  (using no_advertise to prevent fail over)
@@ -3826,7 +3774,6 @@ func TestJWTAccountNATSResolverCrossClusterFetch(t *testing.T) {
 			]
 		}
     `, ojwt, syspub, dirBB, sBA.opts.Cluster.Port, sAA.opts.Cluster.Port)))
-	defer removeFile(t, confBB)
 	sBB, _ := RunServerWithConfig(confBB)
 	defer sBB.Shutdown()
 	// Assert topology
@@ -3917,7 +3864,6 @@ func TestJWTUserLimits(t *testing.T) {
 			%s: %s
 		}
     `, ojwt, aPub, aJwt)))
-	defer removeFile(t, conf)
 	sA, _ := RunServerWithConfig(conf)
 	defer sA.Shutdown()
 	for _, v := range []struct {
@@ -3952,7 +3898,6 @@ func TestJWTUserLimits(t *testing.T) {
 	} {
 		t.Run("", func(t *testing.T) {
 			creds := createUserWithLimit(t, kp, doNotExpire, v.f)
-			defer removeFile(t, creds)
 			if c, err := nats.Connect(sA.ClientURL(), nats.UserCredentials(creds)); err == nil {
 				c.Close()
 				if !v.pass {
@@ -3985,7 +3930,6 @@ func TestJWTTimeExpiration(t *testing.T) {
 			%s: %s
 		}
     `, ojwt, aPub, aJwt)))
-	defer removeFile(t, conf)
 	sA, _ := RunServerWithConfig(conf)
 	defer sA.Shutdown()
 	for _, l := range []string{"", "Europe/Berlin", "America/New_York"} {
@@ -4001,7 +3945,6 @@ func TestJWTTimeExpiration(t *testing.T) {
 					j.Locale = l
 				}
 			})
-			defer removeFile(t, creds)
 			disconnectChan := make(chan struct{})
 			defer close(disconnectChan)
 			errChan := make(chan struct{})
@@ -4038,7 +3981,6 @@ func TestJWTTimeExpiration(t *testing.T) {
 		creds := createUserWithLimit(t, kp, doNotExpire, func(j *jwt.UserPermissionLimits) {
 			j.Times = []jwt.TimeRange{newTimeRange(start1, validFor), newTimeRange(start2, validFor)}
 		})
-		defer removeFile(t, creds)
 		errChan := make(chan struct{})
 		defer close(errChan)
 		reConnectChan := make(chan struct{})
@@ -4075,7 +4017,6 @@ func TestJWTTimeExpiration(t *testing.T) {
 	t.Run("lower jwt expiration overwrites time", func(t *testing.T) {
 		start := time.Now()
 		creds := createUserWithLimit(t, kp, start.Add(validFor), func(j *jwt.UserPermissionLimits) { j.Times = []jwt.TimeRange{newTimeRange(start, 2*validFor)} })
-		defer removeFile(t, creds)
 		disconnectChan := make(chan struct{})
 		defer close(disconnectChan)
 		errChan := make(chan struct{})
@@ -4145,7 +4086,6 @@ func TestJWTSysImportForDifferentAccount(t *testing.T) {
 			%s: %s
 		}
     `, ojwt, sysPub, sysPub, sysJwt, aPub, aJwt)))
-	defer removeFile(t, conf)
 	sA, _ := RunServerWithConfig(conf)
 	defer sA.Shutdown()
 
@@ -4199,7 +4139,6 @@ func TestJWTSysImportFromNothing(t *testing.T) {
 			%s: %s
 		}
     `, ojwt, sysPub, sysPub, sysJwt, aPub, aJwt)))
-	defer removeFile(t, conf)
 	sA, _ := RunServerWithConfig(conf)
 	defer sA.Shutdown()
 
@@ -4263,7 +4202,6 @@ func TestJWTSysImportOverwritePublic(t *testing.T) {
 			%s: %s
 		}
     `, ojwt, sysPub, sysPub, sysJwt, aPub, aJwt)))
-	defer removeFile(t, conf)
 	sA, _ := RunServerWithConfig(conf)
 	defer sA.Shutdown()
 
@@ -4309,7 +4247,6 @@ func TestJWTSysImportOverwriteToken(t *testing.T) {
 			%s: %s
 		}
     `, ojwt, sysPub, sysPub, sysJwt, aPub, aJwt)))
-	defer removeFile(t, conf)
 	sA, _ := RunServerWithConfig(conf)
 	defer sA.Shutdown()
 
@@ -4336,14 +4273,12 @@ func TestJWTLimits(t *testing.T) {
 			%s: %s
 		}
     `, ojwt, aPub, aJwt)))
-	defer removeFile(t, conf)
 	sA, _ := RunServerWithConfig(conf)
 	defer sA.Shutdown()
 	errChan := make(chan struct{})
 	defer close(errChan)
 	t.Run("subs", func(t *testing.T) {
 		creds := createUserWithLimit(t, kp, doNotExpire, func(j *jwt.UserPermissionLimits) { j.Subs = 1 })
-		defer removeFile(t, creds)
 		c := natsConnect(t, sA.ClientURL(), nats.UserCredentials(creds),
 			nats.DisconnectErrHandler(func(conn *nats.Conn, err error) {
 				if e := conn.LastError(); e != nil && strings.Contains(e.Error(), "maximum subscriptions exceeded") {
@@ -4362,7 +4297,6 @@ func TestJWTLimits(t *testing.T) {
 	})
 	t.Run("payload", func(t *testing.T) {
 		creds := createUserWithLimit(t, kp, doNotExpire, func(j *jwt.UserPermissionLimits) { j.Payload = 5 })
-		defer removeFile(t, creds)
 		c := natsConnect(t, sA.ClientURL(), nats.UserCredentials(creds))
 		defer c.Close()
 		if err := c.Flush(); err != nil {
@@ -4449,7 +4383,6 @@ func TestJWTLimitsTemplate(t *testing.T) {
 			%s: %s
 		}
     `, ojwt, aPub, aJwt)))
-	defer removeFile(t, conf)
 	sA, _ := RunServerWithConfig(conf)
 	defer sA.Shutdown()
 	errChan := make(chan struct{})
@@ -4467,8 +4400,6 @@ func TestJWTLimitsTemplate(t *testing.T) {
 	ujwt, err := uclaim.Encode(aSignScopedKp)
 	require_NoError(t, err)
 	creds := genCredsFile(t, ujwt, seed)
-
-	defer removeFile(t, creds)
 
 	t.Run("pass", func(t *testing.T) {
 		c := natsConnect(t, sA.ClientURL(), nats.UserCredentials(creds))
@@ -4508,7 +4439,6 @@ func TestJWTNoOperatorMode(t *testing.T) {
 			defer sA.Shutdown()
 			kp, _ := nkeys.CreateAccount()
 			creds := createUserWithLimit(t, kp, time.Now().Add(time.Hour), nil)
-			defer removeFile(t, creds)
 			url := sA.ClientURL()
 			if login {
 				url = fmt.Sprintf("nats://u:pwd@%s:%d", sA.opts.Host, sA.opts.Port)
@@ -4576,12 +4506,7 @@ func TestJWTUserRevocation(t *testing.T) {
 		for i := 0; i < cap(doneChan); i++ {
 			<-doneChan
 		}
-		defer removeFile(t, sysCreds)
-		defer removeFile(t, dummyCreds)
-		defer removeFile(t, aCreds1)
-		defer removeFile(t, aCreds2)
-		dirSrv := createDir(t, "srv")
-		defer removeDir(t, dirSrv)
+		dirSrv := t.TempDir()
 		conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
 		operator: %s
@@ -4591,7 +4516,6 @@ func TestJWTUserRevocation(t *testing.T) {
 			dir: '%s'
 		}
     `, ojwt, syspub, dirSrv)))
-		defer removeFile(t, conf)
 		srv, _ := RunServerWithConfig(conf)
 		defer srv.Shutdown()
 		updateJwt(t, srv.ClientURL(), sysCreds, sysjwt, 1) // update system account jwt
@@ -4646,7 +4570,6 @@ func TestJWTActivationRevocation(t *testing.T) {
 		sysKp, syspub := createKey(t)
 		sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
 		sysCreds := newUser(t, sysKp)
-		defer removeFile(t, sysCreds)
 
 		aExpKp, aExpPub := createKey(t)
 		aExpClaim := jwt.NewAccountClaims(aExpPub)
@@ -4689,11 +4612,8 @@ func TestJWTActivationRevocation(t *testing.T) {
 		})
 		aImpJwt := encodeClaim(t, aImpClaim, aImpPub)
 		aImpCreds := newUser(t, aImpKp)
-		defer removeFile(t, aExpCreds)
-		defer removeFile(t, aImpCreds)
 
-		dirSrv := createDir(t, "srv")
-		defer removeDir(t, dirSrv)
+		dirSrv := t.TempDir()
 		conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
 		operator: %s
@@ -4703,7 +4623,6 @@ func TestJWTActivationRevocation(t *testing.T) {
 			dir: '%s'
 		}
     `, ojwt, syspub, dirSrv)))
-		defer removeFile(t, conf)
 
 		t.Run("token-expired-on-connect", func(t *testing.T) {
 			srv, _ := RunServerWithConfig(conf)
@@ -4800,12 +4719,9 @@ func TestJWTAccountFetchTimeout(t *testing.T) {
 		t.Run("", func(t *testing.T) {
 			var syspub, sysjwt, sysCreds string
 			createAccountAndUser(&syspub, &sysjwt, &sysCreds)
-			defer removeFile(t, sysCreds)
 			var apub, ajwt1, aCreds1 string
 			createAccountAndUser(&apub, &ajwt1, &aCreds1)
-			defer removeFile(t, aCreds1)
-			dirSrv := createDir(t, "srv")
-			defer removeDir(t, dirSrv)
+			dirSrv := t.TempDir()
 			conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
 		operator: %s
@@ -4816,7 +4732,6 @@ func TestJWTAccountFetchTimeout(t *testing.T) {
 			dir: '%s'
 		}
     `, ojwt, syspub, cfg, dirSrv)))
-			defer removeFile(t, conf)
 			srv, _ := RunServerWithConfig(conf)
 			defer srv.Shutdown()
 			updateJwt(t, srv.ClientURL(), sysCreds, sysjwt, 1) // update system account jwt
@@ -4882,12 +4797,9 @@ func TestJWTAccountOps(t *testing.T) {
 		t.Run("", func(t *testing.T) {
 			var syspub, sysjwt, sysCreds string
 			createAccountAndUser(&syspub, &sysjwt, &sysCreds)
-			defer removeFile(t, sysCreds)
 			var apub, ajwt1, aCreds1 string
 			createAccountAndUser(&apub, &ajwt1, &aCreds1)
-			defer removeFile(t, aCreds1)
-			dirSrv := createDir(t, "srv")
-			defer removeDir(t, dirSrv)
+			dirSrv := t.TempDir()
 			conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
 		operator: %s
@@ -4899,7 +4811,6 @@ func TestJWTAccountOps(t *testing.T) {
     `, opJwt, syspub, cfg, dirSrv)))
 			disconnectErrChan := make(chan struct{}, 1)
 			defer close(disconnectErrChan)
-			defer removeFile(t, conf)
 			srv, _ := RunServerWithConfig(conf)
 			defer srv.Shutdown()
 			updateJwt(t, srv.ClientURL(), sysCreds, sysjwt, 1) // update system account jwt
@@ -4989,7 +4900,6 @@ func TestJWTHeader(t *testing.T) {
 	sysKp, syspub := createKey(t)
 	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
 	sysCreds := newUser(t, sysKp)
-	defer removeFile(t, sysCreds)
 
 	test := func(share bool) {
 		aExpKp, aExpPub := createKey(t)
@@ -5006,7 +4916,6 @@ func TestJWTHeader(t *testing.T) {
 		})
 		aExpJwt := encodeClaim(t, aExpClaim, aExpPub)
 		aExpCreds := newUser(t, aExpKp)
-		defer removeFile(t, aExpCreds)
 
 		aImpKp, aImpPub := createKey(t)
 		aImpClaim := jwt.NewAccountClaims(aImpPub)
@@ -5019,10 +4928,8 @@ func TestJWTHeader(t *testing.T) {
 		})
 		aImpJwt := encodeClaim(t, aImpClaim, aImpPub)
 		aImpCreds := newUser(t, aImpKp)
-		defer removeFile(t, aImpCreds)
 
-		dirSrv := createDir(t, "srv")
-		defer removeDir(t, dirSrv)
+		dirSrv := t.TempDir()
 		conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
 		operator: %s
@@ -5032,7 +4939,6 @@ func TestJWTHeader(t *testing.T) {
 			dir: '%s'
 		}
     `, ojwt, syspub, dirSrv)))
-		defer removeFile(t, conf)
 		srv, _ := RunServerWithConfig(conf)
 		defer srv.Shutdown()
 		updateJwt(t, srv.ClientURL(), sysCreds, sysJwt, 1) // update system account jwt
@@ -5121,7 +5027,6 @@ func TestJWTAccountImportsWithWildcardSupport(t *testing.T) {
 		system_account: %s
 		%s
 		`, ojwt, aExpPub, aExpJwt, aImpPub, aImpJwt, aSysPub, aSysJwt, aSysPub, jsSetting)))
-		defer removeFile(t, cf)
 
 		s, opts := RunServerWithConfig(cf)
 		defer s.Shutdown()
@@ -5175,7 +5080,6 @@ func TestJWTAccountImportsWithWildcardSupport(t *testing.T) {
 	}
 	t.Run("To", func(t *testing.T) {
 		aExpPub, aExpJwt, aExpCreds := createExporter()
-		defer removeFile(t, aExpCreds)
 		aImpKp, aImpPub := createKey(t)
 		aImpClaim := jwt.NewAccountClaims(aImpPub)
 		aImpClaim.Name = "Import"
@@ -5192,14 +5096,12 @@ func TestJWTAccountImportsWithWildcardSupport(t *testing.T) {
 		})
 		aImpJwt := encodeClaim(t, aImpClaim, aImpPub)
 		aImpCreds := newUser(t, aImpKp)
-		defer removeFile(t, aImpCreds)
 		test(aExpPub, aExpJwt, aExpCreds, aImpPub, aImpJwt, aImpCreds, false,
 			"$request.1.$in.2.bar", "$events.1.$in.2.bar",
 			"my.request.1.2.bar", "prefix.$events.1.$in.2.bar")
 	})
 	t.Run("LocalSubject-No-Reorder", func(t *testing.T) {
 		aExpPub, aExpJwt, aExpCreds := createExporter()
-		defer removeFile(t, aExpCreds)
 		aImpKp, aImpPub := createKey(t)
 		aImpClaim := jwt.NewAccountClaims(aImpPub)
 		aImpClaim.Name = "Import"
@@ -5216,7 +5118,6 @@ func TestJWTAccountImportsWithWildcardSupport(t *testing.T) {
 		})
 		aImpJwt := encodeClaim(t, aImpClaim, aImpPub)
 		aImpCreds := newUser(t, aImpKp)
-		defer removeFile(t, aImpCreds)
 		test(aExpPub, aExpJwt, aExpCreds, aImpPub, aImpJwt, aImpCreds, false,
 			"$request.1.$in.2.bar", "$events.1.$in.2.bar",
 			"my.request.1.2.bar", "my.events.1.2.bar")
@@ -5225,7 +5126,6 @@ func TestJWTAccountImportsWithWildcardSupport(t *testing.T) {
 		for _, jsEnabled := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%t", jsEnabled), func(t *testing.T) {
 				aExpPub, aExpJwt, aExpCreds := createExporter()
-				defer removeFile(t, aExpCreds)
 				aImpKp, aImpPub := createKey(t)
 				aImpClaim := jwt.NewAccountClaims(aImpPub)
 				aImpClaim.Name = "Import"
@@ -5242,7 +5142,6 @@ func TestJWTAccountImportsWithWildcardSupport(t *testing.T) {
 				})
 				aImpJwt := encodeClaim(t, aImpClaim, aImpPub)
 				aImpCreds := newUser(t, aImpKp)
-				defer removeFile(t, aImpCreds)
 				test(aExpPub, aExpJwt, aExpCreds, aImpPub, aImpJwt, aImpCreds, jsEnabled,
 					"$request.2.$in.1.bar", "$events.1.$in.2.bar",
 					"my.request.1.2.bar", "my.events.2.1.bar")
@@ -5255,7 +5154,6 @@ func TestJWTAccountTokenImportMisuse(t *testing.T) {
 	sysKp, syspub := createKey(t)
 	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
 	sysCreds := newUser(t, sysKp)
-	defer removeFile(t, sysCreds)
 
 	aExpKp, aExpPub := createKey(t)
 	aExpClaim := jwt.NewAccountClaims(aExpPub)
@@ -5271,7 +5169,6 @@ func TestJWTAccountTokenImportMisuse(t *testing.T) {
 	})
 	aExpJwt := encodeClaim(t, aExpClaim, aExpPub)
 	aExpCreds := newUser(t, aExpKp)
-	defer removeFile(t, aExpCreds)
 
 	createImportingAccountClaim := func(aImpKp nkeys.KeyPair, aExpPub string, ac *jwt.ActivationClaims) (string, string) {
 		t.Helper()
@@ -5313,7 +5210,6 @@ func TestJWTAccountTokenImportMisuse(t *testing.T) {
 			operator: %s
 			resolver: URL("%s/A/")
 		`, ojwt, ts.URL)))
-		defer removeFile(t, cf)
 
 		s, opts := RunServerWithConfig(cf)
 		defer s.Shutdown()
@@ -5325,8 +5221,7 @@ func TestJWTAccountTokenImportMisuse(t *testing.T) {
 
 	testNatsResolver := func(aImpJwt string) {
 		t.Helper()
-		dirSrv := createDir(t, "srv")
-		defer removeDir(t, dirSrv)
+		dirSrv := t.TempDir()
 		cf := createConfFile(t, []byte(fmt.Sprintf(`
 			listen: 127.0.0.1:-1
 			operator: %s
@@ -5353,7 +5248,6 @@ func TestJWTAccountTokenImportMisuse(t *testing.T) {
 		ac.ImportType = jwt.Stream
 
 		aImpJwt, aImpCreds := createImportingAccountClaim(aImpKp, aExpPub, ac)
-		defer removeFile(t, aImpCreds)
 		testConnect(aExpPub, aExpJwt, aExpCreds, aImpPub, aImpJwt, aImpCreds)
 		testNatsResolver(aImpJwt)
 	})
@@ -5366,7 +5260,6 @@ func TestJWTAccountTokenImportMisuse(t *testing.T) {
 		ac.ImportType = jwt.Stream
 
 		aImpJwt, aImpCreds := createImportingAccountClaim(aImpKp, aExpPub, ac)
-		defer removeFile(t, aImpCreds)
 		testConnect(aExpPub, aExpJwt, aExpCreds, aImpPub, aImpJwt, aImpCreds)
 		testNatsResolver(aImpJwt)
 	})
@@ -5379,7 +5272,6 @@ func TestJWTAccountTokenImportMisuse(t *testing.T) {
 		ac.ImportType = jwt.Stream
 
 		aImpJwt, aImpCreds := createImportingAccountClaim(aImpKp, aExpPub, ac)
-		defer removeFile(t, aImpCreds)
 		testConnect(aExpPub, aExpJwt, aExpCreds, aImpPub, aImpJwt, aImpCreds)
 		testNatsResolver(aImpJwt)
 	})
@@ -5398,7 +5290,6 @@ func TestJWTResponseThreshold(t *testing.T) {
 	aExpJwt := encodeClaim(t, aExpClaim, aExpPub)
 	aExpCreds := newUser(t, aExpKp)
 
-	defer removeFile(t, aExpCreds)
 	aImpKp, aImpPub := createKey(t)
 	aImpClaim := jwt.NewAccountClaims(aImpPub)
 	aImpClaim.Name = "Import"
@@ -5409,7 +5300,6 @@ func TestJWTResponseThreshold(t *testing.T) {
 	})
 	aImpJwt := encodeClaim(t, aImpClaim, aImpPub)
 	aImpCreds := newUser(t, aImpKp)
-	defer removeFile(t, aImpCreds)
 
 	cf := createConfFile(t, []byte(fmt.Sprintf(`
 		port: -1
@@ -5420,7 +5310,6 @@ func TestJWTResponseThreshold(t *testing.T) {
 			%s : "%s"
 		}
 		`, ojwt, aExpPub, aExpJwt, aImpPub, aImpJwt)))
-	defer removeFile(t, cf)
 
 	s, opts := RunServerWithConfig(cf)
 	defer s.Shutdown()
@@ -5461,7 +5350,6 @@ func TestJWTJetStreamTiers(t *testing.T) {
 	sysKp, syspub := createKey(t)
 	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
 	sysCreds := newUser(t, sysKp)
-	defer removeFile(t, sysCreds)
 
 	accKp, accPub := createKey(t)
 	accClaim := jwt.NewAccountClaims(accPub)
@@ -5473,11 +5361,9 @@ func TestJWTJetStreamTiers(t *testing.T) {
 
 	start := time.Now()
 
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
-	dirSrv := createDir(t, "srv")
-	defer removeDir(t, dirSrv)
+	dirSrv := t.TempDir()
 	cf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
 		server_name: s1
@@ -5492,7 +5378,6 @@ func TestJWTJetStreamTiers(t *testing.T) {
 			dir: '%s'
 		}
 	`, storeDir, ojwt, syspub, dirSrv)))
-	defer removeFile(t, cf)
 
 	s, _ := RunServerWithConfig(cf)
 	defer s.Shutdown()
@@ -5572,7 +5457,6 @@ func TestJWTJetStreamMaxAckPending(t *testing.T) {
 	sysKp, syspub := createKey(t)
 	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
 	sysCreds := newUser(t, sysKp)
-	defer removeFile(t, sysCreds)
 
 	accKp, accPub := createKey(t)
 	accClaim := jwt.NewAccountClaims(accPub)
@@ -5586,11 +5470,9 @@ func TestJWTJetStreamMaxAckPending(t *testing.T) {
 
 	start := time.Now()
 
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
-	dirSrv := createDir(t, "srv")
-	defer removeDir(t, dirSrv)
+	dirSrv := t.TempDir()
 	cf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
 		server_name: s1
@@ -5605,7 +5487,6 @@ func TestJWTJetStreamMaxAckPending(t *testing.T) {
 			dir: '%s'
 		}
 	`, storeDir, ojwt, syspub, dirSrv)))
-	defer removeFile(t, cf)
 
 	s, _ := RunServerWithConfig(cf)
 	defer s.Shutdown()
@@ -5654,7 +5535,6 @@ func TestJWTJetStreamMaxStreamBytes(t *testing.T) {
 	sysKp, syspub := createKey(t)
 	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
 	sysCreds := newUser(t, sysKp)
-	defer removeFile(t, sysCreds)
 
 	accKp, accPub := createKey(t)
 	accClaim := jwt.NewAccountClaims(accPub)
@@ -5669,11 +5549,9 @@ func TestJWTJetStreamMaxStreamBytes(t *testing.T) {
 
 	start := time.Now()
 
-	storeDir := createDir(t, JetStreamStoreDir)
-	defer removeDir(t, storeDir)
+	storeDir := t.TempDir()
 
-	dirSrv := createDir(t, "srv")
-	defer removeDir(t, dirSrv)
+	dirSrv := t.TempDir()
 	cf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
 		server_name: s1
@@ -5688,7 +5566,6 @@ func TestJWTJetStreamMaxStreamBytes(t *testing.T) {
 			dir: '%s'
 		}
 	`, storeDir, ojwt, syspub, dirSrv)))
-	defer removeFile(t, cf)
 
 	s, _ := RunServerWithConfig(cf)
 	defer s.Shutdown()
@@ -5770,7 +5647,6 @@ func TestJWTQueuePermissions(t *testing.T) {
 		resolver_preload = {
 			%s : %s
 		}`, ojwt, aExpPub, aExpJwt)))
-	defer removeFile(t, confFileName)
 	opts, err := ProcessConfigFile(confFileName)
 	if err != nil {
 		t.Fatalf("Received unexpected error %s", err)
@@ -5794,7 +5670,6 @@ func TestJWTQueuePermissions(t *testing.T) {
 	} {
 		t.Run(test.permType+test.queue, func(t *testing.T) {
 			usrCreds := newUser(t, test.permType)
-			defer removeFile(t, usrCreds)
 			nc, err := nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", opts.Port),
 				nats.ErrorHandler(func(conn *nats.Conn, s *nats.Subscription, err error) {
 					errChan <- err
@@ -5836,7 +5711,6 @@ func TestJWScopedSigningKeys(t *testing.T) {
 	sysKp, syspub := createKey(t)
 	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
 	sysCreds := newUser(t, sysKp)
-	defer removeFile(t, sysCreds)
 
 	_, aExpPub := createKey(t)
 	accClaim := jwt.NewAccountClaims(aExpPub)
@@ -5854,14 +5728,10 @@ func TestJWScopedSigningKeys(t *testing.T) {
 	accJwt := encodeClaim(t, accClaim, aExpPub)
 
 	aNonScopedCreds := newUserEx(t, aSignNonScopedKp, false, aExpPub)
-	defer removeFile(t, aNonScopedCreds)
 	aBadScopedCreds := newUserEx(t, aSignScopedKp, false, aExpPub)
-	defer removeFile(t, aBadScopedCreds)
 	aScopedCreds := newUserEx(t, aSignScopedKp, true, aExpPub)
-	defer removeFile(t, aScopedCreds)
 
-	dirSrv := createDir(t, "srv")
-	defer removeDir(t, dirSrv)
+	dirSrv := t.TempDir()
 	cf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
 		operator: %s
@@ -5871,7 +5741,6 @@ func TestJWScopedSigningKeys(t *testing.T) {
 			dir: '%s'
 		}
     `, ojwt, syspub, dirSrv)))
-	defer removeFile(t, cf)
 	s, opts := RunServerWithConfig(cf)
 	defer s.Shutdown()
 
@@ -6015,15 +5884,10 @@ func TestJWTStrictSigningKeys(t *testing.T) {
 	require_NoError(t, err)
 
 	uBadBadCreds := newUserEx(t, aBadBadKp, false, aBadPub)
-	defer removeFile(t, uBadBadCreds)
 	uBadGoodCreds := newUserEx(t, aBadGoodKp, false, aBadPub)
-	defer removeFile(t, uBadGoodCreds)
 	uGoodBadCreds := newUserEx(t, aGoodBadKp, false, aGoodPub)
-	defer removeFile(t, uGoodBadCreds)
 	uGoodGoodCreds := newUserEx(t, aGoodGoodKp, false, aGoodPub)
-	defer removeFile(t, uGoodGoodCreds)
 	uSysCreds := newUserEx(t, aSysKp, false, aSysPub)
-	defer removeFile(t, uSysCreds)
 
 	connectTest := func(url string) {
 		for _, test := range []struct {
@@ -6046,8 +5910,7 @@ func TestJWTStrictSigningKeys(t *testing.T) {
 	}
 
 	t.Run("resolver", func(t *testing.T) {
-		dirSrv := createDir(t, "srv")
-		defer removeDir(t, dirSrv)
+		dirSrv := t.TempDir()
 		cf := createConfFile(t, []byte(fmt.Sprintf(`
 		port: -1
 		operator = %s
@@ -6059,7 +5922,6 @@ func TestJWTStrictSigningKeys(t *testing.T) {
 			%s : "%s"
 		}
 		`, oJwt, dirSrv, aSysPub, aSysJwt)))
-		defer removeFile(t, cf)
 		s, _ := RunServerWithConfig(cf)
 		defer s.Shutdown()
 		url := s.ClientURL()
@@ -6073,8 +5935,6 @@ func TestJWTStrictSigningKeys(t *testing.T) {
 	})
 
 	t.Run("mem-resolver", func(t *testing.T) {
-		dirSrv := createDir(t, "srv")
-		defer removeDir(t, dirSrv)
 		cf := createConfFile(t, []byte(fmt.Sprintf(`
 		port: -1
 		operator = %s
@@ -6085,7 +5945,6 @@ func TestJWTStrictSigningKeys(t *testing.T) {
 			%s : "%s"
 		}
 		`, oJwt, aSysPub, aSysJwt, aBadPub, aBadJwt, aGoodPub, aGoodJwt)))
-		defer removeFile(t, cf)
 		s, _ := RunServerWithConfig(cf)
 		defer s.Shutdown()
 		connectTest(s.ClientURL())
@@ -6135,7 +5994,6 @@ func TestJWTAccountProtectedImport(t *testing.T) {
 	t.Run("pass", func(t *testing.T) {
 		exportKp, exportPub, exportJWT, _, importKp, importPub, importJWT, srvcSub, strmSub := setupAccounts(true)
 		cf := createConfFile(t, []byte(fmt.Sprintf(srvFmt, ojwt, exportPub, exportJWT, importPub, importJWT)))
-		defer removeFile(t, cf)
 		s, _ := RunServerWithConfig(cf)
 		defer s.Shutdown()
 		ncExp := natsConnect(t, s.ClientURL(), createUserCreds(t, s, exportKp))
@@ -6172,7 +6030,6 @@ func TestJWTAccountProtectedImport(t *testing.T) {
 	t.Run("fail", func(t *testing.T) {
 		exportKp, exportPub, exportJWT, _, importKp, importPub, importJWT, srvcSub, strmSub := setupAccounts(false)
 		cf := createConfFile(t, []byte(fmt.Sprintf(srvFmt, ojwt, exportPub, exportJWT, importPub, importJWT)))
-		defer removeFile(t, cf)
 		s, _ := RunServerWithConfig(cf)
 		defer s.Shutdown()
 		ncExp := natsConnect(t, s.ClientURL(), createUserCreds(t, s, exportKp))
@@ -6210,15 +6067,13 @@ func TestJWTAccountProtectedImport(t *testing.T) {
 	})
 	t.Run("reload-off-2-on", func(t *testing.T) {
 		exportKp, exportPub, exportJWTOn, exportJWTOff, importKp, _, importJWT, srvcSub, strmSub := setupAccounts(false)
-		dirSrv := createDir(t, "srv")
-		defer removeDir(t, dirSrv)
+		dirSrv := t.TempDir()
 		// set up system account. Relying bootstrapping system account to not create JWT
 		sysAcc, err := nkeys.CreateAccount()
 		require_NoError(t, err)
 		sysPub, err := sysAcc.PublicKey()
 		require_NoError(t, err)
 		sysUsrCreds := newUserEx(t, sysAcc, false, sysPub)
-		defer removeFile(t, sysUsrCreds)
 		cf := createConfFile(t, []byte(fmt.Sprintf(`
 		port: -1
 		operator = %s
@@ -6227,7 +6082,6 @@ func TestJWTAccountProtectedImport(t *testing.T) {
 			type: full
 			dir: '%s'
 		}`, ojwt, sysPub, dirSrv)))
-		defer removeFile(t, cf)
 		s, _ := RunServerWithConfig(cf)
 		defer s.Shutdown()
 		updateJwt(t, s.ClientURL(), sysUsrCreds, importJWT, 1)
@@ -6282,7 +6136,6 @@ func TestJWTMappings(t *testing.T) {
 	sysKp, syspub := createKey(t)
 	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
 	sysCreds := newUser(t, sysKp)
-	defer removeFile(t, sysCreds)
 
 	// create two jwt, one with and one without mapping
 	aKp, aPub := createKey(t)
@@ -6295,8 +6148,7 @@ func TestJWTMappings(t *testing.T) {
 	aClaim.AddMapping("foo2", jwt.WeightedMapping{Subject: "bar2"})
 	aJwtMap2 := encodeClaim(t, aClaim, aPub)
 
-	dirSrv := createDir(t, "srv")
-	defer removeDir(t, dirSrv)
+	dirSrv := t.TempDir()
 	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
 		operator: %s
@@ -6306,7 +6158,6 @@ func TestJWTMappings(t *testing.T) {
 			dir: '%s'
 		}
     `, ojwt, syspub, dirSrv)))
-	defer removeFile(t, conf)
 	srv, _ := RunServerWithConfig(conf)
 	defer srv.Shutdown()
 	updateJwt(t, srv.ClientURL(), sysCreds, sysJwt, 1) // update system account jwt
@@ -6347,11 +6198,8 @@ func TestJWTOperatorPinnedAccounts(t *testing.T) {
 		kps[i], pubs[i] = createKey(t)
 		jwts[i] = encodeClaim(t, jwt.NewAccountClaims(pubs[i]), pubs[i])
 	}
-	sysCreds := newUser(t, kps[0]) // index 0 is handled as system account
-	defer removeFile(t, sysCreds)
-
-	dirSrv := createDir(t, "srv")
-	defer removeDir(t, dirSrv)
+	// create system account user credentials, index 0 is handled as system account
+	newUser(t, kps[0])
 
 	cfgCommon := fmt.Sprintf(`
 		listen: 127.0.0.1:-1
@@ -6368,7 +6216,6 @@ func TestJWTOperatorPinnedAccounts(t *testing.T) {
 		resolver_pinned_accounts: [%s, %s]
 	`
 	conf := createConfFile(t, []byte(fmt.Sprintf(cfgFmt, pubs[1], pubs[2])))
-	defer removeFile(t, conf)
 	srv, _ := RunServerWithConfig(conf)
 	defer srv.Shutdown()
 
@@ -6406,8 +6253,7 @@ func TestJWTOperatorPinnedAccounts(t *testing.T) {
 }
 
 func TestJWTNoSystemAccountButNatsResolver(t *testing.T) {
-	dirSrv := createDir(t, "srv")
-	defer removeDir(t, dirSrv)
+	dirSrv := t.TempDir()
 	for _, resType := range []string{"full", "cache"} {
 		t.Run(resType, func(t *testing.T) {
 			conf := createConfFile(t, []byte(fmt.Sprintf(`
@@ -6417,7 +6263,6 @@ func TestJWTNoSystemAccountButNatsResolver(t *testing.T) {
 				type: %s
 				dir: '%s'
 			}`, ojwt, resType, dirSrv)))
-			defer removeFile(t, conf)
 			opts := LoadConfig(conf)
 			s, err := NewServer(opts)
 			// Since the server cannot be stopped, since it did not start,
@@ -6432,8 +6277,7 @@ func TestJWTNoSystemAccountButNatsResolver(t *testing.T) {
 
 func TestJWTAccountConnzAccessAfterClaimUpdate(t *testing.T) {
 	skp, spub := createKey(t)
-	screds := newUser(t, skp)
-	defer removeFile(t, screds)
+	newUser(t, skp)
 
 	sclaim := jwt.NewAccountClaims(spub)
 	sclaim.AddMapping("foo.bar", jwt.WeightedMapping{Subject: "foo.baz"})
@@ -6441,15 +6285,13 @@ func TestJWTAccountConnzAccessAfterClaimUpdate(t *testing.T) {
 
 	// create two jwt, one with and one without mapping
 	akp, apub := createKey(t)
-	creds := newUser(t, akp)
-	defer removeFile(t, creds)
+	newUser(t, akp)
 	claim := jwt.NewAccountClaims(apub)
 	jwt1 := encodeClaim(t, claim, apub)
 	claim.AddMapping("foo.bar", jwt.WeightedMapping{Subject: "foo.baz"})
 	jwt2 := encodeClaim(t, claim, apub)
 
-	dirSrv := createDir(t, "srv")
-	defer removeDir(t, dirSrv)
+	dirSrv := t.TempDir()
 
 	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
@@ -6460,7 +6302,6 @@ func TestJWTAccountConnzAccessAfterClaimUpdate(t *testing.T) {
 			dir: '%s'
 		}
     `, ojwt, spub, dirSrv)))
-	defer removeFile(t, conf)
 
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
@@ -6523,7 +6364,6 @@ func TestAccountWeightedMappingInSuperCluster(t *testing.T) {
 	sysClaim := jwt.NewAccountClaims(spub)
 	sysClaim.Name = "SYS"
 	sysCreds := newUser(t, skp)
-	defer removeFile(t, sysCreds)
 
 	akp, apub := createKey(t)
 	aUsr := createUserCreds(t, nil, akp)
@@ -6545,7 +6385,7 @@ func TestAccountWeightedMappingInSuperCluster(t *testing.T) {
 
 	sc := createJetStreamSuperClusterWithTemplateAndModHook(t, tmpl, 3, 3,
 		func(serverName, clusterName, storeDir, conf string) string {
-			dirSrv := createDir(t, "srv")
+			dirSrv := t.TempDir()
 			return fmt.Sprintf(`%s
 				operator: %s
 				system_account: %s
@@ -6670,8 +6510,7 @@ func TestServerOperatorModeNoAuthRequired(t *testing.T) {
 	require_NoError(t, err)
 	creds := genCredsFile(t, ujwt, seed)
 
-	dirSrv := createDir(t, "srv")
-	defer removeDir(t, dirSrv)
+	dirSrv := t.TempDir()
 
 	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
@@ -6689,7 +6528,6 @@ func TestServerOperatorModeNoAuthRequired(t *testing.T) {
 			%s: %s
 		}
     `, ojwt, spub, dirSrv, spub, sysJwt, apub, accJwt)))
-	defer removeFile(t, conf)
 
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
