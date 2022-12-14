@@ -5912,8 +5912,6 @@ func TestJetStreamLargeNumConsumersSparseDelivery(t *testing.T) {
 }
 
 func TestNoRaceJetStreamEndToEndLatency(t *testing.T) {
-	skip(t)
-
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
@@ -5931,37 +5929,32 @@ func TestNoRaceJetStreamEndToEndLatency(t *testing.T) {
 	defer nc.Close()
 
 	var sent time.Time
+	var max time.Duration
 	next := make(chan struct{})
 
-	var (
-		total time.Duration
-		min   time.Duration
-		max   time.Duration
-	)
 	mh := func(m *nats.Msg) {
 		received := time.Now()
 		tt := received.Sub(sent)
-		if min == 0 || tt < min {
-			min = tt
-		}
 		if max == 0 || tt > max {
 			max = tt
 		}
-		total += tt
 		next <- struct{}{}
 	}
-	_, err = js.Subscribe("foo", mh)
+	sub, err := js.Subscribe("foo", mh)
 	require_NoError(t, err)
 
 	nc, js = jsClientConnect(t, s)
 	defer nc.Close()
 
-	toSend := 100_000
+	toSend := 50_000
 	for i := 0; i < toSend; i++ {
 		sent = time.Now()
-		js.PublishAsync("foo", []byte("ok"))
+		js.Publish("foo", []byte("ok"))
 		<-next
 	}
+	sub.Unsubscribe()
 
-	fmt.Printf("AVG: %v\nMIN: %v\nMAX: %v\n", total/time.Duration(toSend), min, max)
+	if max > 250*time.Millisecond {
+		t.Fatalf("Expected max latency to be < 250ms, got %v", max)
+	}
 }
