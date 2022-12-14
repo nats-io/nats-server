@@ -2849,10 +2849,11 @@ func (s *Server) removeStream(ourID string, mset *stream, nsa *streamAssignment)
 	}
 
 	// Make sure this node is no longer attached to our stream assignment.
-	js, _ := s.getJetStreamCluster()
-	js.mu.Lock()
-	nsa.Group.node = nil
-	js.mu.Unlock()
+	if js, _ := s.getJetStreamCluster(); js != nil {
+		js.mu.Lock()
+		nsa.Group.node = nil
+		js.mu.Unlock()
+	}
 
 	// wait for monitor to be shut down
 	mset.monitorWg.Wait()
