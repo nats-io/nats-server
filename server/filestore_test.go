@@ -4764,3 +4764,72 @@ func TestFileStoreUpdateMaxMsgsPerSubject(t *testing.T) {
 		t.Fatalf("Expected to have %d stored, got %d", 10, ss.Msgs)
 	}
 }
+
+func TestFileStoreBadFirstAndFailedExpireAfterRestart(t *testing.T) {
+	storeDir := t.TempDir()
+
+	ttl := time.Second
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 256},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage, MaxAge: ttl},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// With block size of 256 and subject and message below, seq 8 starts new block.
+	// Will double check and fail test if not the case since test depends on this.
+	subj, msg := "foo", []byte("ZZ")
+	// These are all instant and will expire after 1 sec.
+	start := time.Now()
+	for i := 0; i < 7; i++ {
+		_, _, err := fs.StoreMsg(subj, nil, msg)
+		require_NoError(t, err)
+	}
+
+	// Put two more after a delay.
+	time.Sleep(500 * time.Millisecond)
+	seq, _, err := fs.StoreMsg(subj, nil, msg)
+	require_NoError(t, err)
+	_, _, err = fs.StoreMsg(subj, nil, msg)
+	require_NoError(t, err)
+
+	// Make sure that sequence 8 is first in second block, and break test if that is not true.
+	fs.mu.RLock()
+	lmb := fs.lmb
+	fs.mu.RUnlock()
+	lmb.mu.RLock()
+	first := lmb.first.seq
+	lmb.mu.RUnlock()
+	require_True(t, first == 8)
+
+	// Instantly remove first one from second block.
+	// On restart this will trigger expire on recover which will set fs.FirstSeq to the deleted one.
+	fs.RemoveMsg(seq)
+	// Stop the filstore and wait til first block expires.
+	fs.Stop()
+	time.Sleep(ttl - time.Since(start) + (10 * time.Millisecond))
+
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 256},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage, MaxAge: ttl},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Check that state is correct for first message which should be 9 and have a proper timestamp.
+	var state StreamState
+	fs.FastState(&state)
+	ts := state.FirstTime
+	require_True(t, state.Msgs == 1)
+	require_True(t, state.FirstSeq == 9)
+	require_True(t, !state.FirstTime.IsZero())
+
+	// Wait and make sure expire timer is still working properly.
+	time.Sleep(ttl)
+	fs.FastState(&state)
+	require_True(t, state.Msgs == 0)
+	require_True(t, state.FirstSeq == 10)
+	require_True(t, state.LastSeq == 9)
+	require_True(t, state.LastTime == ts)
+}
