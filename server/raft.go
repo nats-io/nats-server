@@ -951,15 +951,6 @@ func (n *raft) InstallSnapshot(data []byte) error {
 		return errCatchupsRunning
 	}
 
-	// We don't store snapshots for memory based WALs.
-	// This matches loadSnapshot logic now.
-	// But we should compact.
-	if _, ok := n.wal.(*memStore); ok {
-		n.wal.Compact(n.applied)
-		n.Unlock()
-		return nil
-	}
-
 	var state StreamState
 	n.wal.FastState(&state)
 
