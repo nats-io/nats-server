@@ -433,6 +433,27 @@ func (cc *jetStreamCluster) isConsumerCurrent(account, stream, consumer string) 
 	return true
 }
 
+// subjectsOverlap checks all existing stream assignments for the account cross-cluster for subject overlap
+// Use only for clustered JetStream
+// Read lock should be held.
+func (jsc *jetStreamCluster) subjectsOverlap(acc string, subjects []string, osa *streamAssignment) bool {
+	asa := jsc.streams[acc]
+	for _, sa := range asa {
+		// can't overlap yourself, assume osa pre-checked for deep equal if passed
+		if osa != nil && sa == osa {
+			continue
+		}
+		for _, subj := range sa.Config.Subjects {
+			for _, tsubj := range subjects {
+				if SubjectsCollide(tsubj, subj) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func (a *Account) getJetStreamFromAccount() (*Server, *jetStream, *jsAccount) {
 	a.mu.RLock()
 	jsa := a.js
@@ -5139,22 +5160,16 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 		return
 	}
 
+	var self *streamAssignment
+	if osa != nil && areEqual {
+		self = osa
+	}
+
 	// Check for subject collisions here.
-	asa := cc.streams[acc.Name]
-	for _, sa := range asa {
-		// If we found an osa and are here we are letting this through
-		if sa == osa && areEqual {
-			continue
-		}
-		for _, subj := range sa.Config.Subjects {
-			for _, tsubj := range cfg.Subjects {
-				if SubjectsCollide(tsubj, subj) {
-					resp.Error = NewJSStreamSubjectOverlapError()
-					s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
-					return
-				}
-			}
-		}
+	if cc.subjectsOverlap(acc.Name, cfg.Subjects, self) {
+		resp.Error = NewJSStreamSubjectOverlapError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		return
 	}
 
 	apiErr = js.jsClusteredStreamLimitsCheck(acc, cfg)
@@ -5303,19 +5318,10 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	}
 
 	// Check for subject collisions here.
-	for _, sa := range cc.streams[acc.Name] {
-		if sa == osa {
-			continue
-		}
-		for _, subj := range sa.Config.Subjects {
-			for _, tsubj := range newCfg.Subjects {
-				if SubjectsCollide(tsubj, subj) {
-					resp.Error = NewJSStreamSubjectOverlapError()
-					s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
-					return
-				}
-			}
-		}
+	if cc.subjectsOverlap(acc.Name, cfg.Subjects, osa) {
+		resp.Error = NewJSStreamSubjectOverlapError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		return
 	}
 
 	// Make copy so to not change original.
