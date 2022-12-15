@@ -4833,3 +4833,28 @@ func TestFileStoreBadFirstAndFailedExpireAfterRestart(t *testing.T) {
 	require_True(t, state.LastSeq == 9)
 	require_True(t, state.LastTime == ts)
 }
+
+func TestFileStoreCompactAllWithDanglingLMB(t *testing.T) {
+	storeDir := t.TempDir()
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	subj, msg := "foo", []byte("ZZ")
+	for i := 0; i < 100; i++ {
+		_, _, err := fs.StoreMsg(subj, nil, msg)
+		require_NoError(t, err)
+	}
+
+	fs.RemoveMsg(100)
+	purged, err := fs.Compact(100)
+	require_NoError(t, err)
+	require_True(t, purged == 99)
+
+	_, _, err = fs.StoreMsg(subj, nil, msg)
+	require_NoError(t, err)
+}

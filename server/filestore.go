@@ -4911,6 +4911,11 @@ SKIP:
 		}
 		// Update blks slice.
 		fs.blks = copyMsgBlocks(fs.blks[deleted:])
+		if lb := len(fs.blks); lb == 0 {
+			fs.lmb = nil
+		} else {
+			fs.lmb = fs.blks[lb-1]
+		}
 	}
 
 	// Update top level accounting.
