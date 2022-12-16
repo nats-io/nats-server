@@ -413,7 +413,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 
 	// Check for overlapping subjects with other streams.
 	// These are not allowed for now.
-	if jsa.subjectsOverlap(cfg.Subjects) {
+	if jsa.subjectsOverlap(cfg.Subjects, nil) {
 		jsa.mu.Unlock()
 		return nil, NewJSStreamSubjectOverlapError()
 	}
@@ -910,10 +910,14 @@ func (mset *stream) setCreatedTime(created time.Time) {
 	mset.mu.Unlock()
 }
 
-// Check to see if these subjects overlap with existing subjects.
-// Lock should be held.
-func (jsa *jsAccount) subjectsOverlap(subjects []string) bool {
+// subjectsOverlap to see if these subjects overlap with existing subjects.
+// Use only for non-clustered JetStream
+// RLock minimum should be held.
+func (jsa *jsAccount) subjectsOverlap(subjects []string, self *stream) bool {
 	for _, mset := range jsa.streams {
+		if self != nil && mset == self {
+			continue
+		}
 		for _, subj := range mset.cfg.Subjects {
 			for _, tsubj := range subjects {
 				if SubjectsCollide(tsubj, subj) {
@@ -1201,7 +1205,8 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 			return StreamConfig{}, NewJSMirrorWithSubjectsError()
 		}
 
-		// We can allow overlaps, but don't allow direct duplicates.
+		// Check for literal duplication of subject interest in config
+		// and no overlap with any JS API subject space
 		dset := make(map[string]struct{}, len(cfg.Subjects))
 		for _, subj := range cfg.Subjects {
 			if _, ok := dset[subj]; ok {
@@ -1434,6 +1439,11 @@ func (mset *stream) update(config *StreamConfig) error {
 
 // Update will allow certain configuration properties of an existing stream to be updated.
 func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) error {
+	_, jsa, err := mset.acc.checkForJetStream()
+	if err != nil {
+		return err
+	}
+
 	mset.mu.RLock()
 	ocfg := mset.cfg
 	s := mset.srv
@@ -1443,6 +1453,13 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 	if err != nil {
 		return NewJSStreamInvalidConfigError(err, Unless(err))
 	}
+
+	jsa.mu.RLock()
+	if jsa.subjectsOverlap(cfg.Subjects, mset) {
+		jsa.mu.RUnlock()
+		return NewJSStreamSubjectOverlapError()
+	}
+	jsa.mu.RUnlock()
 
 	mset.mu.Lock()
 	if mset.isLeader() {
