@@ -19101,3 +19101,38 @@ func TestJetStreamServerCrashOnPullConsumerDeleteWithInactiveThresholdAfterAck(t
 	_, err = js.StreamInfo("TEST")
 	require_NoError(t, err)
 }
+
+func TestJetStreamStreamUpdateSubjectsOverlapOthers(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"TEST"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"TEST", "foo.a"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST2",
+		Subjects: []string{"TEST2"},
+	})
+	require_NoError(t, err)
+
+	// we expect an error updating stream TEST2 with subject that overlaps that used by TEST
+	// foo.a fails too, but foo.* also double-check for sophisticated overlap match
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:     "TEST2",
+		Subjects: []string{"TEST2", "foo.*"},
+	})
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "overlap")
+}
