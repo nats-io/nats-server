@@ -1266,13 +1266,7 @@ func (c *client) wsCollapsePtoNB() (net.Buffers, int64) {
 	if c.ws.browser {
 		mfs = wsFrameSizeForBrowsers
 	}
-	if len(c.out.p) > 0 {
-		p := c.out.p
-		c.out.p = nil
-		nb = append(c.out.nb, p)
-	} else if len(c.out.nb) > 0 {
-		nb = c.out.nb
-	}
+	nb = c.out.nb
 	mask := c.ws.maskwrite
 	// Start with possible already framed buffers (that we could have
 	// got from partials or control messages such as ws pings or pongs).

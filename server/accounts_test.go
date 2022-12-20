@@ -2099,12 +2099,17 @@ func TestCrossAccountServiceResponseTypes(t *testing.T) {
 
 	cfoo.parseAsync(string(mReply))
 
-	var b [256]byte
-	n, err := crBar.Read(b[:])
-	if err != nil {
-		t.Fatalf("Error reading response: %v", err)
+	var buf []byte
+	for i := 0; i < 20; i++ {
+		b, err := crBar.ReadBytes('\n')
+		if err != nil {
+			t.Fatalf("Error reading response: %v", err)
+		}
+		buf = append(buf[:], b...)
+		if mraw = msgPat.FindAllStringSubmatch(string(buf), -1); len(mraw) == 10 {
+			break
+		}
 	}
-	mraw = msgPat.FindAllStringSubmatch(string(b[:n]), -1)
 	if len(mraw) != 10 {
 		t.Fatalf("Expected a response but got %d", len(mraw))
 	}
