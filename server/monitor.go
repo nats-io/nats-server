@@ -2631,6 +2631,8 @@ type JSzOptions struct {
 
 // HealthzOptions are options passed to Healthz
 type HealthzOptions struct {
+	// Deprecated: Use JSEnabledOnly instead
+	JSEnabled     bool `json:"js-enabled,omitempty"`
 	JSEnabledOnly bool `json:"js-enabled-only,omitempty"`
 	JSServerOnly  bool `json:"js-server-only,omitempty"`
 }
@@ -2985,7 +2987,8 @@ func (s *Server) HandleHealthz(w http.ResponseWriter, r *http.Request) {
 	}
 
 	hs := s.healthz(&HealthzOptions{
-		JSEnabledOnly: jsEnabledOnly || jsEnabled,
+		JSEnabled:     jsEnabled,
+		JSEnabledOnly: jsEnabledOnly,
 		JSServerOnly:  jsServerOnly,
 	})
 	if hs.Error != _EMPTY_ {
@@ -3031,7 +3034,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 		return health
 	}
 	// Only check if JS is enabled, skip meta and asset check.
-	if opts.JSEnabledOnly {
+	if opts.JSEnabledOnly || opts.JSEnabled {
 		return health
 	}
 
