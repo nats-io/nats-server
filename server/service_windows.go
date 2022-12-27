@@ -68,8 +68,7 @@ func (w *winServiceWrapper) Execute(args []string, changes <-chan svc.ChangeRequ
 	go w.server.Start()
 
 	if v, exists := os.LookupEnv("NATS_STARTUP_DELAY"); exists {
-		delay, err := time.ParseDuration(v)
-		if err == nil {
+		if delay, err := time.ParseDuration(v); err == nil {
 			startupDelay = delay
 		} else {
 			w.server.Errorf("Failed to parse \"%v\" as a duration for startup: %s", v, err)
