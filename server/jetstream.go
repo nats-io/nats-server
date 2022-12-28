@@ -1887,7 +1887,11 @@ func (js *jetStream) limitsExceeded(storeType StorageType) bool {
 
 func tierName(cfg *StreamConfig) string {
 	// TODO (mh) this is where we could select based off a placement tag as well "qos:tier"
-	return fmt.Sprintf("R%d", cfg.Replicas)
+	replicas := cfg.Replicas
+	if replicas == 0 {
+		replicas = 1
+	}
+	return fmt.Sprintf("R%d", replicas)
 }
 
 func isSameTier(cfgA, cfgB *StreamConfig) bool {
