@@ -71,65 +71,8 @@ type ConsumerConfig struct {
 	SampleFrequency string          `json:"sample_freq,omitempty"`
 	MaxWaiting      int             `json:"max_waiting,omitempty"`
 	MaxAckPending   int             `json:"max_ack_pending,omitempty"`
-	Heartbeat       time.Duration   `json:"idle_heartbeat,omitempty"`
-	FlowControl     bool            `json:"flow_control,omitempty"`
-	HeadersOnly     bool            `json:"headers_only,omitempty"`
+	Heartbeat       time.Duration   `json:"idle_
 
-	// Pull based options.
-	MaxRequestBatch    int           `json:"max_batch,omitempty"`
-	MaxRequestExpires  time.Duration `json:"max_expires,omitempty"`
-	MaxRequestMaxBytes int           `json:"max_bytes,omitempty"`
-
-	// Push based consumers.
-	DeliverSubject string `json:"deliver_subject,omitempty"`
-	DeliverGroup   string `json:"deliver_group,omitempty"`
-
-	// Ephemeral inactivity threshold.
-	InactiveThreshold time.Duration `json:"inactive_threshold,omitempty"`
-
-	// Generally inherited by parent stream and other markers, now can be configured directly.
-	Replicas int `json:"num_replicas"`
-	// Force memory storage.
-	MemoryStorage bool `json:"mem_storage,omitempty"`
-
-	// Don't add to general clients.
-	Direct bool `json:"direct,omitempty"`
-}
-
-// SequenceInfo has both the consumer and the stream sequence and last activity.
-type SequenceInfo struct {
-	Consumer uint64     `json:"consumer_seq"`
-	Stream   uint64     `json:"stream_seq"`
-	Last     *time.Time `json:"last_active,omitempty"`
-}
-
-type CreateConsumerRequest struct {
-	Stream string         `json:"stream_name"`
-	Config ConsumerConfig `json:"config"`
-}
-
-// ConsumerNakOptions is for optional NAK values, e.g. delay.
-type ConsumerNakOptions struct {
-	Delay time.Duration `json:"delay"`
-}
-
-// DeliverPolicy determines how the consumer should select the first message to deliver.
-type DeliverPolicy int
-
-const (
-	// DeliverAll will be the default so can be omitted from the request.
-	DeliverAll DeliverPolicy = iota
-	// DeliverLast will start the consumer with the last sequence received.
-	DeliverLast
-	// DeliverNew will only deliver new messages that are sent after the consumer is created.
-	DeliverNew
-	// DeliverByStartSequence will look for a defined starting sequence to start.
-	DeliverByStartSequence
-	// DeliverByStartTime will select the first messsage with a timestamp >= to StartTime.
-	DeliverByStartTime
-	// DeliverLastPerSubject will start the consumer with the last message for all subjects received.
-	DeliverLastPerSubject
-)
 
 func (dp DeliverPolicy) String() string {
 	switch dp {
