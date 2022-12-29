@@ -2556,6 +2556,17 @@ func (c *client) processSubEx(subject, queue, bsid []byte, cb msgHandler, noForw
 	if es == nil {
 		c.subs[sid] = sub
 		if acc != nil && acc.sl != nil {
+			if rsi && !subjectHasWildcard(string(sub.subject)) {
+				// There is an issue with leafnodes and imports where there might already exist a subscription
+				// that represents the same interest as the service response import.
+				// In order to avoid duplicate responses due to for example both '_R_.foo.>' and '_R_.foo.bar'
+				// being registered, we suppress adding an extra subscription here.
+				if r := acc.sl.Match(string(sub.subject)); r != nil && (len(r.psubs) > 0) {
+					delete(c.subs, sid)
+					c.mu.Unlock()
+					return sub, nil
+				}
+			}
 			err = acc.sl.Insert(sub)
 			if err != nil {
 				delete(c.subs, sid)
