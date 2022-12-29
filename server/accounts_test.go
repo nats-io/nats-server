@@ -3603,3 +3603,76 @@ func TestAccountImportOwnExport(t *testing.T) {
 	_, err := nc.Request("echo", []byte("request"), time.Second)
 	require_NoError(t, err)
 }
+
+// Test for a bug that would cause duplicate deliveries in certain situations when
+// service export/imports and leafnodes involved.
+// https://github.com/nats-io/nats-server/issues/3191
+func TestAccountImportDuplicateResponseDeliveryWithLeafnodes(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		port: -1
+		accounts: {
+			A: {
+				users = [{user: A, password: P}]
+				exports: [ { service: "foo", response_type: stream } ]
+			}
+			B: {
+				users = [{user: B, password: P}]
+				imports: [ { service: {account: "A", subject:"foo"} } ]
+			}
+		}
+		leaf { listen: "127.0.0.1:17222" }
+	`))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// Requestors will connect to account B.
+	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("B", "P"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	// By sending a request (regardless of no responders), this will trigger a wildcard _R_ subscription since
+	// we do not have a leafnode connected.
+	nc.PublishRequest("foo", "reply", nil)
+	nc.Flush()
+
+	// Now connect the LN. This will be where the service responder lives.
+	conf = createConfFile(t, []byte(`
+		port: -1
+		leaf {
+			remotes [ { url: "nats://A:P@127.0.0.1:17222" } ]
+		}
+	`))
+	ln, _ := RunServerWithConfig(conf)
+	defer ln.Shutdown()
+	checkLeafNodeConnected(t, s)
+
+	// Now attach a responder to the LN.
+	lnc, err := nats.Connect(ln.ClientURL())
+	require_NoError(t, err)
+	defer lnc.Close()
+
+	lnc.Subscribe("foo", func(m *nats.Msg) {
+		m.Respond([]byte("bar"))
+	})
+	lnc.Flush()
+
+	// Make sure it works, but request only wants one, so need second test to show failure, but
+	// want to make sure we are wired up correctly.
+	_, err = nc.Request("foo", nil, time.Second)
+	require_NoError(t, err)
+
+	// Now setup inbox reply so we can check if we get multiple responses.
+	reply := nats.NewInbox()
+	sub, err := nc.SubscribeSync(reply)
+	require_NoError(t, err)
+
+	nc.PublishRequest("foo", reply, nil)
+
+	// Do another to make sure we know the other request will have been processed too.
+	_, err = nc.Request("foo", nil, time.Second)
+	require_NoError(t, err)
+
+	if n, _, _ := sub.Pending(); n > 1 {
+		t.Fatalf("Expected only 1 response, got %d", n)
+	}
+}
