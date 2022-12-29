@@ -14252,7 +14252,7 @@ func TestJetStreamPullConsumerCrossAccountsAndLeafNodes(t *testing.T) {
 	nc2, _ := jsClientConnect(t, s2, nats.UserInfo("m", "p"))
 	defer nc2.Close()
 
-	req := &JSApiConsumerGetNextRequest{Batch: toSend}
+	req := &JSApiConsumerGetNextRequest{Batch: toSend, Expires: 500 * time.Millisecond}
 	jreq, err := json.Marshal(req)
 	require_NoError(t, err)
 
@@ -14282,7 +14282,7 @@ func TestJetStreamPullConsumerCrossAccountsAndLeafNodes(t *testing.T) {
 
 	// Remove interest.
 	sub.Unsubscribe()
-	// Make sure requests go away.
+	// Make sure requests go away eventually after they expire.
 	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
 		ci, err := js.ConsumerInfo("PC", "PC")
 		require_NoError(t, err)
