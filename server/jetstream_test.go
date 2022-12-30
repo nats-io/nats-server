@@ -19136,3 +19136,80 @@ func TestJetStreamStreamUpdateSubjectsOverlapOthers(t *testing.T) {
 	require_Error(t, err)
 	require_Contains(t, err.Error(), "overlap")
 }
+
+func TestJetStreamMetaDataFailOnKernelFault(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 10; i++ {
+		js.Publish("foo", []byte("OK"))
+	}
+
+	sd := s.JetStreamConfig().StoreDir
+	sdir := filepath.Join(sd, "$G", "streams", "TEST")
+	s.Shutdown()
+
+	// Emulate if the kernel did not flush out to disk the meta information.
+	// so we will zero out both meta.inf and meta.sum.
+	err = os.WriteFile(filepath.Join(sdir, JetStreamMetaFile), nil, defaultFilePerms)
+	require_NoError(t, err)
+
+	err = os.WriteFile(filepath.Join(sdir, JetStreamMetaFileSum), nil, defaultFilePerms)
+	require_NoError(t, err)
+
+	// Restart.
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	// The stream will have not been recovered. So err is normal.
+	_, err = js.StreamInfo("TEST")
+	require_Error(t, err)
+
+	// Make sure we are signaled here from healthz
+	hs := s.healthz(nil)
+	const expected = "JetStream stream '$G > TEST' could not be recovered"
+	if hs.Status != "unavailable" || hs.Error == _EMPTY_ {
+		t.Fatalf("Expected healthz to return an error")
+	} else if hs.Error != expected {
+		t.Fatalf("Expected healthz error %q got %q", expected, hs.Error)
+	}
+
+	// If we add it back, this should recover the msgs.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	// Make sure we recovered.
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_True(t, si.State.Msgs == 10)
+
+	// Now if we restart the server, meta should be correct,
+	// and the stream should be restored.
+	s.Shutdown()
+
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Make sure we recovered the stream correctly after re-adding.
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_True(t, si.State.Msgs == 10)
+}
