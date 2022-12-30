@@ -341,9 +341,10 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		return nil, err
 	}
 
-	// Write our meta data iff does not exist.
+	// Write our meta data if it does not exist or is zero'd out.
 	meta := filepath.Join(fcfg.StoreDir, JetStreamMetaFile)
-	if _, err := os.Stat(meta); err != nil && os.IsNotExist(err) {
+	fi, err := os.Stat(meta)
+	if err != nil && os.IsNotExist(err) || fi != nil && fi.Size() == 0 {
 		if err := fs.writeStreamMeta(); err != nil {
 			return nil, err
 		}
