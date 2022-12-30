@@ -3,17 +3,16 @@
 set -e
 
 if [ "$1" = "compile" ]; then
-
-    # We will compile and run some vet, spelling and some other checks.
-
-    go install honnef.co/go/tools/cmd/staticcheck@latest;
-    go install github.com/client9/misspell/cmd/misspell@latest;
-    GO_LIST=$(go list ./...);
+    # First check that NATS builds.
     go build;
-    $(exit $(go fmt $GO_LIST | wc -l));
-    go vet $GO_LIST;
-    find . -type f -name "*.go" | xargs misspell -error -locale US;
-    staticcheck -tags=js_chaos_tests $GO_LIST
+
+    # Now run the linters.
+    # TODO: Pinning a specific commit here as there is a bugfix merged that 
+    # fixes gofmt on macOS Ventura, we can undo this and go back to the binary
+    # install script once there's a new tagged release that contains the fix.
+    # curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.50.1
+    go install github.com/golangci/golangci-lint/cmd/golangci-lint@6f7f8ae;
+    golangci-lint run;
     if [ "$TRAVIS_TAG" != "" ]; then
         go test -race -v -run=TestVersionMatchesTag ./server -count=1 -vet=off
     fi

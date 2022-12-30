@@ -3570,7 +3570,7 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 	// Let's put a non-contigous AppendEntry into the system.
 	ae.pindex += 10
 	// Add in delivered record.
-	ae.entries = []*Entry{&Entry{EntryNormal, dentry(1000, 1000, 1, time.Now().UnixNano())}}
+	ae.entries = []*Entry{{EntryNormal, dentry(1000, 1000, 1, time.Now().UnixNano())}}
 	encoded, err := ae.encode(nil)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)

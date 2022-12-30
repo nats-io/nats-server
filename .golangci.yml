@@ -1,0 +1,60 @@
+# Config file for golangci-lint
+run:
+  concurrency: 4
+  deadline: 1m
+  issues-exit-code: 1
+  tests: true
+  skip-dirs:
+    - .github
+    - doc
+    - docker
+    - logos
+    - scripts
+    - util
+  modules-download-mode: readonly
+
+output:
+  format: colored-line-number
+  print-issued-lines: true
+  print-linter-name: true
+
+linters:
+  disable-all: true
+  enable:
+    # - errcheck
+    - gofmt
+    # - goimports
+    - gosimple
+    - govet
+    - ineffassign
+    # - maligned
+    - megacheck
+    - misspell
+    # - prealloc
+    - staticcheck
+    # - unparam
+    - unused
+
+linters-settings:
+  errcheck:
+    check-type-assertions: false
+    check-blank: false
+  govet:
+    check-shadowing: false
+    settings:
+      printf:
+        funcs:
+          - (github.com/golangci/golangci-lint/pkg/logutils.Log).Infof
+          - (github.com/golangci/golangci-lint/pkg/logutils.Log).Warnf
+          - (github.com/golangci/golangci-lint/pkg/logutils.Log).Errorf
+          - (github.com/golangci/golangci-lint/pkg/logutils.Log).Fatalf
+  gofmt:
+    simple: true
+  misspell:
+    locale: US
+  unparam:
+    check-exported: false
+  prealloc:
+    simple: true
+    range-loops: true
+    for-loops: true
