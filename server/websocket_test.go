@@ -2084,7 +2084,6 @@ func TestWSPubSub(t *testing.T) {
 					ok = 1
 					continue
 				} else if ok == 1 && bytes.Contains(line, []byte("from nats")) {
-					ok = 2
 					break
 				}
 			}

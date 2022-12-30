@@ -1074,7 +1074,7 @@ func TestJetStreamClusterSourceWithOptStartTime(t *testing.T) {
 		_, err = js.AddStream(&nats.StreamConfig{
 			Name:     "SOURCE",
 			Replicas: replicas,
-			Sources: []*nats.StreamSource{&nats.StreamSource{
+			Sources: []*nats.StreamSource{{
 				Name:         "TEST",
 				OptStartTime: &yesterday,
 			}},

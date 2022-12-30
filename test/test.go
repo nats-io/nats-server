@@ -408,7 +408,6 @@ func expectLeftMostResult(t tLogger, c net.Conn, re *regexp.Regexp, buf *[]byte)
 			}
 			*buf = append(*buf, recv()...)
 		} else {
-			emptyCnt = 0
 			cutIdx := strings.Index(string(*buf), string(result)) + len(result)
 			*buf = (*buf)[cutIdx:]
 			return result

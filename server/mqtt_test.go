@@ -3039,7 +3039,7 @@ func TestMQTTClusterReplicasCount(t *testing.T) {
 				t.Run(sname, func(t *testing.T) {
 					si, err := js.StreamInfo(sname)
 					if err != nil {
-						t.Fatalf("Error geting stream info: %v", err)
+						t.Fatalf("Error getting stream info: %v", err)
 					}
 					if si.Config.Replicas != test.replicas {
 						t.Fatalf("Expected %v replicas, got %v", test.replicas, si.Config.Replicas)

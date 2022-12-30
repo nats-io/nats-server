@@ -758,7 +758,6 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) boo
 			if len(allowedConnTypes) == 0 {
 				return false
 			}
-			err = nil
 		}
 		if !c.connectionTypeAllowed(allowedConnTypes) {
 			c.Debugf("Connection type not allowed")
