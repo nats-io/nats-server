@@ -7,7 +7,11 @@ if [ "$1" = "compile" ]; then
     go build;
 
     # Now run the linters.
-    curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.50.1
+    # TODO: Pinning a specific commit here as there is a bugfix merged that 
+    # fixes gofmt on macOS Ventura, we can undo this and go back to the binary
+    # install script once there's a new tagged release that contains the fix.
+    # curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.50.1
+    go install github.com/golangci/golangci-lint/cmd/golangci-lint@6f7f8ae;
     golangci-lint run;
     if [ "$TRAVIS_TAG" != "" ]; then
         go test -race -v -run=TestVersionMatchesTag ./server -count=1 -vet=off

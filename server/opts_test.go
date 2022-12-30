@@ -161,7 +161,7 @@ func TestTLSConfigFile(t *testing.T) {
 		t.Fatalf("Expected MinVersion of 1.2 [%v], got [%v]", tls.VersionTLS12, tlsConfig.MinVersion)
 	}
 	//lint:ignore SA1019 We want to retry on a bunch of errors here.
-	if !tlsConfig.PreferServerCipherSuites {
+	if !tlsConfig.PreferServerCipherSuites { // nolint:staticcheck
 		t.Fatal("Expected PreferServerCipherSuites to be true")
 	}
 	// Verify hostname is correct in certificate

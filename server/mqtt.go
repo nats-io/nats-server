@@ -3347,7 +3347,6 @@ func (c *client) mqttParseSubsOrUnsubs(r *mqttReader, b byte, pl int, sub bool) 
 		filter, err := mqttFilterToNATSSubject(topic)
 		if err != nil {
 			c.Errorf("invalid topic %q: %v", topic, err)
-			err = nil
 		}
 		if sub {
 			qos, err = r.readByte("QoS")

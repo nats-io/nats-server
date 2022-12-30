@@ -22,7 +22,7 @@ linters:
   disable-all: true
   enable:
     # - errcheck
-    # - gofmt
+    - gofmt
     # - goimports
     - gosimple
     - govet

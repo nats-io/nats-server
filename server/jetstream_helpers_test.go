@@ -1101,18 +1101,6 @@ func jsClientConnectEx(t testing.TB, s *Server, domain string, opts ...nats.Opti
 	return nc, js
 }
 
-func jsClientConnectCluster(t testing.TB, c *cluster, opts ...nats.Option) (*nats.Conn, nats.JetStreamContext) {
-	t.Helper()
-
-	serverURLs := make([]string, len(c.servers))
-
-	for i, s := range c.servers {
-		serverURLs[i] = s.ClientURL()
-	}
-	url := strings.Join(serverURLs, ",")
-	return jsClientConnectURL(t, url, opts...)
-}
-
 func jsClientConnectURL(t testing.TB, url string, opts ...nats.Option) (*nats.Conn, nats.JetStreamContext) {
 	t.Helper()
 
@@ -1734,12 +1722,4 @@ func (b *bitset) String() string {
 	}
 	sb.WriteString("\n")
 	return sb.String()
-}
-
-func toIndentedJsonString(v interface{}) string {
-	jsonBytes, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return fmt.Sprintf("Marshal error: %s", err)
-	}
-	return string(jsonBytes)
 }

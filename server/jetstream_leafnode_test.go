@@ -645,8 +645,8 @@ cluster: { name: clustL }
 `
 	for _, withDomain := range []bool{true, false} {
 		t.Run(fmt.Sprintf("with-domain:%t", withDomain), func(t *testing.T) {
-			jsDisabledDomainString := _EMPTY_
-			jsEnabledDomainString := _EMPTY_
+			var jsDisabledDomainString string
+			var jsEnabledDomainString string
 			if withDomain {
 				jsEnabledDomainString = `domain: "domain", `
 				jsDisabledDomainString = `domain: "domain"`

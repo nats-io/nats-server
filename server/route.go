@@ -652,7 +652,7 @@ func (c *client) processRouteInfo(info *Info) {
 		if sendInfo {
 			// The incoming INFO from the route will have IP set
 			// if it has Cluster.Advertise. In that case, use that
-			// otherwise contruct it from the remote TCP address.
+			// otherwise construct it from the remote TCP address.
 			if info.IP == "" {
 				// Need to get the remote IP address.
 				c.mu.Lock()

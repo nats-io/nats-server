@@ -763,7 +763,6 @@ func TestExpirationUpdate(t *testing.T) {
 	createTestAccount(t, dirStore, 1, accountKey)
 	nh = dirStore.Hash()
 	require_NotEqual(t, h, nh)
-	h = nh
 
 	time.Sleep(1500 * time.Millisecond)
 	f, err = os.ReadDir(dir)
@@ -838,6 +837,7 @@ func TestRemove(t *testing.T) {
 		RenameDeleted: {0, 1},
 		NoDelete:      {1, 0},
 	} {
+		deleteType, test := deleteType, test // fixes govet capturing loop variables
 		t.Run("", func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
