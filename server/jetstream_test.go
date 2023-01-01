@@ -19215,3 +19215,82 @@ func TestJetStreamMetaDataFailOnKernelFault(t *testing.T) {
 	require_NoError(t, err)
 	require_True(t, si.State.Msgs == 10)
 }
+
+// https://github.com/nats-io/nats-server/issues/3734
+func TestJetStreamMsgBlkFailOnKernelFault(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		MaxBytes: 10 * 1024 * 1024, // 10MB
+	})
+	require_NoError(t, err)
+
+	msgSize := 1024 * 1024 // 1MB
+	msg := make([]byte, msgSize)
+	rand.Read(msg)
+
+	for i := 0; i < 20; i++ {
+		_, err := js.Publish("foo", msg)
+		require_NoError(t, err)
+	}
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_True(t, si.State.Bytes < uint64(si.Config.MaxBytes))
+
+	// Now emulate a kernel fault that fails to write the last blk properly.
+	mset, err := s.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	mset.mu.RLock()
+	fs := mset.store.(*fileStore)
+	fs.mu.RLock()
+	require_True(t, len(fs.blks) > 2)
+	// Here we do not grab the last one, which we handle correctly. We grab an interior one near the end.
+	lmbf := fs.blks[len(fs.blks)-2].mfn
+	fs.mu.RUnlock()
+	mset.mu.RUnlock()
+
+	sd := s.JetStreamConfig().StoreDir
+	s.Shutdown()
+
+	// Zero out the last block.
+	err = os.WriteFile(lmbf, nil, defaultFilePerms)
+	require_NoError(t, err)
+
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_True(t, si.State.NumDeleted == 3)
+
+	// Test detailed version as well.
+	si, err = js.StreamInfo("TEST", &nats.StreamInfoRequest{DeletedDetails: true})
+	require_NoError(t, err)
+	require_True(t, si.State.NumDeleted == 3)
+	if !reflect.DeepEqual(si.State.Deleted, []uint64{16, 17, 18}) {
+		t.Fatalf("Expected deleted of %+v, got %+v", []uint64{16, 17, 18}, si.State.Deleted)
+	}
+
+	for i := 0; i < 20; i++ {
+		_, err := js.Publish("foo", msg)
+		require_NoError(t, err)
+	}
+
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	if si.State.Bytes > uint64(si.Config.MaxBytes) {
+		t.Fatalf("MaxBytes not enforced with empty interior msg blk, max %v, bytes %v",
+			friendlyBytes(si.Config.MaxBytes), friendlyBytes(int64(si.State.Bytes)))
+	}
+}
