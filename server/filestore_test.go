@@ -4858,3 +4858,139 @@ func TestFileStoreCompactAllWithDanglingLMB(t *testing.T) {
 	_, _, err = fs.StoreMsg(subj, nil, msg)
 	require_NoError(t, err)
 }
+
+func TestFileStoreStateWithBlkFirstDeleted(t *testing.T) {
+	storeDir := t.TempDir()
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 4096},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	subj, msg := "foo", []byte("Hello World")
+	toStore := 500
+	for i := 0; i < toStore; i++ {
+		_, _, err := fs.StoreMsg(subj, nil, msg)
+		require_NoError(t, err)
+	}
+
+	// Delete some messages from the beginning of an interior block.
+	fs.mu.RLock()
+	require_True(t, len(fs.blks) > 2)
+	fseq := fs.blks[1].first.seq
+	fs.mu.RUnlock()
+
+	// Now start from first seq of second blk and delete 10 msgs
+	for seq := fseq; seq < fseq+10; seq++ {
+		removed, err := fs.RemoveMsg(seq)
+		require_NoError(t, err)
+		require_True(t, removed)
+	}
+
+	// This bug was in normal detailed state. But check fast state too.
+	var fstate StreamState
+	fs.FastState(&fstate)
+	require_True(t, fstate.NumDeleted == 10)
+	state := fs.State()
+	require_True(t, state.NumDeleted == 10)
+}
+
+func TestFileStoreMsgBlkFailOnKernelFaultLostDataReporting(t *testing.T) {
+	storeDir := t.TempDir()
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 4096},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	subj, msg := "foo", []byte("Hello World")
+	toStore := 500
+	for i := 0; i < toStore; i++ {
+		_, _, err := fs.StoreMsg(subj, nil, msg)
+		require_NoError(t, err)
+	}
+
+	// We want to make sure all of the scenarios report lost data properly.
+	// Will run 3 scenarios, 1st block, last block, interior block.
+
+	// First block
+	fs.mu.RLock()
+	require_True(t, fs.numMsgBlocks() > 0)
+	mfn := fs.blks[0].mfn
+	fs.mu.RUnlock()
+
+	fs.Stop()
+
+	err = os.WriteFile(mfn, nil, defaultFilePerms)
+	require_NoError(t, err)
+
+	// Restart.
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 4096},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	state := fs.State()
+	require_True(t, state.FirstSeq == 94)
+	require_True(t, state.Lost != nil)
+	require_True(t, len(state.Lost.Msgs) == 93)
+
+	// Last block
+	fs.mu.RLock()
+	require_True(t, fs.numMsgBlocks() > 0)
+	require_True(t, fs.lmb != nil)
+	mfn = fs.lmb.mfn
+	fs.mu.RUnlock()
+
+	fs.Stop()
+
+	err = os.WriteFile(mfn, nil, defaultFilePerms)
+	require_NoError(t, err)
+
+	// Restart.
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 4096},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	state = fs.State()
+	require_True(t, state.FirstSeq == 94)
+	require_True(t, state.LastSeq == 500)   // Make sure we do not lose last seq.
+	require_True(t, state.NumDeleted == 35) // These are interiors
+	require_True(t, state.Lost != nil)
+	require_True(t, len(state.Lost.Msgs) == 35)
+
+	// Interior block.
+	fs.mu.RLock()
+	require_True(t, fs.numMsgBlocks() > 3)
+	mfn = fs.blks[len(fs.blks)-3].mfn
+	fs.mu.RUnlock()
+
+	fs.Stop()
+
+	err = os.WriteFile(mfn, nil, defaultFilePerms)
+	require_NoError(t, err)
+
+	// Restart.
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 4096},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	state = fs.State()
+	require_True(t, state.FirstSeq == 94)
+	require_True(t, state.LastSeq == 500) // Make sure we do not lose last seq.
+	require_True(t, state.NumDeleted == 128)
+	require_True(t, state.Lost != nil)
+	require_True(t, len(state.Lost.Msgs) == 93)
+}
