@@ -3141,7 +3141,7 @@ func TestJWTBearerWithBadIssuerToken(t *testing.T) {
 func TestJWTExpiredUserCredentialsRenewal(t *testing.T) {
 	createTmpFile := func(t *testing.T, content []byte) string {
 		t.Helper()
-		conf := createTempFile(t, "")
+		conf := createTempFile(t, _EMPTY_)
 		fName := conf.Name()
 		conf.Close()
 		if err := os.WriteFile(fName, content, 0666); err != nil {

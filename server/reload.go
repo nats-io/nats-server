@@ -949,6 +949,7 @@ func imposeOrder(value interface{}) error {
 		*URLAccResolver, *MemAccResolver, *DirAccResolver, *CacheDirAccResolver, Authentication, MQTTOpts, jwt.TagList,
 		*OCSPConfig, map[string]string, JSLimitOpts, StoreCipher:
 		// explicitly skipped types
+	case *AuthCallout:
 	default:
 		// this will fail during unit tests
 		return fmt.Errorf("OnReload, sort or explicitly skip type: %s",

@@ -82,6 +82,7 @@ type Account struct {
 	expired      bool
 	incomplete   bool
 	signingKeys  map[string]jwt.Scope
+	extAuth      *jwt.ExternalAuthorization
 	srv          *Server // server this account is registered with (possibly nil)
 	lds          string  // loop detection subject for leaf nodes
 	siReply      []byte  // service reply prefix, will form wildcard subscription.
@@ -1928,6 +1929,13 @@ func (a *Account) subscribeInternal(subject string, cb msgHandler) (*subscriptio
 	return a.subscribeInternalEx(subject, cb, false)
 }
 
+// Unsubscribe from an internal account subscription.
+func (a *Account) unsubscribeInternal(sub *subscription) {
+	if ic := a.internalClient(); ic != nil {
+		ic.processUnsub(sub.sid)
+	}
+}
+
 // Creates internal subscription for service import responses.
 func (a *Account) subscribeServiceImportResponse(subject string) (*subscription, error) {
 	return a.subscribeInternalEx(subject, a.processServiceImportResponse, true)
@@ -2973,6 +2981,65 @@ func (a *Account) traceLabel() string {
 	return a.Name
 }
 
+// Check if an account has external auth set.
+// Operator/Account Resolver only.
+func (a *Account) hasExternalAuth() bool {
+	if a == nil {
+		return false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.extAuth != nil
+}
+
+// Deterimine if this is an external auth user.
+func (a *Account) isExternalAuthUser(userID string) bool {
+	if a == nil {
+		return false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.extAuth != nil {
+		for _, u := range a.extAuth.AuthUsers {
+			if userID == u {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Return the external authorization xkey if external authorization is enabled and the xkey is set.
+// Operator/Account Resolver only.
+func (a *Account) externalAuthXKey() string {
+	if a == nil {
+		return _EMPTY_
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.extAuth != nil && a.extAuth.XKey != _EMPTY_ {
+		return a.extAuth.XKey
+	}
+	return _EMPTY_
+}
+
+// Check if an account switch for external authorization is allowed.
+func (a *Account) isAllowedAcount(acc string) bool {
+	if a == nil {
+		return false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.extAuth != nil {
+		for _, a := range a.extAuth.AllowedAccounts {
+			if a == acc {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // updateAccountClaimsWithRefresh will update an existing account with new claims.
 // If refreshImportingAccounts is true it will also update incomplete dependent accounts
 // This will replace any exports or imports previously defined.
@@ -2991,6 +3058,14 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 	// overwrite claim meta data
 	a.nameTag = ac.Name
 	a.tags = ac.Tags
+
+	// Check for external authorization.
+	if ac.HasExternalAuthorization() {
+		a.extAuth = &jwt.ExternalAuthorization{}
+		a.extAuth.AuthUsers.Add(ac.Authorization.AuthUsers...)
+		a.extAuth.AllowedAccounts.Add(ac.Authorization.AllowedAccounts...)
+		a.extAuth.XKey = ac.Authorization.XKey
+	}
 
 	// Reset exports and imports here.
 

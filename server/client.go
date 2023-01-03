@@ -1987,14 +1987,14 @@ func (c *client) authViolation() {
 	var s *Server
 	var hasTrustedNkeys, hasNkeys, hasUsers bool
 	if s = c.srv; s != nil {
-		s.mu.Lock()
+		s.mu.RLock()
 		hasTrustedNkeys = s.trustedKeys != nil
 		hasNkeys = s.nkeys != nil
 		hasUsers = s.users != nil
-		s.mu.Unlock()
+		s.mu.RUnlock()
 		defer s.sendAuthErrorEvent(c)
-
 	}
+
 	if hasTrustedNkeys {
 		c.Errorf("%v", ErrAuthentication)
 	} else if hasNkeys {
