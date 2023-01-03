@@ -1,4 +1,4 @@
-// Copyright 2018-2022 The NATS Authors
+// Copyright 2018-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -47,20 +47,21 @@ const (
 	accPingReqSubj      = "$SYS.REQ.ACCOUNT.PING.%s" // atm. only used for STATZ and CONNZ import from system account
 	// kept for backward compatibility when using http resolver
 	// this overlaps with the names for events but you'd have to have the operator private key in order to succeed.
-	accUpdateEventSubjOld    = "$SYS.ACCOUNT.%s.CLAIMS.UPDATE"
-	accUpdateEventSubjNew    = "$SYS.REQ.ACCOUNT.%s.CLAIMS.UPDATE"
-	connsRespSubj            = "$SYS._INBOX_.%s"
-	accConnsEventSubjNew     = "$SYS.ACCOUNT.%s.SERVER.CONNS"
-	accConnsEventSubjOld     = "$SYS.SERVER.ACCOUNT.%s.CONNS" // kept for backward compatibility
-	shutdownEventSubj        = "$SYS.SERVER.%s.SHUTDOWN"
-	authErrorEventSubj       = "$SYS.SERVER.%s.CLIENT.AUTH.ERR"
-	serverStatsSubj          = "$SYS.SERVER.%s.STATSZ"
-	serverDirectReqSubj      = "$SYS.REQ.SERVER.%s.%s"
-	serverPingReqSubj        = "$SYS.REQ.SERVER.PING.%s"
-	serverStatsPingReqSubj   = "$SYS.REQ.SERVER.PING"             // use $SYS.REQ.SERVER.PING.STATSZ instead
-	leafNodeConnectEventSubj = "$SYS.ACCOUNT.%s.LEAFNODE.CONNECT" // for internal use only
-	remoteLatencyEventSubj   = "$SYS.LATENCY.M2.%s"
-	inboxRespSubj            = "$SYS._INBOX.%s.%s"
+	accUpdateEventSubjOld     = "$SYS.ACCOUNT.%s.CLAIMS.UPDATE"
+	accUpdateEventSubjNew     = "$SYS.REQ.ACCOUNT.%s.CLAIMS.UPDATE"
+	connsRespSubj             = "$SYS._INBOX_.%s"
+	accConnsEventSubjNew      = "$SYS.ACCOUNT.%s.SERVER.CONNS"
+	accConnsEventSubjOld      = "$SYS.SERVER.ACCOUNT.%s.CONNS" // kept for backward compatibility
+	shutdownEventSubj         = "$SYS.SERVER.%s.SHUTDOWN"
+	authErrorEventSubj        = "$SYS.SERVER.%s.CLIENT.AUTH.ERR"
+	authErrorAccountEventSubj = "$SYS.ACCOUNT.CLIENT.AUTH.ERR"
+	serverStatsSubj           = "$SYS.SERVER.%s.STATSZ"
+	serverDirectReqSubj       = "$SYS.REQ.SERVER.%s.%s"
+	serverPingReqSubj         = "$SYS.REQ.SERVER.PING.%s"
+	serverStatsPingReqSubj    = "$SYS.REQ.SERVER.PING"             // use $SYS.REQ.SERVER.PING.STATSZ instead
+	leafNodeConnectEventSubj  = "$SYS.ACCOUNT.%s.LEAFNODE.CONNECT" // for internal use only
+	remoteLatencyEventSubj    = "$SYS.LATENCY.M2.%s"
+	inboxRespSubj             = "$SYS._INBOX.%s.%s"
 
 	// Used to return information to a user on bound account and user permissions.
 	userDirectInfoSubj = "$SYS.REQ.USER.INFO"
@@ -509,6 +510,23 @@ func (s *Server) sendInternalAccountMsgWithReply(a *Account, subject, reply stri
 	s.sys.sendq.push(newPubMsg(c, subject, reply, nil, hdr, msg, noCompression, echo, false))
 	s.mu.RUnlock()
 	return nil
+}
+
+// Send system style message to an account scope.
+func (s *Server) sendInternalAccountSysMsg(a *Account, subj string, si *ServerInfo, msg interface{}) {
+	s.mu.RLock()
+	if s.sys == nil || s.sys.sendq == nil || a == nil {
+		s.mu.RUnlock()
+		return
+	}
+	sendq := s.sys.sendq
+	s.mu.RUnlock()
+
+	a.mu.Lock()
+	c := a.internalClient()
+	a.mu.Unlock()
+
+	sendq.push(newPubMsg(c, subj, _EMPTY_, si, nil, msg, noCompression, false, false))
 }
 
 // This will queue up a message to be sent.
@@ -2016,6 +2034,7 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 	s.sendInternalMsgLocked(subj, _EMPTY_, &m.Server, &m)
 }
 
+// This is the system level event sent to the system account for operators.
 func (s *Server) sendAuthErrorEvent(c *client) {
 	s.mu.Lock()
 	if !s.eventsEnabled() {
@@ -2068,6 +2087,61 @@ func (s *Server) sendAuthErrorEvent(c *client) {
 	subj := fmt.Sprintf(authErrorEventSubj, s.info.ID)
 	s.sendInternalMsg(subj, _EMPTY_, &m.Server, &m)
 	s.mu.Unlock()
+}
+
+// This is the account level event sent to the origin account for account owners.
+func (s *Server) sendAccountAuthErrorEvent(c *client, acc *Account, reason string) {
+	if acc == nil {
+		return
+	}
+	s.mu.Lock()
+	if !s.eventsEnabled() {
+		s.mu.Unlock()
+		return
+	}
+	eid := s.nextEventID()
+	s.mu.Unlock()
+
+	now := time.Now().UTC()
+	c.mu.Lock()
+	m := DisconnectEventMsg{
+		TypedEvent: TypedEvent{
+			Type: DisconnectEventMsgType,
+			ID:   eid,
+			Time: now,
+		},
+		Client: ClientInfo{
+			Start:      &c.start,
+			Stop:       &now,
+			Host:       c.host,
+			ID:         c.cid,
+			Account:    acc.Name,
+			User:       c.getRawAuthUser(),
+			Name:       c.opts.Name,
+			Lang:       c.opts.Lang,
+			Version:    c.opts.Version,
+			RTT:        c.getRTT(),
+			Jwt:        c.opts.JWT,
+			IssuerKey:  issuerForClient(c),
+			Tags:       c.tags,
+			NameTag:    c.nameTag,
+			Kind:       c.kindString(),
+			ClientType: c.clientTypeString(),
+			MQTTClient: c.getMQTTClientID(),
+		},
+		Sent: DataStats{
+			Msgs:  c.inMsgs,
+			Bytes: c.inBytes,
+		},
+		Received: DataStats{
+			Msgs:  c.outMsgs,
+			Bytes: c.outBytes,
+		},
+		Reason: reason,
+	}
+	c.mu.Unlock()
+
+	s.sendInternalAccountSysMsg(acc, authErrorAccountEventSubj, &m.Server, &m)
 }
 
 // Internal message callback.

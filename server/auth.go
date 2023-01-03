@@ -1,4 +1,4 @@
-// Copyright 2012-2022 The NATS Authors
+// Copyright 2012-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -581,12 +581,20 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 
 	// Check if we have auth callouts enabled at the server level or in the bound account.
 	defer func() {
+		// Default reason
+		reason := AuthenticationViolation.String()
 		// No-op
 		if juc == nil && opts.AuthCallout == nil {
+			if !authorized {
+				s.sendAccountAuthErrorEvent(c, c.acc, reason)
+			}
 			return
 		}
 		// We have a juc defined here, check account.
 		if juc != nil && !acc.hasExternalAuth() {
+			if !authorized {
+				s.sendAccountAuthErrorEvent(c, c.acc, reason)
+			}
 			return
 		}
 
@@ -608,7 +616,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 		// If we are here we have an auth callout defined and we have failed auth so far
 		// so we will callout to our auth backend for processing.
 		if !skip {
-			authorized = s.processClientOrLeafCallout(c, opts)
+			authorized, reason = s.processClientOrLeafCallout(c, opts)
 		}
 		// Check if we are authorized and in the auth callout account, and if so add in deny publish permissions for the auth subject.
 		if authorized {
@@ -623,6 +631,14 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 				c.mergeDenyPermissions(pub, []string{AuthCalloutSubject})
 			}
 			c.mu.Unlock()
+		} else {
+			// If we are here we failed external authorization.
+			// Send an account scoped event. Server config mode acc will be nil,
+			// so lookup the auth callout assigned account, that is where this will be sent.
+			if acc == nil {
+				acc, _ = s.lookupAccount(opts.AuthCallout.Account)
+			}
+			s.sendAccountAuthErrorEvent(c, acc, reason)
 		}
 	}()
 
@@ -1106,7 +1122,7 @@ func checkClientTLSCertSubject(c *client, fn tlsMapAuthFn) bool {
 	// https://github.com/golang/go/issues/12342
 	dn, err := ldap.FromRawCertSubject(cert.RawSubject)
 	if err == nil {
-		if match, ok := fn("", dn, false); ok {
+		if match, ok := fn(_EMPTY_, dn, false); ok {
 			c.Debugf("Using DistinguishedNameMatch for auth [%q]", match)
 			return true
 		}
@@ -1189,22 +1205,22 @@ func (s *Server) isRouterAuthorized(c *client) bool {
 
 	if opts.Cluster.TLSMap || opts.Cluster.TLSCheckKnownURLs {
 		return checkClientTLSCertSubject(c, func(user string, _ *ldap.DN, isDNSAltName bool) (string, bool) {
-			if user == "" {
-				return "", false
+			if user == _EMPTY_ {
+				return _EMPTY_, false
 			}
 			if opts.Cluster.TLSCheckKnownURLs && isDNSAltName {
 				if dnsAltNameMatches(dnsAltNameLabels(user), opts.Routes) {
-					return "", true
+					return _EMPTY_, true
 				}
 			}
 			if opts.Cluster.TLSMap && opts.Cluster.Username == user {
-				return "", true
+				return _EMPTY_, true
 			}
-			return "", false
+			return _EMPTY_, false
 		})
 	}
 
-	if opts.Cluster.Username == "" {
+	if opts.Cluster.Username == _EMPTY_ {
 		return true
 	}
 
@@ -1225,25 +1241,25 @@ func (s *Server) isGatewayAuthorized(c *client) bool {
 	// Check whether TLS map is enabled, otherwise use single user/pass.
 	if opts.Gateway.TLSMap || opts.Gateway.TLSCheckKnownURLs {
 		return checkClientTLSCertSubject(c, func(user string, _ *ldap.DN, isDNSAltName bool) (string, bool) {
-			if user == "" {
-				return "", false
+			if user == _EMPTY_ {
+				return _EMPTY_, false
 			}
 			if opts.Gateway.TLSCheckKnownURLs && isDNSAltName {
 				labels := dnsAltNameLabels(user)
 				for _, gw := range opts.Gateway.Gateways {
 					if gw != nil && dnsAltNameMatches(labels, gw.URLs) {
-						return "", true
+						return _EMPTY_, true
 					}
 				}
 			}
 			if opts.Gateway.TLSMap && opts.Gateway.Username == user {
-				return "", true
+				return _EMPTY_, true
 			}
-			return "", false
+			return _EMPTY_, false
 		})
 	}
 
-	if opts.Gateway.Username == "" {
+	if opts.Gateway.Username == _EMPTY_ {
 		return true
 	}
 

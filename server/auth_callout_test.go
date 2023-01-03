@@ -1,4 +1,4 @@
-// Copyright 2022 The NATS Authors
+// Copyright 2022-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -925,4 +925,76 @@ func TestAuthCalloutAuthUserFailDoesNotInvokeCallout(t *testing.T) {
 	if atomic.LoadUint32(&callouts) != 0 {
 		t.Fatalf("Expected callout to not be called")
 	}
+}
+
+func TestAuthCalloutAuthErrEvents(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		server_name: A
+		accounts {
+            AUTH { users [ {user: "auth", password: "pwd"} ] }
+			FOO {}
+			BAR {}
+		}
+		authorization {
+			auth_callout {
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				account: AUTH
+				auth_users: [ auth ]
+			}
+		}
+	`))
+	defer removeFile(t, conf)
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("auth", "pwd"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	// This is where the event fires, in this account.
+	sub, err := nc.SubscribeSync(authErrorAccountEventSubj)
+	require_NoError(t, err)
+
+	_, err = nc.Subscribe(AuthCalloutSubject, func(m *nats.Msg) {
+		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
+		// Allow dlc user and map to the BAZ account.
+		if opts.Username == "dlc" && opts.Password == "zzz" {
+			ujwt := createAuthUser(t, si.ID, user, _EMPTY_, "FOO", nil, 0, nil)
+			m.Respond([]byte(ujwt))
+		} else if opts.Username == "dlc" {
+			errResp := createErrResponse(t, user, si.ID, "WRONG PASSWORD", nil)
+			m.Respond([]byte(errResp))
+		} else {
+			errResp := createErrResponse(t, user, si.ID, "BAD CREDS", nil)
+			m.Respond([]byte(errResp))
+		}
+	})
+	require_NoError(t, err)
+
+	// This one will use callout since not defined in server config.
+	nc, err = nats.Connect(s.ClientURL(), nats.UserInfo("dlc", "zzz"))
+	require_NoError(t, err)
+	nc.Close()
+	checkSubsPending(t, sub, 0)
+
+	checkAuthErrEvent := func(user, pass, reason string) {
+		_, err = nats.Connect(s.ClientURL(), nats.UserInfo(user, pass))
+		require_Error(t, err)
+
+		m, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+
+		var dm DisconnectEventMsg
+		err = json.Unmarshal(m.Data, &dm)
+		require_NoError(t, err)
+
+		if !strings.Contains(dm.Reason, reason) {
+			t.Fatalf("Expected %q reason, but got %q", reason, dm.Reason)
+		}
+
+	}
+
+	checkAuthErrEvent("dlc", "xxx", "WRONG PASSWORD")
+	checkAuthErrEvent("rip", "abc", "BAD CREDS")
 }

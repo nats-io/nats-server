@@ -1,4 +1,4 @@
-// Copyright 2022 The NATS Authors
+// Copyright 2022-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/pem"
+	"fmt"
 	"time"
 
 	"github.com/nats-io/jwt/v2"
@@ -30,7 +31,7 @@ const (
 )
 
 // Process a callout on this client's behalf.
-func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorized bool) {
+func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorized bool, errStr string) {
 	isOperatorMode := len(opts.TrustedKeys) > 0
 
 	var acc *Account
@@ -39,8 +40,9 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 		var err error
 		acc, err = s.LookupAccount(aname)
 		if err != nil {
-			s.Warnf("No valid account %q for auth callout request: %v", aname, err)
-			return false
+			errStr = fmt.Sprintf("No valid account %q for auth callout request: %v", aname, err)
+			s.Warnf(errStr)
+			return false, errStr
 		}
 	} else {
 		acc = c.acc
@@ -67,15 +69,14 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 	pub, _ := ukp.PublicKey()
 
 	reply := s.newRespInbox()
-	respCh := make(chan bool, 1)
+	respCh := make(chan string, 1)
 
 	processReply := func(_ *subscription, rc *client, racc *Account, subject, reply string, rmsg []byte) {
 		_, msg := rc.msgParts(rmsg)
 		// This signals not authorized.
 		// Since this is an account subscription will always have "\r\n".
 		if len(msg) <= LEN_CR_LF {
-			s.Warnf("Auth callout violation: %q on account %q", "no reason supplied", racc.Name)
-			respCh <- false
+			respCh <- fmt.Sprintf("Auth callout violation: %q on account %q", "no reason supplied", racc.Name)
 			return
 		}
 		// Strip trailing CRLF.
@@ -86,25 +87,24 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 			var err error
 			msg, err = xkp.Open(msg, pubAccXKey)
 			if err != nil {
-				s.Warnf("Error decrypting auth callout response on account %q: %v", racc.Name, err)
-				respCh <- false
+				respCh <- fmt.Sprintf("Error decrypting auth callout response on account %q: %v", racc.Name, err)
 				return
 			}
 		}
 
 		arc, err := jwt.DecodeAuthorizationResponseClaims(string(msg))
 		if err != nil {
-			s.Warnf("Error decoding auth callout response on account %q: %v", racc.Name, err)
-			respCh <- false
+			respCh <- fmt.Sprintf("Error decoding auth callout response on account %q: %v", racc.Name, err)
 			return
 		}
 
 		// FIXME(dlc) - push error through here.
 		if arc.Error != nil || arc.User == nil {
 			if arc.Error != nil {
-				s.Warnf("Auth callout violation: %q on account %q", arc.Error.Description, racc.Name)
+				respCh <- fmt.Sprintf("Auth callout violation: %q on account %q", arc.Error.Description, racc.Name)
+			} else {
+				respCh <- fmt.Sprintf("Auth callout violation: no user returned  on account %q", racc.Name)
 			}
-			respCh <- false
 			return
 		}
 
@@ -119,42 +119,40 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 		// By default issuer needs to match server config or the requesting account in operator mode.
 		if arc.Issuer != issuer {
 			if !isOperatorMode {
-				s.Warnf("Wrong issuer for auth callout response on account %q, expected %q got %q", racc.Name, issuer, arc.Issuer)
-				respCh <- false
+				respCh <- fmt.Sprintf("Wrong issuer for auth callout response on account %q, expected %q got %q", racc.Name, issuer, arc.Issuer)
 				return
 			} else if !acc.isAllowedAcount(arc.Issuer) {
-				s.Warnf("Account %q not permitted as valid account option for auth callout on %q for account %q", arc.Issuer, issuer, racc.Name)
-				respCh <- false
+				respCh <- fmt.Sprintf("Account %q not permitted as valid account option for auth callout for account %q",
+					arc.Issuer, racc.Name)
 				return
 			}
 		}
 
 		// Require the response to have pinned the audience to this server.
 		if arc.Audience != s.info.ID {
-			s.Warnf("Wrong server audience received  for auth callout response on account %q, expected %q got %q", racc.Name, s.info.ID, arc.Audience)
-			respCh <- false
+			respCh <- fmt.Sprintf("Wrong server audience received for auth callout response on account %q, expected %q got %q",
+				racc.Name, s.info.ID, arc.Audience)
 			return
 		}
 
 		juc := arc.User
 		// Make sure that the user is what we requested.
 		if juc.Subject != pub {
-			s.Warnf("Expected authorized user of %q but got %q on account %q", pub, juc.Subject, racc.Name)
-			respCh <- false
+			respCh <- fmt.Sprintf("Expected authorized user of %q but got %q on account %q", pub, juc.Subject, racc.Name)
 			return
 		}
 
 		allowNow, validFor := validateTimes(juc)
 		if !allowNow {
 			c.Errorf("Outside connect times")
-			respCh <- false
+			respCh <- fmt.Sprintf("Authorized user on account %q outside of valid connect times", racc.Name)
 			return
 		}
 		allowedConnTypes, err := convertAllowedConnectionTypes(juc.AllowedConnectionTypes)
 		if err != nil {
 			c.Debugf("%v", err)
 			if len(allowedConnTypes) == 0 {
-				respCh <- false
+				respCh <- fmt.Sprintf("Authorized user on account %q using invalid connection type", racc.Name)
 				return
 			}
 		}
@@ -164,14 +162,12 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 		if aname := juc.Audience; aname != _EMPTY_ {
 			targetAcc, err = s.LookupAccount(aname)
 			if err != nil {
-				s.Warnf("No valid account %q for auth callout response on account %q: %v", aname, racc.Name, err)
-				respCh <- false
+				respCh <- fmt.Sprintf("No valid account %q for auth callout response on account %q: %v", aname, racc.Name, err)
 				return
 			}
 			// In operator mode make sure this account matches the issuer.
 			if isOperatorMode && aname != arc.Issuer {
-				s.Warnf("Account %q does not match issuer %q", aname, juc.Issuer)
-				respCh <- false
+				respCh <- fmt.Sprintf("Account %q does not match issuer %q", aname, juc.Issuer)
 				return
 			}
 		}
@@ -179,8 +175,7 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 		// Build internal user and bind to the targeted account.
 		nkuser := buildInternalNkeyUser(juc, allowedConnTypes, targetAcc)
 		if err := c.RegisterNkeyUser(nkuser); err != nil {
-			s.Warnf("Could not register auth callout user: %v", err)
-			respCh <- false
+			respCh <- fmt.Sprintf("Could not register auth callout user: %v", err)
 			return
 		}
 
@@ -198,13 +193,14 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 		// Check if we need to set an auth timer if the user jwt expires.
 		c.setExpiration(juc.Claims(), validFor)
 
-		respCh <- true
+		respCh <- _EMPTY_
 	}
 
 	sub, err := acc.subscribeInternal(reply, processReply)
 	if err != nil {
-		s.Warnf("Error setting up reply subscription for auth request: %v", err)
-		return false
+		errStr = fmt.Sprintf("Error setting up reply subscription for auth request: %v", err)
+		s.Warnf(errStr)
+		return false, errStr
 	}
 	defer acc.unsubscribeInternal(sub)
 
@@ -283,8 +279,9 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 
 	b, err := claim.Encode(s.kp)
 	if err != nil {
-		s.Warnf("Error encoding auth request claim on account %q: %v", acc.Name, err)
-		return false
+		errStr = fmt.Sprintf("Error encoding auth request claim on account %q: %v", acc.Name, err)
+		s.Warnf(errStr)
+		return false, errStr
 	}
 	req := []byte(b)
 	var hdr map[string]string
@@ -293,8 +290,9 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 	if xkp != nil {
 		req, err = xkp.Seal([]byte(req), pubAccXKey)
 		if err != nil {
-			s.Warnf("Error encrypting auth request claim on account %q: %v", acc.Name, err)
-			return false
+			errStr = fmt.Sprintf("Error encrypting auth request claim on account %q: %v", acc.Name, err)
+			s.Warnf(errStr)
+			return false, errStr
 		}
 		hdr = map[string]string{AuthRequestXKeyHeader: xkey}
 	}
@@ -303,12 +301,16 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 	s.sendInternalAccountMsgWithReply(acc, AuthCalloutSubject, reply, hdr, req, false)
 
 	select {
-	case authorized = <-respCh:
+	case errStr = <-respCh:
+		if authorized = errStr == _EMPTY_; !authorized {
+			s.Warnf(errStr)
+		}
 	case <-time.After(authTimeout):
-		s.Debugf("Authorization callout response not received in time on account %q", acc.Name)
+		errStr = fmt.Sprintf("Authorization callout response not received in time on account %q", acc.Name)
+		s.Debugf(errStr)
 	}
 
-	return authorized
+	return authorized, errStr
 }
 
 // Fill in client information for the request.
