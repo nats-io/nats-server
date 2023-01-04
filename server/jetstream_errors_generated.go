@@ -83,6 +83,9 @@ const (
 	// JSConsumerDurableNameNotSetErr consumer expected to be durable but a durable name was not set
 	JSConsumerDurableNameNotSetErr ErrorIdentifier = 10018
 
+	// JSConsumerEmptyFilter consumer filter in FilterSubjects cannot be empty
+	JSConsumerEmptyFilter ErrorIdentifier = 10139
+
 	// JSConsumerEphemeralWithDurableInSubjectErr consumer expected to be ephemeral but detected a durable name set in subject
 	JSConsumerEphemeralWithDurableInSubjectErr ErrorIdentifier = 10019
 
@@ -406,6 +409,15 @@ const (
 
 	// JSTemplateNameNotMatchSubjectErr template name in subject does not match request
 	JSTemplateNameNotMatchSubjectErr ErrorIdentifier = 10073
+
+	// JsConsumerDuplicateFilterSubjects consumer cannot have both FilterSubject and FilterSubjects specified
+	JsConsumerDuplicateFilterSubjects ErrorIdentifier = 10136
+
+	// JsConsumerMultipleFiltersNotAllowed consumer with multiple subject filters cannot use subject based API
+	JsConsumerMultipleFiltersNotAllowed ErrorIdentifier = 10137
+
+	// JsConsumerOverlappingSubjectFilters consumer subject filters cannot overlap
+	JsConsumerOverlappingSubjectFilters ErrorIdentifier = 10138
 )
 
 var (
@@ -436,6 +448,7 @@ var (
 		JSConsumerDurableNameNotInSubjectErr:       {Code: 400, ErrCode: 10016, Description: "consumer expected to be durable but no durable name set in subject"},
 		JSConsumerDurableNameNotMatchSubjectErr:    {Code: 400, ErrCode: 10017, Description: "consumer name in subject does not match durable name in request"},
 		JSConsumerDurableNameNotSetErr:             {Code: 400, ErrCode: 10018, Description: "consumer expected to be durable but a durable name was not set"},
+		JSConsumerEmptyFilter:                      {Code: 400, ErrCode: 10139, Description: "consumer filter in FilterSubjects cannot be empty"},
 		JSConsumerEphemeralWithDurableInSubjectErr: {Code: 400, ErrCode: 10019, Description: "consumer expected to be ephemeral but detected a durable name set in subject"},
 		JSConsumerEphemeralWithDurableNameErr:      {Code: 400, ErrCode: 10020, Description: "consumer expected to be ephemeral but a durable name was set in request"},
 		JSConsumerExistingActiveErr:                {Code: 400, ErrCode: 10105, Description: "consumer already exists and is still active"},
@@ -544,6 +557,9 @@ var (
 		JSStreamWrongLastSequenceErrF:              {Code: 400, ErrCode: 10071, Description: "wrong last sequence: {seq}"},
 		JSTempStorageFailedErr:                     {Code: 500, ErrCode: 10072, Description: "JetStream unable to open temp storage for restore"},
 		JSTemplateNameNotMatchSubjectErr:           {Code: 400, ErrCode: 10073, Description: "template name in subject does not match request"},
+		JsConsumerDuplicateFilterSubjects:          {Code: 400, ErrCode: 10136, Description: "consumer cannot have both FilterSubject and FilterSubjects specified"},
+		JsConsumerMultipleFiltersNotAllowed:        {Code: 400, ErrCode: 10137, Description: "consumer with multiple subject filters cannot use subject based API"},
+		JsConsumerOverlappingSubjectFilters:        {Code: 400, ErrCode: 10138, Description: "consumer subject filters cannot overlap"},
 	}
 	// ErrJetStreamNotClustered Deprecated by JSClusterNotActiveErr ApiError, use IsNatsError() for comparisons
 	ErrJetStreamNotClustered = ApiErrors[JSClusterNotActiveErr]
@@ -845,6 +861,16 @@ func NewJSConsumerDurableNameNotSetError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSConsumerDurableNameNotSetErr]
+}
+
+// NewJSConsumerEmptyFilterError creates a new JSConsumerEmptyFilter error: "consumer filter in FilterSubjects cannot be empty"
+func NewJSConsumerEmptyFilterError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerEmptyFilter]
 }
 
 // NewJSConsumerEphemeralWithDurableInSubjectError creates a new JSConsumerEphemeralWithDurableInSubjectErr error: "consumer expected to be ephemeral but detected a durable name set in subject"
@@ -2123,4 +2149,34 @@ func NewJSTemplateNameNotMatchSubjectError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSTemplateNameNotMatchSubjectErr]
+}
+
+// NewJsConsumerDuplicateFilterSubjectsError creates a new JsConsumerDuplicateFilterSubjects error: "consumer cannot have both FilterSubject and FilterSubjects specified"
+func NewJsConsumerDuplicateFilterSubjectsError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JsConsumerDuplicateFilterSubjects]
+}
+
+// NewJsConsumerMultipleFiltersNotAllowedError creates a new JsConsumerMultipleFiltersNotAllowed error: "consumer with multiple subject filters cannot use subject based API"
+func NewJsConsumerMultipleFiltersNotAllowedError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JsConsumerMultipleFiltersNotAllowed]
+}
+
+// NewJsConsumerOverlappingSubjectFiltersError creates a new JsConsumerOverlappingSubjectFilters error: "consumer subject filters cannot overlap"
+func NewJsConsumerOverlappingSubjectFiltersError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JsConsumerOverlappingSubjectFilters]
 }

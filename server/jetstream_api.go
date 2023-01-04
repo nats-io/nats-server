@@ -3818,6 +3818,13 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 		return
 	}
 
+	// in case of multiple filters provided, error if new API is used.
+	if filteredSubject != _EMPTY_ && len(req.Config.FilterSubjects) != 0 {
+		resp.Error = NewJsConsumerMultipleFiltersNotAllowedError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
 	// Check for a filter subject.
 	if filteredSubject != _EMPTY_ && req.Config.FilterSubject != filteredSubject {
 		resp.Error = NewJSConsumerCreateFilterSubjectMismatchError()

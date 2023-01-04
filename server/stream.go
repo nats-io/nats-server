@@ -213,7 +213,7 @@ type stream struct {
 	lseq      uint64
 	lmsgId    string
 	consumers map[string]*consumer
-	numFilter int
+	numFilter int // number of filtered consumers
 	cfg       StreamConfig
 	created   time.Time
 	stype     StorageType
@@ -246,7 +246,7 @@ type stream struct {
 	cList []*consumer
 	sch   chan struct{}
 	sigq  *ipQueue // of *cMsg
-	csl   *Sublist
+	csl   *Sublist // Consumer Sublist
 
 	// TODO(dlc) - Hide everything below behind two pointers.
 	// Clustered mode.
@@ -1743,16 +1743,20 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 
 	mset.clsMu.RLock()
 	for _, o := range mset.cList {
+		o.mu.RLock()
 		// we update consumer sequences if:
 		// no subject was specified, we can purge all consumers sequences
-		if preq == nil ||
+		doPurge := preq == nil ||
 			preq.Subject == _EMPTY_ ||
 			// or consumer filter subject is equal to purged subject
 			preq.Subject == o.cfg.FilterSubject ||
 			// or consumer subject is subset of purged subject,
 			// but not the other way around.
-			subjectIsSubsetMatch(o.cfg.FilterSubject, preq.Subject) {
+			subjectIsSubsetMatch(o.cfg.FilterSubject, preq.Subject)
+		o.mu.RUnlock()
+		if doPurge {
 			o.purge(fseq, lseq)
+
 		}
 	}
 	mset.clsMu.RUnlock()
@@ -4620,7 +4624,7 @@ func (mset *stream) numConsumers() int {
 // Lock should be held.
 func (mset *stream) setConsumer(o *consumer) {
 	mset.consumers[o.name] = o
-	if o.cfg.FilterSubject != _EMPTY_ {
+	if len(o.subjf) > 0 {
 		mset.numFilter++
 	}
 	if o.cfg.Direct {
@@ -4652,7 +4656,9 @@ func (mset *stream) removeConsumer(o *consumer) {
 		}
 		// Always remove from the leader sublist.
 		if mset.csl != nil {
-			mset.csl.Remove(o.signalSub())
+			for _, sub := range o.signalSubs() {
+				mset.csl.Remove(sub)
+			}
 		}
 		mset.clsMu.Unlock()
 	}
@@ -4666,7 +4672,9 @@ func (mset *stream) setConsumerAsLeader(o *consumer) {
 	if mset.csl == nil {
 		mset.csl = NewSublistWithCache()
 	}
-	mset.csl.Insert(o.signalSub())
+	for _, sub := range o.signalSubs() {
+		mset.csl.Insert(sub)
+	}
 }
 
 // Remove the consumer as a leader. This will update signaling sublist.
@@ -4674,49 +4682,55 @@ func (mset *stream) removeConsumerAsLeader(o *consumer) {
 	mset.clsMu.Lock()
 	defer mset.clsMu.Unlock()
 	if mset.csl != nil {
-		mset.csl.Remove(o.signalSub())
+		for _, sub := range o.signalSubs() {
+			mset.csl.Remove(sub)
+		}
 	}
 }
 
 // swapSigSubs will update signal Subs for a new subject filter.
 // consumer lock should not be held.
-func (mset *stream) swapSigSubs(o *consumer, newFilter string) {
+func (mset *stream) swapSigSubs(o *consumer, newFilters []string) {
 	mset.clsMu.Lock()
 	o.mu.Lock()
 
-	if o.sigSub != nil {
+	if o.sigSubs != nil {
 		if mset.csl != nil {
-			mset.csl.Remove(o.sigSub)
+			for _, sub := range o.sigSubs {
+				mset.csl.Remove(sub)
+			}
 		}
-		o.sigSub = nil
+		o.sigSubs = nil
 	}
 
 	if o.isLeader() {
-		subject := newFilter
-		if subject == _EMPTY_ {
-			subject = fwcs
-		}
-		o.sigSub = &subscription{subject: []byte(subject), icb: o.processStreamSignal}
 		if mset.csl == nil {
 			mset.csl = NewSublistWithCache()
 		}
-		mset.csl.Insert(o.sigSub)
+		// If no filters are preset, add fwcs to sublist for that consumer.
+		if newFilters == nil {
+			sub := &subscription{subject: []byte(fwcs), icb: o.processStreamSignal}
+			o.mset.csl.Insert(sub)
+			o.sigSubs = append(o.sigSubs, sub)
+			// If there are filters, add their subjects to sublist.
+		} else {
+			for _, filter := range newFilters {
+				sub := &subscription{subject: []byte(filter), icb: o.processStreamSignal}
+				o.mset.csl.Insert(sub)
+				o.sigSubs = append(o.sigSubs, sub)
+			}
+		}
 	}
-
-	oldFilter := o.cfg.FilterSubject
-
 	o.mu.Unlock()
 	mset.clsMu.Unlock()
 
-	// Do any numFilter accounting needed.
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 
-	// Decrement numFilter if old filter was an actual filter.
-	if oldFilter != _EMPTY_ && mset.numFilter > 0 {
+	if mset.numFilter > 0 && len(o.subjf) > 0 {
 		mset.numFilter--
 	}
-	if newFilter != _EMPTY_ {
+	if len(newFilters) > 0 {
 		mset.numFilter++
 	}
 }
@@ -4773,14 +4787,18 @@ func (mset *stream) Store() StreamStore {
 
 // Determines if the new proposed partition is unique amongst all consumers.
 // Lock should be held.
-func (mset *stream) partitionUnique(partition string) bool {
-	for _, o := range mset.consumers {
-		if o.cfg.FilterSubject == _EMPTY_ {
-			return false
-		}
-		if subjectIsSubsetMatch(partition, o.cfg.FilterSubject) ||
-			subjectIsSubsetMatch(o.cfg.FilterSubject, partition) {
-			return false
+func (mset *stream) partitionUnique(partitions []string) bool {
+	for _, partition := range partitions {
+		for _, o := range mset.consumers {
+			if o.subjf == nil {
+				return false
+			}
+			for _, filter := range o.subjf {
+				if subjectIsSubsetMatch(partition, filter.subject) ||
+					subjectIsSubsetMatch(filter.subject, partition) {
+					return false
+				}
+			}
 		}
 	}
 	return true

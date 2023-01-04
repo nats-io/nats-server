@@ -1338,5 +1338,45 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JsConsumerDuplicateFilterSubjects",
+    "code": 400,
+    "error_code": 10136,
+    "description": "consumer cannot have both FilterSubject and FilterSubjects specified",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JsConsumerMultipleFiltersNotAllowed",
+    "code": 400,
+    "error_code": 10137,
+    "description": "consumer with multiple subject filters cannot use subject based API",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JsConsumerOverlappingSubjectFilters",
+    "code": 400,
+    "error_code": 10138,
+    "description": "consumer subject filters cannot overlap",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerEmptyFilter",
+    "code": 400,
+    "error_code": 10139,
+    "description": "consumer filter in FilterSubjects cannot be empty",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]
