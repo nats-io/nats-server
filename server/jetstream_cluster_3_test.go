@@ -2458,3 +2458,47 @@ func TestJetStreamClusterLostConsumers(t *testing.T) {
 		return fmt.Errorf("Consumers is only %d", num)
 	})
 }
+
+// https://github.com/nats-io/nats-server/issues/3636
+func TestJetStreamClusterScaleDownDuringServerOffline(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 100; i++ {
+		sendStreamMsg(t, nc, "foo", "hello")
+	}
+
+	s := c.randomNonStreamLeader(globalAccountName, "TEST")
+	s.Shutdown()
+
+	c.waitOnLeader()
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 1,
+	})
+	require_NoError(t, err)
+
+	s = c.restartServer(s)
+	checkFor(t, time.Second, 200*time.Millisecond, func() error {
+		hs := s.healthz(nil)
+		if hs.Error != _EMPTY_ {
+			return errors.New(hs.Error)
+		}
+		return nil
+	})
+}
