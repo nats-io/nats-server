@@ -1027,6 +1027,14 @@ func (s *Server) closeAndDisableLeafnodes() {
 	}
 }
 
+// Helper function to re-enable leafnode connections.
+func (s *Server) reEnableLeafnodes() {
+	s.mu.Lock()
+	// Re-enable leafnodes.
+	s.leafDisableConnect = false
+	s.mu.Unlock()
+}
+
 // Helper to set the remote migrate feature.
 func (s *Server) setJetStreamMigrateOnRemoteLeaf() {
 	s.mu.Lock()
