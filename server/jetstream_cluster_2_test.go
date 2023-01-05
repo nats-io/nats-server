@@ -6065,6 +6065,34 @@ func TestJetStreamClusterLeafNodeSPOFMigrateLeaders(t *testing.T) {
 		_, err = nc.Request(dsubj, nil, 500*time.Millisecond)
 		return err
 	})
+
+	nc, _ = jsClientConnect(t, lnc.randomServer())
+	defer nc.Close()
+
+	// Now make sure the consumer, or any other asset, can not become a leader on this node while the leafnode
+	// is disconnected.
+	csd := fmt.Sprintf(JSApiConsumerLeaderStepDownT, "TEST", "d")
+	for i := 0; i < 10; i++ {
+		nc.Request(csd, nil, time.Second)
+		lnc.waitOnConsumerLeader(globalAccountName, "TEST", "d")
+		if lnc.consumerLeader(globalAccountName, "TEST", "d") == cl {
+			t.Fatalf("Consumer leader should not migrate to server without a leafnode connection")
+		}
+	}
+
+	// Now make sure once leafnode is back we can have leaders on this server.
+	cl.reEnableLeafnodes()
+	checkLeafNodeConnectedCount(t, cl, 2)
+
+	// Make sure we can migrate back to this server now that we are connected.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		nc.Request(csd, nil, time.Second)
+		lnc.waitOnConsumerLeader(globalAccountName, "TEST", "d")
+		if lnc.consumerLeader(globalAccountName, "TEST", "d") == cl {
+			return nil
+		}
+		return fmt.Errorf("Not this server yet")
+	})
 }
 
 func TestJetStreamClusterStreamCatchupWithTruncateAndPriorSnapshot(t *testing.T) {
