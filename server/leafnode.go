@@ -528,7 +528,42 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 		// We have a connection here to a remote server.
 		// Go ahead and create our leaf node and return.
 		s.createLeafNode(conn, rURL, remote, nil)
+
+		// Clear any observer states if we had them.
+		s.clearObserverState(remote)
+
 		return
+	}
+}
+
+// This will clear any observer state such that stream or consumer assets on this server can become leaders again.
+func (s *Server) clearObserverState(remote *leafNodeCfg) {
+	s.mu.RLock()
+	accName := remote.LocalAccount
+	s.mu.RUnlock()
+
+	acc, err := s.LookupAccount(accName)
+	if err != nil {
+		s.Warnf("Error looking up account [%s] checking for JetStream clear observer state on a leafnode", accName)
+		return
+	}
+
+	// Walk all streams looking for any clustered stream, skip otherwise.
+	for _, mset := range acc.streams() {
+		node := mset.raftNode()
+		if node == nil {
+			// Not R>1
+			continue
+		}
+		// Check consumers
+		for _, o := range mset.getConsumers() {
+			if n := o.raftNode(); n != nil {
+				// Ensure we can become a leader again.
+				n.SetObserver(false)
+			}
+		}
+		// Ensure we can not become a leader again.
+		node.SetObserver(false)
 	}
 }
 
@@ -544,7 +579,7 @@ func (s *Server) checkJetStreamMigrate(remote *leafNodeCfg) {
 
 	acc, err := s.LookupAccount(accName)
 	if err != nil {
-		s.Debugf("Error looking up account [%s] checking for JetStream migration on a leafnode", accName)
+		s.Warnf("Error looking up account [%s] checking for JetStream migration on a leafnode", accName)
 		return
 	}
 
@@ -558,14 +593,20 @@ func (s *Server) checkJetStreamMigrate(remote *leafNodeCfg) {
 		}
 		// Collect any consumers
 		for _, o := range mset.getConsumers() {
-			if n := o.raftNode(); n != nil && n.Leader() {
-				n.StepDown()
+			if n := o.raftNode(); n != nil {
+				if n.Leader() {
+					n.StepDown()
+				}
+				// Ensure we can not become a leader while in this state.
+				n.SetObserver(true)
 			}
 		}
 		// Stepdown if this stream was leader.
 		if node.Leader() {
 			node.StepDown()
 		}
+		// Ensure we can not become a leader while in this state.
+		node.SetObserver(true)
 	}
 }
 
@@ -1340,7 +1381,7 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 			c.mergeDenyPermissionsLocked(both, denyAllJs)
 			// When a remote with a system account is present in a server, unless otherwise disabled, the server will be
 			// started in observer mode. Now that it is clear that this not used, turn the observer mode off.
-			if solicited && meta != nil && meta.isObserver() {
+			if solicited && meta != nil && meta.IsObserver() {
 				meta.setObserver(false, extNotExtended)
 				c.Noticef("Turning JetStream metadata controller Observer Mode off")
 				// Take note that the domain was not extended to avoid this state from startup.
@@ -1361,7 +1402,7 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 			myRemoteDomain, srvDecorated())
 		// In an extension use case, pin leadership to server remotes connect to.
 		// Therefore, server with a remote that are not already in observer mode, need to be put into it.
-		if solicited && meta != nil && !meta.isObserver() {
+		if solicited && meta != nil && !meta.IsObserver() {
 			meta.setObserver(true, extExtended)
 			c.Noticef("Turning JetStream metadata controller Observer Mode on - System Account Connected")
 			// Take note that the domain was not extended to avoid this state next startup.

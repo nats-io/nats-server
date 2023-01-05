@@ -51,6 +51,8 @@ type RaftNode interface {
 	GroupLeader() string
 	HadPreviousLeader() bool
 	StepDown(preferred ...string) error
+	SetObserver(isObserver bool)
+	IsObserver() bool
 	Campaign() error
 	ID() string
 	Group() string
@@ -1663,10 +1665,15 @@ func (n *raft) electTimer() *time.Timer {
 	return n.elect
 }
 
-func (n *raft) isObserver() bool {
+func (n *raft) IsObserver() bool {
 	n.RLock()
 	defer n.RUnlock()
 	return n.observer
+}
+
+// Sets the state to observer only.
+func (n *raft) SetObserver(isObserver bool) {
+	n.setObserver(isObserver, extUndetermined)
 }
 
 func (n *raft) setObserver(isObserver bool, extSt extensionState) {
@@ -1717,7 +1724,7 @@ func (n *raft) runAsFollower() {
 			if n.outOfResources() {
 				n.resetElectionTimeoutWithLock()
 				n.debug("Not switching to candidate, no resources")
-			} else if n.isObserver() {
+			} else if n.IsObserver() {
 				n.resetElectWithLock(48 * time.Hour)
 				n.debug("Not switching to candidate, observer only")
 			} else if n.isCatchingUp() {
