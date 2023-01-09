@@ -240,6 +240,10 @@ func TestClusterQueueSubs(t *testing.T) {
 	sendB("PING\r\n")
 	expectB(pongRe)
 
+	// Give plenty of time for the messages to flush, so that we don't
+	// accidentally only read some of them.
+	time.Sleep(time.Millisecond * 250)
+
 	// Should receive 5.
 	matches = expectMsgsA(5)
 	checkForQueueSid(t, matches, qg1SidsA)
@@ -247,6 +251,10 @@ func TestClusterQueueSubs(t *testing.T) {
 
 	// Send to A
 	sendA("PUB foo 2\r\nok\r\n")
+
+	// Give plenty of time for the messages to flush, so that we don't
+	// accidentally only read some of them.
+	time.Sleep(time.Millisecond * 250)
 
 	// Should receive 5.
 	matches = expectMsgsA(5)
@@ -269,6 +277,10 @@ func TestClusterQueueSubs(t *testing.T) {
 
 	// Send to B
 	sendB("PUB foo 2\r\nok\r\n")
+
+	// Give plenty of time for the messages to flush, so that we don't
+	// accidentally only read some of them.
+	time.Sleep(time.Millisecond * 250)
 
 	// Should receive 1 from B.
 	matches = expectMsgsB(1)
@@ -307,6 +319,10 @@ func TestClusterQueueSubs(t *testing.T) {
 
 	// Send to A
 	sendA("PUB foo 2\r\nok\r\n")
+
+	// Give plenty of time for the messages to flush, so that we don't
+	// accidentally only read some of them.
+	time.Sleep(time.Millisecond * 250)
 
 	// Should receive 4 now.
 	matches = expectMsgsA(4)
