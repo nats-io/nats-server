@@ -14,6 +14,7 @@
 package server
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -26,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/pprof"
 	"sort"
 	"strconv"
 	"strings"
@@ -2639,6 +2641,12 @@ type HealthzOptions struct {
 	JSServerOnly  bool `json:"js-server-only,omitempty"`
 }
 
+// ProfilezOptions are options passed to Profilez
+type ProfilezOptions struct {
+	Name  string `json:"name"`
+	Debug int    `json:"debug"`
+}
+
 type StreamDetail struct {
 	Name     string              `json:"name"`
 	Created  time.Time           `json:"created"`
@@ -3122,4 +3130,37 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 
 	// Success.
 	return health
+}
+
+type ProfilezStatus struct {
+	Profile []byte `json:"profile"`
+	Error   string `json:"error"`
+}
+
+func (s *Server) profilez(opts *ProfilezOptions) *ProfilezStatus {
+	if s.profiler == nil {
+		return &ProfilezStatus{
+			Error: "Profiling is not enabled",
+		}
+	}
+	if opts.Name == _EMPTY_ {
+		return &ProfilezStatus{
+			Error: "Profile name not specified",
+		}
+	}
+	profile := pprof.Lookup(opts.Name)
+	if profile == nil {
+		return &ProfilezStatus{
+			Error: fmt.Sprintf("Profile %q not found", opts.Name),
+		}
+	}
+	var buffer bytes.Buffer
+	if err := profile.WriteTo(&buffer, opts.Debug); err != nil {
+		return &ProfilezStatus{
+			Error: fmt.Sprintf("Profile %q error: %s", opts.Name, err),
+		}
+	}
+	return &ProfilezStatus{
+		Profile: buffer.Bytes(),
+	}
 }

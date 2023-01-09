@@ -3925,7 +3925,7 @@ func TestMonitorAccountz(t *testing.T) {
 	body = string(readBody(t, fmt.Sprintf("http://127.0.0.1:%d%s?acc=$SYS", s.MonitorAddr().Port, AccountzPath)))
 	require_Contains(t, body, `"account_detail": {`)
 	require_Contains(t, body, `"account_name": "$SYS",`)
-	require_Contains(t, body, `"subscriptions": 44,`)
+	require_Contains(t, body, `"subscriptions": 46,`)
 	require_Contains(t, body, `"is_system": true,`)
 	require_Contains(t, body, `"system_account": "$SYS"`)
 
@@ -4584,4 +4584,39 @@ func TestServerIDZRequest(t *testing.T) {
 
 	require_True(t, sid.Name == "TEST22")
 	require_True(t, strings.HasPrefix(sid.ID, "N"))
+}
+
+func TestMonitorProfilez(t *testing.T) {
+	s := RunServer(DefaultOptions())
+	defer s.Shutdown()
+
+	// First of all, check that the profiles aren't accessible
+	// when profiling hasn't been started in the usual way.
+	if ps := s.profilez(&ProfilezOptions{
+		Name: "allocs", Debug: 0,
+	}); ps.Error == "" {
+		t.Fatal("Profile should not be accessible when profiling not started")
+	}
+
+	// Then start profiling.
+	s.StartProfiler()
+
+	// Now check that all of the profiles that we expect are
+	// returning instead of erroring.
+	for _, try := range []*ProfilezOptions{
+		{Name: "allocs", Debug: 0},
+		{Name: "allocs", Debug: 1},
+		{Name: "block", Debug: 0},
+		{Name: "goroutine", Debug: 0},
+		{Name: "goroutine", Debug: 1},
+		{Name: "goroutine", Debug: 2},
+		{Name: "heap", Debug: 0},
+		{Name: "heap", Debug: 1},
+		{Name: "mutex", Debug: 0},
+		{Name: "threadcreate", Debug: 0},
+	} {
+		if ps := s.profilez(try); ps.Error != _EMPTY_ {
+			t.Fatalf("Unexpected error on %v: %s", try, ps.Error)
+		}
+	}
 }
