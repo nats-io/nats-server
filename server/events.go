@@ -949,6 +949,10 @@ func (s *Server) initEventTracking() {
 			optz := &HealthzEventOptions{}
 			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.healthz(&optz.HealthzOptions), nil })
 		},
+		"PROFILEZ": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
+			optz := &ProfilezEventOptions{}
+			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.profilez(&optz.ProfilezOptions), nil })
+		},
 	}
 	for name, req := range monSrvc {
 		subject = fmt.Sprintf(serverDirectReqSubj, s.info.ID, name)
@@ -1571,6 +1575,12 @@ type JszEventOptions struct {
 // In the context of system events, HealthzEventOptions are options passed to Healthz
 type HealthzEventOptions struct {
 	HealthzOptions
+	EventFilterOptions
+}
+
+// In the context of system events, ProfilezEventOptions are options passed to Profilez
+type ProfilezEventOptions struct {
+	ProfilezOptions
 	EventFilterOptions
 }
 
