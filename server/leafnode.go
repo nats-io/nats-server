@@ -1857,7 +1857,7 @@ func (c *client) updateSmap(sub *subscription, delta int32) {
 
 	n := c.leaf.smap[key]
 	// We will update if its a queue, if count is zero (or negative), or we were 0 and are N > 0.
-	update := sub.queue != nil || n == 0 || n+delta <= 0
+	update := sub.queue != nil || (n <= 0 && n+delta > 0) || (n > 0 && n+delta <= 0)
 	n += delta
 	if n > 0 {
 		c.leaf.smap[key] = n
