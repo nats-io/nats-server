@@ -1078,7 +1078,7 @@ URLS:
 		}
 		hostLabels := strings.Split(strings.ToLower(url.Hostname()), ".")
 		// Following https://tools.ietf.org/html/rfc6125#section-6.4.3, should not => will not, may => will not
-		// The wilcard * never matches multiple label and only matches the left most label.
+		// The wildcard * never matches multiple label and only matches the left most label.
 		if len(hostLabels) != len(dnsAltNameLabels) {
 			continue URLS
 		}
