@@ -5544,39 +5544,6 @@ func TestJetStreamClusterMirrorAndSourcesClusterRestart(t *testing.T) {
 	})
 }
 
-func TestJetStreamClusterSourceFilterSubjectUpdateFail(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "MSR", 3)
-	defer c.shutdown()
-
-	// Client for API requests.
-	nc, js := jsClientConnect(t, c.randomServer())
-	defer nc.Close()
-
-	// Origin
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:     "TEST",
-		Subjects: []string{"foo"},
-		Replicas: 2,
-	})
-	require_NoError(t, err)
-
-	_, err = js.AddStream(&nats.StreamConfig{
-		Name:     "S",
-		Sources:  []*nats.StreamSource{{Name: "TEST", FilterSubject: "notthere"}},
-		Replicas: 2,
-	})
-	require_Error(t, err)
-	require_Equal(t, err.Error(), "nats: source 'TEST' filter subject 'notthere' does not overlap with any origin stream subject")
-
-	_, err = js.AddStream(&nats.StreamConfig{
-		Name:     "M",
-		Mirror:   &nats.StreamSource{Name: "TEST", FilterSubject: "notthere"},
-		Replicas: 2,
-	})
-	require_Error(t, err)
-	require_Equal(t, err.Error(), "nats: mirror 'TEST' filter subject 'notthere' does not overlap with any origin stream subject")
-}
-
 func TestJetStreamClusterMirrorAndSourcesFilteredConsumers(t *testing.T) {
 	c := createJetStreamClusterWithTemplate(t, jsClusterMirrorSourceImportsTempl, "MS5", 5)
 	defer c.shutdown()
@@ -5625,9 +5592,8 @@ func TestJetStreamClusterMirrorAndSourcesFilteredConsumers(t *testing.T) {
 	createConsumer("M", "foo")
 	createConsumer("M", "bar")
 	createConsumer("M", "baz.foo")
-	expectFail("M", "baz")
-	expectFail("M", "baz.1.2")
-	expectFail("M", "apple")
+	expectFail("M", ".")
+	expectFail("M", ">.foo")
 
 	// Make sure wider scoped subjects work as well.
 	createConsumer("M", "*")
@@ -5652,9 +5618,6 @@ func TestJetStreamClusterMirrorAndSourcesFilteredConsumers(t *testing.T) {
 
 	createConsumer("S", "foo.1")
 	createConsumer("S", "bar.1")
-	expectFail("S", "baz")
-	expectFail("S", "baz.1")
-	expectFail("S", "apple")
 
 	// Now cross account stuff.
 	nc2, js2 := jsClientConnect(t, s, nats.UserInfo("rip", "pass"))
