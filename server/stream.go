@@ -58,6 +58,9 @@ type StreamConfig struct {
 	Mirror       *StreamSource   `json:"mirror,omitempty"`
 	Sources      []*StreamSource `json:"sources,omitempty"`
 
+	// Allow applying a subject transform to incoming messages before doing anything else
+	InputSubjectTransform *InputSubjectTransform `json:"input_subject_transform,omitempty"`
+
 	// Allow republish of the message after being sequenced and stored.
 	RePublish *RePublish `json:"republish,omitempty"`
 
@@ -80,6 +83,12 @@ type StreamConfig struct {
 	// AllowRollup allows messages to be placed into the system and purge
 	// all older messages using a special msg header.
 	AllowRollup bool `json:"allow_rollup_hdrs"`
+}
+
+// InputSubjectTransform is for applying a subject transform (to matching messages) before doing anything else when a new message is received
+type InputSubjectTransform struct {
+	Source      string `json:"src,omitempty"`
+	Destination string `json:"dest"`
 }
 
 // RePublish is for republishing messages once committed to a stream.
@@ -154,20 +163,23 @@ type PeerInfo struct {
 
 // StreamSourceInfo shows information about an upstream stream source.
 type StreamSourceInfo struct {
-	Name     string          `json:"name"`
-	External *ExternalStream `json:"external,omitempty"`
-	Lag      uint64          `json:"lag"`
-	Active   time.Duration   `json:"active"`
-	Error    *ApiError       `json:"error,omitempty"`
+	Name             string          `json:"name"`
+	External         *ExternalStream `json:"external,omitempty"`
+	Lag              uint64          `json:"lag"`
+	Active           time.Duration   `json:"active"`
+	Error            *ApiError       `json:"error,omitempty"`
+	FilterSubject    string          `json:"filter_subject,omitempty"`
+	SubjectTransform string          `json:"subject_transform,omitempty"`
 }
 
 // StreamSource dictates how streams can source from other streams.
 type StreamSource struct {
-	Name          string          `json:"name"`
-	OptStartSeq   uint64          `json:"opt_start_seq,omitempty"`
-	OptStartTime  *time.Time      `json:"opt_start_time,omitempty"`
-	FilterSubject string          `json:"filter_subject,omitempty"`
-	External      *ExternalStream `json:"external,omitempty"`
+	Name             string          `json:"name"`
+	OptStartSeq      uint64          `json:"opt_start_seq,omitempty"`
+	OptStartTime     *time.Time      `json:"opt_start_time,omitempty"`
+	FilterSubject    string          `json:"filter_subject,omitempty"`
+	SubjectTransform string          `json:"subject_transform,omitempty"`
+	External         *ExternalStream `json:"external,omitempty"`
 
 	// Internal
 	iname string // For indexing when stream names are the same for multiple sources.
@@ -220,8 +232,11 @@ type stream struct {
 	// Indicates we have direct consumers.
 	directs int
 
+	// For input subject transform
+	itr *subjectTransform
+
 	// For republishing.
-	tr *transform
+	tr *subjectTransform
 
 	// For processing consumers without main stream lock.
 	clsMu sync.RWMutex
@@ -271,6 +286,8 @@ type sourceInfo struct {
 	qch   chan struct{}
 	sip   bool // setup in progress
 	wg    sync.WaitGroup
+	sf    string // subject filter
+	tr    *subjectTransform
 }
 
 // For mirrors and direct get
@@ -404,10 +421,17 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		}
 	}
 
-	// Setup our internal indexed names here for sources.
+	// Setup our internal indexed names here for sources and check if the transform (if any) is valid.
 	if len(cfg.Sources) > 0 {
-		for _, ssi := range cfg.Sources {
-			ssi.setIndexName()
+		for i, ssi := range cfg.Sources {
+			ssi.setIndexName(i)
+			// check the transform, if any, is valid
+			if ssi.SubjectTransform != _EMPTY_ {
+				if _, err = newSubjectTransform(ssi.FilterSubject, ssi.SubjectTransform); err != nil {
+					jsa.mu.Unlock()
+					return nil, fmt.Errorf("subject transform for the source not valid %w", err)
+				}
+			}
 		}
 	}
 
@@ -454,16 +478,22 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		mset.ackq = s.newIPQueue(qpfx + "acks") // of uint64
 	}
 
-	// Check for RePublish.
-	if cfg.RePublish != nil {
-		// Empty same as all.
-		if cfg.RePublish.Source == _EMPTY_ {
-			cfg.RePublish.Source = fwcs
-		}
-		tr, err := newTransform(cfg.RePublish.Source, cfg.RePublish.Destination)
+	// Check for input subject transform
+	if cfg.InputSubjectTransform != nil {
+		tr, err := newSubjectTransform(cfg.InputSubjectTransform.Source, cfg.InputSubjectTransform.Destination)
 		if err != nil {
 			jsa.mu.Unlock()
-			return nil, fmt.Errorf("stream configuration for republish not valid")
+			return nil, fmt.Errorf("stream input subject transform not valid %w", err)
+		}
+		mset.itr = tr
+	}
+
+	// Check for RePublish.
+	if cfg.RePublish != nil {
+		tr, err := newSubjectTransform(cfg.RePublish.Source, cfg.RePublish.Destination)
+		if err != nil {
+			jsa.mu.Unlock()
+			return nil, fmt.Errorf("stream republish transform not valid %w", err)
 		}
 		// Assign our transform for republishing.
 		mset.tr = tr
@@ -563,13 +593,14 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	return mset, nil
 }
 
-// Sets the index name. Usually just the stream name but when the stream is external we will
+// Sets the index name. Usually just the stream name and the source's index (so you can source from the same stream more than once)
+// but when the stream is external we will
 // use additional information in case the stream names are the same.
-func (ssi *StreamSource) setIndexName() {
+func (ssi *StreamSource) setIndexName(i int) {
 	if ssi.External != nil {
-		ssi.iname = ssi.Name + ":" + getHash(ssi.External.ApiPrefix)
+		ssi.iname = strconv.Itoa(i) + ":" + ssi.Name + ":" + getHash(ssi.External.ApiPrefix)
 	} else {
-		ssi.iname = ssi.Name
+		ssi.iname = strconv.Itoa(i) + ":" + ssi.Name
 	}
 }
 
@@ -1044,27 +1075,9 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		return exists, cfg.MaxMsgSize, cfg.Subjects
 	}
 
-	hasFilterSubjectOverlap := func(filter string, streamSubs []string) bool {
-		if filter == _EMPTY_ || len(streamSubs) == 0 {
-			return true
-		}
-		for _, sub := range streamSubs {
-			if SubjectsCollide(sub, filter) {
-				return true
-			}
-		}
-		return false
-	}
-
 	var streamSubs []string
 	var deliveryPrefixes []string
 	var apiPrefixes []string
-
-	// Some errors we want to suppress on recovery.
-	var isRecovering bool
-	if js := s.getJetStream(); js != nil {
-		isRecovering = js.isMetaRecovering()
-	}
 
 	// Do some pre-checking for mirror config to avoid cycles in clustered mode.
 	if cfg.Mirror != nil {
@@ -1083,11 +1096,6 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		if exists {
 			if cfg.MaxMsgSize > 0 && maxMsgSize > 0 && cfg.MaxMsgSize < maxMsgSize {
 				return StreamConfig{}, NewJSMirrorMaxMessageSizeTooBigError()
-			}
-			if !isRecovering && !hasFilterSubjectOverlap(cfg.Mirror.FilterSubject, subs) {
-				return StreamConfig{}, NewJSStreamInvalidConfigError(
-					fmt.Errorf("mirror '%s' filter subject '%s' does not overlap with any origin stream subject",
-						cfg.Mirror.Name, cfg.Mirror.FilterSubject))
 			}
 		}
 		if cfg.Mirror.External != nil {
@@ -1123,11 +1131,6 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 			if exists {
 				if cfg.MaxMsgSize > 0 && maxMsgSize > 0 && cfg.MaxMsgSize < maxMsgSize {
 					return StreamConfig{}, NewJSSourceMaxMessageSizeTooBigError()
-				}
-				if !isRecovering && !hasFilterSubjectOverlap(src.FilterSubject, streamSubs) {
-					return StreamConfig{}, NewJSStreamInvalidConfigError(
-						fmt.Errorf("source '%s' filter subject '%s' does not overlap with any origin stream subject",
-							src.Name, src.FilterSubject))
 				}
 			}
 			if src.External == nil {
@@ -1277,7 +1280,7 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		if formsCycle {
 			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration for republish destination forms a cycle"))
 		}
-		if _, err := newTransform(cfg.RePublish.Source, cfg.RePublish.Destination); err != nil {
+		if _, err := newSubjectTransform(cfg.RePublish.Source, cfg.RePublish.Destination); err != nil {
 			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration for republish not valid"))
 		}
 	}
@@ -1497,14 +1500,22 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 			for _, s := range ocfg.Sources {
 				current[s.iname] = s.FilterSubject
 			}
-			for _, s := range cfg.Sources {
-				s.setIndexName()
+			for i, s := range cfg.Sources {
+				s.setIndexName(i)
 				if oFilter, ok := current[s.iname]; !ok {
 					if mset.sources == nil {
 						mset.sources = make(map[string]*sourceInfo)
 					}
 					mset.cfg.Sources = append(mset.cfg.Sources, s)
-					si := &sourceInfo{name: s.Name, iname: s.iname}
+					si := &sourceInfo{name: s.Name, iname: s.iname, sf: s.FilterSubject}
+					// Check for transform.
+					if s.SubjectTransform != _EMPTY_ {
+						var err error
+						if si.tr, err = newSubjectTransform(s.FilterSubject, s.SubjectTransform); err != nil {
+							return err
+						}
+					}
+
 					mset.sources[s.iname] = si
 					mset.setStartingSequenceForSource(s.iname)
 					mset.setSourceConsumer(s.iname, si.sseq+1, time.Time{})
@@ -1707,138 +1718,18 @@ func (mset *stream) sourcesInfo() (sis []*StreamSourceInfo) {
 	return sis
 }
 
-func gatherSourceMirrorSubjects(subjects []string, cfg *StreamConfig, acc *Account) ([]string, bool) {
-	var hasExt bool
-	var seen map[string]bool
-
-	if cfg.Mirror != nil {
-		subjs, localHasExt := acc.streamSourceSubjects(cfg.Mirror, make(map[string]bool))
-		if len(subjs) > 0 {
-			subjects = append(subjects, subjs...)
-		}
-		if localHasExt {
-			hasExt = true
-		}
-	} else if len(cfg.Sources) > 0 {
-		seen = make(map[string]bool)
-		for _, si := range cfg.Sources {
-			subjs, localHasExt := acc.streamSourceSubjects(si, seen)
-			if len(subjs) > 0 {
-				subjects = append(subjects, subjs...)
-			}
-			if localHasExt {
-				hasExt = true
-			}
-		}
-	}
-
-	return subjects, hasExt
-}
-
-// Return the subjects for a stream source.
-func (a *Account) streamSourceSubjects(ss *StreamSource, seen map[string]bool) (subjects []string, hasExt bool) {
-	if ss != nil && ss.External != nil {
-		return nil, true
-	}
-
-	s, js, _ := a.getJetStreamFromAccount()
-
-	if !s.JetStreamIsClustered() {
-		return a.streamSourceSubjectsNotClustered(ss.Name, seen)
-	} else {
-		return js.streamSourceSubjectsClustered(a.Name, ss.Name, seen)
-	}
-}
-
-func (js *jetStream) streamSourceSubjectsClustered(accountName, streamName string, seen map[string]bool) (subjects []string, hasExt bool) {
-	if seen[streamName] {
-		return nil, false
-	}
-
-	// We are clustered here so need to work through stream assignments.
-	sa := js.streamAssignment(accountName, streamName)
-	if sa == nil {
-		return nil, false
-	}
-	seen[streamName] = true
-
-	js.mu.RLock()
-	cfg := sa.Config
-	if len(cfg.Subjects) > 0 {
-		subjects = append(subjects, cfg.Subjects...)
-	}
-
-	// Check if we need to keep going.
-	var sources []*StreamSource
-	if cfg.Mirror != nil {
-		sources = append(sources, cfg.Mirror)
-	} else if len(cfg.Sources) > 0 {
-		sources = append(sources, cfg.Sources...)
-	}
-	js.mu.RUnlock()
-
-	if len(sources) > 0 {
-		var subjs []string
-		if acc, err := js.srv.lookupAccount(accountName); err == nil {
-			for _, ss := range sources {
-				subjs, hasExt = acc.streamSourceSubjects(ss, seen)
-				if len(subjs) > 0 {
-					subjects = append(subjects, subjs...)
-				}
-				if hasExt {
-					break
-				}
-			}
-		}
-	}
-
-	return subjects, hasExt
-}
-
-func (a *Account) streamSourceSubjectsNotClustered(streamName string, seen map[string]bool) (subjects []string, hasExt bool) {
-	if seen[streamName] {
-		return nil, false
-	}
-
-	mset, err := a.lookupStream(streamName)
-	if err != nil {
-		return nil, false
-	}
-	seen[streamName] = true
-
-	cfg := mset.config()
-	if len(cfg.Subjects) > 0 {
-		subjects = append(subjects, cfg.Subjects...)
-	}
-
-	var subjs []string
-	if cfg.Mirror != nil {
-		subjs, hasExt = a.streamSourceSubjects(cfg.Mirror, seen)
-		if len(subjs) > 0 {
-			subjects = append(subjects, subjs...)
-		}
-	} else if len(cfg.Sources) > 0 {
-		for _, si := range cfg.Sources {
-			subjs, hasExt = a.streamSourceSubjects(si, seen)
-			if len(subjs) > 0 {
-				subjects = append(subjects, subjs...)
-			}
-			if hasExt {
-				break
-			}
-		}
-	}
-
-	return subjects, hasExt
-}
-
 // Lock should be held
 func (mset *stream) sourceInfo(si *sourceInfo) *StreamSourceInfo {
 	if si == nil {
 		return nil
 	}
 
-	ssi := &StreamSourceInfo{Name: si.name, Lag: si.lag, Error: si.err}
+	var ssi *StreamSourceInfo
+	if si.tr != nil {
+		ssi = &StreamSourceInfo{Name: si.name, Lag: si.lag, Error: si.err, FilterSubject: si.sf, SubjectTransform: si.tr.dest}
+	} else {
+		ssi = &StreamSourceInfo{Name: si.name, Lag: si.lag, Error: si.err, FilterSubject: si.sf}
+	}
 	// If we have not heard from the source, set Active to -1.
 	if si.last.IsZero() {
 		ssi.Active = -1
@@ -2833,6 +2724,11 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 	// Hold onto the origin reply which has all the metadata.
 	hdr = genHeader(hdr, JSStreamSource, si.genSourceHeader(m.rply))
 
+	// Do the subject transform for the source if there's one
+	if si.tr != nil {
+		m.subj = si.tr.TransformSubject(m.subj)
+	}
+
 	var err error
 	// If we are clustered we need to propose this message to the underlying raft group.
 	if node != nil {
@@ -2869,7 +2765,10 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 // Generate a new style source header.
 func (si *sourceInfo) genSourceHeader(reply string) string {
 	var b strings.Builder
-	b.WriteString(si.iname)
+	// strip the source index number from the iname
+	name := si.iname[strings.IndexRune(si.iname, ':')+1:]
+
+	b.WriteString(name)
 	b.WriteByte(' ')
 	// Grab sequence as text here from reply subject.
 	var tsa [expectedNumReplyTokens]string
@@ -2964,11 +2863,16 @@ func (mset *stream) startingSequenceForSources() {
 	// Always reset here.
 	mset.sources = make(map[string]*sourceInfo)
 
-	for _, ssi := range mset.cfg.Sources {
+	for i, ssi := range mset.cfg.Sources {
 		if ssi.iname == _EMPTY_ {
-			ssi.setIndexName()
+			ssi.setIndexName(i)
 		}
-		si := &sourceInfo{name: ssi.Name, iname: ssi.iname}
+		si := &sourceInfo{name: ssi.Name, iname: ssi.iname, sf: ssi.FilterSubject}
+		// Check for transform.
+		if ssi.SubjectTransform != _EMPTY_ {
+			si.tr, _ = newSubjectTransform(ssi.FilterSubject, ssi.SubjectTransform) // can not return an error because validated in AddStream
+		}
+
 		mset.sources[ssi.iname] = si
 	}
 
@@ -3679,6 +3583,15 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	if c == nil {
 		mset.mu.Unlock()
 		return nil
+	}
+
+	// Apply the input subject transform if any
+	if mset.itr != nil {
+		ts, err := mset.itr.Match(subject)
+		if err == nil {
+			// no filtering: if the subject doesn't map the source of the transform, don't change it
+			subject = ts
+		}
 	}
 
 	var accName string

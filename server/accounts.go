@@ -18,7 +18,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"hash/maphash"
 	"io"
 	"math"
@@ -26,7 +25,6 @@ import (
 	"net/http"
 	"net/textproto"
 	"reflect"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -115,8 +113,8 @@ type streamImport struct {
 	acc     *Account
 	from    string
 	to      string
-	tr      *transform
-	rtr     *transform
+	tr      *subjectTransform
+	rtr     *subjectTransform
 	claim   *jwt.Import
 	usePub  bool
 	invalid bool
@@ -132,7 +130,7 @@ type serviceImport struct {
 	sid         []byte
 	from        string
 	to          string
-	tr          *transform
+	tr          *subjectTransform
 	ts          int64
 	rt          ServiceRespType
 	latency     *serviceLatency
@@ -164,28 +162,6 @@ const (
 	Singleton ServiceRespType = iota
 	Streamed
 	Chunked
-)
-
-var commaSeparatorRegEx = regexp.MustCompile(`,\s*`)
-var partitionMappingFunctionRegEx = regexp.MustCompile(`{{\s*[pP]artition\s*\((.*)\)\s*}}`)
-var wildcardMappingFunctionRegEx = regexp.MustCompile(`{{\s*[wW]ildcard\s*\((.*)\)\s*}}`)
-var splitFromLeftMappingFunctionRegEx = regexp.MustCompile(`{{\s*[sS]plit[fF]rom[lL]eft\s*\((.*)\)\s*}}`)
-var splitFromRightMappingFunctionRegEx = regexp.MustCompile(`{{\s*[sS]plit[fF]rom[rR]ight\s*\((.*)\)\s*}}`)
-var sliceFromLeftMappingFunctionRegEx = regexp.MustCompile(`{{\s*[sS]lice[fF]rom[lL]eft\s*\((.*)\)\s*}}`)
-var sliceFromRightMappingFunctionRegEx = regexp.MustCompile(`{{\s*[sS]lice[fF]rom[rR]ight\s*\((.*)\)\s*}}`)
-var splitMappingFunctionRegEx = regexp.MustCompile(`{{\s*[sS]plit\s*\((.*)\)\s*}}`)
-
-// Enum for the subject mapping transform function types
-const (
-	NoTransform int16 = iota
-	BadTransform
-	Partition
-	Wildcard
-	SplitFromLeft
-	SplitFromRight
-	SliceFromLeft
-	SliceFromRight
-	Split
 )
 
 // String helper.
@@ -590,7 +566,7 @@ func NewMapDest(subject string, weight uint8) *MapDest {
 
 // destination is for internal representation for a weighted mapped destination.
 type destination struct {
-	tr     *transform
+	tr     *subjectTransform
 	weight uint8
 }
 
@@ -643,7 +619,7 @@ func (a *Account) AddWeightedMappings(src string, dests ...*MapDest) error {
 		if err != nil {
 			return err
 		}
-		tr, err := newTransform(src, d.Subject)
+		tr, err := newSubjectTransform(src, d.Subject)
 		if err != nil {
 			return err
 		}
@@ -674,7 +650,7 @@ func (a *Account) AddWeightedMappings(src string, dests ...*MapDest) error {
 				// We need to make the appropriate markers for the wildcards etc.
 				dest = transformTokenize(dest)
 			}
-			tr, err := newTransform(src, dest)
+			tr, err := newSubjectTransform(src, dest)
 			if err != nil {
 				return nil, err
 			}
@@ -728,38 +704,6 @@ func (a *Account) AddWeightedMappings(src string, dests ...*MapDest) error {
 		a.mu.Lock()
 	}
 	return nil
-}
-
-// Helper function to tokenize subjects with partial wildcards into formal transform destinations.
-// e.g. foo.*.* -> foo.$1.$2
-func transformTokenize(subject string) string {
-	// We need to make the appropriate markers for the wildcards etc.
-	i := 1
-	var nda []string
-	for _, token := range strings.Split(subject, tsep) {
-		if token == "*" {
-			nda = append(nda, fmt.Sprintf("$%d", i))
-			i++
-		} else {
-			nda = append(nda, token)
-		}
-	}
-	return strings.Join(nda, tsep)
-}
-
-func transformUntokenize(subject string) (string, []string) {
-	var phs []string
-	var nda []string
-
-	for _, token := range strings.Split(subject, tsep) {
-		if len(token) > 1 && token[0] == '$' && token[1] >= '1' && token[1] <= '9' {
-			phs = append(phs, token)
-			nda = append(nda, "*")
-		} else {
-			nda = append(nda, token)
-		}
-	}
-	return strings.Join(nda, tsep), phs
 }
 
 // RemoveMapping will remove an existing mapping.
@@ -869,8 +813,8 @@ func (a *Account) selectMappedSubject(dest string) (string, bool) {
 	if d != nil {
 		if len(d.tr.dtokmftokindexesargs) == 0 {
 			ndest = d.tr.dest
-		} else if nsubj, err := d.tr.transform(tts); err == nil {
-			ndest = nsubj
+		} else {
+			ndest = d.tr.TransformTokenizedSubject(tts)
 		}
 	}
 
@@ -1874,7 +1818,7 @@ func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Im
 	// Check to see if we have a wildcard
 	var (
 		usePub bool
-		tr     *transform
+		tr     *subjectTransform
 		err    error
 	)
 	if subjectHasWildcard(to) {
@@ -1884,7 +1828,7 @@ func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Im
 		} else {
 			to, _ = transformUntokenize(to)
 			// Create a transform. Do so in reverse such that $ symbols only exist in to
-			if tr, err = newTransform(to, transformTokenize(from)); err != nil {
+			if tr, err = newSubjectTransform(to, transformTokenize(from)); err != nil {
 				a.mu.Unlock()
 				return nil, fmt.Errorf("failed to create mapping transform for service import subject %q to %q: %v",
 					from, to, err)
@@ -2423,7 +2367,7 @@ func (a *Account) AddMappedStreamImportWithClaim(account *Account, from, to stri
 
 	var (
 		usePub bool
-		tr     *transform
+		tr     *subjectTransform
 		err    error
 	)
 	if subjectHasWildcard(from) {
@@ -2431,7 +2375,7 @@ func (a *Account) AddMappedStreamImportWithClaim(account *Account, from, to stri
 			usePub = true
 		} else {
 			// Create a transform
-			if tr, err = newTransform(from, transformTokenize(to)); err != nil {
+			if tr, err = newSubjectTransform(from, transformTokenize(to)); err != nil {
 				return fmt.Errorf("failed to create mapping transform for stream import subject %q to %q: %v",
 					from, to, err)
 			}
@@ -4285,440 +4229,4 @@ func (dr *CacheDirAccResolver) Start(s *Server) error {
 
 func (dr *CacheDirAccResolver) Reload() error {
 	return dr.DirAccResolver.Reload()
-}
-
-// Transforms for arbitrarily mapping subjects from one to another for maps, tees and filters.
-// These can also be used for proper mapping on wildcard exports/imports.
-// These will be grouped and caching and locking are assumed to be in the upper layers.
-type transform struct {
-	src, dest            string
-	dtoks                []string // destination tokens
-	stoks                []string // source tokens
-	dtokmftypes          []int16  // destination token mapping function types
-	dtokmftokindexesargs [][]int  // destination token mapping function array of source token index arguments
-	dtokmfintargs        []int32  // destination token mapping function int32 arguments
-	dtokmfstringargs     []string // destination token mapping function string arguments
-}
-
-func getMappingFunctionArgs(functionRegEx *regexp.Regexp, token string) []string {
-	commandStrings := functionRegEx.FindStringSubmatch(token)
-	if len(commandStrings) > 1 {
-		return commaSeparatorRegEx.Split(commandStrings[1], -1)
-	}
-	return nil
-}
-
-// Helper for mapping functions that take a wildcard index and an integer as arguments
-func transformIndexIntArgsHelper(token string, args []string, transformType int16) (int16, []int, int32, string, error) {
-	if len(args) < 2 {
-		return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
-	}
-	if len(args) > 2 {
-		return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionTooManyArguments}
-	}
-	i, err := strconv.Atoi(strings.Trim(args[0], " "))
-	if err != nil {
-		return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
-	}
-	mappingFunctionIntArg, err := strconv.Atoi(strings.Trim(args[1], " "))
-	if err != nil {
-		return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
-	}
-
-	return transformType, []int{i}, int32(mappingFunctionIntArg), _EMPTY_, nil
-}
-
-// Helper to ingest and index the transform destination token (e.g. $x or {{}}) in the token
-// returns a transformation type, and three function arguments: an array of source subject token indexes, and a single number (e.g. number of partitions, or a slice size), and a string (e.g.a split delimiter)
-
-func indexPlaceHolders(token string) (int16, []int, int32, string, error) {
-	length := len(token)
-	if length > 1 {
-		// old $1, $2, etc... mapping format still supported to maintain backwards compatibility
-		if token[0] == '$' { // simple non-partition mapping
-			tp, err := strconv.Atoi(token[1:])
-			if err != nil {
-				// other things rely on tokens starting with $ so not an error just leave it as is
-				return NoTransform, []int{-1}, -1, _EMPTY_, nil
-			}
-			return Wildcard, []int{tp}, -1, _EMPTY_, nil
-		}
-
-		// New 'mustache' style mapping
-		if length > 4 && token[0] == '{' && token[1] == '{' && token[length-2] == '}' && token[length-1] == '}' {
-			// wildcard(wildcard token index) (equivalent to $)
-			args := getMappingFunctionArgs(wildcardMappingFunctionRegEx, token)
-			if args != nil {
-				if len(args) == 1 && args[0] == _EMPTY_ {
-					return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
-				}
-				if len(args) == 1 {
-					tokenIndex, err := strconv.Atoi(strings.Trim(args[0], " "))
-					if err != nil {
-						return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
-					}
-					return Wildcard, []int{tokenIndex}, -1, _EMPTY_, nil
-				} else {
-					return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionTooManyArguments}
-				}
-			}
-
-			// partition(number of partitions, token1, token2, ...)
-			args = getMappingFunctionArgs(partitionMappingFunctionRegEx, token)
-			if args != nil {
-				if len(args) < 2 {
-					return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
-				}
-				if len(args) >= 2 {
-					mappingFunctionIntArg, err := strconv.Atoi(strings.Trim(args[0], " "))
-					if err != nil {
-						return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
-					}
-					var numPositions = len(args[1:])
-					tokenIndexes := make([]int, numPositions)
-					for ti, t := range args[1:] {
-						i, err := strconv.Atoi(strings.Trim(t, " "))
-						if err != nil {
-							return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
-						}
-						tokenIndexes[ti] = i
-					}
-
-					return Partition, tokenIndexes, int32(mappingFunctionIntArg), _EMPTY_, nil
-				}
-			}
-
-			// SplitFromLeft(token, position)
-			args = getMappingFunctionArgs(splitFromLeftMappingFunctionRegEx, token)
-			if args != nil {
-				return transformIndexIntArgsHelper(token, args, SplitFromLeft)
-			}
-
-			// SplitFromRight(token, position)
-			args = getMappingFunctionArgs(splitFromRightMappingFunctionRegEx, token)
-			if args != nil {
-				return transformIndexIntArgsHelper(token, args, SplitFromRight)
-			}
-
-			// SliceFromLeft(token, position)
-			args = getMappingFunctionArgs(sliceFromLeftMappingFunctionRegEx, token)
-			if args != nil {
-				return transformIndexIntArgsHelper(token, args, SliceFromLeft)
-			}
-
-			// SliceFromRight(token, position)
-			args = getMappingFunctionArgs(sliceFromRightMappingFunctionRegEx, token)
-			if args != nil {
-				return transformIndexIntArgsHelper(token, args, SliceFromRight)
-			}
-
-			// split(token, deliminator)
-			args = getMappingFunctionArgs(splitMappingFunctionRegEx, token)
-			if args != nil {
-				if len(args) < 2 {
-					return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotEnoughArguments}
-				}
-				if len(args) > 2 {
-					return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionTooManyArguments}
-				}
-				i, err := strconv.Atoi(strings.Trim(args[0], " "))
-				if err != nil {
-					return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrorMappingDestinationFunctionInvalidArgument}
-				}
-				if strings.Contains(args[1], " ") || strings.Contains(args[1], tsep) {
-					return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token: token, err: ErrorMappingDestinationFunctionInvalidArgument}
-				}
-
-				return Split, []int{i}, -1, args[1], nil
-			}
-
-			return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrUnknownMappingDestinationFunction}
-		}
-	}
-	return NoTransform, []int{-1}, -1, _EMPTY_, nil
-}
-
-// SubjectTransformer transforms subjects using mappings
-//
-// This API is not part of the public API and not subject to SemVer protections
-type SubjectTransformer interface {
-	Match(string) (string, error)
-}
-
-// NewSubjectTransformer creates a new SubjectTransformer
-//
-// This API is not part of the public API and not subject to SemVer protections
-func NewSubjectTransformer(src, dest string) (SubjectTransformer, error) {
-	return newTransform(src, dest)
-}
-
-// newTransform will create a new transform checking the src and dest subjects for accuracy.
-func newTransform(src, dest string) (*transform, error) {
-	// Both entries need to be valid subjects.
-	sv, stokens, npwcs, hasFwc := subjectInfo(src)
-	dv, dtokens, dnpwcs, dHasFwc := subjectInfo(dest)
-
-	// Make sure both are valid, match fwc if present and there are no pwcs in the dest subject.
-	if !sv || !dv || dnpwcs > 0 || hasFwc != dHasFwc {
-		return nil, ErrBadSubject
-	}
-
-	var dtokMappingFunctionTypes []int16
-	var dtokMappingFunctionTokenIndexes [][]int
-	var dtokMappingFunctionIntArgs []int32
-	var dtokMappingFunctionStringArgs []string
-
-	// If the src has partial wildcards then the dest needs to have the token place markers.
-	if npwcs > 0 || hasFwc {
-		// We need to count to make sure that the dest has token holders for the pwcs.
-		sti := make(map[int]int)
-		for i, token := range stokens {
-			if len(token) == 1 && token[0] == pwc {
-				sti[len(sti)+1] = i
-			}
-		}
-
-		nphs := 0
-		for _, token := range dtokens {
-			tranformType, transformArgWildcardIndexes, transfomArgInt, transformArgString, err := indexPlaceHolders(token)
-			if err != nil {
-				return nil, err
-			}
-
-			if tranformType == NoTransform {
-				dtokMappingFunctionTypes = append(dtokMappingFunctionTypes, NoTransform)
-				dtokMappingFunctionTokenIndexes = append(dtokMappingFunctionTokenIndexes, []int{-1})
-				dtokMappingFunctionIntArgs = append(dtokMappingFunctionIntArgs, -1)
-				dtokMappingFunctionStringArgs = append(dtokMappingFunctionStringArgs, _EMPTY_)
-			} else {
-				nphs++
-				// Now build up our runtime mapping from dest to source tokens.
-				var stis []int
-				for _, wildcardIndex := range transformArgWildcardIndexes {
-					if wildcardIndex > npwcs {
-						return nil, &mappingDestinationErr{fmt.Sprintf("%s: [%d]", token, wildcardIndex), ErrorMappingDestinationFunctionWildcardIndexOutOfRange}
-					}
-					stis = append(stis, sti[wildcardIndex])
-				}
-				dtokMappingFunctionTypes = append(dtokMappingFunctionTypes, tranformType)
-				dtokMappingFunctionTokenIndexes = append(dtokMappingFunctionTokenIndexes, stis)
-				dtokMappingFunctionIntArgs = append(dtokMappingFunctionIntArgs, transfomArgInt)
-				dtokMappingFunctionStringArgs = append(dtokMappingFunctionStringArgs, transformArgString)
-
-			}
-		}
-		if nphs < npwcs {
-			// not all wildcards are being used in the destination
-			return nil, &mappingDestinationErr{dest, ErrMappingDestinationNotUsingAllWildcards}
-		}
-	}
-
-	return &transform{src: src, dest: dest, dtoks: dtokens, stoks: stokens, dtokmftypes: dtokMappingFunctionTypes, dtokmftokindexesargs: dtokMappingFunctionTokenIndexes, dtokmfintargs: dtokMappingFunctionIntArgs, dtokmfstringargs: dtokMappingFunctionStringArgs}, nil
-}
-
-// Match will take a literal published subject that is associated with a client and will match and transform
-// the subject if possible.
-//
-// This API is not part of the public API and not subject to SemVer protections
-func (tr *transform) Match(subject string) (string, error) {
-	// TODO(dlc) - We could add in client here to allow for things like foo -> foo.$ACCOUNT
-
-	// Special case: matches any and no no-op transform. May not be legal config for some features
-	// but specific validations made at transform create time
-	if (tr.src == fwcs || tr.src == _EMPTY_) && (tr.dest == fwcs || tr.dest == _EMPTY_) {
-		return subject, nil
-	}
-
-	// Tokenize the subject. This should always be a literal subject.
-	tsa := [32]string{}
-	tts := tsa[:0]
-	start := 0
-	for i := 0; i < len(subject); i++ {
-		if subject[i] == btsep {
-			tts = append(tts, subject[start:i])
-			start = i + 1
-		}
-	}
-	tts = append(tts, subject[start:])
-	if !isValidLiteralSubject(tts) {
-		return _EMPTY_, ErrBadSubject
-	}
-
-	if (tr.src == _EMPTY_ || tr.src == fwcs) || isSubsetMatch(tts, tr.src) {
-		return tr.transform(tts)
-	}
-	return _EMPTY_, ErrNoTransforms
-}
-
-// transformSubject do not need to match, just transform.
-func (tr *transform) transformSubject(subject string) (string, error) {
-	// Tokenize the subject.
-	tsa := [32]string{}
-	tts := tsa[:0]
-	start := 0
-	for i := 0; i < len(subject); i++ {
-		if subject[i] == btsep {
-			tts = append(tts, subject[start:i])
-			start = i + 1
-		}
-	}
-	tts = append(tts, subject[start:])
-	return tr.transform(tts)
-}
-
-func (tr *transform) getHashPartition(key []byte, numBuckets int) string {
-	h := fnv.New32a()
-	h.Write(key)
-
-	return strconv.Itoa(int(h.Sum32() % uint32(numBuckets)))
-}
-
-// Do a transform on the subject to the dest subject.
-func (tr *transform) transform(tokens []string) (string, error) {
-	if len(tr.dtokmftypes) == 0 {
-		return tr.dest, nil
-	}
-
-	var b strings.Builder
-
-	// We need to walk destination tokens and create the mapped subject pulling tokens or mapping functions
-	// This is slow and that is ok, transforms should have caching layer in front for mapping transforms
-	// and export/import semantics with streams and services.
-	li := len(tr.dtokmftypes) - 1
-	for i, mfType := range tr.dtokmftypes {
-		if mfType == NoTransform {
-			// Break if fwc
-			if len(tr.dtoks[i]) == 1 && tr.dtoks[i][0] == fwc {
-				break
-			}
-			b.WriteString(tr.dtoks[i])
-		} else {
-			switch mfType {
-			case Partition:
-				var (
-					_buffer       [64]byte
-					keyForHashing = _buffer[:0]
-				)
-				for _, sourceToken := range tr.dtokmftokindexesargs[i] {
-					keyForHashing = append(keyForHashing, []byte(tokens[sourceToken])...)
-				}
-				b.WriteString(tr.getHashPartition(keyForHashing, int(tr.dtokmfintargs[i])))
-			case Wildcard: // simple substitution
-				b.WriteString(tokens[tr.dtokmftokindexesargs[i][0]])
-			case SplitFromLeft:
-				sourceToken := tokens[tr.dtokmftokindexesargs[i][0]]
-				sourceTokenLen := len(sourceToken)
-				position := int(tr.dtokmfintargs[i])
-				if position > 0 && position < sourceTokenLen {
-					b.WriteString(sourceToken[:position])
-					b.WriteString(tsep)
-					b.WriteString(sourceToken[position:])
-				} else { // too small to split at the requested position: don't split
-					b.WriteString(sourceToken)
-				}
-			case SplitFromRight:
-				sourceToken := tokens[tr.dtokmftokindexesargs[i][0]]
-				sourceTokenLen := len(sourceToken)
-				position := int(tr.dtokmfintargs[i])
-				if position > 0 && position < sourceTokenLen {
-					b.WriteString(sourceToken[:sourceTokenLen-position])
-					b.WriteString(tsep)
-					b.WriteString(sourceToken[sourceTokenLen-position:])
-				} else { // too small to split at the requested position: don't split
-					b.WriteString(sourceToken)
-				}
-			case SliceFromLeft:
-				sourceToken := tokens[tr.dtokmftokindexesargs[i][0]]
-				sourceTokenLen := len(sourceToken)
-				sliceSize := int(tr.dtokmfintargs[i])
-				if sliceSize > 0 && sliceSize < sourceTokenLen {
-					for i := 0; i+sliceSize <= sourceTokenLen; i += sliceSize {
-						if i != 0 {
-							b.WriteString(tsep)
-						}
-						b.WriteString(sourceToken[i : i+sliceSize])
-						if i+sliceSize != sourceTokenLen && i+sliceSize+sliceSize > sourceTokenLen {
-							b.WriteString(tsep)
-							b.WriteString(sourceToken[i+sliceSize:])
-							break
-						}
-					}
-				} else { // too small to slice at the requested size: don't slice
-					b.WriteString(sourceToken)
-				}
-			case SliceFromRight:
-				sourceToken := tokens[tr.dtokmftokindexesargs[i][0]]
-				sourceTokenLen := len(sourceToken)
-				sliceSize := int(tr.dtokmfintargs[i])
-				if sliceSize > 0 && sliceSize < sourceTokenLen {
-					remainder := sourceTokenLen % sliceSize
-					if remainder > 0 {
-						b.WriteString(sourceToken[:remainder])
-						b.WriteString(tsep)
-					}
-					for i := remainder; i+sliceSize <= sourceTokenLen; i += sliceSize {
-						b.WriteString(sourceToken[i : i+sliceSize])
-						if i+sliceSize < sourceTokenLen {
-							b.WriteString(tsep)
-						}
-					}
-				} else { // too small to slice at the requested size: don't slice
-					b.WriteString(sourceToken)
-				}
-			case Split:
-				sourceToken := tokens[tr.dtokmftokindexesargs[i][0]]
-				splits := strings.Split(sourceToken, tr.dtokmfstringargs[i])
-				for j, split := range splits {
-					if split != _EMPTY_ {
-						b.WriteString(split)
-					}
-					if j < len(splits)-1 && splits[j+1] != _EMPTY_ && !(j == 0 && split == _EMPTY_) {
-						b.WriteString(tsep)
-					}
-				}
-			}
-		}
-
-		if i < li {
-			b.WriteByte(btsep)
-		}
-	}
-
-	// We may have more source tokens available. This happens with ">".
-	if tr.dtoks[len(tr.dtoks)-1] == ">" {
-		for sli, i := len(tokens)-1, len(tr.stoks)-1; i < len(tokens); i++ {
-			b.WriteString(tokens[i])
-			if i < sli {
-				b.WriteByte(btsep)
-			}
-		}
-	}
-	return b.String(), nil
-}
-
-// Reverse a transform.
-func (tr *transform) reverse() *transform {
-	if len(tr.dtokmftokindexesargs) == 0 {
-		rtr, _ := newTransform(tr.dest, tr.src)
-		return rtr
-	}
-	// If we are here we need to dynamically get the correct reverse
-	// of this transform.
-	nsrc, phs := transformUntokenize(tr.dest)
-	var nda []string
-	for _, token := range tr.stoks {
-		if token == "*" {
-			if len(phs) == 0 {
-				// TODO(dlc) - Should not happen
-				return nil
-			}
-			nda = append(nda, phs[0])
-			phs = phs[1:]
-		} else {
-			nda = append(nda, token)
-		}
-	}
-	ndest := strings.Join(nda, tsep)
-	rtr, _ := newTransform(nsrc, ndest)
-	return rtr
 }

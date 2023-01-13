@@ -11343,20 +11343,10 @@ func TestJetStreamMirrorAndSourcesFilteredConsumers(t *testing.T) {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 	}
-	expectFail := func(sn, fs string) {
-		t.Helper()
-		_, err = js.AddConsumer(sn, &nats.ConsumerConfig{DeliverSubject: dsubj, FilterSubject: fs})
-		if err == nil {
-			t.Fatalf("Expected error but got none")
-		}
-	}
 
 	createConsumer("M", "foo")
 	createConsumer("M", "bar")
 	createConsumer("M", "baz.foo")
-	expectFail("M", "baz")
-	expectFail("M", "baz.1.2")
-	expectFail("M", "apple")
 
 	// Now do some sources.
 	if _, err := js.AddStream(&nats.StreamConfig{Name: "O1", Subjects: []string{"foo.*"}}); err != nil {
@@ -11377,9 +11367,6 @@ func TestJetStreamMirrorAndSourcesFilteredConsumers(t *testing.T) {
 
 	createConsumer("S", "foo.1")
 	createConsumer("S", "bar.1")
-	expectFail("S", "baz")
-	expectFail("S", "baz.1")
-	expectFail("S", "apple")
 
 	// Chaining
 	// Create Mirror now.
@@ -11394,9 +11381,6 @@ func TestJetStreamMirrorAndSourcesFilteredConsumers(t *testing.T) {
 	createConsumer("M2", "foo")
 	createConsumer("M2", "bar")
 	createConsumer("M2", "baz.foo")
-	expectFail("M2", "baz")
-	expectFail("M2", "baz.1.2")
-	expectFail("M2", "apple")
 }
 
 func TestJetStreamMirrorBasics(t *testing.T) {
@@ -11623,7 +11607,7 @@ func TestJetStreamSourceBasics(t *testing.T) {
 		Name:    "MS",
 		Storage: FileStorage,
 		Sources: []*StreamSource{
-			{Name: "foo"},
+			{Name: "foo", SubjectTransform: "foo2.>"},
 			{Name: "bar"},
 			{Name: "baz"},
 		},
@@ -11646,6 +11630,14 @@ func TestJetStreamSourceBasics(t *testing.T) {
 		}
 		return nil
 	})
+
+	m, err := js.GetMsg("MS", 1)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if m.Subject != "foo2.foo" {
+		t.Fatalf("Expected message subject foo2.foo, got %s", m.Subject)
+	}
 
 	// Test Source Updates
 	ncfg := &nats.StreamConfig{
@@ -11688,7 +11680,7 @@ func TestJetStreamSourceBasics(t *testing.T) {
 		return nil
 	})
 	// Double check first starting.
-	m, err := js.GetMsg("FMS", 1)
+	m, err = js.GetMsg("FMS", 1)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -11726,6 +11718,49 @@ func TestJetStreamSourceBasics(t *testing.T) {
 		t.Fatalf("Expected a header, got none")
 	} else if _, sseq := streamAndSeq(shdr); sseq != 11 {
 		t.Fatalf("Expected header sequence of 11, got %d", sseq)
+	}
+}
+
+func TestJetStreamInputTransform(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	createStream := func(cfg *StreamConfig) {
+		t.Helper()
+		req, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		rm, err := nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		var resp JSApiStreamCreateResponse
+		if err := json.Unmarshal(rm.Data, &resp); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if resp.Error != nil {
+			t.Fatalf("Unexpected error: %+v", resp.Error)
+		}
+	}
+
+	createStream(&StreamConfig{Name: "T1", Subjects: []string{"foo"}, InputSubjectTransform: &InputSubjectTransform{Source: ">", Destination: "transformed.>"}, Storage: MemoryStorage})
+
+	// publish a message
+	if _, err := js.Publish("foo", []byte("OK")); err != nil {
+		t.Fatalf("Unexpected publish error: %v", err)
+	}
+
+	m, err := js.GetMsg("T1", 1)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if m.Subject != "transformed.foo" {
+		t.Fatalf("Expected message subject transformed.foo, got %s", m.Subject)
 	}
 }
 
