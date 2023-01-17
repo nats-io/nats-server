@@ -204,8 +204,13 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 	}
 	defer acc.unsubscribeInternal(sub)
 
-	// Build our request claims.
-	claim := jwt.NewAuthorizationRequestClaims(AuthRequestSubject)
+	// Build our request claims - jwt subject should be nkey
+	jwtSub := acc.Name
+	if opts.AuthCallout != nil {
+		jwtSub = opts.AuthCallout.Issuer
+	}
+	claim := jwt.NewAuthorizationRequestClaims(jwtSub)
+	claim.Audience = AuthRequestSubject
 	// Set expected public user nkey.
 	claim.UserNkey = pub
 
@@ -229,11 +234,6 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 
 	authTimeout := secondsToDuration(s.getOpts().AuthTimeout)
 	claim.Expires = time.Now().Add(time.Duration(authTimeout)).UTC().Unix()
-	if opts.AuthCallout != nil {
-		claim.Audience = opts.AuthCallout.Issuer
-	} else {
-		claim.Audience = acc.Name
-	}
 
 	// Grab client info for the request.
 	c.mu.Lock()
