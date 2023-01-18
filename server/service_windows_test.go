@@ -45,7 +45,7 @@ func TestWinServiceWrapper(t *testing.T) {
 		status  = make(chan svc.Status)
 	)
 	time.Sleep(time.Millisecond)
-	os.Setenv("NATS_STARTUP_DELAY", "1ms") // purposedly small
+	os.Setenv("NATS_STARTUP_DELAY", "1ms") // purposefly small
 	// prepare mock expectations
 	wsm := &winSvcMock{status: status}
 	wsm.Expect(svc.StartPending)
@@ -90,12 +90,12 @@ type winSvcMock struct {
 	expectedSt []svc.State
 }
 
-// Expect allows to prepare a winSvcMock to recieve a specific type of StatusMessage
+// Expect allows to prepare a winSvcMock to receive a specific type of StatusMessage
 func (w *winSvcMock) Expect(st svc.State) {
 	w.expectedSt = append(w.expectedSt, st)
 }
 
-// Listen is the mock's mainloop, expectes messages to comply with previous Expect().
+// Listen is the mock's mainloop, expects messages to comply with previous Expect().
 func (w *winSvcMock) Listen(dur time.Duration, t *testing.T) error {
 	t.Helper()
 	timeout := time.NewTimer(dur)
