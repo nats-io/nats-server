@@ -19186,3 +19186,55 @@ func TestJetStreamPullConsumerBatchCompleted(t *testing.T) {
 	}
 
 }
+
+func TestJetStreamConsumerAndStreamMetadata(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	metadata := map[string]string{"key": "value", "_nats_created_version": "2.9.11"}
+	acc := s.GlobalAccount()
+
+	// Check stream's first.
+	mset, err := acc.addStream(&StreamConfig{Name: "foo", Metadata: metadata})
+	if err != nil {
+		t.Fatalf("Unexpected error adding stream: %v", err)
+	}
+	if cfg := mset.config(); !reflect.DeepEqual(metadata, cfg.Metadata) {
+		t.Fatalf("Expected a metadata of %q, got %q", metadata, cfg.Metadata)
+	}
+
+	// Now consumer
+	o, err := mset.addConsumer(&ConsumerConfig{
+		Metadata:       metadata,
+		DeliverSubject: "to",
+		AckPolicy:      AckNone})
+	if err != nil {
+		t.Fatalf("Unexpected error adding consumer: %v", err)
+	}
+	if cfg := o.config(); !reflect.DeepEqual(metadata, cfg.Metadata) {
+		t.Fatalf("Expected a metadata of %q, got %q", metadata, cfg.Metadata)
+	}
+
+	// Test max.
+	data := make([]byte, JSMaxMetadataLen/100)
+	rand.Read(data)
+	bigValue := base64.StdEncoding.EncodeToString(data)
+
+	bigMetadata := make(map[string]string, 101)
+	for i := 0; i < 101; i++ {
+		bigMetadata[fmt.Sprintf("key%d", i)] = bigValue
+	}
+
+	_, err = acc.addStream(&StreamConfig{Name: "bar", Metadata: bigMetadata})
+	if err == nil || !strings.Contains(err.Error(), "stream metadata exceeds") {
+		t.Fatalf("Expected an error but got none")
+	}
+
+	_, err = mset.addConsumer(&ConsumerConfig{
+		Metadata:       bigMetadata,
+		DeliverSubject: "to",
+		AckPolicy:      AckNone})
+	if err == nil || !strings.Contains(err.Error(), "consumer metadata exceeds") {
+		t.Fatalf("Expected an error but got none")
+	}
+}

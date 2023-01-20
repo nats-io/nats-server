@@ -83,6 +83,9 @@ type StreamConfig struct {
 	// AllowRollup allows messages to be placed into the system and purge
 	// all older messages using a special msg header.
 	AllowRollup bool `json:"allow_rollup_hdrs"`
+
+	// Metadata is additional metadata for the Stream.
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 // SubjectTransformConfig is for applying a subject transform (to matching messages) before doing anything else when a new message is received
@@ -977,6 +980,14 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 	}
 	if len(config.Description) > JSMaxDescriptionLen {
 		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("stream description is too long, maximum allowed is %d", JSMaxDescriptionLen))
+	}
+
+	var metadataLen int
+	for k, v := range config.Metadata {
+		metadataLen += len(k) + len(v)
+	}
+	if metadataLen > JSMaxMetadataLen {
+		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("stream metadata exceeds maximum size of %d bytes", JSMaxMetadataLen))
 	}
 
 	cfg := *config

@@ -131,6 +131,9 @@ const (
 	// JSConsumerMaxWaitingNegativeErr consumer max waiting needs to be positive
 	JSConsumerMaxWaitingNegativeErr ErrorIdentifier = 10087
 
+	// JSConsumerMetadataLengthErrF consumer metadata exceeds maximum size of {limit}
+	JSConsumerMetadataLengthErrF ErrorIdentifier = 10135
+
 	// JSConsumerNameContainsPathSeparatorsErr Consumer name can not contain path separators
 	JSConsumerNameContainsPathSeparatorsErr ErrorIdentifier = 10127
 
@@ -449,6 +452,7 @@ var (
 		JSConsumerMaxRequestBatchNegativeErr:       {Code: 400, ErrCode: 10114, Description: "consumer max request batch needs to be > 0"},
 		JSConsumerMaxRequestExpiresToSmall:         {Code: 400, ErrCode: 10115, Description: "consumer max request expires needs to be >= 1ms"},
 		JSConsumerMaxWaitingNegativeErr:            {Code: 400, ErrCode: 10087, Description: "consumer max waiting needs to be positive"},
+		JSConsumerMetadataLengthErrF:               {Code: 400, ErrCode: 10135, Description: "consumer metadata exceeds maximum size of {limit}"},
 		JSConsumerNameContainsPathSeparatorsErr:    {Code: 400, ErrCode: 10127, Description: "Consumer name can not contain path separators"},
 		JSConsumerNameExistErr:                     {Code: 400, ErrCode: 10013, Description: "consumer name already in use"},
 		JSConsumerNameTooLongErrF:                  {Code: 400, ErrCode: 10102, Description: "consumer name is too long, maximum allowed is {max}"},
@@ -1025,6 +1029,22 @@ func NewJSConsumerMaxWaitingNegativeError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSConsumerMaxWaitingNegativeErr]
+}
+
+// NewJSConsumerMetadataLengthError creates a new JSConsumerMetadataLengthErrF error: "consumer metadata exceeds maximum size of {limit}"
+func NewJSConsumerMetadataLengthError(limit interface{}, opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	e := ApiErrors[JSConsumerMetadataLengthErrF]
+	args := e.toReplacerArgs([]interface{}{"{limit}", limit})
+	return &ApiError{
+		Code:        e.Code,
+		ErrCode:     e.ErrCode,
+		Description: strings.NewReplacer(args...).Replace(e.Description),
+	}
 }
 
 // NewJSConsumerNameContainsPathSeparatorsError creates a new JSConsumerNameContainsPathSeparatorsErr error: "Consumer name can not contain path separators"
