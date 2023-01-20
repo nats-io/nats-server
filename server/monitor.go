@@ -40,9 +40,13 @@ import (
 var numCores int
 var maxProcs int
 
-func init() {
+func SnapshotMonitorInfo() {
 	numCores = runtime.NumCPU()
 	maxProcs = runtime.GOMAXPROCS(0)
+}
+
+func init() {
+	SnapshotMonitorInfo()
 }
 
 // Connz represents detailed information on current client connections.
