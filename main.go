@@ -134,6 +134,8 @@ func main() {
 		s.Warnf("Failed to set GOMAXPROCS: %v", err)
 	} else {
 		defer undo()
+		// Reset these from the snapshots from init for monitor.go
+		server.SnapshotMonitorInfo()
 	}
 
 	s.WaitForShutdown()
