@@ -3256,7 +3256,7 @@ func TestFileStoreExpireMsgsOnStart(t *testing.T) {
 			} else if mb.last != mbc.last {
 				errStr = fmt.Sprintf("last state does not match: %d vs %d", mb.last, mbc.last)
 			} else if !reflect.DeepEqual(mb.dmap, mbc.dmap) {
-				errStr = fmt.Sprintf("deleted map does not match: %d vs %d", mb.dmap, mbc.dmap)
+				errStr = fmt.Sprintf("deleted map does not match: %+v vs %+v", mb.dmap, mbc.dmap)
 			}
 			mb.mu.RUnlock()
 			if errStr != _EMPTY_ {
@@ -3993,7 +3993,7 @@ func TestFileStoreRebuildStateDmapAccountingBug(t *testing.T) {
 			t.Helper()
 			mb.mu.RLock()
 			defer mb.mu.RUnlock()
-			dmapLen := uint64(len(mb.dmap))
+			dmapLen := uint64(mb.dmap.Size())
 			if mb.msgs != (mb.last.seq-mb.first.seq+1)-dmapLen {
 				t.Fatalf("Consistency check failed: %d != %d -> last %d first %d len(dmap) %d",
 					mb.msgs, (mb.last.seq-mb.first.seq+1)-dmapLen, mb.last.seq, mb.first.seq, dmapLen)
