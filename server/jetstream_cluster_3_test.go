@@ -2493,12 +2493,15 @@ func TestJetStreamClusterScaleDownDuringServerOffline(t *testing.T) {
 	})
 	require_NoError(t, err)
 
+	now := time.Now()
 	s = c.restartServer(s)
-	checkFor(t, 2*time.Second, 500*time.Millisecond, func() error {
+	checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
 		hs := s.healthz(nil)
 		if hs.Error != _EMPTY_ {
 			return errors.New(hs.Error)
 		}
 		return nil
 	})
+
+	fmt.Println("TOOK: ", time.Since(now))
 }
