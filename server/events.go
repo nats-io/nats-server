@@ -1919,10 +1919,11 @@ func (a *Account) statz() *AccountStat {
 
 // accConnsUpdate is called whenever there is a change to the account's
 // number of active connections, or during a heartbeat.
+// We will not send for $G.
 func (s *Server) accConnsUpdate(a *Account) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.eventsEnabled() || a == nil {
+	if !s.eventsEnabled() || a == nil || a == s.gacc {
 		return
 	}
 	s.sendAccConnsUpdate(a, fmt.Sprintf(accConnsEventSubjOld, a.Name), fmt.Sprintf(accConnsEventSubjNew, a.Name))

@@ -1675,12 +1675,10 @@ func TestSystemAccountWithGateways(t *testing.T) {
 	require_NoError(t, err)
 	msgs[1], err = sub.NextMsg(time.Second)
 	require_NoError(t, err)
-	msgs[2], err = sub.NextMsg(time.Second)
-	require_NoError(t, err)
 	// TODO: There is a race currently that can cause the server to process the
 	// system event *after* the subscription on "A" has been registered, and so
 	// the "nca" client would receive its own CONNECT message.
-	msgs[3], _ = sub.NextMsg(250 * time.Millisecond)
+	msgs[2], _ = sub.NextMsg(250 * time.Millisecond)
 
 	findMsgs := func(sub string) []*nats.Msg {
 		rMsgs := []*nats.Msg{}
@@ -1708,10 +1706,6 @@ func TestSystemAccountWithGateways(t *testing.T) {
 
 	connsMsgA := findMsgs(fmt.Sprintf("$SYS.ACCOUNT.%s.SERVER.CONNS", sa.SystemAccount().Name))
 	if len(connsMsgA) != 1 {
-		t.Fatal("Expected a message")
-	}
-	connsMsgG := findMsgs("$SYS.ACCOUNT.$G.SERVER.CONNS")
-	if len(connsMsgG) != 1 {
 		t.Fatal("Expected a message")
 	}
 }
