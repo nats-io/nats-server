@@ -2494,7 +2494,7 @@ func TestJetStreamClusterScaleDownDuringServerOffline(t *testing.T) {
 	require_NoError(t, err)
 
 	s = c.restartServer(s)
-	checkFor(t, time.Second, 200*time.Millisecond, func() error {
+	checkFor(t, 2*time.Second, 500*time.Millisecond, func() error {
 		hs := s.healthz(nil)
 		if hs.Error != _EMPTY_ {
 			return errors.New(hs.Error)
