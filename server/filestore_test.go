@@ -4994,3 +4994,49 @@ func TestFileStoreMsgBlkFailOnKernelFaultLostDataReporting(t *testing.T) {
 	require_True(t, state.Lost != nil)
 	require_True(t, len(state.Lost.Msgs) == 93)
 }
+
+func TestFileStoreAllFilteredStateWithDeleted(t *testing.T) {
+	storeDir := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 1024},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	subj, msg := "foo", []byte("Hello World")
+	for i := 0; i < 100; i++ {
+		_, _, err := fs.StoreMsg(subj, nil, msg)
+		require_NoError(t, err)
+	}
+
+	remove := func(seqs ...uint64) {
+		for _, seq := range seqs {
+			ok, err := fs.RemoveMsg(seq)
+			require_NoError(t, err)
+			require_True(t, ok)
+		}
+	}
+
+	checkFilteredState := func(start, msgs, first, last int) {
+		fss := fs.FilteredState(uint64(start), _EMPTY_)
+		if fss.Msgs != uint64(msgs) {
+			t.Fatalf("Expected %d msgs, got %d", msgs, fss.Msgs)
+		}
+		if fss.First != uint64(first) {
+			t.Fatalf("Expected %d to be first, got %d", first, fss.First)
+		}
+		if fss.Last != uint64(last) {
+			t.Fatalf("Expected %d to be last, got %d", last, fss.Last)
+		}
+	}
+
+	checkFilteredState(1, 100, 1, 100)
+	remove(2)
+	checkFilteredState(2, 98, 3, 100)
+	remove(3, 4, 5)
+	checkFilteredState(2, 95, 6, 100)
+	checkFilteredState(6, 95, 6, 100)
+	remove(8, 10, 12, 14, 16, 18)
+	checkFilteredState(7, 88, 7, 100)
+}
