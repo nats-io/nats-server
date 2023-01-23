@@ -1521,10 +1521,17 @@ func (mb *msgBlock) filteredPending(subj string, wc bool, seq uint64) (total, fi
 // This will traverse a message block and generate the filtered pending.
 // Lock should be held.
 func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, seq uint64) (total, first, last uint64) {
+	isAll := filter == _EMPTY_ || filter == fwcs
+
+	// First check if we can optimize this part.
+	// This means we want all and the starting sequence was before this block.
+	if isAll && seq <= mb.first.seq {
+		return mb.msgs, mb.first.seq, mb.last.seq
+	}
+
 	// Make sure we have fss loaded.
 	mb.ensurePerSubjectInfoLoaded()
 
-	isAll := filter == _EMPTY_ || filter == fwcs
 	subs := []string{filter}
 	// If we have a wildcard match against all tracked subjects we know about.
 	if wc || isAll {
@@ -1661,20 +1668,6 @@ func (fs *fileStore) FilteredState(sseq uint64, subj string) SimpleState {
 
 	// If past the end no results.
 	if sseq > lseq {
-		return ss
-	}
-
-	// If subj is empty or we are not tracking multiple subjects.
-	if subj == _EMPTY_ || subj == fwcs {
-		total := lseq - sseq + 1
-		if state := fs.State(); len(state.Deleted) > 0 {
-			for _, dseq := range state.Deleted {
-				if dseq >= sseq && dseq <= lseq {
-					total--
-				}
-			}
-		}
-		ss.Msgs, ss.First, ss.Last = total, sseq, lseq
 		return ss
 	}
 
