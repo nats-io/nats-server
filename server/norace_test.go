@@ -5331,6 +5331,98 @@ func TestNoRaceJetStreamClusterStreamNamesAndInfosMoreThanAPILimit(t *testing.T)
 	check(JSApiStreamList, JSApiListLimit)
 }
 
+func TestNoRaceJetStreamClusterConsumerListPaging(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	s := c.randomNonLeader()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	cfg := &nats.ConsumerConfig{
+		Replicas:      1,
+		MemoryStorage: true,
+		AckPolicy:     nats.AckExplicitPolicy,
+	}
+
+	// create 3000 consumers.
+	numConsumers := 3000
+	for i := 1; i <= numConsumers; i++ {
+		cfg.Durable = fmt.Sprintf("d-%.4d", i)
+		_, err := js.AddConsumer("TEST", cfg)
+		require_NoError(t, err)
+	}
+
+	// Test both names and list operations.
+
+	// Names
+	reqSubj := fmt.Sprintf(JSApiConsumersT, "TEST")
+	grabConsumerNames := func(offset int) []string {
+		req := fmt.Sprintf(`{"offset":%d}`, offset)
+		respMsg, err := nc.Request(reqSubj, []byte(req), time.Second)
+		require_NoError(t, err)
+		var resp JSApiConsumerNamesResponse
+		err = json.Unmarshal(respMsg.Data, &resp)
+		require_NoError(t, err)
+		// Sanity check that we are actually paging properly around limits.
+		if resp.Limit < len(resp.Consumers) {
+			t.Fatalf("Expected total limited to %d but got %d", resp.Limit, len(resp.Consumers))
+		}
+		return resp.Consumers
+	}
+
+	results := make(map[string]bool)
+
+	for offset := 0; len(results) < numConsumers; {
+		consumers := grabConsumerNames(offset)
+		offset += len(consumers)
+		for _, name := range consumers {
+			if results[name] {
+				t.Fatalf("Found duplicate %q", name)
+			}
+			results[name] = true
+		}
+	}
+
+	// List
+	reqSubj = fmt.Sprintf(JSApiConsumerListT, "TEST")
+	grabConsumerList := func(offset int) []*ConsumerInfo {
+		req := fmt.Sprintf(`{"offset":%d}`, offset)
+		respMsg, err := nc.Request(reqSubj, []byte(req), time.Second)
+		require_NoError(t, err)
+		var resp JSApiConsumerListResponse
+		err = json.Unmarshal(respMsg.Data, &resp)
+		require_NoError(t, err)
+		// Sanity check that we are actually paging properly around limits.
+		if resp.Limit < len(resp.Consumers) {
+			t.Fatalf("Expected total limited to %d but got %d", resp.Limit, len(resp.Consumers))
+		}
+		return resp.Consumers
+	}
+
+	results = make(map[string]bool)
+
+	for offset := 0; len(results) < numConsumers; {
+		consumers := grabConsumerList(offset)
+		offset += len(consumers)
+		for _, ci := range consumers {
+			name := ci.Config.Durable
+			if results[name] {
+				t.Fatalf("Found duplicate %q", name)
+			}
+			results[name] = true
+		}
+	}
+}
+
 func TestNoRaceJetStreamFileStoreLargeKVAccessTiming(t *testing.T) {
 	storeDir := t.TempDir()
 
