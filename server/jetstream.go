@@ -1381,6 +1381,7 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 	// Check interest policy streams for auto cleanup.
 	for _, mset := range ipstreams {
 		mset.checkForOrphanMsgs()
+		mset.checkConsumerReplication()
 	}
 
 	s.Debugf("JetStream state for account %q recovered", a.Name)

@@ -5028,3 +5028,24 @@ func (mset *stream) checkForOrphanMsgs() {
 		}
 	}
 }
+
+// Check on startup to make sure that consumers replication matches us.
+// Interest retention requires replication matches.
+func (mset *stream) checkConsumerReplication() {
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
+
+	if mset.cfg.Retention != InterestPolicy {
+		return
+	}
+
+	s, acc := mset.srv, mset.acc
+	for _, o := range mset.consumers {
+		o.mu.RLock()
+		if mset.cfg.Replicas != o.cfg.Replicas {
+			s.Errorf("consumer '%s > %s > %s' MUST match replication (%d vs %d) of stream with interest policy",
+				acc, mset.cfg.Name, o.cfg.Name, mset.cfg.Replicas, o.cfg.Replicas)
+		}
+		o.mu.RUnlock()
+	}
+}

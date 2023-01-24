@@ -382,6 +382,17 @@ func checkConsumerCfg(
 	if config.Replicas < 0 {
 		return NewJSReplicasCountCannotBeNegativeError()
 	}
+	// If the stream is interest or workqueue retention make sure the replicas
+	// match that of the stream. This is REQUIRED for now.
+	if cfg.Retention == InterestPolicy || cfg.Retention == WorkQueuePolicy {
+		// Only error here if not recovering.
+		// We handle recovering in a different spot to allow consumer to come up
+		// if previous version allowed it to be created. We do not want it to not come up.
+		if !isRecovering && config.Replicas != 0 && config.Replicas != cfg.Replicas {
+			fmt.Printf("config is %+v\n", config)
+			return NewJSConsumerReplicasShouldMatchStreamError()
+		}
+	}
 
 	// Check if we have a BackOff defined that MaxDeliver is within range etc.
 	if lbo := len(config.BackOff); lbo > 0 && config.MaxDeliver <= lbo {

@@ -1318,5 +1318,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerReplicasShouldMatchStream",
+    "code": 400,
+    "error_code": 10134,
+    "description": "consumer config replicas must match interest retention stream's replicas",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]
