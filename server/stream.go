@@ -1542,16 +1542,16 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 				delete(mset.sources, iname)
 			}
 		}
+	}
 
-		// If we are not clustered here and we want allow direct, go ahead and inline here.
-		// use cfg.Replicas vs isClustered() in case we are updating.
-		if cfg.Replicas == 1 {
-			// Check direct.
-			if cfg.AllowDirect {
-				mset.subscribeToDirect()
-			} else {
-				mset.unsubscribeToDirect()
-			}
+	// Check for a change in allow direct status.
+	// These will run on all members, so just update as appropriate here.
+	// We do make sure we are caught up under monitorStream() during initial startup.
+	if cfg.AllowDirect != ocfg.AllowDirect {
+		if cfg.AllowDirect {
+			mset.subscribeToDirect()
+		} else {
+			mset.unsubscribeToDirect()
 		}
 	}
 
@@ -3062,6 +3062,7 @@ func (mset *stream) subscribeToStream() error {
 		}
 	}
 	// Check for direct get access.
+	// We spin up followers for clustered streams in monitorStream().
 	if mset.cfg.AllowDirect {
 		if err := mset.subscribeToDirect(); err != nil {
 			return err
