@@ -4347,7 +4347,9 @@ func (o *consumer) signalSub() *subscription {
 	if subject == _EMPTY_ {
 		subject = fwcs
 	}
-	return &subscription{subject: []byte(subject), icb: o.processStreamSignal}
+	sub := &subscription{subject: []byte(subject), icb: o.processStreamSignal}
+	o.sigSub = sub
+	return sub
 }
 
 // This is what will be called when our parent stream wants to kick us regarding a new message.
