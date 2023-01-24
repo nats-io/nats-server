@@ -1348,10 +1348,6 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, s *Server) (*Str
 	if !reflect.DeepEqual(cfg.Mirror, old.Mirror) {
 		return nil, NewJSStreamMirrorNotUpdatableError()
 	}
-	// Can't change RePublish
-	if !reflect.DeepEqual(cfg.RePublish, old.RePublish) {
-		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update can not change RePublish"))
-	}
 
 	// Check on new discard new per subject.
 	if cfg.DiscardNewPer {
@@ -1553,6 +1549,23 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 		} else {
 			mset.unsubscribeToDirect()
 		}
+	}
+
+	// Check for changes to RePublish.
+	if cfg.RePublish != nil {
+		// Empty same as all.
+		if cfg.RePublish.Source == _EMPTY_ {
+			cfg.RePublish.Source = fwcs
+		}
+		tr, err := newTransform(cfg.RePublish.Source, cfg.RePublish.Destination)
+		if err != nil {
+			jsa.mu.Unlock()
+			return fmt.Errorf("stream configuration for republish not valid")
+		}
+		// Assign our transform for republishing.
+		mset.tr = tr
+	} else {
+		mset.tr = nil
 	}
 
 	js := mset.js
