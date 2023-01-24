@@ -2411,3 +2411,54 @@ func TestJetStreamClusterScaleDownDuringServerOffline(t *testing.T) {
 		return nil
 	})
 }
+
+// Reported by a customer manually upgrading their streams to support direct gets.
+// Worked if single replica but not in clustered mode.
+func TestJetStreamClusterDirectGetStreamUpgrade(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:              "KV_TEST",
+		Subjects:          []string{"$KV.TEST.>"},
+		Discard:           nats.DiscardNew,
+		MaxMsgsPerSubject: 1,
+		DenyDelete:        true,
+		Replicas:          3,
+	})
+	require_NoError(t, err)
+
+	kv, err := js.KeyValue("TEST")
+	require_NoError(t, err)
+
+	_, err = kv.PutString("name", "derek")
+	require_NoError(t, err)
+
+	entry, err := kv.Get("name")
+	require_NoError(t, err)
+	require_True(t, string(entry.Value()) == "derek")
+
+	// Now simulate a update to the stream to support direct gets.
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:              "KV_TEST",
+		Subjects:          []string{"$KV.TEST.>"},
+		Discard:           nats.DiscardNew,
+		MaxMsgsPerSubject: 1,
+		DenyDelete:        true,
+		AllowDirect:       true,
+		Replicas:          3,
+	})
+	require_NoError(t, err)
+
+	// Rebind to KV to make sure we DIRECT version of Get().
+	kv, err = js.KeyValue("TEST")
+	require_NoError(t, err)
+
+	// Make sure direct get works.
+	entry, err = kv.Get("name")
+	require_NoError(t, err)
+	require_True(t, string(entry.Value()) == "derek")
+}
