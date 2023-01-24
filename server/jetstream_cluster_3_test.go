@@ -2500,3 +2500,51 @@ func TestJetStreamClusterKVWatchersWithServerDown(t *testing.T) {
 		w.Stop()
 	}
 }
+
+// TestJetStreamClusterCurrentVsHealth is designed to show the
+// difference between "current" and "healthy" when async publishes
+// outpace the rate at which they can be applied.
+func TestJetStreamClusterCurrentVsHealth(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	c.waitOnLeader()
+	server := c.randomNonLeader()
+
+	nc, js := jsClientConnect(t, server)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	server = c.randomNonStreamLeader(globalAccountName, "TEST")
+	stream, err := server.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	raft, ok := stream.raftGroup().node.(*raft)
+	require_True(t, ok)
+
+	for i := 0; i < 1000; i++ {
+		_, err := js.PublishAsync("foo", []byte("bar"))
+		require_NoError(t, err)
+
+		raft.RLock()
+		commit := raft.commit
+		applied := raft.applied
+		raft.RUnlock()
+
+		current := raft.Current()
+		healthy := raft.Healthy()
+
+		if !current || !healthy || commit != applied {
+			t.Logf(
+				"%d | Current %v, healthy %v, commit %d, applied %d, pending %d",
+				i, current, healthy, commit, applied, commit-applied,
+			)
+		}
+	}
+}
