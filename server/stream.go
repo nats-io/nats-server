@@ -1568,7 +1568,7 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 		if cfg.RePublish.Source == _EMPTY_ {
 			cfg.RePublish.Source = fwcs
 		}
-		tr, err := newTransform(cfg.RePublish.Source, cfg.RePublish.Destination)
+		tr, err := newSubjectTransform(cfg.RePublish.Source, cfg.RePublish.Destination)
 		if err != nil {
 			jsa.mu.Unlock()
 			return fmt.Errorf("stream configuration for republish not valid")
