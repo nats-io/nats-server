@@ -4548,3 +4548,29 @@ func TestMonitorWebsocket(t *testing.T) {
 		}
 	}
 }
+
+func TestReloadz(t *testing.T) {
+	resetPreviousHTTPConnections()
+
+	tmpl := `
+		listen: "127.0.0.1:-1"
+		http: "127.0.0.1:-1"
+		ping_interval: "%s"
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, "10s")))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	if got, expected := s.getOpts().PingInterval, 10*time.Second; got != expected {
+		t.Fatalf("Expected\n%+v\nGot:\n%+v", expected, got)
+	}
+
+	os.WriteFile(conf, []byte(fmt.Sprintf(tmpl, "20s")), 0660)
+
+	reloadzURL := fmt.Sprintf("http://127.0.0.1:%d/reloadz", s.MonitorAddr().Port)
+	readBodyEx(t, reloadzURL, http.StatusAccepted, "")
+
+	if got, expected := s.getOpts().PingInterval, 20*time.Second; got != expected {
+		t.Fatalf("Expected\n%+v\nGot:\n%+v", expected, got)
+	}
+}

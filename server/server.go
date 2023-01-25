@@ -2301,6 +2301,7 @@ const (
 	AccountStatzPath = "/accstatz"
 	JszPath          = "/jsz"
 	HealthzPath      = "/healthz"
+	ReloadzPath      = "/reloadz"
 	IPQueuesPath     = "/ipqueuesz"
 )
 
@@ -2410,6 +2411,8 @@ func (s *Server) startMonitoring(secure bool) error {
 	mux.HandleFunc(s.basePath(JszPath), s.HandleJsz)
 	// Healthz
 	mux.HandleFunc(s.basePath(HealthzPath), s.HandleHealthz)
+	// Reloadz
+	mux.HandleFunc(s.basePath(ReloadzPath), s.HandleReload)
 	// IPQueuesz
 	mux.HandleFunc(s.basePath(IPQueuesPath), s.HandleIPQueuesz)
 

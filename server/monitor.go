@@ -14,6 +14,7 @@
 package server
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -1374,6 +1375,7 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 	<a href=.%s>Routes</a>
 	<a href=.%s>LeafNodes</a>
 	<a href=.%s>Gateways</a>
+	<a href=.%s>Reload</a>
 	<a href=.%s class=last>Health Probe</a>
     <a href=https://docs.nats.io/running-a-nats-service/nats_admin/monitoring class="help">Help</a>
   </body>
@@ -1389,6 +1391,7 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 		s.basePath(RoutezPath),
 		s.basePath(LeafzPath),
 		s.basePath(GatewayzPath),
+		s.basePath(ReloadzPath),
 		s.basePath(HealthzPath),
 	)
 }
@@ -3122,4 +3125,22 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 
 	// Success.
 	return health
+}
+
+func (s *Server) HandleReload(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	s.httpReqStats[ReloadzPath]++
+	s.mu.Unlock()
+
+	if err := s.Reload(); err != nil {
+		var s bytes.Buffer
+		s.WriteString("Failed to reload server configuration: ")
+		s.WriteString(err.Error())
+
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write(s.Bytes())
+		return
+	}
+
+	w.WriteHeader(http.StatusAccepted)
 }
