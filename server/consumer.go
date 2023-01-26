@@ -466,17 +466,8 @@ func checkConsumerCfg(
 		}
 	}
 
-	// As best we can make sure the filtered subject is valid.
-	if config.FilterSubject != _EMPTY_ {
-		subjects := copyStrings(cfg.Subjects)
-		// explicitly skip validFilteredSubject when recovering
-		hasExt := isRecovering
-		if !isRecovering {
-			subjects, hasExt = gatherSourceMirrorSubjects(subjects, cfg, acc)
-		}
-		if !hasExt && !validFilteredSubject(config.FilterSubject, subjects) {
-			return NewJSConsumerFilterNotSubsetError()
-		}
+	if config.FilterSubject != _EMPTY_ && !IsValidSubject(config.FilterSubject) {
+		return NewJSStreamInvalidConfigError(ErrBadSubject)
 	}
 
 	// Helper function to formulate similar errors.
@@ -4266,26 +4257,6 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 func deliveryFormsCycle(cfg *StreamConfig, deliverySubject string) bool {
 	for _, subject := range cfg.Subjects {
 		if subjectIsSubsetMatch(deliverySubject, subject) {
-			return true
-		}
-	}
-	return false
-}
-
-// Check that the filtered subject is valid given a set of stream subjects.
-func validFilteredSubject(filteredSubject string, subjects []string) bool {
-	if !IsValidSubject(filteredSubject) {
-		return false
-	}
-	hasWC := subjectHasWildcard(filteredSubject)
-
-	for _, subject := range subjects {
-		if subjectIsSubsetMatch(filteredSubject, subject) {
-			return true
-		}
-		// If we have a wildcard as the filtered subject check to see if we are
-		// a wider scope but do match a subject.
-		if hasWC && subjectIsSubsetMatch(subject, filteredSubject) {
 			return true
 		}
 	}
