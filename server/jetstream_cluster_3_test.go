@@ -2468,6 +2468,12 @@ func TestJetStreamClusterDirectGetStreamUpgrade(t *testing.T) {
 // to create a consumer where the replication factor does not match. This could cause
 // instability in the state between servers and cause problems on leader switches.
 func TestJetStreamClusterInterestPolicyStreamForConsumersToMatchRFactor(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
 	_, err := js.AddStream(&nats.StreamConfig{
 		Name:      "TEST",
 		Subjects:  []string{"foo"},
