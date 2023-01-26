@@ -11408,7 +11408,7 @@ func TestJetStreamSourceBasics(t *testing.T) {
 		Name:    "MS",
 		Storage: FileStorage,
 		Sources: []*StreamSource{
-			{Name: "foo", SubjectTransform: "foo2.>"},
+			{Name: "foo", SubjectTransformDest: "foo2.>"},
 			{Name: "bar"},
 			{Name: "baz"},
 		},
@@ -11538,7 +11538,7 @@ func TestJetStreamInputTransform(t *testing.T) {
 		}
 	}
 
-	createStream(&StreamConfig{Name: "T1", Subjects: []string{"foo"}, InputSubjectTransform: &InputSubjectTransform{Source: ">", Destination: "transformed.>"}, Storage: MemoryStorage})
+	createStream(&StreamConfig{Name: "T1", Subjects: []string{"foo"}, SubjectTransform: &SubjectTransformConfig{Source: ">", Destination: "transformed.>"}, Storage: MemoryStorage})
 
 	// publish a message
 	if _, err := js.Publish("foo", []byte("OK")); err != nil {

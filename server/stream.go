@@ -59,7 +59,7 @@ type StreamConfig struct {
 	Sources      []*StreamSource `json:"sources,omitempty"`
 
 	// Allow applying a subject transform to incoming messages before doing anything else
-	InputSubjectTransform *InputSubjectTransform `json:"input_subject_transform,omitempty"`
+	SubjectTransform *SubjectTransformConfig `json:"subject_transform,omitempty"`
 
 	// Allow republish of the message after being sequenced and stored.
 	RePublish *RePublish `json:"republish,omitempty"`
@@ -85,8 +85,8 @@ type StreamConfig struct {
 	AllowRollup bool `json:"allow_rollup_hdrs"`
 }
 
-// InputSubjectTransform is for applying a subject transform (to matching messages) before doing anything else when a new message is received
-type InputSubjectTransform struct {
+// SubjectTransformConfig is for applying a subject transform (to matching messages) before doing anything else when a new message is received
+type SubjectTransformConfig struct {
 	Source      string `json:"src,omitempty"`
 	Destination string `json:"dest"`
 }
@@ -163,23 +163,23 @@ type PeerInfo struct {
 
 // StreamSourceInfo shows information about an upstream stream source.
 type StreamSourceInfo struct {
-	Name             string          `json:"name"`
-	External         *ExternalStream `json:"external,omitempty"`
-	Lag              uint64          `json:"lag"`
-	Active           time.Duration   `json:"active"`
-	Error            *ApiError       `json:"error,omitempty"`
-	FilterSubject    string          `json:"filter_subject,omitempty"`
-	SubjectTransform string          `json:"subject_transform,omitempty"`
+	Name                 string          `json:"name"`
+	External             *ExternalStream `json:"external,omitempty"`
+	Lag                  uint64          `json:"lag"`
+	Active               time.Duration   `json:"active"`
+	Error                *ApiError       `json:"error,omitempty"`
+	FilterSubject        string          `json:"filter_subject,omitempty"`
+	SubjectTransformDest string          `json:"subject_transform_dest,omitempty"`
 }
 
 // StreamSource dictates how streams can source from other streams.
 type StreamSource struct {
-	Name             string          `json:"name"`
-	OptStartSeq      uint64          `json:"opt_start_seq,omitempty"`
-	OptStartTime     *time.Time      `json:"opt_start_time,omitempty"`
-	FilterSubject    string          `json:"filter_subject,omitempty"`
-	SubjectTransform string          `json:"subject_transform,omitempty"`
-	External         *ExternalStream `json:"external,omitempty"`
+	Name                 string          `json:"name"`
+	OptStartSeq          uint64          `json:"opt_start_seq,omitempty"`
+	OptStartTime         *time.Time      `json:"opt_start_time,omitempty"`
+	FilterSubject        string          `json:"filter_subject,omitempty"`
+	SubjectTransformDest string          `json:"subject_transform_dest,omitempty"`
+	External             *ExternalStream `json:"external,omitempty"`
 
 	// Internal
 	iname string // For indexing when stream names are the same for multiple sources.
@@ -426,8 +426,8 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		for i, ssi := range cfg.Sources {
 			ssi.setIndexName(i)
 			// check the transform, if any, is valid
-			if ssi.SubjectTransform != _EMPTY_ {
-				if _, err = newSubjectTransform(ssi.FilterSubject, ssi.SubjectTransform); err != nil {
+			if ssi.SubjectTransformDest != _EMPTY_ {
+				if _, err = newSubjectTransform(ssi.FilterSubject, ssi.SubjectTransformDest); err != nil {
 					jsa.mu.Unlock()
 					return nil, fmt.Errorf("subject transform for the source not valid %w", err)
 				}
@@ -479,8 +479,8 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	}
 
 	// Check for input subject transform
-	if cfg.InputSubjectTransform != nil {
-		tr, err := newSubjectTransform(cfg.InputSubjectTransform.Source, cfg.InputSubjectTransform.Destination)
+	if cfg.SubjectTransform != nil {
+		tr, err := newSubjectTransform(cfg.SubjectTransform.Source, cfg.SubjectTransform.Destination)
 		if err != nil {
 			jsa.mu.Unlock()
 			return nil, fmt.Errorf("stream input subject transform not valid %w", err)
@@ -1509,9 +1509,9 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 					mset.cfg.Sources = append(mset.cfg.Sources, s)
 					si := &sourceInfo{name: s.Name, iname: s.iname, sf: s.FilterSubject}
 					// Check for transform.
-					if s.SubjectTransform != _EMPTY_ {
+					if s.SubjectTransformDest != _EMPTY_ {
 						var err error
-						if si.tr, err = newSubjectTransform(s.FilterSubject, s.SubjectTransform); err != nil {
+						if si.tr, err = newSubjectTransform(s.FilterSubject, s.SubjectTransformDest); err != nil {
 							return err
 						}
 					}
@@ -1726,7 +1726,7 @@ func (mset *stream) sourceInfo(si *sourceInfo) *StreamSourceInfo {
 
 	var ssi = StreamSourceInfo{Name: si.name, Lag: si.lag, Error: si.err, FilterSubject: si.sf}
 	if si.tr != nil {
-		ssi.SubjectTransform = si.tr.dest
+		ssi.SubjectTransformDest = si.tr.dest
 	}
 	// If we have not heard from the source, set Active to -1.
 	if si.last.IsZero() {
@@ -2867,8 +2867,8 @@ func (mset *stream) startingSequenceForSources() {
 		}
 		si := &sourceInfo{name: ssi.Name, iname: ssi.iname, sf: ssi.FilterSubject}
 		// Check for transform.
-		if ssi.SubjectTransform != _EMPTY_ {
-			si.tr, _ = newSubjectTransform(ssi.FilterSubject, ssi.SubjectTransform) // can not return an error because validated in AddStream
+		if ssi.SubjectTransformDest != _EMPTY_ {
+			si.tr, _ = newSubjectTransform(ssi.FilterSubject, ssi.SubjectTransformDest) // can not return an error because validated in AddStream
 		}
 
 		mset.sources[ssi.iname] = si
