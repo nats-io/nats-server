@@ -2462,3 +2462,41 @@ func TestJetStreamClusterDirectGetStreamUpgrade(t *testing.T) {
 	require_NoError(t, err)
 	require_True(t, string(entry.Value()) == "derek")
 }
+
+// https://github.com/nats-io/nats-server/issues/3791
+func TestJetStreamClusterKVWatchersWithServerDown(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
+		Bucket:   "TEST",
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	kv.PutString("foo", "bar")
+	kv.PutString("foo", "baz")
+
+	// Shutdown a follower.
+	s := c.randomNonStreamLeader(globalAccountName, "KV_TEST")
+	s.Shutdown()
+	c.waitOnLeader()
+
+	nc, _ = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	js, err = nc.JetStream(nats.MaxWait(2 * time.Second))
+	require_NoError(t, err)
+
+	kv, err = js.KeyValue("TEST")
+	require_NoError(t, err)
+
+	for i := 0; i < 100; i++ {
+		w, err := kv.Watch("foo")
+		require_NoError(t, err)
+		w.Stop()
+	}
+}
