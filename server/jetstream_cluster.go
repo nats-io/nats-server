@@ -6147,14 +6147,36 @@ func decodeStreamAssignment(buf []byte) (*streamAssignment, error) {
 
 // createGroupForConsumer will create a new group from same peer set as the stream.
 func (cc *jetStreamCluster) createGroupForConsumer(cfg *ConsumerConfig, sa *streamAssignment) *raftGroup {
-	peers := copyStrings(sa.Group.Peers)
-	if len(peers) == 0 {
+	if len(sa.Group.Peers) == 0 || cfg.Replicas > len(sa.Group.Peers) {
 		return nil
 	}
-	if cfg.Replicas > 0 && cfg.Replicas != len(peers) {
-		// First shuffle the peers and then select to account for replica = 1.
-		rand.Shuffle(len(peers), func(i, j int) { peers[i], peers[j] = peers[j], peers[i] })
-		peers = peers[:cfg.Replicas]
+
+	peers := copyStrings(sa.Group.Peers)
+	var _ss [5]string
+	active := _ss[:0]
+
+	// Calculate all active peers.
+	for _, peer := range peers {
+		if sir, ok := cc.s.nodeToInfo.Load(peer); ok && sir != nil {
+			if !sir.(nodeInfo).offline {
+				active = append(active, peer)
+			}
+		}
+	}
+	if quorum := cfg.Replicas/2 + 1; quorum > len(active) {
+		// Not enough active to satisfy the request.
+		return nil
+	}
+
+	// If we want less then our parent stream, select from active.
+	if cfg.Replicas > 0 && cfg.Replicas < len(peers) {
+		// Pedantic in case stream is say R5 and consumer is R3 and 3 or more offline, etc.
+		if len(active) < cfg.Replicas {
+			return nil
+		}
+		// First shuffle the active peers and then select to account for replica = 1.
+		rand.Shuffle(len(active), func(i, j int) { active[i], active[j] = active[j], active[i] })
+		peers = active[:cfg.Replicas]
 	}
 	storage := sa.Config.Storage
 	if cfg.MemoryStorage {
