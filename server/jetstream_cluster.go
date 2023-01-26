@@ -1264,6 +1264,16 @@ func (js *jetStream) applyMetaSnapshot(buf []byte) error {
 			js.processConsumerAssignment(ca)
 		}
 	}
+
+	// Perform updates on those in saChk. These were existing so make
+	// sure to process any changes.
+	for _, sa := range saChk {
+		if isRecovering {
+			js.setStreamAssignmentRecovering(sa)
+		}
+		js.processUpdateStreamAssignment(sa)
+	}
+
 	// Now do the deltas for existing stream's consumers.
 	for _, ca := range caDel {
 		if isRecovering {
