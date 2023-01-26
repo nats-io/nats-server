@@ -167,6 +167,9 @@ const (
 	// JSConsumerReplicasExceedsStream consumer config replica count exceeds parent stream
 	JSConsumerReplicasExceedsStream ErrorIdentifier = 10126
 
+	// JSConsumerReplicasShouldMatchStream consumer config replicas must match interest retention stream's replicas
+	JSConsumerReplicasShouldMatchStream ErrorIdentifier = 10134
+
 	// JSConsumerSmallHeartbeatErr consumer idle heartbeat needs to be >= 100ms
 	JSConsumerSmallHeartbeatErr ErrorIdentifier = 10083
 
@@ -458,6 +461,7 @@ var (
 		JSConsumerPushMaxWaitingErr:                {Code: 400, ErrCode: 10080, Description: "consumer in push mode can not set max waiting"},
 		JSConsumerReplacementWithDifferentNameErr:  {Code: 400, ErrCode: 10106, Description: "consumer replacement durable config not the same"},
 		JSConsumerReplicasExceedsStream:            {Code: 400, ErrCode: 10126, Description: "consumer config replica count exceeds parent stream"},
+		JSConsumerReplicasShouldMatchStream:        {Code: 400, ErrCode: 10134, Description: "consumer config replicas must match interest retention stream's replicas"},
 		JSConsumerSmallHeartbeatErr:                {Code: 400, ErrCode: 10083, Description: "consumer idle heartbeat needs to be >= 100ms"},
 		JSConsumerStoreFailedErrF:                  {Code: 500, ErrCode: 10104, Description: "error creating store for consumer: {err}"},
 		JSConsumerWQConsumerNotDeliverAllErr:       {Code: 400, ErrCode: 10101, Description: "consumer must be deliver all on workqueue stream"},
@@ -1147,6 +1151,16 @@ func NewJSConsumerReplicasExceedsStreamError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSConsumerReplicasExceedsStream]
+}
+
+// NewJSConsumerReplicasShouldMatchStreamError creates a new JSConsumerReplicasShouldMatchStream error: "consumer config replicas must match interest retention stream's replicas"
+func NewJSConsumerReplicasShouldMatchStreamError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerReplicasShouldMatchStream]
 }
 
 // NewJSConsumerSmallHeartbeatError creates a new JSConsumerSmallHeartbeatErr error: "consumer idle heartbeat needs to be >= 100ms"

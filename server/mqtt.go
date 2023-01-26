@@ -3701,9 +3701,6 @@ func (sess *mqttSession) processJSConsumer(c *client, subject, sid string,
 			MaxAckPending:  maxAckPending,
 			MemoryStorage:  opts.MQTT.ConsumerMemoryStorage,
 		}
-		if r := opts.MQTT.ConsumerReplicas; r > 0 {
-			cc.Replicas = r
-		}
 		if opts.MQTT.ConsumerInactiveThreshold > 0 {
 			cc.InactiveThreshold = opts.MQTT.ConsumerInactiveThreshold
 		}

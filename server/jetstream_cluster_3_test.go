@@ -2463,6 +2463,34 @@ func TestJetStreamClusterDirectGetStreamUpgrade(t *testing.T) {
 	require_True(t, string(entry.Value()) == "derek")
 }
 
+// For interest (or workqueue) based streams its important to match the replication factor.
+// This was the case but now that more control over consumer creation is allowed its possible
+// to create a consumer where the replication factor does not match. This could cause
+// instability in the state between servers and cause problems on leader switches.
+func TestJetStreamClusterInterestPolicyStreamForConsumersToMatchRFactor(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.InterestPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "XX",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  1,
+	})
+
+	require_Error(t, err, NewJSConsumerReplicasShouldMatchStreamError())
+}
+
 // https://github.com/nats-io/nats-server/issues/3791
 func TestJetStreamClusterKVWatchersWithServerDown(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
