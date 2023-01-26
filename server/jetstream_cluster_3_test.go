@@ -2468,12 +2468,6 @@ func TestJetStreamClusterDirectGetStreamUpgrade(t *testing.T) {
 // to create a consumer where the replication factor does not match. This could cause
 // instability in the state between servers and cause problems on leader switches.
 func TestJetStreamClusterInterestPolicyStreamForConsumersToMatchRFactor(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "R3S", 3)
-	defer c.shutdown()
-
-	nc, js := jsClientConnect(t, c.randomServer())
-	defer nc.Close()
-
 	_, err := js.AddStream(&nats.StreamConfig{
 		Name:      "TEST",
 		Subjects:  []string{"foo"},
@@ -2489,4 +2483,42 @@ func TestJetStreamClusterInterestPolicyStreamForConsumersToMatchRFactor(t *testi
 	})
 
 	require_Error(t, err, NewJSConsumerReplicasShouldMatchStreamError())
+}
+
+// https://github.com/nats-io/nats-server/issues/3791
+func TestJetStreamClusterKVWatchersWithServerDown(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
+		Bucket:   "TEST",
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	kv.PutString("foo", "bar")
+	kv.PutString("foo", "baz")
+
+	// Shutdown a follower.
+	s := c.randomNonStreamLeader(globalAccountName, "KV_TEST")
+	s.Shutdown()
+	c.waitOnLeader()
+
+	nc, _ = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	js, err = nc.JetStream(nats.MaxWait(2 * time.Second))
+	require_NoError(t, err)
+
+	kv, err = js.KeyValue("TEST")
+	require_NoError(t, err)
+
+	for i := 0; i < 100; i++ {
+		w, err := kv.Watch("foo")
+		require_NoError(t, err)
+		w.Stop()
+	}
 }
