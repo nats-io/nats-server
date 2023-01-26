@@ -389,7 +389,6 @@ func checkConsumerCfg(
 		// We handle recovering in a different spot to allow consumer to come up
 		// if previous version allowed it to be created. We do not want it to not come up.
 		if !isRecovering && config.Replicas != 0 && config.Replicas != cfg.Replicas {
-			fmt.Printf("config is %+v\n", config)
 			return NewJSConsumerReplicasShouldMatchStreamError()
 		}
 	}
