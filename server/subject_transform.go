@@ -172,8 +172,8 @@ func transformIndexIntArgsHelper(token string, args []string, transformType int1
 }
 
 // Helper to ingest and index the subjectTransform destination token (e.g. $x or {{}}) in the token
-// returns a transformation type, and three function arguments: an array of source subject token indexes, and a single number (e.g. number of partitions, or a slice size), and a string (e.g.a split delimiter)
-
+// returns a transformation type, and three function arguments: an array of source subject token indexes,
+// and a single number (e.g. number of partitions, or a slice size), and a string (e.g.a split delimiter)
 func indexPlaceHolders(token string) (int16, []int, int32, string, error) {
 	length := len(token)
 	if length > 1 {

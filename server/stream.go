@@ -1724,11 +1724,9 @@ func (mset *stream) sourceInfo(si *sourceInfo) *StreamSourceInfo {
 		return nil
 	}
 
-	var ssi *StreamSourceInfo
+	var ssi = StreamSourceInfo{Name: si.name, Lag: si.lag, Error: si.err, FilterSubject: si.sf}
 	if si.tr != nil {
-		ssi = &StreamSourceInfo{Name: si.name, Lag: si.lag, Error: si.err, FilterSubject: si.sf, SubjectTransform: si.tr.dest}
-	} else {
-		ssi = &StreamSourceInfo{Name: si.name, Lag: si.lag, Error: si.err, FilterSubject: si.sf}
+		ssi.SubjectTransform = si.tr.dest
 	}
 	// If we have not heard from the source, set Active to -1.
 	if si.last.IsZero() {
@@ -1749,7 +1747,7 @@ func (mset *stream) sourceInfo(si *sourceInfo) *StreamSourceInfo {
 			DeliverPrefix: ext.DeliverPrefix,
 		}
 	}
-	return ssi
+	return &ssi
 }
 
 // Return our source info for our mirror.
