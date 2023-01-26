@@ -16594,24 +16594,38 @@ func TestJetStreamPullMaxBytes(t *testing.T) {
 	req = &JSApiConsumerGetNextRequest{Batch: 1, MaxBytes: 10_000_000, NoWait: true}
 	jreq, _ = json.Marshal(req)
 	nc.PublishRequest(subj, reply, jreq)
-	checkSubsPending(t, sub, 1)
+	// we expect two messages, as the second one should be `Batch Completed` status.
+	checkSubsPending(t, sub, 2)
 
+	// first one is message from the stream.
 	m, err = sub.NextMsg(time.Second)
 	require_NoError(t, err)
 	require_True(t, len(m.Data) == dsz)
 	require_True(t, len(m.Header) == 0)
+	// second one is the status.
+	m, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	if v := m.Header.Get("Description"); v != "Batch Completed" {
+		t.Fatalf("Expected Batch Completed, got: %s", v)
+	}
 	checkSubsPending(t, sub, 0)
 
 	// Same but with batch > 1
 	req = &JSApiConsumerGetNextRequest{Batch: 5, MaxBytes: 10_000_000, NoWait: true}
 	jreq, _ = json.Marshal(req)
 	nc.PublishRequest(subj, reply, jreq)
-	checkSubsPending(t, sub, 5)
+	// 6, not 5, as 6th is the status.
+	checkSubsPending(t, sub, 6)
 	for i := 0; i < 5; i++ {
 		m, err = sub.NextMsg(time.Second)
 		require_NoError(t, err)
 		require_True(t, len(m.Data) == dsz)
 		require_True(t, len(m.Header) == 0)
+	}
+	m, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	if v := m.Header.Get("Description"); v != "Batch Completed" {
+		t.Fatalf("Expected Batch Completed, got: %s", v)
 	}
 	checkSubsPending(t, sub, 0)
 
@@ -19118,4 +19132,57 @@ func TestJetStreamMsgBlkFailOnKernelFault(t *testing.T) {
 		t.Fatalf("MaxBytes not enforced with empty interior msg blk, max %v, bytes %v",
 			friendlyBytes(si.Config.MaxBytes), friendlyBytes(int64(si.State.Bytes)))
 	}
+}
+
+func TestJetStreamPullConsumerBatchCompleted(t *testing.T) {
+
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	msgSize := 128
+	msg := make([]byte, msgSize)
+	rand.Read(msg)
+
+	for i := 0; i < 10; i++ {
+		_, err := js.Publish("foo", msg)
+		require_NoError(t, err)
+	}
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "dur",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	req := JSApiConsumerGetNextRequest{Batch: 0, MaxBytes: 1024, Expires: 250 * time.Millisecond}
+
+	reqb, _ := json.Marshal(req)
+	sub := natsSubSync(t, nc, nats.NewInbox())
+	err = nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.dur", sub.Subject, reqb)
+	require_NoError(t, err)
+
+	// Expect first message to arrive normally.
+	_, err = sub.NextMsg(time.Second * 1)
+	require_NoError(t, err)
+
+	// Second message should be info that batch is complete, but there were pending bytes.
+	pullMsg, err := sub.NextMsg(time.Second * 1)
+	require_NoError(t, err)
+
+	if v := pullMsg.Header.Get("Status"); v != "409" {
+		t.Fatalf("Expected 409, got: %s", v)
+	}
+	if v := pullMsg.Header.Get("Description"); v != "Batch Completed" {
+		t.Fatalf("Expected Batch Completed, got: %s", v)
+	}
+
 }
