@@ -408,6 +408,47 @@ func (cc *jetStreamCluster) isStreamCurrent(account, stream string) bool {
 	return false
 }
 
+// isStreamHealthy will determine if the stream is up to date or very close.
+// For R1 it will make sure the stream is present on this server.
+// Read lock should be held.
+func (cc *jetStreamCluster) isStreamHealthy(account, stream string) bool {
+	if cc == nil {
+		// Non-clustered mode
+		return true
+	}
+	as := cc.streams[account]
+	if as == nil {
+		return false
+	}
+	sa := as[stream]
+	if sa == nil {
+		return false
+	}
+	rg := sa.Group
+	if rg == nil {
+		return false
+	}
+
+	if rg.node == nil || rg.node.Healthy() {
+		// Check if we are processing a snapshot and are catching up.
+		acc, err := cc.s.LookupAccount(account)
+		if err != nil {
+			return false
+		}
+		mset, err := acc.lookupStream(stream)
+		if err != nil {
+			return false
+		}
+		if mset.isCatchingUp() {
+			return false
+		}
+		// Success.
+		return true
+	}
+
+	return false
+}
+
 // isConsumerCurrent will determine if the consumer is up to date.
 // For R1 it will make sure the consunmer is present on this server.
 // Read lock should be held.

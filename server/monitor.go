@@ -3105,7 +3105,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 		for stream, sa := range asa {
 			if sa.Group.isMember(ourID) {
 				// Make sure we can look up
-				if !cc.isStreamCurrent(acc, stream) {
+				if !cc.isStreamHealthy(acc, stream) {
 					health.Status = na
 					health.Error = fmt.Sprintf("JetStream stream '%s > %s' is not current", acc, stream)
 					return health
