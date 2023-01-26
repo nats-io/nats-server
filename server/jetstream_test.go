@@ -19294,3 +19294,72 @@ func TestJetStreamMsgBlkFailOnKernelFault(t *testing.T) {
 			friendlyBytes(si.Config.MaxBytes), friendlyBytes(int64(si.State.Bytes)))
 	}
 }
+
+func TestJetStreamConsumerFilterUpdate(t *testing.T) {
+
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.>", "bar.>"},
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 3; i++ {
+		sendStreamMsg(t, nc, "foo.data", "OK")
+	}
+
+	sub, err := nc.SubscribeSync("deliver")
+	require_NoError(t, err)
+
+	js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:        "consumer",
+		DeliverSubject: "deliver",
+		FilterSubject:  "foo.data",
+	})
+
+	_, err = sub.NextMsg(time.Second * 1)
+	require_NoError(t, err)
+	_, err = sub.NextMsg(time.Second * 1)
+	require_NoError(t, err)
+	_, err = sub.NextMsg(time.Second * 1)
+	require_NoError(t, err)
+
+	_, err = js.UpdateConsumer("TEST", &nats.ConsumerConfig{
+		Durable:        "consumer",
+		DeliverSubject: "deliver",
+		FilterSubject:  "foo.>",
+	})
+	require_NoError(t, err)
+
+	sendStreamMsg(t, nc, "foo.other", "data")
+
+	// This will timeout if filters were not properly updated.
+	_, err = sub.NextMsg(time.Second * 1)
+	require_NoError(t, err)
+
+	mset, err := s.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	mset.mu.RLock()
+	require_True(t, mset.numFilter == 1)
+	mset.mu.RUnlock()
+
+	// Update consumer once again, now not having any filters
+	_, err = js.UpdateConsumer("TEST", &nats.ConsumerConfig{
+		Durable:        "consumer",
+		DeliverSubject: "deliver",
+		FilterSubject:  "",
+	})
+	require_NoError(t, err)
+
+	// and expect that numFilter reports correctly.
+	mset.mu.RLock()
+	require_True(t, mset.numFilter == 0)
+	mset.mu.RUnlock()
+
+}

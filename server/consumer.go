@@ -1591,6 +1591,15 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 		}
 	}
 
+	if o.cfg.FilterSubject != cfg.FilterSubject {
+		if cfg.FilterSubject != _EMPTY_ {
+			o.filterWC = subjectHasWildcard(cfg.FilterSubject)
+		}
+		o.mset.mu.Lock()
+		o.mset.swapSigSubs(o, cfg.FilterSubject)
+		o.mset.mu.Unlock()
+	}
+
 	// Record new config for others that do not need special handling.
 	// Allowed but considered no-op, [Description, SampleFrequency, MaxWaiting, HeadersOnly]
 	o.cfg = *cfg
