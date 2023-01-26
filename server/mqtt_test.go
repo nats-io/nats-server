@@ -5788,6 +5788,9 @@ func TestMQTTConsumerReplicasValidate(t *testing.T) {
 	}
 }
 
+// This was ill-advised since the messages stream is currently interest policy.
+// Interest policy streams require consumers match the replica count.
+// Will leave her for now to make sure we do not override.
 func TestMQTTConsumerReplicasOverride(t *testing.T) {
 	conf := `
 		listen: 127.0.0.1:-1
@@ -5820,19 +5823,15 @@ func TestMQTTConsumerReplicasOverride(t *testing.T) {
 		mc, r := testMQTTConnectRetry(t, &mqttConnInfo{clientID: "test", cleanSess: false}, o.MQTT.Host, o.MQTT.Port, 5)
 		defer mc.Close()
 		testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, restarted)
-		testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+		testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: subject, qos: 1}}, []byte{1})
 
 		nc, js := jsClientConnect(t, cl.servers[2])
 		defer nc.Close()
 
 		for ci := range js.ConsumersInfo(mqttStreamName) {
-			if ci.Config.FilterSubject == mqttStreamSubjectPrefix+"foo" {
-				if len(ci.Cluster.Replicas) != 0 {
-					t.Fatalf("Expected consumer to be R1, got: %+v", ci.Cluster)
-				}
-			} else {
-				if len(ci.Cluster.Replicas) != 1 {
-					t.Fatalf("Expected consumer to be R2, got: %+v", ci.Cluster)
+			if ci.Config.FilterSubject == mqttStreamSubjectPrefix+subject {
+				if rf := len(ci.Cluster.Replicas) + 1; rf != 5 {
+					t.Fatalf("Expected consumer to be R5, got: %d", rf)
 				}
 			}
 		}
@@ -5852,17 +5851,16 @@ func TestMQTTConsumerReplicasOverride(t *testing.T) {
 	connectAndCheck("bar", true)
 }
 
-func TestMQTTConsumerReplicasReload(t *testing.T) {
+func TestMQTTConsumerMemStorageReload(t *testing.T) {
 	tmpl := `
 		jetstream: enabled
 		server_name: mqtt
 		mqtt {
 			port: -1
-			consumer_replicas: %v
 			consumer_memory_storage: %s
 		}
 	`
-	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, 3, "false")))
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, "false")))
 	s, o := RunServerWithConfig(conf)
 	defer testMQTTShutdownServer(s)
 
@@ -5872,18 +5870,8 @@ func TestMQTTConsumerReplicasReload(t *testing.T) {
 	c, r := testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: false}, o.MQTT.Host, o.MQTT.Port)
 	defer c.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
-	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{mqttSubAckFailure})
 
-	select {
-	case e := <-l.errCh:
-		if !strings.Contains(e, NewJSStreamReplicasNotSupportedError().Description) {
-			t.Fatalf("Expected error regarding replicas, got %v", e)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatalf("Did not get the error regarding replicas count")
-	}
-
-	reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmpl, 1, "true"))
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmpl, "true"))
 
 	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
 
@@ -5903,50 +5891,6 @@ func TestMQTTConsumerReplicasReload(t *testing.T) {
 	cons.mu.RUnlock()
 	if st != MemoryStorage {
 		t.Fatalf("Expected storage %v, got %v", MemoryStorage, st)
-	}
-}
-
-func TestMQTTConsumerReplicasExceedsParentStream(t *testing.T) {
-	conf := `
-		listen: 127.0.0.1:-1
-		server_name: %s
-		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
-
-		cluster {
-			name: %s
-			listen: 127.0.0.1:%d
-			routes = [%s]
-		}
-
-		mqtt {
-			listen: 127.0.0.1:-1
-			consumer_replicas: 4
-		}
-
-		# For access to system account.
-		accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
-	`
-	cl := createJetStreamClusterWithTemplate(t, conf, "MQTT", 3)
-	defer cl.shutdown()
-
-	l := &captureErrorLogger{errCh: make(chan string, 10)}
-	for _, s := range cl.servers {
-		s.SetLogger(l, false, false)
-	}
-
-	o := cl.opts[0]
-	mc, r := testMQTTConnectRetry(t, &mqttConnInfo{clientID: "test", cleanSess: false}, o.MQTT.Host, o.MQTT.Port, 2)
-	defer mc.Close()
-	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
-	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{mqttSubAckFailure})
-
-	select {
-	case e := <-l.errCh:
-		if !strings.Contains(e, NewJSConsumerReplicasExceedsStreamError().Description) {
-			t.Fatalf("Expected error regarding replicas exceeded parent, got %v", e)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatalf("Did not get the error regarding replicas count")
 	}
 }
 

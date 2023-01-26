@@ -47,6 +47,7 @@ type RaftNode interface {
 	Leader() bool
 	Quorum() bool
 	Current() bool
+	Healthy() bool
 	Term() uint64
 	GroupLeader() string
 	HadPreviousLeader() bool
@@ -1160,13 +1161,15 @@ func (n *raft) isCatchingUp() bool {
 	return n.catchup != nil
 }
 
-// Lock should be held.
-func (n *raft) isCurrent() bool {
-	// First check if have had activity and we match commit and applied.
-	if n.commit == 0 || n.commit != n.applied {
-		n.debug("Not current, commit %d != applied %d", n.commit, n.applied)
+// Lock should be held. This function may block for up to ~5ms to check
+// forward progress in some cases.
+func (n *raft) isCurrent(includeForwardProgress bool) bool {
+	// Check whether we've made progress on any state, 0 is invalid so not healthy.
+	if n.commit == 0 {
+		n.debug("Not current, no commits")
 		return false
 	}
+
 	// Make sure we are the leader or we know we have heard from the leader recently.
 	if n.state == Leader {
 		return true
@@ -1181,14 +1184,40 @@ func (n *raft) isCurrent() bool {
 	if n.leader != noLeader && n.leader != n.id && n.catchup == nil {
 		okInterval := int64(hbInterval) * 2
 		ts := time.Now().UnixNano()
-		if ps := n.peers[n.leader]; ps != nil && ps.ts > 0 && (ts-ps.ts) <= okInterval {
-			return true
+		if ps := n.peers[n.leader]; ps == nil || ps.ts == 0 && (ts-ps.ts) > okInterval {
+			n.debug("Not current, no recent leader contact")
+			return false
 		}
-		n.debug("Not current, no recent leader contact")
 	}
 	if cs := n.catchup; cs != nil {
 		n.debug("Not current, still catching up pindex=%d, cindex=%d", n.pindex, cs.cindex)
 	}
+
+	if n.commit == n.applied {
+		// At this point if we are current, we can return saying so.
+		return true
+	} else if !includeForwardProgress {
+		// Otherwise, if we aren't allowed to include forward progress
+		// (i.e. we are checking "current" instead of "healthy") then
+		// give up now.
+		return false
+	}
+
+	// Otherwise, wait for a short period of time and see if we are making any
+	// forward progress.
+	if startDelta := n.commit - n.applied; startDelta > 0 {
+		for i := 0; i < 10; i++ { // 5ms, in 0.5ms increments
+			n.RUnlock()
+			time.Sleep(time.Millisecond / 2)
+			n.RLock()
+			if n.commit-n.applied < startDelta {
+				// The gap is getting smaller, so we're making forward progress.
+				return true
+			}
+		}
+	}
+
+	n.warn("Falling behind in health check, commit %d != applied %d", n.commit, n.applied)
 	return false
 }
 
@@ -1199,7 +1228,17 @@ func (n *raft) Current() bool {
 	}
 	n.RLock()
 	defer n.RUnlock()
-	return n.isCurrent()
+	return n.isCurrent(false)
+}
+
+// Healthy returns if we are the leader for our group and nearly up-to-date.
+func (n *raft) Healthy() bool {
+	if n == nil {
+		return false
+	}
+	n.RLock()
+	defer n.RUnlock()
+	return n.isCurrent(true)
 }
 
 // HadPreviousLeader indicates if this group ever had a leader.
