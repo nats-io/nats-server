@@ -1328,5 +1328,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerMetadataLengthErrF",
+    "code": 400,
+    "error_code": 10135,
+    "description": "consumer metadata exceeds maximum size of {limit}",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

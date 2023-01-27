@@ -330,6 +330,10 @@ func generateJSMappingTable(domain string) map[string]string {
 // JSMaxDescription is the maximum description length for streams and consumers.
 const JSMaxDescriptionLen = 4 * 1024
 
+// JSMaxMetadataLen is the maximum length for streams an consumers metadata map.
+// It's calculated by summing length of all keys an values.
+const JSMaxMetadataLen = 128 * 1024
+
 // JSMaxNameLen is the maximum name lengths for streams, consumers and templates.
 // Picked 255 as it seems to be a widely used file name limit
 const JSMaxNameLen = 255
