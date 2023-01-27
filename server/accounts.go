@@ -619,7 +619,7 @@ func (a *Account) AddWeightedMappings(src string, dests ...*MapDest) error {
 		if err != nil {
 			return err
 		}
-		tr, err := newSubjectTransform(src, d.Subject)
+		tr, err := NewSubjectTransform(src, d.Subject)
 		if err != nil {
 			return err
 		}
@@ -650,7 +650,7 @@ func (a *Account) AddWeightedMappings(src string, dests ...*MapDest) error {
 				// We need to make the appropriate markers for the wildcards etc.
 				dest = transformTokenize(dest)
 			}
-			tr, err := newSubjectTransform(src, dest)
+			tr, err := NewSubjectTransform(src, dest)
 			if err != nil {
 				return nil, err
 			}
@@ -1828,7 +1828,7 @@ func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Im
 		} else {
 			to, _ = transformUntokenize(to)
 			// Create a transform. Do so in reverse such that $ symbols only exist in to
-			if tr, err = newSubjectTransform(to, transformTokenize(from)); err != nil {
+			if tr, err = NewSubjectTransform(to, transformTokenize(from)); err != nil {
 				a.mu.Unlock()
 				return nil, fmt.Errorf("failed to create mapping transform for service import subject %q to %q: %v",
 					from, to, err)
@@ -2375,7 +2375,7 @@ func (a *Account) AddMappedStreamImportWithClaim(account *Account, from, to stri
 			usePub = true
 		} else {
 			// Create a transform
-			if tr, err = newSubjectTransform(from, transformTokenize(to)); err != nil {
+			if tr, err = NewSubjectTransform(from, transformTokenize(to)); err != nil {
 				return fmt.Errorf("failed to create mapping transform for stream import subject %q to %q: %v",
 					from, to, err)
 			}

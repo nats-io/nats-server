@@ -76,7 +76,7 @@ func TestPlaceHolderIndex(t *testing.T) {
 func TestSubjectTransforms(t *testing.T) {
 	shouldErr := func(src, dest string) {
 		t.Helper()
-		if _, err := newSubjectTransform(src, dest); err != ErrBadSubject && !errors.Is(err, ErrInvalidMappingDestination) {
+		if _, err := NewSubjectTransform(src, dest); err != ErrBadSubject && !errors.Is(err, ErrInvalidMappingDestination) {
 			t.Fatalf("Did not get an error for src=%q and dest=%q", src, dest)
 		}
 	}
@@ -107,7 +107,7 @@ func TestSubjectTransforms(t *testing.T) {
 
 	shouldBeOK := func(src, dest string) *subjectTransform {
 		t.Helper()
-		tr, err := newSubjectTransform(src, dest)
+		tr, err := NewSubjectTransform(src, dest)
 		if err != nil {
 			t.Fatalf("Got an error %v for src=%q and dest=%q", err, src, dest)
 		}
