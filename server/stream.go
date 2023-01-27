@@ -430,7 +430,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 			ssi.setIndexName(i)
 			// check the transform, if any, is valid
 			if ssi.SubjectTransformDest != _EMPTY_ {
-				if _, err = newSubjectTransform(ssi.FilterSubject, ssi.SubjectTransformDest); err != nil {
+				if _, err = NewSubjectTransform(ssi.FilterSubject, ssi.SubjectTransformDest); err != nil {
 					jsa.mu.Unlock()
 					return nil, fmt.Errorf("subject transform for the source not valid %w", err)
 				}
@@ -483,7 +483,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 
 	// Check for input subject transform
 	if cfg.SubjectTransform != nil {
-		tr, err := newSubjectTransform(cfg.SubjectTransform.Source, cfg.SubjectTransform.Destination)
+		tr, err := NewSubjectTransform(cfg.SubjectTransform.Source, cfg.SubjectTransform.Destination)
 		if err != nil {
 			jsa.mu.Unlock()
 			return nil, fmt.Errorf("stream input subject transform not valid %w", err)
@@ -493,7 +493,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 
 	// Check for RePublish.
 	if cfg.RePublish != nil {
-		tr, err := newSubjectTransform(cfg.RePublish.Source, cfg.RePublish.Destination)
+		tr, err := NewSubjectTransform(cfg.RePublish.Source, cfg.RePublish.Destination)
 		if err != nil {
 			jsa.mu.Unlock()
 			return nil, fmt.Errorf("stream republish transform not valid %w", err)
@@ -1291,7 +1291,7 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		if formsCycle {
 			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration for republish destination forms a cycle"))
 		}
-		if _, err := newSubjectTransform(cfg.RePublish.Source, cfg.RePublish.Destination); err != nil {
+		if _, err := NewSubjectTransform(cfg.RePublish.Source, cfg.RePublish.Destination); err != nil {
 			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration for republish not valid"))
 		}
 	}
@@ -1522,7 +1522,7 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 					// Check for transform.
 					if s.SubjectTransformDest != _EMPTY_ {
 						var err error
-						if si.tr, err = newSubjectTransform(s.FilterSubject, s.SubjectTransformDest); err != nil {
+						if si.tr, err = NewSubjectTransform(s.FilterSubject, s.SubjectTransformDest); err != nil {
 							return err
 						}
 					}
@@ -1579,7 +1579,7 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 		if cfg.RePublish.Source == _EMPTY_ {
 			cfg.RePublish.Source = fwcs
 		}
-		tr, err := newSubjectTransform(cfg.RePublish.Source, cfg.RePublish.Destination)
+		tr, err := NewSubjectTransform(cfg.RePublish.Source, cfg.RePublish.Destination)
 		if err != nil {
 			jsa.mu.Unlock()
 			return fmt.Errorf("stream configuration for republish not valid")
@@ -2879,7 +2879,7 @@ func (mset *stream) startingSequenceForSources() {
 		si := &sourceInfo{name: ssi.Name, iname: ssi.iname, sf: ssi.FilterSubject}
 		// Check for transform.
 		if ssi.SubjectTransformDest != _EMPTY_ {
-			si.tr, _ = newSubjectTransform(ssi.FilterSubject, ssi.SubjectTransformDest) // can not return an error because validated in AddStream
+			si.tr, _ = NewSubjectTransform(ssi.FilterSubject, ssi.SubjectTransformDest) // can not return an error because validated in AddStream
 		}
 
 		mset.sources[ssi.iname] = si

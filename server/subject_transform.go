@@ -56,17 +56,17 @@ type subjectTransform struct {
 	dtokmfstringargs     []string // destination token mapping function string arguments
 }
 
-// SubjectTransform transforms subjects using mappings
+// SubjectTransformer transforms subjects using mappings
 //
 // This API is not part of the public API and not subject to SemVer protections
-type SubjectTransform interface {
+type SubjectTransformer interface {
 	// TODO(dlc) - We could add in client here to allow for things like foo -> foo.$ACCOUNT
 	Match(string) (string, error)
 	TransformSubject(subject string) string
 	TransformTokenizedSubject(tokens []string) string
 }
 
-func newSubjectTransform(src, dest string) (*subjectTransform, error) {
+func NewSubjectTransform(src, dest string) (*subjectTransform, error) {
 	// No source given is equivalent to the source being ">"
 	if src == _EMPTY_ {
 		src = fwcs
@@ -493,7 +493,7 @@ func (tr *subjectTransform) TransformTokenizedSubject(tokens []string) string {
 // Reverse a subjectTransform.
 func (tr *subjectTransform) reverse() *subjectTransform {
 	if len(tr.dtokmftokindexesargs) == 0 {
-		rtr, _ := newSubjectTransform(tr.dest, tr.src)
+		rtr, _ := NewSubjectTransform(tr.dest, tr.src)
 		return rtr
 	}
 	// If we are here we need to dynamically get the correct reverse
@@ -513,6 +513,6 @@ func (tr *subjectTransform) reverse() *subjectTransform {
 		}
 	}
 	ndest := strings.Join(nda, tsep)
-	rtr, _ := newSubjectTransform(nsrc, ndest)
+	rtr, _ := NewSubjectTransform(nsrc, ndest)
 	return rtr
 }
