@@ -2576,3 +2576,47 @@ func TestJetStreamClusterCurrentVsHealth(t *testing.T) {
 		}
 	}
 }
+
+// Several users and customers use this setup, but many times across leafnodes.
+// This should be allowed in same account since we are really protecting against
+// multiple pub acks with cycle detection.
+func TestJetStreamClusterActiveActiveSourcedStreams(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "A",
+		Subjects: []string{"A.>"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "B",
+		Subjects: []string{"B.>"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:     "A",
+		Subjects: []string{"A.>"},
+		Sources: []*nats.StreamSource{{
+			Name:          "B",
+			FilterSubject: "B.>",
+		}},
+	})
+	require_NoError(t, err)
+
+	// Before this would fail.
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:     "B",
+		Subjects: []string{"B.>"},
+		Sources: []*nats.StreamSource{{
+			Name:          "A",
+			FilterSubject: "A.>",
+		}},
+	})
+	require_NoError(t, err)
+}
