@@ -6598,9 +6598,12 @@ func TestJetStreamClusterSnapshotBeforePurgeAndCatchup(t *testing.T) {
 	mset, err = nl.GlobalAccount().lookupStream("TEST")
 	require_NoError(t, err)
 
-	if state := mset.state(); state.FirstSeq != 2001 || state.LastSeq != 3000 {
-		t.Fatalf("Incorrect state: %+v", state)
-	}
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		if state := mset.state(); state.FirstSeq != 2001 || state.LastSeq != 3000 {
+			return fmt.Errorf("Incorrect state: %+v", state)
+		}
+		return nil
+	})
 
 	// Make sure we only sent 1 sync catchup msg.
 	nmsgs, _, _ := sub.Pending()
