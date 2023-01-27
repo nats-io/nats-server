@@ -1801,7 +1801,7 @@ func (c *client) processConnect(arg []byte) error {
 			}
 		}
 		if ncs != _EMPTY_ {
-			c.ncs.Store(fmt.Sprintf("%s - %q", c, ncs))
+			c.ncs.CompareAndSwap(nil, fmt.Sprintf("%s - %q", c, ncs))
 		}
 	}
 
