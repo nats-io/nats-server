@@ -873,8 +873,7 @@ func (ms *memStore) State() StreamState {
 
 	// Calculate interior delete details.
 	if state.LastSeq > state.FirstSeq {
-		state.NumDeleted = int((state.LastSeq - state.FirstSeq) - state.Msgs + 1)
-		if state.NumDeleted > 0 {
+		if state.NumDeleted = int((state.LastSeq - state.FirstSeq) - state.Msgs + 1); state.NumDeleted > 0 {
 			state.Deleted = make([]uint64, 0, state.NumDeleted)
 			// TODO(dlc) - Too Simplistic, once state is updated to allow runs etc redo.
 			for seq := state.FirstSeq + 1; seq < ms.state.LastSeq; seq++ {
