@@ -429,11 +429,9 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		for i, ssi := range cfg.Sources {
 			ssi.setIndexName(i)
 			// check the filter, if any, is valid
-			if ssi.FilterSubject != _EMPTY_ {
-				if !IsValidSubject(ssi.FilterSubject) {
-					jsa.mu.Unlock()
-					return nil, fmt.Errorf("subject filter '%s' for the source %w", ssi.FilterSubject, ErrBadSubject)
-				}
+			if ssi.FilterSubject != _EMPTY_ && !IsValidSubject(ssi.FilterSubject) {
+				jsa.mu.Unlock()
+				return nil, fmt.Errorf("subject filter '%s' for the source %w", ssi.FilterSubject, ErrBadSubject)
 			}
 			// check the transform, if any, is valid
 			if ssi.SubjectTransformDest != _EMPTY_ {
@@ -1646,7 +1644,8 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 			return fmt.Errorf("stream configuration for subject transform from '%s' to '%s' %w", cfg.SubjectTransform.Source, cfg.SubjectTransform.Destination, err)
 		}
 		mset.itr = tr
-	} else if ocfg.SubjectTransform != nil && cfg.SubjectTransform != nil && (ocfg.SubjectTransform.Source != cfg.SubjectTransform.Source || ocfg.SubjectTransform.Destination != cfg.SubjectTransform.Destination) {
+	} else if ocfg.SubjectTransform != nil && cfg.SubjectTransform != nil &&
+		(ocfg.SubjectTransform.Source != cfg.SubjectTransform.Source || ocfg.SubjectTransform.Destination != cfg.SubjectTransform.Destination) {
 		tr, err := NewSubjectTransform(cfg.SubjectTransform.Source, cfg.SubjectTransform.Destination)
 		if err != nil {
 			mset.mu.Unlock()
