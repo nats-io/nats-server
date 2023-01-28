@@ -2987,11 +2987,15 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				return
 			}
 			// Save in memory for faster processing during applyCommit.
-			n.pae[n.pindex] = ae
-			if l := len(n.pae); l > paeWarnThreshold && l%paeWarnModulo == 0 {
-				n.warn("%d append entries pending", len(n.pae))
+			// Only save so many however to avoid memory bloat.
+			if l := len(n.pae); l <= paeDropThreshold {
+				n.pae[n.pindex], l = ae, l+1
+				if l > paeWarnThreshold && l%paeWarnModulo == 0 {
+					n.warn("%d append entries pending", len(n.pae))
+				}
+			} else {
+				n.debug("Not saving to append entries pending")
 			}
-
 		} else {
 			// This is a replay on startup so just take the appendEntry version.
 			n.pterm = ae.term
@@ -3140,8 +3144,11 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 	return nil
 }
 
-const paeWarnThreshold = 20_000
-const paeWarnModulo = 5_000
+const (
+	paeDropThreshold = 20_000
+	paeWarnThreshold = 10_000
+	paeWarnModulo    = 5_000
+)
 
 func (n *raft) sendAppendEntry(entries []*Entry) {
 	n.Lock()
