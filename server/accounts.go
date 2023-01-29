@@ -1830,7 +1830,7 @@ func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Im
 			// Create a transform. Do so in reverse such that $ symbols only exist in to
 			if tr, err = NewSubjectTransform(to, transformTokenize(from)); err != nil {
 				a.mu.Unlock()
-				return nil, fmt.Errorf("failed to create mapping transform for service import subject %q to %q: %v",
+				return nil, fmt.Errorf("failed to create mapping transform for service import subject from %q to %q: %v",
 					from, to, err)
 			} else {
 				// un-tokenize and reverse transform so we get the transform needed
@@ -2376,7 +2376,7 @@ func (a *Account) AddMappedStreamImportWithClaim(account *Account, from, to stri
 		} else {
 			// Create a transform
 			if tr, err = NewSubjectTransform(from, transformTokenize(to)); err != nil {
-				return fmt.Errorf("failed to create mapping transform for stream import subject %q to %q: %v",
+				return fmt.Errorf("failed to create mapping transform for stream import subject from %q to %q: %v",
 					from, to, err)
 			}
 			to, _ = transformUntokenize(to)
