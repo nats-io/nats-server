@@ -1606,7 +1606,6 @@ func TestJetStreamClusterStreamSnapshotCatchup(t *testing.T) {
 	sendBatch(2)
 
 	sl := c.streamLeader("$G", "TEST")
-
 	sl.Shutdown()
 	c.waitOnStreamLeader("$G", "TEST")
 
@@ -1645,9 +1644,12 @@ func TestJetStreamClusterStreamSnapshotCatchup(t *testing.T) {
 	mset, err = sl.GlobalAccount().lookupStream("TEST")
 	require_NoError(t, err)
 
-	if nstate := mset.stateWithDetail(true); !reflect.DeepEqual(ostate, nstate) {
-		t.Fatalf("States do not match after recovery: %+v vs %+v", ostate, nstate)
-	}
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		if nstate := mset.stateWithDetail(true); !reflect.DeepEqual(ostate, nstate) {
+			return fmt.Errorf("States do not match after recovery: %+v vs %+v", ostate, nstate)
+		}
+		return nil
+	})
 }
 
 func TestJetStreamClusterDeleteMsg(t *testing.T) {

@@ -4478,7 +4478,7 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 		if deleteFlag {
 			n.Delete()
 			sa = mset.sa
-		} else {
+		} else if n.NeedSnapshot() {
 			// Attempt snapshot on clean exit.
 			n.InstallSnapshot(mset.stateSnapshotLocked())
 			n.Stop()

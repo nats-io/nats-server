@@ -849,7 +849,7 @@ func (n *raft) ResumeApply() {
 	n.resetElectionTimeout()
 }
 
-// Compact will compact our WAL.
+// Compact will compact our WAL up to and including index.
 // This is for when we know we have our state on stable storage.
 // E.g. snapshots.
 func (n *raft) Compact(index uint64) error {
@@ -859,7 +859,7 @@ func (n *raft) Compact(index uint64) error {
 	if n.werr != nil {
 		return n.werr
 	}
-	_, err := n.wal.Compact(index)
+	_, err := n.wal.Compact(index + 1)
 	if err != nil {
 		n.setWriteErrLocked(err)
 	}
@@ -1016,7 +1016,7 @@ func (n *raft) InstallSnapshot(data []byte) error {
 func (n *raft) NeedSnapshot() bool {
 	n.RLock()
 	defer n.RUnlock()
-	return n.snapfile == _EMPTY_ && n.applied > 0
+	return n.snapfile == _EMPTY_ && n.applied > 1
 }
 
 const (
@@ -1094,7 +1094,7 @@ func (n *raft) setupLastSnapshot() {
 		n.commit = snap.lastIndex
 		n.applied = snap.lastIndex
 		n.apply.push(&CommittedEntry{n.commit, []*Entry{{EntrySnapshot, snap.data}}})
-		if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
+		if _, err := n.wal.Compact(snap.lastIndex); err != nil {
 			n.setWriteErrLocked(err)
 		}
 	}
@@ -2297,9 +2297,11 @@ func (n *raft) sendSnapshotToFollower(subject string) (uint64, error) {
 	ae.pterm, ae.pindex = snap.lastTerm, snap.lastIndex
 	var state StreamState
 	n.wal.FastState(&state)
-	if snap.lastIndex < state.FirstSeq && state.FirstSeq != 0 {
-		snap.lastIndex = state.FirstSeq - 1
-		ae.pindex = snap.lastIndex
+
+	fpIndex := state.FirstSeq - 1
+	if snap.lastIndex < fpIndex && state.FirstSeq != 0 {
+		snap.lastIndex = fpIndex
+		ae.pindex = fpIndex
 	}
 
 	encoding, err := ae.encode(nil)
@@ -2326,7 +2328,6 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 	var state StreamState
 	n.wal.FastState(&state)
 
-	var didSnap bool
 	if start < state.FirstSeq || (state.Msgs == 0 && start <= state.LastSeq) {
 		n.debug("Need to send snapshot to follower")
 		if lastIndex, err := n.sendSnapshotToFollower(ar.reply); err != nil {
@@ -2334,20 +2335,20 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 			n.Unlock()
 			return
 		} else {
+			start = lastIndex + 1
 			// If no other entries, we can just return here.
-			if state.Msgs == 0 {
+			if state.Msgs == 0 || start > state.LastSeq {
 				n.debug("Finished catching up")
 				n.Unlock()
 				return
 			}
 			n.debug("Snapshot sent, reset first entry to %d", lastIndex)
-			start, didSnap = lastIndex, true
 		}
 	}
 
 	ae, err := n.loadEntry(start)
 	if err != nil {
-		n.warn("Request from follower for index [%d] possibly beyond our last index [%d] - %v", start, state.LastSeq, err)
+		n.warn("Request from follower for entry at index [%d] errored for state %+v - %v", start, state, err)
 		ae, err = n.loadFirstEntry()
 	}
 	if err != nil || ae == nil {
@@ -2360,12 +2361,7 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 	}
 	// Create a queue for delivering updates from responses.
 	indexUpdates := n.s.newIPQueue(fmt.Sprintf("[ACC:%s] RAFT '%s' indexUpdates", n.accName, n.group)) // of uint64
-	// If we did send a snapshot above, that means we skipped ahead so bump entry pindex by 1 to start for catchup stream.
-	if didSnap {
-		indexUpdates.push(ae.pindex + 1)
-	} else {
-		indexUpdates.push(ae.pindex)
-	}
+	indexUpdates.push(ae.pindex)
 	n.progress[ar.peer] = indexUpdates
 	n.Unlock()
 
@@ -2948,7 +2944,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.pindex = ae.pindex
 			n.pterm = ae.pterm
 			n.commit = ae.pindex
-			_, err := n.wal.Compact(n.pindex + 1)
+			_, err := n.wal.Compact(n.pindex)
 			if err != nil {
 				n.setWriteErrLocked(err)
 				n.Unlock()
