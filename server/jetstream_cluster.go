@@ -739,7 +739,7 @@ func (js *jetStream) isLeaderless() bool {
 
 // Will respond iff we are a member and we know we have no leader.
 func (js *jetStream) isGroupLeaderless(rg *raftGroup) bool {
-	if rg == nil {
+	if rg == nil || js == nil {
 		return false
 	}
 	js.mu.RLock()
