@@ -4288,26 +4288,29 @@ func (fs *fileStore) State() StreamState {
 	state.NumSubjects = fs.numSubjects()
 	state.Deleted = nil // make sure.
 
-	cur := fs.state.FirstSeq
+	if numDeleted := int((state.LastSeq - state.FirstSeq + 1) - state.Msgs); numDeleted > 0 {
+		state.Deleted = make([]uint64, 0, numDeleted)
+		cur := fs.state.FirstSeq
 
-	for _, mb := range fs.blks {
-		mb.mu.Lock()
-		fseq := mb.first.seq
-		// Account for messages missing from the head.
-		if fseq > cur {
-			for seq := cur; seq < fseq; seq++ {
-				state.Deleted = append(state.Deleted, seq)
+		for _, mb := range fs.blks {
+			mb.mu.Lock()
+			fseq := mb.first.seq
+			// Account for messages missing from the head.
+			if fseq > cur {
+				for seq := cur; seq < fseq; seq++ {
+					state.Deleted = append(state.Deleted, seq)
+				}
 			}
-		}
-		cur = mb.last.seq + 1 // Expected next first.
-		for seq := range mb.dmap {
-			if seq < fseq {
-				delete(mb.dmap, seq)
-			} else {
-				state.Deleted = append(state.Deleted, seq)
+			cur = mb.last.seq + 1 // Expected next first.
+			for seq := range mb.dmap {
+				if seq < fseq {
+					delete(mb.dmap, seq)
+				} else {
+					state.Deleted = append(state.Deleted, seq)
+				}
 			}
+			mb.mu.Unlock()
 		}
-		mb.mu.Unlock()
 	}
 	fs.mu.RUnlock()
 
