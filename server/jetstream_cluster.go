@@ -1061,11 +1061,11 @@ func (js *jetStream) monitorCluster() {
 				// FIXME(dlc) - Deal with errors.
 				if didSnap, didRemoval, err := js.applyMetaEntries(ce.Entries, ru); err == nil {
 					_, nb := n.Applied(ce.Index)
-					if js.hasPeerEntries(ce.Entries) || didSnap || (didRemoval && time.Since(lastSnapTime) > 5*time.Second) {
+					if js.hasPeerEntries(ce.Entries) || didSnap || didRemoval {
 						// Since we received one make sure we have our own since we do not store
 						// our meta state outside of raft.
 						doSnapshot()
-					} else if lls := len(lastSnap); nb > uint64(lls*8) && lls > 0 {
+					} else if lls := len(lastSnap); nb > uint64(lls*8) && lls > 0 && time.Since(lastSnapTime) > 5*time.Second {
 						doSnapshot()
 					}
 				}
@@ -1879,9 +1879,10 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 	// Should only to be called from leader.
 	doSnapshot := func() {
-		if mset == nil || isRestore || time.Since(lastSnapTime) < minSnapDelta {
+		if mset == nil || isRestore || time.Since(lastSnapTime) < minSnapDelta || !n.NeedSnapshot() {
 			return
 		}
+
 		snap := mset.stateSnapshot()
 		if hash := highwayhash.Sum(snap, key); !bytes.Equal(hash[:], lastSnap) {
 			if err := n.InstallSnapshot(snap); err == nil {
@@ -4004,15 +4005,16 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 		}
 
 		// Check several things to see if we need a snapshot.
-		needSnap := force || n.NeedSnapshot()
-		if !needSnap {
+		if needSnap := force && n.NeedSnapshot(); !needSnap {
 			// Check if we should compact etc. based on size of log.
 			ne, nb := n.Size()
-			needSnap = nb > 0 && ne >= compactNumMin || nb > compactSizeMin
+			if needSnap = nb > 0 && ne >= compactNumMin || nb > compactSizeMin; !needSnap {
+				return
+			}
 		}
 
 		if snap, err := o.store.EncodedState(); err == nil {
-			if hash := highwayhash.Sum(snap, key); !bytes.Equal(hash[:], lastSnap) || needSnap {
+			if hash := highwayhash.Sum(snap, key); !bytes.Equal(hash[:], lastSnap) {
 				if err := n.InstallSnapshot(snap); err == nil {
 					lastSnap, lastSnapTime = hash[:], time.Now()
 				} else {
