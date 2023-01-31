@@ -4678,6 +4678,33 @@ func (mset *stream) removeConsumerAsLeader(o *consumer) {
 	}
 }
 
+// swapSigSubs will update signal Subs for a new subject filter.
+// Lock should be held.
+func (mset *stream) swapSigSubs(o *consumer, newFilter string) {
+	subject := newFilter
+	if subject == _EMPTY_ {
+		subject = fwcs
+	}
+
+	mset.clsMu.Lock()
+	if o.sigSub != nil {
+		o.mset.csl.Remove(o.sigSub)
+	}
+	sub := &subscription{subject: []byte(subject), icb: o.processStreamSignal}
+	mset.csl.Insert(sub)
+	mset.clsMu.Unlock()
+
+	o.sigSub = sub
+
+	// Decrement numFilter if old filter was an actual filter.
+	if o.cfg.FilterSubject != _EMPTY_ && mset.numFilter > 0 {
+		mset.numFilter--
+	}
+	if newFilter != _EMPTY_ {
+		mset.numFilter++
+	}
+}
+
 // lookupConsumer will retrieve a consumer by name.
 func (mset *stream) lookupConsumer(name string) *consumer {
 	mset.mu.RLock()
