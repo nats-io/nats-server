@@ -125,7 +125,7 @@ func TestFileLogger(t *testing.T) {
 	file = createFileAtDir(t, tmpDir, "nats-server:log_")
 	file.Close()
 
-	logger = NewFileLogger(file.Name(), true, true, true, true)
+	logger = NewFileLogger(file.Name(), true, false, true, true)
 	defer logger.Close()
 	logger.Errorf("foo")
 

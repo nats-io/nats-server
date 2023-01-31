@@ -234,6 +234,7 @@ type Options struct {
 	NoHeaderSupport       bool          `json:"-"`
 	DisableShortFirstPing bool          `json:"-"`
 	Logtime               bool          `json:"-"`
+	LogtimeUTC            bool          `json:"-"`
 	MaxConn               int           `json:"max_connections"`
 	MaxSubs               int           `json:"max_subscriptions,omitempty"`
 	MaxSubTokens          uint8         `json:"-"`
@@ -805,6 +806,9 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 	case "logtime":
 		o.Logtime = v.(bool)
 		trackExplicitVal(o, &o.inConfig, "Logtime", o.Logtime)
+	case "logtime_utc":
+		o.LogtimeUTC = v.(bool)
+		trackExplicitVal(o, &o.inConfig, "LogtimeUTC", o.LogtimeUTC)
 	case "mappings", "maps":
 		gacc := NewAccount(globalAccountName)
 		o.Accounts = append(o.Accounts, gacc)
@@ -4805,6 +4809,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.BoolVar(&dbgAndTrcAndVerboseTrc, "DVV", false, "Enable Debug and Verbose Trace logging. (Traces system account as well)")
 	fs.BoolVar(&opts.Logtime, "T", true, "Timestamp log entries.")
 	fs.BoolVar(&opts.Logtime, "logtime", true, "Timestamp log entries.")
+	fs.BoolVar(&opts.LogtimeUTC, "logtime_utc", true, "Timestamps in UTC instead of local timezone.")
 	fs.StringVar(&opts.Username, "user", _EMPTY_, "Username required for connection.")
 	fs.StringVar(&opts.Password, "pass", _EMPTY_, "Password required for connection.")
 	fs.StringVar(&opts.Authorization, "auth", _EMPTY_, "Authorization token required for connection.")
