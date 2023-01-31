@@ -19302,6 +19302,4 @@ func TestJetStreamConsumerFilterUpdate(t *testing.T) {
 	mset.mu.RLock()
 	require_True(t, mset.numFilter == 0)
 	mset.mu.RUnlock()
-
 }
->>>>>>> main
