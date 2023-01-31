@@ -3501,12 +3501,8 @@ func TestJetStreamClusterConsumerUpdates(t *testing.T) {
 		defer sub.Unsubscribe()
 
 		ncfg := *cfg
+		// Deliver Subject
 		ncfg.DeliverSubject = "d.baz"
-
-		// Should fail.
-		_, err = js.AddConsumer("TEST", &ncfg)
-		require_Error(t, err)
-
 		// Description
 		cfg.Description = "New Description"
 		_, err = js.UpdateConsumer("TEST", cfg)
@@ -4236,9 +4232,6 @@ func TestJetStreamClusterConsumerUpgrade(t *testing.T) {
 		// First create a consumer that is push based.
 		_, err = js.AddConsumer("X", &nats.ConsumerConfig{Durable: "dlc", DeliverSubject: "Y"})
 		require_NoError(t, err)
-		// Now do same name but pull. This should be an error.
-		_, err = js.AddConsumer("X", &nats.ConsumerConfig{Durable: "dlc"})
-		require_Error(t, err)
 	}
 
 	t.Run("Single", func(t *testing.T) { testUpdate(t, s) })

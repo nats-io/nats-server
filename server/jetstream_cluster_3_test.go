@@ -931,7 +931,7 @@ func TestJetStreamClusterSignalPullConsumersOnDelete(t *testing.T) {
 	// We want to make sure we get kicked out prior to the timeout
 	// when consumers are being deleted or the parent stream is being deleted.
 	// Note this should be lower case, Go client needs to be updated.
-	expectedErr := errors.New("nats: Consumer Deleted")
+	expectedErr := errors.New("nats: consumer deleted")
 
 	// Queue up the delete for sub1
 	time.AfterFunc(250*time.Millisecond, func() { js.DeleteConsumer("TEST", "d1") })
