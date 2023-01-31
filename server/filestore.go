@@ -2429,7 +2429,8 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 
 	if secure {
 		if ld, _ := mb.flushPendingMsgsLocked(); ld != nil {
-			fs.rebuildStateLocked(ld)
+			// We have the mb lock here, this needs the mb locks so do in its own go routine.
+			go fs.rebuildState(ld)
 		}
 	}
 	// Check if we need to write the index file and we are flush in place (fip).
@@ -3304,7 +3305,8 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 	if flush || werr != nil {
 		ld, err := mb.flushPendingMsgsLocked()
 		if ld != nil && mb.fs != nil {
-			mb.fs.rebuildStateLocked(ld)
+			// We have the mb lock here, this needs the mb locks so do in its own go routine.
+			go mb.fs.rebuildState(ld)
 		}
 		if err != nil {
 			return err
