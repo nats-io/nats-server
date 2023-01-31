@@ -4238,7 +4238,7 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 			n.Delete()
 		} else {
 			// Try to install snapshot on clean exit
-			if o.store != nil {
+			if o.store != nil && n.NeedSnapshot() {
 				if snap, err := o.store.EncodedState(); err == nil {
 					n.InstallSnapshot(snap)
 				}

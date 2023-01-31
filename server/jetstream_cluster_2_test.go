@@ -2629,7 +2629,8 @@ func TestJetStreamClusterStreamCatchupNoState(t *testing.T) {
 				t.Fatalf("Error installing snapshot: %v", err)
 			}
 		}
-		js.Publish("foo.created", []byte("REQ"))
+		_, err := js.Publish("foo.created", []byte("REQ"))
+		require_NoError(t, err)
 	}
 
 	config := nsl.JetStreamConfig()
@@ -2668,14 +2669,14 @@ func TestJetStreamClusterStreamCatchupNoState(t *testing.T) {
 	nc, js = jsClientConnect(t, c.randomServer())
 	defer nc.Close()
 
-	if _, err := js.Publish("foo.created", []byte("REQ")); err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
+	c.waitOnStreamLeader("$G", "TEST")
+
+	_, err = js.Publish("foo.created", []byte("ZZZ"))
+	require_NoError(t, err)
 
 	si, err := js.StreamInfo("TEST")
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
+	require_NoError(t, err)
+
 	if si.State.LastSeq != 101 {
 		t.Fatalf("bad state after restart: %+v", si.State)
 	}
