@@ -40,7 +40,6 @@ type RaftNode interface {
 	SendSnapshot(snap []byte) error
 	NeedSnapshot() bool
 	Applied(index uint64) (entries uint64, bytes uint64)
-	Compact(index uint64) error
 	State() RaftState
 	Size() (entries, bytes uint64)
 	Progress() (index, commit, applied uint64)
@@ -849,23 +848,6 @@ func (n *raft) ResumeApply() {
 	n.resetElectionTimeout()
 }
 
-// Compact will compact our WAL up to and including index.
-// This is for when we know we have our state on stable storage.
-// E.g. snapshots.
-func (n *raft) Compact(index uint64) error {
-	n.Lock()
-	defer n.Unlock()
-	// Error if we had a previous write error.
-	if n.werr != nil {
-		return n.werr
-	}
-	_, err := n.wal.Compact(index + 1)
-	if err != nil {
-		n.setWriteErrLocked(err)
-	}
-	return err
-}
-
 // Applied is to be called when the FSM has applied the committed entries.
 // Applied will return the number of entries and an estimation of the
 // byte size that could be removed with a snapshot/compact.
@@ -995,8 +977,8 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	n.snapfile = sfile
 
 	if _, err := n.wal.Compact(snap.lastIndex); err != nil {
+		n.setWriteErrLocked(err)
 		n.Unlock()
-		n.setWriteErr(err)
 		return err
 	}
 	n.Unlock()
@@ -2944,8 +2926,8 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.pindex = ae.pindex
 			n.pterm = ae.pterm
 			n.commit = ae.pindex
-			_, err := n.wal.Compact(n.pindex)
-			if err != nil {
+
+			if _, err := n.wal.Compact(n.pindex); err != nil {
 				n.setWriteErrLocked(err)
 				n.Unlock()
 				return
