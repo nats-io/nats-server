@@ -19295,6 +19295,64 @@ func TestJetStreamMsgBlkFailOnKernelFault(t *testing.T) {
 	}
 }
 
+func TestJetStreamConsumerPurge(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"test.>"},
+	})
+	require_NoError(t, err)
+
+	sendStreamMsg(t, nc, "test.1", "hello")
+	sendStreamMsg(t, nc, "test.2", "hello")
+
+	sub, err := js.PullSubscribe("test.>", "consumer")
+	require_NoError(t, err)
+
+	// Purge one of the subjects.
+	err = js.PurgeStream("TEST", &nats.StreamPurgeRequest{Subject: "test.2"})
+	require_NoError(t, err)
+
+	info, err := js.ConsumerInfo("TEST", "consumer")
+	require_NoError(t, err)
+	require_True(t, info.NumPending == 1)
+
+	// Expect to get message from not purged subject.
+	_, err = sub.Fetch(1)
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "OTHER",
+		Subjects: []string{"other.>"},
+	})
+	require_NoError(t, err)
+
+	// Publish two items to two subjects.
+	sendStreamMsg(t, nc, "other.1", "hello")
+	sendStreamMsg(t, nc, "other.2", "hello")
+
+	sub, err = js.PullSubscribe("other.>", "other_consumer")
+	require_NoError(t, err)
+
+	// Purge whole stream.
+	err = js.PurgeStream("OTHER", &nats.StreamPurgeRequest{})
+	require_NoError(t, err)
+
+	info, err = js.ConsumerInfo("OTHER", "other_consumer")
+	require_NoError(t, err)
+	require_True(t, info.NumPending == 0)
+
+	// This time expect error, as we purged whole stream,
+	_, err = sub.Fetch(1)
+	require_Error(t, err)
+
+}
+
 func TestJetStreamConsumerFilterUpdate(t *testing.T) {
 
 	s := RunBasicJetStreamServer(t)
