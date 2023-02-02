@@ -1653,10 +1653,17 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 
 	mset.clsMu.RLock()
 	for _, o := range mset.cList {
-		if preq != nil && !o.isFilteredMatch(preq.Subject) {
-			continue
+		// we update consumer sequences if:
+		// no subject was specified, we can purge all consumers sequences
+		if preq == nil ||
+			preq.Subject == _EMPTY_ ||
+			// or consumer filter subject is equal to purged subject
+			preq.Subject == o.cfg.FilterSubject ||
+			// or consumer subject is subset of purged subject,
+			// but not the other way around.
+			subjectIsSubsetMatch(o.cfg.FilterSubject, preq.Subject) {
+			o.purge(fseq, lseq)
 		}
-		o.purge(fseq, lseq)
 	}
 	mset.clsMu.RUnlock()
 

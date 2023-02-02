@@ -1075,6 +1075,7 @@ func TestIsSubsetMatch(t *testing.T) {
 		test    string
 		result  bool
 	}{
+		{"foo.bar", "foo.bar", true},
 		{"foo.*", ">", true},
 		{"foo.*", "*.*", true},
 		{"foo.*", "foo.*", true},
