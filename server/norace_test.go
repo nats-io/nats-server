@@ -6050,3 +6050,92 @@ func TestNoRaceJetStreamEndToEndLatency(t *testing.T) {
 		t.Fatalf("Expected max latency to be < 250ms, got %v", max)
 	}
 }
+
+func TestNoRaceJetStreamClusterEnsureWALCompact(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:        "dlc",
+		DeliverSubject: "zz",
+		Replicas:       3,
+	})
+	require_NoError(t, err)
+
+	// Force snapshot on stream leader.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	mset, err := sl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	node := mset.raftNode()
+	require_True(t, node != nil)
+
+	err = node.InstallSnapshot(mset.stateSnapshot())
+	require_NoError(t, err)
+
+	// Now publish more than should be needed to cause an additional snapshot.
+	ns := 75_000
+	for i := 0; i <= ns; i++ {
+		_, err := js.Publish("foo", []byte("bar"))
+		require_NoError(t, err)
+	}
+
+	// Grab progress and use that to look into WAL entries.
+	_, _, applied := node.Progress()
+	// If ne == ns that means snapshots and compacts were not happening when
+	// they should have been.
+	if ne, _ := node.Applied(applied); ne >= uint64(ns) {
+		t.Fatalf("Did not snapshot and compact the raft WAL, entries == %d", ne)
+	}
+
+	// Now check consumer.
+	// Force snapshot on consumerleader.
+	cl := c.consumerLeader(globalAccountName, "TEST", "dlc")
+	mset, err = cl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("dlc")
+	require_True(t, o != nil)
+
+	node = o.raftNode()
+	require_True(t, node != nil)
+
+	snap, err := o.store.EncodedState()
+	require_NoError(t, err)
+	err = node.InstallSnapshot(snap)
+	require_NoError(t, err)
+
+	received, done := 0, make(chan bool)
+
+	nc.Subscribe("zz", func(m *nats.Msg) {
+		received++
+		if received >= ns {
+			done <- true
+		}
+		m.Ack()
+	})
+
+	select {
+	case <-done:
+		return
+	case <-time.After(10 * time.Second):
+		t.Fatalf("Did not received all %d msgs, only %d", ns, received)
+	}
+
+	// Do same trick and check that WAL was compacted.
+	// Grab progress and use that to look into WAL entries.
+	_, _, applied = node.Progress()
+	// If ne == ns that means snapshots and compacts were not happening when
+	// they should have been.
+	if ne, _ := node.Applied(applied); ne >= uint64(ns) {
+		t.Fatalf("Did not snapshot and compact the raft WAL, entries == %d", ne)
+	}
+}

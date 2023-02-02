@@ -1879,7 +1879,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 	// Should only to be called from leader.
 	doSnapshot := func() {
-		if mset == nil || isRestore || time.Since(lastSnapTime) < minSnapDelta || !n.NeedSnapshot() {
+		if mset == nil || isRestore || time.Since(lastSnapTime) < minSnapDelta {
 			return
 		}
 
@@ -4005,10 +4005,9 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 		}
 
 		// Check several things to see if we need a snapshot.
-		if needSnap := force && n.NeedSnapshot(); !needSnap {
+		if !force && !n.NeedSnapshot() {
 			// Check if we should compact etc. based on size of log.
-			ne, nb := n.Size()
-			if needSnap = nb > 0 && ne >= compactNumMin || nb > compactSizeMin; !needSnap {
+			if ne, nb := n.Size(); ne < compactNumMin && nb < compactSizeMin {
 				return
 			}
 		}
