@@ -939,7 +939,7 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	var state StreamState
 	n.wal.FastState(&state)
 
-	if n.snapfile != _EMPTY_ && state.FirstSeq >= n.applied {
+	if state.FirstSeq >= n.applied {
 		n.Unlock()
 		return nil
 	}
@@ -1075,6 +1075,7 @@ func (n *raft) setupLastSnapshot() {
 		n.pterm = snap.lastTerm
 		n.commit = snap.lastIndex
 		n.applied = snap.lastIndex
+
 		n.apply.push(&CommittedEntry{n.commit, []*Entry{{EntrySnapshot, snap.data}}})
 		if _, err := n.wal.Compact(snap.lastIndex); err != nil {
 			n.setWriteErrLocked(err)
@@ -1121,6 +1122,15 @@ func (n *raft) loadLastSnapshot() (*snapshot, error) {
 		lastIndex: le.Uint64(buf[8:]),
 		peerstate: buf[20 : 20+lps],
 		data:      buf[20+lps : hoff],
+	}
+
+	// We had a bug in 2.9.12 that would allow snapshots on last index of 0.
+	// Detect that here and return err.
+	if snap.lastIndex == 0 {
+		n.warn("Snapshot with last index 0 is invalid, cleaning up")
+		os.Remove(n.snapfile)
+		n.snapfile = _EMPTY_
+		return nil, errSnapshotCorrupt
 	}
 
 	return snap, nil
@@ -1241,6 +1251,7 @@ func (n *raft) GroupLeader() string {
 }
 
 // Guess the best next leader. Stepdown will check more thoroughly.
+// Lock should be held.
 func (n *raft) selectNextLeader() string {
 	nextLeader, hli := noLeader, uint64(0)
 	for peer, ps := range n.peers {
@@ -2720,7 +2731,7 @@ func (n *raft) truncateWAL(term, index uint64) {
 
 	// Check to see if we invalidated any snapshots that might have held state
 	// from the entries we are truncating.
-	if snap, _ := n.loadLastSnapshot(); snap != nil && snap.lastIndex > index {
+	if snap, _ := n.loadLastSnapshot(); snap != nil && snap.lastIndex >= index {
 		os.Remove(n.snapfile)
 		n.snapfile = _EMPTY_
 	}

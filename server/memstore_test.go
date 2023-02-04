@@ -353,12 +353,19 @@ func TestMemStoreStreamTruncate(t *testing.T) {
 		t.Fatalf("Unexpected error creating store: %v", err)
 	}
 
+	tseq := uint64(50)
+
 	subj, toStore := "foo", uint64(100)
-	for i := uint64(1); i <= toStore; i++ {
-		if _, _, err := ms.StoreMsg(subj, nil, []byte("ok")); err != nil {
-			t.Fatalf("Error storing msg: %v", err)
-		}
+	for i := uint64(1); i < tseq; i++ {
+		_, _, err := ms.StoreMsg(subj, nil, []byte("ok"))
+		require_NoError(t, err)
 	}
+	subj = "bar"
+	for i := tseq; i <= toStore; i++ {
+		_, _, err := ms.StoreMsg(subj, nil, []byte("ok"))
+		require_NoError(t, err)
+	}
+
 	if state := ms.State(); state.Msgs != toStore {
 		t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
 	}
@@ -368,7 +375,6 @@ func TestMemStoreStreamTruncate(t *testing.T) {
 		t.Fatalf("Expected err of '%v', got '%v'", ErrInvalidSequence, err)
 	}
 
-	tseq := uint64(50)
 	if err := ms.Truncate(tseq); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -386,8 +392,15 @@ func TestMemStoreStreamTruncate(t *testing.T) {
 	if err := ms.Truncate(tseq); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	state := ms.State()
+	if state.Msgs != tseq-2 {
+		t.Fatalf("Expected %d msgs, got %d", tseq-2, state.Msgs)
+	}
+	if state.NumSubjects != 1 {
+		t.Fatalf("Expected only 1 subject, got %d", state.NumSubjects)
+	}
 	expected := []uint64{10, 20}
-	if state := ms.State(); !reflect.DeepEqual(state.Deleted, expected) {
+	if !reflect.DeepEqual(state.Deleted, expected) {
 		t.Fatalf("Expected deleted to be %+v, got %+v\n", expected, state.Deleted)
 	}
 }
@@ -441,4 +454,44 @@ func TestMemStoreUpdateMaxMsgsPerSubject(t *testing.T) {
 	if ss.Msgs != 10 {
 		t.Fatalf("Expected to have %d stored, got %d", 10, ss.Msgs)
 	}
+}
+
+func TestMemStoreStreamTruncateReset(t *testing.T) {
+	cfg := &StreamConfig{
+		Name:     "TEST",
+		Storage:  MemoryStorage,
+		Subjects: []string{"foo"},
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(t, err)
+
+	subj, msg := "foo", []byte("Hello World")
+	for i := 0; i < 1000; i++ {
+		_, _, err := ms.StoreMsg(subj, nil, msg)
+		require_NoError(t, err)
+	}
+
+	// Reset everything
+	require_NoError(t, ms.Truncate(0))
+
+	state := ms.State()
+	require_True(t, state.Msgs == 0)
+	require_True(t, state.Bytes == 0)
+	require_True(t, state.FirstSeq == 0)
+	require_True(t, state.LastSeq == 0)
+	require_True(t, state.NumSubjects == 0)
+	require_True(t, state.NumDeleted == 0)
+
+	for i := 0; i < 1000; i++ {
+		_, _, err := ms.StoreMsg(subj, nil, msg)
+		require_NoError(t, err)
+	}
+
+	state = ms.State()
+	require_True(t, state.Msgs == 1000)
+	require_True(t, state.Bytes == 30000)
+	require_True(t, state.FirstSeq == 1)
+	require_True(t, state.LastSeq == 1000)
+	require_True(t, state.NumSubjects == 1)
+	require_True(t, state.NumDeleted == 0)
 }

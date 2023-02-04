@@ -1134,7 +1134,7 @@ func (a *Account) UnTrackServiceExport(service string) {
 	}
 
 	a.mu.Lock()
-	if a == nil || a.exports.services == nil {
+	if a.exports.services == nil {
 		a.mu.Unlock()
 		return
 	}
