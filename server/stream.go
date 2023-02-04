@@ -777,7 +777,9 @@ func (mset *stream) rebuildDedupe() {
 	}
 
 	var smv StoreMsg
-	state := mset.store.State()
+	var state StreamState
+	mset.store.FastState(&state)
+
 	for seq := sseq; seq <= state.LastSeq; seq++ {
 		sm, err := mset.store.LoadMsg(seq, &smv)
 		if err != nil {

@@ -1,4 +1,4 @@
-// Copyright 2020 The NATS Authors
+// Copyright 2020-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -4046,7 +4046,6 @@ func wsBenchPub(b *testing.B, numPubs int, compress bool, payload string) {
 	s := RunServer(opts)
 	defer s.Shutdown()
 
-	n := b.N
 	extra := 0
 	pubProto := []byte(fmt.Sprintf("PUB %s %d\r\n%s\r\n", testWSBenchSubject, len(payload), payload))
 	singleOpBuf := testWSCreateClientMsg(wsBinaryMessage, 1, true, compress, pubProto)
@@ -4065,7 +4064,7 @@ func wsBenchPub(b *testing.B, numPubs int, compress bool, payload string) {
 		}
 	}
 	sendBuf := testWSCreateClientMsg(wsBinaryMessage, 1, true, compress, tmp)
-	n = b.N / pb
+	n := b.N / pb
 	extra = b.N - (n * pb)
 
 	wg := sync.WaitGroup{}
