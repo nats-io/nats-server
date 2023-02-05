@@ -566,8 +566,47 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 	return purged, nil
 }
 
-// Truncate will truncate a stream store up to and including seq. Sequence needs to be valid.
+// Will completely reset our store.
+func (ms *memStore) reset() error {
+
+	ms.mu.Lock()
+	var purged, bytes uint64
+	cb := ms.scb
+	if cb != nil {
+		for _, sm := range ms.msgs {
+			purged++
+			bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.msg)
+		}
+	}
+
+	// Reset
+	ms.state.FirstSeq = 0
+	ms.state.FirstTime = time.Time{}
+	ms.state.LastSeq = 0
+	ms.state.LastTime = time.Now().UTC()
+	// Update msgs and bytes.
+	ms.state.Msgs = 0
+	ms.state.Bytes = 0
+	// Reset msgs and fss.
+	ms.msgs = make(map[uint64]*StoreMsg)
+	ms.fss = make(map[string]*SimpleState)
+
+	ms.mu.Unlock()
+
+	if cb != nil {
+		cb(-int64(purged), -int64(bytes), 0, _EMPTY_)
+	}
+
+	return nil
+}
+
+// Truncate will truncate a stream store up to seq. Sequence needs to be valid.
 func (ms *memStore) Truncate(seq uint64) error {
+	// Check for request to reset.
+	if seq == 0 {
+		return ms.reset()
+	}
+
 	var purged, bytes uint64
 
 	ms.mu.Lock()
@@ -581,7 +620,8 @@ func (ms *memStore) Truncate(seq uint64) error {
 		if sm := ms.msgs[i]; sm != nil {
 			purged++
 			bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.msg)
-			delete(ms.msgs, seq)
+			delete(ms.msgs, i)
+			ms.removeSeqPerSubject(sm.subj, i)
 		}
 	}
 	// Reset last.
@@ -590,6 +630,7 @@ func (ms *memStore) Truncate(seq uint64) error {
 	// Update msgs and bytes.
 	ms.state.Msgs -= purged
 	ms.state.Bytes -= bytes
+
 	cb := ms.scb
 	ms.mu.Unlock()
 
@@ -855,7 +896,10 @@ func (ms *memStore) FastState(state *StreamState) {
 	state.LastSeq = ms.state.LastSeq
 	state.LastTime = ms.state.LastTime
 	if state.LastSeq > state.FirstSeq {
-		state.NumDeleted = int((state.LastSeq - state.FirstSeq) - state.Msgs + 1)
+		state.NumDeleted = int((state.LastSeq - state.FirstSeq + 1) - state.Msgs)
+		if state.NumDeleted < 0 {
+			state.NumDeleted = 0
+		}
 	}
 	state.Consumers = ms.consumers
 	state.NumSubjects = len(ms.fss)
@@ -872,16 +916,17 @@ func (ms *memStore) State() StreamState {
 	state.Deleted = nil
 
 	// Calculate interior delete details.
-	if state.LastSeq > state.FirstSeq {
-		if state.NumDeleted = int((state.LastSeq - state.FirstSeq) - state.Msgs + 1); state.NumDeleted > 0 {
-			state.Deleted = make([]uint64, 0, state.NumDeleted)
-			// TODO(dlc) - Too Simplistic, once state is updated to allow runs etc redo.
-			for seq := state.FirstSeq + 1; seq < ms.state.LastSeq; seq++ {
-				if _, ok := ms.msgs[seq]; !ok {
-					state.Deleted = append(state.Deleted, seq)
-				}
+	if numDeleted := int((state.LastSeq - state.FirstSeq + 1) - state.Msgs); numDeleted > 0 {
+		state.Deleted = make([]uint64, 0, state.NumDeleted)
+		// TODO(dlc) - Too Simplistic, once state is updated to allow runs etc redo.
+		for seq := state.FirstSeq + 1; seq < ms.state.LastSeq; seq++ {
+			if _, ok := ms.msgs[seq]; !ok {
+				state.Deleted = append(state.Deleted, seq)
 			}
 		}
+	}
+	if len(state.Deleted) > 0 {
+		state.NumDeleted = len(state.Deleted)
 	}
 
 	return state

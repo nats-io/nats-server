@@ -964,7 +964,7 @@ func TestFileStoreStreamTruncate(t *testing.T) {
 
 	fs, err := newFileStoreWithCreated(
 		FileStoreConfig{StoreDir: storeDir, BlockSize: 350},
-		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
+		StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage},
 		time.Now(),
 		prf,
 	)
@@ -973,12 +973,19 @@ func TestFileStoreStreamTruncate(t *testing.T) {
 	}
 	defer fs.Stop()
 
+	tseq := uint64(50)
+
 	subj, toStore := "foo", uint64(100)
-	for i := uint64(1); i <= toStore; i++ {
-		if _, _, err := fs.StoreMsg(subj, nil, []byte("ok")); err != nil {
-			t.Fatalf("Error storing msg: %v", err)
-		}
+	for i := uint64(1); i < tseq; i++ {
+		_, _, err := fs.StoreMsg(subj, nil, []byte("ok"))
+		require_NoError(t, err)
 	}
+	subj = "bar"
+	for i := tseq; i <= toStore; i++ {
+		_, _, err := fs.StoreMsg(subj, nil, []byte("ok"))
+		require_NoError(t, err)
+	}
+
 	if state := fs.State(); state.Msgs != toStore {
 		t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
 	}
@@ -988,7 +995,6 @@ func TestFileStoreStreamTruncate(t *testing.T) {
 		t.Fatalf("Expected err of '%v', got '%v'", ErrInvalidSequence, err)
 	}
 
-	tseq := uint64(50)
 	if err := fs.Truncate(tseq); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -1006,15 +1012,16 @@ func TestFileStoreStreamTruncate(t *testing.T) {
 	if err := fs.Truncate(tseq); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if state := fs.State(); state.Msgs != tseq-2 {
+	state := fs.State()
+	if state.Msgs != tseq-2 {
 		t.Fatalf("Expected %d msgs, got %d", tseq-2, state.Msgs)
 	}
 	expected := []uint64{10, 20}
-	if state := fs.State(); !reflect.DeepEqual(state.Deleted, expected) {
+	if !reflect.DeepEqual(state.Deleted, expected) {
 		t.Fatalf("Expected deleted to be %+v, got %+v\n", expected, state.Deleted)
 	}
 
-	before := fs.State()
+	before := state
 
 	// Make sure we can recover same state.
 	fs.Stop()
@@ -5039,4 +5046,46 @@ func TestFileStoreAllFilteredStateWithDeleted(t *testing.T) {
 	checkFilteredState(6, 95, 6, 100)
 	remove(8, 10, 12, 14, 16, 18)
 	checkFilteredState(7, 88, 7, 100)
+}
+
+func TestFileStoreStreamTruncateResetMultiBlock(t *testing.T) {
+	storeDir := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 128},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	subj, msg := "foo", []byte("Hello World")
+	for i := 0; i < 1000; i++ {
+		_, _, err := fs.StoreMsg(subj, nil, msg)
+		require_NoError(t, err)
+	}
+	require_True(t, fs.numMsgBlocks() == 500)
+
+	// Reset everything
+	require_NoError(t, fs.Truncate(0))
+	require_True(t, fs.numMsgBlocks() == 0)
+
+	state := fs.State()
+	require_True(t, state.Msgs == 0)
+	require_True(t, state.Bytes == 0)
+	require_True(t, state.FirstSeq == 0)
+	require_True(t, state.LastSeq == 0)
+	require_True(t, state.NumSubjects == 0)
+	require_True(t, state.NumDeleted == 0)
+
+	for i := 0; i < 1000; i++ {
+		_, _, err := fs.StoreMsg(subj, nil, msg)
+		require_NoError(t, err)
+	}
+
+	state = fs.State()
+	require_True(t, state.Msgs == 1000)
+	require_True(t, state.Bytes == 44000)
+	require_True(t, state.FirstSeq == 1)
+	require_True(t, state.LastSeq == 1000)
+	require_True(t, state.NumSubjects == 1)
+	require_True(t, state.NumDeleted == 0)
 }

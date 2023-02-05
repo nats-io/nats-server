@@ -2865,6 +2865,10 @@ func (mb *msgBlock) truncate(sm *StoreMsg) (nmsgs, nbytes uint64, err error) {
 
 	// Clear our cache.
 	mb.clearCacheAndOffset()
+
+	// Redo per subject info for this block.
+	mb.resetPerSubjectInfo()
+
 	mb.mu.Unlock()
 
 	// Write our index file.
@@ -4983,8 +4987,64 @@ SKIP:
 	return purged, err
 }
 
-// Truncate will truncate a stream store up to and including seq. Sequence needs to be valid.
+// Will completely reset our store.
+func (fs *fileStore) reset() error {
+
+	fs.mu.Lock()
+	if fs.closed {
+		fs.mu.Unlock()
+		return ErrStoreClosed
+	}
+	if fs.sips > 0 {
+		fs.mu.Unlock()
+		return ErrStoreSnapshotInProgress
+	}
+
+	var purged, bytes uint64
+	cb := fs.scb
+
+	if cb != nil {
+		for _, mb := range fs.blks {
+			mb.mu.Lock()
+			purged += mb.msgs
+			bytes += mb.bytes
+			mb.dirtyCloseWithRemove(true)
+			mb.mu.Unlock()
+		}
+	}
+
+	// Reset
+	fs.state.FirstSeq = 0
+	fs.state.FirstTime = time.Time{}
+	fs.state.LastSeq = 0
+	fs.state.LastTime = time.Now().UTC()
+	// Update msgs and bytes.
+	fs.state.Msgs = 0
+	fs.state.Bytes = 0
+
+	// Reset blocks.
+	fs.blks, fs.lmb = nil, nil
+
+	// Reset subject mappings.
+	fs.psim = make(map[string]*psi)
+	fs.bim = make(map[uint32]*msgBlock)
+
+	fs.mu.Unlock()
+
+	if cb != nil {
+		cb(-int64(purged), -int64(bytes), 0, _EMPTY_)
+	}
+
+	return nil
+}
+
+// Truncate will truncate a stream store up to seq. Sequence needs to be valid.
 func (fs *fileStore) Truncate(seq uint64) error {
+	// Check for request to reset.
+	if seq == 0 {
+		return fs.reset()
+	}
+
 	fs.mu.Lock()
 
 	if fs.closed {
@@ -5017,7 +5077,6 @@ func (fs *fileStore) Truncate(seq uint64) error {
 
 	// Truncate our new last message block.
 	nmsgs, nbytes, err := nlmb.truncate(lsm)
-
 	if err != nil {
 		fs.mu.Unlock()
 		return err
@@ -5042,6 +5101,9 @@ func (fs *fileStore) Truncate(seq uint64) error {
 	// Update msgs and bytes.
 	fs.state.Msgs -= purged
 	fs.state.Bytes -= bytes
+
+	// Reset our subject lookup info.
+	fs.resetGlobalPerSubjectInfo()
 
 	cb := fs.scb
 	fs.mu.Unlock()
@@ -5247,6 +5309,22 @@ func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64, smp *StoreMsg) 
 			}
 		}
 	}
+}
+
+// Lock should be held.
+func (fs *fileStore) resetGlobalPerSubjectInfo() {
+	// Clear any global subject state.
+	fs.psim = make(map[string]*psi)
+	for _, mb := range fs.blks {
+		fs.populateGlobalPerSubjectInfo(mb)
+	}
+}
+
+// Lock should be held.
+func (mb *msgBlock) resetPerSubjectInfo() error {
+	mb.fss = nil
+	mb.removePerSubjectInfoLocked()
+	return mb.generatePerSubjectInfo(true)
 }
 
 // generatePerSubjectInfo will generate the per subject info via the raw msg block.
