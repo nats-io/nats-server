@@ -2964,7 +2964,7 @@ func (a *Account) externalAuthXKey() string {
 }
 
 // Check if an account switch for external authorization is allowed.
-func (a *Account) isAllowedAcount(acc string) bool {
+func (a *Account) isAllowedAccount(acc string) bool {
 	if a == nil {
 		return false
 	}

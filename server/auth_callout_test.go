@@ -600,7 +600,7 @@ func TestAuthCalloutOperatorModeSigningKey(t *testing.T) {
 	authClaim := jwt.NewAccountClaims(apub)
 	authClaim.Name = "AUTH"
 	authClaim.EnableExternalAuthorization(upub)
-	authClaim.Authorization.AllowedAccounts.Add(tpub)
+	authClaim.Authorization.AllowedAccounts.Add(tpub, tspub)
 	authJwt, err := authClaim.Encode(oKp)
 	require_NoError(t, err)
 
@@ -706,6 +706,7 @@ func TestAuthCalloutOperatorModeSigningKey(t *testing.T) {
 	// token will use test account signing key
 	nc, err = nats.Connect(s.ClientURL(), nats.UserCredentials(creds), nats.Token(signingKeyToken))
 	require_NoError(t, err)
+	defer nc.Close()
 
 	// make sure we switched accounts
 	resp, err = nc.Request(userDirectInfoSubj, nil, time.Second)

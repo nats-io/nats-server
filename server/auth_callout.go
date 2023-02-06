@@ -121,7 +121,7 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 			if !isOperatorMode {
 				respCh <- fmt.Sprintf("Wrong issuer for auth callout response on account %q, expected %q got %q", racc.Name, issuer, arc.Issuer)
 				return
-			} else if !acc.isAllowedAcount(arc.Issuer) {
+			} else if !acc.isAllowedAccount(arc.Issuer) {
 				respCh <- fmt.Sprintf("Account %q not permitted as valid account option for auth callout for account %q",
 					arc.Issuer, racc.Name)
 				return
@@ -166,8 +166,9 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 				return
 			}
 			// In operator mode make sure this account matches the issuer.
-			if isOperatorMode && aname != arc.Issuer {
-				respCh <- fmt.Sprintf("Account %q does not match issuer %q", aname, juc.Issuer)
+			_, hasIssuer := targetAcc.hasIssuer(arc.Issuer)
+			if isOperatorMode && aname != arc.Issuer && !hasIssuer {
+				respCh <- fmt.Sprintf("Account %q does not match issuer %q", aname, arc.Issuer)
 				return
 			}
 		}
