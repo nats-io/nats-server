@@ -19354,7 +19354,6 @@ func TestJetStreamConsumerPurge(t *testing.T) {
 }
 
 func TestJetStreamConsumerFilterUpdate(t *testing.T) {
-
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
@@ -19403,21 +19402,26 @@ func TestJetStreamConsumerFilterUpdate(t *testing.T) {
 	mset, err := s.GlobalAccount().lookupStream("TEST")
 	require_NoError(t, err)
 
-	mset.mu.RLock()
-	require_True(t, mset.numFilter == 1)
-	mset.mu.RUnlock()
+	checkNumFilter := func(expected int) {
+		t.Helper()
+		mset.mu.RLock()
+		nf := mset.numFilter
+		mset.mu.RUnlock()
+		if nf != expected {
+			t.Fatalf("Expected stream's numFilter to be %d, got %d", expected, nf)
+		}
+	}
+
+	checkNumFilter(1)
 
 	// Update consumer once again, now not having any filters
 	_, err = js.UpdateConsumer("TEST", &nats.ConsumerConfig{
 		Durable:        "consumer",
 		DeliverSubject: "deliver",
-		FilterSubject:  "",
+		FilterSubject:  _EMPTY_,
 	})
 	require_NoError(t, err)
 
 	// and expect that numFilter reports correctly.
-	mset.mu.RLock()
-	require_True(t, mset.numFilter == 0)
-	mset.mu.RUnlock()
-
+	checkNumFilter(0)
 }

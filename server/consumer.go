@@ -1605,9 +1605,12 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 		if cfg.FilterSubject != _EMPTY_ {
 			o.filterWC = subjectHasWildcard(cfg.FilterSubject)
 		}
-		o.mset.mu.Lock()
-		o.mset.swapSigSubs(o, cfg.FilterSubject)
-		o.mset.mu.Unlock()
+		// Make sure we have correct signaling setup.
+		// Consumer lock can not be held.
+		mset := o.mset
+		o.mu.Unlock()
+		mset.swapSigSubs(o, cfg.FilterSubject)
+		o.mu.Lock()
 	}
 
 	// Record new config for others that do not need special handling.
