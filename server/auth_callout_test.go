@@ -569,6 +569,157 @@ func TestAuthCalloutOperatorModeBasics(t *testing.T) {
 	require_Error(t, err)
 }
 
+func TestAuthCalloutOperatorModeSigningKey(t *testing.T) {
+	_, spub := createKey(t)
+	sysClaim := jwt.NewAccountClaims(spub)
+	sysClaim.Name = "$SYS"
+	sysJwt, err := sysClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// AUTH service account.
+	akp, err := nkeys.FromSeed([]byte(authCalloutIssuerSeed))
+	require_NoError(t, err)
+
+	apub, err := akp.PublicKey()
+	require_NoError(t, err)
+
+	// TEST account with signing key
+	tkp, tpub := createKey(t)
+	tskp, tspub := createKey(t)
+	accClaim := jwt.NewAccountClaims(tpub)
+	accClaim.Name = "TEST"
+	accClaim.SigningKeys.Add(tspub)
+
+	accJwt, err := accClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// The authorized user for the service.
+	upub, creds := createAuthServiceUser(t, akp)
+	defer removeFile(t, creds)
+
+	authClaim := jwt.NewAccountClaims(apub)
+	authClaim.Name = "AUTH"
+	authClaim.EnableExternalAuthorization(upub)
+	authClaim.Authorization.AllowedAccounts.Add(tpub)
+	authJwt, err := authClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		operator: %s
+		system_account: %s
+		resolver: MEM
+		resolver_preload: {
+			%s: %s
+			%s: %s
+			%s: %s
+		}
+    `, ojwt, spub, apub, authJwt, tpub, accJwt, spub, sysJwt)))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc, err := nats.Connect(s.ClientURL(), nats.UserCredentials(creds))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	const signingKeyToken = "--XX--"
+	const rootKeyToken = "--ZZ--"
+
+	// Register authorization handlers.
+	_, err = nc.Subscribe(AuthCalloutSubject, func(m *nats.Msg) {
+		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
+		if opts.Token == signingKeyToken {
+			// Our user claims
+			uclaim := jwt.NewUserClaims(user)
+
+			// Our target is the test account
+			uclaim.Audience = tpub
+			uclaim.IssuerAccount = tpub
+
+			// The issuer is our signing key - This usually gets set when
+			// calling jwt.Encode(), but since we do not sign the
+			// user claims setting manually
+			uclaim.Issuer = tspub
+
+			// Our Authorization Response Claims
+			arc := jwt.NewAuthorizationResponseClaims(user)
+			// What we want our user to look like when connected
+			arc.User = uclaim
+			// The server is our audience for this
+			arc.Audience = si.ID
+
+			// Encode using the signing key
+			ujwt, err := arc.Encode(tskp)
+			require_NoError(t, err)
+
+			m.Respond([]byte(ujwt))
+
+		} else if opts.Token == rootKeyToken {
+			// Our user claims
+			uclaim := jwt.NewUserClaims(user)
+
+			// Our target is the test account
+			uclaim.Audience = tpub
+			uclaim.IssuerAccount = tpub
+
+			// Our Authorization Response Claims
+			arc := jwt.NewAuthorizationResponseClaims(user)
+			// What we want our user to look like when connected
+			arc.User = uclaim
+			// The server is our audience for this
+			arc.Audience = si.ID
+
+			// Encode using test root key
+			ujwt, err := arc.Encode(tkp)
+			require_NoError(t, err)
+
+			m.Respond([]byte(ujwt))
+		} else {
+			m.Respond(nil)
+		}
+	})
+	require_NoError(t, err)
+
+	// Connect with a user from the auth account
+	creds = createBasicAccountUser(t, akp)
+	defer removeFile(t, creds)
+
+	// token will use test account root key
+	nc, err = nats.Connect(s.ClientURL(), nats.UserCredentials(creds), nats.Token(rootKeyToken))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	// make sure we switched accounts
+	resp, err := nc.Request(userDirectInfoSubj, nil, time.Second)
+	require_NoError(t, err)
+	response := ServerAPIResponse{Data: &UserInfo{}}
+	err = json.Unmarshal(resp.Data, &response)
+	require_NoError(t, err)
+
+	userInfo := response.Data.(*UserInfo)
+	if userInfo.Account != tpub {
+		t.Fatalf("Expected to be switched to %q, but got %q", tpub, userInfo.Account)
+	}
+
+	// token will use test account signing key
+	nc, err = nats.Connect(s.ClientURL(), nats.UserCredentials(creds), nats.Token(signingKeyToken))
+	require_NoError(t, err)
+
+	// make sure we switched accounts
+	resp, err = nc.Request(userDirectInfoSubj, nil, time.Second)
+	require_NoError(t, err)
+	response = ServerAPIResponse{Data: &UserInfo{}}
+	err = json.Unmarshal(resp.Data, &response)
+	require_NoError(t, err)
+
+	userInfo = response.Data.(*UserInfo)
+	if userInfo.Account != tpub {
+		t.Fatalf("Expected to be switched to %q, but got %q", tpub, userInfo.Account)
+	}
+}
+
 const (
 	curveSeed   = "SXAAXMRAEP6JWWHNB6IKFL554IE6LZVT6EY5MBRICPILTLOPHAG73I3YX4"
 	curvePublic = "XAB3NANV3M6N7AHSQP2U5FRWKKUT7EG2ZXXABV4XVXYQRJGM4S2CZGHT"
