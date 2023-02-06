@@ -4005,7 +4005,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 		}
 
 		// Check several things to see if we need a snapshot.
-		if !force && !n.NeedSnapshot() {
+		if !force || !n.NeedSnapshot() {
 			// Check if we should compact etc. based on size of log.
 			if ne, nb := n.Size(); ne < compactNumMin && nb < compactSizeMin {
 				return
