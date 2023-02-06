@@ -4688,25 +4688,41 @@ func (mset *stream) removeConsumerAsLeader(o *consumer) {
 }
 
 // swapSigSubs will update signal Subs for a new subject filter.
-// Lock should be held.
+// consumer lock should not be held.
 func (mset *stream) swapSigSubs(o *consumer, newFilter string) {
-	subject := newFilter
-	if subject == _EMPTY_ {
-		subject = fwcs
+	mset.clsMu.Lock()
+	o.mu.Lock()
+
+	if o.sigSub != nil {
+		if mset.csl != nil {
+			mset.csl.Remove(o.sigSub)
+		}
+		o.sigSub = nil
 	}
 
-	mset.clsMu.Lock()
-	if o.sigSub != nil {
-		o.mset.csl.Remove(o.sigSub)
+	if o.isLeader() {
+		subject := newFilter
+		if subject == _EMPTY_ {
+			subject = fwcs
+		}
+		o.sigSub = &subscription{subject: []byte(subject), icb: o.processStreamSignal}
+		if mset.csl == nil {
+			mset.csl = NewSublistWithCache()
+		}
+		mset.csl.Insert(o.sigSub)
 	}
-	sub := &subscription{subject: []byte(subject), icb: o.processStreamSignal}
-	mset.csl.Insert(sub)
+
+	oldFilter := o.cfg.FilterSubject
+
+	o.mu.Unlock()
 	mset.clsMu.Unlock()
 
-	o.sigSub = sub
+	// Do any numFilter accounting needed.
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
 
 	// Decrement numFilter if old filter was an actual filter.
-	if o.cfg.FilterSubject != _EMPTY_ && mset.numFilter > 0 {
+	if oldFilter != _EMPTY_ && mset.numFilter > 0 {
 		mset.numFilter--
 	}
 	if newFilter != _EMPTY_ {
