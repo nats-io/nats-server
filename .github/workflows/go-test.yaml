@@ -5,7 +5,9 @@ jobs:
   test:
     strategy:
       matrix:
-        go: [1.16]
+        # This should be quoted or use .x, but should not be unquoted.
+        # Remember that a YAML bare float drops trailing zeroes.
+        go: ['1.16']
 
     env:
       GOPATH: /home/runner/work/nats-server
