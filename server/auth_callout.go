@@ -97,6 +97,46 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 			respCh <- fmt.Sprintf("Error decoding auth callout response on account %q: %v", racc.Name, err)
 			return
 		}
+		// This changes it the configuration so that we can trace the happy path as
+		// it is done for a regular connection
+		if arc.Jwt != _EMPTY_ {
+			// decode the user claims
+			u, err := jwt.DecodeUserClaims(arc.Jwt)
+			if err != nil {
+				respCh <- fmt.Sprintf("Error decoding auth callout embedded JWT %q: %v", racc.Name, err)
+				return
+			}
+			// the current connection is in the auth account, so we need to lookup the
+			// right place based on the issuer/issuer_account
+			arc.User = u
+			aid := u.Issuer
+			if u.IssuerAccount != _EMPTY_ {
+				aid = u.IssuerAccount
+			}
+			// now we get the account the user will land on
+			userAccount, err := s.LookupAccount(aid)
+			if err != nil {
+				respCh <- fmt.Sprintf("Error looking up the user target account %v", err)
+				return
+			}
+			// this will validate the scope - so if it doesn't have the right issuer it gets rejected
+			if scope, ok := userAccount.hasIssuer(u.Issuer); !ok {
+				respCh <- fmt.Sprint("User JWT issuer is not known")
+				return
+			} else if scope != nil {
+				// this possibly has to be different because it could just be a plain issued by a non-scoped signing key
+				if err := scope.ValidateScopedSigner(u); err != nil {
+					respCh <- fmt.Sprintf("User JWT is not valid: %v", err)
+					return
+				} else if uSc, ok := scope.(*jwt.UserScope); !ok {
+					respCh <- fmt.Sprint("User JWT is not valid")
+					return
+				} else if arc.User.UserPermissionLimits, err = processUserPermissionsTemplate(uSc.Template, u, userAccount); err != nil {
+					respCh <- fmt.Sprint("User JWT generated invalid permissions")
+					return
+				}
+			}
+		}
 
 		// FIXME(dlc) - push error through here.
 		if arc.Error != nil || arc.User == nil {
@@ -118,6 +158,15 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 		}
 		// By default issuer needs to match server config or the requesting account in operator mode.
 		if arc.Issuer != issuer {
+			// this would enable signing keys for the account to work the trick here is we need to
+			// verify this key exists in the account JWT
+			if arc.IssuerAccount != _EMPTY_ {
+				// this is possibly wrong - I think what we want here is for the auth account to use
+				// whatever keys it wants, but set the target audience to be the account we want
+				// then really we don't have to worry about attributions at this point, the response
+				// is issed by the auth account, we only care for the stuff in it...
+				arc.Issuer = arc.IssuerAccount
+			}
 			if !isOperatorMode {
 				respCh <- fmt.Sprintf("Wrong issuer for auth callout response on account %q, expected %q got %q", racc.Name, issuer, arc.Issuer)
 				return
@@ -167,8 +216,15 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 			}
 			// In operator mode make sure this account matches the issuer.
 			if isOperatorMode && aname != arc.Issuer {
-				respCh <- fmt.Sprintf("Account %q does not match issuer %q", aname, juc.Issuer)
-				return
+				// FIXME: this is not quite right, because on JWT the signer entry
+				// can be a string or a scope - if the signer has a scope this
+				// is an invalid operation - as we would want for this purpose
+				// to just have a plain public key...
+				signer := targetAcc.signingKeys[arc.Issuer]
+				if signer == nil {
+					respCh <- fmt.Sprintf("Account %q does not match issuer %q", aname, juc.Issuer)
+					return
+				}
 			}
 		}
 
@@ -183,6 +239,17 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 		if juc.Name != _EMPTY_ {
 			c.mu.Lock()
 			c.opts.Username = juc.Name
+			if arc.Jwt != _EMPTY_ {
+				// this is required if we want to assign signing key permissions
+				// there are some other account limits that are assigned by the server
+				// when the user connects, but they are all based on JWT decoding
+				// so without a source JWT, this type of reuse is not possible
+				c.opts.JWT = arc.Jwt
+				if arc.User.IssuerAccount != _EMPTY_ {
+					c.user.SigningKey = arc.User.Issuer
+				}
+				c.applyAccountLimits()
+			}
 			// Clear any others.
 			c.opts.Nkey = _EMPTY_
 			c.pubKey = _EMPTY_
