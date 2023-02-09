@@ -121,7 +121,7 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 			}
 			// this will validate the scope - so if it doesn't have the right issuer it gets rejected
 			if scope, ok := userAccount.hasIssuer(u.Issuer); !ok {
-				respCh <- fmt.Sprint("User JWT issuer is not known")
+				respCh <- "User JWT issuer is not known"
 				return
 			} else if scope != nil {
 				// this possibly has to be different because it could just be a plain issued by a non-scoped signing key
@@ -129,10 +129,10 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 					respCh <- fmt.Sprintf("User JWT is not valid: %v", err)
 					return
 				} else if uSc, ok := scope.(*jwt.UserScope); !ok {
-					respCh <- fmt.Sprint("User JWT is not valid")
+					respCh <- "User JWT is not a valid scoped user"
 					return
 				} else if arc.User.UserPermissionLimits, err = processUserPermissionsTemplate(uSc.Template, u, userAccount); err != nil {
-					respCh <- fmt.Sprint("User JWT generated invalid permissions")
+					respCh <- "User JWT generated invalid permissions"
 					return
 				}
 			}
