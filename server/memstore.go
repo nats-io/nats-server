@@ -23,15 +23,16 @@ import (
 
 // TODO(dlc) - This is a fairly simplistic approach but should do for now.
 type memStore struct {
-	mu        sync.RWMutex
-	cfg       StreamConfig
-	state     StreamState
-	msgs      map[uint64]*StoreMsg
-	fss       map[string]*SimpleState
-	maxp      int64
-	scb       StorageUpdateHandler
-	ageChk    *time.Timer
-	consumers int
+	mu          sync.RWMutex
+	cfg         StreamConfig
+	state       StreamState
+	msgs        map[uint64]*StoreMsg
+	fss         map[string]*SimpleState
+	maxp        int64
+	scb         StorageUpdateHandler
+	ageChk      *time.Timer
+	consumers   int
+	receivedAny bool
 }
 
 func newMemStore(cfg *StreamConfig) (*memStore, error) {
@@ -190,7 +191,6 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 	if ms.ageChk == nil && ms.cfg.MaxAge != 0 {
 		ms.startAgeChk()
 	}
-
 	return nil
 }
 
@@ -199,6 +199,13 @@ func (ms *memStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 	ms.mu.Lock()
 	err := ms.storeRawMsg(subj, hdr, msg, seq, ts)
 	cb := ms.scb
+	// Check if first message timestamp requires expiry
+	// sooner than initial replica expiry timer set to MaxAge when initializing.
+	if !ms.receivedAny && ms.cfg.MaxAge != 0 && ts > 0 {
+		ms.receivedAny = true
+		// Calculate duration when the next expireMsgs should be called.
+		ms.resetAgeChk(int64(time.Millisecond) * 50)
+	}
 	ms.mu.Unlock()
 
 	if err == nil && cb != nil {
@@ -408,6 +415,23 @@ func (ms *memStore) enforceBytesLimit() {
 func (ms *memStore) startAgeChk() {
 	if ms.ageChk == nil && ms.cfg.MaxAge != 0 {
 		ms.ageChk = time.AfterFunc(ms.cfg.MaxAge, ms.expireMsgs)
+	}
+}
+
+// Lock should be held.
+func (ms *memStore) resetAgeChk(delta int64) {
+	if ms.cfg.MaxAge == 0 {
+		return
+	}
+
+	fireIn := ms.cfg.MaxAge
+	if delta > 0 && time.Duration(delta) < fireIn {
+		fireIn = time.Duration(delta)
+	}
+	if ms.ageChk != nil {
+		ms.ageChk.Reset(fireIn)
+	} else {
+		ms.ageChk = time.AfterFunc(fireIn, ms.expireMsgs)
 	}
 }
 

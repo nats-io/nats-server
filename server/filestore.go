@@ -104,26 +104,27 @@ type psi struct {
 }
 
 type fileStore struct {
-	mu      sync.RWMutex
-	state   StreamState
-	ld      *LostStreamData
-	scb     StorageUpdateHandler
-	ageChk  *time.Timer
-	syncTmr *time.Timer
-	cfg     FileStreamInfo
-	fcfg    FileStoreConfig
-	prf     keyGen
-	aek     cipher.AEAD
-	lmb     *msgBlock
-	blks    []*msgBlock
-	bim     map[uint32]*msgBlock
-	psim    map[string]*psi
-	hh      hash.Hash64
-	qch     chan struct{}
-	cfs     []ConsumerStore
-	sips    int
-	closed  bool
-	fip     bool
+	mu          sync.RWMutex
+	state       StreamState
+	ld          *LostStreamData
+	scb         StorageUpdateHandler
+	ageChk      *time.Timer
+	syncTmr     *time.Timer
+	cfg         FileStreamInfo
+	fcfg        FileStoreConfig
+	prf         keyGen
+	aek         cipher.AEAD
+	lmb         *msgBlock
+	blks        []*msgBlock
+	bim         map[uint32]*msgBlock
+	psim        map[string]*psi
+	hh          hash.Hash64
+	qch         chan struct{}
+	cfs         []ConsumerStore
+	sips        int
+	closed      bool
+	fip         bool
+	receivedAny bool
 }
 
 // Represents a message store block and its data.
@@ -2100,6 +2101,14 @@ func (fs *fileStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 	fs.mu.Lock()
 	err := fs.storeRawMsg(subj, hdr, msg, seq, ts)
 	cb := fs.scb
+	// Check if first message timestamp requires expiry
+	// sooner than initial replica expiry timer set to MaxAge when initializing.
+	if !fs.receivedAny && fs.cfg.MaxAge != 0 && ts > 0 {
+		fs.receivedAny = true
+		// don't block here by calling expireMsgs directly.
+		// Instead, set short timeout.
+		fs.resetAgeChk(int64(time.Millisecond * 50))
+	}
 	fs.mu.Unlock()
 
 	if err == nil && cb != nil {

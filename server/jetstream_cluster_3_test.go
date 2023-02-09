@@ -2835,3 +2835,93 @@ func TestJetStreamClusterWALBuildupOnNoOpPull(t *testing.T) {
 		t.Fatalf("got %d entries, expected less than %d entries", entries, max)
 	}
 }
+
+// Found in https://github.com/nats-io/nats-server/issues/3848
+// When Max Age was specified and stream was scaled up, new replicas
+// were expiring messages much later than the leader.
+func TestJetStreamClusterStreamMaxAgeScaleUp(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	for _, test := range []struct {
+		name    string
+		storage nats.StorageType
+		stream  string
+		purge   bool
+	}{
+		{name: "file", storage: nats.FileStorage, stream: "A", purge: false},
+		{name: "memory", storage: nats.MemoryStorage, stream: "B", purge: false},
+		{name: "file with purge", storage: nats.FileStorage, stream: "C", purge: true},
+		{name: "memory with purge", storage: nats.MemoryStorage, stream: "D", purge: true},
+	} {
+
+		t.Run(test.name, func(t *testing.T) {
+			ttl := time.Second * 5
+			// Add stream with one replica and short MaxAge.
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     test.stream,
+				Replicas: 1,
+				Subjects: []string{test.stream},
+				MaxAge:   ttl,
+				Storage:  test.storage,
+			})
+			require_NoError(t, err)
+
+			// Add some messages.
+			for i := 0; i < 10; i++ {
+				sendStreamMsg(t, nc, test.stream, "HELLO")
+			}
+			// We need to also test if we properly set expiry
+			// if first sequence is not 1.
+			if test.purge {
+				err = js.PurgeStream(test.stream)
+				require_NoError(t, err)
+				// Add some messages.
+				for i := 0; i < 10; i++ {
+					sendStreamMsg(t, nc, test.stream, "HELLO")
+				}
+			}
+			// Mark the time when all messages were published.
+			start := time.Now()
+
+			// Sleep for half of the MaxAge time.
+			time.Sleep(ttl / 2)
+
+			// Scale up the Stream to 3 replicas.
+			_, err = js.UpdateStream(&nats.StreamConfig{
+				Name:     test.stream,
+				Replicas: 3,
+				Subjects: []string{test.stream},
+				MaxAge:   ttl,
+				Storage:  test.storage,
+			})
+			require_NoError(t, err)
+
+			// All messages should still be there.
+			info, err := js.StreamInfo(test.stream)
+			require_NoError(t, err)
+			require_True(t, info.State.Msgs == 10)
+
+			// Wait until MaxAge is reached.
+			time.Sleep(ttl - time.Since(start) + (10 * time.Millisecond))
+
+			// Check if all messages are expired.
+			info, err = js.StreamInfo(test.stream)
+			require_NoError(t, err)
+			require_True(t, info.State.Msgs == 0)
+
+			// Now switch leader to one of replicas
+			_, err = nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, test.stream), nil, time.Second)
+			require_NoError(t, err)
+			c.waitOnStreamLeader("$G", test.stream)
+
+			// and make sure that it also expired all messages
+			info, err = js.StreamInfo(test.stream)
+			require_NoError(t, err)
+			require_True(t, info.State.Msgs == 0)
+		})
+	}
+}
