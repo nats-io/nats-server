@@ -3125,6 +3125,7 @@ func (fs *fileStore) expireMsgs() {
 	fs.mu.RLock()
 	minAge := time.Now().UnixNano() - int64(fs.cfg.MaxAge)
 	fs.mu.RUnlock()
+
 	for sm, _ = fs.msgForSeq(0, &smv); sm != nil && sm.ts <= minAge; sm, _ = fs.msgForSeq(0, &smv) {
 		fs.removeMsg(sm.seq, false, true)
 	}
@@ -4859,6 +4860,12 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 		mb.mu.Lock()
 		purged += mb.msgs
 		bytes += mb.bytes
+		// Make sure we do subject cleanup as well.
+		mb.ensurePerSubjectInfoLoaded()
+		for subj := range mb.fss {
+			fs.removePerSubject(subj)
+		}
+		// Now close.
 		mb.dirtyCloseWithRemove(true)
 		mb.mu.Unlock()
 		deleted++
