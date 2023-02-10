@@ -1205,6 +1205,7 @@ type Varz struct {
 	TrustedOperatorsClaim []*jwt.OperatorClaims `json:"trusted_operators_claim,omitempty"`
 	SystemAccount         string                `json:"system_account,omitempty"`
 	PinnedAccountFail     uint64                `json:"pinned_account_fails,omitempty"`
+	Key                   string                `json:"server_key,omitempty"`
 }
 
 // JetStreamVarz contains basic runtime information about jetstream
@@ -1564,6 +1565,13 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 			}
 		}
 		varz.LeafNode.Remotes = rlna
+	}
+	if s.kp != nil {
+		pk, err := s.kp.PublicKey()
+		if err == nil {
+			varz.Key = pk
+		}
+
 	}
 
 	// Finish setting it up with fields that can be updated during

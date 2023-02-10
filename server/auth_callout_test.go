@@ -16,11 +16,13 @@ package server
 import (
 	"bytes"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -46,8 +48,41 @@ const (
 	authCalloutIssuerSeed = "SAANDLKMXL6CUS3CP52WIXBEDN6YJ545GDKC65U5JZPPV6WH6ESWUA6YAI"
 )
 
+func serviceResponse(t *testing.T, errMsg string, payload string) *nats.Msg {
+	var err error
+	r := nats.NewMsg("")
+	cr := CalloutResponse{Error: errMsg, UserToken: payload}
+	r.Data, err = json.Marshal(cr)
+	require_NoError(t, err)
+
+	// this envelope information is not necessary when the payload is encrypted
+	// this is also ignored on servers running in non-operator mode
+	aa, err := nkeys.FromSeed([]byte(authCalloutIssuerSeed))
+	require_NoError(t, err)
+
+	pk, err := aa.PublicKey()
+	require_NoError(t, err)
+	r.Header.Set(AuthAccountPKHeader, pk)
+
+	sig, err := aa.Sign(r.Data)
+	require_NoError(t, err)
+	r.Header.Set(AuthAccountSigHeader, base64.RawURLEncoding.EncodeToString(sig))
+
+	return r
+}
+
+func makeScopedRole(t *testing.T, role string, pub []string, sub []string) (jwt.Scope, nkeys.KeyPair) {
+	akp, pk := createKey(t)
+	r := jwt.NewUserScope()
+	r.Key = pk
+	r.Template.Sub.Allow.Add(sub...)
+	r.Template.Pub.Allow.Add(pub...)
+	r.Role = role
+	return r, akp
+}
+
 // Will create a signed user jwt as an authorized user.
-func createAuthUser(t *testing.T, server, user, name, account string, akp nkeys.KeyPair, expires time.Duration, limits *jwt.UserPermissionLimits) string {
+func createAuthUser(t *testing.T, user, name, account, server, issuerAccount string, akp nkeys.KeyPair, expires time.Duration, limits *jwt.UserPermissionLimits) string {
 	t.Helper()
 
 	if akp == nil {
@@ -56,34 +91,40 @@ func createAuthUser(t *testing.T, server, user, name, account string, akp nkeys.
 		require_NoError(t, err)
 	}
 
-	uclaim := jwt.NewUserClaims(user)
-	uclaim.Audience = account
+	uc := jwt.NewUserClaims(user)
+	if issuerAccount != "" {
+		if _, err := nkeys.FromPublicKey(issuerAccount); err != nil {
+			t.Fatalf("issuer account is not a public key: %v", err)
+		}
+		uc.IssuerAccount = issuerAccount
+	}
+	// The callout uses the audience as the target account
+	// only if in non-operator mode, otherwise the user JWT has
+	// correct attribution - issuer or issuer_account
+	if _, err := nkeys.FromPublicKey(account); err != nil {
+		// if it is not a public key, set the audience
+		uc.Audience = account
+	}
+	uc.Tags.Add(fmt.Sprintf("%s:%s", AuthCalloutServerIdTag, server))
+
 	if name != _EMPTY_ {
-		uclaim.Name = name
+		uc.Name = name
 	}
 	if expires > 0 {
-		uclaim.Expires = time.Now().Add(expires).Unix()
+		uc.Expires = time.Now().Add(expires).Unix()
 	}
 	if limits != nil {
-		uclaim.UserPermissionLimits = *limits
+		uc.UserPermissionLimits = *limits
 	}
 
 	vr := jwt.CreateValidationResults()
-	uclaim.Validate(vr)
+	uc.Validate(vr)
 	require_Len(t, len(vr.Errors()), 0)
 
-	arc := jwt.NewAuthorizationResponseClaims(user)
-	arc.User = uclaim
-	arc.Audience = server
-
-	vr = jwt.CreateValidationResults()
-	arc.Validate(vr)
-	require_Len(t, len(vr.Errors()), 0)
-
-	rjwt, err := arc.Encode(akp)
+	tok, err := uc.Encode(akp)
 	require_NoError(t, err)
 
-	return rjwt
+	return tok
 }
 
 func TestAuthCalloutBasics(t *testing.T) {
@@ -125,8 +166,8 @@ func TestAuthCalloutBasics(t *testing.T) {
 			var j jwt.UserPermissionLimits
 			j.Pub.Allow.Add("$SYS.>")
 			j.Payload = 1024
-			ujwt := createAuthUser(t, si.ID, user, _EMPTY_, globalAccountName, nil, 10*time.Minute, &j)
-			m.Respond([]byte(ujwt))
+			ujwt := createAuthUser(t, user, _EMPTY_, globalAccountName, si.ID, "", nil, 10*time.Minute, &j)
+			m.RespondMsg(serviceResponse(t, "", ujwt))
 		} else {
 			// Nil response signals no authentication.
 			m.Respond(nil)
@@ -207,8 +248,8 @@ func TestAuthCalloutMultiAccounts(t *testing.T) {
 		require_True(t, ci.Host == "127.0.0.1")
 		// Allow dlc user and map to the BAZ account.
 		if opts.Username == "dlc" && opts.Password == "zzz" {
-			ujwt := createAuthUser(t, si.ID, user, _EMPTY_, "BAZ", nil, 0, nil)
-			m.Respond([]byte(ujwt))
+			ujwt := createAuthUser(t, user, _EMPTY_, "BAZ", si.ID, "", nil, 0, nil)
+			m.RespondMsg(serviceResponse(t, "", ujwt))
 		} else {
 			// Nil response signals no authentication.
 			m.Respond(nil)
@@ -285,8 +326,8 @@ func TestAuthCalloutClientTLSCerts(t *testing.T) {
 		require_NoError(t, err)
 		if strings.HasPrefix(cert.Subject.String(), "CN=example.com") {
 			// Override blank name here, server will substitute.
-			ujwt := createAuthUser(t, si.ID, user, "dlc", "FOO", nil, 0, nil)
-			m.Respond([]byte(ujwt))
+			ujwt := createAuthUser(t, user, "dlc", "FOO", si.ID, "", nil, 0, nil)
+			m.RespondMsg(serviceResponse(t, "", ujwt))
 		}
 	})
 	require_NoError(t, err)
@@ -345,8 +386,8 @@ func TestAuthCalloutVerifiedUserCalloutsWithSig(t *testing.T) {
 		require_True(t, ci.Host == "127.0.0.1")
 		require_True(t, opts.SignedNonce != _EMPTY_)
 		require_True(t, ci.Nonce != _EMPTY_)
-		ujwt := createAuthUser(t, si.ID, user, _EMPTY_, globalAccountName, nil, 0, nil)
-		m.Respond([]byte(ujwt))
+		ujwt := createAuthUser(t, user, _EMPTY_, globalAccountName, si.ID, "", nil, 0, nil)
+		m.RespondMsg(serviceResponse(t, "", ujwt))
 	})
 	require_NoError(t, err)
 
@@ -452,8 +493,12 @@ func TestAuthCalloutOperatorModeBasics(t *testing.T) {
 
 	// TEST account.
 	tkp, tpub := createKey(t)
+	tSigningKp, tSigningPub := createKey(t)
 	accClaim := jwt.NewAccountClaims(tpub)
 	accClaim.Name = "TEST"
+	accClaim.SigningKeys.Add(tSigningPub)
+	scope, scopedKp := makeScopedRole(t, "foo", []string{"foo.>", "$SYS.REQ.USER.INFO"}, []string{"foo.>", "_INBOX.>"})
+	accClaim.SigningKeys.AddScopedSigner(scope)
 	accJwt, err := accClaim.Encode(oKp)
 	require_NoError(t, err)
 
@@ -519,17 +564,32 @@ func TestAuthCalloutOperatorModeBasics(t *testing.T) {
 
 	const secretToken = "--XX--"
 	const dummyToken = "--ZZ--"
+	const skKeyToken = "--SK--"
+	const scopedToken = "--Scoped--"
+	const badScopedToken = "--BADScoped--"
+
 	dkp, notAllowAccountPub := createKey(t)
 
 	// Register authorization handlers.
 	_, err = nc.Subscribe(AuthCalloutSubject, func(m *nats.Msg) {
 		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
 		if opts.Token == secretToken {
-			ujwt := createAuthUser(t, si.ID, user, "dlc", tpub, tkp, 0, nil)
-			m.Respond([]byte(ujwt))
+			ujwt := createAuthUser(t, user, "dlc", tpub, si.ID, "", tkp, 0, nil)
+			m.RespondMsg(serviceResponse(t, "", ujwt))
 		} else if opts.Token == dummyToken {
-			ujwt := createAuthUser(t, si.ID, user, "dummy", notAllowAccountPub, dkp, 0, nil)
-			m.Respond([]byte(ujwt))
+			ujwt := createAuthUser(t, user, "dummy", notAllowAccountPub, si.ID, "", dkp, 0, nil)
+			m.RespondMsg(serviceResponse(t, "", ujwt))
+		} else if opts.Token == skKeyToken {
+			ujwt := createAuthUser(t, user, "sk", tpub, si.ID, tpub, tSigningKp, 0, nil)
+			m.RespondMsg(serviceResponse(t, "", ujwt))
+		} else if opts.Token == scopedToken {
+			// must have no limits set
+			ujwt := createAuthUser(t, user, "scoped", tpub, si.ID, tpub, scopedKp, 0, &jwt.UserPermissionLimits{})
+			m.RespondMsg(serviceResponse(t, "", ujwt))
+		} else if opts.Token == badScopedToken {
+			// limits are nil - here which result in a default user - this will fail scoped
+			ujwt := createAuthUser(t, user, "bad-scoped", tpub, si.ID, tpub, scopedKp, 0, nil)
+			m.RespondMsg(serviceResponse(t, "", ujwt))
 		} else {
 			m.Respond(nil)
 		}
@@ -567,6 +627,50 @@ func TestAuthCalloutOperatorModeBasics(t *testing.T) {
 	// Now make sure that if the authorization service switches to an account that is not allowed, we reject.
 	_, err = nats.Connect(s.ClientURL(), nats.UserCredentials(creds), nats.Token(dummyToken))
 	require_Error(t, err)
+
+	// Send the signing key token. This should switch us to the test account, but the user
+	// is signed with the account signing key
+	nc, err = nats.Connect(s.ClientURL(), nats.UserCredentials(creds), nats.Token(skKeyToken))
+	require_NoError(t, err)
+
+	resp, err = nc.Request(userDirectInfoSubj, nil, time.Second)
+	require_NoError(t, err)
+	response = ServerAPIResponse{Data: &UserInfo{}}
+	err = json.Unmarshal(resp.Data, &response)
+	require_NoError(t, err)
+
+	userInfo = response.Data.(*UserInfo)
+	if userInfo.Account != tpub {
+		t.Fatalf("Expected to be switched to %q, but got %q", tpub, userInfo.Account)
+	}
+
+	// bad scoped user
+	_, err = nats.Connect(s.ClientURL(), nats.UserCredentials(creds), nats.Token(badScopedToken))
+	require_Error(t, err)
+
+	// Send the signing key token. This should switch us to the test account, but the user
+	// is signed with the account signing key
+	nc, err = nats.Connect(s.ClientURL(), nats.UserCredentials(creds), nats.Token(scopedToken))
+	require_NoError(t, err)
+
+	resp, err = nc.Request(userDirectInfoSubj, nil, time.Second)
+	require_NoError(t, err)
+	response = ServerAPIResponse{Data: &UserInfo{}}
+	err = json.Unmarshal(resp.Data, &response)
+	require_NoError(t, err)
+
+	userInfo = response.Data.(*UserInfo)
+	if userInfo.Account != tpub {
+		t.Fatalf("Expected to be switched to %q, but got %q", tpub, userInfo.Account)
+	}
+	require_True(t, len(userInfo.Permissions.Publish.Allow) == 2)
+	sort.Strings(userInfo.Permissions.Publish.Allow)
+	require_Equal(t, "foo.>", userInfo.Permissions.Publish.Allow[1])
+	sort.Strings(userInfo.Permissions.Subscribe.Allow)
+	require_True(t, len(userInfo.Permissions.Subscribe.Allow) == 2)
+	require_Equal(t, "foo.>", userInfo.Permissions.Subscribe.Allow[1])
+
+	defer nc.Close()
 }
 
 const (
@@ -620,14 +724,15 @@ func TestAuthCalloutServerConfigEncryption(t *testing.T) {
 		require_True(t, ci.Host == "127.0.0.1")
 		// Allow dlc user.
 		if opts.Username == "dlc" && opts.Password == "zzz" {
-			ujwt := createAuthUser(t, si.ID, user, _EMPTY_, globalAccountName, nil, 10*time.Minute, nil)
-			m.Respond([]byte(ujwt))
+			ujwt := createAuthUser(t, user, _EMPTY_, globalAccountName, si.ID, "", nil, 10*time.Minute, nil)
+			m.RespondMsg(serviceResponse(t, "", ujwt))
 		} else if opts.Username == "dlc" && opts.Password == "xxx" {
-			ujwt := createAuthUser(t, si.ID, user, _EMPTY_, globalAccountName, nil, 10*time.Minute, nil)
+			ujwt := createAuthUser(t, user, _EMPTY_, globalAccountName, si.ID, "", nil, 10*time.Minute, nil)
+			srm := serviceResponse(t, "", ujwt)
 			// Encrypt this response.
-			encryptedResponse, err := rkp.Seal([]byte(ujwt), si.XKey) // Server's public xkey.
+			srm.Data, err = rkp.Seal([]byte(srm.Data), si.XKey) // Server's public xkey.
 			require_NoError(t, err)
-			m.Respond(encryptedResponse)
+			m.RespondMsg(srm)
 		} else {
 			// Nil response signals no authentication.
 			m.Respond(nil)
@@ -639,7 +744,7 @@ func TestAuthCalloutServerConfigEncryption(t *testing.T) {
 	require_NoError(t, err)
 	defer nc.Close()
 
-	// Authorization services can optionally encrypt the reponses using the server's public xkey.
+	// Authorization services can optionally encrypt the responses using the server's public xkey.
 	nc, err = nats.Connect(s.ClientURL(), nats.UserInfo("dlc", "xxx"))
 	require_NoError(t, err)
 	defer nc.Close()
@@ -720,14 +825,15 @@ func TestAuthCalloutOperatorModeEncryption(t *testing.T) {
 		require_True(t, si.XKey == xkey)
 		require_True(t, ci.Host == "127.0.0.1")
 		if opts.Token == tokenA {
-			ujwt := createAuthUser(t, si.ID, user, "dlc", tpub, tkp, 0, nil)
-			m.Respond([]byte(ujwt))
+			ujwt := createAuthUser(t, user, "dlc", tpub, si.ID, "", tkp, 0, nil)
+			m.RespondMsg(serviceResponse(t, "", ujwt))
 		} else if opts.Token == tokenB {
-			ujwt := createAuthUser(t, si.ID, user, "rip", tpub, tkp, 0, nil)
+			ujwt := createAuthUser(t, user, "rip", tpub, si.ID, "", tkp, 0, nil)
+			rm := serviceResponse(t, "", ujwt)
 			// Encrypt this response.
-			encryptedResponse, err := rkp.Seal([]byte(ujwt), si.XKey) // Server's public xkey.
+			rm.Data, err = rkp.Seal(rm.Data, si.XKey) // Server's public xkey.
 			require_NoError(t, err)
-			m.Respond(encryptedResponse)
+			m.RespondMsg(rm)
 		} else {
 			m.Respond(nil)
 		}
@@ -777,8 +883,8 @@ func TestAuthCalloutServerTags(t *testing.T) {
 	_, err = nc.Subscribe(AuthCalloutSubject, func(m *nats.Msg) {
 		user, si, _, _, _ := decodeAuthRequest(t, m.Data)
 		tch <- si.Tags
-		ujwt := createAuthUser(t, si.ID, user, _EMPTY_, globalAccountName, nil, 10*time.Minute, nil)
-		m.Respond([]byte(ujwt))
+		ujwt := createAuthUser(t, user, _EMPTY_, globalAccountName, si.ID, "", nil, 10*time.Minute, nil)
+		m.RespondMsg(serviceResponse(t, "", ujwt))
 	})
 	require_NoError(t, err)
 
@@ -818,8 +924,8 @@ func TestAuthCalloutServerClusterAndVersion(t *testing.T) {
 		user, si, _, _, _ := decodeAuthRequest(t, m.Data)
 		ch <- si.Cluster
 		ch <- si.Version
-		ujwt := createAuthUser(t, si.ID, user, _EMPTY_, globalAccountName, nil, 10*time.Minute, nil)
-		m.Respond([]byte(ujwt))
+		ujwt := createAuthUser(t, user, _EMPTY_, globalAccountName, si.ID, "", nil, 10*time.Minute, nil)
+		m.RespondMsg(serviceResponse(t, "", ujwt))
 	})
 	require_NoError(t, err)
 
@@ -834,28 +940,6 @@ func TestAuthCalloutServerClusterAndVersion(t *testing.T) {
 	ok, err := versionAtLeastCheckError(version, 2, 10, 0)
 	require_NoError(t, err)
 	require_True(t, ok)
-}
-
-func createErrResponse(t *testing.T, user, server, errStr string, akp nkeys.KeyPair) string {
-	t.Helper()
-
-	if akp == nil {
-		var err error
-		akp, err = nkeys.FromSeed([]byte(authCalloutIssuerSeed))
-		require_NoError(t, err)
-	}
-
-	arc := jwt.NewAuthorizationResponseClaims(user)
-	arc.SetErrorDescription(errStr)
-	arc.Audience = server
-	vr := jwt.CreateValidationResults()
-	arc.Validate(vr)
-	require_Len(t, len(vr.Errors()), 0)
-
-	rjwt, err := arc.Encode(akp)
-	require_NoError(t, err)
-
-	return rjwt
 }
 
 func TestAuthCalloutErrorResponse(t *testing.T) {
@@ -880,9 +964,7 @@ func TestAuthCalloutErrorResponse(t *testing.T) {
 	defer nc.Close()
 
 	_, err = nc.Subscribe(AuthCalloutSubject, func(m *nats.Msg) {
-		user, si, _, _, _ := decodeAuthRequest(t, m.Data)
-		errResp := createErrResponse(t, user, si.ID, "BAD AUTH", nil)
-		m.Respond([]byte(errResp))
+		m.RespondMsg(serviceResponse(t, "BAD AUTH", ""))
 	})
 	require_NoError(t, err)
 
@@ -913,9 +995,7 @@ func TestAuthCalloutAuthUserFailDoesNotInvokeCallout(t *testing.T) {
 	callouts := uint32(0)
 	_, err = nc.Subscribe(AuthCalloutSubject, func(m *nats.Msg) {
 		atomic.AddUint32(&callouts, 1)
-		user, si, _, _, _ := decodeAuthRequest(t, m.Data)
-		errResp := createErrResponse(t, user, si.ID, "BAD AUTH", nil)
-		m.Respond([]byte(errResp))
+		m.RespondMsg(serviceResponse(t, "WRONG PASSWORD", ""))
 	})
 	require_NoError(t, err)
 
@@ -960,14 +1040,12 @@ func TestAuthCalloutAuthErrEvents(t *testing.T) {
 		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
 		// Allow dlc user and map to the BAZ account.
 		if opts.Username == "dlc" && opts.Password == "zzz" {
-			ujwt := createAuthUser(t, si.ID, user, _EMPTY_, "FOO", nil, 0, nil)
-			m.Respond([]byte(ujwt))
+			ujwt := createAuthUser(t, user, _EMPTY_, "FOO", si.ID, "", nil, 0, nil)
+			m.RespondMsg(serviceResponse(t, "", ujwt))
 		} else if opts.Username == "dlc" {
-			errResp := createErrResponse(t, user, si.ID, "WRONG PASSWORD", nil)
-			m.Respond([]byte(errResp))
+			m.RespondMsg(serviceResponse(t, "WRONG PASSWORD", ""))
 		} else {
-			errResp := createErrResponse(t, user, si.ID, "BAD CREDS", nil)
-			m.Respond([]byte(errResp))
+			m.RespondMsg(serviceResponse(t, "BAD CREDS", ""))
 		}
 	})
 	require_NoError(t, err)
@@ -1029,14 +1107,13 @@ func TestAuthCalloutConnectEvents(t *testing.T) {
 		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
 		// Allow dlc user and map to the BAZ account.
 		if opts.Username == "dlc" && opts.Password == "zzz" {
-			ujwt := createAuthUser(t, si.ID, user, _EMPTY_, "FOO", nil, 0, nil)
-			m.Respond([]byte(ujwt))
+			ujwt := createAuthUser(t, user, _EMPTY_, "FOO", si.ID, "", nil, 0, nil)
+			m.RespondMsg(serviceResponse(t, "", ujwt))
 		} else if opts.Username == "rip" && opts.Password == "xxx" {
-			ujwt := createAuthUser(t, si.ID, user, _EMPTY_, "BAR", nil, 0, nil)
-			m.Respond([]byte(ujwt))
+			ujwt := createAuthUser(t, user, _EMPTY_, "BAR", si.ID, "", nil, 0, nil)
+			m.RespondMsg(serviceResponse(t, "", ujwt))
 		} else {
-			errResp := createErrResponse(t, user, si.ID, "BAD CREDS", nil)
-			m.Respond([]byte(errResp))
+			m.RespondMsg(serviceResponse(t, "BAD CREDS", ""))
 		}
 	})
 	require_NoError(t, err)
