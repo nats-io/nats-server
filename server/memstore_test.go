@@ -1,4 +1,4 @@
-// Copyright 2019-2022 The NATS Authors
+// Copyright 2019-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -494,4 +494,29 @@ func TestMemStoreStreamTruncateReset(t *testing.T) {
 	require_True(t, state.LastSeq == 1000)
 	require_True(t, state.NumSubjects == 1)
 	require_True(t, state.NumDeleted == 0)
+}
+
+func TestMemStoreStreamCompactMultiBlockSubjectInfo(t *testing.T) {
+	cfg := &StreamConfig{
+		Name:     "TEST",
+		Storage:  MemoryStorage,
+		Subjects: []string{"foo.*"},
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(t, err)
+
+	for i := 0; i < 1000; i++ {
+		subj := fmt.Sprintf("foo.%d", i)
+		_, _, err := ms.StoreMsg(subj, nil, []byte("Hello World"))
+		require_NoError(t, err)
+	}
+
+	// Compact such that we know we throw blocks away from the beginning.
+	deleted, err := ms.Compact(501)
+	require_NoError(t, err)
+	require_True(t, deleted == 500)
+
+	// Make sure we adjusted for subjects etc.
+	state := ms.State()
+	require_True(t, state.NumSubjects == 500)
 }
