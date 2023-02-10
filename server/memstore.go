@@ -541,6 +541,7 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 				bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.msg)
 				purged++
 				delete(ms.msgs, seq)
+				ms.removeSeqPerSubject(sm.subj, seq)
 			}
 		}
 		ms.state.Msgs -= purged

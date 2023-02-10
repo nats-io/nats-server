@@ -1,4 +1,4 @@
-// Copyright 2019-2022 The NATS Authors
+// Copyright 2019-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -5195,5 +5195,35 @@ func TestFileStoreStreamTruncateResetMultiBlock(t *testing.T) {
 		require_True(t, state.LastSeq == 1000)
 		require_True(t, state.NumSubjects == 1)
 		require_True(t, state.NumDeleted == 0)
+	})
+}
+
+func TestFileStoreStreamCompactMultiBlockSubjectInfo(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize = 128
+
+		fs, err := newFileStore(
+			fcfg,
+			StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage},
+		)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		for i := 0; i < 1000; i++ {
+			subj := fmt.Sprintf("foo.%d", i)
+			_, _, err := fs.StoreMsg(subj, nil, []byte("Hello World"))
+			require_NoError(t, err)
+		}
+		require_True(t, fs.numMsgBlocks() == 500)
+
+		// Compact such that we know we throw blocks away from the beginning.
+		deleted, err := fs.Compact(501)
+		require_NoError(t, err)
+		require_True(t, deleted == 500)
+		require_True(t, fs.numMsgBlocks() == 250)
+
+		// Make sure we adjusted for subjects etc.
+		state := fs.State()
+		require_True(t, state.NumSubjects == 500)
 	})
 }
