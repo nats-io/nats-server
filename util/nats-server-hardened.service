@@ -12,7 +12,8 @@ Group=nats
 
 # Hardening
 CapabilityBoundingSet=
-LimitNOFILE=800000 # JetStream requires 2 FDs open per stream.
+# JetStream requires 2 FDs open per stream.
+LimitNOFILE=800000
 LockPersonality=true
 MemoryDenyWriteExecute=true
 NoNewPrivileges=true
