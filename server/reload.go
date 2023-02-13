@@ -162,6 +162,17 @@ func (l *logtimeOption) Apply(server *Server) {
 	server.Noticef("Reloaded: logtime = %v", l.newValue)
 }
 
+// logtimeUTCOption implements the option interface for the `logtime_utc` setting.
+type logtimeUTCOption struct {
+	loggingOption
+	newValue bool
+}
+
+// Apply is a no-op because logging will be reloaded after options are applied.
+func (l *logtimeUTCOption) Apply(server *Server) {
+	server.Noticef("Reloaded: logtime_utc = %v", l.newValue)
+}
+
 // logfileOption implements the option interface for the `log_file` setting.
 type logfileOption struct {
 	loggingOption
@@ -1017,6 +1028,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &debugOption{newValue: newValue.(bool)})
 		case "logtime":
 			diffOpts = append(diffOpts, &logtimeOption{newValue: newValue.(bool)})
+		case "logtimeutc":
+			diffOpts = append(diffOpts, &logtimeUTCOption{newValue: newValue.(bool)})
 		case "logfile":
 			diffOpts = append(diffOpts, &logfileOption{newValue: newValue.(string)})
 		case "syslog":

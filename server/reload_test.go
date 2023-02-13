@@ -308,6 +308,9 @@ func TestConfigReload(t *testing.T) {
 	if !updated.Logtime {
 		t.Fatal("Expected Logtime to be true")
 	}
+	if !updated.LogtimeUTC {
+		t.Fatal("Expected LogtimeUTC to be true")
+	}
 	if runtime.GOOS != "windows" {
 		if !updated.Syslog {
 			t.Fatal("Expected Syslog to be true")

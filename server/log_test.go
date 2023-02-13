@@ -101,7 +101,7 @@ func TestReOpenLogFile(t *testing.T) {
 
 	// Set a File log
 	s.opts.LogFile = filepath.Join(t.TempDir(), "test.log")
-	fileLog := logger.NewFileLogger(s.opts.LogFile, s.opts.Logtime, s.opts.Debug, s.opts.Trace, true)
+	fileLog := logger.NewFileLogger(s.opts.LogFile, s.opts.Logtime, s.opts.Debug, s.opts.Trace, true, logger.LogUTC(s.opts.LogtimeUTC))
 	s.SetLogger(fileLog, false, false)
 	// Add some log
 	expectedStr := "This is a Notice"
