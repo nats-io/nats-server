@@ -30,7 +30,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -6449,12 +6448,8 @@ var dios chan struct{}
 // Used to setup our simplistic counting semaphore using buffered channels.
 // golang.org's semaphore seemed a bit heavy.
 func init() {
-	// Minimum for blocking disk IO calls.
-	const minNIO = 4
-	nIO := runtime.GOMAXPROCS(0)
-	if nIO < minNIO {
-		nIO = minNIO
-	}
+	// Based on Go max threads of 10k, limit ourselves to a max of 1k blocking IO calls.
+	const nIO = 1024
 	dios = make(chan struct{}, nIO)
 	// Fill it up to start.
 	for i := 0; i < nIO; i++ {
