@@ -19228,6 +19228,31 @@ func TestJetStreamConsumerOverlappingSubjects(t *testing.T) {
 	}
 }
 
+func TestJetStreamBothFiltersSet(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	if config := s.JetStreamConfig(); config != nil {
+		defer removeDir(t, config.StoreDir)
+	}
+	defer s.Shutdown()
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+	acc := s.GlobalAccount()
+
+	_, err := acc.addStream(&StreamConfig{
+		Subjects: []string{"events.>"},
+		Name:     "deliver",
+	})
+	require_NoError(t, err)
+
+	resp := createConsumer(t, nc, "deliver", ConsumerConfig{
+		FilterSubjects: []string{"events.one", "events.two"},
+		FilterSubject:  "events.three",
+		Durable:        "name",
+	})
+	require_True(t, resp.Error.ErrCode == 10136)
+}
+
 func TestJetStreamMultipleSubjectsPushBasic(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	if config := s.JetStreamConfig(); config != nil {
