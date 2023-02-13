@@ -514,7 +514,7 @@ func checkConsumerCfg(
 		}
 		for inner, ssubject := range subjectFilters {
 			if inner != outer && subjectIsSubsetMatch(subject, ssubject) {
-				return NewJsConsumerOverlappingSubjectFiltersError()
+				return NewJSConsumerOverlappingSubjectFiltersError()
 			}
 		}
 	}
