@@ -3123,11 +3123,14 @@ func (fs *fileStore) expireMsgs() {
 	var smv StoreMsg
 	var sm *StoreMsg
 	fs.mu.RLock()
-	minAge := time.Now().UnixNano() - int64(fs.cfg.MaxAge)
+	maxAge := int64(fs.cfg.MaxAge)
+	minAge := time.Now().UnixNano() - maxAge
 	fs.mu.RUnlock()
 
 	for sm, _ = fs.msgForSeq(0, &smv); sm != nil && sm.ts <= minAge; sm, _ = fs.msgForSeq(0, &smv) {
 		fs.removeMsg(sm.seq, false, true)
+		// Recalculate in case we are expiring a bunch.
+		minAge = time.Now().UnixNano() - maxAge
 	}
 
 	fs.mu.Lock()
