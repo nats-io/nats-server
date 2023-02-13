@@ -495,6 +495,13 @@ func checkConsumerCfg(
 		}
 	}
 
+	// Do not allow specifying both FilterSubject and FilterSubjects,
+	// as that's probably unintentional without any difference from passing
+	// all filters in FilterSubjects.
+	if config.FilterSubject != _EMPTY_ && len(config.FilterSubjects) > 0 {
+		return NewJSConsumerDuplicateFilterSubjectsError()
+	}
+
 	if config.FilterSubject != _EMPTY_ && !IsValidSubject(config.FilterSubject) {
 		return NewJSStreamInvalidConfigError(ErrBadSubject)
 	}
@@ -514,7 +521,7 @@ func checkConsumerCfg(
 		}
 		for inner, ssubject := range subjectFilters {
 			if inner != outer && subjectIsSubsetMatch(subject, ssubject) {
-				return NewJsConsumerOverlappingSubjectFiltersError()
+				return NewJSConsumerOverlappingSubjectFiltersError()
 			}
 		}
 	}
