@@ -5227,3 +5227,50 @@ func TestFileStoreStreamCompactMultiBlockSubjectInfo(t *testing.T) {
 		require_True(t, state.NumSubjects == 500)
 	})
 }
+
+func TestFileStoreOnlyWritePerSubjectInfoOnExpireWithUpdate(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.CacheExpire = 100 * time.Millisecond
+
+		fs, err := newFileStore(
+			fcfg,
+			StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage},
+		)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		for i := 0; i < 1000; i++ {
+			subj := fmt.Sprintf("foo.%d", i)
+			_, _, err := fs.StoreMsg(subj, nil, []byte("Hello World"))
+			require_NoError(t, err)
+		}
+
+		// Grab first msg block.
+		fs.mu.RLock()
+		mb := fs.blks[0]
+		fs.mu.RUnlock()
+
+		needsUpdate := func() bool {
+			mb.mu.RLock()
+			defer mb.mu.RUnlock()
+			return mb.fssNeedsWrite
+		}
+		require_True(t, needsUpdate())
+		time.Sleep(2 * fcfg.CacheExpire)
+		require_False(t, needsUpdate())
+
+		// Make sure reads do not trigger an update.
+		_, err = fs.LoadMsg(1, nil)
+		require_NoError(t, err)
+		require_False(t, needsUpdate())
+
+		// Remove will though.
+		_, err = fs.RemoveMsg(1)
+		require_NoError(t, err)
+		require_True(t, needsUpdate())
+
+		// We should update then clear.
+		time.Sleep(2 * fcfg.CacheExpire)
+		require_False(t, needsUpdate())
+	})
+}

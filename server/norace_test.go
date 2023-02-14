@@ -6139,3 +6139,64 @@ func TestNoRaceJetStreamClusterEnsureWALCompact(t *testing.T) {
 		t.Fatalf("Did not snapshot and compact the raft WAL, entries == %d", ne)
 	}
 }
+
+func TestNoRaceFileStoreStreamMaxAgePerformance(t *testing.T) {
+	// Uncomment to run.
+	skip(t)
+
+	storeDir := t.TempDir()
+	maxAge := 5 * time.Second
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{Name: "MA",
+			Subjects: []string{"foo.*"},
+			MaxAge:   maxAge,
+			Storage:  FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Simulate a callback similar to consumers decrementing.
+	var mu sync.RWMutex
+	var pending int64
+
+	fs.RegisterStorageUpdates(func(md, bd int64, seq uint64, subj string) {
+		mu.Lock()
+		defer mu.Unlock()
+		pending += md
+	})
+
+	start, num, subj := time.Now(), 0, "foo.foo"
+
+	timeout := start.Add(maxAge)
+	for time.Now().Before(timeout) {
+		// We will store in blocks of 100.
+		for i := 0; i < 100; i++ {
+			_, _, err := fs.StoreMsg(subj, nil, []byte("Hello World"))
+			require_NoError(t, err)
+			num++
+		}
+	}
+	elapsed := time.Since(start)
+	fmt.Printf("Took %v to store %d\n", elapsed, num)
+	fmt.Printf("%.0f msgs/sec\n", float64(num)/elapsed.Seconds())
+
+	// Now keep running for 2x longer knowing we are expiring messages in the background.
+	// We want to see the effect on performance.
+
+	start = time.Now()
+	timeout = start.Add(maxAge * 2)
+
+	for time.Now().Before(timeout) {
+		// We will store in blocks of 100.
+		for i := 0; i < 100; i++ {
+			_, _, err := fs.StoreMsg(subj, nil, []byte("Hello World"))
+			require_NoError(t, err)
+			num++
+		}
+	}
+	elapsed = time.Since(start)
+	fmt.Printf("Took %v to store %d\n", elapsed, num)
+	fmt.Printf("%.0f msgs/sec\n", float64(num)/elapsed.Seconds())
+}
