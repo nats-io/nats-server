@@ -1,4 +1,4 @@
-// Copyright 2019-2022 The NATS Authors
+// Copyright 2019-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -4663,6 +4663,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 
 	eq, wc := compareFn(subject), subjectHasWildcard(subject)
 	var firstSeqNeedsUpdate bool
+	var bytes uint64
 
 	// If we have a "keep" designation need to get full filtered state so we know how many to purge.
 	var maxp uint64
@@ -4712,6 +4713,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 					mb.msgs--
 					mb.bytes -= rl
 					purged++
+					bytes += rl
 				}
 				// FSS updates.
 				mb.removeSeqPerSubject(sm.subj, seq, &smv)
@@ -4759,7 +4761,13 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 		fs.selectNextFirst()
 	}
 
+	cb := fs.scb
 	fs.mu.Unlock()
+
+	if cb != nil {
+		cb(-int64(purged), -int64(bytes), 0, _EMPTY_)
+	}
+
 	return purged, nil
 }
 
