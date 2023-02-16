@@ -1504,6 +1504,7 @@ func TestJetStreamParallelConsumerCreation(t *testing.T) {
 			// Make them all fire at once.
 			<-startCh
 
+			var err error
 			_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
 				Durable:  "dlc",
 				Replicas: 3,

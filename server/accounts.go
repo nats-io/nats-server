@@ -1647,7 +1647,7 @@ func (a *Account) addReverseRespMapEntry(acc *Account, reply, from string) {
 // checkForReverseEntries is for when we are trying to match reverse entries to a wildcard.
 // This will be called from checkForReverseEntry when the reply arg is a wildcard subject.
 // This will usually be called in a go routine since we need to walk all the entries.
-func (a *Account) checkForReverseEntries(reply string, checkInterest bool) {
+func (a *Account) checkForReverseEntries(reply string, checkInterest, recursed bool) {
 	a.mu.RLock()
 	if len(a.imports.rrMap) == 0 {
 		a.mu.RUnlock()
@@ -1656,7 +1656,7 @@ func (a *Account) checkForReverseEntries(reply string, checkInterest bool) {
 
 	if subjectIsLiteral(reply) {
 		a.mu.RUnlock()
-		a.checkForReverseEntry(reply, nil, checkInterest)
+		a._checkForReverseEntry(reply, nil, checkInterest, recursed)
 		return
 	}
 
@@ -1669,14 +1669,20 @@ func (a *Account) checkForReverseEntries(reply string, checkInterest bool) {
 	}
 	a.mu.RUnlock()
 
-	for _, reply := range rs {
-		a.checkForReverseEntry(reply, nil, checkInterest)
+	for _, r := range rs {
+		a._checkForReverseEntry(r, nil, checkInterest, recursed)
 	}
 }
 
 // This checks for any response map entries. If you specify an si we will only match and
 // clean up for that one, otherwise we remove them all.
 func (a *Account) checkForReverseEntry(reply string, si *serviceImport, checkInterest bool) {
+	a._checkForReverseEntry(reply, si, checkInterest, false)
+}
+
+// Callers should use checkForReverseEntry instead. This function exists to help prevent
+// infinite recursion.
+func (a *Account) _checkForReverseEntry(reply string, si *serviceImport, checkInterest, recursed bool) {
 	a.mu.RLock()
 	if len(a.imports.rrMap) == 0 {
 		a.mu.RUnlock()
@@ -1684,13 +1690,23 @@ func (a *Account) checkForReverseEntry(reply string, si *serviceImport, checkInt
 	}
 
 	if subjectHasWildcard(reply) {
+		if recursed {
+			// If we have reached this condition then it is because the reverse entries also
+			// contain wildcards (that shouldn't happen but a client *could* provide an inbox
+			// prefix that is illegal because it ends in a wildcard character), at which point
+			// we will end up with infinite recursion between this func and checkForReverseEntries.
+			// To avoid a stack overflow panic, we'll give up instead.
+			a.mu.RUnlock()
+			return
+		}
+
 		doInline := len(a.imports.rrMap) <= 64
 		a.mu.RUnlock()
 
 		if doInline {
-			a.checkForReverseEntries(reply, checkInterest)
+			a.checkForReverseEntries(reply, checkInterest, true)
 		} else {
-			go a.checkForReverseEntries(reply, checkInterest)
+			go a.checkForReverseEntries(reply, checkInterest, true)
 		}
 		return
 	}
