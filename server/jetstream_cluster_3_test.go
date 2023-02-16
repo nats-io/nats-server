@@ -2621,3 +2621,85 @@ func TestJetStreamClusterActiveActiveSourcedStreams(t *testing.T) {
 	})
 	require_NoError(t, err)
 }
+
+func TestJetStreamClusterInterestPolicyEphemeral(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	for _, test := range []struct {
+		testName string
+		stream   string
+		subject  string
+		durable  string
+		name     string
+		policy   nats.RetentionPolicy
+	}{
+		{testName: "limits - name", name: "eph", subject: "limeph", stream: "LIMIT_EPH", policy: nats.LimitsPolicy},
+		{testName: "interest - durable", durable: "eph", subject: "intdur", stream: "INT_DUR", policy: nats.InterestPolicy},
+		{testName: "interest - name", name: "eph", subject: "inteph", stream: "INT_EPH", policy: nats.InterestPolicy},
+	} {
+		t.Run(test.testName, func(t *testing.T) {
+			var err error
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err = js.AddStream(&nats.StreamConfig{
+				Name:      test.stream,
+				Subjects:  []string{test.subject},
+				Retention: test.policy,
+				Replicas:  3,
+			})
+			require_NoError(t, err)
+
+			_, err = js.AddConsumer(test.stream, &nats.ConsumerConfig{
+				DeliverSubject:    nats.NewInbox(),
+				AckPolicy:         nats.AckExplicitPolicy,
+				InactiveThreshold: time.Second * 5,
+				// those two does not help.
+				FlowControl: true,
+				Heartbeat:   time.Second * 1,
+				Durable:     test.durable,
+				Name:        test.name,
+			})
+			require_NoError(t, err)
+
+			name := test.durable
+			if test.durable == "" {
+				name = test.name
+			}
+
+			lastA := time.Now()
+			_, err = js.Subscribe("", func(msg *nats.Msg) {
+				err := msg.Ack()
+				require_NoError(t, err)
+				lastA = time.Now()
+			}, nats.Bind(test.stream, name), nats.ManualAck())
+			require_NoError(t, err)
+
+			const msgs = 100000
+			// This happens only if we start publishing messages after consumer was craeted.
+			go func() {
+				for i := 0; i < msgs; i++ {
+					js.Publish(test.subject, []byte("DATA"))
+				}
+			}()
+
+			checkFor(t, time.Second*20, time.Second*1, func() error {
+				info, err := js.ConsumerInfo(test.stream, name)
+				// if there is no consumer while it was recently active,
+				// it should still be there.
+				if err != nil && time.Since(lastA) < time.Second*5 {
+					t.Fatalf("consumer should be there")
+				}
+				// if all were delivered, we're fine
+				if info.Delivered.Stream == msgs {
+					return nil
+				}
+				// this means we didn't consume everything yet
+				return fmt.Errorf("didn't consume all messages: %v", info.Delivered.Stream)
+			})
+		})
+	}
+
+}
