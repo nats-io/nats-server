@@ -3321,11 +3321,19 @@ func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
 func (mset *stream) storeUpdates(md, bd int64, seq uint64, subj string) {
 	// If we have a single negative update then we will process our consumers for stream pending.
 	// Purge and Store handled separately inside individual calls.
-	if md == -1 && seq > 0 {
+	if md == -1 && seq > 0 && subj != _EMPTY_ {
 		// We use our consumer list mutex here instead of the main stream lock since it may be held already.
 		mset.clsMu.RLock()
+		// TODO(dlc) - Do sublist like signaling so we do not have to match?
 		for _, o := range mset.cList {
 			o.decStreamPending(seq, subj)
+		}
+		mset.clsMu.RUnlock()
+	} else if md < 0 {
+		// Batch decrements we need to force consumers to re-calculate num pending.
+		mset.clsMu.RLock()
+		for _, o := range mset.cList {
+			o.streamNumPendingLocked()
 		}
 		mset.clsMu.RUnlock()
 	}

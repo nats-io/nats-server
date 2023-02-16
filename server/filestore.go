@@ -1679,6 +1679,7 @@ func (fs *fileStore) FilteredState(sseq uint64, subj string) SimpleState {
 
 	// Tracking subject state.
 	fs.mu.RLock()
+	// TODO(dlc) - Optimize for 2.10 with avl tree and no atomics per block.
 	for _, mb := range fs.blks {
 		// Skip blocks that are less than our starting sequence.
 		if sseq > atomic.LoadUint64(&mb.last.seq) {

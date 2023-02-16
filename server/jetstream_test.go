@@ -19486,3 +19486,59 @@ func TestJetStreamPurgeExAndAccounting(t *testing.T) {
 		}
 	}
 }
+
+func TestJetStreamRollup(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	const STREAM = "S"
+	const SUBJ = "S.*"
+
+	js.AddStream(&nats.StreamConfig{
+		Name:        STREAM,
+		Subjects:    []string{SUBJ},
+		AllowRollup: true,
+	})
+
+	for i := 1; i <= 10; i++ {
+		sendStreamMsg(t, nc, "S.A", fmt.Sprintf("%v", i))
+		sendStreamMsg(t, nc, "S.B", fmt.Sprintf("%v", i))
+	}
+
+	sinfo, err := js.StreamInfo(STREAM)
+	require_NoError(t, err)
+	require_True(t, sinfo.State.Msgs == 20)
+
+	cinfo, err := js.AddConsumer(STREAM, &nats.ConsumerConfig{
+		Durable:       "DUR-A",
+		FilterSubject: "S.A",
+		AckPolicy:     nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+	require_True(t, cinfo.NumPending == 10)
+
+	m := nats.NewMsg("S.A")
+	m.Header.Set(JSMsgRollup, JSMsgRollupSubject)
+
+	_, err = js.PublishMsg(m)
+	require_NoError(t, err)
+
+	cinfo, err = js.ConsumerInfo("S", "DUR-A")
+	require_NoError(t, err)
+	require_True(t, cinfo.NumPending == 1)
+
+	sinfo, err = js.StreamInfo(STREAM)
+	require_NoError(t, err)
+	require_True(t, sinfo.State.Msgs == 11)
+
+	cinfo, err = js.AddConsumer(STREAM, &nats.ConsumerConfig{
+		Durable:       "DUR-B",
+		FilterSubject: "S.B",
+		AckPolicy:     nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+	require_True(t, cinfo.NumPending == 10)
+}
