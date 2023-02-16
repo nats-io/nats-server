@@ -4084,7 +4084,7 @@ func TestNoRaceJetStreamConsumerFileStoreConcurrentDiskIO(t *testing.T) {
 	gmp := runtime.GOMAXPROCS(32)
 	defer runtime.GOMAXPROCS(gmp)
 
-	maxT := debug.SetMaxThreads(64)
+	maxT := debug.SetMaxThreads(1050) // 1024 now
 	defer debug.SetMaxThreads(maxT)
 
 	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "MT", Storage: FileStorage})
