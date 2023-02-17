@@ -250,7 +250,7 @@ type consumer struct {
 	dseq              uint64         // delivered consumer sequence
 	adflr             uint64         // ack delivery floor
 	asflr             uint64         // ack store floor
-	npc               uint64         // Num Pending Count
+	npc               int64          // Num Pending Count
 	npf               uint64         // Num Pending Floor Sequence
 	dsubj             string
 	qgroup            string
@@ -3691,32 +3691,32 @@ func (o *consumer) streamNumPending() uint64 {
 			for _, ss := range o.mset.store.SubjectsState(_EMPTY_) {
 				if o.sseq <= ss.Last {
 					o.npc++
-					if ss.Last > o.npcm {
+					if ss.Last > o.npf {
 						o.npf = ss.Last
 					}
 				}
 			}
-			return o.npc
+			return o.numPending()
 		}
 		// Consumer with filters.
 		for _, filter := range o.subjf {
 			for _, ss := range o.mset.store.SubjectsState(filter.subject) {
 				if filter.nextSeq <= ss.Last {
 					o.npc++
-					if ss.Last > o.npcm {
+					if ss.Last > o.npf {
 						o.npf = ss.Last
 					}
 				}
 			}
 		}
-		return o.npc
+		return o.numPending()
 	}
 	// Every other Delivery Policy is handled here.
 	// Consumer without filters.
 	if o.subjf == nil {
 		ss := o.mset.store.FilteredState(o.sseq, _EMPTY_)
-		o.npc, o.npf = ss.Msgs, ss.Last
-		return o.npc
+		o.npc, o.npf = int64(ss.Msgs), ss.Last
+		return o.numPending()
 	}
 	// Consumer with filters.
 	o.npc, o.npf = 0, 0
@@ -3726,12 +3726,12 @@ func (o *consumer) streamNumPending() uint64 {
 			filter.currentSeq = o.sseq
 		}
 		ss := o.mset.store.FilteredState(filter.currentSeq, filter.subject)
-		o.npc += ss.Msgs
-		if ss.Last > o.npcm {
+		o.npc += int64(ss.Msgs)
+		if ss.Last > o.npf {
 			o.npf = ss.Last
 		}
 	}
-	return o.npc
+	return o.numPending()
 }
 
 func convertToHeadersOnly(pmsg *jsPubMsg) {
