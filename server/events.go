@@ -154,6 +154,7 @@ type AccountStat struct {
 	Conns         int       `json:"conns"`
 	LeafNodes     int       `json:"leafnodes"`
 	TotalConns    int       `json:"total_conns"`
+	NumSubs       uint32    `json:"num_subscriptions"`
 	Sent          DataStats `json:"sent"`
 	Received      DataStats `json:"received"`
 	SlowConsumers int64     `json:"slow_consumers"`
@@ -1907,6 +1908,7 @@ func (a *Account) statz() *AccountStat {
 		Conns:      localConns,
 		LeafNodes:  leafConns,
 		TotalConns: localConns + leafConns,
+		NumSubs:    a.sl.Count(),
 		Received: DataStats{
 			Msgs:  atomic.LoadInt64(&a.inMsgs),
 			Bytes: atomic.LoadInt64(&a.inBytes)},
