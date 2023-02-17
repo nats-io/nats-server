@@ -1660,6 +1660,7 @@ func TestJetStreamSuperClusterConsumerDeliverNewBug(t *testing.T) {
 		removeDir(t, sd)
 		s = c.restartServer(s)
 		c.waitOnServerHealthz(s)
+		c.waitOnConsumerLeader("$G", "T", "d")
 	}
 
 	c.waitOnConsumerLeader("$G", "T", "d")
