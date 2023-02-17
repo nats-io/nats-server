@@ -251,7 +251,7 @@ type consumer struct {
 	adflr             uint64         // ack delivery floor
 	asflr             uint64         // ack store floor
 	npc               uint64         // Num Pending Count
-	npcm              uint64         // Last Num Pending Min
+	npf               uint64         // Num Pending Floor Sequence
 	dsubj             string
 	qgroup            string
 	lss               *lastSeqSkipList
@@ -1043,6 +1043,9 @@ func (o *consumer) setLeader(isLeader bool) {
 		s, jsa, stream, lseq := mset.srv, mset.jsa, mset.cfg.Name, mset.lseq
 		mset.mu.RUnlock()
 
+		// Register as a leader with our parent stream.
+		mset.setConsumerAsLeader(o)
+
 		o.mu.Lock()
 		o.rdq, o.rdqi = nil, nil
 
@@ -1134,9 +1137,6 @@ func (o *consumer) setLeader(isLeader bool) {
 
 		// Snapshot initial info.
 		o.infoWithSnap(true)
-
-		// Register as a leader with our parent stream.
-		mset.setConsumerAsLeader(o)
 
 		// Now start up Go routine to deliver msgs.
 		go o.loopAndGatherMsgs(qch)
@@ -1697,6 +1697,9 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 	// Record new config for others that do not need special handling.
 	// Allowed but considered no-op, [Description, SampleFrequency, MaxWaiting, HeadersOnly]
 	o.cfg = *cfg
+
+	// Re-calculate num pending on update.
+	o.streamNumPending()
 
 	return nil
 }
@@ -2340,7 +2343,7 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		},
 		NumAckPending:  len(o.pending),
 		NumRedelivered: len(o.rdc),
-		NumPending:     o.streamNumPending(),
+		NumPending:     o.checkNumPending(),
 		PushBound:      o.isPushMode() && o.active,
 	}
 	// Adjust active based on non-zero etc. Also make UTC here.
@@ -3444,6 +3447,10 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 
 		// On error either wait or return.
 		if err != nil || pmsg == nil {
+			// On EOF we can optionally fast sync num pending state.
+			if err == ErrStoreEOF {
+				o.checkNumPendingOnEOF()
+			}
 			if err == ErrStoreMsgNotFound || err == ErrStoreEOF || err == errMaxAckPending || err == errPartialCache {
 				goto waitForMsgs
 			} else {
@@ -3453,7 +3460,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		}
 
 		// Update our cached num pending here first.
-		if dc == 1 && o.npcm > 0 {
+		if dc == 1 {
 			o.npc--
 		}
 		// Pre-calculate ackReply
@@ -3490,7 +3497,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			}
 			// We will redo this one.
 			o.sseq--
-			if dc == 1 && o.npcm > 0 {
+			if dc == 1 {
 				o.npc++
 			}
 			pmsg.returnToPool()
@@ -3621,16 +3628,51 @@ func (o *consumer) setMaxPendingBytes(limit int) {
 	}
 }
 
+// Does some sanity checks to see if we should re-calculate.
+// Since there is a race when decrementing when there is contention at the beginning of the stream.
+// The race is a getNextMsg skips a deleted msg, and then the decStreamPending call fires.
+// This does some quick sanity checks to see if we should re-calculate num pending.
+// Lock should be held.
+func (o *consumer) checkNumPending() uint64 {
+	if o.mset != nil {
+		var state StreamState
+		o.mset.store.FastState(&state)
+		if o.sseq > state.LastSeq && o.npc != 0 || o.npc > int64(state.Msgs) {
+			// Re-calculate.
+			o.streamNumPending()
+		}
+	}
+	return o.numPending()
+}
+
 // Lock should be held.
 func (o *consumer) numPending() uint64 {
-	if o.npcm == 0 {
-		o.streamNumPending()
-	}
-	// This can wrap based on possibly having a dec before the inc. Account for that here.
-	if o.npc&(1<<63) != 0 {
+	if o.npc < 0 {
 		return 0
 	}
-	return o.npc
+	return uint64(o.npc)
+}
+
+// This will do a quick sanity check on num pending when we encounter
+// and EOF in the loop and gather.
+// Lock should be held.
+func (o *consumer) checkNumPendingOnEOF() {
+	if o.mset == nil {
+		return
+	}
+	var state StreamState
+	o.mset.store.FastState(&state)
+	if o.sseq > state.LastSeq && o.npc != 0 {
+		// We know here we can reset our running state for num pending.
+		o.npc, o.npf = 0, state.LastSeq
+	}
+}
+
+// Call into streamNumPending after acquiring the consumer lock.
+func (o *consumer) streamNumPendingLocked() uint64 {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.streamNumPending()
 }
 
 // Will force a set from the stream store of num pending.
@@ -3638,19 +3680,19 @@ func (o *consumer) numPending() uint64 {
 // Lock should be held.
 func (o *consumer) streamNumPending() uint64 {
 	if o.mset == nil || o.mset.store == nil {
-		o.npc, o.npcm = 0, 0
+		o.npc, o.npf = 0, 0
 		return 0
 	}
 	// Deliver Last Per Subject calculates num pending differently.
 	if o.cfg.DeliverPolicy == DeliverLastPerSubject {
-		o.npc, o.npcm = 0, 0
+		o.npc, o.npf = 0, 0
 		// Consumer without filters.
 		if o.subjf == nil {
-			for _, ss := range o.mset.store.SubjectsState("") {
+			for _, ss := range o.mset.store.SubjectsState(_EMPTY_) {
 				if o.sseq <= ss.Last {
 					o.npc++
 					if ss.Last > o.npcm {
-						o.npcm = ss.Last
+						o.npf = ss.Last
 					}
 				}
 			}
@@ -3662,7 +3704,7 @@ func (o *consumer) streamNumPending() uint64 {
 				if filter.nextSeq <= ss.Last {
 					o.npc++
 					if ss.Last > o.npcm {
-						o.npcm = ss.Last
+						o.npf = ss.Last
 					}
 				}
 			}
@@ -3672,24 +3714,23 @@ func (o *consumer) streamNumPending() uint64 {
 	// Every other Delivery Policy is handled here.
 	// Consumer without filters.
 	if o.subjf == nil {
-		ss := o.mset.store.FilteredState(o.sseq, "")
-		o.npc, o.npcm = ss.Msgs, ss.Last
+		ss := o.mset.store.FilteredState(o.sseq, _EMPTY_)
+		o.npc, o.npf = ss.Msgs, ss.Last
 		return o.npc
 	}
 	// Consumer with filters.
-	var npc uint64
+	o.npc, o.npf = 0, 0
 	for _, filter := range o.subjf {
 		// We might loose state of o.subjf, so if we do recover from o.sseq
 		if filter.currentSeq < o.sseq {
 			filter.currentSeq = o.sseq
 		}
 		ss := o.mset.store.FilteredState(filter.currentSeq, filter.subject)
-		npc += ss.Msgs
+		o.npc += ss.Msgs
 		if ss.Last > o.npcm {
-			o.npcm = ss.Last
+			o.npf = ss.Last
 		}
 	}
-	o.npc = npc
 	return o.npc
 }
 
@@ -4589,10 +4630,11 @@ func (o *consumer) requestNextMsgSubject() string {
 
 func (o *consumer) decStreamPending(sseq uint64, subj string) {
 	o.mu.Lock()
-	// Update our cached num pending. Only do so if we think deliverMsg has not done so.
-	if sseq > o.npcm && sseq >= o.sseq && o.isFilteredMatch(subj) {
+	// Update our cached num pending only if we think deliverMsg has not done so.
+	if sseq >= o.sseq && o.isFilteredMatch(subj) {
 		o.npc--
 	}
+
 	// Check if this message was pending.
 	p, wasPending := o.pending[sseq]
 	var rdc uint64 = 1
@@ -4605,6 +4647,7 @@ func (o *consumer) decStreamPending(sseq uint64, subj string) {
 	// TODO(dlc) - we could do a term here instead with a reason to generate the advisory.
 	if wasPending {
 		// We could have lock for stream so do this in a go routine.
+		// TODO(dlc) - We should do this with ipq vs naked go routines.
 		go o.processTerm(sseq, p.Sequence, rdc)
 	}
 }
@@ -4653,7 +4696,7 @@ func (o *consumer) processStreamSignal(_ *subscription, _ *client, _ *Account, s
 	if o.mset == nil {
 		return
 	}
-	if seq > o.npcm {
+	if seq > o.npf {
 		o.npc++
 	}
 	if seq < o.sseq {
