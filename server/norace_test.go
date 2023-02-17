@@ -6200,3 +6200,76 @@ func TestNoRaceFileStoreStreamMaxAgePerformance(t *testing.T) {
 	fmt.Printf("Took %v to store %d\n", elapsed, num)
 	fmt.Printf("%.0f msgs/sec\n", float64(num)/elapsed.Seconds())
 }
+
+// ConsumerInfo seems to being called quite a bit more than we had anticipated.
+// Under certain circumstances, since we reset num pending, this can be very costly.
+// We will use the fast path to alleviate that performance bottleneck but also make
+// sure we are still being accurate.
+func TestNoRaceJetStreamClusterConsumerInfoSpeed(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	c.waitOnLeader()
+	server := c.randomNonLeader()
+
+	nc, js := jsClientConnect(t, server)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"events.>"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// The issue is compounded when we have lots of different subjects captured
+	// by a terminal fwc. The consumer will have a terminal pwc.
+	// Here make all subjects unique.
+
+	sub, err := js.PullSubscribe("events.*", "DLC")
+	require_NoError(t, err)
+
+	toSend := 250_000
+	for i := 0; i < toSend; i++ {
+		subj := fmt.Sprintf("events.%d", i+1)
+		js.PublishAsync(subj, []byte("ok"))
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	checkNumPending := func(expected int) {
+		t.Helper()
+		start := time.Now()
+		ci, err := js.ConsumerInfo("TEST", "DLC")
+		require_NoError(t, err)
+		// Make sure these are fast now.
+		if elapsed := time.Since(start); elapsed > 5*time.Millisecond {
+			t.Fatalf("ConsumerInfo took too long: %v", elapsed)
+		}
+		// Make sure pending == expected.
+		if ci.NumPending != uint64(expected) {
+			t.Fatalf("Expected %d NumPending, got %d", expected, ci.NumPending)
+		}
+	}
+	// Make sure in simple case it is correct.
+	checkNumPending(toSend)
+
+	// Do a few acks.
+	toAck := 25
+	for _, m := range fetchMsgs(t, sub, 25, time.Second) {
+		err = m.AckSync()
+		require_NoError(t, err)
+	}
+	checkNumPending(toSend - toAck)
+
+	// Now do a purge such that we only keep so many.
+	// We want to make sure we do the right thing here and have correct calculations.
+	toKeep := 100_000
+	err = js.PurgeStream("TEST", &nats.StreamPurgeRequest{Keep: uint64(toKeep)})
+	require_NoError(t, err)
+
+	checkNumPending(toKeep)
+}
