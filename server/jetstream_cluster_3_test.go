@@ -2628,3 +2628,57 @@ func TestJetStreamClusterActiveActiveSourcedStreams(t *testing.T) {
 	})
 	require_NoError(t, err)
 }
+
+func TestJetStreamClusterUpdateConsumerShouldNotForceDeleteOnRestart(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R7S", 7)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:        "D",
+		DeliverSubject: "_no_bind_",
+	})
+	require_NoError(t, err)
+
+	// Shutdown a consumer follower.
+	nc.Close()
+	s := c.serverByName(ci.Cluster.Replicas[0].Name)
+	s.Shutdown()
+
+	c.waitOnLeader()
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Change delivery subject.
+	_, err = js.UpdateConsumer("TEST", &nats.ConsumerConfig{
+		Durable:        "D",
+		DeliverSubject: "_d_",
+	})
+	require_NoError(t, err)
+
+	// Create interest in new and old deliver subject.
+	_, err = nc.SubscribeSync("_d_")
+	require_NoError(t, err)
+	_, err = nc.SubscribeSync("_no_bind_")
+	require_NoError(t, err)
+	nc.Flush()
+
+	c.restartServer(s)
+	c.waitOnAllCurrent()
+
+	// Wait on bad error that would cleanup consumer.
+	time.Sleep(time.Second)
+
+	_, err = js.ConsumerInfo("TEST", "D")
+	require_NoError(t, err)
+}
