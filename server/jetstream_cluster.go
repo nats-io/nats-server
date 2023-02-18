@@ -1,4 +1,4 @@
-// Copyright 2020-2022 The NATS Authors
+// Copyright 2020-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -146,7 +146,6 @@ type consumerAssignment struct {
 	// Internal
 	responded bool
 	deleted   bool
-	pending   bool
 	err       error
 }
 
@@ -3585,18 +3584,19 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 	}
 	js.mu.RLock()
 	s := js.srv
-	acc, err := s.LookupAccount(ca.Client.serviceAccount())
-	if err != nil {
-		s.Warnf("JetStream cluster failed to lookup account %q: %v", ca.Client.serviceAccount(), err)
-		js.mu.RUnlock()
-		return
-	}
 	rg := ca.Group
-	alreadyRunning := rg.node != nil
+	alreadyRunning := rg != nil && rg.node != nil
+	accName, stream, consumer := ca.Client.serviceAccount(), ca.Stream, ca.Name
 	js.mu.RUnlock()
 
+	acc, err := s.LookupAccount(accName)
+	if err != nil {
+		s.Warnf("JetStream cluster failed to lookup axccount %q: %v", accName, err)
+		return
+	}
+
 	// Go ahead and create or update the consumer.
-	mset, err := acc.lookupStream(ca.Stream)
+	mset, err := acc.lookupStream(stream)
 	if err != nil {
 		js.mu.Lock()
 		s.Debugf("Consumer create failed, could not locate stream '%s > %s'", ca.Client.serviceAccount(), ca.Stream)
@@ -3614,7 +3614,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 	}
 
 	// Check if we already have this consumer running.
-	o := mset.lookupConsumer(ca.Name)
+	o := mset.lookupConsumer(consumer)
 
 	if !alreadyRunning {
 		// Process the raft group and make sure its running if needed.
@@ -3622,7 +3622,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 		if ca.Config.MemoryStorage {
 			storage = MemoryStorage
 		}
-		js.createRaftGroup(acc.GetName(), rg, storage)
+		js.createRaftGroup(accName, rg, storage)
 	} else {
 		// If we are clustered update the known peers.
 		js.mu.RLock()
@@ -3633,51 +3633,56 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 	}
 
 	// Check if we already have this consumer running.
-	var didCreate, isConfigUpdate bool
+	var didCreate, isConfigUpdate, needsLocalResponse bool
 	if o == nil {
 		// Add in the consumer if needed.
-		o, err = mset.addConsumerWithAssignment(ca.Config, ca.Name, ca, false)
-		didCreate = true
-	} else {
-		if err := o.updateConfig(ca.Config); err != nil {
-			// This is essentially an update that has failed.
-			js.mu.Lock()
-			result := &consumerAssignmentResult{
-				Account:  ca.Client.serviceAccount(),
-				Stream:   ca.Stream,
-				Consumer: ca.Name,
-				Response: &JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}},
-			}
-			result.Response.Error = NewJSConsumerNameExistError()
-			s.sendInternalMsgLocked(consumerAssignmentSubj, _EMPTY_, nil, result)
-			js.mu.Unlock()
-			return
+		if o, err = mset.addConsumerWithAssignment(ca.Config, ca.Name, ca, false); err == nil {
+			didCreate = true
 		}
-		// Check if we already had a consumer assignment and its still pending.
-		cca, oca := ca, o.consumerAssignment()
-		o.mu.RLock()
-		leader := o.isLeader()
-		o.mu.RUnlock()
+	} else {
+		// This consumer exists.
+		// Only update if config is really different.
+		cfg := o.config()
+		if !reflect.DeepEqual(&cfg, ca.Config) {
+			if err := o.updateConfig(ca.Config); err != nil {
+				// This is essentially an update that has failed.
+				js.mu.RLock()
+				result := &consumerAssignmentResult{
+					Account:  accName,
+					Stream:   stream,
+					Consumer: consumer,
+					Response: &JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}},
+				}
+				result.Response.Error = NewJSConsumerNameExistError()
+				s.sendInternalMsgLocked(consumerAssignmentSubj, _EMPTY_, nil, result)
+				js.mu.RUnlock()
+				return
+			}
+		}
 
 		var sendState bool
-		js.mu.Lock()
+		js.mu.RLock()
+		n := rg.node
+		// Check if we already had a consumer assignment and its still pending.
+		cca, oca := ca, o.consumerAssignment()
 		if oca != nil {
 			if !oca.responded {
 				// We can't override info for replying here otherwise leader once elected can not respond.
-				// So just update Config, leave off client and reply to the originals.
-				cac := *oca
-				cac.Config = ca.Config
+				// So copy over original client and the reply from the old ca.
+				cac := *ca
+				cac.Client = oca.Client
+				cac.Reply = oca.Reply
 				cca = &cac
+				needsLocalResponse = true
 			}
 			// If we look like we are scaling up, let's send our current state to the group.
-			sendState = len(ca.Group.Peers) > len(oca.Group.Peers) && leader
+			sendState = len(ca.Group.Peers) > len(oca.Group.Peers) && o.IsLeader() && n != nil
 			// Signal that this is an update
 			isConfigUpdate = true
 		}
-		n := rg.node
-		js.mu.Unlock()
+		js.mu.RUnlock()
 
-		if sendState && n != nil {
+		if sendState {
 			if snap, err := o.store.EncodedState(); err == nil {
 				n.SendSnapshot(snap)
 			}
@@ -3694,6 +3699,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 		err = o.setStoreState(state)
 		o.mu.Unlock()
 	}
+
 	if err != nil {
 		if IsNatsErr(err, JSConsumerStoreFailedErrF) {
 			s.Warnf("Consumer create failed for '%s > %s > %s': %v", ca.Client.serviceAccount(), ca.Stream, ca.Name, err)
@@ -3755,7 +3761,6 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 			}
 		}
 
-		// Start our monitoring routine.
 		if rg.node == nil {
 			// Single replica consumer, process manually here.
 			js.mu.Lock()
@@ -3766,15 +3771,14 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 			js.mu.Unlock()
 			js.processConsumerLeaderChange(o, true)
 		} else {
-			if !alreadyRunning {
+			// Clustered consumer.
+			// Start our monitoring routine if needed.
+			if !alreadyRunning && !o.isMonitorRunning() {
 				s.startGoRoutine(func() { js.monitorConsumer(o, ca) })
 			}
-			// Only send response if not recovering.
-			if !js.isMetaRecovering() {
-				o.mu.RLock()
-				isLeader := o.isLeader()
-				o.mu.RUnlock()
-				if wasExisting && (isLeader || (!didCreate && rg.node.GroupLeader() == _EMPTY_)) {
+			// For existing consumer, only send response if not recovering.
+			if wasExisting && !js.isMetaRecovering() {
+				if o.IsLeader() || (!didCreate && needsLocalResponse) {
 					// Process if existing as an update.
 					js.mu.RLock()
 					client, subject, reply := ca.Client, ca.Subject, ca.Reply
@@ -3969,6 +3973,12 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 		s.Warnf("No RAFT group for '%s > %s > %s'", o.acc.Name, ca.Stream, ca.Name)
 		return
 	}
+
+	// Make sure only one is running.
+	if o.checkInMonitor() {
+		return
+	}
+	defer o.clearMonitorRunning()
 
 	qch, lch, aq, uch, ourPeerId := n.QuitC(), n.LeadChangeC(), n.ApplyQ(), o.updateC(), cc.meta.ID()
 
@@ -4373,8 +4383,7 @@ func (js *jetStream) processConsumerLeaderChange(o *consumer, isLeader bool) err
 	ca.responded = true
 	js.mu.Unlock()
 
-	streamName := o.streamName()
-	consumerName := o.String()
+	streamName, consumerName := o.streamName(), o.String()
 	acc, _ := s.LookupAccount(account)
 	if acc == nil {
 		return stepDownIfLeader()
@@ -6493,7 +6502,6 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	if sa.consumers == nil {
 		sa.consumers = make(map[string]*consumerAssignment)
 	}
-	ca.pending = true
 	sa.consumers[ca.Name] = ca
 
 	// Do formal proposal.
