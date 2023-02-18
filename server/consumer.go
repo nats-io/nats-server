@@ -54,7 +54,7 @@ type ConsumerInfo struct {
 }
 
 type ConsumerConfig struct {
-	// Durable is deprecated. All consumers will have names. picked by clients.
+	// Durable is deprecated. All consumers should have names, picked by clients.
 	Durable         string          `json:"durable_name,omitempty"`
 	Name            string          `json:"name,omitempty"`
 	Description     string          `json:"description,omitempty"`
@@ -298,6 +298,7 @@ type consumer struct {
 	prOk      bool
 	uch       chan struct{}
 	retention RetentionPolicy
+	inMonitor bool
 
 	// R>1 proposals
 	pch   chan struct{}
@@ -959,6 +960,13 @@ func (o *consumer) clearNode() {
 	}
 }
 
+// IsLeader will return if we are the current leader.
+func (o *consumer) IsLeader() bool {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.isLeader()
+}
+
 // Lock should be held.
 func (o *consumer) isLeader() bool {
 	if o.node != nil {
@@ -1604,6 +1612,8 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 	if o.cfg.FilterSubject != cfg.FilterSubject {
 		if cfg.FilterSubject != _EMPTY_ {
 			o.filterWC = subjectHasWildcard(cfg.FilterSubject)
+		} else {
+			o.filterWC = false
 		}
 		// Make sure we have correct signaling setup.
 		// Consumer lock can not be held.
@@ -4443,4 +4453,30 @@ func (o *consumer) processStreamSignal(_ *subscription, _ *client, _ *Account, s
 	if o.isPushMode() && o.active || o.isPullMode() && !o.waiting.isEmpty() {
 		o.signalNewMessages()
 	}
+}
+
+// Will check if we are running in the monitor already and if not set the appropriate flag.
+func (o *consumer) checkInMonitor() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	if o.inMonitor {
+		return true
+	}
+	o.inMonitor = true
+	return false
+}
+
+// Clear us being in the monitor routine.
+func (o *consumer) clearMonitorRunning() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.inMonitor = false
+}
+
+// Test whether we are in the monitor routine.
+func (o *consumer) isMonitorRunning() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.inMonitor
 }

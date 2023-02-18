@@ -3823,6 +3823,7 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 	if isClustered && !req.Config.Direct {
 		// If we are inline with client, we still may need to do a callout for consumer info
 		// during this call, so place in Go routine to not block client.
+		// Router and Gateway API calls already in separate context.
 		if c.kind != ROUTER && c.kind != GATEWAY {
 			go s.jsClusteredConsumerRequest(ci, acc, subject, reply, rmsg, req.Stream, &req.Config)
 		} else {
@@ -4165,20 +4166,27 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 			}
 			// We have a consumer assignment.
 			js.mu.RLock()
+
 			var node RaftNode
 			var leaderNotPartOfGroup bool
-			if rg := ca.Group; rg != nil && rg.node != nil && rg.isMember(ourID) {
-				node = rg.node
-				if gl := node.GroupLeader(); gl != _EMPTY_ && !rg.isMember(gl) {
-					leaderNotPartOfGroup = true
+			var isMember bool
+
+			rg := ca.Group
+			if rg != nil && rg.isMember(ourID) {
+				isMember = true
+				if rg.node != nil {
+					node = rg.node
+					if gl := node.GroupLeader(); gl != _EMPTY_ && !rg.isMember(gl) {
+						leaderNotPartOfGroup = true
+					}
 				}
 			}
 			js.mu.RUnlock()
 			// Check if we should ignore all together.
 			if node == nil {
-				// We have been assigned and are pending.
-				if ca.pending {
-					// Send our config and defaults for state and no cluster info.
+				// We have been assigned but have not created a node yet. If we are a member return
+				// our config and defaults for state and no cluster info.
+				if isMember {
 					resp.ConsumerInfo = &ConsumerInfo{
 						Stream:  ca.Stream,
 						Name:    ca.Name,
@@ -4190,7 +4198,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 				return
 			}
 			// If we are a member and we have a group leader or we had a previous leader consider bailing out.
-			if node != nil && (node.GroupLeader() != _EMPTY_ || node.HadPreviousLeader()) {
+			if node.GroupLeader() != _EMPTY_ || node.HadPreviousLeader() {
 				if leaderNotPartOfGroup {
 					resp.Error = NewJSConsumerOfflineError()
 					s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil)

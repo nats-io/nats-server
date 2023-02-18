@@ -541,11 +541,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	}
 
 	// This is always true in single server mode.
-	mset.mu.RLock()
-	isLeader := mset.isLeader()
-	mset.mu.RUnlock()
-
-	if isLeader {
+	if mset.IsLeader() {
 		// Send advisory.
 		var suppress bool
 		if !s.standAloneMode() && sa == nil {
