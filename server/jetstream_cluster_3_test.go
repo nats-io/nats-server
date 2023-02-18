@@ -1486,13 +1486,21 @@ func TestJetStreamParallelConsumerCreation(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	np := 20
+	np := 50
 
 	startCh := make(chan bool)
 	errCh := make(chan error, np)
 
+	cfg := &nats.ConsumerConfig{
+		Durable:  "dlc",
+		Replicas: 3,
+	}
+
 	wg := sync.WaitGroup{}
+	swg := sync.WaitGroup{}
 	wg.Add(np)
+	swg.Add(np)
+
 	for i := 0; i < np; i++ {
 		go func() {
 			defer wg.Done()
@@ -1501,21 +1509,20 @@ func TestJetStreamParallelConsumerCreation(t *testing.T) {
 			nc, js := jsClientConnect(t, c.randomServer())
 			defer nc.Close()
 
+			swg.Done()
+
 			// Make them all fire at once.
 			<-startCh
 
-			var err error
-			_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
-				Durable:  "dlc",
-				Replicas: 3,
-			})
-			if err != nil {
+			if _, err := js.AddConsumer("TEST", cfg); err != nil {
 				errCh <- err
 			}
 		}()
 	}
 
+	swg.Wait()
 	close(startCh)
+
 	wg.Wait()
 
 	if len(errCh) > 0 {
