@@ -5111,7 +5111,9 @@ func (mset *stream) checkConsumerReplication() {
 	s, acc := mset.srv, mset.acc
 	for _, o := range mset.consumers {
 		o.mu.RLock()
-		if mset.cfg.Replicas != o.cfg.Replicas {
+		// Consumer replicas 0 can be a legit config for the replicas and we will inherit from the stream
+		// when this is the case.
+		if mset.cfg.Replicas != o.cfg.Replicas && o.cfg.Replicas != 0 {
 			s.Errorf("consumer '%s > %s > %s' MUST match replication (%d vs %d) of stream with interest policy",
 				acc, mset.cfg.Name, o.cfg.Name, mset.cfg.Replicas, o.cfg.Replicas)
 		}
