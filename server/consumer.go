@@ -1750,14 +1750,13 @@ func (o *consumer) processAck(subject, reply string, hdr int, rmsg []byte) {
 // Used to process a working update to delay redelivery.
 func (o *consumer) progressUpdate(seq uint64) {
 	o.mu.Lock()
-	if len(o.pending) > 0 {
-		if p, ok := o.pending[seq]; ok {
-			p.Timestamp = time.Now().UnixNano()
-			// Update store system.
-			o.updateDelivered(p.Sequence, seq, 1, p.Timestamp)
-		}
+	defer o.mu.Unlock()
+
+	if p, ok := o.pending[seq]; ok {
+		p.Timestamp = time.Now().UnixNano()
+		// Update store system.
+		o.updateDelivered(p.Sequence, seq, 1, p.Timestamp)
 	}
-	o.mu.Unlock()
 }
 
 // Lock should be held.
@@ -1984,10 +1983,8 @@ func (o *consumer) processNak(sseq, dseq, dc uint64, nak []byte) {
 		return
 	}
 	// If we are explicit ack make sure this is still on our pending list.
-	if len(o.pending) > 0 {
-		if _, ok := o.pending[sseq]; !ok {
-			return
-		}
+	if _, ok := o.pending[sseq]; !ok {
+		return
 	}
 
 	// Deliver an advisory
@@ -2156,7 +2153,7 @@ func (o *consumer) applyState(state *ConsumerState) {
 	o.rdc = state.Redelivered
 
 	// Setup tracking timer if we have restored pending.
-	if len(o.pending) > 0 && o.ptmr == nil {
+	if len(o.pending) > 0 {
 		// This is on startup or leader change. We want to check pending
 		// sooner in case there are inconsistencies etc. Pick between 500ms - 1.5s
 		delay := 500*time.Millisecond + time.Duration(rand.Int63n(1000))*time.Millisecond
@@ -2164,7 +2161,11 @@ func (o *consumer) applyState(state *ConsumerState) {
 		if o.cfg.AckWait < delay {
 			delay = o.ackWait(0)
 		}
-		o.ptmr = time.AfterFunc(delay, o.checkPending)
+		if o.ptmr == nil {
+			o.ptmr = time.AfterFunc(delay, o.checkPending)
+		} else {
+			o.ptmr.Reset(delay)
+		}
 	}
 }
 
@@ -4126,11 +4127,22 @@ func (o *consumer) purge(sseq uint64, slseq uint64) {
 	}
 	if o.asflr < sseq {
 		o.asflr = sseq - 1
-		if o.dseq > 0 {
-			o.adflr = o.dseq - 1
+		// We need to remove those no longer relevant from pending.
+		for seq, p := range o.pending {
+			if seq <= o.asflr {
+				if p.Sequence > o.adflr {
+					o.adflr = p.Sequence
+					if o.adflr > o.dseq {
+						o.dseq = o.adflr
+					}
+				}
+				delete(o.pending, seq)
+			}
 		}
 	}
-	o.pending = nil
+	if len(o.pending) == 0 {
+		o.pending = nil
+	}
 
 	// We need to remove all those being queued for redelivery under o.rdq
 	if len(o.rdq) > 0 {
@@ -4238,6 +4250,7 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	if dflag {
 		ca = o.ca
 	}
+	sigSub := o.sigSub
 	o.mu.Unlock()
 
 	if c != nil {
@@ -4251,10 +4264,16 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 		a.sl.clearNotification(delivery, qgroup, o.inch)
 	}
 
-	mset.mu.Lock()
-	mset.removeConsumer(o)
-	rp := mset.cfg.Retention
-	mset.mu.Unlock()
+	var rp RetentionPolicy
+	if mset != nil {
+		if sigSub != nil {
+			mset.removeConsumerAsLeader(o)
+		}
+		mset.mu.Lock()
+		mset.removeConsumer(o)
+		rp = mset.cfg.Retention
+		mset.mu.Unlock()
+	}
 
 	// We need to optionally remove all messages since we are interest based retention.
 	// We will do this consistently on all replicas. Note that if in clustered mode the

@@ -6223,8 +6223,9 @@ func (o *consumerFileStore) flushLoop(fch, qch chan struct{}) {
 				return
 			}
 			// TODO(dlc) - if we error should start failing upwards.
-			o.writeState(buf)
-			lastWrite = time.Now()
+			if err := o.writeState(buf); err == nil {
+				lastWrite = time.Now()
+			}
 		case <-qch:
 			return
 		}
@@ -6414,6 +6415,11 @@ func (o *consumerFileStore) Update(state *ConsumerState) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
+	// Check to see if this is an outdated update.
+	if state.Delivered.Consumer < o.state.Delivered.Consumer {
+		return nil
+	}
+
 	// Sanity checks.
 	if state.AckFloor.Consumer > state.Delivered.Consumer {
 		return fmt.Errorf("bad ack floor for consumer")
@@ -6429,8 +6435,6 @@ func (o *consumerFileStore) Update(state *ConsumerState) error {
 		pending = make(map[uint64]*Pending, len(state.Pending))
 		for seq, p := range state.Pending {
 			pending[seq] = &Pending{p.Sequence, p.Timestamp}
-		}
-		for seq := range pending {
 			if seq <= state.AckFloor.Stream || seq > state.Delivered.Stream {
 				return fmt.Errorf("bad pending entry, sequence [%d] out of range", seq)
 			}
@@ -6443,15 +6447,11 @@ func (o *consumerFileStore) Update(state *ConsumerState) error {
 		}
 	}
 
-	// Check to see if this is an outdated update.
-	if state.Delivered.Consumer < o.state.Delivered.Consumer {
-		return fmt.Errorf("old update ignored")
-	}
-
 	o.state.Delivered = state.Delivered
 	o.state.AckFloor = state.AckFloor
 	o.state.Pending = pending
 	o.state.Redelivered = redelivered
+
 	o.kickFlusher()
 
 	return nil
