@@ -211,6 +211,7 @@ var (
 	AckTerm = []byte("+TERM")
 )
 
+// Calculate accurate replicas for the consumer config with the parent stream config.
 func (consCfg ConsumerConfig) replicas(strCfg *StreamConfig) int {
 	if consCfg.Replicas == 0 {
 		if !isDurableConsumer(&consCfg) && strCfg.Retention == LimitsPolicy {
@@ -827,9 +828,9 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	o.updateInactiveThreshold(&o.cfg)
 
 	if o.isPushMode() {
-		if !o.isDurable() {
-			// Check if we are not durable that the delivery subject has interest.
-			// Check in place here for interest. Will setup properly in setLeader.
+		// Check if we are running only 1 replica and that the delivery subject has interest.
+		// Check in place here for interest. Will setup properly in setLeader.
+		if config.replicas(&mset.cfg) == 1 {
 			r := o.acc.sl.Match(o.cfg.DeliverSubject)
 			if !o.hasDeliveryInterest(len(r.psubs)+len(r.qsubs) > 0) {
 				// Let the interest come to us eventually, but setup delete timer.
@@ -856,10 +857,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	}
 
 	// This is always true in single server mode.
-	o.mu.RLock()
-	isLdr := o.isLeader()
-	o.mu.RUnlock()
-	if isLdr {
+	if o.IsLeader() {
 		// Send advisory.
 		var suppress bool
 		if !s.standAloneMode() && ca == nil {
@@ -1053,6 +1051,7 @@ func (o *consumer) setLeader(isLeader bool) {
 			if o.active = <-o.inch; o.active {
 				o.checkQueueInterest()
 			}
+
 			// Check gateways in case they are enabled.
 			if s.gateway.enabled {
 				if !o.active {
