@@ -3681,6 +3681,7 @@ func (o *consumer) trackPending(sseq, dseq uint64) {
 	}
 	if p, ok := o.pending[sseq]; ok {
 		p.Timestamp = time.Now().UnixNano()
+		p.Sequence = dseq
 	} else {
 		o.pending[sseq] = &Pending{dseq, time.Now().UnixNano()}
 	}
@@ -3806,7 +3807,7 @@ func (o *consumer) checkPending() {
 	fseq := state.FirstSeq
 
 	// Since we can update timestamps, we have to review all pending.
-	// We may want to unlock here or warn if list is big.
+	// We will now bail if we see an ack pending in bound to us via o.awl.
 	var expired []uint64
 	check := len(o.pending) > 1024
 	for seq, p := range o.pending {
@@ -3820,6 +3821,13 @@ func (o *consumer) checkPending() {
 			delete(o.rdc, seq)
 			o.removeFromRedeliverQueue(seq)
 			shouldUpdateState = true
+			// Check if we need to move ack floors.
+			if seq > o.asflr {
+				o.asflr = seq
+			}
+			if p.Sequence > o.adflr {
+				o.adflr = p.Sequence
+			}
 			continue
 		}
 		elapsed, deadline := now-p.Timestamp, ttl
@@ -3866,8 +3874,10 @@ func (o *consumer) checkPending() {
 	if len(o.pending) > 0 {
 		o.ptmr.Reset(o.ackWait(time.Duration(next)))
 	} else {
-		o.ptmr.Stop()
-		o.ptmr = nil
+		// Make sure to stop timer and clear out any re delivery queues
+		stopAndClearTimer(&o.ptmr)
+		o.rdq, o.rdqi = nil, nil
+		o.pending = nil
 	}
 
 	// Update our state if needed.
@@ -4125,8 +4135,10 @@ func (o *consumer) purge(sseq uint64, slseq uint64) {
 	if o.sseq < sseq {
 		o.sseq = sseq
 	}
+
 	if o.asflr < sseq {
 		o.asflr = sseq - 1
+
 		// We need to remove those no longer relevant from pending.
 		for seq, p := range o.pending {
 			if seq <= o.asflr {
@@ -4137,11 +4149,14 @@ func (o *consumer) purge(sseq uint64, slseq uint64) {
 					}
 				}
 				delete(o.pending, seq)
+				delete(o.rdc, seq)
+				// rdq handled below.
 			}
 		}
 	}
+	// This means we can reset everything at this point.
 	if len(o.pending) == 0 {
-		o.pending = nil
+		o.pending, o.rdc = nil, nil
 	}
 
 	// We need to remove all those being queued for redelivery under o.rdq
