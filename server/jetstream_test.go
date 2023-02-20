@@ -19558,8 +19558,7 @@ func TestJetStreamPartialPurgeWithAckPending(t *testing.T) {
 
 	nmsgs := 100
 	for i := 0; i < nmsgs; i++ {
-		_, err := js.Publish("foo", []byte("OK"))
-		require_NoError(t, err)
+		sendStreamMsg(t, nc, "foo", "OK")
 	}
 	sub, err := js.PullSubscribe("foo", "dlc", nats.AckWait(time.Second))
 	require_NoError(t, err)
@@ -19583,8 +19582,7 @@ func TestJetStreamPartialPurgeWithAckPending(t *testing.T) {
 	require_True(t, ci.NumPending == 0)
 
 	for i := 0; i < nmsgs; i++ {
-		_, err := js.Publish("foo", []byte("OK"))
-		require_NoError(t, err)
+		sendStreamMsg(t, nc, "foo", "OK")
 	}
 
 	ci, err = js.ConsumerInfo("TEST", "dlc")
@@ -19666,8 +19664,7 @@ func TestJetStreamPurgeWithRedeliveredPending(t *testing.T) {
 
 	nmsgs := 100
 	for i := 0; i < nmsgs; i++ {
-		_, err := js.Publish("foo", []byte("OK"))
-		require_NoError(t, err)
+		sendStreamMsg(t, nc, "foo", "OK")
 	}
 	sub, err := js.PullSubscribe("foo", "dlc", nats.AckWait(time.Second))
 	require_NoError(t, err)
@@ -19715,8 +19712,7 @@ func TestJetStreamConsumerAckFloorWithExpired(t *testing.T) {
 
 	nmsgs := 100
 	for i := 0; i < nmsgs; i++ {
-		_, err := js.Publish("foo", []byte("OK"))
-		require_NoError(t, err)
+		sendStreamMsg(t, nc, "foo", "OK")
 	}
 	sub, err := js.PullSubscribe("foo", "dlc", nats.AckWait(time.Second))
 	require_NoError(t, err)

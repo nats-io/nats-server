@@ -4206,7 +4206,14 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 				}
 				panic(err.Error())
 			}
-			o.store.Update(state)
+			if err = o.store.Update(state); err != nil {
+				o.mu.RLock()
+				s, acc, mset, name := o.srv, o.acc, o.mset, o.name
+				o.mu.RUnlock()
+				if s != nil && mset != nil {
+					s.Warnf("Consumer '%s > %s > %s' error on store update from snapshot entry: %v", acc, mset.name(), name, err)
+				}
+			}
 		} else if e.Type == EntryRemovePeer {
 			js.mu.RLock()
 			var ourID string

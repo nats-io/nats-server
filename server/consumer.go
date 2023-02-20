@@ -2100,6 +2100,7 @@ func (o *consumer) ackWait(next time.Duration) time.Duration {
 }
 
 // Due to bug in calculation of sequences on restoring redelivered let's do quick sanity check.
+// Lock should be held.
 func (o *consumer) checkRedelivered(slseq uint64) {
 	var lseq uint64
 	if mset := o.mset; mset != nil {
@@ -2114,7 +2115,13 @@ func (o *consumer) checkRedelivered(slseq uint64) {
 		}
 	}
 	if shouldUpdateState {
-		o.writeStoreStateUnlocked()
+		if err := o.writeStoreStateUnlocked(); err != nil && o.srv != nil && o.mset != nil {
+			s, acc, mset, name := o.srv, o.acc, o.mset, o.name
+			// Can not hold lock while gather information about account and stream below.
+			o.mu.Unlock()
+			s.Warnf("Consumer '%s > %s > %s' error on write store state from check redelivered: %v", acc, mset.name(), name, err)
+			o.mu.Lock()
+		}
 	}
 }
 
@@ -3882,7 +3889,13 @@ func (o *consumer) checkPending() {
 
 	// Update our state if needed.
 	if shouldUpdateState {
-		o.writeStoreStateUnlocked()
+		if err := o.writeStoreStateUnlocked(); err != nil && o.srv != nil && o.mset != nil {
+			s, acc, mset, name := o.srv, o.acc, o.mset, o.name
+			// Can not hold lock while gather information about account and stream below.
+			o.mu.Unlock()
+			s.Warnf("Consumer '%s > %s > %s' error on write store state from check pending: %v", acc, mset.name(), name, err)
+			o.mu.Lock()
+		}
 	}
 }
 
@@ -4169,9 +4182,13 @@ func (o *consumer) purge(sseq uint64, slseq uint64) {
 			}
 		}
 	}
+	// Grab some info in case of error below.
+	s, acc, mset, name := o.srv, o.acc, o.mset, o.name
 	o.mu.Unlock()
 
-	o.writeStoreState()
+	if err := o.writeStoreState(); err != nil && s != nil && mset != nil {
+		s.Warnf("Consumer '%s > %s > %s' error on write store state from purge: %v", acc, mset.name(), name, err)
+	}
 }
 
 func stopAndClearTimer(tp **time.Timer) {
