@@ -4431,7 +4431,9 @@ func newTransform(src, dest string) (*transform, error) {
 				dtokMappingFunctionIntArgs = append(dtokMappingFunctionIntArgs, -1)
 				dtokMappingFunctionStringArgs = append(dtokMappingFunctionStringArgs, _EMPTY_)
 			} else {
-				nphs++
+				// We might combine multiple tokens into one, for example with a partition
+				nphs += len(transformArgWildcardIndexes)
+
 				// Now build up our runtime mapping from dest to source tokens.
 				var stis []int
 				for _, wildcardIndex := range transformArgWildcardIndexes {

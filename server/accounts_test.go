@@ -3303,6 +3303,8 @@ func TestSubjectTransforms(t *testing.T) {
 	shouldBeOK("foo", "bar")
 	shouldBeOK("foo.*.bar.*.baz", "req.$2.$1")
 	shouldBeOK("baz.>", "mybaz.>")
+	shouldBeOK("*.*", "{{partition(10,1,2)}}")
+	shouldBeOK("foo.*.*", "foo.{{wildcard(1)}}.{{wildcard(2)}}.{{partition(5,1,2)}}")
 	shouldBeOK("*", "{{splitfromleft(1,1)}}")
 
 	shouldMatch := func(src, dest, sample, expected string) {
