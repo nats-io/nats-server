@@ -3816,7 +3816,7 @@ func (o *consumer) checkPending() {
 			return
 		}
 		// Check if these are no longer valid.
-		if seq < fseq {
+		if seq < fseq || seq <= o.asflr {
 			delete(o.pending, seq)
 			delete(o.rdc, seq)
 			o.removeFromRedeliverQueue(seq)
