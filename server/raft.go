@@ -1,4 +1,4 @@
-// Copyright 2020-2022 The NATS Authors
+// Copyright 2020-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -2872,8 +2872,8 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	}
 
 	if ae.pterm != n.pterm || ae.pindex != n.pindex {
-		// Check if this is a lower index than what we were expecting.
-		if ae.pindex < n.pindex {
+		// Check if this is a lower or equal index than what we were expecting.
+		if ae.pindex <= n.pindex {
 			n.debug("AppendEntry detected pindex less than ours: %d:%d vs %d:%d", ae.pterm, ae.pindex, n.pterm, n.pindex)
 			var ar *appendEntryResponse
 
@@ -2938,7 +2938,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.pterm = ae.pterm
 			n.commit = ae.pindex
 
-			if _, err := n.wal.Compact(n.pindex); err != nil {
+			if _, err := n.wal.Compact(n.pindex + 1); err != nil {
 				n.setWriteErrLocked(err)
 				n.Unlock()
 				return
