@@ -1126,7 +1126,10 @@ func (s *Server) HandleIPQueuesz(w http.ResponseWriter, r *http.Request) {
 
 	s.ipQueues.Range(func(k, v interface{}) bool {
 		name := k.(string)
-		queue := v.(*ipQueue)
+		queue := v.(interface {
+			len() int
+			inProgress() uint64
+		})
 		pending := queue.len()
 		inProgress := int(queue.inProgress())
 		if !all && (pending == 0 && inProgress == 0) {

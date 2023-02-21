@@ -789,8 +789,7 @@ func (s *Server) processJSAPIRoutedRequests() {
 		select {
 		case <-queue.ch:
 			reqs := queue.pop()
-			for _, req := range reqs {
-				r := req.(*jsAPIRoutedReq)
+			for _, r := range reqs {
 				client.pa = r.pa
 				start := time.Now()
 				r.jsub.icb(r.sub, client, r.acc, r.subject, r.reply, r.msg)
@@ -813,7 +812,7 @@ func (s *Server) setJetStreamExportSubs() error {
 
 	// Start the go routine that will process API requests received by the
 	// subscription below when they are coming from routes, etc..
-	s.jsAPIRoutedReqs = s.newIPQueue("Routed JS API Requests")
+	s.jsAPIRoutedReqs = newIPQueue[*jsAPIRoutedReq](s, "Routed JS API Requests")
 	s.startGoRoutine(s.processJSAPIRoutedRequests)
 
 	// This is the catch all now for all JetStream API calls.
@@ -3301,7 +3300,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 
 	// For signaling to upper layers.
 	resultCh := make(chan result, 1)
-	activeQ := s.newIPQueue(fmt.Sprintf("[ACC:%s] stream '%s' restore", acc.Name, streamName)) // of int
+	activeQ := newIPQueue[int](s, fmt.Sprintf("[ACC:%s] stream '%s' restore", acc.Name, streamName)) // of int
 
 	var total int
 
@@ -3441,9 +3440,10 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 				doneCh <- err
 				return
 			case <-activeQ.ch:
-				n := activeQ.popOne().(int)
-				total += n
-				notActive.Reset(activityInterval)
+				if n, ok := activeQ.popOne(); ok {
+					total += n
+					notActive.Reset(activityInterval)
+				}
 			case <-notActive.C:
 				err := fmt.Errorf("restore for stream '%s > %s' is stalled", acc, streamName)
 				doneCh <- err

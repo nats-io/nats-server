@@ -1032,8 +1032,8 @@ func (js *jetStream) monitorCluster() {
 			return
 		case <-aq.ch:
 			ces := aq.pop()
-			for _, cei := range ces {
-				if cei == nil {
+			for _, ce := range ces {
+				if ce == nil {
 					// Signals we have replayed all of our metadata.
 					js.clearMetaRecovering()
 
@@ -1056,7 +1056,6 @@ func (js *jetStream) monitorCluster() {
 					s.Debugf("Recovered JetStream cluster metadata")
 					continue
 				}
-				ce := cei.(*CommittedEntry)
 				// FIXME(dlc) - Deal with errors.
 				if didSnap, didRemoval, err := js.applyMetaEntries(ce.Entries, ru); err == nil {
 					_, nb := n.Applied(ce.Index)
@@ -1952,9 +1951,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		case <-aq.ch:
 			var ne, nb uint64
 			ces := aq.pop()
-			for _, cei := range ces {
+			for _, ce := range ces {
 				// No special processing needed for when we are caught up on restart.
-				if cei == nil {
+				if ce == nil {
 					isRecovering = false
 					// Check on startup if we should snapshot/compact.
 					if _, b := n.Size(); b > compactSizeMin || n.NeedSnapshot() {
@@ -1962,7 +1961,6 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					}
 					continue
 				}
-				ce := cei.(*CommittedEntry)
 				// Apply our entries.
 				if err := js.applyStreamEntries(mset, ce, isRecovering); err == nil {
 					// Update our applied.
@@ -4073,16 +4071,15 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			return
 		case <-aq.ch:
 			ces := aq.pop()
-			for _, cei := range ces {
+			for _, ce := range ces {
 				// No special processing needed for when we are caught up on restart.
-				if cei == nil {
+				if ce == nil {
 					recovering = false
 					if n.NeedSnapshot() {
 						doSnapshot(true)
 					}
 					continue
 				}
-				ce := cei.(*CommittedEntry)
 				if err := js.applyConsumerEntries(o, ce, isLeader); err == nil {
 					ne, nb := n.Applied(ce.Index)
 					// If we have at least min entries to compact, go ahead and snapshot/compact.
@@ -7234,7 +7231,7 @@ RETRY:
 		s.sendInternalMsgLocked(mrec.reply, _EMPTY_, nil, err.Error())
 	}
 
-	msgsQ := s.newIPQueue(qname) // of *im
+	msgsQ := newIPQueue[*im](s, qname)
 	defer msgsQ.unregister()
 
 	// Send our catchup request here.
@@ -7266,8 +7263,7 @@ RETRY:
 
 			mrecs := msgsQ.pop()
 
-			for _, mreci := range mrecs {
-				mrec := mreci.(*im)
+			for _, mrec := range mrecs {
 				msg := mrec.msg
 
 				// Check for eof signaling.
@@ -7319,7 +7315,7 @@ RETRY:
 			msgsQ.recycle(&mrecs)
 		case <-notActive.C:
 			if mrecs := msgsQ.pop(); len(mrecs) > 0 {
-				mrec := mrecs[0].(*im)
+				mrec := mrecs[0]
 				notifyLeaderStopCatchup(mrec, errCatchupStalled)
 				msgsQ.recycle(&mrecs)
 			}

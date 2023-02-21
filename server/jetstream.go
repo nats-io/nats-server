@@ -142,7 +142,7 @@ type jsAccount struct {
 	store     TemplateStore
 
 	// From server
-	sendq *ipQueue // of *pubMsg
+	sendq *ipQueue[*pubMsg]
 
 	// Usage/limits related fields that will be protected by usageMu
 	usageMu    sync.RWMutex
