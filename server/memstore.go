@@ -421,14 +421,23 @@ func (ms *memStore) expireMsgs() {
 	for {
 		if sm, ok := ms.msgs[ms.state.FirstSeq]; ok && sm.ts <= minAge {
 			ms.deleteFirstMsgOrPanic()
+			// Recalculate in case we are expiring a bunch.
+			now = time.Now().UnixNano()
+			minAge = now - int64(ms.cfg.MaxAge)
+
 		} else {
-			if !ok {
+			if len(ms.msgs) == 0 {
 				if ms.ageChk != nil {
 					ms.ageChk.Stop()
 					ms.ageChk = nil
 				}
 			} else {
-				fireIn := time.Duration(sm.ts-now) + ms.cfg.MaxAge
+				var fireIn time.Duration
+				if sm == nil {
+					fireIn = ms.cfg.MaxAge
+				} else {
+					fireIn = time.Duration(sm.ts - minAge)
+				}
 				if ms.ageChk != nil {
 					ms.ageChk.Reset(fireIn)
 				} else {
@@ -541,6 +550,7 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 				bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.msg)
 				purged++
 				delete(ms.msgs, seq)
+				ms.removeSeqPerSubject(sm.subj, seq)
 			}
 		}
 		ms.state.Msgs -= purged

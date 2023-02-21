@@ -21,11 +21,11 @@ import (
 const ipQueueDefaultMaxRecycleSize = 4 * 1024
 
 // This is a generic intra-process queue.
-type ipQueue struct {
+type ipQueue[T any] struct {
 	inprogress int64
 	sync.RWMutex
 	ch   chan struct{}
-	elts []interface{}
+	elts []T
 	pos  int
 	pool *sync.Pool
 	mrs  int
@@ -47,12 +47,12 @@ func ipQueue_MaxRecycleSize(max int) ipQueueOpt {
 	}
 }
 
-func (s *Server) newIPQueue(name string, opts ...ipQueueOpt) *ipQueue {
+func newIPQueue[T any](s *Server, name string, opts ...ipQueueOpt) *ipQueue[T] {
 	qo := ipQueueOpts{maxRecycleSize: ipQueueDefaultMaxRecycleSize}
 	for _, o := range opts {
 		o(&qo)
 	}
-	q := &ipQueue{
+	q := &ipQueue[T]{
 		ch:   make(chan struct{}, 1),
 		mrs:  qo.maxRecycleSize,
 		pool: &sync.Pool{},
@@ -66,7 +66,7 @@ func (s *Server) newIPQueue(name string, opts ...ipQueueOpt) *ipQueue {
 // Add the element `e` to the queue, notifying the queue channel's `ch` if the
 // entry is the first to be added, and returns the length of the queue after
 // this element is added.
-func (q *ipQueue) push(e interface{}) int {
+func (q *ipQueue[T]) push(e T) int {
 	var signal bool
 	q.Lock()
 	l := len(q.elts) - q.pos
@@ -76,10 +76,10 @@ func (q *ipQueue) push(e interface{}) int {
 		if eltsi != nil {
 			// Reason we use pointer to slice instead of slice is explained
 			// here: https://staticcheck.io/docs/checks#SA6002
-			q.elts = (*(eltsi.(*[]interface{})))[:0]
+			q.elts = (*(eltsi.(*[]T)))[:0]
 		}
 		if cap(q.elts) == 0 {
-			q.elts = make([]interface{}, 0, 32)
+			q.elts = make([]T, 0, 32)
 		}
 	}
 	q.elts = append(q.elts, e)
@@ -103,8 +103,8 @@ func (q *ipQueue) push(e interface{}) int {
 // something, but by the time it calls `pop()`, the drain() would have
 // emptied the queue. So the caller should never assume that pop() will
 // return a slice of 1 or more, it could return `nil`.
-func (q *ipQueue) pop() []interface{} {
-	var elts []interface{}
+func (q *ipQueue[T]) pop() []T {
+	var elts []T
 	q.Lock()
 	if q.pos == 0 {
 		elts = q.elts
@@ -117,23 +117,23 @@ func (q *ipQueue) pop() []interface{} {
 	return elts
 }
 
-func (q *ipQueue) resetAndReturnToPool(elts *[]interface{}) {
-	for i, l := 0, len(*elts); i < l; i++ {
-		(*elts)[i] = nil
-	}
+func (q *ipQueue[T]) resetAndReturnToPool(elts *[]T) {
+	(*elts) = (*elts)[:0]
 	q.pool.Put(elts)
 }
 
 // Returns the first element from the queue, if any. See comment above
 // regarding calling after being notified that there is something and
-// the use of drain(). In short, the caller should always expect that
-// pop() or popOne() may return `nil`.
-func (q *ipQueue) popOne() interface{} {
+// the use of drain(). In short, the caller should always check the
+// boolean return value to ensure that the value is genuine and not a
+// default empty value.
+func (q *ipQueue[T]) popOne() (T, bool) {
 	q.Lock()
 	l := len(q.elts) - q.pos
 	if l < 1 {
 		q.Unlock()
-		return nil
+		var empty T
+		return empty, false
 	}
 	e := q.elts[q.pos]
 	q.pos++
@@ -150,7 +150,7 @@ func (q *ipQueue) popOne() interface{} {
 		q.elts, q.pos = nil, 0
 	}
 	q.Unlock()
-	return e
+	return e, true
 }
 
 // After a pop(), the slice can be recycled for the next push() when
@@ -159,7 +159,7 @@ func (q *ipQueue) popOne() interface{} {
 // of the slice.
 // Reason we use pointer to slice instead of slice is explained
 // here: https://staticcheck.io/docs/checks#SA6002
-func (q *ipQueue) recycle(elts *[]interface{}) {
+func (q *ipQueue[T]) recycle(elts *[]T) {
 	// If invoked with a nil list, nothing to do.
 	if elts == nil || *elts == nil {
 		return
@@ -179,7 +179,7 @@ func (q *ipQueue) recycle(elts *[]interface{}) {
 }
 
 // Returns the current length of the queue.
-func (q *ipQueue) len() int {
+func (q *ipQueue[T]) len() int {
 	q.RLock()
 	l := len(q.elts) - q.pos
 	q.RUnlock()
@@ -190,7 +190,7 @@ func (q *ipQueue) len() int {
 // Note that this could cause a reader go routine that has been
 // notified that there is something in the queue (reading from queue's `ch`)
 // may then get nothing if `drain()` is invoked before the `pop()` or `popOne()`.
-func (q *ipQueue) drain() {
+func (q *ipQueue[T]) drain() {
 	if q == nil {
 		return
 	}
@@ -213,13 +213,13 @@ func (q *ipQueue) drain() {
 // For that reason, the queue maintains a count of elements returned through
 // the pop() API. When the caller will call q.recycle(), this count will
 // be reduced by the size of the slice returned by pop().
-func (q *ipQueue) inProgress() int64 {
+func (q *ipQueue[T]) inProgress() int64 {
 	return atomic.LoadInt64(&q.inprogress)
 }
 
 // Remove this queue from the server's map of ipQueues.
 // All ipQueue operations (such as push/pop/etc..) are still possible.
-func (q *ipQueue) unregister() {
+func (q *ipQueue[T]) unregister() {
 	if q == nil {
 		return
 	}

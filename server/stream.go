@@ -207,13 +207,13 @@ type stream struct {
 	sid       int
 	pubAck    []byte
 	outq      *jsOutQ
-	msgs      *ipQueue // of *inMsg
+	msgs      *ipQueue[*inMsg]
 	store     StreamStore
-	ackq      *ipQueue // of uint64
+	ackq      *ipQueue[uint64]
 	lseq      uint64
 	lmsgId    string
 	consumers map[string]*consumer
-	numFilter int
+	numFilter int // number of filtered consumers
 	cfg       StreamConfig
 	created   time.Time
 	stype     StorageType
@@ -245,8 +245,8 @@ type stream struct {
 	clsMu sync.RWMutex
 	cList []*consumer
 	sch   chan struct{}
-	sigq  *ipQueue // of *cMsg
-	csl   *Sublist
+	sigq  *ipQueue[*cMsg]
+	csl   *Sublist // Consumer Sublist
 
 	// TODO(dlc) - Hide everything below behind two pointers.
 	// Clustered mode.
@@ -278,7 +278,7 @@ type sourceInfo struct {
 	sub   *subscription
 	dsub  *subscription
 	lbsub *subscription
-	msgs  *ipQueue // of *inMsg
+	msgs  *ipQueue[*inMsg]
 	sseq  uint64
 	dseq  uint64
 	start time.Time
@@ -471,19 +471,19 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		tier:      tier,
 		stype:     cfg.Storage,
 		consumers: make(map[string]*consumer),
-		msgs:      s.newIPQueue(qpfx + "messages"), // of *inMsg
+		msgs:      newIPQueue[*inMsg](s, qpfx+"messages"),
 		qch:       make(chan struct{}),
 		uch:       make(chan struct{}, 4),
 		sch:       make(chan struct{}, 1),
 	}
 
 	// Start our signaling routine to process consumers.
-	mset.sigq = s.newIPQueue(qpfx + "obs") // of *cMsg
+	mset.sigq = newIPQueue[*cMsg](s, qpfx+"obs") // of *cMsg
 	go mset.signalConsumersLoop()
 
 	// For no-ack consumers when we are interest retention.
 	if cfg.Retention != LimitsPolicy {
-		mset.ackq = s.newIPQueue(qpfx + "acks") // of uint64
+		mset.ackq = newIPQueue[uint64](s, qpfx+"acks")
 	}
 
 	// Check for input subject transform
@@ -579,11 +579,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	}
 
 	// This is always true in single server mode.
-	mset.mu.RLock()
-	isLeader := mset.isLeader()
-	mset.mu.RUnlock()
-
-	if isLeader {
+	if mset.IsLeader() {
 		// Send advisory.
 		var suppress bool
 		if !s.standAloneMode() && sa == nil {
@@ -1743,16 +1739,20 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 
 	mset.clsMu.RLock()
 	for _, o := range mset.cList {
+		o.mu.RLock()
 		// we update consumer sequences if:
 		// no subject was specified, we can purge all consumers sequences
-		if preq == nil ||
+		doPurge := preq == nil ||
 			preq.Subject == _EMPTY_ ||
 			// or consumer filter subject is equal to purged subject
 			preq.Subject == o.cfg.FilterSubject ||
 			// or consumer subject is subset of purged subject,
 			// but not the other way around.
-			subjectIsSubsetMatch(o.cfg.FilterSubject, preq.Subject) {
+			subjectIsSubsetMatch(o.cfg.FilterSubject, preq.Subject)
+		o.mu.RUnlock()
+		if doPurge {
 			o.purge(fseq, lseq)
+
 		}
 	}
 	mset.clsMu.RUnlock()
@@ -1876,8 +1876,7 @@ func (mset *stream) processMirrorMsgs(mirror *sourceInfo, ready *sync.WaitGroup)
 			return
 		case <-msgs.ch:
 			ims := msgs.pop()
-			for _, imi := range ims {
-				im := imi.(*inMsg)
+			for _, im := range ims {
 				if !mset.processInboundMirrorMsg(im) {
 					break
 				}
@@ -2258,7 +2257,7 @@ func (mset *stream) setupMirrorConsumer() error {
 	// delivering messages as soon as the consumer request is received.
 	qname := fmt.Sprintf("[ACC:%s] stream mirror '%s' of '%s' msgs", mset.acc.Name, mset.cfg.Name, mset.cfg.Mirror.Name)
 	// Create a new queue each time
-	mirror.msgs = mset.srv.newIPQueue(qname) /* of *inMsg */
+	mirror.msgs = newIPQueue[*inMsg](mset.srv, qname)
 	msgs := mirror.msgs
 	sub, err := mset.subscribeInternal(deliverSubject, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 		hdr, msg := c.msgParts(copyBytes(rmsg)) // Need to copy.
@@ -2562,7 +2561,7 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64, startTime time.T
 	// delivering messages as soon as the consumer request is received.
 	qname := fmt.Sprintf("[ACC:%s] stream source '%s' from '%s' msgs", mset.acc.Name, mset.cfg.Name, si.name)
 	// Create a new queue each time
-	si.msgs = mset.srv.newIPQueue(qname) // of *inMsg
+	si.msgs = newIPQueue[*inMsg](mset.srv, qname)
 	msgs := si.msgs
 	sub, err := mset.subscribeInternal(deliverSubject, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 		hdr, msg := c.msgParts(copyBytes(rmsg)) // Need to copy.
@@ -2672,8 +2671,7 @@ func (mset *stream) processSourceMsgs(si *sourceInfo, ready *sync.WaitGroup) {
 			return
 		case <-msgs.ch:
 			ims := msgs.pop()
-			for _, imi := range ims {
-				im := imi.(*inMsg)
+			for _, im := range ims {
 				if !mset.processInboundSourceMsg(si, im) {
 					break
 				}
@@ -3303,11 +3301,19 @@ func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
 func (mset *stream) storeUpdates(md, bd int64, seq uint64, subj string) {
 	// If we have a single negative update then we will process our consumers for stream pending.
 	// Purge and Store handled separately inside individual calls.
-	if md == -1 && seq > 0 {
+	if md == -1 && seq > 0 && subj != _EMPTY_ {
 		// We use our consumer list mutex here instead of the main stream lock since it may be held already.
 		mset.clsMu.RLock()
+		// TODO(dlc) - Do sublist like signaling so we do not have to match?
 		for _, o := range mset.cList {
 			o.decStreamPending(seq, subj)
+		}
+		mset.clsMu.RUnlock()
+	} else if md < 0 {
+		// Batch decrements we need to force consumers to re-calculate num pending.
+		mset.clsMu.RLock()
+		for _, o := range mset.cList {
+			o.streamNumPendingLocked()
 		}
 		mset.clsMu.RUnlock()
 	}
@@ -3467,7 +3473,7 @@ type inMsg struct {
 	msg  []byte
 }
 
-func (mset *stream) queueInbound(ib *ipQueue, subj, rply string, hdr, msg []byte) {
+func (mset *stream) queueInbound(ib *ipQueue[*inMsg], subj, rply string, hdr, msg []byte) {
 	ib.push(&inMsg{subj, rply, hdr, msg})
 }
 
@@ -4143,8 +4149,7 @@ func (mset *stream) signalConsumersLoop() {
 			return
 		case <-sch:
 			cms := msgs.pop()
-			for _, cm := range cms {
-				m := cm.(*cMsg)
+			for _, m := range cms {
 				seq, subj := m.seq, m.subj
 				m.returnToPool()
 				// Signal all appropriate consumers.
@@ -4235,7 +4240,7 @@ func (pm *jsPubMsg) size() int {
 
 // Queue of *jsPubMsg for sending internal system messages.
 type jsOutQ struct {
-	*ipQueue
+	*ipQueue[*jsPubMsg]
 }
 
 func (q *jsOutQ) sendMsg(subj string, msg []byte) {
@@ -4276,7 +4281,7 @@ func (mset *stream) setupSendCapabilities() {
 		return
 	}
 	qname := fmt.Sprintf("[ACC:%s] stream '%s' sendQ", mset.acc.Name, mset.cfg.Name)
-	mset.outq = &jsOutQ{mset.srv.newIPQueue(qname)} // of *jsPubMsg
+	mset.outq = &jsOutQ{newIPQueue[*jsPubMsg](mset.srv, qname)}
 	go mset.internalLoop()
 }
 
@@ -4312,7 +4317,7 @@ func (mset *stream) internalLoop() {
 	// For the ack msgs queue for interest retention.
 	var (
 		amch chan struct{}
-		ackq *ipQueue // of uint64
+		ackq *ipQueue[uint64]
 	)
 	if mset.ackq != nil {
 		ackq, amch = mset.ackq, mset.ackq.ch
@@ -4327,8 +4332,7 @@ func (mset *stream) internalLoop() {
 		select {
 		case <-outq.ch:
 			pms := outq.pop()
-			for _, pmi := range pms {
-				pm := pmi.(*jsPubMsg)
+			for _, pm := range pms {
 				c.pa.subject = []byte(pm.dsubj)
 				c.pa.deliver = []byte(pm.subj)
 				c.pa.size = len(pm.msg) + len(pm.hdr)
@@ -4380,9 +4384,7 @@ func (mset *stream) internalLoop() {
 			// This can possibly change now so needs to be checked here.
 			isClustered := mset.IsClustered()
 			ims := msgs.pop()
-			for _, imi := range ims {
-				im := imi.(*inMsg)
-
+			for _, im := range ims {
 				// If we are clustered we need to propose this message to the underlying raft group.
 				if isClustered {
 					mset.processClusteredInboundMsg(im.subj, im.rply, im.hdr, im.msg)
@@ -4394,7 +4396,7 @@ func (mset *stream) internalLoop() {
 		case <-amch:
 			seqs := ackq.pop()
 			for _, seq := range seqs {
-				mset.ackMsg(nil, seq.(uint64))
+				mset.ackMsg(nil, seq)
 			}
 			ackq.recycle(&seqs)
 		case <-qch:
@@ -4620,7 +4622,7 @@ func (mset *stream) numConsumers() int {
 // Lock should be held.
 func (mset *stream) setConsumer(o *consumer) {
 	mset.consumers[o.name] = o
-	if o.cfg.FilterSubject != _EMPTY_ {
+	if len(o.subjf) > 0 {
 		mset.numFilter++
 	}
 	if o.cfg.Direct {
@@ -4652,7 +4654,9 @@ func (mset *stream) removeConsumer(o *consumer) {
 		}
 		// Always remove from the leader sublist.
 		if mset.csl != nil {
-			mset.csl.Remove(o.signalSub())
+			for _, sub := range o.signalSubs() {
+				mset.csl.Remove(sub)
+			}
 		}
 		mset.clsMu.Unlock()
 	}
@@ -4666,7 +4670,9 @@ func (mset *stream) setConsumerAsLeader(o *consumer) {
 	if mset.csl == nil {
 		mset.csl = NewSublistWithCache()
 	}
-	mset.csl.Insert(o.signalSub())
+	for _, sub := range o.signalSubs() {
+		mset.csl.Insert(sub)
+	}
 }
 
 // Remove the consumer as a leader. This will update signaling sublist.
@@ -4674,33 +4680,55 @@ func (mset *stream) removeConsumerAsLeader(o *consumer) {
 	mset.clsMu.Lock()
 	defer mset.clsMu.Unlock()
 	if mset.csl != nil {
-		mset.csl.Remove(o.signalSub())
+		for _, sub := range o.signalSubs() {
+			mset.csl.Remove(sub)
+		}
 	}
 }
 
 // swapSigSubs will update signal Subs for a new subject filter.
-// Lock should be held.
-func (mset *stream) swapSigSubs(o *consumer, newFilter string) {
-	subject := newFilter
-	if subject == _EMPTY_ {
-		subject = fwcs
+// consumer lock should not be held.
+func (mset *stream) swapSigSubs(o *consumer, newFilters []string) {
+	mset.clsMu.Lock()
+	o.mu.Lock()
+
+	if o.sigSubs != nil {
+		if mset.csl != nil {
+			for _, sub := range o.sigSubs {
+				mset.csl.Remove(sub)
+			}
+		}
+		o.sigSubs = nil
 	}
 
-	mset.clsMu.Lock()
-	if o.sigSub != nil {
-		o.mset.csl.Remove(o.sigSub)
+	if o.isLeader() {
+		if mset.csl == nil {
+			mset.csl = NewSublistWithCache()
+		}
+		// If no filters are preset, add fwcs to sublist for that consumer.
+		if newFilters == nil {
+			sub := &subscription{subject: []byte(fwcs), icb: o.processStreamSignal}
+			o.mset.csl.Insert(sub)
+			o.sigSubs = append(o.sigSubs, sub)
+			// If there are filters, add their subjects to sublist.
+		} else {
+			for _, filter := range newFilters {
+				sub := &subscription{subject: []byte(filter), icb: o.processStreamSignal}
+				o.mset.csl.Insert(sub)
+				o.sigSubs = append(o.sigSubs, sub)
+			}
+		}
 	}
-	sub := &subscription{subject: []byte(subject), icb: o.processStreamSignal}
-	mset.csl.Insert(sub)
+	o.mu.Unlock()
 	mset.clsMu.Unlock()
 
-	o.sigSub = sub
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
 
-	// Decrement numFilter if old filter was an actual filter.
-	if o.cfg.FilterSubject != _EMPTY_ && mset.numFilter > 0 {
+	if mset.numFilter > 0 && len(o.subjf) > 0 {
 		mset.numFilter--
 	}
-	if newFilter != _EMPTY_ {
+	if len(newFilters) > 0 {
 		mset.numFilter++
 	}
 }
@@ -4757,14 +4785,18 @@ func (mset *stream) Store() StreamStore {
 
 // Determines if the new proposed partition is unique amongst all consumers.
 // Lock should be held.
-func (mset *stream) partitionUnique(partition string) bool {
-	for _, o := range mset.consumers {
-		if o.cfg.FilterSubject == _EMPTY_ {
-			return false
-		}
-		if subjectIsSubsetMatch(partition, o.cfg.FilterSubject) ||
-			subjectIsSubsetMatch(o.cfg.FilterSubject, partition) {
-			return false
+func (mset *stream) partitionUnique(partitions []string) bool {
+	for _, partition := range partitions {
+		for _, o := range mset.consumers {
+			if o.subjf == nil {
+				return false
+			}
+			for _, filter := range o.subjf {
+				if subjectIsSubsetMatch(partition, filter.subject) ||
+					subjectIsSubsetMatch(filter.subject, partition) {
+					return false
+				}
+			}
 		}
 	}
 	return true
@@ -5082,7 +5114,9 @@ func (mset *stream) checkConsumerReplication() {
 	s, acc := mset.srv, mset.acc
 	for _, o := range mset.consumers {
 		o.mu.RLock()
-		if mset.cfg.Replicas != o.cfg.Replicas {
+		// Consumer replicas 0 can be a legit config for the replicas and we will inherit from the stream
+		// when this is the case.
+		if mset.cfg.Replicas != o.cfg.Replicas && o.cfg.Replicas != 0 {
 			s.Errorf("consumer '%s > %s > %s' MUST match replication (%d vs %d) of stream with interest policy",
 				acc, mset.cfg.Name, o.cfg.Name, mset.cfg.Replicas, o.cfg.Replicas)
 		}

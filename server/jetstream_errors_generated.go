@@ -74,6 +74,9 @@ const (
 	// JSConsumerDirectRequiresPushErr consumer direct requires a push based consumer
 	JSConsumerDirectRequiresPushErr ErrorIdentifier = 10090
 
+	// JSConsumerDuplicateFilterSubjects consumer cannot have both FilterSubject and FilterSubjects specified
+	JSConsumerDuplicateFilterSubjects ErrorIdentifier = 10136
+
 	// JSConsumerDurableNameNotInSubjectErr consumer expected to be durable but no durable name set in subject
 	JSConsumerDurableNameNotInSubjectErr ErrorIdentifier = 10016
 
@@ -82,6 +85,9 @@ const (
 
 	// JSConsumerDurableNameNotSetErr consumer expected to be durable but a durable name was not set
 	JSConsumerDurableNameNotSetErr ErrorIdentifier = 10018
+
+	// JSConsumerEmptyFilter consumer filter in FilterSubjects cannot be empty
+	JSConsumerEmptyFilter ErrorIdentifier = 10139
 
 	// JSConsumerEphemeralWithDurableInSubjectErr consumer expected to be ephemeral but detected a durable name set in subject
 	JSConsumerEphemeralWithDurableInSubjectErr ErrorIdentifier = 10019
@@ -134,6 +140,9 @@ const (
 	// JSConsumerMetadataLengthErrF consumer metadata exceeds maximum size of {limit}
 	JSConsumerMetadataLengthErrF ErrorIdentifier = 10135
 
+	// JSConsumerMultipleFiltersNotAllowed consumer with multiple subject filters cannot use subject based API
+	JSConsumerMultipleFiltersNotAllowed ErrorIdentifier = 10137
+
 	// JSConsumerNameContainsPathSeparatorsErr Consumer name can not contain path separators
 	JSConsumerNameContainsPathSeparatorsErr ErrorIdentifier = 10127
 
@@ -151,6 +160,9 @@ const (
 
 	// JSConsumerOnMappedErr consumer direct on a mapped consumer
 	JSConsumerOnMappedErr ErrorIdentifier = 10092
+
+	// JSConsumerOverlappingSubjectFilters consumer subject filters cannot overlap
+	JSConsumerOverlappingSubjectFilters ErrorIdentifier = 10138
 
 	// JSConsumerPullNotDurableErr consumer in pull mode requires a durable name
 	JSConsumerPullNotDurableErr ErrorIdentifier = 10085
@@ -433,9 +445,11 @@ var (
 		JSConsumerDescriptionTooLongErrF:           {Code: 400, ErrCode: 10107, Description: "consumer description is too long, maximum allowed is {max}"},
 		JSConsumerDirectRequiresEphemeralErr:       {Code: 400, ErrCode: 10091, Description: "consumer direct requires an ephemeral consumer"},
 		JSConsumerDirectRequiresPushErr:            {Code: 400, ErrCode: 10090, Description: "consumer direct requires a push based consumer"},
+		JSConsumerDuplicateFilterSubjects:          {Code: 400, ErrCode: 10136, Description: "consumer cannot have both FilterSubject and FilterSubjects specified"},
 		JSConsumerDurableNameNotInSubjectErr:       {Code: 400, ErrCode: 10016, Description: "consumer expected to be durable but no durable name set in subject"},
 		JSConsumerDurableNameNotMatchSubjectErr:    {Code: 400, ErrCode: 10017, Description: "consumer name in subject does not match durable name in request"},
 		JSConsumerDurableNameNotSetErr:             {Code: 400, ErrCode: 10018, Description: "consumer expected to be durable but a durable name was not set"},
+		JSConsumerEmptyFilter:                      {Code: 400, ErrCode: 10139, Description: "consumer filter in FilterSubjects cannot be empty"},
 		JSConsumerEphemeralWithDurableInSubjectErr: {Code: 400, ErrCode: 10019, Description: "consumer expected to be ephemeral but detected a durable name set in subject"},
 		JSConsumerEphemeralWithDurableNameErr:      {Code: 400, ErrCode: 10020, Description: "consumer expected to be ephemeral but a durable name was set in request"},
 		JSConsumerExistingActiveErr:                {Code: 400, ErrCode: 10105, Description: "consumer already exists and is still active"},
@@ -453,12 +467,14 @@ var (
 		JSConsumerMaxRequestExpiresToSmall:         {Code: 400, ErrCode: 10115, Description: "consumer max request expires needs to be >= 1ms"},
 		JSConsumerMaxWaitingNegativeErr:            {Code: 400, ErrCode: 10087, Description: "consumer max waiting needs to be positive"},
 		JSConsumerMetadataLengthErrF:               {Code: 400, ErrCode: 10135, Description: "consumer metadata exceeds maximum size of {limit}"},
+		JSConsumerMultipleFiltersNotAllowed:        {Code: 400, ErrCode: 10137, Description: "consumer with multiple subject filters cannot use subject based API"},
 		JSConsumerNameContainsPathSeparatorsErr:    {Code: 400, ErrCode: 10127, Description: "Consumer name can not contain path separators"},
 		JSConsumerNameExistErr:                     {Code: 400, ErrCode: 10013, Description: "consumer name already in use"},
 		JSConsumerNameTooLongErrF:                  {Code: 400, ErrCode: 10102, Description: "consumer name is too long, maximum allowed is {max}"},
 		JSConsumerNotFoundErr:                      {Code: 404, ErrCode: 10014, Description: "consumer not found"},
 		JSConsumerOfflineErr:                       {Code: 500, ErrCode: 10119, Description: "consumer is offline"},
 		JSConsumerOnMappedErr:                      {Code: 400, ErrCode: 10092, Description: "consumer direct on a mapped consumer"},
+		JSConsumerOverlappingSubjectFilters:        {Code: 400, ErrCode: 10138, Description: "consumer subject filters cannot overlap"},
 		JSConsumerPullNotDurableErr:                {Code: 400, ErrCode: 10085, Description: "consumer in pull mode requires a durable name"},
 		JSConsumerPullRequiresAckErr:               {Code: 400, ErrCode: 10084, Description: "consumer in pull mode requires ack policy"},
 		JSConsumerPullWithRateLimitErr:             {Code: 400, ErrCode: 10086, Description: "consumer in pull mode can not have rate limit set"},
@@ -817,6 +833,16 @@ func NewJSConsumerDirectRequiresPushError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSConsumerDirectRequiresPushErr]
 }
 
+// NewJSConsumerDuplicateFilterSubjectsError creates a new JSConsumerDuplicateFilterSubjects error: "consumer cannot have both FilterSubject and FilterSubjects specified"
+func NewJSConsumerDuplicateFilterSubjectsError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerDuplicateFilterSubjects]
+}
+
 // NewJSConsumerDurableNameNotInSubjectError creates a new JSConsumerDurableNameNotInSubjectErr error: "consumer expected to be durable but no durable name set in subject"
 func NewJSConsumerDurableNameNotInSubjectError(opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
@@ -845,6 +871,16 @@ func NewJSConsumerDurableNameNotSetError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSConsumerDurableNameNotSetErr]
+}
+
+// NewJSConsumerEmptyFilterError creates a new JSConsumerEmptyFilter error: "consumer filter in FilterSubjects cannot be empty"
+func NewJSConsumerEmptyFilterError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerEmptyFilter]
 }
 
 // NewJSConsumerEphemeralWithDurableInSubjectError creates a new JSConsumerEphemeralWithDurableInSubjectErr error: "consumer expected to be ephemeral but detected a durable name set in subject"
@@ -1047,6 +1083,16 @@ func NewJSConsumerMetadataLengthError(limit interface{}, opts ...ErrorOption) *A
 	}
 }
 
+// NewJSConsumerMultipleFiltersNotAllowedError creates a new JSConsumerMultipleFiltersNotAllowed error: "consumer with multiple subject filters cannot use subject based API"
+func NewJSConsumerMultipleFiltersNotAllowedError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerMultipleFiltersNotAllowed]
+}
+
 // NewJSConsumerNameContainsPathSeparatorsError creates a new JSConsumerNameContainsPathSeparatorsErr error: "Consumer name can not contain path separators"
 func NewJSConsumerNameContainsPathSeparatorsError(opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
@@ -1111,6 +1157,16 @@ func NewJSConsumerOnMappedError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSConsumerOnMappedErr]
+}
+
+// NewJSConsumerOverlappingSubjectFiltersError creates a new JSConsumerOverlappingSubjectFilters error: "consumer subject filters cannot overlap"
+func NewJSConsumerOverlappingSubjectFiltersError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerOverlappingSubjectFilters]
 }
 
 // NewJSConsumerPullNotDurableError creates a new JSConsumerPullNotDurableErr error: "consumer in pull mode requires a durable name"

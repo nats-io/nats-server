@@ -1486,13 +1486,21 @@ func TestJetStreamParallelConsumerCreation(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	np := 20
+	np := 50
 
 	startCh := make(chan bool)
 	errCh := make(chan error, np)
 
+	cfg := &nats.ConsumerConfig{
+		Durable:  "dlc",
+		Replicas: 3,
+	}
+
 	wg := sync.WaitGroup{}
+	swg := sync.WaitGroup{}
 	wg.Add(np)
+	swg.Add(np)
+
 	for i := 0; i < np; i++ {
 		go func() {
 			defer wg.Done()
@@ -1501,20 +1509,20 @@ func TestJetStreamParallelConsumerCreation(t *testing.T) {
 			nc, js := jsClientConnect(t, c.randomServer())
 			defer nc.Close()
 
+			swg.Done()
+
 			// Make them all fire at once.
 			<-startCh
 
-			_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
-				Durable:  "dlc",
-				Replicas: 3,
-			})
-			if err != nil {
+			if _, err := js.AddConsumer("TEST", cfg); err != nil {
 				errCh <- err
 			}
 		}()
 	}
 
+	swg.Wait()
 	close(startCh)
+
 	wg.Wait()
 
 	if len(errCh) > 0 {
@@ -2619,4 +2627,155 @@ func TestJetStreamClusterActiveActiveSourcedStreams(t *testing.T) {
 		}},
 	})
 	require_NoError(t, err)
+}
+
+func TestJetStreamClusterUpdateConsumerShouldNotForceDeleteOnRestart(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R7S", 7)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:        "D",
+		DeliverSubject: "_no_bind_",
+	})
+	require_NoError(t, err)
+
+	// Shutdown a consumer follower.
+	nc.Close()
+	s := c.serverByName(ci.Cluster.Replicas[0].Name)
+	s.Shutdown()
+
+	c.waitOnLeader()
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Change delivery subject.
+	_, err = js.UpdateConsumer("TEST", &nats.ConsumerConfig{
+		Durable:        "D",
+		DeliverSubject: "_d_",
+	})
+	require_NoError(t, err)
+
+	// Create interest in new and old deliver subject.
+	_, err = nc.SubscribeSync("_d_")
+	require_NoError(t, err)
+	_, err = nc.SubscribeSync("_no_bind_")
+	require_NoError(t, err)
+	nc.Flush()
+
+	c.restartServer(s)
+	c.waitOnAllCurrent()
+
+	// Wait on bad error that would cleanup consumer.
+	time.Sleep(time.Second)
+
+	_, err = js.ConsumerInfo("TEST", "D")
+	require_NoError(t, err)
+}
+
+func TestJetStreamClusterInterestPolicyEphemeral(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	for _, test := range []struct {
+		testName string
+		stream   string
+		subject  string
+		durable  string
+		name     string
+	}{
+		{testName: "InterestWithDurable", durable: "eph", subject: "intdur", stream: "INT_DUR"},
+		{testName: "InterestWithName", name: "eph", subject: "inteph", stream: "INT_EPH"},
+	} {
+		t.Run(test.testName, func(t *testing.T) {
+			var err error
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err = js.AddStream(&nats.StreamConfig{
+				Name:      test.stream,
+				Subjects:  []string{test.subject},
+				Retention: nats.LimitsPolicy,
+				Replicas:  3,
+			})
+			require_NoError(t, err)
+
+			const inactiveThreshold = time.Second
+
+			_, err = js.AddConsumer(test.stream, &nats.ConsumerConfig{
+				DeliverSubject:    nats.NewInbox(),
+				AckPolicy:         nats.AckExplicitPolicy,
+				InactiveThreshold: inactiveThreshold,
+				Durable:           test.durable,
+				Name:              test.name,
+			})
+			require_NoError(t, err)
+
+			name := test.durable
+			if test.durable == _EMPTY_ {
+				name = test.name
+			}
+
+			const msgs = 10_000
+			done, count := make(chan bool), 0
+
+			sub, err := js.Subscribe(_EMPTY_, func(msg *nats.Msg) {
+				require_NoError(t, msg.Ack())
+				count++
+				if count >= msgs {
+					done <- true
+				}
+			}, nats.Bind(test.stream, name), nats.ManualAck())
+			require_NoError(t, err)
+
+			// This happens only if we start publishing messages after consumer was created.
+			go func() {
+				for i := 0; i < msgs; i++ {
+					js.PublishAsync(test.subject, []byte("DATA"))
+				}
+				select {
+				case <-js.PublishAsyncComplete():
+				case <-time.After(5 * inactiveThreshold):
+				}
+			}()
+
+			// Wait for inactive threshold to expire and all messages to be published and received
+			// Bug is we clean up active consumers when we should not.
+			time.Sleep(3 * inactiveThreshold / 2)
+
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatalf("Did not receive done signal")
+			}
+
+			info, err := js.ConsumerInfo(test.stream, name)
+			if err != nil {
+				t.Fatalf("Expected to be able to retrieve consumer: %v", err)
+			}
+			require_True(t, info.Delivered.Stream == msgs)
+
+			// Stop the subscription and remove the interest.
+			err = sub.Unsubscribe()
+			require_NoError(t, err)
+
+			// Now wait for interest inactivity threshold to kick in.
+			time.Sleep(3 * inactiveThreshold / 2)
+
+			// Check if the consumer has been removed.
+			_, err = js.ConsumerInfo(test.stream, name)
+			require_Error(t, err, nats.ErrConsumerNotFound)
+		})
+	}
 }

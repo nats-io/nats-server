@@ -1288,14 +1288,14 @@ func TestAccountReqMonitoring(t *testing.T) {
 	resp, err = ncSys.Request(statz(acc.Name), nil, time.Second)
 	require_NoError(t, err)
 	respContentAcc := []string{`"conns":1,`, `"total_conns":1`, `"slow_consumers":0`, `"sent":{"msgs":0,"bytes":0}`,
-		`"received":{"msgs":0,"bytes":0}`, fmt.Sprintf(`"acc":"%s"`, acc.Name)}
+		`"received":{"msgs":0,"bytes":0}`, `"num_subscriptions":`, fmt.Sprintf(`"acc":"%s"`, acc.Name)}
 	require_Contains(t, string(resp.Data), respContentAcc...)
 
 	rIb := ncSys.NewRespInbox()
 	rSub, err := ncSys.SubscribeSync(rIb)
 	require_NoError(t, err)
 	require_NoError(t, ncSys.PublishRequest(pStatz, rIb, nil))
-	minRespContentForBothAcc := []string{`"conns":1,`, `"total_conns":1`, `"slow_consumers":0`, `"acc":"`}
+	minRespContentForBothAcc := []string{`"conns":1,`, `"total_conns":1`, `"slow_consumers":0`, `"acc":"`, `"num_subscriptions":`}
 	resp, err = rSub.NextMsg(time.Second)
 	require_NoError(t, err)
 	require_Contains(t, string(resp.Data), minRespContentForBothAcc...)

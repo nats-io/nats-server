@@ -7,7 +7,9 @@ vm:
 
 language: go
 go:
-- 1.19.5
+# This should be quoted or use .x, but should not be unquoted.
+# Remember that a YAML bare float drops trailing zeroes.
+- '1.19.5'
 
 addons:
   apt:

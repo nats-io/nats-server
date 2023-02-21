@@ -38,12 +38,36 @@ type Logger struct {
 	fl         *fileLogger
 }
 
-// NewStdLogger creates a logger with output directed to Stderr
-func NewStdLogger(time, debug, trace, colors, pid bool) *Logger {
+type LogOption interface {
+	isLoggerOption()
+}
+
+// LogUTC controls whether timestamps in the log output should be UTC or local time.
+type LogUTC bool
+
+func (l LogUTC) isLoggerOption() {}
+
+func logFlags(time bool, opts ...LogOption) int {
 	flags := 0
 	if time {
 		flags = log.LstdFlags | log.Lmicroseconds
 	}
+
+	for _, opt := range opts {
+		switch v := opt.(type) {
+		case LogUTC:
+			if time && bool(v) {
+				flags |= log.LUTC
+			}
+		}
+	}
+
+	return flags
+}
+
+// NewStdLogger creates a logger with output directed to Stderr
+func NewStdLogger(time, debug, trace, colors, pid bool, opts ...LogOption) *Logger {
+	flags := logFlags(time, opts...)
 
 	pre := ""
 	if pid {
@@ -66,11 +90,8 @@ func NewStdLogger(time, debug, trace, colors, pid bool) *Logger {
 }
 
 // NewFileLogger creates a logger with output directed to a file
-func NewFileLogger(filename string, time, debug, trace, pid bool) *Logger {
-	flags := 0
-	if time {
-		flags = log.LstdFlags | log.Lmicroseconds
-	}
+func NewFileLogger(filename string, time, debug, trace, pid bool, opts ...LogOption) *Logger {
+	flags := logFlags(time, opts...)
 
 	pre := ""
 	if pid {

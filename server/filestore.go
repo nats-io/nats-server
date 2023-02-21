@@ -1,4 +1,4 @@
-// Copyright 2019-2022 The NATS Authors
+// Copyright 2019-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -30,7 +30,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -168,6 +167,10 @@ type msgBlock struct {
 	flusher bool
 	noTrack bool
 	closed  bool
+
+	// To avoid excessive writes when expiring cache.
+	// These can be big.
+	fssNeedsWrite bool
 
 	// Used to mock write failures.
 	mockWriteErr bool
@@ -1112,6 +1115,7 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, error) {
 					subj := mb.subjString(data[:slen])
 					mb.fss[subj] = &SimpleState{Msgs: 1, First: seq, Last: seq}
 				}
+				mb.fssNeedsWrite = true
 			}
 		}
 		// Advance to next record.
@@ -1675,6 +1679,7 @@ func (fs *fileStore) FilteredState(sseq uint64, subj string) SimpleState {
 
 	// Tracking subject state.
 	fs.mu.RLock()
+	// TODO(dlc) - Optimize for 2.10 with avl tree and no atomics per block.
 	for _, mb := range fs.blks {
 		// Skip blocks that are less than our starting sequence.
 		if sseq > atomic.LoadUint64(&mb.last.seq) {
@@ -3123,10 +3128,14 @@ func (fs *fileStore) expireMsgs() {
 	var smv StoreMsg
 	var sm *StoreMsg
 	fs.mu.RLock()
-	minAge := time.Now().UnixNano() - int64(fs.cfg.MaxAge)
+	maxAge := int64(fs.cfg.MaxAge)
+	minAge := time.Now().UnixNano() - maxAge
 	fs.mu.RUnlock()
+
 	for sm, _ = fs.msgForSeq(0, &smv); sm != nil && sm.ts <= minAge; sm, _ = fs.msgForSeq(0, &smv) {
 		fs.removeMsg(sm.seq, false, true)
+		// Recalculate in case we are expiring a bunch.
+		minAge = time.Now().UnixNano() - maxAge
 	}
 
 	fs.mu.Lock()
@@ -3235,6 +3244,7 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 		} else {
 			mb.fss[subj] = &SimpleState{Msgs: 1, First: seq, Last: seq}
 		}
+		mb.fssNeedsWrite = true
 	}
 
 	// Indexing
@@ -4654,6 +4664,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 
 	eq, wc := compareFn(subject), subjectHasWildcard(subject)
 	var firstSeqNeedsUpdate bool
+	var bytes uint64
 
 	// If we have a "keep" designation need to get full filtered state so we know how many to purge.
 	var maxp uint64
@@ -4703,6 +4714,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 					mb.msgs--
 					mb.bytes -= rl
 					purged++
+					bytes += rl
 				}
 				// FSS updates.
 				mb.removeSeqPerSubject(sm.subj, seq, &smv)
@@ -4750,7 +4762,13 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 		fs.selectNextFirst()
 	}
 
+	cb := fs.scb
 	fs.mu.Unlock()
+
+	if cb != nil {
+		cb(-int64(purged), -int64(bytes), 0, _EMPTY_)
+	}
+
 	return purged, nil
 }
 
@@ -4859,6 +4877,12 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 		mb.mu.Lock()
 		purged += mb.msgs
 		bytes += mb.bytes
+		// Make sure we do subject cleanup as well.
+		mb.ensurePerSubjectInfoLoaded()
+		for subj := range mb.fss {
+			fs.removePerSubject(subj)
+		}
+		// Now close.
 		mb.dirtyCloseWithRemove(true)
 		mb.mu.Unlock()
 		deleted++
@@ -5279,6 +5303,10 @@ func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64, smp *StoreMsg) 
 	if ss == nil {
 		return
 	}
+
+	// Mark dirty
+	mb.fssNeedsWrite = true
+
 	if ss.Msgs == 1 {
 		delete(mb.fss, subj)
 		return
@@ -5369,6 +5397,7 @@ func (mb *msgBlock) generatePerSubjectInfo(hasLock bool) error {
 			} else {
 				mb.fss[sm.subj] = &SimpleState{Msgs: 1, First: seq, Last: seq}
 			}
+			mb.fssNeedsWrite = true
 		}
 	}
 
@@ -5414,6 +5443,9 @@ func (mb *msgBlock) loadPerSubjectInfo() ([]byte, error) {
 // Helper to make sure fss loaded if we are tracking.
 // Lock should be held
 func (mb *msgBlock) ensurePerSubjectInfoLoaded() error {
+	// Clear
+	mb.fssNeedsWrite = false
+
 	if mb.fss != nil || mb.noTrack {
 		return nil
 	}
@@ -5522,7 +5554,7 @@ func (mb *msgBlock) readPerSubjectInfo(hasLock bool) error {
 // Lock should be held.
 func (mb *msgBlock) writePerSubjectInfo() error {
 	// Raft groups do not have any subjects.
-	if len(mb.fss) == 0 || len(mb.sfn) == 0 {
+	if len(mb.fss) == 0 || len(mb.sfn) == 0 || !mb.fssNeedsWrite {
 		return nil
 	}
 	var scratch [4 * binary.MaxVarintLen64]byte
@@ -5552,6 +5584,11 @@ func (mb *msgBlock) writePerSubjectInfo() error {
 	<-dios
 	err := os.WriteFile(mb.sfn, b.Bytes(), defaultFilePerms)
 	dios <- struct{}{}
+
+	// Clear write flag if no error.
+	if err == nil {
+		mb.fssNeedsWrite = false
+	}
 
 	return err
 }
@@ -6186,8 +6223,9 @@ func (o *consumerFileStore) flushLoop(fch, qch chan struct{}) {
 				return
 			}
 			// TODO(dlc) - if we error should start failing upwards.
-			o.writeState(buf)
-			lastWrite = time.Now()
+			if err := o.writeState(buf); err == nil {
+				lastWrite = time.Now()
+			}
 		case <-qch:
 			return
 		}
@@ -6377,6 +6415,11 @@ func (o *consumerFileStore) Update(state *ConsumerState) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
+	// Check to see if this is an outdated update.
+	if state.Delivered.Consumer < o.state.Delivered.Consumer {
+		return nil
+	}
+
 	// Sanity checks.
 	if state.AckFloor.Consumer > state.Delivered.Consumer {
 		return fmt.Errorf("bad ack floor for consumer")
@@ -6392,8 +6435,6 @@ func (o *consumerFileStore) Update(state *ConsumerState) error {
 		pending = make(map[uint64]*Pending, len(state.Pending))
 		for seq, p := range state.Pending {
 			pending[seq] = &Pending{p.Sequence, p.Timestamp}
-		}
-		for seq := range pending {
 			if seq <= state.AckFloor.Stream || seq > state.Delivered.Stream {
 				return fmt.Errorf("bad pending entry, sequence [%d] out of range", seq)
 			}
@@ -6406,15 +6447,11 @@ func (o *consumerFileStore) Update(state *ConsumerState) error {
 		}
 	}
 
-	// Check to see if this is an outdated update.
-	if state.Delivered.Consumer < o.state.Delivered.Consumer {
-		return fmt.Errorf("old update ignored")
-	}
-
 	o.state.Delivered = state.Delivered
 	o.state.AckFloor = state.AckFloor
 	o.state.Pending = pending
 	o.state.Redelivered = redelivered
+
 	o.kickFlusher()
 
 	return nil
@@ -6439,12 +6476,8 @@ var dios chan struct{}
 // Used to setup our simplistic counting semaphore using buffered channels.
 // golang.org's semaphore seemed a bit heavy.
 func init() {
-	// Minimum for blocking disk IO calls.
-	const minNIO = 4
-	nIO := runtime.GOMAXPROCS(0)
-	if nIO < minNIO {
-		nIO = minNIO
-	}
+	// Based on Go max threads of 10k, limit ourselves to a max of 1k blocking IO calls.
+	const nIO = 1024
 	dios = make(chan struct{}, nIO)
 	// Fill it up to start.
 	for i := 0; i < nIO; i++ {

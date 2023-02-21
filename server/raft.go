@@ -1,4 +1,4 @@
-// Copyright 2020-2022 The NATS Authors
+// Copyright 2020-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -63,7 +63,7 @@ type RaftNode interface {
 	AdjustClusterSize(csz int) error
 	AdjustBootClusterSize(csz int) error
 	ClusterSize() int
-	ApplyQ() *ipQueue // of *CommittedEntry
+	ApplyQ() *ipQueue[*CommittedEntry]
 	PauseApply() error
 	ResumeApply()
 	LeadChangeC() <-chan bool
@@ -145,12 +145,12 @@ type raft struct {
 	active   time.Time
 	llqrt    time.Time
 	lsut     time.Time
-	term     uint64
-	pterm    uint64
-	pindex   uint64
-	commit   uint64
-	applied  uint64
-	leader   string
+	term     uint64 // The current vote term
+	pterm    uint64 // Previous term from the last snapshot
+	pindex   uint64 // Previous index from the last snapshot
+	commit   uint64 // Sequence number of the most recent commit
+	applied  uint64 // Sequence number of the most recently applied commit
+	leader   string // The ID of the leader
 	vote     string
 	hash     string
 	s        *Server
@@ -185,7 +185,7 @@ type raft struct {
 	catchup *catchupState
 
 	// For leader or server catching up a follower.
-	progress map[string]*ipQueue // of uint64
+	progress map[string]*ipQueue[uint64]
 
 	// For when we have paused our applyC.
 	paused    bool
@@ -193,13 +193,13 @@ type raft struct {
 	pobserver bool
 
 	// Queues and Channels
-	prop     *ipQueue // of *Entry
-	entry    *ipQueue // of *appendEntry
-	resp     *ipQueue // of *appendEntryResponse
-	apply    *ipQueue // of *CommittedEntry
-	reqs     *ipQueue // of *voteRequest
-	votes    *ipQueue // of *voteResponse
-	stepdown *ipQueue // of string
+	prop     *ipQueue[*Entry]
+	entry    *ipQueue[*appendEntry]
+	resp     *ipQueue[*appendEntryResponse]
+	apply    *ipQueue[*CommittedEntry]
+	reqs     *ipQueue[*voteRequest]
+	votes    *ipQueue[*voteResponse]
+	stepdown *ipQueue[string]
 	leadc    chan bool
 	quit     chan struct{}
 
@@ -394,13 +394,13 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig) (RaftNode, error
 		quit:     make(chan struct{}),
 		wtvch:    make(chan struct{}, 1),
 		wpsch:    make(chan struct{}, 1),
-		reqs:     s.newIPQueue(qpfx + "vreq"),                // of *voteRequest
-		votes:    s.newIPQueue(qpfx + "vresp"),               // of *voteResponse
-		prop:     s.newIPQueue(qpfx + "entry"),               // of *Entry
-		entry:    s.newIPQueue(qpfx + "appendEntry"),         // of *appendEntry
-		resp:     s.newIPQueue(qpfx + "appendEntryResponse"), // of *appendEntryResponse
-		apply:    s.newIPQueue(qpfx + "committedEntry"),      // of *CommittedEntry
-		stepdown: s.newIPQueue(qpfx + "stepdown"),            // of string
+		reqs:     newIPQueue[*voteRequest](s, qpfx+"vreq"),
+		votes:    newIPQueue[*voteResponse](s, qpfx+"vresp"),
+		prop:     newIPQueue[*Entry](s, qpfx+"entry"),
+		entry:    newIPQueue[*appendEntry](s, qpfx+"appendEntry"),
+		resp:     newIPQueue[*appendEntryResponse](s, qpfx+"appendEntryResponse"),
+		apply:    newIPQueue[*CommittedEntry](s, qpfx+"committedEntry"),
+		stepdown: newIPQueue[string](s, qpfx+"stepdown"),
 		accName:  accName,
 		leadc:    make(chan bool, 1),
 		observer: cfg.Observer,
@@ -1438,9 +1438,9 @@ func (n *raft) UpdateKnownPeers(knownPeers []string) {
 	}
 }
 
-func (n *raft) ApplyQ() *ipQueue         { return n.apply } // queue of *CommittedEntry
-func (n *raft) LeadChangeC() <-chan bool { return n.leadc }
-func (n *raft) QuitC() <-chan struct{}   { return n.quit }
+func (n *raft) ApplyQ() *ipQueue[*CommittedEntry] { return n.apply }
+func (n *raft) LeadChangeC() <-chan bool          { return n.leadc }
+func (n *raft) QuitC() <-chan struct{}            { return n.quit }
 
 func (n *raft) Created() time.Time {
 	n.RLock()
@@ -1486,7 +1486,9 @@ func (n *raft) shutdown(shouldDelete bool) {
 	}
 	// Unregistering ipQueues do not prevent them from push/pop
 	// just will remove them from the central monitoring map
-	queues := []*ipQueue{n.reqs, n.votes, n.prop, n.entry, n.resp, n.apply, n.stepdown}
+	queues := []interface {
+		unregister()
+	}{n.reqs, n.votes, n.prop, n.entry, n.resp, n.apply, n.stepdown}
 	for _, q := range queues {
 		q.unregister()
 	}
@@ -1718,25 +1720,10 @@ func (n *raft) setObserver(isObserver bool, extSt extensionState) {
 // Invoked when being notified that there is something in the entryc's queue
 func (n *raft) processAppendEntries() {
 	aes := n.entry.pop()
-	for _, aei := range aes {
-		ae := aei.(*appendEntry)
+	for _, ae := range aes {
 		n.processAppendEntry(ae, ae.sub)
 	}
 	n.entry.recycle(&aes)
-}
-
-func convertVoteRequest(i interface{}) *voteRequest {
-	if i == nil {
-		return nil
-	}
-	return i.(*voteRequest)
-}
-
-func convertVoteResponse(i interface{}) *voteResponse {
-	if i == nil {
-		return nil
-	}
-	return i.(*voteResponse)
 }
 
 func (n *raft) runAsFollower() {
@@ -1773,11 +1760,14 @@ func (n *raft) runAsFollower() {
 			n.resp.popOne()
 		case <-n.reqs.ch:
 			// Because of drain() it is possible that we get nil from popOne().
-			n.processVoteRequest(convertVoteRequest(n.reqs.popOne()))
+			if voteReq, ok := n.reqs.popOne(); ok {
+				n.processVoteRequest(voteReq)
+			}
 		case <-n.stepdown.ch:
-			newLeader := n.stepdown.popOne().(string)
-			n.switchToFollower(newLeader)
-			return
+			if newLeader, ok := n.stepdown.popOne(); ok {
+				n.switchToFollower(newLeader)
+				return
+			}
 		}
 	}
 }
@@ -2062,8 +2052,7 @@ func (n *raft) runAsLeader() {
 			return
 		case <-n.resp.ch:
 			ars := n.resp.pop()
-			for _, ari := range ars {
-				ar := ari.(*appendEntryResponse)
+			for _, ar := range ars {
 				n.processAppendEntryResponse(ar)
 			}
 			n.resp.recycle(&ars)
@@ -2073,8 +2062,7 @@ func (n *raft) runAsLeader() {
 
 			es := n.prop.pop()
 			sz := 0
-			for i, bi := range es {
-				b := bi.(*Entry)
+			for i, b := range es {
 				if b.Type == EntryRemovePeer {
 					n.doRemovePeerAsLeader(string(b.Data))
 				}
@@ -2100,8 +2088,8 @@ func (n *raft) runAsLeader() {
 			}
 		case <-n.votes.ch:
 			// Because of drain() it is possible that we get nil from popOne().
-			vresp := convertVoteResponse(n.votes.popOne())
-			if vresp == nil {
+			vresp, ok := n.votes.popOne()
+			if !ok {
 				continue
 			}
 			if vresp.term > n.Term() {
@@ -2111,11 +2099,14 @@ func (n *raft) runAsLeader() {
 			n.trackPeer(vresp.peer)
 		case <-n.reqs.ch:
 			// Because of drain() it is possible that we get nil from popOne().
-			n.processVoteRequest(convertVoteRequest(n.reqs.popOne()))
+			if voteReq, ok := n.reqs.popOne(); ok {
+				n.processVoteRequest(voteReq)
+			}
 		case <-n.stepdown.ch:
-			newLeader := n.stepdown.popOne().(string)
-			n.switchToFollower(newLeader)
-			return
+			if newLeader, ok := n.stepdown.popOne(); ok {
+				n.switchToFollower(newLeader)
+				return
+			}
 		case <-n.entry.ch:
 			n.processAppendEntries()
 		}
@@ -2185,7 +2176,7 @@ func (n *raft) loadFirstEntry() (ae *appendEntry, err error) {
 	return n.loadEntry(state.FirstSeq)
 }
 
-func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue /* of uint64 */) {
+func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue[uint64]) {
 	n.RLock()
 	s, reply := n.s, n.areply
 	peer, subj, last := ar.peer, ar.reply, n.pindex
@@ -2259,19 +2250,20 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue /* of 
 			n.debug("Catching up for %q stalled", peer)
 			return
 		case <-indexUpdatesQ.ch:
-			index := indexUpdatesQ.popOne().(uint64)
-			// Update our activity timer.
-			timeout.Reset(activityInterval)
-			// Update outstanding total.
-			total -= om[index]
-			delete(om, index)
-			if next == 0 {
-				next = index
-			}
-			// Check if we are done.
-			if index > last || sendNext() {
-				n.debug("Finished catching up")
-				return
+			if index, ok := indexUpdatesQ.popOne(); ok {
+				// Update our activity timer.
+				timeout.Reset(activityInterval)
+				// Update outstanding total.
+				total -= om[index]
+				delete(om, index)
+				if next == 0 {
+					next = index
+				}
+				// Check if we are done.
+				if index > last || sendNext() {
+					n.debug("Finished catching up")
+					return
+				}
 			}
 		}
 	}
@@ -2309,7 +2301,7 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 	n.debug("Being asked to catch up follower: %q", ar.peer)
 	n.Lock()
 	if n.progress == nil {
-		n.progress = make(map[string]*ipQueue)
+		n.progress = make(map[string]*ipQueue[uint64])
 	} else if q, ok := n.progress[ar.peer]; ok {
 		n.debug("Will cancel existing entry for catching up %q", ar.peer)
 		delete(n.progress, ar.peer)
@@ -2353,7 +2345,7 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 		n.debug("Our first entry [%d:%d] does not match request from follower [%d:%d]", ae.pterm, ae.pindex, ar.term, ar.index)
 	}
 	// Create a queue for delivering updates from responses.
-	indexUpdates := n.s.newIPQueue(fmt.Sprintf("[ACC:%s] RAFT '%s' indexUpdates", n.accName, n.group)) // of uint64
+	indexUpdates := newIPQueue[uint64](n.s, fmt.Sprintf("[ACC:%s] RAFT '%s' indexUpdates", n.accName, n.group))
 	indexUpdates.push(ae.pindex)
 	n.progress[ar.peer] = indexUpdates
 	n.Unlock()
@@ -2614,8 +2606,8 @@ func (n *raft) runAsCandidate() {
 			return
 		case <-n.votes.ch:
 			// Because of drain() it is possible that we get nil from popOne().
-			vresp := convertVoteResponse(n.votes.popOne())
-			if vresp == nil {
+			vresp, ok := n.votes.popOne()
+			if !ok {
 				continue
 			}
 			n.RLock()
@@ -2646,11 +2638,14 @@ func (n *raft) runAsCandidate() {
 			}
 		case <-n.reqs.ch:
 			// Because of drain() it is possible that we get nil from popOne().
-			n.processVoteRequest(convertVoteRequest(n.reqs.popOne()))
+			if voteReq, ok := n.reqs.popOne(); ok {
+				n.processVoteRequest(voteReq)
+			}
 		case <-n.stepdown.ch:
-			newLeader := n.stepdown.popOne().(string)
-			n.switchToFollower(newLeader)
-			return
+			if newLeader, ok := n.stepdown.popOne(); ok {
+				n.switchToFollower(newLeader)
+				return
+			}
 		}
 	}
 }
@@ -2872,8 +2867,8 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	}
 
 	if ae.pterm != n.pterm || ae.pindex != n.pindex {
-		// Check if this is a lower index than what we were expecting.
-		if ae.pindex < n.pindex {
+		// Check if this is a lower or equal index than what we were expecting.
+		if ae.pindex <= n.pindex {
 			n.debug("AppendEntry detected pindex less than ours: %d:%d vs %d:%d", ae.pterm, ae.pindex, n.pterm, n.pindex)
 			var ar *appendEntryResponse
 
@@ -2938,7 +2933,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.pterm = ae.pterm
 			n.commit = ae.pindex
 
-			if _, err := n.wal.Compact(n.pindex); err != nil {
+			if _, err := n.wal.Compact(n.pindex + 1); err != nil {
 				n.setWriteErrLocked(err)
 				n.Unlock()
 				return
