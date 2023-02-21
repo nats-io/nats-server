@@ -57,7 +57,7 @@ type ConsumerInfo struct {
 }
 
 type ConsumerConfig struct {
-	// Durable is deprecated. All consumers will have names. picked by clients.
+	// Durable is deprecated. All consumers should have names, picked by clients.
 	Durable         string          `json:"durable_name,omitempty"`
 	Name            string          `json:"name,omitempty"`
 	Description     string          `json:"description,omitempty"`
@@ -218,6 +218,7 @@ var (
 	AckTerm = []byte("+TERM")
 )
 
+// Calculate accurate replicas for the consumer config with the parent stream config.
 func (consCfg ConsumerConfig) replicas(strCfg *StreamConfig) int {
 	if consCfg.Replicas == 0 {
 		if !isDurableConsumer(&consCfg) && strCfg.Retention == LimitsPolicy {
@@ -305,6 +306,7 @@ type consumer struct {
 	prOk      bool
 	uch       chan struct{}
 	retention RetentionPolicy
+	inMonitor bool
 
 	// R>1 proposals
 	pch   chan struct{}
@@ -886,9 +888,9 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	o.updateInactiveThreshold(&o.cfg)
 
 	if o.isPushMode() {
-		if !o.isDurable() {
-			// Check if we are not durable that the delivery subject has interest.
-			// Check in place here for interest. Will setup properly in setLeader.
+		// Check if we are running only 1 replica and that the delivery subject has interest.
+		// Check in place here for interest. Will setup properly in setLeader.
+		if config.replicas(&mset.cfg) == 1 {
 			r := o.acc.sl.Match(o.cfg.DeliverSubject)
 			if !o.hasDeliveryInterest(len(r.psubs)+len(r.qsubs) > 0) {
 				// Let the interest come to us eventually, but setup delete timer.
@@ -915,10 +917,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	}
 
 	// This is always true in single server mode.
-	o.mu.RLock()
-	isLdr := o.isLeader()
-	o.mu.RUnlock()
-	if isLdr {
+	if o.IsLeader() {
 		// Send advisory.
 		var suppress bool
 		if !s.standAloneMode() && ca == nil {
@@ -1019,6 +1018,13 @@ func (o *consumer) clearNode() {
 	}
 }
 
+// IsLeader will return if we are the current leader.
+func (o *consumer) IsLeader() bool {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.isLeader()
+}
+
 // Lock should be held.
 func (o *consumer) isLeader() bool {
 	if o.node != nil {
@@ -1105,6 +1111,7 @@ func (o *consumer) setLeader(isLeader bool) {
 			if o.active = <-o.inch; o.active {
 				o.checkQueueInterest()
 			}
+
 			// Check gateways in case they are enabled.
 			if s.gateway.enabled {
 				if !o.active {
@@ -1661,6 +1668,8 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 		}
 	}
 
+	<<<<<<< HEAD
+
 	// Check for Subject Filters update.
 	newSubjects := gatherSubjectFilters(cfg.FilterSubject, cfg.FilterSubjects)
 	if !subjectSliceEqual(newSubjects, o.subjf.subjects()) {
@@ -1681,7 +1690,6 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 				continue
 			}
 			newSubjf = append(newSubjf, fs)
-
 		}
 		// Make sure we have correct signaling setup.
 		// Consumer lock can not be held.
@@ -1822,14 +1830,13 @@ func (o *consumer) processAck(subject, reply string, hdr int, rmsg []byte) {
 // Used to process a working update to delay redelivery.
 func (o *consumer) progressUpdate(seq uint64) {
 	o.mu.Lock()
-	if len(o.pending) > 0 {
-		if p, ok := o.pending[seq]; ok {
-			p.Timestamp = time.Now().UnixNano()
-			// Update store system.
-			o.updateDelivered(p.Sequence, seq, 1, p.Timestamp)
-		}
+	defer o.mu.Unlock()
+
+	if p, ok := o.pending[seq]; ok {
+		p.Timestamp = time.Now().UnixNano()
+		// Update store system.
+		o.updateDelivered(p.Sequence, seq, 1, p.Timestamp)
 	}
-	o.mu.Unlock()
 }
 
 // Lock should be held.
@@ -2056,10 +2063,8 @@ func (o *consumer) processNak(sseq, dseq, dc uint64, nak []byte) {
 		return
 	}
 	// If we are explicit ack make sure this is still on our pending list.
-	if len(o.pending) > 0 {
-		if _, ok := o.pending[sseq]; !ok {
-			return
-		}
+	if _, ok := o.pending[sseq]; !ok {
+		return
 	}
 
 	// Deliver an advisory
@@ -2175,6 +2180,7 @@ func (o *consumer) ackWait(next time.Duration) time.Duration {
 }
 
 // Due to bug in calculation of sequences on restoring redelivered let's do quick sanity check.
+// Lock should be held.
 func (o *consumer) checkRedelivered(slseq uint64) {
 	var lseq uint64
 	if mset := o.mset; mset != nil {
@@ -2189,7 +2195,13 @@ func (o *consumer) checkRedelivered(slseq uint64) {
 		}
 	}
 	if shouldUpdateState {
-		o.writeStoreStateUnlocked()
+		if err := o.writeStoreStateUnlocked(); err != nil && o.srv != nil && o.mset != nil {
+			s, acc, mset, name := o.srv, o.acc, o.mset, o.name
+			// Can not hold lock while gather information about account and stream below.
+			o.mu.Unlock()
+			s.Warnf("Consumer '%s > %s > %s' error on write store state from check redelivered: %v", acc, mset.name(), name, err)
+			o.mu.Lock()
+		}
 	}
 }
 
@@ -2228,7 +2240,7 @@ func (o *consumer) applyState(state *ConsumerState) {
 	o.rdc = state.Redelivered
 
 	// Setup tracking timer if we have restored pending.
-	if len(o.pending) > 0 && o.ptmr == nil {
+	if len(o.pending) > 0 {
 		// This is on startup or leader change. We want to check pending
 		// sooner in case there are inconsistencies etc. Pick between 500ms - 1.5s
 		delay := 500*time.Millisecond + time.Duration(rand.Int63n(1000))*time.Millisecond
@@ -2236,7 +2248,11 @@ func (o *consumer) applyState(state *ConsumerState) {
 		if o.cfg.AckWait < delay {
 			delay = o.ackWait(0)
 		}
-		o.ptmr = time.AfterFunc(delay, o.checkPending)
+		if o.ptmr == nil {
+			o.ptmr = time.AfterFunc(delay, o.checkPending)
+		} else {
+			o.ptmr.Reset(delay)
+		}
 	}
 }
 
@@ -3900,6 +3916,7 @@ func (o *consumer) trackPending(sseq, dseq uint64) {
 	}
 	if p, ok := o.pending[sseq]; ok {
 		p.Timestamp = time.Now().UnixNano()
+		p.Sequence = dseq
 	} else {
 		o.pending[sseq] = &Pending{dseq, time.Now().UnixNano()}
 	}
@@ -4025,7 +4042,7 @@ func (o *consumer) checkPending() {
 	fseq := state.FirstSeq
 
 	// Since we can update timestamps, we have to review all pending.
-	// We may want to unlock here or warn if list is big.
+	// We will now bail if we see an ack pending in bound to us via o.awl.
 	var expired []uint64
 	check := len(o.pending) > 1024
 	for seq, p := range o.pending {
@@ -4034,11 +4051,18 @@ func (o *consumer) checkPending() {
 			return
 		}
 		// Check if these are no longer valid.
-		if seq < fseq {
+		if seq < fseq || seq <= o.asflr {
 			delete(o.pending, seq)
 			delete(o.rdc, seq)
 			o.removeFromRedeliverQueue(seq)
 			shouldUpdateState = true
+			// Check if we need to move ack floors.
+			if seq > o.asflr {
+				o.asflr = seq
+			}
+			if p.Sequence > o.adflr {
+				o.adflr = p.Sequence
+			}
 			continue
 		}
 		elapsed, deadline := now-p.Timestamp, ttl
@@ -4085,13 +4109,21 @@ func (o *consumer) checkPending() {
 	if len(o.pending) > 0 {
 		o.ptmr.Reset(o.ackWait(time.Duration(next)))
 	} else {
-		o.ptmr.Stop()
-		o.ptmr = nil
+		// Make sure to stop timer and clear out any re delivery queues
+		stopAndClearTimer(&o.ptmr)
+		o.rdq, o.rdqi = nil, nil
+		o.pending = nil
 	}
 
 	// Update our state if needed.
 	if shouldUpdateState {
-		o.writeStoreStateUnlocked()
+		if err := o.writeStoreStateUnlocked(); err != nil && o.srv != nil && o.mset != nil {
+			s, acc, mset, name := o.srv, o.acc, o.mset, o.name
+			// Can not hold lock while gather information about account and stream below.
+			o.mu.Unlock()
+			s.Warnf("Consumer '%s > %s > %s' error on write store state from check pending: %v", acc, mset.name(), name, err)
+			o.mu.Lock()
+		}
 	}
 }
 
@@ -4390,13 +4422,29 @@ func (o *consumer) purge(sseq uint64, slseq uint64) {
 	if o.sseq < sseq {
 		o.sseq = sseq
 	}
+
 	if o.asflr < sseq {
 		o.asflr = sseq - 1
-		if o.dseq > 0 {
-			o.adflr = o.dseq - 1
+
+		// We need to remove those no longer relevant from pending.
+		for seq, p := range o.pending {
+			if seq <= o.asflr {
+				if p.Sequence > o.adflr {
+					o.adflr = p.Sequence
+					if o.adflr > o.dseq {
+						o.dseq = o.adflr
+					}
+				}
+				delete(o.pending, seq)
+				delete(o.rdc, seq)
+				// rdq handled below.
+			}
 		}
 	}
-	o.pending = nil
+	// This means we can reset everything at this point.
+	if len(o.pending) == 0 {
+		o.pending, o.rdc = nil, nil
+	}
 
 	// We need to remove all those being queued for redelivery under o.rdq
 	if len(o.rdq) > 0 {
@@ -4408,9 +4456,13 @@ func (o *consumer) purge(sseq uint64, slseq uint64) {
 			}
 		}
 	}
+	// Grab some info in case of error below.
+	s, acc, mset, name := o.srv, o.acc, o.mset, o.name
 	o.mu.Unlock()
 
-	o.writeStoreState()
+	if err := o.writeStoreState(); err != nil && s != nil && mset != nil {
+		s.Warnf("Consumer '%s > %s > %s' error on write store state from purge: %v", acc, mset.name(), name, err)
+	}
 }
 
 func stopAndClearTimer(tp **time.Timer) {
@@ -4504,6 +4556,7 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	if dflag {
 		ca = o.ca
 	}
+	sigSub := o.sigSub
 	o.mu.Unlock()
 
 	if c != nil {
@@ -4517,10 +4570,16 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 		a.sl.clearNotification(delivery, qgroup, o.inch)
 	}
 
-	mset.mu.Lock()
-	mset.removeConsumer(o)
-	rp := mset.cfg.Retention
-	mset.mu.Unlock()
+	var rp RetentionPolicy
+	if mset != nil {
+		if sigSub != nil {
+			mset.removeConsumerAsLeader(o)
+		}
+		mset.mu.Lock()
+		mset.removeConsumer(o)
+		rp = mset.cfg.Retention
+		mset.mu.Unlock()
+	}
 
 	// We need to optionally remove all messages since we are interest based retention.
 	// We will do this consistently on all replicas. Note that if in clustered mode the
@@ -4733,4 +4792,30 @@ func gatherSubjectFilters(filter string, filters []string) []string {
 	}
 	// list of filters should never contain non-empty filter.
 	return filters
+}
+
+// Will check if we are running in the monitor already and if not set the appropriate flag.
+func (o *consumer) checkInMonitor() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	if o.inMonitor {
+		return true
+	}
+	o.inMonitor = true
+	return false
+}
+
+// Clear us being in the monitor routine.
+func (o *consumer) clearMonitorRunning() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.inMonitor = false
+}
+
+// Test whether we are in the monitor routine.
+func (o *consumer) isMonitorRunning() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.inMonitor
 }
