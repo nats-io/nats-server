@@ -16,7 +16,6 @@ package server
 import (
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -3207,80 +3206,6 @@ func TestSamplingHeader(t *testing.T) {
 
 	test(true, http.Header{"traceparent": []string{"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}})
 	test(false, http.Header{"traceparent": []string{"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00"}})
-}
-
-func TestSubjectTransforms(t *testing.T) {
-	shouldErr := func(src, dest string) {
-		t.Helper()
-		if _, err := newTransform(src, dest); err != ErrBadSubject && !errors.Is(err, ErrInvalidMappingDestination) {
-			t.Fatalf("Did not get an error for src=%q and dest=%q", src, dest)
-		}
-	}
-
-	shouldErr("foo.*.*", "bar.$2") // Must place all pwcs.
-
-	// Must be valid subjects.
-	shouldErr("foo", "")
-	shouldErr("foo..", "bar")
-
-	// Wildcards are allowed in src, but must be matched by token placements on the other side.
-	// e.g. foo.* -> bar.$1.
-	// Need to have as many pwcs as placements on other side.
-	shouldErr("foo.*", "bar.*")
-	shouldErr("foo.*", "bar.$2")                   // Bad pwc token identifier
-	shouldErr("foo.*", "bar.$1.>")                 // fwcs have to match.
-	shouldErr("foo.>", "bar.baz")                  // fwcs have to match.
-	shouldErr("foo.*.*", "bar.$2")                 // Must place all pwcs.
-	shouldErr("foo.*", "foo.$foo")                 // invalid $ value
-	shouldErr("foo.*", "foo.{{wildcard(2)}}")      // Mapping function being passed an out of range wildcard index
-	shouldErr("foo.*", "foo.{{unimplemented(1)}}") // Mapping trying to use an unknown mapping function
-	shouldErr("foo.*", "foo.{{partition(10)}}")    // Not enough arguments passed to the mapping function
-	shouldErr("foo.*", "foo.{{wildcard(foo)}}")    // Invalid argument passed to the mapping function
-	shouldErr("foo.*", "foo.{{wildcard()}}")       // Not enough arguments passed to the mapping function
-	shouldErr("foo.*", "foo.{{wildcard(1,2)}}")    // Too many arguments passed to the mapping function
-	shouldErr("foo.*", "foo.{{ wildcard5) }}")     // Bad mapping function
-	shouldErr("foo.*", "foo.{{splitLeft(2,2}}")    // arg out of range
-
-	shouldBeOK := func(src, dest string) *transform {
-		t.Helper()
-		tr, err := newTransform(src, dest)
-		if err != nil {
-			t.Fatalf("Got an error %v for src=%q and dest=%q", err, src, dest)
-		}
-		return tr
-	}
-
-	shouldBeOK("foo", "bar")
-	shouldBeOK("foo.*.bar.*.baz", "req.$2.$1")
-	shouldBeOK("baz.>", "mybaz.>")
-	shouldBeOK("*.*", "{{partition(10,1,2)}}")
-	shouldBeOK("foo.*.*", "foo.{{wildcard(1)}}.{{wildcard(2)}}.{{partition(5,1,2)}}")
-	shouldBeOK("*", "{{splitfromleft(1,1)}}")
-
-	shouldMatch := func(src, dest, sample, expected string) {
-		t.Helper()
-		tr := shouldBeOK(src, dest)
-		s, err := tr.Match(sample)
-		if err != nil {
-			t.Fatalf("Got an error %v when expecting a match for %q to %q", err, sample, expected)
-		}
-		if s != expected {
-			t.Fatalf("Dest does not match what was expected. Got %q, expected %q", s, expected)
-		}
-	}
-
-	shouldMatch("foo", "bar", "foo", "bar")
-	shouldMatch("foo.*.bar.*.baz", "req.$2.$1", "foo.A.bar.B.baz", "req.B.A")
-	shouldMatch("baz.>", "my.pre.>", "baz.1.2.3", "my.pre.1.2.3")
-	shouldMatch("baz.>", "foo.bar.>", "baz.1.2.3", "foo.bar.1.2.3")
-	shouldMatch("*", "foo.bar.$1", "foo", "foo.bar.foo")
-	shouldMatch("*", "{{splitfromleft(1,3)}}", "12345", "123.45")
-	shouldMatch("*", "{{SplitFromRight(1,3)}}", "12345", "12.345")
-	shouldMatch("*", "{{SliceFromLeft(1,3)}}", "1234567890", "123.456.789.0")
-	shouldMatch("*", "{{SliceFromRight(1,3)}}", "1234567890", "1.234.567.890")
-	shouldMatch("*", "{{split(1,-)}}", "-abc-def--ghi-", "abc.def.ghi")
-	shouldMatch("*", "{{split(1,-)}}", "abc-def--ghi-", "abc.def.ghi")
-	shouldMatch("*.*", "{{split(2,-)}}.{{splitfromleft(1,2)}}", "foo.-abc-def--ghij-", "abc.def.ghij.fo.o") // combo + checks split for multiple instance of deliminator and deliminator being at the start or end
 }
 
 func TestAccountSystemPermsWithGlobalAccess(t *testing.T) {

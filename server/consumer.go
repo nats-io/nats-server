@@ -1668,8 +1668,6 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 		}
 	}
 
-	<<<<<<< HEAD
-
 	// Check for Subject Filters update.
 	newSubjects := gatherSubjectFilters(cfg.FilterSubject, cfg.FilterSubjects)
 	if !subjectSliceEqual(newSubjects, o.subjf.subjects()) {
@@ -4556,7 +4554,7 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	if dflag {
 		ca = o.ca
 	}
-	sigSub := o.sigSub
+	sigSubs := o.sigSubs
 	o.mu.Unlock()
 
 	if c != nil {
@@ -4572,7 +4570,7 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 
 	var rp RetentionPolicy
 	if mset != nil {
-		if sigSub != nil {
+		if len(sigSubs) > 0 {
 			mset.removeConsumerAsLeader(o)
 		}
 		mset.mu.Lock()
