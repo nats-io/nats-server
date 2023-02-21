@@ -314,7 +314,7 @@ type consumer struct {
 	ptail *proposal
 
 	// Ack queue
-	ackMsgs *ipQueue
+	ackMsgs *ipQueue[*jsAckMsg]
 
 	// for stream signaling when multiple filters are set.
 	sigSubs []*subscription
@@ -799,7 +799,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		}
 	}
 	// Create ackMsgs queue now that we have a consumer name
-	o.ackMsgs = s.newIPQueue(fmt.Sprintf("[ACC:%s] consumer '%s' on stream '%s' ackMsgs", accName, o.name, mset.cfg.Name))
+	o.ackMsgs = newIPQueue[*jsAckMsg](s, fmt.Sprintf("[ACC:%s] consumer '%s' on stream '%s' ackMsgs", accName, o.name, mset.cfg.Name))
 
 	// Create our request waiting queue.
 	if o.isPullMode() {
@@ -3346,8 +3346,7 @@ func (o *consumer) processInboundAcks(qch chan struct{}) {
 		select {
 		case <-o.ackMsgs.ch:
 			acks := o.ackMsgs.pop()
-			for _, acki := range acks {
-				ack := acki.(*jsAckMsg)
+			for _, ack := range acks {
 				o.processAck(ack.subject, ack.reply, ack.hdr, ack.msg)
 				ack.returnToPool()
 			}

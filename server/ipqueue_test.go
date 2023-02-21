@@ -21,7 +21,7 @@ import (
 
 func TestIPQueueBasic(t *testing.T) {
 	s := &Server{}
-	q := s.newIPQueue("test")
+	q := newIPQueue[int](s, "test")
 	// Check that pool has been created
 	if q.pool == nil {
 		t.Fatal("Expected pool to have been created")
@@ -42,7 +42,7 @@ func TestIPQueueBasic(t *testing.T) {
 	}
 
 	// Try to change the max recycle size
-	q2 := s.newIPQueue("test2", ipQueue_MaxRecycleSize(10))
+	q2 := newIPQueue[int](s, "test2", ipQueue_MaxRecycleSize(10))
 	if q2.mrs != 10 {
 		t.Fatalf("Expected max recycle size to be 10, got %v", q2.mrs)
 	}
@@ -82,14 +82,14 @@ func TestIPQueueBasic(t *testing.T) {
 		t.Fatalf("Should have gotten 1 element, got %v", len(elts))
 	}
 	q2.push(2)
-	if e := q2.popOne(); e.(int) != 2 {
+	if e, ok := q2.popOne(); !ok || e != 2 {
 		t.Fatalf("popOne failed: %+v", e)
 	}
 }
 
 func TestIPQueuePush(t *testing.T) {
 	s := &Server{}
-	q := s.newIPQueue("test")
+	q := newIPQueue[int](s, "test")
 	q.push(1)
 	if l := q.len(); l != 1 {
 		t.Fatalf("Expected len to be 1, got %v", l)
@@ -115,7 +115,7 @@ func TestIPQueuePush(t *testing.T) {
 
 func TestIPQueuePop(t *testing.T) {
 	s := &Server{}
-	q := s.newIPQueue("test")
+	q := newIPQueue[int](s, "test")
 	q.push(1)
 	<-q.ch
 	elts := q.pop()
@@ -154,14 +154,14 @@ func TestIPQueuePop(t *testing.T) {
 
 func TestIPQueuePopOne(t *testing.T) {
 	s := &Server{}
-	q := s.newIPQueue("test")
+	q := newIPQueue[int](s, "test")
 	q.push(1)
 	<-q.ch
-	e := q.popOne()
-	if e == nil {
+	e, ok := q.popOne()
+	if !ok {
 		t.Fatal("Got nil")
 	}
-	if i := e.(int); i != 1 {
+	if i := e; i != 1 {
 		t.Fatalf("Expected 1, got %v", i)
 	}
 	if l := q.len(); l != 0 {
@@ -179,11 +179,11 @@ func TestIPQueuePopOne(t *testing.T) {
 	}
 	q.push(2)
 	q.push(3)
-	e = q.popOne()
-	if e == nil {
+	e, ok = q.popOne()
+	if !ok {
 		t.Fatal("Got nil")
 	}
-	if i := e.(int); i != 2 {
+	if i := e; i != 2 {
 		t.Fatalf("Expected 2, got %v", i)
 	}
 	if l := q.len(); l != 1 {
@@ -195,11 +195,11 @@ func TestIPQueuePopOne(t *testing.T) {
 	default:
 		t.Fatalf("Should have been notified that there is more")
 	}
-	e = q.popOne()
-	if e == nil {
+	e, ok = q.popOne()
+	if !ok {
 		t.Fatal("Got nil")
 	}
-	if i := e.(int); i != 3 {
+	if i := e; i != 3 {
 		t.Fatalf("Expected 3, got %v", i)
 	}
 	if l := q.len(); l != 0 {
@@ -213,26 +213,26 @@ func TestIPQueuePopOne(t *testing.T) {
 	}
 	// Calling it again now that we know there is nothing, we
 	// should get nil.
-	if e = q.popOne(); e != nil {
+	if e, ok = q.popOne(); ok {
 		t.Fatalf("Expected nil, got %v", e)
 	}
 
-	q = s.newIPQueue("test2")
+	q = newIPQueue[int](s, "test2")
 	q.push(1)
 	q.push(2)
 	// Capture current capacity
 	q.RLock()
 	c := cap(q.elts)
 	q.RUnlock()
-	e = q.popOne()
-	if e == nil || e.(int) != 1 {
+	e, ok = q.popOne()
+	if !ok || e != 1 {
 		t.Fatalf("Invalid value: %v", e)
 	}
 	if l := q.len(); l != 1 {
 		t.Fatalf("Expected len to be 1, got %v", l)
 	}
 	values := q.pop()
-	if len(values) != 1 || values[0].(int) != 2 {
+	if len(values) != 1 || values[0] != 2 {
 		t.Fatalf("Unexpected values: %v", values)
 	}
 	if cap(values) != c-1 {
@@ -247,7 +247,7 @@ func TestIPQueuePopOne(t *testing.T) {
 
 func TestIPQueueMultiProducers(t *testing.T) {
 	s := &Server{}
-	q := s.newIPQueue("test")
+	q := newIPQueue[int](s, "test")
 
 	wg := sync.WaitGroup{}
 	wg.Add(3)
@@ -269,7 +269,7 @@ func TestIPQueueMultiProducers(t *testing.T) {
 		case <-q.ch:
 			values := q.pop()
 			for _, v := range values {
-				m[v.(int)] = struct{}{}
+				m[v] = struct{}{}
 			}
 			q.recycle(&values)
 			if n := q.inProgress(); n != 0 {
@@ -285,7 +285,7 @@ func TestIPQueueMultiProducers(t *testing.T) {
 
 func TestIPQueueRecycle(t *testing.T) {
 	s := &Server{}
-	q := s.newIPQueue("test")
+	q := newIPQueue[int](s, "test")
 	total := 1000
 	for iter := 0; iter < 5; iter++ {
 		var sz int
@@ -317,7 +317,7 @@ func TestIPQueueRecycle(t *testing.T) {
 		}
 	}
 
-	q = s.newIPQueue("test2", ipQueue_MaxRecycleSize(10))
+	q = newIPQueue[int](s, "test2", ipQueue_MaxRecycleSize(10))
 	for i := 0; i < 100; i++ {
 		q.push(i)
 	}
@@ -357,7 +357,7 @@ func TestIPQueueRecycle(t *testing.T) {
 
 func TestIPQueueDrain(t *testing.T) {
 	s := &Server{}
-	q := s.newIPQueue("test")
+	q := newIPQueue[int](s, "test")
 	for iter, recycled := 0, false; iter < 5 && !recycled; iter++ {
 		for i := 0; i < 100; i++ {
 			q.push(i + 1)
