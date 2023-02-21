@@ -92,7 +92,7 @@ type internal struct {
 	sweeper  *time.Timer
 	stmr     *time.Timer
 	replies  map[string]msgHandler
-	sendq    *ipQueue // of *pubMsg
+	sendq    *ipQueue[*pubMsg]
 	resetCh  chan struct{}
 	wg       sync.WaitGroup
 	sq       *sendq
@@ -332,8 +332,7 @@ RESET:
 		select {
 		case <-sendq.ch:
 			msgs := sendq.pop()
-			for _, pmi := range msgs {
-				pm := pmi.(*pubMsg)
+			for _, pm := range msgs {
 				if pm.si != nil {
 					pm.si.Name = servername
 					pm.si.Domain = domain

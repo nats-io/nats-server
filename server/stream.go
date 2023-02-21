@@ -192,9 +192,9 @@ type stream struct {
 	sid       int
 	pubAck    []byte
 	outq      *jsOutQ
-	msgs      *ipQueue // of *inMsg
+	msgs      *ipQueue[*inMsg]
 	store     StreamStore
-	ackq      *ipQueue // of uint64
+	ackq      *ipQueue[uint64]
 	lseq      uint64
 	lmsgId    string
 	consumers map[string]*consumer
@@ -227,7 +227,7 @@ type stream struct {
 	clsMu sync.RWMutex
 	cList []*consumer
 	sch   chan struct{}
-	sigq  *ipQueue // of *cMsg
+	sigq  *ipQueue[*cMsg]
 	csl   *Sublist
 
 	// TODO(dlc) - Hide everything below behind two pointers.
@@ -260,7 +260,7 @@ type sourceInfo struct {
 	sub   *subscription
 	dsub  *subscription
 	lbsub *subscription
-	msgs  *ipQueue // of *inMsg
+	msgs  *ipQueue[*inMsg]
 	sseq  uint64
 	dseq  uint64
 	start time.Time
@@ -439,19 +439,19 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		tier:      tier,
 		stype:     cfg.Storage,
 		consumers: make(map[string]*consumer),
-		msgs:      s.newIPQueue(qpfx + "messages"), // of *inMsg
+		msgs:      newIPQueue[*inMsg](s, qpfx+"messages"),
 		qch:       make(chan struct{}),
 		uch:       make(chan struct{}, 4),
 		sch:       make(chan struct{}, 1),
 	}
 
 	// Start our signaling routine to process consumers.
-	mset.sigq = s.newIPQueue(qpfx + "obs") // of *cMsg
+	mset.sigq = newIPQueue[*cMsg](s, qpfx+"obs") // of *cMsg
 	go mset.signalConsumersLoop()
 
 	// For no-ack consumers when we are interest retention.
 	if cfg.Retention != LimitsPolicy {
-		mset.ackq = s.newIPQueue(qpfx + "acks") // of uint64
+		mset.ackq = newIPQueue[uint64](s, qpfx+"acks")
 	}
 
 	// Check for RePublish.
@@ -1906,8 +1906,7 @@ func (mset *stream) processMirrorMsgs(mirror *sourceInfo, ready *sync.WaitGroup)
 			return
 		case <-msgs.ch:
 			ims := msgs.pop()
-			for _, imi := range ims {
-				im := imi.(*inMsg)
+			for _, im := range ims {
 				if !mset.processInboundMirrorMsg(im) {
 					break
 				}
@@ -2288,7 +2287,7 @@ func (mset *stream) setupMirrorConsumer() error {
 	// delivering messages as soon as the consumer request is received.
 	qname := fmt.Sprintf("[ACC:%s] stream mirror '%s' of '%s' msgs", mset.acc.Name, mset.cfg.Name, mset.cfg.Mirror.Name)
 	// Create a new queue each time
-	mirror.msgs = mset.srv.newIPQueue(qname) /* of *inMsg */
+	mirror.msgs = newIPQueue[*inMsg](mset.srv, qname)
 	msgs := mirror.msgs
 	sub, err := mset.subscribeInternal(deliverSubject, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 		hdr, msg := c.msgParts(copyBytes(rmsg)) // Need to copy.
@@ -2592,7 +2591,7 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64, startTime time.T
 	// delivering messages as soon as the consumer request is received.
 	qname := fmt.Sprintf("[ACC:%s] stream source '%s' from '%s' msgs", mset.acc.Name, mset.cfg.Name, si.name)
 	// Create a new queue each time
-	si.msgs = mset.srv.newIPQueue(qname) // of *inMsg
+	si.msgs = newIPQueue[*inMsg](mset.srv, qname)
 	msgs := si.msgs
 	sub, err := mset.subscribeInternal(deliverSubject, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 		hdr, msg := c.msgParts(copyBytes(rmsg)) // Need to copy.
@@ -2699,8 +2698,7 @@ func (mset *stream) processSourceMsgs(si *sourceInfo, ready *sync.WaitGroup) {
 			return
 		case <-msgs.ch:
 			ims := msgs.pop()
-			for _, imi := range ims {
-				im := imi.(*inMsg)
+			for _, im := range ims {
 				if !mset.processInboundSourceMsg(si, im) {
 					break
 				}
@@ -3489,7 +3487,7 @@ type inMsg struct {
 	msg  []byte
 }
 
-func (mset *stream) queueInbound(ib *ipQueue, subj, rply string, hdr, msg []byte) {
+func (mset *stream) queueInbound(ib *ipQueue[*inMsg], subj, rply string, hdr, msg []byte) {
 	ib.push(&inMsg{subj, rply, hdr, msg})
 }
 
@@ -4156,8 +4154,7 @@ func (mset *stream) signalConsumersLoop() {
 			return
 		case <-sch:
 			cms := msgs.pop()
-			for _, cm := range cms {
-				m := cm.(*cMsg)
+			for _, m := range cms {
 				seq, subj := m.seq, m.subj
 				m.returnToPool()
 				// Signal all appropriate consumers.
@@ -4248,7 +4245,7 @@ func (pm *jsPubMsg) size() int {
 
 // Queue of *jsPubMsg for sending internal system messages.
 type jsOutQ struct {
-	*ipQueue
+	*ipQueue[*jsPubMsg]
 }
 
 func (q *jsOutQ) sendMsg(subj string, msg []byte) {
@@ -4289,7 +4286,7 @@ func (mset *stream) setupSendCapabilities() {
 		return
 	}
 	qname := fmt.Sprintf("[ACC:%s] stream '%s' sendQ", mset.acc.Name, mset.cfg.Name)
-	mset.outq = &jsOutQ{mset.srv.newIPQueue(qname)} // of *jsPubMsg
+	mset.outq = &jsOutQ{newIPQueue[*jsPubMsg](mset.srv, qname)}
 	go mset.internalLoop()
 }
 
@@ -4325,7 +4322,7 @@ func (mset *stream) internalLoop() {
 	// For the ack msgs queue for interest retention.
 	var (
 		amch chan struct{}
-		ackq *ipQueue // of uint64
+		ackq *ipQueue[uint64]
 	)
 	if mset.ackq != nil {
 		ackq, amch = mset.ackq, mset.ackq.ch
@@ -4340,8 +4337,7 @@ func (mset *stream) internalLoop() {
 		select {
 		case <-outq.ch:
 			pms := outq.pop()
-			for _, pmi := range pms {
-				pm := pmi.(*jsPubMsg)
+			for _, pm := range pms {
 				c.pa.subject = []byte(pm.dsubj)
 				c.pa.deliver = []byte(pm.subj)
 				c.pa.size = len(pm.msg) + len(pm.hdr)
@@ -4393,9 +4389,7 @@ func (mset *stream) internalLoop() {
 			// This can possibly change now so needs to be checked here.
 			isClustered := mset.IsClustered()
 			ims := msgs.pop()
-			for _, imi := range ims {
-				im := imi.(*inMsg)
-
+			for _, im := range ims {
 				// If we are clustered we need to propose this message to the underlying raft group.
 				if isClustered {
 					mset.processClusteredInboundMsg(im.subj, im.rply, im.hdr, im.msg)
@@ -4407,7 +4401,7 @@ func (mset *stream) internalLoop() {
 		case <-amch:
 			seqs := ackq.pop()
 			for _, seq := range seqs {
-				mset.ackMsg(nil, seq.(uint64))
+				mset.ackMsg(nil, seq)
 			}
 			ackq.recycle(&seqs)
 		case <-qch:

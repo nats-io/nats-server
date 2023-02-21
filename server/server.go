@@ -290,7 +290,7 @@ type Server struct {
 	syncOutSem chan struct{}
 
 	// Queue to process JS API requests that come from routes (or gateways)
-	jsAPIRoutedReqs *ipQueue
+	jsAPIRoutedReqs *ipQueue[*jsAPIRoutedReq]
 }
 
 // For tracking JS nodes.
@@ -1259,7 +1259,7 @@ func (s *Server) setSystemAccount(acc *Account) error {
 		sid:     1,
 		servers: make(map[string]*serverUpdate),
 		replies: make(map[string]msgHandler),
-		sendq:   s.newIPQueue("System sendQ"), // of *pubMsg
+		sendq:   newIPQueue[*pubMsg](s, "System sendQ"),
 		resetCh: make(chan struct{}),
 		sq:      s.newSendQ(),
 		statsz:  eventsHBInterval,

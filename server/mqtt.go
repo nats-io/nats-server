@@ -227,17 +227,17 @@ type mqttAccountSessionManager struct {
 	sl         *Sublist                    // sublist allowing to find retained messages for given subscription
 	retmsgs    map[string]*mqttRetainedMsg // retained messages
 	jsa        mqttJSA
-	rrmLastSeq uint64        // Restore retained messages expected last sequence
-	rrmDoneCh  chan struct{} // To notify the caller that all retained messages have been loaded
-	sp         *ipQueue      // of uint64. Used for cluster-wide processing of session records being persisted
-	domainTk   string        // Domain (with trailing "."), or possibly empty. This is added to session subject.
+	rrmLastSeq uint64           // Restore retained messages expected last sequence
+	rrmDoneCh  chan struct{}    // To notify the caller that all retained messages have been loaded
+	sp         *ipQueue[uint64] // Used for cluster-wide processing of session records being persisted
+	domainTk   string           // Domain (with trailing "."), or possibly empty. This is added to session subject.
 }
 
 type mqttJSA struct {
 	mu        sync.Mutex
 	id        string
 	c         *client
-	sendq     *ipQueue // of *mqttJSPubMsg
+	sendq     *ipQueue[*mqttJSPubMsg]
 	rplyr     string
 	replies   sync.Map
 	nuid      *nuid.NUID
@@ -979,11 +979,11 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 			id:     id,
 			c:      c,
 			rplyr:  mqttJSARepliesPrefix + id + ".",
-			sendq:  s.newIPQueue(qname + "send"), // of *mqttJSPubMsg
+			sendq:  newIPQueue[*mqttJSPubMsg](s, qname+"send"),
 			nuid:   nuid.New(),
 			quitCh: quitCh,
 		},
-		sp: s.newIPQueue(qname + "sp"), // of uint64
+		sp: newIPQueue[uint64](s, qname+"sp"),
 	}
 	// TODO record domain name in as here
 
@@ -1648,7 +1648,7 @@ func (as *mqttAccountSessionManager) sessPersistProcessing(closeCh chan struct{}
 		case <-sp.ch:
 			seqs := sp.pop()
 			for _, seq := range seqs {
-				as.processSessPersistRecord(seq.(uint64))
+				as.processSessPersistRecord(seq)
 			}
 			sp.recycle(&seqs)
 		case <-closeCh:
@@ -1747,9 +1747,7 @@ func (as *mqttAccountSessionManager) sendJSAPIrequests(s *Server, c *client, acc
 		select {
 		case <-sendq.ch:
 			pmis := sendq.pop()
-			for _, pmi := range pmis {
-				r := pmi.(*mqttJSPubMsg)
-
+			for _, r := range pmis {
 				var nsize int
 
 				msg := r.msg
