@@ -23,6 +23,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -6272,4 +6273,122 @@ func TestNoRaceJetStreamClusterConsumerInfoSpeed(t *testing.T) {
 	require_NoError(t, err)
 
 	checkNumPending(toKeep)
+}
+
+func TestNoRaceJetStreamClusterGhostConsumers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "GHOST", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"events.>"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 10; i++ {
+		for j := 0; j < 10; j++ {
+			require_NoError(t, nc.Publish(fmt.Sprintf("events.%d.%d", i, j), []byte(`test`)))
+		}
+	}
+
+	fetch := func(id int) {
+		subject := fmt.Sprintf("events.%d.*", id)
+		subscription, err := js.PullSubscribe(subject,
+			_EMPTY_, // ephemeral consumer
+			nats.DeliverAll(),
+			nats.ReplayInstant(),
+			nats.BindStream("TEST"),
+			nats.ConsumerReplicas(1),
+			nats.ConsumerMemoryStorage(),
+		)
+		if err != nil {
+			return
+		}
+		defer subscription.Unsubscribe()
+
+		info, err := subscription.ConsumerInfo()
+		if err != nil {
+			return
+		}
+
+		subscription.Fetch(int(info.NumPending))
+	}
+
+	replay := func(ctx context.Context, id int) {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				fetch(id)
+			}
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go replay(ctx, 0)
+	go replay(ctx, 1)
+	go replay(ctx, 2)
+	go replay(ctx, 3)
+	go replay(ctx, 4)
+	go replay(ctx, 5)
+	go replay(ctx, 6)
+	go replay(ctx, 7)
+	go replay(ctx, 8)
+	go replay(ctx, 9)
+
+	time.Sleep(5 * time.Second)
+
+	for _, server := range c.servers {
+		server.Shutdown()
+		restarted := c.restartServer(server)
+		checkFor(t, time.Second, 200*time.Millisecond, func() error {
+			hs := restarted.healthz(&HealthzOptions{
+				JSEnabled:    true,
+				JSServerOnly: true,
+			})
+			if hs.Error != _EMPTY_ {
+				return errors.New(hs.Error)
+			}
+			return nil
+		})
+		c.waitOnStreamLeader(globalAccountName, "TEST")
+		time.Sleep(time.Second * 2)
+		go replay(ctx, 5)
+		go replay(ctx, 6)
+		go replay(ctx, 7)
+		go replay(ctx, 8)
+		go replay(ctx, 9)
+	}
+
+	time.Sleep(5 * time.Second)
+	cancel()
+
+	getMissing := func() []string {
+		m, err := nc.Request("$JS.API.CONSUMER.LIST.TEST", nil, time.Second*10)
+		require_NoError(t, err)
+
+		var resp JSApiConsumerListResponse
+		err = json.Unmarshal(m.Data, &resp)
+		require_NoError(t, err)
+		return resp.Missing
+	}
+
+	expires := time.Now().Add(10 * time.Second)
+	for time.Now().Before(expires) {
+		missing := getMissing()
+		if len(missing) == 0 {
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	if missing := getMissing(); len(missing) > 0 {
+		t.Fatalf("Still have missing: %+v", missing)
+	}
 }

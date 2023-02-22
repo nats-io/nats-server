@@ -987,7 +987,6 @@ func (js *jetStream) monitorCluster() {
 		isLeader     bool
 		lastSnap     []byte
 		lastSnapTime time.Time
-		beenLeader   bool
 	)
 
 	// Highwayhash key for generating hashes.
@@ -1070,17 +1069,18 @@ func (js *jetStream) monitorCluster() {
 			}
 			aq.recycle(&ces)
 		case isLeader = <-lch:
-			// We want to make sure we are updated on statsz so ping the extended cluster.
-			if isLeader {
-				s.sendInternalMsgLocked(serverStatsPingReqSubj, _EMPTY_, nil, nil)
-			}
 			js.processLeaderChange(isLeader)
-			if isLeader && !beenLeader {
-				beenLeader = true
-				if n.NeedSnapshot() {
-					if err := n.InstallSnapshot(js.metaSnapshot()); err != nil {
-						s.Warnf("Error snapshotting JetStream cluster state: %v", err)
-					}
+
+			if isLeader {
+				// We want to make sure we are updated on statsz for the other peers, so ping the extended cluster.
+				s.sendInternalMsgLocked(serverStatsPingReqSubj, _EMPTY_, nil, nil)
+				// Install a snapshot as we become leader. We will also send to the cluster.
+				snap := js.metaSnapshot()
+				if err := n.InstallSnapshot(snap); err != nil {
+					s.Warnf("Error snapshotting JetStream cluster state: %v", err)
+				} else {
+					// Send our snapshot to others to make sure all in sync.
+					n.SendSnapshot(snap)
 				}
 				js.checkClusterSize()
 			}
