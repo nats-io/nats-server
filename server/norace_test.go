@@ -6276,6 +6276,9 @@ func TestNoRaceJetStreamClusterConsumerInfoSpeed(t *testing.T) {
 }
 
 func TestNoRaceJetStreamKVAccountWithServerRestarts(t *testing.T) {
+	// Uncomment to run. Needs fast machine to not time out on KeyValue lookup.
+	skip(t)
+
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
