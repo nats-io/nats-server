@@ -2779,3 +2779,59 @@ func TestJetStreamClusterInterestPolicyEphemeral(t *testing.T) {
 		})
 	}
 }
+
+// TestJetStreamClusterWALBuildupOnNoOpPull tests whether or not the consumer
+// RAFT log is being compacted when the stream is idle but we are performing
+// lots of fetches. Otherwise the disk usage just spirals out of control if
+// there are no other state changes to trigger a compaction.
+func TestJetStreamClusterWALBuildupOnNoOpPull(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe(
+		"foo",
+		"durable",
+		nats.ConsumerReplicas(3),
+	)
+	require_NoError(t, err)
+
+	for i := 0; i < 10000; i++ {
+		_, _ = sub.Fetch(1, nats.MaxWait(time.Microsecond))
+	}
+
+	// Needs to be at least 5 seconds, otherwise we won't hit the
+	// minSnapDelta that prevents us from snapshotting too often
+	time.Sleep(time.Second * 6)
+
+	for i := 0; i < 1024; i++ {
+		_, _ = sub.Fetch(1, nats.MaxWait(time.Microsecond))
+	}
+
+	time.Sleep(time.Second)
+
+	server := c.randomNonConsumerLeader(globalAccountName, "TEST", "durable")
+
+	stream, err := server.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	consumer := stream.lookupConsumer("durable")
+	require_NotNil(t, consumer)
+
+	entries, bytes := consumer.raftNode().Size()
+	t.Log("new entries:", entries)
+	t.Log("new bytes:", bytes)
+
+	if max := uint64(1024); entries > max {
+		t.Fatalf("got %d entries, expected less than %d entries", entries, max)
+	}
+}
