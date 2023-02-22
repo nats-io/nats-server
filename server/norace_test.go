@@ -23,6 +23,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -6272,4 +6273,81 @@ func TestNoRaceJetStreamClusterConsumerInfoSpeed(t *testing.T) {
 	require_NoError(t, err)
 
 	checkNumPending(toKeep)
+}
+
+func TestNoRaceJetStreamKVAccountWithServerRestarts(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.CreateKeyValue(&nats.KeyValueConfig{
+		Bucket:   "TEST",
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	npubs := 10_000
+	par := 8
+	iter := 2
+	nsubjs := 250
+
+	wg := sync.WaitGroup{}
+	putKeys := func() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+			kv, err := js.KeyValue("TEST")
+			require_NoError(t, err)
+
+			for i := 0; i < npubs; i++ {
+				subj := fmt.Sprintf("KEY-%d", rand.Intn(nsubjs))
+				if _, err := kv.PutString(subj, "hello"); err != nil {
+					nc, js := jsClientConnect(t, c.randomServer())
+					defer nc.Close()
+					kv, err = js.KeyValue("TEST")
+					require_NoError(t, err)
+				}
+			}
+		}()
+	}
+
+	restartServers := func() {
+		time.Sleep(2 * time.Second)
+		// Rotate through and restart the servers.
+		for _, server := range c.servers {
+			server.Shutdown()
+			restarted := c.restartServer(server)
+			checkFor(t, time.Second, 200*time.Millisecond, func() error {
+				hs := restarted.healthz(&HealthzOptions{
+					JSEnabled:    true,
+					JSServerOnly: true,
+				})
+				if hs.Error != _EMPTY_ {
+					return errors.New(hs.Error)
+				}
+				return nil
+			})
+		}
+		c.waitOnLeader()
+		c.waitOnStreamLeader(globalAccountName, "KV_TEST")
+	}
+
+	for n := 0; n < iter; n++ {
+		for i := 0; i < par; i++ {
+			putKeys()
+		}
+		restartServers()
+	}
+	wg.Wait()
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	si, err := js.StreamInfo("KV_TEST")
+	require_NoError(t, err)
+	require_True(t, si.State.NumSubjects == uint64(nsubjs))
 }
