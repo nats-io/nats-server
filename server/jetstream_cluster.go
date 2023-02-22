@@ -1882,9 +1882,17 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		}
 
 		snap := mset.stateSnapshot()
-		if hash := highwayhash.Sum(snap, key); !bytes.Equal(hash[:], lastSnap) {
+		ne, nb := n.Size()
+		hash := highwayhash.Sum(snap, key)
+		// If the state hasn't changed but the log has gone way over
+		// the compaction size then we will want to compact anyway.
+		// This shouldn't happen for streams like it can for pull
+		// consumers on idle streams but better to be safe than sorry!
+		if !bytes.Equal(hash[:], lastSnap) || ne >= compactNumMin || nb >= compactSizeMin {
 			if err := n.InstallSnapshot(snap); err == nil {
 				lastSnap, lastSnapTime = hash[:], time.Now()
+			} else {
+				s.Warnf("Failed to install snapshot for '%s > %s' [%s]: %v", mset.acc.Name, mset.name(), n.Group(), err)
 			}
 		}
 	}
@@ -4015,22 +4023,29 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	var lastSnap []byte
 	var lastSnapTime time.Time
 
-	doSnapshot := func(force bool) {
+	doSnapshot := func() {
 		// Bail if trying too fast and not in a forced situation.
-		if !force && time.Since(lastSnapTime) < minSnapDelta {
+		if time.Since(lastSnapTime) < minSnapDelta {
 			return
 		}
 
 		// Check several things to see if we need a snapshot.
-		if !force || !n.NeedSnapshot() {
+		ne, nb := n.Size()
+		if !n.NeedSnapshot() {
 			// Check if we should compact etc. based on size of log.
-			if ne, nb := n.Size(); ne < compactNumMin && nb < compactSizeMin {
+			if ne < compactNumMin && nb < compactSizeMin {
 				return
 			}
 		}
 
 		if snap, err := o.store.EncodedState(); err == nil {
-			if hash := highwayhash.Sum(snap, key); !bytes.Equal(hash[:], lastSnap) {
+			hash := highwayhash.Sum(snap, key)
+			// If the state hasn't changed but the log has gone way over
+			// the compaction size then we will want to compact anyway.
+			// This can happen for example when a pull consumer fetches a
+			// lot on an idle stream, log entries get distributed but the
+			// state never changes, therefore the log never gets compacted.
+			if !bytes.Equal(hash[:], lastSnap) || ne >= compactNumMin || nb >= compactSizeMin {
 				if err := n.InstallSnapshot(snap); err == nil {
 					lastSnap, lastSnapTime = hash[:], time.Now()
 				} else {
@@ -4076,7 +4091,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 				if ce == nil {
 					recovering = false
 					if n.NeedSnapshot() {
-						doSnapshot(true)
+						doSnapshot()
 					}
 					continue
 				}
@@ -4084,7 +4099,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 					ne, nb := n.Applied(ce.Index)
 					// If we have at least min entries to compact, go ahead and snapshot/compact.
 					if nb > 0 && ne >= compactNumMin || nb > compactSizeMin {
-						doSnapshot(false)
+						doSnapshot()
 					}
 				} else {
 					s.Warnf("Error applying consumer entries to '%s > %s'", ca.Client.serviceAccount(), ca.Name)
@@ -4096,7 +4111,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 				js.setConsumerAssignmentRecovering(ca)
 			}
 			if err := js.processConsumerLeaderChange(o, isLeader); err == nil && isLeader {
-				doSnapshot(true)
+				doSnapshot()
 			}
 
 			// We may receive a leader change after the consumer assignment which would cancel us
@@ -4185,7 +4200,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			}
 
 		case <-t.C:
-			doSnapshot(false)
+			doSnapshot()
 		}
 	}
 }
