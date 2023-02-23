@@ -1281,7 +1281,6 @@ func (n *raft) StepDown(preferred ...string) error {
 	n.debug("Being asked to stepdown")
 
 	// See if we have up to date followers.
-	nowts := time.Now().UnixNano()
 	maybeLeader := noLeader
 	if len(preferred) > 0 {
 		if preferred[0] != _EMPTY_ {
@@ -1290,21 +1289,42 @@ func (n *raft) StepDown(preferred ...string) error {
 			preferred = nil
 		}
 	}
+	// Can't pick ourselves.
+	if maybeLeader == n.id {
+		maybeLeader = noLeader
+		preferred = nil
+	}
 
-	for peer, ps := range n.peers {
-		// If not us and alive and caughtup.
-		if peer != n.id && (nowts-ps.ts) < int64(hbInterval*3) {
-			if maybeLeader != noLeader && maybeLeader != peer {
-				continue
-			}
-			if si, ok := n.s.nodeToInfo.Load(peer); !ok || si.(nodeInfo).offline {
-				continue
-			}
-			n.debug("Looking at %q which is %v behind", peer, time.Duration(nowts-ps.ts))
-			maybeLeader = peer
-			break
+	nowts := time.Now().UnixNano()
+
+	// If we have a preferred check it first.
+	if maybeLeader != noLeader {
+		var isHealthy bool
+		if ps, ok := n.peers[maybeLeader]; ok {
+			si, ok := n.s.nodeToInfo.Load(maybeLeader)
+			isHealthy = ok && !si.(nodeInfo).offline && (nowts-ps.ts) < int64(hbInterval*3)
+		}
+		if !isHealthy {
+			maybeLeader = noLeader
 		}
 	}
+
+	// If we do not have a preferred at this point pick the first healthy one.
+	// Make sure not ourselves.
+	if maybeLeader == noLeader {
+		for peer, ps := range n.peers {
+			if peer == n.id {
+				continue
+			}
+			si, ok := n.s.nodeToInfo.Load(peer)
+			isHealthy := ok && !si.(nodeInfo).offline && (nowts-ps.ts) < int64(hbInterval*3)
+			if isHealthy {
+				maybeLeader = peer
+				break
+			}
+		}
+	}
+
 	stepdown := n.stepdown
 	n.Unlock()
 

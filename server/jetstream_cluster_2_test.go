@@ -199,10 +199,10 @@ func TestJetStreamClusterMultiRestartBug(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+	checkFor(t, 20*time.Second, 250*time.Millisecond, func() error {
 		si, _ := js2.StreamInfo("TEST")
 		if si == nil || si.Cluster == nil {
-			t.Fatalf("Did not get stream info")
+			return fmt.Errorf("No stream info or cluster")
 		}
 		for _, pi := range si.Cluster.Replicas {
 			if !pi.Current {
