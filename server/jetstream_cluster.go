@@ -700,7 +700,7 @@ func (js *jetStream) setupMetaGroup() error {
 	}
 
 	// Start up our meta node.
-	n, err := s.startRaftNode(sysAcc.GetName(), cfg)
+	n, err := s.startRaftNode(sysAcc.GetName(), "_meta_", cfg)
 	if err != nil {
 		s.Warnf("Could not start metadata controller: %v", err)
 		return err
@@ -1784,7 +1784,7 @@ func (rg *raftGroup) setPreferred() {
 }
 
 // createRaftGroup is called to spin up this raft group if needed.
-func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, storage StorageType) error {
+func (js *jetStream) createRaftGroup(accName, assetName string, rg *raftGroup, storage StorageType) error {
 	js.mu.Lock()
 	s, cc := js.srv, js.cluster
 	if cc == nil || cc.meta == nil {
@@ -1808,7 +1808,7 @@ func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, storage Stor
 	}
 	js.mu.Unlock()
 
-	s.Debugf("JetStream cluster creating raft group:%+v", rg)
+	s.Debugf("JetStream cluster creating raft group:%+v for asset %q", rg, assetName)
 
 	sysAcc := s.SystemAccount()
 	if sysAcc == nil {
@@ -1857,7 +1857,7 @@ func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, storage Stor
 		s.bootstrapRaftNode(cfg, rg.Peers, true)
 	}
 
-	n, err := s.startRaftNode(accName, cfg)
+	n, err := s.startRaftNode(accName, assetName, cfg)
 	if err != nil || n == nil {
 		s.Debugf("Error creating raft group: %v", err)
 		return err
@@ -3146,7 +3146,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 		if !alreadyRunning && numReplicas > 1 {
 			if needsNode {
 				mset.setLeader(false)
-				js.createRaftGroup(acc.GetName(), rg, storage)
+				js.createRaftGroup(acc.GetName(), cfg.Name, rg, storage)
 			}
 			mset.monitorWg.Add(1)
 			// Start monitoring..
@@ -3245,7 +3245,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 	js.mu.RUnlock()
 
 	// Process the raft group and make sure it's running if needed.
-	err := js.createRaftGroup(acc.GetName(), rg, storage)
+	err := js.createRaftGroup(acc.GetName(), sa.Config.Name, rg, storage)
 
 	// If we are restoring, create the stream if we are R>1 and not the preferred who handles the
 	// receipt of the snapshot itself.
@@ -3307,7 +3307,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 				s.Warnf("JetStream cluster error updating stream %q for account %q: %v", sa.Config.Name, acc.Name, err)
 				if osa != nil {
 					// Process the raft group and make sure it's running if needed.
-					js.createRaftGroup(acc.GetName(), osa.Group, storage)
+					js.createRaftGroup(acc.GetName(), sa.Config.Name, osa.Group, storage)
 					mset.setStreamAssignment(osa)
 				}
 				if rg.node != nil {
@@ -3796,7 +3796,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 		if ca.Config.MemoryStorage {
 			storage = MemoryStorage
 		}
-		js.createRaftGroup(accName, rg, storage)
+		js.createRaftGroup(accName, consumer, rg, storage)
 	} else {
 		// If we are clustered update the known peers.
 		js.mu.RLock()

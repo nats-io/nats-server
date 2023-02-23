@@ -204,7 +204,8 @@ type raft struct {
 	quit     chan struct{}
 
 	// Account name of the asset this raft group is for
-	accName string
+	accName   string
+	assetName string
 
 	// Random generator, used to generate inboxes for instance
 	prand *rand.Rand
@@ -342,7 +343,7 @@ func (s *Server) bootstrapRaftNode(cfg *RaftConfig, knownPeers []string, allPeer
 }
 
 // startRaftNode will start the raft node.
-func (s *Server) startRaftNode(accName string, cfg *RaftConfig) (RaftNode, error) {
+func (s *Server) startRaftNode(accName, assetName string, cfg *RaftConfig) (RaftNode, error) {
 	if cfg == nil {
 		return nil, errNilCfg
 	}
@@ -373,39 +374,40 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig) (RaftNode, error
 		}
 	}
 	n := &raft{
-		created:  time.Now(),
-		id:       hash[:idLen],
-		group:    cfg.Name,
-		sd:       cfg.Store,
-		wal:      cfg.Log,
-		wtype:    cfg.Log.Type(),
-		track:    cfg.Track,
-		state:    Follower,
-		csz:      ps.clusterSize,
-		qn:       ps.clusterSize/2 + 1,
-		hash:     hash,
-		peers:    make(map[string]*lps),
-		acks:     make(map[uint64]map[string]struct{}),
-		pae:      make(map[uint64]*appendEntry),
-		s:        s,
-		c:        s.createInternalSystemClient(),
-		js:       s.getJetStream(),
-		sq:       sq,
-		quit:     make(chan struct{}),
-		wtvch:    make(chan struct{}, 1),
-		wpsch:    make(chan struct{}, 1),
-		reqs:     newIPQueue[*voteRequest](s, qpfx+"vreq"),
-		votes:    newIPQueue[*voteResponse](s, qpfx+"vresp"),
-		prop:     newIPQueue[*Entry](s, qpfx+"entry"),
-		entry:    newIPQueue[*appendEntry](s, qpfx+"appendEntry"),
-		resp:     newIPQueue[*appendEntryResponse](s, qpfx+"appendEntryResponse"),
-		apply:    newIPQueue[*CommittedEntry](s, qpfx+"committedEntry"),
-		stepdown: newIPQueue[string](s, qpfx+"stepdown"),
-		accName:  accName,
-		leadc:    make(chan bool, 1),
-		observer: cfg.Observer,
-		extSt:    ps.domainExt,
-		prand:    rand.New(rand.NewSource(rsrc)),
+		created:   time.Now(),
+		id:        hash[:idLen],
+		group:     cfg.Name,
+		sd:        cfg.Store,
+		wal:       cfg.Log,
+		wtype:     cfg.Log.Type(),
+		track:     cfg.Track,
+		state:     Follower,
+		csz:       ps.clusterSize,
+		qn:        ps.clusterSize/2 + 1,
+		hash:      hash,
+		peers:     make(map[string]*lps),
+		acks:      make(map[uint64]map[string]struct{}),
+		pae:       make(map[uint64]*appendEntry),
+		s:         s,
+		c:         s.createInternalSystemClient(),
+		js:        s.getJetStream(),
+		sq:        sq,
+		quit:      make(chan struct{}),
+		wtvch:     make(chan struct{}, 1),
+		wpsch:     make(chan struct{}, 1),
+		reqs:      newIPQueue[*voteRequest](s, qpfx+"vreq"),
+		votes:     newIPQueue[*voteResponse](s, qpfx+"vresp"),
+		prop:      newIPQueue[*Entry](s, qpfx+"entry"),
+		entry:     newIPQueue[*appendEntry](s, qpfx+"appendEntry"),
+		resp:      newIPQueue[*appendEntryResponse](s, qpfx+"appendEntryResponse"),
+		apply:     newIPQueue[*CommittedEntry](s, qpfx+"committedEntry"),
+		stepdown:  newIPQueue[string](s, qpfx+"stepdown"),
+		accName:   accName,
+		assetName: assetName,
+		leadc:     make(chan bool, 1),
+		observer:  cfg.Observer,
+		extSt:     ps.domainExt,
+		prand:     rand.New(rand.NewSource(rsrc)),
 	}
 	n.c.registerWithAccount(sacc)
 
@@ -1714,18 +1716,18 @@ func (n *raft) run() {
 
 func (n *raft) debug(format string, args ...interface{}) {
 	if n.dflag {
-		nf := fmt.Sprintf("RAFT [%s - %s] %s", n.id, n.group, format)
+		nf := fmt.Sprintf("RAFT [%s - %s - %q] %s", n.id, n.group, n.assetName, format)
 		n.s.Debugf(nf, args...)
 	}
 }
 
 func (n *raft) warn(format string, args ...interface{}) {
-	nf := fmt.Sprintf("RAFT [%s - %s] %s", n.id, n.group, format)
+	nf := fmt.Sprintf("RAFT [%s - %s - %q] %s", n.id, n.group, n.assetName, format)
 	n.s.RateLimitWarnf(nf, args...)
 }
 
 func (n *raft) error(format string, args ...interface{}) {
-	nf := fmt.Sprintf("RAFT [%s - %s] %s", n.id, n.group, format)
+	nf := fmt.Sprintf("RAFT [%s - %s - %q] %s", n.id, n.group, n.assetName, format)
 	n.s.Errorf(nf, args...)
 }
 
