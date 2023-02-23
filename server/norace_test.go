@@ -1,4 +1,4 @@
-// Copyright 2018-2022 The NATS Authors
+// Copyright 2018-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -6276,6 +6276,9 @@ func TestNoRaceJetStreamClusterConsumerInfoSpeed(t *testing.T) {
 }
 
 func TestNoRaceJetStreamKVAccountWithServerRestarts(t *testing.T) {
+	// Uncomment to run. Needs fast machine to not time out on KeyValue lookup.
+	skip(t)
+
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -6350,4 +6353,58 @@ func TestNoRaceJetStreamKVAccountWithServerRestarts(t *testing.T) {
 	si, err := js.StreamInfo("KV_TEST")
 	require_NoError(t, err)
 	require_True(t, si.State.NumSubjects == uint64(nsubjs))
+}
+
+// Test for consumer create when the subject cardinality is high and the
+// consumer is filtered with a wildcard that forces linear scans.
+// We have an optimization to use in memory structures in filestore to speed up.
+// Only if asking to scan all (DeliverAll).
+func TestNoRaceJetStreamConsumerCreateTimeNumPending(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"events.>"},
+	})
+	require_NoError(t, err)
+
+	n := 500_000
+	msg := bytes.Repeat([]byte("X"), 8*1024)
+
+	for i := 0; i < n; i++ {
+		subj := fmt.Sprintf("events.%d", rand.Intn(100_000))
+		js.PublishAsync(subj, msg)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+	}
+
+	// Should stay under 5ms now, but for Travis variability say 25ms.
+	threshold := 25 * time.Millisecond
+
+	start := time.Now()
+	_, err = js.PullSubscribe("events.*", "dlc")
+	require_NoError(t, err)
+	if elapsed := time.Since(start); elapsed > threshold {
+		t.Fatalf("Consumer create took longer than expected, %v vs %v", elapsed, threshold)
+	}
+
+	start = time.Now()
+	_, err = js.PullSubscribe("events.99999", "xxx")
+	require_NoError(t, err)
+	if elapsed := time.Since(start); elapsed > threshold {
+		t.Fatalf("Consumer create took longer than expected, %v vs %v", elapsed, threshold)
+	}
+
+	start = time.Now()
+	_, err = js.PullSubscribe(">", "zzz")
+	require_NoError(t, err)
+	if elapsed := time.Since(start); elapsed > threshold {
+		t.Fatalf("Consumer create took longer than expected, %v vs %v", elapsed, threshold)
+	}
 }

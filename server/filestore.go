@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -1662,12 +1663,14 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, seq uint64) (t
 // FilteredState will return the SimpleState associated with the filtered subject and a proposed starting sequence.
 func (fs *fileStore) FilteredState(sseq uint64, subj string) SimpleState {
 	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
 	lseq := fs.state.LastSeq
 	if sseq < fs.state.FirstSeq {
 		sseq = fs.state.FirstSeq
 	}
-	fs.mu.RUnlock()
 
+	// Returned state.
 	var ss SimpleState
 
 	// If past the end no results.
@@ -1675,28 +1678,95 @@ func (fs *fileStore) FilteredState(sseq uint64, subj string) SimpleState {
 		return ss
 	}
 
-	wc := subjectHasWildcard(subj)
+	// If we want all msgs that match we can shortcircuit.
+	// TODO(dlc) - This can be extended for all cases but would
+	// need to be careful on total msgs calculations etc.
+	if sseq == fs.state.FirstSeq {
+		fs.numFilteredPending(subj, &ss)
+	} else {
+		wc := subjectHasWildcard(subj)
+		// Tracking subject state.
+		// TODO(dlc) - Optimize for 2.10 with avl tree and no atomics per block.
+		for _, mb := range fs.blks {
+			// Skip blocks that are less than our starting sequence.
+			if sseq > atomic.LoadUint64(&mb.last.seq) {
+				continue
+			}
+			t, f, l := mb.filteredPending(subj, wc, sseq)
+			ss.Msgs += t
+			if ss.First == 0 || (f > 0 && f < ss.First) {
+				ss.First = f
+			}
+			if l > ss.Last {
+				ss.Last = l
+			}
+		}
+	}
 
-	// Tracking subject state.
-	fs.mu.RLock()
-	// TODO(dlc) - Optimize for 2.10 with avl tree and no atomics per block.
-	for _, mb := range fs.blks {
-		// Skip blocks that are less than our starting sequence.
-		if sseq > atomic.LoadUint64(&mb.last.seq) {
-			continue
+	return ss
+}
+
+// Optimized way for getting all num pending matching a filter subject.
+// Lock should be held.
+func (fs *fileStore) numFilteredPending(filter string, ss *SimpleState) {
+	isAll := filter == _EMPTY_ || filter == fwcs
+
+	// If isAll we do not need to do anything special to calculate the first and last and total.
+	if isAll {
+		ss.First = fs.state.FirstSeq
+		ss.Last = fs.state.LastSeq
+		ss.Msgs = fs.state.Msgs
+		return
+	}
+
+	tsa := [32]string{}
+	fsa := [32]string{}
+	fts := tokenizeSubjectIntoSlice(fsa[:0], filter)
+
+	start, stop := uint32(math.MaxUint32), uint32(0)
+	for subj, psi := range fs.psim {
+		if isAll {
+			ss.Msgs += psi.total
+		} else {
+			tts := tokenizeSubjectIntoSlice(tsa[:0], subj)
+			if isSubsetMatchTokenized(tts, fts) {
+				ss.Msgs += psi.total
+				// Keep track of start and stop indexes for this subject.
+				if psi.fblk < start {
+					start = psi.fblk
+				}
+				if psi.lblk > stop {
+					stop = psi.lblk
+				}
+			}
 		}
-		t, f, l := mb.filteredPending(subj, wc, sseq)
-		ss.Msgs += t
-		if ss.First == 0 || (f > 0 && f < ss.First) {
+	}
+	// If not collecting all we do need to figure out the first and last sequences.
+	if !isAll {
+		wc := subjectHasWildcard(filter)
+		// Do start
+		if mb := fs.bim[start]; mb != nil {
+			_, f, _ := mb.filteredPending(filter, wc, 0)
 			ss.First = f
+		} else {
+			// This is a miss. This can happen since psi.fblk is lazy, but should be very rare.
+			for i := start + 1; i <= stop; i++ {
+				mb := fs.bim[i]
+				if mb == nil {
+					continue
+				}
+				if _, f, _ := mb.filteredPending(filter, wc, 0); f > 0 {
+					ss.First = f
+					break
+				}
+			}
 		}
-		if l > ss.Last {
+		// Now last
+		if mb := fs.bim[stop]; mb != nil {
+			_, _, l := mb.filteredPending(filter, wc, 0)
 			ss.Last = l
 		}
 	}
-	fs.mu.RUnlock()
-
-	return ss
 }
 
 // SubjectsState returns a map of SimpleState for all matching subjects.
@@ -5439,6 +5509,7 @@ func (mb *msgBlock) loadPerSubjectInfo() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	if len(buf) < minFileSize || checkHeader(buf) != nil {
 		return nil, errors.New("short fss state")
 	}
