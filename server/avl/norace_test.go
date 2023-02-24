@@ -118,6 +118,7 @@ func TestNoRaceSeqSetEncodeLarge(t *testing.T) {
 		logResults("Decode time is %v\n", elapsed)
 	}
 	require_True(t, ss.Nodes() == ss2.Nodes())
+	require_True(t, ss.Size() == ss2.Size())
 }
 
 func TestNoRaceSeqSetRelativeSpeed(t *testing.T) {

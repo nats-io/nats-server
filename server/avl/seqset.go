@@ -187,7 +187,7 @@ const (
 	// hdrLen
 	hdrLen = 2
 	// minimum length of an encoded SequenceSet.
-	minLen = 2 + 4 // magic + version + num nodes.
+	minLen = 2 + 8 // magic + version + num nodes + num entries.
 )
 
 // EncodeLen returns the bytes needed for encoding.
@@ -198,8 +198,10 @@ func (ss SequenceSet) EncodeLen() int {
 func (ss SequenceSet) Encode(buf []byte) ([]byte, error) {
 	nn, encLen := ss.Nodes(), ss.EncodeLen()
 
-	if len(buf) < encLen {
+	if cap(buf) < encLen {
 		buf = make([]byte, encLen)
+	} else {
+		buf = buf[:encLen]
 	}
 
 	// TODO(dlc) - Go 1.19 introduced Append to not have to keep track.
@@ -210,7 +212,8 @@ func (ss SequenceSet) Encode(buf []byte) ([]byte, error) {
 	buf[0], buf[1] = magic, version
 	i := hdrLen
 	le.PutUint32(buf[i:], uint32(nn))
-	i += 4
+	le.PutUint32(buf[i+4:], uint32(ss.size))
+	i += 8
 	ss.root.nodeIter(func(n *node) {
 		le.PutUint64(buf[i:], n.base)
 		i += 8
@@ -235,7 +238,8 @@ func Decode(buf []byte) (*SequenceSet, error) {
 	var le = binary.LittleEndian
 	index := 2
 	nn := int(le.Uint32(buf[index:]))
-	index += 4
+	sz := int(le.Uint32(buf[index+4:]))
+	index += 8
 
 	expectedLen := minLen + (nn * ((numBuckets+1)*8 + 2))
 	if len(buf) != expectedLen {
@@ -244,7 +248,9 @@ func Decode(buf []byte) (*SequenceSet, error) {
 
 	nodes := make([]node, nn)
 
-	var ss SequenceSet
+	ss := SequenceSet{
+		size: sz,
+	}
 	for i := 0; i < nn; i++ {
 		n := &nodes[i]
 		n.base = le.Uint64(buf[index:])
