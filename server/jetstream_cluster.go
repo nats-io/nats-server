@@ -999,21 +999,19 @@ func (js *jetStream) monitorCluster() {
 	js.setMetaRecovering()
 
 	// Snapshotting function.
-	doSnapshot := func() []byte {
+	doSnapshot := func() {
 		// Suppress during recovery.
 		if js.isMetaRecovering() {
-			return nil
+			return
 		}
 		snap := js.metaSnapshot()
 		if hash := highwayhash.Sum(snap, key); !bytes.Equal(hash[:], lastSnap) {
 			if err := n.InstallSnapshot(snap); err == nil {
 				lastSnap, lastSnapTime = hash[:], time.Now()
-				return snap
 			} else {
 				s.Warnf("Error snapshotting JetStream cluster state: %v", err)
 			}
 		}
-		return nil
 	}
 
 	ru := &recoveryUpdates{
@@ -1088,16 +1086,11 @@ func (js *jetStream) monitorCluster() {
 
 			if isLeader {
 				s.sendInternalMsgLocked(serverStatsPingReqSubj, _EMPTY_, nil, nil)
-				// Install a snapshot as we become leader. We will also send to the cluster.
-				if snap := doSnapshot(); snap != nil {
-					// If we are caught up distribute our current state to followers.
-					if ne, _ := n.Size(); ne == 0 {
-						// Send our snapshot to others to make sure all in sync.
-						n.SendSnapshot(snap)
-					}
-				}
+				// Optionally install a snapshot as we become leader.
+				doSnapshot()
 				js.checkClusterSize()
 			}
+
 		case <-t.C:
 			doSnapshot()
 			// Periodically check the cluster size.

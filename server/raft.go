@@ -939,9 +939,9 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	var state StreamState
 	n.wal.FastState(&state)
 
-	if state.FirstSeq >= n.applied {
+	if n.applied == 0 || len(data) == 0 {
 		n.Unlock()
-		return nil
+		return errNoSnapAvailable
 	}
 
 	n.debug("Installing snapshot of %d bytes", len(data))
@@ -976,7 +976,7 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	// Remember our latest snapshot file.
 	n.snapfile = sfile
 
-	if _, err := n.wal.Compact(snap.lastIndex); err != nil {
+	if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
 		n.setWriteErrLocked(err)
 		n.Unlock()
 		return err
@@ -1289,6 +1289,7 @@ func (n *raft) StepDown(preferred ...string) error {
 			preferred = nil
 		}
 	}
+
 	// Can't pick ourselves.
 	if maybeLeader == n.id {
 		maybeLeader = noLeader
