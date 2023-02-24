@@ -127,9 +127,10 @@ type streamAssignment struct {
 	Reply   string        `json:"reply"`
 	Restore *StreamState  `json:"restore_state,omitempty"`
 	// Internal
-	consumers map[string]*consumerAssignment
-	responded bool
-	err       error
+	consumers  map[string]*consumerAssignment
+	responded  bool
+	recovering bool
+	err        error
 }
 
 // consumerAssignment is what the meta controller uses to assign consumers to streams.
@@ -144,9 +145,10 @@ type consumerAssignment struct {
 	Reply   string          `json:"reply"`
 	State   *ConsumerState  `json:"state,omitempty"`
 	// Internal
-	responded bool
-	deleted   bool
-	err       error
+	responded  bool
+	recovering bool
+	deleted    bool
+	err        error
 }
 
 // streamPurge is what the stream leader will replicate when purging a stream.
@@ -987,7 +989,6 @@ func (js *jetStream) monitorCluster() {
 		isLeader     bool
 		lastSnap     []byte
 		lastSnapTime time.Time
-		beenLeader   bool
 	)
 
 	// Highwayhash key for generating hashes.
@@ -1007,6 +1008,8 @@ func (js *jetStream) monitorCluster() {
 		if hash := highwayhash.Sum(snap, key); !bytes.Equal(hash[:], lastSnap) {
 			if err := n.InstallSnapshot(snap); err == nil {
 				lastSnap, lastSnapTime = hash[:], time.Now()
+			} else {
+				s.Warnf("Error snapshotting JetStream cluster state: %v", err)
 			}
 		}
 	}
@@ -1059,6 +1062,15 @@ func (js *jetStream) monitorCluster() {
 				// FIXME(dlc) - Deal with errors.
 				if didSnap, didRemoval, err := js.applyMetaEntries(ce.Entries, ru); err == nil {
 					_, nb := n.Applied(ce.Index)
+					// If we processed a snapshot and are recovering remove our pending state.
+					if didSnap && js.isMetaRecovering() {
+						ru = &recoveryUpdates{
+							removeStreams:   make(map[string]*streamAssignment),
+							removeConsumers: make(map[string]*consumerAssignment),
+							updateStreams:   make(map[string]*streamAssignment),
+							updateConsumers: make(map[string]*consumerAssignment),
+						}
+					}
 					if js.hasPeerEntries(ce.Entries) || didSnap || didRemoval {
 						// Since we received one make sure we have our own since we do not store
 						// our meta state outside of raft.
@@ -1070,20 +1082,15 @@ func (js *jetStream) monitorCluster() {
 			}
 			aq.recycle(&ces)
 		case isLeader = <-lch:
-			// We want to make sure we are updated on statsz so ping the extended cluster.
+			js.processLeaderChange(isLeader)
+
 			if isLeader {
 				s.sendInternalMsgLocked(serverStatsPingReqSubj, _EMPTY_, nil, nil)
-			}
-			js.processLeaderChange(isLeader)
-			if isLeader && !beenLeader {
-				beenLeader = true
-				if n.NeedSnapshot() {
-					if err := n.InstallSnapshot(js.metaSnapshot()); err != nil {
-						s.Warnf("Error snapshotting JetStream cluster state: %v", err)
-					}
-				}
+				// Optionally install a snapshot as we become leader.
+				doSnapshot()
 				js.checkClusterSize()
 			}
+
 		case <-t.C:
 			doSnapshot()
 			// Periodically check the cluster size.
@@ -1279,27 +1286,20 @@ func (js *jetStream) applyMetaSnapshot(buf []byte) error {
 			}
 		}
 	}
-	isRecovering := js.metaRecovering
 	js.mu.Unlock()
 
 	// Do removals first.
 	for _, sa := range saDel {
-		if isRecovering {
-			js.setStreamAssignmentRecovering(sa)
-		}
+		js.setStreamAssignmentRecovering(sa)
 		js.processStreamRemoval(sa)
 	}
 	// Now do add for the streams. Also add in all consumers.
 	for _, sa := range saAdd {
-		if isRecovering {
-			js.setStreamAssignmentRecovering(sa)
-		}
+		js.setStreamAssignmentRecovering(sa)
 		js.processStreamAssignment(sa)
 		// We can simply add the consumers.
 		for _, ca := range sa.consumers {
-			if isRecovering {
-				js.setConsumerAssignmentRecovering(ca)
-			}
+			js.setConsumerAssignmentRecovering(ca)
 			js.processConsumerAssignment(ca)
 		}
 	}
@@ -1307,23 +1307,17 @@ func (js *jetStream) applyMetaSnapshot(buf []byte) error {
 	// Perform updates on those in saChk. These were existing so make
 	// sure to process any changes.
 	for _, sa := range saChk {
-		if isRecovering {
-			js.setStreamAssignmentRecovering(sa)
-		}
+		js.setStreamAssignmentRecovering(sa)
 		js.processUpdateStreamAssignment(sa)
 	}
 
 	// Now do the deltas for existing stream's consumers.
 	for _, ca := range caDel {
-		if isRecovering {
-			js.setConsumerAssignmentRecovering(ca)
-		}
+		js.setConsumerAssignmentRecovering(ca)
 		js.processConsumerRemoval(ca)
 	}
 	for _, ca := range caAdd {
-		if isRecovering {
-			js.setConsumerAssignmentRecovering(ca)
-		}
+		js.setConsumerAssignmentRecovering(ca)
 		js.processConsumerAssignment(ca)
 	}
 
@@ -1335,6 +1329,7 @@ func (js *jetStream) setStreamAssignmentRecovering(sa *streamAssignment) {
 	js.mu.Lock()
 	defer js.mu.Unlock()
 	sa.responded = true
+	sa.recovering = true
 	sa.Restore = nil
 	if sa.Group != nil {
 		sa.Group.Preferred = _EMPTY_
@@ -1346,6 +1341,7 @@ func (js *jetStream) setConsumerAssignmentRecovering(ca *consumerAssignment) {
 	js.mu.Lock()
 	defer js.mu.Unlock()
 	ca.responded = true
+	ca.recovering = true
 	if ca.Group != nil {
 		ca.Group.Preferred = _EMPTY_
 	}
@@ -2977,6 +2973,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 	storage, cfg := sa.Config.Storage, sa.Config
 	hasResponded := sa.responded
 	sa.responded = true
+	recovering := sa.recovering
 	js.mu.Unlock()
 
 	mset, err := acc.lookupStream(cfg.Name)
@@ -3002,7 +2999,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 			js.mu.Unlock()
 		}
 		// Call update.
-		if err = mset.update(cfg); err != nil {
+		if err = mset.updateWithAdvisory(cfg, !recovering); err != nil {
 			s.Warnf("JetStream cluster error updating stream %q for account %q: %v", cfg.Name, acc.Name, err)
 		}
 		// Set the new stream assignment.
@@ -3036,9 +3033,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 		return
 	}
 
-	mset.mu.RLock()
-	isLeader := mset.isLeader()
-	mset.mu.RUnlock()
+	isLeader := mset.IsLeader()
 
 	// Check for missing syncSubject bug.
 	if isLeader && osa != nil && osa.Sync == _EMPTY_ {
@@ -3054,7 +3049,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 	}
 
 	// Check if we should bail.
-	if !isLeader || hasResponded {
+	if !isLeader || hasResponded || recovering {
 		return
 	}
 
@@ -3114,19 +3109,21 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 					if sa.Group.Name == osa.Group.Name && reflect.DeepEqual(sa.Group.Peers, osa.Group.Peers) {
 						// Since this already exists we know it succeeded, just respond to this caller.
 						js.mu.RLock()
-						client, subject, reply := sa.Client, sa.Subject, sa.Reply
+						client, subject, reply, recovering := sa.Client, sa.Subject, sa.Reply, sa.recovering
 						js.mu.RUnlock()
 
-						var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
-						resp.StreamInfo = &StreamInfo{
-							Created: mset.createdTime(),
-							State:   mset.state(),
-							Config:  mset.config(),
-							Cluster: js.clusterInfo(mset.raftGroup()),
-							Sources: mset.sourcesInfo(),
-							Mirror:  mset.mirrorInfo(),
+						if !recovering {
+							var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
+							resp.StreamInfo = &StreamInfo{
+								Created: mset.createdTime(),
+								State:   mset.state(),
+								Config:  mset.config(),
+								Cluster: js.clusterInfo(mset.raftGroup()),
+								Sources: mset.sourcesInfo(),
+								Mirror:  mset.mirrorInfo(),
+							}
+							s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 						}
-						s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 						return
 					} else {
 						// We had a bug where we could have multiple assignments for the same
@@ -3342,6 +3339,7 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 	if cc := js.cluster; cc != nil {
 		isMetaLeader = cc.isLeader()
 	}
+	recovering := sa.recovering
 	js.mu.RUnlock()
 
 	stopped := false
@@ -3400,7 +3398,7 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 	}
 
 	// Do not respond if the account does not exist any longer
-	if acc == nil {
+	if acc == nil || recovering {
 		return
 	}
 
@@ -3653,7 +3651,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 		// This consumer exists.
 		// Only update if config is really different.
 		cfg := o.config()
-		if !reflect.DeepEqual(&cfg, ca.Config) {
+		if isConfigUpdate = !reflect.DeepEqual(&cfg, ca.Config); isConfigUpdate {
 			// Call into update, ignore consumer exists error here since this means an old deliver subject is bound
 			// which can happen on restart etc.
 			if err := o.updateConfig(ca.Config); err != nil && err != NewJSConsumerNameExistError() {
@@ -3693,7 +3691,9 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 			// If we look like we are scaling up, let's send our current state to the group.
 			sendState = len(ca.Group.Peers) > len(oca.Group.Peers) && o.IsLeader() && n != nil
 			// Signal that this is an update
-			isConfigUpdate = true
+			if ca.Reply != _EMPTY_ {
+				isConfigUpdate = true
+			}
 		}
 		js.mu.RUnlock()
 
@@ -3794,13 +3794,15 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 			// For existing consumer, only send response if not recovering.
 			if wasExisting && !js.isMetaRecovering() {
 				if o.IsLeader() || (!didCreate && needsLocalResponse) {
-					// Process if existing as an update.
+					// Process if existing as an update. Double check that this is not recovered.
 					js.mu.RLock()
-					client, subject, reply := ca.Client, ca.Subject, ca.Reply
+					client, subject, reply, recovering := ca.Client, ca.Subject, ca.Reply, ca.recovering
 					js.mu.RUnlock()
-					var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
-					resp.ConsumerInfo = o.info()
-					s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+					if !recovering {
+						var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
+						resp.ConsumerInfo = o.info()
+						s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+					}
 				}
 			}
 		}
@@ -3819,6 +3821,7 @@ func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, isMemb
 	if cc := js.cluster; cc != nil {
 		isMetaLeader = cc.isLeader()
 	}
+	recovering := ca.recovering
 	js.mu.RUnlock()
 
 	stopped := false
@@ -3856,8 +3859,8 @@ func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, isMemb
 		}
 	}
 
-	// Do not respond if the account does not exist any longer
-	if acc == nil {
+	// Do not respond if the account does not exist any longer or this is during recovery.
+	if acc == nil || recovering {
 		return
 	}
 

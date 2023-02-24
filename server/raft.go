@@ -939,9 +939,9 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	var state StreamState
 	n.wal.FastState(&state)
 
-	if state.FirstSeq >= n.applied {
+	if n.applied == 0 || len(data) == 0 {
 		n.Unlock()
-		return nil
+		return errNoSnapAvailable
 	}
 
 	n.debug("Installing snapshot of %d bytes", len(data))
@@ -976,7 +976,7 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	// Remember our latest snapshot file.
 	n.snapfile = sfile
 
-	if _, err := n.wal.Compact(snap.lastIndex); err != nil {
+	if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
 		n.setWriteErrLocked(err)
 		n.Unlock()
 		return err
@@ -1281,7 +1281,6 @@ func (n *raft) StepDown(preferred ...string) error {
 	n.debug("Being asked to stepdown")
 
 	// See if we have up to date followers.
-	nowts := time.Now().UnixNano()
 	maybeLeader := noLeader
 	if len(preferred) > 0 {
 		if preferred[0] != _EMPTY_ {
@@ -1291,20 +1290,42 @@ func (n *raft) StepDown(preferred ...string) error {
 		}
 	}
 
-	for peer, ps := range n.peers {
-		// If not us and alive and caughtup.
-		if peer != n.id && (nowts-ps.ts) < int64(hbInterval*3) {
-			if maybeLeader != noLeader && maybeLeader != peer {
-				continue
-			}
-			if si, ok := n.s.nodeToInfo.Load(peer); !ok || si.(nodeInfo).offline {
-				continue
-			}
-			n.debug("Looking at %q which is %v behind", peer, time.Duration(nowts-ps.ts))
-			maybeLeader = peer
-			break
+	// Can't pick ourselves.
+	if maybeLeader == n.id {
+		maybeLeader = noLeader
+		preferred = nil
+	}
+
+	nowts := time.Now().UnixNano()
+
+	// If we have a preferred check it first.
+	if maybeLeader != noLeader {
+		var isHealthy bool
+		if ps, ok := n.peers[maybeLeader]; ok {
+			si, ok := n.s.nodeToInfo.Load(maybeLeader)
+			isHealthy = ok && !si.(nodeInfo).offline && (nowts-ps.ts) < int64(hbInterval*3)
+		}
+		if !isHealthy {
+			maybeLeader = noLeader
 		}
 	}
+
+	// If we do not have a preferred at this point pick the first healthy one.
+	// Make sure not ourselves.
+	if maybeLeader == noLeader {
+		for peer, ps := range n.peers {
+			if peer == n.id {
+				continue
+			}
+			si, ok := n.s.nodeToInfo.Load(peer)
+			isHealthy := ok && !si.(nodeInfo).offline && (nowts-ps.ts) < int64(hbInterval*3)
+			if isHealthy {
+				maybeLeader = peer
+				break
+			}
+		}
+	}
+
 	stepdown := n.stepdown
 	n.Unlock()
 
