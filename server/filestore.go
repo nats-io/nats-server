@@ -1746,10 +1746,12 @@ func (fs *fileStore) numFilteredPending(filter string, ss *SimpleState) {
 	if !isAll {
 		wc := subjectHasWildcard(filter)
 		// Do start
-		if mb := fs.bim[start]; mb != nil {
+		mb := fs.bim[start]
+		if mb != nil {
 			_, f, _ := mb.filteredPending(filter, wc, 0)
 			ss.First = f
-		} else {
+		}
+		if ss.First == 0 {
 			// This is a miss. This can happen since psi.fblk is lazy, but should be very rare.
 			for i := start + 1; i <= stop; i++ {
 				mb := fs.bim[i]
@@ -1763,7 +1765,7 @@ func (fs *fileStore) numFilteredPending(filter string, ss *SimpleState) {
 			}
 		}
 		// Now last
-		if mb := fs.bim[stop]; mb != nil {
+		if mb = fs.bim[stop]; mb != nil {
 			_, _, l := mb.filteredPending(filter, wc, 0)
 			ss.Last = l
 		}
@@ -1824,6 +1826,33 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 	}
 
 	return fss
+}
+
+// SubjectsTotal return message totals per subject.
+func (fs *fileStore) SubjectsTotals(filterSubject string) map[string]uint64 {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	if len(fs.psim) == 0 {
+		return nil
+	}
+
+	tsa := [32]string{}
+	fsa := [32]string{}
+	fts := tokenizeSubjectIntoSlice(fsa[:0], filterSubject)
+	isAll := filterSubject == _EMPTY_ || filterSubject == fwcs
+
+	fst := make(map[string]uint64)
+	for subj, psi := range fs.psim {
+		if isAll {
+			fst[subj] = psi.total
+		} else {
+			if tts := tokenizeSubjectIntoSlice(tsa[:0], subj); isSubsetMatchTokenized(tts, fts) {
+				fst[subj] = psi.total
+			}
+		}
+	}
+	return fst
 }
 
 // RegisterStorageUpdates registers a callback for updates to storage changes.

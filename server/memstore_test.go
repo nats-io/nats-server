@@ -16,6 +16,7 @@ package server
 import (
 	"bytes"
 	"fmt"
+	"math/rand"
 	"reflect"
 	"testing"
 	"time"
@@ -519,4 +520,84 @@ func TestMemStoreStreamCompactMultiBlockSubjectInfo(t *testing.T) {
 	// Make sure we adjusted for subjects etc.
 	state := ms.State()
 	require_True(t, state.NumSubjects == 500)
+}
+
+func TestMemStoreSubjectsTotals(t *testing.T) {
+	cfg := &StreamConfig{
+		Name:     "TEST",
+		Storage:  MemoryStorage,
+		Subjects: []string{"*.*"},
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(t, err)
+
+	fmap := make(map[int]int)
+	bmap := make(map[int]int)
+
+	var m map[int]int
+	var ft string
+
+	for i := 0; i < 10_000; i++ {
+		// Flip coin for prefix
+		if rand.Intn(2) == 0 {
+			ft, m = "foo", fmap
+		} else {
+			ft, m = "bar", bmap
+		}
+		dt := rand.Intn(100)
+		subj := fmt.Sprintf("%s.%d", ft, dt)
+		m[dt]++
+
+		_, _, err := ms.StoreMsg(subj, nil, []byte("Hello World"))
+		require_NoError(t, err)
+	}
+
+	// Now test SubjectsTotal
+	for dt, total := range fmap {
+		subj := fmt.Sprintf("foo.%d", dt)
+		m := ms.SubjectsTotals(subj)
+		if m[subj] != uint64(total) {
+			t.Fatalf("Expected %q to have %d total, got %d", subj, total, m[subj])
+		}
+	}
+
+	// Check fmap.
+	if st := ms.SubjectsTotals("foo.*"); len(st) != len(fmap) {
+		t.Fatalf("Expected %d subjects for %q, got %d", len(fmap), "foo.*", len(st))
+	} else {
+		expected := 0
+		for _, n := range fmap {
+			expected += n
+		}
+		received := uint64(0)
+		for _, n := range st {
+			received += n
+		}
+		if received != uint64(expected) {
+			t.Fatalf("Expected %d total but got %d", expected, received)
+		}
+	}
+
+	// Check bmap.
+	if st := ms.SubjectsTotals("bar.*"); len(st) != len(bmap) {
+		t.Fatalf("Expected %d subjects for %q, got %d", len(bmap), "bar.*", len(st))
+	} else {
+		expected := 0
+		for _, n := range bmap {
+			expected += n
+		}
+		received := uint64(0)
+		for _, n := range st {
+			received += n
+		}
+		if received != uint64(expected) {
+			t.Fatalf("Expected %d total but got %d", expected, received)
+		}
+	}
+
+	// All with pwc match.
+	if st, expected := ms.SubjectsTotals("*.*"), len(bmap)+len(fmap); len(st) != expected {
+		t.Fatalf("Expected %d subjects for %q, got %d", expected, "*.*", len(st))
+	}
+
 }

@@ -375,6 +375,33 @@ func (ms *memStore) SubjectsState(subject string) map[string]SimpleState {
 	return fss
 }
 
+// SubjectsTotal return message totals per subject.
+func (ms *memStore) SubjectsTotals(filterSubject string) map[string]uint64 {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+
+	if len(ms.fss) == 0 {
+		return nil
+	}
+
+	tsa := [32]string{}
+	fsa := [32]string{}
+	fts := tokenizeSubjectIntoSlice(fsa[:0], filterSubject)
+	isAll := filterSubject == _EMPTY_ || filterSubject == fwcs
+
+	fst := make(map[string]uint64)
+	for subj, ss := range ms.fss {
+		if isAll {
+			fst[subj] = ss.Msgs
+		} else {
+			if tts := tokenizeSubjectIntoSlice(tsa[:0], subj); isSubsetMatchTokenized(tts, fts) {
+				fst[subj] = ss.Msgs
+			}
+		}
+	}
+	return fst
+}
+
 // Will check the msg limit for this tracked subject.
 // Lock should be held.
 func (ms *memStore) enforcePerSubjectLimit(ss *SimpleState) {
