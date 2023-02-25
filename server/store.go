@@ -96,6 +96,7 @@ type StreamStore interface {
 	FilteredState(seq uint64, subject string) SimpleState
 	SubjectsState(filterSubject string) map[string]SimpleState
 	SubjectsTotals(filterSubject string) map[string]uint64
+	NumPending(sseq uint64, filter string, lastPerSubject bool) (total, validThrough uint64)
 	State() StreamState
 	FastState(*StreamState)
 	Type() StorageType
