@@ -39,6 +39,7 @@ import (
 
 func testFileStoreAllPermutations(t *testing.T, fn func(t *testing.T, fcfg FileStoreConfig)) {
 	for _, fcfg := range []FileStoreConfig{
+		{Cipher: NoCipher},
 		{Cipher: ChaCha},
 		{Cipher: AES},
 	} {
@@ -800,7 +801,9 @@ func TestFileStoreCompact(t *testing.T) {
 			}
 			return h.Sum(nil), nil
 		}
-
+		if fcfg.Cipher == NoCipher {
+			prf = nil
+		}
 		fs, err := newFileStoreWithCreated(
 			fcfg,
 			StreamConfig{Name: "zzz", Storage: FileStorage},
@@ -988,6 +991,9 @@ func TestFileStoreStreamTruncate(t *testing.T) {
 				return nil, err
 			}
 			return h.Sum(nil), nil
+		}
+		if fcfg.Cipher == NoCipher {
+			prf = nil
 		}
 
 		fs, err := newFileStoreWithCreated(
@@ -3460,6 +3466,9 @@ func TestFileStoreSparseCompaction(t *testing.T) {
 			}
 			return h.Sum(nil), nil
 		}
+		if fcfg.Cipher == NoCipher {
+			prf = nil
+		}
 
 		fs, err = newFileStoreWithCreated(fcfg, cfg, time.Now(), prf)
 		if err != nil {
@@ -3772,6 +3781,9 @@ func TestFileStoreCompactReclaimHeadSpace(t *testing.T) {
 			}
 			return h.Sum(nil), nil
 		}
+		if fcfg.Cipher == NoCipher {
+			prf = nil
+		}
 
 		fs, err = newFileStoreWithCreated(
 			fcfg,
@@ -4024,6 +4036,9 @@ func TestFileStoreShortIndexWriteBug(t *testing.T) {
 			}
 			return h.Sum(nil), nil
 		}
+		if fcfg.Cipher == NoCipher {
+			prf = nil
+		}
 
 		created := time.Now()
 
@@ -4086,6 +4101,9 @@ func TestFileStoreDoubleCompactWithWriteInBetweenEncryptedBug(t *testing.T) {
 				return nil, err
 			}
 			return h.Sum(nil), nil
+		}
+		if fcfg.Cipher == NoCipher {
+			prf = nil
 		}
 
 		fs, err := newFileStoreWithCreated(
@@ -5273,4 +5291,207 @@ func TestFileStoreOnlyWritePerSubjectInfoOnExpireWithUpdate(t *testing.T) {
 		time.Sleep(2 * fcfg.CacheExpire)
 		require_False(t, needsUpdate())
 	})
+}
+
+func TestFileStoreSubjectsTotals(t *testing.T) {
+	// No need for all permutations here.
+	storeDir := t.TempDir()
+	fcfg := FileStoreConfig{
+		StoreDir: storeDir,
+	}
+	fs, err := newFileStore(fcfg, StreamConfig{Name: "zzz", Subjects: []string{"*.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	fmap := make(map[int]int)
+	bmap := make(map[int]int)
+
+	var m map[int]int
+	var ft string
+
+	for i := 0; i < 10_000; i++ {
+		// Flip coin for prefix
+		if rand.Intn(2) == 0 {
+			ft, m = "foo", fmap
+		} else {
+			ft, m = "bar", bmap
+		}
+		dt := rand.Intn(100)
+		subj := fmt.Sprintf("%s.%d", ft, dt)
+		m[dt]++
+
+		_, _, err := fs.StoreMsg(subj, nil, []byte("Hello World"))
+		require_NoError(t, err)
+	}
+
+	// Now test SubjectsTotal
+	for dt, total := range fmap {
+		subj := fmt.Sprintf("foo.%d", dt)
+		m := fs.SubjectsTotals(subj)
+		if m[subj] != uint64(total) {
+			t.Fatalf("Expected %q to have %d total, got %d", subj, total, m[subj])
+		}
+	}
+
+	// Check fmap.
+	if st := fs.SubjectsTotals("foo.*"); len(st) != len(fmap) {
+		t.Fatalf("Expected %d subjects for %q, got %d", len(fmap), "foo.*", len(st))
+	} else {
+		expected := 0
+		for _, n := range fmap {
+			expected += n
+		}
+		received := uint64(0)
+		for _, n := range st {
+			received += n
+		}
+		if received != uint64(expected) {
+			t.Fatalf("Expected %d total but got %d", expected, received)
+		}
+	}
+
+	// Check bmap.
+	if st := fs.SubjectsTotals("bar.*"); len(st) != len(bmap) {
+		t.Fatalf("Expected %d subjects for %q, got %d", len(bmap), "bar.*", len(st))
+	} else {
+		expected := 0
+		for _, n := range bmap {
+			expected += n
+		}
+		received := uint64(0)
+		for _, n := range st {
+			received += n
+		}
+		if received != uint64(expected) {
+			t.Fatalf("Expected %d total but got %d", expected, received)
+		}
+	}
+
+	// All with pwc match.
+	if st, expected := fs.SubjectsTotals("*.*"), len(bmap)+len(fmap); len(st) != expected {
+		t.Fatalf("Expected %d subjects for %q, got %d", expected, "*.*", len(st))
+	}
+}
+
+func TestFileStoreNumPending(t *testing.T) {
+	// No need for all permutations here.
+	storeDir := t.TempDir()
+	fcfg := FileStoreConfig{
+		StoreDir:  storeDir,
+		BlockSize: 2 * 1024, // Create many blocks on purpose.
+	}
+	fs, err := newFileStore(fcfg, StreamConfig{Name: "zzz", Subjects: []string{"*.*.*.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	tokens := []string{"foo", "bar", "baz"}
+	genSubj := func() string {
+		return fmt.Sprintf("%s.%s.%s.%s",
+			tokens[rand.Intn(len(tokens))],
+			tokens[rand.Intn(len(tokens))],
+			tokens[rand.Intn(len(tokens))],
+			tokens[rand.Intn(len(tokens))],
+		)
+	}
+
+	for i := 0; i < 50_000; i++ {
+		subj := genSubj()
+		_, _, err := fs.StoreMsg(subj, nil, []byte("Hello World"))
+		require_NoError(t, err)
+	}
+
+	state := fs.State()
+
+	// Scan one by one for sanity check against other calculations.
+	sanityCheck := func(sseq uint64, filter string) SimpleState {
+		t.Helper()
+		var ss SimpleState
+		var smv StoreMsg
+		// For here we know 0 is invalid, set to 1.
+		if sseq == 0 {
+			sseq = 1
+		}
+		for seq := sseq; seq <= state.LastSeq; seq++ {
+			sm, err := fs.LoadMsg(seq, &smv)
+			if err != nil {
+				t.Logf("Encountered error %v loading sequence: %d", err, seq)
+				continue
+			}
+			if subjectIsSubsetMatch(sm.subj, filter) {
+				ss.Msgs++
+				ss.Last = seq
+				if ss.First == 0 || seq < ss.First {
+					ss.First = seq
+				}
+			}
+		}
+		return ss
+	}
+
+	check := func(sseq uint64, filter string) {
+		t.Helper()
+		np, lvs := fs.NumPending(sseq, filter, false)
+		ss := fs.FilteredState(sseq, filter)
+		sss := sanityCheck(sseq, filter)
+		if lvs != state.LastSeq {
+			t.Fatalf("Expected NumPending to return valid through last of %d but got %d", state.LastSeq, lvs)
+		}
+		if ss.Msgs != np {
+			t.Fatalf("NumPending of %d did not match ss.Msgs of %d", np, ss.Msgs)
+		}
+		if ss != sss {
+			t.Fatalf("Failed sanity check, expected %+v got %+v", sss, ss)
+		}
+	}
+
+	sanityCheckLastOnly := func(sseq uint64, filter string) SimpleState {
+		t.Helper()
+		var ss SimpleState
+		var smv StoreMsg
+		// For here we know 0 is invalid, set to 1.
+		if sseq == 0 {
+			sseq = 1
+		}
+		seen := make(map[string]bool)
+		for seq := state.LastSeq; seq >= sseq; seq-- {
+			sm, err := fs.LoadMsg(seq, &smv)
+			if err != nil {
+				t.Logf("Encountered error %v loading sequence: %d", err, seq)
+				continue
+			}
+			if !seen[sm.subj] && subjectIsSubsetMatch(sm.subj, filter) {
+				ss.Msgs++
+				if ss.Last == 0 {
+					ss.Last = seq
+				}
+				if ss.First == 0 || seq < ss.First {
+					ss.First = seq
+				}
+				seen[sm.subj] = true
+			}
+		}
+		return ss
+	}
+
+	checkLastOnly := func(sseq uint64, filter string) {
+		t.Helper()
+		np, lvs := fs.NumPending(sseq, filter, true)
+		ss := sanityCheckLastOnly(sseq, filter)
+		if lvs != state.LastSeq {
+			t.Fatalf("Expected NumPending to return valid through last of %d but got %d", state.LastSeq, lvs)
+		}
+		if ss.Msgs != np {
+			t.Fatalf("NumPending of %d did not match ss.Msgs of %d", np, ss.Msgs)
+		}
+	}
+
+	startSeqs := []uint64{0, 1, 2, 200, 444, 555, 2222, 8888, 12_345, 28_222, 33_456, 44_400, 49_999}
+	checkSubs := []string{"foo.>", "*.bar.>", "foo.bar.*.baz", "*.bar.>", "*.foo.bar.*", "foo.foo.bar.baz"}
+
+	for _, filter := range checkSubs {
+		for _, start := range startSeqs {
+			check(start, filter)
+			checkLastOnly(start, filter)
+		}
+	}
 }

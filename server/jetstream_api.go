@@ -1846,42 +1846,44 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 
 	// Check if they have asked for subject details.
 	if subjects != _EMPTY_ {
-		if mss := mset.store.SubjectsState(subjects); len(mss) > 0 {
-			// As go iterates over map in a non-consistent order, no choice but to buffer it a slice
-
-			buffer := make([]string, 0, len(mss))
-			for subj := range mss {
-				buffer = append(buffer, subj)
-			}
-
-			// Sort it
-			sort.Strings(buffer)
-
-			if offset > len(buffer) {
-				offset = len(buffer)
-			}
-
-			end := offset + JSMaxSubjectDetails
-			if end > len(buffer) {
-				end = len(buffer)
-			}
-
-			actualSize := end - offset
-			var sd map[string]uint64
-
-			if actualSize > 0 {
-				sd = make(map[string]uint64, actualSize)
-				for _, ss := range buffer[offset:end] {
-					sd[ss] = mss[ss].Msgs
-				}
-			}
-
-			resp.StreamInfo.State.Subjects = sd
+		st := mset.store.SubjectsTotals(subjects)
+		if lst := len(st); lst > 0 {
+			// Common for both cases.
 			resp.Offset = offset
 			resp.Limit = JSMaxSubjectDetails
-			resp.Total = len(mss)
-		}
+			resp.Total = lst
 
+			if offset == 0 && lst <= JSMaxSubjectDetails {
+				resp.StreamInfo.State.Subjects = st
+			} else {
+				// Here we have to filter list due to offset or maximum constraints.
+				subjs := make([]string, 0, len(st))
+				for subj := range st {
+					subjs = append(subjs, subj)
+				}
+				// Sort it
+				sort.Strings(subjs)
+
+				if offset > len(subjs) {
+					offset = len(subjs)
+				}
+
+				end := offset + JSMaxSubjectDetails
+				if end > len(subjs) {
+					end = len(subjs)
+				}
+				actualSize := end - offset
+				var sd map[string]uint64
+
+				if actualSize > 0 {
+					sd = make(map[string]uint64, actualSize)
+					for _, ss := range subjs[offset:end] {
+						sd[ss] = st[ss]
+					}
+				}
+				resp.StreamInfo.State.Subjects = sd
+			}
+		}
 	}
 	// Check for out of band catchups.
 	if mset.hasCatchupPeers() {

@@ -1,4 +1,4 @@
-// Copyright 2019-2022 The NATS Authors
+// Copyright 2019-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -95,6 +95,8 @@ type StreamStore interface {
 	GetSeqFromTime(t time.Time) uint64
 	FilteredState(seq uint64, subject string) SimpleState
 	SubjectsState(filterSubject string) map[string]SimpleState
+	SubjectsTotals(filterSubject string) map[string]uint64
+	NumPending(sseq uint64, filter string, lastPerSubject bool) (total, validThrough uint64)
 	State() StreamState
 	FastState(*StreamState)
 	Type() StorageType

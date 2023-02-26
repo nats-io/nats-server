@@ -3696,23 +3696,24 @@ func (o *consumer) streamNumPending() uint64 {
 		o.npc, o.npf = 0, 0
 		return 0
 	}
+
+	isLastPerSubject := o.cfg.DeliverPolicy == DeliverLastPerSubject
+
 	// Deliver Last Per Subject calculates num pending differently.
-	if o.cfg.DeliverPolicy == DeliverLastPerSubject {
+	if isLastPerSubject {
 		o.npc, o.npf = 0, 0
 		// Consumer without filters.
 		if o.subjf == nil {
-			for _, ss := range o.mset.store.SubjectsState(_EMPTY_) {
-				if o.sseq <= ss.Last {
-					o.npc++
-					if ss.Last > o.npf {
-						o.npf = ss.Last
-					}
-				}
-			}
+			npc, npf := o.mset.store.NumPending(o.sseq, o.cfg.FilterSubject, isLastPerSubject)
+			o.npc, o.npf = int64(npc), npf
 			return o.numPending()
 		}
 		// Consumer with filters.
 		for _, filter := range o.subjf {
+			npc, npf := o.mset.store.NumPending(o.sseq, o.cfg.FilterSubject, isLastPerSubject)
+			o.npc += int64(npc)
+			o.npf = npf // Always last
+
 			for _, ss := range o.mset.store.SubjectsState(filter.subject) {
 				if filter.nextSeq <= ss.Last {
 					o.npc++
@@ -3743,7 +3744,16 @@ func (o *consumer) streamNumPending() uint64 {
 		if ss.Last > o.npf {
 			o.npf = ss.Last
 		}
-	}
+
+=======
+	} else {
+		isLastPerSubject := o.cfg.DeliverPolicy == DeliverLastPerSubject
+		// Set our num pending and valid sequence floor.
+		npc, npf := o.mset.store.NumPending(o.sseq, o.cfg.FilterSubject, isLastPerSubject)
+		o.npc, o.npf = int64(npc), npf
+>>>>>>> main
+
+}
 	return o.numPending()
 }
 
