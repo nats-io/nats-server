@@ -109,7 +109,7 @@ func NewSubjectTransform(src, dest string) (*subjectTransform, error) {
 				dtokMappingFunctionIntArgs = append(dtokMappingFunctionIntArgs, -1)
 				dtokMappingFunctionStringArgs = append(dtokMappingFunctionStringArgs, _EMPTY_)
 			} else {
-				nphs++
+				nphs += len(transformArgWildcardIndexes)
 				// Now build up our runtime mapping from dest to source tokens.
 				var stis []int
 				for _, wildcardIndex := range transformArgWildcardIndexes {
