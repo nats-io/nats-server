@@ -270,9 +270,9 @@ const (
 	// Check for bad record length value due to corrupt data.
 	rlBadThresh = 32 * 1024 * 1024
 	// Time threshold to write index info.
-	wiThresh = int64(2 * time.Second)
+	wiThresh = int64(30 * time.Second)
 	// Time threshold to write index info for non FIFO cases
-	winfThresh = int64(500 * time.Millisecond)
+	winfThresh = int64(2 * time.Second)
 )
 
 func newFileStore(fcfg FileStoreConfig, cfg StreamConfig) (*fileStore, error) {
@@ -1192,7 +1192,7 @@ func (fs *fileStore) recoverMsgs() error {
 			if mb.msgs == 0 && mb.rbytes == 0 {
 				if mb == fs.lmb {
 					mb.first.seq, mb.first.ts = mb.last.seq+1, 0
-					mb.closeAndKeepIndex()
+					mb.closeAndKeepIndex(false)
 				} else {
 					emptyBlks = append(emptyBlks, mb)
 				}
@@ -1263,7 +1263,7 @@ func (fs *fileStore) expireMsgsOnRecover() {
 		if mb == fs.lmb {
 			// Do this part by hand since not deleting one by one.
 			mb.first.seq, mb.first.ts = mb.last.seq+1, 0
-			mb.closeAndKeepIndex()
+			mb.closeAndKeepIndex(false)
 			// Clear any global subject state.
 			fs.psim = make(map[string]*psi)
 			return false
@@ -2282,12 +2282,12 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 		if fseq == 0 {
 			fseq, _ = fs.firstSeqForSubj(subj)
 		}
-		if ok, _ := fs.removeMsg(fseq, false, false); ok {
+		if ok, _ := fs.removeMsgViaLimits(fseq); ok {
 			// Make sure we are below the limit.
 			if psmc--; psmc >= mmp {
 				for info, ok := fs.psim[subj]; ok && info.total > mmp; info, ok = fs.psim[subj] {
 					if seq, _ := fs.firstSeqForSubj(subj); seq > 0 {
-						if ok, _ := fs.removeMsg(seq, false, false); !ok {
+						if ok, _ := fs.removeMsgViaLimits(seq); !ok {
 							break
 						}
 					} else {
@@ -2539,7 +2539,7 @@ func (fs *fileStore) enforceMsgPerSubjectLimit() {
 				m, _, err := mb.firstMatching(subj, false, seq, &sm)
 				if err == nil {
 					seq = m.seq + 1
-					if removed, _ := fs.removeMsg(m.seq, false, false); removed {
+					if removed, _ := fs.removeMsgViaLimits(m.seq); removed {
 						total--
 						blks[mb] = struct{}{}
 					}
@@ -2560,17 +2560,24 @@ func (fs *fileStore) enforceMsgPerSubjectLimit() {
 
 // Lock should be held.
 func (fs *fileStore) deleteFirstMsg() (bool, error) {
-	return fs.removeMsg(fs.state.FirstSeq, false, false)
+	return fs.removeMsgViaLimits(fs.state.FirstSeq)
+}
+
+// If we remove via limits that can always be recovered on a restart we
+// do not force the system to update the index file.
+// Lock should be held.
+func (fs *fileStore) removeMsgViaLimits(seq uint64) (bool, error) {
+	return fs.removeMsg(seq, false, true, false)
 }
 
 // RemoveMsg will remove the message from this store.
 // Will return the number of bytes removed.
 func (fs *fileStore) RemoveMsg(seq uint64) (bool, error) {
-	return fs.removeMsg(seq, false, true)
+	return fs.removeMsg(seq, false, false, true)
 }
 
 func (fs *fileStore) EraseMsg(seq uint64) (bool, error) {
-	return fs.removeMsg(seq, true, true)
+	return fs.removeMsg(seq, true, false, true)
 }
 
 // Convenience function to remove per subject tracking at the filestore level.
@@ -2590,7 +2597,7 @@ func (fs *fileStore) removePerSubject(subj string) {
 }
 
 // Remove a message, optionally rewriting the mb file.
-func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error) {
+func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (bool, error) {
 	if seq == 0 {
 		return false, ErrStoreMsgNotFound
 	}
@@ -2695,7 +2702,9 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 	fifo := seq == mb.first.seq
 	isLastBlock := mb == fs.lmb
 	isEmpty := mb.msgs == 0
-	shouldWriteIndex := !isEmpty
+	// If we are removing the message via limits we do not need to write the index file here.
+	// If viaLimits this means ona restart we will properly cleanup these messages regardless.
+	shouldWriteIndex := !isEmpty && !viaLimits
 
 	if fifo {
 		mb.selectNextFirst()
@@ -2724,10 +2733,12 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 
 	var firstSeqNeedsUpdate bool
 
-	// Decide how we want to clean this up. If last block we will hold into index.
+	// Decide how we want to clean this up. If last block and the only block left we will hold into index.
 	if isEmpty {
 		if isLastBlock {
-			mb.closeAndKeepIndex()
+			mb.closeAndKeepIndex(viaLimits)
+			// We do not need to writeIndex since just did above.
+			shouldWriteIndex = false
 		} else {
 			fs.removeMsgBlock(mb)
 		}
@@ -3441,7 +3452,9 @@ func (fs *fileStore) expireMsgs() {
 	fs.mu.RUnlock()
 
 	for sm, _ = fs.msgForSeq(0, &smv); sm != nil && sm.ts <= minAge; sm, _ = fs.msgForSeq(0, &smv) {
-		fs.removeMsg(sm.seq, false, true)
+		fs.mu.Lock()
+		fs.removeMsgViaLimits(sm.seq)
+		fs.mu.Unlock()
 		// Recalculate in case we are expiring a bunch.
 		minAge = time.Now().UnixNano() - maxAge
 	}
@@ -3788,7 +3801,7 @@ func (fs *fileStore) syncBlocks() {
 				mb.ifd.Truncate(mb.liwsz)
 				mb.ifd.Sync()
 			}
-			// See if we can close FDs do to being idle.
+			// See if we can close FDs due to being idle.
 			if mb.ifd != nil || mb.mfd != nil && mb.sinceLastWriteActivity() > closeFDsIdle {
 				mb.dirtyCloseWithRemove(false)
 			}
@@ -4241,6 +4254,7 @@ var (
 	errNoMsgBlk      = errors.New("no message block")
 	errMsgBlkTooBig  = errors.New("message block size exceeded int capacity")
 	errUnknownCipher = errors.New("unknown cipher")
+	errDIOStalled    = errors.New("IO is stalled")
 )
 
 // Used for marking messages that have had their checksums checked.
@@ -4755,7 +4769,9 @@ func (mb *msgBlock) writeIndexInfoLocked() error {
 	}
 
 	// Check if this will be a short write, and if so truncate before writing here.
-	if int64(len(buf)) < mb.liwsz {
+	// We only really need to truncate if we are encryptyed or we have dmap entries.
+	// If no dmap entries readIndexInfo does the right thing in the presence of extra data left over.
+	if int64(len(buf)) < mb.liwsz && (mb.aek != nil || len(mb.dmap) > 0) {
 		if err := mb.ifd.Truncate(0); err != nil {
 			mb.werr = err
 			return err
@@ -4770,7 +4786,6 @@ func (mb *msgBlock) writeIndexInfoLocked() error {
 	} else {
 		mb.werr = err
 	}
-
 	return err
 }
 
@@ -5525,22 +5540,37 @@ func (fs *fileStore) removeMsgBlock(mb *msgBlock) {
 
 // When we have an empty block but want to keep the index for timestamp info etc.
 // Lock should be held.
-func (mb *msgBlock) closeAndKeepIndex() {
-	// We will leave a 0 length blk marker.
-	if mb.mfd != nil {
-		mb.mfd.Truncate(0)
-	} else {
-		// We were closed, so just write out an empty file.
+func (mb *msgBlock) closeAndKeepIndex(viaLimits bool) {
+	// We will leave a 0 length blk marker so we can remember.
+	doIO := func() {
+		// Write out empty file.
 		os.WriteFile(mb.mfn, nil, defaultFilePerms)
+		// Make sure to write the index file so we can remember last seq and ts.
+		mb.writeIndexInfoLocked()
+		mb.removePerSubjectInfoLocked()
 	}
-	// Make sure to write the index file so we can remember last seq and ts.
-	mb.writeIndexInfoLocked()
+
+	if mb.mfd != nil {
+		mb.mfd.Close()
+		mb.mfd = nil
+		// We used to truncate here but can be quite expensive based on platform.
+	}
 	// Close
 	mb.dirtyCloseWithRemove(false)
 
 	// Make sure to remove fss state.
 	mb.fss = nil
-	mb.removePerSubjectInfoLocked()
+
+	// If via limits we can do this out of line in separate Go routine.
+	if viaLimits {
+		go func() {
+			mb.mu.Lock()
+			defer mb.mu.Unlock()
+			doIO()
+		}()
+	} else {
+		doIO()
+	}
 
 	// If we are encrypted we should reset our bek counter.
 	if mb.bek != nil {
@@ -5900,13 +5930,18 @@ func (mb *msgBlock) writePerSubjectInfo() error {
 	b.Write(mb.lchk[:])
 
 	// Gate this for when we have a large number of blocks expiring at the same time.
-	<-dios
-	err := os.WriteFile(mb.sfn, b.Bytes(), defaultFilePerms)
-	dios <- struct{}{}
-
-	// Clear write flag if no error.
-	if err == nil {
-		mb.fssNeedsWrite = false
+	// Since we have the lock we would rather fail here then block.
+	// This is an optional structure that can be rebuilt on restart.
+	var err error
+	select {
+	case <-dios:
+		if err = os.WriteFile(mb.sfn, b.Bytes(), defaultFilePerms); err == nil {
+			// Clear write flag if no error.
+			mb.fssNeedsWrite = false
+		}
+		<-dios
+	default:
+		err = errDIOStalled
 	}
 
 	return err
