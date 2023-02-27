@@ -5939,7 +5939,7 @@ func (mb *msgBlock) writePerSubjectInfo() error {
 			// Clear write flag if no error.
 			mb.fssNeedsWrite = false
 		}
-		<-dios
+		dios <- struct{}{}
 	default:
 		err = errDIOStalled
 	}

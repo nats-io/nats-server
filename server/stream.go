@@ -4168,13 +4168,13 @@ func (mset *stream) signalConsumersLoop() {
 // This will update and signal all consumers that match.
 func (mset *stream) signalConsumers(subj string, seq uint64) {
 	mset.clsMu.RLock()
-	defer mset.clsMu.RUnlock()
-
 	if mset.csl == nil {
+		mset.clsMu.RUnlock()
 		return
 	}
-
 	r := mset.csl.Match(subj)
+	mset.clsMu.RUnlock()
+
 	if len(r.psubs) == 0 {
 		return
 	}
@@ -4756,19 +4756,20 @@ func (mset *stream) state() StreamState {
 }
 
 func (mset *stream) stateWithDetail(details bool) StreamState {
-	mset.mu.RLock()
-	c, store := mset.client, mset.store
-	mset.mu.RUnlock()
-	if c == nil || store == nil {
+	// mset.store does not change once set, so ok to reference here directly.
+	// We do this elsewhere as well.
+	store := mset.store
+	if store == nil {
 		return StreamState{}
 	}
-	// Currently rely on store.
+
+	// Currently rely on store for details.
 	if details {
 		return store.State()
 	}
 	// Here we do the fast version.
 	var state StreamState
-	mset.store.FastState(&state)
+	store.FastState(&state)
 	return state
 }
 

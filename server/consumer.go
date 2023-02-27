@@ -3876,7 +3876,12 @@ func (o *consumer) checkPending() {
 	}
 
 	if len(o.pending) > 0 {
-		o.ptmr.Reset(o.ackWait(time.Duration(next)))
+		delay := time.Duration(next)
+		if o.ptmr == nil {
+			o.ptmr = time.AfterFunc(delay, o.checkPending)
+		} else {
+			o.ptmr.Reset(o.ackWait(delay))
+		}
 	} else {
 		// Make sure to stop timer and clear out any re delivery queues
 		stopAndClearTimer(&o.ptmr)
