@@ -2733,7 +2733,11 @@ func (n *raft) createCatchup(ae *appendEntry) string {
 // Truncate our WAL and reset.
 // Lock should be held.
 func (n *raft) truncateWAL(term, index uint64) {
-	n.debug("Truncating and repairing WAL")
+	n.debug("Truncating and repairing WAL to Term %d Index %d", term, index)
+
+	if term == 0 && index == 0 {
+		n.warn("Resetting WAL state")
+	}
 
 	defer func() {
 		// Check to see if we invalidated any snapshots that might have held state
@@ -2760,6 +2764,11 @@ func (n *raft) truncateWAL(term, index uint64) {
 	// Set after we know we have truncated properly.
 	n.pterm, n.pindex = term, index
 
+}
+
+// Reset our WAL.
+func (n *raft) resetWAL() {
+	n.truncateWAL(0, 0)
 }
 
 // Lock should be held
@@ -3097,7 +3106,9 @@ func (n *raft) processAppendEntryResponse(ar *appendEntryResponse) {
 		n.term = ar.term
 		n.vote = noVote
 		n.writeTermVote()
+		n.warn("Detected another leader with higher term, will stepdown and reset")
 		n.stepdown.push(noLeader)
+		n.resetWAL()
 	} else if ar.reply != _EMPTY_ {
 		n.catchupFollower(ar)
 	}
@@ -3109,14 +3120,6 @@ func (n *raft) handleAppendEntryResponse(sub *subscription, c *client, _ *Accoun
 	ar := n.decodeAppendEntryResponse(msg)
 	ar.reply = reply
 	n.resp.push(ar)
-	if ar.success {
-		n.Lock()
-		// Update peer's last index.
-		if ps := n.peers[ar.peer]; ps != nil && ar.index > ps.li {
-			ps.li = ar.index
-		}
-		n.Unlock()
-	}
 }
 
 func (n *raft) buildAppendEntry(entries []*Entry) *appendEntry {
