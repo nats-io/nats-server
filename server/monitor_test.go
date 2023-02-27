@@ -4308,6 +4308,9 @@ func TestMonitorJsz(t *testing.T) {
 			if info.AccountDetails[0].Streams[0].Consumer[0].Config != nil {
 				t.Fatal("Config expected to not be present")
 			}
+			if len(info.AccountDetails[0].Streams[0].ConsumerRaftGroups) != 0 {
+				t.Fatalf("expected consumer raft groups to not be returned by %s but got %v", url, info)
+			}
 		}
 	})
 	t.Run("config", func(t *testing.T) {
@@ -4380,6 +4383,31 @@ func TestMonitorJsz(t *testing.T) {
 			info := readJsInfo(url + "?acc=DOES_NOT_EXIT")
 			if len(info.AccountDetails) != 0 {
 				t.Fatalf("expected no account to be returned by %s but got %v", url, info)
+			}
+		}
+	})
+	t.Run("raftgroups", func(t *testing.T) {
+		for _, url := range []string{monUrl1, monUrl2} {
+			info := readJsInfo(url + "?acc=ACC&consumers=true&raft=true")
+			if len(info.AccountDetails) != 1 {
+				t.Fatalf("expected account ACC to be returned by %s but got %v", url, info)
+			}
+			if len(info.AccountDetails[0].Streams[0].Consumer) == 0 {
+				t.Fatalf("expected consumers to be returned by %s but got %v", url, info)
+			}
+			if len(info.AccountDetails[0].Streams[0].ConsumerRaftGroups) == 0 {
+				t.Fatalf("expected consumer raft groups to be returned by %s but got %v", url, info)
+			}
+			srgroup := info.AccountDetails[0].Streams[0].RaftGroup
+			if len(srgroup) == 0 {
+				t.Fatal("expected stream raft group info to be included")
+			}
+			crgroup := info.AccountDetails[0].Streams[0].ConsumerRaftGroups[0]
+			if crgroup.Name != "my-consumer-replicated" {
+				t.Fatalf("expected consumer name to be included in raft group info, got: %v", crgroup.Name)
+			}
+			if len(crgroup.RaftGroup) == 0 {
+				t.Fatal("expected consumer raft group info to be included")
 			}
 		}
 	})
