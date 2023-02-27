@@ -597,10 +597,8 @@ func (s *Server) enableJetStreamClustering() error {
 // isClustered returns if we are clustered.
 // Lock should not be held.
 func (js *jetStream) isClustered() bool {
-	js.mu.RLock()
-	isClustered := js.cluster != nil
-	js.mu.RUnlock()
-	return isClustered
+	// This is only ever set, no need for lock here.
+	return js.cluster != nil
 }
 
 // isClusteredNoLock returns if we are clustered, but unlike isClustered() does
@@ -989,6 +987,7 @@ func (js *jetStream) monitorCluster() {
 		isLeader     bool
 		lastSnap     []byte
 		lastSnapTime time.Time
+		minSnapDelta = 10 * time.Second
 	)
 
 	// Highwayhash key for generating hashes.
@@ -1001,7 +1000,7 @@ func (js *jetStream) monitorCluster() {
 	// Snapshotting function.
 	doSnapshot := func() {
 		// Suppress during recovery.
-		if js.isMetaRecovering() {
+		if js.isMetaRecovering() || time.Since(lastSnapTime) < minSnapDelta {
 			return
 		}
 		snap := js.metaSnapshot()
@@ -1275,7 +1274,6 @@ func (js *jetStream) applyMetaSnapshot(buf []byte) error {
 		for _, ca := range sa.consumers {
 			caAdd = append(caAdd, ca)
 		}
-
 		if osa := js.streamAssignment(sa.Client.serviceAccount(), sa.Config.Name); osa != nil {
 			for _, ca := range osa.consumers {
 				if sa.consumers[ca.Name] == nil {
@@ -1843,7 +1841,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		compactInterval = 2 * time.Minute
 		compactSizeMin  = 8 * 1024 * 1024
 		compactNumMin   = 65536
-		minSnapDelta    = 5 * time.Second
+		minSnapDelta    = 10 * time.Second
 	)
 
 	// Spread these out for large numbers on server restart.
@@ -4010,7 +4008,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 		compactInterval = 2 * time.Minute
 		compactSizeMin  = 64 * 1024 // What is stored here is always small for consumers.
 		compactNumMin   = 1024
-		minSnapDelta    = 5 * time.Second
+		minSnapDelta    = 10 * time.Second
 	)
 
 	// Spread these out for large numbers on server restart.
