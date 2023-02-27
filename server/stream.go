@@ -2850,10 +2850,8 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 // Generate a new style source header.
 func (si *sourceInfo) genSourceHeader(reply string) string {
 	var b strings.Builder
-	// strip the source index number from the iname
-	name := si.iname[strings.IndexRune(si.iname, ':')+1:]
 
-	b.WriteString(name)
+	b.WriteString(si.iname)
 	b.WriteByte(' ')
 	// Grab sequence as text here from reply subject.
 	var tsa [expectedNumReplyTokens]string
