@@ -3374,6 +3374,10 @@ func (n *raft) readTermVote() (term uint64, voted string, err error) {
 
 // Lock should be held.
 func (n *raft) setWriteErrLocked(err error) {
+	// Check if we are closed already.
+	if n.state == Closed {
+		return
+	}
 	// Ignore if already set.
 	if n.werr == err || err == nil {
 		return
@@ -3412,6 +3416,12 @@ func (n *raft) fileWriter() {
 	psf := filepath.Join(n.sd, peerStateFile)
 	n.RUnlock()
 
+	isClosed := func() bool {
+		n.RLock()
+		defer n.RUnlock()
+		return n.state == Closed
+	}
+
 	for s.isRunning() {
 		select {
 		case <-n.quit:
@@ -3424,7 +3434,7 @@ func (n *raft) fileWriter() {
 			<-dios
 			err := os.WriteFile(tvf, buf[:], 0640)
 			dios <- struct{}{}
-			if err != nil {
+			if err != nil && !isClosed() {
 				n.setWriteErr(err)
 				n.warn("Error writing term and vote file for %q: %v", n.group, err)
 			}
@@ -3435,7 +3445,7 @@ func (n *raft) fileWriter() {
 			<-dios
 			err := os.WriteFile(psf, buf, 0640)
 			dios <- struct{}{}
-			if err != nil {
+			if err != nil && !isClosed() {
 				n.setWriteErr(err)
 				n.warn("Error writing peer state file for %q: %v", n.group, err)
 			}
