@@ -198,17 +198,15 @@ func (s *Server) trackedJetStreamServers() (js, total int) {
 
 func (s *Server) getJetStreamCluster() (*jetStream, *jetStreamCluster) {
 	s.mu.RLock()
-	shutdown := s.shutdown
-	js := s.js
+	shutdown, js := s.shutdown, s.js
 	s.mu.RUnlock()
 
 	if shutdown || js == nil {
 		return nil, nil
 	}
 
-	js.mu.RLock()
+	// Only set once, do not need a lock.
 	cc := js.cluster
-	js.mu.RUnlock()
 	if cc == nil {
 		return nil, nil
 	}
