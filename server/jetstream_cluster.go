@@ -713,27 +713,6 @@ func (js *jetStream) server() *Server {
 	return s
 }
 
-// Returns leader status, both whether or not we are the leader and if the group is leaderless.
-func (js *jetStream) leaderStatus() (bool, bool) {
-	js.mu.RLock()
-	defer js.mu.RUnlock()
-
-	cc := js.cluster
-	if cc == nil || cc.meta == nil {
-		return false, true
-	}
-	isLeader := cc.meta.Leader()
-	if isLeader {
-		return true, false
-	}
-	// If we don't have a leader.
-	// Make sure we have been running for enough time.
-	if cc.meta.GroupLeader() == _EMPTY_ && time.Since(cc.meta.Created()) > lostQuorumIntervalDefault {
-		return false, true
-	}
-	return false, false
-}
-
 // Will respond if we do not think we have a metacontroller leader.
 func (js *jetStream) isLeaderless() bool {
 	js.mu.RLock()
@@ -7611,7 +7590,12 @@ func (js *jetStream) streamAlternates(ci *ClientInfo, stream string) []StreamAlt
 	return alts
 }
 
-func (mset *stream) handleClusterStreamInfoRequest(sub *subscription, c *client, _ *Account, subject, reply string, _ []byte) {
+// Internal request for stream info, this is coming on the wire so do not block here.
+func (mset *stream) handleClusterStreamInfoRequest(_ *subscription, c *client, _ *Account, subject, reply string, _ []byte) {
+	go mset.processClusterStreamInfoRequest(reply)
+}
+
+func (mset *stream) processClusterStreamInfoRequest(reply string) {
 	mset.mu.RLock()
 	sysc, js, sa, config := mset.sysc, mset.srv.js, mset.sa, mset.cfg
 	stype := mset.cfg.Storage

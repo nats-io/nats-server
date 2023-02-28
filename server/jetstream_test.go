@@ -11974,9 +11974,9 @@ func TestJetStreamServerEncryption(t *testing.T) {
 	}
 
 	for _, c := range cases {
-
 		t.Run(c.name, func(t *testing.T) {
 			tmpl := `
+				server_name: S22
 				listen: 127.0.0.1:-1
 				jetstream: {key: $JS_KEY, store_dir: '%s' %s}
 			`
@@ -18209,6 +18209,7 @@ func TestJetStreamProperErrorDueToOverlapSubjects(t *testing.T) {
 
 func TestJetStreamServerCipherConvert(t *testing.T) {
 	tmpl := `
+		server_name: S22
 		listen: 127.0.0.1:-1
 		jetstream: {key: s3cr3t, store_dir: '%s', cipher: %s}
 	`

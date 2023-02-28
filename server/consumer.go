@@ -1138,8 +1138,9 @@ func (o *consumer) setLeader(isLeader bool) {
 	}
 }
 
+// This is coming on thw wire so do not block here.
 func (o *consumer) handleClusterConsumerInfoRequest(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
-	o.infoWithSnapAndReply(false, reply)
+	go o.infoWithSnapAndReply(false, reply)
 }
 
 // Lock should be held.

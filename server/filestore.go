@@ -5548,6 +5548,10 @@ func (mb *msgBlock) closeAndKeepIndex(viaLimits bool) {
 		// Make sure to write the index file so we can remember last seq and ts.
 		mb.writeIndexInfoLocked()
 		mb.removePerSubjectInfoLocked()
+		if mb.ifd != nil {
+			mb.ifd.Close()
+			mb.ifd = nil
+		}
 	}
 
 	if mb.mfd != nil {
