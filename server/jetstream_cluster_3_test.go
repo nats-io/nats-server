@@ -2809,9 +2809,9 @@ func TestJetStreamClusterWALBuildupOnNoOpPull(t *testing.T) {
 		_, _ = sub.Fetch(1, nats.MaxWait(time.Microsecond))
 	}
 
-	// Needs to be at least 5 seconds, otherwise we won't hit the
+	// Needs to be at least 10 seconds, otherwise we won't hit the
 	// minSnapDelta that prevents us from snapshotting too often
-	time.Sleep(time.Second * 6)
+	time.Sleep(time.Second * 11)
 
 	for i := 0; i < 1024; i++ {
 		_, _ = sub.Fetch(1, nats.MaxWait(time.Microsecond))
