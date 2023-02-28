@@ -1138,8 +1138,9 @@ func (o *consumer) setLeader(isLeader bool) {
 	}
 }
 
+// This is coming on the wire so do not block here.
 func (o *consumer) handleClusterConsumerInfoRequest(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
-	o.infoWithSnapAndReply(false, reply)
+	go o.infoWithSnapAndReply(false, reply)
 }
 
 // Lock should be held.
@@ -1378,7 +1379,7 @@ func (o *consumer) deleteNotActive() {
 			// Check to make sure we went away.
 			// Don't think this needs to be a monitored go routine.
 			go func() {
-				ticker := time.NewTicker(time.Second)
+				ticker := time.NewTicker(10 * time.Second)
 				defer ticker.Stop()
 				for range ticker.C {
 					js.mu.RLock()
@@ -2115,12 +2116,9 @@ func (o *consumer) checkRedelivered(slseq uint64) {
 		}
 	}
 	if shouldUpdateState {
-		if err := o.writeStoreStateUnlocked(); err != nil && o.srv != nil && o.mset != nil {
+		if err := o.writeStoreStateUnlocked(); err != nil && o.srv != nil && o.mset != nil && !o.closed {
 			s, acc, mset, name := o.srv, o.acc, o.mset, o.name
-			// Can not hold lock while gather information about account and stream below.
-			o.mu.Unlock()
-			s.Warnf("Consumer '%s > %s > %s' error on write store state from check redelivered: %v", acc, mset.name(), name, err)
-			o.mu.Lock()
+			s.Warnf("Consumer '%s > %s > %s' error on write store state from check redelivered: %v", acc, mset.cfg.Name, name, err)
 		}
 	}
 }
@@ -3041,20 +3039,25 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 		return nil, 0, errMaxAckPending
 	}
 
+	store := o.mset.store
+	filter, filterWC := o.cfg.FilterSubject, o.filterWC
+
 	// Grab next message applicable to us.
+	// We will unlock here in case lots of contention, e.g. WQ.
+	o.mu.Unlock()
 	pmsg := getJSPubMsgFromPool()
-	sm, sseq, err := o.mset.store.LoadNextMsg(o.cfg.FilterSubject, o.filterWC, seq, &pmsg.StoreMsg)
+	sm, sseq, err := store.LoadNextMsg(filter, filterWC, seq, &pmsg.StoreMsg)
+	if sm == nil {
+		pmsg.returnToPool()
+		pmsg, dc = nil, 0
+	}
+	o.mu.Lock()
 
 	if sseq >= o.sseq {
 		o.sseq = sseq + 1
 		if err == ErrStoreEOF {
 			o.updateSkipped()
 		}
-	}
-
-	if sm == nil {
-		pmsg.returnToPool()
-		return nil, 0, err
 	}
 
 	return pmsg, dc, err
@@ -3779,14 +3782,22 @@ func (o *consumer) removeFromRedeliverQueue(seq uint64) bool {
 
 // Checks the pending messages.
 func (o *consumer) checkPending() {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-
+	o.mu.RLock()
 	mset := o.mset
 	// On stop, mset and timer will be nil.
 	if mset == nil || o.ptmr == nil {
+		o.mu.RUnlock()
 		return
 	}
+	o.mu.RUnlock()
+
+	var shouldUpdateState bool
+	var state StreamState
+	mset.store.FastState(&state)
+	fseq := state.FirstSeq
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
 
 	now := time.Now().UnixNano()
 	ttl := int64(o.cfg.AckWait)
@@ -3796,11 +3807,6 @@ func (o *consumer) checkPending() {
 	if l := len(o.cfg.BackOff); l > 0 {
 		next = int64(o.cfg.BackOff[l-1])
 	}
-
-	var shouldUpdateState bool
-	var state StreamState
-	mset.store.FastState(&state)
-	fseq := state.FirstSeq
 
 	// Since we can update timestamps, we have to review all pending.
 	// We will now bail if we see an ack pending in bound to us via o.awl.
@@ -3868,7 +3874,12 @@ func (o *consumer) checkPending() {
 	}
 
 	if len(o.pending) > 0 {
-		o.ptmr.Reset(o.ackWait(time.Duration(next)))
+		delay := time.Duration(next)
+		if o.ptmr == nil {
+			o.ptmr = time.AfterFunc(delay, o.checkPending)
+		} else {
+			o.ptmr.Reset(o.ackWait(delay))
+		}
 	} else {
 		// Make sure to stop timer and clear out any re delivery queues
 		stopAndClearTimer(&o.ptmr)
@@ -3878,12 +3889,9 @@ func (o *consumer) checkPending() {
 
 	// Update our state if needed.
 	if shouldUpdateState {
-		if err := o.writeStoreStateUnlocked(); err != nil && o.srv != nil && o.mset != nil {
+		if err := o.writeStoreStateUnlocked(); err != nil && o.srv != nil && o.mset != nil && !o.closed {
 			s, acc, mset, name := o.srv, o.acc, o.mset, o.name
-			// Can not hold lock while gather information about account and stream below.
-			o.mu.Unlock()
-			s.Warnf("Consumer '%s > %s > %s' error on write store state from check pending: %v", acc, mset.name(), name, err)
-			o.mu.Lock()
+			s.Warnf("Consumer '%s > %s > %s' error on write store state from check pending: %v", acc, mset.cfg.Name, name, err)
 		}
 	}
 }

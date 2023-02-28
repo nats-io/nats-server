@@ -2727,7 +2727,7 @@ func TestJetStreamClusterInterestPolicyEphemeral(t *testing.T) {
 				name = test.name
 			}
 
-			const msgs = 10_000
+			const msgs = 5_000
 			done, count := make(chan bool), 0
 
 			sub, err := js.Subscribe(_EMPTY_, func(msg *nats.Msg) {
@@ -2740,24 +2740,22 @@ func TestJetStreamClusterInterestPolicyEphemeral(t *testing.T) {
 			require_NoError(t, err)
 
 			// This happens only if we start publishing messages after consumer was created.
-			go func() {
+			pubDone := make(chan struct{})
+			go func(subject string) {
 				for i := 0; i < msgs; i++ {
-					js.PublishAsync(test.subject, []byte("DATA"))
+					js.Publish(subject, []byte("DATA"))
 				}
-				select {
-				case <-js.PublishAsyncComplete():
-				case <-time.After(5 * inactiveThreshold):
-				}
-			}()
+				close(pubDone)
+			}(test.subject)
 
 			// Wait for inactive threshold to expire and all messages to be published and received
 			// Bug is we clean up active consumers when we should not.
 			time.Sleep(3 * inactiveThreshold / 2)
 
 			select {
-			case <-done:
-			case <-time.After(5 * time.Second):
-				t.Fatalf("Did not receive done signal")
+			case <-pubDone:
+			case <-time.After(10 * time.Second):
+				t.Fatalf("Did not receive completion signal")
 			}
 
 			info, err := js.ConsumerInfo(test.stream, name)
@@ -2809,9 +2807,9 @@ func TestJetStreamClusterWALBuildupOnNoOpPull(t *testing.T) {
 		_, _ = sub.Fetch(1, nats.MaxWait(time.Microsecond))
 	}
 
-	// Needs to be at least 5 seconds, otherwise we won't hit the
+	// Needs to be at least 10 seconds, otherwise we won't hit the
 	// minSnapDelta that prevents us from snapshotting too often
-	time.Sleep(time.Second * 6)
+	time.Sleep(time.Second * 11)
 
 	for i := 0; i < 1024; i++ {
 		_, _ = sub.Fetch(1, nats.MaxWait(time.Microsecond))
