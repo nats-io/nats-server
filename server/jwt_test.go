@@ -6132,6 +6132,61 @@ func TestJWTAccountProtectedImport(t *testing.T) {
 	})
 }
 
+// Headers are ignored in claims update, but passing them should not cause error.
+func TestJWTClaimsUpdateWithHeaders(t *testing.T) {
+	skp, spub := createKey(t)
+	newUser(t, skp)
+
+	sclaim := jwt.NewAccountClaims(spub)
+	encodeClaim(t, sclaim, spub)
+
+	akp, apub := createKey(t)
+	newUser(t, akp)
+	claim := jwt.NewAccountClaims(apub)
+	jwtClaim := encodeClaim(t, claim, apub)
+
+	dirSrv := t.TempDir()
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		operator: %s
+		system_account: %s
+		resolver: {
+			type: full
+			dir: '%s'
+		}
+    `, ojwt, spub, dirSrv)))
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	type zapi struct {
+		Server *ServerInfo
+		Data   *Connz
+		Error  *ApiError
+	}
+
+	sc := natsConnect(t, s.ClientURL(), createUserCreds(t, s, skp))
+	defer sc.Close()
+	// Pass claims update with headers.
+	msg := &nats.Msg{
+		Subject: "$SYS.REQ.CLAIMS.UPDATE",
+		Data:    []byte(jwtClaim),
+		Header:  map[string][]string{"key": {"value"}},
+	}
+	resp, err := sc.RequestMsg(msg, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var cz zapi
+	if err := json.Unmarshal(resp.Data, &cz); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if cz.Error != nil {
+		t.Fatalf("Unexpected error: %+v", cz.Error)
+	}
+}
+
 func TestJWTMappings(t *testing.T) {
 	sysKp, syspub := createKey(t)
 	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
