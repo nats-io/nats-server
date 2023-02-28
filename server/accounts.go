@@ -2360,7 +2360,9 @@ func (a *Account) addRespServiceImport(dest *Account, to string, osi *serviceImp
 
 	// Always grab time and make sure response threshold timer is running.
 	si.ts = time.Now().UnixNano()
-	osi.se.setResponseThresholdTimer()
+	if osi.se != nil {
+		osi.se.setResponseThresholdTimer()
+	}
 
 	if rt == Singleton && tracking {
 		si.latency = osi.latency
