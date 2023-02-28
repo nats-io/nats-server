@@ -5541,40 +5541,21 @@ func (fs *fileStore) removeMsgBlock(mb *msgBlock) {
 // When we have an empty block but want to keep the index for timestamp info etc.
 // Lock should be held.
 func (mb *msgBlock) closeAndKeepIndex(viaLimits bool) {
-	// We will leave a 0 length blk marker so we can remember.
-	doIO := func() {
-		// Write out empty file.
-		os.WriteFile(mb.mfn, nil, defaultFilePerms)
-		// Make sure to write the index file so we can remember last seq and ts.
-		mb.writeIndexInfoLocked()
-		mb.removePerSubjectInfoLocked()
-		if mb.ifd != nil {
-			mb.ifd.Close()
-			mb.ifd = nil
-		}
-	}
-
+	// We will leave a 0 length blk marker.
 	if mb.mfd != nil {
-		mb.mfd.Close()
-		mb.mfd = nil
-		// We used to truncate here but can be quite expensive based on platform.
+		mb.mfd.Truncate(0)
+	} else {
+		// We were closed, so just write out an empty file.
+		os.WriteFile(mb.mfn, nil, defaultFilePerms)
 	}
+	// Make sure to write the index file so we can remember last seq and ts.
+	mb.writeIndexInfoLocked()
 	// Close
 	mb.dirtyCloseWithRemove(false)
 
 	// Make sure to remove fss state.
 	mb.fss = nil
-
-	// If via limits we can do this out of line in separate Go routine.
-	if viaLimits {
-		go func() {
-			mb.mu.Lock()
-			defer mb.mu.Unlock()
-			doIO()
-		}()
-	} else {
-		doIO()
-	}
+	mb.removePerSubjectInfoLocked()
 
 	// If we are encrypted we should reset our bek counter.
 	if mb.bek != nil {
