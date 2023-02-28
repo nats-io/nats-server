@@ -1027,8 +1027,8 @@ func (js *jetStream) monitorCluster() {
 		case <-rqch:
 			return
 		case <-qch:
-			// Clean signal from shutdown routine so attempt to snapshot meta layer.
-			doSnapshot()
+			// Clean signal from shutdown routine so do best effort attempt to snapshot meta layer.
+			n.InstallSnapshot(js.metaSnapshot())
 			// Return the signal back since shutdown will be waiting.
 			close(qch)
 			return
@@ -1038,7 +1038,6 @@ func (js *jetStream) monitorCluster() {
 				if ce == nil {
 					// Signals we have replayed all of our metadata.
 					js.clearMetaRecovering()
-
 					// Process any removes that are still valid after recovery.
 					for _, ca := range ru.removeConsumers {
 						js.processConsumerRemoval(ca)
@@ -1046,10 +1045,11 @@ func (js *jetStream) monitorCluster() {
 					for _, sa := range ru.removeStreams {
 						js.processStreamRemoval(sa)
 					}
-					// Same with any pending updates.
+					// Process pending updates.
 					for _, sa := range ru.updateStreams {
 						js.processUpdateStreamAssignment(sa)
 					}
+					// Now consumers.
 					for _, ca := range ru.updateConsumers {
 						js.processConsumerAssignment(ca)
 					}
@@ -1061,20 +1061,11 @@ func (js *jetStream) monitorCluster() {
 				// FIXME(dlc) - Deal with errors.
 				if didSnap, didRemoval, err := js.applyMetaEntries(ce.Entries, ru); err == nil {
 					_, nb := n.Applied(ce.Index)
-					// If we processed a snapshot and are recovering remove our pending state.
-					if didSnap && js.isMetaRecovering() {
-						ru = &recoveryUpdates{
-							removeStreams:   make(map[string]*streamAssignment),
-							removeConsumers: make(map[string]*consumerAssignment),
-							updateStreams:   make(map[string]*streamAssignment),
-							updateConsumers: make(map[string]*consumerAssignment),
-						}
-					}
 					if js.hasPeerEntries(ce.Entries) || didSnap || didRemoval {
 						// Since we received one make sure we have our own since we do not store
 						// our meta state outside of raft.
 						doSnapshot()
-					} else if lls := len(lastSnap); nb > uint64(lls*8) && lls > 0 && time.Since(lastSnapTime) > 5*time.Second {
+					} else if lls := len(lastSnap); nb > uint64(lls*8) && lls > 0 {
 						doSnapshot()
 					}
 				}
@@ -1212,7 +1203,7 @@ func (js *jetStream) metaSnapshot() []byte {
 	return s2.EncodeBetter(nil, b)
 }
 
-func (js *jetStream) applyMetaSnapshot(buf []byte) error {
+func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecovering bool) error {
 	var wsas []writeableStreamAssignment
 	if len(buf) > 0 {
 		jse, err := s2.Decode(nil, buf)
@@ -1289,13 +1280,21 @@ func (js *jetStream) applyMetaSnapshot(buf []byte) error {
 	// Do removals first.
 	for _, sa := range saDel {
 		js.setStreamAssignmentRecovering(sa)
-		js.processStreamRemoval(sa)
+
+		if isRecovering {
+			key := sa.recoveryKey()
+			ru.removeStreams[key] = sa
+			delete(ru.updateStreams, key)
+		} else {
+			js.processStreamRemoval(sa)
+		}
 	}
 	// Now do add for the streams. Also add in all consumers.
 	for _, sa := range saAdd {
 		js.setStreamAssignmentRecovering(sa)
 		js.processStreamAssignment(sa)
-		// We can simply add the consumers.
+
+		// We can simply process the consumers.
 		for _, ca := range sa.consumers {
 			js.setConsumerAssignmentRecovering(ca)
 			js.processConsumerAssignment(ca)
@@ -1306,17 +1305,35 @@ func (js *jetStream) applyMetaSnapshot(buf []byte) error {
 	// sure to process any changes.
 	for _, sa := range saChk {
 		js.setStreamAssignmentRecovering(sa)
-		js.processUpdateStreamAssignment(sa)
+		if isRecovering {
+			key := sa.recoveryKey()
+			ru.updateStreams[key] = sa
+			delete(ru.removeStreams, key)
+		} else {
+			js.processUpdateStreamAssignment(sa)
+		}
 	}
 
 	// Now do the deltas for existing stream's consumers.
 	for _, ca := range caDel {
 		js.setConsumerAssignmentRecovering(ca)
-		js.processConsumerRemoval(ca)
+		if isRecovering {
+			key := ca.recoveryKey()
+			ru.removeConsumers[key] = ca
+			delete(ru.updateConsumers, key)
+		} else {
+			js.processConsumerRemoval(ca)
+		}
 	}
 	for _, ca := range caAdd {
 		js.setConsumerAssignmentRecovering(ca)
-		js.processConsumerAssignment(ca)
+		if isRecovering {
+			key := ca.recoveryKey()
+			delete(ru.removeConsumers, key)
+			ru.updateConsumers[key] = ca
+		} else {
+			js.processConsumerAssignment(ca)
+		}
 	}
 
 	return nil
@@ -1534,7 +1551,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 
 	for _, e := range entries {
 		if e.Type == EntrySnapshot {
-			js.applyMetaSnapshot(e.Data)
+			js.applyMetaSnapshot(e.Data, ru, isRecovering)
 			didSnap = true
 		} else if e.Type == EntryRemovePeer {
 			if !isRecovering {
@@ -3139,9 +3156,11 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 			mset.setStreamAssignment(sa)
 			if err = mset.updateWithAdvisory(sa.Config, false); err != nil {
 				s.Warnf("JetStream cluster error updating stream %q for account %q: %v", sa.Config.Name, acc.Name, err)
-				// Process the raft group and make sure it's running if needed.
-				js.createRaftGroup(acc.GetName(), osa.Group, storage)
-				mset.setStreamAssignment(osa)
+				if osa != nil {
+					// Process the raft group and make sure it's running if needed.
+					js.createRaftGroup(acc.GetName(), osa.Group, storage)
+					mset.setStreamAssignment(osa)
+				}
 				if rg.node != nil {
 					rg.node.Delete()
 					rg.node = nil
