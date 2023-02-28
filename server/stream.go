@@ -3646,39 +3646,9 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 
 // processInboundJetStreamMsg handles processing messages bound for a stream.
 func (mset *stream) processInboundJetStreamMsg(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
-	mset.mu.RLock()
-	isLeader, isClustered, isSealed := mset.isLeader(), mset.isClustered(), mset.cfg.Sealed
-	mset.mu.RUnlock()
-
-	// If we are not the leader just ignore.
-	if !isLeader {
-		return
-	}
-
-	if isSealed {
-		var resp = JSPubAckResponse{
-			PubAck: &PubAck{Stream: mset.name()},
-			Error:  NewJSStreamSealedError(),
-		}
-		b, _ := json.Marshal(resp)
-		mset.outq.sendMsg(reply, b)
-		return
-	}
-
+	// Always move this to another Go routine.
 	hdr, msg := c.msgParts(rmsg)
-
-	// If we are not receiving directly from a client we should move this to another Go routine.
-	if c.kind != CLIENT {
-		mset.queueInboundMsg(subject, reply, hdr, msg)
-		return
-	}
-
-	// If we are clustered we need to propose this message to the underlying raft group.
-	if isClustered {
-		mset.processClusteredInboundMsg(subject, reply, hdr, msg)
-	} else {
-		mset.processJetStreamMsg(subject, reply, hdr, msg, 0, 0)
-	}
+	mset.queueInboundMsg(subject, reply, hdr, msg)
 }
 
 var (
@@ -3706,10 +3676,23 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	numConsumers := len(mset.consumers)
 	interestRetention := mset.cfg.Retention == InterestPolicy
 	// Snapshot if we are the leader and if we can respond.
-	isLeader := mset.isLeader()
+	isLeader, isSealed := mset.isLeader(), mset.cfg.Sealed
 	canRespond := doAck && len(reply) > 0 && isLeader
 
 	var resp = &JSPubAckResponse{}
+
+	// Bail here if sealed.
+	if isSealed {
+		outq := mset.outq
+		mset.mu.Unlock()
+		if canRespond && outq != nil {
+			resp.PubAck = &PubAck{Stream: name}
+			resp.Error = ApiErrors[JSStreamSealedErr]
+			b, _ := json.Marshal(resp)
+			outq.sendMsg(reply, b)
+		}
+		return ApiErrors[JSStreamSealedErr]
+	}
 
 	var buf [256]byte
 	pubAck := append(buf[:0], mset.pubAck...)

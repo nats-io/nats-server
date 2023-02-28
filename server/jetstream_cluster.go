@@ -6782,7 +6782,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	name, stype, store := mset.cfg.Name, mset.cfg.Storage, mset.store
 	s, js, jsa, st, rf, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.tier, mset.outq, mset.node
 	maxMsgSize, lseq, clfs := int(mset.cfg.MaxMsgSize), mset.lseq, mset.clfs
-	isLeader := mset.isLeader()
+	isLeader, isSealed := mset.isLeader(), mset.cfg.Sealed
 	mset.mu.RUnlock()
 
 	// This should not happen but possible now that we allow scale up, and scale down where this could trigger.
@@ -6793,6 +6793,14 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// Check that we are the leader. This can be false if we have scaled up from an R1 that had inbound queued messages.
 	if !isLeader {
 		return NewJSClusterNotLeaderError()
+	}
+
+	// Bail here if sealed.
+	if isSealed {
+		var resp = JSPubAckResponse{PubAck: &PubAck{Stream: mset.name()}, Error: NewJSStreamSealedError()}
+		b, _ := json.Marshal(resp)
+		mset.outq.sendMsg(reply, b)
+		return NewJSStreamSealedError()
 	}
 
 	// Check here pre-emptively if we have exceeded this server limits.
