@@ -1000,7 +1000,7 @@ func (js *jetStream) monitorCluster() {
 	// Snapshotting function.
 	doSnapshot := func() {
 		// Suppress during recovery.
-		if js.isMetaRecovering() || time.Since(lastSnapTime) < minSnapDelta {
+		if js.isMetaRecovering() {
 			return
 		}
 		snap := js.metaSnapshot()
@@ -1059,13 +1059,13 @@ func (js *jetStream) monitorCluster() {
 					continue
 				}
 				// FIXME(dlc) - Deal with errors.
-				if didSnap, didRemoval, err := js.applyMetaEntries(ce.Entries, ru); err == nil {
+				if didSnap, didStreamRemoval, err := js.applyMetaEntries(ce.Entries, ru); err == nil {
 					_, nb := n.Applied(ce.Index)
-					if js.hasPeerEntries(ce.Entries) || didSnap || didRemoval {
+					if js.hasPeerEntries(ce.Entries) || didSnap || didStreamRemoval {
 						// Since we received one make sure we have our own since we do not store
 						// our meta state outside of raft.
 						doSnapshot()
-					} else if lls := len(lastSnap); nb > uint64(lls*8) && lls > 0 {
+					} else if lls := len(lastSnap); nb > uint64(lls*8) && lls > 0 && time.Since(lastSnapTime) > minSnapDelta {
 						doSnapshot()
 					}
 				}
@@ -1633,7 +1633,6 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					delete(ru.updateConsumers, key)
 				} else {
 					js.processConsumerRemoval(ca)
-					didRemove = true
 				}
 			case updateStreamOp:
 				sa, err := decodeStreamAssignment(buf[1:])
