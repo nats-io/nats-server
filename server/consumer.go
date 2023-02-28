@@ -3154,17 +3154,6 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 	// Hold onto this since we release the lock.
 	store := o.mset.store
 
-	// Grab next message applicable to us.
-	// We will unlock here in case lots of contention, e.g. WQ.
-	o.mu.Unlock()
-	pmsg := getJSPubMsgFromPool()
-	sm, sseq, err := store.LoadNextMsg(filter, filterWC, seq, &pmsg.StoreMsg)
-	if sm == nil {
-		pmsg.returnToPool()
-		pmsg, dc = nil, 0
-	}
-	o.mu.Lock()
-
 	// If no filters are specified, optimize to fetch just non-filtered messages.
 	if o.subjf == nil {
 		// Grab next message applicable to us.
@@ -3174,7 +3163,7 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 		sm, sseq, err := store.LoadNextMsg(_EMPTY_, false, o.sseq, &pmsg.StoreMsg)
 		if sm == nil {
 			pmsg.returnToPool()
-			pmsg, dc = nil, 0
+			pmsg = nil
 		}
 		o.mu.Lock()
 		if sseq >= o.sseq {
@@ -3183,7 +3172,7 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 				o.updateSkipped(o.sseq)
 			}
 		}
-		return pmsg, dc, err
+		return pmsg, 1, err
 	}
 
 	var lastErr error
@@ -3200,7 +3189,7 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 			filterSubject, filterWC, nextSeq := filter.subject, filter.hasWildcard, filter.nextSeq
 			o.mu.Unlock()
 			pmsg := getJSPubMsgFromPool()
-			sm, sseq, err := store.LoadNextMsg(filterSubject, filterWC, filter.nextSeq, &pmsg.StoreMsg)
+			sm, sseq, err := store.LoadNextMsg(filterSubject, filterWC, nextSeq, &pmsg.StoreMsg)
 			o.mu.Lock()
 
 			filter.err = err
