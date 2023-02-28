@@ -2082,13 +2082,8 @@ func TestJetStreamSuperClusterMovingStreamAndMoveBack(t *testing.T) {
 
 			toSend := 10_000
 			for i := 0; i < toSend; i++ {
-				_, err := js.PublishAsync("TEST", []byte("HELLO WORLD"))
+				_, err := js.Publish("TEST", []byte("HELLO WORLD"))
 				require_NoError(t, err)
-			}
-			select {
-			case <-js.PublishAsyncComplete():
-			case <-time.After(5 * time.Second):
-				t.Fatalf("Did not receive completion signal")
 			}
 
 			_, err = js.UpdateStream(&nats.StreamConfig{

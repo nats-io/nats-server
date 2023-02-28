@@ -3707,11 +3707,13 @@ func TestMonitorLeafz(t *testing.T) {
 	}
 	acc1, mycreds1 := createAcc(t)
 	acc2, mycreds2 := createAcc(t)
+	leafName := "my-leaf-node"
 
 	content = `
 		port: -1
 		http: "127.0.0.1:-1"
 		ping_interval = 1
+		server_name: %s
 		accounts {
 			%s {
 				users [
@@ -3740,6 +3742,7 @@ func TestMonitorLeafz(t *testing.T) {
 		}
 		`
 	config := fmt.Sprintf(content,
+		leafName,
 		acc1.Name, acc2.Name,
 		acc1.Name, ob.LeafNode.Port, mycreds1,
 		acc2.Name, ob.LeafNode.Port, mycreds2)
@@ -3813,6 +3816,9 @@ func TestMonitorLeafz(t *testing.T) {
 				}
 			} else {
 				t.Fatalf("Expected account to be %q or %q, got %q", acc1.Name, acc2.Name, ln.Account)
+			}
+			if ln.Name != leafName {
+				t.Fatalf("Expected name to be %q, got %q", leafName, ln.Name)
 			}
 			if ln.RTT == "" {
 				t.Fatalf("RTT not tracked?")
@@ -3901,6 +3907,9 @@ func TestMonitorLeafz(t *testing.T) {
 				}
 			} else {
 				t.Fatalf("Expected account to be %q or %q, got %q", acc1.Name, acc2.Name, ln.Account)
+			}
+			if ln.Name != leafName {
+				t.Fatalf("Expected name to be %q, got %q", leafName, ln.Name)
 			}
 			if ln.RTT == "" {
 				t.Fatalf("RTT not tracked?")

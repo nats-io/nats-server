@@ -2096,6 +2096,7 @@ type LeafzOptions struct {
 
 // LeafInfo has detailed information on each remote leafnode connection.
 type LeafInfo struct {
+	Name     string   `json:"name"`
 	Account  string   `json:"account"`
 	IP       string   `json:"ip"`
 	Port     int      `json:"port"`
@@ -2135,6 +2136,7 @@ func (s *Server) Leafz(opts *LeafzOptions) (*Leafz, error) {
 		for _, ln := range lconns {
 			ln.mu.Lock()
 			lni := &LeafInfo{
+				Name:     ln.opts.Name,
 				Account:  ln.acc.Name,
 				IP:       ln.host,
 				Port:     int(ln.port),
