@@ -6836,7 +6836,7 @@ var dios chan struct{}
 // golang.org's semaphore seemed a bit heavy.
 func init() {
 	// Based on Go max threads of 10k, limit ourselves to a max of 1k blocking IO calls.
-	const nIO = 1024
+	const nIO = 4
 	dios = make(chan struct{}, nIO)
 	// Fill it up to start.
 	for i := 0; i < nIO; i++ {
