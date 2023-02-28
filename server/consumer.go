@@ -2116,12 +2116,9 @@ func (o *consumer) checkRedelivered(slseq uint64) {
 		}
 	}
 	if shouldUpdateState {
-		if err := o.writeStoreStateUnlocked(); err != nil && o.srv != nil && o.mset != nil {
+		if err := o.writeStoreStateUnlocked(); err != nil && o.srv != nil && o.mset != nil && !o.closed {
 			s, acc, mset, name := o.srv, o.acc, o.mset, o.name
-			// Can not hold lock while gather information about account and stream below.
-			o.mu.Unlock()
-			s.Warnf("Consumer '%s > %s > %s' error on write store state from check redelivered: %v", acc, mset.name(), name, err)
-			o.mu.Lock()
+			go s.Warnf("Consumer '%s > %s > %s' error on write store state from check redelivered: %v", acc, mset.name(), name, err)
 		}
 	}
 }
@@ -3892,12 +3889,9 @@ func (o *consumer) checkPending() {
 
 	// Update our state if needed.
 	if shouldUpdateState {
-		if err := o.writeStoreStateUnlocked(); err != nil && o.srv != nil && o.mset != nil {
+		if err := o.writeStoreStateUnlocked(); err != nil && o.srv != nil && o.mset != nil && !o.closed {
 			s, acc, mset, name := o.srv, o.acc, o.mset, o.name
-			// Can not hold lock while gather information about account and stream below.
-			o.mu.Unlock()
-			s.Warnf("Consumer '%s > %s > %s' error on write store state from check pending: %v", acc, mset.name(), name, err)
-			o.mu.Lock()
+			go s.Warnf("Consumer '%s > %s > %s' error on write store state from check pending: %v", acc, mset.name(), name, err)
 		}
 	}
 }
