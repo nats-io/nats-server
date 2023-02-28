@@ -206,11 +206,7 @@ func (s *Server) getJetStreamCluster() (*jetStream, *jetStreamCluster) {
 	}
 
 	// Only set once, do not need a lock.
-	cc := js.cluster
-	if cc == nil {
-		return nil, nil
-	}
-	return js, cc
+	return js, js.cluster
 }
 
 func (s *Server) JetStreamIsClustered() bool {
@@ -715,6 +711,27 @@ func (js *jetStream) server() *Server {
 	s := js.srv
 	js.mu.RUnlock()
 	return s
+}
+
+// Returns leader status, both whether or not we are the leader and if the group is leaderless.
+func (js *jetStream) leaderStatus() (bool, bool) {
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+
+	cc := js.cluster
+	if cc == nil || cc.meta == nil {
+		return false, true
+	}
+	isLeader := cc.meta.Leader()
+	if isLeader {
+		return true, false
+	}
+	// If we don't have a leader.
+	// Make sure we have been running for enough time.
+	if cc.meta.GroupLeader() == _EMPTY_ && time.Since(cc.meta.Created()) > lostQuorumIntervalDefault {
+		return false, true
+	}
+	return false, false
 }
 
 // Will respond if we do not think we have a metacontroller leader.

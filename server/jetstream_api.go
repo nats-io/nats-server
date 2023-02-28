@@ -1591,9 +1591,14 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, _ *Account, 
 // Request for the list of all detailed stream info.
 // TODO(dlc) - combine with above long term
 func (s *Server) jsStreamListRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
-	if c == nil || !s.JetStreamEnabled() {
+	if c == nil {
 		return
 	}
+	js, cc := s.getJetStreamCluster()
+	if js == nil {
+		return
+	}
+
 	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
 	if err != nil {
 		s.Warnf(badAPIRequestT, msg)
@@ -1606,18 +1611,15 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, _ *Account, s
 	}
 
 	// Determine if we should proceed here when we are in clustered mode.
-	if s.JetStreamIsClustered() {
-		js, cc := s.getJetStreamCluster()
-		if js == nil || cc == nil {
-			return
-		}
-		if js.isLeaderless() {
+	if cc != nil {
+		leader, leaderless := js.leaderStatus()
+		if leaderless {
 			resp.Error = NewJSClusterNotAvailError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
 		// Make sure we are meta leader.
-		if !s.JetStreamIsLeader() {
+		if !leader {
 			return
 		}
 	}
@@ -1647,7 +1649,7 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, _ *Account, s
 	}
 
 	// Clustered mode will invoke a scatter and gather.
-	if s.JetStreamIsClustered() {
+	if cc != nil {
 		// Need to copy these off before sending.. don't move this inside startGoRoutine!!!
 		msg = copyBytes(msg)
 		s.startGoRoutine(func() { s.jsClusteredStreamListRequest(acc, ci, filter, offset, subject, reply, msg) })
