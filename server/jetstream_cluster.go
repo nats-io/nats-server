@@ -1627,6 +1627,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					delete(ru.updateConsumers, key)
 				} else {
 					js.processConsumerRemoval(ca)
+					didRemove = true
 				}
 			case updateStreamOp:
 				sa, err := decodeStreamAssignment(buf[1:])
