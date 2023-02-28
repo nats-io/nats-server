@@ -2703,7 +2703,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	isLastBlock := mb == fs.lmb
 	isEmpty := mb.msgs == 0
 	// If we are removing the message via limits we do not need to write the index file here.
-	// If viaLimits this means ona restart we will properly cleanup these messages regardless.
+	// If viaLimits this means on a restart we will properly cleanup these messages regardless.
 	shouldWriteIndex := !isEmpty && !viaLimits
 
 	if fifo {
@@ -6816,7 +6816,7 @@ var dios chan struct{}
 // Used to setup our simplistic counting semaphore using buffered channels.
 // golang.org's semaphore seemed a bit heavy.
 func init() {
-	// Based on Go max threads of 10k, limit ourselves to a max of 1k blocking IO calls.
+	// Limit ourselves to a max of 4 blocking IO calls.
 	const nIO = 4
 	dios = make(chan struct{}, nIO)
 	// Fill it up to start.
