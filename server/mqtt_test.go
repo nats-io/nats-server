@@ -6244,6 +6244,129 @@ func TestMQTTSubjectMappingWithImportExport(t *testing.T) {
 	check(nc, "$MQTT.msgs.foo")
 }
 
+// Issue https://github.com/nats-io/nats-server/issues/3924
+// The MQTT Server MUST NOT match Topic Filters starting with a wildcard character (# or +),
+// with Topic Names beginning with a $ character [MQTT-4.7.2-1]
+func TestMQTTSubjectWildcardStart(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		server_name: mqtt
+		jetstream: enabled
+		mqtt {
+			listen: 127.0.0.1:-1
+		}
+	`))
+	s, o := RunServerWithConfig(conf)
+	defer testMQTTShutdownServer(s)
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+
+	mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+
+	mc1, r1 := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mc1.Close()
+	testMQTTCheckConnAck(t, r1, mqttConnAckRCConnectionAccepted, false)
+
+	mc2, r2 := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mc2.Close()
+	testMQTTCheckConnAck(t, r2, mqttConnAckRCConnectionAccepted, false)
+
+	mc3, r3 := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mc3.Close()
+	testMQTTCheckConnAck(t, r3, mqttConnAckRCConnectionAccepted, false)
+
+	// These will fail already with the bug due to messages already being queue up before the subAck.
+	testMQTTSub(t, 1, mc1, r1, []*mqttFilter{{filter: "*", qos: 0}}, []byte{0})
+	testMQTTFlush(t, mc1, nil, r1)
+
+	testMQTTSub(t, 1, mc2, r2, []*mqttFilter{{filter: "#", qos: 1}}, []byte{1})
+	testMQTTFlush(t, mc2, nil, r2)
+
+	testMQTTSub(t, 1, mc3, r3, []*mqttFilter{{filter: "*/foo", qos: 1}}, []byte{1})
+	testMQTTFlush(t, mc2, nil, r2)
+
+	// Just as a barrier
+	natsFlush(t, nc)
+
+	// Now publish
+
+	// NATS Publish
+	msg := []byte("HELLO WORLD")
+	natsPubReq(t, nc, "foo", _EMPTY_, msg)
+
+	// Check messages received
+	testMQTTCheckPubMsg(t, mc1, r1, "foo", 0, msg)
+	testMQTTExpectNothing(t, r1)
+
+	testMQTTCheckPubMsg(t, mc2, r2, "foo", 0, msg)
+	testMQTTExpectNothing(t, r2)
+
+	testMQTTExpectNothing(t, r3)
+
+	// Anything that starts with $ is reserved against wildcard subjects like above.
+	natsPubReq(t, nc, "$JS.foo", _EMPTY_, msg)
+	testMQTTExpectNothing(t, r1)
+	testMQTTExpectNothing(t, r2)
+	testMQTTExpectNothing(t, r3)
+
+	// Now do MQTT QoS-0
+	testMQTTPublish(t, mc, r, 0, false, false, "foo", 0, msg)
+
+	testMQTTCheckPubMsg(t, mc1, r1, "foo", 0, msg)
+	testMQTTExpectNothing(t, r1)
+
+	testMQTTCheckPubMsg(t, mc2, r2, "foo", 0, msg)
+	testMQTTExpectNothing(t, r2)
+
+	testMQTTExpectNothing(t, r3)
+
+	testMQTTPublish(t, mc, r, 0, false, false, "$JS/foo", 1, msg)
+
+	testMQTTExpectNothing(t, r1)
+	testMQTTExpectNothing(t, r2)
+	testMQTTExpectNothing(t, r3)
+
+	// Now do MQTT QoS-1
+	msg = []byte("HELLO WORLD - RETAINED")
+	testMQTTPublish(t, mc, r, 1, false, false, "$JS/foo", 4, msg)
+
+	testMQTTExpectNothing(t, r1)
+	testMQTTExpectNothing(t, r2)
+	testMQTTExpectNothing(t, r3)
+
+	testMQTTPublish(t, mc, r, 1, false, false, "foo", 2, msg)
+
+	testMQTTCheckPubMsg(t, mc1, r1, "foo", 0, msg)
+	testMQTTExpectNothing(t, r1)
+
+	testMQTTCheckPubMsg(t, mc2, r2, "foo", 2, msg)
+	testMQTTExpectNothing(t, r2)
+
+	testMQTTExpectNothing(t, r3)
+
+	testMQTTPublish(t, mc, r, 1, false, false, "foo/foo", 3, msg)
+
+	testMQTTExpectNothing(t, r1)
+
+	testMQTTCheckPubMsg(t, mc2, r2, "foo/foo", 2, msg)
+	testMQTTExpectNothing(t, r2)
+
+	testMQTTCheckPubMsg(t, mc3, r3, "foo/foo", 2, msg)
+	testMQTTExpectNothing(t, r3)
+
+	// Make sure we did not retain the messages prefixed with $.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	si, err := js.StreamInfo(mqttStreamName)
+	require_NoError(t, err)
+
+	require_True(t, si.State.Msgs == 0)
+}
+
 //////////////////////////////////////////////////////////////////////////
 //
 // Benchmarks
