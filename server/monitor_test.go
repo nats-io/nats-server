@@ -3678,6 +3678,7 @@ func TestMonitorOpJWT(t *testing.T) {
 
 func TestMonitorLeafz(t *testing.T) {
 	content := `
+	server_name: "hub"
 	listen: "127.0.0.1:-1"
 	http: "127.0.0.1:-1"
 	operator = "../test/configs/nkeys/op.jwt"
@@ -3817,8 +3818,11 @@ func TestMonitorLeafz(t *testing.T) {
 			} else {
 				t.Fatalf("Expected account to be %q or %q, got %q", acc1.Name, acc2.Name, ln.Account)
 			}
-			if ln.Name != leafName {
-				t.Fatalf("Expected name to be %q, got %q", leafName, ln.Name)
+			if ln.Name != "hub" {
+				t.Fatalf("Expected name to be %q, got %q", "hub", ln.Name)
+			}
+			if !ln.IsSpoke {
+				t.Fatal("Expected leafnode connection to be spoke")
 			}
 			if ln.RTT == "" {
 				t.Fatalf("RTT not tracked?")
@@ -3910,6 +3914,9 @@ func TestMonitorLeafz(t *testing.T) {
 			}
 			if ln.Name != leafName {
 				t.Fatalf("Expected name to be %q, got %q", leafName, ln.Name)
+			}
+			if ln.IsSpoke {
+				t.Fatal("Expected leafnode connection to be hub")
 			}
 			if ln.RTT == "" {
 				t.Fatalf("RTT not tracked?")

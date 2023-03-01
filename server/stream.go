@@ -1,4 +1,4 @@
-// Copyright 2019-2022 The NATS Authors
+// Copyright 2019-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -3630,9 +3630,22 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 
 // processInboundJetStreamMsg handles processing messages bound for a stream.
 func (mset *stream) processInboundJetStreamMsg(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
-	// Always move this to another Go routine.
 	hdr, msg := c.msgParts(rmsg)
-	mset.queueInboundMsg(subject, reply, hdr, msg)
+
+	// If we are not receiving directly from a client we should move this to another Go routine.
+	// Make sure to grab no stream or js locks.
+	if c.kind != CLIENT {
+		mset.queueInboundMsg(subject, reply, hdr, msg)
+		return
+	}
+
+	// This is directly from a client so process inline.
+	// If we are clustered we need to propose this message to the underlying raft group.
+	if mset.IsClustered() {
+		mset.processClusteredInboundMsg(subject, reply, hdr, msg)
+	} else {
+		mset.processJetStreamMsg(subject, reply, hdr, msg, 0, 0)
+	}
 }
 
 var (
