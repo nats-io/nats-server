@@ -888,13 +888,7 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 	}
 	now := time.Now().UTC()
 
-	var clientOpts = ClientOpts{
-		Name:     opts.ServerName,
-		Verbose:  defaultOpts.Verbose,
-		Pedantic: defaultOpts.Pedantic,
-		Echo:     defaultOpts.Echo,
-	}
-	c := &client{srv: s, nc: conn, kind: LEAF, opts: clientOpts, mpay: maxPay, msubs: maxSubs, start: now, last: now}
+	c := &client{srv: s, nc: conn, kind: LEAF, opts: defaultOpts, mpay: maxPay, msubs: maxSubs, start: now, last: now}
 	// Do not update the smap here, we need to do it in initLeafNodeSmapAndSendSubs
 	c.leaf = &leaf{}
 
