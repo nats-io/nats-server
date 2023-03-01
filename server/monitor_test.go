@@ -4183,7 +4183,7 @@ func TestMonitorJsz(t *testing.T) {
 	_, err = js.Publish("foo", nil)
 	require_NoError(t, err)
 	// Wait for mirror replication
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 
 	monUrl1 := fmt.Sprintf("http://127.0.0.1:%d/jsz", 7501)
 	monUrl2 := fmt.Sprintf("http://127.0.0.1:%d/jsz", 5501)
@@ -4418,17 +4418,25 @@ func TestMonitorJsz(t *testing.T) {
 			if len(info.AccountDetails) != 1 {
 				t.Fatalf("expected account ACC to be returned by %s but got %v", url, info)
 			}
-			if len(info.AccountDetails[0].Streams[0].Consumer) == 0 {
+
+			// We will have two streams and order is not guaranteed. So grab the one we want.
+			var si StreamDetail
+			if info.AccountDetails[0].Streams[0].Name == "my-stream-replicated" {
+				si = info.AccountDetails[0].Streams[0]
+			} else {
+				si = info.AccountDetails[0].Streams[1]
+			}
+
+			if len(si.Consumer) == 0 {
 				t.Fatalf("expected consumers to be returned by %s but got %v", url, info)
 			}
-			if len(info.AccountDetails[0].Streams[0].ConsumerRaftGroups) == 0 {
+			if len(si.ConsumerRaftGroups) == 0 {
 				t.Fatalf("expected consumer raft groups to be returned by %s but got %v", url, info)
 			}
-			srgroup := info.AccountDetails[0].Streams[0].RaftGroup
-			if len(srgroup) == 0 {
+			if len(si.RaftGroup) == 0 {
 				t.Fatal("expected stream raft group info to be included")
 			}
-			crgroup := info.AccountDetails[0].Streams[0].ConsumerRaftGroups[0]
+			crgroup := si.ConsumerRaftGroups[0]
 			if crgroup.Name != "my-consumer-replicated" {
 				t.Fatalf("expected consumer name to be included in raft group info, got: %v", crgroup.Name)
 			}
