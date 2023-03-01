@@ -5651,6 +5651,12 @@ func TestJetStreamClusterStreamRepublish(t *testing.T) {
 		seq, err := strconv.Atoi(m.Header.Get(JSSequence))
 		require_NoError(t, err)
 		require_True(t, seq == i)
+		// Make sure timestamp is correct
+		ts, err := time.Parse(time.RFC3339Nano, m.Header.Get(JSTimeStamp))
+		require_NoError(t, err)
+		origMsg, err := js.GetMsg("RP", uint64(seq))
+		require_NoError(t, err)
+		require_True(t, ts == origMsg.Time)
 		// Make sure last sequence matches last seq we received on this subject.
 		last, err := strconv.Atoi(m.Header.Get(JSLastSequence))
 		require_NoError(t, err)
