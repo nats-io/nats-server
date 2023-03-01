@@ -5124,21 +5124,26 @@ func TestNoRaceJetStreamClusterInterestPullConsumerStreamLimitBug(t *testing.T) 
 	time.Sleep(5 * time.Second)
 	close(qch)
 	wg.Wait()
-	time.Sleep(time.Second)
 
-	si, err := js.StreamInfo("TEST")
-	require_NoError(t, err)
+	checkFor(t, 20*time.Second, 500*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST")
+		if err != nil {
+			return err
+		}
+		ci, err := js.ConsumerInfo("TEST", "dur")
+		if err != nil {
+			return err
+		}
 
-	ci, err := js.ConsumerInfo("TEST", "dur")
-	require_NoError(t, err)
-
-	ld := ci.Delivered.Stream
-	if si.State.FirstSeq > ld {
-		ld = si.State.FirstSeq - 1
-	}
-	if si.State.LastSeq-ld != ci.NumPending {
-		t.Fatalf("Expected NumPending to be %d got %d", si.State.LastSeq-ld, ci.NumPending)
-	}
+		ld := ci.Delivered.Stream
+		if si.State.FirstSeq > ld {
+			ld = si.State.FirstSeq - 1
+		}
+		if si.State.LastSeq-ld != ci.NumPending {
+			return fmt.Errorf("Expected NumPending to be %d got %d", si.State.LastSeq-ld, ci.NumPending)
+		}
+		return nil
+	})
 }
 
 // Test that all peers have the direct access subs that participate in a queue group,
