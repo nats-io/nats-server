@@ -7,7 +7,7 @@ vm:
 
 language: go
 go:
-- 1.19.5
+- 1.19.6
 
 addons:
   apt:
