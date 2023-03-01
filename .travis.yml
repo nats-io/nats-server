@@ -9,7 +9,7 @@ language: go
 go:
 # This should be quoted or use .x, but should not be unquoted.
 # Remember that a YAML bare float drops trailing zeroes.
-- '1.19.5'
+- '1.19.6'
 
 addons:
   apt:
