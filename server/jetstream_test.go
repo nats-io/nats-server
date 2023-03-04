@@ -16518,6 +16518,63 @@ func TestJetStreamDisabledHealthz(t *testing.T) {
 	t.Fatalf("Expected healthz to return error if JetStream is disabled, got status: %s", hs.Status)
 }
 
+func TestJetStreamPullTimeout(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name: "TEST",
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "pr",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	const numMessages = 1000
+	// Send messages in small intervals.
+	go func() {
+		for i := 0; i < numMessages; i++ {
+			time.Sleep(time.Millisecond * 10)
+			sendStreamMsg(t, nc, "TEST", "data")
+		}
+	}()
+
+	// Prepare manual Pull Request.
+	req := &JSApiConsumerGetNextRequest{Batch: 200, NoWait: false, Expires: time.Millisecond * 100}
+	jreq, _ := json.Marshal(req)
+
+	subj := fmt.Sprintf(JSApiRequestNextT, "TEST", "pr")
+	reply := "_pr_"
+	var got atomic.Int32
+	nc.PublishRequest(subj, reply, jreq)
+
+	// Manually subscribe to inbox subject and send new request only if we get `408 Request Timeout`.
+	sub, _ := nc.Subscribe(reply, func(msg *nats.Msg) {
+		if msg.Header.Get("Status") == "408" && msg.Header.Get("Description") == "Request Timeout" {
+			nc.PublishRequest(subj, reply, jreq)
+			nc.Flush()
+		} else {
+			got.Add(1)
+			msg.Ack()
+		}
+	})
+	defer sub.Unsubscribe()
+
+	// Check if we're not stuck.
+	checkFor(t, time.Second*30, time.Second*1, func() error {
+		if got.Load() < int32(numMessages) {
+			return fmt.Errorf("expected %d messages", numMessages)
+		}
+		return nil
+	})
+}
+
 func TestJetStreamPullMaxBytes(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()

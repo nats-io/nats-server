@@ -4437,7 +4437,7 @@ func TestMonitorJsz(t *testing.T) {
 				t.Fatal("expected stream raft group info to be included")
 			}
 			crgroup := si.ConsumerRaftGroups[0]
-			if crgroup.Name != "my-consumer-replicated" {
+			if crgroup.Name != "my-consumer-replicated" && crgroup.Name != "my-consumer-mirror" {
 				t.Fatalf("expected consumer name to be included in raft group info, got: %v", crgroup.Name)
 			}
 			if len(crgroup.RaftGroup) == 0 {

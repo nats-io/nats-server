@@ -2881,6 +2881,17 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 			} else if o.srv.gateway.enabled && o.srv.hasGatewayInterest(wr.acc.Name, wr.interest) {
 				return o.waiting.pop()
 			}
+		} else {
+			// We do check for expiration in `processWaiting`, but it is possible to hit the expiry here, and not there.
+			hdr := []byte(fmt.Sprintf("NATS/1.0 408 Request Timeout\r\n%s: %d\r\n%s: %d\r\n\r\n", JSPullRequestPendingMsgs, wr.n, JSPullRequestPendingBytes, wr.b))
+			o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+			o.waiting.removeCurrent()
+			if o.node != nil {
+				o.removeClusterPendingRequest(wr.reply)
+			}
+			wr.recycle()
+			continue
+
 		}
 		if wr.interest != wr.reply {
 			const intExpT = "NATS/1.0 408 Interest Expired\r\n%s: %d\r\n%s: %d\r\n\r\n"
