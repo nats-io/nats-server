@@ -1,4 +1,4 @@
-// Copyright 2019-2022 The NATS Authors
+// Copyright 2019-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -506,8 +506,6 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		// Assign our transform for republishing.
 		mset.tr = tr
 	}
-
-	jsa.streams[cfg.Name] = mset
 	storeDir := filepath.Join(jsa.storeDir, streamsDir, cfg.Name)
 	jsa.mu.Unlock()
 
@@ -593,6 +591,11 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 			mset.sendCreateAdvisory()
 		}
 	}
+
+	// Register with our account last.
+	jsa.mu.Lock()
+	jsa.streams[cfg.Name] = mset
+	jsa.mu.Unlock()
 
 	return mset, nil
 }
@@ -2850,10 +2853,8 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 // Generate a new style source header.
 func (si *sourceInfo) genSourceHeader(reply string) string {
 	var b strings.Builder
-	// strip the source index number from the iname
-	name := si.iname[strings.IndexRune(si.iname, ':')+1:]
 
-	b.WriteString(name)
+	b.WriteString(si.iname)
 	b.WriteByte(' ')
 	// Grab sequence as text here from reply subject.
 	var tsa [expectedNumReplyTokens]string
@@ -3629,35 +3630,18 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 
 // processInboundJetStreamMsg handles processing messages bound for a stream.
 func (mset *stream) processInboundJetStreamMsg(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
-	mset.mu.RLock()
-	isLeader, isClustered, isSealed := mset.isLeader(), mset.isClustered(), mset.cfg.Sealed
-	mset.mu.RUnlock()
-
-	// If we are not the leader just ignore.
-	if !isLeader {
-		return
-	}
-
-	if isSealed {
-		var resp = JSPubAckResponse{
-			PubAck: &PubAck{Stream: mset.name()},
-			Error:  NewJSStreamSealedError(),
-		}
-		b, _ := json.Marshal(resp)
-		mset.outq.sendMsg(reply, b)
-		return
-	}
-
 	hdr, msg := c.msgParts(rmsg)
 
 	// If we are not receiving directly from a client we should move this to another Go routine.
+	// Make sure to grab no stream or js locks.
 	if c.kind != CLIENT {
 		mset.queueInboundMsg(subject, reply, hdr, msg)
 		return
 	}
 
+	// This is directly from a client so process inline.
 	// If we are clustered we need to propose this message to the underlying raft group.
-	if isClustered {
+	if mset.IsClustered() {
 		mset.processClusteredInboundMsg(subject, reply, hdr, msg)
 	} else {
 		mset.processJetStreamMsg(subject, reply, hdr, msg, 0, 0)
@@ -3698,10 +3682,23 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	numConsumers := len(mset.consumers)
 	interestRetention := mset.cfg.Retention == InterestPolicy
 	// Snapshot if we are the leader and if we can respond.
-	isLeader := mset.isLeader()
+	isLeader, isSealed := mset.isLeader(), mset.cfg.Sealed
 	canRespond := doAck && len(reply) > 0 && isLeader
 
 	var resp = &JSPubAckResponse{}
+
+	// Bail here if sealed.
+	if isSealed {
+		outq := mset.outq
+		mset.mu.Unlock()
+		if canRespond && outq != nil {
+			resp.PubAck = &PubAck{Stream: name}
+			resp.Error = ApiErrors[JSStreamSealedErr]
+			b, _ := json.Marshal(resp)
+			outq.sendMsg(reply, b)
+		}
+		return ApiErrors[JSStreamSealedErr]
+	}
 
 	var buf [256]byte
 	pubAck := append(buf[:0], mset.pubAck...)
@@ -4163,13 +4160,13 @@ func (mset *stream) signalConsumersLoop() {
 // This will update and signal all consumers that match.
 func (mset *stream) signalConsumers(subj string, seq uint64) {
 	mset.clsMu.RLock()
-	defer mset.clsMu.RUnlock()
-
 	if mset.csl == nil {
+		mset.clsMu.RUnlock()
 		return
 	}
-
 	r := mset.csl.Match(subj)
+	mset.clsMu.RUnlock()
+
 	if len(r.psubs) == 0 {
 		return
 	}
@@ -4761,19 +4758,20 @@ func (mset *stream) state() StreamState {
 }
 
 func (mset *stream) stateWithDetail(details bool) StreamState {
-	mset.mu.RLock()
-	c, store := mset.client, mset.store
-	mset.mu.RUnlock()
-	if c == nil || store == nil {
+	// mset.store does not change once set, so ok to reference here directly.
+	// We do this elsewhere as well.
+	store := mset.store
+	if store == nil {
 		return StreamState{}
 	}
-	// Currently rely on store.
+
+	// Currently rely on store for details.
 	if details {
 		return store.State()
 	}
 	// Here we do the fast version.
 	var state StreamState
-	mset.store.FastState(&state)
+	store.FastState(&state)
 	return state
 }
 

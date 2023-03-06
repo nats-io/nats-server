@@ -81,6 +81,13 @@ func require_NoError(t testing.TB, err error) {
 	}
 }
 
+func require_NotNil(t testing.TB, v any) {
+	t.Helper()
+	if v == nil {
+		t.Fatalf("require not nil, but got: %v", v)
+	}
+}
+
 func require_Contains(t *testing.T, s string, subStrs ...string) {
 	t.Helper()
 	for _, subStr := range subStrs {

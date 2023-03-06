@@ -14,13 +14,11 @@
 package server
 
 import (
+	"bytes"
 	"crypto/tls"
-	"encoding/base64"
-	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/nats-io/jwt/v2"
@@ -28,31 +26,10 @@ import (
 )
 
 const (
-	AuthCalloutSubject     = "$SYS.REQ.USER.AUTH"
-	AuthRequestSubject     = "nats-authorization-request"
-	AuthRequestXKeyHeader  = "Nats-Server-Xkey"
-	AuthCalloutServerIdTag = "Auth-Callout-Server-ID"
-	AuthAccountPKHeader    = "Auth-Account-Pk"
-	AuthAccountSigHeader   = "Auth-Account-Sig"
+	AuthCalloutSubject    = "$SYS.REQ.USER.AUTH"
+	AuthRequestSubject    = "nats-authorization-request"
+	AuthRequestXKeyHeader = "Nats-Server-Xkey"
 )
-
-type CalloutResponse struct {
-	Error     string `json:"error,omitempty"`
-	UserToken string `json:"user_token,omitempty"`
-}
-
-func getTagValue(uc *jwt.UserClaims, key string) string {
-	// we are expecting `tag: serverID` or `tag:serverID`
-	// note that tags lower case
-	k := fmt.Sprintf("%s:", strings.ToLower(key))
-	for _, t := range uc.Tags {
-		if strings.HasPrefix(t, k) {
-			return t[len(k):]
-		}
-	}
-	// not found
-	return ""
-}
 
 // Process a callout on this client's behalf.
 func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorized bool, errStr string) {
@@ -101,10 +78,7 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 
 	decodeResponse := func(rc *client, rmsg []byte, acc *Account) (*jwt.UserClaims, error) {
 		account := acc.Name
-		hdr, msg := rc.msgParts(rmsg)
-		if len(hdr) == 0 {
-			return nil, errors.New("Auth callout violation - expected headers")
-		}
+		_, msg := rc.msgParts(rmsg)
 
 		// This signals not authorized.
 		// Since this is an account subscription will always have "\r\n".
@@ -115,9 +89,8 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 		msg = msg[:len(msg)-LEN_CR_LF]
 		encrypted := false
 		// If we sent an encrypted request the response could be encrypted as well.
-		// we are expecting JSON, so first char is `{`
-		// possibly faster to do bytes.HasPrefix(msg, []byte("{"))
-		if xkp != nil && len(msg) > 0 && !json.Valid(msg) {
+		// we are expecting the input to be `eyJ` if it is a JWT
+		if xkp != nil && len(msg) > 0 && !bytes.HasPrefix(msg, []byte(jwtPrefix)) {
 			var err error
 			msg, err = xkp.Open(msg, pubAccXKey)
 			if err != nil {
@@ -126,65 +99,45 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 			encrypted = true
 		}
 
-		ar := CalloutResponse{}
-		if err := json.Unmarshal(msg, &ar); err != nil {
-			return nil, fmt.Errorf("Auth callout violation: error deserializing JSON: %v", err)
+		cr, err := jwt.DecodeAuthorizationResponseClaims(string(msg))
+		if err != nil {
+			return nil, err
+		}
+		vr := jwt.CreateValidationResults()
+		cr.Validate(vr)
+		if len(vr.Issues) > 0 {
+			return nil, fmt.Errorf("Authorization response had validation errors: %v", vr.Issues[0])
+		}
+
+		// the subject is the user id
+		if cr.Subject != pub {
+			return nil, errors.New("Auth callout violation: auth callout response is not for expected user")
+		}
+
+		// check the audience to be the server ID
+		if cr.Audience != s.info.ID {
+			return nil, errors.New("Auth callout violation: auth callout response is not for server")
+		}
+
+		// check if had an error message from the auth account
+		if cr.Error != _EMPTY_ {
+			return nil, fmt.Errorf("Auth callout service returned an error: %v", cr.Error)
 		}
 
 		// if response is encrypted none of this is needed
 		if isOperatorMode && !encrypted {
-			pkStr := string(getHeader(AuthAccountPKHeader, hdr))
-			if pkStr == "" {
-				return nil, errors.New("Auth callout violation - expected auth account pk")
+			pkStr := cr.Issuer
+			if cr.IssuerAccount != _EMPTY_ {
+				pkStr = cr.IssuerAccount
 			}
 			if pkStr != account {
 				if _, ok := acc.signingKeys[pkStr]; !ok {
 					return nil, errors.New("Auth callout signing key is unknown")
 				}
 			}
-			pk, err := nkeys.FromPublicKey(pkStr)
-			if err != nil {
-				return nil, fmt.Errorf("Error parsing auth key: %v", err)
-			}
-			sig := string(getHeader(AuthAccountSigHeader, hdr))
-			if sig == "" {
-				return nil, errors.New("Auth callout violation - expected auth sig")
-			}
-			dSig, err := base64.RawURLEncoding.DecodeString(sig)
-			if err != nil {
-				return nil, fmt.Errorf("Error decoding sig: %v", err)
-			}
-			// verify that the payload we got, is signed by the auth account
-			if err := pk.Verify(msg, dSig); err != nil {
-				return nil, fmt.Errorf("Unable to validate sig: %v", err)
-			}
 		}
 
-		if len(ar.Error) > 0 {
-			return nil, fmt.Errorf("Auth callout violation: %q", ar.Error)
-		}
-
-		// if we got a message - we got a JWT, the authentication shouldn't be yielding JWTs on failure
-		return jwt.DecodeUserClaims(ar.UserToken)
-	}
-
-	// FIXME: we were making a point of checking the server id, but, this is not really necessary
-	//  because the user public key, has to be the one that we generated so all this code here
-	//  is not necessary and complicates the response - refactored here so that we can zap
-	// checkServerID validates the server ID matches a value sent to the callout
-	// and expected to be stated in one of the tags
-	checkServerID := func(arc *jwt.UserClaims, expectedServerID string) error {
-		serverID := getTagValue(arc, AuthCalloutServerIdTag)
-		if serverID == "" {
-			return fmt.Errorf("Auth callout violation: missing server id on account %q", expectedServerID)
-		}
-		// Require the response to have pinned the audience to this server.
-		// but the server ID will be lowercase
-		if serverID != strings.ToLower(s.info.ID) {
-			return fmt.Errorf("Wrong server id received for auth callout response on account %q, expected %q got %q",
-				expectedServerID, s.info.ID, serverID)
-		}
-		return nil
+		return jwt.DecodeUserClaims(cr.Jwt)
 	}
 
 	// getIssuerAccount returns the issuer (as per JWT) - it also asserts that
@@ -201,21 +154,21 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 
 		// the jwt issuer can be a signing key
 		jwtIssuer := arc.Issuer
-		if arc.IssuerAccount != "" {
+		if arc.IssuerAccount != _EMPTY_ {
 			if !isOperatorMode {
 				// this should be invalid - effectively it would allow the auth callout
 				// to issue on another account which may be allowed given the configuration
 				// where the auth callout account can handle multiple different ones..
-				return "", fmt.Errorf("Error non operator mode account %q: attempted to use issuer_account", account)
+				return _EMPTY_, fmt.Errorf("Error non operator mode account %q: attempted to use issuer_account", account)
 			}
 			jwtIssuer = arc.IssuerAccount
 		}
 
 		if jwtIssuer != issuer {
 			if !isOperatorMode {
-				return "", fmt.Errorf("Wrong issuer for auth callout response on account %q, expected %q got %q", account, issuer, jwtIssuer)
+				return _EMPTY_, fmt.Errorf("Wrong issuer for auth callout response on account %q, expected %q got %q", account, issuer, jwtIssuer)
 			} else if !acc.isAllowedAcount(jwtIssuer) {
-				return "", fmt.Errorf("Account %q not permitted as valid account option for auth callout for account %q",
+				return _EMPTY_, fmt.Errorf("Account %q not permitted as valid account option for auth callout for account %q",
 					arc.Issuer, account)
 			}
 		}
@@ -236,7 +189,6 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 				return 0, nil, fmt.Errorf("Authorized user on account %q using invalid connection type", account)
 			}
 		}
-
 		return expiration, allowedConnTypes, nil
 	}
 
@@ -249,7 +201,7 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 		}
 
 		// if we are not in operator mode, they can specify placement as a tag
-		placement := ""
+		var placement string
 		if !isOperatorMode {
 			// only allow placement if we are not in operator mode
 			placement = arc.Audience
@@ -287,16 +239,16 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 			respCh <- err.Error()
 			return
 		}
+		vr := jwt.CreateValidationResults()
+		arc.Validate(vr)
+		if len(vr.Issues) > 0 {
+			respCh <- fmt.Sprintf("Error validating user JWT: %v", vr.Issues[0])
+			return
+		}
 
 		// Make sure that the user is what we requested.
 		if arc.Subject != pub {
 			respCh <- fmt.Sprintf("Expected authorized user of %q but got %q on account %q", pub, arc.Subject, racc.Name)
-			return
-		}
-
-		// FIXME: this is likely not necessary - user ID is already the nonce
-		if err := checkServerID(arc, racc.Name); err != nil {
-			respCh <- err.Error()
 			return
 		}
 

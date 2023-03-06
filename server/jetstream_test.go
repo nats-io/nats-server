@@ -207,12 +207,10 @@ func TestJetStreamAddStream(t *testing.T) {
 			}
 			defer mset.delete()
 
-			nc := clientConnectToServer(t, s)
+			nc, js := jsClientConnect(t, s)
 			defer nc.Close()
 
-			nc.Publish("foo", []byte("Hello World!"))
-			nc.Flush()
-
+			js.Publish("foo", []byte("Hello World!"))
 			state := mset.state()
 			if state.Msgs != 1 {
 				t.Fatalf("Expected 1 message, got %d", state.Msgs)
@@ -221,9 +219,7 @@ func TestJetStreamAddStream(t *testing.T) {
 				t.Fatalf("Expected non-zero bytes")
 			}
 
-			nc.Publish("foo", []byte("Hello World Again!"))
-			nc.Flush()
-
+			js.Publish("foo", []byte("Hello World Again!"))
 			state = mset.state()
 			if state.Msgs != 2 {
 				t.Fatalf("Expected 2 messages, got %d", state.Msgs)
@@ -4959,7 +4955,7 @@ func TestJetStreamDurableFilteredSubjectConsumerReconnect(t *testing.T) {
 			}
 			defer mset.delete()
 
-			nc := clientConnectToServer(t, s)
+			nc, js := jsClientConnect(t, s)
 			defer nc.Close()
 
 			sendMsgs := func(toSend int) {
@@ -4970,11 +4966,9 @@ func TestJetStreamDurableFilteredSubjectConsumerReconnect(t *testing.T) {
 					} else {
 						subj = "foo.ZZ"
 					}
-					if err := nc.Publish(subj, []byte("OK!")); err != nil {
-						return
-					}
+					_, err := js.Publish(subj, []byte("OK!"))
+					require_NoError(t, err)
 				}
-				nc.Flush()
 			}
 
 			// Send 50 msgs
@@ -5104,14 +5098,14 @@ func TestJetStreamConsumerInactiveNoDeadlock(t *testing.T) {
 			}
 			defer mset.delete()
 
-			nc := clientConnectToServer(t, s)
+			nc, js := jsClientConnect(t, s)
 			defer nc.Close()
 
 			// Send lots of msgs and have them queued up.
 			for i := 0; i < 10000; i++ {
-				nc.Publish("DC", []byte("OK!"))
+				js.Publish("DC", []byte("OK!"))
 			}
-			nc.Flush()
+
 			if state := mset.state(); state.Msgs != 10000 {
 				t.Fatalf("Expected %d messages, got %d", 10000, state.Msgs)
 			}
@@ -5263,14 +5257,13 @@ func TestJetStreamRedeliverCount(t *testing.T) {
 			}
 			defer mset.delete()
 
-			nc := clientConnectToServer(t, s)
+			nc, js := jsClientConnect(t, s)
 			defer nc.Close()
 
 			// Send 10 msgs
 			for i := 0; i < 10; i++ {
-				nc.Publish("DC", []byte("OK!"))
+				js.Publish("DC", []byte("OK!"))
 			}
-			nc.Flush()
 			if state := mset.state(); state.Msgs != 10 {
 				t.Fatalf("Expected %d messages, got %d", 10, state.Msgs)
 			}
@@ -5412,14 +5405,13 @@ func TestJetStreamCanNotNakAckd(t *testing.T) {
 			}
 			defer mset.delete()
 
-			nc := clientConnectToServer(t, s)
+			nc, js := jsClientConnect(t, s)
 			defer nc.Close()
 
 			// Send 10 msgs
 			for i := 0; i < 10; i++ {
-				nc.Publish("DC", []byte("OK!"))
+				js.Publish("DC", []byte("OK!"))
 			}
-			nc.Flush()
 			if state := mset.state(); state.Msgs != 10 {
 				t.Fatalf("Expected %d messages, got %d", 10, state.Msgs)
 			}
@@ -5486,14 +5478,13 @@ func TestJetStreamStreamPurge(t *testing.T) {
 			}
 			defer mset.delete()
 
-			nc := clientConnectToServer(t, s)
+			nc, js := jsClientConnect(t, s)
 			defer nc.Close()
 
 			// Send 100 msgs
 			for i := 0; i < 100; i++ {
-				nc.Publish("DC", []byte("OK!"))
+				js.Publish("DC", []byte("OK!"))
 			}
-			nc.Flush()
 			if state := mset.state(); state.Msgs != 100 {
 				t.Fatalf("Expected %d messages, got %d", 100, state.Msgs)
 			}
@@ -5508,8 +5499,7 @@ func TestJetStreamStreamPurge(t *testing.T) {
 			}
 			time.Sleep(10 * time.Millisecond)
 			now := time.Now()
-			nc.Publish("DC", []byte("OK!"))
-			nc.Flush()
+			js.Publish("DC", []byte("OK!"))
 
 			state = mset.state()
 			if state.Msgs != 1 {
@@ -5544,14 +5534,13 @@ func TestJetStreamStreamPurgeWithConsumer(t *testing.T) {
 			}
 			defer mset.delete()
 
-			nc := clientConnectToServer(t, s)
+			nc, js := jsClientConnect(t, s)
 			defer nc.Close()
 
 			// Send 100 msgs
 			for i := 0; i < 100; i++ {
-				nc.Publish("DC", []byte("OK!"))
+				js.Publish("DC", []byte("OK!"))
 			}
-			nc.Flush()
 			if state := mset.state(); state.Msgs != 100 {
 				t.Fatalf("Expected %d messages, got %d", 100, state.Msgs)
 			}
@@ -5606,7 +5595,7 @@ func TestJetStreamStreamPurgeWithConsumer(t *testing.T) {
 				t.Fatalf("Expected ackfloor for obsseq to be 75, got %d", state.AckFloor.Consumer)
 			}
 			// Also make sure we can get new messages correctly.
-			nc.Request("DC", []byte("OK-22"), time.Second)
+			js.Publish("DC", []byte("OK-22"))
 			if msg, err := nc.Request(nextSubj, nil, time.Second); err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			} else if string(msg.Data) != "OK-22" {
@@ -5635,14 +5624,13 @@ func TestJetStreamStreamPurgeWithConsumerAndRedelivery(t *testing.T) {
 			}
 			defer mset.delete()
 
-			nc := clientConnectToServer(t, s)
+			nc, js := jsClientConnect(t, s)
 			defer nc.Close()
 
 			// Send 100 msgs
 			for i := 0; i < 100; i++ {
-				nc.Publish("DC", []byte("OK!"))
+				js.Publish("DC", []byte("OK!"))
 			}
-			nc.Flush()
 			if state := mset.state(); state.Msgs != 100 {
 				t.Fatalf("Expected %d messages, got %d", 100, state.Msgs)
 			}
@@ -5690,7 +5678,7 @@ func TestJetStreamStreamPurgeWithConsumerAndRedelivery(t *testing.T) {
 				t.Fatalf("Expected ackfloor for obsseq to be 75, got %d", state.AckFloor.Consumer)
 			}
 			// Also make sure we can get new messages correctly.
-			nc.Request("DC", []byte("OK-22"), time.Second)
+			js.Publish("DC", []byte("OK-22"))
 			if msg, err := nc.Request(nextSubj, nil, time.Second); err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			} else if string(msg.Data) != "OK-22" {
@@ -5719,16 +5707,15 @@ func TestJetStreamInterestRetentionStream(t *testing.T) {
 			}
 			defer mset.delete()
 
-			nc := clientConnectToServer(t, s)
+			nc, js := jsClientConnect(t, s)
 			defer nc.Close()
 
 			// Send 100 msgs
 			totalMsgs := 100
 
 			for i := 0; i < totalMsgs; i++ {
-				nc.Publish("DC", []byte("OK!"))
+				js.Publish("DC", []byte("OK!"))
 			}
-			nc.Flush()
 
 			checkNumMsgs := func(numExpected int) {
 				t.Helper()
@@ -5764,9 +5751,8 @@ func TestJetStreamInterestRetentionStream(t *testing.T) {
 			mset.addConsumer(&ConsumerConfig{DeliverSubject: sub3.Subject, AckPolicy: AckNone})
 
 			for i := 0; i < totalMsgs; i++ {
-				nc.Publish("DC", []byte("OK!"))
+				js.Publish("DC", []byte("OK!"))
 			}
-			nc.Flush()
 
 			checkNumMsgs(totalMsgs)
 
@@ -8264,15 +8250,14 @@ func TestJetStreamDeleteMsg(t *testing.T) {
 				t.Fatalf("Unexpected error adding stream: %v", err)
 			}
 
-			nc := clientConnectToServer(t, s)
+			nc, js := jsClientConnect(t, s)
 			defer nc.Close()
 
 			pubTen := func() {
 				t.Helper()
 				for i := 0; i < 10; i++ {
-					nc.Publish("foo", []byte("Hello World!"))
+					js.Publish("foo", []byte("Hello World!"))
 				}
-				nc.Flush()
 			}
 
 			pubTen()
@@ -11786,9 +11771,9 @@ func TestJetStreamServerEncryption(t *testing.T) {
 	}
 
 	for _, c := range cases {
-
 		t.Run(c.name, func(t *testing.T) {
 			tmpl := `
+				server_name: S22
 				listen: 127.0.0.1:-1
 				jetstream: {key: $JS_KEY, store_dir: '%s' %s}
 			`
@@ -16533,6 +16518,63 @@ func TestJetStreamDisabledHealthz(t *testing.T) {
 	t.Fatalf("Expected healthz to return error if JetStream is disabled, got status: %s", hs.Status)
 }
 
+func TestJetStreamPullTimeout(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name: "TEST",
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "pr",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	const numMessages = 1000
+	// Send messages in small intervals.
+	go func() {
+		for i := 0; i < numMessages; i++ {
+			time.Sleep(time.Millisecond * 10)
+			sendStreamMsg(t, nc, "TEST", "data")
+		}
+	}()
+
+	// Prepare manual Pull Request.
+	req := &JSApiConsumerGetNextRequest{Batch: 200, NoWait: false, Expires: time.Millisecond * 100}
+	jreq, _ := json.Marshal(req)
+
+	subj := fmt.Sprintf(JSApiRequestNextT, "TEST", "pr")
+	reply := "_pr_"
+	var got atomic.Int32
+	nc.PublishRequest(subj, reply, jreq)
+
+	// Manually subscribe to inbox subject and send new request only if we get `408 Request Timeout`.
+	sub, _ := nc.Subscribe(reply, func(msg *nats.Msg) {
+		if msg.Header.Get("Status") == "408" && msg.Header.Get("Description") == "Request Timeout" {
+			nc.PublishRequest(subj, reply, jreq)
+			nc.Flush()
+		} else {
+			got.Add(1)
+			msg.Ack()
+		}
+	})
+	defer sub.Unsubscribe()
+
+	// Check if we're not stuck.
+	checkFor(t, time.Second*30, time.Second*1, func() error {
+		if got.Load() < int32(numMessages) {
+			return fmt.Errorf("expected %d messages", numMessages)
+		}
+		return nil
+	})
+}
+
 func TestJetStreamPullMaxBytes(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
@@ -18009,6 +18051,7 @@ func TestJetStreamProperErrorDueToOverlapSubjects(t *testing.T) {
 
 func TestJetStreamServerCipherConvert(t *testing.T) {
 	tmpl := `
+		server_name: S22
 		listen: 127.0.0.1:-1
 		jetstream: {key: s3cr3t, store_dir: '%s', cipher: %s}
 	`

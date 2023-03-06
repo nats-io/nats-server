@@ -1,4 +1,4 @@
-// Copyright 2018-2022 The NATS Authors
+// Copyright 2018-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -23,6 +23,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -3443,7 +3444,7 @@ func TestNoRaceJetStreamClusterMemoryStreamConsumerRaftGrowth(t *testing.T) {
 		t.Fatalf("Error looking up consumer %q", "q1")
 	}
 	node := o.raftNode().(*raft)
-	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
 		if ms := node.wal.(*memStore); ms.State().Msgs > 8192 {
 			return fmt.Errorf("Did not compact the raft memory WAL")
 		}
@@ -5040,11 +5041,13 @@ func TestNoRaceJetStreamClusterInterestPullConsumerStreamLimitBug(t *testing.T) 
 	nc, js := jsClientConnect(t, c.randomServer())
 	defer nc.Close()
 
+	limit := uint64(1000)
+
 	_, err := js.AddStream(&nats.StreamConfig{
 		Name:      "TEST",
 		Subjects:  []string{"foo"},
 		Retention: nats.InterestPolicy,
-		MaxMsgs:   2000,
+		MaxMsgs:   int64(limit),
 		Replicas:  3,
 	})
 	require_NoError(t, err)
@@ -5064,10 +5067,7 @@ func TestNoRaceJetStreamClusterInterestPullConsumerStreamLimitBug(t *testing.T) 
 			select {
 			case <-pt.C:
 				_, err := js.Publish("foo", []byte("BUG!"))
-				if err != nil {
-					t.Logf("Got a publisher error: %v", err)
-					return
-				}
+				require_NoError(t, err)
 			case <-qch:
 				pt.Stop()
 				return
@@ -5120,24 +5120,31 @@ func TestNoRaceJetStreamClusterInterestPullConsumerStreamLimitBug(t *testing.T) 
 		}()
 	}
 
-	time.Sleep(5 * time.Second)
+	// Make sure we have hit the limit for the number of messages we expected.
+	checkFor(t, 20*time.Second, 500*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST")
+		require_NoError(t, err)
+		if si.State.Msgs < limit {
+			return fmt.Errorf("Not hit limit yet")
+		}
+		return nil
+	})
+
 	close(qch)
 	wg.Wait()
-	time.Sleep(time.Second)
 
-	si, err := js.StreamInfo("TEST")
-	require_NoError(t, err)
+	checkFor(t, 20*time.Second, 500*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST")
+		require_NoError(t, err)
+		ci, err := js.ConsumerInfo("TEST", "dur")
+		require_NoError(t, err)
 
-	ci, err := js.ConsumerInfo("TEST", "dur")
-	require_NoError(t, err)
-
-	ld := ci.Delivered.Stream
-	if si.State.FirstSeq > ld {
-		ld = si.State.FirstSeq - 1
-	}
-	if si.State.LastSeq-ld != ci.NumPending {
-		t.Fatalf("Expected NumPending to be %d got %d", si.State.LastSeq-ld, ci.NumPending)
-	}
+		np := ci.NumPending + uint64(ci.NumAckPending)
+		if np != si.State.Msgs {
+			return fmt.Errorf("Expected NumPending to be %d got %d", si.State.Msgs-uint64(ci.NumAckPending), ci.NumPending)
+		}
+		return nil
+	})
 }
 
 // Test that all peers have the direct access subs that participate in a queue group,
@@ -6272,4 +6279,251 @@ func TestNoRaceJetStreamClusterConsumerInfoSpeed(t *testing.T) {
 	require_NoError(t, err)
 
 	checkNumPending(toKeep)
+}
+
+func TestNoRaceJetStreamKVAccountWithServerRestarts(t *testing.T) {
+	// Uncomment to run. Needs fast machine to not time out on KeyValue lookup.
+	skip(t)
+
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.CreateKeyValue(&nats.KeyValueConfig{
+		Bucket:   "TEST",
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	npubs := 10_000
+	par := 8
+	iter := 2
+	nsubjs := 250
+
+	wg := sync.WaitGroup{}
+	putKeys := func() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+			kv, err := js.KeyValue("TEST")
+			require_NoError(t, err)
+
+			for i := 0; i < npubs; i++ {
+				subj := fmt.Sprintf("KEY-%d", rand.Intn(nsubjs))
+				if _, err := kv.PutString(subj, "hello"); err != nil {
+					nc, js := jsClientConnect(t, c.randomServer())
+					defer nc.Close()
+					kv, err = js.KeyValue("TEST")
+					require_NoError(t, err)
+				}
+			}
+		}()
+	}
+
+	restartServers := func() {
+		time.Sleep(2 * time.Second)
+		// Rotate through and restart the servers.
+		for _, server := range c.servers {
+			server.Shutdown()
+			restarted := c.restartServer(server)
+			checkFor(t, time.Second, 200*time.Millisecond, func() error {
+				hs := restarted.healthz(&HealthzOptions{
+					JSEnabled:    true,
+					JSServerOnly: true,
+				})
+				if hs.Error != _EMPTY_ {
+					return errors.New(hs.Error)
+				}
+				return nil
+			})
+		}
+		c.waitOnLeader()
+		c.waitOnStreamLeader(globalAccountName, "KV_TEST")
+	}
+
+	for n := 0; n < iter; n++ {
+		for i := 0; i < par; i++ {
+			putKeys()
+		}
+		restartServers()
+	}
+	wg.Wait()
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	si, err := js.StreamInfo("KV_TEST")
+	require_NoError(t, err)
+	require_True(t, si.State.NumSubjects == uint64(nsubjs))
+}
+
+// Test for consumer create when the subject cardinality is high and the
+// consumer is filtered with a wildcard that forces linear scans.
+// We have an optimization to use in memory structures in filestore to speed up.
+// Only if asking to scan all (DeliverAll).
+func TestNoRaceJetStreamConsumerCreateTimeNumPending(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"events.>"},
+	})
+	require_NoError(t, err)
+
+	n := 500_000
+	msg := bytes.Repeat([]byte("X"), 8*1024)
+
+	for i := 0; i < n; i++ {
+		subj := fmt.Sprintf("events.%d", rand.Intn(100_000))
+		js.PublishAsync(subj, msg)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+	}
+
+	// Should stay under 5ms now, but for Travis variability say 25ms.
+	threshold := 25 * time.Millisecond
+
+	start := time.Now()
+	_, err = js.PullSubscribe("events.*", "dlc")
+	require_NoError(t, err)
+	if elapsed := time.Since(start); elapsed > threshold {
+		t.Fatalf("Consumer create took longer than expected, %v vs %v", elapsed, threshold)
+	}
+
+	start = time.Now()
+	_, err = js.PullSubscribe("events.99999", "xxx")
+	require_NoError(t, err)
+	if elapsed := time.Since(start); elapsed > threshold {
+		t.Fatalf("Consumer create took longer than expected, %v vs %v", elapsed, threshold)
+	}
+
+	start = time.Now()
+	_, err = js.PullSubscribe(">", "zzz")
+	require_NoError(t, err)
+	if elapsed := time.Since(start); elapsed > threshold {
+		t.Fatalf("Consumer create took longer than expected, %v vs %v", elapsed, threshold)
+	}
+}
+
+func TestNoRaceJetStreamClusterGhostConsumers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "GHOST", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"events.>"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 10; i++ {
+		for j := 0; j < 10; j++ {
+			require_NoError(t, nc.Publish(fmt.Sprintf("events.%d.%d", i, j), []byte(`test`)))
+		}
+	}
+
+	fetch := func(id int) {
+		subject := fmt.Sprintf("events.%d.*", id)
+		subscription, err := js.PullSubscribe(subject,
+			_EMPTY_, // ephemeral consumer
+			nats.DeliverAll(),
+			nats.ReplayInstant(),
+			nats.BindStream("TEST"),
+			nats.ConsumerReplicas(1),
+			nats.ConsumerMemoryStorage(),
+		)
+		if err != nil {
+			return
+		}
+		defer subscription.Unsubscribe()
+
+		info, err := subscription.ConsumerInfo()
+		if err != nil {
+			return
+		}
+
+		subscription.Fetch(int(info.NumPending))
+	}
+
+	replay := func(ctx context.Context, id int) {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				fetch(id)
+			}
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go replay(ctx, 0)
+	go replay(ctx, 1)
+	go replay(ctx, 2)
+	go replay(ctx, 3)
+	go replay(ctx, 4)
+	go replay(ctx, 5)
+	go replay(ctx, 6)
+	go replay(ctx, 7)
+	go replay(ctx, 8)
+	go replay(ctx, 9)
+
+	time.Sleep(5 * time.Second)
+
+	for _, server := range c.servers {
+		server.Shutdown()
+		restarted := c.restartServer(server)
+		checkFor(t, time.Second, 200*time.Millisecond, func() error {
+			hs := restarted.healthz(&HealthzOptions{
+				JSEnabled:    true,
+				JSServerOnly: true,
+			})
+			if hs.Error != _EMPTY_ {
+				return errors.New(hs.Error)
+			}
+			return nil
+		})
+		c.waitOnStreamLeader(globalAccountName, "TEST")
+		time.Sleep(time.Second * 2)
+		go replay(ctx, 5)
+		go replay(ctx, 6)
+		go replay(ctx, 7)
+		go replay(ctx, 8)
+		go replay(ctx, 9)
+	}
+
+	time.Sleep(5 * time.Second)
+	cancel()
+
+	getMissing := func() []string {
+		m, err := nc.Request("$JS.API.CONSUMER.LIST.TEST", nil, time.Second*10)
+		require_NoError(t, err)
+
+		var resp JSApiConsumerListResponse
+		err = json.Unmarshal(m.Data, &resp)
+		require_NoError(t, err)
+		return resp.Missing
+	}
+
+	checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+		missing := getMissing()
+		if len(missing) == 0 {
+			return nil
+		}
+		return fmt.Errorf("Still have missing: %+v", missing)
+	})
 }

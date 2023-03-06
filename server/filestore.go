@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -70,6 +71,7 @@ type StoreCipher int
 const (
 	ChaCha StoreCipher = iota
 	AES
+	NoCipher
 )
 
 func (cipher StoreCipher) String() string {
@@ -78,6 +80,8 @@ func (cipher StoreCipher) String() string {
 		return "ChaCha20-Poly1305"
 	case AES:
 		return "AES-GCM"
+	case NoCipher:
+		return "None"
 	default:
 		return "Unknown StoreCipher"
 	}
@@ -103,26 +107,27 @@ type psi struct {
 }
 
 type fileStore struct {
-	mu      sync.RWMutex
-	state   StreamState
-	ld      *LostStreamData
-	scb     StorageUpdateHandler
-	ageChk  *time.Timer
-	syncTmr *time.Timer
-	cfg     FileStreamInfo
-	fcfg    FileStoreConfig
-	prf     keyGen
-	aek     cipher.AEAD
-	lmb     *msgBlock
-	blks    []*msgBlock
-	bim     map[uint32]*msgBlock
-	psim    map[string]*psi
-	hh      hash.Hash64
-	qch     chan struct{}
-	cfs     []ConsumerStore
-	sips    int
-	closed  bool
-	fip     bool
+	mu          sync.RWMutex
+	state       StreamState
+	ld          *LostStreamData
+	scb         StorageUpdateHandler
+	ageChk      *time.Timer
+	syncTmr     *time.Timer
+	cfg         FileStreamInfo
+	fcfg        FileStoreConfig
+	prf         keyGen
+	aek         cipher.AEAD
+	lmb         *msgBlock
+	blks        []*msgBlock
+	bim         map[uint32]*msgBlock
+	psim        map[string]*psi
+	hh          hash.Hash64
+	qch         chan struct{}
+	cfs         []ConsumerStore
+	sips        int
+	closed      bool
+	fip         bool
+	receivedAny bool
 }
 
 // Represents a message store block and its data.
@@ -265,9 +270,9 @@ const (
 	// Check for bad record length value due to corrupt data.
 	rlBadThresh = 32 * 1024 * 1024
 	// Time threshold to write index info.
-	wiThresh = int64(2 * time.Second)
+	wiThresh = int64(30 * time.Second)
 	// Time threshold to write index info for non FIFO cases
-	winfThresh = int64(500 * time.Millisecond)
+	winfThresh = int64(2 * time.Second)
 )
 
 func newFileStore(fcfg FileStoreConfig, cfg StreamConfig) (*fileStore, error) {
@@ -1187,7 +1192,7 @@ func (fs *fileStore) recoverMsgs() error {
 			if mb.msgs == 0 && mb.rbytes == 0 {
 				if mb == fs.lmb {
 					mb.first.seq, mb.first.ts = mb.last.seq+1, 0
-					mb.closeAndKeepIndex()
+					mb.closeAndKeepIndex(false)
 				} else {
 					emptyBlks = append(emptyBlks, mb)
 				}
@@ -1258,7 +1263,7 @@ func (fs *fileStore) expireMsgsOnRecover() {
 		if mb == fs.lmb {
 			// Do this part by hand since not deleting one by one.
 			mb.first.seq, mb.first.ts = mb.last.seq+1, 0
-			mb.closeAndKeepIndex()
+			mb.closeAndKeepIndex(false)
 			// Clear any global subject state.
 			fs.psim = make(map[string]*psi)
 			return false
@@ -1524,30 +1529,14 @@ func (mb *msgBlock) filteredPending(subj string, wc bool, seq uint64) (total, fi
 
 // This will traverse a message block and generate the filtered pending.
 // Lock should be held.
-func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, seq uint64) (total, first, last uint64) {
+func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (total, first, last uint64) {
 	isAll := filter == _EMPTY_ || filter == fwcs
 
 	// First check if we can optimize this part.
 	// This means we want all and the starting sequence was before this block.
-	if isAll && seq <= mb.first.seq {
+	if isAll && sseq <= mb.first.seq {
 		return mb.msgs, mb.first.seq, mb.last.seq
 	}
-
-	// Make sure we have fss loaded.
-	mb.ensurePerSubjectInfoLoaded()
-
-	subs := []string{filter}
-	// If we have a wildcard match against all tracked subjects we know about.
-	if wc || isAll {
-		subs = subs[:0]
-		for subj := range mb.fss {
-			if isAll || subjectIsSubsetMatch(subj, filter) {
-				subs = append(subs, subj)
-			}
-		}
-	}
-	// If we load the cache for a linear scan we want to expire that cache upon exit.
-	var shouldExpire bool
 
 	update := func(ss *SimpleState) {
 		total += ss.Msgs
@@ -1559,98 +1548,70 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, seq uint64) (t
 		}
 	}
 
-	for i, subj := range subs {
-		// If the starting seq is less then or equal that means we want all and we do not need to load any messages.
-		ss := mb.fss[subj]
-		if ss == nil || seq > ss.Last {
-			continue
+	// Make sure we have fss loaded.
+	mb.ensurePerSubjectInfoLoaded()
+
+	tsa := [32]string{}
+	fsa := [32]string{}
+	fts := tokenizeSubjectIntoSlice(fsa[:0], filter)
+
+	// 1. See if we match any subs from fss.
+	// 2. If we match and the sseq is past ss.Last then we can use meta only.
+	// 3. If we match and we need to do a partial, break and clear any totals and do a full scan like num pending.
+
+	isMatch := func(subj string) bool {
+		if !wc {
+			return subj == filter
 		}
-
-		// If the seq we are starting at is less then the simple state's first sequence we can just return the total msgs.
-		if seq <= ss.First {
-			update(ss)
-			continue
-		}
-
-		// We may need to scan this one block since we have a partial set to consider.
-		// If we are all inclusive then we can do simple math and avoid the scan.
-		if allInclusive := ss.Msgs == ss.Last-ss.First+1; allInclusive {
-			update(ss)
-			// Make sure to compensate for the diff from the head.
-			if seq > ss.First {
-				first, total = seq, total-(seq-ss.First)
-			}
-			continue
-		}
-
-		// We need to scan this block to compute the correct number of pending for this block.
-		// We want to only do this once so we will adjust subs and test against them all here.
-
-		if mb.cacheNotLoaded() {
-			mb.loadMsgsWithLock()
-			shouldExpire = true
-		}
-
-		var all, lseq uint64
-		// Grab last applicable sequence as a union of all applicable subjects.
-		for _, subj := range subs[i:] {
-			if ss := mb.fss[subj]; ss != nil {
-				all += ss.Msgs
-				if ss.Last > lseq {
-					lseq = ss.Last
-				}
-			}
-		}
-		numScanIn, numScanOut := lseq-seq, seq-mb.first.seq
-
-		var smv StoreMsg
-
-		isMatch := func(seq uint64) bool {
-			if sm, _ := mb.cacheLookup(seq, &smv); sm != nil {
-				if len(subs) == 1 && sm.subj == subs[0] {
-					return true
-				}
-				for _, subj := range subs {
-					if sm.subj == subj {
-						return true
-					}
-				}
-			}
-			return false
-		}
-
-		// Decide on whether to scan those included or those excluded based on which scan amount is less.
-		if numScanIn < numScanOut {
-			for tseq := seq; tseq <= lseq; tseq++ {
-				if isMatch(tseq) {
-					total++
-					if first == 0 || tseq < first {
-						first = tseq
-					}
-					last = tseq
-				}
-			}
-		} else {
-			// Here its more efficient to scan the out nodes.
-			var discard uint64
-			for tseq := mb.first.seq; tseq < seq; tseq++ {
-				if isMatch(tseq) {
-					discard++
-				}
-			}
-			total += (all - discard)
-			// Now make sure we match our first
-			for tseq := seq; tseq <= lseq; tseq++ {
-				if isMatch(tseq) {
-					first = tseq
-					break
-				}
-			}
-		}
-		// We can bail since we scanned all remaining in this pass.
-		break
+		tts := tokenizeSubjectIntoSlice(tsa[:0], subj)
+		return isSubsetMatchTokenized(tts, fts)
 	}
 
+	var havePartial bool
+	for subj, ss := range mb.fss {
+		if isAll || isMatch(subj) {
+			if sseq <= ss.First {
+				update(ss)
+			} else if sseq <= ss.Last {
+				// We matched but its a partial.
+				havePartial = true
+				break
+			}
+		}
+	}
+
+	// If we did not encounter any partials we can return here.
+	if !havePartial {
+		return total, first, last
+	}
+
+	// If we are here we need to scan the msgs.
+	// Clear what we had.
+	total, first, last = 0, 0, 0
+
+	// If we load the cache for a linear scan we want to expire that cache upon exit.
+	var shouldExpire bool
+	if mb.cacheNotLoaded() {
+		mb.loadMsgsWithLock()
+		shouldExpire = true
+	}
+
+	var smv StoreMsg
+	for seq := sseq; seq <= mb.last.seq; seq++ {
+		sm, _ := mb.cacheLookup(seq, &smv)
+		if sm == nil {
+			continue
+		}
+		if isAll || isMatch(sm.subj) {
+			total++
+			if first == 0 || seq < first {
+				first = seq
+			}
+			if seq > last {
+				last = seq
+			}
+		}
+	}
 	// If we loaded this block for this operation go ahead and expire it here.
 	if shouldExpire {
 		mb.tryForceExpireCacheLocked()
@@ -1662,12 +1623,14 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, seq uint64) (t
 // FilteredState will return the SimpleState associated with the filtered subject and a proposed starting sequence.
 func (fs *fileStore) FilteredState(sseq uint64, subj string) SimpleState {
 	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
 	lseq := fs.state.LastSeq
 	if sseq < fs.state.FirstSeq {
 		sseq = fs.state.FirstSeq
 	}
-	fs.mu.RUnlock()
 
+	// Returned state.
 	var ss SimpleState
 
 	// If past the end no results.
@@ -1675,28 +1638,97 @@ func (fs *fileStore) FilteredState(sseq uint64, subj string) SimpleState {
 		return ss
 	}
 
-	wc := subjectHasWildcard(subj)
-
-	// Tracking subject state.
-	fs.mu.RLock()
-	// TODO(dlc) - Optimize for 2.10 with avl tree and no atomics per block.
-	for _, mb := range fs.blks {
-		// Skip blocks that are less than our starting sequence.
-		if sseq > atomic.LoadUint64(&mb.last.seq) {
-			continue
+	// If we want all msgs that match we can shortcircuit.
+	// TODO(dlc) - This can be extended for all cases but would
+	// need to be careful on total msgs calculations etc.
+	if sseq == fs.state.FirstSeq {
+		fs.numFilteredPending(subj, &ss)
+	} else {
+		wc := subjectHasWildcard(subj)
+		// Tracking subject state.
+		// TODO(dlc) - Optimize for 2.10 with avl tree and no atomics per block.
+		for _, mb := range fs.blks {
+			// Skip blocks that are less than our starting sequence.
+			if sseq > atomic.LoadUint64(&mb.last.seq) {
+				continue
+			}
+			t, f, l := mb.filteredPending(subj, wc, sseq)
+			ss.Msgs += t
+			if ss.First == 0 || (f > 0 && f < ss.First) {
+				ss.First = f
+			}
+			if l > ss.Last {
+				ss.Last = l
+			}
 		}
-		t, f, l := mb.filteredPending(subj, wc, sseq)
-		ss.Msgs += t
-		if ss.First == 0 || (f > 0 && f < ss.First) {
+	}
+
+	return ss
+}
+
+// Optimized way for getting all num pending matching a filter subject.
+// Lock should be held.
+func (fs *fileStore) numFilteredPending(filter string, ss *SimpleState) {
+	isAll := filter == _EMPTY_ || filter == fwcs
+
+	// If isAll we do not need to do anything special to calculate the first and last and total.
+	if isAll {
+		ss.First = fs.state.FirstSeq
+		ss.Last = fs.state.LastSeq
+		ss.Msgs = fs.state.Msgs
+		return
+	}
+
+	tsa := [32]string{}
+	fsa := [32]string{}
+	fts := tokenizeSubjectIntoSlice(fsa[:0], filter)
+
+	start, stop := uint32(math.MaxUint32), uint32(0)
+	for subj, psi := range fs.psim {
+		if isAll {
+			ss.Msgs += psi.total
+		} else {
+			tts := tokenizeSubjectIntoSlice(tsa[:0], subj)
+			if isSubsetMatchTokenized(tts, fts) {
+				ss.Msgs += psi.total
+				// Keep track of start and stop indexes for this subject.
+				if psi.fblk < start {
+					start = psi.fblk
+				}
+				if psi.lblk > stop {
+					stop = psi.lblk
+				}
+			}
+		}
+	}
+	// If not collecting all we do need to figure out the first and last sequences.
+	if !isAll {
+		wc := subjectHasWildcard(filter)
+		// Do start
+		mb := fs.bim[start]
+		if mb != nil {
+			_, f, _ := mb.filteredPending(filter, wc, 0)
 			ss.First = f
 		}
-		if l > ss.Last {
+		if ss.First == 0 {
+			// This is a miss. This can happen since psi.fblk is lazy, but should be very rare.
+			for i := start + 1; i <= stop; i++ {
+				mb := fs.bim[i]
+				if mb == nil {
+					continue
+				}
+				if _, f, _ := mb.filteredPending(filter, wc, 0); f > 0 {
+					ss.First = f
+					break
+				}
+			}
+		}
+		// Now last
+		if mb = fs.bim[stop]; mb != nil {
+			_, _, l := mb.filteredPending(filter, wc, 0)
 			ss.Last = l
 		}
 	}
-	fs.mu.RUnlock()
-
-	return ss
 }
 
 // SubjectsState returns a map of SimpleState for all matching subjects.
@@ -1753,6 +1785,261 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 	}
 
 	return fss
+}
+
+// NumPending will return the number of pending messages matching the filter subject starting at sequence.
+// Optimized for stream num pending calculations for consumers.
+func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool) (total, validThrough uint64) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	// This can always be last for these purposes.
+	validThrough = fs.state.LastSeq
+
+	if fs.state.Msgs == 0 || sseq > fs.state.LastSeq {
+		return 0, validThrough
+	}
+
+	// Track starting for both block for the sseq and staring block that matches any subject.
+	var seqStart, subjStart int
+
+	// See if we need to figure out starting block per sseq.
+	if sseq > fs.state.FirstSeq {
+		seqStart, _ = fs.selectMsgBlockWithIndex(sseq)
+	}
+
+	tsa := [32]string{}
+	fsa := [32]string{}
+	fts := tokenizeSubjectIntoSlice(fsa[:0], filter)
+	isAll := filter == _EMPTY_ || filter == fwcs
+	wc := subjectHasWildcard(filter)
+
+	isMatch := func(subj string) bool {
+		if isAll {
+			return true
+		}
+		if !wc {
+			return subj == filter
+		}
+		tts := tokenizeSubjectIntoSlice(tsa[:0], subj)
+		return isSubsetMatchTokenized(tts, fts)
+	}
+
+	// If we would need to scan more from the beginning, revert back to calculating directly here.
+	// TODO(dlc) - Redo properly with sublists etc for subject-based filtering.
+	if lastPerSubject || seqStart >= (len(fs.blks)/2) {
+		// If we need to track seen for last per subject.
+		var seen map[string]bool
+		if lastPerSubject {
+			seen = make(map[string]bool)
+		}
+
+		for i := seqStart; i < len(fs.blks); i++ {
+			mb := fs.blks[i]
+			mb.mu.Lock()
+			var t uint64
+			if isAll && sseq <= mb.first.seq {
+				if lastPerSubject {
+					for subj := range mb.fss {
+						if !seen[subj] {
+							total++
+							seen[subj] = true
+						}
+					}
+				} else {
+					total += mb.msgs
+				}
+				mb.mu.Unlock()
+				continue
+			}
+
+			// If we are here we need to at least scan the subject fss.
+			// Make sure we have fss loaded.
+			mb.ensurePerSubjectInfoLoaded()
+			var havePartial bool
+			for subj, ss := range mb.fss {
+				if !seen[subj] && isMatch(subj) {
+					if lastPerSubject {
+						// Can't have a partials with last by subject.
+						if sseq <= ss.Last {
+							t++
+							seen[subj] = true
+						}
+					} else {
+						if sseq <= ss.First {
+							t += ss.Msgs
+						} else if sseq <= ss.Last {
+							// We matched but its a partial.
+							havePartial = true
+							break
+						}
+					}
+				}
+			}
+			// See if we need to scan msgs here.
+			if havePartial {
+				// Clear on partial.
+				t = 0
+				// If we load the cache for a linear scan we want to expire that cache upon exit.
+				var shouldExpire bool
+				if mb.cacheNotLoaded() {
+					mb.loadMsgsWithLock()
+					shouldExpire = true
+				}
+				var smv StoreMsg
+				for seq := sseq; seq <= mb.last.seq; seq++ {
+					if sm, _ := mb.cacheLookup(seq, &smv); sm != nil && (isAll || isMatch(sm.subj)) {
+						t++
+					}
+				}
+				// If we loaded this block for this operation go ahead and expire it here.
+				if shouldExpire {
+					mb.tryForceExpireCacheLocked()
+				}
+			}
+			mb.mu.Unlock()
+			total += t
+		}
+		return total, validThrough
+	}
+
+	// If we are here its better to calculate totals from psim and adjust downward by scanning less blocks.
+	// TODO(dlc) - Eventually when sublist uses generics, make this sublist driven instead.
+	start := uint32(math.MaxUint32)
+	for subj, psi := range fs.psim {
+		if isMatch(subj) {
+			if lastPerSubject {
+				total++
+				// Keep track of start index for this subject.
+				// Use last block in this case.
+				if psi.lblk < start {
+					start = psi.lblk
+				}
+			} else {
+				total += psi.total
+				// Keep track of start index for this subject.
+				if psi.fblk < start {
+					start = psi.fblk
+				}
+			}
+		}
+	}
+	// See if we were asked for all, if so we are done.
+	if sseq <= fs.state.FirstSeq {
+		return total, validThrough
+	}
+
+	// If we are here we need to calculate partials for the first blocks.
+	subjStart = int(start)
+	firstSubjBlk := fs.bim[uint32(subjStart)]
+	var firstSubjBlkFound bool
+	var smv StoreMsg
+
+	// Adjust in case not found.
+	if firstSubjBlk == nil {
+		firstSubjBlkFound = true
+	}
+
+	// Track how many we need to adjust against the total.
+	var adjust uint64
+
+	for i := 0; i <= seqStart; i++ {
+		mb := fs.blks[i]
+
+		// We can skip blks if we know they are below the first one that has any subject matches.
+		if !firstSubjBlkFound {
+			if mb == firstSubjBlk {
+				firstSubjBlkFound = true
+			} else {
+				continue
+			}
+		}
+
+		// We need to scan this block.
+		var shouldExpire bool
+		mb.mu.Lock()
+		// Check if we should include all of this block in adjusting. If so work with metadata.
+		if sseq > mb.last.seq {
+			// We need to adjust for all matches in this block.
+			// We will scan fss state vs messages themselves.
+			// Make sure we have fss loaded.
+			mb.ensurePerSubjectInfoLoaded()
+			for subj, ss := range mb.fss {
+				if isMatch(subj) {
+					if lastPerSubject {
+						adjust++
+					} else {
+						adjust += ss.Msgs
+					}
+				}
+			}
+		} else {
+			// This is the last block. We need to scan per message here.
+			if mb.cacheNotLoaded() {
+				if err := mb.loadMsgsWithLock(); err != nil {
+					mb.mu.Unlock()
+					return 0, 0
+				}
+				shouldExpire = true
+			}
+
+			var last = mb.last.seq
+			if sseq < last {
+				last = sseq
+			}
+			for seq := mb.first.seq; seq < last; seq++ {
+				sm, _ := mb.cacheLookup(seq, &smv)
+				if sm == nil {
+					continue
+				}
+				// Check if it matches our filter.
+				if isMatch(sm.subj) && sm.seq < sseq {
+					adjust++
+				}
+			}
+		}
+		// If we loaded the block try to force expire.
+		if shouldExpire {
+			mb.tryForceExpireCacheLocked()
+		}
+		mb.mu.Unlock()
+	}
+	// Make final adjustment.
+	total -= adjust
+
+	return total, validThrough
+}
+
+// SubjectsTotal return message totals per subject.
+func (fs *fileStore) SubjectsTotals(filter string) map[string]uint64 {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	if len(fs.psim) == 0 {
+		return nil
+	}
+
+	tsa := [32]string{}
+	fsa := [32]string{}
+	fts := tokenizeSubjectIntoSlice(fsa[:0], filter)
+	isAll := filter == _EMPTY_ || filter == fwcs
+	wc := subjectHasWildcard(filter)
+
+	isMatch := func(subj string) bool {
+		if !wc {
+			return subj == filter
+		}
+		tts := tokenizeSubjectIntoSlice(tsa[:0], subj)
+		return isSubsetMatchTokenized(tts, fts)
+	}
+
+	fst := make(map[string]uint64)
+	for subj, psi := range fs.psim {
+		if isAll || isMatch(subj) {
+			fst[subj] = psi.total
+		}
+	}
+	return fst
 }
 
 // RegisterStorageUpdates registers a callback for updates to storage changes.
@@ -1916,8 +2203,9 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 	}
 
 	// Per subject max check needed.
+	mmp := uint64(fs.cfg.MaxMsgsPer)
 	var psmc uint64
-	psmax := fs.cfg.MaxMsgsPer > 0 && len(subj) > 0
+	psmax := mmp > 0 && len(subj) > 0
 	if psmax {
 		if info, ok := fs.psim[subj]; ok {
 			psmc = info.total
@@ -1928,13 +2216,12 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 	// Check if we are discarding new messages when we reach the limit.
 	if fs.cfg.Discard == DiscardNew {
 		var asl bool
-		if psmax && psmc >= uint64(fs.cfg.MaxMsgsPer) {
+		if psmax && psmc >= mmp {
 			// If we are instructed to discard new per subject, this is an error.
 			if fs.cfg.DiscardNewPer {
 				return ErrMaxMsgsPerSubject
 			}
-			fseq, err = fs.firstSeqForSubj(subj)
-			if err != nil {
+			if fseq, err = fs.firstSeqForSubj(subj); err != nil {
 				return err
 			}
 			asl = true
@@ -1990,12 +2277,25 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 
 	// Enforce per message limits.
 	// We snapshotted psmc before our actual write, so >= comparison needed.
-	if psmax && psmc >= uint64(fs.cfg.MaxMsgsPer) {
+	if psmax && psmc >= mmp {
 		// We may have done this above.
 		if fseq == 0 {
 			fseq, _ = fs.firstSeqForSubj(subj)
 		}
-		fs.removeMsg(fseq, false, false)
+		if ok, _ := fs.removeMsgViaLimits(fseq); ok {
+			// Make sure we are below the limit.
+			if psmc--; psmc >= mmp {
+				for info, ok := fs.psim[subj]; ok && info.total > mmp; info, ok = fs.psim[subj] {
+					if seq, _ := fs.firstSeqForSubj(subj); seq > 0 {
+						if ok, _ := fs.removeMsgViaLimits(seq); !ok {
+							break
+						}
+					} else {
+						break
+					}
+				}
+			}
+		}
 	}
 
 	// Limits checks and enforcement.
@@ -2017,6 +2317,14 @@ func (fs *fileStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 	fs.mu.Lock()
 	err := fs.storeRawMsg(subj, hdr, msg, seq, ts)
 	cb := fs.scb
+	// Check if first message timestamp requires expiry
+	// sooner than initial replica expiry timer set to MaxAge when initializing.
+	if !fs.receivedAny && fs.cfg.MaxAge != 0 && ts > 0 {
+		fs.receivedAny = true
+		// don't block here by calling expireMsgs directly.
+		// Instead, set short timeout.
+		fs.resetAgeChk(int64(time.Millisecond * 50))
+	}
 	fs.mu.Unlock()
 
 	if err == nil && cb != nil {
@@ -2231,7 +2539,7 @@ func (fs *fileStore) enforceMsgPerSubjectLimit() {
 				m, _, err := mb.firstMatching(subj, false, seq, &sm)
 				if err == nil {
 					seq = m.seq + 1
-					if removed, _ := fs.removeMsg(m.seq, false, false); removed {
+					if removed, _ := fs.removeMsgViaLimits(m.seq); removed {
 						total--
 						blks[mb] = struct{}{}
 					}
@@ -2252,17 +2560,24 @@ func (fs *fileStore) enforceMsgPerSubjectLimit() {
 
 // Lock should be held.
 func (fs *fileStore) deleteFirstMsg() (bool, error) {
-	return fs.removeMsg(fs.state.FirstSeq, false, false)
+	return fs.removeMsgViaLimits(fs.state.FirstSeq)
+}
+
+// If we remove via limits that can always be recovered on a restart we
+// do not force the system to update the index file.
+// Lock should be held.
+func (fs *fileStore) removeMsgViaLimits(seq uint64) (bool, error) {
+	return fs.removeMsg(seq, false, true, false)
 }
 
 // RemoveMsg will remove the message from this store.
 // Will return the number of bytes removed.
 func (fs *fileStore) RemoveMsg(seq uint64) (bool, error) {
-	return fs.removeMsg(seq, false, true)
+	return fs.removeMsg(seq, false, false, true)
 }
 
 func (fs *fileStore) EraseMsg(seq uint64) (bool, error) {
-	return fs.removeMsg(seq, true, true)
+	return fs.removeMsg(seq, true, false, true)
 }
 
 // Convenience function to remove per subject tracking at the filestore level.
@@ -2282,7 +2597,7 @@ func (fs *fileStore) removePerSubject(subj string) {
 }
 
 // Remove a message, optionally rewriting the mb file.
-func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error) {
+func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (bool, error) {
 	if seq == 0 {
 		return false, ErrStoreMsgNotFound
 	}
@@ -2387,7 +2702,9 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 	fifo := seq == mb.first.seq
 	isLastBlock := mb == fs.lmb
 	isEmpty := mb.msgs == 0
-	shouldWriteIndex := !isEmpty
+	// If we are removing the message via limits we do not need to write the index file here.
+	// If viaLimits this means on a restart we will properly cleanup these messages regardless.
+	shouldWriteIndex := !isEmpty && !viaLimits
 
 	if fifo {
 		mb.selectNextFirst()
@@ -2416,10 +2733,12 @@ func (fs *fileStore) removeMsg(seq uint64, secure, needFSLock bool) (bool, error
 
 	var firstSeqNeedsUpdate bool
 
-	// Decide how we want to clean this up. If last block we will hold into index.
+	// Decide how we want to clean this up. If last block and the only block left we will hold into index.
 	if isEmpty {
 		if isLastBlock {
-			mb.closeAndKeepIndex()
+			mb.closeAndKeepIndex(viaLimits)
+			// We do not need to writeIndex since just did above.
+			shouldWriteIndex = false
 		} else {
 			fs.removeMsgBlock(mb)
 		}
@@ -3133,7 +3452,9 @@ func (fs *fileStore) expireMsgs() {
 	fs.mu.RUnlock()
 
 	for sm, _ = fs.msgForSeq(0, &smv); sm != nil && sm.ts <= minAge; sm, _ = fs.msgForSeq(0, &smv) {
-		fs.removeMsg(sm.seq, false, true)
+		fs.mu.Lock()
+		fs.removeMsgViaLimits(sm.seq)
+		fs.mu.Unlock()
 		// Recalculate in case we are expiring a bunch.
 		minAge = time.Now().UnixNano() - maxAge
 	}
@@ -3480,7 +3801,7 @@ func (fs *fileStore) syncBlocks() {
 				mb.ifd.Truncate(mb.liwsz)
 				mb.ifd.Sync()
 			}
-			// See if we can close FDs do to being idle.
+			// See if we can close FDs due to being idle.
 			if mb.ifd != nil || mb.mfd != nil && mb.sinceLastWriteActivity() > closeFDsIdle {
 				mb.dirtyCloseWithRemove(false)
 			}
@@ -3497,14 +3818,20 @@ func (fs *fileStore) syncBlocks() {
 // Return nil if not in the set.
 // Read lock should be held.
 func (fs *fileStore) selectMsgBlock(seq uint64) *msgBlock {
+	_, mb := fs.selectMsgBlockWithIndex(seq)
+	return mb
+}
+
+func (fs *fileStore) selectMsgBlockWithIndex(seq uint64) (int, *msgBlock) {
 	// Check for out of range.
 	if seq < fs.state.FirstSeq || seq > fs.state.LastSeq {
-		return nil
+		return -1, nil
 	}
 
 	// Starting index, defaults to beginning.
 	si := 0
 
+	// TODO(dlc) - Use new AVL and make this real for anything beyond certain size.
 	// Max threshold before we probe for a starting block to start our linear search.
 	const maxl = 256
 	if nb := len(fs.blks); nb > maxl {
@@ -3522,11 +3849,11 @@ func (fs *fileStore) selectMsgBlock(seq uint64) *msgBlock {
 	for i := si; i < len(fs.blks); i++ {
 		mb := fs.blks[i]
 		if seq <= atomic.LoadUint64(&mb.last.seq) {
-			return mb
+			return i, mb
 		}
 	}
 
-	return nil
+	return -1, nil
 }
 
 // Select the message block where this message should be found.
@@ -3927,6 +4254,7 @@ var (
 	errNoMsgBlk      = errors.New("no message block")
 	errMsgBlkTooBig  = errors.New("message block size exceeded int capacity")
 	errUnknownCipher = errors.New("unknown cipher")
+	errDIOStalled    = errors.New("IO is stalled")
 )
 
 // Used for marking messages that have had their checksums checked.
@@ -4441,7 +4769,9 @@ func (mb *msgBlock) writeIndexInfoLocked() error {
 	}
 
 	// Check if this will be a short write, and if so truncate before writing here.
-	if int64(len(buf)) < mb.liwsz {
+	// We only really need to truncate if we are encryptyed or we have dmap entries.
+	// If no dmap entries readIndexInfo does the right thing in the presence of extra data left over.
+	if int64(len(buf)) < mb.liwsz && (mb.aek != nil || len(mb.dmap) > 0) {
 		if err := mb.ifd.Truncate(0); err != nil {
 			mb.werr = err
 			return err
@@ -4456,7 +4786,6 @@ func (mb *msgBlock) writeIndexInfoLocked() error {
 	} else {
 		mb.werr = err
 	}
-
 	return err
 }
 
@@ -5211,7 +5540,7 @@ func (fs *fileStore) removeMsgBlock(mb *msgBlock) {
 
 // When we have an empty block but want to keep the index for timestamp info etc.
 // Lock should be held.
-func (mb *msgBlock) closeAndKeepIndex() {
+func (mb *msgBlock) closeAndKeepIndex(viaLimits bool) {
 	// We will leave a 0 length blk marker.
 	if mb.mfd != nil {
 		mb.mfd.Truncate(0)
@@ -5317,23 +5646,29 @@ func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64, smp *StoreMsg) 
 		return
 	}
 
-	// Here what we are removing is the first message.
-	// If we only have one message left we can simply assign it to last.
+	// Only one left.
 	if ss.Msgs == 1 {
-		ss.First = ss.Last
+		if seq != ss.First {
+			ss.Last = ss.First
+		} else {
+			ss.First = ss.Last
+		}
 		return
 	}
 
+	// Recalculate first.
 	// TODO(dlc) - Might want to optimize this.
-	var smv StoreMsg
-	if smp == nil {
-		smp = &smv
-	}
-	for tseq := seq + 1; tseq <= ss.Last; tseq++ {
-		if sm, _ := mb.cacheLookup(tseq, smp); sm != nil {
-			if sm.subj == subj {
-				ss.First = tseq
-				return
+	if seq == ss.First {
+		var smv StoreMsg
+		if smp == nil {
+			smp = &smv
+		}
+		for tseq := seq + 1; tseq <= ss.Last; tseq++ {
+			if sm, _ := mb.cacheLookup(tseq, smp); sm != nil {
+				if sm.subj == subj {
+					ss.First = tseq
+					return
+				}
 			}
 		}
 	}
@@ -5420,6 +5755,7 @@ func (mb *msgBlock) loadPerSubjectInfo() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	if len(buf) < minFileSize || checkHeader(buf) != nil {
 		return nil, errors.New("short fss state")
 	}
@@ -5443,9 +5779,6 @@ func (mb *msgBlock) loadPerSubjectInfo() ([]byte, error) {
 // Helper to make sure fss loaded if we are tracking.
 // Lock should be held
 func (mb *msgBlock) ensurePerSubjectInfoLoaded() error {
-	// Clear
-	mb.fssNeedsWrite = false
-
 	if mb.fss != nil || mb.noTrack {
 		return nil
 	}
@@ -5536,6 +5869,7 @@ func (mb *msgBlock) readPerSubjectInfo(hasLock bool) error {
 		fss[subj] = &SimpleState{Msgs: msgs, First: first, Last: last}
 	}
 	mb.fss = fss
+	mb.fssNeedsWrite = false
 
 	// Make sure we run the cache expire timer.
 	if len(mb.fss) > 0 {
@@ -5581,13 +5915,18 @@ func (mb *msgBlock) writePerSubjectInfo() error {
 	b.Write(mb.lchk[:])
 
 	// Gate this for when we have a large number of blocks expiring at the same time.
-	<-dios
-	err := os.WriteFile(mb.sfn, b.Bytes(), defaultFilePerms)
-	dios <- struct{}{}
-
-	// Clear write flag if no error.
-	if err == nil {
-		mb.fssNeedsWrite = false
+	// Since we have the lock we would rather fail here then block.
+	// This is an optional structure that can be rebuilt on restart.
+	var err error
+	select {
+	case <-dios:
+		if err = os.WriteFile(mb.sfn, b.Bytes(), defaultFilePerms); err == nil {
+			// Clear write flag if no error.
+			mb.fssNeedsWrite = false
+		}
+		dios <- struct{}{}
+	default:
+		err = errDIOStalled
 	}
 
 	return err
@@ -5613,10 +5952,11 @@ func (mb *msgBlock) close(sync bool) {
 	}
 
 	// Check if we are tracking by subject.
-	if mb.fss != nil {
+	if len(mb.fss) > 0 && mb.fssNeedsWrite {
 		mb.writePerSubjectInfo()
-		mb.fss = nil
 	}
+	mb.fss = nil
+	mb.fssNeedsWrite = false
 
 	// Close cache
 	mb.clearCacheAndOffset()
@@ -6476,8 +6816,8 @@ var dios chan struct{}
 // Used to setup our simplistic counting semaphore using buffered channels.
 // golang.org's semaphore seemed a bit heavy.
 func init() {
-	// Based on Go max threads of 10k, limit ourselves to a max of 1k blocking IO calls.
-	const nIO = 1024
+	// Limit ourselves to a max of 4 blocking IO calls.
+	const nIO = 4
 	dios = make(chan struct{}, nIO)
 	// Fill it up to start.
 	for i := 0; i < nIO; i++ {

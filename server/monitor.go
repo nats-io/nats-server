@@ -1208,7 +1208,6 @@ type Varz struct {
 	TrustedOperatorsClaim []*jwt.OperatorClaims `json:"trusted_operators_claim,omitempty"`
 	SystemAccount         string                `json:"system_account,omitempty"`
 	PinnedAccountFail     uint64                `json:"pinned_account_fails,omitempty"`
-	Key                   string                `json:"server_key,omitempty"`
 }
 
 // JetStreamVarz contains basic runtime information about jetstream
@@ -1568,13 +1567,6 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 			}
 		}
 		varz.LeafNode.Remotes = rlna
-	}
-	if s.kp != nil {
-		pk, err := s.kp.PublicKey()
-		if err == nil {
-			varz.Key = pk
-		}
-
 	}
 
 	// Finish setting it up with fields that can be updated during
@@ -2104,6 +2096,8 @@ type LeafzOptions struct {
 
 // LeafInfo has detailed information on each remote leafnode connection.
 type LeafInfo struct {
+	Name     string   `json:"name"`
+	IsSpoke  bool     `json:"is_spoke"`
 	Account  string   `json:"account"`
 	IP       string   `json:"ip"`
 	Port     int      `json:"port"`
@@ -2143,6 +2137,8 @@ func (s *Server) Leafz(opts *LeafzOptions) (*Leafz, error) {
 		for _, ln := range lconns {
 			ln.mu.Lock()
 			lni := &LeafInfo{
+				Name:     ln.leaf.remoteServer,
+				IsSpoke:  ln.isSpokeLeafNode(),
 				Account:  ln.acc.Name,
 				IP:       ln.host,
 				Port:     int(ln.port),
@@ -2646,6 +2642,7 @@ type JSzOptions struct {
 	LeaderOnly bool   `json:"leader_only,omitempty"`
 	Offset     int    `json:"offset,omitempty"`
 	Limit      int    `json:"limit,omitempty"`
+	RaftGroups bool   `json:"raft,omitempty"`
 }
 
 // HealthzOptions are options passed to Healthz
@@ -2662,15 +2659,24 @@ type ProfilezOptions struct {
 	Debug int    `json:"debug"`
 }
 
+// StreamDetail shows information about the stream state and its consumers.
 type StreamDetail struct {
-	Name     string              `json:"name"`
-	Created  time.Time           `json:"created"`
-	Cluster  *ClusterInfo        `json:"cluster,omitempty"`
-	Config   *StreamConfig       `json:"config,omitempty"`
-	State    StreamState         `json:"state,omitempty"`
-	Consumer []*ConsumerInfo     `json:"consumer_detail,omitempty"`
-	Mirror   *StreamSourceInfo   `json:"mirror,omitempty"`
-	Sources  []*StreamSourceInfo `json:"sources,omitempty"`
+	Name               string              `json:"name"`
+	Created            time.Time           `json:"created"`
+	Cluster            *ClusterInfo        `json:"cluster,omitempty"`
+	Config             *StreamConfig       `json:"config,omitempty"`
+	State              StreamState         `json:"state,omitempty"`
+	Consumer           []*ConsumerInfo     `json:"consumer_detail,omitempty"`
+	Mirror             *StreamSourceInfo   `json:"mirror,omitempty"`
+	Sources            []*StreamSourceInfo `json:"sources,omitempty"`
+	RaftGroup          string              `json:"stream_raft_group,omitempty"`
+	ConsumerRaftGroups []*RaftGroupDetail  `json:"consumer_raft_groups,omitempty"`
+}
+
+// RaftGroupDetail shows information details about the Raft group.
+type RaftGroupDetail struct {
+	Name      string `json:"name"`
+	RaftGroup string `json:"raft_group,omitempty"`
 }
 
 type AccountDetail struct {
@@ -2706,7 +2712,7 @@ type JSInfo struct {
 	AccountDetails []*AccountDetail `json:"account_details,omitempty"`
 }
 
-func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optCfg bool) *AccountDetail {
+func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optCfg, optRaft bool) *AccountDetail {
 	jsa.mu.RLock()
 	acc := jsa.account
 	name := acc.GetName()
@@ -2745,7 +2751,8 @@ func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optCfg 
 
 	if optStreams {
 		for _, stream := range streams {
-			ci := s.js.clusterInfo(stream.raftGroup())
+			rgroup := stream.raftGroup()
+			ci := s.js.clusterInfo(rgroup)
 			var cfg *StreamConfig
 			if optCfg {
 				c := stream.config()
@@ -2760,17 +2767,28 @@ func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optCfg 
 				Mirror:  stream.mirrorInfo(),
 				Sources: stream.sourcesInfo(),
 			}
+			if optRaft && rgroup != nil {
+				sdet.RaftGroup = rgroup.Name
+				sdet.ConsumerRaftGroups = make([]*RaftGroupDetail, 0)
+			}
 			if optConsumers {
 				for _, consumer := range stream.getPublicConsumers() {
 					cInfo := consumer.info()
 					if cInfo == nil {
 						continue
 					}
-
 					if !optCfg {
 						cInfo.Config = nil
 					}
 					sdet.Consumer = append(sdet.Consumer, cInfo)
+					if optRaft {
+						crgroup := consumer.raftGroup()
+						if crgroup != nil {
+							sdet.ConsumerRaftGroups = append(sdet.ConsumerRaftGroups,
+								&RaftGroupDetail{cInfo.Name, crgroup.Name},
+							)
+						}
+					}
 				}
 			}
 			detail.Streams = append(detail.Streams, sdet)
@@ -2794,7 +2812,7 @@ func (s *Server) JszAccount(opts *JSzOptions) (*AccountDetail, error) {
 	if !ok {
 		return nil, fmt.Errorf("account %q not jetstream enabled", acc)
 	}
-	return s.accountDetail(jsa, opts.Streams, opts.Consumer, opts.Config), nil
+	return s.accountDetail(jsa, opts.Streams, opts.Consumer, opts.Config, opts.RaftGroups), nil
 }
 
 // helper to get cluster info from node via dummy group
@@ -2921,7 +2939,7 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 	}
 	// if wanted, obtain accounts/streams/consumer
 	for _, jsa := range accounts {
-		detail := s.accountDetail(jsa, opts.Streams, opts.Consumer, opts.Config)
+		detail := s.accountDetail(jsa, opts.Streams, opts.Consumer, opts.Config, opts.RaftGroups)
 		jsi.AccountDetails = append(jsi.AccountDetails, detail)
 	}
 	return jsi, nil
@@ -2960,6 +2978,10 @@ func (s *Server) HandleJsz(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	rgroups, err := decodeBool(w, r, "raft")
+	if err != nil {
+		return
+	}
 
 	l, err := s.Jsz(&JSzOptions{
 		r.URL.Query().Get("acc"),
@@ -2969,7 +2991,9 @@ func (s *Server) HandleJsz(w http.ResponseWriter, r *http.Request) {
 		config,
 		leader,
 		offset,
-		limit})
+		limit,
+		rgroups,
+	})
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte(err.Error()))

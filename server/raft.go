@@ -939,9 +939,9 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	var state StreamState
 	n.wal.FastState(&state)
 
-	if state.FirstSeq >= n.applied {
+	if n.applied == 0 || len(data) == 0 {
 		n.Unlock()
-		return nil
+		return errNoSnapAvailable
 	}
 
 	n.debug("Installing snapshot of %d bytes", len(data))
@@ -975,8 +975,7 @@ func (n *raft) InstallSnapshot(data []byte) error {
 
 	// Remember our latest snapshot file.
 	n.snapfile = sfile
-
-	if _, err := n.wal.Compact(snap.lastIndex); err != nil {
+	if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
 		n.setWriteErrLocked(err)
 		n.Unlock()
 		return err
@@ -1075,9 +1074,8 @@ func (n *raft) setupLastSnapshot() {
 		n.pterm = snap.lastTerm
 		n.commit = snap.lastIndex
 		n.applied = snap.lastIndex
-
 		n.apply.push(&CommittedEntry{n.commit, []*Entry{{EntrySnapshot, snap.data}}})
-		if _, err := n.wal.Compact(snap.lastIndex); err != nil {
+		if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
 			n.setWriteErrLocked(err)
 		}
 	}
@@ -1281,7 +1279,6 @@ func (n *raft) StepDown(preferred ...string) error {
 	n.debug("Being asked to stepdown")
 
 	// See if we have up to date followers.
-	nowts := time.Now().UnixNano()
 	maybeLeader := noLeader
 	if len(preferred) > 0 {
 		if preferred[0] != _EMPTY_ {
@@ -1291,20 +1288,42 @@ func (n *raft) StepDown(preferred ...string) error {
 		}
 	}
 
-	for peer, ps := range n.peers {
-		// If not us and alive and caughtup.
-		if peer != n.id && (nowts-ps.ts) < int64(hbInterval*3) {
-			if maybeLeader != noLeader && maybeLeader != peer {
-				continue
-			}
-			if si, ok := n.s.nodeToInfo.Load(peer); !ok || si.(nodeInfo).offline {
-				continue
-			}
-			n.debug("Looking at %q which is %v behind", peer, time.Duration(nowts-ps.ts))
-			maybeLeader = peer
-			break
+	// Can't pick ourselves.
+	if maybeLeader == n.id {
+		maybeLeader = noLeader
+		preferred = nil
+	}
+
+	nowts := time.Now().UnixNano()
+
+	// If we have a preferred check it first.
+	if maybeLeader != noLeader {
+		var isHealthy bool
+		if ps, ok := n.peers[maybeLeader]; ok {
+			si, ok := n.s.nodeToInfo.Load(maybeLeader)
+			isHealthy = ok && !si.(nodeInfo).offline && (nowts-ps.ts) < int64(hbInterval*3)
+		}
+		if !isHealthy {
+			maybeLeader = noLeader
 		}
 	}
+
+	// If we do not have a preferred at this point pick the first healthy one.
+	// Make sure not ourselves.
+	if maybeLeader == noLeader {
+		for peer, ps := range n.peers {
+			if peer == n.id {
+				continue
+			}
+			si, ok := n.s.nodeToInfo.Load(peer)
+			isHealthy := ok && !si.(nodeInfo).offline && (nowts-ps.ts) < int64(hbInterval*3)
+			if isHealthy {
+				maybeLeader = peer
+				break
+			}
+		}
+	}
+
 	stepdown := n.stepdown
 	n.Unlock()
 
@@ -1462,6 +1481,7 @@ func (n *raft) shutdown(shouldDelete bool) {
 		n.Unlock()
 		return
 	}
+
 	close(n.quit)
 	if c := n.c; c != nil {
 		var subs []*subscription
@@ -2327,7 +2347,7 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 				n.Unlock()
 				return
 			}
-			n.debug("Snapshot sent, reset first entry to %d", lastIndex)
+			n.debug("Snapshot sent, reset first catchup entry to %d", lastIndex)
 		}
 	}
 
@@ -2627,14 +2647,13 @@ func (n *raft) runAsCandidate() {
 				// if we observe a bigger term, we should start over again or risk forming a quorum fully knowing
 				// someone with a better term exists. This is even the right thing to do if won == true.
 				n.Lock()
+				n.debug("Stepping down from candidate, detected higher term: %d vs %d", vresp.term, n.term)
 				n.term = vresp.term
 				n.vote = noVote
 				n.writeTermVote()
-				n.debug("Stepping down from candidate, detected higher term: %d vs %d", vresp.term, n.term)
 				n.stepdown.push(noLeader)
 				n.lxfer = false
 				n.Unlock()
-				return
 			}
 		case <-n.reqs.ch:
 			// Because of drain() it is possible that we get nil from popOne().
@@ -2714,22 +2733,49 @@ func (n *raft) createCatchup(ae *appendEntry) string {
 // Truncate our WAL and reset.
 // Lock should be held.
 func (n *raft) truncateWAL(term, index uint64) {
-	n.debug("Truncating and repairing WAL")
+	n.debug("Truncating and repairing WAL to Term %d Index %d", term, index)
+
+	if term == 0 && index == 0 {
+		n.warn("Resetting WAL state")
+	}
+
+	defer func() {
+		// Check to see if we invalidated any snapshots that might have held state
+		// from the entries we are truncating.
+		if snap, _ := n.loadLastSnapshot(); snap != nil && snap.lastIndex >= index {
+			os.Remove(n.snapfile)
+			n.snapfile = _EMPTY_
+		}
+		// Make sure to reset commit and applied if above
+		if n.commit > n.pindex {
+			n.commit = n.pindex
+		}
+		if n.applied > n.commit {
+			n.applied = n.commit
+		}
+	}()
 
 	if err := n.wal.Truncate(index); err != nil {
-		n.setWriteErrLocked(err)
+		// If we get an invalid sequence, reset our wal all together.
+		if err == ErrInvalidSequence {
+			n.debug("Resetting WAL")
+			n.wal.Truncate(0)
+			index, n.pterm, n.pindex = 0, 0, 0
+		} else {
+			n.warn("Error truncating WAL: %v", err)
+			n.setWriteErrLocked(err)
+		}
 		return
 	}
 
 	// Set after we know we have truncated properly.
 	n.pterm, n.pindex = term, index
+}
 
-	// Check to see if we invalidated any snapshots that might have held state
-	// from the entries we are truncating.
-	if snap, _ := n.loadLastSnapshot(); snap != nil && snap.lastIndex >= index {
-		os.Remove(n.snapfile)
-		n.snapfile = _EMPTY_
-	}
+// Reset our WAL.
+// Lock should be held.
+func (n *raft) resetWAL() {
+	n.truncateWAL(0, 0)
 }
 
 // Lock should be held
@@ -2743,7 +2789,6 @@ func (n *raft) updateLeader(newLeader string) {
 // processAppendEntry will process an appendEntry.
 func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	n.Lock()
-
 	// Don't reset here if we have been asked to assume leader position.
 	if !n.lxfer {
 		n.resetElectionTimeout()
@@ -2873,22 +2918,17 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			var ar *appendEntryResponse
 
 			var success bool
-			eae, err := n.loadEntry(ae.pindex)
-			// If terms mismatched, or we got an error loading, delete that entry and all others past it.
-			if eae != nil && ae.pterm > eae.pterm || err != nil {
-				// Truncate will reset our pterm and pindex. Only do so if we have an entry.
-				if eae != nil {
-					n.truncateWAL(ae.pterm, ae.pindex)
-				}
-				// Make sure to cancel any catchups in progress.
-				if catchingUp {
-					n.cancelCatchup()
-				}
+			if eae, _ := n.loadEntry(ae.pindex); eae == nil {
+				n.resetWAL()
 			} else {
-				// Inherit regardless.
-				n.pterm = ae.pterm
-				success = true
+				// If terms mismatched, or we got an error loading, delete that entry and all others past it.
+				// Make sure to cancel any catchups in progress.
+				// Truncate will reset our pterm and pindex. Only do so if we have an entry.
+				n.truncateWAL(ae.pterm, ae.pindex)
 			}
+			// Cancel regardless.
+			n.cancelCatchup()
+
 			// Create response.
 			ar = &appendEntryResponse{ae.pterm, ae.pindex, n.id, success, _EMPTY_}
 			n.Unlock()
@@ -3067,7 +3107,9 @@ func (n *raft) processAppendEntryResponse(ar *appendEntryResponse) {
 		n.term = ar.term
 		n.vote = noVote
 		n.writeTermVote()
+		n.warn("Detected another leader with higher term, will stepdown and reset")
 		n.stepdown.push(noLeader)
+		n.resetWAL()
 	} else if ar.reply != _EMPTY_ {
 		n.catchupFollower(ar)
 	}
@@ -3079,14 +3121,6 @@ func (n *raft) handleAppendEntryResponse(sub *subscription, c *client, _ *Accoun
 	ar := n.decodeAppendEntryResponse(msg)
 	ar.reply = reply
 	n.resp.push(ar)
-	if ar.success {
-		n.Lock()
-		// Update peer's last index.
-		if ps := n.peers[ar.peer]; ps != nil && ar.index > ps.li {
-			ps.li = ar.index
-		}
-		n.Unlock()
-	}
 }
 
 func (n *raft) buildAppendEntry(entries []*Entry) *appendEntry {
@@ -3119,6 +3153,7 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 		} else {
 			// Truncate back to our last known.
 			n.truncateWAL(n.pterm, n.pindex)
+			n.cancelCatchup()
 		}
 		return errEntryStoreFailed
 	}
@@ -3340,13 +3375,22 @@ func (n *raft) readTermVote() (term uint64, voted string, err error) {
 
 // Lock should be held.
 func (n *raft) setWriteErrLocked(err error) {
+	// Check if we are closed already.
+	if n.state == Closed {
+		return
+	}
 	// Ignore if already set.
 	if n.werr == err || err == nil {
 		return
 	}
 	// Ignore non-write errors.
 	if err != nil {
-		if err == ErrStoreClosed || err == ErrStoreEOF || err == ErrInvalidSequence || err == ErrStoreMsgNotFound || err == errNoPending {
+		if err == ErrStoreClosed ||
+			err == ErrStoreEOF ||
+			err == ErrInvalidSequence ||
+			err == ErrStoreMsgNotFound ||
+			err == errNoPending ||
+			err == errPartialCache {
 			return
 		}
 		// If this is a not found report but do not disable.
@@ -3378,6 +3422,12 @@ func (n *raft) fileWriter() {
 	psf := filepath.Join(n.sd, peerStateFile)
 	n.RUnlock()
 
+	isClosed := func() bool {
+		n.RLock()
+		defer n.RUnlock()
+		return n.state == Closed
+	}
+
 	for s.isRunning() {
 		select {
 		case <-n.quit:
@@ -3390,7 +3440,7 @@ func (n *raft) fileWriter() {
 			<-dios
 			err := os.WriteFile(tvf, buf[:], 0640)
 			dios <- struct{}{}
-			if err != nil {
+			if err != nil && !isClosed() {
 				n.setWriteErr(err)
 				n.warn("Error writing term and vote file for %q: %v", n.group, err)
 			}
@@ -3401,7 +3451,7 @@ func (n *raft) fileWriter() {
 			<-dios
 			err := os.WriteFile(psf, buf, 0640)
 			dios <- struct{}{}
-			if err != nil {
+			if err != nil && !isClosed() {
 				n.setWriteErr(err)
 				n.warn("Error writing peer state file for %q: %v", n.group, err)
 			}
@@ -3516,10 +3566,15 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 
 	// Only way we get to yes is through here.
 	voteOk := n.vote == noVote || n.vote == vr.candidate
-	if voteOk && vr.lastTerm >= n.pterm && vr.lastIndex >= n.pindex {
+	if voteOk && (vr.lastTerm > n.pterm || vr.lastTerm == n.pterm && vr.lastIndex >= n.pindex) {
 		vresp.granted = true
 		n.vote = vr.candidate
 		n.writeTermVote()
+	} else {
+		if vr.term >= n.term && n.vote == noVote {
+			n.term = vr.term
+			n.resetElect(randCampaignTimeout())
+		}
 	}
 	n.Unlock()
 

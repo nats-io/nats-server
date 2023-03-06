@@ -4809,7 +4809,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.BoolVar(&dbgAndTrcAndVerboseTrc, "DVV", false, "Enable Debug and Verbose Trace logging. (Traces system account as well)")
 	fs.BoolVar(&opts.Logtime, "T", true, "Timestamp log entries.")
 	fs.BoolVar(&opts.Logtime, "logtime", true, "Timestamp log entries.")
-	fs.BoolVar(&opts.LogtimeUTC, "logtime_utc", true, "Timestamps in UTC instead of local timezone.")
+	fs.BoolVar(&opts.LogtimeUTC, "logtime_utc", false, "Timestamps in UTC instead of local timezone.")
 	fs.StringVar(&opts.Username, "user", _EMPTY_, "Username required for connection.")
 	fs.StringVar(&opts.Password, "pass", _EMPTY_, "Password required for connection.")
 	fs.StringVar(&opts.Authorization, "auth", _EMPTY_, "Authorization token required for connection.")
