@@ -997,7 +997,9 @@ func (js *jetStream) checkForOrphans() {
 		accName, stream := mset.acc.Name, mset.cfg.Name
 		mset.mu.RUnlock()
 		s.Warnf("Detected orphaned stream '%s > %s', will cleanup", accName, stream)
-		mset.delete()
+		if err := mset.delete(); err != nil {
+			s.Warnf("Deleting stream encountered an error: %v", err)
+		}
 	}
 	for _, o := range consumers {
 		o.mu.RLock()
@@ -1010,7 +1012,9 @@ func (js *jetStream) checkForOrphans() {
 			mset.mu.RUnlock()
 		}
 		s.Warnf("Detected orphaned consumer '%s > %s > %s', will cleanup", accName, stream, consumer)
-		o.delete()
+		if err := o.delete(); err != nil {
+			s.Warnf("Deleting consumer encountered an error: %v", err)
+		}
 	}
 }
 
