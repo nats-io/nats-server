@@ -541,11 +541,11 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 }
 
 func getSubjects(client *client) []string {
-	subz := make([]string, 0)
+	subjects := make([]string, 0)
 	for _, value := range client.subs {
-		subz = append(subz, string(value.subject))
+		subjects = append(subjects, string(value.subject))
 	}
-	return subz
+	return subjects
 }
 
 // Fills in the ConnInfo from the client.
