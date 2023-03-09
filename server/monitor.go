@@ -150,7 +150,7 @@ type ConnInfo struct {
 	NameTag        string         `json:"name_tag,omitempty"`
 	Tags           jwt.TagList    `json:"tags,omitempty"`
 	MQTTClient     string         `json:"mqtt_client,omitempty"` // This is the MQTT client id
-	Subz           []string       `json:"subz,omitempty"`
+	Subz           []string       `json:"subjects,omitempty"`
 }
 
 // TLSPeerCert contains basic information about a TLS peer certificate
