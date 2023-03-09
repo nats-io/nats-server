@@ -150,7 +150,6 @@ type ConnInfo struct {
 	NameTag        string         `json:"name_tag,omitempty"`
 	Tags           jwt.TagList    `json:"tags,omitempty"`
 	MQTTClient     string         `json:"mqtt_client,omitempty"` // This is the MQTT client id
-	Subjects       []string       `json:"subjects,omitempty"`
 }
 
 // TLSPeerCert contains basic information about a TLS peer certificate
@@ -540,14 +539,6 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	return c, nil
 }
 
-func getSubjects(client *client) []string {
-	subjects := make([]string, 0)
-	for _, value := range client.subs {
-		subjects = append(subjects, string(value.subject))
-	}
-	return subjects
-}
-
 // Fills in the ConnInfo from the client.
 // client should be locked.
 func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time, auth bool) {
@@ -571,7 +562,7 @@ func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time, auth bool) 
 	// we need to use atomic here.
 	ci.InMsgs = atomic.LoadInt64(&client.inMsgs)
 	ci.InBytes = atomic.LoadInt64(&client.inBytes)
-	ci.Subjects = getSubjects(client)
+	ci.Subs = newSubsList(client)
 	// If the connection is gone, too bad, we won't set TLSVersion and TLSCipher.
 	// Exclude clients that are still doing handshake so we don't block in
 	// ConnectionState().
