@@ -540,13 +540,17 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	return c, nil
 }
 
-// Fills in the ConnInfo from the client.
-// client should be locked.
-func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time, auth bool) {
+func getSubz(client *client) []string {
 	subz := make([]string, 0)
 	for _, value := range client.subs {
 		subz = append(subz, string(value.subject))
 	}
+	return subz
+}
+
+// Fills in the ConnInfo from the client.
+// client should be locked.
+func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time, auth bool) {
 	ci.Cid = client.cid
 	ci.MQTTClient = client.getMQTTClientID()
 	ci.Kind = client.kindString()
@@ -567,7 +571,7 @@ func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time, auth bool) 
 	// we need to use atomic here.
 	ci.InMsgs = atomic.LoadInt64(&client.inMsgs)
 	ci.InBytes = atomic.LoadInt64(&client.inBytes)
-	ci.Subz = subz
+	ci.Subz = getSubz(client)
 	// If the connection is gone, too bad, we won't set TLSVersion and TLSCipher.
 	// Exclude clients that are still doing handshake so we don't block in
 	// ConnectionState().
