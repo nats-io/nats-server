@@ -5633,11 +5633,9 @@ func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64, smp *StoreMsg) 
 		return
 	}
 
-	// Mark dirty
-	mb.fssNeedsWrite = true
-
 	if ss.Msgs == 1 {
 		delete(mb.fss, subj)
+		mb.fssNeedsWrite = true // Mark dirty
 		return
 	}
 
@@ -5650,8 +5648,10 @@ func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64, smp *StoreMsg) 
 	if ss.Msgs == 1 {
 		if seq != ss.First {
 			ss.Last = ss.First
+			mb.fssNeedsWrite = true // Mark dirty
 		} else {
 			ss.First = ss.Last
+			mb.fssNeedsWrite = true // Mark dirty
 		}
 		return
 	}
@@ -5667,6 +5667,7 @@ func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64, smp *StoreMsg) 
 			if sm, _ := mb.cacheLookup(tseq, smp); sm != nil {
 				if sm.subj == subj {
 					ss.First = tseq
+					mb.fssNeedsWrite = true // Mark dirty
 					return
 				}
 			}
