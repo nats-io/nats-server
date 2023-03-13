@@ -32,7 +32,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -4464,29 +4463,28 @@ func (mb *msgBlock) msgFromBuf(buf []byte, sm *StoreMsg, hh hash.Hash64) (*Store
 // Given the `key` byte slice, this function will return the subject
 // as a copy of `key` or a configured subject as to minimize memory allocations.
 // Lock should be held.
-func (mb *msgBlock) subjString(key []byte) string {
-	if len(key) == 0 {
+func (mb *msgBlock) subjString(skey []byte) string {
+	if len(skey) == 0 {
 		return _EMPTY_
 	}
+	key := string(skey)
 
 	if lsubjs := len(mb.fs.cfg.Subjects); lsubjs > 0 {
 		if lsubjs == 1 {
 			// The cast for the comparison does not make a copy
-			if string(key) == mb.fs.cfg.Subjects[0] {
+			if key == mb.fs.cfg.Subjects[0] {
 				return mb.fs.cfg.Subjects[0]
 			}
 		} else {
 			for _, subj := range mb.fs.cfg.Subjects {
-				if string(key) == subj {
+				if key == subj {
 					return subj
 				}
 			}
 		}
 	}
-	// Copy here to not reference underlying buffer.
-	var sb strings.Builder
-	sb.Write(key)
-	return sb.String()
+
+	return key
 }
 
 // LoadMsg will lookup the message by sequence number and return it if found.
