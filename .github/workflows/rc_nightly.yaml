@@ -1,4 +1,4 @@
-name: NATS Server Nightly RC
+name: NATS Server Nightly MAIN
 on:
   workflow_dispatch: {}
 
@@ -7,11 +7,16 @@ on:
 
 
 jobs:
-  rc_release:
+  nightly_main_release:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          path: src/github.com/nats-io/nats-server
+          ref: main
+
       - uses: ./.github/actions/nightly-release
         with:
           go: "1.19"
-          branch: main
           label: nightly-main
