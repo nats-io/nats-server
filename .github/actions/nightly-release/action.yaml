@@ -6,10 +6,6 @@ inputs:
     description: The version of go to build with
     required: true
 
-  branch:
-    description: The branch to build
-    required: true
-
   label:
     description: The label to use for built images
     required: true
@@ -17,12 +13,6 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-      with:
-        path: src/github.com/nats-io/nats-server
-        ref: ${{ inputs.branch }}
-
     - name: Set up Go
       uses: actions/setup-go@v3
       with:
