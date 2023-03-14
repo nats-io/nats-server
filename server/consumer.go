@@ -981,7 +981,24 @@ func (o *consumer) setLeader(isLeader bool) {
 
 	// If we are here we have a change in leader status.
 	if isLeader {
-		if mset == nil || isRunning {
+		if mset == nil {
+			return
+		}
+		if isRunning {
+			// If we detect we are scaling up, make sure to create clustered routines and channels.
+			o.mu.Lock()
+			if o.node != nil && o.pch == nil {
+				// We are moving from R1 to clustered.
+				o.pch = make(chan struct{}, 1)
+				go o.loopAndForwardProposals(o.qch)
+				if o.phead != nil {
+					select {
+					case o.pch <- struct{}{}:
+					default:
+					}
+				}
+			}
+			o.mu.Unlock()
 			return
 		}
 

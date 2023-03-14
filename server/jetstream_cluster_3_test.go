@@ -2923,3 +2923,95 @@ func TestJetStreamClusterStreamMaxAgeScaleUp(t *testing.T) {
 		})
 	}
 }
+
+func TestJetStreamClusterWorkQueueConsumerReplicatedAfterScaleUp(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Replicas:  1,
+		Subjects:  []string{"WQ"},
+		Retention: nats.WorkQueuePolicy,
+	})
+	require_NoError(t, err)
+
+	// Create an ephemeral consumer.
+	sub, err := js.SubscribeSync("WQ")
+	require_NoError(t, err)
+
+	// Scale up to R3.
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Replicas:  3,
+		Subjects:  []string{"WQ"},
+		Retention: nats.WorkQueuePolicy,
+	})
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	ci, err := sub.ConsumerInfo()
+	require_NoError(t, err)
+
+	require_True(t, ci.Config.Replicas == 0 || ci.Config.Replicas == 3)
+
+	s := c.consumerLeader(globalAccountName, "TEST", ci.Name)
+	require_NotNil(t, s)
+
+	mset, err := s.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	o := mset.lookupConsumer(ci.Name)
+	require_NotNil(t, o)
+	require_NotNil(t, o.raftNode())
+}
+
+// https://github.com/nats-io/nats-server/issues/3953
+func TestJetStreamClusterWorkQueueAfterScaleUp(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Replicas:  1,
+		Subjects:  []string{"WQ"},
+		Retention: nats.WorkQueuePolicy,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:        "d1",
+		DeliverSubject: "d1",
+		AckPolicy:      nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	wch := make(chan bool, 1)
+	_, err = nc.Subscribe("d1", func(msg *nats.Msg) {
+		msg.AckSync()
+		wch <- true
+	})
+	require_NoError(t, err)
+
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Replicas:  3,
+		Subjects:  []string{"WQ"},
+		Retention: nats.WorkQueuePolicy,
+	})
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	sendStreamMsg(t, nc, "WQ", "SOME WORK")
+	<-wch
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_True(t, si.State.Msgs == 0)
+}
