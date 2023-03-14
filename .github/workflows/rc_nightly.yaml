@@ -1,0 +1,17 @@
+name: NATS Server Nightly RC
+on:
+  workflow_dispatch: {}
+
+  schedule:
+    - cron: "40 4 * * *"
+
+
+jobs:
+  rc_release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/nightly-release
+        with:
+          go: "1.19"
+          branch: main
+          label: nightly-main
