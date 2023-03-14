@@ -5665,9 +5665,9 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 
 		// Need to remap any consumers.
 		for _, ca := range osa.consumers {
-			// Ephemerals are R=1, so only auto-remap durables, or R>1.
+			// Ephemerals are R=1, so only auto-remap durables, or R>1, unless stream is interest or workqueue policy.
 			numPeers := len(ca.Group.Peers)
-			if ca.Config.Durable != _EMPTY_ || numPeers > 1 {
+			if ca.Config.Durable != _EMPTY_ || numPeers > 1 || cfg.Retention != LimitsPolicy {
 				cca := ca.copyGroup()
 				// Adjust preferred as needed.
 				if numPeers == 1 && len(rg.Peers) > 1 {
