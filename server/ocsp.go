@@ -435,7 +435,7 @@ func (srv *Server) NewOCSPMonitor(config *tlsConfigKind) (*tls.Config, *OCSPMoni
 
 		// Check whether need to verify staples from a client connection depending on the type.
 		switch kind {
-		case kindStringMap[ROUTER], kindStringMap[GATEWAY], kindStringMap[LEAF]:
+		case kindStringMap[ROUTER], kindStringMap[GATEWAY]:
 			tc.VerifyConnection = func(s tls.ConnectionState) error {
 				oresp := s.OCSPResponse
 				if oresp == nil {
@@ -558,10 +558,11 @@ func (s *Server) configureOCSP() []*tlsConfigKind {
 			tlsConfig: config,
 			tlsOpts:   opts,
 			apply: func(tc *tls.Config) {
-
 				// RequireAndVerifyClientCert is used to tell a client that it
 				// should send the client cert to the server.
-				tc.ClientAuth = tls.RequireAndVerifyClientCert
+				if opts.Verify {
+					tc.ClientAuth = tls.RequireAndVerifyClientCert
+				}
 				// GetClientCertificate is used by a client to send the client cert
 				// to a server. We're a server, so we must not set this.
 				tc.GetClientCertificate = nil
