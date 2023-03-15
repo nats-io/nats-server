@@ -2507,6 +2507,10 @@ func (n *raft) applyCommit(index uint64) error {
 // Used to track a success response and apply entries.
 func (n *raft) trackResponse(ar *appendEntryResponse) {
 	n.Lock()
+	if n.state == Closed {
+		n.Unlock()
+		return
+	}
 
 	// Update peer's last index.
 	if ps := n.peers[ar.peer]; ps != nil && ar.index > ps.li {
@@ -2532,8 +2536,8 @@ func (n *raft) trackResponse(ar *appendEntryResponse) {
 		if nr := len(results); nr >= n.qn {
 			// We have a quorum.
 			for index := n.commit + 1; index <= ar.index; index++ {
-				if err := n.applyCommit(index); err != nil {
-					n.error("Got an error apply commit for %d: %v", index, err)
+				if err := n.applyCommit(index); err != nil && err != errNodeClosed {
+					n.error("Got an error applying commit for %d: %v", index, err)
 					break
 				}
 			}
