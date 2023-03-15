@@ -16,7 +16,7 @@ jobs:
           path: src/github.com/nats-io/nats-server
           ref: main
 
-      - uses: src/github.com/nats-io/nats-server/.github/actions/nightly-release
+      - uses: ./src/github.com/nats-io/nats-server/.github/actions/nightly-release
         with:
           go: "1.19"
           label: nightly-main
