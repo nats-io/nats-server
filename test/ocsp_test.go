@@ -1886,7 +1886,131 @@ func TestOCSPLeafVerifyLeafRemote(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cA.Close()
+
+	// Should not have been able to connect.
 	checkLeafNodeConnections(t, srvA, 0)
+}
+
+func TestOCSPLeafVerifyAndMapLeafRemote(t *testing.T) {
+	const (
+		caCert = "configs/certs/ocsp/ca-cert.pem"
+		caKey  = "configs/certs/ocsp/ca-key.pem"
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ocspr := newOCSPResponder(t, caCert, caKey)
+	defer ocspr.Shutdown(ctx)
+	addr := fmt.Sprintf("http://%s", ocspr.Addr)
+	setOCSPStatus(t, addr, "configs/certs/ocsp/server-status-request-url-01-cert.pem", ocsp.Good)
+	setOCSPStatus(t, addr, "configs/certs/ocsp/server-status-request-url-02-cert.pem", ocsp.Good)
+	setOCSPStatus(t, addr, "configs/certs/ocsp/server-status-request-url-03-cert.pem", ocsp.Good)
+	setOCSPStatus(t, addr, "configs/certs/ocsp/server-status-request-url-04-cert.pem", ocsp.Good)
+	setOCSPStatus(t, addr, "configs/certs/ocsp/server-status-request-url-05-cert.pem", ocsp.Good)
+	setOCSPStatus(t, addr, "configs/certs/ocsp/server-status-request-url-06-cert.pem", ocsp.Good)
+	setOCSPStatus(t, addr, "configs/certs/ocsp/server-status-request-url-07-cert.pem", ocsp.Good)
+	setOCSPStatus(t, addr, "configs/certs/ocsp/server-status-request-url-08-cert.pem", ocsp.Good)
+	setOCSPStatus(t, addr, "configs/certs/ocsp/client-cert.pem", ocsp.Good)
+
+	// Store Dirs
+	storeDirA := t.TempDir()
+	storeDirB := t.TempDir()
+
+	// LeafNode server configuration
+	srvConfA := `
+		host: "127.0.0.1"
+		port: -1
+
+		server_name: "AAA"
+
+		tls {
+			cert_file: "configs/certs/ocsp/server-status-request-url-01-cert.pem"
+			key_file: "configs/certs/ocsp/server-status-request-url-01-key.pem"
+			ca_file: "configs/certs/ocsp/ca-cert.pem"
+			timeout: 5
+			verify_and_map: true
+		}
+		store_dir: '%s'
+
+		leafnodes {
+			host: "127.0.0.1"
+			port: -1
+			advertise: "127.0.0.1"
+
+			tls {
+				cert_file: "configs/certs/ocsp/server-status-request-url-02-cert.pem"
+				key_file: "configs/certs/ocsp/server-status-request-url-02-key.pem"
+				ca_file: "configs/certs/ocsp/ca-cert.pem"
+				timeout: 5
+				verify_and_map: true
+			}
+		}
+
+		accounts: {
+			leaf: {
+			  users: [ {user: "C=US, ST=CA, L=San Francisco, O=Synadia, OU=nats.io, CN=localhost server-status-request-url-04"} ]
+			}
+			client: {
+			  users: [ {user: "C=US, ST=CA, L=San Francisco, O=Synadia, OU=nats.io, CN=localhost client"} ]
+			}
+		}
+
+	`
+	srvConfA = fmt.Sprintf(srvConfA, storeDirA)
+	sconfA := createConfFile(t, []byte(srvConfA))
+	srvA, optsA := RunServerWithConfig(sconfA)
+	defer srvA.Shutdown()
+
+	// LeafNode remote that will connect to A and will not present certs.
+	srvConfB := `
+		host: "127.0.0.1"
+		port: -1
+
+		server_name: "BBB"
+
+		tls {
+			cert_file: "configs/certs/ocsp/server-status-request-url-03-cert.pem"
+			key_file: "configs/certs/ocsp/server-status-request-url-03-key.pem"
+			ca_file: "configs/certs/ocsp/ca-cert.pem"
+			timeout: 5
+		}
+		store_dir: '%s'
+
+		leafnodes {
+			remotes: [ {
+				url: "tls://127.0.0.1:%d"
+				tls {
+					cert_file: "configs/certs/ocsp/server-status-request-url-04-cert.pem"
+					key_file: "configs/certs/ocsp/server-status-request-url-04-key.pem"
+					ca_file: "configs/certs/ocsp/ca-cert.pem"
+					timeout: 5
+				}
+			} ]
+		}
+	`
+	srvConfB = fmt.Sprintf(srvConfB, storeDirB, optsA.LeafNode.Port)
+	conf := createConfFile(t, []byte(srvConfB))
+	srvB, _ := RunServerWithConfig(conf)
+	defer srvB.Shutdown()
+
+	// Client connects to server A.
+	cA, err := nats.Connect(fmt.Sprintf("tls://127.0.0.1:%d", optsA.Port),
+		nats.Secure(&tls.Config{
+			VerifyConnection: func(s tls.ConnectionState) error {
+				if s.OCSPResponse == nil {
+					return fmt.Errorf("missing OCSP Staple from server")
+				}
+				return nil
+			},
+		}),
+		nats.ClientCert("./configs/certs/ocsp/client-cert.pem", "./configs/certs/ocsp/client-key.pem"),
+		nats.RootCAs(caCert),
+		nats.ErrorHandler(noOpErrHandler),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cA.Close()
+	checkLeafNodeConnections(t, srvA, 1)
 }
 
 func TestOCSPGateway(t *testing.T) {
