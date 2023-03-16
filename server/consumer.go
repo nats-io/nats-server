@@ -1,4 +1,4 @@
-// Copyright 2019-2022 The NATS Authors
+// Copyright 2019-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -1041,7 +1041,24 @@ func (o *consumer) setLeader(isLeader bool) {
 
 	// If we are here we have a change in leader status.
 	if isLeader {
-		if mset == nil || isRunning {
+		if mset == nil {
+			return
+		}
+		if isRunning {
+			// If we detect we are scaling up, make sure to create clustered routines and channels.
+			o.mu.Lock()
+			if o.node != nil && o.pch == nil {
+				// We are moving from R1 to clustered.
+				o.pch = make(chan struct{}, 1)
+				go o.loopAndForwardProposals(o.qch)
+				if o.phead != nil {
+					select {
+					case o.pch <- struct{}{}:
+					default:
+					}
+				}
+			}
+			o.mu.Unlock()
 			return
 		}
 

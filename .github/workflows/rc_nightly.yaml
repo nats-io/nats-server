@@ -1,24 +1,25 @@
-name: "NATS Server Nightly: DEV"
+name: "NATS Server Nightly: MAIN"
 on:
   workflow_dispatch: {}
 
   schedule:
     - cron: "40 4 * * *"
 
+
 jobs:
-  nightly_release:
+  nightly_main_release:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
         with:
           path: src/github.com/nats-io/nats-server
-          ref: dev
+          ref: main
 
       - uses: ./src/github.com/nats-io/nats-server/.github/actions/nightly-release
         with:
           go: "1.19"
           workdir: src/github.com/nats-io/nats-server
-          label: nightly
+          label: nightly-main
           hub_username: "${{ secrets.DOCKER_USERNAME }}"
           hub_password: "${{ secrets.DOCKER_PASSWORD }}"

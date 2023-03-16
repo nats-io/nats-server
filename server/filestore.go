@@ -32,7 +32,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -3994,16 +3993,17 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 
 	// Check if we need to encrypt.
 	if mb.bek != nil && lob > 0 {
-		const rsz = 32 * 1024 // 32k
-		var rdst [rsz]byte
-		var dst []byte
-		if lob > rsz {
-			dst = make([]byte, lob)
-		} else {
-			dst = rdst[:lob]
-		}
 		// Need to leave original alone.
+		var dst []byte
+		if lob <= defaultLargeBlockSize {
+			dst = getMsgBlockBuf(lob)[:lob]
+		} else {
+			dst = make([]byte, lob)
+		}
 		mb.bek.XORKeyStream(dst, buf)
+		if cap(buf) <= defaultLargeBlockSize {
+			recycleMsgBlockBuf(buf)
+		}
 		buf = dst
 	}
 
@@ -4464,29 +4464,28 @@ func (mb *msgBlock) msgFromBuf(buf []byte, sm *StoreMsg, hh hash.Hash64) (*Store
 // Given the `key` byte slice, this function will return the subject
 // as a copy of `key` or a configured subject as to minimize memory allocations.
 // Lock should be held.
-func (mb *msgBlock) subjString(key []byte) string {
-	if len(key) == 0 {
+func (mb *msgBlock) subjString(skey []byte) string {
+	if len(skey) == 0 {
 		return _EMPTY_
 	}
+	key := string(skey)
 
 	if lsubjs := len(mb.fs.cfg.Subjects); lsubjs > 0 {
 		if lsubjs == 1 {
 			// The cast for the comparison does not make a copy
-			if string(key) == mb.fs.cfg.Subjects[0] {
+			if key == mb.fs.cfg.Subjects[0] {
 				return mb.fs.cfg.Subjects[0]
 			}
 		} else {
 			for _, subj := range mb.fs.cfg.Subjects {
-				if string(key) == subj {
+				if key == subj {
 					return subj
 				}
 			}
 		}
 	}
-	// Copy here to not reference underlying buffer.
-	var sb strings.Builder
-	sb.Write(key)
-	return sb.String()
+
+	return key
 }
 
 // LoadMsg will lookup the message by sequence number and return it if found.
@@ -5633,11 +5632,9 @@ func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64, smp *StoreMsg) 
 		return
 	}
 
-	// Mark dirty
-	mb.fssNeedsWrite = true
-
 	if ss.Msgs == 1 {
 		delete(mb.fss, subj)
+		mb.fssNeedsWrite = true // Mark dirty
 		return
 	}
 
@@ -5650,8 +5647,10 @@ func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64, smp *StoreMsg) 
 	if ss.Msgs == 1 {
 		if seq != ss.First {
 			ss.Last = ss.First
+			mb.fssNeedsWrite = true // Mark dirty
 		} else {
 			ss.First = ss.Last
+			mb.fssNeedsWrite = true // Mark dirty
 		}
 		return
 	}
@@ -5667,6 +5666,7 @@ func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64, smp *StoreMsg) 
 			if sm, _ := mb.cacheLookup(tseq, smp); sm != nil {
 				if sm.subj == subj {
 					ss.First = tseq
+					mb.fssNeedsWrite = true // Mark dirty
 					return
 				}
 			}

@@ -960,34 +960,60 @@ type recoveryUpdates struct {
 // Streams and consumers are recovered from disk, and the meta layer's mappings
 // should clean them up, but under crash scenarios there could be orphans.
 func (js *jetStream) checkForOrphans() {
-	js.mu.Lock()
-	defer js.mu.Unlock()
-
 	consumerName := func(o *consumer) string {
 		o.mu.RLock()
 		defer o.mu.RUnlock()
 		return o.name
 	}
 
+	// Can not hold jetstream lock while trying to delete streams or consumers.
+	js.mu.Lock()
 	s, cc := js.srv, js.cluster
 	s.Debugf("JetStream cluster checking for orphans")
+
+	var streams []*stream
+	var consumers []*consumer
 
 	for accName, jsa := range js.accounts {
 		asa := cc.streams[accName]
 		for stream, mset := range jsa.streams {
 			if sa := asa[stream]; sa == nil {
-				s.Warnf("Detected orphaned stream '%s > %s', will cleanup", accName, stream)
-				mset.delete()
+				streams = append(streams, mset)
 			} else {
 				// This one is good, check consumers now.
 				for _, o := range mset.getConsumers() {
 					consumer := consumerName(o)
 					if sa.consumers[consumer] == nil {
-						s.Warnf("Detected orphaned consumer '%s > %s > %s', will cleanup", accName, stream, consumer)
-						o.delete()
+						consumers = append(consumers, o)
 					}
 				}
 			}
+		}
+	}
+	js.mu.Unlock()
+
+	for _, mset := range streams {
+		mset.mu.RLock()
+		accName, stream := mset.acc.Name, mset.cfg.Name
+		mset.mu.RUnlock()
+		s.Warnf("Detected orphaned stream '%s > %s', will cleanup", accName, stream)
+		if err := mset.delete(); err != nil {
+			s.Warnf("Deleting stream encountered an error: %v", err)
+		}
+	}
+	for _, o := range consumers {
+		o.mu.RLock()
+		accName, mset, consumer := o.acc.Name, o.mset, o.name
+		o.mu.RUnlock()
+		stream := "N/A"
+		if mset != nil {
+			mset.mu.RLock()
+			stream = mset.cfg.Name
+			mset.mu.RUnlock()
+		}
+		s.Warnf("Detected orphaned consumer '%s > %s > %s', will cleanup", accName, stream, consumer)
+		if err := o.delete(); err != nil {
+			s.Warnf("Deleting consumer encountered an error: %v", err)
 		}
 	}
 }
@@ -4289,7 +4315,22 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 				if s != nil && mset != nil {
 					s.Warnf("Consumer '%s > %s > %s' error on store update from snapshot entry: %v", acc, mset.name(), name, err)
 				}
+			} else if state, err := o.store.State(); err == nil {
+				// See if we need to process this update if our parent stream is not a limits policy stream.
+				o.mu.RLock()
+				mset := o.mset
+				shouldProcessAcks := mset != nil && o.retention != LimitsPolicy
+				o.mu.RUnlock()
+				// We should make sure to update the acks.
+				if shouldProcessAcks {
+					var ss StreamState
+					mset.store.FastState(&ss)
+					for seq := ss.FirstSeq; seq <= state.AckFloor.Stream; seq++ {
+						mset.ackMsg(o, seq)
+					}
+				}
 			}
+
 		} else if e.Type == EntryRemovePeer {
 			js.mu.RLock()
 			var ourID string
@@ -5639,9 +5680,9 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 
 		// Need to remap any consumers.
 		for _, ca := range osa.consumers {
-			// Ephemerals are R=1, so only auto-remap durables, or R>1.
+			// Ephemerals are R=1, so only auto-remap durables, or R>1, unless stream is interest or workqueue policy.
 			numPeers := len(ca.Group.Peers)
-			if ca.Config.Durable != _EMPTY_ || numPeers > 1 {
+			if ca.Config.Durable != _EMPTY_ || numPeers > 1 || cfg.Retention != LimitsPolicy {
 				cca := ca.copyGroup()
 				// Adjust preferred as needed.
 				if numPeers == 1 && len(rg.Peers) > 1 {
