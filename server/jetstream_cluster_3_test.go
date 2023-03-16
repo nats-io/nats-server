@@ -2958,6 +2958,7 @@ func TestJetStreamClusterWorkQueueConsumerReplicatedAfterScaleUp(t *testing.T) {
 
 	require_True(t, ci.Config.Replicas == 0 || ci.Config.Replicas == 3)
 
+	c.waitOnConsumerLeader(globalAccountName, "TEST", ci.Name)
 	s := c.consumerLeader(globalAccountName, "TEST", ci.Name)
 	require_NotNil(t, s)
 
