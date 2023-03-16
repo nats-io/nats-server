@@ -3993,16 +3993,17 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 
 	// Check if we need to encrypt.
 	if mb.bek != nil && lob > 0 {
-		const rsz = 32 * 1024 // 32k
-		var rdst [rsz]byte
-		var dst []byte
-		if lob > rsz {
-			dst = make([]byte, lob)
-		} else {
-			dst = rdst[:lob]
-		}
 		// Need to leave original alone.
+		var dst []byte
+		if lob <= defaultLargeBlockSize {
+			dst = getMsgBlockBuf(lob)[:lob]
+		} else {
+			dst = make([]byte, lob)
+		}
 		mb.bek.XORKeyStream(dst, buf)
+		if cap(buf) <= defaultLargeBlockSize {
+			recycleMsgBlockBuf(buf)
+		}
 		buf = dst
 	}
 
