@@ -1,0 +1,57 @@
+name: Nightly Docker Releaser
+description: Builds nightly docker images
+
+inputs:
+  go:
+    description: The version of go to build with
+    required: true
+
+  label:
+    description: The label to use for built images
+    required: true
+
+  hub_username:
+    description: Docker hub username
+    required: true
+
+  hub_password:
+    description: Docker hub password
+    required: true
+
+  workdir:
+    description: The working directory for actions requiring it
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@v3
+      with:
+        go-version: "${{ inputs.go }}"
+
+    - name: goreleaser
+      uses: goreleaser/goreleaser-action@v3
+      with:
+        workdir: "${{ inputs.workdir }}"
+        version: latest
+        args: release --snapshot --config .goreleaser-nightly.yml
+
+    - name: images
+      shell: bash
+      run: docker images
+
+    - name: docker_login
+      shell: bash
+      run: docker login -u "${{ inputs.hub_username }}" -p "${{ inputs.hub_password }}"
+
+    - name: docker_push
+      shell: bash
+      run: |
+        NDATE=$(date +%Y%m%d)
+    
+        docker tag synadia/nats-server:nightly-${NDATE} synadia/nats-server:${{ inputs.label }}-${NDATE}
+        docker tag synadia/nats-server:nightly-${NDATE} synadia/nats-server:${{ inputs.label }}
+    
+        docker push synadia/nats-server:${{ inputs.label }}-${NDATE}
+        docker push synadia/nats-server:${{ inputs.label }}

@@ -4315,7 +4315,22 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 				if s != nil && mset != nil {
 					s.Warnf("Consumer '%s > %s > %s' error on store update from snapshot entry: %v", acc, mset.name(), name, err)
 				}
+			} else if state, err := o.store.State(); err == nil {
+				// See if we need to process this update if our parent stream is not a limits policy stream.
+				o.mu.RLock()
+				mset := o.mset
+				shouldProcessAcks := mset != nil && o.retention != LimitsPolicy
+				o.mu.RUnlock()
+				// We should make sure to update the acks.
+				if shouldProcessAcks {
+					var ss StreamState
+					mset.store.FastState(&ss)
+					for seq := ss.FirstSeq; seq <= state.AckFloor.Stream; seq++ {
+						mset.ackMsg(o, seq)
+					}
+				}
 			}
+
 		} else if e.Type == EntryRemovePeer {
 			js.mu.RLock()
 			var ourID string
