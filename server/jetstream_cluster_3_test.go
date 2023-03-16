@@ -3016,3 +3016,94 @@ func TestJetStreamClusterWorkQueueAfterScaleUp(t *testing.T) {
 	require_NoError(t, err)
 	require_True(t, si.State.Msgs == 0)
 }
+
+func TestJetStreamClusterInterestBasedStreamAndConsumerSnapshots(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Replicas:  3,
+		Subjects:  []string{"foo"},
+		Retention: nats.InterestPolicy,
+	})
+	require_NoError(t, err)
+
+	sub, err := js.SubscribeSync("foo", nats.Durable("d22"))
+	require_NoError(t, err)
+
+	num := 200
+	for i := 0; i < num; i++ {
+		js.PublishAsync("foo", []byte("ok"))
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	checkSubsPending(t, sub, num)
+
+	// Shutdown one server.
+	s := c.randomServer()
+	s.Shutdown()
+
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Now ack all messages while the other server is down.
+	for i := 0; i < num; i++ {
+		m, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		m.AckSync()
+	}
+
+	// Wait for all message acks to be processed and all messages to be removed.
+	checkFor(t, time.Second, 200*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST")
+		require_NoError(t, err)
+		if si.State.Msgs == 0 {
+			return nil
+		}
+		return fmt.Errorf("Still have %d msgs left", si.State.Msgs)
+	})
+
+	// Force a snapshot on the consumer leader before restarting the downed server.
+	cl := c.consumerLeader(globalAccountName, "TEST", "d22")
+	require_NotNil(t, cl)
+
+	mset, err := cl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	o := mset.lookupConsumer("d22")
+	require_NotNil(t, o)
+
+	snap, err := o.store.EncodedState()
+	require_NoError(t, err)
+
+	n := o.raftNode()
+	require_NotNil(t, n)
+	require_NoError(t, n.InstallSnapshot(snap))
+
+	// Now restart the downed server.
+	s = c.restartServer(s)
+
+	// Make the restarted server the eventual leader.
+	checkFor(t, 20*time.Second, 200*time.Millisecond, func() error {
+		c.waitOnStreamLeader(globalAccountName, "TEST")
+		if sl := c.streamLeader(globalAccountName, "TEST"); sl != s {
+			sl.JetStreamStepdownStream(globalAccountName, "TEST")
+			return fmt.Errorf("Server %s is not leader yet", s)
+		}
+		return nil
+	})
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_True(t, si.State.Msgs == 0)
+}
