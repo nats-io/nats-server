@@ -1,4 +1,4 @@
-name: NATS Server Nightly MAIN
+name: "NATS Server Nightly: MAIN"
 on:
   workflow_dispatch: {}
 

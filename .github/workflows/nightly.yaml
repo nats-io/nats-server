@@ -1,49 +1,24 @@
-name: NATS Server Nightly
+name: "NATS Server Nightly: DEV"
 on:
   workflow_dispatch: {}
 
   schedule:
     - cron: "40 4 * * *"
 
-
 jobs:
   nightly_release:
     runs-on: ubuntu-latest
-
-    env:
-      GOPATH: /home/runner/work/nats-server
-      GO111MODULE: "on"
-
     steps:
       - name: Checkout code
-        uses: actions/checkout@v1
+        uses: actions/checkout@v3
         with:
           path: src/github.com/nats-io/nats-server
           ref: dev
 
-      - name: Set up Go
-        uses: actions/setup-go@v3
+      - uses: ./src/github.com/nats-io/nats-server/.github/actions/nightly-release
         with:
-          # This should be quoted or use .x, but should not be unquoted.
-          # Remember that a YAML bare float drops trailing zeroes.
-          go-version: '1.19'
-
-      - name: goreleaser
-        uses: goreleaser/goreleaser-action@v3
-        with:
-          version: latest
-          args: release --snapshot --config .goreleaser-nightly.yml
-
-      - name: images
-        run: |
-          docker images
-
-      - name: docker_login
-        run: |
-          docker login -u "${{ secrets.DOCKER_USERNAME }}" -p "${{ secrets.DOCKER_PASSWORD }}"
-
-      - name: docker_push
-        run: |
-          NDATE=$(date +%Y%m%d)
-          docker push synadia/nats-server:nightly-${NDATE}
-          docker push synadia/nats-server:nightly
+          go: "1.19"
+          workdir: src/github.com/nats-io/nats-server
+          label: nightly
+          hub_username: "${{ secrets.DOCKER_USERNAME }}"
+          hub_password: "${{ secrets.DOCKER_PASSWORD }}"
