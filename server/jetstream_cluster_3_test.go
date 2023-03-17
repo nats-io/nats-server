@@ -3012,9 +3012,14 @@ func TestJetStreamClusterWorkQueueAfterScaleUp(t *testing.T) {
 	sendStreamMsg(t, nc, "WQ", "SOME WORK")
 	<-wch
 
-	si, err := js.StreamInfo("TEST")
-	require_NoError(t, err)
-	require_True(t, si.State.Msgs == 0)
+	checkFor(t, time.Second, 200*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST")
+		require_NoError(t, err)
+		if si.State.Msgs == 0 {
+			return nil
+		}
+		return fmt.Errorf("Still have %d msgs left", si.State.Msgs)
+	})
 }
 
 func TestJetStreamClusterInterestBasedStreamAndConsumerSnapshots(t *testing.T) {
