@@ -4001,9 +4001,6 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 			dst = make([]byte, lob)
 		}
 		mb.bek.XORKeyStream(dst, buf)
-		if cap(buf) <= defaultLargeBlockSize {
-			recycleMsgBlockBuf(buf)
-		}
 		buf = dst
 	}
 
