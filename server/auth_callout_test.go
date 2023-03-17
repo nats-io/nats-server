@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -46,8 +47,33 @@ const (
 	authCalloutIssuerSeed = "SAANDLKMXL6CUS3CP52WIXBEDN6YJ545GDKC65U5JZPPV6WH6ESWUA6YAI"
 )
 
+func serviceResponse(t *testing.T, userID string, serverID string, uJwt string, errMsg string, expires time.Duration) []byte {
+	cr := jwt.NewAuthorizationResponseClaims(userID)
+	cr.Audience = serverID
+	cr.Error = errMsg
+	cr.Jwt = uJwt
+	if expires != 0 {
+		cr.Expires = time.Now().Add(expires).Unix()
+	}
+	aa, err := nkeys.FromSeed([]byte(authCalloutIssuerSeed))
+	require_NoError(t, err)
+	token, err := cr.Encode(aa)
+	require_NoError(t, err)
+	return []byte(token)
+}
+
+func makeScopedRole(t *testing.T, role string, pub []string, sub []string) (jwt.Scope, nkeys.KeyPair) {
+	akp, pk := createKey(t)
+	r := jwt.NewUserScope()
+	r.Key = pk
+	r.Template.Sub.Allow.Add(sub...)
+	r.Template.Pub.Allow.Add(pub...)
+	r.Role = role
+	return r, akp
+}
+
 // Will create a signed user jwt as an authorized user.
-func createAuthUser(t *testing.T, server, user, name, account string, akp nkeys.KeyPair, expires time.Duration, limits *jwt.UserPermissionLimits) string {
+func createAuthUser(t *testing.T, user, name, account, issuerAccount string, akp nkeys.KeyPair, expires time.Duration, limits *jwt.UserPermissionLimits) string {
 	t.Helper()
 
 	if akp == nil {
@@ -56,38 +82,93 @@ func createAuthUser(t *testing.T, server, user, name, account string, akp nkeys.
 		require_NoError(t, err)
 	}
 
-	uclaim := jwt.NewUserClaims(user)
-	uclaim.Audience = account
-	if name != _EMPTY_ {
-		uclaim.Name = name
+	uc := jwt.NewUserClaims(user)
+	if issuerAccount != "" {
+		if _, err := nkeys.FromPublicKey(issuerAccount); err != nil {
+			t.Fatalf("issuer account is not a public key: %v", err)
+		}
+		uc.IssuerAccount = issuerAccount
 	}
-	if expires > 0 {
-		uclaim.Expires = time.Now().Add(expires).Unix()
+	// The callout uses the audience as the target account
+	// only if in non-operator mode, otherwise the user JWT has
+	// correct attribution - issuer or issuer_account
+	if _, err := nkeys.FromPublicKey(account); err != nil {
+		// if it is not a public key, set the audience
+		uc.Audience = account
+	}
+
+	if name != _EMPTY_ {
+		uc.Name = name
+	}
+	if expires != 0 {
+		uc.Expires = time.Now().Add(expires).Unix()
 	}
 	if limits != nil {
-		uclaim.UserPermissionLimits = *limits
+		uc.UserPermissionLimits = *limits
 	}
 
 	vr := jwt.CreateValidationResults()
-	uclaim.Validate(vr)
+	uc.Validate(vr)
 	require_Len(t, len(vr.Errors()), 0)
 
-	arc := jwt.NewAuthorizationResponseClaims(user)
-	arc.User = uclaim
-	arc.Audience = server
-
-	vr = jwt.CreateValidationResults()
-	arc.Validate(vr)
-	require_Len(t, len(vr.Errors()), 0)
-
-	rjwt, err := arc.Encode(akp)
+	tok, err := uc.Encode(akp)
 	require_NoError(t, err)
 
-	return rjwt
+	return tok
+}
+
+type authTest struct {
+	t          *testing.T
+	srv        *Server
+	conf       string
+	authClient *nats.Conn
+	clients    []*nats.Conn
+}
+
+func NewAuthTest(t *testing.T, config string, authHandler nats.MsgHandler, clientOptions ...nats.Option) *authTest {
+	a := &authTest{t: t}
+	a.conf = createConfFile(t, []byte(config))
+	a.srv, _ = RunServerWithConfig(a.conf)
+
+	var err error
+	a.authClient = a.Connect(clientOptions...)
+	_, err = a.authClient.Subscribe(AuthCalloutSubject, authHandler)
+	require_NoError(t, err)
+	return a
+}
+
+func (at *authTest) NewClient(clientOptions ...nats.Option) (*nats.Conn, error) {
+	conn, err := nats.Connect(at.srv.ClientURL(), clientOptions...)
+	if err != nil {
+		return nil, err
+	}
+	at.clients = append(at.clients, conn)
+	return conn, nil
+}
+
+func (at *authTest) Connect(clientOptions ...nats.Option) *nats.Conn {
+	conn, err := at.NewClient(clientOptions...)
+	require_NoError(at.t, err)
+	return conn
+}
+
+func (at *authTest) RequireConnectError(clientOptions ...nats.Option) {
+	_, err := at.NewClient(clientOptions...)
+	require_Error(at.t, err)
+}
+
+func (at *authTest) Cleanup() {
+	if at.authClient != nil {
+		at.authClient.Close()
+	}
+	if at.srv != nil {
+		at.srv.Shutdown()
+		removeFile(at.t, at.conf)
+	}
 }
 
 func TestAuthCalloutBasics(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	conf := `
 		listen: "127.0.0.1:-1"
 		server_name: A
 		authorization {
@@ -100,22 +181,9 @@ func TestAuthCalloutBasics(t *testing.T) {
 				auth_users: [ auth ]
 			}
 		}
-	`))
-	defer removeFile(t, conf)
-	s, _ := RunServerWithConfig(conf)
-	defer s.Shutdown()
-
+	`
 	callouts := uint32(0)
-
-	// This will not use callout since predefined as an auth_user.
-	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("auth", "pwd"))
-	require_NoError(t, err)
-	defer nc.Close()
-
-	// Make sure callout was not triggered.
-	require_True(t, atomic.LoadUint32(&callouts) == 0)
-
-	_, err = nc.Subscribe(AuthCalloutSubject, func(m *nats.Msg) {
+	handler := func(m *nats.Msg) {
 		atomic.AddUint32(&callouts, 1)
 		user, si, ci, opts, _ := decodeAuthRequest(t, m.Data)
 		require_True(t, si.Name == "A")
@@ -125,23 +193,21 @@ func TestAuthCalloutBasics(t *testing.T) {
 			var j jwt.UserPermissionLimits
 			j.Pub.Allow.Add("$SYS.>")
 			j.Payload = 1024
-			ujwt := createAuthUser(t, si.ID, user, _EMPTY_, globalAccountName, nil, 10*time.Minute, &j)
-			m.Respond([]byte(ujwt))
+			ujwt := createAuthUser(t, user, _EMPTY_, globalAccountName, "", nil, 10*time.Minute, &j)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
 		} else {
 			// Nil response signals no authentication.
 			m.Respond(nil)
 		}
-	})
-	require_NoError(t, err)
+	}
+	at := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer at.Cleanup()
 
 	// This one should fail since bad password.
-	_, err = nats.Connect(s.ClientURL(), nats.UserInfo("dlc", "xxx"))
-	require_Error(t, err)
+	at.RequireConnectError(nats.UserInfo("dlc", "xxx"))
 
 	// This one will use callout since not defined in server config.
-	nc, err = nats.Connect(s.ClientURL(), nats.UserInfo("dlc", "zzz"))
-	require_NoError(t, err)
-	defer nc.Close()
+	nc := at.Connect(nats.UserInfo("dlc", "zzz"))
 
 	resp, err := nc.Request(userDirectInfoSubj, nil, time.Second)
 	require_NoError(t, err)
@@ -173,7 +239,7 @@ func TestAuthCalloutBasics(t *testing.T) {
 }
 
 func TestAuthCalloutMultiAccounts(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	conf := `
 		listen: "127.0.0.1:-1"
 		server_name: ZZ
 		accounts {
@@ -191,35 +257,26 @@ func TestAuthCalloutMultiAccounts(t *testing.T) {
 				auth_users: [ auth ]
 			}
 		}
-	`))
-	defer removeFile(t, conf)
-	s, _ := RunServerWithConfig(conf)
-	defer s.Shutdown()
-
-	// Auth callout user.
-	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("auth", "pwd"))
-	require_NoError(t, err)
-	defer nc.Close()
-	// Should always make auth callouts queue subscribers or proper services.
-	_, err = nc.Subscribe(AuthCalloutSubject, func(m *nats.Msg) {
+	`
+	handler := func(m *nats.Msg) {
 		user, si, ci, opts, _ := decodeAuthRequest(t, m.Data)
 		require_True(t, si.Name == "ZZ")
 		require_True(t, ci.Host == "127.0.0.1")
 		// Allow dlc user and map to the BAZ account.
 		if opts.Username == "dlc" && opts.Password == "zzz" {
-			ujwt := createAuthUser(t, si.ID, user, _EMPTY_, "BAZ", nil, 0, nil)
-			m.Respond([]byte(ujwt))
+			ujwt := createAuthUser(t, user, _EMPTY_, "BAZ", "", nil, 0, nil)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
 		} else {
 			// Nil response signals no authentication.
 			m.Respond(nil)
 		}
-	})
-	require_NoError(t, err)
+	}
+
+	at := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer at.Cleanup()
 
 	// This one will use callout since not defined in server config.
-	nc, err = nats.Connect(s.ClientURL(), nats.UserInfo("dlc", "zzz"))
-	require_NoError(t, err)
-	defer nc.Close()
+	nc := at.Connect(nats.UserInfo("dlc", "zzz"))
 
 	resp, err := nc.Request(userDirectInfoSubj, nil, time.Second)
 	require_NoError(t, err)
@@ -233,7 +290,7 @@ func TestAuthCalloutMultiAccounts(t *testing.T) {
 }
 
 func TestAuthCalloutClientTLSCerts(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	conf := `
 		listen: "localhost:-1"
 		server_name: T
 
@@ -257,20 +314,8 @@ func TestAuthCalloutClientTLSCerts(t *testing.T) {
 				auth_users: [ auth ]
 			}
 		}
-	`))
-	defer removeFile(t, conf)
-	s, _ := RunServerWithConfig(conf)
-	defer s.Shutdown()
-
-	nc, err := nats.Connect(s.ClientURL(),
-		nats.UserInfo("auth", "pwd"),
-		nats.ClientCert("../test/configs/certs/tlsauth/client2.pem", "../test/configs/certs/tlsauth/client2-key.pem"),
-		nats.RootCAs("../test/configs/certs/tlsauth/ca.pem"),
-	)
-	require_NoError(t, err)
-	defer nc.Close()
-
-	_, err = nc.Subscribe(AuthCalloutSubject, func(m *nats.Msg) {
+	`
+	handler := func(m *nats.Msg) {
 		user, si, ci, _, ctls := decodeAuthRequest(t, m.Data)
 		require_True(t, si.Name == "T")
 		require_True(t, ci.Host == "127.0.0.1")
@@ -285,19 +330,22 @@ func TestAuthCalloutClientTLSCerts(t *testing.T) {
 		require_NoError(t, err)
 		if strings.HasPrefix(cert.Subject.String(), "CN=example.com") {
 			// Override blank name here, server will substitute.
-			ujwt := createAuthUser(t, si.ID, user, "dlc", "FOO", nil, 0, nil)
-			m.Respond([]byte(ujwt))
+			ujwt := createAuthUser(t, user, "dlc", "FOO", "", nil, 0, nil)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
 		}
-	})
-	require_NoError(t, err)
+	}
+
+	ac := NewAuthTest(t, conf, handler,
+		nats.UserInfo("auth", "pwd"),
+		nats.ClientCert("../test/configs/certs/tlsauth/client2.pem", "../test/configs/certs/tlsauth/client2-key.pem"),
+		nats.RootCAs("../test/configs/certs/tlsauth/ca.pem"))
+	defer ac.Cleanup()
 
 	// Will use client cert to determine user.
-	nc, err = nats.Connect(s.ClientURL(),
+	nc := ac.Connect(
 		nats.ClientCert("../test/configs/certs/tlsauth/client2.pem", "../test/configs/certs/tlsauth/client2-key.pem"),
 		nats.RootCAs("../test/configs/certs/tlsauth/ca.pem"),
 	)
-	require_NoError(t, err)
-	defer nc.Close()
 
 	resp, err := nc.Request(userDirectInfoSubj, nil, time.Second)
 	require_NoError(t, err)
@@ -311,7 +359,7 @@ func TestAuthCalloutClientTLSCerts(t *testing.T) {
 }
 
 func TestAuthCalloutVerifiedUserCalloutsWithSig(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	conf := `
 		listen: "127.0.0.1:-1"
 		server_name: A
 		authorization {
@@ -327,40 +375,28 @@ func TestAuthCalloutVerifiedUserCalloutsWithSig(t *testing.T) {
 				auth_users: [ auth ]
 			}
 		}
-	`))
-	defer removeFile(t, conf)
-	s, _ := RunServerWithConfig(conf)
-	defer s.Shutdown()
-
-	// This will not use callout since predefined as an auth_user.
-	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("auth", "pwd"))
-	require_NoError(t, err)
-	defer nc.Close()
-
+	`
 	callouts := uint32(0)
-	_, err = nc.Subscribe(AuthCalloutSubject, func(m *nats.Msg) {
+	handler := func(m *nats.Msg) {
 		atomic.AddUint32(&callouts, 1)
 		user, si, ci, opts, _ := decodeAuthRequest(t, m.Data)
 		require_True(t, si.Name == "A")
 		require_True(t, ci.Host == "127.0.0.1")
 		require_True(t, opts.SignedNonce != _EMPTY_)
 		require_True(t, ci.Nonce != _EMPTY_)
-		ujwt := createAuthUser(t, si.ID, user, _EMPTY_, globalAccountName, nil, 0, nil)
-		m.Respond([]byte(ujwt))
-	})
-	require_NoError(t, err)
+		ujwt := createAuthUser(t, user, _EMPTY_, globalAccountName, "", nil, 0, nil)
+		m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+	}
+	ac := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer ac.Cleanup()
 
-	// This one will use callout since not part of auth_users.
-	// Even though we will internally verify this user the callout will still be called.
 	seedFile := createTempFile(t, _EMPTY_)
 	defer removeFile(t, seedFile.Name())
 	seedFile.WriteString(authCalloutSeed)
 	nkeyOpt, err := nats.NkeyOptionFromSeed(seedFile.Name())
 	require_NoError(t, err)
 
-	nc, err = nats.Connect(s.ClientURL(), nkeyOpt)
-	require_NoError(t, err)
-	defer nc.Close()
+	nc := ac.Connect(nkeyOpt)
 
 	// Make sure that the callout was called.
 	if atomic.LoadUint32(&callouts) != 1 {
@@ -452,8 +488,12 @@ func TestAuthCalloutOperatorModeBasics(t *testing.T) {
 
 	// TEST account.
 	tkp, tpub := createKey(t)
+	tSigningKp, tSigningPub := createKey(t)
 	accClaim := jwt.NewAccountClaims(tpub)
 	accClaim.Name = "TEST"
+	accClaim.SigningKeys.Add(tSigningPub)
+	scope, scopedKp := makeScopedRole(t, "foo", []string{"foo.>", "$SYS.REQ.USER.INFO"}, []string{"foo.>", "_INBOX.>"})
+	accClaim.SigningKeys.AddScopedSigner(scope)
 	accJwt, err := accClaim.Encode(oKp)
 	require_NoError(t, err)
 
@@ -475,7 +515,7 @@ func TestAuthCalloutOperatorModeBasics(t *testing.T) {
 	authJwt, err := authClaim.Encode(oKp)
 	require_NoError(t, err)
 
-	conf := createConfFile(t, []byte(fmt.Sprintf(`
+	conf := fmt.Sprintf(`
 		listen: 127.0.0.1:-1
 		operator: %s
 		system_account: %s
@@ -485,18 +525,40 @@ func TestAuthCalloutOperatorModeBasics(t *testing.T) {
 			%s: %s
 			%s: %s
 		}
-    `, ojwt, spub, apub, authJwt, tpub, accJwt, spub, sysJwt)))
-	defer removeFile(t, conf)
+    `, ojwt, spub, apub, authJwt, tpub, accJwt, spub, sysJwt)
 
-	s, _ := RunServerWithConfig(conf)
-	defer s.Shutdown()
+	const secretToken = "--XX--"
+	const dummyToken = "--ZZ--"
+	const skKeyToken = "--SK--"
+	const scopedToken = "--Scoped--"
+	const badScopedToken = "--BADScoped--"
+	dkp, notAllowAccountPub := createKey(t)
+	handler := func(m *nats.Msg) {
+		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
+		if opts.Token == secretToken {
+			ujwt := createAuthUser(t, user, "dlc", tpub, "", tkp, 0, nil)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+		} else if opts.Token == dummyToken {
+			ujwt := createAuthUser(t, user, "dummy", notAllowAccountPub, "", dkp, 0, nil)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+		} else if opts.Token == skKeyToken {
+			ujwt := createAuthUser(t, user, "sk", tpub, tpub, tSigningKp, 0, nil)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+		} else if opts.Token == scopedToken {
+			// must have no limits set
+			ujwt := createAuthUser(t, user, "scoped", tpub, tpub, scopedKp, 0, &jwt.UserPermissionLimits{})
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+		} else if opts.Token == badScopedToken {
+			// limits are nil - here which result in a default user - this will fail scoped
+			ujwt := createAuthUser(t, user, "bad-scoped", tpub, tpub, scopedKp, 0, nil)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+		} else {
+			m.Respond(nil)
+		}
+	}
 
-	nc, err := nats.Connect(s.ClientURL(), nats.UserCredentials(creds))
-	require_NoError(t, err)
-	defer nc.Close()
-
-	// Check that we have the deny permission autoset properly.
-	resp, err := nc.Request(userDirectInfoSubj, nil, time.Second)
+	ac := NewAuthTest(t, conf, handler, nats.UserCredentials(creds))
+	resp, err := ac.authClient.Request(userDirectInfoSubj, nil, time.Second)
 	require_NoError(t, err)
 	response := ServerAPIResponse{Data: &UserInfo{}}
 	err = json.Unmarshal(resp.Data, &response)
@@ -517,25 +579,6 @@ func TestAuthCalloutOperatorModeBasics(t *testing.T) {
 		t.Fatalf("User info did not match expected, expected auto-deny permissions on callout subject")
 	}
 
-	const secretToken = "--XX--"
-	const dummyToken = "--ZZ--"
-	dkp, notAllowAccountPub := createKey(t)
-
-	// Register authorization handlers.
-	_, err = nc.Subscribe(AuthCalloutSubject, func(m *nats.Msg) {
-		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
-		if opts.Token == secretToken {
-			ujwt := createAuthUser(t, si.ID, user, "dlc", tpub, tkp, 0, nil)
-			m.Respond([]byte(ujwt))
-		} else if opts.Token == dummyToken {
-			ujwt := createAuthUser(t, si.ID, user, "dummy", notAllowAccountPub, dkp, 0, nil)
-			m.Respond([]byte(ujwt))
-		} else {
-			m.Respond(nil)
-		}
-	})
-	require_NoError(t, err)
-
 	// Bearer token etc..
 	// This is used by all users, and the customization will be in other connect args.
 	// This needs to also be bound to the authorization account.
@@ -543,13 +586,11 @@ func TestAuthCalloutOperatorModeBasics(t *testing.T) {
 	defer removeFile(t, creds)
 
 	// We require a token.
-	_, err = nats.Connect(s.ClientURL(), nats.UserCredentials(creds))
-	require_Error(t, err)
+	ac.RequireConnectError(nats.UserCredentials(creds))
 
 	// Send correct token. This should switch us to the test account.
-	nc, err = nats.Connect(s.ClientURL(), nats.UserCredentials(creds), nats.Token(secretToken))
+	nc := ac.Connect(nats.UserCredentials(creds), nats.Token(secretToken))
 	require_NoError(t, err)
-	defer nc.Close()
 
 	resp, err = nc.Request(userDirectInfoSubj, nil, time.Second)
 	require_NoError(t, err)
@@ -565,8 +606,47 @@ func TestAuthCalloutOperatorModeBasics(t *testing.T) {
 	}
 
 	// Now make sure that if the authorization service switches to an account that is not allowed, we reject.
-	_, err = nats.Connect(s.ClientURL(), nats.UserCredentials(creds), nats.Token(dummyToken))
-	require_Error(t, err)
+	ac.RequireConnectError(nats.UserCredentials(creds), nats.Token(dummyToken))
+
+	// Send the signing key token. This should switch us to the test account, but the user
+	// is signed with the account signing key
+	nc = ac.Connect(nats.UserCredentials(creds), nats.Token(skKeyToken))
+
+	resp, err = nc.Request(userDirectInfoSubj, nil, time.Second)
+	require_NoError(t, err)
+	response = ServerAPIResponse{Data: &UserInfo{}}
+	err = json.Unmarshal(resp.Data, &response)
+	require_NoError(t, err)
+
+	userInfo = response.Data.(*UserInfo)
+	if userInfo.Account != tpub {
+		t.Fatalf("Expected to be switched to %q, but got %q", tpub, userInfo.Account)
+	}
+
+	// bad scoped user
+	ac.RequireConnectError(nats.UserCredentials(creds), nats.Token(badScopedToken))
+
+	// Send the signing key token. This should switch us to the test account, but the user
+	// is signed with the account signing key
+	nc = ac.Connect(nats.UserCredentials(creds), nats.Token(scopedToken))
+	require_NoError(t, err)
+
+	resp, err = nc.Request(userDirectInfoSubj, nil, time.Second)
+	require_NoError(t, err)
+	response = ServerAPIResponse{Data: &UserInfo{}}
+	err = json.Unmarshal(resp.Data, &response)
+	require_NoError(t, err)
+
+	userInfo = response.Data.(*UserInfo)
+	if userInfo.Account != tpub {
+		t.Fatalf("Expected to be switched to %q, but got %q", tpub, userInfo.Account)
+	}
+	require_True(t, len(userInfo.Permissions.Publish.Allow) == 2)
+	sort.Strings(userInfo.Permissions.Publish.Allow)
+	require_Equal(t, "foo.>", userInfo.Permissions.Publish.Allow[1])
+	sort.Strings(userInfo.Permissions.Subscribe.Allow)
+	require_True(t, len(userInfo.Permissions.Subscribe.Allow) == 2)
+	require_Equal(t, "foo.>", userInfo.Permissions.Subscribe.Allow[1])
 }
 
 const (
@@ -591,20 +671,12 @@ func TestAuthCalloutServerConfigEncryption(t *testing.T) {
 			}
 		}
 	`
-	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, curvePublic)))
-	defer removeFile(t, conf)
-	s, _ := RunServerWithConfig(conf)
-	defer s.Shutdown()
-
-	// This will not use callout since predefined as an auth_user.
-	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("auth", "pwd"))
-	require_NoError(t, err)
-	defer nc.Close()
+	conf := fmt.Sprintf(tmpl, curvePublic)
 
 	rkp, err := nkeys.FromCurveSeed([]byte(curveSeed))
 	require_NoError(t, err)
 
-	_, err = nc.Subscribe(AuthCalloutSubject, func(m *nats.Msg) {
+	handler := func(m *nats.Msg) {
 		// This will be encrypted.
 		_, err := jwt.DecodeAuthorizationRequestClaims(string(m.Data))
 		require_Error(t, err)
@@ -620,29 +692,27 @@ func TestAuthCalloutServerConfigEncryption(t *testing.T) {
 		require_True(t, ci.Host == "127.0.0.1")
 		// Allow dlc user.
 		if opts.Username == "dlc" && opts.Password == "zzz" {
-			ujwt := createAuthUser(t, si.ID, user, _EMPTY_, globalAccountName, nil, 10*time.Minute, nil)
-			m.Respond([]byte(ujwt))
+			ujwt := createAuthUser(t, user, _EMPTY_, globalAccountName, "", nil, 10*time.Minute, nil)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
 		} else if opts.Username == "dlc" && opts.Password == "xxx" {
-			ujwt := createAuthUser(t, si.ID, user, _EMPTY_, globalAccountName, nil, 10*time.Minute, nil)
+			ujwt := createAuthUser(t, user, _EMPTY_, globalAccountName, "", nil, 10*time.Minute, nil)
 			// Encrypt this response.
-			encryptedResponse, err := rkp.Seal([]byte(ujwt), si.XKey) // Server's public xkey.
+			data, err := rkp.Seal(serviceResponse(t, user, si.ID, ujwt, "", 0), si.XKey) // Server's public xkey.
 			require_NoError(t, err)
-			m.Respond(encryptedResponse)
+			m.Respond(data)
 		} else {
 			// Nil response signals no authentication.
 			m.Respond(nil)
 		}
-	})
-	require_NoError(t, err)
+	}
 
-	nc, err = nats.Connect(s.ClientURL(), nats.UserInfo("dlc", "zzz"))
-	require_NoError(t, err)
-	defer nc.Close()
+	ac := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer ac.Cleanup()
 
-	// Authorization services can optionally encrypt the reponses using the server's public xkey.
-	nc, err = nats.Connect(s.ClientURL(), nats.UserInfo("dlc", "xxx"))
-	require_NoError(t, err)
-	defer nc.Close()
+	ac.Connect(nats.UserInfo("dlc", "zzz"))
+
+	// Authorization services can optionally encrypt the responses using the server's public xkey.
+	ac.Connect(nats.UserInfo("dlc", "xxx"))
 }
 
 func TestAuthCalloutOperatorModeEncryption(t *testing.T) {
@@ -679,7 +749,7 @@ func TestAuthCalloutOperatorModeEncryption(t *testing.T) {
 	authJwt, err := authClaim.Encode(oKp)
 	require_NoError(t, err)
 
-	conf := createConfFile(t, []byte(fmt.Sprintf(`
+	conf := fmt.Sprintf(`
 		listen: 127.0.0.1:-1
 		operator: %s
 		system_account: %s
@@ -689,24 +759,15 @@ func TestAuthCalloutOperatorModeEncryption(t *testing.T) {
 			%s: %s
 			%s: %s
 		}
-    `, ojwt, spub, apub, authJwt, tpub, accJwt, spub, sysJwt)))
-	defer removeFile(t, conf)
-
-	s, _ := RunServerWithConfig(conf)
-	defer s.Shutdown()
-
-	nc, err := nats.Connect(s.ClientURL(), nats.UserCredentials(creds))
-	require_NoError(t, err)
-	defer nc.Close()
-
-	const tokenA = "--XX--"
-	const tokenB = "--ZZ--"
+    `, ojwt, spub, apub, authJwt, tpub, accJwt, spub, sysJwt)
 
 	rkp, err := nkeys.FromCurveSeed([]byte(curveSeed))
 	require_NoError(t, err)
 
-	// Register authorization handlers.
-	_, err = nc.Subscribe(AuthCalloutSubject, func(m *nats.Msg) {
+	const tokenA = "--XX--"
+	const tokenB = "--ZZ--"
+
+	handler := func(m *nats.Msg) {
 		// Make sure this is an encrypted request.
 		if bytes.HasPrefix(m.Data, []byte(jwtPrefix)) {
 			t.Fatalf("Request not encrypted")
@@ -720,19 +781,20 @@ func TestAuthCalloutOperatorModeEncryption(t *testing.T) {
 		require_True(t, si.XKey == xkey)
 		require_True(t, ci.Host == "127.0.0.1")
 		if opts.Token == tokenA {
-			ujwt := createAuthUser(t, si.ID, user, "dlc", tpub, tkp, 0, nil)
-			m.Respond([]byte(ujwt))
+			ujwt := createAuthUser(t, user, "dlc", tpub, "", tkp, 0, nil)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
 		} else if opts.Token == tokenB {
-			ujwt := createAuthUser(t, si.ID, user, "rip", tpub, tkp, 0, nil)
+			ujwt := createAuthUser(t, user, "rip", tpub, "", tkp, 0, nil)
 			// Encrypt this response.
-			encryptedResponse, err := rkp.Seal([]byte(ujwt), si.XKey) // Server's public xkey.
+			data, err := rkp.Seal(serviceResponse(t, user, si.ID, ujwt, "", 0), si.XKey) // Server's public xkey.
 			require_NoError(t, err)
-			m.Respond(encryptedResponse)
+			m.Respond(data)
 		} else {
 			m.Respond(nil)
 		}
-	})
-	require_NoError(t, err)
+	}
+
+	ac := NewAuthTest(t, conf, handler, nats.UserCredentials(creds))
 
 	// Bearer token etc..
 	// This is used by all users, and the customization will be in other connect args.
@@ -741,18 +803,14 @@ func TestAuthCalloutOperatorModeEncryption(t *testing.T) {
 	defer removeFile(t, creds)
 
 	// This will receive an encrypted request to the auth service but send plaintext response.
-	nc, err = nats.Connect(s.ClientURL(), nats.UserCredentials(creds), nats.Token(tokenA))
-	require_NoError(t, err)
-	defer nc.Close()
+	ac.Connect(nats.UserCredentials(creds), nats.Token(tokenA))
 
 	// This will receive an encrypted request to the auth service and send an encrypted response.
-	nc, err = nats.Connect(s.ClientURL(), nats.UserCredentials(creds), nats.Token(tokenB))
-	require_NoError(t, err)
-	defer nc.Close()
+	ac.Connect(nats.UserCredentials(creds), nats.Token(tokenB))
 }
 
 func TestAuthCalloutServerTags(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	conf := `
 		listen: "127.0.0.1:-1"
 		server_name: A
 		server_tags: ["foo", "bar"]
@@ -763,27 +821,20 @@ func TestAuthCalloutServerTags(t *testing.T) {
 				auth_users: [ auth ]
 			}
 		}
-	`))
-	defer removeFile(t, conf)
-	s, _ := RunServerWithConfig(conf)
-	defer s.Shutdown()
-
-	// This will not use callout since predefined as an auth_user.
-	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("auth", "pwd"))
-	require_NoError(t, err)
-	defer nc.Close()
+	`
 
 	tch := make(chan jwt.TagList, 1)
-	_, err = nc.Subscribe(AuthCalloutSubject, func(m *nats.Msg) {
+	handler := func(m *nats.Msg) {
 		user, si, _, _, _ := decodeAuthRequest(t, m.Data)
 		tch <- si.Tags
-		ujwt := createAuthUser(t, si.ID, user, _EMPTY_, globalAccountName, nil, 10*time.Minute, nil)
-		m.Respond([]byte(ujwt))
-	})
-	require_NoError(t, err)
+		ujwt := createAuthUser(t, user, _EMPTY_, globalAccountName, "", nil, 10*time.Minute, nil)
+		m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+	}
 
-	_, err = nats.Connect(s.ClientURL())
-	require_NoError(t, err)
+	ac := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer ac.Cleanup()
+
+	ac.Connect()
 
 	tags := <-tch
 	require_True(t, len(tags) == 2)
@@ -792,7 +843,7 @@ func TestAuthCalloutServerTags(t *testing.T) {
 }
 
 func TestAuthCalloutServerClusterAndVersion(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	conf := `
 		listen: "127.0.0.1:-1"
 		server_name: A
 		authorization {
@@ -803,28 +854,20 @@ func TestAuthCalloutServerClusterAndVersion(t *testing.T) {
 			}
 		}
 		cluster { name: HUB }
-	`))
-	defer removeFile(t, conf)
-	s, _ := RunServerWithConfig(conf)
-	defer s.Shutdown()
-
-	// This will not use callout since predefined as an auth_user.
-	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("auth", "pwd"))
-	require_NoError(t, err)
-	defer nc.Close()
-
+	`
 	ch := make(chan string, 2)
-	_, err = nc.Subscribe(AuthCalloutSubject, func(m *nats.Msg) {
+	handler := func(m *nats.Msg) {
 		user, si, _, _, _ := decodeAuthRequest(t, m.Data)
 		ch <- si.Cluster
 		ch <- si.Version
-		ujwt := createAuthUser(t, si.ID, user, _EMPTY_, globalAccountName, nil, 10*time.Minute, nil)
-		m.Respond([]byte(ujwt))
-	})
-	require_NoError(t, err)
+		ujwt := createAuthUser(t, user, _EMPTY_, globalAccountName, "", nil, 10*time.Minute, nil)
+		m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+	}
 
-	_, err = nats.Connect(s.ClientURL())
-	require_NoError(t, err)
+	ac := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer ac.Cleanup()
+
+	ac.Connect()
 
 	cluster := <-ch
 	require_True(t, cluster == "HUB")
@@ -836,30 +879,8 @@ func TestAuthCalloutServerClusterAndVersion(t *testing.T) {
 	require_True(t, ok)
 }
 
-func createErrResponse(t *testing.T, user, server, errStr string, akp nkeys.KeyPair) string {
-	t.Helper()
-
-	if akp == nil {
-		var err error
-		akp, err = nkeys.FromSeed([]byte(authCalloutIssuerSeed))
-		require_NoError(t, err)
-	}
-
-	arc := jwt.NewAuthorizationResponseClaims(user)
-	arc.SetErrorDescription(errStr)
-	arc.Audience = server
-	vr := jwt.CreateValidationResults()
-	arc.Validate(vr)
-	require_Len(t, len(vr.Errors()), 0)
-
-	rjwt, err := arc.Encode(akp)
-	require_NoError(t, err)
-
-	return rjwt
-}
-
 func TestAuthCalloutErrorResponse(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	conf := `
 		listen: "127.0.0.1:-1"
 		server_name: A
 		authorization {
@@ -869,29 +890,20 @@ func TestAuthCalloutErrorResponse(t *testing.T) {
 				auth_users: [ auth ]
 			}
 		}
-	`))
-	defer removeFile(t, conf)
-	s, _ := RunServerWithConfig(conf)
-	defer s.Shutdown()
-
-	// This will not use callout since predefined as an auth_user.
-	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("auth", "pwd"))
-	require_NoError(t, err)
-	defer nc.Close()
-
-	_, err = nc.Subscribe(AuthCalloutSubject, func(m *nats.Msg) {
+	`
+	handler := func(m *nats.Msg) {
 		user, si, _, _, _ := decodeAuthRequest(t, m.Data)
-		errResp := createErrResponse(t, user, si.ID, "BAD AUTH", nil)
-		m.Respond([]byte(errResp))
-	})
-	require_NoError(t, err)
+		m.Respond(serviceResponse(t, user, si.ID, "", "BAD AUTH", 0))
+	}
 
-	_, err = nats.Connect(s.ClientURL(), nats.UserInfo("dlc", "zzz"))
-	require_Error(t, err)
+	ac := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer ac.Cleanup()
+
+	ac.RequireConnectError(nats.UserInfo("dlc", "zzz"))
 }
 
 func TestAuthCalloutAuthUserFailDoesNotInvokeCallout(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	conf := `
 		listen: "127.0.0.1:-1"
 		server_name: A
 		authorization {
@@ -901,26 +913,18 @@ func TestAuthCalloutAuthUserFailDoesNotInvokeCallout(t *testing.T) {
 				auth_users: [ auth ]
 			}
 		}
-	`))
-	defer removeFile(t, conf)
-	s, _ := RunServerWithConfig(conf)
-	defer s.Shutdown()
-
-	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("auth", "pwd"))
-	require_NoError(t, err)
-	defer nc.Close()
-
+	`
 	callouts := uint32(0)
-	_, err = nc.Subscribe(AuthCalloutSubject, func(m *nats.Msg) {
-		atomic.AddUint32(&callouts, 1)
+	handler := func(m *nats.Msg) {
 		user, si, _, _, _ := decodeAuthRequest(t, m.Data)
-		errResp := createErrResponse(t, user, si.ID, "BAD AUTH", nil)
-		m.Respond([]byte(errResp))
-	})
-	require_NoError(t, err)
+		atomic.AddUint32(&callouts, 1)
+		m.Respond(serviceResponse(t, user, si.ID, "", "WRONG PASSWORD", 0))
+	}
 
-	_, err = nats.Connect(s.ClientURL(), nats.UserInfo("auth", "zzz"))
-	require_Error(t, err)
+	ac := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer ac.Cleanup()
+
+	ac.RequireConnectError(nats.UserInfo("auth", "zzz"))
 
 	if atomic.LoadUint32(&callouts) != 0 {
 		t.Fatalf("Expected callout to not be called")
@@ -928,7 +932,7 @@ func TestAuthCalloutAuthUserFailDoesNotInvokeCallout(t *testing.T) {
 }
 
 func TestAuthCalloutAuthErrEvents(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	conf := `
 		listen: "127.0.0.1:-1"
 		server_name: A
 		accounts {
@@ -943,44 +947,34 @@ func TestAuthCalloutAuthErrEvents(t *testing.T) {
 				auth_users: [ auth ]
 			}
 		}
-	`))
-	defer removeFile(t, conf)
-	s, _ := RunServerWithConfig(conf)
-	defer s.Shutdown()
+	`
 
-	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("auth", "pwd"))
-	require_NoError(t, err)
-	defer nc.Close()
-
-	// This is where the event fires, in this account.
-	sub, err := nc.SubscribeSync(authErrorAccountEventSubj)
-	require_NoError(t, err)
-
-	_, err = nc.Subscribe(AuthCalloutSubject, func(m *nats.Msg) {
+	handler := func(m *nats.Msg) {
 		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
 		// Allow dlc user and map to the BAZ account.
 		if opts.Username == "dlc" && opts.Password == "zzz" {
-			ujwt := createAuthUser(t, si.ID, user, _EMPTY_, "FOO", nil, 0, nil)
-			m.Respond([]byte(ujwt))
+			ujwt := createAuthUser(t, user, _EMPTY_, "FOO", "", nil, 0, nil)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
 		} else if opts.Username == "dlc" {
-			errResp := createErrResponse(t, user, si.ID, "WRONG PASSWORD", nil)
-			m.Respond([]byte(errResp))
+			m.Respond(serviceResponse(t, user, si.ID, "", "WRONG PASSWORD", 0))
 		} else {
-			errResp := createErrResponse(t, user, si.ID, "BAD CREDS", nil)
-			m.Respond([]byte(errResp))
+			m.Respond(serviceResponse(t, user, si.ID, "", "BAD CREDS", 0))
 		}
-	})
+	}
+
+	ac := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer ac.Cleanup()
+
+	// This is where the event fires, in this account.
+	sub, err := ac.authClient.SubscribeSync(authErrorAccountEventSubj)
 	require_NoError(t, err)
 
 	// This one will use callout since not defined in server config.
-	nc, err = nats.Connect(s.ClientURL(), nats.UserInfo("dlc", "zzz"))
-	require_NoError(t, err)
-	nc.Close()
+	ac.Connect(nats.UserInfo("dlc", "zzz"))
 	checkSubsPending(t, sub, 0)
 
 	checkAuthErrEvent := func(user, pass, reason string) {
-		_, err = nats.Connect(s.ClientURL(), nats.UserInfo(user, pass))
-		require_Error(t, err)
+		ac.RequireConnectError(nats.UserInfo(user, pass))
 
 		m, err := sub.NextMsg(time.Second)
 		require_NoError(t, err)
@@ -992,7 +986,6 @@ func TestAuthCalloutAuthErrEvents(t *testing.T) {
 		if !strings.Contains(dm.Reason, reason) {
 			t.Fatalf("Expected %q reason, but got %q", reason, dm.Reason)
 		}
-
 	}
 
 	checkAuthErrEvent("dlc", "xxx", "WRONG PASSWORD")
@@ -1000,7 +993,7 @@ func TestAuthCalloutAuthErrEvents(t *testing.T) {
 }
 
 func TestAuthCalloutConnectEvents(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	conf := `
 		listen: "127.0.0.1:-1"
 		server_name: A
 		accounts {
@@ -1016,35 +1009,27 @@ func TestAuthCalloutConnectEvents(t *testing.T) {
 				auth_users: [ auth, admin ]
 			}
 		}
-	`))
-	defer removeFile(t, conf)
-	s, _ := RunServerWithConfig(conf)
-	defer s.Shutdown()
+	`
 
-	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("auth", "pwd"))
-	require_NoError(t, err)
-	defer nc.Close()
-
-	_, err = nc.Subscribe(AuthCalloutSubject, func(m *nats.Msg) {
+	handler := func(m *nats.Msg) {
 		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
 		// Allow dlc user and map to the BAZ account.
 		if opts.Username == "dlc" && opts.Password == "zzz" {
-			ujwt := createAuthUser(t, si.ID, user, _EMPTY_, "FOO", nil, 0, nil)
-			m.Respond([]byte(ujwt))
+			ujwt := createAuthUser(t, user, _EMPTY_, "FOO", "", nil, 0, nil)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
 		} else if opts.Username == "rip" && opts.Password == "xxx" {
-			ujwt := createAuthUser(t, si.ID, user, _EMPTY_, "BAR", nil, 0, nil)
-			m.Respond([]byte(ujwt))
+			ujwt := createAuthUser(t, user, _EMPTY_, "BAR", "", nil, 0, nil)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
 		} else {
-			errResp := createErrResponse(t, user, si.ID, "BAD CREDS", nil)
-			m.Respond([]byte(errResp))
+			m.Respond(serviceResponse(t, user, si.ID, "", "BAD CREDS", 0))
 		}
-	})
-	require_NoError(t, err)
+	}
+
+	ac := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer ac.Cleanup()
 
 	// Setup system user.
-	snc, err := nats.Connect(s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
-	require_NoError(t, err)
-	defer nc.Close()
+	snc := ac.Connect(nats.UserInfo("admin", "s3cr3t!"))
 
 	// Allow this connect event to pass us by..
 	time.Sleep(250 * time.Millisecond)
@@ -1068,7 +1053,7 @@ func TestAuthCalloutConnectEvents(t *testing.T) {
 	snc.Flush()
 
 	checkConnectEvents := func(user, pass, acc string) {
-		nc, err := nats.Connect(s.ClientURL(), nats.UserInfo(user, pass))
+		nc := ac.Connect(nats.UserInfo(user, pass))
 		require_NoError(t, err)
 
 		m, err := csub.NextMsg(time.Second)
@@ -1132,4 +1117,200 @@ func TestAuthCalloutConnectEvents(t *testing.T) {
 
 	checkConnectEvents("dlc", "zzz", "FOO")
 	checkConnectEvents("rip", "xxx", "BAR")
+}
+
+func TestAuthCalloutBadServer(t *testing.T) {
+	conf := `
+		listen: "127.0.0.1:-1"
+		server_name: A
+		accounts {
+            AUTH { users [ {user: "auth", password: "pwd"} ] }
+			FOO {}
+		}
+		authorization {
+			auth_callout {
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				account: AUTH
+				auth_users: [ auth ]
+			}
+		}
+	`
+
+	handler := func(m *nats.Msg) {
+		user, _, _, _, _ := decodeAuthRequest(t, m.Data)
+		skp, err := nkeys.CreateServer()
+		require_NoError(t, err)
+		spk, err := skp.PublicKey()
+		require_NoError(t, err)
+		ujwt := createAuthUser(t, user, _EMPTY_, "FOO", "", nil, 0, nil)
+		m.Respond(serviceResponse(t, user, spk, ujwt, "", 0))
+	}
+
+	ac := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer ac.Cleanup()
+
+	// This is where the event fires, in this account.
+	sub, err := ac.authClient.SubscribeSync(authErrorAccountEventSubj)
+	require_NoError(t, err)
+
+	checkAuthErrEvent := func(user, pass, reason string) {
+		ac.RequireConnectError(nats.UserInfo(user, pass))
+
+		m, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+
+		var dm DisconnectEventMsg
+		err = json.Unmarshal(m.Data, &dm)
+		require_NoError(t, err)
+
+		if !strings.Contains(dm.Reason, reason) {
+			t.Fatalf("Expected %q reason, but got %q", reason, dm.Reason)
+		}
+	}
+	checkAuthErrEvent("hello", "world", "response is not for server")
+}
+
+func TestAuthCalloutBadUser(t *testing.T) {
+	conf := `
+		listen: "127.0.0.1:-1"
+		server_name: A
+		accounts {
+            AUTH { users [ {user: "auth", password: "pwd"} ] }
+			FOO {}
+		}
+		authorization {
+			auth_callout {
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				account: AUTH
+				auth_users: [ auth ]
+			}
+		}
+	`
+
+	handler := func(m *nats.Msg) {
+		_, si, _, _, _ := decodeAuthRequest(t, m.Data)
+		kp, err := nkeys.CreateUser()
+		require_NoError(t, err)
+		upk, err := kp.PublicKey()
+		require_NoError(t, err)
+		ujwt := createAuthUser(t, upk, _EMPTY_, "FOO", "", nil, 0, nil)
+		m.Respond(serviceResponse(t, upk, si.ID, ujwt, "", 0))
+	}
+
+	ac := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer ac.Cleanup()
+
+	// This is where the event fires, in this account.
+	sub, err := ac.authClient.SubscribeSync(authErrorAccountEventSubj)
+	require_NoError(t, err)
+
+	checkAuthErrEvent := func(user, pass, reason string) {
+		ac.RequireConnectError(nats.UserInfo(user, pass))
+
+		m, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+
+		var dm DisconnectEventMsg
+		err = json.Unmarshal(m.Data, &dm)
+		require_NoError(t, err)
+
+		if !strings.Contains(dm.Reason, reason) {
+			t.Fatalf("Expected %q reason, but got %q", reason, dm.Reason)
+		}
+	}
+	checkAuthErrEvent("hello", "world", "auth callout response is not for expected user")
+}
+
+func TestAuthCalloutExpiredUser(t *testing.T) {
+	conf := `
+		listen: "127.0.0.1:-1"
+		server_name: A
+		accounts {
+            AUTH { users [ {user: "auth", password: "pwd"} ] }
+			FOO {}
+		}
+		authorization {
+			auth_callout {
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				account: AUTH
+				auth_users: [ auth ]
+			}
+		}
+	`
+
+	handler := func(m *nats.Msg) {
+		user, si, _, _, _ := decodeAuthRequest(t, m.Data)
+		ujwt := createAuthUser(t, user, _EMPTY_, "FOO", "", nil, time.Second*-5, nil)
+		m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+	}
+
+	ac := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer ac.Cleanup()
+
+	// This is where the event fires, in this account.
+	sub, err := ac.authClient.SubscribeSync(authErrorAccountEventSubj)
+	require_NoError(t, err)
+
+	checkAuthErrEvent := func(user, pass, reason string) {
+		ac.RequireConnectError(nats.UserInfo(user, pass))
+
+		m, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+
+		var dm DisconnectEventMsg
+		err = json.Unmarshal(m.Data, &dm)
+		require_NoError(t, err)
+
+		if !strings.Contains(dm.Reason, reason) {
+			t.Fatalf("Expected %q reason, but got %q", reason, dm.Reason)
+		}
+	}
+	checkAuthErrEvent("hello", "world", "claim is expired")
+}
+
+func TestAuthCalloutExpiredResponse(t *testing.T) {
+	conf := `
+		listen: "127.0.0.1:-1"
+		server_name: A
+		accounts {
+            AUTH { users [ {user: "auth", password: "pwd"} ] }
+			FOO {}
+		}
+		authorization {
+			auth_callout {
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				account: AUTH
+				auth_users: [ auth ]
+			}
+		}
+	`
+
+	handler := func(m *nats.Msg) {
+		user, si, _, _, _ := decodeAuthRequest(t, m.Data)
+		ujwt := createAuthUser(t, user, _EMPTY_, "FOO", "", nil, 0, nil)
+		m.Respond(serviceResponse(t, user, si.ID, ujwt, "", time.Second*-5))
+	}
+
+	ac := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer ac.Cleanup()
+
+	// This is where the event fires, in this account.
+	sub, err := ac.authClient.SubscribeSync(authErrorAccountEventSubj)
+	require_NoError(t, err)
+
+	checkAuthErrEvent := func(user, pass, reason string) {
+		ac.RequireConnectError(nats.UserInfo(user, pass))
+
+		m, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+
+		var dm DisconnectEventMsg
+		err = json.Unmarshal(m.Data, &dm)
+		require_NoError(t, err)
+
+		if !strings.Contains(dm.Reason, reason) {
+			t.Fatalf("Expected %q reason, but got %q", reason, dm.Reason)
+		}
+	}
+	checkAuthErrEvent("hello", "world", "claim is expired")
 }
