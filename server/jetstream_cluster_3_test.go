@@ -1,4 +1,4 @@
-// Copyright 2022 The NATS Authors
+// Copyright 2022-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -3111,4 +3111,121 @@ func TestJetStreamClusterInterestBasedStreamAndConsumerSnapshots(t *testing.T) {
 	si, err := js.StreamInfo("TEST")
 	require_NoError(t, err)
 	require_True(t, si.State.Msgs == 0)
+}
+
+func TestJetStreamClusterConsumerFollowerStoreStateAckFloorBug(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Replicas: 3,
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe(_EMPTY_, "C", nats.BindStream("TEST"), nats.ManualAck())
+	require_NoError(t, err)
+
+	num := 100
+	for i := 0; i < num; i++ {
+		sendStreamMsg(t, nc, "foo", "data")
+	}
+
+	// This one prevents the state for pending from reaching 0 and resetting, which would not show the bug.
+	sendStreamMsg(t, nc, "foo", "data")
+
+	// Ack all but one and out of order and make sure all consumers have the same stored state.
+	msgs, err := sub.Fetch(num, nats.MaxWait(time.Second))
+	require_NoError(t, err)
+	require_True(t, len(msgs) == num)
+
+	_, err = sub.Fetch(1, nats.MaxWait(time.Second))
+	require_NoError(t, err)
+
+	rand.Shuffle(len(msgs), func(i, j int) { msgs[i], msgs[j] = msgs[j], msgs[i] })
+	for _, m := range msgs {
+		m.AckSync()
+	}
+
+	checkConsumerState := func(delivered, ackFloor nats.SequenceInfo, numAckPending int) {
+		expectedDelivered := uint64(num) + 1
+		if delivered.Stream != expectedDelivered || delivered.Consumer != expectedDelivered {
+			t.Fatalf("Wrong delivered, expected %d got %+v", expectedDelivered, delivered)
+		}
+		expectedAck := uint64(num)
+		if ackFloor.Stream != expectedAck || ackFloor.Consumer != expectedAck {
+			t.Fatalf("Wrong ackFloor, expected %d got %+v", expectedAck, ackFloor)
+		}
+		require_True(t, numAckPending == 1)
+	}
+
+	ci, err := js.ConsumerInfo("TEST", "C")
+	require_NoError(t, err)
+	checkConsumerState(ci.Delivered, ci.AckFloor, ci.NumAckPending)
+
+	// Check each consumer on each server for it's store state and make sure it matches as well.
+	for _, s := range c.servers {
+		mset, err := s.GlobalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		require_NotNil(t, mset)
+		o := mset.lookupConsumer("C")
+		require_NotNil(t, o)
+
+		state, err := o.store.State()
+		require_NoError(t, err)
+
+		delivered := nats.SequenceInfo{Stream: state.Delivered.Stream, Consumer: state.Delivered.Consumer}
+		ackFloor := nats.SequenceInfo{Stream: state.AckFloor.Stream, Consumer: state.AckFloor.Consumer}
+		checkConsumerState(delivered, ackFloor, len(state.Pending))
+	}
+
+	// Now stepdown the consumer and move its leader and check the state after transition.
+	// Make the restarted server the eventual leader.
+	seen := make(map[*Server]bool)
+	cl := c.consumerLeader(globalAccountName, "TEST", "C")
+	require_NotNil(t, cl)
+	seen[cl] = true
+
+	allSeen := func() bool {
+		for _, s := range c.servers {
+			if !seen[s] {
+				return false
+			}
+		}
+		return true
+	}
+
+	checkAllLeaders := func() {
+		t.Helper()
+		checkFor(t, 20*time.Second, 200*time.Millisecond, func() error {
+			c.waitOnConsumerLeader(globalAccountName, "TEST", "C")
+			if allSeen() {
+				return nil
+			}
+			cl := c.consumerLeader(globalAccountName, "TEST", "C")
+			seen[cl] = true
+			ci, err := js.ConsumerInfo("TEST", "C")
+			require_NoError(t, err)
+			checkConsumerState(ci.Delivered, ci.AckFloor, ci.NumAckPending)
+			cl.JetStreamStepdownConsumer(globalAccountName, "TEST", "C")
+			return fmt.Errorf("Not all servers have been consumer leader yet")
+		})
+	}
+
+	checkAllLeaders()
+
+	// No restart all servers and check again.
+	c.stopAll()
+	c.restartAll()
+	c.waitOnLeader()
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	seen = make(map[*Server]bool)
+	checkAllLeaders()
 }

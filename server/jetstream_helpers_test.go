@@ -1,4 +1,4 @@
-// Copyright 2020-2022 The NATS Authors
+// Copyright 2020-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -41,6 +41,15 @@ func init() {
 	maxElectionTimeout = 3 * time.Second
 	lostQuorumInterval = time.Second
 	lostQuorumCheck = 4 * hbInterval
+}
+
+// Used to setup clusters of clusters for tests.
+type cluster struct {
+	servers  []*Server
+	opts     []*Options
+	name     string
+	t        testing.TB
+	nproxies []*netProxy
 }
 
 // Used to setup superclusters for tests.
@@ -350,6 +359,9 @@ type gwProxy struct {
 	up   int
 	down int
 }
+
+// For use in normal clusters.
+type clusterProxy = gwProxy
 
 // Maps cluster names to proxy settings.
 type gwProxyMap map[string]*gwProxy
@@ -692,9 +704,19 @@ func createJetStreamCluster(t testing.TB, tmpl string, clusterName, snPre string
 
 type modifyCb func(serverName, clusterName, storeDir, conf string) string
 
-func createJetStreamClusterAndModHook(t testing.TB, tmpl string, clusterName, snPre string, numServers int, portStart int, waitOnReady bool, modify modifyCb) *cluster {
+func createJetStreamClusterAndModHook(t testing.TB, tmpl, cName, snPre string, numServers int, portStart int, waitOnReady bool, modify modifyCb) *cluster {
+	return createJetStreamClusterEx(t, tmpl, cName, snPre, numServers, portStart, waitOnReady, modify, nil)
+}
+
+func createJetStreamClusterWithNetProxy(t testing.TB, cName string, numServers int, cnp *clusterProxy) *cluster {
+	startPorts := []int{7_122, 9_122, 11_122, 15_122}
+	port := startPorts[rand.Intn(len(startPorts))]
+	return createJetStreamClusterEx(t, jsClusterTempl, cName, _EMPTY_, numServers, port, true, nil, cnp)
+}
+
+func createJetStreamClusterEx(t testing.TB, tmpl, cName, snPre string, numServers int, portStart int, wait bool, modify modifyCb, cnp *clusterProxy) *cluster {
 	t.Helper()
-	if clusterName == _EMPTY_ || numServers < 1 {
+	if cName == _EMPTY_ || numServers < 1 {
 		t.Fatalf("Bad params")
 	}
 
@@ -715,20 +737,32 @@ func createJetStreamClusterAndModHook(t testing.TB, tmpl string, clusterName, sn
 
 	// Build out the routes that will be shared with all configs.
 	var routes []string
+	var nproxies []*netProxy
 	for cp := portStart; cp < portStart+numServers; cp++ {
-		routes = append(routes, fmt.Sprintf("nats-route://127.0.0.1:%d", cp))
+		routeURL := fmt.Sprintf("nats-route://127.0.0.1:%d", cp)
+		if cnp != nil {
+			np := createNetProxy(cnp.rtt, cnp.up, cnp.down, routeURL, false)
+			nproxies = append(nproxies, np)
+			routeURL = np.routeURL()
+		}
+		routes = append(routes, routeURL)
 	}
 	routeConfig := strings.Join(routes, ",")
 
 	// Go ahead and build configurations and start servers.
-	c := &cluster{servers: make([]*Server, 0, numServers), opts: make([]*Options, 0, numServers), name: clusterName}
+	c := &cluster{servers: make([]*Server, 0, numServers), opts: make([]*Options, 0, numServers), name: cName, nproxies: nproxies}
+
+	// Start any proxies.
+	for _, np := range nproxies {
+		np.start()
+	}
 
 	for cp := portStart; cp < portStart+numServers; cp++ {
 		storeDir := t.TempDir()
 		sn := fmt.Sprintf("%sS-%d", snPre, cp-portStart+1)
-		conf := fmt.Sprintf(tmpl, sn, storeDir, clusterName, cp, routeConfig)
+		conf := fmt.Sprintf(tmpl, sn, storeDir, cName, cp, routeConfig)
 		if modify != nil {
-			conf = modify(sn, clusterName, storeDir, conf)
+			conf = modify(sn, cName, storeDir, conf)
 		}
 		s, o := RunServerWithConfig(createConfFile(t, []byte(conf)))
 		c.servers = append(c.servers, s)
@@ -738,7 +772,7 @@ func createJetStreamClusterAndModHook(t testing.TB, tmpl string, clusterName, sn
 
 	// Wait til we are formed and have a leader.
 	c.checkClusterFormed()
-	if waitOnReady {
+	if wait {
 		c.waitOnClusterReady()
 	}
 
@@ -1621,18 +1655,14 @@ func (np *netProxy) loop(rtt time.Duration, tbw int, r, w net.Conn) {
 
 	rl := rate.NewLimiter(rate.Limit(tbw), rbl)
 
-	for fr := true; ; {
-		sr := time.Now()
+	for {
 		n, err := r.Read(buf[:])
 		if err != nil {
 			return
 		}
 		// RTT delays
-		if fr || time.Since(sr) > 250*time.Millisecond {
-			fr = false
-			if delay > 0 {
-				time.Sleep(delay)
-			}
+		if delay > 0 {
+			time.Sleep(delay)
 		}
 		if err := rl.WaitN(ctx, n); err != nil {
 			return
