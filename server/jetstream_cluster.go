@@ -281,6 +281,37 @@ func (s *Server) JetStreamStepdownStream(account, stream string) error {
 	return nil
 }
 
+func (s *Server) JetStreamStepdownConsumer(account, stream, consumer string) error {
+	js, cc := s.getJetStreamCluster()
+	if js == nil {
+		return NewJSNotEnabledError()
+	}
+	if cc == nil {
+		return NewJSClusterNotActiveError()
+	}
+	// Grab account
+	acc, err := s.LookupAccount(account)
+	if err != nil {
+		return err
+	}
+	// Grab stream
+	mset, err := acc.lookupStream(stream)
+	if err != nil {
+		return err
+	}
+
+	o := mset.lookupConsumer(consumer)
+	if o == nil {
+		return NewJSConsumerNotFoundError()
+	}
+
+	if node := o.raftNode(); node != nil && node.Leader() {
+		node.StepDown()
+	}
+
+	return nil
+}
+
 func (s *Server) JetStreamSnapshotStream(account, stream string) error {
 	js, cc := s.getJetStreamCluster()
 	if js == nil {

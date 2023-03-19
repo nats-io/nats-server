@@ -1,4 +1,4 @@
-// Copyright 2019-2021 The NATS Authors
+// Copyright 2019-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -50,14 +50,6 @@ func RunRandClientPortServer() *Server {
 	opts := DefaultTestOptions
 	opts.Port = -1
 	return RunServer(&opts)
-}
-
-// Used to setup clusters of clusters for tests.
-type cluster struct {
-	servers []*Server
-	opts    []*Options
-	name    string
-	t       testing.TB
 }
 
 func require_True(t *testing.T, b bool) {
@@ -276,6 +268,11 @@ func (c *cluster) shutdown() {
 	if c == nil {
 		return
 	}
+	// Stop any proxies.
+	for _, np := range c.nproxies {
+		np.stop()
+	}
+	// Shutdown and cleanup servers.
 	for i, s := range c.servers {
 		sd := s.StoreDir()
 		s.Shutdown()

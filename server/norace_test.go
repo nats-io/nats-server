@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"net"
 	"net/http"
@@ -49,6 +50,7 @@ import (
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
+	"github.com/nats-io/nuid"
 )
 
 // IMPORTANT: Tests in this file are not executed when running with the -race flag.
@@ -6526,4 +6528,300 @@ func TestNoRaceJetStreamClusterGhostConsumers(t *testing.T) {
 		}
 		return fmt.Errorf("Still have missing: %+v", missing)
 	})
+}
+
+// This is to test a publish slowdown and general instability experienced in a setup simular to this.
+// We have feeder streams that are all sourced to an aggregate stream. All streams are interest retention.
+// We want to monitor the avg publish time for the sync publishers to the feeder streams, the ingest rate to
+// the aggregate stream, and general health of the consumers on the aggregate stream.
+// Target publish rate is ~2k/s with publish time being ~40-60ms but remaining stable.
+// We can also simulate max redeliveries that create interior deletes in streams.
+func TestNoRaceJetStreamClusterF3Setup(t *testing.T) {
+	// Uncomment to run. Needs to be on a pretty big machine. Do not want as part of Travis tests atm.
+	skip(t)
+
+	// These and the settings below achieve ~60ms pub time on avg and ~2k msgs per sec inbound to the aggregate stream.
+	// On my machine though.
+	np := clusterProxy{
+		rtt:  2 * time.Millisecond,
+		up:   1 * 1024 * 1024 * 1024, // 1gbit
+		down: 1 * 1024 * 1024 * 1024, // 1gbit
+	}
+
+	// Test params.
+	numSourceStreams := 20
+	numConsumersPerSource := 1
+	numPullersForAggregate := 50
+	numPublishers := 100
+	setHighStartSequence := false
+	simulateMaxRedeliveries := false
+	testTime := 60 * time.Minute // make sure to do --timeout=65m
+
+	t.Logf("Starting Test: Total Test Time %v", testTime)
+
+	c := createJetStreamClusterWithNetProxy(t, "R3S", 3, &np)
+	defer c.shutdown()
+
+	// Do some quick sanity checking for latency stuff.
+	{
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:      "TEST",
+			Replicas:  3,
+			Subjects:  []string{"foo"},
+			Retention: nats.InterestPolicy,
+		})
+		require_NoError(t, err)
+		defer js.DeleteStream("TEST")
+
+		sl := c.streamLeader(globalAccountName, "TEST")
+		nc, js = jsClientConnect(t, sl)
+		defer nc.Close()
+		start := time.Now()
+		_, err = js.Publish("foo", []byte("hello"))
+		require_NoError(t, err)
+		// This is best case, and with client connection being close to free, this should be at least > rtt
+		if elapsed := time.Since(start); elapsed < np.rtt {
+			t.Fatalf("Expected publish time to be > %v, got %v", np.rtt, elapsed)
+		}
+
+		nl := c.randomNonStreamLeader(globalAccountName, "TEST")
+		nc, js = jsClientConnect(t, nl)
+		defer nc.Close()
+		start = time.Now()
+		_, err = js.Publish("foo", []byte("hello"))
+		require_NoError(t, err)
+		// This is worst case, meaning message has to travel to leader, then to fastest replica, then back.
+		// So should be at 3x rtt, so check at least > 2x rtt.
+		if elapsed := time.Since(start); elapsed < 2*np.rtt {
+			t.Fatalf("Expected publish time to be > %v, got %v", 2*np.rtt, elapsed)
+		}
+	}
+
+	// Setup source streams.
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	t.Logf("Creating %d Source Streams", numSourceStreams)
+
+	var sources []string
+	wg := sync.WaitGroup{}
+	for i := 0; i < numSourceStreams; i++ {
+		sname := fmt.Sprintf("EVENT-%s", nuid.Next())
+		wg.Add(1)
+		go func(stream string) {
+			defer wg.Done()
+			t.Logf("  %q", stream)
+			sources = append(sources, stream)
+			subj := fmt.Sprintf("%s.>", stream)
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:      stream,
+				Subjects:  []string{subj},
+				Replicas:  3,
+				Retention: nats.InterestPolicy,
+			})
+			require_NoError(t, err)
+			for j := 0; j < numConsumersPerSource; j++ {
+				consumer := fmt.Sprintf("C%d", j)
+				_, err := js.Subscribe(_EMPTY_, func(msg *nats.Msg) {
+					msg.Ack()
+				}, nats.BindStream(stream), nats.Durable(consumer), nats.ManualAck())
+				require_NoError(t, err)
+			}
+		}(sname)
+	}
+	wg.Wait()
+
+	var streamSources []*nats.StreamSource
+	for _, src := range sources {
+		streamSources = append(streamSources, &nats.StreamSource{Name: src})
+
+	}
+
+	t.Log("Creating Aggregate Stream")
+
+	// Now create the aggregate stream.
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "EVENTS",
+		Replicas:  3,
+		Retention: nats.InterestPolicy,
+		Sources:   streamSources,
+	})
+	require_NoError(t, err)
+
+	// Set first sequence to a high number.
+	if setHighStartSequence {
+		require_NoError(t, js.PurgeStream("EVENTS", &nats.StreamPurgeRequest{Sequence: 32_000_001}))
+	}
+
+	// Now create 2 pull consumers.
+	_, err = js.PullSubscribe(_EMPTY_, "C1",
+		nats.BindStream("EVENTS"),
+		nats.MaxDeliver(1),
+		nats.AckWait(10*time.Second),
+		nats.ManualAck(),
+	)
+	require_NoError(t, err)
+
+	_, err = js.PullSubscribe(_EMPTY_, "C2",
+		nats.BindStream("EVENTS"),
+		nats.MaxDeliver(1),
+		nats.AckWait(10*time.Second),
+		nats.ManualAck(),
+	)
+	require_NoError(t, err)
+
+	t.Logf("Creating %d Pull Subscribers", numPullersForAggregate)
+
+	// Now create the pullers.
+	for _, subName := range []string{"C1", "C2"} {
+		for i := 0; i < numPullersForAggregate; i++ {
+			go func(subName string) {
+				nc, js := jsClientConnect(t, c.randomServer())
+				defer nc.Close()
+
+				sub, err := js.PullSubscribe(_EMPTY_, subName,
+					nats.BindStream("EVENTS"),
+					nats.MaxDeliver(1),
+					nats.AckWait(10*time.Second),
+					nats.ManualAck(),
+				)
+				require_NoError(t, err)
+
+				for {
+					msgs, err := sub.Fetch(25, nats.MaxWait(2*time.Second))
+					if err != nil && err != nats.ErrTimeout {
+						t.Logf("Exiting pull subscriber %q: %v", subName, err)
+						return
+					}
+					// Shuffle
+					rand.Shuffle(len(msgs), func(i, j int) { msgs[i], msgs[j] = msgs[j], msgs[i] })
+					// Wait for a random interval up to 100ms.
+					time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
+					for _, m := range msgs {
+						// If we want to simulate max redeliveries being hit, since not acking
+						// once will cause it due to subscriber setup.
+						// 100_000 == 0.01%
+						if simulateMaxRedeliveries && rand.Intn(100_000) == 0 {
+							md, err := m.Metadata()
+							require_NoError(t, err)
+							t.Logf("** Skipping Ack: %d **", md.Sequence.Stream)
+						} else {
+							m.Ack()
+						}
+					}
+				}
+			}(subName)
+		}
+	}
+
+	// Now create feeder publishers.
+	eventTypes := []string{"PAYMENT", "SUBMISSION", "CANCEL"}
+
+	msg := make([]byte, 2*1024) // 2k payload
+	rand.Read(msg)
+
+	// For tracking pub times.
+	var pubs int
+	var totalPubTime time.Duration
+	var pmu sync.Mutex
+	last := time.Now()
+
+	updatePubStats := func(elapsed time.Duration) {
+		pmu.Lock()
+		defer pmu.Unlock()
+		// Reset every 5s
+		if time.Since(last) > 5*time.Second {
+			pubs = 0
+			totalPubTime = 0
+			last = time.Now()
+		}
+		pubs++
+		totalPubTime += elapsed
+	}
+	avgPubTime := func() time.Duration {
+		pmu.Lock()
+		np := pubs
+		tpt := totalPubTime
+		pmu.Unlock()
+		return tpt / time.Duration(np)
+	}
+
+	t.Logf("Creating %d Publishers", numPublishers)
+
+	for i := 0; i < numPublishers; i++ {
+		go func() {
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			for {
+				// Grab a random source stream
+				stream := sources[rand.Intn(len(sources))]
+				// Grab random event type.
+				evt := eventTypes[rand.Intn(len(eventTypes))]
+				subj := fmt.Sprintf("%s.%s", stream, evt)
+				start := time.Now()
+				_, err := js.Publish(subj, msg)
+				if err != nil {
+					t.Logf("Exiting publisher: %v", err)
+					return
+				}
+				elapsed := time.Since(start)
+				if elapsed > 5*time.Second {
+					t.Logf("Publish time took more than expected: %v", elapsed)
+				}
+				updatePubStats(elapsed)
+			}
+		}()
+	}
+
+	t.Log("Creating Monitoring Routine - Data in ~10s")
+
+	// Create monitoring routine.
+	go func() {
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		fseq, lseq := uint64(0), uint64(0)
+		for {
+			// Grab consumers
+			var minAckFloor uint64 = math.MaxUint64
+			for _, consumer := range []string{"C1", "C2"} {
+				ci, err := js.ConsumerInfo("EVENTS", consumer)
+				if err != nil {
+					t.Logf("Exiting Monitor: %v", err)
+					return
+				}
+				if lseq > 0 {
+					t.Logf("%s:\n  Delivered:\t%d\n  AckFloor:\t%d\n  AckPending:\t%d\n  NumPending:\t%d",
+						consumer, ci.Delivered.Stream, ci.AckFloor.Stream, ci.NumAckPending, ci.NumPending)
+				}
+				if ci.AckFloor.Stream < minAckFloor {
+					minAckFloor = ci.AckFloor.Stream
+				}
+			}
+			// Now grab aggregate stream state.
+			si, err := js.StreamInfo("EVENTS")
+			if err != nil {
+				t.Logf("Exiting Monitor: %v", err)
+				return
+			}
+			state := si.State
+			if lseq != 0 {
+				t.Logf("Stream:\n  Msgs: \t%d\n  First:\t%d\n  Last: \t%d\n  Deletes:\t%d\n",
+					state.Msgs, state.FirstSeq, state.LastSeq, state.NumDeleted)
+				t.Logf("Publish Stats:\n  Msgs/s:\t%0.2f\n  Avg Pub:\t%v\n\n", float64(si.State.LastSeq-lseq)/5.0, avgPubTime())
+				if si.State.FirstSeq < minAckFloor && si.State.FirstSeq == fseq {
+					t.Log("Stream first seq < minimum ack floor")
+				}
+			}
+			fseq, lseq = si.State.FirstSeq, si.State.LastSeq
+			time.Sleep(5 * time.Second)
+		}
+
+	}()
+
+	time.Sleep(testTime)
 }

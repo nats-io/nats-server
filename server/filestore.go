@@ -6685,21 +6685,15 @@ func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
 		delete(o.state.Pending, sseq)
 		dseq = p.Sequence // Use the original.
 	}
-	// Now remove from redelivered.
-	if len(o.state.Redelivered) > 0 {
-		delete(o.state.Redelivered, sseq)
-	}
-
 	if len(o.state.Pending) == 0 {
 		o.state.AckFloor.Consumer = o.state.Delivered.Consumer
 		o.state.AckFloor.Stream = o.state.Delivered.Stream
 	} else if dseq == o.state.AckFloor.Consumer+1 {
-		first := o.state.AckFloor.Consumer == 0
 		o.state.AckFloor.Consumer = dseq
 		o.state.AckFloor.Stream = sseq
 
-		if !first && o.state.Delivered.Consumer > dseq {
-			for ss := sseq + 1; ss < o.state.Delivered.Stream; ss++ {
+		if o.state.Delivered.Consumer > dseq {
+			for ss := sseq + 1; ss <= o.state.Delivered.Stream; ss++ {
 				if p, ok := o.state.Pending[ss]; ok {
 					if p.Sequence > 0 {
 						o.state.AckFloor.Consumer = p.Sequence - 1
@@ -6710,6 +6704,8 @@ func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
 			}
 		}
 	}
+	// We do these regardless.
+	delete(o.state.Redelivered, sseq)
 
 	o.kickFlusher()
 	return nil
