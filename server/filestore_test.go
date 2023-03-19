@@ -2776,8 +2776,8 @@ func TestFileStoreConsumerDeliveredAndAckUpdates(t *testing.T) {
 			}
 		}
 
-		testAck(1, 100, 1, 100)
-		testAck(3, 130, 1, 100)
+		testAck(1, 100, 1, 109)
+		testAck(3, 130, 1, 109)
 		testAck(2, 110, 3, 149) // We do not track explicit state on previous stream floors, so we take last known -1
 		testAck(5, 165, 3, 149)
 		testAck(4, 150, 5, 165)

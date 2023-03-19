@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -634,7 +635,7 @@ func (s *Server) updateServerUsage(v *ServerStats) {
 	defer s.mu.Lock()
 	var vss int64
 	pse.ProcUsage(&v.CPU, &v.Mem, &vss)
-	v.Cores = numCores
+	v.Cores = runtime.NumCPU()
 }
 
 // Generate a route stat for our statz update.

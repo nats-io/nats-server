@@ -3108,12 +3108,14 @@ func (n *raft) processAppendEntryResponse(ar *appendEntryResponse) {
 		n.trackResponse(ar)
 	} else if ar.term > n.term {
 		// False here and they have a higher term.
+		n.Lock()
 		n.term = ar.term
 		n.vote = noVote
 		n.writeTermVote()
 		n.warn("Detected another leader with higher term, will stepdown and reset")
 		n.stepdown.push(noLeader)
 		n.resetWAL()
+		n.Unlock()
 	} else if ar.reply != _EMPTY_ {
 		n.catchupFollower(ar)
 	}

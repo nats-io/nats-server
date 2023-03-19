@@ -38,19 +38,6 @@ import (
 	"github.com/nats-io/nats-server/v2/server/pse"
 )
 
-// Snapshot this
-var numCores int
-var maxProcs int
-
-func SnapshotMonitorInfo() {
-	numCores = runtime.NumCPU()
-	maxProcs = runtime.GOMAXPROCS(0)
-}
-
-func init() {
-	SnapshotMonitorInfo()
-}
-
 // Connz represents detailed information on current client connections.
 type Connz struct {
 	ID       string      `json:"server_id"`
@@ -1530,8 +1517,8 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 		},
 		Start:                 s.start,
 		MaxSubs:               opts.MaxSubs,
-		Cores:                 numCores,
-		MaxProcs:              maxProcs,
+		Cores:                 runtime.NumCPU(),
+		MaxProcs:              runtime.GOMAXPROCS(0),
 		Tags:                  opts.Tags,
 		TrustedOperatorsJwt:   opts.operatorJWT,
 		TrustedOperatorsClaim: opts.TrustedOperators,
