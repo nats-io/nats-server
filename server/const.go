@@ -121,6 +121,9 @@ const (
 	// DEFAULT_ROUTE_DIAL Route dial timeout.
 	DEFAULT_ROUTE_DIAL = 1 * time.Second
 
+	// DEFAULT_ROUTE_POOL_SIZE Route default pool size
+	DEFAULT_ROUTE_POOL_SIZE = 3
+
 	// DEFAULT_LEAF_NODE_RECONNECT LeafNode reconnect interval.
 	DEFAULT_LEAF_NODE_RECONNECT = time.Second
 

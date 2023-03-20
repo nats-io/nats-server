@@ -1579,6 +1579,30 @@ func TestConfigCheck(t *testing.T) {
 			errorLine: 5,
 			errorPos:  6,
 		},
+		{
+			name: "wrong type for cluter pool size",
+			config: `
+				cluster {
+					port: -1
+					pool_size: "abc"
+				}
+			`,
+			err:       fmt.Errorf("interface conversion: interface {} is string, not int64"),
+			errorLine: 4,
+			errorPos:  6,
+		},
+		{
+			name: "wrong type for cluter accounts",
+			config: `
+				cluster {
+					port: -1
+					accounts: 123
+				}
+			`,
+			err:       fmt.Errorf("error parsing accounts: unsupported type int64"),
+			errorLine: 4,
+			errorPos:  6,
+		},
 	}
 
 	checkConfig := func(config string) error {

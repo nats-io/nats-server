@@ -103,6 +103,7 @@ func TestClusterTLSInsecure(t *testing.T) {
 		cluster {
 			name: "xyz"
 			listen: "127.0.0.1:-1"
+			pool_size: -1
 			tls {
 			    cert_file: "./configs/certs/server-noip.pem"
 				key_file:  "./configs/certs/server-key-noip.pem"
@@ -122,6 +123,7 @@ func TestClusterTLSInsecure(t *testing.T) {
 		cluster {
 			name: "xyz"
 			listen: "127.0.0.1:-1"
+			pool_size: -1
 			tls {
 			    cert_file: "./configs/certs/server-noip.pem"
 				key_file:  "./configs/certs/server-key-noip.pem"

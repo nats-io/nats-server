@@ -679,9 +679,9 @@ func (s *Server) sendStatsz(subj string) {
 	m.Stats.SlowConsumers = atomic.LoadInt64(&s.slowConsumers)
 	m.Stats.NumSubs = s.numSubscriptions()
 	// Routes
-	for _, r := range s.routes {
+	s.forEachRoute(func(r *client) {
 		m.Stats.Routes = append(m.Stats.Routes, routeStat(r))
-	}
+	})
 	// Gateways
 	if s.gateway.enabled {
 		gw := s.gateway
@@ -2270,14 +2270,14 @@ func (s *Server) remoteLatencyUpdate(sub *subscription, _ *client, _ *Account, s
 
 	// So we have not processed the response tracking measurement yet.
 	if m1 == nil {
-		si.acc.mu.Lock()
+		acc.mu.Lock()
 		// Double check since could have slipped in.
 		m1 = si.m1
 		if m1 == nil {
 			// Store our value there for them to pick up.
 			si.m1 = &m2
 		}
-		si.acc.mu.Unlock()
+		acc.mu.Unlock()
 		if m1 == nil {
 			return
 		}

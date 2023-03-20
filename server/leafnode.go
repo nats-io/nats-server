@@ -860,9 +860,7 @@ func (s *Server) generateLeafNodeInfoJSON() {
 	s.leafNodeInfo.Cluster = s.cachedClusterName()
 	s.leafNodeInfo.LeafNodeURLs = s.leafURLsMap.getAsStringSlice()
 	s.leafNodeInfo.WSConnectURLs = s.websocket.connectURLsMap.getAsStringSlice()
-	b, _ := json.Marshal(s.leafNodeInfo)
-	pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}
-	s.leafNodeInfoJSON = bytes.Join(pcs, []byte(" "))
+	s.leafNodeInfoJSON = generateInfoJSON(&s.leafNodeInfo)
 }
 
 // Sends an async INFO protocol so that the connected servers can update
@@ -1003,14 +1001,12 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 		copy(c.nonce, nonce[:])
 		info.Nonce = string(c.nonce)
 		info.CID = c.cid
-		b, _ := json.Marshal(info)
-
-		pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}
+		proto := generateInfoJSON(info)
 		// We have to send from this go routine because we may
 		// have to block for TLS handshake before we start our
 		// writeLoop go routine. The other side needs to receive
 		// this before it can initiate the TLS handshake..
-		c.sendProtoNow(bytes.Join(pcs, []byte(" ")))
+		c.sendProtoNow(proto)
 
 		// The above call could have marked the connection as closed (due to TCP error).
 		if c.isClosed() {
@@ -1616,9 +1612,7 @@ func (s *Server) sendPermsAndAccountInfo(c *client) {
 	info.Export = c.opts.Export
 	info.RemoteAccount = c.acc.Name
 	info.ConnectInfo = true
-	b, _ := json.Marshal(info)
-	pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}
-	c.enqueueProto(bytes.Join(pcs, []byte(" ")))
+	c.enqueueProto(generateInfoJSON(info))
 	c.mu.Unlock()
 }
 

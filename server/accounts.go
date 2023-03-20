@@ -91,7 +91,13 @@ type Account struct {
 	tags         jwt.TagList
 	nameTag      string
 	lastLimErr   int64
+	routePoolIdx int
 }
+
+const (
+	accDedicatedRoute                = -1
+	accTransitioningToDedicatedRoute = -2
+)
 
 // Account based limits.
 type limits struct {
@@ -1331,11 +1337,11 @@ func (a *Account) sendTrackingLatency(si *serviceImport, responder *client) bool
 	// FIXME(dlc) - We need to clean these up but this should happen
 	// already with the auto-expire logic.
 	if responder != nil && responder.kind != CLIENT {
-		si.acc.mu.Lock()
+		a.mu.Lock()
 		if si.m1 != nil {
 			m1, m2 := sl, si.m1
 			m1.merge(m2)
-			si.acc.mu.Unlock()
+			a.mu.Unlock()
 			a.srv.sendInternalAccountMsg(a, si.latency.subject, m1)
 			a.mu.Lock()
 			si.rc = nil
@@ -1343,7 +1349,7 @@ func (a *Account) sendTrackingLatency(si *serviceImport, responder *client) bool
 			return true
 		}
 		si.m1 = sl
-		si.acc.mu.Unlock()
+		a.mu.Unlock()
 		return false
 	} else {
 		a.srv.sendInternalAccountMsg(a, si.latency.subject, sl)

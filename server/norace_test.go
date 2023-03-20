@@ -648,11 +648,13 @@ func TestNoRaceRouteCache(t *testing.T) {
 
 			oa := DefaultOptions()
 			oa.NoSystemAccount = true
+			oa.Cluster.PoolSize = -1
 			sa := RunServer(oa)
 			defer sa.Shutdown()
 
 			ob := DefaultOptions()
 			ob.NoSystemAccount = true
+			ob.Cluster.PoolSize = -1
 			ob.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", oa.Cluster.Host, oa.Cluster.Port))
 			sb := RunServer(ob)
 			defer sb.Shutdown()
@@ -706,10 +708,7 @@ func TestNoRaceRouteCache(t *testing.T) {
 
 			var route *client
 			sb.mu.Lock()
-			for _, r := range sb.routes {
-				route = r
-				break
-			}
+			route = getFirstRoute(sb)
 			sb.mu.Unlock()
 
 			checkExpected := func(t *testing.T, expected int) {
@@ -7806,5 +7805,363 @@ func TestNoRaceParallelStreamAndConsumerCreation(t *testing.T) {
 	})
 	if numConsumers > 1 {
 		t.Fatalf("Expected only one consumer to be really created, got %d out of %d attempts", numConsumers, np)
+	}
+}
+
+func TestNoRaceRoutePool(t *testing.T) {
+	var dur1 time.Duration
+	var dur2 time.Duration
+
+	total := 1_000_000
+
+	for _, test := range []struct {
+		name     string
+		poolSize int
+	}{
+		{"no pooling", 0},
+		{"pooling", 5},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tmpl := `
+			port: -1
+			accounts {
+				A { users: [{user: "A", password: "A"}] }
+				B { users: [{user: "B", password: "B"}] }
+				C { users: [{user: "C", password: "C"}] }
+				D { users: [{user: "D", password: "D"}] }
+				E { users: [{user: "E", password: "E"}] }
+			}
+			cluster {
+				port: -1
+				name: "local"
+				%s
+				pool_size: %d
+			}
+		`
+			conf1 := createConfFile(t, []byte(fmt.Sprintf(tmpl, _EMPTY_, test.poolSize)))
+			s1, o1 := RunServerWithConfig(conf1)
+			defer s1.Shutdown()
+
+			conf2 := createConfFile(t, []byte(fmt.Sprintf(tmpl,
+				fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", o1.Cluster.Port),
+				test.poolSize)))
+			s2, _ := RunServerWithConfig(conf2)
+			defer s2.Shutdown()
+
+			checkClusterFormed(t, s1, s2)
+
+			wg := sync.WaitGroup{}
+			wg.Add(5)
+
+			sendAndRecv := func(acc string) (*nats.Conn, *nats.Conn) {
+				t.Helper()
+
+				s2nc := natsConnect(t, s2.ClientURL(), nats.UserInfo(acc, acc))
+				count := 0
+				natsSub(t, s2nc, "foo", func(_ *nats.Msg) {
+					if count++; count == total {
+						wg.Done()
+					}
+				})
+				natsFlush(t, s2nc)
+
+				s1nc := natsConnect(t, s1.ClientURL(), nats.UserInfo(acc, acc))
+
+				checkSubInterest(t, s1, acc, "foo", time.Second)
+				return s2nc, s1nc
+			}
+
+			var rcv = [5]*nats.Conn{}
+			var snd = [5]*nats.Conn{}
+			accs := []string{"A", "B", "C", "D", "E"}
+
+			for i := 0; i < 5; i++ {
+				rcv[i], snd[i] = sendAndRecv(accs[i])
+				defer rcv[i].Close()
+				defer snd[i].Close()
+			}
+
+			payload := []byte("some message")
+			start := time.Now()
+			for i := 0; i < 5; i++ {
+				go func(idx int) {
+					for i := 0; i < total; i++ {
+						snd[idx].Publish("foo", payload)
+					}
+				}(i)
+			}
+
+			wg.Wait()
+			dur := time.Since(start)
+			if test.poolSize == 0 {
+				dur1 = dur
+			} else {
+				dur2 = dur
+			}
+		})
+	}
+	perf1 := float64(total*5) / dur1.Seconds()
+	t.Logf("No pooling: %.0f msgs/sec", perf1)
+	perf2 := float64(total*5) / dur2.Seconds()
+	t.Logf("Pooling   : %.0f msgs/sec", perf2)
+	t.Logf("Gain      : %.2fx", perf2/perf1)
+}
+
+func TestNoRaceRoutePerAccount(t *testing.T) {
+	var dur1 time.Duration
+	var dur2 time.Duration
+
+	accounts := make([]string, 5)
+	for i := 0; i < 5; i++ {
+		akp, _ := nkeys.CreateAccount()
+		pub, _ := akp.PublicKey()
+		accounts[i] = pub
+	}
+	routeAccs := fmt.Sprintf("accounts: [\"%s\", \"%s\", \"%s\", \"%s\", \"%s\"]",
+		accounts[0], accounts[1], accounts[2], accounts[3], accounts[4])
+
+	total := 1_000_000
+
+	for _, test := range []struct {
+		name      string
+		dedicated bool
+	}{
+		{"route for all accounts", false},
+		{"route per account", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tmpl := `
+			port: -1
+			accounts {
+				%s { users: [{user: "0", password: "0"}] }
+				%s { users: [{user: "1", password: "1"}] }
+				%s { users: [{user: "2", password: "2"}] }
+				%s { users: [{user: "3", password: "3"}] }
+				%s { users: [{user: "4", password: "4"}] }
+			}
+			cluster {
+				port: -1
+				name: "local"
+				%s
+				%s
+			}
+		`
+			var racc string
+			if test.dedicated {
+				racc = routeAccs
+			} else {
+				racc = _EMPTY_
+			}
+			conf1 := createConfFile(t, []byte(fmt.Sprintf(tmpl,
+				accounts[0], accounts[1], accounts[2], accounts[3],
+				accounts[4], _EMPTY_, racc)))
+			s1, o1 := RunServerWithConfig(conf1)
+			defer s1.Shutdown()
+
+			conf2 := createConfFile(t, []byte(fmt.Sprintf(tmpl,
+				accounts[0], accounts[1], accounts[2], accounts[3], accounts[4],
+				fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", o1.Cluster.Port),
+				racc)))
+			s2, _ := RunServerWithConfig(conf2)
+			defer s2.Shutdown()
+
+			checkClusterFormed(t, s1, s2)
+
+			wg := sync.WaitGroup{}
+			wg.Add(5)
+
+			sendAndRecv := func(acc string, user string) (*nats.Conn, *nats.Conn) {
+				t.Helper()
+
+				s2nc := natsConnect(t, s2.ClientURL(), nats.UserInfo(user, user))
+				count := 0
+				natsSub(t, s2nc, "foo", func(_ *nats.Msg) {
+					if count++; count == total {
+						wg.Done()
+					}
+				})
+				natsFlush(t, s2nc)
+
+				s1nc := natsConnect(t, s1.ClientURL(), nats.UserInfo(user, user))
+
+				checkSubInterest(t, s1, acc, "foo", time.Second)
+				return s2nc, s1nc
+			}
+
+			var rcv = [5]*nats.Conn{}
+			var snd = [5]*nats.Conn{}
+			users := []string{"0", "1", "2", "3", "4"}
+
+			for i := 0; i < 5; i++ {
+				rcv[i], snd[i] = sendAndRecv(accounts[i], users[i])
+				defer rcv[i].Close()
+				defer snd[i].Close()
+			}
+
+			payload := []byte("some message")
+			start := time.Now()
+			for i := 0; i < 5; i++ {
+				go func(idx int) {
+					for i := 0; i < total; i++ {
+						snd[idx].Publish("foo", payload)
+					}
+				}(i)
+			}
+
+			wg.Wait()
+			dur := time.Since(start)
+			if !test.dedicated {
+				dur1 = dur
+			} else {
+				dur2 = dur
+			}
+		})
+	}
+	perf1 := float64(total*5) / dur1.Seconds()
+	t.Logf("Route for all accounts: %.0f msgs/sec", perf1)
+	perf2 := float64(total*5) / dur2.Seconds()
+	t.Logf("Route per account     : %.0f msgs/sec", perf2)
+	t.Logf("Gain                  : %.2fx", perf2/perf1)
+}
+
+// This test, which checks that messages are not duplicated when pooling or
+// per-account routes are reloaded, would cause a DATA RACE that is not
+// specific to the changes for pooling/per_account. For this reason, this
+// test is located in the norace_test.go file.
+func TestNoRaceRoutePoolAndPerAccountConfigReload(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		poolSizeBefore string
+		poolSizeAfter  string
+		accountsBefore string
+		accountsAfter  string
+	}{
+		{"from no pool to pool", _EMPTY_, "pool_size: 2", _EMPTY_, _EMPTY_},
+		{"increase pool size", "pool_size: 2", "pool_size: 5", _EMPTY_, _EMPTY_},
+		{"decrease pool size", "pool_size: 5", "pool_size: 2", _EMPTY_, _EMPTY_},
+		{"from pool to no pool", "pool_size: 5", _EMPTY_, _EMPTY_, _EMPTY_},
+		{"from no account to account", _EMPTY_, _EMPTY_, _EMPTY_, "accounts: [\"A\"]"},
+		{"add account", _EMPTY_, _EMPTY_, "accounts: [\"B\"]", "accounts: [\"A\",\"B\"]"},
+		{"remove account", _EMPTY_, _EMPTY_, "accounts: [\"A\",\"B\"]", "accounts: [\"B\"]"},
+		{"from account to no account", _EMPTY_, _EMPTY_, "accounts: [\"A\"]", _EMPTY_},
+		{"increase pool size and add account", "pool_size: 2", "pool_size: 3", "accounts: [\"B\"]", "accounts: [\"B\",\"A\"]"},
+		{"decrease pool size and remove account", "pool_size: 3", "pool_size: 2", "accounts: [\"A\",\"B\"]", "accounts: [\"B\"]"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tmplA := `
+				port: -1
+				server_name: "A"
+				accounts {
+					A { users: [{user: a, password: pwd}] }
+					B { users: [{user: b, password: pwd}] }
+				}
+				cluster: {
+					port: -1
+					name: "local"
+					%s
+					%s
+				}
+			`
+			confA := createConfFile(t, []byte(fmt.Sprintf(tmplA, test.poolSizeBefore, test.accountsBefore)))
+			srva, optsA := RunServerWithConfig(confA)
+			defer srva.Shutdown()
+
+			tmplB := `
+				port: -1
+				server_name: "B"
+				accounts {
+					A { users: [{user: a, password: pwd}] }
+					B { users: [{user: b, password: pwd}] }
+				}
+				cluster: {
+					port: -1
+					name: "local"
+					%s
+					%s
+					routes: ["nats://127.0.0.1:%d"]
+				}
+			`
+			confB := createConfFile(t, []byte(fmt.Sprintf(tmplB, test.poolSizeBefore, test.accountsBefore, optsA.Cluster.Port)))
+			srvb, _ := RunServerWithConfig(confB)
+			defer srvb.Shutdown()
+
+			checkClusterFormed(t, srva, srvb)
+
+			ncA := natsConnect(t, srva.ClientURL(), nats.UserInfo("a", "pwd"))
+			defer ncA.Close()
+
+			sub := natsSubSync(t, ncA, "foo")
+			sub.SetPendingLimits(-1, -1)
+			checkSubInterest(t, srvb, "A", "foo", time.Second)
+
+			ncB := natsConnect(t, srvb.ClientURL(), nats.UserInfo("a", "pwd"))
+			defer ncB.Close()
+
+			wg := sync.WaitGroup{}
+			wg.Add(1)
+			ch := make(chan struct{})
+			go func() {
+				defer wg.Done()
+
+				for i := 0; ; i++ {
+					ncB.Publish("foo", []byte(fmt.Sprintf("%d", i)))
+					select {
+					case <-ch:
+						return
+					default:
+					}
+					if i%300 == 0 {
+						time.Sleep(time.Duration(rand.Intn(5)) * time.Millisecond)
+					}
+				}
+			}()
+
+			var l *captureErrorLogger
+			if test.accountsBefore != _EMPTY_ && test.accountsAfter == _EMPTY_ {
+				l = &captureErrorLogger{errCh: make(chan string, 100)}
+				srva.SetLogger(l, false, false)
+			}
+
+			time.Sleep(250 * time.Millisecond)
+			reloadUpdateConfig(t, srva, confA, fmt.Sprintf(tmplA, test.poolSizeAfter, test.accountsAfter))
+			time.Sleep(125 * time.Millisecond)
+			reloadUpdateConfig(t, srvb, confB, fmt.Sprintf(tmplB, test.poolSizeAfter, test.accountsAfter, optsA.Cluster.Port))
+
+			checkClusterFormed(t, srva, srvb)
+			checkSubInterest(t, srvb, "A", "foo", time.Second)
+
+			if l != nil {
+				// Errors regarding "No route for account" should stop
+				var ok bool
+				for numErrs := 0; !ok && numErrs < 10; {
+					select {
+					case e := <-l.errCh:
+						if strings.Contains(e, "No route for account") {
+							numErrs++
+						}
+					case <-time.After(DEFAULT_ROUTE_RECONNECT + 250*time.Millisecond):
+						ok = true
+					}
+				}
+				if !ok {
+					t.Fatalf("Still report of no route for account")
+				}
+			}
+
+			close(ch)
+			wg.Wait()
+
+			for prev := -1; ; {
+				msg, err := sub.NextMsg(50 * time.Millisecond)
+				if err != nil {
+					break
+				}
+				cur, _ := strconv.Atoi(string(msg.Data))
+				if cur <= prev {
+					t.Fatalf("Previous was %d, got %d", prev, cur)
+				}
+				prev = cur
+			}
+		})
 	}
 }

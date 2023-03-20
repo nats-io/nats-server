@@ -21,6 +21,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
 	"math/rand"
@@ -90,6 +91,10 @@ type Info struct {
 	LNOC          bool               `json:"lnoc,omitempty"`
 	InfoOnConnect bool               `json:"info_on_connect,omitempty"` // When true the server will respond to CONNECT with an INFO
 	ConnectInfo   bool               `json:"connect_info,omitempty"`    // When true this is the server INFO response to CONNECT
+	RoutePoolSize int                `json:"route_pool_size,omitempty"`
+	RoutePoolIdx  int                `json:"route_pool_idx,omitempty"`
+	RouteAccount  string             `json:"route_account,omitempty"`
+	RouteAccReqID string             `json:"route_acc_add_reqid,omitempty"`
 
 	// Gateways Specific
 	Gateway           string   `json:"gateway,omitempty"`             // Name of the origin Gateway (sent by gateway's INFO)
@@ -135,9 +140,14 @@ type Server struct {
 	activeAccounts      int32
 	accResolver         AccountResolver
 	clients             map[uint64]*client
-	routes              map[uint64]*client
-	routesByHash        sync.Map
-	remotes             map[string]*client
+	routes              map[string][]*client
+	routesPoolSize      int                           // Configured pool size
+	routesReject        bool                          // During reload, we may want to reject adding routes until some conditions are met
+	routesNoPool        int                           // Number of routes that don't use pooling (connecting to older server for instance)
+	accRoutes           map[string]map[string]*client // Key is account name, value is key=remoteID/value=route connection
+	accRouteByHash      sync.Map                      // Key is account name, value is nil or a pool index
+	accAddedCh          chan struct{}
+	accAddedReqID       string
 	leafs               map[uint64]*client
 	users               map[string]*User
 	nkeys               map[string]*NkeyUser
@@ -153,7 +163,6 @@ type Server struct {
 	routeListener       net.Listener
 	routeListenerErr    error
 	routeInfo           Info
-	routeInfoJSON       []byte
 	routeResolver       netResolver
 	routesToSelf        map[string]struct{}
 	routeTLSName        string
@@ -503,8 +512,7 @@ func NewServer(opts *Options) (*Server, error) {
 	s.grTmpClients = make(map[uint64]*client)
 
 	// For tracking routes and their remote ids
-	s.routes = make(map[uint64]*client)
-	s.remotes = make(map[string]*client)
+	s.initRouteStructures(opts)
 
 	// For tracking leaf nodes.
 	s.leafs = make(map[uint64]*client)
@@ -570,6 +578,27 @@ func NewServer(opts *Options) (*Server, error) {
 	return s, nil
 }
 
+// Initializes route structures based on pooling and/or per-account routes.
+//
+// Server lock is held on entry
+func (s *Server) initRouteStructures(opts *Options) {
+	s.routes = make(map[string][]*client)
+	if ps := opts.Cluster.PoolSize; ps > 0 {
+		s.routesPoolSize = ps
+	} else {
+		s.routesPoolSize = 1
+	}
+	// If we have per-account routes, we create accRoutes and initialize it
+	// with nil values. The presence of an account as the key will allow us
+	// to know if a given account is supposed to have dedicated routes.
+	if l := len(opts.Cluster.Accounts); l > 0 {
+		s.accRoutes = make(map[string]map[string]*client, l)
+		for _, acc := range opts.Cluster.Accounts {
+			s.accRoutes[acc] = make(map[string]*client)
+		}
+	}
+}
+
 func (s *Server) logRejectedTLSConns() {
 	defer s.grWG.Done()
 	t := time.NewTicker(time.Second)
@@ -614,8 +643,6 @@ func (s *Server) setClusterName(name string) {
 	s.info.Cluster = name
 	s.routeInfo.Cluster = name
 
-	// Regenerate the info byte array
-	s.generateRouteInfoJSON()
 	// Need to close solicited leaf nodes. The close has to be done outside of the server lock.
 	var leafs []*client
 	for _, c := range s.leafs {
@@ -674,6 +701,18 @@ func validateCluster(o *Options) error {
 		}
 		// Set this here so we do not consider it dynamic.
 		o.Cluster.Name = o.Gateway.Name
+	}
+	if l := len(o.Cluster.Accounts); l > 0 {
+		if o.Cluster.PoolSize < 0 {
+			return fmt.Errorf("pool_size cannot be negative if accounts are specified")
+		}
+		m := make(map[string]struct{}, l)
+		for _, a := range o.Cluster.Accounts {
+			if _, exists := m[a]; exists {
+				return fmt.Errorf("found duplicate account name %q in accounts list %q", a, o.Cluster.Accounts)
+			}
+			m[a] = struct{}{}
+		}
 	}
 	return nil
 }
@@ -939,12 +978,6 @@ func (s *Server) checkResolvePreloads() {
 			}
 		}
 	}
-}
-
-func (s *Server) generateRouteInfoJSON() {
-	b, _ := json.Marshal(s.routeInfo)
-	pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}
-	s.routeInfoJSON = bytes.Join(pcs, []byte(" "))
 }
 
 // Determines if we are in pre NATS 2.0 setup with no accounts.
@@ -1385,6 +1418,7 @@ func (s *Server) registerAccountNoLock(acc *Account) *Account {
 	s.setAccountSublist(acc)
 
 	acc.mu.Lock()
+	s.setRouteInfo(acc)
 	if acc.clients == nil {
 		acc.clients = make(map[*client]struct{})
 	}
@@ -1437,6 +1471,47 @@ func (s *Server) registerAccountNoLock(acc *Account) *Account {
 	s.mu.Lock()
 
 	return nil
+}
+
+// Sets the account's routePoolIdx depending on presence or not of
+// pooling or per-account routes. Also updates a map used by
+// gateway code to retrieve a route based on some route hash.
+//
+// Both Server and Account lock held on entry.
+func (s *Server) setRouteInfo(acc *Account) {
+	// If there is a dedicated route configured for this account
+	if _, ok := s.accRoutes[acc.Name]; ok {
+		// We want the account name to be in the map, but we don't
+		// need a value (we could store empty string)
+		s.accRouteByHash.Store(acc.Name, nil)
+		// Set the route pool index to -1 so that it is easy when
+		// ranging over accounts to exclude those accounts when
+		// trying to get accounts for a given pool index.
+		acc.routePoolIdx = accDedicatedRoute
+	} else {
+		// If pool size more than 1, we will compute a hash code and
+		// use modulo to assign to an index of the pool slice. For 1
+		// and below, all accounts will be bound to the single connection
+		// at index 0.
+		acc.routePoolIdx = s.computeRoutePoolIdx(acc)
+		if s.routesPoolSize > 1 {
+			s.accRouteByHash.Store(acc.Name, acc.routePoolIdx)
+		}
+	}
+}
+
+// Returns a route pool index for this account based on the given pool size.
+// Account lock is held on entry (account's name is accessed but immutable
+// so could be called without account's lock).
+// Server lock held on entry.
+func (s *Server) computeRoutePoolIdx(acc *Account) int {
+	if s.routesPoolSize <= 1 {
+		return 0
+	}
+	h := fnv.New32a()
+	h.Write([]byte(acc.Name))
+	sum32 := h.Sum32()
+	return int((sum32 % uint32(s.routesPoolSize)))
 }
 
 // lookupAccount is a function to return the account structure
@@ -1957,9 +2032,11 @@ func (s *Server) Shutdown() {
 	}
 	s.grMu.Unlock()
 	// Copy off the routes
-	for i, r := range s.routes {
-		conns[i] = r
-	}
+	s.forEachRoute(func(r *client) {
+		r.mu.Lock()
+		conns[r.cid] = r
+		r.mu.Unlock()
+	})
 	// Copy off the gateways
 	s.getAllGatewayConnections(conns)
 
@@ -2723,6 +2800,7 @@ func (s *Server) saveClosedClient(c *client, nc net.Conn, reason ClosedState) {
 // Adds to the list of client and websocket clients connect URLs.
 // If there was a change, an INFO protocol is sent to registered clients
 // that support async INFO protocols.
+// Server lock held on entry.
 func (s *Server) addConnectURLsAndSendINFOToClients(curls, wsurls []string) {
 	s.updateServerINFOAndSendINFOToClients(curls, wsurls, true)
 }
@@ -2730,16 +2808,15 @@ func (s *Server) addConnectURLsAndSendINFOToClients(curls, wsurls []string) {
 // Removes from the list of client and websocket clients connect URLs.
 // If there was a change, an INFO protocol is sent to registered clients
 // that support async INFO protocols.
+// Server lock held on entry.
 func (s *Server) removeConnectURLsAndSendINFOToClients(curls, wsurls []string) {
 	s.updateServerINFOAndSendINFOToClients(curls, wsurls, false)
 }
 
 // Updates the list of client and websocket clients connect URLs and if any change
 // sends an async INFO update to clients that support it.
+// Server lock held on entry.
 func (s *Server) updateServerINFOAndSendINFOToClients(curls, wsurls []string, add bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	remove := !add
 	// Will return true if we need alter the server's Info object.
 	updateMap := func(urls []string, m refCountedUrlSet) bool {
@@ -2873,8 +2950,17 @@ func (s *Server) addToTempClients(cid uint64, c *client) bool {
 // NumRoutes will report the number of registered routes.
 func (s *Server) NumRoutes() int {
 	s.mu.RLock()
-	nr := len(s.routes)
-	s.mu.RUnlock()
+	defer s.mu.RUnlock()
+	return s.numRoutes()
+}
+
+// numRoutes will report the number of registered routes.
+// Server lock held on entry
+func (s *Server) numRoutes() int {
+	var nr int
+	s.forEachRoute(func(c *client) {
+		nr++
+	})
 	return nr
 }
 
@@ -2882,7 +2968,13 @@ func (s *Server) NumRoutes() int {
 func (s *Server) NumRemotes() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return len(s.remotes)
+	return s.numRemotes()
+}
+
+// numRemotes will report number of registered remotes.
+// Server lock held on entry
+func (s *Server) numRemotes() int {
+	return len(s.routes)
 }
 
 // NumLeafNodes will report number of leaf node connections.
@@ -3558,12 +3650,12 @@ func (s *Server) lameDuckMode() {
 // Server lock is held on entry.
 func (s *Server) sendLDMToRoutes() {
 	s.routeInfo.LameDuckMode = true
-	s.generateRouteInfoJSON()
-	for _, r := range s.routes {
+	infoJSON := generateInfoJSON(&s.routeInfo)
+	s.forEachRemote(func(r *client) {
 		r.mu.Lock()
-		r.enqueueProto(s.routeInfoJSON)
+		r.enqueueProto(infoJSON)
 		r.mu.Unlock()
-	}
+	})
 	// Clear now so that we notify only once, should we have to send other INFOs.
 	s.routeInfo.LameDuckMode = false
 }

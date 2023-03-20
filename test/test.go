@@ -79,6 +79,8 @@ func RunServerCallback(opts *server.Options, callback func(*server.Server)) *ser
 	opts.NoLog = !doLog
 	opts.Trace = doTrace
 	opts.Debug = doDebug
+	// For all tests in the "test" package, we will disable route pooling.
+	opts.Cluster.PoolSize = -1
 
 	s, err := server.NewServer(opts)
 	if err != nil || s == nil {

@@ -1198,8 +1198,8 @@ func (s *Server) isRouterAuthorized(c *client) bool {
 
 	// Check custom auth first, then TLS map if enabled
 	// then single user/pass.
-	if s.opts.CustomRouterAuthentication != nil {
-		return s.opts.CustomRouterAuthentication.Check(c)
+	if opts.CustomRouterAuthentication != nil {
+		return opts.CustomRouterAuthentication.Check(c)
 	}
 
 	if opts.Cluster.TLSMap || opts.Cluster.TLSCheckKnownURLs {

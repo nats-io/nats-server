@@ -732,7 +732,13 @@ func (c *client) Kind() int {
 // registerWithAccount will register the given user with a specific
 // account. This will change the subject namespace.
 func (c *client) registerWithAccount(acc *Account) error {
-	if acc == nil || acc.sl == nil {
+	if acc == nil {
+		return ErrBadAccount
+	}
+	acc.mu.RLock()
+	bad := acc.sl == nil
+	acc.mu.RUnlock()
+	if bad {
 		return ErrBadAccount
 	}
 	// If we were previously registered, usually to $G, do accounting here to remove.
@@ -2219,10 +2225,7 @@ func (c *client) generateClientInfoJSON(info Info) []byte {
 		info.ClientConnectURLs = info.WSConnectURLs
 	}
 	info.WSConnectURLs = nil
-	// Generate the info json
-	b, _ := json.Marshal(info)
-	pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}
-	return bytes.Join(pcs, []byte(" "))
+	return generateInfoJSON(&info)
 }
 
 func (c *client) sendErr(err string) {
@@ -2869,10 +2872,6 @@ func (c *client) unsubscribe(acc *Account, sub *subscription, force, remove bool
 		c.traceOp("<-> %s", "DELSUB", sub.sid)
 	}
 
-	if c.kind != CLIENT && c.kind != SYSTEM {
-		c.removeReplySubTimeout(sub)
-	}
-
 	// Remove accounting if requested. This will be false when we close a connection
 	// with open subscriptions.
 	if remove {
@@ -3025,8 +3024,10 @@ func (c *client) msgHeaderForRouteOrLeaf(subj, reply []byte, rt *routeTarget, ac
 			// Router (and Gateway) nodes are RMSG. Set here since leafnodes may rewrite.
 			mh[0] = 'R'
 		}
-		mh = append(mh, acc.Name...)
-		mh = append(mh, ' ')
+		if len(subclient.route.accName) == 0 {
+			mh = append(mh, acc.Name...)
+			mh = append(mh, ' ')
+		}
 	} else {
 		// Leaf nodes are LMSG
 		mh[0] = 'L'
@@ -4904,13 +4905,11 @@ func (c *client) closeConnection(reason ClosedState) {
 	}
 
 	var (
-		connectURLs   []string
-		wsConnectURLs []string
-		kind          = c.kind
-		srv           = c.srv
-		noReconnect   = c.flags.isSet(noReconnect)
-		acc           = c.acc
-		spoke         bool
+		kind        = c.kind
+		srv         = c.srv
+		noReconnect = c.flags.isSet(noReconnect)
+		acc         = c.acc
+		spoke       bool
 	)
 
 	// Snapshot for use if we are a client connection.
@@ -4929,11 +4928,6 @@ func (c *client) closeConnection(reason ClosedState) {
 		spoke = c.isSpokeLeafNode()
 	}
 
-	if c.route != nil {
-		connectURLs = c.route.connectURLs
-		wsConnectURLs = c.route.wsConnURLs
-	}
-
 	// If we have remote latency tracking running shut that down.
 	if c.rrTracking != nil {
 		c.rrTracking.ptmr.Stop()
@@ -4946,17 +4940,10 @@ func (c *client) closeConnection(reason ClosedState) {
 	if acc != nil && (kind == CLIENT || kind == LEAF || kind == JETSTREAM) {
 		acc.sl.RemoveBatch(subs)
 	} else if kind == ROUTER {
-		go c.removeRemoteSubs()
+		c.removeRemoteSubs()
 	}
 
 	if srv != nil {
-		// If this is a route that disconnected, possibly send an INFO with
-		// the updated list of connect URLs to clients that know how to
-		// handle async INFOs.
-		if (len(connectURLs) > 0 || len(wsConnectURLs) > 0) && !srv.getOpts().Cluster.NoAdvertise {
-			srv.removeConnectURLsAndSendINFOToClients(connectURLs, wsConnectURLs)
-		}
-
 		// Unregister
 		srv.removeClient(c)
 
@@ -5051,15 +5038,17 @@ func (c *client) reconnect() {
 	// Check for a solicited route. If it was, start up a reconnect unless
 	// we are already connected to the other end.
 	if c.isSolicitedRoute() || retryImplicit {
+		srv.mu.Lock()
+		defer srv.mu.Unlock()
+
 		// Capture these under lock
 		c.mu.Lock()
 		rid := c.route.remoteID
 		rtype := c.route.routeType
 		rurl := c.route.url
+		accName := string(c.route.accName)
+		checkRID := accName == _EMPTY_ && srv.routesPoolSize <= 1 && rid != _EMPTY_
 		c.mu.Unlock()
-
-		srv.mu.Lock()
-		defer srv.mu.Unlock()
 
 		// It is possible that the server is being shutdown.
 		// If so, don't try to reconnect
@@ -5067,17 +5056,17 @@ func (c *client) reconnect() {
 			return
 		}
 
-		if rid != "" && srv.remotes[rid] != nil {
-			srv.Debugf("Not attempting reconnect for solicited route, already connected to \"%s\"", rid)
+		if checkRID && srv.routes[rid] != nil {
+			srv.Debugf("Not attempting reconnect for solicited route, already connected to %q", rid)
 			return
 		} else if rid == srv.info.ID {
 			srv.Debugf("Detected route to self, ignoring %q", rurl.Redacted())
 			return
 		} else if rtype != Implicit || retryImplicit {
-			srv.Debugf("Attempting reconnect for solicited route \"%s\"", rurl.Redacted())
+			srv.Debugf("Attempting reconnect for solicited route %q", rurl.Redacted())
 			// Keep track of this go-routine so we can wait for it on
 			// server shutdown.
-			srv.startGoRoutine(func() { srv.reConnectToRoute(rurl, rtype) })
+			srv.startGoRoutine(func() { srv.reConnectToRoute(rurl, rtype, accName) })
 		}
 	} else if srv != nil && kind == GATEWAY && gwIsOutbound {
 		if gwCfg != nil {

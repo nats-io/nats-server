@@ -76,6 +76,8 @@ type ClusterOpts struct {
 	Advertise         string            `json:"-"`
 	NoAdvertise       bool              `json:"-"`
 	ConnectRetries    int               `json:"-"`
+	PoolSize          int               `json:"-"`
+	Accounts          []string          `json:"-"`
 
 	// Not exported (used in tests)
 	resolver netResolver
@@ -1595,6 +1597,10 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 			}
 			// This will possibly override permissions that were define in auth block
 			setClusterPermissions(&opts.Cluster, perms)
+		case "pool_size":
+			opts.Cluster.PoolSize = int(mv.(int64))
+		case "accounts":
+			opts.Cluster.Accounts, _ = parseStringArray("accounts", tk, &lt, mv, errors, warnings)
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
@@ -4663,7 +4669,7 @@ func setBaselineOptions(opts *Options) {
 	if opts.AuthTimeout == 0 {
 		opts.AuthTimeout = getDefaultAuthTimeout(opts.TLSConfig, opts.TLSTimeout)
 	}
-	if opts.Cluster.Port != 0 {
+	if opts.Cluster.Port != 0 || opts.Cluster.ListenStr != _EMPTY_ {
 		if opts.Cluster.Host == _EMPTY_ {
 			opts.Cluster.Host = DEFAULT_HOST
 		}
@@ -4672,6 +4678,30 @@ func setBaselineOptions(opts *Options) {
 		}
 		if opts.Cluster.AuthTimeout == 0 {
 			opts.Cluster.AuthTimeout = getDefaultAuthTimeout(opts.Cluster.TLSConfig, opts.Cluster.TLSTimeout)
+		}
+		if opts.Cluster.PoolSize == 0 {
+			opts.Cluster.PoolSize = DEFAULT_ROUTE_POOL_SIZE
+		}
+		// Unless pooling/accounts are disabled (by PoolSize being set to -1),
+		// check for Cluster.Accounts. Add the system account if not present and
+		// unless we have a configuration that disabled it.
+		if opts.Cluster.PoolSize > 0 {
+			sysAccName := opts.SystemAccount
+			if sysAccName == _EMPTY_ && !opts.NoSystemAccount {
+				sysAccName = DEFAULT_SYSTEM_ACCOUNT
+			}
+			if sysAccName != _EMPTY_ {
+				var found bool
+				for _, acc := range opts.Cluster.Accounts {
+					if acc == sysAccName {
+						found = true
+						break
+					}
+				}
+				if !found {
+					opts.Cluster.Accounts = append(opts.Cluster.Accounts, sysAccName)
+				}
+			}
 		}
 	}
 	if opts.LeafNode.Port != 0 {
