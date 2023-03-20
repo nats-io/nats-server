@@ -1565,6 +1565,7 @@ func (s *Server) reloadAuthorization() {
 	// import configuration changed.
 	awcsti := make(map[string]struct{})
 	checkJetStream := false
+	opts := s.getOpts()
 	s.mu.Lock()
 
 	// This can not be changed for now so ok to check server's trustedKeys unlocked.
@@ -1649,12 +1650,12 @@ func (s *Server) reloadAuthorization() {
 		})
 		s.mu.Lock()
 		// Check if we had a default system account.
-		if s.sys != nil && s.sys.account != nil && !s.opts.NoSystemAccount {
+		if s.sys != nil && s.sys.account != nil && !opts.NoSystemAccount {
 			s.accounts.Store(s.sys.account.Name, s.sys.account)
 		}
 		// Double check any JetStream configs.
 		checkJetStream = s.js != nil
-	} else if s.opts.AccountResolver != nil {
+	} else if opts.AccountResolver != nil {
 		s.configureResolver()
 		if _, ok := s.accResolver.(*MemAccResolver); ok {
 			// Check preloads so we can issue warnings etc if needed.
@@ -1710,7 +1711,7 @@ func (s *Server) reloadAuthorization() {
 		routes = append(routes, route)
 	}
 	// Check here for any system/internal clients which will not be in the servers map of normal clients.
-	if s.sys != nil && s.sys.account != nil && !s.opts.NoSystemAccount {
+	if s.sys != nil && s.sys.account != nil && !opts.NoSystemAccount {
 		s.accounts.Store(s.sys.account.Name, s.sys.account)
 	}
 
