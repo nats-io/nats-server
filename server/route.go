@@ -2205,7 +2205,7 @@ func (s *Server) startRouteAcceptLoop() {
 	s.routeInfo = info
 	// Possibly override Host/Port and set IP based on Cluster.Advertise
 	if err := s.setRouteInfoHostPortAndIP(); err != nil {
-		s.Fatalf("Error setting route INFO with Cluster.Advertise value of %s, err=%v", s.opts.Cluster.Advertise, err)
+		s.Fatalf("Error setting route INFO with Cluster.Advertise value of %s, err=%v", opts.Cluster.Advertise, err)
 		l.Close()
 		s.mu.Unlock()
 		return
@@ -2245,8 +2245,9 @@ func (s *Server) startRouteAcceptLoop() {
 
 // Similar to setInfoHostPortAndGenerateJSON, but for routeInfo.
 func (s *Server) setRouteInfoHostPortAndIP() error {
-	if s.opts.Cluster.Advertise != "" {
-		advHost, advPort, err := parseHostPort(s.opts.Cluster.Advertise, s.opts.Cluster.Port)
+	opts := s.getOpts()
+	if opts.Cluster.Advertise != "" {
+		advHost, advPort, err := parseHostPort(opts.Cluster.Advertise, opts.Cluster.Port)
 		if err != nil {
 			return err
 		}
@@ -2254,8 +2255,8 @@ func (s *Server) setRouteInfoHostPortAndIP() error {
 		s.routeInfo.Port = advPort
 		s.routeInfo.IP = fmt.Sprintf("nats-route://%s/", net.JoinHostPort(advHost, strconv.Itoa(advPort)))
 	} else {
-		s.routeInfo.Host = s.opts.Cluster.Host
-		s.routeInfo.Port = s.opts.Cluster.Port
+		s.routeInfo.Host = opts.Cluster.Host
+		s.routeInfo.Port = opts.Cluster.Port
 		s.routeInfo.IP = ""
 	}
 	return nil

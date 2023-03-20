@@ -550,15 +550,15 @@ func NewServer(opts *Options) (*Server, error) {
 			s.mu.Unlock()
 			var a *Account
 			// perform direct lookup to avoid warning trace
-			if _, err := fetchAccount(ar, s.opts.SystemAccount); err == nil {
-				a, _ = s.lookupAccount(s.opts.SystemAccount)
+			if _, err := fetchAccount(ar, opts.SystemAccount); err == nil {
+				a, _ = s.lookupAccount(opts.SystemAccount)
 			}
 			s.mu.Lock()
 			if a == nil {
-				sac := NewAccount(s.opts.SystemAccount)
+				sac := NewAccount(opts.SystemAccount)
 				sac.Issuer = opts.TrustedOperators[0].Issuer
 				sac.signingKeys = map[string]jwt.Scope{}
-				sac.signingKeys[s.opts.SystemAccount] = nil
+				sac.signingKeys[opts.SystemAccount] = nil
 				s.registerAccountNoLock(sac)
 			}
 		}
@@ -798,11 +798,11 @@ func (s *Server) configureAccounts() error {
 		s.registerAccountNoLock(s.gacc)
 	}
 
-	opts := s.opts
+	opts := s.getOpts()
 
 	// Check opts and walk through them. We need to copy them here
 	// so that we do not keep a real one sitting in the options.
-	for _, acc := range s.opts.Accounts {
+	for _, acc := range opts.Accounts {
 		var a *Account
 		if acc.Name == globalAccountName {
 			a = s.gacc
@@ -822,7 +822,7 @@ func (s *Server) configureAccounts() error {
 
 		// If we see an account defined using $SYS we will make sure that is set as system account.
 		if acc.Name == DEFAULT_SYSTEM_ACCOUNT && opts.SystemAccount == _EMPTY_ {
-			s.opts.SystemAccount = DEFAULT_SYSTEM_ACCOUNT
+			opts.SystemAccount = DEFAULT_SYSTEM_ACCOUNT
 		}
 	}
 
@@ -903,7 +903,7 @@ func (s *Server) configureAccounts() error {
 		// We would do this to add user/pass to the system account. If this is the case add in
 		// no-auth-user for $G.
 		// Only do this if non-operator mode.
-		if len(opts.TrustedOperators) == 0 && numAccounts == 2 && s.opts.NoAuthUser == _EMPTY_ {
+		if len(opts.TrustedOperators) == 0 && numAccounts == 2 && opts.NoAuthUser == _EMPTY_ {
 			// If we come here from config reload, let's not recreate the fake user name otherwise
 			// it will cause currently clients to be disconnected.
 			uname := s.sysAccOnlyNoAuthUser
@@ -918,8 +918,8 @@ func (s *Server) configureAccounts() error {
 				uname = fmt.Sprintf("nats-%s", b[:])
 				s.sysAccOnlyNoAuthUser = uname
 			}
-			s.opts.Users = append(s.opts.Users, &User{Username: uname, Password: uname[6:], Account: s.gacc})
-			s.opts.NoAuthUser = uname
+			opts.Users = append(opts.Users, &User{Username: uname, Password: uname[6:], Account: s.gacc})
+			opts.NoAuthUser = uname
 		}
 	}
 
@@ -1046,16 +1046,17 @@ func (s *Server) isTrustedIssuer(issuer string) bool {
 // options-based trusted nkeys. Returns success.
 func (s *Server) processTrustedKeys() bool {
 	s.strictSigningKeyUsage = map[string]struct{}{}
+	opts := s.getOpts()
 	if trustedKeys != _EMPTY_ && !s.initStampedTrustedKeys() {
 		return false
-	} else if s.opts.TrustedKeys != nil {
-		for _, key := range s.opts.TrustedKeys {
+	} else if opts.TrustedKeys != nil {
+		for _, key := range opts.TrustedKeys {
 			if !nkeys.IsValidPublicOperatorKey(key) {
 				return false
 			}
 		}
-		s.trustedKeys = append([]string(nil), s.opts.TrustedKeys...)
-		for _, claim := range s.opts.TrustedOperators {
+		s.trustedKeys = append([]string(nil), opts.TrustedKeys...)
+		for _, claim := range opts.TrustedOperators {
 			if !claim.StrictSigningKeyUsage {
 				continue
 			}
@@ -1088,7 +1089,7 @@ func checkTrustedKeyString(keys string) []string {
 // it succeeded or not.
 func (s *Server) initStampedTrustedKeys() bool {
 	// Check to see if we have an override in options, which will cause us to fail.
-	if len(s.opts.TrustedKeys) > 0 {
+	if len(s.getOpts().TrustedKeys) > 0 {
 		return false
 	}
 	tks := checkTrustedKeyString(trustedKeys)
@@ -1377,7 +1378,8 @@ func (s *Server) createInternalClient(kind int) *client {
 // efficient propagation.
 // Lock should be held on entry.
 func (s *Server) shouldTrackSubscriptions() bool {
-	return (s.opts.Cluster.Port != 0 || s.opts.Gateway.Port != 0)
+	opts := s.getOpts()
+	return (opts.Cluster.Port != 0 || opts.Gateway.Port != 0)
 }
 
 // Invokes registerAccountNoLock under the protection of the server lock.
@@ -1811,8 +1813,9 @@ func (s *Server) Start() {
 		// In operator mode, when the account resolver depends on an external system and
 		// the system account is the bootstrapping account, start fetching it.
 		if len(opts.TrustedOperators) == 1 && opts.SystemAccount != _EMPTY_ && opts.SystemAccount != DEFAULT_SYSTEM_ACCOUNT {
+			opts := s.getOpts()
 			_, isMemResolver := ar.(*MemAccResolver)
-			if v, ok := s.accounts.Load(s.opts.SystemAccount); !isMemResolver && ok && v.(*Account).claimJWT == "" {
+			if v, ok := s.accounts.Load(opts.SystemAccount); !isMemResolver && ok && v.(*Account).claimJWT == "" {
 				s.Noticef("Using bootstrapping system account")
 				s.startGoRoutine(func() {
 					defer s.grWG.Done()
@@ -1824,7 +1827,7 @@ func (s *Server) Start() {
 							return
 						case <-t.C:
 							sacc := s.SystemAccount()
-							if claimJWT, err := fetchAccount(ar, s.opts.SystemAccount); err != nil {
+							if claimJWT, err := fetchAccount(ar, opts.SystemAccount); err != nil {
 								continue
 							} else if err = s.updateAccountWithClaimJWT(sacc, claimJWT); err != nil {
 								continue
@@ -2195,7 +2198,7 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 	// server's info Host/Port with either values from Options or
 	// ClientAdvertise.
 	if err := s.setInfoHostPort(); err != nil {
-		s.Fatalf("Error setting server INFO with ClientAdvertise value of %s, err=%v", s.opts.ClientAdvertise, err)
+		s.Fatalf("Error setting server INFO with ClientAdvertise value of %s, err=%v", opts.ClientAdvertise, err)
 		l.Close()
 		s.mu.Unlock()
 		return
@@ -2273,16 +2276,17 @@ func (s *Server) setInfoHostPort() error {
 	// When this function is called, opts.Port is set to the actual listen
 	// port (if option was originally set to RANDOM), even during a config
 	// reload. So use of s.opts.Port is safe.
-	if s.opts.ClientAdvertise != _EMPTY_ {
-		h, p, err := parseHostPort(s.opts.ClientAdvertise, s.opts.Port)
+	opts := s.getOpts()
+	if opts.ClientAdvertise != _EMPTY_ {
+		h, p, err := parseHostPort(opts.ClientAdvertise, opts.Port)
 		if err != nil {
 			return err
 		}
 		s.info.Host = h
 		s.info.Port = p
 	} else {
-		s.info.Host = s.opts.Host
-		s.info.Port = s.opts.Port
+		s.info.Host = opts.Host
+		s.info.Port = opts.Port
 	}
 	return nil
 }

@@ -4803,12 +4803,19 @@ func (c *client) kindString() string {
 // an older one.
 func (c *client) swapAccountAfterReload() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.srv == nil {
+	srv := c.srv
+	an := c.acc.GetName()
+	c.mu.Unlock()
+	if srv == nil {
 		return
 	}
-	acc, _ := c.srv.LookupAccount(c.acc.Name)
-	c.acc = acc
+	if acc, _ := srv.LookupAccount(an); acc != nil {
+		c.mu.Lock()
+		if c.acc != acc {
+			c.acc = acc
+		}
+		c.mu.Unlock()
+	}
 }
 
 // processSubsOnConfigReload removes any subscriptions the client has that are no

@@ -695,7 +695,7 @@ func (s *Server) startLeafNodeAcceptLoop() {
 	s.leafNodeInfo = info
 	// Possibly override Host/Port and set IP based on Cluster.Advertise
 	if err := s.setLeafNodeInfoHostPortAndIP(); err != nil {
-		s.Fatalf("Error setting leafnode INFO with LeafNode.Advertise value of %s, err=%v", s.opts.LeafNode.Advertise, err)
+		s.Fatalf("Error setting leafnode INFO with LeafNode.Advertise value of %s, err=%v", opts.LeafNode.Advertise, err)
 		l.Close()
 		s.mu.Unlock()
 		return
