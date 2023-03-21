@@ -2185,6 +2185,15 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 		case <-t.C:
 			doSnapshot()
+			// Check is we have preAcks left over if we have become the leader.
+			if isLeader {
+				mset.mu.Lock()
+				if mset.preAcks != nil {
+					mset.preAcks = nil
+				}
+				mset.mu.Unlock()
+			}
+
 		case <-uch:
 			// keep stream assignment current
 			sa = mset.streamAssignment()
