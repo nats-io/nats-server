@@ -2092,7 +2092,7 @@ func (n *raft) runAsLeader() {
 					continue
 				}
 				n.sendAppendEntry(entries)
-				// We need to re-craete `entries` because there is a reference
+				// We need to re-create `entries` because there is a reference
 				// to it in the node's pae map.
 				entries = nil
 			}

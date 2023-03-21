@@ -248,6 +248,9 @@ type stream struct {
 	sigq  *ipQueue[*cMsg]
 	csl   *Sublist // Consumer Sublist
 
+	// For non limits policy streams when they process an ack before the actual msg.
+	preAcks map[uint64]struct{}
+
 	// TODO(dlc) - Hide everything below behind two pointers.
 	// Clustered mode.
 	sa         *streamAssignment
@@ -3988,7 +3991,16 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	} else {
 		// Make sure to take into account any message assignments that we had to skip (clfs).
 		seq = lseq + 1 - clfs
-		err = store.StoreRawMsg(subject, hdr, msg, seq, ts)
+		// Check for preAcks and the need to skip vs store.
+		var shouldSkip bool
+		if _, shouldSkip = mset.preAcks[seq]; shouldSkip {
+			delete(mset.preAcks, seq)
+		}
+		if shouldSkip {
+			store.SkipMsg()
+		} else {
+			err = store.StoreRawMsg(subject, hdr, msg, seq, ts)
+		}
 	}
 
 	if err != nil {
@@ -4861,10 +4873,16 @@ func (mset *stream) ackMsg(o *consumer, seq uint64) {
 	if shouldRemove {
 		if _, err := mset.store.RemoveMsg(seq); err == ErrStoreEOF {
 			// This should be rare but I have seen it.
-			// The ack reached us before the actual msg with AckNone and InterestPolicy.
-			if n := mset.raftNode(); n != nil {
-				md := streamMsgDelete{Seq: seq, NoErase: true, Stream: mset.cfg.Name}
-				n.ForwardProposal(encodeMsgDelete(&md))
+			// The ack reached us before the actual msg.
+			var state StreamState
+			mset.store.FastState(&state)
+			if seq >= state.LastSeq {
+				mset.mu.Lock()
+				if mset.preAcks == nil {
+					mset.preAcks = make(map[uint64]struct{})
+				}
+				mset.preAcks[seq] = struct{}{}
+				mset.mu.Unlock()
 			}
 		}
 	}
