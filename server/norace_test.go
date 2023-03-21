@@ -6963,7 +6963,7 @@ func TestNoRaceJetStreamClusterDifferentRTTInterestBasedStreamSetup(t *testing.T
 	msg := make([]byte, 2*1024) // 2k payload
 	rand.Read(msg)
 
-	// 25 publishers.
+	// Publishers.
 	for i := 0; i < numPublishers; i++ {
 		wg.Add(1)
 		go func(iter int) {
