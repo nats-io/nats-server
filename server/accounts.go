@@ -2989,6 +2989,12 @@ func (a *Account) isAllowedAcount(acc string) bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	if a.extAuth != nil {
+		// if we have a single allowed account, and we have a wildcard
+		// we accept it
+		if len(a.extAuth.AllowedAccounts) == 1 && a.extAuth.AllowedAccounts[0] == "*" {
+			return true
+		}
+		// otherwise must match exactly
 		for _, a := range a.extAuth.AllowedAccounts {
 			if a == acc {
 				return true

@@ -1314,3 +1314,109 @@ func TestAuthCalloutExpiredResponse(t *testing.T) {
 	}
 	checkAuthErrEvent("hello", "world", "claim is expired")
 }
+
+func TestAuthCalloutOperator_AnyAccount(t *testing.T) {
+	_, spub := createKey(t)
+	sysClaim := jwt.NewAccountClaims(spub)
+	sysClaim.Name = "$SYS"
+	sysJwt, err := sysClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// A account.
+	akp, apk := createKey(t)
+	aClaim := jwt.NewAccountClaims(apk)
+	aClaim.Name = "A"
+	aJwt, err := aClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// B account.
+	bkp, bpk := createKey(t)
+	bClaim := jwt.NewAccountClaims(bpk)
+	bClaim.Name = "B"
+	bJwt, err := bClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// AUTH callout service account.
+	ckp, err := nkeys.FromSeed([]byte(authCalloutIssuerSeed))
+	require_NoError(t, err)
+
+	cpk, err := ckp.PublicKey()
+	require_NoError(t, err)
+
+	// The authorized user for the service.
+	upub, creds := createAuthServiceUser(t, ckp)
+	defer removeFile(t, creds)
+
+	authClaim := jwt.NewAccountClaims(cpk)
+	authClaim.Name = "AUTH"
+	authClaim.EnableExternalAuthorization(upub)
+	authClaim.Authorization.AllowedAccounts.Add("*")
+	authJwt, err := authClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	conf := fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		operator: %s
+		system_account: %s
+		resolver: MEM
+		resolver_preload: {
+			%s: %s
+			%s: %s
+			%s: %s
+			%s: %s
+		}
+    `, ojwt, spub, cpk, authJwt, apk, aJwt, bpk, bJwt, spub, sysJwt)
+
+	handler := func(m *nats.Msg) {
+		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
+		if opts.Token == "PutMeInA" {
+			ujwt := createAuthUser(t, user, "user_a", apk, "", akp, 0, nil)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+		} else if opts.Token == "PutMeInB" {
+			ujwt := createAuthUser(t, user, "user_b", bpk, "", bkp, 0, nil)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+		} else {
+			m.Respond(nil)
+		}
+
+	}
+
+	ac := NewAuthTest(t, conf, handler, nats.UserCredentials(creds))
+	resp, err := ac.authClient.Request(userDirectInfoSubj, nil, time.Second)
+	require_NoError(t, err)
+	response := ServerAPIResponse{Data: &UserInfo{}}
+	err = json.Unmarshal(resp.Data, &response)
+	require_NoError(t, err)
+
+	// Bearer token etc..
+	// This is used by all users, and the customization will be in other connect args.
+	// This needs to also be bound to the authorization account.
+	creds = createBasicAccountUser(t, ckp)
+	defer removeFile(t, creds)
+
+	// We require a token.
+	ac.RequireConnectError(nats.UserCredentials(creds))
+
+	// Send correct token. This should switch us to the A account.
+	nc := ac.Connect(nats.UserCredentials(creds), nats.Token("PutMeInA"))
+	require_NoError(t, err)
+
+	resp, err = nc.Request(userDirectInfoSubj, nil, time.Second)
+	require_NoError(t, err)
+	response = ServerAPIResponse{Data: &UserInfo{}}
+	err = json.Unmarshal(resp.Data, &response)
+	require_NoError(t, err)
+	userInfo := response.Data.(*UserInfo)
+	require_Equal(t, userInfo.Account, apk)
+
+	nc = ac.Connect(nats.UserCredentials(creds), nats.Token("PutMeInB"))
+	require_NoError(t, err)
+
+	resp, err = nc.Request(userDirectInfoSubj, nil, time.Second)
+	require_NoError(t, err)
+	response = ServerAPIResponse{Data: &UserInfo{}}
+	err = json.Unmarshal(resp.Data, &response)
+	require_NoError(t, err)
+	userInfo = response.Data.(*UserInfo)
+	require_Equal(t, userInfo.Account, bpk)
+}
