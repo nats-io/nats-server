@@ -578,6 +578,9 @@ func (s *Server) DisableJetStream() error {
 	// Normal shutdown.
 	s.shutdownJetStream()
 
+	// Shut down the RAFT groups.
+	s.shutdownRaftNodes()
+
 	return nil
 }
 

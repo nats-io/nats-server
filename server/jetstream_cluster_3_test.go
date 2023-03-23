@@ -3364,3 +3364,42 @@ func TestNoRaceJetStreamClusterDifferentRTTInterestBasedStreamPreAck(t *testing.
 	})
 
 }
+
+func TestJetStreamInterestLeakOnDisableJetStream(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.leader())
+	defer nc.Close()
+
+	for i := 1; i <= 5; i++ {
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     fmt.Sprintf("test_%d", i),
+			Subjects: []string{fmt.Sprintf("test_%d", i)},
+			Replicas: 3,
+		})
+		require_NoError(t, err)
+	}
+
+	c.waitOnAllCurrent()
+
+	server := c.randomNonLeader()
+	account := server.SystemAccount()
+
+	server.DisableJetStream()
+
+	var sublist []*subscription
+	account.sl.localSubs(&sublist, false)
+
+	var danglingJSC, danglingRaft int
+	for _, sub := range sublist {
+		if strings.HasPrefix(string(sub.subject), "$JSC.") {
+			danglingJSC++
+		} else if strings.HasPrefix(string(sub.subject), "$NRG.") {
+			danglingRaft++
+		}
+	}
+	if danglingJSC > 0 || danglingRaft > 0 {
+		t.Fatalf("unexpected dangling interests for JetStream assets after shutdown (%d $JSC, %d $NRG)", danglingJSC, danglingRaft)
+	}
+}
