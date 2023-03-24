@@ -1717,7 +1717,7 @@ func (s *Server) remoteConnsUpdate(sub *subscription, c *client, _ *Account, sub
 
 // This will import any system level exports.
 func (s *Server) registerSystemImports(a *Account) {
-	if a == nil || !s.eventsEnabled() {
+	if a == nil || !s.EventsEnabled() {
 		return
 	}
 	sacc := s.SystemAccount()
