@@ -3408,8 +3408,10 @@ func (n *raft) setWriteErrLocked(err error) {
 	}
 	n.werr = err
 
-	// For now since this can be happening all under the covers, we will call up and disable JetStream.
-	go n.s.handleOutOfSpace(nil)
+	if isOutOfSpaceErr(err) {
+		// For now since this can be happening all under the covers, we will call up and disable JetStream.
+		go n.s.handleOutOfSpace(nil)
+	}
 }
 
 // Capture our write error if any and hold.

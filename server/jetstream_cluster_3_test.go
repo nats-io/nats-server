@@ -3229,3 +3229,177 @@ func TestJetStreamClusterConsumerFollowerStoreStateAckFloorBug(t *testing.T) {
 	seen = make(map[*Server]bool)
 	checkAllLeaders()
 }
+
+func TestNoRaceJetStreamClusterDifferentRTTInterestBasedStreamPreAck(t *testing.T) {
+	tmpl := `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+
+	cluster {
+		name: "F3"
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+
+	accounts {
+		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+	}
+	`
+
+	//  Route Ports
+	//	"S1": 14622,
+	//	"S2": 15622,
+	//	"S3": 16622,
+
+	// S2 (stream leader) will have a slow path to S1 (via proxy) and S3 (consumer leader) will have a fast path.
+
+	// Do these in order, S1, S2 (proxy) then S3.
+	c := &cluster{t: t, servers: make([]*Server, 3), opts: make([]*Options, 3), name: "F3"}
+
+	// S1
+	conf := fmt.Sprintf(tmpl, "S1", t.TempDir(), 14622, "route://127.0.0.1:15622, route://127.0.0.1:16622")
+	c.servers[0], c.opts[0] = RunServerWithConfig(createConfFile(t, []byte(conf)))
+
+	// S2
+	// Create the proxy first. Connect this to S1. Make it slow, e.g. 5ms RTT.
+	np := createNetProxy(1*time.Millisecond, 1024*1024*1024, 1024*1024*1024, "route://127.0.0.1:14622", true)
+	routes := fmt.Sprintf("%s, route://127.0.0.1:16622", np.routeURL())
+	conf = fmt.Sprintf(tmpl, "S2", t.TempDir(), 15622, routes)
+	c.servers[1], c.opts[1] = RunServerWithConfig(createConfFile(t, []byte(conf)))
+
+	// S3
+	conf = fmt.Sprintf(tmpl, "S3", t.TempDir(), 16622, "route://127.0.0.1:14622, route://127.0.0.1:15622")
+	c.servers[2], c.opts[2] = RunServerWithConfig(createConfFile(t, []byte(conf)))
+
+	c.checkClusterFormed()
+	c.waitOnClusterReady()
+	defer c.shutdown()
+	defer np.stop()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Now create the stream.
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "EVENTS",
+		Subjects:  []string{"EV.>"},
+		Replicas:  3,
+		Retention: nats.InterestPolicy,
+	})
+	require_NoError(t, err)
+
+	// Make sure it's leader is on S2.
+	sl := c.servers[1]
+	checkFor(t, 20*time.Second, 200*time.Millisecond, func() error {
+		c.waitOnStreamLeader(globalAccountName, "EVENTS")
+		if s := c.streamLeader(globalAccountName, "EVENTS"); s != sl {
+			s.JetStreamStepdownStream(globalAccountName, "EVENTS")
+			return fmt.Errorf("Server %s is not stream leader yet", sl)
+		}
+		return nil
+	})
+
+	// Now create the consumer.
+	_, err = js.AddConsumer("EVENTS", &nats.ConsumerConfig{
+		Durable:        "C",
+		AckPolicy:      nats.AckExplicitPolicy,
+		DeliverSubject: "dx",
+	})
+	require_NoError(t, err)
+
+	// Make sure the consumer leader is on S3.
+	cl := c.servers[2]
+	checkFor(t, 20*time.Second, 200*time.Millisecond, func() error {
+		c.waitOnConsumerLeader(globalAccountName, "EVENTS", "C")
+		if s := c.consumerLeader(globalAccountName, "EVENTS", "C"); s != cl {
+			s.JetStreamStepdownConsumer(globalAccountName, "EVENTS", "C")
+			return fmt.Errorf("Server %s is not consumer leader yet", sl)
+		}
+		return nil
+	})
+
+	// Create the real consumer on the consumer leader to make it efficient.
+	nc, js = jsClientConnect(t, cl)
+	defer nc.Close()
+
+	_, err = js.Subscribe(_EMPTY_, func(msg *nats.Msg) {
+		msg.Ack()
+	}, nats.BindStream("EVENTS"), nats.Durable("C"), nats.ManualAck())
+	require_NoError(t, err)
+
+	for i := 0; i < 1_000; i++ {
+		_, err := js.PublishAsync("EVENTS.PAID", []byte("ok"))
+		require_NoError(t, err)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	slow := c.servers[0]
+	mset, err := slow.GlobalAccount().lookupStream("EVENTS")
+	require_NoError(t, err)
+
+	// Make sure preAck is non-nil, so we know the logic has kicked in.
+	mset.mu.RLock()
+	preAcks := mset.preAcks
+	mset.mu.RUnlock()
+	require_NotNil(t, preAcks)
+
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		state := mset.state()
+		if state.Msgs == 0 {
+			mset.mu.RLock()
+			lp := len(mset.preAcks)
+			mset.mu.RUnlock()
+			if lp == 0 {
+				return nil
+			} else {
+				t.Fatalf("Expected no preAcks with no msgs, but got %d", lp)
+			}
+		}
+		return fmt.Errorf("Still have %d msgs left", state.Msgs)
+	})
+
+}
+
+func TestJetStreamInterestLeakOnDisableJetStream(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.leader())
+	defer nc.Close()
+
+	for i := 1; i <= 5; i++ {
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     fmt.Sprintf("test_%d", i),
+			Subjects: []string{fmt.Sprintf("test_%d", i)},
+			Replicas: 3,
+		})
+		require_NoError(t, err)
+	}
+
+	c.waitOnAllCurrent()
+
+	server := c.randomNonLeader()
+	account := server.SystemAccount()
+
+	server.DisableJetStream()
+
+	var sublist []*subscription
+	account.sl.localSubs(&sublist, false)
+
+	var danglingJSC, danglingRaft int
+	for _, sub := range sublist {
+		if strings.HasPrefix(string(sub.subject), "$JSC.") {
+			danglingJSC++
+		} else if strings.HasPrefix(string(sub.subject), "$NRG.") {
+			danglingRaft++
+		}
+	}
+	if danglingJSC > 0 || danglingRaft > 0 {
+		t.Fatalf("unexpected dangling interests for JetStream assets after shutdown (%d $JSC, %d $NRG)", danglingJSC, danglingRaft)
+	}
+}
