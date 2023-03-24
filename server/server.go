@@ -129,7 +129,6 @@ type Server struct {
 	opts                *Options
 	running             bool
 	shutdown            bool
-	reloading           bool
 	listener            net.Listener
 	listenerErr         error
 	gacc                *Account
@@ -565,7 +564,7 @@ func NewServer(opts *Options) (*Server, error) {
 	}
 
 	// For tracking accounts
-	if err := s.configureAccounts(); err != nil {
+	if _, err := s.configureAccounts(false); err != nil {
 		return nil, err
 	}
 
@@ -789,9 +788,13 @@ func (s *Server) globalAccount() *Account {
 	return gacc
 }
 
-// Used to setup Accounts.
-// Lock is held upon entry.
-func (s *Server) configureAccounts() error {
+// Used to setup or update Accounts.
+// Returns a map that indicates which accounts have had their stream imports
+// changed (in case of an update in configuration reload).
+// Lock is held upon entry, but will be released/reacquired in this function.
+func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) {
+	awcsti := make(map[string]struct{})
+
 	// Create the global account.
 	if s.gacc == nil {
 		s.gacc = NewAccount(globalAccountName)
@@ -804,21 +807,62 @@ func (s *Server) configureAccounts() error {
 	// so that we do not keep a real one sitting in the options.
 	for _, acc := range opts.Accounts {
 		var a *Account
-		if acc.Name == globalAccountName {
-			a = s.gacc
-		} else {
-			a = acc.shallowCopy()
+		create := true
+		// For the global account, we want to skip the reload process
+		// and fall back into the "create" case which will in that
+		// case really be just an update (shallowCopy will make sure
+		// that mappings are copied over).
+		if reloading && acc.Name != globalAccountName {
+			if ai, ok := s.accounts.Load(acc.Name); ok {
+				a = ai.(*Account)
+				a.mu.Lock()
+				// Before updating the account, check if stream imports have changed.
+				if !a.checkStreamImportsEqual(acc) {
+					awcsti[acc.Name] = struct{}{}
+				}
+				// Collect the sids for the service imports since we are going to
+				// replace with new ones.
+				var sids [][]byte
+				c := a.ic
+				for _, si := range a.imports.services {
+					if c != nil && si.sid != nil {
+						sids = append(sids, si.sid)
+					}
+				}
+				// Now reset all export/imports fields since they are going to be
+				// filled in shallowCopy()
+				a.imports.streams, a.imports.services = nil, nil
+				a.exports.streams, a.exports.services = nil, nil
+				// We call shallowCopy from the account `acc` (the one in Options)
+				// and pass `a` (our existing account) to get it updated.
+				acc.shallowCopy(a)
+				a.mu.Unlock()
+				// Need to release the lock for this.
+				s.mu.Unlock()
+				for _, sid := range sids {
+					c.processUnsub(sid)
+				}
+				// Add subscriptions for existing service imports.
+				a.addAllServiceImportSubs()
+				s.mu.Lock()
+				create = false
+			}
 		}
-		if acc.hasMappings() {
-			// For now just move and wipe from opts.Accounts version.
-			a.mappings = acc.mappings
-			acc.mappings = nil
-			// We use this for selecting between multiple weighted destinations.
-			a.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
+		if create {
+			if acc.Name == globalAccountName {
+				a = s.gacc
+			} else {
+				a = NewAccount(acc.Name)
+			}
+			// Locking matters in the case of an update of the global account
+			a.mu.Lock()
+			acc.shallowCopy(a)
+			a.mu.Unlock()
+			// Will be a no-op in case of the global account since it is alrady registered.
+			s.registerAccountNoLock(a)
 		}
-		acc.sl = nil
-		acc.clients = nil
-		s.registerAccountNoLock(a)
+		// The `acc` account is stored in options, not in the server, and these can be cleared.
+		acc.sl, acc.clients, acc.mappings = nil, nil, nil
 
 		// If we see an account defined using $SYS we will make sure that is set as system account.
 		if acc.Name == DEFAULT_SYSTEM_ACCOUNT && opts.SystemAccount == _EMPTY_ {
@@ -841,6 +885,7 @@ func (s *Server) configureAccounts() error {
 	s.accounts.Range(func(k, v interface{}) bool {
 		numAccounts++
 		acc := v.(*Account)
+		acc.mu.Lock()
 		// Exports
 		for _, se := range acc.exports.streams {
 			if se != nil {
@@ -867,16 +912,32 @@ func (s *Server) configureAccounts() error {
 		for _, si := range acc.imports.services {
 			if v, ok := s.accounts.Load(si.acc.Name); ok {
 				si.acc = v.(*Account)
+				// TODO: Not sure if it is possible for an account to have a
+				// service import from itself, but if that is the case,
+				// we are already lock, otherwise use locking to protect
+				// the call to si.acc.getServiceExport().
+				if si.acc == acc {
+					si.se = si.acc.getServiceExport(si.to)
+					continue
+				}
+				si.acc.mu.RLock()
 				si.se = si.acc.getServiceExport(si.to)
+				si.acc.mu.RUnlock()
 			}
 		}
 		// Make sure the subs are running, but only if not reloading.
-		if len(acc.imports.services) > 0 && acc.ic == nil && !s.reloading {
+		if len(acc.imports.services) > 0 && acc.ic == nil && !reloading {
 			acc.ic = s.createInternalAccountClient()
 			acc.ic.acc = acc
+			// Need to release locks to invoke this function.
+			acc.mu.Unlock()
+			s.mu.Unlock()
 			acc.addAllServiceImportSubs()
+			s.mu.Lock()
+			acc.mu.Lock()
 		}
 		acc.updated = time.Now().UTC()
+		acc.mu.Unlock()
 		return true
 	})
 
@@ -896,7 +957,7 @@ func (s *Server) configureAccounts() error {
 			s.mu.Lock()
 		}
 		if err != nil {
-			return fmt.Errorf("error resolving system account: %v", err)
+			return awcsti, fmt.Errorf("error resolving system account: %v", err)
 		}
 
 		// If we have defined a system account here check to see if its just us and the $G account.
@@ -923,7 +984,7 @@ func (s *Server) configureAccounts() error {
 		}
 	}
 
-	return nil
+	return awcsti, nil
 }
 
 // Setup the account resolver. For memory resolver, make sure the JWTs are
