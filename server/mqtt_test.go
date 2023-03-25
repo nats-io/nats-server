@@ -2791,7 +2791,7 @@ func TestMQTTCluster(t *testing.T) {
 					}
 				})
 			}
-			if topTest.restart {
+			if !t.Failed() && topTest.restart {
 				cl.stopAll()
 				cl.restartAll()
 
