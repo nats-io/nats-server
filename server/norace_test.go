@@ -6122,12 +6122,15 @@ func TestNoRaceJetStreamClusterEnsureWALCompact(t *testing.T) {
 	err = node.InstallSnapshot(snap)
 	require_NoError(t, err)
 
-	received, done := 0, make(chan bool)
+	received, done := 0, make(chan bool, 1)
 
 	nc.Subscribe("zz", func(m *nats.Msg) {
 		received++
 		if received >= ns {
-			done <- true
+			select {
+			case done <- true:
+			default:
+			}
 		}
 		m.Ack()
 	})
