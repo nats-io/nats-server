@@ -1,7 +1,7 @@
 project_name: nats-server
 
 builds:
-  - main: ./main.go
+  - main: .
     id: nats-server
     binary: nats-server
     ldflags:
