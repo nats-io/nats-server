@@ -1,8 +1,5 @@
 project_name: nats-server
 
-gomod:
-  proxy: true
-
 release:
   github:
     owner: nats-io
