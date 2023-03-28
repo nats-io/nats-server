@@ -11,8 +11,10 @@ changelog:
   skip: true
 
 builds:
-- main: ./main.go
+- main: .
   binary: nats-server
+  flags:
+  - -trimpath
   ldflags:
     - -w -X github.com/nats-io/nats-server/v2/server.gitCommit={{.ShortCommit}}
   env:
