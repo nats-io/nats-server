@@ -7419,7 +7419,7 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) (e error) {
 		}
 
 		mset.mu.RLock()
-		var consumers []*consumer
+		consumers := make([]*consumer, 0, len(mset.consumers))
 		for _, o := range mset.consumers {
 			consumers = append(consumers, o)
 		}
