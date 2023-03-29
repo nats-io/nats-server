@@ -3668,7 +3668,7 @@ func TestFileStoreFetchPerf(t *testing.T) {
 // https://github.com/nats-io/nats-server/issues/2936
 func TestFileStoreCompactReclaimHeadSpace(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
-		fcfg.BlockSize = 1024 * 1024
+		fcfg.BlockSize = 4 * 1024 * 1024
 
 		fs, err := newFileStore(
 			fcfg,
@@ -3678,7 +3678,7 @@ func TestFileStoreCompactReclaimHeadSpace(t *testing.T) {
 		defer fs.Stop()
 
 		// Create random bytes for payload to test for corruption vs repeated.
-		msg := make([]byte, 16*1024)
+		msg := make([]byte, 64*1024)
 		crand.Read(msg)
 
 		// This gives us ~63 msgs in first and ~37 in second.

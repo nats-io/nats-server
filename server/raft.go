@@ -855,6 +855,11 @@ func (n *raft) Applied(index uint64) (entries uint64, bytes uint64) {
 	n.Lock()
 	defer n.Unlock()
 
+	// Ignore if not applicable. This can happen during a reset.
+	if index > n.commit {
+		return 0, 0
+	}
+
 	// Ignore if already applied.
 	if index > n.applied {
 		n.applied = index
@@ -1325,6 +1330,7 @@ func (n *raft) StepDown(preferred ...string) error {
 	}
 
 	stepdown := n.stepdown
+	prop := n.prop
 	n.Unlock()
 
 	if len(preferred) > 0 && maybeLeader == noLeader {
@@ -1334,7 +1340,7 @@ func (n *raft) StepDown(preferred ...string) error {
 	// If we have a new leader selected, transfer over to them.
 	if maybeLeader != noLeader {
 		n.debug("Selected %q for new leader", maybeLeader)
-		n.sendAppendEntry([]*Entry{{EntryLeaderTransfer, []byte(maybeLeader)}})
+		prop.push(&Entry{EntryLeaderTransfer, []byte(maybeLeader)})
 	}
 	// Force us to stepdown here.
 	n.debug("Stepping down")
@@ -2489,6 +2495,9 @@ func (n *raft) applyCommit(index uint64) error {
 
 			// We pass these up as well.
 			committed = append(committed, e)
+
+		case EntryLeaderTransfer:
+			// No-op
 		}
 	}
 	// Pass to the upper layers if we have normal entries.
@@ -2852,15 +2861,6 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		}
 	}
 
-	// Ignore old terms.
-	if isNew && ae.term < n.term {
-		ar := &appendEntryResponse{n.term, n.pindex, n.id, false, _EMPTY_}
-		n.Unlock()
-		n.debug("AppendEntry ignoring old term")
-		n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
-		return
-	}
-
 	// If we are catching up ignore old catchup subs.
 	// This could happen when we stall or cancel a catchup.
 	if !isNew && catchingUp && sub != n.catchup.sub {
@@ -2896,6 +2896,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 
 	// If this term is greater than ours.
 	if ae.term > n.term {
+		n.pterm = ae.pterm
 		n.term = ae.term
 		n.vote = noVote
 		if isNew {
@@ -2915,7 +2916,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		n.updateLeadChange(false)
 	}
 
-	if ae.pterm != n.pterm || ae.pindex != n.pindex {
+	if (isNew && ae.pterm != n.pterm) || ae.pindex != n.pindex {
 		// Check if this is a lower or equal index than what we were expecting.
 		if ae.pindex <= n.pindex {
 			n.debug("AppendEntry detected pindex less than ours: %d:%d vs %d:%d", ae.pterm, ae.pindex, n.pterm, n.pindex)
@@ -3004,7 +3005,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	}
 
 	// Save to our WAL if we have entries.
-	if len(ae.entries) > 0 {
+	if ae.shouldStore() {
 		// Only store if an original which will have sub != nil
 		if sub != nil {
 			if err := n.storeToWAL(ae); err != nil {
@@ -3029,26 +3030,26 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.pterm = ae.term
 			n.pindex = ae.pindex + 1
 		}
+	}
 
-		// Check to see if we have any related entries to process here.
-		for _, e := range ae.entries {
-			switch e.Type {
-			case EntryLeaderTransfer:
-				if isNew {
-					maybeLeader := string(e.Data)
-					if maybeLeader == n.id && !n.observer && !n.paused {
-						n.lxfer = true
-						n.xferCampaign()
-					}
+	// Check to see if we have any related entries to process here.
+	for _, e := range ae.entries {
+		switch e.Type {
+		case EntryLeaderTransfer:
+			if isNew {
+				maybeLeader := string(e.Data)
+				if maybeLeader == n.id && !n.observer && !n.paused {
+					n.lxfer = true
+					n.xferCampaign()
 				}
-			case EntryAddPeer:
-				if newPeer := string(e.Data); len(newPeer) == idLen {
-					// Track directly, but wait for commit to be official
-					if ps := n.peers[newPeer]; ps != nil {
-						ps.ts = time.Now().UnixNano()
-					} else {
-						n.peers[newPeer] = &lps{time.Now().UnixNano(), 0, false}
-					}
+			}
+		case EntryAddPeer:
+			if newPeer := string(e.Data); len(newPeer) == idLen {
+				// Track directly, but wait for commit to be official
+				if ps := n.peers[newPeer]; ps != nil {
+					ps.ts = time.Now().UnixNano()
+				} else {
+					n.peers[newPeer] = &lps{time.Now().UnixNano(), 0, false}
 				}
 			}
 		}
@@ -3133,6 +3134,11 @@ func (n *raft) buildAppendEntry(entries []*Entry) *appendEntry {
 	return &appendEntry{n.id, n.term, n.commit, n.pterm, n.pindex, entries, _EMPTY_, nil, nil}
 }
 
+// Determine if we should store an entry.
+func (ae *appendEntry) shouldStore() bool {
+	return ae != nil && len(ae.entries) > 0 && ae.entries[0].Type != EntryLeaderTransfer
+}
+
 // Store our append entry to our WAL.
 // lock should be held.
 func (n *raft) storeToWAL(ae *appendEntry) error {
@@ -3188,7 +3194,7 @@ func (n *raft) sendAppendEntry(entries []*Entry) {
 	}
 
 	// If we have entries store this in our wal.
-	if len(entries) > 0 {
+	if ae.shouldStore() {
 		if err := n.storeToWAL(ae); err != nil {
 			return
 		}
@@ -3566,8 +3572,8 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 		if n.state != Follower {
 			n.debug("Stepping down from candidate, detected higher term: %d vs %d", vr.term, n.term)
 			n.stepdown.push(noLeader)
+			n.term = vr.term
 		}
-		n.term = vr.term
 		n.vote = noVote
 		n.writeTermVote()
 	}
@@ -3576,6 +3582,7 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 	voteOk := n.vote == noVote || n.vote == vr.candidate
 	if voteOk && (vr.lastTerm > n.pterm || vr.lastTerm == n.pterm && vr.lastIndex >= n.pindex) {
 		vresp.granted = true
+		n.term = vr.term
 		n.vote = vr.candidate
 		n.writeTermVote()
 	} else {
