@@ -2418,9 +2418,11 @@ func (n *raft) applyCommit(index uint64) error {
 		if ae, err = n.loadEntry(index); err != nil {
 			if err != ErrStoreClosed && err != ErrStoreEOF {
 				if err == errBadMsg {
-					n.setWriteErrLocked(err)
+					n.warn("Got an error loading %d index: %v - will reset", index, err)
+					n.resetWAL()
+				} else {
+					n.warn("Got an error loading %d index: %v", index, err)
 				}
-				n.warn("Got an error loading %d index: %v", index, err)
 			}
 			n.commit = original
 			return errEntryLoadFailed
