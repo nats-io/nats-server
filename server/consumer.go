@@ -4569,7 +4569,7 @@ func (o *consumer) checkStateForInterestStream() {
 	// See if we need to process this update if our parent stream is not a limits policy stream.
 	mset := o.mset
 	shouldProcessState := mset != nil && o.retention != LimitsPolicy
-	if !shouldProcessState {
+	if o.closed || !shouldProcessState {
 		o.mu.Unlock()
 		return
 	}
@@ -4596,7 +4596,7 @@ func (o *consumer) checkStateForInterestStream() {
 	o.mu.RUnlock()
 
 	// If we have pending, we will need to walk through to delivered in case we missed any of those acks as well.
-	if len(state.Pending) > 0 {
+	if state != nil && len(state.Pending) > 0 {
 		for seq := state.AckFloor.Stream + 1; seq <= state.Delivered.Stream; seq++ {
 			if _, ok := state.Pending[seq]; !ok {
 				mset.ackMsg(o, seq)
