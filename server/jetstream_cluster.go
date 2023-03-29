@@ -5602,8 +5602,8 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	// Now process the request and proposal.
 	js.mu.Lock()
 	defer js.mu.Unlock()
-
-	if cc.meta == nil {
+	meta := cc.meta
+	if meta == nil {
 		return
 	}
 
@@ -5643,13 +5643,6 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	// Check for subject collisions here.
 	if cc.subjectsOverlap(acc.Name, cfg.Subjects, osa) {
 		resp.Error = NewJSStreamSubjectOverlapError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
-		return
-	}
-
-	// Since we release lock above for the config update recheck here to make sure we did not shutdown.
-	if cc.meta == nil {
-		resp.Error = NewJSClusterNotActiveError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
@@ -5876,13 +5869,12 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	}
 
 	sa := &streamAssignment{Group: rg, Sync: osa.Sync, Created: osa.Created, Config: newCfg, Subject: subject, Reply: reply, Client: ci}
-	cc.meta.Propose(encodeUpdateStreamAssignment(sa))
+	meta.Propose(encodeUpdateStreamAssignment(sa))
 
 	// Process any staged consumers.
 	for _, ca := range consumers {
-		cc.meta.Propose(encodeAddConsumerAssignment(ca))
+		meta.Propose(encodeAddConsumerAssignment(ca))
 	}
-
 }
 
 func (s *Server) jsClusteredStreamDeleteRequest(ci *ClientInfo, acc *Account, stream, subject, reply string, rmsg []byte) {
