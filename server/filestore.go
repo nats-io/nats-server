@@ -106,6 +106,7 @@ type psi struct {
 }
 
 type fileStore struct {
+	srv         *Server
 	mu          sync.RWMutex
 	state       StreamState
 	ld          *LostStreamData
@@ -371,6 +372,12 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	fs.syncTmr = time.AfterFunc(fs.fcfg.SyncInterval, fs.syncBlocks)
 
 	return fs, nil
+}
+
+func (fs *fileStore) registerServer(s *Server) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	fs.srv = s
 }
 
 // Lock all existing message blocks.
@@ -765,6 +772,7 @@ func (fs *fileStore) recoverMsgBlock(fi os.FileInfo, index uint32) (*msgBlock, e
 	if ld, _ := mb.rebuildState(); ld != nil {
 		fs.addLostData(ld)
 	}
+
 	if mb.msgs > 0 && !mb.noTrack && fs.psim != nil {
 		fs.populateGlobalPerSubjectInfo(mb)
 		// Try to dump any state we needed on recovery.
@@ -2625,6 +2633,16 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	if secure && fs.prf != nil {
 		secure = false
 	}
+
+	if fs.state.Msgs == 0 {
+		var err = ErrStoreEOF
+		if seq <= fs.state.LastSeq {
+			err = ErrStoreMsgNotFound
+		}
+		fsUnlock()
+		return false, err
+	}
+
 	mb := fs.selectMsgBlock(seq)
 	if mb == nil {
 		var err = ErrStoreEOF
@@ -2637,8 +2655,8 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 
 	mb.mu.Lock()
 
-	// See if the sequence number is still relevant.
-	if seq < mb.first.seq {
+	// See if we are closed or the sequence number is still relevant.
+	if mb.closed || seq < mb.first.seq {
 		mb.mu.Unlock()
 		fsUnlock()
 		return false, nil
@@ -2933,6 +2951,7 @@ func (mb *msgBlock) slotInfo(slot int) (uint32, uint32, bool, error) {
 	if mb.cache == nil || slot >= len(mb.cache.idx) {
 		return 0, 0, false, errPartialCache
 	}
+
 	bi := mb.cache.idx[slot]
 	ri, hashChecked := (bi &^ hbit), (bi&hbit) != 0
 
@@ -3911,11 +3930,12 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 		dlen := int(rl) - msgHdrSize
 
 		// Do some quick sanity checks here.
-		if dlen < 0 || int(slen) > dlen || dlen > int(rl) || rl > 32*1024*1024 {
+		if dlen < 0 || int(slen) > dlen || dlen > int(rl) || index+rl > lbuf || rl > 32*1024*1024 {
 			// This means something is off.
 			// TODO(dlc) - Add into bad list?
 			return errCorruptState
 		}
+
 		// Clear erase bit.
 		seq = seq &^ ebit
 		// Adjust if we guessed wrong.
@@ -4756,6 +4776,9 @@ func (mb *msgBlock) writeIndexInfoLocked() error {
 		if err != nil {
 			return err
 		}
+		if fi, _ := ifd.Stat(); fi != nil {
+			mb.liwsz = fi.Size()
+		}
 		mb.ifd = ifd
 	}
 
@@ -5175,7 +5198,7 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 // but not including the seq parameter.
 // Will return the number of purged messages.
 func (fs *fileStore) Compact(seq uint64) (uint64, error) {
-	if seq == 0 || seq > fs.lastSeq() {
+	if seq == 0 {
 		return fs.purge(seq)
 	}
 
@@ -5183,14 +5206,15 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 
 	// We have to delete interior messages.
 	fs.mu.Lock()
+	if lseq := fs.state.LastSeq; seq > lseq {
+		fs.mu.Unlock()
+		return fs.purge(seq)
+	}
+
 	smb := fs.selectMsgBlock(seq)
 	if smb == nil {
 		fs.mu.Unlock()
 		return 0, nil
-	}
-	if err := smb.loadMsgs(); err != nil {
-		fs.mu.Unlock()
-		return 0, err
 	}
 
 	// All msgblocks up to this one can be thrown away.
@@ -5218,7 +5242,12 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 	var isEmpty bool
 
 	smb.mu.Lock()
-	// Since we loaded before we acquired our lock, double check here under lock that we have the messages loaded.
+	if smb.first.seq == seq {
+		isEmpty = smb.msgs == 0
+		goto SKIP
+	}
+
+	// Make sure we have the messages loaded.
 	if smb.cacheNotLoaded() {
 		if err = smb.loadMsgsWithLock(); err != nil {
 			goto SKIP
@@ -5229,7 +5258,7 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 		if err == errDeletedMsg {
 			// Update dmap.
 			if len(smb.dmap) > 0 {
-				delete(smb.dmap, seq)
+				delete(smb.dmap, mseq)
 				if len(smb.dmap) == 0 {
 					smb.dmap = nil
 				}
@@ -5265,7 +5294,7 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 
 		// Check if we should reclaim the head space from this block.
 		// This will be optimistic only, so don't continue if we encounter any errors here.
-		if smb.bytes*2 < smb.rbytes {
+		if smb.rbytes > compactMinimum && smb.bytes*2 < smb.rbytes {
 			var moff uint32
 			moff, _, _, err = smb.slotInfo(int(smb.first.seq - smb.cache.fseq))
 			if err != nil || moff >= uint32(len(smb.cache.buf)) {
@@ -5299,12 +5328,12 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 	}
 
 SKIP:
-	smb.mu.Unlock()
-
 	if !isEmpty {
 		// Make sure to write out our index info.
-		smb.writeIndexInfo()
+		smb.writeIndexInfoLocked()
 	}
+
+	smb.mu.Unlock()
 
 	if deleted > 0 {
 		// Update block map.
@@ -5329,7 +5358,7 @@ SKIP:
 	cb := fs.scb
 	fs.mu.Unlock()
 
-	if cb != nil {
+	if cb != nil && purged > 0 {
 		cb(-int64(purged), -int64(bytes), 0, _EMPTY_)
 	}
 
@@ -5338,7 +5367,6 @@ SKIP:
 
 // Will completely reset our store.
 func (fs *fileStore) reset() error {
-
 	fs.mu.Lock()
 	if fs.closed {
 		fs.mu.Unlock()
@@ -5352,14 +5380,12 @@ func (fs *fileStore) reset() error {
 	var purged, bytes uint64
 	cb := fs.scb
 
-	if cb != nil {
-		for _, mb := range fs.blks {
-			mb.mu.Lock()
-			purged += mb.msgs
-			bytes += mb.bytes
-			mb.dirtyCloseWithRemove(true)
-			mb.mu.Unlock()
-		}
+	for _, mb := range fs.blks {
+		mb.mu.Lock()
+		purged += mb.msgs
+		bytes += mb.bytes
+		mb.dirtyCloseWithRemove(true)
+		mb.mu.Unlock()
 	}
 
 	// Reset
@@ -6749,7 +6775,7 @@ func (o *consumerFileStore) Update(state *ConsumerState) error {
 	defer o.mu.Unlock()
 
 	// Check to see if this is an outdated update.
-	if state.Delivered.Consumer < o.state.Delivered.Consumer {
+	if state.Delivered.Consumer < o.state.Delivered.Consumer || state.AckFloor.Stream < o.state.AckFloor.Stream {
 		return nil
 	}
 
