@@ -7001,3 +7001,314 @@ func TestNoRaceJetStreamClusterDifferentRTTInterestBasedStreamSetup(t *testing.T
 	default:
 	}
 }
+
+func TestNoRaceJetStreamInterestStreamCheckInterestRaceBug(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Replicas:  3,
+		Retention: nats.InterestPolicy,
+	})
+	require_NoError(t, err)
+
+	numConsumers := 10
+	for i := 0; i < numConsumers; i++ {
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		_, err = js.Subscribe("foo", func(m *nats.Msg) {
+			m.Ack()
+		}, nats.Durable(fmt.Sprintf("C%d", i)), nats.ManualAck())
+		require_NoError(t, err)
+	}
+
+	numToSend := 10_000
+	for i := 0; i < numToSend; i++ {
+		_, err := js.PublishAsync("foo", nil)
+		require_NoError(t, err)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(20 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	// Wait til ackfloor is correct for all consumers.
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			mset, err := s.GlobalAccount().lookupStream("TEST")
+			require_NoError(t, err)
+
+			mset.mu.RLock()
+			defer mset.mu.RUnlock()
+
+			require_True(t, len(mset.consumers) == numConsumers)
+
+			for _, o := range mset.consumers {
+				state, err := o.store.State()
+				require_NoError(t, err)
+				if state.AckFloor.Stream != uint64(numToSend) {
+					return fmt.Errorf("Ackfloor not correct yet")
+				}
+			}
+		}
+		return nil
+	})
+
+	for _, s := range c.servers {
+		mset, err := s.GlobalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+
+		mset.mu.RLock()
+		defer mset.mu.RUnlock()
+
+		state := mset.state()
+		require_True(t, state.Msgs == 0)
+		require_True(t, state.FirstSeq == uint64(numToSend+1))
+	}
+}
+
+func TestNoRaceJetStreamClusterInterestStreamConsistencyAfterRollingRestart(t *testing.T) {
+	// Uncomment to run. Needs to be on a big machine. Do not want as part of Travis tests atm.
+	skip(t)
+
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	numStreams := 200
+	numConsumersPer := 5
+	numPublishers := 10
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	qch := make(chan bool)
+
+	var mm sync.Mutex
+	ackMap := make(map[string]map[uint64][]string)
+
+	addAckTracking := func(seq uint64, stream, consumer string) {
+		mm.Lock()
+		defer mm.Unlock()
+		sam := ackMap[stream]
+		if sam == nil {
+			sam = make(map[uint64][]string)
+			ackMap[stream] = sam
+		}
+		sam[seq] = append(sam[seq], consumer)
+	}
+
+	doPullSubscriber := func(stream, consumer, filter string) {
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		var err error
+		var sub *nats.Subscription
+		timeout := time.Now().Add(5 * time.Second)
+		for time.Now().Before(timeout) {
+			sub, err = js.PullSubscribe(filter, consumer, nats.BindStream(stream), nats.ManualAck())
+			if err == nil {
+				break
+			}
+		}
+		if err != nil {
+			t.Logf("Error on pull subscriber: %v", err)
+			return
+		}
+
+		for {
+			select {
+			case <-time.After(500 * time.Millisecond):
+				msgs, err := sub.Fetch(100, nats.MaxWait(time.Second))
+				if err != nil {
+					continue
+				}
+				// Shuffleraf
+				rand.Shuffle(len(msgs), func(i, j int) { msgs[i], msgs[j] = msgs[j], msgs[i] })
+				for _, m := range msgs {
+					meta, err := m.Metadata()
+					require_NoError(t, err)
+					m.Ack()
+					addAckTracking(meta.Sequence.Stream, stream, consumer)
+					if meta.NumDelivered > 1 {
+						t.Logf("Got a msg redelivered %d for sequence %d on %q %q\n", meta.NumDelivered, meta.Sequence.Stream, stream, consumer)
+					}
+				}
+			case <-qch:
+				nc.Flush()
+				return
+			}
+		}
+	}
+
+	// Setup
+	wg := sync.WaitGroup{}
+	for i := 0; i < numStreams; i++ {
+		wg.Add(1)
+		go func(stream string) {
+			defer wg.Done()
+			subj := fmt.Sprintf("%s.>", stream)
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:      stream,
+				Subjects:  []string{subj},
+				Replicas:  3,
+				Retention: nats.InterestPolicy,
+			})
+			require_NoError(t, err)
+			for i := 0; i < numConsumersPer; i++ {
+				consumer := fmt.Sprintf("C%d", i)
+				filter := fmt.Sprintf("%s.%d", stream, i)
+				_, err = js.AddConsumer(stream, &nats.ConsumerConfig{
+					Durable:       consumer,
+					FilterSubject: filter,
+					AckPolicy:     nats.AckExplicitPolicy,
+					AckWait:       2 * time.Second,
+				})
+				require_NoError(t, err)
+				c.waitOnConsumerLeader(globalAccountName, stream, consumer)
+				go doPullSubscriber(stream, consumer, filter)
+			}
+		}(fmt.Sprintf("A-%d", i))
+	}
+	wg.Wait()
+
+	msg := make([]byte, 2*1024) // 2k payload
+	rand.Read(msg)
+
+	// Controls if publishing is on or off.
+	var pubActive atomic.Bool
+
+	doPublish := func() {
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		for {
+			select {
+			case <-time.After(100 * time.Millisecond):
+				if pubActive.Load() {
+					for i := 0; i < numStreams; i++ {
+						for j := 0; j < numConsumersPer; j++ {
+							subj := fmt.Sprintf("A-%d.%d", i, j)
+							// Don't care about errors here for this test.
+							js.Publish(subj, msg)
+						}
+					}
+				}
+			case <-qch:
+				return
+			}
+		}
+	}
+
+	pubActive.Store(true)
+
+	for i := 0; i < numPublishers; i++ {
+		go doPublish()
+	}
+
+	// Let run for a bit.
+	time.Sleep(20 * time.Second)
+
+	// Do a rolling restart.
+	for _, s := range c.servers {
+		t.Logf("Shutdown %v\n", s)
+		s.Shutdown()
+		t.Logf("Restarting %v\n", s)
+		s = c.restartServer(s)
+		c.waitOnServerHealthz(s)
+	}
+
+	// Let run for a bit longer.
+	time.Sleep(10 * time.Second)
+
+	// Stop pubs.
+	pubActive.Store(false)
+
+	// Let settle.
+	time.Sleep(10 * time.Second)
+	close(qch)
+	time.Sleep(20 * time.Second)
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	minAckFloor := func(stream string) (uint64, string) {
+		var maf uint64 = math.MaxUint64
+		var consumer string
+		for i := 0; i < numConsumersPer; i++ {
+			cname := fmt.Sprintf("C%d", i)
+			ci, err := js.ConsumerInfo(stream, cname)
+			require_NoError(t, err)
+			if ci.AckFloor.Stream < maf {
+				maf = ci.AckFloor.Stream
+				consumer = cname
+			}
+		}
+		return maf, consumer
+	}
+
+	checkStreamAcks := func(stream string) {
+		mm.Lock()
+		defer mm.Unlock()
+		if sam := ackMap[stream]; sam != nil {
+			for seq := 1; ; seq++ {
+				acks := sam[uint64(seq)]
+				if acks == nil {
+					if sam[uint64(seq+1)] != nil {
+						t.Logf("Missing an ack on stream %q for sequence %d\n", stream, seq)
+					} else {
+						break
+					}
+				}
+				if len(acks) > 1 {
+					t.Fatalf("Multiple acks for %d which is not expected: %+v", seq, acks)
+				}
+			}
+		}
+	}
+
+	// Now check all streams such that their first sequence is equal to the minimum of all consumers.
+	for i := 0; i < numStreams; i++ {
+		stream := fmt.Sprintf("A-%d", i)
+		si, err := js.StreamInfo(stream)
+		require_NoError(t, err)
+
+		if maf, consumer := minAckFloor(stream); maf > si.State.FirstSeq {
+			t.Logf("\nBAD STATE DETECTED FOR %q, CHECKING OTHER SERVERS! ACK %d vs %+v LEADER %v, CL FOR %q %v\n",
+				stream, maf, si.State, c.streamLeader(globalAccountName, stream), consumer, c.consumerLeader(globalAccountName, stream, consumer))
+
+			checkStreamAcks(stream)
+
+			for _, s := range c.servers {
+				mset, err := s.GlobalAccount().lookupStream(stream)
+				require_NoError(t, err)
+				state := mset.state()
+				t.Logf("Server %v Stream STATE %+v\n", s, state)
+
+				var smv StoreMsg
+				if sm, err := mset.store.LoadMsg(state.FirstSeq, &smv); err == nil {
+					t.Logf("Subject for msg %d is %q", state.FirstSeq, sm.subj)
+				} else {
+					t.Logf("Could not retrieve msg for %d: %v", state.FirstSeq, err)
+				}
+
+				if len(mset.preAcks) > 0 {
+					t.Logf("%v preAcks %+v\n", s, mset.preAcks)
+				}
+
+				for _, o := range mset.consumers {
+					ostate, err := o.store.State()
+					require_NoError(t, err)
+					t.Logf("Consumer STATE for %q is %+v\n", o.name, ostate)
+				}
+			}
+			t.Fatalf("BAD STATE: ACKFLOOR > FIRST %d vs %d\n", maf, si.State.FirstSeq)
+		}
+	}
+}
