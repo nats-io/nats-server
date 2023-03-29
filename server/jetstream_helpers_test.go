@@ -37,8 +37,8 @@ import (
 func init() {
 	// Speed up raft for tests.
 	hbInterval = 50 * time.Millisecond
-	minElectionTimeout = 1 * time.Second
-	maxElectionTimeout = 3 * time.Second
+	minElectionTimeout = 250 * time.Millisecond
+	maxElectionTimeout = 1 * time.Second
 	lostQuorumInterval = time.Second
 	lostQuorumCheck = 4 * hbInterval
 }
