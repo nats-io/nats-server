@@ -944,7 +944,7 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	var state StreamState
 	n.wal.FastState(&state)
 
-	if n.applied == 0 || len(data) == 0 {
+	if n.applied == 0 {
 		n.Unlock()
 		return errNoSnapAvailable
 	}
