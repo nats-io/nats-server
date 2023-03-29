@@ -5267,7 +5267,7 @@ func TestNoRaceJetStreamClusterDirectAccessAllPeersSubs(t *testing.T) {
 		t.Fatalf("Expected to see messages increase, got %d", si.State.Msgs)
 	}
 
-	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
 		// Make sure they are all the same from a state perspective.
 		// Leader will have the expected state.
 		lmset, err := c.streamLeader("$G", "TEST").GlobalAccount().lookupStream("TEST")

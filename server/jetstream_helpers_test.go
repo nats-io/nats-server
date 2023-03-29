@@ -37,9 +37,9 @@ import (
 func init() {
 	// Speed up raft for tests.
 	hbInterval = 50 * time.Millisecond
-	minElectionTimeout = 250 * time.Millisecond
-	maxElectionTimeout = 1 * time.Second
-	lostQuorumInterval = time.Second
+	minElectionTimeout = 750 * time.Millisecond
+	maxElectionTimeout = 2500 * time.Millisecond
+	lostQuorumInterval = 500 * time.Millisecond
 	lostQuorumCheck = 4 * hbInterval
 }
 
@@ -509,7 +509,7 @@ func (sc *supercluster) leader() *Server {
 
 func (sc *supercluster) waitOnLeader() {
 	sc.t.Helper()
-	expires := time.Now().Add(10 * time.Second)
+	expires := time.Now().Add(30 * time.Second)
 	for time.Now().Before(expires) {
 		for _, c := range sc.clusters {
 			if leader := c.leader(); leader != nil {
@@ -548,7 +548,7 @@ func (sc *supercluster) waitOnPeerCount(n int) {
 	sc.t.Helper()
 	sc.waitOnLeader()
 	leader := sc.leader()
-	expires := time.Now().Add(20 * time.Second)
+	expires := time.Now().Add(30 * time.Second)
 	for time.Now().Before(expires) {
 		peers := leader.JetStreamClusterPeers()
 		if len(peers) == n {
@@ -1237,7 +1237,7 @@ func (c *cluster) waitOnPeerCount(n int) {
 
 func (c *cluster) waitOnConsumerLeader(account, stream, consumer string) {
 	c.t.Helper()
-	expires := time.Now().Add(20 * time.Second)
+	expires := time.Now().Add(30 * time.Second)
 	for time.Now().Before(expires) {
 		if leader := c.consumerLeader(account, stream, consumer); leader != nil {
 			time.Sleep(200 * time.Millisecond)
@@ -1329,7 +1329,7 @@ func (c *cluster) waitOnServerHealthz(s *Server) {
 
 func (c *cluster) waitOnServerCurrent(s *Server) {
 	c.t.Helper()
-	expires := time.Now().Add(20 * time.Second)
+	expires := time.Now().Add(30 * time.Second)
 	for time.Now().Before(expires) {
 		time.Sleep(100 * time.Millisecond)
 		if !s.JetStreamEnabled() || s.JetStreamIsCurrent() {

@@ -971,6 +971,7 @@ func TestJetStreamClusterRestoreSingleConsumer(t *testing.T) {
 	c.stopAll()
 	c.restartAll()
 	c.waitOnLeader()
+	c.waitOnStreamLeader("$G", "foo")
 
 	s = c.randomServer()
 	nc, js = jsClientConnect(t, s)
