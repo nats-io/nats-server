@@ -5114,7 +5114,7 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 // Issue https://github.com/nats-io/nats-server/issues/3612
 func (mset *stream) checkForOrphanMsgs() {
 	mset.mu.RLock()
-	var consumers []*consumer
+	consumers := make([]*consumer, 0, len(mset.consumers))
 	for _, o := range mset.consumers {
 		consumers = append(consumers, o)
 	}
