@@ -5647,6 +5647,13 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 		return
 	}
 
+	// Since we release lock above for the config update recheck here to make sure we did not shutdown.
+	if cc.meta == nil {
+		resp.Error = NewJSClusterNotActiveError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		return
+	}
+
 	// Make copy so to not change original.
 	rg := osa.copyGroup().Group
 
