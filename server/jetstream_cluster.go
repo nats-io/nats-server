@@ -351,7 +351,7 @@ func (s *Server) JetStreamClusterPeers() []string {
 	defer js.mu.RUnlock()
 
 	cc := js.cluster
-	if !cc.isLeader() {
+	if !cc.isLeader() || cc.meta == nil {
 		return nil
 	}
 	peers := cc.meta.Peers()
@@ -1487,6 +1487,9 @@ func (js *jetStream) processAddPeer(peer string) {
 	defer js.mu.Unlock()
 
 	s, cc := js.srv, js.cluster
+	if cc == nil || cc.meta == nil {
+		return
+	}
 	isLeader := cc.isLeader()
 
 	// Now check if we are meta-leader. We will check for any re-assignments.
@@ -1528,7 +1531,7 @@ func (js *jetStream) processAddPeer(peer string) {
 func (js *jetStream) processRemovePeer(peer string) {
 	js.mu.Lock()
 	s, cc := js.srv, js.cluster
-	if cc.meta == nil {
+	if cc == nil || cc.meta == nil {
 		js.mu.Unlock()
 		return
 	}
@@ -1592,6 +1595,9 @@ func (js *jetStream) removePeerFromStreamLocked(sa *streamAssignment, peer strin
 	}
 
 	s, cc, csa := js.srv, js.cluster, sa.copyGroup()
+	if cc == nil || cc.meta == nil {
+		return false
+	}
 	replaced := cc.remapStreamAssignment(csa, peer)
 	if !replaced {
 		s.Warnf("JetStream cluster could not replace peer for stream '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
@@ -4748,6 +4754,9 @@ func (js *jetStream) processStreamAssignmentResults(sub *subscription, c *client
 	defer js.mu.Unlock()
 
 	s, cc := js.srv, js.cluster
+	if cc == nil || cc.meta == nil {
+		return
+	}
 
 	// This should have been done already in processStreamAssignment, but in
 	// case we have a code path that gets here with no processStreamAssignment,
@@ -4821,6 +4830,9 @@ func (js *jetStream) processConsumerAssignmentResults(sub *subscription, c *clie
 	defer js.mu.Unlock()
 
 	s, cc := js.srv, js.cluster
+	if cc == nil || cc.meta == nil {
+		return
+	}
 
 	if sa := js.streamAssignment(result.Account, result.Stream); sa != nil && sa.consumers != nil {
 		if ca := sa.consumers[result.Consumer]; ca != nil && !ca.responded {
@@ -5591,6 +5603,10 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	js.mu.Lock()
 	defer js.mu.Unlock()
 
+	if cc.meta == nil {
+		return
+	}
+
 	var resp = JSApiStreamUpdateResponse{ApiResponse: ApiResponse{Type: JSApiStreamUpdateResponseType}}
 
 	osa := js.streamAssignment(acc.Name, cfg.Name)
@@ -5871,6 +5887,10 @@ func (s *Server) jsClusteredStreamDeleteRequest(ci *ClientInfo, acc *Account, st
 	js.mu.Lock()
 	defer js.mu.Unlock()
 
+	if cc.meta == nil {
+		return
+	}
+
 	osa := js.streamAssignment(acc.Name, stream)
 	if osa == nil {
 		var resp = JSApiStreamDeleteResponse{ApiResponse: ApiResponse{Type: JSApiStreamDeleteResponseType}}
@@ -5943,6 +5963,10 @@ func (s *Server) jsClusteredStreamRestoreRequest(
 
 	js.mu.Lock()
 	defer js.mu.Unlock()
+
+	if cc.meta == nil {
+		return
+	}
 
 	cfg := &req.Config
 	resp := JSApiStreamRestoreResponse{ApiResponse: ApiResponse{Type: JSApiStreamRestoreResponseType}}
@@ -6315,6 +6339,10 @@ func (s *Server) jsClusteredConsumerDeleteRequest(ci *ClientInfo, acc *Account, 
 	js.mu.Lock()
 	defer js.mu.Unlock()
 
+	if cc.meta == nil {
+		return
+	}
+
 	var resp = JSApiConsumerDeleteResponse{ApiResponse: ApiResponse{Type: JSApiConsumerDeleteResponseType}}
 
 	sa := js.streamAssignment(acc.Name, stream)
@@ -6502,6 +6530,10 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 
 	js.mu.Lock()
 	defer js.mu.Unlock()
+
+	if cc.meta == nil {
+		return
+	}
 
 	// Lookup the stream assignment.
 	sa := js.streamAssignment(acc.Name, stream)
