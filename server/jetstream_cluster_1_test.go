@@ -3720,6 +3720,7 @@ func TestJetStreamClusterAccountPurge(t *testing.T) {
 				resolver: {
 					type: full
 					dir: '%s/jwt'
+					timeout: "10ms"
 				}`, ojwt, syspub, storeDir)
 		})
 	defer c.shutdown()
@@ -3892,7 +3893,6 @@ func TestJetStreamClusterAccountPurge(t *testing.T) {
 		}
 		c.restartAll()
 		checkForDirs(t, 6, 4)
-		c.waitOnClusterReady() // unfortunately, this does not wait until leader is not catching up.
 		purge(t)
 		checkForDirs(t, 0, 0)
 		c.stopAll()
