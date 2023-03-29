@@ -2505,8 +2505,12 @@ func (o *consumer) needAck(sseq uint64, subj string) bool {
 	defer o.mu.RUnlock()
 
 	isFiltered := o.isFiltered()
+	if isFiltered && o.mset == nil {
+		return false
+	}
+
 	// Check if we are filtered, and if so check if this is even applicable to us.
-	if isFiltered && o.mset != nil {
+	if isFiltered {
 		if subj == _EMPTY_ {
 			var svp StoreMsg
 			if _, err := o.mset.store.LoadMsg(sseq, &svp); err != nil {
@@ -2517,10 +2521,6 @@ func (o *consumer) needAck(sseq uint64, subj string) bool {
 		if !o.isFilteredMatch(subj) {
 			return false
 		}
-	}
-
-	if isFiltered && o.mset == nil {
-		return false
 	}
 
 	if o.isLeader() {
