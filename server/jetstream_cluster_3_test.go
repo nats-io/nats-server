@@ -313,7 +313,7 @@ func TestJetStreamClusterDeleteConsumerWhileServerDown(t *testing.T) {
 
 	// Restart.
 	s = c.restartServer(s)
-	checkFor(t, time.Second, 200*time.Millisecond, func() error {
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
 		hs := s.healthz(&HealthzOptions{
 			JSEnabledOnly: false,
 			JSServerOnly:  false,
