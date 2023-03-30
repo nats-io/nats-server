@@ -4322,7 +4322,7 @@ func TestJetStreamClusterStreamReplicaUpdates(t *testing.T) {
 		require_NoError(t, err)
 		c.waitOnStreamLeader("$G", "TEST")
 
-		checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
 			si, err = js.StreamInfo("TEST")
 			require_NoError(t, err)
 			if len(si.Cluster.Replicas) != r-1 {

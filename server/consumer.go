@@ -2466,6 +2466,11 @@ func (o *consumer) sampleAck(sseq, dseq, dc uint64) {
 
 func (o *consumer) processAckMsg(sseq, dseq, dc uint64, doSample bool) {
 	o.mu.Lock()
+	if o.closed {
+		o.mu.Unlock()
+		return
+	}
+
 	var sagap uint64
 	var needSignal bool
 
@@ -2596,20 +2601,25 @@ func (o *consumer) needAck(sseq uint64, subj string) bool {
 	var needAck bool
 	var asflr, osseq uint64
 	var pending map[uint64]*Pending
+
 	o.mu.RLock()
+	defer o.mu.RUnlock()
+
+	isFiltered := o.isFiltered()
+	if isFiltered && o.mset == nil {
+		return false
+	}
 
 	// Check if we are filtered, and if so check if this is even applicable to us.
-	if o.isFiltered() && o.mset != nil {
+	if isFiltered {
 		if subj == _EMPTY_ {
 			var svp StoreMsg
 			if _, err := o.mset.store.LoadMsg(sseq, &svp); err != nil {
-				o.mu.RUnlock()
 				return false
 			}
 			subj = svp.subj
 		}
 		if !o.isFilteredMatch(subj) {
-			o.mu.RUnlock()
 			return false
 		}
 	}
@@ -2618,14 +2628,12 @@ func (o *consumer) needAck(sseq uint64, subj string) bool {
 		pending = o.pending
 	} else {
 		if o.store == nil {
-			o.mu.RUnlock()
 			return false
 		}
 		state, err := o.store.BorrowState()
 		if err != nil || state == nil {
 			// Fall back to what we track internally for now.
 			needAck := sseq > o.asflr && !o.isFiltered()
-			o.mu.RUnlock()
 			return needAck
 		}
 		// If loading state as here, the osseq is +1.
@@ -2645,7 +2653,6 @@ func (o *consumer) needAck(sseq uint64, subj string) bool {
 		}
 	}
 
-	o.mu.RUnlock()
 	return needAck
 }
 
@@ -4848,4 +4855,46 @@ func (o *consumer) isMonitorRunning() bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.inMonitor
+}
+
+// If we are a consumer of an interest or workqueue policy stream, process that state and make sure consistent.
+func (o *consumer) checkStateForInterestStream() {
+	o.mu.Lock()
+	// See if we need to process this update if our parent stream is not a limits policy stream.
+	mset := o.mset
+	shouldProcessState := mset != nil && o.retention != LimitsPolicy
+	if o.closed || !shouldProcessState {
+		o.mu.Unlock()
+		return
+	}
+
+	state, err := o.store.State()
+	o.mu.Unlock()
+
+	if err != nil {
+		return
+	}
+
+	// We should make sure to update the acks.
+	var ss StreamState
+	mset.store.FastState(&ss)
+
+	asflr := state.AckFloor.Stream
+	for seq := ss.FirstSeq; seq <= asflr; seq++ {
+		mset.ackMsg(o, seq)
+	}
+
+	o.mu.RLock()
+	// See if we need to process this update if our parent stream is not a limits policy stream.
+	state, _ = o.store.State()
+	o.mu.RUnlock()
+
+	// If we have pending, we will need to walk through to delivered in case we missed any of those acks as well.
+	if state != nil && len(state.Pending) > 0 {
+		for seq := state.AckFloor.Stream + 1; seq <= state.Delivered.Stream; seq++ {
+			if _, ok := state.Pending[seq]; !ok {
+				mset.ackMsg(o, seq)
+			}
+		}
+	}
 }
