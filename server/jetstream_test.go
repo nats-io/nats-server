@@ -18842,6 +18842,7 @@ func TestJetStreamAccountPurge(t *testing.T) {
 	require_NoError(t, os.Remove(storeDir+"/jwt/"+accpub+".jwt"))
 
 	s, o = RunServerWithConfig(o.ConfigFile)
+	defer s.Shutdown()
 	inspectDirs(t, 1)
 	purge(t)
 	inspectDirs(t, 0)

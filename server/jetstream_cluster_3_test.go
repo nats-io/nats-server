@@ -1046,6 +1046,7 @@ func TestJetStreamClusterSourceWithOptStartTime(t *testing.T) {
 			sd := s.JetStreamConfig().StoreDir
 			s.Shutdown()
 			s = RunJetStreamServerOnPort(-1, sd)
+			defer s.Shutdown()
 		}
 
 		// Wait a bit before checking because sync'ing (even with the defect)
@@ -1590,7 +1591,7 @@ func TestJetStreamGhostEphemeralsAfterRestart(t *testing.T) {
 	defer nc.Close()
 
 	subj := fmt.Sprintf(JSApiConsumerListT, "TEST")
-	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
 		m, err := nc.Request(subj, nil, time.Second)
 		if err != nil {
 			return err
@@ -2728,13 +2729,16 @@ func TestJetStreamClusterInterestPolicyEphemeral(t *testing.T) {
 			}
 
 			const msgs = 5_000
-			done, count := make(chan bool), 0
+			done, count := make(chan bool, 1), 0
 
 			sub, err := js.Subscribe(_EMPTY_, func(msg *nats.Msg) {
 				require_NoError(t, msg.Ack())
 				count++
 				if count >= msgs {
-					done <- true
+					select {
+					case done <- true:
+					default:
+					}
 				}
 			}, nats.Bind(test.stream, name), nats.ManualAck())
 			require_NoError(t, err)

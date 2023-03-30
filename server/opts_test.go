@@ -2533,13 +2533,9 @@ func TestParsingLeafNodeRemotes(t *testing.T) {
 }
 
 func TestLargeMaxControlLine(t *testing.T) {
-	confFileName := "big_mcl.conf"
-	content := `
-    max_control_line = 3000000000
-    `
-	if err := os.WriteFile(confFileName, []byte(content), 0666); err != nil {
-		t.Fatalf("Error writing config file: %v", err)
-	}
+	confFileName := createConfFile(t, []byte(`
+		max_control_line = 3000000000
+	`))
 	if _, err := ProcessConfigFile(confFileName); err == nil {
 		t.Fatalf("Expected an error from too large of a max_control_line entry")
 	}
