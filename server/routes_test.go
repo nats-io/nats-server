@@ -2457,7 +2457,7 @@ func TestRoutePerAccountConnectRace(t *testing.T) {
 		o.Accounts = []*Account{NewAccount("A")}
 		o.NoSystemAccount = true
 		o.Cluster.PoolSize = 1
-		o.Cluster.Accounts = []string{"A"}
+		o.Cluster.PinnedAccounts = []string{"A"}
 		o.Cluster.Name = "local"
 		o.Cluster.Port = port
 		o.Routes = RoutesFromStr("nats://127.0.0.1:1234,nats://127.0.0.1:1235,nats://127.0.0.1:1236")

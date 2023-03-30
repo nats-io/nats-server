@@ -1056,7 +1056,7 @@ func (c *client) parseUnsubProto(arg []byte) (string, []byte, []byte, error) {
 	case subjIdx + 2:
 		queue = args[subjIdx+1]
 	default:
-		return "", nil, nil, fmt.Errorf("parse error: '%s'", arg)
+		return _EMPTY_, nil, nil, fmt.Errorf("parse error: '%s'", arg)
 	}
 	if accountName == _EMPTY_ {
 		accountName = string(args[0])
@@ -1238,6 +1238,10 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 		if accInProto {
 			sub.sid = arg[accPos : accPos+len(accountName)+1+len(sub.subject)+1+len(sub.queue)]
 		} else {
+			// It is unfortunate that we have to do this, but the gain of not
+			// having the account name in message protocols outweight the
+			// penalty of having to do this here for the processing of a
+			// subscription.
 			sub.sid = append(sub.sid, accountName...)
 			sub.sid = append(sub.sid, ' ')
 			sub.sid = append(sub.sid, sub.subject...)
@@ -1382,7 +1386,7 @@ func (s *Server) sendSubsToRoute(route *client, idx int, account string) {
 		}
 	}
 	// Send over our account subscriptions.
-	accs := make([]*Account, 0, 32)
+	accs := make([]*Account, 0, 1024)
 	if idx < 0 || account != _EMPTY_ {
 		if ai, ok := s.accounts.Load(account); ok {
 			a := ai.(*Account)
@@ -1868,6 +1872,9 @@ func (s *Server) addRoute(c *client, didSolicit bool, info *Info, accName string
 				select {
 				case <-time.After(time.Duration(rand.Intn(100)) * time.Millisecond):
 				case <-s.quitCh:
+					// Doing this here and not as a defer because connectToRoute is also
+					// calling s.grWG.Done() on exit, so we do this only if we don't
+					// invoke connectToRoute().
 					s.grWG.Done()
 					return
 				}
@@ -2238,7 +2245,7 @@ func (s *Server) startRouteAcceptLoop() {
 	go s.acceptConnections(l, "Route", func(conn net.Conn) { s.createRoute(conn, nil, _EMPTY_) }, nil)
 
 	// Solicit Routes if applicable. This will not block.
-	s.solicitRoutes(opts.Routes, opts.Cluster.Accounts)
+	s.solicitRoutes(opts.Routes, opts.Cluster.PinnedAccounts)
 
 	s.mu.Unlock()
 }

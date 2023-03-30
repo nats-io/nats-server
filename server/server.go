@@ -590,9 +590,9 @@ func (s *Server) initRouteStructures(opts *Options) {
 	// If we have per-account routes, we create accRoutes and initialize it
 	// with nil values. The presence of an account as the key will allow us
 	// to know if a given account is supposed to have dedicated routes.
-	if l := len(opts.Cluster.Accounts); l > 0 {
+	if l := len(opts.Cluster.PinnedAccounts); l > 0 {
 		s.accRoutes = make(map[string]map[string]*client, l)
-		for _, acc := range opts.Cluster.Accounts {
+		for _, acc := range opts.Cluster.PinnedAccounts {
 			s.accRoutes[acc] = make(map[string]*client)
 		}
 	}
@@ -701,14 +701,14 @@ func validateCluster(o *Options) error {
 		// Set this here so we do not consider it dynamic.
 		o.Cluster.Name = o.Gateway.Name
 	}
-	if l := len(o.Cluster.Accounts); l > 0 {
+	if l := len(o.Cluster.PinnedAccounts); l > 0 {
 		if o.Cluster.PoolSize < 0 {
-			return fmt.Errorf("pool_size cannot be negative if accounts are specified")
+			return fmt.Errorf("pool_size cannot be negative if pinned accounts are specified")
 		}
 		m := make(map[string]struct{}, l)
-		for _, a := range o.Cluster.Accounts {
+		for _, a := range o.Cluster.PinnedAccounts {
 			if _, exists := m[a]; exists {
-				return fmt.Errorf("found duplicate account name %q in accounts list %q", a, o.Cluster.Accounts)
+				return fmt.Errorf("found duplicate account name %q in pinned accounts list %q", a, o.Cluster.PinnedAccounts)
 			}
 			m[a] = struct{}{}
 		}
@@ -912,10 +912,8 @@ func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) 
 		for _, si := range acc.imports.services {
 			if v, ok := s.accounts.Load(si.acc.Name); ok {
 				si.acc = v.(*Account)
-				// TODO: Not sure if it is possible for an account to have a
-				// service import from itself, but if that is the case,
-				// we are already lock, otherwise use locking to protect
-				// the call to si.acc.getServiceExport().
+				// It is possible to allow for latency tracking inside your
+				// own account, so lock only when not the same account.
 				if si.acc == acc {
 					si.se = si.acc.getServiceExport(si.to)
 					continue
@@ -1876,7 +1874,7 @@ func (s *Server) Start() {
 		if len(opts.TrustedOperators) == 1 && opts.SystemAccount != _EMPTY_ && opts.SystemAccount != DEFAULT_SYSTEM_ACCOUNT {
 			opts := s.getOpts()
 			_, isMemResolver := ar.(*MemAccResolver)
-			if v, ok := s.accounts.Load(opts.SystemAccount); !isMemResolver && ok && v.(*Account).claimJWT == "" {
+			if v, ok := s.accounts.Load(opts.SystemAccount); !isMemResolver && ok && v.(*Account).claimJWT == _EMPTY_ {
 				s.Noticef("Using bootstrapping system account")
 				s.startGoRoutine(func() {
 					defer s.grWG.Done()

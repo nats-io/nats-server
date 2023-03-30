@@ -77,7 +77,7 @@ type ClusterOpts struct {
 	NoAdvertise       bool              `json:"-"`
 	ConnectRetries    int               `json:"-"`
 	PoolSize          int               `json:"-"`
-	Accounts          []string          `json:"-"`
+	PinnedAccounts    []string          `json:"-"`
 
 	// Not exported (used in tests)
 	resolver netResolver
@@ -1600,7 +1600,7 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 		case "pool_size":
 			opts.Cluster.PoolSize = int(mv.(int64))
 		case "accounts":
-			opts.Cluster.Accounts, _ = parseStringArray("accounts", tk, &lt, mv, errors, warnings)
+			opts.Cluster.PinnedAccounts, _ = parseStringArray("accounts", tk, &lt, mv, errors, warnings)
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
@@ -4692,14 +4692,14 @@ func setBaselineOptions(opts *Options) {
 			}
 			if sysAccName != _EMPTY_ {
 				var found bool
-				for _, acc := range opts.Cluster.Accounts {
+				for _, acc := range opts.Cluster.PinnedAccounts {
 					if acc == sysAccName {
 						found = true
 						break
 					}
 				}
 				if !found {
-					opts.Cluster.Accounts = append(opts.Cluster.Accounts, sysAccName)
+					opts.Cluster.PinnedAccounts = append(opts.Cluster.PinnedAccounts, sysAccName)
 				}
 			}
 		}

@@ -1883,7 +1883,7 @@ func TestServerEventsStatsZ(t *testing.T) {
 	if m.Stats.Received.Msgs < 1 {
 		t.Fatalf("Did not match received msgs of >=1, got %d", m.Stats.Received.Msgs)
 	}
-	// Default pool size + 1 for systemt account
+	// Default pool size + 1 for system account
 	expectedRoutes := DEFAULT_ROUTE_POOL_SIZE + 1
 	if lr := len(m.Stats.Routes); lr != expectedRoutes {
 		t.Fatalf("Expected %d routes, but got %d", expectedRoutes, lr)

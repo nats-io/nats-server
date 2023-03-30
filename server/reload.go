@@ -400,8 +400,8 @@ func (c *clusterOption) IsClusterPoolSizeOrAccountsChange() bool {
 func (c *clusterOption) diffPoolAndAccounts(old *ClusterOpts) {
 	c.poolSizeChanged = c.newValue.PoolSize != old.PoolSize
 addLoop:
-	for _, na := range c.newValue.Accounts {
-		for _, oa := range old.Accounts {
+	for _, na := range c.newValue.PinnedAccounts {
+		for _, oa := range old.PinnedAccounts {
 			if na == oa {
 				continue addLoop
 			}
@@ -409,8 +409,8 @@ addLoop:
 		c.accsAdded = append(c.accsAdded, na)
 	}
 removeLoop:
-	for _, oa := range old.Accounts {
-		for _, na := range c.newValue.Accounts {
+	for _, oa := range old.PinnedAccounts {
+		for _, na := range c.newValue.PinnedAccounts {
 			if oa == na {
 				continue removeLoop
 			}
@@ -463,7 +463,7 @@ func (r *routesOption) Apply(server *Server) {
 
 	// Add routes.
 	server.mu.Lock()
-	server.solicitRoutes(r.add, server.getOpts().Cluster.Accounts)
+	server.solicitRoutes(r.add, server.getOpts().Cluster.PinnedAccounts)
 	server.mu.Unlock()
 
 	server.Noticef("Reloaded: cluster routes")
@@ -2135,7 +2135,7 @@ func (s *Server) reloadClusterPoolAndAccounts(co *clusterOption, opts *Options) 
 	// We should always have at least the system account with a dedicated route,
 	// but in case we have a configuration that disables pooling and without
 	// a system account, possibly set the accRoutes to nil.
-	if len(opts.Cluster.Accounts) == 0 {
+	if len(opts.Cluster.PinnedAccounts) == 0 {
 		s.accRoutes = nil
 	}
 	// Now deal with pool size updates.

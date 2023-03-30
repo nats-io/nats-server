@@ -5113,7 +5113,7 @@ func TestGatewaySendReplyAcrossGateways(t *testing.T) {
 			oa1 := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
 			oa1.Cluster.PoolSize = test.poolSize
 			if test.peracc {
-				oa1.Cluster.Accounts = []string{"ACC"}
+				oa1.Cluster.PinnedAccounts = []string{"ACC"}
 			}
 			oa1.Accounts = []*Account{NewAccount("ACC")}
 			oa1.Users = []*User{{Username: "user", Password: "pwd", Account: oa1.Accounts[0]}}
@@ -5132,7 +5132,7 @@ func TestGatewaySendReplyAcrossGateways(t *testing.T) {
 			oa2 := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
 			oa2.Cluster.PoolSize = test.poolSize
 			if test.peracc {
-				oa2.Cluster.Accounts = []string{"ACC"}
+				oa2.Cluster.PinnedAccounts = []string{"ACC"}
 			}
 			oa2.Accounts = []*Account{NewAccount("ACC")}
 			oa2.Users = []*User{{Username: "user", Password: "pwd", Account: oa2.Accounts[0]}}
