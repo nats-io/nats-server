@@ -485,6 +485,12 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig) (RaftNode, error
 
 	n.debug("Started")
 
+	// Check if we need to start in observer mode due to lame duck status.
+	if s.isLameDuckMode() {
+		n.debug("Will start in observer mode due to lame duck status")
+		n.SetObserver(true)
+	}
+
 	n.Lock()
 	n.resetElectionTimeout()
 	n.llqrt = time.Now()
@@ -611,6 +617,9 @@ func (s *Server) shutdownRaftNodes() {
 	}
 }
 
+// Used in lameduck mode to move off the leaders.
+// We also put all nodes in observer mode so new leaders
+// can not be placed on this server.
 func (s *Server) transferRaftLeaders() bool {
 	if s == nil {
 		return false
@@ -631,6 +640,7 @@ func (s *Server) transferRaftLeaders() bool {
 			node.StepDown()
 			didTransfer = true
 		}
+		node.SetObserver(true)
 	}
 	return didTransfer
 }
