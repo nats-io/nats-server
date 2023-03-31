@@ -7575,3 +7575,111 @@ func TestNoRaceJetStreamClusterUnbalancedInterestMultipleConsumers(t *testing.T)
 		require_True(t, numPreAcks == 0)
 	}
 }
+
+func TestNoRaceJetStreamClusterUnbalancedInterestMultipleFilteredConsumers(t *testing.T) {
+	c, np := createStretchUnbalancedCluster(t)
+	defer c.shutdown()
+	defer np.stop()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Now create the stream.
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "EVENTS",
+		Subjects:  []string{"EV.>"},
+		Replicas:  3,
+		Retention: nats.InterestPolicy,
+	})
+	require_NoError(t, err)
+
+	// Make sure it's leader is on S2.
+	sl := c.servers[1]
+	checkFor(t, 20*time.Second, 200*time.Millisecond, func() error {
+		c.waitOnStreamLeader(globalAccountName, "EVENTS")
+		if s := c.streamLeader(globalAccountName, "EVENTS"); s != sl {
+			s.JetStreamStepdownStream(globalAccountName, "EVENTS")
+			return fmt.Errorf("Server %s is not stream leader yet", sl)
+		}
+		return nil
+	})
+
+	// Create a fast ack consumer.
+	_, err = js.Subscribe("EV.NEW", func(m *nats.Msg) {
+		m.Ack()
+	}, nats.Durable("C"), nats.ManualAck())
+	require_NoError(t, err)
+
+	// Make sure the consumer leader is on S3.
+	cl := c.servers[2]
+	checkFor(t, 20*time.Second, 200*time.Millisecond, func() error {
+		c.waitOnConsumerLeader(globalAccountName, "EVENTS", "C")
+		if s := c.consumerLeader(globalAccountName, "EVENTS", "C"); s != cl {
+			s.JetStreamStepdownConsumer(globalAccountName, "EVENTS", "C")
+			return fmt.Errorf("Server %s is not consumer leader yet", cl)
+		}
+		return nil
+	})
+
+	// Connect a client directly to the stream leader.
+	nc, js = jsClientConnect(t, sl)
+	defer nc.Close()
+
+	// Now create another fast ack consumer.
+	_, err = js.Subscribe("EV.UPDATED", func(m *nats.Msg) {
+		m.Ack()
+	}, nats.Durable("D"), nats.ManualAck())
+	require_NoError(t, err)
+
+	// Make sure this consumer leader is on S1.
+	cl = c.servers[0]
+	checkFor(t, 20*time.Second, 200*time.Millisecond, func() error {
+		c.waitOnConsumerLeader(globalAccountName, "EVENTS", "D")
+		if s := c.consumerLeader(globalAccountName, "EVENTS", "D"); s != cl {
+			s.JetStreamStepdownConsumer(globalAccountName, "EVENTS", "D")
+			return fmt.Errorf("Server %s is not consumer leader yet", cl)
+		}
+		return nil
+	})
+
+	numToSend := 500
+	for i := 0; i < numToSend; i++ {
+		_, err := js.PublishAsync("EV.NEW", nil)
+		require_NoError(t, err)
+		_, err = js.PublishAsync("EV.UPDATED", nil)
+		require_NoError(t, err)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(20 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	// Let acks propagate.
+	time.Sleep(250 * time.Millisecond)
+
+	ci, err := js.ConsumerInfo("EVENTS", "D")
+	require_NoError(t, err)
+	require_True(t, ci.NumPending == 0)
+	require_True(t, ci.NumAckPending == 0)
+	require_True(t, ci.Delivered.Consumer == 500)
+	require_True(t, ci.Delivered.Stream == 1000)
+	require_True(t, ci.AckFloor.Consumer == 500)
+	require_True(t, ci.AckFloor.Stream == 1000)
+
+	// Check final stream state on all servers.
+	for _, s := range c.servers {
+		mset, err := s.GlobalAccount().lookupStream("EVENTS")
+		require_NoError(t, err)
+		state := mset.state()
+		require_True(t, state.Msgs == 0)
+		require_True(t, state.FirstSeq == 1001)
+		require_True(t, state.LastSeq == 1000)
+		require_True(t, state.Consumers == 2)
+		// Now check preAcks
+		mset.mu.RLock()
+		numPreAcks := len(mset.preAcks)
+		mset.mu.RUnlock()
+		require_True(t, numPreAcks == 0)
+	}
+}

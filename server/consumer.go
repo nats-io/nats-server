@@ -4357,14 +4357,15 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 		}
 
 		var rmseqs []uint64
-		mset.mu.RLock()
+		mset.mu.Lock()
 		for seq := start; seq <= stop; seq++ {
-			if !mset.checkInterest(seq, o) {
+			if mset.noInterest(seq, o) {
 				rmseqs = append(rmseqs, seq)
 			}
 		}
-		mset.mu.RUnlock()
+		mset.mu.Unlock()
 
+		// These can be removed.
 		for _, seq := range rmseqs {
 			mset.store.RemoveMsg(seq)
 		}
