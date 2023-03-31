@@ -1378,5 +1378,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSSourceDuplicateDetected",
+    "code": 400,
+    "error_code": 10140,
+    "description": "duplicate source configuration detected",
+    "comment": "source stream, filter and transform (plus external if present) must form a unique combination",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

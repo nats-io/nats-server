@@ -5252,7 +5252,7 @@ func TestJetStreamClusterLeaderStepdown(t *testing.T) {
 	}
 }
 
-func TestJetStreamClusterSourcesFilterSubjectUpdate(t *testing.T) {
+func TestJetStreamClusterSourcesFilteringAndUpdating(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "MSR", 5)
 	defer c.shutdown()
 
@@ -5295,6 +5295,7 @@ func TestJetStreamClusterSourcesFilterSubjectUpdate(t *testing.T) {
 	require_NoError(t, err)
 	defer js.DeleteStream("TEST")
 
+	// Create M stream with a single source on "foo"
 	_, err = js.AddStream(&nats.StreamConfig{
 		Name:     "M",
 		Sources:  []*nats.StreamSource{{Name: "TEST", FilterSubject: "foo"}},
@@ -5303,13 +5304,14 @@ func TestJetStreamClusterSourcesFilterSubjectUpdate(t *testing.T) {
 	require_NoError(t, err)
 	defer js.DeleteStream("M")
 
+	// check a message on "bar" doesn't get sourced
 	sendBatch("bar", 100)
 	checkSync(100, 0)
+	// check a message on "foo" does get sourced
 	sendBatch("foo", 100)
-	// The source stream remains at 100 msgs as it filters for foo
 	checkSync(200, 100)
 
-	// change filter subject
+	// change remove the source on "foo" and add a new source on "bar"
 	_, err = js.UpdateStream(&nats.StreamConfig{
 		Name:     "M",
 		Sources:  []*nats.StreamSource{{Name: "TEST", FilterSubject: "bar"}},
@@ -5317,40 +5319,62 @@ func TestJetStreamClusterSourcesFilterSubjectUpdate(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	sendBatch("foo", 100)
-	// The source stream remains at 100 msgs as it filters for bar
-	checkSync(300, 100)
+	// as it is a new source (never been sourced before) it starts sourcing at the start of TEST
+	// and therefore sources the message on "bar" that is in TEST
+	checkSync(200, 200)
 
+	// new messages on "foo" are being filtered as it's not being currently sourced
+	sendBatch("foo", 100)
+	checkSync(300, 200)
+	// new messages on "bar" are being sourced
 	sendBatch("bar", 100)
-	checkSync(400, 200)
+	checkSync(400, 300)
 
-	// test unsuspected re delivery by sending to filtered subject
-	sendBatch("foo", 100)
-	checkSync(500, 200)
-
-	// change filter subject to foo, as the internal sequence number does not cover the previously filtered tail end
+	// re-add the source for "foo" keep the source on "bar"
 	_, err = js.UpdateStream(&nats.StreamConfig{
 		Name:     "M",
-		Sources:  []*nats.StreamSource{{Name: "TEST", FilterSubject: "foo"}},
+		Sources:  []*nats.StreamSource{{Name: "TEST", FilterSubject: "bar"}, {Name: "TEST", FilterSubject: "foo"}},
 		Replicas: 2,
 	})
 	require_NoError(t, err)
-	// The filter was completely switched, which is why we only receive new messages
-	checkSync(500, 200)
-	sendBatch("foo", 100)
-	checkSync(600, 300)
-	sendBatch("bar", 100)
-	checkSync(700, 300)
 
-	// change filter subject to *, as the internal sequence number does not cover the previously filtered tail end
-	_, err = js.UpdateStream(&nats.StreamConfig{
-		Name:     "M",
-		Sources:  []*nats.StreamSource{{Name: "TEST", FilterSubject: "*"}},
-		Replicas: 2,
-	})
-	require_NoError(t, err)
-	// no send was necessary as we received previously filtered messages
-	checkSync(700, 400)
+	// check the 'backfill' of messages on "foo" that were published while the source was inactive
+	checkSync(400, 400)
+
+	// causes startingSequenceForSources() to be called
+	nc.Close()
+	c.stopAll()
+	c.restartAll()
+	c.waitOnStreamLeader("$G", "TEST")
+	c.waitOnStreamLeader("$G", "M")
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// check that it restarted the sources' consumers at the right place
+	checkSync(400, 400)
+
+	// check both sources are still active
+	sendBatch("bar", 100)
+	checkSync(500, 500)
+	sendBatch("foo", 100)
+	checkSync(600, 600)
+
+	// Check that purging the stream and does not cause the sourcing of the messages
+	js.PurgeStream("M")
+	checkSync(600, 0)
+
+	// Even after a leader change or restart
+	nc.Close()
+	c.stopAll()
+	c.restartAll()
+	c.waitOnStreamLeader("$G", "TEST")
+	c.waitOnStreamLeader("$G", "M")
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	checkSync(600, 0)
 }
 
 func TestJetStreamClusterSourcesUpdateOriginError(t *testing.T) {
