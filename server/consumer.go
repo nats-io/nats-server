@@ -3290,12 +3290,10 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 				filter.pmsg = pmsg
 			} else {
 				pmsg.returnToPool()
+				pmsg = nil
 			}
 			if sseq >= filter.nextSeq {
 				filter.nextSeq = sseq + 1
-				if err == ErrStoreEOF {
-					o.updateSkipped(uint64(filter.currentSeq))
-				}
 			}
 
 			// If we're sure that this filter has continuous sequence of messages, skip looking up other filters.
@@ -3313,30 +3311,34 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 	// to avoid reflection.
 	if o.subjf != nil && len(o.subjf) > 1 {
 		sort.Slice(o.subjf, func(i, j int) bool {
+			if o.subjf[j].pmsg != nil && o.subjf[i].pmsg == nil {
+				return false
+			}
+			if o.subjf[i].pmsg != nil && o.subjf[j].pmsg == nil {
+				return true
+			}
 			return o.subjf[j].nextSeq > o.subjf[i].nextSeq
 		})
 	}
-
 	// Grab next message applicable to us.
 	// Sort sequences first, to grab the first message.
-	for _, filter := range o.subjf {
-		// set o.sseq to the first subject sequence
-		if filter.nextSeq > o.sseq {
-			o.sseq = filter.nextSeq
-		}
-		// This means we got a message in this subject fetched.
-		if filter.pmsg != nil {
-			filter.currentSeq = filter.nextSeq
-			o.sseq = filter.currentSeq
-			returned := filter.pmsg
-			filter.pmsg = nil
-			return returned, 1, filter.err
-		}
-		if filter.err != nil {
-			lastErr = filter.err
-		}
+	filter := o.subjf[0]
+	// This means we got a message in this subject fetched.
+	if filter.pmsg != nil {
+		filter.currentSeq = filter.nextSeq
+		o.sseq = filter.currentSeq
+		returned := filter.pmsg
+		filter.pmsg = nil
+		return returned, 1, filter.err
+	}
+	if filter.err == ErrStoreEOF {
+		o.updateSkipped(filter.nextSeq)
 	}
 
+	// set o.sseq to the first subject sequence
+	if filter.nextSeq > o.sseq {
+		o.sseq = filter.nextSeq
+	}
 	return nil, 0, lastErr
 }
 
