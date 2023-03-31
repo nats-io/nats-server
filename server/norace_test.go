@@ -6846,15 +6846,15 @@ func TestNoRaceJetStreamClusterF3Setup(t *testing.T) {
 	}
 }
 
-// We test an interest based stream that has a cluster with a node with asymmetric paths from
-// the stream leader and the consumer leader such that the consumer leader path is fast and
-// replicated acks arrive sooner then the actual message. This path was considered, but also
-// categorized as very rare and was expensive as it tried to forward a new stream msg delete
-// proposal to the original stream leader. It now will deal with the issue locally and not
-// slow down the ingest rate to the stream's publishers.
-func TestNoRaceJetStreamClusterDifferentRTTInterestBasedStreamSetup(t *testing.T) {
-	// Uncomment to run. Do not want as part of Travis tests atm.
-	skip(t)
+// Unbalanced stretch cluster.
+// S2 (stream leader) will have a slow path to S1 (via proxy) and S3 (consumer leader) will have a fast path.
+//
+//	 Route Ports
+//		"S1": 14622
+//		"S2": 15622
+//		"S3": 16622
+func createStretchUnbalancedCluster(t testing.TB) (c *cluster, np *netProxy) {
+	t.Helper()
 
 	tmpl := `
 	listen: 127.0.0.1:-1
@@ -6871,16 +6871,8 @@ func TestNoRaceJetStreamClusterDifferentRTTInterestBasedStreamSetup(t *testing.T
 		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
 	}
 	`
-
-	//  Route Ports
-	//	"S1": 14622,
-	//	"S2": 15622,
-	//	"S3": 16622,
-
-	// S2 (stream leader) will have a slow path to S1 (via proxy) and S3 (consumer leader) will have a fast path.
-
 	// Do these in order, S1, S2 (proxy) then S3.
-	c := &cluster{t: t, servers: make([]*Server, 3), opts: make([]*Options, 3), name: "F3"}
+	c = &cluster{t: t, servers: make([]*Server, 3), opts: make([]*Options, 3), name: "F3"}
 
 	// S1
 	conf := fmt.Sprintf(tmpl, "S1", t.TempDir(), 14622, "route://127.0.0.1:15622, route://127.0.0.1:16622")
@@ -6888,7 +6880,7 @@ func TestNoRaceJetStreamClusterDifferentRTTInterestBasedStreamSetup(t *testing.T
 
 	// S2
 	// Create the proxy first. Connect this to S1. Make it slow, e.g. 5ms RTT.
-	np := createNetProxy(1*time.Millisecond, 1024*1024*1024, 1024*1024*1024, "route://127.0.0.1:14622", true)
+	np = createNetProxy(1*time.Millisecond, 1024*1024*1024, 1024*1024*1024, "route://127.0.0.1:14622", true)
 	routes := fmt.Sprintf("%s, route://127.0.0.1:16622", np.routeURL())
 	conf = fmt.Sprintf(tmpl, "S2", t.TempDir(), 15622, routes)
 	c.servers[1], c.opts[1] = RunServerWithConfig(createConfFile(t, []byte(conf)))
@@ -6899,6 +6891,21 @@ func TestNoRaceJetStreamClusterDifferentRTTInterestBasedStreamSetup(t *testing.T
 
 	c.checkClusterFormed()
 	c.waitOnClusterReady()
+
+	return c, np
+}
+
+// We test an interest based stream that has a cluster with a node with asymmetric paths from
+// the stream leader and the consumer leader such that the consumer leader path is fast and
+// replicated acks arrive sooner then the actual message. This path was considered, but also
+// categorized as very rare and was expensive as it tried to forward a new stream msg delete
+// proposal to the original stream leader. It now will deal with the issue locally and not
+// slow down the ingest rate to the stream's publishers.
+func TestNoRaceJetStreamClusterDifferentRTTInterestBasedStreamSetup(t *testing.T) {
+	// Uncomment to run. Do not want as part of Travis tests atm.
+	skip(t)
+
+	c, np := createStretchUnbalancedCluster(t)
 	defer c.shutdown()
 	defer np.stop()
 
@@ -6935,7 +6942,7 @@ func TestNoRaceJetStreamClusterDifferentRTTInterestBasedStreamSetup(t *testing.T
 		c.waitOnConsumerLeader(globalAccountName, "EVENTS", "C")
 		if s := c.consumerLeader(globalAccountName, "EVENTS", "C"); s != cl {
 			s.JetStreamStepdownConsumer(globalAccountName, "EVENTS", "C")
-			return fmt.Errorf("Server %s is not consumer leader yet", sl)
+			return fmt.Errorf("Server %s is not consumer leader yet", cl)
 		}
 		return nil
 	})
@@ -7436,5 +7443,135 @@ func TestNoRaceFileStoreNumPending(t *testing.T) {
 			check(start, filter)
 			checkLastOnly(start, filter)
 		}
+	}
+}
+
+func TestNoRaceJetStreamClusterUnbalancedInterestMultipleConsumers(t *testing.T) {
+	c, np := createStretchUnbalancedCluster(t)
+	defer c.shutdown()
+	defer np.stop()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Now create the stream.
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "EVENTS",
+		Subjects:  []string{"EV.>"},
+		Replicas:  3,
+		Retention: nats.InterestPolicy,
+	})
+	require_NoError(t, err)
+
+	// Make sure it's leader is on S2.
+	sl := c.servers[1]
+	checkFor(t, 20*time.Second, 200*time.Millisecond, func() error {
+		c.waitOnStreamLeader(globalAccountName, "EVENTS")
+		if s := c.streamLeader(globalAccountName, "EVENTS"); s != sl {
+			s.JetStreamStepdownStream(globalAccountName, "EVENTS")
+			return fmt.Errorf("Server %s is not stream leader yet", sl)
+		}
+		return nil
+	})
+
+	// Create a fast ack consumer.
+	_, err = js.Subscribe("EV.NEW", func(m *nats.Msg) {
+		m.Ack()
+	}, nats.Durable("C"), nats.ManualAck())
+	require_NoError(t, err)
+
+	// Make sure the consumer leader is on S3.
+	cl := c.servers[2]
+	checkFor(t, 20*time.Second, 200*time.Millisecond, func() error {
+		c.waitOnConsumerLeader(globalAccountName, "EVENTS", "C")
+		if s := c.consumerLeader(globalAccountName, "EVENTS", "C"); s != cl {
+			s.JetStreamStepdownConsumer(globalAccountName, "EVENTS", "C")
+			return fmt.Errorf("Server %s is not consumer leader yet", cl)
+		}
+		return nil
+	})
+
+	// Connect a client directly to the stream leader.
+	nc, js = jsClientConnect(t, sl)
+	defer nc.Close()
+
+	// Now create a pull subscriber.
+	sub, err := js.PullSubscribe("EV.NEW", "D", nats.ManualAck())
+	require_NoError(t, err)
+
+	// Make sure this consumer leader is on S1.
+	cl = c.servers[0]
+	checkFor(t, 20*time.Second, 200*time.Millisecond, func() error {
+		c.waitOnConsumerLeader(globalAccountName, "EVENTS", "D")
+		if s := c.consumerLeader(globalAccountName, "EVENTS", "D"); s != cl {
+			s.JetStreamStepdownConsumer(globalAccountName, "EVENTS", "D")
+			return fmt.Errorf("Server %s is not consumer leader yet", cl)
+		}
+		return nil
+	})
+
+	numToSend := 1000
+	for i := 0; i < numToSend; i++ {
+		_, err := js.PublishAsync("EV.NEW", nil)
+		require_NoError(t, err)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(20 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	// Now make sure we can pull messages since we have not acked.
+	// The bug is that the acks arrive on S1 faster then the messages but we want to
+	// make sure we do not remove prematurely.
+	msgs, err := sub.Fetch(100, nats.MaxWait(time.Second))
+	require_NoError(t, err)
+	require_True(t, len(msgs) == 100)
+	for _, m := range msgs {
+		m.AckSync()
+	}
+
+	ci, err := js.ConsumerInfo("EVENTS", "D")
+	require_NoError(t, err)
+	require_True(t, ci.NumPending == uint64(numToSend-100))
+	require_True(t, ci.NumAckPending == 0)
+	require_True(t, ci.Delivered.Stream == 100)
+	require_True(t, ci.AckFloor.Stream == 100)
+
+	// Check stream state on all servers.
+	for _, s := range c.servers {
+		mset, err := s.GlobalAccount().lookupStream("EVENTS")
+		require_NoError(t, err)
+		state := mset.state()
+		require_True(t, state.Msgs == 900)
+		require_True(t, state.FirstSeq == 101)
+		require_True(t, state.LastSeq == 1000)
+		require_True(t, state.Consumers == 2)
+	}
+
+	msgs, err = sub.Fetch(900, nats.MaxWait(time.Second))
+	require_NoError(t, err)
+	require_True(t, len(msgs) == 900)
+	for _, m := range msgs {
+		m.AckSync()
+	}
+
+	// Let acks propagate.
+	time.Sleep(250 * time.Millisecond)
+
+	// Check final stream state on all servers.
+	for _, s := range c.servers {
+		mset, err := s.GlobalAccount().lookupStream("EVENTS")
+		require_NoError(t, err)
+		state := mset.state()
+		require_True(t, state.Msgs == 0)
+		require_True(t, state.FirstSeq == 1001)
+		require_True(t, state.LastSeq == 1000)
+		require_True(t, state.Consumers == 2)
+		// Now check preAcks
+		mset.mu.RLock()
+		numPreAcks := len(mset.preAcks)
+		mset.mu.RUnlock()
+		require_True(t, numPreAcks == 0)
 	}
 }

@@ -2567,16 +2567,8 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					// Check for any preAcks in case we are interest based.
 					mset.mu.Lock()
 					seq := lseq + 1 - mset.clfs
-					var shouldAck bool
-					if len(mset.preAcks) > 0 {
-						if _, shouldAck = mset.preAcks[seq]; shouldAck {
-							delete(mset.preAcks, seq)
-						}
-					}
+					mset.clearAllPreAcks(seq)
 					mset.mu.Unlock()
-					if shouldAck {
-						mset.ackMsg(nil, seq)
-					}
 					continue
 				}
 
@@ -2590,7 +2582,9 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				// Messages to be skipped have no subject or timestamp or msg or hdr.
 				if subject == _EMPTY_ && ts == 0 && len(msg) == 0 && len(hdr) == 0 {
 					// Skip and update our lseq.
-					mset.setLastSeq(mset.store.SkipMsg())
+					last := mset.store.SkipMsg()
+					mset.setLastSeq(last)
+					mset.clearAllPreAcks(last)
 					continue
 				}
 
@@ -7200,6 +7194,7 @@ func (mset *stream) processSnapshotDeletes(snap *streamSnapshot) {
 		mset.store.Compact(snap.FirstSeq)
 		mset.store.FastState(&state)
 		mset.setLastSeq(state.LastSeq)
+		mset.clearAllPreAcksBelowFloor(state.FirstSeq)
 	}
 	// Range the deleted and delete if applicable.
 	for _, dseq := range snap.Deleted {
@@ -7614,12 +7609,10 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 	ddloaded := mset.ddloaded
 	tierName := mset.tier
 
-	if len(mset.preAcks) > 0 {
-		if _, shouldSkip := mset.preAcks[seq]; shouldSkip {
-			delete(mset.preAcks, seq)
-			// Mark this to be skipped
-			subj, ts = _EMPTY_, 0
-		}
+	if mset.hasAllPreAcks(seq) {
+		mset.clearAllPreAcks(seq)
+		// Mark this to be skipped
+		subj, ts = _EMPTY_, 0
 	}
 	mset.mu.Unlock()
 
