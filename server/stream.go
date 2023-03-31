@@ -1291,19 +1291,9 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 	if cfg.RePublish != nil {
 		// Check to make sure source is a valid subset of the subjects we have.
 		// Also make sure it does not form a cycle.
-		var srcValid bool
 		// Empty same as all.
 		if cfg.RePublish.Source == _EMPTY_ {
 			cfg.RePublish.Source = fwcs
-		}
-		for _, subj := range cfg.Subjects {
-			if SubjectsCollide(cfg.RePublish.Source, subj) {
-				srcValid = true
-				break
-			}
-		}
-		if !srcValid {
-			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration for republish source is not valid subset of subjects"))
 		}
 		var formsCycle bool
 		for _, subj := range cfg.Subjects {
