@@ -7609,7 +7609,7 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 	ddloaded := mset.ddloaded
 	tierName := mset.tier
 
-	if mset.hasAllPreAcks(seq) {
+	if mset.hasAllPreAcks(seq, subj) {
 		mset.clearAllPreAcks(seq)
 		// Mark this to be skipped
 		subj, ts = _EMPTY_, 0
