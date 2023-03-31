@@ -2569,9 +2569,9 @@ func (o *consumer) isFiltered() bool {
 	// `isFiltered` need to be performant, so we do
 	// as any checks as possible to avoid unnecessary work.
 	// Here we avoid iteration over slices if there is only one subject in stream
-	// and one equal filter for the consumer.
-	if len(mset.cfg.Subjects) == 1 && len(o.subjf) == 1 && mset.cfg.Subjects[0] == o.subjf[0].subject {
-		return true
+	// and one filter for the consumer.
+	if len(mset.cfg.Subjects) == 1 && len(o.subjf) == 1 {
+		return mset.cfg.Subjects[0] != o.subjf[0].subject
 	}
 
 	// if the list is not equal length, we can return early, as this is filtered.
