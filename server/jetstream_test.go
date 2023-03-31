@@ -20573,3 +20573,64 @@ func TestJetStreamConsumerAckFloorWithExpired(t *testing.T) {
 	require_True(t, ci.NumPending == 0)
 	require_True(t, ci.NumRedelivered == 0)
 }
+
+func TestJetStreamConsumerIsFiltered(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+	acc := s.GlobalAccount()
+
+	tests := []struct {
+		name           string
+		streamSubjects []string
+		filters        []string
+		isFiltered     bool
+	}{
+		{
+			name:           "single_subject",
+			streamSubjects: []string{"one"},
+			filters:        []string{"one"},
+			isFiltered:     false,
+		},
+		{
+			name:           "single_subject_filtered",
+			streamSubjects: []string{"one.>"},
+			filters:        []string{"one.filter"},
+			isFiltered:     true,
+		},
+		{
+			name:           "multi_subject_non_filtered",
+			streamSubjects: []string{"multi", "foo", "bar.>"},
+			filters:        []string{"multi", "bar.>", "foo"},
+			isFiltered:     false,
+		},
+		{
+			name:           "multi_subject_filtered_wc",
+			streamSubjects: []string{"events", "data"},
+			filters:        []string{"data"},
+			isFiltered:     true,
+		},
+		{
+			name:           "multi_subject_filtered",
+			streamSubjects: []string{"machines", "floors"},
+			filters:        []string{"machines"},
+			isFiltered:     true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			mset, err := acc.addStream(&StreamConfig{
+				Name:     test.name,
+				Subjects: test.streamSubjects,
+			})
+			require_NoError(t, err)
+
+			o, err := mset.addConsumer(&ConsumerConfig{
+				FilterSubjects: test.filters,
+				Durable:        test.name,
+			})
+			require_NoError(t, err)
+
+			require_True(t, o.isFiltered() == test.isFiltered)
+		})
+	}
+}
