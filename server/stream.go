@@ -232,7 +232,8 @@ type stream struct {
 	csl   *Sublist
 
 	// For non limits policy streams when they process an ack before the actual msg.
-	preAcks map[uint64]struct{}
+	// Can happen in stretch clusters, multi-cloud, or during catchup for a restarted server.
+	preAcks map[uint64]map[*consumer]struct{}
 
 	// TODO(dlc) - Hide everything below behind two pointers.
 	// Clustered mode.
@@ -1689,6 +1690,7 @@ func (mset *stream) deleteMsg(seq uint64) (bool, error) {
 		return false, fmt.Errorf("invalid stream")
 	}
 	mset.mu.RUnlock()
+
 	return mset.store.RemoveMsg(seq)
 }
 
@@ -4002,11 +4004,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		// Make sure to take into account any message assignments that we had to skip (clfs).
 		seq = lseq + 1 - clfs
 		// Check for preAcks and the need to skip vs store.
-		var shouldSkip bool
-		if _, shouldSkip = mset.preAcks[seq]; shouldSkip {
-			delete(mset.preAcks, seq)
-		}
-		if shouldSkip {
+		if mset.hasAllPreAcks(seq) {
+			mset.clearAllPreAcks(seq)
 			store.SkipMsg()
 		} else {
 			err = store.StoreRawMsg(subject, hdr, msg, seq, ts)
@@ -4835,16 +4834,116 @@ func (mset *stream) checkInterest(seq uint64, obs *consumer) bool {
 		defer pmsg.returnToPool()
 		sm, err := mset.store.LoadMsg(seq, &pmsg.StoreMsg)
 		if err != nil {
+			if err == ErrStoreEOF {
+				// Register this as a preAck.
+				mset.registerPreAck(obs, seq)
+				return true
+			}
 			return false
 		}
 		subj = sm.subj
 	}
 	for _, o := range mset.consumers {
-		if o != obs && o.needAck(seq, subj) {
+		// If this is us or we have a registered preAck for this consumer continue inspecting.
+		if o == obs || mset.hasPreAck(o, seq) {
+			continue
+		}
+		// Check if we need an ack.
+		if o.needAck(seq, subj) {
 			return true
 		}
 	}
 	return false
+}
+
+// Check if we have a pre-registered ack for this sequence.
+// Write lock should be held.
+func (mset *stream) hasPreAck(o *consumer, seq uint64) bool {
+	if o == nil || len(mset.preAcks) == 0 {
+		return false
+	}
+	consumers := mset.preAcks[seq]
+	if len(consumers) == 0 {
+		return false
+	}
+	_, found := consumers[o]
+	return found
+}
+
+// Check if we have all consumers pre-acked.
+// Write lock should be held.
+func (mset *stream) hasAllPreAcks(seq uint64) bool {
+	if len(mset.preAcks) == 0 {
+		return false
+	}
+	return len(mset.preAcks[seq]) >= len(mset.consumers)
+}
+
+// Check if we have all consumers pre-acked.
+func (mset *stream) clearAllPreAcksLock(seq uint64) {
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+	mset.clearAllPreAcks(seq)
+}
+
+// Check if we have all consumers pre-acked.
+// Write lock should be held.
+func (mset *stream) clearAllPreAcks(seq uint64) {
+	delete(mset.preAcks, seq)
+}
+
+// Clear all preAcks below floor.
+// Write lock should be held.
+func (mset *stream) clearAllPreAcksBelowFloor(floor uint64) {
+	for seq := range mset.preAcks {
+		if seq < floor {
+			delete(mset.preAcks, seq)
+		}
+	}
+}
+
+// This will register an ack for a consumer if it arrives before the actual message.
+func (mset *stream) registerPreAckLock(o *consumer, seq uint64) {
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+	mset.registerPreAck(o, seq)
+}
+
+// This will register an ack for a consumer if it arrives before
+// the actual message.
+// Write lock should be held.
+func (mset *stream) registerPreAck(o *consumer, seq uint64) {
+	if o == nil {
+		return
+	}
+	if mset.preAcks == nil {
+		mset.preAcks = make(map[uint64]map[*consumer]struct{})
+	}
+	if mset.preAcks[seq] == nil {
+		mset.preAcks[seq] = make(map[*consumer]struct{})
+	}
+	mset.preAcks[seq][o] = struct{}{}
+}
+
+// This will clear an ack for a consumer.
+func (mset *stream) clearPreAckLock(o *consumer, seq uint64) {
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+	mset.clearPreAck(o, seq)
+}
+
+// This will clear an ack for a consumer.
+// Write lock should be held.
+func (mset *stream) clearPreAck(o *consumer, seq uint64) {
+	if o == nil || len(mset.preAcks) == 0 {
+		return
+	}
+	if consumers := mset.preAcks[seq]; len(consumers) > 0 {
+		delete(consumers, o)
+		if len(consumers) == 0 {
+			delete(mset.preAcks, seq)
+		}
+	}
 }
 
 // ackMsg is called into from a consumer when we have a WorkQueue or Interest Retention Policy.
@@ -4865,6 +4964,14 @@ func (mset *stream) ackMsg(o *consumer, seq uint64) {
 
 	// Make sure this sequence is not below our first sequence.
 	if seq < state.FirstSeq {
+		mset.clearPreAck(o, seq)
+		mset.mu.Unlock()
+		return
+	}
+
+	// If this has arrived before we have processed the message itself.
+	if seq > state.LastSeq {
+		mset.registerPreAck(o, seq)
 		mset.mu.Unlock()
 		return
 	}
@@ -4878,40 +4985,21 @@ func (mset *stream) ackMsg(o *consumer, seq uint64) {
 	case InterestPolicy:
 		shouldRemove = !mset.checkInterest(seq, o)
 	}
-
-	// Check for existing preAcks. These will override the concept of shouldRemove.
-	if len(mset.preAcks) > 0 {
-		if _, hasAck := mset.preAcks[seq]; hasAck {
-			delete(mset.preAcks, seq)
-			shouldRemove = true
-		}
-	}
-
-	// If we should remove but we know this is beyond our last we can add to preAcks here.
-	// The ack reached us before the actual msg.
-	ackBeforeMsg := shouldRemove && seq > state.LastSeq
-	if ackBeforeMsg {
-		if mset.preAcks == nil {
-			mset.preAcks = make(map[uint64]struct{})
-		}
-		mset.preAcks[seq] = struct{}{}
-	}
 	mset.mu.Unlock()
 
 	// If nothing else to do.
-	if !shouldRemove || ackBeforeMsg {
+	if !shouldRemove {
+		// Clear any pending preAcks for this consumer.
+		mset.clearPreAckLock(o, seq)
 		return
 	}
 
 	// If we are here we should attempt to remove.
 	if _, err := mset.store.RemoveMsg(seq); err == ErrStoreEOF {
-		// The ack reached us before the actual msg.
-		mset.mu.Lock()
-		if mset.preAcks == nil {
-			mset.preAcks = make(map[uint64]struct{})
-		}
-		mset.preAcks[seq] = struct{}{}
-		mset.mu.Unlock()
+		// This should not happen, but being pedantic.
+		mset.registerPreAckLock(o, seq)
+	} else {
+		mset.clearAllPreAcksLock(seq)
 	}
 }
 
