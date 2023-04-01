@@ -616,16 +616,15 @@ func (ssi *StreamSource) composeIName() string {
 
 	filter := ssi.FilterSubject
 	// normalize filter and destination in case they are empty
-	if filter == "" {
-		filter = ">"
+	if filter == _EMPTY_ {
+		filter = fwcs
 	}
 	destination := ssi.SubjectTransformDest
-	if destination == "" {
-		destination = ">"
+	if destination == _EMPTY_ {
+		destination = fwcs
 	}
 
-	iName = iName + " " + filter + " " + destination
-	return iName
+	return strings.Join([]string{iName, filter, destination}, " ")
 }
 
 // Sets the index name.
@@ -2901,10 +2900,8 @@ func streamAndSeq(shdr string) (string, string, uint64) {
 		return _EMPTY_, _EMPTY_, 0
 	}
 
-	sName := fields[0]
 	if nFields >= 4 {
-		iName := sName + " " + fields[2] + " " + fields[3]
-		return fields[0], iName, uint64(parseAckReplyNum(fields[1]))
+		return fields[0], strings.Join([]string{fields[0], fields[2], fields[3]}, " "), uint64(parseAckReplyNum(fields[1]))
 	} else {
 		return fields[0], _EMPTY_, uint64(parseAckReplyNum(fields[1]))
 	}
