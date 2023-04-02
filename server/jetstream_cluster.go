@@ -436,8 +436,11 @@ func (cc *jetStreamCluster) isStreamCurrent(account, stream string) bool {
 
 // isStreamHealthy will determine if the stream is up to date or very close.
 // For R1 it will make sure the stream is present on this server.
-// Read lock should be held.
-func (cc *jetStreamCluster) isStreamHealthy(account, stream string) bool {
+func (js *jetStream) isStreamHealthy(account, stream string) bool {
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+	cc := js.cluster
+
 	if cc == nil {
 		// Non-clustered mode
 		return true
@@ -477,8 +480,11 @@ func (cc *jetStreamCluster) isStreamHealthy(account, stream string) bool {
 
 // isConsumerCurrent will determine if the consumer is up to date.
 // For R1 it will make sure the consunmer is present on this server.
-// Read lock should be held.
-func (cc *jetStreamCluster) isConsumerCurrent(account, stream, consumer string) bool {
+func (js *jetStream) isConsumerCurrent(account, stream, consumer string) bool {
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+	cc := js.cluster
+
 	if cc == nil {
 		// Non-clustered mode
 		return true
