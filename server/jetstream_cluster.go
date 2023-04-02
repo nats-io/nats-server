@@ -4525,11 +4525,9 @@ func (o *consumer) processReplicatedAck(dseq, sseq uint64) {
 
 	// Update activity.
 	o.lat = time.Now()
+
 	// Do actual ack update to store.
-	if err := o.store.UpdateAcks(dseq, sseq); err != nil {
-		o.mu.Unlock()
-		return
-	}
+	o.store.UpdateAcks(dseq, sseq)
 
 	if o.retention == LimitsPolicy {
 		o.mu.Unlock()

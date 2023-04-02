@@ -1352,6 +1352,7 @@ func (n *raft) StepDown(preferred ...string) error {
 	if maybeLeader != noLeader {
 		n.debug("Selected %q for new leader", maybeLeader)
 		prop.push(&Entry{EntryLeaderTransfer, []byte(maybeLeader)})
+		time.AfterFunc(250*time.Millisecond, func() { stepdown.push(noLeader) })
 	} else {
 		// Force us to stepdown here.
 		n.debug("Stepping down")
