@@ -4936,11 +4936,11 @@ func TestJetStreamClusterDuplicateMsgIdsOnCatchupAndLeaderTakeover(t *testing.T)
 	// Now restart
 	sr = c.restartServer(sr)
 	c.waitOnStreamCurrent(sr, "$G", "TEST")
+	c.waitOnStreamLeader("$G", "TEST")
 
 	// Now make them the leader.
 	for sr != c.streamLeader("$G", "TEST") {
-		_, err = nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "TEST"), nil, time.Second)
-		require_NoError(t, err)
+		nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "TEST"), nil, time.Second)
 		c.waitOnStreamLeader("$G", "TEST")
 	}
 

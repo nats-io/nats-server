@@ -25,6 +25,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1212,9 +1213,9 @@ func (n *raft) isCurrent(includeForwardProgress bool) bool {
 	// forward progress.
 	if startDelta := n.commit - n.applied; startDelta > 0 {
 		for i := 0; i < 10; i++ { // 5ms, in 0.5ms increments
-			n.RUnlock()
+			n.Unlock()
 			time.Sleep(time.Millisecond / 2)
-			n.RLock()
+			n.Lock()
 			if n.commit-n.applied < startDelta {
 				// The gap is getting smaller, so we're making forward progress.
 				return true
@@ -1231,8 +1232,8 @@ func (n *raft) Current() bool {
 	if n == nil {
 		return false
 	}
-	n.RLock()
-	defer n.RUnlock()
+	n.Lock()
+	defer n.Unlock()
 	return n.isCurrent(false)
 }
 
@@ -1241,8 +1242,8 @@ func (n *raft) Healthy() bool {
 	if n == nil {
 		return false
 	}
-	n.RLock()
-	defer n.RUnlock()
+	n.Lock()
+	defer n.Unlock()
 	return n.isCurrent(true)
 }
 
@@ -1351,10 +1352,12 @@ func (n *raft) StepDown(preferred ...string) error {
 	if maybeLeader != noLeader {
 		n.debug("Selected %q for new leader", maybeLeader)
 		prop.push(&Entry{EntryLeaderTransfer, []byte(maybeLeader)})
+		time.AfterFunc(250*time.Millisecond, func() { stepdown.push(noLeader) })
+	} else {
+		// Force us to stepdown here.
+		n.debug("Stepping down")
+		stepdown.push(noLeader)
 	}
-	// Force us to stepdown here.
-	n.debug("Stepping down")
-	stepdown.push(noLeader)
 
 	return nil
 }
@@ -2071,6 +2074,7 @@ func (n *raft) runAsLeader() {
 		n.Unlock()
 	}()
 
+	// To send out our initial peer state.
 	n.sendPeerState()
 
 	hb := time.NewTicker(hbInterval)
@@ -2509,6 +2513,10 @@ func (n *raft) applyCommit(index uint64) error {
 			committed = append(committed, e)
 
 		case EntryLeaderTransfer:
+			if n.state == Leader {
+				n.debug("Stepping down")
+				n.stepdown.push(noLeader)
+			}
 			// No-op
 		}
 	}
@@ -3160,6 +3168,7 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 	if n.werr != nil {
 		return n.werr
 	}
+
 	seq, _, err := n.wal.StoreMsg(_EMPTY_, nil, ae.buf)
 	if err != nil {
 		n.setWriteErrLocked(err)
@@ -3582,7 +3591,7 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 	// If this is a higher term go ahead and stepdown.
 	if vr.term > n.term {
 		if n.state != Follower {
-			n.debug("Stepping down from candidate, detected higher term: %d vs %d", vr.term, n.term)
+			n.debug("Stepping down from %s, detected higher term: %d vs %d", vr.term, n.term, strings.ToLower(n.state.String()))
 			n.stepdown.push(noLeader)
 			n.term = vr.term
 		}

@@ -250,6 +250,7 @@ type stream struct {
 	catchups   map[string]uint64
 	uch        chan struct{}
 	compressOK bool
+	inMonitor  bool
 
 	// Direct get subscription.
 	directSub *subscription
@@ -4004,6 +4005,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		// Make sure to take into account any message assignments that we had to skip (clfs).
 		seq = lseq + 1 - clfs
 		// Check for preAcks and the need to skip vs store.
+
 		if mset.hasAllPreAcks(seq, subject) {
 			mset.clearAllPreAcks(seq)
 			store.SkipMsg()
@@ -5238,4 +5240,23 @@ func (mset *stream) checkConsumerReplication() {
 		}
 		o.mu.RUnlock()
 	}
+}
+
+// Will check if we are running in the monitor already and if not set the appropriate flag.
+func (mset *stream) checkInMonitor() bool {
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+
+	if mset.inMonitor {
+		return true
+	}
+	mset.inMonitor = true
+	return false
+}
+
+// Clear us being in the monitor routine.
+func (mset *stream) clearMonitorRunning() {
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+	mset.inMonitor = false
 }

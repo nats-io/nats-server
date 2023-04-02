@@ -3068,14 +3068,13 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 
 	// Clustered JetStream
 	js.mu.RLock()
-	defer js.mu.RUnlock()
-
 	cc := js.cluster
+	js.mu.RUnlock()
 
 	const na = "unavailable"
 
 	// Currently single server we make sure the streams were recovered.
-	if cc == nil || cc.meta == nil {
+	if cc == nil {
 		sdir := js.config.StoreDir
 		// Whip through account folders and pull each stream name.
 		fis, _ := os.ReadDir(sdir)
@@ -3100,17 +3099,19 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 	}
 
 	// If we are here we want to check for any assets assigned to us.
-	meta := cc.meta
-	ourID := meta.ID()
+	var meta RaftNode
+	js.mu.RLock()
+	meta = cc.meta
+	js.mu.RUnlock()
 
 	// If no meta leader.
-	if meta.GroupLeader() == _EMPTY_ {
+	if meta == nil || meta.GroupLeader() == _EMPTY_ {
 		health.Status = na
 		health.Error = "JetStream has not established contact with a meta leader"
 		return health
 	}
 	// If we are not current with the meta leader.
-	if !meta.Current() {
+	if !meta.Healthy() {
 		health.Status = na
 		health.Error = "JetStream is not current with the meta leader"
 		return health
@@ -3123,6 +3124,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 
 	// Range across all accounts, the streams assigned to them, and the consumers.
 	// If they are assigned to this server check their status.
+	ourID := meta.ID()
 	for acc, asa := range cc.streams {
 		for stream, sa := range asa {
 			if sa.Group.isMember(ourID) {

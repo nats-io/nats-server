@@ -312,8 +312,11 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	if err != nil {
 		return nil, fmt.Errorf("storage directory is not writable")
 	}
+
 	tmpfile.Close()
+	<-dios
 	os.Remove(tmpfile.Name())
+	dios <- struct{}{}
 
 	fs := &fileStore{
 		fcfg: fcfg,
@@ -1148,9 +1151,11 @@ func (fs *fileStore) recoverMsgs() error {
 
 	// Check for any left over purged messages.
 	pdir := filepath.Join(fs.fcfg.StoreDir, purgeDir)
+	<-dios
 	if _, err := os.Stat(pdir); err == nil {
 		os.RemoveAll(pdir)
 	}
+	dios <- struct{}{}
 
 	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
 	fis, err := os.ReadDir(mdir)
@@ -6680,13 +6685,14 @@ func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
 	if o.cfg.AckPolicy == AckNone {
 		return ErrNoAckPolicy
 	}
-	if len(o.state.Pending) == 0 || o.state.Pending[sseq] == nil {
-		return ErrStoreMsgNotFound
-	}
 
 	// On restarts the old leader may get a replay from the raft logs that are old.
 	if dseq <= o.state.AckFloor.Consumer {
 		return nil
+	}
+
+	if len(o.state.Pending) == 0 || o.state.Pending[sseq] == nil {
+		return ErrStoreMsgNotFound
 	}
 
 	// Check for AckAll here.
