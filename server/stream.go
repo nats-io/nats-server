@@ -366,10 +366,21 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		return nil, ApiErrors[JSStreamReplicasNotSupportedErr]
 	}
 
+	// Make sure we are ok when these are done in parallel.
+	var wg sync.WaitGroup
+	v, loaded := jsa.inflight.LoadOrStore(cfg.Name, &wg)
+	ifwg := v.(*sync.WaitGroup)
+	if loaded {
+		ifwg.Wait()
+	} else {
+		ifwg.Add(1)
+		defer ifwg.Done()
+	}
+
 	js, isClustered := jsa.jetStreamAndClustered()
-	jsa.mu.RLock()
+	jsa.mu.Lock()
 	if mset, ok := jsa.streams[cfg.Name]; ok {
-		jsa.mu.RUnlock()
+		jsa.mu.Unlock()
 		// Check to see if configs are same.
 		ocfg := mset.config()
 		if reflect.DeepEqual(ocfg, cfg) {
@@ -388,7 +399,8 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	if !isClustered {
 		reserved = jsa.tieredReservation(tier, &cfg)
 	}
-	jsa.mu.RUnlock()
+	jsa.mu.Unlock()
+
 	if !hasTier {
 		return nil, NewJSNoLimitsError()
 	}
@@ -4427,6 +4439,26 @@ func (mset *stream) internalLoop() {
 	}
 }
 
+// Used to break consumers out of their
+func (mset *stream) resetAndWaitOnConsumers() {
+	mset.mu.RLock()
+	consumers := make([]*consumer, 0, len(mset.consumers))
+	for _, o := range mset.consumers {
+		consumers = append(consumers, o)
+	}
+	mset.mu.RUnlock()
+
+	for _, o := range consumers {
+		if node := o.raftNode(); node != nil {
+			if o.IsLeader() {
+				node.StepDown()
+			}
+			node.Delete()
+		}
+		o.monitorWg.Wait()
+	}
+}
+
 // Internal function to delete a stream.
 func (mset *stream) delete() error {
 	if mset == nil {
@@ -4445,7 +4477,7 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 		return NewJSNotEnabledForAccountError()
 	}
 
-	// Remove from our account map.
+	// Remove from our account map first.
 	jsa.mu.Lock()
 	delete(jsa.streams, mset.cfg.Name)
 	accName := jsa.account.Name
@@ -4474,26 +4506,6 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 			mset.cancelSourceConsumer(si.iname)
 		}
 	}
-	mset.mu.Unlock()
-
-	for _, o := range obs {
-		// Third flag says do not broadcast a signal.
-		// TODO(dlc) - If we have an err here we don't want to stop
-		// but should we log?
-		o.stopWithFlags(deleteFlag, deleteFlag, false, advisory)
-	}
-	mset.mu.Lock()
-
-	// Stop responding to sync requests.
-	mset.stopClusterSubs()
-	// Unsubscribe from direct stream.
-	mset.unsubscribeToStream(true)
-
-	// Our info sub if we spun it up.
-	if mset.infoSub != nil {
-		mset.srv.sysUnsubscribe(mset.infoSub)
-		mset.infoSub = nil
-	}
 
 	// Cluster cleanup
 	var sa *streamAssignment
@@ -4506,6 +4518,27 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 			n.InstallSnapshot(mset.stateSnapshotLocked())
 			n.Stop()
 		}
+	}
+	mset.mu.Unlock()
+
+	for _, o := range obs {
+		// Third flag says do not broadcast a signal.
+		// TODO(dlc) - If we have an err here we don't want to stop
+		// but should we log?
+		o.stopWithFlags(deleteFlag, deleteFlag, false, advisory)
+		o.monitorWg.Wait()
+	}
+
+	mset.mu.Lock()
+	// Stop responding to sync requests.
+	mset.stopClusterSubs()
+	// Unsubscribe from direct stream.
+	mset.unsubscribeToStream(true)
+
+	// Our info sub if we spun it up.
+	if mset.infoSub != nil {
+		mset.srv.sysUnsubscribe(mset.infoSub)
+		mset.infoSub = nil
 	}
 
 	// Send stream delete advisory after the consumers.

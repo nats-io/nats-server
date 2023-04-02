@@ -299,6 +299,8 @@ type consumer struct {
 	prOk      bool
 	uch       chan struct{}
 	retention RetentionPolicy
+
+	monitorWg sync.WaitGroup
 	inMonitor bool
 
 	// R>1 proposals
@@ -4559,8 +4561,8 @@ func (o *consumer) clearMonitorRunning() {
 
 // Test whether we are in the monitor routine.
 func (o *consumer) isMonitorRunning() bool {
-	o.mu.Lock()
-	defer o.mu.Unlock()
+	o.mu.RLock()
+	defer o.mu.RUnlock()
 	return o.inMonitor
 }
 

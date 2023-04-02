@@ -7687,3 +7687,111 @@ func TestNoRaceJetStreamClusterUnbalancedInterestMultipleFilteredConsumers(t *te
 		require_True(t, numPreAcks == 0)
 	}
 }
+
+func TestNoRaceParallelStreamAndConsumerCreation(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	// stream config.
+	scfg := &StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar"},
+		MaxMsgs:  10,
+		Storage:  FileStorage,
+		Replicas: 1,
+	}
+
+	// Will do these direct against the low level API to really make
+	// sure parallel creation ok.
+	np := 1000
+	startCh := make(chan bool)
+	errCh := make(chan error, np)
+	wg := sync.WaitGroup{}
+	wg.Add(np)
+
+	var streams sync.Map
+
+	for i := 0; i < np; i++ {
+		go func() {
+			defer wg.Done()
+
+			// Make them all fire at once.
+			<-startCh
+
+			if mset, err := s.GlobalAccount().addStream(scfg); err != nil {
+				t.Logf("Stream create got an error: %v", err)
+				errCh <- err
+			} else {
+				streams.Store(mset, true)
+			}
+		}()
+	}
+	time.Sleep(100 * time.Millisecond)
+	close(startCh)
+	wg.Wait()
+
+	// Check for no errors.
+	if len(errCh) > 0 {
+		t.Fatalf("Expected no errors, got %d", len(errCh))
+	}
+
+	// Now make sure we really only created one stream.
+	var numStreams int
+	streams.Range(func(k, v any) bool {
+		numStreams++
+		return true
+	})
+	if numStreams > 1 {
+		t.Fatalf("Expected only one stream to be really created, got %d out of %d attempts", numStreams, np)
+	}
+
+	// Now do consumers.
+	mset, err := s.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	cfg := &ConsumerConfig{
+		DeliverSubject: "to",
+		Name:           "DLC",
+		AckPolicy:      AckExplicit,
+	}
+
+	startCh = make(chan bool)
+	errCh = make(chan error, np)
+	wg.Add(np)
+
+	var consumers sync.Map
+
+	for i := 0; i < np; i++ {
+		go func() {
+			defer wg.Done()
+
+			// Make them all fire at once.
+			<-startCh
+
+			if _, err = mset.addConsumer(cfg); err != nil {
+				t.Logf("Consumer create got an error: %v", err)
+				errCh <- err
+			} else {
+				consumers.Store(mset, true)
+			}
+		}()
+	}
+	time.Sleep(100 * time.Millisecond)
+	close(startCh)
+	wg.Wait()
+
+	// Check for no errors.
+	if len(errCh) > 0 {
+		t.Fatalf("Expected no errors, got %d", len(errCh))
+	}
+
+	// Now make sure we really only created one stream.
+	var numConsumers int
+	consumers.Range(func(k, v any) bool {
+		numConsumers++
+		return true
+	})
+	if numConsumers > 1 {
+		t.Fatalf("Expected only one consumer to be really created, got %d out of %d attempts", numConsumers, np)
+	}
+}

@@ -137,6 +137,7 @@ type jsAccount struct {
 	js        *jetStream
 	account   *Account
 	storeDir  string
+	inflight  sync.Map
 	streams   map[string]*stream
 	templates map[string]*streamTemplate
 	store     TemplateStore
