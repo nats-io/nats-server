@@ -367,16 +367,15 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	}
 
 	// Make sure we are ok when these are done in parallel.
-	var wg sync.WaitGroup
-	v, loaded := jsa.inflight.LoadOrStore(cfg.Name, &wg)
-	ifwg := v.(*sync.WaitGroup)
+	v, loaded := jsa.inflight.LoadOrStore(cfg.Name, &sync.WaitGroup{})
+	wg := v.(*sync.WaitGroup)
 	if loaded {
-		ifwg.Wait()
+		wg.Wait()
 	} else {
-		ifwg.Add(1)
+		wg.Add(1)
 		defer func() {
 			jsa.inflight.Delete(cfg.Name)
-			ifwg.Done()
+			wg.Done()
 		}()
 	}
 
