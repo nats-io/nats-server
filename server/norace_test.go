@@ -7745,8 +7745,21 @@ func TestNoRaceParallelStreamAndConsumerCreation(t *testing.T) {
 		t.Fatalf("Expected only one stream to be really created, got %d out of %d attempts", numStreams, np)
 	}
 
+	// Also make sure we cleanup the inflight entries for streams.
+	gacc := s.GlobalAccount()
+	_, jsa, err := gacc.checkForJetStream()
+	require_NoError(t, err)
+	var numEntries int
+	jsa.inflight.Range(func(k, v any) bool {
+		numEntries++
+		return true
+	})
+	if numEntries > 0 {
+		t.Fatalf("Expected no inflight entries to be left over, got %d", numEntries)
+	}
+
 	// Now do consumers.
-	mset, err := s.GlobalAccount().lookupStream("TEST")
+	mset, err := gacc.lookupStream("TEST")
 	require_NoError(t, err)
 
 	cfg := &ConsumerConfig{

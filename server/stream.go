@@ -374,7 +374,10 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		ifwg.Wait()
 	} else {
 		ifwg.Add(1)
-		defer ifwg.Done()
+		defer func() {
+			jsa.inflight.Delete(cfg.Name)
+			ifwg.Done()
+		}()
 	}
 
 	js, isClustered := jsa.jetStreamAndClustered()
