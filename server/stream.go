@@ -4070,21 +4070,23 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	// Check for republish.
 	if republish {
+		tsStr := time.Unix(0, ts).UTC().Format(time.RFC3339Nano)
 		var rpMsg []byte
 		if len(hdr) == 0 {
-			const ht = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Last-Sequence: %d\r\n\r\n"
-			const htho = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Last-Sequence: %d\r\nNats-Msg-Size: %d\r\n\r\n"
+			const ht = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\nNats-Last-Sequence: %d\r\n\r\n"
+			const htho = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\nNats-Last-Sequence: %d\r\nNats-Msg-Size: %d\r\n\r\n"
 			if !thdrsOnly {
-				hdr = []byte(fmt.Sprintf(ht, name, subject, seq, tlseq))
+				hdr = []byte(fmt.Sprintf(ht, name, subject, seq, tsStr, tlseq))
 				rpMsg = copyBytes(msg)
 			} else {
-				hdr = []byte(fmt.Sprintf(htho, name, subject, seq, tlseq, len(msg)))
+				hdr = []byte(fmt.Sprintf(htho, name, subject, seq, tsStr, tlseq, len(msg)))
 			}
 		} else {
 			// Slow path.
 			hdr = genHeader(hdr, JSStream, name)
 			hdr = genHeader(hdr, JSSubject, subject)
 			hdr = genHeader(hdr, JSSequence, strconv.FormatUint(seq, 10))
+			hdr = genHeader(hdr, JSTimeStamp, tsStr)
 			hdr = genHeader(hdr, JSLastSequence, strconv.FormatUint(tlseq, 10))
 			if !thdrsOnly {
 				rpMsg = copyBytes(msg)
