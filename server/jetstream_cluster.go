@@ -1937,13 +1937,21 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		return
 	}
 
+	// Make sure to stop the raft group on exit to prevent accidental memory bloat.
+	defer n.Stop()
+
+	// Make sure only one is running.
+	if mset != nil {
+		if mset.checkInMonitor() {
+			return
+		}
+		defer mset.clearMonitorRunning()
+	}
+
 	qch, lch, aq, uch, ourPeerId := n.QuitC(), n.LeadChangeC(), n.ApplyQ(), mset.updateC(), meta.ID()
 
 	s.Debugf("Starting stream monitor for '%s > %s' [%s]", sa.Client.serviceAccount(), sa.Config.Name, n.Group())
 	defer s.Debugf("Exiting stream monitor for '%s > %s' [%s]", sa.Client.serviceAccount(), sa.Config.Name, n.Group())
-
-	// Make sure to stop the raft group on exit to prevent accidental memory bloat.
-	defer n.Stop()
 
 	// Make sure we do not leave the apply channel to fill up and block the raft layer.
 	defer func() {
@@ -3524,7 +3532,12 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 			mset.monitorWg.Wait()
 			err = mset.stop(true, wasLeader)
 			stopped = true
+		} else if isMember {
+			s.Warnf("JetStream failed to lookup running stream while removing stream '%s > %s' from this server",
+				sa.Client.serviceAccount(), sa.Config.Name)
 		}
+	} else if isMember {
+		s.Warnf("JetStream failed to lookup account while removing stream '%s > %s' from this server", sa.Client.serviceAccount(), sa.Config.Name)
 	}
 
 	// Always delete the node if present.
@@ -3537,11 +3550,16 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 	// 2) node was nil (and couldn't be deleted)
 	if !stopped || node == nil {
 		if sacc := s.SystemAccount(); sacc != nil {
-			os.RemoveAll(filepath.Join(js.config.StoreDir, sacc.GetName(), defaultStoreDirName, sa.Group.Name))
+			saccName := sacc.GetName()
+			os.RemoveAll(filepath.Join(js.config.StoreDir, saccName, defaultStoreDirName, sa.Group.Name))
 			// cleanup dependent consumer groups
 			if !stopped {
 				for _, ca := range sa.consumers {
-					os.RemoveAll(filepath.Join(js.config.StoreDir, sacc.GetName(), defaultStoreDirName, ca.Group.Name))
+					// Make sure we cleanup any possible running nodes for the consumers.
+					if isMember && ca.Group != nil && ca.Group.node != nil {
+						ca.Group.node.Delete()
+					}
+					os.RemoveAll(filepath.Join(js.config.StoreDir, saccName, defaultStoreDirName, ca.Group.Name))
 				}
 			}
 		}
@@ -3796,6 +3814,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 		if ca.Config.MemoryStorage {
 			storage = MemoryStorage
 		}
+		// No-op if R1.
 		js.createRaftGroup(accName, rg, storage)
 	} else {
 		// If we are clustered update the known peers.
@@ -4158,6 +4177,9 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 		return
 	}
 
+	// Make sure to stop the raft group on exit to prevent accidental memory bloat.
+	defer n.Stop()
+
 	// Make sure only one is running.
 	if o.checkInMonitor() {
 		return
@@ -4168,9 +4190,6 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 
 	s.Debugf("Starting consumer monitor for '%s > %s > %s' [%s]", o.acc.Name, ca.Stream, ca.Name, n.Group())
 	defer s.Debugf("Exiting consumer monitor for '%s > %s > %s' [%s]", o.acc.Name, ca.Stream, ca.Name, n.Group())
-
-	// Make sure to stop the raft group on exit to prevent accidental memory bloat.
-	defer n.Stop()
 
 	const (
 		compactInterval = 2 * time.Minute
@@ -4192,9 +4211,9 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	var lastSnap []byte
 	var lastSnapTime time.Time
 
-	doSnapshot := func() {
+	doSnapshot := func(force bool) {
 		// Bail if trying too fast and not in a forced situation.
-		if time.Since(lastSnapTime) < minSnapDelta {
+		if !force && time.Since(lastSnapTime) < minSnapDelta {
 			return
 		}
 
@@ -4202,7 +4221,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 		ne, nb := n.Size()
 		if !n.NeedSnapshot() {
 			// Check if we should compact etc. based on size of log.
-			if ne < compactNumMin && nb < compactSizeMin {
+			if !force && ne < compactNumMin && nb < compactSizeMin {
 				return
 			}
 		}
@@ -4260,7 +4279,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 				if ce == nil {
 					recovering = false
 					if n.NeedSnapshot() {
-						doSnapshot()
+						doSnapshot(true)
 					}
 					// Check our state if we are under an interest based stream.
 					o.checkStateForInterestStream()
@@ -4270,7 +4289,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 					ne, nb := n.Applied(ce.Index)
 					// If we have at least min entries to compact, go ahead and snapshot/compact.
 					if nb > 0 && ne >= compactNumMin || nb > compactSizeMin {
-						doSnapshot()
+						doSnapshot(false)
 					}
 				} else {
 					s.Warnf("Error applying consumer entries to '%s > %s'", ca.Client.serviceAccount(), ca.Name)
@@ -4284,7 +4303,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 
 			// Process the change.
 			if err := js.processConsumerLeaderChange(o, isLeader); err == nil && isLeader {
-				doSnapshot()
+				doSnapshot(true)
 			}
 
 			// We may receive a leader change after the consumer assignment which would cancel us
@@ -4373,7 +4392,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			}
 
 		case <-t.C:
-			doSnapshot()
+			doSnapshot(false)
 		}
 	}
 }
@@ -4507,7 +4526,10 @@ func (o *consumer) processReplicatedAck(dseq, sseq uint64) {
 	// Update activity.
 	o.lat = time.Now()
 	// Do actual ack update to store.
-	o.store.UpdateAcks(dseq, sseq)
+	if err := o.store.UpdateAcks(dseq, sseq); err != nil {
+		o.mu.Unlock()
+		return
+	}
 
 	if o.retention == LimitsPolicy {
 		o.mu.Unlock()
@@ -7186,16 +7208,18 @@ func (mset *stream) calculateSyncRequest(state *StreamState, snap *streamSnapsho
 // processSnapshotDeletes will update our current store based on the snapshot
 // but only processing deletes and new FirstSeq / purges.
 func (mset *stream) processSnapshotDeletes(snap *streamSnapshot) {
+	mset.mu.Lock()
 	var state StreamState
 	mset.store.FastState(&state)
-
 	// Always adjust if FirstSeq has moved beyond our state.
 	if snap.FirstSeq > state.FirstSeq {
 		mset.store.Compact(snap.FirstSeq)
 		mset.store.FastState(&state)
-		mset.setLastSeq(state.LastSeq)
+		mset.lseq = state.LastSeq
 		mset.clearAllPreAcksBelowFloor(state.FirstSeq)
 	}
+	mset.mu.Unlock()
+
 	// Range the deleted and delete if applicable.
 	for _, dseq := range snap.Deleted {
 		if dseq > state.FirstSeq && dseq <= state.LastSeq {
@@ -7396,6 +7420,7 @@ func (mset *stream) processSnapshot(snap *streamSnapshot) (e error) {
 			mset.store.FastState(&state)
 			// Make sure last is also correct in case this also moved.
 			mset.lseq = state.LastSeq
+			mset.clearAllPreAcksBelowFloor(state.FirstSeq)
 			didReset = true
 		}
 		mset.mu.Unlock()
