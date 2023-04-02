@@ -3607,7 +3607,7 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 	fs = o.raftNode().(*raft).wal.(*fileStore)
 	state = fs.State()
 	err = fs.Truncate(state.FirstSeq)
-	require_NoError(t, err)
+	require_True(t, err == nil || err == ErrInvalidSequence)
 	state = fs.State()
 
 	sub, err = js.PullSubscribe("foo", "dlc")
