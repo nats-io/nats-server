@@ -3125,6 +3125,11 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 	// Range across all accounts, the streams assigned to them, and the consumers.
 	// If they are assigned to this server check their status.
 	ourID := meta.ID()
+
+	// TODO(dlc) - Might be better here to not hold the lock the whole time.
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+
 	for acc, asa := range cc.streams {
 		for stream, sa := range asa {
 			if sa.Group.isMember(ourID) {

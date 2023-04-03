@@ -436,11 +436,9 @@ func (cc *jetStreamCluster) isStreamCurrent(account, stream string) bool {
 
 // isStreamHealthy will determine if the stream is up to date or very close.
 // For R1 it will make sure the stream is present on this server.
+// Read lock should be held.
 func (js *jetStream) isStreamHealthy(account, stream string) bool {
-	js.mu.RLock()
-	defer js.mu.RUnlock()
 	cc := js.cluster
-
 	if cc == nil {
 		// Non-clustered mode
 		return true
@@ -480,11 +478,9 @@ func (js *jetStream) isStreamHealthy(account, stream string) bool {
 
 // isConsumerCurrent will determine if the consumer is up to date.
 // For R1 it will make sure the consunmer is present on this server.
+// Read lock should be held.
 func (js *jetStream) isConsumerCurrent(account, stream, consumer string) bool {
-	js.mu.RLock()
-	defer js.mu.RUnlock()
 	cc := js.cluster
-
 	if cc == nil {
 		// Non-clustered mode
 		return true
@@ -1943,9 +1939,6 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		return
 	}
 
-	// Make sure to stop the raft group on exit to prevent accidental memory bloat.
-	defer n.Stop()
-
 	// Make sure only one is running.
 	if mset != nil {
 		if mset.checkInMonitor() {
@@ -1953,6 +1946,11 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		}
 		defer mset.clearMonitorRunning()
 	}
+
+	// Make sure to stop the raft group on exit to prevent accidental memory bloat.
+	// This should be below the checkInMonitor call though to avoid stopping it out
+	// from underneath the one that is running since it will be the same raft node.
+	defer n.Stop()
 
 	qch, lch, aq, uch, ourPeerId := n.QuitC(), n.LeadChangeC(), n.ApplyQ(), mset.updateC(), meta.ID()
 
@@ -4187,14 +4185,16 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 		return
 	}
 
-	// Make sure to stop the raft group on exit to prevent accidental memory bloat.
-	defer n.Stop()
-
 	// Make sure only one is running.
 	if o.checkInMonitor() {
 		return
 	}
 	defer o.clearMonitorRunning()
+
+	// Make sure to stop the raft group on exit to prevent accidental memory bloat.
+	// This should be below the checkInMonitor call though to avoid stopping it out
+	// from underneath the one that is running since it will be the same raft node.
+	defer n.Stop()
 
 	qch, lch, aq, uch, ourPeerId := n.QuitC(), n.LeadChangeC(), n.ApplyQ(), o.updateC(), cc.meta.ID()
 
