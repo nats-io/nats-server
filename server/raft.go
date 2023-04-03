@@ -2511,13 +2511,6 @@ func (n *raft) applyCommit(index uint64) error {
 
 			// We pass these up as well.
 			committed = append(committed, e)
-
-		case EntryLeaderTransfer:
-			if n.state == Leader {
-				n.debug("Stepping down")
-				n.stepdown.push(noLeader)
-			}
-			// No-op
 		}
 	}
 	// Pass to the upper layers if we have normal entries.
@@ -3056,6 +3049,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	for _, e := range ae.entries {
 		switch e.Type {
 		case EntryLeaderTransfer:
+			// Only process these if they are new, so no replays or catchups.
 			if isNew {
 				maybeLeader := string(e.Data)
 				if maybeLeader == n.id && !n.observer && !n.paused {
@@ -3156,7 +3150,7 @@ func (n *raft) buildAppendEntry(entries []*Entry) *appendEntry {
 
 // Determine if we should store an entry.
 func (ae *appendEntry) shouldStore() bool {
-	return ae != nil && len(ae.entries) > 0 && ae.entries[0].Type != EntryLeaderTransfer
+	return ae != nil && len(ae.entries) > 0
 }
 
 // Store our append entry to our WAL.

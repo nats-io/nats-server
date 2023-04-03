@@ -3654,21 +3654,7 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 // processInboundJetStreamMsg handles processing messages bound for a stream.
 func (mset *stream) processInboundJetStreamMsg(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	hdr, msg := c.msgParts(rmsg)
-
-	// If we are not receiving directly from a client we should move this to another Go routine.
-	// Make sure to grab no stream or js locks.
-	if c.kind != CLIENT {
-		mset.queueInboundMsg(subject, reply, hdr, msg)
-		return
-	}
-
-	// This is directly from a client so process inline.
-	// If we are clustered we need to propose this message to the underlying raft group.
-	if mset.IsClustered() {
-		mset.processClusteredInboundMsg(subject, reply, hdr, msg)
-	} else {
-		mset.processJetStreamMsg(subject, reply, hdr, msg, 0, 0)
-	}
+	mset.queueInboundMsg(subject, reply, hdr, msg)
 }
 
 var (

@@ -2242,14 +2242,15 @@ func TestJetStreamClusterMemLeaderRestart(t *testing.T) {
 
 	// Make sure that we have a META leader (there can always be a re-election)
 	c.waitOnLeader()
+	c.waitOnStreamLeader(globalAccountName, "foo")
 
 	// Should still have quorum and a new leader
-	checkFor(t, time.Second, 200*time.Millisecond, func() error {
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
 		osi, err = jsc.StreamInfo("foo")
 		if err != nil {
 			return fmt.Errorf("expected healthy stream asset, got %s", err.Error())
 		}
-		if osi.Cluster.Leader == "" {
+		if osi.Cluster.Leader == _EMPTY_ {
 			return fmt.Errorf("expected healthy stream asset with new leader")
 		}
 		if osi.State.Msgs != uint64(toSend) {
