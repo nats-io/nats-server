@@ -436,8 +436,11 @@ func (cc *jetStreamCluster) isStreamCurrent(account, stream string) bool {
 
 // isStreamHealthy will determine if the stream is up to date or very close.
 // For R1 it will make sure the stream is present on this server.
-// Read lock should be held.
-func (cc *jetStreamCluster) isStreamHealthy(account, stream string) bool {
+func (js *jetStream) isStreamHealthy(account, stream string) bool {
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+	cc := js.cluster
+
 	if cc == nil {
 		// Non-clustered mode
 		return true
@@ -477,8 +480,11 @@ func (cc *jetStreamCluster) isStreamHealthy(account, stream string) bool {
 
 // isConsumerCurrent will determine if the consumer is up to date.
 // For R1 it will make sure the consunmer is present on this server.
-// Read lock should be held.
-func (cc *jetStreamCluster) isConsumerCurrent(account, stream, consumer string) bool {
+func (js *jetStream) isConsumerCurrent(account, stream, consumer string) bool {
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+	cc := js.cluster
+
 	if cc == nil {
 		// Non-clustered mode
 		return true
@@ -2486,41 +2492,42 @@ func (mset *stream) resetClusteredState(err error) bool {
 
 	// Preserve our current state and messages unless we have a first sequence mismatch.
 	shouldDelete := err == errFirstSequenceMismatch
+
+	mset.monitorWg.Wait()
+	mset.resetAndWaitOnConsumers()
+	// Stop our stream.
 	mset.stop(shouldDelete, false)
 
 	if sa != nil {
-		s.Warnf("Resetting stream cluster state for '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
 		js.mu.Lock()
+		s.Warnf("Resetting stream cluster state for '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
+		// Now wipe groups from assignments.
 		sa.Group.node = nil
-		js.mu.Unlock()
-		go js.restartClustered(acc, sa)
-	}
-	return true
-}
-
-// This will reset the stream and consumers.
-// Should be done in separate go routine.
-func (js *jetStream) restartClustered(acc *Account, sa *streamAssignment) {
-	// Check and collect consumers first.
-	js.mu.RLock()
-	var consumers []*consumerAssignment
-	if cc := js.cluster; cc != nil && cc.meta != nil {
-		ourID := cc.meta.ID()
-		for _, ca := range sa.consumers {
-			if rg := ca.Group; rg != nil && rg.isMember(ourID) {
-				rg.node = nil // Erase group raft/node state.
-				consumers = append(consumers, ca)
+		var consumers []*consumerAssignment
+		if cc := js.cluster; cc != nil && cc.meta != nil {
+			ourID := cc.meta.ID()
+			for _, ca := range sa.consumers {
+				if rg := ca.Group; rg != nil && rg.isMember(ourID) {
+					rg.node = nil // Erase group raft/node state.
+					consumers = append(consumers, ca)
+				}
 			}
 		}
-	}
-	js.mu.RUnlock()
+		js.mu.Unlock()
 
-	// Reset stream.
-	js.processClusterCreateStream(acc, sa)
-	// Reset consumers.
-	for _, ca := range consumers {
-		js.processClusterCreateConsumer(ca, nil, false)
+		// restart in a separate Go routine.
+		// This will reset the stream and consumers.
+		go func() {
+			// Reset stream.
+			js.processClusterCreateStream(acc, sa)
+			// Reset consumers.
+			for _, ca := range consumers {
+				js.processClusterCreateConsumer(ca, nil, false)
+			}
+		}()
 	}
+
+	return true
 }
 
 func isControlHdr(hdr []byte) bool {
@@ -3974,6 +3981,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 			// Clustered consumer.
 			// Start our monitoring routine if needed.
 			if !alreadyRunning && !o.isMonitorRunning() {
+				o.monitorWg.Add(1)
 				s.startGoRoutine(func() { js.monitorConsumer(o, ca) })
 			}
 			// For existing consumer, only send response if not recovering.
@@ -4171,6 +4179,8 @@ func (o *consumer) raftNode() RaftNode {
 func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	s, n, cc := js.server(), o.raftNode(), js.cluster
 	defer s.grWG.Done()
+
+	defer o.monitorWg.Done()
 
 	if n == nil {
 		s.Warnf("No RAFT group for '%s > %s > %s'", o.acc.Name, ca.Stream, ca.Name)
