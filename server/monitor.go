@@ -3137,7 +3137,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 		for stream, sa := range asa {
 			if sa.Group.isMember(ourID) {
 				// Make sure we can look up
-				if !cc.isStreamHealthy(acc, stream) {
+				if !js.isStreamHealthy(acc, stream) {
 					health.Status = na
 					health.Error = fmt.Sprintf("JetStream stream '%s > %s' is not current", acc, stream)
 					return health
@@ -3145,7 +3145,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 				// Now check consumers.
 				for consumer, ca := range sa.consumers {
 					if ca.Group.isMember(ourID) {
-						if !cc.isConsumerCurrent(acc, stream, consumer) {
+						if !js.isConsumerCurrent(acc, stream, consumer) {
 							health.Status = na
 							health.Error = fmt.Sprintf("JetStream consumer '%s > %s > %s' is not current", acc, stream, consumer)
 							return health
