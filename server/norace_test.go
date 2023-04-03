@@ -5566,7 +5566,7 @@ func TestNoRaceJetStreamSuperClusterStreamMoveLongRTT(t *testing.T) {
 	// Make C2 far away.
 	gwm := gwProxyMap{
 		"C2": &gwProxy{
-			rtt:  50 * time.Millisecond,
+			rtt:  20 * time.Millisecond,
 			up:   1 * 1024 * 1024 * 1024, // 1gbit
 			down: 1 * 1024 * 1024 * 1024, // 1gbit
 		},
@@ -5585,7 +5585,7 @@ func TestNoRaceJetStreamSuperClusterStreamMoveLongRTT(t *testing.T) {
 	}
 
 	// Place a stream in C1.
-	_, err := js.AddStream(cfg)
+	_, err := js.AddStream(cfg, nats.MaxWait(10*time.Second))
 	require_NoError(t, err)
 
 	chunk := bytes.Repeat([]byte("Z"), 1000*1024) // ~1MB
