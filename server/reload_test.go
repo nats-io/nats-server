@@ -30,6 +30,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1278,8 +1279,8 @@ func TestConfigReloadEnableClusterAuthorization(t *testing.T) {
 	}
 	defer srvbConn.Close()
 
-	if numRoutes := srvb.NumRoutes(); numRoutes != 1 {
-		t.Fatalf("Expected 1 route, got %d", numRoutes)
+	if numRoutes := srvb.NumRoutes(); numRoutes != DEFAULT_ROUTE_POOL_SIZE {
+		t.Fatalf("Expected %d route, got %d", DEFAULT_ROUTE_POOL_SIZE, numRoutes)
 	}
 
 	// Ensure messages flow through the cluster as a sanity check.
@@ -1321,8 +1322,8 @@ func TestConfigReloadEnableClusterAuthorization(t *testing.T) {
 	}
 	checkClusterFormed(t, srva, srvb)
 
-	if numRoutes := srvb.NumRoutes(); numRoutes != 1 {
-		t.Fatalf("Expected 1 route, got %d", numRoutes)
+	if numRoutes := srvb.NumRoutes(); numRoutes != DEFAULT_ROUTE_POOL_SIZE {
+		t.Fatalf("Expected %d route, got %d", DEFAULT_ROUTE_POOL_SIZE, numRoutes)
 	}
 
 	// Ensure messages flow through the cluster now.
@@ -1375,8 +1376,8 @@ func TestConfigReloadDisableClusterAuthorization(t *testing.T) {
 	}
 	defer srvbConn.Close()
 
-	if numRoutes := srvb.NumRoutes(); numRoutes != 1 {
-		t.Fatalf("Expected 1 route, got %d", numRoutes)
+	if numRoutes := srvb.NumRoutes(); numRoutes != DEFAULT_ROUTE_POOL_SIZE {
+		t.Fatalf("Expected %d route, got %d", DEFAULT_ROUTE_POOL_SIZE, numRoutes)
 	}
 
 	// Ensure messages flow through the cluster as a sanity check.
@@ -1400,8 +1401,8 @@ func TestConfigReloadDisableClusterAuthorization(t *testing.T) {
 
 	checkClusterFormed(t, srva, srvb)
 
-	if numRoutes := srvb.NumRoutes(); numRoutes != 1 {
-		t.Fatalf("Expected 1 route, got %d", numRoutes)
+	if numRoutes := srvb.NumRoutes(); numRoutes != DEFAULT_ROUTE_POOL_SIZE {
+		t.Fatalf("Expected %d route, got %d", DEFAULT_ROUTE_POOL_SIZE, numRoutes)
 	}
 
 	// Ensure messages still flow through the cluster.
@@ -1464,8 +1465,8 @@ func TestConfigReloadClusterRoutes(t *testing.T) {
 	}
 	defer srvbConn.Close()
 
-	if numRoutes := srvb.NumRoutes(); numRoutes != 1 {
-		t.Fatalf("Expected 1 route, got %d", numRoutes)
+	if numRoutes := srvb.NumRoutes(); numRoutes != DEFAULT_ROUTE_POOL_SIZE {
+		t.Fatalf("Expected %d route, got %d", DEFAULT_ROUTE_POOL_SIZE, numRoutes)
 	}
 
 	// Ensure consumer on srvA is propagated to srvB
@@ -1622,15 +1623,16 @@ func TestConfigReloadClusterAdvertise(t *testing.T) {
 	verify := func(expectedHost string, expectedPort int, expectedIP string) {
 		s.mu.Lock()
 		routeInfo := s.routeInfo
-		routeInfoJSON := Info{}
-		err := json.Unmarshal(s.routeInfoJSON[5:], &routeInfoJSON) // Skip "INFO "
+		rij := generateInfoJSON(&routeInfo)
 		s.mu.Unlock()
-		if err != nil {
-			t.Fatalf("Error on Unmarshal: %v", err)
-		}
 		if routeInfo.Host != expectedHost || routeInfo.Port != expectedPort || routeInfo.IP != expectedIP {
 			t.Fatalf("Expected host/port/IP to be %s:%v, %q, got %s:%d, %q",
 				expectedHost, expectedPort, expectedIP, routeInfo.Host, routeInfo.Port, routeInfo.IP)
+		}
+		routeInfoJSON := Info{}
+		err := json.Unmarshal(rij[5:], &routeInfoJSON) // Skip "INFO "
+		if err != nil {
+			t.Fatalf("Error on Unmarshal: %v", err)
 		}
 		// Check that server routeInfoJSON was updated too
 		if !reflect.DeepEqual(routeInfo, routeInfoJSON) {
@@ -2013,7 +2015,7 @@ func TestConfigReloadClusterWorks(t *testing.T) {
 	getCID := func(s *Server) uint64 {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		for _, r := range s.routes {
+		if r := getFirstRoute(s); r != nil {
 			return r.cid
 		}
 		return 0
@@ -2462,11 +2464,10 @@ func TestConfigReloadClusterPermsOldServer(t *testing.T) {
 	getRouteRID := func() uint64 {
 		rid := uint64(0)
 		srvb.mu.Lock()
-		for _, r := range srvb.routes {
+		if r := getFirstRoute(srvb); r != nil {
 			r.mu.Lock()
 			rid = r.cid
 			r.mu.Unlock()
-			break
 		}
 		srvb.mu.Unlock()
 		return rid
@@ -2660,8 +2661,10 @@ func TestConfigReloadAccountUsers(t *testing.T) {
 		fooMatch := gAcc.sl.Match("foo")
 		bazMatch := gAcc.sl.Match("baz")
 		gAcc.mu.RUnlock()
-		if n != 2 {
-			return fmt.Errorf("Global account should have 2 subs, got %v", n)
+		// The number of subscriptions should be 4 ($SYS.REQ.USER.INFO, $SYS.REQ.ACCOUNT.PING.CONNZ, etc..)
+		// + 2 (foo and baz)
+		if n != 6 {
+			return fmt.Errorf("Global account should have 6 subs, got %v", n)
 		}
 		if len(fooMatch.psubs) != 1 {
 			return fmt.Errorf("Global account should have foo sub")
@@ -3044,7 +3047,6 @@ func TestConfigReloadAccountServicesImportExport(t *testing.T) {
 			]
 		}
 	}
-	no_sys_acc: true
 	cluster {
 		name: "abc"
 		port: -1
@@ -3157,7 +3159,6 @@ func TestConfigReloadAccountServicesImportExport(t *testing.T) {
 			]
 		}
 	}
-	no_sys_acc: true
 	cluster {
 		name: "abc"
 		port: -1
@@ -3900,7 +3901,7 @@ func TestConfigReloadConnectErrReports(t *testing.T) {
 	}
 }
 
-func TestAuthReloadDoesNotBreakRouteInterest(t *testing.T) {
+func TestConfigReloadAuthDoesNotBreakRouteInterest(t *testing.T) {
 	s, opts := RunServerWithConfig("./configs/seed_tls.conf")
 	defer s.Shutdown()
 
@@ -4050,7 +4051,7 @@ func TestConfigReloadAccountResolverTLSConfig(t *testing.T) {
 	}
 }
 
-func TestLoggingReload(t *testing.T) {
+func TestConfigReloadLogging(t *testing.T) {
 	// This test basically starts a server and causes it's configuration to be reloaded 3 times.
 	// Each time, a new log file is created and trace levels are turned, off - on - off.
 
@@ -4177,7 +4178,7 @@ func TestLoggingReload(t *testing.T) {
 	check("off-post.log", tracingAbsent)
 }
 
-func TestReloadValidate(t *testing.T) {
+func TestConfigReloadValidate(t *testing.T) {
 	confFileName := createConfFile(t, []byte(`
 		listen: "127.0.0.1:-1"
 		no_auth_user: a
@@ -4237,12 +4238,14 @@ func TestConfigReloadAccounts(t *testing.T) {
 
 	urlSys := fmt.Sprintf("nats://sys:pwd@%s:%d", o.Host, o.Port)
 	urlUsr := fmt.Sprintf("nats://usr:pwd@%s:%d", o.Host, o.Port)
-	oldAcc, ok := s.accounts.Load("SYS")
+	oldAcci, ok := s.accounts.Load("SYS")
 	if !ok {
 		t.Fatal("No SYS account")
 	}
+	oldAcc := oldAcci.(*Account)
 
-	testSrvState := func(oldAcc interface{}) {
+	testSrvState := func(oldAcc *Account) {
+		t.Helper()
 		sysAcc := s.SystemAccount()
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -4255,11 +4258,13 @@ func TestConfigReloadAccounts(t *testing.T) {
 		if s.opts.SystemAccount != "SYS" {
 			t.Fatal("Found wrong sys.account")
 		}
-		// This will fail prior to system account reload
-		if acc, ok := s.accounts.Load(s.opts.SystemAccount); !ok {
-			t.Fatal("Found different sys.account pointer")
-		} else if acc == oldAcc {
-			t.Fatal("System account is unaltered")
+		ai, ok := s.accounts.Load(s.opts.SystemAccount)
+		if !ok {
+			t.Fatalf("System account %q not found in s.accounts map", s.opts.SystemAccount)
+		}
+		acc := ai.(*Account)
+		if acc != oldAcc {
+			t.Fatalf("System account pointer was changed during reload, was %p now %p", oldAcc, acc)
 		}
 		if s.sys.client == nil {
 			t.Fatal("Expected sys.client to be non-nil")
@@ -4327,7 +4332,7 @@ func TestConfigReloadAccounts(t *testing.T) {
 		}
 	}
 
-	testSrvState(nil)
+	testSrvState(oldAcc)
 	c1, s1C, s1D := subscribe("SYS1")
 	defer c1.Close()
 	defer s1C.Unsubscribe()
@@ -4510,4 +4515,849 @@ func TestConfigReloadWithSysAccountOnly(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 		// ok
 	}
+}
+
+func TestConfigReloadRouteImportPermissionsWithAccounts(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		poolSize string
+		accounts string
+	}{
+		{"regular", _EMPTY_, _EMPTY_},
+		{"pooling", "pool_size: 5", _EMPTY_},
+		{"per-account", _EMPTY_, "accounts: [\"A\"]"},
+		{"pool and per-account", "pool_size: 3", "accounts: [\"A\"]"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			confATemplate := `
+				server_name: "A"
+				port: -1
+				accounts {
+					A { users: [{user: "user1", password: "pwd"}] }
+					B { users: [{user: "user2", password: "pwd"}] }
+					C { users: [{user: "user3", password: "pwd"}] }
+					D { users: [{user: "user4", password: "pwd"}] }
+				}
+				cluster {
+					name: "local"
+					listen: 127.0.0.1:-1
+					permissions {
+						import {
+							allow: %s
+						}
+						export {
+							allow: ">"
+						}
+					}
+					%s
+					%s
+				}
+			`
+			confA := createConfFile(t, []byte(fmt.Sprintf(confATemplate, `"foo"`, test.poolSize, test.accounts)))
+			srva, optsA := RunServerWithConfig(confA)
+			defer srva.Shutdown()
+
+			confBTemplate := `
+				server_name: "B"
+				port: -1
+				accounts {
+					A { users: [{user: "user1", password: "pwd"}] }
+					B { users: [{user: "user2", password: "pwd"}] }
+					C { users: [{user: "user3", password: "pwd"}] }
+					D { users: [{user: "user4", password: "pwd"}] }
+				}
+				cluster {
+					listen: 127.0.0.1:-1
+					name: "local"
+					permissions {
+						import {
+							allow: %s
+						}
+						export {
+							allow: ">"
+						}
+					}
+					routes = [
+						"nats://127.0.0.1:%d"
+					]
+					%s
+					%s
+				}
+			`
+			confB := createConfFile(t, []byte(fmt.Sprintf(confBTemplate, `"foo"`, optsA.Cluster.Port, test.poolSize, test.accounts)))
+			srvb, _ := RunServerWithConfig(confB)
+			defer srvb.Shutdown()
+
+			checkClusterFormed(t, srva, srvb)
+
+			ncA := natsConnect(t, srva.ClientURL(), nats.UserInfo("user1", "pwd"))
+			defer ncA.Close()
+
+			sub1Foo := natsSubSync(t, ncA, "foo")
+			sub2Foo := natsSubSync(t, ncA, "foo")
+
+			sub1Bar := natsSubSync(t, ncA, "bar")
+			sub2Bar := natsSubSync(t, ncA, "bar")
+
+			natsFlush(t, ncA)
+
+			checkSubInterest(t, srvb, "A", "foo", 2*time.Second)
+
+			ncB := natsConnect(t, srvb.ClientURL(), nats.UserInfo("user1", "pwd"))
+			defer ncB.Close()
+
+			check := func(sub *nats.Subscription, expected bool) {
+				t.Helper()
+				if expected {
+					natsNexMsg(t, sub, time.Second)
+				} else {
+					if msg, err := sub.NextMsg(250 * time.Millisecond); err == nil {
+						t.Fatalf("Should not have gotten the message, got %s/%s", msg.Subject, msg.Data)
+					}
+				}
+			}
+
+			// Should receive on "foo"
+			natsPub(t, ncB, "foo", []byte("foo1"))
+			check(sub1Foo, true)
+			check(sub2Foo, true)
+
+			// But not on "bar"
+			natsPub(t, ncB, "bar", []byte("bar1"))
+			check(sub1Bar, false)
+			check(sub2Bar, false)
+
+			reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, `"bar"`, test.poolSize, test.accounts))
+			reloadUpdateConfig(t, srvb, confB, fmt.Sprintf(confBTemplate, `"bar"`, optsA.Cluster.Port, test.poolSize, test.accounts))
+
+			checkClusterFormed(t, srva, srvb)
+
+			checkSubInterest(t, srvb, "A", "bar", 2*time.Second)
+
+			// Should not receive on foo
+			natsPub(t, ncB, "foo", []byte("foo2"))
+			check(sub1Foo, false)
+			check(sub2Foo, false)
+
+			// Should be able to receive on bar
+			natsPub(t, ncB, "bar", []byte("bar2"))
+			check(sub1Bar, true)
+			check(sub2Bar, true)
+
+			// Restore "foo"
+			reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, `"foo"`, test.poolSize, test.accounts))
+			reloadUpdateConfig(t, srvb, confB, fmt.Sprintf(confBTemplate, `"foo"`, optsA.Cluster.Port, test.poolSize, test.accounts))
+
+			checkClusterFormed(t, srva, srvb)
+
+			checkSubInterest(t, srvb, "A", "foo", 2*time.Second)
+
+			// Should receive on "foo"
+			natsPub(t, ncB, "foo", []byte("foo3"))
+			check(sub1Foo, true)
+			check(sub2Foo, true)
+			// But make sure there are no more than what we expect
+			check(sub1Foo, false)
+			check(sub2Foo, false)
+
+			// And now "bar" should fail
+			natsPub(t, ncB, "bar", []byte("bar3"))
+			check(sub1Bar, false)
+			check(sub2Bar, false)
+		})
+	}
+}
+
+func TestConfigReloadRoutePoolAndPerAccount(t *testing.T) {
+	confATemplate := `
+		port: -1
+		server_name: "A"
+		accounts {
+				A { users: [{user: "user1", password: "pwd"}] }
+				B { users: [{user: "user2", password: "pwd"}] }
+				C { users: [{user: "user3", password: "pwd"}] }
+				D { users: [{user: "user4", password: "pwd"}] }
+		}
+		cluster {
+				name: "local"
+				listen: 127.0.0.1:-1
+				%s
+				%s
+		}
+	`
+	confA := createConfFile(t, []byte(fmt.Sprintf(confATemplate, "pool_size: 3", "accounts: [\"A\"]")))
+	srva, optsA := RunServerWithConfig(confA)
+	defer srva.Shutdown()
+
+	confBCTemplate := `
+		port: -1
+		server_name: "%s"
+		accounts {
+				A { users: [{user: "user1", password: "pwd"}] }
+				B { users: [{user: "user2", password: "pwd"}] }
+				C { users: [{user: "user3", password: "pwd"}] }
+				D { users: [{user: "user4", password: "pwd"}] }
+		}
+		cluster {
+				listen: 127.0.0.1:-1
+				name: "local"
+				routes = [
+						"nats://127.0.0.1:%d"
+				]
+				%s
+				%s
+		}
+	`
+	confB := createConfFile(t, []byte(fmt.Sprintf(confBCTemplate, "B", optsA.Cluster.Port, "pool_size: 3", "accounts: [\"A\"]")))
+	srvb, _ := RunServerWithConfig(confB)
+	defer srvb.Shutdown()
+	confC := createConfFile(t, []byte(fmt.Sprintf(confBCTemplate, "C", optsA.Cluster.Port, "pool_size: 3", "accounts: [\"A\"]")))
+	srvc, _ := RunServerWithConfig(confC)
+	defer srvc.Shutdown()
+
+	checkClusterFormed(t, srva, srvb, srvc)
+
+	// We will also create subscriptions for accounts A, B and C on all sides
+	// just to make sure that interest is properly propagated after a reload.
+	// The conns slices will contain connections for accounts A on srva, srvb,
+	// srvc, then B on srva, srvb, etc.. and the subs slices will contain
+	// subscriptions for account A on foo on srva, bar on srvb, baz on srvc,
+	// then for account B on foo on srva, etc...
+	var conns []*nats.Conn
+	var subs []*nats.Subscription
+	for _, user := range []string{"user1", "user2", "user3"} {
+		nc := natsConnect(t, srva.ClientURL(), nats.UserInfo(user, "pwd"))
+		defer nc.Close()
+		conns = append(conns, nc)
+		sub := natsSubSync(t, nc, "foo")
+		subs = append(subs, sub)
+		nc = natsConnect(t, srvb.ClientURL(), nats.UserInfo(user, "pwd"))
+		defer nc.Close()
+		conns = append(conns, nc)
+		sub = natsSubSync(t, nc, "bar")
+		subs = append(subs, sub)
+		nc = natsConnect(t, srvc.ClientURL(), nats.UserInfo(user, "pwd"))
+		defer nc.Close()
+		conns = append(conns, nc)
+		sub = natsSubSync(t, nc, "baz")
+		subs = append(subs, sub)
+	}
+
+	checkCluster := func() {
+		t.Helper()
+		checkClusterFormed(t, srva, srvb, srvc)
+
+		for _, acc := range []string{"A", "B", "C"} {
+			// On server A, there should be interest for bar/baz
+			checkSubInterest(t, srva, acc, "bar", 2*time.Second)
+			checkSubInterest(t, srva, acc, "baz", 2*time.Second)
+			// On serer B, there should be interest on foo/baz
+			checkSubInterest(t, srvb, acc, "foo", 2*time.Second)
+			checkSubInterest(t, srvb, acc, "baz", 2*time.Second)
+			// And on server C, interest on foo/bar
+			checkSubInterest(t, srvc, acc, "foo", 2*time.Second)
+			checkSubInterest(t, srvc, acc, "bar", 2*time.Second)
+		}
+	}
+	checkCluster()
+
+	getAccRouteID := func(acc string) uint64 {
+		s := srva
+		var id uint64
+		srvbId := srvb.ID()
+		s.mu.RLock()
+		if remotes, ok := s.accRoutes[acc]; ok {
+			// For this test, we will take a single remote, say srvb
+			if r := remotes[srvbId]; r != nil {
+				r.mu.Lock()
+				if string(r.route.accName) == acc {
+					id = r.cid
+				}
+				r.mu.Unlock()
+			}
+		}
+		s.mu.RUnlock()
+		return id
+	}
+	// Capture the route for account "A"
+	raid := getAccRouteID("A")
+	if raid == 0 {
+		t.Fatal("Did not find route for account A")
+	}
+
+	getRouteIDForAcc := func(acc string) uint64 {
+		s := srva
+		a, _ := s.LookupAccount(acc)
+		if a == nil {
+			return 0
+		}
+		a.mu.RLock()
+		pidx := a.routePoolIdx
+		a.mu.RUnlock()
+		var id uint64
+		s.mu.RLock()
+		// For this test, we will take a single remote, say srvb
+		srvbId := srvb.ID()
+		if conns, ok := s.routes[srvbId]; ok {
+			if r := conns[pidx]; r != nil {
+				r.mu.Lock()
+				id = r.cid
+				r.mu.Unlock()
+			}
+		}
+		s.mu.RUnlock()
+		return id
+	}
+	rbid := getRouteIDForAcc("B")
+	if rbid == 0 {
+		t.Fatal("Did not find route for account B")
+	}
+	rcid := getRouteIDForAcc("C")
+	if rcid == 0 {
+		t.Fatal("Did not find route for account C")
+	}
+	rdid := getRouteIDForAcc("D")
+	if rdid == 0 {
+		t.Fatal("Did not find route for account D")
+	}
+
+	sendAndRecv := func(msg string) {
+		t.Helper()
+		for accIdx := 0; accIdx < 9; accIdx += 3 {
+			natsPub(t, conns[accIdx], "bar", []byte(msg))
+			m := natsNexMsg(t, subs[accIdx+1], time.Second)
+			checkMsg := func(m *nats.Msg, subj string) {
+				t.Helper()
+				if string(m.Data) != msg {
+					t.Fatalf("For accIdx=%v, subject %q, expected message %q, got %q", accIdx, subj, msg, m.Data)
+				}
+			}
+			checkMsg(m, "bar")
+			natsPub(t, conns[accIdx+1], "baz", []byte(msg))
+			m = natsNexMsg(t, subs[accIdx+2], time.Second)
+			checkMsg(m, "baz")
+			natsPub(t, conns[accIdx+2], "foo", []byte(msg))
+			m = natsNexMsg(t, subs[accIdx], time.Second)
+			checkMsg(m, "foo")
+		}
+	}
+	sendAndRecv("0")
+
+	// Now add accounts "B" and "D" and do a config reload.
+	reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, "pool_size: 3", "accounts: [\"A\",\"B\",\"D\"]"))
+
+	// Even before reloading srvb and srvc, we should already have per-account
+	// routes for accounts B and D being established. The accounts routePoolIdx
+	// should be marked as transitioning.
+	checkAccPoolIdx := func(s *Server, acc string, expected int) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+			s.mu.RLock()
+			defer s.mu.RUnlock()
+			if a, ok := s.accounts.Load(acc); ok {
+				acc := a.(*Account)
+				acc.mu.RLock()
+				rpi := acc.routePoolIdx
+				acc.mu.RUnlock()
+				if rpi != expected {
+					return fmt.Errorf("Server %q - Account %q routePoolIdx should be %v, but is %v", s, acc, expected, rpi)
+				}
+				return nil
+			}
+			return fmt.Errorf("Server %q - Account %q not found", s, acc)
+		})
+	}
+	checkRoutePerAccAlreadyEstablished := func(s *Server, acc string) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+			s.mu.RLock()
+			defer s.mu.RUnlock()
+			if _, ok := s.accRoutes[acc]; !ok {
+				return fmt.Errorf("Route for account %q still not established", acc)
+			}
+			return nil
+		})
+		checkAccPoolIdx(s, acc, accTransitioningToDedicatedRoute)
+	}
+	// Check srvb and srvc for both accounts.
+	for _, s := range []*Server{srvb, srvc} {
+		for _, acc := range []string{"B", "D"} {
+			checkRoutePerAccAlreadyEstablished(s, acc)
+		}
+	}
+	// On srva, the accounts should already have their routePoolIdx set to
+	// the accDedicatedRoute value.
+	for _, acc := range []string{"B", "D"} {
+		checkAccPoolIdx(srva, acc, accDedicatedRoute)
+	}
+	// Now reload the other servers
+	reloadUpdateConfig(t, srvb, confB, fmt.Sprintf(confBCTemplate, "B", optsA.Cluster.Port, "pool_size: 3", "accounts: [\"A\",\"B\",\"D\"]"))
+	reloadUpdateConfig(t, srvc, confC, fmt.Sprintf(confBCTemplate, "C", optsA.Cluster.Port, "pool_size: 3", "accounts: [\"A\",\"B\",\"D\"]"))
+
+	checkCluster()
+	// Now check that the accounts B and D are no longer transitioning
+	for _, s := range []*Server{srva, srvb, srvc} {
+		for _, acc := range []string{"B", "D"} {
+			checkAccPoolIdx(s, acc, accDedicatedRoute)
+		}
+	}
+
+	checkRouteForADidNotChange := func() {
+		t.Helper()
+		if id := getAccRouteID("A"); id != raid {
+			t.Fatalf("Route id for account 'A' was %d, is now %d", raid, id)
+		}
+	}
+	// Verify that the route for account "A" did not change.
+	checkRouteForADidNotChange()
+
+	// Verify that account "B" has now its own route
+	if id := getAccRouteID("B"); id == 0 {
+		t.Fatal("Did not find route for account B")
+	}
+	// Same for "D".
+	if id := getAccRouteID("D"); id == 0 {
+		t.Fatal("Did not find route for account D")
+	}
+
+	checkRouteStillPresent := func(id uint64) {
+		t.Helper()
+		srva.mu.RLock()
+		defer srva.mu.RUnlock()
+		srvbId := srvb.ID()
+		for _, r := range srva.routes[srvbId] {
+			if r != nil {
+				r.mu.Lock()
+				found := r.cid == id
+				r.mu.Unlock()
+				if found {
+					return
+				}
+			}
+		}
+		t.Fatalf("Route id %v has been disconnected", id)
+	}
+	// Verify that routes that were dealing with "B", and "D" were not disconnected.
+	// Of course, since "C" was not involved, that route should still be present too.
+	checkRouteStillPresent(rbid)
+	checkRouteStillPresent(rcid)
+	checkRouteStillPresent(rdid)
+
+	sendAndRecv("1")
+
+	// Now remove "B" and "D" and verify that route for "A" did not change.
+	reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, "pool_size: 3", "accounts: [\"A\"]"))
+	reloadUpdateConfig(t, srvb, confB, fmt.Sprintf(confBCTemplate, "B", optsA.Cluster.Port, "pool_size: 3", "accounts: [\"A\"]"))
+	reloadUpdateConfig(t, srvc, confC, fmt.Sprintf(confBCTemplate, "C", optsA.Cluster.Port, "pool_size: 3", "accounts: [\"A\"]"))
+
+	checkCluster()
+
+	// Verify that the route for account "A" did not change.
+	checkRouteForADidNotChange()
+
+	// Verify that there is no dedicated route for account "B"
+	if id := getAccRouteID("B"); id != 0 {
+		t.Fatal("Should not have found a route for account B")
+	}
+	// It should instead be in one of the pooled route, and same
+	// than it was before.
+	if id := getRouteIDForAcc("B"); id != rbid {
+		t.Fatalf("Account B's route was %d, it is now %d", rbid, id)
+	}
+	// Same for "D"
+	if id := getAccRouteID("D"); id != 0 {
+		t.Fatal("Should not have found a route for account D")
+	}
+	if id := getRouteIDForAcc("D"); id != rdid {
+		t.Fatalf("Account D's route was %d, it is now %d", rdid, id)
+	}
+
+	sendAndRecv("2")
+
+	// Finally, change pool size and make sure that routes handling B, C and D
+	// were disconnected/reconnected, and that A did not change.
+	reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, "pool_size: 5", "accounts: [\"A\"]"))
+	reloadUpdateConfig(t, srvb, confB, fmt.Sprintf(confBCTemplate, "B", optsA.Cluster.Port, "pool_size: 5", "accounts: [\"A\"]"))
+	reloadUpdateConfig(t, srvc, confC, fmt.Sprintf(confBCTemplate, "C", optsA.Cluster.Port, "pool_size: 5", "accounts: [\"A\"]"))
+
+	checkCluster()
+
+	checkRouteForADidNotChange()
+
+	checkRouteDisconnected := func(acc string, oldID uint64) {
+		t.Helper()
+		if id := getRouteIDForAcc(acc); id == oldID {
+			t.Fatalf("Route that was handling account %q did not change", acc)
+		}
+	}
+	checkRouteDisconnected("B", rbid)
+	checkRouteDisconnected("C", rcid)
+	checkRouteDisconnected("D", rdid)
+
+	sendAndRecv("3")
+
+	// Now check that there were no duplicates and that all subs have 0 pending messages.
+	for i, sub := range subs {
+		if n, _, _ := sub.Pending(); n != 0 {
+			t.Fatalf("Expected 0 pending messages, got %v for accIdx=%d sub=%q", n, i, sub.Subject)
+		}
+	}
+}
+
+func TestConfigReloadRoutePoolCannotBeDisabledIfAccountsPresent(t *testing.T) {
+	tmpl := `
+		port: -1
+		server_name: "%s"
+		accounts {
+			A { users: [{user: "user1", password: "pwd"}] }
+			B { users: [{user: "user2", password: "pwd"}] }
+		}
+		cluster {
+				name: "local"
+				listen: 127.0.0.1:-1
+				%s
+				%s
+				%s
+		}
+	`
+	conf1 := createConfFile(t, []byte(fmt.Sprintf(tmpl, "A", "accounts: [\"A\"]", _EMPTY_, _EMPTY_)))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(tmpl, "B", "accounts: [\"A\"]", _EMPTY_,
+		fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", o1.Cluster.Port))))
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	err := os.WriteFile(conf1, []byte(fmt.Sprintf(tmpl, "A", "accounts: [\"A\"]", "pool_size: -1", _EMPTY_)), 0666)
+	require_NoError(t, err)
+	if err := s1.Reload(); err == nil || !strings.Contains(err.Error(), "accounts") {
+		t.Fatalf("Expected error regarding presence of accounts, got %v", err)
+	}
+
+	// Now remove the accounts too and reload, this should work
+	reloadUpdateConfig(t, s1, conf1, fmt.Sprintf(tmpl, "A", _EMPTY_, "pool_size: -1", _EMPTY_))
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl, "B", _EMPTY_, "pool_size: -1", fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", o1.Cluster.Port)))
+	checkClusterFormed(t, s1, s2)
+
+	ncs2 := natsConnect(t, s2.ClientURL(), nats.UserInfo("user1", "pwd"))
+	defer ncs2.Close()
+	sub := natsSubSync(t, ncs2, "foo")
+	checkSubInterest(t, s1, "A", "foo", time.Second)
+
+	ncs1 := natsConnect(t, s1.ClientURL(), nats.UserInfo("user1", "pwd"))
+	defer ncs1.Close()
+	natsPub(t, ncs1, "foo", []byte("hello"))
+	natsNexMsg(t, sub, time.Second)
+
+	// Wait a bit and make sure there are no duplicates
+	time.Sleep(50 * time.Millisecond)
+	if n, _, _ := sub.Pending(); n != 0 {
+		t.Fatalf("Expected no pending messages, got %v", n)
+	}
+
+	// Finally, verify that the system account is no longer bound to
+	// a dedicated route. For that matter, s.accRoutes should be nil.
+	for _, s := range []*Server{s1, s2} {
+		sys := s.SystemAccount()
+		if sys == nil {
+			t.Fatal("No system account found")
+		}
+		sys.mu.RLock()
+		rpi := sys.routePoolIdx
+		sys.mu.RUnlock()
+		if rpi != 0 {
+			t.Fatalf("Server %q - expected account's routePoolIdx to be 0, got %v", s, rpi)
+		}
+		s.mu.RLock()
+		arNil := s.accRoutes == nil
+		s.mu.RUnlock()
+		if !arNil {
+			t.Fatalf("Server %q - accRoutes expected to be nil, it was not", s)
+		}
+	}
+}
+
+func TestConfigReloadRoutePoolAndPerAccountWithOlderServer(t *testing.T) {
+	confATemplate := `
+		port: -1
+		server_name: "A"
+		accounts {
+				A { users: [{user: "user1", password: "pwd"}] }
+		}
+		cluster {
+				name: "local"
+				listen: 127.0.0.1:-1
+				%s
+				%s
+		}
+	`
+	confA := createConfFile(t, []byte(fmt.Sprintf(confATemplate, "pool_size: 3", _EMPTY_)))
+	srva, optsA := RunServerWithConfig(confA)
+	defer srva.Shutdown()
+
+	confBCTemplate := `
+		port: -1
+		server_name: "%s"
+		accounts {
+				A { users: [{user: "user1", password: "pwd"}] }
+		}
+		cluster {
+				listen: 127.0.0.1:-1
+				name: "local"
+				routes = [
+						"nats://127.0.0.1:%d"
+				]
+				%s
+				%s
+		}
+	`
+	confB := createConfFile(t, []byte(fmt.Sprintf(confBCTemplate, "B", optsA.Cluster.Port, "pool_size: 3", _EMPTY_)))
+	srvb, _ := RunServerWithConfig(confB)
+	defer srvb.Shutdown()
+	confC := createConfFile(t, []byte(fmt.Sprintf(confBCTemplate, "C", optsA.Cluster.Port, "pool_size: -1", _EMPTY_)))
+	srvc, _ := RunServerWithConfig(confC)
+	defer srvc.Shutdown()
+
+	checkClusterFormed(t, srva, srvb, srvc)
+
+	// Create a connection and sub on B and C
+	ncB := natsConnect(t, srvb.ClientURL(), nats.UserInfo("user1", "pwd"))
+	defer ncB.Close()
+	subB := natsSubSync(t, ncB, "foo")
+
+	ncC := natsConnect(t, srvc.ClientURL(), nats.UserInfo("user1", "pwd"))
+	defer ncC.Close()
+	subC := natsSubSync(t, ncC, "bar")
+
+	// Check that on server B, there is interest on "bar" for account A
+	// (coming from server C), and on server C, there is interest on "foo"
+	// for account A (coming from server B).
+	checkCluster := func() {
+		t.Helper()
+		checkClusterFormed(t, srva, srvb, srvc)
+		checkSubInterest(t, srvb, "A", "bar", 2*time.Second)
+		checkSubInterest(t, srvc, "A", "foo", 2*time.Second)
+	}
+	checkCluster()
+
+	sendAndRecv := func(msg string) {
+		t.Helper()
+		natsPub(t, ncB, "bar", []byte(msg))
+		if m := natsNexMsg(t, subC, time.Second); string(m.Data) != msg {
+			t.Fatalf("Expected message %q on %q, got %q", msg, "bar", m.Data)
+		}
+		natsPub(t, ncC, "foo", []byte(msg))
+		if m := natsNexMsg(t, subB, time.Second); string(m.Data) != msg {
+			t.Fatalf("Expected message %q on %q, got %q", msg, "foo", m.Data)
+		}
+	}
+	sendAndRecv("0")
+
+	// Now add account "A" and do a config reload. We do this only on
+	// server srva and srb since server C really does not change.
+	reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, "pool_size: 3", "accounts: [\"A\"]"))
+	reloadUpdateConfig(t, srvb, confB, fmt.Sprintf(confBCTemplate, "B", optsA.Cluster.Port, "pool_size: 3", "accounts: [\"A\"]"))
+	checkCluster()
+	sendAndRecv("1")
+
+	// Remove "A" from the accounts list
+	reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, "pool_size: 3", _EMPTY_))
+	reloadUpdateConfig(t, srvb, confB, fmt.Sprintf(confBCTemplate, "B", optsA.Cluster.Port, "pool_size: 3", _EMPTY_))
+	checkCluster()
+	sendAndRecv("2")
+
+	// Change the pool size
+	reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, "pool_size: 5", _EMPTY_))
+	reloadUpdateConfig(t, srvb, confB, fmt.Sprintf(confBCTemplate, "B", optsA.Cluster.Port, "pool_size: 5", _EMPTY_))
+	checkCluster()
+	sendAndRecv("3")
+
+	// Add account "A" and change the pool size
+	reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, "pool_size: 4", "accounts: [\"A\"]"))
+	reloadUpdateConfig(t, srvb, confB, fmt.Sprintf(confBCTemplate, "B", optsA.Cluster.Port, "pool_size: 4", "accounts: [\"A\"]"))
+	checkCluster()
+	sendAndRecv("4")
+
+	// Remove account "A" and change the pool size
+	reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, "pool_size: 3", _EMPTY_))
+	reloadUpdateConfig(t, srvb, confB, fmt.Sprintf(confBCTemplate, "B", optsA.Cluster.Port, "pool_size: 3", _EMPTY_))
+	checkCluster()
+	sendAndRecv("5")
+}
+
+func TestConfigReloadRoutePoolAndPerAccountNoDuplicateSub(t *testing.T) {
+	confATemplate := `
+		port: -1
+		server_name: "A"
+		accounts {
+				A { users: [{user: "user1", password: "pwd"}] }
+		}
+		cluster {
+				name: "local"
+				listen: 127.0.0.1:-1
+				pool_size: 3
+				%s
+		}
+	`
+	confA := createConfFile(t, []byte(fmt.Sprintf(confATemplate, _EMPTY_)))
+	srva, optsA := RunServerWithConfig(confA)
+	defer srva.Shutdown()
+
+	confBCTemplate := `
+		port: -1
+		server_name: "%s"
+		accounts {
+				A { users: [{user: "user1", password: "pwd"}] }
+		}
+		cluster {
+				listen: 127.0.0.1:-1
+				name: "local"
+				routes = [
+						"nats://127.0.0.1:%d"
+				]
+				pool_size: 3
+				%s
+		}
+	`
+	confB := createConfFile(t, []byte(fmt.Sprintf(confBCTemplate, "B", optsA.Cluster.Port, _EMPTY_)))
+	srvb, _ := RunServerWithConfig(confB)
+	defer srvb.Shutdown()
+	confC := createConfFile(t, []byte(fmt.Sprintf(confBCTemplate, "C", optsA.Cluster.Port, _EMPTY_)))
+	srvc, _ := RunServerWithConfig(confC)
+	defer srvc.Shutdown()
+
+	checkClusterFormed(t, srva, srvb, srvc)
+
+	ncC := natsConnect(t, srvc.ClientURL(), nats.UserInfo("user1", "pwd"))
+	defer ncC.Close()
+
+	ch := make(chan struct{})
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	var subs []*nats.Subscription
+	go func() {
+		defer wg.Done()
+		// Limit the number of subscriptions. From experimentation, the issue would
+		// arise around subscriptions ~700.
+		for i := 0; i < 1000; i++ {
+			if sub, err := ncC.SubscribeSync(fmt.Sprintf("foo.%d", i)); err == nil {
+				subs = append(subs, sub)
+			}
+			select {
+			case <-ch:
+				return
+			default:
+				if i%100 == 0 {
+					time.Sleep(5 * time.Millisecond)
+				}
+			}
+		}
+	}()
+
+	// Wait a tiny bit before doing the configuration reload.
+	time.Sleep(100 * time.Millisecond)
+
+	reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, "accounts: [\"A\"]"))
+	reloadUpdateConfig(t, srvb, confB, fmt.Sprintf(confBCTemplate, "B", optsA.Cluster.Port, "accounts: [\"A\"]"))
+	reloadUpdateConfig(t, srvc, confC, fmt.Sprintf(confBCTemplate, "C", optsA.Cluster.Port, "accounts: [\"A\"]"))
+
+	checkClusterFormed(t, srva, srvb, srvc)
+
+	close(ch)
+	wg.Wait()
+
+	for _, sub := range subs {
+		checkSubInterest(t, srvb, "A", sub.Subject, 500*time.Millisecond)
+	}
+
+	ncB := natsConnect(t, srvb.ClientURL(), nats.UserInfo("user1", "pwd"))
+	defer ncB.Close()
+
+	for _, sub := range subs {
+		natsPub(t, ncB, sub.Subject, []byte("hello"))
+	}
+
+	// Now make sure that there is only 1 pending message for each sub.
+	// Wait a bit to give a chance to duplicate messages to arrive if
+	// there was a bug that would lead to a sub on each route (the pooled
+	// and the per-account)
+	time.Sleep(250 * time.Millisecond)
+	for _, sub := range subs {
+		if n, _, _ := sub.Pending(); n != 1 {
+			t.Fatalf("Expected only 1 message for subscription on %q, got %v", sub.Subject, n)
+		}
+	}
+}
+
+func TestConfigReloadGlobalAccountWithMappingAndJetStream(t *testing.T) {
+	tmpl := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+
+		mappings {
+			subj.orig: subj.mapped.before.reload
+		}
+
+		leaf {
+			listen: 127.0.0.1:-1
+		}
+
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+
+		# For access to system account.
+		accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+	`
+	c := createJetStreamClusterWithTemplate(t, tmpl, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Verify that mapping works
+	checkMapping := func(expectedSubj string) {
+		t.Helper()
+		sub := natsSubSync(t, nc, "subj.>")
+		defer sub.Unsubscribe()
+		natsPub(t, nc, "subj.orig", nil)
+		msg := natsNexMsg(t, sub, time.Second)
+		if msg.Subject != expectedSubj {
+			t.Fatalf("Expected subject to have been mapped to %q, got %q", expectedSubj, msg.Subject)
+		}
+	}
+	checkMapping("subj.mapped.before.reload")
+
+	// Create a stream and check that we can get the INFO
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Replicas:  3,
+		Subjects:  []string{"foo"},
+		Retention: nats.InterestPolicy,
+	})
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	_, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+
+	// Change mapping on all servers and issue reload
+	for i, s := range c.servers {
+		opts := c.opts[i]
+		content, err := os.ReadFile(opts.ConfigFile)
+		require_NoError(t, err)
+		reloadUpdateConfig(t, s, opts.ConfigFile, strings.Replace(string(content), "subj.mapped.before.reload", "subj.mapped.after.reload", 1))
+	}
+	// Make sure the cluster is still formed
+	checkClusterFormed(t, c.servers...)
+	// Now repeat the test for the subject mapping and stream info
+	checkMapping("subj.mapped.after.reload")
+	_, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
 }

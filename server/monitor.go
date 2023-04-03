@@ -778,6 +778,7 @@ type RouteInfo struct {
 	NumSubs      uint32             `json:"subscriptions"`
 	Subs         []string           `json:"subscriptions_list,omitempty"`
 	SubsDetail   []SubDetail        `json:"subscriptions_list_detail,omitempty"`
+	Account      string             `json:"account,omitempty"`
 }
 
 // Routez returns a Routez struct containing information about routes.
@@ -790,7 +791,7 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 	}
 
 	s.mu.Lock()
-	rs.NumRoutes = len(s.routes)
+	rs.NumRoutes = s.numRoutes()
 
 	// copy the server id for monitoring
 	rs.ID = s.info.ID
@@ -801,8 +802,7 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 		rs.Export = perms.Export
 	}
 
-	// Walk the list
-	for _, r := range s.routes {
+	addRoute := func(r *client) {
 		r.mu.Lock()
 		ri := &RouteInfo{
 			Rid:          r.cid,
@@ -821,6 +821,7 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 			LastActivity: r.last,
 			Uptime:       myUptime(rs.Now.Sub(r.start)),
 			Idle:         myUptime(rs.Now.Sub(r.last)),
+			Account:      string(r.route.accName),
 		}
 
 		if len(r.subs) > 0 {
@@ -840,6 +841,11 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 		r.mu.Unlock()
 		rs.Routes = append(rs.Routes, ri)
 	}
+
+	// Walk the list
+	s.forEachRoute(func(r *client) {
+		addRoute(r)
+	})
 	s.mu.Unlock()
 	return rs, nil
 }
@@ -1214,6 +1220,7 @@ type ClusterOptsVarz struct {
 	TLSTimeout  float64  `json:"tls_timeout,omitempty"`
 	TLSRequired bool     `json:"tls_required,omitempty"`
 	TLSVerify   bool     `json:"tls_verify,omitempty"`
+	PoolSize    int      `json:"pool_size,omitempty"`
 }
 
 // GatewayOptsVarz contains monitoring gateway information
@@ -1467,6 +1474,7 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 			TLSTimeout:  c.TLSTimeout,
 			TLSRequired: clustTlsReq,
 			TLSVerify:   clustTlsReq,
+			PoolSize:    opts.Cluster.PoolSize,
 		},
 		Gateway: GatewayOptsVarz{
 			Name:           gw.Name,
@@ -1634,8 +1642,8 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 	}
 	v.Connections = len(s.clients)
 	v.TotalConnections = s.totalClients
-	v.Routes = len(s.routes)
-	v.Remotes = len(s.remotes)
+	v.Routes = s.numRoutes()
+	v.Remotes = s.numRemotes()
 	v.Leafs = len(s.leafs)
 	v.InMsgs = atomic.LoadInt64(&s.inMsgs)
 	v.InBytes = atomic.LoadInt64(&s.inBytes)

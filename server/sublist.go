@@ -820,9 +820,13 @@ func (s *Sublist) RemoveBatch(subs []*subscription) error {
 	// Turn off our cache if enabled.
 	wasEnabled := s.cache != nil
 	s.cache = nil
+	// We will try to remove all subscriptions but will report the first that caused
+	// an error. In other words, we don't bail out at the first error which would
+	// possibly leave a bunch of subscriptions that could have been removed.
+	var err error
 	for _, sub := range subs {
-		if err := s.remove(sub, false, false); err != nil {
-			return err
+		if lerr := s.remove(sub, false, false); lerr != nil && err == nil {
+			err = lerr
 		}
 	}
 	// Turn caching back on here.
@@ -830,7 +834,7 @@ func (s *Sublist) RemoveBatch(subs []*subscription) error {
 	if wasEnabled {
 		s.cache = make(map[string]*SublistResult)
 	}
-	return nil
+	return err
 }
 
 // pruneNode is used to prune an empty node from the tree.

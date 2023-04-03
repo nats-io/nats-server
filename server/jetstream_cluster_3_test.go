@@ -1136,13 +1136,13 @@ func TestJetStreamClusterScaleDownWhileNoQuorum(t *testing.T) {
 	}
 
 	sl.mu.Lock()
-	for _, r := range sl.routes {
+	sl.forEachRoute(func(r *client) {
 		r.mu.Lock()
 		ncu := &networkCableUnplugged{Conn: r.nc, unplugged: true}
 		ncu.wg.Add(1)
 		r.nc = ncu
 		r.mu.Unlock()
-	}
+	})
 	sl.mu.Unlock()
 
 	// Wait for the stream info to fail
@@ -1170,7 +1170,7 @@ func TestJetStreamClusterScaleDownWhileNoQuorum(t *testing.T) {
 	}, nats.MaxWait(5*time.Second))
 
 	sl.mu.Lock()
-	for _, r := range sl.routes {
+	sl.forEachRoute(func(r *client) {
 		r.mu.Lock()
 		ncu := r.nc.(*networkCableUnplugged)
 		ncu.Lock()
@@ -1178,7 +1178,7 @@ func TestJetStreamClusterScaleDownWhileNoQuorum(t *testing.T) {
 		ncu.wg.Done()
 		ncu.Unlock()
 		r.mu.Unlock()
-	}
+	})
 	sl.mu.Unlock()
 
 	checkClusterFormed(t, c.servers...)
@@ -1391,12 +1391,11 @@ func TestJetStreamParallelStreamCreation(t *testing.T) {
 			// Make them all fire at once.
 			<-startCh
 
-			_, err := js.AddStream(&nats.StreamConfig{
+			if _, err := js.AddStream(&nats.StreamConfig{
 				Name:     "TEST",
 				Subjects: []string{"common.*.*"},
 				Replicas: 3,
-			})
-			if err != nil {
+			}); err != nil {
 				errCh <- err
 			}
 		}()
@@ -1486,6 +1485,7 @@ func TestJetStreamParallelConsumerCreation(t *testing.T) {
 		Replicas: 3,
 	})
 	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
 
 	np := 50
 

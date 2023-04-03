@@ -419,7 +419,7 @@ func TestClientAdvertiseInCluster(t *testing.T) {
 
 	checkURLs := func(expected string) {
 		t.Helper()
-		checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
 			srvs := nc.DiscoveredServers()
 			for _, u := range srvs {
 				if u == expected {
@@ -441,7 +441,7 @@ func TestClientAdvertiseInCluster(t *testing.T) {
 	checkURLs("nats://srvBC:4222")
 
 	srvB.Shutdown()
-	checkNumRoutes(t, srvA, 1)
+	checkNumRoutes(t, srvA, DEFAULT_ROUTE_POOL_SIZE+1)
 	checkURLs("nats://srvBC:4222")
 }
 
@@ -691,7 +691,8 @@ func TestCustomRouterAuthentication(t *testing.T) {
 	s3 := RunServer(opts3)
 	defer s3.Shutdown()
 	checkClusterFormed(t, s, s3)
-	checkNumRoutes(t, s3, 1)
+	// Default pool size + 1 for system account
+	checkNumRoutes(t, s3, DEFAULT_ROUTE_POOL_SIZE+1)
 }
 
 func TestMonitoringNoTimeout(t *testing.T) {

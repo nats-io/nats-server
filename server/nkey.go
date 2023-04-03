@@ -34,7 +34,7 @@ func (s *Server) NonceRequired() bool {
 // nonceRequired tells us if we should send a nonce.
 // Lock should be held on entry.
 func (s *Server) nonceRequired() bool {
-	return s.opts.AlwaysEnableNonce || len(s.nkeys) > 0 || s.trustedKeys != nil
+	return s.getOpts().AlwaysEnableNonce || len(s.nkeys) > 0 || s.trustedKeys != nil
 }
 
 // Generate a nonce for INFO challenge.

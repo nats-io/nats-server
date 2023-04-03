@@ -1030,9 +1030,12 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 	}
 
 	js.mu.Lock()
-	if _, ok := js.accounts[a.Name]; ok && a.JetStreamEnabled() {
+	if jsa, ok := js.accounts[a.Name]; ok {
+		a.mu.Lock()
+		a.js = jsa
+		a.mu.Unlock()
 		js.mu.Unlock()
-		return fmt.Errorf("jetstream already enabled for account")
+		return a.enableAllJetStreamServiceImportsAndMappings()
 	}
 
 	// Check the limits against existing reservations.
@@ -1054,12 +1057,11 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 	jsa.usageMu.Unlock()
 
 	js.accounts[a.Name] = jsa
-	js.mu.Unlock()
-
-	// Stamp inside account as well.
+	// Stamp inside account as well. Needs to be done under js's lock.
 	a.mu.Lock()
 	a.js = jsa
 	a.mu.Unlock()
+	js.mu.Unlock()
 
 	// Create the proper imports here.
 	if err := a.enableAllJetStreamServiceImportsAndMappings(); err != nil {

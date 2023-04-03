@@ -46,6 +46,7 @@ func TestNoRaceRouteSendSubs(t *testing.T) {
 			write_deadline: "2s"
 			cluster {
 				port: -1
+				pool_size: -1
 				%s
 			}
 			no_sys_acc: true

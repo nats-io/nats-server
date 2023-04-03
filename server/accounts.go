@@ -91,7 +91,13 @@ type Account struct {
 	tags         jwt.TagList
 	nameTag      string
 	lastLimErr   int64
+	routePoolIdx int
 }
+
+const (
+	accDedicatedRoute                = -1
+	accTransitioningToDedicatedRoute = -2
+)
 
 // Account based limits.
 type limits struct {
@@ -238,8 +244,7 @@ func (a *Account) String() string {
 
 // Used to create shallow copies of accounts for transfer
 // from opts to real accounts in server struct.
-func (a *Account) shallowCopy() *Account {
-	na := NewAccount(a.Name)
+func (a *Account) shallowCopy(na *Account) {
 	na.Nkey = a.Nkey
 	na.Issuer = a.Issuer
 
@@ -279,12 +284,14 @@ func (a *Account) shallowCopy() *Account {
 			}
 		}
 	}
+	na.mappings = a.mappings
+	if len(na.mappings) > 0 && na.prand == nil {
+		na.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
 	// JetStream
 	na.jsLimits = a.jsLimits
 	// Server config account limits.
 	na.limits = a.limits
-
-	return na
 }
 
 // nextEventID uses its own lock for better concurrency.
@@ -1331,11 +1338,11 @@ func (a *Account) sendTrackingLatency(si *serviceImport, responder *client) bool
 	// FIXME(dlc) - We need to clean these up but this should happen
 	// already with the auto-expire logic.
 	if responder != nil && responder.kind != CLIENT {
-		si.acc.mu.Lock()
+		a.mu.Lock()
 		if si.m1 != nil {
 			m1, m2 := sl, si.m1
 			m1.merge(m2)
-			si.acc.mu.Unlock()
+			a.mu.Unlock()
 			a.srv.sendInternalAccountMsg(a, si.latency.subject, m1)
 			a.mu.Lock()
 			si.rc = nil
@@ -1343,7 +1350,7 @@ func (a *Account) sendTrackingLatency(si *serviceImport, responder *client) bool
 			return true
 		}
 		si.m1 = sl
-		si.acc.mu.Unlock()
+		a.mu.Unlock()
 		return false
 	} else {
 		a.srv.sendInternalAccountMsg(a, si.latency.subject, sl)
@@ -2747,7 +2754,12 @@ func (a *Account) checkStreamImportsEqual(b *Account) bool {
 	return true
 }
 
+// Returns true if `a` and `b` stream exports are the same.
+// Acquires `a` read lock, but `b` is assumed to not be accessed
+// by anyone but the caller (`b` is not registered anywhere).
 func (a *Account) checkStreamExportsEqual(b *Account) bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	if len(a.exports.streams) != len(b.exports.streams) {
 		return false
 	}
@@ -2756,14 +2768,29 @@ func (a *Account) checkStreamExportsEqual(b *Account) bool {
 		if !ok {
 			return false
 		}
-		if !reflect.DeepEqual(aea, bea) {
+		if !isStreamExportEqual(aea, bea) {
 			return false
 		}
 	}
 	return true
 }
 
+func isStreamExportEqual(a, b *streamExport) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if (a == nil && b != nil) || (a != nil && b == nil) {
+		return false
+	}
+	return isExportAuthEqual(&a.exportAuth, &b.exportAuth)
+}
+
+// Returns true if `a` and `b` service exports are the same.
+// Acquires `a` read lock, but `b` is assumed to not be accessed
+// by anyone but the caller (`b` is not registered anywhere).
 func (a *Account) checkServiceExportsEqual(b *Account) bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	if len(a.exports.services) != len(b.exports.services) {
 		return false
 	}
@@ -2772,7 +2799,66 @@ func (a *Account) checkServiceExportsEqual(b *Account) bool {
 		if !ok {
 			return false
 		}
-		if !reflect.DeepEqual(aea, bea) {
+		if !isServiceExportEqual(aea, bea) {
+			return false
+		}
+	}
+	return true
+}
+
+func isServiceExportEqual(a, b *serviceExport) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if (a == nil && b != nil) || (a != nil && b == nil) {
+		return false
+	}
+	if !isExportAuthEqual(&a.exportAuth, &b.exportAuth) {
+		return false
+	}
+	if a.acc.Name != b.acc.Name {
+		return false
+	}
+	if a.respType != b.respType {
+		return false
+	}
+	if a.latency != nil || b.latency != nil {
+		if (a.latency != nil && b.latency == nil) || (a.latency == nil && b.latency != nil) {
+			return false
+		}
+		if a.latency.sampling != b.latency.sampling {
+			return false
+		}
+		if a.latency.subject != b.latency.subject {
+			return false
+		}
+	}
+	return true
+}
+
+// Returns true if `a` and `b` exportAuth structures are equal.
+// Both `a` and `b` are guaranteed to be non-nil.
+// Locking is handled by the caller.
+func isExportAuthEqual(a, b *exportAuth) bool {
+	if a.tokenReq != b.tokenReq {
+		return false
+	}
+	if a.accountPos != b.accountPos {
+		return false
+	}
+	if len(a.approved) != len(b.approved) {
+		return false
+	}
+	for ak, av := range a.approved {
+		if bv, ok := b.approved[ak]; !ok || av.Name != bv.Name {
+			return false
+		}
+	}
+	if len(a.actsRevoked) != len(b.actsRevoked) {
+		return false
+	}
+	for ak, av := range a.actsRevoked {
+		if bv, ok := b.actsRevoked[ak]; !ok || av != bv {
 			return false
 		}
 	}

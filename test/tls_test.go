@@ -1921,6 +1921,7 @@ func TestTLSPinnedCertsRoute(t *testing.T) {
 	port: -1
 	cluster {
 		port: -1
+		pool_size: -1
 		tls {
 			ca_file: "configs/certs/ca.pem"
 			cert_file: "configs/certs/server-cert.pem"

@@ -21,6 +21,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
 	"math/rand"
@@ -90,6 +91,10 @@ type Info struct {
 	LNOC          bool               `json:"lnoc,omitempty"`
 	InfoOnConnect bool               `json:"info_on_connect,omitempty"` // When true the server will respond to CONNECT with an INFO
 	ConnectInfo   bool               `json:"connect_info,omitempty"`    // When true this is the server INFO response to CONNECT
+	RoutePoolSize int                `json:"route_pool_size,omitempty"`
+	RoutePoolIdx  int                `json:"route_pool_idx,omitempty"`
+	RouteAccount  string             `json:"route_account,omitempty"`
+	RouteAccReqID string             `json:"route_acc_add_reqid,omitempty"`
 
 	// Gateways Specific
 	Gateway           string   `json:"gateway,omitempty"`             // Name of the origin Gateway (sent by gateway's INFO)
@@ -124,7 +129,6 @@ type Server struct {
 	opts                *Options
 	running             bool
 	shutdown            bool
-	reloading           bool
 	listener            net.Listener
 	listenerErr         error
 	gacc                *Account
@@ -135,9 +139,14 @@ type Server struct {
 	activeAccounts      int32
 	accResolver         AccountResolver
 	clients             map[uint64]*client
-	routes              map[uint64]*client
-	routesByHash        sync.Map
-	remotes             map[string]*client
+	routes              map[string][]*client
+	routesPoolSize      int                           // Configured pool size
+	routesReject        bool                          // During reload, we may want to reject adding routes until some conditions are met
+	routesNoPool        int                           // Number of routes that don't use pooling (connecting to older server for instance)
+	accRoutes           map[string]map[string]*client // Key is account name, value is key=remoteID/value=route connection
+	accRouteByHash      sync.Map                      // Key is account name, value is nil or a pool index
+	accAddedCh          chan struct{}
+	accAddedReqID       string
 	leafs               map[uint64]*client
 	users               map[string]*User
 	nkeys               map[string]*NkeyUser
@@ -153,7 +162,6 @@ type Server struct {
 	routeListener       net.Listener
 	routeListenerErr    error
 	routeInfo           Info
-	routeInfoJSON       []byte
 	routeResolver       netResolver
 	routesToSelf        map[string]struct{}
 	routeTLSName        string
@@ -503,8 +511,7 @@ func NewServer(opts *Options) (*Server, error) {
 	s.grTmpClients = make(map[uint64]*client)
 
 	// For tracking routes and their remote ids
-	s.routes = make(map[uint64]*client)
-	s.remotes = make(map[string]*client)
+	s.initRouteStructures(opts)
 
 	// For tracking leaf nodes.
 	s.leafs = make(map[uint64]*client)
@@ -542,22 +549,22 @@ func NewServer(opts *Options) (*Server, error) {
 			s.mu.Unlock()
 			var a *Account
 			// perform direct lookup to avoid warning trace
-			if _, err := fetchAccount(ar, s.opts.SystemAccount); err == nil {
-				a, _ = s.lookupAccount(s.opts.SystemAccount)
+			if _, err := fetchAccount(ar, opts.SystemAccount); err == nil {
+				a, _ = s.lookupAccount(opts.SystemAccount)
 			}
 			s.mu.Lock()
 			if a == nil {
-				sac := NewAccount(s.opts.SystemAccount)
+				sac := NewAccount(opts.SystemAccount)
 				sac.Issuer = opts.TrustedOperators[0].Issuer
 				sac.signingKeys = map[string]jwt.Scope{}
-				sac.signingKeys[s.opts.SystemAccount] = nil
+				sac.signingKeys[opts.SystemAccount] = nil
 				s.registerAccountNoLock(sac)
 			}
 		}
 	}
 
 	// For tracking accounts
-	if err := s.configureAccounts(); err != nil {
+	if _, err := s.configureAccounts(false); err != nil {
 		return nil, err
 	}
 
@@ -568,6 +575,27 @@ func NewServer(opts *Options) (*Server, error) {
 	s.handleSignals()
 
 	return s, nil
+}
+
+// Initializes route structures based on pooling and/or per-account routes.
+//
+// Server lock is held on entry
+func (s *Server) initRouteStructures(opts *Options) {
+	s.routes = make(map[string][]*client)
+	if ps := opts.Cluster.PoolSize; ps > 0 {
+		s.routesPoolSize = ps
+	} else {
+		s.routesPoolSize = 1
+	}
+	// If we have per-account routes, we create accRoutes and initialize it
+	// with nil values. The presence of an account as the key will allow us
+	// to know if a given account is supposed to have dedicated routes.
+	if l := len(opts.Cluster.PinnedAccounts); l > 0 {
+		s.accRoutes = make(map[string]map[string]*client, l)
+		for _, acc := range opts.Cluster.PinnedAccounts {
+			s.accRoutes[acc] = make(map[string]*client)
+		}
+	}
 }
 
 func (s *Server) logRejectedTLSConns() {
@@ -614,8 +642,6 @@ func (s *Server) setClusterName(name string) {
 	s.info.Cluster = name
 	s.routeInfo.Cluster = name
 
-	// Regenerate the info byte array
-	s.generateRouteInfoJSON()
 	// Need to close solicited leaf nodes. The close has to be done outside of the server lock.
 	var leafs []*client
 	for _, c := range s.leafs {
@@ -674,6 +700,18 @@ func validateCluster(o *Options) error {
 		}
 		// Set this here so we do not consider it dynamic.
 		o.Cluster.Name = o.Gateway.Name
+	}
+	if l := len(o.Cluster.PinnedAccounts); l > 0 {
+		if o.Cluster.PoolSize < 0 {
+			return fmt.Errorf("pool_size cannot be negative if pinned accounts are specified")
+		}
+		m := make(map[string]struct{}, l)
+		for _, a := range o.Cluster.PinnedAccounts {
+			if _, exists := m[a]; exists {
+				return fmt.Errorf("found duplicate account name %q in pinned accounts list %q", a, o.Cluster.PinnedAccounts)
+			}
+			m[a] = struct{}{}
+		}
 	}
 	return nil
 }
@@ -750,40 +788,85 @@ func (s *Server) globalAccount() *Account {
 	return gacc
 }
 
-// Used to setup Accounts.
-// Lock is held upon entry.
-func (s *Server) configureAccounts() error {
+// Used to setup or update Accounts.
+// Returns a map that indicates which accounts have had their stream imports
+// changed (in case of an update in configuration reload).
+// Lock is held upon entry, but will be released/reacquired in this function.
+func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) {
+	awcsti := make(map[string]struct{})
+
 	// Create the global account.
 	if s.gacc == nil {
 		s.gacc = NewAccount(globalAccountName)
 		s.registerAccountNoLock(s.gacc)
 	}
 
-	opts := s.opts
+	opts := s.getOpts()
 
 	// Check opts and walk through them. We need to copy them here
 	// so that we do not keep a real one sitting in the options.
-	for _, acc := range s.opts.Accounts {
+	for _, acc := range opts.Accounts {
 		var a *Account
-		if acc.Name == globalAccountName {
-			a = s.gacc
-		} else {
-			a = acc.shallowCopy()
+		create := true
+		// For the global account, we want to skip the reload process
+		// and fall back into the "create" case which will in that
+		// case really be just an update (shallowCopy will make sure
+		// that mappings are copied over).
+		if reloading && acc.Name != globalAccountName {
+			if ai, ok := s.accounts.Load(acc.Name); ok {
+				a = ai.(*Account)
+				a.mu.Lock()
+				// Before updating the account, check if stream imports have changed.
+				if !a.checkStreamImportsEqual(acc) {
+					awcsti[acc.Name] = struct{}{}
+				}
+				// Collect the sids for the service imports since we are going to
+				// replace with new ones.
+				var sids [][]byte
+				c := a.ic
+				for _, si := range a.imports.services {
+					if c != nil && si.sid != nil {
+						sids = append(sids, si.sid)
+					}
+				}
+				// Now reset all export/imports fields since they are going to be
+				// filled in shallowCopy()
+				a.imports.streams, a.imports.services = nil, nil
+				a.exports.streams, a.exports.services = nil, nil
+				// We call shallowCopy from the account `acc` (the one in Options)
+				// and pass `a` (our existing account) to get it updated.
+				acc.shallowCopy(a)
+				a.mu.Unlock()
+				// Need to release the lock for this.
+				s.mu.Unlock()
+				for _, sid := range sids {
+					c.processUnsub(sid)
+				}
+				// Add subscriptions for existing service imports.
+				a.addAllServiceImportSubs()
+				s.mu.Lock()
+				create = false
+			}
 		}
-		if acc.hasMappings() {
-			// For now just move and wipe from opts.Accounts version.
-			a.mappings = acc.mappings
-			acc.mappings = nil
-			// We use this for selecting between multiple weighted destinations.
-			a.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
+		if create {
+			if acc.Name == globalAccountName {
+				a = s.gacc
+			} else {
+				a = NewAccount(acc.Name)
+			}
+			// Locking matters in the case of an update of the global account
+			a.mu.Lock()
+			acc.shallowCopy(a)
+			a.mu.Unlock()
+			// Will be a no-op in case of the global account since it is alrady registered.
+			s.registerAccountNoLock(a)
 		}
-		acc.sl = nil
-		acc.clients = nil
-		s.registerAccountNoLock(a)
+		// The `acc` account is stored in options, not in the server, and these can be cleared.
+		acc.sl, acc.clients, acc.mappings = nil, nil, nil
 
 		// If we see an account defined using $SYS we will make sure that is set as system account.
 		if acc.Name == DEFAULT_SYSTEM_ACCOUNT && opts.SystemAccount == _EMPTY_ {
-			s.opts.SystemAccount = DEFAULT_SYSTEM_ACCOUNT
+			opts.SystemAccount = DEFAULT_SYSTEM_ACCOUNT
 		}
 	}
 
@@ -802,6 +885,7 @@ func (s *Server) configureAccounts() error {
 	s.accounts.Range(func(k, v interface{}) bool {
 		numAccounts++
 		acc := v.(*Account)
+		acc.mu.Lock()
 		// Exports
 		for _, se := range acc.exports.streams {
 			if se != nil {
@@ -828,16 +912,30 @@ func (s *Server) configureAccounts() error {
 		for _, si := range acc.imports.services {
 			if v, ok := s.accounts.Load(si.acc.Name); ok {
 				si.acc = v.(*Account)
+				// It is possible to allow for latency tracking inside your
+				// own account, so lock only when not the same account.
+				if si.acc == acc {
+					si.se = si.acc.getServiceExport(si.to)
+					continue
+				}
+				si.acc.mu.RLock()
 				si.se = si.acc.getServiceExport(si.to)
+				si.acc.mu.RUnlock()
 			}
 		}
 		// Make sure the subs are running, but only if not reloading.
-		if len(acc.imports.services) > 0 && acc.ic == nil && !s.reloading {
+		if len(acc.imports.services) > 0 && acc.ic == nil && !reloading {
 			acc.ic = s.createInternalAccountClient()
 			acc.ic.acc = acc
+			// Need to release locks to invoke this function.
+			acc.mu.Unlock()
+			s.mu.Unlock()
 			acc.addAllServiceImportSubs()
+			s.mu.Lock()
+			acc.mu.Lock()
 		}
 		acc.updated = time.Now().UTC()
+		acc.mu.Unlock()
 		return true
 	})
 
@@ -857,14 +955,14 @@ func (s *Server) configureAccounts() error {
 			s.mu.Lock()
 		}
 		if err != nil {
-			return fmt.Errorf("error resolving system account: %v", err)
+			return awcsti, fmt.Errorf("error resolving system account: %v", err)
 		}
 
 		// If we have defined a system account here check to see if its just us and the $G account.
 		// We would do this to add user/pass to the system account. If this is the case add in
 		// no-auth-user for $G.
 		// Only do this if non-operator mode.
-		if len(opts.TrustedOperators) == 0 && numAccounts == 2 && s.opts.NoAuthUser == _EMPTY_ {
+		if len(opts.TrustedOperators) == 0 && numAccounts == 2 && opts.NoAuthUser == _EMPTY_ {
 			// If we come here from config reload, let's not recreate the fake user name otherwise
 			// it will cause currently clients to be disconnected.
 			uname := s.sysAccOnlyNoAuthUser
@@ -879,12 +977,12 @@ func (s *Server) configureAccounts() error {
 				uname = fmt.Sprintf("nats-%s", b[:])
 				s.sysAccOnlyNoAuthUser = uname
 			}
-			s.opts.Users = append(s.opts.Users, &User{Username: uname, Password: uname[6:], Account: s.gacc})
-			s.opts.NoAuthUser = uname
+			opts.Users = append(opts.Users, &User{Username: uname, Password: uname[6:], Account: s.gacc})
+			opts.NoAuthUser = uname
 		}
 	}
 
-	return nil
+	return awcsti, nil
 }
 
 // Setup the account resolver. For memory resolver, make sure the JWTs are
@@ -939,12 +1037,6 @@ func (s *Server) checkResolvePreloads() {
 			}
 		}
 	}
-}
-
-func (s *Server) generateRouteInfoJSON() {
-	b, _ := json.Marshal(s.routeInfo)
-	pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}
-	s.routeInfoJSON = bytes.Join(pcs, []byte(" "))
 }
 
 // Determines if we are in pre NATS 2.0 setup with no accounts.
@@ -1013,16 +1105,17 @@ func (s *Server) isTrustedIssuer(issuer string) bool {
 // options-based trusted nkeys. Returns success.
 func (s *Server) processTrustedKeys() bool {
 	s.strictSigningKeyUsage = map[string]struct{}{}
+	opts := s.getOpts()
 	if trustedKeys != _EMPTY_ && !s.initStampedTrustedKeys() {
 		return false
-	} else if s.opts.TrustedKeys != nil {
-		for _, key := range s.opts.TrustedKeys {
+	} else if opts.TrustedKeys != nil {
+		for _, key := range opts.TrustedKeys {
 			if !nkeys.IsValidPublicOperatorKey(key) {
 				return false
 			}
 		}
-		s.trustedKeys = append([]string(nil), s.opts.TrustedKeys...)
-		for _, claim := range s.opts.TrustedOperators {
+		s.trustedKeys = append([]string(nil), opts.TrustedKeys...)
+		for _, claim := range opts.TrustedOperators {
 			if !claim.StrictSigningKeyUsage {
 				continue
 			}
@@ -1055,7 +1148,7 @@ func checkTrustedKeyString(keys string) []string {
 // it succeeded or not.
 func (s *Server) initStampedTrustedKeys() bool {
 	// Check to see if we have an override in options, which will cause us to fail.
-	if len(s.opts.TrustedKeys) > 0 {
+	if len(s.getOpts().TrustedKeys) > 0 {
 		return false
 	}
 	tks := checkTrustedKeyString(trustedKeys)
@@ -1344,7 +1437,8 @@ func (s *Server) createInternalClient(kind int) *client {
 // efficient propagation.
 // Lock should be held on entry.
 func (s *Server) shouldTrackSubscriptions() bool {
-	return (s.opts.Cluster.Port != 0 || s.opts.Gateway.Port != 0)
+	opts := s.getOpts()
+	return (opts.Cluster.Port != 0 || opts.Gateway.Port != 0)
 }
 
 // Invokes registerAccountNoLock under the protection of the server lock.
@@ -1385,6 +1479,7 @@ func (s *Server) registerAccountNoLock(acc *Account) *Account {
 	s.setAccountSublist(acc)
 
 	acc.mu.Lock()
+	s.setRouteInfo(acc)
 	if acc.clients == nil {
 		acc.clients = make(map[*client]struct{})
 	}
@@ -1437,6 +1532,47 @@ func (s *Server) registerAccountNoLock(acc *Account) *Account {
 	s.mu.Lock()
 
 	return nil
+}
+
+// Sets the account's routePoolIdx depending on presence or not of
+// pooling or per-account routes. Also updates a map used by
+// gateway code to retrieve a route based on some route hash.
+//
+// Both Server and Account lock held on entry.
+func (s *Server) setRouteInfo(acc *Account) {
+	// If there is a dedicated route configured for this account
+	if _, ok := s.accRoutes[acc.Name]; ok {
+		// We want the account name to be in the map, but we don't
+		// need a value (we could store empty string)
+		s.accRouteByHash.Store(acc.Name, nil)
+		// Set the route pool index to -1 so that it is easy when
+		// ranging over accounts to exclude those accounts when
+		// trying to get accounts for a given pool index.
+		acc.routePoolIdx = accDedicatedRoute
+	} else {
+		// If pool size more than 1, we will compute a hash code and
+		// use modulo to assign to an index of the pool slice. For 1
+		// and below, all accounts will be bound to the single connection
+		// at index 0.
+		acc.routePoolIdx = s.computeRoutePoolIdx(acc)
+		if s.routesPoolSize > 1 {
+			s.accRouteByHash.Store(acc.Name, acc.routePoolIdx)
+		}
+	}
+}
+
+// Returns a route pool index for this account based on the given pool size.
+// Account lock is held on entry (account's name is accessed but immutable
+// so could be called without account's lock).
+// Server lock held on entry.
+func (s *Server) computeRoutePoolIdx(acc *Account) int {
+	if s.routesPoolSize <= 1 {
+		return 0
+	}
+	h := fnv.New32a()
+	h.Write([]byte(acc.Name))
+	sum32 := h.Sum32()
+	return int((sum32 % uint32(s.routesPoolSize)))
 }
 
 // lookupAccount is a function to return the account structure
@@ -1736,8 +1872,9 @@ func (s *Server) Start() {
 		// In operator mode, when the account resolver depends on an external system and
 		// the system account is the bootstrapping account, start fetching it.
 		if len(opts.TrustedOperators) == 1 && opts.SystemAccount != _EMPTY_ && opts.SystemAccount != DEFAULT_SYSTEM_ACCOUNT {
+			opts := s.getOpts()
 			_, isMemResolver := ar.(*MemAccResolver)
-			if v, ok := s.accounts.Load(s.opts.SystemAccount); !isMemResolver && ok && v.(*Account).claimJWT == "" {
+			if v, ok := s.accounts.Load(opts.SystemAccount); !isMemResolver && ok && v.(*Account).claimJWT == _EMPTY_ {
 				s.Noticef("Using bootstrapping system account")
 				s.startGoRoutine(func() {
 					defer s.grWG.Done()
@@ -1749,7 +1886,7 @@ func (s *Server) Start() {
 							return
 						case <-t.C:
 							sacc := s.SystemAccount()
-							if claimJWT, err := fetchAccount(ar, s.opts.SystemAccount); err != nil {
+							if claimJWT, err := fetchAccount(ar, opts.SystemAccount); err != nil {
 								continue
 							} else if err = s.updateAccountWithClaimJWT(sacc, claimJWT); err != nil {
 								continue
@@ -1957,9 +2094,11 @@ func (s *Server) Shutdown() {
 	}
 	s.grMu.Unlock()
 	// Copy off the routes
-	for i, r := range s.routes {
-		conns[i] = r
-	}
+	s.forEachRoute(func(r *client) {
+		r.mu.Lock()
+		conns[r.cid] = r
+		r.mu.Unlock()
+	})
 	// Copy off the gateways
 	s.getAllGatewayConnections(conns)
 
@@ -2118,7 +2257,7 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 	// server's info Host/Port with either values from Options or
 	// ClientAdvertise.
 	if err := s.setInfoHostPort(); err != nil {
-		s.Fatalf("Error setting server INFO with ClientAdvertise value of %s, err=%v", s.opts.ClientAdvertise, err)
+		s.Fatalf("Error setting server INFO with ClientAdvertise value of %s, err=%v", opts.ClientAdvertise, err)
 		l.Close()
 		s.mu.Unlock()
 		return
@@ -2196,16 +2335,17 @@ func (s *Server) setInfoHostPort() error {
 	// When this function is called, opts.Port is set to the actual listen
 	// port (if option was originally set to RANDOM), even during a config
 	// reload. So use of s.opts.Port is safe.
-	if s.opts.ClientAdvertise != _EMPTY_ {
-		h, p, err := parseHostPort(s.opts.ClientAdvertise, s.opts.Port)
+	opts := s.getOpts()
+	if opts.ClientAdvertise != _EMPTY_ {
+		h, p, err := parseHostPort(opts.ClientAdvertise, opts.Port)
 		if err != nil {
 			return err
 		}
 		s.info.Host = h
 		s.info.Port = p
 	} else {
-		s.info.Host = s.opts.Host
-		s.info.Port = s.opts.Port
+		s.info.Host = opts.Host
+		s.info.Port = opts.Port
 	}
 	return nil
 }
@@ -2723,6 +2863,7 @@ func (s *Server) saveClosedClient(c *client, nc net.Conn, reason ClosedState) {
 // Adds to the list of client and websocket clients connect URLs.
 // If there was a change, an INFO protocol is sent to registered clients
 // that support async INFO protocols.
+// Server lock held on entry.
 func (s *Server) addConnectURLsAndSendINFOToClients(curls, wsurls []string) {
 	s.updateServerINFOAndSendINFOToClients(curls, wsurls, true)
 }
@@ -2730,16 +2871,15 @@ func (s *Server) addConnectURLsAndSendINFOToClients(curls, wsurls []string) {
 // Removes from the list of client and websocket clients connect URLs.
 // If there was a change, an INFO protocol is sent to registered clients
 // that support async INFO protocols.
+// Server lock held on entry.
 func (s *Server) removeConnectURLsAndSendINFOToClients(curls, wsurls []string) {
 	s.updateServerINFOAndSendINFOToClients(curls, wsurls, false)
 }
 
 // Updates the list of client and websocket clients connect URLs and if any change
 // sends an async INFO update to clients that support it.
+// Server lock held on entry.
 func (s *Server) updateServerINFOAndSendINFOToClients(curls, wsurls []string, add bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	remove := !add
 	// Will return true if we need alter the server's Info object.
 	updateMap := func(urls []string, m refCountedUrlSet) bool {
@@ -2873,8 +3013,17 @@ func (s *Server) addToTempClients(cid uint64, c *client) bool {
 // NumRoutes will report the number of registered routes.
 func (s *Server) NumRoutes() int {
 	s.mu.RLock()
-	nr := len(s.routes)
-	s.mu.RUnlock()
+	defer s.mu.RUnlock()
+	return s.numRoutes()
+}
+
+// numRoutes will report the number of registered routes.
+// Server lock held on entry
+func (s *Server) numRoutes() int {
+	var nr int
+	s.forEachRoute(func(c *client) {
+		nr++
+	})
 	return nr
 }
 
@@ -2882,7 +3031,13 @@ func (s *Server) NumRoutes() int {
 func (s *Server) NumRemotes() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return len(s.remotes)
+	return s.numRemotes()
+}
+
+// numRemotes will report number of registered remotes.
+// Server lock held on entry
+func (s *Server) numRemotes() int {
+	return len(s.routes)
 }
 
 // NumLeafNodes will report number of leaf node connections.
@@ -3558,12 +3713,12 @@ func (s *Server) lameDuckMode() {
 // Server lock is held on entry.
 func (s *Server) sendLDMToRoutes() {
 	s.routeInfo.LameDuckMode = true
-	s.generateRouteInfoJSON()
-	for _, r := range s.routes {
+	infoJSON := generateInfoJSON(&s.routeInfo)
+	s.forEachRemote(func(r *client) {
 		r.mu.Lock()
-		r.enqueueProto(s.routeInfoJSON)
+		r.enqueueProto(infoJSON)
 		r.mu.Unlock()
-	}
+	})
 	// Clear now so that we notify only once, should we have to send other INFOs.
 	s.routeInfo.LameDuckMode = false
 }

@@ -1883,8 +1883,10 @@ func TestServerEventsStatsZ(t *testing.T) {
 	if m.Stats.Received.Msgs < 1 {
 		t.Fatalf("Did not match received msgs of >=1, got %d", m.Stats.Received.Msgs)
 	}
-	if lr := len(m.Stats.Routes); lr != 1 {
-		t.Fatalf("Expected a route, but got %d", lr)
+	// Default pool size + 1 for system account
+	expectedRoutes := DEFAULT_ROUTE_POOL_SIZE + 1
+	if lr := len(m.Stats.Routes); lr != expectedRoutes {
+		t.Fatalf("Expected %d routes, but got %d", expectedRoutes, lr)
 	}
 
 	// Now let's prompt this server to send us the statsz
@@ -1912,8 +1914,8 @@ func TestServerEventsStatsZ(t *testing.T) {
 	if m2.Stats.Received.Msgs < 1 {
 		t.Fatalf("Did not match received msgs of >= 1, got %d", m2.Stats.Received.Msgs)
 	}
-	if lr := len(m2.Stats.Routes); lr != 1 {
-		t.Fatalf("Expected a route, but got %d", lr)
+	if lr := len(m2.Stats.Routes); lr != expectedRoutes {
+		t.Fatalf("Expected %d routes, but got %d", expectedRoutes, lr)
 	}
 
 	msg, err = ncs.Request(subj, nil, time.Second)
@@ -1939,11 +1941,13 @@ func TestServerEventsStatsZ(t *testing.T) {
 	if m3.Stats.Received.Msgs < 2 {
 		t.Fatalf("Did not match received msgs of >= 2, got %d", m3.Stats.Received.Msgs)
 	}
-	if lr := len(m3.Stats.Routes); lr != 1 {
-		t.Fatalf("Expected a route, but got %d", lr)
+	if lr := len(m3.Stats.Routes); lr != expectedRoutes {
+		t.Fatalf("Expected %d routes, but got %d", expectedRoutes, lr)
 	}
-	if sr := m3.Stats.Routes[0]; sr.Name != "B_SRV" {
-		t.Fatalf("Expected server A's route to B to have Name set to %q, got %q", "B", sr.Name)
+	for _, sr := range m3.Stats.Routes {
+		if sr.Name != "B_SRV" {
+			t.Fatalf("Expected server A's route to B to have Name set to %q, got %q", "B", sr.Name)
+		}
 	}
 
 	// Now query B and check that route's name is "A"
@@ -1957,11 +1961,13 @@ func TestServerEventsStatsZ(t *testing.T) {
 	if err := json.Unmarshal(msg.Data, &m); err != nil {
 		t.Fatalf("Error unmarshalling the statz json: %v", err)
 	}
-	if lr := len(m.Stats.Routes); lr != 1 {
-		t.Fatalf("Expected a route, but got %d", lr)
+	if lr := len(m.Stats.Routes); lr != expectedRoutes {
+		t.Fatalf("Expected %d routes, but got %d", expectedRoutes, lr)
 	}
-	if sr := m.Stats.Routes[0]; sr.Name != "A_SRV" {
-		t.Fatalf("Expected server B's route to A to have Name set to %q, got %q", "A_SRV", sr.Name)
+	for _, sr := range m.Stats.Routes {
+		if sr.Name != "A_SRV" {
+			t.Fatalf("Expected server B's route to A to have Name set to %q, got %q", "A_SRV", sr.Name)
+		}
 	}
 }
 

@@ -180,13 +180,14 @@ func (p *Permissions) clone() *Permissions {
 // Lock is assumed held.
 func (s *Server) checkAuthforWarnings() {
 	warn := false
-	if s.opts.Password != _EMPTY_ && !isBcrypt(s.opts.Password) {
+	opts := s.getOpts()
+	if opts.Password != _EMPTY_ && !isBcrypt(opts.Password) {
 		warn = true
 	}
 	for _, u := range s.users {
 		// Skip warn if using TLS certs based auth
 		// unless a password has been left in the config.
-		if u.Password == _EMPTY_ && s.opts.TLSMap {
+		if u.Password == _EMPTY_ && opts.TLSMap {
 			continue
 		}
 		// Check if this is our internal sys client created on the fly.
@@ -277,8 +278,10 @@ func (s *Server) configureAuthorization() {
 
 	// Check for server configured auth callouts.
 	if opts.AuthCallout != nil {
+		s.mu.Unlock()
 		// Make sure we have a valid account and auth_users.
 		_, err := s.lookupAccount(opts.AuthCallout.Account)
+		s.mu.Lock()
 		if err != nil {
 			s.Errorf("Authorization callout account %q not valid", opts.AuthCallout.Account)
 		}
@@ -1198,8 +1201,8 @@ func (s *Server) isRouterAuthorized(c *client) bool {
 
 	// Check custom auth first, then TLS map if enabled
 	// then single user/pass.
-	if s.opts.CustomRouterAuthentication != nil {
-		return s.opts.CustomRouterAuthentication.Check(c)
+	if opts.CustomRouterAuthentication != nil {
+		return opts.CustomRouterAuthentication.Check(c)
 	}
 
 	if opts.Cluster.TLSMap || opts.Cluster.TLSCheckKnownURLs {

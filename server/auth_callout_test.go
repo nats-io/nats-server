@@ -558,6 +558,7 @@ func TestAuthCalloutOperatorModeBasics(t *testing.T) {
 	}
 
 	ac := NewAuthTest(t, conf, handler, nats.UserCredentials(creds))
+	defer ac.Cleanup()
 	resp, err := ac.authClient.Request(userDirectInfoSubj, nil, time.Second)
 	require_NoError(t, err)
 	response := ServerAPIResponse{Data: &UserInfo{}}
@@ -795,6 +796,7 @@ func TestAuthCalloutOperatorModeEncryption(t *testing.T) {
 	}
 
 	ac := NewAuthTest(t, conf, handler, nats.UserCredentials(creds))
+	defer ac.Cleanup()
 
 	// Bearer token etc..
 	// This is used by all users, and the customization will be in other connect args.
@@ -1382,6 +1384,7 @@ func TestAuthCalloutOperator_AnyAccount(t *testing.T) {
 	}
 
 	ac := NewAuthTest(t, conf, handler, nats.UserCredentials(creds))
+	defer ac.Cleanup()
 	resp, err := ac.authClient.Request(userDirectInfoSubj, nil, time.Second)
 	require_NoError(t, err)
 	response := ServerAPIResponse{Data: &UserInfo{}}

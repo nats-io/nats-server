@@ -341,6 +341,7 @@ func TestReloadDoesNotWipeAccountsWithOperatorMode(t *testing.T) {
 	cluster {
 		name: "A"
 		listen: 127.0.0.1:-1
+		pool_size: -1
 		authorization {
 			timeout: 2.2
 		} %s
@@ -463,6 +464,7 @@ func TestReloadDoesUpdateAccountsWithMemoryResolver(t *testing.T) {
 	cluster {
 		name: "A"
 		listen: 127.0.0.1:-1
+		pool_size: -1
 		authorization {
 			timeout: 2.2
 		} %s
@@ -554,6 +556,7 @@ func TestReloadFailsWithBadAccountsWithMemoryResolver(t *testing.T) {
 	cluster {
 		name: "A"
 		listen: 127.0.0.1:-1
+		pool_size: -1
 		authorization {
 			timeout: 2.2
 		} %s
