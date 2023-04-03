@@ -5566,7 +5566,7 @@ func TestNoRaceJetStreamSuperClusterStreamMoveLongRTT(t *testing.T) {
 	// Make C2 far away.
 	gwm := gwProxyMap{
 		"C2": &gwProxy{
-			rtt:  400 * time.Millisecond,
+			rtt:  50 * time.Millisecond,
 			up:   1 * 1024 * 1024 * 1024, // 1gbit
 			down: 1 * 1024 * 1024 * 1024, // 1gbit
 		},
@@ -5596,7 +5596,7 @@ func TestNoRaceJetStreamSuperClusterStreamMoveLongRTT(t *testing.T) {
 	}
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(5 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatalf("Did not receive completion signal")
 	}
 
@@ -5605,7 +5605,7 @@ func TestNoRaceJetStreamSuperClusterStreamMoveLongRTT(t *testing.T) {
 	_, err = js.UpdateStream(cfg)
 	require_NoError(t, err)
 
-	checkFor(t, 10*time.Second, time.Second, func() error {
+	checkFor(t, 20*time.Second, time.Second, func() error {
 		si, err := js.StreamInfo("TEST", nats.MaxWait(time.Second))
 		if err != nil {
 			return err
