@@ -286,9 +286,10 @@ type rrTracking struct {
 
 // Struct for PING initiation from the server.
 type pinfo struct {
-	tmr  *time.Timer
-	last time.Time
-	out  int
+	tmr        *time.Timer
+	lastRxPing time.Time
+	lastRxMsg  time.Time
+	out        int
 }
 
 // outbound holds pending data for a socket.
@@ -1309,6 +1310,7 @@ func (c *client) readLoop(pre []byte) {
 		// Activity based on interest changes or data/msgs.
 		if c.in.msgs > 0 || c.in.subs > 0 {
 			c.last = last
+			c.ping.lastRxMsg = last
 		}
 
 		if n >= cap(b) {
@@ -2196,7 +2198,7 @@ func (c *client) processPing() {
 
 	// Record this to suppress us sending one if this
 	// is within a given time interval for activity.
-	c.ping.last = time.Now()
+	c.ping.lastRxPing = time.Now()
 
 	// If not a CLIENT, we are done. Also the CONNECT should
 	// have been received, but make sure it is so before proceeding
@@ -4555,8 +4557,6 @@ func (c *client) processPingTimer() {
 
 	c.Debugf("%s Ping Timer", c.kindString())
 
-	var sendPing bool
-
 	pingInterval := c.srv.getOpts().PingInterval
 	if c.kind == GATEWAY {
 		pingInterval = adjustPingIntervalForGateway(pingInterval)
@@ -4564,23 +4564,14 @@ func (c *client) processPingTimer() {
 	now := time.Now()
 	needRTT := c.rtt == 0 || now.Sub(c.rttStart) > DEFAULT_RTT_MEASUREMENT_INTERVAL
 
-	// Do not delay PINGs for GATEWAY or spoke LEAF connections.
-	if c.kind == GATEWAY || c.isSpokeLeafNode() {
-		sendPing = true
+	// If we have had receive activity within the PingInterval then
+	// there is no need to send a ping. This can be client data
+	// or if we received a ping from the other side.
+	if delta := now.Sub(c.ping.lastRxMsg); delta < pingInterval && !needRTT {
+		c.Debugf("Delaying PING due to receive traffic %v ago", delta.Round(time.Second))
+	} else if delta := now.Sub(c.ping.lastRxPing); delta < pingInterval && !needRTT {
+		c.Debugf("Delaying PING due to remote ping %v ago", delta.Round(time.Second))
 	} else {
-		// If we have had activity within the PingInterval then
-		// there is no need to send a ping. This can be client data
-		// or if we received a ping from the other side.
-		if delta := now.Sub(c.last); delta < pingInterval && !needRTT {
-			c.Debugf("Delaying PING due to client activity %v ago", delta.Round(time.Second))
-		} else if delta := now.Sub(c.ping.last); delta < pingInterval && !needRTT {
-			c.Debugf("Delaying PING due to remote ping %v ago", delta.Round(time.Second))
-		} else {
-			sendPing = true
-		}
-	}
-
-	if sendPing {
 		// Check for violation
 		if c.ping.out+1 > c.srv.getOpts().MaxPingsOut {
 			c.Debugf("Stale Client Connection - Closing")
