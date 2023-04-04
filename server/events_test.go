@@ -1341,6 +1341,9 @@ func TestAccountReqMonitoring(t *testing.T) {
 	require_NoError(t, nc.PublishRequest(pStatz, ib, nil))
 	resp, err = rSub.NextMsg(time.Second)
 	require_NoError(t, err)
+	// Since we now have processed our own message, msgs will be 1.
+	respContentAcc = []string{`"conns":1,`, `"total_conns":1`, `"slow_consumers":0`, `"sent":{"msgs":0,"bytes":0}`,
+		`"received":{"msgs":1,"bytes":0}`, fmt.Sprintf(`"acc":"%s"`, acc.Name)}
 	require_Contains(t, string(resp.Data), respContentAcc...)
 	_, err = rSub.NextMsg(200 * time.Millisecond)
 	require_Error(t, err)
