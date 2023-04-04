@@ -2860,7 +2860,7 @@ func newNextMsgReq(reply string, msg []byte) *nextMsgReq {
 	} else {
 		nmr = &nextMsgReq{}
 	}
-	// When getting something from a pool it is criticical that all fields are
+	// When getting something from a pool it is critical that all fields are
 	// initialized. Doing this way guarantees that if someone adds a field to
 	// the structure, the compiler will fail the build if this line is not updated.
 	(*nmr) = nextMsgReq{reply, msg}
