@@ -1,4 +1,4 @@
-// Copyright 2018-2020 The NATS Authors
+// Copyright 2018-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -1220,6 +1220,7 @@ func TestAccountClaimsUpdates(t *testing.T) {
 		claimUpdateSubj := fmt.Sprintf(subj, pub)
 		nc.Publish(claimUpdateSubj, []byte(ajwt))
 		nc.Flush()
+		time.Sleep(200 * time.Millisecond)
 
 		acc, _ = s.LookupAccount(pub)
 		if acc.MaxActiveConnections() != 8 {
@@ -1340,6 +1341,9 @@ func TestAccountReqMonitoring(t *testing.T) {
 	require_NoError(t, nc.PublishRequest(pStatz, ib, nil))
 	resp, err = rSub.NextMsg(time.Second)
 	require_NoError(t, err)
+	// Since we now have processed our own message, msgs will be 1.
+	respContentAcc = []string{`"conns":1,`, `"total_conns":1`, `"slow_consumers":0`, `"sent":{"msgs":0,"bytes":0}`,
+		`"received":{"msgs":1,"bytes":0}`, fmt.Sprintf(`"acc":"%s"`, acc.Name)}
 	require_Contains(t, string(resp.Data), respContentAcc...)
 	_, err = rSub.NextMsg(200 * time.Millisecond)
 	require_Error(t, err)
@@ -1641,7 +1645,7 @@ func TestSystemAccountWithBadRemoteLatencyUpdate(t *testing.T) {
 		ReqId:   "_INBOX.22",
 	}
 	b, _ := json.Marshal(&rl)
-	s.remoteLatencyUpdate(nil, nil, nil, "foo", _EMPTY_, b)
+	s.remoteLatencyUpdate(nil, nil, nil, "foo", _EMPTY_, nil, b)
 }
 
 func TestSystemAccountWithGateways(t *testing.T) {
