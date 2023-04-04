@@ -1,4 +1,4 @@
-// Copyright 2018-2022 The NATS Authors
+// Copyright 2018-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -926,39 +926,39 @@ func (s *Server) initEventTracking() {
 		"STATSZ": s.statszReq,
 		"VARZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &VarzEventOptions{}
-			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Varz(&optz.VarzOptions) })
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Varz(&optz.VarzOptions) })
 		},
 		"SUBSZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &SubszEventOptions{}
-			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Subsz(&optz.SubszOptions) })
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Subsz(&optz.SubszOptions) })
 		},
 		"CONNZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &ConnzEventOptions{}
-			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Connz(&optz.ConnzOptions) })
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Connz(&optz.ConnzOptions) })
 		},
 		"ROUTEZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &RoutezEventOptions{}
-			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Routez(&optz.RoutezOptions) })
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Routez(&optz.RoutezOptions) })
 		},
 		"GATEWAYZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &GatewayzEventOptions{}
-			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Gatewayz(&optz.GatewayzOptions) })
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Gatewayz(&optz.GatewayzOptions) })
 		},
 		"LEAFZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &LeafzEventOptions{}
-			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Leafz(&optz.LeafzOptions) })
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Leafz(&optz.LeafzOptions) })
 		},
 		"ACCOUNTZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &AccountzEventOptions{}
-			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Accountz(&optz.AccountzOptions) })
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Accountz(&optz.AccountzOptions) })
 		},
 		"JSZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &JszEventOptions{}
-			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Jsz(&optz.JSzOptions) })
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Jsz(&optz.JSzOptions) })
 		},
 		"HEALTHZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &HealthzEventOptions{}
-			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.healthz(&optz.HealthzOptions), nil })
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.healthz(&optz.HealthzOptions), nil })
 		},
 	}
 	for name, req := range monSrvc {
@@ -981,7 +981,7 @@ func (s *Server) initEventTracking() {
 	monAccSrvc := map[string]sysMsgHandler{
 		"SUBSZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &SubszEventOptions{}
-			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
 				if acc, err := extractAccount(c, subject, msg); err != nil {
 					return nil, err
 				} else {
@@ -993,7 +993,7 @@ func (s *Server) initEventTracking() {
 		},
 		"CONNZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &ConnzEventOptions{}
-			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
 				if acc, err := extractAccount(c, subject, msg); err != nil {
 					return nil, err
 				} else {
@@ -1004,7 +1004,7 @@ func (s *Server) initEventTracking() {
 		},
 		"LEAFZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &LeafzEventOptions{}
-			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
 				if acc, err := extractAccount(c, subject, msg); err != nil {
 					return nil, err
 				} else {
@@ -1015,7 +1015,7 @@ func (s *Server) initEventTracking() {
 		},
 		"JSZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &JszEventOptions{}
-			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
 				if acc, err := extractAccount(c, subject, msg); err != nil {
 					return nil, err
 				} else {
@@ -1026,7 +1026,7 @@ func (s *Server) initEventTracking() {
 		},
 		"INFO": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &AccInfoEventOptions{}
-			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
 				if acc, err := extractAccount(c, subject, msg); err != nil {
 					return nil, err
 				} else {
@@ -1039,7 +1039,7 @@ func (s *Server) initEventTracking() {
 		// STATZ is also less heavy weight than INFO
 		"STATZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &AccountStatzEventOptions{}
-			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
 				if acc, err := extractAccount(c, subject, msg); err != nil {
 					return nil, err
 				} else if acc == "PING" { // Filter PING subject. Happens for server as well. But wildcards are not used
@@ -1068,7 +1068,7 @@ func (s *Server) initEventTracking() {
 	if _, err := s.sysSubscribe(fmt.Sprintf(accPingReqSubj, "STATZ"),
 		s.noInlineCallback(func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &AccountStatzEventOptions{}
-			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
 				if stz, err := s.AccountStatz(&optz.AccountStatzOptions); err != nil {
 					return nil, err
 				} else if len(stz.Accounts) == 0 && !optz.IncludeUnused {
@@ -1637,14 +1637,13 @@ func getAcceptEncoding(hdr []byte) compressionType {
 	return unsupportedCompression
 }
 
-func (s *Server) zReq(c *client, reply string, rmsg []byte, fOpts *EventFilterOptions, optz interface{}, respf func() (interface{}, error)) {
+func (s *Server) zReq(c *client, reply string, hdr, msg []byte, fOpts *EventFilterOptions, optz interface{}, respf func() (interface{}, error)) {
 	if !s.EventsEnabled() || reply == _EMPTY_ {
 		return
 	}
 	response := &ServerAPIResponse{Server: &ServerInfo{}}
 	var err error
 	status := 0
-	hdr, msg := c.msgParts(rmsg)
 	if len(msg) != 0 {
 		if err = json.Unmarshal(msg, optz); err != nil {
 			status = http.StatusBadRequest // status is only included on error, so record how far execution got
