@@ -992,9 +992,9 @@ func (s *Server) initEventTracking() {
 			optz := &HealthzEventOptions{}
 			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.healthz(&optz.HealthzOptions), nil })
 		},
-		"PROFILEZ": func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
+		"PROFILEZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &ProfilezEventOptions{}
-			s.zReq(c, reply, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.profilez(&optz.ProfilezOptions), nil })
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.profilez(&optz.ProfilezOptions), nil })
 		},
 	}
 	for name, req := range monSrvc {
