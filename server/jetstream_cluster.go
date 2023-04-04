@@ -4293,16 +4293,16 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 					}
 					// Check our state if we are under an interest based stream.
 					o.checkStateForInterestStream()
-					continue
-				}
-				if err := js.applyConsumerEntries(o, ce, isLeader); err == nil {
-					ne, nb := n.Applied(ce.Index)
-					// If we have at least min entries to compact, go ahead and snapshot/compact.
-					if nb > 0 && ne >= compactNumMin || nb > compactSizeMin {
-						doSnapshot(false)
+				} else if !recovering {
+					if err := js.applyConsumerEntries(o, ce, isLeader); err == nil {
+						ne, nb := n.Applied(ce.Index)
+						// If we have at least min entries to compact, go ahead and snapshot/compact.
+						if nb > 0 && ne >= compactNumMin || nb > compactSizeMin {
+							doSnapshot(false)
+						}
+					} else {
+						s.Warnf("Error applying consumer entries to '%s > %s'", ca.Client.serviceAccount(), ca.Name)
 					}
-				} else {
-					s.Warnf("Error applying consumer entries to '%s > %s'", ca.Client.serviceAccount(), ca.Name)
 				}
 			}
 			aq.recycle(&ces)
