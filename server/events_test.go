@@ -1641,7 +1641,7 @@ func TestSystemAccountWithBadRemoteLatencyUpdate(t *testing.T) {
 		ReqId:   "_INBOX.22",
 	}
 	b, _ := json.Marshal(&rl)
-	s.remoteLatencyUpdate(nil, nil, nil, "foo", _EMPTY_, b)
+	s.remoteLatencyUpdate(nil, nil, nil, "foo", _EMPTY_, nil, b)
 }
 
 func TestSystemAccountWithGateways(t *testing.T) {
