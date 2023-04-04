@@ -1220,6 +1220,7 @@ func TestAccountClaimsUpdates(t *testing.T) {
 		claimUpdateSubj := fmt.Sprintf(subj, pub)
 		nc.Publish(claimUpdateSubj, []byte(ajwt))
 		nc.Flush()
+		time.Sleep(200 * time.Millisecond)
 
 		acc, _ = s.LookupAccount(pub)
 		if acc.MaxActiveConnections() != 8 {

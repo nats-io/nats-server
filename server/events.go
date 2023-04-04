@@ -2266,8 +2266,26 @@ func (s *Server) debugSubscribers(sub *subscription, c *client, _ *Account, subj
 		return
 	}
 
-	_, acc, _, msg, err := s.getRequestInfo(c, msg)
-	if err != nil {
+	var ci ClientInfo
+	if len(hdr) > 0 {
+		if err := json.Unmarshal(getHeader(ClientInfoHdr, hdr), &ci); err != nil {
+			return
+		}
+	}
+
+	var acc *Account
+	if ci.Service != _EMPTY_ {
+		acc, _ = s.LookupAccount(ci.Service)
+	} else if ci.Account != _EMPTY_ {
+		acc, _ = s.LookupAccount(ci.Account)
+	} else {
+		// Direct $SYS access.
+		acc = c.acc
+		if acc == nil {
+			acc = s.SystemAccount()
+		}
+	}
+	if acc == nil {
 		return
 	}
 
