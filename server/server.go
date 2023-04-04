@@ -1364,13 +1364,13 @@ func (s *Server) setSystemAccount(acc *Account) error {
 		servers: make(map[string]*serverUpdate),
 		replies: make(map[string]msgHandler),
 		sendq:   newIPQueue[*pubMsg](s, "System sendQ"),
+		recvq:   newIPQueue[*inSysMsg](s, "System recvQ"),
 		resetCh: make(chan struct{}),
 		sq:      s.newSendQ(),
 		statsz:  eventsHBInterval,
 		orphMax: 5 * eventsHBInterval,
 		chkOrph: 3 * eventsHBInterval,
 	}
-
 	s.sys.wg.Add(1)
 	s.mu.Unlock()
 
@@ -1382,6 +1382,9 @@ func (s *Server) setSystemAccount(acc *Account) error {
 	// Start our internal loop to serialize outbound messages.
 	// We do our own wg here since we will stop first during shutdown.
 	go s.internalSendLoop(&s.sys.wg)
+
+	// Start the internal loop for inbound messages.
+	go s.internalReceiveLoop()
 
 	// Start up our general subscriptions
 	s.initEventTracking()
