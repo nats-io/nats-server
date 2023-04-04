@@ -6559,7 +6559,7 @@ func TestNoRaceJetStreamClusterF3Setup(t *testing.T) {
 	setHighStartSequence := false
 	simulateMaxRedeliveries := false
 	maxBadPubTimes := uint32(20)
-	badPubThresh := 5 * time.Second
+	badPubThresh := 500 * time.Millisecond
 	testTime := 5 * time.Minute // make sure to do --timeout=65m
 
 	t.Logf("Starting Test: Total Test Time %v", testTime)

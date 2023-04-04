@@ -254,6 +254,7 @@ type consumer struct {
 	ackReplyT         string
 	ackSubj           string
 	nextMsgSubj       string
+	nextMsgReqs       *ipQueue[*nextMsgReq]
 	maxp              int
 	pblimit           int
 	maxpb             int
@@ -750,6 +751,8 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	// Create our request waiting queue.
 	if o.isPullMode() {
 		o.waiting = newWaitQueue(config.MaxWaiting)
+		// Create our internal queue for next msg requests.
+		o.nextMsgReqs = newIPQueue[*nextMsgReq](s, fmt.Sprintf("[ACC:%s] consumer '%s' on stream '%s' pull requests", accName, o.name, mset.cfg.Name))
 	}
 
 	// Check if we have  filtered subject that is a wildcard.
@@ -1099,6 +1102,7 @@ func (o *consumer) setLeader(isLeader bool) {
 		if node != nil && o.pch == nil {
 			o.pch = make(chan struct{}, 1)
 		}
+		pullMode := o.isPullMode()
 		o.mu.Unlock()
 
 		// Snapshot initial info.
@@ -1109,6 +1113,12 @@ func (o *consumer) setLeader(isLeader bool) {
 
 		// Now start up Go routine to process acks.
 		go o.processInboundAcks(qch)
+
+		if pullMode {
+			// Now start up Go routine to process inbound next message requests.
+			go o.processInboundNextMsgReqs(qch)
+
+		}
 
 		// If we are R>1 spin up our proposal loop.
 		if node != nil {
@@ -1145,6 +1155,7 @@ func (o *consumer) setLeader(isLeader bool) {
 			if !o.isDurable() {
 				stopAndClearTimer(&o.dtmr)
 			}
+			o.nextMsgReqs.drain()
 		} else if o.srv.gateway.enabled {
 			stopAndClearTimer(&o.gwdtmr)
 		}
@@ -2833,6 +2844,37 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 	return nil
 }
 
+// Next message request.
+type nextMsgReq struct {
+	reply string
+	msg   []byte
+}
+
+var nextMsgReqPool sync.Pool
+
+func newNextMsgReq(reply string, msg []byte) *nextMsgReq {
+	var nmr *nextMsgReq
+	m := nextMsgReqPool.Get()
+	if m != nil {
+		nmr = m.(*nextMsgReq)
+	} else {
+		nmr = &nextMsgReq{}
+	}
+	// When getting something from a pool it is critical that all fields are
+	// initialized. Doing this way guarantees that if someone adds a field to
+	// the structure, the compiler will fail the build if this line is not updated.
+	(*nmr) = nextMsgReq{reply, msg}
+	return nmr
+}
+
+func (nmr *nextMsgReq) returnToPool() {
+	if nmr == nil {
+		return
+	}
+	nmr.reply, nmr.msg = _EMPTY_, nil
+	nextMsgReqPool.Put(nmr)
+}
+
 // processNextMsgReq will process a request for the next message available. A nil message payload means deliver
 // a single message. If the payload is a formal request or a number parseable with Atoi(), then we will send a
 // batch of messages without requiring another request to this endpoint, or an ACK.
@@ -2840,21 +2882,16 @@ func (o *consumer) processNextMsgReq(_ *subscription, c *client, _ *Account, _, 
 	if reply == _EMPTY_ {
 		return
 	}
-	_, msg = c.msgParts(msg)
 
-	inlineOk := c.kind != ROUTER && c.kind != GATEWAY && c.kind != LEAF
-	if !inlineOk {
-		// Check how long we have been away from the readloop for the route or gateway or leafnode.
-		// If too long move to a separate go routine.
-		if elapsed := time.Since(c.in.start); elapsed < noBlockThresh {
-			inlineOk = true
-		}
+	// Short circuit error here.
+	if o.nextMsgReqs == nil {
+		hdr := []byte("NATS/1.0 409 Consumer is push based\r\n\r\n")
+		o.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		return
 	}
-	if inlineOk {
-		o.processNextMsgRequest(reply, msg)
-	} else {
-		go o.processNextMsgRequest(reply, copyBytes(msg))
-	}
+
+	_, msg = c.msgParts(msg)
+	o.nextMsgReqs.push(newNextMsgReq(reply, copyBytes(msg)))
 }
 
 func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
@@ -3216,6 +3253,30 @@ func (o *consumer) processInboundAcks(qch chan struct{}) {
 			if hasInactiveThresh {
 				o.suppressDeletion()
 			}
+		case <-qch:
+			return
+		case <-s.quitCh:
+			return
+		}
+	}
+}
+
+// Process inbound next message requests.
+func (o *consumer) processInboundNextMsgReqs(qch chan struct{}) {
+	// Grab the server lock to watch for server quit.
+	o.mu.RLock()
+	s := o.srv
+	o.mu.RUnlock()
+
+	for {
+		select {
+		case <-o.nextMsgReqs.ch:
+			reqs := o.nextMsgReqs.pop()
+			for _, req := range reqs {
+				o.processNextMsgRequest(req.reply, req.msg)
+				req.returnToPool()
+			}
+			o.nextMsgReqs.recycle(&reqs)
 		case <-qch:
 			return
 		case <-s.quitCh:
@@ -4310,6 +4371,9 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	n := o.node
 	qgroup := o.cfg.DeliverGroup
 	o.ackMsgs.unregister()
+	if o.nextMsgReqs != nil {
+		o.nextMsgReqs.unregister()
+	}
 
 	// For cleaning up the node assignment.
 	var ca *consumerAssignment
