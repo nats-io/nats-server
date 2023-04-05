@@ -446,8 +446,8 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 
 	// Setup our internal indexed names here for sources and check if the transform (if any) is valid.
 	if len(cfg.Sources) > 0 {
-		for i, ssi := range cfg.Sources {
-			ssi.setIndexName(i)
+		for _, ssi := range cfg.Sources {
+			ssi.setIndexName()
 			// check the filter, if any, is valid
 			if ssi.FilterSubject != _EMPTY_ && !IsValidSubject(ssi.FilterSubject) {
 				jsa.mu.Unlock()
@@ -620,15 +620,31 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	return mset, nil
 }
 
-// Sets the index name. Usually just the stream name and the source's index (so you can source from the same stream more than once)
-// but when the stream is external we will
-// use additional information in case the stream names are the same.
-func (ssi *StreamSource) setIndexName(i int) {
+// Composes  the index name. Contains the stream name, subject filter, and transform destination
+// when the stream is external we will use additional information in case the (external)  stream names are the same.
+func (ssi *StreamSource) composeIName() string {
+	var iName = ssi.Name
+
 	if ssi.External != nil {
-		ssi.iname = strconv.Itoa(i) + ":" + ssi.Name + ":" + getHash(ssi.External.ApiPrefix)
-	} else {
-		ssi.iname = strconv.Itoa(i) + ":" + ssi.Name
+		iName = iName + ":" + getHash(ssi.External.ApiPrefix)
 	}
+
+	filter := ssi.FilterSubject
+	// normalize filter and destination in case they are empty
+	if filter == _EMPTY_ {
+		filter = fwcs
+	}
+	destination := ssi.SubjectTransformDest
+	if destination == _EMPTY_ {
+		destination = fwcs
+	}
+
+	return strings.Join([]string{iName, filter, destination}, " ")
+}
+
+// Sets the index name.
+func (ssi *StreamSource) setIndexName() {
+	ssi.iname = ssi.composeIName()
 }
 
 func (mset *stream) streamAssignment() *streamAssignment {
@@ -1160,6 +1176,15 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		}
 	}
 	if len(cfg.Sources) > 0 {
+		// check for duplicates
+		var iNames = make(map[string]struct{})
+		for _, src := range cfg.Sources {
+			if _, ok := iNames[src.composeIName()]; !ok {
+				iNames[src.composeIName()] = struct{}{}
+			} else {
+				return StreamConfig{}, NewJSSourceDuplicateDetectedError()
+			}
+		}
 		for _, src := range cfg.Sources {
 			exists, maxMsgSize, subs := hasStream(src.Name)
 			if len(subs) > 0 {
@@ -1536,15 +1561,14 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 
 		// Check for Sources.
 		if len(cfg.Sources) > 0 || len(ocfg.Sources) > 0 {
-			currentFilter := make(map[string]string)
-			currentTransformDest := make(map[string]string)
+			currentIName := make(map[string]struct{})
 			for _, s := range ocfg.Sources {
-				currentFilter[s.iname] = s.FilterSubject
-				currentTransformDest[s.iname] = s.SubjectTransformDest
+				currentIName[s.iname] = struct{}{}
 			}
-			for i, s := range cfg.Sources {
-				s.setIndexName(i)
-				if oFilter, ok := currentFilter[s.iname]; !ok {
+			for _, s := range cfg.Sources {
+				s.setIndexName()
+				if _, ok := currentIName[s.iname]; !ok {
+					// new source
 					if mset.sources == nil {
 						mset.sources = make(map[string]*sourceInfo)
 					}
@@ -1558,60 +1582,18 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 							return fmt.Errorf("stream source subject transform from '%s' to '%s' %w", s.FilterSubject, s.SubjectTransformDest, err)
 						}
 					}
-
 					mset.sources[s.iname] = si
-					mset.setStartingSequenceForSource(s.iname)
+					mset.setStartingSequenceForSource(s.iname, s.External)
 					mset.setSourceConsumer(s.iname, si.sseq+1, time.Time{})
-				} else if oFilter != s.FilterSubject {
-					if si, ok := mset.sources[s.iname]; ok {
-						if s.SubjectTransformDest != _EMPTY_ {
-							var err error
-							if si.tr, err = NewSubjectTransform(s.FilterSubject, s.SubjectTransformDest); err != nil {
-								mset.mu.Unlock()
-								return fmt.Errorf("stream source subject transform from '%s' to '%s' %w", s.FilterSubject, s.SubjectTransformDest, err)
-							}
-						}
-						filterOverlap := true
-						if oFilter != _EMPTY_ && s.FilterSubject != _EMPTY_ {
-							newFilter := strings.Split(s.FilterSubject, tsep)
-							oldFilter := strings.Split(oFilter, tsep)
-							if !isSubsetMatchTokenized(oldFilter, newFilter) &&
-								!isSubsetMatchTokenized(newFilter, oldFilter) {
-								filterOverlap = false
-							}
-						}
-						if filterOverlap {
-							// si.sseq is the last message we received
-							// if upstream has more messages (with a bigger sequence number)
-							// that we used to filter, now we get them
-							mset.setSourceConsumer(s.iname, si.sseq+1, time.Time{})
-						} else {
-							// since the filter has no overlap at all, we will request messages starting now
-							mset.setSourceConsumer(s.iname, si.sseq+1, time.Now())
-						}
-					}
-				} else if currentTransformDest[s.iname] != s.SubjectTransformDest {
-					// transform destination has changed
-					if si, ok := mset.sources[s.iname]; ok {
-						if s.SubjectTransformDest == _EMPTY_ {
-							// remove the transform
-							si.tr = nil
-						} else {
-							// update the transform with the new destination if it's valid
-							var err error
-							if si.tr, err = NewSubjectTransform(s.FilterSubject, s.SubjectTransformDest); err != nil {
-								mset.mu.Unlock()
-								return fmt.Errorf("stream source subject transform from '%s' to '%s' %w", s.FilterSubject, s.SubjectTransformDest, err)
-							}
-						}
-					}
+				} else {
+					// source already exists
+					delete(currentIName, s.iname)
 				}
-				delete(currentFilter, s.iname)
 			}
-			// What is left in currentFilter needs to be deleted.
-			for iname := range currentFilter {
-				mset.cancelSourceConsumer(iname)
-				delete(mset.sources, iname)
+			// What is left in cuurentIName needs to be deleted.
+			for iName := range currentIName {
+				mset.cancelSourceConsumer(iName)
+				delete(mset.sources, iName)
 			}
 		}
 	}
@@ -2370,16 +2352,19 @@ func (mset *stream) streamSource(iname string) *StreamSource {
 	return nil
 }
 
-func (mset *stream) retrySourceConsumer(sname string) {
+func (mset *stream) retrySourceConsumer(iName string) {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 
-	si := mset.sources[sname]
+	si := mset.sources[iName]
 	if si == nil {
 		return
 	}
-	mset.setStartingSequenceForSource(sname)
-	mset.retrySourceConsumerAtSeq(sname, si.sseq+1)
+	var ss = mset.streamSource(iName)
+	if ss != nil {
+		mset.setStartingSequenceForSource(iName, ss.External)
+		mset.retrySourceConsumerAtSeq(iName, si.sseq+1)
+	}
 }
 
 // Same than setSourceConsumer but simply issue a debug statement indicating
@@ -2861,11 +2846,12 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 	return true
 }
 
-// Generate a new style source header.
+// Generate a new (2.10) style source header (stream name, sequence number, source filter, source destination transform).
 func (si *sourceInfo) genSourceHeader(reply string) string {
 	var b strings.Builder
+	iNameParts := strings.Fields(si.iname)
 
-	b.WriteString(si.iname)
+	b.WriteString(iNameParts[0])
 	b.WriteByte(' ')
 	// Grab sequence as text here from reply subject.
 	var tsa [expectedNumReplyTokens]string
@@ -2881,11 +2867,16 @@ func (si *sourceInfo) genSourceHeader(reply string) string {
 		seq = tokens[5]
 	}
 	b.WriteString(seq)
+
+	b.WriteByte(' ')
+	b.WriteString(iNameParts[1])
+	b.WriteByte(' ')
+	b.WriteString(iNameParts[2])
 	return b.String()
 }
 
 // Original version of header that stored ack reply direct.
-func streamAndSeqFromAckReply(reply string) (string, uint64) {
+func streamAndSeqFromAckReply(reply string) (string, string, uint64) {
 	tsa := [expectedNumReplyTokens]string{}
 	start, tokens := 0, tsa[:0]
 	for i := 0; i < len(reply); i++ {
@@ -2895,27 +2886,36 @@ func streamAndSeqFromAckReply(reply string) (string, uint64) {
 	}
 	tokens = append(tokens, reply[start:])
 	if len(tokens) != expectedNumReplyTokens || tokens[0] != "$JS" || tokens[1] != "ACK" {
-		return _EMPTY_, 0
+		return _EMPTY_, _EMPTY_, 0
 	}
-	return tokens[2], uint64(parseAckReplyNum(tokens[5]))
+	return tokens[2], _EMPTY_, uint64(parseAckReplyNum(tokens[5]))
 }
 
-// Extract the stream (indexed name) and sequence from the source header.
-func streamAndSeq(shdr string) (string, uint64) {
+// Extract the stream name, the source index name and the message sequence number from the source header.
+// Uses the filter and transform arguments to provide backwards compatibility
+func streamAndSeq(shdr string) (string, string, uint64) {
 	if strings.HasPrefix(shdr, jsAckPre) {
 		return streamAndSeqFromAckReply(shdr)
 	}
 	// New version which is stream index name <SPC> sequence
 	fields := strings.Fields(shdr)
-	if len(fields) != 2 {
-		return _EMPTY_, 0
+	nFields := len(fields)
+
+	if nFields != 2 && nFields <= 3 {
+		return _EMPTY_, _EMPTY_, 0
 	}
-	return fields[0], uint64(parseAckReplyNum(fields[1]))
+
+	if nFields >= 4 {
+		return fields[0], strings.Join([]string{fields[0], fields[2], fields[3]}, " "), uint64(parseAckReplyNum(fields[1]))
+	} else {
+		return fields[0], _EMPTY_, uint64(parseAckReplyNum(fields[1]))
+	}
+
 }
 
 // Lock should be held.
-func (mset *stream) setStartingSequenceForSource(sname string) {
-	si := mset.sources[sname]
+func (mset *stream) setStartingSequenceForSource(iName string, external *ExternalStream) {
+	si := mset.sources[iName]
 	if si == nil {
 		return
 	}
@@ -2939,8 +2939,8 @@ func (mset *stream) setStartingSequenceForSource(sname string) {
 		if len(ss) == 0 {
 			continue
 		}
-		iname, sseq := streamAndSeq(string(ss))
-		if iname == sname {
+		streamName, indexName, sseq := streamAndSeq(string(ss))
+		if indexName == si.iname || (indexName == _EMPTY_ && (streamName == si.name || (external != nil && streamName == si.name+":"+getHash(external.ApiPrefix)))) {
 			si.sseq = sseq
 			si.dseq = 0
 			return
@@ -2960,9 +2960,9 @@ func (mset *stream) startingSequenceForSources() {
 	// Always reset here.
 	mset.sources = make(map[string]*sourceInfo)
 
-	for i, ssi := range mset.cfg.Sources {
+	for _, ssi := range mset.cfg.Sources {
 		if ssi.iname == _EMPTY_ {
-			ssi.setIndexName(i)
+			ssi.setIndexName()
 		}
 		si := &sourceInfo{name: ssi.Name, iname: ssi.iname, sf: ssi.FilterSubject}
 		// Check for transform.
@@ -3016,15 +3016,28 @@ func (mset *stream) startingSequenceForSources() {
 		if len(ss) == 0 {
 			continue
 		}
-		name, sseq := streamAndSeq(string(ss))
-		// Only update active in case we have older ones in here that got configured out.
-		if si := mset.sources[name]; si != nil {
-			if _, ok := seqs[name]; !ok {
-				seqs[name] = sseq
-				if len(seqs) == expected {
-					return
+
+		var update = func(iName string, seq uint64) {
+			// Only update active in case we have older ones in here that got configured out.
+			if si := mset.sources[iName]; si != nil {
+				if _, ok := seqs[iName]; !ok {
+					seqs[iName] = seq
 				}
 			}
+		}
+
+		streamName, iName, sSeq := streamAndSeq(string(ss))
+		if iName == _EMPTY_ { // Pre-2.10 message header means it's a match for any source using that stream name
+			for _, ssi := range mset.cfg.Sources {
+				if streamName == ssi.Name || streamName == ssi.Name+":"+getHash(ssi.External.ApiPrefix) {
+					update(ssi.iname, sSeq)
+				}
+			}
+		} else {
+			update(iName, sSeq)
+		}
+		if len(seqs) == expected {
+			return
 		}
 	}
 }

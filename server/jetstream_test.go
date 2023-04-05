@@ -11415,12 +11415,12 @@ func TestJetStreamSourceBasics(t *testing.T) {
 		return nil
 	})
 
-	m, err := js.GetMsg("MS", 1)
+	ss, err := js.SubscribeSync("foo2.foo", nats.BindStream("MS"))
 	require_NoError(t, err)
-
-	if m.Subject != "foo2.foo" {
-		t.Fatalf("Expected message subject foo2.foo, got %s", m.Subject)
-	}
+	// we must have at least one message on the transformed subject name (ie no timeout)
+	_, err = ss.NextMsg(time.Millisecond)
+	require_NoError(t, err)
+	ss.Drain()
 
 	// Test Source Updates
 	ncfg := &nats.StreamConfig{
@@ -11461,11 +11461,11 @@ func TestJetStreamSourceBasics(t *testing.T) {
 		return nil
 	})
 	// Double check first starting.
-	m, err = js.GetMsg("FMS", 1)
+	m, err := js.GetMsg("FMS", 1)
 	require_NoError(t, err)
 	if shdr := m.Header.Get(JSStreamSource); shdr == _EMPTY_ {
 		t.Fatalf("Expected a header, got none")
-	} else if _, sseq := streamAndSeq(shdr); sseq != 26 {
+	} else if _, _, sseq := streamAndSeq(shdr); sseq != 26 {
 		t.Fatalf("Expected header sequence of 26, got %d", sseq)
 	}
 
@@ -11493,7 +11493,7 @@ func TestJetStreamSourceBasics(t *testing.T) {
 	}
 	if shdr := m.Header.Get(JSStreamSource); shdr == _EMPTY_ {
 		t.Fatalf("Expected a header, got none")
-	} else if _, sseq := streamAndSeq(shdr); sseq != 11 {
+	} else if _, _, sseq := streamAndSeq(shdr); sseq != 11 {
 		t.Fatalf("Expected header sequence of 11, got %d", sseq)
 	}
 }
