@@ -253,7 +253,9 @@ type client struct {
 	ping       pinfo
 	msgb       [msgScratchSize]byte
 	last       time.Time
-	headers    bool
+	lastIn     time.Time
+
+	headers bool
 
 	rtt      time.Duration
 	rttStart time.Time
@@ -286,9 +288,8 @@ type rrTracking struct {
 
 // Struct for PING initiation from the server.
 type pinfo struct {
-	tmr  *time.Timer
-	last time.Time
-	out  int
+	tmr *time.Timer
+	out int
 }
 
 // outbound holds pending data for a socket.
@@ -1307,8 +1308,10 @@ func (c *client) readLoop(pre []byte) {
 		c.mu.Lock()
 
 		// Activity based on interest changes or data/msgs.
+		// Also update last receive activity for ping sender
 		if c.in.msgs > 0 || c.in.subs > 0 {
 			c.last = last
+			c.lastIn = last
 		}
 
 		if n >= cap(b) {
@@ -2196,7 +2199,7 @@ func (c *client) processPing() {
 
 	// Record this to suppress us sending one if this
 	// is within a given time interval for activity.
-	c.ping.last = time.Now()
+	c.lastIn = time.Now()
 
 	// If not a CLIENT, we are done. Also the CONNECT should
 	// have been received, but make sure it is so before proceeding
@@ -4564,17 +4567,14 @@ func (c *client) processPingTimer() {
 	now := time.Now()
 	needRTT := c.rtt == 0 || now.Sub(c.rttStart) > DEFAULT_RTT_MEASUREMENT_INTERVAL
 
-	// Do not delay PINGs for GATEWAY or spoke LEAF connections.
-	if c.kind == GATEWAY || c.isSpokeLeafNode() {
+	// Do not delay PINGs for ROUTER, GATEWAY or spoke LEAF connections.
+	if c.kind == ROUTER || c.kind == GATEWAY || c.isSpokeLeafNode() {
 		sendPing = true
 	} else {
-		// If we have had activity within the PingInterval then
-		// there is no need to send a ping. This can be client data
-		// or if we received a ping from the other side.
-		if delta := now.Sub(c.last); delta < pingInterval && !needRTT {
-			c.Debugf("Delaying PING due to client activity %v ago", delta.Round(time.Second))
-		} else if delta := now.Sub(c.ping.last); delta < pingInterval && !needRTT {
-			c.Debugf("Delaying PING due to remote ping %v ago", delta.Round(time.Second))
+		// If we received client data or a ping from the other side within the PingInterval,
+		// then there is no need to send a ping.
+		if delta := now.Sub(c.lastIn); delta < pingInterval && !needRTT {
+			c.Debugf("Delaying PING due to remote client data or ping %v ago", delta.Round(time.Second))
 		} else {
 			sendPing = true
 		}
