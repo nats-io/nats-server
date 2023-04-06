@@ -1515,6 +1515,7 @@ func TestAccountClaimsUpdatesWithServiceImports(t *testing.T) {
 		nc.Publish(claimUpdateSubj, []byte(ajwt2))
 	}
 	nc.Flush()
+	time.Sleep(50 * time.Millisecond)
 
 	if startSubs < s.NumSubscriptions() {
 		t.Fatalf("Subscriptions leaked: %d vs %d", startSubs, s.NumSubscriptions())
