@@ -890,10 +890,17 @@ func (s *Server) sendAPIErrResponse(ci *ClientInfo, acc *Account, subject, reply
 const errRespDelay = 500 * time.Millisecond
 
 func (s *Server) sendDelayedAPIErrResponse(ci *ClientInfo, acc *Account, subject, reply, request, response string, rg *raftGroup) {
+	js := s.getJetStream()
+	if js == nil {
+		return
+	}
 	var quitCh <-chan struct{}
+	js.mu.RLock()
 	if rg != nil && rg.node != nil {
 		quitCh = rg.node.QuitC()
 	}
+	js.mu.RUnlock()
+
 	s.startGoRoutine(func() {
 		defer s.grWG.Done()
 		select {
