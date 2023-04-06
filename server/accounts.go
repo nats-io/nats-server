@@ -4162,18 +4162,14 @@ func (dr *DirAccResolver) apply(opts ...DirResOption) error {
 	return nil
 }
 
-func NewDirAccResolver(path string, limit int64, syncInterval time.Duration, delete bool, opts ...DirResOption) (*DirAccResolver, error) {
+func NewDirAccResolver(path string, limit int64, syncInterval time.Duration, delete deleteType, opts ...DirResOption) (*DirAccResolver, error) {
 	if limit == 0 {
 		limit = math.MaxInt64
 	}
 	if syncInterval <= 0 {
 		syncInterval = time.Minute
 	}
-	deleteType := NoDelete
-	if delete {
-		deleteType = RenameDeleted
-	}
-	store, err := NewExpiringDirJWTStore(path, false, true, deleteType, 0, limit, false, 0, nil)
+	store, err := NewExpiringDirJWTStore(path, false, true, delete, 0, limit, false, 0, nil)
 	if err != nil {
 		return nil, err
 	}

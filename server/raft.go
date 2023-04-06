@@ -1758,9 +1758,15 @@ func (n *raft) setObserver(isObserver bool, extSt extensionState) {
 
 // Invoked when being notified that there is something in the entryc's queue
 func (n *raft) processAppendEntries() {
+	ok := !n.outOfResources()
+	if !ok {
+		n.debug("AppendEntry not processing inbound, no resources")
+	}
 	aes := n.entry.pop()
-	for _, ae := range aes {
-		n.processAppendEntry(ae, ae.sub)
+	if ok {
+		for _, ae := range aes {
+			n.processAppendEntry(ae, ae.sub)
+		}
 	}
 	n.entry.recycle(&aes)
 }
@@ -2697,11 +2703,6 @@ func (n *raft) runAsCandidate() {
 
 // handleAppendEntry handles an append entry from the wire.
 func (n *raft) handleAppendEntry(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
-	if n.outOfResources() {
-		n.debug("AppendEntry not processing inbound, no resources")
-		return
-	}
-
 	msg = copyBytes(msg)
 	if ae, err := n.decodeAppendEntry(msg, sub, reply); err == nil {
 		n.entry.push(ae)
