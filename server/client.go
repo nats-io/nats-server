@@ -110,9 +110,6 @@ const (
 	// For stalling fast producers
 	stallClientMinDuration = 100 * time.Millisecond
 	stallClientMaxDuration = time.Second
-
-	// Threshold for not knowingly doing a potential blocking operation when internal and on a route or gateway or leafnode.
-	noBlockThresh = 500 * time.Millisecond
 )
 
 var readLoopReportThreshold = readLoopReport
