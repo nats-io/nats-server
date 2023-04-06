@@ -436,62 +436,38 @@ func (cc *jetStreamCluster) isStreamCurrent(account, stream string) bool {
 
 // isStreamHealthy will determine if the stream is up to date or very close.
 // For R1 it will make sure the stream is present on this server.
-// Read lock should be held.
-func (js *jetStream) isStreamHealthy(account, stream string) bool {
+func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) bool {
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+
 	cc := js.cluster
 	if cc == nil {
 		// Non-clustered mode
 		return true
-	}
-	as := cc.streams[account]
-	if as == nil {
-		return false
-	}
-	sa := as[stream]
-	if sa == nil {
-		return false
 	}
 	rg := sa.Group
 	if rg == nil {
 		return false
 	}
-
-	if rg.node == nil || rg.node.Healthy() {
+	if rg := sa.Group; rg != nil && (rg.node == nil || rg.node.Healthy()) {
 		// Check if we are processing a snapshot and are catching up.
-		acc, err := cc.s.LookupAccount(account)
-		if err != nil {
-			return false
+		if mset, err := acc.lookupStream(sa.Config.Name); err == nil && !mset.isCatchingUp() {
+			return true
 		}
-		mset, err := acc.lookupStream(stream)
-		if err != nil {
-			return false
-		}
-		if mset.isCatchingUp() {
-			return false
-		}
-		// Success.
-		return true
 	}
-
 	return false
 }
 
 // isConsumerCurrent will determine if the consumer is up to date.
 // For R1 it will make sure the consunmer is present on this server.
-// Read lock should be held.
-func (js *jetStream) isConsumerCurrent(account, stream, consumer string) bool {
+func (js *jetStream) isConsumerCurrent(mset *stream, consumer string, ca *consumerAssignment) bool {
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+
 	cc := js.cluster
 	if cc == nil {
 		// Non-clustered mode
 		return true
-	}
-	acc, err := cc.s.LookupAccount(account)
-	if err != nil {
-		return false
-	}
-	mset, err := acc.lookupStream(stream)
-	if err != nil {
-		return false
 	}
 	o := mset.lookupConsumer(consumer)
 	if o == nil {
