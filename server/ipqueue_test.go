@@ -221,9 +221,9 @@ func TestIPQueuePopOne(t *testing.T) {
 	q.push(1)
 	q.push(2)
 	// Capture current capacity
-	q.RLock()
+	q.Lock()
 	c := cap(q.elts)
-	q.RUnlock()
+	q.Unlock()
 	e, ok = q.popOne()
 	if !ok || e != 1 {
 		t.Fatalf("Invalid value: %v", e)
@@ -343,9 +343,9 @@ func TestIPQueueRecycle(t *testing.T) {
 	values = q.pop()
 	q.recycle(&values)
 	q.push(1002)
-	q.RLock()
+	q.Lock()
 	recycled := &q.elts == &values
-	q.RUnlock()
+	q.Unlock()
 	if recycled {
 		t.Fatalf("Unexpected recycled slice")
 	}
