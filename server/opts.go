@@ -1130,6 +1130,8 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			}
 		case map[string]interface{}:
 			del := false
+			hdel := false
+			hdel_set := false
 			dir := ""
 			dirType := ""
 			limit := int64(0)
@@ -1148,6 +1150,11 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			if v, ok := v["allow_delete"]; ok {
 				_, v := unwrapValue(v, &lt)
 				del = v.(bool)
+			}
+			if v, ok := v["hard_delete"]; ok {
+				_, v := unwrapValue(v, &lt)
+				hdel_set = true
+				hdel = v.(bool)
 			}
 			if v, ok := v["limit"]; ok {
 				_, v := unwrapValue(v, &lt)
@@ -1189,12 +1196,26 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 				if del {
 					*errors = append(*errors, &configErr{tk, "CACHE does not accept allow_delete"})
 				}
+				if hdel_set {
+					*errors = append(*errors, &configErr{tk, "CACHE does not accept hard_delete"})
+				}
 				res, err = NewCacheDirAccResolver(dir, limit, ttl, opts...)
 			case "FULL":
 				if ttl != 0 {
 					*errors = append(*errors, &configErr{tk, "FULL does not accept ttl"})
 				}
-				res, err = NewDirAccResolver(dir, limit, sync, del, opts...)
+				if hdel_set && !del {
+					*errors = append(*errors, &configErr{tk, "hard_delete has no effect without delete"})
+				}
+				delete := NoDelete
+				if del {
+					if hdel {
+						delete = HardDelete
+					} else {
+						delete = RenameDeleted
+					}
+				}
+				res, err = NewDirAccResolver(dir, limit, sync, delete, opts...)
 			}
 			if err != nil {
 				*errors = append(*errors, &configErr{tk, err.Error()})
