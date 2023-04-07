@@ -2134,7 +2134,6 @@ func (n *raft) runAsLeader() {
 			ars := n.resp.pop()
 			for _, ar := range ars {
 				n.processAppendEntryResponse(ar)
-				arPool.Put(ar)
 			}
 			n.resp.recycle(&ars)
 		case <-n.prop.ch:
@@ -2264,6 +2263,7 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue[uint64
 	n.RUnlock()
 
 	defer s.grWG.Done()
+	defer arPool.Put(ar)
 
 	defer func() {
 		n.Lock()
@@ -2399,6 +2399,7 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 		if lastIndex, err := n.sendSnapshotToFollower(ar.reply); err != nil {
 			n.error("Error sending snapshot to follower [%s]: %v", ar.peer, err)
 			n.Unlock()
+			arPool.Put(ar)
 			return
 		} else {
 			start = lastIndex + 1
@@ -2406,6 +2407,7 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 			if state.Msgs == 0 || start > state.LastSeq {
 				n.debug("Finished catching up")
 				n.Unlock()
+				arPool.Put(ar)
 				return
 			}
 			n.debug("Snapshot sent, reset first catchup entry to %d", lastIndex)
@@ -2420,6 +2422,7 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 	if err != nil || ae == nil {
 		n.warn("Could not find a starting entry for catchup request: %v", err)
 		n.Unlock()
+		arPool.Put(ar)
 		return
 	}
 	if ae.pindex != ar.index || ae.pterm != ar.term {
@@ -3169,6 +3172,7 @@ func (n *raft) processAppendEntryResponse(ar *appendEntryResponse) {
 
 	if ar.success {
 		n.trackResponse(ar)
+		arPool.Put(ar)
 	} else if ar.term > n.term {
 		// False here and they have a higher term.
 		n.Lock()
@@ -3179,6 +3183,7 @@ func (n *raft) processAppendEntryResponse(ar *appendEntryResponse) {
 		n.stepdown.push(noLeader)
 		n.resetWAL()
 		n.Unlock()
+		arPool.Put(ar)
 	} else if ar.reply != _EMPTY_ {
 		n.catchupFollower(ar)
 	}
