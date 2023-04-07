@@ -3031,7 +3031,7 @@ func (mset *stream) startingSequenceForSources() {
 		streamName, iName, sSeq := streamAndSeq(string(ss))
 		if iName == _EMPTY_ { // Pre-2.10 message header means it's a match for any source using that stream name
 			for _, ssi := range mset.cfg.Sources {
-				if streamName == ssi.Name || streamName == ssi.Name+":"+getHash(ssi.External.ApiPrefix) {
+				if streamName == ssi.Name || (ssi.External != nil && streamName == ssi.Name+":"+getHash(ssi.External.ApiPrefix)) {
 					update(ssi.iname, sSeq)
 				}
 			}
