@@ -4490,24 +4490,21 @@ func (mb *msgBlock) subjString(skey []byte) string {
 	if len(skey) == 0 {
 		return _EMPTY_
 	}
-	key := string(skey)
-
 	if lsubjs := len(mb.fs.cfg.Subjects); lsubjs > 0 {
 		if lsubjs == 1 {
 			// The cast for the comparison does not make a copy
-			if key == mb.fs.cfg.Subjects[0] {
+			if string(skey) == mb.fs.cfg.Subjects[0] {
 				return mb.fs.cfg.Subjects[0]
 			}
 		} else {
 			for _, subj := range mb.fs.cfg.Subjects {
-				if key == subj {
+				if string(skey) == subj {
 					return subj
 				}
 			}
 		}
 	}
-
-	return key
+	return string(skey)
 }
 
 // LoadMsg will lookup the message by sequence number and return it if found.
