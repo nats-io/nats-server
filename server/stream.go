@@ -4993,13 +4993,13 @@ func (mset *stream) clearPreAck(o *consumer, seq uint64) {
 
 // ackMsg is called into from a consumer when we have a WorkQueue or Interest Retention Policy.
 func (mset *stream) ackMsg(o *consumer, seq uint64) {
-	if seq == 0 || mset.cfg.Retention == LimitsPolicy {
+	if seq == 0 {
 		return
 	}
 
 	// Don't make this RLock(). We need to have only 1 running at a time to gauge interest across all consumers.
 	mset.mu.Lock()
-	if mset.closed || mset.store == nil {
+	if mset.closed || mset.store == nil || mset.cfg.Retention == LimitsPolicy {
 		mset.mu.Unlock()
 		return
 	}
