@@ -1956,19 +1956,34 @@ func (n *raft) decodeAppendEntry(msg []byte, sub *subscription, reply string) (*
 	return ae, nil
 }
 
-// appendEntryResponse is our response to a received appendEntry.
-type appendEntryResponse struct {
-	term    uint64
-	index   uint64
-	peer    string
-	success bool
-	// internal
-	reply string
+var arPool = sync.Pool{
+	New: func() any {
+		return &appendEntryResponse{}
+	},
 }
 
 // We want to make sure this does not change from system changing length of syshash.
 const idLen = 8
 const appendEntryResponseLen = 24 + 1
+
+// appendEntryResponse is our response to a received appendEntry.
+type appendEntryResponse struct {
+	term    uint64
+	index   uint64
+	peer    string
+	reply   string      // internal usage.
+	_pb_    [idLen]byte // internal bytes from wire for peer name.
+	success bool
+}
+
+// Create a new appendEntryResponse.
+func newAppendEntryResponse(term, index uint64, peer string, success bool) *appendEntryResponse {
+	ar := arPool.Get().(*appendEntryResponse)
+	ar.term, ar.index, ar.peer, ar.success = term, index, peer, success
+	// Always empty out.
+	ar.reply = _EMPTY_
+	return ar
+}
 
 func (ar *appendEntryResponse) encode(b []byte) []byte {
 	var buf []byte
@@ -1994,11 +2009,11 @@ func (n *raft) decodeAppendEntryResponse(msg []byte) *appendEntryResponse {
 		return nil
 	}
 	var le = binary.LittleEndian
-	ar := &appendEntryResponse{
-		term:  le.Uint64(msg[0:]),
-		index: le.Uint64(msg[8:]),
-		peer:  string(msg[16 : 16+idLen]),
-	}
+	ar := arPool.Get().(*appendEntryResponse)
+	ar.term = le.Uint64(msg[0:])
+	ar.index = le.Uint64(msg[8:])
+	copy(ar._pb_[:idLen], msg[16:16+idLen])
+	ar.peer = string(ar._pb_[:])
 	ar.success = msg[24] == 1
 	return ar
 }
@@ -2100,6 +2115,7 @@ func (n *raft) runAsLeader() {
 			ars := n.resp.pop()
 			for _, ar := range ars {
 				n.processAppendEntryResponse(ar)
+				arPool.Put(ar)
 			}
 			n.resp.recycle(&ars)
 		case <-n.prop.ch:
@@ -2841,9 +2857,10 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.stepdown.push(ae.leader)
 		} else {
 			// Let them know we are the leader.
-			ar := &appendEntryResponse{n.term, n.pindex, n.id, false, _EMPTY_}
+			ar := newAppendEntryResponse(n.term, n.pindex, n.id, false)
 			n.debug("AppendEntry ignoring old term from another leader")
 			n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
+			arPool.Put(ar)
 		}
 		// Always return here from processing.
 		n.Unlock()
@@ -2897,11 +2914,12 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			if n.catchupStalled() {
 				n.debug("Catchup may be stalled, will request again")
 				inbox = n.createCatchup(ae)
-				ar = &appendEntryResponse{n.pterm, n.pindex, n.id, false, _EMPTY_}
+				ar = newAppendEntryResponse(n.pterm, n.pindex, n.id, false)
 			}
 			n.Unlock()
 			if ar != nil {
 				n.sendRPC(ae.reply, inbox, ar.encode(arbuf))
+				arPool.Put(ar)
 			}
 			// Ignore new while catching up or replaying.
 			return
@@ -2949,9 +2967,10 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.cancelCatchup()
 
 			// Create response.
-			ar = &appendEntryResponse{ae.pterm, ae.pindex, n.id, success, _EMPTY_}
+			ar = newAppendEntryResponse(ae.pterm, ae.pindex, n.id, success)
 			n.Unlock()
 			n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
+			arPool.Put(ar)
 			return
 		}
 
@@ -3010,9 +3029,10 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			if ae.pindex > n.pindex {
 				// Setup our state for catching up.
 				inbox := n.createCatchup(ae)
-				ar := &appendEntryResponse{n.pterm, n.pindex, n.id, false, _EMPTY_}
+				ar := newAppendEntryResponse(n.pterm, n.pindex, n.id, false)
 				n.Unlock()
 				n.sendRPC(ae.reply, inbox, ar.encode(arbuf))
+				arPool.Put(ar)
 				return
 			}
 		}
@@ -3086,13 +3106,14 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 
 	var ar *appendEntryResponse
 	if sub != nil {
-		ar = &appendEntryResponse{n.pterm, n.pindex, n.id, true, _EMPTY_}
+		ar = newAppendEntryResponse(n.pterm, n.pindex, n.id, true)
 	}
 	n.Unlock()
 
 	// Success. Send our response.
 	if ar != nil {
 		n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
+		arPool.Put(ar)
 	}
 }
 
@@ -3139,7 +3160,6 @@ func (n *raft) processAppendEntryResponse(ar *appendEntryResponse) {
 
 // handleAppendEntryResponse processes responses to append entries.
 func (n *raft) handleAppendEntryResponse(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
-	msg = copyBytes(msg)
 	ar := n.decodeAppendEntryResponse(msg)
 	ar.reply = reply
 	n.resp.push(ar)
