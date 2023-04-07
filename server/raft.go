@@ -1823,6 +1823,13 @@ type CommittedEntry struct {
 	Entries []*Entry
 }
 
+// Pool for appendEntry re-use.
+var aePool = sync.Pool{
+	New: func() any {
+		return &appendEntry{}
+	},
+}
+
 // appendEntry is the main struct that is used to sync raft peers.
 type appendEntry struct {
 	leader  string
@@ -1835,6 +1842,14 @@ type appendEntry struct {
 	reply string
 	sub   *subscription
 	buf   []byte
+}
+
+// Create a new appendEntry.
+func newAppendEntry(leader string, term, commit, pterm, pindex uint64, entries []*Entry) *appendEntry {
+	ae := aePool.Get().(*appendEntry)
+	ae.leader, ae.term, ae.commit, ae.pterm, ae.pindex, ae.entries = leader, term, commit, pterm, pindex, entries
+	ae.reply, ae.sub, ae.buf = _EMPTY_, nil, nil
+	return ae
 }
 
 type EntryType uint8
@@ -1928,15 +1943,10 @@ func (n *raft) decodeAppendEntry(msg []byte, sub *subscription, reply string) (*
 	}
 
 	var le = binary.LittleEndian
-	ae := &appendEntry{
-		leader: string(msg[:idLen]),
-		term:   le.Uint64(msg[8:]),
-		commit: le.Uint64(msg[16:]),
-		pterm:  le.Uint64(msg[24:]),
-		pindex: le.Uint64(msg[32:]),
-		sub:    sub,
-		reply:  reply,
-	}
+
+	ae := newAppendEntry(string(msg[:idLen]), le.Uint64(msg[8:]), le.Uint64(msg[16:]), le.Uint64(msg[24:]), le.Uint64(msg[32:]), nil)
+	ae.reply, ae.sub = reply, sub
+
 	// Decode Entries.
 	ne, ri := int(le.Uint16(msg[40:])), 42
 	for i, max := 0, len(msg); i < ne; i++ {
@@ -1956,6 +1966,7 @@ func (n *raft) decodeAppendEntry(msg []byte, sub *subscription, reply string) (*
 	return ae, nil
 }
 
+// Pool for appendEntryResponse re-use.
 var arPool = sync.Pool{
 	New: func() any {
 		return &appendEntryResponse{}
@@ -2545,6 +2556,8 @@ func (n *raft) applyCommit(index uint64) error {
 		// If we processed inline update our applied index.
 		n.applied = index
 	}
+	// Place back in the pool.
+	aePool.Put(ae)
 	return nil
 }
 
@@ -3166,7 +3179,7 @@ func (n *raft) handleAppendEntryResponse(sub *subscription, c *client, _ *Accoun
 }
 
 func (n *raft) buildAppendEntry(entries []*Entry) *appendEntry {
-	return &appendEntry{n.id, n.term, n.commit, n.pterm, n.pindex, entries, _EMPTY_, nil, nil}
+	return newAppendEntry(n.id, n.term, n.commit, n.pterm, n.pindex, entries)
 }
 
 // Determine if we should store an entry.
@@ -3230,7 +3243,8 @@ func (n *raft) sendAppendEntry(entries []*Entry) {
 	}
 
 	// If we have entries store this in our wal.
-	if ae.shouldStore() {
+	shouldStore := ae.shouldStore()
+	if shouldStore {
 		if err := n.storeToWAL(ae); err != nil {
 			return
 		}
@@ -3245,6 +3259,9 @@ func (n *raft) sendAppendEntry(entries []*Entry) {
 		}
 	}
 	n.sendRPC(n.asubj, n.areply, ae.buf)
+	if !shouldStore {
+		aePool.Put(ae)
+	}
 }
 
 type extensionState uint16
