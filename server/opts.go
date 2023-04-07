@@ -1161,7 +1161,6 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			hdel_set := false
 			dir := _EMPTY_
 			dirType := _EMPTY_
-
 			limit := int64(0)
 			ttl := time.Duration(0)
 			sync := time.Duration(0)

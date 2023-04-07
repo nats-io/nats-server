@@ -1,4 +1,4 @@
-// Copyright 2016-2020 The NATS Authors
+// Copyright 2016-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -1476,6 +1476,20 @@ func TestSublistReverseMatch(t *testing.T) {
 	verifyMember(r.psubs, fooBarSub, t)
 	verifyMember(r.psubs, fooBazSub, t)
 	verifyMember(r.psubs, fooBarBazSub, t)
+}
+
+func TestSublistReverseMatchWider(t *testing.T) {
+	s := NewSublistWithCache()
+	sub := newSub("uplink.*.*.>")
+	s.Insert(sub)
+
+	r := s.ReverseMatch("uplink.1.*.*.>")
+	verifyLen(r.psubs, 1, t)
+	verifyMember(r.psubs, sub, t)
+
+	r = s.ReverseMatch("uplink.1.2.3.>")
+	verifyLen(r.psubs, 1, t)
+	verifyMember(r.psubs, sub, t)
 }
 
 func TestSublistMatchWithEmptyTokens(t *testing.T) {
