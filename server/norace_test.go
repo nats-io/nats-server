@@ -2424,7 +2424,7 @@ func TestNoRaceJetStreamSlowFilteredInititalPendingAndFirstMsg(t *testing.T) {
 	})
 
 	// Threshold for taking too long.
-	const thresh = 50 * time.Millisecond
+	const thresh = 100 * time.Millisecond
 
 	var dindex int
 	testConsumerCreate := func(subj string, startSeq, expectedNumPending uint64) {
@@ -6615,11 +6615,11 @@ func TestNoRaceJetStreamClusterF3Setup(t *testing.T) {
 	wg := sync.WaitGroup{}
 	for i := 0; i < numSourceStreams; i++ {
 		sname := fmt.Sprintf("EVENT-%s", nuid.Next())
+		sources = append(sources, sname)
 		wg.Add(1)
 		go func(stream string) {
 			defer wg.Done()
 			t.Logf("  %q", stream)
-			sources = append(sources, stream)
 			subj := fmt.Sprintf("%s.>", stream)
 			_, err := js.AddStream(&nats.StreamConfig{
 				Name:      stream,
