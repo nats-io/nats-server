@@ -1138,6 +1138,7 @@ func (js *jetStream) monitorCluster() {
 					} else if lls := len(lastSnap); nb > uint64(lls*8) && lls > 0 && time.Since(lastSnapTime) > minSnapDelta {
 						doSnapshot()
 					}
+					ce.ReturnToPool()
 				}
 			}
 			aq.recycle(&ces)
@@ -2101,6 +2102,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				if err := js.applyStreamEntries(mset, ce, isRecovering); err == nil {
 					// Update our applied.
 					ne, nb = n.Applied(ce.Index)
+					ce.ReturnToPool()
 				} else {
 					s.Warnf("Error applying entries to '%s > %s': %v", accName, sa.Config.Name, err)
 					if isClusterResetErr(err) {
@@ -4272,6 +4274,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 				} else if !recovering {
 					if err := js.applyConsumerEntries(o, ce, isLeader); err == nil {
 						ne, nb := n.Applied(ce.Index)
+						ce.ReturnToPool()
 						// If we have at least min entries to compact, go ahead and snapshot/compact.
 						if nb > 0 && ne >= compactNumMin || nb > compactSizeMin {
 							doSnapshot(false)

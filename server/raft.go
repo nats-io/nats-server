@@ -1090,7 +1090,7 @@ func (n *raft) setupLastSnapshot() {
 		n.pterm = snap.lastTerm
 		n.commit = snap.lastIndex
 		n.applied = snap.lastIndex
-		n.apply.push(&CommittedEntry{n.commit, []*Entry{{EntrySnapshot, snap.data}}})
+		n.apply.push(newCommittedEntry(n.commit, []*Entry{{EntrySnapshot, snap.data}}))
 		if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
 			n.setWriteErrLocked(err)
 		}
@@ -1817,10 +1817,44 @@ func (n *raft) runAsFollower() {
 	}
 }
 
+// Pool for CommitedEntry re-use.
+var cePool = sync.Pool{
+	New: func() any {
+		return &CommittedEntry{}
+	},
+}
+
 // CommitEntry is handed back to the user to apply a commit to their FSM.
 type CommittedEntry struct {
 	Index   uint64
 	Entries []*Entry
+}
+
+// Create a new ComittedEntry.
+func newCommittedEntry(index uint64, entries []*Entry) *CommittedEntry {
+	ce := cePool.Get().(*CommittedEntry)
+	ce.Index, ce.Entries = index, entries
+	return ce
+}
+
+func (ce *CommittedEntry) ReturnToPool() {
+	if ce == nil {
+		return
+	}
+	if len(ce.Entries) > 0 {
+		for _, e := range ce.Entries {
+			entryPool.Put(e)
+		}
+	}
+	ce.Index, ce.Entries = 0, nil
+	cePool.Put(ce)
+}
+
+// Pool for Entry re-use.
+var entryPool = sync.Pool{
+	New: func() any {
+		return &Entry{}
+	},
 }
 
 // Pool for appendEntry re-use.
@@ -1850,6 +1884,12 @@ func newAppendEntry(leader string, term, commit, pterm, pindex uint64, entries [
 	ae.leader, ae.term, ae.commit, ae.pterm, ae.pindex, ae.entries = leader, term, commit, pterm, pindex, entries
 	ae.reply, ae.sub, ae.buf = _EMPTY_, nil, nil
 	return ae
+}
+
+// Will return this append entry, and its interior entries to their respective pools.
+func (ae *appendEntry) returnToPool() {
+	ae.entries, ae.buf, ae.sub, ae.reply = nil, nil, nil, _EMPTY_
+	aePool.Put(ae)
 }
 
 type EntryType uint8
@@ -1958,8 +1998,9 @@ func (n *raft) decodeAppendEntry(msg []byte, sub *subscription, reply string) (*
 		if le <= 0 || ri+le > max {
 			return nil, errBadAppendEntry
 		}
-		etype := EntryType(msg[ri])
-		ae.entries = append(ae.entries, &Entry{etype, msg[ri+1 : ri+le]})
+		entry := entryPool.Get().(*Entry)
+		entry.Type, entry.Data = EntryType(msg[ri]), msg[ri+1:ri+le]
+		ae.entries = append(ae.entries, entry)
 		ri += le
 	}
 	ae.buf = msg
@@ -2565,13 +2606,13 @@ func (n *raft) applyCommit(index uint64) error {
 		if fpae {
 			delete(n.pae, index)
 		}
-		n.apply.push(&CommittedEntry{index, committed})
+		n.apply.push(newCommittedEntry(index, committed))
 	} else {
 		// If we processed inline update our applied index.
 		n.applied = index
 	}
 	// Place back in the pool.
-	aePool.Put(ae)
+	ae.returnToPool()
 	return nil
 }
 
@@ -3045,7 +3086,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			}
 
 			// Now send snapshot to upper levels. Only send the snapshot, not the peerstate entry.
-			n.apply.push(&CommittedEntry{n.commit, ae.entries[:1]})
+			n.apply.push(newCommittedEntry(n.commit, ae.entries[:1]))
 			n.Unlock()
 			return
 
@@ -3278,7 +3319,7 @@ func (n *raft) sendAppendEntry(entries []*Entry) {
 	}
 	n.sendRPC(n.asubj, n.areply, ae.buf)
 	if !shouldStore {
-		aePool.Put(ae)
+		ae.returnToPool()
 	}
 }
 
