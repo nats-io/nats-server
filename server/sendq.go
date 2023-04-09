@@ -98,13 +98,6 @@ var outMsgPool = sync.Pool{
 	},
 }
 
-// Create a new outMsg.
-func newOutMsg(index uint64, entries []*Entry) *CommittedEntry {
-	ce := cePool.Get().(*CommittedEntry)
-	ce.Index, ce.Entries = index, entries
-	return ce
-}
-
 func (sq *sendq) send(subj, rply string, hdr, msg []byte) {
 	if sq == nil {
 		return
