@@ -2096,8 +2096,6 @@ func (n *raft) handleForwardedRemovePeerProposal(sub *subscription, c *client, _
 		n.warn("Received invalid peer name for remove proposal: %q", msg)
 		return
 	}
-	// Need to copy since this is underlying client/route buffer.
-	peer := string(copyBytes(msg))
 
 	n.RLock()
 	prop, werr := n.prop, n.werr
@@ -2108,7 +2106,9 @@ func (n *raft) handleForwardedRemovePeerProposal(sub *subscription, c *client, _
 		return
 	}
 
-	prop.push(newEntry(EntryRemovePeer, []byte(peer)))
+	// Need to copy since this is underlying client/route buffer.
+	peer := copyBytes(msg)
+	prop.push(newEntry(EntryRemovePeer, peer))
 }
 
 // Called when a peer has forwarded a proposal.
@@ -2602,6 +2602,9 @@ func (n *raft) applyCommit(index uint64) error {
 			if peer == n.id && n.state == Leader {
 				n.stepdown.push(n.selectNextLeader())
 			}
+
+			// Remove from string intern map.
+			peers.Delete(peer)
 
 			// We pass these up as well.
 			committed = append(committed, e)
