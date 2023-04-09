@@ -4353,16 +4353,29 @@ func (mset *stream) internalLoop() {
 	// This should be rarely used now so can be smaller.
 	var _r [1024]byte
 
+	// To optimize for not converting a string to a []byte slice.
+	var (
+		subj  [256]byte
+		dsubj [256]byte
+		rply  [256]byte
+		szb   [10]byte
+		hdb   [10]byte
+	)
+
 	for {
 		select {
 		case <-outq.ch:
 			pms := outq.pop()
 			for _, pm := range pms {
-				c.pa.subject = []byte(pm.dsubj)
-				c.pa.deliver = []byte(pm.subj)
+				c.pa.subject = append(dsubj[:0], pm.dsubj...)
+				c.pa.deliver = append(subj[:0], pm.subj...)
 				c.pa.size = len(pm.msg) + len(pm.hdr)
-				c.pa.szb = []byte(strconv.Itoa(c.pa.size))
-				c.pa.reply = []byte(pm.reply)
+				c.pa.szb = append(szb[:0], strconv.Itoa(c.pa.size)...)
+				if len(pm.reply) > 0 {
+					c.pa.reply = append(rply[:0], pm.reply...)
+				} else {
+					c.pa.reply = nil
+				}
 
 				// If we have an underlying buf that is the wire contents for hdr + msg, else construct on the fly.
 				var msg []byte
@@ -4385,6 +4398,7 @@ func (mset *stream) internalLoop() {
 				if len(pm.hdr) > 0 {
 					c.pa.hdr = len(pm.hdr)
 					c.pa.hdb = []byte(strconv.Itoa(c.pa.hdr))
+					c.pa.hdb = append(hdb[:0], strconv.Itoa(c.pa.hdr)...)
 				} else {
 					c.pa.hdr = -1
 					c.pa.hdb = nil

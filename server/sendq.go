@@ -51,9 +51,12 @@ func (sq *sendq) internalLoop() {
 	defer c.closeConnection(ClientClosed)
 
 	// To optimize for not converting a string to a []byte slice.
-	var subj [256]byte
-	var rply [256]byte
-	var szb [10]byte
+	var (
+		subj [256]byte
+		rply [256]byte
+		szb  [10]byte
+		hdb  [10]byte
+	)
 
 	for s.isRunning() {
 		select {
@@ -73,7 +76,7 @@ func (sq *sendq) internalLoop() {
 				var msg []byte
 				if len(pm.hdr) > 0 {
 					c.pa.hdr = len(pm.hdr)
-					c.pa.hdb = []byte(strconv.Itoa(c.pa.hdr))
+					c.pa.hdb = append(hdb[:0], strconv.Itoa(c.pa.hdr)...)
 					msg = append(pm.hdr, pm.msg...)
 					msg = append(msg, _CRLF_...)
 				} else {
