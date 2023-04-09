@@ -5238,12 +5238,14 @@ func TestJetStreamClusterDeleteAndRestoreAndRestart(t *testing.T) {
 	nc, js = jsClientConnect(t, c.randomServer())
 	defer nc.Close()
 
-	si, err := js.StreamInfo("TEST")
-	require_NoError(t, err)
-
-	if si.State.Msgs != 22 {
-		t.Fatalf("State is not correct after restart")
-	}
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST")
+		require_NoError(t, err)
+		if si.State.Msgs != 22 {
+			return fmt.Errorf("State is not correct after restart, expected 22 msgs, got %d", si.State.Msgs)
+		}
+		return nil
+	})
 
 	ci, err := js.ConsumerInfo("TEST", "dlc")
 	require_NoError(t, err)
