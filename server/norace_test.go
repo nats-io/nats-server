@@ -3800,10 +3800,12 @@ func TestNoRaceJetStreamClusterStreamReset(t *testing.T) {
 		return err
 	})
 
-	// Grab number go routines.
-	if after := runtime.NumGoroutine(); base > after {
-		t.Fatalf("Expected %d go routines, got %d", base, after)
-	}
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		if after := runtime.NumGoroutine(); base > after {
+			return fmt.Errorf("Expected %d go routines, got %d", base, after)
+		}
+		return nil
+	})
 
 	// Simulate a low level write error on our consumer and make sure we can recover etc.
 	cl = c.consumerLeader("$G", "TEST", "d1")
