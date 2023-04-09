@@ -665,7 +665,7 @@ func (n *raft) Propose(data []byte) error {
 	prop := n.prop
 	n.RUnlock()
 
-	prop.push(&Entry{EntryNormal, data})
+	prop.push(newEntry(EntryNormal, data))
 	return nil
 }
 
@@ -717,7 +717,7 @@ func (n *raft) ProposeAddPeer(peer string) error {
 	prop := n.prop
 	n.RUnlock()
 
-	prop.push(&Entry{EntryAddPeer, []byte(peer)})
+	prop.push(newEntry(EntryAddPeer, []byte(peer)))
 	return nil
 }
 
@@ -750,7 +750,7 @@ func (n *raft) ProposeRemovePeer(peer string) error {
 	}
 
 	if isLeader {
-		prop.push(&Entry{EntryRemovePeer, []byte(peer)})
+		prop.push(newEntry(EntryRemovePeer, []byte(peer)))
 		n.doRemovePeerAsLeader(peer)
 		return nil
 	}
@@ -1351,7 +1351,7 @@ func (n *raft) StepDown(preferred ...string) error {
 	// If we have a new leader selected, transfer over to them.
 	if maybeLeader != noLeader {
 		n.debug("Selected %q for new leader", maybeLeader)
-		prop.push(&Entry{EntryLeaderTransfer, []byte(maybeLeader)})
+		prop.push(newEntry(EntryLeaderTransfer, []byte(maybeLeader)))
 		time.AfterFunc(250*time.Millisecond, func() { stepdown.push(noLeader) })
 	} else {
 		// Force us to stepdown here.
@@ -1857,6 +1857,13 @@ var entryPool = sync.Pool{
 	},
 }
 
+// Helper to create new entries.
+func newEntry(t EntryType, data []byte) *Entry {
+	entry := entryPool.Get().(*Entry)
+	entry.Type, entry.Data = t, data
+	return entry
+}
+
 // Pool for appendEntry re-use.
 var aePool = sync.Pool{
 	New: func() any {
@@ -1998,8 +2005,7 @@ func (n *raft) decodeAppendEntry(msg []byte, sub *subscription, reply string) (*
 		if le <= 0 || ri+le > max {
 			return nil, errBadAppendEntry
 		}
-		entry := entryPool.Get().(*Entry)
-		entry.Type, entry.Data = EntryType(msg[ri]), msg[ri+1:ri+le]
+		entry := newEntry(EntryType(msg[ri]), msg[ri+1:ri+le])
 		ae.entries = append(ae.entries, entry)
 		ri += le
 	}
@@ -2102,7 +2108,7 @@ func (n *raft) handleForwardedRemovePeerProposal(sub *subscription, c *client, _
 		return
 	}
 
-	prop.push(&Entry{EntryRemovePeer, []byte(peer)})
+	prop.push(newEntry(EntryRemovePeer, []byte(peer)))
 }
 
 // Called when a peer has forwarded a proposal.
@@ -2123,7 +2129,7 @@ func (n *raft) handleForwardedProposal(sub *subscription, c *client, _ *Account,
 		return
 	}
 
-	prop.push(&Entry{EntryNormal, msg})
+	prop.push(newEntry(EntryNormal, msg))
 }
 
 func (n *raft) runAsLeader() {
@@ -2539,7 +2545,7 @@ func (n *raft) applyCommit(index uint64) error {
 			committed = append(committed, e)
 		case EntryOldSnapshot:
 			// For old snapshots in our WAL.
-			committed = append(committed, &Entry{EntrySnapshot, e.Data})
+			committed = append(committed, newEntry(EntrySnapshot, e.Data))
 		case EntrySnapshot:
 			committed = append(committed, e)
 		case EntryPeerState:
