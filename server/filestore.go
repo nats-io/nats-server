@@ -4483,31 +4483,50 @@ func (mb *msgBlock) msgFromBuf(buf []byte, sm *StoreMsg, hh hash.Hash64) (*Store
 	return sm, nil
 }
 
+// Used to intern strings for subjects.
+// Based on idea from https://github.com/josharian/intern/blob/master/intern.go
+var subjPool = sync.Pool{
+	New: func() any {
+		return make(map[string]string)
+	},
+}
+
+// Get an interned string from a byte slice.
+func subjFromBytes(b []byte) string {
+	sm := subjPool.Get().(map[string]string)
+	defer subjPool.Put(sm)
+	subj, ok := sm[string(b)]
+	if ok {
+		return subj
+	}
+	s := string(b)
+	sm[s] = s
+	return s
+}
+
 // Given the `key` byte slice, this function will return the subject
-// as a copy of `key` or a configured subject as to minimize memory allocations.
+// as an interned string of `key` or a configured subject as to minimize memory allocations.
 // Lock should be held.
 func (mb *msgBlock) subjString(skey []byte) string {
 	if len(skey) == 0 {
 		return _EMPTY_
 	}
-	key := string(skey)
 
 	if lsubjs := len(mb.fs.cfg.Subjects); lsubjs > 0 {
 		if lsubjs == 1 {
 			// The cast for the comparison does not make a copy
-			if key == mb.fs.cfg.Subjects[0] {
+			if string(skey) == mb.fs.cfg.Subjects[0] {
 				return mb.fs.cfg.Subjects[0]
 			}
 		} else {
 			for _, subj := range mb.fs.cfg.Subjects {
-				if key == subj {
+				if string(skey) == subj {
 					return subj
 				}
 			}
 		}
 	}
-
-	return key
+	return subjFromBytes(skey)
 }
 
 // LoadMsg will lookup the message by sequence number and return it if found.

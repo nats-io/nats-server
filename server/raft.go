@@ -665,7 +665,7 @@ func (n *raft) Propose(data []byte) error {
 	prop := n.prop
 	n.RUnlock()
 
-	prop.push(&Entry{EntryNormal, data})
+	prop.push(newEntry(EntryNormal, data))
 	return nil
 }
 
@@ -717,7 +717,7 @@ func (n *raft) ProposeAddPeer(peer string) error {
 	prop := n.prop
 	n.RUnlock()
 
-	prop.push(&Entry{EntryAddPeer, []byte(peer)})
+	prop.push(newEntry(EntryAddPeer, []byte(peer)))
 	return nil
 }
 
@@ -750,7 +750,7 @@ func (n *raft) ProposeRemovePeer(peer string) error {
 	}
 
 	if isLeader {
-		prop.push(&Entry{EntryRemovePeer, []byte(peer)})
+		prop.push(newEntry(EntryRemovePeer, []byte(peer)))
 		n.doRemovePeerAsLeader(peer)
 		return nil
 	}
@@ -1090,7 +1090,7 @@ func (n *raft) setupLastSnapshot() {
 		n.pterm = snap.lastTerm
 		n.commit = snap.lastIndex
 		n.applied = snap.lastIndex
-		n.apply.push(&CommittedEntry{n.commit, []*Entry{{EntrySnapshot, snap.data}}})
+		n.apply.push(newCommittedEntry(n.commit, []*Entry{{EntrySnapshot, snap.data}}))
 		if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
 			n.setWriteErrLocked(err)
 		}
@@ -1351,7 +1351,7 @@ func (n *raft) StepDown(preferred ...string) error {
 	// If we have a new leader selected, transfer over to them.
 	if maybeLeader != noLeader {
 		n.debug("Selected %q for new leader", maybeLeader)
-		prop.push(&Entry{EntryLeaderTransfer, []byte(maybeLeader)})
+		prop.push(newEntry(EntryLeaderTransfer, []byte(maybeLeader)))
 		time.AfterFunc(250*time.Millisecond, func() { stepdown.push(noLeader) })
 	} else {
 		// Force us to stepdown here.
@@ -1817,10 +1817,58 @@ func (n *raft) runAsFollower() {
 	}
 }
 
+// Pool for CommitedEntry re-use.
+var cePool = sync.Pool{
+	New: func() any {
+		return &CommittedEntry{}
+	},
+}
+
 // CommitEntry is handed back to the user to apply a commit to their FSM.
 type CommittedEntry struct {
 	Index   uint64
 	Entries []*Entry
+}
+
+// Create a new ComittedEntry.
+func newCommittedEntry(index uint64, entries []*Entry) *CommittedEntry {
+	ce := cePool.Get().(*CommittedEntry)
+	ce.Index, ce.Entries = index, entries
+	return ce
+}
+
+func (ce *CommittedEntry) ReturnToPool() {
+	if ce == nil {
+		return
+	}
+	if len(ce.Entries) > 0 {
+		for _, e := range ce.Entries {
+			entryPool.Put(e)
+		}
+	}
+	ce.Index, ce.Entries = 0, nil
+	cePool.Put(ce)
+}
+
+// Pool for Entry re-use.
+var entryPool = sync.Pool{
+	New: func() any {
+		return &Entry{}
+	},
+}
+
+// Helper to create new entries.
+func newEntry(t EntryType, data []byte) *Entry {
+	entry := entryPool.Get().(*Entry)
+	entry.Type, entry.Data = t, data
+	return entry
+}
+
+// Pool for appendEntry re-use.
+var aePool = sync.Pool{
+	New: func() any {
+		return &appendEntry{}
+	},
 }
 
 // appendEntry is the main struct that is used to sync raft peers.
@@ -1835,6 +1883,20 @@ type appendEntry struct {
 	reply string
 	sub   *subscription
 	buf   []byte
+}
+
+// Create a new appendEntry.
+func newAppendEntry(leader string, term, commit, pterm, pindex uint64, entries []*Entry) *appendEntry {
+	ae := aePool.Get().(*appendEntry)
+	ae.leader, ae.term, ae.commit, ae.pterm, ae.pindex, ae.entries = leader, term, commit, pterm, pindex, entries
+	ae.reply, ae.sub, ae.buf = _EMPTY_, nil, nil
+	return ae
+}
+
+// Will return this append entry, and its interior entries to their respective pools.
+func (ae *appendEntry) returnToPool() {
+	ae.entries, ae.buf, ae.sub, ae.reply = nil, nil, nil, _EMPTY_
+	aePool.Put(ae)
 }
 
 type EntryType uint8
@@ -1928,15 +1990,10 @@ func (n *raft) decodeAppendEntry(msg []byte, sub *subscription, reply string) (*
 	}
 
 	var le = binary.LittleEndian
-	ae := &appendEntry{
-		leader: string(msg[:idLen]),
-		term:   le.Uint64(msg[8:]),
-		commit: le.Uint64(msg[16:]),
-		pterm:  le.Uint64(msg[24:]),
-		pindex: le.Uint64(msg[32:]),
-		sub:    sub,
-		reply:  reply,
-	}
+
+	ae := newAppendEntry(string(msg[:idLen]), le.Uint64(msg[8:]), le.Uint64(msg[16:]), le.Uint64(msg[24:]), le.Uint64(msg[32:]), nil)
+	ae.reply, ae.sub = reply, sub
+
 	// Decode Entries.
 	ne, ri := int(le.Uint16(msg[40:])), 42
 	for i, max := 0, len(msg); i < ne; i++ {
@@ -1948,27 +2005,42 @@ func (n *raft) decodeAppendEntry(msg []byte, sub *subscription, reply string) (*
 		if le <= 0 || ri+le > max {
 			return nil, errBadAppendEntry
 		}
-		etype := EntryType(msg[ri])
-		ae.entries = append(ae.entries, &Entry{etype, msg[ri+1 : ri+le]})
+		entry := newEntry(EntryType(msg[ri]), msg[ri+1:ri+le])
+		ae.entries = append(ae.entries, entry)
 		ri += le
 	}
 	ae.buf = msg
 	return ae, nil
 }
 
-// appendEntryResponse is our response to a received appendEntry.
-type appendEntryResponse struct {
-	term    uint64
-	index   uint64
-	peer    string
-	success bool
-	// internal
-	reply string
+// Pool for appendEntryResponse re-use.
+var arPool = sync.Pool{
+	New: func() any {
+		return &appendEntryResponse{}
+	},
 }
 
 // We want to make sure this does not change from system changing length of syshash.
 const idLen = 8
 const appendEntryResponseLen = 24 + 1
+
+// appendEntryResponse is our response to a received appendEntry.
+type appendEntryResponse struct {
+	term    uint64
+	index   uint64
+	peer    string
+	reply   string // internal usage.
+	success bool
+}
+
+// Create a new appendEntryResponse.
+func newAppendEntryResponse(term, index uint64, peer string, success bool) *appendEntryResponse {
+	ar := arPool.Get().(*appendEntryResponse)
+	ar.term, ar.index, ar.peer, ar.success = term, index, peer, success
+	// Always empty out.
+	ar.reply = _EMPTY_
+	return ar
+}
 
 func (ar *appendEntryResponse) encode(b []byte) []byte {
 	var buf []byte
@@ -1989,16 +2061,25 @@ func (ar *appendEntryResponse) encode(b []byte) []byte {
 	return buf[:appendEntryResponseLen]
 }
 
+// Track all peers we may have ever seen to use an string interns for appendEntryResponse decoding.
+var peers sync.Map
+
 func (n *raft) decodeAppendEntryResponse(msg []byte) *appendEntryResponse {
 	if len(msg) != appendEntryResponseLen {
 		return nil
 	}
 	var le = binary.LittleEndian
-	ar := &appendEntryResponse{
-		term:  le.Uint64(msg[0:]),
-		index: le.Uint64(msg[8:]),
-		peer:  string(msg[16 : 16+idLen]),
+	ar := arPool.Get().(*appendEntryResponse)
+	ar.term = le.Uint64(msg[0:])
+	ar.index = le.Uint64(msg[8:])
+
+	peer, ok := peers.Load(string(msg[16 : 16+idLen]))
+	if !ok {
+		// We missed so store inline here.
+		peer = string(msg[16 : 16+idLen])
+		peers.Store(peer, peer)
 	}
+	ar.peer = peer.(string)
 	ar.success = msg[24] == 1
 	return ar
 }
@@ -2015,8 +2096,6 @@ func (n *raft) handleForwardedRemovePeerProposal(sub *subscription, c *client, _
 		n.warn("Received invalid peer name for remove proposal: %q", msg)
 		return
 	}
-	// Need to copy since this is underlying client/route buffer.
-	peer := string(copyBytes(msg))
 
 	n.RLock()
 	prop, werr := n.prop, n.werr
@@ -2027,7 +2106,9 @@ func (n *raft) handleForwardedRemovePeerProposal(sub *subscription, c *client, _
 		return
 	}
 
-	prop.push(&Entry{EntryRemovePeer, []byte(peer)})
+	// Need to copy since this is underlying client/route buffer.
+	peer := copyBytes(msg)
+	prop.push(newEntry(EntryRemovePeer, peer))
 }
 
 // Called when a peer has forwarded a proposal.
@@ -2048,7 +2129,7 @@ func (n *raft) handleForwardedProposal(sub *subscription, c *client, _ *Account,
 		return
 	}
 
-	prop.push(&Entry{EntryNormal, msg})
+	prop.push(newEntry(EntryNormal, msg))
 }
 
 func (n *raft) runAsLeader() {
@@ -2229,6 +2310,7 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue[uint64
 	n.RUnlock()
 
 	defer s.grWG.Done()
+	defer arPool.Put(ar)
 
 	defer func() {
 		n.Lock()
@@ -2364,6 +2446,7 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 		if lastIndex, err := n.sendSnapshotToFollower(ar.reply); err != nil {
 			n.error("Error sending snapshot to follower [%s]: %v", ar.peer, err)
 			n.Unlock()
+			arPool.Put(ar)
 			return
 		} else {
 			start = lastIndex + 1
@@ -2371,6 +2454,7 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 			if state.Msgs == 0 || start > state.LastSeq {
 				n.debug("Finished catching up")
 				n.Unlock()
+				arPool.Put(ar)
 				return
 			}
 			n.debug("Snapshot sent, reset first catchup entry to %d", lastIndex)
@@ -2385,6 +2469,7 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 	if err != nil || ae == nil {
 		n.warn("Could not find a starting entry for catchup request: %v", err)
 		n.Unlock()
+		arPool.Put(ar)
 		return
 	}
 	if ae.pindex != ar.index || ae.pterm != ar.term {
@@ -2460,7 +2545,7 @@ func (n *raft) applyCommit(index uint64) error {
 			committed = append(committed, e)
 		case EntryOldSnapshot:
 			// For old snapshots in our WAL.
-			committed = append(committed, &Entry{EntrySnapshot, e.Data})
+			committed = append(committed, newEntry(EntrySnapshot, e.Data))
 		case EntrySnapshot:
 			committed = append(committed, e)
 		case EntryPeerState:
@@ -2472,6 +2557,9 @@ func (n *raft) applyCommit(index uint64) error {
 		case EntryAddPeer:
 			newPeer := string(e.Data)
 			n.debug("Added peer %q", newPeer)
+
+			// Store our peer in our global peer map for all peers.
+			peers.LoadOrStore(newPeer, newPeer)
 
 			// If we were on the removed list reverse that here.
 			if n.removed != nil {
@@ -2515,6 +2603,9 @@ func (n *raft) applyCommit(index uint64) error {
 				n.stepdown.push(n.selectNextLeader())
 			}
 
+			// Remove from string intern map.
+			peers.Delete(peer)
+
 			// We pass these up as well.
 			committed = append(committed, e)
 		}
@@ -2524,11 +2615,13 @@ func (n *raft) applyCommit(index uint64) error {
 		if fpae {
 			delete(n.pae, index)
 		}
-		n.apply.push(&CommittedEntry{index, committed})
+		n.apply.push(newCommittedEntry(index, committed))
 	} else {
 		// If we processed inline update our applied index.
 		n.applied = index
 	}
+	// Place back in the pool.
+	ae.returnToPool()
 	return nil
 }
 
@@ -2841,9 +2934,10 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.stepdown.push(ae.leader)
 		} else {
 			// Let them know we are the leader.
-			ar := &appendEntryResponse{n.term, n.pindex, n.id, false, _EMPTY_}
+			ar := newAppendEntryResponse(n.term, n.pindex, n.id, false)
 			n.debug("AppendEntry ignoring old term from another leader")
 			n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
+			arPool.Put(ar)
 		}
 		// Always return here from processing.
 		n.Unlock()
@@ -2897,11 +2991,12 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			if n.catchupStalled() {
 				n.debug("Catchup may be stalled, will request again")
 				inbox = n.createCatchup(ae)
-				ar = &appendEntryResponse{n.pterm, n.pindex, n.id, false, _EMPTY_}
+				ar = newAppendEntryResponse(n.pterm, n.pindex, n.id, false)
 			}
 			n.Unlock()
 			if ar != nil {
 				n.sendRPC(ae.reply, inbox, ar.encode(arbuf))
+				arPool.Put(ar)
 			}
 			// Ignore new while catching up or replaying.
 			return
@@ -2949,9 +3044,10 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.cancelCatchup()
 
 			// Create response.
-			ar = &appendEntryResponse{ae.pterm, ae.pindex, n.id, success, _EMPTY_}
+			ar = newAppendEntryResponse(ae.pterm, ae.pindex, n.id, success)
 			n.Unlock()
 			n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
+			arPool.Put(ar)
 			return
 		}
 
@@ -2999,7 +3095,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			}
 
 			// Now send snapshot to upper levels. Only send the snapshot, not the peerstate entry.
-			n.apply.push(&CommittedEntry{n.commit, ae.entries[:1]})
+			n.apply.push(newCommittedEntry(n.commit, ae.entries[:1]))
 			n.Unlock()
 			return
 
@@ -3010,9 +3106,10 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			if ae.pindex > n.pindex {
 				// Setup our state for catching up.
 				inbox := n.createCatchup(ae)
-				ar := &appendEntryResponse{n.pterm, n.pindex, n.id, false, _EMPTY_}
+				ar := newAppendEntryResponse(n.pterm, n.pindex, n.id, false)
 				n.Unlock()
 				n.sendRPC(ae.reply, inbox, ar.encode(arbuf))
+				arPool.Put(ar)
 				return
 			}
 		}
@@ -3066,6 +3163,8 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				} else {
 					n.peers[newPeer] = &lps{time.Now().UnixNano(), 0, false}
 				}
+				// Store our peer in our global peer map for all peers.
+				peers.LoadOrStore(newPeer, newPeer)
 			}
 		}
 	}
@@ -3086,13 +3185,14 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 
 	var ar *appendEntryResponse
 	if sub != nil {
-		ar = &appendEntryResponse{n.pterm, n.pindex, n.id, true, _EMPTY_}
+		ar = newAppendEntryResponse(n.pterm, n.pindex, n.id, true)
 	}
 	n.Unlock()
 
 	// Success. Send our response.
 	if ar != nil {
 		n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
+		arPool.Put(ar)
 	}
 }
 
@@ -3122,6 +3222,7 @@ func (n *raft) processAppendEntryResponse(ar *appendEntryResponse) {
 
 	if ar.success {
 		n.trackResponse(ar)
+		arPool.Put(ar)
 	} else if ar.term > n.term {
 		// False here and they have a higher term.
 		n.Lock()
@@ -3132,6 +3233,7 @@ func (n *raft) processAppendEntryResponse(ar *appendEntryResponse) {
 		n.stepdown.push(noLeader)
 		n.resetWAL()
 		n.Unlock()
+		arPool.Put(ar)
 	} else if ar.reply != _EMPTY_ {
 		n.catchupFollower(ar)
 	}
@@ -3139,14 +3241,13 @@ func (n *raft) processAppendEntryResponse(ar *appendEntryResponse) {
 
 // handleAppendEntryResponse processes responses to append entries.
 func (n *raft) handleAppendEntryResponse(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
-	msg = copyBytes(msg)
 	ar := n.decodeAppendEntryResponse(msg)
 	ar.reply = reply
 	n.resp.push(ar)
 }
 
 func (n *raft) buildAppendEntry(entries []*Entry) *appendEntry {
-	return &appendEntry{n.id, n.term, n.commit, n.pterm, n.pindex, entries, _EMPTY_, nil, nil}
+	return newAppendEntry(n.id, n.term, n.commit, n.pterm, n.pindex, entries)
 }
 
 // Determine if we should store an entry.
@@ -3210,7 +3311,8 @@ func (n *raft) sendAppendEntry(entries []*Entry) {
 	}
 
 	// If we have entries store this in our wal.
-	if ae.shouldStore() {
+	shouldStore := ae.shouldStore()
+	if shouldStore {
 		if err := n.storeToWAL(ae); err != nil {
 			return
 		}
@@ -3225,6 +3327,9 @@ func (n *raft) sendAppendEntry(entries []*Entry) {
 		}
 	}
 	n.sendRPC(n.asubj, n.areply, ae.buf)
+	if !shouldStore {
+		ae.returnToPool()
+	}
 }
 
 type extensionState uint16

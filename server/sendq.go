@@ -1,4 +1,4 @@
-// Copyright 2020-2021 The NATS Authors
+// Copyright 2020-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -50,6 +50,14 @@ func (sq *sendq) internalLoop() {
 
 	defer c.closeConnection(ClientClosed)
 
+	// To optimize for not converting a string to a []byte slice.
+	var (
+		subj [256]byte
+		rply [256]byte
+		szb  [10]byte
+		hdb  [10]byte
+	)
+
 	for s.isRunning() {
 		select {
 		case <-s.quitCh:
@@ -57,14 +65,18 @@ func (sq *sendq) internalLoop() {
 		case <-q.ch:
 			pms := q.pop()
 			for _, pm := range pms {
-				c.pa.subject = []byte(pm.subj)
+				c.pa.subject = append(subj[:0], pm.subj...)
 				c.pa.size = len(pm.msg) + len(pm.hdr)
-				c.pa.szb = []byte(strconv.Itoa(c.pa.size))
-				c.pa.reply = []byte(pm.rply)
+				c.pa.szb = append(szb[:0], strconv.Itoa(c.pa.size)...)
+				if len(pm.rply) > 0 {
+					c.pa.reply = append(rply[:0], pm.rply...)
+				} else {
+					c.pa.reply = nil
+				}
 				var msg []byte
 				if len(pm.hdr) > 0 {
 					c.pa.hdr = len(pm.hdr)
-					c.pa.hdb = []byte(strconv.Itoa(c.pa.hdr))
+					c.pa.hdb = append(hdb[:0], strconv.Itoa(c.pa.hdr)...)
 					msg = append(pm.hdr, pm.msg...)
 					msg = append(msg, _CRLF_...)
 				} else {
@@ -74,6 +86,7 @@ func (sq *sendq) internalLoop() {
 				}
 				c.processInboundClientMsg(msg)
 				c.pa.szb = nil
+				outMsgPool.Put(pm)
 			}
 			// TODO: should this be in the for-loop instead?
 			c.flushClients(0)
@@ -82,8 +95,20 @@ func (sq *sendq) internalLoop() {
 	}
 }
 
+var outMsgPool = sync.Pool{
+	New: func() any {
+		return &outMsg{}
+	},
+}
+
 func (sq *sendq) send(subj, rply string, hdr, msg []byte) {
-	out := &outMsg{subj, rply, nil, nil}
+	if sq == nil {
+		return
+	}
+	out := outMsgPool.Get().(*outMsg)
+	out.subj, out.rply = subj, rply
+	out.hdr, out.msg = nil, nil
+
 	// We will copy these for now.
 	if len(hdr) > 0 {
 		hdr = copyBytes(hdr)
