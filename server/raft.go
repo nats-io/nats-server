@@ -347,7 +347,7 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig) (RaftNode, error
 	if cfg == nil {
 		return nil, errNilCfg
 	}
-	s.mu.Lock()
+	s.mu.RLock()
 	if s.sys == nil {
 		s.mu.Unlock()
 		return nil, ErrNoSysAccount
@@ -356,7 +356,7 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig) (RaftNode, error
 	sacc := s.sys.account
 	hash := s.sys.shash
 	pub := s.info.ID
-	s.mu.Unlock()
+	s.mu.RUnlock()
 
 	ps, err := readPeerState(cfg.Store)
 	if err != nil {

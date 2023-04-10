@@ -1,4 +1,4 @@
-// Copyright 2021 The NATS Authors
+// Copyright 2021-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -17,7 +17,54 @@ import (
 	"math"
 	"math/rand"
 	"testing"
+	"time"
 )
+
+func TestNRGSimple(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+	// Do several state transitions.
+	rg.randomMember().(*stateAdder).proposeDelta(11)
+	rg.randomMember().(*stateAdder).proposeDelta(11)
+	rg.randomMember().(*stateAdder).proposeDelta(-22)
+	// Wait for all members to have the correct state.
+	rg.waitOnTotal(t, 0)
+}
+
+func TestNRGSnapshotAndRestart(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	var expectedTotal int64
+
+	leader := rg.leader().(*stateAdder)
+	sm := rg.nonLeader().(*stateAdder)
+
+	for i := 0; i < 1000; i++ {
+		delta := rand.Int63n(222)
+		expectedTotal += delta
+		leader.proposeDelta(delta)
+
+		if i == 250 {
+			// Let some things catchup.
+			time.Sleep(50 * time.Millisecond)
+			// Snapshot leader and stop and snapshot a member.
+			leader.snapshot(t)
+			sm.snapshot(t)
+			sm.stop()
+		}
+	}
+	// Restart.
+	sm.restart()
+	// Wait for all members to have the correct state.
+	rg.waitOnTotal(t, expectedTotal)
+}
 
 func TestNRGAppendEntryEncode(t *testing.T) {
 	ae := &appendEntry{
