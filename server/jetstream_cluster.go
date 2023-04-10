@@ -1138,6 +1138,7 @@ func (js *jetStream) monitorCluster() {
 					} else if lls := len(lastSnap); nb > uint64(lls*8) && lls > 0 && time.Since(lastSnapTime) > minSnapDelta {
 						doSnapshot()
 					}
+					ce.ReturnToPool()
 				}
 			}
 			aq.recycle(&ces)
@@ -2101,6 +2102,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				if err := js.applyStreamEntries(mset, ce, isRecovering); err == nil {
 					// Update our applied.
 					ne, nb = n.Applied(ce.Index)
+					ce.ReturnToPool()
 				} else {
 					s.Warnf("Error applying entries to '%s > %s': %v", accName, sa.Config.Name, err)
 					if isClusterResetErr(err) {
@@ -2467,39 +2469,39 @@ func (mset *stream) resetClusteredState(err error) bool {
 	// Preserve our current state and messages unless we have a first sequence mismatch.
 	shouldDelete := err == errFirstSequenceMismatch
 
-	mset.monitorWg.Wait()
-	mset.resetAndWaitOnConsumers()
-	// Stop our stream.
-	mset.stop(shouldDelete, false)
+	// Need to do the rest in a separate Go routine.
+	go func() {
+		mset.monitorWg.Wait()
+		mset.resetAndWaitOnConsumers()
+		// Stop our stream.
+		mset.stop(shouldDelete, false)
 
-	if sa != nil {
-		js.mu.Lock()
-		s.Warnf("Resetting stream cluster state for '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
-		// Now wipe groups from assignments.
-		sa.Group.node = nil
-		var consumers []*consumerAssignment
-		if cc := js.cluster; cc != nil && cc.meta != nil {
-			ourID := cc.meta.ID()
-			for _, ca := range sa.consumers {
-				if rg := ca.Group; rg != nil && rg.isMember(ourID) {
-					rg.node = nil // Erase group raft/node state.
-					consumers = append(consumers, ca)
+		if sa != nil {
+			js.mu.Lock()
+			s.Warnf("Resetting stream cluster state for '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
+			// Now wipe groups from assignments.
+			sa.Group.node = nil
+			var consumers []*consumerAssignment
+			if cc := js.cluster; cc != nil && cc.meta != nil {
+				ourID := cc.meta.ID()
+				for _, ca := range sa.consumers {
+					if rg := ca.Group; rg != nil && rg.isMember(ourID) {
+						rg.node = nil // Erase group raft/node state.
+						consumers = append(consumers, ca)
+					}
 				}
 			}
-		}
-		js.mu.Unlock()
+			js.mu.Unlock()
 
-		// restart in a separate Go routine.
-		// This will reset the stream and consumers.
-		go func() {
+			// This will reset the stream and consumers.
 			// Reset stream.
 			js.processClusterCreateStream(acc, sa)
 			// Reset consumers.
 			for _, ca := range consumers {
 				js.processClusterCreateConsumer(ca, nil, false)
 			}
-		}()
-	}
+		}
+	}()
 
 	return true
 }
@@ -4272,6 +4274,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 				} else if !recovering {
 					if err := js.applyConsumerEntries(o, ce, isLeader); err == nil {
 						ne, nb := n.Applied(ce.Index)
+						ce.ReturnToPool()
 						// If we have at least min entries to compact, go ahead and snapshot/compact.
 						if nb > 0 && ne >= compactNumMin || nb > compactSizeMin {
 							doSnapshot(false)
@@ -7150,7 +7153,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// Check to see if we are being overrun.
 	// TODO(dlc) - Make this a limit where we drop messages to protect ourselves, but allow to be configured.
 	if mset.clseq-(lseq+clfs) > streamLagWarnThreshold {
-		lerr := fmt.Errorf("JetStream stream '%s > %s' has high message lag", jsa.acc().Name, mset.cfg.Name)
+		lerr := fmt.Errorf("JetStream stream '%s > %s' has high message lag", jsa.acc().Name, name)
 		s.RateLimitWarnf(lerr.Error())
 	}
 	mset.clMu.Unlock()

@@ -1799,7 +1799,7 @@ func newJSAckMsg(subj, reply string, hdr int, msg []byte) *jsAckMsg {
 	} else {
 		m = &jsAckMsg{}
 	}
-	// When getting something from a pool it is criticical that all fields are
+	// When getting something from a pool it is critical that all fields are
 	// initialized. Doing this way guarantees that if someone adds a field to
 	// the structure, the compiler will fail the build if this line is not updated.
 	(*m) = jsAckMsg{subj, reply, hdr, msg}
@@ -1899,7 +1899,9 @@ func (o *consumer) loopAndForwardProposals(qch chan struct{}) {
 		const maxBatch = 256 * 1024
 		var entries []*Entry
 		for sz := 0; proposal != nil; proposal = proposal.next {
-			entries = append(entries, &Entry{EntryNormal, proposal.data})
+			entry := entryPool.Get().(*Entry)
+			entry.Type, entry.Data = EntryNormal, proposal.data
+			entries = append(entries, entry)
 			sz += len(proposal.data)
 			if sz > maxBatch {
 				node.ProposeDirect(entries)

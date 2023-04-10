@@ -3157,9 +3157,11 @@ var needFlush = struct{}{}
 // deliverMsg will deliver a message to a matching subscription and its underlying client.
 // We process all connection/client types. mh is the part that will be protocol/client specific.
 func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, subject, reply, mh, msg []byte, gwrply bool) bool {
-	if sub.client == nil {
+	// Check sub client and check echo
+	if sub.client == nil || c == sub.client && !sub.client.echo {
 		return false
 	}
+
 	client := sub.client
 	client.mu.Lock()
 
@@ -4211,7 +4213,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 	// delivery subject for clients
 	var dsubj []byte
 	// Used as scratch if mapping
-	var _dsubj [64]byte
+	var _dsubj [128]byte
 
 	// For stats, we will keep track of the number of messages that have been
 	// delivered and then multiply by the size of that message and update

@@ -2300,7 +2300,7 @@ func (s *Server) remoteLatencyUpdate(sub *subscription, _ *client, _ *Account, s
 	if !s.eventsRunning() {
 		return
 	}
-	rl := remoteLatency{}
+	var rl remoteLatency
 	if err := json.Unmarshal(msg, &rl); err != nil {
 		s.Errorf("Error unmarshalling remote latency measurement: %v", err)
 		return
@@ -2322,25 +2322,22 @@ func (s *Server) remoteLatencyUpdate(sub *subscription, _ *client, _ *Account, s
 		acc.mu.RUnlock()
 		return
 	}
-	m1 := si.m1
-	m2 := rl.M2
-
 	lsub := si.latency.subject
 	acc.mu.RUnlock()
 
+	si.acc.mu.Lock()
+	m1 := si.m1
+	m2 := rl.M2
+
 	// So we have not processed the response tracking measurement yet.
 	if m1 == nil {
-		acc.mu.Lock()
-		// Double check since could have slipped in.
-		m1 = si.m1
-		if m1 == nil {
-			// Store our value there for them to pick up.
-			si.m1 = &m2
-		}
-		acc.mu.Unlock()
-		if m1 == nil {
-			return
-		}
+		// Store our value there for them to pick up.
+		si.m1 = &m2
+	}
+	si.acc.mu.Unlock()
+
+	if m1 == nil {
+		return
 	}
 
 	// Calculate the correct latencies given M1 and M2.
