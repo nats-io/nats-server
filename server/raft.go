@@ -349,7 +349,7 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig) (RaftNode, error
 	}
 	s.mu.RLock()
 	if s.sys == nil {
-		s.mu.Unlock()
+		s.mu.RUnlock()
 		return nil, ErrNoSysAccount
 	}
 	sq := s.sys.sq
