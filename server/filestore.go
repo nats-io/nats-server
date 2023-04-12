@@ -5098,7 +5098,8 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 					if mb.isEmpty() {
 						fs.removeMsgBlock(mb)
 						i--
-						firstSeqNeedsUpdate = seq == fs.state.FirstSeq
+						// keep flag set, if set previously
+						firstSeqNeedsUpdate = firstSeqNeedsUpdate || seq == fs.state.FirstSeq
 					} else if seq == fs.state.FirstSeq {
 						fs.state.FirstSeq = mb.first.seq // new one.
 						fs.state.FirstTime = time.Unix(0, mb.first.ts).UTC()
