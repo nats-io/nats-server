@@ -19784,3 +19784,34 @@ func TestJetStreamConsumerAckFloorWithExpired(t *testing.T) {
 	require_True(t, ci.NumPending == 0)
 	require_True(t, ci.NumRedelivered == 0)
 }
+
+func TestJetStreamConsumerWithFormattingSymbol(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "Test%123",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 10; i++ {
+		sendStreamMsg(t, nc, "foo", "OK")
+	}
+
+	_, err = js.AddConsumer("Test%123", &nats.ConsumerConfig{
+		Durable:        "Test%123",
+		FilterSubject:  "foo",
+		DeliverSubject: "bar",
+	})
+	require_NoError(t, err)
+
+	sub, err := js.SubscribeSync("foo", nats.Bind("Test%123", "Test%123"))
+	require_NoError(t, err)
+
+	_, err = sub.NextMsg(time.Second * 5)
+	require_NoError(t, err)
+}

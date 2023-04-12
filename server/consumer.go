@@ -823,8 +823,10 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	// Set up the ack subscription for this consumer. Will use wildcard for all acks.
 	// We will remember the template to generate replies with sequence numbers and use
 	// that to scanf them back in.
-	mn := mset.cfg.Name
-	pre := fmt.Sprintf(jsAckT, mn, o.name)
+	// Escape '%' in consumer and stream names, as `pre` is used as a template later
+	// in consumer.ackReply(), resulting in erroneous formatting of the ack subject.
+	mn := strings.ReplaceAll(mset.cfg.Name, "%", "%%")
+	pre := fmt.Sprintf(jsAckT, mn, strings.ReplaceAll(o.name, "%", "%%"))
 	o.ackReplyT = fmt.Sprintf("%s.%%d.%%d.%%d.%%d.%%d", pre)
 	o.ackSubj = fmt.Sprintf("%s.*.*.*.*.*", pre)
 	o.nextMsgSubj = fmt.Sprintf(JSApiRequestNextT, mn, o.name)
