@@ -4020,6 +4020,7 @@ func TestFileStorePurgeExWithSubject(t *testing.T) {
 		require_True(t, int(p) == total)
 		require_True(t, int(p) == total)
 		require_True(t, fs.State().Msgs == 1)
+		require_True(t, fs.State().FirstSeq == 201)
 	})
 }
 
