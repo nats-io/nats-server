@@ -7843,9 +7843,9 @@ func (mset *stream) processClusterStreamInfoRequest(reply string) {
 		return
 	}
 
-	// If we are not the leader let someone else possible respond first.
+	// If we are not the leader let someone else possibly respond first.
 	if !isLeader {
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	si := &StreamInfo{
