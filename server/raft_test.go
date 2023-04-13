@@ -34,6 +34,72 @@ func TestNRGSimple(t *testing.T) {
 	rg.waitOnTotal(t, 0)
 }
 
+func TestNRGPIndex(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	rafts := make([]*raft, 0, len(rg))
+	for _, n := range rg {
+		rafts = append(rafts, n.node().(*raft))
+	}
+
+	for _, r := range rafts {
+		switch {
+		case r.pterm != 1:
+			t.Fatalf("initial state should be pterm 1, got %d", r.pterm)
+		case r.pindex != 1:
+			t.Fatalf("initial state should be pindex 1, got %d", r.pindex)
+		case r.commit != 1:
+			t.Fatalf("initial state should be commit 1, got %d", r.commit)
+		case r.applied != 1:
+			t.Fatalf("initial state should be applied 1, got %d", r.applied)
+		}
+	}
+
+	randomAdder := func() *stateAdder {
+		return rg.randomMember().(*stateAdder)
+	}
+
+	type step struct {
+		total  int64
+		term   uint64
+		pterm  uint64
+		pindex uint64
+		commit uint64
+		action func()
+	}
+
+	for i, s := range []step{
+		{1, 1, 1, 2, 2, func() { randomAdder().proposeDelta(1) }},
+		{2, 1, 1, 3, 3, func() { randomAdder().proposeDelta(1) }},
+		{3, 1, 1, 4, 4, func() { randomAdder().proposeDelta(1) }},
+		{4, 1, 1, 5, 5, func() { randomAdder().proposeDelta(1) }},
+		{4, 2, 2, 5, 5, func() { rg.leader().node().StepDown(); rg.waitOnLeader() }},
+		{4, 2, 2, 6, 6, func() { randomAdder().proposeDelta(1) }},
+	} {
+		s.action()
+		rg.waitOnTotal(t, s.total)
+
+		for _, r := range rafts {
+			switch {
+			case r.term != s.term:
+				t.Fatalf("loop %d state should be term %d, got %d", i, s.term, r.term)
+			//case r.pterm != s.pterm:
+			//	t.Fatalf("loop %d state should be pterm %d, got %d", i, s.pterm, r.pterm)
+			case r.pindex != s.pindex:
+				t.Fatalf("loop %d state should be pindex %d, got %d", i, s.pindex, r.pindex)
+			case r.commit != s.commit:
+				t.Fatalf("loop %d state should be commit %d, got %d", i, s.commit, r.commit)
+			case r.commit != r.applied:
+				t.Fatalf("loop %d state should have applied %d commits but has only applied %d", i, r.commit, r.applied)
+			}
+		}
+	}
+}
+
 func TestNRGSnapshotAndRestart(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()

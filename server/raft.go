@@ -1367,10 +1367,12 @@ func (n *raft) StepDown(preferred ...string) error {
 	// If we have a new leader selected, transfer over to them.
 	if maybeLeader != noLeader {
 		n.debug("Selected %q for new leader", maybeLeader)
+		fmt.Println("Selected", maybeLeader, "for new leader")
 		prop.push(newEntry(EntryLeaderTransfer, []byte(maybeLeader)))
 	} else {
 		// Force us to stepdown here.
 		n.debug("Stepping down")
+		fmt.Println("Stepping down")
 		stepdown.push(noLeader)
 	}
 
