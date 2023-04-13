@@ -347,16 +347,16 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig) (RaftNode, error
 	if cfg == nil {
 		return nil, errNilCfg
 	}
-	s.mu.Lock()
+	s.mu.RLock()
 	if s.sys == nil {
-		s.mu.Unlock()
+		s.mu.RUnlock()
 		return nil, ErrNoSysAccount
 	}
 	sq := s.sys.sq
 	sacc := s.sys.account
 	hash := s.sys.shash
 	pub := s.info.ID
-	s.mu.Unlock()
+	s.mu.RUnlock()
 
 	ps, err := readPeerState(cfg.Store)
 	if err != nil {
@@ -2403,6 +2403,8 @@ func (n *raft) sendSnapshotToFollower(subject string) (uint64, error) {
 	if err != nil {
 		// We need to stepdown here when this happens.
 		n.stepdown.push(noLeader)
+		// We need to reset our state here as well.
+		n.resetWAL()
 		return 0, err
 	}
 	// Go ahead and send the snapshot and peerstate here as first append entry to the catchup follower.
@@ -2880,7 +2882,7 @@ func (n *raft) truncateWAL(term, index uint64) {
 		if err == ErrInvalidSequence {
 			n.debug("Resetting WAL")
 			n.wal.Truncate(0)
-			index, n.pterm, n.pindex = 0, 0, 0
+			index, n.term, n.pterm, n.pindex = 0, 0, 0, 0
 		} else {
 			n.warn("Error truncating WAL: %v", err)
 			n.setWriteErrLocked(err)
@@ -2889,7 +2891,7 @@ func (n *raft) truncateWAL(term, index uint64) {
 	}
 
 	// Set after we know we have truncated properly.
-	n.pterm, n.pindex = term, index
+	n.term, n.pterm, n.pindex = term, term, index
 }
 
 // Reset our WAL.
