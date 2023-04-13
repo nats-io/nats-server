@@ -257,6 +257,8 @@ const (
 	// For smaller reuse buffers. Usually being generated during contention on the lead write buffer.
 	// E.g. mirrors/sources etc.
 	defaultSmallBlockSize = 1 * 1024 * 1024 // 1MB
+	// Maximum size for the encrypted head block.
+	maximumEncryptedBlockSize = 2 * 1024 * 1024 // 2MB
 	// Default for KV based
 	defaultKVBlockSize = defaultMediumBlockSize
 	// max block size for now.
@@ -288,7 +290,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	}
 	// Default values.
 	if fcfg.BlockSize == 0 {
-		fcfg.BlockSize = dynBlkSize(cfg.Retention, cfg.MaxBytes)
+		fcfg.BlockSize = dynBlkSize(cfg.Retention, cfg.MaxBytes, fcfg.Cipher)
 	}
 	if fcfg.BlockSize > maxBlockSize {
 		return nil, fmt.Errorf("filestore max block size is %s", friendlyBytes(maxBlockSize))
@@ -451,7 +453,7 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 	return nil
 }
 
-func dynBlkSize(retention RetentionPolicy, maxBytes int64) uint64 {
+func dynBlkSize(retention RetentionPolicy, maxBytes int64, cipher StoreCipher) uint64 {
 	if maxBytes > 0 {
 		blkSize := (maxBytes / 4) + 1 // (25% overhead)
 		// Round up to nearest 100
@@ -465,13 +467,24 @@ func dynBlkSize(retention RetentionPolicy, maxBytes int64) uint64 {
 		} else {
 			blkSize = defaultMediumBlockSize
 		}
+		if cipher != NoCipher && blkSize > maximumEncryptedBlockSize {
+			// Notes on this below.
+			blkSize = maximumEncryptedBlockSize
+		}
 		return uint64(blkSize)
 	}
 
-	if retention == LimitsPolicy {
+	switch {
+	case cipher != NoCipher:
+		// In the case of encrypted stores, large blocks can result in worsened perf
+		// since many writes on disk involve re-encrypting the entire block. For now,
+		// we will enforce a cap on the block size when encryption is enabled to avoid
+		// this.
+		return maximumEncryptedBlockSize
+	case retention == LimitsPolicy:
 		// TODO(dlc) - Make the blocksize relative to this if set.
 		return defaultLargeBlockSize
-	} else {
+	default:
 		// TODO(dlc) - Make the blocksize relative to this if set.
 		return defaultMediumBlockSize
 	}
