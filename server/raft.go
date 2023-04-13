@@ -563,11 +563,10 @@ func (s *Server) lookupRaftNode(group string) RaftNode {
 	return n
 }
 
-func (s *Server) reloadDebugRaftNodes() {
+func (s *Server) reloadDebugRaftNodes(debug bool) {
 	if s == nil {
 		return
 	}
-	debug := atomic.LoadInt32(&s.logging.debug) > 0
 	s.rnMu.RLock()
 	for _, ni := range s.raftNodes {
 		n := ni.(*raft)
