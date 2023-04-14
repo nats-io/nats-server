@@ -1,4 +1,4 @@
-// Copyright 2019-2022 The NATS Authors
+// Copyright 2019-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -79,9 +79,9 @@ func (ms *memStore) UpdateConfig(cfg *StreamConfig) error {
 	// If the value is smaller we need to enforce that.
 	if ms.maxp != 0 && ms.maxp < maxp {
 		lm := uint64(ms.maxp)
-		for _, ss := range ms.fss {
+		for subj, ss := range ms.fss {
 			if ss.Msgs > lm {
-				ms.enforcePerSubjectLimit(ss)
+				ms.enforcePerSubjectLimit(subj, ss)
 			}
 		}
 	}
@@ -125,6 +125,9 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 				return ErrMaxBytes
 			}
 			// If we are here we are at a subject maximum, need to determine if dropping last message gives us enough room.
+			if ss.firstNeedsUpdate {
+				ms.recalculateFirstForSubj(subj, ss.First, ss)
+			}
 			sm, ok := ms.msgs[ss.First]
 			if !ok || memStoreMsgSize(sm.subj, sm.hdr, sm.msg) < uint64(len(msg)+len(hdr)) {
 				return ErrMaxBytes
@@ -176,7 +179,7 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 			ss.Last = seq
 			// Check per subject limits.
 			if ms.maxp > 0 && ss.Msgs > uint64(ms.maxp) {
-				ms.enforcePerSubjectLimit(ss)
+				ms.enforcePerSubjectLimit(subj, ss)
 			}
 		} else {
 			ms.fss[subj] = &SimpleState{Msgs: 1, First: seq, Last: seq}
@@ -358,6 +361,9 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 	// We will track start and end sequences as we go.
 	for subj, fss := range ms.fss {
 		if isMatch(subj) {
+			if fss.firstNeedsUpdate {
+				ms.recalculateFirstForSubj(subj, fss.First, fss)
+			}
 			if sseq <= fss.First {
 				update(fss)
 			} else if sseq <= fss.Last {
@@ -452,6 +458,9 @@ func (ms *memStore) SubjectsState(subject string) map[string]SimpleState {
 	fss := make(map[string]SimpleState)
 	for subj, ss := range ms.fss {
 		if subject == _EMPTY_ || subject == fwcs || subjectIsSubsetMatch(subj, subject) {
+			if ss.firstNeedsUpdate {
+				ms.recalculateFirstForSubj(subj, ss.First, ss)
+			}
 			oss := fss[subj]
 			if oss.First == 0 { // New
 				fss[subj] = *ss
@@ -503,11 +512,14 @@ func (ms *memStore) NumPending(sseq uint64, filter string, lastPerSubject bool) 
 
 // Will check the msg limit for this tracked subject.
 // Lock should be held.
-func (ms *memStore) enforcePerSubjectLimit(ss *SimpleState) {
+func (ms *memStore) enforcePerSubjectLimit(subj string, ss *SimpleState) {
 	if ms.maxp <= 0 {
 		return
 	}
 	for nmsgs := ss.Msgs; nmsgs > uint64(ms.maxp); nmsgs = ss.Msgs {
+		if ss.firstNeedsUpdate {
+			ms.recalculateFirstForSubj(subj, ss.First, ss)
+		}
 		if !ms.removeMsg(ss.First, false) {
 			break
 		}
@@ -899,6 +911,9 @@ func (ms *memStore) LoadNextMsg(filter string, wc bool, start uint64, smp *Store
 			if ss == nil {
 				continue
 			}
+			if ss.firstNeedsUpdate {
+				ms.recalculateFirstForSubj(subj, ss.First, ss)
+			}
 			if ss.First < fseq {
 				fseq = ss.First
 			}
@@ -981,19 +996,26 @@ func (ms *memStore) removeSeqPerSubject(subj string, seq uint64) {
 		return
 	}
 	ss.Msgs--
-	if seq != ss.First {
-		return
-	}
+
 	// If we know we only have 1 msg left don't need to search for next first.
 	if ss.Msgs == 1 {
-		ss.First = ss.Last
-		return
+		if seq == ss.Last {
+			ss.Last = ss.First
+		} else {
+			ss.First = ss.Last
+		}
+	} else {
+		ss.firstNeedsUpdate = seq == ss.First || ss.firstNeedsUpdate
 	}
-	// TODO(dlc) - Might want to optimize this longer term.
-	for tseq := seq + 1; tseq <= ss.Last; tseq++ {
+}
+
+// Will recalulate the first sequence for this subject in this block.
+func (ms *memStore) recalculateFirstForSubj(subj string, startSeq uint64, ss *SimpleState) {
+	for tseq := startSeq + 1; tseq <= ss.Last; tseq++ {
 		if sm := ms.msgs[tseq]; sm != nil && sm.subj == subj {
 			ss.First = tseq
-			break
+			ss.firstNeedsUpdate = false
+			return
 		}
 	}
 }

@@ -156,6 +156,9 @@ type SimpleState struct {
 	Msgs  uint64 `json:"messages"`
 	First uint64 `json:"first_seq"`
 	Last  uint64 `json:"last_seq"`
+
+	// Internal usage for when the first needs to be updated before use.
+	firstNeedsUpdate bool
 }
 
 // LostStreamData indicates msgs that have been lost.
