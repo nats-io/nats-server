@@ -1,4 +1,4 @@
-// Copyright 2013-2022 The NATS Authors
+// Copyright 2013-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -1192,7 +1192,6 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 		acc = v.(*Account)
 	}
 	if acc == nil {
-		isNew := false
 		// if the option of retrieving accounts later exists, create an expired one.
 		// When a client comes along, expiration will prevent it from being used,
 		// cause a fetch and update the account to what is should be.
@@ -1202,6 +1201,7 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 		}
 		c.Debugf("Unknown account %q for remote subject %q", accountName, sub.subject)
 
+		var isNew bool
 		if acc, isNew = srv.LookupOrRegisterAccount(accountName); isNew {
 			acc.mu.Lock()
 			acc.expired = true
@@ -1366,7 +1366,7 @@ func (s *Server) sendSubsToRoute(route *client, idx int, account string) {
 		route.mu.Unlock()
 	}
 	// Estimated size of all protocols. It does not have to be accurate at all.
-	eSize := 0
+	var eSize int
 	estimateProtosSize := func(a *Account, addAccountName bool) {
 		if ns := len(a.rm); ns > 0 {
 			var accSize int
@@ -2029,7 +2029,7 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 	var _routes [32]*client
 	routes := _routes[:0]
 
-	s.mu.Lock()
+	s.mu.RLock()
 	// The account's routePoolIdx field is set/updated under the server lock
 	// (but also the account's lock). So we don't need to acquire the account's
 	// lock here to get the value.
@@ -2071,7 +2071,7 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 		}
 	}
 	trace := atomic.LoadInt32(&s.logging.trace) == 1
-	s.mu.Unlock()
+	s.mu.RUnlock()
 
 	// If we are a queue subscriber we need to make sure our updates are serialized from
 	// potential multiple connections. We want to make sure that the order above is preserved
