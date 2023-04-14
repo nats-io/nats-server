@@ -2927,7 +2927,8 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 
 	// Are we receiving from another leader.
 	if n.state == Leader {
-		if ae.term > n.term {
+		// If we are the same we should step down to break the tie.
+		if ae.term >= n.term {
 			n.term = ae.term
 			n.vote = noVote
 			n.writeTermVote()
