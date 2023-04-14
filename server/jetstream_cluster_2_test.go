@@ -5790,9 +5790,6 @@ func TestJetStreamClusterConsumerDeliverNewMaxRedeliveriesAndServerRestart(t *te
 		t.Fatalf("Expected timeout, got msg=%+v err=%v", msg, err)
 	}
 
-	// Give a chance to things to be persisted
-	time.Sleep(300 * time.Millisecond)
-
 	// Check server restart
 	nc.Close()
 	c.stopAll()

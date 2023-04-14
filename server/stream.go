@@ -4483,7 +4483,7 @@ func (mset *stream) delete() error {
 // Internal function to stop or delete the stream.
 func (mset *stream) stop(deleteFlag, advisory bool) error {
 	mset.mu.RLock()
-	js, jsa := mset.js, mset.jsa
+	js, jsa, name := mset.js, mset.jsa, mset.cfg.Name
 	mset.mu.RUnlock()
 
 	if jsa == nil {
@@ -4492,7 +4492,7 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 
 	// Remove from our account map first.
 	jsa.mu.Lock()
-	delete(jsa.streams, mset.cfg.Name)
+	delete(jsa.streams, name)
 	accName := jsa.account.Name
 	jsa.mu.Unlock()
 
