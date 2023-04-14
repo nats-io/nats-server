@@ -6687,7 +6687,10 @@ func (o *consumerFileStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) err
 			if o.state.Redelivered == nil {
 				o.state.Redelivered = make(map[uint64]uint64)
 			}
-			o.state.Redelivered[sseq] = dc - 1
+			// Only update if greater then what we already have.
+			if o.state.Redelivered[sseq] < dc {
+				o.state.Redelivered[sseq] = dc - 1
+			}
 		}
 	} else {
 		// For AckNone just update delivered and ackfloor at the same time.
