@@ -738,6 +738,7 @@ func (s *Server) HandleConnz(w http.ResponseWriter, r *http.Request) {
 // Routez represents detailed information on current client connections.
 type Routez struct {
 	ID        string             `json:"server_id"`
+	Name      string             `json:"server_name"`
 	Now       time.Time          `json:"now"`
 	Import    *SubjectPermission `json:"import,omitempty"`
 	Export    *SubjectPermission `json:"export,omitempty"`
@@ -757,6 +758,7 @@ type RoutezOptions struct {
 type RouteInfo struct {
 	Rid          uint64             `json:"rid"`
 	RemoteID     string             `json:"remote_id"`
+	RemoteName   string             `json:"remote_name"`
 	DidSolicit   bool               `json:"did_solicit"`
 	IsConfigured bool               `json:"is_configured"`
 	IP           string             `json:"ip"`
@@ -798,6 +800,7 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 		rs.Import = perms.Import
 		rs.Export = perms.Export
 	}
+	rs.Name = s.getOpts().ServerName
 
 	// Walk the list
 	for _, r := range s.routes {
@@ -805,6 +808,7 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 		ri := &RouteInfo{
 			Rid:          r.cid,
 			RemoteID:     r.route.remoteID,
+			RemoteName:   r.route.remoteName,
 			DidSolicit:   r.route.didSolicit,
 			IsConfigured: r.route.routeType == Explicit,
 			InMsgs:       atomic.LoadInt64(&r.inMsgs),
