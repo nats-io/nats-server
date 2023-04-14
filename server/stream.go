@@ -1143,38 +1143,42 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		if len(cfg.Sources) > 0 {
 			return StreamConfig{}, NewJSMirrorWithSourcesError()
 		}
-		// We do not require other stream to exist anymore, but if we can see it check payloads.
-		exists, maxMsgSize, subs := hasStream(cfg.Mirror.Name)
-		if len(subs) > 0 {
-			streamSubs = append(streamSubs, subs...)
-		}
-		if exists {
-			if cfg.MaxMsgSize > 0 && maxMsgSize > 0 && cfg.MaxMsgSize < maxMsgSize {
-				return StreamConfig{}, NewJSMirrorMaxMessageSizeTooBigError()
+		// Do not perform checks if External is provided, as it could lead to
+		// checking against itself (if sourced stream name is the same on different JetStream)
+		if cfg.Mirror.External == nil {
+			// We do not require other stream to exist anymore, but if we can see it check payloads.
+			exists, maxMsgSize, subs := hasStream(cfg.Mirror.Name)
+			if len(subs) > 0 {
+				streamSubs = append(streamSubs, subs...)
 			}
-		}
-		if cfg.Mirror.External != nil {
+			if exists {
+				if cfg.MaxMsgSize > 0 && maxMsgSize > 0 && cfg.MaxMsgSize < maxMsgSize {
+					return StreamConfig{}, NewJSMirrorMaxMessageSizeTooBigError()
+				}
+			}
+			// Determine if we are inheriting direct gets.
+			if exists, ocfg := getStream(cfg.Mirror.Name); exists {
+				cfg.MirrorDirect = ocfg.AllowDirect
+			} else if js := s.getJetStream(); js != nil && js.isClustered() {
+				// Could not find it here. If we are clustered we can look it up.
+				js.mu.RLock()
+				if cc := js.cluster; cc != nil {
+					if as := cc.streams[acc.Name]; as != nil {
+						if sa := as[cfg.Mirror.Name]; sa != nil {
+							cfg.MirrorDirect = sa.Config.AllowDirect
+						}
+					}
+				}
+				js.mu.RUnlock()
+			}
+		} else {
 			if cfg.Mirror.External.DeliverPrefix != _EMPTY_ {
 				deliveryPrefixes = append(deliveryPrefixes, cfg.Mirror.External.DeliverPrefix)
 			}
 			if cfg.Mirror.External.ApiPrefix != _EMPTY_ {
 				apiPrefixes = append(apiPrefixes, cfg.Mirror.External.ApiPrefix)
 			}
-		}
-		// Determine if we are inheriting direct gets.
-		if exists, ocfg := getStream(cfg.Mirror.Name); exists {
-			cfg.MirrorDirect = ocfg.AllowDirect
-		} else if js := s.getJetStream(); js != nil && js.isClustered() {
-			// Could not find it here. If we are clustered we can look it up.
-			js.mu.RLock()
-			if cc := js.cluster; cc != nil {
-				if as := cc.streams[acc.Name]; as != nil {
-					if sa := as[cfg.Mirror.Name]; sa != nil {
-						cfg.MirrorDirect = sa.Config.AllowDirect
-					}
-				}
-			}
-			js.mu.RUnlock()
+
 		}
 	}
 	if len(cfg.Sources) > 0 {
@@ -1188,16 +1192,19 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 			}
 		}
 		for _, src := range cfg.Sources {
-			exists, maxMsgSize, subs := hasStream(src.Name)
-			if len(subs) > 0 {
-				streamSubs = append(streamSubs, subs...)
-			}
-			if exists {
-				if cfg.MaxMsgSize > 0 && maxMsgSize > 0 && cfg.MaxMsgSize < maxMsgSize {
-					return StreamConfig{}, NewJSSourceMaxMessageSizeTooBigError()
-				}
-			}
+			// Do not perform checks if External is provided, as it could lead to
+			// checking against itself (if sourced stream name is the same on different JetStream)
 			if src.External == nil {
+				exists, maxMsgSize, subs := hasStream(src.Name)
+				if len(subs) > 0 {
+					streamSubs = append(streamSubs, subs...)
+				}
+				if exists {
+					if cfg.MaxMsgSize > 0 && maxMsgSize > 0 && cfg.MaxMsgSize < maxMsgSize {
+						return StreamConfig{}, NewJSSourceMaxMessageSizeTooBigError()
+					}
+				}
+
 				continue
 			}
 			if src.External.DeliverPrefix != _EMPTY_ {
