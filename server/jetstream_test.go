@@ -20665,3 +20665,83 @@ func TestJetStreamConsumerWithFormattingSymbol(t *testing.T) {
 	_, err = sub.NextMsg(time.Second * 5)
 	require_NoError(t, err)
 }
+
+func TestJetStreamStreamUpdateWithExternalSource(t *testing.T) {
+	ho := DefaultTestOptions
+	ho.Port = -1
+	ho.LeafNode.Host = "127.0.0.1"
+	ho.LeafNode.Port = -1
+	ho.JetStream = true
+	ho.JetStreamDomain = "hub"
+	ho.StoreDir = t.TempDir()
+	hs := RunServer(&ho)
+	defer hs.Shutdown()
+
+	lu, err := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", ho.LeafNode.Port))
+	require_NoError(t, err)
+
+	lo1 := DefaultTestOptions
+	lo1.Port = -1
+	lo1.ServerName = "a-leaf"
+	lo1.JetStream = true
+	lo1.StoreDir = t.TempDir()
+	lo1.JetStreamDomain = "a-leaf"
+	lo1.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{lu}}}
+	l1 := RunServer(&lo1)
+	defer l1.Shutdown()
+
+	checkLeafNodeConnected(t, l1)
+
+	// Test sources with `External` provided
+	ncl, jsl := jsClientConnect(t, l1)
+	defer ncl.Close()
+
+	// Hub stream.
+	_, err = jsl.AddStream(&nats.StreamConfig{Name: "stream", Subjects: []string{"leaf"}})
+	require_NoError(t, err)
+
+	nch, jsh := jsClientConnect(t, hs)
+	defer nch.Close()
+
+	// Leaf stream.
+	// Both streams uses the same name, as we're testing if overlap does not check against itself
+	// if `External` stream has the same name.
+	_, err = jsh.AddStream(&nats.StreamConfig{
+		Name:     "stream",
+		Subjects: []string{"hub"},
+	})
+	require_NoError(t, err)
+
+	// Add `Sources`.
+	// This should not validate subjects overlap against itself.
+	_, err = jsh.UpdateStream(&nats.StreamConfig{
+		Name:     "stream",
+		Subjects: []string{"hub"},
+		Sources: []*nats.StreamSource{
+			{
+				Name:          "stream",
+				FilterSubject: "leaf",
+				External: &nats.ExternalStream{
+					APIPrefix: "$JS.a-leaf.API",
+				},
+			},
+		},
+	})
+	require_NoError(t, err)
+
+	// Specifying not existing FilterSubject should also be fine, as we do not validate `External` stream.
+	_, err = jsh.UpdateStream(&nats.StreamConfig{
+		Name:     "stream",
+		Subjects: []string{"hub"},
+		Sources: []*nats.StreamSource{
+			{
+				Name:          "stream",
+				FilterSubject: "foo",
+				External: &nats.ExternalStream{
+					APIPrefix: "$JS.a-leaf.API",
+				},
+			},
+		},
+	})
+	require_NoError(t, err)
+}
