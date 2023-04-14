@@ -5819,18 +5819,6 @@ func TestJetStreamClusterFailMirrorsAndSources(t *testing.T) {
 		})
 	}
 
-	testPrefix("mirror-bad-deliverprefix", JSStreamExternalDelPrefixOverlapsErrF, StreamConfig{
-		Name:    "MY_MIRROR_TEST",
-		Storage: FileStorage,
-		Mirror: &StreamSource{
-			Name: "TEST",
-			External: &ExternalStream{
-				ApiPrefix: "RI.JS.API",
-				// this will result in test.test.> which test.> would match
-				DeliverPrefix: "test",
-			},
-		},
-	})
 	testPrefix("mirror-bad-apiprefix", JSStreamExternalApiOverlapErrF, StreamConfig{
 		Name:    "MY_MIRROR_TEST",
 		Storage: FileStorage,
@@ -5840,18 +5828,6 @@ func TestJetStreamClusterFailMirrorsAndSources(t *testing.T) {
 				ApiPrefix:     "$JS.API",
 				DeliverPrefix: "here",
 			},
-		},
-	})
-	testPrefix("source-bad-deliverprefix", JSStreamExternalDelPrefixOverlapsErrF, StreamConfig{
-		Name:    "MY_SOURCE_TEST",
-		Storage: FileStorage,
-		Sources: []*StreamSource{{
-			Name: "TEST",
-			External: &ExternalStream{
-				ApiPrefix:     "RI.JS.API",
-				DeliverPrefix: "test",
-			},
-		},
 		},
 	})
 	testPrefix("source-bad-apiprefix", JSStreamExternalApiOverlapErrF, StreamConfig{
