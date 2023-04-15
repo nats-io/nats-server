@@ -1792,6 +1792,10 @@ func (n *raft) runAsFollower() {
 				n.debug("Not switching to candidate, observer only")
 			} else if n.isCatchingUp() {
 				n.debug("Not switching to candidate, catching up")
+				// Check to see if our catchup has stalled.
+				if n.catchupStalled() {
+					n.cancelCatchup()
+				}
 			} else {
 				n.switchToCandidate()
 				return
@@ -2523,14 +2527,16 @@ func (n *raft) applyCommit(index uint64) error {
 		var err error
 		if ae, err = n.loadEntry(index); err != nil {
 			if err != ErrStoreClosed && err != ErrStoreEOF {
-				if err == errBadMsg {
-					n.warn("Got an error loading %d index: %v - will reset", index, err)
-					n.resetWAL()
-				} else {
-					n.warn("Got an error loading %d index: %v", index, err)
+				n.warn("Got an error loading %d index: %v - will reset", index, err)
+				if n.state == Leader {
+					n.stepdown.push(n.selectNextLeader())
 				}
+				// Reset and cancel any catchup.
+				n.resetWAL()
+				n.cancelCatchup()
+			} else {
+				n.commit = original
 			}
-			n.commit = original
 			return errEntryLoadFailed
 		}
 	} else {
@@ -3275,17 +3281,13 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 
 	// Sanity checking for now.
 	if index := ae.pindex + 1; index != seq {
-		n.warn("Wrong index, ae is %+v, index stored was %d, n.pindex is %d", ae, seq, n.pindex)
-		if index > seq {
-			// We are missing store state from our state. We need to stepdown at this point.
-			if n.state == Leader {
-				n.stepdown.push(n.selectNextLeader())
-			}
-		} else {
-			// Truncate back to our last known.
-			n.truncateWAL(n.pterm, n.pindex)
-			n.cancelCatchup()
+		n.warn("Wrong index, ae is %+v, index stored was %d, n.pindex is %d, will reset", ae, seq, n.pindex)
+		if n.state == Leader {
+			n.stepdown.push(n.selectNextLeader())
 		}
+		// Reset and cancel any catchup.
+		n.resetWAL()
+		n.cancelCatchup()
 		return errEntryStoreFailed
 	}
 
