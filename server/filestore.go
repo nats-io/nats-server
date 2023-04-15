@@ -5731,6 +5731,7 @@ func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64) {
 		} else {
 			ss.First = ss.Last
 		}
+		ss.firstNeedsUpdate = false
 		mb.fssNeedsWrite = true // Mark dirty
 		return
 	}
