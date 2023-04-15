@@ -20745,3 +20745,59 @@ func TestJetStreamStreamUpdateWithExternalSource(t *testing.T) {
 	})
 	require_NoError(t, err)
 }
+
+func TestJetStreamKVHistoryRegression(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	for _, storage := range []nats.StorageType{nats.FileStorage, nats.MemoryStorage} {
+		t.Run(storage.String(), func(t *testing.T) {
+			js.DeleteKeyValue("TEST")
+
+			kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
+				Bucket:  "TEST",
+				History: 4,
+				Storage: storage,
+			})
+			require_NoError(t, err)
+
+			r1, err := kv.Create("foo", []byte("a"))
+			require_NoError(t, err)
+
+			_, err = kv.Update("foo", []byte("ab"), r1)
+			require_NoError(t, err)
+
+			err = kv.Delete("foo")
+			require_NoError(t, err)
+
+			_, err = kv.Create("foo", []byte("abc"))
+			require_NoError(t, err)
+
+			err = kv.Delete("foo")
+			require_NoError(t, err)
+
+			history, err := kv.History("foo")
+			require_NoError(t, err)
+			require_True(t, len(history) == 4)
+
+			_, err = kv.Update("foo", []byte("abcd"), history[len(history)-1].Revision())
+			require_NoError(t, err)
+
+			err = kv.Purge("foo")
+			require_NoError(t, err)
+
+			_, err = kv.Create("foo", []byte("abcde"))
+			require_NoError(t, err)
+
+			err = kv.Purge("foo")
+			require_NoError(t, err)
+
+			history, err = kv.History("foo")
+			require_NoError(t, err)
+			require_True(t, len(history) == 1)
+		})
+	}
+}

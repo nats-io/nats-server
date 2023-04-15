@@ -1004,6 +1004,7 @@ func (ms *memStore) removeSeqPerSubject(subj string, seq uint64) {
 		} else {
 			ss.First = ss.Last
 		}
+		ss.firstNeedsUpdate = false
 	} else {
 		ss.firstNeedsUpdate = seq == ss.First || ss.firstNeedsUpdate
 	}
