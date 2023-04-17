@@ -2017,7 +2017,14 @@ func (a *Account) removeAllServiceImportSubs() {
 
 // Add in subscriptions for all registered service imports.
 func (a *Account) addAllServiceImportSubs() {
+	var sis [32]*serviceImport
+	serviceImports := sis[:0]
+	a.mu.RLock()
 	for _, si := range a.imports.services {
+		serviceImports = append(serviceImports, si)
+	}
+	a.mu.RUnlock()
+	for _, si := range serviceImports {
 		a.addServiceImportSub(si)
 	}
 }
