@@ -1594,13 +1594,23 @@ func (s *Server) fetchAccount(name string) (*Account, error) {
 	}
 	// The sub imports may have been setup but will not have had their
 	// subscriptions properly setup. Do that here.
+	var needImportSubs bool
+
+	acc.mu.Lock()
 	if len(acc.imports.services) > 0 {
 		if acc.ic == nil {
 			acc.ic = s.createInternalAccountClient()
 			acc.ic.acc = acc
 		}
+		needImportSubs = true
+	}
+	acc.mu.Unlock()
+
+	// Do these outside the lock.
+	if needImportSubs {
 		acc.addAllServiceImportSubs()
 	}
+
 	return acc, nil
 }
 
