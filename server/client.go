@@ -212,6 +212,7 @@ const (
 	DuplicateServerName
 	MinimumVersionRequired
 	ClusterNamesIdentical
+	FailedOCSPPeerVerification
 )
 
 // Some flags passed to processMsgResults

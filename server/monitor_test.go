@@ -2968,9 +2968,10 @@ func TestMonitorLeafNode(t *testing.T) {
 		opts.LeafNode.TLSConfig != nil,
 		[]RemoteLeafOptsVarz{
 			{
-				"acc", 1, []string{"localhost:1234"}, nil,
+				"acc", 1, []string{"localhost:1234"}, nil, false,
 			},
 		},
+		false,
 	}
 
 	varzURL := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
@@ -2987,7 +2988,7 @@ func TestMonitorLeafNode(t *testing.T) {
 
 		// Having this here to make sure that if fields are added in ClusterOptsVarz,
 		// we make sure to update this test (compiler will report an error if we don't)
-		_ = LeafNodeOptsVarz{"", 0, 0, 0, false, false, []RemoteLeafOptsVarz{{"", 0, nil, nil}}}
+		_ = LeafNodeOptsVarz{"", 0, 0, 0, false, false, []RemoteLeafOptsVarz{{"", 0, nil, nil, false}}, false}
 
 		// Alter the fields to make sure that we have a proper deep copy
 		// of what may be stored in the server. Anything we change here
