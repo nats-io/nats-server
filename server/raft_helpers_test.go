@@ -68,6 +68,33 @@ func (sg smGroup) waitOnLeader() {
 	}
 }
 
+func (sg smGroup) waitOnAllCurrent() {
+	expires := time.Now().Add(10 * time.Second)
+	var current bool
+	for time.Now().Before(expires) {
+		time.Sleep(25 * time.Millisecond)
+		current = true
+		for _, n := range sg {
+			current = current && n.node().(*raft).Current()
+		}
+		if current {
+			break
+		}
+	}
+}
+
+func (sg smGroup) lockAndInspect(tb testing.TB, f func()) {
+	for _, n := range sg {
+		//n.node().(*raft).RWMutex.Lock()
+		//defer n.node().(*raft).RWMutex.Unlock()
+		if err := n.node().PauseApply(); err != nil {
+			//tb.Fatal(err)
+		}
+		defer n.node().ResumeApply()
+	}
+	f()
+}
+
 // Pick a random member.
 func (sg smGroup) randomMember() stateMachine {
 	return sg[rand.Intn(len(sg))]
@@ -220,6 +247,9 @@ func (a *stateAdder) restart() {
 	if a.n.State() != Closed {
 		return
 	}
+
+	// Reset the total.
+	a.sum = 0
 
 	// The filestore is stopped as well, so need to extract the parts to recreate it.
 	rn := a.n.(*raft)

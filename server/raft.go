@@ -1193,6 +1193,20 @@ func (n *raft) isCurrent(includeForwardProgress bool) bool {
 		return true
 	}
 
+	// If we know about our peers but haven't heard from any of them yet (i.e. after a
+	// restart) the we can't assume that we are current.
+	seenAnyPeers := false
+	for i, p := range n.peers {
+		if i != n.id && p.ts > 0 {
+			seenAnyPeers = true
+			break
+		}
+	}
+	if !seenAnyPeers {
+		return false
+		// fmt.Println("Haven't seen any peers when asked if current")
+	}
+
 	// Check here on catchup status.
 	if cs := n.catchup; cs != nil && n.pterm >= cs.cterm && n.pindex >= cs.cindex {
 		n.cancelCatchup()
@@ -1367,12 +1381,10 @@ func (n *raft) StepDown(preferred ...string) error {
 	// If we have a new leader selected, transfer over to them.
 	if maybeLeader != noLeader {
 		n.debug("Selected %q for new leader", maybeLeader)
-		fmt.Println("Selected", maybeLeader, "for new leader")
 		prop.push(newEntry(EntryLeaderTransfer, []byte(maybeLeader)))
 	} else {
 		// Force us to stepdown here.
 		n.debug("Stepping down")
-		fmt.Println("Stepping down")
 		stepdown.push(noLeader)
 	}
 

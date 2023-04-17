@@ -38,65 +38,98 @@ func TestNRGPIndex(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
+	/*
+		for _, s := range c.servers {
+			log := srvlog.NewStdLogger(true, true, false, true, true)
+			s.SetLogger(log, true, false)
+			s.reloadDebugRaftNodes(true)
+		}
+	*/
+
 	rg := c.createRaftGroup("TEST", 3, newStateAdder)
 	rg.waitOnLeader()
-
-	rafts := make([]*raft, 0, len(rg))
-	for _, n := range rg {
-		rafts = append(rafts, n.node().(*raft))
-	}
-
-	for _, r := range rafts {
-		switch {
-		case r.pterm != 1:
-			t.Fatalf("initial state should be pterm 1, got %d", r.pterm)
-		case r.pindex != 1:
-			t.Fatalf("initial state should be pindex 1, got %d", r.pindex)
-		case r.commit != 1:
-			t.Fatalf("initial state should be commit 1, got %d", r.commit)
-		case r.applied != 1:
-			t.Fatalf("initial state should be applied 1, got %d", r.applied)
-		}
-	}
+	rg.waitOnAllCurrent()
 
 	randomAdder := func() *stateAdder {
 		return rg.randomMember().(*stateAdder)
 	}
 
 	type step struct {
-		total  int64
-		term   uint64
-		pterm  uint64
-		pindex uint64
-		commit uint64
-		action func()
+		total  int64  // The expected value of the adder
+		term   uint64 // The expected term value
+		pterm  uint64 // The expected pterm value
+		pindex uint64 // The expected pindex value
+		commit uint64 // The expected number of commits
+		action func() // The action this step should perform
 	}
 
 	for i, s := range []step{
+		// First, try just proposing some changes. Use a random node
+		// each time to check that we are remaining consistent.
 		{1, 1, 1, 2, 2, func() { randomAdder().proposeDelta(1) }},
-		{2, 1, 1, 3, 3, func() { randomAdder().proposeDelta(1) }},
-		{3, 1, 1, 4, 4, func() { randomAdder().proposeDelta(1) }},
-		{4, 1, 1, 5, 5, func() { randomAdder().proposeDelta(1) }},
-		{4, 2, 2, 5, 5, func() { rg.leader().node().StepDown(); rg.waitOnLeader() }},
-		{4, 2, 2, 6, 6, func() { randomAdder().proposeDelta(1) }},
-	} {
-		s.action()
-		rg.waitOnTotal(t, s.total)
+		{3, 1, 1, 3, 3, func() { randomAdder().proposeDelta(2) }},
+		{6, 1, 1, 4, 4, func() { randomAdder().proposeDelta(3) }},
+		{10, 1, 1, 5, 5, func() { randomAdder().proposeDelta(4) }},
 
-		for _, r := range rafts {
-			switch {
-			case r.term != s.term:
-				t.Fatalf("loop %d state should be term %d, got %d", i, s.term, r.term)
-			//case r.pterm != s.pterm:
-			//	t.Fatalf("loop %d state should be pterm %d, got %d", i, s.pterm, r.pterm)
-			case r.pindex != s.pindex:
-				t.Fatalf("loop %d state should be pindex %d, got %d", i, s.pindex, r.pindex)
-			case r.commit != s.commit:
-				t.Fatalf("loop %d state should be commit %d, got %d", i, s.commit, r.commit)
-			case r.commit != r.applied:
-				t.Fatalf("loop %d state should have applied %d commits but has only applied %d", i, r.commit, r.applied)
+		// Now ask the leader to step down. At this point we expect
+		// a new term to start but the adder value shouldn't change.
+		{10, 2, 2, 7, 7, func() { rg.leader().node().StepDown() }},
+
+		// Propose a new addition now that we have a new leader.
+		{11, 2, 2, 8, 8, func() { randomAdder().proposeDelta(1) }},
+
+		// Now we're going to kill and restart the leader. There
+		// should be no value change here, but we do expect a new
+		// term to start, since this should result in an election.
+		{11, 3, 3, 9, 9, func() {
+			leader := rg.leader()
+			t.Log("Restarting", leader.node().ID())
+			leader.stop()
+			leader.restart()
+		}},
+
+		// Now propose some more changes.
+		{12, 3, 3, 10, 10, func() { randomAdder().proposeDelta(1) }},
+		{14, 3, 3, 11, 11, func() { randomAdder().proposeDelta(2) }},
+		{17, 3, 3, 12, 12, func() { randomAdder().proposeDelta(3) }},
+	} {
+		t.Logf("Step %d", i+1)
+
+		// Perform the action and then wait for all nodes in the
+		// cluster to become current.
+		s.action()
+		rg.waitOnAllCurrent()
+
+		rg.lockAndInspect(t, func() {
+			// Now perform sanity checks.
+			for _, sm := range rg {
+				a := sm.(*stateAdder)
+				r := sm.node().(*raft)
+				t.Logf(
+					" - [%s] %s, %v, total %d, term %d, pterm %d, pindex %d, commit %d",
+					r.id, r.state, true /*r.Current()*/, a.total(), r.term, r.pterm, r.pindex, r.commit,
+				)
 			}
-		}
+
+			for _, sm := range rg {
+				a := sm.(*stateAdder)
+				r := sm.node().(*raft)
+				switch {
+				case r.commit != s.commit:
+					t.Fatalf("%s state should be commit %d, got %d", r.id, s.commit, r.commit)
+				case r.commit != r.applied:
+					t.Fatalf("%s state should have applied %d commits but has only applied %d", r.id, r.commit, r.applied)
+				case a.total() != s.total:
+					t.Fatalf("%s total should be %d, got %d", r.id, s.total, a.total())
+				case r.term != s.term:
+					t.Fatalf("%s state should be term %d, got %d", r.id, s.term, r.term)
+				case r.pterm != s.pterm:
+					t.Fatalf("%s state should be pterm %d, got %d", r.id, s.pterm, r.pterm)
+				case r.pindex != s.pindex:
+					t.Fatalf("%s state should be pindex %d, got %d", r.id, s.pindex, r.pindex)
+				}
+			}
+		})
 	}
 }
 
