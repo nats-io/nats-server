@@ -1,4 +1,3 @@
-
 os: linux
 dist: focal
 
@@ -9,12 +8,12 @@ language: go
 go:
 # This should be quoted or use .x, but should not be unquoted.
 # Remember that a YAML bare float drops trailing zeroes.
-- '1.19.6'
+  - '1.19.8'
 
 addons:
   apt:
     packages:
-    - rpm
+      - rpm
 go_import_path: github.com/nats-io/nats-server
 
 jobs:

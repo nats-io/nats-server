@@ -8,24 +8,24 @@
 
 ## Documentation
 
-* [Official Website](https://nats.io)
-* [Official Documentation](https://docs.nats.io)
-* [FAQ](https://docs.nats.io/reference/faq)
-* Watch [a video overview](https://rethink.synadia.com/episodes/1/) of NATS.
-* Watch [this video from SCALE 13x](https://www.youtube.com/watch?v=sm63oAVPqAM) to learn more about its origin story and design philosophy.
+- [Official Website](https://nats.io)
+- [Official Documentation](https://docs.nats.io)
+- [FAQ](https://docs.nats.io/reference/faq)
+- Watch [a video overview](https://rethink.synadia.com/episodes/1/) of NATS.
+- Watch [this video from SCALE 13x](https://www.youtube.com/watch?v=sm63oAVPqAM) to learn more about its origin story and design philosophy.
 
 ## Contact
 
-* [Twitter](https://twitter.com/nats_io): Follow us on Twitter!
-* [Google Groups](https://groups.google.com/forum/#!forum/natsio): Where you can ask questions
-* [Slack](https://natsio.slack.com): Click [here](https://slack.nats.io) to join. You can ask question to our maintainers and to the rich and active community.
+- [Twitter](https://twitter.com/nats_io): Follow us on Twitter!
+- [Google Groups](https://groups.google.com/forum/#!forum/natsio): Where you can ask questions
+- [Slack](https://natsio.slack.com): Click [here](https://slack.nats.io) to join. You can ask question to our maintainers and to the rich and active community.
 
 ## Contributing
 
 If you are interested in contributing to NATS, read about our...
 
-* [Contributing guide](https://nats.io/community/#contribute)
-* [Report issues or propose Pull Requests](https://github.com/nats-io)
+- [Contributing guide](https://nats.io/community/#contribute)
+- [Report issues or propose Pull Requests](https://github.com/nats-io)
 
 [License-Url]: https://www.apache.org/licenses/LICENSE-2.0
 [License-Image]: https://img.shields.io/badge/License-Apache2-blue.svg
@@ -37,8 +37,8 @@ If you are interested in contributing to NATS, read about our...
 [Fossa-Image]: https://app.fossa.io/api/projects/git%2Bgithub.com%2Fnats-io%2Fnats-server.svg?type=shield
 [Build-Status-Url]: https://travis-ci.com/github/nats-io/nats-server
 [Build-Status-Image]: https://travis-ci.com/nats-io/nats-server.svg?branch=main
-[Release-Url]: https://github.com/nats-io/nats-server/releases/tag/v2.9.15
-[Release-image]: https://img.shields.io/badge/release-v2.9.15-1eb0fc.svg
+[Release-Url]: https://github.com/nats-io/nats-server/releases/tag/v2.9.16
+[Release-image]: https://img.shields.io/badge/release-v2.9.16-1eb0fc.svg
 [Coverage-Url]: https://coveralls.io/r/nats-io/nats-server?branch=main
 [Coverage-image]: https://coveralls.io/repos/github/nats-io/nats-server/badge.svg?branch=main
 [ReportCard-Url]: https://goreportcard.com/report/nats-io/nats-server
