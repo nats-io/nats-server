@@ -309,7 +309,7 @@ func TestJWTUserExpiresAfterConnect(t *testing.T) {
 		t.Fatalf("Received %v", err)
 	}
 	if !strings.HasPrefix(l, "PONG") {
-		t.Fatalf("Expected a PONG")
+		t.Fatalf("Expected a PONG, got %q", l)
 	}
 
 	// Now we should expire after 1 second or so.
