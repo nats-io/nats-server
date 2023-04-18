@@ -224,6 +224,8 @@ const (
 	magic = uint8(22)
 	// Version
 	version = uint8(1)
+	// New IndexInfo Version
+	newVersion = uint8(2)
 	// hdrLen
 	hdrLen = 2
 	// This is where we keep the streams.
@@ -689,9 +691,6 @@ const (
 	emptyRecordLen = msgHdrSize + checksumSize
 )
 
-// This is the max room needed for index header.
-const indexHdrSize = 7*binary.MaxVarintLen64 + hdrLen + checksumSize
-
 // Lock should be held.
 func (fs *fileStore) noTrackSubjects() bool {
 	return !(len(fs.psim) > 0 || len(fs.cfg.Subjects) > 0 || fs.cfg.Mirror != nil || len(fs.cfg.Sources) > 0)
@@ -968,7 +967,7 @@ func (mb *msgBlock) convertToEncrypted() error {
 		return err
 	}
 	if buf, err = os.ReadFile(mb.ifn); err == nil && len(buf) > 0 {
-		if err := checkHeader(buf); err != nil {
+		if err := checkNewHeader(buf); err != nil {
 			return err
 		}
 		buf = mb.aek.Seal(buf[:0], mb.nonce, buf, nil)
@@ -5024,11 +5023,12 @@ func (mb *msgBlock) writeIndexInfo() error {
 // Filestore lock and mb lock should be held.
 func (mb *msgBlock) writeIndexInfoLocked() error {
 	// HEADER: magic version msgs bytes fseq fts lseq lts ndel checksum
-	var hdr [indexHdrSize]byte
+	// Make large enough to hold almost all possible maximum interior delete scenarios.
+	var hdr [42 * 1024]byte
 
 	// Write header
 	hdr[0] = magic
-	hdr[1] = version
+	hdr[1] = newVersion
 
 	n := hdrLen
 	n += binary.PutUvarint(hdr[n:], mb.msgs)
@@ -5042,7 +5042,16 @@ func (mb *msgBlock) writeIndexInfoLocked() error {
 
 	// Append a delete map if needed
 	if !mb.dmap.IsEmpty() {
-		buf = append(buf, mb.genDeleteMap()...)
+		// Always attempt to tack it onto end.
+		dmap, err := mb.dmap.Encode(hdr[len(buf):])
+		if err != nil {
+			return err
+		}
+		if len(dmap) < cap(hdr)-len(buf) {
+			buf = hdr[:len(buf)+len(dmap)]
+		} else {
+			buf = append(buf, dmap...)
+		}
 	}
 
 	// Open our FD if needed.
@@ -5083,6 +5092,14 @@ func (mb *msgBlock) writeIndexInfoLocked() error {
 	return err
 }
 
+func checkNewHeader(hdr []byte) error {
+	if hdr == nil || len(hdr) < 2 || hdr[0] != magic ||
+		(hdr[1] != version && hdr[1] != newVersion) {
+		return errCorruptState
+	}
+	return nil
+}
+
 // readIndexInfo will read in the index information for the message block.
 func (mb *msgBlock) readIndexInfo() error {
 	buf, err := os.ReadFile(mb.ifn)
@@ -5103,7 +5120,7 @@ func (mb *msgBlock) readIndexInfo() error {
 		}
 	}
 
-	if err := checkHeader(buf); err != nil {
+	if err := checkNewHeader(buf); err != nil {
 		defer os.Remove(mb.ifn)
 		return fmt.Errorf("bad index file")
 	}
@@ -5162,36 +5179,26 @@ func (mb *msgBlock) readIndexInfo() error {
 
 	// Now check for presence of a delete map
 	if dmapLen > 0 {
-		for i := 0; i < int(dmapLen); i++ {
-			seq := readSeq()
-			if seq == 0 {
-				break
+		// New version is encoded avl seqset.
+		if buf[1] == newVersion {
+			dmap, err := avl.Decode(buf[bi:])
+			if err != nil {
+				return fmt.Errorf("could not decode avl dmap: %v", err)
 			}
-			mb.dmap.Insert(seq + mb.first.seq)
+			mb.dmap = *dmap
+		} else {
+			// This is the old version.
+			for i := 0; i < int(dmapLen); i++ {
+				seq := readSeq()
+				if seq == 0 {
+					break
+				}
+				mb.dmap.Insert(seq + mb.first.seq)
+			}
 		}
 	}
 
 	return nil
-}
-
-func (mb *msgBlock) genDeleteMap() []byte {
-	if mb.dmap.IsEmpty() {
-		return nil
-	}
-	buf := make([]byte, mb.dmap.Size()*binary.MaxVarintLen64)
-	// We use first seq as an offset to cut down on size.
-	fseq, n := uint64(mb.first.seq), 0
-
-	mb.dmap.Range(func(seq uint64) bool {
-		// This is for lazy cleanup as the first sequence moves up.
-		if seq < fseq {
-			mb.dmap.Delete(seq)
-		} else {
-			n += binary.PutUvarint(buf[n:], seq-fseq)
-		}
-		return true
-	})
-	return buf[:n]
 }
 
 func syncAndClose(mfd, ifd *os.File) {
