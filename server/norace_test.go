@@ -48,6 +48,7 @@ import (
 
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
+	"github.com/nats-io/nats-server/v2/server/avl"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
@@ -6212,6 +6213,93 @@ func TestNoRaceFileStoreStreamMaxAgePerformance(t *testing.T) {
 	elapsed = time.Since(start)
 	fmt.Printf("Took %v to store %d\n", elapsed, num)
 	fmt.Printf("%.0f msgs/sec\n", float64(num)/elapsed.Seconds())
+}
+
+// SequenceSet memory tests vs dmaps.
+func TestNoRaceSeqSetSizeComparison(t *testing.T) {
+	// Create 5M random entries (dupes possible but ok for this test) out of 8M range.
+	num := 5_000_000
+	max := 7_000_000
+
+	seqs := make([]uint64, 0, num)
+	for i := 0; i < num; i++ {
+		n := uint64(rand.Int63n(int64(max + 1)))
+		seqs = append(seqs, n)
+	}
+
+	runtime.GC()
+	// Disable to get stable results.
+	gcp := debug.SetGCPercent(-1)
+	defer debug.SetGCPercent(gcp)
+
+	mem := runtime.MemStats{}
+	runtime.ReadMemStats(&mem)
+	inUseBefore := mem.HeapInuse
+
+	dmap := make(map[uint64]struct{}, num)
+	for _, n := range seqs {
+		dmap[n] = struct{}{}
+	}
+	runtime.ReadMemStats(&mem)
+	dmapUse := mem.HeapInuse - inUseBefore
+	inUseBefore = mem.HeapInuse
+
+	// Now do SequenceSet on same dataset.
+	var sset avl.SequenceSet
+	for _, n := range seqs {
+		sset.Insert(n)
+	}
+
+	runtime.ReadMemStats(&mem)
+	seqSetUse := mem.HeapInuse - inUseBefore
+
+	if seqSetUse > 2*1024*1024 {
+		t.Fatalf("Expected SequenceSet size to be < 2M, got %v", friendlyBytes(int64(seqSetUse)))
+	}
+	if seqSetUse*50 > dmapUse {
+		t.Fatalf("Expected SequenceSet to be at least 50x better then dmap approach: %v vs %v",
+			friendlyBytes(int64(seqSetUse)),
+			friendlyBytes(int64(dmapUse)),
+		)
+	}
+}
+
+// FilteredState for ">" with large interior deletes was very slow.
+func TestNoRaceFileStoreFilteredStateWithLargeDeletes(t *testing.T) {
+	storeDir := t.TempDir()
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir, BlockSize: 4096},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	subj, msg := "foo", []byte("Hello World")
+
+	toStore := 500_000
+	for i := 0; i < toStore; i++ {
+		_, _, err := fs.StoreMsg(subj, nil, msg)
+		require_NoError(t, err)
+	}
+
+	// Now delete every other one.
+	for seq := 2; seq <= toStore; seq += 2 {
+		_, err := fs.RemoveMsg(uint64(seq))
+		require_NoError(t, err)
+	}
+
+	runtime.GC()
+	// Disable to get stable results.
+	gcp := debug.SetGCPercent(-1)
+	defer debug.SetGCPercent(gcp)
+
+	start := time.Now()
+	fss := fs.FilteredState(1, _EMPTY_)
+	elapsed := time.Since(start)
+
+	require_True(t, fss.Msgs == uint64(toStore/2))
+	require_True(t, elapsed < 500*time.Microsecond)
 }
 
 // ConsumerInfo seems to being called quite a bit more than we had anticipated.

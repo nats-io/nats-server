@@ -3256,7 +3256,7 @@ func TestFileStoreExpireMsgsOnStart(t *testing.T) {
 			} else if mb.last != mbc.last {
 				errStr = fmt.Sprintf("last state does not match: %d vs %d", mb.last, mbc.last)
 			} else if !reflect.DeepEqual(mb.dmap, mbc.dmap) {
-				errStr = fmt.Sprintf("deleted map does not match: %d vs %d", mb.dmap, mbc.dmap)
+				errStr = fmt.Sprintf("deleted map does not match: %+v vs %+v", mb.dmap, mbc.dmap)
 			}
 			mb.mu.RUnlock()
 			if errStr != _EMPTY_ {
@@ -3993,7 +3993,7 @@ func TestFileStoreRebuildStateDmapAccountingBug(t *testing.T) {
 			t.Helper()
 			mb.mu.RLock()
 			defer mb.mu.RUnlock()
-			dmapLen := uint64(len(mb.dmap))
+			dmapLen := uint64(mb.dmap.Size())
 			if mb.msgs != (mb.last.seq-mb.first.seq+1)-dmapLen {
 				t.Fatalf("Consistency check failed: %d != %d -> last %d first %d len(dmap) %d",
 					mb.msgs, (mb.last.seq-mb.first.seq+1)-dmapLen, mb.last.seq, mb.first.seq, dmapLen)
@@ -5399,4 +5399,61 @@ func TestFileStoreSubjectsTotals(t *testing.T) {
 	if st, expected := fs.SubjectsTotals("*.*"), len(bmap)+len(fmap); len(st) != expected {
 		t.Fatalf("Expected %d subjects for %q, got %d", expected, "*.*", len(st))
 	}
+}
+
+func TestFileStoreNewWriteIndexInfo(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize = defaultLargeBlockSize
+
+		fs, err := newFileStore(fcfg, StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// Fill a block.
+		numToFill := 254200
+		for i := 0; i < numToFill; i++ {
+			_, _, err := fs.StoreMsg("A", nil, []byte("OK"))
+			require_NoError(t, err)
+		}
+
+		// Maximize interior deletes for testing the new AVL sequence set.
+		for seq := uint64(2); seq < uint64(numToFill); seq++ {
+			removed, err := fs.RemoveMsg(seq)
+			require_NoError(t, err)
+			require_True(t, removed)
+		}
+		// Grab first block
+		fs.mu.RLock()
+		mb := fs.blks[0]
+		fs.mu.RUnlock()
+
+		mb.mu.Lock()
+		start := time.Now()
+		require_NoError(t, mb.writeIndexInfoLocked())
+		elapsed := time.Since(start)
+		require_True(t, elapsed < time.Millisecond)
+		fi, err := os.Stat(mb.ifn)
+		mb.mu.Unlock()
+
+		require_NoError(t, err)
+		require_True(t, fi.Size() < 34*1024) // Just over 32k
+
+		mb.mu.Lock()
+		mb.dmap.Empty()
+		err = mb.readIndexInfo()
+		numMsgs := mb.msgs
+		firstSeq := mb.first.seq
+		lastSeq := mb.last.seq
+		mb.mu.Unlock()
+		// Make sure consistent.
+		require_NoError(t, err)
+		require_True(t, numMsgs == 2)
+		require_True(t, firstSeq == 1)
+		require_True(t, lastSeq == uint64(numToFill))
+
+		fs.Stop()
+		fs, err = newFileStore(fcfg, StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
+		require_NoError(t, err)
+		defer fs.Stop()
+	})
 }
