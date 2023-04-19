@@ -69,7 +69,7 @@ func (ss *SequenceSet) SetInitialMin(min uint64) error {
 	if !ss.IsEmpty() {
 		return ErrSetNotEmpty
 	}
-	ss.root = &node{base: min, h: 1}
+	ss.root, ss.nodes = &node{base: min, h: 1}, 1
 	return nil
 }
 
