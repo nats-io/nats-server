@@ -2221,8 +2221,6 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	// Remember our last sequence number.
 	mb.first.seq = fs.state.LastSeq + 1
 	mb.last.seq = fs.state.LastSeq
-	// Mark initial base for delete set.
-	mb.dmap.SetInitialMin(mb.first.seq)
 	mb.mu.Unlock()
 
 	// If we know we will need this so go ahead and spin up.
@@ -2790,6 +2788,10 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 			}
 		}
 	} else if !isEmpty {
+		if mb.dmap.IsEmpty() {
+			// Mark initial base for delete set.
+			mb.dmap.SetInitialMin(mb.first.seq)
+		}
 		// Out of order delete.
 		mb.dmap.Insert(seq)
 		// Check if <25% utilization and minimum size met.

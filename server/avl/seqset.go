@@ -84,6 +84,9 @@ func (ss *SequenceSet) Delete(seq uint64) bool {
 	if ss.changed {
 		ss.changed = false
 		ss.size--
+		if ss.size == 0 {
+			ss.Empty()
+		}
 		return true
 	}
 	return false
