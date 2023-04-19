@@ -62,17 +62,34 @@ func (ss *SequenceSet) Exists(seq uint64) bool {
 	return false
 }
 
+// SetInitialMin should be used to set the initial minimum sequence when known.
+// This will more effectively utilize space versus self selecting.
+// The set should be empty.
+func (ss *SequenceSet) SetInitialMin(min uint64) error {
+	if !ss.IsEmpty() {
+		return ErrSetNotEmpty
+	}
+	ss.root, ss.nodes = &node{base: min, h: 1}, 1
+	return nil
+}
+
 // Delete will remove the sequence from the set.
-// Wil optionally remove nodes and rebalance.
-func (ss *SequenceSet) Delete(seq uint64) {
+// Will optionally remove nodes and rebalance.
+// Returns where the sequence was set.
+func (ss *SequenceSet) Delete(seq uint64) bool {
 	if ss == nil || ss.root == nil {
-		return
+		return false
 	}
 	ss.root = ss.root.delete(seq, &ss.changed, &ss.nodes)
 	if ss.changed {
 		ss.changed = false
 		ss.size--
+		if ss.size == 0 {
+			ss.Empty()
+		}
+		return true
 	}
+	return false
 }
 
 // Size returns the number of items in the set.
@@ -228,7 +245,10 @@ func (ss SequenceSet) Encode(buf []byte) ([]byte, error) {
 }
 
 // ErrBadEncoding is returned when we can not decode properly.
-var ErrBadEncoding = errors.New("ss: bad encoding")
+var (
+	ErrBadEncoding = errors.New("ss: bad encoding")
+	ErrSetNotEmpty = errors.New("ss: set not empty")
+)
 
 func Decode(buf []byte) (*SequenceSet, error) {
 	if len(buf) < minLen || buf[0] != magic || buf[1] != version {

@@ -218,6 +218,23 @@ func TestSeqSetUnion(t *testing.T) {
 	}
 }
 
+func TestSeqSetFirst(t *testing.T) {
+	var ss SequenceSet
+
+	seqs := []uint64{22, 222, 2222, 222_222}
+	for _, seq := range seqs {
+		// Normal case where we pick first/base.
+		ss.Insert(seq)
+		require_True(t, ss.root.base == (seq/numEntries)*numEntries)
+		ss.Empty()
+		// Where we set the minimum start value.
+		ss.SetInitialMin(seq)
+		ss.Insert(seq)
+		require_True(t, ss.root.base == seq)
+		ss.Empty()
+	}
+}
+
 func require_NoError(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {

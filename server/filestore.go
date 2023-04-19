@@ -2817,6 +2817,10 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 			}
 		}
 	} else if !isEmpty {
+		if mb.dmap.IsEmpty() {
+			// Mark initial base for delete set.
+			mb.dmap.SetInitialMin(mb.first.seq)
+		}
 		// Out of order delete.
 		mb.dmap.Insert(seq)
 		// Check if <25% utilization and minimum size met.
