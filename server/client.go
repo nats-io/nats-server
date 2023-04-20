@@ -302,12 +302,20 @@ type outbound struct {
 	stc chan struct{} // Stall chan we create to slow down producers on overrun, e.g. fan-in.
 }
 
-const nbPoolSizeSmall = 4096  // Underlying array size of small buffer
+const nbPoolSizeSmall = 512   // Underlying array size of small buffer
+const nbPoolSizeMedium = 4096 // Underlying array size of medium buffer
 const nbPoolSizeLarge = 65536 // Underlying array size of large buffer
 
 var nbPoolSmall = &sync.Pool{
 	New: func() any {
 		b := [nbPoolSizeSmall]byte{}
+		return &b
+	},
+}
+
+var nbPoolMedium = &sync.Pool{
+	New: func() any {
+		b := [nbPoolSizeMedium]byte{}
 		return &b
 	},
 }
@@ -324,6 +332,9 @@ func nbPoolPut(b []byte) {
 	case nbPoolSizeSmall:
 		b := (*[nbPoolSizeSmall]byte)(b[0:nbPoolSizeSmall])
 		nbPoolSmall.Put(b)
+	case nbPoolSizeMedium:
+		b := (*[nbPoolSizeMedium]byte)(b[0:nbPoolSizeMedium])
+		nbPoolMedium.Put(b)
 	case nbPoolSizeLarge:
 		b := (*[nbPoolSizeLarge]byte)(b[0:nbPoolSizeLarge])
 		nbPoolLarge.Put(b)
@@ -1481,7 +1492,7 @@ func (c *client) flushOutbound() bool {
 	if err != nil && err != io.ErrShortWrite {
 		// Handle timeout error (slow consumer) differently
 		if ne, ok := err.(net.Error); ok && ne.Timeout() {
-			if closed := c.handleWriteTimeout(n, attempted, len(c.out.nb)); closed {
+			if closed := c.handleWriteTimeout(n, attempted, len(orig)); closed {
 				return true
 			}
 		} else {
@@ -1509,7 +1520,7 @@ func (c *client) flushOutbound() bool {
 	// Check for partial writes
 	// TODO(dlc) - zero write with no error will cause lost message and the writeloop to spin.
 	if n != attempted && n > 0 {
-		c.handlePartialWrite(c.out.nb)
+		c.handlePartialWrite(c.out.wnb)
 	}
 
 	// Check that if there is still data to send and writeLoop is in wait,
@@ -2014,41 +2025,24 @@ func (c *client) queueOutbound(data []byte) {
 	// without affecting the original "data" slice.
 	toBuffer := data
 
-	// All of the queued []byte have a fixed capacity, so if there's a []byte
-	// at the tail of the buffer list that isn't full yet, we should top that
-	// up first. This helps to ensure we aren't pulling more []bytes from the
-	// pool than we need to.
-	if len(c.out.nb) > 0 {
-		last := &c.out.nb[len(c.out.nb)-1]
-		if free := cap(*last) - len(*last); free > 0 {
-			if l := len(toBuffer); l < free {
-				free = l
-			}
-			*last = append(*last, toBuffer[:free]...)
-			toBuffer = toBuffer[free:]
-		}
-	}
-
 	// Now we can push the rest of the data into new []bytes from the pool
 	// in fixed size chunks. This ensures we don't go over the capacity of any
 	// of the buffers and end up reallocating.
 	for len(toBuffer) > 0 {
 		var new []byte
-		if len(c.out.nb) == 0 && len(toBuffer) <= nbPoolSizeSmall {
-			// If the buffer is empty, try to allocate a small buffer if the
-			// message will fit in it. This will help for cases like pings.
+		switch {
+		case len(toBuffer) <= nbPoolSizeSmall:
 			new = nbPoolSmall.Get().(*[nbPoolSizeSmall]byte)[:0]
-		} else {
-			// If "nb" isn't empty, default to large buffers in all cases as
-			// this means we are always coalescing future messages into
-			// larger buffers. Reduces the number of buffers into writev.
+		case len(toBuffer) <= nbPoolSizeMedium:
+			new = nbPoolMedium.Get().(*[nbPoolSizeMedium]byte)[:0]
+		default:
 			new = nbPoolLarge.Get().(*[nbPoolSizeLarge]byte)[:0]
 		}
 		l := len(toBuffer)
 		if c := cap(new); l > c {
 			l = c
 		}
-		new = append(new, toBuffer[:l]...)
+		new = append(new[:0], toBuffer[:l]...)
 		c.out.nb = append(c.out.nb, new)
 		toBuffer = toBuffer[l:]
 	}
