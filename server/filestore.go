@@ -6495,7 +6495,7 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 	// Track if we are creating the directory so that we can clean up if we encounter an error.
 	var didCreate bool
 
-	// Write our meta data iff does not exist.
+	// Write our meta data if does not exist.
 	meta := filepath.Join(odir, JetStreamMetaFile)
 	if _, err := os.Stat(meta); err != nil && os.IsNotExist(err) {
 		didCreate = true
