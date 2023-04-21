@@ -1,4 +1,4 @@
-// Copyright 2020 The NATS Authors
+// Copyright 2020-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -15,7 +15,6 @@ package server
 
 import (
 	"bytes"
-	"compress/flate"
 	"crypto/rand"
 	"crypto/sha1"
 	"crypto/tls"
@@ -34,6 +33,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/klauspost/compress/flate"
 )
 
 type wsOpCode int
