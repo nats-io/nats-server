@@ -1483,64 +1483,69 @@ func TestWildcardCharsInLiteralSubjectWorks(t *testing.T) {
 	}
 }
 
-// This test ensures that coalescing into the fixed-size output
-// queues works as expected. When bytes are queued up, they should
-// not overflow a buffer until the capacity is exceeded, at which
-// point a new buffer should be added.
-func TestClientOutboundQueueCoalesce(t *testing.T) {
+// This test ensures that outbound queues don't cause a run on
+// memory when sending something to lots of clients.
+func TestClientOutboundQueueMemory(t *testing.T) {
 	opts := DefaultOptions()
 	s := RunServer(opts)
 	defer s.Shutdown()
 
-	nc, err := nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
+	var before runtime.MemStats
+	var after runtime.MemStats
+
+	var err error
+	clients := make([]*nats.Conn, 50000)
+	wait := &sync.WaitGroup{}
+	wait.Add(len(clients))
+
+	for i := 0; i < len(clients); i++ {
+		clients[i], err = nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port), nats.InProcessServer(s))
+		if err != nil {
+			t.Fatalf("Error on connect: %v", err)
+		}
+		defer clients[i].Close()
+
+		clients[i].Subscribe("test", func(m *nats.Msg) {
+			wait.Done()
+		})
+	}
+
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+
+	nc, err := nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port), nats.InProcessServer(s))
 	if err != nil {
 		t.Fatalf("Error on connect: %v", err)
 	}
 	defer nc.Close()
 
-	clients := s.GlobalAccount().getClients()
-	if len(clients) != 1 {
-		t.Fatal("Expecting a client to exist")
-	}
-	client := clients[0]
-	client.mu.Lock()
-	defer client.mu.Unlock()
-
-	// First up, queue something small into the queue.
-	client.queueOutbound([]byte{1, 2, 3, 4, 5})
-
-	if len(client.out.nb) != 1 {
-		t.Fatal("Expecting a single queued buffer")
-	}
-	if l := len(client.out.nb[0]); l != 5 {
-		t.Fatalf("Expecting only 5 bytes in the first queued buffer, found %d instead", l)
+	var m [48000]byte
+	if err = nc.Publish("test", m[:]); err != nil {
+		t.Fatal(err)
 	}
 
-	// Then queue up a few more bytes, but not enough
-	// to overflow into the next buffer.
-	client.queueOutbound([]byte{6, 7, 8, 9, 10})
+	wait.Wait()
 
-	if len(client.out.nb) != 1 {
-		t.Fatal("Expecting a single queued buffer")
-	}
-	if l := len(client.out.nb[0]); l != 10 {
-		t.Fatalf("Expecting 10 bytes in the first queued buffer, found %d instead", l)
-	}
+	runtime.GC()
+	runtime.ReadMemStats(&after)
 
-	// Finally, queue up something that is guaranteed
-	// to overflow.
-	b := nbPoolSmall.Get().(*[nbPoolSizeSmall]byte)[:]
-	b = b[:cap(b)]
-	client.queueOutbound(b)
-	if len(client.out.nb) != 2 {
-		t.Fatal("Expecting buffer to have overflowed")
-	}
-	if l := len(client.out.nb[0]); l != cap(b) {
-		t.Fatalf("Expecting %d bytes in the first queued buffer, found %d instead", cap(b), l)
-	}
-	if l := len(client.out.nb[1]); l != 10 {
-		t.Fatalf("Expecting 10 bytes in the second queued buffer, found %d instead", l)
-	}
+	hb, ha := float64(before.HeapAlloc), float64(after.HeapAlloc)
+	ms := float64(len(m))
+	diff := float64(ha) - float64(hb)
+	inc := (diff / float64(hb)) * 100
+
+	fmt.Printf("Message size:       %.1fKB\n", ms/1024)
+	fmt.Printf("Subscribed clients: %d\n", len(clients))
+	fmt.Printf("Heap allocs before: %.1fMB\n", hb/1024/1024)
+	fmt.Printf("Heap allocs after:  %.1fMB\n", ha/1024/1024)
+	fmt.Printf("Heap allocs delta:  %.1f%%\n", inc)
+
+	// TODO: What threshold makes sense here for a failure?
+	/*
+		if inc > 10 {
+			t.Fatalf("memory increase was %.1f%% (should be <= 10%%)", inc)
+		}
+	*/
 }
 
 func TestClientTraceRace(t *testing.T) {

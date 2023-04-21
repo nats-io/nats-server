@@ -16,7 +16,6 @@ package server
 import (
 	"bufio"
 	"bytes"
-	"compress/flate"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
@@ -36,6 +35,8 @@ import (
 
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nkeys"
+
+	"github.com/klauspost/compress/flate"
 )
 
 type testReader struct {
@@ -2863,11 +2864,11 @@ func (wc *testWSWrappedConn) Write(p []byte) (int, error) {
 }
 
 func TestWSCompressionBasic(t *testing.T) {
-	payload := "This is the content of a message that will be compresseddddddddddddddddddddd."
+	payload := "This is the content of a message that will be compresseddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd."
 	msgProto := fmt.Sprintf("MSG foo 1 %d\r\n%s\r\n", len(payload), payload)
-
 	cbuf := &bytes.Buffer{}
-	compressor, _ := flate.NewWriter(cbuf, flate.BestSpeed)
+	compressor, err := flate.NewWriter(cbuf, flate.BestSpeed)
+	require_NoError(t, err)
 	compressor.Write([]byte(msgProto))
 	compressor.Flush()
 	compressed := cbuf.Bytes()
@@ -2890,14 +2891,14 @@ func TestWSCompressionBasic(t *testing.T) {
 	}
 
 	var wc *testWSWrappedConn
-	s.mu.Lock()
+	s.mu.RLock()
 	for _, c := range s.clients {
 		c.mu.Lock()
 		wc = &testWSWrappedConn{Conn: c.nc, buf: &bytes.Buffer{}}
 		c.nc = wc
 		c.mu.Unlock()
 	}
-	s.mu.Unlock()
+	s.mu.RUnlock()
 
 	nc := natsConnect(t, s.ClientURL())
 	defer nc.Close()
