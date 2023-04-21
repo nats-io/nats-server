@@ -2231,6 +2231,7 @@ func (mset *stream) setupMirrorConsumer() error {
 	// Determine subjects etc.
 	var deliverSubject string
 	ext := mset.cfg.Mirror.External
+	filter := mset.cfg.Mirror.FilterSubject
 
 	if ext != nil && ext.DeliverPrefix != _EMPTY_ {
 		deliverSubject = strings.ReplaceAll(ext.DeliverPrefix+syncSubject(".M"), "..", ".")
@@ -2256,6 +2257,7 @@ func (mset *stream) setupMirrorConsumer() error {
 			Heartbeat:      sourceHealthCheckInterval,
 			FlowControl:    true,
 			Direct:         true,
+			FilterSubject:  filter,
 		},
 	}
 
