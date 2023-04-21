@@ -3279,7 +3279,7 @@ func (o *consumer) checkAckFloor() {
 	defer o.mu.Unlock()
 
 	// If we are here, and this should be rare, we still are off with our ack floor.
-	// We will set it explcitly to 1 behind our current lowest in pending, or if
+	// We will set it explicitly to 1 behind our current lowest in pending, or if
 	// pending is empty, to our current delivered -1.
 	if o.asflr < ss.FirstSeq-1 {
 		var psseq, pdseq uint64
