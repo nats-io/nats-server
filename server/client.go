@@ -327,6 +327,22 @@ var nbPoolLarge = &sync.Pool{
 	},
 }
 
+func nbPoolGet(sz int) []byte {
+	var new []byte
+	switch {
+	case sz <= nbPoolSizeSmall:
+		ptr := nbPoolSmall.Get().(*[nbPoolSizeSmall]byte)
+		new = ptr[:0]
+	case sz <= nbPoolSizeMedium:
+		ptr := nbPoolMedium.Get().(*[nbPoolSizeMedium]byte)
+		new = ptr[:0]
+	default:
+		ptr := nbPoolLarge.Get().(*[nbPoolSizeLarge]byte)
+		new = ptr[:0]
+	}
+	return new
+}
+
 func nbPoolPut(b []byte) {
 	switch cap(b) {
 	case nbPoolSizeSmall:
@@ -1520,7 +1536,7 @@ func (c *client) flushOutbound() bool {
 	// Check for partial writes
 	// TODO(dlc) - zero write with no error will cause lost message and the writeloop to spin.
 	if n != attempted && n > 0 {
-		c.handlePartialWrite(c.out.wnb)
+		c.handlePartialWrite(c.out.nb)
 	}
 
 	// Check that if there is still data to send and writeLoop is in wait,
@@ -2029,22 +2045,10 @@ func (c *client) queueOutbound(data []byte) {
 	// in fixed size chunks. This ensures we don't go over the capacity of any
 	// of the buffers and end up reallocating.
 	for len(toBuffer) > 0 {
-		var new []byte
-		switch {
-		case len(toBuffer) <= nbPoolSizeSmall:
-			new = nbPoolSmall.Get().(*[nbPoolSizeSmall]byte)[:0]
-		case len(toBuffer) <= nbPoolSizeMedium:
-			new = nbPoolMedium.Get().(*[nbPoolSizeMedium]byte)[:0]
-		default:
-			new = nbPoolLarge.Get().(*[nbPoolSizeLarge]byte)[:0]
-		}
-		l := len(toBuffer)
-		if c := cap(new); l > c {
-			l = c
-		}
-		new = append(new[:0], toBuffer[:l]...)
-		c.out.nb = append(c.out.nb, new)
-		toBuffer = toBuffer[l:]
+		new := nbPoolGet(len(toBuffer))
+		n := copy(new[:cap(new)], toBuffer)
+		c.out.nb = append(c.out.nb, new[:n])
+		toBuffer = toBuffer[n:]
 	}
 
 	// Check for slow consumer via pending bytes limit.
