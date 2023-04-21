@@ -2535,6 +2535,7 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64, startTime time.T
 	// Determine subjects etc.
 	var deliverSubject string
 	ext := ssi.External
+	filter := ssi.FilterSubject
 
 	if ext != nil && ext.DeliverPrefix != _EMPTY_ {
 		deliverSubject = strings.ReplaceAll(ext.DeliverPrefix+syncSubject(".S"), "..", ".")
@@ -2552,6 +2553,7 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64, startTime time.T
 			Heartbeat:      sourceHealthCheckInterval,
 			FlowControl:    true,
 			Direct:         true,
+			FilterSubject:  filter,
 		},
 	}
 
