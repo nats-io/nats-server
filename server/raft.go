@@ -3695,7 +3695,8 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 	// If this is a higher term go ahead and stepdown.
 	if vr.term > n.term {
 		if n.state != Follower {
-			n.debug("Stepping down from %s, detected higher term: %d vs %d", vr.term, n.term, strings.ToLower(n.state.String()))
+			n.debug("Stepping down from %s, detected higher term: %d vs %d",
+				strings.ToLower(n.state.String()), vr.term, n.term)
 			n.stepdown.push(noLeader)
 			n.term = vr.term
 		}
