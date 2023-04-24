@@ -17,11 +17,13 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1973,6 +1975,806 @@ func TestServerEventsStatsZ(t *testing.T) {
 		if sr.Name != "A_SRV" {
 			t.Fatalf("Expected server B's route to A to have Name set to %q, got %q", "A_SRV", sr.Name)
 		}
+	}
+}
+
+func TestServerEventsHealthZSingleServer(t *testing.T) {
+	type healthzResp struct {
+		Healthz HealthStatus `json:"data"`
+		Server  ServerInfo   `json:"server"`
+	}
+	cfg := fmt.Sprintf(`listen: 127.0.0.1:-1
+
+	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+
+	no_auth_user: one
+
+	accounts {
+		ONE { users = [ { user: "one", pass: "p" } ]; jetstream: enabled }
+		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+	}`, t.TempDir())
+
+	serverHealthzReqSubj := "$SYS.REQ.SERVER.%s.HEALTHZ"
+	s, _ := RunServerWithConfig(createConfFile(t, []byte(cfg)))
+	defer s.Shutdown()
+
+	ncs, err := nats.Connect(s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	if err != nil {
+		t.Fatalf("Error connecting to cluster: %v", err)
+	}
+
+	defer ncs.Close()
+	ncAcc, err := nats.Connect(s.ClientURL())
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ncAcc.Close()
+	js, err := ncAcc.JetStream()
+	if err != nil {
+		t.Fatalf("Error creating JetStream context: %v", err)
+	}
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "test",
+		Subjects: []string{"foo"},
+	})
+	if err != nil {
+		t.Fatalf("Error creating stream: %v", err)
+	}
+	_, err = js.AddConsumer("test", &nats.ConsumerConfig{
+		Name: "cons",
+	})
+	if err != nil {
+		t.Fatalf("Error creating consumer: %v", err)
+	}
+
+	subj := fmt.Sprintf(serverHealthzReqSubj, s.ID())
+
+	tests := []struct {
+		name     string
+		req      *HealthzEventOptions
+		expected HealthStatus
+	}{
+		{
+			name:     "no parameters",
+			expected: HealthStatus{Status: "ok", StatusCode: 200},
+		},
+		{
+			name: "with js enabled only",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					JSEnabledOnly: true,
+				},
+			},
+			expected: HealthStatus{Status: "ok", StatusCode: 200},
+		},
+		{
+			name: "with server only",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					JSServerOnly: true,
+				},
+			},
+			expected: HealthStatus{Status: "ok", StatusCode: 200},
+		},
+		{
+			name: "with account name",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account: "ONE",
+				},
+			},
+			expected: HealthStatus{Status: "ok", StatusCode: 200},
+		},
+		{
+			name: "with account name and stream",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account: "ONE",
+					Stream:  "test",
+				},
+			},
+			expected: HealthStatus{Status: "ok", StatusCode: 200},
+		},
+		{
+			name: "with account name, stream and consumer",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account:  "ONE",
+					Stream:   "test",
+					Consumer: "cons",
+				},
+			},
+			expected: HealthStatus{Status: "ok", StatusCode: 200},
+		},
+		{
+			name: "with stream only",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Stream: "test",
+				},
+			},
+			expected: HealthStatus{
+				Status:     "error",
+				StatusCode: 400,
+				Error:      `"account" must not be empty when checking stream health`,
+			},
+		},
+		{
+			name: "with stream only, detailed",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Details: true,
+					Stream:  "test",
+				},
+			},
+			expected: HealthStatus{
+				Status:     "error",
+				StatusCode: 400,
+				Errors: []HealthzError{
+					{
+						Type:  HealthzErrorBadRequest,
+						Error: `"account" must not be empty when checking stream health`,
+					},
+				},
+			},
+		},
+		{
+			name: "with account and consumer",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account:  "ONE",
+					Consumer: "cons",
+				},
+			},
+			expected: HealthStatus{
+				Status:     "error",
+				StatusCode: 400,
+				Error:      `"stream" must not be empty when checking consumer health`,
+			},
+		},
+		{
+			name: "with account and consumer, detailed",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account:  "ONE",
+					Consumer: "cons",
+					Details:  true,
+				},
+			},
+			expected: HealthStatus{
+				Status:     "error",
+				StatusCode: 400,
+				Errors: []HealthzError{
+					{
+						Type:  HealthzErrorBadRequest,
+						Error: `"stream" must not be empty when checking consumer health`,
+					},
+				},
+			},
+		},
+		{
+			name: "account not found",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account: "abc",
+				},
+			},
+			expected: HealthStatus{
+				Status:     "unavailable",
+				StatusCode: 404,
+				Error:      `JetStream account "abc" not found`,
+			},
+		},
+		{
+			name: "account not found, detailed",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account: "abc",
+					Details: true,
+				},
+			},
+			expected: HealthStatus{
+				Status:     "error",
+				StatusCode: 404,
+				Errors: []HealthzError{
+					{
+						Type:    HealthzErrorAccount,
+						Account: "abc",
+						Error:   `JetStream account "abc" not found`,
+					},
+				},
+			},
+		},
+		{
+			name: "stream not found",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account: "ONE",
+					Stream:  "abc",
+				},
+			},
+			expected: HealthStatus{
+				Status:     "unavailable",
+				StatusCode: 404,
+				Error:      `JetStream stream "abc" not found on account "ONE"`,
+			},
+		},
+		{
+			name: "stream not found, detailed",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account: "ONE",
+					Stream:  "abc",
+					Details: true,
+				},
+			},
+			expected: HealthStatus{
+				Status:     "error",
+				StatusCode: 404,
+				Errors: []HealthzError{
+					{
+						Type:    HealthzErrorStream,
+						Account: "ONE",
+						Stream:  "abc",
+						Error:   `JetStream stream "abc" not found on account "ONE"`,
+					},
+				},
+			},
+		},
+		{
+			name: "consumer not found",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account:  "ONE",
+					Stream:   "test",
+					Consumer: "abc",
+				},
+			},
+			expected: HealthStatus{
+				Status:     "unavailable",
+				StatusCode: 404,
+				Error:      `JetStream consumer "abc" not found for stream "test" on account "ONE"`,
+			},
+		},
+		{
+			name: "consumer not found, detailed",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account:  "ONE",
+					Stream:   "test",
+					Consumer: "abc",
+					Details:  true,
+				},
+			},
+			expected: HealthStatus{
+				Status:     "error",
+				StatusCode: 404,
+				Errors: []HealthzError{
+					{
+						Type:     HealthzErrorConsumer,
+						Account:  "ONE",
+						Stream:   "test",
+						Consumer: "abc",
+						Error:    `JetStream consumer "abc" not found for stream "test" on account "ONE"`,
+					},
+				},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var body []byte
+			var err error
+			if test.req != nil {
+				body, err = json.Marshal(test.req)
+				if err != nil {
+					t.Fatalf("Error marshaling request body: %v", err)
+				}
+			}
+			msg, err := ncs.Request(subj, body, 1*time.Second)
+			if err != nil {
+				t.Fatalf("Error trying to request healthz: %v", err)
+			}
+			var health healthzResp
+			if err := json.Unmarshal(msg.Data, &health); err != nil {
+				t.Fatalf("Error unmarshalling the statz json: %v", err)
+			}
+			if !reflect.DeepEqual(health.Healthz, test.expected) {
+				t.Errorf("Invalid healthz status; want: %+v; got: %+v", test.expected, health.Healthz)
+			}
+		})
+	}
+}
+
+func TestServerEventsHealthZClustered(t *testing.T) {
+	type healthzResp struct {
+		Healthz HealthStatus `json:"data"`
+		Server  ServerInfo   `json:"server"`
+	}
+	serverHealthzReqSubj := "$SYS.REQ.SERVER.%s.HEALTHZ"
+	c := createJetStreamClusterWithTemplate(t, jsClusterAccountsTempl, "JSC", 3)
+	defer c.shutdown()
+
+	ncs, err := nats.Connect(c.randomServer().ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	if err != nil {
+		t.Fatalf("Error connecting to cluster: %v", err)
+	}
+
+	defer ncs.Close()
+	ncAcc, err := nats.Connect(c.randomServer().ClientURL())
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ncAcc.Close()
+	js, err := ncAcc.JetStream()
+	if err != nil {
+		t.Fatalf("Error creating JetStream context: %v", err)
+	}
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "test",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	if err != nil {
+		t.Fatalf("Error creating stream: %v", err)
+	}
+	_, err = js.AddConsumer("test", &nats.ConsumerConfig{
+		Name:     "cons",
+		Replicas: 3,
+	})
+	if err != nil {
+		t.Fatalf("Error creating consumer: %v", err)
+	}
+
+	subj := fmt.Sprintf(serverHealthzReqSubj, c.servers[0].ID())
+	pingSubj := fmt.Sprintf(serverHealthzReqSubj, "PING")
+
+	tests := []struct {
+		name          string
+		req           *HealthzEventOptions
+		expected      HealthStatus
+		expectedError string
+	}{
+		{
+			name:     "no parameters",
+			expected: HealthStatus{Status: "ok", StatusCode: 200},
+		},
+		{
+			name: "with js enabled only",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					JSEnabledOnly: true,
+				},
+			},
+			expected: HealthStatus{Status: "ok", StatusCode: 200},
+		},
+		{
+			name: "with server only",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					JSServerOnly: true,
+				},
+			},
+			expected: HealthStatus{Status: "ok", StatusCode: 200},
+		},
+		{
+			name: "with account name",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account: "ONE",
+				},
+			},
+			expected: HealthStatus{Status: "ok", StatusCode: 200},
+		},
+		{
+			name: "with account name and stream",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account: "ONE",
+					Stream:  "test",
+				},
+			},
+			expected: HealthStatus{Status: "ok", StatusCode: 200},
+		},
+		{
+			name: "with account name, stream and consumer",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account:  "ONE",
+					Stream:   "test",
+					Consumer: "cons",
+				},
+			},
+			expected: HealthStatus{Status: "ok", StatusCode: 200},
+		},
+		{
+			name: "with stream only",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Stream: "test",
+				},
+			},
+			expected: HealthStatus{
+				Status:     "error",
+				StatusCode: 400,
+				Error:      `"account" must not be empty when checking stream health`,
+			},
+			expectedError: "Bad request:",
+		},
+		{
+			name: "with stream only, detailed",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Details: true,
+					Stream:  "test",
+				},
+			},
+			expected: HealthStatus{
+				Status:     "error",
+				StatusCode: 400,
+				Errors: []HealthzError{
+					{
+						Type:  HealthzErrorBadRequest,
+						Error: `"account" must not be empty when checking stream health`,
+					},
+				},
+			},
+		},
+		{
+			name: "account not found",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account: "abc",
+				},
+			},
+			expected: HealthStatus{
+				Status:     "unavailable",
+				StatusCode: 404,
+				Error:      `JetStream account "abc" not found`,
+			},
+			expectedError: `account "abc" not found`,
+		},
+		{
+			name: "account not found, detailed",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account: "abc",
+					Details: true,
+				},
+			},
+			expected: HealthStatus{
+				Status:     "error",
+				StatusCode: 404,
+				Errors: []HealthzError{
+					{
+						Type:    HealthzErrorAccount,
+						Account: "abc",
+						Error:   `JetStream account "abc" not found`,
+					},
+				},
+			},
+		},
+		{
+			name: "stream not found",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account: "ONE",
+					Stream:  "abc",
+				},
+			},
+			expected: HealthStatus{
+				Status:     "unavailable",
+				StatusCode: 404,
+				Error:      `JetStream stream "abc" not found on account "ONE"`,
+			},
+			expectedError: `stream "abc" not found`,
+		},
+		{
+			name: "stream not found, detailed",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account: "ONE",
+					Stream:  "abc",
+					Details: true,
+				},
+			},
+			expected: HealthStatus{
+				Status:     "error",
+				StatusCode: 404,
+				Errors: []HealthzError{
+					{
+						Type:    HealthzErrorStream,
+						Account: "ONE",
+						Stream:  "abc",
+						Error:   `JetStream stream "abc" not found on account "ONE"`,
+					},
+				},
+			},
+		},
+		{
+			name: "consumer not found",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account:  "ONE",
+					Stream:   "test",
+					Consumer: "abc",
+				},
+			},
+			expected: HealthStatus{
+				Status:     "unavailable",
+				StatusCode: 404,
+				Error:      `JetStream consumer "abc" not found for stream "test" on account "ONE"`,
+			},
+			expectedError: `consumer "abc" not found for stream "test"`,
+		},
+		{
+			name: "consumer not found, detailed",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account:  "ONE",
+					Stream:   "test",
+					Consumer: "abc",
+					Details:  true,
+				},
+			},
+			expected: HealthStatus{
+				Status:     "error",
+				StatusCode: 404,
+				Errors: []HealthzError{
+					{
+						Type:     HealthzErrorConsumer,
+						Account:  "ONE",
+						Stream:   "test",
+						Consumer: "abc",
+						Error:    `JetStream consumer "abc" not found for stream "test" on account "ONE"`,
+					},
+				},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var body []byte
+			var err error
+			if test.req != nil {
+				body, err = json.Marshal(test.req)
+				if err != nil {
+					t.Fatalf("Error marshaling request body: %v", err)
+				}
+			}
+			msg, err := ncs.Request(subj, body, 1*time.Second)
+			if err != nil {
+				t.Fatalf("Error trying to request healthz: %v", err)
+			}
+			var health healthzResp
+			if err := json.Unmarshal(msg.Data, &health); err != nil {
+				t.Fatalf("Error unmarshalling the statz json: %v", err)
+			}
+			if !reflect.DeepEqual(health.Healthz, test.expected) {
+				t.Errorf("Invalid healthz status; want: %+v; got: %+v", test.expected, health.Healthz)
+			}
+
+			reply := ncs.NewRespInbox()
+			sub, err := ncs.SubscribeSync(reply)
+			if err != nil {
+				t.Fatalf("Error creating subscription: %v", err)
+			}
+			defer sub.Unsubscribe()
+
+			// now PING all servers
+			if err := ncs.PublishRequest(pingSubj, reply, body); err != nil {
+				t.Fatalf("Publish error: %v", err)
+			}
+			for i := 0; i < 3; i++ {
+				msg, err := sub.NextMsg(1 * time.Second)
+				if err != nil {
+					t.Fatalf("Error fetching healthz PING response: %v", err)
+				}
+				var health healthzResp
+				if err := json.Unmarshal(msg.Data, &health); err != nil {
+					t.Fatalf("Error unmarshalling the statz json: %v", err)
+				}
+				if !reflect.DeepEqual(health.Healthz, test.expected) {
+					t.Errorf("Invalid healthz status; want: %+v; got: %+v", test.expected, health.Healthz)
+				}
+			}
+			if _, err := sub.NextMsg(50 * time.Millisecond); !errors.Is(err, nats.ErrTimeout) {
+				t.Fatalf("Expected timeout error; got: %v", err)
+			}
+		})
+	}
+}
+
+func TestServerEventsHealthZClustered_NoReplicas(t *testing.T) {
+	type healthzResp struct {
+		Healthz HealthStatus `json:"data"`
+		Server  ServerInfo   `json:"server"`
+	}
+	serverHealthzReqSubj := "$SYS.REQ.SERVER.%s.HEALTHZ"
+	c := createJetStreamClusterWithTemplate(t, jsClusterAccountsTempl, "JSC", 3)
+	defer c.shutdown()
+
+	ncs, err := nats.Connect(c.randomServer().ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	if err != nil {
+		t.Fatalf("Error connecting to cluster: %v", err)
+	}
+
+	defer ncs.Close()
+	ncAcc, err := nats.Connect(c.randomServer().ClientURL())
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ncAcc.Close()
+	js, err := ncAcc.JetStream()
+	if err != nil {
+		t.Fatalf("Error creating JetStream context: %v", err)
+	}
+
+	pingSubj := fmt.Sprintf(serverHealthzReqSubj, "PING")
+
+	t.Run("non-replicated stream", func(t *testing.T) {
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     "test",
+			Subjects: []string{"foo"},
+		})
+		if err != nil {
+			t.Fatalf("Error creating stream: %v", err)
+		}
+		_, err = js.AddConsumer("test", &nats.ConsumerConfig{
+			Name: "cons",
+		})
+		if err != nil {
+			t.Fatalf("Error creating consumer: %v", err)
+		}
+		body, err := json.Marshal(HealthzEventOptions{
+			HealthzOptions: HealthzOptions{
+				Account: "ONE",
+				Stream:  "test",
+			},
+		})
+		if err != nil {
+			t.Fatalf("Error marshaling request body: %v", err)
+		}
+
+		reply := ncs.NewRespInbox()
+		sub, err := ncs.SubscribeSync(reply)
+		if err != nil {
+			t.Fatalf("Error creating subscription: %v", err)
+		}
+		defer sub.Unsubscribe()
+
+		// now PING all servers
+		if err := ncs.PublishRequest(pingSubj, reply, body); err != nil {
+			t.Fatalf("Publish error: %v", err)
+		}
+		var healthy int
+		for i := 0; i < 3; i++ {
+			msg, err := sub.NextMsg(1 * time.Second)
+			if err != nil {
+				t.Fatalf("Error fetching healthz PING response: %v", err)
+			}
+			var health healthzResp
+			if err := json.Unmarshal(msg.Data, &health); err != nil {
+				t.Fatalf("Error unmarshalling the statz json: %v", err)
+			}
+			if health.Healthz.Status == "ok" {
+				healthy++
+				continue
+			}
+			if !strings.Contains(health.Healthz.Error, `stream "test" not found`) {
+				t.Errorf("Expected error to contain: %q, got: %s", `stream "test" not found`, health.Healthz.Error)
+			}
+		}
+		if healthy != 1 {
+			t.Fatalf("Expected 1 healthy server; got: %d", healthy)
+		}
+		if _, err := sub.NextMsg(50 * time.Millisecond); !errors.Is(err, nats.ErrTimeout) {
+			t.Fatalf("Expected timeout error; got: %v", err)
+		}
+	})
+
+	t.Run("non-replicated consumer", func(t *testing.T) {
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     "test-repl",
+			Subjects: []string{"bar"},
+			Replicas: 3,
+		})
+		if err != nil {
+			t.Fatalf("Error creating stream: %v", err)
+		}
+		_, err = js.AddConsumer("test-repl", &nats.ConsumerConfig{
+			Name: "cons-single",
+		})
+		if err != nil {
+			t.Fatalf("Error creating consumer: %v", err)
+		}
+		body, err := json.Marshal(HealthzEventOptions{
+			HealthzOptions: HealthzOptions{
+				Account:  "ONE",
+				Stream:   "test-repl",
+				Consumer: "cons-single",
+			},
+		})
+		if err != nil {
+			t.Fatalf("Error marshaling request body: %v", err)
+		}
+
+		reply := ncs.NewRespInbox()
+		sub, err := ncs.SubscribeSync(reply)
+		if err != nil {
+			t.Fatalf("Error creating subscription: %v", err)
+		}
+		defer sub.Unsubscribe()
+
+		// now PING all servers
+		if err := ncs.PublishRequest(pingSubj, reply, body); err != nil {
+			t.Fatalf("Publish error: %v", err)
+		}
+		var healthy int
+		for i := 0; i < 3; i++ {
+			msg, err := sub.NextMsg(1 * time.Second)
+			if err != nil {
+				t.Fatalf("Error fetching healthz PING response: %v", err)
+			}
+			var health healthzResp
+			if err := json.Unmarshal(msg.Data, &health); err != nil {
+				t.Fatalf("Error unmarshalling the statz json: %v", err)
+			}
+			if health.Healthz.Status == "ok" {
+				healthy++
+				continue
+			}
+			if !strings.Contains(health.Healthz.Error, `consumer "cons-single" not found`) {
+				t.Errorf("Expected error to contain: %q, got: %s", `consumer "cons-single" not found`, health.Healthz.Error)
+			}
+		}
+		if healthy != 1 {
+			t.Fatalf("Expected 1 healthy server; got: %d", healthy)
+		}
+		if _, err := sub.NextMsg(50 * time.Millisecond); !errors.Is(err, nats.ErrTimeout) {
+			t.Fatalf("Expected timeout error; got: %v", err)
+		}
+	})
+
+}
+
+func TestServerEventsHealthZJetStreamNotEnabled(t *testing.T) {
+	type healthzResp struct {
+		Healthz HealthStatus `json:"data"`
+		Server  ServerInfo   `json:"server"`
+	}
+	cfg := `listen: 127.0.0.1:-1
+
+	accounts {
+		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+	}`
+
+	serverHealthzReqSubj := "$SYS.REQ.SERVER.%s.HEALTHZ"
+	s, _ := RunServerWithConfig(createConfFile(t, []byte(cfg)))
+	defer s.Shutdown()
+
+	ncs, err := nats.Connect(s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	if err != nil {
+		t.Fatalf("Error connecting to cluster: %v", err)
+	}
+
+	defer ncs.Close()
+
+	subj := fmt.Sprintf(serverHealthzReqSubj, s.ID())
+
+	msg, err := ncs.Request(subj, nil, 1*time.Second)
+	if err != nil {
+		t.Fatalf("Error trying to request healthz: %v", err)
+	}
+	var health healthzResp
+	if err := json.Unmarshal(msg.Data, &health); err != nil {
+		t.Fatalf("Error unmarshalling the statz json: %v", err)
+	}
+	if health.Healthz.Status != "ok" {
+		t.Errorf("Invalid healthz status; want: %q; got: %q", "ok", health.Healthz.Status)
+	}
+	if health.Healthz.Error != "" {
+		t.Errorf("HealthZ error: %s", health.Healthz.Error)
 	}
 }
 
