@@ -328,19 +328,14 @@ var nbPoolLarge = &sync.Pool{
 }
 
 func nbPoolGet(sz int) []byte {
-	var new []byte
 	switch {
 	case sz <= nbPoolSizeSmall:
-		ptr := nbPoolSmall.Get().(*[nbPoolSizeSmall]byte)
-		new = ptr[:0]
+		return nbPoolSmall.Get().(*[nbPoolSizeSmall]byte)[:0]
 	case sz <= nbPoolSizeMedium:
-		ptr := nbPoolMedium.Get().(*[nbPoolSizeMedium]byte)
-		new = ptr[:0]
+		return nbPoolMedium.Get().(*[nbPoolSizeMedium]byte)[:0]
 	default:
-		ptr := nbPoolLarge.Get().(*[nbPoolSizeLarge]byte)
-		new = ptr[:0]
+		return nbPoolLarge.Get().(*[nbPoolSizeLarge]byte)[:0]
 	}
-	return new
 }
 
 func nbPoolPut(b []byte) {
@@ -1447,7 +1442,8 @@ func (c *client) flushOutbound() bool {
 	// "nb" will be reset back to its starting position so it can be modified
 	// safely by queueOutbound calls.
 	c.out.wnb = append(c.out.wnb, collapsed...)
-	orig := append(net.Buffers{}, c.out.wnb...)
+	var _orig [1024][]byte
+	orig := append(_orig[:0], c.out.wnb...)
 	c.out.nb = c.out.nb[:0]
 
 	// Since WriteTo is lopping things off the beginning, we need to remember
@@ -2040,6 +2036,21 @@ func (c *client) queueOutbound(data []byte) {
 	// Take a copy of the slice ref so that we can chop bits off the beginning
 	// without affecting the original "data" slice.
 	toBuffer := data
+
+	// All of the queued []byte have a fixed capacity, so if there's a []byte
+	// at the tail of the buffer list that isn't full yet, we should top that
+	// up first. This helps to ensure we aren't pulling more []bytes from the
+	// pool than we need to.
+	if len(c.out.nb) > 0 {
+		last := &c.out.nb[len(c.out.nb)-1]
+		if free := cap(*last) - len(*last); free > 0 {
+			if l := len(toBuffer); l < free {
+				free = l
+			}
+			*last = append(*last, toBuffer[:free]...)
+			toBuffer = toBuffer[free:]
+		}
+	}
 
 	// Now we can push the rest of the data into new []bytes from the pool
 	// in fixed size chunks. This ensures we don't go over the capacity of any
