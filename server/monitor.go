@@ -3083,6 +3083,9 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 		// Whip through account folders and pull each stream name.
 		fis, _ := os.ReadDir(sdir)
 		for _, fi := range fis {
+			if fi.Name() == snapStagingDir {
+				continue
+			}
 			acc, err := s.LookupAccount(fi.Name())
 			if err != nil {
 				health.Status = na
