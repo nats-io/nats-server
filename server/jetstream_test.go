@@ -19991,7 +19991,7 @@ func TestJetStreamSnapshotRestoreStallAndHealthz(t *testing.T) {
 		t.Fatalf("Expected health to be ok, got %+v", hs)
 	}
 
-	// Simulate the stagingf directory for restores. This is normally cleaned up
+	// Simulate the staging directory for restores. This is normally cleaned up
 	// but since its at the root of the storage directory make sure healthz is not affected.
 	snapDir := filepath.Join(s.getJetStream().config.StoreDir, snapStagingDir)
 	require_NoError(t, os.MkdirAll(snapDir, defaultDirPerms))
