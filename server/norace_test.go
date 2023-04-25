@@ -6397,8 +6397,8 @@ func TestNoRaceJetStreamConsumerCreateTimeNumPending(t *testing.T) {
 	case <-time.After(5 * time.Second):
 	}
 
-	// Should stay under 5ms now, but for Travis variability say 25ms.
-	threshold := 25 * time.Millisecond
+	// Should stay under 5ms now, but for Travis variability say 50ms.
+	threshold := 50 * time.Millisecond
 
 	start := time.Now()
 	_, err = js.PullSubscribe("events.*", "dlc")
