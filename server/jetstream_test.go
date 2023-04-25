@@ -19968,3 +19968,37 @@ func TestJetStreamKVHistoryRegression(t *testing.T) {
 		})
 	}
 }
+
+func TestJetStreamSnapshotRestoreStallAndHealthz(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "ORDERS",
+		Subjects: []string{"orders.*"},
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 1000; i++ {
+		sendStreamMsg(t, nc, "orders.created", "new order")
+	}
+
+	hs := s.healthz(nil)
+	if hs.Status != "ok" || hs.Error != _EMPTY_ {
+		t.Fatalf("Expected health to be ok, got %+v", hs)
+	}
+
+	// Simulate the stagingf directory for restores. This is normally cleaned up
+	// but since its at the root of the storage directory make sure healthz is not affected.
+	snapDir := filepath.Join(s.getJetStream().config.StoreDir, snapStagingDir)
+	require_NoError(t, os.MkdirAll(snapDir, defaultDirPerms))
+
+	// Make sure healthz ok.
+	hs = s.healthz(nil)
+	if hs.Status != "ok" || hs.Error != _EMPTY_ {
+		t.Fatalf("Expected health to be ok, got %+v", hs)
+	}
+}
