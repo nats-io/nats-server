@@ -1342,7 +1342,7 @@ func (a *Account) sendBackendErrorTrackingLatency(si *serviceImport, reason rsiR
 	a.sendLatencyResult(si, sl)
 }
 
-// sendTrackingMessage will send out the appropriate tracking information for the
+// sendTrackingLatency will send out the appropriate tracking information for the
 // service request/response latency. This is called when the requestor's server has
 // received the response.
 // TODO(dlc) - holding locks for RTTs may be too much long term. Should revisit.
@@ -1602,7 +1602,7 @@ func (a *Account) NumPendingAllResponses() int {
 	return a.NumPendingResponses(_EMPTY_)
 }
 
-// NumResponsesPending returns the number of responses outstanding for service exports
+// NumPendingResponses returns the number of responses outstanding for service exports
 // on this account. An empty filter string returns all responses regardless of which export.
 // If you specify the filter we will only return ones that are for that export.
 // NOTE this is only for what this server is tracking.
