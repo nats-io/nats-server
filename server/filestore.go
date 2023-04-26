@@ -6536,6 +6536,10 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 	o.qch = make(chan struct{})
 	go o.flushLoop(o.fch, o.qch)
 
+	// Make sure to load in our state from disk if needed.
+	o.loadState()
+
+	// Assign to filestore.
 	fs.AddConsumer(o)
 
 	return o, nil
@@ -6841,18 +6845,16 @@ const seqsHdrSize = 6*binary.MaxVarintLen64 + hdrLen
 func (o *consumerFileStore) EncodedState() ([]byte, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-
-	if o.closed {
-		return nil, ErrStoreClosed
-	}
-	return encodeConsumerState(&o.state), nil
+	return o.encodeState()
 }
 
 func (o *consumerFileStore) encodeState() ([]byte, error) {
-	if o.closed {
-		return nil, ErrStoreClosed
+	// Grab reference to state, but make sure we load in if needed, so do not reference o.state directly.
+	state, err := o.stateWithCopyLocked(false)
+	if err != nil {
+		return nil, err
 	}
-	return encodeConsumerState(&o.state), nil
+	return encodeConsumerState(state), nil
 }
 
 func (o *consumerFileStore) UpdateConfig(cfg *ConsumerConfig) error {
@@ -7084,7 +7086,11 @@ func (o *consumerFileStore) BorrowState() (*ConsumerState, error) {
 func (o *consumerFileStore) stateWithCopy(doCopy bool) (*ConsumerState, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	return o.stateWithCopyLocked(doCopy)
+}
 
+// Lock should be held.
+func (o *consumerFileStore) stateWithCopyLocked(doCopy bool) (*ConsumerState, error) {
 	if o.closed {
 		return nil, ErrStoreClosed
 	}
@@ -7161,6 +7167,14 @@ func (o *consumerFileStore) stateWithCopy(doCopy bool) (*ConsumerState, error) {
 	}
 
 	return state, nil
+}
+
+// Lock should be held. Called at startup.
+func (o *consumerFileStore) loadState() {
+	if _, err := os.Stat(o.ifn); err == nil {
+		// This will load our state in from disk.
+		o.stateWithCopyLocked(false)
+	}
 }
 
 // Decode consumer state.
