@@ -2013,8 +2013,18 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 	startMigrationMonitoring := func() {
 		if mmt == nil {
-			mmt = time.NewTicker(500 * time.Millisecond)
+			mmt = time.NewTicker(10 * time.Millisecond)
 			mmtc = mmt.C
+		}
+	}
+
+	adjustMigrationMonitoring := func() {
+		const delay = 500 * time.Millisecond
+		if mmt == nil {
+			mmt = time.NewTicker(delay)
+			mmtc = mmt.C
+		} else {
+			mmt.Reset(delay)
 		}
 	}
 
@@ -2242,8 +2252,6 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 			// Check to see where we are..
 			rg := mset.raftGroup()
-			ci := js.clusterInfo(rg)
-			mset.checkClusterInfo(ci)
 
 			// Track the new peers and check the ones that are current.
 			mset.mu.RLock()
@@ -2255,7 +2263,14 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				continue
 			}
 
-			newPeers, oldPeers, newPeerSet, oldPeerSet := genPeerInfo(rg.Peers, len(rg.Peers)-replicas)
+			// Adjust to our normal time delay.
+			adjustMigrationMonitoring()
+
+			// Make sure we have correct cluster information on the other peers.
+			ci := js.clusterInfo(rg)
+			mset.checkClusterInfo(ci)
+
+			newPeers, _, newPeerSet, oldPeerSet := genPeerInfo(rg.Peers, len(rg.Peers)-replicas)
 
 			// If we are part of the new peerset and we have been passed the baton.
 			// We will handle scale down.
@@ -2281,23 +2296,18 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					continue
 				}
 
-				// We are good to go, can scale down here.
-				for _, p := range oldPeers {
-					n.ProposeRemovePeer(p)
-				}
-
 				csa := sa.copyGroup()
 				csa.Group.Peers = newPeers
 				csa.Group.Preferred = ourPeerId
 				csa.Group.Cluster = s.cachedClusterName()
 				cc.meta.ForwardProposal(encodeUpdateStreamAssignment(csa))
 				s.Noticef("Scaling down '%s > %s' to %+v", accName, sa.Config.Name, s.peerSetToNames(newPeers))
-
 			} else {
 				// We are the old leader here, from the original peer set.
 				// We are simply waiting on the new peerset to be caught up so we can transfer leadership.
 				var newLeaderPeer, newLeader string
 				neededCurrent, current := replicas/2+1, 0
+
 				for _, r := range ci.Replicas {
 					if r.Current && newPeerSet[r.Peer] {
 						current++
@@ -6877,7 +6887,7 @@ func encodeStreamMsg(subject, reply string, hdr, msg []byte, lseq uint64, ts int
 
 // Threshold for compression.
 // TODO(dlc) - Eventually make configurable.
-const compressThreshold = 4 * 1024
+const compressThreshold = 256
 
 // If allowed and contents over the threshold we will compress.
 func encodeStreamMsgAllowCompress(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, compressOK bool) []byte {

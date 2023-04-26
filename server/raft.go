@@ -855,7 +855,13 @@ func (n *raft) ResumeApply() {
 		}
 	}
 	n.hcommit = 0
-	n.resetElectionTimeout()
+
+	// If we had been selected to be the next leader campaign here now that we have resumed.
+	if n.lxfer {
+		n.xferCampaign()
+	} else {
+		n.resetElectionTimeout()
+	}
 }
 
 // Applied is to be called when the FSM has applied the committed entries.
@@ -3158,9 +3164,16 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			// Only process these if they are new, so no replays or catchups.
 			if isNew {
 				maybeLeader := string(e.Data)
-				if maybeLeader == n.id && !n.observer && !n.paused {
-					n.lxfer = true
-					n.xferCampaign()
+				// This is us. We need to check if we can become the leader.
+				if maybeLeader == n.id {
+					// If not an observer and not paused we are good to go.
+					if !n.observer && !n.paused {
+						n.lxfer = true
+						n.xferCampaign()
+					} else if n.paused && !n.pobserver {
+						// Here we can become a leader but need to wait for resume of the apply channel.
+						n.lxfer = true
+					}
 				}
 			}
 		case EntryAddPeer:
