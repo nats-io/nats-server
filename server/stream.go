@@ -86,8 +86,18 @@ type StreamConfig struct {
 	// all older messages using a special msg header.
 	AllowRollup bool `json:"allow_rollup_hdrs"`
 
+	// The following defaults will apply to consumers when created against
+	// this stream, unless overridden manually.
+	// TODO(nat): Can/should we name these better?
+	ConsumerLimits StreamConsumerLimits `json:"consumer_limits"`
+
 	// Metadata is additional metadata for the Stream.
 	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+type StreamConsumerLimits struct {
+	InactiveThreshold time.Duration `json:"inactive_threshold,omitempty"`
+	MaxAckPending     int           `json:"max_ack_pending,omitempty"`
 }
 
 // SubjectTransformConfig is for applying a subject transform (to matching messages) before doing anything else when a new message is received
@@ -1669,6 +1679,35 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 	cfg, err := mset.jsa.configUpdateCheck(&ocfg, config, s)
 	if err != nil {
 		return NewJSStreamInvalidConfigError(err, Unless(err))
+	}
+
+	// In the event that some of the stream-level limits have changed, yell appropriately
+	// if any of the consumers exceed that limit.
+	updateLimits := ocfg.ConsumerLimits.InactiveThreshold != cfg.ConsumerLimits.InactiveThreshold ||
+		ocfg.ConsumerLimits.MaxAckPending != cfg.ConsumerLimits.MaxAckPending
+	if updateLimits {
+		var errorConsumers []string
+		consumers := map[string]*ConsumerConfig{}
+		if mset.js.isClustered() {
+			for _, c := range mset.sa.consumers {
+				consumers[c.Name] = c.Config
+			}
+		} else {
+			for _, c := range mset.consumers {
+				consumers[c.name] = &c.cfg
+			}
+		}
+		for name, ccfg := range consumers {
+			if ccfg.InactiveThreshold > cfg.ConsumerLimits.InactiveThreshold ||
+				ccfg.MaxAckPending > cfg.ConsumerLimits.MaxAckPending {
+				errorConsumers = append(errorConsumers, name)
+			}
+		}
+		if len(errorConsumers) > 0 {
+			// TODO(nat): Return a parsable error so that we can surface something
+			// sensible through the JS API.
+			return fmt.Errorf("change to limits violates consumers: %s", strings.Join(errorConsumers, ", "))
+		}
 	}
 
 	jsa.mu.RLock()

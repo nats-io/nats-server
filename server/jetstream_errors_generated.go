@@ -113,6 +113,9 @@ const (
 	// JSConsumerHBRequiresPushErr consumer idle heartbeat requires a push based consumer
 	JSConsumerHBRequiresPushErr ErrorIdentifier = 10088
 
+	// JSConsumerInactiveThresholdExcess consumer inactive threshold exceeds system limit of {limit}
+	JSConsumerInactiveThresholdExcess ErrorIdentifier = 10153
+
 	// JSConsumerInvalidDeliverSubject invalid push consumer deliver subject
 	JSConsumerInvalidDeliverSubject ErrorIdentifier = 10112
 
@@ -497,6 +500,7 @@ var (
 		JSConsumerFCRequiresPushErr:                {Code: 400, ErrCode: 10089, Description: "consumer flow control requires a push based consumer"},
 		JSConsumerFilterNotSubsetErr:               {Code: 400, ErrCode: 10093, Description: "consumer filter subject is not a valid subset of the interest subjects"},
 		JSConsumerHBRequiresPushErr:                {Code: 400, ErrCode: 10088, Description: "consumer idle heartbeat requires a push based consumer"},
+		JSConsumerInactiveThresholdExcess:          {Code: 400, ErrCode: 10153, Description: "consumer inactive threshold exceeds system limit of {limit}"},
 		JSConsumerInvalidDeliverSubject:            {Code: 400, ErrCode: 10112, Description: "invalid push consumer deliver subject"},
 		JSConsumerInvalidPolicyErrF:                {Code: 400, ErrCode: 10094, Description: "{err}"},
 		JSConsumerInvalidSamplingErrF:              {Code: 400, ErrCode: 10095, Description: "failed to parse consumer sampling configuration: {err}"},
@@ -1013,6 +1017,22 @@ func NewJSConsumerHBRequiresPushError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSConsumerHBRequiresPushErr]
+}
+
+// NewJSConsumerInactiveThresholdExcessError creates a new JSConsumerInactiveThresholdExcess error: "consumer inactive threshold exceeds system limit of {limit}"
+func NewJSConsumerInactiveThresholdExcessError(limit interface{}, opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	e := ApiErrors[JSConsumerInactiveThresholdExcess]
+	args := e.toReplacerArgs([]interface{}{"{limit}", limit})
+	return &ApiError{
+		Code:        e.Code,
+		ErrCode:     e.ErrCode,
+		Description: strings.NewReplacer(args...).Replace(e.Description),
+	}
 }
 
 // NewJSConsumerInvalidDeliverSubjectError creates a new JSConsumerInvalidDeliverSubject error: "invalid push consumer deliver subject"
