@@ -3653,3 +3653,63 @@ func TestJetStreamClusterInterestStreamFilteredConsumersWithNoInterest(t *testin
 		return fmt.Errorf("stream still has msgs")
 	})
 }
+
+func TestJetStreamClusterChangeClusterAfterStreamCreate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "NATS", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"*"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 1000; i++ {
+		sendStreamMsg(t, nc, "foo", "HELLO")
+	}
+
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"*"},
+		Replicas: 1,
+	})
+	require_NoError(t, err)
+
+	c.stopAll()
+
+	c.name = "FOO"
+	for _, o := range c.opts {
+		buf, err := os.ReadFile(o.ConfigFile)
+		require_NoError(t, err)
+		nbuf := bytes.Replace(buf, []byte("name: NATS"), []byte("name: FOO"), 1)
+		err = os.WriteFile(o.ConfigFile, nbuf, 0640)
+		require_NoError(t, err)
+	}
+
+	c.restartAll()
+	c.waitOnLeader()
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"*"},
+		Replicas: 3,
+	})
+	// This should fail with no suitable peers, since the asset was created under the NATS cluster which has no peers.
+	require_Error(t, err, errors.New("nats: no suitable peers for placement"))
+
+	// Make sure we can swap the cluster.
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"*"},
+		Placement: &nats.Placement{Cluster: "FOO"},
+	})
+	require_NoError(t, err)
+}

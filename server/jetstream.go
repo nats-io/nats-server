@@ -468,7 +468,7 @@ func (s *Server) restartJetStream() error {
 	return nil
 }
 
-// checkStreamExports will check if we have the JS exports setup
+// checkJetStreamExports will check if we have the JS exports setup
 // on the system account, and if not go ahead and set them up.
 func (s *Server) checkJetStreamExports() {
 	if sacc := s.SystemAccount(); sacc != nil {
@@ -642,7 +642,7 @@ func (a *Account) enableAllJetStreamServiceImportsAndMappings() error {
 	return nil
 }
 
-// enableJetStreamEnabledServiceImportOnly will enable the single service import responder.
+// enableJetStreamInfoServiceImportOnly will enable the single service import responder.
 // Should we do them all regardless?
 func (a *Account) enableJetStreamInfoServiceImportOnly() error {
 	// Check if this import would be overshadowed. This can happen when accounts
