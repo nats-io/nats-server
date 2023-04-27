@@ -1728,7 +1728,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					js.processUpdateStreamAssignment(sa)
 				}
 			default:
-				panic("JetStream Cluster Unknown meta entry op type")
+				panic(fmt.Sprintf("JetStream Cluster Unknown meta entry op type: %v", entryOp(buf[0])))
 			}
 		}
 	}
@@ -2687,7 +2687,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					}
 				}
 			default:
-				panic("JetStream Cluster Unknown group entry op type!")
+				panic(fmt.Sprintf("JetStream Cluster Unknown group entry op type: %v", op))
 			}
 		} else if e.Type == EntrySnapshot {
 			if !isRecovering && mset != nil {
@@ -4517,7 +4517,7 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 				}
 				o.mu.Unlock()
 			default:
-				panic(fmt.Sprintf("JetStream Cluster Unknown group entry op type! %v", entryOp(buf[0])))
+				panic(fmt.Sprintf("JetStream Cluster Unknown group entry op type: %v", entryOp(buf[0])))
 			}
 		}
 	}
