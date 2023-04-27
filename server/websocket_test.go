@@ -2497,7 +2497,7 @@ func TestWSAdvertise(t *testing.T) {
 	defer s.Shutdown()
 	l := &captureFatalLogger{fatalCh: make(chan string, 1)}
 	s.SetLogger(l, false, false)
-	go s.Start()
+	s.Start()
 	select {
 	case e := <-l.fatalCh:
 		if !strings.Contains(e, "Unable to get websocket connect URLs") {

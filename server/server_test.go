@@ -86,7 +86,7 @@ func RunServer(opts *Options) *Server {
 	}
 
 	// Run server in Go routine.
-	go s.Start()
+	s.Start()
 
 	// Wait for accept loop(s) to be started
 	if err := s.readyForConnections(10 * time.Second); err != nil {
