@@ -47,6 +47,7 @@ func TestNoRaceRouteSendSubs(t *testing.T) {
 			cluster {
 				port: -1
 				pool_size: -1
+				compression: disabled
 				%s
 			}
 			no_sys_acc: true

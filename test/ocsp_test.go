@@ -1206,6 +1206,7 @@ func TestOCSPCluster(t *testing.T) {
 		cluster {
 			port: -1
 			pool_size: -1
+			compression: "disabled"
 			name: AB
 			host: "127.0.0.1"
 			advertise: 127.0.0.1

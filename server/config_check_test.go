@@ -1603,6 +1603,62 @@ func TestConfigCheck(t *testing.T) {
 			errorLine: 4,
 			errorPos:  6,
 		},
+		{
+			name: "wrong type for cluter compression",
+			config: `
+				cluster {
+					port: -1
+					compression: 123
+				}
+			`,
+			err:       fmt.Errorf("field %q should be a boolean or a structure, got int64", "compression"),
+			errorLine: 4,
+			errorPos:  6,
+		},
+		{
+			name: "wrong type for cluter compression mode",
+			config: `
+				cluster {
+					port: -1
+					compression: {
+						mode: 123
+					}
+				}
+			`,
+			err:       fmt.Errorf("interface conversion: interface {} is int64, not string"),
+			errorLine: 5,
+			errorPos:  7,
+		},
+		{
+			name: "wrong type for cluter compression rtt thresholds",
+			config: `
+				cluster {
+					port: -1
+					compression: {
+						mode: "s2_auto"
+						rtt_thresholds: 123
+					}
+				}
+			`,
+			err:       fmt.Errorf("interface conversion: interface {} is int64, not []interface {}"),
+			errorLine: 6,
+			errorPos:  7,
+		},
+		{
+			name: "invalid durations for cluter compression rtt thresholds",
+			config: `
+				cluster {
+					port: -1
+					compression: {
+						mode: "s2_auto"
+						rtt_thresholds: [abc]
+					}
+				}
+			`,
+			err:       fmt.Errorf("time: invalid duration %q", "abc"),
+			errorLine: 6,
+			errorPos:  7,
+		},
 	}
 
 	checkConfig := func(config string) error {

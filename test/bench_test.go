@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats.go"
 )
 
 const PERF_PORT = 8422
@@ -733,6 +734,105 @@ func Benchmark____Routed8QueueSub(b *testing.B) {
 
 func Benchmark___Routed16QueueSub(b *testing.B) {
 	routeQueue(b, 16, 2)
+}
+
+func doS2CompressBench(b *testing.B, compress string) {
+	b.StopTimer()
+	conf1 := createConfFile(b, []byte(fmt.Sprintf(`
+		port: -1
+		cluster {
+			name: "local"
+			port: -1
+			pool_size: -1
+			compression: %s
+		}
+	`, compress)))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	conf2 := createConfFile(b, []byte(fmt.Sprintf(`
+		port: -1
+		cluster {
+			name: "local"
+			port: -1
+			pool_size: -1
+			compression: %s
+			routes: ["nats://127.0.0.1:%d"]
+		}
+	`, compress, o1.Cluster.Port)))
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(b, s1, s2)
+
+	nc2, err := nats.Connect(s2.ClientURL())
+	if err != nil {
+		b.Fatalf("Error on connect: %v", err)
+	}
+	defer nc2.Close()
+
+	ch := make(chan struct{}, 1)
+	var count int
+	nc2.Subscribe("foo", func(_ *nats.Msg) {
+		if count++; count == b.N {
+			select {
+			case ch <- struct{}{}:
+			default:
+			}
+		}
+	})
+
+	checkSubInterest(b, s1, "$G", "foo", time.Second)
+
+	nc1, err := nats.Connect(s1.ClientURL())
+	if err != nil {
+		b.Fatalf("Error on connect: %v", err)
+	}
+	defer nc1.Close()
+
+	// This one is easily compressible.
+	payload1 := make([]byte, 128)
+	// Make it random so that compression code has more to do.
+	payload2 := make([]byte, 256)
+	for i := 0; i < len(payload); i++ {
+		payload2[i] = byte(rand.Intn(26) + 'A')
+	}
+	b.StartTimer()
+
+	for i := 0; i < b.N; i++ {
+		if i%2 == 0 {
+			nc1.Publish("foo", payload1)
+		} else {
+			nc1.Publish("foo", payload2)
+		}
+	}
+
+	select {
+	case <-ch:
+		return
+	case <-time.After(10 * time.Second):
+		b.Fatal("Timeout waiting to receive all messages")
+	}
+}
+
+func Benchmark____________RouteCompressOff(b *testing.B) {
+	doS2CompressBench(b, server.CompressionOff)
+}
+
+func Benchmark_RouteCompressS2Uncompressed(b *testing.B) {
+	doS2CompressBench(b, server.CompressionS2Uncompressed)
+}
+
+func Benchmark_________RouteCompressS2Fast(b *testing.B) {
+	doS2CompressBench(b, server.CompressionS2Fast)
+}
+
+func Benchmark_______RouteCompressS2Better(b *testing.B) {
+	doS2CompressBench(b, server.CompressionS2Better)
+}
+
+func Benchmark_________RouteCompressS2Best(b *testing.B) {
+	doS2CompressBench(b, server.CompressionS2Best)
 }
 
 func doFanout(b *testing.B, numServers, numConnections, subsPerConnection int, subject, payload string) {

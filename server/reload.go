@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nuid"
 )
@@ -361,6 +362,7 @@ type clusterOption struct {
 	accsAdded       []string
 	accsRemoved     []string
 	poolSizeChanged bool
+	compChanged     bool
 }
 
 // Apply the cluster change.
@@ -379,9 +381,37 @@ func (c *clusterOption) Apply(s *Server) {
 		s.routeInfo.WSConnectURLs = s.websocket.connectURLs
 	}
 	s.setRouteInfoHostPortAndIP()
+	var routes []*client
+	if c.compChanged {
+		newMode := s.getOpts().Cluster.Compression.Mode
+		s.forEachRoute(func(r *client) {
+			r.mu.Lock()
+			// Skip routes that are "not supported" (because they will never do
+			// compression) or the routes that have already the new compression
+			// mode.
+			if r.route.compression == CompressionNotSupported || r.route.compression == newMode {
+				r.mu.Unlock()
+				return
+			}
+			// We need to close the route if it had compression "off" or the new
+			// mode is compression "off", or if the new mode is "accept", because
+			// these require negotiation.
+			if r.route.compression == CompressionOff || newMode == CompressionOff || newMode == CompressionAccept {
+				routes = append(routes, r)
+			} else {
+				// Simply change the compression writer
+				r.out.cw = s2.NewWriter(nil, s2WriterOptions(newMode)...)
+				r.route.compression = newMode
+			}
+			r.mu.Unlock()
+		})
+	}
 	s.mu.Unlock()
 	if c.newValue.Name != "" && c.newValue.Name != s.ClusterName() {
 		s.setClusterName(c.newValue.Name)
+	}
+	for _, r := range routes {
+		r.closeConnection(ClientClosed)
 	}
 	s.Noticef("Reloaded: cluster")
 	if tlsRequired && c.newValue.TLSConfig.InsecureSkipVerify {
@@ -1111,6 +1141,7 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			co := &clusterOption{
 				newValue:     newClusterOpts,
 				permsChanged: !reflect.DeepEqual(newClusterOpts.Permissions, oldClusterOpts.Permissions),
+				compChanged:  !reflect.DeepEqual(oldClusterOpts.Compression, newClusterOpts.Compression),
 			}
 			co.diffPoolAndAccounts(&oldClusterOpts)
 			// If there are added accounts, first make sure that we can look them up.
@@ -2191,8 +2222,8 @@ func (s *Server) reloadClusterPoolAndAccounts(co *clusterOption, opts *Options) 
 	s.mu.Unlock()
 }
 
-// validateClusterOpts ensures the new ClusterOpts does not change host or
-// port, which do not support reload.
+// validateClusterOpts ensures the new ClusterOpts does not change some of the
+// fields that do not support reload.
 func validateClusterOpts(old, new ClusterOpts) error {
 	if old.Host != new.Host {
 		return fmt.Errorf("config reload not supported for cluster host: old=%s, new=%s",

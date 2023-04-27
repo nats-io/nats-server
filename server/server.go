@@ -41,6 +41,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
@@ -84,6 +85,7 @@ type Info struct {
 	ClientConnectURLs []string `json:"connect_urls,omitempty"`    // Contains URLs a client can connect to.
 	WSConnectURLs     []string `json:"ws_connect_urls,omitempty"` // Contains URLs a ws client can connect to.
 	LameDuckMode      bool     `json:"ldm,omitempty"`
+	Compression       string   `json:"compression,omitempty"`
 
 	// Route Specific
 	Import        *SubjectPermission `json:"import,omitempty"`
@@ -325,7 +327,221 @@ type stats struct {
 	outMsgs       int64
 	inBytes       int64
 	outBytes      int64
+	sentBytes     int64 // Total of what is sent out, include all protocols
 	slowConsumers int64
+}
+
+// This is used by tests so we can run all server tests with a default route
+// compression mode. For instance:
+// go test -race -v ./server -cluster_compression=fast
+var testDefaultClusterCompression string
+
+// Compression modes.
+const (
+	CompressionNotSupported   = "not supported"
+	CompressionOff            = "off"
+	CompressionAccept         = "accept"
+	CompressionS2Auto         = "s2_auto"
+	CompressionS2Uncompressed = "s2_uncompressed"
+	CompressionS2Fast         = "s2_fast"
+	CompressionS2Better       = "s2_better"
+	CompressionS2Best         = "s2_best"
+)
+
+// defaultCompressionS2AutoRTTThresholds is the default of RTT thresholds for
+// the CompressionS2Auto mode.
+var defaultCompressionS2AutoRTTThresholds = []time.Duration{
+	// [0..10ms] -> CompressionS2Uncompressed
+	10 * time.Millisecond,
+	// ]10ms..50ms] -> CompressionS2Fast
+	50 * time.Millisecond,
+	// ]50ms..100ms] -> CompressionS2Better
+	100 * time.Millisecond,
+	// ]100ms..] -> CompressionS2Best
+}
+
+// For a given user provided string, matches to one of the compression mode
+// constant and updates the provided string to that constant. Returns an
+// error if the provided compression mode is not known.
+func validateAndNormalizeCompressionOption(c *CompressionOpts) error {
+	if c == nil {
+		return nil
+	}
+	cmtl := strings.ToLower(c.Mode)
+	switch cmtl {
+	case "not supported", "not_supported":
+		c.Mode = CompressionNotSupported
+	case "disabled", "off", "false":
+		c.Mode = CompressionOff
+	case "accept":
+		c.Mode = CompressionAccept
+	case "on", "enabled", "true", "auto", "s2_auto":
+		var rtts []time.Duration
+		if len(c.RTTThresholds) == 0 {
+			rtts = defaultCompressionS2AutoRTTThresholds
+		} else {
+			for _, n := range c.RTTThresholds {
+				// Do not error on negative, but simply set to 0
+				if n < 0 {
+					n = 0
+				}
+				// Make sure they are properly ordered. However, it is possible
+				// to have a "0" anywhere in the list to indicate that this
+				// compression level should not be used.
+				if l := len(rtts); l > 0 && n != 0 {
+					for _, v := range rtts {
+						if n < v {
+							return fmt.Errorf("RTT threshold values %v should be in ascending order", c.RTTThresholds)
+						}
+					}
+				}
+				rtts = append(rtts, n)
+			}
+			if len(rtts) > 0 {
+				// Trim 0 that are at the end.
+				stop := -1
+				for i := len(rtts) - 1; i >= 0; i-- {
+					if rtts[i] != 0 {
+						stop = i
+						break
+					}
+				}
+				rtts = rtts[:stop+1]
+			}
+			if len(rtts) > 4 {
+				// There should be at most values for "uncompressed", "fast",
+				// "better" and "best" (when some 0 are present).
+				return fmt.Errorf("The compression mode %q should have no more than 4 RTT thresholds: %v", c.Mode, c.RTTThresholds)
+			} else if len(rtts) == 0 {
+				// But there should be at least 1 if the user provided the slice.
+				// We would be here only if it was provided by say with values
+				// being a single or all zeros.
+				return fmt.Errorf("The compression mode %q requires at least one RTT threshold", c.Mode)
+			}
+		}
+		c.Mode = CompressionS2Auto
+		c.RTTThresholds = rtts
+	case "fast", "s2_fast":
+		c.Mode = CompressionS2Fast
+	case "better", "s2_better":
+		c.Mode = CompressionS2Better
+	case "best", "s2_best":
+		c.Mode = CompressionS2Best
+	default:
+		return fmt.Errorf("Unsupported compression mode %q", c.Mode)
+	}
+	return nil
+}
+
+// Returns `true` if the compression mode `m` indicates that the server
+// will negotiate compression with the remote server, `false` otherwise.
+// Note that the provided compression mode is assumed to have been
+// normalized and validated.
+func needsCompression(m string) bool {
+	return m != _EMPTY_ && m != CompressionOff && m != CompressionNotSupported
+}
+
+// Compression is asymmetric, meaning that one side can have a different
+// compression level than the other. However, we need to check for cases
+// when this server `scm` or the remote `rcm` do not support compression
+// (say older server, or test to make it behave as it is not), or have
+// the compression off.
+// Note that `scm` is assumed to not be "off" or "not supported".
+func selectCompressionMode(scm, rcm string) (mode string, err error) {
+	if rcm == CompressionNotSupported || rcm == _EMPTY_ {
+		return CompressionNotSupported, nil
+	}
+	switch rcm {
+	case CompressionOff:
+		// If the remote explicitly disables compression, then we won't
+		// use compression.
+		return CompressionOff, nil
+	case CompressionAccept:
+		// If the remote is ok with compression (but is not initiating it),
+		// and if we too are in this mode, then it means no compression.
+		if scm == CompressionAccept {
+			return CompressionOff, nil
+		}
+		// Otherwise use our compression mode.
+		return scm, nil
+	case CompressionS2Auto, CompressionS2Uncompressed, CompressionS2Fast, CompressionS2Better, CompressionS2Best:
+		// This case is here to make sure that if we don't recognize a
+		// compression setting, we error out.
+		if scm == CompressionAccept {
+			// If our compression mode is "accept", then we will use the remote
+			// compression mode, except if it is "auto", in which case we will
+			// default to "fast". This is not a configuration (auto in one
+			// side and accept in the other) that would be recommended.
+			if rcm == CompressionS2Auto {
+				return CompressionS2Fast, nil
+			}
+			// Use their compression mode.
+			return rcm, nil
+		}
+		// Otherwise use our compression mode.
+		return scm, nil
+	default:
+		return _EMPTY_, fmt.Errorf("Unsupported route compression mode %q", rcm)
+	}
+}
+
+// Given a connection RTT and a list of thresholds durations, this
+// function will return an S2 compression level such as "uncompressed",
+// "fast", "better" or "best". For instance, with the following slice:
+// [5ms, 10ms, 15ms, 20ms], a RTT of up to 5ms will result
+// in the compression level "uncompressed", ]5ms..10ms] will result in
+// "fast" compression, etc..
+// However, the 0 value allows for disabling of some compression levels.
+// For instance, the following slice: [0, 0, 20, 30] means that a RTT of
+// [0..20ms] would result in the "better" compression - effectively disabling
+// the use of "uncompressed" and "fast", then anything above 20ms would
+// result in the use of "best" level (the 30 in the list has no effect
+// and the list could have been simplified to [0, 0, 20]).
+func selectS2AutoModeBasedOnRTT(rtt time.Duration, rttThresholds []time.Duration) string {
+	var idx int
+	var found bool
+	for i, d := range rttThresholds {
+		if rtt <= d {
+			idx = i
+			found = true
+			break
+		}
+	}
+	if !found {
+		// If we did not find but we have all levels, then use "best",
+		// otherwise use the last one in array.
+		if l := len(rttThresholds); l >= 3 {
+			idx = 3
+		} else {
+			idx = l - 1
+		}
+	}
+	switch idx {
+	case 0:
+		return CompressionS2Uncompressed
+	case 1:
+		return CompressionS2Fast
+	case 2:
+		return CompressionS2Better
+	}
+	return CompressionS2Best
+}
+
+// Returns an array of s2 WriterOption based on the route compression mode.
+// So far we return a single option, but this way we can call s2.NewWriter()
+// with a nil []s2.WriterOption, but not with a nil s2.WriterOption, so
+// this is more versatile.
+func s2WriterOptions(cm string) []s2.WriterOption {
+	switch cm {
+	case CompressionS2Uncompressed:
+		return []s2.WriterOption{s2.WriterUncompressed()}
+	case CompressionS2Best:
+		return []s2.WriterOption{s2.WriterBestCompression()}
+	case CompressionS2Better:
+		return []s2.WriterOption{s2.WriterBetterCompression()}
+	default:
+		return nil
+	}
 }
 
 // New will setup a new server struct after parsing the options.
@@ -690,6 +906,11 @@ func (s *Server) ClientURL() string {
 }
 
 func validateCluster(o *Options) error {
+	if o.Cluster.Compression.Mode != _EMPTY_ {
+		if err := validateAndNormalizeCompressionOption(&o.Cluster.Compression); err != nil {
+			return err
+		}
+	}
 	if err := validatePinnedCerts(o.Cluster.TLSPinnedCerts); err != nil {
 		return fmt.Errorf("cluster: %v", err)
 	}

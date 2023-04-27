@@ -686,11 +686,13 @@ func routeStat(r *client) *RouteStat {
 		return nil
 	}
 	r.mu.Lock()
+	// Note: *client.out[Msgs|Bytes] are not set using atomics,
+	// unlike in[Msgs|Bytes].
 	rs := &RouteStat{
 		ID: r.cid,
 		Sent: DataStats{
-			Msgs:  atomic.LoadInt64(&r.outMsgs),
-			Bytes: atomic.LoadInt64(&r.outBytes),
+			Msgs:  r.outMsgs,
+			Bytes: r.outBytes,
 		},
 		Received: DataStats{
 			Msgs:  atomic.LoadInt64(&r.inMsgs),
@@ -732,9 +734,11 @@ func (s *Server) sendStatsz(subj string) {
 			gs := &GatewayStat{Name: name}
 			c.mu.Lock()
 			gs.ID = c.cid
+			// Note that *client.out[Msgs|Bytes] are not set using atomic,
+			// unlike the in[Msgs|bytes].
 			gs.Sent = DataStats{
-				Msgs:  atomic.LoadInt64(&c.outMsgs),
-				Bytes: atomic.LoadInt64(&c.outBytes),
+				Msgs:  c.outMsgs,
+				Bytes: c.outBytes,
 			}
 			c.mu.Unlock()
 			// Gather matching inbound connections
