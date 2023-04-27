@@ -406,6 +406,8 @@ func TestClusterDoubleMsgs(t *testing.T) {
 	sendB("PING\r\n")
 	expectB(pongRe)
 
+	time.Sleep(10 * time.Millisecond)
+
 	matches = expectMsgsA2(2)
 	checkMsg(t, matches[0], "foo", "", "", "2", "ok")
 	checkForPubSids(t, matches, pSids)
