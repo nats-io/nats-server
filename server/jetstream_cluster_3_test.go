@@ -3713,3 +3713,53 @@ func TestJetStreamClusterChangeClusterAfterStreamCreate(t *testing.T) {
 	})
 	require_NoError(t, err)
 }
+
+// The consumer info() call does not take into account whether a consumer
+// is a leader or not, so results would be very different when asking servers
+// that housed consumer followers vs leaders.
+func TestJetStreamClusterConsumerInfoForJszForFollowers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "NATS", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"*"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 1000; i++ {
+		sendStreamMsg(t, nc, "foo", "HELLO")
+	}
+
+	sub, err := js.PullSubscribe("foo", "d")
+	require_NoError(t, err)
+
+	fetch, ack := 122, 22
+	msgs, err := sub.Fetch(fetch, nats.MaxWait(10*time.Second))
+	require_NoError(t, err)
+	require_True(t, len(msgs) == fetch)
+	for _, m := range msgs[:ack] {
+		m.AckSync()
+	}
+	// Let acks propagate.
+	time.Sleep(100 * time.Millisecond)
+
+	for _, s := range c.servers {
+		jsz, err := s.Jsz(&JSzOptions{Accounts: true, Consumer: true})
+		require_NoError(t, err)
+		require_True(t, len(jsz.AccountDetails) == 1)
+		require_True(t, len(jsz.AccountDetails[0].Streams) == 1)
+		require_True(t, len(jsz.AccountDetails[0].Streams[0].Consumer) == 1)
+		consumer := jsz.AccountDetails[0].Streams[0].Consumer[0]
+		if consumer.Delivered.Consumer != uint64(fetch) || consumer.Delivered.Stream != uint64(fetch) {
+			t.Fatalf("Incorrect delivered for %v: %+v", s, consumer.Delivered)
+		}
+		if consumer.AckFloor.Consumer != uint64(ack) || consumer.AckFloor.Stream != uint64(ack) {
+			t.Fatalf("Incorrect ackfloor for %v: %+v", s, consumer.AckFloor)
+		}
+	}
+}
