@@ -1558,6 +1558,7 @@ var benchSublistSl = NewSublistWithCache()
 
 // https://github.com/golang/go/issues/31859
 func TestMain(m *testing.M) {
+	flag.StringVar(&testDefaultClusterCompression, "cluster_compression", _EMPTY_, "Test with this compression level as the default")
 	flag.Parse()
 	initSublist := false
 	flag.Visit(func(f *flag.Flag) {

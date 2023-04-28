@@ -781,6 +781,7 @@ type RouteInfo struct {
 	Subs         []string           `json:"subscriptions_list,omitempty"`
 	SubsDetail   []SubDetail        `json:"subscriptions_list_detail,omitempty"`
 	Account      string             `json:"account,omitempty"`
+	Compression  string             `json:"compression,omitempty"`
 }
 
 // Routez returns a Routez struct containing information about routes.
@@ -826,6 +827,7 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 			Uptime:       myUptime(rs.Now.Sub(r.start)),
 			Idle:         myUptime(rs.Now.Sub(r.last)),
 			Account:      string(r.route.accName),
+			Compression:  r.route.compression,
 		}
 
 		if len(r.subs) > 0 {

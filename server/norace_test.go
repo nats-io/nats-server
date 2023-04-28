@@ -1691,6 +1691,7 @@ func TestNoRaceJetStreamSuperClusterMixedModeMirrors(t *testing.T) {
 		if _, err := js.AddStream(&nats.StreamConfig{Name: name}); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
+		c.waitOnStreamLeader(globalAccountName, name)
 		// Load them up with a bunch of messages.
 		for n := 0; n < toSend; n++ {
 			m := nats.NewMsg(name)
@@ -1921,6 +1922,10 @@ func TestNoRaceJetStreamClusterSourcesMuxd(t *testing.T) {
 		if _, err := js.AddStream(&nats.StreamConfig{Name: name}); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
+		// Make sure we have a leader before publishing, especially since we use
+		// non JS publisher, we would not know if the messages made it to those
+		// streams or not.
+		c.waitOnStreamLeader(globalAccountName, name)
 		// Load them up with a bunch of messages.
 		for n := 0; n < toSend; n++ {
 			if err := nc.Publish(name, msg); err != nil {
@@ -1996,6 +2001,7 @@ func TestNoRaceJetStreamSuperClusterMixedModeSources(t *testing.T) {
 		if _, err := js.AddStream(&nats.StreamConfig{Name: name}); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
+		c.waitOnStreamLeader(globalAccountName, name)
 		// Load them up with a bunch of messages.
 		for n := 0; n < toSend; n++ {
 			m := nats.NewMsg(name)

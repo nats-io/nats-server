@@ -78,11 +78,27 @@ type ClusterOpts struct {
 	ConnectRetries    int               `json:"-"`
 	PoolSize          int               `json:"-"`
 	PinnedAccounts    []string          `json:"-"`
+	Compression       CompressionOpts   `json:"-"`
 
 	// Not exported (used in tests)
 	resolver netResolver
 	// Snapshot of configured TLS options.
 	tlsConfigOpts *TLSConfigOpts
+}
+
+// CompressionOpts defines the compression mode and optional configuration.
+type CompressionOpts struct {
+	Mode string
+	// If `Mode` is set to CompressionS2Auto, RTTThresholds provides the
+	// thresholds at which the compression level will go from
+	// CompressionS2Uncompressed to CompressionS2Fast, CompressionS2Better
+	// or CompressionS2Best. If a given level is not desired, specify 0
+	// for this slot. For instance, the slice []{0, 10ms, 20ms} means that
+	// for any RTT up to 10ms included the compression level will be
+	// CompressionS2Fast, then from ]10ms..20ms], the level will be selected
+	// as CompressionS2Better. Anything above 20ms will result in picking
+	// the CompressionS2Best compression level.
+	RTTThresholds []time.Duration
 }
 
 // GatewayOpts are options for gateways.
@@ -1622,6 +1638,11 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 			opts.Cluster.PoolSize = int(mv.(int64))
 		case "accounts":
 			opts.Cluster.PinnedAccounts, _ = parseStringArray("accounts", tk, &lt, mv, errors, warnings)
+		case "compression":
+			if err := parseCompression(&opts.Cluster.Compression, tk, mk, mv); err != nil {
+				*errors = append(*errors, err)
+				continue
+			}
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
@@ -1634,6 +1655,47 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 				continue
 			}
 		}
+	}
+	return nil
+}
+
+func parseCompression(c *CompressionOpts, tk token, mk string, mv interface{}) (retErr error) {
+	var lt token
+	defer convertPanicToError(&lt, &retErr)
+
+	switch mv := mv.(type) {
+	case string:
+		// Do not validate here, it will be done in NewServer.
+		c.Mode = mv
+	case bool:
+		if mv {
+			c.Mode = CompressionS2Fast
+		} else {
+			c.Mode = CompressionOff
+		}
+	case map[string]interface{}:
+		for mk, mv := range mv {
+			tk, mv = unwrapValue(mv, &lt)
+			switch strings.ToLower(mk) {
+			case "mode":
+				c.Mode = mv.(string)
+			case "rtt_thresholds", "thresholds", "rtts", "rtt":
+				for _, iv := range mv.([]interface{}) {
+					_, mv := unwrapValue(iv, &lt)
+					dur, err := time.ParseDuration(mv.(string))
+					if err != nil {
+						return &configErr{tk, err.Error()}
+					}
+					c.RTTThresholds = append(c.RTTThresholds, dur)
+				}
+			default:
+				if !tk.IsUsedVariable() {
+					return &configErr{tk, fmt.Sprintf("unknown field %q", mk)}
+				}
+			}
+		}
+	default:
+		return &configErr{tk, fmt.Sprintf("field %q should be a boolean or a structure, got %T", mk, mv)}
 	}
 	return nil
 }
@@ -4722,6 +4784,16 @@ func setBaselineOptions(opts *Options) {
 				if !found {
 					opts.Cluster.PinnedAccounts = append(opts.Cluster.PinnedAccounts, sysAccName)
 				}
+			}
+		}
+		// Default to compression "accept", which means that compression is not
+		// initiated, but if the remote selects compression, this server will
+		// use the same.
+		if c := &opts.Cluster.Compression; c.Mode == _EMPTY_ {
+			if testDefaultClusterCompression != _EMPTY_ {
+				c.Mode = testDefaultClusterCompression
+			} else {
+				c.Mode = CompressionAccept
 			}
 		}
 	}

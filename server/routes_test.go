@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -3135,4 +3136,597 @@ func TestRoutePoolWithOlderServerConnectAndReconnect(t *testing.T) {
 	checkClusterFormed(t, s1, s2)
 	// And again, make sure there is no repeat-connect
 	checkRepeatConnect()
+}
+
+func TestRouteCompressionOptions(t *testing.T) {
+	org := testDefaultClusterCompression
+	testDefaultClusterCompression = _EMPTY_
+	defer func() { testDefaultClusterCompression = org }()
+
+	tmpl := `
+		port: -1
+		cluster {
+			port: -1
+			compression: %s
+		}
+	`
+	for _, test := range []struct {
+		name     string
+		mode     string
+		rttVals  []int
+		expected string
+		rtts     []time.Duration
+	}{
+		{"boolean enabled", "true", nil, CompressionS2Fast, nil},
+		{"string enabled", "enabled", nil, CompressionS2Fast, nil},
+		{"string EnaBled", "EnaBled", nil, CompressionS2Fast, nil},
+		{"string on", "on", nil, CompressionS2Fast, nil},
+		{"string ON", "ON", nil, CompressionS2Fast, nil},
+		{"string fast", "fast", nil, CompressionS2Fast, nil},
+		{"string Fast", "Fast", nil, CompressionS2Fast, nil},
+		{"string s2_fast", "s2_fast", nil, CompressionS2Fast, nil},
+		{"string s2_Fast", "s2_Fast", nil, CompressionS2Fast, nil},
+		{"boolean disabled", "false", nil, CompressionOff, nil},
+		{"string disabled", "disabled", nil, CompressionOff, nil},
+		{"string DisableD", "DisableD", nil, CompressionOff, nil},
+		{"string off", "off", nil, CompressionOff, nil},
+		{"string OFF", "OFF", nil, CompressionOff, nil},
+		{"better", "better", nil, CompressionS2Better, nil},
+		{"Better", "Better", nil, CompressionS2Better, nil},
+		{"s2_better", "s2_better", nil, CompressionS2Better, nil},
+		{"S2_BETTER", "S2_BETTER", nil, CompressionS2Better, nil},
+		{"best", "best", nil, CompressionS2Best, nil},
+		{"BEST", "BEST", nil, CompressionS2Best, nil},
+		{"s2_best", "s2_best", nil, CompressionS2Best, nil},
+		{"S2_BEST", "S2_BEST", nil, CompressionS2Best, nil},
+		{"auto no rtts", "auto", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
+		{"s2_auto no rtts", "s2_auto", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
+		{"auto", "{mode: auto, rtt_thresholds: [%s]}", []int{1}, CompressionS2Auto, []time.Duration{time.Millisecond}},
+		{"Auto", "{Mode: Auto, thresholds: [%s]}", []int{1, 2}, CompressionS2Auto, []time.Duration{time.Millisecond, 2 * time.Millisecond}},
+		{"s2_auto", "{mode: s2_auto, thresholds: [%s]}", []int{1, 2, 3}, CompressionS2Auto, []time.Duration{time.Millisecond, 2 * time.Millisecond, 3 * time.Millisecond}},
+		{"s2_AUTO", "{mode: s2_AUTO, thresholds: [%s]}", []int{1, 2, 3, 4}, CompressionS2Auto, []time.Duration{time.Millisecond, 2 * time.Millisecond, 3 * time.Millisecond, 4 * time.Millisecond}},
+		{"s2_auto:-10,5,10", "{mode: s2_auto, thresholds: [%s]}", []int{-10, 5, 10}, CompressionS2Auto, []time.Duration{0, 5 * time.Millisecond, 10 * time.Millisecond}},
+		{"s2_auto:5,10,15", "{mode: s2_auto, thresholds: [%s]}", []int{5, 10, 15}, CompressionS2Auto, []time.Duration{5 * time.Millisecond, 10 * time.Millisecond, 15 * time.Millisecond}},
+		{"s2_auto:0,5,10", "{mode: s2_auto, thresholds: [%s]}", []int{0, 5, 10}, CompressionS2Auto, []time.Duration{0, 5 * time.Millisecond, 10 * time.Millisecond}},
+		{"s2_auto:5,10,0,20", "{mode: s2_auto, thresholds: [%s]}", []int{5, 10, 0, 20}, CompressionS2Auto, []time.Duration{5 * time.Millisecond, 10 * time.Millisecond, 0, 20 * time.Millisecond}},
+		{"s2_auto:0,10,0,20", "{mode: s2_auto, thresholds: [%s]}", []int{0, 10, 0, 20}, CompressionS2Auto, []time.Duration{0, 10 * time.Millisecond, 0, 20 * time.Millisecond}},
+		{"s2_auto:0,0,0,20", "{mode: s2_auto, thresholds: [%s]}", []int{0, 0, 0, 20}, CompressionS2Auto, []time.Duration{0, 0, 0, 20 * time.Millisecond}},
+		{"s2_auto:0,10,0,0", "{mode: s2_auto, rtt_thresholds: [%s]}", []int{0, 10, 0, 0}, CompressionS2Auto, []time.Duration{0, 10 * time.Millisecond}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var val string
+			if len(test.rttVals) > 0 {
+				var rtts string
+				for i, v := range test.rttVals {
+					if i > 0 {
+						rtts += ", "
+					}
+					rtts += fmt.Sprintf("%dms", v)
+				}
+				val = fmt.Sprintf(test.mode, rtts)
+			} else {
+				val = test.mode
+			}
+			conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, val)))
+			s, o := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			if o.Cluster.Compression.Mode != test.expected {
+				t.Fatalf("Expected compression value to be %q, got %q", test.expected, o.Cluster.Compression)
+			}
+			if !reflect.DeepEqual(test.rtts, o.Cluster.Compression.RTTThresholds) {
+				t.Fatalf("Expected RTT tresholds to be %+v, got %+v", test.rtts, o.Cluster.Compression.RTTThresholds)
+			}
+			s.Shutdown()
+
+			o.Cluster.Port = -1
+			o.Cluster.Compression.Mode = test.mode
+			if len(test.rttVals) > 0 {
+				o.Cluster.Compression.Mode = CompressionS2Auto
+				o.Cluster.Compression.RTTThresholds = o.Cluster.Compression.RTTThresholds[:0]
+				for _, v := range test.rttVals {
+					o.Cluster.Compression.RTTThresholds = append(o.Cluster.Compression.RTTThresholds, time.Duration(v)*time.Millisecond)
+				}
+			}
+			s = RunServer(o)
+			defer s.Shutdown()
+			if o.Cluster.Compression.Mode != test.expected {
+				t.Fatalf("Expected compression value to be %q, got %q", test.expected, o.Cluster.Compression)
+			}
+			if !reflect.DeepEqual(test.rtts, o.Cluster.Compression.RTTThresholds) {
+				t.Fatalf("Expected RTT tresholds to be %+v, got %+v", test.rtts, o.Cluster.Compression.RTTThresholds)
+			}
+		})
+	}
+	// Test that with no compression specified, we default to "accept"
+	conf := createConfFile(t, []byte(`
+		port: -1
+		cluster {
+			port: -1
+		}
+	`))
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+	if o.Cluster.Compression.Mode != CompressionAccept {
+		t.Fatalf("Expected compression value to be %q, got %q", CompressionAccept, o.Cluster.Compression.Mode)
+	}
+	for _, test := range []struct {
+		name string
+		mode string
+		rtts []time.Duration
+		err  string
+	}{
+		{"unsupported mode", "gzip", nil, "Unsupported"},
+		{"not ascending order", "s2_auto", []time.Duration{
+			5 * time.Millisecond,
+			10 * time.Millisecond,
+			2 * time.Millisecond,
+		}, "ascending"},
+		{"too many thresholds", "s2_auto", []time.Duration{
+			5 * time.Millisecond,
+			10 * time.Millisecond,
+			20 * time.Millisecond,
+			40 * time.Millisecond,
+			60 * time.Millisecond,
+		}, "more than 4"},
+		{"all 0", "s2_auto", []time.Duration{0, 0, 0, 0}, "at least one"},
+		{"single 0", "s2_auto", []time.Duration{0}, "at least one"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			o := DefaultOptions()
+			o.Cluster.Port = -1
+			o.Cluster.Compression = CompressionOpts{test.mode, test.rtts}
+			if _, err := NewServer(o); err == nil || !strings.Contains(err.Error(), test.err) {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+type testConnSentBytes struct {
+	net.Conn
+	sync.RWMutex
+	sent int
+}
+
+func (c *testConnSentBytes) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	c.Lock()
+	c.sent += n
+	c.Unlock()
+	return n, err
+}
+
+func TestRouteCompression(t *testing.T) {
+	tmpl := `
+		port: -1
+		server_name: "%s"
+		accounts {
+			A { users: [{user: "a", pass: "pwd"}] }
+		}
+		cluster {
+			name: "local"
+			port: -1
+			compression: true
+			pool_size: %d
+			%s
+			%s
+		}
+	`
+	for _, test := range []struct {
+		name     string
+		poolSize int
+		accounts string
+	}{
+		{"no pooling", -1, _EMPTY_},
+		{"pooling", 3, _EMPTY_},
+		{"per account", 1, "accounts: [\"A\"]"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conf1 := createConfFile(t, []byte(fmt.Sprintf(tmpl, "S1", test.poolSize, test.accounts, _EMPTY_)))
+			s1, o1 := RunServerWithConfig(conf1)
+			defer s1.Shutdown()
+
+			conf2 := createConfFile(t, []byte(fmt.Sprintf(tmpl, "S2", test.poolSize, test.accounts,
+				fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", o1.Cluster.Port))))
+			s2, _ := RunServerWithConfig(conf2)
+			defer s2.Shutdown()
+
+			checkClusterFormed(t, s1, s2)
+
+			s1.mu.RLock()
+			s1.forEachRoute(func(r *client) {
+				r.mu.Lock()
+				r.nc = &testConnSentBytes{Conn: r.nc}
+				r.mu.Unlock()
+			})
+			s1.mu.RUnlock()
+
+			nc2 := natsConnect(t, s2.ClientURL(), nats.UserInfo("a", "pwd"))
+			defer nc2.Close()
+			sub := natsSubSync(t, nc2, "foo")
+			natsFlush(t, nc2)
+			checkSubInterest(t, s1, "A", "foo", time.Second)
+
+			nc1 := natsConnect(t, s1.ClientURL(), nats.UserInfo("a", "pwd"))
+			defer nc1.Close()
+
+			var payloads [][]byte
+			count := 26
+			for i := 0; i < count; i++ {
+				n := rand.Intn(2048) + 1
+				p := make([]byte, n)
+				for j := 0; j < n; j++ {
+					p[j] = byte(i) + 'A'
+				}
+				payloads = append(payloads, p)
+				natsPub(t, nc1, "foo", p)
+			}
+
+			totalPayloadSize := 0
+			for i := 0; i < count; i++ {
+				m := natsNexMsg(t, sub, time.Second)
+				if !bytes.Equal(m.Data, payloads[i]) {
+					t.Fatalf("Expected payload %q - got %q", payloads[i], m.Data)
+				}
+				totalPayloadSize += len(m.Data)
+			}
+
+			// Also check that the route stats shows that compression likely occurred
+			var out int
+			s1.mu.RLock()
+			if len(test.accounts) > 0 {
+				rems := s1.accRoutes["A"]
+				if rems == nil {
+					t.Fatal("Did not find route for account")
+				}
+				for _, r := range rems {
+					r.mu.Lock()
+					if r.nc != nil {
+						nc := r.nc.(*testConnSentBytes)
+						nc.RLock()
+						out = nc.sent
+						nc.RUnlock()
+					}
+					r.mu.Unlock()
+					break
+				}
+			} else {
+				ai, _ := s1.accounts.Load("A")
+				acc := ai.(*Account)
+				acc.mu.RLock()
+				pi := acc.routePoolIdx
+				acc.mu.RUnlock()
+				s1.forEachRouteIdx(pi, func(r *client) bool {
+					r.mu.Lock()
+					if r.nc != nil {
+						nc := r.nc.(*testConnSentBytes)
+						nc.RLock()
+						out = nc.sent
+						nc.RUnlock()
+					}
+					r.mu.Unlock()
+					return false
+				})
+			}
+			s1.mu.RUnlock()
+			// Should at least be smaller than totalPayloadSize, use 20%.
+			limit := totalPayloadSize * 80 / 100
+			if int(out) > limit {
+				t.Fatalf("Expected s1's outBytes to be less than %v, got %v", limit, out)
+			}
+		})
+	}
+}
+
+func TestRouteCompressionMatrixModes(t *testing.T) {
+	tmpl := `
+			port: -1
+			server_name: "%s"
+			cluster {
+				name: "local"
+				port: -1
+				compression: %s
+				pool_size: -1
+				%s
+			}
+		`
+	for _, test := range []struct {
+		name       string
+		s1         string
+		s2         string
+		s1Expected string
+		s2Expected string
+	}{
+		{"off off", "off", "off", CompressionOff, CompressionOff},
+		{"off accept", "off", "accept", CompressionOff, CompressionOff},
+		{"off on", "off", "on", CompressionOff, CompressionOff},
+		{"off better", "off", "better", CompressionOff, CompressionOff},
+		{"off best", "off", "best", CompressionOff, CompressionOff},
+
+		{"accept off", "accept", "off", CompressionOff, CompressionOff},
+		{"accept accept", "accept", "accept", CompressionOff, CompressionOff},
+		{"accept on", "accept", "on", CompressionS2Fast, CompressionS2Fast},
+		{"accept better", "accept", "better", CompressionS2Better, CompressionS2Better},
+		{"accept best", "accept", "best", CompressionS2Best, CompressionS2Best},
+
+		{"on off", "on", "off", CompressionOff, CompressionOff},
+		{"on accept", "on", "accept", CompressionS2Fast, CompressionS2Fast},
+		{"on on", "on", "on", CompressionS2Fast, CompressionS2Fast},
+		{"on better", "on", "better", CompressionS2Fast, CompressionS2Better},
+		{"on best", "on", "best", CompressionS2Fast, CompressionS2Best},
+
+		{"better off", "better", "off", CompressionOff, CompressionOff},
+		{"better accept", "better", "accept", CompressionS2Better, CompressionS2Better},
+		{"better on", "better", "on", CompressionS2Better, CompressionS2Fast},
+		{"better better", "better", "better", CompressionS2Better, CompressionS2Better},
+		{"better best", "better", "best", CompressionS2Better, CompressionS2Best},
+
+		{"best off", "best", "off", CompressionOff, CompressionOff},
+		{"best accept", "best", "accept", CompressionS2Best, CompressionS2Best},
+		{"best on", "best", "on", CompressionS2Best, CompressionS2Fast},
+		{"best better", "best", "better", CompressionS2Best, CompressionS2Better},
+		{"best best", "best", "best", CompressionS2Best, CompressionS2Best},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conf1 := createConfFile(t, []byte(fmt.Sprintf(tmpl, "A", test.s1, _EMPTY_)))
+			s1, o1 := RunServerWithConfig(conf1)
+			defer s1.Shutdown()
+
+			conf2 := createConfFile(t, []byte(fmt.Sprintf(tmpl, "B", test.s2, fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", o1.Cluster.Port))))
+			s2, _ := RunServerWithConfig(conf2)
+			defer s2.Shutdown()
+
+			checkClusterFormed(t, s1, s2)
+
+			nc1 := natsConnect(t, s1.ClientURL())
+			defer nc1.Close()
+
+			nc2 := natsConnect(t, s2.ClientURL())
+			defer nc2.Close()
+
+			payload := make([]byte, 128)
+			check := func(ncp, ncs *nats.Conn, subj string, s *Server) {
+				t.Helper()
+				sub := natsSubSync(t, ncs, subj)
+				checkSubInterest(t, s, globalAccountName, subj, time.Second)
+				natsPub(t, ncp, subj, payload)
+				natsNexMsg(t, sub, time.Second)
+
+				for _, srv := range []*Server{s1, s2} {
+					rz, err := srv.Routez(nil)
+					require_NoError(t, err)
+					var expected string
+					if srv == s1 {
+						expected = test.s1Expected
+					} else {
+						expected = test.s2Expected
+					}
+					if cm := rz.Routes[0].Compression; cm != expected {
+						t.Fatalf("Server %s - expected compression %q, got %q", srv, expected, cm)
+					}
+				}
+			}
+			check(nc1, nc2, "foo", s1)
+			check(nc2, nc1, "bar", s2)
+		})
+	}
+}
+
+func TestRouteCompressionWithOlderServer(t *testing.T) {
+	tmpl := `
+		port: -1
+		server_name: "%s"
+		cluster {
+			port: -1
+			name: "local"
+			%s
+			%s
+		}
+	`
+	conf1 := createConfFile(t, []byte(fmt.Sprintf(tmpl, "A", _EMPTY_, "compression: \"on\"")))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	routes := fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", o1.Cluster.Port)
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(tmpl, "B", routes, "compression: \"not supported\"")))
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	// Make sure that s1 route's compression is "off"
+	s1.mu.RLock()
+	s1.forEachRoute(func(r *client) {
+		r.mu.Lock()
+		cm := r.route.compression
+		r.mu.Unlock()
+		if cm != CompressionNotSupported {
+			s1.mu.RUnlock()
+			t.Fatalf("Compression should be %q, got %q", CompressionNotSupported, cm)
+		}
+	})
+	s1.mu.RUnlock()
+}
+
+func TestRouteCompressionImplicitRoute(t *testing.T) {
+	tmpl := `
+		port: -1
+		server_name: "%s"
+		cluster {
+			port: -1
+			name: "local"
+			%s
+			%s
+		}
+	`
+	conf1 := createConfFile(t, []byte(fmt.Sprintf(tmpl, "A", _EMPTY_, _EMPTY_)))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	routes := fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", o1.Cluster.Port)
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(tmpl, "B", routes, "compression: \"fast\"")))
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	conf3 := createConfFile(t, []byte(fmt.Sprintf(tmpl, "C", routes, "compression: \"best\"")))
+	s3, _ := RunServerWithConfig(conf3)
+	defer s3.Shutdown()
+
+	checkClusterFormed(t, s1, s2, s3)
+
+	checkComp := func(s *Server, remoteID, expected string) {
+		t.Helper()
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		var err error
+		s.forEachRoute(func(r *client) {
+			if err != nil {
+				return
+			}
+			var cm string
+			ok := true
+			r.mu.Lock()
+			if r.route.remoteID == remoteID {
+				cm = r.route.compression
+				ok = cm == expected
+			}
+			r.mu.Unlock()
+			if !ok {
+				err = fmt.Errorf("Server %q - expected route to %q to use compression %q, got %q",
+					s, remoteID, expected, cm)
+			}
+		})
+	}
+	checkComp(s1, s2.ID(), CompressionS2Fast)
+	checkComp(s1, s3.ID(), CompressionS2Best)
+	checkComp(s2, s1.ID(), CompressionS2Fast)
+	checkComp(s2, s3.ID(), CompressionS2Best)
+	checkComp(s3, s1.ID(), CompressionS2Best)
+	checkComp(s3, s2.ID(), CompressionS2Best)
+}
+
+func TestRouteCompressionAuto(t *testing.T) {
+	tmpl := `
+		port: -1
+		server_name: "%s"
+		ping_interval: "%s"
+		cluster {
+			port: -1
+			name: "local"
+			compression: %s
+			%s
+		}
+	`
+	conf1 := createConfFile(t, []byte(fmt.Sprintf(tmpl, "A", "10s", "s2_fast", _EMPTY_)))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	// Start with 0ms RTT
+	np := createNetProxy(0, 1024*1024*1024, 1024*1024*1024, fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port), true)
+	routes := fmt.Sprintf("routes: [\"%s\"]", np.routeURL())
+
+	rtts := "{mode: s2_auto, rtt_thresholds: [10ms, 20ms, 30ms]}"
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(tmpl, "B", "100ms", rtts, routes)))
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+	defer np.stop()
+
+	checkClusterFormed(t, s1, s2)
+
+	checkComp := func(expected string) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+			s2.mu.RLock()
+			defer s2.mu.RUnlock()
+			var err error
+			s2.forEachRoute(func(r *client) {
+				if err != nil {
+					return
+				}
+				r.mu.Lock()
+				cm := r.route.compression
+				r.mu.Unlock()
+				if cm != expected {
+					err = fmt.Errorf("Route %v compression mode expected to be %q, got %q", r, expected, cm)
+				}
+			})
+			return err
+		})
+	}
+	checkComp(CompressionS2Uncompressed)
+
+	// Change the proxy RTT and we should get compression "fast"
+	np.updateRTT(15 * time.Millisecond)
+	checkComp(CompressionS2Fast)
+
+	// Now 25ms, and get "better"
+	np.updateRTT(25 * time.Millisecond)
+	checkComp(CompressionS2Better)
+
+	// Above 35 and we should get "best"
+	np.updateRTT(35 * time.Millisecond)
+	checkComp(CompressionS2Best)
+
+	// Down to 1ms and again should get "uncompressed"
+	np.updateRTT(1 * time.Millisecond)
+	checkComp(CompressionS2Uncompressed)
+
+	// Do a config reload with disabling uncompressed
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl, "B", "100ms", "{mode: s2_auto, rtt_thresholds: [0ms, 10ms, 0ms, 30ms]}", routes))
+	// Change the RTT back down to 1ms, but we should not go uncompressed,
+	// we should have "fast" compression.
+	np.updateRTT(1 * time.Millisecond)
+	checkComp(CompressionS2Fast)
+	// Now bump to 15ms and we should be using "best", not the "better" mode
+	np.updateRTT(15 * time.Millisecond)
+	checkComp(CompressionS2Best)
+	// Try 40ms and we should still be using "best"
+	np.updateRTT(40 * time.Millisecond)
+	checkComp(CompressionS2Best)
+
+	// Try other variations
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl, "B", "100ms", "{mode: s2_auto, rtt_thresholds: [5ms, 15ms, 0ms, 0ms]}", routes))
+	np.updateRTT(1 * time.Millisecond)
+	checkComp(CompressionS2Uncompressed)
+	np.updateRTT(10 * time.Millisecond)
+	checkComp(CompressionS2Fast)
+	// Since we expect the same compression level, just wait before doing
+	// the update and the next check.
+	time.Sleep(100 * time.Millisecond)
+	np.updateRTT(25 * time.Millisecond)
+	checkComp(CompressionS2Fast)
+}
+
+func TestRoutePings(t *testing.T) {
+	routeMaxPingInterval = 50 * time.Millisecond
+	defer func() { routeMaxPingInterval = defaultRouteMaxPingInterval }()
+
+	o1 := DefaultOptions()
+	s1 := RunServer(o1)
+	defer s1.Shutdown()
+
+	o2 := DefaultOptions()
+	o2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port))
+	s2 := RunServer(o2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	ch := make(chan struct{}, 1)
+	s1.mu.RLock()
+	s1.forEachRemote(func(r *client) {
+		r.mu.Lock()
+		r.nc = &capturePingConn{r.nc, ch}
+		r.mu.Unlock()
+	})
+	s1.mu.RUnlock()
+
+	for i := 0; i < 5; i++ {
+		select {
+		case <-ch:
+		case <-time.After(250 * time.Millisecond):
+			t.Fatalf("Did not send PING")
+		}
+	}
 }

@@ -27,6 +27,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/klauspost/compress/s2"
 )
 
 // RouteType designates the router type
@@ -93,6 +95,9 @@ type route struct {
 	// This is set to true if this is a route connection to an old
 	// server or a server that has pooling completely disabled.
 	noPool bool
+	// Selected compression mode, which may be different from the
+	// server configured mode.
+	compression string
 }
 
 type connectInfo struct {
@@ -123,6 +128,15 @@ const (
 
 // Can be changed for tests
 var routeConnectDelay = DEFAULT_ROUTE_CONNECT
+
+// The default ping interval is set to 2 minutes, which is fine for client
+// connections, etc.. but since for route compression, the CompressionS2Auto
+// mode uses RTT measurements (ping/pong) to decide which compression level
+// to use, we want the interval to not be that high.
+const defaultRouteMaxPingInterval = 30 * time.Second
+
+// Can be changed for tests
+var routeMaxPingInterval = defaultRouteMaxPingInterval
 
 // removeReplySub is called when we trip the max on remoteReply subs.
 func (c *client) removeReplySub(sub *subscription) {
@@ -544,6 +558,8 @@ func (c *client) processRouteInfo(info *Info) {
 
 	opts := s.getOpts()
 
+	didSolicit := c.route.didSolicit
+
 	// If this is an async INFO from an existing route...
 	if c.flags.isSet(infoReceived) {
 		remoteID := c.route.remoteID
@@ -675,12 +691,63 @@ func (c *client) processRouteInfo(info *Info) {
 	}
 
 	// Check if remote has same server name than this server.
-	if !c.route.didSolicit && info.Name == srvName {
+	if !didSolicit && info.Name == srvName {
 		c.mu.Unlock()
 		// This is now an error and we close the connection. We need unique names for JetStream clustering.
 		c.Errorf("Remote server has a duplicate name: %q", info.Name)
 		c.closeConnection(DuplicateServerName)
 		return
+	}
+
+	// First INFO, check if this server is configured for compression because
+	// if that is the case, we need to negotiate it with the remote server.
+	if needsCompression(opts.Cluster.Compression.Mode) {
+		accName := string(c.route.accName)
+		// If we did not yet negotiate...
+		if !c.flags.isSet(compressionNegotiated) {
+			// Prevent from getting back here.
+			c.flags.set(compressionNegotiated)
+			// Release client lock since following function will need server lock.
+			c.mu.Unlock()
+			compress, err := s.negotiateRouteCompression(c, didSolicit, accName, info, opts)
+			if err != nil {
+				c.sendErrAndErr(err.Error())
+				c.closeConnection(ProtocolViolation)
+				return
+			}
+			if compress {
+				// Done for now, will get back another INFO protocol...
+				return
+			}
+			// No compression because one side does not want/can't, so proceed.
+			c.mu.Lock()
+		} else if didSolicit {
+			// The other side has switched to compression, so we can now set
+			// the first ping timer and send the delayed INFO for situations
+			// where it was not already sent.
+			c.setFirstPingTimer()
+			if !routeShouldDelayInfo(accName, opts) {
+				cm := routeCompressionModeForInfoProtocol(opts, c.route.compression)
+				// Need to release and then reacquire...
+				c.mu.Unlock()
+				s.sendDelayedRouteInfo(c, accName, cm)
+				c.mu.Lock()
+			}
+		}
+		// Check that the connection did not close if the lock was released.
+		if c.isClosed() {
+			c.mu.Unlock()
+			return
+		}
+	} else {
+		// Coming from an old server, the Compression field would be the empty
+		// string. For servers that are configured with CompressionNotSupported,
+		// this makes them behave as old servers.
+		if info.Compression == _EMPTY_ || opts.Cluster.Compression.Mode == CompressionNotSupported {
+			c.route.compression = CompressionNotSupported
+		} else {
+			c.route.compression = CompressionOff
+		}
 	}
 
 	// Mark that the INFO protocol has been received, so we can detect updates.
@@ -748,7 +815,6 @@ func (c *client) processRouteInfo(info *Info) {
 	// If this is a solicit route, we already have c.route.accName set in createRoute.
 	// For non solicited route (the accept side), we will set the account name that
 	// is present in the INFO protocol.
-	didSolicit := c.route.didSolicit
 	if !didSolicit {
 		c.route.accName = []byte(info.RouteAccount)
 	}
@@ -768,6 +834,89 @@ func (c *client) processRouteInfo(info *Info) {
 		c.Debugf("Detected duplicate remote route %q", info.ID)
 		c.closeConnection(DuplicateRoute)
 	}
+}
+
+func (s *Server) negotiateRouteCompression(c *client, didSolicit bool, accName string, info *Info, opts *Options) (bool, error) {
+	// Negotiate the appropriate compression mode (or no compression)
+	cm, err := selectCompressionMode(opts.Cluster.Compression.Mode, info.Compression)
+	if err != nil {
+		return false, err
+	}
+	c.mu.Lock()
+	// For "auto" mode, set the initial compression mode based on RTT
+	if cm == CompressionS2Auto {
+		if c.rttStart.IsZero() {
+			c.rtt = computeRTT(c.start)
+		}
+		cm = selectS2AutoModeBasedOnRTT(c.rtt, opts.Cluster.Compression.RTTThresholds)
+	}
+	// Keep track of the negotiated compression mode.
+	c.route.compression = cm
+	c.mu.Unlock()
+
+	// If we end-up doing compression...
+	if needsCompression(cm) {
+		// Generate an INFO with the chosen compression mode.
+		s.mu.Lock()
+		infoProto := s.generateRouteInitialInfoJSON(accName, cm, 0)
+		s.mu.Unlock()
+
+		// If we solicited, then send this INFO protocol BEFORE switching
+		// to compression writer. However, if we did not, we send it after.
+		c.mu.Lock()
+		if didSolicit {
+			c.enqueueProto(infoProto)
+			// Make sure it is completely flushed (the pending bytes goes to
+			// 0) before proceeding.
+			for c.out.pb > 0 && !c.isClosed() {
+				c.flushOutbound()
+			}
+		}
+		// This is to notify the readLoop that it should switch to a
+		// (de)compression reader.
+		c.in.flags.set(switchToCompression)
+		// Create the compress writer before queueing the INFO protocol for
+		// a route that did not solicit. It will make sure that that proto
+		// is sent with compression on.
+		c.out.cw = s2.NewWriter(nil, s2WriterOptions(cm)...)
+		if !didSolicit {
+			c.enqueueProto(infoProto)
+		}
+		// We can now set the ping timer.
+		c.setFirstPingTimer()
+		c.mu.Unlock()
+		return true, nil
+	}
+	// We are not using compression, set the ping timer.
+	c.mu.Lock()
+	c.setFirstPingTimer()
+	c.mu.Unlock()
+	// If this is a solicited route, we need to send the INFO if it was not
+	// done during createRoute() and will not be done in addRoute().
+	if didSolicit && !routeShouldDelayInfo(accName, opts) {
+		cm = routeCompressionModeForInfoProtocol(opts, cm)
+		s.sendDelayedRouteInfo(c, accName, cm)
+	}
+	return false, nil
+}
+
+// If the configured compression mode is "auto" then will return that,
+// otherwise will return the given `cm` compression mode.
+func routeCompressionModeForInfoProtocol(opts *Options, cm string) string {
+	if opts.Cluster.Compression.Mode == CompressionS2Auto {
+		return CompressionS2Auto
+	}
+	return cm
+}
+
+func (s *Server) sendDelayedRouteInfo(c *client, accName, cm string) {
+	s.mu.Lock()
+	infoProto := s.generateRouteInitialInfoJSON(accName, cm, 0)
+	s.mu.Unlock()
+
+	c.mu.Lock()
+	c.enqueueProto(infoProto)
+	c.mu.Unlock()
 }
 
 // Possibly sends local subscriptions interest to this route
@@ -1515,15 +1664,20 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL, accName string) *clie
 
 	c := &client{srv: s, nc: conn, opts: ClientOpts{}, kind: ROUTER, msubs: -1, mpay: -1, route: r, start: time.Now()}
 
+	// Is the server configured for compression?
+	compressionConfigured := needsCompression(opts.Cluster.Compression.Mode)
+
 	var infoJSON []byte
-	// Grab server variables
+	// Grab server variables and generates route INFO Json. Note that we set
+	// and reset some of s.routeInfo fields when that happens, so we need
+	// the server write lock.
 	s.mu.Lock()
 	// If we are creating a pooled connection and this is the server soliciting
 	// the connection, we will delay sending the INFO after we have processed
-	// the incoming INFO from the remote.
-	delayInfo := didSolicit && accName == _EMPTY_ && opts.Cluster.PoolSize >= 1
+	// the incoming INFO from the remote. Also delay if configured for compression.
+	delayInfo := didSolicit && (compressionConfigured || routeShouldDelayInfo(accName, opts))
 	if !delayInfo {
-		infoJSON = s.generateRouteInitialInfoJSON(accName, 0)
+		infoJSON = s.generateRouteInitialInfoJSON(accName, opts.Cluster.Compression.Mode, 0)
 	}
 	authRequired := s.routeInfo.AuthRequired
 	tlsRequired := s.routeInfo.TLSRequired
@@ -1575,8 +1729,23 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL, accName string) *clie
 		c.setRoutePermissions(opts.Cluster.Permissions)
 	}
 
-	// Set the Ping timer
-	c.setFirstPingTimer()
+	// We can't safely send the pings until we have negotiated compression
+	// with the remote, but we want to protect against a connection that
+	// does not perform the handshake. We will start a timer that will close
+	// the connection as stale based on the ping interval and max out values,
+	// but without actually sending pings.
+	if compressionConfigured {
+		c.ping.tmr = time.AfterFunc(opts.PingInterval*time.Duration(opts.MaxPingsOut+1), func() {
+			c.mu.Lock()
+			c.Debugf("Stale Client Connection - Closing")
+			c.enqueueProto([]byte(fmt.Sprintf(errProto, "Stale Connection")))
+			c.mu.Unlock()
+			c.closeConnection(StaleConnection)
+		})
+	} else {
+		// Set the Ping timer
+		c.setFirstPingTimer()
+	}
 
 	// For routes, the "client" is added to s.routes only when processing
 	// the INFO protocol, that is much later.
@@ -1631,21 +1800,29 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL, accName string) *clie
 	return c
 }
 
+func routeShouldDelayInfo(accName string, opts *Options) bool {
+	return accName == _EMPTY_ && opts.Cluster.PoolSize >= 1
+}
+
 // Generates a nonce and set some route info's fields before marshal'ing into JSON.
 // To be used only when a route is created (to send the initial INFO protocol).
 //
 // Server lock held on entry.
-func (s *Server) generateRouteInitialInfoJSON(accName string, poolIdx int) []byte {
+func (s *Server) generateRouteInitialInfoJSON(accName, compression string, poolIdx int) []byte {
 	// New proto wants a nonce (although not used in routes, that is, not signed in CONNECT)
 	var raw [nonceLen]byte
 	nonce := raw[:]
 	s.generateNonce(nonce)
 	ri := &s.routeInfo
-	ri.Nonce, ri.RouteAccount, ri.RoutePoolIdx = string(nonce), accName, poolIdx
+	// Override compression with s2_auto instead of actual compression level.
+	if s.getOpts().Cluster.Compression.Mode == CompressionS2Auto {
+		compression = CompressionS2Auto
+	}
+	ri.Nonce, ri.RouteAccount, ri.RoutePoolIdx, ri.Compression = string(nonce), accName, poolIdx, compression
 	infoJSON := generateInfoJSON(&s.routeInfo)
 	// Clear now that it has been serialized. Will prevent nonce to be included in async INFO that we may send.
 	// Same for some other fields.
-	ri.Nonce, ri.RouteAccount, ri.RoutePoolIdx = _EMPTY_, _EMPTY_, 0
+	ri.Nonce, ri.RouteAccount, ri.RoutePoolIdx, ri.Compression = _EMPTY_, _EMPTY_, 0, _EMPTY_
 	return infoJSON
 }
 
@@ -1806,7 +1983,7 @@ func (s *Server) addRoute(c *client, didSolicit bool, info *Info, accName string
 		url := c.route.url
 		// For solicited routes, we need now to send the INFO protocol
 		if didSolicit {
-			c.enqueueProto(s.generateRouteInitialInfoJSON(_EMPTY_, idx))
+			c.enqueueProto(s.generateRouteInitialInfoJSON(_EMPTY_, c.route.compression, idx))
 		}
 		c.mu.Unlock()
 
@@ -2178,6 +2355,11 @@ func (s *Server) startRouteAcceptLoop() {
 		Domain:       s.info.Domain,
 		Dynamic:      s.isClusterNameDynamic(),
 		LNOC:         true,
+	}
+	// For tests that want to simulate old servers, do not set the compression
+	// on the INFO protocol if configured with CompressionNotSupported.
+	if opts.Cluster.Compression.Mode != CompressionNotSupported {
+		info.Compression = opts.Cluster.Compression.Mode
 	}
 	if ps := opts.Cluster.PoolSize; ps > 0 {
 		info.RoutePoolSize = ps

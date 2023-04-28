@@ -342,6 +342,7 @@ func TestReloadDoesNotWipeAccountsWithOperatorMode(t *testing.T) {
 		name: "A"
 		listen: 127.0.0.1:-1
 		pool_size: -1
+		compression: "disabled"
 		authorization {
 			timeout: 2.2
 		} %s
