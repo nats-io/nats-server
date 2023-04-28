@@ -327,7 +327,6 @@ type stats struct {
 	outMsgs       int64
 	inBytes       int64
 	outBytes      int64
-	sentBytes     int64 // Total of what is sent out, include all protocols
 	slowConsumers int64
 }
 

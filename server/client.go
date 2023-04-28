@@ -415,9 +415,7 @@ const (
 	switchToCompression readCacheFlag = 1 << 1
 )
 
-const (
-	sysGroup = "_sys_"
-)
+const sysGroup = "_sys_"
 
 // Used in readloop to cache hot subject lookups and group statistics.
 type readCache struct {
@@ -1602,9 +1600,6 @@ func (c *client) flushOutbound() bool {
 
 	// Re-acquire client lock.
 	c.mu.Lock()
-
-	// Keep track of what was actually sent
-	c.sentBytes += n
 
 	// Adjust if we were compressing.
 	if cw != nil {

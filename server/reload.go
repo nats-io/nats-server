@@ -362,7 +362,7 @@ type clusterOption struct {
 	accsAdded       []string
 	accsRemoved     []string
 	poolSizeChanged bool
-	compChanged     bool
+	compressChanged bool
 }
 
 // Apply the cluster change.
@@ -382,7 +382,7 @@ func (c *clusterOption) Apply(s *Server) {
 	}
 	s.setRouteInfoHostPortAndIP()
 	var routes []*client
-	if c.compChanged {
+	if c.compressChanged {
 		newMode := s.getOpts().Cluster.Compression.Mode
 		s.forEachRoute(func(r *client) {
 			r.mu.Lock()
@@ -1139,9 +1139,9 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 				return nil, err
 			}
 			co := &clusterOption{
-				newValue:     newClusterOpts,
-				permsChanged: !reflect.DeepEqual(newClusterOpts.Permissions, oldClusterOpts.Permissions),
-				compChanged:  !reflect.DeepEqual(oldClusterOpts.Compression, newClusterOpts.Compression),
+				newValue:        newClusterOpts,
+				permsChanged:    !reflect.DeepEqual(newClusterOpts.Permissions, oldClusterOpts.Permissions),
+				compressChanged: !reflect.DeepEqual(oldClusterOpts.Compression, newClusterOpts.Compression),
 			}
 			co.diffPoolAndAccounts(&oldClusterOpts)
 			// If there are added accounts, first make sure that we can look them up.

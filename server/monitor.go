@@ -123,7 +123,6 @@ type ConnInfo struct {
 	OutMsgs        int64          `json:"out_msgs"`
 	InBytes        int64          `json:"in_bytes"`
 	OutBytes       int64          `json:"out_bytes"`
-	SentBytes      int64          `json:"sent_bytes"`
 	NumSubs        uint32         `json:"subscriptions"`
 	Name           string         `json:"name,omitempty"`
 	Lang           string         `json:"lang,omitempty"`
@@ -543,7 +542,6 @@ func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time, auth bool) 
 	ci.RTT = client.getRTT().String()
 	ci.OutMsgs = client.outMsgs
 	ci.OutBytes = client.outBytes
-	ci.SentBytes = client.sentBytes
 	ci.NumSubs = uint32(len(client.subs))
 	ci.Pending = int(client.out.pb)
 	ci.Name = client.opts.Name
@@ -779,7 +777,6 @@ type RouteInfo struct {
 	OutMsgs      int64              `json:"out_msgs"`
 	InBytes      int64              `json:"in_bytes"`
 	OutBytes     int64              `json:"out_bytes"`
-	SentBytes    int64              `json:"sent_bytes"`
 	NumSubs      uint32             `json:"subscriptions"`
 	Subs         []string           `json:"subscriptions_list,omitempty"`
 	SubsDetail   []SubDetail        `json:"subscriptions_list_detail,omitempty"`
@@ -821,7 +818,6 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 			OutMsgs:      r.outMsgs,
 			InBytes:      atomic.LoadInt64(&r.inBytes),
 			OutBytes:     r.outBytes,
-			SentBytes:    r.sentBytes,
 			NumSubs:      uint32(len(r.subs)),
 			Import:       r.opts.Import,
 			Export:       r.opts.Export,
@@ -2101,19 +2097,18 @@ type LeafzOptions struct {
 
 // LeafInfo has detailed information on each remote leafnode connection.
 type LeafInfo struct {
-	Name      string   `json:"name"`
-	IsSpoke   bool     `json:"is_spoke"`
-	Account   string   `json:"account"`
-	IP        string   `json:"ip"`
-	Port      int      `json:"port"`
-	RTT       string   `json:"rtt,omitempty"`
-	InMsgs    int64    `json:"in_msgs"`
-	OutMsgs   int64    `json:"out_msgs"`
-	InBytes   int64    `json:"in_bytes"`
-	OutBytes  int64    `json:"out_bytes"`
-	SentBytes int64    `json:"sent_bytes"`
-	NumSubs   uint32   `json:"subscriptions"`
-	Subs      []string `json:"subscriptions_list,omitempty"`
+	Name     string   `json:"name"`
+	IsSpoke  bool     `json:"is_spoke"`
+	Account  string   `json:"account"`
+	IP       string   `json:"ip"`
+	Port     int      `json:"port"`
+	RTT      string   `json:"rtt,omitempty"`
+	InMsgs   int64    `json:"in_msgs"`
+	OutMsgs  int64    `json:"out_msgs"`
+	InBytes  int64    `json:"in_bytes"`
+	OutBytes int64    `json:"out_bytes"`
+	NumSubs  uint32   `json:"subscriptions"`
+	Subs     []string `json:"subscriptions_list,omitempty"`
 }
 
 // Leafz returns a Leafz structure containing information about leafnodes.
@@ -2143,18 +2138,17 @@ func (s *Server) Leafz(opts *LeafzOptions) (*Leafz, error) {
 		for _, ln := range lconns {
 			ln.mu.Lock()
 			lni := &LeafInfo{
-				Name:      ln.leaf.remoteServer,
-				IsSpoke:   ln.isSpokeLeafNode(),
-				Account:   ln.acc.Name,
-				IP:        ln.host,
-				Port:      int(ln.port),
-				RTT:       ln.getRTT().String(),
-				InMsgs:    atomic.LoadInt64(&ln.inMsgs),
-				OutMsgs:   ln.outMsgs,
-				InBytes:   atomic.LoadInt64(&ln.inBytes),
-				OutBytes:  ln.outBytes,
-				SentBytes: ln.sentBytes,
-				NumSubs:   uint32(len(ln.subs)),
+				Name:     ln.leaf.remoteServer,
+				IsSpoke:  ln.isSpokeLeafNode(),
+				Account:  ln.acc.Name,
+				IP:       ln.host,
+				Port:     int(ln.port),
+				RTT:      ln.getRTT().String(),
+				InMsgs:   atomic.LoadInt64(&ln.inMsgs),
+				OutMsgs:  ln.outMsgs,
+				InBytes:  atomic.LoadInt64(&ln.inBytes),
+				OutBytes: ln.outBytes,
+				NumSubs:  uint32(len(ln.subs)),
 			}
 			if opts != nil && opts.Subscriptions {
 				lni.Subs = make([]string, 0, len(ln.subs))

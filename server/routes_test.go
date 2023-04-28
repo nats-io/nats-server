@@ -3283,6 +3283,20 @@ func TestRouteCompressionOptions(t *testing.T) {
 	}
 }
 
+type testConnSentBytes struct {
+	net.Conn
+	sync.RWMutex
+	sent int
+}
+
+func (c *testConnSentBytes) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	c.Lock()
+	c.sent += n
+	c.Unlock()
+	return n, err
+}
+
 func TestRouteCompression(t *testing.T) {
 	tmpl := `
 		port: -1
@@ -3320,6 +3334,14 @@ func TestRouteCompression(t *testing.T) {
 
 			checkClusterFormed(t, s1, s2)
 
+			s1.mu.RLock()
+			s1.forEachRoute(func(r *client) {
+				r.mu.Lock()
+				r.nc = &testConnSentBytes{Conn: r.nc}
+				r.mu.Unlock()
+			})
+			s1.mu.RUnlock()
+
 			nc2 := natsConnect(t, s2.ClientURL(), nats.UserInfo("a", "pwd"))
 			defer nc2.Close()
 			sub := natsSubSync(t, nc2, "foo")
@@ -3351,7 +3373,7 @@ func TestRouteCompression(t *testing.T) {
 			}
 
 			// Also check that the route stats shows that compression likely occurred
-			var out int64
+			var out int
 			s1.mu.RLock()
 			if len(test.accounts) > 0 {
 				rems := s1.accRoutes["A"]
@@ -3360,7 +3382,12 @@ func TestRouteCompression(t *testing.T) {
 				}
 				for _, r := range rems {
 					r.mu.Lock()
-					out = r.sentBytes
+					if r.nc != nil {
+						nc := r.nc.(*testConnSentBytes)
+						nc.RLock()
+						out = nc.sent
+						nc.RUnlock()
+					}
 					r.mu.Unlock()
 					break
 				}
@@ -3372,7 +3399,12 @@ func TestRouteCompression(t *testing.T) {
 				acc.mu.RUnlock()
 				s1.forEachRouteIdx(pi, func(r *client) bool {
 					r.mu.Lock()
-					out = r.sentBytes
+					if r.nc != nil {
+						nc := r.nc.(*testConnSentBytes)
+						nc.RLock()
+						out = nc.sent
+						nc.RUnlock()
+					}
 					r.mu.Unlock()
 					return false
 				})
