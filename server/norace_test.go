@@ -1691,6 +1691,7 @@ func TestNoRaceJetStreamSuperClusterMixedModeMirrors(t *testing.T) {
 		if _, err := js.AddStream(&nats.StreamConfig{Name: name}); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
+		c.waitOnStreamLeader(globalAccountName, name)
 		// Load them up with a bunch of messages.
 		for n := 0; n < toSend; n++ {
 			m := nats.NewMsg(name)
@@ -2000,6 +2001,7 @@ func TestNoRaceJetStreamSuperClusterMixedModeSources(t *testing.T) {
 		if _, err := js.AddStream(&nats.StreamConfig{Name: name}); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
+		c.waitOnStreamLeader(globalAccountName, name)
 		// Load them up with a bunch of messages.
 		for n := 0; n < toSend; n++ {
 			m := nats.NewMsg(name)
