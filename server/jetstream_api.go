@@ -15,6 +15,8 @@ package server
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -3649,15 +3651,16 @@ func (s *Server) streamSnapshot(ci *ClientInfo, acc *Account, mset *stream, sr *
 	})
 	defer mset.unsubscribeUnlocked(ackSub)
 
-	// TODO(dlc) - Add in NATS-Chunked-Sequence header
-
+	hash := sha256.New()
 	for index := 1; ; index++ {
+		hdr := genHeader(nil, "Nats-Snapshot-Chunk-Secuence", strconv.Itoa(index))
 		chunk := make([]byte, chunkSize)
 		n, err := r.Read(chunk)
 		chunk = chunk[:n]
+		_, _ = hash.Write(chunk)
 		if err != nil {
 			if n > 0 {
-				mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, chunk, nil, 0))
+				mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, chunk, nil, 0))
 			}
 			break
 		}
@@ -3673,13 +3676,13 @@ func (s *Server) streamSnapshot(ci *ClientInfo, acc *Account, mset *stream, sr *
 			}
 		}
 		ackReply := fmt.Sprintf("%s.%d.%d", ackSubj, len(chunk), index)
-		mset.outq.send(newJSPubMsg(reply, _EMPTY_, ackReply, nil, chunk, nil, 0))
+		mset.outq.send(newJSPubMsg(reply, _EMPTY_, ackReply, hdr, chunk, nil, 0))
 		atomic.AddInt32(&out, int32(len(chunk)))
 	}
 done:
 	// Send last EOF
-	// TODO(dlc) - place hash in header
-	mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, nil, nil, 0))
+	hdr := genHeader(nil, "Nats-Snapshot-Checksum-Sha256", hex.EncodeToString(hash.Sum(nil)))
+	mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 }
 
 // For determining consumer request type.
