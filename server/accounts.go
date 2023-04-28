@@ -1338,11 +1338,11 @@ func (a *Account) sendTrackingLatency(si *serviceImport, responder *client) bool
 	// FIXME(dlc) - We need to clean these up but this should happen
 	// already with the auto-expire logic.
 	if responder != nil && responder.kind != CLIENT {
-		a.mu.Lock()
+		si.acc.mu.Lock()
 		if si.m1 != nil {
 			m1, m2 := sl, si.m1
 			m1.merge(m2)
-			a.mu.Unlock()
+			si.acc.mu.Unlock()
 			a.srv.sendInternalAccountMsg(a, si.latency.subject, m1)
 			a.mu.Lock()
 			si.rc = nil
@@ -1350,7 +1350,7 @@ func (a *Account) sendTrackingLatency(si *serviceImport, responder *client) bool
 			return true
 		}
 		si.m1 = sl
-		a.mu.Unlock()
+		si.acc.mu.Unlock()
 		return false
 	} else {
 		a.srv.sendInternalAccountMsg(a, si.latency.subject, sl)
