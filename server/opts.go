@@ -1669,7 +1669,7 @@ func parseCompression(c *CompressionOpts, tk token, mk string, mv interface{}) (
 		c.Mode = mv
 	case bool:
 		if mv {
-			c.Mode = CompressionS2Auto
+			c.Mode = CompressionS2Fast
 		} else {
 			c.Mode = CompressionOff
 		}
@@ -4786,13 +4786,14 @@ func setBaselineOptions(opts *Options) {
 				}
 			}
 		}
-		// Default to compression "auto", unless we are running tests that specify
-		// what the default compression mode should be.
+		// Default to compression "accept", which means that compression is not
+		// initiated, but if the remote selects compression, this server will
+		// use the same.
 		if c := &opts.Cluster.Compression; c.Mode == _EMPTY_ {
 			if testDefaultClusterCompression != _EMPTY_ {
 				c.Mode = testDefaultClusterCompression
 			} else {
-				c.Mode = CompressionS2Auto
+				c.Mode = CompressionAccept
 			}
 		}
 	}

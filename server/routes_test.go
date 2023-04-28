@@ -3157,11 +3157,11 @@ func TestRouteCompressionOptions(t *testing.T) {
 		expected string
 		rtts     []time.Duration
 	}{
-		{"boolean enabled", "true", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
-		{"string enabled", "enabled", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
-		{"string EnaBled", "EnaBled", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
-		{"string on", "on", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
-		{"string ON", "ON", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
+		{"boolean enabled", "true", nil, CompressionS2Fast, nil},
+		{"string enabled", "enabled", nil, CompressionS2Fast, nil},
+		{"string EnaBled", "EnaBled", nil, CompressionS2Fast, nil},
+		{"string on", "on", nil, CompressionS2Fast, nil},
+		{"string ON", "ON", nil, CompressionS2Fast, nil},
 		{"string fast", "fast", nil, CompressionS2Fast, nil},
 		{"string Fast", "Fast", nil, CompressionS2Fast, nil},
 		{"string s2_fast", "s2_fast", nil, CompressionS2Fast, nil},
@@ -3238,7 +3238,7 @@ func TestRouteCompressionOptions(t *testing.T) {
 			}
 		})
 	}
-	// Test that with no compression specified, we default to "auto"
+	// Test that with no compression specified, we default to "accept"
 	conf := createConfFile(t, []byte(`
 		port: -1
 		cluster {
@@ -3247,8 +3247,8 @@ func TestRouteCompressionOptions(t *testing.T) {
 	`))
 	s, o := RunServerWithConfig(conf)
 	defer s.Shutdown()
-	if o.Cluster.Compression.Mode != CompressionS2Auto {
-		t.Fatalf("Expected compression value to be %q, got %q", CompressionS2Auto, o.Cluster.Compression.Mode)
+	if o.Cluster.Compression.Mode != CompressionAccept {
+		t.Fatalf("Expected compression value to be %q, got %q", CompressionAccept, o.Cluster.Compression.Mode)
 	}
 	for _, test := range []struct {
 		name string
@@ -3307,7 +3307,7 @@ func TestRouteCompression(t *testing.T) {
 		cluster {
 			name: "local"
 			port: -1
-			compression: s2_fast
+			compression: true
 			pool_size: %d
 			%s
 			%s
@@ -3446,25 +3446,25 @@ func TestRouteCompressionMatrixModes(t *testing.T) {
 
 		{"accept off", "accept", "off", CompressionOff, CompressionOff},
 		{"accept accept", "accept", "accept", CompressionOff, CompressionOff},
-		{"accept on", "accept", "on", CompressionS2Fast, CompressionS2Uncompressed},
+		{"accept on", "accept", "on", CompressionS2Fast, CompressionS2Fast},
 		{"accept better", "accept", "better", CompressionS2Better, CompressionS2Better},
 		{"accept best", "accept", "best", CompressionS2Best, CompressionS2Best},
 
 		{"on off", "on", "off", CompressionOff, CompressionOff},
-		{"on accept", "on", "accept", CompressionS2Uncompressed, CompressionS2Fast},
-		{"on on", "on", "on", CompressionS2Uncompressed, CompressionS2Uncompressed},
-		{"on better", "on", "better", CompressionS2Uncompressed, CompressionS2Better},
-		{"on best", "on", "best", CompressionS2Uncompressed, CompressionS2Best},
+		{"on accept", "on", "accept", CompressionS2Fast, CompressionS2Fast},
+		{"on on", "on", "on", CompressionS2Fast, CompressionS2Fast},
+		{"on better", "on", "better", CompressionS2Fast, CompressionS2Better},
+		{"on best", "on", "best", CompressionS2Fast, CompressionS2Best},
 
 		{"better off", "better", "off", CompressionOff, CompressionOff},
 		{"better accept", "better", "accept", CompressionS2Better, CompressionS2Better},
-		{"better on", "better", "on", CompressionS2Better, CompressionS2Uncompressed},
+		{"better on", "better", "on", CompressionS2Better, CompressionS2Fast},
 		{"better better", "better", "better", CompressionS2Better, CompressionS2Better},
 		{"better best", "better", "best", CompressionS2Better, CompressionS2Best},
 
 		{"best off", "best", "off", CompressionOff, CompressionOff},
 		{"best accept", "best", "accept", CompressionS2Best, CompressionS2Best},
-		{"best on", "best", "on", CompressionS2Best, CompressionS2Uncompressed},
+		{"best on", "best", "on", CompressionS2Best, CompressionS2Fast},
 		{"best better", "best", "better", CompressionS2Best, CompressionS2Better},
 		{"best best", "best", "best", CompressionS2Best, CompressionS2Best},
 	} {

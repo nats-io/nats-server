@@ -374,7 +374,7 @@ func validateAndNormalizeCompressionOption(c *CompressionOpts) error {
 		c.Mode = CompressionOff
 	case "accept":
 		c.Mode = CompressionAccept
-	case "on", "enabled", "true", "auto", "s2_auto":
+	case "auto", "s2_auto":
 		var rtts []time.Duration
 		if len(c.RTTThresholds) == 0 {
 			rtts = defaultCompressionS2AutoRTTThresholds
@@ -420,7 +420,7 @@ func validateAndNormalizeCompressionOption(c *CompressionOpts) error {
 		}
 		c.Mode = CompressionS2Auto
 		c.RTTThresholds = rtts
-	case "fast", "s2_fast":
+	case "on", "enabled", "true", "fast", "s2_fast":
 		c.Mode = CompressionS2Fast
 	case "better", "s2_better":
 		c.Mode = CompressionS2Better

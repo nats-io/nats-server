@@ -146,10 +146,9 @@ func TestConfigReloadUnsupported(t *testing.T) {
 		MaxPingsOut:    2,
 		WriteDeadline:  10 * time.Second,
 		Cluster: ClusterOpts{
-			Name:        "abc",
-			Host:        "127.0.0.1",
-			Port:        -1,
-			Compression: CompressionOpts{Mode: CompressionS2Auto, RTTThresholds: defaultCompressionS2AutoRTTThresholds},
+			Name: "abc",
+			Host: "127.0.0.1",
+			Port: -1,
 		},
 		NoSigs: true,
 	}
@@ -219,10 +218,9 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 		MaxPingsOut:    2,
 		WriteDeadline:  10 * time.Second,
 		Cluster: ClusterOpts{
-			Name:        "abc",
-			Host:        "127.0.0.1",
-			Port:        -1,
-			Compression: CompressionOpts{Mode: CompressionS2Auto, RTTThresholds: defaultCompressionS2AutoRTTThresholds},
+			Name: "abc",
+			Host: "127.0.0.1",
+			Port: -1,
 		},
 		NoSigs: true,
 	}
@@ -283,10 +281,9 @@ func TestConfigReload(t *testing.T) {
 		MaxPingsOut:    2,
 		WriteDeadline:  10 * time.Second,
 		Cluster: ClusterOpts{
-			Name:        "abc",
-			Host:        "127.0.0.1",
-			Port:        server.ClusterAddr().Port,
-			Compression: CompressionOpts{Mode: CompressionS2Auto, RTTThresholds: defaultCompressionS2AutoRTTThresholds},
+			Name: "abc",
+			Host: "127.0.0.1",
+			Port: server.ClusterAddr().Port,
 		},
 		NoSigs: true,
 	}
@@ -5380,12 +5377,12 @@ func TestConfigReloadRouteCompression(t *testing.T) {
 			%s
 		}
 	`
-	conf1 := createConfFile(t, []byte(fmt.Sprintf(tmpl, "A", _EMPTY_, "compression: accept")))
+	conf1 := createConfFile(t, []byte(fmt.Sprintf(tmpl, "A", _EMPTY_, _EMPTY_)))
 	s1, o1 := RunServerWithConfig(conf1)
 	defer s1.Shutdown()
 
 	routes := fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", o1.Cluster.Port)
-	conf2 := createConfFile(t, []byte(fmt.Sprintf(tmpl, "B", routes, "compression: accept")))
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(tmpl, "B", routes, _EMPTY_)))
 	s2, _ := RunServerWithConfig(conf2)
 	defer s2.Shutdown()
 
@@ -5475,25 +5472,23 @@ func TestConfigReloadRouteCompression(t *testing.T) {
 			return nil
 		})
 	}
-	// Since both started with "accept", which means that a server can
-	// accept/switch to compression but not initiate compression, they
-	// should both be "off"
+	// Since both started without any compression setting, we default to
+	// "accept" which means that a server can accept/switch to compression
+	// but not initiate compression, so they should both be "off"
 	checkCompMode(CompressionOff, CompressionOff, false)
 
-	// Now reload s1 with "on" ("auto"), since s2 is *configured* with "accept",
-	// it won't use "auto" but instead fall back to "fast". S1 should be set
-	// to "uncompressed" because the default RTT threshold is 10ms and we should
-	// below that...
+	// Now relead s1 with "on" (s2_fast), since s2 is *configured* with "accept",
+	// they should both be CompressionS2Fast, even before we reload s2.
 	reloadUpdateConfig(t, s1, conf1, fmt.Sprintf(tmpl, "A", _EMPTY_, "compression: on"))
-	checkCompMode(CompressionS2Uncompressed, CompressionS2Fast, true)
+	checkCompMode(CompressionS2Fast, CompressionS2Fast, true)
 	// Now reload s2
 	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl, "B", routes, "compression: on"))
-	checkCompMode(CompressionS2Uncompressed, CompressionS2Uncompressed, false)
+	checkCompMode(CompressionS2Fast, CompressionS2Fast, false)
 
 	// Move on with "better"
 	reloadUpdateConfig(t, s1, conf1, fmt.Sprintf(tmpl, "A", _EMPTY_, "compression: s2_better"))
-	// s1 should be at "better", but s2 still at "uncompressed"
-	checkCompMode(CompressionS2Better, CompressionS2Uncompressed, false)
+	// s1 should be at "better", but s2 still at "fast"
+	checkCompMode(CompressionS2Better, CompressionS2Fast, false)
 	// Now reload s2
 	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl, "B", routes, "compression: s2_better"))
 	checkCompMode(CompressionS2Better, CompressionS2Better, false)
@@ -5525,16 +5520,16 @@ func TestConfigReloadRouteCompression(t *testing.T) {
 	// S1 should be "best" but S2 should have stayed at "better"
 	checkCompMode(CompressionS2Best, CompressionS2Better, false)
 
-	// Change compression setting back to "accept", which in that case we want
-	// to have a negotiation and use the remote's compression level. So
-	// connections should be re-created.
-	reloadUpdateConfig(t, s1, conf1, fmt.Sprintf(tmpl, "A", _EMPTY_, "compression: accept"))
+	// If we remove the compression setting, it defaults to "accept", which
+	// in that case we want to have a negotiation and use the remote's compression
+	// level. So connections should be re-created.
+	reloadUpdateConfig(t, s1, conf1, fmt.Sprintf(tmpl, "A", _EMPTY_, _EMPTY_))
 	checkCompMode(CompressionS2Better, CompressionS2Better, true)
 
 	// To avoid flapping, add a little sleep here to make sure we have things
 	// settled before reloading s2.
 	time.Sleep(100 * time.Millisecond)
 	// And if we do the same with s2, then we will end-up with no compression.
-	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl, "B", routes, "compression: accept"))
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl, "B", routes, _EMPTY_))
 	checkCompMode(CompressionOff, CompressionOff, true)
 }
