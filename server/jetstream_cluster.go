@@ -1127,6 +1127,10 @@ func (js *jetStream) monitorCluster() {
 	lt := time.NewTicker(leaderCheckInterval)
 	defer lt.Stop()
 
+	const healthCheckInterval = 2 * time.Minute
+	ht := time.NewTicker(healthCheckInterval)
+	defer ht.Stop()
+
 	var (
 		isLeader       bool
 		lastSnapTime   time.Time
@@ -1237,6 +1241,11 @@ func (js *jetStream) monitorCluster() {
 			if n.Leader() {
 				js.checkClusterSize()
 			}
+		case <-ht.C:
+			if hs := s.healthz(nil); hs.Error != _EMPTY_ {
+				s.Warnf("%v", hs.Error)
+			}
+
 		case <-lt.C:
 			s.Debugf("Checking JetStream cluster state")
 			// If we have a current leader or had one in the past we can cancel this here since the metaleader
