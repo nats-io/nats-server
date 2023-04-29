@@ -4010,6 +4010,13 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 
 		if rg.node != nil {
 			rg.node.Delete()
+			// Clear the node here.
+			rg.node = nil
+		}
+
+		// If we did seem to create a consumer make sure to stop it.
+		if o != nil {
+			o.stop()
 		}
 
 		var result *consumerAssignmentResult
