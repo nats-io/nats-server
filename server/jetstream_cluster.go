@@ -434,24 +434,89 @@ func (cc *jetStreamCluster) isStreamCurrent(account, stream string) bool {
 	return false
 }
 
+// Restart the stream in question.
+// Should only be called when the stream is know in a bad state.
+func (js *jetStream) restartStream(acc *Account, csa *streamAssignment) {
+	js.mu.Lock()
+	cc := js.cluster
+	if cc == nil {
+		js.mu.Unlock()
+		return
+	}
+	// Need to lookup the one directly from the meta layer, what we get handed is a copy if coming from isStreamHealthy.
+	asa := cc.streams[acc.Name]
+	if asa == nil {
+		js.mu.Unlock()
+		return
+	}
+	sa := asa[csa.Config.Name]
+	if sa == nil {
+		js.mu.Unlock()
+		return
+	}
+	// Make sure to clear out the raft node if still present in the meta layer.
+	if rg := sa.Group; rg != nil && rg.node != nil {
+		rg.node = nil
+	}
+	js.mu.Unlock()
+
+	// Process stream assignment to recreate.
+	js.processStreamAssignment(sa)
+
+	// If we had consumers assigned to this server they will be present in the copy, csa.
+	// They also need to be processed. The csa consumers is a copy of only our consumers,
+	// those assigned to us, but the consumer assignment's there are direct from the meta
+	// layer to make this part much easier and avoid excessive lookups.
+	for _, cca := range csa.consumers {
+		if cca.deleted {
+			continue
+		}
+		// Need to look up original as well here to make sure node is nil.
+		js.mu.Lock()
+		ca := sa.consumers[cca.Name]
+		if ca != nil && ca.Group != nil {
+			// Make sure node is wiped.
+			ca.Group.node = nil
+		}
+		js.mu.Unlock()
+		if ca != nil {
+			js.processConsumerAssignment(ca)
+		}
+	}
+}
+
 // isStreamHealthy will determine if the stream is up to date or very close.
 // For R1 it will make sure the stream is present on this server.
 func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) bool {
-	js.mu.RLock()
-	defer js.mu.RUnlock()
-
+	js.mu.Lock()
 	cc := js.cluster
 	if cc == nil {
 		// Non-clustered mode
+		js.mu.Unlock()
 		return true
 	}
+
+	// Pull the group out.
 	rg := sa.Group
 	if rg == nil {
+		js.mu.Unlock()
 		return false
 	}
-	if rg := sa.Group; rg != nil && (rg.node == nil || rg.node.Healthy()) {
+
+	streamName := sa.Config.Name
+	node := rg.node
+	js.mu.Unlock()
+
+	// First lookup stream and make sure its there.
+	mset, err := acc.lookupStream(streamName)
+	if err != nil {
+		js.restartStream(acc, sa)
+		return false
+	}
+
+	if node == nil || node.Healthy() {
 		// Check if we are processing a snapshot and are catching up.
-		if mset, err := acc.lookupStream(sa.Config.Name); err == nil && !mset.isCatchingUp() {
+		if !mset.isCatchingUp() {
 			return true
 		}
 	}
@@ -460,23 +525,35 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) bool {
 
 // isConsumerCurrent will determine if the consumer is up to date.
 // For R1 it will make sure the consunmer is present on this server.
-func (js *jetStream) isConsumerCurrent(mset *stream, consumer string, ca *consumerAssignment) bool {
+func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consumerAssignment) bool {
+	if mset == nil {
+		return false
+	}
 	js.mu.RLock()
-	defer js.mu.RUnlock()
-
 	cc := js.cluster
+	js.mu.RUnlock()
+
 	if cc == nil {
 		// Non-clustered mode
 		return true
 	}
 	o := mset.lookupConsumer(consumer)
 	if o == nil {
+		js.mu.Lock()
+		if ca.Group != nil {
+			ca.Group.node = nil
+		}
+		deleted := ca.deleted
+		js.mu.Unlock()
+		if !deleted {
+			js.processConsumerAssignment(ca)
+		}
 		return false
 	}
-	if n := o.raftNode(); n != nil && !n.Current() {
-		return false
+	if node := o.raftNode(); node == nil || node.Healthy() {
+		return true
 	}
-	return true
+	return false
 }
 
 // subjectsOverlap checks all existing stream assignments for the account cross-cluster for subject overlap
