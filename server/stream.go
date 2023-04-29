@@ -4474,7 +4474,7 @@ func (mset *stream) internalLoop() {
 	}
 }
 
-// Used to break consumers out of their
+// Used to break consumers out of their monitorConsumer go routines.
 func (mset *stream) resetAndWaitOnConsumers() {
 	mset.mu.RLock()
 	consumers := make([]*consumer, 0, len(mset.consumers))
@@ -4556,10 +4556,7 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	}
 	mset.mu.Unlock()
 
-	js.mu.RLock()
-	isShuttingDown := js.shuttingDown
-	js.mu.RUnlock()
-
+	isShuttingDown := js.isShuttingDown()
 	for _, o := range obs {
 		if !o.isClosed() {
 			// Third flag says do not broadcast a signal.

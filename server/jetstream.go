@@ -858,6 +858,13 @@ func (s *Server) signalPullConsumers() {
 	}
 }
 
+// Helper for determining if we are shutting down.
+func (js *jetStream) isShuttingDown() bool {
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+	return js.shuttingDown
+}
+
 // Shutdown jetstream for this server.
 func (s *Server) shutdownJetStream() {
 	s.mu.RLock()

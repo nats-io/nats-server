@@ -2567,6 +2567,12 @@ func (mset *stream) resetClusteredState(err error) bool {
 		node.StepDown()
 	}
 
+	// If we detect we are shutting down just return.
+	if js != nil && js.isShuttingDown() {
+		s.Debugf("Will not reset stream, jetstream shutting down")
+		return false
+	}
+
 	// Server
 	if js.limitsExceeded(stype) {
 		s.Debugf("Will not reset stream, server resources exceeded")
@@ -3203,19 +3209,23 @@ func (s *Server) removeStream(ourID string, mset *stream, nsa *streamAssignment)
 			node.StepDown(nsa.Group.Preferred)
 		}
 		node.ProposeRemovePeer(ourID)
-		// shut down monitor by shutting down raft
+		// shutdown monitor by shutting down raft.
 		node.Delete()
 	}
 
+	var isShuttingDown bool
 	// Make sure this node is no longer attached to our stream assignment.
 	if js, _ := s.getJetStreamCluster(); js != nil {
 		js.mu.Lock()
 		nsa.Group.node = nil
+		isShuttingDown = js.shuttingDown
 		js.mu.Unlock()
 	}
 
-	// wait for monitor to be shut down
-	mset.monitorWg.Wait()
+	if !isShuttingDown {
+		// wait for monitor to be shutdown.
+		mset.monitorWg.Wait()
+	}
 	mset.stop(true, false)
 }
 
