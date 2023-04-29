@@ -4395,6 +4395,13 @@ func (o *consumer) delete() error {
 	return o.stopWithFlags(true, false, true, true)
 }
 
+// To test for closed state.
+func (o *consumer) isClosed() bool {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.closed
+}
+
 func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	o.mu.Lock()
 	js := o.js

@@ -4556,12 +4556,20 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	}
 	mset.mu.Unlock()
 
+	js.mu.RLock()
+	isShuttingDown := js.shuttingDown
+	js.mu.RUnlock()
+
 	for _, o := range obs {
-		// Third flag says do not broadcast a signal.
-		// TODO(dlc) - If we have an err here we don't want to stop
-		// but should we log?
-		o.stopWithFlags(deleteFlag, deleteFlag, false, advisory)
-		o.monitorWg.Wait()
+		if !o.isClosed() {
+			// Third flag says do not broadcast a signal.
+			// TODO(dlc) - If we have an err here we don't want to stop
+			// but should we log?
+			o.stopWithFlags(deleteFlag, deleteFlag, false, advisory)
+			if !isShuttingDown {
+				o.monitorWg.Wait()
+			}
+		}
 	}
 
 	mset.mu.Lock()
