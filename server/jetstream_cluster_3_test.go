@@ -3833,4 +3833,19 @@ func TestJetStreamClusterHealthzCheckForStoppedAssets(t *testing.T) {
 		}
 		return nil
 	})
+
+	// Now just stop the raft node from underneath the consumer.
+	o = mset.lookupConsumer("d")
+	require_NotNil(t, o)
+	node := o.raftNode()
+	require_NotNil(t, node)
+	node.Stop()
+
+	checkFor(t, 5*time.Second, 500*time.Millisecond, func() error {
+		hs := s.healthz(nil)
+		if hs.Error != _EMPTY_ {
+			return errors.New(hs.Error)
+		}
+		return nil
+	})
 }

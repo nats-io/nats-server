@@ -537,8 +537,10 @@ func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consum
 		// Non-clustered mode
 		return true
 	}
-	o := mset.lookupConsumer(consumer)
-	if o == nil {
+
+	// When we try to restart we nil out the node if applicable
+	// and reprocess the consumer assignment.
+	restartConsumer := func() {
 		js.mu.Lock()
 		if ca.Group != nil {
 			ca.Group.node = nil
@@ -548,10 +550,19 @@ func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consum
 		if !deleted {
 			js.processConsumerAssignment(ca)
 		}
+	}
+
+	o := mset.lookupConsumer(consumer)
+	if o == nil {
+		restartConsumer()
 		return false
 	}
 	if node := o.raftNode(); node == nil || node.Healthy() {
 		return true
+	} else if node != nil && node.State() == Closed {
+		// We have a consumer, and it should have a running node but it is closed.
+		o.stop()
+		restartConsumer()
 	}
 	return false
 }
