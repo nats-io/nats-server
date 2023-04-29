@@ -1142,6 +1142,13 @@ func (js *jetStream) monitorCluster() {
 	ht := time.NewTicker(healthCheckInterval)
 	defer ht.Stop()
 
+	// Utility to check health.
+	checkHealth := func() {
+		if hs := s.healthz(nil); hs.Error != _EMPTY_ {
+			s.Warnf("%v", hs.Error)
+		}
+	}
+
 	var (
 		isLeader       bool
 		lastSnapTime   time.Time
@@ -1216,6 +1223,8 @@ func (js *jetStream) monitorCluster() {
 					ru = nil
 					s.Debugf("Recovered JetStream cluster metadata")
 					js.checkForOrphans()
+					// Do a health check here as well.
+					go checkHealth()
 					continue
 				}
 				// FIXME(dlc) - Deal with errors.
@@ -1232,6 +1241,7 @@ func (js *jetStream) monitorCluster() {
 				}
 			}
 			aq.recycle(&ces)
+
 		case isLeader = <-lch:
 			// For meta layer synchronize everyone to our state on becoming leader.
 			if isLeader {
@@ -1253,9 +1263,8 @@ func (js *jetStream) monitorCluster() {
 				js.checkClusterSize()
 			}
 		case <-ht.C:
-			if hs := s.healthz(nil); hs.Error != _EMPTY_ {
-				s.Warnf("%v", hs.Error)
-			}
+			// Do this in a separate go routine.
+			go checkHealth()
 
 		case <-lt.C:
 			s.Debugf("Checking JetStream cluster state")
