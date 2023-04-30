@@ -621,7 +621,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	mset.mu.Lock()
 	if mset.client == nil || mset.store == nil || mset.consumers == nil {
 		mset.mu.Unlock()
-		return nil, errors.New("invalid stream")
+		return nil, NewJSStreamInvalidError()
 	}
 
 	// If this one is durable and already exists, we let that be ok as long as only updating what should be allowed.
@@ -4393,6 +4393,13 @@ func (o *consumer) deleteWithoutAdvisory() error {
 // Delete will delete the consumer for the associated stream and send advisories.
 func (o *consumer) delete() error {
 	return o.stopWithFlags(true, false, true, true)
+}
+
+// To test for closed state.
+func (o *consumer) isClosed() bool {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.closed
 }
 
 func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {

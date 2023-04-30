@@ -601,6 +601,20 @@ func (mset *stream) streamAssignment() *streamAssignment {
 }
 
 func (mset *stream) setStreamAssignment(sa *streamAssignment) {
+	var node RaftNode
+
+	mset.mu.RLock()
+	js := mset.js
+	mset.mu.RUnlock()
+
+	if js != nil {
+		js.mu.RLock()
+		if sa.Group != nil {
+			node = sa.Group.node
+		}
+		js.mu.RUnlock()
+	}
+
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 
@@ -610,7 +624,7 @@ func (mset *stream) setStreamAssignment(sa *streamAssignment) {
 	}
 
 	// Set our node.
-	mset.node = sa.Group.node
+	mset.node = node
 	if mset.node != nil {
 		mset.node.UpdateKnownPeers(sa.Group.Peers)
 	}
@@ -4460,7 +4474,7 @@ func (mset *stream) internalLoop() {
 	}
 }
 
-// Used to break consumers out of their
+// Used to break consumers out of their monitorConsumer go routines.
 func (mset *stream) resetAndWaitOnConsumers() {
 	mset.mu.RLock()
 	consumers := make([]*consumer, 0, len(mset.consumers))
@@ -4542,12 +4556,17 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	}
 	mset.mu.Unlock()
 
+	isShuttingDown := js.isShuttingDown()
 	for _, o := range obs {
-		// Third flag says do not broadcast a signal.
-		// TODO(dlc) - If we have an err here we don't want to stop
-		// but should we log?
-		o.stopWithFlags(deleteFlag, deleteFlag, false, advisory)
-		o.monitorWg.Wait()
+		if !o.isClosed() {
+			// Third flag says do not broadcast a signal.
+			// TODO(dlc) - If we have an err here we don't want to stop
+			// but should we log?
+			o.stopWithFlags(deleteFlag, deleteFlag, false, advisory)
+			if !isShuttingDown {
+				o.monitorWg.Wait()
+			}
+		}
 	}
 
 	mset.mu.Lock()

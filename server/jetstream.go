@@ -1,4 +1,4 @@
-// Copyright 2019-2022 The NATS Authors
+// Copyright 2019-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -109,11 +109,14 @@ type jetStream struct {
 	started       time.Time
 
 	// System level request to purge a stream move
-	accountPurge   *subscription
+	accountPurge *subscription
+
+	// Some bools regarding general state.
 	metaRecovering bool
 	standAlone     bool
 	disabled       bool
 	oos            bool
+	shuttingDown   bool
 }
 
 type remoteUsage struct {
@@ -855,6 +858,13 @@ func (s *Server) signalPullConsumers() {
 	}
 }
 
+// Helper for determining if we are shutting down.
+func (js *jetStream) isShuttingDown() bool {
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+	return js.shuttingDown
+}
+
 // Shutdown jetstream for this server.
 func (s *Server) shutdownJetStream() {
 	s.mu.RLock()
@@ -887,6 +897,8 @@ func (s *Server) shutdownJetStream() {
 	}
 	accPurgeSub := js.accountPurge
 	js.accountPurge = nil
+	// Signal we are shutting down.
+	js.shuttingDown = true
 	js.mu.Unlock()
 
 	if accPurgeSub != nil {
