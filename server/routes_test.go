@@ -615,7 +615,7 @@ func TestBlockedShutdownOnRouteAcceptLoopFailure(t *testing.T) {
 	opts.Cluster.Port = 7222
 
 	s := New(opts)
-	go s.Start()
+	s.Start()
 	// Wait a second
 	time.Sleep(time.Second)
 	ch := make(chan bool)
@@ -1399,9 +1399,7 @@ func TestRouteIPResolutionAndRouteToSelf(t *testing.T) {
 	defer s.Shutdown()
 	l := &routeHostLookupLogger{errCh: make(chan string, 1), ch: make(chan bool, 1)}
 	s.SetLogger(l, true, true)
-	go func() {
-		s.Start()
-	}()
+	s.Start()
 	if err := s.readyForConnections(time.Second); err != nil {
 		t.Fatal(err)
 	}

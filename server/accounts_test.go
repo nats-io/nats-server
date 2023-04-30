@@ -213,7 +213,7 @@ func TestAccountIsolationExportImport(t *testing.T) {
 			// Setup NATS server.
 			s := opTrustBasicSetup()
 			defer s.Shutdown()
-			go s.Start()
+			s.Start()
 			if err := s.readyForConnections(5 * time.Second); err != nil {
 				t.Fatal(err)
 			}
@@ -1677,7 +1677,7 @@ func TestAccountRequestReplyTrackLatency(t *testing.T) {
 	defer s.Shutdown()
 
 	// Run server in Go routine. We need this one running for internal sending of msgs.
-	go s.Start()
+	s.Start()
 	// Wait for accept loop(s) to be started
 	if err := s.readyForConnections(10 * time.Second); err != nil {
 		t.Fatal(err)

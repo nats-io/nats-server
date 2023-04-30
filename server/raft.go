@@ -1172,9 +1172,16 @@ func (n *raft) isCatchingUp() bool {
 	return n.catchup != nil
 }
 
-// Lock should be held. This function may block for up to ~5ms to check
+// This function may block for up to ~10ms to check
 // forward progress in some cases.
+// Lock should be held.
 func (n *raft) isCurrent(includeForwardProgress bool) bool {
+	// Check if we are closed.
+	if n.state == Closed {
+		n.debug("Not current, node is closed")
+		return false
+	}
+
 	// Check whether we've made progress on any state, 0 is invalid so not healthy.
 	if n.commit == 0 {
 		n.debug("Not current, no commits")
@@ -1219,7 +1226,7 @@ func (n *raft) isCurrent(includeForwardProgress bool) bool {
 	if startDelta := n.commit - n.applied; startDelta > 0 {
 		for i := 0; i < 10; i++ { // 5ms, in 0.5ms increments
 			n.Unlock()
-			time.Sleep(time.Millisecond / 2)
+			time.Sleep(time.Millisecond)
 			n.Lock()
 			if n.commit-n.applied < startDelta {
 				// The gap is getting smaller, so we're making forward progress.

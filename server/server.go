@@ -1981,8 +1981,10 @@ func (s *Server) fetchAccount(name string) (*Account, error) {
 	return acc, nil
 }
 
-// Start up the server, this will block.
-// Start via a Go routine if needed.
+// Start up the server, this will not block.
+//
+// WaitForShutdown can be used to block and wait for the server to shutdown properly if needed
+// after calling s.Shutdown()
 func (s *Server) Start() {
 	s.Noticef("Starting nats-server")
 

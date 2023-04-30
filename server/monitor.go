@@ -3162,7 +3162,8 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 				csa.consumers = make(map[string]*consumerAssignment)
 				for consumer, ca := range sa.consumers {
 					if ca.Group.isMember(ourID) {
-						csa.consumers[consumer] = ca.copyGroup()
+						// Use original here. Not a copy.
+						csa.consumers[consumer] = ca
 					}
 				}
 				nasa[stream] = csa
@@ -3191,7 +3192,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 			mset, _ := acc.lookupStream(stream)
 			// Now check consumers.
 			for consumer, ca := range sa.consumers {
-				if !js.isConsumerCurrent(mset, consumer, ca) {
+				if !js.isConsumerHealthy(mset, consumer, ca) {
 					health.Status = na
 					health.Error = fmt.Sprintf("JetStream consumer '%s > %s > %s' is not current", acc, stream, consumer)
 					return health
