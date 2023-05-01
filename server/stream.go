@@ -4646,9 +4646,8 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 
 	if deleteFlag {
 		if store != nil {
-			if err := store.Delete(); err != nil {
-				return err
-			}
+			// Ignore errors.
+			store.Delete()
 		}
 		// Release any resources.
 		js.releaseStreamResources(&mset.cfg)
@@ -4658,9 +4657,8 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 		os.Remove(filepath.Join(accDir, streamsDir))
 		os.Remove(accDir)
 	} else if store != nil {
-		if err := store.Stop(); err != nil {
-			return err
-		}
+		// Ignore errors.
+		store.Stop()
 	}
 
 	return nil
