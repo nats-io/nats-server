@@ -3849,3 +3849,37 @@ func TestJetStreamClusterHealthzCheckForStoppedAssets(t *testing.T) {
 		return nil
 	})
 }
+
+// Make sure that stopping a stream shutdowns down it's raft node.
+func TestJetStreamClusterStreamNodeShutdownBugOnStop(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "NATS", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"*"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 100; i++ {
+		sendStreamMsg(t, nc, "foo", "HELLO")
+	}
+
+	s := c.randomServer()
+	numNodesStart := s.numRaftNodes()
+	mset, err := s.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	node := mset.raftNode()
+	require_NotNil(t, node)
+	node.InstallSnapshot(mset.stateSnapshot())
+	// Stop the stream
+	mset.stop(false, false)
+
+	if numNodes := s.numRaftNodes(); numNodes != numNodesStart-1 {
+		t.Fatalf("RAFT nodes after stream stop incorrect: %d vs %d", numNodesStart, numNodes)
+	}
+}
