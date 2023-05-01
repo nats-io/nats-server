@@ -339,6 +339,7 @@ func (s *Server) updateRemoteLeafNodesTLSConfig(opts *Options) {
 		if ro.TLSConfig != nil {
 			cfg.Lock()
 			cfg.TLSConfig = ro.TLSConfig.Clone()
+			cfg.TLSHandshakeFirst = ro.TLSHandshakeFirst
 			cfg.Unlock()
 		}
 	}
@@ -938,6 +939,7 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 	c.initClient()
 	c.Noticef("Leafnode connection created%s %s", remoteSuffix, c.opts.Name)
 
+	var tlsFirst bool
 	if remote != nil {
 		solicited = true
 		remote.Lock()
@@ -946,6 +948,7 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 		if !c.leaf.remote.Hub {
 			c.leaf.isSpoke = true
 		}
+		tlsFirst = remote.TLSHandshakeFirst
 		remote.Unlock()
 		c.acc = acc
 	} else {
@@ -990,6 +993,30 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 				return nil
 			}
 		} else {
+			// If configured to do TLS handshake first
+			if tlsFirst {
+				// Still check if there is really need for TLS in case user set
+				// this boolean but nothing else...
+				tlsRequired, tlsConfig, tlsName, tlsTimeout := c.leafNodeGetTLSConfigForSolicit(remote, true)
+
+				// If TLS required, peform handshake.
+				if tlsRequired {
+					// Get the URL that was used to connect to the remote server.
+					rURL := remote.getCurrentURL()
+
+					// Perform the client-side TLS handshake.
+					if resetTLSName, err := c.doTLSClientHandshake("leafnode", rURL, tlsConfig, tlsName, tlsTimeout, opts.LeafNode.TLSPinnedCerts); err != nil {
+						// Check if we need to reset the remote's TLS name.
+						if resetTLSName {
+							remote.Lock()
+							remote.tlsName = _EMPTY_
+							remote.Unlock()
+						}
+						c.mu.Unlock()
+						return nil
+					}
+				}
+			}
 			// We need to wait for the info, but not for too long.
 			c.nc.SetReadDeadline(time.Now().Add(DEFAULT_LEAFNODE_INFO_WAIT))
 		}
@@ -1004,17 +1031,19 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 		info.Nonce = string(c.nonce)
 		info.CID = c.cid
 		proto := generateInfoJSON(info)
-		// We have to send from this go routine because we may
-		// have to block for TLS handshake before we start our
-		// writeLoop go routine. The other side needs to receive
-		// this before it can initiate the TLS handshake..
-		c.sendProtoNow(proto)
+		if !opts.LeafNode.TLSHandshakeFirst {
+			// We have to send from this go routine because we may
+			// have to block for TLS handshake before we start our
+			// writeLoop go routine. The other side needs to receive
+			// this before it can initiate the TLS handshake..
+			c.sendProtoNow(proto)
 
-		// The above call could have marked the connection as closed (due to TCP error).
-		if c.isClosed() {
-			c.mu.Unlock()
-			c.closeConnection(WriteError)
-			return nil
+			// The above call could have marked the connection as closed (due to TCP error).
+			if c.isClosed() {
+				c.mu.Unlock()
+				c.closeConnection(WriteError)
+				return nil
+			}
 		}
 
 		// Check to see if we need to spin up TLS.
@@ -1022,6 +1051,17 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 			// Perform server-side TLS handshake.
 			if err := c.doTLSServerHandshake("leafnode", opts.LeafNode.TLSConfig, opts.LeafNode.TLSTimeout, opts.LeafNode.TLSPinnedCerts); err != nil {
 				c.mu.Unlock()
+				return nil
+			}
+		}
+
+		// If the user wants the TLS handshake to occur first, now that it is
+		// done, send the INFO protocol.
+		if opts.LeafNode.TLSHandshakeFirst {
+			c.sendProtoNow(proto)
+			if c.isClosed() {
+				c.mu.Unlock()
+				c.closeConnection(WriteError)
 				return nil
 			}
 		}
@@ -1042,7 +1082,7 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 	// Spin up the read loop.
 	s.startGoRoutine(func() { c.readLoop(preBuf) })
 
-	// We will sping the write loop for solicited connections only
+	// We will spin the write loop for solicited connections only
 	// when processing the INFO and after switching to TLS if needed.
 	if !solicited {
 		s.startGoRoutine(func() { c.writeLoop() })
@@ -2611,7 +2651,7 @@ func (c *client) leafNodeSolicitWSConnection(opts *Options, rURL *url.URL, remot
 const connectProcessTimeout = 2 * time.Second
 
 // This is invoked for remote LEAF remote connections after processing the INFO
-// protocol. This will do the TLS handshake (if needed be)
+// protocol. This will do the TLS handshake (if need be)
 func (s *Server) leafNodeResumeConnectProcess(c *client) {
 	clusterName := s.ClusterName()
 
@@ -2625,8 +2665,9 @@ func (s *Server) leafNodeResumeConnectProcess(c *client) {
 	var tlsRequired bool
 
 	// In case of websocket, the TLS handshake has been already done.
-	// So check only for non websocket connections.
-	if !c.isWebsocket() {
+	// So check only for non websocket connections and for configurations
+	// where the TLS Handshake was not done first.
+	if !c.isWebsocket() && !remote.TLSHandshakeFirst {
 		var tlsConfig *tls.Config
 		var tlsName string
 		var tlsTimeout float64

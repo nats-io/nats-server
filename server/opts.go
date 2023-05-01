@@ -153,6 +153,7 @@ type LeafNodeOpts struct {
 	TLSTimeout        float64       `json:"tls_timeout,omitempty"`
 	TLSMap            bool          `json:"-"`
 	TLSPinnedCerts    PinnedCertSet `json:"-"`
+	TLSHandshakeFirst bool          `json:"-"`
 	Advertise         string        `json:"-"`
 	NoAdvertise       bool          `json:"-"`
 	ReconnectInterval time.Duration `json:"-"`
@@ -183,17 +184,18 @@ type SignatureHandler func([]byte) (string, []byte, error)
 
 // RemoteLeafOpts are options for connecting to a remote server as a leaf node.
 type RemoteLeafOpts struct {
-	LocalAccount string           `json:"local_account,omitempty"`
-	NoRandomize  bool             `json:"-"`
-	URLs         []*url.URL       `json:"urls,omitempty"`
-	Credentials  string           `json:"-"`
-	SignatureCB  SignatureHandler `json:"-"`
-	TLS          bool             `json:"-"`
-	TLSConfig    *tls.Config      `json:"-"`
-	TLSTimeout   float64          `json:"tls_timeout,omitempty"`
-	Hub          bool             `json:"hub,omitempty"`
-	DenyImports  []string         `json:"-"`
-	DenyExports  []string         `json:"-"`
+	LocalAccount      string           `json:"local_account,omitempty"`
+	NoRandomize       bool             `json:"-"`
+	URLs              []*url.URL       `json:"urls,omitempty"`
+	Credentials       string           `json:"-"`
+	SignatureCB       SignatureHandler `json:"-"`
+	TLS               bool             `json:"-"`
+	TLSConfig         *tls.Config      `json:"-"`
+	TLSTimeout        float64          `json:"tls_timeout,omitempty"`
+	TLSHandshakeFirst bool             `json:"-"`
+	Hub               bool             `json:"hub,omitempty"`
+	DenyImports       []string         `json:"-"`
+	DenyExports       []string         `json:"-"`
 
 	// When an URL has the "ws" (or "wss") scheme, then the server will initiate the
 	// connection as a websocket connection. By default, the websocket frames will be
@@ -604,6 +606,7 @@ type TLSConfigOpts struct {
 	Insecure          bool
 	Map               bool
 	TLSCheckKnownURLs bool
+	HandshakeFirst    bool // Indicate that the TLS handshake should occur first, before sending the INFO protocol
 	Timeout           float64
 	RateLimit         int64
 	Ciphers           []uint16
@@ -2173,6 +2176,7 @@ func parseLeafNodes(v interface{}, opts *Options, errors *[]error, warnings *[]e
 			opts.LeafNode.TLSTimeout = tc.Timeout
 			opts.LeafNode.TLSMap = tc.Map
 			opts.LeafNode.TLSPinnedCerts = tc.PinnedCerts
+			opts.LeafNode.TLSHandshakeFirst = tc.HandshakeFirst
 			opts.LeafNode.tlsConfigOpts = tc
 		case "leafnode_advertise", "advertise":
 			opts.LeafNode.Advertise = mv.(string)
@@ -2388,6 +2392,7 @@ func parseRemoteLeafNodes(v interface{}, errors *[]error, warnings *[]error) ([]
 				} else {
 					remote.TLSTimeout = float64(DEFAULT_LEAF_TLS_TIMEOUT) / float64(time.Second)
 				}
+				remote.TLSHandshakeFirst = tc.HandshakeFirst
 				remote.tlsConfigOpts = tc
 			case "hub":
 				remote.Hub = v.(bool)
@@ -4205,6 +4210,8 @@ func parseTLS(v interface{}, isClientCtx bool) (t *TLSConfigOpts, retErr error) 
 				return nil, &configErr{tk, certstore.ErrBadCertMatchField.Error()}
 			}
 			tc.CertMatch = certMatch
+		case "handshake_first", "first", "immediate":
+			tc.HandshakeFirst = mv.(bool)
 		default:
 			return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, unknown field [%q]", mk)}
 		}
