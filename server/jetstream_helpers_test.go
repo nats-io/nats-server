@@ -116,6 +116,13 @@ var jsClusterAccountsTempl = `
 		routes = [%s]
 	}
 
+	websocket {
+		listen: 127.0.0.1:-1
+		compression: true
+		handshake_timeout: "5s"
+		no_tls: true
+	}
+
 	no_auth_user: one
 
 	accounts {
@@ -905,6 +912,18 @@ var jsClusterTemplWithSingleLeafNode = `
 	accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
 `
 
+var jsClusterTemplWithSingleFleetLeafNode = `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	cluster: { name: fleet }
+	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+
+	{{leaf}}
+
+	# For access to system account.
+	accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+`
+
 var jsClusterTemplWithSingleLeafNodeNoJS = `
 	listen: 127.0.0.1:-1
 	server_name: %s
@@ -973,8 +992,12 @@ func (c *cluster) createLeafNodeWithTemplate(name, template string) *Server {
 }
 
 func (c *cluster) createLeafNodeWithTemplateNoSystem(name, template string) *Server {
+	return c.createLeafNodeWithTemplateNoSystemWithProto(name, template, "nats")
+}
+
+func (c *cluster) createLeafNodeWithTemplateNoSystemWithProto(name, template, proto string) *Server {
 	c.t.Helper()
-	tmpl := c.createLeafSolicitNoSystem(template)
+	tmpl := c.createLeafSolicitNoSystemWithProto(template, proto)
 	conf := fmt.Sprintf(tmpl, name, c.t.TempDir())
 	s, o := RunServerWithConfig(createConfFile(c.t, []byte(conf)))
 	c.servers = append(c.servers, s)
@@ -984,6 +1007,10 @@ func (c *cluster) createLeafNodeWithTemplateNoSystem(name, template string) *Ser
 
 // Helper to generate the leaf solicit configs.
 func (c *cluster) createLeafSolicit(tmpl string) string {
+	return c.createLeafSolicitWithProto(tmpl, "nats")
+}
+
+func (c *cluster) createLeafSolicitWithProto(tmpl, proto string) string {
 	c.t.Helper()
 
 	// Create our leafnode cluster template first.
@@ -993,8 +1020,8 @@ func (c *cluster) createLeafSolicit(tmpl string) string {
 			continue
 		}
 		ln := s.getOpts().LeafNode
-		lns = append(lns, fmt.Sprintf("nats://%s:%d", ln.Host, ln.Port))
-		lnss = append(lnss, fmt.Sprintf("nats://admin:s3cr3t!@%s:%d", ln.Host, ln.Port))
+		lns = append(lns, fmt.Sprintf("%s://%s:%d", proto, ln.Host, ln.Port))
+		lnss = append(lnss, fmt.Sprintf("%s://admin:s3cr3t!@%s:%d", proto, ln.Host, ln.Port))
 	}
 	lnc := strings.Join(lns, ", ")
 	lnsc := strings.Join(lnss, ", ")
@@ -1002,19 +1029,26 @@ func (c *cluster) createLeafSolicit(tmpl string) string {
 	return strings.Replace(tmpl, "{{leaf}}", lconf, 1)
 }
 
-func (c *cluster) createLeafSolicitNoSystem(tmpl string) string {
+func (c *cluster) createLeafSolicitNoSystemWithProto(tmpl, proto string) string {
 	c.t.Helper()
 
 	// Create our leafnode cluster template first.
-	var lns string
+	var lns []string
 	for _, s := range c.servers {
 		if s.ClusterName() != c.name {
 			continue
 		}
-		ln := s.getOpts().LeafNode
-		lns = fmt.Sprintf("nats://%s:%d", ln.Host, ln.Port)
+		switch proto {
+		case "nats", "tls":
+			ln := s.getOpts().LeafNode
+			lns = append(lns, fmt.Sprintf("%s://%s:%d", proto, ln.Host, ln.Port))
+		case "ws", "wss":
+			ln := s.getOpts().Websocket
+			lns = append(lns, fmt.Sprintf("%s://%s:%d", proto, ln.Host, ln.Port))
+		}
 	}
-	return strings.Replace(tmpl, "{{leaf}}", fmt.Sprintf(jsLeafNoSysFrag, lns), 1)
+	lnc := strings.Join(lns, ", ")
+	return strings.Replace(tmpl, "{{leaf}}", fmt.Sprintf(jsLeafNoSysFrag, lnc), 1)
 }
 
 func (c *cluster) createLeafNodesWithTemplateMixedMode(template, clusterName string, numJsServers, numNonServers int, doJSConfig bool) *cluster {
