@@ -789,6 +789,18 @@ func (o *mqttInactiveThresholdReload) Apply(s *Server) {
 	s.Noticef("Reloaded: MQTT consumer_inactive_threshold = %v", o.newValue)
 }
 
+type leafNodeOption struct {
+	noopOption
+}
+
+func (l *leafNodeOption) Apply(s *Server) {
+	opts := s.getOpts()
+	s.Noticef("Reloaded: LeafNode TLS HandshakeFirst value is: %v", opts.LeafNode.TLSHandshakeFirst)
+	for _, r := range opts.LeafNode.Remotes {
+		s.Noticef("Reloaded: LeafNode Remote to %v TLS HandshakeFirst value is: %v", r.URLs, r.TLSHandshakeFirst)
+	}
+}
+
 // Compares options and disconnects clients that are no longer listed in pinned certs. Lock must not be held.
 func (s *Server) recheckPinnedCerts(curOpts *Options, newOpts *Options) {
 	s.mu.Lock()
@@ -1232,6 +1244,24 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			tmpNew.TLSConfig = nil
 			tmpOld.tlsConfigOpts = nil
 			tmpNew.tlsConfigOpts = nil
+			// We will allow TLSHandshakeFirst to me config reloaded. First,
+			// we just want to detect if there was a change in the leafnodes{}
+			// block, and if not, we will check the remotes.
+			handshakeFirstChanged := tmpOld.TLSHandshakeFirst != tmpNew.TLSHandshakeFirst
+			// If changed, set them (in the temporary variables) to false so that the
+			// rest of the comparison does not fail.
+			if handshakeFirstChanged {
+				tmpOld.TLSHandshakeFirst, tmpNew.TLSHandshakeFirst = false, false
+			} else if len(tmpOld.Remotes) == len(tmpNew.Remotes) {
+				// Since we don't support changes in the remotes, we will do a
+				// simple pass to see if there was a change of this field.
+				for i := 0; i < len(tmpOld.Remotes); i++ {
+					if tmpOld.Remotes[i].TLSHandshakeFirst != tmpNew.Remotes[i].TLSHandshakeFirst {
+						handshakeFirstChanged = true
+						break
+					}
+				}
+			}
 
 			// Need to do the same for remote leafnodes' TLS configs.
 			// But we can't just set remotes' TLSConfig to nil otherwise this
@@ -1319,6 +1349,12 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 				// See TODO(ik) note below about printing old/new values.
 				return nil, fmt.Errorf("config reload not supported for %s: old=%v, new=%v",
 					field.Name, oldValue, newValue)
+			}
+
+			// If we detected a change in TLSHandshakeFirst, then let's add to
+			// the diffOpts so that we can print that we change that.
+			if handshakeFirstChanged {
+				diffOpts = append(diffOpts, &leafNodeOption{})
 			}
 		case "jetstream":
 			new := newValue.(bool)
@@ -1506,6 +1542,7 @@ func copyRemoteLNConfigForReloadCompare(current []*RemoteLeafOpts) []*RemoteLeaf
 		cp := *rcfg
 		cp.TLSConfig = nil
 		cp.tlsConfigOpts = nil
+		cp.TLSHandshakeFirst = false
 		// This is set only when processing a CONNECT, so reset here so that we
 		// don't fail the DeepEqual comparison.
 		cp.TLS = false

@@ -4846,3 +4846,137 @@ func TestLeafNodeDuplicateMsg(t *testing.T) {
 	t.Run("sub_b2_pub_a1", func(t *testing.T) { check(t, b2, a1) })
 	t.Run("sub_b2_pub_a2", func(t *testing.T) { check(t, b2, a2) })
 }
+
+func TestLeafNodeTLSHandshakeFirstVerifyNoInfoSent(t *testing.T) {
+	confHub := createConfFile(t, []byte(`
+		port : -1
+		leafnodes : {
+			port : -1
+			tls {
+				cert_file: "../test/configs/certs/server-cert.pem"
+				key_file:  "../test/configs/certs/server-key.pem"
+				ca_file: "../test/configs/certs/ca.pem"
+				timeout: 2
+				handshake_first: true
+			}
+		}
+	`))
+	s1, o1 := RunServerWithConfig(confHub)
+	defer s1.Shutdown()
+
+	c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", o1.LeafNode.Port), 2*time.Second)
+	require_NoError(t, err)
+	defer c.Close()
+
+	buf := make([]byte, 1024)
+	// We will wait for up to 500ms to see if the server is sending (incorrectly)
+	// the INFO.
+	c.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	n, err := c.Read(buf)
+	c.SetReadDeadline(time.Time{})
+	// If we did not get an error, this is an issue...
+	if err == nil {
+		t.Fatalf("Should not have received anything, got n=%v buf=%s", n, buf[:n])
+	}
+	// We expect a timeout error
+	if ne, ok := err.(net.Error); !ok || !ne.Timeout() {
+		t.Fatalf("Expected a timeout error, got %v", err)
+	}
+}
+
+func TestLeafNodeTLSHandshakeFirst(t *testing.T) {
+	tmpl1 := `
+		port : -1
+		leafnodes : {
+			port : -1
+			tls {
+				cert_file: "../test/configs/certs/server-cert.pem"
+				key_file:  "../test/configs/certs/server-key.pem"
+				ca_file: "../test/configs/certs/ca.pem"
+				timeout: 2
+				handshake_first: %s
+			}
+		}
+	`
+	confHub := createConfFile(t, []byte(fmt.Sprintf(tmpl1, "true")))
+	s1, o1 := RunServerWithConfig(confHub)
+	defer s1.Shutdown()
+
+	tmpl2 := `
+		port: -1
+		leafnodes : {
+			port : -1
+			remotes : [
+				{
+					urls : [tls://127.0.0.1:%d]
+					tls {
+						cert_file: "../test/configs/certs/client-cert.pem"
+						key_file:  "../test/configs/certs/client-key.pem"
+						ca_file: "../test/configs/certs/ca.pem"
+						timeout: 2
+						first: %s
+					}
+				}
+			]
+		}
+	`
+	confSpoke := createConfFile(t, []byte(fmt.Sprintf(tmpl2, o1.LeafNode.Port, "true")))
+	s2, _ := RunServerWithConfig(confSpoke)
+	defer s2.Shutdown()
+
+	checkLeafNodeConnected(t, s2)
+
+	s2.Shutdown()
+
+	// Now check that there will be a failure if the remote does not ask for
+	// handshake first since the hub is configured that way.
+	// Set a logger on s1 to capture errors
+	l := &captureErrorLogger{errCh: make(chan string, 10)}
+	s1.SetLogger(l, false, false)
+
+	confSpoke = createConfFile(t, []byte(fmt.Sprintf(tmpl2, o1.LeafNode.Port, "false")))
+	s2, _ = RunServerWithConfig(confSpoke)
+	defer s2.Shutdown()
+
+	select {
+	case err := <-l.errCh:
+		if !strings.Contains(err, "handshake error") {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Did not get TLS handshake failure")
+	}
+
+	// Check configuration reload for this remote
+	reloadUpdateConfig(t, s2, confSpoke, fmt.Sprintf(tmpl2, o1.LeafNode.Port, "true"))
+	checkLeafNodeConnected(t, s2)
+	s2.Shutdown()
+
+	// Drain the logger error channel
+	for done := false; !done; {
+		select {
+		case <-l.errCh:
+		default:
+			done = true
+		}
+	}
+
+	// Now change the config on the hub
+	reloadUpdateConfig(t, s1, confHub, fmt.Sprintf(tmpl1, "false"))
+	// Restart s2
+	s2, _ = RunServerWithConfig(confSpoke)
+	defer s2.Shutdown()
+
+	select {
+	case err := <-l.errCh:
+		if !strings.Contains(err, "handshake error") {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Did not get TLS handshake failure")
+	}
+
+	// Reload again with "true"
+	reloadUpdateConfig(t, s1, confHub, fmt.Sprintf(tmpl1, "true"))
+	checkLeafNodeConnected(t, s2)
+}
