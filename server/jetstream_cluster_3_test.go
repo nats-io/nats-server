@@ -3849,3 +3849,90 @@ func TestJetStreamClusterHealthzCheckForStoppedAssets(t *testing.T) {
 		return nil
 	})
 }
+
+// Make sure that stopping a stream shutdowns down it's raft node.
+func TestJetStreamClusterStreamNodeShutdownBugOnStop(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "NATS", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"*"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 100; i++ {
+		sendStreamMsg(t, nc, "foo", "HELLO")
+	}
+
+	s := c.randomServer()
+	numNodesStart := s.numRaftNodes()
+	mset, err := s.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	node := mset.raftNode()
+	require_NotNil(t, node)
+	node.InstallSnapshot(mset.stateSnapshot())
+	// Stop the stream
+	mset.stop(false, false)
+
+	if numNodes := s.numRaftNodes(); numNodes != numNodesStart-1 {
+		t.Fatalf("RAFT nodes after stream stop incorrect: %d vs %d", numNodesStart, numNodes)
+	}
+}
+
+func TestJetStreamClusterStreamAccountingOnStoreError(t *testing.T) {
+	c := createJetStreamClusterWithTemplate(t, jsClusterMaxBytesAccountLimitTempl, "NATS", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"*"},
+		MaxBytes: 1 * 1024 * 1024 * 1024,
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	msg := strings.Repeat("Z", 32*1024)
+	for i := 0; i < 100; i++ {
+		sendStreamMsg(t, nc, "foo", msg)
+	}
+	s := c.randomServer()
+	acc, err := s.LookupAccount("$U")
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+	mset.mu.Lock()
+	mset.store.Stop()
+	sjs := mset.js
+	mset.mu.Unlock()
+
+	// Now delete the stream
+	js.DeleteStream("TEST")
+
+	// Wait for this to propgate.
+	// The bug will have us not release reserved resources properly.
+	time.Sleep(time.Second)
+	info, err := js.AccountInfo()
+	require_NoError(t, err)
+
+	// Default tier
+	if info.Store != 0 {
+		t.Fatalf("Expected store to be 0 but got %v", friendlyBytes(info.Store))
+	}
+
+	// Now check js from server directly regarding reserved.
+	sjs.mu.RLock()
+	reserved := sjs.storeReserved
+	sjs.mu.RUnlock()
+	// Under bug will show 1GB
+	if reserved != 0 {
+		t.Fatalf("Expected store reserved to be 0 after stream delete, got %v", friendlyBytes(reserved))
+	}
+}
