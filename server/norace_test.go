@@ -7810,3 +7810,57 @@ func TestNoRaceParallelStreamAndConsumerCreation(t *testing.T) {
 		t.Fatalf("Expected only one consumer to be really created, got %d out of %d attempts", numConsumers, np)
 	}
 }
+
+func TestNoRaceJetStreamClusterLeafnodeConnectPerf(t *testing.T) {
+	// Uncomment to run. Needs to be on a big machine. Do not want as part of Travis tests atm.
+	skip(t)
+
+	tmpl := strings.Replace(jsClusterAccountsTempl, "store_dir:", "domain: cloud, store_dir:", 1)
+	c := createJetStreamCluster(t, tmpl, "CLOUD", _EMPTY_, 3, 18033, true)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "STATE",
+		Subjects: []string{"STATE.GLOBAL.CELL1.*.>"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	tmpl = strings.Replace(jsClusterTemplWithSingleFleetLeafNode, "store_dir:", "domain: vehicle, store_dir:", 1)
+
+	var vinSerial int
+	genVIN := func() string {
+		vinSerial++
+		return fmt.Sprintf("7PDSGAALXNN%06d", vinSerial)
+	}
+
+	numVehicles := 500
+	for i := 0; i < numVehicles; i++ {
+		start := time.Now()
+		vin := genVIN()
+		ln := c.createLeafNodeWithTemplateNoSystemWithProto(vin, tmpl, "ws")
+		nc, js := jsClientConnect(t, ln)
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "VEHICLE",
+			Subjects: []string{"STATE.GLOBAL.LOCAL.>"},
+			Sources: []*nats.StreamSource{{
+				Name:          "STATE",
+				FilterSubject: fmt.Sprintf("STATE.GLOBAL.CELL1.%s.>", vin),
+				External: &nats.ExternalStream{
+					APIPrefix:     "$JS.cloud.API",
+					DeliverPrefix: fmt.Sprintf("DELIVER.STATE.GLOBAL.CELL1.%s", vin),
+				},
+			}},
+		})
+		require_NoError(t, err)
+		// Create the sourced stream.
+		checkLeafNodeConnectedCount(t, ln, 1)
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Fatalf("Took too long to create leafnode %d connection: %v", i+1, elapsed)
+		}
+		nc.Close()
+	}
+}
