@@ -1,4 +1,4 @@
-// Copyright 2019-2022 The NATS Authors
+// Copyright 2019-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -39,29 +39,31 @@ import (
 	"github.com/nats-io/nuid"
 )
 
-// Warning when user configures leafnode TLS insecure
-const leafnodeTLSInsecureWarning = "TLS certificate chain and hostname of solicited leafnodes will not be verified. DO NOT USE IN PRODUCTION!"
+const (
+	// Warning when user configures leafnode TLS insecure
+	leafnodeTLSInsecureWarning = "TLS certificate chain and hostname of solicited leafnodes will not be verified. DO NOT USE IN PRODUCTION!"
 
-// When a loop is detected, delay the reconnect of solicited connection.
-const leafNodeReconnectDelayAfterLoopDetected = 30 * time.Second
+	// When a loop is detected, delay the reconnect of solicited connection.
+	leafNodeReconnectDelayAfterLoopDetected = 30 * time.Second
 
-// When a server receives a message causing a permission violation, the
-// connection is closed and it won't attempt to reconnect for that long.
-const leafNodeReconnectAfterPermViolation = 30 * time.Second
+	// When a server receives a message causing a permission violation, the
+	// connection is closed and it won't attempt to reconnect for that long.
+	leafNodeReconnectAfterPermViolation = 30 * time.Second
 
-// When we have the same cluster name as the hub.
-const leafNodeReconnectDelayAfterClusterNameSame = 30 * time.Second
+	// When we have the same cluster name as the hub.
+	leafNodeReconnectDelayAfterClusterNameSame = 30 * time.Second
 
-// Prefix for loop detection subject
-const leafNodeLoopDetectionSubjectPrefix = "$LDS."
+	// Prefix for loop detection subject
+	leafNodeLoopDetectionSubjectPrefix = "$LDS."
 
-// Path added to URL to indicate to WS server that the connection is a
-// LEAF connection as opposed to a CLIENT.
-const leafNodeWSPath = "/leafnode"
+	// Path added to URL to indicate to WS server that the connection is a
+	// LEAF connection as opposed to a CLIENT.
+	leafNodeWSPath = "/leafnode"
 
-// This is the time the server will wait, when receiving a CONNECT,
-// before closing the connection if the required minimum version is not met.
-const leafNodeWaitBeforeClose = 5 * time.Second
+	// This is the time the server will wait, when receiving a CONNECT,
+	// before closing the connection if the required minimum version is not met.
+	leafNodeWaitBeforeClose = 5 * time.Second
+)
 
 type leaf struct {
 	// We have any auth stuff here for solicited connections.
@@ -1579,6 +1581,11 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 
 	c.mu.Unlock()
 
+	// Register the cluster, even if empty, as long as we are acting as a hub.
+	if !proto.Hub {
+		c.acc.registerLeafNodeCluster(proto.Cluster)
+	}
+
 	// Add in the leafnode here since we passed through auth at this point.
 	s.addLeafNodeConnection(c, proto.Name, proto.Cluster, true)
 
@@ -1793,32 +1800,41 @@ func (s *Server) updateLeafNodes(acc *Account, sub *subscription, delta int32) {
 		return
 	}
 
-	_l := [32]*client{}
-	leafs := _l[:0]
+	// Is this a loop detection subject.
+	isLDS := bytes.HasPrefix(sub.subject, []byte(leafNodeLoopDetectionSubjectPrefix))
 
-	// Grab all leaf nodes. Ignore a leafnode if sub's client is a leafnode and matches.
-	acc.mu.RLock()
-	for _, ln := range acc.lleafs {
-		if ln != sub.client {
-			leafs = append(leafs, ln)
-		}
+	// Capture the cluster even if its empty.
+	cluster := _EMPTY_
+	if sub.origin != nil {
+		cluster = string(sub.origin)
 	}
+
+	acc.mu.RLock()
+	// If we have an isolated cluster we can return early, as long as it is not a loop detection subject.
+	// Empty clusters will return false for the check.
+	if !isLDS && acc.isLeafNodeClusterIsolated(cluster) {
+		acc.mu.RUnlock()
+		return
+	}
+	// Grab all leaf nodes.
+	const numStackClients = 64
+	var _l [numStackClients]*client
+	leafs := append(_l[:0], acc.lleafs...)
 	acc.mu.RUnlock()
 
 	for _, ln := range leafs {
-		// Check to make sure this sub does not have an origin cluster than matches the leafnode.
-		ln.mu.Lock()
-		skip := (sub.origin != nil && string(sub.origin) == ln.remoteCluster()) || !ln.canSubscribe(string(sub.subject))
-		// If skipped, make sure that we still let go the "$LDS." subscription that allows
-		// the detection of a loop.
-		if skip && bytes.HasPrefix(sub.subject, []byte(leafNodeLoopDetectionSubjectPrefix)) {
-			skip = false
-		}
-		ln.mu.Unlock()
-		if skip {
+		if ln == sub.client {
 			continue
 		}
-		ln.updateSmap(sub, delta)
+		// Check to make sure this sub does not have an origin cluster that matches the leafnode.
+		ln.mu.Lock()
+		skip := (cluster != _EMPTY_ && cluster == ln.remoteCluster()) || !ln.canSubscribe(string(sub.subject))
+		ln.mu.Unlock()
+		// If skipped, make sure that we still let go the "$LDS." subscription that allows
+		// the detection of a loop.
+		if isLDS || !skip {
+			ln.updateSmap(sub, delta)
+		}
 	}
 }
 

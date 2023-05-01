@@ -1,4 +1,4 @@
-// Copyright 2018-2022 The NATS Authors
+// Copyright 2018-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -74,6 +74,7 @@ type Account struct {
 	usersRevoked map[string]int64
 	mappings     []*mapping
 	lleafs       []*client
+	leafClusters map[string]uint64
 	imports      importMap
 	exports      exportMap
 	js           *jsAccount
@@ -921,6 +922,29 @@ func (a *Account) addClient(c *client) int {
 	return n
 }
 
+// For registering clusters for remote leafnodes.
+// We only register as the hub.
+func (a *Account) registerLeafNodeCluster(cluster string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.leafClusters == nil {
+		a.leafClusters = make(map[string]uint64)
+	}
+	a.leafClusters[cluster]++
+}
+
+// Check to see if this cluster is isolated, meaning the only one.
+// Read Lock should be held.
+func (a *Account) isLeafNodeClusterIsolated(cluster string) bool {
+	if cluster == _EMPTY_ {
+		return false
+	}
+	if len(a.leafClusters) > 1 {
+		return false
+	}
+	return a.leafClusters[cluster] > 0
+}
+
 // Helper function to remove leaf nodes. If number of leafnodes gets large
 // this may need to be optimized out of linear search but believe number
 // of active leafnodes per account scope to be small and therefore cache friendly.
@@ -934,6 +958,15 @@ func (a *Account) removeLeafNode(c *client) {
 				a.lleafs = nil
 			} else {
 				a.lleafs = a.lleafs[:ll-1]
+			}
+			// Do cluster accounting if we are a hub.
+			if l.isHubLeafNode() {
+				cluster := l.remoteCluster()
+				if count := a.leafClusters[cluster]; count > 1 {
+					a.leafClusters[cluster]--
+				} else if count == 1 {
+					delete(a.leafClusters, cluster)
+				}
 			}
 			return
 		}
