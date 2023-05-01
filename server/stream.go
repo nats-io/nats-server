@@ -4548,9 +4548,11 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 		if deleteFlag {
 			n.Delete()
 			sa = mset.sa
-		} else if n.NeedSnapshot() {
-			// Attempt snapshot on clean exit.
-			n.InstallSnapshot(mset.stateSnapshotLocked())
+		} else {
+			if n.NeedSnapshot() {
+				// Attempt snapshot on clean exit.
+				n.InstallSnapshot(mset.stateSnapshotLocked())
+			}
 			n.Stop()
 		}
 	}
@@ -4642,23 +4644,21 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 		sysc.closeConnection(ClientClosed)
 	}
 
-	if store == nil {
-		return nil
-	}
-
 	if deleteFlag {
-		if err := store.Delete(); err != nil {
-			return err
+		if store != nil {
+			// Ignore errors.
+			store.Delete()
 		}
+		// Release any resources.
 		js.releaseStreamResources(&mset.cfg)
-
 		// cleanup directories after the stream
 		accDir := filepath.Join(js.config.StoreDir, accName)
 		// no op if not empty
 		os.Remove(filepath.Join(accDir, streamsDir))
 		os.Remove(accDir)
-	} else if err := store.Stop(); err != nil {
-		return err
+	} else if store != nil {
+		// Ignore errors.
+		store.Stop()
 	}
 
 	return nil

@@ -6104,6 +6104,16 @@ func (fs *fileStore) Delete() error {
 	if fs.isClosed() {
 		// Always attempt to remove since we could have been closed beforehand.
 		os.RemoveAll(fs.fcfg.StoreDir)
+		// Since we did remove, if we did have anything remaining make sure to
+		// call into any storage updates that had been registered.
+		fs.mu.Lock()
+		cb, msgs, bytes := fs.scb, int64(fs.state.Msgs), int64(fs.state.Bytes)
+		// Guard against double accounting if called twice.
+		fs.state.Msgs, fs.state.Bytes = 0, 0
+		fs.mu.Unlock()
+		if msgs > 0 && cb != nil {
+			cb(-msgs, -bytes, 0, _EMPTY_)
+		}
 		return ErrStoreClosed
 	}
 	fs.Purge()
