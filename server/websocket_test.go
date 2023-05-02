@@ -2674,6 +2674,7 @@ func TestWSAdvertise(t *testing.T) {
 	checkInfo([]string{"host1:1234"})
 
 	// Restart with another advertise and check that it gets updated
+	o2.Websocket.Muxer = nil
 	o2.Websocket.Advertise = "host3:9012"
 	s2 = RunServer(o2)
 	defer s2.Shutdown()
