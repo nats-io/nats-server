@@ -3088,6 +3088,7 @@ func TestLeafNodeWSAuth(t *testing.T) {
 		websocket {
 			port: -1
 			no_tls: true
+			endpoint: "/"
 		}
 		leafnodes {
 			port: -1
