@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path"
@@ -512,6 +513,15 @@ type WebsocketOpts struct {
 
 	// Snapshot of configured TLS options.
 	tlsConfigOpts *TLSConfigOpts
+
+	// If nil, will create a new ServeMux when websocket is being
+	// created.  Otherwise, it uses the provided muxer so that
+	// embedding a NATs powered websocket in an existing webapp is
+	// possible
+	Muxer *http.ServeMux
+
+	// Endpoint string of the websocket.  Defaults to "/"
+	Endpoint string
 }
 
 // MQTTOpts are options for MQTT

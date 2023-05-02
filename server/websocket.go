@@ -1148,7 +1148,7 @@ func (s *Server) startWebsocketServer() {
 	if port == 0 {
 		o.Port = hl.Addr().(*net.TCPAddr).Port
 	}
-	s.Noticef("Listening for websocket clients on %s://%s:%d", proto, o.Host, o.Port)
+	s.Noticef("Listening for websocket clients on %s://%s:%d%s", proto, o.Host, o.Port, o.Endpoint)
 	if proto == wsSchemePrefix {
 		s.Warnf("Websocket not configured with TLS. DO NOT USE IN PRODUCTION!")
 	}
@@ -1162,8 +1162,18 @@ func (s *Server) startWebsocketServer() {
 		return
 	}
 	hasLeaf := sopts.LeafNode.Port != 0
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+
+	if o.Muxer == nil {
+		o.Muxer = http.NewServeMux()
+	}
+
+	mux := o.Muxer
+
+	if o.Endpoint == "" {
+		o.Endpoint = "/"
+	}
+
+	mux.HandleFunc(o.Endpoint, func(w http.ResponseWriter, r *http.Request) {
 		res, err := s.wsUpgrade(w, r)
 		if err != nil {
 			s.Errorf(err.Error())
