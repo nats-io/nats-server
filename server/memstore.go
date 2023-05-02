@@ -42,6 +42,9 @@ func newMemStore(cfg *StreamConfig) (*memStore, error) {
 	if cfg.Storage != MemoryStorage {
 		return nil, fmt.Errorf("memStore requires memory storage type in config")
 	}
+	if cfg.Compression != NoCompression {
+		return nil, fmt.Errorf("memory storage does not support compression")
+	}
 	ms := &memStore{
 		msgs: make(map[uint64]*StoreMsg),
 		fss:  make(map[string]*SimpleState),
@@ -58,6 +61,9 @@ func (ms *memStore) UpdateConfig(cfg *StreamConfig) error {
 	}
 	if cfg.Storage != MemoryStorage {
 		return fmt.Errorf("memStore requires memory storage type in config")
+	}
+	if cfg.Compression != NoCompression {
+		return fmt.Errorf("memory storage does not support compression")
 	}
 
 	ms.mu.Lock()

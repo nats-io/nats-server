@@ -1123,6 +1123,12 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		}
 	}
 
+	// Compression is only support on the file store, so don't allow streams to be created
+	// that are using other storage backends like memory.
+	if cfg.Storage != FileStorage && cfg.Compression != NoCompression {
+		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("compression is only supported with file storage"))
+	}
+
 	getStream := func(streamName string) (bool, StreamConfig) {
 		var exists bool
 		var cfg StreamConfig
