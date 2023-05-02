@@ -4832,6 +4832,8 @@ func parseWebsocket(v any, o *Options, errors *[]error) error {
 			o.Websocket.Advertise = mv.(string)
 		case "no_tls":
 			o.Websocket.NoTLS = mv.(bool)
+		case "endpoint":
+			o.Websocket.Endpoint = mv.(string)
 		case "tls":
 			tc, err := parseTLS(tk, true)
 			if err != nil {

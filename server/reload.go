@@ -1552,8 +1552,10 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			// Similar to gateways
 			tmpOld := oldValue.(WebsocketOpts)
 			tmpNew := newValue.(WebsocketOpts)
-			tmpOld.TLSConfig, tmpOld.tlsConfigOpts = nil, nil
-			tmpNew.TLSConfig, tmpNew.tlsConfigOpts = nil, nil
+
+			tmpOld.TLSConfig, tmpOld.tlsConfigOpts, tmpOld.Muxer = nil, nil, nil
+			tmpNew.TLSConfig, tmpNew.tlsConfigOpts, tmpNew.Muxer = nil, nil, nil
+
 			// If there is really a change prevents reload.
 			if !reflect.DeepEqual(tmpOld, tmpNew) {
 				// See TODO(ik) note below about printing old/new values.
