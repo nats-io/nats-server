@@ -4065,6 +4065,7 @@ func TestWSReloadTLSConfig(t *testing.T) {
 	template := `
 		listen: "127.0.0.1:-1"
 		websocket {
+			endpoint: "/"
 			listen: "127.0.0.1:-1"
 			tls {
 				cert_file: '%s'
