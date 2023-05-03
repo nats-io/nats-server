@@ -862,10 +862,8 @@ func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) 
 		for _, si := range acc.imports.services {
 			if v, ok := s.accounts.Load(si.acc.Name); ok {
 				si.acc = v.(*Account)
-				// TODO: Not sure if it is possible for an account to have a
-				// service import from itself, but if that is the case,
-				// we are already lock, otherwise use locking to protect
-				// the call to si.acc.getServiceExport().
+				// It is possible to allow for latency tracking inside your
+				// own account, so lock only when not the same account.
 				if si.acc == acc {
 					si.se = si.acc.getServiceExport(si.to)
 					continue
@@ -1805,7 +1803,7 @@ func (s *Server) Start() {
 		if len(opts.TrustedOperators) == 1 && opts.SystemAccount != _EMPTY_ && opts.SystemAccount != DEFAULT_SYSTEM_ACCOUNT {
 			opts := s.getOpts()
 			_, isMemResolver := ar.(*MemAccResolver)
-			if v, ok := s.accounts.Load(opts.SystemAccount); !isMemResolver && ok && v.(*Account).claimJWT == "" {
+			if v, ok := s.accounts.Load(opts.SystemAccount); !isMemResolver && ok && v.(*Account).claimJWT == _EMPTY_ {
 				s.Noticef("Using bootstrapping system account")
 				s.startGoRoutine(func() {
 					defer s.grWG.Done()

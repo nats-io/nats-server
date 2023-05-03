@@ -1773,7 +1773,7 @@ func (s *Server) startRouteAcceptLoop() {
 // Similar to setInfoHostPortAndGenerateJSON, but for routeInfo.
 func (s *Server) setRouteInfoHostPortAndIP() error {
 	opts := s.getOpts()
-	if opts.Cluster.Advertise != "" {
+	if opts.Cluster.Advertise != _EMPTY_ {
 		advHost, advPort, err := parseHostPort(opts.Cluster.Advertise, opts.Cluster.Port)
 		if err != nil {
 			return err
