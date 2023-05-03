@@ -3295,6 +3295,11 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 					o.updateSkipped(uint64(filter.currentSeq))
 				}
 			}
+
+			// If we're sure that this filter has continuous sequence of messages, skip looking up other filters.
+			if nextSeq == sseq && err != ErrStoreEOF {
+				break
+			}
 		}
 
 	}
