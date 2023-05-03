@@ -5839,7 +5839,7 @@ func TestNoRaceEncodeConsumerStateBug(t *testing.T) {
 }
 
 // Performance impact on stream ingress with large number of consumers.
-func TestJetStreamLargeNumConsumersPerfImpact(t *testing.T) {
+func TestNoRaceJetStreamLargeNumConsumersPerfImpact(t *testing.T) {
 	skip(t)
 
 	s := RunBasicJetStreamServer(t)
@@ -5931,7 +5931,7 @@ func TestJetStreamLargeNumConsumersPerfImpact(t *testing.T) {
 }
 
 // Performance impact on large number of consumers but sparse delivery.
-func TestJetStreamLargeNumConsumersSparseDelivery(t *testing.T) {
+func TestNoRaceJetStreamLargeNumConsumersSparseDelivery(t *testing.T) {
 	skip(t)
 
 	s := RunBasicJetStreamServer(t)
@@ -7863,4 +7863,69 @@ func TestNoRaceJetStreamClusterLeafnodeConnectPerf(t *testing.T) {
 		}
 		nc.Close()
 	}
+}
+
+// This test ensures that outbound queues don't cause a run on
+// memory when sending something to lots of clients.
+func TestNoRaceClientOutboundQueueMemory(t *testing.T) {
+	opts := DefaultOptions()
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	var before runtime.MemStats
+	var after runtime.MemStats
+
+	var err error
+	clients := make([]*nats.Conn, 50000)
+	wait := &sync.WaitGroup{}
+	wait.Add(len(clients))
+
+	for i := 0; i < len(clients); i++ {
+		clients[i], err = nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port), nats.InProcessServer(s))
+		if err != nil {
+			t.Fatalf("Error on connect: %v", err)
+		}
+		defer clients[i].Close()
+
+		clients[i].Subscribe("test", func(m *nats.Msg) {
+			wait.Done()
+		})
+	}
+
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+
+	nc, err := nats.Connect(fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port), nats.InProcessServer(s))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	var m [48000]byte
+	if err = nc.Publish("test", m[:]); err != nil {
+		t.Fatal(err)
+	}
+
+	wait.Wait()
+
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+
+	hb, ha := float64(before.HeapAlloc), float64(after.HeapAlloc)
+	ms := float64(len(m))
+	diff := float64(ha) - float64(hb)
+	inc := (diff / float64(hb)) * 100
+
+	fmt.Printf("Message size:       %.1fKB\n", ms/1024)
+	fmt.Printf("Subscribed clients: %d\n", len(clients))
+	fmt.Printf("Heap allocs before: %.1fMB\n", hb/1024/1024)
+	fmt.Printf("Heap allocs after:  %.1fMB\n", ha/1024/1024)
+	fmt.Printf("Heap allocs delta:  %.1f%%\n", inc)
+
+	// TODO: What threshold makes sense here for a failure?
+	/*
+		if inc > 10 {
+			t.Fatalf("memory increase was %.1f%% (should be <= 10%%)", inc)
+		}
+	*/
 }

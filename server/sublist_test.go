@@ -370,6 +370,30 @@ func TestSublistNoCacheRemoveBatch(t *testing.T) {
 	}
 }
 
+func TestSublistRemoveBatchWithError(t *testing.T) {
+	s := NewSublistNoCache()
+	sub1 := newSub("foo")
+	sub2 := newSub("bar")
+	sub3 := newSub("baz")
+	s.Insert(sub1)
+	s.Insert(sub2)
+	s.Insert(sub3)
+	subNotPresent := newSub("not.inserted")
+	// Try to remove all subs, but include the sub that has not been inserted.
+	err := s.RemoveBatch([]*subscription{subNotPresent, sub1, sub3})
+	// We expect an error to be returned, but sub1,2 and 3 to have been removed.
+	require_Error(t, err, ErrNotFound)
+	// Make sure that we have only sub2 present
+	verifyCount(s, 1, t)
+	r := s.Match("bar")
+	verifyLen(r.psubs, 1, t)
+	verifyMember(r.psubs, sub2, t)
+	r = s.Match("foo")
+	verifyLen(r.psubs, 0, t)
+	r = s.Match("baz")
+	verifyLen(r.psubs, 0, t)
+}
+
 func testSublistInvalidSubjectsInsert(t *testing.T, s *Sublist) {
 	// Insert, or subscriptions, can have wildcards, but not empty tokens,
 	// and can not have a FWC that is not the terminal token.

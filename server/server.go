@@ -120,7 +120,6 @@ type Server struct {
 	opts                *Options
 	running             bool
 	shutdown            bool
-	reloading           bool
 	listener            net.Listener
 	listenerErr         error
 	gacc                *Account
@@ -531,22 +530,22 @@ func NewServer(opts *Options) (*Server, error) {
 			s.mu.Unlock()
 			var a *Account
 			// perform direct lookup to avoid warning trace
-			if _, err := fetchAccount(ar, s.opts.SystemAccount); err == nil {
-				a, _ = s.lookupAccount(s.opts.SystemAccount)
+			if _, err := fetchAccount(ar, opts.SystemAccount); err == nil {
+				a, _ = s.lookupAccount(opts.SystemAccount)
 			}
 			s.mu.Lock()
 			if a == nil {
-				sac := NewAccount(s.opts.SystemAccount)
+				sac := NewAccount(opts.SystemAccount)
 				sac.Issuer = opts.TrustedOperators[0].Issuer
 				sac.signingKeys = map[string]jwt.Scope{}
-				sac.signingKeys[s.opts.SystemAccount] = nil
+				sac.signingKeys[opts.SystemAccount] = nil
 				s.registerAccountNoLock(sac)
 			}
 		}
 	}
 
 	// For tracking accounts
-	if err := s.configureAccounts(); err != nil {
+	if _, err := s.configureAccounts(false); err != nil {
 		return nil, err
 	}
 
@@ -739,40 +738,85 @@ func (s *Server) globalAccount() *Account {
 	return gacc
 }
 
-// Used to setup Accounts.
-// Lock is held upon entry.
-func (s *Server) configureAccounts() error {
+// Used to setup or update Accounts.
+// Returns a map that indicates which accounts have had their stream imports
+// changed (in case of an update in configuration reload).
+// Lock is held upon entry, but will be released/reacquired in this function.
+func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) {
+	awcsti := make(map[string]struct{})
+
 	// Create the global account.
 	if s.gacc == nil {
 		s.gacc = NewAccount(globalAccountName)
 		s.registerAccountNoLock(s.gacc)
 	}
 
-	opts := s.opts
+	opts := s.getOpts()
 
 	// Check opts and walk through them. We need to copy them here
 	// so that we do not keep a real one sitting in the options.
-	for _, acc := range s.opts.Accounts {
+	for _, acc := range opts.Accounts {
 		var a *Account
-		if acc.Name == globalAccountName {
-			a = s.gacc
-		} else {
-			a = acc.shallowCopy()
+		create := true
+		// For the global account, we want to skip the reload process
+		// and fall back into the "create" case which will in that
+		// case really be just an update (shallowCopy will make sure
+		// that mappings are copied over).
+		if reloading && acc.Name != globalAccountName {
+			if ai, ok := s.accounts.Load(acc.Name); ok {
+				a = ai.(*Account)
+				a.mu.Lock()
+				// Before updating the account, check if stream imports have changed.
+				if !a.checkStreamImportsEqual(acc) {
+					awcsti[acc.Name] = struct{}{}
+				}
+				// Collect the sids for the service imports since we are going to
+				// replace with new ones.
+				var sids [][]byte
+				c := a.ic
+				for _, si := range a.imports.services {
+					if c != nil && si.sid != nil {
+						sids = append(sids, si.sid)
+					}
+				}
+				// Now reset all export/imports fields since they are going to be
+				// filled in shallowCopy()
+				a.imports.streams, a.imports.services = nil, nil
+				a.exports.streams, a.exports.services = nil, nil
+				// We call shallowCopy from the account `acc` (the one in Options)
+				// and pass `a` (our existing account) to get it updated.
+				acc.shallowCopy(a)
+				a.mu.Unlock()
+				// Need to release the lock for this.
+				s.mu.Unlock()
+				for _, sid := range sids {
+					c.processUnsub(sid)
+				}
+				// Add subscriptions for existing service imports.
+				a.addAllServiceImportSubs()
+				s.mu.Lock()
+				create = false
+			}
 		}
-		if acc.hasMappings() {
-			// For now just move and wipe from opts.Accounts version.
-			a.mappings = acc.mappings
-			acc.mappings = nil
-			// We use this for selecting between multiple weighted destinations.
-			a.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
+		if create {
+			if acc.Name == globalAccountName {
+				a = s.gacc
+			} else {
+				a = NewAccount(acc.Name)
+			}
+			// Locking matters in the case of an update of the global account
+			a.mu.Lock()
+			acc.shallowCopy(a)
+			a.mu.Unlock()
+			// Will be a no-op in case of the global account since it is alrady registered.
+			s.registerAccountNoLock(a)
 		}
-		acc.sl = nil
-		acc.clients = nil
-		s.registerAccountNoLock(a)
+		// The `acc` account is stored in options, not in the server, and these can be cleared.
+		acc.sl, acc.clients, acc.mappings = nil, nil, nil
 
 		// If we see an account defined using $SYS we will make sure that is set as system account.
 		if acc.Name == DEFAULT_SYSTEM_ACCOUNT && opts.SystemAccount == _EMPTY_ {
-			s.opts.SystemAccount = DEFAULT_SYSTEM_ACCOUNT
+			opts.SystemAccount = DEFAULT_SYSTEM_ACCOUNT
 		}
 	}
 
@@ -791,6 +835,7 @@ func (s *Server) configureAccounts() error {
 	s.accounts.Range(func(k, v interface{}) bool {
 		numAccounts++
 		acc := v.(*Account)
+		acc.mu.Lock()
 		// Exports
 		for _, se := range acc.exports.streams {
 			if se != nil {
@@ -817,16 +862,30 @@ func (s *Server) configureAccounts() error {
 		for _, si := range acc.imports.services {
 			if v, ok := s.accounts.Load(si.acc.Name); ok {
 				si.acc = v.(*Account)
+				// It is possible to allow for latency tracking inside your
+				// own account, so lock only when not the same account.
+				if si.acc == acc {
+					si.se = si.acc.getServiceExport(si.to)
+					continue
+				}
+				si.acc.mu.RLock()
 				si.se = si.acc.getServiceExport(si.to)
+				si.acc.mu.RUnlock()
 			}
 		}
 		// Make sure the subs are running, but only if not reloading.
-		if len(acc.imports.services) > 0 && acc.ic == nil && !s.reloading {
+		if len(acc.imports.services) > 0 && acc.ic == nil && !reloading {
 			acc.ic = s.createInternalAccountClient()
 			acc.ic.acc = acc
+			// Need to release locks to invoke this function.
+			acc.mu.Unlock()
+			s.mu.Unlock()
 			acc.addAllServiceImportSubs()
+			s.mu.Lock()
+			acc.mu.Lock()
 		}
 		acc.updated = time.Now().UTC()
+		acc.mu.Unlock()
 		return true
 	})
 
@@ -846,14 +905,14 @@ func (s *Server) configureAccounts() error {
 			s.mu.Lock()
 		}
 		if err != nil {
-			return fmt.Errorf("error resolving system account: %v", err)
+			return awcsti, fmt.Errorf("error resolving system account: %v", err)
 		}
 
 		// If we have defined a system account here check to see if its just us and the $G account.
 		// We would do this to add user/pass to the system account. If this is the case add in
 		// no-auth-user for $G.
 		// Only do this if non-operator mode.
-		if len(opts.TrustedOperators) == 0 && numAccounts == 2 && s.opts.NoAuthUser == _EMPTY_ {
+		if len(opts.TrustedOperators) == 0 && numAccounts == 2 && opts.NoAuthUser == _EMPTY_ {
 			// If we come here from config reload, let's not recreate the fake user name otherwise
 			// it will cause currently clients to be disconnected.
 			uname := s.sysAccOnlyNoAuthUser
@@ -868,12 +927,12 @@ func (s *Server) configureAccounts() error {
 				uname = fmt.Sprintf("nats-%s", b[:])
 				s.sysAccOnlyNoAuthUser = uname
 			}
-			s.opts.Users = append(s.opts.Users, &User{Username: uname, Password: uname[6:], Account: s.gacc})
-			s.opts.NoAuthUser = uname
+			opts.Users = append(opts.Users, &User{Username: uname, Password: uname[6:], Account: s.gacc})
+			opts.NoAuthUser = uname
 		}
 	}
 
-	return nil
+	return awcsti, nil
 }
 
 // Setup the account resolver. For memory resolver, make sure the JWTs are
@@ -1002,16 +1061,17 @@ func (s *Server) isTrustedIssuer(issuer string) bool {
 // options-based trusted nkeys. Returns success.
 func (s *Server) processTrustedKeys() bool {
 	s.strictSigningKeyUsage = map[string]struct{}{}
+	opts := s.getOpts()
 	if trustedKeys != _EMPTY_ && !s.initStampedTrustedKeys() {
 		return false
-	} else if s.opts.TrustedKeys != nil {
-		for _, key := range s.opts.TrustedKeys {
+	} else if opts.TrustedKeys != nil {
+		for _, key := range opts.TrustedKeys {
 			if !nkeys.IsValidPublicOperatorKey(key) {
 				return false
 			}
 		}
-		s.trustedKeys = append([]string(nil), s.opts.TrustedKeys...)
-		for _, claim := range s.opts.TrustedOperators {
+		s.trustedKeys = append([]string(nil), opts.TrustedKeys...)
+		for _, claim := range opts.TrustedOperators {
 			if !claim.StrictSigningKeyUsage {
 				continue
 			}
@@ -1044,7 +1104,7 @@ func checkTrustedKeyString(keys string) []string {
 // it succeeded or not.
 func (s *Server) initStampedTrustedKeys() bool {
 	// Check to see if we have an override in options, which will cause us to fail.
-	if len(s.opts.TrustedKeys) > 0 {
+	if len(s.getOpts().TrustedKeys) > 0 {
 		return false
 	}
 	tks := checkTrustedKeyString(trustedKeys)
@@ -1336,7 +1396,8 @@ func (s *Server) createInternalClient(kind int) *client {
 // efficient propagation.
 // Lock should be held on entry.
 func (s *Server) shouldTrackSubscriptions() bool {
-	return (s.opts.Cluster.Port != 0 || s.opts.Gateway.Port != 0)
+	opts := s.getOpts()
+	return (opts.Cluster.Port != 0 || opts.Gateway.Port != 0)
 }
 
 // Invokes registerAccountNoLock under the protection of the server lock.
@@ -1740,8 +1801,9 @@ func (s *Server) Start() {
 		// In operator mode, when the account resolver depends on an external system and
 		// the system account is the bootstrapping account, start fetching it.
 		if len(opts.TrustedOperators) == 1 && opts.SystemAccount != _EMPTY_ && opts.SystemAccount != DEFAULT_SYSTEM_ACCOUNT {
+			opts := s.getOpts()
 			_, isMemResolver := ar.(*MemAccResolver)
-			if v, ok := s.accounts.Load(s.opts.SystemAccount); !isMemResolver && ok && v.(*Account).claimJWT == "" {
+			if v, ok := s.accounts.Load(opts.SystemAccount); !isMemResolver && ok && v.(*Account).claimJWT == _EMPTY_ {
 				s.Noticef("Using bootstrapping system account")
 				s.startGoRoutine(func() {
 					defer s.grWG.Done()
@@ -1753,7 +1815,7 @@ func (s *Server) Start() {
 							return
 						case <-t.C:
 							sacc := s.SystemAccount()
-							if claimJWT, err := fetchAccount(ar, s.opts.SystemAccount); err != nil {
+							if claimJWT, err := fetchAccount(ar, opts.SystemAccount); err != nil {
 								continue
 							} else if err = s.updateAccountWithClaimJWT(sacc, claimJWT); err != nil {
 								continue
@@ -2121,7 +2183,7 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 	// server's info Host/Port with either values from Options or
 	// ClientAdvertise.
 	if err := s.setInfoHostPort(); err != nil {
-		s.Fatalf("Error setting server INFO with ClientAdvertise value of %s, err=%v", s.opts.ClientAdvertise, err)
+		s.Fatalf("Error setting server INFO with ClientAdvertise value of %s, err=%v", opts.ClientAdvertise, err)
 		l.Close()
 		s.mu.Unlock()
 		return
@@ -2199,16 +2261,17 @@ func (s *Server) setInfoHostPort() error {
 	// When this function is called, opts.Port is set to the actual listen
 	// port (if option was originally set to RANDOM), even during a config
 	// reload. So use of s.opts.Port is safe.
-	if s.opts.ClientAdvertise != _EMPTY_ {
-		h, p, err := parseHostPort(s.opts.ClientAdvertise, s.opts.Port)
+	opts := s.getOpts()
+	if opts.ClientAdvertise != _EMPTY_ {
+		h, p, err := parseHostPort(opts.ClientAdvertise, opts.Port)
 		if err != nil {
 			return err
 		}
 		s.info.Host = h
 		s.info.Port = p
 	} else {
-		s.info.Host = s.opts.Host
-		s.info.Port = s.opts.Port
+		s.info.Host = opts.Host
+		s.info.Port = opts.Port
 	}
 	return nil
 }

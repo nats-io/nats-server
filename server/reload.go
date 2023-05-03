@@ -788,13 +788,6 @@ func (s *Server) Reload() error {
 func (s *Server) ReloadOptions(newOpts *Options) error {
 	s.mu.Lock()
 
-	s.reloading = true
-	defer func() {
-		s.mu.Lock()
-		s.reloading = false
-		s.mu.Unlock()
-	}()
-
 	curOpts := s.getOpts()
 
 	// Wipe trusted keys if needed when we have an operator.
@@ -1563,98 +1556,44 @@ func (s *Server) reloadClientTraceLevel() {
 func (s *Server) reloadAuthorization() {
 	// This map will contain the names of accounts that have their streams
 	// import configuration changed.
-	awcsti := make(map[string]struct{})
+	var awcsti map[string]struct{}
 	checkJetStream := false
+	opts := s.getOpts()
 	s.mu.Lock()
+
+	deletedAccounts := make(map[string]*Account)
 
 	// This can not be changed for now so ok to check server's trustedKeys unlocked.
 	// If plain configured accounts, process here.
 	if s.trustedKeys == nil {
-		// We need to drain the old accounts here since we have something
-		// new configured. We do not want s.accounts to change since that would
-		// mean adding a lock to lookupAccount which is what we are trying to
-		// optimize for with the change from a map to a sync.Map.
-		oldAccounts := make(map[string]*Account)
+		// Make a map of the configured account names so we figure out the accounts
+		// that should be removed later on.
+		configAccs := make(map[string]struct{}, len(opts.Accounts))
+		for _, acc := range opts.Accounts {
+			configAccs[acc.GetName()] = struct{}{}
+		}
+		// Now range over existing accounts and keep track of the ones deleted
+		// so some cleanup can be made after releasing the server lock.
 		s.accounts.Range(func(k, v interface{}) bool {
-			acc := v.(*Account)
-			acc.mu.Lock()
-			oldAccounts[acc.Name] = acc
-			// Need to clear out eventing timers since they close over this account and not the new one.
-			clearTimer(&acc.etmr)
-			clearTimer(&acc.ctmr)
-			acc.mu.Unlock()
-			s.accounts.Delete(k)
-			return true
-		})
-		s.gacc = nil
-		s.configureAccounts()
-		s.configureAuthorization()
-		s.mu.Unlock()
-
-		s.accounts.Range(func(k, v interface{}) bool {
-			newAcc := v.(*Account)
-			if acc, ok := oldAccounts[newAcc.Name]; ok {
-				// If account exist in latest config, "transfer" the account's
-				// sublist and client map to the new account.
-				acc.mu.RLock()
-				newAcc.mu.Lock()
-				if len(acc.clients) > 0 {
-					newAcc.clients = make(map[*client]struct{}, len(acc.clients))
-					for c := range acc.clients {
-						newAcc.clients[c] = struct{}{}
-					}
-				}
-				// Same for leafnodes
-				newAcc.lleafs = append([]*client(nil), acc.lleafs...)
-
-				newAcc.sl = acc.sl
-				if acc.rm != nil {
-					newAcc.rm = make(map[string]int32)
-				}
-				for k, v := range acc.rm {
-					newAcc.rm[k] = v
-				}
-				// Transfer internal client state. The configureAccounts call from above may have set up a new one.
-				// We need to use the old one, and the isid to not confuse internal subs.
-				newAcc.ic, newAcc.isid = acc.ic, acc.isid
-				// Transfer any JetStream state.
-				newAcc.js = acc.js
-				// Also transfer any internal accounting on different client types. We copy over all clients
-				// so need to copy this as well for proper accounting going forward.
-				newAcc.nrclients = acc.nrclients
-				newAcc.sysclients = acc.sysclients
-				newAcc.nleafs = acc.nleafs
-				newAcc.nrleafs = acc.nrleafs
-				// Process any reverse map entries.
-				if len(acc.imports.rrMap) > 0 {
-					newAcc.imports.rrMap = make(map[string][]*serviceRespEntry)
-					for k, v := range acc.imports.rrMap {
-						newAcc.imports.rrMap[k] = v
-					}
-				}
-				newAcc.mu.Unlock()
-				acc.mu.RUnlock()
-
-				// Check if current and new config of this account are same
-				// in term of stream imports.
-				if !acc.checkStreamImportsEqual(newAcc) {
-					awcsti[newAcc.Name] = struct{}{}
-				}
-
-				// We need to remove all old service import subs.
-				acc.removeAllServiceImportSubs()
-				newAcc.addAllServiceImportSubs()
+			an, acc := k.(string), v.(*Account)
+			// Exclude default and system account from this test since those
+			// may not actually be in opts.Accounts.
+			if an == DEFAULT_GLOBAL_ACCOUNT || an == DEFAULT_SYSTEM_ACCOUNT {
+				return true
+			}
+			// Check check if existing account is still in opts.Accounts.
+			if _, ok := configAccs[an]; !ok {
+				deletedAccounts[an] = acc
+				s.accounts.Delete(k)
 			}
 			return true
 		})
-		s.mu.Lock()
-		// Check if we had a default system account.
-		if s.sys != nil && s.sys.account != nil && !s.opts.NoSystemAccount {
-			s.accounts.Store(s.sys.account.Name, s.sys.account)
-		}
+		// This will update existing and add new ones.
+		awcsti, _ = s.configureAccounts(true)
+		s.configureAuthorization()
 		// Double check any JetStream configs.
 		checkJetStream = s.js != nil
-	} else if s.opts.AccountResolver != nil {
+	} else if opts.AccountResolver != nil {
 		s.configureResolver()
 		if _, ok := s.accResolver.(*MemAccResolver); ok {
 			// Check preloads so we can issue warnings etc if needed.
@@ -1710,7 +1649,7 @@ func (s *Server) reloadAuthorization() {
 		routes = append(routes, route)
 	}
 	// Check here for any system/internal clients which will not be in the servers map of normal clients.
-	if s.sys != nil && s.sys.account != nil && !s.opts.NoSystemAccount {
+	if s.sys != nil && s.sys.account != nil && !opts.NoSystemAccount {
 		s.accounts.Store(s.sys.account.Name, s.sys.account)
 	}
 
@@ -1735,6 +1674,18 @@ func (s *Server) reloadAuthorization() {
 		resetCh = s.sys.resetCh
 	}
 	s.mu.Unlock()
+
+	// Clear some timers and remove service import subs for deleted accounts.
+	for _, acc := range deletedAccounts {
+		acc.mu.Lock()
+		clearTimer(&acc.etmr)
+		clearTimer(&acc.ctmr)
+		for _, se := range acc.exports.services {
+			se.clearResponseThresholdTimer()
+		}
+		acc.mu.Unlock()
+		acc.removeAllServiceImportSubs()
+	}
 
 	if resetCh != nil {
 		resetCh <- struct{}{}
