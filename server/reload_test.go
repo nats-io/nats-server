@@ -2661,8 +2661,9 @@ func TestConfigReloadAccountUsers(t *testing.T) {
 		fooMatch := gAcc.sl.Match("foo")
 		bazMatch := gAcc.sl.Match("baz")
 		gAcc.mu.RUnlock()
-		// The number of subscriptions should be 4 ($SYS.REQ.USER.INFO, $SYS.REQ.ACCOUNT.PING.CONNZ, etc..)
-		// + 2 (foo and baz)
+		// The number of subscriptions should be 4 ($SYS.REQ.USER.INFO,
+		// $SYS.REQ.ACCOUNT.PING.CONNZ, $SYS.REQ.ACCOUNT.PING.STATZ,
+		// $SYS.REQ.SERVER.PING.CONNZ) + 2 (foo and baz)
 		if n != 6 {
 			return fmt.Errorf("Global account should have 6 subs, got %v", n)
 		}
