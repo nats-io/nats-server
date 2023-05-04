@@ -3936,3 +3936,63 @@ func TestJetStreamClusterStreamAccountingOnStoreError(t *testing.T) {
 		t.Fatalf("Expected store reserved to be 0 after stream delete, got %v", friendlyBytes(reserved))
 	}
 }
+
+func TestJetStreamClusterStreamAccountingDriftFixups(t *testing.T) {
+	c := createJetStreamClusterWithTemplate(t, jsClusterMaxBytesAccountLimitTempl, "NATS", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"*"},
+		MaxBytes: 2 * 1024 * 1024,
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	msg := strings.Repeat("Z", 32*1024)
+	for i := 0; i < 100; i++ {
+		sendStreamMsg(t, nc, "foo", msg)
+	}
+
+	err = js.PurgeStream("TEST")
+	require_NoError(t, err)
+
+	checkFor(t, time.Second, 200*time.Millisecond, func() error {
+		info, err := js.AccountInfo()
+		require_NoError(t, err)
+		if info.Store != 0 {
+			return fmt.Errorf("Store usage not 0: %d", info.Store)
+		}
+		return nil
+	})
+
+	s := c.leader()
+	jsz, err := s.Jsz(nil)
+	require_NoError(t, err)
+	require_True(t, jsz.JetStreamStats.Store == 0)
+
+	acc, err := s.LookupAccount("$U")
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+	mset.mu.RLock()
+	jsa, tier, stype := mset.jsa, mset.tier, mset.stype
+	mset.mu.RUnlock()
+	// Drift the usage.
+	jsa.updateUsage(tier, stype, -100)
+
+	checkFor(t, time.Second, 200*time.Millisecond, func() error {
+		info, err := js.AccountInfo()
+		require_NoError(t, err)
+		if info.Store != 0 {
+			return fmt.Errorf("Store usage not 0: %d", info.Store)
+		}
+		return nil
+	})
+	jsz, err = s.Jsz(nil)
+	require_NoError(t, err)
+	require_True(t, jsz.JetStreamStats.Store == 0)
+}

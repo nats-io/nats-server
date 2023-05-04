@@ -1791,6 +1791,71 @@ func (jsa *jsAccount) remoteUpdateUsage(sub *subscription, c *client, _ *Account
 	jsa.usageMu.Unlock()
 }
 
+// When we detect a skew of some sort this will verify the usage reporting is correct.
+// No locks should be held.
+func (jsa *jsAccount) checkAndSyncUsage(tierName string, storeType StorageType) {
+	// Hold the account read lock and the usage lock while we calculate.
+	// We scope by tier and storage type, but if R3 File has 200 streams etc. could
+	// show a pause. I did test with > 100 non-active streams and was 80-200ns or so.
+	// Should be rare this gets called as well.
+	jsa.mu.RLock()
+	defer jsa.mu.RUnlock()
+	js := jsa.js
+	if js == nil {
+		return
+	}
+	s := js.srv
+
+	// Now range and qualify, hold usage lock to prevent updates.
+	jsa.usageMu.Lock()
+	defer jsa.usageMu.Unlock()
+
+	usage, ok := jsa.usage[tierName]
+	if !ok {
+		return
+	}
+
+	var total int64
+	var state StreamState
+	for _, mset := range jsa.streams {
+		mset.mu.RLock()
+		if mset.tier == tierName && mset.stype == storeType {
+			mset.store.FastState(&state)
+			total += int64(state.Bytes)
+		}
+		mset.mu.RUnlock()
+	}
+
+	var needClusterUpdate bool
+	// If we do not match on our calculations compute delta and adjust.
+	if storeType == MemoryStorage {
+		if total != usage.local.mem {
+			s.Warnf("MemStore usage drift of %v vs %v detected for account %q",
+				friendlyBytes(total), friendlyBytes(usage.local.mem), jsa.account.GetName())
+			delta := total - usage.local.mem
+			usage.local.mem += delta
+			usage.total.mem += delta
+			atomic.AddInt64(&js.memUsed, delta)
+			needClusterUpdate = true
+		}
+	} else {
+		if total != usage.local.store {
+			s.Warnf("FileStore usage drift of %v vs %v detected for account %q",
+				friendlyBytes(total), friendlyBytes(usage.local.store), jsa.account.GetName())
+			delta := total - usage.local.store
+			usage.local.store += delta
+			usage.total.store += delta
+			atomic.AddInt64(&js.storeUsed, delta)
+			needClusterUpdate = true
+		}
+	}
+
+	// Publish our local updates if in clustered mode.
+	if needClusterUpdate && js.isClusteredNoLock() {
+		jsa.sendClusterUsageUpdate()
+	}
+}
+
 // Updates accounting on in use memory and storage. This is called from locally
 // by the lower storage layers.
 func (jsa *jsAccount) updateUsage(tierName string, storeType StorageType, delta int64) {
@@ -1801,9 +1866,8 @@ func (jsa *jsAccount) updateUsage(tierName string, storeType StorageType, delta 
 	// use of an atomic to do the check without having data race reports.
 	isClustered := js.isClusteredNoLock()
 
+	var needsCheck bool
 	jsa.usageMu.Lock()
-	defer jsa.usageMu.Unlock()
-
 	s, ok := jsa.usage[tierName]
 	if !ok {
 		s = &jsaStorage{}
@@ -1813,14 +1877,21 @@ func (jsa *jsAccount) updateUsage(tierName string, storeType StorageType, delta 
 		s.local.mem += delta
 		s.total.mem += delta
 		atomic.AddInt64(&js.memUsed, delta)
+		needsCheck = s.local.mem < 0
 	} else {
 		s.local.store += delta
 		s.total.store += delta
 		atomic.AddInt64(&js.storeUsed, delta)
+		needsCheck = s.local.store < 0
 	}
 	// Publish our local updates if in clustered mode.
 	if isClustered {
 		jsa.sendClusterUsageUpdate()
+	}
+	jsa.usageMu.Unlock()
+
+	if needsCheck {
+		jsa.checkAndSyncUsage(tierName, storeType)
 	}
 }
 
@@ -2108,15 +2179,24 @@ func (js *jetStream) usageStats() *JetStreamStats {
 	var stats JetStreamStats
 	js.mu.RLock()
 	stats.Accounts = len(js.accounts)
-	stats.ReservedMemory = (uint64)(js.memReserved)
-	stats.ReservedStore = (uint64)(js.storeReserved)
+	stats.ReservedMemory = uint64(js.memReserved)
+	stats.ReservedStore = uint64(js.storeReserved)
 	s := js.srv
 	js.mu.RUnlock()
-	stats.API.Total = (uint64)(atomic.LoadInt64(&js.apiTotal))
-	stats.API.Errors = (uint64)(atomic.LoadInt64(&js.apiErrors))
-	stats.API.Inflight = (uint64)(atomic.LoadInt64(&js.apiInflight))
-	stats.Memory = (uint64)(atomic.LoadInt64(&js.memUsed))
-	stats.Store = (uint64)(atomic.LoadInt64(&js.storeUsed))
+	stats.API.Total = uint64(atomic.LoadInt64(&js.apiTotal))
+	stats.API.Errors = uint64(atomic.LoadInt64(&js.apiErrors))
+	stats.API.Inflight = uint64(atomic.LoadInt64(&js.apiInflight))
+	// Make sure we do not report negative.
+	used := atomic.LoadInt64(&js.memUsed)
+	if used < 0 {
+		used = 0
+	}
+	stats.Memory = uint64(used)
+	used = atomic.LoadInt64(&js.storeUsed)
+	if used < 0 {
+		used = 0
+	}
+	stats.Store = uint64(used)
 	stats.HAAssets = s.numRaftNodes()
 	return &stats
 }

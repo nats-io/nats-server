@@ -1615,14 +1615,14 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 
 	if targetTier := tierName(cfg); mset.tier != targetTier {
 		// In cases such as R1->R3, only one update is needed
-		mset.jsa.usageMu.RLock()
-		_, ok := mset.jsa.limits[targetTier]
-		mset.jsa.usageMu.RUnlock()
+		jsa.usageMu.RLock()
+		_, ok := jsa.limits[targetTier]
+		jsa.usageMu.RUnlock()
 		if ok {
 			// error never set
 			_, reported, _ := mset.store.Utilization()
-			mset.jsa.updateUsage(mset.tier, mset.stype, -int64(reported))
-			mset.jsa.updateUsage(targetTier, mset.stype, int64(reported))
+			jsa.updateUsage(mset.tier, mset.stype, -int64(reported))
+			jsa.updateUsage(targetTier, mset.stype, int64(reported))
 			mset.tier = targetTier
 		}
 		// else in case the new tier does not exist (say on move), keep the old tier around
