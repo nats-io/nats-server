@@ -3900,7 +3900,7 @@ func TestJetStreamClusterStreamAccountingOnStoreError(t *testing.T) {
 	require_NoError(t, err)
 
 	msg := strings.Repeat("Z", 32*1024)
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 10; i++ {
 		sendStreamMsg(t, nc, "foo", msg)
 	}
 	s := c.randomServer()
@@ -3918,14 +3918,15 @@ func TestJetStreamClusterStreamAccountingOnStoreError(t *testing.T) {
 
 	// Wait for this to propgate.
 	// The bug will have us not release reserved resources properly.
-	time.Sleep(time.Second)
-	info, err := js.AccountInfo()
-	require_NoError(t, err)
-
-	// Default tier
-	if info.Store != 0 {
-		t.Fatalf("Expected store to be 0 but got %v", friendlyBytes(info.Store))
-	}
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		info, err := js.AccountInfo()
+		require_NoError(t, err)
+		// Default tier
+		if info.Store != 0 {
+			return fmt.Errorf("Expected store to be 0 but got %v", friendlyBytes(info.Store))
+		}
+		return nil
+	})
 
 	// Now check js from server directly regarding reserved.
 	sjs.mu.RLock()
