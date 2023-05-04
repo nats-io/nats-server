@@ -1364,6 +1364,9 @@ func (fs *fileStore) expireMsgsOnRecover() {
 			if mb.msgs > 0 {
 				mb.first.seq, needNextFirst = seq, true
 				sz := fileStoreMsgSize(sm.subj, sm.hdr, sm.msg)
+				if sz > mb.bytes {
+					sz = mb.bytes
+				}
 				mb.bytes -= sz
 				bytes += sz
 				mb.msgs--
@@ -1411,8 +1414,16 @@ func (fs *fileStore) expireMsgsOnRecover() {
 		}
 	}
 	// Update top level accounting.
-	fs.state.Msgs -= purged
-	fs.state.Bytes -= bytes
+	if purged < fs.state.Msgs {
+		fs.state.Msgs -= purged
+	} else {
+		fs.state.Msgs = 0
+	}
+	if bytes < fs.state.Bytes {
+		fs.state.Bytes -= bytes
+	} else {
+		fs.state.Bytes = 0
+	}
 	// Make sure to we properly set the fs first sequence and timestamp.
 	fs.selectNextFirst()
 }
@@ -2757,12 +2768,24 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	mb.lrts = time.Now().UnixNano()
 
 	// Global stats
-	fs.state.Msgs--
-	fs.state.Bytes -= msz
+	if fs.state.Msgs > 0 {
+		fs.state.Msgs--
+	}
+	if msz < fs.state.Bytes {
+		fs.state.Bytes -= msz
+	} else {
+		fs.state.Bytes = 0
+	}
 
 	// Now local mb updates.
-	mb.msgs--
-	mb.bytes -= msz
+	if mb.msgs > 0 {
+		mb.msgs--
+	}
+	if msz < mb.bytes {
+		mb.bytes -= msz
+	} else {
+		mb.bytes = 0
+	}
 
 	// If we are tracking subjects here make sure we update that accounting.
 	mb.ensurePerSubjectInfoLoaded()
@@ -3240,6 +3263,9 @@ func (mb *msgBlock) truncate(sm *StoreMsg) (nmsgs, nbytes uint64, err error) {
 			if mb.msgs > 0 {
 				rl := fileStoreMsgSize(m.subj, m.hdr, m.msg)
 				mb.msgs--
+				if rl > mb.bytes {
+					rl = mb.bytes
+				}
 				mb.bytes -= rl
 				mb.rbytes -= rl
 				// For return accounting.
@@ -5137,10 +5163,19 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 				// Do fast in place remove.
 				// Stats
 				if mb.msgs > 0 {
+					// Msgs
 					fs.state.Msgs--
-					fs.state.Bytes -= rl
 					mb.msgs--
+					// Bytes, make sure to not go negative.
+					if rl > fs.state.Bytes {
+						rl = fs.state.Bytes
+					}
+					if rl > mb.bytes {
+						rl = mb.bytes
+					}
+					fs.state.Bytes -= rl
 					mb.bytes -= rl
+					// Totals
 					purged++
 					bytes += rl
 				}
@@ -5347,9 +5382,12 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 		} else if sm != nil {
 			sz := fileStoreMsgSize(sm.subj, sm.hdr, sm.msg)
 			if smb.msgs > 0 {
+				smb.msgs--
+				if sz > smb.bytes {
+					sz = smb.bytes
+				}
 				smb.bytes -= sz
 				bytes += sz
-				smb.msgs--
 				purged++
 			}
 			// Update fss
@@ -5433,7 +5471,14 @@ SKIP:
 	}
 
 	// Update top level accounting.
+	if purged > fs.state.Msgs {
+		purged = fs.state.Msgs
+	}
 	fs.state.Msgs -= purged
+
+	if bytes > fs.state.Bytes {
+		bytes = fs.state.Bytes
+	}
 	fs.state.Bytes -= bytes
 
 	cb := fs.scb
@@ -5555,7 +5600,13 @@ func (fs *fileStore) Truncate(seq uint64) error {
 	fs.state.LastSeq = lsm.seq
 	fs.state.LastTime = time.Unix(0, lsm.ts).UTC()
 	// Update msgs and bytes.
+	if purged > fs.state.Msgs {
+		purged = fs.state.Msgs
+	}
 	fs.state.Msgs -= purged
+	if bytes > fs.state.Bytes {
+		bytes = fs.state.Bytes
+	}
 	fs.state.Bytes -= bytes
 
 	// Reset our subject lookup info.
