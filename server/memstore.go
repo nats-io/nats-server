@@ -715,7 +715,13 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 				ms.removeSeqPerSubject(sm.subj, seq)
 			}
 		}
+		if purged > ms.state.Msgs {
+			purged = ms.state.Msgs
+		}
 		ms.state.Msgs -= purged
+		if bytes > ms.state.Bytes {
+			bytes = ms.state.Bytes
+		}
 		ms.state.Bytes -= bytes
 	} else {
 		// We are compacting past the end of our range. Do purge and set sequences correctly
@@ -800,7 +806,13 @@ func (ms *memStore) Truncate(seq uint64) error {
 	ms.state.LastSeq = lsm.seq
 	ms.state.LastTime = time.Unix(0, lsm.ts).UTC()
 	// Update msgs and bytes.
+	if purged > ms.state.Msgs {
+		purged = ms.state.Msgs
+	}
 	ms.state.Msgs -= purged
+	if bytes > ms.state.Bytes {
+		bytes = ms.state.Bytes
+	}
 	ms.state.Bytes -= bytes
 
 	cb := ms.scb
@@ -1033,8 +1045,13 @@ func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 	ss = memStoreMsgSize(sm.subj, sm.hdr, sm.msg)
 
 	delete(ms.msgs, seq)
-	ms.state.Msgs--
-	ms.state.Bytes -= ss
+	if ms.state.Msgs > 0 {
+		ms.state.Msgs--
+		if ss > ms.state.Bytes {
+			ss = ms.state.Bytes
+		}
+		ms.state.Bytes -= ss
+	}
 	ms.updateFirstSeq(seq)
 
 	if secure {
