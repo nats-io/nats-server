@@ -8,3 +8,9 @@ jetStream -> jsAccount -> stream -> consumer
 
 A lock to protect jetstream account's usage has been introduced: jsAccount.usageMu.
 This lock is independent and can be invoked under any other lock: jsAccount -> jsa.usageMu, stream -> jsa.usageMu, etc...
+
+A lock to protect the account's leafnodes list was also introduced to
+allow that lock to be held and the acquire a client lock which is not
+possible with the normal account lock.
+
+accountLeafList -> client

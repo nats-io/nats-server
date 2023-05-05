@@ -902,7 +902,7 @@ func (c *client) removeRemoteSubs() {
 		if srv.gateway.enabled {
 			srv.gatewayUpdateSubInterest(accountName, sub, -1)
 		}
-		srv.updateLeafNodes(ase.acc, sub, -1)
+		ase.acc.updateLeafNodes(sub, -1)
 	}
 
 	// Now remove the subs by batch for each account sublist.
@@ -972,7 +972,7 @@ func (c *client) processRemoteUnsub(arg []byte) (err error) {
 	}
 
 	// Now check on leafnode updates.
-	srv.updateLeafNodes(acc, sub, -1)
+	acc.updateLeafNodes(sub, -1)
 
 	if c.opts.Verbose {
 		c.sendOK()
@@ -1109,7 +1109,7 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 	}
 
 	// Now check on leafnode updates.
-	srv.updateLeafNodes(acc, sub, delta)
+	acc.updateLeafNodes(sub, delta)
 
 	if c.opts.Verbose {
 		c.sendOK()
