@@ -2932,12 +2932,13 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 		s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 	} else {
 		resp.StreamInfo = &StreamInfo{
-			Created: mset.createdTime(),
-			State:   mset.state(),
-			Config:  mset.config(),
-			Cluster: js.clusterInfo(mset.raftGroup()),
-			Sources: mset.sourcesInfo(),
-			Mirror:  mset.mirrorInfo(),
+			Created:   mset.createdTime(),
+			State:     mset.state(),
+			Config:    mset.config(),
+			Cluster:   js.clusterInfo(mset.raftGroup()),
+			Sources:   mset.sourcesInfo(),
+			Mirror:    mset.mirrorInfo(),
+			TimeStamp: time.Now().UTC(),
 		}
 		resp.DidCreate = true
 		s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
@@ -3339,12 +3340,13 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 	// Send our response.
 	var resp = JSApiStreamUpdateResponse{ApiResponse: ApiResponse{Type: JSApiStreamUpdateResponseType}}
 	resp.StreamInfo = &StreamInfo{
-		Created: mset.createdTime(),
-		State:   mset.state(),
-		Config:  mset.config(),
-		Cluster: js.clusterInfo(mset.raftGroup()),
-		Mirror:  mset.mirrorInfo(),
-		Sources: mset.sourcesInfo(),
+		Created:   mset.createdTime(),
+		State:     mset.state(),
+		Config:    mset.config(),
+		Cluster:   js.clusterInfo(mset.raftGroup()),
+		Mirror:    mset.mirrorInfo(),
+		Sources:   mset.sourcesInfo(),
+		TimeStamp: time.Now().UTC(),
 	}
 
 	s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
@@ -3398,12 +3400,13 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 						if !recovering {
 							var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
 							resp.StreamInfo = &StreamInfo{
-								Created: mset.createdTime(),
-								State:   mset.state(),
-								Config:  mset.config(),
-								Cluster: js.clusterInfo(mset.raftGroup()),
-								Sources: mset.sourcesInfo(),
-								Mirror:  mset.mirrorInfo(),
+								Created:   mset.createdTime(),
+								State:     mset.state(),
+								Config:    mset.config(),
+								Cluster:   js.clusterInfo(mset.raftGroup()),
+								Sources:   mset.sourcesInfo(),
+								Mirror:    mset.mirrorInfo(),
+								TimeStamp: time.Now().UTC(),
 							}
 							s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 						}
@@ -6264,7 +6267,12 @@ func (s *Server) jsClusteredStreamListRequest(acc *Account, ci *ClientInfo, filt
 	for _, sa := range streams {
 		if s.allPeersOffline(sa.Group) {
 			// Place offline onto our results by hand here.
-			si := &StreamInfo{Config: *sa.Config, Created: sa.Created, Cluster: js.offlineClusterInfo(sa.Group)}
+			si := &StreamInfo{
+				Config:    *sa.Config,
+				Created:   sa.Created,
+				Cluster:   js.offlineClusterInfo(sa.Group),
+				TimeStamp: time.Now().UTC(),
+			}
 			resp.Streams = append(resp.Streams, si)
 			missingNames = append(missingNames, sa.Config.Name)
 		} else {
@@ -6410,7 +6418,12 @@ func (s *Server) jsClusteredConsumerListRequest(acc *Account, ci *ClientInfo, of
 	for _, ca := range consumers {
 		if s.allPeersOffline(ca.Group) {
 			// Place offline onto our results by hand here.
-			ci := &ConsumerInfo{Config: ca.Config, Created: ca.Created, Cluster: js.offlineClusterInfo(ca.Group)}
+			ci := &ConsumerInfo{
+				Config:    ca.Config,
+				Created:   ca.Created,
+				Cluster:   js.offlineClusterInfo(ca.Group),
+				TimeStamp: time.Now().UTC(),
+			}
 			resp.Consumers = append(resp.Consumers, ci)
 			missingNames = append(missingNames, ca.Name)
 		} else {
@@ -7993,12 +8006,13 @@ func (mset *stream) processClusterStreamInfoRequest(reply string) {
 	}
 
 	si := &StreamInfo{
-		Created: mset.createdTime(),
-		State:   mset.state(),
-		Config:  config,
-		Cluster: js.clusterInfo(mset.raftGroup()),
-		Sources: mset.sourcesInfo(),
-		Mirror:  mset.mirrorInfo(),
+		Created:   mset.createdTime(),
+		State:     mset.state(),
+		Config:    config,
+		Cluster:   js.clusterInfo(mset.raftGroup()),
+		Sources:   mset.sourcesInfo(),
+		Mirror:    mset.mirrorInfo(),
+		TimeStamp: time.Now().UTC(),
 	}
 
 	// Check for out of band catchups.
