@@ -1216,7 +1216,7 @@ func (c *client) writeLoop() {
 // sent to during processing. We pass in a budget as a time.Duration
 // for how much time to spend in place flushing for this client.
 func (c *client) flushClients(budget time.Duration) time.Time {
-	last := time.Now().UTC()
+	last := time.Now()
 
 	// Check pending clients for flush.
 	for cp := range c.pcd {
@@ -2702,7 +2702,7 @@ func (c *client) processSubEx(subject, queue, bsid []byte, cb msgHandler, noForw
 		}
 	}
 	// Now check on leafnode updates.
-	srv.updateLeafNodes(acc, sub, 1)
+	acc.updateLeafNodes(sub, 1)
 	return sub, nil
 }
 
@@ -2995,7 +2995,7 @@ func (c *client) unsubscribe(acc *Account, sub *subscription, force, remove bool
 			}
 		}
 		// Now check on leafnode updates.
-		c.srv.updateLeafNodes(nsub.im.acc, nsub, -1)
+		nsub.im.acc.updateLeafNodes(nsub, -1)
 	}
 
 	// Now check to see if this was part of a respMap entry for service imports.
@@ -3059,7 +3059,7 @@ func (c *client) processUnsub(arg []byte) error {
 			}
 		}
 		// Now check on leafnode updates.
-		srv.updateLeafNodes(acc, sub, -1)
+		acc.updateLeafNodes(sub, -1)
 	}
 
 	return nil
@@ -5057,7 +5057,7 @@ func (c *client) closeConnection(reason ClosedState) {
 							srv.gatewayUpdateSubInterest(acc.Name, sub, -1)
 						}
 					}
-					srv.updateLeafNodes(acc, sub, -1)
+					acc.updateLeafNodes(sub, -1)
 				} else {
 					// We handle queue subscribers special in case we
 					// have a bunch we can just send one update to the
@@ -5082,7 +5082,7 @@ func (c *client) closeConnection(reason ClosedState) {
 						srv.gatewayUpdateSubInterest(acc.Name, esub.sub, -(esub.n))
 					}
 				}
-				srv.updateLeafNodes(acc, esub.sub, -(esub.n))
+				acc.updateLeafNodes(esub.sub, -(esub.n))
 			}
 			if prev := acc.removeClient(c); prev == 1 {
 				srv.decActiveAccounts()

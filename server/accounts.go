@@ -71,6 +71,7 @@ type Account struct {
 	lqws         map[string]int32
 	usersRevoked map[string]int64
 	mappings     []*mapping
+	lmu          sync.RWMutex
 	lleafs       []*client
 	leafClusters map[string]uint64
 	imports      importMap
@@ -357,12 +358,14 @@ func (a *Account) updateRemoteServer(m *AccountNumConns) []*client {
 	mtlce := a.mleafs != jwt.NoLimit && (a.nleafs+a.nrleafs > a.mleafs)
 	if mtlce {
 		// Take ones from the end.
+		a.lmu.RLock()
 		leafs := a.lleafs
 		over := int(a.nleafs + a.nrleafs - a.mleafs)
 		if over < len(leafs) {
 			leafs = leafs[len(leafs)-over:]
 		}
 		clients = append(clients, leafs...)
+		a.lmu.RUnlock()
 	}
 	a.mu.Unlock()
 
@@ -702,13 +705,15 @@ func (a *Account) AddWeightedMappings(src string, dests ...*MapDest) error {
 	a.mappings = append(a.mappings, m)
 
 	// If we have connected leafnodes make sure to update.
-	if len(a.lleafs) > 0 {
-		leafs := append([]*client(nil), a.lleafs...)
+	if a.nleafs > 0 {
 		// Need to release because lock ordering is client -> account
 		a.mu.Unlock()
-		for _, lc := range leafs {
+		// Now grab the leaf list lock. We can hold client lock under this one.
+		a.lmu.RLock()
+		for _, lc := range a.lleafs {
 			lc.forceAddToSmap(src)
 		}
+		a.lmu.RUnlock()
 		a.mu.Lock()
 	}
 	return nil
@@ -862,10 +867,16 @@ func (a *Account) addClient(c *client) int {
 			a.sysclients++
 		} else if c.kind == LEAF {
 			a.nleafs++
-			a.lleafs = append(a.lleafs, c)
 		}
 	}
 	a.mu.Unlock()
+
+	// If we added a new leaf use the list lock and add it to the list.
+	if added && c.kind == LEAF {
+		a.lmu.Lock()
+		a.lleafs = append(a.lleafs, c)
+		a.lmu.Unlock()
+	}
 
 	if c != nil && c.srv != nil && added {
 		c.srv.accConnsUpdate(a)
@@ -900,8 +911,12 @@ func (a *Account) isLeafNodeClusterIsolated(cluster string) bool {
 // Helper function to remove leaf nodes. If number of leafnodes gets large
 // this may need to be optimized out of linear search but believe number
 // of active leafnodes per account scope to be small and therefore cache friendly.
-// Lock should be held on account.
+// Lock should not be held on general account lock.
 func (a *Account) removeLeafNode(c *client) {
+	// Make sure we hold the list lock as well.
+	a.lmu.Lock()
+	defer a.lmu.Unlock()
+
 	ll := len(a.lleafs)
 	for i, l := range a.lleafs {
 		if l == c {
@@ -910,15 +925,6 @@ func (a *Account) removeLeafNode(c *client) {
 				a.lleafs = nil
 			} else {
 				a.lleafs = a.lleafs[:ll-1]
-			}
-			// Do cluster accounting if we are a hub.
-			if l.isHubLeafNode() {
-				cluster := l.remoteCluster()
-				if count := a.leafClusters[cluster]; count > 1 {
-					a.leafClusters[cluster]--
-				} else if count == 1 {
-					delete(a.leafClusters, cluster)
-				}
 			}
 			return
 		}
@@ -936,10 +942,23 @@ func (a *Account) removeClient(c *client) int {
 			a.sysclients--
 		} else if c.kind == LEAF {
 			a.nleafs--
-			a.removeLeafNode(c)
+			// Need to do cluster accounting here.
+			// Do cluster accounting if we are a hub.
+			if c.isHubLeafNode() {
+				cluster := c.remoteCluster()
+				if count := a.leafClusters[cluster]; count > 1 {
+					a.leafClusters[cluster]--
+				} else if count == 1 {
+					delete(a.leafClusters, cluster)
+				}
+			}
 		}
 	}
 	a.mu.Unlock()
+
+	if removed && c.kind == LEAF {
+		a.removeLeafNode(c)
+	}
 
 	if c != nil && c.srv != nil && removed {
 		c.srv.accConnsUpdate(a)
@@ -1981,7 +2000,7 @@ func (a *Account) addServiceImportSub(si *serviceImport) error {
 	// This is similar to what initLeafNodeSmapAndSendSubs does
 	// TODO we need to consider performing this update as we get client subscriptions.
 	//      This behavior would result in subscription propagation only where actually used.
-	a.srv.updateLeafNodes(a, sub, 1)
+	a.updateLeafNodes(sub, 1)
 	return nil
 }
 
