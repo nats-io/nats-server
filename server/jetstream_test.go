@@ -19123,6 +19123,7 @@ func TestJetStreamConsumerMultipleSubjects(t *testing.T) {
 		Durable:        durable,
 		DeliverSubject: "deliver",
 		FilterSubjects: []string{"events.created", "data.processed"},
+		AckPolicy:      AckExplicit,
 	})
 	require_NoError(t, err)
 
