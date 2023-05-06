@@ -3765,7 +3765,7 @@ func (s *Server) updateRemoteSubscription(acc *Account, sub *subscription, delta
 		s.gatewayUpdateSubInterest(acc.Name, sub, delta)
 	}
 
-	s.updateLeafNodes(acc, sub, delta)
+	acc.updateLeafNodes(sub, delta)
 }
 
 func (s *Server) startRateLimitLogExpiration() {
