@@ -19637,6 +19637,7 @@ func TestJetStreamConsumerMultipleSubjectsWithAddedMessages(t *testing.T) {
 		DeliverSubject: "deliver",
 		FilterSubjects: []string{"events.created", "events.processed"},
 		Durable:        durable,
+		AckPolicy:      AckExplicit,
 	})
 
 	require_NoError(t, err)
@@ -19682,14 +19683,14 @@ func TestJetStreamConsumerMultipleSubjectsWithAddedMessages(t *testing.T) {
 		}
 
 	}
+
 	info, err := js.ConsumerInfo("deliver", durable)
 	require_NoError(t, err)
 
 	require_True(t, info.Delivered.Consumer == 12)
 	require_True(t, info.Delivered.Stream == 15)
-	require_True(t, info.AckFloor.Stream == 15)
-	require_True(t, info.AckFloor.Consumer == 12)
-
+	require_True(t, info.AckFloor.Stream == 12)
+	require_True(t, info.AckFloor.Consumer == 10)
 }
 
 func TestJetStreamConsumerThreeFilters(t *testing.T) {
