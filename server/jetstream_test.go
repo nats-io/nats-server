@@ -19723,6 +19723,7 @@ func TestJetStreamConsumerThreeFilters(t *testing.T) {
 	mset.addConsumer(&ConsumerConfig{
 		FilterSubjects: []string{"events", "data", "other"},
 		Durable:        "multi",
+		AckPolicy:      AckExplicit,
 	})
 
 	consumer, err := js.PullSubscribe("", "multi", nats.Bind("TEST", "multi"))
