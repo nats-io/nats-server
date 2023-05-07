@@ -19770,6 +19770,7 @@ func TestJetStreamConsumerUpdateFilterSubjects(t *testing.T) {
 	_, err = mset.addConsumer(&ConsumerConfig{
 		FilterSubjects: []string{"events", "data"},
 		Durable:        "multi",
+		AckPolicy:      AckExplicit,
 	})
 	require_NoError(t, err)
 
@@ -19786,6 +19787,7 @@ func TestJetStreamConsumerUpdateFilterSubjects(t *testing.T) {
 	_, err = mset.addConsumer(&ConsumerConfig{
 		FilterSubjects: []string{"events", "data", "other"},
 		Durable:        "multi",
+		AckPolicy:      AckExplicit,
 	})
 	require_NoError(t, err)
 
