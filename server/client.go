@@ -2389,12 +2389,12 @@ func (c *client) processPong() {
 	c.rtt = computeRTT(c.rttStart)
 	srv := c.srv
 	reorderGWs := c.kind == GATEWAY && c.gw.outbound
-	// For routes, check if we have compression auto and if we should change
-	// the compression level. However, exclude the route if compression is
-	// "not supported", which indicates that this is a route to an older server.
-	if c.kind == ROUTER && c.route.compression != CompressionNotSupported {
-		if opts := srv.getOpts(); opts.Cluster.Compression.Mode == CompressionS2Auto {
-			if cm := selectS2AutoModeBasedOnRTT(c.rtt, opts.Cluster.Compression.RTTThresholds); cm != c.route.compression {
+	// If compression is currently active for a route connection, if the
+	// compression configuration is s2_auto, check if we should change
+	// the compression level.
+	if c.kind == ROUTER && needsCompression(c.route.compression) {
+		if co := &(srv.getOpts().Cluster.Compression); co.Mode == CompressionS2Auto {
+			if cm := selectS2AutoModeBasedOnRTT(c.rtt, co.RTTThresholds); cm != c.route.compression {
 				c.route.compression = cm
 				c.out.cw = s2.NewWriter(nil, s2WriterOptions(cm)...)
 			}
