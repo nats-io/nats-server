@@ -7,7 +7,7 @@ jobs:
       matrix:
         # This should be quoted or use .x, but should not be unquoted.
         # Remember that a YAML bare float drops trailing zeroes.
-        go: ['1.16']
+        go: ['1.19']
 
     env:
       GOPATH: /home/runner/work/nats-server
@@ -16,12 +16,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v1
+        uses: actions/checkout@v3
         with:
           path: src/github.com/nats-io/nats-server
 
       - name: Setup Go
-        uses: actions/setup-go@v1
+        uses: actions/setup-go@v3
         with:
           go-version: ${{matrix.go}}
 
