@@ -3637,6 +3637,9 @@ func TestRouteCompressionAuto(t *testing.T) {
 		checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
 			s2.mu.RLock()
 			defer s2.mu.RUnlock()
+			if n := s2.numRoutes(); n != 4 {
+				return fmt.Errorf("Cluster not formed properly, got %v routes", n)
+			}
 			var err error
 			s2.forEachRoute(func(r *client) {
 				if err != nil {
@@ -3694,6 +3697,18 @@ func TestRouteCompressionAuto(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	np.updateRTT(25 * time.Millisecond)
 	checkComp(CompressionS2Fast)
+
+	// Now disable compression on s1
+	reloadUpdateConfig(t, s1, conf1, fmt.Sprintf(tmpl, "A", "10s", "off", _EMPTY_))
+	// Wait a bit to make sure we don't check for cluster too soon since
+	// we expect a disconnect.
+	time.Sleep(100 * time.Millisecond)
+	checkClusterFormed(t, s1, s2)
+	// Now change the RTT values in the proxy.
+	np.updateRTT(1 * time.Millisecond)
+	// Now check that s2 also shows as "off". Wait for some ping intervals.
+	time.Sleep(200 * time.Millisecond)
+	checkComp(CompressionOff)
 }
 
 func TestRoutePings(t *testing.T) {
