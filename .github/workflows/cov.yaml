@@ -15,7 +15,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v1
+        uses: actions/checkout@v3
         with:
           path: src/github.com/nats-io/nats-server
           ref: dev
@@ -23,7 +23,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v3
         with:
-          go-version: 1.19.x
+          go-version: '1.19.x'
 
       - name: Run code coverage
         shell: bash --noprofile --norc -x -eo pipefail {0}
@@ -38,7 +38,7 @@ jobs:
           infile: acc.out
 
       - name: Coveralls
-        uses: coverallsapp/github-action@1.1.3
+        uses: coverallsapp/github-action@v2
         with:
           github-token: ${{ secrets.github_token }}
           path-to-lcov: coverage.lcov
