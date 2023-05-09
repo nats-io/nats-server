@@ -7916,16 +7916,13 @@ func TestNoRaceClientOutboundQueueMemory(t *testing.T) {
 	diff := float64(ha) - float64(hb)
 	inc := (diff / float64(hb)) * 100
 
-	fmt.Printf("Message size:       %.1fKB\n", ms/1024)
-	fmt.Printf("Subscribed clients: %d\n", len(clients))
-	fmt.Printf("Heap allocs before: %.1fMB\n", hb/1024/1024)
-	fmt.Printf("Heap allocs after:  %.1fMB\n", ha/1024/1024)
-	fmt.Printf("Heap allocs delta:  %.1f%%\n", inc)
+	if inc > 10 {
+		t.Logf("Message size:       %.1fKB\n", ms/1024)
+		t.Logf("Subscribed clients: %d\n", len(clients))
+		t.Logf("Heap allocs before: %.1fMB\n", hb/1024/1024)
+		t.Logf("Heap allocs after:  %.1fMB\n", ha/1024/1024)
+		t.Logf("Heap allocs delta:  %.1f%%\n", inc)
 
-	// TODO: What threshold makes sense here for a failure?
-	/*
-		if inc > 10 {
-			t.Fatalf("memory increase was %.1f%% (should be <= 10%%)", inc)
-		}
-	*/
+		t.Fatalf("memory increase was %.1f%% (should be <= 10%%)", inc)
+	}
 }
