@@ -83,6 +83,21 @@ func (sg smGroup) waitOnAllCurrent() {
 	}
 }
 
+func (sg smGroup) waitOnCommit(commit uint64) {
+	expires := time.Now().Add(10 * time.Second)
+	var current bool
+	for time.Now().Before(expires) {
+		time.Sleep(25 * time.Millisecond)
+		current = true
+		for _, n := range sg {
+			current = current && n.node().(*raft).commit >= commit
+		}
+		if current {
+			break
+		}
+	}
+}
+
 func (sg smGroup) lockAndInspect(tb testing.TB, f func()) {
 	for _, n := range sg {
 		//n.node().(*raft).RWMutex.Lock()

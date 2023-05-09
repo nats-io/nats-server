@@ -98,7 +98,7 @@ func TestNRGPIndex(t *testing.T) {
 		// Perform the action and then wait for all nodes in the
 		// cluster to become current.
 		s.action()
-		rg.waitOnAllCurrent()
+		rg.waitOnCommit(s.commit)
 
 		rg.lockAndInspect(t, func() {
 			// Now perform sanity checks.
