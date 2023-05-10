@@ -1368,15 +1368,6 @@ func (n *raft) StepDown(preferred ...string) error {
 	if maybeLeader != noLeader {
 		n.debug("Selected %q for new leader", maybeLeader)
 		prop.push(newEntry(EntryLeaderTransfer, []byte(maybeLeader)))
-		time.AfterFunc(250*time.Millisecond, func() {
-			n.RLock()
-			stillLeader := n.state == Leader
-			n.RUnlock()
-			// If we are still the leader force a stepdown.
-			if stillLeader {
-				stepdown.push(noLeader)
-			}
-		})
 	} else {
 		// Force us to stepdown here.
 		n.debug("Stepping down")
@@ -2234,11 +2225,20 @@ func (n *raft) runAsLeader() {
 					continue
 				}
 				n.sendAppendEntry(entries)
+
+				// If this is us sending out a leadership transfer stepdown inline here.
+				if b.Type == EntryLeaderTransfer {
+					n.prop.recycle(&es)
+					n.debug("Stepping down due to leadership transfer")
+					n.switchToFollower(noLeader)
+					return
+				}
 				// We need to re-create `entries` because there is a reference
 				// to it in the node's pae map.
 				entries = nil
 			}
 			n.prop.recycle(&es)
+
 		case <-hb.C:
 			if n.notActive() {
 				n.sendHeartbeat()
