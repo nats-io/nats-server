@@ -2376,7 +2376,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			ci := js.clusterInfo(rg)
 			mset.checkClusterInfo(ci)
 
-			newPeers, _, newPeerSet, oldPeerSet := genPeerInfo(rg.Peers, len(rg.Peers)-replicas)
+			newPeers, oldPeers, newPeerSet, oldPeerSet := genPeerInfo(rg.Peers, len(rg.Peers)-replicas)
 
 			// If we are part of the new peerset and we have been passed the baton.
 			// We will handle scale down.
@@ -2402,6 +2402,11 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					continue
 				}
 
+				// We are good to go, can scale down here.
+				for _, p := range oldPeers {
+					n.ProposeRemovePeer(p)
+				}
+
 				csa := sa.copyGroup()
 				csa.Group.Peers = newPeers
 				csa.Group.Preferred = ourPeerId
@@ -2425,6 +2430,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				// Check if we have a quorom.
 				if current >= neededCurrent {
 					s.Noticef("Transfer of stream leader for '%s > %s' to '%s'", accName, sa.Config.Name, newLeader)
+					n.UpdateKnownPeers(newPeers)
 					n.StepDown(newLeaderPeer)
 				}
 			}
