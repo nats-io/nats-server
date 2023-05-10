@@ -1364,7 +1364,15 @@ func (n *raft) StepDown(preferred ...string) error {
 	if maybeLeader != noLeader {
 		n.debug("Selected %q for new leader", maybeLeader)
 		prop.push(newEntry(EntryLeaderTransfer, []byte(maybeLeader)))
-		time.AfterFunc(250*time.Millisecond, func() { stepdown.push(noLeader) })
+		time.AfterFunc(250*time.Millisecond, func() {
+			n.RLock()
+			stillLeader := n.state == Leader
+			n.RUnlock()
+			// If we are still the leader force a stepdown.
+			if stillLeader {
+				stepdown.push(noLeader)
+			}
+		})
 	} else {
 		// Force us to stepdown here.
 		n.debug("Stepping down")
@@ -1402,6 +1410,7 @@ func (n *raft) campaign() error {
 func (n *raft) xferCampaign() error {
 	n.debug("Starting transfer campaign")
 	if n.state == Leader {
+		n.lxfer = false
 		return errAlreadyLeader
 	}
 	n.resetElect(10 * time.Millisecond)
