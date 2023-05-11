@@ -288,6 +288,10 @@ func (store *DirJWTStore) PackWalk(maxJWTs int, cb func(partialPackMsg string)) 
 			if err != nil {
 				return err
 			}
+			if len(jwtBytes) == 0 {
+				// Skip if no contents in the JWT.
+				return nil
+			}
 			if exp != nil {
 				claim, err := jwt.DecodeGeneric(string(jwtBytes))
 				if err == nil && claim.Expires > 0 && claim.Expires < time.Now().Unix() {
@@ -406,6 +410,9 @@ func (store *DirJWTStore) load(publicKey string) (string, error) {
 // write that keeps hash of all jwt in sync
 // Assumes the lock is held. Does return true or an error never both.
 func (store *DirJWTStore) write(path string, publicKey string, theJWT string) (bool, error) {
+	if len(theJWT) == 0 {
+		return false, fmt.Errorf("invalid JWT")
+	}
 	var newHash *[sha256.Size]byte
 	if store.expiration != nil {
 		h := sha256.Sum256([]byte(theJWT))
