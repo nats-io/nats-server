@@ -2767,7 +2767,7 @@ func (s *Server) saveClosedClient(c *client, nc net.Conn, reason ClosedState) {
 		}
 	}
 	// Hold user as well.
-	cc.user = c.opts.Username
+	cc.user = c.getRawAuthUser()
 	// Hold account name if not the global account.
 	if c.acc != nil && c.acc.Name != globalAccountName {
 		cc.acc = c.acc.Name

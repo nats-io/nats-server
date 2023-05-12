@@ -5323,20 +5323,28 @@ func (c *client) doTLSHandshake(typ string, solicit bool, url *url.URL, tlsConfi
 	return false, err
 }
 
-// getRAwAuthUser returns the raw auth user for the client.
+// getRawAuthUserLock returns the raw auth user for the client.
+// Will acquire the client lock.
+func (c *client) getRawAuthUserLock() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.getRawAuthUser()
+}
+
+// getRawAuthUser returns the raw auth user for the client.
 // Lock should be held.
 func (c *client) getRawAuthUser() string {
 	switch {
-	case c.opts.Nkey != "":
+	case c.opts.Nkey != _EMPTY_:
 		return c.opts.Nkey
-	case c.opts.Username != "":
+	case c.opts.Username != _EMPTY_:
 		return c.opts.Username
-	case c.opts.JWT != "":
+	case c.opts.JWT != _EMPTY_:
 		return c.pubKey
-	case c.opts.Token != "":
+	case c.opts.Token != _EMPTY_:
 		return c.opts.Token
 	default:
-		return ""
+		return _EMPTY_
 	}
 }
 
@@ -5344,11 +5352,11 @@ func (c *client) getRawAuthUser() string {
 // Lock should be held.
 func (c *client) getAuthUser() string {
 	switch {
-	case c.opts.Nkey != "":
+	case c.opts.Nkey != _EMPTY_:
 		return fmt.Sprintf("Nkey %q", c.opts.Nkey)
-	case c.opts.Username != "":
+	case c.opts.Username != _EMPTY_:
 		return fmt.Sprintf("User %q", c.opts.Username)
-	case c.opts.JWT != "":
+	case c.opts.JWT != _EMPTY_:
 		return fmt.Sprintf("JWT User %q", c.pubKey)
 	default:
 		return `User "N/A"`
