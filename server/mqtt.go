@@ -422,7 +422,7 @@ func (s *Server) createMQTTClient(conn net.Conn, ws *websocket) *client {
 	if maxSubs == 0 {
 		maxSubs = -1
 	}
-	now := time.Now().UTC()
+	now := time.Now()
 
 	c := &client{srv: s, nc: conn, mpay: maxPay, msubs: maxSubs, start: now, last: now, mqtt: &mqtt{}, ws: ws}
 	c.headers = true

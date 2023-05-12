@@ -5868,6 +5868,18 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	if isReplicaChange {
 		// We are adding new peers here.
 		if newCfg.Replicas > len(rg.Peers) {
+			// Check if we do not have a cluster assigned, and if we do not make sure we
+			// try to pick one. This could happen with older streams that were assigned by
+			// previous servers.
+			if rg.Cluster == _EMPTY_ {
+				// Prefer placement directrives if we have them.
+				if newCfg.Placement != nil && newCfg.Placement.Cluster != _EMPTY_ {
+					rg.Cluster = newCfg.Placement.Cluster
+				} else {
+					// Fall back to the cluster assignment from the client.
+					rg.Cluster = ci.Cluster
+				}
+			}
 			peers, err := cc.selectPeerGroup(newCfg.Replicas, rg.Cluster, newCfg, rg.Peers, 0, nil)
 			if err != nil {
 				resp.Error = NewJSClusterNoPeersError(err)

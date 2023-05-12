@@ -3532,7 +3532,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		a.jsLimits = nil
 	}
 
-	a.updated = time.Now().UTC()
+	a.updated = time.Now()
 	clients := a.getClientsLocked()
 	a.mu.Unlock()
 
@@ -3991,7 +3991,7 @@ func removeCb(s *Server, pubKey string) {
 	a.mpay = 0
 	a.mconns = 0
 	a.mleafs = 0
-	a.updated = time.Now().UTC()
+	a.updated = time.Now()
 	jsa := a.js
 	a.mu.Unlock()
 	// set the account to be expired and disconnect clients

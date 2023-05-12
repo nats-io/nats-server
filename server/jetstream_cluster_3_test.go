@@ -3997,3 +3997,52 @@ func TestJetStreamClusterStreamAccountingDriftFixups(t *testing.T) {
 	require_NoError(t, err)
 	require_True(t, jsz.JetStreamStats.Store == 0)
 }
+
+// Some older streams seem to have been created or exist with no explicit cluster setting.
+// For server <= 2.9.16 you could not scale the streams up since we could not place them in another cluster.
+func TestJetStreamClusterStreamScaleUpNoGroupCluster(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "NATS", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"*"},
+	})
+	require_NoError(t, err)
+
+	// Manually going to grab stream assignment and update it to be without the group cluster.
+	s := c.streamLeader(globalAccountName, "TEST")
+	mset, err := s.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	sa := mset.streamAssignment()
+	require_NotNil(t, sa)
+	// Make copy to not change stream's
+	sa = sa.copyGroup()
+	// Remove cluster and preferred.
+	sa.Group.Cluster = _EMPTY_
+	sa.Group.Preferred = _EMPTY_
+	// Insert into meta layer.
+	s.mu.RLock()
+	s.js.cluster.meta.ForwardProposal(encodeUpdateStreamAssignment(sa))
+	s.mu.RUnlock()
+	// Make sure it got propagated..
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		sa := mset.streamAssignment().copyGroup()
+		require_NotNil(t, sa)
+		if sa.Group.Cluster != _EMPTY_ {
+			return fmt.Errorf("Cluster still not cleared")
+		}
+		return nil
+	})
+	// Now we know it has been nil'd out. Make sure we can scale up.
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"*"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+}

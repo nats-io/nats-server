@@ -787,7 +787,7 @@ type RouteInfo struct {
 // Routez returns a Routez struct containing information about routes.
 func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 	rs := &Routez{Routes: []*RouteInfo{}}
-	rs.Now = time.Now().UTC()
+	rs.Now = time.Now()
 
 	if routezOpts == nil {
 		routezOpts = &RoutezOptions{}
@@ -980,7 +980,7 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 	slStats := &SublistStats{}
 
 	// FIXME(dlc) - Make account aware.
-	sz := &Subsz{s.info.ID, time.Now().UTC(), slStats, 0, offset, limit, nil}
+	sz := &Subsz{s.info.ID, time.Now(), slStats, 0, offset, limit, nil}
 
 	if subdetail {
 		var raw [4096]*subscription
@@ -1607,7 +1607,7 @@ func (s *Server) updateVarzConfigReloadableFields(v *Varz) {
 	v.MaxPending = opts.MaxPending
 	v.TLSTimeout = opts.TLSTimeout
 	v.WriteDeadline = opts.WriteDeadline
-	v.ConfigLoadTime = s.configTime
+	v.ConfigLoadTime = s.configTime.UTC()
 	// Update route URLs if applicable
 	if s.varzUpdateRouteURLs {
 		v.Cluster.URLs = urlsToStrings(opts.Routes)
