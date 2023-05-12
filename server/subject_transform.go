@@ -320,7 +320,7 @@ func transformUntokenize(subject string) (string, []string) {
 	var nda []string
 
 	for _, token := range strings.Split(subject, tsep) {
-		if args := getMappingFunctionArgs(wildcardMappingFunctionRegEx, token); (len(token) > 1 && token[0] == '$' && token[1] >= '1' && token[1] <= '9') || (args != nil && len(args) == 1 && args[0] != _EMPTY_) {
+		if args := getMappingFunctionArgs(wildcardMappingFunctionRegEx, token); (len(token) > 1 && token[0] == '$' && token[1] >= '1' && token[1] <= '9') || (len(args) == 1 && args[0] != _EMPTY_) {
 			phs = append(phs, token)
 			nda = append(nda, pwcs)
 		} else {
