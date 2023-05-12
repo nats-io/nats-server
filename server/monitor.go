@@ -294,13 +294,10 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	}
 
 	// We may need to filter these connections.
-	if (acc != _EMPTY_ || user != _EMPTY_) && len(closedClients) > 0 {
+	if acc != _EMPTY_ && len(closedClients) > 0 {
 		var ccc []*closedClient
 		for _, cc := range closedClients {
-			if acc != _EMPTY_ && cc.acc != acc {
-				continue
-			}
-			if user != _EMPTY_ && cc.user != user {
+			if cc.acc != acc {
 				continue
 			}
 			ccc = append(ccc, cc)
