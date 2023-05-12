@@ -3747,7 +3747,7 @@ func TestJWTAccountNATSResolverCrossClusterFetch(t *testing.T) {
        `, ojwt, syspub, dirBA, sAA.opts.Gateway.Port)))
 	sBA, _ := RunServerWithConfig(confBA)
 	defer sBA.Shutdown()
-	// Create Sever BA  (using no_advertise to prevent fail over)
+	// Create Server BA (using no_advertise to prevent fail over)
 	confBB := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
 		server_name: srv-B-B
