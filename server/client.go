@@ -5323,7 +5323,7 @@ func (c *client) doTLSHandshake(typ string, solicit bool, url *url.URL, tlsConfi
 	return false, err
 }
 
-// getRAwAuthUserLock returns the raw auth user for the client.
+// getRawAuthUserLock returns the raw auth user for the client.
 // Will acquire the client lock.
 func (c *client) getRawAuthUserLock() string {
 	c.mu.Lock()
@@ -5331,7 +5331,7 @@ func (c *client) getRawAuthUserLock() string {
 	return c.getRawAuthUser()
 }
 
-// getRAwAuthUser returns the raw auth user for the client.
+// getRawAuthUser returns the raw auth user for the client.
 // Lock should be held.
 func (c *client) getRawAuthUser() string {
 	switch {
