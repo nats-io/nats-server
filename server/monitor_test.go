@@ -4600,3 +4600,74 @@ func TestMonitorWebsocket(t *testing.T) {
 		}
 	}
 }
+
+func TestMonitorConnzOperatorModeFilterByUser(t *testing.T) {
+	accKp, accPub := createKey(t)
+	accClaim := jwt.NewAccountClaims(accPub)
+	accJwt := encodeClaim(t, accClaim, accPub)
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		http: 127.0.0.1:-1
+		operator = %s
+		resolver = MEMORY
+		resolver_preload = {
+			%s : %s
+		}
+	`, ojwt, accPub, accJwt)))
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	createUser := func() (string, string) {
+		ukp, _ := nkeys.CreateUser()
+		seed, _ := ukp.Seed()
+		upub, _ := ukp.PublicKey()
+		uclaim := newJWTTestUserClaims()
+		uclaim.Subject = upub
+		ujwt, err := uclaim.Encode(accKp)
+		require_NoError(t, err)
+		return upub, genCredsFile(t, ujwt, seed)
+	}
+
+	// Now create 2 users.
+	aUser, aCreds := createUser()
+	bUser, bCreds := createUser()
+
+	// Create 2 for A
+	for i := 0; i < 2; i++ {
+		nc, err := nats.Connect(s.ClientURL(), nats.UserCredentials(aCreds))
+		require_NoError(t, err)
+		defer nc.Close()
+	}
+	// Create 5 for B
+	for i := 0; i < 5; i++ {
+		nc, err := nats.Connect(s.ClientURL(), nats.UserCredentials(bCreds))
+		require_NoError(t, err)
+		defer nc.Close()
+	}
+
+	// Test A
+	connz, err := s.Connz(&ConnzOptions{User: aUser, Username: true})
+	require_NoError(t, err)
+	require_True(t, connz.NumConns == 2)
+	for _, ci := range connz.Conns {
+		require_True(t, ci.AuthorizedUser == aUser)
+	}
+	// Test B
+	connz, err = s.Connz(&ConnzOptions{User: bUser, Username: true})
+	require_NoError(t, err)
+	require_True(t, connz.NumConns == 5)
+	for _, ci := range connz.Conns {
+		require_True(t, ci.AuthorizedUser == bUser)
+	}
+
+	// Make sure URL access same.
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
+	urlFull := url + fmt.Sprintf("connz?auth=true&user=%s", aUser)
+	connz = pollConz(t, s, 0, urlFull, nil)
+	require_True(t, connz.NumConns == 2)
+	for _, ci := range connz.Conns {
+		require_True(t, ci.AuthorizedUser == aUser)
+	}
+}

@@ -201,11 +201,11 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 
 		// Auth specifics.
 		auth = opts.Username
+		user = opts.User
+		acc = opts.Account
 		if !auth && (user != _EMPTY_ || acc != _EMPTY_) {
 			return nil, fmt.Errorf("filter by user or account only allowed with auth option")
 		}
-		user = opts.User
-		acc = opts.Account
 		mqttCID = opts.MQTTClient
 
 		subs = opts.Subscriptions
@@ -273,7 +273,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	}
 
 	// Walk the open client list with server lock held.
-	s.mu.Lock()
+	s.mu.RLock()
 	// Default to all client unless filled in above.
 	if clist == nil {
 		clist = s.clients
@@ -357,7 +357,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 					continue
 				}
 				// Do user filtering second
-				if user != _EMPTY_ && client.opts.Username != user {
+				if user != _EMPTY_ && client.getRawAuthUserLock() != user {
 					continue
 				}
 				// Do mqtt client ID filtering next
@@ -368,7 +368,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 			}
 		}
 	}
-	s.mu.Unlock()
+	s.mu.RUnlock()
 
 	// Filter by subject now if needed. We do this outside of server lock.
 	if filter != _EMPTY_ {
