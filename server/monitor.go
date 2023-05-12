@@ -203,9 +203,6 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		auth = opts.Username
 		user = opts.User
 		acc = opts.Account
-		if !auth && (user != _EMPTY_ || acc != _EMPTY_) {
-			return nil, fmt.Errorf("filter by user or account only allowed with auth option")
-		}
 		mqttCID = opts.MQTTClient
 
 		subs = opts.Subscriptions
@@ -297,12 +294,16 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	}
 
 	// We may need to filter these connections.
-	if acc != _EMPTY_ && len(closedClients) > 0 {
+	if (acc != _EMPTY_ || user != _EMPTY_) && len(closedClients) > 0 {
 		var ccc []*closedClient
 		for _, cc := range closedClients {
-			if cc.acc == acc {
-				ccc = append(ccc, cc)
+			if acc != _EMPTY_ && cc.acc != acc {
+				continue
 			}
+			if user != _EMPTY_ && cc.user != user {
+				continue
+			}
+			ccc = append(ccc, cc)
 		}
 		c.Total -= (len(closedClients) - len(ccc))
 		closedClients = ccc
