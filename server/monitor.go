@@ -2446,19 +2446,20 @@ func (s *Server) Accountz(optz *AccountzOptions) (*Accountz, error) {
 	if sacc := s.SystemAccount(); sacc != nil {
 		a.SystemAccount = sacc.GetName()
 	}
-	if optz.Account == "" {
+	if optz == nil || optz.Account == _EMPTY_ {
 		a.Accounts = []string{}
 		s.accounts.Range(func(key, value interface{}) bool {
 			a.Accounts = append(a.Accounts, key.(string))
 			return true
 		})
 		return a, nil
-	} else if aInfo, err := s.accountInfo(optz.Account); err != nil {
-		return nil, err
-	} else {
-		a.Account = aInfo
-		return a, nil
 	}
+	aInfo, err := s.accountInfo(optz.Account)
+	if err != nil {
+		return nil, err
+	}
+	a.Account = aInfo
+	return a, nil
 }
 
 func newExtImport(v *serviceImport) ExtImport {
@@ -2471,10 +2472,12 @@ func newExtImport(v *serviceImport) ExtImport {
 		imp.Tracking = v.tracking
 		imp.Invalid = v.invalid
 		imp.Import = jwt.Import{
-			Subject: jwt.Subject(v.from),
+			Subject: jwt.Subject(v.to),
 			Account: v.acc.Name,
 			Type:    jwt.Service,
-			To:      jwt.Subject(v.to),
+			// Deprecated so we duplicate. Use LocalSubject.
+			To:           jwt.Subject(v.from),
+			LocalSubject: jwt.RenamingSubject(v.from),
 		}
 		imp.TrackingHdr = v.trackingHdr
 		imp.Latency = newExtServiceLatency(v.latency)
