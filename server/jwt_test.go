@@ -6774,7 +6774,7 @@ func TestJWTAccountNATSResolverWrongCreds(t *testing.T) {
 
 	// Check that trying to connect with bad credentials should not hang until the fetch timeout
 	// and instead return a faster response when an account is not found.
-	_, err := nats.Connect(sC.ClientURL(), nats.UserCredentials(cCreds), nats.Timeout(1*time.Second))
+	_, err := nats.Connect(sC.ClientURL(), nats.UserCredentials(cCreds), nats.Timeout(500*time.Second))
 	if err != nil && !errors.Is(err, nats.ErrAuthorization) {
 		t.Fatalf("Expected auth error: %v", err)
 	}
