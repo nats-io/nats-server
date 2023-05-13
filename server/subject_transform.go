@@ -69,7 +69,7 @@ type SubjectTransformer interface {
 	TransformTokenizedSubject(tokens []string) string
 }
 
-func NewSubjectTransform(src, dest string, strict bool) (*subjectTransform, error) {
+func NewSubjectTransformWithStrict(src, dest string, strict bool) (*subjectTransform, error) {
 	// strict = true for import subject mappings that need to be reversible
 	// (meaning can only use the Wildcard function and must use all the pwcs that are present in the source)
 	// No source given is equivalent to the source being ">"
@@ -152,6 +152,14 @@ func NewSubjectTransform(src, dest string, strict bool) (*subjectTransform, erro
 		dtokmfintargs:        dtokMappingFunctionIntArgs,
 		dtokmfstringargs:     dtokMappingFunctionStringArgs,
 	}, nil
+}
+
+func NewSubjectTransform(src, dest string) (*subjectTransform, error) {
+	return NewSubjectTransformWithStrict(src, dest, false)
+}
+
+func NewSubjectTransformStrict(src, dest string) (*subjectTransform, error) {
+	return NewSubjectTransformWithStrict(src, dest, true)
 }
 
 func getMappingFunctionArgs(functionRegEx *regexp.Regexp, token string) []string {
@@ -505,7 +513,7 @@ func (tr *subjectTransform) TransformTokenizedSubject(tokens []string) string {
 // Reverse a subjectTransform.
 func (tr *subjectTransform) reverse() *subjectTransform {
 	if len(tr.dtokmftokindexesargs) == 0 {
-		rtr, _ := NewSubjectTransform(tr.dest, tr.src, true)
+		rtr, _ := NewSubjectTransformStrict(tr.dest, tr.src)
 		return rtr
 	}
 	// If we are here we need to dynamically get the correct reverse
@@ -525,6 +533,6 @@ func (tr *subjectTransform) reverse() *subjectTransform {
 		}
 	}
 	ndest := strings.Join(nda, tsep)
-	rtr, _ := NewSubjectTransform(nsrc, ndest, true)
+	rtr, _ := NewSubjectTransformStrict(nsrc, ndest)
 	return rtr
 }

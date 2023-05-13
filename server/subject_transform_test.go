@@ -102,7 +102,7 @@ func TestSubjectTransformHelpers(t *testing.T) {
 	}
 
 	newReversibleTransform := func(src, dest string) *subjectTransform {
-		tr, err := NewSubjectTransform(src, dest, true)
+		tr, err := NewSubjectTransformStrict(src, dest)
 		if err != nil {
 			t.Fatalf("Error getting reversible transform: %s to %s", src, dest)
 		}
@@ -121,7 +121,7 @@ func TestSubjectTransformHelpers(t *testing.T) {
 func TestSubjectTransforms(t *testing.T) {
 	shouldErr := func(src, dest string, strict bool) {
 		t.Helper()
-		if _, err := NewSubjectTransform(src, dest, strict); err != ErrBadSubject && !errors.Is(err, ErrInvalidMappingDestination) {
+		if _, err := NewSubjectTransformWithStrict(src, dest, strict); err != ErrBadSubject && !errors.Is(err, ErrInvalidMappingDestination) {
 			t.Fatalf("Did not get an error for src=%q and dest=%q", src, dest)
 		}
 	}
@@ -152,7 +152,7 @@ func TestSubjectTransforms(t *testing.T) {
 
 	shouldBeOK := func(src, dest string, strict bool) *subjectTransform {
 		t.Helper()
-		tr, err := NewSubjectTransform(src, dest, strict)
+		tr, err := NewSubjectTransformWithStrict(src, dest, strict)
 		if err != nil {
 			t.Fatalf("Got an error %v for src=%q and dest=%q", err, src, dest)
 		}
