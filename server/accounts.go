@@ -3991,7 +3991,6 @@ func (dr *DirAccResolver) Start(s *Server) error {
 	defer dr.Unlock()
 	dr.Server = s
 	dr.operator = opKeys
-	fetchTimeout := dr.fetchTimeout
 	dr.DirJWTStore.changed = func(pubKey string) {
 		if v, ok := s.accounts.Load(pubKey); ok {
 			if theJwt, err := dr.LoadAcc(pubKey); err != nil {
@@ -4082,9 +4081,7 @@ func (dr *DirAccResolver) Start(s *Server) error {
 		if theJWT, err := dr.DirJWTStore.LoadAcc(accName); err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				s.Debugf("DirResolver - Could not find account %q", accName)
-				// Reply with empty response to signal absence of JWT to others,
-				// but not too fast to mitigate beating actual responses with content.
-				time.Sleep(fetchTimeout / 10)
+				// Reply with empty response to signal absence of JWT to others.
 				s.sendInternalMsgLocked(reply, _EMPTY_, nil, nil)
 			} else {
 				s.Errorf("DirResolver - Error looking up account %q: %v", accName, err)
@@ -4250,18 +4247,16 @@ func (s *Server) fetch(res AccountResolver, name string, timeout time.Duration) 
 	replies := s.sys.replies
 
 	// Store our handler.
-	replies[replySubj] = func(sub *subscription, _ *client, _ *Account, subject, reply string, msg []byte) {
+	replies[replySubj] = func(sub *subscription, _ *client, _ *Account, subject, _ string, msg []byte) {
 		clone := make([]byte, len(msg))
 		copy(clone, msg)
 
 		s.mu.Lock()
+		defer s.mu.Unlock()
 		expectedServers--
-		if len(msg) == 0 {
-			// Skip empty responses until getting all the available servers.
-			if expectedServers > 0 {
-				s.mu.Unlock()
-				return
-			}
+		// Skip empty responses until getting all the available servers.
+		if len(msg) == 0 && expectedServers > 0 {
+			return
 		}
 		// Use the first valid response if there is still interest or
 		// one of the empty responses to signal that it was not found.
@@ -4271,7 +4266,6 @@ func (s *Server) fetch(res AccountResolver, name string, timeout time.Duration) 
 			default:
 			}
 		}
-		s.mu.Unlock()
 	}
 	s.sendInternalMsg(accountLookupRequest, replySubj, nil, []byte{})
 	quit := s.quitCh
