@@ -1,4 +1,4 @@
-// Copyright 2013-2022 The NATS Authors
+// Copyright 2013-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -4684,5 +4684,53 @@ func TestMonitorConnzOperatorModeFilterByUser(t *testing.T) {
 	require_True(t, connz.NumConns == 2)
 	for _, ci := range connz.Conns {
 		require_True(t, ci.AuthorizedUser == aUser)
+	}
+}
+
+func TestMonitorConnzSortByRTT(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	for i := 0; i < 10; i++ {
+		nc, err := nats.Connect(s.ClientURL())
+		require_NoError(t, err)
+		defer nc.Close()
+	}
+
+	connz := pollConz(t, s, 1, _EMPTY_, &ConnzOptions{Sort: ByRTT})
+	require_True(t, connz.NumConns == 10)
+
+	var rtt int64
+	for _, ci := range connz.Conns {
+		if rtt == 0 {
+			rtt = ci.rtt
+		} else {
+			if ci.rtt > rtt {
+				t.Fatalf("RTT not in descending order: %v vs %v",
+					time.Duration(rtt), time.Duration(ci.rtt))
+			}
+			rtt = ci.rtt
+		}
+	}
+
+	// Make sure url works as well.
+	url := fmt.Sprintf("http://127.0.0.1:%d/connz?sort=rtt", s.MonitorAddr().Port)
+	connz = pollConz(t, s, 0, url, nil)
+	require_True(t, connz.NumConns == 10)
+
+	rtt = 0
+	for _, ci := range connz.Conns {
+		crttd, err := time.ParseDuration(ci.RTT)
+		require_NoError(t, err)
+		crtt := int64(crttd)
+		if rtt == 0 {
+			rtt = crtt
+		} else {
+			if crtt > rtt {
+				t.Fatalf("RTT not in descending order: %v vs %v",
+					time.Duration(rtt), time.Duration(crtt))
+			}
+			rtt = ci.rtt
+		}
 	}
 }

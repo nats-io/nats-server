@@ -137,6 +137,9 @@ type ConnInfo struct {
 	NameTag        string         `json:"name_tag,omitempty"`
 	Tags           jwt.TagList    `json:"tags,omitempty"`
 	MQTTClient     string         `json:"mqtt_client,omitempty"` // This is the MQTT client id
+
+	// Internal
+	rtt int64 // For fast sorting
 }
 
 // TLSPeerCert contains basic information about a TLS peer certificate
@@ -190,9 +193,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 
 	if opts != nil {
 		// If no sort option given or sort is by uptime, then sort by cid
-		if opts.Sort == _EMPTY_ {
-			sortOpt = ByCid
-		} else {
+		if opts.Sort != _EMPTY_ {
 			sortOpt = opts.Sort
 			if !sortOpt.IsValid() {
 				return nil, fmt.Errorf("invalid sorting option: %s", sortOpt)
@@ -498,6 +499,8 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		sort.Sort(sort.Reverse(byStop{pconns}))
 	case ByReason:
 		sort.Sort(byReason{pconns})
+	case ByRTT:
+		sort.Sort(sort.Reverse(byRTT{pconns}))
 	}
 
 	minoff := c.Offset
@@ -527,6 +530,10 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 // Fills in the ConnInfo from the client.
 // client should be locked.
 func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time, auth bool) {
+	// For fast sort if required.
+	rtt := client.getRTT()
+	ci.rtt = int64(rtt)
+
 	ci.Cid = client.cid
 	ci.MQTTClient = client.getMQTTClientID()
 	ci.Kind = client.kindString()
@@ -535,7 +542,7 @@ func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time, auth bool) 
 	ci.LastActivity = client.last
 	ci.Uptime = myUptime(now.Sub(client.start))
 	ci.Idle = myUptime(now.Sub(client.last))
-	ci.RTT = client.getRTT().String()
+	ci.RTT = rtt.String()
 	ci.OutMsgs = client.outMsgs
 	ci.OutBytes = client.outBytes
 	ci.NumSubs = uint32(len(client.subs))
@@ -584,7 +591,7 @@ func (c *client) getRTT() time.Duration {
 	if c.rtt == 0 {
 		// If a real client, go ahead and send ping now to get a value
 		// for RTT. For tests and telnet, or if client is closing, etc skip.
-		if c.opts.Lang != "" {
+		if c.opts.Lang != _EMPTY_ {
 			c.sendRTTPingLocked()
 		}
 		return 0
