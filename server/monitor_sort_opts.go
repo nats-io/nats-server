@@ -45,7 +45,7 @@ const (
 	ByUptime   SortOpt = "uptime"     // By the amount of time connections exist
 	ByStop     SortOpt = "stop"       // By the stop time for a closed connection
 	ByReason   SortOpt = "reason"     // By the reason for a closed connection
-
+	ByRTT      SortOpt = "rtt"        // By the round trip time
 )
 
 // Individual sort options provide the Less for sort.Interface. Len and Swap are on cList.
@@ -139,10 +139,15 @@ func (l byReason) Less(i, j int) bool {
 	return l.ConnInfos[i].Reason < l.ConnInfos[j].Reason
 }
 
+// RTT - Default is descending
+type byRTT struct{ ConnInfos }
+
+func (l byRTT) Less(i, j int) bool { return l.ConnInfos[i].rtt < l.ConnInfos[j].rtt }
+
 // IsValid determines if a sort option is valid
 func (s SortOpt) IsValid() bool {
 	switch s {
-	case "", ByCid, ByStart, BySubs, ByPending, ByOutMsgs, ByInMsgs, ByOutBytes, ByInBytes, ByLast, ByIdle, ByUptime, ByStop, ByReason:
+	case _EMPTY_, ByCid, ByStart, BySubs, ByPending, ByOutMsgs, ByInMsgs, ByOutBytes, ByInBytes, ByLast, ByIdle, ByUptime, ByStop, ByReason, ByRTT:
 		return true
 	default:
 		return false
