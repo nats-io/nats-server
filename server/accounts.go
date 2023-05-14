@@ -4233,30 +4233,24 @@ func (s *Server) fetch(res AccountResolver, name string, timeout time.Duration) 
 	respC := make(chan []byte, 1)
 	accountLookupRequest := fmt.Sprintf(accLookupReqSubj, name)
 	s.mu.Lock()
-	// Resolver will wait for detected active servers to reply
-	// before serving an error in case there weren't any found.
-	var expectedServers int
 	if s.sys == nil || s.sys.replies == nil {
 		s.mu.Unlock()
 		return _EMPTY_, fmt.Errorf("eventing shut down")
 	}
-	if s.sys != nil && s.sys.servers != nil {
-		expectedServers = len(s.sys.servers)
-	}
+	// Resolver will wait for detected active servers to reply
+	// before serving an error in case there weren't any found.
+	expectedServers := len(s.sys.servers)
 	replySubj := s.newRespInbox()
 	replies := s.sys.replies
 
 	// Store our handler.
 	replies[replySubj] = func(sub *subscription, _ *client, _ *Account, subject, _ string, msg []byte) {
 		var clone []byte
-		var isEmpty bool
-		if len(msg) > 0 {
+		isEmpty := len(msg) == 0
+		if !isEmpty {
 			clone = make([]byte, len(msg))
 			copy(clone, msg)
-		} else {
-			isEmpty = true
 		}
-
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		expectedServers--
