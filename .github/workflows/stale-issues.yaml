@@ -1,0 +1,17 @@
+name: stale-issues
+on:
+  schedule:
+    - cron: "30 1 * * *"
+
+jobs:
+  - name: stale-issues
+    stale:
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/stale@v8
+          with:
+            debug-only: true # Set until the behavior is tuned.
+            days-before-stale: 28 # Mark stale after 4 weeks (28 days) of inactivity
+            days-before-close: 7 # Close 1 week after marked `Stale` and without follow-up activity
+            exempt-all-milestones: true # Any issue/PR within a milestone will be omitted
+            #exempt-assigness: "foo,bar"  # Exempt issues/PRs assigned to particular users
