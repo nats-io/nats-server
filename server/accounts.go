@@ -4233,29 +4233,35 @@ func (s *Server) fetch(res AccountResolver, name string, timeout time.Duration) 
 	respC := make(chan []byte, 1)
 	accountLookupRequest := fmt.Sprintf(accLookupReqSubj, name)
 	s.mu.Lock()
-	// Resolver will wait for available routes + gateways to reply
+	// Resolver will wait for detected active servers to reply
 	// before serving an error in case there weren't any found.
-	expectedServers := len(s.routes)
-	if s.gateway != nil {
-		expectedServers += len(s.gateway.remotes)
-	}
+	var expectedServers int
 	if s.sys == nil || s.sys.replies == nil {
 		s.mu.Unlock()
 		return _EMPTY_, fmt.Errorf("eventing shut down")
+	}
+	if s.sys != nil && s.sys.servers != nil {
+		expectedServers = len(s.sys.servers)
 	}
 	replySubj := s.newRespInbox()
 	replies := s.sys.replies
 
 	// Store our handler.
 	replies[replySubj] = func(sub *subscription, _ *client, _ *Account, subject, _ string, msg []byte) {
-		clone := make([]byte, len(msg))
-		copy(clone, msg)
+		var clone []byte
+		var isEmpty bool
+		if len(msg) > 0 {
+			clone = make([]byte, len(msg))
+			copy(clone, msg)
+		} else {
+			isEmpty = true
+		}
 
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		expectedServers--
 		// Skip empty responses until getting all the available servers.
-		if len(msg) == 0 && expectedServers > 0 {
+		if isEmpty && expectedServers > 0 {
 			return
 		}
 		// Use the first valid response if there is still interest or
