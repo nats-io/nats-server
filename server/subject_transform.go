@@ -69,7 +69,9 @@ type SubjectTransformer interface {
 	TransformTokenizedSubject(tokens []string) string
 }
 
-func NewSubjectTransform(src, dest string) (*subjectTransform, error) {
+func NewSubjectTransformWithStrict(src, dest string, strict bool) (*subjectTransform, error) {
+	// strict = true for import subject mappings that need to be reversible
+	// (meaning can only use the Wildcard function and must use all the pwcs that are present in the source)
 	// No source given is equivalent to the source being ">"
 	if src == _EMPTY_ {
 		src = fwcs
@@ -106,6 +108,12 @@ func NewSubjectTransform(src, dest string) (*subjectTransform, error) {
 				return nil, err
 			}
 
+			if strict {
+				if tranformType != NoTransform && tranformType != Wildcard {
+					return nil, &mappingDestinationErr{token, ErrorMappingDestinationFunctionNotSupportedForImport}
+				}
+			}
+
 			if tranformType == NoTransform {
 				dtokMappingFunctionTypes = append(dtokMappingFunctionTypes, NoTransform)
 				dtokMappingFunctionTokenIndexes = append(dtokMappingFunctionTokenIndexes, []int{-1})
@@ -128,7 +136,7 @@ func NewSubjectTransform(src, dest string) (*subjectTransform, error) {
 
 			}
 		}
-		if nphs < npwcs {
+		if strict && nphs < npwcs {
 			// not all wildcards are being used in the destination
 			return nil, &mappingDestinationErr{dest, ErrMappingDestinationNotUsingAllWildcards}
 		}
@@ -144,6 +152,14 @@ func NewSubjectTransform(src, dest string) (*subjectTransform, error) {
 		dtokmfintargs:        dtokMappingFunctionIntArgs,
 		dtokmfstringargs:     dtokMappingFunctionStringArgs,
 	}, nil
+}
+
+func NewSubjectTransform(src, dest string) (*subjectTransform, error) {
+	return NewSubjectTransformWithStrict(src, dest, false)
+}
+
+func NewSubjectTransformStrict(src, dest string) (*subjectTransform, error) {
+	return NewSubjectTransformWithStrict(src, dest, true)
 }
 
 func getMappingFunctionArgs(functionRegEx *regexp.Regexp, token string) []string {
@@ -304,14 +320,15 @@ func transformTokenize(subject string) string {
 // Helper function to go from transform destination to a subject with partial wildcards and ordered list of placeholders
 // E.g.:
 //
-//	"bar" -> "bar", []
-//	"foo.$2.$1" -> "foo.*.*", ["$2","$1"]
+//		"bar" -> "bar", []
+//		"foo.$2.$1" -> "foo.*.*", ["$2","$1"]
+//	    "foo.{{wildcard(2)}}.{{wildcard(1)}}" -> "foo.*.*", ["{{wildcard(2)}}","{{wildcard(1)}}"]
 func transformUntokenize(subject string) (string, []string) {
 	var phs []string
 	var nda []string
 
 	for _, token := range strings.Split(subject, tsep) {
-		if len(token) > 1 && token[0] == '$' && token[1] >= '1' && token[1] <= '9' {
+		if args := getMappingFunctionArgs(wildcardMappingFunctionRegEx, token); (len(token) > 1 && token[0] == '$' && token[1] >= '1' && token[1] <= '9') || (len(args) == 1 && args[0] != _EMPTY_) {
 			phs = append(phs, token)
 			nda = append(nda, pwcs)
 		} else {
@@ -496,7 +513,7 @@ func (tr *subjectTransform) TransformTokenizedSubject(tokens []string) string {
 // Reverse a subjectTransform.
 func (tr *subjectTransform) reverse() *subjectTransform {
 	if len(tr.dtokmftokindexesargs) == 0 {
-		rtr, _ := NewSubjectTransform(tr.dest, tr.src)
+		rtr, _ := NewSubjectTransformStrict(tr.dest, tr.src)
 		return rtr
 	}
 	// If we are here we need to dynamically get the correct reverse
@@ -516,6 +533,6 @@ func (tr *subjectTransform) reverse() *subjectTransform {
 		}
 	}
 	ndest := strings.Join(nda, tsep)
-	rtr, _ := NewSubjectTransform(nsrc, ndest)
+	rtr, _ := NewSubjectTransformStrict(nsrc, ndest)
 	return rtr
 }

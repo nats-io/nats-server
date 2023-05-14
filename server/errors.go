@@ -219,6 +219,9 @@ var (
 
 	// ErrorMappingDestinationFunctionTooManyArguments is returned when the mapping destination function is passed too many arguments
 	ErrorMappingDestinationFunctionTooManyArguments = fmt.Errorf("%w: too many arguments passed to the function", ErrInvalidMappingDestination)
+
+	// ErrorMappingDestinationFunctionNotSupportedForImport is returned when you try to use a mapping function other than wildcard in a transform that needs to be reversible (i.e. an import)
+	ErrorMappingDestinationFunctionNotSupportedForImport = fmt.Errorf("%w: the only mapping function allowed for import transforms is {{Wildcard()}}", ErrInvalidMappingDestination)
 )
 
 // mappingDestinationErr is a type of subject mapping destination error

@@ -1903,7 +1903,7 @@ func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Im
 		} else {
 			to, _ = transformUntokenize(to)
 			// Create a transform. Do so in reverse such that $ symbols only exist in to
-			if tr, err = NewSubjectTransform(to, transformTokenize(from)); err != nil {
+			if tr, err = NewSubjectTransformStrict(to, transformTokenize(from)); err != nil {
 				a.mu.Unlock()
 				return nil, fmt.Errorf("failed to create mapping transform for service import subject from %q to %q: %v",
 					from, to, err)
@@ -2256,7 +2256,7 @@ func (si *serviceImport) isRespServiceImport() bool {
 	return si != nil && si.response
 }
 
-// Sets the response theshold timer for a service export.
+// Sets the response threshold timer for a service export.
 // Account lock should be held
 func (se *serviceExport) setResponseThresholdTimer() {
 	if se.rtmr != nil {
@@ -2459,7 +2459,7 @@ func (a *Account) AddMappedStreamImportWithClaim(account *Account, from, to stri
 			usePub = true
 		} else {
 			// Create a transform
-			if tr, err = NewSubjectTransform(from, transformTokenize(to)); err != nil {
+			if tr, err = NewSubjectTransformStrict(from, transformTokenize(to)); err != nil {
 				return fmt.Errorf("failed to create mapping transform for stream import subject from %q to %q: %v",
 					from, to, err)
 			}

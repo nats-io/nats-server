@@ -73,58 +73,107 @@ func TestPlaceHolderIndex(t *testing.T) {
 	}
 }
 
+func TestSubjectTransformHelpers(t *testing.T) {
+	equals := func(a, b []string) bool {
+		if len(a) != len(b) {
+			return false
+		}
+		for i, v := range a {
+			if v != b[i] {
+				return false
+			}
+		}
+		return true
+	}
+
+	filter, placeHolders := transformUntokenize("bar")
+	if filter != "bar" || len(placeHolders) != 0 {
+		t.Fatalf("transformUntokenize for not returning expected result")
+	}
+
+	filter, placeHolders = transformUntokenize("foo.$2.$1")
+	if filter != "foo.*.*" || !equals(placeHolders, []string{"$2", "$1"}) {
+		t.Fatalf("transformUntokenize for not returning expected result")
+	}
+
+	filter, placeHolders = transformUntokenize("foo.{{wildcard(2)}}.{{wildcard(1)}}")
+	if filter != "foo.*.*" || !equals(placeHolders, []string{"{{wildcard(2)}}", "{{wildcard(1)}}"}) {
+		t.Fatalf("transformUntokenize for not returning expected result")
+	}
+
+	newReversibleTransform := func(src, dest string) *subjectTransform {
+		tr, err := NewSubjectTransformStrict(src, dest)
+		if err != nil {
+			t.Fatalf("Error getting reversible transform: %s to %s", src, dest)
+		}
+		return tr
+	}
+
+	tr := newReversibleTransform("foo.*.*", "bar.$2.{{Wildcard(1)}}")
+	subject := "foo.b.a"
+	transformed := tr.TransformSubject(subject)
+	reverse := tr.reverse()
+	if reverse.TransformSubject(transformed) != subject {
+		t.Fatal("Reversed transform subject not matching")
+	}
+}
+
 func TestSubjectTransforms(t *testing.T) {
-	shouldErr := func(src, dest string) {
+	shouldErr := func(src, dest string, strict bool) {
 		t.Helper()
-		if _, err := NewSubjectTransform(src, dest); err != ErrBadSubject && !errors.Is(err, ErrInvalidMappingDestination) {
+		if _, err := NewSubjectTransformWithStrict(src, dest, strict); err != ErrBadSubject && !errors.Is(err, ErrInvalidMappingDestination) {
 			t.Fatalf("Did not get an error for src=%q and dest=%q", src, dest)
 		}
 	}
 
-	shouldErr("foo.*.*", "bar.$2") // Must place all pwcs.
-
 	// Must be valid subjects.
-	shouldErr("foo", "")
-	shouldErr("foo..", "bar")
+	shouldErr("foo", "", false)
+	shouldErr("foo..", "bar", false)
 
 	// Wildcards are allowed in src, but must be matched by token placements on the other side.
 	// e.g. foo.* -> bar.$1.
-	// Need to have as many pwcs as placements on other side.
-	shouldErr("foo.*", "bar.*")
-	shouldErr("foo.*", "bar.$2")                   // Bad pwc token identifier
-	shouldErr("foo.*", "bar.$1.>")                 // fwcs have to match.
-	shouldErr("foo.>", "bar.baz")                  // fwcs have to match.
-	shouldErr("foo.*.*", "bar.$2")                 // Must place all pwcs.
-	shouldErr("foo.*", "foo.$foo")                 // invalid $ value
-	shouldErr("foo.*", "foo.{{wildcard(2)}}")      // Mapping function being passed an out of range wildcard index
-	shouldErr("foo.*", "foo.{{unimplemented(1)}}") // Mapping trying to use an unknown mapping function
-	shouldErr("foo.*", "foo.{{partition(10)}}")    // Not enough arguments passed to the mapping function
-	shouldErr("foo.*", "foo.{{wildcard(foo)}}")    // Invalid argument passed to the mapping function
-	shouldErr("foo.*", "foo.{{wildcard()}}")       // Not enough arguments passed to the mapping function
-	shouldErr("foo.*", "foo.{{wildcard(1,2)}}")    // Too many arguments passed to the mapping function
-	shouldErr("foo.*", "foo.{{ wildcard5) }}")     // Bad mapping function
-	shouldErr("foo.*", "foo.{{splitLeft(2,2}}")    // arg out of range
+	// Need to have as many pwcs as placements on other side
 
-	shouldBeOK := func(src, dest string) *subjectTransform {
+	shouldErr("foo.*", "bar.*", false)
+	shouldErr("foo.*", "bar.$2", false)                   // Bad pwc token identifier
+	shouldErr("foo.*", "bar.$1.>", false)                 // fwcs have to match.
+	shouldErr("foo.>", "bar.baz", false)                  // fwcs have to match.
+	shouldErr("foo.*.*", "bar.$2", true)                  // Must place all pwcs.
+	shouldErr("foo.*", "foo.$foo", true)                  // invalid $ value
+	shouldErr("foo.*", "bar.{{Partition(2,1)}}", true)    // can only use Wildcard function (and old-style $x) in import transform
+	shouldErr("foo.*", "foo.{{wildcard(2)}}", false)      // Mapping function being passed an out of range wildcard index
+	shouldErr("foo.*", "foo.{{unimplemented(1)}}", false) // Mapping trying to use an unknown mapping function
+	shouldErr("foo.*", "foo.{{partition(10)}}", false)    // Not enough arguments passed to the mapping function
+	shouldErr("foo.*", "foo.{{wildcard(foo)}}", false)    // Invalid argument passed to the mapping function
+	shouldErr("foo.*", "foo.{{wildcard()}}", false)       // Not enough arguments passed to the mapping function
+	shouldErr("foo.*", "foo.{{wildcard(1,2)}}", false)    // Too many arguments passed to the mapping function
+	shouldErr("foo.*", "foo.{{ wildcard5) }}", false)     // Bad mapping function
+	shouldErr("foo.*", "foo.{{splitLeft(2,2}}", false)    // arg out of range
+
+	shouldBeOK := func(src, dest string, strict bool) *subjectTransform {
 		t.Helper()
-		tr, err := NewSubjectTransform(src, dest)
+		tr, err := NewSubjectTransformWithStrict(src, dest, strict)
 		if err != nil {
 			t.Fatalf("Got an error %v for src=%q and dest=%q", err, src, dest)
 		}
 		return tr
 	}
 
-	shouldBeOK("foo", "bar")
-	shouldBeOK("foo.*.bar.*.baz", "req.$2.$1")
-	shouldBeOK("baz.>", "mybaz.>")
-	shouldBeOK("*", "{{splitfromleft(1,1)}}")
-	shouldBeOK("", "prefix.>")
-	shouldBeOK("*.*", "{{partition(10,1,2)}}")
-	shouldBeOK("foo.*.*", "foo.{{wildcard(1)}}.{{wildcard(2)}}.{{partition(5,1,2)}}")
+	shouldBeOK("foo.*", "bar.{{Wildcard(1)}}", true)
+
+	shouldBeOK("foo.*.*", "bar.$2", false)              // don't have to use all pwcs.
+	shouldBeOK("foo.*.*", "bar.{{wildcard(1)}}", false) // don't have to use all pwcs.
+	shouldBeOK("foo", "bar", false)
+	shouldBeOK("foo.*.bar.*.baz", "req.$2.$1", false)
+	shouldBeOK("baz.>", "mybaz.>", false)
+	shouldBeOK("*", "{{splitfromleft(1,1)}}", false)
+	shouldBeOK("", "prefix.>", false)
+	shouldBeOK("*.*", "{{partition(10,1,2)}}", false)
+	shouldBeOK("foo.*.*", "foo.{{wildcard(1)}}.{{wildcard(2)}}.{{partition(5,1,2)}}", false)
 
 	shouldMatch := func(src, dest, sample, expected string) {
 		t.Helper()
-		tr := shouldBeOK(src, dest)
+		tr := shouldBeOK(src, dest, false)
 		s, err := tr.Match(sample)
 		if err != nil {
 			t.Fatalf("Got an error %v when expecting a match for %q to %q", err, sample, expected)
@@ -137,6 +186,7 @@ func TestSubjectTransforms(t *testing.T) {
 	shouldMatch("", "prefix.>", "foo", "prefix.foo")
 	shouldMatch("foo", "bar", "foo", "bar")
 	shouldMatch("foo.*.bar.*.baz", "req.$2.$1", "foo.A.bar.B.baz", "req.B.A")
+	shouldMatch("foo.*.bar.*.baz", "req.{{wildcard(2)}}.{{wildcard(1)}}", "foo.A.bar.B.baz", "req.B.A")
 	shouldMatch("baz.>", "my.pre.>", "baz.1.2.3", "my.pre.1.2.3")
 	shouldMatch("baz.>", "foo.bar.>", "baz.1.2.3", "foo.bar.1.2.3")
 	shouldMatch("*", "foo.bar.$1", "foo", "foo.bar.foo")
