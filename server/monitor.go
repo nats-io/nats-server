@@ -2603,7 +2603,7 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 	}
 	return &AccountInfo{
 		accName,
-		a.updated,
+		a.updated.UTC(),
 		isSys,
 		a.expired,
 		!a.incomplete,
