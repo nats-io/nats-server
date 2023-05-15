@@ -989,6 +989,9 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, error) {
 	mb.last.seq, mb.last.ts = 0, 0
 	firstNeedsSet := true
 
+	// Remove the .fss file from disk.
+	mb.removePerSubjectInfoLocked()
+
 	// Check if we need to decrypt.
 	if mb.bek != nil && len(buf) > 0 {
 		// Recreate to reset counter.
@@ -1186,6 +1189,13 @@ func (fs *fileStore) recoverMsgs() error {
 				return err
 			}
 			if mb, err := fs.recoverMsgBlock(finfo, index); err == nil && mb != nil {
+				// This is a truncate block with possibly no index. If the OS got shutdown
+				// out from underneath of us this is possible.
+				if mb.first.seq == 0 {
+					mb.dirtyCloseWithRemove(true)
+					fs.removeMsgBlockFromList(mb)
+					continue
+				}
 				if fs.state.FirstSeq == 0 || mb.first.seq < fs.state.FirstSeq {
 					fs.state.FirstSeq = mb.first.seq
 					fs.state.FirstTime = time.Unix(0, mb.first.ts).UTC()
@@ -2468,12 +2478,16 @@ func (fs *fileStore) rebuildFirst() {
 	if len(fs.blks) == 0 {
 		return
 	}
-	if fmb := fs.blks[0]; fmb != nil {
-		fmb.removeIndexFile()
-		fmb.rebuildState()
-		fmb.writeIndexInfo()
-		fs.selectNextFirst()
+	fmb := fs.blks[0]
+	if fmb == nil {
+		return
 	}
+
+	fmb.removeIndexFile()
+	ld, _ := fmb.rebuildState()
+	fmb.writeIndexInfo()
+	fs.selectNextFirst()
+	fs.rebuildStateLocked(ld)
 }
 
 // Optimized helper function to return first sequence.
@@ -5667,11 +5681,9 @@ func (fs *fileStore) addMsgBlock(mb *msgBlock) {
 	fs.bim[mb.index] = mb
 }
 
-// Removes the msgBlock
+// Remove from our list of blks.
 // Both locks should be held.
-func (fs *fileStore) removeMsgBlock(mb *msgBlock) {
-	mb.dirtyCloseWithRemove(true)
-
+func (fs *fileStore) removeMsgBlockFromList(mb *msgBlock) {
 	// Remove from list.
 	for i, omb := range fs.blks {
 		if mb == omb {
@@ -5683,6 +5695,13 @@ func (fs *fileStore) removeMsgBlock(mb *msgBlock) {
 			break
 		}
 	}
+}
+
+// Removes the msgBlock
+// Both locks should be held.
+func (fs *fileStore) removeMsgBlock(mb *msgBlock) {
+	mb.dirtyCloseWithRemove(true)
+	fs.removeMsgBlockFromList(mb)
 	// Check for us being last message block
 	if mb == fs.lmb {
 		// Creating a new message write block requires that the lmb lock is not held.

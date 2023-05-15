@@ -20002,3 +20002,62 @@ func TestJetStreamSnapshotRestoreStallAndHealthz(t *testing.T) {
 		t.Fatalf("Expected health to be ok, got %+v", hs)
 	}
 }
+
+// https://github.com/nats-io/nats-server/pull/4163
+func TestJetStreamMaxBytesIgnored(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"*"},
+		MaxBytes: 10 * 1024 * 1024,
+	})
+	require_NoError(t, err)
+
+	msg := bytes.Repeat([]byte("A"), 1024*1024)
+
+	for i := 0; i < 10; i++ {
+		_, err := js.Publish("x", msg)
+		require_NoError(t, err)
+	}
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_True(t, si.State.Msgs == 9)
+
+	// Stop current
+	sd := s.JetStreamConfig().StoreDir
+	s.Shutdown()
+
+	// We will remove the idx file and truncate the blk and fss files.
+	mdir := filepath.Join(sd, "$G", "streams", "TEST", "msgs")
+	// Remove idx
+	err = os.Remove(filepath.Join(mdir, "1.idx"))
+	require_NoError(t, err)
+	// Truncate fss
+	err = os.WriteFile(filepath.Join(mdir, "1.fss"), nil, defaultFilePerms)
+	require_NoError(t, err)
+	// Truncate blk
+	err = os.WriteFile(filepath.Join(mdir, "1.blk"), nil, defaultFilePerms)
+	require_NoError(t, err)
+
+	// Restart.
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	for i := 0; i < 10; i++ {
+		_, err := js.Publish("x", msg)
+		require_NoError(t, err)
+	}
+
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_True(t, si.State.Bytes <= 10*1024*1024)
+}
