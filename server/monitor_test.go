@@ -4734,3 +4734,36 @@ func TestMonitorConnzSortByRTT(t *testing.T) {
 		}
 	}
 }
+
+// https://github.com/nats-io/nats-server/issues/4144
+func TestMonitorAccountszMappingOrderReporting(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+	listen: 127.0.0.1:-1
+	server_name: SR22
+	accounts {
+		CLOUD {
+			exports [ { service: "downlink.>" } ]
+		}
+		APP {
+			imports [ { service: { account: CLOUD, subject: "downlink.>"}, to: "event.>"} ]
+		}
+	}`))
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	az, err := s.Accountz(&AccountzOptions{"APP"})
+	require_NoError(t, err)
+	require_NotNil(t, az.Account)
+	require_True(t, len(az.Account.Imports) > 0)
+
+	var found bool
+	for _, si := range az.Account.Imports {
+		if si.Import.Subject == "downlink.>" {
+			found = true
+			require_True(t, si.Import.LocalSubject == "event.>")
+			break
+		}
+	}
+	require_True(t, found)
+}
