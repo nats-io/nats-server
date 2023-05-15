@@ -1268,6 +1268,13 @@ func (s *Server) remoteServerUpdate(sub *subscription, c *client, _ *Account, su
 	}
 	si := ssm.Server
 
+	// Should do normal updates before bailing if wrong domain.
+	s.mu.Lock()
+	if s.running && s.eventsEnabled() && ssm.Server.ID != s.info.ID {
+		s.updateRemoteServer(&si)
+	}
+	s.mu.Unlock()
+
 	// JetStream node updates.
 	if !s.sameDomain(si.Domain) {
 		return
@@ -1293,11 +1300,6 @@ func (s *Server) remoteServerUpdate(sub *subscription, c *client, _ *Account, su
 		stats,
 		false, si.JetStream,
 	})
-	s.mu.Lock()
-	if s.running && s.eventsEnabled() && ssm.Server.ID != s.info.ID {
-		s.updateRemoteServer(&si)
-	}
-	s.mu.Unlock()
 }
 
 // updateRemoteServer is called when we have an update from a remote server.
