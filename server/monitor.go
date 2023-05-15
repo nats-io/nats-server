@@ -788,7 +788,7 @@ type RouteInfo struct {
 // Routez returns a Routez struct containing information about routes.
 func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 	rs := &Routez{Routes: []*RouteInfo{}}
-	rs.Now = time.Now()
+	rs.Now = time.Now().UTC()
 
 	if routezOpts == nil {
 		routezOpts = &RoutezOptions{}
@@ -975,7 +975,7 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 	slStats := &SublistStats{}
 
 	// FIXME(dlc) - Make account aware.
-	sz := &Subsz{s.info.ID, time.Now(), slStats, 0, offset, limit, nil}
+	sz := &Subsz{s.info.ID, time.Now().UTC(), slStats, 0, offset, limit, nil}
 
 	if subdetail {
 		var raw [4096]*subscription
@@ -1522,7 +1522,7 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 			Compression:      ws.Compression,
 			HandshakeTimeout: ws.HandshakeTimeout,
 		},
-		Start:                 s.start,
+		Start:                 s.start.UTC(),
 		MaxSubs:               opts.MaxSubs,
 		Cores:                 runtime.NumCPU(),
 		MaxProcs:              runtime.GOMAXPROCS(0),
@@ -2606,7 +2606,7 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 	}
 	return &AccountInfo{
 		accName,
-		a.updated,
+		a.updated.UTC(),
 		isSys,
 		a.expired,
 		!a.incomplete,
