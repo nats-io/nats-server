@@ -792,7 +792,7 @@ type RouteInfo struct {
 // Routez returns a Routez struct containing information about routes.
 func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 	rs := &Routez{Routes: []*RouteInfo{}}
-	rs.Now = time.Now()
+	rs.Now = time.Now().UTC()
 
 	if routezOpts == nil {
 		routezOpts = &RoutezOptions{}
@@ -985,7 +985,7 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 	slStats := &SublistStats{}
 
 	// FIXME(dlc) - Make account aware.
-	sz := &Subsz{s.info.ID, time.Now(), slStats, 0, offset, limit, nil}
+	sz := &Subsz{s.info.ID, time.Now().UTC(), slStats, 0, offset, limit, nil}
 
 	if subdetail {
 		var raw [4096]*subscription
@@ -1534,7 +1534,7 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 			Compression:      ws.Compression,
 			HandshakeTimeout: ws.HandshakeTimeout,
 		},
-		Start:                 s.start,
+		Start:                 s.start.UTC(),
 		MaxSubs:               opts.MaxSubs,
 		Cores:                 runtime.NumCPU(),
 		MaxProcs:              runtime.GOMAXPROCS(0),
@@ -2458,19 +2458,20 @@ func (s *Server) Accountz(optz *AccountzOptions) (*Accountz, error) {
 	if sacc := s.SystemAccount(); sacc != nil {
 		a.SystemAccount = sacc.GetName()
 	}
-	if optz.Account == "" {
+	if optz == nil || optz.Account == _EMPTY_ {
 		a.Accounts = []string{}
 		s.accounts.Range(func(key, value interface{}) bool {
 			a.Accounts = append(a.Accounts, key.(string))
 			return true
 		})
 		return a, nil
-	} else if aInfo, err := s.accountInfo(optz.Account); err != nil {
-		return nil, err
-	} else {
-		a.Account = aInfo
-		return a, nil
 	}
+	aInfo, err := s.accountInfo(optz.Account)
+	if err != nil {
+		return nil, err
+	}
+	a.Account = aInfo
+	return a, nil
 }
 
 func newExtImport(v *serviceImport) ExtImport {
@@ -2483,10 +2484,12 @@ func newExtImport(v *serviceImport) ExtImport {
 		imp.Tracking = v.tracking
 		imp.Invalid = v.invalid
 		imp.Import = jwt.Import{
-			Subject: jwt.Subject(v.from),
+			Subject: jwt.Subject(v.to),
 			Account: v.acc.Name,
 			Type:    jwt.Service,
-			To:      jwt.Subject(v.to),
+			// Deprecated so we duplicate. Use LocalSubject.
+			To:           jwt.Subject(v.from),
+			LocalSubject: jwt.RenamingSubject(v.from),
 		}
 		imp.TrackingHdr = v.trackingHdr
 		imp.Latency = newExtServiceLatency(v.latency)
@@ -2615,7 +2618,7 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 	}
 	return &AccountInfo{
 		accName,
-		a.updated,
+		a.updated.UTC(),
 		isSys,
 		a.expired,
 		!a.incomplete,
