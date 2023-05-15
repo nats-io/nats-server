@@ -129,15 +129,6 @@ const (
 // Can be changed for tests
 var routeConnectDelay = DEFAULT_ROUTE_CONNECT
 
-// The default ping interval is set to 2 minutes, which is fine for client
-// connections, etc.. but since for route compression, the CompressionS2Auto
-// mode uses RTT measurements (ping/pong) to decide which compression level
-// to use, we want the interval to not be that high.
-const defaultRouteMaxPingInterval = 30 * time.Second
-
-// Can be changed for tests
-var routeMaxPingInterval = defaultRouteMaxPingInterval
-
 // removeReplySub is called when we trip the max on remoteReply subs.
 func (c *client) removeReplySub(sub *subscription) {
 	if sub == nil {
@@ -709,7 +700,7 @@ func (c *client) processRouteInfo(info *Info) {
 			c.flags.set(compressionNegotiated)
 			// Release client lock since following function will need server lock.
 			c.mu.Unlock()
-			compress, err := s.negotiateRouteCompression(c, didSolicit, accName, info, opts)
+			compress, err := s.negotiateRouteCompression(c, didSolicit, accName, info.Compression, opts)
 			if err != nil {
 				c.sendErrAndErr(err.Error())
 				c.closeConnection(ProtocolViolation)
@@ -727,7 +718,7 @@ func (c *client) processRouteInfo(info *Info) {
 			// where it was not already sent.
 			c.setFirstPingTimer()
 			if !routeShouldDelayInfo(accName, opts) {
-				cm := routeCompressionModeForInfoProtocol(opts, c.route.compression)
+				cm := compressionModeForInfoProtocol(&opts.Cluster.Compression, c.route.compression)
 				// Need to release and then reacquire...
 				c.mu.Unlock()
 				s.sendDelayedRouteInfo(c, accName, cm)
@@ -836,9 +827,9 @@ func (c *client) processRouteInfo(info *Info) {
 	}
 }
 
-func (s *Server) negotiateRouteCompression(c *client, didSolicit bool, accName string, info *Info, opts *Options) (bool, error) {
+func (s *Server) negotiateRouteCompression(c *client, didSolicit bool, accName, infoCompression string, opts *Options) (bool, error) {
 	// Negotiate the appropriate compression mode (or no compression)
-	cm, err := selectCompressionMode(opts.Cluster.Compression.Mode, info.Compression)
+	cm, err := selectCompressionMode(opts.Cluster.Compression.Mode, infoCompression)
 	if err != nil {
 		return false, err
 	}
@@ -894,19 +885,10 @@ func (s *Server) negotiateRouteCompression(c *client, didSolicit bool, accName s
 	// If this is a solicited route, we need to send the INFO if it was not
 	// done during createRoute() and will not be done in addRoute().
 	if didSolicit && !routeShouldDelayInfo(accName, opts) {
-		cm = routeCompressionModeForInfoProtocol(opts, cm)
+		cm = compressionModeForInfoProtocol(&opts.Cluster.Compression, cm)
 		s.sendDelayedRouteInfo(c, accName, cm)
 	}
 	return false, nil
-}
-
-// If the configured compression mode is "auto" then will return that,
-// otherwise will return the given `cm` compression mode.
-func routeCompressionModeForInfoProtocol(opts *Options, cm string) string {
-	if opts.Cluster.Compression.Mode == CompressionS2Auto {
-		return CompressionS2Auto
-	}
-	return cm
 }
 
 func (s *Server) sendDelayedRouteInfo(c *client, accName, cm string) {
@@ -2358,8 +2340,8 @@ func (s *Server) startRouteAcceptLoop() {
 	}
 	// For tests that want to simulate old servers, do not set the compression
 	// on the INFO protocol if configured with CompressionNotSupported.
-	if opts.Cluster.Compression.Mode != CompressionNotSupported {
-		info.Compression = opts.Cluster.Compression.Mode
+	if cm := opts.Cluster.Compression.Mode; cm != CompressionNotSupported {
+		info.Compression = cm
 	}
 	if ps := opts.Cluster.PoolSize; ps > 0 {
 		info.RoutePoolSize = ps

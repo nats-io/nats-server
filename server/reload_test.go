@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -5411,7 +5412,6 @@ func TestConfigReloadRouteCompression(t *testing.T) {
 	}
 	s1RouteIDs := collect(s1)
 	s2RouteIDs := collect(s2)
-	s3RouteIDs := collect(s3)
 	s3ID := s3.ID()
 
 	servers := []*Server{s1, s2}
@@ -5437,12 +5437,14 @@ func TestConfigReloadRouteCompression(t *testing.T) {
 					var m map[uint64]struct{}
 					if r.route.remoteID == s3ID {
 						exp = CompressionNotSupported
-						m = s3RouteIDs
 					} else if s == s1 {
 						exp = s1Expected
-						m = s1RouteIDs
 					} else {
 						exp = s2Expected
+					}
+					if s == s1 {
+						m = s1RouteIDs
+					} else {
 						m = s2RouteIDs
 					}
 					_, present := m[r.cid]
@@ -5469,7 +5471,6 @@ func TestConfigReloadRouteCompression(t *testing.T) {
 			}
 			s1RouteIDs = collect(s1)
 			s2RouteIDs = collect(s2)
-			s3RouteIDs = collect(s3)
 			return nil
 		})
 	}
@@ -5478,7 +5479,7 @@ func TestConfigReloadRouteCompression(t *testing.T) {
 	// but not initiate compression, so they should both be "off"
 	checkCompMode(CompressionOff, CompressionOff, false)
 
-	// Now relead s1 with "on" (s2_fast), since s2 is *configured* with "accept",
+	// Now reload s1 with "on" (s2_fast), since s2 is *configured* with "accept",
 	// they should both be CompressionS2Fast, even before we reload s2.
 	reloadUpdateConfig(t, s1, conf1, fmt.Sprintf(tmpl, "A", _EMPTY_, "compression: on"))
 	checkCompMode(CompressionS2Fast, CompressionS2Fast, true)
@@ -5533,4 +5534,313 @@ func TestConfigReloadRouteCompression(t *testing.T) {
 	// And if we do the same with s2, then we will end-up with no compression.
 	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl, "B", routes, _EMPTY_))
 	checkCompMode(CompressionOff, CompressionOff, true)
+}
+
+func TestConfigReloadRouteCompressionS2Auto(t *testing.T) {
+	// This test checks s2_auto specific behavior. It makes sure that we update
+	// only if the rtt_thresholds and current RTT value warrants a change and
+	// also that we actually save in c.route.compression the actual compression
+	// level (not s2_auto).
+	tmpl1 := `
+		port: -1
+		server_name: "A"
+		cluster {
+			port: -1
+			name: "local"
+			pool_size: -1
+			compression: {mode: s2_auto, rtt_thresholds: [%s]}
+		}
+	`
+	conf1 := createConfFile(t, []byte(fmt.Sprintf(tmpl1, "50ms, 100ms, 150ms")))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		server_name: "B"
+		cluster {
+			port: -1
+			name: "local"
+			pool_size: -1
+			compression: s2_fast
+			routes: ["nats://127.0.0.1:%d"]
+		}
+	`, o1.Cluster.Port)))
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	getCompInfo := func() (string, io.Writer) {
+		var cm string
+		var cw io.Writer
+		s1.mu.RLock()
+		// There should be only 1 route...
+		s1.forEachRemote(func(r *client) {
+			r.mu.Lock()
+			cm = r.route.compression
+			cw = r.out.cw
+			r.mu.Unlock()
+		})
+		s1.mu.RUnlock()
+		return cm, cw
+	}
+	// Capture the s2 writer from s1 to s2
+	cm, cw := getCompInfo()
+
+	// We do a reload but really the mode is still s2_auto (even if the current
+	// compression level may be "uncompressed", "better", etc.. so we don't
+	// expect the writer to have changed.
+	reloadUpdateConfig(t, s1, conf1, fmt.Sprintf(tmpl1, "100ms, 200ms, 300ms"))
+	if ncm, ncw := getCompInfo(); ncm != cm || ncw != cw {
+		t.Fatalf("Expected compression info to have stayed the same, was %q - %p, got %q - %p", cm, cw, ncm, ncw)
+	}
+}
+
+func TestConfigReloadLeafNodeCompression(t *testing.T) {
+	org := testDefaultLeafNodeCompression
+	testDefaultLeafNodeCompression = _EMPTY_
+	defer func() { testDefaultLeafNodeCompression = org }()
+
+	tmpl1 := `
+		port: -1
+		server_name: "A"
+		leafnodes {
+			port: -1
+			%s
+		}
+	`
+	conf1 := createConfFile(t, []byte(fmt.Sprintf(tmpl1, "compression: accept")))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	port := o1.LeafNode.Port
+
+	tmpl2 := `
+		port: -1
+		server_name: "%s"
+		leafnodes {
+			remotes [
+				{
+					url: "nats://127.0.0.1:%d"
+					%s
+				}
+			]
+		}
+	`
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(tmpl2, "B", port, "compression: accept")))
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	// Run a 3rd server but make it as if it was an old server. We want to
+	// make sure that reload of s1 and s2 will not affect leafnodes from s3 to
+	// s1/s2 because these do not support compression.
+	conf3 := createConfFile(t, []byte(fmt.Sprintf(tmpl2, "C", port, "compression: \"not supported\"")))
+	s3, _ := RunServerWithConfig(conf3)
+	defer s3.Shutdown()
+
+	checkLeafNodeConnected(t, s2)
+	checkLeafNodeConnected(t, s3)
+	checkLeafNodeConnectedCount(t, s1, 2)
+
+	// Collect leafnodes' cid from servers so we can check if connections are
+	// recreated when they should and are not when they should not.
+	collect := func(s *Server) map[uint64]struct{} {
+		m := make(map[uint64]struct{})
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		for _, l := range s.leafs {
+			l.mu.Lock()
+			m[l.cid] = struct{}{}
+			l.mu.Unlock()
+		}
+		return m
+	}
+	s1LeafNodeIDs := collect(s1)
+	s2LeafNodeIDs := collect(s2)
+
+	servers := []*Server{s1, s2}
+	checkCompMode := func(s1Expected, s2Expected string, shouldBeNew bool) {
+		t.Helper()
+		// We wait a bit to make sure that we have leaf connections closed
+		// before checking that they are properly reconnected.
+		time.Sleep(100 * time.Millisecond)
+		checkLeafNodeConnected(t, s2)
+		checkLeafNodeConnected(t, s3)
+		checkLeafNodeConnectedCount(t, s1, 2)
+		// Check that all leafnodes are with the expected mode. We need to
+		// possibly wait a bit since there is negotiation going on.
+		checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+			for _, s := range servers {
+				var err error
+				s.mu.RLock()
+				for _, l := range s.leafs {
+					l.mu.Lock()
+					var exp string
+					var m map[uint64]struct{}
+					if l.leaf.remoteServer == "C" {
+						exp = CompressionNotSupported
+					} else if s == s1 {
+						exp = s1Expected
+					} else {
+						exp = s2Expected
+					}
+					if s == s1 {
+						m = s1LeafNodeIDs
+					} else {
+						m = s2LeafNodeIDs
+					}
+					_, present := m[l.cid]
+					cm := l.leaf.compression
+					l.mu.Unlock()
+					if cm != exp {
+						err = fmt.Errorf("Expected leaf %v for server %s to have compression mode %q, got %q", l, s, exp, cm)
+					}
+					sbn := shouldBeNew
+					if exp == CompressionNotSupported {
+						// Override for routes to s3
+						sbn = false
+					}
+					if sbn && present {
+						err = fmt.Errorf("Expected leaf %v for server %s to be a new leaf, but it was already present", l, s)
+					} else if !sbn && !present {
+						err = fmt.Errorf("Expected leaf %v for server %s to not be new", l, s)
+					}
+					if err != nil {
+						break
+					}
+				}
+				s.mu.RUnlock()
+				if err != nil {
+					return err
+				}
+			}
+			s1LeafNodeIDs = collect(s1)
+			s2LeafNodeIDs = collect(s2)
+			return nil
+		})
+	}
+	// Since both started with compression "accept", they should both be set to "off"
+	checkCompMode(CompressionOff, CompressionOff, false)
+
+	// Now reload s1 with "on" (s2_auto), since s2 is *configured* with "accept",
+	// s1 should be "uncompressed" (due to low RTT), and s2 is in that case set
+	// to s2_fast.
+	reloadUpdateConfig(t, s1, conf1, fmt.Sprintf(tmpl1, "compression: on"))
+	checkCompMode(CompressionS2Uncompressed, CompressionS2Fast, true)
+	// Now reload s2
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl2, "B", port, "compression: on"))
+	checkCompMode(CompressionS2Uncompressed, CompressionS2Uncompressed, false)
+
+	// Move on with "better"
+	reloadUpdateConfig(t, s1, conf1, fmt.Sprintf(tmpl1, "compression: s2_better"))
+	// s1 should be at "better", but s2 still at "uncompressed"
+	checkCompMode(CompressionS2Better, CompressionS2Uncompressed, false)
+	// Now reload s2
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl2, "B", port, "compression: s2_better"))
+	checkCompMode(CompressionS2Better, CompressionS2Better, false)
+
+	// Move to "best"
+	reloadUpdateConfig(t, s1, conf1, fmt.Sprintf(tmpl1, "compression: s2_best"))
+	checkCompMode(CompressionS2Best, CompressionS2Better, false)
+	// Now reload s2
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl2, "B", port, "compression: s2_best"))
+	checkCompMode(CompressionS2Best, CompressionS2Best, false)
+
+	// Now turn off
+	reloadUpdateConfig(t, s1, conf1, fmt.Sprintf(tmpl1, "compression: off"))
+	checkCompMode(CompressionOff, CompressionOff, true)
+	// Now reload s2
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl2, "B", port, "compression: off"))
+	checkCompMode(CompressionOff, CompressionOff, false)
+
+	// When "off" (and not "accept"), enabling 1 is not enough, the reload
+	// has to be done on both to take effect.
+	reloadUpdateConfig(t, s1, conf1, fmt.Sprintf(tmpl1, "compression: s2_better"))
+	checkCompMode(CompressionOff, CompressionOff, true)
+	// Now reload s2
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl2, "B", port, "compression: s2_better"))
+	checkCompMode(CompressionS2Better, CompressionS2Better, true)
+
+	// Try now to have different ones
+	reloadUpdateConfig(t, s1, conf1, fmt.Sprintf(tmpl1, "compression: s2_best"))
+	// S1 should be "best" but S2 should have stayed at "better"
+	checkCompMode(CompressionS2Best, CompressionS2Better, false)
+
+	// Change the setting to "accept", which in that case we want to have a
+	// negotiation and use the remote's compression level. So connections
+	// should be re-created.
+	reloadUpdateConfig(t, s1, conf1, fmt.Sprintf(tmpl1, "compression: accept"))
+	checkCompMode(CompressionS2Better, CompressionS2Better, true)
+
+	// To avoid flapping, add a little sleep here to make sure we have things
+	// settled before reloading s2.
+	time.Sleep(100 * time.Millisecond)
+	// And if we do the same with s2, then we will end-up with no compression.
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl2, "B", port, "compression: accept"))
+	checkCompMode(CompressionOff, CompressionOff, true)
+
+	// Now remove completely and we should default to s2_auto, which means that
+	// s1 should be at "uncompressed" and s2 to "fast".
+	reloadUpdateConfig(t, s1, conf1, fmt.Sprintf(tmpl1, _EMPTY_))
+	checkCompMode(CompressionS2Uncompressed, CompressionS2Fast, true)
+
+	// Now with s2, both will be "uncompressed"
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl2, "B", port, _EMPTY_))
+	checkCompMode(CompressionS2Uncompressed, CompressionS2Uncompressed, false)
+}
+
+func TestConfigReloadLeafNodeCompressionS2Auto(t *testing.T) {
+	// This test checks s2_auto specific behavior. It makes sure that we update
+	// only if the rtt_thresholds and current RTT value warrants a change and
+	// also that we actually save in c.leaf.compression the actual compression
+	// level (not s2_auto).
+	tmpl1 := `
+		port: -1
+		server_name: "A"
+		leafnodes {
+			port: -1
+			compression: {mode: s2_auto, rtt_thresholds: [%s]}
+		}
+	`
+	conf1 := createConfFile(t, []byte(fmt.Sprintf(tmpl1, "50ms, 100ms, 150ms")))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		server_name: "B"
+		leafnodes {
+			remotes [{ url: "nats://127.0.0.1:%d", compression: s2_fast}]
+		}
+	`, o1.LeafNode.Port)))
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	checkLeafNodeConnected(t, s2)
+
+	getCompInfo := func() (string, io.Writer) {
+		var cm string
+		var cw io.Writer
+		s1.mu.RLock()
+		// There should be only 1 leaf...
+		for _, l := range s1.leafs {
+			l.mu.Lock()
+			cm = l.leaf.compression
+			cw = l.out.cw
+			l.mu.Unlock()
+		}
+		s1.mu.RUnlock()
+		return cm, cw
+	}
+	// Capture the s2 writer from s1 to s2
+	cm, cw := getCompInfo()
+
+	// We do a reload but really the mode is still s2_auto (even if the current
+	// compression level may be "uncompressed", "better", etc.. so we don't
+	// expect the writer to have changed.
+	reloadUpdateConfig(t, s1, conf1, fmt.Sprintf(tmpl1, "100ms, 200ms, 300ms"))
+	if ncm, ncw := getCompInfo(); ncm != cm || ncw != cw {
+		t.Fatalf("Expected compression info to have stayed the same, was %q - %p, got %q - %p", cm, cw, ncm, ncw)
+	}
 }

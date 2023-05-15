@@ -330,10 +330,22 @@ type stats struct {
 	slowConsumers int64
 }
 
+// The default ping interval is set to 2 minutes, which is fine for client
+// connections, etc.. but for route or leaf compression, the CompressionS2Auto
+// mode uses RTT measurements (ping/pong) to decide which compression level
+// to use, we want the interval to not be that high.
+const defaultConnWithCompressionMaxPingInterval = 30 * time.Second
+
+// Can be changed for tests
+var connWithCompressionMaxPingInterval = defaultConnWithCompressionMaxPingInterval
+
 // This is used by tests so we can run all server tests with a default route
-// compression mode. For instance:
+// or leafnode compression mode. For instance:
 // go test -race -v ./server -cluster_compression=fast
-var testDefaultClusterCompression string
+var (
+	testDefaultClusterCompression  string
+	testDefaultLeafNodeCompression string
+)
 
 // Compression modes.
 const (
@@ -362,11 +374,23 @@ var defaultCompressionS2AutoRTTThresholds = []time.Duration{
 // For a given user provided string, matches to one of the compression mode
 // constant and updates the provided string to that constant. Returns an
 // error if the provided compression mode is not known.
-func validateAndNormalizeCompressionOption(c *CompressionOpts) error {
+// The parameter `chosenModeForOn` indicates which compression mode to use
+// when the user selects "on" (or enabled, true, etc..). This is because
+// we may have different defaults depending on where the compression is used.
+func validateAndNormalizeCompressionOption(c *CompressionOpts, chosenModeForOn string) error {
 	if c == nil {
 		return nil
 	}
 	cmtl := strings.ToLower(c.Mode)
+	// First, check for the "on" case so that we set to the default compression
+	// mode for that. The other switch/case will finish setup if needed (for
+	// instance if the default mode is s2Auto).
+	switch cmtl {
+	case "on", "enabled", "true":
+		cmtl = chosenModeForOn
+	default:
+	}
+	// Check (again) with the proper mode.
 	switch cmtl {
 	case "not supported", "not_supported":
 		c.Mode = CompressionNotSupported
@@ -420,7 +444,7 @@ func validateAndNormalizeCompressionOption(c *CompressionOpts) error {
 		}
 		c.Mode = CompressionS2Auto
 		c.RTTThresholds = rtts
-	case "on", "enabled", "true", "fast", "s2_fast":
+	case "fast", "s2_fast":
 		c.Mode = CompressionS2Fast
 	case "better", "s2_better":
 		c.Mode = CompressionS2Better
@@ -482,6 +506,15 @@ func selectCompressionMode(scm, rcm string) (mode string, err error) {
 	default:
 		return _EMPTY_, fmt.Errorf("Unsupported route compression mode %q", rcm)
 	}
+}
+
+// If the configured compression mode is "auto" then will return that,
+// otherwise will return the given `cm` compression mode.
+func compressionModeForInfoProtocol(co *CompressionOpts, cm string) string {
+	if co.Mode == CompressionS2Auto {
+		return CompressionS2Auto
+	}
+	return cm
 }
 
 // Given a connection RTT and a list of thresholds durations, this
@@ -906,7 +939,7 @@ func (s *Server) ClientURL() string {
 
 func validateCluster(o *Options) error {
 	if o.Cluster.Compression.Mode != _EMPTY_ {
-		if err := validateAndNormalizeCompressionOption(&o.Cluster.Compression); err != nil {
+		if err := validateAndNormalizeCompressionOption(&o.Cluster.Compression, CompressionS2Fast); err != nil {
 			return err
 		}
 	}

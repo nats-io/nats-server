@@ -1187,7 +1187,9 @@ func runTLSSolicitLeafServer(lso *server.Options) (*server.Server, *server.Optio
 	host, _, _ := net.SplitHostPort(lso.LeafNode.Host)
 	remote.TLSConfig.ServerName = host
 	remote.TLSConfig.InsecureSkipVerify = true
+	remote.Compression.Mode = server.CompressionOff
 	o.LeafNode.Remotes = []*server.RemoteLeafOpts{remote}
+	o.LeafNode.Compression.Mode = server.CompressionOff
 	return RunServer(&o), &o
 }
 

@@ -158,6 +158,9 @@ type LeafNodeOpts struct {
 	NoAdvertise       bool          `json:"-"`
 	ReconnectInterval time.Duration `json:"-"`
 
+	// Compression options
+	Compression CompressionOpts `json:"-"`
+
 	// For solicited connections to other clusters/superclusters.
 	Remotes []*RemoteLeafOpts `json:"remotes,omitempty"`
 
@@ -196,6 +199,10 @@ type RemoteLeafOpts struct {
 	Hub               bool             `json:"hub,omitempty"`
 	DenyImports       []string         `json:"-"`
 	DenyExports       []string         `json:"-"`
+
+	// Compression options for this remote. Each remote could have a different
+	// setting and also be different from the LeafNode options.
+	Compression CompressionOpts `json:"-"`
 
 	// When an URL has the "ws" (or "wss") scheme, then the server will initiate the
 	// connection as a websocket connection. By default, the websocket frames will be
@@ -1642,7 +1649,7 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 		case "accounts":
 			opts.Cluster.PinnedAccounts, _ = parseStringArray("accounts", tk, &lt, mv, errors, warnings)
 		case "compression":
-			if err := parseCompression(&opts.Cluster.Compression, tk, mk, mv); err != nil {
+			if err := parseCompression(&opts.Cluster.Compression, CompressionS2Fast, tk, mk, mv); err != nil {
 				*errors = append(*errors, err)
 				continue
 			}
@@ -1662,7 +1669,10 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 	return nil
 }
 
-func parseCompression(c *CompressionOpts, tk token, mk string, mv interface{}) (retErr error) {
+// The parameter `chosenModeForOn` indicates which compression mode to use
+// when the user selects "on" (or enabled, true, etc..). This is because
+// we may have different defaults depending on where the compression is used.
+func parseCompression(c *CompressionOpts, chosenModeForOn string, tk token, mk string, mv interface{}) (retErr error) {
 	var lt token
 	defer convertPanicToError(&lt, &retErr)
 
@@ -1672,7 +1682,7 @@ func parseCompression(c *CompressionOpts, tk token, mk string, mv interface{}) (
 		c.Mode = mv
 	case bool:
 		if mv {
-			c.Mode = CompressionS2Fast
+			c.Mode = chosenModeForOn
 		} else {
 			c.Mode = CompressionOff
 		}
@@ -2191,6 +2201,11 @@ func parseLeafNodes(v interface{}, opts *Options, errors *[]error, warnings *[]e
 				continue
 			}
 			opts.LeafNode.MinVersion = version
+		case "compression":
+			if err := parseCompression(&opts.LeafNode.Compression, CompressionS2Auto, tk, mk, mv); err != nil {
+				*errors = append(*errors, err)
+				continue
+			}
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
@@ -2416,6 +2431,11 @@ func parseRemoteLeafNodes(v interface{}, errors *[]error, warnings *[]error) ([]
 				remote.Websocket.NoMasking = v.(bool)
 			case "jetstream_cluster_migrate", "js_cluster_migrate":
 				remote.JetStreamClusterMigrate = true
+			case "compression":
+				if err := parseCompression(&remote.Compression, CompressionS2Auto, tk, k, v); err != nil {
+					*errors = append(*errors, err)
+					continue
+				}
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{
@@ -4814,6 +4834,14 @@ func setBaselineOptions(opts *Options) {
 		if opts.LeafNode.AuthTimeout == 0 {
 			opts.LeafNode.AuthTimeout = getDefaultAuthTimeout(opts.LeafNode.TLSConfig, opts.LeafNode.TLSTimeout)
 		}
+		// Default to compression "s2_auto".
+		if c := &opts.LeafNode.Compression; c.Mode == _EMPTY_ {
+			if testDefaultLeafNodeCompression != _EMPTY_ {
+				c.Mode = testDefaultLeafNodeCompression
+			} else {
+				c.Mode = CompressionS2Auto
+			}
+		}
 	}
 	// Set baseline connect port for remotes.
 	for _, r := range opts.LeafNode.Remotes {
@@ -4821,6 +4849,14 @@ func setBaselineOptions(opts *Options) {
 			for _, u := range r.URLs {
 				if u.Port() == _EMPTY_ {
 					u.Host = net.JoinHostPort(u.Host, strconv.Itoa(DEFAULT_LEAFNODE_PORT))
+				}
+			}
+			// Default to compression "s2_auto".
+			if c := &r.Compression; c.Mode == _EMPTY_ {
+				if testDefaultLeafNodeCompression != _EMPTY_ {
+					c.Mode = testDefaultLeafNodeCompression
+				} else {
+					c.Mode = CompressionS2Auto
 				}
 			}
 		}
