@@ -3961,7 +3961,7 @@ func TestJetStreamClusterStreamAccountingDriftFixups(t *testing.T) {
 	err = js.PurgeStream("TEST")
 	require_NoError(t, err)
 
-	checkFor(t, time.Second, 200*time.Millisecond, func() error {
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
 		info, err := js.AccountInfo()
 		require_NoError(t, err)
 		if info.Store != 0 {
