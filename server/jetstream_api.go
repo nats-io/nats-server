@@ -2656,7 +2656,7 @@ func (s *Server) jsLeaderAccountPurgeRequest(sub *subscription, c *client, _ *Ac
 }
 
 // Request to have the meta leader stepdown.
-// These will only be received the the meta leaders, so less checking needed.
+// These will only be received the meta leaders, so less checking needed.
 func (s *Server) jsLeaderStepDownRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	if c == nil || !s.JetStreamEnabled() {
 		return
@@ -3326,7 +3326,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 
 	var total int
 
-	// FIXM(dlc) - Probably take out of network path eventually due to disk I/O?
+	// FIXME(dlc) - Probably take out of network path eventually due to disk I/O?
 	processChunk := func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 		// We require reply subjects to communicate back failures, flow etc. If they do not have one log and cancel.
 		if reply == _EMPTY_ {

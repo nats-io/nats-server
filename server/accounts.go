@@ -616,7 +616,7 @@ func (a *Account) AddMapping(src, dest string) error {
 	return a.AddWeightedMappings(src, NewMapDest(dest, 100))
 }
 
-// AddWeightedMapping will add in a weighted mappings for the destinations.
+// AddWeightedMappings will add in a weighted mappings for the destinations.
 // TODO(dlc) - Allow cluster filtering
 func (a *Account) AddWeightedMappings(src string, dests ...*MapDest) error {
 	a.mu.Lock()
@@ -2301,7 +2301,7 @@ func (si *serviceImport) isRespServiceImport() bool {
 	return si != nil && si.response
 }
 
-// Sets the response theshold timer for a service export.
+// Sets the response threshold timer for a service export.
 // Account lock should be held
 func (se *serviceExport) setResponseThresholdTimer() {
 	if se.rtmr != nil {
@@ -3112,7 +3112,7 @@ func (a *Account) isClaimAccount() bool {
 	return a.claimJWT != _EMPTY_
 }
 
-// updateAccountClaims will update an existing account with new claims.
+// UpdateAccountClaims will update an existing account with new claims.
 // This will replace any exports or imports previously defined.
 // Lock MUST NOT be held upon entry.
 func (s *Server) UpdateAccountClaims(a *Account, ac *jwt.AccountClaims) {
