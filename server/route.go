@@ -124,10 +124,19 @@ const (
 const (
 	// Warning when user configures cluster TLS insecure
 	clusterTLSInsecureWarning = "TLS certificate chain and hostname of solicited routes will not be verified. DO NOT USE IN PRODUCTION!"
+
+	// The default ping interval is set to 2 minutes, which is fine for client
+	// connections, etc.. but for route compression, the CompressionS2Auto
+	// mode uses RTT measurements (ping/pong) to decide which compression level
+	// to use, we want the interval to not be that high.
+	defaultRouteMaxPingInterval = 30 * time.Second
 )
 
 // Can be changed for tests
-var routeConnectDelay = DEFAULT_ROUTE_CONNECT
+var (
+	routeConnectDelay    = DEFAULT_ROUTE_CONNECT
+	routeMaxPingInterval = defaultRouteMaxPingInterval
+)
 
 // removeReplySub is called when we trip the max on remoteReply subs.
 func (c *client) removeReplySub(sub *subscription) {

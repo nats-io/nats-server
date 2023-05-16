@@ -330,15 +330,6 @@ type stats struct {
 	slowConsumers int64
 }
 
-// The default ping interval is set to 2 minutes, which is fine for client
-// connections, etc.. but for route or leaf compression, the CompressionS2Auto
-// mode uses RTT measurements (ping/pong) to decide which compression level
-// to use, we want the interval to not be that high.
-const defaultConnWithCompressionMaxPingInterval = 30 * time.Second
-
-// Can be changed for tests
-var connWithCompressionMaxPingInterval = defaultConnWithCompressionMaxPingInterval
-
 // This is used by tests so we can run all server tests with a default route
 // or leafnode compression mode. For instance:
 // go test -race -v ./server -cluster_compression=fast

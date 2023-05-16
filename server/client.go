@@ -4743,8 +4743,8 @@ func (c *client) processPingTimer() {
 	now := time.Now()
 	needRTT := c.rtt == 0 || now.Sub(c.rttStart) > DEFAULT_RTT_MEASUREMENT_INTERVAL
 
-	// Do not delay PINGs for ROUTER, GATEWAY or LEAF connections.
-	if c.kind == ROUTER || c.kind == GATEWAY || c.kind == LEAF {
+	// Do not delay PINGs for ROUTER, GATEWAY or spoke LEAF connections.
+	if c.kind == ROUTER || c.kind == GATEWAY || c.isSpokeLeafNode() {
 		sendPing = true
 	} else {
 		// If we received client data or a ping from the other side within the PingInterval,
@@ -4778,9 +4778,9 @@ func (c *client) processPingTimer() {
 // based on the connection kind.
 func adjustPingInterval(kind int, d time.Duration) time.Duration {
 	switch kind {
-	case ROUTER, LEAF:
-		if d > connWithCompressionMaxPingInterval {
-			return connWithCompressionMaxPingInterval
+	case ROUTER:
+		if d > routeMaxPingInterval {
+			return routeMaxPingInterval
 		}
 	case GATEWAY:
 		if d > gatewayMaxPingInterval {

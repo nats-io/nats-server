@@ -3712,8 +3712,8 @@ func TestRouteCompressionAuto(t *testing.T) {
 }
 
 func TestRoutePings(t *testing.T) {
-	connWithCompressionMaxPingInterval = 50 * time.Millisecond
-	defer func() { connWithCompressionMaxPingInterval = defaultConnWithCompressionMaxPingInterval }()
+	routeMaxPingInterval = 50 * time.Millisecond
+	defer func() { routeMaxPingInterval = defaultRouteMaxPingInterval }()
 
 	o1 := DefaultOptions()
 	s1 := RunServer(o1)
