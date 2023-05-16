@@ -3961,7 +3961,7 @@ func TestJetStreamClusterStreamAccountingDriftFixups(t *testing.T) {
 	err = js.PurgeStream("TEST")
 	require_NoError(t, err)
 
-	checkFor(t, time.Second, 200*time.Millisecond, func() error {
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
 		info, err := js.AccountInfo()
 		require_NoError(t, err)
 		if info.Store != 0 {
@@ -4045,4 +4045,80 @@ func TestJetStreamClusterStreamScaleUpNoGroupCluster(t *testing.T) {
 		Replicas: 3,
 	})
 	require_NoError(t, err)
+}
+
+// https://github.com/nats-io/nats-server/issues/4162
+func TestJetStreamClusterStaleDirectGetOnRestart(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "NATS", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
+		Bucket:   "TEST",
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = kv.PutString("foo", "bar")
+	require_NoError(t, err)
+
+	// Close client in case we were connected to server below.
+	// We will recreate.
+	nc.Close()
+
+	// Shutdown a non-leader.
+	s := c.randomNonStreamLeader(globalAccountName, "KV_TEST")
+	s.Shutdown()
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	kv, err = js.KeyValue("TEST")
+	require_NoError(t, err)
+
+	_, err = kv.PutString("foo", "baz")
+	require_NoError(t, err)
+
+	errCh := make(chan error, 100)
+	done := make(chan struct{})
+
+	go func() {
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		kv, err := js.KeyValue("TEST")
+		if err != nil {
+			errCh <- err
+			return
+		}
+
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				entry, err := kv.Get("foo")
+				if err != nil {
+					errCh <- err
+					return
+				}
+				if v := string(entry.Value()); v != "baz" {
+					errCh <- fmt.Errorf("Got wrong value: %q", v)
+				}
+			}
+		}
+	}()
+
+	// Restart
+	c.restartServer(s)
+	// Wait for a bit to make sure as this server participates in direct gets
+	// it does not server stale reads.
+	time.Sleep(2 * time.Second)
+	close(done)
+
+	if len(errCh) > 0 {
+		t.Fatalf("Expected no errors but got %v", <-errCh)
+	}
 }
