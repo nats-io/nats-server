@@ -2284,27 +2284,19 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			// Here we are checking if we are not the leader but we have been asked to allow
 			// direct access. We now allow non-leaders to participate in the queue group.
 			if !isLeader && mset != nil {
-				mset.mu.Lock()
-				// Check direct gets first.
-				if mset.cfg.AllowDirect {
-					if mset.directSub == nil && mset.isCurrent() {
-						mset.subscribeToDirect()
-					} else {
-						startDirectAccessMonitoring()
-					}
-				}
-				// Now check for mirror directs as well.
-				if mset.cfg.MirrorDirect {
-					if mset.mirror != nil && mset.mirror.dsub == nil && mset.isCurrent() {
-						mset.subscribeToMirrorDirect()
-					} else {
-						startDirectAccessMonitoring()
-					}
-				}
-				mset.mu.Unlock()
+				startDirectAccessMonitoring()
 			}
 
 		case <-datc:
+			if mset == nil || isRecovering {
+				return
+			}
+			// If we are leader we can stop, we know this is setup now.
+			if isLeader {
+				stopDirectMonitoring()
+				return
+			}
+
 			mset.mu.Lock()
 			ad, md, current := mset.cfg.AllowDirect, mset.cfg.MirrorDirect, mset.isCurrent()
 			if !current {
@@ -2328,7 +2320,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				mset.subscribeToMirrorDirect()
 			}
 			mset.mu.Unlock()
-			// Stop monitoring.
+			// Stop direct monitoring.
 			stopDirectMonitoring()
 
 		case <-t.C:
