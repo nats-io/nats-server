@@ -475,6 +475,10 @@ func (js *jetStream) restartStream(acc *Account, csa *streamAssignment) {
 		js.mu.Lock()
 		ca := sa.consumers[cca.Name]
 		if ca != nil && ca.Group != nil {
+			// Make sure the node is stopped if still running.
+			if node := ca.Group.node; node != nil && node.State() != Closed {
+				node.Stop()
+			}
 			// Make sure node is wiped.
 			ca.Group.node = nil
 		}
