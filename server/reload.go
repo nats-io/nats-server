@@ -383,7 +383,8 @@ func (c *clusterOption) Apply(s *Server) {
 	s.setRouteInfoHostPortAndIP()
 	var routes []*client
 	if c.compressChanged {
-		newMode := s.getOpts().Cluster.Compression.Mode
+		co := &s.getOpts().Cluster.Compression
+		newMode := co.Mode
 		s.forEachRoute(func(r *client) {
 			r.mu.Lock()
 			// Skip routes that are "not supported" (because they will never do
@@ -398,6 +399,11 @@ func (c *clusterOption) Apply(s *Server) {
 			// these require negotiation.
 			if r.route.compression == CompressionOff || newMode == CompressionOff || newMode == CompressionAccept {
 				routes = append(routes, r)
+			} else if newMode == CompressionS2Auto {
+				// If the mode is "s2_auto", we need to check if there is really
+				// need to change, and at any rate, we want to save the actual
+				// compression level here, not s2_auto.
+				r.updateS2AutoCompressionLevel(co, &r.route.compression)
 			} else {
 				// Simply change the compression writer
 				r.out.cw = s2.NewWriter(nil, s2WriterOptions(newMode)...)
@@ -791,13 +797,79 @@ func (o *mqttInactiveThresholdReload) Apply(s *Server) {
 
 type leafNodeOption struct {
 	noopOption
+	tlsFirstChanged    bool
+	compressionChanged bool
 }
 
 func (l *leafNodeOption) Apply(s *Server) {
 	opts := s.getOpts()
-	s.Noticef("Reloaded: LeafNode TLS HandshakeFirst value is: %v", opts.LeafNode.TLSHandshakeFirst)
-	for _, r := range opts.LeafNode.Remotes {
-		s.Noticef("Reloaded: LeafNode Remote to %v TLS HandshakeFirst value is: %v", r.URLs, r.TLSHandshakeFirst)
+	if l.tlsFirstChanged {
+		s.Noticef("Reloaded: LeafNode TLS HandshakeFirst value is: %v", opts.LeafNode.TLSHandshakeFirst)
+		for _, r := range opts.LeafNode.Remotes {
+			s.Noticef("Reloaded: LeafNode Remote to %v TLS HandshakeFirst value is: %v", r.URLs, r.TLSHandshakeFirst)
+		}
+	}
+	if l.compressionChanged {
+		var leafs []*client
+		acceptSideCompOpts := &opts.LeafNode.Compression
+
+		s.mu.RLock()
+		// First, update our internal leaf remote configurations with the new
+		// compress options.
+		// Since changing the remotes (as in adding/removing) is currently not
+		// supported, we know that we should have the same number in Options
+		// than in leafRemoteCfgs, but to be sure, use the max size.
+		max := len(opts.LeafNode.Remotes)
+		if l := len(s.leafRemoteCfgs); l < max {
+			max = l
+		}
+		for i := 0; i < max; i++ {
+			lr := s.leafRemoteCfgs[i]
+			lr.Lock()
+			lr.Compression = opts.LeafNode.Remotes[i].Compression
+			lr.Unlock()
+		}
+
+		for _, l := range s.leafs {
+			var co *CompressionOpts
+
+			l.mu.Lock()
+			if r := l.leaf.remote; r != nil {
+				co = &r.Compression
+			} else {
+				co = acceptSideCompOpts
+			}
+			newMode := co.Mode
+			// Skip leaf connections that are "not supported" (because they
+			// will never do compression) or the ones that have already the
+			// new compression mode.
+			if l.leaf.compression == CompressionNotSupported || l.leaf.compression == newMode {
+				l.mu.Unlock()
+				continue
+			}
+			// We need to close the connections if it had compression "off" or the new
+			// mode is compression "off", or if the new mode is "accept", because
+			// these require negotiation.
+			if l.leaf.compression == CompressionOff || newMode == CompressionOff || newMode == CompressionAccept {
+				leafs = append(leafs, l)
+			} else if newMode == CompressionS2Auto {
+				// If the mode is "s2_auto", we need to check if there is really
+				// need to change, and at any rate, we want to save the actual
+				// compression level here, not s2_auto.
+				l.updateS2AutoCompressionLevel(co, &l.leaf.compression)
+			} else {
+				// Simply change the compression writer
+				l.out.cw = s2.NewWriter(nil, s2WriterOptions(newMode)...)
+				l.leaf.compression = newMode
+			}
+			l.mu.Unlock()
+		}
+		s.mu.RUnlock()
+		// Close the connections for which negotiation is required.
+		for _, l := range leafs {
+			l.closeConnection(ClientClosed)
+		}
+		s.Noticef("Reloaded: LeafNode compression settings")
 	}
 }
 
@@ -1262,6 +1334,20 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 					}
 				}
 			}
+			// We also support config reload for compression. Check if it changed before
+			// blanking them out for the deep-equal check at the end.
+			compressionChanged := !reflect.DeepEqual(tmpOld.Compression, tmpNew.Compression)
+			if compressionChanged {
+				tmpOld.Compression, tmpNew.Compression = CompressionOpts{}, CompressionOpts{}
+			} else if len(tmpOld.Remotes) == len(tmpNew.Remotes) {
+				// Same that for tls first check, do the remotes now.
+				for i := 0; i < len(tmpOld.Remotes); i++ {
+					if !reflect.DeepEqual(tmpOld.Remotes[i].Compression, tmpNew.Remotes[i].Compression) {
+						compressionChanged = true
+						break
+					}
+				}
+			}
 
 			// Need to do the same for remote leafnodes' TLS configs.
 			// But we can't just set remotes' TLSConfig to nil otherwise this
@@ -1351,11 +1437,10 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 					field.Name, oldValue, newValue)
 			}
 
-			// If we detected a change in TLSHandshakeFirst, then let's add to
-			// the diffOpts so that we can print that we change that.
-			if handshakeFirstChanged {
-				diffOpts = append(diffOpts, &leafNodeOption{})
-			}
+			diffOpts = append(diffOpts, &leafNodeOption{
+				tlsFirstChanged:    handshakeFirstChanged,
+				compressionChanged: compressionChanged,
+			})
 		case "jetstream":
 			new := newValue.(bool)
 			old := oldValue.(bool)
@@ -1549,6 +1634,8 @@ func copyRemoteLNConfigForReloadCompare(current []*RemoteLeafOpts) []*RemoteLeaf
 		// For now, remove DenyImports/Exports since those get modified at runtime
 		// to add JS APIs.
 		cp.DenyImports, cp.DenyExports = nil, nil
+		// Remove compression mode
+		cp.Compression = CompressionOpts{}
 		rlns = append(rlns, &cp)
 	}
 	return rlns

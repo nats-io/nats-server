@@ -497,7 +497,7 @@ func (s *Server) createMQTTClient(conn net.Conn, ws *websocket) *client {
 		}
 
 		// Perform server-side TLS handshake.
-		if err := c.doTLSServerHandshake("mqtt", opts.MQTT.TLSConfig, opts.MQTT.TLSTimeout, opts.MQTT.TLSPinnedCerts); err != nil {
+		if err := c.doTLSServerHandshake(tlsHandshakeMQTT, opts.MQTT.TLSConfig, opts.MQTT.TLSTimeout, opts.MQTT.TLSPinnedCerts); err != nil {
 			c.mu.Unlock()
 			return nil
 		}

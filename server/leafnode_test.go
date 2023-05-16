@@ -22,6 +22,7 @@ import (
 	"math/rand"
 	"net"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,6 +31,7 @@ import (
 
 	"github.com/nats-io/nkeys"
 
+	"github.com/klauspost/compress/s2"
 	jwt "github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 
@@ -986,12 +988,8 @@ func TestLeafCloseTLSConnection(t *testing.T) {
 	if err := tlsConn.Handshake(); err != nil {
 		t.Fatalf("Unexpected error during handshake: %v", err)
 	}
-	connectOp := []byte("CONNECT {\"name\":\"leaf\",\"verbose\":false,\"pedantic\":false,\"tls_required\":true}\r\n")
+	connectOp := []byte("CONNECT {\"name\":\"leaf\",\"verbose\":false,\"pedantic\":false}\r\n")
 	if _, err := tlsConn.Write(connectOp); err != nil {
-		t.Fatalf("Unexpected error writing CONNECT: %v", err)
-	}
-	infoOp := []byte("INFO {\"server_id\":\"leaf\",\"tls_required\":true}\r\n")
-	if _, err := tlsConn.Write(infoOp); err != nil {
 		t.Fatalf("Unexpected error writing CONNECT: %v", err)
 	}
 	if _, err := tlsConn.Write([]byte("PING\r\n")); err != nil {
@@ -3640,6 +3638,10 @@ func TestLeafNodeNoPingBeforeConnect(t *testing.T) {
 	o := DefaultOptions()
 	o.LeafNode.Port = -1
 	o.LeafNode.AuthTimeout = 0.5
+	// For this test we need to disable compression, because we do use
+	// the ping timer instead of the auth timer before the negotiation
+	// is complete.
+	o.LeafNode.Compression.Mode = CompressionOff
 	s := RunServer(o)
 	defer s.Shutdown()
 
@@ -4979,4 +4981,904 @@ func TestLeafNodeTLSHandshakeFirst(t *testing.T) {
 	// Reload again with "true"
 	reloadUpdateConfig(t, s1, confHub, fmt.Sprintf(tmpl1, "true"))
 	checkLeafNodeConnected(t, s2)
+}
+
+func TestLeafNodeCompressionOptions(t *testing.T) {
+	org := testDefaultLeafNodeCompression
+	testDefaultLeafNodeCompression = _EMPTY_
+	defer func() { testDefaultLeafNodeCompression = org }()
+
+	tmpl := `
+		port: -1
+		leafnodes {
+			port: -1
+			compression: %s
+		}
+	`
+	for _, test := range []struct {
+		name     string
+		mode     string
+		rttVals  []int
+		expected string
+		rtts     []time.Duration
+	}{
+		{"boolean enabled", "true", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
+		{"string enabled", "enabled", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
+		{"string EnaBled", "EnaBled", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
+		{"string on", "on", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
+		{"string ON", "ON", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
+		{"string fast", "fast", nil, CompressionS2Fast, nil},
+		{"string Fast", "Fast", nil, CompressionS2Fast, nil},
+		{"string s2_fast", "s2_fast", nil, CompressionS2Fast, nil},
+		{"string s2_Fast", "s2_Fast", nil, CompressionS2Fast, nil},
+		{"boolean disabled", "false", nil, CompressionOff, nil},
+		{"string disabled", "disabled", nil, CompressionOff, nil},
+		{"string DisableD", "DisableD", nil, CompressionOff, nil},
+		{"string off", "off", nil, CompressionOff, nil},
+		{"string OFF", "OFF", nil, CompressionOff, nil},
+		{"better", "better", nil, CompressionS2Better, nil},
+		{"Better", "Better", nil, CompressionS2Better, nil},
+		{"s2_better", "s2_better", nil, CompressionS2Better, nil},
+		{"S2_BETTER", "S2_BETTER", nil, CompressionS2Better, nil},
+		{"best", "best", nil, CompressionS2Best, nil},
+		{"BEST", "BEST", nil, CompressionS2Best, nil},
+		{"s2_best", "s2_best", nil, CompressionS2Best, nil},
+		{"S2_BEST", "S2_BEST", nil, CompressionS2Best, nil},
+		{"auto no rtts", "auto", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
+		{"s2_auto no rtts", "s2_auto", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
+		{"auto", "{mode: auto, rtt_thresholds: [%s]}", []int{1}, CompressionS2Auto, []time.Duration{time.Millisecond}},
+		{"Auto", "{Mode: Auto, thresholds: [%s]}", []int{1, 2}, CompressionS2Auto, []time.Duration{time.Millisecond, 2 * time.Millisecond}},
+		{"s2_auto", "{mode: s2_auto, thresholds: [%s]}", []int{1, 2, 3}, CompressionS2Auto, []time.Duration{time.Millisecond, 2 * time.Millisecond, 3 * time.Millisecond}},
+		{"s2_AUTO", "{mode: s2_AUTO, thresholds: [%s]}", []int{1, 2, 3, 4}, CompressionS2Auto, []time.Duration{time.Millisecond, 2 * time.Millisecond, 3 * time.Millisecond, 4 * time.Millisecond}},
+		{"s2_auto:-10,5,10", "{mode: s2_auto, thresholds: [%s]}", []int{-10, 5, 10}, CompressionS2Auto, []time.Duration{0, 5 * time.Millisecond, 10 * time.Millisecond}},
+		{"s2_auto:5,10,15", "{mode: s2_auto, thresholds: [%s]}", []int{5, 10, 15}, CompressionS2Auto, []time.Duration{5 * time.Millisecond, 10 * time.Millisecond, 15 * time.Millisecond}},
+		{"s2_auto:0,5,10", "{mode: s2_auto, thresholds: [%s]}", []int{0, 5, 10}, CompressionS2Auto, []time.Duration{0, 5 * time.Millisecond, 10 * time.Millisecond}},
+		{"s2_auto:5,10,0,20", "{mode: s2_auto, thresholds: [%s]}", []int{5, 10, 0, 20}, CompressionS2Auto, []time.Duration{5 * time.Millisecond, 10 * time.Millisecond, 0, 20 * time.Millisecond}},
+		{"s2_auto:0,10,0,20", "{mode: s2_auto, thresholds: [%s]}", []int{0, 10, 0, 20}, CompressionS2Auto, []time.Duration{0, 10 * time.Millisecond, 0, 20 * time.Millisecond}},
+		{"s2_auto:0,0,0,20", "{mode: s2_auto, thresholds: [%s]}", []int{0, 0, 0, 20}, CompressionS2Auto, []time.Duration{0, 0, 0, 20 * time.Millisecond}},
+		{"s2_auto:0,10,0,0", "{mode: s2_auto, rtt_thresholds: [%s]}", []int{0, 10, 0, 0}, CompressionS2Auto, []time.Duration{0, 10 * time.Millisecond}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var val string
+			if len(test.rttVals) > 0 {
+				var rtts string
+				for i, v := range test.rttVals {
+					if i > 0 {
+						rtts += ", "
+					}
+					rtts += fmt.Sprintf("%dms", v)
+				}
+				val = fmt.Sprintf(test.mode, rtts)
+			} else {
+				val = test.mode
+			}
+			conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, val)))
+			s, o := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			if cm := o.LeafNode.Compression.Mode; cm != test.expected {
+				t.Fatalf("Expected compression value to be %q, got %q", test.expected, cm)
+			}
+			if !reflect.DeepEqual(test.rtts, o.LeafNode.Compression.RTTThresholds) {
+				t.Fatalf("Expected RTT tresholds to be %+v, got %+v", test.rtts, o.LeafNode.Compression.RTTThresholds)
+			}
+			s.Shutdown()
+
+			o.LeafNode.Port = -1
+			o.LeafNode.Compression.Mode = test.mode
+			if len(test.rttVals) > 0 {
+				o.LeafNode.Compression.Mode = CompressionS2Auto
+				o.LeafNode.Compression.RTTThresholds = o.LeafNode.Compression.RTTThresholds[:0]
+				for _, v := range test.rttVals {
+					o.LeafNode.Compression.RTTThresholds = append(o.LeafNode.Compression.RTTThresholds, time.Duration(v)*time.Millisecond)
+				}
+			}
+			s = RunServer(o)
+			defer s.Shutdown()
+			if cm := o.LeafNode.Compression.Mode; cm != test.expected {
+				t.Fatalf("Expected compression value to be %q, got %q", test.expected, cm)
+			}
+			if !reflect.DeepEqual(test.rtts, o.LeafNode.Compression.RTTThresholds) {
+				t.Fatalf("Expected RTT tresholds to be %+v, got %+v", test.rtts, o.LeafNode.Compression.RTTThresholds)
+			}
+		})
+	}
+
+	// Same, but with remotes
+	tmpl = `
+		port: -1
+		leafnodes {
+			port: -1
+			remotes [
+				{
+					url: "nats://127.0.0.1:1234"
+					compression: %s
+				}
+			]
+		}
+	`
+	for _, test := range []struct {
+		name     string
+		mode     string
+		rttVals  []int
+		expected string
+		rtts     []time.Duration
+	}{
+		{"boolean enabled", "true", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
+		{"string enabled", "enabled", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
+		{"string EnaBled", "EnaBled", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
+		{"string on", "on", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
+		{"string ON", "ON", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
+		{"string fast", "fast", nil, CompressionS2Fast, nil},
+		{"string Fast", "Fast", nil, CompressionS2Fast, nil},
+		{"string s2_fast", "s2_fast", nil, CompressionS2Fast, nil},
+		{"string s2_Fast", "s2_Fast", nil, CompressionS2Fast, nil},
+		{"boolean disabled", "false", nil, CompressionOff, nil},
+		{"string disabled", "disabled", nil, CompressionOff, nil},
+		{"string DisableD", "DisableD", nil, CompressionOff, nil},
+		{"string off", "off", nil, CompressionOff, nil},
+		{"string OFF", "OFF", nil, CompressionOff, nil},
+		{"better", "better", nil, CompressionS2Better, nil},
+		{"Better", "Better", nil, CompressionS2Better, nil},
+		{"s2_better", "s2_better", nil, CompressionS2Better, nil},
+		{"S2_BETTER", "S2_BETTER", nil, CompressionS2Better, nil},
+		{"best", "best", nil, CompressionS2Best, nil},
+		{"BEST", "BEST", nil, CompressionS2Best, nil},
+		{"s2_best", "s2_best", nil, CompressionS2Best, nil},
+		{"S2_BEST", "S2_BEST", nil, CompressionS2Best, nil},
+		{"auto no rtts", "auto", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
+		{"s2_auto no rtts", "s2_auto", nil, CompressionS2Auto, defaultCompressionS2AutoRTTThresholds},
+		{"auto", "{mode: auto, rtt_thresholds: [%s]}", []int{1}, CompressionS2Auto, []time.Duration{time.Millisecond}},
+		{"Auto", "{Mode: Auto, thresholds: [%s]}", []int{1, 2}, CompressionS2Auto, []time.Duration{time.Millisecond, 2 * time.Millisecond}},
+		{"s2_auto", "{mode: s2_auto, thresholds: [%s]}", []int{1, 2, 3}, CompressionS2Auto, []time.Duration{time.Millisecond, 2 * time.Millisecond, 3 * time.Millisecond}},
+		{"s2_AUTO", "{mode: s2_AUTO, thresholds: [%s]}", []int{1, 2, 3, 4}, CompressionS2Auto, []time.Duration{time.Millisecond, 2 * time.Millisecond, 3 * time.Millisecond, 4 * time.Millisecond}},
+		{"s2_auto:-10,5,10", "{mode: s2_auto, thresholds: [%s]}", []int{-10, 5, 10}, CompressionS2Auto, []time.Duration{0, 5 * time.Millisecond, 10 * time.Millisecond}},
+		{"s2_auto:5,10,15", "{mode: s2_auto, thresholds: [%s]}", []int{5, 10, 15}, CompressionS2Auto, []time.Duration{5 * time.Millisecond, 10 * time.Millisecond, 15 * time.Millisecond}},
+		{"s2_auto:0,5,10", "{mode: s2_auto, thresholds: [%s]}", []int{0, 5, 10}, CompressionS2Auto, []time.Duration{0, 5 * time.Millisecond, 10 * time.Millisecond}},
+		{"s2_auto:5,10,0,20", "{mode: s2_auto, thresholds: [%s]}", []int{5, 10, 0, 20}, CompressionS2Auto, []time.Duration{5 * time.Millisecond, 10 * time.Millisecond, 0, 20 * time.Millisecond}},
+		{"s2_auto:0,10,0,20", "{mode: s2_auto, thresholds: [%s]}", []int{0, 10, 0, 20}, CompressionS2Auto, []time.Duration{0, 10 * time.Millisecond, 0, 20 * time.Millisecond}},
+		{"s2_auto:0,0,0,20", "{mode: s2_auto, thresholds: [%s]}", []int{0, 0, 0, 20}, CompressionS2Auto, []time.Duration{0, 0, 0, 20 * time.Millisecond}},
+		{"s2_auto:0,10,0,0", "{mode: s2_auto, rtt_thresholds: [%s]}", []int{0, 10, 0, 0}, CompressionS2Auto, []time.Duration{0, 10 * time.Millisecond}},
+	} {
+		t.Run("remote leaf "+test.name, func(t *testing.T) {
+			var val string
+			if len(test.rttVals) > 0 {
+				var rtts string
+				for i, v := range test.rttVals {
+					if i > 0 {
+						rtts += ", "
+					}
+					rtts += fmt.Sprintf("%dms", v)
+				}
+				val = fmt.Sprintf(test.mode, rtts)
+			} else {
+				val = test.mode
+			}
+			conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, val)))
+			s, o := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			r := o.LeafNode.Remotes[0]
+
+			if cm := r.Compression.Mode; cm != test.expected {
+				t.Fatalf("Expected compression value to be %q, got %q", test.expected, cm)
+			}
+			if !reflect.DeepEqual(test.rtts, r.Compression.RTTThresholds) {
+				t.Fatalf("Expected RTT tresholds to be %+v, got %+v", test.rtts, r.Compression.RTTThresholds)
+			}
+			s.Shutdown()
+
+			o.LeafNode.Port = -1
+			o.LeafNode.Remotes[0].Compression.Mode = test.mode
+			if len(test.rttVals) > 0 {
+				o.LeafNode.Remotes[0].Compression.Mode = CompressionS2Auto
+				o.LeafNode.Remotes[0].Compression.RTTThresholds = o.LeafNode.Remotes[0].Compression.RTTThresholds[:0]
+				for _, v := range test.rttVals {
+					o.LeafNode.Remotes[0].Compression.RTTThresholds = append(o.LeafNode.Remotes[0].Compression.RTTThresholds, time.Duration(v)*time.Millisecond)
+				}
+			}
+			s = RunServer(o)
+			defer s.Shutdown()
+			if cm := o.LeafNode.Remotes[0].Compression.Mode; cm != test.expected {
+				t.Fatalf("Expected compression value to be %q, got %q", test.expected, cm)
+			}
+			if !reflect.DeepEqual(test.rtts, o.LeafNode.Remotes[0].Compression.RTTThresholds) {
+				t.Fatalf("Expected RTT tresholds to be %+v, got %+v", test.rtts, o.LeafNode.Remotes[0].Compression.RTTThresholds)
+			}
+		})
+	}
+
+	// Test that with no compression specified, we default to "s2_auto"
+	conf := createConfFile(t, []byte(`
+		port: -1
+		leafnodes {
+			port: -1
+		}
+	`))
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+	if o.LeafNode.Compression.Mode != CompressionS2Auto {
+		t.Fatalf("Expected compression value to be %q, got %q", CompressionAccept, o.LeafNode.Compression.Mode)
+	}
+	if !reflect.DeepEqual(defaultCompressionS2AutoRTTThresholds, o.LeafNode.Compression.RTTThresholds) {
+		t.Fatalf("Expected RTT tresholds to be %+v, got %+v", defaultCompressionS2AutoRTTThresholds, o.LeafNode.Compression.RTTThresholds)
+	}
+	// Same for remotes
+	conf = createConfFile(t, []byte(`
+		port: -1
+		leafnodes {
+			port: -1
+			remotes [ { url: "nats://127.0.0.1:1234" } ]
+		}
+	`))
+	s, o = RunServerWithConfig(conf)
+	defer s.Shutdown()
+	if cm := o.LeafNode.Remotes[0].Compression.Mode; cm != CompressionS2Auto {
+		t.Fatalf("Expected compression value to be %q, got %q", CompressionAccept, cm)
+	}
+	if !reflect.DeepEqual(defaultCompressionS2AutoRTTThresholds, o.LeafNode.Remotes[0].Compression.RTTThresholds) {
+		t.Fatalf("Expected RTT tresholds to be %+v, got %+v", defaultCompressionS2AutoRTTThresholds, o.LeafNode.Remotes[0].Compression.RTTThresholds)
+	}
+	for _, test := range []struct {
+		name string
+		mode string
+		rtts []time.Duration
+		err  string
+	}{
+		{"unsupported mode", "gzip", nil, "Unsupported"},
+		{"not ascending order", "s2_auto", []time.Duration{
+			5 * time.Millisecond,
+			10 * time.Millisecond,
+			2 * time.Millisecond,
+		}, "ascending"},
+		{"too many thresholds", "s2_auto", []time.Duration{
+			5 * time.Millisecond,
+			10 * time.Millisecond,
+			20 * time.Millisecond,
+			40 * time.Millisecond,
+			60 * time.Millisecond,
+		}, "more than 4"},
+		{"all 0", "s2_auto", []time.Duration{0, 0, 0, 0}, "at least one"},
+		{"single 0", "s2_auto", []time.Duration{0}, "at least one"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			o := DefaultOptions()
+			o.LeafNode.Port = -1
+			o.LeafNode.Compression = CompressionOpts{test.mode, test.rtts}
+			if _, err := NewServer(o); err == nil || !strings.Contains(err.Error(), test.err) {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			// Same with remotes
+			o.LeafNode.Compression = CompressionOpts{}
+			o.LeafNode.Remotes = []*RemoteLeafOpts{{Compression: CompressionOpts{test.mode, test.rtts}}}
+			if _, err := NewServer(o); err == nil || !strings.Contains(err.Error(), test.err) {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestLeafNodeCompression(t *testing.T) {
+	conf1 := createConfFile(t, []byte(`
+		port: -1
+		server_name: "Hub"
+		accounts {
+			A { users: [{user: a, password: pwd}] }
+			B { users: [{user: b, password: pwd}] }
+			C { users: [{user: c, password: pwd}] }
+		}
+		leafnodes {
+			port: -1
+			compression: s2_fast
+		}
+	`))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	port := o1.LeafNode.Port
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		server_name: "Spoke"
+		accounts {
+			A { users: [{user: a, password: pwd}] }
+			B { users: [{user: b, password: pwd}] }
+			C { users: [{user: c, password: pwd}] }
+		}
+		leafnodes {
+			remotes [
+				{ url: "nats://a:pwd@127.0.0.1:%d", account: "A", compression: s2_better }
+				{ url: "nats://b:pwd@127.0.0.1:%d", account: "B", compression: s2_best }
+				{ url: "nats://c:pwd@127.0.0.1:%d", account: "C", compression: off }
+			]
+		}
+	`, port, port, port)))
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	checkLeafNodeConnectedCount(t, s1, 3)
+	checkLeafNodeConnectedCount(t, s2, 3)
+
+	s1.mu.RLock()
+	for _, l := range s1.leafs {
+		l.mu.Lock()
+		l.nc = &testConnSentBytes{Conn: l.nc}
+		l.mu.Unlock()
+	}
+	s1.mu.RUnlock()
+
+	var payloads [][]byte
+	totalPayloadSize := 0
+	count := 26
+	for i := 0; i < count; i++ {
+		n := rand.Intn(2048) + 1
+		p := make([]byte, n)
+		for j := 0; j < n; j++ {
+			p[j] = byte(i) + 'A'
+		}
+		totalPayloadSize += len(p)
+		payloads = append(payloads, p)
+	}
+
+	check := func(acc, user, subj string) {
+		t.Helper()
+		nc2 := natsConnect(t, s2.ClientURL(), nats.UserInfo(user, "pwd"))
+		defer nc2.Close()
+		sub := natsSubSync(t, nc2, subj)
+		natsFlush(t, nc2)
+		checkSubInterest(t, s1, acc, subj, time.Second)
+
+		nc1 := natsConnect(t, s1.ClientURL(), nats.UserInfo(user, "pwd"))
+		defer nc1.Close()
+
+		for i := 0; i < count; i++ {
+			natsPub(t, nc1, subj, payloads[i])
+		}
+		for i := 0; i < count; i++ {
+			m := natsNexMsg(t, sub, time.Second)
+			if !bytes.Equal(m.Data, payloads[i]) {
+				t.Fatalf("Expected payload %q - got %q", payloads[i], m.Data)
+			}
+		}
+
+		// Also check that the leafnode stats shows that compression likely occurred
+		var out int
+		s1.mu.RLock()
+		for _, l := range s1.leafs {
+			l.mu.Lock()
+			if l.acc.Name == acc && l.nc != nil {
+				nc := l.nc.(*testConnSentBytes)
+				nc.Lock()
+				out = nc.sent
+				nc.sent = 0
+				nc.Unlock()
+			}
+			l.mu.Unlock()
+		}
+		s1.mu.RUnlock()
+		// Except for account "C", where compression should be off,
+		// "out" should at least be smaller than totalPayloadSize, use 20%.
+		if acc == "C" {
+			if int(out) < totalPayloadSize {
+				t.Fatalf("Expected s1's sent bytes to be at least payload size (%v), got %v", totalPayloadSize, out)
+			}
+		} else {
+			limit := totalPayloadSize * 80 / 100
+			if int(out) > limit {
+				t.Fatalf("Expected s1's sent bytes to be less than %v, got %v (total payload was %v)", limit, out, totalPayloadSize)
+			}
+		}
+	}
+	check("A", "a", "foo")
+	check("B", "b", "bar")
+	check("C", "c", "baz")
+
+	// Check compression settings. S1 should always be s2_fast, except for account "C"
+	// since "C" wanted compression "off"
+	l, err := s1.Leafz(nil)
+	require_NoError(t, err)
+	for _, r := range l.Leafs {
+		switch r.Account {
+		case "C":
+			if r.Compression != CompressionOff {
+				t.Fatalf("Expected compression of remote for C account to be %q, got %q", CompressionOff, r.Compression)
+			}
+		default:
+			if r.Compression != CompressionS2Fast {
+				t.Fatalf("Expected compression of remote for %s account to be %q, got %q", r.Account, CompressionS2Fast, r.Compression)
+			}
+		}
+	}
+
+	l, err = s2.Leafz(nil)
+	require_NoError(t, err)
+	for _, r := range l.Leafs {
+		switch r.Account {
+		case "A":
+			if r.Compression != CompressionS2Better {
+				t.Fatalf("Expected compression for A account to be %q, got %q", CompressionS2Better, r.Compression)
+			}
+		case "B":
+			if r.Compression != CompressionS2Best {
+				t.Fatalf("Expected compression for B account to be %q, got %q", CompressionS2Best, r.Compression)
+			}
+		case "C":
+			if r.Compression != CompressionOff {
+				t.Fatalf("Expected compression for C account to be %q, got %q", CompressionOff, r.Compression)
+			}
+		}
+	}
+}
+
+func TestLeafNodeCompressionMatrixModes(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		s1         string
+		s2         string
+		s1Expected string
+		s2Expected string
+	}{
+		{"off off", "off", "off", CompressionOff, CompressionOff},
+		{"off accept", "off", "accept", CompressionOff, CompressionOff},
+		{"off on", "off", "on", CompressionOff, CompressionOff},
+		{"off better", "off", "better", CompressionOff, CompressionOff},
+		{"off best", "off", "best", CompressionOff, CompressionOff},
+
+		{"accept off", "accept", "off", CompressionOff, CompressionOff},
+		{"accept accept", "accept", "accept", CompressionOff, CompressionOff},
+		// Note: "on", means s2_auto, which will mean uncompressed since RTT is low.
+		{"accept on", "accept", "on", CompressionS2Fast, CompressionS2Uncompressed},
+		{"accept better", "accept", "better", CompressionS2Better, CompressionS2Better},
+		{"accept best", "accept", "best", CompressionS2Best, CompressionS2Best},
+
+		{"on off", "on", "off", CompressionOff, CompressionOff},
+		{"on accept", "on", "accept", CompressionS2Uncompressed, CompressionS2Fast},
+		{"on on", "on", "on", CompressionS2Uncompressed, CompressionS2Uncompressed},
+		{"on better", "on", "better", CompressionS2Uncompressed, CompressionS2Better},
+		{"on best", "on", "best", CompressionS2Uncompressed, CompressionS2Best},
+
+		{"better off", "better", "off", CompressionOff, CompressionOff},
+		{"better accept", "better", "accept", CompressionS2Better, CompressionS2Better},
+		{"better on", "better", "on", CompressionS2Better, CompressionS2Uncompressed},
+		{"better better", "better", "better", CompressionS2Better, CompressionS2Better},
+		{"better best", "better", "best", CompressionS2Better, CompressionS2Best},
+
+		{"best off", "best", "off", CompressionOff, CompressionOff},
+		{"best accept", "best", "accept", CompressionS2Best, CompressionS2Best},
+		{"best on", "best", "on", CompressionS2Best, CompressionS2Uncompressed},
+		{"best better", "best", "better", CompressionS2Best, CompressionS2Better},
+		{"best best", "best", "best", CompressionS2Best, CompressionS2Best},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conf1 := createConfFile(t, []byte(fmt.Sprintf(`
+				port: -1
+				server_name: "A"
+				leafnodes {
+					port: -1
+					compression: %s
+				}
+			`, test.s1)))
+			s1, o1 := RunServerWithConfig(conf1)
+			defer s1.Shutdown()
+
+			conf2 := createConfFile(t, []byte(fmt.Sprintf(`
+				port: -1
+				server_name: "B"
+				leafnodes {
+					remotes: [
+						{url: "nats://127.0.0.1:%d", compression: %s}
+					]
+				}
+			`, o1.LeafNode.Port, test.s2)))
+			s2, _ := RunServerWithConfig(conf2)
+			defer s2.Shutdown()
+
+			checkLeafNodeConnected(t, s2)
+
+			nc1 := natsConnect(t, s1.ClientURL())
+			defer nc1.Close()
+
+			nc2 := natsConnect(t, s2.ClientURL())
+			defer nc2.Close()
+
+			payload := make([]byte, 128)
+			check := func(ncp, ncs *nats.Conn, subj string, s *Server) {
+				t.Helper()
+				sub := natsSubSync(t, ncs, subj)
+				checkSubInterest(t, s, globalAccountName, subj, time.Second)
+				natsPub(t, ncp, subj, payload)
+				natsNexMsg(t, sub, time.Second)
+
+				for _, srv := range []*Server{s1, s2} {
+					lz, err := srv.Leafz(nil)
+					require_NoError(t, err)
+					var expected string
+					if srv == s1 {
+						expected = test.s1Expected
+					} else {
+						expected = test.s2Expected
+					}
+					if cm := lz.Leafs[0].Compression; cm != expected {
+						t.Fatalf("Server %s - expected compression %q, got %q", srv, expected, cm)
+					}
+				}
+			}
+			check(nc1, nc2, "foo", s1)
+			check(nc2, nc1, "bar", s2)
+		})
+	}
+}
+
+func TestLeafNodeCompressionWithOlderServer(t *testing.T) {
+	tmpl1 := `
+		port: -1
+		server_name: "A"
+		leafnodes {
+			port: -1
+			compression: "%s"
+		}
+	`
+	conf1 := createConfFile(t, []byte(fmt.Sprintf(tmpl1, CompressionS2Fast)))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	tmpl2 := `
+		port: -1
+		server_name: "B"
+		leafnodes {
+			remotes [
+				{url: "nats://127.0.0.1:%d", compression: "%s"}
+			]
+		}
+	`
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(tmpl2, o1.LeafNode.Port, CompressionNotSupported)))
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	checkLeafNodeConnected(t, s2)
+
+	getLeafCompMode := func(s *Server) string {
+		var cm string
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		for _, l := range s1.leafs {
+			l.mu.Lock()
+			cm = l.leaf.compression
+			l.mu.Unlock()
+			return cm
+		}
+		return _EMPTY_
+	}
+	for _, s := range []*Server{s1, s2} {
+		if cm := getLeafCompMode(s); cm != CompressionNotSupported {
+			t.Fatalf("Expected compression not supported, got %q", cm)
+		}
+	}
+
+	s2.Shutdown()
+	s1.Shutdown()
+
+	conf1 = createConfFile(t, []byte(fmt.Sprintf(tmpl1, CompressionNotSupported)))
+	s1, o1 = RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	conf2 = createConfFile(t, []byte(fmt.Sprintf(tmpl2, o1.LeafNode.Port, CompressionS2Fast)))
+	s2, _ = RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	checkLeafNodeConnected(t, s2)
+	for _, s := range []*Server{s1, s2} {
+		if cm := getLeafCompMode(s); cm != CompressionNotSupported {
+			t.Fatalf("Expected compression not supported, got %q", cm)
+		}
+	}
+}
+
+func TestLeafNodeCompressionAuto(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		s1Ping        string
+		s1Compression string
+		s2Ping        string
+		s2Compression string
+		checkS1       bool
+	}{
+		{"remote side", "10s", CompressionS2Fast, "100ms", "{mode: s2_auto, rtt_thresholds: [10ms, 20ms, 30ms]}", false},
+		{"accept side", "100ms", "{mode: s2_auto, rtt_thresholds: [10ms, 20ms, 30ms]}", "10s", CompressionS2Fast, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conf1 := createConfFile(t, []byte(fmt.Sprintf(`
+				port: -1
+				server_name: "A"
+				ping_interval: "%s"
+				leafnodes {
+					port: -1
+					compression: %s
+				}
+			`, test.s1Ping, test.s1Compression)))
+			s1, o1 := RunServerWithConfig(conf1)
+			defer s1.Shutdown()
+
+			// Start with 0ms RTT
+			np := createNetProxy(0, 1024*1024*1024, 1024*1024*1024, fmt.Sprintf("nats://127.0.0.1:%d", o1.LeafNode.Port), true)
+
+			conf2 := createConfFile(t, []byte(fmt.Sprintf(`
+				port: -1
+				server_name: "B"
+				ping_interval: "%s"
+				leafnodes {
+					remotes [
+						{url: %s, compression %s}
+					]
+				}
+			`, test.s2Ping, np.routeURL(), test.s2Compression)))
+			s2, _ := RunServerWithConfig(conf2)
+			defer s2.Shutdown()
+			defer np.stop()
+
+			checkLeafNodeConnected(t, s2)
+
+			checkComp := func(expected string) {
+				t.Helper()
+				var s *Server
+				if test.checkS1 {
+					s = s1
+				} else {
+					s = s2
+				}
+				checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+					s.mu.RLock()
+					defer s.mu.RUnlock()
+					for _, l := range s.leafs {
+						l.mu.Lock()
+						cm := l.leaf.compression
+						l.mu.Unlock()
+						if cm != expected {
+							return fmt.Errorf("Leaf %v compression mode expected to be %q, got %q", l, expected, cm)
+						}
+					}
+					return nil
+				})
+			}
+			checkComp(CompressionS2Uncompressed)
+
+			// Change the proxy RTT and we should get compression "fast"
+			np.updateRTT(15 * time.Millisecond)
+			checkComp(CompressionS2Fast)
+
+			// Now 25ms, and get "better"
+			np.updateRTT(25 * time.Millisecond)
+			checkComp(CompressionS2Better)
+
+			// Above 35 and we should get "best"
+			np.updateRTT(35 * time.Millisecond)
+			checkComp(CompressionS2Best)
+
+			// Down to 1ms and again should get "uncompressed"
+			np.updateRTT(1 * time.Millisecond)
+			checkComp(CompressionS2Uncompressed)
+		})
+	}
+
+	// Make sure that if compression is off on one side, the update of RTT does
+	// not trigger a compression change.
+	conf1 := createConfFile(t, []byte(`
+		port: -1
+		server_name: "A"
+		leafnodes {
+			port: -1
+			compression: off
+		}
+	`))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	// Start with 0ms RTT
+	np := createNetProxy(0, 1024*1024*1024, 1024*1024*1024, fmt.Sprintf("nats://127.0.0.1:%d", o1.LeafNode.Port), true)
+
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		server_name: "B"
+		ping_interval: "50ms"
+		leafnodes {
+			remotes [
+				{url: %s, compression s2_auto}
+			]
+		}
+	`, np.routeURL())))
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+	defer np.stop()
+
+	checkLeafNodeConnected(t, s2)
+
+	// Even with a bug of updating compression level while it should have been
+	// off, the check done below would almost always pass because after
+	// reconnecting, there could be a chance to get at first compression set
+	// to "off". So we will double check that the leaf node CID did not change
+	// at the end of the test.
+	getCID := func() uint64 {
+		s2.mu.RLock()
+		defer s2.mu.RUnlock()
+		for _, l := range s2.leafs {
+			l.mu.Lock()
+			cid := l.cid
+			l.mu.Unlock()
+			return cid
+		}
+		return 0
+	}
+	oldCID := getCID()
+
+	checkCompOff := func() {
+		t.Helper()
+		checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+			s2.mu.RLock()
+			defer s2.mu.RUnlock()
+			if len(s2.leafs) != 1 {
+				return fmt.Errorf("Leaf not currently connected")
+			}
+			for _, l := range s2.leafs {
+				l.mu.Lock()
+				cm := l.leaf.compression
+				l.mu.Unlock()
+				if cm != CompressionOff {
+					return fmt.Errorf("Leaf %v compression mode expected to be %q, got %q", l, CompressionOff, cm)
+				}
+			}
+			return nil
+		})
+	}
+	checkCompOff()
+
+	// Now change RTT and again, make sure that it is still off
+	np.updateRTT(20 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
+	checkCompOff()
+	if cid := getCID(); cid != oldCID {
+		t.Fatalf("Leafnode has reconnected, cid was %v, now %v", oldCID, cid)
+	}
+}
+
+func TestLeafNodeCompressionWithWSCompression(t *testing.T) {
+	conf1 := createConfFile(t, []byte(`
+		port: -1
+		server_name: "A"
+		websocket {
+			port: -1
+			no_tls: true
+			compression: true
+		}
+		leafnodes {
+			port: -1
+			compression: s2_fast
+		}
+	`))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		server_name: "B"
+		leafnodes {
+			remotes [
+				{
+					url: "ws://127.0.0.1:%d"
+					ws_compression: true
+					compression: s2_fast
+				}
+			]
+		}
+	`, o1.Websocket.Port)))
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	checkLeafNodeConnected(t, s2)
+
+	nc1 := natsConnect(t, s1.ClientURL())
+	defer nc1.Close()
+
+	sub := natsSubSync(t, nc1, "foo")
+	checkSubInterest(t, s2, globalAccountName, "foo", time.Second)
+
+	nc2 := natsConnect(t, s2.ClientURL())
+	defer nc2.Close()
+
+	payload := make([]byte, 1024)
+	for i := 0; i < len(payload); i++ {
+		payload[i] = 'A'
+	}
+	natsPub(t, nc2, "foo", payload)
+	msg := natsNexMsg(t, sub, time.Second)
+	require_True(t, len(msg.Data) == 1024)
+	for i := 0; i < len(msg.Data); i++ {
+		if msg.Data[i] != 'A' {
+			t.Fatalf("Invalid msg: %s", msg.Data)
+		}
+	}
+}
+
+func TestLeafNodeCompressionWithWSGetNeedsData(t *testing.T) {
+	conf1 := createConfFile(t, []byte(`
+		port: -1
+		server_name: "A"
+		websocket {
+			port: -1
+			no_tls: true
+		}
+		leafnodes {
+			port: -1
+			compression: s2_fast
+		}
+	`))
+	srv1, o1 := RunServerWithConfig(conf1)
+	defer srv1.Shutdown()
+
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(`
+		port: -1
+		server_name: "B"
+		leafnodes {
+			remotes [
+				{
+					url: "ws://127.0.0.1:%d"
+					ws_no_masking: true
+					compression: s2_fast
+				}
+			]
+		}
+	`, o1.Websocket.Port)))
+	srv2, _ := RunServerWithConfig(conf2)
+	defer srv2.Shutdown()
+
+	checkLeafNodeConnected(t, srv2)
+
+	nc1 := natsConnect(t, srv1.ClientURL())
+	defer nc1.Close()
+
+	sub := natsSubSync(t, nc1, "foo")
+	checkSubInterest(t, srv2, globalAccountName, "foo", time.Second)
+
+	// We want to have the payload more than 126 bytes so that the websocket
+	// code need to read 2 bytes for the length. See below.
+	payload := "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	sentBytes := []byte("LMSG foo 156\r\n" + payload + "\r\n")
+	h, _ := wsCreateFrameHeader(false, false, wsBinaryMessage, len(sentBytes))
+	combined := &bytes.Buffer{}
+	combined.Write(h)
+	combined.Write(sentBytes)
+	toSend := combined.Bytes()
+
+	// We will make a compressed block that cuts the websocket header that
+	// makes the reader want to read bytes directly from the connection.
+	// We want to make sure that we are not going to get compressed data
+	// without going through the (de)compress library. So for that, compress
+	// the first 3 bytes.
+	b := &bytes.Buffer{}
+	w := s2.NewWriter(b)
+	w.Write(toSend[:3])
+	w.Close()
+
+	var nc net.Conn
+	srv2.mu.RLock()
+	for _, l := range srv2.leafs {
+		l.mu.Lock()
+		nc = l.nc
+		l.mu.Unlock()
+	}
+	srv2.mu.RUnlock()
+
+	nc.Write(b.Bytes())
+
+	// Pause to make sure other side just gets a partial of the whole WS frame.
+	time.Sleep(100 * time.Millisecond)
+
+	b.Reset()
+	w.Reset(b)
+	w.Write(toSend[3:])
+	w.Close()
+
+	nc.Write(b.Bytes())
+
+	msg := natsNexMsg(t, sub, time.Second)
+	require_True(t, len(msg.Data) == 156)
+	require_Equal(t, string(msg.Data), payload)
 }

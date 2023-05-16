@@ -83,6 +83,7 @@ func RunServerCallback(opts *server.Options, callback func(*server.Server)) *ser
 	opts.Cluster.PoolSize = -1
 	// Also disable compression for "test" package.
 	opts.Cluster.Compression.Mode = server.CompressionOff
+	opts.LeafNode.Compression.Mode = server.CompressionOff
 
 	s, err := server.NewServer(opts)
 	if err != nil || s == nil {

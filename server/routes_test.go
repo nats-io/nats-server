@@ -3209,8 +3209,8 @@ func TestRouteCompressionOptions(t *testing.T) {
 			s, o := RunServerWithConfig(conf)
 			defer s.Shutdown()
 
-			if o.Cluster.Compression.Mode != test.expected {
-				t.Fatalf("Expected compression value to be %q, got %q", test.expected, o.Cluster.Compression)
+			if cm := o.Cluster.Compression.Mode; cm != test.expected {
+				t.Fatalf("Expected compression value to be %q, got %q", test.expected, cm)
 			}
 			if !reflect.DeepEqual(test.rtts, o.Cluster.Compression.RTTThresholds) {
 				t.Fatalf("Expected RTT tresholds to be %+v, got %+v", test.rtts, o.Cluster.Compression.RTTThresholds)
@@ -3228,8 +3228,8 @@ func TestRouteCompressionOptions(t *testing.T) {
 			}
 			s = RunServer(o)
 			defer s.Shutdown()
-			if o.Cluster.Compression.Mode != test.expected {
-				t.Fatalf("Expected compression value to be %q, got %q", test.expected, o.Cluster.Compression)
+			if cm := o.Cluster.Compression.Mode; cm != test.expected {
+				t.Fatalf("Expected compression value to be %q, got %q", test.expected, cm)
 			}
 			if !reflect.DeepEqual(test.rtts, o.Cluster.Compression.RTTThresholds) {
 				t.Fatalf("Expected RTT tresholds to be %+v, got %+v", test.rtts, o.Cluster.Compression.RTTThresholds)
@@ -3245,8 +3245,8 @@ func TestRouteCompressionOptions(t *testing.T) {
 	`))
 	s, o := RunServerWithConfig(conf)
 	defer s.Shutdown()
-	if o.Cluster.Compression.Mode != CompressionAccept {
-		t.Fatalf("Expected compression value to be %q, got %q", CompressionAccept, o.Cluster.Compression.Mode)
+	if cm := o.Cluster.Compression.Mode; cm != CompressionAccept {
+		t.Fatalf("Expected compression value to be %q, got %q", CompressionAccept, cm)
 	}
 	for _, test := range []struct {
 		name string

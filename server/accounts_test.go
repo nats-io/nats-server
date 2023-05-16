@@ -3532,6 +3532,7 @@ func TestAccountImportDuplicateResponseDeliveryWithLeafnodes(t *testing.T) {
 		m.Respond([]byte("bar"))
 	})
 	lnc.Flush()
+	checkSubInterest(t, s, "A", "foo", time.Second)
 
 	// Make sure it works, but request only wants one, so need second test to show failure, but
 	// want to make sure we are wired up correctly.
