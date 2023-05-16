@@ -84,6 +84,12 @@ const (
 	okProto   = "+OK" + _CRLF_
 )
 
+// TLS Hanshake client types
+const (
+	tlsHandshakeLeaf = "leafnode"
+	tlsHandshakeMQTT = "mqtt"
+)
+
 func init() {
 	rand.Seed(time.Now().UnixNano())
 }
