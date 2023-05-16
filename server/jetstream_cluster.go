@@ -543,6 +543,10 @@ func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consum
 	restartConsumer := func() {
 		js.mu.Lock()
 		if ca.Group != nil {
+			// Make sure the node is stopped if still running.
+			if node := ca.Group.node; node != nil && node.State() != Closed {
+				node.Stop()
+			}
 			ca.Group.node = nil
 		}
 		deleted := ca.deleted
