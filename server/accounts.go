@@ -597,7 +597,6 @@ func (a *Account) AddMapping(src, dest string) error {
 }
 
 // AddWeightedMappings will add in a weighted mappings for the destinations.
-// TODO(dlc) - Allow cluster filtering
 func (a *Account) AddWeightedMappings(src string, dests ...*MapDest) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -614,7 +613,7 @@ func (a *Account) AddWeightedMappings(src string, dests ...*MapDest) error {
 	m := &mapping{src: src, wc: subjectHasWildcard(src), dests: make([]*destination, 0, len(dests)+1)}
 	seen := make(map[string]struct{})
 
-	var tw uint8
+	var tw = make(map[string]uint8)
 	for _, d := range dests {
 		if _, ok := seen[d.Subject]; ok {
 			return fmt.Errorf("duplicate entry for %q", d.Subject)
@@ -623,8 +622,8 @@ func (a *Account) AddWeightedMappings(src string, dests ...*MapDest) error {
 		if d.Weight > 100 {
 			return fmt.Errorf("individual weights need to be <= 100")
 		}
-		tw += d.Weight
-		if tw > 100 {
+		tw[d.Cluster] += d.Weight
+		if tw[d.Cluster] > 100 {
 			return fmt.Errorf("total weight needs to be <= 100")
 		}
 		err := ValidateMappingDestination(d.Subject)
