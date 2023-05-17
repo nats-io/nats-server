@@ -528,6 +528,7 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) bool {
 		}
 	} else if node != nil && node != mset.raftNode() {
 		s.Warnf("Detected stream cluster node skew '%s > %s'", acc.GetName(), streamName)
+		node.Delete()
 		mset.resetClusteredState(nil)
 	}
 
