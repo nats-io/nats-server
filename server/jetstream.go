@@ -1813,6 +1813,17 @@ func (jsa *jsAccount) checkAndSyncUsage(tierName string, storeType StorageType) 
 	}
 	s := js.srv
 
+	// We need to collect the stream stores before we acquire the usage lock since in storeUpdates the
+	// stream lock could be held if deletion are inline with storing a new message, e.g. via limits.
+	var stores []StreamStore
+	for _, mset := range jsa.streams {
+		mset.mu.RLock()
+		if mset.tier == tierName && mset.stype == storeType && mset.store != nil {
+			stores = append(stores, mset.store)
+		}
+		mset.mu.RUnlock()
+	}
+
 	// Now range and qualify, hold usage lock to prevent updates.
 	jsa.usageMu.Lock()
 	defer jsa.usageMu.Unlock()
@@ -1822,15 +1833,12 @@ func (jsa *jsAccount) checkAndSyncUsage(tierName string, storeType StorageType) 
 		return
 	}
 
+	// Collect current total for all stream stores that matched.
 	var total int64
 	var state StreamState
-	for _, mset := range jsa.streams {
-		mset.mu.RLock()
-		if mset.tier == tierName && mset.stype == storeType {
-			mset.store.FastState(&state)
-			total += int64(state.Bytes)
-		}
-		mset.mu.RUnlock()
+	for _, store := range stores {
+		store.FastState(&state)
+		total += int64(state.Bytes)
 	}
 
 	var needClusterUpdate bool
