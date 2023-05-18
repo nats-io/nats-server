@@ -1,7 +1,7 @@
 project_name: nats-server
 
 builds:
-  - main: ./main.go
+  - main: .
     id: nats-server
     binary: nats-server
     ldflags:
@@ -28,7 +28,7 @@ dockers:
       - docker/nats-server.conf
 
 checksum:
-  name_template: 'SHA256SUMS'
+  name_template: "SHA256SUMS"
   algorithm: sha256
 
 snapshot:
