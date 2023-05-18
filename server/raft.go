@@ -2501,6 +2501,13 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 	ae, err := n.loadEntry(start)
 	if err != nil {
 		n.warn("Request from follower for entry at index [%d] errored for state %+v - %v", start, state, err)
+		if err == ErrStoreEOF {
+			// If we are here we are seeing a request for an item beyond our state, meaning we should stepdown.
+			n.stepdown.push(noLeader)
+			n.Unlock()
+			arPool.Put(ar)
+			return
+		}
 		ae, err = n.loadFirstEntry()
 	}
 	if err != nil || ae == nil {
