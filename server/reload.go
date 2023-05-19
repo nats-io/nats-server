@@ -2122,16 +2122,12 @@ func (s *Server) reloadClusterPermissions(oldPerms *RoutePermissions) {
 			if canImportNow {
 				// If we could not before, then will need to send a SUB protocol.
 				if !couldImportThen {
-					list := subsNeedSUB[route]
-					list = append(list, sub)
-					subsNeedSUB[route] = list
+					subsNeedSUB[route] = append(subsNeedSUB[route], sub)
 				}
 			} else if couldImportThen {
 				// We were previously able to import this sub, but now
 				// we can't so we need to send an UNSUB protocol
-				list := subsNeedUNSUB[route]
-				list = append(list, sub)
-				subsNeedUNSUB[route] = list
+				subsNeedUNSUB[route] = append(subsNeedUNSUB[route], sub)
 			}
 		}
 		deleteRoutedSubs = deleteRoutedSubs[:0]
