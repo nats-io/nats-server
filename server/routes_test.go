@@ -66,6 +66,20 @@ func checkSubInterest(t *testing.T, s *Server, accName, subject string, timeout 
 	})
 }
 
+func checkSubNoInterest(t *testing.T, s *Server, accName, subject string, timeout time.Duration) {
+	t.Helper()
+	checkFor(t, timeout, 15*time.Millisecond, func() error {
+		acc, err := s.LookupAccount(accName)
+		if err != nil {
+			return fmt.Errorf("error looking up account %q: %v", accName, err)
+		}
+		if acc.SubscriptionInterest(subject) {
+			return fmt.Errorf("unexpected subscription interest for account %q on %q", accName, subject)
+		}
+		return nil
+	})
+}
+
 func TestRouteConfig(t *testing.T) {
 	opts, err := ProcessConfigFile("./configs/cluster.conf")
 	if err != nil {

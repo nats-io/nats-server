@@ -927,31 +927,39 @@ func (s *Server) updateRemoteRoutePerms(c *client, info *Info) {
 
 	c.opts.Import = info.Import
 	c.opts.Export = info.Export
+
+	routeAcc, poolIdx, noPool := string(c.route.accName), c.route.poolIdx, c.route.noPool
 	c.mu.Unlock()
 
-	var acc *Account
-	var err error
-	if an := info.RouteAccount; an == _EMPTY_ {
-		acc = s.globalAccount()
-	} else if acc, err = s.LookupAccount(an); err != nil {
-		c.Errorf("Unable to lookup account %q to update remote route permissions: %v", an, err)
-		return
-	}
-
-	acc.mu.RLock()
-	sl := acc.sl
-	acc.mu.RUnlock()
-	if sl == nil {
-		return
-	}
 	var (
 		_localSubs [4096]*subscription
-		localSubs  = _localSubs[:0]
+		_allSubs   [4096]*subscription
+		allSubs    = _allSubs[:0]
 	)
-	sl.localSubs(&localSubs, false)
+
+	s.accounts.Range(func(_, v interface{}) bool {
+		acc := v.(*Account)
+		acc.mu.RLock()
+		accName, sl, accPoolIdx := acc.Name, acc.sl, acc.routePoolIdx
+		acc.mu.RUnlock()
+
+		// Do this only for accounts handled by this route
+		if (accPoolIdx >= 0 && accPoolIdx == poolIdx) || (routeAcc == accName) || noPool {
+			localSubs := _localSubs[:0]
+			sl.localSubs(&localSubs, false)
+			if len(localSubs) > 0 {
+				allSubs = append(allSubs, localSubs...)
+			}
+		}
+		return true
+	})
+
+	if len(allSubs) == 0 {
+		return
+	}
 
 	c.mu.Lock()
-	c.sendRouteSubProtos(localSubs, false, func(sub *subscription) bool {
+	c.sendRouteSubProtos(allSubs, false, func(sub *subscription) bool {
 		subj := string(sub.subject)
 		// If the remote can now export but could not before, and this server can import this
 		// subject, then send SUB protocol.
