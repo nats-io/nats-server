@@ -4525,12 +4525,12 @@ func TestConfigReloadRouteImportPermissionsWithAccounts(t *testing.T) {
 		poolSize string
 		accounts string
 	}{
-		{"regular", _EMPTY_, _EMPTY_},
+		{"regular", "pool_size: -1", _EMPTY_},
 		{"pooling", "pool_size: 5", _EMPTY_},
 		{"per-account", _EMPTY_, "accounts: [\"A\"]"},
 		{"pool and per-account", "pool_size: 3", "accounts: [\"A\"]"},
 	} {
-		t.Run(test.name, func(t *testing.T) {
+		t.Run("import "+test.name, func(t *testing.T) {
 			confATemplate := `
 				server_name: "A"
 				port: -1
@@ -4604,6 +4604,7 @@ func TestConfigReloadRouteImportPermissionsWithAccounts(t *testing.T) {
 			natsFlush(t, ncA)
 
 			checkSubInterest(t, srvb, "A", "foo", 2*time.Second)
+			checkSubNoInterest(t, srvb, "A", "bar", 2*time.Second)
 
 			ncB := natsConnect(t, srvb.ClientURL(), nats.UserInfo("user1", "pwd"))
 			defer ncB.Close()
@@ -4613,7 +4614,7 @@ func TestConfigReloadRouteImportPermissionsWithAccounts(t *testing.T) {
 				if expected {
 					natsNexMsg(t, sub, time.Second)
 				} else {
-					if msg, err := sub.NextMsg(250 * time.Millisecond); err == nil {
+					if msg, err := sub.NextMsg(50 * time.Millisecond); err == nil {
 						t.Fatalf("Should not have gotten the message, got %s/%s", msg.Subject, msg.Data)
 					}
 				}
@@ -4634,6 +4635,7 @@ func TestConfigReloadRouteImportPermissionsWithAccounts(t *testing.T) {
 
 			checkClusterFormed(t, srva, srvb)
 
+			checkSubNoInterest(t, srvb, "A", "foo", 2*time.Second)
 			checkSubInterest(t, srvb, "A", "bar", 2*time.Second)
 
 			// Should not receive on foo
@@ -4653,6 +4655,158 @@ func TestConfigReloadRouteImportPermissionsWithAccounts(t *testing.T) {
 			checkClusterFormed(t, srva, srvb)
 
 			checkSubInterest(t, srvb, "A", "foo", 2*time.Second)
+			checkSubNoInterest(t, srvb, "A", "bar", 2*time.Second)
+
+			// Should receive on "foo"
+			natsPub(t, ncB, "foo", []byte("foo3"))
+			check(sub1Foo, true)
+			check(sub2Foo, true)
+			// But make sure there are no more than what we expect
+			check(sub1Foo, false)
+			check(sub2Foo, false)
+
+			// And now "bar" should fail
+			natsPub(t, ncB, "bar", []byte("bar3"))
+			check(sub1Bar, false)
+			check(sub2Bar, false)
+		})
+	}
+	// Check export now
+	for _, test := range []struct {
+		name     string
+		poolSize string
+		accounts string
+	}{
+		{"regular", "pool_size: -1", _EMPTY_},
+		{"pooling", "pool_size: 5", _EMPTY_},
+		{"per-account", _EMPTY_, "accounts: [\"A\"]"},
+		{"pool and per-account", "pool_size: 3", "accounts: [\"A\"]"},
+	} {
+		t.Run("export "+test.name, func(t *testing.T) {
+			confATemplate := `
+				server_name: "A"
+				port: -1
+				accounts {
+					A { users: [{user: "user1", password: "pwd"}] }
+					B { users: [{user: "user2", password: "pwd"}] }
+					C { users: [{user: "user3", password: "pwd"}] }
+					D { users: [{user: "user4", password: "pwd"}] }
+				}
+				cluster {
+					name: "local"
+					listen: 127.0.0.1:-1
+					permissions {
+						import {
+							allow: ">"
+						}
+						export {
+							allow: %s
+						}
+					}
+					%s
+					%s
+				}
+			`
+			confA := createConfFile(t, []byte(fmt.Sprintf(confATemplate, `"foo"`, test.poolSize, test.accounts)))
+			srva, optsA := RunServerWithConfig(confA)
+			defer srva.Shutdown()
+
+			confBTemplate := `
+				server_name: "B"
+				port: -1
+				accounts {
+					A { users: [{user: "user1", password: "pwd"}] }
+					B { users: [{user: "user2", password: "pwd"}] }
+					C { users: [{user: "user3", password: "pwd"}] }
+					D { users: [{user: "user4", password: "pwd"}] }
+				}
+				cluster {
+					listen: 127.0.0.1:-1
+					name: "local"
+					permissions {
+						import {
+							allow: ">"
+						}
+						export {
+							allow: %s
+						}
+					}
+					routes = [
+						"nats://127.0.0.1:%d"
+					]
+					%s
+					%s
+				}
+			`
+			confB := createConfFile(t, []byte(fmt.Sprintf(confBTemplate, `"foo"`, optsA.Cluster.Port, test.poolSize, test.accounts)))
+			srvb, _ := RunServerWithConfig(confB)
+			defer srvb.Shutdown()
+
+			checkClusterFormed(t, srva, srvb)
+
+			ncA := natsConnect(t, srva.ClientURL(), nats.UserInfo("user1", "pwd"))
+			defer ncA.Close()
+
+			sub1Foo := natsSubSync(t, ncA, "foo")
+			sub2Foo := natsSubSync(t, ncA, "foo")
+
+			sub1Bar := natsSubSync(t, ncA, "bar")
+			sub2Bar := natsSubSync(t, ncA, "bar")
+
+			natsFlush(t, ncA)
+
+			checkSubInterest(t, srvb, "A", "foo", 2*time.Second)
+			checkSubNoInterest(t, srvb, "A", "bar", 2*time.Second)
+
+			ncB := natsConnect(t, srvb.ClientURL(), nats.UserInfo("user1", "pwd"))
+			defer ncB.Close()
+
+			check := func(sub *nats.Subscription, expected bool) {
+				t.Helper()
+				if expected {
+					natsNexMsg(t, sub, time.Second)
+				} else {
+					if msg, err := sub.NextMsg(50 * time.Millisecond); err == nil {
+						t.Fatalf("Should not have gotten the message, got %s/%s", msg.Subject, msg.Data)
+					}
+				}
+			}
+
+			// Should receive on "foo"
+			natsPub(t, ncB, "foo", []byte("foo1"))
+			check(sub1Foo, true)
+			check(sub2Foo, true)
+
+			// But not on "bar"
+			natsPub(t, ncB, "bar", []byte("bar1"))
+			check(sub1Bar, false)
+			check(sub2Bar, false)
+
+			reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, `["foo", "bar"]`, test.poolSize, test.accounts))
+			reloadUpdateConfig(t, srvb, confB, fmt.Sprintf(confBTemplate, `["foo", "bar"]`, optsA.Cluster.Port, test.poolSize, test.accounts))
+
+			checkClusterFormed(t, srva, srvb)
+
+			checkSubInterest(t, srvb, "A", "foo", 2*time.Second)
+			checkSubInterest(t, srvb, "A", "bar", 2*time.Second)
+
+			// Should receive on foo and bar
+			natsPub(t, ncB, "foo", []byte("foo2"))
+			check(sub1Foo, true)
+			check(sub2Foo, true)
+
+			natsPub(t, ncB, "bar", []byte("bar2"))
+			check(sub1Bar, true)
+			check(sub2Bar, true)
+
+			// Remove "bar"
+			reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, `"foo"`, test.poolSize, test.accounts))
+			reloadUpdateConfig(t, srvb, confB, fmt.Sprintf(confBTemplate, `"foo"`, optsA.Cluster.Port, test.poolSize, test.accounts))
+
+			checkClusterFormed(t, srva, srvb)
+
+			checkSubInterest(t, srvb, "A", "foo", 2*time.Second)
+			checkSubNoInterest(t, srvb, "A", "bar", 2*time.Second)
 
 			// Should receive on "foo"
 			natsPub(t, ncB, "foo", []byte("foo3"))

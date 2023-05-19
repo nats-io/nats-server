@@ -2029,11 +2029,8 @@ func (s *Server) clientHasMovedToDifferentAccount(c *client) bool {
 // import subjects.
 func (s *Server) reloadClusterPermissions(oldPerms *RoutePermissions) {
 	s.mu.Lock()
-	var (
-		infoJSON []byte
-		newPerms = s.getOpts().Cluster.Permissions
-		routes   = make(map[uint64]*client, s.numRoutes())
-	)
+	newPerms := s.getOpts().Cluster.Permissions
+	routes := make(map[uint64]*client, s.numRoutes())
 	// Get all connected routes
 	s.forEachRoute(func(route *client) {
 		route.mu.Lock()
@@ -2048,8 +2045,7 @@ func (s *Server) reloadClusterPermissions(oldPerms *RoutePermissions) {
 		s.routeInfo.Import = newPerms.Import
 		s.routeInfo.Export = newPerms.Export
 	}
-	// Copy the current route's INFO struct. We will need to modify it per-account
-	routeInfo := s.routeInfo
+	infoJSON := generateInfoJSON(&s.routeInfo)
 	s.mu.Unlock()
 
 	// Close connections for routes that don't understand async INFO.
@@ -2075,17 +2071,46 @@ func (s *Server) reloadClusterPermissions(oldPerms *RoutePermissions) {
 	newPermsTester := &client{}
 	newPermsTester.setRoutePermissions(newPerms)
 
-	// For a given account and list of remotes, will send an INFO protocol so
-	// that remote updates its route permissions and will also send the RS+ or
-	// RS- for subscriptions that become or are no longer permitted.
-	update := func(accName string, sl *Sublist, remotes []*client) {
-		var (
-			_localSubs       [4096]*subscription
-			localSubs        = _localSubs[:0]
-			subsNeedSUB      []*subscription
-			subsNeedUNSUB    []*subscription
-			deleteRoutedSubs []*subscription
-		)
+	var (
+		_localSubs       [4096]*subscription
+		subsNeedSUB      = map[*client][]*subscription{}
+		subsNeedUNSUB    = map[*client][]*subscription{}
+		deleteRoutedSubs []*subscription
+	)
+
+	getRouteForAccount := func(accName string, poolIdx int) *client {
+		for _, r := range routes {
+			r.mu.Lock()
+			ok := (poolIdx >= 0 && poolIdx == r.route.poolIdx) || (string(r.route.accName) == accName) || r.route.noPool
+			r.mu.Unlock()
+			if ok {
+				return r
+			}
+		}
+		return nil
+	}
+
+	// First set the new permissions on all routes.
+	for _, route := range routes {
+		route.mu.Lock()
+		route.setRoutePermissions(newPerms)
+		route.mu.Unlock()
+	}
+
+	// Then, go over all accounts and gather local subscriptions that need to be
+	// sent over as SUB or removed as UNSUB, and routed subscriptions that need
+	// to be dropped due to export permissions.
+	s.accounts.Range(func(_, v interface{}) bool {
+		acc := v.(*Account)
+		acc.mu.RLock()
+		accName, sl, poolIdx := acc.Name, acc.sl, acc.routePoolIdx
+		acc.mu.RUnlock()
+		// Get the route handling this account. If no route or sublist, bail out.
+		route := getRouteForAccount(accName, poolIdx)
+		if route == nil || sl == nil {
+			return true
+		}
+		localSubs := _localSubs[:0]
 		sl.localSubs(&localSubs, false)
 
 		// Go through all local subscriptions
@@ -2097,64 +2122,49 @@ func (s *Server) reloadClusterPermissions(oldPerms *RoutePermissions) {
 			if canImportNow {
 				// If we could not before, then will need to send a SUB protocol.
 				if !couldImportThen {
-					subsNeedSUB = append(subsNeedSUB, sub)
+					subsNeedSUB[route] = append(subsNeedSUB[route], sub)
 				}
 			} else if couldImportThen {
 				// We were previously able to import this sub, but now
 				// we can't so we need to send an UNSUB protocol
-				subsNeedUNSUB = append(subsNeedUNSUB, sub)
+				subsNeedUNSUB[route] = append(subsNeedUNSUB[route], sub)
 			}
 		}
-
-		for _, route := range remotes {
-			// We do this manually here, not invoke generateRouteInfoJSON()
-			routeInfo.RemoteAccount = accName
-			infoJSON = generateInfoJSON(&routeInfo)
-
-			route.mu.Lock()
-			route.setRoutePermissions(newPerms)
-			for _, sub := range route.subs {
-				// If we can't export, we need to drop the subscriptions that
-				// we have on behalf of this route.
-				subj := string(sub.subject)
-				if !route.canExport(subj) {
-					delete(route.subs, string(sub.sid))
-					deleteRoutedSubs = append(deleteRoutedSubs, sub)
-				}
+		deleteRoutedSubs = deleteRoutedSubs[:0]
+		route.mu.Lock()
+		for key, sub := range route.subs {
+			if an := strings.Fields(key)[0]; an != accName {
+				continue
 			}
-			// Send an update INFO, which will allow remote server to show
-			// our current route config in monitoring and resend subscriptions
-			// that we now possibly allow with a change of Export permissions.
-			route.enqueueProto(infoJSON)
-			// Now send SUB and UNSUB protocols as needed.
-			route.sendRouteSubProtos(subsNeedSUB, false, nil)
-			route.sendRouteUnSubProtos(subsNeedUNSUB, false, nil)
-			route.mu.Unlock()
+			// If we can't export, we need to drop the subscriptions that
+			// we have on behalf of this route.
+			subj := string(sub.subject)
+			if !route.canExport(subj) {
+				delete(route.subs, string(sub.sid))
+				deleteRoutedSubs = append(deleteRoutedSubs, sub)
+			}
 		}
+		route.mu.Unlock()
 		// Remove as a batch all the subs that we have removed from each route.
 		sl.RemoveBatch(deleteRoutedSubs)
-	}
-
-	// Now go over all accounts and invoke the update function defined above.
-	s.accounts.Range(func(_, v interface{}) bool {
-		acc := v.(*Account)
-		acc.mu.RLock()
-		accName, sl, poolIdx := acc.Name, acc.sl, acc.routePoolIdx
-		acc.mu.RUnlock()
-		if sl == nil {
-			return true
-		}
-		var remotes []*client
-		for _, r := range routes {
-			r.mu.Lock()
-			if (poolIdx >= 0 && poolIdx == r.route.poolIdx) || (string(r.route.accName) == accName) {
-				remotes = append(remotes, r)
-			}
-			r.mu.Unlock()
-		}
-		update(accName, sl, remotes)
 		return true
 	})
+
+	// Send an update INFO, which will allow remote server to show
+	// our current route config in monitoring and resend subscriptions
+	// that we now possibly allow with a change of Export permissions.
+	for _, route := range routes {
+		route.mu.Lock()
+		route.enqueueProto(infoJSON)
+		// Now send SUB and UNSUB protocols as needed.
+		if subs, ok := subsNeedSUB[route]; ok && len(subs) > 0 {
+			route.sendRouteSubProtos(subs, false, nil)
+		}
+		if unsubs, ok := subsNeedUNSUB[route]; ok && len(unsubs) > 0 {
+			route.sendRouteUnSubProtos(unsubs, false, nil)
+		}
+		route.mu.Unlock()
+	}
 }
 
 func (s *Server) reloadClusterPoolAndAccounts(co *clusterOption, opts *Options) {
