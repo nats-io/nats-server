@@ -88,53 +88,6 @@ func (cipher StoreCipher) String() string {
 	}
 }
 
-type StoreCompression uint8
-
-const (
-	NoCompression StoreCompression = iota
-	S2Compression
-)
-
-func (alg StoreCompression) String() string {
-	switch alg {
-	case NoCompression:
-		return "None"
-	case S2Compression:
-		return "S2"
-	default:
-		return "Unknown StoreCompression"
-	}
-}
-
-func (alg StoreCompression) MarshalJSON() ([]byte, error) {
-	var str string
-	switch alg {
-	case S2Compression:
-		str = "s2"
-	case NoCompression:
-		str = "none"
-	default:
-		return nil, fmt.Errorf("unknown compression algorithm")
-	}
-	return json.Marshal(str)
-}
-
-func (alg *StoreCompression) UnmarshalJSON(b []byte) error {
-	var str string
-	if err := json.Unmarshal(b, &str); err != nil {
-		return err
-	}
-	switch str {
-	case "s2":
-		*alg = S2Compression
-	case "none":
-		*alg = NoCompression
-	default:
-		return fmt.Errorf("unknown compression algorithm")
-	}
-	return nil
-}
-
 // File ConsumerInfo is used for creating consumer stores.
 type FileConsumerInfo struct {
 	Created time.Time
@@ -3403,7 +3356,7 @@ func (mb *msgBlock) truncate(sm *StoreMsg) (nmsgs, nbytes uint64, err error) {
 		}
 		buf = buf[:eof]
 		copy(mb.lchk[0:], buf[:len(buf)-checksumSize])
-		buf, err = mb.cmp.Compress(buf)
+		buf, err = mb.cmp.CompressWithChecksum(buf)
 		if err != nil {
 			return 0, 0, fmt.Errorf("failed to recompress block: %w", err)
 		}
@@ -4095,7 +4048,7 @@ func (mb *msgBlock) recompressOnDiskIfNeeded() error {
 		// The block is already compressed using some algorithm, so we need
 		// to decompress the block using the existing algorithm before we can
 		// recompress it with the new one.
-		if origBuf, err = meta.Algorithm.Decompress(origBuf); err != nil {
+		if origBuf, err = meta.Algorithm.DecompressWithChecksum(origBuf); err != nil {
 			return fmt.Errorf("failed to decompress original block: %w", err)
 		}
 	}
@@ -4112,7 +4065,7 @@ func (mb *msgBlock) recompressOnDiskIfNeeded() error {
 	// The original buffer at this point is uncompressed, so we will now compress
 	// it if needed. Note that if the selected algorithm is NoCompression, the
 	// Compress function will just return the input buffer unmodified.
-	cmpBuf, err := alg.Compress(origBuf)
+	cmpBuf, err := alg.CompressWithChecksum(origBuf)
 	if err != nil {
 		return fmt.Errorf("failed to compress block: %w", err)
 	}
@@ -4185,7 +4138,7 @@ func (mb *msgBlock) decompressIfNeeded(buf []byte) ([]byte, error) {
 		// are compressed. If by any chance the metadata claims that the
 		// block is uncompressed, then the input slice is just returned
 		// unmodified.
-		return meta.Algorithm.Decompress(buf[n:])
+		return meta.Algorithm.DecompressWithChecksum(buf[n:])
 	}
 }
 
@@ -5769,7 +5722,7 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 			}
 			// Recompress if necessary (smb.cmp contains the algorithm used when
 			// the block was loaded from disk, or defaults to NoCompression if not)
-			if nbuf, err = smb.cmp.Compress(nbuf); err != nil {
+			if nbuf, err = smb.cmp.CompressWithChecksum(nbuf); err != nil {
 				goto SKIP
 			}
 			if err = os.WriteFile(smb.mfn, nbuf, defaultFilePerms); err != nil {
@@ -8023,108 +7976,4 @@ func (ts *templateFileStore) Store(t *streamTemplate) error {
 
 func (ts *templateFileStore) Delete(t *streamTemplate) error {
 	return os.RemoveAll(filepath.Join(ts.dir, t.Name))
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// Compression
-////////////////////////////////////////////////////////////////////////////////
-
-type CompressionInfo struct {
-	Algorithm    StoreCompression
-	OriginalSize uint64
-}
-
-func (c *CompressionInfo) MarshalMetadata() []byte {
-	b := make([]byte, 14) // 4 + potentially up to 10 for uint64
-	b[0], b[1], b[2] = 'c', 'm', 'p'
-	b[3] = byte(c.Algorithm)
-	n := binary.PutUvarint(b[4:], c.OriginalSize)
-	return b[:4+n]
-}
-
-func (c *CompressionInfo) UnmarshalMetadata(b []byte) (int, error) {
-	c.Algorithm = NoCompression
-	c.OriginalSize = 0
-	if len(b) < 5 { // 4 + min 1 for uvarint uint64
-		return 0, nil
-	}
-	if b[0] != 'c' || b[1] != 'm' || b[2] != 'p' {
-		return 0, nil
-	}
-	var n int
-	c.Algorithm = StoreCompression(b[3])
-	c.OriginalSize, n = binary.Uvarint(b[4:])
-	if n <= 0 {
-		return 0, fmt.Errorf("metadata incomplete")
-	}
-	return 4 + n, nil
-}
-
-func (alg StoreCompression) Compress(buf []byte) ([]byte, error) {
-	if len(buf) < checksumSize {
-		return nil, fmt.Errorf("uncompressed buffer is too short")
-	}
-	bodyLen := int64(len(buf) - checksumSize)
-	var output bytes.Buffer
-	var writer io.WriteCloser
-	switch alg {
-	case NoCompression:
-		return buf, nil
-	case S2Compression:
-		writer = s2.NewWriter(&output)
-	default:
-		return nil, fmt.Errorf("compression algorithm not known")
-	}
-
-	input := bytes.NewReader(buf[:bodyLen])
-	checksum := buf[bodyLen:]
-
-	// Compress the block content, but don't compress the checksum.
-	// We will preserve it at the end of the block as-is.
-	if n, err := io.CopyN(writer, input, bodyLen); err != nil {
-		return nil, fmt.Errorf("error writing to compression writer: %w", err)
-	} else if n != bodyLen {
-		return nil, fmt.Errorf("short write on body (%d != %d)", n, bodyLen)
-	}
-	if err := writer.Close(); err != nil {
-		return nil, fmt.Errorf("error closing compression writer: %w", err)
-	}
-
-	// Now add the checksum back onto the end of the block.
-	if n, err := output.Write(checksum); err != nil {
-		return nil, fmt.Errorf("error writing checksum: %w", err)
-	} else if n != checksumSize {
-		return nil, fmt.Errorf("short write on checksum (%d != %d)", n, checksumSize)
-	}
-
-	return output.Bytes(), nil
-}
-
-func (alg StoreCompression) Decompress(buf []byte) ([]byte, error) {
-	if len(buf) < checksumSize {
-		return nil, fmt.Errorf("compressed buffer is too short")
-	}
-	bodyLen := int64(len(buf) - checksumSize)
-	input := bytes.NewReader(buf[:bodyLen])
-
-	var reader io.ReadCloser
-	switch alg {
-	case NoCompression:
-		return buf, nil
-	case S2Compression:
-		reader = io.NopCloser(s2.NewReader(input))
-	default:
-		return nil, fmt.Errorf("compression algorithm not known")
-	}
-
-	// Decompress the block content. The checksum isn't compressed so
-	// we can preserve it from the end of the block as-is.
-	checksum := buf[bodyLen:]
-	output, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, fmt.Errorf("error reading compression reader: %w", err)
-	}
-	output = append(output, checksum...)
-
-	return output, reader.Close()
 }

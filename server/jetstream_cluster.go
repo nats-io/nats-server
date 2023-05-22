@@ -7358,7 +7358,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		jsa.usage[tierName] = t
 	}
 	if st == MemoryStorage {
-		total := t.total.store + int64(memStoreMsgSize(subject, hdr, msg)*uint64(rf))
+		total := t.total.store + int64(memStoreMsgSize(subject, hdr, uint64(len(msg)))*uint64(rf))
 		if jsaLimits.MaxMemory > 0 && total > jsaLimits.MaxMemory {
 			exceeded = true
 		}

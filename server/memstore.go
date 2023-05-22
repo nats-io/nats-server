@@ -29,13 +29,19 @@ type memStore struct {
 	mu          sync.RWMutex
 	cfg         StreamConfig
 	state       StreamState
-	msgs        map[uint64]*StoreMsg
+	msgs        map[uint64]*memStoreMsg
 	fss         map[string]*SimpleState
 	maxp        int64
 	scb         StorageUpdateHandler
 	ageChk      *time.Timer
 	consumers   int
 	receivedAny bool
+}
+
+type memStoreMsg struct {
+	*StoreMsg
+	compression StoreCompression // The compression algorithm used
+	origMsgSz   uint64           // Size of the message prior to compression
 }
 
 func newMemStore(cfg *StreamConfig) (*memStore, error) {
@@ -46,7 +52,7 @@ func newMemStore(cfg *StreamConfig) (*memStore, error) {
 		return nil, fmt.Errorf("memStore requires memory storage type in config")
 	}
 	ms := &memStore{
-		msgs: make(map[uint64]*StoreMsg),
+		msgs: make(map[uint64]*memStoreMsg),
 		fss:  make(map[string]*SimpleState),
 		maxp: cfg.MaxMsgsPer,
 		cfg:  *cfg,
@@ -137,7 +143,7 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 				ms.recalculateFirstForSubj(subj, ss.First, ss)
 			}
 			sm, ok := ms.msgs[ss.First]
-			if !ok || memStoreMsgSize(sm.subj, sm.hdr, sm.msg) < uint64(len(msg)+len(hdr)) {
+			if !ok || memStoreMsgSize(sm.subj, sm.hdr, sm.origMsgSz) < uint64(len(msg)+len(hdr)) {
 				return ErrMaxBytes
 			}
 		}
@@ -166,6 +172,14 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 		hdr = copyBytes(hdr)
 	}
 
+	// Compress the message if needed.
+	origsz := uint64(len(msg))
+	if c, err := ms.cfg.Compression.Compress(msg); err != nil {
+		return err
+	} else {
+		msg = c
+	}
+
 	// FIXME(dlc) - Could pool at this level?
 	sm := &StoreMsg{subj, nil, nil, make([]byte, 0, len(hdr)+len(msg)), seq, ts}
 	sm.buf = append(sm.buf, hdr...)
@@ -174,9 +188,13 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 		sm.hdr = sm.buf[:len(hdr)]
 	}
 	sm.msg = sm.buf[len(hdr):]
-	ms.msgs[seq] = sm
+	ms.msgs[seq] = &memStoreMsg{
+		StoreMsg:    sm,
+		compression: ms.cfg.Compression,
+		origMsgSz:   origsz,
+	}
 	ms.state.Msgs++
-	ms.state.Bytes += memStoreMsgSize(subj, hdr, msg)
+	ms.state.Bytes += memStoreMsgSize(subj, hdr, origsz)
 	ms.state.LastSeq = seq
 	ms.state.LastTime = now
 
@@ -220,7 +238,7 @@ func (ms *memStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 	ms.mu.Unlock()
 
 	if err == nil && cb != nil {
-		cb(1, int64(memStoreMsgSize(subj, hdr, msg)), seq, subj)
+		cb(1, int64(memStoreMsgSize(subj, hdr, uint64(len(msg)))), seq, subj)
 	}
 
 	return err
@@ -237,7 +255,7 @@ func (ms *memStore) StoreMsg(subj string, hdr, msg []byte) (uint64, int64, error
 	if err != nil {
 		seq, ts = 0, 0
 	} else if cb != nil {
-		cb(1, int64(memStoreMsgSize(subj, hdr, msg)), seq, subj)
+		cb(1, int64(memStoreMsgSize(subj, hdr, uint64(len(msg)))), seq, subj)
 	}
 
 	return seq, ts, err
@@ -690,7 +708,7 @@ func (ms *memStore) purge(fseq uint64) (uint64, error) {
 	ms.state.FirstTime = time.Time{}
 	ms.state.Bytes = 0
 	ms.state.Msgs = 0
-	ms.msgs = make(map[uint64]*StoreMsg)
+	ms.msgs = make(map[uint64]*memStoreMsg)
 	ms.fss = make(map[string]*SimpleState)
 	ms.mu.Unlock()
 
@@ -724,7 +742,7 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 
 		for seq := seq - 1; seq > 0; seq-- {
 			if sm := ms.msgs[seq]; sm != nil {
-				bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.msg)
+				bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.origMsgSz)
 				purged++
 				delete(ms.msgs, seq)
 				ms.removeSeqPerSubject(sm.subj, seq)
@@ -748,7 +766,7 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 		ms.state.FirstSeq = seq
 		ms.state.FirstTime = time.Time{}
 		ms.state.LastSeq = seq - 1
-		ms.msgs = make(map[uint64]*StoreMsg)
+		ms.msgs = make(map[uint64]*memStoreMsg)
 	}
 	ms.mu.Unlock()
 
@@ -768,7 +786,7 @@ func (ms *memStore) reset() error {
 	if cb != nil {
 		for _, sm := range ms.msgs {
 			purged++
-			bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.msg)
+			bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.origMsgSz)
 		}
 	}
 
@@ -781,7 +799,7 @@ func (ms *memStore) reset() error {
 	ms.state.Msgs = 0
 	ms.state.Bytes = 0
 	// Reset msgs and fss.
-	ms.msgs = make(map[uint64]*StoreMsg)
+	ms.msgs = make(map[uint64]*memStoreMsg)
 	ms.fss = make(map[string]*SimpleState)
 
 	ms.mu.Unlock()
@@ -812,7 +830,7 @@ func (ms *memStore) Truncate(seq uint64) error {
 	for i := ms.state.LastSeq; i > seq; i-- {
 		if sm := ms.msgs[i]; sm != nil {
 			purged++
-			bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.msg)
+			bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.origMsgSz)
 			delete(ms.msgs, i)
 			ms.removeSeqPerSubject(sm.subj, i)
 		}
@@ -869,13 +887,21 @@ func (ms *memStore) LoadMsg(seq uint64, smp *StoreMsg) (*StoreMsg, error) {
 		smp = new(StoreMsg)
 	}
 	sm.copy(smp)
+
+	// Decompress the message if needed.
+	if c, err := sm.compression.Decompress(smp.msg); err != nil {
+		return nil, err
+	} else {
+		smp.msg = c
+	}
+
 	return smp, nil
 }
 
 // LoadLastMsg will return the last message we have that matches a given subject.
 // The subject can be a wildcard.
 func (ms *memStore) LoadLastMsg(subject string, smp *StoreMsg) (*StoreMsg, error) {
-	var sm *StoreMsg
+	var sm *memStoreMsg
 	var ok bool
 
 	ms.mu.RLock()
@@ -898,6 +924,14 @@ func (ms *memStore) LoadLastMsg(subject string, smp *StoreMsg) (*StoreMsg, error
 		smp = new(StoreMsg)
 	}
 	sm.copy(smp)
+
+	// Decompress the message if needed.
+	if c, err := ms.cfg.Compression.Decompress(smp.msg); err != nil {
+		return nil, err
+	} else {
+		smp.msg = c
+	}
+
 	return smp, nil
 }
 
@@ -998,7 +1032,7 @@ func (ms *memStore) updateFirstSeq(seq uint64) {
 		// Interior delete.
 		return
 	}
-	var nsm *StoreMsg
+	var nsm *memStoreMsg
 	var ok bool
 	for nseq := ms.state.FirstSeq + 1; nseq <= ms.state.LastSeq; nseq++ {
 		if nsm, ok = ms.msgs[nseq]; ok {
@@ -1061,7 +1095,7 @@ func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 		return false
 	}
 
-	ss = memStoreMsgSize(sm.subj, sm.hdr, sm.msg)
+	ss = memStoreMsgSize(sm.subj, sm.hdr, sm.origMsgSz)
 
 	delete(ms.msgs, seq)
 	if ms.state.Msgs > 0 {
@@ -1157,8 +1191,8 @@ func (ms *memStore) Utilization() (total, reported uint64, err error) {
 	return ms.state.Bytes, ms.state.Bytes, nil
 }
 
-func memStoreMsgSize(subj string, hdr, msg []byte) uint64 {
-	return uint64(len(subj) + len(hdr) + len(msg) + 16) // 8*2 for seq + age
+func memStoreMsgSize(subj string, hdr []byte, msglen uint64) uint64 {
+	return uint64(len(subj)+len(hdr)) + msglen + 16 // 8*2 for seq + age
 }
 
 // Delete is same as Stop for memory store.
