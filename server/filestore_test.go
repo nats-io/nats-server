@@ -889,18 +889,21 @@ func TestFileStoreCompactLastPlusOne(t *testing.T) {
 		}
 		defer fs.Stop()
 
+		flush := func() {
+			// The performance of this test is quite terrible with compression
+			// if we have AsyncFlush = false, so we'll batch flushes instead.
+			fs.mu.Lock()
+			defer fs.mu.Unlock()
+			fs.checkAndFlushAllBlocks()
+		}
+
 		subj, msg := "foo", make([]byte, 10_000)
 		for i := 0; i < 10_000; i++ {
 			if _, _, err := fs.StoreMsg(subj, nil, msg); err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
 		}
-
-		// The performance of this test is quite terrible with compression
-		// if we have AsyncFlush = false, so we'll batch flushes instead.
-		fs.mu.Lock()
-		fs.checkAndFlushAllBlocks()
-		fs.mu.Unlock()
+		flush()
 
 		if state := fs.State(); state.Msgs != 10_000 {
 			t.Fatalf("Expected 1000000 msgs, got %d", state.Msgs)
@@ -908,12 +911,16 @@ func TestFileStoreCompactLastPlusOne(t *testing.T) {
 		if _, err := fs.Compact(10_001); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
+
 		state := fs.State()
 		if state.Msgs != 0 {
 			t.Fatalf("Expected no message but got %d", state.Msgs)
 		}
 
-		fs.StoreMsg(subj, nil, msg)
+		if _, _, err := fs.StoreMsg(subj, nil, msg); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		flush()
 		state = fs.State()
 		if state.Msgs != 1 {
 			t.Fatalf("Expected one message but got %d", state.Msgs)

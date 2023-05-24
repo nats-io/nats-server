@@ -218,6 +218,7 @@ type msgBlock struct {
 	dmap    avl.SequenceSet
 	fch     chan struct{}
 	qch     chan struct{}
+	qwg     sync.WaitGroup
 	lchk    [8]byte
 	loading bool
 	flusher bool
@@ -3119,6 +3120,12 @@ func (mb *msgBlock) spinUpFlushLoop() {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
 
+	// If the block is closed, we shouldn't be able to start up a
+	// new flush loop.
+	if mb.closed {
+		return
+	}
+
 	// Are we already running?
 	if mb.flusher {
 		return
@@ -3126,6 +3133,7 @@ func (mb *msgBlock) spinUpFlushLoop() {
 	mb.flusher = true
 	mb.fch = make(chan struct{}, 1)
 	mb.qch = make(chan struct{})
+	mb.qwg.Add(1)
 	fch, qch := mb.fch, mb.qch
 
 	go mb.flushLoop(fch, qch)
@@ -3164,6 +3172,7 @@ func (mb *msgBlock) clearInFlusher() {
 func (mb *msgBlock) flushLoop(fch, qch chan struct{}) {
 	mb.setInFlusher()
 	defer mb.clearInFlusher()
+	defer mb.qwg.Done()
 
 	// Will use to test if we have meta data updates.
 	var firstSeq, lastSeq uint64
@@ -5525,10 +5534,15 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 	fs.state.Bytes = 0
 	fs.state.Msgs = 0
 
-	for _, mb := range fs.blks {
+	blks := make([]*msgBlock, len(fs.blks))
+	copy(blks, fs.blks)
+	fs.mu.Unlock()
+
+	for _, mb := range blks {
 		mb.dirtyClose()
 	}
 
+	fs.mu.Lock()
 	fs.blks = nil
 	fs.lmb = nil
 	fs.bim = make(map[uint32]*msgBlock)
@@ -6024,6 +6038,9 @@ func (mb *msgBlock) dirtyCloseWithRemove(remove bool) {
 	if mb.qch != nil {
 		close(mb.qch)
 		mb.qch = nil
+		mb.mu.Unlock()
+		mb.qwg.Wait()
+		mb.mu.Lock()
 	}
 	if mb.mfd != nil {
 		mb.mfd.Close()
@@ -6422,6 +6439,9 @@ func (mb *msgBlock) close(sync bool) {
 	if mb.qch != nil {
 		close(mb.qch)
 		mb.qch = nil
+		mb.mu.Unlock()
+		mb.qwg.Wait()
+		mb.mu.Lock()
 	}
 	if sync {
 		syncAndClose(mb.mfd, mb.ifd)
