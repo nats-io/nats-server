@@ -950,7 +950,7 @@ func TestLeafNodeLoopFromDAG(t *testing.T) {
 	checkLeafNodeConnectedCount(t, sc, 1)
 }
 
-func TestLeafCloseTLSConnection(t *testing.T) {
+func TestLeafNodeCloseTLSConnection(t *testing.T) {
 	opts := DefaultOptions()
 	opts.DisableShortFirstPing = true
 	opts.LeafNode.Host = "127.0.0.1"
@@ -2374,17 +2374,16 @@ func TestLeafNodeLMsgSplit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error parsing url: %v", err)
 	}
-	remoteLeafs := []*RemoteLeafOpts{{URLs: []*url.URL{u1, u2}}}
 
 	oLeaf1 := DefaultOptions()
 	oLeaf1.Cluster.Name = "xyz"
-	oLeaf1.LeafNode.Remotes = remoteLeafs
+	oLeaf1.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{u1, u2}}}
 	leaf1 := RunServer(oLeaf1)
 	defer leaf1.Shutdown()
 
 	oLeaf2 := DefaultOptions()
 	oLeaf2.Cluster.Name = "xyz"
-	oLeaf2.LeafNode.Remotes = remoteLeafs
+	oLeaf2.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{u1, u2}}}
 	oLeaf2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", oLeaf1.Cluster.Port))
 	leaf2 := RunServer(oLeaf2)
 	defer leaf2.Shutdown()
@@ -2473,11 +2472,10 @@ func TestLeafNodeRouteParseLSUnsub(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error parsing url: %v", err)
 	}
-	remoteLeafs := []*RemoteLeafOpts{{URLs: []*url.URL{u2}}}
 
 	oLeaf2 := DefaultOptions()
 	oLeaf2.Cluster.Name = "xyz"
-	oLeaf2.LeafNode.Remotes = remoteLeafs
+	oLeaf2.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{u2}}}
 	leaf2 := RunServer(oLeaf2)
 	defer leaf2.Shutdown()
 

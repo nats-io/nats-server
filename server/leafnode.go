@@ -191,6 +191,13 @@ func validateLeafNode(o *Options) error {
 		return err
 	}
 
+	// Users can bind to any local account, if its empty we will assume the $G account.
+	for _, r := range o.LeafNode.Remotes {
+		if r.LocalAccount == _EMPTY_ {
+			r.LocalAccount = globalAccountName
+		}
+	}
+
 	// In local config mode, check that leafnode configuration refers to accounts that exist.
 	if len(o.TrustedOperators) == 0 {
 		accNames := map[string]struct{}{}
@@ -933,15 +940,7 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 	if remote != nil {
 		// For now, if lookup fails, we will constantly try
 		// to recreate this LN connection.
-		remote.Lock()
-		// Users can bind to any local account, if its empty
-		// we will assume the $G account.
-		if remote.LocalAccount == _EMPTY_ {
-			remote.LocalAccount = globalAccountName
-		}
 		lacc := remote.LocalAccount
-		remote.Unlock()
-
 		var err error
 		acc, err = s.LookupAccount(lacc)
 		if err != nil {
