@@ -156,7 +156,7 @@ func TestMemStoreBytesLimit(t *testing.T) {
 }
 
 func TestMemStoreAgeLimit(t *testing.T) {
-	maxAge := 10 * time.Millisecond
+	maxAge := 250 * time.Millisecond
 
 	testMemStoreAllPermutations(t, func(t *testing.T, cfg StreamConfig) {
 		cfg.MaxAge = maxAge
