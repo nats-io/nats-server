@@ -1735,7 +1735,12 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 		o.mu.Lock()
 
 		// When we're done with signaling, we can replace the subjects.
-		o.subjf = newSubjf
+		// If filters were removed, set `o.subjf` to nil.
+		if len(newSubjf) == 0 {
+			o.subjf = nil
+		} else {
+			o.subjf = newSubjf
+		}
 	}
 
 	// Record new config for others that do not need special handling.
@@ -3247,7 +3252,7 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 	store := o.mset.store
 
 	// If no filters are specified, optimize to fetch just non-filtered messages.
-	if o.subjf == nil {
+	if len(o.subjf) == 0 {
 		// Grab next message applicable to us.
 		// We will unlock here in case lots of contention, e.g. WQ.
 		o.mu.Unlock()
@@ -3308,7 +3313,7 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 	// even if len == 0 or 1.
 	// TODO(tp): we should have sort based off generics for server
 	// to avoid reflection.
-	if o.subjf != nil && len(o.subjf) > 1 {
+	if len(o.subjf) > 1 {
 		sort.Slice(o.subjf, func(i, j int) bool {
 			if o.subjf[j].pmsg != nil && o.subjf[i].pmsg == nil {
 				return false

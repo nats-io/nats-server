@@ -28,6 +28,56 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+func TestJetStreamConsumerMultipleFiltersRemoveFilters(t *testing.T) {
+
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+	acc := s.GlobalAccount()
+
+	mset, err := acc.addStream(&StreamConfig{
+		Name:      "TEST",
+		Retention: LimitsPolicy,
+		Subjects:  []string{"one", "two", "three"},
+		MaxAge:    time.Second * 90,
+	})
+	require_NoError(t, err)
+
+	_, err = mset.addConsumer(&ConsumerConfig{
+		Durable:        "consumer",
+		FilterSubjects: []string{"one", "two"},
+	})
+	require_NoError(t, err)
+
+	sendStreamMsg(t, nc, "one", "data")
+	sendStreamMsg(t, nc, "two", "data")
+	sendStreamMsg(t, nc, "three", "data")
+
+	consumer, err := js.PullSubscribe("", "consumer", nats.Bind("TEST", "consumer"))
+	require_NoError(t, err)
+
+	msgs, err := consumer.Fetch(1)
+	require_NoError(t, err)
+	require_True(t, len(msgs) == 1)
+
+	_, err = mset.addConsumer(&ConsumerConfig{
+		Durable:        "consumer",
+		FilterSubjects: []string{},
+	})
+	require_NoError(t, err)
+
+	msgs, err = consumer.Fetch(1)
+	require_NoError(t, err)
+	require_True(t, len(msgs) == 1)
+
+	msgs, err = consumer.Fetch(1)
+	require_NoError(t, err)
+	require_True(t, len(msgs) == 1)
+
+}
+
 func TestJetStreamConsumerMultipleFiltersRace(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
