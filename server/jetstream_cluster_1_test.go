@@ -4912,6 +4912,66 @@ func TestJetStreamClusterPurgeReplayAfterRestart(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterPurgeExReplayAfterRestart(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "P3F", 3)
+	defer c.shutdown()
+
+	// Client based API
+	s := c.randomNonLeader()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"TEST.>"}, Replicas: 3}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	c.waitOnStreamLeader("$G", "TEST")
+	fsl := c.streamLeader("$G", "TEST")
+
+	nc, js = jsClientConnect(t, fsl)
+	js.Publish("TEST.0", []byte("OK"))
+	js.Publish("TEST.1", []byte("OK"))
+
+	// install snapshot, then purge, ensuring the purge needs to be recovered later
+	fsl.JetStreamSnapshotStream("$G", "TEST")
+	if err := js.PurgeStream("TEST", &nats.StreamPurgeRequest{Subject: "TEST.0"}); err != nil {
+		t.Fatalf("Unexpected purge error: %v", err)
+	}
+
+	nc.Flush()
+	time.Sleep(250 * time.Millisecond)
+
+	fsl.Shutdown()
+	fsl.WaitForShutdown()
+	fsl = c.restartServer(fsl)
+	c.waitOnServerCurrent(fsl)
+
+	c.waitOnStreamLeader("$G", "TEST")
+	sl := c.streamLeader("$G", "TEST")
+
+	// keep stepping down so the stream leader matches the initial leader
+	// we need to check if it restored from the snapshot properly
+	for sl.Name() != fsl.Name() {
+		if _, err := nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "TEST"), nil, time.Second); err != nil {
+			t.Fatalf("Unexpected stepdown error: %v", err)
+		}
+		c.waitOnStreamLeader("$G", "TEST")
+		sl = c.streamLeader("$G", "TEST")
+	}
+
+	si, err := js.StreamInfo("TEST")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if si.State.Msgs != 1 {
+		t.Fatalf("Expected 1 msg after restart, got %d", si.State.Msgs)
+	}
+	if si.State.FirstSeq != 2 || si.State.LastSeq != 2 {
+		t.Fatalf("Expected FirstSeq=2, LastSeq=2 after restart, got FirstSeq=%d, LastSeq=%d", si.State.FirstSeq, si.State.LastSeq)
+	}
+}
+
 func TestJetStreamClusterStreamGetMsg(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3F", 3)
 	defer c.shutdown()
