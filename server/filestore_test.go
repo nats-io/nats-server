@@ -3560,7 +3560,7 @@ func TestFileStorePurgeExKeepOneBug(t *testing.T) {
 			t.Fatalf("Expected to find 2 `A` msgs, got %d", fss.Msgs)
 		}
 
-		n, err := fs.PurgeEx("A", 0, 1)
+		n, err := fs.PurgeEx("A", 0, 1, fs.lastSeq())
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -4015,10 +4015,46 @@ func TestFileStorePurgeExWithSubject(t *testing.T) {
 		require_NoError(t, err)
 
 		// This should purge all.
-		p, err := fs.PurgeEx("foo.1", 1, 0)
+		p, err := fs.PurgeEx("foo.1", 1, 0, fs.lastSeq())
 		require_NoError(t, err)
 		require_True(t, int(p) == total)
 		require_True(t, int(p) == total)
+		require_True(t, fs.State().Msgs == 1)
+		require_True(t, fs.State().FirstSeq == 201)
+	})
+}
+
+func TestFileStorePurgeExWithMaxSequence(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize = 1000
+
+		fs, err := newFileStore(
+			fcfg,
+			StreamConfig{Name: "TEST", Subjects: []string{"foo.>"}, Storage: FileStorage},
+		)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		payload := make([]byte, 20)
+		total := 200
+		for i := 0; i < total; i++ {
+			_, _, err = fs.StoreMsg("foo.1", nil, payload)
+			require_NoError(t, err)
+		}
+		_, _, err = fs.StoreMsg("foo.2", nil, []byte("xxxxxx"))
+		require_NoError(t, err)
+
+		// This should purge only one, since we've specified the max sequence to be the first
+		p, err := fs.PurgeEx("foo.1", 0, 0, 1)
+		require_NoError(t, err)
+		require_True(t, int(p) == 1)
+		require_True(t, fs.State().Msgs == 200)
+		require_True(t, fs.State().FirstSeq == 2)
+
+		// This should purge the rest, since we've specified the max sequence equal to the last sequence
+		p, err = fs.PurgeEx("foo.1", 0, 0, fs.lastSeq())
+		require_NoError(t, err)
+		require_True(t, int(p) == 199)
 		require_True(t, fs.State().Msgs == 1)
 		require_True(t, fs.State().FirstSeq == 201)
 	})

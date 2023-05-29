@@ -155,6 +155,7 @@ type consumerAssignment struct {
 type streamPurge struct {
 	Client  *ClientInfo              `json:"client,omitempty"`
 	Stream  string                   `json:"stream"`
+	LastSeq uint64                   `json:"last_seq"`
 	Subject string                   `json:"subject"`
 	Reply   string                   `json:"reply"`
 	Request *JSApiStreamPurgeRequest `json:"request,omitempty"`
@@ -2805,6 +2806,15 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 							mset.account(), mset.name(), node.Group())
 					}
 					panic(err.Error())
+				}
+				// Ignore if we are recovering and we have already processed.
+				if isRecovering {
+					if sp.Request != nil {
+						mset.store.PurgeEx(sp.Request.Subject, sp.Request.Sequence, sp.Request.Keep, sp.LastSeq)
+					} else if mset.state().FirstSeq <= sp.LastSeq {
+						mset.store.Compact(sp.LastSeq + 1)
+					}
+					continue
 				}
 
 				s := js.server()
@@ -6117,7 +6127,7 @@ func (s *Server) jsClusteredStreamPurgeRequest(
 	}
 
 	if n := sa.Group.node; n != nil {
-		sp := &streamPurge{Stream: stream, Subject: subject, Reply: reply, Client: ci, Request: preq}
+		sp := &streamPurge{Stream: stream, LastSeq: mset.state().LastSeq, Subject: subject, Reply: reply, Client: ci, Request: preq}
 		n.Propose(encodeStreamPurge(sp))
 		js.mu.Unlock()
 		return

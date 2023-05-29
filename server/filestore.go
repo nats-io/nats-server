@@ -5107,7 +5107,7 @@ func compareFn(subject string) func(string, string) bool {
 
 // PurgeEx will remove messages based on subject filters, sequence and number of messages to keep.
 // Will return the number of purged messages.
-func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint64, err error) {
+func (fs *fileStore) PurgeEx(subject string, sequence, keep, maxSequence uint64) (purged uint64, err error) {
 	if sequence > 1 && keep > 0 {
 		return 0, ErrPurgeArgMismatch
 	}
@@ -5120,12 +5120,12 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 			return fs.Compact(sequence)
 		} else if keep > 0 {
 			fs.mu.RLock()
-			msgs, lseq := fs.state.Msgs, fs.state.LastSeq
+			msgs, mseq := fs.state.Msgs, maxSequence
 			fs.mu.RUnlock()
 			if keep >= msgs {
 				return 0, nil
 			}
-			return fs.Compact(lseq - keep + 1)
+			return fs.Compact(mseq - keep + 1)
 		}
 		return 0, nil
 	}
@@ -5169,6 +5169,13 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 		}
 		if sequence > 1 && sequence <= l {
 			l = sequence - 1
+		} else if l > maxSequence {
+			l = maxSequence
+			// no blocks left to traverse if we exceed the max sequence
+			if f > l {
+				mb.mu.Unlock()
+				break
+			}
 		}
 
 		for seq := f; seq <= l; seq++ {

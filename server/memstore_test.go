@@ -416,8 +416,36 @@ func TestMemStorePurgeExWithSubject(t *testing.T) {
 	}
 
 	// This should purge all.
-	ms.PurgeEx("foo", 1, 0)
+	ms.PurgeEx("foo", 1, 0, ms.State().LastSeq)
 	require_True(t, ms.State().Msgs == 0)
+}
+
+func TestMemStorePurgeExWithMaxSequence(t *testing.T) {
+	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage})
+	require_NoError(t, err)
+
+	payload := make([]byte, 20)
+	total := 200
+	for i := 0; i < total; i++ {
+		_, _, err = ms.StoreMsg("foo.1", nil, payload)
+		require_NoError(t, err)
+	}
+	_, _, err = ms.StoreMsg("foo.2", nil, []byte("xxxxxx"))
+	require_NoError(t, err)
+
+	// This should purge only one, since we've specified the max sequence to be the first
+	p, err := ms.PurgeEx("foo.1", 0, 0, 1)
+	require_NoError(t, err)
+	require_True(t, int(p) == 1)
+	require_True(t, ms.State().Msgs == 200)
+	require_True(t, ms.State().FirstSeq == 2)
+
+	// This should purge the rest, since we've specified the max sequence equal to the last sequence
+	p, err = ms.PurgeEx("foo.1", 0, 0, ms.State().LastSeq)
+	require_NoError(t, err)
+	require_True(t, int(p) == 199)
+	require_True(t, ms.State().Msgs == 1)
+	require_True(t, ms.State().FirstSeq == 201)
 }
 
 func TestMemStoreUpdateMaxMsgsPerSubject(t *testing.T) {
