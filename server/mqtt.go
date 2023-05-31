@@ -2330,6 +2330,7 @@ func (as *mqttAccountSessionManager) transferRetainedToPerKeySubjectStream(log *
 				break
 			}
 			log.Warnf("    Unable to load retained message with sequence %d: %s", smsg.Sequence, err)
+			errors++
 			return
 		}
 		// Unmarshal the message so that we can obtain the subject name.
