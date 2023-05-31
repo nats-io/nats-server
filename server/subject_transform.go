@@ -114,6 +114,12 @@ func NewSubjectTransformWithStrict(src, dest string, strict bool) (*subjectTrans
 				}
 			}
 
+			if npwcs == 0 {
+				if tranformType != NoTransform {
+					return nil, &mappingDestinationErr{token, ErrorMappingDestinationFunctionWildcardIndexOutOfRange}
+				}
+			}
+
 			if tranformType == NoTransform {
 				dtokMappingFunctionTypes = append(dtokMappingFunctionTypes, NoTransform)
 				dtokMappingFunctionTokenIndexes = append(dtokMappingFunctionTokenIndexes, []int{-1})
@@ -139,6 +145,18 @@ func NewSubjectTransformWithStrict(src, dest string, strict bool) (*subjectTrans
 		if strict && nphs < npwcs {
 			// not all wildcards are being used in the destination
 			return nil, &mappingDestinationErr{dest, ErrMappingDestinationNotUsingAllWildcards}
+		}
+	} else {
+		// no wildcards used in the source: check that no transform functions are used in the destination
+		for _, token := range dtokens {
+			tranformType, _, _, _, err := indexPlaceHolders(token)
+			if err != nil {
+				return nil, err
+			}
+
+			if tranformType != NoTransform {
+				return nil, &mappingDestinationErr{token, ErrorMappingDestinationFunctionWildcardIndexOutOfRange}
+			}
 		}
 	}
 
