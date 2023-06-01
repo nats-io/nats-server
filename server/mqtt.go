@@ -112,7 +112,7 @@ const (
 
 	// Stream name for MQTT retained messages on a given account
 	mqttRetainedMsgsStreamName    = mqttStreamNamePrefix + "rmsgs"
-	mqttRetainedMsgsStreamSubject = "$MQTT.rmsgs"
+	mqttRetainedMsgsStreamSubject = "$MQTT.rmsgs."
 
 	// Stream name for MQTT sessions on a given account
 	mqttSessStreamName          = mqttStreamNamePrefix + "sess"
@@ -145,6 +145,7 @@ const (
 	mqttJSAIdTokenPos     = 3
 	mqttJSATokenPos       = 4
 	mqttJSAStreamCreate   = "SC"
+	mqttJSAStreamUpdate   = "SU"
 	mqttJSAStreamLookup   = "SL"
 	mqttJSAStreamDel      = "SD"
 	mqttJSAConsumerCreate = "CC"
@@ -1150,11 +1151,12 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 	} else if si == nil {
 		// Create the stream for retained messages.
 		cfg := &StreamConfig{
-			Name:      mqttRetainedMsgsStreamName,
-			Subjects:  []string{mqttRetainedMsgsStreamSubject},
-			Storage:   FileStorage,
-			Retention: LimitsPolicy,
-			Replicas:  replicas,
+			Name:       mqttRetainedMsgsStreamName,
+			Subjects:   []string{mqttRetainedMsgsStreamSubject + as.domainTk + ">"},
+			Storage:    FileStorage,
+			Retention:  LimitsPolicy,
+			Replicas:   replicas,
+			MaxMsgsPer: 1,
 		}
 		// We will need "si" outside of this block.
 		si, _, err = jsa.createStream(cfg)
@@ -1167,6 +1169,39 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 			si, err = lookupStream(mqttRetainedMsgsStreamName, "retained messages")
 			if err != nil {
 				return nil, err
+			}
+		}
+	}
+	// Doing this check outside of above if/else due to possible race when
+	// creating the stream.
+	wantedSubj := mqttRetainedMsgsStreamSubject + as.domainTk + ">"
+	if len(si.Config.Subjects) != 1 || si.Config.Subjects[0] != wantedSubj {
+		// Update only the Subjects at this stage, not MaxMsgsPer yet.
+		si.Config.Subjects = []string{wantedSubj}
+		if si, err = jsa.updateStream(&si.Config); err != nil {
+			return nil, fmt.Errorf("failed to update stream config: %w", err)
+		}
+	}
+	// Try to transfer regardless if we have already updated the stream or not
+	// in case not all messages were transferred and the server was restarted.
+	if as.transferRetainedToPerKeySubjectStream(s) {
+		// We need another lookup to have up-to-date si.State values in order
+		// to load all retained messages.
+		si, err = lookupStream(mqttRetainedMsgsStreamName, "retained messages")
+		if err != nil {
+			return nil, err
+		}
+	}
+	// Now, if the stream does not have MaxMsgsPer set to 1, and there are no
+	// more messages on the single $MQTT.rmsgs subject, update the stream again.
+	if si.Config.MaxMsgsPer != 1 {
+		_, err := jsa.loadNextMsgFor(mqttRetainedMsgsStreamName, "$MQTT.rmsgs")
+		// Looking for an error indicated that there is no such message.
+		if err != nil && IsNatsErr(err, JSNoMessageFoundErr) {
+			si.Config.MaxMsgsPer = 1
+			// We will need an up-to-date si, so don't use local variable here.
+			if si, err = jsa.updateStream(&si.Config); err != nil {
+				return nil, fmt.Errorf("failed to update stream config: %w", err)
 			}
 		}
 	}
@@ -1199,7 +1234,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		Stream: mqttRetainedMsgsStreamName,
 		Config: ConsumerConfig{
 			Durable:        rmDurName,
-			FilterSubject:  mqttRetainedMsgsStreamSubject,
+			FilterSubject:  mqttRetainedMsgsStreamSubject + as.domainTk + ">",
 			DeliverSubject: rmsubj,
 			ReplayPolicy:   ReplayInstant,
 			AckPolicy:      AckNone,
@@ -1353,6 +1388,19 @@ func (jsa *mqttJSA) createStream(cfg *StreamConfig) (*StreamInfo, bool, error) {
 	return scr.StreamInfo, scr.DidCreate, scr.ToError()
 }
 
+func (jsa *mqttJSA) updateStream(cfg *StreamConfig) (*StreamInfo, error) {
+	cfgb, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, err
+	}
+	scri, err := jsa.newRequest(mqttJSAStreamUpdate, fmt.Sprintf(JSApiStreamUpdateT, cfg.Name), 0, cfgb)
+	if err != nil {
+		return nil, err
+	}
+	scr := scri.(*JSApiStreamUpdateResponse)
+	return scr.StreamInfo, scr.ToError()
+}
+
 func (jsa *mqttJSA) lookupStream(name string) (*StreamInfo, error) {
 	slri, err := jsa.newRequest(mqttJSAStreamLookup, fmt.Sprintf(JSApiStreamInfoT, name), 0, nil)
 	if err != nil {
@@ -1373,6 +1421,20 @@ func (jsa *mqttJSA) deleteStream(name string) (bool, error) {
 
 func (jsa *mqttJSA) loadLastMsgFor(streamName string, subject string) (*StoredMsg, error) {
 	mreq := &JSApiMsgGetRequest{LastFor: subject}
+	req, err := json.Marshal(mreq)
+	if err != nil {
+		return nil, err
+	}
+	lmri, err := jsa.newRequest(mqttJSAMsgLoad, fmt.Sprintf(JSApiMsgGetT, streamName), 0, req)
+	if err != nil {
+		return nil, err
+	}
+	lmr := lmri.(*JSApiMsgGetResponse)
+	return lmr.Message, lmr.ToError()
+}
+
+func (jsa *mqttJSA) loadNextMsgFor(streamName string, subject string) (*StoredMsg, error) {
+	mreq := &JSApiMsgGetRequest{NextFor: subject}
 	req, err := json.Marshal(mreq)
 	if err != nil {
 		return nil, err
@@ -1460,6 +1522,12 @@ func (as *mqttAccountSessionManager) processJSAPIReplies(_ *subscription, pc *cl
 	switch token {
 	case mqttJSAStreamCreate:
 		var resp = &JSApiStreamCreateResponse{}
+		if err := json.Unmarshal(msg, resp); err != nil {
+			resp.Error = NewJSInvalidJSONError()
+		}
+		ch <- resp
+	case mqttJSAStreamUpdate:
+		var resp = &JSApiStreamUpdateResponse{}
 		if err := json.Unmarshal(msg, resp); err != nil {
 			resp.Error = NewJSInvalidJSONError()
 		}
@@ -2258,6 +2326,56 @@ func (as *mqttAccountSessionManager) transferUniqueSessStreamsToMuxed(log *Serve
 	}
 	log.Noticef("Transfer of %v MQTT session streams done!", ns)
 	retry = false
+}
+
+func (as *mqttAccountSessionManager) transferRetainedToPerKeySubjectStream(log *Server) bool {
+	jsa := &as.jsa
+	var count, errors int
+
+	for {
+		// Try and look up messages on the original undivided "$MQTT.rmsgs" subject.
+		// If nothing is returned here, we assume to have migrated all old messages.
+		smsg, err := jsa.loadNextMsgFor(mqttRetainedMsgsStreamName, "$MQTT.rmsgs")
+		if err != nil {
+			if IsNatsErr(err, JSNoMessageFoundErr) {
+				// We've ran out of messages to transfer so give up.
+				break
+			}
+			log.Warnf("    Unable to load retained message with sequence %d: %s", smsg.Sequence, err)
+			errors++
+			break
+		}
+		// Unmarshal the message so that we can obtain the subject name.
+		var rmsg mqttRetainedMsg
+		if err := json.Unmarshal(smsg.Data, &rmsg); err != nil {
+			log.Warnf("    Unable to unmarshal retained message with sequence %d, skipping", smsg.Sequence)
+			errors++
+			continue
+		}
+		// Store the message again, this time with the new per-key subject.
+		subject := mqttRetainedMsgsStreamSubject + as.domainTk + rmsg.Subject
+		if _, err := jsa.storeMsgWithKind(mqttJSASessPersist, subject, 0, smsg.Data); err != nil {
+			log.Errorf("    Unable to transfer the retained message with sequence %d: %v", smsg.Sequence, err)
+			errors++
+			continue
+		}
+		// Delete the original message.
+		if err := jsa.deleteMsg(mqttRetainedMsgsStreamName, smsg.Sequence, true); err != nil {
+			log.Errorf("    Unable to clean up the retained message with sequence %d: %v", smsg.Sequence, err)
+			errors++
+			continue
+		}
+		count++
+	}
+	if errors > 0 {
+		next := mqttDefaultTransferRetry
+		log.Warnf("Failed to transfer %d MQTT retained messages, will try again in %v", errors, next)
+		time.AfterFunc(next, func() { as.transferRetainedToPerKeySubjectStream(log) })
+	} else if count > 0 {
+		log.Noticef("Transfer of %d MQTT retained messages done!", count)
+	}
+	// Signal if there was any activity (either some transferred or some errors)
+	return errors > 0 || count > 0
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -3092,7 +3210,7 @@ func (c *client) mqttHandlePubRetain() {
 			Source:  c.opts.Username,
 		}
 		rmBytes, _ := json.Marshal(rm)
-		smr, err := asm.jsa.storeMsg(mqttRetainedMsgsStreamSubject, -1, rmBytes)
+		smr, err := asm.jsa.storeMsg(mqttRetainedMsgsStreamSubject+asm.domainTk+key, -1, rmBytes)
 		if err == nil {
 			// Update the new sequence
 			rm.sseq = smr.Sequence

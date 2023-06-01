@@ -1979,6 +1979,11 @@ func testMQTTCheckPubMsgNoAck(t testing.TB, c net.Conn, r *mqttReader, topic str
 }
 
 func testMQTTGetPubMsg(t testing.TB, c net.Conn, r *mqttReader, topic string, payload []byte) (byte, uint16) {
+	flags, pi, _ := testMQTTGetPubMsgEx(t, c, r, topic, payload)
+	return flags, pi
+}
+
+func testMQTTGetPubMsgEx(t testing.TB, c net.Conn, r *mqttReader, topic string, payload []byte) (byte, uint16, string) {
 	t.Helper()
 	b, pl := testMQTTReadPacket(t, r)
 	if pt := b & mqttPacketMask; pt != mqttPacketPub {
@@ -1991,7 +1996,7 @@ func testMQTTGetPubMsg(t testing.TB, c net.Conn, r *mqttReader, topic string, pa
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ptopic != topic {
+	if topic != _EMPTY_ && ptopic != topic {
 		t.Fatalf("Expected topic %q, got %q", topic, ptopic)
 	}
 	var pi uint16
@@ -2011,7 +2016,7 @@ func testMQTTGetPubMsg(t testing.TB, c net.Conn, r *mqttReader, topic string, pa
 		t.Fatalf("Expected payload %q, got %q", payload, ppayload)
 	}
 	r.pos += msgLen
-	return pflags, pi
+	return pflags, pi, ptopic
 }
 
 func testMQTTSendPubAck(t testing.TB, c net.Conn, pi uint16) {
@@ -2990,6 +2995,88 @@ func TestMQTTRetainedMsgNetworkUpdates(t *testing.T) {
 			asm.handleRetainedMsgDel(subject, 0)
 			check(t, subject, false, 0, 0)
 		})
+	}
+}
+
+func TestMQTTRetainedMsgMigration(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Create the retained messages stream to listen on the old subject first.
+	// The server will correct this when the migration takes place.
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      mqttRetainedMsgsStreamName,
+		Subjects:  []string{`$MQTT.rmsgs`},
+		Storage:   nats.FileStorage,
+		Retention: nats.LimitsPolicy,
+		Replicas:  1,
+	})
+	require_NoError(t, err)
+
+	// Publish some retained messages on the old "$MQTT.rmsgs" subject.
+	for i := 0; i < 100; i++ {
+		msg := fmt.Sprintf(
+			`{"origin":"b5IQZNtG","subject":"test%d","topic":"test%d","msg":"YmFy","flags":1}`, i, i,
+		)
+		_, err := js.Publish(`$MQTT.rmsgs`, []byte(msg))
+		require_NoError(t, err)
+	}
+
+	// Check that the old subject looks right.
+	si, err := js.StreamInfo(mqttRetainedMsgsStreamName, &nats.StreamInfoRequest{
+		SubjectsFilter: `$MQTT.>`,
+	})
+	require_NoError(t, err)
+	if si.State.NumSubjects != 1 {
+		t.Fatalf("expected 1 subject, got %d", si.State.NumSubjects)
+	}
+	if n := si.State.Subjects[`$MQTT.rmsgs`]; n != 100 {
+		t.Fatalf("expected to find 100 messages on the original subject but found %d", n)
+	}
+
+	// Create an MQTT client, this will cause a migration to take place.
+	mc, rc := testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, false)
+
+	testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "+", qos: 0}}, []byte{0})
+	topics := map[string]struct{}{}
+	for i := 0; i < 100; i++ {
+		_, _, topic := testMQTTGetPubMsgEx(t, mc, rc, _EMPTY_, []byte("bar"))
+		topics[topic] = struct{}{}
+	}
+	if len(topics) != 100 {
+		t.Fatalf("Unexpected topics: %v", topics)
+	}
+
+	// Now look at the stream, there should be 100 messages on the new
+	// divided subjects and none on the old undivided subject.
+	si, err = js.StreamInfo(mqttRetainedMsgsStreamName, &nats.StreamInfoRequest{
+		SubjectsFilter: `$MQTT.>`,
+	})
+	require_NoError(t, err)
+	if si.State.NumSubjects != 100 {
+		t.Fatalf("expected 100 subjects, got %d", si.State.NumSubjects)
+	}
+	if n := si.State.Subjects[`$MQTT.rmsgs`]; n > 0 {
+		t.Fatalf("expected to find no messages on the original subject but found %d", n)
+	}
+
+	// Check that the message counts look right. There should be one
+	// retained message per key.
+	for i := 0; i < 100; i++ {
+		expected := fmt.Sprintf(`$MQTT.rmsgs.test%d`, i)
+		n, ok := si.State.Subjects[expected]
+		if !ok {
+			t.Fatalf("expected to find %q but didn't", expected)
+		}
+		if n != 1 {
+			t.Fatalf("expected %q to have 1 message but had %d", expected, n)
+		}
 	}
 }
 
