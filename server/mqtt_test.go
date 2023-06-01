@@ -1979,6 +1979,11 @@ func testMQTTCheckPubMsgNoAck(t testing.TB, c net.Conn, r *mqttReader, topic str
 }
 
 func testMQTTGetPubMsg(t testing.TB, c net.Conn, r *mqttReader, topic string, payload []byte) (byte, uint16) {
+	flags, pi, _ := testMQTTGetPubMsgEx(t, c, r, topic, payload)
+	return flags, pi
+}
+
+func testMQTTGetPubMsgEx(t testing.TB, c net.Conn, r *mqttReader, topic string, payload []byte) (byte, uint16, string) {
 	t.Helper()
 	b, pl := testMQTTReadPacket(t, r)
 	if pt := b & mqttPacketMask; pt != mqttPacketPub {
@@ -1991,7 +1996,7 @@ func testMQTTGetPubMsg(t testing.TB, c net.Conn, r *mqttReader, topic string, pa
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ptopic != topic {
+	if topic != _EMPTY_ && ptopic != topic {
 		t.Fatalf("Expected topic %q, got %q", topic, ptopic)
 	}
 	var pi uint16
@@ -2011,7 +2016,7 @@ func testMQTTGetPubMsg(t testing.TB, c net.Conn, r *mqttReader, topic string, pa
 		t.Fatalf("Expected payload %q, got %q", payload, ppayload)
 	}
 	r.pos += msgLen
-	return pflags, pi
+	return pflags, pi, ptopic
 }
 
 func testMQTTSendPubAck(t testing.TB, c net.Conn, pi uint16) {
@@ -3037,6 +3042,16 @@ func TestMQTTRetainedMsgMigration(t *testing.T) {
 	mc, rc := testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
 	defer mc.Close()
 	testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, false)
+
+	testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "+", qos: 0}}, []byte{0})
+	topics := map[string]struct{}{}
+	for i := 0; i < 100; i++ {
+		_, _, topic := testMQTTGetPubMsgEx(t, mc, rc, _EMPTY_, []byte("bar"))
+		topics[topic] = struct{}{}
+	}
+	if len(topics) != 100 {
+		t.Fatalf("Unexpected topics: %v", topics)
+	}
 
 	// Now look at the stream, there should be 100 messages on the new
 	// divided subjects and none on the old undivided subject.

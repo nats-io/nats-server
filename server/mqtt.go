@@ -1170,17 +1170,40 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 			if err != nil {
 				return nil, err
 			}
-			as.transferRetainedToPerKeySubjectStream(s)
 		}
-	} else {
-		wantedSubj := mqttRetainedMsgsStreamSubject + as.domainTk + ">"
-		if len(si.Config.Subjects) != 1 || si.Config.Subjects[0] != wantedSubj {
-			si.Config.Subjects = []string{wantedSubj}
-			if _, err := jsa.updateStream(&si.Config); err != nil {
+	}
+	// Doing this check outside of above if/else due to possible race when
+	// creating the stream.
+	wantedSubj := mqttRetainedMsgsStreamSubject + as.domainTk + ">"
+	if len(si.Config.Subjects) != 1 || si.Config.Subjects[0] != wantedSubj {
+		// Update only the Subjects at this stage, not MaxMsgsPer yet.
+		si.Config.Subjects = []string{wantedSubj}
+		if si, err = jsa.updateStream(&si.Config); err != nil {
+			return nil, fmt.Errorf("failed to update stream config: %w", err)
+		}
+	}
+	// Try to transfer regardless if we have already updated the stream or not
+	// in case not all messages were transferred and the server was restarted.
+	if as.transferRetainedToPerKeySubjectStream(s) {
+		// We need another lookup to have up-to-date si.State values in order
+		// to load all retained messages.
+		si, err = lookupStream(mqttRetainedMsgsStreamName, "retained messages")
+		if err != nil {
+			return nil, err
+		}
+	}
+	// Now, if the stream does not have MaxMsgsPer set to 1, and there are no
+	// more messages on the single $MQTT.rmsgs subject, update the stream again.
+	if si.Config.MaxMsgsPer != 1 {
+		_, err := jsa.loadNextMsgFor(mqttRetainedMsgsStreamName, "$MQTT.rmsgs")
+		// Looking for an error indicated that there is no such message.
+		if err != nil && IsNatsErr(err, JSNoMessageFoundErr) {
+			si.Config.MaxMsgsPer = 1
+			// We will need an up-to-date si, so don't use local variable here.
+			if si, err = jsa.updateStream(&si.Config); err != nil {
 				return nil, fmt.Errorf("failed to update stream config: %w", err)
 			}
 		}
-		as.transferRetainedToPerKeySubjectStream(s)
 	}
 
 	var lastSeq uint64
@@ -2305,20 +2328,9 @@ func (as *mqttAccountSessionManager) transferUniqueSessStreamsToMuxed(log *Serve
 	retry = false
 }
 
-func (as *mqttAccountSessionManager) transferRetainedToPerKeySubjectStream(log *Server) {
+func (as *mqttAccountSessionManager) transferRetainedToPerKeySubjectStream(log *Server) bool {
 	jsa := &as.jsa
 	var count, errors int
-
-	// Set retry to true, will be set to false on success.
-	defer func() {
-		if errors > 0 {
-			next := mqttDefaultTransferRetry
-			log.Warnf("Failed to transfer %d MQTT retained messages, will try again in %v", errors, next)
-			time.AfterFunc(next, func() { as.transferRetainedToPerKeySubjectStream(log) })
-		} else if count > 0 {
-			log.Noticef("Transfer of %d MQTT retained messages done!", count)
-		}
-	}()
 
 	for {
 		// Try and look up messages on the original undivided "$MQTT.rmsgs" subject.
@@ -2331,7 +2343,7 @@ func (as *mqttAccountSessionManager) transferRetainedToPerKeySubjectStream(log *
 			}
 			log.Warnf("    Unable to load retained message with sequence %d: %s", smsg.Sequence, err)
 			errors++
-			return
+			break
 		}
 		// Unmarshal the message so that we can obtain the subject name.
 		var rmsg mqttRetainedMsg
@@ -2355,6 +2367,15 @@ func (as *mqttAccountSessionManager) transferRetainedToPerKeySubjectStream(log *
 		}
 		count++
 	}
+	if errors > 0 {
+		next := mqttDefaultTransferRetry
+		log.Warnf("Failed to transfer %d MQTT retained messages, will try again in %v", errors, next)
+		time.AfterFunc(next, func() { as.transferRetainedToPerKeySubjectStream(log) })
+	} else if count > 0 {
+		log.Noticef("Transfer of %d MQTT retained messages done!", count)
+	}
+	// Signal if there was any activity (either some transferred or some errors)
+	return errors > 0 || count > 0
 }
 
 //////////////////////////////////////////////////////////////////////////////
