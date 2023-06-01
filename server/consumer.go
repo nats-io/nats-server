@@ -1735,7 +1735,12 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 		o.mu.Lock()
 
 		// When we're done with signaling, we can replace the subjects.
-		o.subjf = newSubjf
+		// If filters were removed, set `o.subjf` to nil.
+		if len(newSubjf) == 0 {
+			o.subjf = nil
+		} else {
+			o.subjf = newSubjf
+		}
 	}
 
 	// Record new config for others that do not need special handling.
@@ -3247,7 +3252,7 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 	store := o.mset.store
 
 	// If no filters are specified, optimize to fetch just non-filtered messages.
-	if o.subjf == nil {
+	if len(o.subjf) == 0 {
 		// Grab next message applicable to us.
 		// We will unlock here in case lots of contention, e.g. WQ.
 		o.mu.Unlock()
@@ -3267,7 +3272,6 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 		return pmsg, 1, err
 	}
 
-	var lastErr error
 	// if we have filters, iterate over filters and optimize by buffering found messages.
 	for _, filter := range o.subjf {
 		if filter.nextSeq < o.sseq {
@@ -3290,12 +3294,10 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 				filter.pmsg = pmsg
 			} else {
 				pmsg.returnToPool()
+				pmsg = nil
 			}
 			if sseq >= filter.nextSeq {
 				filter.nextSeq = sseq + 1
-				if err == ErrStoreEOF {
-					o.updateSkipped(uint64(filter.currentSeq))
-				}
 			}
 
 			// If we're sure that this filter has continuous sequence of messages, skip looking up other filters.
@@ -3311,33 +3313,38 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 	// even if len == 0 or 1.
 	// TODO(tp): we should have sort based off generics for server
 	// to avoid reflection.
-	if o.subjf != nil && len(o.subjf) > 1 {
+	if len(o.subjf) > 1 {
 		sort.Slice(o.subjf, func(i, j int) bool {
+			if o.subjf[j].pmsg != nil && o.subjf[i].pmsg == nil {
+				return false
+			}
+			if o.subjf[i].pmsg != nil && o.subjf[j].pmsg == nil {
+				return true
+			}
 			return o.subjf[j].nextSeq > o.subjf[i].nextSeq
 		})
 	}
-
 	// Grab next message applicable to us.
 	// Sort sequences first, to grab the first message.
-	for _, filter := range o.subjf {
-		// set o.sseq to the first subject sequence
-		if filter.nextSeq > o.sseq {
-			o.sseq = filter.nextSeq
-		}
-		// This means we got a message in this subject fetched.
-		if filter.pmsg != nil {
-			filter.currentSeq = filter.nextSeq
-			o.sseq = filter.currentSeq
-			returned := filter.pmsg
-			filter.pmsg = nil
-			return returned, 1, filter.err
-		}
-		if filter.err != nil {
-			lastErr = filter.err
-		}
+	filter := o.subjf[0]
+	err := filter.err
+	// This means we got a message in this subject fetched.
+	if filter.pmsg != nil {
+		filter.currentSeq = filter.nextSeq
+		o.sseq = filter.currentSeq
+		returned := filter.pmsg
+		filter.pmsg = nil
+		return returned, 1, err
+	}
+	if err == ErrStoreEOF {
+		o.updateSkipped(filter.nextSeq)
 	}
 
-	return nil, 0, lastErr
+	// set o.sseq to the first subject sequence
+	if filter.nextSeq > o.sseq {
+		o.sseq = filter.nextSeq
+	}
+	return nil, 0, err
 }
 
 // Will check for expiration and lack of interest on waiting requests.
