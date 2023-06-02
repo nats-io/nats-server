@@ -1788,8 +1788,12 @@ func gatherSourceMirrorSubjects(subjects []string, cfg *StreamConfig, acc *Accou
 
 // Return the subjects for a stream source.
 func (a *Account) streamSourceSubjects(ss *StreamSource, seen map[string]bool) (subjects []string, hasExt bool) {
-	if ss != nil && ss.External != nil {
-		return nil, true
+	if ss == nil {
+		return nil, false
+	} else {
+		if ss.External != nil {
+			return nil, true
+		}
 	}
 
 	s, js, _ := a.getJetStreamFromAccount()
