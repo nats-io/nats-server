@@ -28,7 +28,7 @@ dockers:
       - docker/nats-server.conf
 
 checksum:
-  name_template: 'SHA256SUMS'
+  name_template: "SHA256SUMS"
   algorithm: sha256
 
 snapshot:
