@@ -905,7 +905,7 @@ func (a *Account) isLeafNodeClusterIsolated(cluster string) bool {
 	if len(a.leafClusters) > 1 {
 		return false
 	}
-	return a.leafClusters[cluster] > 0
+	return a.leafClusters[cluster] == uint64(a.nleafs)
 }
 
 // Helper function to remove leaf nodes. If number of leafnodes gets large

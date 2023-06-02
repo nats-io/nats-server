@@ -436,8 +436,8 @@ func checkLeafNodeConnectedCount(t testing.TB, s *Server, lnCons int) {
 	t.Helper()
 	checkFor(t, 5*time.Second, 15*time.Millisecond, func() error {
 		if nln := s.NumLeafNodes(); nln != lnCons {
-			return fmt.Errorf("Expected %d connected leafnode(s) for server %q, got %d",
-				lnCons, s.ID(), nln)
+			return fmt.Errorf("Expected %d connected leafnode(s) for server %v, got %d",
+				lnCons, s, nln)
 		}
 		return nil
 	})
