@@ -1373,9 +1373,10 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, _ *Account,
 		return
 	}
 	resp.StreamInfo = &StreamInfo{
-		Created: mset.createdTime(),
-		State:   mset.state(),
-		Config:  mset.config(),
+		Created:   mset.createdTime(),
+		State:     mset.state(),
+		Config:    mset.config(),
+		TimeStamp: time.Now().UTC(),
 	}
 	resp.DidCreate = true
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
@@ -1461,12 +1462,13 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, _ *Account,
 	}
 
 	resp.StreamInfo = &StreamInfo{
-		Created: mset.createdTime(),
-		State:   mset.state(),
-		Config:  mset.config(),
-		Domain:  s.getOpts().JetStreamDomain,
-		Mirror:  mset.mirrorInfo(),
-		Sources: mset.sourcesInfo(),
+		Created:   mset.createdTime(),
+		State:     mset.state(),
+		Config:    mset.config(),
+		Domain:    s.getOpts().JetStreamDomain,
+		Mirror:    mset.mirrorInfo(),
+		Sources:   mset.sourcesInfo(),
+		TimeStamp: time.Now().UTC(),
 	}
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
@@ -1686,12 +1688,13 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, _ *Account, s
 	for _, mset := range msets[offset:] {
 		config := mset.config()
 		resp.Streams = append(resp.Streams, &StreamInfo{
-			Created: mset.createdTime(),
-			State:   mset.state(),
-			Config:  config,
-			Domain:  s.getOpts().JetStreamDomain,
-			Mirror:  mset.mirrorInfo(),
-			Sources: mset.sourcesInfo(),
+			Created:   mset.createdTime(),
+			State:     mset.state(),
+			Config:    config,
+			Domain:    s.getOpts().JetStreamDomain,
+			Mirror:    mset.mirrorInfo(),
+			Sources:   mset.sourcesInfo(),
+			TimeStamp: time.Now().UTC(),
 		})
 		if len(resp.Streams) >= JSApiListLimit {
 			break
@@ -1846,6 +1849,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 		Mirror:     mset.mirrorInfo(),
 		Sources:    mset.sourcesInfo(),
 		Alternates: js.streamAlternates(ci, config.Name),
+		TimeStamp:  time.Now().UTC(),
 	}
 	if clusterWideConsCount > 0 {
 		resp.StreamInfo.State.Consumers = clusterWideConsCount
@@ -3455,7 +3459,12 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 					s.Warnf("Restore failed for %s for stream '%s > %s' in %v",
 						friendlyBytes(int64(total)), streamName, acc.Name, end.Sub(start))
 				} else {
-					resp.StreamInfo = &StreamInfo{Created: mset.createdTime(), State: mset.state(), Config: mset.config()}
+					resp.StreamInfo = &StreamInfo{
+						Created:   mset.createdTime(),
+						State:     mset.state(),
+						Config:    mset.config(),
+						TimeStamp: time.Now().UTC(),
+					}
 					s.Noticef("Completed restore of %s for stream '%s > %s' in %v",
 						friendlyBytes(int64(total)), streamName, acc.Name, end.Sub(start))
 				}
@@ -4222,10 +4231,11 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 				// our config and defaults for state and no cluster info.
 				if isMember {
 					resp.ConsumerInfo = &ConsumerInfo{
-						Stream:  ca.Stream,
-						Name:    ca.Name,
-						Created: ca.Created,
-						Config:  ca.Config,
+						Stream:    ca.Stream,
+						Name:      ca.Name,
+						Created:   ca.Created,
+						Config:    ca.Config,
+						TimeStamp: time.Now().UTC(),
 					}
 					s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 				}

@@ -136,6 +136,8 @@ type StreamInfo struct {
 	Mirror     *StreamSourceInfo   `json:"mirror,omitempty"`
 	Sources    []*StreamSourceInfo `json:"sources,omitempty"`
 	Alternates []StreamAlternate   `json:"alternates,omitempty"`
+	// TimeStamp indicates when the info was gathered
+	TimeStamp time.Time `json:"ts"`
 }
 
 type StreamAlternate struct {

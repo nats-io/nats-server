@@ -55,6 +55,8 @@ type ConsumerInfo struct {
 	NumPending     uint64          `json:"num_pending"`
 	Cluster        *ClusterInfo    `json:"cluster,omitempty"`
 	PushBound      bool            `json:"push_bound,omitempty"`
+	// TimeStamp indicates when the info was gathered
+	TimeStamp time.Time `json:"ts"`
 }
 
 type ConsumerConfig struct {
@@ -2401,6 +2403,7 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		NumRedelivered: len(o.rdc),
 		NumPending:     o.checkNumPending(),
 		PushBound:      o.isPushMode() && o.active,
+		TimeStamp:      time.Now().UTC(),
 	}
 
 	// If we are replicated and we are not the leader we need to pull certain data from our store.
