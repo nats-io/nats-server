@@ -1234,9 +1234,6 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 			}
 			buf = nbuf
 			plaintext = false
-
-			// Remove the key file to have system regenerate with the new cipher.
-			os.Remove(keyFile)
 		}
 
 		var cfg FileStreamInfo
@@ -1288,6 +1285,8 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 				s.Noticef("  Encrypting stream '%s > %s'", a.Name, cfg.StreamConfig.Name)
 			} else if convertingCiphers {
 				s.Noticef("  Converting from %s to %s for stream '%s > %s'", osc, sc, a.Name, cfg.StreamConfig.Name)
+				// Remove the key file to have system regenerate with the new cipher.
+				os.Remove(keyFile)
 			}
 		}
 
