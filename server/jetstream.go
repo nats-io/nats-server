@@ -1209,22 +1209,23 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 
 		// Check if we are encrypted.
 		keyFile := filepath.Join(mdir, JetStreamMetaFileKey)
-		if key, err := os.ReadFile(keyFile); err == nil {
+		keyBuf, err := os.ReadFile(keyFile)
+		if err == nil {
 			s.Debugf("  Stream metafile is encrypted, reading encrypted keyfile")
-			if len(key) < minMetaKeySize {
-				s.Warnf("  Bad stream encryption key length of %d", len(key))
+			if len(keyBuf) < minMetaKeySize {
+				s.Warnf("  Bad stream encryption key length of %d", len(keyBuf))
 				continue
 			}
 			// Decode the buffer before proceeding.
-			nbuf, err := s.decryptMeta(sc, key, buf, a.Name, fi.Name())
+			nbuf, err := s.decryptMeta(sc, keyBuf, buf, a.Name, fi.Name())
 			if err != nil {
 				// See if we are changing ciphers.
 				switch sc {
 				case ChaCha:
-					nbuf, err = s.decryptMeta(AES, key, buf, a.Name, fi.Name())
+					nbuf, err = s.decryptMeta(AES, keyBuf, buf, a.Name, fi.Name())
 					osc, convertingCiphers = AES, true
 				case AES:
-					nbuf, err = s.decryptMeta(ChaCha, key, buf, a.Name, fi.Name())
+					nbuf, err = s.decryptMeta(ChaCha, keyBuf, buf, a.Name, fi.Name())
 					osc, convertingCiphers = ChaCha, true
 				}
 				if err != nil {
@@ -1294,6 +1295,13 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 		mset, err := a.addStream(&cfg.StreamConfig)
 		if err != nil {
 			s.Warnf("  Error recreating stream %q: %v", cfg.Name, err)
+			// If we removed a keyfile from above make sure to put it back.
+			if convertingCiphers {
+				err := os.WriteFile(keyFile, keyBuf, defaultFilePerms)
+				if err != nil {
+					s.Warnf("  Error replacing meta keyfile for stream %q: %v", cfg.Name, err)
+				}
+			}
 			continue
 		}
 		if !cfg.Created.IsZero() {
