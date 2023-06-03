@@ -3400,6 +3400,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 	s, rg := js.srv, sa.Group
 	alreadyRunning := rg.node != nil
 	storage := sa.Config.Storage
+	restore := sa.Restore
 	js.mu.RUnlock()
 
 	// Process the raft group and make sure it's running if needed.
@@ -3408,11 +3409,13 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 	// If we are restoring, create the stream if we are R>1 and not the preferred who handles the
 	// receipt of the snapshot itself.
 	shouldCreate := true
-	if sa.Restore != nil {
+	if restore != nil {
 		if len(rg.Peers) == 1 || rg.node != nil && rg.node.ID() == rg.Preferred {
 			shouldCreate = false
 		} else {
+			js.mu.Lock()
 			sa.Restore = nil
+			js.mu.Unlock()
 		}
 	}
 

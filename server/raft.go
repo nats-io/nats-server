@@ -1816,9 +1816,11 @@ func (n *raft) runAsFollower() {
 			} else if n.isCatchingUp() {
 				n.debug("Not switching to candidate, catching up")
 				// Check to see if our catchup has stalled.
+				n.Lock()
 				if n.catchupStalled() {
 					n.cancelCatchup()
 				}
+				n.Unlock()
 			} else {
 				n.switchToCandidate()
 				return
