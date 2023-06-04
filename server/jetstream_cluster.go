@@ -2808,12 +2808,12 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					panic(err.Error())
 				}
 				// Ignore if we are recovering and we have already processed.
-				if isRecovering {
-					if mset.state().FirstSeq <= sp.LastSeq {
-						// Make sure all messages from the purge are gone.
-						mset.store.Compact(sp.LastSeq + 1)
+				if isRecovering && (sp.Request == nil || sp.Request.Sequence == 0) {
+					if sp.Request == nil {
+						sp.Request = &JSApiStreamPurgeRequest{Sequence: sp.LastSeq}
+					} else {
+						sp.Request.Sequence = sp.LastSeq
 					}
-					continue
 				}
 
 				s := js.server()
@@ -3402,6 +3402,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 	s, rg := js.srv, sa.Group
 	alreadyRunning := rg.node != nil
 	storage := sa.Config.Storage
+	restore := sa.Restore
 	js.mu.RUnlock()
 
 	// Process the raft group and make sure it's running if needed.
@@ -3410,11 +3411,13 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 	// If we are restoring, create the stream if we are R>1 and not the preferred who handles the
 	// receipt of the snapshot itself.
 	shouldCreate := true
-	if sa.Restore != nil {
+	if restore != nil {
 		if len(rg.Peers) == 1 || rg.node != nil && rg.node.ID() == rg.Preferred {
 			shouldCreate = false
 		} else {
+			js.mu.Lock()
 			sa.Restore = nil
+			js.mu.Unlock()
 		}
 	}
 

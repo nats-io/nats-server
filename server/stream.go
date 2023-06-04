@@ -4493,7 +4493,9 @@ func (mset *stream) resetAndWaitOnConsumers() {
 			}
 			node.Delete()
 		}
-		o.monitorWg.Wait()
+		if o.isMonitorRunning() {
+			o.monitorWg.Wait()
+		}
 	}
 }
 
