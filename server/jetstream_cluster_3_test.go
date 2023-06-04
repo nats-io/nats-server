@@ -4367,16 +4367,34 @@ func TestJetStreamClusterPurgeExReplayAfterRestart(t *testing.T) {
 	si = runTest(func(js nats.JetStreamManager) {
 		err = js.PurgeStream("TEST", &nats.StreamPurgeRequest{Keep: 1})
 		require_NoError(t, err)
+		// Send 4 more messages.
+		sendStreamMsg(t, nc, "TEST.1", "OK")
+		sendStreamMsg(t, nc, "TEST.2", "OK")
+		sendStreamMsg(t, nc, "TEST.3", "OK")
+		sendStreamMsg(t, nc, "TEST.1", "OK")
+	})
+	if si.State.Msgs != 5 {
+		t.Fatalf("Expected 5 msgs after restart, got %d", si.State.Msgs)
+	}
+	if si.State.FirstSeq != 5 || si.State.LastSeq != 9 {
+		t.Fatalf("Expected FirstSeq=5, LastSeq=9 after restart, got FirstSeq=%d, LastSeq=%d",
+			si.State.FirstSeq, si.State.LastSeq)
+	}
+
+	// Now test a keep on a subject
+	si = runTest(func(js nats.JetStreamManager) {
+		err = js.PurgeStream("TEST", &nats.StreamPurgeRequest{Subject: "TEST.1", Keep: 1})
+		require_NoError(t, err)
 		// Send 3 more messages.
 		sendStreamMsg(t, nc, "TEST.1", "OK")
 		sendStreamMsg(t, nc, "TEST.2", "OK")
 		sendStreamMsg(t, nc, "TEST.3", "OK")
 	})
-	if si.State.Msgs != 4 {
-		t.Fatalf("Expected 4 msgs after restart, got %d", si.State.Msgs)
+	if si.State.Msgs != 7 {
+		t.Fatalf("Expected 7 msgs after restart, got %d", si.State.Msgs)
 	}
-	if si.State.FirstSeq != 5 || si.State.LastSeq != 8 {
-		t.Fatalf("Expected FirstSeq=5, LastSeq=8 after restart, got FirstSeq=%d, LastSeq=%d",
+	if si.State.FirstSeq != 5 || si.State.LastSeq != 12 {
+		t.Fatalf("Expected FirstSeq=5, LastSeq=12 after restart, got FirstSeq=%d, LastSeq=%d",
 			si.State.FirstSeq, si.State.LastSeq)
 	}
 }
