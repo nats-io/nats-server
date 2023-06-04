@@ -2808,12 +2808,12 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					panic(err.Error())
 				}
 				// Ignore if we are recovering and we have already processed.
-				if isRecovering {
-					if mset.state().FirstSeq <= sp.LastSeq {
-						// Make sure all messages from the purge are gone.
-						mset.store.Compact(sp.LastSeq + 1)
+				if isRecovering && (sp.Request == nil || sp.Request.Sequence == 0) {
+					if sp.Request == nil {
+						sp.Request = &JSApiStreamPurgeRequest{Sequence: sp.LastSeq}
+					} else {
+						sp.Request.Sequence = sp.LastSeq
 					}
-					continue
 				}
 
 				s := js.server()
