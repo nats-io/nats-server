@@ -27,6 +27,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -4397,4 +4398,100 @@ func TestJetStreamClusterPurgeExReplayAfterRestart(t *testing.T) {
 		t.Fatalf("Expected FirstSeq=5, LastSeq=12 after restart, got FirstSeq=%d, LastSeq=%d",
 			si.State.FirstSeq, si.State.LastSeq)
 	}
+}
+
+func TestJetStreamClusterConsumerCleanupWithSameName(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3F", 3)
+	defer c.shutdown()
+
+	// Client based API
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "UPDATES",
+		Subjects: []string{"DEVICE.*"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Create a consumer that will be an R1 that we will auto-recreate but using the same name.
+	// We want to make sure that the system does not continually try to cleanup the new one from the old one.
+
+	// Track the sequence for restart etc.
+	var seq atomic.Uint64
+
+	msgCB := func(msg *nats.Msg) {
+		msg.AckSync()
+		meta, err := msg.Metadata()
+		require_NoError(t, err)
+		seq.Store(meta.Sequence.Stream)
+	}
+
+	waitOnSeqDelivered := func(expected uint64) {
+		checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+			received := seq.Load()
+			if received == expected {
+				return nil
+			}
+			return fmt.Errorf("Seq is %d, want %d", received, expected)
+		})
+	}
+
+	doSub := func() {
+		_, err = js.Subscribe(
+			"DEVICE.22",
+			msgCB,
+			nats.ConsumerName("dlc"),
+			nats.SkipConsumerLookup(),
+			nats.StartSequence(seq.Load()+1),
+			nats.MaxAckPending(1), // One at a time.
+			nats.ManualAck(),
+			nats.ConsumerReplicas(1),
+			nats.ConsumerMemoryStorage(),
+			nats.MaxDeliver(1),
+			nats.InactiveThreshold(time.Second),
+			nats.IdleHeartbeat(250*time.Millisecond),
+		)
+		require_NoError(t, err)
+	}
+
+	// Track any errors for consumer not active so we can recreate the consumer.
+	errCh := make(chan error, 10)
+	nc.SetErrorHandler(func(c *nats.Conn, s *nats.Subscription, err error) {
+		if errors.Is(err, nats.ErrConsumerNotActive) {
+			s.Unsubscribe()
+			errCh <- err
+			doSub()
+		}
+	})
+
+	doSub()
+
+	sendStreamMsg(t, nc, "DEVICE.22", "update-1")
+	sendStreamMsg(t, nc, "DEVICE.22", "update-2")
+	sendStreamMsg(t, nc, "DEVICE.22", "update-3")
+	waitOnSeqDelivered(3)
+
+	// Shutdown the consumer's leader.
+	s := c.consumerLeader(globalAccountName, "UPDATES", "dlc")
+	s.Shutdown()
+	c.waitOnStreamLeader(globalAccountName, "UPDATES")
+
+	// In case our client connection was to the same server.
+	nc, _ = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	sendStreamMsg(t, nc, "DEVICE.22", "update-4")
+	sendStreamMsg(t, nc, "DEVICE.22", "update-5")
+	sendStreamMsg(t, nc, "DEVICE.22", "update-6")
+
+	// Wait for the consumer not active error.
+	<-errCh
+	// Now restart server with the old consumer.
+	c.restartServer(s)
+	// Wait on all messages delivered.
+	waitOnSeqDelivered(6)
+	// Make sure no other errors showed up
+	require_True(t, len(errCh) == 0)
 }

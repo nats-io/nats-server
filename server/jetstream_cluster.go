@@ -3910,8 +3910,12 @@ func (js *jetStream) processConsumerRemoval(ca *consumerAssignment) {
 	var needDelete bool
 	if accStreams := cc.streams[ca.Client.serviceAccount()]; accStreams != nil {
 		if sa := accStreams[ca.Stream]; sa != nil && sa.consumers != nil && sa.consumers[ca.Name] != nil {
-			needDelete = true
-			delete(sa.consumers, ca.Name)
+			oca := sa.consumers[ca.Name]
+			// Make sure this removal is for what we have, otherwise ignore.
+			if ca.Group != nil && oca.Group != nil && ca.Group.Name == oca.Group.Name {
+				needDelete = true
+				delete(sa.consumers, ca.Name)
+			}
 		}
 	}
 	js.mu.Unlock()
