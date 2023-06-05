@@ -17,7 +17,6 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math/rand"
 	"net"
@@ -1952,7 +1951,7 @@ func (c *client) processRouteConnect(srv *Server, arg []byte, lang string) error
 	}
 
 	if srv == nil {
-		return errors.New("server is not set")
+		return ErrServerNotRunning
 	}
 
 	perms := srv.getOpts().Cluster.Permissions
