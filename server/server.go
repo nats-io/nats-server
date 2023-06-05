@@ -3560,7 +3560,10 @@ func (s *Server) lameDuckMode() {
 	numClients := int64(len(s.clients))
 	batch := 1
 	// Sleep interval between each client connection close.
-	si := dur / numClients
+	var si int64
+	if numClients != 0 {
+		si = dur / numClients
+	}
 	if si < 1 {
 		// Should not happen (except in test with very small LD duration), but
 		// if there are too many clients, batch the number of close and

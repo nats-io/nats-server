@@ -1949,12 +1949,12 @@ func (c *client) processRouteConnect(srv *Server, arg []byte, lang string) error
 		c.closeConnection(WrongGateway)
 		return ErrWrongGateway
 	}
-	var perms *RoutePermissions
-	//TODO this check indicates srv may be nil. see srv usage below
-	if srv != nil {
-		perms = srv.getOpts().Cluster.Permissions
+
+	if srv == nil {
+		return ErrServerNotRunning
 	}
 
+	perms := srv.getOpts().Cluster.Permissions
 	clusterName := srv.ClusterName()
 
 	// If we have a cluster name set, make sure it matches ours.

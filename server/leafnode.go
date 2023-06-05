@@ -1422,7 +1422,7 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 	}
 	// If we have a specified JetStream domain we will want to add a mapping to
 	// allow access cross domain for each non-system account.
-	if opts.JetStreamDomain != _EMPTY_ && acc != sysAcc && opts.JetStream {
+	if opts.JetStreamDomain != _EMPTY_ && opts.JetStream && acc != nil && acc != sysAcc {
 		for src, dest := range generateJSMappingTable(opts.JetStreamDomain) {
 			if err := acc.AddMapping(src, dest); err != nil {
 				c.Debugf("Error adding JetStream domain mapping: %s", err.Error())
