@@ -2138,7 +2138,9 @@ func (c *client) authViolation() {
 			ErrAuthentication.Error(),
 			c.opts.Username)
 	} else {
-		c.Errorf(ErrAuthentication.Error())
+		if c.srv != nil {
+			c.Errorf(ErrAuthentication.Error())
+		}
 	}
 	if c.isMqtt() {
 		c.mqttEnqueueConnAck(mqttConnAckRCNotAuthorized, false)

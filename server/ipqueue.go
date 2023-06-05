@@ -104,6 +104,9 @@ func (q *ipQueue[T]) push(e T) int {
 // emptied the queue. So the caller should never assume that pop() will
 // return a slice of 1 or more, it could return `nil`.
 func (q *ipQueue[T]) pop() []T {
+	if q == nil {
+		return nil
+	}
 	var elts []T
 	q.Lock()
 	if q.pos == 0 {

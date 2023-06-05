@@ -1372,7 +1372,7 @@ func (a *Account) sendTrackingLatency(si *serviceImport, responder *client) bool
 	}
 	sl.RequestStart = time.Unix(0, si.ts-int64(reqRTT)).UTC()
 	sl.ServiceLatency = serviceRTT - respRTT
-	sl.TotalLatency = sl.Requestor.RTT + serviceRTT
+	sl.TotalLatency = reqRTT + serviceRTT
 	if respRTT > 0 {
 		sl.SystemLatency = time.Since(ts)
 		sl.TotalLatency += sl.SystemLatency
@@ -3813,10 +3813,11 @@ func (ur *URLAccResolver) Fetch(name string) (string, error) {
 		return _EMPTY_, fmt.Errorf("could not fetch <%q>: %v", redactURLString(url), err)
 	} else if resp == nil {
 		return _EMPTY_, fmt.Errorf("could not fetch <%q>: no response", redactURLString(url))
-	} else if resp.StatusCode != http.StatusOK {
-		return _EMPTY_, fmt.Errorf("could not fetch <%q>: %v", redactURLString(url), resp.Status)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return _EMPTY_, fmt.Errorf("could not fetch <%q>: %v", redactURLString(url), resp.Status)
+	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return _EMPTY_, err

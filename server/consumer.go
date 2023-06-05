@@ -1482,9 +1482,10 @@ func (o *consumer) deleteNotActive() {
 				defer ticker.Stop()
 				for range ticker.C {
 					js.mu.RLock()
-					ca := js.consumerAssignment(acc, stream, name)
+					nca := js.consumerAssignment(acc, stream, name)
 					js.mu.RUnlock()
-					if ca != nil {
+					// Make sure this is not a new consumer with the same name.
+					if nca != nil && nca == ca {
 						s.Warnf("Consumer assignment for '%s > %s > %s' not cleaned up, retrying", acc, stream, name)
 						meta.ForwardProposal(removeEntry)
 					} else {
