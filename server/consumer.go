@@ -116,6 +116,59 @@ type SequenceInfo struct {
 type CreateConsumerRequest struct {
 	Stream string         `json:"stream_name"`
 	Config ConsumerConfig `json:"config"`
+	Action ConsumerAction `json:"action"`
+}
+
+type ConsumerAction int
+
+const (
+	ActionCreateOrUpdate ConsumerAction = iota
+	ActionUpdate
+	ActionCreate
+)
+
+const (
+	actionUpdateString         = "update"
+	actionCreateString         = "create"
+	actionCreateOrUpdateString = ""
+)
+
+func (a ConsumerAction) String() string {
+	switch a {
+	case ActionCreateOrUpdate:
+		return actionCreateOrUpdateString
+	case ActionCreate:
+		return actionCreateString
+	case ActionUpdate:
+		return actionUpdateString
+	}
+	return actionCreateOrUpdateString
+}
+func (a ConsumerAction) MarshalJSON() ([]byte, error) {
+	switch a {
+	case ActionCreate:
+		return json.Marshal(actionCreateString)
+	case ActionUpdate:
+		return json.Marshal(actionUpdateString)
+	case ActionCreateOrUpdate:
+		return json.Marshal(actionCreateOrUpdateString)
+	default:
+		return nil, fmt.Errorf("can not marshal %v", a)
+	}
+}
+
+func (a *ConsumerAction) UnmarshalJSON(data []byte) error {
+	switch string(data) {
+	case jsonString("create"):
+		*a = ActionCreate
+	case jsonString("update"):
+		*a = ActionUpdate
+	case jsonString(""):
+		*a = ActionCreateOrUpdate
+	default:
+		return fmt.Errorf("unknown consumer action: %v", string(data))
+	}
+	return nil
 }
 
 // ConsumerNakOptions is for optional NAK values, e.g. delay.
@@ -620,11 +673,15 @@ func checkConsumerCfg(
 	return nil
 }
 
-func (mset *stream) addConsumer(config *ConsumerConfig) (*consumer, error) {
-	return mset.addConsumerWithAssignment(config, _EMPTY_, nil, false)
+func (mset *stream) addConsumerWithAction(config *ConsumerConfig, action ConsumerAction) (*consumer, error) {
+	return mset.addConsumerWithAssignment(config, _EMPTY_, nil, false, action)
 }
 
-func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname string, ca *consumerAssignment, isRecovering bool) (*consumer, error) {
+func (mset *stream) addConsumer(config *ConsumerConfig) (*consumer, error) {
+	return mset.addConsumerWithAction(config, ActionCreateOrUpdate)
+}
+
+func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname string, ca *consumerAssignment, isRecovering bool, action ConsumerAction) (*consumer, error) {
 	mset.mu.RLock()
 	s, jsa, tierName, cfg, acc := mset.srv, mset.jsa, mset.tier, mset.cfg, mset.acc
 	retention := cfg.Retention
@@ -692,12 +749,19 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	if cName != _EMPTY_ {
 		if eo, ok := mset.consumers[cName]; ok {
 			mset.mu.Unlock()
+			if action == ActionCreate && !reflect.DeepEqual(*config, eo.config()) {
+				return nil, NewJSConsumerAlreadyExistsError()
+			}
 			err := eo.updateConfig(config)
 			if err == nil {
 				return eo, nil
 			}
 			return nil, NewJSConsumerCreateError(err, Unless(err))
 		}
+	}
+	if action == ActionUpdate {
+		mset.mu.Unlock()
+		return nil, NewJSConsumerDoesNotExistError()
 	}
 
 	// Check for any limits, if the config for the consumer sets a limit we check against that

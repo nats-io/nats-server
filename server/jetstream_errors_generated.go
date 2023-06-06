@@ -44,6 +44,9 @@ const (
 	// JSClusterUnSupportFeatureErr not currently supported in clustered mode
 	JSClusterUnSupportFeatureErr ErrorIdentifier = 10036
 
+	// JSConsumerAlreadyExists action CREATE is used for a existing consumer with a different config (consumer already exists)
+	JSConsumerAlreadyExists ErrorIdentifier = 10148
+
 	// JSConsumerBadDurableNameErr durable name can not contain '.', '*', '>'
 	JSConsumerBadDurableNameErr ErrorIdentifier = 10103
 
@@ -73,6 +76,9 @@ const (
 
 	// JSConsumerDirectRequiresPushErr consumer direct requires a push based consumer
 	JSConsumerDirectRequiresPushErr ErrorIdentifier = 10090
+
+	// JSConsumerDoesNotExist action UPDATE is used for a nonexisting consumer (consumer does not exist)
+	JSConsumerDoesNotExist ErrorIdentifier = 10149
 
 	// JSConsumerDuplicateFilterSubjects consumer cannot have both FilterSubject and FilterSubjects specified
 	JSConsumerDuplicateFilterSubjects ErrorIdentifier = 10136
@@ -459,6 +465,7 @@ var (
 		JSClusterServerNotMemberErr:                {Code: 400, ErrCode: 10044, Description: "server is not a member of the cluster"},
 		JSClusterTagsErr:                           {Code: 400, ErrCode: 10011, Description: "tags placement not supported for operation"},
 		JSClusterUnSupportFeatureErr:               {Code: 503, ErrCode: 10036, Description: "not currently supported in clustered mode"},
+		JSConsumerAlreadyExists:                    {Code: 400, ErrCode: 10148, Description: "consumer already exists"},
 		JSConsumerBadDurableNameErr:                {Code: 400, ErrCode: 10103, Description: "durable name can not contain '.', '*', '>'"},
 		JSConsumerConfigRequiredErr:                {Code: 400, ErrCode: 10078, Description: "consumer config required"},
 		JSConsumerCreateDurableAndNameMismatch:     {Code: 400, ErrCode: 10132, Description: "Consumer Durable and Name have to be equal if both are provided"},
@@ -469,6 +476,7 @@ var (
 		JSConsumerDescriptionTooLongErrF:           {Code: 400, ErrCode: 10107, Description: "consumer description is too long, maximum allowed is {max}"},
 		JSConsumerDirectRequiresEphemeralErr:       {Code: 400, ErrCode: 10091, Description: "consumer direct requires an ephemeral consumer"},
 		JSConsumerDirectRequiresPushErr:            {Code: 400, ErrCode: 10090, Description: "consumer direct requires a push based consumer"},
+		JSConsumerDoesNotExist:                     {Code: 400, ErrCode: 10149, Description: "consumer does not exist"},
 		JSConsumerDuplicateFilterSubjects:          {Code: 400, ErrCode: 10136, Description: "consumer cannot have both FilterSubject and FilterSubjects specified"},
 		JSConsumerDurableNameNotInSubjectErr:       {Code: 400, ErrCode: 10016, Description: "consumer expected to be durable but no durable name set in subject"},
 		JSConsumerDurableNameNotMatchSubjectErr:    {Code: 400, ErrCode: 10017, Description: "consumer name in subject does not match durable name in request"},
@@ -753,6 +761,16 @@ func NewJSClusterUnSupportFeatureError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSClusterUnSupportFeatureErr]
 }
 
+// NewJSConsumerAlreadyExistsError creates a new JSConsumerAlreadyExists error: "consumer already exists"
+func NewJSConsumerAlreadyExistsError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerAlreadyExists]
+}
+
 // NewJSConsumerBadDurableNameError creates a new JSConsumerBadDurableNameErr error: "durable name can not contain '.', '*', '>'"
 func NewJSConsumerBadDurableNameError(opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
@@ -863,6 +881,16 @@ func NewJSConsumerDirectRequiresPushError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSConsumerDirectRequiresPushErr]
+}
+
+// NewJSConsumerDoesNotExistError creates a new JSConsumerDoesNotExist error: "consumer does not exist"
+func NewJSConsumerDoesNotExistError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerDoesNotExist]
 }
 
 // NewJSConsumerDuplicateFilterSubjectsError creates a new JSConsumerDuplicateFilterSubjects error: "consumer cannot have both FilterSubject and FilterSubjects specified"

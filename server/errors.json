@@ -1458,5 +1458,25 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerAlreadyExists",
+    "code": 400,
+    "error_code": 10148,
+    "description": "consumer already exists",
+    "comment": "action CREATE is used for a existing consumer with a different config",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerDoesNotExist",
+    "code": 400,
+    "error_code": 10149,
+    "description": "consumer does not exist",
+    "comment": "action UPDATE is used for a nonexisting consumer",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]
