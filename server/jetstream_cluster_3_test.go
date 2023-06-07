@@ -4280,6 +4280,44 @@ func TestJetStreamClusterLeafnodePlusDaisyChainSetup(t *testing.T) {
 	// Third hop from AP -> CN is 1F, 1T, 1T and 1T
 	// Each cluster hop that has the export/import mapping will add another T message copy.
 	checkSubsPending(t, tsub, num*4)
+
+	// Create stream in cloud.
+	nc, js := jsClientConnect(t, c.randomServer(), nats.UserInfo("F", "pass"))
+	defer nc.Close()
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"TEST.>"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 100; i++ {
+		sendStreamMsg(t, nc, fmt.Sprintf("TEST.%d", i), "OK")
+	}
+
+	// Now connect to EU.
+	nc, js = jsClientConnect(t, lceu.randomServer(), nats.UserInfo("F", "pass"))
+	defer nc.Close()
+
+	// Create a mirror.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name: "M",
+		Mirror: &nats.StreamSource{
+			Name:   "TEST",
+			Domain: "CLOUD",
+		},
+	})
+	require_NoError(t, err)
+
+	checkFor(t, time.Second, 200*time.Millisecond, func() error {
+		si, err := js.StreamInfo("M")
+		require_NoError(t, err)
+		if si.State.Msgs == 100 {
+			return nil
+		}
+		return fmt.Errorf("State not current: %+v", si.State)
+	})
 }
 
 // https://github.com/nats-io/nats-server/pull/4197
