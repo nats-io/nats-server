@@ -1203,6 +1203,9 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		// check for duplicates
 		var iNames = make(map[string]struct{})
 		for _, src := range cfg.Sources {
+			if !isValidName(src.Name) {
+				return StreamConfig{}, NewJSSourceInvalidStreamNameError()
+			}
 			if _, ok := iNames[src.composeIName()]; !ok {
 				iNames[src.composeIName()] = struct{}{}
 			} else {
