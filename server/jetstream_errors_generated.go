@@ -224,7 +224,7 @@ const (
 	// JSMirrorConsumerSetupFailedErrF generic mirror consumer setup failure string ({err})
 	JSMirrorConsumerSetupFailedErrF ErrorIdentifier = 10029
 
-	// JSMirrorInvalidStreamName source stream name is invalid
+	// JSMirrorInvalidStreamName mirrored stream name is invalid
 	JSMirrorInvalidStreamName ErrorIdentifier = 10142
 
 	// JSMirrorMaxMessageSizeTooBigErr stream mirror must have max message size >= source
@@ -284,7 +284,7 @@ const (
 	// JSSourceDuplicateDetected source stream, filter and transform (plus external if present) must form a unique combination (duplicate source configuration detected)
 	JSSourceDuplicateDetected ErrorIdentifier = 10140
 
-	// JSSourceInvalidStreamName source stream name is invalid
+	// JSSourceInvalidStreamName sourced stream name is invalid
 	JSSourceInvalidStreamName ErrorIdentifier = 10141
 
 	// JSSourceMaxMessageSizeTooBigErr stream source must have max message size >= target
@@ -504,7 +504,7 @@ var (
 		JSMaximumStreamsLimitErr:                   {Code: 400, ErrCode: 10027, Description: "maximum number of streams reached"},
 		JSMemoryResourcesExceededErr:               {Code: 500, ErrCode: 10028, Description: "insufficient memory resources available"},
 		JSMirrorConsumerSetupFailedErrF:            {Code: 500, ErrCode: 10029, Description: "{err}"},
-		JSMirrorInvalidStreamName:                  {Code: 400, ErrCode: 10142, Description: "source stream name is invalid"},
+		JSMirrorInvalidStreamName:                  {Code: 400, ErrCode: 10142, Description: "mirrored stream name is invalid"},
 		JSMirrorMaxMessageSizeTooBigErr:            {Code: 400, ErrCode: 10030, Description: "stream mirror must have max message size >= source"},
 		JSMirrorWithSourcesErr:                     {Code: 400, ErrCode: 10031, Description: "stream mirrors can not also contain other sources"},
 		JSMirrorWithStartSeqAndTimeErr:             {Code: 400, ErrCode: 10032, Description: "stream mirrors can not have both start seq and start time configured"},
@@ -524,7 +524,7 @@ var (
 		JSSnapshotDeliverSubjectInvalidErr:         {Code: 400, ErrCode: 10015, Description: "deliver subject not valid"},
 		JSSourceConsumerSetupFailedErrF:            {Code: 500, ErrCode: 10045, Description: "{err}"},
 		JSSourceDuplicateDetected:                  {Code: 400, ErrCode: 10140, Description: "duplicate source configuration detected"},
-		JSSourceInvalidStreamName:                  {Code: 400, ErrCode: 10141, Description: "source stream name is invalid"},
+		JSSourceInvalidStreamName:                  {Code: 400, ErrCode: 10141, Description: "sourced stream name is invalid"},
 		JSSourceMaxMessageSizeTooBigErr:            {Code: 400, ErrCode: 10046, Description: "stream source must have max message size >= target"},
 		JSStorageResourcesExceededErr:              {Code: 500, ErrCode: 10047, Description: "insufficient storage resources available"},
 		JSStreamAssignmentErrF:                     {Code: 500, ErrCode: 10048, Description: "{err}"},
@@ -1393,7 +1393,7 @@ func NewJSMirrorConsumerSetupFailedError(err error, opts ...ErrorOption) *ApiErr
 	}
 }
 
-// NewJSMirrorInvalidStreamNameError creates a new JSMirrorInvalidStreamName error: "source stream name is invalid"
+// NewJSMirrorInvalidStreamNameError creates a new JSMirrorInvalidStreamName error: "mirrored stream name is invalid"
 func NewJSMirrorInvalidStreamNameError(opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
 	if ae, ok := eopts.err.(*ApiError); ok {
@@ -1617,7 +1617,7 @@ func NewJSSourceDuplicateDetectedError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSSourceDuplicateDetected]
 }
 
-// NewJSSourceInvalidStreamNameError creates a new JSSourceInvalidStreamName error: "source stream name is invalid"
+// NewJSSourceInvalidStreamNameError creates a new JSSourceInvalidStreamName error: "sourced stream name is invalid"
 func NewJSSourceInvalidStreamNameError(opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
 	if ae, ok := eopts.err.(*ApiError); ok {
