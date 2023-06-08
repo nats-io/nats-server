@@ -550,7 +550,7 @@ func TestJetStreamSuperClusterConnectionCount(t *testing.T) {
 		require_NoError(t, err)
 		_, err = js.AddStream(&nats.StreamConfig{
 			Name:     "src",
-			Sources:  []*nats.StreamSource{{Name: "foo.1"}, {Name: "foo.2"}},
+			Sources:  []*nats.StreamSource{{Name: "foo1"}, {Name: "foo2"}},
 			Replicas: 3})
 		require_NoError(t, err)
 	}()
@@ -561,7 +561,7 @@ func TestJetStreamSuperClusterConnectionCount(t *testing.T) {
 		require_NoError(t, err)
 		_, err = js.AddStream(&nats.StreamConfig{
 			Name:     "mir",
-			Mirror:   &nats.StreamSource{Name: "foo.2"},
+			Mirror:   &nats.StreamSource{Name: "foo2"},
 			Replicas: 3})
 		require_NoError(t, err)
 	}()

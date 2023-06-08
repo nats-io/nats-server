@@ -11372,6 +11372,10 @@ func TestJetStreamSourceBasics(t *testing.T) {
 		}
 	}
 
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "test", Sources: []*nats.StreamSource{{Name: ""}}}); err.Error() == "source stream name is invalid" {
+		t.Fatal("Expected a source stream name is invalid error")
+	}
+
 	for _, sname := range []string{"foo", "bar", "baz"} {
 		if _, err := js.AddStream(&nats.StreamConfig{Name: sname}); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
