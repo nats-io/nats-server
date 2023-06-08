@@ -4134,7 +4134,10 @@ func TestJetStreamClusterLeafnodePlusDaisyChainSetup(t *testing.T) {
 		server_name: %s
 		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, domain: CLOUD, store_dir: '%s'}
 
-		leaf { listen: 127.0.0.1:-1 }
+		leaf {
+			listen: 127.0.0.1:-1
+			compression: off
+		}
 
 		cluster {
 			name: %s
@@ -4191,7 +4194,7 @@ func TestJetStreamClusterLeafnodePlusDaisyChainSetup(t *testing.T) {
 	var leafFrag = `
 			leaf {
 				listen: 127.0.0.1:-1
-				remotes [ { urls: [ %s ], account: "T" }, { urls: [ %s ], account: "F" } ]
+				remotes [ { urls: [ %s ], account: "T", compression:off }, { urls: [ %s ], account: "F", compression: off } ]
 			}`
 
 	genLeafTmpl := func(tmpl string, c *cluster) string {
