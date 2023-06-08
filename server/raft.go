@@ -1474,12 +1474,6 @@ func (n *raft) Peers() []*Peer {
 // Update our known set of peers.
 func (n *raft) UpdateKnownPeers(knownPeers []string) {
 	n.Lock()
-	// If this is a scale up, let the normal add peer logic take precedence.
-	// Otherwise if the new peers are slow to start we stall ourselves.
-	if len(knownPeers) > len(n.peers) {
-		n.Unlock()
-		return
-	}
 	// Process like peer state update.
 	ps := &peerState{knownPeers, len(knownPeers), n.extSt}
 	n.processPeerState(ps)
