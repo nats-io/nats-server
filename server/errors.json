@@ -1398,5 +1398,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSMirrorInvalidStreamName",
+    "code": 400,
+    "error_code": 10142,
+    "description": "source stream name is invalid",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

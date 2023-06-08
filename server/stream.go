@@ -1164,6 +1164,9 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		// Do not perform checks if External is provided, as it could lead to
 		// checking against itself (if sourced stream name is the same on different JetStream)
 		if cfg.Mirror.External == nil {
+			if !isValidName(cfg.Mirror.Name) {
+				return StreamConfig{}, NewJSMirrorInvalidStreamNameError()
+			}
 			// We do not require other stream to exist anymore, but if we can see it check payloads.
 			exists, maxMsgSize, subs := hasStream(cfg.Mirror.Name)
 			if len(subs) > 0 {

@@ -224,6 +224,9 @@ const (
 	// JSMirrorConsumerSetupFailedErrF generic mirror consumer setup failure string ({err})
 	JSMirrorConsumerSetupFailedErrF ErrorIdentifier = 10029
 
+	// JSMirrorInvalidStreamName source stream name is invalid
+	JSMirrorInvalidStreamName ErrorIdentifier = 10142
+
 	// JSMirrorMaxMessageSizeTooBigErr stream mirror must have max message size >= source
 	JSMirrorMaxMessageSizeTooBigErr ErrorIdentifier = 10030
 
@@ -501,6 +504,7 @@ var (
 		JSMaximumStreamsLimitErr:                   {Code: 400, ErrCode: 10027, Description: "maximum number of streams reached"},
 		JSMemoryResourcesExceededErr:               {Code: 500, ErrCode: 10028, Description: "insufficient memory resources available"},
 		JSMirrorConsumerSetupFailedErrF:            {Code: 500, ErrCode: 10029, Description: "{err}"},
+		JSMirrorInvalidStreamName:                  {Code: 400, ErrCode: 10142, Description: "source stream name is invalid"},
 		JSMirrorMaxMessageSizeTooBigErr:            {Code: 400, ErrCode: 10030, Description: "stream mirror must have max message size >= source"},
 		JSMirrorWithSourcesErr:                     {Code: 400, ErrCode: 10031, Description: "stream mirrors can not also contain other sources"},
 		JSMirrorWithStartSeqAndTimeErr:             {Code: 400, ErrCode: 10032, Description: "stream mirrors can not have both start seq and start time configured"},
@@ -1387,6 +1391,16 @@ func NewJSMirrorConsumerSetupFailedError(err error, opts ...ErrorOption) *ApiErr
 		ErrCode:     e.ErrCode,
 		Description: strings.NewReplacer(args...).Replace(e.Description),
 	}
+}
+
+// NewJSMirrorInvalidStreamNameError creates a new JSMirrorInvalidStreamName error: "source stream name is invalid"
+func NewJSMirrorInvalidStreamNameError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSMirrorInvalidStreamName]
 }
 
 // NewJSMirrorMaxMessageSizeTooBigError creates a new JSMirrorMaxMessageSizeTooBigErr error: "stream mirror must have max message size >= source"
