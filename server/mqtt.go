@@ -3219,11 +3219,7 @@ func (c *client) mqttHandlePubRetain() {
 				sseq: smr.Sequence,
 			}
 			// Add/update the map
-			oldSeq := asm.handleRetainedMsg(key, rf)
-			// If this is a new message on the same subject, delete the old one.
-			if oldSeq != 0 {
-				asm.deleteRetainedMsg(oldSeq)
-			}
+			asm.handleRetainedMsg(key, rf)
 		} else {
 			c.mu.Lock()
 			acc := c.acc
