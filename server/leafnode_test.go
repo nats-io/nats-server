@@ -5880,3 +5880,72 @@ func TestLeafNodeCompressionWithWSGetNeedsData(t *testing.T) {
 	require_True(t, len(msg.Data) == 156)
 	require_Equal(t, string(msg.Data), payload)
 }
+
+func TestLeafNodeCompressionAuthTimeout(t *testing.T) {
+	hconf := createConfFile(t, []byte(`
+		port: -1
+		server_name: "hub"
+		leafnodes {
+			port: -1
+			authorization {
+				timeout: 0.75
+			}
+		}
+	`))
+	sh, oh := RunServerWithConfig(hconf)
+	defer sh.Shutdown()
+
+	sconfTmpl := `
+		port: -1
+		server_name: "%s"
+		cluster {
+			port: -1
+			name: "spoke"
+			%s
+		}
+		leafnodes {
+			port: -1
+			remotes [
+				{ url: "nats://127.0.0.1:%d" }
+			]
+		}
+	`
+	s1conf := createConfFile(t, []byte(fmt.Sprintf(sconfTmpl, "SP1", _EMPTY_, oh.LeafNode.Port)))
+	s1, o1 := RunServerWithConfig(s1conf)
+	defer s1.Shutdown()
+
+	s2conf := createConfFile(t, []byte(fmt.Sprintf(sconfTmpl, "SP2", fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", o1.Cluster.Port), oh.LeafNode.Port)))
+	s2, _ := RunServerWithConfig(s2conf)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	checkLeafNodeConnected(t, s1)
+	checkLeafNodeConnected(t, s2)
+
+	getCID := func(s *Server) uint64 {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		var cid uint64
+		for _, l := range s.leafs {
+			l.mu.Lock()
+			cid = l.cid
+			l.mu.Unlock()
+		}
+		return cid
+	}
+	leaf1 := getCID(s1)
+	leaf2 := getCID(s2)
+
+	// Wait for more than auth timeout
+	time.Sleep(time.Second)
+
+	checkLeafNodeConnected(t, s1)
+	checkLeafNodeConnected(t, s2)
+	if l1 := getCID(s1); l1 != leaf1 {
+		t.Fatalf("Leaf connection first connection had CID %v, now %v", leaf1, l1)
+	}
+	if l2 := getCID(s2); l2 != leaf2 {
+		t.Fatalf("Leaf connection first connection had CID %v, now %v", leaf2, l2)
+	}
+}

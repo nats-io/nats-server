@@ -696,6 +696,8 @@ func (s *Server) startLeafNodeAcceptLoop() {
 
 	tlsRequired := opts.LeafNode.TLSConfig != nil
 	tlsVerify := tlsRequired && opts.LeafNode.TLSConfig.ClientAuth == tls.RequireAndVerifyClientCert
+	// Do not set compression in this Info object, it would possibly cause
+	// issues when sending asynchronous INFO to the remote.
 	info := Info{
 		ID:            s.info.ID,
 		Name:          s.info.Name,
@@ -711,11 +713,6 @@ func (s *Server) startLeafNodeAcceptLoop() {
 		Domain:        opts.JetStreamDomain,
 		Proto:         1, // Fixed for now.
 		InfoOnConnect: true,
-	}
-	// For tests that want to simulate old servers, do not set the compression
-	// on the INFO protocol if configured with CompressionNotSupported.
-	if cm := opts.LeafNode.Compression.Mode; cm != CompressionNotSupported {
-		info.Compression = cm
 	}
 	// If we have selected a random port...
 	if port == 0 {
@@ -987,7 +984,11 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 		// Grab server variables
 		s.mu.Lock()
 		info = s.copyLeafNodeInfo()
-		info.Compression = opts.LeafNode.Compression.Mode
+		// For tests that want to simulate old servers, do not set the compression
+		// on the INFO protocol if configured with CompressionNotSupported.
+		if cm := opts.LeafNode.Compression.Mode; cm != CompressionNotSupported {
+			info.Compression = cm
+		}
 		s.generateNonce(nonce[:])
 		s.mu.Unlock()
 	}
@@ -1201,14 +1202,21 @@ func (c *client) processLeafnodeInfo(info *Info) {
 				c.leaf.compression = CompressionOff
 			}
 		}
+		// Accepting side does not normally process an INFO protocol during
+		// initial connection handshake. So we keep it consistent by returning
+		// if we are not soliciting.
+		if !didSolicit {
+			// If we had created the ping timer instead of the auth timer, we will
+			// clear the ping timer and set the auth timer now that the compression
+			// negotiation is done.
+			if info.Compression != _EMPTY_ && c.ping.tmr != nil {
+				clearTimer(&c.ping.tmr)
+				c.setAuthTimer(secondsToDuration(opts.LeafNode.AuthTimeout))
+			}
+			c.mu.Unlock()
+			return
+		}
 		// Fall through and process the INFO protocol as usual.
-	} else if firstINFO && !didSolicit && needsCompression(opts.LeafNode.Compression.Mode) {
-		// We used the ping timer instead of auth timer when accepting a remote
-		// connection so that we can exchange INFO protocols and not have the
-		// parser return a protocol violation. Now that the negotiation is over
-		// stop the ping timer and set the auth timer.
-		clearTimer(&c.ping.tmr)
-		c.setAuthTimer(secondsToDuration(opts.LeafNode.AuthTimeout))
 	}
 
 	// Note: For now, only the initial INFO has a nonce. We
@@ -2859,9 +2867,6 @@ func (s *Server) leafNodeResumeConnectProcess(c *client) {
 	// Spin up the write loop.
 	s.startGoRoutine(func() { c.writeLoop() })
 
-	// In case there was compression negotiation, the timer could have been
-	// already created. Destroy and recreate with different callback.
-	clearTimer(&c.ping.tmr)
 	// timeout leafNodeFinishConnectProcess
 	c.ping.tmr = time.AfterFunc(connectProcessTimeout, func() {
 		c.mu.Lock()
