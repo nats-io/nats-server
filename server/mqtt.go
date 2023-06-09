@@ -3260,48 +3260,54 @@ func (s *Server) mqttCheckPubRetainedPerms() {
 	}
 	s.mu.Unlock()
 
-	/*
-		sm.mu.RLock()
-		defer sm.mu.RUnlock()
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
 
-		for _, asm := range sm.sessions {
-			perms := map[string]*perm{}
-			deletes := map[string]uint64{}
-			asm.mu.Lock()
-			for subject, rm := range asm.retmsgs {
-				if rm.Source == _EMPTY_ {
-					continue
+	for _, asm := range sm.sessions {
+		perms := map[string]*perm{}
+		deletes := map[string]uint64{}
+		asm.mu.Lock()
+		for subject, rf := range asm.retmsgs {
+			jsm, err := asm.jsa.loadMsg(mqttRetainedMsgsStreamName, rf.sseq)
+			if err != nil || jsm == nil {
+				continue
+			}
+			var rm mqttRetainedMsg
+			if err := json.Unmarshal(jsm.Data, &rm); err != nil {
+				continue
+			}
+			if rm.Source == _EMPTY_ {
+				continue
+			}
+			// Lookup source from global users.
+			u := users[rm.Source]
+			if u != nil {
+				p, ok := perms[rm.Source]
+				if !ok {
+					p = generatePubPerms(u.Permissions)
+					perms[rm.Source] = p
 				}
-				// Lookup source from global users.
-				u := users[rm.Source]
-				if u != nil {
-					p, ok := perms[rm.Source]
-					if !ok {
-						p = generatePubPerms(u.Permissions)
-						perms[rm.Source] = p
-					}
-					// If there is permission and no longer allowed to publish in
-					// the subject, remove the publish retained message from the map.
-					if p != nil && !pubAllowed(p, subject) {
-						u = nil
-					}
-				}
-
-				// Not present or permissions have changed such that the source can't
-				// publish on that subject anymore: remove it from the map.
-				if u == nil {
-					delete(asm.retmsgs, subject)
-					asm.sl.Remove(rm.sub)
-					deletes[subject] = rm.sseq
+				// If there is permission and no longer allowed to publish in
+				// the subject, remove the publish retained message from the map.
+				if p != nil && !pubAllowed(p, subject) {
+					u = nil
 				}
 			}
-			asm.mu.Unlock()
-			for subject, seq := range deletes {
-				asm.deleteRetainedMsg(seq)
-				asm.notifyRetainedMsgDeleted(subject, seq)
+
+			// Not present or permissions have changed such that the source can't
+			// publish on that subject anymore: remove it from the map.
+			if u == nil {
+				delete(asm.retmsgs, subject)
+				asm.sl.Remove(rf.sub)
+				deletes[subject] = rf.sseq
 			}
 		}
-	*/
+		asm.mu.Unlock()
+		for subject, seq := range deletes {
+			asm.deleteRetainedMsg(seq)
+			asm.notifyRetainedMsgDeleted(subject, seq)
+		}
+	}
 }
 
 // Helper to generate only pub permissions from a Permissions object
