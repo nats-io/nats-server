@@ -2975,8 +2975,8 @@ func TestMQTTRetainedMsgNetworkUpdates(t *testing.T) {
 		t.Run(test.subject, func(t *testing.T) {
 			for _, a := range test.order {
 				if a.add {
-					rm := &mqttRetainedMsg{sseq: a.seq}
-					asm.handleRetainedMsg(test.subject, rm)
+					rf := &mqttRetainedMsgRef{sseq: a.seq}
+					asm.handleRetainedMsg(test.subject, rf)
 				} else {
 					asm.handleRetainedMsgDel(test.subject, a.seq)
 				}
@@ -2988,8 +2988,8 @@ func TestMQTTRetainedMsgNetworkUpdates(t *testing.T) {
 	for _, subject := range []string{"foo.5", "foo.6"} {
 		t.Run("clear_"+subject, func(t *testing.T) {
 			// Now add a new message, which should clear the floor.
-			rm := &mqttRetainedMsg{sseq: 3}
-			asm.handleRetainedMsg(subject, rm)
+			rf := &mqttRetainedMsgRef{sseq: 3}
+			asm.handleRetainedMsg(subject, rf)
 			check(t, subject, true, 3, 0)
 			// Now do a non network delete and make sure it is gone.
 			asm.handleRetainedMsgDel(subject, 0)
