@@ -864,6 +864,10 @@ func (ms *memStore) LoadLastMsg(subject string, smp *StoreMsg) (*StoreMsg, error
 
 	if subject == _EMPTY_ || subject == fwcs {
 		sm, ok = ms.msgs[ms.state.LastSeq]
+	} else if subjectIsLiteral(subject) {
+		if ss := ms.fss[subject]; ss != nil && ss.Msgs > 0 {
+			sm, ok = ms.msgs[ss.Last]
+		}
 	} else if ss := ms.filteredStateLocked(1, subject, true); ss.Msgs > 0 {
 		sm, ok = ms.msgs[ss.Last]
 	}
@@ -895,8 +899,8 @@ func (ms *memStore) LoadNextMsg(filter string, wc bool, start uint64, smp *Store
 
 	isAll := filter == _EMPTY_ || filter == fwcs
 
-	// Skip scan of mb.fss is number of messages in the block are less than
-	// 1/2 the number of subjects in mb.fss. Or we have a wc and lots of fss entries.
+	// Skip scan of ms.fss is number of messages in the block are less than
+	// 1/2 the number of subjects in ms.fss. Or we have a wc and lots of fss entries.
 	const linearScanMaxFSS = 256
 	doLinearScan := isAll || 2*int(ms.state.LastSeq-start) < len(ms.fss) || (wc && len(ms.fss) > linearScanMaxFSS)
 
