@@ -615,7 +615,7 @@ func (s *Sublist) reduceCacheCount() {
 
 // Helper function for auto-expanding remote qsubs.
 func isRemoteQSub(sub *subscription) bool {
-	return sub != nil && sub.queue != nil && sub.client != nil && sub.client.kind == ROUTER
+	return sub != nil && sub.queue != nil && sub.client != nil && (sub.client.kind == ROUTER || sub.client.kind == LEAF)
 }
 
 // UpdateRemoteQSub should be called when we update the weight of an existing
