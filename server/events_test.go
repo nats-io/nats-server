@@ -2501,6 +2501,40 @@ func TestServerEventsAndDQSubscribers(t *testing.T) {
 	checkSubsPending(t, sub, 10)
 }
 
+func TestServerEventsStatszSingleServer(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		accounts { $SYS { users [{user: "admin", password: "p1d"}]} }
+	`))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// Grab internal system client.
+	s.mu.RLock()
+	sysc := s.sys.client
+	wait := s.sys.cstatsz + 25*time.Millisecond
+	s.mu.RUnlock()
+
+	// Wait for when first statsz would have gone out..
+	time.Sleep(wait)
+
+	sysc.mu.Lock()
+	outMsgs := sysc.stats.outMsgs
+	sysc.mu.Unlock()
+
+	require_True(t, outMsgs == 0)
+
+	// Connect as a system user and make sure if there is
+	// subscription interest that we will receive updates.
+	nc, _ := jsClientConnect(t, s, nats.UserInfo("admin", "p1d"))
+	defer nc.Close()
+
+	sub, err := nc.SubscribeSync(fmt.Sprintf(serverStatsSubj, "*"))
+	require_NoError(t, err)
+
+	checkSubsPending(t, sub, 1)
+}
+
 func Benchmark_GetHash(b *testing.B) {
 	b.StopTimer()
 	// Get 100 random names
