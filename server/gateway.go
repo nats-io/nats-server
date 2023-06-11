@@ -870,9 +870,7 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 
 	// Announce ourselves again to new connections.
 	if solicit && s.EventsEnabled() {
-		s.mu.Lock()
-		s.sendStatsz(fmt.Sprintf(serverStatsSubj, s.info.ID))
-		s.mu.Unlock()
+		s.sendStatszUpdate()
 	}
 }
 
