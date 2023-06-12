@@ -1,5 +1,4 @@
 name: Linux Tests
-runs-on: ubuntu-latest
 
 on: [push]
 
@@ -9,6 +8,7 @@ env:
 jobs:
   build:
     name: Build
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v3
