@@ -8,7 +8,9 @@ env:
 jobs:
   build:
     name: Build
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-2019, windows-latest]
     steps:
       - name: Checkout
         uses: actions/checkout@v3
