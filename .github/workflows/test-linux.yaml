@@ -23,3 +23,229 @@ jobs:
 
       - name: Build
         run: go build
+
+  no-race:
+    name: No Race Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install Deps
+        run: go mod download
+
+      - name: Build
+        run: go test -v -p=1 \
+          -run=TestNoRace \
+          ./... \
+          -count=1 -vet=off -timeout=30m -failfast
+
+  js-no-cluster:
+    name: No Race Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install Deps
+        run: go mod download
+
+      - name: Build
+        run: |-
+          go test -race -v \
+            -run=TestJetStream \
+            ./server/... \
+            -tags=skip_js_cluster_tests,skip_js_cluster_tests_2,skip_js_cluster_tests_3,skip_js_super_cluster_tests \
+            -count=1 -vet=off -timeout=30m -failfast
+
+  js-cluster-1:
+    name: JetStream Cluster - Test 1
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install Deps
+        run: go mod download
+
+      - name: Build
+        run: |-
+          go test -race -v \
+            -run=TestJetStreamCluster \
+            ./server/... \
+            -tags=skip_js_cluster_tests_2,skip_js_cluster_tests_3 \
+            -count=1 -vet=off -timeout=30m -failfast
+
+  js-cluster-2:
+    name: JetStream Cluster - Test 2
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install Deps
+        run: go mod download
+
+      - name: Build
+        run: |-
+          go test -race -v \
+            -run=TestJetStreamCluster \
+            ./server/... \
+            -tags=skip_js_cluster_tests,skip_js_cluster_tests_3 \
+            -count=1 -vet=off -timeout=30m -failfast
+
+  js-cluster-3:
+    name: JetStream Cluster - Test 3
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install Deps
+        run: go mod download
+
+      - name: Build
+        run: |-
+          go test -race -v \
+            -run=TestJetStreamCluster \
+            ./server/... \
+            -tags=skip_js_cluster_tests,skip_js_cluster_tests_2 \
+            -count=1 -vet=off -timeout=30m -failfast
+
+  js-supercluster:
+    name: JetStream Supercluster
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install Deps
+        run: go mod download
+
+      - name: Build
+        run: |-
+          go test -race -v \
+            -run=TestJetStreamSuperCluster \
+            ./server/... \
+            -count=1 -vet=off -timeout=30m -failfast
+
+  js-chaos:
+    name: JetStream Chaos
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install Deps
+        run: go mod download
+
+      - name: Build
+        run: |-
+          go test -race -v -p=1 \
+            -run=TestJetStreamChaos \
+            ./server/... \
+            -tags=js_chaos_tests \
+            -count=1 -vet=off -timeout=30m -failfast
+
+  mqtt:
+    name: MQTT
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install Deps
+        run: go mod download
+
+      - name: Build
+        run: |-
+          go test -race -v \
+            -run=TestMQTT \
+            ./server/... \
+            -count=1 -vet=off -timeout=30m -failfast
+
+  server-pkg-non-js:
+    name: Server Package - Non-JS
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install Deps
+        run: go mod download
+
+      - name: Build
+        run: |-
+          go test -race -v -p=1 \
+            ./server/... \
+            -tags=skip_js_tests,skip_mqtt_tests \
+            -count=1 -vet=off -timeout=30m -failfast
+
+  non-server-pkg:
+    name: Non-Server Package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install Deps
+        run: go mod download
+
+      - name: Build
+        run: |-
+          go test -race -v -p=1 \
+            ./conf/... \
+            ./internal/... \
+            ./logger/... \
+            ./test/... \
+            -count=1 -vet=off -timeout=30m -failfast
