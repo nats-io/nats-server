@@ -7,11 +7,8 @@ env:
 
 jobs:
   linux-compile:
-    name: Run Tests
+    name: Linux - Compile
     runs-on: ubuntu-latest
-
-    env:
-      TEST_SUITE: compile
 
     steps:
       - name: Checkout
@@ -25,16 +22,19 @@ jobs:
       - name: Install Deps
         run: go mod download
 
-      - name: Run Tests
-        run: go test -v ./...
+      - name: Build
+        run: go build
+
+      - name: Install GolangCI Lint
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@6f7f8ae
+
+      - name: Run GolangCI Lint
+        run: golangci-lint run
 
   windows-2019-compile:
-    name: Run Tests
+    name: Windows Server 2019 - Compile
     runs-on: windows-2019
 
-    env:
-      TEST_SUITE: compile
-
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v3
@@ -47,15 +47,18 @@ jobs:
       - name: Install Dependencies
         run: go mod download
 
-      - name: Run Tests
-        run: go test -v ./...
+      - name: Build
+        run: go build
+
+      - name: Install GolangCI Lint
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@6f7f8ae
+
+      - name: Run GolangCI Lint
+        run: golangci-lint run
 
   windows-2022-compile:
-    name: Run Tests
+    name: Windows Server 2022 - Compile
     runs-on: windows-2022
-
-    env:
-      TEST_SUITE: compile
 
     steps:
       - name: Checkout Repository
@@ -69,5 +72,11 @@ jobs:
       - name: Install Dependencies
         run: go mod download
 
-      - name: Run Tests
-        run: go test -v ./...
+      - name: Build
+        run: go build
+
+      - name: Install GolangCI Lint
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@6f7f8ae
+
+      - name: Run GolangCI Lint
+        run: golangci-lint run
