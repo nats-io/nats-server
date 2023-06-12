@@ -6,8 +6,8 @@ env:
   GO_VERSION: "^1.19.10"
 
 jobs:
-  linux-compile:
-    name: Linux - Compile
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
 
     steps:
@@ -31,8 +31,27 @@ jobs:
       - name: Run GolangCI Lint
         run: golangci-lint run
 
-  windows-2019-compile:
-    name: Windows Server 2019 - Compile
+  linux-build:
+    name: Linux - Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install Deps
+        run: go mod download
+
+      - name: Build
+        run: go build
+
+  windows-2019-build:
+    name: Windows Server 2019 - Build
     runs-on: windows-2019
 
     steps:
@@ -50,14 +69,8 @@ jobs:
       - name: Build
         run: go build
 
-      - name: Install GolangCI Lint
-        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-
-      - name: Run GolangCI Lint
-        run: golangci-lint run
-
-  windows-2022-compile:
-    name: Windows Server 2022 - Compile
+  windows-2022-build:
+    name: Windows Server 2022
     runs-on: windows-2022
 
     steps:
@@ -74,9 +87,3 @@ jobs:
 
       - name: Build
         run: go build
-
-      - name: Install GolangCI Lint
-        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-
-      - name: Run GolangCI Lint
-        run: golangci-lint run
