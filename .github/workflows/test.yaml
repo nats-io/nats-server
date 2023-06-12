@@ -26,7 +26,7 @@ jobs:
         run: go build
 
       - name: Install GolangCI Lint
-        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@6f7f8ae
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 
       - name: Run GolangCI Lint
         run: golangci-lint run
@@ -51,7 +51,7 @@ jobs:
         run: go build
 
       - name: Install GolangCI Lint
-        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@6f7f8ae
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 
       - name: Run GolangCI Lint
         run: golangci-lint run
@@ -76,7 +76,7 @@ jobs:
         run: go build
 
       - name: Install GolangCI Lint
-        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@6f7f8ae
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 
       - name: Run GolangCI Lint
         run: golangci-lint run
