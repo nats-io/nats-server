@@ -1,0 +1,26 @@
+name: General Tests
+
+on: [push]
+
+env:
+  GO_VERSION: "^1.19.10"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install GolangCI Lint
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+
+      - name: Run GolangCI Lint
+        run: golangci-lint run
