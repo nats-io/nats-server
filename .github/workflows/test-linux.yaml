@@ -40,10 +40,11 @@ jobs:
         run: go mod download
 
       - name: Build
-        run: go test -v -p=1 \
-          -run=TestNoRace \
-          ./... \
-          -count=1 -vet=off -timeout=30m -failfast
+        run: |-
+          go test -v -p=1 \
+            -run=TestNoRace \
+            ./... \
+            -count=1 -vet=off -timeout=30m -failfast
 
   js-no-cluster:
     name: No Race Tests
