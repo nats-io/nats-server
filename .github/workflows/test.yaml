@@ -10,6 +10,9 @@ jobs:
     name: Run Tests
     runs-on: ubuntu-latest
 
+    env:
+      TEST_SUITE: compile
+
     steps:
       - name: Checkout
         uses: actions/checkout@v3
@@ -23,12 +26,15 @@ jobs:
         run: go mod download
 
       - name: Run Tests
-        run: TEST_SUITE=compile go test -v ./...
+        run: go test -v ./...
 
   windows-2019-compile:
     name: Run Tests
     runs-on: windows-2019
 
+    env:
+      TEST_SUITE: compile
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v3
@@ -42,12 +48,15 @@ jobs:
         run: go mod download
 
       - name: Run Tests
-        run: TEST_SUITE=compile go test -v ./...
+        run: go test -v ./...
 
   windows-2022-compile:
     name: Run Tests
     runs-on: windows-2022
 
+    env:
+      TEST_SUITE: compile
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v3
@@ -61,4 +70,4 @@ jobs:
         run: go mod download
 
       - name: Run Tests
-        run: TEST_SUITE=compile go test -v ./...
+        run: go test -v ./...
