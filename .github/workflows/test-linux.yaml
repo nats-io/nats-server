@@ -39,7 +39,7 @@ jobs:
       - name: Install Deps
         run: go mod download
 
-      - name: Build
+      - name: Run Tests
         run: |-
           go test -v -p=1 \
             -run=TestNoRace \
@@ -47,7 +47,7 @@ jobs:
             -count=1 -vet=off -timeout=30m -failfast
 
   js-no-cluster:
-    name: No Race Tests
+    name: JetStream - No Cluster
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -61,7 +61,7 @@ jobs:
       - name: Install Deps
         run: go mod download
 
-      - name: Build
+      - name: Run Tests
         run: |-
           go test -race -v \
             -run=TestJetStream \
@@ -84,7 +84,7 @@ jobs:
       - name: Install Deps
         run: go mod download
 
-      - name: Build
+      - name: Run Tests
         run: |-
           go test -race -v \
             -run=TestJetStreamCluster \
@@ -107,7 +107,7 @@ jobs:
       - name: Install Deps
         run: go mod download
 
-      - name: Build
+      - name: Run Tests
         run: |-
           go test -race -v \
             -run=TestJetStreamCluster \
@@ -130,7 +130,7 @@ jobs:
       - name: Install Deps
         run: go mod download
 
-      - name: Build
+      - name: Run Tests
         run: |-
           go test -race -v \
             -run=TestJetStreamCluster \
@@ -153,7 +153,7 @@ jobs:
       - name: Install Deps
         run: go mod download
 
-      - name: Build
+      - name: Run Tests
         run: |-
           go test -race -v \
             -run=TestJetStreamSuperCluster \
@@ -175,7 +175,7 @@ jobs:
       - name: Install Deps
         run: go mod download
 
-      - name: Build
+      - name: Run Tests
         run: |-
           go test -race -v -p=1 \
             -run=TestJetStreamChaos \
@@ -198,7 +198,7 @@ jobs:
       - name: Install Deps
         run: go mod download
 
-      - name: Build
+      - name: Run Tests
         run: |-
           go test -race -v \
             -run=TestMQTT \
@@ -220,7 +220,7 @@ jobs:
       - name: Install Deps
         run: go mod download
 
-      - name: Build
+      - name: Run Tests
         run: |-
           go test -race -v -p=1 \
             ./server/... \
@@ -242,7 +242,7 @@ jobs:
       - name: Install Deps
         run: go mod download
 
-      - name: Build
+      - name: Run Tests
         run: |-
           go test -race -v -p=1 \
             ./conf/... \
