@@ -4115,7 +4115,8 @@ func mqttFilterToNATSSubject(filter []byte) ([]byte, error) {
 //   - '/' is replaced with './' if the last or next character in mt is '/'
 //     For instance, foo//bar would become foo./.bar
 //   - '/' is replaced with '.' for all other conditions (foo/bar -> foo.bar)
-//   - '.' and ' ' cause an error to be returned.
+//   - '.' is replaced with '//'.
+//   - ' ' cause an error to be returned.
 //
 // If there is no need to convert anything (say "foo" remains "foo"), then
 // the no memory is allocated and the returned slice is the original `mt`.
@@ -4154,9 +4155,15 @@ func mqttToNATSSubjectConversion(mt []byte, wcOk bool) ([]byte, error) {
 				}
 				res = append(res, btsep)
 			}
-		case btsep, ' ':
-			// As of now, we cannot support '.' or ' ' in the MQTT topic/filter.
+		case ' ':
+			// As of now, we cannot support ' ' in the MQTT topic/filter.
 			return nil, errMQTTUnsupportedCharacters
+		case btsep:
+			if !cp {
+				makeCopy(i)
+			}
+			res = append(res, mqttTopicLevelSep, mqttTopicLevelSep)
+			j++
 		case mqttSingleLevelWC, mqttMultiLevelWC:
 			if !wcOk {
 				// Spec [MQTT-3.3.2-2] and [MQTT-4.7.1-1]
@@ -4195,16 +4202,22 @@ func natsSubjectToMQTTTopic(subject string) []byte {
 	for i := 0; i < len(subject); i++ {
 		switch subject[i] {
 		case mqttTopicLevelSep:
-			if !(i == 0 && i < end && subject[i+1] == btsep) {
-				topic[j] = mqttTopicLevelSep
-				j++
+			if i < end {
+				switch c := subject[i+1]; c {
+				case btsep, mqttTopicLevelSep:
+					if c == btsep {
+						topic[j] = mqttTopicLevelSep
+					} else {
+						topic[j] = btsep
+					}
+					j++
+					i++
+				default:
+				}
 			}
 		case btsep:
 			topic[j] = mqttTopicLevelSep
 			j++
-			if i < end && subject[i+1] == mqttTopicLevelSep {
-				i++
-			}
 		default:
 			topic[j] = subject[i]
 			j++
