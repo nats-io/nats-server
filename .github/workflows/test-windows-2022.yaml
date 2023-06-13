@@ -48,9 +48,9 @@ jobs:
         run: |-
           go test -race -v `
             -run TestJetStreamCluster `
-            ./server/... `
             -tags "skip_js_cluster_tests_2,skip_js_cluster_tests_3" `
-            -count 1 -vet off -timeout 30m -failfast
+            -count 1 -vet off -timeout 30m -failfast `
+            ./server/...
 
   js-cluster-2:
     name: JetStream Cluster - Test 2
@@ -71,9 +71,9 @@ jobs:
         run: |-
           go test -race -v `
             -run TestJetStreamCluster `
-            ./server/... `
             -tags "skip_js_cluster_tests,skip_js_cluster_tests_3" `
-            -count 1 -vet off -timeout 30m -failfast
+            -count 1 -vet off -timeout 30m -failfast `
+            ./server/...
 
   js-cluster-3:
     name: JetStream Cluster - Test 3
@@ -94,9 +94,9 @@ jobs:
         run: |-
           go test -race -v `
             -run TestJetStreamCluster `
-            ./server/... `
             -tags "skip_js_cluster_tests,skip_js_cluster_tests_2" `
-            -count 1 -vet off -timeout 30m -failfast
+            -count 1 -vet off -timeout 30m -failfast `
+            ./server/...
 
   js-supercluster:
     name: JetStream Supercluster
@@ -117,8 +117,8 @@ jobs:
         run: |-
           go test -race -v `
             -run TestJetStreamSuperCluster `
-            ./server/... `
-            -count 1 -vet off -timeout 30m -failfast
+            -count 1 -vet off -timeout 30m -failfast `
+            ./server/...
 
   js-chaos:
     name: JetStream Chaos
@@ -139,9 +139,9 @@ jobs:
         run: |-
           go test -race -v -p 1 `
             -run TestJetStreamChaos `
-            ./server/... `
             -tags "js_chaos_tests" `
-            -count 1 -vet off -timeout 30m -failfast
+            -count 1 -vet off -timeout 30m -failfast `
+            ./server/...
 
   mqtt:
     name: MQTT
@@ -183,9 +183,9 @@ jobs:
       - name: Run Tests
         run: |-
           go test -race -v -p 1 `
-            ./server/... `
             -tags "skip_js_tests,skip_mqtt_tests" `
-            -count 1 -vet off -timeout 30m -failfast
+            -count 1 -vet off -timeout 30m -failfast `
+            ./server/...
 
   non-server-pkg:
     name: Non-Server Package
