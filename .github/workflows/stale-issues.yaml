@@ -15,7 +15,7 @@ jobs:
       - uses: actions/stale@v8
         with:
           debug-only: true # Set until the behavior is tuned.
-          operations-per-run: 250
           days-before-stale: 56 # Mark stale after 8 weeks (56 days) of inactivity
           days-before-close: -1 # Disable auto-closing
           exempt-all-milestones: true # Any issue/PR within a milestone will be omitted
+          #exempt-assigness: "foo,bar"  # Exempt issues/PRs assigned to particular users
