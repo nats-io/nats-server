@@ -62,6 +62,7 @@ const (
 
 	winNcryptKeySpec = 0xFFFFFFFF // CERT_NCRYPT_KEY_SPEC
 
+	winBCryptPadPKCS1   uintptr = 0x2
 	winBCryptPadPSS     uintptr = 0x8 // Modern TLS 1.2+
 	winBCryptPadPSSSalt uint32  = 32  // default 20, 32 optimal for typical SHA256 hash
 
@@ -126,6 +127,10 @@ var (
 
 	winFnGetProperty = winGetProperty
 )
+
+type winPKCS1PaddingInfo struct {
+	pszAlgID *uint16
+}
 
 type winPSSPaddingInfo struct {
 	pszAlgID *uint16
@@ -405,7 +410,12 @@ func (k winKey) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte
 		if !ok {
 			return nil, ErrBadRSAHashAlgorithm
 		}
-		return winSignRSA(k.handle, digest, algID)
+		switch opts.(type) {
+		case *rsa.PSSOptions:
+			return winSignRSAPSSPadding(k.handle, digest, algID)
+		default:
+			return winSignRSAPKCS1Padding(k.handle, digest, algID)
+		}
 	default:
 		return nil, ErrBadSigningAlgorithm
 	}
@@ -467,8 +477,44 @@ func winPackECDSASigValue(r io.Reader, digestLength int) ([]byte, error) {
 	return b.Bytes()
 }
 
-func winSignRSA(kh uintptr, digest []byte, algID *uint16) ([]byte, error) {
-	// PSS padding for TLS 1.2+
+func winSignRSAPKCS1Padding(kh uintptr, digest []byte, algID *uint16) ([]byte, error) {
+	// PKCS#1 v1.5 padding for some TLS 1.2
+	padInfo := winPKCS1PaddingInfo{pszAlgID: algID}
+	var size uint32
+	// Obtain the size of the signature
+	r, _, _ := winNCryptSignHash.Call(
+		kh,
+		uintptr(unsafe.Pointer(&padInfo)),
+		uintptr(unsafe.Pointer(&digest[0])),
+		uintptr(len(digest)),
+		0,
+		0,
+		uintptr(unsafe.Pointer(&size)),
+		winBCryptPadPKCS1)
+	if r != 0 {
+		return nil, ErrStoreRSASigningError
+	}
+
+	// Obtain the signature data
+	sig := make([]byte, size)
+	r, _, _ = winNCryptSignHash.Call(
+		kh,
+		uintptr(unsafe.Pointer(&padInfo)),
+		uintptr(unsafe.Pointer(&digest[0])),
+		uintptr(len(digest)),
+		uintptr(unsafe.Pointer(&sig[0])),
+		uintptr(size),
+		uintptr(unsafe.Pointer(&size)),
+		winBCryptPadPKCS1)
+	if r != 0 {
+		return nil, ErrStoreRSASigningError
+	}
+
+	return sig[:size], nil
+}
+
+func winSignRSAPSSPadding(kh uintptr, digest []byte, algID *uint16) ([]byte, error) {
+	// PSS padding for TLS 1.3 and some TLS 1.2
 	padInfo := winPSSPaddingInfo{pszAlgID: algID, cbSalt: winBCryptPadPSSSalt}
 
 	var size uint32
