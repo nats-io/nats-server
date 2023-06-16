@@ -8138,3 +8138,63 @@ func TestNoRaceCheckAckFloorWithVeryLargeFirstSeqAndNewConsumers(t *testing.T) {
 		t.Fatalf("Check ack floor taking too long!")
 	}
 }
+
+func TestNoRaceReplicatedMirrorWithLargeStartingSequenceOverLeafnode(t *testing.T) {
+	// Cluster B
+	tmpl := strings.Replace(jsClusterTempl, "store_dir:", "domain: B, store_dir:", 1)
+	c := createJetStreamCluster(t, tmpl, "B", _EMPTY_, 3, 22020, true)
+	defer c.shutdown()
+
+	// Cluster A
+	// Domain is "A'
+	lc := c.createLeafNodesWithStartPortAndDomain("A", 3, 22110, "A")
+	defer lc.shutdown()
+
+	lc.waitOnClusterReady()
+
+	// Create a stream on B (HUB/CLOUD) and set its starting sequence very high.
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	err = js.PurgeStream("TEST", &nats.StreamPurgeRequest{Sequence: 1_000_000_000})
+	require_NoError(t, err)
+
+	// Send in a small amount of messages.
+	for i := 0; i < 1000; i++ {
+		sendStreamMsg(t, nc, "foo", "Hello")
+	}
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_True(t, si.State.FirstSeq == 1_000_000_000)
+
+	// Now try to create a replicated mirror on the leaf cluster.
+	lnc, ljs := jsClientConnect(t, lc.randomServer())
+	defer lnc.Close()
+
+	_, err = ljs.AddStream(&nats.StreamConfig{
+		Name: "TEST",
+		Mirror: &nats.StreamSource{
+			Name:   "TEST",
+			Domain: "B",
+		},
+	})
+	require_NoError(t, err)
+
+	// Make sure we sync quickly.
+	checkFor(t, time.Second, 200*time.Millisecond, func() error {
+		si, err = ljs.StreamInfo("TEST")
+		require_NoError(t, err)
+		if si.State.Msgs == 1000 && si.State.FirstSeq == 1_000_000_000 {
+			return nil
+		}
+		return fmt.Errorf("Mirror state not correct: %+v", si.State)
+	})
+}

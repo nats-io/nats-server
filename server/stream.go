@@ -1671,7 +1671,7 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 		mset.mu.RUnlock()
 		return 0, errors.New("sealed stream")
 	}
-	store := mset.store
+	store, mlseq := mset.store, mset.lseq
 	mset.mu.RUnlock()
 
 	if preq != nil {
@@ -1683,11 +1683,17 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 		return purged, err
 	}
 
-	// Purge consumers.
+	// Grab our stream state.
 	var state StreamState
 	store.FastState(&state)
 	fseq, lseq := state.FirstSeq, state.LastSeq
 
+	// Check if our last has moved past what our original last sequence was, if so reset.
+	if lseq > mlseq {
+		mset.setLastSeq(lseq)
+	}
+
+	// Purge consumers.
 	// Check for filtered purge.
 	if preq != nil && preq.Subject != _EMPTY_ {
 		ss := store.FilteredState(state.FirstSeq, preq.Subject)
@@ -2399,7 +2405,14 @@ func (mset *stream) setupMirrorConsumer() error {
 
 				// Check if we need to skip messages.
 				if state.LastSeq != ccr.ConsumerInfo.Delivered.Stream {
-					mset.skipMsgs(state.LastSeq+1, ccr.ConsumerInfo.Delivered.Stream)
+					// Check to see if delivered is past our last and we have no msgs. This will help the
+					// case when mirroring a stream that has a very high starting sequence number.
+					if state.Msgs == 0 && ccr.ConsumerInfo.Delivered.Stream > state.LastSeq {
+						mset.store.PurgeEx(_EMPTY_, ccr.ConsumerInfo.Delivered.Stream+1, 0)
+						mset.lseq = ccr.ConsumerInfo.Delivered.Stream
+					} else {
+						mset.skipMsgs(state.LastSeq+1, ccr.ConsumerInfo.Delivered.Stream)
+					}
 				}
 
 				// Capture consumer name.
