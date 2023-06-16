@@ -4954,6 +4954,7 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithSeparateAccounts(t *tes
 	defer closeSubs(subs2)
 
 	sendRequests := func(num int) {
+		t.Helper()
 		// Now connect to the leaf cluster and send some requests.
 		nc, _ := jsClientConnect(t, ln.randomServer())
 		defer nc.Close()
@@ -4965,6 +4966,7 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithSeparateAccounts(t *tes
 	}
 
 	pending := func(subs []*nats.Subscription) (total int) {
+		t.Helper()
 		for _, sub := range subs {
 			n, _, err := sub.Pending()
 			require_NoError(t, err)
@@ -4983,6 +4985,7 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithSeparateAccounts(t *tes
 	}
 
 	checkBalanced := func(total, pc1, pc2 int) {
+		t.Helper()
 		tf := float64(total)
 		e1 := tf * (float64(pc1) / 100.00)
 		e2 := tf * (float64(pc2) / 100.00)
@@ -5209,6 +5212,7 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithStreamImportAccounts(t 
 	defer closeSubs(subs2)
 
 	sendRequests := func(num int) {
+		t.Helper()
 		// Now connect to the leaf cluster and send some requests.
 		nc, _ := jsClientConnect(t, ln.randomServer())
 		defer nc.Close()
@@ -5220,6 +5224,7 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithStreamImportAccounts(t 
 	}
 
 	pending := func(subs []*nats.Subscription) (total int) {
+		t.Helper()
 		for _, sub := range subs {
 			n, _, err := sub.Pending()
 			require_NoError(t, err)
@@ -5238,6 +5243,7 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithStreamImportAccounts(t 
 	}
 
 	checkBalanced := func(total, pc1, pc2 int) {
+		t.Helper()
 		tf := float64(total)
 		e1 := tf * (float64(pc1) / 100.00)
 		e2 := tf * (float64(pc2) / 100.00)
