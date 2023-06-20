@@ -2167,6 +2167,25 @@ func (c *client) generateClientInfoJSON(info Info) []byte {
 	info.MaxPayload = c.mpay
 	if c.isWebsocket() {
 		info.ClientConnectURLs = info.WSConnectURLs
+		if c.srv != nil { // Otherwise lame duck info can panic
+			c.srv.websocket.mu.RLock()
+			info.TLSAvailable = c.srv.websocket.tls
+			if c.srv.websocket.server != nil {
+				if tc := c.srv.websocket.server.TLSConfig; tc != nil {
+					info.TLSRequired = !tc.InsecureSkipVerify
+				}
+			}
+			if c.srv.websocket.listener != nil {
+				laddr := c.srv.websocket.listener.Addr().String()
+				if h, p, err := net.SplitHostPort(laddr); err == nil {
+					if p, err := strconv.Atoi(p); err == nil {
+						info.Host = h
+						info.Port = p
+					}
+				}
+			}
+			c.srv.websocket.mu.RUnlock()
+		}
 	}
 	info.WSConnectURLs = nil
 	// Generate the info json
