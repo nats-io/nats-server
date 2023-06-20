@@ -28,6 +28,7 @@ import (
 	"net"
 	"net/http"
 	"regexp"
+	"runtime/pprof"
 
 	// Allow dynamic profiling.
 	_ "net/http/pprof"
@@ -3501,15 +3502,28 @@ func (s *Server) String() string {
 	return s.info.Name
 }
 
-func (s *Server) startGoRoutine(f func()) bool {
+type pprofLabels map[string]string
+
+func (s *Server) startGoRoutine(f func(), tags ...pprofLabels) bool {
 	var started bool
 	s.grMu.Lock()
+	defer s.grMu.Unlock()
 	if s.grRunning {
+		var labels []string
+		for _, m := range tags {
+			for k, v := range m {
+				labels = append(labels, k, v)
+			}
+		}
 		s.grWG.Add(1)
-		go f()
+		go func() {
+			pprof.SetGoroutineLabels(
+				pprof.WithLabels(context.Background(), pprof.Labels(labels...)),
+			)
+			f()
+		}()
 		started = true
 	}
-	s.grMu.Unlock()
 	return started
 }
 

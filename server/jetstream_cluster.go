@@ -833,7 +833,13 @@ func (js *jetStream) setupMetaGroup() error {
 	atomic.StoreInt32(&js.clustered, 1)
 	c.registerWithAccount(sacc)
 
-	js.srv.startGoRoutine(js.monitorCluster)
+	js.srv.startGoRoutine(
+		js.monitorCluster,
+		pprofLabels{
+			"type":    "metaleader",
+			"account": sacc.Name,
+		},
+	)
 	return nil
 }
 
@@ -3315,7 +3321,14 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 			}
 			mset.monitorWg.Add(1)
 			// Start monitoring..
-			s.startGoRoutine(func() { js.monitorStream(mset, sa, needsNode) })
+			s.startGoRoutine(
+				func() { js.monitorStream(mset, sa, needsNode) },
+				pprofLabels{
+					"type":    "stream",
+					"account": mset.accName(),
+					"stream":  mset.name(),
+				},
+			)
 		} else if numReplicas == 1 && alreadyRunning {
 			// We downgraded to R1. Make sure we cleanup the raft node and the stream monitor.
 			mset.removeNode()
@@ -3538,7 +3551,14 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 			if mset != nil {
 				mset.monitorWg.Add(1)
 			}
-			s.startGoRoutine(func() { js.monitorStream(mset, sa, false) })
+			s.startGoRoutine(
+				func() { js.monitorStream(mset, sa, false) },
+				pprofLabels{
+					"type":    "stream",
+					"account": mset.accName(),
+					"stream":  mset.name(),
+				},
+			)
 		}
 	} else {
 		// Single replica stream, process manually here.
@@ -4150,7 +4170,15 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 			// Start our monitoring routine if needed.
 			if !alreadyRunning && !o.isMonitorRunning() {
 				o.monitorWg.Add(1)
-				s.startGoRoutine(func() { js.monitorConsumer(o, ca) })
+				s.startGoRoutine(
+					func() { js.monitorConsumer(o, ca) },
+					pprofLabels{
+						"type":     "consumer",
+						"account":  mset.accName(),
+						"stream":   mset.name(),
+						"consumer": ca.Name,
+					},
+				)
 			}
 			// For existing consumer, only send response if not recovering.
 			if wasExisting && !js.isMetaRecovering() {
