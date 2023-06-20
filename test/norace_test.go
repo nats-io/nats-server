@@ -18,9 +18,9 @@ package test
 
 import (
 	"context"
+	crand "crypto/rand"
 	"encoding/json"
 	"fmt"
-	"math/rand"
 	"net"
 	"net/url"
 	"os"
@@ -687,7 +687,7 @@ func TestNoRaceSlowProxy(t *testing.T) {
 	// Now test send BW.
 	const payloadSize = 64 * 1024
 	var payload [payloadSize]byte
-	rand.Read(payload[:])
+	crand.Read(payload[:])
 
 	// 5MB total.
 	bytesSent := (5 * 1024 * 1024)

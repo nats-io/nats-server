@@ -19,6 +19,7 @@ package server
 import (
 	"bytes"
 	"context"
+	crand "crypto/rand"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -5076,7 +5077,7 @@ func TestJetStreamClusterConsumerPerf(t *testing.T) {
 	}
 	toSend := 500000
 	msg := make([]byte, 64)
-	rand.Read(msg)
+	crand.Read(msg)
 
 	for i := 0; i < toSend; i++ {
 		nc.Publish("TEST", msg)

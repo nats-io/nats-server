@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -36,7 +35,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	mrand "math/rand"
+	crand "crypto/rand"
 
 	"github.com/klauspost/compress/s2"
 	"github.com/minio/highwayhash"
@@ -588,7 +587,7 @@ func (fs *fileStore) genEncryptionKeys(context string) (aek cipher.AEAD, bek cip
 
 	const seedSize = 32
 	seed = make([]byte, seedSize)
-	if n, err := rand.Read(seed); err != nil || n != seedSize {
+	if n, err := crand.Read(seed); err != nil || n != seedSize {
 		return nil, nil, nil, nil, err
 	}
 
@@ -599,7 +598,7 @@ func (fs *fileStore) genEncryptionKeys(context string) (aek cipher.AEAD, bek cip
 
 	// Generate our nonce. Use same buffer to hold encrypted seed.
 	nonce := make([]byte, kek.NonceSize(), kek.NonceSize()+len(seed)+kek.Overhead())
-	mrand.Read(nonce)
+	crand.Read(nonce)
 
 	bek, err = genBlockEncryptionKey(sc, seed[:], nonce)
 	if err != nil {
@@ -653,7 +652,7 @@ func (fs *fileStore) writeStreamMeta() error {
 	// Encrypt if needed.
 	if fs.aek != nil {
 		nonce := make([]byte, fs.aek.NonceSize(), fs.aek.NonceSize()+len(b)+fs.aek.Overhead())
-		mrand.Read(nonce)
+		crand.Read(nonce)
 		b = fs.aek.Seal(nonce, nonce, b, nil)
 	}
 
@@ -3260,7 +3259,7 @@ func (mb *msgBlock) eraseMsg(seq uint64, ri, rl int) error {
 
 	// Randomize record
 	data := make([]byte, rl-emptyRecordLen)
-	mrand.Read(data)
+	crand.Read(data)
 
 	// Now write to underlying buffer.
 	var b bytes.Buffer
@@ -7467,7 +7466,7 @@ func (o *consumerFileStore) encryptState(buf []byte) []byte {
 	}
 	// TODO(dlc) - Optimize on space usage a bit?
 	nonce := make([]byte, o.aek.NonceSize(), o.aek.NonceSize()+len(buf)+o.aek.Overhead())
-	mrand.Read(nonce)
+	crand.Read(nonce)
 	return o.aek.Seal(nonce, nonce, buf, nil)
 }
 
@@ -7559,7 +7558,7 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 	// Encrypt if needed.
 	if cfs.aek != nil {
 		nonce := make([]byte, cfs.aek.NonceSize(), cfs.aek.NonceSize()+len(b)+cfs.aek.Overhead())
-		mrand.Read(nonce)
+		crand.Read(nonce)
 		b = cfs.aek.Seal(nonce, nonce, b, nil)
 	}
 

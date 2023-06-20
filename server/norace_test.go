@@ -77,7 +77,7 @@ func TestNoRaceAvoidSlowConsumerBigMessages(t *testing.T) {
 	defer nc2.Close()
 
 	data := make([]byte, 1024*1024) // 1MB payload
-	rand.Read(data)
+	crand.Read(data)
 
 	expected := int32(500)
 	received := int32(0)
@@ -1913,7 +1913,7 @@ func TestNoRaceJetStreamClusterSourcesMuxd(t *testing.T) {
 
 	// Send in 10000 messages.
 	msg, toSend := make([]byte, 1024), 10000
-	rand.Read(msg)
+	crand.Read(msg)
 
 	var sources []*nats.StreamSource
 	// Create 10 origin streams.
@@ -2355,7 +2355,7 @@ func TestNoRaceJetStreamSuperClusterRIPStress(t *testing.T) {
 	}
 
 	msg := make([]byte, 1024)
-	rand.Read(msg)
+	crand.Read(msg)
 
 	// 10 minutes
 	expires := time.Now().Add(480 * time.Second)
@@ -2540,7 +2540,7 @@ func TestNoRaceJetStreamFileStoreBufferReuse(t *testing.T) {
 
 	m := nats.NewMsg("foo")
 	m.Data = make([]byte, 8*1024)
-	rand.Read(m.Data)
+	crand.Read(m.Data)
 
 	start := time.Now()
 	for i := 0; i < toSend; i++ {
@@ -3108,7 +3108,7 @@ func TestNoRaceJetStreamFileStoreCompaction(t *testing.T) {
 
 	toSend := 10_000
 	data := make([]byte, 4*1024)
-	rand.Read(data)
+	crand.Read(data)
 
 	// First one.
 	js.PublishAsync("KV.FM", data)
@@ -3168,7 +3168,7 @@ func TestNoRaceJetStreamEncryptionEnabledOnRestartWithExpire(t *testing.T) {
 	}
 
 	data := make([]byte, 4*1024) // 4K payload
-	rand.Read(data)
+	crand.Read(data)
 
 	for i := 0; i < toSend; i++ {
 		js.PublishAsync("foo", data)
@@ -6823,7 +6823,7 @@ func TestNoRaceJetStreamClusterF3Setup(t *testing.T) {
 	eventTypes := []string{"PAYMENT", "SUBMISSION", "CANCEL"}
 
 	msg := make([]byte, 2*1024) // 2k payload
-	rand.Read(msg)
+	crand.Read(msg)
 
 	// For tracking pub times.
 	var pubs int
@@ -7066,7 +7066,7 @@ func TestNoRaceJetStreamClusterDifferentRTTInterestBasedStreamSetup(t *testing.T
 	wg := sync.WaitGroup{}
 
 	msg := make([]byte, 2*1024) // 2k payload
-	rand.Read(msg)
+	crand.Read(msg)
 
 	// Publishers.
 	for i := 0; i < numPublishers; i++ {
@@ -7284,7 +7284,7 @@ func TestNoRaceJetStreamClusterInterestStreamConsistencyAfterRollingRestart(t *t
 	wg.Wait()
 
 	msg := make([]byte, 2*1024) // 2k payload
-	rand.Read(msg)
+	crand.Read(msg)
 
 	// Controls if publishing is on or off.
 	var pubActive atomic.Bool

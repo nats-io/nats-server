@@ -19,6 +19,7 @@ package server
 import (
 	"bytes"
 	"context"
+	crand "crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -381,7 +382,7 @@ func TestJetStreamConsumerAndStreamDescriptions(t *testing.T) {
 
 	// Test max.
 	data := make([]byte, JSMaxDescriptionLen+1)
-	rand.Read(data)
+	crand.Read(data)
 	bigDescr := base64.StdEncoding.EncodeToString(data)
 
 	_, err = acc.addStream(&StreamConfig{Name: "bar", Description: bigDescr})
@@ -3452,7 +3453,7 @@ func TestJetStreamConsumerRateLimit(t *testing.T) {
 
 	msgSize := 128 * 1024
 	msg := make([]byte, msgSize)
-	rand.Read(msg)
+	crand.Read(msg)
 
 	// 10MB
 	totalSize := 10 * 1024 * 1024
@@ -4446,7 +4447,7 @@ func TestJetStreamSnapshotsAPIPerf(t *testing.T) {
 
 	msg := make([]byte, 128*1024)
 	// If you don't give gzip some data will spend too much time compressing everything to zero.
-	rand.Read(msg)
+	crand.Read(msg)
 
 	for i := 0; i < 10000; i++ {
 		nc.Publish("snap-perf", msg)
@@ -7216,7 +7217,7 @@ func TestJetStreamPushConsumerFlowControl(t *testing.T) {
 
 	msgSize := 1024
 	msg := make([]byte, msgSize)
-	rand.Read(msg)
+	crand.Read(msg)
 
 	sendBatch := func(n int) {
 		for i := 0; i < n; i++ {
@@ -19972,7 +19973,7 @@ func TestJetStreamMsgBlkFailOnKernelFault(t *testing.T) {
 
 	msgSize := 1024 * 1024 // 1MB
 	msg := make([]byte, msgSize)
-	rand.Read(msg)
+	crand.Read(msg)
 
 	for i := 0; i < 20; i++ {
 		_, err := js.Publish("foo", msg)

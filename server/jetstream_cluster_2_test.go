@@ -19,6 +19,7 @@ package server
 import (
 	"bytes"
 	"context"
+	crand "crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -151,7 +152,7 @@ func TestJetStreamClusterMultiRestartBug(t *testing.T) {
 
 	// Send in 10000 messages.
 	msg, toSend := make([]byte, 4*1024), 10000
-	rand.Read(msg)
+	crand.Read(msg)
 
 	for i := 0; i < toSend; i++ {
 		if _, err = js.Publish("foo", msg); err != nil {
@@ -223,7 +224,7 @@ func TestJetStreamClusterServerLimits(t *testing.T) {
 	defer nc.Close()
 
 	msg, toSend := make([]byte, 4*1024), 5000
-	rand.Read(msg)
+	crand.Read(msg)
 
 	// Memory first.
 	max_mem := uint64(2*1024*1024) + uint64(len(msg))
@@ -331,7 +332,7 @@ func TestJetStreamClusterAckPendingWithExpired(t *testing.T) {
 
 	// Send in 100 messages.
 	msg, toSend := make([]byte, 256), 100
-	rand.Read(msg)
+	crand.Read(msg)
 
 	for i := 0; i < toSend; i++ {
 		if _, err = js.Publish("foo", msg); err != nil {
@@ -2701,7 +2702,7 @@ func TestJetStreamClusterLargeHeaders(t *testing.T) {
 
 	// We use u16 to encode msg header len. Make sure we do the right thing when > 65k.
 	data := make([]byte, 8*1024)
-	rand.Read(data)
+	crand.Read(data)
 	val := hex.EncodeToString(data)[:8*1024]
 	m := nats.NewMsg("foo")
 	for i := 1; i <= 10; i++ {
