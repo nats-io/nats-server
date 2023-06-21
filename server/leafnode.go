@@ -78,6 +78,8 @@ type leaf struct {
 	remoteServer string
 	// domain name of remote server
 	remoteDomain string
+	// account name of remote server
+	remoteAccName string
 	// Used to suppress sub and unsub interest. Same as routes but our audience
 	// here is tied to this leaf node. This will hold all subscriptions except this
 	// leaf nodes. This represents all the interest we want to send to the other side.
@@ -348,8 +350,8 @@ func (s *Server) updateRemoteLeafNodesTLSConfig(opts *Options) {
 		return
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	// Changes in the list of remote leaf nodes is not supported.
 	// However, make sure that we don't go over the arrays.
@@ -764,16 +766,17 @@ var credsRe = regexp.MustCompile(`\s*(?:(?:[-]{3,}[^\n]*[-]{3,}\n)(.+)(?:\n\s*[-
 func (c *client) sendLeafConnect(clusterName string, headers bool) error {
 	// We support basic user/pass and operator based user JWT with signatures.
 	cinfo := leafConnectInfo{
-		Version:     VERSION,
-		ID:          c.srv.info.ID,
-		Domain:      c.srv.info.Domain,
-		Name:        c.srv.info.Name,
-		Hub:         c.leaf.remote.Hub,
-		Cluster:     clusterName,
-		Headers:     headers,
-		JetStream:   c.acc.jetStreamConfigured(),
-		DenyPub:     c.leaf.remote.DenyImports,
-		Compression: c.leaf.compression,
+		Version:       VERSION,
+		ID:            c.srv.info.ID,
+		Domain:        c.srv.info.Domain,
+		Name:          c.srv.info.Name,
+		Hub:           c.leaf.remote.Hub,
+		Cluster:       clusterName,
+		Headers:       headers,
+		JetStream:     c.acc.jetStreamConfigured(),
+		DenyPub:       c.leaf.remote.DenyImports,
+		Compression:   c.leaf.compression,
+		RemoteAccount: c.acc.GetName(),
 	}
 
 	// If a signature callback is specified, this takes precedence over anything else.
@@ -1310,6 +1313,8 @@ func (c *client) processLeafnodeInfo(info *Info) {
 		// Clear deadline that was set in createLeafNode while waiting for the INFO.
 		c.nc.SetDeadline(time.Time{})
 		resumeConnect = true
+	} else if !firstINFO && didSolicit {
+		c.leaf.remoteAccName = info.RemoteAccount
 	}
 
 	// Check if we have the remote account information and if so make sure it's stored.
@@ -1503,6 +1508,7 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 	}
 	myRemoteDomain := c.leaf.remoteDomain
 	mySrvName := c.leaf.remoteServer
+	remoteAccName := c.leaf.remoteAccName
 	myClustName := c.leaf.remoteCluster
 	solicited := c.leaf.remote != nil
 	c.mu.Unlock()
@@ -1518,7 +1524,8 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 			// We have code for the loop detection elsewhere, which also delays
 			// attempt to reconnect.
 			if !ol.isSolicitedLeafNode() && ol.leaf.remoteServer == srvName &&
-				ol.leaf.remoteCluster == clusterName && ol.acc.Name == accName {
+				ol.leaf.remoteCluster == clusterName && ol.acc.Name == accName &&
+				remoteAccName != _EMPTY_ && ol.leaf.remoteAccName == remoteAccName {
 				old = ol
 			}
 			ol.mu.Unlock()
@@ -1693,6 +1700,9 @@ type leafConnectInfo struct {
 
 	// Just used to detect wrong connection attempts.
 	Gateway string `json:"gateway,omitempty"`
+
+	// Tells the accept side which account the remote is binding to.
+	RemoteAccount string `json:"remote_account,omitempty"`
 }
 
 // processLeafNodeConnect will process the inbound connect args.
@@ -1774,6 +1784,8 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 
 	// Remember the remote server.
 	c.leaf.remoteServer = proto.Name
+	// Remember the remote account name
+	c.leaf.remoteAccName = proto.RemoteAccount
 
 	// If the other side has declared itself a hub, so we will take on the spoke role.
 	if proto.Hub {
