@@ -294,6 +294,7 @@ type Options struct {
 	JetStreamDomain       string        `json:"-"`
 	JetStreamExtHint      string        `json:"-"`
 	JetStreamKey          string        `json:"-"`
+	JetStreamOldKey       string        `json:"-"`
 	JetStreamCipher       StoreCipher   `json:"-"`
 	JetStreamUniqueTag    string
 	JetStreamLimits       JSLimitOpts
@@ -2077,6 +2078,8 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 				doEnable = mv.(bool)
 			case "key", "ek", "encryption_key":
 				opts.JetStreamKey = mv.(string)
+			case "old_key", "old_ek", "old_encryption_key":
+				opts.JetStreamOldKey = mv.(string)
 			case "cipher":
 				switch strings.ToLower(mv.(string)) {
 				case "chacha", "chachapoly":

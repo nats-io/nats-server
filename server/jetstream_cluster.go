@@ -754,7 +754,8 @@ func (js *jetStream) setupMetaGroup() error {
 		FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMetaFSBlkSize, AsyncFlush: false},
 		StreamConfig{Name: defaultMetaGroupName, Storage: FileStorage},
 		time.Now().UTC(),
-		s.jsKeyGen(defaultMetaGroupName),
+		s.jsKeyGen(s.getOpts().JetStreamKey, defaultMetaGroupName),
+		s.jsKeyGen(s.getOpts().JetStreamOldKey, defaultMetaGroupName),
 	)
 	if err != nil {
 		s.Errorf("Error creating filestore: %v", err)
@@ -1965,7 +1966,8 @@ func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, storage Stor
 			FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMediumBlockSize, AsyncFlush: false, SyncInterval: 5 * time.Minute},
 			StreamConfig{Name: rg.Name, Storage: FileStorage},
 			time.Now().UTC(),
-			s.jsKeyGen(rg.Name),
+			s.jsKeyGen(s.getOpts().JetStreamKey, rg.Name),
+			s.jsKeyGen(s.getOpts().JetStreamOldKey, rg.Name),
 		)
 		if err != nil {
 			s.Errorf("Error creating filestore WAL: %v", err)

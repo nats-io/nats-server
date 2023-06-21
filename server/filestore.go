@@ -165,6 +165,7 @@ type fileStore struct {
 	cfg         FileStreamInfo
 	fcfg        FileStoreConfig
 	prf         keyGen
+	oldprf      keyGen
 	aek         cipher.AEAD
 	lmb         *msgBlock
 	blks        []*msgBlock
@@ -332,10 +333,10 @@ const (
 )
 
 func newFileStore(fcfg FileStoreConfig, cfg StreamConfig) (*fileStore, error) {
-	return newFileStoreWithCreated(fcfg, cfg, time.Now().UTC(), nil)
+	return newFileStoreWithCreated(fcfg, cfg, time.Now().UTC(), nil, nil)
 }
 
-func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created time.Time, prf keyGen) (*fileStore, error) {
+func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created time.Time, prf, oldprf keyGen) (*fileStore, error) {
 	if cfg.Name == _EMPTY_ {
 		return nil, fmt.Errorf("name required")
 	}
@@ -375,12 +376,13 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	dios <- struct{}{}
 
 	fs := &fileStore{
-		fcfg: fcfg,
-		psim: make(map[string]*psi),
-		bim:  make(map[uint32]*msgBlock),
-		cfg:  FileStreamInfo{Created: created, StreamConfig: cfg},
-		prf:  prf,
-		qch:  make(chan struct{}),
+		fcfg:   fcfg,
+		psim:   make(map[string]*psi),
+		bim:    make(map[uint32]*msgBlock),
+		cfg:    FileStreamInfo{Created: created, StreamConfig: cfg},
+		prf:    prf,
+		oldprf: oldprf,
+		qch:    make(chan struct{}),
 	}
 
 	// Set flush in place to AsyncFlush which by default is false.
@@ -948,52 +950,67 @@ func (mb *msgBlock) convertCipher() error {
 	if len(ekey) < minBlkKeySize {
 		return errBadKeySize
 	}
-	// Recover key encryption key.
-	rb, err := fs.prf([]byte(fmt.Sprintf("%s:%d", fs.cfg.Name, mb.index)))
-	if err != nil {
-		return err
+	type prfWithCipher struct {
+		keyGen
+		StoreCipher
 	}
-	kek, err := genEncryptionKey(osc, rb)
-	if err != nil {
-		return err
+	var prfs []prfWithCipher
+	if fs.prf != nil {
+		prfs = append(prfs, prfWithCipher{fs.prf, sc})
+		prfs = append(prfs, prfWithCipher{fs.prf, osc})
 	}
-	ns := kek.NonceSize()
-	seed, err := kek.Open(nil, ekey[:ns], ekey[ns:], nil)
-	if err != nil {
-		return err
-	}
-	nonce := ekey[:ns]
-
-	bek, err := genBlockEncryptionKey(osc, seed, nonce)
-	if err != nil {
-		return err
+	if fs.oldprf != nil {
+		prfs = append(prfs, prfWithCipher{fs.oldprf, sc})
+		prfs = append(prfs, prfWithCipher{fs.oldprf, osc})
 	}
 
-	buf, _ := mb.loadBlock(nil)
-	bek.XORKeyStream(buf, buf)
-	// Make sure we can parse with old cipher and key file.
-	if err = mb.indexCacheBuf(buf); err != nil {
-		return err
-	}
-	// Reset the cache since we just read everything in.
-	mb.cache = nil
+	for _, prf := range prfs {
+		// Recover key encryption key.
+		rb, err := prf.keyGen([]byte(fmt.Sprintf("%s:%d", fs.cfg.Name, mb.index)))
+		if err != nil {
+			continue
+		}
+		kek, err := genEncryptionKey(prf.StoreCipher, rb)
+		if err != nil {
+			continue
+		}
+		ns := kek.NonceSize()
+		seed, err := kek.Open(nil, ekey[:ns], ekey[ns:], nil)
+		if err != nil {
+			continue
+		}
+		nonce := ekey[:ns]
+		bek, err := genBlockEncryptionKey(prf.StoreCipher, seed, nonce)
+		if err != nil {
+			return err
+		}
 
-	// Generate new keys based on our
-	if err := fs.genEncryptionKeysForBlock(mb); err != nil {
-		// Put the old keyfile back.
-		keyFile := filepath.Join(mdir, fmt.Sprintf(keyScan, mb.index))
-		os.WriteFile(keyFile, ekey, defaultFilePerms)
-		return err
-	}
-	mb.bek.XORKeyStream(buf, buf)
-	if err := os.WriteFile(mb.mfn, buf, defaultFilePerms); err != nil {
-		return err
-	}
-	// If we are here we want to delete other meta, e.g. idx, fss.
-	os.Remove(mb.ifn)
-	os.Remove(mb.sfn)
+		buf, _ := mb.loadBlock(nil)
+		bek.XORKeyStream(buf, buf)
+		// Make sure we can parse with old cipher and key file.
+		if err = mb.indexCacheBuf(buf); err != nil {
+			return err
+		}
+		// Reset the cache since we just read everything in.
+		mb.cache = nil
 
-	return nil
+		// Generate new keys based on our
+		if err := fs.genEncryptionKeysForBlock(mb); err != nil {
+			// Put the old keyfile back.
+			keyFile := filepath.Join(mdir, fmt.Sprintf(keyScan, mb.index))
+			os.WriteFile(keyFile, ekey, defaultFilePerms)
+			return err
+		}
+		mb.bek.XORKeyStream(buf, buf)
+		if err := os.WriteFile(mb.mfn, buf, defaultFilePerms); err != nil {
+			return err
+		}
+		// If we are here we want to delete other meta, e.g. idx, fss.
+		os.Remove(mb.ifn)
+		os.Remove(mb.sfn)
+		return nil
+	}
+	return fmt.Errorf("unable to recover keys")
 }
 
 // Convert a plaintext block to encrypted.

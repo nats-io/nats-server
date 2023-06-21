@@ -4433,7 +4433,7 @@ func TestNoRaceJetStreamFileStoreKeyFileCleanup(t *testing.T) {
 		FileStoreConfig{StoreDir: storeDir, BlockSize: 1024 * 1024},
 		StreamConfig{Name: "TEST", Storage: FileStorage},
 		time.Now(),
-		prf)
+		prf, nil)
 	require_NoError(t, err)
 	defer fs.Stop()
 
