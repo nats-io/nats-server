@@ -624,6 +624,9 @@ type ClientOpts struct {
 	// Routes and Leafnodes only
 	Import *SubjectPermission `json:"import,omitempty"`
 	Export *SubjectPermission `json:"export,omitempty"`
+
+	// Leafnodes
+	RemoteAccount string `json:"remote_account,omitempty"`
 }
 
 var defaultOpts = ClientOpts{Verbose: true, Pedantic: true, Echo: true}
