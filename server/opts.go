@@ -347,6 +347,9 @@ type Options struct {
 	// CheckConfig configuration file syntax test was successful and exit.
 	CheckConfig bool `json:"-"`
 
+	// DisableJetStreamBanner will not print the ascii art on startup for JetStream enabled servers
+	DisableJetStreamBanner bool `json:"-"`
+
 	// ConnectErrorReports specifies the number of failed attempts
 	// at which point server should report the failure of an initial
 	// connection to a route, gateway or leaf node.
