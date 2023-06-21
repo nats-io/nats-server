@@ -367,13 +367,16 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 		s.SetDefaultSystemAccount()
 	}
 
-	s.Noticef("    _ ___ _____ ___ _____ ___ ___   _   __  __")
-	s.Noticef(" _ | | __|_   _/ __|_   _| _ \\ __| /_\\ |  \\/  |")
-	s.Noticef("| || | _|  | | \\__ \\ | | |   / _| / _ \\| |\\/| |")
-	s.Noticef(" \\__/|___| |_| |___/ |_| |_|_\\___/_/ \\_\\_|  |_|")
-	s.Noticef("")
-	s.Noticef("         https://docs.nats.io/jetstream")
-	s.Noticef("")
+	opts := s.getOpts()
+	if !opts.DisableJetStreamBanner {
+		s.Noticef("    _ ___ _____ ___ _____ ___ ___   _   __  __")
+		s.Noticef(" _ | | __|_   _/ __|_   _| _ \\ __| /_\\ |  \\/  |")
+		s.Noticef("| || | _|  | | \\__ \\ | | |   / _| / _ \\| |\\/| |")
+		s.Noticef(" \\__/|___| |_| |___/ |_| |_|_\\___/_/ \\_\\_|  |_|")
+		s.Noticef("")
+		s.Noticef("         https://docs.nats.io/jetstream")
+		s.Noticef("")
+	}
 	s.Noticef("---------------- JETSTREAM ----------------")
 	s.Noticef("  Max Memory:      %s", friendlyBytes(cfg.MaxMemory))
 	s.Noticef("  Max Storage:     %s", friendlyBytes(cfg.MaxStore))
@@ -381,7 +384,7 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 	if cfg.Domain != _EMPTY_ {
 		s.Noticef("  Domain:          %s", cfg.Domain)
 	}
-	opts := s.getOpts()
+
 	if ek := opts.JetStreamKey; ek != _EMPTY_ {
 		s.Noticef("  Encryption:      %s", opts.JetStreamCipher)
 	}
