@@ -2170,7 +2170,7 @@ func (c *client) generateClientInfoJSON(info Info) []byte {
 		if c.srv != nil { // Otherwise lame duck info can panic
 			c.srv.websocket.mu.RLock()
 			info.TLSAvailable = c.srv.websocket.tls
-			if c.srv.websocket.server != nil {
+			if c.srv.websocket.tls && c.srv.websocket.server != nil {
 				if tc := c.srv.websocket.server.TLSConfig; tc != nil {
 					info.TLSRequired = !tc.InsecureSkipVerify
 				}
