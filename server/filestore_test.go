@@ -5541,3 +5541,45 @@ func TestFileStoreConsumerStoreEncodeAfterRestart(t *testing.T) {
 		}
 	})
 }
+
+func TestFileStoreNumPendingLargeNumBlks(t *testing.T) {
+	// No need for all permutations here.
+	storeDir := t.TempDir()
+	fcfg := FileStoreConfig{
+		StoreDir:  storeDir,
+		BlockSize: 128, // Small on purpose to create alot of blks.
+	}
+	fs, err := newFileStore(fcfg, StreamConfig{Name: "zzz", Subjects: []string{"zzz"}, Storage: FileStorage})
+	require_NoError(t, err)
+
+	subj, msg := "zzz", bytes.Repeat([]byte("X"), 100)
+	numMsgs := 10_000
+
+	for i := 0; i < numMsgs; i++ {
+		fs.StoreMsg(subj, nil, msg)
+	}
+
+	start := time.Now()
+	total, _ := fs.NumPending(4000, "zzz", false)
+	require_True(t, time.Since(start) < 5*time.Millisecond)
+	require_True(t, total == 6001)
+
+	start = time.Now()
+	total, _ = fs.NumPending(6000, "zzz", false)
+	require_True(t, time.Since(start) < 5*time.Millisecond)
+	require_True(t, total == 4001)
+
+	// Now delete a message in first half and second half.
+	fs.RemoveMsg(1000)
+	fs.RemoveMsg(9000)
+
+	start = time.Now()
+	total, _ = fs.NumPending(4000, "zzz", false)
+	require_True(t, time.Since(start) < 50*time.Millisecond)
+	require_True(t, total == 6000)
+
+	start = time.Now()
+	total, _ = fs.NumPending(6000, "zzz", false)
+	require_True(t, time.Since(start) < 50*time.Millisecond)
+	require_True(t, total == 4000)
+}
