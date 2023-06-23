@@ -1868,11 +1868,23 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 		seqStart, _ = fs.selectMsgBlockWithIndex(sseq)
 	}
 
-	tsa := [32]string{}
-	fsa := [32]string{}
+	var tsa, fsa [32]string
 	fts := tokenizeSubjectIntoSlice(fsa[:0], filter)
 	isAll := filter == _EMPTY_ || filter == fwcs
 	wc := subjectHasWildcard(filter)
+
+	// See if filter was provided but its the only subject.
+	if !isAll && !wc && len(fs.psim) == 1 && fs.psim[filter] != nil {
+		isAll = true
+	}
+
+	// If we are isAll and have no deleted we can do a simpler calculation.
+	if isAll && (fs.state.LastSeq-fs.state.FirstSeq+1) == fs.state.Msgs {
+		if sseq == 0 {
+			return fs.state.Msgs, validThrough
+		}
+		return fs.state.LastSeq - sseq + 1, validThrough
+	}
 
 	isMatch := func(subj string) bool {
 		if isAll {
@@ -1900,6 +1912,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 			var t uint64
 			if isAll && sseq <= mb.first.seq {
 				if lastPerSubject {
+					mb.ensurePerSubjectInfoLoaded()
 					for subj := range mb.fss {
 						if !seen[subj] {
 							total++
@@ -2023,16 +2036,20 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 		mb.mu.Lock()
 		// Check if we should include all of this block in adjusting. If so work with metadata.
 		if sseq > mb.last.seq {
-			// We need to adjust for all matches in this block.
-			// We will scan fss state vs messages themselves.
-			// Make sure we have fss loaded.
-			mb.ensurePerSubjectInfoLoaded()
-			for subj, ss := range mb.fss {
-				if isMatch(subj) {
-					if lastPerSubject {
-						adjust++
-					} else {
-						adjust += ss.Msgs
+			if isAll && !lastPerSubject {
+				adjust += mb.msgs
+			} else {
+				// We need to adjust for all matches in this block.
+				// We will scan fss state vs messages themselves.
+				// Make sure we have fss loaded.
+				mb.ensurePerSubjectInfoLoaded()
+				for subj, ss := range mb.fss {
+					if isMatch(subj) {
+						if lastPerSubject {
+							adjust++
+						} else {
+							adjust += ss.Msgs
+						}
 					}
 				}
 			}
