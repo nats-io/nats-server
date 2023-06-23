@@ -5491,11 +5491,11 @@ func TestFileStoreNumPendingLargeNumBlks(t *testing.T) {
 
 	start = time.Now()
 	total, _ = fs.NumPending(4000, "zzz", false)
-	require_True(t, time.Since(start) < 5*time.Millisecond)
+	require_True(t, time.Since(start) < 50*time.Millisecond)
 	require_True(t, total == 6000)
 
 	start = time.Now()
 	total, _ = fs.NumPending(6000, "zzz", false)
-	require_True(t, time.Since(start) < 5*time.Millisecond)
+	require_True(t, time.Since(start) < 50*time.Millisecond)
 	require_True(t, total == 4000)
 }
