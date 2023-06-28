@@ -2953,7 +2953,7 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 	// Check if this is a service reply subject (_R_)
 	noInterest := len(r.psubs) == 0
 	checkNoInterest := true
-	if acc.imports.services != nil {
+	if acc.NumServiceImports() > 0 {
 		if isServiceReply(c.pa.subject) {
 			checkNoInterest = false
 		} else {
