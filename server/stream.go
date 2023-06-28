@@ -1271,6 +1271,18 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 					return StreamConfig{}, NewJSSourceInvalidTransformDestinationError()
 				}
 			}
+				if (src.FilterSubject != _EMPTY_ && len(src.FilterSubjects) != 0) && (src.SubjectTransformDest != _EMPTY_ && len(src.SubjectTransformDests) != 0) {
+					return StreamConfig{}, NewJSSourceMultipleFiltersNotAllowedError()
+				}
+				if len(src.FilterSubjects) != len(src.SubjectTransformDests) {
+					return StreamConfig{}, NewJSSourceNumberOfFiltersAndTransformDestinationMustMatchError()
+				}
+				for i := range src.FilterSubjects {
+					err := ValidateMappingDestination(src.SubjectTransformDests[i])
+					if err != nil {
+						return StreamConfig{}, NewJSSourceInvalidTransformDestinationError()
+					}
+				}
 
 			// Check subject filters overlap.
 			for outer, subject := range src.FilterSubjects {
