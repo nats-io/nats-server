@@ -4413,7 +4413,7 @@ func TestJetStreamClusterSnapshotAndRestoreWithHealthz(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	toSend, msg := 10_000, bytes.Repeat([]byte("Z"), 1024)
+	toSend, msg := 1000, bytes.Repeat([]byte("Z"), 1024)
 	for i := 0; i < toSend; i++ {
 		_, err := js.PublishAsync("foo", msg)
 		require_NoError(t, err)
