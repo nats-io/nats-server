@@ -1676,7 +1676,7 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 						}
 					} else {
 						si = &sourceInfo{name: s.Name, iname: s.iname, sfs: s.FilterSubjects}
-						for i, _ := range s.SubjectTransformDests {
+						for i := range s.SubjectTransformDests {
 							var err error
 							if si.trs[i], err = NewSubjectTransform(s.FilterSubjects[i], s.SubjectTransformDests[i]); err != nil {
 								mset.mu.Unlock()
@@ -1922,7 +1922,7 @@ func (mset *stream) sourceInfo(si *sourceInfo) *StreamSourceInfo {
 	}
 	if si.trs != nil {
 		ssi.SubjectTransformDests = make([]string, len(si.trs))
-		for i, _ := range si.trs {
+		for i := range si.trs {
 			ssi.SubjectTransformDests[i] = si.trs[i].dest
 		}
 	}
@@ -3120,7 +3120,7 @@ func (mset *stream) startingSequenceForSources() {
 			si.tr, _ = NewSubjectTransform(ssi.FilterSubject, ssi.SubjectTransformDest) // can not return an error because validated in AddStream
 		} else if len(ssi.SubjectTransformDests) != 0 {
 			si.trs = make([]*subjectTransform, len(ssi.SubjectTransformDests))
-			for i, _ := range ssi.SubjectTransformDests {
+			for i := range ssi.SubjectTransformDests {
 				si.trs[i], _ = NewSubjectTransform(ssi.FilterSubjects[i], ssi.SubjectTransformDests[i]) // also validated in AddStream
 			}
 		}
