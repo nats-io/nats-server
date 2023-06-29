@@ -3147,7 +3147,8 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 	for acc, asa := range cc.streams {
 		nasa := make(map[string]*streamAssignment)
 		for stream, sa := range asa {
-			if sa.Group.isMember(ourID) {
+			// If we are a member and we are not being restored, select for check.
+			if sa.Group.isMember(ourID) && sa.Restore == nil {
 				csa := sa.copyGroup()
 				csa.consumers = make(map[string]*consumerAssignment)
 				for consumer, ca := range sa.consumers {
