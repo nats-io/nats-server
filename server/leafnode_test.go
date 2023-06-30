@@ -5108,7 +5108,7 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithStreamImportAccounts(t 
 		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
 	}`
 
-	sc := createJetStreamSuperClusterWithTemplate(t, tmpl, 3, 2)
+	sc := createJetStreamSuperClusterWithTemplate(t, tmpl, 5, 2)
 	defer sc.shutdown()
 
 	// Now create a leafnode cluster that has 2 LNs, one to each cluster but on separate accounts, ONE and TWO.
