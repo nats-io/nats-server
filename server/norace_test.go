@@ -8649,3 +8649,200 @@ func TestNoRaceReplicatedMirrorWithLargeStartingSequenceOverLeafnode(t *testing.
 		return fmt.Errorf("Mirror state not correct: %+v", si.State)
 	})
 }
+
+func TestNoRaceBinaryStreamSnapshotEncodingBasic(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:              "TEST",
+		Subjects:          []string{"*"},
+		MaxMsgsPerSubject: 1,
+	})
+	require_NoError(t, err)
+
+	// Set first key
+	sendStreamMsg(t, nc, "key:1", "hello")
+
+	// Set Second key but keep updating it, causing a laggard pattern.
+	value := bytes.Repeat([]byte("Z"), 8*1024)
+
+	for i := 0; i <= 1000; i++ {
+		_, err := js.PublishAsync("key:2", value)
+		require_NoError(t, err)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	// Now do more of swiss cheese style.
+	for i := 3; i <= 1000; i++ {
+		key := fmt.Sprintf("key:%d", i)
+		_, err := js.PublishAsync(key, value)
+		require_NoError(t, err)
+		// Send it twice to create hole right behind it, like swiss cheese.
+		_, err = js.PublishAsync(key, value)
+		require_NoError(t, err)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	// Make for round numbers for stream state.
+	sendStreamMsg(t, nc, "key:2", "hello")
+	sendStreamMsg(t, nc, "key:2", "world")
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_True(t, si.State.FirstSeq == 1)
+	require_True(t, si.State.LastSeq == 3000)
+	require_True(t, si.State.Msgs == 1000)
+	require_True(t, si.State.NumDeleted == 2000)
+
+	mset, err := s.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	snap, err := mset.store.EncodedStreamState(0)
+	require_NoError(t, err)
+
+	// Now decode the snapshot.
+	ss, err := DecodeStreamState(snap)
+	require_NoError(t, err)
+
+	require_True(t, ss.FirstSeq == 1)
+	require_True(t, ss.LastSeq == 3000)
+	require_True(t, ss.Msgs == 1000)
+	// We should have collapsed all these into 2 delete blocks.
+	require_True(t, len(ss.Deleted) == 2)
+	require_True(t, ss.Deleted.NumDeleted() == 2000)
+}
+
+func TestNoRaceFilestoreBinaryStreamSnapshotEncodingLargeGaps(t *testing.T) {
+	storeDir := t.TempDir()
+	fcfg := FileStoreConfig{
+		StoreDir:  storeDir,
+		BlockSize: 512, // Small on purpose to create alot of blks.
+	}
+	fs, err := newFileStore(fcfg, StreamConfig{Name: "zzz", Subjects: []string{"zzz"}, Storage: FileStorage})
+	require_NoError(t, err)
+
+	subj, msg := "zzz", bytes.Repeat([]byte("X"), 128)
+	numMsgs := 20_000
+
+	fs.StoreMsg(subj, nil, msg)
+	for i := 2; i < numMsgs; i++ {
+		seq, _, err := fs.StoreMsg(subj, nil, nil)
+		require_NoError(t, err)
+		fs.RemoveMsg(seq)
+	}
+	fs.StoreMsg(subj, nil, msg)
+
+	snap, err := fs.EncodedStreamState(0)
+	require_NoError(t, err)
+	require_True(t, len(snap) < 512)
+
+	// Now decode the snapshot.
+	ss, err := DecodeStreamState(snap)
+	require_NoError(t, err)
+
+	require_True(t, ss.FirstSeq == 1)
+	require_True(t, ss.LastSeq == 20_000)
+	require_True(t, ss.Msgs == 2)
+	require_True(t, len(ss.Deleted) == 2)
+	require_True(t, ss.Deleted.NumDeleted() == 19_998)
+}
+
+func TestNoRaceJetStreamClusterStreamSnapshotCatchup(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	s := c.randomServer()
+
+	// Client based API
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:              "TEST",
+		Subjects:          []string{"*"},
+		MaxMsgsPerSubject: 1,
+		Replicas:          3,
+	})
+	require_NoError(t, err)
+
+	msg := []byte("Hello World")
+	_, err = js.Publish("foo", msg)
+	require_NoError(t, err)
+
+	for i := 1; i < 1000; i++ {
+		_, err := js.PublishAsync("bar", msg)
+		require_NoError(t, err)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	sr := c.randomNonStreamLeader(globalAccountName, "TEST")
+	sr.Shutdown()
+
+	// Now create larger gap.
+	for i := 0; i < 50_000; i++ {
+		_, err := js.PublishAsync("bar", msg)
+		require_NoError(t, err)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(10 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	sl.JetStreamSnapshotStream(globalAccountName, "TEST")
+
+	sr = c.restartServer(sr)
+	c.checkClusterFormed()
+
+	c.waitOnServerCurrent(sr)
+	c.waitOnStreamCurrent(sr, globalAccountName, "TEST")
+
+	mset, err := sr.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	var state StreamState
+	mset.store.FastState(&state)
+
+	require_True(t, state.Msgs == 2)
+	require_True(t, state.FirstSeq == 1)
+	require_True(t, state.LastSeq == 51_000)
+	require_True(t, state.NumDeleted == 51_000-2)
+
+	sr.Shutdown()
+
+	_, err = js.Publish("baz", msg)
+	require_NoError(t, err)
+	sl.JetStreamSnapshotStream(globalAccountName, "TEST")
+
+	sr = c.restartServer(sr)
+	c.checkClusterFormed()
+
+	c.waitOnServerCurrent(sr)
+	c.waitOnStreamCurrent(sr, globalAccountName, "TEST")
+
+	mset, err = sr.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	mset.store.FastState(&state)
+
+	require_True(t, state.Msgs == 3)
+	require_True(t, state.FirstSeq == 1)
+	require_True(t, state.LastSeq == 51_001)
+	require_True(t, state.NumDeleted == 51_001-3)
+}

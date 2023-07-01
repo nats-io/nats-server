@@ -193,18 +193,53 @@ type ServerID struct {
 	ID   string `json:"id"`
 }
 
+// Type for our server capabilities.
+type ServerCapability uint64
+
 // ServerInfo identifies remote servers.
 type ServerInfo struct {
-	Name      string    `json:"name"`
-	Host      string    `json:"host"`
-	ID        string    `json:"id"`
-	Cluster   string    `json:"cluster,omitempty"`
-	Domain    string    `json:"domain,omitempty"`
-	Version   string    `json:"ver"`
-	Tags      []string  `json:"tags,omitempty"`
-	Seq       uint64    `json:"seq"`
-	JetStream bool      `json:"jetstream"`
-	Time      time.Time `json:"time"`
+	Name    string   `json:"name"`
+	Host    string   `json:"host"`
+	ID      string   `json:"id"`
+	Cluster string   `json:"cluster,omitempty"`
+	Domain  string   `json:"domain,omitempty"`
+	Version string   `json:"ver"`
+	Tags    []string `json:"tags,omitempty"`
+	// Whether JetStream is enabled (deprecated in favor of the `ServerCapability`).
+	JetStream bool `json:"jetstream"`
+	// Generic capability flags
+	Flags ServerCapability
+	// Sequence and Time from the remote server for this message.
+	Seq  uint64    `json:"seq"`
+	Time time.Time `json:"time"`
+}
+
+const (
+	JetStreamEnabled     ServerCapability = 1 << iota // Server had JetStream enabled.
+	BinaryStreamSnapshot                              // New stream snapshot capability.
+)
+
+// Set JetStream capability.
+func (si *ServerInfo) SetJetStreamEnabled() {
+	si.Flags |= JetStreamEnabled
+	// Still set old version.
+	si.JetStream = true
+}
+
+// JetStreamEnabled indicates whether or not we have JetStream enabled.
+func (si *ServerInfo) JetStreamEnabled() bool {
+	// Take into account old version.
+	return si.Flags&JetStreamEnabled != 0 || si.JetStream
+}
+
+// Set binary stream snapshot capability.
+func (si *ServerInfo) SetBinaryStreamSnapshot() {
+	si.Flags |= BinaryStreamSnapshot
+}
+
+// JetStreamEnabled indicates whether or not we have binary stream snapshot capbilities.
+func (si *ServerInfo) BinaryStreamSnapshot() bool {
+	return si.Flags&BinaryStreamSnapshot != 0
 }
 
 // ClientInfo is detailed information about the client forming a connection.
@@ -391,17 +426,21 @@ RESET:
 		case <-sendq.ch:
 			msgs := sendq.pop()
 			for _, pm := range msgs {
-				if pm.si != nil {
-					pm.si.Name = servername
-					pm.si.Domain = domain
-					pm.si.Host = host
-					pm.si.Cluster = cluster
-					pm.si.ID = id
-					pm.si.Seq = atomic.AddUint64(seqp, 1)
-					pm.si.Version = VERSION
-					pm.si.Time = time.Now().UTC()
-					pm.si.JetStream = js
-					pm.si.Tags = tags
+				if si := pm.si; si != nil {
+					si.Name = servername
+					si.Domain = domain
+					si.Host = host
+					si.Cluster = cluster
+					si.ID = id
+					si.Seq = atomic.AddUint64(seqp, 1)
+					si.Version = VERSION
+					si.Time = time.Now().UTC()
+					si.Tags = tags
+					if js {
+						// New capability based flags.
+						si.SetJetStreamEnabled()
+						si.SetBinaryStreamSnapshot()
+					}
 				}
 				var b []byte
 				if pm.msg != nil {
@@ -1418,7 +1457,9 @@ func (s *Server) remoteServerUpdate(sub *subscription, c *client, _ *Account, su
 		si.Tags,
 		cfg,
 		stats,
-		false, si.JetStream,
+		false,
+		si.JetStreamEnabled(),
+		si.BinaryStreamSnapshot(),
 	})
 }
 
@@ -1454,7 +1495,19 @@ func (s *Server) processNewServer(si *ServerInfo) {
 		node := getHash(si.Name)
 		// Only update if non-existent
 		if _, ok := s.nodeToInfo.Load(node); !ok {
-			s.nodeToInfo.Store(node, nodeInfo{si.Name, si.Version, si.Cluster, si.Domain, si.ID, si.Tags, nil, nil, false, si.JetStream})
+			s.nodeToInfo.Store(node, nodeInfo{
+				si.Name,
+				si.Version,
+				si.Cluster,
+				si.Domain,
+				si.ID,
+				si.Tags,
+				nil,
+				nil,
+				false,
+				si.JetStreamEnabled(),
+				si.BinaryStreamSnapshot(),
+			})
 		}
 	}
 	// Announce ourselves..

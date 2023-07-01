@@ -21,6 +21,8 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"github.com/nats-io/nats-server/v2/server/avl"
 )
 
 // StorageType determines how messages are stored for retention.
@@ -97,6 +99,8 @@ type StreamStore interface {
 	NumPending(sseq uint64, filter string, lastPerSubject bool) (total, validThrough uint64)
 	State() StreamState
 	FastState(*StreamState)
+	EncodedStreamState(failed uint64) (enc []byte, err error)
+	SyncDeleted(dbs DeleteBlocks)
 	Type() StorageType
 	RegisterStorageUpdates(StorageUpdateHandler)
 	UpdateConfig(cfg *StreamConfig) error
@@ -169,6 +173,144 @@ type LostStreamData struct {
 type SnapshotResult struct {
 	Reader io.ReadCloser
 	State  StreamState
+}
+
+const (
+	// Magic is used to identify stream state encodings.
+	streamStateMagic = uint8(42)
+	// Version
+	streamStateVersion = uint8(1)
+	// Magic / Identifier for run length encodings.
+	runLengthMagic = uint8(33)
+	// Magic / Identifier for AVL seqsets.
+	seqSetMagic = uint8(22)
+)
+
+// Interface for DeleteBlock.
+// These will be of three types:
+// 1. AVL seqsets.
+// 2. Run length encoding of a deleted range.
+// 3. Legacy []uint64
+type DeleteBlock interface {
+	State() (first, last, num uint64)
+	Range(f func(uint64) bool)
+}
+
+type DeleteBlocks []DeleteBlock
+
+// StreamReplicatedState represents what is encoded in a binary stream snapshot used
+// for stream replication in an NRG.
+type StreamReplicatedState struct {
+	Msgs     uint64
+	Bytes    uint64
+	FirstSeq uint64
+	LastSeq  uint64
+	Failed   uint64
+	Deleted  DeleteBlocks
+}
+
+// Determine if this is an encoded stream state.
+func IsEncodedStreamState(buf []byte) bool {
+	return len(buf) >= hdrLen && buf[0] == streamStateMagic && buf[1] == streamStateVersion
+}
+
+var ErrBadStreamStateEncoding = errors.New("bad stream state encoding")
+
+func DecodeStreamState(buf []byte) (*StreamReplicatedState, error) {
+	ss := &StreamReplicatedState{}
+	if len(buf) < hdrLen || buf[0] != streamStateMagic || buf[1] != streamStateVersion {
+		return nil, ErrBadStreamStateEncoding
+	}
+	var bi = hdrLen
+
+	readU64 := func() uint64 {
+		if bi < 0 || bi >= len(buf) {
+			bi = -1
+			return 0
+		}
+		num, n := binary.Uvarint(buf[bi:])
+		if n <= 0 {
+			bi = -1
+			return 0
+		}
+		bi += n
+		return num
+	}
+
+	ss.Msgs = readU64()
+	ss.Bytes = readU64()
+	ss.FirstSeq = readU64()
+	ss.LastSeq = readU64()
+	ss.Failed = readU64()
+
+	if numDeleted := readU64(); numDeleted > 0 {
+		// If we have some deleted blocks.
+		for l := len(buf); l > bi; {
+			switch buf[bi] {
+			case seqSetMagic:
+				dmap, n, err := avl.Decode(buf[bi:])
+				if err != nil {
+					return nil, err
+				}
+				bi += n
+				ss.Deleted = append(ss.Deleted, dmap)
+			case runLengthMagic:
+				bi++
+				var rl DeleteRange
+				rl.First = readU64()
+				rl.Num = readU64()
+				ss.Deleted = append(ss.Deleted, &rl)
+			}
+		}
+	}
+
+	return ss, nil
+}
+
+// DeleteRange is a run length encoded delete range.
+type DeleteRange struct {
+	First uint64
+	Num   uint64
+}
+
+func (dr *DeleteRange) State() (first, last, num uint64) {
+	return dr.First, dr.First + dr.Num, dr.Num
+}
+
+// Range will range over all the deleted sequences represented by this block.
+func (dr *DeleteRange) Range(f func(uint64) bool) {
+	for seq := dr.First; seq <= dr.First+dr.Num; seq++ {
+		if !f(seq) {
+			return
+		}
+	}
+}
+
+// Legacy []uint64
+type DeleteSlice []uint64
+
+func (ds DeleteSlice) State() (first, last, num uint64) {
+	if len(ds) == 0 {
+		return 0, 0, 0
+	}
+	return ds[0], ds[len(ds)-1], uint64(len(ds))
+}
+
+// Range will range over all the deleted sequences represented by this []uint64.
+func (ds DeleteSlice) Range(f func(uint64) bool) {
+	for _, seq := range ds {
+		if !f(seq) {
+			return
+		}
+	}
+}
+
+func (dbs DeleteBlocks) NumDeleted() (total uint64) {
+	for _, db := range dbs {
+		_, _, num := db.State()
+		total += num
+	}
+	return total
 }
 
 // ConsumerStore stores state on consumers for streams.

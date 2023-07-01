@@ -5583,3 +5583,24 @@ func TestFileStoreNumPendingLargeNumBlks(t *testing.T) {
 	require_True(t, time.Since(start) < 50*time.Millisecond)
 	require_True(t, total == 4000)
 }
+
+func TestFileStoreSkipMsgAndNumBlocks(t *testing.T) {
+	// No need for all permutations here.
+	storeDir := t.TempDir()
+	fcfg := FileStoreConfig{
+		StoreDir:  storeDir,
+		BlockSize: 128, // Small on purpose to create alot of blks.
+	}
+	fs, err := newFileStore(fcfg, StreamConfig{Name: "zzz", Subjects: []string{"zzz"}, Storage: FileStorage})
+	require_NoError(t, err)
+
+	subj, msg := "zzz", bytes.Repeat([]byte("X"), 100)
+	numMsgs := 10_000
+
+	fs.StoreMsg(subj, nil, msg)
+	for i := 0; i < numMsgs; i++ {
+		fs.SkipMsg()
+	}
+	fs.StoreMsg(subj, nil, msg)
+	require_True(t, fs.numMsgBlocks() == 2)
+}

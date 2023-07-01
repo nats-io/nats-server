@@ -310,16 +310,17 @@ type Server struct {
 
 // For tracking JS nodes.
 type nodeInfo struct {
-	name    string
-	version string
-	cluster string
-	domain  string
-	id      string
-	tags    jwt.TagList
-	cfg     *JetStreamConfig
-	stats   *JetStreamStats
-	offline bool
-	js      bool
+	name            string
+	version         string
+	cluster         string
+	domain          string
+	id              string
+	tags            jwt.TagList
+	cfg             *JetStreamConfig
+	stats           *JetStreamStats
+	offline         bool
+	js              bool
+	binarySnapshots bool
 }
 
 // Make sure all are 64bits for atomic use
@@ -696,7 +697,7 @@ func NewServer(opts *Options) (*Server, error) {
 			opts.Tags,
 			&JetStreamConfig{MaxMemory: opts.JetStreamMaxMemory, MaxStore: opts.JetStreamMaxStore, CompressOK: true},
 			nil,
-			false, true,
+			false, true, true,
 		})
 	}
 

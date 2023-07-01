@@ -14,11 +14,14 @@
 package server
 
 import (
+	"encoding/binary"
 	"fmt"
 	"math/rand"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/nats-io/nats-server/v2/server/avl"
 )
 
 // TODO(dlc) - This is a fairly simplistic approach but should do for now.
@@ -1206,6 +1209,50 @@ func (ms *memStore) RemoveConsumer(o ConsumerStore) error {
 
 func (ms *memStore) Snapshot(_ time.Duration, _, _ bool) (*SnapshotResult, error) {
 	return nil, fmt.Errorf("no impl")
+}
+
+// Binary encoded state snapshot, >= v2.10 server.
+func (ms *memStore) EncodedStreamState(failed uint64) ([]byte, error) {
+	// FIXME(dlc) - Don't calculate deleted on the fly, keep delete blocks.
+	state := ms.State()
+
+	// Encoded is Msgs, Bytes, FirstSeq, LastSeq, Failed, NumDeleted and optional DeletedBlocks
+	var buf [1024]byte
+	buf[0], buf[1] = streamStateMagic, streamStateVersion
+	n := hdrLen
+	n += binary.PutUvarint(buf[n:], state.Msgs)
+	n += binary.PutUvarint(buf[n:], state.Bytes)
+	n += binary.PutUvarint(buf[n:], state.FirstSeq)
+	n += binary.PutUvarint(buf[n:], state.LastSeq)
+	n += binary.PutUvarint(buf[n:], failed)
+	n += binary.PutUvarint(buf[n:], uint64(state.NumDeleted))
+
+	b := buf[0:n]
+
+	if state.NumDeleted > 0 {
+		var ss avl.SequenceSet
+		ss.SetInitialMin(state.Deleted[0])
+		for _, seq := range state.Deleted {
+			ss.Insert(seq)
+		}
+		buf, err := ss.Encode(nil)
+		if err != nil {
+			return nil, err
+		}
+		b = append(b, buf...)
+	}
+
+	return b, nil
+}
+
+// SyncDeleted will make sure this stream has same deleted state as dbs.
+func (ms *memStore) SyncDeleted(dbs DeleteBlocks) {
+	for _, db := range dbs {
+		db.Range(func(dseq uint64) bool {
+			ms.RemoveMsg(dseq)
+			return true
+		})
+	}
 }
 
 func (o *consumerMemStore) Update(state *ConsumerState) error {
