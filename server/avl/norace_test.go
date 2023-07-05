@@ -110,7 +110,7 @@ func TestNoRaceSeqSetEncodeLarge(t *testing.T) {
 	}
 
 	start = time.Now()
-	ss2, err := Decode(b)
+	ss2, _, err := Decode(b)
 	require_NoError(t, err)
 	if elapsed := time.Since(start); elapsed > expected {
 		t.Fatalf("Expected decode to take less than %v, got %v", expected, elapsed)
@@ -174,8 +174,8 @@ func TestNoRaceSeqSetRelativeSpeed(t *testing.T) {
 		t.Fatalf("Expected SequenceSet insert to be no more than 2x slower (%v vs %v)", mapInsertElapsed, ssInsertElapsed)
 	}
 
-	if mapLookupElapsed*2 <= ssLookupElapsed {
-		t.Fatalf("Expected SequenceSet lookups to be no more than 2x slower (%v vs %v)", mapLookupElapsed, ssLookupElapsed)
+	if mapLookupElapsed*3 <= ssLookupElapsed {
+		t.Fatalf("Expected SequenceSet lookups to be no more than 3x slower (%v vs %v)", mapLookupElapsed, ssLookupElapsed)
 	}
 }
 

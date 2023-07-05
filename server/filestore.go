@@ -5307,7 +5307,7 @@ func (mb *msgBlock) readIndexInfo() error {
 	if dmapLen > 0 {
 		// New version is encoded avl seqset.
 		if buf[1] == newVersion {
-			dmap, err := avl.Decode(buf[bi:])
+			dmap, _, err := avl.Decode(buf[bi:])
 			if err != nil {
 				return fmt.Errorf("could not decode avl dmap: %v", err)
 			}
@@ -6784,6 +6784,153 @@ func (fs *fileStore) fileStoreConfig() FileStoreConfig {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 	return fs.fcfg
+}
+
+// When we will write a run length encoded record vs adding to the existing avl.SequenceSet.
+const rlThresh = 4096
+
+// Binary encoded state snapshot, >= v2.10 server.
+func (fs *fileStore) EncodedStreamState(failed uint64) ([]byte, error) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	// Calculate deleted.
+	var numDeleted int64
+	if fs.state.LastSeq > fs.state.FirstSeq {
+		numDeleted = int64(fs.state.LastSeq-fs.state.FirstSeq+1) - int64(fs.state.Msgs)
+		if numDeleted < 0 {
+			numDeleted = 0
+		}
+	}
+
+	// Encoded is Msgs, Bytes, FirstSeq, LastSeq, Failed, NumDeleted and optional DeletedBlocks
+	var buf [1024]byte
+	buf[0], buf[1] = streamStateMagic, streamStateVersion
+	n := hdrLen
+	n += binary.PutUvarint(buf[n:], fs.state.Msgs)
+	n += binary.PutUvarint(buf[n:], fs.state.Bytes)
+	n += binary.PutUvarint(buf[n:], fs.state.FirstSeq)
+	n += binary.PutUvarint(buf[n:], fs.state.LastSeq)
+	n += binary.PutUvarint(buf[n:], failed)
+	n += binary.PutUvarint(buf[n:], uint64(numDeleted))
+
+	b := buf[0:n]
+
+	if numDeleted > 0 {
+		var scratch [4 * 1024]byte
+		for _, db := range fs.deleteBlocks() {
+			switch db := db.(type) {
+			case *DeleteRange:
+				first, _, num := db.State()
+				scratch[0] = runLengthMagic
+				i := 1
+				i += binary.PutUvarint(scratch[i:], first)
+				i += binary.PutUvarint(scratch[i:], num)
+				b = append(b, scratch[0:i]...)
+			case *avl.SequenceSet:
+				buf, err := db.Encode(scratch[:0])
+				if err != nil {
+					return nil, err
+				}
+				b = append(b, buf...)
+			}
+		}
+	}
+
+	return b, nil
+}
+
+// Lock should be held.
+func (fs *fileStore) deleteBlocks() DeleteBlocks {
+	var (
+		dbs      DeleteBlocks
+		adm      *avl.SequenceSet
+		prevLast uint64
+	)
+	for _, mb := range fs.blks {
+		mb.mu.RLock()
+		// Detect if we have a gap between these blocks.
+		if prevLast > 0 && prevLast+1 != mb.first.seq {
+			// Detect if we need to encode a run length encoding here.
+			gap := mb.first.seq - prevLast - 1
+			if gap > rlThresh {
+				// Check if we have a running adm, if so write that out first, or if contigous update rle params.
+				if adm != nil && adm.Size() > 0 {
+					min, max := adm.MinMax()
+					// Check if we are all contingous.
+					if uint64(adm.Size()) == max-min+1 {
+						prevLast, gap = min-1, mb.first.seq-min
+					} else {
+						dbs = append(dbs, adm)
+					}
+					// Always nil out here.
+					adm = nil
+				}
+				dbs = append(dbs, &DeleteRange{First: prevLast + 1, Num: gap})
+			} else {
+				// Common dmap
+				if adm == nil {
+					adm = &avl.SequenceSet{}
+					adm.SetInitialMin(prevLast + 1)
+				}
+				for seq := prevLast + 1; seq < mb.first.seq; seq++ {
+					adm.Insert(seq)
+				}
+			}
+		}
+		if sz := mb.dmap.Size(); sz > 0 {
+			// Check in case the mb's dmap is contiguous.
+			min, max := mb.dmap.MinMax()
+			if uint64(sz) == max-min+1 {
+				// Need to write out adm if it exists.
+				if adm != nil && adm.Size() > 0 {
+					dbs = append(dbs, adm)
+				}
+				dbs = append(dbs, &DeleteRange{First: min, Num: max - min + 1})
+			} else {
+				// Aggregated dmap
+				if adm == nil {
+					adm = mb.dmap.Clone()
+				} else {
+					adm.Union(&mb.dmap)
+				}
+			}
+		}
+		prevLast = mb.last.seq
+		mb.mu.RUnlock()
+	}
+
+	if adm != nil {
+		dbs = append(dbs, adm)
+	}
+
+	return dbs
+}
+
+// SyncDeleted will make sure this stream has same deleted state as dbs.
+func (fs *fileStore) SyncDeleted(dbs DeleteBlocks) {
+	if len(dbs) == 0 {
+		return
+	}
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	mdbs := fs.deleteBlocks()
+	for i, db := range dbs {
+		// If the block is same as what we have we can skip.
+		if i < len(mdbs) {
+			first, last, num := db.State()
+			eFirst, eLast, eNum := mdbs[i].State()
+			if first == eFirst && last == eLast && num == eNum {
+				continue
+			}
+		}
+		// Need to insert these.
+		db.Range(func(dseq uint64) bool {
+			fs.removeMsg(dseq, false, true, false)
+			return true
+		})
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////

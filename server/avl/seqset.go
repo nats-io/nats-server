@@ -138,6 +138,15 @@ func (ss *SequenceSet) Heights() (l, r int) {
 	return l, r
 }
 
+// Returns min, max and number of set items.
+func (ss *SequenceSet) State() (min, max, num uint64) {
+	if ss.root == nil {
+		return 0, 0, 0
+	}
+	min, max = ss.MinMax()
+	return min, max, uint64(ss.Size())
+}
+
 // MinMax will return the minunum and maximum values in the set.
 func (ss *SequenceSet) MinMax() (min, max uint64) {
 	if ss.root == nil {
@@ -177,6 +186,23 @@ func (ss *SequenceSet) Clone() *SequenceSet {
 	return css
 }
 
+// Union will union this SequenceSet with ssa.
+func (ss *SequenceSet) Union(ssa ...*SequenceSet) {
+	for _, sa := range ssa {
+		sa.root.nodeIter(func(n *node) {
+			for nb, b := range n.bits {
+				for pos := uint64(0); b != 0; pos++ {
+					if b&1 == 1 {
+						seq := n.base + (uint64(nb) * uint64(bitsPerBucket)) + pos
+						ss.Insert(seq)
+					}
+					b >>= 1
+				}
+			}
+		})
+	}
+}
+
 // Union will return a union of all sets.
 func Union(ssa ...*SequenceSet) *SequenceSet {
 	if len(ssa) == 0 {
@@ -200,7 +226,7 @@ const (
 	// Magic is used to identify the encode binary state..
 	magic = uint8(22)
 	// Version
-	version = uint8(1)
+	version = uint8(2)
 	// hdrLen
 	hdrLen = 2
 	// minimum length of an encoded SequenceSet.
@@ -247,14 +273,28 @@ func (ss SequenceSet) Encode(buf []byte) ([]byte, error) {
 // ErrBadEncoding is returned when we can not decode properly.
 var (
 	ErrBadEncoding = errors.New("ss: bad encoding")
+	ErrBadVersion  = errors.New("ss: bad version")
 	ErrSetNotEmpty = errors.New("ss: set not empty")
 )
 
-func Decode(buf []byte) (*SequenceSet, error) {
-	if len(buf) < minLen || buf[0] != magic || buf[1] != version {
-		return nil, ErrBadEncoding
+// Decode returns the sequence set and number of bytes read from the buffer on success.
+func Decode(buf []byte) (*SequenceSet, int, error) {
+	if len(buf) < minLen || buf[0] != magic {
+		return nil, -1, ErrBadEncoding
 	}
 
+	switch v := buf[1]; v {
+	case 1:
+		return decodev1(buf)
+	case 2:
+		return decodev2(buf)
+	default:
+		return nil, -1, ErrBadVersion
+	}
+}
+
+// Helper to decode v2.
+func decodev2(buf []byte) (*SequenceSet, int, error) {
 	var le = binary.LittleEndian
 	index := 2
 	nn := int(le.Uint32(buf[index:]))
@@ -262,15 +302,12 @@ func Decode(buf []byte) (*SequenceSet, error) {
 	index += 8
 
 	expectedLen := minLen + (nn * ((numBuckets+1)*8 + 2))
-	if len(buf) != expectedLen {
-		return nil, ErrBadEncoding
+	if len(buf) < expectedLen {
+		return nil, -1, ErrBadEncoding
 	}
 
-	nodes := make([]node, nn)
+	ss, nodes := SequenceSet{size: sz}, make([]node, nn)
 
-	ss := SequenceSet{
-		size: sz,
-	}
 	for i := 0; i < nn; i++ {
 		n := &nodes[i]
 		n.base = le.Uint64(buf[index:])
@@ -284,7 +321,51 @@ func Decode(buf []byte) (*SequenceSet, error) {
 		ss.insertNode(n)
 	}
 
-	return &ss, nil
+	return &ss, index, nil
+}
+
+// Helper to decode v1 into v2 which has fixed buckets of 32 vs 64 originally.
+func decodev1(buf []byte) (*SequenceSet, int, error) {
+	var le = binary.LittleEndian
+	index := 2
+	nn := int(le.Uint32(buf[index:]))
+	sz := int(le.Uint32(buf[index+4:]))
+	index += 8
+
+	const v1NumBuckets = 64
+
+	expectedLen := minLen + (nn * ((v1NumBuckets+1)*8 + 2))
+	if len(buf) < expectedLen {
+		return nil, -1, ErrBadEncoding
+	}
+
+	var ss SequenceSet
+	for i := 0; i < nn; i++ {
+		base := le.Uint64(buf[index:])
+		index += 8
+		for nb := uint64(0); nb < v1NumBuckets; nb++ {
+			n := le.Uint64(buf[index:])
+			// Walk all set bits and insert sequences manually for this decode from v1.
+			for pos := uint64(0); n != 0; pos++ {
+				if n&1 == 1 {
+					seq := base + (nb * uint64(bitsPerBucket)) + pos
+					ss.Insert(seq)
+				}
+				n >>= 1
+			}
+			index += 8
+		}
+		// Skip over encoded height.
+		index += 2
+	}
+
+	// Sanity check.
+	if ss.Size() != sz {
+		return nil, -1, ErrBadEncoding
+	}
+
+	return &ss, index, nil
+
 }
 
 // insertNode places a decoded node into the tree.
@@ -318,7 +399,7 @@ func (ss *SequenceSet) insertNode(n *node) {
 
 const (
 	bitsPerBucket = 64 // bits in uint64
-	numBuckets    = 64
+	numBuckets    = 32
 	numEntries    = numBuckets * bitsPerBucket
 )
 

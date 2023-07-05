@@ -2847,25 +2847,46 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				panic(fmt.Sprintf("JetStream Cluster Unknown group entry op type: %v", op))
 			}
 		} else if e.Type == EntrySnapshot {
-			if !isRecovering && mset != nil {
-				var snap streamSnapshot
-				if err := json.Unmarshal(e.Data, &snap); err != nil {
-					return err
-				}
-				if !mset.IsLeader() {
-					if err := mset.processSnapshot(&snap); err != nil {
-						return err
-					}
-				}
-			} else if isRecovering && mset != nil {
-				// On recovery, reset CLFS/FAILED.
-				var snap streamSnapshot
-				if err := json.Unmarshal(e.Data, &snap); err != nil {
-					return err
-				}
+			if mset == nil {
+				return nil
+			}
 
+			// Everything operates on new replicated state. Will convert legacy snapshots to this for processing.
+			var ss *StreamReplicatedState
+
+			// Check if we are the new binary encoding.
+			if IsEncodedStreamState(e.Data) {
+				var err error
+				ss, err = DecodeStreamState(e.Data)
+				if err != nil {
+					return err
+				}
+			} else {
+				var snap streamSnapshot
+				if err := json.Unmarshal(e.Data, &snap); err != nil {
+					return err
+				}
+				// Convert over to StreamReplicatedState
+				ss = &StreamReplicatedState{
+					Msgs:     snap.Msgs,
+					Bytes:    snap.Bytes,
+					FirstSeq: snap.FirstSeq,
+					LastSeq:  snap.LastSeq,
+					Failed:   snap.Failed,
+				}
+				if len(snap.Deleted) > 0 {
+					ss.Deleted = append(ss.Deleted, DeleteSlice(snap.Deleted))
+				}
+			}
+
+			if !isRecovering && !mset.IsLeader() {
+				if err := mset.processSnapshot(ss); err != nil {
+					return err
+				}
+			} else if isRecovering {
+				// On recovery, reset CLFS/FAILED.
 				mset.mu.Lock()
-				mset.clfs = snap.Failed
+				mset.clfs = ss.Failed
 				mset.mu.Unlock()
 			}
 		} else if e.Type == EntryRemovePeer {
@@ -7174,7 +7195,36 @@ func encodeStreamMsgAllowCompress(subject, reply string, hdr, msg []byte, lseq u
 	return buf[:wi]
 }
 
+// Determine if all peers in our set support the binary snapshot.
+func (mset *stream) supportsBinarySnapshot() bool {
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
+	return mset.supportsBinarySnapshotLocked()
+}
+
+// Determine if all peers in our set support the binary snapshot.
+// Lock should be held.
+func (mset *stream) supportsBinarySnapshotLocked() bool {
+	s, n := mset.srv, mset.node
+	if s == nil || n == nil {
+		return false
+	}
+	// Grab our peers and walk them to make sure we can all support binary stream snapshots.
+	id, peers := n.ID(), n.Peers()
+	for _, p := range peers {
+		if p.ID == id {
+			// We know we support ourselves.
+			continue
+		}
+		if sir, ok := s.nodeToInfo.Load(p.ID); !ok || sir == nil || !sir.(nodeInfo).binarySnapshots {
+			return false
+		}
+	}
+	return true
+}
+
 // StreamSnapshot is used for snapshotting and out of band catch up in clustered mode.
+// Legacy, replace with binary stream snapshots.
 type streamSnapshot struct {
 	Msgs     uint64   `json:"messages"`
 	Bytes    uint64   `json:"bytes"`
@@ -7194,6 +7244,13 @@ func (mset *stream) stateSnapshot() []byte {
 // Grab a snapshot of a stream for clustered mode.
 // Lock should be held.
 func (mset *stream) stateSnapshotLocked() []byte {
+	// Decide if we can support the new style of stream snapshots.
+	if mset.supportsBinarySnapshotLocked() {
+		snap, _ := mset.store.EncodedStreamState(mset.clfs)
+		return snap
+	}
+
+	// Older v1 version with deleted as a sorted []uint64.
 	state := mset.store.State()
 	snap := &streamSnapshot{
 		Msgs:     state.Msgs,
@@ -7438,7 +7495,7 @@ type streamSyncRequest struct {
 }
 
 // Given a stream state that represents a snapshot, calculate the sync request based on our current state.
-func (mset *stream) calculateSyncRequest(state *StreamState, snap *streamSnapshot) *streamSyncRequest {
+func (mset *stream) calculateSyncRequest(state *StreamState, snap *StreamReplicatedState) *streamSyncRequest {
 	// Quick check if we are already caught up.
 	if state.LastSeq >= snap.LastSeq {
 		return nil
@@ -7448,7 +7505,7 @@ func (mset *stream) calculateSyncRequest(state *StreamState, snap *streamSnapsho
 
 // processSnapshotDeletes will update our current store based on the snapshot
 // but only processing deletes and new FirstSeq / purges.
-func (mset *stream) processSnapshotDeletes(snap *streamSnapshot) {
+func (mset *stream) processSnapshotDeletes(snap *StreamReplicatedState) {
 	mset.mu.Lock()
 	var state StreamState
 	mset.store.FastState(&state)
@@ -7461,11 +7518,8 @@ func (mset *stream) processSnapshotDeletes(snap *streamSnapshot) {
 	}
 	mset.mu.Unlock()
 
-	// Range the deleted and delete if applicable.
-	for _, dseq := range snap.Deleted {
-		if dseq > state.FirstSeq && dseq <= state.LastSeq {
-			mset.store.RemoveMsg(dseq)
-		}
+	if len(snap.Deleted) > 0 {
+		mset.store.SyncDeleted(snap.Deleted)
 	}
 }
 
@@ -7562,7 +7616,7 @@ var (
 )
 
 // Process a stream snapshot.
-func (mset *stream) processSnapshot(snap *streamSnapshot) (e error) {
+func (mset *stream) processSnapshot(snap *StreamReplicatedState) (e error) {
 	// Update any deletes, etc.
 	mset.processSnapshotDeletes(snap)
 
