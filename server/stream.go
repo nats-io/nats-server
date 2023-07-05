@@ -2077,12 +2077,13 @@ func (mset *stream) processMirrorMsgs(mirror *sourceInfo, ready *sync.WaitGroup)
 	msgs, qch, siqch := mirror.msgs, mset.qch, mirror.qch
 	// Set the last seen as now so that we don't fail at the first check.
 	mirror.last = time.Now()
+	heartbeat := mset.getMirrorHeartbeat()
 	mset.mu.Unlock()
 
 	// Signal the caller that we have captured the above fields.
 	ready.Done()
 
-	t := time.NewTicker(mset.getMirrorHeartbeat())
+	t := time.NewTicker(heartbeat)
 	defer t.Stop()
 
 	for {
@@ -2104,7 +2105,7 @@ func (mset *stream) processMirrorMsgs(mirror *sourceInfo, ready *sync.WaitGroup)
 		case <-t.C:
 			mset.mu.RLock()
 			isLeader := mset.isLeader()
-			stalled := mset.mirror != nil && time.Since(mset.mirror.last) > 3*mset.getMirrorHeartbeat()
+			stalled := mset.mirror != nil && time.Since(mset.mirror.last) > 3*heartbeat
 			mset.mu.RUnlock()
 			// No longer leader.
 			if !isLeader {
