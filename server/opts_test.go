@@ -1,4 +1,4 @@
-// Copyright 2012-2020 The NATS Authors
+// Copyright 2012-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -1410,12 +1410,13 @@ func TestOptionsProcessConfigFile(t *testing.T) {
 func TestConfigureOptions(t *testing.T) {
 	// Options.Configure() will snapshot the flags. This is used by the reload code.
 	// We need to set it back to nil otherwise it will impact reload tests.
-	defer func() { FlagSnapshot = nil }()
 
 	ch := make(chan bool, 1)
 	checkPrintInvoked := func() {
 		ch <- true
 	}
+	OsExit = func(int) { checkPrintInvoked() }
+	defer func() { FlagSnapshot = nil; OsExit = os.Exit }()
 	usage := func() { panic("should not get there") }
 	var fs *flag.FlagSet
 	type testPrint struct {
@@ -1431,7 +1432,7 @@ func TestConfigureOptions(t *testing.T) {
 	}
 	for _, tf := range testFuncs {
 		fs = flag.NewFlagSet("test", flag.ContinueOnError)
-		opts, err := ConfigureOptions(fs, tf.args, tf.version, tf.help, tf.tlsHelp)
+		opts, err := ConfigureOptions(fs, tf.args, tf.version, tf.tlsHelp)
 		if err != nil {
 			t.Fatalf("Error on configure: %v", err)
 		}
@@ -1448,7 +1449,7 @@ func TestConfigureOptions(t *testing.T) {
 	// Helper function that expect parsing with given args to not produce an error.
 	mustNotFail := func(args []string) *Options {
 		fs := flag.NewFlagSet("test", flag.ContinueOnError)
-		opts, err := ConfigureOptions(fs, args, PrintServerAndExit, fs.Usage, PrintTLSHelpAndDie)
+		opts, err := ConfigureOptions(fs, args, PrintServerAndExit, PrintTLSHelpAndDie)
 		if err != nil {
 			stackFatalf(t, "Error on configure: %v", err)
 		}
@@ -1462,7 +1463,7 @@ func TestConfigureOptions(t *testing.T) {
 		// (flagSet would print error message about unknown flags, etc..)
 		silenceOuput := &bytes.Buffer{}
 		fs.SetOutput(silenceOuput)
-		opts, err := ConfigureOptions(fs, args, PrintServerAndExit, fs.Usage, PrintTLSHelpAndDie)
+		opts, err := ConfigureOptions(fs, args, PrintServerAndExit, PrintTLSHelpAndDie)
 		if opts != nil || err == nil {
 			stackFatalf(t, "Expected no option and an error, got opts=%v and err=%v", opts, err)
 		}

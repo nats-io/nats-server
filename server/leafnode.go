@@ -65,6 +65,10 @@ const (
 	leafNodeWaitBeforeClose = 5 * time.Second
 )
 
+var (
+	ReadCreds = os.ReadFile
+)
+
 type leaf struct {
 	// We have any auth stuff here for solicited connections.
 	remote *leafNodeCfg
@@ -144,7 +148,7 @@ func (s *Server) solicitLeafNodeRemotes(remotes []*RemoteLeafOpts) {
 		}
 		s.mu.Unlock()
 		if creds != _EMPTY_ {
-			contents, err := os.ReadFile(creds)
+			contents, err := ReadCreds(creds)
 			defer wipeSlice(contents)
 			if err != nil {
 				s.Errorf("Error reading LeafNode Remote Credentials file %q: %v", creds, err)
@@ -448,9 +452,11 @@ func (s *Server) setLeafNodeNonExportedOptions() {
 	}
 }
 
-const sharedSysAccDelay = 250 * time.Millisecond
-
 func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool) {
+	const (
+		sharedSysAccDelay = 250 * time.Millisecond
+		connErrFmt        = "Error trying to connect as leafnode to remote server %q (attempt %v): %v"
+	)
 	defer s.grWG.Done()
 
 	if remote == nil || len(remote.URLs) == 0 {
@@ -485,8 +491,6 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 	}
 
 	var conn net.Conn
-
-	const connErrFmt = "Error trying to connect as leafnode to remote server %q (attempt %v): %v"
 
 	attempts := 0
 	for s.isRunning() && s.remoteLeafNodeStillValid(remote) {
@@ -769,7 +773,7 @@ func (c *client) sendLeafConnect(clusterName string, tlsRequired, headers bool) 
 	} else if creds := c.leaf.remote.Credentials; creds != _EMPTY_ {
 		// Check for credentials first, that will take precedence..
 		c.Debugf("Authenticating with credentials file %q", c.leaf.remote.Credentials)
-		contents, err := os.ReadFile(creds)
+		contents, err := ReadCreds(creds)
 		if err != nil {
 			c.Errorf("%v", err)
 			return err
@@ -2634,11 +2638,10 @@ func (c *client) leafNodeSolicitWSConnection(opts *Options, rURL *url.URL, remot
 	return preBuf, 0, nil
 }
 
-const connectProcessTimeout = 2 * time.Second
-
 // This is invoked for remote LEAF remote connections after processing the INFO
 // protocol. This will do the TLS handshake (if needed be)
 func (s *Server) leafNodeResumeConnectProcess(c *client) {
+	const connectProcessTimeout = 2 * time.Second
 	clusterName := s.ClusterName()
 
 	c.mu.Lock()

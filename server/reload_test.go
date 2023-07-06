@@ -1,4 +1,4 @@
-// Copyright 2017-2021 The NATS Authors
+// Copyright 2017-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -3600,6 +3600,8 @@ func TestConfigReloadBoolFlags(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			OsExit = func(int) {}
+			defer func() { OsExit = os.Exit }()
 			conf := createConfFile(t, []byte(fmt.Sprintf(template, logfile, test.content)))
 
 			fs := flag.NewFlagSet("test", flag.ContinueOnError)
@@ -3608,7 +3610,7 @@ func TestConfigReloadBoolFlags(t *testing.T) {
 			if test.cmdLine != nil {
 				args = append(args, test.cmdLine...)
 			}
-			opts, err = ConfigureOptions(fs, args, nil, nil, nil)
+			opts, err = ConfigureOptions(fs, args, nil, nil)
 			if err != nil {
 				t.Fatalf("Error processing config: %v", err)
 			}

@@ -1,4 +1,4 @@
-// Copyright 2012-2022 The NATS Authors
+// Copyright 2012-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -39,7 +39,10 @@ import (
 	"github.com/nats-io/nkeys"
 )
 
-var allowUnknownTopLevelField = int32(0)
+var (
+	allowUnknownTopLevelField = int32(0)
+	LoadX509KeyPair           = tls.LoadX509KeyPair
+)
 
 // NoErrOnUnknownFields can be used to change the behavior the processing
 // of a configuration file. By default, an error is reported if unknown
@@ -4330,7 +4333,7 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 		return nil, fmt.Errorf("missing 'cert_file' in TLS configuration")
 	case tc.CertFile != _EMPTY_ && tc.KeyFile != _EMPTY_:
 		// Now load in cert and private key
-		cert, err := tls.LoadX509KeyPair(tc.CertFile, tc.KeyFile)
+		cert, err := LoadX509KeyPair(tc.CertFile, tc.KeyFile)
 		if err != nil {
 			return nil, fmt.Errorf("error parsing X509 certificate/key pair: %v", err)
 		}
@@ -4695,7 +4698,7 @@ func getDefaultAuthTimeout(tls *tls.Config, tlsTimeout float64) float64 {
 // specific flags. On success, an options structure is returned configured
 // based on the selected flags and/or configuration file.
 // The command line options take precedence to the ones in the configuration file.
-func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, printTLSHelp func()) (*Options, error) {
+func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printTLSHelp func()) (*Options, error) {
 	opts := &Options{}
 	var (
 		showVersion            bool
@@ -4708,71 +4711,9 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 		dbgAndTrcAndVerboseTrc bool
 		err                    error
 	)
-
-	fs.BoolVar(&showHelp, "h", false, "Show this message.")
-	fs.BoolVar(&showHelp, "help", false, "Show this message.")
-	fs.IntVar(&opts.Port, "port", 0, "Port to listen on.")
-	fs.IntVar(&opts.Port, "p", 0, "Port to listen on.")
-	fs.StringVar(&opts.ServerName, "n", "", "Server name.")
-	fs.StringVar(&opts.ServerName, "name", "", "Server name.")
-	fs.StringVar(&opts.ServerName, "server_name", "", "Server name.")
-	fs.StringVar(&opts.Host, "addr", "", "Network host to listen on.")
-	fs.StringVar(&opts.Host, "a", "", "Network host to listen on.")
-	fs.StringVar(&opts.Host, "net", "", "Network host to listen on.")
-	fs.StringVar(&opts.ClientAdvertise, "client_advertise", "", "Client URL to advertise to other servers.")
-	fs.BoolVar(&opts.Debug, "D", false, "Enable Debug logging.")
-	fs.BoolVar(&opts.Debug, "debug", false, "Enable Debug logging.")
-	fs.BoolVar(&opts.Trace, "V", false, "Enable Trace logging.")
-	fs.BoolVar(&trcAndVerboseTrc, "VV", false, "Enable Verbose Trace logging. (Traces system account as well)")
-	fs.BoolVar(&opts.Trace, "trace", false, "Enable Trace logging.")
-	fs.BoolVar(&dbgAndTrace, "DV", false, "Enable Debug and Trace logging.")
-	fs.BoolVar(&dbgAndTrcAndVerboseTrc, "DVV", false, "Enable Debug and Verbose Trace logging. (Traces system account as well)")
-	fs.BoolVar(&opts.Logtime, "T", true, "Timestamp log entries.")
-	fs.BoolVar(&opts.Logtime, "logtime", true, "Timestamp log entries.")
-	fs.StringVar(&opts.Username, "user", "", "Username required for connection.")
-	fs.StringVar(&opts.Password, "pass", "", "Password required for connection.")
-	fs.StringVar(&opts.Authorization, "auth", "", "Authorization token required for connection.")
-	fs.IntVar(&opts.HTTPPort, "m", 0, "HTTP Port for /varz, /connz endpoints.")
-	fs.IntVar(&opts.HTTPPort, "http_port", 0, "HTTP Port for /varz, /connz endpoints.")
-	fs.IntVar(&opts.HTTPSPort, "ms", 0, "HTTPS Port for /varz, /connz endpoints.")
-	fs.IntVar(&opts.HTTPSPort, "https_port", 0, "HTTPS Port for /varz, /connz endpoints.")
-	fs.StringVar(&configFile, "c", "", "Configuration file.")
-	fs.StringVar(&configFile, "config", "", "Configuration file.")
-	fs.BoolVar(&opts.CheckConfig, "t", false, "Check configuration and exit.")
-	fs.StringVar(&signal, "sl", "", "Send signal to nats-server process (ldm, stop, quit, term, reopen, reload).")
-	fs.StringVar(&signal, "signal", "", "Send signal to nats-server process (ldm, stop, quit, term, reopen, reload).")
-	fs.StringVar(&opts.PidFile, "P", "", "File to store process pid.")
-	fs.StringVar(&opts.PidFile, "pid", "", "File to store process pid.")
-	fs.StringVar(&opts.PortsFileDir, "ports_file_dir", "", "Creates a ports file in the specified directory (<executable_name>_<pid>.ports).")
-	fs.StringVar(&opts.LogFile, "l", "", "File to store logging output.")
-	fs.StringVar(&opts.LogFile, "log", "", "File to store logging output.")
-	fs.Int64Var(&opts.LogSizeLimit, "log_size_limit", 0, "Logfile size limit being auto-rotated")
-	fs.BoolVar(&opts.Syslog, "s", false, "Enable syslog as log method.")
-	fs.BoolVar(&opts.Syslog, "syslog", false, "Enable syslog as log method.")
-	fs.StringVar(&opts.RemoteSyslog, "r", "", "Syslog server addr (udp://127.0.0.1:514).")
-	fs.StringVar(&opts.RemoteSyslog, "remote_syslog", "", "Syslog server addr (udp://127.0.0.1:514).")
-	fs.BoolVar(&showVersion, "version", false, "Print version information.")
-	fs.BoolVar(&showVersion, "v", false, "Print version information.")
-	fs.IntVar(&opts.ProfPort, "profile", 0, "Profiling HTTP port.")
-	fs.StringVar(&opts.RoutesStr, "routes", "", "Routes to actively solicit a connection.")
-	fs.StringVar(&opts.Cluster.ListenStr, "cluster", "", "Cluster url from which members can solicit routes.")
-	fs.StringVar(&opts.Cluster.ListenStr, "cluster_listen", "", "Cluster url from which members can solicit routes.")
-	fs.StringVar(&opts.Cluster.Advertise, "cluster_advertise", "", "Cluster URL to advertise to other servers.")
-	fs.BoolVar(&opts.Cluster.NoAdvertise, "no_advertise", false, "Advertise known cluster IPs to clients.")
-	fs.IntVar(&opts.Cluster.ConnectRetries, "connect_retries", 0, "For implicit routes, number of connect retries.")
-	fs.StringVar(&opts.Cluster.Name, "cluster_name", "", "Cluster Name, if not set one will be dynamically generated.")
-	fs.BoolVar(&showTLSHelp, "help_tls", false, "TLS help.")
-	fs.BoolVar(&opts.TLS, "tls", false, "Enable TLS.")
-	fs.BoolVar(&opts.TLSVerify, "tlsverify", false, "Enable TLS with client verification.")
-	fs.StringVar(&opts.TLSCert, "tlscert", "", "Server certificate file.")
-	fs.StringVar(&opts.TLSKey, "tlskey", "", "Private key for server certificate.")
-	fs.StringVar(&opts.TLSCaCert, "tlscacert", "", "Client certificate CA for verification.")
-	fs.IntVar(&opts.MaxTracedMsgLen, "max_traced_msg_len", 0, "Maximum printable length for traced messages. 0 for unlimited.")
-	fs.BoolVar(&opts.JetStream, "js", false, "Enable JetStream.")
-	fs.BoolVar(&opts.JetStream, "jetstream", false, "Enable JetStream.")
-	fs.StringVar(&opts.StoreDir, "sd", "", "Storage directory.")
-	fs.StringVar(&opts.StoreDir, "store_dir", "", "Storage directory.")
-
+	configureFlagSet(fs, opts, &showVersion, &showHelp, &showTLSHelp,
+		&signal, &configFile,
+		&dbgAndTrace, &trcAndVerboseTrc, &dbgAndTrcAndVerboseTrc)
 	// The flags definition above set "default" values to some of the options.
 	// Calling Parse() here will override the default options with any value
 	// specified from the command line. This is ok. We will then update the
@@ -4791,7 +4732,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	}
 
 	if showHelp {
-		printHelp()
+		fs.Usage()
 		return nil, nil
 	}
 
@@ -4809,7 +4750,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 		printVersion()
 		return nil, nil
 	} else if showHelp {
-		printHelp()
+		fs.Usage()
 		return nil, nil
 	}
 
