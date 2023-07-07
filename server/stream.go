@@ -1264,7 +1264,7 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 			if len(src.FilterSubjects) != len(src.SubjectTransformDests) {
 				return StreamConfig{}, NewJSSourceNumberOfFiltersAndTransformDestinationMustMatchError()
 			}
-			for i, _ := range src.FilterSubjects {
+			for i := range src.FilterSubjects {
 				err := ValidateMappingDestination(src.SubjectTransformDests[i])
 				if err != nil {
 					return StreamConfig{}, NewJSSourceInvalidTransformDestinationError()
