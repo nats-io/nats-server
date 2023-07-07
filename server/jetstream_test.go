@@ -11441,12 +11441,13 @@ func TestJetStreamSourceBasics(t *testing.T) {
 	}
 
 	// Test optional start times, filtered subjects etc.
-	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"dlc", "rip"}}); err != nil {
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"dlc", "rip", "jnm"}}); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	sendBatch("dlc", 20)
 	sendBatch("rip", 20)
 	sendBatch("dlc", 10)
+	sendBatch("jnm", 10)
 
 	cfg = &StreamConfig{
 		Name:    "FMS",
@@ -11459,8 +11460,8 @@ func TestJetStreamSourceBasics(t *testing.T) {
 	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
 		si, err := js2.StreamInfo("FMS")
 		require_NoError(t, err)
-		if si.State.Msgs != 25 {
-			return fmt.Errorf("Expected 25 msgs, got state: %+v", si.State)
+		if si.State.Msgs != 35 {
+			return fmt.Errorf("Expected 35 msgs, got state: %+v", si.State)
 		}
 		return nil
 	})
@@ -11500,6 +11501,53 @@ func TestJetStreamSourceBasics(t *testing.T) {
 	} else if _, _, sseq := streamAndSeq(shdr); sseq != 11 {
 		t.Fatalf("Expected header sequence of 11, got %d", sseq)
 	}
+
+	// Test Filters
+	cfg = &StreamConfig{
+		Name:    "FMS3",
+		Storage: FileStorage,
+		Sources: []*StreamSource{
+			{Name: "TEST", FilterSubjects: []string{"dlc", "rip"}, SubjectTransformDests: []string{"dlc2", "rip2"}},
+		},
+	}
+	createStream(cfg)
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		si, err := js2.StreamInfo("FMS3")
+		require_NoError(t, err)
+		if si.State.Msgs != 50 {
+			return fmt.Errorf("Expected 50 msgs, got state: %+v", si.State)
+		}
+		return nil
+	})
+
+	// Double check first message
+	if m, err = js.GetMsg("FMS3", 1); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if shdr := m.Header.Get(JSStreamSource); shdr == _EMPTY_ {
+		t.Fatalf("Expected a header, got none")
+	} else if m.Subject != "dlc2" {
+		t.Fatalf("Expected subject 'dlc2' and got %s", m.Subject)
+	}
+
+	// Double check first message with the other subject
+	if m, err = js.GetMsg("FMS3", 21); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if shdr := m.Header.Get(JSStreamSource); shdr == _EMPTY_ {
+		t.Fatalf("Expected a header, got none")
+	} else if m.Subject != "rip2" {
+		t.Fatalf("Expected subject 'rip2' and got %s", m.Subject)
+	}
+
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		si, err := js2.StreamInfo("FMS3")
+		require_NoError(t, err)
+		if si.State.Subjects["jnm"] != 0 {
+			return fmt.Errorf("Unexpected messages from the source found")
+		}
+		return nil
+	})
 }
 
 func TestJetStreamInputTransform(t *testing.T) {

@@ -169,23 +169,27 @@ type PeerInfo struct {
 
 // StreamSourceInfo shows information about an upstream stream source.
 type StreamSourceInfo struct {
-	Name                 string          `json:"name"`
-	External             *ExternalStream `json:"external,omitempty"`
-	Lag                  uint64          `json:"lag"`
-	Active               time.Duration   `json:"active"`
-	Error                *ApiError       `json:"error,omitempty"`
-	FilterSubject        string          `json:"filter_subject,omitempty"`
-	SubjectTransformDest string          `json:"subject_transform_dest,omitempty"`
+	Name                  string          `json:"name"`
+	External              *ExternalStream `json:"external,omitempty"`
+	Lag                   uint64          `json:"lag"`
+	Active                time.Duration   `json:"active"`
+	Error                 *ApiError       `json:"error,omitempty"`
+	FilterSubject         string          `json:"filter_subject,omitempty"`
+	SubjectTransformDest  string          `json:"subject_transform_dest,omitempty"`
+	FilterSubjects        []string        `json:"filter_subjects,omitempty"`
+	SubjectTransformDests []string        `json:"subject_transform_dests,omitempty"`
 }
 
 // StreamSource dictates how streams can source from other streams.
 type StreamSource struct {
-	Name                 string          `json:"name"`
-	OptStartSeq          uint64          `json:"opt_start_seq,omitempty"`
-	OptStartTime         *time.Time      `json:"opt_start_time,omitempty"`
-	FilterSubject        string          `json:"filter_subject,omitempty"`
-	SubjectTransformDest string          `json:"subject_transform_dest,omitempty"`
-	External             *ExternalStream `json:"external,omitempty"`
+	Name                  string          `json:"name"`
+	OptStartSeq           uint64          `json:"opt_start_seq,omitempty"`
+	OptStartTime          *time.Time      `json:"opt_start_time,omitempty"`
+	FilterSubject         string          `json:"filter_subject,omitempty"`
+	SubjectTransformDest  string          `json:"subject_transform_dest,omitempty"`
+	FilterSubjects        []string        `json:"filter_subjects,omitempty"`
+	SubjectTransformDests []string        `json:"subject_transform_dests,omitempty"`
+	External              *ExternalStream `json:"external,omitempty"`
 
 	// Internal
 	iname string // For indexing when stream names are the same for multiple sources.
@@ -301,6 +305,8 @@ type sourceInfo struct {
 	wg    sync.WaitGroup
 	sf    string // subject filter
 	tr    *subjectTransform
+	sfs   []string            // subject filters
+	trs   []*subjectTransform // subject transforms
 }
 
 // For mirrors and direct get
@@ -455,18 +461,34 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	}
 
 	// Setup our internal indexed names here for sources and check if the transform (if any) is valid.
-
 	for _, ssi := range cfg.Sources {
-		// check the filter, if any, is valid
-		if ssi.FilterSubject != _EMPTY_ && !IsValidSubject(ssi.FilterSubject) {
-			jsa.mu.Unlock()
-			return nil, fmt.Errorf("subject filter '%s' for the source %w", ssi.FilterSubject, ErrBadSubject)
-		}
-		// check the transform, if any, is valid
-		if ssi.SubjectTransformDest != _EMPTY_ {
-			if _, err = NewSubjectTransform(ssi.FilterSubject, ssi.SubjectTransformDest); err != nil {
+		ssi.setIndexName()
+		if len(ssi.FilterSubjects) == 0 {
+			// check the filter, if any, is valid
+			if ssi.FilterSubject != _EMPTY_ && !IsValidSubject(ssi.FilterSubject) {
 				jsa.mu.Unlock()
-				return nil, fmt.Errorf("subject transform from '%s' to '%s' for the source %w", ssi.FilterSubject, ssi.SubjectTransformDest, err)
+				return nil, fmt.Errorf("subject filter '%s' for the source %w", ssi.FilterSubject, ErrBadSubject)
+			}
+			// check the transform, if any, is valid
+			if ssi.SubjectTransformDest != _EMPTY_ {
+				if _, err = NewSubjectTransform(ssi.FilterSubject, ssi.SubjectTransformDest); err != nil {
+					jsa.mu.Unlock()
+					return nil, fmt.Errorf("subject transform from '%s' to '%s' for the source %w", ssi.FilterSubject, ssi.SubjectTransformDest, err)
+				}
+			}
+		} else {
+			for i, sf := range ssi.FilterSubjects {
+				if sf != _EMPTY_ && !IsValidSubject(sf) {
+					jsa.mu.Unlock()
+					return nil, fmt.Errorf("subject filter '%s' for the source %w", sf, ErrBadSubject)
+				}
+				// check the transform, if any, is valid
+				if ssi.SubjectTransformDests[i] != _EMPTY_ {
+					if _, err = NewSubjectTransform(sf, ssi.SubjectTransformDests[i]); err != nil {
+						jsa.mu.Unlock()
+						return nil, fmt.Errorf("subject transform from '%s' to '%s' for the source %w", sf, ssi.SubjectTransformDests[i], err)
+					}
+				}
 			}
 		}
 	}
@@ -640,13 +662,19 @@ func (ssi *StreamSource) composeIName() string {
 	}
 
 	filter := ssi.FilterSubject
-	// normalize filter and destination in case they are empty
-	if filter == _EMPTY_ {
-		filter = fwcs
-	}
 	destination := ssi.SubjectTransformDest
-	if destination == _EMPTY_ {
-		destination = fwcs
+
+	if len(ssi.FilterSubjects) == 0 {
+		// normalize filter and destination in case they are empty
+		if filter == _EMPTY_ {
+			filter = fwcs
+		}
+		if destination == _EMPTY_ {
+			destination = fwcs
+		}
+	} else {
+		filter = strings.Join(ssi.FilterSubjects, "\f")
+		destination = strings.Join(ssi.SubjectTransformDests, "\f")
 	}
 
 	return strings.Join([]string{iName, filter, destination}, " ")
@@ -1233,6 +1261,31 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 					}
 				}
 
+				if (src.FilterSubject != _EMPTY_ && len(src.FilterSubjects) != 0) && (src.SubjectTransformDest != _EMPTY_ && len(src.SubjectTransformDests) != 0) {
+					return StreamConfig{}, NewJSSourceMultipleFiltersNotAllowedError()
+				}
+				if len(src.FilterSubjects) != len(src.SubjectTransformDests) {
+					return StreamConfig{}, NewJSSourceNumberOfFiltersAndTransformDestinationMustMatchError()
+				}
+				for i, _ := range src.FilterSubjects {
+					err := ValidateMappingDestination(src.SubjectTransformDests[i])
+					if err != nil {
+						return StreamConfig{}, NewJSSourceInvalidTransformDestinationError()
+					}
+				}
+
+				// Check subject filters overlap.
+				for outer, subject := range src.FilterSubjects {
+					if !IsValidSubject(subject) {
+						return StreamConfig{}, NewJSSourceInvalidSubjectFilterError()
+					}
+					for inner, ssubject := range src.FilterSubjects {
+						if inner != outer && subjectIsSubsetMatch(subject, ssubject) {
+							return StreamConfig{}, NewJSSourceOverlappingSubjectFiltersError()
+						}
+					}
+				}
+
 				continue
 			}
 			if src.External.DeliverPrefix != _EMPTY_ {
@@ -1610,15 +1663,30 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 						mset.sources = make(map[string]*sourceInfo)
 					}
 					mset.cfg.Sources = append(mset.cfg.Sources, s)
-					si := &sourceInfo{name: s.Name, iname: s.iname, sf: s.FilterSubject}
-					// Check for transform.
-					if s.SubjectTransformDest != _EMPTY_ {
-						var err error
-						if si.tr, err = NewSubjectTransform(s.FilterSubject, s.SubjectTransformDest); err != nil {
-							mset.mu.Unlock()
-							return fmt.Errorf("stream source subject transform from '%s' to '%s' %w", s.FilterSubject, s.SubjectTransformDest, err)
+
+					var si *sourceInfo
+
+					if len(s.FilterSubjects) == 0 {
+						si = &sourceInfo{name: s.Name, iname: s.iname, sf: s.FilterSubject}
+						// Check for transform.
+						if s.SubjectTransformDest != _EMPTY_ {
+							var err error
+							if si.tr, err = NewSubjectTransform(s.FilterSubject, s.SubjectTransformDest); err != nil {
+								mset.mu.Unlock()
+								return fmt.Errorf("stream source subject transform from '%s' to '%s' %w", s.FilterSubject, s.SubjectTransformDest, err)
+							}
+						}
+					} else {
+						si = &sourceInfo{name: s.Name, iname: s.iname, sfs: s.FilterSubjects}
+						for i, _ := range s.SubjectTransformDests {
+							var err error
+							if si.trs[i], err = NewSubjectTransform(s.FilterSubjects[i], s.SubjectTransformDests[i]); err != nil {
+								mset.mu.Unlock()
+								return fmt.Errorf("stream source subject transform from '%s' to '%s' %w", s.FilterSubjects[i], s.SubjectTransformDests[i], err)
+							}
 						}
 					}
+
 					mset.sources[s.iname] = si
 					mset.setStartingSequenceForSource(s.iname, s.External)
 					mset.setSourceConsumer(s.iname, si.sseq+1, time.Time{})
@@ -1849,10 +1917,18 @@ func (mset *stream) sourceInfo(si *sourceInfo) *StreamSourceInfo {
 		return nil
 	}
 
-	var ssi = StreamSourceInfo{Name: si.name, Lag: si.lag, Error: si.err, FilterSubject: si.sf}
+	var ssi = StreamSourceInfo{Name: si.name, Lag: si.lag, Error: si.err, FilterSubject: si.sf, FilterSubjects: si.sfs}
+
 	if si.tr != nil {
 		ssi.SubjectTransformDest = si.tr.dest
 	}
+	if si.trs != nil {
+		ssi.SubjectTransformDests = make([]string, len(si.trs))
+		for i, _ := range si.trs {
+			ssi.SubjectTransformDests[i] = si.trs[i].dest
+		}
+	}
+
 	// If we have not heard from the source, set Active to -1.
 	if si.last.IsZero() {
 		ssi.Active = -1
@@ -2578,6 +2654,10 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64, startTime time.T
 		req.Config.FilterSubject = ssi.FilterSubject
 	}
 
+	if len(ssi.FilterSubjects) != 0 {
+		req.Config.FilterSubjects = ssi.FilterSubjects
+	}
+
 	respCh := make(chan *JSApiConsumerCreateResponse, 1)
 	reply := infoReplySubject()
 	crSub, err := mset.subscribeInternal(reply, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
@@ -2875,6 +2955,14 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 	// Do the subject transform for the source if there's one
 	if si.tr != nil {
 		m.subj = si.tr.TransformSubject(m.subj)
+	} else if si.trs != nil {
+		for _, tr := range si.trs {
+			tsubj, err := tr.Match(m.subj)
+			if err == nil {
+				m.subj = tsubj
+				break
+			}
+		}
 	}
 
 	var err error
@@ -3028,10 +3116,15 @@ func (mset *stream) startingSequenceForSources() {
 		if ssi.iname == _EMPTY_ {
 			ssi.setIndexName()
 		}
-		si := &sourceInfo{name: ssi.Name, iname: ssi.iname, sf: ssi.FilterSubject}
+		si := &sourceInfo{name: ssi.Name, iname: ssi.iname, sf: ssi.FilterSubject, sfs: ssi.FilterSubjects}
 		// Check for transform.
 		if ssi.SubjectTransformDest != _EMPTY_ {
 			si.tr, _ = NewSubjectTransform(ssi.FilterSubject, ssi.SubjectTransformDest) // can not return an error because validated in AddStream
+		} else if len(ssi.SubjectTransformDests) != 0 {
+			si.trs = make([]*subjectTransform, len(ssi.SubjectTransformDests))
+			for i, _ := range ssi.SubjectTransformDests {
+				si.trs[i], _ = NewSubjectTransform(ssi.FilterSubjects[i], ssi.SubjectTransformDests[i]) // also validated in AddStream
+			}
 		}
 
 		mset.sources[ssi.iname] = si

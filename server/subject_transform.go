@@ -383,6 +383,8 @@ func (tr *subjectTransform) Match(subject string) (string, error) {
 	}
 
 	tts := tokenizeSubject(subject)
+
+	// TODO(jnm): optimization -> not sure this is actually needed but was there in initial code
 	if !isValidLiteralSubject(tts) {
 		return _EMPTY_, ErrBadSubject
 	}
