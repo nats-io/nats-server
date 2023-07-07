@@ -462,7 +462,6 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 
 	// Setup our internal indexed names here for sources and check if the transform (if any) is valid.
 	for _, ssi := range cfg.Sources {
-		ssi.setIndexName()
 		if len(ssi.FilterSubjects) == 0 {
 			// check the filter, if any, is valid
 			if ssi.FilterSubject != _EMPTY_ && !IsValidSubject(ssi.FilterSubject) {
@@ -1271,18 +1270,18 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 					return StreamConfig{}, NewJSSourceInvalidTransformDestinationError()
 				}
 			}
-				if (src.FilterSubject != _EMPTY_ && len(src.FilterSubjects) != 0) && (src.SubjectTransformDest != _EMPTY_ && len(src.SubjectTransformDests) != 0) {
-					return StreamConfig{}, NewJSSourceMultipleFiltersNotAllowedError()
+			if (src.FilterSubject != _EMPTY_ && len(src.FilterSubjects) != 0) && (src.SubjectTransformDest != _EMPTY_ && len(src.SubjectTransformDests) != 0) {
+				return StreamConfig{}, NewJSSourceMultipleFiltersNotAllowedError()
+			}
+			if len(src.FilterSubjects) != len(src.SubjectTransformDests) {
+				return StreamConfig{}, NewJSSourceNumberOfFiltersAndTransformDestinationMustMatchError()
+			}
+			for i := range src.FilterSubjects {
+				err := ValidateMappingDestination(src.SubjectTransformDests[i])
+				if err != nil {
+					return StreamConfig{}, NewJSSourceInvalidTransformDestinationError()
 				}
-				if len(src.FilterSubjects) != len(src.SubjectTransformDests) {
-					return StreamConfig{}, NewJSSourceNumberOfFiltersAndTransformDestinationMustMatchError()
-				}
-				for i := range src.FilterSubjects {
-					err := ValidateMappingDestination(src.SubjectTransformDests[i])
-					if err != nil {
-						return StreamConfig{}, NewJSSourceInvalidTransformDestinationError()
-					}
-				}
+			}
 
 			// Check subject filters overlap.
 			for outer, subject := range src.FilterSubjects {
