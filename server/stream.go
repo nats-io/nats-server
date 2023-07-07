@@ -1234,68 +1234,66 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 
 		}
 	}
-	if len(cfg.Sources) > 0 {
-		// check for duplicates
-		var iNames = make(map[string]struct{})
-		for _, src := range cfg.Sources {
-			if !isValidName(src.Name) {
-				return StreamConfig{}, NewJSSourceInvalidStreamNameError()
-			}
-			if _, ok := iNames[src.composeIName()]; !ok {
-				iNames[src.composeIName()] = struct{}{}
-			} else {
-				return StreamConfig{}, NewJSSourceDuplicateDetectedError()
-			}
+
+	// check for duplicates
+	var iNames = make(map[string]struct{})
+	for _, src := range cfg.Sources {
+		if !isValidName(src.Name) {
+			return StreamConfig{}, NewJSSourceInvalidStreamNameError()
 		}
-		for _, src := range cfg.Sources {
-			// Do not perform checks if External is provided, as it could lead to
-			// checking against itself (if sourced stream name is the same on different JetStream)
-			if src.External == nil {
-				exists, maxMsgSize, subs := hasStream(src.Name)
-				if len(subs) > 0 {
-					streamSubs = append(streamSubs, subs...)
-				}
-				if exists {
-					if cfg.MaxMsgSize > 0 && maxMsgSize > 0 && cfg.MaxMsgSize < maxMsgSize {
-						return StreamConfig{}, NewJSSourceMaxMessageSizeTooBigError()
-					}
-				}
-
-				if (src.FilterSubject != _EMPTY_ && len(src.FilterSubjects) != 0) && (src.SubjectTransformDest != _EMPTY_ && len(src.SubjectTransformDests) != 0) {
-					return StreamConfig{}, NewJSSourceMultipleFiltersNotAllowedError()
-				}
-				if len(src.FilterSubjects) != len(src.SubjectTransformDests) {
-					return StreamConfig{}, NewJSSourceNumberOfFiltersAndTransformDestinationMustMatchError()
-				}
-				for i, _ := range src.FilterSubjects {
-					err := ValidateMappingDestination(src.SubjectTransformDests[i])
-					if err != nil {
-						return StreamConfig{}, NewJSSourceInvalidTransformDestinationError()
-					}
-				}
-
-				// Check subject filters overlap.
-				for outer, subject := range src.FilterSubjects {
-					if !IsValidSubject(subject) {
-						return StreamConfig{}, NewJSSourceInvalidSubjectFilterError()
-					}
-					for inner, ssubject := range src.FilterSubjects {
-						if inner != outer && subjectIsSubsetMatch(subject, ssubject) {
-							return StreamConfig{}, NewJSSourceOverlappingSubjectFiltersError()
-						}
-					}
-				}
-
-				continue
+		if _, ok := iNames[src.composeIName()]; !ok {
+			iNames[src.composeIName()] = struct{}{}
+		} else {
+			return StreamConfig{}, NewJSSourceDuplicateDetectedError()
+		}
+		// Do not perform checks if External is provided, as it could lead to
+		// checking against itself (if sourced stream name is the same on different JetStream)
+		if src.External == nil {
+			exists, maxMsgSize, subs := hasStream(src.Name)
+			if len(subs) > 0 {
+				streamSubs = append(streamSubs, subs...)
 			}
-			if src.External.DeliverPrefix != _EMPTY_ {
-				deliveryPrefixes = append(deliveryPrefixes, src.External.DeliverPrefix)
+			if exists {
+				if cfg.MaxMsgSize > 0 && maxMsgSize > 0 && cfg.MaxMsgSize < maxMsgSize {
+					return StreamConfig{}, NewJSSourceMaxMessageSizeTooBigError()
+				}
 			}
-			if src.External.ApiPrefix != _EMPTY_ {
-				apiPrefixes = append(apiPrefixes, src.External.ApiPrefix)
+
+			if (src.FilterSubject != _EMPTY_ && len(src.FilterSubjects) != 0) && (src.SubjectTransformDest != _EMPTY_ && len(src.SubjectTransformDests) != 0) {
+				return StreamConfig{}, NewJSSourceMultipleFiltersNotAllowedError()
 			}
+			if len(src.FilterSubjects) != len(src.SubjectTransformDests) {
+				return StreamConfig{}, NewJSSourceNumberOfFiltersAndTransformDestinationMustMatchError()
+			}
+			for i, _ := range src.FilterSubjects {
+				err := ValidateMappingDestination(src.SubjectTransformDests[i])
+				if err != nil {
+					return StreamConfig{}, NewJSSourceInvalidTransformDestinationError()
+				}
+			}
+
+			// Check subject filters overlap.
+			for outer, subject := range src.FilterSubjects {
+				if !IsValidSubject(subject) {
+					return StreamConfig{}, NewJSSourceInvalidSubjectFilterError()
+				}
+				for inner, ssubject := range src.FilterSubjects {
+					if inner != outer && subjectIsSubsetMatch(subject, ssubject) {
+						return StreamConfig{}, NewJSSourceOverlappingSubjectFiltersError()
+					}
+				}
+			}
+
+			continue
+		}
+		if src.External.DeliverPrefix != _EMPTY_ {
+			deliveryPrefixes = append(deliveryPrefixes, src.External.DeliverPrefix)
+		}
+		if src.External.ApiPrefix != _EMPTY_ {
+			apiPrefixes = append(apiPrefixes, src.External.ApiPrefix)
 		}
 	}
+
 	// check prefix overlap with subjects
 	for _, pfx := range deliveryPrefixes {
 		if !IsValidPublishSubject(pfx) {
