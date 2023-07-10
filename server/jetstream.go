@@ -1241,7 +1241,7 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 					osc, convertingCiphers = ChaCha, true
 				}
 				if err != nil {
-					s.Warnf("  Error decrypting our stream metafile: %v", err)
+					s.Fatalf("  Error decrypting our stream metafile: %v", err)
 					continue
 				}
 			}

@@ -756,7 +756,7 @@ func (js *jetStream) setupMetaGroup() error {
 		s.jsKeyGen(defaultMetaGroupName),
 	)
 	if err != nil {
-		s.Errorf("Error creating filestore: %v", err)
+		s.Fatalf("Error creating filestore: %v", err)
 		return err
 	}
 	// Register our server.
