@@ -5,9 +5,7 @@ jobs:
   test:
     strategy:
       matrix:
-        # This should be quoted or use .x, but should not be unquoted.
-        # Remember that a YAML bare float drops trailing zeroes.
-        go: ['1.19']
+        go: ["1.20"]
 
     env:
       GOPATH: /home/runner/work/nats-server
@@ -28,8 +26,8 @@ jobs:
       - name: Install deps
         shell: bash --noprofile --norc -x -eo pipefail {0}
         run: |
-          go get -u honnef.co/go/tools/cmd/staticcheck
-          go get -u github.com/client9/misspell/cmd/misspell
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          go install github.com/client9/misspell/cmd/misspell@latest
 
       - name: Lint
         shell: bash --noprofile --norc -x -eo pipefail {0}

@@ -6,9 +6,8 @@ vm:
 
 language: go
 go:
-# This should be quoted or use .x, but should not be unquoted.
-# Remember that a YAML bare float drops trailing zeroes.
-  - '1.19.10'
+  - "1.20.x"
+
 addons:
   apt:
     packages:
@@ -49,4 +48,4 @@ deploy:
   script: curl -sL http://git.io/goreleaser | bash
   on:
     tags: true
-    condition: ($TRAVIS_GO_VERSION =~ 1.19) && ($TEST_SUITE = "compile")
+    condition: ($TRAVIS_GO_VERSION =~ 1.20) && ($TEST_SUITE = "compile")
