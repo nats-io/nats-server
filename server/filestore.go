@@ -994,9 +994,9 @@ func (mb *msgBlock) convertCipher() error {
 		// Reset the cache since we just read everything in.
 		mb.cache = nil
 
-		// Generate new keys based on our
+		// Generate new keys. If we error for some reason then we will put
+		// the old keyfile back.
 		if err := fs.genEncryptionKeysForBlock(mb); err != nil {
-			// Put the old keyfile back.
 			keyFile := filepath.Join(mdir, fmt.Sprintf(keyScan, mb.index))
 			os.WriteFile(keyFile, ekey, defaultFilePerms)
 			return err

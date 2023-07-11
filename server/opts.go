@@ -2078,7 +2078,7 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 				doEnable = mv.(bool)
 			case "key", "ek", "encryption_key":
 				opts.JetStreamKey = mv.(string)
-			case "old_key", "old_ek", "old_encryption_key":
+			case "prev_key", "prev_ek", "prev_encryption_key":
 				opts.JetStreamOldKey = mv.(string)
 			case "cipher":
 				switch strings.ToLower(mv.(string)) {
