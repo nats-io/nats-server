@@ -5499,3 +5499,41 @@ func TestFileStoreNumPendingLargeNumBlks(t *testing.T) {
 	require_True(t, time.Since(start) < 50*time.Millisecond)
 	require_True(t, total == 4000)
 }
+
+func TestFileStoreRestoreEncryptedWithNoKeyFuncFails(t *testing.T) {
+	// No need for all permutations here.
+	fcfg := FileStoreConfig{StoreDir: t.TempDir(), Cipher: AES}
+	scfg := StreamConfig{Name: "zzz", Subjects: []string{"zzz"}, Storage: FileStorage}
+
+	// Create at first with encryption (prf)
+	prf := func(context []byte) ([]byte, error) {
+		h := hmac.New(sha256.New, []byte("dlc22"))
+		if _, err := h.Write(context); err != nil {
+			return nil, err
+		}
+		return h.Sum(nil), nil
+	}
+
+	fs, err := newFileStoreWithCreated(
+		fcfg, scfg,
+		time.Now(),
+		prf,
+	)
+	require_NoError(t, err)
+
+	subj, msg := "zzz", bytes.Repeat([]byte("X"), 100)
+	numMsgs := 100
+	for i := 0; i < numMsgs; i++ {
+		fs.StoreMsg(subj, nil, msg)
+	}
+
+	fs.Stop()
+
+	// Make sure if we try to restore with no prf (key) that it fails.
+	_, err = newFileStoreWithCreated(
+		fcfg, scfg,
+		time.Now(),
+		nil,
+	)
+	require_Error(t, err, errNoMainKey)
+}
