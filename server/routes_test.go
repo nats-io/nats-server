@@ -3777,9 +3777,11 @@ func TestRouteNoLeakOnSlowConsumer(t *testing.T) {
 	// This should result in an effectively immediate write timeout,
 	// which will surface as a slow consumer.
 	s1.mu.Lock()
-	for _, cli := range s1.routes {
-		cli.out.wdl = time.Nanosecond
-		cli.sendRTTPing()
+	for _, cl := range s1.routes {
+		for _, cli := range cl {
+			cli.out.wdl = time.Nanosecond
+			cli.sendRTTPing()
+		}
 	}
 	s1.mu.Unlock()
 
