@@ -2337,8 +2337,11 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 	spoke := c.isSpokeLeafNode()
 	c.mu.Unlock()
 
-	if err := c.addShadowSubscriptions(acc, sub); err != nil {
-		c.Errorf(err.Error())
+	// Only add in shadow subs if a new sub or qsub.
+	if osub == nil {
+		if err := c.addShadowSubscriptions(acc, sub); err != nil {
+			c.Errorf(err.Error())
+		}
 	}
 
 	// If we are not solicited, treat leaf node subscriptions similar to a
