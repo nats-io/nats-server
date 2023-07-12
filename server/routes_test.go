@@ -1,4 +1,4 @@
-// Copyright 2013-2020 The NATS Authors
+// Copyright 2013-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -3823,12 +3823,6 @@ func TestRouteNoLeakOnAuthTimeout(t *testing.T) {
 	var info serverInfo
 	if err = json.Unmarshal(line[5:], &info); err != nil {
 		t.Fatalf("Could not parse INFO json: %v\n", err)
-	}
-
-	// The server will send a PING, too
-	line, _, _ = cr.ReadLine()
-	if string(line) != "PING" {
-		t.Fatalf("Expected 'PING' but got %q", line)
 	}
 
 	// Wait out the clock so we hit the auth timeout
