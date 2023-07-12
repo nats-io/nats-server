@@ -3762,10 +3762,12 @@ func TestRoutePings(t *testing.T) {
 
 func TestRouteNoLeakOnSlowConsumer(t *testing.T) {
 	o1 := DefaultOptions()
+	o1.Cluster.PoolSize = -1
 	s1 := RunServer(o1)
 	defer s1.Shutdown()
 
 	o2 := DefaultOptions()
+	o2.Cluster.PoolSize = -1
 	o2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port))
 	s2 := RunServer(o2)
 	defer s2.Shutdown()
@@ -3778,9 +3780,11 @@ func TestRouteNoLeakOnSlowConsumer(t *testing.T) {
 	// which will surface as a slow consumer.
 	s1.mu.Lock()
 	for _, cl := range s1.routes {
-		for _, cli := range cl {
-			cli.out.wdl = time.Nanosecond
-			cli.sendRTTPing()
+		for _, c := range cl {
+			c.mu.Lock()
+			c.out.wdl = time.Nanosecond
+			c.mu.Unlock()
+			c.sendRTTPing()
 		}
 	}
 	s1.mu.Unlock()
