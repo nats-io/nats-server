@@ -3127,8 +3127,8 @@ var needFlush = struct{}{}
 // deliverMsg will deliver a message to a matching subscription and its underlying client.
 // We process all connection/client types. mh is the part that will be protocol/client specific.
 func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, subject, reply, mh, msg []byte, gwrply bool) bool {
-	// Check sub client and check echo. Only do this if not an internal sub.
-	if sub.client == nil || (c == sub.client && !sub.client.echo && sub.icb == nil) {
+	// Check sub client and check echo. Only do this if not a service import.
+	if sub.client == nil || (c == sub.client && !sub.client.echo && !sub.si) {
 		return false
 	}
 
