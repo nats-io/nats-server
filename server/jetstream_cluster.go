@@ -759,6 +759,7 @@ func (js *jetStream) setupMetaGroup() error {
 		s.Errorf("Error creating filestore: %v", err)
 		return err
 	}
+
 	// Register our server.
 	fs.registerServer(s)
 

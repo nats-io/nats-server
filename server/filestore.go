@@ -349,6 +349,14 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		return nil, fmt.Errorf("could not create hash: %v", err)
 	}
 
+	keyFile := filepath.Join(fs.fcfg.StoreDir, JetStreamMetaFileKey)
+	// Make sure we do not have an encrypted store underneath of us but no main key.
+	if fs.prf == nil {
+		if _, err := os.Stat(keyFile); err == nil {
+			return nil, errNoMainKey
+		}
+	}
+
 	// Recover our message state.
 	if err := fs.recoverMsgs(); err != nil {
 		return nil, err
@@ -366,7 +374,6 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	// If we expect to be encrypted check that what we are restoring is not plaintext.
 	// This can happen on snapshot restores or conversions.
 	if fs.prf != nil {
-		keyFile := filepath.Join(fs.fcfg.StoreDir, JetStreamMetaFileKey)
 		if _, err := os.Stat(keyFile); err != nil && os.IsNotExist(err) {
 			if err := fs.writeStreamMeta(); err != nil {
 				return nil, err
@@ -4390,6 +4397,7 @@ var (
 	errMsgBlkTooBig  = errors.New("message block size exceeded int capacity")
 	errUnknownCipher = errors.New("unknown cipher")
 	errDIOStalled    = errors.New("IO is stalled")
+	errNoMainKey     = errors.New("encrypted store encountered with no main key")
 )
 
 // Used for marking messages that have had their checksums checked.

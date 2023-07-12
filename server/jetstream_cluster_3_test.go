@@ -4519,3 +4519,50 @@ func TestJetStreamClusterSnapshotAndRestoreWithHealthz(t *testing.T) {
 	require_NoError(t, err)
 	require_True(t, si.State.Msgs == uint64(toSend))
 }
+
+func TestJetStreamClusterBadEncryptKey(t *testing.T) {
+	c := createJetStreamClusterWithTemplate(t, jsClusterEncryptedTempl, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Create 10 streams.
+	for i := 0; i < 10; i++ {
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     fmt.Sprintf("TEST-%d", i),
+			Replicas: 3,
+		})
+		require_NoError(t, err)
+	}
+
+	// Grab random server.
+	s := c.randomServer()
+	s.Shutdown()
+	s.WaitForShutdown()
+
+	var opts *Options
+	for i := 0; i < len(c.servers); i++ {
+		if c.servers[i] == s {
+			opts = c.opts[i]
+			break
+		}
+	}
+	require_NotNil(t, opts)
+
+	// Replace key with an empty key.
+	buf, err := os.ReadFile(opts.ConfigFile)
+	require_NoError(t, err)
+	nbuf := bytes.Replace(buf, []byte("key: \"s3cr3t!\""), []byte("key: \"\""), 1)
+	err = os.WriteFile(opts.ConfigFile, nbuf, 0640)
+	require_NoError(t, err)
+
+	// Make sure trying to start the server now fails.
+	s, err = NewServer(LoadConfig(opts.ConfigFile))
+	require_NoError(t, err)
+	require_NotNil(t, s)
+	s.Start()
+	if err := s.readyForConnections(1 * time.Second); err == nil {
+		t.Fatalf("Expected server not to start")
+	}
+}
