@@ -1,4 +1,4 @@
-// Copyright 2020-2021 The NATS Authors
+// Copyright 2020-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -3407,8 +3407,8 @@ func mqttSubscribeTrace(pi uint16, filters []*mqttFilter) string {
 // message and this is the callback for a QoS1 subscription because in
 // that case, it will be handled by the other callback. This avoid getting
 // duplicate deliveries.
-func mqttDeliverMsgCbQos0(sub *subscription, pc *client, _ *Account, subject, _ string, rmsg []byte) {
-	if pc.kind == JETSTREAM {
+func mqttDeliverMsgCbQos0(sub *subscription, pc *client, _ *Account, subject, reply string, rmsg []byte) {
+	if pc.kind == JETSTREAM && len(reply) > 0 && strings.HasPrefix(reply, jsAckPre) {
 		return
 	}
 
