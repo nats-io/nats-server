@@ -60,6 +60,7 @@ const (
 	serverDirectReqSubj       = "$SYS.REQ.SERVER.%s.%s"
 	serverPingReqSubj         = "$SYS.REQ.SERVER.PING.%s"
 	serverStatsPingReqSubj    = "$SYS.REQ.SERVER.PING"             // use $SYS.REQ.SERVER.PING.STATSZ instead
+	serverReloadReqSubj       = "$SYS.REQ.SERVER.%s.RELOAD"        // with server ID
 	leafNodeConnectEventSubj  = "$SYS.ACCOUNT.%s.LEAFNODE.CONNECT" // for internal use only
 	remoteLatencyEventSubj    = "$SYS.LATENCY.M2.%s"
 	inboxRespSubj             = "$SYS._INBOX.%s.%s"
@@ -1206,6 +1207,12 @@ func (s *Server) initEventTracking() {
 	// This is for simple debugging of number of subscribers that exist in the system.
 	if _, err := s.sysSubscribeInternal(accSubsSubj, s.noInlineCallback(s.debugSubscribers)); err != nil {
 		s.Errorf("Error setting up internal debug service for subscribers: %v", err)
+	}
+
+	// Listen for requests to reload the server configuration.
+	subject = fmt.Sprintf(serverReloadReqSubj, s.info.ID)
+	if _, err := s.sysSubscribe(subject, s.noInlineCallback(s.reloadConfig)); err != nil {
+		s.Errorf("Error setting up internal tracking: %v", err)
 	}
 }
 
@@ -2677,6 +2684,19 @@ func (s *Server) nsubsRequest(sub *subscription, c *client, _ *Account, subject,
 		}
 	}
 	s.sendInternalMsgLocked(reply, _EMPTY_, nil, nsubs)
+}
+
+// accountClaimUpdate will receive claim updates for accounts.
+func (s *Server) reloadConfig(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
+	if !s.eventsRunning() {
+		return
+	}
+
+	optz := &EventFilterOptions{}
+	s.zReq(c, reply, hdr, msg, optz, optz, func() (interface{}, error) {
+		// Reload the server config, as requested.
+		return nil, s.Reload()
+	})
 }
 
 // Helper to grab account name for a client.

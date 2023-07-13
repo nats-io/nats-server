@@ -2535,6 +2535,73 @@ func TestServerEventsStatszSingleServer(t *testing.T) {
 	checkSubsPending(t, sub, 1)
 }
 
+func TestServerEventsReload(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		accounts: {
+			$SYS { users [{user: "admin", password: "p1d"}]}
+			test { users [{user: "foo", password: "bar"}]}
+		}
+		ping_interval: "100ms"
+	`))
+	opts := LoadConfig(conf)
+	opts.Trace = true
+	opts.Debug = true
+	opts.TraceVerbose = true
+	s := RunServer(opts)
+	defer s.Shutdown()
+	subject := fmt.Sprintf("$SYS.REQ.SERVER.%s.RELOAD", s.info.ID)
+
+	// Connect as a test user and make sure the reload endpoint is not
+	// accessible.
+	ncTest, _ := jsClientConnect(t, s, nats.UserInfo("foo", "bar"))
+	defer ncTest.Close()
+	testReply := ncTest.NewRespInbox()
+	sub, err := ncTest.SubscribeSync(testReply)
+	require_NoError(t, err)
+	err = ncTest.PublishRequest(subject, testReply, nil)
+	require_NoError(t, err)
+	_, err = sub.NextMsg(time.Second)
+	require_Error(t, err)
+
+	require_True(t, s.getOpts().PingInterval == 100*time.Millisecond)
+
+	// rewrite the config file with a different ping interval
+	err = os.WriteFile(conf, []byte(`
+		listen: "127.0.0.1:-1"
+		accounts: {
+			$SYS { users [{user: "admin", password: "p1d"}]}
+			test { users [{user: "foo", password: "bar"}]}
+		}
+		ping_interval: "200ms"
+	`), 0666)
+	require_NoError(t, err)
+
+	// Connect as a system user and make sure if there is
+	// subscription interest that we will receive updates.
+	nc, _ := jsClientConnect(t, s, nats.UserInfo("admin", "p1d"))
+	defer nc.Close()
+
+	// Request the server to reload and wait for the response.
+	// subject := fmt.Sprintf("$SYS.REQ.SERVER.%s.RELOAD", s.info.ID)
+	reply := nc.NewRespInbox()
+	sub, err = nc.SubscribeSync(reply)
+	require_NoError(t, err)
+	err = nc.PublishRequest(subject, reply, nil)
+	require_NoError(t, err)
+	msg, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+
+	apiResp := ServerAPIResponse{}
+	err = json.Unmarshal(msg.Data, &apiResp)
+	require_NoError(t, err)
+
+	require_True(t, apiResp.Data.(string) == "OK")
+
+	// See that the ping interval has changed.
+	require_True(t, s.getOpts().PingInterval == 200*time.Millisecond)
+}
+
 func Benchmark_GetHash(b *testing.B) {
 	b.StopTimer()
 	// Get 100 random names
