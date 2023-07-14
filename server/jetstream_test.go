@@ -8703,13 +8703,16 @@ func TestJetStreamMsgHeaders(t *testing.T) {
 			nc.PublishMsg(m)
 			nc.Flush()
 
-			state := mset.state()
-			if state.Msgs != 1 {
-				t.Fatalf("Expected 1 message, got %d", state.Msgs)
-			}
-			if state.Bytes == 0 {
-				t.Fatalf("Expected non-zero bytes")
-			}
+			checkFor(t, time.Second*2, time.Millisecond*250, func() error {
+				state := mset.state()
+				if state.Msgs != 1 {
+					return fmt.Errorf("Expected 1 message, got %d", state.Msgs)
+				}
+				if state.Bytes == 0 {
+					return fmt.Errorf("Expected non-zero bytes")
+				}
+				return nil
+			})
 
 			// Now access raw from stream.
 			sm, err := mset.getMsg(1)
