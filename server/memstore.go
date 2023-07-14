@@ -14,9 +14,9 @@
 package server
 
 import (
+	crand "crypto/rand"
 	"encoding/binary"
 	"fmt"
-	"math/rand"
 	"sort"
 	"sync"
 	"time"
@@ -1060,11 +1060,11 @@ func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 	if secure {
 		if len(sm.hdr) > 0 {
 			sm.hdr = make([]byte, len(sm.hdr))
-			rand.Read(sm.hdr)
+			crand.Read(sm.hdr)
 		}
 		if len(sm.msg) > 0 {
 			sm.msg = make([]byte, len(sm.msg))
-			rand.Read(sm.msg)
+			crand.Read(sm.msg)
 		}
 		sm.seq, sm.ts = 0, 0
 	}

@@ -15,6 +15,7 @@ package server
 
 import (
 	"bytes"
+	crand "crypto/rand"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -1206,7 +1207,7 @@ func (js *jetStream) monitorCluster() {
 
 	// Highwayhash key for generating hashes.
 	key := make([]byte, 32)
-	rand.Read(key)
+	crand.Read(key)
 
 	// Set to true to start.
 	js.setMetaRecovering()
@@ -4435,7 +4436,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 
 	// Highwayhash key for generating hashes.
 	key := make([]byte, 32)
-	rand.Read(key)
+	crand.Read(key)
 
 	// Hash of the last snapshot (fixed size in memory).
 	var lastSnap []byte
