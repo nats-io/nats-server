@@ -5336,13 +5336,15 @@ func TestJetStreamRedeliverCount(t *testing.T) {
 			nc, js := jsClientConnect(t, s)
 			defer nc.Close()
 
-			// Send 10 msgs
-			for i := 0; i < 10; i++ {
-				js.Publish("DC", []byte("OK!"))
+			if _, err = js.Publish("DC", []byte("OK!")); err != nil {
+				t.Fatal(err)
 			}
-			if state := mset.state(); state.Msgs != 10 {
-				t.Fatalf("Expected %d messages, got %d", 10, state.Msgs)
-			}
+			checkFor(t, time.Second, time.Millisecond*250, func() error {
+				if state := mset.state(); state.Msgs != 1 {
+					return fmt.Errorf("Expected %d messages, got %d", 1, state.Msgs)
+				}
+				return nil
+			})
 
 			o, err := mset.addConsumer(workerModeConfig("WQ"))
 			if err != nil {
