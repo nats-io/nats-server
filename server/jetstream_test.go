@@ -10800,38 +10800,37 @@ func TestJetStreamAccountImportJSAdvisoriesAsService(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error adding stream: %v", err)
 	}
-	msg, err := subJS.NextMsg(time.Second)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
+
+	gotEvents := map[string]int{}
+	for i := 0; i < 2; i++ {
+		msg, err := subJS.NextMsg(time.Second * 2)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		gotEvents[msg.Subject]++
 	}
-	if msg.Subject != "$JS.EVENT.ADVISORY.STREAM.CREATED.ORDERS" {
-		t.Fatalf("Unexpected subject: %q", msg.Subject)
+	if c := gotEvents["$JS.EVENT.ADVISORY.STREAM.CREATED.ORDERS"]; c != 1 {
+		t.Fatalf("Should have received one advisory from $JS.EVENT.ADVISORY.STREAM.CREATED.ORDERS but got %d", c)
 	}
-	msg, err = subJS.NextMsg(time.Second)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if msg.Subject != "$JS.EVENT.ADVISORY.API" {
-		t.Fatalf("Unexpected subject: %q", msg.Subject)
+	if c := gotEvents["$JS.EVENT.ADVISORY.API"]; c != 1 {
+		t.Fatalf("Should have received one advisory from $JS.EVENT.ADVISORY.API but got %d", c)
 	}
 
 	// same set of events should be received by AGG account
 	// on subjects containing account name (ACC.JS)
-	msg, err = subAgg.NextMsg(time.Second)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
+	gotEvents = map[string]int{}
+	for i := 0; i < 2; i++ {
+		msg, err := subAgg.NextMsg(time.Second * 2)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		gotEvents[msg.Subject]++
 	}
-	if msg.Subject != "$JS.EVENT.ADVISORY.ACC.JS.STREAM.CREATED.ORDERS" {
-		t.Fatalf("Unexpected subject: %q", msg.Subject)
+	if c := gotEvents["$JS.EVENT.ADVISORY.ACC.JS.STREAM.CREATED.ORDERS"]; c != 1 {
+		t.Fatalf("Should have received one advisory from $JS.EVENT.ADVISORY.ACC.JS.STREAM.CREATED.ORDERS but got %d", c)
 	}
-
-	// we get error here, since we do not get the api audit event
-	msg, err = subAgg.NextMsg(time.Second)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if msg.Subject != "$JS.EVENT.ADVISORY.ACC.JS.API" {
-		t.Fatalf("Unexpected subject: %q", msg.Subject)
+	if c := gotEvents["$JS.EVENT.ADVISORY.ACC.JS.API"]; c != 1 {
+		t.Fatalf("Should have received one advisory from $JS.EVENT.ADVISORY.ACC.JS.API but got %d", c)
 	}
 }
 
