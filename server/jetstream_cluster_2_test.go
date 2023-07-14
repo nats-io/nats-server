@@ -3305,6 +3305,7 @@ func TestJetStreamClusterStreamUpdateSyncBug(t *testing.T) {
 	}
 
 	// We need to snapshot to force upper layer catchup vs RAFT layer.
+	c.waitOnAllCurrent()
 	mset, err := c.streamLeader("$G", "TEST").GlobalAccount().lookupStream("TEST")
 	if err != nil {
 		t.Fatalf("Expected to find a stream for %q", "TEST")
@@ -3313,6 +3314,7 @@ func TestJetStreamClusterStreamUpdateSyncBug(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
+	c.waitOnAllCurrent()
 	nsl = c.restartServer(nsl)
 	c.waitOnStreamCurrent(nsl, "$G", "TEST")
 
