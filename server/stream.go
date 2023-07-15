@@ -482,10 +482,12 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 					return nil, fmt.Errorf("subject filter '%s' for the source %w", sf, ErrBadSubject)
 				}
 				// check the transform, if any, is valid
-				if ssi.SubjectTransformDests[i] != _EMPTY_ {
-					if _, err = NewSubjectTransform(sf, ssi.SubjectTransformDests[i]); err != nil {
-						jsa.mu.Unlock()
-						return nil, fmt.Errorf("subject transform from '%s' to '%s' for the source %w", sf, ssi.SubjectTransformDests[i], err)
+				if len(ssi.SubjectTransformDests) != 0 {
+					if ssi.SubjectTransformDests[i] != _EMPTY_ {
+						if _, err = NewSubjectTransform(sf, ssi.SubjectTransformDests[i]); err != nil {
+							jsa.mu.Unlock()
+							return nil, fmt.Errorf("subject transform from '%s' to '%s' for the source %w", sf, ssi.SubjectTransformDests[i], err)
+						}
 					}
 				}
 			}
@@ -1258,28 +1260,20 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 				}
 			}
 
-			if (src.FilterSubject != _EMPTY_ && len(src.FilterSubjects) != 0) && (src.SubjectTransformDest != _EMPTY_ && len(src.SubjectTransformDests) != 0) {
+			if (src.FilterSubject != _EMPTY_ && len(src.FilterSubjects) != 0) || (src.SubjectTransformDest != _EMPTY_ && len(src.SubjectTransformDests) != 0) {
 				return StreamConfig{}, NewJSSourceMultipleFiltersNotAllowedError()
 			}
-			if len(src.FilterSubjects) != len(src.SubjectTransformDests) {
+
+			if len(src.SubjectTransformDests) > 0 && len(src.FilterSubjects) != len(src.SubjectTransformDests) {
 				return StreamConfig{}, NewJSSourceNumberOfFiltersAndTransformDestinationMustMatchError()
 			}
-			for i := range src.FilterSubjects {
-				err := ValidateMappingDestination(src.SubjectTransformDests[i])
-				if err != nil {
-					return StreamConfig{}, NewJSSourceInvalidTransformDestinationError()
-				}
-			}
-			if (src.FilterSubject != _EMPTY_ && len(src.FilterSubjects) != 0) && (src.SubjectTransformDest != _EMPTY_ && len(src.SubjectTransformDests) != 0) {
-				return StreamConfig{}, NewJSSourceMultipleFiltersNotAllowedError()
-			}
-			if len(src.FilterSubjects) != len(src.SubjectTransformDests) {
-				return StreamConfig{}, NewJSSourceNumberOfFiltersAndTransformDestinationMustMatchError()
-			}
-			for i := range src.FilterSubjects {
-				err := ValidateMappingDestination(src.SubjectTransformDests[i])
-				if err != nil {
-					return StreamConfig{}, NewJSSourceInvalidTransformDestinationError()
+
+			if len(src.SubjectTransformDests) > 0 {
+				for i := range src.FilterSubjects {
+					err := ValidateMappingDestination(src.SubjectTransformDests[i])
+					if err != nil {
+						return StreamConfig{}, NewJSSourceInvalidTransformDestinationError()
+					}
 				}
 			}
 
@@ -1934,7 +1928,11 @@ func (mset *stream) sourceInfo(si *sourceInfo) *StreamSourceInfo {
 	if si.trs != nil {
 		ssi.SubjectTransformDests = make([]string, len(si.trs))
 		for i := range si.trs {
-			ssi.SubjectTransformDests[i] = si.trs[i].dest
+			if si.trs[i] == nil {
+				ssi.SubjectTransformDests[i] = _EMPTY_
+			} else {
+				ssi.SubjectTransformDests[i] = si.trs[i].dest
+			}
 		}
 	}
 
@@ -2964,12 +2962,16 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 	// Do the subject transform for the source if there's one
 	if si.tr != nil {
 		m.subj = si.tr.TransformSubject(m.subj)
-	} else if si.trs != nil {
+	} else {
 		for _, tr := range si.trs {
-			tsubj, err := tr.Match(m.subj)
-			if err == nil {
-				m.subj = tsubj
-				break
+			if tr == nil {
+				continue
+			} else {
+				tsubj, err := tr.Match(m.subj)
+				if err == nil {
+					m.subj = tsubj
+					break
+				}
 			}
 		}
 	}

@@ -127,7 +127,6 @@ func TestSubjectTransforms(t *testing.T) {
 	}
 
 	// Must be valid subjects.
-	shouldErr("foo", "", false)
 	shouldErr("foo..", "bar", false)
 
 	// Wildcards are allowed in src, but must be matched by token placements on the other side.
