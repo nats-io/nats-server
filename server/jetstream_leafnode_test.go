@@ -298,8 +298,8 @@ jetstream :{
 server_name: A
 cluster: {
 	name: clust1
-	listen: 127.0.0.1:50554
-	routes=[nats-route://127.0.0.1:50555]
+	listen: 127.0.0.1:20104
+	routes=[nats-route://127.0.0.1:20105]
 	no_advertise: true
 }
 `
@@ -327,8 +327,8 @@ jetstream: {
 server_name: B
 cluster: {
 	name: clust1
-	listen: 127.0.0.1:50555
-	routes=[nats-route://127.0.0.1:50554]
+	listen: 127.0.0.1:20105
+	routes=[nats-route://127.0.0.1:20104]
 	no_advertise: true
 }
 `
@@ -350,8 +350,8 @@ jetstream: {
 server_name: LA
 cluster: {
 	name: clustL
-	listen: 127.0.0.1:50556
-	routes=[nats-route://127.0.0.1:50557]
+	listen: 127.0.0.1:20106
+	routes=[nats-route://127.0.0.1:20107]
 	no_advertise: true
 }
 leafnodes:{
@@ -378,8 +378,8 @@ jetstream: {
 server_name: LB
 cluster: {
 	name: clustL
-	listen: 127.0.0.1:50557
-	routes=[nats-route://127.0.0.1:50556]
+	listen: 127.0.0.1:20107
+	routes=[nats-route://127.0.0.1:20106]
 	no_advertise: true
 }
 leafnodes:{
@@ -568,8 +568,8 @@ jetstream: { %s store_dir: '%s'; max_mem: 50Mb, max_file: 50Mb }
 server_name: A
 cluster: {
 	name: clust1
-	listen: 127.0.0.1:50554
-	routes=[nats-route://127.0.0.1:50555,nats-route://127.0.0.1:50556]
+	listen: 127.0.0.1:20114
+	routes=[nats-route://127.0.0.1:20115,nats-route://127.0.0.1:20116]
 	no_advertise: true
 }
 `
@@ -592,8 +592,8 @@ jetstream: { %s store_dir: '%s'; max_mem: 50Mb, max_file: 50Mb }
 server_name: B
 cluster: {
 	name: clust1
-	listen: 127.0.0.1:50555
-	routes=[nats-route://127.0.0.1:50554,nats-route://127.0.0.1:50556]
+	listen: 127.0.0.1:20115
+	routes=[nats-route://127.0.0.1:20114,nats-route://127.0.0.1:20116]
 	no_advertise: true
 }
 `
@@ -619,8 +619,8 @@ jetstream: {
 server_name: C
 cluster: {
 	name: clust1
-	listen: 127.0.0.1:50556
-	routes=[nats-route://127.0.0.1:50554,nats-route://127.0.0.1:50555]
+	listen: 127.0.0.1:20116
+	routes=[nats-route://127.0.0.1:20114,nats-route://127.0.0.1:20115]
 	no_advertise: true
 }
 `
@@ -741,8 +741,8 @@ jetstream: {
     max_file: 50Mb
 }
 leafnodes:{
-    remotes:[{url:nats://a1:a1@127.0.0.1:50555, account: A, credentials: '%s' },
-		     {url:nats://s1:s1@127.0.0.1:50555, account: SYS, credentials: '%s', deny_imports: foo, deny_exports: bar}]
+    remotes:[{url:nats://a1:a1@127.0.0.1:20125, account: A, credentials: '%s' },
+		     {url:nats://s1:s1@127.0.0.1:20125, account: SYS, credentials: '%s', deny_imports: foo, deny_exports: bar}]
 }
 `
 	akp, err := nkeys.CreateAccount()
@@ -1052,8 +1052,8 @@ jetstream : { domain: "DHUB", store_dir: '%s', max_mem: 100Mb, max_file: 100Mb }
 server_name: HUB1
 cluster: {
 	name: HUB
-	listen: 127.0.0.1:50554
-	routes=[nats-route://127.0.0.1:50555]
+	listen: 127.0.0.1:20134
+	routes=[nats-route://127.0.0.1:20135]
 }
 leafnodes: {
 	listen:127.0.0.1:-1
@@ -1070,8 +1070,8 @@ jetstream : { domain: "DHUB", store_dir: '%s', max_mem: 100Mb, max_file: 100Mb }
 server_name: HUB2
 cluster: {
 	name: HUB
-	listen: 127.0.0.1:50555
-	routes=[nats-route://127.0.0.1:50554]
+	listen: 127.0.0.1:20135
+	routes=[nats-route://127.0.0.1:20134]
 }
 leafnodes: {
 	listen:127.0.0.1:-1
@@ -1088,8 +1088,8 @@ jetstream: { domain: "DLEAF", store_dir: '%s', max_mem: 100Mb, max_file: 100Mb }
 server_name: LEAF1
 cluster: {
 	name: LEAF
-	listen: 127.0.0.1:50556
-	routes=[nats-route://127.0.0.1:50557]
+	listen: 127.0.0.1:20136
+	routes=[nats-route://127.0.0.1:20137]
 }
 leafnodes: {
     remotes:[{url:nats://a1:a1@127.0.0.1:%d, account: A},{url:nats://b1:b1@127.0.0.1:%d, account: B}]
@@ -1107,8 +1107,8 @@ jetstream: { domain: "DLEAF", store_dir: '%s', max_mem: 100Mb, max_file: 100Mb }
 server_name: LEAF2
 cluster: {
 	name: LEAF
-	listen: 127.0.0.1:50557
-	routes=[nats-route://127.0.0.1:50556]
+	listen: 127.0.0.1:20137
+	routes=[nats-route://127.0.0.1:20136]
 }
 leafnodes: {
     remotes:[{url:nats://a1:a1@127.0.0.1:%d, account: A},{url:nats://b1:b1@127.0.0.1:%d, account: B}]

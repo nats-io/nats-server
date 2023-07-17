@@ -1,6 +1,11 @@
 os: linux
 dist: focal
 
+branches:
+  only:
+    - main
+    - dev
+
 vm:
   size: 2x-large
 
@@ -8,12 +13,13 @@ language: go
 go:
 # This should be quoted or use .x, but should not be unquoted.
 # Remember that a YAML bare float drops trailing zeroes.
-  - '1.19.10'
+  - '1.19.11'
+go_import_path: github.com/nats-io/nats-server
+
 addons:
   apt:
     packages:
       - rpm
-go_import_path: github.com/nats-io/nats-server
 
 jobs:
   include:
