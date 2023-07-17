@@ -24,7 +24,7 @@ _Note: there may be various other branches present in the repo, owned by core ma
 
 ## Contributing code
 
-Before writing any code, the branch the changes will be propsoed on needs to be determined.
+Before writing any code, the branch the changes will be proposed on needs to be determined.
 
 The `main` branch, tracking the current minor series, can have the following change types proposed:
 
