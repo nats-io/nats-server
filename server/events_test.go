@@ -2618,12 +2618,10 @@ func TestServerEventsReload(t *testing.T) {
 	require_NoError(t, err)
 
 	require_True(t, apiResp.Data == nil)
-	require_True(t, apiResp.Error != nil)
-	require_True(t, apiResp.Error.Description == "Parse error on line 1: 'Expected a top-level value to end with a new line, comment or EOF, but got 'n' instead.'")
+	require_Error(t, apiResp.Error, fmt.Errorf("Parse error on line 1: 'Expected a top-level value to end with a new line, comment or EOF, but got 'n' instead.'"))
 
 	// See that the ping interval has changed.
 	require_True(t, s.getOpts().PingInterval == 200*time.Millisecond)
-
 }
 
 func Benchmark_GetHash(b *testing.B) {
