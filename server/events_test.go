@@ -2550,7 +2550,7 @@ func TestServerEventsReload(t *testing.T) {
 	opts.TraceVerbose = true
 	s := RunServer(opts)
 	defer s.Shutdown()
-	subject := fmt.Sprintf("$SYS.REQ.SERVER.%s.RELOAD", s.info.ID)
+	subject := fmt.Sprintf(serverReloadReqSubj, s.info.ID)
 
 	// Connect as a test user and make sure the reload endpoint is not
 	// accessible.
