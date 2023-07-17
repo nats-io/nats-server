@@ -2566,6 +2566,10 @@ func TestServerEventsReload(t *testing.T) {
 
 	require_True(t, s.getOpts().PingInterval == 100*time.Millisecond)
 
+	// Connect as a system user.
+	nc, _ := jsClientConnect(t, s, nats.UserInfo("admin", "p1d"))
+	defer nc.Close()
+
 	// rewrite the config file with a different ping interval
 	err = os.WriteFile(conf, []byte(`
 		listen: "127.0.0.1:-1"
@@ -2577,13 +2581,7 @@ func TestServerEventsReload(t *testing.T) {
 	`), 0666)
 	require_NoError(t, err)
 
-	// Connect as a system user and make sure if there is
-	// subscription interest that we will receive updates.
-	nc, _ := jsClientConnect(t, s, nats.UserInfo("admin", "p1d"))
-	defer nc.Close()
-
 	// Request the server to reload and wait for the response.
-	// subject := fmt.Sprintf("$SYS.REQ.SERVER.%s.RELOAD", s.info.ID)
 	reply := nc.NewRespInbox()
 	sub, err = nc.SubscribeSync(reply)
 	require_NoError(t, err)
@@ -2596,10 +2594,36 @@ func TestServerEventsReload(t *testing.T) {
 	err = json.Unmarshal(msg.Data, &apiResp)
 	require_NoError(t, err)
 
-	require_True(t, apiResp.Data.(string) == "OK")
+	require_True(t, apiResp.Data == nil)
+	require_True(t, apiResp.Error == nil)
 
 	// See that the ping interval has changed.
 	require_True(t, s.getOpts().PingInterval == 200*time.Millisecond)
+
+	// rewrite the config file with a different ping interval
+	err = os.WriteFile(conf, []byte(`garbage and nonsense`), 0666)
+	require_NoError(t, err)
+
+	// Request the server to reload and wait for the response.
+	reply = nc.NewRespInbox()
+	sub, err = nc.SubscribeSync(reply)
+	require_NoError(t, err)
+	err = nc.PublishRequest(subject, reply, nil)
+	require_NoError(t, err)
+	msg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+
+	apiResp = ServerAPIResponse{}
+	err = json.Unmarshal(msg.Data, &apiResp)
+	require_NoError(t, err)
+
+	require_True(t, apiResp.Data == nil)
+	require_True(t, apiResp.Error != nil)
+	require_True(t, apiResp.Error.Description == "Parse error on line 1: 'Expected a top-level value to end with a new line, comment or EOF, but got 'n' instead.'")
+
+	// See that the ping interval has changed.
+	require_True(t, s.getOpts().PingInterval == 200*time.Millisecond)
+
 }
 
 func Benchmark_GetHash(b *testing.B) {
