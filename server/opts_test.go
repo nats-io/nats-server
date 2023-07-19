@@ -121,6 +121,7 @@ func TestConfigFile(t *testing.T) {
 		LameDuckDuration:      4 * time.Minute,
 		ConnectErrorReports:   86400,
 		ReconnectErrorReports: 5,
+		ConfigDigest:          "sha256:314adbd9997c1183f028f5b620362daa45893da76bac746136bfb48b2fd14996",
 		authBlockDefined:      true,
 	}
 
@@ -142,6 +143,7 @@ func TestTLSConfigFile(t *testing.T) {
 		AuthTimeout:      1.0,
 		TLSTimeout:       2.0,
 		authBlockDefined: true,
+		ConfigDigest:     "sha256:cec986d37d7c09c86916d1ba4990cea1b8dadd49c86f9f782b455b47d07c2ac8",
 	}
 	opts, err := ProcessConfigFile("./configs/tls.conf")
 	if err != nil {
@@ -287,6 +289,7 @@ func TestMergeOverrides(t *testing.T) {
 		ConnectErrorReports:   86400,
 		ReconnectErrorReports: 5,
 		authBlockDefined:      true,
+		ConfigDigest:          "sha256:314adbd9997c1183f028f5b620362daa45893da76bac746136bfb48b2fd14996",
 	}
 	fopts, err := ProcessConfigFile("./configs/test.conf")
 	if err != nil {
@@ -362,8 +365,9 @@ func TestRouteFlagOverride(t *testing.T) {
 			Password:    "top_secret",
 			AuthTimeout: 0.5,
 		},
-		Routes:    []*url.URL{rurl},
-		RoutesStr: routeFlag,
+		Routes:       []*url.URL{rurl},
+		RoutesStr:    routeFlag,
+		ConfigDigest: "sha256:fe3c13f82637723989a9bbd0ad6d064b95d48971666af440d4196d9c0d3af979",
 	}
 
 	fopts, err := ProcessConfigFile("./configs/srv_a.conf")
@@ -403,7 +407,8 @@ func TestClusterFlagsOverride(t *testing.T) {
 			Password:    "top_secret",
 			AuthTimeout: 0.5,
 		},
-		Routes: []*url.URL{rurl},
+		Routes:       []*url.URL{rurl},
+		ConfigDigest: "sha256:fe3c13f82637723989a9bbd0ad6d064b95d48971666af440d4196d9c0d3af979",
 	}
 
 	fopts, err := ProcessConfigFile("./configs/srv_a.conf")
@@ -438,8 +443,9 @@ func TestRouteFlagOverrideWithMultiple(t *testing.T) {
 			Password:    "top_secret",
 			AuthTimeout: 0.5,
 		},
-		Routes:    rurls,
-		RoutesStr: routeFlag,
+		Routes:       rurls,
+		RoutesStr:    routeFlag,
+		ConfigDigest: "sha256:fe3c13f82637723989a9bbd0ad6d064b95d48971666af440d4196d9c0d3af979",
 	}
 
 	fopts, err := ProcessConfigFile("./configs/srv_a.conf")
