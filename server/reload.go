@@ -1637,6 +1637,10 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			if new != old {
 				diffOpts = append(diffOpts, &profBlockRateReload{newValue: new})
 			}
+		case "configdigest":
+			// skip changes in config digest, this is handled already while
+			// processing the config.
+			continue
 		default:
 			// TODO(ik): Implement String() on those options to have a nice print.
 			// %v is difficult to figure what's what, %+v print private fields and
@@ -1785,7 +1789,7 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 		s.Warnf("Can't restart OCSP features: %v", err)
 	}
 
-	s.Noticef("Reloaded server configuration")
+	s.Noticef("Reloaded server configuration (%s)", newOpts.ConfigDigest)
 }
 
 // This will send a reset to the internal send loop.
