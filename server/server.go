@@ -2243,7 +2243,7 @@ func (s *Server) Start() {
 	}
 
 	if opts.ConfigFile != _EMPTY_ {
-		s.Noticef("Using configuration file: %s", opts.ConfigFile)
+		s.Noticef("Using configuration file: %s (%s)", opts.ConfigFile, opts.ConfigDigest)
 	}
 
 	hasOperators := len(opts.TrustedOperators) > 0

@@ -26,6 +26,7 @@ package conf
 // see parse_test.go for more examples.
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -35,6 +36,8 @@ import (
 	"time"
 	"unicode"
 )
+
+const _EMPTY_ = ""
 
 type parser struct {
 	mapping map[string]any
@@ -108,6 +111,44 @@ func ParseFileWithChecks(fp string) (map[string]any, error) {
 	return p.mapping, nil
 }
 
+// cleanupUsedEnvVars will recursively remove all already used
+// environment variables which might be in the parsed tree.
+func cleanupUsedEnvVars(m map[string]interface{}) {
+	for k, v := range m {
+		t := v.(*token)
+		if t.usedVariable {
+			delete(m, k)
+			continue
+		}
+		// Cleanup any other env var that is still in the map.
+		if tm, ok := t.value.(map[string]interface{}); ok {
+			cleanupUsedEnvVars(tm)
+		}
+	}
+}
+
+// ParseWithDigest returns the processed config and a digest
+// that represents the configuration.
+func ParseWithDigest(fp string) (map[string]interface{}, string, error) {
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		return nil, _EMPTY_, err
+	}
+	p, err := parse(string(data), fp, true)
+	if err != nil {
+		return nil, _EMPTY_, err
+	}
+	// Filter out any environment variables before taking the digest.
+	cleanupUsedEnvVars(p.mapping)
+	digest := sha256.New()
+	e := json.NewEncoder(digest)
+	err = e.Encode(p.mapping)
+	if err != nil {
+		return nil, _EMPTY_, err
+	}
+	return p.mapping, fmt.Sprintf("sha256:%x", digest.Sum(nil)), nil
+}
+
 type token struct {
 	item         item
 	value        any
@@ -116,10 +157,15 @@ type token struct {
 }
 
 func (t *token) MarshalJSON() ([]byte, error) {
+	// Do not duplicate variable contents since
+	// they already have been expanded at this point.
+	if t.usedVariable {
+		return []byte("null"), nil
+	}
 	return json.Marshal(t.value)
 }
 
-func (t *token) Value() any {
+func (t *token) Value() interface{} {
 	return t.value
 }
 
