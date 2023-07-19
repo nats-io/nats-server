@@ -2617,6 +2617,13 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 		info.AuthRequired = false
 	}
 
+	// Check to see if this is an in-process connection with tls_required.
+	// If so, set as not required, but available.
+	if inProcess && info.TLSRequired {
+		info.TLSRequired = false
+		info.TLSAvailable = true
+	}
+
 	s.totalClients++
 	s.mu.Unlock()
 
@@ -2667,7 +2674,7 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 	}
 	s.clients[c.cid] = c
 
-	tlsRequired := info.TLSRequired && !inProcess
+	tlsRequired := info.TLSRequired
 	s.mu.Unlock()
 
 	// Re-Grab lock
