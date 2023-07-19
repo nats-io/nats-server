@@ -2686,7 +2686,6 @@ func (s *Server) nsubsRequest(sub *subscription, c *client, _ *Account, subject,
 	s.sendInternalMsgLocked(reply, _EMPTY_, nil, nsubs)
 }
 
-// accountClaimUpdate will receive claim updates for accounts.
 func (s *Server) reloadConfig(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 	if !s.eventsRunning() {
 		return

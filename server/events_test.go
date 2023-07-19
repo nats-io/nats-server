@@ -1666,7 +1666,7 @@ func TestSystemAccountWithGateways(t *testing.T) {
 
 	// If this tests fails with wrong number after 10 seconds we may have
 	// added a new inititial subscription for the eventing system.
-	checkExpectedSubs(t, 52, sa)
+	checkExpectedSubs(t, 53, sa)
 
 	// Create a client on B and see if we receive the event
 	urlb := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)
@@ -2620,7 +2620,7 @@ func TestServerEventsReload(t *testing.T) {
 	require_True(t, apiResp.Data == nil)
 	require_Error(t, apiResp.Error, fmt.Errorf("Parse error on line 1: 'Expected a top-level value to end with a new line, comment or EOF, but got 'n' instead.'"))
 
-	// See that the ping interval has changed.
+	// See that the ping interval has not changed.
 	require_True(t, s.getOpts().PingInterval == 200*time.Millisecond)
 }
 
