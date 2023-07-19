@@ -416,6 +416,18 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		return nil, err
 	}
 
+	// If the stream has an initial sequence number then make sure we
+	// have purged up until that point. Checking the number of blocks
+	// is a cheap way of checking if the stream looks new-ish, rather
+	// than re-running a potentially expensive set of dirty closes on
+	// an existing stream. A new stream should have 1 block (as the
+	// lmb has already been created) but account for 0 just in case.
+	if len(fs.blks) <= 1 && cfg.FirstSeq > 0 {
+		if _, err := fs.purge(cfg.FirstSeq); err != nil {
+			return nil, err
+		}
+	}
+
 	// Write our meta data if it does not exist or is zero'd out.
 	meta := filepath.Join(fcfg.StoreDir, JetStreamMetaFile)
 	fi, err := os.Stat(meta)

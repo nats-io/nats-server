@@ -45,6 +45,9 @@ func newMemStore(cfg *StreamConfig) (*memStore, error) {
 	if cfg.Storage != MemoryStorage {
 		return nil, fmt.Errorf("memStore requires memory storage type in config")
 	}
+	if cfg.FirstSeq > 0 {
+		return nil, fmt.Errorf("setting the initial sequence is not supported by memory store")
+	}
 	ms := &memStore{
 		msgs: make(map[uint64]*StoreMsg),
 		fss:  make(map[string]*SimpleState),

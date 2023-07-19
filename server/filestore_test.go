@@ -5642,3 +5642,34 @@ func TestFileStoreRestoreEncryptedWithNoKeyFuncFails(t *testing.T) {
 	)
 	require_Error(t, err, errNoMainKey)
 }
+
+func TestFileStoreInitialFirstSeq(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fs, err := newFileStore(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage, FirstSeq: 1000})
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		seq, _, err := fs.StoreMsg("A", nil, []byte("OK"))
+		require_NoError(t, err)
+		if seq != 1000 {
+			t.Fatalf("Message should have been sequence 1000 but was %d", seq)
+		}
+
+		seq, _, err = fs.StoreMsg("B", nil, []byte("OK"))
+		require_NoError(t, err)
+		if seq != 1001 {
+			t.Fatalf("Message should have been sequence 1001 but was %d", seq)
+		}
+
+		var state StreamState
+		fs.FastState(&state)
+		switch {
+		case state.Msgs != 2:
+			t.Fatalf("Expected 2 messages, got %d", state.Msgs)
+		case state.FirstSeq != 1000:
+			t.Fatalf("Expected first seq 1000, got %d", state.FirstSeq)
+		case state.LastSeq != 1001:
+			t.Fatalf("Expected last seq 1001, got %d", state.LastSeq)
+		}
+	})
+}
