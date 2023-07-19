@@ -2217,7 +2217,7 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 func (s *Server) InProcessConn() (net.Conn, error) {
 	pl, pr := net.Pipe()
 	if !s.startGoRoutine(func() {
-		s.createClient(pl)
+		s.createClientInProcess(pl)
 		s.grWG.Done()
 	}) {
 		pl.Close()
@@ -2572,6 +2572,14 @@ func (c *tlsMixConn) Read(b []byte) (int, error) {
 }
 
 func (s *Server) createClient(conn net.Conn) *client {
+	return s.createClientEx(conn, false)
+}
+
+func (s *Server) createClientInProcess(conn net.Conn) *client {
+	return s.createClientEx(conn, true)
+}
+
+func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 	// Snapshot server options.
 	opts := s.getOpts()
 
@@ -2659,7 +2667,7 @@ func (s *Server) createClient(conn net.Conn) *client {
 	}
 	s.clients[c.cid] = c
 
-	tlsRequired := info.TLSRequired
+	tlsRequired := info.TLSRequired && !inProcess
 	s.mu.Unlock()
 
 	// Re-Grab lock
@@ -2670,8 +2678,9 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 	var pre []byte
 	// If we have both TLS and non-TLS allowed we need to see which
-	// one the client wants.
-	if !isClosed && opts.TLSConfig != nil && opts.AllowNonTLS {
+	// one the client wants. We'll always allow this for in-process
+	// connections.
+	if !isClosed && opts.TLSConfig != nil && (inProcess || opts.AllowNonTLS) {
 		pre = make([]byte, 4)
 		c.nc.SetReadDeadline(time.Now().Add(secondsToDuration(opts.TLSTimeout)))
 		n, _ := io.ReadFull(c.nc, pre[:])
