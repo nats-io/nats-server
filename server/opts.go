@@ -390,6 +390,9 @@ type Options struct {
 
 	// OCSP Cache config enables next-gen cache for OCSP features
 	OCSPCacheConfig *OCSPResponseCacheConfig
+
+	// ConfigDigest represents the state of configuration.
+	ConfigDigest string
 }
 
 // WebsocketOpts are options for websocket
@@ -785,10 +788,12 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 	if configFile == _EMPTY_ {
 		return nil
 	}
-	m, err := conf.ParseFileWithChecks(configFile)
+	m, digest, err := conf.ParseWithDigest(configFile)
 	if err != nil {
 		return err
 	}
+	o.ConfigDigest = digest
+
 	// Collect all errors and warnings and report them all together.
 	errors := make([]error, 0)
 	warnings := make([]error, 0)

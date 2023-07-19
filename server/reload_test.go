@@ -151,7 +151,8 @@ func TestConfigReloadUnsupported(t *testing.T) {
 			Host: "127.0.0.1",
 			Port: -1,
 		},
-		NoSigs: true,
+		NoSigs:       true,
+		ConfigDigest: "sha256:3c5c4141f56274bcfa801f2d7326ec64d5eabddd9e6d4f9a06ed167315a57f55",
 	}
 	setBaselineOptions(golden)
 
@@ -223,7 +224,8 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 			Host: "127.0.0.1",
 			Port: -1,
 		},
-		NoSigs: true,
+		NoSigs:       true,
+		ConfigDigest: "sha256:3c5c4141f56274bcfa801f2d7326ec64d5eabddd9e6d4f9a06ed167315a57f55",
 	}
 	setBaselineOptions(golden)
 
@@ -286,7 +288,8 @@ func TestConfigReload(t *testing.T) {
 			Host: "127.0.0.1",
 			Port: server.ClusterAddr().Port,
 		},
-		NoSigs: true,
+		NoSigs:       true,
+		ConfigDigest: "sha256:3c5c4141f56274bcfa801f2d7326ec64d5eabddd9e6d4f9a06ed167315a57f55",
 	}
 	setBaselineOptions(golden)
 
@@ -3952,6 +3955,11 @@ func TestConfigReloadAndVarz(t *testing.T) {
 	if v.MaxConn != DEFAULT_MAX_CONNECTIONS {
 		t.Fatalf("MaxConn should be %v, got %v", DEFAULT_MAX_CONNECTIONS, v.MaxConn)
 	}
+	got := v.ConfigDigest
+	expected := "sha256:7ea4cc5c6864139d814ce940a40ee6546b7ac5285eec3c390a4ce11e34dc1102"
+	if got != expected {
+		t.Fatalf("got: %v, expected: %v", got, expected)
+	}
 
 	changeCurrentConfigContentWithNewContent(t, conf, []byte(fmt.Sprintf(template, "max_connections: 10")))
 
@@ -3968,6 +3976,11 @@ func TestConfigReloadAndVarz(t *testing.T) {
 	}
 	if v.MaxConn != 10 {
 		t.Fatalf("MaxConn should be 10, got %v", v.MaxConn)
+	}
+	got = v.ConfigDigest
+	expected = "sha256:508a26309068f62c3022aa8951e712ed8ff5dd6f2360f727ad8242a2a233176e"
+	if got != expected {
+		t.Fatalf("got: %v, expected: %v", got, expected)
 	}
 }
 

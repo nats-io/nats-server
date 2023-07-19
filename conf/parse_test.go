@@ -3,6 +3,7 @@ package conf
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -428,5 +429,145 @@ func TestParseWithNoValues(t *testing.T) {
 		} else if !strings.Contains(err.Error(), "config has no values or is empty") {
 			t.Fatal("expected invalid conf error")
 		}
+	}
+}
+
+func TestParseDigest(t *testing.T) {
+	for _, test := range []struct {
+		input    string
+		includes map[string]string
+		digest   string
+	}{
+		{
+			`foo = bar`,
+			nil,
+			"sha256:226e49e13d16e5e8aa0d62e58cd63361bf097d3e2b2444aa3044334628a2e8de",
+		},
+		{
+			`# Comments and whitespace have no effect
+                        foo = bar
+                        `,
+			nil,
+			"sha256:226e49e13d16e5e8aa0d62e58cd63361bf097d3e2b2444aa3044334628a2e8de",
+		},
+		{
+			`# Syntax changes have no effect
+                        'foo': 'bar'
+                        `,
+			nil,
+			"sha256:226e49e13d16e5e8aa0d62e58cd63361bf097d3e2b2444aa3044334628a2e8de",
+		},
+		{
+			`# Syntax changes have no effect
+                        { 'foo': 'bar' }
+                        `,
+			nil,
+			"sha256:226e49e13d16e5e8aa0d62e58cd63361bf097d3e2b2444aa3044334628a2e8de",
+		},
+		{
+			`# substitutions
+                        BAR_USERS = { users = [ {user = "bar"} ]}
+                        hello = 'world'
+                        accounts {
+                          QUUX_USERS = [ { user: quux }]
+                          bar = $BAR_USERS
+                          quux = { users = $QUUX_USERS }
+                        }
+                        very { nested { env { VAR = 'NESTED', quux = $VAR }}}
+                        `,
+			nil,
+			"sha256:34f8faf3f269fe7509edc4742f20c8c4a7ad51fe21f8b361764314b533ac3ab5",
+		},
+		{
+			`# substitutions, same as previous one without env vars.
+                        hello = 'world'
+                        accounts {
+                          bar  = { users = [ { user = "bar" } ]}
+                          quux = { users = [ { user: quux   } ]}
+                        }
+                        very { nested { env { quux = 'NESTED' }}}
+                        `,
+			nil,
+			"sha256:34f8faf3f269fe7509edc4742f20c8c4a7ad51fe21f8b361764314b533ac3ab5",
+		},
+		{
+			`# substitutions
+                        BAR_USERS = { users = [ {user = "foo"} ]}
+                        bar = $BAR_USERS
+                        accounts {
+                          users = $BAR_USERS
+                        }
+                        `,
+			nil,
+			"sha256:f5d943b4ed22b80c6199203f8a7eaa8eb68ef7b2d46ef6b1b26f05e21f8beb13",
+		},
+		{
+			`# substitutions
+                        bar = { users = [ {user = "foo"} ]}
+                        accounts {
+                          users = { users = [ {user = "foo"} ]}
+                        }
+                        `,
+			nil,
+			"sha256:f5d943b4ed22b80c6199203f8a7eaa8eb68ef7b2d46ef6b1b26f05e21f8beb13",
+		},
+		{
+			`# includes
+			accounts {
+                          foo { include 'foo.conf'}
+                          bar { users = [{user = "bar"}] }
+                          quux { include 'quux.conf'}
+                        }
+                        `,
+			map[string]string{
+				"foo.conf":  ` users = [{user = "foo"}]`,
+				"quux.conf": ` users = [{user = "quux"}]`,
+			},
+			"sha256:e72d70c91b64b0f880f86decb95ec2600cbdcf8bdcd2355fce5ebc54a84a77e9",
+		},
+		{
+			`# includes
+			accounts {
+                          foo { include 'foo.conf'}
+                          bar { include 'bar.conf'}
+                          quux { include 'quux.conf'}
+                        }
+                        `,
+			map[string]string{
+				"foo.conf":  ` users = [{user = "foo"}]`,
+				"bar.conf":  ` users = [{user = "bar"}]`,
+				"quux.conf": ` users = [{user = "quux"}]`,
+			},
+			"sha256:e72d70c91b64b0f880f86decb95ec2600cbdcf8bdcd2355fce5ebc54a84a77e9",
+		},
+	} {
+		t.Run("", func(t *testing.T) {
+			sdir := t.TempDir()
+			f, err := os.CreateTemp(sdir, "nats.conf-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(f.Name(), []byte(test.input), 066); err != nil {
+				t.Error(err)
+			}
+			if test.includes != nil {
+				for includeFile, contents := range test.includes {
+					inf, err := os.Create(filepath.Join(sdir, includeFile))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(inf.Name(), []byte(contents), 066); err != nil {
+						t.Error(err)
+					}
+				}
+			}
+			_, digest, err := ParseWithDigest(f.Name())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if digest != test.digest {
+				t.Errorf("\ngot: %s\nexpected: %s", digest, test.digest)
+			}
+		})
 	}
 }
