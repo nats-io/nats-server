@@ -3506,7 +3506,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			if err == ErrStoreEOF {
 				o.checkNumPendingOnEOF()
 			}
-			if err == ErrStoreMsgNotFound || err == ErrStoreEOF || err == errMaxAckPending || err == errPartialCache {
+			if err == ErrStoreMsgNotFound || err == errDeletedMsg || err == ErrStoreEOF || err == errMaxAckPending || err == errPartialCache {
 				goto waitForMsgs
 			} else {
 				s.Errorf("Received an error looking up message for consumer: %v", err)
