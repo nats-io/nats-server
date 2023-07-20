@@ -122,6 +122,7 @@ type Server struct {
 	// How often user logon fails due to the issuer account not being pinned.
 	pinnedAccFail uint64
 	stats
+	scStats
 	mu                  sync.RWMutex
 	kp                  nkeys.KeyPair
 	xkp                 nkeys.KeyPair
@@ -336,6 +337,14 @@ type stats struct {
 	inBytes       int64
 	outBytes      int64
 	slowConsumers int64
+}
+
+// scStats includes the total and per connection counters of Slow Consumers.
+type scStats struct {
+	clients  atomic.Uint64
+	routes   atomic.Uint64
+	leafs    atomic.Uint64
+	gateways atomic.Uint64
 }
 
 // This is used by tests so we can run all server tests with a default route
@@ -3410,6 +3419,26 @@ func (s *Server) numSubscriptions() uint32 {
 // NumSlowConsumers will report the number of slow consumers.
 func (s *Server) NumSlowConsumers() int64 {
 	return atomic.LoadInt64(&s.slowConsumers)
+}
+
+// NumSlowConsumersClients will report the number of slow consumers clients.
+func (s *Server) NumSlowConsumersClients() uint64 {
+	return s.scStats.clients.Load()
+}
+
+// NumSlowConsumersRoutes will report the number of slow consumers routes.
+func (s *Server) NumSlowConsumersRoutes() uint64 {
+	return s.scStats.routes.Load()
+}
+
+// NumSlowConsumersGateways will report the number of slow consumers leafs.
+func (s *Server) NumSlowConsumersGateways() uint64 {
+	return s.scStats.gateways.Load()
+}
+
+// NumSlowConsumersLeafs will report the number of slow consumers leafs.
+func (s *Server) NumSlowConsumersLeafs() uint64 {
+	return s.scStats.leafs.Load()
 }
 
 // ConfigTime will report the last time the server configuration was loaded.

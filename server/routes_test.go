@@ -3800,6 +3800,31 @@ func TestRouteNoLeakOnSlowConsumer(t *testing.T) {
 		}
 		return nil
 	})
+	var got, expected int64
+	got = s1.NumSlowConsumers()
+	expected = 1
+	if got != expected {
+		t.Errorf("got: %d, expected: %d", got, expected)
+	}
+	got = int64(s1.NumSlowConsumersRoutes())
+	if got != expected {
+		t.Errorf("got: %d, expected: %d", got, expected)
+	}
+	got = int64(s1.NumSlowConsumersClients())
+	expected = 0
+	if got != expected {
+		t.Errorf("got: %d, expected: %d", got, expected)
+	}
+	varz, err := s1.Varz(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if varz.SlowConsumersStats.Clients != 0 {
+		t.Error("Expected no slow consumer clients")
+	}
+	if varz.SlowConsumersStats.Routes != 1 {
+		t.Error("Expected a slow consumer route")
+	}
 }
 
 func TestRouteNoLeakOnAuthTimeout(t *testing.T) {
