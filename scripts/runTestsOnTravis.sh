@@ -2,6 +2,10 @@
 
 set -e
 
+free -m
+
+export GOMEMLIMIT="4096MiB"
+
 if [ "$1" = "compile" ]; then
     # First check that NATS builds.
     go build;
