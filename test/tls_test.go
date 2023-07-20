@@ -72,6 +72,26 @@ func TestTLSConnection(t *testing.T) {
 	}
 }
 
+// TestTLSInProcessConnection checks that even if TLS is enabled on the server,
+// that an in-process connection that does *not* use TLS still connects successfully.
+func TestTLSInProcessConnection(t *testing.T) {
+	srv, opts := RunServerWithConfig("./configs/tls.conf")
+	defer srv.Shutdown()
+
+	nc, err := nats.Connect("", nats.InProcessServer(srv), nats.UserInfo(opts.Username, opts.Password))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if nc.TLSRequired() {
+		t.Fatalf("Shouldn't have required TLS for in-process connection")
+	}
+
+	if _, err = nc.TLSConnectionState(); err == nil {
+		t.Fatal("Should have got an error retrieving TLS connection state")
+	}
+}
+
 func TestTLSClientCertificate(t *testing.T) {
 	srv, opts := RunServerWithConfig("./configs/tlsverify.conf")
 	defer srv.Shutdown()
