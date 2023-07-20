@@ -11507,7 +11507,7 @@ func TestJetStreamSourceBasics(t *testing.T) {
 		Name:    "FMS3",
 		Storage: FileStorage,
 		Sources: []*StreamSource{
-			{Name: "TEST", FilterSubjects: []string{"dlc", "rip"}, SubjectTransformDests: []string{"dlc2", "rip2"}},
+			{Name: "TEST", SubjectTransforms: []SubjectTransformConfig{{Source: "dlc", Destination: "dlc2"}, {Source: "rip", Destination: "rip2"}}},
 		},
 	}
 	createStream(cfg)

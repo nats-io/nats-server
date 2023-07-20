@@ -1420,19 +1420,9 @@
     "deprecates": ""
   },
   {
-    "constant": "JSSourceNumberOfFiltersAndTransformDestinationMustMatch",
-    "code": 400,
-    "error_code": 10144,
-    "description": "source must have a matching number of filters and transform destinations",
-    "comment": "",
-    "help": "",
-    "url": "",
-    "deprecates": ""
-  },
-  {
     "constant": "JSSourceInvalidSubjectFilter",
     "code": 400,
-    "error_code": 10145,
+    "error_code": 10144,
     "description": "source subject filter is invalid",
     "comment": "",
     "help": "",
@@ -1442,7 +1432,7 @@
   {
     "constant": "JSSourceInvalidTransformDestination",
     "code": 400,
-    "error_code": 10146,
+    "error_code": 10145,
     "description": "source transform destination is invalid",
     "comment": "",
     "help": "",
@@ -1452,7 +1442,7 @@
   {
     "constant": "JSSourceOverlappingSubjectFilters",
     "code": 400,
-    "error_code": 10147,
+    "error_code": 10146,
     "description": "source filters can not overlap",
     "comment": "",
     "help": "",
