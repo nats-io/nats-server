@@ -721,3 +721,36 @@ func TestMemStoreNumPending(t *testing.T) {
 		}
 	}
 }
+
+func TestMemStoreInitialFirstSeq(t *testing.T) {
+	cfg := &StreamConfig{
+		Name:     "zzz",
+		Storage:  MemoryStorage,
+		FirstSeq: 1000,
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(t, err)
+
+	seq, _, err := ms.StoreMsg("A", nil, []byte("OK"))
+	require_NoError(t, err)
+	if seq != 1000 {
+		t.Fatalf("Message should have been sequence 1000 but was %d", seq)
+	}
+
+	seq, _, err = ms.StoreMsg("B", nil, []byte("OK"))
+	require_NoError(t, err)
+	if seq != 1001 {
+		t.Fatalf("Message should have been sequence 1001 but was %d", seq)
+	}
+
+	var state StreamState
+	ms.FastState(&state)
+	switch {
+	case state.Msgs != 2:
+		t.Fatalf("Expected 2 messages, got %d", state.Msgs)
+	case state.FirstSeq != 1000:
+		t.Fatalf("Expected first seq 1000, got %d", state.FirstSeq)
+	case state.LastSeq != 1001:
+		t.Fatalf("Expected last seq 1001, got %d", state.LastSeq)
+	}
+}

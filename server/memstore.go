@@ -45,14 +45,16 @@ func newMemStore(cfg *StreamConfig) (*memStore, error) {
 	if cfg.Storage != MemoryStorage {
 		return nil, fmt.Errorf("memStore requires memory storage type in config")
 	}
-	if cfg.FirstSeq > 0 {
-		return nil, fmt.Errorf("setting the initial sequence is not supported by memory store")
-	}
 	ms := &memStore{
 		msgs: make(map[uint64]*StoreMsg),
 		fss:  make(map[string]*SimpleState),
 		maxp: cfg.MaxMsgsPer,
 		cfg:  *cfg,
+	}
+	if cfg.FirstSeq > 0 {
+		if _, err := ms.purge(cfg.FirstSeq); err != nil {
+			return nil, err
+		}
 	}
 
 	return ms, nil
@@ -669,11 +671,22 @@ func (ms *memStore) PurgeEx(subject string, sequence, keep uint64) (purged uint6
 // Purge will remove all messages from this store.
 // Will return the number of purged messages.
 func (ms *memStore) Purge() (uint64, error) {
+	ms.mu.RLock()
+	first := ms.state.LastSeq + 1
+	ms.mu.RUnlock()
+	return ms.purge(first)
+}
+
+func (ms *memStore) purge(fseq uint64) (uint64, error) {
 	ms.mu.Lock()
 	purged := uint64(len(ms.msgs))
 	cb := ms.scb
 	bytes := int64(ms.state.Bytes)
-	ms.state.FirstSeq = ms.state.LastSeq + 1
+	if fseq < ms.state.LastSeq {
+		return 0, fmt.Errorf("partial purges not supported on memory store")
+	}
+	ms.state.FirstSeq = fseq
+	ms.state.LastSeq = fseq - 1
 	ms.state.FirstTime = time.Time{}
 	ms.state.Bytes = 0
 	ms.state.Msgs = 0

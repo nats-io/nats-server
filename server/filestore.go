@@ -417,12 +417,11 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	}
 
 	// If the stream has an initial sequence number then make sure we
-	// have purged up until that point. Checking the number of blocks
-	// is a cheap way of checking if the stream looks new-ish, rather
-	// than re-running a potentially expensive set of dirty closes on
-	// an existing stream. A new stream should have 1 block (as the
-	// lmb has already been created) but account for 0 just in case.
-	if len(fs.blks) <= 1 && cfg.FirstSeq > 0 {
+	// have purged up until that point. We will do this only if the
+	// recovered first sequence number is before our configured first
+	// sequence.
+	fs.FastState(&fs.state)
+	if cfg.FirstSeq > 0 && fs.state.FirstSeq <= cfg.FirstSeq {
 		if _, err := fs.purge(cfg.FirstSeq); err != nil {
 			return nil, err
 		}
