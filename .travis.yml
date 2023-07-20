@@ -1,17 +1,12 @@
 os: linux
 dist: focal
 
-branches:
-  only:
-    - main
-    - dev
-
 vm:
   size: 2x-large
 
 language: go
 go:
-  - 1.19.11
+  - '1.19.11'
 go_import_path: github.com/nats-io/nats-server
 
 addons:
