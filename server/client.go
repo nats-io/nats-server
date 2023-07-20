@@ -810,15 +810,16 @@ func (c *client) subsAtLimit() bool {
 }
 
 func minLimit(value *int32, limit int32) bool {
-	if *value != jwt.NoLimit {
+	v := atomic.LoadInt32(value)
+	if v != jwt.NoLimit {
 		if limit != jwt.NoLimit {
-			if limit < *value {
-				*value = limit
+			if limit < v {
+				atomic.StoreInt32(value, limit)
 				return true
 			}
 		}
 	} else if limit != jwt.NoLimit {
-		*value = limit
+		atomic.StoreInt32(value, limit)
 		return true
 	}
 	return false
@@ -831,7 +832,7 @@ func (c *client) applyAccountLimits() {
 	if c.acc == nil || (c.kind != CLIENT && c.kind != LEAF) {
 		return
 	}
-	c.mpay = jwt.NoLimit
+	atomic.StoreInt32(&c.mpay, jwt.NoLimit)
 	c.msubs = jwt.NoLimit
 	if c.opts.JWT != _EMPTY_ { // user jwt implies account
 		if uc, _ := jwt.DecodeUserClaims(c.opts.JWT); uc != nil {
@@ -3749,15 +3750,21 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 	}
 
 	// Mostly under testing scenarios.
+	c.mu.Lock()
 	if c.srv == nil || c.acc == nil {
+		c.mu.Unlock()
 		return false, false
 	}
+	acc := c.acc
+	genidAddr := &acc.sl.genid
 
 	// Check pub permissions
-	if c.perms != nil && (c.perms.pub.allow != nil || c.perms.pub.deny != nil) && !c.pubAllowed(string(c.pa.subject)) {
+	if c.perms != nil && (c.perms.pub.allow != nil || c.perms.pub.deny != nil) && !c.pubAllowedFullCheck(string(c.pa.subject), true, true) {
+		c.mu.Unlock()
 		c.pubPermissionViolation(c.pa.subject)
 		return false, true
 	}
+	c.mu.Unlock()
 
 	// Now check for reserved replies. These are used for service imports.
 	if c.kind == CLIENT && len(c.pa.reply) > 0 && isReservedReply(c.pa.reply) {
@@ -3778,10 +3785,10 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 	// performance impact reported in our bench)
 	var isGWRouted bool
 	if c.kind != CLIENT {
-		if atomic.LoadInt32(&c.acc.gwReplyMapping.check) > 0 {
-			c.acc.mu.RLock()
-			c.pa.subject, isGWRouted = c.acc.gwReplyMapping.get(c.pa.subject)
-			c.acc.mu.RUnlock()
+		if atomic.LoadInt32(&acc.gwReplyMapping.check) > 0 {
+			acc.mu.RLock()
+			c.pa.subject, isGWRouted = acc.gwReplyMapping.get(c.pa.subject)
+			acc.mu.RUnlock()
 		}
 	} else if atomic.LoadInt32(&c.gwReplyMapping.check) > 0 {
 		c.mu.Lock()
@@ -3824,7 +3831,7 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 	var r *SublistResult
 	var ok bool
 
-	genid := atomic.LoadUint64(&c.acc.sl.genid)
+	genid := atomic.LoadUint64(genidAddr)
 	if genid == c.in.genid && c.in.results != nil {
 		r, ok = c.in.results[string(c.pa.subject)]
 	} else {
@@ -3835,7 +3842,7 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 
 	// Go back to the sublist data structure.
 	if !ok {
-		r = c.acc.sl.Match(string(c.pa.subject))
+		r = acc.sl.Match(string(c.pa.subject))
 		c.in.results[string(c.pa.subject)] = r
 		// Prune the results cache. Keeps us from unbounded growth. Random delete.
 		if len(c.in.results) > maxResultCacheSize {
@@ -3866,7 +3873,7 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 			atomic.LoadInt64(&c.srv.gateway.totalQSubs) > 0 {
 			flag |= pmrCollectQueueNames
 		}
-		didDeliver, qnames = c.processMsgResults(c.acc, r, msg, c.pa.deliver, c.pa.subject, c.pa.reply, flag)
+		didDeliver, qnames = c.processMsgResults(acc, r, msg, c.pa.deliver, c.pa.subject, c.pa.reply, flag)
 	}
 
 	// Now deal with gateways
@@ -3876,7 +3883,7 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 			reply = append(reply, '@')
 			reply = append(reply, c.pa.deliver...)
 		}
-		didDeliver = c.sendMsgToGateways(c.acc, msg, c.pa.subject, reply, qnames) || didDeliver
+		didDeliver = c.sendMsgToGateways(acc, msg, c.pa.subject, reply, qnames) || didDeliver
 	}
 
 	// Check to see if we did not deliver to anyone and the client has a reply subject set
@@ -4082,6 +4089,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 			checkJS = true
 		}
 	}
+	siAcc := si.acc
 	acc.mu.RUnlock()
 
 	// We have a special case where JetStream pulls in all service imports through one export.
@@ -4112,7 +4120,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 		}
 	} else if !isResponse && si.latency != nil && tracking {
 		// Check to see if this was a bad request with no reply and we were supposed to be tracking.
-		si.acc.sendBadRequestTrackingLatency(si, c, headers)
+		siAcc.sendBadRequestTrackingLatency(si, c, headers)
 	}
 
 	// Send tracking info here if we are tracking this response.
@@ -4140,7 +4148,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	// Now check to see if this account has mappings that could affect the service import.
 	// Can't use non-locked trick like in processInboundClientMsg, so just call into selectMappedSubject
 	// so we only lock once.
-	nsubj, changed := si.acc.selectMappedSubject(to)
+	nsubj, changed := siAcc.selectMappedSubject(to)
 	if changed {
 		c.pa.mapped = []byte(to)
 		to = nsubj
@@ -4157,7 +4165,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	// Place our client info for the request in the original message.
 	// This will survive going across routes, etc.
 	if !isResponse {
-		isSysImport := si.acc == c.srv.SystemAccount()
+		isSysImport := siAcc == c.srv.SystemAccount()
 		var ci *ClientInfo
 		if hadPrevSi && c.pa.hdr >= 0 {
 			var cis ClientInfo
@@ -4198,11 +4206,11 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	c.pa.reply = nrr
 
 	if changed && c.isMqtt() && c.pa.hdr > 0 {
-		c.srv.mqttStoreQoS1MsgForAccountOnNewSubject(c.pa.hdr, msg, si.acc.GetName(), to)
+		c.srv.mqttStoreQoS1MsgForAccountOnNewSubject(c.pa.hdr, msg, siAcc.GetName(), to)
 	}
 
 	// FIXME(dlc) - Do L1 cache trick like normal client?
-	rr := si.acc.sl.Match(to)
+	rr := siAcc.sl.Match(to)
 
 	// If we are a route or gateway or leafnode and this message is flipped to a queue subscriber we
 	// need to handle that since the processMsgResults will want a queue filter.
@@ -4227,10 +4235,10 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	if c.srv.gateway.enabled {
 		flags |= pmrCollectQueueNames
 		var queues [][]byte
-		didDeliver, queues = c.processMsgResults(si.acc, rr, msg, c.pa.deliver, []byte(to), nrr, flags)
-		didDeliver = c.sendMsgToGateways(si.acc, msg, []byte(to), nrr, queues) || didDeliver
+		didDeliver, queues = c.processMsgResults(siAcc, rr, msg, c.pa.deliver, []byte(to), nrr, flags)
+		didDeliver = c.sendMsgToGateways(siAcc, msg, []byte(to), nrr, queues) || didDeliver
 	} else {
-		didDeliver, _ = c.processMsgResults(si.acc, rr, msg, c.pa.deliver, []byte(to), nrr, flags)
+		didDeliver, _ = c.processMsgResults(siAcc, rr, msg, c.pa.deliver, []byte(to), nrr, flags)
 	}
 
 	// Restore to original values.
@@ -4263,7 +4271,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 		} else {
 			// This is a main import and since we could not even deliver to the exporting account
 			// go ahead and remove the respServiceImport we created above.
-			si.acc.removeRespServiceImport(rsi, reason)
+			siAcc.removeRespServiceImport(rsi, reason)
 		}
 	}
 }

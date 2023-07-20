@@ -1049,6 +1049,12 @@ func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) 
 
 	opts := s.getOpts()
 
+	// We need to track service imports since we can not swap them out (unsub and re-sub)
+	// until the proper server struct accounts have been swapped in properly. Doing it in
+	// place could lead to data loss or server panic since account under new si has no real
+	// account and hence no sublist, so will panic on inbound message.
+	siMap := make(map[*Account][][]byte)
+
 	// Check opts and walk through them. We need to copy them here
 	// so that we do not keep a real one sitting in the options.
 	for _, acc := range opts.Accounts {
@@ -1069,12 +1075,16 @@ func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) 
 				// Collect the sids for the service imports since we are going to
 				// replace with new ones.
 				var sids [][]byte
-				c := a.ic
 				for _, si := range a.imports.services {
-					if c != nil && si.sid != nil {
+					if si.sid != nil {
 						sids = append(sids, si.sid)
 					}
 				}
+				// Setup to process later if needed.
+				if len(sids) > 0 || len(acc.imports.services) > 0 {
+					siMap[a] = sids
+				}
+
 				// Now reset all export/imports fields since they are going to be
 				// filled in shallowCopy()
 				a.imports.streams, a.imports.services = nil, nil
@@ -1083,14 +1093,6 @@ func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) 
 				// and pass `a` (our existing account) to get it updated.
 				acc.shallowCopy(a)
 				a.mu.Unlock()
-				// Need to release the lock for this.
-				s.mu.Unlock()
-				for _, sid := range sids {
-					c.processUnsub(sid)
-				}
-				// Add subscriptions for existing service imports.
-				a.addAllServiceImportSubs()
-				s.mu.Lock()
 				create = false
 			}
 		}
@@ -1158,6 +1160,7 @@ func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) 
 		for _, si := range acc.imports.services {
 			if v, ok := s.accounts.Load(si.acc.Name); ok {
 				si.acc = v.(*Account)
+
 				// It is possible to allow for latency tracking inside your
 				// own account, so lock only when not the same account.
 				if si.acc == acc {
@@ -1184,6 +1187,16 @@ func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) 
 		acc.mu.Unlock()
 		return true
 	})
+
+	// Check if we need to process service imports pending from above.
+	// This processing needs to be after we swap in the real accounts above.
+	for acc, sids := range siMap {
+		c := acc.ic
+		for _, sid := range sids {
+			c.processUnsub(sid)
+		}
+		acc.addAllServiceImportSubs()
+	}
 
 	// Set the system account if it was configured.
 	// Otherwise create a default one.
@@ -2552,7 +2565,7 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 func (s *Server) InProcessConn() (net.Conn, error) {
 	pl, pr := net.Pipe()
 	if !s.startGoRoutine(func() {
-		s.createClient(pl)
+		s.createClientInProcess(pl)
 		s.grWG.Done()
 	}) {
 		pl.Close()
@@ -2907,6 +2920,14 @@ func (c *tlsMixConn) Read(b []byte) (int, error) {
 }
 
 func (s *Server) createClient(conn net.Conn) *client {
+	return s.createClientEx(conn, false)
+}
+
+func (s *Server) createClientInProcess(conn net.Conn) *client {
+	return s.createClientEx(conn, true)
+}
+
+func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 	// Snapshot server options.
 	opts := s.getOpts()
 
@@ -2942,6 +2963,13 @@ func (s *Server) createClient(conn net.Conn) *client {
 	// If so set back to false.
 	if info.AuthRequired && opts.NoAuthUser != _EMPTY_ && opts.NoAuthUser != s.sysAccOnlyNoAuthUser {
 		info.AuthRequired = false
+	}
+
+	// Check to see if this is an in-process connection with tls_required.
+	// If so, set as not required, but available.
+	if inProcess && info.TLSRequired {
+		info.TLSRequired = false
+		info.TLSAvailable = true
 	}
 
 	s.totalClients++
@@ -3005,8 +3033,9 @@ func (s *Server) createClient(conn net.Conn) *client {
 
 	var pre []byte
 	// If we have both TLS and non-TLS allowed we need to see which
-	// one the client wants.
-	if !isClosed && opts.TLSConfig != nil && opts.AllowNonTLS {
+	// one the client wants. We'll always allow this for in-process
+	// connections.
+	if !isClosed && opts.TLSConfig != nil && (inProcess || opts.AllowNonTLS) {
 		pre = make([]byte, 4)
 		c.nc.SetReadDeadline(time.Now().Add(secondsToDuration(opts.TLSTimeout)))
 		n, _ := io.ReadFull(c.nc, pre[:])
