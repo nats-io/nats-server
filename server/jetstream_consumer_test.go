@@ -514,6 +514,26 @@ func TestJetStreamConsumerActions(t *testing.T) {
 		AckWait:        time.Second * 30,
 	}, ActionUpdate)
 	require_Error(t, err)
+
+	// Create new ephemeral. Should be fine as the consumer doesn't exist already
+	_, err = mset.addConsumerWithAction(&ConsumerConfig{
+		Name:           "EPH",
+		FilterSubjects: []string{"one"},
+		AckPolicy:      AckExplicit,
+		DeliverPolicy:  DeliverAll,
+		AckWait:        time.Second * 30,
+	}, ActionCreate)
+	require_NoError(t, err)
+
+	// Trying to create it again right away. Should error as it already exists (and hasn't been cleaned up yet)
+	_, err = mset.addConsumerWithAction(&ConsumerConfig{
+		Name:           "EPH",
+		FilterSubjects: []string{"one"},
+		AckPolicy:      AckExplicit,
+		DeliverPolicy:  DeliverAll,
+		AckWait:        time.Second * 30,
+	}, ActionCreate)
+	require_Error(t, err)
 }
 
 func TestJetStreamConsumerActionsViaAPI(t *testing.T) {
@@ -588,6 +608,40 @@ func TestJetStreamConsumerActionsViaAPI(t *testing.T) {
 		t.Fatalf("expected err, got nil")
 	}
 
+	// create a named ephemeral consumer
+	ccResp.Error = nil
+	request, err = json.Marshal(&CreateConsumerRequest{
+		Action: ActionCreate,
+		Config: ConsumerConfig{
+			Name:          "ephemeral",
+			FilterSubject: "one",
+		},
+		Stream: "TEST",
+	})
+	require_NoError(t, err)
+	resp, err = nc.Request("$JS.API.CONSUMER.CREATE.TEST.ephemeral", []byte(request), time.Second*6)
+	require_NoError(t, err)
+	err = json.Unmarshal(resp.Data, &ccResp)
+	require_NoError(t, err)
+
+	// re-create existing consumer - which should be an error.
+	ccResp.Error = nil
+	request, err = json.Marshal(&CreateConsumerRequest{
+		Action: ActionCreate,
+		Config: ConsumerConfig{
+			Name:          "ephemeral",
+			FilterSubject: "one",
+		},
+		Stream: "TEST",
+	})
+	require_NoError(t, err)
+	resp, err = nc.Request("$JS.API.CONSUMER.CREATE.TEST.ephemeral", []byte(request), time.Second*6)
+	require_NoError(t, err)
+	err = json.Unmarshal(resp.Data, &ccResp)
+	require_NoError(t, err)
+	if ccResp.Error == nil {
+		t.Fatalf("expected err, got nil")
+	}
 }
 
 func TestJetStreamConsumerActionsUnmarshal(t *testing.T) {
