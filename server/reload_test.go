@@ -2700,6 +2700,42 @@ func TestConfigReloadAccountUsers(t *testing.T) {
 	})
 }
 
+func TestConfigReloadAccountWithNoChanges(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+	listen: "127.0.0.1:-1"
+        system_account: sys
+	accounts {
+		A {
+			users = [{ user: a }]
+		}
+		B {
+			users = [{ user: b }]
+		}
+		C {
+			users = [{ user: c }]
+		}
+		sys {
+			users = [{ user: sys }]
+		}
+	}
+	`))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+	before := s.NumSubscriptions()
+	s.Reload()
+	after := s.NumSubscriptions()
+	if before != after {
+		t.Errorf("Number of subscriptions changed after reload: %d -> %d", before, after)
+	}
+
+	before = s.NumSubscriptions()
+	s.Reload()
+	after = s.NumSubscriptions()
+	if before != after {
+		t.Errorf("Number of subscriptions changed after reload: %d -> %d", before, after)
+	}
+}
+
 func TestConfigReloadAccountNKeyUsers(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 	listen: "127.0.0.1:-1"
