@@ -44,7 +44,7 @@ func TestSignalToReOpenLogFile(t *testing.T) {
 	defer s.Shutdown()
 
 	// Set the file log
-	fileLog := logger.NewFileLogger(s.opts.LogFile, s.opts.Logtime, s.opts.Debug, s.opts.Trace, true)
+	fileLog := logger.NewFileLogger(s.opts.LogFile, s.opts.Logtime, s.opts.Debug, s.opts.Trace, true, logger.LogUTC(s.opts.LogtimeUTC))
 	s.SetLogger(fileLog, false, false)
 
 	// Add a trace
