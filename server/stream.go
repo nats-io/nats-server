@@ -476,13 +476,13 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 			for _, st := range ssi.SubjectTransforms {
 				if st.Source != _EMPTY_ && !IsValidSubject(st.Source) {
 					jsa.mu.Unlock()
-					return nil, fmt.Errorf("subject filter '%s' for the source %w", st, ErrBadSubject)
+					return nil, fmt.Errorf("subject filter '%s' for the source %w", st.Source, ErrBadSubject)
 				}
 				// check the transform, if any, is valid
 				if st.Destination != _EMPTY_ {
 					if _, err = NewSubjectTransform(st.Source, st.Destination); err != nil {
 						jsa.mu.Unlock()
-						return nil, fmt.Errorf("subject transform from '%s' to '%s' for the source %w", st.Source, st.Destination, err)
+						return nil, fmt.Errorf("subject transform from '%s' to '%s' for the source: %w", st.Source, st.Destination, err)
 					}
 				}
 			}
@@ -1272,12 +1272,10 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 				return StreamConfig{}, NewJSSourceMultipleFiltersNotAllowedError()
 			}
 
-			if len(src.SubjectTransforms) > 0 {
-				for _, tr := range src.SubjectTransforms {
-					err := ValidateMappingDestination(tr.Destination)
-					if err != nil {
-						return StreamConfig{}, NewJSSourceInvalidTransformDestinationError()
-					}
+			for _, tr := range src.SubjectTransforms {
+				err := ValidateMappingDestination(tr.Destination)
+				if err != nil {
+					return StreamConfig{}, NewJSSourceInvalidTransformDestinationError()
 				}
 			}
 
