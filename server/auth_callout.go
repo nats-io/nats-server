@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unicode"
 
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nkeys"
@@ -83,7 +84,7 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 		// This signals not authorized.
 		// Since this is an account subscription will always have "\r\n".
 		if len(msg) <= LEN_CR_LF {
-			return nil, fmt.Errorf("Auth callout violation: %q on account %q", "no reason supplied", account)
+			return nil, fmt.Errorf("auth callout violation: %q on account %q", "no reason supplied", account)
 		}
 		// Strip trailing CRLF.
 		msg = msg[:len(msg)-LEN_CR_LF]
@@ -94,7 +95,7 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 			var err error
 			msg, err = xkp.Open(msg, pubAccXKey)
 			if err != nil {
-				return nil, fmt.Errorf("Error decrypting auth callout response on account %q: %v", account, err)
+				return nil, fmt.Errorf("error decrypting auth callout response on account %q: %v", account, err)
 			}
 			encrypted = true
 		}
@@ -106,22 +107,22 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 		vr := jwt.CreateValidationResults()
 		cr.Validate(vr)
 		if len(vr.Issues) > 0 {
-			return nil, fmt.Errorf("Authorization response had validation errors: %v", vr.Issues[0])
+			return nil, fmt.Errorf("authorization response had validation errors: %v", vr.Issues[0])
 		}
 
 		// the subject is the user id
 		if cr.Subject != pub {
-			return nil, errors.New("Auth callout violation: auth callout response is not for expected user")
+			return nil, errors.New("auth callout violation: auth callout response is not for expected user")
 		}
 
 		// check the audience to be the server ID
 		if cr.Audience != s.info.ID {
-			return nil, errors.New("Auth callout violation: auth callout response is not for server")
+			return nil, errors.New("auth callout violation: auth callout response is not for server")
 		}
 
 		// check if had an error message from the auth account
 		if cr.Error != _EMPTY_ {
-			return nil, fmt.Errorf("Auth callout service returned an error: %v", cr.Error)
+			return nil, fmt.Errorf("auth callout service returned an error: %v", cr.Error)
 		}
 
 		// if response is encrypted none of this is needed
@@ -132,7 +133,7 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 			}
 			if pkStr != account {
 				if _, ok := acc.signingKeys[pkStr]; !ok {
-					return nil, errors.New("Auth callout signing key is unknown")
+					return nil, errors.New("auth callout signing key is unknown")
 				}
 			}
 		}
@@ -159,16 +160,16 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 				// this should be invalid - effectively it would allow the auth callout
 				// to issue on another account which may be allowed given the configuration
 				// where the auth callout account can handle multiple different ones..
-				return _EMPTY_, fmt.Errorf("Error non operator mode account %q: attempted to use issuer_account", account)
+				return _EMPTY_, fmt.Errorf("error non operator mode account %q: attempted to use issuer_account", account)
 			}
 			jwtIssuer = arc.IssuerAccount
 		}
 
 		if jwtIssuer != issuer {
 			if !isOperatorMode {
-				return _EMPTY_, fmt.Errorf("Wrong issuer for auth callout response on account %q, expected %q got %q", account, issuer, jwtIssuer)
+				return _EMPTY_, fmt.Errorf("wrong issuer for auth callout response on account %q, expected %q got %q", account, issuer, jwtIssuer)
 			} else if !acc.isAllowedAcount(jwtIssuer) {
-				return _EMPTY_, fmt.Errorf("Account %q not permitted as valid account option for auth callout for account %q",
+				return _EMPTY_, fmt.Errorf("account %q not permitted as valid account option for auth callout for account %q",
 					arc.Issuer, account)
 			}
 		}
@@ -179,14 +180,14 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 		allowNow, expiration := validateTimes(arc)
 		if !allowNow {
 			c.Errorf("Outside connect times")
-			return 0, nil, fmt.Errorf("Authorized user on account %q outside of valid connect times", account)
+			return 0, nil, fmt.Errorf("authorized user on account %q outside of valid connect times", account)
 		}
 
 		allowedConnTypes, err := convertAllowedConnectionTypes(arc.User.AllowedConnectionTypes)
 		if err != nil {
 			c.Debugf("%v", err)
 			if len(allowedConnTypes) == 0 {
-				return 0, nil, fmt.Errorf("Authorized user on account %q using invalid connection type", account)
+				return 0, nil, fmt.Errorf("authorized user on account %q using invalid connection type", account)
 			}
 		}
 		return expiration, allowedConnTypes, nil
@@ -211,21 +212,21 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 
 		targetAcc, err := s.LookupAccount(placement)
 		if err != nil {
-			return nil, fmt.Errorf("No valid account %q for auth callout response on account %q: %v", placement, account, err)
+			return nil, fmt.Errorf("no valid account %q for auth callout response on account %q: %v", placement, account, err)
 		}
 		if isOperatorMode {
 			// this will validate the signing key that emitted the user, and if it is a signing
 			// key it assigns the permissions from the target account
 			if scope, ok := targetAcc.hasIssuer(arc.Issuer); !ok {
-				return nil, fmt.Errorf("User JWT issuer %q is not known", arc.Issuer)
+				return nil, fmt.Errorf("user JWT issuer %q is not known", arc.Issuer)
 			} else if scope != nil {
 				// this possibly has to be different because it could just be a plain issued by a non-scoped signing key
 				if err := scope.ValidateScopedSigner(arc); err != nil {
-					return nil, fmt.Errorf("User JWT is not valid: %v", err)
+					return nil, fmt.Errorf("user JWT is not valid: %v", err)
 				} else if uSc, ok := scope.(*jwt.UserScope); !ok {
-					return nil, fmt.Errorf("User JWT is not a valid scoped user")
+					return nil, fmt.Errorf("user JWT is not a valid scoped user")
 				} else if arc.User.UserPermissionLimits, err = processUserPermissionsTemplate(uSc.Template, arc, targetAcc); err != nil {
-					return nil, fmt.Errorf("User JWT generated invalid permissions: %v", err)
+					return nil, fmt.Errorf("user JWT generated invalid permissions: %v", err)
 				}
 			}
 		}
@@ -234,9 +235,14 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 	}
 
 	processReply := func(_ *subscription, rc *client, racc *Account, subject, reply string, rmsg []byte) {
+		titleCase := func(m string) string {
+			r := []rune(m)
+			return string(append([]rune{unicode.ToUpper(r[0])}, r[1:]...))
+		}
+
 		arc, err := decodeResponse(rc, rmsg, racc)
 		if err != nil {
-			respCh <- err.Error()
+			respCh <- titleCase(err.Error())
 			return
 		}
 		vr := jwt.CreateValidationResults()
@@ -254,13 +260,13 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 
 		expiration, allowedConnTypes, err := getExpirationAndAllowedConnections(arc, racc.Name)
 		if err != nil {
-			respCh <- err.Error()
+			respCh <- titleCase(err.Error())
 			return
 		}
 
 		targetAcc, err := assignAccountAndPermissions(arc, racc.Name)
 		if err != nil {
-			respCh <- err.Error()
+			respCh <- titleCase(err.Error())
 			return
 		}
 
@@ -409,8 +415,7 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 			s.Warnf(errStr)
 		}
 	case <-time.After(authTimeout):
-		errStr = fmt.Sprintf("Authorization callout response not received in time on account %q", acc.Name)
-		s.Debugf(errStr)
+		s.Debugf(fmt.Sprintf("Authorization callout response not received in time on account %q", acc.Name))
 	}
 
 	return authorized, errStr

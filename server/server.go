@@ -427,12 +427,12 @@ func validateAndNormalizeCompressionOption(c *CompressionOpts, chosenModeForOn s
 			if len(rtts) > 4 {
 				// There should be at most values for "uncompressed", "fast",
 				// "better" and "best" (when some 0 are present).
-				return fmt.Errorf("The compression mode %q should have no more than 4 RTT thresholds: %v", c.Mode, c.RTTThresholds)
+				return fmt.Errorf("compression mode %q should have no more than 4 RTT thresholds: %v", c.Mode, c.RTTThresholds)
 			} else if len(rtts) == 0 {
 				// But there should be at least 1 if the user provided the slice.
 				// We would be here only if it was provided by say with values
 				// being a single or all zeros.
-				return fmt.Errorf("The compression mode %q requires at least one RTT threshold", c.Mode)
+				return fmt.Errorf("compression mode %q requires at least one RTT threshold", c.Mode)
 			}
 		}
 		c.Mode = CompressionS2Auto
@@ -444,7 +444,7 @@ func validateAndNormalizeCompressionOption(c *CompressionOpts, chosenModeForOn s
 	case "best", "s2_best":
 		c.Mode = CompressionS2Best
 	default:
-		return fmt.Errorf("Unsupported compression mode %q", c.Mode)
+		return fmt.Errorf("unsupported compression mode %q", c.Mode)
 	}
 	return nil
 }
@@ -497,7 +497,7 @@ func selectCompressionMode(scm, rcm string) (mode string, err error) {
 		// Otherwise use our compression mode.
 		return scm, nil
 	default:
-		return _EMPTY_, fmt.Errorf("Unsupported route compression mode %q", rcm)
+		return _EMPTY_, fmt.Errorf("unsupported route compression mode %q", rcm)
 	}
 }
 
