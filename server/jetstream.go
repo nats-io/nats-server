@@ -2734,7 +2734,7 @@ func canonicalName(name string) string {
 }
 
 // To throttle the out of resources errors.
-func (s *Server) resourcesExeededError() {
+func (s *Server) resourcesExceededError() {
 	var didAlert bool
 
 	s.rerrMu.Lock()
