@@ -1377,6 +1377,9 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, _ *Account,
 		State:     mset.state(),
 		Config:    mset.config(),
 		TimeStamp: time.Now().UTC(),
+		Mirror:    mset.mirrorInfo(),
+		Sources:   mset.sourcesInfo(),
+		Domain:    s.getOpts().JetStreamDomain,
 	}
 	resp.DidCreate = true
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
