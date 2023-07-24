@@ -2581,16 +2581,10 @@ func TestServerEventsReload(t *testing.T) {
 	`), 0666)
 	require_NoError(t, err)
 
-	// Request the server to reload and wait for the response.
-	reply := nc.NewRespInbox()
-	sub, err = nc.SubscribeSync(reply)
-	require_NoError(t, err)
-	err = nc.PublishRequest(subject, reply, nil)
-	require_NoError(t, err)
-	msg, err := sub.NextMsg(time.Second)
+	msg, err := nc.Request(subject, nil, time.Second)
 	require_NoError(t, err)
 
-	apiResp := ServerAPIResponse{}
+	var apiResp = ServerAPIResponse{}
 	err = json.Unmarshal(msg.Data, &apiResp)
 	require_NoError(t, err)
 
@@ -2605,12 +2599,7 @@ func TestServerEventsReload(t *testing.T) {
 	require_NoError(t, err)
 
 	// Request the server to reload and wait for the response.
-	reply = nc.NewRespInbox()
-	sub, err = nc.SubscribeSync(reply)
-	require_NoError(t, err)
-	err = nc.PublishRequest(subject, reply, nil)
-	require_NoError(t, err)
-	msg, err = sub.NextMsg(time.Second)
+	msg, err = nc.Request(subject, nil, time.Second)
 	require_NoError(t, err)
 
 	apiResp = ServerAPIResponse{}
