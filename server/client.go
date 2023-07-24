@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/s2"
+
 	"github.com/nats-io/jwt/v2"
 )
 
@@ -212,7 +213,6 @@ const (
 	DuplicateServerName
 	MinimumVersionRequired
 	ClusterNamesIdentical
-	FailedOCSPPeerVerification
 )
 
 // Some flags passed to processMsgResults
