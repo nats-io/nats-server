@@ -11479,7 +11479,7 @@ func TestJetStreamSourceBasics(t *testing.T) {
 		Name:    "FMS2",
 		Storage: FileStorage,
 		Sources: []*StreamSource{
-			{Name: "TEST", OptStartSeq: 11, FilterSubject: "dlc"},
+			{Name: "TEST", OptStartSeq: 11, FilterSubject: "dlc", SubjectTransformDest: "dlc2"},
 		},
 	}
 	createStream(cfg)
@@ -11501,13 +11501,16 @@ func TestJetStreamSourceBasics(t *testing.T) {
 	} else if _, _, sseq := streamAndSeq(shdr); sseq != 11 {
 		t.Fatalf("Expected header sequence of 11, got %d", sseq)
 	}
+	if m.Subject != "dlc2" {
+		t.Fatalf("Expected transformed subject dlc2, but got %s instead", m.Subject)
+	}
 
 	// Test Filters
 	cfg = &StreamConfig{
 		Name:    "FMS3",
 		Storage: FileStorage,
 		Sources: []*StreamSource{
-			{Name: "TEST", SubjectTransforms: []SubjectTransformConfig{{Source: "dlc", Destination: "dlc2"}, {Source: "rip", Destination: "rip2"}}},
+			{Name: "TEST", SubjectTransforms: []SubjectTransformConfig{{Source: "dlc", Destination: "dlc2"}, {Source: "rip", Destination: ""}}},
 		},
 	}
 	createStream(cfg)
@@ -11536,8 +11539,8 @@ func TestJetStreamSourceBasics(t *testing.T) {
 	}
 	if shdr := m.Header.Get(JSStreamSource); shdr == _EMPTY_ {
 		t.Fatalf("Expected a header, got none")
-	} else if m.Subject != "rip2" {
-		t.Fatalf("Expected subject 'rip2' and got %s", m.Subject)
+	} else if m.Subject != "rip" {
+		t.Fatalf("Expected subject 'rip' and got %s", m.Subject)
 	}
 
 	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {

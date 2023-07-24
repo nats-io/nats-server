@@ -463,20 +463,20 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 			// check the filter, if any, is valid
 			if ssi.FilterSubject != _EMPTY_ && !IsValidSubject(ssi.FilterSubject) {
 				jsa.mu.Unlock()
-				return nil, fmt.Errorf("subject filter '%s' for the source %w", ssi.FilterSubject, ErrBadSubject)
+				return nil, fmt.Errorf("subject filter '%s' for the source: %w", ssi.FilterSubject, ErrBadSubject)
 			}
 			// check the transform, if any, is valid
 			if ssi.SubjectTransformDest != _EMPTY_ {
 				if _, err = NewSubjectTransform(ssi.FilterSubject, ssi.SubjectTransformDest); err != nil {
 					jsa.mu.Unlock()
-					return nil, fmt.Errorf("subject transform from '%s' to '%s' for the source %w", ssi.FilterSubject, ssi.SubjectTransformDest, err)
+					return nil, fmt.Errorf("subject transform from '%s' to '%s' for the source: %w", ssi.FilterSubject, ssi.SubjectTransformDest, err)
 				}
 			}
 		} else {
 			for _, st := range ssi.SubjectTransforms {
 				if st.Source != _EMPTY_ && !IsValidSubject(st.Source) {
 					jsa.mu.Unlock()
-					return nil, fmt.Errorf("subject filter '%s' for the source %w", st.Source, ErrBadSubject)
+					return nil, fmt.Errorf("subject filter '%s' for the source: %w", st.Source, ErrBadSubject)
 				}
 				// check the transform, if any, is valid
 				if st.Destination != _EMPTY_ {
@@ -538,7 +538,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		tr, err := NewSubjectTransform(cfg.SubjectTransform.Source, cfg.SubjectTransform.Destination)
 		if err != nil {
 			jsa.mu.Unlock()
-			return nil, fmt.Errorf("stream subject transform from '%s' to '%s' %w", cfg.SubjectTransform.Source, cfg.SubjectTransform.Destination, err)
+			return nil, fmt.Errorf("stream subject transform from '%s' to '%s': %w", cfg.SubjectTransform.Source, cfg.SubjectTransform.Destination, err)
 		}
 		mset.itr = tr
 	}
@@ -548,7 +548,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		tr, err := NewSubjectTransform(cfg.RePublish.Source, cfg.RePublish.Destination)
 		if err != nil {
 			jsa.mu.Unlock()
-			return nil, fmt.Errorf("stream republish transform from '%s' to '%s' %w", cfg.RePublish.Source, cfg.RePublish.Destination, err)
+			return nil, fmt.Errorf("stream republish transform from '%s' to '%s': %w", cfg.RePublish.Source, cfg.RePublish.Destination, err)
 		}
 		// Assign our transform for republishing.
 		mset.tr = tr
@@ -1677,7 +1677,7 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 							var err error
 							if si.tr, err = NewSubjectTransform(s.FilterSubject, s.SubjectTransformDest); err != nil {
 								mset.mu.Unlock()
-								return fmt.Errorf("stream source subject transform from '%s' to '%s' %w", s.FilterSubject, s.SubjectTransformDest, err)
+								return fmt.Errorf("stream source subject transform from '%s' to '%s': %w", s.FilterSubject, s.SubjectTransformDest, err)
 							}
 						}
 					} else {
@@ -1727,7 +1727,7 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 		tr, err := NewSubjectTransform(cfg.RePublish.Source, cfg.RePublish.Destination)
 		if err != nil {
 			mset.mu.Unlock()
-			return fmt.Errorf("stream configuration for republish from '%s' to '%s' %w", cfg.RePublish.Source, cfg.RePublish.Destination, err)
+			return fmt.Errorf("stream configuration for republish from '%s' to '%s': %w", cfg.RePublish.Source, cfg.RePublish.Destination, err)
 		}
 		// Assign our transform for republishing.
 		mset.tr = tr
@@ -1740,7 +1740,7 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 		tr, err := NewSubjectTransform(cfg.SubjectTransform.Source, cfg.SubjectTransform.Destination)
 		if err != nil {
 			mset.mu.Unlock()
-			return fmt.Errorf("stream configuration for subject transform from '%s' to '%s' %w", cfg.SubjectTransform.Source, cfg.SubjectTransform.Destination, err)
+			return fmt.Errorf("stream configuration for subject transform from '%s' to '%s': %w", cfg.SubjectTransform.Source, cfg.SubjectTransform.Destination, err)
 		}
 		mset.itr = tr
 	} else if ocfg.SubjectTransform != nil && cfg.SubjectTransform != nil &&
@@ -1748,7 +1748,7 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 		tr, err := NewSubjectTransform(cfg.SubjectTransform.Source, cfg.SubjectTransform.Destination)
 		if err != nil {
 			mset.mu.Unlock()
-			return fmt.Errorf("stream configuration for subject transform from '%s' to '%s' %w", cfg.SubjectTransform.Source, cfg.SubjectTransform.Destination, err)
+			return fmt.Errorf("stream configuration for subject transform from '%s' to '%s': %w", cfg.SubjectTransform.Source, cfg.SubjectTransform.Destination, err)
 		}
 		mset.itr = tr
 	} else if ocfg.SubjectTransform != nil && cfg.SubjectTransform == nil {
