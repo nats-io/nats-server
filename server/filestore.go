@@ -419,9 +419,13 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	// If the stream has an initial sequence number then make sure we
 	// have purged up until that point. We will do this only if the
 	// recovered first sequence number is before our configured first
-	// sequence.
-	fs.FastState(&fs.state)
-	if cfg.FirstSeq > 0 && fs.state.FirstSeq <= cfg.FirstSeq {
+	// sequence. Need to do this locked as by now the age check timer
+	// has started.
+	var st StreamState
+	fs.mu.RLock()
+	fs.FastState(&st)
+	fs.mu.RUnlock()
+	if cfg.FirstSeq > 0 && st.FirstSeq <= cfg.FirstSeq {
 		if _, err := fs.purge(cfg.FirstSeq); err != nil {
 			return nil, err
 		}
