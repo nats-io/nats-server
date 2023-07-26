@@ -1192,7 +1192,7 @@ func (s *Server) initEventTracking() {
 	// Listen for requests to reload the server configuration.
 	subject = fmt.Sprintf(serverReloadReqSubj, s.info.ID)
 	if _, err := s.sysSubscribe(subject, s.noInlineCallback(s.reloadConfig)); err != nil {
-		s.Errorf("Error setting up internal tracking: %v", err)
+		s.Errorf("Error setting up server reload handler: %v", err)
 	}
 }
 

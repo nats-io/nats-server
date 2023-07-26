@@ -2545,9 +2545,6 @@ func TestServerEventsReload(t *testing.T) {
 		ping_interval: "100ms"
 	`))
 	opts := LoadConfig(conf)
-	opts.Trace = true
-	opts.Debug = true
-	opts.TraceVerbose = true
 	s := RunServer(opts)
 	defer s.Shutdown()
 	subject := fmt.Sprintf(serverReloadReqSubj, s.info.ID)
