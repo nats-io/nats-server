@@ -3270,7 +3270,7 @@ func TestRouteCompressionOptions(t *testing.T) {
 		rtts []time.Duration
 		err  string
 	}{
-		{"unsupported mode", "gzip", nil, "Unsupported"},
+		{"unsupported mode", "gzip", nil, "unsupported"},
 		{"not ascending order", "s2_auto", []time.Duration{
 			5 * time.Millisecond,
 			10 * time.Millisecond,

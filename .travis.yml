@@ -1,11 +1,6 @@
 os: linux
 dist: focal
 
-branches:
-  only:
-    - main
-    - dev
-
 vm:
   size: 2x-large
 

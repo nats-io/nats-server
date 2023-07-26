@@ -918,35 +918,15 @@ func getHash(name string) string {
 	return getHashSize(name, sysHashLen)
 }
 
-var nameToHashSize8 = sync.Map{}
-var nameToHashSize6 = sync.Map{}
-
 // Computes a hash for the given `name`. The result will be `size` characters long.
 func getHashSize(name string, size int) string {
-	compute := func() string {
-		sha := sha256.New()
-		sha.Write([]byte(name))
-		b := sha.Sum(nil)
-		for i := 0; i < size; i++ {
-			b[i] = digits[int(b[i]%base)]
-		}
-		return string(b[:size])
+	sha := sha256.New()
+	sha.Write([]byte(name))
+	b := sha.Sum(nil)
+	for i := 0; i < size; i++ {
+		b[i] = digits[int(b[i]%base)]
 	}
-	var m *sync.Map
-	switch size {
-	case 8:
-		m = &nameToHashSize8
-	case 6:
-		m = &nameToHashSize6
-	default:
-		return compute()
-	}
-	if v, ok := m.Load(name); ok {
-		return v.(string)
-	}
-	h := compute()
-	m.Store(name, h)
-	return h
+	return string(b[:size])
 }
 
 // Returns the node name for this server which is a hash of the server name.
