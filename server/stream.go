@@ -58,6 +58,7 @@ type StreamConfig struct {
 	Mirror       *StreamSource    `json:"mirror,omitempty"`
 	Sources      []*StreamSource  `json:"sources,omitempty"`
 	Compression  StoreCompression `json:"compression"`
+	FirstSeq     uint64           `json:"first_seq,omitempty"`
 
 	// Allow applying a subject transform to incoming messages before doing anything else
 	SubjectTransform *SubjectTransformConfig `json:"subject_transform,omitempty"`
