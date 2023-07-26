@@ -1666,7 +1666,7 @@ func TestSystemAccountWithGateways(t *testing.T) {
 
 	// If this tests fails with wrong number after 10 seconds we may have
 	// added a new inititial subscription for the eventing system.
-	checkExpectedSubs(t, 52, sa)
+	checkExpectedSubs(t, 53, sa)
 
 	// Create a client on B and see if we receive the event
 	urlb := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)
@@ -2533,6 +2533,81 @@ func TestServerEventsStatszSingleServer(t *testing.T) {
 	require_NoError(t, err)
 
 	checkSubsPending(t, sub, 1)
+}
+
+func TestServerEventsReload(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		accounts: {
+			$SYS { users [{user: "admin", password: "p1d"}]}
+			test { users [{user: "foo", password: "bar"}]}
+		}
+		ping_interval: "100ms"
+	`))
+	opts := LoadConfig(conf)
+	s := RunServer(opts)
+	defer s.Shutdown()
+	subject := fmt.Sprintf(serverReloadReqSubj, s.info.ID)
+
+	// Connect as a test user and make sure the reload endpoint is not
+	// accessible.
+	ncTest, _ := jsClientConnect(t, s, nats.UserInfo("foo", "bar"))
+	defer ncTest.Close()
+	testReply := ncTest.NewRespInbox()
+	sub, err := ncTest.SubscribeSync(testReply)
+	require_NoError(t, err)
+	err = ncTest.PublishRequest(subject, testReply, nil)
+	require_NoError(t, err)
+	_, err = sub.NextMsg(time.Second)
+	require_Error(t, err)
+
+	require_True(t, s.getOpts().PingInterval == 100*time.Millisecond)
+
+	// Connect as a system user.
+	nc, _ := jsClientConnect(t, s, nats.UserInfo("admin", "p1d"))
+	defer nc.Close()
+
+	// rewrite the config file with a different ping interval
+	err = os.WriteFile(conf, []byte(`
+		listen: "127.0.0.1:-1"
+		accounts: {
+			$SYS { users [{user: "admin", password: "p1d"}]}
+			test { users [{user: "foo", password: "bar"}]}
+		}
+		ping_interval: "200ms"
+	`), 0666)
+	require_NoError(t, err)
+
+	msg, err := nc.Request(subject, nil, time.Second)
+	require_NoError(t, err)
+
+	var apiResp = ServerAPIResponse{}
+	err = json.Unmarshal(msg.Data, &apiResp)
+	require_NoError(t, err)
+
+	require_True(t, apiResp.Data == nil)
+	require_True(t, apiResp.Error == nil)
+
+	// See that the ping interval has changed.
+	require_True(t, s.getOpts().PingInterval == 200*time.Millisecond)
+
+	// rewrite the config file with a different ping interval
+	err = os.WriteFile(conf, []byte(`garbage and nonsense`), 0666)
+	require_NoError(t, err)
+
+	// Request the server to reload and wait for the response.
+	msg, err = nc.Request(subject, nil, time.Second)
+	require_NoError(t, err)
+
+	apiResp = ServerAPIResponse{}
+	err = json.Unmarshal(msg.Data, &apiResp)
+	require_NoError(t, err)
+
+	require_True(t, apiResp.Data == nil)
+	require_Error(t, apiResp.Error, fmt.Errorf("Parse error on line 1: 'Expected a top-level value to end with a new line, comment or EOF, but got 'n' instead.'"))
+
+	// See that the ping interval has not changed.
+	require_True(t, s.getOpts().PingInterval == 200*time.Millisecond)
 }
 
 func Benchmark_GetHash(b *testing.B) {
