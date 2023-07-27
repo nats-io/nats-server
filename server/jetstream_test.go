@@ -19481,6 +19481,45 @@ func TestJetStreamMetaDataFailOnKernelFault(t *testing.T) {
 	require_True(t, si.State.Msgs == 10)
 }
 
+func TestJetstreamConsumerSingleTokenSubject(t *testing.T) {
+
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	filterSubject := "foo"
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{filterSubject},
+	})
+	require_NoError(t, err)
+
+	req, err := json.Marshal(&CreateConsumerRequest{Stream: "TEST", Config: ConsumerConfig{
+		FilterSubject: filterSubject,
+		Name:          "name",
+	}})
+
+	if err != nil {
+		t.Fatalf("failed to marshal consumer create request: %v", err)
+	}
+
+	resp, err := nc.Request(fmt.Sprintf("$JS.API.CONSUMER.CREATE.%s.%s.%s", "TEST", "name", "not_filter_subject"), req, time.Second*10)
+
+	var apiResp ApiResponse
+	json.Unmarshal(resp.Data, &apiResp)
+	if err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if apiResp.Error == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	if apiResp.Error.ErrCode != 10131 {
+		t.Fatalf("expected error 10131, got %v", apiResp.Error)
+	}
+}
+
 // https://github.com/nats-io/nats-server/issues/3734
 func TestJetStreamMsgBlkFailOnKernelFault(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
