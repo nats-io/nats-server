@@ -6524,7 +6524,7 @@ LOOP:
 		})
 	}
 
-	resp.Total = len(resp.Consumers)
+	resp.Total = ocnt
 	resp.Limit = JSApiListLimit
 	resp.Offset = offset
 	resp.Missing = missingNames

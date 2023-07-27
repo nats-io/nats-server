@@ -5387,6 +5387,9 @@ func TestNoRaceJetStreamClusterConsumerListPaging(t *testing.T) {
 		if resp.Limit < len(resp.Consumers) {
 			t.Fatalf("Expected total limited to %d but got %d", resp.Limit, len(resp.Consumers))
 		}
+		if resp.Total != numConsumers {
+			t.Fatalf("Invalid total response: expected %d got %d", numConsumers, resp.Total)
+		}
 		return resp.Consumers
 	}
 
@@ -5416,6 +5419,9 @@ func TestNoRaceJetStreamClusterConsumerListPaging(t *testing.T) {
 		if resp.Limit < len(resp.Consumers) {
 			t.Fatalf("Expected total limited to %d but got %d", resp.Limit, len(resp.Consumers))
 		}
+		if resp.Total != numConsumers {
+			t.Fatalf("Invalid total response: expected %d got %d", numConsumers, resp.Total)
+		}
 		return resp.Consumers
 	}
 
@@ -5431,6 +5437,10 @@ func TestNoRaceJetStreamClusterConsumerListPaging(t *testing.T) {
 			}
 			results[name] = true
 		}
+	}
+
+	if len(results) != numConsumers {
+		t.Fatalf("Received %d / %d consumers", len(results), numConsumers)
 	}
 }
 
