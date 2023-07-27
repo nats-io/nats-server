@@ -3781,7 +3781,6 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 			consumerName = consumerNameFromSubject(subject)
 			// New has optional filtered subject as part of main subject..
 			if n > 6 {
-
 				tokens := strings.Split(subject, tsep)
 				filteredSubject = strings.Join(tokens[6:], tsep)
 			}
