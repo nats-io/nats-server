@@ -3368,7 +3368,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 		// TODO(dlc) - We could check apriori and cancel initial request if we know it won't fit.
 		total += len(msg)
 		if js.wouldExceedLimits(FileStorage, total) {
-			s.resourcesExeededError()
+			s.resourcesExceededError()
 			resultCh <- result{NewJSInsufficientResourcesError(), reply}
 			return
 		}

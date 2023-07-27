@@ -2049,7 +2049,7 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 	var err error
 	if node != nil {
 		if js.limitsExceeded(stype) {
-			s.resourcesExeededError()
+			s.resourcesExceededError()
 			err = ApiErrors[JSInsufficientResourcesErr]
 		} else {
 			err = node.Propose(encodeStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts))
@@ -3976,7 +3976,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	// Check to see if we have exceeded our limits.
 	if js.limitsExceeded(stype) {
-		s.resourcesExeededError()
+		s.resourcesExceededError()
 		mset.clfs++
 		mset.mu.Unlock()
 		if canRespond {
