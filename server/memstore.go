@@ -40,12 +40,7 @@ type memStore struct {
 
 type memStoreMsg struct {
 	*StoreMsg
-	origMsgSz []byte // Uvarint, size of the message prior to compression
-}
-
-func (m *memStoreMsg) OrigMsgSz() uint64 {
-	sz, _ := binary.Uvarint(m.origMsgSz)
-	return sz
+	origMsgSz uint64 // Size of the message prior to compression
 }
 
 func newMemStore(cfg *StreamConfig) (*memStore, error) {
@@ -147,7 +142,7 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 				ms.recalculateFirstForSubj(subj, ss.First, ss)
 			}
 			sm, ok := ms.msgs[ss.First]
-			if !ok || memStoreMsgSize(sm.subj, sm.hdr, sm.OrigMsgSz()) < uint64(len(msg)+len(hdr)) {
+			if !ok || memStoreMsgSize(sm.subj, sm.hdr, sm.origMsgSz) < uint64(len(msg)+len(hdr)) {
 				return ErrMaxBytes
 			}
 		}
@@ -194,7 +189,7 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 	sm.msg = sm.buf[len(hdr):]
 	ms.msgs[seq] = &memStoreMsg{
 		StoreMsg:  sm,
-		origMsgSz: binary.AppendUvarint(nil, origsz),
+		origMsgSz: origsz,
 	}
 	ms.state.Msgs++
 	ms.state.Bytes += memStoreMsgSize(subj, hdr, origsz)
@@ -745,7 +740,7 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 
 		for seq := seq - 1; seq > 0; seq-- {
 			if sm := ms.msgs[seq]; sm != nil {
-				bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.OrigMsgSz())
+				bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.origMsgSz)
 				purged++
 				delete(ms.msgs, seq)
 				ms.removeSeqPerSubject(sm.subj, seq)
@@ -789,7 +784,7 @@ func (ms *memStore) reset() error {
 	if cb != nil {
 		for _, sm := range ms.msgs {
 			purged++
-			bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.OrigMsgSz())
+			bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.origMsgSz)
 		}
 	}
 
@@ -833,7 +828,7 @@ func (ms *memStore) Truncate(seq uint64) error {
 	for i := ms.state.LastSeq; i > seq; i-- {
 		if sm := ms.msgs[i]; sm != nil {
 			purged++
-			bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.OrigMsgSz())
+			bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.origMsgSz)
 			delete(ms.msgs, i)
 			ms.removeSeqPerSubject(sm.subj, i)
 		}
@@ -1098,7 +1093,7 @@ func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 		return false
 	}
 
-	ss = memStoreMsgSize(sm.subj, sm.hdr, sm.OrigMsgSz())
+	ss = memStoreMsgSize(sm.subj, sm.hdr, sm.origMsgSz)
 
 	delete(ms.msgs, seq)
 	if ms.state.Msgs > 0 {
