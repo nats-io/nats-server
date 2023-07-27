@@ -40,8 +40,7 @@ type memStore struct {
 
 type memStoreMsg struct {
 	*StoreMsg
-	compression StoreCompression // The compression algorithm used
-	origMsgSz   uint64           // Size of the message prior to compression
+	origMsgSz uint64 // Size of the message prior to compression
 }
 
 func newMemStore(cfg *StreamConfig) (*memStore, error) {
@@ -189,9 +188,8 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 	}
 	sm.msg = sm.buf[len(hdr):]
 	ms.msgs[seq] = &memStoreMsg{
-		StoreMsg:    sm,
-		compression: ms.cfg.Compression,
-		origMsgSz:   origsz,
+		StoreMsg:  sm,
+		origMsgSz: origsz,
 	}
 	ms.state.Msgs++
 	ms.state.Bytes += memStoreMsgSize(subj, hdr, origsz)
@@ -889,7 +887,7 @@ func (ms *memStore) LoadMsg(seq uint64, smp *StoreMsg) (*StoreMsg, error) {
 	sm.copy(smp)
 
 	// Decompress the message if needed.
-	if c, err := sm.compression.Decompress(smp.msg); err != nil {
+	if c, err := ms.cfg.Compression.Decompress(smp.msg); err != nil {
 		return nil, err
 	} else {
 		smp.msg = c
