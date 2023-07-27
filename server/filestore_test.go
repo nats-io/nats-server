@@ -820,7 +820,7 @@ func TestFileStoreCompact(t *testing.T) {
 			fcfg,
 			StreamConfig{Name: "zzz", Storage: FileStorage},
 			time.Now(),
-			prf,
+			prf, nil,
 		)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
@@ -865,7 +865,7 @@ func TestFileStoreCompact(t *testing.T) {
 			fcfg,
 			StreamConfig{Name: "zzz", Storage: FileStorage},
 			time.Now(),
-			prf,
+			prf, nil,
 		)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
@@ -1019,7 +1019,7 @@ func TestFileStoreStreamTruncate(t *testing.T) {
 			fcfg,
 			StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage},
 			time.Now(),
-			prf,
+			prf, nil,
 		)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
@@ -1083,7 +1083,7 @@ func TestFileStoreStreamTruncate(t *testing.T) {
 			fcfg,
 			StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
 			time.Now(),
-			prf,
+			prf, nil,
 		)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
@@ -3489,7 +3489,7 @@ func TestFileStoreSparseCompaction(t *testing.T) {
 			prf = nil
 		}
 
-		fs, err = newFileStoreWithCreated(fcfg, cfg, time.Now(), prf)
+		fs, err = newFileStoreWithCreated(fcfg, cfg, time.Now(), prf, nil)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -3814,7 +3814,7 @@ func TestFileStoreCompactReclaimHeadSpace(t *testing.T) {
 			fcfg,
 			StreamConfig{Name: "TEST", Storage: FileStorage},
 			time.Now(),
-			prf,
+			prf, nil,
 		)
 		require_NoError(t, err)
 		defer fs.Stop()
@@ -3844,7 +3844,7 @@ func TestFileStoreCompactReclaimHeadSpace(t *testing.T) {
 			fcfg,
 			StreamConfig{Name: "TEST", Storage: FileStorage},
 			time.Now(),
-			prf,
+			prf, nil,
 		)
 		require_NoError(t, err)
 		defer fs.Stop()
@@ -4072,7 +4072,7 @@ func TestFileStoreShortIndexWriteBug(t *testing.T) {
 			fcfg,
 			StreamConfig{Name: "TEST", Storage: FileStorage, MaxAge: time.Second},
 			created,
-			prf,
+			prf, nil,
 		)
 		require_NoError(t, err)
 		defer fs.Stop()
@@ -4108,7 +4108,7 @@ func TestFileStoreShortIndexWriteBug(t *testing.T) {
 			fcfg,
 			StreamConfig{Name: "TEST", Storage: FileStorage, MaxAge: time.Second},
 			created,
-			prf,
+			prf, nil,
 		)
 		require_NoError(t, err)
 		defer fs.Stop()
@@ -4136,7 +4136,7 @@ func TestFileStoreDoubleCompactWithWriteInBetweenEncryptedBug(t *testing.T) {
 			fcfg,
 			StreamConfig{Name: "zzz", Storage: FileStorage},
 			time.Now(),
-			prf,
+			prf, nil,
 		)
 		require_NoError(t, err)
 		defer fs.Stop()
@@ -4188,7 +4188,7 @@ func TestFileStoreEncryptedKeepIndexNeedBekResetBug(t *testing.T) {
 			fcfg,
 			StreamConfig{Name: "zzz", Storage: FileStorage, MaxAge: ttl},
 			time.Now(),
-			prf,
+			prf, nil,
 		)
 		require_NoError(t, err)
 		defer fs.Stop()
@@ -4478,7 +4478,7 @@ func TestFileStoreEncrypted(t *testing.T) {
 			fcfg,
 			StreamConfig{Name: "zzz", Storage: FileStorage},
 			time.Now(),
-			prf,
+			prf, nil,
 		)
 		require_NoError(t, err)
 		defer fs.Stop()
@@ -4505,7 +4505,7 @@ func TestFileStoreEncrypted(t *testing.T) {
 			fcfg,
 			StreamConfig{Name: "zzz", Storage: FileStorage},
 			time.Now(),
-			prf,
+			prf, nil,
 		)
 		require_NoError(t, err)
 		defer fs.Stop()
@@ -5622,7 +5622,7 @@ func TestFileStoreRestoreEncryptedWithNoKeyFuncFails(t *testing.T) {
 	fs, err := newFileStoreWithCreated(
 		fcfg, scfg,
 		time.Now(),
-		prf,
+		prf, nil,
 	)
 	require_NoError(t, err)
 
@@ -5638,7 +5638,7 @@ func TestFileStoreRestoreEncryptedWithNoKeyFuncFails(t *testing.T) {
 	_, err = newFileStoreWithCreated(
 		fcfg, scfg,
 		time.Now(),
-		nil,
+		nil, nil,
 	)
 	require_Error(t, err, errNoMainKey)
 }

@@ -3365,12 +3365,13 @@ func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
 		mset.store = ms
 	case FileStorage:
 		s := mset.srv
-		prf := s.jsKeyGen(mset.acc.Name)
+		prf := s.jsKeyGen(s.getOpts().JetStreamKey, mset.acc.Name)
 		if prf != nil {
 			// We are encrypted here, fill in correct cipher selection.
 			fsCfg.Cipher = s.getOpts().JetStreamCipher
 		}
-		fs, err := newFileStoreWithCreated(*fsCfg, mset.cfg, mset.created, prf)
+		oldprf := s.jsKeyGen(s.getOpts().JetStreamOldKey, mset.acc.Name)
+		fs, err := newFileStoreWithCreated(*fsCfg, mset.cfg, mset.created, prf, oldprf)
 		if err != nil {
 			mset.mu.Unlock()
 			return err
