@@ -5537,3 +5537,35 @@ func TestFileStoreRestoreEncryptedWithNoKeyFuncFails(t *testing.T) {
 	)
 	require_Error(t, err, errNoMainKey)
 }
+
+func TestFileStoreRecaluclateFirstForSubjBug(t *testing.T) {
+	fs, err := newFileStore(FileStoreConfig{StoreDir: t.TempDir()}, StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
+	require_NoError(t, err)
+
+	fs.StoreMsg("foo", nil, nil) // 1
+	fs.StoreMsg("bar", nil, nil) // 2
+	fs.StoreMsg("foo", nil, nil) // 3
+
+	// Now remove first 2..
+	fs.RemoveMsg(1)
+	fs.RemoveMsg(2)
+
+	// Now grab first (and only) block.
+	fs.mu.RLock()
+	mb := fs.blks[0]
+	fs.mu.RUnlock()
+
+	// Since we lazy update the first, simulate that we have not updated it as of yet.
+	ss := &SimpleState{Msgs: 1, First: 1, Last: 3, firstNeedsUpdate: true}
+
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+
+	// Flush the cache.
+	mb.clearCacheAndOffset()
+	// Now call with start sequence of 1, the old one
+	// This will panic without the fix.
+	mb.recalculateFirstForSubj("foo", 1, ss)
+	// Make sure it was update properly.
+	require_True(t, *ss == SimpleState{Msgs: 1, First: 3, Last: 3, firstNeedsUpdate: false})
+}
