@@ -4380,12 +4380,9 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 			// Track that we do not have holes.
 			// Not expected but did see it in the field.
 			if pseq > 0 && seq != pseq+1 {
-				if mb.dmap == nil {
-					mb.dmap = make(map[uint64]struct{})
-				}
 				for dseq := pseq + 1; dseq < seq; dseq++ {
 					idx = append(idx, dbit)
-					mb.dmap[dseq] = struct{}{}
+					mb.dmap.Insert(dseq)
 				}
 			}
 			pseq = seq
@@ -4750,12 +4747,11 @@ func (mb *msgBlock) cacheLookup(seq uint64, sm *StoreMsg) (*StoreMsg, error) {
 	}
 
 	// If we have a delete map check it.
-	if !mb.dmap.IsEmpty() {
-		if mb.dmap.Exists(seq) {
-			mb.llts = time.Now().UnixNano()
-			return nil, errDeletedMsg
-		}
+	if mb.dmap.Exists(seq) {
+		mb.llts = time.Now().UnixNano()
+		return nil, errDeletedMsg
 	}
+
 	// Detect no cache loaded.
 	if mb.cache == nil || mb.cache.fseq == 0 || len(mb.cache.idx) == 0 || len(mb.cache.buf) == 0 {
 		return nil, errNoCache
