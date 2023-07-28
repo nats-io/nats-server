@@ -403,3 +403,30 @@ func TestParserNoInfiniteLoop(t *testing.T) {
 		}
 	}
 }
+
+func TestParseWithNoValues(t *testing.T) {
+	for _, test := range []string{
+		``,
+		`aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`,
+		`              aaaaaaaaaaaaaaaaaaaaaaaaaaa`,
+		`     aaaaaaaaaaaaaaaaaaaaaaaaaaa         `,
+		`
+                # just comments with no values
+                # is also invalid.
+                `,
+		`
+                # with comments and no spaces to create key values
+                # is also an invalid config.
+                aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                `,
+		`
+                a,a,a,a,a,a,a,a,a,a,a
+                `,
+	} {
+		if _, err := parse(test, "", true); err == nil {
+			t.Fatal("expected an error")
+		} else if !strings.Contains(err.Error(), "config has no values or is empty") {
+			t.Fatal("expected invalid conf error")
+		}
+	}
+}
