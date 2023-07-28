@@ -275,6 +275,8 @@ const (
 	wiThresh = int64(30 * time.Second)
 	// Time threshold to write index info for non FIFO cases
 	winfThresh = int64(2 * time.Second)
+	// Checksum size for hash for msg records.
+	recordHashSize = 8
 )
 
 func newFileStore(fcfg FileStoreConfig, cfg StreamConfig) (*fileStore, error) {
@@ -1071,7 +1073,7 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, error) {
 		rl &^= hbit
 		dlen := int(rl) - msgHdrSize
 		// Do some quick sanity checks here.
-		if dlen < 0 || int(slen) > (dlen-8) || dlen > int(rl) || index+rl > lbuf || rl > rlBadThresh {
+		if dlen < 0 || int(slen) > (dlen-recordHashSize) || dlen > int(rl) || index+rl > lbuf || rl > rlBadThresh {
 			truncate(index)
 			return gatherLost(lbuf - index), errBadMsg
 		}
@@ -1117,12 +1119,12 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, error) {
 				hh.Write(hdr[4:20])
 				hh.Write(data[:slen])
 				if hasHeaders {
-					hh.Write(data[slen+4 : dlen-8])
+					hh.Write(data[slen+4 : dlen-recordHashSize])
 				} else {
-					hh.Write(data[slen : dlen-8])
+					hh.Write(data[slen : dlen-recordHashSize])
 				}
 				checksum := hh.Sum(nil)
-				if !bytes.Equal(checksum, data[len(data)-8:]) {
+				if !bytes.Equal(checksum, data[len(data)-recordHashSize:]) {
 					truncate(index)
 					return gatherLost(lbuf - index), errBadMsg
 				}
@@ -4090,7 +4092,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 		dlen := int(rl) - msgHdrSize
 
 		// Do some quick sanity checks here.
-		if dlen < 0 || int(slen) > (dlen-8) || dlen > int(rl) || index+rl > lbuf || rl > rlBadThresh {
+		if dlen < 0 || int(slen) > (dlen-recordHashSize) || dlen > int(rl) || index+rl > lbuf || rl > rlBadThresh {
 			// This means something is off.
 			// TODO(dlc) - Add into bad list?
 			return errCorruptState
@@ -4614,9 +4616,9 @@ func (mb *msgBlock) msgFromBuf(buf []byte, sm *StoreMsg, hh hash.Hash64) (*Store
 		hh.Write(hdr[4:20])
 		hh.Write(data[:slen])
 		if hasHeaders {
-			hh.Write(data[slen+4 : dlen-8])
+			hh.Write(data[slen+4 : dlen-recordHashSize])
 		} else {
-			hh.Write(data[slen : dlen-8])
+			hh.Write(data[slen : dlen-recordHashSize])
 		}
 		if !bytes.Equal(hh.Sum(nil), data[len(data)-8:]) {
 			return nil, errBadMsg
