@@ -1159,6 +1159,9 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 
 	// Do some pre-checking for mirror config to avoid cycles in clustered mode.
 	if cfg.Mirror != nil {
+		if cfg.FirstSeq > 0 {
+			return StreamConfig{}, NewJSMirrorWithFirstSeqError()
+		}
 		if len(cfg.Subjects) > 0 {
 			return StreamConfig{}, NewJSMirrorWithSubjectsError()
 
