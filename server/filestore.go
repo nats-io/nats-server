@@ -5934,6 +5934,8 @@ func (mb *msgBlock) recalculateFirstForSubj(subj string, startSeq uint64, ss *Si
 	if startSlot >= len(mb.cache.idx) {
 		ss.First = ss.Last
 		return
+	} else if startSlot < 0 {
+		startSlot = 0
 	}
 
 	var le = binary.LittleEndian
