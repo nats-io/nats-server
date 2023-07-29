@@ -146,7 +146,9 @@ func parse(data, fp string, pedantic bool) (p *parser, err error) {
 			return nil, err
 		}
 	}
-
+	if len(p.mapping) == 0 {
+		return nil, fmt.Errorf("config has no values or is empty")
+	}
 	return p, nil
 }
 
