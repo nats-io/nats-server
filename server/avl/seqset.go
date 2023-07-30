@@ -140,7 +140,7 @@ func (ss *SequenceSet) Heights() (l, r int) {
 
 // Returns min, max and number of set items.
 func (ss *SequenceSet) State() (min, max, num uint64) {
-	if ss.root == nil {
+	if ss == nil || ss.root == nil {
 		return 0, 0, 0
 	}
 	min, max = ss.MinMax()
@@ -446,20 +446,16 @@ func (n *node) insert(seq uint64, inserted *bool, nodes *int) *node {
 	// Don't make a function, impacts performance.
 	if bf := balanceF(n); bf > 1 {
 		// Left unbalanced.
-		if n.l.base+numEntries > seq {
-			return n.rotateR()
-		} else {
+		if balanceF(n.l) < 0 {
 			n.l = n.l.rotateL()
-			return n.rotateR()
 		}
+		return n.rotateR()
 	} else if bf < -1 {
-		// right unbalanced.
-		if n.r.base+numEntries > seq {
+		// Right unbalanced.
+		if balanceF(n.r) > 0 {
 			n.r = n.r.rotateR()
-			return n.rotateL()
-		} else {
-			return n.rotateL()
 		}
+		return n.rotateL()
 	}
 	return n
 }
@@ -507,6 +503,9 @@ func balanceF(n *node) int {
 }
 
 func maxH(n *node) int {
+	if n == nil {
+		return 0
+	}
 	var lh, rh int
 	if n.l != nil {
 		lh = n.l.h
@@ -550,36 +549,63 @@ func (n *node) delete(seq uint64, deleted *bool, nodes *int) *node {
 		n.r = n.r.delete(seq, deleted, nodes)
 	} else if empty := n.clear(seq, deleted); empty {
 		*nodes--
-		if nn := n.l; nn == nil {
+		if n.l == nil {
 			n = n.r
-		} else if nn.r == nil {
-			nn.r = n.r
-			n = nn
+		} else if n.r == nil {
+			n = n.l
 		} else {
-			nn.r.r = n.r
-			n = nn
+			// We have both children.
+			n.r = n.r.insertNodePrev(n.l)
+			n = n.r
 		}
+	}
+
+	if n != nil {
+		n.h = maxH(n) + 1
 	}
 
 	// Check balance.
 	if bf := balanceF(n); bf > 1 {
 		// Left unbalanced.
-		if n.l.base+numEntries > seq {
-			return n.rotateR()
-		} else {
+		if balanceF(n.l) < 0 {
 			n.l = n.l.rotateL()
-			return n.rotateR()
 		}
+		return n.rotateR()
 	} else if bf < -1 {
 		// right unbalanced.
-		if n.r.base+numEntries > seq {
+		if balanceF(n.r) > 0 {
 			n.r = n.r.rotateR()
-			return n.rotateL()
-		} else {
-			return n.rotateL()
 		}
+		return n.rotateL()
 	}
 
+	return n
+}
+
+// Will insert nn into the node assuming it is less than all other nodes in n.
+// Will re-calculate height and balance.
+func (n *node) insertNodePrev(nn *node) *node {
+	if n.l == nil {
+		n.l = nn
+	} else {
+		n.l = n.l.insertNodePrev(nn)
+	}
+	n.h = maxH(n) + 1
+
+	// Check balance.
+	if bf := balanceF(n); bf > 1 {
+		// Left unbalanced.
+		if balanceF(n.l) < 0 {
+			n.l = n.l.rotateL()
+		}
+		return n.rotateR()
+	} else if bf < -1 {
+		// right unbalanced.
+		if balanceF(n.r) > 0 {
+			n.r = n.r.rotateR()
+		}
+		return n.rotateL()
+	}
 	return n
 }
 
