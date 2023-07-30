@@ -2604,7 +2604,7 @@ func (mset *stream) isMigrating() bool {
 	return true
 }
 
-// resetClusteredState is called when a clustered stream had a sequence mismatch and needs to be reset.
+// resetClusteredState is called when a clustered stream had an error (e.g sequence mismatch, bad snapshot) and needs to be reset.
 func (mset *stream) resetClusteredState(err error) bool {
 	mset.mu.RLock()
 	s, js, jsa, sa, acc, node := mset.srv, mset.js, mset.jsa, mset.sa, mset.acc, mset.node
@@ -2858,16 +2858,26 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 			// Everything operates on new replicated state. Will convert legacy snapshots to this for processing.
 			var ss *StreamReplicatedState
 
+			onBadState := func(err error) {
+				// If we are the leader or recovering, meaning we own the snapshot,
+				// we should stepdown and clear our raft state since our snapshot is bad.
+				if isRecovering || mset.IsLeader() {
+					mset.resetClusteredState(err)
+				}
+			}
+
 			// Check if we are the new binary encoding.
 			if IsEncodedStreamState(e.Data) {
 				var err error
 				ss, err = DecodeStreamState(e.Data)
 				if err != nil {
+					onBadState(err)
 					return err
 				}
 			} else {
 				var snap streamSnapshot
 				if err := json.Unmarshal(e.Data, &snap); err != nil {
+					onBadState(err)
 					return err
 				}
 				// Convert over to StreamReplicatedState
