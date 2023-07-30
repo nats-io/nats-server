@@ -6927,6 +6927,8 @@ func (fs *fileStore) EncodedStreamState(failed uint64) ([]byte, error) {
 					return nil, err
 				}
 				b = append(b, buf...)
+			default:
+				return nil, errors.New("no impl")
 			}
 		}
 	}
@@ -6946,13 +6948,11 @@ func (fs *fileStore) deleteBlocks() DeleteBlocks {
 		// Detect if we have a gap between these blocks.
 		if prevLast > 0 && prevLast+1 != mb.first.seq {
 			// Detect if we need to encode a run length encoding here.
-			gap := mb.first.seq - prevLast - 1
-			if gap > rlThresh {
+			if gap := mb.first.seq - prevLast - 1; gap > rlThresh {
 				// Check if we have a running adm, if so write that out first, or if contigous update rle params.
-				if adm != nil && adm.Size() > 0 {
-					min, max := adm.MinMax()
+				if min, max, num := adm.State(); num > 0 {
 					// Check if we are all contingous.
-					if uint64(adm.Size()) == max-min+1 {
+					if num == max-min+1 {
 						prevLast, gap = min-1, mb.first.seq-min
 					} else {
 						dbs = append(dbs, adm)
@@ -6972,13 +6972,13 @@ func (fs *fileStore) deleteBlocks() DeleteBlocks {
 				}
 			}
 		}
-		if sz := mb.dmap.Size(); sz > 0 {
-			// Check in case the mb's dmap is contiguous.
-			min, max := mb.dmap.MinMax()
-			if uint64(sz) == max-min+1 {
+		if min, max, num := mb.dmap.State(); num > 0 {
+			// Check in case the mb's dmap is contiguous and over our threshold.
+			if num == max-min+1 && num > rlThresh {
 				// Need to write out adm if it exists.
 				if adm != nil && adm.Size() > 0 {
 					dbs = append(dbs, adm)
+					adm = nil
 				}
 				dbs = append(dbs, &DeleteRange{First: min, Num: max - min + 1})
 			} else {
