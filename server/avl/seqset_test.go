@@ -134,21 +134,46 @@ func TestSeqSetDelete(t *testing.T) {
 		require_True(t, !ss.Exists(seq))
 	}
 	require_True(t, ss.root == nil)
+}
 
-	num := 22*numEntries + 22
+func TestSeqSetInsertAndDeletePedantic(t *testing.T) {
+	var ss SequenceSet
+
+	num := 50*numEntries + 22
 	nums := make([]uint64, 0, num)
 	for i := 0; i < num; i++ {
 		nums = append(nums, uint64(i))
 	}
 	rand.Shuffle(len(nums), func(i, j int) { nums[i], nums[j] = nums[j], nums[i] })
 
-	for _, n := range nums {
-		ss.Insert(n)
+	// Make sure always balanced.
+	testBalanced := func() {
+		t.Helper()
+		// Check heights.
+		ss.root.nodeIter(func(n *node) {
+			if n != nil && n.h != maxH(n)+1 {
+				t.Fatalf("Node height is wrong: %+v", n)
+			}
+		})
+		// Check balance factor.
+		if bf := balanceF(ss.root); bf > 1 || bf < -1 {
+			t.Fatalf("Unbalanced tree")
+		}
 	}
 
 	for _, n := range nums {
+		ss.Insert(n)
+		testBalanced()
+	}
+	require_True(t, ss.root != nil)
+
+	for _, n := range nums {
 		ss.Delete(n)
+		testBalanced()
 		require_True(t, !ss.Exists(n))
+		if ss.Size() > 0 {
+			require_True(t, ss.root != nil)
+		}
 	}
 	require_True(t, ss.root == nil)
 }
