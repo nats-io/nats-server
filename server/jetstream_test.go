@@ -18134,6 +18134,22 @@ func TestJetStreamMirrorUpdatesNotSupported(t *testing.T) {
 	require_Error(t, err, NewJSStreamMirrorNotUpdatableError())
 }
 
+func TestJetStreamMirrorFirstSeqNotSupported(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	_, err := s.gacc.addStream(&StreamConfig{Name: "SOURCE"})
+	require_NoError(t, err)
+
+	cfg := &StreamConfig{
+		Name:     "M",
+		Mirror:   &StreamSource{Name: "SOURCE"},
+		FirstSeq: 123,
+	}
+	_, err = s.gacc.addStream(cfg)
+	require_Error(t, err, NewJSMirrorWithFirstSeqError())
+}
+
 func TestJetStreamDirectGetBySubject(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 		listen: 127.0.0.1:-1

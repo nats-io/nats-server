@@ -230,6 +230,9 @@ const (
 	// JSMirrorMaxMessageSizeTooBigErr stream mirror must have max message size >= source
 	JSMirrorMaxMessageSizeTooBigErr ErrorIdentifier = 10030
 
+	// JSMirrorWithFirstSeqErr stream mirrors can not have first sequence configured
+	JSMirrorWithFirstSeqErr ErrorIdentifier = 10143
+
 	// JSMirrorWithSourcesErr stream mirrors can not also contain other sources
 	JSMirrorWithSourcesErr ErrorIdentifier = 10031
 
@@ -506,6 +509,7 @@ var (
 		JSMirrorConsumerSetupFailedErrF:            {Code: 500, ErrCode: 10029, Description: "{err}"},
 		JSMirrorInvalidStreamName:                  {Code: 400, ErrCode: 10142, Description: "mirrored stream name is invalid"},
 		JSMirrorMaxMessageSizeTooBigErr:            {Code: 400, ErrCode: 10030, Description: "stream mirror must have max message size >= source"},
+		JSMirrorWithFirstSeqErr:                    {Code: 400, ErrCode: 10143, Description: "stream mirrors can not have first sequence configured"},
 		JSMirrorWithSourcesErr:                     {Code: 400, ErrCode: 10031, Description: "stream mirrors can not also contain other sources"},
 		JSMirrorWithStartSeqAndTimeErr:             {Code: 400, ErrCode: 10032, Description: "stream mirrors can not have both start seq and start time configured"},
 		JSMirrorWithSubjectFiltersErr:              {Code: 400, ErrCode: 10033, Description: "stream mirrors can not contain filtered subjects"},
@@ -1411,6 +1415,16 @@ func NewJSMirrorMaxMessageSizeTooBigError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSMirrorMaxMessageSizeTooBigErr]
+}
+
+// NewJSMirrorWithFirstSeqError creates a new JSMirrorWithFirstSeqErr error: "stream mirrors can not have first sequence configured"
+func NewJSMirrorWithFirstSeqError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSMirrorWithFirstSeqErr]
 }
 
 // NewJSMirrorWithSourcesError creates a new JSMirrorWithSourcesErr error: "stream mirrors can not also contain other sources"
