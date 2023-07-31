@@ -3335,9 +3335,6 @@ func writeJWT(t *testing.T, dir string, pub string, jwt string) {
 }
 
 func TestJWTAccountNATSResolverFetch(t *testing.T) {
-	origEventsHBInterval := eventsHBInterval
-	eventsHBInterval = 50 * time.Millisecond // speed up eventing
-	defer func() { eventsHBInterval = origEventsHBInterval }()
 	require_NoLocalOrRemoteConnections := func(account string, srvs ...*Server) {
 		t.Helper()
 		for _, srv := range srvs {
@@ -3446,6 +3443,7 @@ func TestJWTAccountNATSResolverFetch(t *testing.T) {
 		server_name: srv-A
 		operator: %s
 		system_account: %s
+		hb_interval: 50ms
 		resolver: {
 			type: full
 			dir: '%s'
@@ -3471,6 +3469,7 @@ func TestJWTAccountNATSResolverFetch(t *testing.T) {
 		server_name: srv-B
 		operator: %s
 		system_account: %s
+		hb_interval: 50ms
 		resolver: {
 			type: full
 
@@ -3495,6 +3494,7 @@ func TestJWTAccountNATSResolverFetch(t *testing.T) {
 		server_name: srv-C
 		operator: %s
 		system_account: %s
+		hb_interval: 50ms
 		resolver: {
 			type: cache
 			dir: '%s'

@@ -53,6 +53,7 @@ func TestDefaultOptions(t *testing.T) {
 		Port:                DEFAULT_PORT,
 		MaxConn:             DEFAULT_MAX_CONNECTIONS,
 		HTTPHost:            DEFAULT_HOST,
+		HBInterval:          DEFAULT_HB_INTERVAL,
 		PingInterval:        DEFAULT_PING_INTERVAL,
 		MaxPingsOut:         DEFAULT_PING_MAX_OUT,
 		TLSTimeout:          float64(TLS_TIMEOUT) / float64(time.Second),
@@ -113,6 +114,7 @@ func TestConfigFile(t *testing.T) {
 		MaxConn:               100,
 		MaxSubs:               1000,
 		MaxPending:            10000000,
+		HBInterval:            30 * time.Second,
 		PingInterval:          60 * time.Second,
 		MaxPingsOut:           3,
 		WriteDeadline:         3 * time.Second,
@@ -272,6 +274,7 @@ func TestMergeOverrides(t *testing.T) {
 		MaxConn:        100,
 		MaxSubs:        1000,
 		MaxPending:     10000000,
+		HBInterval:     30 * time.Second,
 		PingInterval:   60 * time.Second,
 		MaxPingsOut:    3,
 		Cluster: ClusterOpts{
@@ -1251,6 +1254,7 @@ func TestOptionsClone(t *testing.T) {
 		MaxControlLine: 2048,
 		MaxPayload:     65536,
 		MaxConn:        100,
+		HBInterval:     30 * time.Second,
 		PingInterval:   60 * time.Second,
 		MaxPingsOut:    3,
 		Cluster: ClusterOpts{

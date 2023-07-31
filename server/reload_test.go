@@ -143,6 +143,7 @@ func TestConfigReloadUnsupported(t *testing.T) {
 		MaxControlLine: 4096,
 		MaxPayload:     1048576,
 		MaxConn:        65536,
+		HBInterval:     30 * time.Second,
 		PingInterval:   2 * time.Minute,
 		MaxPingsOut:    2,
 		WriteDeadline:  10 * time.Second,
@@ -215,6 +216,7 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 		MaxControlLine: 4096,
 		MaxPayload:     1048576,
 		MaxConn:        65536,
+		HBInterval:     30 * time.Second,
 		PingInterval:   2 * time.Minute,
 		MaxPingsOut:    2,
 		WriteDeadline:  10 * time.Second,
@@ -278,6 +280,7 @@ func TestConfigReload(t *testing.T) {
 		MaxControlLine: 4096,
 		MaxPayload:     1048576,
 		MaxConn:        65536,
+		HBInterval:     30 * time.Second,
 		PingInterval:   2 * time.Minute,
 		MaxPingsOut:    2,
 		WriteDeadline:  10 * time.Second,
@@ -353,6 +356,9 @@ func TestConfigReload(t *testing.T) {
 	}
 	if updated.MaxControlLine != 512 {
 		t.Fatalf("MaxControlLine is incorrect.\nexpected: 512\ngot: %d", updated.MaxControlLine)
+	}
+	if updated.HBInterval != 5*time.Second {
+		t.Fatalf("HBInterval is incorrect.\nexpected 5s\ngot: %s", updated.HBInterval)
 	}
 	if updated.PingInterval != 5*time.Second {
 		t.Fatalf("PingInterval is incorrect.\nexpected 5s\ngot: %s", updated.PingInterval)
