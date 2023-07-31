@@ -2549,6 +2549,7 @@ func TestWSAdvertise(t *testing.T) {
 	checkInfo([]string{"host1:1234"})
 
 	// Restart with another advertise and check that it gets updated
+	o2.Websocket.Muxer = nil
 	o2.Websocket.Advertise = "host3:9012"
 	s2 = RunServer(o2)
 	defer s2.Shutdown()
@@ -3853,6 +3854,7 @@ func TestWSReloadTLSConfig(t *testing.T) {
 	template := `
 		listen: "127.0.0.1:-1"
 		websocket {
+			endpoint: "/"
 			listen: "127.0.0.1:-1"
 			tls {
 				cert_file: '%s'

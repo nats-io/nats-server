@@ -5237,6 +5237,7 @@ func TestMQTTWebsocket(t *testing.T) {
 		websocket {
 			listen: "127.0.0.1:-1"
 			no_tls: true
+			endpoint: "/"
 		}
 	`
 	s, o, conf := runReloadServerWithContent(t, []byte(fmt.Sprintf(template, jwt.ConnectionTypeMqtt, "")))
