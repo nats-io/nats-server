@@ -1,4 +1,4 @@
-// Copyright 2012-2022 The NATS Authors
+// Copyright 2012-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -35,6 +35,7 @@ import (
 
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats-server/v2/conf"
+	"github.com/nats-io/nats-server/v2/server/certidp"
 	"github.com/nats-io/nats-server/v2/server/certstore"
 	"github.com/nats-io/nkeys"
 )
@@ -386,6 +387,9 @@ type Options struct {
 	// JetStream
 	maxMemSet   bool
 	maxStoreSet bool
+
+	// OCSP Cache config enables next-gen cache for OCSP features
+	OCSPCacheConfig *OCSPResponseCacheConfig
 }
 
 // WebsocketOpts are options for websocket
@@ -449,6 +453,9 @@ type WebsocketOpts struct {
 	// and write the response back to the client. This include the
 	// time needed for the TLS Handshake.
 	HandshakeTimeout time.Duration
+
+	// Snapshot of configured TLS options.
+	tlsConfigOpts *TLSConfigOpts
 }
 
 // MQTTOpts are options for MQTT
@@ -529,6 +536,9 @@ type MQTTOpts struct {
 	// subscription ending with "#" will use 2 times the MaxAckPending value.
 	// Note that changes to this option is applied only to new subscriptions.
 	MaxAckPending uint16
+
+	// Snapshot of configured TLS options.
+	tlsConfigOpts *TLSConfigOpts
 }
 
 type netResolver interface {
@@ -626,6 +636,7 @@ type TLSConfigOpts struct {
 	CertStore         certstore.StoreType
 	CertMatchBy       certstore.MatchByType
 	CertMatch         string
+	OCSPPeerConfig    *certidp.OCSPPeerConfig
 }
 
 // OCSPConfig represents the options of OCSP stapling options.
@@ -1450,6 +1461,34 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			m[kk] = v.(string)
 		}
 		o.JsAccDefaultDomain = m
+	case "ocsp_cache":
+		var err error
+		switch vv := v.(type) {
+		case bool:
+			pc := NewOCSPResponseCacheConfig()
+			if vv {
+				// Set enabled
+				pc.Type = LOCAL
+				o.OCSPCacheConfig = pc
+			} else {
+				// Set disabled (none cache)
+				pc.Type = NONE
+				o.OCSPCacheConfig = pc
+			}
+		case map[string]interface{}:
+			pc, err := parseOCSPResponseCache(v)
+			if err != nil {
+				*errors = append(*errors, err)
+				return
+			}
+			o.OCSPCacheConfig = pc
+		default:
+			err = &configErr{tk, fmt.Sprintf("error parsing tags: unsupported type %T", v)}
+		}
+		if err != nil {
+			*errors = append(*errors, err)
+			return
+		}
 	default:
 		if au := atomic.LoadInt32(&allowUnknownTopLevelField); au == 0 && !tk.IsUsedVariable() {
 			err := &unknownConfigFieldErr{
@@ -4051,8 +4090,10 @@ func PrintTLSHelpAndDie() {
 		fmt.Printf("    %s\n", k)
 	}
 	if runtime.GOOS == "windows" {
-		fmt.Printf("%s", certstore.Usage)
+		fmt.Printf("%s\n", certstore.Usage)
 	}
+	fmt.Printf("%s", certidp.OCSPPeerUsage)
+	fmt.Printf("%s", OCSPResponseCacheUsage)
 	os.Exit(0)
 }
 
@@ -4238,6 +4279,28 @@ func parseTLS(v interface{}, isClientCtx bool) (t *TLSConfigOpts, retErr error) 
 			tc.CertMatch = certMatch
 		case "handshake_first", "first", "immediate":
 			tc.HandshakeFirst = mv.(bool)
+		case "ocsp_peer":
+			switch vv := mv.(type) {
+			case bool:
+				pc := certidp.NewOCSPPeerConfig()
+				if vv {
+					// Set enabled
+					pc.Verify = true
+					tc.OCSPPeerConfig = pc
+				} else {
+					// Set disabled
+					pc.Verify = false
+					tc.OCSPPeerConfig = pc
+				}
+			case map[string]interface{}:
+				pc, err := parseOCSPPeer(mv)
+				if err != nil {
+					return nil, &configErr{tk, err.Error()}
+				}
+				tc.OCSPPeerConfig = pc
+			default:
+				return nil, &configErr{tk, fmt.Sprintf("error parsing ocsp peer config: unsupported type %T", v)}
+			}
 		default:
 			return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, unknown field [%q]", mk)}
 		}
@@ -4368,6 +4431,7 @@ func parseWebsocket(v interface{}, o *Options, errors *[]error, warnings *[]erro
 			}
 			o.Websocket.TLSMap = tc.Map
 			o.Websocket.TLSPinnedCerts = tc.PinnedCerts
+			o.Websocket.tlsConfigOpts = tc
 		case "same_origin":
 			o.Websocket.SameOrigin = mv.(bool)
 		case "allowed_origins", "allowed_origin", "allow_origins", "allow_origin", "origins", "origin":
@@ -4458,6 +4522,7 @@ func parseMQTT(v interface{}, o *Options, errors *[]error, warnings *[]error) er
 			o.MQTT.TLSTimeout = tc.Timeout
 			o.MQTT.TLSMap = tc.Map
 			o.MQTT.TLSPinnedCerts = tc.PinnedCerts
+			o.MQTT.tlsConfigOpts = tc
 		case "authorization", "authentication":
 			auth := parseSimpleAuth(tk, errors, warnings)
 			o.MQTT.Username = auth.user

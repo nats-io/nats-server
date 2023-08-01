@@ -1,4 +1,4 @@
-// Copyright 2021 The NATS Authors
+// Copyright 2021-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -16,7 +16,7 @@ package test
 import (
 	"bytes"
 	"context"
-	"crypto/rsa"
+	"crypto"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -32,9 +32,15 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/crypto/ocsp"
+
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
-	"golang.org/x/crypto/ocsp"
+)
+
+const (
+	defaultResponseTTL = 4 * time.Second
+	defaultAddress     = "127.0.0.1:8888"
 )
 
 func TestOCSPAlwaysMustStapleAndShutdown(t *testing.T) {
@@ -2307,7 +2313,7 @@ func TestOCSPGatewayIntermediate(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ocspr := newOCSPResponderDesignated(t, caCert, caIntermCert, caIntermKey, true)
+	ocspr := newOCSPResponderDesignated(t, caCert, caIntermCert, caIntermKey)
 	defer ocspr.Shutdown(ctx)
 
 	addr := fmt.Sprintf("http://%s", ocspr.Addr)
@@ -2866,12 +2872,27 @@ func TestOCSPCustomConfigReloadEnable(t *testing.T) {
 	nc.Close()
 }
 
-func newOCSPResponder(t *testing.T, issuerCertPEM, issuerKeyPEM string) *http.Server {
+func newOCSPResponderCustomAddress(t *testing.T, issuerCertPEM, issuerKeyPEM string, addr string) *http.Server {
 	t.Helper()
-	return newOCSPResponderDesignated(t, issuerCertPEM, issuerCertPEM, issuerKeyPEM, false)
+	return newOCSPResponderBase(t, issuerCertPEM, issuerCertPEM, issuerKeyPEM, false, addr, defaultResponseTTL)
 }
 
-func newOCSPResponderDesignated(t *testing.T, issuerCertPEM, respCertPEM, respKeyPEM string, embed bool) *http.Server {
+func newOCSPResponder(t *testing.T, issuerCertPEM, issuerKeyPEM string) *http.Server {
+	t.Helper()
+	return newOCSPResponderBase(t, issuerCertPEM, issuerCertPEM, issuerKeyPEM, false, defaultAddress, defaultResponseTTL)
+}
+
+func newOCSPResponderDesignated(t *testing.T, issuerCertPEM, respCertPEM, respKeyPEM string) *http.Server {
+	t.Helper()
+	return newOCSPResponderBase(t, issuerCertPEM, respCertPEM, respKeyPEM, true, defaultAddress, defaultResponseTTL)
+}
+
+func newOCSPResponderDesignatedCustomAddress(t *testing.T, issuerCertPEM, respCertPEM, respKeyPEM string, addr string) *http.Server {
+	t.Helper()
+	return newOCSPResponderBase(t, issuerCertPEM, respCertPEM, respKeyPEM, true, addr, defaultResponseTTL)
+}
+
+func newOCSPResponderBase(t *testing.T, issuerCertPEM, respCertPEM, respKeyPEM string, embed bool, addr string, responseTTL time.Duration) *http.Server {
 	t.Helper()
 	var mu sync.Mutex
 	status := make(map[string]int)
@@ -2952,7 +2973,9 @@ func newOCSPResponderDesignated(t *testing.T, issuerCertPEM, respCertPEM, respKe
 			Status:       n,
 			SerialNumber: ocspReq.SerialNumber,
 			ThisUpdate:   time.Now(),
-			NextUpdate:   time.Now().Add(4 * time.Second),
+		}
+		if responseTTL != 0 {
+			tmpl.NextUpdate = tmpl.ThisUpdate.Add(responseTTL)
 		}
 		if embed {
 			tmpl.Certificate = respCert
@@ -2970,7 +2993,7 @@ func newOCSPResponderDesignated(t *testing.T, issuerCertPEM, respCertPEM, respKe
 	})
 
 	srv := &http.Server{
-		Addr:    "127.0.0.1:8888",
+		Addr:    addr,
 		Handler: mux,
 	}
 	go srv.ListenAndServe()
@@ -3016,15 +3039,19 @@ func parseCertPEM(t *testing.T, certPEM string) *x509.Certificate {
 	return cert
 }
 
-func parseKeyPEM(t *testing.T, keyPEM string) *rsa.PrivateKey {
+func parseKeyPEM(t *testing.T, keyPEM string) crypto.Signer {
 	t.Helper()
 	block := parsePEM(t, keyPEM)
 
-	key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
-		t.Fatalf("failed to parse ikey %s: %s", keyPEM, err)
+		key, err = x509.ParsePKCS1PrivateKey(block.Bytes)
+		if err != nil {
+			t.Fatalf("failed to parse ikey %s: %s", keyPEM, err)
+		}
 	}
-	return key
+	keyc := key.(crypto.Signer)
+	return keyc
 }
 
 func parsePEM(t *testing.T, pemPath string) *pem.Block {

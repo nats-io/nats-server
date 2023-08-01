@@ -262,6 +262,12 @@ type Server struct {
 	// OCSP monitoring
 	ocsps []*OCSPMonitor
 
+	// OCSP peer verification (at least one TLS block)
+	ocspPeerVerify bool
+
+	// OCSP response cache
+	ocsprc OCSPResponseCache
+
 	// exporting account name the importer experienced issues with
 	incompleteAccExporterMap sync.Map
 
@@ -714,8 +720,8 @@ func NewServer(opts *Options) (*Server, error) {
 	// Ensure that non-exported options (used in tests) are properly set.
 	s.setLeafNodeNonExportedOptions()
 
-	// Setup OCSP Stapling. This will abort server from starting if there
-	// are no valid staples and OCSP policy is set to Always or MustStaple.
+	// Setup OCSP Stapling and OCSP Peer. This will abort server from starting if there
+	// are no valid staples and OCSP Stapling policy is set to Always or MustStaple.
 	if err := s.enableOCSP(); err != nil {
 		return nil, err
 	}
@@ -2234,8 +2240,12 @@ func (s *Server) Start() {
 		}
 	}
 
-	// Start OCSP Stapling monitoring for TLS certificates if enabled.
+	// Start OCSP Stapling monitoring for TLS certificates if enabled. Hook TLS handshake for
+	// OCSP check on peers (LEAF and CLIENT kind) if enabled.
 	s.startOCSPMonitoring()
+
+	// Configure OCSP Response Cache for peer OCSP checks if enabled.
+	s.initOCSPResponseCache()
 
 	// Start up gateway if needed. Do this before starting the routes, because
 	// we want to resolve the gateway host:port so that this information can
@@ -2303,6 +2313,9 @@ func (s *Server) Start() {
 	if !opts.DontListen {
 		s.AcceptLoop(clientListenReady)
 	}
+
+	// Bring OSCP Response cache online after accept loop started in anticipation of NATS-enabled cache types
+	s.startOCSPResponseCache()
 }
 
 // Shutdown will shutdown the server instance by kicking out the AcceptLoop
@@ -2465,6 +2478,12 @@ func (s *Server) Shutdown() {
 	}
 
 	s.Noticef("Server Exiting..")
+
+	// Stop OCSP Response Cache
+	if s.ocsprc != nil {
+		s.ocsprc.Stop(s)
+	}
+
 	// Close logger if applicable. It allows tests on Windows
 	// to be able to do proper cleanup (delete log file).
 	s.logging.RLock()

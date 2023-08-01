@@ -1164,6 +1164,7 @@ type Varz struct {
 	AuthRequired          bool                  `json:"auth_required,omitempty"`
 	TLSRequired           bool                  `json:"tls_required,omitempty"`
 	TLSVerify             bool                  `json:"tls_verify,omitempty"`
+	TLSOCSPPeerVerify     bool                  `json:"tls_ocsp_peer_verify,omitempty"`
 	IP                    string                `json:"ip,omitempty"`
 	ClientConnectURLs     []string              `json:"connect_urls,omitempty"`
 	WSConnectURLs         []string              `json:"ws_connect_urls,omitempty"`
@@ -1212,6 +1213,7 @@ type Varz struct {
 	TrustedOperatorsClaim []*jwt.OperatorClaims `json:"trusted_operators_claim,omitempty"`
 	SystemAccount         string                `json:"system_account,omitempty"`
 	PinnedAccountFail     uint64                `json:"pinned_account_fails,omitempty"`
+	OCSPResponseCache     OCSPResponseCacheVarz `json:"ocsp_peer_cache,omitempty"`
 }
 
 // JetStreamVarz contains basic runtime information about jetstream
@@ -1258,13 +1260,14 @@ type RemoteGatewayOptsVarz struct {
 
 // LeafNodeOptsVarz contains monitoring leaf node information
 type LeafNodeOptsVarz struct {
-	Host        string               `json:"host,omitempty"`
-	Port        int                  `json:"port,omitempty"`
-	AuthTimeout float64              `json:"auth_timeout,omitempty"`
-	TLSTimeout  float64              `json:"tls_timeout,omitempty"`
-	TLSRequired bool                 `json:"tls_required,omitempty"`
-	TLSVerify   bool                 `json:"tls_verify,omitempty"`
-	Remotes     []RemoteLeafOptsVarz `json:"remotes,omitempty"`
+	Host              string               `json:"host,omitempty"`
+	Port              int                  `json:"port,omitempty"`
+	AuthTimeout       float64              `json:"auth_timeout,omitempty"`
+	TLSTimeout        float64              `json:"tls_timeout,omitempty"`
+	TLSRequired       bool                 `json:"tls_required,omitempty"`
+	TLSVerify         bool                 `json:"tls_verify,omitempty"`
+	Remotes           []RemoteLeafOptsVarz `json:"remotes,omitempty"`
+	TLSOCSPPeerVerify bool                 `json:"tls_ocsp_peer_verify,omitempty"`
 }
 
 // DenyRules Contains lists of subjects not allowed to be imported/exported
@@ -1275,41 +1278,55 @@ type DenyRules struct {
 
 // RemoteLeafOptsVarz contains monitoring remote leaf node information
 type RemoteLeafOptsVarz struct {
-	LocalAccount string     `json:"local_account,omitempty"`
-	TLSTimeout   float64    `json:"tls_timeout,omitempty"`
-	URLs         []string   `json:"urls,omitempty"`
-	Deny         *DenyRules `json:"deny,omitempty"`
+	LocalAccount      string     `json:"local_account,omitempty"`
+	TLSTimeout        float64    `json:"tls_timeout,omitempty"`
+	URLs              []string   `json:"urls,omitempty"`
+	Deny              *DenyRules `json:"deny,omitempty"`
+	TLSOCSPPeerVerify bool       `json:"tls_ocsp_peer_verify,omitempty"`
 }
 
 // MQTTOptsVarz contains monitoring MQTT information
 type MQTTOptsVarz struct {
-	Host           string        `json:"host,omitempty"`
-	Port           int           `json:"port,omitempty"`
-	NoAuthUser     string        `json:"no_auth_user,omitempty"`
-	AuthTimeout    float64       `json:"auth_timeout,omitempty"`
-	TLSMap         bool          `json:"tls_map,omitempty"`
-	TLSTimeout     float64       `json:"tls_timeout,omitempty"`
-	TLSPinnedCerts []string      `json:"tls_pinned_certs,omitempty"`
-	JsDomain       string        `json:"js_domain,omitempty"`
-	AckWait        time.Duration `json:"ack_wait,omitempty"`
-	MaxAckPending  uint16        `json:"max_ack_pending,omitempty"`
+	Host              string        `json:"host,omitempty"`
+	Port              int           `json:"port,omitempty"`
+	NoAuthUser        string        `json:"no_auth_user,omitempty"`
+	AuthTimeout       float64       `json:"auth_timeout,omitempty"`
+	TLSMap            bool          `json:"tls_map,omitempty"`
+	TLSTimeout        float64       `json:"tls_timeout,omitempty"`
+	TLSPinnedCerts    []string      `json:"tls_pinned_certs,omitempty"`
+	JsDomain          string        `json:"js_domain,omitempty"`
+	AckWait           time.Duration `json:"ack_wait,omitempty"`
+	MaxAckPending     uint16        `json:"max_ack_pending,omitempty"`
+	TLSOCSPPeerVerify bool          `json:"tls_ocsp_peer_verify,omitempty"`
 }
 
 // WebsocketOptsVarz contains monitoring websocket information
 type WebsocketOptsVarz struct {
-	Host             string        `json:"host,omitempty"`
-	Port             int           `json:"port,omitempty"`
-	Advertise        string        `json:"advertise,omitempty"`
-	NoAuthUser       string        `json:"no_auth_user,omitempty"`
-	JWTCookie        string        `json:"jwt_cookie,omitempty"`
-	HandshakeTimeout time.Duration `json:"handshake_timeout,omitempty"`
-	AuthTimeout      float64       `json:"auth_timeout,omitempty"`
-	NoTLS            bool          `json:"no_tls,omitempty"`
-	TLSMap           bool          `json:"tls_map,omitempty"`
-	TLSPinnedCerts   []string      `json:"tls_pinned_certs,omitempty"`
-	SameOrigin       bool          `json:"same_origin,omitempty"`
-	AllowedOrigins   []string      `json:"allowed_origins,omitempty"`
-	Compression      bool          `json:"compression,omitempty"`
+	Host              string        `json:"host,omitempty"`
+	Port              int           `json:"port,omitempty"`
+	Advertise         string        `json:"advertise,omitempty"`
+	NoAuthUser        string        `json:"no_auth_user,omitempty"`
+	JWTCookie         string        `json:"jwt_cookie,omitempty"`
+	HandshakeTimeout  time.Duration `json:"handshake_timeout,omitempty"`
+	AuthTimeout       float64       `json:"auth_timeout,omitempty"`
+	NoTLS             bool          `json:"no_tls,omitempty"`
+	TLSMap            bool          `json:"tls_map,omitempty"`
+	TLSPinnedCerts    []string      `json:"tls_pinned_certs,omitempty"`
+	SameOrigin        bool          `json:"same_origin,omitempty"`
+	AllowedOrigins    []string      `json:"allowed_origins,omitempty"`
+	Compression       bool          `json:"compression,omitempty"`
+	TLSOCSPPeerVerify bool          `json:"tls_ocsp_peer_verify,omitempty"`
+}
+
+// OCSPResponseCacheVarz contains OCSP response cache information
+type OCSPResponseCacheVarz struct {
+	Type      string `json:"cache_type,omitempty"`
+	Hits      int64  `json:"cache_hits,omitempty"`
+	Misses    int64  `json:"cache_misses,omitempty"`
+	Responses int64  `json:"cached_responses,omitempty"`
+	Revokes   int64  `json:"cached_revoked_responses,omitempty"`
+	Goods     int64  `json:"cached_good_responses,omitempty"`
+	Unknowns  int64  `json:"cached_unknown_responses,omitempty"`
 }
 
 // VarzOptions are the options passed to Varz().
@@ -1463,6 +1480,9 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 	gatewayTlsReq := gw.TLSConfig != nil
 	leafTlsReq := ln.TLSConfig != nil
 	leafTlsVerify := leafTlsReq && ln.TLSConfig.ClientAuth == tls.RequireAndVerifyClientCert
+	leafTlsOCSPPeerVerify := s.ocspPeerVerify && leafTlsReq && ln.tlsConfigOpts.OCSPPeerConfig != nil && ln.tlsConfigOpts.OCSPPeerConfig.Verify
+	mqttTlsOCSPPeerVerify := s.ocspPeerVerify && mqtt.TLSConfig != nil && mqtt.tlsConfigOpts.OCSPPeerConfig != nil && mqtt.tlsConfigOpts.OCSPPeerConfig.Verify
+	wsTlsOCSPPeerVerify := s.ocspPeerVerify && ws.TLSConfig != nil && ws.tlsConfigOpts.OCSPPeerConfig != nil && ws.tlsConfigOpts.OCSPPeerConfig.Verify
 	varz := &Varz{
 		ID:           info.ID,
 		Version:      info.Version,
@@ -1501,38 +1521,41 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 			RejectUnknown:  gw.RejectUnknown,
 		},
 		LeafNode: LeafNodeOptsVarz{
-			Host:        ln.Host,
-			Port:        ln.Port,
-			AuthTimeout: ln.AuthTimeout,
-			TLSTimeout:  ln.TLSTimeout,
-			TLSRequired: leafTlsReq,
-			TLSVerify:   leafTlsVerify,
-			Remotes:     []RemoteLeafOptsVarz{},
+			Host:              ln.Host,
+			Port:              ln.Port,
+			AuthTimeout:       ln.AuthTimeout,
+			TLSTimeout:        ln.TLSTimeout,
+			TLSRequired:       leafTlsReq,
+			TLSVerify:         leafTlsVerify,
+			TLSOCSPPeerVerify: leafTlsOCSPPeerVerify,
+			Remotes:           []RemoteLeafOptsVarz{},
 		},
 		MQTT: MQTTOptsVarz{
-			Host:          mqtt.Host,
-			Port:          mqtt.Port,
-			NoAuthUser:    mqtt.NoAuthUser,
-			AuthTimeout:   mqtt.AuthTimeout,
-			TLSMap:        mqtt.TLSMap,
-			TLSTimeout:    mqtt.TLSTimeout,
-			JsDomain:      mqtt.JsDomain,
-			AckWait:       mqtt.AckWait,
-			MaxAckPending: mqtt.MaxAckPending,
+			Host:              mqtt.Host,
+			Port:              mqtt.Port,
+			NoAuthUser:        mqtt.NoAuthUser,
+			AuthTimeout:       mqtt.AuthTimeout,
+			TLSMap:            mqtt.TLSMap,
+			TLSTimeout:        mqtt.TLSTimeout,
+			JsDomain:          mqtt.JsDomain,
+			AckWait:           mqtt.AckWait,
+			MaxAckPending:     mqtt.MaxAckPending,
+			TLSOCSPPeerVerify: mqttTlsOCSPPeerVerify,
 		},
 		Websocket: WebsocketOptsVarz{
-			Host:             ws.Host,
-			Port:             ws.Port,
-			Advertise:        ws.Advertise,
-			NoAuthUser:       ws.NoAuthUser,
-			JWTCookie:        ws.JWTCookie,
-			AuthTimeout:      ws.AuthTimeout,
-			NoTLS:            ws.NoTLS,
-			TLSMap:           ws.TLSMap,
-			SameOrigin:       ws.SameOrigin,
-			AllowedOrigins:   copyStrings(ws.AllowedOrigins),
-			Compression:      ws.Compression,
-			HandshakeTimeout: ws.HandshakeTimeout,
+			Host:              ws.Host,
+			Port:              ws.Port,
+			Advertise:         ws.Advertise,
+			NoAuthUser:        ws.NoAuthUser,
+			JWTCookie:         ws.JWTCookie,
+			AuthTimeout:       ws.AuthTimeout,
+			NoTLS:             ws.NoTLS,
+			TLSMap:            ws.TLSMap,
+			SameOrigin:        ws.SameOrigin,
+			AllowedOrigins:    copyStrings(ws.AllowedOrigins),
+			Compression:       ws.Compression,
+			HandshakeTimeout:  ws.HandshakeTimeout,
+			TLSOCSPPeerVerify: wsTlsOCSPPeerVerify,
 		},
 		Start:                 s.start.UTC(),
 		MaxSubs:               opts.MaxSubs,
@@ -1565,11 +1588,14 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 					Exports: r.DenyExports,
 				}
 			}
+			remoteTlsOCSPPeerVerify := s.ocspPeerVerify && r.tlsConfigOpts != nil && r.tlsConfigOpts.OCSPPeerConfig != nil && r.tlsConfigOpts.OCSPPeerConfig.Verify
+
 			rlna[i] = RemoteLeafOptsVarz{
-				LocalAccount: r.LocalAccount,
-				URLs:         urlsToStrings(r.URLs),
-				TLSTimeout:   r.TLSTimeout,
-				Deny:         deny,
+				LocalAccount:      r.LocalAccount,
+				URLs:              urlsToStrings(r.URLs),
+				TLSTimeout:        r.TLSTimeout,
+				Deny:              deny,
+				TLSOCSPPeerVerify: remoteTlsOCSPPeerVerify,
 			}
 		}
 		varz.LeafNode.Remotes = rlna
@@ -1623,6 +1649,8 @@ func (s *Server) updateVarzConfigReloadableFields(v *Varz) {
 	}
 	v.MQTT.TLSPinnedCerts = getPinnedCertsAsSlice(opts.MQTT.TLSPinnedCerts)
 	v.Websocket.TLSPinnedCerts = getPinnedCertsAsSlice(opts.Websocket.TLSPinnedCerts)
+
+	v.TLSOCSPPeerVerify = s.ocspPeerVerify && v.TLSRequired && s.opts.tlsConfigOpts != nil && s.opts.tlsConfigOpts.OCSPPeerConfig != nil && s.opts.tlsConfigOpts.OCSPPeerConfig.Verify
 }
 
 func getPinnedCertsAsSlice(certs PinnedCertSet) []string {
@@ -1714,6 +1742,21 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 		}
 	}
 	gw.RUnlock()
+
+	if s.ocsprc != nil && s.ocsprc.Type() != "none" {
+		stats := s.ocsprc.Stats()
+		if stats != nil {
+			v.OCSPResponseCache = OCSPResponseCacheVarz{
+				s.ocsprc.Type(),
+				stats.Hits,
+				stats.Misses,
+				stats.Responses,
+				stats.Revokes,
+				stats.Goods,
+				stats.Unknowns,
+			}
+		}
+	}
 }
 
 // HandleVarz will process HTTP requests for server information.
@@ -2358,6 +2401,8 @@ func (reason ClosedState) String() string {
 		return "Minimum Version Required"
 	case ClusterNamesIdentical:
 		return "Cluster Names Identical"
+	case FailedOCSPPeerVerification:
+		return "Failed OCSP Peer Verification"
 	}
 
 	return "Unknown State"
