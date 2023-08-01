@@ -291,19 +291,19 @@ const (
 	JSSourceInvalidStreamName ErrorIdentifier = 10141
 
 	// JSSourceInvalidSubjectFilter source subject filter is invalid
-	JSSourceInvalidSubjectFilter ErrorIdentifier = 10144
+	JSSourceInvalidSubjectFilter ErrorIdentifier = 10145
 
 	// JSSourceInvalidTransformDestination source transform destination is invalid
-	JSSourceInvalidTransformDestination ErrorIdentifier = 10145
+	JSSourceInvalidTransformDestination ErrorIdentifier = 10146
 
 	// JSSourceMaxMessageSizeTooBigErr stream source must have max message size >= target
 	JSSourceMaxMessageSizeTooBigErr ErrorIdentifier = 10046
 
 	// JSSourceMultipleFiltersNotAllowed source with multiple subject filters cannot also have a single subject filter
-	JSSourceMultipleFiltersNotAllowed ErrorIdentifier = 10143
+	JSSourceMultipleFiltersNotAllowed ErrorIdentifier = 10144
 
 	// JSSourceOverlappingSubjectFilters source filters can not overlap
-	JSSourceOverlappingSubjectFilters ErrorIdentifier = 10146
+	JSSourceOverlappingSubjectFilters ErrorIdentifier = 10147
 
 	// JSStorageResourcesExceededErr insufficient storage resources available
 	JSStorageResourcesExceededErr ErrorIdentifier = 10047
@@ -541,11 +541,11 @@ var (
 		JSSourceConsumerSetupFailedErrF:            {Code: 500, ErrCode: 10045, Description: "{err}"},
 		JSSourceDuplicateDetected:                  {Code: 400, ErrCode: 10140, Description: "duplicate source configuration detected"},
 		JSSourceInvalidStreamName:                  {Code: 400, ErrCode: 10141, Description: "sourced stream name is invalid"},
-		JSSourceInvalidSubjectFilter:               {Code: 400, ErrCode: 10144, Description: "source subject filter is invalid"},
-		JSSourceInvalidTransformDestination:        {Code: 400, ErrCode: 10145, Description: "source transform destination is invalid"},
+		JSSourceInvalidSubjectFilter:               {Code: 400, ErrCode: 10145, Description: "source subject filter is invalid"},
+		JSSourceInvalidTransformDestination:        {Code: 400, ErrCode: 10146, Description: "source transform destination is invalid"},
 		JSSourceMaxMessageSizeTooBigErr:            {Code: 400, ErrCode: 10046, Description: "stream source must have max message size >= target"},
-		JSSourceMultipleFiltersNotAllowed:          {Code: 400, ErrCode: 10143, Description: "source with multiple subject filters cannot also have a single subject filter"},
-		JSSourceOverlappingSubjectFilters:          {Code: 400, ErrCode: 10146, Description: "source filters can not overlap"},
+		JSSourceMultipleFiltersNotAllowed:          {Code: 400, ErrCode: 10144, Description: "source with multiple subject filters cannot also have a single subject filter"},
+		JSSourceOverlappingSubjectFilters:          {Code: 400, ErrCode: 10147, Description: "source filters can not overlap"},
 		JSStorageResourcesExceededErr:              {Code: 500, ErrCode: 10047, Description: "insufficient storage resources available"},
 		JSStreamAssignmentErrF:                     {Code: 500, ErrCode: 10048, Description: "{err}"},
 		JSStreamCreateErrF:                         {Code: 500, ErrCode: 10049, Description: "{err}"},
