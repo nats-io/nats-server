@@ -127,7 +127,6 @@ func TestSubjectTransforms(t *testing.T) {
 	}
 
 	// Must be valid subjects.
-	shouldErr("foo", "", false)
 	shouldErr("foo..", "bar", false)
 
 	// Wildcards are allowed in src, but must be matched by token placements on the other side.
@@ -175,16 +174,19 @@ func TestSubjectTransforms(t *testing.T) {
 	shouldMatch := func(src, dest, sample, expected string) {
 		t.Helper()
 		tr := shouldBeOK(src, dest, false)
-		s, err := tr.Match(sample)
-		if err != nil {
-			t.Fatalf("Got an error %v when expecting a match for %q to %q", err, sample, expected)
-		}
-		if s != expected {
-			t.Fatalf("Dest does not match what was expected. Got %q, expected %q", s, expected)
+		if tr != nil {
+			s, err := tr.Match(sample)
+			if err != nil {
+				t.Fatalf("Got an error %v when expecting a match for %q to %q", err, sample, expected)
+			}
+			if s != expected {
+				t.Fatalf("Dest does not match what was expected. Got %q, expected %q", s, expected)
+			}
 		}
 	}
 
 	shouldMatch("", "prefix.>", "foo", "prefix.foo")
+	shouldMatch("foo", "", "foo", "foo")
 	shouldMatch("foo", "bar", "foo", "bar")
 	shouldMatch("foo.*.bar.*.baz", "req.$2.$1", "foo.A.bar.B.baz", "req.B.A")
 	shouldMatch("foo.*.bar.*.baz", "req.{{wildcard(2)}}.{{wildcard(1)}}", "foo.A.bar.B.baz", "req.B.A")

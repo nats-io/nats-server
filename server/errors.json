@@ -1418,5 +1418,45 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSSourceMultipleFiltersNotAllowed",
+    "code": 400,
+    "error_code": 10143,
+    "description": "source with multiple subject filters cannot also have a single subject filter",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSSourceInvalidSubjectFilter",
+    "code": 400,
+    "error_code": 10144,
+    "description": "source subject filter is invalid",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSSourceInvalidTransformDestination",
+    "code": 400,
+    "error_code": 10145,
+    "description": "source transform destination is invalid",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSSourceOverlappingSubjectFilters",
+    "code": 400,
+    "error_code": 10146,
+    "description": "source filters can not overlap",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

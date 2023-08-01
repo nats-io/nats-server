@@ -73,6 +73,11 @@ func NewSubjectTransformWithStrict(src, dest string, strict bool) (*subjectTrans
 	// strict = true for import subject mappings that need to be reversible
 	// (meaning can only use the Wildcard function and must use all the pwcs that are present in the source)
 	// No source given is equivalent to the source being ">"
+
+	if dest == _EMPTY_ {
+		return nil, nil
+	}
+
 	if src == _EMPTY_ {
 		src = fwcs
 	}
@@ -383,6 +388,8 @@ func (tr *subjectTransform) Match(subject string) (string, error) {
 	}
 
 	tts := tokenizeSubject(subject)
+
+	// TODO(jnm): optimization -> not sure this is actually needed but was there in initial code
 	if !isValidLiteralSubject(tts) {
 		return _EMPTY_, ErrBadSubject
 	}
