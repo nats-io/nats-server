@@ -30,6 +30,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ocsp"
+
+	"github.com/nats-io/nats-server/v2/server/certstore"
 )
 
 const (
@@ -389,7 +391,7 @@ func (srv *Server) NewOCSPMonitor(config *tlsConfigKind) (*tls.Config, *OCSPMoni
 		}
 
 		// TODO: Add OCSP 'responder_cert' option in case CA cert not available.
-		issuers, err := getOCSPIssuer(caFile, cert.Certificate)
+		issuer, err := getOCSPIssuer(caFile, cert.Certificate)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -402,7 +404,7 @@ func (srv *Server) NewOCSPMonitor(config *tlsConfigKind) (*tls.Config, *OCSPMoni
 			certFile:         certFile,
 			stopCh:           make(chan struct{}, 1),
 			Leaf:             cert.Leaf,
-			Issuer:           issuers[len(issuers)-1],
+			Issuer:           issuer,
 		}
 
 		// Get the certificate status from the memory, then remote OCSP responder.
@@ -449,7 +451,7 @@ func (srv *Server) NewOCSPMonitor(config *tlsConfigKind) (*tls.Config, *OCSPMoni
 
 				chain := s.VerifiedChains[0]
 				leaf := chain[0]
-				parent := issuers[len(issuers)-1]
+				parent := issuer
 
 				resp, err := ocsp.ParseResponseForCert(oresp, leaf, parent)
 				if err != nil {
@@ -833,37 +835,81 @@ func parseCertPEM(name string) ([]*x509.Certificate, error) {
 	return x509.ParseCertificates(pemBytes)
 }
 
-// getOCSPIssuer returns a CA cert from the given path. If the path is empty,
-// then this checks a given cert chain. If both are empty, then it returns an
-// error.
-func getOCSPIssuer(issuerCert string, chain [][]byte) ([]*x509.Certificate, error) {
-	var issuers []*x509.Certificate
-	var err error
-	switch {
-	case len(chain) == 1 && issuerCert == _EMPTY_:
-		err = fmt.Errorf("ocsp ca required in chain or configuration")
-	case issuerCert != _EMPTY_:
-		issuers, err = parseCertPEM(issuerCert)
-	case len(chain) > 1 && issuerCert == _EMPTY_:
-		issuers, err = x509.ParseCertificates(chain[1])
-	default:
-		err = fmt.Errorf("invalid ocsp ca configuration")
-	}
-	if err != nil {
-		return nil, err
+// getOCSPIssuerLocally determines a leaf's issuer from locally configured certificates
+func getOCSPIssuerLocally(trustedCAs []*x509.Certificate, certBundle []*x509.Certificate) (*x509.Certificate, error) {
+	var vOpts x509.VerifyOptions
+	var leaf *x509.Certificate
+	trustedCAPool := x509.NewCertPool()
+
+	// Require Leaf as first cert in bundle
+	if len(certBundle) > 0 {
+		leaf = certBundle[0]
+	} else {
+		return nil, fmt.Errorf("invalid ocsp ca configuration")
 	}
 
-	if len(issuers) == 0 {
-		return nil, fmt.Errorf("no issuers found")
-	}
-
-	for _, issuer := range issuers {
-		if !issuer.IsCA {
-			return nil, fmt.Errorf("%s invalid ca basic constraints: is not ca", issuer.Subject)
+	// Allow Issuer to be configured as second cert in bundle
+	if len(certBundle) > 1 {
+		// The operator may have misconfigured the cert bundle
+		issuerCandidate := certBundle[1]
+		err := issuerCandidate.CheckSignature(leaf.SignatureAlgorithm, leaf.RawTBSCertificate, leaf.Signature)
+		if err != nil {
+			return nil, fmt.Errorf("invalid issuer configuration: %w", err)
+		} else {
+			return issuerCandidate, nil
 		}
 	}
 
-	return issuers, nil
+	// Operator did not provide the Leaf Issuer in cert bundle second position
+	// so we will attempt to create at least one ordered verified chain from the
+	// trusted CA pool.
+
+	// Specify CA trust store to validator; if unset, system trust store used
+	if len(trustedCAs) > 0 {
+		for _, ca := range trustedCAs {
+			trustedCAPool.AddCert(ca)
+		}
+		vOpts.Roots = trustedCAPool
+	}
+
+	return certstore.GetLeafIssuer(leaf, vOpts), nil
+}
+
+// getOCSPIssuer determines an issuer certificate from the cert (bundle) or the file-based CA trust store
+func getOCSPIssuer(caFile string, chain [][]byte) (*x509.Certificate, error) {
+	var issuer *x509.Certificate
+	var trustedCAs []*x509.Certificate
+	var certBundle []*x509.Certificate
+	var err error
+
+	// FIXME(tgb): extend if pluggable CA store provider added to NATS (i.e. other than PEM file)
+
+	// Non-system default CA trust store passed
+	if caFile != _EMPTY_ {
+		trustedCAs, err = parseCertPEM(caFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse ca_file: %v", err)
+		}
+	}
+
+	// Specify bundled intermediate CA store
+	for _, certBytes := range chain {
+		cert, err := x509.ParseCertificate(certBytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse cert: %v", err)
+		}
+		certBundle = append(certBundle, cert)
+	}
+
+	issuer, err = getOCSPIssuerLocally(trustedCAs, certBundle)
+	if err != nil || issuer == nil {
+		return nil, fmt.Errorf("no issuers found")
+	}
+
+	if !issuer.IsCA {
+		return nil, fmt.Errorf("%s invalid ca basic constraints: is not ca", issuer.Subject)
+	}
+	return issuer, nil
 }
 
 func ocspStatusString(n int) string {
