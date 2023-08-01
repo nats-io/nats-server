@@ -3454,7 +3454,6 @@ func TestOCSPLocalIssuerDetermination(t *testing.T) {
 	serverCert := "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_cert.pem"
 
 	var (
-		// errExpectedNoStaple = fmt.Errorf("expected no staple")
 		errMissingStaple = fmt.Errorf("missing OCSP Staple from server")
 	)
 
