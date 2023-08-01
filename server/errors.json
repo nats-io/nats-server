@@ -1423,7 +1423,7 @@
     "constant": "JSSourceMultipleFiltersNotAllowed",
     "code": 400,
     "error_code": 10144,
-    "description": "source with multiple subject filters cannot also have a single subject filter",
+    "description": "source with multiple subject transforms cannot also have a single subject filter",
     "comment": "",
     "help": "",
     "url": "",

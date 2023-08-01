@@ -458,7 +458,37 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		}
 	}
 
-	// Setup our internal indexed names here for sources and check if the transform (if any) is valid.
+	// If mirror, check if the transforms (if any) are valid.
+	if cfg.Mirror != nil {
+		if len(cfg.Mirror.SubjectTransforms) == 0 {
+			if cfg.Mirror.FilterSubject != _EMPTY_ && !IsValidSubject(cfg.Mirror.FilterSubject) {
+				jsa.mu.Unlock()
+				return nil, fmt.Errorf("subject filter '%s' for the mirror %w", cfg.Mirror.FilterSubject, ErrBadSubject)
+			}
+			if cfg.Mirror.SubjectTransformDest != _EMPTY_ {
+				if _, err = NewSubjectTransform(cfg.Mirror.FilterSubject, cfg.Mirror.SubjectTransformDest); err != nil {
+					jsa.mu.Unlock()
+					return nil, fmt.Errorf("subject transform from '%s' to '%s' for the mirror %w", cfg.Mirror.FilterSubject, cfg.Mirror.SubjectTransformDest, err)
+				}
+			}
+		} else {
+			for _, st := range cfg.Mirror.SubjectTransforms {
+				if st.Source != _EMPTY_ && !IsValidSubject(st.Source) {
+					jsa.mu.Unlock()
+					return nil, fmt.Errorf("subject filter '%s' for the mirror %w", st.Source, ErrBadSubject)
+				}
+				// check the transform, if any, is valid
+				if st.Destination != _EMPTY_ {
+					if _, err = NewSubjectTransform(st.Source, st.Destination); err != nil {
+						jsa.mu.Unlock()
+						return nil, fmt.Errorf("subject transform from '%s' to '%s' for the mirror %w", st.Source, st.Destination, err)
+					}
+				}
+			}
+		}
+	}
+
+	// Setup our internal indexed names here for sources and check if the transforms (if any) are valid.
 	for _, ssi := range cfg.Sources {
 		if len(ssi.SubjectTransforms) == 0 {
 			// check the filter, if any, is valid
@@ -1209,10 +1239,23 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		}
 		if len(cfg.Subjects) > 0 {
 			return StreamConfig{}, NewJSMirrorWithSubjectsError()
-
 		}
 		if len(cfg.Sources) > 0 {
 			return StreamConfig{}, NewJSMirrorWithSourcesError()
+		}
+		if (cfg.Mirror.FilterSubject != _EMPTY_ || cfg.Mirror.SubjectTransformDest != _EMPTY_) && len(cfg.Mirror.SubjectTransforms) != 0 {
+			return StreamConfig{}, NewJSMirrorMultipleFiltersNotAllowedError()
+		}
+		// Check subject filters overlap.
+		for outer, tr := range cfg.Mirror.SubjectTransforms {
+			if !IsValidSubject(tr.Source) {
+				return StreamConfig{}, NewJSMirrorInvalidSubjectFilterError()
+			}
+			for inner, innertr := range cfg.Mirror.SubjectTransforms {
+				if inner != outer && subjectIsSubsetMatch(tr.Source, innertr.Source) {
+					return StreamConfig{}, NewJSMirrorOverlappingSubjectFiltersError()
+				}
+			}
 		}
 		// Do not perform checks if External is provided, as it could lead to
 		// checking against itself (if sourced stream name is the same on different JetStream)
@@ -1303,12 +1346,13 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 				}
 			}
 			continue
-		}
-		if src.External.DeliverPrefix != _EMPTY_ {
-			deliveryPrefixes = append(deliveryPrefixes, src.External.DeliverPrefix)
-		}
-		if src.External.ApiPrefix != _EMPTY_ {
-			apiPrefixes = append(apiPrefixes, src.External.ApiPrefix)
+		} else {
+			if src.External.DeliverPrefix != _EMPTY_ {
+				deliveryPrefixes = append(deliveryPrefixes, src.External.DeliverPrefix)
+			}
+			if src.External.ApiPrefix != _EMPTY_ {
+				apiPrefixes = append(apiPrefixes, src.External.ApiPrefix)
+			}
 		}
 	}
 
@@ -2167,6 +2211,23 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 	js, stype := mset.js, mset.cfg.Storage
 	mset.mu.Unlock()
 
+	// Do the subject transform if there's one
+	if mset.mirror.tr != nil {
+		m.subj = mset.mirror.tr.TransformSubject(m.subj)
+	} else {
+		for _, tr := range mset.mirror.trs {
+			if tr == nil {
+				continue
+			} else {
+				tsubj, err := tr.Match(m.subj)
+				if err == nil {
+					m.subj = tsubj
+					break
+				}
+			}
+		}
+	}
+
 	s := mset.srv
 	var err error
 	if node != nil {
@@ -2377,7 +2438,19 @@ func (mset *stream) setupMirrorConsumer() error {
 	// Filters
 	if mset.cfg.Mirror.FilterSubject != _EMPTY_ {
 		req.Config.FilterSubject = mset.cfg.Mirror.FilterSubject
+		if mset.cfg.Mirror.SubjectTransformDest != _EMPTY_ {
+			mirror.tr, _ = NewSubjectTransform(mset.cfg.Mirror.FilterSubject, mset.cfg.Mirror.SubjectTransformDest)
+		}
 	}
+
+	var filters []string
+	for _, tr := range mset.cfg.Mirror.SubjectTransforms {
+		// will not fail as already checked before that the transform will work
+		subjectTransform, _ := NewSubjectTransform(tr.Source, tr.Destination)
+		mirror.trs = append(mirror.trs, subjectTransform)
+		filters = append(filters, tr.Source)
+	}
+	req.Config.FilterSubjects = filters
 
 	respCh := make(chan *JSApiConsumerCreateResponse, 1)
 	reply := infoReplySubject()

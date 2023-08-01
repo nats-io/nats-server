@@ -233,8 +233,17 @@ const (
 	// JSMirrorInvalidStreamName mirrored stream name is invalid
 	JSMirrorInvalidStreamName ErrorIdentifier = 10142
 
+	// JSMirrorInvalidSubjectFilter mirror subject filter is invalid
+	JSMirrorInvalidSubjectFilter ErrorIdentifier = 10149
+
 	// JSMirrorMaxMessageSizeTooBigErr stream mirror must have max message size >= source
 	JSMirrorMaxMessageSizeTooBigErr ErrorIdentifier = 10030
+
+	// JSMirrorMultipleFiltersNotAllowed mirror with multiple subject transforms cannot also have a single subject filter
+	JSMirrorMultipleFiltersNotAllowed ErrorIdentifier = 10148
+
+	// JSMirrorOverlappingSubjectFilters mirror subject filters can not overlap
+	JSMirrorOverlappingSubjectFilters ErrorIdentifier = 10150
 
 	// JSMirrorWithFirstSeqErr stream mirrors can not have first sequence configured
 	JSMirrorWithFirstSeqErr ErrorIdentifier = 10143
@@ -305,7 +314,7 @@ const (
 	// JSSourceMaxMessageSizeTooBigErr stream source must have max message size >= target
 	JSSourceMaxMessageSizeTooBigErr ErrorIdentifier = 10046
 
-	// JSSourceMultipleFiltersNotAllowed source with multiple subject filters cannot also have a single subject filter
+	// JSSourceMultipleFiltersNotAllowed source with multiple subject transforms cannot also have a single subject filter
 	JSSourceMultipleFiltersNotAllowed ErrorIdentifier = 10144
 
 	// JSSourceOverlappingSubjectFilters source filters can not overlap
@@ -528,7 +537,10 @@ var (
 		JSMemoryResourcesExceededErr:               {Code: 500, ErrCode: 10028, Description: "insufficient memory resources available"},
 		JSMirrorConsumerSetupFailedErrF:            {Code: 500, ErrCode: 10029, Description: "{err}"},
 		JSMirrorInvalidStreamName:                  {Code: 400, ErrCode: 10142, Description: "mirrored stream name is invalid"},
+		JSMirrorInvalidSubjectFilter:               {Code: 400, ErrCode: 10149, Description: "mirror subject filter is invalid"},
 		JSMirrorMaxMessageSizeTooBigErr:            {Code: 400, ErrCode: 10030, Description: "stream mirror must have max message size >= source"},
+		JSMirrorMultipleFiltersNotAllowed:          {Code: 400, ErrCode: 10148, Description: "mirror with multiple subject transforms cannot also have a single subject filter"},
+		JSMirrorOverlappingSubjectFilters:          {Code: 400, ErrCode: 10150, Description: "mirror subject filters can not overlap"},
 		JSMirrorWithFirstSeqErr:                    {Code: 400, ErrCode: 10143, Description: "stream mirrors can not have first sequence configured"},
 		JSMirrorWithSourcesErr:                     {Code: 400, ErrCode: 10031, Description: "stream mirrors can not also contain other sources"},
 		JSMirrorWithStartSeqAndTimeErr:             {Code: 400, ErrCode: 10032, Description: "stream mirrors can not have both start seq and start time configured"},
@@ -552,7 +564,7 @@ var (
 		JSSourceInvalidSubjectFilter:               {Code: 400, ErrCode: 10145, Description: "source subject filter is invalid"},
 		JSSourceInvalidTransformDestination:        {Code: 400, ErrCode: 10146, Description: "source transform destination is invalid"},
 		JSSourceMaxMessageSizeTooBigErr:            {Code: 400, ErrCode: 10046, Description: "stream source must have max message size >= target"},
-		JSSourceMultipleFiltersNotAllowed:          {Code: 400, ErrCode: 10144, Description: "source with multiple subject filters cannot also have a single subject filter"},
+		JSSourceMultipleFiltersNotAllowed:          {Code: 400, ErrCode: 10144, Description: "source with multiple subject transforms cannot also have a single subject filter"},
 		JSSourceOverlappingSubjectFilters:          {Code: 400, ErrCode: 10147, Description: "source filters can not overlap"},
 		JSStorageResourcesExceededErr:              {Code: 500, ErrCode: 10047, Description: "insufficient storage resources available"},
 		JSStreamAssignmentErrF:                     {Code: 500, ErrCode: 10048, Description: "{err}"},
@@ -1451,6 +1463,16 @@ func NewJSMirrorInvalidStreamNameError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSMirrorInvalidStreamName]
 }
 
+// NewJSMirrorInvalidSubjectFilterError creates a new JSMirrorInvalidSubjectFilter error: "mirror subject filter is invalid"
+func NewJSMirrorInvalidSubjectFilterError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSMirrorInvalidSubjectFilter]
+}
+
 // NewJSMirrorMaxMessageSizeTooBigError creates a new JSMirrorMaxMessageSizeTooBigErr error: "stream mirror must have max message size >= source"
 func NewJSMirrorMaxMessageSizeTooBigError(opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
@@ -1459,6 +1481,26 @@ func NewJSMirrorMaxMessageSizeTooBigError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSMirrorMaxMessageSizeTooBigErr]
+}
+
+// NewJSMirrorMultipleFiltersNotAllowedError creates a new JSMirrorMultipleFiltersNotAllowed error: "mirror with multiple subject transforms cannot also have a single subject filter"
+func NewJSMirrorMultipleFiltersNotAllowedError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSMirrorMultipleFiltersNotAllowed]
+}
+
+// NewJSMirrorOverlappingSubjectFiltersError creates a new JSMirrorOverlappingSubjectFilters error: "mirror subject filters can not overlap"
+func NewJSMirrorOverlappingSubjectFiltersError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSMirrorOverlappingSubjectFilters]
 }
 
 // NewJSMirrorWithFirstSeqError creates a new JSMirrorWithFirstSeqErr error: "stream mirrors can not have first sequence configured"
@@ -1715,7 +1757,7 @@ func NewJSSourceMaxMessageSizeTooBigError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSSourceMaxMessageSizeTooBigErr]
 }
 
-// NewJSSourceMultipleFiltersNotAllowedError creates a new JSSourceMultipleFiltersNotAllowed error: "source with multiple subject filters cannot also have a single subject filter"
+// NewJSSourceMultipleFiltersNotAllowedError creates a new JSSourceMultipleFiltersNotAllowed error: "source with multiple subject transforms cannot also have a single subject filter"
 func NewJSSourceMultipleFiltersNotAllowedError(opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
 	if ae, ok := eopts.err.(*ApiError); ok {
