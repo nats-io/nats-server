@@ -3664,6 +3664,7 @@ func (s *Server) getNonLocalIPsIfHostIsIPAny(host string, all bool) (bool, []str
 	var ips []string
 	ifaces, _ := net.Interfaces()
 	for _, i := range ifaces {
+		i := i
 		addrs, _ := i.Addrs()
 		for _, addr := range addrs {
 			switch v := addr.(type) {
@@ -3697,6 +3698,7 @@ func resolveHostPorts(addr net.Listener) []string {
 		var ip net.IP
 		ifaces, _ := net.Interfaces()
 		for _, i := range ifaces {
+			i := i
 			addrs, _ := i.Addrs()
 			for _, addr := range addrs {
 				switch v := addr.(type) {

@@ -5139,6 +5139,7 @@ func (fs *fileStore) State() StreamState {
 		cur := fs.state.FirstSeq
 
 		for _, mb := range fs.blks {
+			mb := mb
 			mb.mu.Lock()
 			fseq := mb.first.seq
 			// Account for messages missing from the head.

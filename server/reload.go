@@ -1098,6 +1098,7 @@ func imposeOrder(value interface{}) error {
 			return value[i].Name < value[j].Name
 		})
 		for _, a := range value {
+			a := a
 			sort.Slice(a.imports.streams, func(i, j int) bool {
 				return a.imports.streams[i].acc.Name < a.imports.streams[j].acc.Name
 			})
@@ -2193,6 +2194,7 @@ func (s *Server) reloadClusterPoolAndAccounts(co *clusterOption, opts *Options) 
 		protosSent := 0
 		s.accAddedReqID = nuid.Next()
 		for _, an := range co.accsAdded {
+			an := an
 			if s.accRoutes == nil {
 				s.accRoutes = make(map[string]map[string]*client)
 			}
@@ -2340,6 +2342,7 @@ func (s *Server) reloadClusterPoolAndAccounts(co *clusterOption, opts *Options) 
 		// For accounts that no longer have a dedicated route, we need to send
 		// the subsriptions on the existing pooled routes for those accounts.
 		for _, an := range co.accsRemoved {
+			an := an
 			if a, ok := s.accounts.Load(an); ok {
 				acc := a.(*Account)
 				acc.mu.Lock()

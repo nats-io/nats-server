@@ -3233,6 +3233,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 	for sub, wm := range ac.Mappings {
 		mappings := make([]*MapDest, len(wm))
 		for i, m := range wm {
+			m := m
 			mappings[i] = &MapDest{
 				Subject: string(m.Subject),
 				Weight:  m.GetWeight(),
