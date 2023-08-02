@@ -21407,3 +21407,113 @@ func TestJetStreamServerReencryption(t *testing.T) {
 		})
 	}
 }
+
+func TestJetStreamLimitsToInterestPolicy(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.leader())
+	defer nc.Close()
+
+	// This is the index of the consumer that we'll create as R1
+	// instead of R3, just to prove that it blocks the stream
+	// update from happening properly.
+	singleReplica := 3
+
+	streamCfg := nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.LimitsPolicy,
+		Storage:   nats.MemoryStorage,
+		Replicas:  3,
+	}
+
+	stream, err := js.AddStream(&streamCfg)
+	require_NoError(t, err)
+
+	for i := 0; i < 10; i++ {
+		replicas := streamCfg.Replicas
+		if i == singleReplica {
+			// Make one of the consumers R1 so that we can check
+			// that the switch to interest-based retention is also
+			// turning it into an R3 consumer.
+			replicas = 1
+		}
+		cname := fmt.Sprintf("test_%d", i)
+		_, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+			Name:      cname,
+			Durable:   cname,
+			AckPolicy: nats.AckAllPolicy,
+			Replicas:  replicas,
+		})
+		require_NoError(t, err)
+	}
+
+	for i := 0; i < 20; i++ {
+		_, err := js.Publish("foo", []byte{1, 2, 3, 4, 5})
+		require_NoError(t, err)
+	}
+
+	// Pull 10 or more messages from the stream. We will never pull
+	// less than 10, which guarantees that the lowest ack floor of
+	// all consumers should be 10.
+	for i := 0; i < 10; i++ {
+		cname := fmt.Sprintf("test_%d", i)
+		count := 10 + i // At least 10 messages
+
+		sub, err := js.PullSubscribe("foo", cname)
+		require_NoError(t, err)
+
+		msgs, err := sub.Fetch(count)
+		require_NoError(t, err)
+		require_Equal(t, len(msgs), count)
+		require_NoError(t, msgs[len(msgs)-1].AckSync())
+
+		// At this point the ack floor should match the count of
+		// messages we received.
+		info, err := js.ConsumerInfo("TEST", cname)
+		require_NoError(t, err)
+		require_Equal(t, info.AckFloor.Consumer, uint64(count))
+	}
+
+	// Try updating to interest-based. This should fail because
+	// we have a consumer that is R1 on an R3 stream.
+	streamCfg = stream.Config
+	streamCfg.Retention = nats.InterestPolicy
+	_, err = js.UpdateStream(&streamCfg)
+	require_Error(t, err)
+
+	// Now we'll make the R1 consumer an R3.
+	cname := fmt.Sprintf("test_%d", singleReplica)
+	cinfo, err := js.ConsumerInfo("TEST", cname)
+	require_NoError(t, err)
+
+	cinfo.Config.Replicas = streamCfg.Replicas
+	_, _ = js.UpdateConsumer("TEST", &cinfo.Config)
+	// TODO(nat): The jsConsumerCreateRequest update doesn't always
+	// respond when there are no errors updating a consumer, so this
+	// nearly always returns a timeout, despite actually doing what
+	// it should. We'll make sure the replicas were updated by doing
+	// another consumer info just to be sure.
+	// require_NoError(t, err)
+	c.waitOnAllCurrent()
+	cinfo, err = js.ConsumerInfo("TEST", cname)
+	require_NoError(t, err)
+	require_Equal(t, cinfo.Config.Replicas, streamCfg.Replicas)
+	require_Equal(t, len(cinfo.Cluster.Replicas), streamCfg.Replicas-1)
+
+	// This time it should succeed.
+	_, err = js.UpdateStream(&streamCfg)
+	require_NoError(t, err)
+
+	// We need to wait for all nodes to have applied the new stream
+	// configuration.
+	c.waitOnAllCurrent()
+
+	// Now we should only have 10 messages left in the stream, as
+	// each consumer has acked at least the first 10 messages.
+	info, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, info.State.FirstSeq, 11)
+	require_Equal(t, info.State.Msgs, 10)
+}

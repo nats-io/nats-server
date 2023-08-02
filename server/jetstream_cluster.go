@@ -6980,7 +6980,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	} else {
 		nca := ca.copyGroup()
 
-		rBefore := ca.Config.replicas(sa.Config)
+		rBefore := nca.Config.replicas(sa.Config)
 		rAfter := cfg.replicas(sa.Config)
 
 		var curLeader string
