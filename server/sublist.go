@@ -48,7 +48,7 @@ const (
 	// cacheMax is used to bound limit the frontend cache
 	slCacheMax = 1024
 	// If we run a sweeper we will drain to this count.
-	slCacheSweep = 512
+	slCacheSweep = 256
 	// plistMin is our lower bounds to create a fast plist for Match.
 	plistMin = 256
 )
