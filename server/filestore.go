@@ -5421,13 +5421,13 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 
 	var purged, bytes uint64
 
-	// We have to delete interior messages.
 	fs.mu.Lock()
+	// Same as purge all.
 	if lseq := fs.state.LastSeq; seq > lseq {
 		fs.mu.Unlock()
 		return fs.purge(seq)
 	}
-
+	// We have to delete interior messages.
 	smb := fs.selectMsgBlock(seq)
 	if smb == nil {
 		fs.mu.Unlock()
@@ -6345,6 +6345,9 @@ func (fs *fileStore) Stop() error {
 	fs.cancelSyncTimer()
 	fs.cancelAgeChk()
 
+	// We should update the upper usage layer on a stop.
+	cb, bytes := fs.scb, int64(fs.state.Bytes)
+
 	var _cfs [256]ConsumerStore
 	cfs := append(_cfs[:0], fs.cfs...)
 	fs.cfs = nil
@@ -6352,6 +6355,10 @@ func (fs *fileStore) Stop() error {
 
 	for _, o := range cfs {
 		o.Stop()
+	}
+
+	if bytes > 0 && cb != nil {
+		cb(0, -bytes, 0, _EMPTY_)
 	}
 
 	return nil
