@@ -3490,9 +3490,9 @@ func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
 		// Register our server.
 		fs.registerServer(s)
 	}
-	mset.mu.Unlock()
-
+	// This will fire the callback but we do not require the lock since md will be 0 here.
 	mset.store.RegisterStorageUpdates(mset.storeUpdates)
+	mset.mu.Unlock()
 
 	return nil
 }

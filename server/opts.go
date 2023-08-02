@@ -1247,17 +1247,22 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 				*errors = append(*errors, &configErr{tk, err.Error()})
 				return
 			}
-			if dir == _EMPTY_ {
-				*errors = append(*errors, &configErr{tk, "dir has no value and needs to point to a directory"})
-				return
+
+			checkDir := func() {
+				if dir == _EMPTY_ {
+					*errors = append(*errors, &configErr{tk, "dir has no value and needs to point to a directory"})
+					return
+				}
+				if info, _ := os.Stat(dir); info != nil && (!info.IsDir() || info.Mode().Perm()&(1<<(uint(7))) == 0) {
+					*errors = append(*errors, &configErr{tk, "dir needs to point to an accessible directory"})
+					return
+				}
 			}
-			if info, _ := os.Stat(dir); info != nil && (!info.IsDir() || info.Mode().Perm()&(1<<(uint(7))) == 0) {
-				*errors = append(*errors, &configErr{tk, "dir needs to point to an accessible directory"})
-				return
-			}
+
 			var res AccountResolver
 			switch strings.ToUpper(dirType) {
 			case "CACHE":
+				checkDir()
 				if sync != 0 {
 					*errors = append(*errors, &configErr{tk, "CACHE does not accept sync"})
 				}
@@ -1269,6 +1274,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 				}
 				res, err = NewCacheDirAccResolver(dir, limit, ttl, opts...)
 			case "FULL":
+				checkDir()
 				if ttl != 0 {
 					*errors = append(*errors, &configErr{tk, "FULL does not accept ttl"})
 				}
@@ -1284,6 +1290,8 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 					}
 				}
 				res, err = NewDirAccResolver(dir, limit, sync, delete, opts...)
+			case "MEM", "MEMORY":
+				res = &MemAccResolver{}
 			}
 			if err != nil {
 				*errors = append(*errors, &configErr{tk, err.Error()})

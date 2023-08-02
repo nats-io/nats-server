@@ -2817,12 +2817,15 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					}
 					panic(err.Error())
 				}
-				// Ignore if we are recovering and we have already processed.
-				if isRecovering && (sp.Request == nil || sp.Request.Sequence == 0) {
+				// If no explicit request, fill in with leader stamped last sequence to protect ourselves on replay during server start.
+				if sp.Request == nil || sp.Request.Sequence == 0 {
+					purgeSeq := sp.LastSeq + 1
 					if sp.Request == nil {
-						sp.Request = &JSApiStreamPurgeRequest{Sequence: sp.LastSeq}
-					} else {
-						sp.Request.Sequence = sp.LastSeq
+						sp.Request = &JSApiStreamPurgeRequest{Sequence: purgeSeq}
+					} else if sp.Request.Keep == 0 {
+						sp.Request.Sequence = purgeSeq
+					} else if isRecovering {
+						continue
 					}
 				}
 

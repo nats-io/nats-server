@@ -3844,14 +3844,16 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 	// Go back to the sublist data structure.
 	if !ok {
 		r = acc.sl.Match(string(c.pa.subject))
-		c.in.results[string(c.pa.subject)] = r
-		// Prune the results cache. Keeps us from unbounded growth. Random delete.
-		if len(c.in.results) > maxResultCacheSize {
-			n := 0
-			for subject := range c.in.results {
-				delete(c.in.results, subject)
-				if n++; n > pruneSize {
-					break
+		if len(r.psubs)+len(r.qsubs) > 0 {
+			c.in.results[string(c.pa.subject)] = r
+			// Prune the results cache. Keeps us from unbounded growth. Random delete.
+			if len(c.in.results) > maxResultCacheSize {
+				n := 0
+				for subject := range c.in.results {
+					delete(c.in.results, subject)
+					if n++; n > pruneSize {
+						break
+					}
 				}
 			}
 		}
