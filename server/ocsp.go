@@ -520,10 +520,11 @@ func (s *Server) setupOCSPStapleStoreDir() error {
 }
 
 type tlsConfigKind struct {
-	tlsConfig *tls.Config
-	tlsOpts   *TLSConfigOpts
-	kind      string
-	apply     func(*tls.Config)
+	tlsConfig   *tls.Config
+	tlsOpts     *TLSConfigOpts
+	kind        string
+	isLeafSpoke bool
+	apply       func(*tls.Config)
 }
 
 func (s *Server) configureOCSP() []*tlsConfigKind {
@@ -538,6 +539,26 @@ func (s *Server) configureOCSP() []*tlsConfigKind {
 			tlsConfig: config,
 			tlsOpts:   opts,
 			apply:     func(tc *tls.Config) { sopts.TLSConfig = tc },
+		}
+		configs = append(configs, o)
+	}
+	if config := sopts.Websocket.TLSConfig; config != nil {
+		opts := sopts.Websocket.tlsConfigOpts
+		o := &tlsConfigKind{
+			kind:      kindStringMap[CLIENT],
+			tlsConfig: config,
+			tlsOpts:   opts,
+			apply:     func(tc *tls.Config) { sopts.Websocket.TLSConfig = tc },
+		}
+		configs = append(configs, o)
+	}
+	if config := sopts.MQTT.TLSConfig; config != nil {
+		opts := sopts.tlsConfigOpts
+		o := &tlsConfigKind{
+			kind:      kindStringMap[CLIENT],
+			tlsConfig: config,
+			tlsOpts:   opts,
+			apply:     func(tc *tls.Config) { sopts.MQTT.TLSConfig = tc },
 		}
 		configs = append(configs, o)
 	}
@@ -557,16 +578,7 @@ func (s *Server) configureOCSP() []*tlsConfigKind {
 			kind:      kindStringMap[LEAF],
 			tlsConfig: config,
 			tlsOpts:   opts,
-			apply: func(tc *tls.Config) {
-				// RequireAndVerifyClientCert is used to tell a client that it
-				// should send the client cert to the server.
-				if opts.Verify {
-					tc.ClientAuth = tls.RequireAndVerifyClientCert
-				}
-				// We're a leaf hub server, so we must not set this.
-				tc.GetClientCertificate = nil
-				sopts.LeafNode.TLSConfig = tc
-			},
+			apply:     func(tc *tls.Config) { sopts.LeafNode.TLSConfig = tc },
 		}
 		configs = append(configs, o)
 	}
@@ -576,14 +588,11 @@ func (s *Server) configureOCSP() []*tlsConfigKind {
 			// in the apply func callback below.
 			r, opts := remote, remote.tlsConfigOpts
 			o := &tlsConfigKind{
-				kind:      kindStringMap[LEAF],
-				tlsConfig: config,
-				tlsOpts:   opts,
-				apply: func(tc *tls.Config) {
-					// We're a leaf client, so we must not set this.
-					tc.GetCertificate = nil
-					r.TLSConfig = tc
-				},
+				kind:        kindStringMap[LEAF],
+				tlsConfig:   config,
+				tlsOpts:     opts,
+				isLeafSpoke: true,
+				apply:       func(tc *tls.Config) { r.TLSConfig = tc },
 			}
 			configs = append(configs, o)
 		}
@@ -605,9 +614,7 @@ func (s *Server) configureOCSP() []*tlsConfigKind {
 				kind:      kindStringMap[GATEWAY],
 				tlsConfig: config,
 				tlsOpts:   opts,
-				apply: func(tc *tls.Config) {
-					gw.TLSConfig = tc
-				},
+				apply:     func(tc *tls.Config) { gw.TLSConfig = tc },
 			}
 			configs = append(configs, o)
 		}
@@ -619,16 +626,33 @@ func (s *Server) enableOCSP() error {
 	configs := s.configureOCSP()
 
 	for _, config := range configs {
-		tc, mon, err := s.NewOCSPMonitor(config)
-		if err != nil {
-			return err
-		}
-		// Check if an OCSP stapling monitor is required for this certificate.
-		if mon != nil {
-			s.ocsps = append(s.ocsps, mon)
 
-			// Override the TLS config with one that follows OCSP.
-			config.apply(tc)
+		// We do not staple Leaf Hub and Leaf Spokes, use ocsp_peer
+		if config.kind != kindStringMap[LEAF] {
+			// OCSP Stapling feature, will also enable tls server peer check for gateway and route peers
+			tc, mon, err := s.NewOCSPMonitor(config)
+			if err != nil {
+				return err
+			}
+			// Check if an OCSP stapling monitor is required for this certificate.
+			if mon != nil {
+				s.ocsps = append(s.ocsps, mon)
+
+				// Override the TLS config with one that follows OCSP stapling
+				config.apply(tc)
+			}
+		}
+
+		// OCSP peer check (client mTLS, leaf mTLS, leaf remote TLS)
+		if config.kind == kindStringMap[CLIENT] || config.kind == kindStringMap[LEAF] {
+			tc, plugged, err := s.plugTLSOCSPPeer(config)
+			if err != nil {
+				return err
+			}
+			if plugged && tc != nil {
+				s.ocspPeerVerify = true
+				config.apply(tc)
+			}
 		}
 	}
 
@@ -670,17 +694,39 @@ func (s *Server) reloadOCSP() error {
 
 	// Restart the monitors under the new configuration.
 	ocspm := make([]*OCSPMonitor, 0)
-	for _, config := range configs {
-		tc, mon, err := s.NewOCSPMonitor(config)
-		if err != nil {
-			return err
-		}
-		// Check if an OCSP stapling monitor is required for this certificate.
-		if mon != nil {
-			ocspm = append(ocspm, mon)
 
-			// Apply latest TLS configuration.
-			config.apply(tc)
+	// Reset server's ocspPeerVerify flag to re-detect at least one plugged OCSP peer
+	s.mu.Lock()
+	s.ocspPeerVerify = false
+	s.mu.Unlock()
+	s.stopOCSPResponseCache()
+
+	for _, config := range configs {
+		// We do not staple Leaf Hub and Leaf Spokes, use ocsp_peer
+		if config.kind != kindStringMap[LEAF] {
+			tc, mon, err := s.NewOCSPMonitor(config)
+			if err != nil {
+				return err
+			}
+			// Check if an OCSP stapling monitor is required for this certificate.
+			if mon != nil {
+				ocspm = append(ocspm, mon)
+
+				// Apply latest TLS configuration.
+				config.apply(tc)
+			}
+		}
+
+		// OCSP peer check (client mTLS, leaf mTLS, leaf remote TLS)
+		if config.kind == kindStringMap[CLIENT] || config.kind == kindStringMap[LEAF] {
+			tc, plugged, err := s.plugTLSOCSPPeer(config)
+			if err != nil {
+				return err
+			}
+			if plugged && tc != nil {
+				s.ocspPeerVerify = true
+				config.apply(tc)
+			}
 		}
 	}
 
@@ -691,6 +737,11 @@ func (s *Server) reloadOCSP() error {
 
 	// Dispatch all goroutines once again.
 	s.startOCSPMonitoring()
+
+	// Init and restart OCSP responder cache
+	s.stopOCSPResponseCache()
+	s.initOCSPResponseCache()
+	s.startOCSPResponseCache()
 
 	return nil
 }
