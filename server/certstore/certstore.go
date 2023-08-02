@@ -15,6 +15,7 @@ package certstore
 
 import (
 	"crypto"
+	"crypto/x509"
 	"io"
 	"runtime"
 	"strings"
@@ -80,6 +81,16 @@ func ParseCertMatchBy(certMatchBy string) (MatchByType, error) {
 		return 0, ErrBadMatchByType
 	}
 	return certMatchByType, nil
+}
+
+func GetLeafIssuer(leaf *x509.Certificate, vOpts x509.VerifyOptions) (issuer *x509.Certificate) {
+	chains, err := leaf.Verify(vOpts)
+	if err != nil || len(chains) == 0 {
+		issuer = nil
+	} else {
+		issuer = chains[0][1]
+	}
+	return
 }
 
 // credential provides access to a public key and is a crypto.Signer.
