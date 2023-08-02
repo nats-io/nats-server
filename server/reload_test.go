@@ -2603,6 +2603,25 @@ func TestConfigReloadAccountUsers(t *testing.T) {
 		t.Fatalf("Error on subscribe: %v", err)
 	}
 
+	// confirm subscriptions before and after reload.
+	var expectedSubs uint32 = 4
+	sAcc, err := s.LookupAccount("synadia")
+	require_NoError(t, err)
+	sAcc.mu.RLock()
+	n := sAcc.sl.Count()
+	sAcc.mu.RUnlock()
+	if n != expectedSubs {
+		t.Errorf("Synadia account should have %d sub, got %v", expectedSubs, n)
+	}
+	nAcc, err := s.LookupAccount("nats.io")
+	require_NoError(t, err)
+	nAcc.mu.RLock()
+	n = nAcc.sl.Count()
+	nAcc.mu.RUnlock()
+	if n != expectedSubs {
+		t.Errorf("Nats.io account should have %d sub, got %v", expectedSubs, n)
+	}
+
 	// Remove user from account and whole account
 	reloadUpdateConfig(t, s, conf, `
 	listen: "127.0.0.1:-1"
@@ -2654,7 +2673,8 @@ func TestConfigReloadAccountUsers(t *testing.T) {
 	// being reconnected does not mean that resent of subscriptions
 	// has already been processed.
 	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
-		gAcc, _ := s.LookupAccount(globalAccountName)
+		gAcc, err := s.LookupAccount(globalAccountName)
+		require_NoError(t, err)
 		gAcc.mu.RLock()
 		n := gAcc.sl.Count()
 		fooMatch := gAcc.sl.Match("foo")
@@ -2673,31 +2693,113 @@ func TestConfigReloadAccountUsers(t *testing.T) {
 			return fmt.Errorf("Global account should have baz sub")
 		}
 
-		sAcc, _ := s.LookupAccount("synadia")
+		sAcc, err := s.LookupAccount("synadia")
+		require_NoError(t, err)
 		sAcc.mu.RLock()
 		n = sAcc.sl.Count()
 		barMatch := sAcc.sl.Match("bar")
+
 		sAcc.mu.RUnlock()
-		if n != 1 {
-			return fmt.Errorf("Synadia account should have 1 sub, got %v", n)
+		if n != expectedSubs {
+			return fmt.Errorf("Synadia account should have %d sub, got %v", expectedSubs, n)
 		}
 		if len(barMatch.psubs) != 1 {
 			return fmt.Errorf("Synadia account should have bar sub")
 		}
 
-		nAcc, _ := s.LookupAccount("nats.io")
+		nAcc, err := s.LookupAccount("nats.io")
+		require_NoError(t, err)
 		nAcc.mu.RLock()
 		n = nAcc.sl.Count()
 		batMatch := nAcc.sl.Match("bat")
 		nAcc.mu.RUnlock()
-		if n != 1 {
-			return fmt.Errorf("Nats.io account should have 1 sub, got %v", n)
+		if n != expectedSubs {
+			return fmt.Errorf("Nats.io account should have %d sub, got %v", expectedSubs, n)
 		}
 		if len(batMatch.psubs) != 1 {
 			return fmt.Errorf("Synadia account should have bar sub")
 		}
 		return nil
 	})
+}
+
+func TestConfigReloadAccountWithNoChanges(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+	listen: "127.0.0.1:-1"
+        system_account: sys
+	accounts {
+		A {
+			users = [{ user: a }]
+		}
+		B {
+			users = [{ user: b }]
+		}
+		C {
+			users = [{ user: c }]
+		}
+		sys {
+			users = [{ user: sys }]
+		}
+	}
+	`))
+	s, opts := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	ncA, err := nats.Connect(fmt.Sprintf("nats://a:@%s:%d", opts.Host, opts.Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ncA.Close()
+
+	// Confirm default service imports are ok.
+	checkSubs := func(t *testing.T) {
+		resp, err := ncA.Request("$SYS.REQ.ACCOUNT.PING.CONNZ", nil, time.Second)
+		if err != nil {
+			t.Error(err)
+		}
+		if resp == nil || !strings.Contains(string(resp.Data), `"num_connections":1`) {
+			t.Fatal("unexpected data in connz response")
+		}
+		resp, err = ncA.Request("$SYS.REQ.SERVER.PING.CONNZ", nil, time.Second)
+		if err != nil {
+			t.Error(err)
+		}
+		if resp == nil || !strings.Contains(string(resp.Data), `"num_connections":1`) {
+			t.Fatal("unexpected data in connz response")
+		}
+		resp, err = ncA.Request("$SYS.REQ.ACCOUNT.PING.STATZ", nil, time.Second)
+		if err != nil {
+			t.Error(err)
+		}
+		if resp == nil || !strings.Contains(string(resp.Data), `"conns":1`) {
+			t.Fatal("unexpected data in connz response")
+		}
+	}
+	checkSubs(t)
+	before := s.NumSubscriptions()
+	s.Reload()
+	after := s.NumSubscriptions()
+	if before != after {
+		t.Errorf("Number of subscriptions changed after reload: %d -> %d", before, after)
+	}
+
+	// Confirm this still works after a reload...
+	checkSubs(t)
+	before = s.NumSubscriptions()
+	s.Reload()
+	after = s.NumSubscriptions()
+	if before != after {
+		t.Errorf("Number of subscriptions changed after reload: %d -> %d", before, after)
+	}
+
+	// Do another extra reload just in case.
+	checkSubs(t)
+	before = s.NumSubscriptions()
+	s.Reload()
+	after = s.NumSubscriptions()
+	if before != after {
+		t.Errorf("Number of subscriptions changed after reload: %d -> %d", before, after)
+	}
 }
 
 func TestConfigReloadAccountNKeyUsers(t *testing.T) {
