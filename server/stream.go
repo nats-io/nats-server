@@ -842,7 +842,7 @@ func (mset *stream) clearCLFS() uint64 {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 	clfs := mset.clfs
-	mset.clfs = 0
+	mset.clfs, mset.clseq = 0, 0
 	return clfs
 }
 
