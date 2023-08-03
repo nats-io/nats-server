@@ -1,4 +1,4 @@
-// Copyright 2021 The NATS Authors
+// Copyright 2021-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -16,7 +16,7 @@ package test
 import (
 	"bytes"
 	"context"
-	"crypto/rsa"
+	"crypto"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -32,9 +32,15 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/crypto/ocsp"
+
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
-	"golang.org/x/crypto/ocsp"
+)
+
+const (
+	defaultResponseTTL = 4 * time.Second
+	defaultAddress     = "127.0.0.1:8888"
 )
 
 func TestOCSPAlwaysMustStapleAndShutdown(t *testing.T) {
@@ -2290,20 +2296,14 @@ func TestOCSPGateway(t *testing.T) {
 }
 
 func TestOCSPGatewayIntermediate(t *testing.T) {
-	const (
-		caCert       = "configs/certs/ocsp/desgsign/ca-cert.pem"
-		caIntermCert = "configs/certs/ocsp/desgsign/ca-interm-cert.pem"
-		caIntermKey  = "configs/certs/ocsp/desgsign/ca-interm-key.pem"
-	)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ocspr := newOCSPResponderDesignated(t, caCert, caIntermCert, caIntermKey, true)
-	defer ocspr.Shutdown(ctx)
-
-	addr := fmt.Sprintf("http://%s", ocspr.Addr)
-	setOCSPStatus(t, addr, "configs/certs/ocsp/desgsign/server-01-cert.pem", ocsp.Good)
-	setOCSPStatus(t, addr, "configs/certs/ocsp/desgsign/server-02-cert.pem", ocsp.Good)
+	intermediateCA1Responder := newOCSPResponderIntermediateCA1(t)
+	intermediateCA1ResponderURL := fmt.Sprintf("http://%s", intermediateCA1Responder.Addr)
+	defer intermediateCA1Responder.Shutdown(ctx)
+	setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_cert.pem", ocsp.Good)
+	setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/server1/TestServer2_cert.pem", ocsp.Good)
 
 	// Gateway server configuration
 	srvConfA := `
@@ -2324,14 +2324,14 @@ func TestOCSPGatewayIntermediate(t *testing.T) {
 			advertise: "127.0.0.1"
 
 			tls {
-				cert_file: "configs/certs/ocsp/desgsign/server-01-cert.pem"
-				key_file: "configs/certs/ocsp/desgsign/server-01-key.pem"
-				ca_file: "configs/certs/ocsp/desgsign/ca-chain-cert.pem"
+				cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+				key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+				ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 				timeout: 5
 			}
 		}
 	`
-	srvConfA = fmt.Sprintf(srvConfA, addr)
+	srvConfA = fmt.Sprintf(srvConfA, intermediateCA1ResponderURL)
 	sconfA := createConfFile(t, []byte(srvConfA))
 	srvA, optsA := RunServerWithConfig(sconfA)
 	defer srvA.Shutdown()
@@ -2357,14 +2357,14 @@ func TestOCSPGatewayIntermediate(t *testing.T) {
 				url: "nats://127.0.0.1:%d"
 			}]
 			tls {
-				cert_file: "configs/certs/ocsp/desgsign/server-02-cert.pem"
-				key_file: "configs/certs/ocsp/desgsign/server-02-key.pem"
-				ca_file: "configs/certs/ocsp/desgsign/ca-chain-cert.pem"
+				cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer2_bundle.pem"
+				key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer2_keypair.pem"
+				ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
 				timeout: 5
 			}
 		}
 	`
-	srvConfB = fmt.Sprintf(srvConfB, addr, optsA.Gateway.Port)
+	srvConfB = fmt.Sprintf(srvConfB, intermediateCA1ResponderURL, optsA.Gateway.Port)
 	conf := createConfFile(t, []byte(srvConfB))
 	srvB, optsB := RunServerWithConfig(conf)
 	defer srvB.Shutdown()
@@ -2857,12 +2857,22 @@ func TestOCSPCustomConfigReloadEnable(t *testing.T) {
 	nc.Close()
 }
 
-func newOCSPResponder(t *testing.T, issuerCertPEM, issuerKeyPEM string) *http.Server {
+func newOCSPResponderCustomAddress(t *testing.T, issuerCertPEM, issuerKeyPEM string, addr string) *http.Server {
 	t.Helper()
-	return newOCSPResponderDesignated(t, issuerCertPEM, issuerCertPEM, issuerKeyPEM, false)
+	return newOCSPResponderBase(t, issuerCertPEM, issuerCertPEM, issuerKeyPEM, false, addr, defaultResponseTTL)
 }
 
-func newOCSPResponderDesignated(t *testing.T, issuerCertPEM, respCertPEM, respKeyPEM string, embed bool) *http.Server {
+func newOCSPResponder(t *testing.T, issuerCertPEM, issuerKeyPEM string) *http.Server {
+	t.Helper()
+	return newOCSPResponderBase(t, issuerCertPEM, issuerCertPEM, issuerKeyPEM, false, defaultAddress, defaultResponseTTL)
+}
+
+func newOCSPResponderDesignatedCustomAddress(t *testing.T, issuerCertPEM, respCertPEM, respKeyPEM string, addr string) *http.Server {
+	t.Helper()
+	return newOCSPResponderBase(t, issuerCertPEM, respCertPEM, respKeyPEM, true, addr, defaultResponseTTL)
+}
+
+func newOCSPResponderBase(t *testing.T, issuerCertPEM, respCertPEM, respKeyPEM string, embed bool, addr string, responseTTL time.Duration) *http.Server {
 	t.Helper()
 	var mu sync.Mutex
 	status := make(map[string]int)
@@ -2943,7 +2953,9 @@ func newOCSPResponderDesignated(t *testing.T, issuerCertPEM, respCertPEM, respKe
 			Status:       n,
 			SerialNumber: ocspReq.SerialNumber,
 			ThisUpdate:   time.Now(),
-			NextUpdate:   time.Now().Add(4 * time.Second),
+		}
+		if responseTTL != 0 {
+			tmpl.NextUpdate = tmpl.ThisUpdate.Add(responseTTL)
 		}
 		if embed {
 			tmpl.Certificate = respCert
@@ -2961,7 +2973,7 @@ func newOCSPResponderDesignated(t *testing.T, issuerCertPEM, respCertPEM, respKe
 	})
 
 	srv := &http.Server{
-		Addr:    "127.0.0.1:8888",
+		Addr:    addr,
 		Handler: mux,
 	}
 	go srv.ListenAndServe()
@@ -3007,15 +3019,19 @@ func parseCertPEM(t *testing.T, certPEM string) *x509.Certificate {
 	return cert
 }
 
-func parseKeyPEM(t *testing.T, keyPEM string) *rsa.PrivateKey {
+func parseKeyPEM(t *testing.T, keyPEM string) crypto.Signer {
 	t.Helper()
 	block := parsePEM(t, keyPEM)
 
-	key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
-		t.Fatalf("failed to parse ikey %s: %s", keyPEM, err)
+		key, err = x509.ParsePKCS1PrivateKey(block.Bytes)
+		if err != nil {
+			t.Fatalf("failed to parse ikey %s: %s", keyPEM, err)
+		}
 	}
-	return key
+	keyc := key.(crypto.Signer)
+	return keyc
 }
 
 func parsePEM(t *testing.T, pemPath string) *pem.Block {
@@ -3412,5 +3428,541 @@ func TestOCSPSuperCluster(t *testing.T) {
 	}
 	if n := srvD.NumOutboundGateways(); n > 1 {
 		t.Errorf("Expected single gateway, got: %v", n)
+	}
+}
+
+func TestOCSPLocalIssuerDetermination(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	intermediateCA1Responder := newOCSPResponderIntermediateCA1(t)
+	intermediateCA1ResponderURL := fmt.Sprintf("http://%s", intermediateCA1Responder.Addr)
+	defer intermediateCA1Responder.Shutdown(ctx)
+
+	// Test constants
+	ocspURL := intermediateCA1ResponderURL
+	clientTrustBundle := "configs/certs/ocsp_peer/mini-ca/misc/trust_config1_bundle.pem"
+	serverCert := "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_cert.pem"
+
+	var (
+		errMissingStaple = fmt.Errorf("missing OCSP Staple from server")
+	)
+
+	for _, test := range []struct {
+		name        string
+		config      string
+		opts        []nats.Option
+		err         error
+		rerr        error
+		serverStart bool
+		configure   func()
+	}{
+		{
+			"Correct issuer configured in cert bundle",
+			`
+				port: -1
+
+				ocsp {
+					mode: always
+				}
+
+				tls {
+					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+					timeout: 5
+				}
+			`,
+			[]nats.Option{
+				nats.Secure(&tls.Config{
+					VerifyConnection: func(s tls.ConnectionState) error {
+						if s.OCSPResponse == nil {
+							return errMissingStaple
+						}
+						return nil
+					},
+				}),
+				nats.ClientCert("./configs/certs/ocsp/client-cert.pem", "./configs/certs/ocsp/client-key.pem"),
+				nats.RootCAs(clientTrustBundle),
+				nats.ErrorHandler(noOpErrHandler),
+			},
+			nil,
+			nil,
+			true,
+			func() {
+				setOCSPStatus(t, ocspURL, serverCert, ocsp.Good)
+			},
+		},
+		{
+			"Wrong issuer configured in cert bundle, server no start",
+			`
+				port: -1
+
+				ocsp {
+					mode: always
+				}
+
+				tls {
+					cert_file: "configs/certs/ocsp_peer/mini-ca/misc/misconfig_TestServer1_bundle.pem"
+					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+					timeout: 5
+				}
+			`,
+			[]nats.Option{
+				nats.Secure(&tls.Config{
+					VerifyConnection: func(s tls.ConnectionState) error {
+						if s.OCSPResponse == nil {
+							return errMissingStaple
+						}
+						return nil
+					},
+				}),
+				nats.ClientCert("./configs/certs/ocsp/client-cert.pem", "./configs/certs/ocsp/client-key.pem"),
+				nats.RootCAs(clientTrustBundle),
+				nats.ErrorHandler(noOpErrHandler),
+			},
+			nil,
+			nil,
+			false,
+			func() {
+				setOCSPStatus(t, ocspURL, serverCert, ocsp.Good)
+			},
+		},
+		{
+			"Issuer configured in CA bundle only, configuration 1",
+			`
+				port: -1
+
+				ocsp {
+					mode: always
+				}
+
+				tls {
+					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_cert.pem"
+					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+					ca_file: "configs/certs/ocsp_peer/mini-ca/misc/trust_config1_bundle.pem"
+					timeout: 5
+				}
+			`,
+			[]nats.Option{
+				nats.Secure(&tls.Config{
+					VerifyConnection: func(s tls.ConnectionState) error {
+						if s.OCSPResponse == nil {
+							return errMissingStaple
+						}
+						return nil
+					},
+				}),
+				nats.ClientCert("./configs/certs/ocsp/client-cert.pem", "./configs/certs/ocsp/client-key.pem"),
+				nats.RootCAs(clientTrustBundle),
+				nats.ErrorHandler(noOpErrHandler),
+			},
+			nil,
+			nil,
+			true,
+			func() {
+				setOCSPStatus(t, ocspURL, serverCert, ocsp.Good)
+			},
+		},
+		{
+			"Issuer configured in CA bundle only, configuration 2",
+			`
+				port: -1
+
+				ocsp {
+					mode: always
+				}
+
+				tls {
+					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_cert.pem"
+					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+					ca_file: "configs/certs/ocsp_peer/mini-ca/misc/trust_config2_bundle.pem"
+					timeout: 5
+				}
+			`,
+			[]nats.Option{
+				nats.Secure(&tls.Config{
+					VerifyConnection: func(s tls.ConnectionState) error {
+						if s.OCSPResponse == nil {
+							return errMissingStaple
+						}
+						return nil
+					},
+				}),
+				nats.ClientCert("./configs/certs/ocsp/client-cert.pem", "./configs/certs/ocsp/client-key.pem"),
+				nats.RootCAs(clientTrustBundle),
+				nats.ErrorHandler(noOpErrHandler),
+			},
+			nil,
+			nil,
+			true,
+			func() {
+				setOCSPStatus(t, ocspURL, serverCert, ocsp.Good)
+			},
+		},
+		{
+			"Issuer configured in CA bundle only, configuration 3",
+			`
+				port: -1
+
+				ocsp {
+					mode: always
+				}
+
+				tls {
+					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_cert.pem"
+					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+					ca_file: "configs/certs/ocsp_peer/mini-ca/misc/trust_config3_bundle.pem"
+					timeout: 5
+				}
+			`,
+			[]nats.Option{
+				nats.Secure(&tls.Config{
+					VerifyConnection: func(s tls.ConnectionState) error {
+						if s.OCSPResponse == nil {
+							return errMissingStaple
+						}
+						return nil
+					},
+				}),
+				nats.ClientCert("./configs/certs/ocsp/client-cert.pem", "./configs/certs/ocsp/client-key.pem"),
+				nats.RootCAs(clientTrustBundle),
+				nats.ErrorHandler(noOpErrHandler),
+			},
+			nil,
+			nil,
+			true,
+			func() {
+				setOCSPStatus(t, ocspURL, serverCert, ocsp.Good)
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if r != nil && test.serverStart {
+					t.Fatalf("Expected server start, unexpected panic: %v", r)
+				}
+				if r == nil && !test.serverStart {
+					t.Fatalf("Expected server to not start and panic thrown")
+				}
+			}()
+			test.configure()
+			content := test.config
+			conf := createConfFile(t, []byte(content))
+			s, opts := RunServerWithConfig(conf)
+			// server may not start for some tests
+			if s != nil {
+				defer s.Shutdown()
+			}
+
+			nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port), test.opts...)
+			if test.err == nil && err != nil {
+				t.Errorf("Expected to connect, got %v", err)
+			} else if test.err != nil && err == nil {
+				t.Errorf("Expected error on connect")
+			} else if test.err != nil && err != nil {
+				// Error on connect was expected
+				if test.err.Error() != err.Error() {
+					t.Errorf("Expected error %s, got: %s", test.err, err)
+				}
+				return
+			}
+			defer nc.Close()
+
+			nc.Subscribe("ping", func(m *nats.Msg) {
+				m.Respond([]byte("pong"))
+			})
+			nc.Flush()
+
+			_, err = nc.Request("ping", []byte("ping"), 250*time.Millisecond)
+			if test.rerr != nil && err == nil {
+				t.Errorf("Expected error getting response")
+			} else if test.rerr == nil && err != nil {
+				t.Errorf("Expected response")
+			}
+		})
+	}
+}
+
+func TestMixedCAOCSPSuperCluster(t *testing.T) {
+	const (
+		caCert = "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+		caKey  = "configs/certs/ocsp/ca-key.pem"
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	intermediateCA1Responder := newOCSPResponderIntermediateCA1(t)
+	intermediateCA1ResponderURL := fmt.Sprintf("http://%s", intermediateCA1Responder.Addr)
+	defer intermediateCA1Responder.Shutdown(ctx)
+	setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_cert.pem", ocsp.Good)
+
+	intermediateCA2Responder := newOCSPResponderIntermediateCA2(t)
+	intermediateCA2ResponderURL := fmt.Sprintf("http://%s", intermediateCA2Responder.Addr)
+	defer intermediateCA2Responder.Shutdown(ctx)
+	setOCSPStatus(t, intermediateCA2ResponderURL, "configs/certs/ocsp_peer/mini-ca/server2/TestServer3_cert.pem", ocsp.Good)
+
+	// Store Dirs
+	storeDirA := t.TempDir()
+	storeDirB := t.TempDir()
+	storeDirC := t.TempDir()
+
+	// Gateway server configuration
+	srvConfA := `
+		host: "127.0.0.1"
+		port: -1
+
+		server_name: "A"
+
+		ocsp { mode: "always" }
+
+		tls {
+			cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+			key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+			ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+			timeout: 5
+		}
+		store_dir: '%s'
+
+		cluster {
+			name: A
+			host: "127.0.0.1"
+			advertise: 127.0.0.1
+			port: -1
+
+			tls {
+				cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+				key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+				ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+				timeout: 5
+			}
+		}
+
+		gateway {
+			name: A
+			host: "127.0.0.1"
+			port: -1
+			advertise: "127.0.0.1"
+
+			tls {
+				cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+				key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+				ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+				timeout: 5
+				verify: true
+			}
+		}
+	`
+	srvConfA = fmt.Sprintf(srvConfA, storeDirA)
+	sconfA := createConfFile(t, []byte(srvConfA))
+	srvA, optsA := RunServerWithConfig(sconfA)
+	defer srvA.Shutdown()
+
+	// Server that has the original as a cluster.
+	srvConfB := `
+		host: "127.0.0.1"
+		port: -1
+
+		server_name: "B"
+
+		ocsp { mode: "always" }
+
+		tls {
+			cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+			key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+			ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+			timeout: 5
+		}
+		store_dir: '%s'
+
+		cluster {
+			name: A
+			host: "127.0.0.1"
+			advertise: 127.0.0.1
+			port: -1
+
+			routes: [ nats://127.0.0.1:%d ]
+
+			tls {
+				cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+				key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+				ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+				timeout: 5
+			}
+		}
+
+		gateway {
+			name: A
+			host: "127.0.0.1"
+			advertise: "127.0.0.1"
+			port: -1
+
+			tls {
+				cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+				key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+				ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+				timeout: 5
+				verify: true
+			}
+		}
+	`
+	srvConfB = fmt.Sprintf(srvConfB, storeDirB, optsA.Cluster.Port)
+	conf := createConfFile(t, []byte(srvConfB))
+	srvB, optsB := RunServerWithConfig(conf)
+	defer srvB.Shutdown()
+
+	// Client connects to server A.
+	cA, err := nats.Connect(fmt.Sprintf("tls://127.0.0.1:%d", optsA.Port),
+		nats.Secure(&tls.Config{
+			VerifyConnection: func(s tls.ConnectionState) error {
+				if s.OCSPResponse == nil {
+					return fmt.Errorf("missing OCSP Staple from server")
+				}
+				return nil
+			},
+		}),
+		nats.RootCAs(caCert),
+		nats.ErrorHandler(noOpErrHandler),
+	)
+	if err != nil {
+		t.Fatal(err)
+
+	}
+	defer cA.Close()
+
+	// Start another server that will make connect as a gateway to cluster A but with different CA issuer.
+	srvConfC := `
+		host: "127.0.0.1"
+		port: -1
+
+		server_name: "C"
+
+		ocsp { mode: "always" }
+
+		tls {
+			cert_file: "configs/certs/ocsp_peer/mini-ca/server2/TestServer3_bundle.pem"
+			key_file: "configs/certs/ocsp_peer/mini-ca/server2/private/TestServer3_keypair.pem"
+			ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+			timeout: 5
+		}
+		store_dir: '%s'
+		gateway {
+			name: C
+			host: "127.0.0.1"
+			advertise: "127.0.0.1"
+			port: -1
+			gateways: [{
+				name: "A",
+				urls: ["nats://127.0.0.1:%d"]
+				tls {
+					cert_file: "configs/certs/ocsp_peer/mini-ca/server2/TestServer3_bundle.pem"
+					key_file: "configs/certs/ocsp_peer/mini-ca/server2/private/TestServer3_keypair.pem"
+					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+					timeout: 5
+				}
+			}]
+			tls {
+				cert_file: "configs/certs/ocsp_peer/mini-ca/server2/TestServer3_bundle.pem"
+				key_file: "configs/certs/ocsp_peer/mini-ca/server2/private/TestServer3_keypair.pem"
+				ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+				timeout: 5
+				verify: true
+			}
+		}
+	`
+	srvConfC = fmt.Sprintf(srvConfC, storeDirC, optsA.Gateway.Port)
+	conf = createConfFile(t, []byte(srvConfC))
+	srvC, optsC := RunServerWithConfig(conf)
+	defer srvC.Shutdown()
+
+	// Check that server is connected to any server from the other cluster.
+	checkClusterFormed(t, srvA, srvB)
+	waitForOutboundGateways(t, srvC, 1, 5*time.Second)
+
+	// Connect to cluster A using server B.
+	cB, err := nats.Connect(fmt.Sprintf("tls://127.0.0.1:%d", optsB.Port),
+		nats.Secure(&tls.Config{
+			VerifyConnection: func(s tls.ConnectionState) error {
+				if s.OCSPResponse == nil {
+					return fmt.Errorf("missing OCSP Staple from server")
+				}
+				return nil
+			},
+		}),
+		nats.RootCAs(caCert),
+		nats.ErrorHandler(noOpErrHandler),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cB.Close()
+
+	// Connects to cluster C using server C.
+	cC, err := nats.Connect(fmt.Sprintf("tls://127.0.0.1:%d", optsC.Port),
+		nats.Secure(&tls.Config{
+			VerifyConnection: func(s tls.ConnectionState) error {
+				if s.OCSPResponse == nil {
+					return fmt.Errorf("missing OCSP Staple from server")
+				}
+				return nil
+			},
+		}),
+		nats.RootCAs(caCert),
+		nats.ErrorHandler(noOpErrHandler),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cC.Close()
+
+	_, err = cA.Subscribe("foo", func(m *nats.Msg) {
+		m.Respond([]byte("From Server A"))
+	})
+	if err != nil {
+		t.Errorf("%v", err)
+	}
+	cA.Flush()
+
+	_, err = cB.Subscribe("bar", func(m *nats.Msg) {
+		m.Respond([]byte("From Server B"))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cB.Flush()
+
+	// Confirm that a message from server C can flow back to server A via gateway..
+	var (
+		resp *nats.Msg
+		lerr error
+	)
+	for i := 0; i < 10; i++ {
+		resp, lerr = cC.Request("foo", nil, 500*time.Millisecond)
+		if lerr != nil {
+			continue
+		}
+		got := string(resp.Data)
+		expected := "From Server A"
+		if got != expected {
+			t.Fatalf("Expected %v, got: %v", expected, got)
+		}
+
+		// Make request to B
+		resp, lerr = cC.Request("bar", nil, 500*time.Millisecond)
+		if lerr != nil {
+			continue
+		}
+		got = string(resp.Data)
+		expected = "From Server B"
+		if got != expected {
+			t.Errorf("Expected %v, got: %v", expected, got)
+		}
+		lerr = nil
+		break
+	}
+	if lerr != nil {
+		t.Errorf("Unexpected error: %v", lerr)
 	}
 }
