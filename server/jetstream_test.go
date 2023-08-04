@@ -3462,10 +3462,14 @@ func TestJetStreamConsumerRateLimit(t *testing.T) {
 		nc.Publish(mname, msg)
 	}
 	nc.Flush()
-	state := mset.state()
-	if state.Msgs != uint64(toSend) {
-		t.Fatalf("Expected %d messages, got %d", toSend, state.Msgs)
-	}
+
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		state := mset.state()
+		if state.Msgs != uint64(toSend) {
+			return fmt.Errorf("Expected %d messages, got %d", toSend, state.Msgs)
+		}
+		return nil
+	})
 
 	// 100Mbit
 	rateLimit := uint64(100 * 1024 * 1024)
