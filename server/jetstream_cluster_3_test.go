@@ -4807,3 +4807,203 @@ func TestJetStreamAccountUsageDrifts(t *testing.T) {
 		checkAccount(sir1.State.Bytes, sir3.State.Bytes)
 	}
 }
+
+func TestJetStreamClusterStreamFailTracking(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	m := nats.NewMsg("foo")
+	m.Data = []byte("OK")
+
+	b, bsz := 0, 5
+	sendBatch := func() {
+		for i := b * bsz; i < b*bsz+bsz; i++ {
+			msgId := fmt.Sprintf("ID:%d", i)
+			m.Header.Set(JSMsgId, msgId)
+			// Send it twice on purpose.
+			js.PublishMsg(m)
+			js.PublishMsg(m)
+		}
+		b++
+	}
+
+	sendBatch()
+
+	_, err = nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "TEST"), nil, time.Second)
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	sendBatch()
+
+	// Now stop one and restart.
+	nl := c.randomNonStreamLeader(globalAccountName, "TEST")
+	mset, err := nl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	// Reset raft
+	mset.resetClusteredState(nil)
+	time.Sleep(100 * time.Millisecond)
+
+	nl.Shutdown()
+	nl.WaitForShutdown()
+
+	sendBatch()
+
+	nl = c.restartServer(nl)
+
+	sendBatch()
+
+	for {
+		_, err = nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "TEST"), nil, time.Second)
+		require_NoError(t, err)
+		c.waitOnStreamLeader(globalAccountName, "TEST")
+		if nl == c.streamLeader(globalAccountName, "TEST") {
+			break
+		}
+	}
+
+	sendBatch()
+
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 1,
+	})
+	require_NoError(t, err)
+
+	// Make sure all in order.
+	errCh := make(chan error, 100)
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	expected, seen := b*bsz, 0
+
+	sub, err := js.Subscribe("foo", func(msg *nats.Msg) {
+		expectedID := fmt.Sprintf("ID:%d", seen)
+		if v := msg.Header.Get(JSMsgId); v != expectedID {
+			errCh <- err
+			wg.Done()
+			msg.Sub.Unsubscribe()
+			return
+		}
+		seen++
+		if seen >= expected {
+			wg.Done()
+			msg.Sub.Unsubscribe()
+		}
+	})
+	require_NoError(t, err)
+	defer sub.Unsubscribe()
+
+	wg.Wait()
+	if len(errCh) > 0 {
+		t.Fatalf("Expected no errors, got %d", len(errCh))
+	}
+}
+
+func TestJetStreamClusterStreamFailTrackingSnapshots(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	m := nats.NewMsg("foo")
+	m.Data = []byte("OK")
+
+	// Send 1000 a dupe every msgID.
+	for i := 0; i < 1000; i++ {
+		msgId := fmt.Sprintf("ID:%d", i)
+		m.Header.Set(JSMsgId, msgId)
+		// Send it twice on purpose.
+		js.PublishMsg(m)
+		js.PublishMsg(m)
+	}
+
+	// Now stop one.
+	nl := c.randomNonStreamLeader(globalAccountName, "TEST")
+	nl.Shutdown()
+	nl.WaitForShutdown()
+
+	// Now send more and make sure leader snapshots.
+	for i := 1000; i < 2000; i++ {
+		msgId := fmt.Sprintf("ID:%d", i)
+		m.Header.Set(JSMsgId, msgId)
+		// Send it twice on purpose.
+		js.PublishMsg(m)
+		js.PublishMsg(m)
+	}
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	mset, err := sl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	node := mset.raftNode()
+	require_NotNil(t, node)
+	node.InstallSnapshot(mset.stateSnapshot())
+
+	// Now restart nl
+	nl = c.restartServer(nl)
+	c.waitOnServerCurrent(nl)
+
+	// Move leader to NL
+	for {
+		_, err = nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "TEST"), nil, time.Second)
+		require_NoError(t, err)
+		c.waitOnStreamLeader(globalAccountName, "TEST")
+		if nl == c.streamLeader(globalAccountName, "TEST") {
+			break
+		}
+	}
+
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 1,
+	})
+	require_NoError(t, err)
+
+	// Make sure all in order.
+	errCh := make(chan error, 100)
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	expected, seen := 2000, 0
+
+	sub, err := js.Subscribe("foo", func(msg *nats.Msg) {
+		expectedID := fmt.Sprintf("ID:%d", seen)
+		if v := msg.Header.Get(JSMsgId); v != expectedID {
+			errCh <- err
+			wg.Done()
+			msg.Sub.Unsubscribe()
+			return
+		}
+		seen++
+		if seen >= expected {
+			wg.Done()
+			msg.Sub.Unsubscribe()
+		}
+	})
+	require_NoError(t, err)
+	defer sub.Unsubscribe()
+
+	wg.Wait()
+	if len(errCh) > 0 {
+		t.Fatalf("Expected no errors, got %d", len(errCh))
+	}
+}

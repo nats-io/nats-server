@@ -1,4 +1,4 @@
-// Copyright 2021 The NATS Authors
+// Copyright 2021-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -31,6 +31,7 @@ import (
 
 	"golang.org/x/crypto/ocsp"
 
+	"github.com/nats-io/nats-server/v2/server/certidp"
 	"github.com/nats-io/nats-server/v2/server/certstore"
 )
 
@@ -450,21 +451,20 @@ func (srv *Server) NewOCSPMonitor(config *tlsConfigKind) (*tls.Config, *OCSPMoni
 				}
 
 				chain := s.VerifiedChains[0]
-				leaf := chain[0]
-				parent := issuer
+				peerLeaf := chain[0]
+				peerIssuer := certidp.GetLeafIssuerCert(chain, 0)
+				if peerIssuer == nil {
+					return fmt.Errorf("failed to get issuer certificate for %s peer", kind)
+				}
 
-				resp, err := ocsp.ParseResponseForCert(oresp, leaf, parent)
+				// Response signature of issuer or issuer delegate is checked in the library parse
+				resp, err := ocsp.ParseResponseForCert(oresp, peerLeaf, peerIssuer)
 				if err != nil {
 					return fmt.Errorf("failed to parse OCSP response from %s peer: %w", kind, err)
 				}
-				if resp.Certificate == nil {
-					if err := resp.CheckSignatureFrom(parent); err != nil {
-						return fmt.Errorf("OCSP staple not issued by issuer: %w", err)
-					}
-				} else {
-					if err := resp.Certificate.CheckSignatureFrom(parent); err != nil {
-						return fmt.Errorf("OCSP staple's signer not signed by issuer: %w", err)
-					}
+
+				// If signer was issuer delegate double-check issuer delegate authorization
+				if resp.Certificate != nil {
 					ok := false
 					for _, eku := range resp.Certificate.ExtKeyUsage {
 						if eku == x509.ExtKeyUsageOCSPSigning {
@@ -476,6 +476,14 @@ func (srv *Server) NewOCSPMonitor(config *tlsConfigKind) (*tls.Config, *OCSPMoni
 						return fmt.Errorf("OCSP staple's signer missing authorization by CA to act as OCSP signer")
 					}
 				}
+
+				// Check that the OCSP response is effective, take defaults for clockskew and default validity
+				peerOpts := certidp.OCSPPeerConfig{ClockSkew: -1, TTLUnsetNextUpdate: -1}
+				sLog := certidp.Log{Debugf: srv.Debugf}
+				if !certidp.OCSPResponseCurrent(resp, &peerOpts, &sLog) {
+					return fmt.Errorf("OCSP staple from %s peer not current", kind)
+				}
+
 				if resp.Status != ocsp.Good {
 					return fmt.Errorf("bad status for OCSP Staple from %s peer: %s", kind, ocspStatusString(resp.Status))
 				}

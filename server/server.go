@@ -1202,6 +1202,9 @@ func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) 
 			c.processUnsub(sid)
 		}
 		acc.addAllServiceImportSubs()
+		s.mu.Unlock()
+		s.registerSystemImports(acc)
+		s.mu.Lock()
 	}
 
 	// Set the system account if it was configured.

@@ -2300,9 +2300,13 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 		case isLeader = <-lch:
 			if isLeader {
-				if sendSnapshot && mset != nil && n != nil {
-					n.SendSnapshot(mset.stateSnapshot())
-					sendSnapshot = false
+				if mset != nil && n != nil {
+					// Send a snapshot if being asked or if we are tracking
+					// a failed state so that followers sync.
+					if clfs := mset.clearCLFS(); clfs > 0 || sendSnapshot {
+						n.SendSnapshot(mset.stateSnapshot())
+						sendSnapshot = false
+					}
 				}
 				if isRestore {
 					acc, _ := s.LookupAccount(sa.Client.serviceAccount())
@@ -2723,15 +2727,14 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 
 				// Grab last sequence and CLFS.
 				last, clfs := mset.lastSeqAndCLFS()
-
 				// We can skip if we know this is less than what we already have.
 				if lseq-clfs < last {
 					s.Debugf("Apply stream entries for '%s > %s' skipping message with sequence %d with last of %d",
 						mset.account(), mset.name(), lseq+1-clfs, last)
-					// Check for any preAcks in case we are interest based.
+
 					mset.mu.Lock()
-					seq := lseq + 1 - mset.clfs
-					mset.clearAllPreAcks(seq)
+					// Check for any preAcks in case we are interest based.
+					mset.clearAllPreAcks(lseq + 1 - mset.clfs)
 					mset.mu.Unlock()
 					continue
 				}
