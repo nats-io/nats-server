@@ -2606,7 +2606,7 @@ func TestConfigReloadAccountUsers(t *testing.T) {
 	}
 
 	// confirm subscriptions before and after reload.
-	var expectedSubs uint32 = 4
+	var expectedSubs uint32 = 5
 	sAcc, err := s.LookupAccount("synadia")
 	require_NoError(t, err)
 	sAcc.mu.RLock()
