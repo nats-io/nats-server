@@ -141,6 +141,48 @@ func TestProcessSignalMultipleProcesses(t *testing.T) {
 	}
 }
 
+func TestProcessSignalMultipleProcessesGlob(t *testing.T) {
+	pid := os.Getpid()
+	pgrepBefore := pgrep
+	pgrep = func() ([]byte, error) {
+		return []byte(fmt.Sprintf("123\n456\n%d\n", pid)), nil
+	}
+	defer func() {
+		pgrep = pgrepBefore
+	}()
+
+	err := ProcessSignal(CommandStop, "*")
+	if err == nil {
+		t.Fatal("Expected error")
+	}
+	expectedStr := "\nsignal \"stop\" 123: no such process"
+	expectedStr += "\nsignal \"stop\" 456: no such process"
+	if err.Error() != expectedStr {
+		t.Fatalf("Error is incorrect.\nexpected: %s\ngot: %s", expectedStr, err.Error())
+	}
+}
+
+func TestProcessSignalMultipleProcessesGlobPartial(t *testing.T) {
+	pid := os.Getpid()
+	pgrepBefore := pgrep
+	pgrep = func() ([]byte, error) {
+		return []byte(fmt.Sprintf("123\n124\n456\n%d\n", pid)), nil
+	}
+	defer func() {
+		pgrep = pgrepBefore
+	}()
+
+	err := ProcessSignal(CommandStop, "12*")
+	if err == nil {
+		t.Fatal("Expected error")
+	}
+	expectedStr := "\nsignal \"stop\" 123: no such process"
+	expectedStr += "\nsignal \"stop\" 124: no such process"
+	if err.Error() != expectedStr {
+		t.Fatalf("Error is incorrect.\nexpected: %s\ngot: %s", expectedStr, err.Error())
+	}
+}
+
 func TestProcessSignalPgrepError(t *testing.T) {
 	pgrepBefore := pgrep
 	pgrep = func() ([]byte, error) {
