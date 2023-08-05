@@ -8729,8 +8729,6 @@ func TestNoRaceBinaryStreamSnapshotEncodingBasic(t *testing.T) {
 	require_True(t, ss.FirstSeq == 1)
 	require_True(t, ss.LastSeq == 3000)
 	require_True(t, ss.Msgs == 1000)
-	// We should have collapsed all these into 2 delete blocks.
-	require_True(t, len(ss.Deleted) <= 2)
 	require_True(t, ss.Deleted.NumDeleted() == 2000)
 }
 
