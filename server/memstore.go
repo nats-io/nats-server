@@ -31,6 +31,7 @@ type memStore struct {
 	state       StreamState
 	msgs        map[uint64]*StoreMsg
 	fss         map[string]*SimpleState
+	dmap        avl.SequenceSet
 	maxp        int64
 	scb         StorageUpdateHandler
 	ageChk      *time.Timer
@@ -1005,6 +1006,7 @@ func (ms *memStore) updateFirstSeq(seq uint64) {
 			break
 		}
 	}
+	oldFirst := ms.state.FirstSeq
 	if nsm != nil {
 		ms.state.FirstSeq = nsm.seq
 		ms.state.FirstTime = time.Unix(0, nsm.ts).UTC()
@@ -1012,6 +1014,17 @@ func (ms *memStore) updateFirstSeq(seq uint64) {
 		// Like purge.
 		ms.state.FirstSeq = ms.state.LastSeq + 1
 		ms.state.FirstTime = time.Time{}
+	}
+
+	if oldFirst == ms.state.FirstSeq-1 {
+		ms.dmap.Delete(oldFirst)
+	} else {
+		for seq := oldFirst; seq < ms.state.FirstSeq; seq++ {
+			ms.dmap.Delete(seq)
+		}
+	}
+	if ms.dmap.IsEmpty() {
+		ms.dmap.SetInitialMin(ms.state.FirstSeq)
 	}
 }
 
@@ -1071,6 +1084,7 @@ func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 		}
 		ms.state.Bytes -= ss
 	}
+	ms.dmap.Insert(seq)
 	ms.updateFirstSeq(seq)
 
 	if secure {
@@ -1230,29 +1244,30 @@ func (ms *memStore) Snapshot(_ time.Duration, _, _ bool) (*SnapshotResult, error
 
 // Binary encoded state snapshot, >= v2.10 server.
 func (ms *memStore) EncodedStreamState(failed uint64) ([]byte, error) {
-	// FIXME(dlc) - Don't calculate deleted on the fly, keep delete blocks.
-	state := ms.State()
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+
+	// Quick calculate num deleted.
+	numDeleted := int((ms.state.LastSeq - ms.state.FirstSeq + 1) - ms.state.Msgs)
+	if numDeleted < 0 {
+		numDeleted = 0
+	}
 
 	// Encoded is Msgs, Bytes, FirstSeq, LastSeq, Failed, NumDeleted and optional DeletedBlocks
 	var buf [1024]byte
 	buf[0], buf[1] = streamStateMagic, streamStateVersion
 	n := hdrLen
-	n += binary.PutUvarint(buf[n:], state.Msgs)
-	n += binary.PutUvarint(buf[n:], state.Bytes)
-	n += binary.PutUvarint(buf[n:], state.FirstSeq)
-	n += binary.PutUvarint(buf[n:], state.LastSeq)
+	n += binary.PutUvarint(buf[n:], ms.state.Msgs)
+	n += binary.PutUvarint(buf[n:], ms.state.Bytes)
+	n += binary.PutUvarint(buf[n:], ms.state.FirstSeq)
+	n += binary.PutUvarint(buf[n:], ms.state.LastSeq)
 	n += binary.PutUvarint(buf[n:], failed)
-	n += binary.PutUvarint(buf[n:], uint64(state.NumDeleted))
+	n += binary.PutUvarint(buf[n:], uint64(numDeleted))
 
 	b := buf[0:n]
 
-	if state.NumDeleted > 0 {
-		var ss avl.SequenceSet
-		ss.SetInitialMin(state.Deleted[0])
-		for _, seq := range state.Deleted {
-			ss.Insert(seq)
-		}
-		buf, err := ss.Encode(nil)
+	if numDeleted > 0 {
+		buf, err := ms.dmap.Encode(nil)
 		if err != nil {
 			return nil, err
 		}
@@ -1264,6 +1279,16 @@ func (ms *memStore) EncodedStreamState(failed uint64) ([]byte, error) {
 
 // SyncDeleted will make sure this stream has same deleted state as dbs.
 func (ms *memStore) SyncDeleted(dbs DeleteBlocks) {
+	// For now we share one dmap, so if we have one entry here check if states are the same.
+	// Note this will work for any DeleteBlock type, but we expect this to be a dmap too.
+	if len(dbs) == 1 {
+		ms.mu.RLock()
+		min, max, num := ms.dmap.State()
+		ms.mu.RUnlock()
+		if pmin, pmax, pnum := dbs[0].State(); pmin == min && pmax == max && pnum == num {
+			return
+		}
+	}
 	for _, db := range dbs {
 		db.Range(func(dseq uint64) bool {
 			ms.RemoveMsg(dseq)

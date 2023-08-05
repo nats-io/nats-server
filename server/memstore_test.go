@@ -754,3 +754,41 @@ func TestMemStoreInitialFirstSeq(t *testing.T) {
 		t.Fatalf("Expected last seq 1001, got %d", state.LastSeq)
 	}
 }
+
+func TestMemStoreDeleteBlocks(t *testing.T) {
+	cfg := &StreamConfig{
+		Name:     "zzz",
+		Subjects: []string{"*"},
+		Storage:  MemoryStorage,
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(t, err)
+
+	// Put in 10_000 msgs.
+	total := 10_000
+	for i := 0; i < total; i++ {
+		_, _, err := ms.StoreMsg("A", nil, []byte("OK"))
+		require_NoError(t, err)
+	}
+
+	// Now pick 5k random sequences.
+	delete := 5000
+	deleteMap := make(map[int]struct{}, delete)
+	for len(deleteMap) < delete {
+		deleteMap[rand.Intn(total)+1] = struct{}{}
+	}
+	// Now remove?
+	for seq := range deleteMap {
+		ms.RemoveMsg(uint64(seq))
+	}
+
+	var state StreamState
+	ms.FastState(&state)
+
+	// For now we just track via one dmap.
+	ms.mu.RLock()
+	dmap := ms.dmap.Clone()
+	ms.mu.RUnlock()
+
+	require_True(t, dmap.Size() == state.NumDeleted)
+}
