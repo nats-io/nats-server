@@ -1112,7 +1112,7 @@ func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) 
 			a.mu.Lock()
 			acc.shallowCopy(a)
 			a.mu.Unlock()
-			// Will be a no-op in case of the global account since it is alrady registered.
+			// Will be a no-op in case of the global account since it is already registered.
 			s.registerAccountNoLock(a)
 		}
 		// The `acc` account is stored in options, not in the server, and these can be cleared.
@@ -1202,6 +1202,9 @@ func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) 
 			c.processUnsub(sid)
 		}
 		acc.addAllServiceImportSubs()
+		s.mu.Unlock()
+		s.registerSystemImports(acc)
+		s.mu.Lock()
 	}
 
 	// Set the system account if it was configured.
@@ -1214,10 +1217,6 @@ func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) 
 		if err == nil && s.sys != nil && acc != s.sys.account {
 			// sys.account.clients (including internal client)/respmap/etc... are transferred separately
 			s.sys.account = acc
-			s.mu.Unlock()
-			// acquires server lock separately
-			s.addSystemAccountExports(acc)
-			s.mu.Lock()
 		}
 		if err != nil {
 			return awcsti, fmt.Errorf("error resolving system account: %v", err)
@@ -1245,6 +1244,13 @@ func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) 
 			opts.Users = append(opts.Users, &User{Username: uname, Password: uname[6:], Account: s.gacc})
 			opts.NoAuthUser = uname
 		}
+	}
+
+	// Add any required exports from system account.
+	if s.sys != nil {
+		s.mu.Unlock()
+		s.addSystemAccountExports(s.sys.account)
+		s.mu.Lock()
 	}
 
 	return awcsti, nil
