@@ -1935,7 +1935,7 @@ func (s *Server) registerSystemImports(a *Account) {
 		return
 	}
 	sacc := s.SystemAccount()
-	if sacc == nil {
+	if sacc == nil || sacc == a {
 		return
 	}
 	// FIXME(dlc) - make a shared list between sys exports etc.

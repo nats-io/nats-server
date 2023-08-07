@@ -2509,7 +2509,6 @@ func TestConfigReloadClusterPermsOldServer(t *testing.T) {
 }
 
 func TestConfigReloadAccountUsers(t *testing.T) {
-	t.Skip("fix for this needs to be revisited for v2.10 release")
 	conf := createConfFile(t, []byte(`
 	listen: "127.0.0.1:-1"
 	accounts {
@@ -2727,7 +2726,6 @@ func TestConfigReloadAccountUsers(t *testing.T) {
 }
 
 func TestConfigReloadAccountWithNoChanges(t *testing.T) {
-	t.Skip("fix for this needs to be revisited for v2.10 release")
 	conf := createConfFile(t, []byte(`
 	listen: "127.0.0.1:-1"
         system_account: sys
