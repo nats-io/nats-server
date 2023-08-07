@@ -2021,6 +2021,7 @@ func testMQTTPublish(t testing.TB, c net.Conn, r *mqttReader, qos byte, dup, ret
 	if _, err := testMQTTWrite(c, w.Bytes()); err != nil {
 		t.Fatalf("Error writing PUBLISH proto: %v", err)
 	}
+	fmt.Printf("<>/<> testMQTTPublish: wrote PUBLISH\n")
 	switch qos {
 	case 1:
 		b, _ := testMQTTReadPacket(t, r)
@@ -2210,7 +2211,7 @@ func TestMQTTSubQoS(t *testing.T) {
 
 	// Subscribe with QoS 1
 	// testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo/#", qos: 1}}, []byte{1})
-	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: mqttTopic, qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: mqttTopic, qos: 2}}, []byte{1})
 	testMQTTFlush(t, mc, nil, r)
 
 	// // Publish from NATS, which means QoS 0
@@ -2225,8 +2226,8 @@ func TestMQTTSubQoS(t *testing.T) {
 	// testMQTTCheckPubMsg(t, mc, r, mqttTopic, 0, []byte("msg"))
 	// testMQTTCheckPubMsg(t, mc, r, mqttTopic, 0, []byte("msg"))
 
-	// Publish from MQTT with QoS 1
-	testMQTTPublish(t, mcp, mpr, 1, false, false, mqttTopic, 1, []byte("msg"))
+	// Publish from MQTT with QoS 2
+	testMQTTPublish(t, mcp, mpr, 2, false, false, mqttTopic, 1, []byte("msg"))
 	pflags1, pi1 := testMQTTGetPubMsg(t, mc, r, mqttTopic, []byte("msg"))
 	if pflags1 != 0x2 {
 		t.Fatalf("Expected flags to be 0x2, got %v", pflags1)

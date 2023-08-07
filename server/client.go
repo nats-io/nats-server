@@ -4222,6 +4222,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	c.pa.reply = nrr
 
 	if changed && c.isMqtt() && c.pa.hdr > 0 {
+		// <>/<> handle QoS2
 		c.srv.mqttStoreQoS1MsgForAccountOnNewSubject(c.pa.hdr, msg, siAcc.GetName(), to)
 	}
 
