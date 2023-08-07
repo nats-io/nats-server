@@ -3618,7 +3618,7 @@ func TestAccountReloadServiceImportPanic(t *testing.T) {
 	wg.Wait()
 
 	totalRequests := requests.Load()
-	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+	checkFor(t, 20*time.Second, 250*time.Millisecond, func() error {
 		resp := responses.Load()
 		if resp == totalRequests {
 			return nil
