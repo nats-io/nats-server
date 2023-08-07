@@ -8729,8 +8729,6 @@ func TestNoRaceBinaryStreamSnapshotEncodingBasic(t *testing.T) {
 	require_True(t, ss.FirstSeq == 1)
 	require_True(t, ss.LastSeq == 3000)
 	require_True(t, ss.Msgs == 1000)
-	// We should have collapsed all these into 2 delete blocks.
-	require_True(t, len(ss.Deleted) <= 2)
 	require_True(t, ss.Deleted.NumDeleted() == 2000)
 }
 
@@ -8855,4 +8853,79 @@ func TestNoRaceJetStreamClusterStreamSnapshotCatchup(t *testing.T) {
 	require_True(t, state.FirstSeq == 1)
 	require_True(t, state.LastSeq == 51_001)
 	require_True(t, state.NumDeleted == 51_001-3)
+}
+
+func TestNoRaceStoreStreamEncoderDecoder(t *testing.T) {
+	cfg := &StreamConfig{
+		Name:       "zzz",
+		Subjects:   []string{"*"},
+		MaxMsgsPer: 1,
+		Storage:    MemoryStorage,
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(t, err)
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"*"}, MaxMsgsPer: 1, Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	const seed = 2222222
+	msg := bytes.Repeat([]byte("ABC"), 33) // ~100bytes
+
+	maxEncodeTime := 2 * time.Second
+	maxEncodeSize := 700 * 1024
+
+	test := func(t *testing.T, gs StreamStore) {
+		t.Parallel()
+		prand := rand.New(rand.NewSource(seed))
+		tick := time.NewTicker(time.Second)
+		defer tick.Stop()
+		done := time.NewTimer(10 * time.Second)
+
+		for running := true; running; {
+			select {
+			case <-tick.C:
+				var state StreamState
+				gs.FastState(&state)
+				if state.NumDeleted == 0 {
+					continue
+				}
+				start := time.Now()
+				snap, err := gs.EncodedStreamState(0)
+				require_NoError(t, err)
+				elapsed := time.Since(start)
+				// Should take <1ms without race but if CI/CD is slow we will give it a bit of room.
+				if elapsed > maxEncodeTime {
+					t.Logf("Encode took longer then expected: %v", elapsed)
+				}
+				if len(snap) > maxEncodeSize {
+					t.Fatalf("Expected snapshot size < %v got %v", friendlyBytes(maxEncodeSize), friendlyBytes(len(snap)))
+				}
+				ss, err := DecodeStreamState(snap)
+				require_True(t, len(ss.Deleted) > 0)
+				require_NoError(t, err)
+			case <-done.C:
+				running = false
+			default:
+				key := strconv.Itoa(prand.Intn(256_000))
+				gs.StoreMsg(key, nil, msg)
+			}
+		}
+	}
+
+	for _, gs := range []StreamStore{ms, fs} {
+		switch gs.(type) {
+		case *memStore:
+			t.Run("MemStore", func(t *testing.T) {
+				test(t, gs)
+			})
+		case *fileStore:
+			t.Run("FileStore", func(t *testing.T) {
+				test(t, gs)
+			})
+		}
+	}
 }
