@@ -1478,5 +1478,35 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSMirrorMultipleFiltersNotAllowed",
+    "code": 400,
+    "error_code": 10150,
+    "description": "mirror with multiple subject transforms cannot also have a single subject filter",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSMirrorInvalidSubjectFilter",
+    "code": 400,
+    "error_code": 10151,
+    "description": "mirror subject filter is invalid",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSMirrorOverlappingSubjectFilters",
+    "code": 400,
+    "error_code": 10152,
+    "description": "mirror subject filters can not overlap",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

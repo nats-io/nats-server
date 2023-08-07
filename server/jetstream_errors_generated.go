@@ -234,16 +234,16 @@ const (
 	JSMirrorInvalidStreamName ErrorIdentifier = 10142
 
 	// JSMirrorInvalidSubjectFilter mirror subject filter is invalid
-	JSMirrorInvalidSubjectFilter ErrorIdentifier = 10149
+	JSMirrorInvalidSubjectFilter ErrorIdentifier = 10151
 
 	// JSMirrorMaxMessageSizeTooBigErr stream mirror must have max message size >= source
 	JSMirrorMaxMessageSizeTooBigErr ErrorIdentifier = 10030
 
 	// JSMirrorMultipleFiltersNotAllowed mirror with multiple subject transforms cannot also have a single subject filter
-	JSMirrorMultipleFiltersNotAllowed ErrorIdentifier = 10148
+	JSMirrorMultipleFiltersNotAllowed ErrorIdentifier = 10150
 
 	// JSMirrorOverlappingSubjectFilters mirror subject filters can not overlap
-	JSMirrorOverlappingSubjectFilters ErrorIdentifier = 10150
+	JSMirrorOverlappingSubjectFilters ErrorIdentifier = 10152
 
 	// JSMirrorWithFirstSeqErr stream mirrors can not have first sequence configured
 	JSMirrorWithFirstSeqErr ErrorIdentifier = 10143
@@ -537,10 +537,10 @@ var (
 		JSMemoryResourcesExceededErr:               {Code: 500, ErrCode: 10028, Description: "insufficient memory resources available"},
 		JSMirrorConsumerSetupFailedErrF:            {Code: 500, ErrCode: 10029, Description: "{err}"},
 		JSMirrorInvalidStreamName:                  {Code: 400, ErrCode: 10142, Description: "mirrored stream name is invalid"},
-		JSMirrorInvalidSubjectFilter:               {Code: 400, ErrCode: 10149, Description: "mirror subject filter is invalid"},
+		JSMirrorInvalidSubjectFilter:               {Code: 400, ErrCode: 10151, Description: "mirror subject filter is invalid"},
 		JSMirrorMaxMessageSizeTooBigErr:            {Code: 400, ErrCode: 10030, Description: "stream mirror must have max message size >= source"},
-		JSMirrorMultipleFiltersNotAllowed:          {Code: 400, ErrCode: 10148, Description: "mirror with multiple subject transforms cannot also have a single subject filter"},
-		JSMirrorOverlappingSubjectFilters:          {Code: 400, ErrCode: 10150, Description: "mirror subject filters can not overlap"},
+		JSMirrorMultipleFiltersNotAllowed:          {Code: 400, ErrCode: 10150, Description: "mirror with multiple subject transforms cannot also have a single subject filter"},
+		JSMirrorOverlappingSubjectFilters:          {Code: 400, ErrCode: 10152, Description: "mirror subject filters can not overlap"},
 		JSMirrorWithFirstSeqErr:                    {Code: 400, ErrCode: 10143, Description: "stream mirrors can not have first sequence configured"},
 		JSMirrorWithSourcesErr:                     {Code: 400, ErrCode: 10031, Description: "stream mirrors can not also contain other sources"},
 		JSMirrorWithStartSeqAndTimeErr:             {Code: 400, ErrCode: 10032, Description: "stream mirrors can not have both start seq and start time configured"},
