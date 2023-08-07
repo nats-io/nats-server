@@ -17,6 +17,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"sort"
@@ -447,5 +448,227 @@ func TestJetStreamConsumerMultipleFiltersSequence(t *testing.T) {
 		msg, err := sub.NextMsg(time.Second * 1)
 		require_NoError(t, err)
 		require_True(t, string(msg.Data) == fmt.Sprintf("%d", i))
+	}
+}
+
+func TestJetStreamConsumerActions(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+	acc := s.GlobalAccount()
+
+	mset, err := acc.addStream(&StreamConfig{
+		Name:      "TEST",
+		Retention: LimitsPolicy,
+		Subjects:  []string{"one", "two", "three", "four", "five.>"},
+		MaxAge:    time.Second * 90,
+	})
+	require_NoError(t, err)
+
+	// Create Consumer. No consumers existed before, so should be fine.
+	_, err = mset.addConsumerWithAction(&ConsumerConfig{
+		Durable:        "DUR",
+		FilterSubjects: []string{"one", "two"},
+		AckPolicy:      AckExplicit,
+		DeliverPolicy:  DeliverAll,
+		AckWait:        time.Second * 30,
+	}, ActionCreate)
+	require_NoError(t, err)
+	// Create consumer again. Should be ok if action is CREATE but config is exactly the same.
+	_, err = mset.addConsumerWithAction(&ConsumerConfig{
+		Durable:        "DUR",
+		FilterSubjects: []string{"one", "two"},
+		AckPolicy:      AckExplicit,
+		DeliverPolicy:  DeliverAll,
+		AckWait:        time.Second * 30,
+	}, ActionCreate)
+	require_NoError(t, err)
+	// Create consumer again. Should error if action is CREATE.
+	_, err = mset.addConsumerWithAction(&ConsumerConfig{
+		Durable:        "DUR",
+		FilterSubjects: []string{"one"},
+		AckPolicy:      AckExplicit,
+		DeliverPolicy:  DeliverAll,
+		AckWait:        time.Second * 30,
+	}, ActionCreate)
+	require_Error(t, err)
+
+	// Update existing consumer. Should be fine, as consumer exists.
+	_, err = mset.addConsumerWithAction(&ConsumerConfig{
+		Durable:        "DUR",
+		FilterSubjects: []string{"one"},
+		AckPolicy:      AckExplicit,
+		DeliverPolicy:  DeliverAll,
+		AckWait:        time.Second * 30,
+	}, ActionUpdate)
+	require_NoError(t, err)
+
+	// Update consumer. Should error, as this consumer does not exist.
+	_, err = mset.addConsumerWithAction(&ConsumerConfig{
+		Durable:        "NEW",
+		FilterSubjects: []string{"one"},
+		AckPolicy:      AckExplicit,
+		DeliverPolicy:  DeliverAll,
+		AckWait:        time.Second * 30,
+	}, ActionUpdate)
+	require_Error(t, err)
+
+	// Create new ephemeral. Should be fine as the consumer doesn't exist already
+	_, err = mset.addConsumerWithAction(&ConsumerConfig{
+		Name:           "EPH",
+		FilterSubjects: []string{"one"},
+		AckPolicy:      AckExplicit,
+		DeliverPolicy:  DeliverAll,
+		AckWait:        time.Second * 30,
+	}, ActionCreate)
+	require_NoError(t, err)
+
+	// Trying to create it again right away. Should error as it already exists (and hasn't been cleaned up yet)
+	_, err = mset.addConsumerWithAction(&ConsumerConfig{
+		Name:           "EPH",
+		FilterSubjects: []string{"one"},
+		AckPolicy:      AckExplicit,
+		DeliverPolicy:  DeliverAll,
+		AckWait:        time.Second * 30,
+	}, ActionCreate)
+	require_Error(t, err)
+}
+
+func TestJetStreamConsumerActionsViaAPI(t *testing.T) {
+
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+	acc := s.GlobalAccount()
+
+	_, err := acc.addStream(&StreamConfig{
+		Name:      "TEST",
+		Retention: LimitsPolicy,
+		Subjects:  []string{"one"},
+		MaxAge:    time.Second * 90,
+	})
+	require_NoError(t, err)
+
+	// Update non-existing consumer, which should fail.
+	request, err := json.Marshal(&CreateConsumerRequest{
+		Action: ActionUpdate,
+		Config: ConsumerConfig{
+			Durable: "hello",
+		},
+		Stream: "TEST",
+	})
+	require_NoError(t, err)
+
+	resp, err := nc.Request("$JS.API.CONSUMER.DURABLE.CREATE.TEST.hello", []byte(request), time.Second*6)
+	require_NoError(t, err)
+	var ccResp JSApiConsumerCreateResponse
+	err = json.Unmarshal(resp.Data, &ccResp)
+	require_NoError(t, err)
+	require_Error(t, ccResp.Error)
+
+	// create non existing consumer - which should be fine.
+	ccResp.Error = nil
+	request, err = json.Marshal(&CreateConsumerRequest{
+		Action: ActionCreate,
+		Config: ConsumerConfig{
+			Durable: "hello",
+		},
+		Stream: "TEST",
+	})
+	require_NoError(t, err)
+
+	resp, err = nc.Request("$JS.API.CONSUMER.DURABLE.CREATE.TEST.hello", []byte(request), time.Second*6)
+	require_NoError(t, err)
+	err = json.Unmarshal(resp.Data, &ccResp)
+	require_NoError(t, err)
+	if ccResp.Error != nil {
+		t.Fatalf("expected nil, got %v", ccResp.Error)
+	}
+
+	// re-create existing consumer - which should be an error.
+	ccResp.Error = nil
+	request, err = json.Marshal(&CreateConsumerRequest{
+		Action: ActionCreate,
+		Config: ConsumerConfig{
+			Durable:       "hello",
+			FilterSubject: "one",
+		},
+		Stream: "TEST",
+	})
+	require_NoError(t, err)
+	resp, err = nc.Request("$JS.API.CONSUMER.DURABLE.CREATE.TEST.hello", []byte(request), time.Second*6)
+	require_NoError(t, err)
+	err = json.Unmarshal(resp.Data, &ccResp)
+	require_NoError(t, err)
+	if ccResp.Error == nil {
+		t.Fatalf("expected err, got nil")
+	}
+
+	// create a named ephemeral consumer
+	ccResp.Error = nil
+	request, err = json.Marshal(&CreateConsumerRequest{
+		Action: ActionCreate,
+		Config: ConsumerConfig{
+			Name:          "ephemeral",
+			FilterSubject: "one",
+		},
+		Stream: "TEST",
+	})
+	require_NoError(t, err)
+	resp, err = nc.Request("$JS.API.CONSUMER.CREATE.TEST.ephemeral", []byte(request), time.Second*6)
+	require_NoError(t, err)
+	err = json.Unmarshal(resp.Data, &ccResp)
+	require_NoError(t, err)
+
+	// re-create existing consumer - which should be an error.
+	ccResp.Error = nil
+	request, err = json.Marshal(&CreateConsumerRequest{
+		Action: ActionCreate,
+		Config: ConsumerConfig{
+			Name:          "ephemeral",
+			FilterSubject: "one",
+		},
+		Stream: "TEST",
+	})
+	require_NoError(t, err)
+	resp, err = nc.Request("$JS.API.CONSUMER.CREATE.TEST.ephemeral", []byte(request), time.Second*6)
+	require_NoError(t, err)
+	err = json.Unmarshal(resp.Data, &ccResp)
+	require_NoError(t, err)
+	if ccResp.Error == nil {
+		t.Fatalf("expected err, got nil")
+	}
+}
+
+func TestJetStreamConsumerActionsUnmarshal(t *testing.T) {
+	tests := []struct {
+		name      string
+		given     []byte
+		expected  ConsumerAction
+		expectErr bool
+	}{
+		{name: "action create", given: []byte(`{"action": "create"}`), expected: ActionCreate},
+		{name: "action update", given: []byte(`{"action": "update"}`), expected: ActionUpdate},
+		{name: "no action", given: []byte("{}"), expected: ActionCreateOrUpdate},
+		{name: "unknown", given: []byte(`{"action": "unknown"}`), expected: ActionCreateOrUpdate, expectErr: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+
+			var request CreateConsumerRequest
+			err := json.Unmarshal(test.given, &request)
+			fmt.Printf("given: %v, expecetd: %v\n", test.expectErr, err)
+			if !test.expectErr {
+				require_NoError(t, err)
+			} else {
+				require_Error(t, err)
+			}
+			require_True(t, test.expected == request.Action)
+		})
 	}
 }
