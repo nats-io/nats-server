@@ -21,9 +21,9 @@ jobs:
           ref: dev
 
       - name: Set up Go
-        uses: actions/setup-go@v3
+        uses: actions/setup-go@v4
         with:
-          go-version: '1.19.x'
+          go-version: "1.20.x"
 
       - name: Run code coverage
         shell: bash --noprofile --norc -x -eo pipefail {0}
