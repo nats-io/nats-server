@@ -1742,7 +1742,11 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 						si = &sourceInfo{name: s.Name, iname: s.iname}
 						for i := range s.SubjectTransforms {
 							// err can be ignored as already validated in config check
-							si.trs[i], _ = NewSubjectTransform(s.SubjectTransforms[i].Source, s.SubjectTransforms[i].Destination)
+							var err error
+							si.trs[i], err = NewSubjectTransform(s.SubjectTransforms[i].Source, s.SubjectTransforms[i].Destination)
+							if err != nil {
+								mset.srv.Errorf("Unable to get subject transform for source: %v", err)
+							}
 						}
 					}
 
@@ -2439,14 +2443,21 @@ func (mset *stream) setupMirrorConsumer() error {
 	if mset.cfg.Mirror.FilterSubject != _EMPTY_ {
 		req.Config.FilterSubject = mset.cfg.Mirror.FilterSubject
 		if mset.cfg.Mirror.SubjectTransformDest != _EMPTY_ {
-			mirror.tr, _ = NewSubjectTransform(mset.cfg.Mirror.FilterSubject, mset.cfg.Mirror.SubjectTransformDest)
+			var err error
+			mirror.tr, err = NewSubjectTransform(mset.cfg.Mirror.FilterSubject, mset.cfg.Mirror.SubjectTransformDest)
+			if err != nil {
+				mset.srv.Errorf("Unable to get transform for mirror consumer: %v", err)
+			}
 		}
 	}
 
 	var filters []string
 	for _, tr := range mset.cfg.Mirror.SubjectTransforms {
 		// will not fail as already checked before that the transform will work
-		subjectTransform, _ := NewSubjectTransform(tr.Source, tr.Destination)
+		subjectTransform, err := NewSubjectTransform(tr.Source, tr.Destination)
+		if err != nil {
+			mset.srv.Errorf("Unable to get transform for mirror consumer: %v", err)
+		}
 		mirror.trs = append(mirror.trs, subjectTransform)
 		filters = append(filters, tr.Source)
 	}
@@ -3250,12 +3261,20 @@ func (mset *stream) startingSequenceForSources() {
 			// Check for transform.
 			if ssi.SubjectTransformDest != _EMPTY_ {
 				// no need to check the error as already validated that it will not before
-				si.tr, _ = NewSubjectTransform(ssi.FilterSubject, ssi.SubjectTransformDest)
+				var err error
+				si.tr, err = NewSubjectTransform(ssi.FilterSubject, ssi.SubjectTransformDest)
+				if err != nil {
+					mset.srv.Errorf("Unable to get subject transform for source: %v", err)
+				}
 			}
 		} else {
 			var trs []*subjectTransform
 			for _, str := range ssi.SubjectTransforms {
-				tr, _ := NewSubjectTransform(str.Source, str.Destination)
+				var err error
+				tr, err := NewSubjectTransform(str.Source, str.Destination)
+				if err != nil {
+					mset.srv.Errorf("Unable to get subject transform for source: %v", err)
+				}
 				trs = append(trs, tr)
 			}
 			si = &sourceInfo{name: ssi.Name, iname: ssi.iname, trs: trs}
