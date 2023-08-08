@@ -3528,7 +3528,7 @@ func TestClusterTLSMixedIPAndDNS(t *testing.T) {
 	bConfigTemplate := `
 		listen: 127.0.0.1:-1
 		leafnodes {
-			listen: "localhost:-1"
+			listen: "127.0.0.1:-1"
 			tls {
 				cert_file: "./configs/certs/server-cert.pem"
 				key_file:  "./configs/certs/server-key.pem"
