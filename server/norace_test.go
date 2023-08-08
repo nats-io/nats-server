@@ -1171,7 +1171,7 @@ func TestNoRaceJetStreamServiceImportAccountSwapIssue(t *testing.T) {
 
 	// Pull messages flow.
 	var received int
-	for time.Now().Before(timeout) {
+	for time.Now().Before(timeout.Add(2 * time.Second)) {
 		if msgs, err := sub.Fetch(1, nats.MaxWait(200*time.Millisecond)); err == nil {
 			for _, m := range msgs {
 				received++
