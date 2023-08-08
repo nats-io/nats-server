@@ -5478,9 +5478,16 @@ func TestFileStoreNewWriteIndexInfo(t *testing.T) {
 
 		mb.mu.Lock()
 		start := time.Now()
-		require_NoError(t, mb.writeIndexInfoLocked())
+		err = mb.writeIndexInfoLocked()
+		if err != nil {
+			mb.mu.Unlock()
+			t.Fatalf("Unexpected error: %v", err)
+		}
 		elapsed := time.Since(start)
-		require_True(t, elapsed < time.Millisecond)
+		if elapsed > time.Millisecond {
+			mb.mu.Unlock()
+			t.Fatalf("Unexpected elapsed time: %v", elapsed)
+		}
 		fi, err := os.Stat(mb.ifn)
 		mb.mu.Unlock()
 
