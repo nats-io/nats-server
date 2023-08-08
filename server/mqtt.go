@@ -135,10 +135,15 @@ const (
 	// Stream name prefix for MQTT sessions on a given account
 	mqttSessionsStreamNamePrefix = mqttStreamNamePrefix + "sess_"
 
-	// Stream name for MQTT QOS2 messages
-	mqttQOS2MsgsStreamName               = mqttStreamNamePrefix + "qos2"
-	mqttQOS2MsgsStreamSubjectPrefixNoSep = "$MQTT.qos2"
-	mqttQOS2MsgsStreamSubjectPrefix      = mqttQOS2MsgsStreamSubjectPrefixNoSep + "."
+	// Stream name for incoming MQTT QOS2 messages
+	mqttQOS2IncomingMsgsStreamName               = mqttStreamNamePrefix + "qos2in"
+	mqttQOS2IncomingMsgsStreamSubjectPrefixNoSep = "$MQTT.qos2in"
+	mqttQOS2IncomingMsgsStreamSubjectPrefix      = mqttQOS2IncomingMsgsStreamSubjectPrefixNoSep + "."
+
+	// Stream name for outgoing MQTT QOS2 PUBREL messages
+	mqttQOS2OutgoingPubRelSubjectPrefixNoSep = "$MQTT.qos2out"
+	mqttQOS2OutgoingPubRelSubjectPrefix      = mqttQOS2OutgoingPubRelSubjectPrefixNoSep + "."
+	mqttQOS2OutgoingPubRelSubPrefix
 
 	// Normally, MQTT server should not redeliver QoS 1 messages to clients,
 	// except after client reconnects. However, NATS Server will redeliver
@@ -176,16 +181,6 @@ const (
 	mqttJSASessPersist    = "SP"
 	mqttJSARetainedMsgDel = "RD"
 	mqttJSAStreamNames    = "SN"
-
-	// Names of the header keys added to NATS message to carry mqtt PUBLISH
-	// information.
-	//   - "Nmqtt-Pub" indicates that the message originated from MQTT, and
-	//   contains the original message QoS.
-	//   - "Nmqtt-Subject" contains the original MQTT subject from mqttParsePub.
-	//   - "Nmqtt-Mapped" contains the mapping during mqttParsePub.
-	mqttNatsHeader        = "Nmqtt-Pub"
-	mqttNatsHeaderSubject = "Nmqtt-Subject"
-	mqttNatsHeaderMapped  = "Nmqtt-Mapped"
 
 	// This is how long to keep a client in the flappers map before closing the
 	// connection. This prevent quick reconnect from those clients that keep
@@ -286,27 +281,22 @@ type mqttRetMsgDel struct {
 }
 
 type mqttSession struct {
-	mu       sync.Mutex
-	id       string // client ID
-	idHash   string // client ID hash
-	c        *client
-	jsa      *mqttJSA
-	subs     map[string]byte
-	cons     map[string]*ConsumerConfig
-	seq      uint64
-	pending  map[uint16]*mqttPending      // Key is the PUBLISH packet identifier sent to client and maps to a mqttPending record
-	cpending map[string]map[uint64]uint16 // For each JS consumer, the key is the stream sequence and maps to the PUBLISH packet identifier
-	ppi      uint16                       // publish packet identifier
-	maxp     uint16
-	tmaxack  int
-	clean    bool
-	domainTk string
-
-	// Spec [MQTT-4.3.3-2]. When we receive a QOS2 message, we acknowledge it
-	// with a PUBREC and ensure its PI is in this map. If it was not in the map
-	// before, delivery is initiated, just like for QOS1. When we receive a
-	// PUBREL, we remove the PI from the map, send a PUBCOMP to the sender.
-	pendingQOS2Received map[uint16]struct{}
+	mu             sync.Mutex
+	id             string // client ID
+	idHash         string // client ID hash
+	c              *client
+	jsa            *mqttJSA
+	subs           map[string]byte // Key is MQTT SUBSCRIBE filter, value is the subscription QoS
+	cons           map[string]*ConsumerConfig
+	pubrelConsumer *ConsumerConfig
+	seq            uint64
+	pending        map[uint16]*mqttPending      // Key is the PUBLISH packet identifier sent to client and maps to a mqttPending record
+	cpending       map[string]map[uint64]uint16 // For each JS consumer, the key is the stream sequence and maps to the PUBLISH packet identifier
+	ppi            uint16                       // publish packet identifier
+	maxp           uint16
+	tmaxack        int
+	clean          bool
+	domainTk       string
 }
 
 type mqttPersistedSession struct {
@@ -352,9 +342,10 @@ type mqtt struct {
 }
 
 type mqttPending struct {
-	sseq    uint64 // stream sequence
-	subject string // the ACK subject to send the ack to
-	jsDur   string // JS durable name
+	packetType   byte   // what are we waiting for: PUBACK, PUBREL, or PUBCOMP
+	sseq         uint64 // stream sequence
+	jsAckSubject string // the ACK subject to send the ack to
+	jsDur        string // JS durable name
 }
 
 type mqttConnectProto struct {
@@ -404,6 +395,32 @@ type mqttPublish struct {
 	sz      int
 	pi      uint16
 	flags   byte
+}
+
+// Names of the header keys added to NATS message to carry mqtt PUBLISH
+// information.
+//   - "Nmqtt-Pub" indicates that the message originated from MQTT, and
+//     contains the original message QoS.
+//   - "Nmqtt-Subject" contains the original MQTT subject from mqttParsePub.
+//   - "Nmqtt-Mapped" contains the mapping during mqttParsePub.
+const (
+	mqttNatsHeader        = "Nmqtt-Pub"
+	mqttNatsPubRelHeader  = "Nmqtt-PubRel"
+	mqttNatsHeaderSubject = "Nmqtt-Subject"
+	mqttNatsHeaderMapped  = "Nmqtt-Mapped"
+)
+
+type mqttParsedNatsHeader struct {
+	// either mqttPacketPub or mqttPacketPubRel
+	packetType byte
+
+	// for mqttPacketPub, the published message QOS, subject, and mapped subject
+	qos     byte
+	subject []byte
+	mapped  []byte
+
+	// for mqttPacketPubRel, the packet identifier of the PUBLISH message
+	pi uint16
 }
 
 func (s *Server) startMQTT() {
@@ -948,8 +965,8 @@ func (s *Server) mqttStoreQoS1MsgForAccountOnNewSubject(hdr int, msg []byte, acc
 	if s == nil || hdr <= 0 {
 		return
 	}
-	_, qos, _, _ := mqttParseInternalNATSHeader(msg[:hdr])
-	if qos != 1 {
+	h := mqttParseInternalNATSHeader(msg[:hdr])
+	if h == nil || h.packetType != mqttPacketPub || h.qos < 1 {
 		return
 	}
 	jsa := s.mqttGetJSAForAccount(acc)
@@ -959,16 +976,31 @@ func (s *Server) mqttStoreQoS1MsgForAccountOnNewSubject(hdr int, msg []byte, acc
 	jsa.storeMsg(mqttStreamSubjectPrefix+subject, hdr, msg)
 }
 
-func mqttParseInternalNATSHeader(headerBytes []byte) (isMqtt bool, qos byte, subject, mapped []byte) {
-	qosValue := getHeader(mqttNatsHeader, headerBytes)
-	if len(qosValue) < 1 {
-		return false, 0, nil, nil
+func mqttParseInternalNATSHeader(headerBytes []byte) *mqttParsedNatsHeader {
+	if len(headerBytes) == 0 {
+		return nil
 	}
 
-	qos = qosValue[0] - '0'
-	subject = getHeader(mqttNatsHeaderSubject, headerBytes)
-	mapped = getHeader(mqttNatsHeaderMapped, headerBytes)
-	return true, qos, subject, mapped
+	pubValue := getHeader(mqttNatsHeader, headerBytes)
+	if len(pubValue) > 0 {
+		return &mqttParsedNatsHeader{
+			packetType: mqttPacketPub,
+			qos:        pubValue[0] - '0',
+			subject:    getHeader(mqttNatsHeaderSubject, headerBytes),
+			mapped:     getHeader(mqttNatsHeaderMapped, headerBytes),
+		}
+	}
+
+	pubrelValue := getHeader(mqttNatsPubRelHeader, headerBytes)
+	if len(pubrelValue) > 0 {
+		pi, _ := strconv.Atoi(string(pubrelValue))
+		return &mqttParsedNatsHeader{
+			packetType: mqttPacketPubRel,
+			pi:         uint16(pi),
+		}
+	}
+
+	return nil
 }
 
 // Returns the MQTT sessions manager for a given account.
@@ -1190,8 +1222,11 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 	} else if si == nil {
 		// Create the stream for the messages.
 		cfg := &StreamConfig{
-			Name:      mqttStreamName,
-			Subjects:  []string{mqttStreamSubjectPrefix + ">"},
+			Name: mqttStreamName,
+			Subjects: []string{
+				mqttStreamSubjectPrefix + ">",
+				mqttQOS2OutgoingPubRelSubjectPrefix + ">",
+			},
 			Storage:   FileStorage,
 			Retention: InterestPolicy,
 			Replicas:  replicas,
@@ -1201,16 +1236,18 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		}
 	}
 
-	if si, err := lookupStream(mqttQOS2MsgsStreamName, "QoS2 messages"); err != nil {
+	if si, err := lookupStream(mqttQOS2IncomingMsgsStreamName, "QoS2 incoming messages"); err != nil {
 		return nil, err
 	} else if si == nil {
-		// Create the stream for the QoS2 messages. Subject is
+		// Create the stream for the incoming QoS2 messages that have not been
+		// PUBREL-ed by the sender. Subject is
 		// "$MQTT.qos2.<domain>.<session>.<PI>", the .PI is to achieve exactly
 		// once for each PI.
+		//
 		// <>/<> TODO: MaxAge, other static limits configurable?
 		cfg := &StreamConfig{
-			Name:          mqttQOS2MsgsStreamName,
-			Subjects:      []string{mqttQOS2MsgsStreamSubjectPrefix + as.domainTk + ">"},
+			Name:          mqttQOS2IncomingMsgsStreamName,
+			Subjects:      []string{mqttQOS2IncomingMsgsStreamSubjectPrefix + as.domainTk + ">"},
 			Storage:       FileStorage,
 			Retention:     LimitsPolicy,
 			Discard:       DiscardNew,
@@ -1219,9 +1256,9 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 			Replicas:      replicas,
 		}
 		if _, _, err := jsa.createStream(cfg); isErrorOtherThan(err, JSStreamNameExistErr) {
-			return nil, fmt.Errorf("create QoS2 messages stream for account %q: %v", accName, err)
+			return nil, fmt.Errorf("create QoS2 incoming messages stream for account %q: %v", accName, err)
 		}
-		fmt.Printf("<>/<> created MQTT QoS2 messages stream %q\n", mqttQOS2MsgsStreamName)
+		fmt.Printf("<>/<> created MQTT QoS2 messages stream %q\n", mqttQOS2IncomingMsgsStreamName)
 	}
 
 	// This is the only case where we need "si" after lookup/create
@@ -2164,16 +2201,20 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 		// Note that if a subscription already exists on this subject,
 		// the existing sub is returned. Need to update the qos.
 		asAndSessLock()
-		sub, err := c.processSub([]byte(subject), nil, []byte(sid), mqttDeliverMsgCbQos0, false)
+		sub, err := c.processSub([]byte(subject), nil, []byte(sid), mqttOnNATSMsgReceived, false)
 		if err == nil {
 			setupSub(sub, f.qos)
 		}
 		asAndSessUnlock()
+
 		if err == nil {
 			// This will create (if not already exist) a JS consumer for subscriptions
 			// of QoS >= 1. But if a JS consumer already exists and the subscription
 			// for same subject is now a QoS==0, then the JS consumer will be deleted.
-			jscons, jssub, err = sess.processJSConsumer(c, subject, sid, f.qos, fromSubProto)
+			jscons, jssub, err = sess.ensurePUBLISHConsumer(c, subject, sid, f.qos, fromSubProto)
+		}
+		if err == nil {
+			_, err = sess.ensurePubRelConsumer(c)
 		}
 		if err != nil {
 			// c.processSub already called c.Errorf(), so no need here.
@@ -2181,6 +2222,7 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 			sess.cleanupFailedSub(c, sub, jscons, jssub)
 			continue
 		}
+
 		if mqttNeedSubForLevelUp(subject) {
 			var fwjscons *ConsumerConfig
 			var fwjssub *subscription
@@ -2192,13 +2234,13 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 			fwcsid := fwcsubject + mqttMultiLevelSidSuffix
 			// See note above about existing subscription.
 			asAndSessLock()
-			fwcsub, err = c.processSub([]byte(fwcsubject), nil, []byte(fwcsid), mqttDeliverMsgCbQos0, false)
+			fwcsub, err = c.processSub([]byte(fwcsubject), nil, []byte(fwcsid), mqttOnNATSMsgReceived, false)
 			if err == nil {
 				setupSub(fwcsub, f.qos)
 			}
 			asAndSessUnlock()
 			if err == nil {
-				fwjscons, fwjssub, err = sess.processJSConsumer(c, fwcsubject, fwcsid, f.qos, fromSubProto)
+				fwjscons, fwjssub, err = sess.ensurePUBLISHConsumer(c, fwcsubject, fwcsid, f.qos, fromSubProto)
 			}
 			if err != nil {
 				// c.processSub already called c.Errorf(), so no need here.
@@ -2533,7 +2575,6 @@ func (sess *mqttSession) clear() error {
 		}
 	}
 	sess.subs, sess.pending, sess.cpending, sess.seq, sess.tmaxack = nil, nil, nil, 0, 0
-	sess.pendingQOS2Received = nil
 	for _, dur := range durs {
 		if _, err := sess.jsa.deleteConsumer(mqttStreamName, dur); isErrorOtherThan(err, JSConsumerNotFoundErr) {
 			sess.mu.Unlock()
@@ -2592,43 +2633,44 @@ func (sess *mqttSession) getPubAckIdentifier(pQos byte, sub *subscription) uint1
 	return pi
 }
 
+func (sess *mqttSession) bumpPI() uint16 {
+	var avail bool
+	next := sess.ppi
+	for i := 0; i < 0xFFFF; i++ {
+		next++
+		if next == 0 {
+			next = 1
+		}
+		if _, used := sess.pending[next]; !used {
+			sess.ppi = next
+			avail = true
+			break
+		}
+	}
+	if !avail {
+		return 0
+	}
+	return sess.ppi
+}
+
 // If publish message QoS (pQos) and the subscription's QoS are both at least 1,
 // this function will assign a packet identifier (pi) and will keep track of
 // the pending ack. If the message has already been redelivered (reply != ""),
 // the returned boolean will be `true`.
 //
 // Lock held on entry
-func (sess *mqttSession) trackPending(pQos byte, reply string, sub *subscription) (uint16, bool) {
-	fmt.Printf("<>/<> trackPending: pQos=%v, reply=%q, sub QoS=%v\n", pQos, reply, sub.mqtt.qos)
-	if pQos == 0 || sub.mqtt.qos == 0 {
+func (sess *mqttSession) trackPending(pubQOS byte, jsAckSubject string, sub *subscription) (uint16, bool) {
+	fmt.Printf("<>/<> trackPending: pQos=%v, reply=%q, sub QoS=%v\n", pubQOS, jsAckSubject, sub.mqtt.qos)
+	if pubQOS == 0 || sub.mqtt.qos == 0 {
 		return 0, false
 	}
+
 	var dup bool
 	var pi uint16
 
-	bumpPI := func() uint16 {
-		var avail bool
-		next := sess.ppi
-		for i := 0; i < 0xFFFF; i++ {
-			next++
-			if next == 0 {
-				next = 1
-			}
-			if _, used := sess.pending[next]; !used {
-				sess.ppi = next
-				avail = true
-				break
-			}
-		}
-		if !avail {
-			return 0
-		}
-		return sess.ppi
-	}
-
 	// This can happen when invoked from getPubAckIdentifier...
-	if reply == _EMPTY_ || sub.mqtt.jsDur == _EMPTY_ {
-		pi = bumpPI()
+	if jsAckSubject == _EMPTY_ || sub.mqtt.jsDur == _EMPTY_ {
+		pi = sess.bumpPI()
 		fmt.Printf("<>/<> trackPending: invoked from getPubAckIdentifier, pi:%v\n", pi)
 		return pi, false
 	}
@@ -2637,13 +2679,12 @@ func (sess *mqttSession) trackPending(pQos byte, reply string, sub *subscription
 	jsDur := sub.mqtt.jsDur
 	fmt.Printf("<>/<> trackPending: sub has a durable consumer: %q\n", jsDur)
 	if sess.pending == nil {
-		fmt.Printf("<>/<> trackPending: initialize tracking maps\n")
 		sess.pending = make(map[uint16]*mqttPending)
 		sess.cpending = make(map[string]map[uint64]uint16)
 	}
 	// Get the stream sequence and other from the ack reply subject
-	sseq, _, dcount := ackReplyInfo(reply)
-	fmt.Printf("<>/<> trackPending: parsed subject %q, %v %v\n", reply, sseq, dcount)
+	sseq, _, dcount := ackReplyInfo(jsAckSubject)
+	fmt.Printf("<>/<> trackPending: parsed subject %q, %v %v\n", jsAckSubject, sseq, dcount)
 
 	var pending *mqttPending
 	// For this JS consumer, check to see if we already have sseq->pi
@@ -2666,11 +2707,11 @@ func (sess *mqttSession) trackPending(pQos byte, reply string, sub *subscription
 			// and JS will redeliver later, based on consumer's AckWait.
 			return 0, false
 		}
-		pi = bumpPI()
+		pi = sess.bumpPI()
 		sseqToPi[sseq] = pi
 	}
 	if pending == nil {
-		pending = &mqttPending{jsDur: jsDur, sseq: sseq, subject: reply}
+		pending = &mqttPending{jsDur: jsDur, sseq: sseq, jsAckSubject: jsAckSubject}
 		sess.pending[pi] = pending
 	}
 	// If redelivery, return DUP flag
@@ -2683,13 +2724,27 @@ func (sess *mqttSession) trackPending(pQos byte, reply string, sub *subscription
 // Sends a request to create a JS Durable Consumer based on the given consumer's config.
 // This will wait in place for the reply from the server handling the requests.
 //
-// Lock held on entry
-func (sess *mqttSession) createConsumer(consConfig *ConsumerConfig) error {
+// Lock not held on entry
+func (sess *mqttSession) createConsumer(cc *ConsumerConfig) error {
 	cfg := &CreateConsumerRequest{
 		Stream: mqttStreamName,
-		Config: *consConfig,
+		Config: *cc,
 	}
+
+	sess.mu.Lock()
+	if after := sess.tmaxack + cc.MaxAckPending; after > mqttMaxAckTotalLimit {
+		return fmt.Errorf("max_ack_pending for all consumers would be %v which exceeds the limit of %v",
+			after, mqttMaxAckTotalLimit)
+	}
+	sess.tmaxack += cc.MaxAckPending
+	sess.mu.Unlock()
+
 	_, err := sess.jsa.createConsumer(cfg)
+	if err != nil {
+		sess.mu.Lock()
+		sess.tmaxack -= cc.MaxAckPending
+		sess.mu.Unlock()
+	}
 	return err
 }
 
@@ -3334,7 +3389,7 @@ func (s *Server) mqttProcessPub(c *client, pp *mqttPublish, trace bool) error {
 		return err
 
 	default:
-		return fmt.Errorf("Unreachable: invalid QoS in mqttProcessPub: %v", qos)
+		return fmt.Errorf("unreachable: invalid QoS in mqttProcessPub: %v", qos)
 	}
 }
 
@@ -3389,7 +3444,7 @@ func (c *client) mqttQOS2InternalSubject(pi uint16) string {
 	accName := acc.GetName()
 
 	return strings.Join([]string{
-		mqttQOS2MsgsStreamSubjectPrefixNoSep,
+		mqttQOS2IncomingMsgsStreamSubjectPrefixNoSep,
 		accName,
 		clientID,
 		strconv.FormatUint(uint64(pi), 10),
@@ -3407,7 +3462,7 @@ func (s *Server) mqttProcessPubRel(c *client, pi uint16, trace bool) {
 	// See if there is a message pending for this pi. All failures are treated
 	// as "not found".
 	asm := c.mqtt.asm
-	stored, _ := asm.jsa.loadLastMsgFor(mqttQOS2MsgsStreamName, c.mqttQOS2InternalSubject(pi))
+	stored, _ := asm.jsa.loadLastMsgFor(mqttQOS2IncomingMsgsStreamName, c.mqttQOS2InternalSubject(pi))
 	fmt.Printf("<>/<> process PUBREL: stored %v\n", stored)
 
 	if stored == nil {
@@ -3415,27 +3470,27 @@ func (s *Server) mqttProcessPubRel(c *client, pi uint16, trace bool) {
 		return
 	}
 	// Best attempt to delete the message from the QoS2 stream.
-	err := asm.jsa.deleteMsg(mqttQOS2MsgsStreamName, stored.Sequence, true)
+	err := asm.jsa.deleteMsg(mqttQOS2IncomingMsgsStreamName, stored.Sequence, true)
 	fmt.Printf("<>/<> process PUBREL: delete err %v\n", err)
 
 	// only MQTT QoS2 messages should be here, and they must have a subject.
-	isMQTT, qos, subj, mapped := mqttParseInternalNATSHeader(stored.Header)
-	if !isMQTT || qos != 2 || len(subj) == 0 {
+	h := mqttParseInternalNATSHeader(stored.Header)
+	fmt.Printf("<>/<> process PUBREL: parsed header %#v\n", h)
+	if h == nil || h.packetType != mqttPacketPub || h.qos != 2 || len(h.subject) == 0 {
 		return
 	}
-	fmt.Printf("<>/<> process PUBREL: parsed header %v %v %v %v\n", isMQTT, qos, subj, mapped)
 
 	// <>/<> TODO remove extra alloc/copy
 	msgToSend := append(stored.Header, stored.Data...)
 	pp := &mqttPublish{
-		topic:   natsSubjectToMQTTTopic(string(subj)),
-		subject: subj,
-		mapped:  mapped,
+		topic:   natsSubjectToMQTTTopic(string(h.subject)),
+		subject: h.subject,
+		mapped:  h.mapped,
 		msg:     msgToSend,
-		sz:      -1, // <>/<> what is sz?
+		sz:      -1, // <>/<> TODO what should sz be?
 		pi:      pi,
-		// <>/<> where do I handle the retain flag for QoS2?
-		flags: qos << 1,
+		// <>/<> TODO store and restore retain flag
+		flags: h.qos << 1,
 	}
 
 	_ = s.mqttInitiateMsgDelivery(c, pp)
@@ -3711,6 +3766,11 @@ func (c *client) mqttProcessPubAck(pi uint16) {
 	}
 	var ackSubject string
 	if ack, ok := sess.pending[pi]; ok {
+		if ack.packetType != mqttPacketPubAck {
+			// Ignore PUBACKs for QOS 2.
+			sess.mu.Unlock()
+			return
+		}
 		delete(sess.pending, pi)
 		jsDur := ack.jsDur
 		if sseqToPi, ok := sess.cpending[jsDur]; ok {
@@ -3719,7 +3779,7 @@ func (c *client) mqttProcessPubAck(pi uint16) {
 		if len(sess.pending) == 0 {
 			sess.ppi = 0
 		}
-		ackSubject = ack.subject
+		ackSubject = ack.jsAckSubject
 	}
 	// Send the ack if applicable.
 	if ackSubject != _EMPTY_ {
@@ -3830,114 +3890,25 @@ func mqttSubscribeTrace(pi uint16, filters []*mqttFilter) string {
 	return sb.String()
 }
 
-// func mqttDeliver(fromJetStream bool) func(*subscription, *client, *Account, string, string, []byte) {
-// 	return func(sub *subscription, from *client, _ *Account, rawSubject, reply string, rawMsg []byte) {
-// 		// MQTT messages come as NATS messages with the "Nmqtt-Pub" header. The
-// 		// header contains the MQTT publish packet QoS, as a single ASCII digit.
-// 		natsHeader, msg := from.msgParts(rawMsg)
-// 		if len(natsHeader) == 0 {
-// 			return
-// 		}
-// 		nhv := getHeader(mqttNatsHeader, natsHeader)
-// 		if len(nhv) < 1 {
-// 			return
-// 		}
-// 		pubQOS := nhv[0] - '0'
-
-// 		// When coming from JetStream, the subject is prefixed with
-// 		// "$MQTT.msgs.". Validate and remove the prefix.
-// 		subject := rawSubject
-// 		if fromJetStream {
-// 			if !strings.HasPrefix(subject, mqttStreamSubjectPrefix) {
-// 				return
-// 			}
-// 			subject = subject[len(mqttStreamSubjectPrefix):]
-// 			if len(subject) == 0 {
-// 				return
-// 			}
-// 		}
-
-// 		to := sub.client
-
-// 		// mqtt.sess is immutable
-// 		sess := to.mqtt.sess
-
-// 		// Check the subscription's QoS. This needs to be protected because
-// 		// the client may change an existing subscription at any time.
-// 		sess.mu.Lock()
-// 		subQOS := sub.mqtt.qos
-// 		isReserved := mqttCheckReserved(sub, subject)
-// 		sess.mu.Unlock()
-
-// 		// We have a wildcard subscription and this subject starts with '$' so ignore per Spec [MQTT-4.7.2-1].
-// 		if isReserved {
-// 			return
-// 		}
-
-// 		switch {
-// 		case subQOS == 0 && pubQOS == 0:
-// 		}
-
-// 		if subQoS == 0 {
-// 			// This is an MQTT publisher directly connected to this server.
-// 			if from.isMqtt() {
-// 				// If the MQTT subscription is QoS1, then we bail out if the published
-// 				// message is QoS1 because it will be handled in the other callack.
-// 				if subQos == 1 && sss > 0 {
-// 					return
-// 				}
-// 				topic = pc.mqtt.pp.topic
-// 				// Check for service imports where subject mapping is in play.
-// 				if len(pc.pa.mapped) > 0 && len(pc.pa.psi) > 0 {
-// 					topic = natsSubjectToMQTTTopic(subject)
-// 				}
-// 				retained = mqttIsRetained(pc.mqtt.pp.flags)
-
-// 			} else {
-// 				// Non MQTT client, could be NATS publisher, or ROUTER, etc..
-
-// 				// For QoS1 subs, we need to make sure that if there is a header, it does
-// 				// not say that this is a QoS1 published message, because it will be handled
-// 				// in the other callback.
-// 				if subQos != 0 && len(hdr) > 0 {
-// 					if nhv := getHeader(mqttNatsHeader, hdr); len(nhv) >= 1 {
-// 						if qos := nhv[0] - '0'; qos > 0 {
-// 							return
-// 						}
-// 					}
-// 				}
-
-// 				// If size is more than what a MQTT client can handle, we should probably reject,
-// 				// for now just truncate.
-// 				if len(msg) > mqttMaxPayloadSize {
-// 					msg = msg[:mqttMaxPayloadSize]
-// 				}
-// 				topic = natsSubjectToMQTTTopic(subject)
-// 			}
-
-// 		}
-
-// 	}
-// }
-
-// For a MQTT QoS0 subscription, we create a single NATS subscription
-// on the actual subject, for instance "foo.bar".
-// For a MQTT QoS1 subscription, we create 2 subscriptions, one on
-// "foo.bar" (as for QoS0, but sub.mqtt.qos will be 1), and one on
-// the subject "$MQTT.sub.<uid>" which is the delivery subject of
-// the JS durable consumer with the filter subject "$MQTT.msgs.foo.bar".
+// For a MQTT QoS0 subscription, we create a single NATS subscription on the
+// actual subject, for instance "foo.bar".
+//
+// For a MQTT QoS1+ subscription, we create 2 subscriptions, one on "foo.bar"
+// (as for QoS0, but sub.mqtt.qos will be 1 or 2), and one on the subject
+// "$MQTT.sub.<uid>" which is the delivery subject of the JS durable consumer
+// with the filter subject "$MQTT.msgs.foo.bar".
 //
 // This callback delivers messages to the client as QoS0 messages, either
-// because they have been produced as QoS0 messages (and therefore only
-// this callback can receive them), they are QoS1 published messages but
-// this callback is for a subscription that is QoS0, or the published
-// messages come from NATS publishers.
+// because: (a) they have been produced as MQTT QoS0 messages (and therefore
+// only this callback can receive them); (b) they are MQTT QoS1+ published
+// messages but this callback is for a subscription that is QoS0; or (c) the
+// published messages come from (other) NATS publishers on the subject.
 //
-// This callback must reject a message if it is known to be a QoS1 published
-// message and this is the callback for a QoS1 subscription because in
-// that case, it will be handled by the other callback. This avoid getting
-// duplicate deliveries.
-func mqttDeliverMsgCbQos0(sub *subscription, pc *client, _ *Account, subject, reply string, rmsg []byte) {
+// This callback must reject a message if it is known to be a QoS1+ published
+// message and this is the callback for a QoS1+ subscription because in that
+// case, it will be handled by the other callback. This avoid getting duplicate
+// deliveries.
+func mqttOnNATSMsgReceived(sub *subscription, pc *client, _ *Account, subject, reply string, rmsg []byte) {
 	if pc.kind == JETSTREAM && len(reply) > 0 && strings.HasPrefix(reply, jsAckPre) {
 		return
 	}
@@ -3953,7 +3924,7 @@ func mqttDeliverMsgCbQos0(sub *subscription, pc *client, _ *Account, subject, re
 	// Check the subscription's QoS. This needs to be protected because
 	// the client may change an existing subscription at any time.
 	sess.mu.Lock()
-	subQos := sub.mqtt.qos
+	subQOS := sub.mqtt.qos
 	isReserved := mqttCheckReserved(sub, subject)
 	sess.mu.Unlock()
 
@@ -3964,12 +3935,12 @@ func mqttDeliverMsgCbQos0(sub *subscription, pc *client, _ *Account, subject, re
 
 	var retained bool
 	var topic []byte
-
-	// This is an MQTT publisher directly connected to this server.
 	if pc.isMqtt() {
-		// If the MQTT subscription is QoS1, then we bail out if the published
-		// message is QoS1 because it will be handled in the other callack.
-		if subQos == 1 && mqttGetQoS(pc.mqtt.pp.flags) > 0 {
+		// This is an MQTT publisher directly connected to this server.
+
+		msgQOS := mqttGetQoS(pc.mqtt.pp.flags)
+		// This callback delivers only QOS0 messages to QOS0 subscriptions.
+		if subQOS > 0 && msgQOS > 0 {
 			return
 		}
 		topic = pc.mqtt.pp.topic
@@ -3981,14 +3952,10 @@ func mqttDeliverMsgCbQos0(sub *subscription, pc *client, _ *Account, subject, re
 
 	} else {
 		// Non MQTT client, could be NATS publisher, or ROUTER, etc..
-
-		// For QoS1 subs, we need to make sure that if there is a header, it does
-		// not say that this is a QoS1 published message, because it will be handled
-		// in the other callback.
-		if subQos != 0 && len(hdr) > 0 {
-			if _, qos, _, _ := mqttParseInternalNATSHeader(hdr); qos > 0 {
-				return
-			}
+		h := mqttParseInternalNATSHeader(hdr)
+		if subQOS > 0 && h != nil && h.packetType == mqttPacketPub && h.qos > 0 {
+			// will be delivered by the JetStream callback
+			return
 		}
 
 		// If size is more than what a MQTT client can handle, we should probably reject,
@@ -4000,17 +3967,20 @@ func mqttDeliverMsgCbQos0(sub *subscription, pc *client, _ *Account, subject, re
 	}
 
 	// Message never has a packet identifier nor is marked as duplicate.
-	pc.mqttSerializeAndDeliverPublishMsg(cc, sub, 0, false, retained, topic, msg)
+	pc.mqttSerializeAndEnqueuePublishMsg(cc, sub, 0, false, retained, topic, msg)
 }
 
-// This is the callback attached to a JS durable subscription for a MQTT Qos1 sub.
-// Only JETSTREAM should be sending a message to this subject (the delivery subject
-// associated with the JS durable consumer), but in cluster mode, this can be coming
-// from a route, gw, etc... We make sure that if this is the case, the message contains
-// a NATS/MQTT header that indicates that this is a published QoS1 message.
-func mqttDeliverMsgCbQos1(sub *subscription, pc *client, _ *Account, subject, reply string, rmsg []byte) {
-	fmt.Printf("<>/<> !!!!! mqttDeliverMsgCbQos1: subject:%q, reply:%q\n", subject, reply)
-	var retained bool
+// This is the callback attached to a JS durable subscription for a MQTT QOS1+
+// sub. Only JETSTREAM should be sending a message to this subject (the delivery
+// subject associated with the JS durable consumer), but in cluster mode, this
+// can be coming from a route, gw, etc... We make sure that if this is the case,
+// the message contains a NATS/MQTT header that indicates that this is a
+// published QoS1+ message.
+func mqttOnJSMsgReceived(sub *subscription, pc *client, _ *Account, subject, reply string, rmsg []byte) {
+	if sub.mqtt == nil {
+		return
+	}
+	fmt.Printf("<>/<> mqttOnJSMsgReceived: subject:%q, reply:%q\n", subject, reply)
 
 	// Message on foo.bar is stored under $MQTT.msgs.foo.bar, so the subject has to be
 	// at least as long as the stream subject prefix "$MQTT.msgs.", and after removing
@@ -4020,17 +3990,12 @@ func mqttDeliverMsgCbQos1(sub *subscription, pc *client, _ *Account, subject, re
 	}
 
 	hdr, msg := pc.msgParts(rmsg)
-	if pc.kind != JETSTREAM {
-		if len(hdr) == 0 {
-			return
-		}
-		nhv := getHeader(mqttNatsHeader, hdr)
-		if len(nhv) < 1 {
-			return
-		}
-		if qos := nhv[0] - '0'; qos != 1 {
-			return
-		}
+	h := mqttParseInternalNATSHeader(hdr)
+	if h == nil || (h.packetType == mqttPacketPub && h.qos == 0) {
+		// MQTT QOS0 messages must be ignored, they will be delivered by the
+		// other callback, the direct NATS subscription. All JETSTREAM messages
+		// will have the header.
+		return
 	}
 
 	// This is the client associated with the subscription.
@@ -4047,10 +4012,7 @@ func mqttDeliverMsgCbQos1(sub *subscription, pc *client, _ *Account, subject, re
 		return
 	}
 
-	// This is a QoS1 message for a QoS1 subscription, so get the pi and keep
-	// track of ack subject.
-	pQoS := byte(1)
-	pi, dup := sess.trackPending(pQoS, reply, sub)
+	pi, dup := sess.trackPending(h.qos, reply, sub)
 
 	// Check for reserved subject violation.
 	strippedSubj := string(subject[len(mqttStreamSubjectPrefix):])
@@ -4071,8 +4033,8 @@ func mqttDeliverMsgCbQos1(sub *subscription, pc *client, _ *Account, subject, re
 	}
 
 	topic := natsSubjectToMQTTTopic(strippedSubj)
-
-	pc.mqttSerializeAndDeliverPublishMsg(cc, sub, pi, dup, retained, topic, msg)
+	retained := false // <>/<>
+	pc.mqttSerializeAndEnqueuePublishMsg(cc, sub, pi, dup, retained, topic, msg)
 }
 
 // The MQTT Server MUST NOT match Topic Filters starting with a wildcard character (# or +)
@@ -4100,7 +4062,7 @@ func isMQTTReservedSubscription(subject string) bool {
 
 // Common function to mqtt delivery callbacks to serialize and send the message
 // to the `cc` client.
-func (c *client) mqttSerializeAndDeliverPublishMsg(cc *client, sub *subscription, pi uint16, dup, retained bool, topic, msg []byte) {
+func (c *client) mqttSerializeAndEnqueuePublishMsg(cc *client, sub *subscription, pi uint16, dup, retained bool, topic, msg []byte) {
 	sw := mqttWriter{}
 	w := &sw
 
@@ -4203,6 +4165,85 @@ func (sess *mqttSession) cleanupFailedSub(c *client, sub *subscription, cc *Cons
 	}
 }
 
+func (sess *mqttSession) countQOS2Subs() int {
+	c := 0
+	for _, qos := range sess.subs {
+		if qos == 2 {
+			c++
+		}
+	}
+	return c
+}
+
+func (sess *mqttSession) ensurePubRelConsumer(c *client) (*ConsumerConfig, error) {
+	var ccDelete *ConsumerConfig
+	var cc *ConsumerConfig
+	create := false
+	pubrelDeliverSubject := mqttQOS2OutgoingPubRelSubjectPrefix + sess.idHash
+	pubrelDeliverSubjectB := []byte(pubrelDeliverSubject)
+
+	sess.mu.Lock()
+	cQOS2 := sess.countQOS2Subs()
+	if cQOS2 == 0 && sess.pubrelConsumer != nil {
+		ccDelete, sess.pubrelConsumer = sess.pubrelConsumer, nil
+	}
+	if cQOS2 > 0 && sess.pubrelConsumer == nil {
+		create = true
+	}
+	cc = sess.pubrelConsumer
+	sess.mu.Unlock()
+
+	if ccDelete != nil {
+		sess.deleteConsumer(ccDelete)
+		err := c.processUnsub(pubrelDeliverSubjectB)
+		return nil, err
+	}
+
+	if !create {
+		return cc, nil
+	}
+
+	opts := c.srv.getOpts()
+	ackWait := opts.MQTT.AckWait
+	if ackWait == 0 {
+		ackWait = mqttDefaultAckWait
+	}
+	maxAckPending := int(opts.MQTT.MaxAckPending)
+	if maxAckPending == 0 {
+		maxAckPending = mqttDefaultMaxAckPending
+	}
+
+	cc = &ConsumerConfig{
+		DeliverSubject: pubrelDeliverSubject,
+		Durable:        sess.idHash + "_pubrel",
+		AckPolicy:      AckExplicit,
+		DeliverPolicy:  DeliverNew,
+		FilterSubject:  pubrelDeliverSubject,
+		AckWait:        ackWait,
+		MaxAckPending:  maxAckPending,
+		MemoryStorage:  opts.MQTT.ConsumerMemoryStorage,
+	}
+	if opts.MQTT.ConsumerInactiveThreshold > 0 {
+		cc.InactiveThreshold = opts.MQTT.ConsumerInactiveThreshold
+	}
+	if err := sess.createConsumer(cc); err != nil {
+		c.Errorf("Unable to add JetStream consumer for PUBREL for client %q: err=%v", sess.id, err)
+		return nil, err
+	}
+
+	sess.mu.Lock()
+	_, err := c.processSub([]byte(pubrelDeliverSubject), nil, []byte(pubrelDeliverSubject), mqttOnJSPubRelReceived, false)
+	if err != nil {
+		sess.mu.Unlock()
+		sess.deleteConsumer(cc)
+		c.Errorf("Unable to create subscription for JetStream consumer on %q: %v", pubrelDeliverSubject, err)
+		return nil, err
+	}
+	sess.mu.Unlock()
+
+	return cc, nil
+}
+
 // When invoked with a QoS of 0, looks for an existing JS durable consumer for
 // the given sid and if one is found, delete the JS durable consumer and unsub
 // the NATS subscription on the delivery subject.
@@ -4210,7 +4251,7 @@ func (sess *mqttSession) cleanupFailedSub(c *client, sub *subscription, cc *Cons
 // its NATS subscription on a delivery subject.
 //
 // Lock not held on entry, but session is in the locked map.
-func (sess *mqttSession) processJSConsumer(c *client, subject, sid string,
+func (sess *mqttSession) ensurePUBLISHConsumer(c *client, subject, sid string,
 	qos byte, fromSubProto bool) (*ConsumerConfig, *subscription, error) {
 
 	// Check if we are already a JS consumer for this SID.
@@ -4282,12 +4323,11 @@ func (sess *mqttSession) processJSConsumer(c *client, subject, sid string,
 			c.Errorf("Unable to add JetStream consumer for subscription on %q: err=%v", subject, err)
 			return nil, nil, err
 		}
-		sess.tmaxack += maxAckPending
 	}
 	// This is an internal subscription on subject like "$MQTT.sub.<nuid>" that is setup
 	// for the JS durable's deliver subject.
 	sess.mu.Lock()
-	sub, err := c.processSub([]byte(inbox), nil, []byte(inbox), mqttDeliverMsgCbQos1, false)
+	sub, err := c.processSub([]byte(inbox), nil, []byte(inbox), mqttOnJSMsgReceived, false)
 	if err != nil {
 		sess.mu.Unlock()
 		sess.deleteConsumer(cc)
