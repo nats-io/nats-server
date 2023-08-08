@@ -481,7 +481,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 				if st.Destination != _EMPTY_ {
 					if _, err = NewSubjectTransform(st.Source, st.Destination); err != nil {
 						jsa.mu.Unlock()
-						return nil, fmt.Errorf("subject transform from '%s' to '%s' for the mirror %w", st.Source, st.Destination, err)
+						return nil, fmt.Errorf("subject transform from '%s' to '%s' for the mirror: %w", st.Source, st.Destination, err)
 					}
 				}
 			}
