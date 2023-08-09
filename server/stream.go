@@ -1495,9 +1495,11 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, s *Server) (*Str
 	if cfg.Storage != old.Storage {
 		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update can not change storage type"))
 	}
-	// Can't change retention.
+	// Can only change retention from limits to interest or back, not to/from work queue for now.
 	if cfg.Retention != old.Retention {
-		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update can not change retention policy"))
+		if old.Retention == WorkQueuePolicy || cfg.Retention == WorkQueuePolicy {
+			return nil, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration update can not change retention policy to/from workqueue"))
+		}
 	}
 	// Can not have a template owner for now.
 	if old.Template != _EMPTY_ {
@@ -1785,8 +1787,40 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 		// a subsequent update to an existing tier will then move from existing past tier to existing new tier
 	}
 
+	if mset.isLeader() && ocfg.Retention != cfg.Retention && cfg.Retention == InterestPolicy {
+		// Before we can update the retention policy for the consumer, we need
+		// the replica count of all consumers to match the stream.
+		for _, c := range mset.sa.consumers {
+			if c.Config.Replicas > 0 && c.Config.Replicas != cfg.Replicas {
+				mset.mu.Unlock()
+				return fmt.Errorf("consumer %q replica count must be %d", c.Name, cfg.Replicas)
+			}
+		}
+	}
+
 	// Now update config and store's version of our config.
 	mset.cfg = *cfg
+
+	// If we're changing retention and haven't errored because of consumer
+	// replicas by now, whip through and update the consumer retention.
+	if ocfg.Retention != cfg.Retention && cfg.Retention == InterestPolicy {
+		toUpdate := make([]*consumer, 0, len(mset.consumers))
+		for _, c := range mset.consumers {
+			toUpdate = append(toUpdate, c)
+		}
+		mset.mu.Unlock()
+		for _, c := range toUpdate {
+			c.mu.Lock()
+			c.retention = cfg.Retention
+			c.mu.Unlock()
+			if c.retention == InterestPolicy {
+				// If we're switching to interest, force a check of the
+				// interest of existing stream messages.
+				c.checkStateForInterestStream()
+			}
+		}
+		mset.mu.Lock()
+	}
 
 	// If we are the leader never suppress update advisory, simply send.
 	if mset.isLeader() && sendAdvisory {
