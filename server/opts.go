@@ -714,27 +714,28 @@ type authorization struct {
 // TLSConfigOpts holds the parsed tls config information,
 // used with flag parsing
 type TLSConfigOpts struct {
-	CertFile          string
-	KeyFile           string
-	CaFile            string
-	Verify            bool
-	Insecure          bool
-	Map               bool
-	TLSCheckKnownURLs bool
-	HandshakeFirst    bool          // Indicate that the TLS handshake should occur first, before sending the INFO protocol.
-	FallbackDelay     time.Duration // Where supported, indicates how long to wait for the handshake before falling back to sending the INFO protocol first.
-	Timeout           float64
-	RateLimit         int64
-	Ciphers           []uint16
-	CurvePreferences  []tls.CurveID
-	PinnedCerts       PinnedCertSet
-	CertStore         certstore.StoreType
-	CertMatchBy       certstore.MatchByType
-	CertMatch         string
-	CaCertsMatch      []string
-	OCSPPeerConfig    *certidp.OCSPPeerConfig
-	Certificates      []*TLSCertPairOpt
-	MinVersion        uint16
+	CertFile             string
+	KeyFile              string
+	CaFile               string
+	Verify               bool
+	Insecure             bool
+	Map                  bool
+	TLSCheckKnownURLs    bool
+	HandshakeFirst       bool          // Indicate that the TLS handshake should occur first, before sending the INFO protocol.
+	FallbackDelay        time.Duration // Where supported, indicates how long to wait for the handshake before falling back to sending the INFO protocol first.
+	Timeout              float64
+	RateLimit            int64
+	Ciphers              []uint16
+	CurvePreferences     []tls.CurveID
+	PinnedCerts          PinnedCertSet
+	CertStore            certstore.StoreType
+	CertMatchBy          certstore.MatchByType
+	CertMatch            string
+	CertMatchSkipInvalid bool
+	CaCertsMatch         []string
+	OCSPPeerConfig       *certidp.OCSPPeerConfig
+	Certificates         []*TLSCertPairOpt
+	MinVersion           uint16
 }
 
 // TLSCertPairOpt are the paths to a certificate and private key.
@@ -4819,6 +4820,12 @@ func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 			default:
 				return nil, &configErr{tk, fmt.Sprintf("field %q should be a boolean or a string, got %T", mk, mv)}
 			}
+		case "cert_match_skip_invalid":
+			certMatchSkipInvalid, ok := mv.(bool)
+			if !ok {
+				return nil, &configErr{tk, certstore.ErrBadCertMatchSkipInvalidField.Error()}
+			}
+			tc.CertMatchSkipInvalid = certMatchSkipInvalid
 		case "ocsp_peer":
 			switch vv := mv.(type) {
 			case bool:
@@ -5217,7 +5224,7 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 		}
 		config.Certificates = []tls.Certificate{cert}
 	case tc.CertStore != certstore.STOREEMPTY:
-		err := certstore.TLSConfig(tc.CertStore, tc.CertMatchBy, tc.CertMatch, tc.CaCertsMatch, &config)
+		err := certstore.TLSConfig(tc.CertStore, tc.CertMatchBy, tc.CertMatch, tc.CaCertsMatch, tc.CertMatchSkipInvalid, &config)
 		if err != nil {
 			return nil, err
 		}

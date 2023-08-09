@@ -71,6 +71,9 @@ var (
 	// ErrBadCaCertMatchField represents malformed cert_match option
 	ErrBadCaCertMatchField = errors.New("expected 'ca_certs_match' to be a valid non-empty string array")
 
+	// ErrBadCertMatchSkipInvalidField represents malformed cert_match_skip_invalid option
+	ErrBadCertMatchSkipInvalidField = errors.New("expected 'cert_match_skip_invalid' to be a boolean")
+
 	// ErrOSNotCompatCertStore represents cert_store passed that exists but is not valid on current OS
 	ErrOSNotCompatCertStore = errors.New("cert_store not compatible with current operating system")
 )
