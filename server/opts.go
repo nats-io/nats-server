@@ -588,6 +588,7 @@ type TLSConfigOpts struct {
 	CertStore         certstore.StoreType
 	CertMatchBy       certstore.MatchByType
 	CertMatch         string
+	CertSkipInvalid   bool
 	OCSPPeerConfig    *certidp.OCSPPeerConfig
 }
 
@@ -4089,6 +4090,12 @@ func parseTLS(v interface{}, isClientCtx bool) (t *TLSConfigOpts, retErr error) 
 				return nil, &configErr{tk, certstore.ErrBadCertMatchField.Error()}
 			}
 			tc.CertMatch = certMatch
+		case "cert_skip_invalid":
+			certSkipInvalid, ok := mv.(bool)
+			if !ok {
+				return nil, &configErr{tk, certstore.ErrBadCertSkipInvalidField.Error()}
+			}
+			tc.CertSkipInvalid = certSkipInvalid
 		case "ocsp_peer":
 			switch vv := mv.(type) {
 			case bool:
@@ -4417,7 +4424,7 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 		}
 		config.Certificates = []tls.Certificate{cert}
 	case tc.CertStore != certstore.STOREEMPTY:
-		err := certstore.TLSConfig(tc.CertStore, tc.CertMatchBy, tc.CertMatch, &config)
+		err := certstore.TLSConfig(tc.CertStore, tc.CertMatchBy, tc.CertMatch, tc.CertSkipInvalid, &config)
 		if err != nil {
 			return nil, err
 		}
