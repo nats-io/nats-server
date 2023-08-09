@@ -4109,8 +4109,6 @@ func mqttDeliverPubRelCb(sub *subscription, pc *client, _ *Account, subject, rep
 	// This is immutable
 	sess := cc.mqtt.sess
 
-	// We lock to check some of the subscription's fields and if we need to
-	// keep track of pending acks, etc..
 	sess.mu.Lock()
 	if sess.c != cc {
 		sess.mu.Unlock()
