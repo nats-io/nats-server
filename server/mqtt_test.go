@@ -1967,7 +1967,7 @@ func testMQTTGetPubMsg(t testing.TB, c net.Conn, r *mqttReader, topic string, pa
 	return flags, pi
 }
 
-func testMQTTGetPubMsgEx(t testing.TB, c net.Conn, r *mqttReader, topic string, payload []byte) (byte, uint16, string) {
+func testMQTTGetPubMsgEx(t testing.TB, _ net.Conn, r *mqttReader, topic string, payload []byte) (byte, uint16, string) {
 	t.Helper()
 	b, pl := testMQTTReadPacket(t, r)
 	if pt := b & mqttPacketMask; pt != mqttPacketPub {
@@ -2003,6 +2003,21 @@ func testMQTTGetPubMsgEx(t testing.TB, c net.Conn, r *mqttReader, topic string, 
 	return pflags, pi, ptopic
 }
 
+func testMQTTGetPubRelMsg(t testing.TB, r *mqttReader, expectedPI uint16) {
+	t.Helper()
+	b, _ := testMQTTReadPacket(t, r)
+	if pt := b & mqttPacketMask; pt != mqttPacketPubRel {
+		t.Fatalf("Expected PUBREL packet %x, got %x", mqttPacketPubRel, pt)
+	}
+	pi, err := r.readUint16("packet identifier")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pi != expectedPI {
+		t.Fatalf("Expected packet identifier %v, got %v", expectedPI, pi)
+	}
+}
+
 func testMQTTSendPIPacket(packetType byte, t testing.TB, c net.Conn, pi uint16) {
 	t.Helper()
 	w := &mqttWriter{}
@@ -2021,7 +2036,6 @@ func testMQTTPublish(t testing.TB, c net.Conn, r *mqttReader, qos byte, dup, ret
 	if _, err := testMQTTWrite(c, w.Bytes()); err != nil {
 		t.Fatalf("Error writing PUBLISH proto: %v", err)
 	}
-	fmt.Printf("<>/<> testMQTTPublish: wrote PUBLISH\n")
 	switch qos {
 	case 1:
 		b, _ := testMQTTReadPacket(t, r)
@@ -2193,7 +2207,10 @@ func TestMQTTSub(t *testing.T) {
 
 func TestMQTTSubQoS(t *testing.T) {
 	o := testMQTTDefaultOptions()
+	o.Debug = false
+	o.Trace = true
 	s := testMQTTRunServer(t, o)
+	s.ConfigureLogger()
 	defer testMQTTShutdownServer(s)
 
 	nc := natsConnect(t, s.ClientURL())
@@ -2207,40 +2224,36 @@ func TestMQTTSubQoS(t *testing.T) {
 	defer mc.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 
-	mqttTopic := "foo/bar"
+	mqttTopic := "foo/bar/baz"
+	pubQOS := byte(2)
+	subQOS := byte(2)
+	subPI := uint16(123)
+	pubPI := uint16(456)
 
-	// Subscribe with QoS 1
-	// testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo/#", qos: 1}}, []byte{1})
-	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: mqttTopic, qos: 2}}, []byte{1})
+	testMQTTSub(t, subPI, mc, r, []*mqttFilter{{filter: mqttTopic, qos: subQOS}}, []byte{subQOS})
 	testMQTTFlush(t, mc, nil, r)
 
-	// // Publish from NATS, which means QoS 0
-	// natsPub(t, nc, "foo.bar", []byte("NATS"))
-	// // Will receive as QoS 0
-	// testMQTTCheckPubMsg(t, mc, r, mqttTopic, 0, []byte("NATS"))
-	// testMQTTCheckPubMsg(t, mc, r, mqttTopic, 0, []byte("NATS"))
+	testMQTTPublish(t, mcp, mpr, pubQOS, false, false, mqttTopic, pubPI, []byte("msg"))
 
-	// // Publish from MQTT with QoS 0
-	// testMQTTPublish(t, mcp, mpr, 0, false, false, mqttTopic, 0, []byte("msg"))
-	// // Will receive as QoS 0
-	// testMQTTCheckPubMsg(t, mc, r, mqttTopic, 0, []byte("msg"))
-	// testMQTTCheckPubMsg(t, mc, r, mqttTopic, 0, []byte("msg"))
-
-	// Publish from MQTT with QoS 2
-	testMQTTPublish(t, mcp, mpr, 2, false, false, mqttTopic, 1, []byte("msg"))
 	pflags1, pi1 := testMQTTGetPubMsg(t, mc, r, mqttTopic, []byte("msg"))
-	if pflags1 != 0x2 {
-		t.Fatalf("Expected flags to be 0x2, got %v", pflags1)
+	deliverQOS := mqttGetQoS(pflags1)
+	expectedQOS := pubQOS
+	if subQOS < pubQOS {
+		expectedQOS = subQOS
 	}
-	// pflags2, pi2 := testMQTTGetPubMsg(t, mc, r, mqttTopic, []byte("msg"))
-	// if pflags2 != 0x2 {
-	// 	t.Fatalf("Expected flags to be 0x2, got %v", pflags2)
-	// }
-	// if pi1 == pi2 {
-	// 	t.Fatalf("packet identifier for message 1: %v should be different from message 2", pi1)
-	// }
-	testMQTTSendPIPacket(mqttPacketPubAck, t, mc, pi1)
-	// testMQTTSendPIPacket(mqttPacketPubAck, t, mc, pi2)
+	if deliverQOS != expectedQOS {
+		t.Fatalf("Expected QoS %v, got %v", expectedQOS, deliverQOS)
+	}
+
+	switch expectedQOS {
+	case 1:
+		testMQTTSendPIPacket(mqttPacketPubAck, t, mc, pi1)
+
+	case 2:
+		testMQTTSendPIPacket(mqttPacketPubRec, t, mc, pi1)
+		testMQTTGetPubRelMsg(t, r, pi1)
+		testMQTTSendPIPacket(mqttPacketPubComp, t, mc, pi1)
+	}
 }
 
 func getSubQoS(sub *subscription) int {
