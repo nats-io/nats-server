@@ -28,9 +28,12 @@ import (
 )
 
 func runPowershellScript(scriptFile string, args []string) error {
-	_ = args
 	psExec, _ := exec.LookPath("powershell.exe")
+
 	execArgs := []string{psExec, "-command", fmt.Sprintf("& '%s'", scriptFile)}
+	if len(args) > 0 {
+		execArgs = append(execArgs, args...)
+	}
 
 	cmdImport := &exec.Cmd{
 		Path:   psExec,
@@ -247,6 +250,58 @@ func TestServerTLSWindowsCertStore(t *testing.T) {
 					t.Fatalf("expected repeated connection result %v to TLS authenticated server", tc.expect)
 				}
 				nc.Close()
+			}
+		})
+	}
+}
+
+// TestServerIgnoreExpiredCerts tests if the server skips expired certificates in configuration, and finds non-expired ones
+func TestServerIgnoreExpiredCerts(t *testing.T) {
+
+	// Server Identities: expired.pem; not-expired.pem
+	// Issuer: OU = NATS.io, CN = localhost
+	// Subject: OU = NATS.io Operators, CN = localhost
+
+	testCases := []struct {
+		certFile string
+		expect   bool
+	}{
+		{"expired.p12", false},
+		{"not-expired.p12", true},
+	}
+	for _, tc := range testCases {
+		t.Run(fmt.Sprintf("Server certificate: %s", tc.certFile), func(t *testing.T) {
+			// Make sure windows cert store is reset to avoid conflict with other tests
+			err := runPowershellScript("../test/configs/certs/tlsauth/certstore/delete-cert-from-store.ps1", nil)
+			if err != nil {
+				t.Fatalf("expected powershell cert delete to succeed: %s", err.Error())
+			}
+
+			// Provision Windows cert store with server cert and secret
+			err = runPowershellScript("../test/configs/certs/tlsauth/certstore/import-p12-server.ps1", []string{tc.certFile})
+			if err != nil {
+				t.Fatalf("expected powershell provision to succeed: %s", err.Error())
+			}
+			// Fire up the server
+			srvConfig := createConfFile(t, []byte(`
+			listen: "localhost:-1"
+			tls {
+				cert_store: "WindowsCurrentUser"
+				cert_match_by: "Subject"
+				cert_match: "NATS.io Operators"
+				cert_match_skip_invalid: true
+				timeout: 5
+			}
+			`))
+			defer removeFile(t, srvConfig)
+			cfg, _ := ProcessConfigFile(srvConfig)
+			if (cfg != nil) == tc.expect {
+				return
+			}
+			if tc.expect == false {
+				t.Fatalf("expected server start to fail with expired certificate")
+			} else {
+				t.Fatalf("expected server to start with non expired certificate")
 			}
 		})
 	}
