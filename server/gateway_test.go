@@ -6871,3 +6871,38 @@ func TestGatewaySwitchToInterestOnlyModeImmediately(t *testing.T) {
 	natsFlush(t, nc)
 	checkCount(t, gwcb, 1)
 }
+
+func TestGatewaySlowConsumer(t *testing.T) {
+	gatewayMaxPingInterval = 50 * time.Millisecond
+	defer func() { gatewayMaxPingInterval = gwMaxPingInterval }()
+
+	ob := testDefaultOptionsForGateway("B")
+	sb := RunServer(ob)
+	defer sb.Shutdown()
+
+	oa := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	sa := RunServer(oa)
+	defer sa.Shutdown()
+
+	waitForInboundGateways(t, sa, 1, 2*time.Second)
+	waitForOutboundGateways(t, sa, 1, 2*time.Second)
+	waitForInboundGateways(t, sb, 1, 2*time.Second)
+	waitForOutboundGateways(t, sb, 1, 2*time.Second)
+
+	c := sa.getOutboundGatewayConnection("B")
+	c.mu.Lock()
+	c.out.wdl = time.Nanosecond
+	c.mu.Unlock()
+
+	<-time.After(250 * time.Millisecond)
+	got := sa.NumSlowConsumersGateways()
+	expected := uint64(1)
+	if got != 1 {
+		t.Errorf("got: %d, expected: %d", got, expected)
+	}
+	got = sb.NumSlowConsumersGateways()
+	expected = 0
+	if got != expected {
+		t.Errorf("got: %d, expected: %d", got, expected)
+	}
+}

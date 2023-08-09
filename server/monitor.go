@@ -1214,6 +1214,7 @@ type Varz struct {
 	SystemAccount         string                `json:"system_account,omitempty"`
 	PinnedAccountFail     uint64                `json:"pinned_account_fails,omitempty"`
 	OCSPResponseCache     OCSPResponseCacheVarz `json:"ocsp_peer_cache,omitempty"`
+	SlowConsumersStats    *SlowConsumersStats   `json:"slow_consumer_stats"`
 }
 
 // JetStreamVarz contains basic runtime information about jetstream
@@ -1332,6 +1333,14 @@ type OCSPResponseCacheVarz struct {
 // VarzOptions are the options passed to Varz().
 // Currently, there are no options defined.
 type VarzOptions struct{}
+
+// SlowConsumersStats contains information about the slow consumers from different type of connections.
+type SlowConsumersStats struct {
+	Clients  uint64 `json:"clients"`
+	Routes   uint64 `json:"routes"`
+	Gateways uint64 `json:"gateways"`
+	Leafs    uint64 `json:"leafs"`
+}
 
 func myUptime(d time.Duration) string {
 	// Just use total seconds for uptime, and display days / years
@@ -1689,6 +1698,12 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 	v.OutMsgs = atomic.LoadInt64(&s.outMsgs)
 	v.OutBytes = atomic.LoadInt64(&s.outBytes)
 	v.SlowConsumers = atomic.LoadInt64(&s.slowConsumers)
+	v.SlowConsumersStats = &SlowConsumersStats{
+		Clients:  s.NumSlowConsumersClients(),
+		Routes:   s.NumSlowConsumersRoutes(),
+		Gateways: s.NumSlowConsumersGateways(),
+		Leafs:    s.NumSlowConsumersLeafs(),
+	}
 	v.PinnedAccountFail = atomic.LoadUint64(&s.pinnedAccFail)
 
 	// Make sure to reset in case we are re-using.

@@ -2027,8 +2027,18 @@ func TestClientSlowConsumerWithoutConnect(t *testing.T) {
 		if n := atomic.LoadInt64(&s.slowConsumers); n != 1 {
 			return fmt.Errorf("Expected 1 slow consumer, got: %v", n)
 		}
+		if n := s.scStats.clients.Load(); n != 1 {
+			return fmt.Errorf("Expected 1 slow consumer, got: %v", n)
+		}
 		return nil
 	})
+	varz, err := s.Varz(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if varz.SlowConsumersStats.Clients != 1 {
+		t.Error("Expected a slow consumer client in varz")
+	}
 }
 
 func TestClientNoSlowConsumerIfConnectExpected(t *testing.T) {

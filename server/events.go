@@ -2043,7 +2043,7 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 	a.mu.Unlock()
 }
 
-// Lock shoulc be held on entry
+// Lock should be held on entry.
 func (a *Account) statz() *AccountStat {
 	localConns := a.numLocalConnections()
 	leafConns := a.numLocalLeafNodes()
@@ -2055,10 +2055,12 @@ func (a *Account) statz() *AccountStat {
 		NumSubs:    a.sl.Count(),
 		Received: DataStats{
 			Msgs:  atomic.LoadInt64(&a.inMsgs),
-			Bytes: atomic.LoadInt64(&a.inBytes)},
+			Bytes: atomic.LoadInt64(&a.inBytes),
+		},
 		Sent: DataStats{
 			Msgs:  atomic.LoadInt64(&a.outMsgs),
-			Bytes: atomic.LoadInt64(&a.outBytes)},
+			Bytes: atomic.LoadInt64(&a.outBytes),
+		},
 		SlowConsumers: atomic.LoadInt64(&a.slowConsumers),
 	}
 }
