@@ -1028,7 +1028,7 @@ func TestMQTTTLSVerifyAndMap(t *testing.T) {
 			if !test.provideCert {
 				if err == nil {
 					t.Fatal("Expected error, did not get one")
-				} else if !strings.Contains(err.Error(), "bad certificate") {
+				} else if !strings.Contains(err.Error(), "bad certificate") && !strings.Contains(err.Error(), "certificate required") {
 					t.Fatalf("Unexpected error: %v", err)
 				}
 				return
