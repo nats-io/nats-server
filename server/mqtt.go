@@ -3994,7 +3994,7 @@ func mqttDeliverMsgCbQos0(sub *subscription, pc *client, _ *Account, subject, re
 
 		msgQOS := mqttGetQoS(pc.mqtt.pp.flags)
 		// This callback delivers only QOS0 messages to QOS0 subscriptions.
-		if subQOS > 0 && msgQOS > 0 {
+		if subQOS > 0 || msgQOS > 0 {
 			return
 		}
 		topic = pc.mqtt.pp.topic
