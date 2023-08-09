@@ -50,6 +50,7 @@ func testFileStoreAllPermutations(t *testing.T, fn func(t *testing.T, fcfg FileS
 		t.Run(subtestName, func(t *testing.T) {
 			fcfg.StoreDir = t.TempDir()
 			fn(t, fcfg)
+			time.Sleep(100 * time.Millisecond)
 		})
 	}
 }
