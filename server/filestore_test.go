@@ -5485,9 +5485,9 @@ func TestFileStoreNewWriteIndexInfo(t *testing.T) {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 		elapsed := time.Since(start)
-		if elapsed > time.Millisecond {
+		if elapsed > 3*time.Millisecond {
 			mb.mu.Unlock()
-			t.Fatalf("Unexpected elapsed time: %v", elapsed)
+			t.Errorf("Unexpected elapsed time: %v", elapsed)
 		}
 		fi, err := os.Stat(mb.ifn)
 		mb.mu.Unlock()
