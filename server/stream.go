@@ -475,7 +475,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 			for _, st := range cfg.Mirror.SubjectTransforms {
 				if st.Source != _EMPTY_ && !IsValidSubject(st.Source) {
 					jsa.mu.Unlock()
-					return nil, fmt.Errorf("subject filter '%s' for the mirror %w", st.Source, ErrBadSubject)
+					return nil, fmt.Errorf("invalid subject transform source '%s' for the mirror: %w", st.Source, ErrBadSubject)
 				}
 				// check the transform, if any, is valid
 				if st.Destination != _EMPTY_ {
