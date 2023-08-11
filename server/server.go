@@ -4252,3 +4252,36 @@ func (s *Server) changeRateLimitLogInterval(d time.Duration) {
 	default:
 	}
 }
+
+// DisconnectClientByID disconnects a client by connection ID
+func (s *Server) DisconnectClientByID(id uint64) error {
+	client := s.clients[id]
+	if client != nil {
+		client.closeConnection(Kicked)
+		return nil
+	}
+	return errors.New("no such client id")
+}
+
+// LDMClientByID sends a Lame Duck Mode info message to a client by connection ID
+func (s *Server) LDMClientByID(id uint64) error {
+	info := s.copyInfo()
+	info.LameDuckMode = true
+
+	c := s.clients[id]
+	if c != nil {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.opts.Protocol >= ClientProtoInfo &&
+			c.flags.isSet(firstPongSent) {
+			// sendInfo takes care of checking if the connection is still
+			// valid or not, so don't duplicate tests here.
+			c.Debugf("sending Lame Duck Mode info to client")
+			c.enqueueProto(c.generateClientInfoJSON(info))
+			return nil
+		} else {
+			return errors.New("ClientProtoInfo < ClientOps.Protocol or first pong not sent")
+		}
+	}
+	return errors.New("no such client id")
+}

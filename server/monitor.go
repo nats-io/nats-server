@@ -2416,6 +2416,8 @@ func (reason ClosedState) String() string {
 		return "Minimum Version Required"
 	case ClusterNamesIdentical:
 		return "Cluster Names Identical"
+	case Kicked:
+		return "Kicked"
 	}
 
 	return "Unknown State"
