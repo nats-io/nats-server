@@ -561,7 +561,7 @@ func TestParseDigest(t *testing.T) {
 					}
 				}
 			}
-			_, digest, err := ParseWithDigest(f.Name())
+			_, digest, err := ParseFileWithChecksDigest(f.Name())
 			if err != nil {
 				t.Fatal(err)
 			}
