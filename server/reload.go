@@ -1628,7 +1628,9 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 				diffOpts = append(diffOpts, &profBlockRateReload{newValue: new})
 			}
 		case "configdigest":
-			newOpts.ConfigDigest = newValue.(string)
+			// skip changes in config digest, this is handled already while
+			// processing the config.
+			continue
 		default:
 			// TODO(ik): Implement String() on those options to have a nice print.
 			// %v is difficult to figure what's what, %+v print private fields and

@@ -894,7 +894,7 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 	if configFile == _EMPTY_ {
 		return nil
 	}
-	m, digest, err := conf.ParseWithDigest(configFile)
+	m, digest, err := conf.ParseFileWithChecksDigest(configFile)
 	if err != nil {
 		return err
 	}
