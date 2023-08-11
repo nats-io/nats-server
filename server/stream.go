@@ -1787,7 +1787,7 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 		// a subsequent update to an existing tier will then move from existing past tier to existing new tier
 	}
 
-	if mset.isLeader() && ocfg.Retention != cfg.Retention && cfg.Retention == InterestPolicy {
+	if mset.isLeader() && mset.sa != nil && ocfg.Retention != cfg.Retention && cfg.Retention == InterestPolicy {
 		// Before we can update the retention policy for the consumer, we need
 		// the replica count of all consumers to match the stream.
 		for _, c := range mset.sa.consumers {
