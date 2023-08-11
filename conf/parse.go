@@ -127,9 +127,9 @@ func cleanupUsedEnvVars(m map[string]interface{}) {
 	}
 }
 
-// ParseWithDigest returns the processed config and a digest
+// ParseFileWithChecksDigest returns the processed config and a digest
 // that represents the configuration.
-func ParseWithDigest(fp string) (map[string]interface{}, string, error) {
+func ParseFileWithChecksDigest(fp string) (map[string]interface{}, string, error) {
 	data, err := os.ReadFile(fp)
 	if err != nil {
 		return nil, _EMPTY_, err
