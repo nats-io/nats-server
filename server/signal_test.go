@@ -76,7 +76,10 @@ func TestSignalToReOpenLogFile(t *testing.T) {
 }
 
 func TestSignalToReloadConfig(t *testing.T) {
-	opts, err := ProcessConfigFile("./configs/reload/basic.conf")
+	confA := []byte(`accounts { a { users = [{user: "a"}]}}`)
+	confB := []byte(`accounts { b { users = [{user: "b"}]}}`)
+	conf := createConfFile(t, confA)
+	opts, err := ProcessConfigFile(conf)
 	if err != nil {
 		t.Fatalf("Error processing config file: %v", err)
 	}
@@ -84,8 +87,14 @@ func TestSignalToReloadConfig(t *testing.T) {
 	s := RunServer(opts)
 	defer s.Shutdown()
 
-	// Repeat test to make sure that server services signals more than once...
-	for i := 0; i < 2; i++ {
+	// Repeat test to make sure that server services signals more than once,
+	// in case no changes there were detected then the reload would not happen.
+	for i := 0; i < 5; i++ {
+		if i%2 == 0 {
+			changeCurrentConfigContentWithNewContent(t, conf, confB)
+		} else {
+			changeCurrentConfigContentWithNewContent(t, conf, confA)
+		}
 		loaded := s.ConfigTime()
 
 		// Wait a bit to ensure ConfigTime changes.

@@ -984,6 +984,10 @@ func (s *Server) ReloadOptions(newOpts *Options) error {
 	mqttOrgPort := curOpts.MQTT.Port
 
 	s.mu.Unlock()
+	if curOpts.ConfigDigest == newOpts.ConfigDigest {
+		s.Noticef("Skipped reloading server configuration: no changes detected")
+		return nil
+	}
 
 	// In case "-cluster ..." was provided through the command line, this will
 	// properly set the Cluster.Host/Port etc...
