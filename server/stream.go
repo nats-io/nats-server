@@ -3270,7 +3270,6 @@ func (mset *stream) startingSequenceForSources() {
 		} else {
 			var trs []*subjectTransform
 			for _, str := range ssi.SubjectTransforms {
-				var err error
 				tr, err := NewSubjectTransform(str.Source, str.Destination)
 				if err != nil {
 					mset.srv.Errorf("Unable to get subject transform for source: %v", err)
