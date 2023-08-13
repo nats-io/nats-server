@@ -1668,7 +1668,7 @@ func TestSystemAccountWithGateways(t *testing.T) {
 
 	// If this tests fails with wrong number after 10 seconds we may have
 	// added a new inititial subscription for the eventing system.
-	checkExpectedSubs(t, 53, sa)
+	checkExpectedSubs(t, 55, sa)
 
 	// Create a client on B and see if we receive the event
 	urlb := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)
@@ -3410,6 +3410,66 @@ func TestServerEventsReload(t *testing.T) {
 
 	// See that the ping interval has not changed.
 	require_True(t, s.getOpts().PingInterval == 200*time.Millisecond)
+}
+
+func TestServerEventsLDMKick(t *testing.T) {
+	ldmed := make(chan bool, 1)
+	disconnected := make(chan bool, 1)
+
+	s, opts := runTrustedServer(t)
+	defer s.Shutdown()
+
+	acc, akp := createAccount(s)
+	s.setSystemAccount(acc)
+
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	ncs, err := nats.Connect(url, createUserCreds(t, s, akp))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ncs.Close()
+
+	_, akp2 := createAccount(s)
+
+	nc, err := nats.Connect(url, createUserCreds(t, s, akp2), nats.Name("TEST EVENTS LDM+KICK"), nats.LameDuckModeHandler(func(_ *nats.Conn) { ldmed <- true }))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	nc.SetDisconnectErrHandler(func(_ *nats.Conn, err error) { disconnected <- true })
+
+	cid, err := nc.GetClientID()
+	if err != nil {
+		t.Fatalf("Error on getting the CID: %v", err)
+	}
+
+	reqldm := LDMClientReq{CID: cid}
+	reqldmpayload, _ := json.Marshal(reqldm)
+	reqkick := KickClientReq{CID: cid}
+	reqkickpayload, _ := json.Marshal(reqkick)
+
+	_, err = ncs.Request(fmt.Sprintf("$SYS.REQ.SERVER.%s.LDM", s.ID()), reqldmpayload, time.Second)
+	if err != nil {
+		t.Fatalf("Error trying to publish the LDM request: %v", err)
+	}
+
+	select {
+	case <-ldmed:
+	case <-time.After(time.Second):
+		t.Fatalf("timeout waiting for the connection to receive the LDM signal")
+	}
+
+	_, err = ncs.Request(fmt.Sprintf("$SYS.REQ.SERVER.%s.KICK", s.ID()), reqkickpayload, time.Second)
+	if err != nil {
+		t.Fatalf("Error trying to publish the KICK request: %v", err)
+	}
+
+	select {
+	case <-disconnected:
+	case <-time.After(time.Second):
+		t.Fatalf("timeout waiting for the client to get disconnected")
+	}
 }
 
 func Benchmark_GetHash(b *testing.B) {

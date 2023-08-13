@@ -7029,6 +7029,7 @@ func TestLeafNodeSlowConsumer(t *testing.T) {
 	ao := DefaultOptions()
 	ao.LeafNode.Host = "127.0.0.1"
 	ao.LeafNode.Port = -1
+	ao.WriteDeadline = 1 * time.Millisecond
 	a := RunServer(ao)
 	defer a.Shutdown()
 
@@ -7036,21 +7037,9 @@ func TestLeafNodeSlowConsumer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error connecting: %v", err)
 	}
-	// Only leafnode slow consumers that made it past connect are tracked
-	// in the slow consumers counter.
-	if _, err := c.Write([]byte("CONNECT {}\r\n")); err != nil {
-		t.Fatalf("Error writing connect: %v", err)
-	}
-	if _, err := c.Write([]byte("PING\r\n")); err != nil {
-		t.Fatalf("Unexpected error writing PING: %v", err)
-	}
-	defer c.Close()
-	// Read info
-	br := bufio.NewReader(c)
-	br.ReadLine()
+	time.Sleep(5 * time.Millisecond)
 	a.mu.Lock()
-
-	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
 		a.grMu.Lock()
 		defer a.grMu.Unlock()
 		for _, cli := range a.grTmpClients {
@@ -7060,12 +7049,33 @@ func TestLeafNodeSlowConsumer(t *testing.T) {
 		return nil
 	})
 	a.mu.Unlock()
-	<-time.After(250 * time.Millisecond)
+
+	// Only leafnode slow consumers that made it past connect are tracked
+	// in the slow consumers counter.
+	if _, err := c.Write([]byte("CONNECT {}\r\n")); err != nil {
+		t.Fatalf("Error writing connect: %v", err)
+	}
+	// Read info
+	br := bufio.NewReader(c)
+	br.ReadLine()
+	for i := 0; i < 10; i++ {
+		if _, err := c.Write([]byte("PING\r\n")); err != nil {
+			t.Fatalf("Unexpected error writing PING: %v", err)
+		}
+	}
+	defer c.Close()
+	timeout := time.Now().Add(time.Second)
 	var (
-		got             = a.NumSlowConsumersLeafs()
+		got      uint64
 		expected uint64 = 1
 	)
-	if got != expected {
-		t.Errorf("got: %d, expected: %d", got, expected)
+	for time.Now().Before(timeout) {
+		got = a.NumSlowConsumersLeafs()
+		if got == expected {
+			return
+		}
+		time.Sleep(1 * time.Millisecond)
 	}
+	t.Fatalf("Timed out waiting for slow consumer leafnodes, got: %v, expected: %v", got, expected)
+
 }

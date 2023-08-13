@@ -57,6 +57,8 @@ const (
 	accConnsEventSubjNew      = "$SYS.ACCOUNT.%s.SERVER.CONNS"
 	accConnsEventSubjOld      = "$SYS.SERVER.ACCOUNT.%s.CONNS" // kept for backward compatibility
 	shutdownEventSubj         = "$SYS.SERVER.%s.SHUTDOWN"
+	clientKickReqSubj         = "$SYS.REQ.SERVER.%s.KICK"
+	clientLDMReqSubj          = "$SYS.REQ.SERVER.%s.LDM"
 	authErrorEventSubj        = "$SYS.SERVER.%s.CLIENT.AUTH.ERR"
 	authErrorAccountEventSubj = "$SYS.ACCOUNT.CLIENT.AUTH.ERR"
 	serverStatsSubj           = "$SYS.SERVER.%s.STATSZ"
@@ -1227,6 +1229,17 @@ func (s *Server) initEventTracking() {
 	subject = fmt.Sprintf(serverReloadReqSubj, s.info.ID)
 	if _, err := s.sysSubscribe(subject, s.noInlineCallback(s.reloadConfig)); err != nil {
 		s.Errorf("Error setting up server reload handler: %v", err)
+	}
+
+	// Client connection kick
+	subject = fmt.Sprintf(clientKickReqSubj, s.info.ID)
+	if _, err := s.sysSubscribe(subject, s.noInlineCallback(s.kickClient)); err != nil {
+		s.Errorf("Error setting up client kick service: %v", err)
+	}
+	// Client connection LDM
+	subject = fmt.Sprintf(clientLDMReqSubj, s.info.ID)
+	if _, err := s.sysSubscribe(subject, s.noInlineCallback(s.ldmClient)); err != nil {
+		s.Errorf("Error setting up client LDM service: %v", err)
 	}
 }
 
@@ -2711,6 +2724,49 @@ func (s *Server) reloadConfig(sub *subscription, c *client, _ *Account, subject,
 	s.zReq(c, reply, hdr, msg, optz, optz, func() (interface{}, error) {
 		// Reload the server config, as requested.
 		return nil, s.Reload()
+	})
+}
+
+type KickClientReq struct {
+	CID uint64 `json:"cid"`
+}
+
+type LDMClientReq struct {
+	CID uint64 `json:"cid"`
+}
+
+func (s *Server) kickClient(_ *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
+	if !s.eventsRunning() {
+		return
+	}
+
+	var req KickClientReq
+	if err := json.Unmarshal(msg, &req); err != nil {
+		s.sys.client.Errorf("Error unmarshalling kick client request: %v", err)
+		return
+	}
+
+	optz := &EventFilterOptions{}
+	s.zReq(c, reply, hdr, msg, optz, optz, func() (interface{}, error) {
+		return nil, s.DisconnectClientByID(req.CID)
+	})
+
+}
+
+func (s *Server) ldmClient(_ *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
+	if !s.eventsRunning() {
+		return
+	}
+
+	var req LDMClientReq
+	if err := json.Unmarshal(msg, &req); err != nil {
+		s.sys.client.Errorf("Error unmarshalling kick client request: %v", err)
+		return
+	}
+
+	optz := &EventFilterOptions{}
+	s.zReq(c, reply, hdr, msg, optz, optz, func() (interface{}, error) {
+		return nil, s.LDMClientByID(req.CID)
 	})
 }
 

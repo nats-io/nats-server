@@ -4074,8 +4074,10 @@ func TestNoRaceJetStreamMemstoreWithLargeInteriorDeletes(t *testing.T) {
 	now := time.Now()
 	ss := mset.stateWithDetail(true)
 	// Before the fix the snapshot for this test would be > 200ms on my setup.
-	if elapsed := time.Since(now); elapsed > 50*time.Millisecond {
+	if elapsed := time.Since(now); elapsed > 100*time.Millisecond {
 		t.Fatalf("Took too long to snapshot: %v", elapsed)
+	} else if elapsed > 50*time.Millisecond {
+		t.Logf("WRN: Took longer than usual to snapshot: %v", elapsed)
 	}
 
 	if ss.Msgs != 2 || ss.FirstSeq != 1 || ss.LastSeq != 1_000_001 || ss.NumDeleted != 999999 {

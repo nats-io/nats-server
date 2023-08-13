@@ -11435,13 +11435,13 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 	// Clear subjects.
 	cfg.Subjects = nil
 
-	// Source
+	// Mirrored
 	scfg := &nats.StreamConfig{
 		Name:     "S1",
 		Subjects: []string{"foo", "bar", "baz"},
 	}
 
-	// Create source stream
+	// Create mirrored stream
 	createStreamOk(scfg)
 
 	// Now create our mirror stream.
@@ -11471,7 +11471,7 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 		return nil
 	})
 
-	// Purge the source stream.
+	// Purge the mirrored stream.
 	if err := js.PurgeStream("S1"); err != nil {
 		t.Fatalf("Unexpected purge error: %v", err)
 	}
@@ -11551,6 +11551,101 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 		}
 		return nil
 	})
+
+	// Test subject filtering and transformation
+	createStreamServerStreamConfig := func(cfg *StreamConfig, errToCheck uint16) {
+		t.Helper()
+		req, err := json.Marshal(cfg)
+		require_NoError(t, err)
+
+		rm, err := nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
+		require_NoError(t, err)
+
+		var resp JSApiStreamCreateResponse
+		if err := json.Unmarshal(rm.Data, &resp); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		if errToCheck == 0 {
+			if resp.Error != nil {
+				t.Fatalf("Unexpected error: %+v", resp.Error)
+			}
+		} else {
+			if resp.Error.ErrCode != errToCheck {
+				t.Fatalf("Expected error %+v, got: %+v", errToCheck, resp.Error)
+			}
+		}
+	}
+
+	// check for errors
+	createStreamServerStreamConfig(&StreamConfig{
+		Name:    "MBAD",
+		Storage: FileStorage,
+		Mirror:  &StreamSource{Name: "S1", FilterSubject: "foo", SubjectTransforms: []SubjectTransformConfig{{Source: "foo", Destination: "foo3"}}},
+	}, ApiErrors[JSMirrorMultipleFiltersNotAllowed].ErrCode)
+
+	createStreamServerStreamConfig(&StreamConfig{
+		Name:    "MBAD",
+		Storage: FileStorage,
+		Mirror:  &StreamSource{Name: "S1", SubjectTransforms: []SubjectTransformConfig{{Source: ".*.", Destination: "foo3"}}},
+	}, ApiErrors[JSMirrorInvalidSubjectFilter].ErrCode)
+
+	createStreamServerStreamConfig(&StreamConfig{
+		Name:    "MBAD",
+		Storage: FileStorage,
+		Mirror:  &StreamSource{Name: "S1", SubjectTransforms: []SubjectTransformConfig{{Source: "*", Destination: "{{wildcard(2)}}"}}},
+	}, ApiErrors[JSStreamCreateErrF].ErrCode)
+
+	createStreamServerStreamConfig(&StreamConfig{
+		Name:    "MBAD",
+		Storage: FileStorage,
+		Mirror:  &StreamSource{Name: "S1", SubjectTransforms: []SubjectTransformConfig{{Source: "foo", Destination: ""}, {Source: "foo", Destination: "bar"}}},
+	}, ApiErrors[JSMirrorOverlappingSubjectFilters].ErrCode)
+
+	createStreamServerStreamConfig(&StreamConfig{
+		Name:    "M5",
+		Storage: FileStorage,
+		Mirror:  &StreamSource{Name: "S1", FilterSubject: "foo", SubjectTransformDest: "foo2"},
+	}, 0)
+
+	createStreamServerStreamConfig(&StreamConfig{
+		Name:    "M6",
+		Storage: FileStorage,
+		Mirror:  &StreamSource{Name: "S1", SubjectTransforms: []SubjectTransformConfig{{Source: "bar", Destination: "bar2"}, {Source: "baz", Destination: "baz2"}}},
+	}, 0)
+
+	// Send 100 messages on foo (there should already be 50 messages on bar and 100 on baz in the stream)
+	for i := 0; i < 100; i++ {
+		if _, err := js.Publish("foo", []byte("OK")); err != nil {
+			t.Fatalf("Unexpected publish error: %v", err)
+		}
+	}
+
+	var f = func(streamName string, subject string, subjectNumMsgs uint64, streamNumMsg uint64, firstSeq uint64, lastSeq uint64) func() error {
+		return func() error {
+			si, err := js2.StreamInfo(streamName, &nats.StreamInfoRequest{SubjectsFilter: ">"})
+			require_NoError(t, err)
+			if ss, ok := si.State.Subjects[subject]; !ok {
+				t.Log("Expected messages with the transformed subject")
+			} else {
+				if ss != subjectNumMsgs {
+					t.Fatalf("Expected %d messages on the transformed subject but got %d", subjectNumMsgs, ss)
+				}
+			}
+			if si.State.Msgs != streamNumMsg {
+				return fmt.Errorf("Expected %d stream messages, got state: %+v", streamNumMsg, si.State)
+			}
+			if si.State.FirstSeq != firstSeq || si.State.LastSeq != lastSeq {
+				return fmt.Errorf("Expected first sequence=%d and last sequence=%d, but got state: %+v", firstSeq, lastSeq, si.State)
+			}
+			return nil
+		}
+	}
+
+	checkFor(t, 2*time.Second, 100*time.Millisecond, f("M5", "foo2", 100, 100, 251, 350))
+	checkFor(t, 2*time.Second, 100*time.Millisecond, f("M6", "bar2", 50, 150, 101, 250))
+	checkFor(t, 2*time.Second, 100*time.Millisecond, f("M6", "baz2", 100, 150, 101, 250))
+
 }
 
 func TestJetStreamMirrorUpdatePreventsSubjects(t *testing.T) {

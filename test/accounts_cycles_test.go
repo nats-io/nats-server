@@ -419,17 +419,17 @@ func TestAccountSubjectMapping(t *testing.T) {
 // Alice imports from Bob with subject mapping
 func TestAccountImportSubjectMapping(t *testing.T) {
 	conf := createConfFile(t, []byte(`
-		port: -1
-		accounts {
-		  A {
-			users: [{user: a,  pass: x}]
-			imports [ {stream: {account: B, subject: "foo.*.*"}, to : "foo.$1.{{wildcard(2)}}"}]
-		  }
-		  B {
-			users: [{user: b, pass x}]
-		    exports [ { stream: ">" } ]
-		  }
-		}
+                port: -1
+                accounts {
+                  A {
+                      users: [{user: a,  pass: x}]
+                      imports [ {stream: {account: B, subject: "foo.*.*"}, to : "foo.$1.{{wildcard(2)}}"}]
+                  }
+                  B {
+                      users: [{user: b, pass x}]
+                      exports [ { stream: ">" } ]
+                  }
+                }
 	`))
 
 	s, opts := RunServerWithConfig(conf)
@@ -449,6 +449,7 @@ func TestAccountImportSubjectMapping(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	sub1.AutoUnsubscribe(numMessages)
+	ncA.Flush()
 
 	ncB := clientConnectToServerWithUP(t, opts, "b", "x")
 	defer ncB.Close()
@@ -463,7 +464,12 @@ func TestAccountImportSubjectMapping(t *testing.T) {
 	}
 
 	for i := 0; i < numMessages; i++ {
-		subject := <-subjectsReceived
+		var subject string
+		select {
+		case subject = <-subjectsReceived:
+		case <-time.After(1 * time.Second):
+			t.Fatal("Timed out waiting for messages")
+		}
 		sTokens := strings.Split(subject, ".")
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
