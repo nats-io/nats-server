@@ -2141,8 +2141,10 @@ func TestMQTTPublish(t *testing.T) {
 
 func TestMQTTSub(t *testing.T) {
 	o := testMQTTDefaultOptions()
+	o.Trace = true
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownServer(s)
+	s.ConfigureLogger()
 
 	nc := natsConnect(t, s.ClientURL())
 	defer nc.Close()
@@ -2208,7 +2210,7 @@ func TestMQTTSub(t *testing.T) {
 func TestMQTTSubQoS(t *testing.T) {
 	o := testMQTTDefaultOptions()
 	o.Debug = false
-	o.Trace = true
+	o.Trace = false
 	s := testMQTTRunServer(t, o)
 	s.ConfigureLogger()
 	defer testMQTTShutdownServer(s)
@@ -2254,6 +2256,9 @@ func TestMQTTSubQoS(t *testing.T) {
 		testMQTTGetPubRelMsg(t, r, pi1)
 		testMQTTSendPIPacket(mqttPacketPubComp, t, mc, pi1)
 	}
+
+	testMQTTExpectNothing(t, r)
+	fmt.Printf("<>/<> END\n")
 }
 
 func getSubQoS(sub *subscription) int {
@@ -2611,10 +2616,9 @@ func TestMQTTSubWithNATSStream(t *testing.T) {
 
 func TestMQTTTrackPendingOverrun(t *testing.T) {
 	sess := &mqttSession{pending: make(map[uint16]*mqttPending)}
-	sub := &subscription{mqtt: &mqttSub{qos: 1}}
 
 	sess.ppi = 0xFFFF
-	pi, _ := sess.trackPending(1, _EMPTY_, sub)
+	pi, _ := sess.trackPending(_EMPTY_, _EMPTY_)
 	if pi != 1 {
 		t.Fatalf("Expected 1, got %v", pi)
 	}
@@ -2623,13 +2627,13 @@ func TestMQTTTrackPendingOverrun(t *testing.T) {
 	for i := 1; i <= 0xFFFF; i++ {
 		sess.pending[uint16(i)] = p
 	}
-	pi, _ = sess.trackPending(1, _EMPTY_, sub)
+	pi, _ = sess.trackPending(_EMPTY_, _EMPTY_)
 	if pi != 0 {
 		t.Fatalf("Expected 0, got %v", pi)
 	}
 
 	delete(sess.pending, 1234)
-	pi, _ = sess.trackPending(1, _EMPTY_, sub)
+	pi, _ = sess.trackPending(_EMPTY_, _EMPTY_)
 	if pi != 1234 {
 		t.Fatalf("Expected 1234, got %v", pi)
 	}
