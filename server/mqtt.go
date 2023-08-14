@@ -721,7 +721,7 @@ func (c *client) mqttParse(buf []byte) error {
 			var pi uint16
 			pi, err = mqttParsePIPacket(r, pl)
 			if trace {
-				c.traceInOp("MQTT-PUBACK", errOrTrace(err, fmt.Sprintf("pi=%v", pi)))
+				c.traceInOp("PUBACK", errOrTrace(err, fmt.Sprintf("pi=%v", pi)))
 			}
 			if err == nil {
 				c.mqttProcessPubAckAndComp(pi)
@@ -731,7 +731,7 @@ func (c *client) mqttParse(buf []byte) error {
 			var pi uint16
 			pi, err = mqttParsePIPacket(r, pl)
 			if trace {
-				c.traceInOp("MQTT-PUBREC", errOrTrace(err, fmt.Sprintf("pi=%v", pi)))
+				c.traceInOp("PUBREC", errOrTrace(err, fmt.Sprintf("pi=%v", pi)))
 			}
 			if err == nil {
 				err = c.mqttProcessPubRec(pi)
@@ -741,7 +741,7 @@ func (c *client) mqttParse(buf []byte) error {
 			var pi uint16
 			pi, err = mqttParsePIPacket(r, pl)
 			if trace {
-				c.traceInOp("MQTT-PUBCOMP", errOrTrace(err, fmt.Sprintf("pi=%v", pi)))
+				c.traceInOp("PUBCOMP", errOrTrace(err, fmt.Sprintf("pi=%v", pi)))
 			}
 			if err == nil {
 				c.mqttProcessPubAckAndComp(pi)
@@ -753,7 +753,7 @@ func (c *client) mqttParse(buf []byte) error {
 			pp.flags = b & mqttPacketFlagMask
 			err = c.mqttParsePub(r, pl, pp, hasMappings)
 			if trace {
-				c.traceInOp("MQTT-PUBLISH", errOrTrace(err, mqttPubTrace(pp)))
+				c.traceInOp("PUBLISH", errOrTrace(err, mqttPubTrace(pp)))
 				if err == nil {
 					c.mqttTraceMsg(pp.msg)
 				}
@@ -766,7 +766,7 @@ func (c *client) mqttParse(buf []byte) error {
 			var pi uint16
 			pi, err = mqttParsePIPacket(r, pl)
 			if trace {
-				c.traceInOp("MQTT-PUBREL", errOrTrace(err, fmt.Sprintf("pi=%v", pi)))
+				c.traceInOp("PUBREL", errOrTrace(err, fmt.Sprintf("pi=%v", pi)))
 			}
 			if err == nil {
 				s.mqttProcessPubRel(c, pi, trace)
@@ -778,12 +778,12 @@ func (c *client) mqttParse(buf []byte) error {
 			var subs []*subscription
 			pi, filters, err = c.mqttParseSubs(r, b, pl)
 			if trace {
-				c.traceInOp("MQTT-SUBSCRIBE", errOrTrace(err, mqttSubscribeTrace(pi, filters)))
+				c.traceInOp("SUBSCRIBE", errOrTrace(err, mqttSubscribeTrace(pi, filters)))
 			}
 			if err == nil {
 				subs, err = c.mqttProcessSubs(filters)
 				if err == nil && trace {
-					c.traceOutOp("MQTT-SUBACK", []byte(fmt.Sprintf("pi=%v", pi)))
+					c.traceOutOp("SUBACK", []byte(fmt.Sprintf("pi=%v", pi)))
 				}
 			}
 			if err == nil {
@@ -796,12 +796,12 @@ func (c *client) mqttParse(buf []byte) error {
 			var filters []*mqttFilter
 			pi, filters, err = c.mqttParseUnsubs(r, b, pl)
 			if trace {
-				c.traceInOp("MQTT-UNSUBSCRIBE", errOrTrace(err, mqttUnsubscribeTrace(pi, filters)))
+				c.traceInOp("UNSUBSCRIBE", errOrTrace(err, mqttUnsubscribeTrace(pi, filters)))
 			}
 			if err == nil {
 				err = c.mqttProcessUnsubs(filters)
 				if err == nil && trace {
-					c.traceOutOp("MQTT-UNSUBACK", []byte(fmt.Sprintf("pi=%v", pi)))
+					c.traceOutOp("UNSUBACK", []byte(fmt.Sprintf("pi=%v", pi)))
 				}
 			}
 			if err == nil {
@@ -811,11 +811,11 @@ func (c *client) mqttParse(buf []byte) error {
 		// Packets that we get both as a receiver and sender: PING, CONNECT, DISCONNECT
 		case mqttPacketPing:
 			if trace {
-				c.traceInOp("MQTT-PINGREQ", nil)
+				c.traceInOp("PINGREQ", nil)
 			}
 			c.mqttEnqueuePingResp()
 			if trace {
-				c.traceOutOp("MQTT-PINGRESP", nil)
+				c.traceOutOp("PINGRESP", nil)
 			}
 
 		case mqttPacketConnect:
@@ -833,12 +833,12 @@ func (c *client) mqttParse(buf []byte) error {
 			// after parsing the client ID itself.
 			c.ncs.Store(fmt.Sprintf("%s - %q", c, c.mqtt.cid))
 			if trace && cp != nil {
-				c.traceInOp("MQTT-CONNECT", errOrTrace(err, c.mqttConnectTrace(cp)))
+				c.traceInOp("CONNECT", errOrTrace(err, c.mqttConnectTrace(cp)))
 			}
 			if rc != 0 {
 				c.mqttEnqueueConnAck(rc, sessp)
 				if trace {
-					c.traceOutOp("MQTT-CONNACK", []byte(fmt.Sprintf("sp=%v rc=%v", sessp, rc)))
+					c.traceOutOp("CONNACK", []byte(fmt.Sprintf("sp=%v rc=%v", sessp, rc)))
 				}
 			} else if err == nil {
 				if err = s.mqttProcessConnect(c, cp, trace); err != nil {
@@ -854,7 +854,7 @@ func (c *client) mqttParse(buf []byte) error {
 
 		case mqttPacketDisconnect:
 			if trace {
-				c.traceInOp("MQTT-DISCONNECT", nil)
+				c.traceInOp("DISCONNECT", nil)
 			}
 			// Normal disconnect, we need to discard the will.
 			// Spec [MQTT-3.1.2-8]
@@ -2344,7 +2344,7 @@ func (as *mqttAccountSessionManager) serializeRetainedMsgsForSub(sess *mqttSessi
 				pi:    pi,
 				sz:    len(rm.Msg),
 			}
-			c.traceOutOp("MQTT-PUBLISH", []byte(mqttPubTrace(&pp)))
+			c.traceOutOp("PUBLISH", []byte(mqttPubTrace(&pp)))
 		}
 	}
 }
@@ -3030,7 +3030,7 @@ func (s *Server) mqttProcessConnect(c *client, cp *mqttConnectProto, trace bool)
 	sendConnAck := func(rc byte, sessp bool) {
 		c.mqttEnqueueConnAck(rc, sessp)
 		if trace {
-			c.traceOutOp("MQTT-CONNACK", []byte(fmt.Sprintf("sp=%v rc=%v", sessp, rc)))
+			c.traceOutOp("CONNACK", []byte(fmt.Sprintf("sp=%v rc=%v", sessp, rc)))
 		}
 	}
 
@@ -3040,7 +3040,7 @@ func (s *Server) mqttProcessConnect(c *client, cp *mqttConnectProto, trace bool)
 	c.mu.Unlock()
 	if !s.isClientAuthorized(c) {
 		if trace {
-			c.traceOutOp("MQTT-CONNACK", []byte(fmt.Sprintf("sp=%v rc=%v", false, mqttConnAckRCNotAuthorized)))
+			c.traceOutOp("CONNACK", []byte(fmt.Sprintf("sp=%v rc=%v", false, mqttConnAckRCNotAuthorized)))
 		}
 		c.authViolation()
 		return ErrAuthentication
@@ -3787,13 +3787,13 @@ func (c *client) mqttEnqueuePubResponse(packetType byte, pi uint16, trace bool) 
 		name := "(???)"
 		switch packetType {
 		case mqttPacketPubAck:
-			name = "MQTT-PUBACK"
+			name = "PUBACK"
 		case mqttPacketPubRec:
-			name = "MQTT-PUBREC"
+			name = "PUBREC"
 		case mqttPacketPubRel:
-			name = "MQTT-PUBREL"
+			name = "PUBREL"
 		case mqttPacketPubComp:
-			name = "MQTT-PUBCOMP"
+			name = "PUBCOMP"
 		}
 		c.traceOutOp(name, []byte(fmt.Sprintf("pi=%v", pi)))
 	}
@@ -4227,7 +4227,7 @@ func (c *client) mqttEnqueuePublishMsgTo(cc *client, sub *subscription, pi uint1
 			pi:    pi,
 			sz:    len(msg),
 		}
-		cc.traceOutOp("MQTT-PUBLISH", []byte(mqttPubTrace(&pp)))
+		cc.traceOutOp("PUBLISH", []byte(mqttPubTrace(&pp)))
 	}
 }
 
