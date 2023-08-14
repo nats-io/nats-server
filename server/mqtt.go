@@ -352,7 +352,6 @@ type mqtt struct {
 }
 
 type mqttPending struct {
-	packetType   byte   // mqttPacketPub or mqttPacketPubRel
 	sseq         uint64 // stream sequence
 	jsAckSubject string // the ACK subject to send the ack to
 	jsDur        string // JS durable name
@@ -1259,7 +1258,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 	} else if si == nil {
 		// Create the stream for the incoming QoS2 messages that have not been
 		// PUBREL-ed by the sender. Subject is
-		// "$MQTT.qos2.<domain>.<session>.<PI>", the .PI is to achieve exactly
+		// "$MQTT.qos2.<session>.<PI>", the .PI is to achieve exactly
 		// once for each PI.
 		//
 		// <>/<> TODO: MaxAge, other static limits configurable?
@@ -1297,7 +1296,6 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		if _, _, err := jsa.createStream(cfg); isErrorOtherThan(err, JSStreamNameExistErr) {
 			return nil, fmt.Errorf("create QoS2 incoming messages stream for account %q: %v", accName, err)
 		}
-		fmt.Printf("<>/<> created pubrel stream: %q foor %q\n", cfg.Name, cfg.Subjects[0])
 	}
 
 	// This is the only case where we need "si" after lookup/create
@@ -1627,9 +1625,7 @@ func (jsa *mqttJSA) storeMsgWithKind(kind, subject string, headers int, msg []by
 		return nil, err
 	}
 	smr := smri.(*JSPubAckResponse)
-	if smr.ToError() == nil {
-		fmt.Printf("<>/<> jsa.storeMsgWithKind: %s: %q; \n", subject, string(msg))
-	}
+	fmt.Printf("<>/<> jsa.storeMsgWithKind: %v, %s: %q;\n", smr.ToError(), subject, string(msg))
 	return smr, smr.ToError()
 }
 
@@ -2254,7 +2250,6 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 		// <>/<> TODO: persist and restore restore sess.pubRelConsumer
 		havePubRelConsumer = (sess.pubRelConsumer != nil)
 		asAndSessUnlock()
-		fmt.Printf("<>/<> process subs: havePubRelConsumer: %v\n", havePubRelConsumer)
 
 		if err == nil {
 			// This will create (if not already exist) a JS consumer for subscriptions
@@ -2299,7 +2294,6 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 			addJSConsToSess(fwcsid, fwjscons)
 		}
 
-		fmt.Printf("<>/<> process subs: %q %v\n", f.filter, f.qos)
 		if f.qos == 2 {
 			haveQOS2 = true
 		}
@@ -3473,8 +3467,6 @@ func (s *Server) mqttProcessPub(c *client, pp *mqttPublish, trace bool) error {
 func (s *Server) mqttInitiateMsgDelivery(c *client, pp *mqttPublish) error {
 	natsMsg, headerLen := mqttNewDeliverableMessage(pp, false)
 
-	fmt.Printf("<>/<> initiated delivery for message: %q\n", string(natsMsg[headerLen:]))
-
 	// Broadcast the message just as we do for QoS0, but this message is
 	// recognized as QoS1 (stored in the NATS header), so it will be ignored
 	// by the QoS1+ subscriptions. Those will expect the message to be
@@ -3484,7 +3476,6 @@ func (s *Server) mqttInitiateMsgDelivery(c *client, pp *mqttPublish) error {
 		return nil
 	}
 
-	// <>/<> what is addToPCD?
 	// We need to call flushClients now since this we may have called c.addToPCD
 	// with destination clients (possibly a route). Without calling flushClients
 	// the following call may then be stuck waiting for a reply that may never
@@ -3492,9 +3483,16 @@ func (s *Server) mqttInitiateMsgDelivery(c *client, pp *mqttPublish) error {
 	// see addToPCD and writeLoop for details).
 	c.flushClients(0)
 
-	// Store the message in JetStream as "$MQTT.msgs.<delivery-subject>"
-	_, err := c.mqtt.sess.jsa.storeMsg(mqttStreamSubjectPrefix+string(pp.subject), headerLen, natsMsg)
-	return err
+	// If QOS 0 messages don't need to be stored, other (1 and 2) do. Store them
+	// JetStream under "$MQTT.msgs.<delivery-subject>"
+	if qos := mqttGetQoS(pp.flags); qos > 0 {
+		_, err := c.mqtt.sess.jsa.storeMsg(mqttStreamSubjectPrefix+string(pp.subject), headerLen, natsMsg)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (s *Server) mqttStoreQOS2Msg(c *client, pp *mqttPublish) error {
@@ -3513,17 +3511,9 @@ func (s *Server) mqttStoreQOS2Msg(c *client, pp *mqttPublish) error {
 }
 
 func (c *client) mqttQOS2InternalSubject(pi uint16) string {
-	clientID := c.mqtt.cid
-
-	c.mu.Lock()
-	acc := c.acc
-	c.mu.Unlock()
-	accName := acc.GetName()
-
 	return strings.Join([]string{
 		mqttQOS2IncomingMsgsStreamSubjectPrefixNoSep,
-		accName,
-		clientID,
+		c.mqtt.cid,
 		strconv.FormatUint(uint64(pi), 10),
 	}, ".")
 }
@@ -3546,7 +3536,7 @@ func (s *Server) mqttProcessPubRel(c *client, pi uint16, trace bool) {
 		return
 	}
 	// Best attempt to delete the message from the QoS2 stream.
-	_ = asm.jsa.deleteMsg(mqttQOS2IncomingMsgsStreamName, stored.Sequence, true)
+	asm.jsa.deleteMsg(mqttQOS2IncomingMsgsStreamName, stored.Sequence, true)
 
 	// only MQTT QoS2 messages should be here, and they must have a subject.
 	h := mqttParseNATSMsgHeader(stored.Header)
@@ -3554,19 +3544,18 @@ func (s *Server) mqttProcessPubRel(c *client, pi uint16, trace bool) {
 		return
 	}
 
-	// msgToSend := append(stored.Header, stored.Data...)
 	pp := &mqttPublish{
 		topic:   natsSubjectToMQTTTopic(string(h.subject)),
 		subject: h.subject,
 		mapped:  h.mapped,
 		msg:     stored.Data,
-		sz:      -1, // <>/<> TODO what should sz be?
+		sz:      len(stored.Data),
 		pi:      pi,
 		// <>/<> TODO store and restore retain flag
 		flags: h.qos << 1,
 	}
 
-	_ = s.mqttInitiateMsgDelivery(c, pp)
+	s.mqttInitiateMsgDelivery(c, pp)
 }
 
 // Invoked when processing an inbound client message. If the "retain" flag is
@@ -3794,18 +3783,18 @@ func (c *client) mqttEnqueuePubResponse(packetType byte, pi uint16, trace bool) 
 	c.enqueueProto(proto[:4])
 	c.mu.Unlock()
 
-	name := "(???)"
-	switch packetType {
-	case mqttPacketPubAck:
-		name = "MQTT-PUBACK"
-	case mqttPacketPubRec:
-		name = "MQTT-PUBREC"
-	case mqttPacketPubRel:
-		name = "MQTT-PUBREL"
-	case mqttPacketPubComp:
-		name = "MQTT-PUBCOMP"
-	}
 	if trace {
+		name := "(???)"
+		switch packetType {
+		case mqttPacketPubAck:
+			name = "MQTT-PUBACK"
+		case mqttPacketPubRec:
+			name = "MQTT-PUBREC"
+		case mqttPacketPubRel:
+			name = "MQTT-PUBREL"
+		case mqttPacketPubComp:
+			name = "MQTT-PUBCOMP"
+		}
 		c.traceOutOp(name, []byte(fmt.Sprintf("pi=%v", pi)))
 	}
 }
@@ -3827,7 +3816,6 @@ func mqttParsePIPacket(r *mqttReader, pl int) (uint16, error) {
 //
 // Runs from the client's readLoop. No lock held on entry.
 func (c *client) mqttProcessPubAckAndComp(pi uint16) {
-	fmt.Printf("<>/<> mqttProcessPubAckAndComp: %v\n", pi)
 	sess := c.mqtt.sess
 	if sess == nil || sess.c != c {
 		return
@@ -3858,11 +3846,9 @@ func (c *client) mqttProcessPubAckAndComp(pi uint16) {
 	// "client info" header. This is not a JS API request per se.
 	sess.jsa.sendq.push(&mqttJSPubMsg{subj: jsAckSubject, hdr: -1})
 	sess.mu.Unlock()
-	fmt.Printf("<>/<> mqttProcessPubAckAndComp: sent ack %q\n", jsAckSubject)
 }
 
 func (s *mqttSession) pubRelSubject() string {
-	// TODO <>/<> is this sufficiently unique? domain? account?
 	return mqttQOS2PubRelStoredSubjectPrefix + s.idHash
 }
 
@@ -3906,7 +3892,6 @@ func (c *client) mqttProcessPubRec(pi uint16) error {
 	// Move the PI tracking to the PUBREL consumer. It will not have a
 	// sequence nor an ACK subject until we get a PUBREL callback on the
 	// subscription. See <>/<>
-	sess.pending[pi].packetType = mqttPacketPubRel
 	sess.pending[pi].jsDur = sess.pubRelConsumer.Durable
 	sess.pending[pi].jsAckSubject = ""
 	sess.pending[pi].sseq = 0
@@ -4069,9 +4054,10 @@ func mqttDeliverMsgCbQos0(sub *subscription, pc *client, _ *Account, subject, re
 	if pc.isMqtt() {
 		// This is an MQTT publisher directly connected to this server.
 
+		// If the message was published with a QOS > 0 and the sub has the QOS >
+		// 0 then the message will be delivered by the other callback.
 		msgQOS := mqttGetQoS(pc.mqtt.pp.flags)
-		// This callback delivers only QOS0 messages to QOS0 subscriptions.
-		if subQOS > 0 || msgQOS > 0 {
+		if subQOS > 0 && msgQOS > 0 {
 			return
 		}
 		topic = pc.mqtt.pp.topic
@@ -4108,10 +4094,6 @@ func mqttDeliverMsgCbQos0(sub *subscription, pc *client, _ *Account, subject, re
 // the message contains a NATS/MQTT header that indicates that this is a
 // published QoS1+ message.
 func mqttDeliverMsgCbQos1(sub *subscription, pc *client, _ *Account, subject, reply string, rmsg []byte) {
-	if sub.mqtt == nil {
-		return
-	}
-
 	// Message on foo.bar is stored under $MQTT.msgs.foo.bar, so the subject has to be
 	// at least as long as the stream subject prefix "$MQTT.msgs.", and after removing
 	// the prefix, has to be at least 1 character long.
@@ -4132,7 +4114,7 @@ func mqttDeliverMsgCbQos1(sub *subscription, pc *client, _ *Account, subject, re
 
 	// This is immutable
 	sess := sub.client.mqtt.sess
-	if sess.c != sub.client || sub.mqtt == nil {
+	if sess.c != sub.client {
 		return
 	}
 
@@ -4148,12 +4130,13 @@ func mqttDeliverMsgCbQos1(sub *subscription, pc *client, _ *Account, subject, re
 	if qos > sub.mqtt.qos {
 		qos = sub.mqtt.qos
 	}
+	jsDur := sub.mqtt.jsDur
 	sess.mu.Unlock()
 	if qos == 0 {
 		return
 	}
 
-	pi, dup := sess.trackPending(sub.mqtt.jsDur, reply)
+	pi, dup := sess.trackPending(jsDur, reply)
 	if pi == 0 {
 		// We have reached max pending, don't send the message now.
 		// JS will cause a redelivery and if by then the number of pending
@@ -4161,23 +4144,20 @@ func mqttDeliverMsgCbQos1(sub *subscription, pc *client, _ *Account, subject, re
 		return
 	}
 
-	topic := natsSubjectToMQTTTopic(strippedSubj)
-	retained := false // <>/<>
-	pc.mqttEnqueuePublishMsgTo(sub.client, sub, pi, qos, dup, retained, topic, msg)
+	pc.mqttEnqueuePublishMsgTo(sub.client, sub, pi, qos, dup,
+		false, // retanied
+		natsSubjectToMQTTTopic(strippedSubj), msg)
 }
 
 func mqttDeliverPubRelCb(sub *subscription, pc *client, _ *Account, subject, reply string, rmsg []byte) {
 	// precautions
-	fmt.Printf("<>/<> mqttDeliverPubRelCb 0\n")
 	if sub.client.mqtt == nil {
 		return
 	}
-	fmt.Printf("<>/<> mqttDeliverPubRelCb 1\n")
 	sess := sub.client.mqtt.sess
 	if sess == nil || len(sess.pending) == 0 || len(sess.cpending) == 0 {
 		return
 	}
-	fmt.Printf("<>/<> mqttDeliverPubRelCb 2\n")
 
 	hdr, _ := pc.msgParts(rmsg)
 	pi := mqttParseNATSPubRelHeader(hdr)
@@ -4193,11 +4173,10 @@ func mqttDeliverPubRelCb(sub *subscription, pc *client, _ *Account, subject, rep
 		return
 	}
 	pending.jsAckSubject = reply
+	trace := sub.client.trace
 	sess.mu.Unlock()
 
-	fmt.Printf("<>/<> mqttDeliverPubRelCb 4: stored ack subject %q for PI %v\n", reply, pi)
-
-	sub.client.mqttEnqueuePubRel(pi)
+	sub.client.mqttEnqueuePubResponse(mqttPacketPubRel, pi, trace)
 }
 
 // The MQTT Server MUST NOT match Topic Filters starting with a wildcard character (# or +)
@@ -4249,20 +4228,6 @@ func (c *client) mqttEnqueuePublishMsgTo(cc *client, sub *subscription, pi uint1
 			sz:    len(msg),
 		}
 		cc.traceOutOp("MQTT-PUBLISH", []byte(mqttPubTrace(&pp)))
-	}
-}
-
-func (c *client) mqttEnqueuePubRel(pi uint16) {
-	proto := [4]byte{mqttPacketPubRel, 0x2, 0, 0}
-	proto[2] = byte(pi >> 8)
-	proto[3] = byte(pi)
-	c.mu.Lock()
-	c.enqueueProto(proto[:4])
-	trace := c.trace
-	c.mu.Unlock()
-
-	if trace {
-		c.traceOutOp("PUBREL", []byte(fmt.Sprintf("pi=%v", pi)))
 	}
 }
 
@@ -4384,8 +4349,6 @@ func (sess *mqttSession) createPubRelConsumer(c *client) (*ConsumerConfig, error
 		return nil, err
 	}
 
-	fmt.Printf("<>/<> createPubRelConsumer: created %q %q %q\n", cc.Durable, cc.FilterSubject, cc.DeliverSubject)
-
 	sess.mu.Lock()
 	sess.pubRelConsumer = cc
 	_, err := c.processSub(deliverSubjB, nil, deliverSubjB, mqttDeliverPubRelCb, false)
@@ -4396,7 +4359,6 @@ func (sess *mqttSession) createPubRelConsumer(c *client) (*ConsumerConfig, error
 		return nil, err
 	}
 	sess.mu.Unlock()
-	fmt.Printf("<>/<> createPubRelConsumer: subscribed to %q \n", deliverSubj)
 
 	return cc, nil
 }

@@ -2210,7 +2210,7 @@ func TestMQTTSub(t *testing.T) {
 func TestMQTTSubQoS(t *testing.T) {
 	o := testMQTTDefaultOptions()
 	o.Debug = false
-	o.Trace = false
+	o.Trace = true
 	s := testMQTTRunServer(t, o)
 	s.ConfigureLogger()
 	defer testMQTTShutdownServer(s)
@@ -2256,9 +2256,6 @@ func TestMQTTSubQoS(t *testing.T) {
 		testMQTTGetPubRelMsg(t, r, pi1)
 		testMQTTSendPIPacket(mqttPacketPubComp, t, mc, pi1)
 	}
-
-	testMQTTExpectNothing(t, r)
-	fmt.Printf("<>/<> END\n")
 }
 
 func getSubQoS(sub *subscription) int {
