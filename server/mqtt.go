@@ -1622,7 +1622,6 @@ func (jsa *mqttJSA) storeMsgWithKind(kind, subject string, headers int, msg []by
 		return nil, err
 	}
 	smr := smri.(*JSPubAckResponse)
-	fmt.Printf("<>/<> jsa.storeMsgWithKind: %v, %s: %q;\n", smr.ToError(), subject, string(msg))
 	return smr, smr.ToError()
 }
 
@@ -3815,7 +3814,6 @@ func (s *mqttSession) pubRelSubject() string {
 }
 
 func (s *mqttSession) pubRelDeliverySubject() string {
-	// TODO <>/<> is this sufficiently unique? domain? account?
 	return mqttQOS2PubRelDeliverySubjectPrefix + s.idHash
 }
 
@@ -3831,7 +3829,7 @@ func (c *client) mqttProcessPubRec(pi uint16) error {
 
 	// Initiate PUBREL delivery
 	natsMsg, headerLen := mqttNewDeliverablePubRel(pi)
-	_, err := c.mqtt.sess.jsa.storeMsg(sess.pubRelSubject(), headerLen, natsMsg)
+	_, err := sess.jsa.storeMsg(sess.pubRelSubject(), headerLen, natsMsg)
 	if err != nil {
 		return err
 	}
@@ -4449,7 +4447,6 @@ func (sess *mqttSession) processJSConsumer(c *client, subject, sid string,
 			return nil, nil, err
 		}
 		cc = &ccr.Config
-		// <>/<> check tmaxack handling
 		sess.tmaxack += maxAckPending
 	}
 	// This is an internal subscription on subject like "$MQTT.sub.<nuid>" that is setup
