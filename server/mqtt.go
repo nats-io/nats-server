@@ -281,15 +281,16 @@ type mqttRetMsgDel struct {
 }
 
 type mqttSession struct {
-	mu             sync.Mutex
-	id             string // client ID
-	idHash         string // client ID hash
-	c              *client
-	jsa            *mqttJSA
-	subs           map[string]byte // Key is MQTT SUBSCRIBE filter, value is the subscription QoS
-	cons           map[string]*ConsumerConfig
-	pubRelConsumer *ConsumerConfig
-	seq            uint64
+	mu               sync.Mutex
+	id               string // client ID
+	idHash           string // client ID hash
+	c                *client
+	jsa              *mqttJSA
+	subs             map[string]byte // Key is MQTT SUBSCRIBE filter, value is the subscription QoS
+	cons             map[string]*ConsumerConfig
+	pubRelConsumer   *ConsumerConfig
+	pubRelSubscribed bool
+	seq              uint64
 
 	// Maps PI sent to client to a mqttPending record, that contains the JS
 	// consumer name and stream sequence.
@@ -315,6 +316,7 @@ type mqttPersistedSession struct {
 	Clean  bool                       `json:"clean,omitempty"`
 	Subs   map[string]byte            `json:"subs,omitempty"`
 	Cons   map[string]*ConsumerConfig `json:"cons,omitempty"`
+	PubRel *ConsumerConfig            `json:"pubrel,omitempty"`
 }
 
 type mqttRetainedMsg struct {
@@ -1260,8 +1262,6 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		// PUBREL-ed by the sender. Subject is
 		// "$MQTT.qos2.<session>.<PI>", the .PI is to achieve exactly
 		// once for each PI.
-		//
-		// <>/<> TODO: MaxAge, other static limits configurable?
 		cfg := &StreamConfig{
 			Name:          mqttQOS2IncomingMsgsStreamName,
 			Subjects:      []string{mqttQOS2IncomingMsgsStreamSubjectPrefix + ">"},
@@ -1281,11 +1281,8 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		return nil, err
 	} else if si == nil {
 		// Create the stream for the incoming QoS2 messages that have not been
-		// PUBREL-ed by the sender. Subject is
-		// "$MQTT.qos2.<domain>.<session>.<PI>", the .PI is to achieve exactly
-		// once for each PI.
-		//
-		// <>/<> TODO: MaxAge, other static limits configurable?
+		// PUBREL-ed by the sender. NATS messages are submitted as
+		// "$MQTT.pubrel.<session hash>"
 		cfg := &StreamConfig{
 			Name:      mqttQOS2PubRelStreamName,
 			Subjects:  []string{mqttQOS2PubRelStoredSubjectPrefix + ">"},
@@ -1294,7 +1291,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 			Replicas:  replicas,
 		}
 		if _, _, err := jsa.createStream(cfg); isErrorOtherThan(err, JSStreamNameExistErr) {
-			return nil, fmt.Errorf("create QoS2 incoming messages stream for account %q: %v", accName, err)
+			return nil, fmt.Errorf("create QoS2 outgoing PUBREL stream for account %q: %v", accName, err)
 		}
 	}
 
@@ -2220,8 +2217,6 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 
 	var err error
 	subs := make([]*subscription, 0, len(filters))
-	haveQOS2 := false
-	havePubRelConsumer := false
 	for _, f := range filters {
 		if f.qos > 2 {
 			f.qos = 2
@@ -2244,11 +2239,9 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 		if err == nil {
 			setupSub(sub, f.qos)
 		}
-
-		// Use the existing lock to see if we already have a QOS2 PubRel
-		// consumer, even if redundantly. Will need this later.
-		// <>/<> TODO: persist and restore restore sess.pubRelConsumer
-		havePubRelConsumer = (sess.pubRelConsumer != nil)
+		if f.qos == 2 {
+			err = sess.ensurePubRelConsumerSubscription(c)
+		}
 		asAndSessUnlock()
 
 		if err == nil {
@@ -2294,18 +2287,11 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 			addJSConsToSess(fwcsid, fwjscons)
 		}
 
-		if f.qos == 2 {
-			haveQOS2 = true
-		}
 		subs = append(subs, sub)
 		addJSConsToSess(sid, jscons)
 	}
 	if fromSubProto {
 		err = sess.update(filters, true)
-	}
-
-	if haveQOS2 && !havePubRelConsumer {
-		_, err = sess.createPubRelConsumer(c)
 	}
 
 	return subs, err
@@ -2413,6 +2399,7 @@ func (as *mqttAccountSessionManager) createOrRestoreSession(clientID string, opt
 	sess.clean = ps.Clean
 	sess.subs = ps.Subs
 	sess.cons = ps.Cons
+	sess.pubRelConsumer = ps.PubRel
 	as.addSession(sess, true)
 	return sess, true, nil
 }
@@ -2577,6 +2564,7 @@ func (sess *mqttSession) save() error {
 		Clean:  sess.clean,
 		Subs:   sess.subs,
 		Cons:   sess.cons,
+		PubRel: sess.pubRelConsumer,
 	}
 	b, _ := json.Marshal(&ps)
 
@@ -4308,17 +4296,12 @@ func (sess *mqttSession) cleanupFailedSub(c *client, sub *subscription, cc *Cons
 	}
 }
 
-func (sess *mqttSession) countQOS2Subs() int {
-	c := 0
-	for _, qos := range sess.subs {
-		if qos == 2 {
-			c++
-		}
-	}
-	return c
-}
-
-func (sess *mqttSession) createPubRelConsumer(c *client) (*ConsumerConfig, error) {
+// Make sure we are set up to deliver PUBREL messages to this QOS2-subscribed
+// session.
+//
+// Session lock held on entry. Need to make sure no other subscribe packet races
+// to do the same. 
+func (sess *mqttSession) ensurePubRelConsumerSubscription(c *client) error {
 	deliverSubj := sess.pubRelDeliverySubject()
 	deliverSubjB := []byte(deliverSubj)
 	opts := c.srv.getOpts()
@@ -4331,36 +4314,50 @@ func (sess *mqttSession) createPubRelConsumer(c *client) (*ConsumerConfig, error
 		maxAckPending = mqttDefaultMaxAckPending
 	}
 
-	cc := &ConsumerConfig{
-		DeliverSubject: deliverSubj,
-		Durable:        sess.idHash + "_pubrel",
-		AckPolicy:      AckExplicit,
-		DeliverPolicy:  DeliverNew,
-		FilterSubject:  sess.pubRelSubject(),
-		AckWait:        ackWait,
-		MaxAckPending:  maxAckPending,
-		MemoryStorage:  opts.MQTT.ConsumerMemoryStorage,
-	}
-	if opts.MQTT.ConsumerInactiveThreshold > 0 {
-		cc.InactiveThreshold = opts.MQTT.ConsumerInactiveThreshold
-	}
-	if err := sess.createConsumer(mqttQOS2PubRelStreamName, cc); err != nil {
-		c.Errorf("Unable to add JetStream consumer for PUBREL for client %q: err=%v", sess.id, err)
-		return nil, err
+	// Subscribe before the consumer is created so we don't loose any messages.
+	if !sess.pubRelSubscribed {
+		_, err := c.processSub(deliverSubjB, nil, deliverSubjB, mqttDeliverPubRelCb, false)
+		if err != nil {
+			c.Errorf("Unable to create subscription for JetStream consumer on %q: %v", deliverSubj, err)
+			return err
+		}
+		sess.pubRelSubscribed = true
 	}
 
-	sess.mu.Lock()
-	sess.pubRelConsumer = cc
-	_, err := c.processSub(deliverSubjB, nil, deliverSubjB, mqttDeliverPubRelCb, false)
-	if err != nil {
-		sess.mu.Unlock()
-		sess.deleteConsumer(cc)
-		c.Errorf("Unable to create subscription for JetStream consumer on %q: %v", deliverSubj, err)
-		return nil, err
+	// Create the consumer if needed.
+	if sess.pubRelConsumer == nil {
+		cc := &ConsumerConfig{
+			DeliverSubject: deliverSubj,
+			Durable:        sess.idHash + "_pubrel",
+			AckPolicy:      AckExplicit,
+			DeliverPolicy:  DeliverNew,
+			FilterSubject:  sess.pubRelSubject(),
+			AckWait:        ackWait,
+			MaxAckPending:  maxAckPending,
+			MemoryStorage:  opts.MQTT.ConsumerMemoryStorage,
+		}
+		if opts.MQTT.ConsumerInactiveThreshold > 0 {
+			cc.InactiveThreshold = opts.MQTT.ConsumerInactiveThreshold
+		}
+		// <>/<> RACE!
+		if err := sess.createConsumer(mqttQOS2PubRelStreamName, cc); err != nil {
+			c.Errorf("Unable to add JetStream consumer for PUBREL for client %q: err=%v", sess.id, err)
+			return err
+		}
+		sess.pubRelConsumer = cc
 	}
-	sess.mu.Unlock()
 
-	return cc, nil
+	return nil
+}
+
+func (sess *mqttSession) countQOS2Subs() int {
+	c := 0
+	for _, qos := range sess.subs {
+		if qos == 2 {
+			c++
+		}
+	}
+	return c
 }
 
 func (sess *mqttSession) cleanupPubRelConsumer(c *client) error {
