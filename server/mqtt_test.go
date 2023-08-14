@@ -1906,7 +1906,7 @@ func TestMQTTSubAck(t *testing.T) {
 	expected := []byte{
 		0,
 		1,
-		1,
+		2,
 		mqttSubAckFailure,
 	}
 	testMQTTSub(t, 1, mc, r, subs, expected)
@@ -2080,7 +2080,7 @@ func TestMQTTParsePub(t *testing.T) {
 		pl    int
 		err   string
 	}{
-		{"qos not supported", 0x4, nil, 0, "not supported"},
+		{"qos not supported", (3 << 1), nil, 0, "QoS=3 is invalid in MQTT"},
 		{"packet in buffer error", 0, nil, 10, io.ErrUnexpectedEOF.Error()},
 		{"error on topic", 0, []byte{0, 3, 'f', 'o'}, 4, "topic"},
 		{"empty topic", 0, []byte{0, 0}, 2, errMQTTTopicIsEmpty.Error()},
@@ -2207,7 +2207,7 @@ func TestMQTTSub(t *testing.T) {
 	}
 }
 
-func TestMQTTSubQoS(t *testing.T) {
+func TestMQTTSubQoS2(t *testing.T) {
 	o := testMQTTDefaultOptions()
 	o.Debug = false
 	o.Trace = true
@@ -2226,36 +2226,105 @@ func TestMQTTSubQoS(t *testing.T) {
 	defer mc.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 
-	mqttTopic := "foo/bar/baz"
-	pubQOS := byte(2)
-	subQOS := byte(2)
-	subPI := uint16(123)
-	pubPI := uint16(456)
-
-	testMQTTSub(t, subPI, mc, r, []*mqttFilter{{filter: mqttTopic, qos: subQOS}}, []byte{subQOS})
+	topic := "foo/bar/baz"
+	mqttTopic0 := "foo/#"
+	mqttTopic1 := "foo/bar/#"
+	mqttTopic2 := topic
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: mqttTopic0, qos: 0}}, []byte{0})
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: mqttTopic1, qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: mqttTopic2, qos: 2}}, []byte{2})
 	testMQTTFlush(t, mc, nil, r)
 
-	testMQTTPublish(t, mcp, mpr, pubQOS, false, false, mqttTopic, pubPI, []byte("msg"))
+	for pubQOS, expectedCounts := range map[byte]map[byte]int{
+		0: {0: 3},
+		1: {0: 1, 1: 2},
+		2: {0: 1, 1: 1, 2: 1},
+	} {
+		t.Run(fmt.Sprintf("pubQOS %v", pubQOS), func(t *testing.T) {
+			pubPI := uint16(456)
 
+			testMQTTPublish(t, mcp, mpr, pubQOS, false, false, topic, pubPI, []byte("msg"))
+
+			qosCounts := map[byte]int{}
+			delivered := map[uint16]byte{}
+
+			// We have 3 subscriptions, each should receive the message, with the
+			// QoS that maybe "trimmed" to that of the subscription.
+			for i := 0; i < 3; i++ {
+				flags, pi := testMQTTGetPubMsg(t, mc, r, topic, []byte("msg"))
+				delivered[pi] = flags
+				qosCounts[mqttGetQoS(flags)]++
+			}
+
+			for pi, flags := range delivered {
+				switch mqttGetQoS(flags) {
+				case 1:
+					testMQTTSendPIPacket(mqttPacketPubAck, t, mc, pi)
+
+				case 2:
+					testMQTTSendPIPacket(mqttPacketPubRec, t, mc, pi)
+					testMQTTGetPubRelMsg(t, r, pi)
+					testMQTTSendPIPacket(mqttPacketPubComp, t, mc, pi)
+				}
+			}
+
+			if !reflect.DeepEqual(qosCounts, expectedCounts) {
+				t.Fatalf("Expected QoS %#v, got %#v", expectedCounts, qosCounts)
+			}
+		})
+	}
+}
+
+func TestMQTTSubQoS1(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+
+	mcp, mpr := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mcp.Close()
+	testMQTTCheckConnAck(t, mpr, mqttConnAckRCConnectionAccepted, false)
+
+	mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+
+	mqttTopic := "foo/bar"
+
+	// Subscribe with QoS 1
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo/#", qos: 1}}, []byte{1})
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: mqttTopic, qos: 1}}, []byte{1})
+	testMQTTFlush(t, mc, nil, r)
+
+	// Publish from NATS, which means QoS 0
+	natsPub(t, nc, "foo.bar", []byte("NATS"))
+	// Will receive as QoS 0
+	testMQTTCheckPubMsg(t, mc, r, mqttTopic, 0, []byte("NATS"))
+	testMQTTCheckPubMsg(t, mc, r, mqttTopic, 0, []byte("NATS"))
+
+	// Publish from MQTT with QoS 0
+	testMQTTPublish(t, mcp, mpr, 0, false, false, mqttTopic, 0, []byte("msg"))
+	// Will receive as QoS 0
+	testMQTTCheckPubMsg(t, mc, r, mqttTopic, 0, []byte("msg"))
+	testMQTTCheckPubMsg(t, mc, r, mqttTopic, 0, []byte("msg"))
+
+	// Publish from MQTT with QoS 1
+	testMQTTPublish(t, mcp, mpr, 1, false, false, mqttTopic, 1, []byte("msg"))
 	pflags1, pi1 := testMQTTGetPubMsg(t, mc, r, mqttTopic, []byte("msg"))
-	deliverQOS := mqttGetQoS(pflags1)
-	expectedQOS := pubQOS
-	if subQOS < pubQOS {
-		expectedQOS = subQOS
+	if pflags1 != 0x2 {
+		t.Fatalf("Expected flags to be 0x2, got %v", pflags1)
 	}
-	if deliverQOS != expectedQOS {
-		t.Fatalf("Expected QoS %v, got %v", expectedQOS, deliverQOS)
+	pflags2, pi2 := testMQTTGetPubMsg(t, mc, r, mqttTopic, []byte("msg"))
+	if pflags2 != 0x2 {
+		t.Fatalf("Expected flags to be 0x2, got %v", pflags2)
 	}
-
-	switch expectedQOS {
-	case 1:
-		testMQTTSendPIPacket(mqttPacketPubAck, t, mc, pi1)
-
-	case 2:
-		testMQTTSendPIPacket(mqttPacketPubRec, t, mc, pi1)
-		testMQTTGetPubRelMsg(t, r, pi1)
-		testMQTTSendPIPacket(mqttPacketPubComp, t, mc, pi1)
+	if pi1 == pi2 {
+		t.Fatalf("packet identifier for message 1: %v should be different from message 2", pi1)
 	}
+	testMQTTSendPIPacket(mqttPacketPubAck, t, mc, pi1)
+	testMQTTSendPIPacket(mqttPacketPubAck, t, mc, pi2)
 }
 
 func getSubQoS(sub *subscription) int {
@@ -2288,8 +2357,8 @@ func TestMQTTSubDups(t *testing.T) {
 
 	// And also with separate SUBSCRIBE protocols
 	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "bar", qos: 0}}, []byte{0})
-	// Ask for QoS 2 but server will downgrade to 1
-	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "bar", qos: 2}}, []byte{1})
+	// Ask for QoS 1 but server will downgrade to 1
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "bar", qos: 1}}, []byte{1})
 	testMQTTFlush(t, mc, nil, r)
 
 	// Publish and test msg received only once
