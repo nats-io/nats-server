@@ -1497,6 +1497,16 @@ func (jsa *mqttJSA) newRequestEx(kind, subject string, hdr int, msg []byte, time
 	return i, nil
 }
 
+func (jsa *mqttJSA) sendAck(ackSubject string) {
+	if ackSubject == _EMPTY_ {
+		return
+	}
+
+	// We pass -1 for the hdr so that the send loop does not need to
+	// add the "client info" header. This is not a JS API request per se.
+	jsa.sendq.push(&mqttJSPubMsg{subj: ackSubject, hdr: -1})
+}
+
 func (jsa *mqttJSA) createConsumer(cfg *CreateConsumerRequest) (*JSApiConsumerCreateResponse, error) {
 	cfgb, err := json.Marshal(cfg)
 	if err != nil {
@@ -2600,17 +2610,16 @@ func (sess *mqttSession) save() error {
 // Runs from the client's readLoop.
 // Lock not held on entry, but session is in the locked map.
 func (sess *mqttSession) clear() error {
+	var durs []string
 	sess.mu.Lock()
 	id := sess.id
 	seq := sess.seq
-	// <>/<> Can I just add the pubRelConsumer to the cons map and get rid of
-	// the field?
+	if l := len(sess.cons); l > 0 {
+		durs = make([]string, 0, l)
+	}
 	for sid, cc := range sess.cons {
 		delete(sess.cons, sid)
-		if _, err := sess.jsa.deleteConsumer(mqttStreamName, cc.Durable); isErrorOtherThan(err, JSConsumerNotFoundErr) {
-			sess.mu.Unlock()
-			return fmt.Errorf("unable to delete consumer %q for session %q: %v", cc.Durable, sess.id, err)
-		}
+		durs = append(durs, cc.Durable)
 	}
 	if sess.pubRelConsumer != nil {
 		_, err := sess.jsa.deleteConsumer(mqttQOS2PubRelStreamName, sess.pubRelConsumer.Durable)
@@ -2625,13 +2634,19 @@ func (sess *mqttSession) clear() error {
 	sess.pubRelConsumer = nil
 	sess.seq = 0
 	sess.tmaxack = 0
+	sess.mu.Unlock()
+
+	for _, dur := range durs {
+		if _, err := sess.jsa.deleteConsumer(mqttStreamName, dur); isErrorOtherThan(err, JSConsumerNotFoundErr) {
+			return fmt.Errorf("unable to delete consumer %q for session %q: %v", dur, sess.id, err)
+		}
+	}
 
 	if seq > 0 {
 		if err := sess.jsa.deleteMsg(mqttSessStreamName, seq, true); err != nil {
 			return fmt.Errorf("unable to delete session %q record at sequence %v", id, seq)
 		}
 	}
-	sess.mu.Unlock()
 	return nil
 }
 
@@ -3205,9 +3220,7 @@ func (s *Server) mqttHandleWill(c *client) {
 		pp.flags |= mqttPubFlagRetain
 	}
 	c.mu.Unlock()
-	// <>/<> restore
-	// s.mqttForwardPub(c, pp)
-	c.flushClients(0)
+	s.mqttInitiateMsgDelivery(c, pp)
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -3429,7 +3442,7 @@ func (s *Server) mqttInitiateMsgDelivery(c *client, pp *mqttPublish) error {
 
 	// Broadcast the message just as we do for QoS0, but this message is
 	// recognized as QoS1 (stored in the NATS header), so it will be ignored
-	// by the QoS1+ subscriptions. Those will expect the message to be
+	// by the QoS1+ subscriptions. QOS1+ messages will expect the message to be
 	// delivered via JetStream.
 	permIssue := s.mqttDeliverNATS(c, pp, natsMsg, headerLen)
 	if permIssue {
@@ -3445,11 +3458,12 @@ func (s *Server) mqttInitiateMsgDelivery(c *client, pp *mqttPublish) error {
 
 	// If QOS 0 messages don't need to be stored, other (1 and 2) do. Store them
 	// JetStream under "$MQTT.msgs.<delivery-subject>"
-	if qos := mqttGetQoS(pp.flags); qos > 0 {
-		_, err := c.mqtt.sess.jsa.storeMsg(mqttStreamSubjectPrefix+string(pp.subject), headerLen, natsMsg)
-		if err != nil {
-			return err
-		}
+	if qos := mqttGetQoS(pp.flags); qos == 0 {
+		return nil
+	}
+	_, err := c.mqtt.sess.jsa.storeMsg(mqttStreamSubjectPrefix+string(pp.subject), headerLen, natsMsg)
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -3777,12 +3791,17 @@ func mqttParsePIPacket(r *mqttReader, pl int) (uint16, error) {
 // Runs from the client's readLoop. No lock held on entry.
 func (c *client) mqttProcessPubAckAndComp(pi uint16) {
 	sess := c.mqtt.sess
-	if sess == nil || sess.c != c {
+	if sess == nil {
 		return
 	}
 
 	var jsAckSubject string
+
 	sess.mu.Lock()
+	if sess.c != c {
+		sess.mu.Unlock()
+		return
+	}
 	if ack, ok := sess.pending[pi]; ok {
 		// Remove all references to the PI from the session.
 		delete(sess.pending, pi)
@@ -3795,17 +3814,10 @@ func (c *client) mqttProcessPubAckAndComp(pi uint16) {
 		}
 		jsAckSubject = ack.jsAckSubject
 	}
-
-	if jsAckSubject == _EMPTY_ {
-		sess.mu.Unlock()
-		return
-	}
-
-	// Send the ack to JS to remove the pending message from the consumer. We
-	// pass -1 for the hdr so that the send loop does not need to add the
-	// "client info" header. This is not a JS API request per se.
-	sess.jsa.sendq.push(&mqttJSPubMsg{subj: jsAckSubject, hdr: -1})
 	sess.mu.Unlock()
+
+	// Send the ack to JS to remove the pending message from the consumer.
+	sess.jsa.sendAck(jsAckSubject)
 }
 
 func (s *mqttSession) pubRelSubject() string {
@@ -3822,7 +3834,7 @@ func (s *mqttSession) pubRelDeliverySubject() string {
 // No lock held on entry.
 func (c *client) mqttProcessPubRec(pi uint16) error {
 	sess := c.mqtt.sess
-	if sess == nil || sess.c != c {
+	if sess == nil {
 		return nil
 	}
 
@@ -3834,10 +3846,16 @@ func (c *client) mqttProcessPubRec(pi uint16) error {
 	}
 
 	sess.mu.Lock()
+	if sess.c != c {
+		return nil
+	}
+
 	ack, ok := sess.pending[pi]
 	if !ok {
-		return nil // <>/<> error?
+		sess.mu.Unlock()
+		return nil
 	}
+	ackSubject := ack.jsAckSubject
 
 	// Remove the old consumer/seq->PI mapping.
 	jsDur := ack.jsDur
@@ -3855,13 +3873,10 @@ func (c *client) mqttProcessPubRec(pi uint16) error {
 	sess.pending[pi].jsAckSubject = ""
 	sess.pending[pi].sseq = 0
 
-	// Send the ack if applicable. This will remove the message from the "messages" consumer.
-	if ack.jsAckSubject != _EMPTY_ {
-		// We pass -1 for the hdr so that the send loop does not need to
-		// add the "client info" header. This is not a JS API request per se.
-		sess.jsa.sendq.push(&mqttJSPubMsg{subj: ack.jsAckSubject, hdr: -1})
-	}
 	sess.mu.Unlock()
+
+	// Send the ack if applicable. This will remove the message from the "messages" consumer.
+	sess.jsa.sendAck(ackSubject)
 
 	return nil
 }
@@ -4062,40 +4077,52 @@ func mqttDeliverMsgCbQos1(sub *subscription, pc *client, _ *Account, subject, re
 
 	hdr, msg := pc.msgParts(rmsg)
 	h := mqttParseNATSMsgHeader(hdr)
-	if h == nil || h.qos == 0 {
+	if pc.kind != JETSTREAM && (h == nil || h.qos == 0) {
 		// MQTT QOS0 messages must be ignored, they will be delivered by the
 		// other callback, the direct NATS subscription. All JETSTREAM messages
 		// will have the header.
 		return
 	}
 
-	qos := h.qos
+	// This is the client associated with the subscription.
+	cc := sub.client
 
 	// This is immutable
-	sess := sub.client.mqtt.sess
-	if sess.c != sub.client {
-		return
-	}
+	sess := cc.mqtt.sess
 
-	// Check for reserved subject violation.
-	strippedSubj := string(subject[len(mqttStreamSubjectPrefix):])
-	if mqttIsReserved(sub, strippedSubj) {
-		return
-	}
-
-	// Check the subscription's QoS. This needs to be protected because
-	// the client may change an existing subscription at any time.
+	// We lock to check some of the subscription's fields and if we need to
+	// keep track of pending acks, etc..
 	sess.mu.Lock()
+	if sess.c != cc || sub.mqtt == nil {
+		sess.mu.Unlock()
+		return
+	}
+
+	// In this callback we handle only QOS-published messages to QOS
+	// subscriptions. Ignore if either is 0, will be delivered by the other
+	// callback, mqttDeliverMsgCbQos1.
+	qos := h.qos
 	if qos > sub.mqtt.qos {
 		qos = sub.mqtt.qos
 	}
-	jsDur := sub.mqtt.jsDur
-	sess.mu.Unlock()
 	if qos == 0 {
+		sess.mu.Unlock()
 		return
 	}
 
-	pi, dup := sess.trackPending(jsDur, reply)
+	// Check for reserved subject violation. If so, we will send the ack to
+	// remove the message, and do nothing else.
+	strippedSubj := string(subject[len(mqttStreamSubjectPrefix):])
+	isReservedSub := mqttIsReserved(sub, strippedSubj)
+	if isReservedSub {
+		sess.mu.Unlock()
+		sess.jsa.sendAck(reply)
+		return
+	}
+
+	pi, dup := sess.trackPending(sub.mqtt.jsDur, reply)
+	sess.mu.Unlock()
+
 	if pi == 0 {
 		// We have reached max pending, don't send the message now.
 		// JS will cause a redelivery and if by then the number of pending
@@ -4103,9 +4130,8 @@ func mqttDeliverMsgCbQos1(sub *subscription, pc *client, _ *Account, subject, re
 		return
 	}
 
-	pc.mqttEnqueuePublishMsgTo(sub.client, sub, pi, qos, dup,
-		false, // retanied
-		natsSubjectToMQTTTopic(strippedSubj), msg)
+	originalTopic := natsSubjectToMQTTTopic(strippedSubj)
+	pc.mqttEnqueuePublishMsgTo(cc, sub, pi, qos, dup, false, originalTopic, msg)
 }
 
 func mqttDeliverPubRelCb(sub *subscription, pc *client, _ *Account, subject, reply string, rmsg []byte) {
@@ -4114,7 +4140,7 @@ func mqttDeliverPubRelCb(sub *subscription, pc *client, _ *Account, subject, rep
 		return
 	}
 	sess := sub.client.mqtt.sess
-	if sess == nil || len(sess.pending) == 0 || len(sess.cpending) == 0 {
+	if sess == nil {
 		return
 	}
 
@@ -4125,9 +4151,13 @@ func mqttDeliverPubRelCb(sub *subscription, pc *client, _ *Account, subject, rep
 	}
 
 	sess.mu.Lock()
+	if len(sess.pending) == 0 || len(sess.cpending) == 0 {
+		sess.mu.Unlock()
+		return
+	}
+
 	pending := sess.pending[pi]
 	if pending == nil {
-		// <>/<> should never happen, log/error?
 		sess.mu.Unlock()
 		return
 	}
@@ -4141,6 +4171,8 @@ func mqttDeliverPubRelCb(sub *subscription, pc *client, _ *Account, subject, rep
 // The MQTT Server MUST NOT match Topic Filters starting with a wildcard character (# or +)
 // with Topic Names beginning with a $ character, Spec [MQTT-4.7.2-1].
 // We will return true if there is a violation.
+//
+// Session lock must be held on entry to protect access to sub.mqtt.reserved.
 func mqttIsReserved(sub *subscription, subject string) bool {
 	// If the subject does not start with $ nothing to do here.
 	if !sub.mqtt.reserved || len(subject) == 0 || subject[0] != mqttReservedPre {
