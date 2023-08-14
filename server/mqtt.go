@@ -2761,32 +2761,6 @@ func (sess *mqttSession) trackPending(jsDur, jsAckSubject string) (uint16, bool)
 	return pi, dup
 }
 
-// Sends a request to create a JS Durable Consumer based on the given consumer's config.
-// This will wait in place for the reply from the server handling the requests.
-//
-// Lock not held on entry
-func (sess *mqttSession) createConsumer(streamName string, cc *ConsumerConfig) error {
-	cfg := &CreateConsumerRequest{
-		Stream: streamName,
-		Config: *cc,
-	}
-
-	sess.mu.Lock()
-	if after := sess.tmaxack + cc.MaxAckPending; after > mqttMaxAckTotalLimit {
-		return fmt.Errorf("max_ack_pending for all consumers would be %v which exceeds the limit of %v",
-			after, mqttMaxAckTotalLimit)
-	}
-	sess.tmaxack += cc.MaxAckPending
-	sess.mu.Unlock()
-
-	_, err := sess.jsa.createConsumer(cfg)
-	if err != nil {
-		sess.mu.Lock()
-		sess.tmaxack -= cc.MaxAckPending
-		sess.mu.Unlock()
-	}
-	return err
-}
 
 // Sends a consumer delete request, but does not wait for response.
 //
@@ -4300,7 +4274,7 @@ func (sess *mqttSession) cleanupFailedSub(c *client, sub *subscription, cc *Cons
 // session.
 //
 // Session lock held on entry. Need to make sure no other subscribe packet races
-// to do the same. 
+// to do the same.
 func (sess *mqttSession) ensurePubRelConsumerSubscription(c *client) error {
 	deliverSubj := sess.pubRelDeliverySubject()
 	deliverSubjB := []byte(deliverSubj)
@@ -4326,25 +4300,34 @@ func (sess *mqttSession) ensurePubRelConsumerSubscription(c *client) error {
 
 	// Create the consumer if needed.
 	if sess.pubRelConsumer == nil {
-		cc := &ConsumerConfig{
-			DeliverSubject: deliverSubj,
-			Durable:        sess.idHash + "_pubrel",
-			AckPolicy:      AckExplicit,
-			DeliverPolicy:  DeliverNew,
-			FilterSubject:  sess.pubRelSubject(),
-			AckWait:        ackWait,
-			MaxAckPending:  maxAckPending,
-			MemoryStorage:  opts.MQTT.ConsumerMemoryStorage,
+		// Check that the limit of subs' maxAckPending are not going over the limit
+		if after := sess.tmaxack + maxAckPending; after > mqttMaxAckTotalLimit {
+			return fmt.Errorf("max_ack_pending for all consumers would be %v which exceeds the limit of %v",
+				after, mqttMaxAckTotalLimit)
+		}
+
+		ccr := &CreateConsumerRequest{
+			Stream: mqttQOS2PubRelStreamName,
+			Config: ConsumerConfig{
+				DeliverSubject: deliverSubj,
+				Durable:        sess.idHash + "_pubrel",
+				AckPolicy:      AckExplicit,
+				DeliverPolicy:  DeliverNew,
+				FilterSubject:  sess.pubRelSubject(),
+				AckWait:        ackWait,
+				MaxAckPending:  maxAckPending,
+				MemoryStorage:  opts.MQTT.ConsumerMemoryStorage,
+			},
 		}
 		if opts.MQTT.ConsumerInactiveThreshold > 0 {
-			cc.InactiveThreshold = opts.MQTT.ConsumerInactiveThreshold
+			ccr.Config.InactiveThreshold = opts.MQTT.ConsumerInactiveThreshold
 		}
-		// <>/<> RACE!
-		if err := sess.createConsumer(mqttQOS2PubRelStreamName, cc); err != nil {
+		if _, err := sess.jsa.createConsumer(ccr); err != nil {
 			c.Errorf("Unable to add JetStream consumer for PUBREL for client %q: err=%v", sess.id, err)
 			return err
 		}
-		sess.pubRelConsumer = cc
+		sess.pubRelConsumer = &ccr.Config
+		sess.tmaxack += maxAckPending
 	}
 
 	return nil
@@ -4445,23 +4428,29 @@ func (sess *mqttSession) processJSConsumer(c *client, subject, sid string,
 		}
 
 		durName := sess.idHash + "_" + nuid.Next()
-		cc = &ConsumerConfig{
-			DeliverSubject: inbox,
-			Durable:        durName,
-			AckPolicy:      AckExplicit,
-			DeliverPolicy:  DeliverNew,
-			FilterSubject:  mqttStreamSubjectPrefix + subject,
-			AckWait:        ackWait,
-			MaxAckPending:  maxAckPending,
-			MemoryStorage:  opts.MQTT.ConsumerMemoryStorage,
+		ccr := &CreateConsumerRequest{
+			Stream: mqttStreamName,
+			Config: ConsumerConfig{
+				DeliverSubject: inbox,
+				Durable:        durName,
+				AckPolicy:      AckExplicit,
+				DeliverPolicy:  DeliverNew,
+				FilterSubject:  mqttStreamSubjectPrefix + subject,
+				AckWait:        ackWait,
+				MaxAckPending:  maxAckPending,
+				MemoryStorage:  opts.MQTT.ConsumerMemoryStorage,
+			},
 		}
 		if opts.MQTT.ConsumerInactiveThreshold > 0 {
-			cc.InactiveThreshold = opts.MQTT.ConsumerInactiveThreshold
+			ccr.Config.InactiveThreshold = opts.MQTT.ConsumerInactiveThreshold
 		}
-		if err := sess.createConsumer(mqttStreamName, cc); err != nil {
+		if _, err := sess.jsa.createConsumer(ccr); err != nil {
 			c.Errorf("Unable to add JetStream consumer for subscription on %q: err=%v", subject, err)
 			return nil, nil, err
 		}
+		cc = &ccr.Config
+		// <>/<> check tmaxack handling
+		sess.tmaxack += maxAckPending
 	}
 	// This is an internal subscription on subject like "$MQTT.sub.<nuid>" that is setup
 	// for the JS durable's deliver subject.
