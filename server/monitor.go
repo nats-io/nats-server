@@ -3657,11 +3657,6 @@ type ProfilezStatus struct {
 }
 
 func (s *Server) profilez(opts *ProfilezOptions) *ProfilezStatus {
-	if s.profiler == nil {
-		return &ProfilezStatus{
-			Error: "Profiling is not enabled",
-		}
-	}
 	if opts.Name == _EMPTY_ {
 		return &ProfilezStatus{
 			Error: "Profile name not specified",

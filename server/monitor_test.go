@@ -4647,14 +4647,6 @@ func TestMonitorProfilez(t *testing.T) {
 	s := RunServer(DefaultOptions())
 	defer s.Shutdown()
 
-	// First of all, check that the profiles aren't accessible
-	// when profiling hasn't been started in the usual way.
-	if ps := s.profilez(&ProfilezOptions{
-		Name: "allocs", Debug: 0,
-	}); ps.Error == "" {
-		t.Fatal("Profile should not be accessible when profiling not started")
-	}
-
 	// Then start profiling.
 	s.StartProfiler()
 
