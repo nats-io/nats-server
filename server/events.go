@@ -245,7 +245,7 @@ type ServerInfo struct {
 	// Whether JetStream is enabled (deprecated in favor of the `ServerCapability`).
 	JetStream bool `json:"jetstream"`
 	// Generic capability flags
-	Flags ServerCapability
+	Flags ServerCapability `json:"flags"`
 	// Sequence and Time from the remote server for this message.
 	Seq  uint64    `json:"seq"`
 	Time time.Time `json:"time"`
