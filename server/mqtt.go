@@ -2760,7 +2760,6 @@ func (sess *mqttSession) trackPending(jsDur, jsAckSubject string) (uint16, bool)
 	return pi, dup
 }
 
-
 // Sends a consumer delete request, but does not wait for response.
 //
 // Lock not held on entry.
@@ -3347,32 +3346,32 @@ func mqttNewDeliverableMessage(pp *mqttPublish, encodePP bool) (natsMsg []byte, 
 
 	qos := mqttGetQoS(pp.flags)
 
-	_, _ = buf.WriteString(hdrLine)
-	_, _ = buf.WriteString(mqttNatsHeader)
-	_ = buf.WriteByte(':')
-	_ = buf.WriteByte(qos + '0')
-	_, _ = buf.WriteString(_CRLF_)
+	buf.WriteString(hdrLine)
+	buf.WriteString(mqttNatsHeader)
+	buf.WriteByte(':')
+	buf.WriteByte(qos + '0')
+	buf.WriteString(_CRLF_)
 
 	if encodePP {
-		_, _ = buf.WriteString(mqttNatsHeaderSubject)
-		_ = buf.WriteByte(':')
-		_, _ = buf.Write(pp.subject)
-		_, _ = buf.WriteString(_CRLF_)
+		buf.WriteString(mqttNatsHeaderSubject)
+		buf.WriteByte(':')
+		buf.Write(pp.subject)
+		buf.WriteString(_CRLF_)
 
 		if len(pp.mapped) > 0 {
-			_, _ = buf.WriteString(mqttNatsHeaderMapped)
-			_ = buf.WriteByte(':')
-			_, _ = buf.Write(pp.mapped)
-			_, _ = buf.WriteString(_CRLF_)
+			buf.WriteString(mqttNatsHeaderMapped)
+			buf.WriteByte(':')
+			buf.Write(pp.mapped)
+			buf.WriteString(_CRLF_)
 		}
 	}
 
 	// End of header
-	_, _ = buf.WriteString(_CRLF_)
+	buf.WriteString(_CRLF_)
 
 	headerLen = buf.Len()
 
-	_, _ = buf.Write(pp.msg)
+	buf.Write(pp.msg)
 	return buf.Bytes(), headerLen
 }
 
@@ -3389,12 +3388,12 @@ func mqttNewDeliverablePubRel(pi uint16) (natsMsg []byte, headerLen int) {
 		len(mqttNatsPubRelHeader) + 6 + 2 + // 6 for ':65535', and 2 for CRLF
 		2 // end-of-header CRLF
 	buf := bytes.NewBuffer(make([]byte, 0, size))
-	_, _ = buf.WriteString(hdrLine)
-	_, _ = buf.WriteString(mqttNatsPubRelHeader)
-	_ = buf.WriteByte(':')
-	_, _ = buf.WriteString(strconv.FormatInt(int64(pi), 10))
-	_, _ = buf.WriteString(_CRLF_)
-	_, _ = buf.WriteString(_CRLF_)
+	buf.WriteString(hdrLine)
+	buf.WriteString(mqttNatsPubRelHeader)
+	buf.WriteByte(':')
+	buf.WriteString(strconv.FormatInt(int64(pi), 10))
+	buf.WriteString(_CRLF_)
+	buf.WriteString(_CRLF_)
 	return buf.Bytes(), buf.Len()
 }
 
