@@ -1615,7 +1615,9 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 				meta.Campaign()
 			}
 		} else {
-			c.Noticef("JetStream using domains: local %q, remote %q", opts.JetStreamDomain, myRemoteDomain)
+			if len(opts.JetStreamDomain) > 0 || len(myRemoteDomain) > 0 {
+				c.Noticef("JetStream using domains: local %q, remote %q", opts.JetStreamDomain, myRemoteDomain)
+			}
 			c.mergeDenyPermissionsLocked(both, denyAllClientJs)
 		}
 		blockMappingOutgoing = true
