@@ -2230,15 +2230,15 @@ func TestMQTTSubQoS2(t *testing.T) {
 	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: mqttTopic2, qos: 2}}, []byte{2})
 	testMQTTFlush(t, mc, nil, r)
 
-	for pubQOS, expectedCounts := range map[byte]map[byte]int{
+	for pubQoS, expectedCounts := range map[byte]map[byte]int{
 		0: {0: 3},
 		1: {0: 1, 1: 2},
 		2: {0: 1, 1: 1, 2: 1},
 	} {
-		t.Run(fmt.Sprintf("pubQOS %v", pubQOS), func(t *testing.T) {
+		t.Run(fmt.Sprintf("pubQoS %v", pubQoS), func(t *testing.T) {
 			pubPI := uint16(456)
 
-			testMQTTPublish(t, mcp, mpr, pubQOS, false, false, topic, pubPI, []byte("msg"))
+			testMQTTPublish(t, mcp, mpr, pubQoS, false, false, topic, pubPI, []byte("msg"))
 
 			qosCounts := map[byte]int{}
 			delivered := map[uint16]byte{}

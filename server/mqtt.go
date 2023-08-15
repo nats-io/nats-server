@@ -135,15 +135,15 @@ const (
 	// Stream name prefix for MQTT sessions on a given account
 	mqttSessionsStreamNamePrefix = mqttStreamNamePrefix + "sess_"
 
-	// Stream name and subject for incoming MQTT QOS2 messages
-	mqttQOS2IncomingMsgsStreamName               = mqttStreamNamePrefix + "qos2in"
-	mqttQOS2IncomingMsgsStreamSubjectPrefixNoSep = "$MQTT.qos2in"
-	mqttQOS2IncomingMsgsStreamSubjectPrefix      = "$MQTT.qos2in."
+	// Stream name and subject for incoming MQTT QoS2 messages
+	mqttQoS2IncomingMsgsStreamName               = mqttStreamNamePrefix + "qos2in"
+	mqttQoS2IncomingMsgsStreamSubjectPrefixNoSep = "$MQTT.qos2in"
+	mqttQoS2IncomingMsgsStreamSubjectPrefix      = "$MQTT.qos2in."
 
-	// Stream name and subjects for outgoing MQTT QOS2 PUBREL messages
-	mqttQOS2PubRelStreamName            = mqttStreamNamePrefix + "qos2pubrel"
-	mqttQOS2PubRelStoredSubjectPrefix   = "$MQTT.qos2out."
-	mqttQOS2PubRelDeliverySubjectPrefix = "$MQTT.pubrel."
+	// Stream name and subjects for outgoing MQTT QoS2 PUBREL messages
+	mqttQoS2PubRelStreamName            = mqttStreamNamePrefix + "qos2pubrel"
+	mqttQoS2PubRelStoredSubjectPrefix   = "$MQTT.qos2out."
+	mqttQoS2PubRelDeliverySubjectPrefix = "$MQTT.pubrel."
 
 	// Normally, MQTT server should not redeliver QoS 1 messages to clients,
 	// except after client reconnects. However, NATS Server will redeliver
@@ -1255,7 +1255,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		}
 	}
 
-	if si, err := lookupStream(mqttQOS2IncomingMsgsStreamName, "QoS2 incoming messages"); err != nil {
+	if si, err := lookupStream(mqttQoS2IncomingMsgsStreamName, "QoS2 incoming messages"); err != nil {
 		return nil, err
 	} else if si == nil {
 		// Create the stream for the incoming QoS2 messages that have not been
@@ -1263,8 +1263,8 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		// "$MQTT.qos2.<session>.<PI>", the .PI is to achieve exactly
 		// once for each PI.
 		cfg := &StreamConfig{
-			Name:          mqttQOS2IncomingMsgsStreamName,
-			Subjects:      []string{mqttQOS2IncomingMsgsStreamSubjectPrefix + ">"},
+			Name:          mqttQoS2IncomingMsgsStreamName,
+			Subjects:      []string{mqttQoS2IncomingMsgsStreamSubjectPrefix + ">"},
 			Storage:       FileStorage,
 			Retention:     LimitsPolicy,
 			Discard:       DiscardNew,
@@ -1277,15 +1277,15 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		}
 	}
 
-	if si, err := lookupStream(mqttQOS2PubRelStreamName, "QoS2 outgoing PUBREL"); err != nil {
+	if si, err := lookupStream(mqttQoS2PubRelStreamName, "QoS2 outgoing PUBREL"); err != nil {
 		return nil, err
 	} else if si == nil {
 		// Create the stream for the incoming QoS2 messages that have not been
 		// PUBREL-ed by the sender. NATS messages are submitted as
 		// "$MQTT.pubrel.<session hash>"
 		cfg := &StreamConfig{
-			Name:      mqttQOS2PubRelStreamName,
-			Subjects:  []string{mqttQOS2PubRelStoredSubjectPrefix + ">"},
+			Name:      mqttQoS2PubRelStreamName,
+			Subjects:  []string{mqttQoS2PubRelStoredSubjectPrefix + ">"},
 			Storage:   FileStorage,
 			Retention: InterestPolicy,
 			Replicas:  replicas,
@@ -2244,7 +2244,7 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 		// Note that if a subscription already exists on this subject,
 		// the existing sub is returned. Need to update the qos.
 		asAndSessLock()
-		sub, err := c.processSub([]byte(subject), nil, []byte(sid), mqttDeliverMsgCbQos0, false)
+		sub, err := c.processSub([]byte(subject), nil, []byte(sid), mqttDeliverMsgCbQoS0, false)
 		if err == nil {
 			setupSub(sub, f.qos)
 		}
@@ -2277,7 +2277,7 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 			fwcsid := fwcsubject + mqttMultiLevelSidSuffix
 			// See note above about existing subscription.
 			asAndSessLock()
-			fwcsub, err = c.processSub([]byte(fwcsubject), nil, []byte(fwcsid), mqttDeliverMsgCbQos0, false)
+			fwcsub, err = c.processSub([]byte(fwcsubject), nil, []byte(fwcsid), mqttDeliverMsgCbQoS0, false)
 			if err == nil {
 				setupSub(fwcsub, f.qos)
 			}
@@ -2622,7 +2622,7 @@ func (sess *mqttSession) clear() error {
 		durs = append(durs, cc.Durable)
 	}
 	if sess.pubRelConsumer != nil {
-		_, err := sess.jsa.deleteConsumer(mqttQOS2PubRelStreamName, sess.pubRelConsumer.Durable)
+		_, err := sess.jsa.deleteConsumer(mqttQoS2PubRelStreamName, sess.pubRelConsumer.Durable)
 		if isErrorOtherThan(err, JSConsumerNotFoundErr) {
 			sess.mu.Unlock()
 			return fmt.Errorf("unable to delete consumer %q for session %q: %v", sess.pubRelConsumer.Durable, sess.id, err)
@@ -3427,7 +3427,7 @@ func (s *Server) mqttProcessPub(c *client, pp *mqttPublish, trace bool) error {
 		return err
 
 	case 2:
-		err := s.mqttStoreQOS2Msg(c, pp)
+		err := s.mqttStoreQoS2Msg(c, pp)
 		// Send a PUBREC back to the client.
 		c.mqttEnqueuePubResponse(mqttPacketPubRec, pp.pi, trace)
 		return err
@@ -3442,7 +3442,7 @@ func (s *Server) mqttInitiateMsgDelivery(c *client, pp *mqttPublish) error {
 
 	// Broadcast the message just as we do for QoS0, but this message is
 	// recognized as QoS1 (stored in the NATS header), so it will be ignored
-	// by the QoS1+ subscriptions. QOS1+ messages will expect the message to be
+	// by the QoS1+ subscriptions. QoS 1+ messages will expect the message to be
 	// delivered via JetStream.
 	permIssue := s.mqttDeliverNATS(c, pp, natsMsg, headerLen)
 	if permIssue {
@@ -3456,7 +3456,7 @@ func (s *Server) mqttInitiateMsgDelivery(c *client, pp *mqttPublish) error {
 	// see addToPCD and writeLoop for details).
 	c.flushClients(0)
 
-	// If QOS 0 messages don't need to be stored, other (1 and 2) do. Store them
+	// If QoS 0 messages don't need to be stored, other (1 and 2) do. Store them
 	// JetStream under "$MQTT.msgs.<delivery-subject>"
 	if qos := mqttGetQoS(pp.flags); qos == 0 {
 		return nil
@@ -3466,7 +3466,7 @@ func (s *Server) mqttInitiateMsgDelivery(c *client, pp *mqttPublish) error {
 	return err
 }
 
-func (s *Server) mqttStoreQOS2Msg(c *client, pp *mqttPublish) error {
+func (s *Server) mqttStoreQoS2Msg(c *client, pp *mqttPublish) error {
 	// `true` means encode the MQTT PUBLISH packet in the NATS message header.
 	natsMsg, headerLen := mqttNewDeliverableMessage(pp, true)
 
@@ -3477,13 +3477,13 @@ func (s *Server) mqttStoreQOS2Msg(c *client, pp *mqttPublish) error {
 	// to send a PUBREC back to the client. The original subject (translated
 	// from MQTT topic) is included in the NATS header of the stored message to
 	// use for latter delivery.
-	_, err := c.mqtt.sess.jsa.storeMsg(c.mqttQOS2InternalSubject(pp.pi), headerLen, natsMsg)
+	_, err := c.mqtt.sess.jsa.storeMsg(c.mqttQoS2InternalSubject(pp.pi), headerLen, natsMsg)
 	return err
 }
 
-func (c *client) mqttQOS2InternalSubject(pi uint16) string {
+func (c *client) mqttQoS2InternalSubject(pi uint16) string {
 	return strings.Join([]string{
-		mqttQOS2IncomingMsgsStreamSubjectPrefixNoSep,
+		mqttQoS2IncomingMsgsStreamSubjectPrefixNoSep,
 		c.mqtt.cid,
 		strconv.FormatUint(uint64(pi), 10),
 	}, ".")
@@ -3500,14 +3500,14 @@ func (s *Server) mqttProcessPubRel(c *client, pi uint16, trace bool) {
 	// See if there is a message pending for this pi. All failures are treated
 	// as "not found".
 	asm := c.mqtt.asm
-	stored, _ := asm.jsa.loadLastMsgFor(mqttQOS2IncomingMsgsStreamName, c.mqttQOS2InternalSubject(pi))
+	stored, _ := asm.jsa.loadLastMsgFor(mqttQoS2IncomingMsgsStreamName, c.mqttQoS2InternalSubject(pi))
 
 	if stored == nil {
 		// No message found, nothing to do.
 		return
 	}
 	// Best attempt to delete the message from the QoS2 stream.
-	asm.jsa.deleteMsg(mqttQOS2IncomingMsgsStreamName, stored.Sequence, true)
+	asm.jsa.deleteMsg(mqttQoS2IncomingMsgsStreamName, stored.Sequence, true)
 
 	// only MQTT QoS2 messages should be here, and they must have a subject.
 	h := mqttParseNATSMsgHeader(stored.Header)
@@ -3818,11 +3818,11 @@ func (c *client) mqttProcessPubAckAndComp(pi uint16) {
 }
 
 func (s *mqttSession) pubRelSubject() string {
-	return mqttQOS2PubRelStoredSubjectPrefix + s.idHash
+	return mqttQoS2PubRelStoredSubjectPrefix + s.idHash
 }
 
 func (s *mqttSession) pubRelDeliverySubject() string {
-	return mqttQOS2PubRelDeliverySubjectPrefix + s.idHash
+	return mqttQoS2PubRelDeliverySubjectPrefix + s.idHash
 }
 
 // Process a PUBREC packet (QoS2, acting as Sender).
@@ -3866,9 +3866,9 @@ func (c *client) mqttProcessPubRec(pi uint16) error {
 	// Move the PI tracking to the PUBREL consumer. It will not have a
 	// sequence nor an ACK subject until we get a PUBREL callback on the
 	// subscription. See mqttDeliverPubRelCb.
-	sess.pending[pi].jsDur = sess.pubRelConsumer.Durable
-	sess.pending[pi].jsAckSubject = ""
-	sess.pending[pi].sseq = 0
+	ack.jsDur = sess.pubRelConsumer.Durable
+	ack.jsAckSubject = ""
+	ack.sseq = 0
 
 	sess.mu.Unlock()
 
@@ -3996,7 +3996,7 @@ func mqttSubscribeTrace(pi uint16, filters []*mqttFilter) string {
 // message and this is the callback for a QoS1+ subscription because in that
 // case, it will be handled by the other callback. This avoid getting duplicate
 // deliveries.
-func mqttDeliverMsgCbQos0(sub *subscription, pc *client, _ *Account, subject, reply string, rmsg []byte) {
+func mqttDeliverMsgCbQoS0(sub *subscription, pc *client, _ *Account, subject, reply string, rmsg []byte) {
 	if pc.kind == JETSTREAM && len(reply) > 0 && strings.HasPrefix(reply, jsAckPre) {
 		return
 	}
@@ -4012,7 +4012,7 @@ func mqttDeliverMsgCbQos0(sub *subscription, pc *client, _ *Account, subject, re
 	// Check the subscription's QoS. This needs to be protected because
 	// the client may change an existing subscription at any time.
 	sess.mu.Lock()
-	subQOS := sub.mqtt.qos
+	subQoS := sub.mqtt.qos
 	isReservedSub := mqttIsReserved(sub, subject)
 	sess.mu.Unlock()
 
@@ -4026,10 +4026,10 @@ func mqttDeliverMsgCbQos0(sub *subscription, pc *client, _ *Account, subject, re
 	if pc.isMqtt() {
 		// This is an MQTT publisher directly connected to this server.
 
-		// If the message was published with a QOS > 0 and the sub has the QOS >
+		// If the message was published with a QoS > 0 and the sub has the QoS >
 		// 0 then the message will be delivered by the other callback.
-		msgQOS := mqttGetQoS(pc.mqtt.pp.flags)
-		if subQOS > 0 && msgQOS > 0 {
+		msgQoS := mqttGetQoS(pc.mqtt.pp.flags)
+		if subQoS > 0 && msgQoS > 0 {
 			return
 		}
 		topic = pc.mqtt.pp.topic
@@ -4042,7 +4042,7 @@ func mqttDeliverMsgCbQos0(sub *subscription, pc *client, _ *Account, subject, re
 	} else {
 		// Non MQTT client, could be NATS publisher, or ROUTER, etc..
 		h := mqttParseNATSMsgHeader(hdr)
-		if subQOS > 0 && h != nil && h.qos > 0 {
+		if subQoS > 0 && h != nil && h.qos > 0 {
 			// will be delivered by the JetStream callback
 			return
 		}
@@ -4059,13 +4059,13 @@ func mqttDeliverMsgCbQos0(sub *subscription, pc *client, _ *Account, subject, re
 	pc.mqttEnqueuePublishMsgTo(cc, sub, 0, 0, false, retained, topic, msg)
 }
 
-// This is the callback attached to a JS durable subscription for a MQTT QOS1+
+// This is the callback attached to a JS durable subscription for a MQTT QoS 1+
 // sub. Only JETSTREAM should be sending a message to this subject (the delivery
 // subject associated with the JS durable consumer), but in cluster mode, this
 // can be coming from a route, gw, etc... We make sure that if this is the case,
 // the message contains a NATS/MQTT header that indicates that this is a
 // published QoS1+ message.
-func mqttDeliverMsgCbQos1(sub *subscription, pc *client, _ *Account, subject, reply string, rmsg []byte) {
+func mqttDeliverMsgCbQoS12(sub *subscription, pc *client, _ *Account, subject, reply string, rmsg []byte) {
 	// Message on foo.bar is stored under $MQTT.msgs.foo.bar, so the subject has to be
 	// at least as long as the stream subject prefix "$MQTT.msgs.", and after removing
 	// the prefix, has to be at least 1 character long.
@@ -4076,7 +4076,7 @@ func mqttDeliverMsgCbQos1(sub *subscription, pc *client, _ *Account, subject, re
 	hdr, msg := pc.msgParts(rmsg)
 	h := mqttParseNATSMsgHeader(hdr)
 	if pc.kind != JETSTREAM && (h == nil || h.qos == 0) {
-		// MQTT QOS0 messages must be ignored, they will be delivered by the
+		// MQTT QoS 0 messages must be ignored, they will be delivered by the
 		// other callback, the direct NATS subscription. All JETSTREAM messages
 		// will have the header.
 		return
@@ -4096,7 +4096,7 @@ func mqttDeliverMsgCbQos1(sub *subscription, pc *client, _ *Account, subject, re
 		return
 	}
 
-	// In this callback we handle only QOS-published messages to QOS
+	// In this callback we handle only QoS-published messages to QoS
 	// subscriptions. Ignore if either is 0, will be delivered by the other
 	// callback, mqttDeliverMsgCbQos1.
 	qos := h.qos
@@ -4297,7 +4297,7 @@ func (sess *mqttSession) cleanupFailedSub(c *client, sub *subscription, cc *Cons
 	}
 }
 
-// Make sure we are set up to deliver PUBREL messages to this QOS2-subscribed
+// Make sure we are set up to deliver PUBREL messages to this QoS2-subscribed
 // session.
 //
 // Session lock held on entry. Need to make sure no other subscribe packet races
@@ -4334,7 +4334,7 @@ func (sess *mqttSession) ensurePubRelConsumerSubscription(c *client) error {
 		}
 
 		ccr := &CreateConsumerRequest{
-			Stream: mqttQOS2PubRelStreamName,
+			Stream: mqttQoS2PubRelStreamName,
 			Config: ConsumerConfig{
 				DeliverSubject: deliverSubj,
 				Durable:        sess.idHash + "_pubrel",
@@ -4448,7 +4448,7 @@ func (sess *mqttSession) processJSConsumer(c *client, subject, sid string,
 	// This is an internal subscription on subject like "$MQTT.sub.<nuid>" that is setup
 	// for the JS durable's deliver subject.
 	sess.mu.Lock()
-	sub, err := c.processSub([]byte(inbox), nil, []byte(inbox), mqttDeliverMsgCbQos1, false)
+	sub, err := c.processSub([]byte(inbox), nil, []byte(inbox), mqttDeliverMsgCbQoS12, false)
 	if err != nil {
 		sess.mu.Unlock()
 		sess.deleteConsumer(cc)
