@@ -109,6 +109,9 @@ func LoadConfig(configFile string) (opts *Options) {
 // RunServerWithConfig starts a new Go routine based server with a configuration file.
 func RunServerWithConfig(configFile string) (srv *Server, opts *Options) {
 	opts = LoadConfig(configFile)
+	opts.Debug = true
+	// opts.Trace = true
+	opts.NoLog = false
 	srv = RunServer(opts)
 	return
 }
