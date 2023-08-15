@@ -3462,24 +3462,21 @@ func (s *Server) mqttInitiateMsgDelivery(c *client, pp *mqttPublish) error {
 		return nil
 	}
 	_, err := c.mqtt.sess.jsa.storeMsg(mqttStreamSubjectPrefix+string(pp.subject), headerLen, natsMsg)
-	if err != nil {
-		return err
-	}
 
-	return nil
+	return err
 }
 
 func (s *Server) mqttStoreQOS2Msg(c *client, pp *mqttPublish) error {
 	// `true` means encode the MQTT PUBLISH packet in the NATS message header.
 	natsMsg, headerLen := mqttNewDeliverableMessage(pp, true)
 
-	// Do not broadcast the message until it has been deduplicated and
-	// released by the sender. Instead store this QoS2 message as
-	// "$MQTT.qos2.<account-name>.<client-id>.<PI>". If the message
-	// is a duplicate, we get back a ErrMaxMsgsPerSubject, otherwise it does
-	// not change the flow, still need to send a PUBREC back to the client.
-	// The original subject (translated from MQTT topic) is included in the
-	// NATS header of the stored message to use for latter delivery.
+	// Do not broadcast the message until it has been deduplicated and released
+	// by the sender. Instead store this QoS2 message as
+	// "$MQTT.qos2.<client-id>.<PI>". If the message is a duplicate, we get back
+	// a ErrMaxMsgsPerSubject, otherwise it does not change the flow, still need
+	// to send a PUBREC back to the client. The original subject (translated
+	// from MQTT topic) is included in the NATS header of the stored message to
+	// use for latter delivery.
 	_, err := c.mqtt.sess.jsa.storeMsg(c.mqttQOS2InternalSubject(pp.pi), headerLen, natsMsg)
 	return err
 }
@@ -3868,7 +3865,7 @@ func (c *client) mqttProcessPubRec(pi uint16) error {
 
 	// Move the PI tracking to the PUBREL consumer. It will not have a
 	// sequence nor an ACK subject until we get a PUBREL callback on the
-	// subscription. See <>/<>
+	// subscription. See mqttDeliverPubRelCb.
 	sess.pending[pi].jsDur = sess.pubRelConsumer.Durable
 	sess.pending[pi].jsAckSubject = ""
 	sess.pending[pi].sseq = 0
@@ -4016,10 +4013,11 @@ func mqttDeliverMsgCbQos0(sub *subscription, pc *client, _ *Account, subject, re
 	// the client may change an existing subscription at any time.
 	sess.mu.Lock()
 	subQOS := sub.mqtt.qos
+	isReservedSub := mqttIsReserved(sub, subject)
 	sess.mu.Unlock()
 
 	// We have a wildcard subscription and this subject starts with '$' so ignore per Spec [MQTT-4.7.2-1].
-	if mqttIsReserved(sub, subject) {
+	if isReservedSub {
 		return
 	}
 
@@ -4361,39 +4359,6 @@ func (sess *mqttSession) ensurePubRelConsumerSubscription(c *client) error {
 
 	return nil
 }
-
-// func (sess *mqttSession) countQOS2Subs() int {
-// 	c := 0
-// 	for _, qos := range sess.subs {
-// 		if qos == 2 {
-// 			c++
-// 		}
-// 	}
-// 	return c
-// }
-
-// func (sess *mqttSession) cleanupPubRelConsumer(c *client) error {
-// 	var ccDelete *ConsumerConfig
-// 	sess.mu.Lock()
-// 	cQOS2 := sess.countQOS2Subs()
-// 	if cQOS2 == 0 && sess.pubRelConsumer != nil {
-// 		ccDelete, sess.pubRelConsumer = sess.pubRelConsumer, nil
-// 	}
-// 	sess.mu.Unlock()
-
-// 	if ccDelete == nil {
-// 		return nil
-// 	}
-// 	if err := c.processUnsub([]byte(ccDelete.DeliverSubject)); err != nil {
-// 		return err
-// 	}
-// 	sess.deleteConsumer(ccDelete)
-
-// 	sess.mu.Lock()
-// 	sess.pubRelConsumer = nil
-// 	sess.mu.Unlock()
-// 	return nil
-// }
 
 // When invoked with a QoS of 0, looks for an existing JS durable consumer for
 // the given sid and if one is found, delete the JS durable consumer and unsub

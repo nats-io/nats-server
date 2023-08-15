@@ -1900,7 +1900,7 @@ func TestMQTTSubAck(t *testing.T) {
 	subs := []*mqttFilter{
 		{filter: "foo", qos: 0},
 		{filter: "bar", qos: 1},
-		{filter: "baz", qos: 2},       // Since we don't support, we should receive a result of 1
+		{filter: "baz", qos: 2},
 		{filter: "foo/#/bar", qos: 0}, // Invalid sub, so we should receive a result of mqttSubAckFailure
 	}
 	expected := []byte{
@@ -2141,10 +2141,8 @@ func TestMQTTPublish(t *testing.T) {
 
 func TestMQTTSub(t *testing.T) {
 	o := testMQTTDefaultOptions()
-	o.Trace = true
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownServer(s)
-	s.ConfigureLogger()
 
 	nc := natsConnect(t, s.ClientURL())
 	defer nc.Close()
@@ -2209,10 +2207,7 @@ func TestMQTTSub(t *testing.T) {
 
 func TestMQTTSubQoS2(t *testing.T) {
 	o := testMQTTDefaultOptions()
-	o.Debug = false
-	o.Trace = true
 	s := testMQTTRunServer(t, o)
-	s.ConfigureLogger()
 	defer testMQTTShutdownServer(s)
 
 	nc := natsConnect(t, s.ClientURL())
