@@ -240,6 +240,7 @@ func natsSub(t *testing.T, nc *nats.Conn, subj string, cb nats.MsgHandler) *nats
 	if err != nil {
 		t.Fatalf("Error on subscribe: %v", err)
 	}
+	natsFlush(t, nc)
 	return sub
 }
 
@@ -249,6 +250,7 @@ func natsSubSync(t *testing.T, nc *nats.Conn, subj string) *nats.Subscription {
 	if err != nil {
 		t.Fatalf("Error on subscribe: %v", err)
 	}
+	natsFlush(t, nc)
 	return sub
 }
 
@@ -267,6 +269,7 @@ func natsQueueSub(t *testing.T, nc *nats.Conn, subj, queue string, cb nats.MsgHa
 	if err != nil {
 		t.Fatalf("Error on subscribe: %v", err)
 	}
+	natsFlush(t, nc)
 	return sub
 }
 
@@ -276,6 +279,7 @@ func natsQueueSubSync(t *testing.T, nc *nats.Conn, subj, queue string) *nats.Sub
 	if err != nil {
 		t.Fatalf("Error on subscribe: %v", err)
 	}
+	natsFlush(t, nc)
 	return sub
 }
 
