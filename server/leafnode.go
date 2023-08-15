@@ -533,6 +533,8 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 			}
 		}
 		if err != nil {
+			jitter := time.Duration(rand.Int63n(int64(reconnectDelay)))
+			delay := reconnectDelay + jitter
 			attempts++
 			if s.shouldReportConnectErr(firstConnect, attempts) {
 				s.Errorf(connErrFmt, rURL.Host, attempts, err)
@@ -542,7 +544,7 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 			select {
 			case <-s.quitCh:
 				return
-			case <-time.After(reconnectDelay):
+			case <-time.After(delay):
 				// Check if we should migrate any JetStream assets while this remote is down.
 				s.checkJetStreamMigrate(remote)
 				continue
