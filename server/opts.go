@@ -744,6 +744,9 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 	// Collect all errors and warnings and report them all together.
 	errors := make([]error, 0)
 	warnings := make([]error, 0)
+	if len(m) == 0 {
+		warnings = append(warnings, fmt.Errorf("%s: config has no values or is empty", configFile))
+	}
 
 	// First check whether a system account has been defined,
 	// as that is a condition for other features to be enabled.
