@@ -4362,38 +4362,38 @@ func (sess *mqttSession) ensurePubRelConsumerSubscription(c *client) error {
 	return nil
 }
 
-func (sess *mqttSession) countQOS2Subs() int {
-	c := 0
-	for _, qos := range sess.subs {
-		if qos == 2 {
-			c++
-		}
-	}
-	return c
-}
+// func (sess *mqttSession) countQOS2Subs() int {
+// 	c := 0
+// 	for _, qos := range sess.subs {
+// 		if qos == 2 {
+// 			c++
+// 		}
+// 	}
+// 	return c
+// }
 
-func (sess *mqttSession) cleanupPubRelConsumer(c *client) error {
-	var ccDelete *ConsumerConfig
-	sess.mu.Lock()
-	cQOS2 := sess.countQOS2Subs()
-	if cQOS2 == 0 && sess.pubRelConsumer != nil {
-		ccDelete, sess.pubRelConsumer = sess.pubRelConsumer, nil
-	}
-	sess.mu.Unlock()
+// func (sess *mqttSession) cleanupPubRelConsumer(c *client) error {
+// 	var ccDelete *ConsumerConfig
+// 	sess.mu.Lock()
+// 	cQOS2 := sess.countQOS2Subs()
+// 	if cQOS2 == 0 && sess.pubRelConsumer != nil {
+// 		ccDelete, sess.pubRelConsumer = sess.pubRelConsumer, nil
+// 	}
+// 	sess.mu.Unlock()
 
-	if ccDelete == nil {
-		return nil
-	}
-	if err := c.processUnsub([]byte(ccDelete.DeliverSubject)); err != nil {
-		return err
-	}
-	sess.deleteConsumer(ccDelete)
+// 	if ccDelete == nil {
+// 		return nil
+// 	}
+// 	if err := c.processUnsub([]byte(ccDelete.DeliverSubject)); err != nil {
+// 		return err
+// 	}
+// 	sess.deleteConsumer(ccDelete)
 
-	sess.mu.Lock()
-	sess.pubRelConsumer = nil
-	sess.mu.Unlock()
-	return nil
-}
+// 	sess.mu.Lock()
+// 	sess.pubRelConsumer = nil
+// 	sess.mu.Unlock()
+// 	return nil
+// }
 
 // When invoked with a QoS of 0, looks for an existing JS durable consumer for
 // the given sid and if one is found, delete the JS durable consumer and unsub
