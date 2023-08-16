@@ -2623,8 +2623,10 @@ func (sess *mqttSession) clear() error {
 		delete(sess.cons, sid)
 		durs = append(durs, cc.Durable)
 	}
-	pubRelDur = sess.pubRelConsumer.Durable
-
+	if sess.pubRelConsumer != nil {
+		pubRelDur = sess.pubRelConsumer.Durable
+	}
+	
 	sess.subs = nil
 	sess.pending = nil
 	sess.cpending = nil
