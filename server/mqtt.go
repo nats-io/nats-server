@@ -2611,6 +2611,8 @@ func (sess *mqttSession) save() error {
 // Lock not held on entry, but session is in the locked map.
 func (sess *mqttSession) clear() error {
 	var durs []string
+	var pubRelDur string
+
 	sess.mu.Lock()
 	id := sess.id
 	seq := sess.seq
@@ -2621,13 +2623,8 @@ func (sess *mqttSession) clear() error {
 		delete(sess.cons, sid)
 		durs = append(durs, cc.Durable)
 	}
-	if sess.pubRelConsumer != nil {
-		_, err := sess.jsa.deleteConsumer(mqttQoS2PubRelStreamName, sess.pubRelConsumer.Durable)
-		if isErrorOtherThan(err, JSConsumerNotFoundErr) {
-			sess.mu.Unlock()
-			return fmt.Errorf("unable to delete consumer %q for session %q: %v", sess.pubRelConsumer.Durable, sess.id, err)
-		}
-	}
+	pubRelDur = sess.pubRelConsumer.Durable
+
 	sess.subs = nil
 	sess.pending = nil
 	sess.cpending = nil
@@ -2639,6 +2636,13 @@ func (sess *mqttSession) clear() error {
 	for _, dur := range durs {
 		if _, err := sess.jsa.deleteConsumer(mqttStreamName, dur); isErrorOtherThan(err, JSConsumerNotFoundErr) {
 			return fmt.Errorf("unable to delete consumer %q for session %q: %v", dur, sess.id, err)
+		}
+	}
+	if pubRelDur != "" {
+		_, err := sess.jsa.deleteConsumer(mqttQoS2PubRelStreamName, pubRelDur)
+		if isErrorOtherThan(err, JSConsumerNotFoundErr) {
+			sess.mu.Unlock()
+			return fmt.Errorf("unable to delete consumer %q for session %q: %v", pubRelDur, sess.id, err)
 		}
 	}
 
