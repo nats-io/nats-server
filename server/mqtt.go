@@ -2626,7 +2626,7 @@ func (sess *mqttSession) clear() error {
 	if sess.pubRelConsumer != nil {
 		pubRelDur = sess.pubRelConsumer.Durable
 	}
-	
+
 	sess.subs = nil
 	sess.pending = nil
 	sess.cpending = nil
