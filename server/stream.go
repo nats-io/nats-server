@@ -3137,7 +3137,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 // Generate a new (2.10) style source header (stream name, sequence number, source filter, source destination transform).
 func (si *sourceInfo) genSourceHeader(reply string) string {
 	var b strings.Builder
-	iNameParts := strings.Fields(si.iname)
+	iNameParts := strings.Split(si.iname, " ")
 
 	b.WriteString(iNameParts[0])
 	b.WriteByte(' ')
@@ -3186,7 +3186,7 @@ func streamAndSeq(shdr string) (string, string, uint64) {
 		return streamAndSeqFromAckReply(shdr)
 	}
 	// New version which is stream index name <SPC> sequence
-	fields := strings.Fields(shdr)
+	fields := strings.Split(shdr, " ")
 	nFields := len(fields)
 
 	if nFields != 2 && nFields <= 3 {
