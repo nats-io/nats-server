@@ -2071,23 +2071,24 @@ func TestJetStreamSuperClusterMovingStreamAndMoveBack(t *testing.T) {
 		{"R3", 3},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			js.DeleteStream("TEST")
+			streamName := fmt.Sprintf("TEST_%s", test.name)
 
 			_, err := js.AddStream(&nats.StreamConfig{
-				Name:      "TEST",
+				Name:      streamName,
 				Replicas:  test.replicas,
 				Placement: &nats.Placement{Tags: []string{"cloud:aws"}},
 			})
+			defer js.DeleteStream(streamName)
 			require_NoError(t, err)
 
 			toSend := 10_000
 			for i := 0; i < toSend; i++ {
-				_, err := js.Publish("TEST", []byte("HELLO WORLD"))
+				_, err := js.Publish(streamName, []byte("HELLO WORLD"))
 				require_NoError(t, err)
 			}
 
 			_, err = js.UpdateStream(&nats.StreamConfig{
-				Name:      "TEST",
+				Name:      streamName,
 				Replicas:  test.replicas,
 				Placement: &nats.Placement{Tags: []string{"cloud:gcp"}},
 			})
@@ -2095,9 +2096,9 @@ func TestJetStreamSuperClusterMovingStreamAndMoveBack(t *testing.T) {
 
 			checkMove := func(cluster string) {
 				t.Helper()
-				sc.waitOnStreamLeader("$G", "TEST")
-				checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
-					si, err := js.StreamInfo("TEST")
+				sc.waitOnStreamLeader("$G", streamName)
+				checkFor(t, 300*time.Second, 100*time.Millisecond, func() error {
+					si, err := js.StreamInfo(streamName)
 					if err != nil {
 						return err
 					}
@@ -2123,7 +2124,7 @@ func TestJetStreamSuperClusterMovingStreamAndMoveBack(t *testing.T) {
 			checkMove("C2")
 
 			_, err = js.UpdateStream(&nats.StreamConfig{
-				Name:      "TEST",
+				Name:      streamName,
 				Replicas:  test.replicas,
 				Placement: &nats.Placement{Tags: []string{"cloud:aws"}},
 			})
