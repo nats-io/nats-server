@@ -88,9 +88,10 @@ func RunServer(opts *Options) *Server {
 	}
 	if os.Getenv("DEBUG_NATS_TEST") == "true" {
 		log := srvlog.NewTestLogger(fmt.Sprintf("[%s] | ", opts.ServerName), true)
-		s.SetLoggerV2(log, opts.Debug, opts.Trace, opts.TraceVerbose)
+		trace := os.Getenv("TRACE_NATS_TEST") == "true"
+		s.SetLoggerV2(log, true, trace, false)
 	}
-	
+
 	// Run server in Go routine.
 	s.Start()
 
@@ -114,9 +115,6 @@ func LoadConfig(configFile string) (opts *Options) {
 // RunServerWithConfig starts a new Go routine based server with a configuration file.
 func RunServerWithConfig(configFile string) (srv *Server, opts *Options) {
 	opts = LoadConfig(configFile)
-	opts.Debug = true
-	// opts.Trace = true
-	opts.NoLog = false
 	srv = RunServer(opts)
 	return
 }
