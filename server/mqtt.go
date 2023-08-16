@@ -2641,7 +2641,6 @@ func (sess *mqttSession) clear() error {
 	if pubRelDur != "" {
 		_, err := sess.jsa.deleteConsumer(mqttQoS2PubRelStreamName, pubRelDur)
 		if isErrorOtherThan(err, JSConsumerNotFoundErr) {
-			sess.mu.Unlock()
 			return fmt.Errorf("unable to delete consumer %q for session %q: %v", pubRelDur, sess.id, err)
 		}
 	}
