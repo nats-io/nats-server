@@ -2093,9 +2093,6 @@ func (s *Server) Start() {
 	// Pprof http endpoint for the profiler.
 	if opts.ProfPort != 0 {
 		s.StartProfiler()
-	} else {
-		// Enable blocking profile even if no port defined since profiling is always possible over $SYS requests
-		runtime.SetBlockProfileRate(1)
 	}
 
 	if opts.ConfigFile != _EMPTY_ {
@@ -2696,9 +2693,6 @@ func (s *Server) StartProfiler() {
 	}
 	s.profiler = l
 	s.profilingServer = srv
-
-	// Enable blocking profile
-	runtime.SetBlockProfileRate(1)
 
 	go func() {
 		// if this errors out, it's probably because the server is being shutdown
