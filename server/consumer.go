@@ -213,14 +213,13 @@ var (
 
 // Calculate accurate replicas for the consumer config with the parent stream config.
 func (consCfg ConsumerConfig) replicas(strCfg *StreamConfig) int {
-	if consCfg.Replicas == 0 {
+	if consCfg.Replicas == 0 || consCfg.Replicas > strCfg.Replicas {
 		if !isDurableConsumer(&consCfg) && strCfg.Retention == LimitsPolicy {
 			return 1
 		}
 		return strCfg.Replicas
-	} else {
-		return consCfg.Replicas
 	}
+	return consCfg.Replicas
 }
 
 // Consumer is a jetstream consumer.
