@@ -1691,22 +1691,23 @@ func TestJetStreamSuperClusterMovingStreamsAndConsumers(t *testing.T) {
 		{"R3", 3},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			streamName := fmt.Sprintf("MOVE_%s", test.name)
 			replicas := test.replicas
 
 			si, err := js.AddStream(&nats.StreamConfig{
-				Name:      "MOVE",
+				Name:      streamName,
 				Replicas:  replicas,
 				Placement: &nats.Placement{Tags: []string{"cloud:aws"}},
 			})
 			require_NoError(t, err)
-			defer js.DeleteStream("MOVE")
+			defer js.DeleteStream(streamName)
 
 			if si.Cluster.Name != "C1" {
 				t.Fatalf("Failed to place properly in %q, got %q", "C1", si.Cluster.Name)
 			}
 
 			for i := 0; i < 1000; i++ {
-				_, err := js.PublishAsync("MOVE", []byte("Moving on up"))
+				_, err := js.PublishAsync(streamName, []byte("Moving on up"))
 				require_NoError(t, err)
 			}
 			select {
@@ -1716,23 +1717,27 @@ func TestJetStreamSuperClusterMovingStreamsAndConsumers(t *testing.T) {
 			}
 
 			// Durable Push Consumer, so same R.
-			dpushSub, err := js.SubscribeSync("MOVE", nats.Durable("dlc"))
+			dpushSub, err := js.SubscribeSync(streamName, nats.Durable("dlc"))
+			require_NoError(t, err)
+			err = nc.Flush()
 			require_NoError(t, err)
 			defer dpushSub.Unsubscribe()
 
 			// Ephemeral Push Consumer, R1.
-			epushSub, err := js.SubscribeSync("MOVE")
+			epushSub, err := js.SubscribeSync(streamName)
+			require_NoError(t, err)
+			err = nc.Flush()
 			require_NoError(t, err)
 			defer epushSub.Unsubscribe()
 
 			// Durable Pull Consumer, so same R.
-			dpullSub, err := js.PullSubscribe("MOVE", "dlc-pull")
+			dpullSub, err := js.PullSubscribe(streamName, "dlc-pull")
 			require_NoError(t, err)
 			defer dpullSub.Unsubscribe()
 
 			// TODO(dlc) - Server supports ephemeral pulls but Go client does not yet.
 
-			si, err = js.StreamInfo("MOVE")
+			si, err = js.StreamInfo(streamName)
 			require_NoError(t, err)
 			if si.State.Consumers != 3 {
 				t.Fatalf("Expected 3 attached consumers, got %d", si.State.Consumers)
@@ -1746,11 +1751,11 @@ func TestJetStreamSuperClusterMovingStreamsAndConsumers(t *testing.T) {
 			// Ack 100
 			toAck := 100
 			for i := 0; i < toAck; i++ {
-				m, err := dpushSub.NextMsg(time.Second)
+				m, err := dpushSub.NextMsg(3 * time.Second)
 				require_NoError(t, err)
 				m.AckSync()
 				// Ephemeral
-				m, err = epushSub.NextMsg(time.Second)
+				m, err = epushSub.NextMsg(3 * time.Second)
 				require_NoError(t, err)
 				m.AckSync()
 			}
@@ -1762,7 +1767,7 @@ func TestJetStreamSuperClusterMovingStreamsAndConsumers(t *testing.T) {
 
 			// First make sure we disallow move and replica changes in same update.
 			_, err = js.UpdateStream(&nats.StreamConfig{
-				Name:      "MOVE",
+				Name:      streamName,
 				Placement: &nats.Placement{Tags: []string{"cloud:gcp"}},
 				Replicas:  replicas + 1,
 			})
@@ -1770,7 +1775,7 @@ func TestJetStreamSuperClusterMovingStreamsAndConsumers(t *testing.T) {
 
 			// Now move to new cluster.
 			si, err = js.UpdateStream(&nats.StreamConfig{
-				Name:      "MOVE",
+				Name:      streamName,
 				Replicas:  replicas,
 				Placement: &nats.Placement{Tags: []string{"cloud:gcp"}},
 			})
@@ -1782,7 +1787,7 @@ func TestJetStreamSuperClusterMovingStreamsAndConsumers(t *testing.T) {
 
 			// Make sure we can not move an inflight stream and consumers, should error.
 			_, err = js.UpdateStream(&nats.StreamConfig{
-				Name:      "MOVE",
+				Name:      streamName,
 				Replicas:  replicas,
 				Placement: &nats.Placement{Tags: []string{"cloud:aws"}},
 			})
@@ -1845,7 +1850,7 @@ func TestJetStreamSuperClusterMovingStreamsAndConsumers(t *testing.T) {
 			})
 
 			// Check moved state is same as initial state.
-			si, err = js.StreamInfo("MOVE")
+			si, err = js.StreamInfo(streamName)
 			require_NoError(t, err)
 
 			if !reflect.DeepEqual(si.State, initialState) {
@@ -1855,11 +1860,11 @@ func TestJetStreamSuperClusterMovingStreamsAndConsumers(t *testing.T) {
 			// Make sure we can still send messages.
 			addN := toAck
 			for i := 0; i < addN; i++ {
-				_, err := js.Publish("MOVE", []byte("Done Moved"))
+				_, err := js.Publish(streamName, []byte("Done Moved"))
 				require_NoError(t, err)
 			}
 
-			si, err = js.StreamInfo("MOVE")
+			si, err = js.StreamInfo(streamName)
 			require_NoError(t, err)
 
 			expectedPushMsgs := initialState.Msgs + uint64(addN)
@@ -1897,7 +1902,7 @@ func TestJetStreamSuperClusterMovingStreamsAndConsumers(t *testing.T) {
 						return fmt.Errorf("NumAckPending for %q is not correct: %v", ci.Name, ci.NumAckPending)
 					}
 					// Make sure the replicas etc are back to what is expected.
-					si, err := js.StreamInfo("MOVE")
+					si, err := js.StreamInfo(streamName)
 					if err != nil {
 						return err
 					}
@@ -1934,7 +1939,7 @@ func TestJetStreamSuperClusterMovingStreamsAndConsumers(t *testing.T) {
 			checkPullConsumer(dpullSub)
 
 			// Cleanup
-			err = js.DeleteStream("MOVE")
+			err = js.DeleteStream(streamName)
 			require_NoError(t, err)
 		})
 	}

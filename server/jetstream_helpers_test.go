@@ -353,8 +353,9 @@ func createJetStreamTaggedSuperClusterWithGWProxy(t *testing.T, gwm gwProxyMap) 
 
 	// Walk and make sure all tags are registered.
 	expires := time.Now().Add(10 * time.Second)
+	var allOK bool
 	for time.Now().Before(expires) {
-		allOK := true
+		allOK = true
 		for _, p := range cc.meta.Peers() {
 			si, ok := ml.nodeToInfo.Load(p.ID)
 			require_True(t, ok)
@@ -367,6 +368,11 @@ func createJetStreamTaggedSuperClusterWithGWProxy(t *testing.T, gwm gwProxyMap) 
 		if allOK {
 			break
 		}
+	}
+	if allOK {
+		t.Logf("ALL TAGS REGISTERED")
+	} else {
+		t.Logf("NOT ALL TAGS REGISTERED")
 	}
 
 	return sc
