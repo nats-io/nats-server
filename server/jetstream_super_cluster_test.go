@@ -1694,11 +1694,20 @@ func TestJetStreamSuperClusterMovingStreamsAndConsumers(t *testing.T) {
 			streamName := fmt.Sprintf("MOVE_%s", test.name)
 			replicas := test.replicas
 
+			checkFor(t, 30*time.Second, 100*time.Millisecond, func() error {
+				_, err := js.AccountInfo(nats.MaxWait(2 * time.Second))
+				if err != nil {
+					t.Logf("------> %v", err)
+					return err
+				}
+				return nil
+			})
+
 			si, err := js.AddStream(&nats.StreamConfig{
 				Name:      streamName,
 				Replicas:  replicas,
 				Placement: &nats.Placement{Tags: []string{"cloud:aws"}},
-			})
+			}, nats.MaxWait(10*time.Second))
 			require_NoError(t, err)
 			defer js.DeleteStream(streamName)
 
@@ -2077,6 +2086,15 @@ func TestJetStreamSuperClusterMovingStreamAndMoveBack(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			streamName := fmt.Sprintf("TEST_%s", test.name)
+
+			checkFor(t, 30*time.Second, 100*time.Millisecond, func() error {
+				_, err := js.AccountInfo(nats.MaxWait(2 * time.Second))
+				if err != nil {
+					t.Logf("------> %v", err)
+					return err
+				}
+				return nil
+			})
 
 			_, err := js.AddStream(&nats.StreamConfig{
 				Name:      streamName,
