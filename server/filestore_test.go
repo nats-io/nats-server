@@ -5714,3 +5714,27 @@ func TestFileStoreRecaluclateFirstForSubjBug(t *testing.T) {
 	// Make sure it was update properly.
 	require_True(t, *ss == SimpleState{Msgs: 1, First: 3, Last: 3, firstNeedsUpdate: false})
 }
+
+func TestFileStoreLockFileSystem(t *testing.T) {
+	dir := t.TempDir()
+
+	fs0, err0 := newFileStore(FileStoreConfig{StoreDir: dir}, StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
+	require_NoError(t, err0)
+	fs0.Stop()
+
+	fs1, err1 := newFileStore(FileStoreConfig{StoreDir: dir}, StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
+	require_NoError(t, err1)
+	fs1.Stop()
+}
+
+func TestFileStoreLockFileSystemConflict(t *testing.T) {
+	dir := t.TempDir()
+
+	fs0, err0 := newFileStore(FileStoreConfig{StoreDir: dir}, StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
+	require_NoError(t, err0)
+
+	_, err1 := newFileStore(FileStoreConfig{StoreDir: dir}, StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
+	require_Error(t, err1)
+
+	fs0.Stop()
+}
