@@ -14,7 +14,6 @@
 package server
 
 import (
-	"bytes"
 	"fmt"
 	"math/rand"
 	"net/url"
@@ -112,16 +111,16 @@ func require_Error(t *testing.T, err error, expected ...error) {
 	t.Fatalf("Expected one of %v, got '%v'", expected, err)
 }
 
-func require_Equal(t *testing.T, a, b string) {
+func require_Equal[T comparable](t *testing.T, a, b T) {
 	t.Helper()
-	if strings.Compare(a, b) != 0 {
+	if a != b {
 		t.Fatalf("require equal, but got: %v != %v", a, b)
 	}
 }
 
-func require_NotEqual(t *testing.T, a, b [32]byte) {
+func require_NotEqual[T comparable](t *testing.T, a, b T) {
 	t.Helper()
-	if bytes.Equal(a[:], b[:]) {
+	if a == b {
 		t.Fatalf("require not equal, but got: %v != %v", a, b)
 	}
 }

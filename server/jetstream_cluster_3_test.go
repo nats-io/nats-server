@@ -4985,3 +4985,44 @@ func TestJetStreamClusterStreamFailTrackingSnapshots(t *testing.T) {
 		t.Fatalf("Expected no errors, got %d", len(errCh))
 	}
 }
+
+func TestJetStreamClusterOrphanConsumerSubjects(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.>", "bar.>"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Name:          "consumer_foo",
+		Durable:       "consumer_foo",
+		FilterSubject: "foo.something",
+	})
+	require_NoError(t, err)
+
+	for _, replicas := range []int{3, 1, 3} {
+		_, err = js.UpdateStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"bar.>"},
+			Replicas: replicas,
+		})
+		require_NoError(t, err)
+		c.waitOnAllCurrent()
+	}
+
+	c.waitOnStreamLeader("$G", "TEST")
+	c.waitOnConsumerLeader("$G", "TEST", "consumer_foo")
+
+	info, err := js.ConsumerInfo("TEST", "consumer_foo")
+	require_NoError(t, err)
+	require_True(t, info.Cluster != nil)
+	require_NotEqual(t, info.Cluster.Leader, "")
+	require_Equal(t, len(info.Cluster.Replicas), 2)
+}
