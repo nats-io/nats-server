@@ -4865,9 +4865,6 @@ func TestMQTTQoS2InflightMsgsDeliveredAfterUnsubscribe(t *testing.T) {
 	testMQTTSendPIPacket(mqttPacketPubRec, t, c, subPI2)
 	testMQTTReadPIPacket(mqttPacketPubRel, t, r, subPI2)
 
-	// maintan one more subscription so that the session doesn't disconnect
-	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "bar", qos: qos2}}, []byte{qos2})
-
 	// Unsubscribe
 	testMQTTUnsub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: qos2}})
 
