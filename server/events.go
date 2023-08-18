@@ -533,6 +533,19 @@ RESET:
 	}
 }
 
+// Will send a shutdown message for lame-duck. Unlike sendShutdownEvent, this will
+// not close off the send queue or reply handler, as we may still have a workload
+// that needs migrating off.
+// Lock should be held.
+func (s *Server) sendLDMShutdownEventLocked() {
+	if s.sys == nil || s.sys.sendq == nil {
+		return
+	}
+	subj := fmt.Sprintf(shutdownEventSubj, s.info.ID)
+	si := &ServerInfo{}
+	s.sys.sendq.push(newPubMsg(nil, subj, _EMPTY_, si, nil, si, noCompression, false, true))
+}
+
 // Will send a shutdown message.
 func (s *Server) sendShutdownEvent() {
 	s.mu.Lock()
