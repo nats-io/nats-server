@@ -81,7 +81,8 @@ const (
 	mqttPubFlagRetain = byte(0x01)
 	mqttPubFlagQoS    = byte(0x06)
 	mqttPubFlagDup    = byte(0x08)
-	mqttPubQos1       = byte(0x2) // 1 << 1
+	mqttPubQos1       = byte(0x1 << 1)
+	mqttPubQoS2       = byte(0x2 << 1)
 
 	// Subscribe flags
 	mqttSubscribeFlags = byte(0x2)
@@ -3471,6 +3472,8 @@ func (s *Server) mqttInitiateMsgDelivery(c *client, pp *mqttPublish) error {
 	return err
 }
 
+var mqttMaxMsgErrPattern = fmt.Sprintf("%s (%v)", ErrMaxMsgsPerSubject.Error(), JSStreamStoreFailedF)
+
 func (s *Server) mqttStoreQoS2Msg(c *client, pp *mqttPublish) error {
 	// `true` means encode the MQTT PUBLISH packet in the NATS message header.
 	natsMsg, headerLen := mqttNewDeliverableMessage(pp, true)
@@ -3483,7 +3486,15 @@ func (s *Server) mqttStoreQoS2Msg(c *client, pp *mqttPublish) error {
 	// from MQTT topic) is included in the NATS header of the stored message to
 	// use for latter delivery.
 	_, err := c.mqtt.sess.jsa.storeMsg(c.mqttQoS2InternalSubject(pp.pi), headerLen, natsMsg)
-	return err
+
+	// TODO: would prefer a more robust and performant way of checking the
+	// error, but it comes back wrapped as an API result.
+	if err != nil &&
+		(isErrorOtherThan(err, JSStreamStoreFailedF) || err.Error() != mqttMaxMsgErrPattern) {
+		return err
+	}
+
+	return nil
 }
 
 func (c *client) mqttQoS2InternalSubject(pi uint16) string {
@@ -3527,8 +3538,7 @@ func (s *Server) mqttProcessPubRel(c *client, pi uint16, trace bool) {
 		msg:     stored.Data,
 		sz:      len(stored.Data),
 		pi:      pi,
-		// <>/<> TODO store and restore retain flag
-		flags: h.qos << 1,
+		flags:   h.qos << 1,
 	}
 
 	s.mqttInitiateMsgDelivery(c, pp)
@@ -4154,7 +4164,7 @@ func mqttDeliverPubRelCb(sub *subscription, pc *client, _ *Account, subject, rep
 	}
 
 	sess.mu.Lock()
-	if len(sess.pending) == 0 || len(sess.cpending) == 0 {
+	if len(sess.pending) == 0 {
 		sess.mu.Unlock()
 		return
 	}
