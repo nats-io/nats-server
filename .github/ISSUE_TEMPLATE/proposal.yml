@@ -29,6 +29,6 @@ body:
     id: alternates
     attributes:
       label: What alternatives have you evaluated?
-      description: This could be using existing features or relaying on an external dependency.
+      description: This could be using existing features or relying on an external dependency.
     validations:
       required: false
