@@ -3849,6 +3849,7 @@ func (c *client) mqttProcessPubRec(pi uint16) error {
 
 	sess.mu.Lock()
 	if sess.c != c {
+		sess.mu.Unlock()
 		return nil
 	}
 
