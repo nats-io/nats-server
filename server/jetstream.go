@@ -148,6 +148,9 @@ type jsAccount struct {
 	// From server
 	sendq *ipQueue[*pubMsg]
 
+	// For limiting only running one checkAndSync at a time.
+	sync atomic.Bool
+
 	// Usage/limits related fields that will be protected by usageMu
 	usageMu    sync.RWMutex
 	limits     map[string]JetStreamAccountLimits // indexed by tierName
@@ -1811,6 +1814,12 @@ func (jsa *jsAccount) remoteUpdateUsage(sub *subscription, c *client, _ *Account
 // When we detect a skew of some sort this will verify the usage reporting is correct.
 // No locks should be held.
 func (jsa *jsAccount) checkAndSyncUsage(tierName string, storeType StorageType) {
+	// This will run in a separate go routine, so check that we are only running once.
+	if !jsa.sync.CompareAndSwap(false, true) {
+		return
+	}
+	defer jsa.sync.Store(false)
+
 	// Hold the account read lock and the usage lock while we calculate.
 	// We scope by tier and storage type, but if R3 File has 200 streams etc. could
 	// show a pause. I did test with > 100 non-active streams and was 80-200ns or so.
@@ -1916,7 +1925,10 @@ func (jsa *jsAccount) updateUsage(tierName string, storeType StorageType, delta 
 	jsa.usageMu.Unlock()
 
 	if needsCheck {
-		jsa.checkAndSyncUsage(tierName, storeType)
+		// We could be holding the stream lock from up in the stack, and this
+		// will want the jsa lock, which would violate locking order.
+		// So do this in a Go routine. The function will check if it is already running.
+		go jsa.checkAndSyncUsage(tierName, storeType)
 	}
 }
 
