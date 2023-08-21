@@ -20408,3 +20408,30 @@ func TestJetStreamLastSequenceBySubjectConcurrent(t *testing.T) {
 		})
 	}
 }
+
+func TestJetStreamUsageSyncDeadlock(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"*"},
+	})
+	require_NoError(t, err)
+
+	sendStreamMsg(t, nc, "foo", "hello")
+
+	// Now purposely mess up the usage that will force a sync.
+	// Without the fix this will deadlock.
+	jsa := s.getJetStream().lookupAccount(s.GlobalAccount())
+	jsa.usageMu.Lock()
+	st, ok := jsa.usage[_EMPTY_]
+	require_True(t, ok)
+	st.local.store = -1000
+	jsa.usageMu.Unlock()
+
+	sendStreamMsg(t, nc, "foo", "hello")
+}
