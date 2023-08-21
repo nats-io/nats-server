@@ -183,9 +183,14 @@ func TestSeedSolicitWorks(t *testing.T) {
 	// Wait for a bit for graph to connect
 	time.Sleep(500 * time.Millisecond)
 
-	// Grab Routez from monitor ports, make sure we are fully connected
+	// Grab Routez from monitor ports, make sure we are fully connected.
 	url := fmt.Sprintf("http://%s:%d/", opts.Host, opts.HTTPPort)
 	rz := readHTTPRoutez(t, url)
+	for _, route := range rz.Routes {
+		if route.LastActivity.IsZero() {
+			t.Error("Expected LastActivity to be valid\n")
+		}
+	}
 	ris := expectRids(t, rz, []string{s2.ID(), s3.ID()})
 	if ris[s2.ID()].IsConfigured {
 		t.Fatalf("Expected server not to be configured\n")
@@ -194,8 +199,14 @@ func TestSeedSolicitWorks(t *testing.T) {
 		t.Fatalf("Expected server not to be configured\n")
 	}
 
+	// Server 2 did solicit routes to Server 1.
 	url = fmt.Sprintf("http://%s:%d/", s2Opts.Host, s2Opts.HTTPPort)
 	rz = readHTTPRoutez(t, url)
+	for _, route := range rz.Routes {
+		if route.LastActivity.IsZero() {
+			t.Error("Expected LastActivity to be valid")
+		}
+	}
 	ris = expectRids(t, rz, []string{s1.ID(), s3.ID()})
 	if !ris[s1.ID()].IsConfigured {
 		t.Fatalf("Expected seed server to be configured\n")
@@ -206,6 +217,11 @@ func TestSeedSolicitWorks(t *testing.T) {
 
 	url = fmt.Sprintf("http://%s:%d/", s3Opts.Host, s3Opts.HTTPPort)
 	rz = readHTTPRoutez(t, url)
+	for _, route := range rz.Routes {
+		if route.LastActivity.IsZero() {
+			t.Error("Expected LastActivity to be valid")
+		}
+	}
 	ris = expectRids(t, rz, []string{s1.ID(), s2.ID()})
 	if !ris[s1.ID()].IsConfigured {
 		t.Fatalf("Expected seed server to be configured\n")
