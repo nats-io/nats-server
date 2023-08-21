@@ -1791,6 +1791,22 @@ func TestConfigCheck(t *testing.T) {
 			errorLine: 9,
 			errorPos:  9,
 		},
+			name:       "show warnings on empty configs without values",
+			config:     ``,
+			warningErr: errors.New(`config has no values or is empty`),
+			errorLine:  0,
+			errorPos:   0,
+			reason:     "",
+		},
+		{
+			name: "show warnings on empty configs without values and only comments",
+			config: `# Valid file but has no usable values.
+                                    `,
+			warningErr: errors.New(`config has no values or is empty`),
+			errorLine:  0,
+			errorPos:   0,
+			reason:     "",
+		},
 	}
 
 	checkConfig := func(config string) error {
@@ -1832,6 +1848,8 @@ func TestConfigCheck(t *testing.T) {
 					if test.reason != "" {
 						msg += ": " + test.reason
 					}
+				} else if test.warningErr != nil {
+					msg = expectedErr.Error()
 				} else {
 					msg = test.reason
 				}

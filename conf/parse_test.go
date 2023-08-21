@@ -3,6 +3,7 @@ package conf
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -404,29 +405,162 @@ func TestParserNoInfiniteLoop(t *testing.T) {
 	}
 }
 
-func TestParseWithNoValues(t *testing.T) {
-	for _, test := range []string{
-		``,
-		`aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`,
-		`              aaaaaaaaaaaaaaaaaaaaaaaaaaa`,
-		`     aaaaaaaaaaaaaaaaaaaaaaaaaaa         `,
-		`
-                # just comments with no values
-                # is also invalid.
-                `,
-		`
-                # with comments and no spaces to create key values
-                # is also an invalid config.
-                aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-                `,
-		`
-                a,a,a,a,a,a,a,a,a,a,a
-                `,
+func TestParseWithNoValuesAreInvalid(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		conf string
+		err  string
+	}{
+		{
+			"invalid key without values",
+			`aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`,
+			"config is invalid (:1:41)",
+		},
+		{
+			"invalid untrimmed key without values",
+			`              aaaaaaaaaaaaaaaaaaaaaaaaaaa`,
+			"config is invalid (:1:41)",
+		},
+		{
+			"invalid untrimmed key without values",
+			`     aaaaaaaaaaaaaaaaaaaaaaaaaaa         `,
+			"config is invalid (:1:41)",
+		},
+		{
+			"invalid keys after comments",
+			`
+          		# with comments and no spaces to create key values
+         		# is also an invalid config.
+         		aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                        `,
+			"config is invalid (:5:25)",
+		},
+		{
+			"comma separated without values are invalid",
+			`
+                        a,a,a,a,a,a,a,a,a,a,a
+                        `,
+			"config is invalid (:3:25)",
+		},
+		{
+			// trailing brackets accidentally can become keys, these are also invalid.
+			"trailing brackets after config",
+			`
+                        accounts { users = [{}]}
+                        }
+                        `,
+			"config is invalid (:4:25)",
+		},
 	} {
-		if _, err := parse(test, "", true); err == nil {
-			t.Fatal("expected an error")
-		} else if !strings.Contains(err.Error(), "config has no values or is empty") {
-			t.Fatal("expected invalid conf error")
-		}
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := parse(test.conf, "", true); err == nil {
+				t.Error("expected an error")
+			} else if !strings.Contains(err.Error(), test.err) {
+				t.Errorf("expected invalid conf error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestParseWithNoValuesEmptyConfigsAreValid(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		conf string
+	}{
+		{
+			"empty conf",
+			"",
+		},
+		{
+			"empty conf with line breaks",
+			`
+
+
+                        `,
+		},
+		{
+			"just comments with no values",
+			`
+                        # just comments with no values
+                        # is still valid.
+                        `,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := parse(test.conf, "", true); err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestParseWithNoValuesIncludes(t *testing.T) {
+	for _, test := range []struct {
+		input    string
+		includes map[string]string
+		err      string
+		linepos  string
+	}{
+		{
+			`# includes
+			accounts {
+                          foo { include 'foo.conf'}
+                          bar { users = [{user = "bar"}] }
+                          quux { include 'quux.conf'}
+                        }
+                        `,
+			map[string]string{
+				"foo.conf":  ``,
+				"quux.conf": `?????????????`,
+			},
+			"error parsing include file 'quux.conf', config is invalid",
+			"quux.conf:1:1",
+		},
+		{
+			`# includes
+			accounts {
+                          foo { include 'foo.conf'}
+                          bar { include 'bar.conf'}
+                          quux { include 'quux.conf'}
+                        }
+                        `,
+			map[string]string{
+				"foo.conf": ``, // Empty configs are ok
+				"bar.conf": `AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`,
+				"quux.conf": `
+                                   # just some comments,
+                                   # and no key values also ok.
+                                `,
+			},
+			"error parsing include file 'bar.conf', config is invalid",
+			"bar.conf:1:34",
+		},
+	} {
+		t.Run("", func(t *testing.T) {
+			sdir := t.TempDir()
+			f, err := os.CreateTemp(sdir, "nats.conf-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(f.Name(), []byte(test.input), 066); err != nil {
+				t.Error(err)
+			}
+			if test.includes != nil {
+				for includeFile, contents := range test.includes {
+					inf, err := os.Create(filepath.Join(sdir, includeFile))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(inf.Name(), []byte(contents), 066); err != nil {
+						t.Error(err)
+					}
+				}
+			}
+			if _, err := parse(test.input, f.Name(), true); err == nil {
+				t.Error("expected an error")
+			} else if !strings.Contains(err.Error(), test.err) || !strings.Contains(err.Error(), test.linepos) {
+				t.Errorf("expected invalid conf error, got: %v", err)
+			}
+		})
 	}
 }

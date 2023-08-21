@@ -137,17 +137,19 @@ func parse(data, fp string, pedantic bool) (p *parser, err error) {
 	}
 	p.pushContext(p.mapping)
 
+	var prevItem itemType
 	for {
 		it := p.next()
 		if it.typ == itemEOF {
+			if prevItem == itemKey {
+				return nil, fmt.Errorf("config is invalid (%s:%d:%d)", fp, it.line, it.pos)
+			}
 			break
 		}
+		prevItem = it.typ
 		if err := p.processItem(it, fp); err != nil {
 			return nil, err
 		}
-	}
-	if len(p.mapping) == 0 {
-		return nil, fmt.Errorf("config has no values or is empty")
 	}
 	return p, nil
 }
