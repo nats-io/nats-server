@@ -792,7 +792,8 @@ type RouteInfo struct {
 // Routez returns a Routez struct containing information about routes.
 func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 	rs := &Routez{Routes: []*RouteInfo{}}
-	rs.Now = time.Now().UTC()
+	now := time.Now()
+	rs.Now = now.UTC()
 
 	if routezOpts == nil {
 		routezOpts = &RoutezOptions{}
@@ -813,6 +814,13 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 
 	addRoute := func(r *client) {
 		r.mu.Lock()
+		var idle, uptime time.Duration
+		if !r.last.IsZero() {
+			idle = now.Sub(r.last)
+		}
+		if !r.start.IsZero() {
+			uptime = now.Sub(r.start)
+		}
 		ri := &RouteInfo{
 			Rid:          r.cid,
 			RemoteID:     r.route.remoteID,
@@ -827,10 +835,10 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 			Import:       r.opts.Import,
 			Export:       r.opts.Export,
 			RTT:          r.getRTT().String(),
-			Start:        r.start,
-			LastActivity: r.last,
-			Uptime:       myUptime(rs.Now.Sub(r.start)),
-			Idle:         myUptime(rs.Now.Sub(r.last)),
+			Start:        r.start.UTC(),
+			LastActivity: r.last.UTC(),
+			Uptime:       myUptime(uptime),
+			Idle:         myUptime(idle),
 			Account:      string(r.route.accName),
 			Compression:  r.route.compression,
 		}
