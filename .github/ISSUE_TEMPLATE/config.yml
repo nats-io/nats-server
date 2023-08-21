@@ -1,5 +1,8 @@
-blank_issues_enabled: true
+blank_issues_enabled: false
 contact_links:
-  - name: NATS Slack
+  - name: Discussion
+    url: https://github.com/nats-io/nats-server/discussions
+    about: Ideal for ideas, feedback, or longer form questions.
+  - name: Chat
     url: https://slack.nats.io
-    about: Please ask and answer questions in our Slack server here.
+    about: Ideal for short, one-off questions, general conversation, and meeting other NATS users!

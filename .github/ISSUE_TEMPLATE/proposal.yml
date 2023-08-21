@@ -1,0 +1,34 @@
+---
+name: Proposal
+description: Propose an enhancement or new feature.
+labels:
+  - proposal
+body:
+  - type: textarea
+    id: usecase
+    attributes:
+      label: What motivated this proposal?
+      description: Describe the use case justifying this request.
+    validations:
+      required: true
+  - type: textarea
+    id: change
+    attributes:
+      label: What is the proposed change?
+      description: This could be a behavior change, enhanced API, or a branch new feature.
+    validations:
+      required: true
+  - type: textarea
+    id: benefits
+    attributes:
+      label: Who benefits from this change?
+      description: Describe how this not only benefits you.
+    validations:
+      required: false
+  - type: textarea
+    id: alternates
+    attributes:
+      label: What alternatives have you evaluated?
+      description: This could be using existing features or relying on an external dependency.
+    validations:
+      required: false
