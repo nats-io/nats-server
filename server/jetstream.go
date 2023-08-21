@@ -1818,7 +1818,7 @@ func (jsa *jsAccount) checkAndSyncUsage(tierName string, storeType StorageType) 
 	if !jsa.sync.CompareAndSwap(false, true) {
 		return
 	}
-	defer jsa.sync.Store(true)
+	defer jsa.sync.Store(false)
 
 	// Hold the account read lock and the usage lock while we calculate.
 	// We scope by tier and storage type, but if R3 File has 200 streams etc. could
