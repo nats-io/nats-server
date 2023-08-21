@@ -1791,6 +1791,7 @@ func TestConfigCheck(t *testing.T) {
 			errorLine: 9,
 			errorPos:  9,
 		},
+		{
 			name:       "show warnings on empty configs without values",
 			config:     ``,
 			warningErr: errors.New(`config has no values or is empty`),

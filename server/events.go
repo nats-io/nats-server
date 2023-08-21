@@ -58,7 +58,6 @@ const (
 	accConnsEventSubjOld      = "$SYS.SERVER.ACCOUNT.%s.CONNS" // kept for backward compatibility
 	lameDuckEventSubj         = "$SYS.SERVER.%s.LAMEDUCK"
 	shutdownEventSubj         = "$SYS.SERVER.%s.SHUTDOWN"
-	shutdownEventSubj         = "$SYS.SERVER.%s.SHUTDOWN"
 	clientKickReqSubj         = "$SYS.REQ.SERVER.%s.KICK"
 	clientLDMReqSubj          = "$SYS.REQ.SERVER.%s.LDM"
 	authErrorEventSubj        = "$SYS.SERVER.%s.CLIENT.AUTH.ERR"
