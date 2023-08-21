@@ -56,6 +56,7 @@ const (
 	connsRespSubj            = "$SYS._INBOX_.%s"
 	accConnsEventSubjNew     = "$SYS.ACCOUNT.%s.SERVER.CONNS"
 	accConnsEventSubjOld     = "$SYS.SERVER.ACCOUNT.%s.CONNS" // kept for backward compatibility
+	lameDuckEventSubj        = "$SYS.SERVER.%s.LAMEDUCK"
 	shutdownEventSubj        = "$SYS.SERVER.%s.SHUTDOWN"
 	authErrorEventSubj       = "$SYS.SERVER.%s.CLIENT.AUTH.ERR"
 	serverStatsSubj          = "$SYS.SERVER.%s.STATSZ"
@@ -533,6 +534,19 @@ RESET:
 	}
 }
 
+// Will send a shutdown message for lame-duck. Unlike sendShutdownEvent, this will
+// not close off the send queue or reply handler, as we may still have a workload
+// that needs migrating off.
+// Lock should be held.
+func (s *Server) sendLDMShutdownEventLocked() {
+	if s.sys == nil || s.sys.sendq == nil {
+		return
+	}
+	subj := fmt.Sprintf(lameDuckEventSubj, s.info.ID)
+	si := &ServerInfo{}
+	s.sys.sendq.push(newPubMsg(nil, subj, _EMPTY_, si, nil, si, noCompression, false, true))
+}
+
 // Will send a shutdown message.
 func (s *Server) sendShutdownEvent() {
 	s.mu.Lock()
@@ -941,6 +955,13 @@ func (s *Server) initEventTracking() {
 	}
 	// Listen for all server shutdowns.
 	subject = fmt.Sprintf(shutdownEventSubj, "*")
+	if _, err := s.sysSubscribe(subject, s.noInlineCallback(s.remoteServerShutdown)); err != nil {
+		s.Errorf("Error setting up internal tracking: %v", err)
+	}
+	// Listen for servers entering lame-duck mode.
+	// NOTE: This currently is handled in the same way as a server shutdown, but has
+	// a different subject in case we need to handle differently in future.
+	subject = fmt.Sprintf(lameDuckEventSubj, "*")
 	if _, err := s.sysSubscribe(subject, s.noInlineCallback(s.remoteServerShutdown)); err != nil {
 		s.Errorf("Error setting up internal tracking: %v", err)
 	}

@@ -3557,6 +3557,7 @@ func (s *Server) lameDuckMode() {
 	}
 	s.Noticef("Entering lame duck mode, stop accepting new clients")
 	s.ldm = true
+	s.sendLDMShutdownEventLocked()
 	expected := 1
 	s.listener.Close()
 	s.listener = nil
