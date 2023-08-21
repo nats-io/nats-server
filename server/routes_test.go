@@ -1089,7 +1089,17 @@ func TestRouteNoCrashOnAddingSubToRoute(t *testing.T) {
 		defer rs.Shutdown()
 		servers = append(servers, rs)
 
-		// Create a sub on each routed server
+		// Confirm routes are already active before clients connect.
+		for _, srv := range servers {
+			rz, err := srv.Routez(nil)
+			require_NoError(t, err)
+			for _, route := range rz.Routes {
+				if route.LastActivity.IsZero() {
+					t.Error("Expected LastActivity to be valid")
+				}
+			}
+		}
+		// Create a sub on each routed server.
 		nc := natsConnect(t, fmt.Sprintf("nats://%s:%d", ropts.Host, ropts.Port))
 		defer nc.Close()
 		natsSub(t, nc, "foo", cb)

@@ -1429,6 +1429,9 @@ func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 				nodeInfo{c.route.remoteName, s.info.Version, s.info.Cluster, info.Domain, id, nil, nil, nil, false, info.JetStream})
 		}
 		c.mu.Lock()
+		if c.last.IsZero() {
+			c.last = time.Now()
+		}
 		c.route.connectURLs = info.ClientConnectURLs
 		c.route.wsConnURLs = info.WSConnectURLs
 		cid := c.cid
@@ -1456,6 +1459,9 @@ func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
 		var r *route
 
 		c.mu.Lock()
+		if c.last.IsZero() {
+			c.last = time.Now()
+		}
 		// upgrade to solicited?
 		if c.route.didSolicit {
 			// Make a copy
