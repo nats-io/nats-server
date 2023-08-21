@@ -5026,3 +5026,49 @@ func TestJetStreamClusterOrphanConsumerSubjects(t *testing.T) {
 	require_NotEqual(t, info.Cluster.Leader, "")
 	require_Equal(t, len(info.Cluster.Replicas), 2)
 }
+
+func TestJetStreamClusterDurableConsumerInactiveThresholdLeaderSwitch(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"*"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Queue a msg.
+	sendStreamMsg(t, nc, "foo", "ok")
+
+	thresh := 250 * time.Millisecond
+
+	// This will start the timer.
+	sub, err := js.PullSubscribe("foo", "dlc", nats.InactiveThreshold(thresh))
+	require_NoError(t, err)
+
+	// Switch over leader.
+	cl := c.consumerLeader(globalAccountName, "TEST", "dlc")
+	cl.JetStreamStepdownConsumer(globalAccountName, "TEST", "dlc")
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "dlc")
+
+	// Create activity on this consumer.
+	msgs, err := sub.Fetch(1)
+	require_NoError(t, err)
+	require_True(t, len(msgs) == 1)
+
+	// This is consider activity as well. So we can watch now up to thresh to make sure consumer still active.
+	msgs[0].AckSync()
+
+	// The consumer should not disappear for next `thresh` interval unless old leader does so.
+	timeout := time.Now().Add(thresh)
+	for time.Now().Before(timeout) {
+		_, err := js.ConsumerInfo("TEST", "dlc")
+		if err == nats.ErrConsumerNotFound {
+			t.Fatalf("Consumer deleted when it should not have been")
+		}
+	}
+}
