@@ -2083,8 +2083,9 @@ func handleDuplicateRoute(remote, c *client, setNoReconnect bool) {
 	// removeRoute() now does the right thing of doing that only when
 	// the closed connection was an added route connection.
 	c.mu.Lock()
-	didSolict := c.route.didSolicit
+	didSolicit := c.route.didSolicit
 	url := c.route.url
+	rtype := c.route.routeType
 	if setNoReconnect {
 		c.flags.set(noReconnect)
 	}
@@ -2095,9 +2096,14 @@ func handleDuplicateRoute(remote, c *client, setNoReconnect bool) {
 	}
 
 	remote.mu.Lock()
-	if didSolict && !remote.route.didSolicit {
+	if didSolicit && !remote.route.didSolicit {
 		remote.route.didSolicit = true
 		remote.route.url = url
+	}
+	// The extra route might be an configured explicit route
+	// so keep the state that the remote was configured.
+	if rtype == Explicit {
+		remote.route.routeType = rtype
 	}
 	// This is to mitigate the issue where both sides add the route
 	// on the opposite connection, and therefore end-up with both
