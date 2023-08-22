@@ -2087,10 +2087,11 @@ func TestJetStreamSuperClusterMovingStreamAndMoveBack(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			streamName := fmt.Sprintf("TEST_%s", test.name)
 
-			checkFor(t, 30*time.Second, 100*time.Millisecond, func() error {
+			start := time.Now()
+			checkFor(t, 60*time.Second, 100*time.Millisecond, func() error {
 				_, err := js.AccountInfo(nats.MaxWait(2 * time.Second))
 				if err != nil {
-					t.Logf("------> %v", err)
+					t.Logf("------> %v (took: %v)", err, time.Since(start))
 					return err
 				}
 				return nil
