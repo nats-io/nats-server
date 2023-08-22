@@ -1905,6 +1905,9 @@ func (s *Server) addRoute(c *client, didSolicit bool, info *Info, accName string
 			c.mu.Lock()
 			idHash := c.route.idHash
 			cid := c.cid
+			if c.last.IsZero() {
+				c.last = time.Now()
+			}
 			c.mu.Unlock()
 
 			// Store this route with key being the route id hash + account name
@@ -1980,9 +1983,12 @@ func (s *Server) addRoute(c *client, didSolicit bool, info *Info, accName string
 		rHash := c.route.hash
 		rn := c.route.remoteName
 		url := c.route.url
-		// For solicited routes, we need now to send the INFO protocol
+		// For solicited routes, we need now to send the INFO protocol.
 		if didSolicit {
 			c.enqueueProto(s.generateRouteInitialInfoJSON(_EMPTY_, c.route.compression, idx))
+		}
+		if c.last.IsZero() {
+			c.last = time.Now()
 		}
 		c.mu.Unlock()
 
