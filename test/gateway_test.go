@@ -602,6 +602,7 @@ func TestGatewaySystemConnectionAllowedToPublishOnGWPrefix(t *testing.T) {
 }
 
 func TestGatewayTLSMixedIPAndDNS(t *testing.T) {
+	t.Skip("skipping on alpine")
 	server.SetGatewaysSolicitDelay(5 * time.Millisecond)
 	defer server.ResetGatewaysSolicitDelay()
 
