@@ -137,16 +137,18 @@ func parse(data, fp string, pedantic bool) (p *parser, err error) {
 	}
 	p.pushContext(p.mapping)
 
-	var prevItem itemType
+	var prevItem item
 	for {
 		it := p.next()
 		if it.typ == itemEOF {
-			if prevItem == itemKey {
+			// Here we allow the final character to be a bracket '}'
+			// in order to support JSON like configurations.
+			if prevItem.typ == itemKey && prevItem.val != mapEndString {
 				return nil, fmt.Errorf("config is invalid (%s:%d:%d)", fp, it.line, it.pos)
 			}
 			break
 		}
-		prevItem = it.typ
+		prevItem = it
 		if err := p.processItem(it, fp); err != nil {
 			return nil, err
 		}
