@@ -3550,7 +3550,7 @@ func (o *consumer) checkAckFloor() {
 			}
 		}
 	} else if numPending > 0 {
-		// here it shorter to walk pending.
+		// here it is shorter to walk pending.
 		// toTerm is seq, dseq, rcd for each entry.
 		toTerm := make([]uint64, 0, numPending*3)
 		o.mu.RLock()

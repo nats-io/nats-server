@@ -2170,18 +2170,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 	startMigrationMonitoring := func() {
 		if mmt == nil {
-			mmt = time.NewTicker(10 * time.Millisecond)
+			mmt = time.NewTicker(500 * time.Millisecond)
 			mmtc = mmt.C
-		}
-	}
-
-	adjustMigrationMonitoring := func() {
-		const delay = 500 * time.Millisecond
-		if mmt == nil {
-			mmt = time.NewTicker(delay)
-			mmtc = mmt.C
-		} else {
-			mmt.Reset(delay)
 		}
 	}
 
@@ -2415,9 +2405,6 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				stopMigrationMonitoring()
 				continue
 			}
-
-			// Adjust to our normal time delay.
-			adjustMigrationMonitoring()
 
 			// Make sure we have correct cluster information on the other peers.
 			ci := js.clusterInfo(rg)
