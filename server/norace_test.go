@@ -8208,3 +8208,45 @@ func TestNoRaceReplicatedMirrorWithLargeStartingSequenceOverLeafnode(t *testing.
 		return fmt.Errorf("Mirror state not correct: %+v", si.State)
 	})
 }
+
+func TestNoRaceParallelConsumerCreation(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"*"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	numConsumers := 100
+	startCh := make(chan bool)
+	wg := sync.WaitGroup{}
+	wg.Add(numConsumers)
+
+	//sync atomic.Int64
+
+	for i := 0; i < numConsumers; i++ {
+		go func(index int) {
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+			defer wg.Done()
+			<-startCh
+
+			start := time.Now()
+			_, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+				AckPolicy: nats.AckExplicitPolicy,
+				Replicas:  1,
+			})
+			require_NoError(t, err)
+			fmt.Printf("%d took %v\n", index, time.Since(start))
+		}(i)
+	}
+	time.Sleep(250 * time.Millisecond)
+	close(startCh)
+	wg.Wait()
+}
