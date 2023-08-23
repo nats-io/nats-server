@@ -157,7 +157,14 @@ func readBodyEx(t *testing.T, url string, status int, content string) []byte {
 	}
 	ct := resp.Header.Get("Content-Type")
 	if ct != content {
-		stackFatalf(t, "Expected %s content-type, got %s\n", content, ct)
+		stackFatalf(t, "Expected %q content-type, got %q\n", content, ct)
+	}
+	// Check the CORS header for "application/json" requests only.
+	if ct == appJSONContent {
+		acao := resp.Header.Get("Access-Control-Allow-Origin")
+		if acao != "*" {
+			stackFatalf(t, "Expected with %q Content-Type an Access-Control-Allow-Origin header with value %q, got %q\n", appJSONContent, "*", acao)
+		}
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
