@@ -8228,7 +8228,9 @@ func TestNoRaceParallelConsumerCreation(t *testing.T) {
 	wg := sync.WaitGroup{}
 	wg.Add(numConsumers)
 
-	//sync atomic.Int64
+	var mu sync.Mutex
+	var low, high, total time.Duration
+	low = time.Minute
 
 	for i := 0; i < numConsumers; i++ {
 		go func(index int) {
@@ -8243,10 +8245,23 @@ func TestNoRaceParallelConsumerCreation(t *testing.T) {
 				Replicas:  1,
 			})
 			require_NoError(t, err)
-			fmt.Printf("%d took %v\n", index, time.Since(start))
+			elapsed := time.Since(start)
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			if elapsed > high {
+				high = elapsed
+			}
+			if elapsed < low {
+				low = elapsed
+			}
+			total += elapsed
 		}(i)
 	}
 	time.Sleep(250 * time.Millisecond)
 	close(startCh)
 	wg.Wait()
+
+	t.Logf("LOW %v HIGH %v AVG %v\n", low, high, total/time.Duration(numConsumers))
 }
