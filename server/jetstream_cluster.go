@@ -2170,18 +2170,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 	startMigrationMonitoring := func() {
 		if mmt == nil {
-			mmt = time.NewTicker(10 * time.Millisecond)
+			mmt = time.NewTicker(500 * time.Millisecond)
 			mmtc = mmt.C
-		}
-	}
-
-	adjustMigrationMonitoring := func() {
-		const delay = 500 * time.Millisecond
-		if mmt == nil {
-			mmt = time.NewTicker(delay)
-			mmtc = mmt.C
-		} else {
-			mmt.Reset(delay)
 		}
 	}
 
@@ -2415,9 +2405,6 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				stopMigrationMonitoring()
 				continue
 			}
-
-			// Adjust to our normal time delay.
-			adjustMigrationMonitoring()
 
 			// Make sure we have correct cluster information on the other peers.
 			ci := js.clusterInfo(rg)
@@ -4058,7 +4045,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 	var didCreate, isConfigUpdate, needsLocalResponse bool
 	if o == nil {
 		// Add in the consumer if needed.
-		if o, err = mset.addConsumerWithAssignment(ca.Config, ca.Name, ca, false, ActionCreateOrUpdate); err == nil {
+		if o, err = mset.addConsumerWithAssignment(ca.Config, ca.Name, ca, wasExisting, ActionCreateOrUpdate); err == nil {
 			didCreate = true
 		}
 	} else {
@@ -5262,7 +5249,12 @@ func (cc *jetStreamCluster) remapStreamAssignment(sa *streamAssignment, removePe
 		return true
 	}
 
-	// If we are here let's remove the peer at least.
+	// If R1 just return to avoid bricking the stream.
+	if sa.Group.node == nil || len(sa.Group.Peers) == 1 {
+		return false
+	}
+
+	// If we are here let's remove the peer at least, as long as we are R>1
 	for i, peer := range sa.Group.Peers {
 		if peer == removePeer {
 			sa.Group.Peers[i] = sa.Group.Peers[len(sa.Group.Peers)-1]

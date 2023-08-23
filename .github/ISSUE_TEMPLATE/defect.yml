@@ -1,0 +1,41 @@
+---
+name: Defect
+description: Report a defect, such as a bug or regression.
+labels:
+  - defect
+body:
+  - type: textarea
+    id: versions
+    attributes:
+      label: What version were you using?
+      description: Include the server version (`nats-server --version`) and any client versions when observing the issue.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: What environment was the server running in?
+      description: This pertains to the operating system, CPU architecture, and/or Docker image that was used.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Is this defect reproducible?
+      description: Provide best-effort steps to showcase the defect.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Given the capability you are leveraging, describe your expectation?
+      description: This may be the expected behavior or performance characteristics.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Given the expectation, what is the defect you are observing?
+      description: This may be an unexpected behavior or regression in performance.
+    validations:
+      required: true

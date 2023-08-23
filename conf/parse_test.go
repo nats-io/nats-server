@@ -3,6 +3,7 @@ package conf
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -404,29 +405,338 @@ func TestParserNoInfiniteLoop(t *testing.T) {
 	}
 }
 
-func TestParseWithNoValues(t *testing.T) {
-	for _, test := range []string{
-		``,
-		`aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`,
-		`              aaaaaaaaaaaaaaaaaaaaaaaaaaa`,
-		`     aaaaaaaaaaaaaaaaaaaaaaaaaaa         `,
-		`
-                # just comments with no values
-                # is also invalid.
-                `,
-		`
-                # with comments and no spaces to create key values
-                # is also an invalid config.
-                aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-                `,
-		`
-                a,a,a,a,a,a,a,a,a,a,a
-                `,
+func TestParseWithNoValuesAreInvalid(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		conf string
+		err  string
+	}{
+		{
+			"invalid key without values",
+			`aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`,
+			"config is invalid (:1:41)",
+		},
+		{
+			"invalid untrimmed key without values",
+			`              aaaaaaaaaaaaaaaaaaaaaaaaaaa`,
+			"config is invalid (:1:41)",
+		},
+		{
+			"invalid untrimmed key without values",
+			`     aaaaaaaaaaaaaaaaaaaaaaaaaaa         `,
+			"config is invalid (:1:41)",
+		},
+		{
+			"invalid keys after comments",
+			`
+          		# with comments and no spaces to create key values
+         		# is also an invalid config.
+         		aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                        `,
+			"config is invalid (:5:25)",
+		},
+		{
+			"comma separated without values are invalid",
+			`
+                        a,a,a,a,a,a,a,a,a,a,a
+                        `,
+			"config is invalid (:3:25)",
+		},
 	} {
-		if _, err := parse(test, "", true); err == nil {
-			t.Fatal("expected an error")
-		} else if !strings.Contains(err.Error(), "config has no values or is empty") {
-			t.Fatal("expected invalid conf error")
-		}
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := parse(test.conf, "", true); err == nil {
+				t.Error("expected an error")
+			} else if !strings.Contains(err.Error(), test.err) {
+				t.Errorf("expected invalid conf error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestParseWithNoValuesEmptyConfigsAreValid(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		conf string
+	}{
+		{
+			"empty conf",
+			"",
+		},
+		{
+			"empty conf with line breaks",
+			`
+
+
+                        `,
+		},
+		{
+			"just comments with no values",
+			`
+                        # just comments with no values
+                        # is still valid.
+                        `,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := parse(test.conf, "", true); err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestParseWithTrailingBracketsAreValid(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		conf string
+	}{
+		{
+			"empty conf",
+			"{}",
+		},
+		{
+			"just comments with no values",
+			`
+                        {
+                        # comments in the body
+                        }
+                        `,
+		},
+		{
+			// trailing brackets accidentally can become keys,
+			// this is valid since needed to support JSON like configs..
+			"trailing brackets after config",
+			`
+                        accounts { users = [{}]}
+                        }
+                        `,
+		},
+		{
+			"wrapped in brackets",
+			`{
+                          accounts { users = [{}]}
+                        }
+                        `,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := parse(test.conf, "", true); err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestParseWithNoValuesIncludes(t *testing.T) {
+	for _, test := range []struct {
+		input    string
+		includes map[string]string
+		err      string
+		linepos  string
+	}{
+		{
+			`# includes
+			accounts {
+                          foo { include 'foo.conf'}
+                          bar { users = [{user = "bar"}] }
+                          quux { include 'quux.conf'}
+                        }
+                        `,
+			map[string]string{
+				"foo.conf":  ``,
+				"quux.conf": `?????????????`,
+			},
+			"error parsing include file 'quux.conf', config is invalid",
+			"quux.conf:1:1",
+		},
+		{
+			`# includes
+			accounts {
+                          foo { include 'foo.conf'}
+                          bar { include 'bar.conf'}
+                          quux { include 'quux.conf'}
+                        }
+                        `,
+			map[string]string{
+				"foo.conf": ``, // Empty configs are ok
+				"bar.conf": `AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`,
+				"quux.conf": `
+                                   # just some comments,
+                                   # and no key values also ok.
+                                `,
+			},
+			"error parsing include file 'bar.conf', config is invalid",
+			"bar.conf:1:34",
+		},
+	} {
+		t.Run("", func(t *testing.T) {
+			sdir := t.TempDir()
+			f, err := os.CreateTemp(sdir, "nats.conf-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(f.Name(), []byte(test.input), 066); err != nil {
+				t.Error(err)
+			}
+			if test.includes != nil {
+				for includeFile, contents := range test.includes {
+					inf, err := os.Create(filepath.Join(sdir, includeFile))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(inf.Name(), []byte(contents), 066); err != nil {
+						t.Error(err)
+					}
+				}
+			}
+			if _, err := parse(test.input, f.Name(), true); err == nil {
+				t.Error("expected an error")
+			} else if !strings.Contains(err.Error(), test.err) || !strings.Contains(err.Error(), test.linepos) {
+				t.Errorf("expected invalid conf error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestJSONParseCompat(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		input    string
+		includes map[string]string
+		expected map[string]interface{}
+	}{
+		{
+			"JSON with nested blocks",
+			`
+                        {
+                          "http_port": 8227,
+                          "port": 4227,
+                          "write_deadline": "1h",
+                          "cluster": {
+                            "port": 6222,
+                            "routes": [
+                              "nats://127.0.0.1:4222",
+                              "nats://127.0.0.1:4223",
+                              "nats://127.0.0.1:4224"
+                            ]
+                          }
+                        }
+                        `,
+			nil,
+			map[string]interface{}{
+				"http_port":      int64(8227),
+				"port":           int64(4227),
+				"write_deadline": "1h",
+				"cluster": map[string]interface{}{
+					"port": int64(6222),
+					"routes": []interface{}{
+						"nats://127.0.0.1:4222",
+						"nats://127.0.0.1:4223",
+						"nats://127.0.0.1:4224",
+					},
+				},
+			},
+		},
+		{
+			"JSON with nested blocks",
+			`{
+                          "jetstream": {
+                            "store_dir": "/tmp/nats"
+                            "max_mem": 1000000,
+                          },
+                          "port": 4222,
+                          "server_name": "nats1"
+                        }
+                        `,
+			nil,
+			map[string]interface{}{
+				"jetstream": map[string]interface{}{
+					"store_dir": "/tmp/nats",
+					"max_mem":   int64(1_000_000),
+				},
+				"port":        int64(4222),
+				"server_name": "nats1",
+			},
+		},
+		{
+			"JSON empty object in one line",
+			`{}`,
+			nil,
+			map[string]interface{}{},
+		},
+		{
+			"JSON empty object with line breaks",
+			`
+                        {
+                        }
+                        `,
+			nil,
+			map[string]interface{}{},
+		},
+		{
+			"JSON includes",
+			`
+                        accounts {
+                          foo  { include 'foo.json'  }
+                          bar  { include 'bar.json'  }
+                          quux { include 'quux.json' }
+                        }
+                        `,
+			map[string]string{
+				"foo.json": `{ "users": [ {"user": "foo"} ] }`,
+				"bar.json": `{ 
+                                  "users": [ {"user": "bar"} ] 
+                                }`,
+				"quux.json": `{}`,
+			},
+			map[string]interface{}{
+				"accounts": map[string]interface{}{
+					"foo": map[string]interface{}{
+						"users": []interface{}{
+							map[string]interface{}{
+								"user": "foo",
+							},
+						},
+					},
+					"bar": map[string]interface{}{
+						"users": []interface{}{
+							map[string]interface{}{
+								"user": "bar",
+							},
+						},
+					},
+					"quux": map[string]interface{}{},
+				},
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sdir := t.TempDir()
+			f, err := os.CreateTemp(sdir, "nats.conf-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(f.Name(), []byte(test.input), 066); err != nil {
+				t.Error(err)
+			}
+			if test.includes != nil {
+				for includeFile, contents := range test.includes {
+					inf, err := os.Create(filepath.Join(sdir, includeFile))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(inf.Name(), []byte(contents), 066); err != nil {
+						t.Error(err)
+					}
+				}
+			}
+			m, err := ParseFile(f.Name())
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if !reflect.DeepEqual(m, test.expected) {
+				t.Fatalf("Not Equal:\nReceived: '%+v'\nExpected: '%+v'\n", m, test.expected)
+			}
+		})
 	}
 }

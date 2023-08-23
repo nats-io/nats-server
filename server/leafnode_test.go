@@ -2551,7 +2551,7 @@ func TestLeafNodeOperatorBadCfg(t *testing.T) {
 			cfg: `
 			port: -1
 			authorization {
-				users = [{user: "u", password: "p"}]}
+				users = [{user: "u", password: "p"}]
 			}`,
 		},
 		{
@@ -3891,9 +3891,9 @@ func TestLeafNodeInterestPropagationDaisychain(t *testing.T) {
 	aTmpl := `
 		port: %d
 		leafnodes {
-			port: %d
-		   }
-		}`
+		  port: %d
+		}
+		`
 
 	confA := createConfFile(t, []byte(fmt.Sprintf(aTmpl, -1, -1)))
 	sA, _ := RunServerWithConfig(confA)
