@@ -87,7 +87,7 @@ func RunServer(opts *Options) *Server {
 		s.ConfigureLogger()
 	}
 	if os.Getenv("DEBUG_NATS_TEST") == "true" {
-		log := srvlog.NewTestLogger(fmt.Sprintf("[%s] | ", opts.ServerName), true)
+		log := srvlog.NewTestLogger(fmt.Sprintf("[%-10s] | ", opts.ServerName), true)
 		trace := os.Getenv("TRACE_NATS_TEST") == "true"
 		s.SetLoggerV2(log, true, trace, false)
 	}
