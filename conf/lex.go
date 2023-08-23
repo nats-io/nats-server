@@ -78,6 +78,7 @@ const (
 	topOptTerm        = '}'
 	blockStart        = '('
 	blockEnd          = ')'
+	mapEndString      = string(mapEnd)
 )
 
 type stateFn func(lx *lexer) stateFn

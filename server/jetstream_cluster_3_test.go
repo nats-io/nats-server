@@ -3379,6 +3379,90 @@ func TestJetStreamClusterNoLeadersDuringLameDuck(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterNoR1AssetsDuringLameDuck(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Grab the first server and set lameduck option directly.
+	s := c.servers[0]
+	s.optsMu.Lock()
+	s.opts.LameDuckDuration = 5 * time.Second
+	s.opts.LameDuckGracePeriod = -5 * time.Second
+	s.optsMu.Unlock()
+
+	// Connect to the server to keep it alive when we go into LDM.
+	dummy, _ := jsClientConnect(t, s)
+	defer dummy.Close()
+
+	// Connect to the third server.
+	nc, js := jsClientConnect(t, c.servers[2])
+	defer nc.Close()
+
+	// Now put the first server into lame duck mode.
+	go s.lameDuckMode()
+
+	// Wait for news to arrive that the first server has gone into
+	// lame duck mode and been marked offline.
+	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+		id := s.info.ID
+		s := c.servers[2]
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+
+		var isOffline bool
+		s.nodeToInfo.Range(func(_, v any) bool {
+			ni := v.(nodeInfo)
+			if ni.id == id {
+				isOffline = ni.offline
+				return false
+			}
+			return true
+		})
+
+		if !isOffline {
+			return fmt.Errorf("first node is still online unexpectedly")
+		}
+		return nil
+	})
+
+	// Create a go routine that will create streams constantly.
+	qch := make(chan bool)
+	go func() {
+		var index int
+		for {
+			select {
+			case <-time.After(time.Millisecond * 25):
+				index++
+				_, err := js.AddStream(&nats.StreamConfig{
+					Name:     fmt.Sprintf("NEW_TEST_%d", index),
+					Subjects: []string{fmt.Sprintf("bar.%d", index)},
+					Replicas: 1,
+				})
+				if err != nil {
+					return
+				}
+			case <-qch:
+				return
+			}
+		}
+	}()
+	defer close(qch)
+
+	// Make sure we do not have any R1 assets placed on the lameduck server.
+	for s.isRunning() {
+		s.rnMu.RLock()
+		if s.js == nil || s.js.srv == nil || s.js.srv.gacc == nil {
+			s.rnMu.RUnlock()
+			break
+		}
+		hasAsset := len(s.js.srv.gacc.streams()) > 0
+		s.rnMu.RUnlock()
+		if hasAsset {
+			t.Fatalf("Server had an R1 asset when it should not due to lameduck mode")
+		}
+	}
+}
+
 // If a consumer has not been registered (possible in heavily loaded systems with lots  of assets)
 // it could miss the signal of a message going away. If that message was pending and expires the
 // ack floor could fall below the stream first sequence. This test will force that condition and
@@ -5092,5 +5176,92 @@ func TestJetStreamClusterStreamFailTrackingSnapshots(t *testing.T) {
 	wg.Wait()
 	if len(errCh) > 0 {
 		t.Fatalf("Expected no errors, got %d", len(errCh))
+	}
+}
+
+func TestJetStreamClusterOrphanConsumerSubjects(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.>", "bar.>"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Name:          "consumer_foo",
+		Durable:       "consumer_foo",
+		FilterSubject: "foo.something",
+	})
+	require_NoError(t, err)
+
+	for _, replicas := range []int{3, 1, 3} {
+		_, err = js.UpdateStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"bar.>"},
+			Replicas: replicas,
+		})
+		require_NoError(t, err)
+		c.waitOnAllCurrent()
+	}
+
+	c.waitOnStreamLeader("$G", "TEST")
+	c.waitOnConsumerLeader("$G", "TEST", "consumer_foo")
+
+	info, err := js.ConsumerInfo("TEST", "consumer_foo")
+	require_NoError(t, err)
+	require_True(t, info.Cluster != nil)
+	require_NotEqual(t, info.Cluster.Leader, "")
+	require_Equal(t, len(info.Cluster.Replicas), 2)
+}
+
+func TestJetStreamClusterDurableConsumerInactiveThresholdLeaderSwitch(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"*"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Queue a msg.
+	sendStreamMsg(t, nc, "foo", "ok")
+
+	thresh := 250 * time.Millisecond
+
+	// This will start the timer.
+	sub, err := js.PullSubscribe("foo", "dlc", nats.InactiveThreshold(thresh))
+	require_NoError(t, err)
+
+	// Switch over leader.
+	cl := c.consumerLeader(globalAccountName, "TEST", "dlc")
+	cl.JetStreamStepdownConsumer(globalAccountName, "TEST", "dlc")
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "dlc")
+
+	// Create activity on this consumer.
+	msgs, err := sub.Fetch(1)
+	require_NoError(t, err)
+	require_True(t, len(msgs) == 1)
+
+	// This is consider activity as well. So we can watch now up to thresh to make sure consumer still active.
+	msgs[0].AckSync()
+
+	// The consumer should not disappear for next `thresh` interval unless old leader does so.
+	timeout := time.Now().Add(thresh)
+	for time.Now().Before(timeout) {
+		_, err := js.ConsumerInfo("TEST", "dlc")
+		if err == nats.ErrConsumerNotFound {
+			t.Fatalf("Consumer deleted when it should not have been")
+		}
 	}
 }

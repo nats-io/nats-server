@@ -1471,6 +1471,8 @@ func TestJSONCompat(t *testing.T) {
 			expected: []item{
 				{itemKey, "http_port", 3, 28},
 				{itemInteger, "8223", 3, 40},
+				{itemKey, "}", 4, 25},
+				{itemEOF, "", 0, 0},
 			},
 		},
 		{
@@ -1486,6 +1488,8 @@ func TestJSONCompat(t *testing.T) {
 				{itemInteger, "8223", 3, 40},
 				{itemKey, "port", 4, 28},
 				{itemInteger, "4223", 4, 35},
+				{itemKey, "}", 5, 25},
+				{itemEOF, "", 0, 0},
 			},
 		},
 		{
@@ -1510,6 +1514,8 @@ func TestJSONCompat(t *testing.T) {
 				{itemBool, "true", 6, 36},
 				{itemKey, "max_control_line", 7, 28},
 				{itemInteger, "1024", 7, 47},
+				{itemKey, "}", 8, 25},
+				{itemEOF, "", 0, 0},
 			},
 		},
 		{
@@ -1521,6 +1527,7 @@ func TestJSONCompat(t *testing.T) {
 				{itemInteger, "8224", 1, 14},
 				{itemKey, "port", 1, 20},
 				{itemInteger, "4224", 1, 27},
+				{itemEOF, "", 0, 0},
 			},
 		},
 		{
@@ -1533,6 +1540,8 @@ func TestJSONCompat(t *testing.T) {
 				{itemInteger, "8225", 1, 14},
 				{itemKey, "port", 1, 20},
 				{itemInteger, "4225", 1, 27},
+				{itemKey, "}", 2, 25},
+				{itemEOF, "", 0, 0},
 			},
 		},
 		{
@@ -1557,6 +1566,8 @@ func TestJSONCompat(t *testing.T) {
 				{itemString, "nats://127.0.0.1:4224", 1, 140},
 				{itemArrayEnd, "", 1, 163},
 				{itemMapEnd, "", 1, 164},
+				{itemKey, "}", 14, 25},
+				{itemEOF, "", 0, 0},
 			},
 		},
 		{
@@ -1594,6 +1605,35 @@ func TestJSONCompat(t *testing.T) {
 				{itemString, "nats://127.0.0.1:4224", 11, 32},
 				{itemArrayEnd, "", 12, 30},
 				{itemMapEnd, "", 13, 28},
+				{itemKey, "}", 14, 25},
+				{itemEOF, "", 0, 0},
+			},
+		},
+		{
+			name: "should support JSON with blocks",
+			input: `{
+                          "jetstream": {
+                            "store_dir": "/tmp/nats"
+                            "max_mem": 1000000,
+                          },
+                          "port": 4222,
+                          "server_name": "nats1"
+                        }
+                        `,
+			expected: []item{
+				{itemKey, "jetstream", 2, 28},
+				{itemMapStart, "", 2, 41},
+				{itemKey, "store_dir", 3, 30},
+				{itemString, "/tmp/nats", 3, 43},
+				{itemKey, "max_mem", 4, 30},
+				{itemInteger, "1000000", 4, 40},
+				{itemMapEnd, "", 5, 28},
+				{itemKey, "port", 6, 28},
+				{itemInteger, "4222", 6, 35},
+				{itemKey, "server_name", 7, 28},
+				{itemString, "nats1", 7, 43},
+				{itemKey, "}", 8, 25},
+				{itemEOF, "", 0, 0},
 			},
 		},
 	} {

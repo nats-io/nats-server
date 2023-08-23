@@ -41,7 +41,7 @@ jobs:
     - name: "Run all tests from all other packages"
       env: TEST_SUITE=non_srv_pkg_tests
     - name: "Compile with older Go release"
-      go: 1.19.x
+      go: "1.19.12"
       env: TEST_SUITE=build_only
 
 script: ./scripts/runTestsOnTravis.sh $TEST_SUITE
