@@ -2693,25 +2693,25 @@ func TestMQTTSubWithNATSStream(t *testing.T) {
 }
 
 func TestMQTTTrackPendingOverrun(t *testing.T) {
-	sess := &mqttSession{pending: make(map[uint16]*mqttPending)}
+	sess := &mqttSession{pendingPublish: make(map[uint16]*mqttPending)}
 
 	sess.ppi = 0xFFFF
-	pi, _ := sess.trackPending(_EMPTY_, _EMPTY_)
+	pi, _ := sess.trackPublish(_EMPTY_, _EMPTY_)
 	if pi != 1 {
 		t.Fatalf("Expected 1, got %v", pi)
 	}
 
 	p := &mqttPending{}
 	for i := 1; i <= 0xFFFF; i++ {
-		sess.pending[uint16(i)] = p
+		sess.pendingPublish[uint16(i)] = p
 	}
-	pi, _ = sess.trackPending(_EMPTY_, _EMPTY_)
+	pi, _ = sess.trackPublish(_EMPTY_, _EMPTY_)
 	if pi != 0 {
 		t.Fatalf("Expected 0, got %v", pi)
 	}
 
-	delete(sess.pending, 1234)
-	pi, _ = sess.trackPending(_EMPTY_, _EMPTY_)
+	delete(sess.pendingPublish, 1234)
+	pi, _ = sess.trackPublish(_EMPTY_, _EMPTY_)
 	if pi != 1234 {
 		t.Fatalf("Expected 1234, got %v", pi)
 	}
@@ -4806,7 +4806,7 @@ func TestMQTTRedeliveryAckWait(t *testing.T) {
 	mc.mu.Lock()
 	sess := mc.mqtt.sess
 	sess.mu.Lock()
-	lpi := len(sess.pending)
+	lpi := len(sess.pendingPublish)
 	var lsseq int
 	for _, sseqToPi := range sess.cpending {
 		lsseq += len(sseqToPi)
@@ -5171,7 +5171,7 @@ func TestMQTTUnsubscribeWithPendingAcks(t *testing.T) {
 	mc.mu.Lock()
 	sess := mc.mqtt.sess
 	sess.mu.Lock()
-	pal := len(sess.pending)
+	pal := len(sess.pendingPublish)
 	sess.mu.Unlock()
 	mc.mu.Unlock()
 	if pal != 0 {
@@ -5247,7 +5247,7 @@ func TestMQTTMaxAckPending(t *testing.T) {
 		mcli.mu.Lock()
 		sess := mcli.mqtt.sess
 		sess.mu.Lock()
-		np := len(sess.pending)
+		np := len(sess.pendingPublish)
 		sess.mu.Unlock()
 		mcli.mu.Unlock()
 		if np != 0 {
