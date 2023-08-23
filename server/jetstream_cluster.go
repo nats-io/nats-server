@@ -5184,7 +5184,12 @@ func (cc *jetStreamCluster) remapStreamAssignment(sa *streamAssignment, removePe
 		return true
 	}
 
-	// If we are here let's remove the peer at least.
+	// If R1 just return to avoid bricking the stream.
+	if sa.Group.node == nil || len(sa.Group.Peers) == 1 {
+		return false
+	}
+
+	// If we are here let's remove the peer at least, as long as we are R>1
 	for i, peer := range sa.Group.Peers {
 		if peer == removePeer {
 			sa.Group.Peers[i] = sa.Group.Peers[len(sa.Group.Peers)-1]

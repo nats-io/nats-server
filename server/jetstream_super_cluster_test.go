@@ -4016,3 +4016,34 @@ func TestJetStreamSuperClusterMovingR1Stream(t *testing.T) {
 		return nil
 	})
 }
+
+// https://github.com/nats-io/nats-server/issues/4396
+func TestJetStreamSuperClusterR1StreamPeerRemove(t *testing.T) {
+	sc := createJetStreamSuperCluster(t, 1, 3)
+	defer sc.shutdown()
+
+	nc, js := jsClientConnect(t, sc.serverByName("C1-S1"))
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 1,
+	})
+	require_NoError(t, err)
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+
+	// Call peer remove on the only peer the leader.
+	resp, err := nc.Request(fmt.Sprintf(JSApiStreamRemovePeerT, "TEST"), []byte(`{"peer":"`+si.Cluster.Leader+`"}`), time.Second)
+	require_NoError(t, err)
+	var rpr JSApiStreamRemovePeerResponse
+	require_NoError(t, json.Unmarshal(resp.Data, &rpr))
+	require_False(t, rpr.Success)
+	require_True(t, rpr.Error.ErrCode == 10075)
+
+	// Stream should still be in place and useable.
+	_, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+}
