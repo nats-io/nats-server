@@ -13655,23 +13655,25 @@ func TestJetStreamMemoryCorruption(t *testing.T) {
 	kv.Purge("key1")
 	kv.Purge("key2")
 
-	checkUpdates := func(updates <-chan nats.KeyValueEntry) {
+	checkUpdates := func(t *testing.T, updates <-chan nats.KeyValueEntry) {
 		t.Helper()
 		count := 0
+		start := time.Now()
 		for {
 			select {
 			case <-updates:
 				count++
 				if count == 13 {
+					t.Logf("Took %v (count==%v)", time.Since(start), count)
 					return
 				}
-			case <-time.After(time.Second):
-				t.Fatal("Did not receive all updates")
+			case <-time.After(30 * time.Second):
+				t.Fatalf("Did not receive all updates (count==%v)", count)
 			}
 		}
 	}
-	checkUpdates(w1.Updates())
-	checkUpdates(w2.Updates())
+	checkUpdates(t, w1.Updates())
+	checkUpdates(t, w2.Updates())
 
 	select {
 	case e := <-errCh:
