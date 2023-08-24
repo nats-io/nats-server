@@ -3092,7 +3092,10 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 					o.notifyDeliveryExceeded(seq, dc-1)
 				}
 				// Make sure to remove from pending.
-				delete(o.pending, seq)
+				if p, ok := o.pending[seq]; ok && p != nil {
+					delete(o.pending, seq)
+					o.updateDelivered(p.Sequence, seq, dc, p.Timestamp)
+				}
 				continue
 			}
 			if seq > 0 {
