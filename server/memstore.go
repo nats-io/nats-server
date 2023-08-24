@@ -1307,17 +1307,28 @@ func (o *consumerMemStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) erro
 		}
 
 		if dc > 1 {
+			if maxdc := uint64(o.cfg.MaxDeliver); maxdc > 0 && dc > maxdc {
+				// Make sure to remove from pending.
+				delete(o.state.Pending, sseq)
+			}
 			if o.state.Redelivered == nil {
 				o.state.Redelivered = make(map[uint64]uint64)
 			}
-			o.state.Redelivered[sseq] = dc - 1
+			// Only update if greater then what we already have.
+			if o.state.Redelivered[sseq] < dc-1 {
+				o.state.Redelivered[sseq] = dc - 1
+			}
 		}
 	} else {
 		// For AckNone just update delivered and ackfloor at the same time.
-		o.state.Delivered.Consumer = dseq
-		o.state.Delivered.Stream = sseq
-		o.state.AckFloor.Consumer = dseq
-		o.state.AckFloor.Stream = sseq
+		if dseq > o.state.Delivered.Consumer {
+			o.state.Delivered.Consumer = dseq
+			o.state.AckFloor.Consumer = dseq
+		}
+		if sseq > o.state.Delivered.Stream {
+			o.state.Delivered.Stream = sseq
+			o.state.AckFloor.Stream = sseq
+		}
 	}
 
 	return nil
