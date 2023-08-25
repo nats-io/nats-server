@@ -684,6 +684,7 @@ func (ms *memStore) purge(fseq uint64) (uint64, error) {
 	cb := ms.scb
 	bytes := int64(ms.state.Bytes)
 	if fseq < ms.state.LastSeq {
+		ms.mu.Unlock()
 		return 0, fmt.Errorf("partial purges not supported on memory store")
 	}
 	ms.state.FirstSeq = fseq
