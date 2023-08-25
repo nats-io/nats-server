@@ -1814,6 +1814,7 @@ func (n *raft) runAsFollower() {
 				if n.catchupStalled() {
 					n.cancelCatchup()
 				}
+				n.resetElectionTimeout()
 				n.Unlock()
 			} else {
 				n.switchToCandidate()
