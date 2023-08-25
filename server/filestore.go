@@ -174,6 +174,7 @@ type fileStore struct {
 	hh          hash.Hash64
 	qch         chan struct{}
 	cfs         []ConsumerStore
+	lfd         *os.File
 	sips        int
 	closed      bool
 	fip         bool
@@ -385,6 +386,10 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		prf:    prf,
 		oldprf: oldprf,
 		qch:    make(chan struct{}),
+	}
+
+	if err := fs.lockFileSystem(); err != nil {
+		return nil, err
 	}
 
 	// Set flush in place to AsyncFlush which by default is false.
@@ -6633,6 +6638,8 @@ func (fs *fileStore) Stop() error {
 	fs.cancelSyncTimer()
 	fs.cancelAgeChk()
 
+	fs.lfd.Close()
+
 	// We should update the upper usage layer on a stop.
 	cb, bytes := fs.scb, int64(fs.state.Bytes)
 
@@ -7013,6 +7020,18 @@ func (fs *fileStore) SyncDeleted(dbs DeleteBlocks) {
 			return true
 		})
 	}
+}
+
+func (fs *fileStore) lockFileSystem() error {
+	var err error
+	lpath := filepath.Join(fs.fcfg.StoreDir, "LOCK")
+	if fs.lfd, err = os.Create(lpath); err != nil {
+		return fmt.Errorf("could not create `%s': %v", lpath, err)
+	}
+	if err = lockFile(fs.lfd); err != nil {
+		return err
+	}
+	return nil
 }
 
 ////////////////////////////////////////////////////////////////////////////////
