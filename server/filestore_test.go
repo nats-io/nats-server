@@ -5714,3 +5714,23 @@ func TestFileStoreRecaluclateFirstForSubjBug(t *testing.T) {
 	// Make sure it was update properly.
 	require_True(t, *ss == SimpleState{Msgs: 1, First: 3, Last: 3, firstNeedsUpdate: false})
 }
+
+func TestFileStoreKeepWithDeletedMsgsBug(t *testing.T) {
+	fs, err := newFileStore(FileStoreConfig{StoreDir: t.TempDir()}, StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
+	require_NoError(t, err)
+
+	msg := bytes.Repeat([]byte("A"), 19)
+	for i := 0; i < 5; i++ {
+		fs.StoreMsg("A", nil, msg)
+		fs.StoreMsg("B", nil, msg)
+	}
+
+	n, err := fs.PurgeEx("A", 0, 0)
+	require_NoError(t, err)
+	require_True(t, n == 5)
+
+	// Purge with keep.
+	n, err = fs.PurgeEx(_EMPTY_, 0, 2)
+	require_NoError(t, err)
+	require_True(t, n == 3)
+}

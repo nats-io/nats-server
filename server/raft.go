@@ -2509,6 +2509,10 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 	}
 	if err != nil || ae == nil {
 		n.warn("Could not find a starting entry for catchup request: %v", err)
+		// If we are here we are seeing a request for an item we do not have, meaning we should stepdown.
+		// This is possible on a reset of our WAL but the other side has a snapshot already.
+		// If we do not stepdown this can cycle.
+		n.stepdown.push(noLeader)
 		n.Unlock()
 		arPool.Put(ar)
 		return
