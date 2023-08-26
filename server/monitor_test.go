@@ -4775,3 +4775,119 @@ func TestMonitorAccountszMappingOrderReporting(t *testing.T) {
 	}
 	require_True(t, found)
 }
+
+// createCallbackURL adds a callback query parameter for JSONP requests.
+func createCallbackURL(t *testing.T, endpoint string) string {
+	t.Helper()
+
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	params := u.Query()
+	params.Set("callback", "callback")
+
+	u.RawQuery = params.Encode()
+
+	return u.String()
+}
+
+// stripCallback removes the JSONP callback function from the response.
+// Returns the JSON body without the wrapping callback function.
+// If there's no callback function, the data is returned as is.
+func stripCallback(data []byte) []byte {
+	// Cut the JSONP callback function with the opening parentheses.
+	_, after, found := bytes.Cut(data, []byte("("))
+
+	if found {
+		return bytes.TrimSuffix(after, []byte(")"))
+	}
+
+	return data
+}
+
+// expectHealthStatus makes 1 regular and 1 JSONP request to the URL and checks the
+// HTTP status code, Content-Type header and health status string.
+func expectHealthStatus(t *testing.T, url string, statusCode int, wantStatus string) {
+	t.Helper()
+
+	// First check for regular requests.
+	body := readBodyEx(t, url, statusCode, appJSONContent)
+	checkHealthStatus(t, body, wantStatus)
+
+	// Another check for JSONP requests.
+	jsonpURL := createCallbackURL(t, url) // Adds a callback query param.
+	jsonpBody := readBodyEx(t, jsonpURL, statusCode, appJSContent)
+	checkHealthStatus(t, stripCallback(jsonpBody), wantStatus)
+}
+
+// checkHealthStatus checks the health status from a JSON response.
+func checkHealthStatus(t *testing.T, body []byte, wantStatus string) {
+	t.Helper()
+
+	h := &HealthStatus{}
+
+	if err := json.Unmarshal(body, h); err != nil {
+		t.Fatalf("error unmarshalling the body: %v", err)
+	}
+
+	if h.Status != wantStatus {
+		t.Errorf("want health status %q, got %q", wantStatus, h.Status)
+	}
+}
+
+// checkHealthzEndpoint makes requests to the /healthz endpoint and checks the health status.
+func checkHealthzEndpoint(t *testing.T, address string, statusCode int, wantStatus string) {
+	t.Helper()
+
+	cases := map[string]string{
+		"healthz":         fmt.Sprintf("http://%s/healthz", address),
+		"js-enabled-only": fmt.Sprintf("http://%s/healthz?js-enabled-only=true", address),
+		"js-server-only":  fmt.Sprintf("http://%s/healthz?js-server-only=true", address),
+	}
+
+	for name, url := range cases {
+		t.Run(name, func(t *testing.T) {
+			expectHealthStatus(t, url, statusCode, wantStatus)
+		})
+	}
+}
+
+func TestHealthzStatusOK(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	checkHealthzEndpoint(t, s.MonitorAddr().String(), http.StatusOK, "ok")
+}
+
+func TestHealthzStatusError(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	// Intentionally causing an error in readyForConnections().
+	// Note: Private field access, taking advantage of having the tests in the same package.
+	s.listener = nil
+
+	checkHealthzEndpoint(t, s.MonitorAddr().String(), http.StatusServiceUnavailable, "error")
+}
+
+func TestHealthzStatusUnavailable(t *testing.T) {
+	opts := DefaultMonitorOptions()
+	opts.JetStream = true
+
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	if !s.JetStreamEnabled() {
+		t.Fatalf("want JetStream to be enabled first")
+	}
+
+	err := s.DisableJetStream()
+
+	if err != nil {
+		t.Fatalf("got an error disabling JetStream: %v", err)
+	}
+
+	checkHealthzEndpoint(t, s.MonitorAddr().String(), http.StatusServiceUnavailable, "unavailable")
+}
