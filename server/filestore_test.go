@@ -4688,6 +4688,40 @@ func TestFileStoreFSSCloseAndKeepOnExpireOnRecoverBug(t *testing.T) {
 	})
 }
 
+func TestFileStoreExpireOnRecoverSubjectAccounting(t *testing.T) {
+	const msgLen = 19
+	msg := bytes.Repeat([]byte("A"), msgLen)
+
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize = 100
+		ttl := 200 * time.Millisecond
+		scfg := StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage, MaxAge: ttl}
+
+		fs, err := newFileStore(fcfg, scfg)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// These are in first block.
+		fs.StoreMsg("A", nil, msg)
+		fs.StoreMsg("B", nil, msg)
+		time.Sleep(ttl / 2)
+		// This one in 2nd block.
+		fs.StoreMsg("C", nil, msg)
+		fs.Stop()
+
+		time.Sleep(ttl/2 + 10*time.Millisecond)
+
+		fs, err = newFileStore(fcfg, scfg)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// Make sure we take into account PSIM when throwing a whole block away.
+		if state := fs.State(); state.NumSubjects != 1 {
+			t.Fatalf("Expected 1 subject, got %d", state.NumSubjects)
+		}
+	})
+}
+
 func TestFileStoreFSSBadStateBug(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fs, err := newFileStore(
