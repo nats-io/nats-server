@@ -1315,6 +1315,11 @@ func (fs *fileStore) expireMsgsOnRecover() {
 			fs.psim = make(map[string]*psi)
 			return false
 		}
+		// Make sure we do subject cleanup as well.
+		mb.ensurePerSubjectInfoLoaded()
+		for subj := range mb.fss {
+			fs.removePerSubject(subj)
+		}
 		mb.dirtyCloseWithRemove(true)
 		deleted++
 		return true
