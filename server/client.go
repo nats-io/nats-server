@@ -4223,7 +4223,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	c.pa.reply = nrr
 
 	if changed && c.isMqtt() && c.pa.hdr > 0 {
-		c.srv.mqttStoreQoS1MsgForAccountOnNewSubject(c.pa.hdr, msg, siAcc.GetName(), to)
+		c.srv.mqttStoreQoSMsgForAccountOnNewSubject(c.pa.hdr, msg, siAcc.GetName(), to)
 	}
 
 	// FIXME(dlc) - Do L1 cache trick like normal client?

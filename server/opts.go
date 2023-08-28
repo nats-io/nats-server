@@ -517,21 +517,24 @@ type MQTTOpts struct {
 	// Set of allowable certificates
 	TLSPinnedCerts PinnedCertSet
 
-	// AckWait is the amount of time after which a QoS 1 message sent to
-	// a client is redelivered as a DUPLICATE if the server has not
-	// received the PUBACK on the original Packet Identifier.
-	// The value has to be positive.
-	// Zero will cause the server to use the default value (30 seconds).
-	// Note that changes to this option is applied only to new MQTT subscriptions.
+	// AckWait is the amount of time after which a QoS 1 or 2 message sent to a
+	// client is redelivered as a DUPLICATE if the server has not received the
+	// PUBACK on the original Packet Identifier. The same value applies to
+	// PubRel redelivery. The value has to be positive. Zero will cause the
+	// server to use the default value (30 seconds). Note that changes to this
+	// option is applied only to new MQTT subscriptions (or sessions for
+	// PubRels).
 	AckWait time.Duration
 
-	// MaxAckPending is the amount of QoS 1 messages the server can send to
-	// a subscription without receiving any PUBACK for those messages.
-	// The valid range is [0..65535].
+	// MaxAckPending is the amount of QoS 1 and 2 messages (combined) the server
+	// can send to a subscription without receiving any PUBACK for those
+	// messages. The valid range is [0..65535].
+	//
 	// The total of subscriptions' MaxAckPending on a given session cannot
-	// exceed 65535. Attempting to create a subscription that would bring
-	// the total above the limit would result in the server returning 0x80
-	// in the SUBACK for this subscription.
+	// exceed 65535. Attempting to create a subscription that would bring the
+	// total above the limit would result in the server returning 0x80 in the
+	// SUBACK for this subscription.
+	//
 	// Due to how the NATS Server handles the MQTT "#" wildcard, each
 	// subscription ending with "#" will use 2 times the MaxAckPending value.
 	// Note that changes to this option is applied only to new subscriptions.
