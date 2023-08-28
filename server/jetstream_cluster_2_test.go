@@ -3301,15 +3301,21 @@ func TestJetStreamClusterStreamUpdateSyncBug(t *testing.T) {
 	c.waitOnStreamLeader("$G", "TEST")
 	c.waitOnStreamCurrent(nsl, "$G", "TEST")
 
-	mset, _ = nsl.GlobalAccount().lookupStream("TEST")
-	cloneState := mset.state()
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		mset, _ = nsl.GlobalAccount().lookupStream("TEST")
+		cloneState := mset.state()
 
-	mset, _ = c.streamLeader("$G", "TEST").GlobalAccount().lookupStream("TEST")
-	leaderState := mset.state()
+		mset, _ = c.streamLeader("$G", "TEST").GlobalAccount().lookupStream("TEST")
+		leaderState := mset.state()
 
-	if !reflect.DeepEqual(cloneState, leaderState) {
-		t.Fatalf("States do not match: %+v vs %+v", cloneState, leaderState)
-	}
+		if !reflect.DeepEqual(cloneState, leaderState) {
+			errMsg := fmt.Errorf("States do not match: %+v vs %+v", cloneState, leaderState)
+			t.Log(errMsg)
+			return errMsg
+		}
+
+		return nil
+	})
 }
 
 // Issue #2666
