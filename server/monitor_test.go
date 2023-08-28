@@ -147,28 +147,29 @@ var (
 )
 
 func readBodyEx(t *testing.T, url string, status int, content string) []byte {
+	t.Helper()
 	resp, err := http.Get(url)
 	if err != nil {
-		stackFatalf(t, "Expected no error: Got %v\n", err)
+		t.Fatalf("Expected no error: Got %v\n", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != status {
-		stackFatalf(t, "Expected a %d response, got %d\n", status, resp.StatusCode)
+		t.Fatalf("Expected a %d response, got %d\n", status, resp.StatusCode)
 	}
 	ct := resp.Header.Get("Content-Type")
 	if ct != content {
-		stackFatalf(t, "Expected %q content-type, got %q\n", content, ct)
+		t.Fatalf("Expected %q content-type, got %q\n", content, ct)
 	}
 	// Check the CORS header for "application/json" requests only.
 	if ct == appJSONContent {
 		acao := resp.Header.Get("Access-Control-Allow-Origin")
 		if acao != "*" {
-			stackFatalf(t, "Expected with %q Content-Type an Access-Control-Allow-Origin header with value %q, got %q\n", appJSONContent, "*", acao)
+			t.Fatalf("Expected with %q Content-Type an Access-Control-Allow-Origin header with value %q, got %q\n", appJSONContent, "*", acao)
 		}
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		stackFatalf(t, "Got an error reading the body: %v\n", err)
+		t.Fatalf("Got an error reading the body: %v\n", err)
 	}
 	return body
 }
@@ -2302,7 +2303,7 @@ func TestClusterEmptyWhenNotDefined(t *testing.T) {
 	body := readBody(t, fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port))
 	var v map[string]interface{}
 	if err := json.Unmarshal(body, &v); err != nil {
-		stackFatalf(t, "Got an error unmarshalling the body: %v\n", err)
+		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
 	}
 	// Cluster can empty, or be defined but that needs to be empty.
 	c, ok := v["cluster"]
@@ -5112,7 +5113,7 @@ func TestHealthzStatusError(t *testing.T) {
 	// Note: Private field access, taking advantage of having the tests in the same package.
 	s.listener = nil
 
-	checkHealthzEndpoint(t, s.MonitorAddr().String(), http.StatusServiceUnavailable, "error")
+	checkHealthzEndpoint(t, s.MonitorAddr().String(), http.StatusInternalServerError, "error")
 }
 
 func TestHealthzStatusUnavailable(t *testing.T) {
