@@ -18,6 +18,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -5304,7 +5305,10 @@ func (c *client) doTLSHandshake(typ string, solicit bool, url *url.URL, tlsConfi
 		if solicit {
 			// Based on type of error, possibly clear the saved tlsName
 			// See: https://github.com/nats-io/nats-server/issues/1256
-			if _, ok := err.(x509.HostnameError); ok {
+			// NOTE: As of Go 1.20, the HostnameError is wrapped so cannot
+			// type assert to check directly.
+			var hostnameErr x509.HostnameError
+			if errors.As(err, &hostnameErr) {
 				if host == tlsName {
 					resetTLSName = true
 				}
