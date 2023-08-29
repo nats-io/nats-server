@@ -3129,7 +3129,7 @@ func TestRoutePoolWithOlderServerConnectAndReconnect(t *testing.T) {
 	// We could get some, but it should settle.
 	checkRepeatConnect := func() {
 		t.Helper()
-		tm := time.NewTimer(2 * DEFAULT_ROUTE_CONNECT)
+		tm := time.NewTimer(4 * routeConnectDelay)
 		var last time.Time
 		for done := false; !done; {
 			select {
@@ -3139,7 +3139,7 @@ func TestRoutePoolWithOlderServerConnectAndReconnect(t *testing.T) {
 				done = true
 			}
 		}
-		if dur := time.Since(last); dur <= DEFAULT_ROUTE_CONNECT {
+		if dur := time.Since(last); dur <= routeConnectDelay {
 			t.Fatalf("Still attempted to connect %v ago", dur)
 		}
 	}
