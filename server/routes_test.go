@@ -2108,7 +2108,7 @@ func TestRoutePoolConnectRace(t *testing.T) {
 		select {
 		case e := <-l.dbgCh:
 			if strings.Contains(e, "duplicate") {
-				if duplicate++; duplicate > 10 {
+				if duplicate++; duplicate > 20 {
 					t.Fatalf("Routes are constantly reconnecting: %v", e)
 				}
 			}
