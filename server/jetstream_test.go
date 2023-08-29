@@ -21639,3 +21639,64 @@ func TestJetStreamUsageSyncDeadlock(t *testing.T) {
 
 	sendStreamMsg(t, nc, "foo", "hello")
 }
+
+// https://github.com/nats-io/nats.go/issues/1382
+// https://github.com/nats-io/nats-server/issues/4445
+func TestJetStreamChangeMaxMessagesPerSubject(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:              "TEST",
+		Subjects:          []string{"one.>"},
+		MaxMsgsPerSubject: 5,
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 10; i++ {
+		sendStreamMsg(t, nc, "one.data", "data")
+	}
+
+	expectMsgs := func(num int32) error {
+		t.Helper()
+
+		var msgs atomic.Int32
+		sub, err := js.Subscribe("one.>", func(msg *nats.Msg) {
+			msgs.Add(1)
+			msg.Ack()
+		})
+		require_NoError(t, err)
+		defer sub.Unsubscribe()
+
+		checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+			if nm := msgs.Load(); nm != num {
+				return fmt.Errorf("expected to get %v messages, got %v instead", num, nm)
+			}
+			return nil
+		})
+		return nil
+	}
+
+	require_NoError(t, expectMsgs(5))
+
+	js.UpdateStream(&nats.StreamConfig{
+		Name:              "TEST",
+		Subjects:          []string{"one.>"},
+		MaxMsgsPerSubject: 3,
+	})
+
+	info, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_True(t, info.Config.MaxMsgsPerSubject == 3)
+	require_True(t, info.State.Msgs == 3)
+
+	require_NoError(t, expectMsgs(3))
+
+	for i := 0; i < 10; i++ {
+		sendStreamMsg(t, nc, "one.data", "data")
+	}
+
+	require_NoError(t, expectMsgs(3))
+}
