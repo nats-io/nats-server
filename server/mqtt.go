@@ -2165,6 +2165,7 @@ func (as *mqttAccountSessionManager) serializeRetainedMsgsForSub(sess *mqttSessi
 		pi := sess.getPubAckIdentifier(mqttGetQoS(rm.Flags), sub)
 		// Need to use the subject for the retained message, not the `sub` subject.
 		// We can find the published retained message in rm.sub.subject.
+		// Set the RETAIN flag: [MQTT-3.3.1-8].
 		flags := mqttSerializePublishMsg(prm, pi, false, true, []byte(rm.Topic), rm.Msg)
 		if trace {
 			pp := mqttPublish{
@@ -3593,7 +3594,6 @@ func mqttDeliverMsgCbQos0(sub *subscription, pc *client, _ *Account, subject, re
 		return
 	}
 
-	var retained bool
 	var topic []byte
 
 	// This is an MQTT publisher directly connected to this server.
@@ -3608,7 +3608,6 @@ func mqttDeliverMsgCbQos0(sub *subscription, pc *client, _ *Account, subject, re
 		if len(pc.pa.mapped) > 0 && len(pc.pa.psi) > 0 {
 			topic = natsSubjectToMQTTTopic(subject)
 		}
-		retained = mqttIsRetained(pc.mqtt.pp.flags)
 
 	} else {
 		// Non MQTT client, could be NATS publisher, or ROUTER, etc..
@@ -3633,7 +3632,7 @@ func mqttDeliverMsgCbQos0(sub *subscription, pc *client, _ *Account, subject, re
 	}
 
 	// Message never has a packet identifier nor is marked as duplicate.
-	pc.mqttDeliver(cc, sub, 0, false, retained, topic, msg)
+	pc.mqttDeliver(cc, sub, 0, false, topic, msg)
 }
 
 // This is the callback attached to a JS durable subscription for a MQTT Qos1 sub.
@@ -3642,8 +3641,6 @@ func mqttDeliverMsgCbQos0(sub *subscription, pc *client, _ *Account, subject, re
 // from a route, gw, etc... We make sure that if this is the case, the message contains
 // a NATS/MQTT header that indicates that this is a published QoS1 message.
 func mqttDeliverMsgCbQos1(sub *subscription, pc *client, _ *Account, subject, reply string, rmsg []byte) {
-	var retained bool
-
 	// Message on foo.bar is stored under $MQTT.msgs.foo.bar, so the subject has to be
 	// at least as long as the stream subject prefix "$MQTT.msgs.", and after removing
 	// the prefix, has to be at least 1 character long.
@@ -3704,7 +3701,7 @@ func mqttDeliverMsgCbQos1(sub *subscription, pc *client, _ *Account, subject, re
 
 	topic := natsSubjectToMQTTTopic(strippedSubj)
 
-	pc.mqttDeliver(cc, sub, pi, dup, retained, topic, msg)
+	pc.mqttDeliver(cc, sub, pi, dup, topic, msg)
 }
 
 // The MQTT Server MUST NOT match Topic Filters starting with a wildcard character (# or +)
@@ -3732,11 +3729,11 @@ func isMQTTReservedSubscription(subject string) bool {
 
 // Common function to mqtt delivery callbacks to serialize and send the message
 // to the `cc` client.
-func (c *client) mqttDeliver(cc *client, sub *subscription, pi uint16, dup, retained bool, topic, msg []byte) {
+func (c *client) mqttDeliver(cc *client, sub *subscription, pi uint16, dup bool, topic, msg []byte) {
 	sw := mqttWriter{}
 	w := &sw
 
-	flags := mqttSerializePublishMsg(w, pi, dup, retained, topic, msg)
+	flags := mqttSerializePublishMsg(w, pi, dup, false, topic, msg)
 
 	cc.mu.Lock()
 	if sub.mqtt.prm != nil {
