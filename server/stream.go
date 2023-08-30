@@ -2983,7 +2983,7 @@ func streamAndSeq(shdr string) (string, uint64) {
 	}
 	// New version which is stream index name <SPC> sequence
 	fields := strings.Fields(shdr)
-	if len(fields) != 2 {
+	if len(fields) < 2 {
 		return _EMPTY_, 0
 	}
 	return fields[0], uint64(parseAckReplyNum(fields[1]))
