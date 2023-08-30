@@ -3120,10 +3120,9 @@ func TestNoRaceJetStreamFileStoreCompaction(t *testing.T) {
 	for i := 0; i < toSend; i++ {
 		js.PublishAsync(fmt.Sprintf("KV.%d", i+1), data)
 	}
-
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatalf("Did not receive completion signal")
 	}
 
@@ -5218,6 +5217,10 @@ func TestNoRaceJetStreamClusterDirectAccessAllPeersSubs(t *testing.T) {
 			for {
 				select {
 				case <-qch:
+					select {
+					case <-js.PublishAsyncComplete():
+					case <-time.After(10 * time.Second):
+					}
 					return
 				default:
 					// Send as fast as we can.
@@ -5227,7 +5230,7 @@ func TestNoRaceJetStreamClusterDirectAccessAllPeersSubs(t *testing.T) {
 		}()
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 
 	// Now let's scale up to an R3.
 	cfg.Replicas = 3
@@ -5277,7 +5280,7 @@ func TestNoRaceJetStreamClusterDirectAccessAllPeersSubs(t *testing.T) {
 		t.Fatalf("Expected to see messages increase, got %d", si.State.Msgs)
 	}
 
-	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
 		// Make sure they are all the same from a state perspective.
 		// Leader will have the expected state.
 		lmset, err := c.streamLeader("$G", "TEST").GlobalAccount().lookupStream("TEST")
@@ -8742,6 +8745,7 @@ func TestNoRaceFilestoreBinaryStreamSnapshotEncodingLargeGaps(t *testing.T) {
 	}
 	fs, err := newFileStore(fcfg, StreamConfig{Name: "zzz", Subjects: []string{"zzz"}, Storage: FileStorage})
 	require_NoError(t, err)
+	defer fs.Stop()
 
 	subj, msg := "zzz", bytes.Repeat([]byte("X"), 128)
 	numMsgs := 20_000

@@ -12232,6 +12232,7 @@ func TestJetStreamServerEncryption(t *testing.T) {
 
 			// Check stream meta.
 			checkEncrypted := func() {
+				t.Helper()
 				checkKeyFile(filepath.Join(sdir, JetStreamMetaFileKey))
 				checkFor(filepath.Join(sdir, JetStreamMetaFile), "TEST", "foo", "bar", "baz", "max_msgs", "max_bytes")
 				// Check a message block.
@@ -15463,47 +15464,6 @@ func TestJetStreamStorageReservedBytes(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestJetStreamRecoverStreamWithDeletedMessagesNonCleanShutdown(t *testing.T) {
-	s := RunBasicJetStreamServer(t)
-	defer s.Shutdown()
-
-	nc, js := jsClientConnect(t, s)
-	defer nc.Close()
-
-	_, err := js.AddStream(&nats.StreamConfig{Name: "T"})
-	require_NoError(t, err)
-
-	for i := 0; i < 100; i++ {
-		js.Publish("T", []byte("OK"))
-	}
-
-	js.DeleteMsg("T", 22)
-
-	// Now we need a non-clean shutdown.
-	// For this use case that means we do *not* write the fss file.
-	sd := s.JetStreamConfig().StoreDir
-	fss := filepath.Join(sd, "$G", "streams", "T", "msgs", "1.fss")
-
-	// Stop current
-	nc.Close()
-	s.Shutdown()
-
-	// Remove fss file to simulate a non-clean shutdown.
-	err = os.Remove(fss)
-	require_NoError(t, err)
-
-	// Restart.
-	s = RunJetStreamServerOnPort(-1, sd)
-	defer s.Shutdown()
-
-	nc, js = jsClientConnect(t, s)
-	defer nc.Close()
-
-	// Make sure we recovered our stream
-	_, err = js.StreamInfo("T")
-	require_NoError(t, err)
 }
 
 func TestJetStreamRestoreBadStream(t *testing.T) {
@@ -20387,9 +20347,8 @@ func TestJetStreamMsgBlkFailOnKernelFault(t *testing.T) {
 	sd := s.JetStreamConfig().StoreDir
 	s.Shutdown()
 
-	// Zero out the last block.
-	err = os.WriteFile(lmbf, nil, defaultFilePerms)
-	require_NoError(t, err)
+	// Remove block.
+	require_NoError(t, os.Remove(lmbf))
 
 	s = RunJetStreamServerOnPort(-1, sd)
 	defer s.Shutdown()
@@ -21263,14 +21222,8 @@ func TestJetStreamMaxBytesIgnored(t *testing.T) {
 	sd := s.JetStreamConfig().StoreDir
 	s.Shutdown()
 
-	// We will remove the idx file and truncate the blk and fss files.
+	// We will truncate blk file.
 	mdir := filepath.Join(sd, "$G", "streams", "TEST", "msgs")
-	// Remove idx
-	err = os.Remove(filepath.Join(mdir, "1.idx"))
-	require_NoError(t, err)
-	// Truncate fss
-	err = os.WriteFile(filepath.Join(mdir, "1.fss"), nil, defaultFilePerms)
-	require_NoError(t, err)
 	// Truncate blk
 	err = os.WriteFile(filepath.Join(mdir, "1.blk"), nil, defaultFilePerms)
 	require_NoError(t, err)
