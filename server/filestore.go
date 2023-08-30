@@ -1081,6 +1081,12 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, error) {
 		seq := le.Uint64(hdr[4:])
 		ts := int64(le.Uint64(hdr[12:]))
 
+		// Check if this is a delete tombstone.
+		if seq&tbit != 0 {
+			index += rl
+			continue
+		}
+
 		// This is an old erased message, or a new one that we can track.
 		if seq == 0 || seq&ebit != 0 || seq < mb.first.seq {
 			seq = seq &^ ebit
@@ -2392,6 +2398,12 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 					}
 				}
 			}
+		} else if mb := fs.selectMsgBlock(fseq); mb != nil {
+			// If we are here we could not remove fseq from above, so rebuild.
+			var ld *LostStreamData
+			if ld, _ = mb.rebuildState(); ld != nil {
+				fs.rebuildStateLocked(ld)
+			}
 		}
 	}
 
@@ -3048,7 +3060,8 @@ func (mb *msgBlock) compact() {
 		if !isDeleted(seq) {
 			// Normal message here.
 			nbuf = append(nbuf, buf[index:index+rl]...)
-			if !firstSet {
+			// Do not set based on tombstone.
+			if !firstSet && seq&tbit == 0 {
 				firstSet = true
 				mb.first.seq = seq
 			}
@@ -3811,20 +3824,25 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 	// Update write through cache.
 	// Write to msg record.
 	mb.cache.buf = append(mb.cache.buf, checksum...)
-	// Write index
-	mb.cache.idx = append(mb.cache.idx, uint32(index)|hbit)
 	mb.cache.lrl = uint32(rl)
-	if mb.cache.fseq == 0 {
-		mb.cache.fseq = seq
-	}
 
 	// Set cache timestamp for last store.
 	mb.lwts = ts
 	// Decide if we write index info if flushing in place.
 	writeIndex := ts-mb.lwits > wiThresh
 
-	// Accounting
-	mb.updateAccounting(seq, ts, rl)
+	// Only update index and do accounting if not a delete tombstone.
+	if seq&tbit == 0 {
+		// Strip ebit if set.
+		seq = seq &^ ebit
+		if mb.cache.fseq == 0 {
+			mb.cache.fseq = seq
+		}
+		// Write index
+		mb.cache.idx = append(mb.cache.idx, uint32(index)|hbit)
+		// Accounting
+		mb.updateAccounting(seq, ts, rl)
+	}
 
 	fch, werr := mb.fch, mb.werr
 
@@ -3927,7 +3945,7 @@ func (mb *msgBlock) updateAccounting(seq uint64, ts int64, rl uint64) {
 		seq = seq &^ ebit
 	}
 
-	if mb.first.seq == 0 || mb.first.ts == 0 {
+	if mb.first.seq == 0 || mb.first.ts == 0 && seq >= mb.first.seq {
 		mb.first.seq = seq
 		mb.first.ts = ts
 	}
@@ -4110,6 +4128,12 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 			// This means something is off.
 			// TODO(dlc) - Add into bad list?
 			return errCorruptState
+		}
+
+		// Check for tombstones which we can skip in terms of indexing.
+		if seq&tbit != 0 {
+			index += rl
+			continue
 		}
 
 		// Clear erase bit.
@@ -4467,15 +4491,17 @@ var (
 	errNoMainKey     = errors.New("encrypted store encountered with no main key")
 )
 
-// Used for marking messages that have had their checksums checked.
-// Used to signal a message record with headers.
-const hbit = 1 << 31
-
-// Used for marking erased messages sequences.
-const ebit = 1 << 63
-
-// Used to mark a bad index as deleted.
-const dbit = 1 << 30
+const (
+	// Used for marking messages that have had their checksums checked.
+	// Used to signal a message record with headers.
+	hbit = 1 << 31
+	// Used for marking erased messages sequences.
+	ebit = 1 << 63
+	// Used for marking tombstone sequences.
+	tbit = 1 << 62
+	// Used to mark a bad index as deleted.
+	dbit = 1 << 30
+)
 
 // Will do a lookup from cache.
 // Lock should be held.
