@@ -47,8 +47,6 @@ var (
 const (
 	// cacheMax is used to bound limit the frontend cache
 	slCacheMax = 1024
-	// If we run a sweeper we will drain to this count.
-	slCacheSweep = 256
 	// plistMin is our lower bounds to create a fast plist for Match.
 	plistMin = 256
 )
@@ -68,8 +66,7 @@ type Sublist struct {
 	inserts   uint64
 	removes   uint64
 	root      *level
-	cache     map[string]*SublistResult
-	ccSweep   int32
+	cache     *Cache
 	notify    *notifyMaps
 	count     uint32
 }
@@ -114,7 +111,7 @@ func newLevel() *level {
 // NewSublist will create a default sublist with caching enabled per the flag.
 func NewSublist(enableCache bool) *Sublist {
 	if enableCache {
-		return &Sublist{root: newLevel(), cache: make(map[string]*SublistResult)}
+		return &Sublist{root: newLevel(), cache: NewCache(MemHashString)}
 	}
 	return &Sublist{root: newLevel()}
 }
@@ -489,16 +486,17 @@ func (s *Sublist) addToCache(subject string, sub *subscription) {
 	}
 	// If literal we can direct match.
 	if subjectIsLiteral(subject) {
-		if r := s.cache[subject]; r != nil {
-			s.cache[subject] = r.addSubToResult(sub)
+		if r, _ := s.cache.Get(subject); r != nil {
+			s.cache.Set(subject, r.addSubToResult(sub))
 		}
 		return
 	}
-	for key, r := range s.cache {
+
+	s.cache.Iterate(func(key string, value *SublistResult) {
 		if matchLiteral(key, subject) {
-			s.cache[key] = r.addSubToResult(sub)
+			s.cache.Set(key, value.addSubToResult(sub))
 		}
-	}
+	})
 }
 
 // removeFromCache will remove the sub from any active cache entries.
@@ -509,15 +507,15 @@ func (s *Sublist) removeFromCache(subject string, sub *subscription) {
 	}
 	// If literal we can direct match.
 	if subjectIsLiteral(subject) {
-		delete(s.cache, subject)
+		s.cache.Delete(subject)
 		return
 	}
 	// Wildcard here.
-	for key := range s.cache {
+	s.cache.Iterate(func(key string, value *SublistResult) {
 		if matchLiteral(key, subject) {
-			delete(s.cache, key)
+			s.cache.Delete(key)
 		}
-	}
+	})
 }
 
 // a place holder for an empty result.
@@ -537,13 +535,9 @@ func (s *Sublist) match(subject string, doLock bool) *SublistResult {
 	atomic.AddUint64(&s.matches, 1)
 
 	// Check cache first.
-	if doLock {
-		s.RLock()
-	}
-	r, ok := s.cache[subject]
-	if doLock {
-		s.RUnlock()
-	}
+
+	r, ok := s.cache.Get(subject)
+
 	if ok {
 		atomic.AddUint64(&s.cacheHits, 1)
 		return r
@@ -571,8 +565,6 @@ func (s *Sublist) match(subject string, doLock bool) *SublistResult {
 
 	// Get result from the main structure and place into the shared cache.
 	// Hold the read lock to avoid race between match and store.
-	var n int
-
 	if doLock {
 		s.Lock()
 	}
@@ -583,34 +575,13 @@ func (s *Sublist) match(subject string, doLock bool) *SublistResult {
 		result = emptyResult
 	}
 	if s.cache != nil {
-		s.cache[subject] = result
-		n = len(s.cache)
+		s.cache.Set(subject, result)
 	}
 	if doLock {
 		s.Unlock()
 	}
 
-	// Reduce the cache count if we have exceeded our set maximum.
-	if n > slCacheMax && atomic.CompareAndSwapInt32(&s.ccSweep, 0, 1) {
-		go s.reduceCacheCount()
-	}
-
 	return result
-}
-
-// Remove entries in the cache until we are under the maximum.
-// TODO(dlc) this could be smarter now that its not inline.
-func (s *Sublist) reduceCacheCount() {
-	defer atomic.StoreInt32(&s.ccSweep, 0)
-	// If we are over the cache limit randomly drop until under the limit.
-	s.Lock()
-	for key := range s.cache {
-		delete(s.cache, key)
-		if len(s.cache) <= slCacheSweep {
-			break
-		}
-	}
-	s.Unlock()
 }
 
 // Helper function for auto-expanding remote qsubs.
@@ -832,7 +803,7 @@ func (s *Sublist) RemoveBatch(subs []*subscription) error {
 	// Turn caching back on here.
 	atomic.AddUint64(&s.genid, 1)
 	if wasEnabled {
-		s.cache = make(map[string]*SublistResult)
+		s.cache = NewCache(MemHashString)
 	}
 	return err
 }
@@ -914,7 +885,7 @@ func (s *Sublist) Count() uint32 {
 // CacheCount returns the number of result sets in the cache.
 func (s *Sublist) CacheCount() int {
 	s.RLock()
-	cc := len(s.cache)
+	cc := s.cache.Len()
 	s.RUnlock()
 	return cc
 }
@@ -963,7 +934,7 @@ func (s *Sublist) Stats() *SublistStats {
 
 	s.RLock()
 	cache := s.cache
-	cc := len(s.cache)
+	cc := s.CacheCount()
 	st.NumSubs = s.count
 	st.NumInserts = s.inserts
 	st.NumRemoves = s.removes
@@ -981,14 +952,14 @@ func (s *Sublist) Stats() *SublistStats {
 	if cache != nil {
 		tot, max, clen := 0, 0, 0
 		s.RLock()
-		for _, r := range s.cache {
+		cache.Iterate(func(key string, r *SublistResult) {
 			clen++
 			l := len(r.psubs) + len(r.qsubs)
 			tot += l
 			if l > max {
 				max = l
 			}
-		}
+		})
 		s.RUnlock()
 		st.totFanout = tot
 		st.cacheCnt = clen
