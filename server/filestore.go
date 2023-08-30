@@ -2595,7 +2595,14 @@ func (fs *fileStore) rebuildFirst() {
 
 	fmb.removeIndexFile()
 	ld, _ := fmb.rebuildState()
-	fmb.writeIndexInfo()
+	fmb.mu.RLock()
+	isEmpty := fmb.msgs == 0
+	fmb.mu.RUnlock()
+	if isEmpty {
+		fs.removeMsgBlock(fmb)
+	} else {
+		fmb.writeIndexInfo()
+	}
 	fs.selectNextFirst()
 	fs.rebuildStateLocked(ld)
 }
