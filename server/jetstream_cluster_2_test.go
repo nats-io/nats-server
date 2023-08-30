@@ -3317,6 +3317,7 @@ func TestJetStreamClusterStreamUpdateSyncBug(t *testing.T) {
 
 	c.waitOnAllCurrent()
 	nsl = c.restartServer(nsl)
+	c.waitOnStreamLeader("$G", "TEST")
 	c.waitOnStreamCurrent(nsl, "$G", "TEST")
 
 	mset, _ = nsl.GlobalAccount().lookupStream("TEST")

@@ -817,18 +817,22 @@ func TestJetStreamClusterMetaSnapshotsMultiChange(t *testing.T) {
 	if _, err := js.AddStream(&nats.StreamConfig{Name: "S1"}); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	c.waitOnStreamLeader(globalAccountName, "S1")
 	_, err := js.AddConsumer("S1", &nats.ConsumerConfig{Durable: "S1C1", AckPolicy: nats.AckExplicitPolicy})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	c.waitOnConsumerLeader(globalAccountName, "S1", "S1C1")
 
 	if _, err = js.AddStream(&nats.StreamConfig{Name: "S2"}); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	c.waitOnStreamLeader(globalAccountName, "S2")
 	_, err = js.AddConsumer("S2", &nats.ConsumerConfig{Durable: "S2C1", AckPolicy: nats.AckExplicitPolicy})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	c.waitOnConsumerLeader(globalAccountName, "S2", "S2C1")
 
 	// Add in a new server to the group. This way we know we can delete the original streams and consumers.
 	rs := c.addInNewServer()
@@ -853,10 +857,12 @@ func TestJetStreamClusterMetaSnapshotsMultiChange(t *testing.T) {
 	if _, err = js.AddStream(&nats.StreamConfig{Name: "S3"}); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	c.waitOnStreamLeader(globalAccountName, "S3")
 	_, err = js.AddConsumer("S3", &nats.ConsumerConfig{Durable: "S3C1", AckPolicy: nats.AckExplicitPolicy})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	c.waitOnConsumerLeader(globalAccountName, "S3", "S3C1")
 	// Delete stream S2
 	resp, _ := nc.Request(fmt.Sprintf(JSApiStreamDeleteT, "S2"), nil, time.Second)
 	var dResp JSApiStreamDeleteResponse
@@ -880,6 +886,7 @@ func TestJetStreamClusterMetaSnapshotsMultiChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	c.waitOnConsumerLeader(globalAccountName, "S1", "S1C2")
 
 	cl := c.leader()
 	cl.JetStreamSnapshotMeta()
