@@ -3945,7 +3945,7 @@ func (mb *msgBlock) updateAccounting(seq uint64, ts int64, rl uint64) {
 		seq = seq &^ ebit
 	}
 
-	if mb.first.seq == 0 || mb.first.ts == 0 && seq >= mb.first.seq {
+	if (mb.first.seq == 0 || mb.first.ts == 0) && seq >= mb.first.seq {
 		mb.first.seq = seq
 		mb.first.ts = ts
 	}
