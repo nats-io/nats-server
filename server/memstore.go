@@ -1137,10 +1137,7 @@ func (ms *memStore) FastState(state *StreamState) {
 	state.LastSeq = ms.state.LastSeq
 	state.LastTime = ms.state.LastTime
 	if state.LastSeq > state.FirstSeq {
-		state.NumDeleted = int((state.LastSeq - state.FirstSeq + 1) - state.Msgs)
-		if state.NumDeleted < 0 {
-			state.NumDeleted = 0
-		}
+		state.NumDeleted = uint64((state.LastSeq - state.FirstSeq + 1) - state.Msgs)
 	}
 	state.Consumers = ms.consumers
 	state.NumSubjects = len(ms.fss)
@@ -1167,7 +1164,7 @@ func (ms *memStore) State() StreamState {
 		}
 	}
 	if len(state.Deleted) > 0 {
-		state.NumDeleted = len(state.Deleted)
+		state.NumDeleted = uint64(len(state.Deleted))
 	}
 
 	return state

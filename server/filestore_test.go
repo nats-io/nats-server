@@ -1590,7 +1590,7 @@ func TestFileStoreCollapseDmap(t *testing.T) {
 			t.Fatalf("Expected 10 msgs, got %d", state.Msgs)
 		}
 
-		checkDmapTotal := func(total int) {
+		checkDmapTotal := func(total uint64) {
 			t.Helper()
 			if nde := fs.dmapEntries(); nde != total {
 				t.Fatalf("Expecting only %d entries, got %d", total, nde)

@@ -29,7 +29,7 @@ func TestSeqSetBasics(t *testing.T) {
 	}
 
 	require_True(t, ss.Nodes() == 1)
-	require_True(t, ss.Size() == len(seqs)-1) // We have one dup in there.
+	require_True(t, ss.Size() == uint64(len(seqs)-1)) // We have one dup in there.
 	lh, rh := ss.Heights()
 	require_True(t, lh == 0)
 	require_True(t, rh == 0)
@@ -85,7 +85,7 @@ func TestSeqSetCorrectness(t *testing.T) {
 func TestSeqSetRange(t *testing.T) {
 	num := 2*numEntries + 22
 	nums := make([]uint64, 0, num)
-	for i := 0; i < num; i++ {
+	for i := uint64(0); i < num; i++ {
 		nums = append(nums, uint64(i))
 	}
 	rand.Shuffle(len(nums), func(i, j int) { nums[i], nums[j] = nums[j], nums[i] })
@@ -100,7 +100,7 @@ func TestSeqSetRange(t *testing.T) {
 		nums = append(nums, n)
 		return true
 	})
-	require_True(t, len(nums) == num)
+	require_True(t, uint64(len(nums)) == num)
 	for i := uint64(0); i < uint64(num); i++ {
 		require_True(t, nums[i] == i)
 	}
@@ -141,7 +141,7 @@ func TestSeqSetInsertAndDeletePedantic(t *testing.T) {
 
 	num := 50*numEntries + 22
 	nums := make([]uint64, 0, num)
-	for i := 0; i < num; i++ {
+	for i := uint64(0); i < num; i++ {
 		nums = append(nums, uint64(i))
 	}
 	rand.Shuffle(len(nums), func(i, j int) { nums[i], nums[j] = nums[j], nums[i] })
@@ -195,7 +195,7 @@ func TestSeqSetMinMax(t *testing.T) {
 
 	num := 22*numEntries + 22
 	nums := make([]uint64, 0, num)
-	for i := 0; i < num; i++ {
+	for i := uint64(0); i < num; i++ {
 		nums = append(nums, uint64(i))
 	}
 	rand.Shuffle(len(nums), func(i, j int) { nums[i], nums[j] = nums[j], nums[i] })
@@ -280,7 +280,7 @@ func TestSeqSetDistinctUnion(t *testing.T) {
 	allSeqs := append(seqs1, seqs2...)
 
 	ss.Union(&ss2)
-	require_True(t, ss.Size() == len(allSeqs))
+	require_True(t, ss.Size() == uint64(len(allSeqs)))
 	for _, seq := range allSeqs {
 		require_True(t, ss.Exists(seq))
 	}
@@ -299,7 +299,7 @@ FgEDAAAABQAAAABgAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 	ss, _, err := Decode(enc)
 	require_NoError(t, err)
 
-	require_True(t, ss.Size() == len(seqs))
+	require_True(t, ss.Size() == uint64(len(seqs)))
 	for _, seq := range seqs {
 		require_True(t, ss.Exists(seq))
 	}

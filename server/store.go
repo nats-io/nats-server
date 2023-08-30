@@ -149,7 +149,7 @@ type StreamState struct {
 	LastTime    time.Time         `json:"last_ts"`
 	NumSubjects int               `json:"num_subjects,omitempty"`
 	Subjects    map[string]uint64 `json:"subjects,omitempty"`
-	NumDeleted  int               `json:"num_deleted,omitempty"`
+	NumDeleted  uint64            `json:"num_deleted,omitempty"`
 	Deleted     []uint64          `json:"deleted,omitempty"`
 	Lost        *LostStreamData   `json:"lost,omitempty"`
 	Consumers   int               `json:"consumer_count"`

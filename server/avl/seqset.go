@@ -30,9 +30,9 @@ import (
 //
 // Encoding will convert to a space optimized encoding using bitmasks.
 type SequenceSet struct {
-	root  *node // root node
-	size  int   // number of items
-	nodes int   // number of nodes
+	root  *node  // root node
+	size  uint64 // number of items
+	nodes uint64 // number of nodes
 	// Having this here vs on the stack in Insert/Delete
 	// makes a difference in memory usage.
 	changed bool
@@ -93,12 +93,12 @@ func (ss *SequenceSet) Delete(seq uint64) bool {
 }
 
 // Size returns the number of items in the set.
-func (ss *SequenceSet) Size() int {
+func (ss *SequenceSet) Size() uint64 {
 	return ss.size
 }
 
 // Nodes returns the number of nodes in the tree.
-func (ss *SequenceSet) Nodes() int {
+func (ss *SequenceSet) Nodes() uint64 {
 	return ss.nodes
 }
 
@@ -193,7 +193,7 @@ func (ss *SequenceSet) Union(ssa ...*SequenceSet) {
 			for nb, b := range n.bits {
 				for pos := uint64(0); b != 0; pos++ {
 					if b&1 == 1 {
-						seq := n.base + (uint64(nb) * uint64(bitsPerBucket)) + pos
+						seq := n.base + (uint64(nb) * bitsPerBucket) + pos
 						ss.Insert(seq)
 					}
 					b >>= 1
@@ -226,48 +226,40 @@ const (
 	// Magic is used to identify the encode binary state..
 	magic = uint8(22)
 	// Version
-	version = uint8(2)
+	version = uint8(3)
 	// hdrLen
 	hdrLen = 2
 	// minimum length of an encoded SequenceSet.
-	minLen = 2 + 8 // magic + version + num nodes + num entries.
+	minLen12 = 2 + 8  // u8 magic + u8 version + u32 num nodes + u32 num entries.
+	minLen3  = 2 + 16 // u8 magic + u8 version + u64 num nodes + u64 num entries.
 )
 
 // EncodeLen returns the bytes needed for encoding.
-func (ss SequenceSet) EncodeLen() int {
-	return minLen + (ss.Nodes() * ((numBuckets+1)*8 + 2))
+func (ss SequenceSet) EncodeLen() uint64 {
+	return minLen3 + (ss.Nodes() * ((numBuckets+1)*8 + 2))
 }
 
 func (ss SequenceSet) Encode(buf []byte) ([]byte, error) {
 	nn, encLen := ss.Nodes(), ss.EncodeLen()
 
-	if cap(buf) < encLen {
-		buf = make([]byte, encLen)
+	if uint64(cap(buf)) < encLen {
+		buf = make([]byte, 0, encLen)[:hdrLen]
 	} else {
-		buf = buf[:encLen]
+		buf = buf[:hdrLen]
 	}
-
-	// TODO(dlc) - Go 1.19 introduced Append to not have to keep track.
-	// Once 1.20 is out we could change this over.
-	// Also binary.Write() is way slower, do not use.
 
 	var le = binary.LittleEndian
 	buf[0], buf[1] = magic, version
-	i := hdrLen
-	le.PutUint32(buf[i:], uint32(nn))
-	le.PutUint32(buf[i+4:], uint32(ss.size))
-	i += 8
+	buf = le.AppendUint64(buf, nn)
+	buf = le.AppendUint64(buf, ss.size)
 	ss.root.nodeIter(func(n *node) {
-		le.PutUint64(buf[i:], n.base)
-		i += 8
+		buf = le.AppendUint64(buf, n.base)
 		for _, b := range n.bits {
-			le.PutUint64(buf[i:], b)
-			i += 8
+			buf = le.AppendUint64(buf, b)
 		}
-		le.PutUint16(buf[i:], uint16(n.h))
-		i += 2
+		buf = le.AppendUint16(buf, uint16(n.h))
 	})
-	return buf[:i], nil
+	return buf, nil
 }
 
 // ErrBadEncoding is returned when we can not decode properly.
@@ -279,7 +271,7 @@ var (
 
 // Decode returns the sequence set and number of bytes read from the buffer on success.
 func Decode(buf []byte) (*SequenceSet, int, error) {
-	if len(buf) < minLen || buf[0] != magic {
+	if len(buf) < hdrLen || buf[0] != magic {
 		return nil, -1, ErrBadEncoding
 	}
 
@@ -288,25 +280,66 @@ func Decode(buf []byte) (*SequenceSet, int, error) {
 		return decodev1(buf)
 	case 2:
 		return decodev2(buf)
+	case 3:
+		return decodev3(buf)
 	default:
 		return nil, -1, ErrBadVersion
 	}
 }
 
+// Helper to decode v3.
+func decodev3(buf []byte) (*SequenceSet, int, error) {
+	if len(buf) < minLen3 {
+		return nil, -1, ErrBadEncoding
+	}
+
+	var le = binary.LittleEndian
+	index := 2
+	nn := le.Uint64(buf[index:])
+	sz := le.Uint64(buf[index+8:])
+	index += 16
+
+	expectedLen := minLen3 + (nn * ((numBuckets+1)*8 + 2))
+	if uint64(len(buf)) < expectedLen {
+		return nil, -1, ErrBadEncoding
+	}
+
+	ss, nodes := SequenceSet{size: sz}, make([]node, nn)
+
+	for i := uint64(0); i < nn; i++ {
+		n := &nodes[i]
+		n.base = le.Uint64(buf[index:])
+		index += 8
+		for bi := range n.bits {
+			n.bits[bi] = le.Uint64(buf[index:])
+			index += 8
+		}
+		n.h = int(le.Uint16(buf[index:]))
+		index += 2
+		ss.insertNode(n)
+	}
+
+	return &ss, index, nil
+}
+
 // Helper to decode v2.
 func decodev2(buf []byte) (*SequenceSet, int, error) {
+	if len(buf) < minLen12 {
+		return nil, -1, ErrBadEncoding
+	}
+
 	var le = binary.LittleEndian
 	index := 2
 	nn := int(le.Uint32(buf[index:]))
 	sz := int(le.Uint32(buf[index+4:]))
 	index += 8
 
-	expectedLen := minLen + (nn * ((numBuckets+1)*8 + 2))
+	expectedLen := minLen12 + (nn * ((numBuckets+1)*8 + 2))
 	if len(buf) < expectedLen {
 		return nil, -1, ErrBadEncoding
 	}
 
-	ss, nodes := SequenceSet{size: sz}, make([]node, nn)
+	ss, nodes := SequenceSet{size: uint64(sz)}, make([]node, nn)
 
 	for i := 0; i < nn; i++ {
 		n := &nodes[i]
@@ -326,21 +359,25 @@ func decodev2(buf []byte) (*SequenceSet, int, error) {
 
 // Helper to decode v1 into v2 which has fixed buckets of 32 vs 64 originally.
 func decodev1(buf []byte) (*SequenceSet, int, error) {
+	if len(buf) < minLen12 {
+		return nil, -1, ErrBadEncoding
+	}
+
 	var le = binary.LittleEndian
 	index := 2
-	nn := int(le.Uint32(buf[index:]))
-	sz := int(le.Uint32(buf[index+4:]))
+	nn := uint64(le.Uint32(buf[index:]))
+	sz := uint64(le.Uint32(buf[index+4:]))
 	index += 8
 
 	const v1NumBuckets = 64
 
-	expectedLen := minLen + (nn * ((v1NumBuckets+1)*8 + 2))
-	if len(buf) < expectedLen {
+	expectedLen := minLen12 + (nn * ((v1NumBuckets+1)*8 + 2))
+	if uint64(len(buf)) < expectedLen {
 		return nil, -1, ErrBadEncoding
 	}
 
 	var ss SequenceSet
-	for i := 0; i < nn; i++ {
+	for i := uint64(0); i < nn; i++ {
 		base := le.Uint64(buf[index:])
 		index += 8
 		for nb := uint64(0); nb < v1NumBuckets; nb++ {
@@ -348,7 +385,7 @@ func decodev1(buf []byte) (*SequenceSet, int, error) {
 			// Walk all set bits and insert sequences manually for this decode from v1.
 			for pos := uint64(0); n != 0; pos++ {
 				if n&1 == 1 {
-					seq := base + (nb * uint64(bitsPerBucket)) + pos
+					seq := base + (nb * bitsPerBucket) + pos
 					ss.Insert(seq)
 				}
 				n >>= 1
@@ -365,7 +402,6 @@ func decodev1(buf []byte) (*SequenceSet, int, error) {
 	}
 
 	return &ss, index, nil
-
 }
 
 // insertNode places a decoded node into the tree.
@@ -398,13 +434,12 @@ func (ss *SequenceSet) insertNode(n *node) {
 }
 
 const (
-	bitsPerBucket = 64 // bits in uint64
-	numBuckets    = 32
-	numEntries    = numBuckets * bitsPerBucket
+	bitsPerBucket uint64 = 64 // bits in uint64
+	numBuckets           = 32
+	numEntries           = numBuckets * bitsPerBucket
 )
 
 type node struct {
-	//v dvalue
 	base uint64
 	bits [numBuckets]uint64
 	l    *node
@@ -424,7 +459,7 @@ func (n *node) set(seq uint64, inserted *bool) {
 	}
 }
 
-func (n *node) insert(seq uint64, inserted *bool, nodes *int) *node {
+func (n *node) insert(seq uint64, inserted *bool, nodes *uint64) *node {
 	if n == nil {
 		base := (seq / numEntries) * numEntries
 		n := &node{base: base, h: 1}
@@ -538,7 +573,7 @@ func (n *node) clear(seq uint64, deleted *bool) bool {
 	return true
 }
 
-func (n *node) delete(seq uint64, deleted *bool, nodes *int) *node {
+func (n *node) delete(seq uint64, deleted *bool, nodes *uint64) *node {
 	if n == nil {
 		return nil
 	}
@@ -622,7 +657,7 @@ func (n *node) min() uint64 {
 	for i, b := range n.bits {
 		if b != 0 {
 			return n.base +
-				uint64(i*bitsPerBucket) +
+				uint64(i)*bitsPerBucket +
 				uint64(bits.TrailingZeros64(b))
 		}
 	}
@@ -635,8 +670,8 @@ func (n *node) max() uint64 {
 	for i := numBuckets - 1; i >= 0; i-- {
 		if b := n.bits[i]; b != 0 {
 			return n.base +
-				uint64(i*bitsPerBucket) +
-				uint64(bitsPerBucket-bits.LeadingZeros64(b>>1))
+				uint64(i)*bitsPerBucket +
+				bitsPerBucket - uint64(bits.LeadingZeros64(b>>1))
 		}
 	}
 	return 0
