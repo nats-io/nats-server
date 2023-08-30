@@ -5501,6 +5501,7 @@ func TestFileStoreNumPendingLargeNumBlks(t *testing.T) {
 	}
 	fs, err := newFileStore(fcfg, StreamConfig{Name: "zzz", Subjects: []string{"zzz"}, Storage: FileStorage})
 	require_NoError(t, err)
+	defer fs.Stop()
 
 	subj, msg := "zzz", bytes.Repeat([]byte("X"), 100)
 	numMsgs := 10_000
@@ -5554,6 +5555,7 @@ func TestFileStoreRestoreEncryptedWithNoKeyFuncFails(t *testing.T) {
 		prf,
 	)
 	require_NoError(t, err)
+	defer fs.Stop()
 
 	subj, msg := "zzz", bytes.Repeat([]byte("X"), 100)
 	numMsgs := 100
@@ -5572,9 +5574,10 @@ func TestFileStoreRestoreEncryptedWithNoKeyFuncFails(t *testing.T) {
 	require_Error(t, err, errNoMainKey)
 }
 
-func TestFileStoreRecaluclateFirstForSubjBug(t *testing.T) {
+func TestFileStoreRecalculateFirstForSubjBug(t *testing.T) {
 	fs, err := newFileStore(FileStoreConfig{StoreDir: t.TempDir()}, StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
 	require_NoError(t, err)
+	defer fs.Stop()
 
 	fs.StoreMsg("foo", nil, nil) // 1
 	fs.StoreMsg("bar", nil, nil) // 2
@@ -5607,6 +5610,7 @@ func TestFileStoreRecaluclateFirstForSubjBug(t *testing.T) {
 func TestFileStoreKeepWithDeletedMsgsBug(t *testing.T) {
 	fs, err := newFileStore(FileStoreConfig{StoreDir: t.TempDir()}, StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
 	require_NoError(t, err)
+	defer fs.Stop()
 
 	msg := bytes.Repeat([]byte("A"), 19)
 	for i := 0; i < 5; i++ {
@@ -5622,4 +5626,94 @@ func TestFileStoreKeepWithDeletedMsgsBug(t *testing.T) {
 	n, err = fs.PurgeEx(_EMPTY_, 0, 2)
 	require_NoError(t, err)
 	require_True(t, n == 3)
+}
+
+// This is for 2.10 delete tombstones and backward compatibility if a user downgrades to 2.9.x
+// TODO(dlc) - Can remove once merged into 2.10 codebase.
+func TestFileStoreTombstoneBackwardCompatibility(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(FileStoreConfig{StoreDir: sd}, StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// We will test scenarios where tombstones are embedded in a filestore from a 2.10 system.
+	msgA := bytes.Repeat([]byte("A"), 22)
+	msgZ := bytes.Repeat([]byte("Z"), 22)
+
+	fs.StoreMsg("A", nil, msgA)
+	fs.StoreMsg("B", nil, msgZ)
+
+	mb := fs.getFirstBlock()
+	require_True(t, mb != nil)
+
+	// >= 2.10 tombstone
+	mb.writeMsgRecord(emptyRecordLen, 2|tbit, _EMPTY_, nil, nil, time.Now().UnixNano(), true)
+
+	// Put a real message behind it.
+	fs.StoreMsg("C", nil, msgA)
+
+	checkState := func() {
+		state := fs.State()
+		require_True(t, state.Msgs == 3)
+		require_True(t, state.FirstSeq == 1)
+		require_True(t, state.LastSeq == 3)
+		require_True(t, state.NumSubjects == 3)
+
+		sm, err := fs.LoadMsg(2, nil)
+		require_NoError(t, err)
+		require_True(t, bytes.Equal(sm.msg, msgZ))
+		require_True(t, sm.subj == "B")
+
+		sm, err = fs.LoadMsg(3, nil)
+		require_NoError(t, err)
+		require_True(t, bytes.Equal(sm.msg, msgA))
+		require_True(t, sm.subj == "C")
+	}
+
+	checkState()
+	fs.Stop()
+
+	// Make sure we are good on recreate.
+	fs, err = newFileStore(FileStoreConfig{StoreDir: sd}, StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	checkState()
+
+	// Now we will purge, place tombstone first, then add messages and check.
+	_, err = fs.Purge()
+	require_NoError(t, err)
+
+	// >= 2.10 tombstone
+	mb.writeMsgRecord(emptyRecordLen, 22|tbit, _EMPTY_, nil, nil, time.Now().UnixNano(), true)
+
+	fs.StoreMsg("A", nil, msgA) // seq 4
+	fs.StoreMsg("B", nil, msgZ) // seq 5
+
+	checkPurgeState := func() {
+		state := fs.State()
+		require_True(t, state.Msgs == 2)
+		require_True(t, state.FirstSeq == 4)
+		require_True(t, state.LastSeq == 5)
+		require_True(t, state.NumSubjects == 2)
+
+		sm, err := fs.LoadMsg(4, nil)
+		require_NoError(t, err)
+		require_True(t, bytes.Equal(sm.msg, msgA))
+		require_True(t, sm.subj == "A")
+
+		sm, err = fs.LoadMsg(5, nil)
+		require_NoError(t, err)
+		require_True(t, bytes.Equal(sm.msg, msgZ))
+		require_True(t, sm.subj == "B")
+	}
+
+	checkPurgeState()
+
+	// Make sure we are good on recreate.
+	fs, err = newFileStore(FileStoreConfig{StoreDir: sd}, StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	checkPurgeState()
 }
