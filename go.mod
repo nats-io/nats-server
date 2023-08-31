@@ -1,6 +1,6 @@
 module github.com/nats-io/nats-server/v2
 
-go 1.19
+go 1.20
 
 require (
 	github.com/klauspost/compress v1.16.7
