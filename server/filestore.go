@@ -447,15 +447,16 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		}()
 	}
 
+	// Lock while do enforcements and removals.
+	fs.mu.Lock()
+
 	// Check if we have any left over tombstones to process.
 	if len(fs.tombs) > 0 {
-		fs.mu.Lock()
 		for _, seq := range fs.tombs {
 			fs.removeMsg(seq, false, false, false)
 		}
 		// Not needed after this phase.
 		fs.tombs = nil
-		fs.mu.Unlock()
 	}
 
 	// Limits checks and enforcement.
@@ -473,16 +474,16 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		fs.enforceMsgPerSubjectLimit()
 	}
 
+	// Grab first sequence for check below while we have lock.
+	firstSeq := fs.state.FirstSeq
+	fs.mu.Unlock()
+
 	// If the stream has an initial sequence number then make sure we
 	// have purged up until that point. We will do this only if the
 	// recovered first sequence number is before our configured first
 	// sequence. Need to do this locked as by now the age check timer
 	// has started.
-	var st StreamState
-	fs.mu.RLock()
-	fs.FastState(&st)
-	fs.mu.RUnlock()
-	if cfg.FirstSeq > 0 && st.FirstSeq <= cfg.FirstSeq {
+	if cfg.FirstSeq > 0 && firstSeq <= cfg.FirstSeq {
 		if _, err := fs.purge(cfg.FirstSeq); err != nil {
 			return nil, err
 		}
@@ -1867,9 +1868,6 @@ func (fs *fileStore) recoverMsgs() error {
 // that will expire alot of messages on startup.
 // Should only be called on startup.
 func (fs *fileStore) expireMsgsOnRecover() {
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-
 	if fs.state.Msgs == 0 {
 		return
 	}

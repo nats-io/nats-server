@@ -5689,6 +5689,35 @@ func TestFileStoreFullStateTestSysRemovals(t *testing.T) {
 	})
 }
 
+func TestFileStoreRestartWithExpireAndLockingBug(t *testing.T) {
+	sd := t.TempDir()
+	scfg := StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage}
+	fs, err := newFileStore(FileStoreConfig{StoreDir: sd}, scfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// 20 total
+	msg := []byte("HELLO WORLD")
+	for i := 0; i < 10; i++ {
+		fs.StoreMsg("A", nil, msg)
+		fs.StoreMsg("B", nil, msg)
+	}
+	fs.Stop()
+
+	// Now change config underneath of so we will do expires at startup.
+	scfg.MaxMsgs = 15
+	scfg.MaxMsgsPer = 2
+	newCfg := FileStreamInfo{Created: fs.cfg.Created, StreamConfig: scfg}
+
+	// Replace
+	fs.cfg = newCfg
+	require_NoError(t, fs.writeStreamMeta())
+
+	fs, err = newFileStore(FileStoreConfig{StoreDir: sd}, scfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////
