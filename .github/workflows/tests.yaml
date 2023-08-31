@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build (${{ env.GO_VERSION }}, ${{ matrix.os }})
+    name: Build (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -21,7 +21,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Install Go
+      - name: Install Go ${{ env.GO_VERSION }}
         uses: actions/setup-go@v4
         with:
           go-version: ${{ env.GO_VERSION }}
@@ -29,17 +29,14 @@ jobs:
       - name: Build NATS Server
         run: go build
 
-      - name: Run linter
-        uses: golangci/golangci-lint-action@v3
-
   lint:
-    name: Lint (${{ env.GO_VERSION }})
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Install Go
+      - name: Install Go ${{ env.GO_VERSION }}
         uses: actions/setup-go@v4
         with:
           go-version: ${{ env.GO_VERSION }}
@@ -52,14 +49,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Install Go
+      - name: Install Go ${{ env.GO_VERSION }}
         uses: actions/setup-go@v4
         with:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Run unit tests
-        run: |-
-          go test -race -v -run=TestJetStream ./server/... -tags=skip_js_cluster_tests,skip_js_cluster_tests_2,skip_js_cluster_tests_3,skip_js_super_cluster_tests -count=1 -vet=off -timeout=30m -failfast
+        run: go test -race -v -run=TestJetStream ./server/... -tags=skip_js_cluster_tests,skip_js_cluster_tests_2,skip_js_cluster_tests_3,skip_js_super_cluster_tests -count=1 -vet=off -timeout=30m -failfast
 
   js-cluster-1:
     name: JetStream cluster tests (1)
@@ -69,18 +65,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Install Go
+      - name: Install Go ${{ env.GO_VERSION }}
         uses: actions/setup-go@v4
         with:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Run unit tests
-        run: |-
-          go test -race -v \
-            -run=TestJetStreamCluster \
-            ./server/... \
-            -tags=skip_js_cluster_tests_2,skip_js_cluster_tests_3 \
-            -count=1 -vet=off -timeout=30m -failfast
+        run: go test -race -v -run=TestJetStreamCluster ./server/... -tags=skip_js_cluster_tests_2,skip_js_cluster_tests_3 -count=1 -vet=off -timeout=30m -failfast
 
   js-cluster-2:
     name: JetStream cluster tests (2)
@@ -90,18 +81,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Install Go
+      - name: Install Go ${{ env.GO_VERSION }}
         uses: actions/setup-go@v4
         with:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Run unit tests
-        run: |-
-          go test -race -v \
-            -run=TestJetStreamCluster \
-            ./server/... \
-            -tags=skip_js_cluster_tests,skip_js_cluster_tests_3 \
-            -count=1 -vet=off -timeout=30m -failfast
+        run: go test -race -v -run=TestJetStreamCluster ./server/... -tags=skip_js_cluster_tests,skip_js_cluster_tests_3 -count=1 -vet=off -timeout=30m -failfast
 
   js-cluster-3:
     name: JetStream cluster tests (3)
@@ -111,18 +97,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Install Go
+      - name: Install Go ${{ env.GO_VERSION }}
         uses: actions/setup-go@v4
         with:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Run unit tests
-        run: |-
-          go test -race -v \
-            -run=TestJetStreamCluster \
-            ./server/... \
-            -tags=skip_js_cluster_tests,skip_js_cluster_tests_2 \
-            -count=1 -vet=off -timeout=30m -failfast
+        run: go test -race -v -run=TestJetStreamCluster ./server/... -tags=skip_js_cluster_tests,skip_js_cluster_tests_2 -count=1 -vet=off -timeout=30m -failfast
 
   js-supercluster:
     name: JetStream supercluster tests
@@ -132,20 +113,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Install Go
+      - name: Install Go ${{ env.GO_VERSION }}
         uses: actions/setup-go@v4
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Install Deps
-        run: go mod download
-
       - name: Run unit tests
-        run: |-
-          go test -race -v \
-            -run=TestJetStreamSuperCluster \
-            ./server/... \
-            -count=1 -vet=off -timeout=30m -failfast
+        run: go test -race -v -run=TestJetStreamSuperCluster ./server/... -count=1 -vet=off -timeout=30m -failfast
 
   no-race:
     name: No-race tests
@@ -155,17 +129,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Install Go
+      - name: Install Go ${{ env.GO_VERSION }}
         uses: actions/setup-go@v4
         with:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Run unit tests
-        run: |-
-          go test -v -p=1 \
-            -run=TestNoRace \
-            ./... \
-            -count=1 -vet=off -timeout=30m -failfast
+        run: go test -v -p=1 -run=TestNoRace ./... -count=1 -vet=off -timeout=30m -failfast
 
   js-chaos:
     name: JetStream chaos tests
@@ -175,18 +145,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Install Go
+      - name: Install Go ${{ env.GO_VERSION }}
         uses: actions/setup-go@v4
         with:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Run unit tests
-        run: |-
-          go test -race -v -p=1 \
-            -run=TestJetStreamChaos \
-            ./server/... \
-            -tags=js_chaos_tests \
-            -count=1 -vet=off -timeout=30m -failfast
+        run: go test -race -v -p=1 -run=TestJetStreamChaos ./server/... -tags=js_chaos_tests -count=1 -vet=off -timeout=30m -failfast
 
   mqtt:
     name: MQTT tests
@@ -196,17 +161,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Install Go
+      - name: Install Go ${{ env.GO_VERSION }}
         uses: actions/setup-go@v4
         with:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Run unit tests
-        run: |-
-          go test -race -v \
-            -run=TestMQTT \
-            ./server/... \
-            -count=1 -vet=off -timeout=30m -failfast
+        run: go test -race -v -run=TestMQTT ./server/... -count=1 -vet=off -timeout=30m -failfast
 
   server-pkg-non-js:
     name: Non-JetStream/MQTT tests
@@ -216,17 +177,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Install Go
+      - name: Install Go ${{ env.GO_VERSION }}
         uses: actions/setup-go@v4
         with:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Run unit tests
-        run: |-
-          go test -race -v -p=1 \
-            ./server/... \
-            -tags=skip_js_tests,skip_mqtt_tests \
-            -count=1 -vet=off -timeout=30m -failfast
+        run: go test -race -v -p=1 ./server/... -tags=skip_js_tests,skip_mqtt_tests -count=1 -vet=off -timeout=30m -failfast
 
   non-server-pkg:
     name: Tests from all other packages
@@ -236,16 +193,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Install Go
+      - name: Install Go ${{ env.GO_VERSION }}
         uses: actions/setup-go@v4
         with:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Run unit tests
-        run: |-
-          go test -race -v -p=1 \
-            ./conf/... \
-            ./internal/... \
-            ./logger/... \
-            ./test/... \
-            -count=1 -vet=off -timeout=30m -failfast
+        run: go test -race -v -p=1 ./conf/... ./internal/... ./logger/... ./test/... -count=1 -vet=off -timeout=30m -failfast
