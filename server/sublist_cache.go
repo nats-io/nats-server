@@ -14,8 +14,8 @@
 package server
 
 import (
+	"hash/maphash"
 	"sync/atomic"
-	"unsafe"
 )
 
 type Cache struct {
@@ -28,24 +28,14 @@ type cacheEntry struct {
 	value *SublistResult
 }
 
-type stringStruct struct {
-	str unsafe.Pointer
-	len int
-}
+func NewCache() *Cache {
+	seed := maphash.MakeSeed()
+	hfunc := func(str string) int {
+		return int(maphash.String(seed, str) % slCacheMax)
+	}
 
-//go:noescape
-//go:linkname memhash runtime.memhash
-func memhash(p unsafe.Pointer, h, s uintptr) uintptr
-
-// MemHashString is the hash function used by go map, it utilizes available hardware instructions
-func MemHashString(str string) int {
-	ss := (*stringStruct)(unsafe.Pointer(&str))
-	return int(uint64(memhash(ss.str, 0, uintptr(ss.len))) % slCacheMax)
-}
-
-func NewCache(hashFunc func(string) int) *Cache {
 	return &Cache{
-		hashFunc: hashFunc,
+		hashFunc: hfunc,
 	}
 }
 
