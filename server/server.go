@@ -1898,11 +1898,14 @@ func (s *Server) LookupAccount(name string) (*Account, error) {
 // This will fetch new claims and if found update the account with new claims.
 // Lock MUST NOT be held upon entry.
 func (s *Server) updateAccount(acc *Account) error {
+	acc.mu.RLock()
 	// TODO(dlc) - Make configurable
 	if !acc.incomplete && time.Since(acc.updated) < time.Second {
+		acc.mu.RUnlock()
 		s.Debugf("Requested account update for [%s] ignored, too soon", acc.Name)
 		return ErrAccountResolverUpdateTooSoon
 	}
+	acc.mu.RUnlock()
 	claimJWT, err := s.fetchRawAccountClaims(acc.Name)
 	if err != nil {
 		return err
