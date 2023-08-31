@@ -2991,7 +2991,9 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 			fmb.writeIndexInfo()
 		}
 	}
-	fs.mu.Unlock()
+	if !needFSLock {
+		fs.mu.Unlock()
+	}
 
 	// Storage updates.
 	if cb != nil {
