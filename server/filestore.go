@@ -1226,7 +1226,7 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 			fd = mb.mfd
 		} else {
 			fd, err = os.OpenFile(mb.mfn, os.O_RDWR, defaultFilePerms)
-			if err != nil {
+			if err == nil {
 				defer fd.Close()
 			}
 		}
@@ -1279,6 +1279,26 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 			return gatherLost(lbuf - index), tombstones, errBadMsg
 		}
 
+		// Check for checksum failures before additional processing.
+		data := buf[index+msgHdrSize : index+rl]
+		if hh := mb.hh; hh != nil {
+			hh.Reset()
+			hh.Write(hdr[4:20])
+			hh.Write(data[:slen])
+			if hasHeaders {
+				hh.Write(data[slen+4 : dlen-recordHashSize])
+			} else {
+				hh.Write(data[slen : dlen-recordHashSize])
+			}
+			checksum := hh.Sum(nil)
+			if !bytes.Equal(checksum, data[len(data)-recordHashSize:]) {
+				truncate(index)
+				return gatherLost(lbuf - index), errBadMsg
+			}
+			copy(mb.lchk[0:], checksum)
+		}
+
+		// Grab our sequence and timestamp.
 		seq := le.Uint64(hdr[4:])
 		ts := int64(le.Uint64(hdr[12:]))
 
@@ -1320,33 +1340,7 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 			firstNeedsSet, mb.first.seq, mb.first.ts = false, seq, ts
 		}
 
-		// Always set last.
-		mb.last.seq = seq
-		mb.last.ts = ts
-
 		if !mb.dmap.Exists(seq) {
-			data := buf[index+msgHdrSize : index+rl]
-			if hh := mb.hh; hh != nil {
-				hh.Reset()
-				hh.Write(hdr[4:20])
-				hh.Write(data[:slen])
-				if hasHeaders {
-					hh.Write(data[slen+4 : dlen-recordHashSize])
-				} else {
-					hh.Write(data[slen : dlen-recordHashSize])
-				}
-				checksum := hh.Sum(nil)
-				if !bytes.Equal(checksum, data[len(data)-recordHashSize:]) {
-					truncate(index)
-					return gatherLost(lbuf - index), tombstones, errBadMsg
-				}
-				copy(mb.lchk[0:], checksum)
-			}
-
-			if firstNeedsSet {
-				firstNeedsSet, mb.first.seq, mb.first.ts = false, seq, ts
-			}
-
 			mb.msgs++
 			mb.bytes += uint64(rl)
 
@@ -1367,6 +1361,11 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 				}
 			}
 		}
+
+		// Always set last
+		mb.last.seq = seq
+		mb.last.ts = ts
+
 		// Advance to next record.
 		index += rl
 	}
@@ -5355,7 +5354,7 @@ func (mb *msgBlock) msgFromBuf(buf []byte, sm *StoreMsg, hh hash.Hash64) (*Store
 	dlen := int(rl) - msgHdrSize
 	slen := int(le.Uint16(hdr[20:]))
 	// Simple sanity check.
-	if dlen < 0 || slen > dlen || int(rl) > len(buf) {
+	if dlen < 0 || slen > (dlen-recordHashSize) || dlen > int(rl) || int(rl) > len(buf) {
 		return nil, errBadMsg
 	}
 	data := buf[msgHdrSize : msgHdrSize+dlen]

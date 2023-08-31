@@ -3814,6 +3814,7 @@ func TestNoRaceJetStreamClusterStreamReset(t *testing.T) {
 
 	// Simulate a low level write error on our consumer and make sure we can recover etc.
 	cl = c.consumerLeader("$G", "TEST", "d1")
+	require_True(t, cl != nil)
 	mset, err = cl.GlobalAccount().lookupStream("TEST")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -5211,9 +5212,8 @@ func TestNoRaceJetStreamClusterDirectAccessAllPeersSubs(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			nc, _ := jsClientConnect(t, c.randomServer())
+			nc, js := jsClientConnect(t, c.randomServer())
 			defer nc.Close()
-			js, _ := nc.JetStream(nats.MaxWait(500 * time.Millisecond))
 			for {
 				select {
 				case <-qch:
@@ -5224,7 +5224,7 @@ func TestNoRaceJetStreamClusterDirectAccessAllPeersSubs(t *testing.T) {
 					return
 				default:
 					// Send as fast as we can.
-					js.PublishAsync(fmt.Sprintf("kv.%d", rand.Intn(1000)), msg)
+					js.Publish(fmt.Sprintf("kv.%d", rand.Intn(1000)), msg)
 				}
 			}
 		}()

@@ -2330,19 +2330,26 @@ func (s *Server) HandleAccountStatz(w http.ResponseWriter, r *http.Request) {
 	ResponseHandler(w, r, b)
 }
 
-// ResponseHandler handles responses for monitoring routes
+// ResponseHandler handles responses for monitoring routes.
 func ResponseHandler(w http.ResponseWriter, r *http.Request, data []byte) {
+	handleResponse(http.StatusOK, w, r, data)
+}
+
+// handleResponse handles responses for monitoring routes with a specific HTTP status code.
+func handleResponse(code int, w http.ResponseWriter, r *http.Request, data []byte) {
 	// Get callback from request
 	callback := r.URL.Query().Get("callback")
 	// If callback is not empty then
 	if callback != "" {
 		// Response for JSONP
 		w.Header().Set("Content-Type", "application/javascript")
+		w.WriteHeader(code)
 		fmt.Fprintf(w, "%s(%s)", callback, data)
 	} else {
 		// Otherwise JSON
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.WriteHeader(code)
 		w.Write(data)
 	}
 }
@@ -3153,7 +3160,7 @@ func (t *HealthZErrorType) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// https://tools.ietf.org/id/draft-inadarei-api-health-check-05.html
+// https://datatracker.ietf.org/doc/html/draft-inadarei-api-health-check
 func (s *Server) HandleHealthz(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.httpReqStats[HealthzPath]++
@@ -3189,16 +3196,19 @@ func (s *Server) HandleHealthz(w http.ResponseWriter, r *http.Request) {
 		Consumer:      r.URL.Query().Get("consumer"),
 		Details:       includeDetails,
 	})
+
+	code := http.StatusOK
+
 	if hs.Error != _EMPTY_ {
 		s.Warnf("Healthcheck failed: %q", hs.Error)
-		w.WriteHeader(http.StatusServiceUnavailable)
+		code = http.StatusServiceUnavailable
 	}
 	b, err := json.Marshal(hs)
 	if err != nil {
 		s.Errorf("Error marshaling response to /healthz request: %v", err)
 	}
 
-	ResponseHandler(w, r, b)
+	handleResponse(code, w, r, b)
 }
 
 // Generate health status.

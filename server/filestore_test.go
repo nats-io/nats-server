@@ -1257,7 +1257,10 @@ func TestFileStoreBitRot(t *testing.T) {
 			// Now twiddle some bits.
 			fs.mu.Lock()
 			lmb := fs.lmb
-			contents, _ := os.ReadFile(lmb.mfn)
+			contents, err := os.ReadFile(lmb.mfn)
+			require_NoError(t, err)
+			require_True(t, len(contents) > 0)
+
 			var index int
 			for {
 				index = rand.Intn(len(contents))
@@ -1273,6 +1276,10 @@ func TestFileStoreBitRot(t *testing.T) {
 
 			ld := fs.checkMsgs()
 			if len(ld.Msgs) > 0 {
+				break
+			}
+			// If our bitrot caused us to not be able to recover any messages we can break as well.
+			if state := fs.State(); state.Msgs == 0 {
 				break
 			}
 			// Fail the test if we have tried the 10 times and still did not
@@ -1293,7 +1300,10 @@ func TestFileStoreBitRot(t *testing.T) {
 
 		// checkMsgs will repair the underlying store, so checkMsgs should be clean now.
 		if ld := fs.checkMsgs(); ld != nil {
-			t.Fatalf("Expected no errors restoring checked and fixed filestore, got %+v", ld)
+			// If we have no msgs left this will report the head msgs as lost again.
+			if state := fs.State(); state.Msgs > 0 {
+				t.Fatalf("Expected no errors restoring checked and fixed filestore, got %+v", ld)
+			}
 		}
 	})
 }
