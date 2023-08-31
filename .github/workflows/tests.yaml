@@ -4,7 +4,6 @@ on: [push]
 
 env:
   GO_VERSION: "^1.21"
-  MIN_GO_VERSION: "^1.20"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -12,32 +11,12 @@ concurrency:
 
 jobs:
   build:
-    name: Build (${{ matrix.os }}, ${{ matrix.goversion }})
+    name: Build (${{ env.GO_VERSION }}, ${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-2019, windows-2022]
-        goversion: ["${{ env.GO_VERSION }}", "${{ env.MIN_GO_VERSION }}"]
     runs-on: ${{ matrix.os }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-
-      - name: Install Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: ${{ matrix.goversion }}
-
-      - name: Build NATS Server
-        run: go build
-
-  lint:
-    name: Lint (${{ matrix.goversion }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        goversion: ["${{ env.GO_VERSION }}", "${{ env.MIN_GO_VERSION }}"]
     steps:
       - name: Checkout
         uses: actions/checkout@v3
@@ -47,8 +26,23 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
+      - name: Build NATS Server
+        run: go build
+
       - name: Run linter
         uses: golangci/golangci-lint-action@v3
+
+  lint:
+    name: Lint (${{ env.GO_VERSION }})
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
 
   js-no-cluster:
     name: JetStream tests
