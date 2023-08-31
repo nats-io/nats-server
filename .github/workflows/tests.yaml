@@ -1,13 +1,58 @@
-name: Linux Tests
+name: NATS Server Tests
 
 on: [push]
 
 env:
   GO_VERSION: "^1.21"
+  MIN_GO_VERSION: "^1.20"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  build:
+    name: Build (${{ matrix.os }}, ${{ matrix.goversion }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-2019, windows-2022]
+        goversion: ["${{ env.GO_VERSION }}", "${{ env.MIN_GO_VERSION }}"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ matrix.goversion }}
+
+      - name: Build NATS Server
+        run: go build
+
+  lint:
+    name: Lint (${{ matrix.goversion }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goversion: ["${{ env.GO_VERSION }}", "${{ env.MIN_GO_VERSION }}"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Run linter
+        uses: golangci/golangci-lint-action@v3
+
   js-no-cluster:
     name: JetStream tests
+    needs: [build, lint]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -20,14 +65,11 @@ jobs:
 
       - name: Run unit tests
         run: |-
-          go test -race -v \
-            -run=TestJetStream \
-            ./server/... \
-            -tags=skip_js_cluster_tests,skip_js_cluster_tests_2,skip_js_cluster_tests_3,skip_js_super_cluster_tests \
-            -count=1 -vet=off -timeout=30m -failfast
+          go test -race -v -run=TestJetStream ./server/... -tags=skip_js_cluster_tests,skip_js_cluster_tests_2,skip_js_cluster_tests_3,skip_js_super_cluster_tests -count=1 -vet=off -timeout=30m -failfast
 
   js-cluster-1:
     name: JetStream cluster tests (1)
+    needs: [build, lint]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -48,6 +90,7 @@ jobs:
 
   js-cluster-2:
     name: JetStream cluster tests (2)
+    needs: [build, lint]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -68,6 +111,7 @@ jobs:
 
   js-cluster-3:
     name: JetStream cluster tests (3)
+    needs: [build, lint]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -88,6 +132,7 @@ jobs:
 
   js-supercluster:
     name: JetStream supercluster tests
+    needs: [build, lint]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -110,6 +155,7 @@ jobs:
 
   no-race:
     name: No-race tests
+    needs: [build, lint]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -129,6 +175,7 @@ jobs:
 
   js-chaos:
     name: JetStream chaos tests
+    needs: [build, lint]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -149,6 +196,7 @@ jobs:
 
   mqtt:
     name: MQTT tests
+    needs: [build, lint]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -168,6 +216,7 @@ jobs:
 
   server-pkg-non-js:
     name: Non-JetStream/MQTT tests
+    needs: [build, lint]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -187,6 +236,7 @@ jobs:
 
   non-server-pkg:
     name: Tests from all other packages
+    needs: [build, lint]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
