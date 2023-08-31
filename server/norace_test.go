@@ -5205,16 +5205,15 @@ func TestNoRaceJetStreamClusterDirectAccessAllPeersSubs(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			nc, _ := jsClientConnect(t, c.randomServer())
+			nc, js := jsClientConnect(t, c.randomServer())
 			defer nc.Close()
-			js, _ := nc.JetStream(nats.MaxWait(500 * time.Millisecond))
 			for {
 				select {
 				case <-qch:
 					return
 				default:
 					// Send as fast as we can.
-					js.PublishAsync(fmt.Sprintf("kv.%d", rand.Intn(1000)), msg)
+					js.Publish(fmt.Sprintf("kv.%d", rand.Intn(1000)), msg)
 				}
 			}
 		}()
