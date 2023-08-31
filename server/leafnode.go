@@ -1643,6 +1643,10 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 	subs := _subs[:0]
 	ims := []string{}
 
+	// Hold the client lock otherwise there can be a race and miss some subs.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	acc.mu.RLock()
 	accName := acc.Name
 	accNTag := acc.nameTag
@@ -1718,7 +1722,6 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 	}
 
 	// Now walk the results and add them to our smap
-	c.mu.Lock()
 	rc := c.leaf.remoteCluster
 	c.leaf.smap = make(map[string]int32)
 	for _, sub := range subs {
@@ -1784,7 +1787,6 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 			c.mu.Unlock()
 		})
 	}
-	c.mu.Unlock()
 }
 
 // updateInterestForAccountOnGateway called from gateway code when processing RS+ and RS-.
