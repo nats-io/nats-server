@@ -3510,9 +3510,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	}
 
 	cb := fs.scb
-	if !needFSLock {
-		fs.mu.Unlock()
-	}
+	fs.mu.Unlock()
 
 	// Storage updates.
 	if cb != nil {
