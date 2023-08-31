@@ -3,7 +3,7 @@ name: General Tests
 on: [push]
 
 env:
-  GO_VERSION: "^1.19.10"
+  GO_VERSION: "^1.21"
 
 jobs:
   lint:
@@ -19,11 +19,8 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Install GolangCI Lint
-        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-
-      - name: Run GolangCI Lint
-        run: golangci-lint run
+      - name: Run linter
+        uses: golangci/golangci-lint-action@v3
 
   build:
     name: Build
@@ -40,8 +37,5 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Install Deps
-        run: go mod download
-
-      - name: Build
+      - name: Build NATS Server
         run: go build
