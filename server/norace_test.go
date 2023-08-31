@@ -3809,6 +3809,7 @@ func TestNoRaceJetStreamClusterStreamReset(t *testing.T) {
 
 	// Simulate a low level write error on our consumer and make sure we can recover etc.
 	cl = c.consumerLeader("$G", "TEST", "d1")
+	require_True(t, cl != nil)
 	mset, err = cl.GlobalAccount().lookupStream("TEST")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
