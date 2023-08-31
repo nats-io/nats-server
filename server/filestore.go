@@ -1291,6 +1291,7 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 			if minTombstoneSeq == 0 || seq < minTombstoneSeq {
 				minTombstoneSeq, minTombstoneTs = seq, ts
 			}
+			index += rl
 			continue
 		}
 

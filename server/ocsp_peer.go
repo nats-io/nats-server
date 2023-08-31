@@ -139,13 +139,13 @@ func (s *Server) plugTLSOCSPPeer(config *tlsConfigKind) (*tls.Config, bool, erro
 	if config == nil || config.tlsConfig == nil {
 		return nil, false, errors.New(certidp.ErrUnableToPlugTLSEmptyConfig)
 	}
-	s.Debugf(certidp.DbgPlugTLSForKind, config.kind)
 	kind := config.kind
 	isSpoke := config.isLeafSpoke
 	tcOpts := config.tlsOpts
 	if tcOpts == nil || tcOpts.OCSPPeerConfig == nil || !tcOpts.OCSPPeerConfig.Verify {
 		return nil, false, nil
 	}
+	s.Debugf(certidp.DbgPlugTLSForKind, config.kind)
 	// peer is a tls client
 	if kind == kindStringMap[CLIENT] || (kind == kindStringMap[LEAF] && !isSpoke) {
 		if !tcOpts.Verify {
