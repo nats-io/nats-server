@@ -1293,7 +1293,7 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 			checksum := hh.Sum(nil)
 			if !bytes.Equal(checksum, data[len(data)-recordHashSize:]) {
 				truncate(index)
-				return gatherLost(lbuf - index), errBadMsg
+				return gatherLost(lbuf - index), tombstones, errBadMsg
 			}
 			copy(mb.lchk[0:], checksum)
 		}
