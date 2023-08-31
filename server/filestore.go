@@ -3506,21 +3506,23 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		fs.kickFlushStateLoop()
 	}
 
-	cb := fs.scb
-	fs.mu.Unlock()
-
-	// Storage updates.
-	if cb != nil {
-		subj := _EMPTY_
+	if cb := fs.scb; cb != nil {
+		// If we have a callback registered we need to release lock regardless since cb might need it to lookup msg, etc.
+		fs.mu.Unlock()
+		// Storage updates.
+		var subj string
 		if sm != nil {
 			subj = sm.subj
 		}
 		delta := int64(msz)
 		cb(-1, -delta, seq, subj)
-	}
 
-	if !needFSLock {
-		fs.mu.Lock()
+		if !needFSLock {
+			fs.mu.Lock()
+		}
+	} else if needFSLock {
+		// We acquired it so release it.
+		fs.mu.Unlock()
 	}
 
 	return true, nil
