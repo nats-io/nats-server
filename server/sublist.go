@@ -111,7 +111,7 @@ func newLevel() *level {
 // NewSublist will create a default sublist with caching enabled per the flag.
 func NewSublist(enableCache bool) *Sublist {
 	if enableCache {
-		return &Sublist{root: newLevel(), cache: NewCache(MemHashString)}
+		return &Sublist{root: newLevel(), cache: NewCache()}
 	}
 	return &Sublist{root: newLevel()}
 }
@@ -803,7 +803,7 @@ func (s *Sublist) RemoveBatch(subs []*subscription) error {
 	// Turn caching back on here.
 	atomic.AddUint64(&s.genid, 1)
 	if wasEnabled {
-		s.cache = NewCache(MemHashString)
+		s.cache = NewCache()
 	}
 	return err
 }
