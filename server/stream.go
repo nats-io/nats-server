@@ -4769,7 +4769,7 @@ func (mset *stream) internalLoop() {
 				// Check to see if this is a delivery for a consumer and
 				// we failed to deliver the message. If so alert the consumer.
 				if pm.o != nil && pm.seq > 0 && !didDeliver {
-					pm.o.didNotDeliver(pm.seq)
+					pm.o.didNotDeliver(pm.seq, pm.dsubj)
 				}
 				pm.returnToPool()
 			}

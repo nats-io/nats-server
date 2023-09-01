@@ -5754,3 +5754,99 @@ func Benchmark_FileStoreSelectMsgBlock(b *testing.B) {
 	}
 	b.StopTimer()
 }
+
+// Test that loads from lmb under lots of writes do not return errPartialCache.
+func TestFileStoreErrPartialLoad(t *testing.T) {
+	fs, err := newFileStore(FileStoreConfig{StoreDir: t.TempDir()}, StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	put := func(num int) {
+		for i := 0; i < num; i++ {
+			fs.StoreMsg("Z", nil, []byte("ZZZZZZZZZZZZZ"))
+		}
+	}
+
+	put(100)
+
+	// Dump cache of lmb.
+	clearCache := func() {
+		fs.mu.RLock()
+		lmb := fs.lmb
+		fs.mu.RUnlock()
+		lmb.mu.Lock()
+		lmb.clearCache()
+		lmb.mu.Unlock()
+	}
+	clearCache()
+
+	qch := make(chan struct{})
+	defer close(qch)
+
+	for i := 0; i < 10; i++ {
+		go func() {
+			for {
+				select {
+				case <-qch:
+					return
+				default:
+					put(5)
+				}
+			}
+		}()
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	var smv StoreMsg
+	for i := 0; i < 10_000; i++ {
+		fs.mu.RLock()
+		lmb := fs.lmb
+		fs.mu.RUnlock()
+		lmb.mu.Lock()
+		first, last := fs.lmb.first.seq, fs.lmb.last.seq
+		if i%100 == 0 {
+			lmb.clearCache()
+		}
+		lmb.mu.Unlock()
+
+		if spread := int(last - first); spread > 0 {
+			seq := first + uint64(rand.Intn(spread))
+			_, err = fs.LoadMsg(seq, &smv)
+			require_NoError(t, err)
+		}
+	}
+}
+
+func TestFileStoreErrPartialLoadOnSyncClose(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 500},
+		StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// This yields an internal record length of 50 bytes. So 10 msgs per blk.
+	msgLen := 19
+	msg := bytes.Repeat([]byte("A"), msgLen)
+
+	// Load up half the block.
+	for _, subj := range []string{"A", "B", "C", "D", "E"} {
+		fs.StoreMsg(subj, nil, msg)
+	}
+
+	// Now simulate the sync timer closing the last block.
+	fs.mu.RLock()
+	lmb := fs.lmb
+	fs.mu.RUnlock()
+	require_True(t, lmb != nil)
+
+	lmb.mu.Lock()
+	lmb.expireCacheLocked()
+	lmb.dirtyCloseWithRemove(false)
+	lmb.mu.Unlock()
+
+	fs.StoreMsg("Z", nil, msg)
+	_, err = fs.LoadMsg(1, nil)
+	require_NoError(t, err)
+}
