@@ -54,9 +54,9 @@ func BenchmarkRequestReplyOverEncryptedConnection(b *testing.B) {
 
 					// run server with tls scheme
 					server, _ := RunServerWithConfig(schemeConfig)
-					opts := defaultOpts
 					defer server.Shutdown()
 
+					opts := defaultOpts
 					if keyType != "none" {
 						opts = append(opts, nats.Secure(&tls.Config{
 							InsecureSkipVerify: true,
