@@ -2339,7 +2339,6 @@ func ResponseHandler(w http.ResponseWriter, r *http.Request, data []byte) {
 func handleResponse(code int, w http.ResponseWriter, r *http.Request, data []byte) {
 	// Get callback from request
 	callback := r.URL.Query().Get("callback")
-	// If callback is not empty then
 	if callback != "" {
 		// Response for JSONP
 		w.Header().Set("Content-Type", "application/javascript")
@@ -3198,11 +3197,13 @@ func (s *Server) HandleHealthz(w http.ResponseWriter, r *http.Request) {
 	})
 
 	code := http.StatusOK
-
 	if hs.Error != _EMPTY_ {
 		s.Warnf("Healthcheck failed: %q", hs.Error)
-		code = http.StatusServiceUnavailable
+		code = hs.StatusCode
 	}
+	// Remove StatusCode from JSON representation when responding via HTTP
+	// since this is already in the response.
+	hs.StatusCode = 0
 	b, err := json.Marshal(hs)
 	if err != nil {
 		s.Errorf("Error marshaling response to /healthz request: %v", err)
@@ -3232,7 +3233,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 		// if no specific status code was set, set it based on the presence of errors
 		if health.StatusCode == 0 {
 			if health.Error != "" || len(health.Errors) != 0 {
-				health.StatusCode = http.StatusInternalServerError
+				health.StatusCode = http.StatusServiceUnavailable
 			} else {
 				health.StatusCode = http.StatusOK
 			}

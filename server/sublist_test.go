@@ -29,7 +29,6 @@ import (
 	"github.com/nats-io/nuid"
 )
 
-// FIXME(dlc) - this is also used by monitor_test. Not needed with t.Helper.
 func stackFatalf(t *testing.T, f string, args ...interface{}) {
 	lines := make([]string, 0, 32)
 	msg := fmt.Sprintf(f, args...)
