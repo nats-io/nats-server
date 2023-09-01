@@ -5405,3 +5405,142 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 	cia.Created, cib.Created = now, now
 	checkConsumerInfo(cia, cib)
 }
+
+func TestJetStreamClusterConsumerDefaultsFromStream(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	streamTmpl := &StreamConfig{
+		Name:     "test",
+		Subjects: []string{"test.*"},
+		Storage:  MemoryStorage,
+		ConsumerLimits: StreamConsumerLimits{
+			MaxAckPending:     0,
+			InactiveThreshold: 0,
+		},
+	}
+
+	// Since nats.go doesn't yet know about the consumer limits, craft
+	// the stream configuration request by hand.
+	streamCreate := func(maxAckPending int, inactiveThreshold time.Duration) (*StreamConfig, error) {
+		cfg := streamTmpl
+		cfg.ConsumerLimits = StreamConsumerLimits{
+			MaxAckPending:     maxAckPending,
+			InactiveThreshold: inactiveThreshold,
+		}
+		j, err := json.Marshal(cfg)
+		if err != nil {
+			return nil, err
+		}
+		msg, err := nc.Request(fmt.Sprintf(JSApiStreamCreateT, "test"), j, time.Second*3)
+		if err != nil {
+			return nil, err
+		}
+		var resp JSApiStreamCreateResponse
+		if err := json.Unmarshal(msg.Data, &resp); err != nil {
+			return nil, err
+		}
+		if resp.StreamInfo == nil {
+			return nil, resp.ApiResponse.ToError()
+		}
+		return &resp.Config, resp.ApiResponse.ToError()
+	}
+	streamUpdate := func(maxAckPending int, inactiveThreshold time.Duration) (*StreamConfig, error) {
+		cfg := streamTmpl
+		cfg.ConsumerLimits = StreamConsumerLimits{
+			MaxAckPending:     maxAckPending,
+			InactiveThreshold: inactiveThreshold,
+		}
+		j, err := json.Marshal(cfg)
+		if err != nil {
+			return nil, err
+		}
+		msg, err := nc.Request(fmt.Sprintf(JSApiStreamUpdateT, "test"), j, time.Second*3)
+		if err != nil {
+			return nil, err
+		}
+		var resp JSApiStreamUpdateResponse
+		if err := json.Unmarshal(msg.Data, &resp); err != nil {
+			return nil, err
+		}
+		if resp.StreamInfo == nil {
+			return nil, resp.ApiResponse.ToError()
+		}
+		return &resp.Config, resp.ApiResponse.ToError()
+	}
+
+	if _, err := streamCreate(15, time.Second); err != nil {
+		t.Fatalf("Failed to add stream: %v", err)
+	}
+
+	t.Run("InheritDefaultsFromStream", func(t *testing.T) {
+		ci, err := js.AddConsumer("test", &nats.ConsumerConfig{
+			Name: "InheritDefaultsFromStream",
+		})
+		require_NoError(t, err)
+
+		switch {
+		case ci.Config.InactiveThreshold != time.Second:
+			t.Fatalf("InactiveThreshold should be 1s, got %s", ci.Config.InactiveThreshold)
+		case ci.Config.MaxAckPending != 15:
+			t.Fatalf("MaxAckPending should be 15, got %d", ci.Config.MaxAckPending)
+		}
+	})
+
+	t.Run("CreateConsumerErrorOnExceedMaxAckPending", func(t *testing.T) {
+		_, err := js.AddConsumer("test", &nats.ConsumerConfig{
+			Name:          "CreateConsumerErrorOnExceedMaxAckPending",
+			MaxAckPending: 30,
+		})
+		switch e := err.(type) {
+		case *nats.APIError:
+			if ErrorIdentifier(e.ErrorCode) != JSConsumerMaxPendingAckExcessErrF {
+				t.Fatalf("invalid error code, got %d, wanted %d", e.ErrorCode, JSConsumerMaxPendingAckExcessErrF)
+			}
+		default:
+			t.Fatalf("should have returned API error, got %T", e)
+		}
+	})
+
+	t.Run("CreateConsumerErrorOnExceedInactiveThreshold", func(t *testing.T) {
+		_, err := js.AddConsumer("test", &nats.ConsumerConfig{
+			Name:              "CreateConsumerErrorOnExceedInactiveThreshold",
+			InactiveThreshold: time.Second * 2,
+		})
+		switch e := err.(type) {
+		case *nats.APIError:
+			if ErrorIdentifier(e.ErrorCode) != JSConsumerInactiveThresholdExcess {
+				t.Fatalf("invalid error code, got %d, wanted %d", e.ErrorCode, JSConsumerInactiveThresholdExcess)
+			}
+		default:
+			t.Fatalf("should have returned API error, got %T", e)
+		}
+	})
+
+	t.Run("UpdateStreamErrorOnViolateConsumerMaxAckPending", func(t *testing.T) {
+		_, err := js.AddConsumer("test", &nats.ConsumerConfig{
+			Name:          "UpdateStreamErrorOnViolateConsumerMaxAckPending",
+			MaxAckPending: 15,
+		})
+		require_NoError(t, err)
+
+		if _, err = streamUpdate(10, 0); err == nil {
+			t.Fatalf("stream update should have errored but didn't")
+		}
+	})
+
+	t.Run("UpdateStreamErrorOnViolateConsumerInactiveThreshold", func(t *testing.T) {
+		_, err := js.AddConsumer("test", &nats.ConsumerConfig{
+			Name:              "UpdateStreamErrorOnViolateConsumerInactiveThreshold",
+			InactiveThreshold: time.Second,
+		})
+		require_NoError(t, err)
+
+		if _, err = streamUpdate(0, time.Second/2); err == nil {
+			t.Fatalf("stream update should have errored but didn't")
+		}
+	})
+}
