@@ -92,12 +92,13 @@ func (l byLast) Less(i, j int) bool {
 }
 
 // Idle time
-type byIdle struct{ ConnInfos }
+type byIdle struct {
+	ConnInfos
+	now time.Time
+}
 
 func (l byIdle) Less(i, j int) bool {
-	ii := l.ConnInfos[i].LastActivity.Sub(l.ConnInfos[i].Start)
-	ij := l.ConnInfos[j].LastActivity.Sub(l.ConnInfos[j].Start)
-	return ii < ij
+	return l.now.Sub(l.ConnInfos[i].LastActivity) < l.now.Sub(l.ConnInfos[j].LastActivity)
 }
 
 // Uptime
