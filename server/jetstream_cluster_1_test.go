@@ -19,6 +19,8 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -2665,14 +2667,24 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 	config := *resp.Config
 
 	var snapshot []byte
+	hash := sha256.New()
 	done := make(chan bool)
 
 	sub, _ := nc.Subscribe(sreq.DeliverSubject, func(m *nats.Msg) {
 		// EOF
 		if len(m.Data) == 0 {
+			// Check hash
+			hashHdr := m.Header.Get("Nats-Snapshot-Checksum-Sha256")
+			if finalHash := hex.EncodeToString(hash.Sum(nil)); hashHdr != finalHash {
+				t.Fatalf("Hash mismatch: received %q: calculated: %q", hashHdr, finalHash)
+			}
+
 			done <- true
 			return
 		}
+		// write to hash
+		_, _ = hash.Write(m.Data)
+
 		// Could be writing to a file here too.
 		snapshot = append(snapshot, m.Data...)
 		// Flow ack
