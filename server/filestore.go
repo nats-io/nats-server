@@ -1307,7 +1307,6 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 			seq = seq &^ tbit
 			// Need to process this here and make sure we have accounted for this properly.
 			tombstones = append(tombstones, seq)
-			index += rl
 			if minTombstoneSeq == 0 || seq < minTombstoneSeq {
 				minTombstoneSeq, minTombstoneTs = seq, ts
 			}
