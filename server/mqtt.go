@@ -126,6 +126,7 @@ const (
 
 	// Stream name and subjects for outgoing MQTT QoS2 PUBREL messages
 	mqttQoS2PubRelStreamName            = "$MQTT_qos2out"
+	mqttQoS2PubRelConsumerDurablePrefix = "$MQTT_PUBREL_"
 	mqttQoS2PubRelStoredSubjectPrefix   = "$MQTT.qos2.out."
 	mqttQoS2PubRelDeliverySubjectPrefix = "$MQTT.qos2.delivery."
 
@@ -4465,7 +4466,7 @@ func (sess *mqttSession) ensurePubRelConsumerSubscription(c *client) error {
 			Stream: mqttQoS2PubRelStreamName,
 			Config: ConsumerConfig{
 				DeliverSubject: sess.pubRelDeliverySubject,
-				Durable:        sess.idHash + "_pubrel",
+				Durable:        mqttQoS2PubRelConsumerDurablePrefix + sess.idHash,
 				AckPolicy:      AckExplicit,
 				DeliverPolicy:  DeliverNew,
 				FilterSubject:  sess.pubRelSubject,
