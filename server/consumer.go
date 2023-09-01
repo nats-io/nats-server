@@ -3530,11 +3530,13 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			if err == ErrStoreMsgNotFound || err == errDeletedMsg || err == ErrStoreEOF || err == errMaxAckPending {
 				goto waitForMsgs
 			} else if err == errPartialCache {
-				s.Warnf("Unexpected partial cache error looking up message for consumer")
+				s.Warnf("Unexpected partial cache error looking up message for consumer '%s > %s > %s'",
+					o.mset.acc, o.mset.cfg.Name, o.cfg.Name)
 				goto waitForMsgs
 
 			} else {
-				s.Errorf("Received an error looking up message for consumer: %v", err)
+				s.Errorf("Received an error looking up message for consumer '%s > %s > %s': %v",
+					o.mset.acc, o.mset.cfg.Name, o.cfg.Name, err)
 				goto waitForMsgs
 			}
 		}
