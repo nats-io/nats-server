@@ -15,7 +15,6 @@ package server
 
 import (
 	"crypto/rand"
-	"crypto/tls"
 	"fmt"
 	"testing"
 	"time"
@@ -23,95 +22,68 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-func BenchmarkRequestReplyOverEncryptedConnection(b *testing.B) {
+func BenchmarkCoreRequestReply(b *testing.B) {
 	const (
-		subject         = "test-subject"
-		configsBasePath = "./configs/tls"
+		subject = "test-subject"
 	)
 
-	// default TLS client connection options
-	defaultOpts := []nats.Option{}
-
-	keyTypes := []string{
-		"none",
-		"ed25519",
-		"rsa-1024",
-		"rsa-2048",
-		"rsa-4096",
-	}
-	payloadSzs := []int64{
+	messageSizes := []int64{
 		1024,   // 1kb
 		4096,   // 4kb
 		40960,  // 40kb
 		409600, // 400kb
 	}
 
-	for _, keyType := range keyTypes {
-		schemeConfig := fmt.Sprintf("%s/tls-%s.conf", configsBasePath, keyType)
-		b.Run(fmt.Sprintf("keyType=%s", keyType), func(b *testing.B) {
-			for _, payloadSz := range payloadSzs {
-				b.Run(fmt.Sprintf("payloadSz=%db", payloadSz), func(b *testing.B) {
+	for _, messageSize := range messageSizes {
+		b.Run(fmt.Sprintf("msgSz=%db", messageSize), func(b *testing.B) {
 
-					// run server with tls scheme
-					server, _ := RunServerWithConfig(schemeConfig)
-					defer server.Shutdown()
+			// Start server
+			serverOpts := DefaultOptions()
+			server := RunServer(serverOpts)
+			defer server.Shutdown()
 
-					opts := defaultOpts
-					if keyType != "none" {
-						opts = append(opts, nats.Secure(&tls.Config{
-							InsecureSkipVerify: true,
-						}))
-					}
+			clientUrl := server.ClientURL()
 
-					// default client url
-					clientUrl := server.ClientURL()
-
-					// subscriber
-					ncSub, err := nats.Connect(clientUrl, opts...)
-					if err != nil {
-						b.Fatal(err)
-					}
-					defer ncSub.Close()
-					sub, err := ncSub.Subscribe(subject, func(msg *nats.Msg) {
-						// Responder echoes the request payload as-is
-						msg.Respond(msg.Data)
-					})
-					defer sub.Unsubscribe()
-					if err != nil {
-						b.Fatal(err)
-					}
-
-					// publisher
-					ncPub, err := nats.Connect(clientUrl, opts...)
-					if err != nil {
-						b.Fatal(err)
-					}
-					defer ncPub.Close()
-
-					var errors = 0
-
-					// random bytes as payload
-					b.SetBytes(payloadSz)
-					payload := make([]byte, payloadSz)
-					rand.Read(payload)
-
-					// start benchmark
-					b.ResetTimer()
-
-					for i := 0; i < b.N; i++ {
-						_, err := ncPub.Request(subject, payload, time.Second)
-						if err != nil {
-							errors++
-						}
-					}
-
-					// stop benchmark
-					b.StopTimer()
-
-					b.ReportMetric(float64(errors), "errors")
-				})
+			// Create "echo" subscriber
+			ncSub, err := nats.Connect(clientUrl)
+			if err != nil {
+				b.Fatal(err)
 			}
+			defer ncSub.Close()
+			sub, err := ncSub.Subscribe(subject, func(msg *nats.Msg) {
+				// Responder echoes the request payload as-is
+				msg.Respond(msg.Data)
+			})
+			defer sub.Unsubscribe()
+			if err != nil {
+				b.Fatal(err)
+			}
+
+			// Create publisher
+			ncPub, err := nats.Connect(clientUrl)
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer ncPub.Close()
+
+			var errors = 0
+
+			// Create message (reused for all requests)
+			messageData := make([]byte, messageSize)
+			b.SetBytes(messageSize)
+			rand.Read(messageData)
+
+			// Benchmark
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_, err := ncPub.Request(subject, messageData, time.Second)
+				if err != nil {
+					errors++
+				}
+			}
+			b.StopTimer()
+
+			b.ReportMetric(float64(errors), "errors")
 		})
 	}
-
 }
