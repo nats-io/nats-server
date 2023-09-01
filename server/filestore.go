@@ -3836,6 +3836,8 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 
 	// Only update index and do accounting if not a delete tombstone.
 	if seq&tbit == 0 {
+		// Accounting, do this before stripping ebit, it is ebit aware.
+		mb.updateAccounting(seq, ts, rl)
 		// Strip ebit if set.
 		seq = seq &^ ebit
 		if mb.cache.fseq == 0 {
@@ -3843,8 +3845,6 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 		}
 		// Write index
 		mb.cache.idx = append(mb.cache.idx, uint32(index)|hbit)
-		// Accounting
-		mb.updateAccounting(seq, ts, rl)
 	}
 
 	fch, werr := mb.fch, mb.werr
