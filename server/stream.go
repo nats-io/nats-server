@@ -805,7 +805,7 @@ func (mset *stream) rebuildDedupe() {
 
 	mset.ddloaded = true
 
-	if mset.cfg.Duplicates != time.Duration(0) {
+	if mset.cfg.Duplicates > time.Duration(0) {
 		// We have some messages. Lookup starting sequence by duplicate time window.
 		sseq := mset.store.GetSeqFromTime(time.Now().Add(-mset.cfg.Duplicates))
 		if sseq == 0 {
@@ -3488,7 +3488,7 @@ func (mset *stream) storeMsgId(dde *ddentry) {
 // storeMsgIdLocked will store the message id for duplicate detection.
 // Lock should he held.
 func (mset *stream) storeMsgIdLocked(dde *ddentry) {
-	if mset.cfg.Duplicates != time.Duration(0) {
+	if mset.cfg.Duplicates > time.Duration(0) {
 		if mset.ddmap == nil {
 			mset.ddmap = make(map[string]*ddentry)
 		}
