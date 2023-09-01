@@ -7023,8 +7023,9 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, state *StreamState, includ
 		writeErr(fmt.Sprintf("Could not gather stream meta file: %v", err))
 		return
 	}
-	fs.hh.Reset()
-	fs.hh.Write(meta)
+	hh := fs.hh
+	hh.Reset()
+	hh.Write(meta)
 	sum := []byte(hex.EncodeToString(fs.hh.Sum(nil)))
 	fs.mu.Unlock()
 
@@ -7048,8 +7049,8 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, state *StreamState, includ
 			buf, err = fs.aek.Open(nil, buf[:ns], buf[ns:len(buf)-highwayhash.Size64], nil)
 			if err == nil {
 				// Redo hash checksum at end on plaintext.
-				fs.hh.Reset()
-				fs.hh.Write(buf)
+				hh.Reset()
+				hh.Write(buf)
 				buf = fs.hh.Sum(buf)
 			}
 		}
@@ -7102,9 +7103,9 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, state *StreamState, includ
 	}
 
 	// Do consumers' state last.
-	fs.mu.Lock()
+	fs.mu.RLock()
 	cfs := fs.cfs
-	fs.mu.Unlock()
+	fs.mu.RUnlock()
 
 	for _, cs := range cfs {
 		o, ok := cs.(*consumerFileStore)
