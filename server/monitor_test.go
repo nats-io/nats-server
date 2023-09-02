@@ -5225,3 +5225,22 @@ func TestHealthzStatusUnavailable(t *testing.T) {
 
 	checkHealthzEndpoint(t, s.MonitorAddr().String(), http.StatusServiceUnavailable, "unavailable")
 }
+
+// When we converted ipq to use generics we still were using sync.Map. Currently you can not convert
+// interface{} or any to a generic parameterized type. So this stopped working and panics.
+func TestIpqzWithGenerics(t *testing.T) {
+	opts := DefaultMonitorOptions()
+	opts.JetStream = true
+
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	url := fmt.Sprintf("http://%s/ipqueuesz?all=1", s.MonitorAddr().String())
+	body := readBody(t, url)
+	require_True(t, len(body) > 0)
+
+	queues := map[string]*monitorIPQueue{}
+	require_NoError(t, json.Unmarshal(body, &queues))
+	require_True(t, len(queues) >= 4)
+	require_True(t, queues["SendQ"] != nil)
+}
