@@ -292,7 +292,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	}
 	// Default values.
 	if fcfg.BlockSize == 0 {
-		fcfg.BlockSize = dynBlkSize(cfg.Retention, cfg.MaxBytes, fcfg.Cipher)
+		fcfg.BlockSize = dynBlkSize(cfg.Retention, cfg.MaxBytes, prf != nil)
 	}
 	if fcfg.BlockSize > maxBlockSize {
 		return nil, fmt.Errorf("filestore max block size is %s", friendlyBytes(maxBlockSize))
@@ -462,7 +462,7 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 	return nil
 }
 
-func dynBlkSize(retention RetentionPolicy, maxBytes int64, cipher StoreCipher) uint64 {
+func dynBlkSize(retention RetentionPolicy, maxBytes int64, encrypted bool) uint64 {
 	if maxBytes > 0 {
 		blkSize := (maxBytes / 4) + 1 // (25% overhead)
 		// Round up to nearest 100
@@ -476,7 +476,7 @@ func dynBlkSize(retention RetentionPolicy, maxBytes int64, cipher StoreCipher) u
 		} else {
 			blkSize = defaultMediumBlockSize
 		}
-		if cipher != NoCipher && blkSize > maximumEncryptedBlockSize {
+		if encrypted && blkSize > maximumEncryptedBlockSize {
 			// Notes on this below.
 			blkSize = maximumEncryptedBlockSize
 		}
@@ -484,7 +484,7 @@ func dynBlkSize(retention RetentionPolicy, maxBytes int64, cipher StoreCipher) u
 	}
 
 	switch {
-	case cipher != NoCipher:
+	case encrypted:
 		// In the case of encrypted stores, large blocks can result in worsened perf
 		// since many writes on disk involve re-encrypting the entire block. For now,
 		// we will enforce a cap on the block size when encryption is enabled to avoid
