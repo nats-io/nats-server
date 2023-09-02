@@ -1120,14 +1120,17 @@ func (s *Server) HandleIPQueuesz(w http.ResponseWriter, r *http.Request) {
 
 	queues := map[string]monitorIPQueue{}
 
-	s.ipQueues.Range(func(k, v interface{}) bool {
+	s.ipQueues.Range(func(k, v any) bool {
+		var pending, inProgress int
 		name := k.(string)
-		queue := v.(interface {
+		queue, ok := v.(interface {
 			len() int
-			inProgress() uint64
+			inProgress() int64
 		})
-		pending := queue.len()
-		inProgress := int(queue.inProgress())
+		if ok {
+			pending = queue.len()
+			inProgress = int(queue.inProgress())
+		}
 		if !all && (pending == 0 && inProgress == 0) {
 			return true
 		} else if qfilter != _EMPTY_ && !strings.Contains(name, qfilter) {
