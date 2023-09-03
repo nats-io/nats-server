@@ -20356,6 +20356,9 @@ func TestJetStreamMsgBlkFailOnKernelFault(t *testing.T) {
 	nc, js = jsClientConnect(t, s)
 	defer nc.Close()
 
+	_, err = js.GetMsg("TEST", 17)
+	require_Error(t, err, nats.ErrMsgNotFound)
+
 	si, err = js.StreamInfo("TEST")
 	require_NoError(t, err)
 	require_True(t, si.State.NumDeleted == 3)
