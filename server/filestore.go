@@ -442,14 +442,16 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		// Since we recovered here, make sure to kick ourselves to write out our stream state.
 		fs.dirty++
 		defer fs.kickFlushStateLoop()
-		// Also make sure we get rid of old idx and fss files on return.
-		defer func() {
-			go func() {
-				os.RemoveAll(filepath.Join(fs.fcfg.StoreDir, msgDir, indexScanAll))
-				os.RemoveAll(filepath.Join(fs.fcfg.StoreDir, msgDir, fssScanAll))
-			}()
-		}()
 	}
+
+	// Also make sure we get rid of old idx and fss files on return.
+	// Do this in separate go routine vs inline and at end of processing.
+	defer func() {
+		go func() {
+			os.RemoveAll(filepath.Join(fs.fcfg.StoreDir, msgDir, indexScanAll))
+			os.RemoveAll(filepath.Join(fs.fcfg.StoreDir, msgDir, fssScanAll))
+		}()
+	}()
 
 	// Lock while do enforcements and removals.
 	fs.mu.Lock()
