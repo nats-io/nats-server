@@ -21533,6 +21533,7 @@ func TestJetStreamChangeMaxMessagesPerSubject(t *testing.T) {
 	defer s.Shutdown()
 
 	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
 
 	_, err := js.AddStream(&nats.StreamConfig{
 		Name:              "TEST",
@@ -21698,4 +21699,53 @@ func TestJetStreamConsumerDefaultsFromStream(t *testing.T) {
 			t.Fatalf("stream update should have errored but didn't")
 		}
 	})
+}
+
+func TestJetStreamSyncInterval(t *testing.T) {
+	sd := t.TempDir()
+	tmpl := `
+		listen: 127.0.0.1:-1
+		jetstream: {
+			store_dir: %q
+			%s
+		}`
+
+	for _, test := range []struct {
+		name     string
+		sync     string
+		expected time.Duration
+		always   bool
+	}{
+		{"Default", _EMPTY_, defaultSyncInterval, false},
+		{"10s", "sync_interval: 10s", time.Duration(10 * time.Second), false},
+		{"Always", "sync_interval: always", defaultSyncInterval, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, sd, test.sync)))
+			s, _ := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			opts := s.getOpts()
+			require_True(t, opts.SyncInterval == test.expected)
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"test.>"},
+			})
+			require_NoError(t, err)
+
+			mset, err := s.GlobalAccount().lookupStream("TEST")
+			require_NoError(t, err)
+			fs := mset.store.(*fileStore)
+			fs.mu.RLock()
+			fsSync := fs.fcfg.SyncInterval
+			syncAlways := fs.fcfg.SyncAlways
+			fs.mu.RUnlock()
+			require_True(t, fsSync == test.expected)
+			require_True(t, syncAlways == test.always)
+		})
+	}
 }

@@ -615,7 +615,9 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	}
 	fsCfg.StoreDir = storeDir
 	fsCfg.AsyncFlush = false
-	fsCfg.SyncInterval = 2 * time.Minute
+	// Grab configured sync interval.
+	fsCfg.SyncInterval = s.getOpts().SyncInterval
+	fsCfg.SyncAlways = s.getOpts().SyncAlways
 	fsCfg.Compression = config.Compression
 
 	if err := mset.setupStore(fsCfg); err != nil {
