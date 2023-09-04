@@ -22,7 +22,7 @@ jobs:
 
       - uses: ./src/github.com/nats-io/nats-server/.github/actions/nightly-release
         with:
-          go: "1.19"
+          go: "1.20"
           workdir: src/github.com/nats-io/nats-server
           label: nightly
           hub_username: "${{ secrets.DOCKER_USERNAME }}"

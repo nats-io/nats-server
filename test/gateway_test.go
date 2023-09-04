@@ -605,89 +605,96 @@ func TestGatewayTLSMixedIPAndDNS(t *testing.T) {
 	server.SetGatewaysSolicitDelay(5 * time.Millisecond)
 	defer server.ResetGatewaysSolicitDelay()
 
-	confA1 := createConfFile(t, []byte(`
-		listen: 127.0.0.1:-1
-		gateway {
-			name: "A"
-			listen: "127.0.0.1:-1"
-			tls {
-				cert_file: "./configs/certs/server-iponly.pem"
-				key_file:  "./configs/certs/server-key-iponly.pem"
-				ca_file:   "./configs/certs/ca.pem"
-				timeout: 2
+	// Run this test extra times to make sure not flaky since it
+	// on solicit time.
+	for i := 0; i < 10; i++ {
+		t.Run("", func(t *testing.T) {
+			confA1 := createConfFile(t, []byte(`
+			listen: 127.0.0.1:-1
+			server_name: A1
+			gateway {
+				name: "A"
+				listen: "127.0.0.1:-1"
+				tls {
+					cert_file: "./configs/certs/server-iponly.pem"
+					key_file:  "./configs/certs/server-key-iponly.pem"
+					ca_file:   "./configs/certs/ca.pem"
+					timeout: 2
+				}
 			}
-		}
-		cluster {
-			listen: "127.0.0.1:-1"
-		}
-	`))
-	srvA1, optsA1 := RunServerWithConfig(confA1)
-	defer srvA1.Shutdown()
+			cluster {
+				listen: "127.0.0.1:-1"
+			}`))
+			srvA1, optsA1 := RunServerWithConfig(confA1)
+			defer srvA1.Shutdown()
 
-	confA2Template := `
-		listen: 127.0.0.1:-1
-		gateway {
-			name: "A"
-			listen: "localhost:-1"
-			tls {
-				cert_file: "./configs/certs/server-cert.pem"
-				key_file:  "./configs/certs/server-key.pem"
-				ca_file:   "./configs/certs/ca.pem"
-				timeout: 2
+			confA2Template := `
+			listen: 127.0.0.1:-1
+			server_name: A2
+			gateway {
+				name: "A"
+				listen: "localhost:-1"
+				tls {
+					cert_file: "./configs/certs/server-cert.pem"
+					key_file:  "./configs/certs/server-key.pem"
+					ca_file:   "./configs/certs/ca.pem"
+					timeout: 2
+				}
 			}
-		}
-		cluster {
-			listen: "127.0.0.1:-1"
-			routes [
-				"nats://%s:%d"
-			]
-		}
-	`
-	confA2 := createConfFile(t, []byte(fmt.Sprintf(confA2Template,
-		optsA1.Cluster.Host, optsA1.Cluster.Port)))
-	srvA2, optsA2 := RunServerWithConfig(confA2)
-	defer srvA2.Shutdown()
+			cluster {
+				listen: "127.0.0.1:-1"
+				routes [
+					"nats://%s:%d"
+				]
+			}`
+			confA2 := createConfFile(t, []byte(fmt.Sprintf(confA2Template,
+				optsA1.Cluster.Host, optsA1.Cluster.Port)))
+			srvA2, optsA2 := RunServerWithConfig(confA2)
+			defer srvA2.Shutdown()
 
-	checkClusterFormed(t, srvA1, srvA2)
+			checkClusterFormed(t, srvA1, srvA2)
 
-	// Create a GW connection to cluster "A". Don't use the helper since we need verification etc.
-	o := DefaultTestOptions
-	o.Port = -1
-	o.Gateway.Name = "B"
-	o.Gateway.Host = "127.0.0.1"
-	o.Gateway.Port = -1
+			// Create a GW connection to cluster "A". Don't use the helper since we need verification etc.
+			o := DefaultTestOptions
+			o.Port = -1
+			o.ServerName = "B1"
+			o.Gateway.Name = "B"
+			o.Gateway.Host = "127.0.0.1"
+			o.Gateway.Port = -1
 
-	tc := &server.TLSConfigOpts{}
-	tc.CertFile = "./configs/certs/server-cert.pem"
-	tc.KeyFile = "./configs/certs/server-key.pem"
-	tc.CaFile = "./configs/certs/ca.pem"
-	tc.Timeout = 2.0
-	tlsConfig, err := server.GenTLSConfig(tc)
-	if err != nil {
-		t.Fatalf("Error generating TLS config: %v", err)
+			tc := &server.TLSConfigOpts{}
+			tc.CertFile = "./configs/certs/server-cert.pem"
+			tc.KeyFile = "./configs/certs/server-key.pem"
+			tc.CaFile = "./configs/certs/ca.pem"
+			tc.Timeout = 2.0
+			tlsConfig, err := server.GenTLSConfig(tc)
+			if err != nil {
+				t.Fatalf("Error generating TLS config: %v", err)
+			}
+			tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+			tlsConfig.RootCAs = tlsConfig.ClientCAs
+
+			o.Gateway.TLSConfig = tlsConfig.Clone()
+
+			rurl, _ := url.Parse(fmt.Sprintf("nats://%s:%d", optsA2.Gateway.Host, optsA2.Gateway.Port))
+			remote := &server.RemoteGatewayOpts{Name: "A", URLs: []*url.URL{rurl}}
+			remote.TLSConfig = tlsConfig.Clone()
+			o.Gateway.Gateways = []*server.RemoteGatewayOpts{remote}
+
+			srvB := RunServer(&o)
+			defer srvB.Shutdown()
+
+			waitForOutboundGateways(t, srvB, 1, 10*time.Second)
+			waitForOutboundGateways(t, srvA1, 1, 10*time.Second)
+			waitForOutboundGateways(t, srvA2, 1, 10*time.Second)
+
+			// Now kill off srvA2 and force serverB to connect to srvA1.
+			srvA2.Shutdown()
+
+			// Make sure this works.
+			waitForOutboundGateways(t, srvB, 1, 30*time.Second)
+		})
 	}
-	tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
-	tlsConfig.RootCAs = tlsConfig.ClientCAs
-
-	o.Gateway.TLSConfig = tlsConfig.Clone()
-
-	rurl, _ := url.Parse(fmt.Sprintf("nats://%s:%d", optsA2.Gateway.Host, optsA2.Gateway.Port))
-	remote := &server.RemoteGatewayOpts{Name: "A", URLs: []*url.URL{rurl}}
-	remote.TLSConfig = tlsConfig.Clone()
-	o.Gateway.Gateways = []*server.RemoteGatewayOpts{remote}
-
-	srvB := RunServer(&o)
-	defer srvB.Shutdown()
-
-	waitForOutboundGateways(t, srvB, 1, 10*time.Second)
-	waitForOutboundGateways(t, srvA1, 1, 10*time.Second)
-	waitForOutboundGateways(t, srvA2, 1, 10*time.Second)
-
-	// Now kill off srvA2 and force serverB to connect to srvA1.
-	srvA2.Shutdown()
-
-	// Make sure this works.
-	waitForOutboundGateways(t, srvB, 1, 10*time.Second)
 }
 
 func TestGatewayAdvertiseInCluster(t *testing.T) {
