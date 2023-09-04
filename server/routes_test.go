@@ -1592,7 +1592,7 @@ func testTLSRoutesCertificateImplicitAllow(t *testing.T, pass bool) {
 }
 
 func TestSubjectRenameViaJetStreamAck(t *testing.T) {
-	s := RunRandClientPortServer()
+	s := RunRandClientPortServer(t)
 	defer s.Shutdown()
 	errChan := make(chan error)
 	defer close(errChan)

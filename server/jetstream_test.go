@@ -50,10 +50,7 @@ import (
 )
 
 func TestJetStreamBasicNilConfig(t *testing.T) {
-	s := RunRandClientPortServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
+	s := RunRandClientPortServer(t)
 	defer s.Shutdown()
 
 	if err := s.EnableJetStream(nil); err != nil {
@@ -301,16 +298,12 @@ func TestJetStreamAddStreamDiscardNew(t *testing.T) {
 }
 
 func TestJetStreamAutoTuneFSConfig(t *testing.T) {
-	s := RunRandClientPortServer()
+	s := RunRandClientPortServer(t)
 	defer s.Shutdown()
 
-	jsconfig := &JetStreamConfig{MaxMemory: -1, MaxStore: 128 * 1024 * 1024}
+	jsconfig := &JetStreamConfig{MaxMemory: -1, MaxStore: 128 * 1024 * 1024, StoreDir: t.TempDir()}
 	if err := s.EnableJetStream(jsconfig); err != nil {
 		t.Fatalf("Expected no error, got %v", err)
-	}
-
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
 	}
 
 	maxMsgSize := int32(512)
@@ -2974,10 +2967,6 @@ func TestJetStreamConsumerAckAck(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
-
 	mname := "ACK-ACK"
 	mset, err := s.GlobalAccount().addStream(&StreamConfig{Name: mname, Storage: MemoryStorage})
 	if err != nil {
@@ -4022,10 +4011,6 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	defer s.Shutdown()
 
 	checkLeafNodeConnected(t, s)
-
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
 
 	mname := "MY-STREAM"
 	subjects := []string{"foo", "bar", "baz"}
@@ -6353,10 +6338,7 @@ func TestJetStreamConsumerReplayQuit(t *testing.T) {
 }
 
 func TestJetStreamSystemLimits(t *testing.T) {
-	s := RunRandClientPortServer()
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
+	s := RunRandClientPortServer(t)
 	defer s.Shutdown()
 
 	if _, _, err := s.JetStreamReservedResources(); err == nil {
@@ -6367,7 +6349,7 @@ func TestJetStreamSystemLimits(t *testing.T) {
 	bacc, _ := s.LookupOrRegisterAccount("BAR")
 	zacc, _ := s.LookupOrRegisterAccount("BAZ")
 
-	jsconfig := &JetStreamConfig{MaxMemory: 1024, MaxStore: 8192}
+	jsconfig := &JetStreamConfig{MaxMemory: 1024, MaxStore: 8192, StoreDir: t.TempDir()}
 	if err := s.EnableJetStream(jsconfig); err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -8893,9 +8875,10 @@ func TestJetStreamCanNotEnableOnSystemAccount(t *testing.T) {
 }
 
 func TestJetStreamMultipleAccountsBasics(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	tdir := t.TempDir()
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
-		jetstream: {max_mem_store: 64GB, max_file_store: 10TB}
+		jetstream: {max_mem_store: 64GB, max_file_store: 10TB, store_dir: %q}
 		accounts: {
 			A: {
 				jetstream: enabled
@@ -8909,12 +8892,9 @@ func TestJetStreamMultipleAccountsBasics(t *testing.T) {
 				users: [ {user: uc, password: pwd} ]
 			},
 		}
-	`))
+	`, tdir)))
 
 	s, opts := RunServerWithConfig(conf)
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
 	defer s.Shutdown()
 
 	if !s.JetStreamEnabled() {
@@ -8972,9 +8952,9 @@ func TestJetStreamMultipleAccountsBasics(t *testing.T) {
 	expectNotEnabled(ncc.Request(JSApiAccountInfo, nil, 250*time.Millisecond))
 
 	// Now do simple reload and check that we do the right thing. Testing enable and disable and also change in limits
-	newConf := []byte(`
+	newConf := []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
-		jetstream: {max_mem_store: 64GB, max_file_store: 10TB}
+		jetstream: {max_mem_store: 64GB, max_file_store: 10TB, store_dir: %q}
 		accounts: {
 			A: {
 				jetstream: disabled
@@ -8989,7 +8969,7 @@ func TestJetStreamMultipleAccountsBasics(t *testing.T) {
 				users: [ {user: uc, password: pwd} ]
 			},
 		}
-	`)
+	`, tdir))
 	if err := os.WriteFile(conf, newConf, 0600); err != nil {
 		t.Fatalf("Error rewriting server's config file: %v", err)
 	}
@@ -9057,20 +9037,16 @@ func TestJetStreamMultipleAccountsBasics(t *testing.T) {
 }
 
 func TestJetStreamServerResourcesConfig(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
-		jetstream: {max_mem_store: 2GB, max_file_store: 1TB}
-	`))
+		jetstream: {max_mem_store: 2GB, max_file_store: 1TB, store_dir: %q}
+	`, t.TempDir())))
 
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
 	if !s.JetStreamEnabled() {
 		t.Fatalf("Expected JetStream to be enabled")
-	}
-
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
 	}
 
 	gb := int64(1024 * 1024 * 1024)
@@ -10322,10 +10298,8 @@ func TestJetStreamDeliveryAfterServerRestart(t *testing.T) {
 	opts := DefaultTestOptions
 	opts.Port = -1
 	opts.JetStream = true
+	opts.StoreDir = t.TempDir()
 	s := RunServer(&opts)
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
 	defer s.Shutdown()
 
 	mset, err := s.GlobalAccount().addStream(&StreamConfig{
@@ -10424,10 +10398,10 @@ func TestJetStreamDeliveryAfterServerRestart(t *testing.T) {
 // This is for the basics of importing the ability to send to a stream and consume
 // from a consumer that is pull based on push based on a well known delivery subject.
 func TestJetStreamAccountImportBasics(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
 		no_auth_user: rip
-		jetstream: {max_mem_store: 64GB, max_file_store: 10TB}
+		jetstream: {max_mem_store: 64GB, max_file_store: 10TB, store_dir: %q}
 		accounts: {
 			JS: {
 				jetstream: enabled
@@ -10453,12 +10427,9 @@ func TestJetStreamAccountImportBasics(t *testing.T) {
 				]
 			},
 		}
-	`))
+	`, t.TempDir())))
 
 	s, _ := RunServerWithConfig(conf)
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
 	defer s.Shutdown()
 
 	acc, err := s.LookupAccount("JS")
@@ -10568,10 +10539,10 @@ func TestJetStreamAccountImportBasics(t *testing.T) {
 // for each account in aggregate account config.
 // This test fails as it is not receiving the api audit event ($JS.EVENT.ADVISORY.API).
 func TestJetStreamAccountImportJSAdvisoriesAsService(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen=127.0.0.1:-1
 		no_auth_user: pp
-		jetstream: {max_mem_store: 64GB, max_file_store: 10TB}
+		jetstream: {max_mem_store: 64GB, max_file_store: 10TB, store_dir: %q}
 		accounts {
 			JS {
 				jetstream: enabled
@@ -10587,12 +10558,9 @@ func TestJetStreamAccountImportJSAdvisoriesAsService(t *testing.T) {
 				]
 			}
 		}
-	`))
+	`, t.TempDir())))
 
 	s, _ := RunServerWithConfig(conf)
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
 	defer s.Shutdown()
 
 	// This should be the pp user, one which manages JetStream assets
@@ -10675,10 +10643,10 @@ func TestJetStreamAccountImportJSAdvisoriesAsService(t *testing.T) {
 // as long as there is a separate stream import entry for each account
 // in aggregate account config.
 func TestJetStreamAccountImportJSAdvisoriesAsStream(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen=127.0.0.1:-1
 		no_auth_user: pp
-		jetstream: {max_mem_store: 64GB, max_file_store: 10TB}
+		jetstream: {max_mem_store: 64GB, max_file_store: 10TB, store_dir: %q}
 		accounts {
 			JS {
 				jetstream: enabled
@@ -10694,12 +10662,9 @@ func TestJetStreamAccountImportJSAdvisoriesAsStream(t *testing.T) {
 				]
 			}
 		}
-	`))
+	`, t.TempDir())))
 
 	s, _ := RunServerWithConfig(conf)
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
 	defer s.Shutdown()
 
 	// This should be the pp user, one which manages JetStream assets
@@ -10779,10 +10744,10 @@ func TestJetStreamAccountImportJSAdvisoriesAsStream(t *testing.T) {
 
 // This is for importing all of JetStream into another account for admin purposes.
 func TestJetStreamAccountImportAll(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
 		no_auth_user: rip
-		jetstream: {max_mem_store: 64GB, max_file_store: 10TB}
+		jetstream: {max_mem_store: 64GB, max_file_store: 10TB, store_dir: %q}
 		accounts: {
 			JS: {
 				jetstream: enabled
@@ -10794,12 +10759,9 @@ func TestJetStreamAccountImportAll(t *testing.T) {
 				imports [ { service: { subject: "$JS.API.>", account: JS }, to: "jsapi.>"} ]
 			},
 		}
-	`))
+	`, t.TempDir())))
 
 	s, _ := RunServerWithConfig(conf)
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
 	defer s.Shutdown()
 
 	acc, err := s.LookupAccount("JS")
@@ -10845,9 +10807,9 @@ func TestJetStreamAccountImportAll(t *testing.T) {
 
 // https://github.com/nats-io/nats-server/issues/1736
 func TestJetStreamServerReload(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
-		jetstream: {max_mem_store: 64GB, max_file_store: 10TB }
+		jetstream: {max_mem_store: 64GB, max_file_store: 10TB, store_dir: %q }
 		accounts: {
 			A: { users: [ {user: ua, password: pwd} ] },
 			B: {
@@ -10858,12 +10820,9 @@ func TestJetStreamServerReload(t *testing.T) {
 		}
 		no_auth_user: ub
 		system_account: SYS
-	`))
+	`, t.TempDir())))
 
 	s, _ := RunServerWithConfig(conf)
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
 	defer s.Shutdown()
 
 	if !s.JetStreamEnabled() {
@@ -10920,6 +10879,7 @@ func TestJetStreamServerReload(t *testing.T) {
 }
 
 func TestJetStreamConfigReloadWithGlobalAccount(t *testing.T) {
+	tdir := t.TempDir()
 	template := `
 		listen: 127.0.0.1:-1
 		authorization {
@@ -10929,14 +10889,13 @@ func TestJetStreamConfigReloadWithGlobalAccount(t *testing.T) {
 			]
 		}
 		no_auth_user: anonymous
-		jetstream: enabled
+		jetstream {
+			store_dir = %q
+		}
 	`
-	conf := createConfFile(t, []byte(fmt.Sprintf(template, "pwd")))
+	conf := createConfFile(t, []byte(fmt.Sprintf(template, "pwd", tdir)))
 
 	s, _ := RunServerWithConfig(conf)
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
 	defer s.Shutdown()
 
 	// Client for API requests.
@@ -10968,7 +10927,7 @@ func TestJetStreamConfigReloadWithGlobalAccount(t *testing.T) {
 		t.Fatalf("Expected %d msgs after restart, got %d", toSend, si.State.Msgs)
 	}
 
-	if err := os.WriteFile(conf, []byte(fmt.Sprintf(template, "pwd2")), 0666); err != nil {
+	if err := os.WriteFile(conf, []byte(fmt.Sprintf(template, "pwd2", tdir)), 0666); err != nil {
 		t.Fatalf("Error writing config: %v", err)
 	}
 
@@ -11975,10 +11934,10 @@ func TestJetStreamServerDomainBadConfig(t *testing.T) {
 }
 
 func TestJetStreamServerDomainConfig(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
-		jetstream: {domain: "HUB"}
-	`))
+		jetstream: {domain: "HUB", store_dir: %q}
+	`, t.TempDir())))
 
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
@@ -11988,9 +11947,6 @@ func TestJetStreamServerDomainConfig(t *testing.T) {
 	}
 
 	config := s.JetStreamConfig()
-	if config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
 	if config.Domain != "HUB" {
 		t.Fatalf("Expected %q as domain name, got %q", "HUB", config.Domain)
 	}
@@ -12016,16 +11972,12 @@ func TestJetStreamServerDomainConfigButDisabled(t *testing.T) {
 }
 
 func TestJetStreamDomainInPubAck(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
-		jetstream: {domain: "HUB"}
-	`))
+		jetstream: {domain: "HUB", store_dir: %q}
+	`, t.TempDir())))
 
 	s, _ := RunServerWithConfig(conf)
-	config := s.JetStreamConfig()
-	if config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
 	defer s.Shutdown()
 
 	nc, js := jsClientConnect(t, s)
@@ -13789,9 +13741,9 @@ func TestJetStreamRecoverBadMirrorConfigWithSubjects(t *testing.T) {
 }
 
 func TestJetStreamCrossAccountsDeliverSubjectInterest(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
-		jetstream: {max_mem_store: 4GB, max_file_store: 1TB}
+		jetstream: {max_mem_store: 4GB, max_file_store: 1TB, store_dir: %q}
 		accounts: {
 			A: {
 				jetstream: enabled
@@ -13807,12 +13759,9 @@ func TestJetStreamCrossAccountsDeliverSubjectInterest(t *testing.T) {
 				]
 			},
 		}
-	`))
+	`, t.TempDir())))
 
 	s, _ := RunServerWithConfig(conf)
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
 	defer s.Shutdown()
 
 	nc, js := jsClientConnect(t, s, nats.UserInfo("a", "pwd"))
@@ -14055,9 +14004,9 @@ func TestJetStreamEphemeralPullConsumersInactiveThresholdAndNoWait(t *testing.T)
 }
 
 func TestJetStreamPullConsumerCrossAccountExpires(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
-		jetstream: {max_mem_store: 4GB, max_file_store: 1TB}
+		jetstream: {max_mem_store: 4GB, max_file_store: 1TB, store_dir: %q}
 		accounts: {
 			JS: {
 				jetstream: enabled
@@ -14075,12 +14024,9 @@ func TestJetStreamPullConsumerCrossAccountExpires(t *testing.T) {
 				imports [ { service: { subject: "$JS.API.CONSUMER.MSG.NEXT.*.*", account: IU } } ]
 			},
 		}
-	`))
+	`, t.TempDir())))
 
 	s, _ := RunServerWithConfig(conf)
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
 	defer s.Shutdown()
 
 	// Connect to JS account and create stream, put some messages into it.
@@ -14261,9 +14207,9 @@ func TestJetStreamPullConsumerCrossAccountExpires(t *testing.T) {
 }
 
 func TestJetStreamPullConsumerCrossAccountExpiresNoDataRace(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
-		jetstream: {max_mem_store: 4GB, max_file_store: 1TB}
+		jetstream: {max_mem_store: 4GB, max_file_store: 1TB, store_dir: %q}
 		accounts: {
 			JS: {
 				jetstream: enabled
@@ -14276,13 +14222,10 @@ func TestJetStreamPullConsumerCrossAccountExpiresNoDataRace(t *testing.T) {
 				imports [ { service: { subject: "$JS.API.CONSUMER.MSG.NEXT.*.*", account: JS } }]
 			},
 		}
-	`))
+	`, t.TempDir())))
 
 	test := func() {
 		s, _ := RunServerWithConfig(conf)
-		if config := s.JetStreamConfig(); config != nil {
-			defer removeDir(t, config.StoreDir)
-		}
 		defer s.Shutdown()
 
 		// Connect to JS account and create stream, put some messages into it.
@@ -14335,10 +14278,10 @@ func TestJetStreamPullConsumerCrossAccountExpiresNoDataRace(t *testing.T) {
 // This tests account export/import replies across a LN connection with account import/export
 // on both sides of the LN.
 func TestJetStreamPullConsumerCrossAccountsAndLeafNodes(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		server_name: SJS
 		listen: 127.0.0.1:-1
-		jetstream: {max_mem_store: 4GB, max_file_store: 1TB, domain: JSD }
+		jetstream: {max_mem_store: 4GB, max_file_store: 1TB, domain: JSD, store_dir: %q }
 		accounts: {
 			JS: {
 				jetstream: enabled
@@ -14351,12 +14294,9 @@ func TestJetStreamPullConsumerCrossAccountsAndLeafNodes(t *testing.T) {
 			},
 		}
 		leaf { listen: "127.0.0.1:-1" }
-	`))
+	`, t.TempDir())))
 
 	s, o := RunServerWithConfig(conf)
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
 	defer s.Shutdown()
 
 	conf2 := createConfFile(t, []byte(fmt.Sprintf(`
@@ -15984,9 +15924,11 @@ func TestJetStreamBackOffCheckPending(t *testing.T) {
 }
 
 func TestJetStreamCrossAccounts(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
-        jetstream: enabled
+        jetstream {
+			store_dir = %q
+		}
         accounts: {
            A: {
                users: [ {user: a, password: a} ]
@@ -16005,11 +15947,8 @@ func TestJetStreamCrossAccounts(t *testing.T) {
                    {stream: {subject: 'accI.>', account: A}}
                ]
            }
-		}`))
+		}`, t.TempDir())))
 	s, _ := RunServerWithConfig(conf)
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
 	defer s.Shutdown()
 
 	watchNext := func(w nats.KeyWatcher) nats.KeyValueEntry {
@@ -16525,9 +16464,9 @@ func TestJetStreamRecoverSealedAfterServerRestart(t *testing.T) {
 }
 
 func TestJetStreamImportConsumerStreamSubjectRemapSingle(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
-		jetstream: {max_mem_store: 4GB, max_file_store: 1TB}
+		jetstream: {max_mem_store: 4GB, max_file_store: 1TB, store_dir: %q}
 		accounts: {
 			JS: {
 				jetstream: enabled
@@ -16551,13 +16490,10 @@ func TestJetStreamImportConsumerStreamSubjectRemapSingle(t *testing.T) {
 				]
 			},
 		}
-	`))
+	`, t.TempDir())))
 
 	test := func(t *testing.T, queue bool) {
 		s, _ := RunServerWithConfig(conf)
-		if config := s.JetStreamConfig(); config != nil {
-			defer removeDir(t, config.StoreDir)
-		}
 		defer s.Shutdown()
 
 		nc, js := jsClientConnect(t, s, nats.UserInfo("js", "pwd"))
@@ -18261,9 +18197,9 @@ func TestJetStreamMirrorFirstSeqNotSupported(t *testing.T) {
 }
 
 func TestJetStreamDirectGetBySubject(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
-		jetstream: {max_mem_store: 64GB, max_file_store: 10TB}
+		jetstream: {max_mem_store: 64GB, max_file_store: 10TB, store_dir: %q}
 
 		ONLYME = {
 			publish = { allow = "$JS.API.DIRECT.GET.KV.vid.22.>"}
@@ -18278,12 +18214,9 @@ func TestJetStreamDirectGetBySubject(t *testing.T) {
 				]
 			},
 		}
-	`))
+	`, t.TempDir())))
 
 	s, _ := RunServerWithConfig(conf)
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
 	defer s.Shutdown()
 
 	nc, js := jsClientConnect(t, s, nats.UserInfo("admin", "s3cr3t"))
@@ -18707,9 +18640,9 @@ func TestJetStreamConsumerEOFBugNewFileStore(t *testing.T) {
 }
 
 func TestJetStreamSubjectBasedFilteredConsumers(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
-		jetstream: {max_mem_store: 64GB, max_file_store: 10TB}
+		jetstream: {max_mem_store: 64GB, max_file_store: 10TB, store_dir: %q}
 		accounts: {
 			A: {
 				jetstream: enabled
@@ -18731,12 +18664,9 @@ func TestJetStreamSubjectBasedFilteredConsumers(t *testing.T) {
 				} ]
 			},
 		}
-	`))
+	`, t.TempDir())))
 
 	s, _ := RunServerWithConfig(conf)
-	if config := s.JetStreamConfig(); config != nil {
-		defer removeDir(t, config.StoreDir)
-	}
 	defer s.Shutdown()
 
 	nc, js := jsClientConnect(t, s, nats.UserInfo("u", "p"), nats.ErrorHandler(noOpErrHandler))
