@@ -5392,6 +5392,43 @@ func TestFileStoreErrPartialLoadOnSyncClose(t *testing.T) {
 	require_NoError(t, err)
 }
 
+func TestFileStoreSyncIntervals(t *testing.T) {
+	fcfg := FileStoreConfig{StoreDir: t.TempDir(), SyncInterval: 250 * time.Millisecond}
+	fs, err := newFileStore(fcfg, StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	checkSyncFlag := func(expected bool) {
+		fs.mu.RLock()
+		lmb := fs.lmb
+		fs.mu.RUnlock()
+		lmb.mu.RLock()
+		syncNeeded := lmb.needSync
+		lmb.mu.RUnlock()
+		if syncNeeded != expected {
+			t.Fatalf("Expected needSync to be %v", expected)
+		}
+	}
+
+	checkSyncFlag(false)
+	fs.StoreMsg("Z", nil, []byte("hello"))
+	checkSyncFlag(true)
+	time.Sleep(400 * time.Millisecond)
+	checkSyncFlag(false)
+	fs.Stop()
+
+	// Now check always
+	fcfg.SyncInterval = 10 * time.Second
+	fcfg.SyncAlways = true
+	fs, err = newFileStore(fcfg, StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	checkSyncFlag(false)
+	fs.StoreMsg("Z", nil, []byte("hello"))
+	checkSyncFlag(false)
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // New WAL based architecture tests
 ///////////////////////////////////////////////////////////////////////////

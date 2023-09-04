@@ -301,6 +301,8 @@ type Options struct {
 	JetStreamLimits       JSLimitOpts
 	JetStreamMaxCatchup   int64
 	StoreDir              string            `json:"-"`
+	SyncInterval          time.Duration     `json:"-"`
+	SyncAlways            bool              `json:"-"`
 	JsAccDefaultDomain    map[string]string `json:"-"` // account to domain name mapping
 	Websocket             WebsocketOpts     `json:"-"`
 	MQTT                  MQTTOpts          `json:"-"`
@@ -387,6 +389,7 @@ type Options struct {
 	// JetStream
 	maxMemSet   bool
 	maxStoreSet bool
+	syncSet     bool
 
 	// OCSP Cache config enables next-gen cache for OCSP features
 	OCSPCacheConfig *OCSPResponseCacheConfig
@@ -2111,6 +2114,14 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 					return &configErr{tk, "Duplicate 'store_dir' configuration"}
 				}
 				opts.StoreDir = mv.(string)
+			case "sync", "sync_interval":
+				if v, ok := mv.(string); ok && strings.ToLower(v) == "always" {
+					opts.SyncInterval = defaultSyncInterval
+					opts.SyncAlways = true
+				} else {
+					opts.SyncInterval = parseDuration(mk, tk, mv, errors, warnings)
+				}
+				opts.syncSet = true
 			case "max_memory_store", "max_mem_store", "max_mem":
 				s, err := getStorageSize(mv)
 				if err != nil {
@@ -5009,6 +5020,9 @@ func setBaselineOptions(opts *Options) {
 	}
 	if opts.JetStreamMaxStore == 0 && !opts.maxStoreSet {
 		opts.JetStreamMaxStore = -1
+	}
+	if opts.SyncInterval == 0 && !opts.syncSet {
+		opts.SyncInterval = defaultSyncInterval
 	}
 }
 

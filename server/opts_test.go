@@ -72,6 +72,7 @@ func TestDefaultOptions(t *testing.T) {
 		MaxTracedMsgLen:       0,
 		JetStreamMaxMemory:    -1,
 		JetStreamMaxStore:     -1,
+		SyncInterval:          2 * time.Minute,
 	}
 
 	opts := &Options{}

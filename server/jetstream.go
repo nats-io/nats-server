@@ -38,12 +38,14 @@ import (
 // JetStreamConfig determines this server's configuration.
 // MaxMemory and MaxStore are in bytes.
 type JetStreamConfig struct {
-	MaxMemory  int64  `json:"max_memory"`
-	MaxStore   int64  `json:"max_storage"`
-	StoreDir   string `json:"store_dir,omitempty"`
-	Domain     string `json:"domain,omitempty"`
-	CompressOK bool   `json:"compress_ok,omitempty"`
-	UniqueTag  string `json:"unique_tag,omitempty"`
+	MaxMemory    int64         `json:"max_memory"`
+	MaxStore     int64         `json:"max_storage"`
+	StoreDir     string        `json:"store_dir,omitempty"`
+	SyncInterval time.Duration `json:"sync_interval,omitempty"`
+	SyncAlways   bool          `json:"sync_always,omitempty"`
+	Domain       string        `json:"domain,omitempty"`
+	CompressOK   bool          `json:"compress_ok,omitempty"`
+	UniqueTag    string        `json:"unique_tag,omitempty"`
 }
 
 // Statistics about JetStream for this server.
@@ -490,10 +492,12 @@ func (s *Server) updateJetStreamInfoStatus(enabled bool) {
 func (s *Server) restartJetStream() error {
 	opts := s.getOpts()
 	cfg := JetStreamConfig{
-		StoreDir:  opts.StoreDir,
-		MaxMemory: opts.JetStreamMaxMemory,
-		MaxStore:  opts.JetStreamMaxStore,
-		Domain:    opts.JetStreamDomain,
+		StoreDir:     opts.StoreDir,
+		SyncInterval: opts.SyncInterval,
+		SyncAlways:   opts.SyncAlways,
+		MaxMemory:    opts.JetStreamMaxMemory,
+		MaxStore:     opts.JetStreamMaxStore,
+		Domain:       opts.JetStreamDomain,
 	}
 	s.Noticef("Restarting JetStream")
 	err := s.EnableJetStream(&cfg)
@@ -2399,6 +2403,10 @@ func (s *Server) dynJetStreamConfig(storeDir string, maxStore, maxMem int64) *Je
 
 	opts := s.getOpts()
 
+	// Sync options.
+	jsc.SyncInterval = opts.SyncInterval
+	jsc.SyncAlways = opts.SyncAlways
+
 	if opts.maxStoreSet && maxStore >= 0 {
 		jsc.MaxStore = maxStore
 	} else {
@@ -2415,6 +2423,7 @@ func (s *Server) dynJetStreamConfig(storeDir string, maxStore, maxMem int64) *Je
 			jsc.MaxMemory = JetStreamMaxMemDefault
 		}
 	}
+
 	return jsc
 }
 

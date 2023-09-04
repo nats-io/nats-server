@@ -5244,3 +5244,20 @@ func TestIpqzWithGenerics(t *testing.T) {
 	require_True(t, len(queues) >= 4)
 	require_True(t, queues["SendQ"] != nil)
 }
+
+func TestVarzSyncInterval(t *testing.T) {
+	resetPreviousHTTPConnections()
+	opts := DefaultMonitorOptions()
+	opts.JetStream = true
+	opts.SyncInterval = 22 * time.Second
+	opts.SyncAlways = true
+
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
+
+	jscfg := pollVarz(t, s, 0, url, nil).JetStream.Config
+	require_True(t, jscfg.SyncInterval == opts.SyncInterval)
+	require_True(t, jscfg.SyncAlways)
+}
