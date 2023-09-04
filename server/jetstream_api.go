@@ -3468,7 +3468,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 						TimeStamp: time.Now().UTC(),
 					}
 					s.Noticef("Completed restore of %s for stream '%s > %s' in %v",
-						friendlyBytes(int64(total)), streamName, acc.Name, end.Sub(start))
+						friendlyBytes(int64(total)), streamName, acc.Name, end.Sub(start).Round(time.Millisecond))
 				}
 
 				// On the last EOF, send back the stream info or error status.

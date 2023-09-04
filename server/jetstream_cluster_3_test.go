@@ -5403,6 +5403,8 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 	// Created can skew a small bit due to server restart, this is expected.
 	now := time.Now()
 	cia.Created, cib.Created = now, now
+	// might not be push bound yet.
+	cib.PushBound = cia.PushBound
 	checkConsumerInfo(cia, cib)
 }
 

@@ -1311,6 +1311,7 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 		}
 
 		s.Noticef("  Starting restore for stream '%s > %s'", a.Name, cfg.StreamConfig.Name)
+		rt := time.Now()
 
 		// Log if we are converting from plaintext to encrypted.
 		if encrypted {
@@ -1341,7 +1342,8 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 		}
 
 		state := mset.state()
-		s.Noticef("  Restored %s messages for stream '%s > %s'", comma(int64(state.Msgs)), mset.accName(), mset.name())
+		s.Noticef("  Restored %s messages for stream '%s > %s' in %v",
+			comma(int64(state.Msgs)), mset.accName(), mset.name(), time.Since(rt).Round(time.Millisecond))
 
 		// Collect to check for dangling messages.
 		// TODO(dlc) - Can be removed eventually.
