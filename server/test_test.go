@@ -45,9 +45,10 @@ func testDefaultClusterOptionsForLeafNodes() *Options {
 	return &o
 }
 
-func RunRandClientPortServer() *Server {
+func RunRandClientPortServer(t *testing.T) *Server {
 	opts := DefaultTestOptions
 	opts.Port = -1
+	opts.StoreDir = t.TempDir()
 	return RunServer(&opts)
 }
 

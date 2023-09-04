@@ -3138,10 +3138,12 @@ func TestNoRaceJetStreamFileStoreCompaction(t *testing.T) {
 }
 
 func TestNoRaceJetStreamEncryptionEnabledOnRestartWithExpire(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
-		jetstream: enabled
-	`))
+		jetstream {
+			store_dir = %q
+		}
+	`, t.TempDir())))
 
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
@@ -4217,9 +4219,11 @@ func TestNoRaceJetStreamClusterHealthz(t *testing.T) {
 // Also test that we will fail at some point and the user can fall back to
 // an orderedconsumer like we do with watch for KV Keys() call.
 func TestNoRaceJetStreamStreamInfoSubjectDetailsLimits(t *testing.T) {
-	conf := createConfFile(t, []byte(`
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
-		jetstream: enabled
+		jetstream {
+			store_dir = %q
+		}
 		accounts: {
 		  default: {
 			jetstream: true
@@ -4227,7 +4231,7 @@ func TestNoRaceJetStreamStreamInfoSubjectDetailsLimits(t *testing.T) {
 			limits { max_payload: 256 }
 		  }
 		}
-	`))
+	`, t.TempDir())))
 
 	s, _ := RunServerWithConfig(conf)
 	if config := s.JetStreamConfig(); config != nil {
