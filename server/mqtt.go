@@ -2521,7 +2521,7 @@ func (as *mqttAccountSessionManager) transferRetainedToPerKeySubjectStream(log *
 				// We've ran out of messages to transfer so give up.
 				break
 			}
-			log.Warnf("    Unable to load retained message with sequence %d: %s", smsg.Sequence, err)
+			log.Warnf("    Unable to load retained message from '$MQTT.rmsgs': %s", err)
 			errors++
 			break
 		}
