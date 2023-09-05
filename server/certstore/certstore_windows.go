@@ -347,11 +347,10 @@ func (w *winCertStore) certSearch(searchType uint32, matchValue string, searchRo
 		return nil, nil, ErrFailedCertSearch
 	}
 
-	var timeValid bool
 	// pass 0 as the third parameter because it is not used
 	// https://msdn.microsoft.com/en-us/library/windows/desktop/aa376064(v=vs.85).aspx
 
-	for timeValid == false {
+	for {
 		nc, err := winFindCert(h, winEncodingX509ASN|winEncodingPKCS7, 0, searchType, i, prev)
 		if err != nil {
 			return nil, nil, err
@@ -571,7 +570,7 @@ func winSignRSAPSSPadding(kh uintptr, digest []byte, algID *uint16) ([]byte, err
 	return sig[:size], nil
 }
 
-// certKey wraps CryptAcquireCertificatePrivateKey. It obtains the CNG private
+// certKey wraps CryptAcquireCFertificatePrivateKey. It obtains the CNG private
 // key of a known certificate and returns a pointer to a winKey which implements
 // both crypto.Signer. When a nil cert context is passed
 // a nil key is intentionally returned, to model the expected behavior of a

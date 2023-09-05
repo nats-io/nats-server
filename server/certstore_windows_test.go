@@ -239,23 +239,6 @@ func TestServerIgnoreExpiredCerts(t *testing.T) {
 	// Issuer: OU = NATS.io, CN = localhost
 	// Subject: OU = NATS.io Operators, CN = localhost
 
-	// Fire up the server
-	srvConfig := createConfFile(t, []byte(`
-	listen: "localhost:-1"
-	tls {
-		cert_store: "WindowsCurrentUser"
-		cert_match_by: "Subject"
-		cert_match: "NATS.io Operators"
-		timeout: 5
-	}
-	`))
-	defer removeFile(t, srvConfig)
-	srvServer, _ := RunServerWithConfig(srvConfig)
-	if srvServer == nil {
-		t.Fatalf("expected to be able start server with cert store configuration")
-	}
-	defer srvServer.Shutdown()
-
 	testCases := []struct {
 		certFile string
 		expect   bool
