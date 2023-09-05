@@ -283,7 +283,7 @@ func TestServerIgnoreExpiredCerts(t *testing.T) {
 				cert_store: "WindowsCurrentUser"
 				cert_match_by: "Subject"
 				cert_match: "NATS.io Operators"
-				cert_skip_invalid: true
+				cert_match_skip_invalid: true
 				timeout: 5
 			}
 			`))

@@ -26,7 +26,7 @@ var _ = MATCHBYEMPTY
 // otherKey implements crypto.Signer and crypto.Decrypter to satisfy linter on platforms that don't implement certstore
 type otherKey struct{}
 
-func TLSConfig(certStore StoreType, certMatchBy MatchByType, certMatch string, certSkipInvalid bool, config *tls.Config) error {
+func TLSConfig(certStore StoreType, certMatchBy MatchByType, certMatch string, certMatchSkipInvalid bool, config *tls.Config) error {
 	_, _, _, _ = certStore, certMatchBy, certMatch, config
 	return ErrOSNotCompatCertStore
 }
