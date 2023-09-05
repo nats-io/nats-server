@@ -20396,7 +20396,7 @@ func TestJetStreamPullConsumerBatchCompleted(t *testing.T) {
 
 	msgSize := 128
 	msg := make([]byte, msgSize)
-	rand.Read(msg)
+	crand.Read(msg)
 
 	for i := 0; i < 10; i++ {
 		_, err := js.Publish("foo", msg)
@@ -20462,7 +20462,7 @@ func TestJetStreamConsumerAndStreamMetadata(t *testing.T) {
 
 	// Test max.
 	data := make([]byte, JSMaxMetadataLen/100)
-	rand.Read(data)
+	crand.Read(data)
 	bigValue := base64.StdEncoding.EncodeToString(data)
 
 	bigMetadata := make(map[string]string, 101)
