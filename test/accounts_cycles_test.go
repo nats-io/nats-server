@@ -367,6 +367,7 @@ func TestAccountSubjectMapping(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	sub1.AutoUnsubscribe(numMessages * 2)
+	nc1.Flush()
 
 	nc2 := clientConnectToServer(t, s)
 	defer nc2.Close()
@@ -385,7 +386,12 @@ func TestAccountSubjectMapping(t *testing.T) {
 	partitionsReceived := make([]int, numMessages)
 
 	for i := 0; i < numMessages; i++ {
-		subject := <-subjectsReceived
+		var subject string
+		select {
+		case subject = <-subjectsReceived:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Timed out waiting for messages")
+		}
 		sTokens := strings.Split(subject, ".")
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
