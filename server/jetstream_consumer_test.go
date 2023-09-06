@@ -236,7 +236,6 @@ func TestJetStreamConsumerMultipleConsumersSingleFilter(t *testing.T) {
 	}
 
 	// Publish with random intervals, while consumers are active.
-	rand.Seed(time.Now().UnixNano())
 	var wg sync.WaitGroup
 	for _, subject := range subjects {
 		wg.Add(subject.messages)
@@ -348,7 +347,6 @@ func TestJetStreamConsumerMultipleConsumersMultipleFilters(t *testing.T) {
 	}
 
 	// Publish with random intervals, while consumers are active.
-	rand.Seed(time.Now().UnixNano())
 	var wg sync.WaitGroup
 	for _, subject := range subjects {
 		wg.Add(subject.messages)

@@ -91,10 +91,6 @@ const (
 	tlsHandshakeMQTT = "mqtt"
 )
 
-func init() {
-	rand.Seed(time.Now().UnixNano())
-}
-
 const (
 	// Scratch buffer size for the processMsg() calls.
 	msgScratchSize  = 1024

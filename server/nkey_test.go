@@ -274,7 +274,7 @@ func BenchmarkNonceGeneration(b *testing.B) {
 func BenchmarkPublicVerify(b *testing.B) {
 	data := make([]byte, nonceRawLen)
 	nonce := make([]byte, nonceLen)
-	mrand.Read(data)
+	crand.Read(data)
 	base64.RawURLEncoding.Encode(nonce, data)
 
 	user, err := nkeys.CreateUser()
