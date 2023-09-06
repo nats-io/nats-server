@@ -1003,6 +1003,7 @@ func (s *Server) JetStreamConfig() *JetStreamConfig {
 	return c
 }
 
+// StoreDir returns the current JetStream directory.
 func (s *Server) StoreDir() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()

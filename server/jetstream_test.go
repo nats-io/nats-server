@@ -8774,7 +8774,7 @@ func TestJetStreamSingleInstanceRemoteAccess(t *testing.T) {
 
 	checkLeafNodeConnected(t, s)
 
-	if err := s.EnableJetStream(nil); err != nil {
+	if err := s.EnableJetStream(&JetStreamConfig{StoreDir: t.TempDir()}); err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
 
