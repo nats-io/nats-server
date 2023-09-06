@@ -573,22 +573,23 @@ type authorization struct {
 // TLSConfigOpts holds the parsed tls config information,
 // used with flag parsing
 type TLSConfigOpts struct {
-	CertFile          string
-	KeyFile           string
-	CaFile            string
-	Verify            bool
-	Insecure          bool
-	Map               bool
-	TLSCheckKnownURLs bool
-	Timeout           float64
-	RateLimit         int64
-	Ciphers           []uint16
-	CurvePreferences  []tls.CurveID
-	PinnedCerts       PinnedCertSet
-	CertStore         certstore.StoreType
-	CertMatchBy       certstore.MatchByType
-	CertMatch         string
-	OCSPPeerConfig    *certidp.OCSPPeerConfig
+	CertFile             string
+	KeyFile              string
+	CaFile               string
+	Verify               bool
+	Insecure             bool
+	Map                  bool
+	TLSCheckKnownURLs    bool
+	Timeout              float64
+	RateLimit            int64
+	Ciphers              []uint16
+	CurvePreferences     []tls.CurveID
+	PinnedCerts          PinnedCertSet
+	CertStore            certstore.StoreType
+	CertMatchBy          certstore.MatchByType
+	CertMatch            string
+	CertMatchSkipInvalid bool
+	OCSPPeerConfig       *certidp.OCSPPeerConfig
 }
 
 // OCSPConfig represents the options of OCSP stapling options.
@@ -4092,6 +4093,12 @@ func parseTLS(v interface{}, isClientCtx bool) (t *TLSConfigOpts, retErr error) 
 				return nil, &configErr{tk, certstore.ErrBadCertMatchField.Error()}
 			}
 			tc.CertMatch = certMatch
+		case "cert_match_skip_invalid":
+			certMatchSkipInvalid, ok := mv.(bool)
+			if !ok {
+				return nil, &configErr{tk, certstore.ErrBadCertMatchSkipInvalidField.Error()}
+			}
+			tc.CertMatchSkipInvalid = certMatchSkipInvalid
 		case "ocsp_peer":
 			switch vv := mv.(type) {
 			case bool:
@@ -4420,7 +4427,7 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 		}
 		config.Certificates = []tls.Certificate{cert}
 	case tc.CertStore != certstore.STOREEMPTY:
-		err := certstore.TLSConfig(tc.CertStore, tc.CertMatchBy, tc.CertMatch, &config)
+		err := certstore.TLSConfig(tc.CertStore, tc.CertMatchBy, tc.CertMatch, tc.CertMatchSkipInvalid, &config)
 		if err != nil {
 			return nil, err
 		}
