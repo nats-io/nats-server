@@ -1242,7 +1242,7 @@ func TestAccountReqMonitoring(t *testing.T) {
 	defer s.Shutdown()
 	sacc, sakp := createAccount(s)
 	s.setSystemAccount(sacc)
-	s.EnableJetStream(nil)
+	s.EnableJetStream(&JetStreamConfig{StoreDir: t.TempDir()})
 	unusedAcc, _ := createAccount(s)
 	acc, akp := createAccount(s)
 	acc.EnableJetStream(nil)
@@ -1336,17 +1336,24 @@ func TestAccountReqMonitoring(t *testing.T) {
 	_, err = rSub.NextMsg(200 * time.Millisecond)
 	require_Error(t, err)
 
-	// Test ping from within account
+	// Test ping from within account, send extra message to check counters.
+	require_NoError(t, nc.Publish("foo", nil))
 	ib := nc.NewRespInbox()
 	rSub, err = nc.SubscribeSync(ib)
 	require_NoError(t, err)
 	require_NoError(t, nc.PublishRequest(pStatz, ib, nil))
+	require_NoError(t, nc.Flush())
 	resp, err = rSub.NextMsg(time.Second)
 	require_NoError(t, err)
-	// Since we now have processed our own message, msgs will be 1.
-	respContentAcc = []string{`"conns":1,`, `"total_conns":1`, `"slow_consumers":0`, `"sent":{"msgs":0,"bytes":0}`,
-		`"received":{"msgs":1,"bytes":0}`, fmt.Sprintf(`"acc":"%s"`, acc.Name)}
-	require_Contains(t, string(resp.Data), respContentAcc...)
+
+	// Since we now have processed our own message, sent msgs will be at least 1.
+	payload := string(resp.Data)
+	respContentAcc = []string{`"conns":1,`, `"total_conns":1`, `"slow_consumers":0`, `"sent":{"msgs":1,"bytes":0}`, fmt.Sprintf(`"acc":"%s"`, acc.Name)}
+	require_Contains(t, payload, respContentAcc...)
+
+	// Depending on timing, statz message could be accounted too.
+	receivedOK := strings.Contains(payload, `"received":{"msgs":1,"bytes":0}`) || strings.Contains(payload, `"received":{"msgs":2,"bytes":0}`)
+	require_True(t, receivedOK)
 	_, err = rSub.NextMsg(200 * time.Millisecond)
 	require_Error(t, err)
 }
