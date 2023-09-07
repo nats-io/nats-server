@@ -7154,7 +7154,7 @@ func TestNoRaceJetStreamInterestStreamCheckInterestRaceBug(t *testing.T) {
 
 	numToSend := 10_000
 	for i := 0; i < numToSend; i++ {
-		_, err := js.PublishAsync("foo", nil)
+		_, err := js.PublishAsync("foo", nil, nats.StallWait(800*time.Millisecond))
 		require_NoError(t, err)
 	}
 	select {
