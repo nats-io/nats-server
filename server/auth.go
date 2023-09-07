@@ -28,10 +28,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/crypto/bcrypt"
+
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats-server/v2/internal/ldap"
 	"github.com/nats-io/nkeys"
-	"golang.org/x/crypto/bcrypt"
 )
 
 // Authentication is an interface for implementing authentication
@@ -279,7 +280,7 @@ func (s *Server) configureAuthorization() {
 	// Check for server configured auth callouts.
 	if opts.AuthCallout != nil {
 		s.mu.Unlock()
-		// Make sure we have a valid account and auth_users.
+		// Give operator log entries if not valid account and auth_users.
 		_, err := s.lookupAccount(opts.AuthCallout.Account)
 		s.mu.Lock()
 		if err != nil {
@@ -290,7 +291,8 @@ func (s *Server) configureAuthorization() {
 			var found bool
 			if len(s.users) > 0 {
 				_, found = s.users[u]
-			} else if len(s.nkeys) > 0 && !found {
+			}
+			if !found && len(s.nkeys) > 0 {
 				_, found = s.nkeys[u]
 			}
 			if !found {
