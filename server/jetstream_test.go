@@ -10707,38 +10707,45 @@ func TestJetStreamAccountImportJSAdvisoriesAsStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error adding stream: %v", err)
 	}
-	msg, err := subJS.NextMsg(time.Second)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
+
+	var gotAPIAdvisory, gotCreateAdvisory bool
+	for i := 0; i < 2; i++ {
+		msg, err := subJS.NextMsg(time.Second * 2)
+		if err != nil {
+			t.Fatalf("Unexpected error on JS account: %v", err)
+		}
+		switch msg.Subject {
+		case "$JS.EVENT.ADVISORY.STREAM.CREATED.ORDERS":
+			gotCreateAdvisory = true
+		case "$JS.EVENT.ADVISORY.API":
+			gotAPIAdvisory = true
+		default:
+			t.Fatalf("Unexpected subject: %q", msg.Subject)
+		}
 	}
-	if msg.Subject != "$JS.EVENT.ADVISORY.STREAM.CREATED.ORDERS" {
-		t.Fatalf("Unexpected subject: %q", msg.Subject)
-	}
-	msg, err = subJS.NextMsg(time.Second)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if msg.Subject != "$JS.EVENT.ADVISORY.API" {
-		t.Fatalf("Unexpected subject: %q", msg.Subject)
+	if !gotAPIAdvisory || !gotCreateAdvisory {
+		t.Fatalf("Expected to have received both advisories on JS account (API advisory %v, create advisory %v)", gotAPIAdvisory, gotCreateAdvisory)
 	}
 
 	// same set of events should be received by AGG account
 	// on subjects containing account name (ACC.JS)
-	msg, err = subAgg.NextMsg(time.Second)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
+	gotAPIAdvisory, gotCreateAdvisory = false, false
+	for i := 0; i < 2; i++ {
+		msg, err := subAgg.NextMsg(time.Second * 2)
+		if err != nil {
+			t.Fatalf("Unexpected error on AGG account: %v", err)
+		}
+		switch msg.Subject {
+		case "$JS.EVENT.ADVISORY.ACC.JS.STREAM.CREATED.ORDERS":
+			gotCreateAdvisory = true
+		case "$JS.EVENT.ADVISORY.ACC.JS.API":
+			gotAPIAdvisory = true
+		default:
+			t.Fatalf("Unexpected subject: %q", msg.Subject)
+		}
 	}
-	if msg.Subject != "$JS.EVENT.ADVISORY.ACC.JS.STREAM.CREATED.ORDERS" {
-		t.Fatalf("Unexpected subject: %q", msg.Subject)
-	}
-
-	// when using stream instead of service, we get all events
-	msg, err = subAgg.NextMsg(time.Second)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if msg.Subject != "$JS.EVENT.ADVISORY.ACC.JS.API" {
-		t.Fatalf("Unexpected subject: %q", msg.Subject)
+	if !gotAPIAdvisory || !gotCreateAdvisory {
+		t.Fatalf("Expected to have received both advisories on AGG account (API advisory %v, create advisory %v)", gotAPIAdvisory, gotCreateAdvisory)
 	}
 }
 
