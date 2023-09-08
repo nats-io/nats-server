@@ -4321,14 +4321,14 @@ func TestNoRaceJetStreamSparseConsumers(t *testing.T) {
 
 			// We will purposely place foo msgs near the beginning, then in middle, then at the end.
 			for n := 0; n < 2; n++ {
-				_, err = js.PublishAsync("foo", msg)
+				_, err = js.PublishAsync("foo", msg, nats.StallWait(800*time.Millisecond))
 				require_NoError(t, err)
 
 				for i := 0; i < 1_000_000; i++ {
-					_, err = js.PublishAsync("bar", msg)
+					_, err = js.PublishAsync("bar", msg, nats.StallWait(800*time.Millisecond))
 					require_NoError(t, err)
 				}
-				_, err = js.PublishAsync("foo", msg)
+				_, err = js.PublishAsync("foo", msg, nats.StallWait(800*time.Millisecond))
 				require_NoError(t, err)
 			}
 			select {
