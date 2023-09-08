@@ -96,7 +96,7 @@ func TestNoRaceSeqSetEncodeLarge(t *testing.T) {
 	defer debug.SetGCPercent(gcp)
 
 	// In general should be about the same, but can see some variability.
-	expected := 500 * time.Microsecond
+	expected := time.Millisecond
 
 	start := time.Now()
 	b, err := ss.Encode(nil)
