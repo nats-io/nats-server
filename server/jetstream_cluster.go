@@ -2892,9 +2892,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				}
 			} else if isRecovering {
 				// On recovery, reset CLFS/FAILED.
-				mset.mu.Lock()
-				mset.clfs = ss.Failed
-				mset.mu.Unlock()
+				mset.setCLFS(ss.Failed)
 			}
 		} else if e.Type == EntryRemovePeer {
 			js.mu.RLock()
@@ -7268,7 +7266,7 @@ func (mset *stream) stateSnapshot() []byte {
 func (mset *stream) stateSnapshotLocked() []byte {
 	// Decide if we can support the new style of stream snapshots.
 	if mset.supportsBinarySnapshotLocked() {
-		snap, _ := mset.store.EncodedStreamState(mset.clfs)
+		snap, _ := mset.store.EncodedStreamState(mset.getCLFS())
 		return snap
 	}
 
@@ -7470,10 +7468,9 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	mset.clMu.Lock()
 	if mset.clseq == 0 || mset.clseq < lseq {
 		// Re-capture
-		lseq, clfs = mset.lastSeqAndCLFS()
+		lseq, clfs = mset.lseq, mset.clfs
 		mset.clseq = lseq + clfs
 	}
-
 	esm := encodeStreamMsgAllowCompress(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano(), mset.compressOK)
 	mset.clseq++
 
