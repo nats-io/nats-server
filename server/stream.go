@@ -979,7 +979,7 @@ func (mset *stream) rebuildDedupe() {
 func (mset *stream) lastSeqAndCLFS() (uint64, uint64) {
 	mset.mu.RLock()
 	defer mset.mu.RUnlock()
-	return mset.lseq, mset.clfs
+	return mset.lseq, mset.getCLFS()
 }
 
 func (mset *stream) clearCLFS() uint64 {
@@ -988,6 +988,18 @@ func (mset *stream) clearCLFS() uint64 {
 	clfs := mset.clfs
 	mset.clfs, mset.clseq = 0, 0
 	return clfs
+}
+
+func (mset *stream) getCLFS() uint64 {
+	mset.clMu.Lock()
+	defer mset.clMu.Unlock()
+	return mset.clfs
+}
+
+func (mset *stream) setCLFS(clfs uint64) {
+	mset.clMu.Lock()
+	mset.clfs = clfs
+	mset.clMu.Unlock()
 }
 
 func (mset *stream) lastSeq() uint64 {
