@@ -462,7 +462,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		if auth {
 			cc.AuthorizedUser = cc.user
 			// Add in account iff not the global account.
-			if cc.acc != "" && (cc.acc != globalAccountName) {
+			if cc.acc != _EMPTY_ && (cc.acc != globalAccountName) {
 				cc.Account = cc.acc
 			}
 		}
@@ -609,7 +609,7 @@ func (c *client) getRTT() time.Duration {
 
 func decodeBool(w http.ResponseWriter, r *http.Request, param string) (bool, error) {
 	str := r.URL.Query().Get(param)
-	if str == "" {
+	if str == _EMPTY_ {
 		return false, nil
 	}
 	val, err := strconv.ParseBool(str)
@@ -623,7 +623,7 @@ func decodeBool(w http.ResponseWriter, r *http.Request, param string) (bool, err
 
 func decodeUint64(w http.ResponseWriter, r *http.Request, param string) (uint64, error) {
 	str := r.URL.Query().Get(param)
-	if str == "" {
+	if str == _EMPTY_ {
 		return 0, nil
 	}
 	val, err := strconv.ParseUint(str, 10, 64)
@@ -637,7 +637,7 @@ func decodeUint64(w http.ResponseWriter, r *http.Request, param string) (uint64,
 
 func decodeInt(w http.ResponseWriter, r *http.Request, param string) (int, error) {
 	str := r.URL.Query().Get(param)
-	if str == "" {
+	if str == _EMPTY_ {
 		return 0, nil
 	}
 	val, err := strconv.Atoi(str)
@@ -651,7 +651,7 @@ func decodeInt(w http.ResponseWriter, r *http.Request, param string) (int, error
 
 func decodeState(w http.ResponseWriter, r *http.Request) (ConnState, error) {
 	str := r.URL.Query().Get("state")
-	if str == "" {
+	if str == _EMPTY_ {
 		return ConnOpen, nil
 	}
 	switch strings.ToLower(str) {
@@ -955,9 +955,9 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 		subdetail bool
 		test      bool
 		offset    int
+		testSub   string
+		filterAcc string
 		limit     = DefaultSubListSize
-		testSub   = ""
-		filterAcc = ""
 	)
 
 	if opts != nil {
@@ -970,14 +970,14 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 		if limit <= 0 {
 			limit = DefaultSubListSize
 		}
-		if opts.Test != "" {
+		if opts.Test != _EMPTY_ {
 			testSub = opts.Test
 			test = true
 			if !IsValidLiteralSubject(testSub) {
 				return nil, fmt.Errorf("invalid test subject, must be valid publish subject: %s", testSub)
 			}
 		}
-		if opts.Account != "" {
+		if opts.Account != _EMPTY_ {
 			filterAcc = opts.Account
 		}
 	}
@@ -992,7 +992,7 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 		subs := raw[:0]
 		s.accounts.Range(func(k, v interface{}) bool {
 			acc := v.(*Account)
-			if filterAcc != "" && acc.GetName() != filterAcc {
+			if filterAcc != _EMPTY_ && acc.GetName() != filterAcc {
 				return true
 			}
 			slStats.add(acc.sl.Stats())
@@ -1033,7 +1033,7 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 	} else {
 		s.accounts.Range(func(k, v interface{}) bool {
 			acc := v.(*Account)
-			if filterAcc != "" && acc.GetName() != filterAcc {
+			if filterAcc != _EMPTY_ && acc.GetName() != filterAcc {
 				return true
 			}
 			slStats.add(acc.sl.Stats())
@@ -2186,7 +2186,7 @@ func (s *Server) Leafz(opts *LeafzOptions) (*Leafz, error) {
 	if len(s.leafs) > 0 {
 		lconns = make([]*client, 0, len(s.leafs))
 		for _, ln := range s.leafs {
-			if opts != nil && opts.Account != "" {
+			if opts != nil && opts.Account != _EMPTY_ {
 				ln.mu.Lock()
 				ok := ln.acc.Name == opts.Account
 				ln.mu.Unlock()
@@ -2342,7 +2342,7 @@ func ResponseHandler(w http.ResponseWriter, r *http.Request, data []byte) {
 func handleResponse(code int, w http.ResponseWriter, r *http.Request, data []byte) {
 	// Get callback from request
 	callback := r.URL.Query().Get("callback")
-	if callback != "" {
+	if callback != _EMPTY_ {
 		// Response for JSONP
 		w.Header().Set("Content-Type", "application/javascript")
 		w.WriteHeader(code)
@@ -2668,7 +2668,7 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 	mappings := ExtMap{}
 	for _, m := range a.mappings {
 		var dests []*MapDest
-		src := ""
+		var src string
 		if m == nil {
 			src = "nil"
 			if _, ok := mappings[src]; ok { // only set if not present (keep orig in case nil is used)
@@ -2678,7 +2678,7 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 		} else {
 			src = m.src
 			for _, d := range m.dests {
-				dests = append(dests, &MapDest{d.tr.dest, d.weight, ""})
+				dests = append(dests, &MapDest{d.tr.dest, d.weight, _EMPTY_})
 			}
 			for c, cd := range m.cdests {
 				for _, d := range cd {
@@ -2802,7 +2802,7 @@ func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optCfg,
 	acc := jsa.account
 	name := acc.GetName()
 	id := name
-	if acc.nameTag != "" {
+	if acc.nameTag != _EMPTY_ {
 		name = acc.nameTag
 	}
 	jsa.usageMu.RLock()
@@ -3235,7 +3235,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 		}
 		// if no specific status code was set, set it based on the presence of errors
 		if health.StatusCode == 0 {
-			if health.Error != "" || len(health.Errors) != 0 {
+			if health.Error != _EMPTY_ || len(health.Errors) != 0 {
 				health.StatusCode = http.StatusServiceUnavailable
 			} else {
 				health.StatusCode = http.StatusOK
@@ -3243,7 +3243,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 		}
 	}()
 
-	if opts.Account == "" && opts.Stream != "" {
+	if opts.Account == _EMPTY_ && opts.Stream != _EMPTY_ {
 		health.StatusCode = http.StatusBadRequest
 		if !details {
 			health.Status = "error"
@@ -3257,7 +3257,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 		return health
 	}
 
-	if opts.Stream == "" && opts.Consumer != "" {
+	if opts.Stream == _EMPTY_ && opts.Consumer != _EMPTY_ {
 		health.StatusCode = http.StatusBadRequest
 		if !details {
 			health.Status = "error"
@@ -3328,7 +3328,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 			if fi.Name() == snapStagingDir {
 				continue
 			}
-			if opts.Account != "" {
+			if opts.Account != _EMPTY_ {
 				if fi.Name() != opts.Account {
 					continue
 				}
@@ -3350,7 +3350,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 			}
 			sfis, _ := os.ReadDir(filepath.Join(sdir, fi.Name(), "streams"))
 			for _, sfi := range sfis {
-				if opts.Stream != "" {
+				if opts.Stream != _EMPTY_ {
 					if sfi.Name() != opts.Stream {
 						continue
 					}
@@ -3374,7 +3374,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 				}
 				if streamFound {
 					// if consumer option is passed, verify that the consumer exists on stream
-					if opts.Consumer != "" {
+					if opts.Consumer != _EMPTY_ {
 						for _, cons := range s.consumers {
 							if cons.name == opts.Consumer {
 								consumerFound = true
@@ -3389,7 +3389,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 				break
 			}
 		}
-		if opts.Account != "" && !accFound {
+		if opts.Account != _EMPTY_ && !accFound {
 			health.StatusCode = http.StatusNotFound
 			if !details {
 				health.Status = na
@@ -3405,7 +3405,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 			}
 			return health
 		}
-		if opts.Stream != "" && !streamFound {
+		if opts.Stream != _EMPTY_ && !streamFound {
 			health.StatusCode = http.StatusNotFound
 			if !details {
 				health.Status = na
@@ -3422,7 +3422,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 			}
 			return health
 		}
-		if opts.Consumer != "" && !consumerFound {
+		if opts.Consumer != _EMPTY_ && !consumerFound {
 			health.StatusCode = http.StatusNotFound
 			if !details {
 				health.Status = na
@@ -3491,7 +3491,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 	// Copy the meta layer so we do not need to hold the js read lock for an extended period of time.
 	var streams map[string]map[string]*streamAssignment
 	js.mu.RLock()
-	if opts.Account == "" {
+	if opts.Account == _EMPTY_ {
 		streams = make(map[string]map[string]*streamAssignment, len(cc.streams))
 		for acc, asa := range cc.streams {
 			nasa := make(map[string]*streamAssignment)
@@ -3532,7 +3532,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 			return health
 		}
 		nasa := make(map[string]*streamAssignment)
-		if opts.Stream != "" {
+		if opts.Stream != _EMPTY_ {
 			sa, ok := asa[opts.Stream]
 			if !ok || !sa.Group.isMember(ourID) {
 				health.StatusCode = http.StatusNotFound
@@ -3556,7 +3556,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 			csa.consumers = make(map[string]*consumerAssignment)
 			var consumerFound bool
 			for consumer, ca := range sa.consumers {
-				if opts.Consumer != "" {
+				if opts.Consumer != _EMPTY_ {
 					if consumer != opts.Consumer || !ca.Group.isMember(ourID) {
 						continue
 					}
@@ -3570,7 +3570,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 					break
 				}
 			}
-			if opts.Consumer != "" && !consumerFound {
+			if opts.Consumer != _EMPTY_ && !consumerFound {
 				health.StatusCode = http.StatusNotFound
 				if !details {
 					health.Status = na
