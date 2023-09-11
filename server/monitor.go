@@ -3225,7 +3225,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 	}
 	details := opts.Details
 	defer func() {
-		// for response with details enabled, ses status to either "error" or "ok"
+		// for response with details enabled, set status to either "error" or "ok"
 		if details {
 			if len(health.Errors) != 0 {
 				health.Status = "error"
@@ -3492,6 +3492,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 	var streams map[string]map[string]*streamAssignment
 	js.mu.RLock()
 	if opts.Account == _EMPTY_ {
+		// Collect all relevant streams and consumers.
 		streams = make(map[string]map[string]*streamAssignment, len(cc.streams))
 		for acc, asa := range cc.streams {
 			nasa := make(map[string]*streamAssignment)

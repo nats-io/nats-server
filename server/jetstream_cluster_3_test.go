@@ -5555,7 +5555,7 @@ func TestJetStreamClusterCheckFileStoreBlkSizes(t *testing.T) {
 	nc, js := jsClientConnect(t, c.randomServer())
 	defer nc.Close()
 
-	// Nowmal Stream
+	// Normal Stream
 	_, err := js.AddStream(&nats.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"*"},
@@ -5633,4 +5633,52 @@ func TestJetStreamClusterCheckFileStoreBlkSizes(t *testing.T) {
 		fs = n.(*raft).wal.(*fileStore)
 		require_True(t, blkSize(fs) == defaultMediumBlockSize)
 	}
+}
+
+func TestJetStreamClusterDetectOrphanNRGs(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Normal Stream
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"*"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "DC",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	// We will force an orphan for a certain server.
+	s := c.randomNonStreamLeader(globalAccountName, "TEST")
+
+	mset, err := s.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	sgn := mset.raftNode().Group()
+	mset.clearRaftNode()
+
+	o := mset.lookupConsumer("DC")
+	require_True(t, o != nil)
+	ogn := o.raftNode().Group()
+	o.clearRaftNode()
+
+	require_NoError(t, js.DeleteStream("TEST"))
+
+	// Check that we do in fact have orphans.
+	require_True(t, s.numRaftNodes() > 1)
+
+	// This function will detect orphans and clean them up.
+	s.checkForNRGOrphans()
+
+	// Should only be meta NRG left.
+	require_True(t, s.numRaftNodes() == 1)
+	require_True(t, s.lookupRaftNode(sgn) == nil)
+	require_True(t, s.lookupRaftNode(ogn) == nil)
 }
