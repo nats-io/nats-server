@@ -18,6 +18,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -128,13 +131,14 @@ type fileLogger struct {
 	out       int64
 	canRotate int32
 	sync.Mutex
-	l      *Logger
-	f      writerAndCloser
-	limit  int64
-	olimit int64
-	pid    string
-	time   bool
-	closed bool
+	l            *Logger
+	f            writerAndCloser
+	limit        int64
+	olimit       int64
+	pid          string
+	time         bool
+	closed       bool
+	archiveLimit int
 }
 
 func newFileLogger(filename, pidPrefix string, time bool) (*fileLogger, error) {
@@ -169,6 +173,12 @@ func (l *fileLogger) setLimit(limit int64) {
 	}
 }
 
+func (l *fileLogger) setArchiveLimit(limit int) {
+	l.Lock()
+	l.archiveLimit = limit
+	l.Unlock()
+}
+
 func (l *fileLogger) logDirect(label, format string, v ...interface{}) int {
 	var entrya = [256]byte{}
 	var entry = entrya[:0]
@@ -188,6 +198,46 @@ func (l *fileLogger) logDirect(label, format string, v ...interface{}) int {
 	entry = append(entry, '\r', '\n')
 	l.f.Write(entry)
 	return len(entry)
+}
+
+func (l *fileLogger) archivePurge(fname string) {
+	// Evaluate number of saved backups for purge
+	// l readlock held
+	var backups []string
+	lDir := filepath.Dir(fname)
+	lBase := filepath.Base(fname)
+	entries, err := os.ReadDir(lDir)
+	if err != nil {
+		l.logDirect(l.l.errorLabel, "Unable to read directory %q for log purge (%v), will attempt next rotation", lDir, err)
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Name() == lBase || !strings.HasPrefix(entry.Name(), lBase) {
+			continue
+		}
+		stamp, found := strings.CutPrefix(entry.Name(), fmt.Sprintf("%s%s", lBase, "."))
+		if found {
+			_, err := time.Parse("2006:01:02:15:04:05.999999999", strings.Replace(stamp, ".", ":", 5))
+			if err == nil {
+				backups = append(backups, entry.Name())
+			}
+		}
+	}
+	archives := len(backups)
+	if archives > l.archiveLimit {
+		// Oldest to latest
+		sort.Slice(backups, func(i, j int) bool {
+			return backups[i] < backups[j]
+		})
+		for i := 0; i < archives-l.archiveLimit; i++ {
+			if err := os.Remove(fmt.Sprintf("%s%s%s", lDir, string(os.PathSeparator), backups[i])); err != nil {
+				l.logDirect(l.l.errorLabel, "Unable to remove backup log file %q (%v), will attempt next rotation", backups[i], err)
+				// Bail fast, we'll try again next rotation
+				return
+			}
+			l.logDirect(l.l.infoLabel, "Removed archived log file %q", backups[i])
+		}
+	}
 }
 
 func (l *fileLogger) Write(b []byte) (int, error) {
@@ -225,6 +275,9 @@ func (l *fileLogger) Write(b []byte) (int, error) {
 			n := l.logDirect(l.l.infoLabel, "Rotated log, backup saved as %q", bak)
 			l.out = int64(n)
 			l.limit = l.olimit
+			if l.archiveLimit > 0 {
+				l.archivePurge(fname)
+			}
 		}
 	}
 	l.Unlock()
@@ -254,6 +307,19 @@ func (l *Logger) SetSizeLimit(limit int64) error {
 	fl := l.fl
 	l.Unlock()
 	fl.setLimit(limit)
+	return nil
+}
+
+// SetArchiveLimit sets the number of archived log files that will be retained
+func (l *Logger) SetArchiveLimit(limit int) error {
+	l.Lock()
+	if l.fl == nil {
+		l.Unlock()
+		return fmt.Errorf("can set log archive limit only for file logger")
+	}
+	fl := l.fl
+	l.Unlock()
+	fl.setArchiveLimit(limit)
 	return nil
 }
 

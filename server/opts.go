@@ -311,6 +311,7 @@ type Options struct {
 	PortsFileDir          string            `json:"-"`
 	LogFile               string            `json:"-"`
 	LogSizeLimit          int64             `json:"-"`
+	LogMaxArchives        int64             `json:"-"`
 	Syslog                bool              `json:"-"`
 	RemoteSyslog          string            `json:"-"`
 	Routes                []*url.URL        `json:"-"`
@@ -999,6 +1000,8 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		o.LogFile = v.(string)
 	case "logfile_size_limit", "log_size_limit":
 		o.LogSizeLimit = v.(int64)
+	case "logfile_max_archives", "log_max_archives":
+		o.LogMaxArchives = v.(int64)
 	case "syslog":
 		o.Syslog = v.(bool)
 		trackExplicitVal(o, &o.inConfig, "Syslog", o.Syslog)
