@@ -5867,6 +5867,65 @@ func TestFileStoreFullStateTestSysRemovals(t *testing.T) {
 	})
 }
 
+func TestFileStoreSelectBlockWithFirstSeqRemovals(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize = 100
+		scfg := StreamConfig{
+			Name:       "zzz",
+			Subjects:   []string{"*"},
+			MaxMsgsPer: 1,
+			Storage:    FileStorage,
+		}
+
+		prf := func(context []byte) ([]byte, error) {
+			h := hmac.New(sha256.New, []byte("dlc22"))
+			if _, err := h.Write(context); err != nil {
+				return nil, err
+			}
+			return h.Sum(nil), nil
+		}
+		if fcfg.Cipher == NoCipher {
+			prf = nil
+		}
+
+		fs, err := newFileStoreWithCreated(fcfg, scfg, time.Now(), prf, nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// This yields an internal record length of 50 bytes. So 2 msgs per blk.
+		msgLen := 19
+		msg := bytes.Repeat([]byte("A"), msgLen)
+
+		subjects := "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz+@$^"
+		// We need over 32 blocks to kick in binary search. So 32*2+1 (65) msgs to get 33 blocks.
+		for i := 0; i < 32*2+1; i++ {
+			subj := string(subjects[i])
+			fs.StoreMsg(subj, nil, msg)
+		}
+		require_True(t, fs.numMsgBlocks() == 33)
+
+		// Now we want to delete the first msg of each block to move the first sequence.
+		// Want to do this via system removes, not user initiated moves.
+		for i := 0; i < len(subjects); i += 2 {
+			subj := string(subjects[i])
+			fs.StoreMsg(subj, nil, msg)
+		}
+
+		var ss StreamState
+		fs.FastState(&ss)
+
+		// We want to make sure that select always returns an index and a non-nil mb.
+		for seq := ss.FirstSeq; seq <= ss.LastSeq; seq++ {
+			fs.mu.RLock()
+			index, mb := fs.selectMsgBlockWithIndex(seq)
+			fs.mu.RUnlock()
+			require_True(t, index >= 0)
+			require_True(t, mb != nil)
+			require_True(t, (seq-1)/2 == uint64(index))
+		}
+	})
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////
