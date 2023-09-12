@@ -20,29 +20,29 @@ addons:
 
 jobs:
   include:
-    # - name: "Compile and various other checks"
-    #   env: TEST_SUITE=compile
-    # - name: "Run TestNoRace tests"
-    #   env: TEST_SUITE=no_race_tests
-    # - name: "Run JetStream tests"
-    #   env: TEST_SUITE=js_tests
-    # - name: "Run JetStream cluster tests (1)"
-    #   env: TEST_SUITE=js_cluster_tests_1
-    # - name: "Run JetStream cluster tests (2)"
-    #   env: TEST_SUITE=js_cluster_tests_2
-    # - name: "Run JetStream cluster tests (3)"
-    #   env: TEST_SUITE=js_cluster_tests_3
-    # - name: "Run JetStream super cluster tests"
-    #   env: TEST_SUITE=js_super_cluster_tests
+    - name: "Compile and various other checks"
+      env: TEST_SUITE=compile
+    - name: "Run TestNoRace tests"
+      env: TEST_SUITE=no_race_tests
+    - name: "Run JetStream tests"
+      env: TEST_SUITE=js_tests
+    - name: "Run JetStream cluster tests (1)"
+      env: TEST_SUITE=js_cluster_tests_1
+    - name: "Run JetStream cluster tests (2)"
+      env: TEST_SUITE=js_cluster_tests_2
+    - name: "Run JetStream cluster tests (3)"
+      env: TEST_SUITE=js_cluster_tests_3
+    - name: "Run JetStream super cluster tests"
+      env: TEST_SUITE=js_super_cluster_tests
     - name: "Run MQTT tests"
       env: TEST_SUITE=mqtt_tests
-    # - name: "Run non JetStream/MQTT tests from the server package"
-    #   env: TEST_SUITE=srv_pkg_non_js_tests
-    # - name: "Run all tests from all other packages"
-    #   env: TEST_SUITE=non_srv_pkg_tests
-    # - name: "Compile with older Go release"
-    #   go: "1.20"
-    #   env: TEST_SUITE=build_only
+    - name: "Run non JetStream/MQTT tests from the server package"
+      env: TEST_SUITE=srv_pkg_non_js_tests
+    - name: "Run all tests from all other packages"
+      env: TEST_SUITE=non_srv_pkg_tests
+    - name: "Compile with older Go release"
+      go: "1.20"
+      env: TEST_SUITE=build_only
 
 script: ./scripts/runTestsOnTravis.sh $TEST_SUITE
 
