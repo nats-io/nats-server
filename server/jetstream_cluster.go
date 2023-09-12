@@ -3642,8 +3642,13 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 		return
 	}
 
+	// Re-capture node.
+	js.mu.RLock()
+	node := rg.node
+	js.mu.RUnlock()
+
 	// Start our monitoring routine.
-	if rg.node != nil {
+	if node != nil {
 		if !alreadyRunning {
 			if mset != nil {
 				mset.monitorWg.Add(1)
