@@ -7114,7 +7114,7 @@ func TestJetStreamClusterStaleReadsOnRestart(t *testing.T) {
 				var fs StreamState
 				mset.store.FastState(&fs)
 				if !reflect.DeepEqual(fs, state) {
-					return fmt.Errorf("States do not match, exepected %+v but got %+v", state, fs)
+					return fmt.Errorf("States do not match, expected %+v but got %+v", state, fs)
 				}
 			}
 		}
