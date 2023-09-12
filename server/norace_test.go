@@ -4242,6 +4242,9 @@ func TestNoRaceJetStreamStreamInfoSubjectDetailsLimits(t *testing.T) {
 	nc, js := jsClientConnect(t, s, nats.UserInfo("me", "pwd"))
 	defer nc.Close()
 
+	// Make sure to flush so we process the 2nd INFO.
+	nc.Flush()
+
 	// Make sure we cannot send larger than 256 bytes.
 	// But we can receive larger.
 	sub, err := nc.SubscribeSync("foo")
