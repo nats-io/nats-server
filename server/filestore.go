@@ -2452,7 +2452,10 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 
 	// See if we need to figure out starting block per sseq.
 	if sseq > fs.state.FirstSeq {
-		seqStart, _ = fs.selectMsgBlockWithIndex(sseq)
+		// This should not, but can return -1, so make sure we check to avoid panic below.
+		if seqStart, _ = fs.selectMsgBlockWithIndex(sseq); seqStart < 0 {
+			seqStart = 0
+		}
 	}
 
 	var tsa, fsa [32]string
@@ -4738,6 +4741,7 @@ func (fs *fileStore) selectMsgBlock(seq uint64) *msgBlock {
 	return mb
 }
 
+// Lock should be held.
 func (fs *fileStore) selectMsgBlockWithIndex(seq uint64) (int, *msgBlock) {
 	// Check for out of range.
 	if seq < fs.state.FirstSeq || seq > fs.state.LastSeq {
@@ -4765,6 +4769,13 @@ func (fs *fileStore) selectMsgBlockWithIndex(seq uint64) (int, *msgBlock) {
 		if seq > last {
 			low = mid + 1
 		} else if seq < first {
+			// A message block's first sequence can change here meaning we could find a gap.
+			// We want to behave like above, which if inclusive (we check at start) should
+			// always return an index and a valid mb.
+			// If we have a gap then our seq would be > fs.blks[mid-1].last.seq
+			if mid == 0 || seq > atomic.LoadUint64(&fs.blks[mid-1].last.seq) {
+				return mid, mb
+			}
 			high = mid - 1
 		} else {
 			return mid, mb
