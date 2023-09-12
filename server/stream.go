@@ -2273,9 +2273,6 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 		}
 	}
 
-	js, stype := mset.js, mset.cfg.Storage
-	mset.mu.Unlock()
-
 	// Do the subject transform if there's one
 	if mset.mirror.tr != nil {
 		m.subj = mset.mirror.tr.TransformSubject(m.subj)
@@ -2293,7 +2290,9 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 		}
 	}
 
-	s := mset.srv
+	s, js, stype := mset.srv, mset.js, mset.cfg.Storage
+	mset.mu.Unlock()
+
 	var err error
 	if node != nil {
 		if js.limitsExceeded(stype) {
