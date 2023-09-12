@@ -7096,8 +7096,10 @@ func TestJetStreamClusterStaleReadsOnRestart(t *testing.T) {
 	c.restartServer(sl)
 	c.waitOnAllCurrent()
 
-	var state StreamState
+	// Allow the 3rd replica to be current.
+	time.Sleep(250 * time.Millisecond)
 
+	var state StreamState
 	for _, s := range c.servers {
 		if s.Running() {
 			mset, err := s.GlobalAccount().lookupStream("TEST")
