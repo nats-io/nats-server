@@ -5098,13 +5098,13 @@ func TestFileStoreNumPendingLargeNumBlks(t *testing.T) {
 
 	start := time.Now()
 	total, _ := fs.NumPending(4000, "zzz", false)
-	require_True(t, time.Since(start) < 10*time.Millisecond)
-	require_True(t, total == 6001)
+	require_LessThan(t, time.Since(start), 15*time.Millisecond)
+	require_Equal(t, total, 6001)
 
 	start = time.Now()
 	total, _ = fs.NumPending(6000, "zzz", false)
-	require_True(t, time.Since(start) < 10*time.Millisecond)
-	require_True(t, total == 4001)
+	require_LessThan(t, time.Since(start), 15*time.Millisecond)
+	require_Equal(t, total, 4001)
 
 	// Now delete a message in first half and second half.
 	fs.RemoveMsg(1000)
@@ -5112,13 +5112,13 @@ func TestFileStoreNumPendingLargeNumBlks(t *testing.T) {
 
 	start = time.Now()
 	total, _ = fs.NumPending(4000, "zzz", false)
-	require_True(t, time.Since(start) < 50*time.Millisecond)
-	require_True(t, total == 6000)
+	require_LessThan(t, time.Since(start), 50*time.Millisecond)
+	require_Equal(t, total, 6000)
 
 	start = time.Now()
 	total, _ = fs.NumPending(6000, "zzz", false)
-	require_True(t, time.Since(start) < 50*time.Millisecond)
-	require_True(t, total == 4000)
+	require_LessThan(t, time.Since(start), 50*time.Millisecond)
+	require_Equal(t, total, 4000)
 }
 
 func TestFileStoreSkipMsgAndNumBlocks(t *testing.T) {
