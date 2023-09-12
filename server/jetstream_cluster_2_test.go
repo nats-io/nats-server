@@ -7095,25 +7095,31 @@ func TestJetStreamClusterStaleReadsOnRestart(t *testing.T) {
 
 	c.restartServer(sl)
 	c.waitOnAllCurrent()
+	c.waitOnStreamLeader("$G", "TEST")
 
-	// Allow the 3rd replica to be current.
-	time.Sleep(250 * time.Millisecond)
-
+	// Grab expected from leader.
 	var state StreamState
-	for _, s := range c.servers {
-		if s.Running() {
-			mset, err := s.GlobalAccount().lookupStream("TEST")
-			require_NoError(t, err)
-			var fs StreamState
-			mset.store.FastState(&fs)
-			if state.FirstSeq == 0 {
-				state = fs
-			}
-			if !reflect.DeepEqual(fs, state) {
-				t.Fatalf("States do not match, exepected %+v but got %+v", state, fs)
+	sl = c.streamLeader("$G", "TEST")
+	mset, err := sl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	mset.store.FastState(&state)
+
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			if s.Running() {
+				mset, err := s.GlobalAccount().lookupStream("TEST")
+				if err != nil {
+					return err
+				}
+				var fs StreamState
+				mset.store.FastState(&fs)
+				if !reflect.DeepEqual(fs, state) {
+					return fmt.Errorf("States do not match, exepected %+v but got %+v", state, fs)
+				}
 			}
 		}
-	}
+		return nil
+	})
 }
 
 func TestJetStreamClusterReplicasChangeStreamInfo(t *testing.T) {
