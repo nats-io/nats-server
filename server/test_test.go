@@ -21,6 +21,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/exp/constraints"
 )
 
 // DefaultTestOptions are default options for the unit tests.
@@ -130,6 +132,13 @@ func require_Len(t *testing.T, a, b int) {
 	t.Helper()
 	if a != b {
 		t.Fatalf("require len, but got: %v != %v", a, b)
+	}
+}
+
+func require_LessThan[T constraints.Ordered](t *testing.T, a, b T) {
+	t.Helper()
+	if a >= b {
+		t.Fatalf("require %v to be less than %v", a, b)
 	}
 }
 
