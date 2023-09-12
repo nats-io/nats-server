@@ -75,7 +75,7 @@ elif [ "$1" = "mqtt_tests" ]; then
     # Run MQTT tests. By convention, all MQTT tests start with `TestMQTT`.
 
     set -x
-    go test -race -v -run=TestMQTTSubPropagation ./server -count=100 -vet=off -timeout=30m -failfast
+    go test -race -v -run=TestMQTT ./server -count=20 -vet=off -timeout=30m -failfast
 
 elif [ "$1" = "srv_pkg_non_js_tests" ]; then
 
