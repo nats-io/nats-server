@@ -1689,7 +1689,7 @@ func (n *raft) run() {
 	gw := s.gateway
 	for {
 		s.mu.Lock()
-		ready := len(s.routes)+len(s.leafs) > 0
+		ready := s.numRemotes()+len(s.leafs) > 0
 		if !ready && gw.enabled {
 			gw.RLock()
 			ready = len(gw.out)+len(gw.in) > 0

@@ -21,11 +21,14 @@ import (
 	"math/rand"
 	"net"
 	"net/url"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/klauspost/compress/s2"
 )
 
 // RouteType designates the router type
@@ -78,11 +81,23 @@ type route struct {
 	jetstream    bool
 	connectURLs  []string
 	wsConnURLs   []string
-	replySubs    map[*subscription]*time.Timer
 	gatewayURL   string
 	leafnodeURL  string
 	hash         string
 	idHash       string
+	// Location of the route in the slice: s.routes[remoteID][]*client.
+	// Initialized to -1 on creation, as to indicate that it is not
+	// added to the list.
+	poolIdx int
+	// If this is set, it means that the route is dedicated for this
+	// account and the account name will not be included in protocols.
+	accName []byte
+	// This is set to true if this is a route connection to an old
+	// server or a server that has pooling completely disabled.
+	noPool bool
+	// Selected compression mode, which may be different from the
+	// server configured mode.
+	compression string
 }
 
 type connectInfo struct {
@@ -109,10 +124,19 @@ const (
 const (
 	// Warning when user configures cluster TLS insecure
 	clusterTLSInsecureWarning = "TLS certificate chain and hostname of solicited routes will not be verified. DO NOT USE IN PRODUCTION!"
+
+	// The default ping interval is set to 2 minutes, which is fine for client
+	// connections, etc.. but for route compression, the CompressionS2Auto
+	// mode uses RTT measurements (ping/pong) to decide which compression level
+	// to use, we want the interval to not be that high.
+	defaultRouteMaxPingInterval = 30 * time.Second
 )
 
 // Can be changed for tests
-var routeConnectDelay = DEFAULT_ROUTE_CONNECT
+var (
+	routeConnectDelay    = DEFAULT_ROUTE_CONNECT
+	routeMaxPingInterval = defaultRouteMaxPingInterval
+)
 
 // removeReplySub is called when we trip the max on remoteReply subs.
 func (c *client) removeReplySub(sub *subscription) {
@@ -126,22 +150,8 @@ func (c *client) removeReplySub(sub *subscription) {
 			(v.(*Account)).sl.Remove(sub)
 		}
 		c.mu.Lock()
-		c.removeReplySubTimeout(sub)
 		delete(c.subs, string(sub.sid))
 		c.mu.Unlock()
-	}
-}
-
-// removeReplySubTimeout will remove a timer if it exists.
-// Lock should be held upon entering.
-func (c *client) removeReplySubTimeout(sub *subscription) {
-	// Remove any reply sub timer if it exists.
-	if c.route == nil || c.route.replySubs == nil {
-		return
-	}
-	if t, ok := c.route.replySubs[sub]; ok {
-		t.Stop()
-		delete(c.route.replySubs, sub)
 	}
 }
 
@@ -184,6 +194,13 @@ func (c *client) processRoutedOriginClusterMsgArgs(arg []byte) error {
 		args = append(args, arg[start:])
 	}
 
+	var an []byte
+	if c.kind == ROUTER {
+		if an = c.route.accName; len(an) > 0 && len(args) > 2 {
+			args = append(args[:2], args[1:]...)
+			args[1] = an
+		}
+	}
 	c.pa.arg = arg
 	switch len(args) {
 	case 0, 1, 2, 3, 4:
@@ -245,8 +262,11 @@ func (c *client) processRoutedOriginClusterMsgArgs(arg []byte) error {
 	c.pa.origin = args[0]
 	c.pa.account = args[1]
 	c.pa.subject = args[2]
-	c.pa.pacache = arg[len(args[0])+1 : len(args[0])+len(args[1])+len(args[2])+2]
-
+	if len(an) > 0 {
+		c.pa.pacache = c.pa.subject
+	} else {
+		c.pa.pacache = arg[len(args[0])+1 : len(args[0])+len(args[1])+len(args[2])+2]
+	}
 	return nil
 }
 
@@ -255,6 +275,12 @@ func (c *client) processRoutedHeaderMsgArgs(arg []byte) error {
 	// Unroll splitArgs to avoid runtime/heap issues
 	a := [MAX_HMSG_ARGS][]byte{}
 	args := a[:0]
+	var an []byte
+	if c.kind == ROUTER {
+		if an = c.route.accName; len(an) > 0 {
+			args = append(args, an)
+		}
+	}
 	start := -1
 	for i, b := range arg {
 		switch b {
@@ -333,7 +359,11 @@ func (c *client) processRoutedHeaderMsgArgs(arg []byte) error {
 	// Common ones processed after check for arg length
 	c.pa.account = args[0]
 	c.pa.subject = args[1]
-	c.pa.pacache = arg[:len(args[0])+len(args[1])+1]
+	if len(an) > 0 {
+		c.pa.pacache = c.pa.subject
+	} else {
+		c.pa.pacache = arg[:len(args[0])+len(args[1])+1]
+	}
 	return nil
 }
 
@@ -342,6 +372,12 @@ func (c *client) processRoutedMsgArgs(arg []byte) error {
 	// Unroll splitArgs to avoid runtime/heap issues
 	a := [MAX_RMSG_ARGS][]byte{}
 	args := a[:0]
+	var an []byte
+	if c.kind == ROUTER {
+		if an = c.route.accName; len(an) > 0 {
+			args = append(args, an)
+		}
+	}
 	start := -1
 	for i, b := range arg {
 		switch b {
@@ -405,7 +441,11 @@ func (c *client) processRoutedMsgArgs(arg []byte) error {
 	// Common ones processed after check for arg length
 	c.pa.account = args[0]
 	c.pa.subject = args[1]
-	c.pa.pacache = arg[:len(args[0])+len(args[1])+1]
+	if len(an) > 0 {
+		c.pa.pacache = c.pa.subject
+	} else {
+		c.pa.pacache = arg[:len(args[0])+len(args[1])+1]
+	}
 	return nil
 }
 
@@ -477,15 +517,6 @@ func (c *client) sendRouteConnect(clusterName string, tlsRequired bool) error {
 
 // Process the info message if we are a route.
 func (c *client) processRouteInfo(info *Info) {
-	// We may need to update route permissions and will need the account
-	// sublist. Since getting the account requires server lock, do the
-	// lookup now.
-
-	// FIXME(dlc) - Add account scoping.
-	gacc := c.srv.globalAccount()
-	gacc.mu.RLock()
-	sl := gacc.sl
-	gacc.mu.RUnlock()
 
 	supportsHeaders := c.srv.supportsHeaders()
 	clusterName := c.srv.ClusterName()
@@ -517,7 +548,7 @@ func (c *client) processRouteInfo(info *Info) {
 		// Use other if remote is non dynamic or their name is "bigger"
 		if s.isClusterNameDynamic() && (!info.Dynamic || (strings.Compare(clusterName, info.Cluster) < 0)) {
 			s.setClusterName(info.Cluster)
-			s.removeAllRoutesExcept(c)
+			s.removeAllRoutesExcept(info.ID)
 			c.mu.Lock()
 		} else {
 			c.closeConnection(ClusterNameConflict)
@@ -525,9 +556,85 @@ func (c *client) processRouteInfo(info *Info) {
 		}
 	}
 
+	opts := s.getOpts()
+
+	didSolicit := c.route.didSolicit
+
 	// If this is an async INFO from an existing route...
 	if c.flags.isSet(infoReceived) {
 		remoteID := c.route.remoteID
+
+		// Check if this is an INFO about adding a per-account route during
+		// a configuration reload.
+		if info.RouteAccReqID != _EMPTY_ {
+			c.mu.Unlock()
+
+			// If there is an account name, then the remote server is telling
+			// us that this account will now have its dedicated route.
+			if an := info.RouteAccount; an != _EMPTY_ {
+				acc, err := s.LookupAccount(an)
+				if err != nil {
+					s.Errorf("Error looking up account %q: %v", an, err)
+					return
+				}
+				s.mu.Lock()
+				if _, ok := s.accRoutes[an]; !ok {
+					s.accRoutes[an] = make(map[string]*client)
+				}
+				acc.mu.Lock()
+				sl := acc.sl
+				rpi := acc.routePoolIdx
+				// Make sure that the account was not already switched.
+				if rpi >= 0 {
+					s.setRouteInfo(acc)
+					// Change the route pool index to indicate that this
+					// account is actually transitioning. This will be used
+					// to suppress possible remote subscription interest coming
+					// in while the transition is happening.
+					acc.routePoolIdx = accTransitioningToDedicatedRoute
+				} else if info.RoutePoolSize == s.routesPoolSize {
+					// Otherwise, and if the other side's pool size matches
+					// ours, get the route pool index that was handling this
+					// account.
+					rpi = s.computeRoutePoolIdx(acc)
+				}
+				acc.mu.Unlock()
+				// Go over each remote's route at pool index `rpi` and remove
+				// remote subs for this account.
+				s.forEachRouteIdx(rpi, func(r *client) bool {
+					r.mu.Lock()
+					// Exclude routes to servers that don't support pooling.
+					if !r.route.noPool {
+						if subs := r.removeRemoteSubsForAcc(an); len(subs) > 0 {
+							sl.RemoveBatch(subs)
+						}
+					}
+					r.mu.Unlock()
+					return true
+				})
+				// Respond to the remote by clearing the RouteAccount field.
+				info.RouteAccount = _EMPTY_
+				proto := generateInfoJSON(info)
+				c.mu.Lock()
+				c.enqueueProto(proto)
+				c.mu.Unlock()
+				s.mu.Unlock()
+			} else {
+				// If no account name is specified, this is a response from the
+				// remote. Simply send to the communication channel, if the
+				// request ID matches the current one.
+				s.mu.Lock()
+				if info.RouteAccReqID == s.accAddedReqID && s.accAddedCh != nil {
+					select {
+					case s.accAddedCh <- struct{}{}:
+					default:
+					}
+				}
+				s.mu.Unlock()
+			}
+			// In both cases, we are done here.
+			return
+		}
 
 		// Check if this is an INFO for gateways...
 		if info.Gateway != _EMPTY_ {
@@ -556,34 +663,91 @@ func (c *client) processRouteInfo(info *Info) {
 
 		var connectURLs []string
 		var wsConnectURLs []string
+		var updateRoutePerms bool
 
 		// If we are notified that the remote is going into LDM mode, capture route's connectURLs.
 		if info.LameDuckMode {
 			connectURLs = c.route.connectURLs
 			wsConnectURLs = c.route.wsConnURLs
 		} else {
-			// If this is an update due to config reload on the remote server,
-			// need to possibly send local subs to the remote server.
-			c.updateRemoteRoutePerms(sl, info)
+			// Update only if we detect a difference
+			updateRoutePerms = !reflect.DeepEqual(c.opts.Import, info.Import) || !reflect.DeepEqual(c.opts.Export, info.Export)
 		}
 		c.mu.Unlock()
+
+		if updateRoutePerms {
+			s.updateRemoteRoutePerms(c, info)
+		}
 
 		// If the remote is going into LDM and there are client connect URLs
 		// associated with this route and we are allowed to advertise, remove
 		// those URLs and update our clients.
-		if (len(connectURLs) > 0 || len(wsConnectURLs) > 0) && !s.getOpts().Cluster.NoAdvertise {
+		if (len(connectURLs) > 0 || len(wsConnectURLs) > 0) && !opts.Cluster.NoAdvertise {
+			s.mu.Lock()
 			s.removeConnectURLsAndSendINFOToClients(connectURLs, wsConnectURLs)
+			s.mu.Unlock()
 		}
 		return
 	}
 
 	// Check if remote has same server name than this server.
-	if !c.route.didSolicit && info.Name == srvName {
+	if !didSolicit && info.Name == srvName {
 		c.mu.Unlock()
 		// This is now an error and we close the connection. We need unique names for JetStream clustering.
 		c.Errorf("Remote server has a duplicate name: %q", info.Name)
 		c.closeConnection(DuplicateServerName)
 		return
+	}
+
+	// First INFO, check if this server is configured for compression because
+	// if that is the case, we need to negotiate it with the remote server.
+	if needsCompression(opts.Cluster.Compression.Mode) {
+		accName := string(c.route.accName)
+		// If we did not yet negotiate...
+		if !c.flags.isSet(compressionNegotiated) {
+			// Prevent from getting back here.
+			c.flags.set(compressionNegotiated)
+			// Release client lock since following function will need server lock.
+			c.mu.Unlock()
+			compress, err := s.negotiateRouteCompression(c, didSolicit, accName, info.Compression, opts)
+			if err != nil {
+				c.sendErrAndErr(err.Error())
+				c.closeConnection(ProtocolViolation)
+				return
+			}
+			if compress {
+				// Done for now, will get back another INFO protocol...
+				return
+			}
+			// No compression because one side does not want/can't, so proceed.
+			c.mu.Lock()
+		} else if didSolicit {
+			// The other side has switched to compression, so we can now set
+			// the first ping timer and send the delayed INFO for situations
+			// where it was not already sent.
+			c.setFirstPingTimer()
+			if !routeShouldDelayInfo(accName, opts) {
+				cm := compressionModeForInfoProtocol(&opts.Cluster.Compression, c.route.compression)
+				// Need to release and then reacquire...
+				c.mu.Unlock()
+				s.sendDelayedRouteInfo(c, accName, cm)
+				c.mu.Lock()
+			}
+		}
+		// Check that the connection did not close if the lock was released.
+		if c.isClosed() {
+			c.mu.Unlock()
+			return
+		}
+	} else {
+		// Coming from an old server, the Compression field would be the empty
+		// string. For servers that are configured with CompressionNotSupported,
+		// this makes them behave as old servers.
+		if info.Compression == _EMPTY_ || opts.Cluster.Compression.Mode == CompressionNotSupported {
+			c.route.compression = CompressionNotSupported
+		} else {
+			c.route.compression = CompressionOff
+		}
 	}
 
 	// Mark that the INFO protocol has been received, so we can detect updates.
@@ -633,65 +797,123 @@ func (c *client) processRouteInfo(info *Info) {
 		}
 		c.route.url = url
 	}
+	// The incoming INFO from the route will have IP set
+	// if it has Cluster.Advertise. In that case, use that
+	// otherwise construct it from the remote TCP address.
+	if info.IP == _EMPTY_ {
+		// Need to get the remote IP address.
+		switch conn := c.nc.(type) {
+		case *net.TCPConn, *tls.Conn:
+			addr := conn.RemoteAddr().(*net.TCPAddr)
+			info.IP = fmt.Sprintf("nats-route://%s/", net.JoinHostPort(addr.IP.String(),
+				strconv.Itoa(info.Port)))
+		default:
+			info.IP = c.route.url.String()
+		}
+	}
+	// For accounts that are configured to have their own route:
+	// If this is a solicit route, we already have c.route.accName set in createRoute.
+	// For non solicited route (the accept side), we will set the account name that
+	// is present in the INFO protocol.
+	if !didSolicit {
+		c.route.accName = []byte(info.RouteAccount)
+	}
+	accName := string(c.route.accName)
 
 	// Check to see if we have this remote already registered.
 	// This can happen when both servers have routes to each other.
 	c.mu.Unlock()
 
-	if added, sendInfo := s.addRoute(c, info); added {
-		c.Debugf("Registering remote route %q", info.ID)
-
-		// Send our subs to the other side.
-		s.sendSubsToRoute(c)
-
-		// Send info about the known gateways to this route.
-		s.sendGatewayConfigsToRoute(c)
-
-		// sendInfo will be false if the route that we just accepted
-		// is the only route there is.
-		if sendInfo {
-			// The incoming INFO from the route will have IP set
-			// if it has Cluster.Advertise. In that case, use that
-			// otherwise construct it from the remote TCP address.
-			if info.IP == _EMPTY_ {
-				// Need to get the remote IP address.
-				c.mu.Lock()
-				switch conn := c.nc.(type) {
-				case *net.TCPConn, *tls.Conn:
-					addr := conn.RemoteAddr().(*net.TCPAddr)
-					info.IP = fmt.Sprintf("nats-route://%s/", net.JoinHostPort(addr.IP.String(),
-						strconv.Itoa(info.Port)))
-				default:
-					info.IP = c.route.url.String()
-				}
-				c.mu.Unlock()
-			}
-			// Now let the known servers know about this new route
-			s.forwardNewRouteInfoToKnownServers(info)
+	if added := s.addRoute(c, didSolicit, info, accName); added {
+		if accName != _EMPTY_ {
+			c.Debugf("Registering remote route %q for account %q", info.ID, accName)
+		} else {
+			c.Debugf("Registering remote route %q", info.ID)
 		}
-		// Unless disabled, possibly update the server's INFO protocol
-		// and send to clients that know how to handle async INFOs.
-		if !s.getOpts().Cluster.NoAdvertise {
-			s.addConnectURLsAndSendINFOToClients(info.ClientConnectURLs, info.WSConnectURLs)
-		}
-		// Add the remote's leafnodeURL to our list of URLs and send the update
-		// to all LN connections. (Note that when coming from a route, LeafNodeURLs
-		// is an array of size 1 max).
-		s.mu.Lock()
-		if len(info.LeafNodeURLs) == 1 && s.addLeafNodeURL(info.LeafNodeURLs[0]) {
-			s.sendAsyncLeafNodeInfo()
-		}
-		s.mu.Unlock()
 	} else {
 		c.Debugf("Detected duplicate remote route %q", info.ID)
 		c.closeConnection(DuplicateRoute)
 	}
 }
 
+func (s *Server) negotiateRouteCompression(c *client, didSolicit bool, accName, infoCompression string, opts *Options) (bool, error) {
+	// Negotiate the appropriate compression mode (or no compression)
+	cm, err := selectCompressionMode(opts.Cluster.Compression.Mode, infoCompression)
+	if err != nil {
+		return false, err
+	}
+	c.mu.Lock()
+	// For "auto" mode, set the initial compression mode based on RTT
+	if cm == CompressionS2Auto {
+		if c.rttStart.IsZero() {
+			c.rtt = computeRTT(c.start)
+		}
+		cm = selectS2AutoModeBasedOnRTT(c.rtt, opts.Cluster.Compression.RTTThresholds)
+	}
+	// Keep track of the negotiated compression mode.
+	c.route.compression = cm
+	c.mu.Unlock()
+
+	// If we end-up doing compression...
+	if needsCompression(cm) {
+		// Generate an INFO with the chosen compression mode.
+		s.mu.Lock()
+		infoProto := s.generateRouteInitialInfoJSON(accName, cm, 0)
+		s.mu.Unlock()
+
+		// If we solicited, then send this INFO protocol BEFORE switching
+		// to compression writer. However, if we did not, we send it after.
+		c.mu.Lock()
+		if didSolicit {
+			c.enqueueProto(infoProto)
+			// Make sure it is completely flushed (the pending bytes goes to
+			// 0) before proceeding.
+			for c.out.pb > 0 && !c.isClosed() {
+				c.flushOutbound()
+			}
+		}
+		// This is to notify the readLoop that it should switch to a
+		// (de)compression reader.
+		c.in.flags.set(switchToCompression)
+		// Create the compress writer before queueing the INFO protocol for
+		// a route that did not solicit. It will make sure that that proto
+		// is sent with compression on.
+		c.out.cw = s2.NewWriter(nil, s2WriterOptions(cm)...)
+		if !didSolicit {
+			c.enqueueProto(infoProto)
+		}
+		// We can now set the ping timer.
+		c.setFirstPingTimer()
+		c.mu.Unlock()
+		return true, nil
+	}
+	// We are not using compression, set the ping timer.
+	c.mu.Lock()
+	c.setFirstPingTimer()
+	c.mu.Unlock()
+	// If this is a solicited route, we need to send the INFO if it was not
+	// done during createRoute() and will not be done in addRoute().
+	if didSolicit && !routeShouldDelayInfo(accName, opts) {
+		cm = compressionModeForInfoProtocol(&opts.Cluster.Compression, cm)
+		s.sendDelayedRouteInfo(c, accName, cm)
+	}
+	return false, nil
+}
+
+func (s *Server) sendDelayedRouteInfo(c *client, accName, cm string) {
+	s.mu.Lock()
+	infoProto := s.generateRouteInitialInfoJSON(accName, cm, 0)
+	s.mu.Unlock()
+
+	c.mu.Lock()
+	c.enqueueProto(infoProto)
+	c.mu.Unlock()
+}
+
 // Possibly sends local subscriptions interest to this route
 // based on changes in the remote's Export permissions.
-// Lock assumed held on entry
-func (c *client) updateRemoteRoutePerms(sl *Sublist, info *Info) {
+func (s *Server) updateRemoteRoutePerms(c *client, info *Info) {
+	c.mu.Lock()
 	// Interested only on Export permissions for the remote server.
 	// Create "fake" clients that we will use to check permissions
 	// using the old permissions...
@@ -706,13 +928,38 @@ func (c *client) updateRemoteRoutePerms(sl *Sublist, info *Info) {
 	c.opts.Import = info.Import
 	c.opts.Export = info.Export
 
+	routeAcc, poolIdx, noPool := string(c.route.accName), c.route.poolIdx, c.route.noPool
+	c.mu.Unlock()
+
 	var (
 		_localSubs [4096]*subscription
-		localSubs  = _localSubs[:0]
+		_allSubs   [4096]*subscription
+		allSubs    = _allSubs[:0]
 	)
-	sl.localSubs(&localSubs, false)
 
-	c.sendRouteSubProtos(localSubs, false, func(sub *subscription) bool {
+	s.accounts.Range(func(_, v interface{}) bool {
+		acc := v.(*Account)
+		acc.mu.RLock()
+		accName, sl, accPoolIdx := acc.Name, acc.sl, acc.routePoolIdx
+		acc.mu.RUnlock()
+
+		// Do this only for accounts handled by this route
+		if (accPoolIdx >= 0 && accPoolIdx == poolIdx) || (routeAcc == accName) || noPool {
+			localSubs := _localSubs[:0]
+			sl.localSubs(&localSubs, false)
+			if len(localSubs) > 0 {
+				allSubs = append(allSubs, localSubs...)
+			}
+		}
+		return true
+	})
+
+	if len(allSubs) == 0 {
+		return
+	}
+
+	c.mu.Lock()
+	c.sendRouteSubProtos(allSubs, false, func(sub *subscription) bool {
 		subj := string(sub.subject)
 		// If the remote can now export but could not before, and this server can import this
 		// subject, then send SUB protocol.
@@ -721,6 +968,7 @@ func (c *client) updateRemoteRoutePerms(sl *Sublist, info *Info) {
 		}
 		return false
 	})
+	c.mu.Unlock()
 }
 
 // sendAsyncInfoToClients sends an INFO protocol to all
@@ -765,7 +1013,13 @@ func (s *Server) processImplicitRoute(info *Info) {
 		return
 	}
 	// Check if this route already exists
-	if _, exists := s.remotes[remoteID]; exists {
+	if accName := info.RouteAccount; accName != _EMPTY_ {
+		if remotes, ok := s.accRoutes[accName]; ok {
+			if r := remotes[remoteID]; r != nil {
+				return
+			}
+		}
+	} else if _, exists := s.routes[remoteID]; exists {
 		return
 	}
 	// Check if we have this route as a configured route
@@ -786,7 +1040,7 @@ func (s *Server) processImplicitRoute(info *Info) {
 	if info.AuthRequired {
 		r.User = url.UserPassword(opts.Cluster.Username, opts.Cluster.Password)
 	}
-	s.startGoRoutine(func() { s.connectToRoute(r, false, true) })
+	s.startGoRoutine(func() { s.connectToRoute(r, false, true, info.RouteAccount) })
 }
 
 // hasThisRouteConfigured returns true if info.Host:info.Port is present
@@ -805,10 +1059,8 @@ func (s *Server) hasThisRouteConfigured(info *Info) bool {
 // forwardNewRouteInfoToKnownServers sends the INFO protocol of the new route
 // to all routes known by this server. In turn, each server will contact this
 // new route.
+// Server lock held on entry.
 func (s *Server) forwardNewRouteInfoToKnownServers(info *Info) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	// Note: nonce is not used in routes.
 	// That being said, the info we get is the initial INFO which
 	// contains a nonce, but we now forward this to existing routes,
@@ -817,13 +1069,13 @@ func (s *Server) forwardNewRouteInfoToKnownServers(info *Info) {
 	b, _ := json.Marshal(info)
 	infoJSON := []byte(fmt.Sprintf(InfoProto, b))
 
-	for _, r := range s.routes {
+	s.forEachRemote(func(r *client) {
 		r.mu.Lock()
 		if r.route.remoteID != info.ID {
 			r.enqueueProto(infoJSON)
 		}
 		r.mu.Unlock()
-	}
+	})
 }
 
 // canImport is whether or not we will send a SUB for interest to the other side.
@@ -908,8 +1160,26 @@ func (c *client) removeRemoteSubs() {
 	// Now remove the subs by batch for each account sublist.
 	for _, ase := range as {
 		c.Debugf("Removing %d subscriptions for account %q", len(ase.subs), ase.acc.Name)
+		ase.acc.mu.Lock()
 		ase.acc.sl.RemoveBatch(ase.subs)
+		ase.acc.mu.Unlock()
 	}
+}
+
+// Removes (and returns) the subscriptions from this route's subscriptions map
+// that belong to the given account.
+// Lock is held on entry
+func (c *client) removeRemoteSubsForAcc(name string) []*subscription {
+	var subs []*subscription
+	for key, sub := range c.subs {
+		an := strings.Fields(key)[0]
+		if an == name {
+			sub.max = 0
+			subs = append(subs, sub)
+			delete(c.subs, key)
+		}
+	}
+	return subs
 }
 
 func (c *client) parseUnsubProto(arg []byte) (string, []byte, []byte, error) {
@@ -919,14 +1189,27 @@ func (c *client) parseUnsubProto(arg []byte) (string, []byte, []byte, error) {
 	args := splitArg(arg)
 	var queue []byte
 
-	switch len(args) {
-	case 2:
-	case 3:
-		queue = args[2]
-	default:
-		return "", nil, nil, fmt.Errorf("parse error: '%s'", arg)
+	var accountName string
+	subjIdx := 1
+	c.mu.Lock()
+	if c.kind == ROUTER && c.route != nil {
+		if accountName = string(c.route.accName); accountName != _EMPTY_ {
+			subjIdx = 0
+		}
 	}
-	return string(args[0]), args[1], queue, nil
+	c.mu.Unlock()
+
+	switch len(args) {
+	case subjIdx + 1:
+	case subjIdx + 2:
+		queue = args[subjIdx+1]
+	default:
+		return _EMPTY_, nil, nil, fmt.Errorf("parse error: '%s'", arg)
+	}
+	if accountName == _EMPTY_ {
+		accountName = string(args[0])
+	}
+	return accountName, args[subjIdx], queue, nil
 }
 
 // Indicates no more interest in the given account/subject for the remote side.
@@ -957,12 +1240,16 @@ func (c *client) processRemoteUnsub(arg []byte) (err error) {
 	updateGWs := false
 	// We store local subs by account and subject and optionally queue name.
 	// RS- will have the arg exactly as the key.
-	key := string(arg)
+	var key string
+	if c.kind == ROUTER && c.route != nil && len(c.route.accName) > 0 {
+		key = accountName + " " + string(arg)
+	} else {
+		key = string(arg)
+	}
 	sub, ok := c.subs[key]
 	if ok {
 		delete(c.subs, key)
 		acc.sl.Remove(sub)
-		c.removeReplySubTimeout(sub)
 		updateGWs = srv.gateway.enabled
 	}
 	c.mu.Unlock()
@@ -996,26 +1283,44 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 	args := splitArg(arg)
 	sub := &subscription{client: c}
 
-	var off int
+	// This value indicate what is the mandatory subject offset in the args
+	// slice. It varies based on the optional presence of origin or account name
+	// fields (tha latter would not be present for "per-account" routes).
+	var subjIdx int
+	// If account is present, this is its "char" position in arg slice.
+	var accPos int
 	if hasOrigin {
-		off = 1
+		// Set to 1, will be adjusted if the account is also expected.
+		subjIdx = 1
 		sub.origin = args[0]
+		// The account would start after the origin and trailing space.
+		accPos = len(sub.origin) + 1
 	}
-
+	c.mu.Lock()
+	accountName := string(c.route.accName)
+	c.mu.Unlock()
+	// If the route is dedicated to an account, accountName will not
+	// be empty. If it is, then the account must be in the protocol.
+	var accInProto bool
+	if accountName == _EMPTY_ {
+		subjIdx++
+		accInProto = true
+	}
 	switch len(args) {
-	case 2 + off:
+	case subjIdx + 1:
 		sub.queue = nil
-	case 4 + off:
-		sub.queue = args[2+off]
-		sub.qw = int32(parseSize(args[3+off]))
+	case subjIdx + 3:
+		sub.queue = args[subjIdx+1]
+		sub.qw = int32(parseSize(args[subjIdx+2]))
 	default:
 		return fmt.Errorf("processRemoteSub Parse Error: '%s'", arg)
 	}
-	sub.subject = args[1+off]
-
-	// Lookup the account
-	// FIXME(dlc) - This may start having lots of contention?
-	accountName := string(args[0+off])
+	sub.subject = args[subjIdx]
+	// If the account name is empty (not a "per-account" route), the account
+	// is at the index prior to the subject.
+	if accountName == _EMPTY_ {
+		accountName = string(args[subjIdx-1])
+	}
 	// Lookup account while avoiding fetch.
 	// A slow fetch delays subsequent remote messages. It also avoids the expired check (see below).
 	// With all but memory resolver lookup can be delayed or fail.
@@ -1076,19 +1381,51 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 	// We store local subs by account and subject and optionally queue name.
 	// If we have a queue it will have a trailing weight which we do not want.
 	if sub.queue != nil {
-		sub.sid = arg[len(sub.origin)+off : len(arg)-len(args[3+off])-1]
+		// if the account is in the protocol, we can reference directly "arg",
+		// otherwise, we need to allocate/construct the sid.
+		if accInProto {
+			sub.sid = arg[accPos : accPos+len(accountName)+1+len(sub.subject)+1+len(sub.queue)]
+		} else {
+			// It is unfortunate that we have to do this, but the gain of not
+			// having the account name in message protocols outweight the
+			// penalty of having to do this here for the processing of a
+			// subscription.
+			sub.sid = append(sub.sid, accountName...)
+			sub.sid = append(sub.sid, ' ')
+			sub.sid = append(sub.sid, sub.subject...)
+			sub.sid = append(sub.sid, ' ')
+			sub.sid = append(sub.sid, sub.queue...)
+		}
+	} else if accInProto {
+		sub.sid = arg[accPos:]
 	} else {
-		sub.sid = arg[len(sub.origin)+off:]
+		sub.sid = append(sub.sid, accountName...)
+		sub.sid = append(sub.sid, ' ')
+		sub.sid = append(sub.sid, sub.subject...)
 	}
 	key := string(sub.sid)
 
+	acc.mu.RLock()
+	// For routes (this can be called by leafnodes), check if the account is
+	// transitioning (from pool to dedicated route) and this route is not a
+	// per-account route (route.poolIdx >= 0). If so, ignore this subscription.
+	// Exclude "no pool" routes from this check.
+	if c.kind == ROUTER && !c.route.noPool &&
+		acc.routePoolIdx == accTransitioningToDedicatedRoute && c.route.poolIdx >= 0 {
+		acc.mu.RUnlock()
+		c.mu.Unlock()
+		// Do not return an error, which would cause the connection to be closed.
+		return nil
+	}
+	sl := acc.sl
+	acc.mu.RUnlock()
 	osub := c.subs[key]
 	updateGWs := false
 	delta := int32(1)
 	if osub == nil {
 		c.subs[key] = sub
 		// Now place into the account sl.
-		if err = acc.sl.Insert(sub); err != nil {
+		if err = sl.Insert(sub); err != nil {
 			delete(c.subs, key)
 			c.mu.Unlock()
 			c.Errorf("Could not insert subscription: %v", err)
@@ -1100,7 +1437,7 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 		// For a queue we need to update the weight.
 		delta = sub.qw - atomic.LoadInt32(&osub.qw)
 		atomic.StoreInt32(&osub.qw, sub.qw)
-		acc.sl.UpdateRemoteQSub(osub)
+		sl.UpdateRemoteQSub(osub)
 	}
 	c.mu.Unlock()
 
@@ -1118,6 +1455,7 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 	return nil
 }
 
+// Lock is held on entry
 func (c *client) addRouteSubOrUnsubProtoToBuf(buf []byte, accName string, sub *subscription, isSubProto bool) []byte {
 	// If we have an origin cluster and the other side supports leafnode origin clusters
 	// send an LS+/LS- version instead.
@@ -1136,8 +1474,10 @@ func (c *client) addRouteSubOrUnsubProtoToBuf(buf []byte, accName string, sub *s
 			buf = append(buf, rUnsubBytes...)
 		}
 	}
-	buf = append(buf, accName...)
-	buf = append(buf, ' ')
+	if len(c.route.accName) == 0 {
+		buf = append(buf, accName...)
+		buf = append(buf, ' ')
+	}
 	buf = append(buf, sub.subject...)
 	if len(sub.queue) > 0 {
 		buf = append(buf, ' ')
@@ -1162,20 +1502,27 @@ func (c *client) addRouteSubOrUnsubProtoToBuf(buf []byte, accName string, sub *s
 // the remote side. For each account we will send the
 // complete interest for all subjects, both normal as a binary
 // and queue group weights.
-func (s *Server) sendSubsToRoute(route *client) {
+//
+// Server lock held on entry.
+func (s *Server) sendSubsToRoute(route *client, idx int, account string) {
+	var noPool bool
+	if idx >= 0 {
+		// We need to check if this route is "no_pool" in which case we
+		// need to select all accounts.
+		route.mu.Lock()
+		noPool = route.route.noPool
+		route.mu.Unlock()
+	}
 	// Estimated size of all protocols. It does not have to be accurate at all.
 	var eSize int
-	// Copy of accounts.
-	accs := make([]*Account, 0, 32)
-
-	s.mu.RLock()
-	s.accounts.Range(func(k, v interface{}) bool {
-		a := v.(*Account)
-		accs = append(accs, a)
-		a.mu.RLock()
+	estimateProtosSize := func(a *Account, addAccountName bool) {
 		if ns := len(a.rm); ns > 0 {
-			// Proto looks like: "RS+ <account name> <subject>[ <queue> <weight>]\r\n"
-			eSize += ns * (len(rSubBytes) + len(a.Name) + 1 + 2)
+			var accSize int
+			if addAccountName {
+				accSize = len(a.Name) + 1
+			}
+			// Proto looks like: "RS+ [<account name> ]<subject>[ <queue> <weight>]\r\n"
+			eSize += ns * (len(rSubBytes) + 1 + accSize)
 			for key := range a.rm {
 				// Key contains "<subject>[ <queue>]"
 				eSize += len(key)
@@ -1185,10 +1532,34 @@ func (s *Server) sendSubsToRoute(route *client) {
 				eSize += 5
 			}
 		}
-		a.mu.RUnlock()
-		return true
-	})
-	s.mu.RUnlock()
+	}
+	// Send over our account subscriptions.
+	accs := make([]*Account, 0, 1024)
+	if idx < 0 || account != _EMPTY_ {
+		if ai, ok := s.accounts.Load(account); ok {
+			a := ai.(*Account)
+			a.mu.RLock()
+			// Estimate size and add account name in protocol if idx is not -1
+			estimateProtosSize(a, idx >= 0)
+			accs = append(accs, a)
+			a.mu.RUnlock()
+		}
+	} else {
+		s.accounts.Range(func(k, v interface{}) bool {
+			a := v.(*Account)
+			a.mu.RLock()
+			// We are here for regular or pooled routes (not per-account).
+			// So we collect all accounts whose routePoolIdx matches the
+			// one for this route, or only the account provided, or all
+			// accounts if dealing with a "no pool" route.
+			if a.routePoolIdx == idx || noPool {
+				estimateProtosSize(a, true)
+				accs = append(accs, a)
+			}
+			a.mu.RUnlock()
+			return true
+		})
+	}
 
 	buf := make([]byte, 0, eSize)
 
@@ -1212,9 +1583,11 @@ func (s *Server) sendSubsToRoute(route *client) {
 		}
 		a.mu.RUnlock()
 	}
-	route.enqueueProto(buf)
+	if len(buf) > 0 {
+		route.enqueueProto(buf)
+		route.Debugf("Sent local subscriptions to route")
+	}
 	route.mu.Unlock()
-	route.Debugf("Sent local subscriptions to route")
 }
 
 // Sends SUBs protocols for the given subscriptions. If a filter is specified, it is
@@ -1273,16 +1646,15 @@ func (c *client) sendRouteSubOrUnSubProtos(subs []*subscription, isSubProto, tra
 			c.traceOutOp("", buf[as:len(buf)-LEN_CR_LF])
 		}
 	}
-
 	c.enqueueProto(buf)
 }
 
-func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
+func (s *Server) createRoute(conn net.Conn, rURL *url.URL, accName string) *client {
 	// Snapshot server options.
 	opts := s.getOpts()
 
 	didSolicit := rURL != nil
-	r := &route{didSolicit: didSolicit}
+	r := &route{didSolicit: didSolicit, poolIdx: -1}
 	for _, route := range opts.Routes {
 		if rURL != nil && (strings.EqualFold(rURL.Host, route.Host)) {
 			r.routeType = Explicit
@@ -1291,17 +1663,21 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 
 	c := &client{srv: s, nc: conn, opts: ClientOpts{}, kind: ROUTER, msubs: -1, mpay: -1, route: r, start: time.Now()}
 
-	// Grab server variables
+	// Is the server configured for compression?
+	compressionConfigured := needsCompression(opts.Cluster.Compression.Mode)
+
+	var infoJSON []byte
+	// Grab server variables and generates route INFO Json. Note that we set
+	// and reset some of s.routeInfo fields when that happens, so we need
+	// the server write lock.
 	s.mu.Lock()
-	// New proto wants a nonce (although not used in routes, that is, not signed in CONNECT)
-	var raw [nonceLen]byte
-	nonce := raw[:]
-	s.generateNonce(nonce)
-	s.routeInfo.Nonce = string(nonce)
-	s.generateRouteInfoJSON()
-	// Clear now that it has been serialized. Will prevent nonce to be included in async INFO that we may send.
-	s.routeInfo.Nonce = _EMPTY_
-	infoJSON := s.routeInfoJSON
+	// If we are creating a pooled connection and this is the server soliciting
+	// the connection, we will delay sending the INFO after we have processed
+	// the incoming INFO from the remote. Also delay if configured for compression.
+	delayInfo := didSolicit && (compressionConfigured || routeShouldDelayInfo(accName, opts))
+	if !delayInfo {
+		infoJSON = s.generateRouteInitialInfoJSON(accName, opts.Cluster.Compression.Mode, 0)
+	}
 	authRequired := s.routeInfo.AuthRequired
 	tlsRequired := s.routeInfo.TLSRequired
 	clusterName := s.info.Cluster
@@ -1318,6 +1694,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 		// Do this before the TLS code, otherwise, in case of failure
 		// and if route is explicit, it would try to reconnect to 'nil'...
 		r.url = rURL
+		r.accName = []byte(accName)
 	} else {
 		c.flags.set(expectConnect)
 	}
@@ -1351,8 +1728,23 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 		c.setRoutePermissions(opts.Cluster.Permissions)
 	}
 
-	// Set the Ping timer
-	c.setFirstPingTimer()
+	// We can't safely send the pings until we have negotiated compression
+	// with the remote, but we want to protect against a connection that
+	// does not perform the handshake. We will start a timer that will close
+	// the connection as stale based on the ping interval and max out values,
+	// but without actually sending pings.
+	if compressionConfigured {
+		c.ping.tmr = time.AfterFunc(opts.PingInterval*time.Duration(opts.MaxPingsOut+1), func() {
+			c.mu.Lock()
+			c.Debugf("Stale Client Connection - Closing")
+			c.enqueueProto([]byte(fmt.Sprintf(errProto, "Stale Connection")))
+			c.mu.Unlock()
+			c.closeConnection(StaleConnection)
+		})
+	} else {
+		// Set the Ping timer
+		c.setFirstPingTimer()
+	}
 
 	// For routes, the "client" is added to s.routes only when processing
 	// the INFO protocol, that is much later.
@@ -1396,13 +1788,41 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL) *client {
 		}
 	}
 
-	// Send our info to the other side.
-	// Our new version requires dynamic information for accounts and a nonce.
-	c.enqueueProto(infoJSON)
+	if !delayInfo {
+		// Send our info to the other side.
+		// Our new version requires dynamic information for accounts and a nonce.
+		c.enqueueProto(infoJSON)
+	}
 	c.mu.Unlock()
 
 	c.Noticef("Route connection created")
 	return c
+}
+
+func routeShouldDelayInfo(accName string, opts *Options) bool {
+	return accName == _EMPTY_ && opts.Cluster.PoolSize >= 1
+}
+
+// Generates a nonce and set some route info's fields before marshal'ing into JSON.
+// To be used only when a route is created (to send the initial INFO protocol).
+//
+// Server lock held on entry.
+func (s *Server) generateRouteInitialInfoJSON(accName, compression string, poolIdx int) []byte {
+	// New proto wants a nonce (although not used in routes, that is, not signed in CONNECT)
+	var raw [nonceLen]byte
+	nonce := raw[:]
+	s.generateNonce(nonce)
+	ri := &s.routeInfo
+	// Override compression with s2_auto instead of actual compression level.
+	if s.getOpts().Cluster.Compression.Mode == CompressionS2Auto {
+		compression = CompressionS2Auto
+	}
+	ri.Nonce, ri.RouteAccount, ri.RoutePoolIdx, ri.Compression = string(nonce), accName, poolIdx, compression
+	infoJSON := generateInfoJSON(&s.routeInfo)
+	// Clear now that it has been serialized. Will prevent nonce to be included in async INFO that we may send.
+	// Same for some other fields.
+	ri.Nonce, ri.RouteAccount, ri.RoutePoolIdx, ri.Compression = _EMPTY_, _EMPTY_, 0, _EMPTY_
+	return infoJSON
 }
 
 const (
@@ -1410,84 +1830,292 @@ const (
 	_EMPTY_ = ""
 )
 
-func (s *Server) addRoute(c *client, info *Info) (bool, bool) {
-	id := c.route.remoteID
-	sendInfo := false
+func (s *Server) addRoute(c *client, didSolicit bool, info *Info, accName string) bool {
+	id := info.ID
 
 	s.mu.Lock()
-	if !s.running {
+	if !s.running || s.routesReject {
 		s.mu.Unlock()
-		return false, false
+		return false
 	}
-	remote, exists := s.remotes[id]
-	if !exists {
-		s.routes[c.cid] = c
-		s.remotes[id] = c
-		// check to be consistent and future proof. but will be same domain
-		if s.sameDomain(info.Domain) {
-			s.nodeToInfo.Store(c.route.hash,
-				nodeInfo{c.route.remoteName, s.info.Version, s.info.Cluster, info.Domain, id, nil, nil, nil, false, info.JetStream})
+	var invProtoErr string
+
+	opts := s.getOpts()
+
+	// Assume we are in pool mode if info.RoutePoolSize is set. We may disable
+	// in some cases.
+	pool := info.RoutePoolSize > 0
+	// This is used to prevent a server with pooling to constantly trying
+	// to connect to a server with no pooling (for instance old server) after
+	// the first connection is established.
+	var noReconnectForOldServer bool
+
+	// If the remote is an old server, info.RoutePoolSize will be 0, or if
+	// this server's Cluster.PoolSize is negative, we will behave as an old
+	// server and need to handle things differently.
+	if info.RoutePoolSize <= 0 || opts.Cluster.PoolSize < 0 {
+		if accName != _EMPTY_ {
+			invProtoErr = fmt.Sprintf("Not possible to have a dedicate route for account %q between those servers", accName)
+			// In this case, make sure this route does not attempt to reconnect
+			c.setNoReconnect()
+		} else {
+			// We will accept, but treat this remote has "no pool"
+			pool, noReconnectForOldServer = false, true
+			c.mu.Lock()
+			c.route.poolIdx = 0
+			c.route.noPool = true
+			c.mu.Unlock()
+			// Keep track of number of routes like that. We will use that when
+			// sending subscriptions over routes.
+			s.routesNoPool++
 		}
+	} else if s.routesPoolSize != info.RoutePoolSize {
+		// The cluster's PoolSize configuration must be an exact match with the remote server.
+		invProtoErr = fmt.Sprintf("Mismatch route pool size: %v vs %v", s.routesPoolSize, info.RoutePoolSize)
+	} else if didSolicit {
+		// For solicited route, the incoming's RoutePoolIdx should not be set.
+		if info.RoutePoolIdx != 0 {
+			invProtoErr = fmt.Sprintf("Route pool index should not be set but is set to %v", info.RoutePoolIdx)
+		}
+	} else if info.RoutePoolIdx < 0 || info.RoutePoolIdx >= s.routesPoolSize {
+		// For non solicited routes, if the remote sends a RoutePoolIdx, make
+		// sure it is a valid one (in range of the pool size).
+		invProtoErr = fmt.Sprintf("Invalid route pool index: %v - pool size is %v", info.RoutePoolIdx, info.RoutePoolSize)
+	}
+	if invProtoErr != _EMPTY_ {
+		s.mu.Unlock()
+		c.sendErrAndErr(invProtoErr)
+		c.closeConnection(ProtocolViolation)
+		return false
+	}
+	// If accName is set, we are dealing with a per-account connection.
+	if accName != _EMPTY_ {
+		// When an account has its own route, it will be an error if the given
+		// account name is not found in s.accRoutes map.
+		conns, exists := s.accRoutes[accName]
+		if !exists {
+			s.mu.Unlock()
+			c.sendErrAndErr(fmt.Sprintf("No route for account %q", accName))
+			c.closeConnection(ProtocolViolation)
+			return false
+		}
+		remote, exists := conns[id]
+		if !exists {
+			conns[id] = c
+			c.mu.Lock()
+			idHash := c.route.idHash
+			cid := c.cid
+			if c.last.IsZero() {
+				c.last = time.Now()
+			}
+			c.mu.Unlock()
+
+			// Store this route with key being the route id hash + account name
+			s.storeRouteByHash(idHash+accName, c)
+
+			// Now that we have registered the route, we can remove from the temp map.
+			s.removeFromTempClients(cid)
+
+			// Notify other routes about this new route
+			s.forwardNewRouteInfoToKnownServers(info)
+
+			// Send subscription interest
+			s.sendSubsToRoute(c, -1, accName)
+		} else {
+			handleDuplicateRoute(remote, c, true)
+		}
+		s.mu.Unlock()
+		return !exists
+	}
+	var remote *client
+	// That will be the position of the connection in the slice, we initialize
+	// to -1 to indicate that no space was found.
+	idx := -1
+	// This will be the size (or number of connections) in a given slice.
+	sz := 0
+	// Check if we know about the remote server
+	conns, exists := s.routes[id]
+	if !exists {
+		// No, create a slice for route connections of the size of the pool
+		// or 1 when not in pool mode.
+		conns = make([]*client, s.routesPoolSize)
+		// Track this slice for this remote server.
+		s.routes[id] = conns
+		// Set the index to info.RoutePoolIdx because if this is a solicited
+		// route, this value will be 0, which is what we want, otherwise, we
+		// will use whatever index the remote has chosen.
+		idx = info.RoutePoolIdx
+	} else if pool {
+		// The remote was found. If this is a non solicited route, we will place
+		// the connection in the pool at the index given by info.RoutePoolIdx.
+		// But if there is already one, close this incoming connection as a
+		// duplicate.
+		if !didSolicit {
+			idx = info.RoutePoolIdx
+			if remote = conns[idx]; remote != nil {
+				handleDuplicateRoute(remote, c, false)
+				s.mu.Unlock()
+				return false
+			}
+		}
+		// For all cases (solicited and not) we need to count how many connections
+		// we already have, and for solicited route, we will find a free spot in
+		// the slice.
+		for i, r := range conns {
+			if idx == -1 && r == nil {
+				idx = i
+			} else if r != nil {
+				sz++
+			}
+		}
+	} else {
+		remote = conns[0]
+	}
+	// If there is a spot, idx will be greater or equal to 0.
+	if idx >= 0 {
 		c.mu.Lock()
 		c.route.connectURLs = info.ClientConnectURLs
 		c.route.wsConnURLs = info.WSConnectURLs
+		c.route.poolIdx = idx
+		rtype := c.route.routeType
 		cid := c.cid
-		hash := c.route.hash
 		idHash := c.route.idHash
+		rHash := c.route.hash
+		rn := c.route.remoteName
+		url := c.route.url
+		// For solicited routes, we need now to send the INFO protocol.
+		if didSolicit {
+			c.enqueueProto(s.generateRouteInitialInfoJSON(_EMPTY_, c.route.compression, idx))
+		}
+		if c.last.IsZero() {
+			c.last = time.Now()
+		}
 		c.mu.Unlock()
 
+		// Add to the slice and bump the count of connections for this remote
+		conns[idx] = c
+		sz++
+		// This boolean will indicate that we are registering the only
+		// connection in non pooled situation or we stored the very first
+		// connection for a given remote server.
+		doOnce := !pool || sz == 1
+		if doOnce {
+			// check to be consistent and future proof. but will be same domain
+			if s.sameDomain(info.Domain) {
+				s.nodeToInfo.Store(rHash,
+					nodeInfo{rn, s.info.Version, s.info.Cluster, info.Domain, id, nil, nil, nil, false, info.JetStream, false})
+			}
+		}
+
 		// Store this route using the hash as the key
-		s.storeRouteByHash(hash, idHash, c)
+		if pool {
+			idHash += strconv.Itoa(idx)
+		}
+		s.storeRouteByHash(idHash, c)
 
 		// Now that we have registered the route, we can remove from the temp map.
 		s.removeFromTempClients(cid)
 
-		// we don't need to send if the only route is the one we just accepted.
-		sendInfo = len(s.routes) > 1
+		if doOnce {
+			// If the INFO contains a Gateway URL, add it to the list for our cluster.
+			if info.GatewayURL != _EMPTY_ && s.addGatewayURL(info.GatewayURL) {
+				s.sendAsyncGatewayInfo()
+			}
 
-		// If the INFO contains a Gateway URL, add it to the list for our cluster.
-		if info.GatewayURL != _EMPTY_ && s.addGatewayURL(info.GatewayURL) {
-			s.sendAsyncGatewayInfo()
+			// we don't need to send if the only route is the one we just accepted.
+			if len(s.routes) > 1 {
+				// Now let the known servers know about this new route
+				s.forwardNewRouteInfoToKnownServers(info)
+			}
+
+			// Send info about the known gateways to this route.
+			s.sendGatewayConfigsToRoute(c)
+
+			// Unless disabled, possibly update the server's INFO protocol
+			// and send to clients that know how to handle async INFOs.
+			if !opts.Cluster.NoAdvertise {
+				s.addConnectURLsAndSendINFOToClients(info.ClientConnectURLs, info.WSConnectURLs)
+			}
+
+			// Add the remote's leafnodeURL to our list of URLs and send the update
+			// to all LN connections. (Note that when coming from a route, LeafNodeURLs
+			// is an array of size 1 max).
+			if len(info.LeafNodeURLs) == 1 && s.addLeafNodeURL(info.LeafNodeURLs[0]) {
+				s.sendAsyncLeafNodeInfo()
+			}
+		}
+
+		// Send the subscriptions interest.
+		s.sendSubsToRoute(c, idx, _EMPTY_)
+
+		// In pool mode, if we did not yet reach the cap, try to connect a new connection
+		if pool && didSolicit && sz != s.routesPoolSize {
+			s.startGoRoutine(func() {
+				select {
+				case <-time.After(time.Duration(rand.Intn(100)) * time.Millisecond):
+				case <-s.quitCh:
+					// Doing this here and not as a defer because connectToRoute is also
+					// calling s.grWG.Done() on exit, so we do this only if we don't
+					// invoke connectToRoute().
+					s.grWG.Done()
+					return
+				}
+				s.connectToRoute(url, rtype == Explicit, true, _EMPTY_)
+			})
 		}
 	}
 	s.mu.Unlock()
-
+	if pool {
+		if idx == -1 {
+			// Was full, so need to close connection
+			c.Debugf("Route pool size reached, closing extra connection to %q", id)
+			handleDuplicateRoute(nil, c, true)
+			return false
+		}
+		return true
+	}
+	// This is for non-pool mode at this point.
 	if exists {
-		var r *route
-
-		c.mu.Lock()
-		// upgrade to solicited?
-		if c.route.didSolicit {
-			// Make a copy
-			rs := *c.route
-			r = &rs
-		}
-		// Since this duplicate route is going to be removed, make sure we clear
-		// c.route.leafnodeURL, otherwise, when processing the disconnect, this
-		// would cause the leafnode URL for that remote server to be removed
-		// from our list. Same for gateway...
-		c.route.leafnodeURL, c.route.gatewayURL = _EMPTY_, _EMPTY_
-		// Same for the route hash otherwise it would be removed from s.routesByHash.
-		c.route.hash, c.route.idHash = _EMPTY_, _EMPTY_
-		c.mu.Unlock()
-
-		remote.mu.Lock()
-		// r will be not nil if c.route.didSolicit was true
-		if r != nil {
-			// If we upgrade to solicited, we still want to keep the remote's
-			// connectURLs. So transfer those.
-			r.connectURLs = remote.route.connectURLs
-			r.wsConnURLs = remote.route.wsConnURLs
-			remote.route = r
-		}
-		// This is to mitigate the issue where both sides add the route
-		// on the opposite connection, and therefore end-up with both
-		// connections being dropped.
-		remote.route.retry = true
-		remote.mu.Unlock()
+		handleDuplicateRoute(remote, c, noReconnectForOldServer)
 	}
 
-	return !exists, sendInfo
+	return !exists
+}
+
+func handleDuplicateRoute(remote, c *client, setNoReconnect bool) {
+	// We used to clear some fields when closing a duplicate connection
+	// to prevent sending INFO protocols for the remotes to update
+	// their leafnode/gateway URLs. This is no longer needed since
+	// removeRoute() now does the right thing of doing that only when
+	// the closed connection was an added route connection.
+	c.mu.Lock()
+	didSolicit := c.route.didSolicit
+	url := c.route.url
+	rtype := c.route.routeType
+	if setNoReconnect {
+		c.flags.set(noReconnect)
+	}
+	c.mu.Unlock()
+
+	if remote == nil {
+		return
+	}
+
+	remote.mu.Lock()
+	if didSolicit && !remote.route.didSolicit {
+		remote.route.didSolicit = true
+		remote.route.url = url
+	}
+	// The extra route might be an configured explicit route
+	// so keep the state that the remote was configured.
+	if rtype == Explicit {
+		remote.route.routeType = rtype
+	}
+	// This is to mitigate the issue where both sides add the route
+	// on the opposite connection, and therefore end-up with both
+	// connections being dropped.
+	remote.route.retry = true
+	remote.mu.Unlock()
 }
 
 // Import filter check.
@@ -1590,8 +2218,45 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 	routes := _routes[:0]
 
 	s.mu.RLock()
-	for _, route := range s.routes {
-		routes = append(routes, route)
+	// The account's routePoolIdx field is set/updated under the server lock
+	// (but also the account's lock). So we don't need to acquire the account's
+	// lock here to get the value.
+	if poolIdx := acc.routePoolIdx; poolIdx < 0 {
+		if conns, ok := s.accRoutes[acc.Name]; ok {
+			for _, r := range conns {
+				routes = append(routes, r)
+			}
+		}
+		if s.routesNoPool > 0 {
+			// We also need to look for "no pool" remotes (that is, routes to older
+			// servers or servers that have explicitly disabled pooling).
+			s.forEachRemote(func(r *client) {
+				r.mu.Lock()
+				if r.route.noPool {
+					routes = append(routes, r)
+				}
+				r.mu.Unlock()
+			})
+		}
+	} else {
+		// We can't use s.forEachRouteIdx here since we want to check/get the
+		// "no pool" route ONLY if we don't find a route at the given `poolIdx`.
+		for _, conns := range s.routes {
+			if r := conns[poolIdx]; r != nil {
+				routes = append(routes, r)
+			} else if s.routesNoPool > 0 {
+				// Check if we have a "no pool" route at index 0, and if so, it
+				// means that for this remote, we have a single connection because
+				// that server does not have pooling.
+				if r := conns[0]; r != nil {
+					r.mu.Lock()
+					if r.route.noPool {
+						routes = append(routes, r)
+					}
+					r.mu.Unlock()
+				}
+			}
+		}
 	}
 	trace := atomic.LoadInt32(&s.logging.trace) == 1
 	s.mu.RUnlock()
@@ -1702,6 +2367,14 @@ func (s *Server) startRouteAcceptLoop() {
 		Dynamic:      s.isClusterNameDynamic(),
 		LNOC:         true,
 	}
+	// For tests that want to simulate old servers, do not set the compression
+	// on the INFO protocol if configured with CompressionNotSupported.
+	if cm := opts.Cluster.Compression.Mode; cm != CompressionNotSupported {
+		info.Compression = cm
+	}
+	if ps := opts.Cluster.PoolSize; ps > 0 {
+		info.RoutePoolSize = ps
+	}
 	// Set this if only if advertise is not disabled
 	if !opts.Cluster.NoAdvertise {
 		info.ClientConnectURLs = s.clientConnectURLs
@@ -1762,10 +2435,10 @@ func (s *Server) startRouteAcceptLoop() {
 	}
 
 	// Start the accept loop in a different go routine.
-	go s.acceptConnections(l, "Route", func(conn net.Conn) { s.createRoute(conn, nil) }, nil)
+	go s.acceptConnections(l, "Route", func(conn net.Conn) { s.createRoute(conn, nil, _EMPTY_) }, nil)
 
 	// Solicit Routes if applicable. This will not block.
-	s.solicitRoutes(opts.Routes)
+	s.solicitRoutes(opts.Routes, opts.Cluster.PinnedAccounts)
 
 	s.mu.Unlock()
 }
@@ -1786,8 +2459,6 @@ func (s *Server) setRouteInfoHostPortAndIP() error {
 		s.routeInfo.Port = opts.Cluster.Port
 		s.routeInfo.IP = ""
 	}
-	// (re)generate the routeInfoJSON byte array
-	s.generateRouteInfoJSON()
 	return nil
 }
 
@@ -1805,7 +2476,7 @@ func (s *Server) StartRouting(clientListenReady chan struct{}) {
 
 }
 
-func (s *Server) reConnectToRoute(rURL *url.URL, rtype RouteType) {
+func (s *Server) reConnectToRoute(rURL *url.URL, rtype RouteType, accName string) {
 	tryForEver := rtype == Explicit
 	// If A connects to B, and B to A (regardless if explicit or
 	// implicit - due to auto-discovery), and if each server first
@@ -1822,7 +2493,7 @@ func (s *Server) reConnectToRoute(rURL *url.URL, rtype RouteType) {
 		s.grWG.Done()
 		return
 	}
-	s.connectToRoute(rURL, tryForEver, false)
+	s.connectToRoute(rURL, tryForEver, false, accName)
 }
 
 // Checks to make sure the route is still valid.
@@ -1835,7 +2506,7 @@ func (s *Server) routeStillValid(rURL *url.URL) bool {
 	return false
 }
 
-func (s *Server) connectToRoute(rURL *url.URL, tryForEver, firstConnect bool) {
+func (s *Server) connectToRoute(rURL *url.URL, tryForEver, firstConnect bool, accName string) {
 	// Snapshot server options.
 	opts := s.getOpts()
 
@@ -1850,8 +2521,18 @@ func (s *Server) connectToRoute(rURL *url.URL, tryForEver, firstConnect bool) {
 
 	attempts := 0
 	for s.isRunning() && rURL != nil {
-		if tryForEver && !s.routeStillValid(rURL) {
-			return
+		if tryForEver {
+			if !s.routeStillValid(rURL) {
+				return
+			}
+			if accName != _EMPTY_ {
+				s.mu.RLock()
+				_, valid := s.accRoutes[accName]
+				s.mu.RUnlock()
+				if !valid {
+					return
+				}
+			}
 		}
 		var conn net.Conn
 		address, err := s.getRandomIP(resolver, rURL.Host, excludedAddresses)
@@ -1893,7 +2574,7 @@ func (s *Server) connectToRoute(rURL *url.URL, tryForEver, firstConnect bool) {
 
 		// We have a route connection here.
 		// Go ahead and create it and exit this func.
-		s.createRoute(conn, rURL)
+		s.createRoute(conn, rURL, accName)
 		return
 	}
 }
@@ -1918,11 +2599,18 @@ func (s *Server) saveRouteTLSName(routes []*url.URL) {
 // Start connection process to provided routes. Each route connection will
 // be started in a dedicated go routine.
 // Lock is held on entry
-func (s *Server) solicitRoutes(routes []*url.URL) {
+func (s *Server) solicitRoutes(routes []*url.URL, accounts []string) {
 	s.saveRouteTLSName(routes)
 	for _, r := range routes {
 		route := r
-		s.startGoRoutine(func() { s.connectToRoute(route, true, true) })
+		s.startGoRoutine(func() { s.connectToRoute(route, true, true, _EMPTY_) })
+	}
+	// Now go over possible per-account routes and create them.
+	for _, an := range accounts {
+		for _, r := range routes {
+			route, accName := r, an
+			s.startGoRoutine(func() { s.connectToRoute(route, true, true, accName) })
+		}
 	}
 }
 
@@ -1968,7 +2656,10 @@ func (c *client) processRouteConnect(srv *Server, arg []byte, lang string) error
 				if !proto.Dynamic {
 					srv.getOpts().Cluster.Name = proto.Cluster
 				}
-				srv.removeAllRoutesExcept(c)
+				c.mu.Lock()
+				remoteID := c.opts.Name
+				c.mu.Unlock()
+				srv.removeAllRoutesExcept(remoteID)
 				shouldReject = false
 			}
 		}
@@ -1994,11 +2685,24 @@ func (c *client) processRouteConnect(srv *Server, arg []byte, lang string) error
 }
 
 // Called when we update our cluster name during negotiations with remotes.
-func (s *Server) removeAllRoutesExcept(c *client) {
+func (s *Server) removeAllRoutesExcept(remoteID string) {
 	s.mu.Lock()
-	routes := make([]*client, 0, len(s.routes))
-	for _, r := range s.routes {
-		if r != c {
+	routes := make([]*client, 0, s.numRoutes())
+	for rID, conns := range s.routes {
+		if rID == remoteID {
+			continue
+		}
+		for _, r := range conns {
+			if r != nil {
+				routes = append(routes, r)
+			}
+		}
+	}
+	for _, conns := range s.accRoutes {
+		for rID, r := range conns {
+			if rID == remoteID {
+				continue
+			}
 			routes = append(routes, r)
 		}
 	}
@@ -2010,63 +2714,192 @@ func (s *Server) removeAllRoutesExcept(c *client) {
 }
 
 func (s *Server) removeRoute(c *client) {
-	var rID string
-	var lnURL string
-	var gwURL string
-	var hash string
-	var idHash string
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var (
+		rID           string
+		lnURL         string
+		gwURL         string
+		idHash        string
+		accName       string
+		poolIdx       = -1
+		connectURLs   []string
+		wsConnectURLs []string
+		opts          = s.getOpts()
+		rURL          *url.URL
+		noPool        bool
+	)
 	c.mu.Lock()
 	cid := c.cid
 	r := c.route
 	if r != nil {
 		rID = r.remoteID
 		lnURL = r.leafnodeURL
-		hash = r.hash
 		idHash = r.idHash
 		gwURL = r.gatewayURL
+		poolIdx = r.poolIdx
+		accName = string(r.accName)
+		if r.noPool {
+			s.routesNoPool--
+			noPool = true
+		}
+		connectURLs = r.connectURLs
+		wsConnectURLs = r.wsConnURLs
+		rURL = r.url
 	}
 	c.mu.Unlock()
-	s.mu.Lock()
-	delete(s.routes, cid)
-	if r != nil {
-		rc, ok := s.remotes[rID]
-		// Only delete it if it is us..
-		if ok && c == rc {
-			delete(s.remotes, rID)
+	if accName != _EMPTY_ {
+		if conns, ok := s.accRoutes[accName]; ok {
+			if r := conns[rID]; r == c {
+				s.removeRouteByHash(idHash + accName)
+				delete(conns, rID)
+				// Do not remove or set to nil when all remotes have been
+				// removed from the map. The configured accounts must always
+				// be in the accRoutes map and addRoute expects "conns" map
+				// to be created.
+			}
 		}
-		// Remove the remote's gateway URL from our list and
-		// send update to inbound Gateway connections.
-		if gwURL != _EMPTY_ && s.removeGatewayURL(gwURL) {
-			s.sendAsyncGatewayInfo()
+	}
+	// If this is still -1, it means that it was not added to the routes
+	// so simply remove from temp clients and we are done.
+	if poolIdx == -1 || accName != _EMPTY_ {
+		s.removeFromTempClients(cid)
+		return
+	}
+	if conns, ok := s.routes[rID]; ok {
+		// If this route was not the one stored, simply remove from the
+		// temporary map and be done.
+		if conns[poolIdx] != c {
+			s.removeFromTempClients(cid)
+			return
 		}
-		// Remove the remote's leafNode URL from
-		// our list and send update to LN connections.
-		if lnURL != _EMPTY_ && s.removeLeafNodeURL(lnURL) {
-			s.sendAsyncLeafNodeInfo()
+		conns[poolIdx] = nil
+		// Now check if this was the last connection to be removed.
+		empty := true
+		for _, c := range conns {
+			if c != nil {
+				empty = false
+				break
+			}
 		}
-		s.removeRouteByHash(hash, idHash)
+		// This was the last route for this remote. Remove the remote entry
+		// and possibly send some async INFO protocols regarding gateway
+		// and leafnode URLs.
+		if empty {
+			delete(s.routes, rID)
+
+			// Since this is the last route for this remote, possibly update
+			// the client connect URLs and send an update to connected
+			// clients.
+			if (len(connectURLs) > 0 || len(wsConnectURLs) > 0) && !opts.Cluster.NoAdvertise {
+				s.removeConnectURLsAndSendINFOToClients(connectURLs, wsConnectURLs)
+			}
+			// Remove the remote's gateway URL from our list and
+			// send update to inbound Gateway connections.
+			if gwURL != _EMPTY_ && s.removeGatewayURL(gwURL) {
+				s.sendAsyncGatewayInfo()
+			}
+			// Remove the remote's leafNode URL from
+			// our list and send update to LN connections.
+			if lnURL != _EMPTY_ && s.removeLeafNodeURL(lnURL) {
+				s.sendAsyncLeafNodeInfo()
+			}
+			// If this server has pooling and the route for this remote
+			// was a "no pool" route, attempt to reconnect.
+			if s.routesPoolSize > 1 && noPool {
+				s.startGoRoutine(func() { s.connectToRoute(rURL, true, true, _EMPTY_) })
+			}
+		}
+		// This is for gateway code. Remove this route from a map that uses
+		// the route hash in combination with the pool index as the key.
+		if s.routesPoolSize > 1 {
+			idHash += strconv.Itoa(poolIdx)
+		}
+		s.removeRouteByHash(idHash)
 	}
 	s.removeFromTempClients(cid)
-	s.mu.Unlock()
 }
 
 func (s *Server) isDuplicateServerName(name string) bool {
 	if name == _EMPTY_ {
 		return false
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	if s.info.Name == name {
 		return true
 	}
-	for _, r := range s.routes {
-		r.mu.Lock()
-		duplicate := r.route.remoteName == name
-		r.mu.Unlock()
-		if duplicate {
-			return true
+	for _, conns := range s.routes {
+		for _, r := range conns {
+			if r != nil {
+				r.mu.Lock()
+				duplicate := r.route.remoteName == name
+				r.mu.Unlock()
+				if duplicate {
+					return true
+				}
+				break
+			}
 		}
 	}
 	return false
+}
+
+// Goes over each non-nil route connection for all remote servers
+// and invokes the function `f`. It does not go over per-account
+// routes.
+// Server lock is held on entry.
+func (s *Server) forEachNonPerAccountRoute(f func(r *client)) {
+	for _, conns := range s.routes {
+		for _, r := range conns {
+			if r != nil {
+				f(r)
+			}
+		}
+	}
+}
+
+// Goes over each non-nil route connection for all remote servers
+// and invokes the function `f`. This also includes the per-account
+// routes.
+// Server lock is held on entry.
+func (s *Server) forEachRoute(f func(r *client)) {
+	s.forEachNonPerAccountRoute(f)
+	for _, conns := range s.accRoutes {
+		for _, r := range conns {
+			f(r)
+		}
+	}
+}
+
+// Goes over each non-nil route connection at the given pool index
+// location in the slice and invokes the function `f`. If the
+// callback returns `true`, this function moves to the next remote.
+// Otherwise, the iteration over removes stops.
+// This does not include per-account routes.
+// Server lock is held on entry.
+func (s *Server) forEachRouteIdx(idx int, f func(r *client) bool) {
+	for _, conns := range s.routes {
+		if r := conns[idx]; r != nil {
+			if !f(r) {
+				return
+			}
+		}
+	}
+}
+
+// Goes over each remote and for the first non nil route connection,
+// invokes the function `f`.
+// Server lock is held on entry.
+func (s *Server) forEachRemote(f func(r *client)) {
+	for _, conns := range s.routes {
+		for _, r := range conns {
+			if r != nil {
+				f(r)
+				break
+			}
+		}
+	}
 }

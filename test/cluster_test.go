@@ -74,7 +74,7 @@ func checkExpectedSubs(expected int, servers ...*server.Server) error {
 	return nil
 }
 
-func checkSubInterest(t *testing.T, s *server.Server, accName, subject string, timeout time.Duration) {
+func checkSubInterest(t testing.TB, s *server.Server, accName, subject string, timeout time.Duration) {
 	t.Helper()
 	checkFor(t, timeout, 15*time.Millisecond, func() error {
 		acc, err := s.LookupAccount(accName)

@@ -448,6 +448,7 @@ func TestParseHeaderPubArg(t *testing.T) {
 
 func TestParseRoutedHeaderMsg(t *testing.T) {
 	c := dummyRouteClient()
+	c.route = &route{}
 
 	pub := []byte("HMSG $foo foo 10 8\r\nXXXhello\r")
 	if err := c.parse(pub); err == nil {
@@ -565,6 +566,7 @@ func TestParseRoutedHeaderMsg(t *testing.T) {
 
 func TestParseRouteMsg(t *testing.T) {
 	c := dummyRouteClient()
+	c.route = &route{}
 
 	pub := []byte("MSG $foo foo 5\r\nhello\r")
 	err := c.parse(pub)

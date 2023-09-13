@@ -367,6 +367,7 @@ func TestAccountSubjectMapping(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	sub1.AutoUnsubscribe(numMessages * 2)
+	nc1.Flush()
 
 	nc2 := clientConnectToServer(t, s)
 	defer nc2.Close()
@@ -385,7 +386,12 @@ func TestAccountSubjectMapping(t *testing.T) {
 	partitionsReceived := make([]int, numMessages)
 
 	for i := 0; i < numMessages; i++ {
-		subject := <-subjectsReceived
+		var subject string
+		select {
+		case subject = <-subjectsReceived:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Timed out waiting for messages")
+		}
 		sTokens := strings.Split(subject, ".")
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
@@ -415,21 +421,21 @@ func TestAccountSubjectMapping(t *testing.T) {
 	}
 }
 
-// test token and partition subject mapping within an account
+// test token subject mapping within an account
 // Alice imports from Bob with subject mapping
 func TestAccountImportSubjectMapping(t *testing.T) {
 	conf := createConfFile(t, []byte(`
-		port: -1
-		accounts {
-		  A {
-			users: [{user: a,  pass: x}]
-			imports [ {stream: {account: B, subject: "foo.*.*"}, to : "foo.$1.{{wildcard(2)}}.{{partition(10,1,2)}}"}]
-		  }
-		  B {
-			users: [{user: b, pass x}]
-		    exports [ { stream: ">" } ]
-		  }
-		}
+                port: -1
+                accounts {
+                  A {
+                      users: [{user: a,  pass: x}]
+                      imports [ {stream: {account: B, subject: "foo.*.*"}, to : "foo.$1.{{wildcard(2)}}"}]
+                  }
+                  B {
+                      users: [{user: b, pass x}]
+                      exports [ { stream: ">" } ]
+                  }
+                }
 	`))
 
 	s, opts := RunServerWithConfig(conf)
@@ -442,57 +448,43 @@ func TestAccountImportSubjectMapping(t *testing.T) {
 	subjectsReceived := make(chan string)
 
 	msg := []byte("HELLO")
-	sub1, err := ncA.Subscribe("foo.*.*.*", func(m *nats.Msg) {
+	sub1, err := ncA.Subscribe("foo.*.*", func(m *nats.Msg) {
 		subjectsReceived <- m.Subject
 	})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	sub1.AutoUnsubscribe(numMessages * 2)
+	sub1.AutoUnsubscribe(numMessages)
+	ncA.Flush()
 
 	ncB := clientConnectToServerWithUP(t, opts, "b", "x")
 	defer ncB.Close()
 
-	// publish numMessages with an increasing id (should map to partition numbers with the range of 10 partitions) - twice
-	for j := 0; j < 2; j++ {
-		for i := 0; i < numMessages; i++ {
-			err = ncB.Publish(fmt.Sprintf("foo.%d.%d", i, numMessages-i), msg)
-			if err != nil {
-				t.Fatalf("Unexpected error: %v", err)
-			}
+	// publish numMessages with an increasing id
+
+	for i := 0; i < numMessages; i++ {
+		err = ncB.Publish(fmt.Sprintf("foo.%d.%d", i, numMessages-i), msg)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
 		}
 	}
 
-	// verify all the partition numbers are in the expected range
-	partitionsReceived := make([]int, numMessages)
-
 	for i := 0; i < numMessages; i++ {
-		subject := <-subjectsReceived
+		var subject string
+		select {
+		case subject = <-subjectsReceived:
+		case <-time.After(1 * time.Second):
+			t.Fatal("Timed out waiting for messages")
+		}
 		sTokens := strings.Split(subject, ".")
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 		t1, _ := strconv.Atoi(sTokens[1])
 		t2, _ := strconv.Atoi(sTokens[2])
-		partitionsReceived[i], err = strconv.Atoi(sTokens[3])
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
 
-		if partitionsReceived[i] > 9 || partitionsReceived[i] < 0 || t1 != i || t2 != numMessages-i {
-			t.Fatalf("Error received unexpected %d.%d to partition %d", t1, t2, partitionsReceived[i])
-		}
-	}
-
-	// verify hashing is deterministic by checking it produces the same exact result twice
-	for i := 0; i < numMessages; i++ {
-		subject := <-subjectsReceived
-		partitionNumber, err := strconv.Atoi(strings.Split(subject, ".")[3])
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		if partitionsReceived[i] != partitionNumber {
-			t.Fatalf("Error: same id mapped to two different partitions")
+		if t1 != i || t2 != numMessages-i {
+			t.Fatalf("Error received unexpected %d.%d", t1, t2)
 		}
 	}
 }

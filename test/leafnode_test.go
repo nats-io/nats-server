@@ -199,7 +199,7 @@ func setupLeaf(t *testing.T, lc net.Conn, expectedSubs int) (sendFun, expectFun)
 	send, expect := setupConn(t, lc)
 	// A loop detection subscription is sent, so consume this here, along
 	// with the ones that caller expect on setup.
-	expectNumberOfProtos(t, expect, lsubRe, expectedSubs, infoRe, pingRe)
+	expectNumberOfProtos(t, expect, lsubRe, expectedSubs, infoStartRe, pingRe)
 	return send, expect
 }
 
@@ -439,7 +439,7 @@ func TestLeafNodeAndRoutes(t *testing.T) {
 	lc := createLeafConn(t, optsA.LeafNode.Host, optsA.LeafNode.Port)
 	defer lc.Close()
 
-	leafSend, leafExpect := setupLeaf(t, lc, 5)
+	leafSend, leafExpect := setupLeaf(t, lc, 6)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -833,7 +833,7 @@ func TestLeafNodeGatewaySendsSystemEvent(t *testing.T) {
 	defer lc.Close()
 
 	// This is for our global responses since we are setting up GWs above.
-	leafSend, leafExpect := setupLeaf(t, lc, 7)
+	leafSend, leafExpect := setupLeaf(t, lc, 8)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -874,17 +874,18 @@ func TestLeafNodeGatewayInterestPropagation(t *testing.T) {
 	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
 	defer lc.Close()
 	_, leafExpect := setupConn(t, lc)
-	buf := leafExpect(infoRe)
-	buf = infoRe.ReplaceAll(buf, []byte(nil))
+	buf := leafExpect(infoStartRe)
+	buf = infoStartRe.ReplaceAll(buf, []byte(nil))
+
 	foundFoo := false
-	for count := 0; count != 9; {
+	for count := 0; count < 10; {
 		// skip first time if we still have data (buf from above may already have some left)
 		if count != 0 || len(buf) == 0 {
 			buf = append(buf, leafExpect(anyRe)...)
 		}
 		count += len(lsubRe.FindAllSubmatch(buf, -1))
-		if count > 9 {
-			t.Fatalf("Expected %v matches, got %v (buf=%s)", 8, count, buf)
+		if count > 10 {
+			t.Fatalf("Expected %v matches, got %v (buf=%s)", 10, count, buf)
 		}
 		if strings.Contains(string(buf), "foo") {
 			foundFoo = true
@@ -936,7 +937,7 @@ func TestLeafNodeWithRouteAndGateway(t *testing.T) {
 	defer lc.Close()
 
 	// This is for our global responses since we are setting up GWs above.
-	leafSend, leafExpect := setupLeaf(t, lc, 7)
+	leafSend, leafExpect := setupLeaf(t, lc, 8)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -995,7 +996,7 @@ func TestLeafNodeWithGatewaysAndStaggeredStart(t *testing.T) {
 	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
 	defer lc.Close()
 
-	leafSend, leafExpect := setupLeaf(t, lc, 7)
+	leafSend, leafExpect := setupLeaf(t, lc, 8)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -1035,7 +1036,7 @@ func TestLeafNodeWithGatewaysServerRestart(t *testing.T) {
 	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
 	defer lc.Close()
 
-	leafSend, leafExpect := setupLeaf(t, lc, 7)
+	leafSend, leafExpect := setupLeaf(t, lc, 8)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 
@@ -1069,7 +1070,7 @@ func TestLeafNodeWithGatewaysServerRestart(t *testing.T) {
 	lc = createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
 	defer lc.Close()
 
-	_, leafExpect = setupLeaf(t, lc, 7)
+	_, leafExpect = setupLeaf(t, lc, 8)
 
 	// Now wait on GW solicit to fire
 	time.Sleep(500 * time.Millisecond)
@@ -1186,7 +1187,9 @@ func runTLSSolicitLeafServer(lso *server.Options) (*server.Server, *server.Optio
 	host, _, _ := net.SplitHostPort(lso.LeafNode.Host)
 	remote.TLSConfig.ServerName = host
 	remote.TLSConfig.InsecureSkipVerify = true
+	remote.Compression.Mode = server.CompressionOff
 	o.LeafNode.Remotes = []*server.RemoteLeafOpts{remote}
+	o.LeafNode.Compression.Mode = server.CompressionOff
 	return RunServer(&o), &o
 }
 
@@ -2040,7 +2043,7 @@ func TestLeafNodeExportImportComplexSetup(t *testing.T) {
 
 	// Wait for the sub to propagate to s2. LDS + subject above.
 	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
-		if acc1.RoutedSubs() != 5 {
+		if acc1.RoutedSubs() != 6 {
 			return fmt.Errorf("Still no routed subscription: %d", acc1.RoutedSubs())
 		}
 		return nil
@@ -2614,7 +2617,7 @@ func TestLeafNodeSwitchGatewayToInterestModeOnly(t *testing.T) {
 	defer lc.Close()
 
 	// This is for our global responses since we are setting up GWs above.
-	leafSend, leafExpect := setupLeaf(t, lc, 7)
+	leafSend, leafExpect := setupLeaf(t, lc, 8)
 	leafSend("PING\r\n")
 	leafExpect(pongRe)
 }
@@ -3525,7 +3528,7 @@ func TestClusterTLSMixedIPAndDNS(t *testing.T) {
 	bConfigTemplate := `
 		listen: 127.0.0.1:-1
 		leafnodes {
-			listen: "localhost:-1"
+			listen: "127.0.0.1:-1"
 			tls {
 				cert_file: "./configs/certs/server-cert.pem"
 				key_file:  "./configs/certs/server-key.pem"

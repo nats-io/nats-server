@@ -25,6 +25,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1615,6 +1616,7 @@ func (o *consumer) setInActiveDeleteThreshold(dthresh time.Duration) error {
 
 // Net Proxy - For introducing RTT and BW constraints.
 type netProxy struct {
+	sync.RWMutex
 	listener net.Listener
 	conns    []net.Conn
 	rtt      time.Duration
@@ -1667,8 +1669,8 @@ func (np *netProxy) start() {
 				continue
 			}
 			np.conns = append(np.conns, client, server)
-			go np.loop(np.rtt, np.up, client, server)
-			go np.loop(np.rtt, np.down, server, client)
+			go np.loop(np.up, client, server)
+			go np.loop(np.down, server, client)
 		}
 	}()
 }
@@ -1681,8 +1683,7 @@ func (np *netProxy) routeURL() string {
 	return strings.Replace(np.url, "nats", "nats-route", 1)
 }
 
-func (np *netProxy) loop(rtt time.Duration, tbw int, r, w net.Conn) {
-	delay := rtt / 2
+func (np *netProxy) loop(tbw int, r, w net.Conn) {
 	const rbl = 8192
 	var buf [rbl]byte
 	ctx := context.Background()
@@ -1692,9 +1693,13 @@ func (np *netProxy) loop(rtt time.Duration, tbw int, r, w net.Conn) {
 	for {
 		n, err := r.Read(buf[:])
 		if err != nil {
+			w.Close()
 			return
 		}
 		// RTT delays
+		np.RLock()
+		delay := np.rtt / 2
+		np.RUnlock()
 		if delay > 0 {
 			time.Sleep(delay)
 		}
@@ -1702,9 +1707,16 @@ func (np *netProxy) loop(rtt time.Duration, tbw int, r, w net.Conn) {
 			return
 		}
 		if _, err = w.Write(buf[:n]); err != nil {
+			r.Close()
 			return
 		}
 	}
+}
+
+func (np *netProxy) updateRTT(rtt time.Duration) {
+	np.Lock()
+	np.rtt = rtt
+	np.Unlock()
 }
 
 func (np *netProxy) stop() {

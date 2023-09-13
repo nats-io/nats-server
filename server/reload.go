@@ -24,7 +24,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/klauspost/compress/s2"
+
 	"github.com/nats-io/jwt/v2"
+	"github.com/nats-io/nuid"
 )
 
 // FlagSnapshot captures the server options as specified by CLI flags at
@@ -57,6 +60,10 @@ type option interface {
 	// cluster permissions.
 	IsClusterPermsChange() bool
 
+	// IsClusterPoolSizeOrAccountsChange indicates if this option requires
+	// special handling for changes in cluster's pool size or accounts list.
+	IsClusterPoolSizeOrAccountsChange() bool
+
 	// IsJetStreamChange inidicates a change in the servers config for JetStream.
 	// Account changes will be handled separately in reloadAuthorization.
 	IsJetStreamChange() bool
@@ -85,6 +92,10 @@ func (n noopOption) IsTLSChange() bool {
 }
 
 func (n noopOption) IsClusterPermsChange() bool {
+	return false
+}
+
+func (n noopOption) IsClusterPoolSizeOrAccountsChange() bool {
 	return false
 }
 
@@ -347,8 +358,12 @@ func (u *nkeysOption) Apply(server *Server) {
 // clusterOption implements the option interface for the `cluster` setting.
 type clusterOption struct {
 	authOption
-	newValue     ClusterOpts
-	permsChanged bool
+	newValue        ClusterOpts
+	permsChanged    bool
+	accsAdded       []string
+	accsRemoved     []string
+	poolSizeChanged bool
+	compressChanged bool
 }
 
 // Apply the cluster change.
@@ -367,9 +382,43 @@ func (c *clusterOption) Apply(s *Server) {
 		s.routeInfo.WSConnectURLs = s.websocket.connectURLs
 	}
 	s.setRouteInfoHostPortAndIP()
+	var routes []*client
+	if c.compressChanged {
+		co := &s.getOpts().Cluster.Compression
+		newMode := co.Mode
+		s.forEachRoute(func(r *client) {
+			r.mu.Lock()
+			// Skip routes that are "not supported" (because they will never do
+			// compression) or the routes that have already the new compression
+			// mode.
+			if r.route.compression == CompressionNotSupported || r.route.compression == newMode {
+				r.mu.Unlock()
+				return
+			}
+			// We need to close the route if it had compression "off" or the new
+			// mode is compression "off", or if the new mode is "accept", because
+			// these require negotiation.
+			if r.route.compression == CompressionOff || newMode == CompressionOff || newMode == CompressionAccept {
+				routes = append(routes, r)
+			} else if newMode == CompressionS2Auto {
+				// If the mode is "s2_auto", we need to check if there is really
+				// need to change, and at any rate, we want to save the actual
+				// compression level here, not s2_auto.
+				r.updateS2AutoCompressionLevel(co, &r.route.compression)
+			} else {
+				// Simply change the compression writer
+				r.out.cw = s2.NewWriter(nil, s2WriterOptions(newMode)...)
+				r.route.compression = newMode
+			}
+			r.mu.Unlock()
+		})
+	}
 	s.mu.Unlock()
 	if c.newValue.Name != "" && c.newValue.Name != s.ClusterName() {
 		s.setClusterName(c.newValue.Name)
+	}
+	for _, r := range routes {
+		r.closeConnection(ClientClosed)
 	}
 	s.Noticef("Reloaded: cluster")
 	if tlsRequired && c.newValue.TLSConfig.InsecureSkipVerify {
@@ -379,6 +428,32 @@ func (c *clusterOption) Apply(s *Server) {
 
 func (c *clusterOption) IsClusterPermsChange() bool {
 	return c.permsChanged
+}
+
+func (c *clusterOption) IsClusterPoolSizeOrAccountsChange() bool {
+	return c.poolSizeChanged || len(c.accsAdded) > 0 || len(c.accsRemoved) > 0
+}
+
+func (c *clusterOption) diffPoolAndAccounts(old *ClusterOpts) {
+	c.poolSizeChanged = c.newValue.PoolSize != old.PoolSize
+addLoop:
+	for _, na := range c.newValue.PinnedAccounts {
+		for _, oa := range old.PinnedAccounts {
+			if na == oa {
+				continue addLoop
+			}
+		}
+		c.accsAdded = append(c.accsAdded, na)
+	}
+removeLoop:
+	for _, oa := range old.PinnedAccounts {
+		for _, na := range c.newValue.PinnedAccounts {
+			if oa == na {
+				continue removeLoop
+			}
+		}
+		c.accsRemoved = append(c.accsRemoved, oa)
+	}
 }
 
 // routesOption implements the option interface for the cluster `routes`
@@ -392,12 +467,12 @@ type routesOption struct {
 // Apply the route changes by adding and removing the necessary routes.
 func (r *routesOption) Apply(server *Server) {
 	server.mu.Lock()
-	routes := make([]*client, len(server.routes))
+	routes := make([]*client, server.numRoutes())
 	i := 0
-	for _, client := range server.routes {
-		routes[i] = client
+	server.forEachRoute(func(r *client) {
+		routes[i] = r
 		i++
-	}
+	})
 	// If there was a change, notify monitoring code that it should
 	// update the route URLs if /varz endpoint is inspected.
 	if len(r.add)+len(r.remove) > 0 {
@@ -425,7 +500,7 @@ func (r *routesOption) Apply(server *Server) {
 
 	// Add routes.
 	server.mu.Lock()
-	server.solicitRoutes(r.add)
+	server.solicitRoutes(r.add, server.getOpts().Cluster.PinnedAccounts)
 	server.mu.Unlock()
 
 	server.Noticef("Reloaded: cluster routes")
@@ -730,6 +805,84 @@ func (o *mqttInactiveThresholdReload) Apply(s *Server) {
 	s.Noticef("Reloaded: MQTT consumer_inactive_threshold = %v", o.newValue)
 }
 
+type leafNodeOption struct {
+	noopOption
+	tlsFirstChanged    bool
+	compressionChanged bool
+}
+
+func (l *leafNodeOption) Apply(s *Server) {
+	opts := s.getOpts()
+	if l.tlsFirstChanged {
+		s.Noticef("Reloaded: LeafNode TLS HandshakeFirst value is: %v", opts.LeafNode.TLSHandshakeFirst)
+		for _, r := range opts.LeafNode.Remotes {
+			s.Noticef("Reloaded: LeafNode Remote to %v TLS HandshakeFirst value is: %v", r.URLs, r.TLSHandshakeFirst)
+		}
+	}
+	if l.compressionChanged {
+		var leafs []*client
+		acceptSideCompOpts := &opts.LeafNode.Compression
+
+		s.mu.RLock()
+		// First, update our internal leaf remote configurations with the new
+		// compress options.
+		// Since changing the remotes (as in adding/removing) is currently not
+		// supported, we know that we should have the same number in Options
+		// than in leafRemoteCfgs, but to be sure, use the max size.
+		max := len(opts.LeafNode.Remotes)
+		if l := len(s.leafRemoteCfgs); l < max {
+			max = l
+		}
+		for i := 0; i < max; i++ {
+			lr := s.leafRemoteCfgs[i]
+			lr.Lock()
+			lr.Compression = opts.LeafNode.Remotes[i].Compression
+			lr.Unlock()
+		}
+
+		for _, l := range s.leafs {
+			var co *CompressionOpts
+
+			l.mu.Lock()
+			if r := l.leaf.remote; r != nil {
+				co = &r.Compression
+			} else {
+				co = acceptSideCompOpts
+			}
+			newMode := co.Mode
+			// Skip leaf connections that are "not supported" (because they
+			// will never do compression) or the ones that have already the
+			// new compression mode.
+			if l.leaf.compression == CompressionNotSupported || l.leaf.compression == newMode {
+				l.mu.Unlock()
+				continue
+			}
+			// We need to close the connections if it had compression "off" or the new
+			// mode is compression "off", or if the new mode is "accept", because
+			// these require negotiation.
+			if l.leaf.compression == CompressionOff || newMode == CompressionOff || newMode == CompressionAccept {
+				leafs = append(leafs, l)
+			} else if newMode == CompressionS2Auto {
+				// If the mode is "s2_auto", we need to check if there is really
+				// need to change, and at any rate, we want to save the actual
+				// compression level here, not s2_auto.
+				l.updateS2AutoCompressionLevel(co, &l.leaf.compression)
+			} else {
+				// Simply change the compression writer
+				l.out.cw = s2.NewWriter(nil, s2WriterOptions(newMode)...)
+				l.leaf.compression = newMode
+			}
+			l.mu.Unlock()
+		}
+		s.mu.RUnlock()
+		// Close the connections for which negotiation is required.
+		for _, l := range leafs {
+			l.closeConnection(ClientClosed)
+		}
+		s.Noticef("Reloaded: LeafNode compression settings")
+	}
+}
+
 // Compares options and disconnects clients that are no longer listed in pinned certs. Lock must not be held.
 func (s *Server) recheckPinnedCerts(curOpts *Options, newOpts *Options) {
 	s.mu.Lock()
@@ -765,14 +918,22 @@ func (s *Server) recheckPinnedCerts(curOpts *Options, newOpts *Options) {
 		checkClients(LEAF, s.leafs, newOpts.LeafNode.TLSPinnedCerts)
 	}
 	if !reflect.DeepEqual(newOpts.Cluster.TLSPinnedCerts, curOpts.Cluster.TLSPinnedCerts) {
-		checkClients(ROUTER, s.routes, newOpts.Cluster.TLSPinnedCerts)
+		s.forEachRoute(func(c *client) {
+			if !c.matchesPinnedCert(newOpts.Cluster.TLSPinnedCerts) {
+				disconnectClients = append(disconnectClients, c)
+			}
+		})
 	}
-	if reflect.DeepEqual(newOpts.Gateway.TLSPinnedCerts, curOpts.Gateway.TLSPinnedCerts) {
-		for _, c := range s.remotes {
+	if s.gateway.enabled && reflect.DeepEqual(newOpts.Gateway.TLSPinnedCerts, curOpts.Gateway.TLSPinnedCerts) {
+		gw := s.gateway
+		gw.RLock()
+		for _, c := range gw.out {
 			if !c.matchesPinnedCert(newOpts.Gateway.TLSPinnedCerts) {
 				disconnectClients = append(disconnectClients, c)
 			}
 		}
+		checkClients(GATEWAY, gw.in, newOpts.Gateway.TLSPinnedCerts)
+		gw.RUnlock()
 	}
 	s.mu.Unlock()
 	if len(disconnectClients) > 0 {
@@ -823,6 +984,13 @@ func (s *Server) ReloadOptions(newOpts *Options) error {
 	mqttOrgPort := curOpts.MQTT.Port
 
 	s.mu.Unlock()
+
+	// In case "-cluster ..." was provided through the command line, this will
+	// properly set the Cluster.Host/Port etc...
+	if l := curOpts.Cluster.ListenStr; l != _EMPTY_ {
+		newOpts.Cluster.ListenStr = l
+		overrideCluster(newOpts)
+	}
 
 	// Apply flags over config file settings.
 	newOpts = MergeOptions(newOpts, FlagSnapshot)
@@ -962,6 +1130,7 @@ func imposeOrder(value interface{}) error {
 		*URLAccResolver, *MemAccResolver, *DirAccResolver, *CacheDirAccResolver, Authentication, MQTTOpts, jwt.TagList,
 		*OCSPConfig, map[string]string, JSLimitOpts, StoreCipher, *OCSPResponseCacheConfig:
 		// explicitly skipped types
+	case *AuthCallout:
 	default:
 		// this will fail during unit tests
 		return fmt.Errorf("OnReload, sort or explicitly skip type: %s",
@@ -1063,8 +1232,28 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			if err := validateClusterOpts(oldClusterOpts, newClusterOpts); err != nil {
 				return nil, err
 			}
-			permsChanged := !reflect.DeepEqual(newClusterOpts.Permissions, oldClusterOpts.Permissions)
-			diffOpts = append(diffOpts, &clusterOption{newValue: newClusterOpts, permsChanged: permsChanged})
+			co := &clusterOption{
+				newValue:        newClusterOpts,
+				permsChanged:    !reflect.DeepEqual(newClusterOpts.Permissions, oldClusterOpts.Permissions),
+				compressChanged: !reflect.DeepEqual(oldClusterOpts.Compression, newClusterOpts.Compression),
+			}
+			co.diffPoolAndAccounts(&oldClusterOpts)
+			// If there are added accounts, first make sure that we can look them up.
+			// If we can't let's fail the reload.
+			for _, acc := range co.accsAdded {
+				if _, err := s.LookupAccount(acc); err != nil {
+					return nil, fmt.Errorf("unable to add account %q to the list of dedicated routes: %v", acc, err)
+				}
+			}
+			// If pool_size has been set to negative (but was not before), then let's
+			// add the system account to the list of removed accounts (we don't have
+			// to check if already there, duplicates are ok in that case).
+			if newClusterOpts.PoolSize < 0 && oldClusterOpts.PoolSize >= 0 {
+				if sys := s.SystemAccount(); sys != nil {
+					co.accsRemoved = append(co.accsRemoved, sys.GetName())
+				}
+			}
+			diffOpts = append(diffOpts, co)
 		case "routes":
 			add, remove := diffRoutes(oldValue.([]*url.URL), newValue.([]*url.URL))
 			diffOpts = append(diffOpts, &routesOption{add: add, remove: remove})
@@ -1137,6 +1326,38 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			tmpNew.TLSConfig = nil
 			tmpOld.tlsConfigOpts = nil
 			tmpNew.tlsConfigOpts = nil
+			// We will allow TLSHandshakeFirst to me config reloaded. First,
+			// we just want to detect if there was a change in the leafnodes{}
+			// block, and if not, we will check the remotes.
+			handshakeFirstChanged := tmpOld.TLSHandshakeFirst != tmpNew.TLSHandshakeFirst
+			// If changed, set them (in the temporary variables) to false so that the
+			// rest of the comparison does not fail.
+			if handshakeFirstChanged {
+				tmpOld.TLSHandshakeFirst, tmpNew.TLSHandshakeFirst = false, false
+			} else if len(tmpOld.Remotes) == len(tmpNew.Remotes) {
+				// Since we don't support changes in the remotes, we will do a
+				// simple pass to see if there was a change of this field.
+				for i := 0; i < len(tmpOld.Remotes); i++ {
+					if tmpOld.Remotes[i].TLSHandshakeFirst != tmpNew.Remotes[i].TLSHandshakeFirst {
+						handshakeFirstChanged = true
+						break
+					}
+				}
+			}
+			// We also support config reload for compression. Check if it changed before
+			// blanking them out for the deep-equal check at the end.
+			compressionChanged := !reflect.DeepEqual(tmpOld.Compression, tmpNew.Compression)
+			if compressionChanged {
+				tmpOld.Compression, tmpNew.Compression = CompressionOpts{}, CompressionOpts{}
+			} else if len(tmpOld.Remotes) == len(tmpNew.Remotes) {
+				// Same that for tls first check, do the remotes now.
+				for i := 0; i < len(tmpOld.Remotes); i++ {
+					if !reflect.DeepEqual(tmpOld.Remotes[i].Compression, tmpNew.Remotes[i].Compression) {
+						compressionChanged = true
+						break
+					}
+				}
+			}
 
 			// Need to do the same for remote leafnodes' TLS configs.
 			// But we can't just set remotes' TLSConfig to nil otherwise this
@@ -1225,6 +1446,11 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 				return nil, fmt.Errorf("config reload not supported for %s: old=%v, new=%v",
 					field.Name, oldValue, newValue)
 			}
+
+			diffOpts = append(diffOpts, &leafNodeOption{
+				tlsFirstChanged:    handshakeFirstChanged,
+				compressionChanged: compressionChanged,
+			})
 		case "jetstream":
 			new := newValue.(bool)
 			old := oldValue.(bool)
@@ -1413,12 +1639,15 @@ func copyRemoteLNConfigForReloadCompare(current []*RemoteLeafOpts) []*RemoteLeaf
 		cp := *rcfg
 		cp.TLSConfig = nil
 		cp.tlsConfigOpts = nil
+		cp.TLSHandshakeFirst = false
 		// This is set only when processing a CONNECT, so reset here so that we
 		// don't fail the DeepEqual comparison.
 		cp.TLS = false
 		// For now, remove DenyImports/Exports since those get modified at runtime
 		// to add JS APIs.
 		cp.DenyImports, cp.DenyExports = nil, nil
+		// Remove compression mode
+		cp.Compression = CompressionOpts{}
 		rlns = append(rlns, &cp)
 	}
 	return rlns
@@ -1434,6 +1663,7 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 		jsEnabled          = false
 		reloadTLS          = false
 		isStatszChange     = false
+		co                 *clusterOption
 	)
 	for _, opt := range opts {
 		opt.Apply(s)
@@ -1448,6 +1678,9 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 		}
 		if opt.IsTLSChange() {
 			reloadTLS = true
+		}
+		if opt.IsClusterPoolSizeOrAccountsChange() {
+			co = opt.(*clusterOption)
 		}
 		if opt.IsClusterPermsChange() {
 			reloadClusterPerms = true
@@ -1473,7 +1706,11 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 	if reloadClusterPerms {
 		s.reloadClusterPermissions(ctx.oldClusterPerms)
 	}
-
+	newOpts := s.getOpts()
+	// If we need to reload cluster pool/per-account, then co will be not nil
+	if co != nil {
+		s.reloadClusterPoolAndAccounts(co, newOpts)
+	}
 	if reloadJetstream {
 		if !jsEnabled {
 			s.DisableJetStream()
@@ -1492,7 +1729,6 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 	// For remote gateways and leafnodes, make sure that their TLS configuration
 	// is updated (since the config is "captured" early and changes would otherwise
 	// not be visible).
-	newOpts := s.getOpts()
 	if s.gateway.enabled {
 		s.gateway.updateRemotesTLSConfig(newOpts)
 	}
@@ -1539,7 +1775,7 @@ func (s *Server) reloadClientTraceLevel() {
 	// Update their trace level when not holding server or gateway lock
 
 	s.mu.Lock()
-	clientCnt := 1 + len(s.clients) + len(s.grTmpClients) + len(s.routes) + len(s.leafs)
+	clientCnt := 1 + len(s.clients) + len(s.grTmpClients) + s.numRoutes() + len(s.leafs)
 	s.mu.Unlock()
 
 	s.gateway.RLock()
@@ -1553,12 +1789,15 @@ func (s *Server) reloadClientTraceLevel() {
 		clients = append(clients, s.sys.client)
 	}
 
-	cMaps := []map[uint64]*client{s.clients, s.grTmpClients, s.routes, s.leafs}
+	cMaps := []map[uint64]*client{s.clients, s.grTmpClients, s.leafs}
 	for _, m := range cMaps {
 		for _, c := range m {
 			clients = append(clients, c)
 		}
 	}
+	s.forEachRoute(func(c *client) {
+		clients = append(clients, c)
+	})
 	s.mu.Unlock()
 
 	s.gateway.RLock()
@@ -1671,9 +1910,9 @@ func (s *Server) reloadAuthorization() {
 			clients = append(clients, client)
 		}
 	}
-	for _, route := range s.routes {
+	s.forEachRoute(func(route *client) {
 		routes = append(routes, route)
-	}
+	})
 	// Check here for any system/internal clients which will not be in the servers map of normal clients.
 	if s.sys != nil && s.sys.account != nil && !opts.NoSystemAccount {
 		s.accounts.Store(s.sys.account.Name, s.sys.account)
@@ -1804,22 +2043,14 @@ func (s *Server) clientHasMovedToDifferentAccount(c *client) bool {
 // import subjects.
 func (s *Server) reloadClusterPermissions(oldPerms *RoutePermissions) {
 	s.mu.Lock()
-	var (
-		infoJSON     []byte
-		newPerms     = s.opts.Cluster.Permissions
-		routes       = make(map[uint64]*client, len(s.routes))
-		withNewProto int
-	)
+	newPerms := s.getOpts().Cluster.Permissions
+	routes := make(map[uint64]*client, s.numRoutes())
 	// Get all connected routes
-	for i, route := range s.routes {
-		// Count the number of routes that can understand receiving INFO updates.
+	s.forEachRoute(func(route *client) {
 		route.mu.Lock()
-		if route.opts.Protocol >= RouteProtoInfo {
-			withNewProto++
-		}
+		routes[route.cid] = route
 		route.mu.Unlock()
-		routes[i] = route
-	}
+	})
 	// If new permissions is nil, then clear routeInfo import/export
 	if newPerms == nil {
 		s.routeInfo.Import = nil
@@ -1828,23 +2059,23 @@ func (s *Server) reloadClusterPermissions(oldPerms *RoutePermissions) {
 		s.routeInfo.Import = newPerms.Import
 		s.routeInfo.Export = newPerms.Export
 	}
-	// Regenerate route INFO
-	s.generateRouteInfoJSON()
-	infoJSON = s.routeInfoJSON
-	gacc := s.gacc
+	infoJSON := generateInfoJSON(&s.routeInfo)
 	s.mu.Unlock()
 
-	// If there were no route, we are done
-	if len(routes) == 0 {
-		return
+	// Close connections for routes that don't understand async INFO.
+	for _, route := range routes {
+		route.mu.Lock()
+		close := route.opts.Protocol < RouteProtoInfo
+		cid := route.cid
+		route.mu.Unlock()
+		if close {
+			route.closeConnection(RouteRemoved)
+			delete(routes, cid)
+		}
 	}
 
-	// If only older servers, simply close all routes and they will do the right
-	// thing on reconnect.
-	if withNewProto == 0 {
-		for _, route := range routes {
-			route.closeConnection(RouteRemoved)
-		}
+	// If there are no route left, we are done
+	if len(routes) == 0 {
 		return
 	}
 
@@ -1856,42 +2087,69 @@ func (s *Server) reloadClusterPermissions(oldPerms *RoutePermissions) {
 
 	var (
 		_localSubs       [4096]*subscription
-		localSubs        = _localSubs[:0]
-		subsNeedSUB      []*subscription
-		subsNeedUNSUB    []*subscription
+		subsNeedSUB      = map[*client][]*subscription{}
+		subsNeedUNSUB    = map[*client][]*subscription{}
 		deleteRoutedSubs []*subscription
 	)
-	// FIXME(dlc) - Change for accounts.
-	gacc.sl.localSubs(&localSubs, false)
 
-	// Go through all local subscriptions
-	for _, sub := range localSubs {
-		// Get all subs that can now be imported
-		subj := string(sub.subject)
-		couldImportThen := oldPermsTester.canImport(subj)
-		canImportNow := newPermsTester.canImport(subj)
-		if canImportNow {
-			// If we could not before, then will need to send a SUB protocol.
-			if !couldImportThen {
-				subsNeedSUB = append(subsNeedSUB, sub)
+	getRouteForAccount := func(accName string, poolIdx int) *client {
+		for _, r := range routes {
+			r.mu.Lock()
+			ok := (poolIdx >= 0 && poolIdx == r.route.poolIdx) || (string(r.route.accName) == accName) || r.route.noPool
+			r.mu.Unlock()
+			if ok {
+				return r
 			}
-		} else if couldImportThen {
-			// We were previously able to import this sub, but now
-			// we can't so we need to send an UNSUB protocol
-			subsNeedUNSUB = append(subsNeedUNSUB, sub)
 		}
+		return nil
 	}
 
+	// First set the new permissions on all routes.
 	for _, route := range routes {
 		route.mu.Lock()
-		// If route is to older server, simply close connection.
-		if route.opts.Protocol < RouteProtoInfo {
-			route.mu.Unlock()
-			route.closeConnection(RouteRemoved)
-			continue
-		}
 		route.setRoutePermissions(newPerms)
-		for _, sub := range route.subs {
+		route.mu.Unlock()
+	}
+
+	// Then, go over all accounts and gather local subscriptions that need to be
+	// sent over as SUB or removed as UNSUB, and routed subscriptions that need
+	// to be dropped due to export permissions.
+	s.accounts.Range(func(_, v interface{}) bool {
+		acc := v.(*Account)
+		acc.mu.RLock()
+		accName, sl, poolIdx := acc.Name, acc.sl, acc.routePoolIdx
+		acc.mu.RUnlock()
+		// Get the route handling this account. If no route or sublist, bail out.
+		route := getRouteForAccount(accName, poolIdx)
+		if route == nil || sl == nil {
+			return true
+		}
+		localSubs := _localSubs[:0]
+		sl.localSubs(&localSubs, false)
+
+		// Go through all local subscriptions
+		for _, sub := range localSubs {
+			// Get all subs that can now be imported
+			subj := string(sub.subject)
+			couldImportThen := oldPermsTester.canImport(subj)
+			canImportNow := newPermsTester.canImport(subj)
+			if canImportNow {
+				// If we could not before, then will need to send a SUB protocol.
+				if !couldImportThen {
+					subsNeedSUB[route] = append(subsNeedSUB[route], sub)
+				}
+			} else if couldImportThen {
+				// We were previously able to import this sub, but now
+				// we can't so we need to send an UNSUB protocol
+				subsNeedUNSUB[route] = append(subsNeedUNSUB[route], sub)
+			}
+		}
+		deleteRoutedSubs = deleteRoutedSubs[:0]
+		route.mu.Lock()
+		for key, sub := range route.subs {
+			if an := strings.Fields(key)[0]; an != accName {
+				continue
+			}
 			// If we can't export, we need to drop the subscriptions that
 			// we have on behalf of this route.
 			subj := string(sub.subject)
@@ -1900,22 +2158,220 @@ func (s *Server) reloadClusterPermissions(oldPerms *RoutePermissions) {
 				deleteRoutedSubs = append(deleteRoutedSubs, sub)
 			}
 		}
-		// Send an update INFO, which will allow remote server to show
-		// our current route config in monitoring and resend subscriptions
-		// that we now possibly allow with a change of Export permissions.
+		route.mu.Unlock()
+		// Remove as a batch all the subs that we have removed from each route.
+		sl.RemoveBatch(deleteRoutedSubs)
+		return true
+	})
+
+	// Send an update INFO, which will allow remote server to show
+	// our current route config in monitoring and resend subscriptions
+	// that we now possibly allow with a change of Export permissions.
+	for _, route := range routes {
+		route.mu.Lock()
 		route.enqueueProto(infoJSON)
 		// Now send SUB and UNSUB protocols as needed.
-		route.sendRouteSubProtos(subsNeedSUB, false, nil)
-		route.sendRouteUnSubProtos(subsNeedUNSUB, false, nil)
+		if subs, ok := subsNeedSUB[route]; ok && len(subs) > 0 {
+			route.sendRouteSubProtos(subs, false, nil)
+		}
+		if unsubs, ok := subsNeedUNSUB[route]; ok && len(unsubs) > 0 {
+			route.sendRouteUnSubProtos(unsubs, false, nil)
+		}
 		route.mu.Unlock()
 	}
-	// Remove as a batch all the subs that we have removed from each route.
-	// FIXME(dlc) - Change for accounts.
-	gacc.sl.RemoveBatch(deleteRoutedSubs)
 }
 
-// validateClusterOpts ensures the new ClusterOpts does not change host or
-// port, which do not support reload.
+func (s *Server) reloadClusterPoolAndAccounts(co *clusterOption, opts *Options) {
+	s.mu.Lock()
+	// Prevent adding new routes until we are ready to do so.
+	s.routesReject = true
+	var ch chan struct{}
+	// For accounts that have been added to the list of dedicated routes,
+	// send a protocol to their current assigned routes to allow the
+	// other side to prepare for the changes.
+	if len(co.accsAdded) > 0 {
+		protosSent := 0
+		s.accAddedReqID = nuid.Next()
+		for _, an := range co.accsAdded {
+			if s.accRoutes == nil {
+				s.accRoutes = make(map[string]map[string]*client)
+			}
+			// In case a config reload was first done on another server,
+			// we may have already switched this account to a dedicated route.
+			// But we still want to send the protocol over the routes that
+			// would have otherwise handled it.
+			if _, ok := s.accRoutes[an]; !ok {
+				s.accRoutes[an] = make(map[string]*client)
+			}
+			if a, ok := s.accounts.Load(an); ok {
+				acc := a.(*Account)
+				acc.mu.Lock()
+				sl := acc.sl
+				// Get the current route pool index before calling setRouteInfo.
+				rpi := acc.routePoolIdx
+				// Switch to per-account route if not already done.
+				if rpi >= 0 {
+					s.setRouteInfo(acc)
+				} else {
+					// If it was transitioning, make sure we set it to the state
+					// that indicates that it has a dedicated route
+					if rpi == accTransitioningToDedicatedRoute {
+						acc.routePoolIdx = accDedicatedRoute
+					}
+					// Otherwise get the route pool index it would have been before
+					// the move so we can send the protocol to those routes.
+					rpi = s.computeRoutePoolIdx(acc)
+				}
+				acc.mu.Unlock()
+				// Generate the INFO protocol to send indicating that this account
+				// is being moved to a dedicated route.
+				ri := Info{
+					RoutePoolSize: s.routesPoolSize,
+					RouteAccount:  an,
+					RouteAccReqID: s.accAddedReqID,
+				}
+				proto := generateInfoJSON(&ri)
+				// Go over each remote's route at pool index `rpi` and remove
+				// remote subs for this account and send the protocol.
+				s.forEachRouteIdx(rpi, func(r *client) bool {
+					r.mu.Lock()
+					// Exclude routes to servers that don't support pooling.
+					if !r.route.noPool {
+						if subs := r.removeRemoteSubsForAcc(an); len(subs) > 0 {
+							sl.RemoveBatch(subs)
+						}
+						r.enqueueProto(proto)
+						protosSent++
+					}
+					r.mu.Unlock()
+					return true
+				})
+			}
+		}
+		if protosSent > 0 {
+			s.accAddedCh = make(chan struct{}, protosSent)
+			ch = s.accAddedCh
+		}
+	}
+	// Collect routes that need to be closed.
+	routes := make(map[*client]struct{})
+	// Collect the per-account routes that need to be closed.
+	if len(co.accsRemoved) > 0 {
+		for _, an := range co.accsRemoved {
+			if remotes, ok := s.accRoutes[an]; ok && remotes != nil {
+				for _, r := range remotes {
+					if r != nil {
+						r.setNoReconnect()
+						routes[r] = struct{}{}
+					}
+				}
+			}
+		}
+	}
+	// If the pool size has changed, we need to close all pooled routes.
+	if co.poolSizeChanged {
+		s.forEachNonPerAccountRoute(func(r *client) {
+			routes[r] = struct{}{}
+		})
+	}
+	// If there are routes to close, we need to release the server lock.
+	// Same if we need to wait on responses from the remotes when
+	// processing new per-account routes.
+	if len(routes) > 0 || len(ch) > 0 {
+		s.mu.Unlock()
+
+		for done := false; !done && len(ch) > 0; {
+			select {
+			case <-ch:
+			case <-time.After(2 * time.Second):
+				s.Warnf("Timed out waiting for confirmation from all routes regarding per-account routes changes")
+				done = true
+			}
+		}
+
+		for r := range routes {
+			r.closeConnection(RouteRemoved)
+		}
+
+		s.mu.Lock()
+	}
+	// Clear the accAddedCh/ReqID fields in case they were set.
+	s.accAddedReqID, s.accAddedCh = _EMPTY_, nil
+	// Now that per-account routes that needed to be closed are closed,
+	// remove them from s.accRoutes. Doing so before would prevent
+	// removeRoute() to do proper cleanup because the route would not
+	// be found in s.accRoutes.
+	for _, an := range co.accsRemoved {
+		delete(s.accRoutes, an)
+		// Do not lookup and call setRouteInfo() on the accounts here.
+		// We need first to set the new s.routesPoolSize value and
+		// anyway, there is no need to do here if the pool size has
+		// changed (since it will be called for all accounts).
+	}
+	// We have already added the accounts to s.accRoutes that needed to
+	// be added.
+
+	// We should always have at least the system account with a dedicated route,
+	// but in case we have a configuration that disables pooling and without
+	// a system account, possibly set the accRoutes to nil.
+	if len(opts.Cluster.PinnedAccounts) == 0 {
+		s.accRoutes = nil
+	}
+	// Now deal with pool size updates.
+	if ps := opts.Cluster.PoolSize; ps > 0 {
+		s.routesPoolSize = ps
+		s.routeInfo.RoutePoolSize = ps
+	} else {
+		s.routesPoolSize = 1
+		s.routeInfo.RoutePoolSize = 0
+	}
+	// If the pool size has changed, we need to recompute all accounts' route
+	// pool index. Note that the added/removed accounts will be reset there
+	// too, but that's ok (we could use a map to exclude them, but not worth it).
+	if co.poolSizeChanged {
+		s.accounts.Range(func(_, v interface{}) bool {
+			acc := v.(*Account)
+			acc.mu.Lock()
+			s.setRouteInfo(acc)
+			acc.mu.Unlock()
+			return true
+		})
+	} else if len(co.accsRemoved) > 0 {
+		// For accounts that no longer have a dedicated route, we need to send
+		// the subsriptions on the existing pooled routes for those accounts.
+		for _, an := range co.accsRemoved {
+			if a, ok := s.accounts.Load(an); ok {
+				acc := a.(*Account)
+				acc.mu.Lock()
+				// First call this which will assign a new route pool index.
+				s.setRouteInfo(acc)
+				// Get the value so we can send the subscriptions interest
+				// on all routes with this pool index.
+				rpi := acc.routePoolIdx
+				acc.mu.Unlock()
+				s.forEachRouteIdx(rpi, func(r *client) bool {
+					// We have the guarantee that if the route exists, it
+					// is not a new one that would have been created when
+					// we released the server lock if some routes needed
+					// to be closed, because we have set s.routesReject
+					// to `true` at the top of this function.
+					s.sendSubsToRoute(r, rpi, an)
+					return true
+				})
+			}
+		}
+	}
+	// Allow routes to be accepted now.
+	s.routesReject = false
+	// If there is a pool size change or added accounts, solicit routes now.
+	if co.poolSizeChanged || len(co.accsAdded) > 0 {
+		s.solicitRoutes(opts.Routes, co.accsAdded)
+	}
+	s.mu.Unlock()
+}
+
+// validateClusterOpts ensures the new ClusterOpts does not change some of the
+// fields that do not support reload.
 func validateClusterOpts(old, new ClusterOpts) error {
 	if old.Host != new.Host {
 		return fmt.Errorf("config reload not supported for cluster host: old=%s, new=%s",

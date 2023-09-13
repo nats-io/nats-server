@@ -21,6 +21,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/exp/constraints"
 )
 
 // DefaultTestOptions are default options for the unit tests.
@@ -45,9 +47,10 @@ func testDefaultClusterOptionsForLeafNodes() *Options {
 	return &o
 }
 
-func RunRandClientPortServer() *Server {
+func RunRandClientPortServer(t *testing.T) *Server {
 	opts := DefaultTestOptions
 	opts.Port = -1
+	opts.StoreDir = t.TempDir()
 	return RunServer(&opts)
 }
 
@@ -114,14 +117,14 @@ func require_Error(t *testing.T, err error, expected ...error) {
 func require_Equal[T comparable](t *testing.T, a, b T) {
 	t.Helper()
 	if a != b {
-		t.Fatalf("require equal, but got: %v != %v", a, b)
+		t.Fatalf("require %T equal, but got: %v != %v", a, a, b)
 	}
 }
 
 func require_NotEqual[T comparable](t *testing.T, a, b T) {
 	t.Helper()
 	if a == b {
-		t.Fatalf("require not equal, but got: %v != %v", a, b)
+		t.Fatalf("require %T not equal, but got: %v != %v", a, a, b)
 	}
 }
 
@@ -129,6 +132,13 @@ func require_Len(t *testing.T, a, b int) {
 	t.Helper()
 	if a != b {
 		t.Fatalf("require len, but got: %v != %v", a, b)
+	}
+}
+
+func require_LessThan[T constraints.Ordered](t *testing.T, a, b T) {
+	t.Helper()
+	if a >= b {
+		t.Fatalf("require %v to be less than %v", a, b)
 	}
 }
 

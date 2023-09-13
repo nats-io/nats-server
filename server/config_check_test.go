@@ -1580,6 +1580,218 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  6,
 		},
 		{
+			name: "wrong type for cluter pool size",
+			config: `
+				cluster {
+					port: -1
+					pool_size: "abc"
+				}
+			`,
+			err:       fmt.Errorf("interface conversion: interface {} is string, not int64"),
+			errorLine: 4,
+			errorPos:  6,
+		},
+		{
+			name: "wrong type for cluter accounts",
+			config: `
+				cluster {
+					port: -1
+					accounts: 123
+				}
+			`,
+			err:       fmt.Errorf("error parsing accounts: unsupported type int64"),
+			errorLine: 4,
+			errorPos:  6,
+		},
+		{
+			name: "wrong type for cluter compression",
+			config: `
+				cluster {
+					port: -1
+					compression: 123
+				}
+			`,
+			err:       fmt.Errorf("field %q should be a boolean or a structure, got int64", "compression"),
+			errorLine: 4,
+			errorPos:  6,
+		},
+		{
+			name: "wrong type for cluter compression mode",
+			config: `
+				cluster {
+					port: -1
+					compression: {
+						mode: 123
+					}
+				}
+			`,
+			err:       fmt.Errorf("interface conversion: interface {} is int64, not string"),
+			errorLine: 5,
+			errorPos:  7,
+		},
+		{
+			name: "wrong type for cluter compression rtt thresholds",
+			config: `
+				cluster {
+					port: -1
+					compression: {
+						mode: "s2_auto"
+						rtt_thresholds: 123
+					}
+				}
+			`,
+			err:       fmt.Errorf("interface conversion: interface {} is int64, not []interface {}"),
+			errorLine: 6,
+			errorPos:  7,
+		},
+		{
+			name: "invalid durations for cluter compression rtt thresholds",
+			config: `
+				cluster {
+					port: -1
+					compression: {
+						mode: "s2_auto"
+						rtt_thresholds: [abc]
+					}
+				}
+			`,
+			err:       fmt.Errorf("time: invalid duration %q", "abc"),
+			errorLine: 6,
+			errorPos:  7,
+		},
+		{
+			name: "wrong type for leafnodes compression",
+			config: `
+				leafnodes {
+					port: -1
+					compression: 123
+				}
+			`,
+			err:       fmt.Errorf("field %q should be a boolean or a structure, got int64", "compression"),
+			errorLine: 4,
+			errorPos:  6,
+		},
+		{
+			name: "wrong type for leafnodes compression mode",
+			config: `
+				leafnodes {
+					port: -1
+					compression: {
+						mode: 123
+					}
+				}
+			`,
+			err:       fmt.Errorf("interface conversion: interface {} is int64, not string"),
+			errorLine: 5,
+			errorPos:  7,
+		},
+		{
+			name: "wrong type for leafnodes compression rtt thresholds",
+			config: `
+				leafnodes {
+					port: -1
+					compression: {
+						mode: "s2_auto"
+						rtt_thresholds: 123
+					}
+				}
+			`,
+			err:       fmt.Errorf("interface conversion: interface {} is int64, not []interface {}"),
+			errorLine: 6,
+			errorPos:  7,
+		},
+		{
+			name: "invalid durations for leafnodes compression rtt thresholds",
+			config: `
+				leafnodes {
+					port: -1
+					compression: {
+						mode: "s2_auto"
+						rtt_thresholds: [abc]
+					}
+				}
+			`,
+			err:       fmt.Errorf("time: invalid duration %q", "abc"),
+			errorLine: 6,
+			errorPos:  7,
+		},
+		{
+			name: "wrong type for remote leafnodes compression",
+			config: `
+				leafnodes {
+					port: -1
+					remotes [
+						{
+							url: "nats://127.0.0.1:123"
+							compression: 123
+						}
+					]
+				}
+			`,
+			err:       fmt.Errorf("field %q should be a boolean or a structure, got int64", "compression"),
+			errorLine: 7,
+			errorPos:  8,
+		},
+		{
+			name: "wrong type for remote leafnodes compression mode",
+			config: `
+				leafnodes {
+					port: -1
+					remotes [
+						{
+							url: "nats://127.0.0.1:123"
+							compression: {
+								mode: 123
+							}
+						}
+					]
+				}
+			`,
+			err:       fmt.Errorf("interface conversion: interface {} is int64, not string"),
+			errorLine: 8,
+			errorPos:  9,
+		},
+		{
+			name: "wrong type for remote leafnodes compression rtt thresholds",
+			config: `
+				leafnodes {
+					port: -1
+					remotes [
+						{
+							url: "nats://127.0.0.1:123"
+							compression: {
+								mode: "s2_auto"
+								rtt_thresholds: 123
+							}
+						}
+					]
+				}
+			`,
+			err:       fmt.Errorf("interface conversion: interface {} is int64, not []interface {}"),
+			errorLine: 9,
+			errorPos:  9,
+		},
+		{
+			name: "invalid durations for remote leafnodes compression rtt thresholds",
+			config: `
+				leafnodes {
+					port: -1
+					remotes [
+						{
+							url: "nats://127.0.0.1:123"
+							compression: {
+								mode: "s2_auto"
+								rtt_thresholds: [abc]
+							}
+						}
+					]
+				}
+			`,
+			err:       fmt.Errorf("time: invalid duration %q", "abc"),
+			errorLine: 9,
+			errorPos:  9,
+		},
+		{
 			name:       "show warnings on empty configs without values",
 			config:     ``,
 			warningErr: errors.New(`config has no values or is empty`),

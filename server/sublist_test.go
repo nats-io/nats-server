@@ -29,7 +29,6 @@ import (
 	"github.com/nats-io/nuid"
 )
 
-// FIXME(dlc) - this is also used by monitor_test. Not needed with t.Helper.
 func stackFatalf(t *testing.T, f string, args ...interface{}) {
 	lines := make([]string, 0, 32)
 	msg := fmt.Sprintf(f, args...)
@@ -1582,6 +1581,8 @@ var benchSublistSl = NewSublistWithCache()
 
 // https://github.com/golang/go/issues/31859
 func TestMain(m *testing.M) {
+	flag.StringVar(&testDefaultClusterCompression, "cluster_compression", _EMPTY_, "Test with this compression level as the default")
+	flag.StringVar(&testDefaultLeafNodeCompression, "leafnode_compression", _EMPTY_, "Test with this compression level as the default")
 	flag.Parse()
 	initSublist := false
 	flag.Visit(func(f *flag.Flag) {

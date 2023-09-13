@@ -1018,6 +1018,7 @@ func TestOCSPCluster(t *testing.T) {
 			host: "127.0.0.1"
 			advertise: 127.0.0.1
 			port: -1
+			pool_size: -1
 
 			tls {
 				cert_file: "configs/certs/ocsp/server-status-request-url-02-cert.pem"
@@ -1051,6 +1052,7 @@ func TestOCSPCluster(t *testing.T) {
 			host: "127.0.0.1"
 			advertise: 127.0.0.1
 			port: -1
+			pool_size: -1
 
 			routes: [ nats://127.0.0.1:%d ]
 			connect_retries: 30
@@ -1117,6 +1119,7 @@ func TestOCSPCluster(t *testing.T) {
 			host: "127.0.0.1"
 			advertise: 127.0.0.1
 			port: -1
+			pool_size: -1
 
 			routes: [ nats://127.0.0.1:%d ]
 			connect_retries: 30
@@ -1208,6 +1211,8 @@ func TestOCSPCluster(t *testing.T) {
 		store_dir: '%s'
 		cluster {
 			port: -1
+			pool_size: -1
+			compression: "disabled"
 			name: AB
 			host: "127.0.0.1"
 			advertise: 127.0.0.1
@@ -1561,6 +1566,9 @@ func TestOCSPLeafNoVerify(t *testing.T) {
 			host: "127.0.0.1"
 			port: -1
 			advertise: "127.0.0.1"
+			# for this test, explicitly disable compression because we do it
+			# in RunServer but here we do a config reload...
+			compression: off
 
 			tls {
 				cert_file: "configs/certs/ocsp/server-status-request-url-02-cert.pem"
@@ -1744,6 +1752,7 @@ func TestOCSPLeafNoVerify(t *testing.T) {
 			host: "127.0.0.1"
 			port: -1
 			advertise: "127.0.0.1"
+			compression: off
 
 			tls {
 				cert_file: "configs/certs/ocsp/server-status-request-url-08-cert.pem"

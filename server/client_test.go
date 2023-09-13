@@ -2027,8 +2027,18 @@ func TestClientSlowConsumerWithoutConnect(t *testing.T) {
 		if n := atomic.LoadInt64(&s.slowConsumers); n != 1 {
 			return fmt.Errorf("Expected 1 slow consumer, got: %v", n)
 		}
+		if n := s.scStats.clients.Load(); n != 1 {
+			return fmt.Errorf("Expected 1 slow consumer, got: %v", n)
+		}
 		return nil
 	})
+	varz, err := s.Varz(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if varz.SlowConsumersStats.Clients != 1 {
+		t.Error("Expected a slow consumer client in varz")
+	}
 }
 
 func TestClientNoSlowConsumerIfConnectExpected(t *testing.T) {
@@ -2514,5 +2524,81 @@ func TestClientAuthRequiredNoAuthUser(t *testing.T) {
 
 	if nc.AuthRequired() {
 		t.Fatalf("Expected AuthRequired to be false due to 'no_auth_user'")
+	}
+}
+
+func TestClientUserInfoReq(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		PERMS = {
+			publish = { allow: "$SYS.REQ.>", deny: "$SYS.REQ.ACCOUNT.>" }
+			subscribe = "_INBOX.>"
+			allow_responses: true
+		}
+		accounts: {
+			A: { users: [ { user: dlc, password: pass, permissions: $PERMS } ] }
+			$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+		}
+		no_auth_user: dlc
+	`))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc, err := nats.Connect(s.ClientURL())
+	require_NoError(t, err)
+	defer nc.Close()
+
+	resp, err := nc.Request("$SYS.REQ.USER.INFO", nil, time.Second)
+	require_NoError(t, err)
+
+	response := ServerAPIResponse{Data: &UserInfo{}}
+	err = json.Unmarshal(resp.Data, &response)
+	require_NoError(t, err)
+
+	userInfo := response.Data.(*UserInfo)
+
+	dlc := &UserInfo{
+		UserID:  "dlc",
+		Account: "A",
+		Permissions: &Permissions{
+			Publish: &SubjectPermission{
+				Allow: []string{"$SYS.REQ.>"},
+				Deny:  []string{"$SYS.REQ.ACCOUNT.>"},
+			},
+			Subscribe: &SubjectPermission{
+				Allow: []string{"_INBOX.>"},
+			},
+			Response: &ResponsePermission{
+				MaxMsgs: DEFAULT_ALLOW_RESPONSE_MAX_MSGS,
+				Expires: DEFAULT_ALLOW_RESPONSE_EXPIRATION,
+			},
+		},
+	}
+	if !reflect.DeepEqual(dlc, userInfo) {
+		t.Fatalf("User info for %q did not match", "dlc")
+	}
+
+	// Make sure system users work ok too.
+	nc, err = nats.Connect(s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	resp, err = nc.Request("$SYS.REQ.USER.INFO", nil, time.Second)
+	require_NoError(t, err)
+
+	response = ServerAPIResponse{Data: &UserInfo{}}
+	err = json.Unmarshal(resp.Data, &response)
+	require_NoError(t, err)
+
+	userInfo = response.Data.(*UserInfo)
+
+	admin := &UserInfo{
+		UserID:  "admin",
+		Account: "$SYS",
+	}
+	if !reflect.DeepEqual(admin, userInfo) {
+		t.Fatalf("User info for %q did not match", "admin")
 	}
 }

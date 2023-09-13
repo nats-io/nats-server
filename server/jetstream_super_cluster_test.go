@@ -550,7 +550,7 @@ func TestJetStreamSuperClusterConnectionCount(t *testing.T) {
 		require_NoError(t, err)
 		_, err = js.AddStream(&nats.StreamConfig{
 			Name:     "src",
-			Sources:  []*nats.StreamSource{{Name: "foo.1"}, {Name: "foo.2"}},
+			Sources:  []*nats.StreamSource{{Name: "foo1"}, {Name: "foo2"}},
 			Replicas: 3})
 		require_NoError(t, err)
 	}()
@@ -561,7 +561,7 @@ func TestJetStreamSuperClusterConnectionCount(t *testing.T) {
 		require_NoError(t, err)
 		_, err = js.AddStream(&nats.StreamConfig{
 			Name:     "mir",
-			Mirror:   &nats.StreamSource{Name: "foo.2"},
+			Mirror:   &nats.StreamSource{Name: "foo2"},
 			Replicas: 3})
 		require_NoError(t, err)
 	}()
@@ -1788,8 +1788,8 @@ func TestJetStreamSuperClusterMovingStreamsAndConsumers(t *testing.T) {
 			})
 			require_Contains(t, err.Error(), "stream move already in progress")
 
-			checkFor(t, 10*time.Second, 10*time.Millisecond, func() error {
-				si, err := js.StreamInfo("MOVE")
+			checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+				si, err := js.StreamInfo("MOVE", nats.MaxWait(500*time.Millisecond))
 				if err != nil {
 					return err
 				}
@@ -1811,8 +1811,8 @@ func TestJetStreamSuperClusterMovingStreamsAndConsumers(t *testing.T) {
 			// Expect a new leader to emerge and replicas to drop as a leader is elected.
 			// We have to check fast or it might complete and we will not see intermediate steps.
 			sc.waitOnStreamLeader("$G", "MOVE")
-			checkFor(t, 10*time.Second, 10*time.Millisecond, func() error {
-				si, err := js.StreamInfo("MOVE")
+			checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+				si, err := js.StreamInfo("MOVE", nats.MaxWait(500*time.Millisecond))
 				if err != nil {
 					return err
 				}
@@ -1824,8 +1824,8 @@ func TestJetStreamSuperClusterMovingStreamsAndConsumers(t *testing.T) {
 
 			// Should see the cluster designation and leader switch to C2.
 			// We should also shrink back down to original replica count.
-			checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
-				si, err := js.StreamInfo("MOVE")
+			checkFor(t, 20*time.Second, 200*time.Millisecond, func() error {
+				si, err := js.StreamInfo("MOVE", nats.MaxWait(500*time.Millisecond))
 				if err != nil {
 					return err
 				}
@@ -3182,7 +3182,7 @@ func TestJetStreamSuperClusterPeerEvacuationAndStreamReassignment(t *testing.T) 
 			})
 		}
 		// Now wait until the stream is now current.
-		checkFor(t, 50*time.Second, 100*time.Millisecond, func() error {
+		checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
 			si, err := js.StreamInfo("TEST", nats.MaxWait(time.Second))
 			if err != nil {
 				return fmt.Errorf("could not fetch stream info: %v", err)
@@ -3216,7 +3216,7 @@ func TestJetStreamSuperClusterPeerEvacuationAndStreamReassignment(t *testing.T) 
 		checkFor(t, 20*time.Second, time.Second, func() error {
 			if !listFrom {
 				// when needed determine which server move moved away from
-				si, err := js.StreamInfo("TEST", nats.MaxWait(2*time.Second))
+				si, err := js.StreamInfo("TEST", nats.MaxWait(time.Second))
 				if err != nil {
 					return fmt.Errorf("could not fetch stream info: %v", err)
 				}

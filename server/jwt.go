@@ -14,6 +14,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -152,6 +153,12 @@ func validateTrustedOperators(o *Options) error {
 			o.resolverPinnedAccounts[o.SystemAccount] = struct{}{}
 		}
 	}
+
+	// If we have an auth callout defined make sure we are not in operator mode.
+	if o.AuthCallout != nil {
+		return errors.New("operators do not allow authorization callouts to be configured directly")
+	}
+
 	return nil
 }
 

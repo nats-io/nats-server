@@ -300,6 +300,16 @@
     "deprecates": ""
   },
   {
+    "constant": "JSMirrorWithFirstSeqErr",
+    "code": 400,
+    "error_code": 10143,
+    "description": "stream mirrors can not have first sequence configured",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
     "constant": "JSNotEnabledErr",
     "code": 503,
     "error_code": 10076,
@@ -1324,6 +1334,186 @@
     "code": 400,
     "error_code": 10134,
     "description": "consumer config replicas must match interest retention stream's replicas",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerMetadataLengthErrF",
+    "code": 400,
+    "error_code": 10135,
+    "description": "consumer metadata exceeds maximum size of {limit}",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerDuplicateFilterSubjects",
+    "code": 400,
+    "error_code": 10136,
+    "description": "consumer cannot have both FilterSubject and FilterSubjects specified",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerMultipleFiltersNotAllowed",
+    "code": 400,
+    "error_code": 10137,
+    "description": "consumer with multiple subject filters cannot use subject based API",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerOverlappingSubjectFilters",
+    "code": 400,
+    "error_code": 10138,
+    "description": "consumer subject filters cannot overlap",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerEmptyFilter",
+    "code": 400,
+    "error_code": 10139,
+    "description": "consumer filter in FilterSubjects cannot be empty",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSSourceDuplicateDetected",
+    "code": 400,
+    "error_code": 10140,
+    "description": "duplicate source configuration detected",
+    "comment": "source stream, filter and transform (plus external if present) must form a unique combination",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSSourceInvalidStreamName",
+    "code": 400,
+    "error_code": 10141,
+    "description": "sourced stream name is invalid",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSMirrorInvalidStreamName",
+    "code": 400,
+    "error_code": 10142,
+    "description": "mirrored stream name is invalid",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSSourceMultipleFiltersNotAllowed",
+    "code": 400,
+    "error_code": 10144,
+    "description": "source with multiple subject transforms cannot also have a single subject filter",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSSourceInvalidSubjectFilter",
+    "code": 400,
+    "error_code": 10145,
+    "description": "source subject filter is invalid",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSSourceInvalidTransformDestination",
+    "code": 400,
+    "error_code": 10146,
+    "description": "source transform destination is invalid",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSSourceOverlappingSubjectFilters",
+    "code": 400,
+    "error_code": 10147,
+    "description": "source filters can not overlap",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerAlreadyExists",
+    "code": 400,
+    "error_code": 10148,
+    "description": "consumer already exists",
+    "comment": "action CREATE is used for a existing consumer with a different config",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerDoesNotExist",
+    "code": 400,
+    "error_code": 10149,
+    "description": "consumer does not exist",
+    "comment": "action UPDATE is used for a nonexisting consumer",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSMirrorMultipleFiltersNotAllowed",
+    "code": 400,
+    "error_code": 10150,
+    "description": "mirror with multiple subject transforms cannot also have a single subject filter",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSMirrorInvalidSubjectFilter",
+    "code": 400,
+    "error_code": 10151,
+    "description": "mirror subject filter is invalid",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSMirrorOverlappingSubjectFilters",
+    "code": 400,
+    "error_code": 10152,
+    "description": "mirror subject filters can not overlap",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerInactiveThresholdExcess",
+    "code": 400,
+    "error_code": 10153,
+    "description": "consumer inactive threshold exceeds system limit of {limit}",
     "comment": "",
     "help": "",
     "url": "",

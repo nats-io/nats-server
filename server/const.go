@@ -41,7 +41,7 @@ var (
 
 const (
 	// VERSION is the current version for the server.
-	VERSION = "2.9.22"
+	VERSION = "2.10.0-beta.56"
 
 	// PROTO is the currently supported protocol.
 	// 0 was the original
@@ -85,7 +85,7 @@ const (
 	// AUTH_TIMEOUT is the authorization wait time.
 	AUTH_TIMEOUT = 2 * time.Second
 
-	// DEFAULT_PING_INTERVAL is how often pings are sent to clients and routes.
+	// DEFAULT_PING_INTERVAL is how often pings are sent to clients, etc...
 	DEFAULT_PING_INTERVAL = 2 * time.Minute
 
 	// DEFAULT_PING_MAX_OUT is maximum allowed pings outstanding before disconnect.
@@ -120,6 +120,9 @@ const (
 
 	// DEFAULT_ROUTE_DIAL Route dial timeout.
 	DEFAULT_ROUTE_DIAL = 1 * time.Second
+
+	// DEFAULT_ROUTE_POOL_SIZE Route default pool size
+	DEFAULT_ROUTE_POOL_SIZE = 3
 
 	// DEFAULT_LEAF_NODE_RECONNECT LeafNode reconnect interval.
 	DEFAULT_LEAF_NODE_RECONNECT = time.Second

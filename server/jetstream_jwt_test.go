@@ -127,14 +127,14 @@ func TestJetStreamJWTLimits(t *testing.T) {
 	dir := t.TempDir()
 	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
-		jetstream: {max_mem_store: 10Mb, max_file_store: 10Mb}
+		jetstream: {max_mem_store: 10Mb, max_file_store: 10Mb, store_dir: "%s"}
 		operator: %s
 		resolver: {
 			type: full
 			dir: '%s'
 		}
 		system_account: %s
-    `, ojwt, dir, sysPub)))
+    `, dir, ojwt, dir, sysPub)))
 	s, opts := RunServerWithConfig(conf)
 	defer s.Shutdown()
 	port := opts.Port
@@ -172,14 +172,14 @@ func TestJetStreamJWTLimits(t *testing.T) {
 	s.Shutdown()
 	conf = createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:%d
-		jetstream: {max_mem_store: 20Mb, max_file_store: 20Mb}
+		jetstream: {max_mem_store: 20Mb, max_file_store: 20Mb, store_dir: "%s"}
 		operator: %s
 		resolver: {
 			type: full
 			dir: '%s'
 		}
 		system_account: %s
-    `, port, ojwt, dir, sysPub)))
+    `, port, dir, ojwt, dir, sysPub)))
 	s, _ = RunServerWithConfig(conf)
 	defer s.Shutdown()
 	c.Flush() // force client to discover the disconnect
@@ -878,7 +878,7 @@ func TestJetStreamJWTSysAccUpdateMixedMode(t *testing.T) {
 	require_NoError(t, err)
 }
 
-func TestJetStreamExpiredAccountNotCountedTowardLimits(t *testing.T) {
+func TestJetStreamJWTExpiredAccountNotCountedTowardLimits(t *testing.T) {
 	op, _ := nkeys.CreateOperator()
 	opPk, _ := op.PublicKey()
 	sk, _ := nkeys.CreateOperator()
@@ -926,7 +926,7 @@ func TestJetStreamExpiredAccountNotCountedTowardLimits(t *testing.T) {
 	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
 		operator: %s
-		jetstream: {max_mem_store: 10Mb, max_file_store: 10Mb}
+		jetstream: {max_mem_store: 10Mb, max_file_store: 10Mb, store_dir: "%s"}
 		system_account: %s
 		resolver: {
 			type: full
@@ -934,7 +934,7 @@ func TestJetStreamExpiredAccountNotCountedTowardLimits(t *testing.T) {
 			dir: '%s'
 			timeout: "500ms"
 		}
-    `, opJwt, syspub, dirSrv)))
+    `, opJwt, dirSrv, syspub, dirSrv)))
 
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
@@ -974,7 +974,7 @@ func TestJetStreamExpiredAccountNotCountedTowardLimits(t *testing.T) {
 	require_True(t, ai.Limits.MaxMemory == 7*1024*1024)
 }
 
-func TestJetStreamDeletedAccountDoesNotLeakSubscriptions(t *testing.T) {
+func TestJetStreamJWTDeletedAccountDoesNotLeakSubscriptions(t *testing.T) {
 	op, _ := nkeys.CreateOperator()
 	opPk, _ := op.PublicKey()
 	sk, _ := nkeys.CreateOperator()
@@ -1094,7 +1094,7 @@ func TestJetStreamDeletedAccountDoesNotLeakSubscriptions(t *testing.T) {
 	checkNumSubs(beforeCreate + 1)
 }
 
-func TestJetStreamDeletedAccountIsReEnabled(t *testing.T) {
+func TestJetStreamJWTDeletedAccountIsReEnabled(t *testing.T) {
 	op, _ := nkeys.CreateOperator()
 	opPk, _ := op.PublicKey()
 	sk, _ := nkeys.CreateOperator()
@@ -1143,7 +1143,7 @@ func TestJetStreamDeletedAccountIsReEnabled(t *testing.T) {
 	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
 		operator: %s
-		jetstream: {max_mem_store: 10Mb, max_file_store: 10Mb, store_dir: %v}
+		jetstream: {max_mem_store: 10Mb, max_file_store: 10Mb, store_dir: "%s"}
 		system_account: %s
 		resolver: {
 			type: full

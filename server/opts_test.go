@@ -72,6 +72,7 @@ func TestDefaultOptions(t *testing.T) {
 		MaxTracedMsgLen:       0,
 		JetStreamMaxMemory:    -1,
 		JetStreamMaxStore:     -1,
+		SyncInterval:          2 * time.Minute,
 	}
 
 	opts := &Options{}
@@ -1131,6 +1132,7 @@ func TestBadNkeyConfig(t *testing.T) {
 	if err := os.WriteFile(confFileName, []byte(content), 0666); err != nil {
 		t.Fatalf("Error writing config file: %v", err)
 	}
+	defer removeFile(t, confFileName)
 	if _, err := ProcessConfigFile(confFileName); err == nil {
 		t.Fatalf("Expected an error from nkey entry with password")
 	}
@@ -1147,6 +1149,7 @@ func TestNkeyWithPassConfig(t *testing.T) {
 	if err := os.WriteFile(confFileName, []byte(content), 0666); err != nil {
 		t.Fatalf("Error writing config file: %v", err)
 	}
+	defer removeFile(t, confFileName)
 	if _, err := ProcessConfigFile(confFileName); err == nil {
 		t.Fatalf("Expected an error from bad nkey entry")
 	}
@@ -1163,6 +1166,7 @@ func TestTokenWithUserPass(t *testing.T) {
 	if err := os.WriteFile(confFileName, []byte(content), 0666); err != nil {
 		t.Fatalf("Error writing config file: %v", err)
 	}
+	defer removeFile(t, confFileName)
 	_, err := ProcessConfigFile(confFileName)
 	if err == nil {
 		t.Fatal("Expected error, got none")
@@ -1184,6 +1188,7 @@ func TestTokenWithUsers(t *testing.T) {
 	if err := os.WriteFile(confFileName, []byte(content), 0666); err != nil {
 		t.Fatalf("Error writing config file: %v", err)
 	}
+	defer removeFile(t, confFileName)
 	_, err := ProcessConfigFile(confFileName)
 	if err == nil {
 		t.Fatal("Expected error, got none")
@@ -2084,6 +2089,7 @@ func TestParsingGateways(t *testing.T) {
 	if err := os.WriteFile(file, []byte(content), 0600); err != nil {
 		t.Fatalf("Error writing config file: %v", err)
 	}
+	defer removeFile(t, file)
 	opts, err := ProcessConfigFile(file)
 	if err != nil {
 		t.Fatalf("Error processing file: %v", err)
@@ -2337,6 +2343,7 @@ func TestParsingGatewaysErrors(t *testing.T) {
 			if err := os.WriteFile(file, []byte(test.content), 0600); err != nil {
 				t.Fatalf("Error writing config file: %v", err)
 			}
+			defer removeFile(t, file)
 			_, err := ProcessConfigFile(file)
 			if err == nil {
 				t.Fatalf("Expected to fail, did not. Content:\n%s", test.content)

@@ -17,11 +17,13 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1240,7 +1242,7 @@ func TestAccountReqMonitoring(t *testing.T) {
 	defer s.Shutdown()
 	sacc, sakp := createAccount(s)
 	s.setSystemAccount(sacc)
-	s.EnableJetStream(nil)
+	s.EnableJetStream(&JetStreamConfig{StoreDir: t.TempDir()})
 	unusedAcc, _ := createAccount(s)
 	acc, akp := createAccount(s)
 	acc.EnableJetStream(nil)
@@ -1266,7 +1268,7 @@ func TestAccountReqMonitoring(t *testing.T) {
 	// query SUBSZ for account
 	resp, err := ncSys.Request(subsz, nil, time.Second)
 	require_NoError(t, err)
-	require_Contains(t, string(resp.Data), `"num_subscriptions":4,`)
+	require_Contains(t, string(resp.Data), `"num_subscriptions":5,`)
 	// create a subscription
 	sub, err := nc.Subscribe("foo", func(msg *nats.Msg) {})
 	require_NoError(t, err)
@@ -1276,7 +1278,7 @@ func TestAccountReqMonitoring(t *testing.T) {
 	// query SUBSZ for account
 	resp, err = ncSys.Request(subsz, nil, time.Second)
 	require_NoError(t, err)
-	require_Contains(t, string(resp.Data), `"num_subscriptions":5,`, `"subject":"foo"`)
+	require_Contains(t, string(resp.Data), `"num_subscriptions":6,`, `"subject":"foo"`)
 	// query connections for account
 	resp, err = ncSys.Request(connz, nil, time.Second)
 	require_NoError(t, err)
@@ -1289,14 +1291,14 @@ func TestAccountReqMonitoring(t *testing.T) {
 	resp, err = ncSys.Request(statz(acc.Name), nil, time.Second)
 	require_NoError(t, err)
 	respContentAcc := []string{`"conns":1,`, `"total_conns":1`, `"slow_consumers":0`, `"sent":{"msgs":0,"bytes":0}`,
-		`"received":{"msgs":0,"bytes":0}`, fmt.Sprintf(`"acc":"%s"`, acc.Name)}
+		`"received":{"msgs":0,"bytes":0}`, `"num_subscriptions":`, fmt.Sprintf(`"acc":"%s"`, acc.Name)}
 	require_Contains(t, string(resp.Data), respContentAcc...)
 
 	rIb := ncSys.NewRespInbox()
 	rSub, err := ncSys.SubscribeSync(rIb)
 	require_NoError(t, err)
 	require_NoError(t, ncSys.PublishRequest(pStatz, rIb, nil))
-	minRespContentForBothAcc := []string{`"conns":1,`, `"total_conns":1`, `"slow_consumers":0`, `"acc":"`}
+	minRespContentForBothAcc := []string{`"conns":1,`, `"total_conns":1`, `"slow_consumers":0`, `"acc":"`, `"num_subscriptions":`}
 	resp, err = rSub.NextMsg(time.Second)
 	require_NoError(t, err)
 	require_Contains(t, string(resp.Data), minRespContentForBothAcc...)
@@ -1334,17 +1336,24 @@ func TestAccountReqMonitoring(t *testing.T) {
 	_, err = rSub.NextMsg(200 * time.Millisecond)
 	require_Error(t, err)
 
-	// Test ping from within account
+	// Test ping from within account, send extra message to check counters.
+	require_NoError(t, nc.Publish("foo", nil))
 	ib := nc.NewRespInbox()
 	rSub, err = nc.SubscribeSync(ib)
 	require_NoError(t, err)
 	require_NoError(t, nc.PublishRequest(pStatz, ib, nil))
+	require_NoError(t, nc.Flush())
 	resp, err = rSub.NextMsg(time.Second)
 	require_NoError(t, err)
-	// Since we now have processed our own message, msgs will be 1.
-	respContentAcc = []string{`"conns":1,`, `"total_conns":1`, `"slow_consumers":0`, `"sent":{"msgs":0,"bytes":0}`,
-		`"received":{"msgs":1,"bytes":0}`, fmt.Sprintf(`"acc":"%s"`, acc.Name)}
-	require_Contains(t, string(resp.Data), respContentAcc...)
+
+	// Since we now have processed our own message, sent msgs will be at least 1.
+	payload := string(resp.Data)
+	respContentAcc = []string{`"conns":1,`, `"total_conns":1`, `"slow_consumers":0`, `"sent":{"msgs":1,"bytes":0}`, fmt.Sprintf(`"acc":"%s"`, acc.Name)}
+	require_Contains(t, payload, respContentAcc...)
+
+	// Depending on timing, statz message could be accounted too.
+	receivedOK := strings.Contains(payload, `"received":{"msgs":1,"bytes":0}`) || strings.Contains(payload, `"received":{"msgs":2,"bytes":0}`)
+	require_True(t, receivedOK)
 	_, err = rSub.NextMsg(200 * time.Millisecond)
 	require_Error(t, err)
 }
@@ -1419,7 +1428,7 @@ func TestAccountReqInfo(t *testing.T) {
 		t.Fatalf("Unmarshalling failed: %v", err)
 	} else if len(info.Exports) != 1 {
 		t.Fatalf("Unexpected value: %v", info.Exports)
-	} else if len(info.Imports) != 3 {
+	} else if len(info.Imports) != 4 {
 		t.Fatalf("Unexpected value: %+v", info.Imports)
 	} else if info.Exports[0].Subject != "req.*" {
 		t.Fatalf("Unexpected value: %v", info.Exports)
@@ -1427,7 +1436,7 @@ func TestAccountReqInfo(t *testing.T) {
 		t.Fatalf("Unexpected value: %v", info.Exports)
 	} else if info.Exports[0].ResponseType != jwt.ResponseTypeSingleton {
 		t.Fatalf("Unexpected value: %v", info.Exports)
-	} else if info.SubCnt != 3 {
+	} else if info.SubCnt != 4 {
 		t.Fatalf("Unexpected value: %v", info.SubCnt)
 	} else {
 		checkCommon(&info, &srv, pub1, ajwt1)
@@ -1440,7 +1449,7 @@ func TestAccountReqInfo(t *testing.T) {
 		t.Fatalf("Unmarshalling failed: %v", err)
 	} else if len(info.Exports) != 0 {
 		t.Fatalf("Unexpected value: %v", info.Exports)
-	} else if len(info.Imports) != 4 {
+	} else if len(info.Imports) != 5 {
 		t.Fatalf("Unexpected value: %+v", info.Imports)
 	}
 	// Here we need to find our import
@@ -1458,7 +1467,7 @@ func TestAccountReqInfo(t *testing.T) {
 		t.Fatalf("Unexpected value: %+v", si)
 	} else if si.Account != pub1 {
 		t.Fatalf("Unexpected value: %+v", si)
-	} else if info.SubCnt != 4 {
+	} else if info.SubCnt != 5 {
 		t.Fatalf("Unexpected value: %+v", si)
 	} else {
 		checkCommon(&info, &srv, pub2, ajwt2)
@@ -1666,7 +1675,7 @@ func TestSystemAccountWithGateways(t *testing.T) {
 
 	// If this tests fails with wrong number after 10 seconds we may have
 	// added a new inititial subscription for the eventing system.
-	checkExpectedSubs(t, 46, sa)
+	checkExpectedSubs(t, 56, sa)
 
 	// Create a client on B and see if we receive the event
 	urlb := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)
@@ -1680,12 +1689,10 @@ func TestSystemAccountWithGateways(t *testing.T) {
 	require_NoError(t, err)
 	msgs[1], err = sub.NextMsg(time.Second)
 	require_NoError(t, err)
-	msgs[2], err = sub.NextMsg(time.Second)
-	require_NoError(t, err)
 	// TODO: There is a race currently that can cause the server to process the
 	// system event *after* the subscription on "A" has been registered, and so
 	// the "nca" client would receive its own CONNECT message.
-	msgs[3], _ = sub.NextMsg(250 * time.Millisecond)
+	msgs[2], _ = sub.NextMsg(250 * time.Millisecond)
 
 	findMsgs := func(sub string) []*nats.Msg {
 		rMsgs := []*nats.Msg{}
@@ -1713,10 +1720,6 @@ func TestSystemAccountWithGateways(t *testing.T) {
 
 	connsMsgA := findMsgs(fmt.Sprintf("$SYS.ACCOUNT.%s.SERVER.CONNS", sa.SystemAccount().Name))
 	if len(connsMsgA) != 1 {
-		t.Fatal("Expected a message")
-	}
-	connsMsgG := findMsgs("$SYS.ACCOUNT.$G.SERVER.CONNS")
-	if len(connsMsgG) != 1 {
 		t.Fatal("Expected a message")
 	}
 }
@@ -1894,8 +1897,10 @@ func TestServerEventsStatsZ(t *testing.T) {
 	if m.Stats.Received.Msgs < 1 {
 		t.Fatalf("Did not match received msgs of >=1, got %d", m.Stats.Received.Msgs)
 	}
-	if lr := len(m.Stats.Routes); lr != 1 {
-		t.Fatalf("Expected a route, but got %d", lr)
+	// Default pool size + 1 for system account
+	expectedRoutes := DEFAULT_ROUTE_POOL_SIZE + 1
+	if lr := len(m.Stats.Routes); lr != expectedRoutes {
+		t.Fatalf("Expected %d routes, but got %d", expectedRoutes, lr)
 	}
 
 	// Now let's prompt this server to send us the statsz
@@ -1923,8 +1928,8 @@ func TestServerEventsStatsZ(t *testing.T) {
 	if m2.Stats.Received.Msgs < 1 {
 		t.Fatalf("Did not match received msgs of >= 1, got %d", m2.Stats.Received.Msgs)
 	}
-	if lr := len(m2.Stats.Routes); lr != 1 {
-		t.Fatalf("Expected a route, but got %d", lr)
+	if lr := len(m2.Stats.Routes); lr != expectedRoutes {
+		t.Fatalf("Expected %d routes, but got %d", expectedRoutes, lr)
 	}
 
 	msg, err = ncs.Request(subj, nil, time.Second)
@@ -1950,11 +1955,13 @@ func TestServerEventsStatsZ(t *testing.T) {
 	if m3.Stats.Received.Msgs < 2 {
 		t.Fatalf("Did not match received msgs of >= 2, got %d", m3.Stats.Received.Msgs)
 	}
-	if lr := len(m3.Stats.Routes); lr != 1 {
-		t.Fatalf("Expected a route, but got %d", lr)
+	if lr := len(m3.Stats.Routes); lr != expectedRoutes {
+		t.Fatalf("Expected %d routes, but got %d", expectedRoutes, lr)
 	}
-	if sr := m3.Stats.Routes[0]; sr.Name != "B_SRV" {
-		t.Fatalf("Expected server A's route to B to have Name set to %q, got %q", "B", sr.Name)
+	for _, sr := range m3.Stats.Routes {
+		if sr.Name != "B_SRV" {
+			t.Fatalf("Expected server A's route to B to have Name set to %q, got %q", "B", sr.Name)
+		}
 	}
 
 	// Now query B and check that route's name is "A"
@@ -1968,11 +1975,813 @@ func TestServerEventsStatsZ(t *testing.T) {
 	if err := json.Unmarshal(msg.Data, &m); err != nil {
 		t.Fatalf("Error unmarshalling the statz json: %v", err)
 	}
-	if lr := len(m.Stats.Routes); lr != 1 {
-		t.Fatalf("Expected a route, but got %d", lr)
+	if lr := len(m.Stats.Routes); lr != expectedRoutes {
+		t.Fatalf("Expected %d routes, but got %d", expectedRoutes, lr)
 	}
-	if sr := m.Stats.Routes[0]; sr.Name != "A_SRV" {
-		t.Fatalf("Expected server B's route to A to have Name set to %q, got %q", "A_SRV", sr.Name)
+	for _, sr := range m.Stats.Routes {
+		if sr.Name != "A_SRV" {
+			t.Fatalf("Expected server B's route to A to have Name set to %q, got %q", "A_SRV", sr.Name)
+		}
+	}
+}
+
+func TestServerEventsHealthZSingleServer(t *testing.T) {
+	type healthzResp struct {
+		Healthz HealthStatus `json:"data"`
+		Server  ServerInfo   `json:"server"`
+	}
+	cfg := fmt.Sprintf(`listen: 127.0.0.1:-1
+
+	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+
+	no_auth_user: one
+
+	accounts {
+		ONE { users = [ { user: "one", pass: "p" } ]; jetstream: enabled }
+		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+	}`, t.TempDir())
+
+	serverHealthzReqSubj := "$SYS.REQ.SERVER.%s.HEALTHZ"
+	s, _ := RunServerWithConfig(createConfFile(t, []byte(cfg)))
+	defer s.Shutdown()
+
+	ncs, err := nats.Connect(s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	if err != nil {
+		t.Fatalf("Error connecting to cluster: %v", err)
+	}
+
+	defer ncs.Close()
+	ncAcc, err := nats.Connect(s.ClientURL())
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ncAcc.Close()
+	js, err := ncAcc.JetStream()
+	if err != nil {
+		t.Fatalf("Error creating JetStream context: %v", err)
+	}
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "test",
+		Subjects: []string{"foo"},
+	})
+	if err != nil {
+		t.Fatalf("Error creating stream: %v", err)
+	}
+	_, err = js.AddConsumer("test", &nats.ConsumerConfig{
+		Name: "cons",
+	})
+	if err != nil {
+		t.Fatalf("Error creating consumer: %v", err)
+	}
+
+	subj := fmt.Sprintf(serverHealthzReqSubj, s.ID())
+
+	tests := []struct {
+		name     string
+		req      *HealthzEventOptions
+		expected HealthStatus
+	}{
+		{
+			name:     "no parameters",
+			expected: HealthStatus{Status: "ok", StatusCode: 200},
+		},
+		{
+			name: "with js enabled only",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					JSEnabledOnly: true,
+				},
+			},
+			expected: HealthStatus{Status: "ok", StatusCode: 200},
+		},
+		{
+			name: "with server only",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					JSServerOnly: true,
+				},
+			},
+			expected: HealthStatus{Status: "ok", StatusCode: 200},
+		},
+		{
+			name: "with account name",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account: "ONE",
+				},
+			},
+			expected: HealthStatus{Status: "ok", StatusCode: 200},
+		},
+		{
+			name: "with account name and stream",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account: "ONE",
+					Stream:  "test",
+				},
+			},
+			expected: HealthStatus{Status: "ok", StatusCode: 200},
+		},
+		{
+			name: "with account name, stream and consumer",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account:  "ONE",
+					Stream:   "test",
+					Consumer: "cons",
+				},
+			},
+			expected: HealthStatus{Status: "ok", StatusCode: 200},
+		},
+		{
+			name: "with stream only",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Stream: "test",
+				},
+			},
+			expected: HealthStatus{
+				Status:     "error",
+				StatusCode: 400,
+				Error:      `"account" must not be empty when checking stream health`,
+			},
+		},
+		{
+			name: "with stream only, detailed",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Details: true,
+					Stream:  "test",
+				},
+			},
+			expected: HealthStatus{
+				Status:     "error",
+				StatusCode: 400,
+				Errors: []HealthzError{
+					{
+						Type:  HealthzErrorBadRequest,
+						Error: `"account" must not be empty when checking stream health`,
+					},
+				},
+			},
+		},
+		{
+			name: "with account and consumer",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account:  "ONE",
+					Consumer: "cons",
+				},
+			},
+			expected: HealthStatus{
+				Status:     "error",
+				StatusCode: 400,
+				Error:      `"stream" must not be empty when checking consumer health`,
+			},
+		},
+		{
+			name: "with account and consumer, detailed",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account:  "ONE",
+					Consumer: "cons",
+					Details:  true,
+				},
+			},
+			expected: HealthStatus{
+				Status:     "error",
+				StatusCode: 400,
+				Errors: []HealthzError{
+					{
+						Type:  HealthzErrorBadRequest,
+						Error: `"stream" must not be empty when checking consumer health`,
+					},
+				},
+			},
+		},
+		{
+			name: "account not found",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account: "abc",
+				},
+			},
+			expected: HealthStatus{
+				Status:     "unavailable",
+				StatusCode: 404,
+				Error:      `JetStream account "abc" not found`,
+			},
+		},
+		{
+			name: "account not found, detailed",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account: "abc",
+					Details: true,
+				},
+			},
+			expected: HealthStatus{
+				Status:     "error",
+				StatusCode: 404,
+				Errors: []HealthzError{
+					{
+						Type:    HealthzErrorAccount,
+						Account: "abc",
+						Error:   `JetStream account "abc" not found`,
+					},
+				},
+			},
+		},
+		{
+			name: "stream not found",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account: "ONE",
+					Stream:  "abc",
+				},
+			},
+			expected: HealthStatus{
+				Status:     "unavailable",
+				StatusCode: 404,
+				Error:      `JetStream stream "abc" not found on account "ONE"`,
+			},
+		},
+		{
+			name: "stream not found, detailed",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account: "ONE",
+					Stream:  "abc",
+					Details: true,
+				},
+			},
+			expected: HealthStatus{
+				Status:     "error",
+				StatusCode: 404,
+				Errors: []HealthzError{
+					{
+						Type:    HealthzErrorStream,
+						Account: "ONE",
+						Stream:  "abc",
+						Error:   `JetStream stream "abc" not found on account "ONE"`,
+					},
+				},
+			},
+		},
+		{
+			name: "consumer not found",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account:  "ONE",
+					Stream:   "test",
+					Consumer: "abc",
+				},
+			},
+			expected: HealthStatus{
+				Status:     "unavailable",
+				StatusCode: 404,
+				Error:      `JetStream consumer "abc" not found for stream "test" on account "ONE"`,
+			},
+		},
+		{
+			name: "consumer not found, detailed",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account:  "ONE",
+					Stream:   "test",
+					Consumer: "abc",
+					Details:  true,
+				},
+			},
+			expected: HealthStatus{
+				Status:     "error",
+				StatusCode: 404,
+				Errors: []HealthzError{
+					{
+						Type:     HealthzErrorConsumer,
+						Account:  "ONE",
+						Stream:   "test",
+						Consumer: "abc",
+						Error:    `JetStream consumer "abc" not found for stream "test" on account "ONE"`,
+					},
+				},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var body []byte
+			var err error
+			if test.req != nil {
+				body, err = json.Marshal(test.req)
+				if err != nil {
+					t.Fatalf("Error marshaling request body: %v", err)
+				}
+			}
+			msg, err := ncs.Request(subj, body, 1*time.Second)
+			if err != nil {
+				t.Fatalf("Error trying to request healthz: %v", err)
+			}
+			var health healthzResp
+			if err := json.Unmarshal(msg.Data, &health); err != nil {
+				t.Fatalf("Error unmarshalling the statz json: %v", err)
+			}
+			if !reflect.DeepEqual(health.Healthz, test.expected) {
+				t.Errorf("Invalid healthz status; want: %+v; got: %+v", test.expected, health.Healthz)
+			}
+		})
+	}
+}
+
+func TestServerEventsHealthZClustered(t *testing.T) {
+	type healthzResp struct {
+		Healthz HealthStatus `json:"data"`
+		Server  ServerInfo   `json:"server"`
+	}
+	serverHealthzReqSubj := "$SYS.REQ.SERVER.%s.HEALTHZ"
+	c := createJetStreamClusterWithTemplate(t, jsClusterAccountsTempl, "JSC", 3)
+	defer c.shutdown()
+
+	ncs, err := nats.Connect(c.randomServer().ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	if err != nil {
+		t.Fatalf("Error connecting to cluster: %v", err)
+	}
+
+	defer ncs.Close()
+	ncAcc, err := nats.Connect(c.randomServer().ClientURL())
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ncAcc.Close()
+	js, err := ncAcc.JetStream()
+	if err != nil {
+		t.Fatalf("Error creating JetStream context: %v", err)
+	}
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "test",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	if err != nil {
+		t.Fatalf("Error creating stream: %v", err)
+	}
+	_, err = js.AddConsumer("test", &nats.ConsumerConfig{
+		Name:     "cons",
+		Replicas: 3,
+	})
+	if err != nil {
+		t.Fatalf("Error creating consumer: %v", err)
+	}
+
+	subj := fmt.Sprintf(serverHealthzReqSubj, c.servers[0].ID())
+	pingSubj := fmt.Sprintf(serverHealthzReqSubj, "PING")
+
+	tests := []struct {
+		name          string
+		req           *HealthzEventOptions
+		expected      HealthStatus
+		expectedError string
+	}{
+		{
+			name:     "no parameters",
+			expected: HealthStatus{Status: "ok", StatusCode: 200},
+		},
+		{
+			name: "with js enabled only",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					JSEnabledOnly: true,
+				},
+			},
+			expected: HealthStatus{Status: "ok", StatusCode: 200},
+		},
+		{
+			name: "with server only",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					JSServerOnly: true,
+				},
+			},
+			expected: HealthStatus{Status: "ok", StatusCode: 200},
+		},
+		{
+			name: "with account name",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account: "ONE",
+				},
+			},
+			expected: HealthStatus{Status: "ok", StatusCode: 200},
+		},
+		{
+			name: "with account name and stream",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account: "ONE",
+					Stream:  "test",
+				},
+			},
+			expected: HealthStatus{Status: "ok", StatusCode: 200},
+		},
+		{
+			name: "with account name, stream and consumer",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account:  "ONE",
+					Stream:   "test",
+					Consumer: "cons",
+				},
+			},
+			expected: HealthStatus{Status: "ok", StatusCode: 200},
+		},
+		{
+			name: "with stream only",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Stream: "test",
+				},
+			},
+			expected: HealthStatus{
+				Status:     "error",
+				StatusCode: 400,
+				Error:      `"account" must not be empty when checking stream health`,
+			},
+			expectedError: "Bad request:",
+		},
+		{
+			name: "with stream only, detailed",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Details: true,
+					Stream:  "test",
+				},
+			},
+			expected: HealthStatus{
+				Status:     "error",
+				StatusCode: 400,
+				Errors: []HealthzError{
+					{
+						Type:  HealthzErrorBadRequest,
+						Error: `"account" must not be empty when checking stream health`,
+					},
+				},
+			},
+		},
+		{
+			name: "account not found",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account: "abc",
+				},
+			},
+			expected: HealthStatus{
+				Status:     "unavailable",
+				StatusCode: 404,
+				Error:      `JetStream account "abc" not found`,
+			},
+			expectedError: `account "abc" not found`,
+		},
+		{
+			name: "account not found, detailed",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account: "abc",
+					Details: true,
+				},
+			},
+			expected: HealthStatus{
+				Status:     "error",
+				StatusCode: 404,
+				Errors: []HealthzError{
+					{
+						Type:    HealthzErrorAccount,
+						Account: "abc",
+						Error:   `JetStream account "abc" not found`,
+					},
+				},
+			},
+		},
+		{
+			name: "stream not found",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account: "ONE",
+					Stream:  "abc",
+				},
+			},
+			expected: HealthStatus{
+				Status:     "unavailable",
+				StatusCode: 404,
+				Error:      `JetStream stream "abc" not found on account "ONE"`,
+			},
+			expectedError: `stream "abc" not found`,
+		},
+		{
+			name: "stream not found, detailed",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account: "ONE",
+					Stream:  "abc",
+					Details: true,
+				},
+			},
+			expected: HealthStatus{
+				Status:     "error",
+				StatusCode: 404,
+				Errors: []HealthzError{
+					{
+						Type:    HealthzErrorStream,
+						Account: "ONE",
+						Stream:  "abc",
+						Error:   `JetStream stream "abc" not found on account "ONE"`,
+					},
+				},
+			},
+		},
+		{
+			name: "consumer not found",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account:  "ONE",
+					Stream:   "test",
+					Consumer: "abc",
+				},
+			},
+			expected: HealthStatus{
+				Status:     "unavailable",
+				StatusCode: 404,
+				Error:      `JetStream consumer "abc" not found for stream "test" on account "ONE"`,
+			},
+			expectedError: `consumer "abc" not found for stream "test"`,
+		},
+		{
+			name: "consumer not found, detailed",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					Account:  "ONE",
+					Stream:   "test",
+					Consumer: "abc",
+					Details:  true,
+				},
+			},
+			expected: HealthStatus{
+				Status:     "error",
+				StatusCode: 404,
+				Errors: []HealthzError{
+					{
+						Type:     HealthzErrorConsumer,
+						Account:  "ONE",
+						Stream:   "test",
+						Consumer: "abc",
+						Error:    `JetStream consumer "abc" not found for stream "test" on account "ONE"`,
+					},
+				},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var body []byte
+			var err error
+			if test.req != nil {
+				body, err = json.Marshal(test.req)
+				if err != nil {
+					t.Fatalf("Error marshaling request body: %v", err)
+				}
+			}
+			msg, err := ncs.Request(subj, body, 1*time.Second)
+			if err != nil {
+				t.Fatalf("Error trying to request healthz: %v", err)
+			}
+			var health healthzResp
+			if err := json.Unmarshal(msg.Data, &health); err != nil {
+				t.Fatalf("Error unmarshalling the statz json: %v", err)
+			}
+			if !reflect.DeepEqual(health.Healthz, test.expected) {
+				t.Errorf("Invalid healthz status; want: %+v; got: %+v", test.expected, health.Healthz)
+			}
+
+			reply := ncs.NewRespInbox()
+			sub, err := ncs.SubscribeSync(reply)
+			if err != nil {
+				t.Fatalf("Error creating subscription: %v", err)
+			}
+			defer sub.Unsubscribe()
+
+			// now PING all servers
+			if err := ncs.PublishRequest(pingSubj, reply, body); err != nil {
+				t.Fatalf("Publish error: %v", err)
+			}
+			for i := 0; i < 3; i++ {
+				msg, err := sub.NextMsg(1 * time.Second)
+				if err != nil {
+					t.Fatalf("Error fetching healthz PING response: %v", err)
+				}
+				var health healthzResp
+				if err := json.Unmarshal(msg.Data, &health); err != nil {
+					t.Fatalf("Error unmarshalling the statz json: %v", err)
+				}
+				if !reflect.DeepEqual(health.Healthz, test.expected) {
+					t.Errorf("Invalid healthz status; want: %+v; got: %+v", test.expected, health.Healthz)
+				}
+			}
+			if _, err := sub.NextMsg(50 * time.Millisecond); !errors.Is(err, nats.ErrTimeout) {
+				t.Fatalf("Expected timeout error; got: %v", err)
+			}
+		})
+	}
+}
+
+func TestServerEventsHealthZClustered_NoReplicas(t *testing.T) {
+	type healthzResp struct {
+		Healthz HealthStatus `json:"data"`
+		Server  ServerInfo   `json:"server"`
+	}
+	serverHealthzReqSubj := "$SYS.REQ.SERVER.%s.HEALTHZ"
+	c := createJetStreamClusterWithTemplate(t, jsClusterAccountsTempl, "JSC", 3)
+	defer c.shutdown()
+
+	ncs, err := nats.Connect(c.randomServer().ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	if err != nil {
+		t.Fatalf("Error connecting to cluster: %v", err)
+	}
+
+	defer ncs.Close()
+	ncAcc, err := nats.Connect(c.randomServer().ClientURL())
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ncAcc.Close()
+	js, err := ncAcc.JetStream()
+	if err != nil {
+		t.Fatalf("Error creating JetStream context: %v", err)
+	}
+
+	pingSubj := fmt.Sprintf(serverHealthzReqSubj, "PING")
+
+	t.Run("non-replicated stream", func(t *testing.T) {
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     "test",
+			Subjects: []string{"foo"},
+		})
+		if err != nil {
+			t.Fatalf("Error creating stream: %v", err)
+		}
+		_, err = js.AddConsumer("test", &nats.ConsumerConfig{
+			Name: "cons",
+		})
+		if err != nil {
+			t.Fatalf("Error creating consumer: %v", err)
+		}
+		body, err := json.Marshal(HealthzEventOptions{
+			HealthzOptions: HealthzOptions{
+				Account: "ONE",
+				Stream:  "test",
+			},
+		})
+		if err != nil {
+			t.Fatalf("Error marshaling request body: %v", err)
+		}
+
+		reply := ncs.NewRespInbox()
+		sub, err := ncs.SubscribeSync(reply)
+		if err != nil {
+			t.Fatalf("Error creating subscription: %v", err)
+		}
+		defer sub.Unsubscribe()
+
+		// now PING all servers
+		if err := ncs.PublishRequest(pingSubj, reply, body); err != nil {
+			t.Fatalf("Publish error: %v", err)
+		}
+		var healthy int
+		for i := 0; i < 3; i++ {
+			msg, err := sub.NextMsg(1 * time.Second)
+			if err != nil {
+				t.Fatalf("Error fetching healthz PING response: %v", err)
+			}
+			var health healthzResp
+			if err := json.Unmarshal(msg.Data, &health); err != nil {
+				t.Fatalf("Error unmarshalling the statz json: %v", err)
+			}
+			if health.Healthz.Status == "ok" {
+				healthy++
+				continue
+			}
+			if !strings.Contains(health.Healthz.Error, `stream "test" not found`) {
+				t.Errorf("Expected error to contain: %q, got: %s", `stream "test" not found`, health.Healthz.Error)
+			}
+		}
+		if healthy != 1 {
+			t.Fatalf("Expected 1 healthy server; got: %d", healthy)
+		}
+		if _, err := sub.NextMsg(50 * time.Millisecond); !errors.Is(err, nats.ErrTimeout) {
+			t.Fatalf("Expected timeout error; got: %v", err)
+		}
+	})
+
+	t.Run("non-replicated consumer", func(t *testing.T) {
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     "test-repl",
+			Subjects: []string{"bar"},
+			Replicas: 3,
+		})
+		if err != nil {
+			t.Fatalf("Error creating stream: %v", err)
+		}
+		_, err = js.AddConsumer("test-repl", &nats.ConsumerConfig{
+			Name: "cons-single",
+		})
+		if err != nil {
+			t.Fatalf("Error creating consumer: %v", err)
+		}
+		body, err := json.Marshal(HealthzEventOptions{
+			HealthzOptions: HealthzOptions{
+				Account:  "ONE",
+				Stream:   "test-repl",
+				Consumer: "cons-single",
+			},
+		})
+		if err != nil {
+			t.Fatalf("Error marshaling request body: %v", err)
+		}
+
+		reply := ncs.NewRespInbox()
+		sub, err := ncs.SubscribeSync(reply)
+		if err != nil {
+			t.Fatalf("Error creating subscription: %v", err)
+		}
+		defer sub.Unsubscribe()
+
+		// now PING all servers
+		if err := ncs.PublishRequest(pingSubj, reply, body); err != nil {
+			t.Fatalf("Publish error: %v", err)
+		}
+		var healthy int
+		for i := 0; i < 3; i++ {
+			msg, err := sub.NextMsg(1 * time.Second)
+			if err != nil {
+				t.Fatalf("Error fetching healthz PING response: %v", err)
+			}
+			var health healthzResp
+			if err := json.Unmarshal(msg.Data, &health); err != nil {
+				t.Fatalf("Error unmarshalling the statz json: %v", err)
+			}
+			if health.Healthz.Status == "ok" {
+				healthy++
+				continue
+			}
+			if !strings.Contains(health.Healthz.Error, `consumer "cons-single" not found`) {
+				t.Errorf("Expected error to contain: %q, got: %s", `consumer "cons-single" not found`, health.Healthz.Error)
+			}
+		}
+		if healthy != 1 {
+			t.Fatalf("Expected 1 healthy server; got: %d", healthy)
+		}
+		if _, err := sub.NextMsg(50 * time.Millisecond); !errors.Is(err, nats.ErrTimeout) {
+			t.Fatalf("Expected timeout error; got: %v", err)
+		}
+	})
+
+}
+
+func TestServerEventsHealthZJetStreamNotEnabled(t *testing.T) {
+	type healthzResp struct {
+		Healthz HealthStatus `json:"data"`
+		Server  ServerInfo   `json:"server"`
+	}
+	cfg := `listen: 127.0.0.1:-1
+
+	accounts {
+		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+	}`
+
+	serverHealthzReqSubj := "$SYS.REQ.SERVER.%s.HEALTHZ"
+	s, _ := RunServerWithConfig(createConfFile(t, []byte(cfg)))
+	defer s.Shutdown()
+
+	ncs, err := nats.Connect(s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	if err != nil {
+		t.Fatalf("Error connecting to cluster: %v", err)
+	}
+
+	defer ncs.Close()
+
+	subj := fmt.Sprintf(serverHealthzReqSubj, s.ID())
+
+	msg, err := ncs.Request(subj, nil, 1*time.Second)
+	if err != nil {
+		t.Fatalf("Error trying to request healthz: %v", err)
+	}
+	var health healthzResp
+	if err := json.Unmarshal(msg.Data, &health); err != nil {
+		t.Fatalf("Error unmarshalling the statz json: %v", err)
+	}
+	if health.Healthz.Status != "ok" {
+		t.Errorf("Invalid healthz status; want: %q; got: %q", "ok", health.Healthz.Status)
+	}
+	if health.Healthz.Error != "" {
+		t.Errorf("HealthZ error: %s", health.Healthz.Error)
 	}
 }
 
@@ -2533,6 +3342,141 @@ func TestServerEventsStatszSingleServer(t *testing.T) {
 	require_NoError(t, err)
 
 	checkSubsPending(t, sub, 1)
+}
+
+func TestServerEventsReload(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		accounts: {
+			$SYS { users [{user: "admin", password: "p1d"}]}
+			test { users [{user: "foo", password: "bar"}]}
+		}
+		ping_interval: "100ms"
+	`))
+	opts := LoadConfig(conf)
+	s := RunServer(opts)
+	defer s.Shutdown()
+	subject := fmt.Sprintf(serverReloadReqSubj, s.info.ID)
+
+	// Connect as a test user and make sure the reload endpoint is not
+	// accessible.
+	ncTest, _ := jsClientConnect(t, s, nats.UserInfo("foo", "bar"))
+	defer ncTest.Close()
+	testReply := ncTest.NewRespInbox()
+	sub, err := ncTest.SubscribeSync(testReply)
+	require_NoError(t, err)
+	err = ncTest.PublishRequest(subject, testReply, nil)
+	require_NoError(t, err)
+	_, err = sub.NextMsg(time.Second)
+	require_Error(t, err)
+
+	require_True(t, s.getOpts().PingInterval == 100*time.Millisecond)
+
+	// Connect as a system user.
+	nc, _ := jsClientConnect(t, s, nats.UserInfo("admin", "p1d"))
+	defer nc.Close()
+
+	// rewrite the config file with a different ping interval
+	err = os.WriteFile(conf, []byte(`
+		listen: "127.0.0.1:-1"
+		accounts: {
+			$SYS { users [{user: "admin", password: "p1d"}]}
+			test { users [{user: "foo", password: "bar"}]}
+		}
+		ping_interval: "200ms"
+	`), 0666)
+	require_NoError(t, err)
+
+	msg, err := nc.Request(subject, nil, time.Second)
+	require_NoError(t, err)
+
+	var apiResp = ServerAPIResponse{}
+	err = json.Unmarshal(msg.Data, &apiResp)
+	require_NoError(t, err)
+
+	require_True(t, apiResp.Data == nil)
+	require_True(t, apiResp.Error == nil)
+
+	// See that the ping interval has changed.
+	require_True(t, s.getOpts().PingInterval == 200*time.Millisecond)
+
+	// rewrite the config file with a different ping interval
+	err = os.WriteFile(conf, []byte(`garbage and nonsense`), 0666)
+	require_NoError(t, err)
+
+	// Request the server to reload and wait for the response.
+	msg, err = nc.Request(subject, nil, time.Second)
+	require_NoError(t, err)
+
+	apiResp = ServerAPIResponse{}
+	err = json.Unmarshal(msg.Data, &apiResp)
+	require_NoError(t, err)
+
+	require_True(t, apiResp.Data == nil)
+	require_Error(t, apiResp.Error, fmt.Errorf("Parse error on line 1: 'Expected a top-level value to end with a new line, comment or EOF, but got 'n' instead.'"))
+
+	// See that the ping interval has not changed.
+	require_True(t, s.getOpts().PingInterval == 200*time.Millisecond)
+}
+
+func TestServerEventsLDMKick(t *testing.T) {
+	ldmed := make(chan bool, 1)
+	disconnected := make(chan bool, 1)
+
+	s, opts := runTrustedServer(t)
+	defer s.Shutdown()
+
+	acc, akp := createAccount(s)
+	s.setSystemAccount(acc)
+
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	ncs, err := nats.Connect(url, createUserCreds(t, s, akp))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ncs.Close()
+
+	_, akp2 := createAccount(s)
+
+	nc, err := nats.Connect(url, createUserCreds(t, s, akp2), nats.Name("TEST EVENTS LDM+KICK"), nats.LameDuckModeHandler(func(_ *nats.Conn) { ldmed <- true }))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nc.Close()
+
+	nc.SetDisconnectErrHandler(func(_ *nats.Conn, err error) { disconnected <- true })
+
+	cid, err := nc.GetClientID()
+	if err != nil {
+		t.Fatalf("Error on getting the CID: %v", err)
+	}
+
+	reqldm := LDMClientReq{CID: cid}
+	reqldmpayload, _ := json.Marshal(reqldm)
+	reqkick := KickClientReq{CID: cid}
+	reqkickpayload, _ := json.Marshal(reqkick)
+
+	_, err = ncs.Request(fmt.Sprintf("$SYS.REQ.SERVER.%s.LDM", s.ID()), reqldmpayload, time.Second)
+	if err != nil {
+		t.Fatalf("Error trying to publish the LDM request: %v", err)
+	}
+
+	select {
+	case <-ldmed:
+	case <-time.After(time.Second):
+		t.Fatalf("timeout waiting for the connection to receive the LDM signal")
+	}
+
+	_, err = ncs.Request(fmt.Sprintf("$SYS.REQ.SERVER.%s.KICK", s.ID()), reqkickpayload, time.Second)
+	if err != nil {
+		t.Fatalf("Error trying to publish the KICK request: %v", err)
+	}
+
+	select {
+	case <-disconnected:
+	case <-time.After(time.Second):
+		t.Fatalf("timeout waiting for the client to get disconnected")
+	}
 }
 
 func Benchmark_GetHash(b *testing.B) {

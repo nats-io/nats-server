@@ -1,4 +1,4 @@
-// Copyright 2012-2018 The NATS Authors
+// Copyright 2012-2022 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -14,6 +14,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/url"
@@ -273,6 +274,49 @@ func TestNoAuthUser(t *testing.T) {
 				t.Fatalf("The account should have been %q, got %q", test.account, accName)
 			}
 		})
+	}
+}
+
+func TestUserConnectionDeadline(t *testing.T) {
+	clientAuth := &DummyAuth{
+		t:        t,
+		register: true,
+		deadline: time.Now().Add(50 * time.Millisecond),
+	}
+
+	opts := DefaultOptions()
+	opts.CustomClientAuthentication = clientAuth
+
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	var dcerr error
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+
+	nc, err := nats.Connect(
+		s.ClientURL(),
+		nats.UserInfo("valid", _EMPTY_),
+		nats.NoReconnect(),
+		nats.ErrorHandler(func(nc *nats.Conn, _ *nats.Subscription, err error) {
+			dcerr = err
+			cancel()
+		}))
+	if err != nil {
+		t.Fatalf("Expected client to connect, got: %s", err)
+	}
+
+	<-ctx.Done()
+
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		if nc.IsConnected() {
+			return fmt.Errorf("Expected to be disconnected")
+		}
+		return nil
+	})
+
+	if dcerr == nil || dcerr.Error() != "nats: authentication expired" {
+		t.Fatalf("Expected a auth expired error: got: %v", dcerr)
 	}
 }
 

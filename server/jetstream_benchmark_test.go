@@ -307,17 +307,20 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 							if verbose {
 								b.Logf("Setting up %d nodes", bc.clusterSize)
 							}
-							var connectURL string
+							var (
+								connectURL string
+								cl         *cluster
+							)
 							if bc.clusterSize == 1 {
 								s := RunBasicJetStreamServer(b)
 								defer s.Shutdown()
 								connectURL = s.ClientURL()
 							} else {
-								cl := createJetStreamClusterExplicit(b, "BENCH_PUB", bc.clusterSize)
+								cl = createJetStreamClusterExplicit(b, "BENCH_PUB", bc.clusterSize)
 								defer cl.shutdown()
 								cl.waitOnClusterReadyWithNumPeers(bc.clusterSize)
 								cl.waitOnLeader()
-								connectURL = cl.randomServer().ClientURL()
+								connectURL = cl.leader().ClientURL()
 							}
 
 							nc, js := jsClientConnectURL(b, connectURL)
@@ -333,6 +336,13 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 							}
 							if _, err := js.AddStream(streamConfig); err != nil {
 								b.Fatalf("Error creating stream: %v", err)
+							}
+
+							// cluster_size > 1, connect to stream leader
+							if cl != nil {
+								connectURL = cl.streamLeader("$G", streamName).ClientURL()
+								nc.Close()
+								_, js = jsClientConnectURL(b, connectURL)
 							}
 
 							rng := rand.New(rand.NewSource(int64(seed)))
@@ -407,8 +417,9 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 func BenchmarkJetStreamPublish(b *testing.B) {
 
 	const (
-		verbose = false
-		seed    = 12345
+		verbose    = false
+		seed       = 12345
+		streamName = "S"
 	)
 
 	runSyncPublisher := func(b *testing.B, js nats.JetStreamContext, messageSize int, subjects []string) (int, int) {
@@ -576,18 +587,21 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 							if verbose {
 								b.Logf("Setting up %d nodes", bc.clusterSize)
 							}
-							var connectURL string
+							var (
+								connectURL string
+								cl         *cluster
+							)
 
 							if bc.clusterSize == 1 {
 								s := RunBasicJetStreamServer(b)
 								defer s.Shutdown()
 								connectURL = s.ClientURL()
 							} else {
-								cl := createJetStreamClusterExplicit(b, "BENCH_PUB", bc.clusterSize)
+								cl = createJetStreamClusterExplicit(b, "BENCH_PUB", bc.clusterSize)
 								defer cl.shutdown()
 								cl.waitOnClusterReadyWithNumPeers(bc.clusterSize)
 								cl.waitOnLeader()
-								connectURL = cl.randomServer().ClientURL()
+								connectURL = cl.leader().ClientURL()
 							}
 
 							nc, err := nats.Connect(connectURL)
@@ -613,12 +627,28 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 								b.Logf("Creating stream with R=%d and %d input subjects", bc.replicas, bc.numSubjects)
 							}
 							streamConfig := &nats.StreamConfig{
-								Name:     "S",
+								Name:     streamName,
 								Subjects: subjects,
 								Replicas: bc.replicas,
 							}
 							if _, err := js.AddStream(streamConfig); err != nil {
 								b.Fatalf("Error creating stream: %v", err)
+							}
+
+							// cluster_size > 1, connect to stream leader
+							if cl != nil {
+								connectURL = cl.streamLeader("$G", streamName).ClientURL()
+								nc.Close()
+								nc, err = nats.Connect(connectURL)
+								if err != nil {
+									b.Fatalf("Failed to create client connection to stream leader: %v", err)
+								}
+								defer nc.Close()
+								js, err = nc.JetStream(jsOpts...)
+								if err != nil {
+									b.Fatalf("Unexpected error getting JetStream context for stream leader: %v", err)
+								}
+
 							}
 
 							if verbose {
@@ -731,8 +761,7 @@ func BenchmarkJetStreamInterestStreamWithLimit(b *testing.B) {
 			shutdownFunc = cl.shutdown
 			cl.waitOnClusterReadyWithNumPeers(clusterSize)
 			cl.waitOnLeader()
-			connectURL = cl.randomServer().ClientURL()
-			//connectURL = cl.leader().ClientURL()
+			connectURL = cl.leader().ClientURL()
 		}
 
 		return connectURL, shutdownFunc
@@ -938,21 +967,20 @@ func BenchmarkJetStreamInterestStreamWithLimit(b *testing.B) {
 func BenchmarkJetStreamKV(b *testing.B) {
 
 	const (
-		verbose      = false
-		kvNamePrefix = "B_"
-		keyPrefix    = "K_"
-		seed         = 12345
-		minOps       = 1_000
+		verbose   = false
+		kvName    = "BUCKET"
+		keyPrefix = "K_"
+		seed      = 12345
+		minOps    = 1_000
 	)
 
-	runKVGet := func(b *testing.B, kvs []nats.KeyValue, keys []string) int {
+	runKVGet := func(b *testing.B, kv nats.KeyValue, keys []string) int {
 		rng := rand.New(rand.NewSource(int64(seed)))
 		errors := 0
 
 		b.ResetTimer()
 
 		for i := 1; i <= b.N; i++ {
-			kv := kvs[rng.Intn(len(kvs))]
 			key := keys[rng.Intn(len(keys))]
 			kve, err := kv.Get(key)
 			if err != nil {
@@ -971,7 +999,7 @@ func BenchmarkJetStreamKV(b *testing.B) {
 		return errors
 	}
 
-	runKVPut := func(b *testing.B, kvs []nats.KeyValue, keys []string, valueSize int) int {
+	runKVPut := func(b *testing.B, kv nats.KeyValue, keys []string, valueSize int) int {
 		rng := rand.New(rand.NewSource(int64(seed)))
 		value := make([]byte, valueSize)
 		errors := 0
@@ -979,7 +1007,6 @@ func BenchmarkJetStreamKV(b *testing.B) {
 		b.ResetTimer()
 
 		for i := 1; i <= b.N; i++ {
-			kv := kvs[rng.Intn(len(kvs))]
 			key := keys[rng.Intn(len(keys))]
 			rng.Read(value)
 			_, err := kv.Put(key, value)
@@ -999,7 +1026,7 @@ func BenchmarkJetStreamKV(b *testing.B) {
 		return errors
 	}
 
-	runKVUpdate := func(b *testing.B, kvs []nats.KeyValue, keys []string, valueSize int) int {
+	runKVUpdate := func(b *testing.B, kv nats.KeyValue, keys []string, valueSize int) int {
 		rng := rand.New(rand.NewSource(int64(seed)))
 		value := make([]byte, valueSize)
 		errors := 0
@@ -1007,7 +1034,6 @@ func BenchmarkJetStreamKV(b *testing.B) {
 		b.ResetTimer()
 
 		for i := 1; i <= b.N; i++ {
-			kv := kvs[rng.Intn(len(kvs))]
 			key := keys[rng.Intn(len(keys))]
 
 			kve, getErr := kv.Get(key)
@@ -1044,15 +1070,14 @@ func BenchmarkJetStreamKV(b *testing.B) {
 	benchmarksCases := []struct {
 		clusterSize int
 		replicas    int
-		numBuckets  int
 		numKeys     int
 		valueSize   int
 	}{
-		{1, 1, 1, 100, 100},    // 1 node, 1 bucket with 100 keys, 100B values
-		{1, 1, 10, 1000, 100},  // 1 node, 10 buckets with 1000 keys, 100B values
-		{3, 3, 1, 100, 100},    // 3 nodes, 1 bucket with 100 keys, 100B values
-		{3, 3, 10, 1000, 100},  // 3 nodes, 10 buckets with 1000 keys, 100B values
-		{3, 3, 10, 1000, 1024}, // 3 nodes, 10 buckets with 1000 keys, 1KB values
+		{1, 1, 100, 100},   // 1 node with 100 keys, 100B values
+		{1, 1, 1000, 100},  // 1 node with 1000 keys, 100B values
+		{3, 3, 100, 100},   // 3 nodes with 100 keys, 100B values
+		{3, 3, 1000, 100},  // 3 nodes with 1000 keys, 100B values
+		{3, 3, 1000, 1024}, // 3 nodes with 1000 keys, 1KB values
 	}
 
 	workloadCases := []WorkloadType{
@@ -1064,10 +1089,9 @@ func BenchmarkJetStreamKV(b *testing.B) {
 	for _, bc := range benchmarksCases {
 
 		bName := fmt.Sprintf(
-			"N=%d,R=%d,B=%d,K=%d,ValSz=%db",
+			"N=%d,R=%d,B=1,K=%d,ValSz=%db",
 			bc.clusterSize,
 			bc.replicas,
-			bc.numBuckets,
 			bc.numKeys,
 			bc.valueSize,
 		)
@@ -1093,17 +1117,20 @@ func BenchmarkJetStreamKV(b *testing.B) {
 							if verbose {
 								b.Logf("Setting up %d nodes", bc.clusterSize)
 							}
-							var connectURL string
+							var (
+								connectURL string
+								cl         *cluster
+							)
 							if bc.clusterSize == 1 {
 								s := RunBasicJetStreamServer(b)
 								defer s.Shutdown()
 								connectURL = s.ClientURL()
 							} else {
-								cl := createJetStreamClusterExplicit(b, "BENCH_KV", bc.clusterSize)
+								cl = createJetStreamClusterExplicit(b, "BENCH_KV", bc.clusterSize)
 								defer cl.shutdown()
 								cl.waitOnClusterReadyWithNumPeers(bc.clusterSize)
 								cl.waitOnLeader()
-								connectURL = cl.randomServer().ClientURL()
+								connectURL = cl.leader().ClientURL()
 							}
 
 							nc, js := jsClientConnectURL(b, connectURL)
@@ -1116,34 +1143,40 @@ func BenchmarkJetStreamKV(b *testing.B) {
 								keys = append(keys, key)
 							}
 
-							// Initialize all KVs
-							kvs := make([]nats.KeyValue, 0, bc.numBuckets)
-							for i := 1; i <= bc.numBuckets; i++ {
-								// Create bucket
-								kvName := fmt.Sprintf("%s%d", kvNamePrefix, i)
-								if verbose {
-									b.Logf("Creating KV %s with R=%d", kvName, bc.replicas)
-								}
-								kvConfig := &nats.KeyValueConfig{
-									Bucket:   kvName,
-									Replicas: bc.replicas,
-								}
-								kv, err := js.CreateKeyValue(kvConfig)
-								if err != nil {
-									b.Fatalf("Error creating KV: %v", err)
-								}
-								kvs = append(kvs, kv)
+							// Create bucket
+							if verbose {
+								b.Logf("Creating KV %s with R=%d", kvName, bc.replicas)
+							}
+							kvConfig := &nats.KeyValueConfig{
+								Bucket:   kvName,
+								Replicas: bc.replicas,
+							}
+							kv, err := js.CreateKeyValue(kvConfig)
+							if err != nil {
+								b.Fatalf("Error creating KV: %v", err)
+							}
 
-								// Initialize all keys
-								rng := rand.New(rand.NewSource(int64(seed * i)))
-								value := make([]byte, bc.valueSize)
-								for _, key := range keys {
-									rng.Read(value)
-									_, err := kv.Create(key, value)
-									if err != nil {
-										b.Fatalf("Failed to initialize %s/%s: %v", kvName, key, err)
-									}
+							// Initialize all keys
+							rng := rand.New(rand.NewSource(int64(seed)))
+							value := make([]byte, bc.valueSize)
+							for _, key := range keys {
+								rng.Read(value)
+								_, err := kv.Create(key, value)
+								if err != nil {
+									b.Fatalf("Failed to initialize %s/%s: %v", kvName, key, err)
 								}
+							}
+
+							// if cluster_size > 1, connect to stream leader of bucket
+							if cl != nil {
+								nc.Close()
+
+								connectURL = cl.streamLeader("$G", fmt.Sprintf("KV_%s", kvName)).ClientURL()
+								_, js = jsClientConnectURL(b, connectURL)
+							}
+							kv, err = js.KeyValue(kv.Bucket())
+							if err != nil {
+								b.Fatalf("Error binding to KV: %v", err)
 							}
 
 							// Discard time spent during setup
@@ -1154,11 +1187,11 @@ func BenchmarkJetStreamKV(b *testing.B) {
 
 							switch wc {
 							case Get:
-								errors = runKVGet(b, kvs, keys)
+								errors = runKVGet(b, kv, keys)
 							case Put:
-								errors = runKVPut(b, kvs, keys, bc.valueSize)
+								errors = runKVPut(b, kv, keys, bc.valueSize)
 							case Update:
-								errors = runKVUpdate(b, kvs, keys, bc.valueSize)
+								errors = runKVUpdate(b, kv, keys, bc.valueSize)
 							default:
 								b.Fatalf("Unknown workload type: %v", wc)
 							}

@@ -15,6 +15,7 @@ package server
 
 import (
 	"bytes"
+	crand "crypto/rand"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -753,7 +754,8 @@ func (js *jetStream) setupMetaGroup() error {
 		FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMetaFSBlkSize, AsyncFlush: false},
 		StreamConfig{Name: defaultMetaGroupName, Storage: FileStorage},
 		time.Now().UTC(),
-		s.jsKeyGen(defaultMetaGroupName),
+		s.jsKeyGen(s.getOpts().JetStreamKey, defaultMetaGroupName),
+		s.jsKeyGen(s.getOpts().JetStreamOldKey, defaultMetaGroupName),
 	)
 	if err != nil {
 		s.Errorf("Error creating filestore: %v", err)
@@ -834,7 +836,13 @@ func (js *jetStream) setupMetaGroup() error {
 	atomic.StoreInt32(&js.clustered, 1)
 	c.registerWithAccount(sacc)
 
-	js.srv.startGoRoutine(js.monitorCluster)
+	js.srv.startGoRoutine(
+		js.monitorCluster,
+		pprofLabels{
+			"type":    "metaleader",
+			"account": sacc.Name,
+		},
+	)
 	return nil
 }
 
@@ -1159,6 +1167,65 @@ func (js *jetStream) checkForOrphans() {
 	}
 }
 
+// Check and delete any orphans we may come across.
+func (s *Server) checkForNRGOrphans() {
+	js, cc := s.getJetStreamCluster()
+	if js == nil || cc == nil || js.isMetaRecovering() {
+		// No cluster means no NRGs. Also return if still recovering.
+		return
+	}
+
+	// Track which assets R>1 should be on this server.
+	nrgMap := make(map[string]struct{})
+	trackGroup := func(rg *raftGroup) {
+		// If R>1 track this as a legit NRG.
+		if rg.node != nil {
+			nrgMap[rg.Name] = struct{}{}
+		}
+	}
+	// Register our meta.
+	js.mu.RLock()
+	meta := cc.meta
+	if meta == nil {
+		js.mu.RUnlock()
+		// Bail with no meta node.
+		return
+	}
+
+	ourID := meta.ID()
+	nrgMap[meta.Group()] = struct{}{}
+
+	// Collect all valid groups from our assignments.
+	for _, asa := range cc.streams {
+		for _, sa := range asa {
+			if sa.Group.isMember(ourID) && sa.Restore == nil {
+				trackGroup(sa.Group)
+				for _, ca := range sa.consumers {
+					if ca.Group.isMember(ourID) {
+						trackGroup(ca.Group)
+					}
+				}
+			}
+		}
+	}
+	js.mu.RUnlock()
+
+	// Check NRGs that are running.
+	var needDelete []RaftNode
+	s.rnMu.RLock()
+	for name, n := range s.raftNodes {
+		if _, ok := nrgMap[name]; !ok {
+			needDelete = append(needDelete, n)
+		}
+	}
+	s.rnMu.RUnlock()
+
+	for _, n := range needDelete {
+		s.Warnf("Detected orphaned NRG %q, will cleanup", n.Group())
+		n.Delete()
+	}
+}
+
 func (js *jetStream) monitorCluster() {
 	s, n := js.server(), js.getMetaGroup()
 	qch, rqch, lch, aq := js.clusterQuitC(), n.QuitC(), n.LeadChangeC(), n.ApplyQ()
@@ -1189,6 +1256,8 @@ func (js *jetStream) monitorCluster() {
 		if hs := s.healthz(nil); hs.Error != _EMPTY_ {
 			s.Warnf("%v", hs.Error)
 		}
+		// Also check for orphaned NRGs.
+		s.checkForNRGOrphans()
 	}
 
 	var (
@@ -1200,7 +1269,7 @@ func (js *jetStream) monitorCluster() {
 
 	// Highwayhash key for generating hashes.
 	key := make([]byte, 32)
-	rand.Read(key)
+	crand.Read(key)
 
 	// Set to true to start.
 	js.setMetaRecovering()
@@ -1269,7 +1338,6 @@ func (js *jetStream) monitorCluster() {
 					go checkHealth()
 					continue
 				}
-				// FIXME(dlc) - Deal with errors.
 				if didSnap, didStreamRemoval, didConsumerRemoval, err := js.applyMetaEntries(ce.Entries, ru); err == nil {
 					_, nb := n.Applied(ce.Index)
 					if js.hasPeerEntries(ce.Entries) || didStreamRemoval || (didSnap && !isLeader) {
@@ -1280,6 +1348,8 @@ func (js *jetStream) monitorCluster() {
 						doSnapshot()
 					}
 					ce.ReturnToPool()
+				} else {
+					s.Warnf("Error applying JetStream cluster entries: %v", err)
 				}
 			}
 			aq.recycle(&ces)
@@ -1958,7 +2028,8 @@ func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, storage Stor
 			FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMediumBlockSize, AsyncFlush: false, SyncInterval: 5 * time.Minute},
 			StreamConfig{Name: rg.Name, Storage: FileStorage},
 			time.Now().UTC(),
-			s.jsKeyGen(rg.Name),
+			s.jsKeyGen(s.getOpts().JetStreamKey, rg.Name),
+			s.jsKeyGen(s.getOpts().JetStreamOldKey, rg.Name),
 		)
 		if err != nil {
 			s.Errorf("Error creating filestore WAL: %v", err)
@@ -2026,6 +2097,15 @@ func (mset *stream) removeNode() {
 		n.Delete()
 		mset.node = nil
 	}
+}
+
+func (mset *stream) clearRaftNode() {
+	if mset == nil {
+		return
+	}
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+	mset.node = nil
 }
 
 // Helper function to generate peer info.
@@ -2586,7 +2666,7 @@ func (mset *stream) isMigrating() bool {
 	return true
 }
 
-// resetClusteredState is called when a clustered stream had a sequence mismatch and needs to be reset.
+// resetClusteredState is called when a clustered stream had an error (e.g sequence mismatch, bad snapshot) and needs to be reset.
 func (mset *stream) resetClusteredState(err error) bool {
 	mset.mu.RLock()
 	s, js, jsa, sa, acc, node := mset.srv, mset.js, mset.jsa, mset.sa, mset.acc, mset.node
@@ -2835,26 +2915,55 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				panic(fmt.Sprintf("JetStream Cluster Unknown group entry op type: %v", op))
 			}
 		} else if e.Type == EntrySnapshot {
-			if !isRecovering && mset != nil {
-				var snap streamSnapshot
-				if err := json.Unmarshal(e.Data, &snap); err != nil {
-					return err
-				}
-				if !mset.IsLeader() {
-					if err := mset.processSnapshot(&snap); err != nil {
-						return err
-					}
-				}
-			} else if isRecovering && mset != nil {
-				// On recovery, reset CLFS/FAILED.
-				var snap streamSnapshot
-				if err := json.Unmarshal(e.Data, &snap); err != nil {
-					return err
-				}
+			if mset == nil {
+				return nil
+			}
 
-				mset.mu.Lock()
-				mset.clfs = snap.Failed
-				mset.mu.Unlock()
+			// Everything operates on new replicated state. Will convert legacy snapshots to this for processing.
+			var ss *StreamReplicatedState
+
+			onBadState := func(err error) {
+				// If we are the leader or recovering, meaning we own the snapshot,
+				// we should stepdown and clear our raft state since our snapshot is bad.
+				if isRecovering || mset.IsLeader() {
+					mset.resetClusteredState(err)
+				}
+			}
+
+			// Check if we are the new binary encoding.
+			if IsEncodedStreamState(e.Data) {
+				var err error
+				ss, err = DecodeStreamState(e.Data)
+				if err != nil {
+					onBadState(err)
+					return err
+				}
+			} else {
+				var snap streamSnapshot
+				if err := json.Unmarshal(e.Data, &snap); err != nil {
+					onBadState(err)
+					return err
+				}
+				// Convert over to StreamReplicatedState
+				ss = &StreamReplicatedState{
+					Msgs:     snap.Msgs,
+					Bytes:    snap.Bytes,
+					FirstSeq: snap.FirstSeq,
+					LastSeq:  snap.LastSeq,
+					Failed:   snap.Failed,
+				}
+				if len(snap.Deleted) > 0 {
+					ss.Deleted = append(ss.Deleted, DeleteSlice(snap.Deleted))
+				}
+			}
+
+			if !isRecovering && !mset.IsLeader() {
+				if err := mset.processSnapshot(ss); err != nil {
+					return err
+				}
+			} else if isRecovering {
+				// On recovery, reset CLFS/FAILED.
+				mset.setCLFS(ss.Failed)
 			}
 		} else if e.Type == EntryRemovePeer {
 			js.mu.RLock()
@@ -2965,12 +3074,13 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 		s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 	} else {
 		resp.StreamInfo = &StreamInfo{
-			Created: mset.createdTime(),
-			State:   mset.state(),
-			Config:  mset.config(),
-			Cluster: js.clusterInfo(mset.raftGroup()),
-			Sources: mset.sourcesInfo(),
-			Mirror:  mset.mirrorInfo(),
+			Created:   mset.createdTime(),
+			State:     mset.state(),
+			Config:    mset.config(),
+			Cluster:   js.clusterInfo(mset.raftGroup()),
+			Sources:   mset.sourcesInfo(),
+			Mirror:    mset.mirrorInfo(),
+			TimeStamp: time.Now().UTC(),
 		}
 		resp.DidCreate = true
 		s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
@@ -3308,7 +3418,14 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 			}
 			mset.monitorWg.Add(1)
 			// Start monitoring..
-			s.startGoRoutine(func() { js.monitorStream(mset, sa, needsNode) })
+			s.startGoRoutine(
+				func() { js.monitorStream(mset, sa, needsNode) },
+				pprofLabels{
+					"type":    "stream",
+					"account": mset.accName(),
+					"stream":  mset.name(),
+				},
+			)
 		} else if numReplicas == 1 && alreadyRunning {
 			// We downgraded to R1. Make sure we cleanup the raft node and the stream monitor.
 			mset.removeNode()
@@ -3378,12 +3495,13 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 	// Send our response.
 	var resp = JSApiStreamUpdateResponse{ApiResponse: ApiResponse{Type: JSApiStreamUpdateResponseType}}
 	resp.StreamInfo = &StreamInfo{
-		Created: mset.createdTime(),
-		State:   mset.state(),
-		Config:  mset.config(),
-		Cluster: js.clusterInfo(mset.raftGroup()),
-		Mirror:  mset.mirrorInfo(),
-		Sources: mset.sourcesInfo(),
+		Created:   mset.createdTime(),
+		State:     mset.state(),
+		Config:    mset.config(),
+		Cluster:   js.clusterInfo(mset.raftGroup()),
+		Mirror:    mset.mirrorInfo(),
+		Sources:   mset.sourcesInfo(),
+		TimeStamp: time.Now().UTC(),
 	}
 
 	s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
@@ -3440,12 +3558,13 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 						if !recovering {
 							var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
 							resp.StreamInfo = &StreamInfo{
-								Created: mset.createdTime(),
-								State:   mset.state(),
-								Config:  mset.config(),
-								Cluster: js.clusterInfo(mset.raftGroup()),
-								Sources: mset.sourcesInfo(),
-								Mirror:  mset.mirrorInfo(),
+								Created:   mset.createdTime(),
+								State:     mset.state(),
+								Config:    mset.config(),
+								Cluster:   js.clusterInfo(mset.raftGroup()),
+								Sources:   mset.sourcesInfo(),
+								Mirror:    mset.mirrorInfo(),
+								TimeStamp: time.Now().UTC(),
 							}
 							s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 						}
@@ -3523,13 +3642,25 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 		return
 	}
 
+	// Re-capture node.
+	js.mu.RLock()
+	node := rg.node
+	js.mu.RUnlock()
+
 	// Start our monitoring routine.
-	if rg.node != nil {
+	if node != nil {
 		if !alreadyRunning {
 			if mset != nil {
 				mset.monitorWg.Add(1)
 			}
-			s.startGoRoutine(func() { js.monitorStream(mset, sa, false) })
+			s.startGoRoutine(
+				func() { js.monitorStream(mset, sa, false) },
+				pprofLabels{
+					"type":    "stream",
+					"account": mset.accName(),
+					"stream":  mset.name(),
+				},
+			)
 		}
 	} else {
 		// Single replica stream, process manually here.
@@ -3988,7 +4119,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 	var didCreate, isConfigUpdate, needsLocalResponse bool
 	if o == nil {
 		// Add in the consumer if needed.
-		if o, err = mset.addConsumerWithAssignment(ca.Config, ca.Name, ca, wasExisting); err == nil {
+		if o, err = mset.addConsumerWithAssignment(ca.Config, ca.Name, ca, wasExisting, ActionCreateOrUpdate); err == nil {
 			didCreate = true
 		}
 	} else {
@@ -4141,7 +4272,15 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 			// Start our monitoring routine if needed.
 			if !alreadyRunning && !o.isMonitorRunning() {
 				o.monitorWg.Add(1)
-				s.startGoRoutine(func() { js.monitorConsumer(o, ca) })
+				s.startGoRoutine(
+					func() { js.monitorConsumer(o, ca) },
+					pprofLabels{
+						"type":     "consumer",
+						"account":  mset.accName(),
+						"stream":   mset.name(),
+						"consumer": ca.Name,
+					},
+				)
 			}
 			// For existing consumer, only send response if not recovering.
 			if wasExisting && !js.isMetaRecovering() {
@@ -4376,7 +4515,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 
 	// Highwayhash key for generating hashes.
 	key := make([]byte, 32)
-	rand.Read(key)
+	crand.Read(key)
 
 	// Hash of the last snapshot (fixed size in memory).
 	var lastSnap []byte
@@ -6332,7 +6471,12 @@ func (s *Server) jsClusteredStreamListRequest(acc *Account, ci *ClientInfo, filt
 	for _, sa := range streams {
 		if s.allPeersOffline(sa.Group) {
 			// Place offline onto our results by hand here.
-			si := &StreamInfo{Config: *sa.Config, Created: sa.Created, Cluster: js.offlineClusterInfo(sa.Group)}
+			si := &StreamInfo{
+				Config:    *sa.Config,
+				Created:   sa.Created,
+				Cluster:   js.offlineClusterInfo(sa.Group),
+				TimeStamp: time.Now().UTC(),
+			}
 			resp.Streams = append(resp.Streams, si)
 			missingNames = append(missingNames, sa.Config.Name)
 		} else {
@@ -6478,7 +6622,12 @@ func (s *Server) jsClusteredConsumerListRequest(acc *Account, ci *ClientInfo, of
 	for _, ca := range consumers {
 		if s.allPeersOffline(ca.Group) {
 			// Place offline onto our results by hand here.
-			ci := &ConsumerInfo{Config: ca.Config, Created: ca.Created, Cluster: js.offlineClusterInfo(ca.Group)}
+			ci := &ConsumerInfo{
+				Config:    ca.Config,
+				Created:   ca.Created,
+				Cluster:   js.offlineClusterInfo(ca.Group),
+				TimeStamp: time.Now().UTC(),
+			}
 			resp.Consumers = append(resp.Consumers, ci)
 			missingNames = append(missingNames, ca.Name)
 		} else {
@@ -6710,7 +6859,7 @@ func (cc *jetStreamCluster) createGroupForConsumer(cfg *ConsumerConfig, sa *stre
 }
 
 // jsClusteredConsumerRequest is first point of entry to create a consumer with R > 1.
-func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subject, reply string, rmsg []byte, stream string, cfg *ConsumerConfig) {
+func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subject, reply string, rmsg []byte, stream string, cfg *ConsumerConfig, action ConsumerAction) {
 	js, cc := s.getJetStreamCluster()
 	if js == nil || cc == nil {
 		return
@@ -6732,7 +6881,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	}
 	srvLim := &s.getOpts().JetStreamLimits
 	// Make sure we have sane defaults
-	setConsumerConfigDefaults(cfg, srvLim, selectedLimits)
+	setConsumerConfigDefaults(cfg, &streamCfg, srvLim, selectedLimits)
 
 	if err := checkConsumerCfg(cfg, srvLim, &streamCfg, acc, selectedLimits, false); err != nil {
 		resp.Error = err
@@ -6811,6 +6960,11 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 			oname = cfg.Durable
 		}
 		if ca = sa.consumers[oname]; ca != nil && !ca.deleted {
+			if action == ActionCreate && !reflect.DeepEqual(cfg, ca.Config) {
+				resp.Error = NewJSConsumerAlreadyExistsError()
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+				return
+			}
 			// Do quick sanity check on new cfg to prevent here if possible.
 			if err := acc.checkNewConsumerConfig(ca.Config, cfg); err != nil {
 				resp.Error = NewJSConsumerCreateError(err, Unless(err))
@@ -6822,6 +6976,11 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 
 	// If this is new consumer.
 	if ca == nil {
+		if action == ActionUpdate {
+			resp.Error = NewJSConsumerDoesNotExistError()
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+			return
+		}
 		rg := cc.createGroupForConsumer(cfg, sa)
 		if rg == nil {
 			resp.Error = NewJSInsufficientResourcesError()
@@ -6887,7 +7046,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	} else {
 		nca := ca.copyGroup()
 
-		rBefore := ca.Config.replicas(sa.Config)
+		rBefore := nca.Config.replicas(sa.Config)
 		rAfter := cfg.replicas(sa.Config)
 
 		var curLeader string
@@ -7132,7 +7291,36 @@ func encodeStreamMsgAllowCompress(subject, reply string, hdr, msg []byte, lseq u
 	return buf[:wi]
 }
 
+// Determine if all peers in our set support the binary snapshot.
+func (mset *stream) supportsBinarySnapshot() bool {
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
+	return mset.supportsBinarySnapshotLocked()
+}
+
+// Determine if all peers in our set support the binary snapshot.
+// Lock should be held.
+func (mset *stream) supportsBinarySnapshotLocked() bool {
+	s, n := mset.srv, mset.node
+	if s == nil || n == nil {
+		return false
+	}
+	// Grab our peers and walk them to make sure we can all support binary stream snapshots.
+	id, peers := n.ID(), n.Peers()
+	for _, p := range peers {
+		if p.ID == id {
+			// We know we support ourselves.
+			continue
+		}
+		if sir, ok := s.nodeToInfo.Load(p.ID); !ok || sir == nil || !sir.(nodeInfo).binarySnapshots {
+			return false
+		}
+	}
+	return true
+}
+
 // StreamSnapshot is used for snapshotting and out of band catch up in clustered mode.
+// Legacy, replace with binary stream snapshots.
 type streamSnapshot struct {
 	Msgs     uint64   `json:"messages"`
 	Bytes    uint64   `json:"bytes"`
@@ -7152,6 +7340,13 @@ func (mset *stream) stateSnapshot() []byte {
 // Grab a snapshot of a stream for clustered mode.
 // Lock should be held.
 func (mset *stream) stateSnapshotLocked() []byte {
+	// Decide if we can support the new style of stream snapshots.
+	if mset.supportsBinarySnapshotLocked() {
+		snap, _ := mset.store.EncodedStreamState(mset.getCLFS())
+		return snap
+	}
+
+	// Older v1 version with deleted as a sorted []uint64.
 	state := mset.store.State()
 	snap := &streamSnapshot{
 		Msgs:     state.Msgs,
@@ -7349,10 +7544,9 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	mset.clMu.Lock()
 	if mset.clseq == 0 || mset.clseq < lseq {
 		// Re-capture
-		lseq, clfs = mset.lastSeqAndCLFS()
+		lseq, clfs = mset.lseq, mset.clfs
 		mset.clseq = lseq + clfs
 	}
-
 	esm := encodeStreamMsgAllowCompress(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano(), mset.compressOK)
 	mset.clseq++
 
@@ -7396,7 +7590,7 @@ type streamSyncRequest struct {
 }
 
 // Given a stream state that represents a snapshot, calculate the sync request based on our current state.
-func (mset *stream) calculateSyncRequest(state *StreamState, snap *streamSnapshot) *streamSyncRequest {
+func (mset *stream) calculateSyncRequest(state *StreamState, snap *StreamReplicatedState) *streamSyncRequest {
 	// Quick check if we are already caught up.
 	if state.LastSeq >= snap.LastSeq {
 		return nil
@@ -7406,7 +7600,7 @@ func (mset *stream) calculateSyncRequest(state *StreamState, snap *streamSnapsho
 
 // processSnapshotDeletes will update our current store based on the snapshot
 // but only processing deletes and new FirstSeq / purges.
-func (mset *stream) processSnapshotDeletes(snap *streamSnapshot) {
+func (mset *stream) processSnapshotDeletes(snap *StreamReplicatedState) {
 	mset.mu.Lock()
 	var state StreamState
 	mset.store.FastState(&state)
@@ -7419,11 +7613,8 @@ func (mset *stream) processSnapshotDeletes(snap *streamSnapshot) {
 	}
 	mset.mu.Unlock()
 
-	// Range the deleted and delete if applicable.
-	for _, dseq := range snap.Deleted {
-		if dseq > state.FirstSeq && dseq <= state.LastSeq {
-			mset.store.RemoveMsg(dseq)
-		}
+	if len(snap.Deleted) > 0 {
+		mset.store.SyncDeleted(snap.Deleted)
 	}
 }
 
@@ -7520,7 +7711,7 @@ var (
 )
 
 // Process a stream snapshot.
-func (mset *stream) processSnapshot(snap *streamSnapshot) (e error) {
+func (mset *stream) processSnapshot(snap *StreamReplicatedState) (e error) {
 	// Update any deletes, etc.
 	mset.processSnapshotDeletes(snap)
 
@@ -8072,12 +8263,13 @@ func (mset *stream) processClusterStreamInfoRequest(reply string) {
 	}
 
 	si := &StreamInfo{
-		Created: mset.createdTime(),
-		State:   mset.state(),
-		Config:  config,
-		Cluster: js.clusterInfo(mset.raftGroup()),
-		Sources: mset.sourcesInfo(),
-		Mirror:  mset.mirrorInfo(),
+		Created:   mset.createdTime(),
+		State:     mset.state(),
+		Config:    config,
+		Cluster:   js.clusterInfo(mset.raftGroup()),
+		Sources:   mset.sourcesInfo(),
+		Mirror:    mset.mirrorInfo(),
+		TimeStamp: time.Now().UTC(),
 	}
 
 	// Check for out of band catchups.
