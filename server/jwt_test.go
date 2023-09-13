@@ -6607,15 +6607,15 @@ func TestServerOperatorModeUserInfoExpiration(t *testing.T) {
 	require_NoError(t, err)
 
 	conf := createConfFile(t, []byte(fmt.Sprintf(`
-		listen: 127.0.0.1:-1
-		operator: %s
-		system_account: %s
-		resolver: MEM
-		resolver_preload: {
-			%s: %s
-			%s: %s
-		}
-    `, ojwt, spub, apub, accJwt, spub, sysJwt)))
+				listen: 127.0.0.1:-1
+				operator: %s
+				system_account: %s
+				resolver: MEM
+				resolver_preload: {
+					%s: %s
+					%s: %s
+				}
+			`, ojwt, spub, apub, accJwt, spub, sysJwt)))
 	defer removeFile(t, conf)
 
 	s, _ := RunServerWithConfig(conf)
@@ -6637,7 +6637,14 @@ func TestServerOperatorModeUserInfoExpiration(t *testing.T) {
 
 	userInfo := response.Data.(*UserInfo)
 	require_True(t, userInfo.Expires != 0)
-	require_True(t, expires.Sub(now).Truncate(time.Second) == userInfo.Expires)
+
+	// We need to round the expiration time to the second because the server
+	// will truncate the expiration time to the second.
+	expiresDurRounded := expires.Sub(now).Truncate(time.Second)
+
+	// Checking range to avoid flaky tests where the expiration time is
+	// off by a couple of seconds.
+	require_True(t, expiresDurRounded >= userInfo.Expires-2*time.Second && expiresDurRounded <= userInfo.Expires+2*time.Second)
 }
 
 func TestJWTAccountNATSResolverWrongCreds(t *testing.T) {
