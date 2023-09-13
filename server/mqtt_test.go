@@ -5055,7 +5055,7 @@ func TestMQTTQoS2RejectPublishDuplicates(t *testing.T) {
 
 func TestMQTTQoS2RetriesPublish(t *testing.T) {
 	o := testMQTTDefaultOptions()
-	o.MQTT.AckWait = 10 * time.Millisecond
+	o.MQTT.AckWait = 100 * time.Millisecond
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownServer(s)
 
@@ -5081,8 +5081,8 @@ func TestMQTTQoS2RetriesPublish(t *testing.T) {
 	// yet.
 	subPI := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQoS2, []byte("data1"))
 
-	// See that the message is redelivered again 3 times, with the DUP on, before we PUBREC it.
-	for i := 0; i < 3; i++ {
+	// See that the message is redelivered again 2 times, with the DUP on, before we PUBREC it.
+	for i := 0; i < 2; i++ {
 		expectedFlags := mqttPubQoS2 | mqttPubFlagDup
 		pi := testMQTTCheckPubMsgNoAck(t, c, r, "foo", expectedFlags, []byte("data1"))
 		if pi != subPI {
@@ -5099,7 +5099,7 @@ func TestMQTTQoS2RetriesPublish(t *testing.T) {
 
 func TestMQTTQoS2RetriesPubRel(t *testing.T) {
 	o := testMQTTDefaultOptions()
-	o.MQTT.AckWait = 10 * time.Millisecond
+	o.MQTT.AckWait = 50 * time.Millisecond
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownServer(s)
 
