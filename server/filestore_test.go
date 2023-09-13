@@ -29,6 +29,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -5427,6 +5428,60 @@ func TestFileStoreSyncIntervals(t *testing.T) {
 	checkSyncFlag(false)
 	fs.StoreMsg("Z", nil, []byte("hello"))
 	checkSyncFlag(false)
+}
+
+// https://github.com/nats-io/nats-server/issues/4529
+// Run this wuth --race and you will see the unlocked access that probably caused this.
+func TestFileStoreRecalcFirstSequenceBug(t *testing.T) {
+	fcfg := FileStoreConfig{StoreDir: t.TempDir()}
+	fs, err := newFileStore(fcfg, StreamConfig{Name: "zzz", Subjects: []string{"*"}, MaxMsgsPer: 2, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := bytes.Repeat([]byte("A"), 22)
+
+	for _, subj := range []string{"A", "A", "B", "B"} {
+		fs.StoreMsg(subj, nil, msg)
+	}
+	// Make sure the buffer is cleared.
+	clearLMBCache := func() {
+		fs.mu.RLock()
+		mb := fs.lmb
+		fs.mu.RUnlock()
+		mb.mu.Lock()
+		mb.clearCacheAndOffset()
+		mb.mu.Unlock()
+	}
+
+	clearLMBCache()
+
+	// Do first here.
+	fs.StoreMsg("A", nil, msg)
+
+	var wg sync.WaitGroup
+	start := make(chan bool)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 1_000; i++ {
+			fs.LoadLastMsg("A", nil)
+			clearLMBCache()
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 1_000; i++ {
+			fs.StoreMsg("A", nil, msg)
+		}
+	}()
+
+	close(start)
+	wg.Wait()
 }
 
 ///////////////////////////////////////////////////////////////////////////
