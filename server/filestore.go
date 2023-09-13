@@ -3114,9 +3114,7 @@ func (fs *fileStore) firstSeqForSubj(subj string) (uint64, error) {
 			mb.mu.Unlock()
 			return 0, err
 		}
-		ss := mb.fss[subj]
-		mb.mu.Unlock()
-		if ss != nil {
+		if ss := mb.fss[subj]; ss != nil {
 			// Adjust first if it was not where we thought it should be.
 			if i != start {
 				if info, ok := fs.psim[subj]; ok {
@@ -3126,8 +3124,10 @@ func (fs *fileStore) firstSeqForSubj(subj string) (uint64, error) {
 			if ss.firstNeedsUpdate {
 				mb.recalculateFirstForSubj(subj, ss.First, ss)
 			}
+			mb.mu.Unlock()
 			return ss.First, nil
 		}
+		mb.mu.Unlock()
 	}
 	return 0, nil
 }
@@ -6578,6 +6578,7 @@ func (mb *msgBlock) recalculateFirstForSubj(subj string, startSeq uint64, ss *Si
 			return
 		}
 	}
+
 	// Mark first as updated.
 	ss.firstNeedsUpdate = false
 	startSeq++
