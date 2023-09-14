@@ -1435,6 +1435,25 @@ func (c *cluster) waitOnLeader() {
 	c.t.Fatalf("Expected a cluster leader, got none")
 }
 
+func (c *cluster) waitOnAccount(account string) {
+	c.t.Helper()
+	expires := time.Now().Add(40 * time.Second)
+	for time.Now().Before(expires) {
+		found := true
+		for _, s := range c.servers {
+			acc, err := s.fetchAccount(account)
+			found = found && err == nil && acc != nil
+		}
+		if found {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+		continue
+	}
+
+	c.t.Fatalf("Expected account %q to exist but didn't", account)
+}
+
 // Helper function to check that a cluster is formed
 func (c *cluster) waitOnClusterReady() {
 	c.t.Helper()
