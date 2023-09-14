@@ -1567,7 +1567,8 @@ func (o *consumer) deleteNotActive() {
 					startInterval = 5 * time.Second
 					maxInterval   = 5 * time.Minute
 				)
-				interval := startInterval
+				jitter := time.Duration(rand.Int63n(int64(startInterval)))
+				interval := startInterval + jitter
 				ticker := time.NewTicker(interval)
 				defer ticker.Stop()
 				for range ticker.C {
