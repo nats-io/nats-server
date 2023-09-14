@@ -749,9 +749,13 @@ func TestJetStreamConsumerAckFloorFill(t *testing.T) {
 			// Now ack first, should move ack floor to 3.
 			first.Respond(nil)
 			nc.Flush()
-			if info := o.info(); info.AckFloor.Consumer != 3 {
-				t.Fatalf("Expected the ack floor to be 3, got %d", info.AckFloor.Consumer)
-			}
+
+			checkFor(t, time.Second, 50*time.Millisecond, func() error {
+				if info := o.info(); info.AckFloor.Consumer != 3 {
+					return fmt.Errorf("Expected the ack floor to be 3, got %d", info.AckFloor.Consumer)
+				}
+				return nil
+			})
 		})
 	}
 }
