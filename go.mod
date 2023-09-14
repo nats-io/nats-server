@@ -20,3 +20,5 @@ require (
 	github.com/golang/protobuf v1.4.2 // indirect
 	google.golang.org/protobuf v1.23.0 // indirect
 )
+
+replace github.com/nats-io/nats.go v1.28.0 => github.com/M4SS-Code/nats.go v1.28.1-stream-source-heartbeat

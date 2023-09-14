@@ -1,3 +1,5 @@
+github.com/M4SS-Code/nats.go v1.28.1-stream-source-heartbeat h1:1RTa1e65JlQqnvcDaFFCVwDSE4Cy1S3+b5qkz/OdQvM=
+github.com/M4SS-Code/nats.go v1.28.1-stream-source-heartbeat/go.mod h1:XpbWUlOElGwTYbMR7imivs7jJj9GtK7ypv321Wp6pjc=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/golang/protobuf v1.4.0-rc.1/go.mod h1:ceaxUfeHdC40wWswd/P6IGgMaK3YpKi5j83Wpe3EHw8=
 github.com/golang/protobuf v1.4.0-rc.1.0.20200221234624-67d41d38c208/go.mod h1:xKAWHe0F5eneWXFV3EuXVDTCmh+JuBKY0li0aMyXATA=

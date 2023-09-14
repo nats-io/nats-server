@@ -199,6 +199,7 @@ type StreamSource struct {
 	SubjectTransformDest string                   `json:"subject_transform_dest,omitempty"`
 	SubjectTransforms    []SubjectTransformConfig `json:"subject_transforms,omitempty"`
 	External             *ExternalStream          `json:"external,omitempty"`
+	Heartbeat            time.Duration            `json:"idle_heartbeat,omitempty"`
 
 	// Internal
 	iname string // For indexing when stream names are the same for multiple sources.
@@ -2129,12 +2130,13 @@ func (mset *stream) processMirrorMsgs(mirror *sourceInfo, ready *sync.WaitGroup)
 	msgs, qch, siqch := mirror.msgs, mset.qch, mirror.qch
 	// Set the last seen as now so that we don't fail at the first check.
 	mirror.last = time.Now()
+	heartbeat := mset.getMirrorHeartbeat()
 	mset.mu.Unlock()
 
 	// Signal the caller that we have captured the above fields.
 	ready.Done()
 
-	t := time.NewTicker(sourceHealthCheckInterval)
+	t := time.NewTicker(heartbeat)
 	defer t.Stop()
 
 	for {
@@ -2156,7 +2158,7 @@ func (mset *stream) processMirrorMsgs(mirror *sourceInfo, ready *sync.WaitGroup)
 		case <-t.C:
 			mset.mu.RLock()
 			isLeader := mset.isLeader()
-			stalled := mset.mirror != nil && time.Since(mset.mirror.last) > 3*sourceHealthCheckInterval
+			stalled := mset.mirror != nil && time.Since(mset.mirror.last) > 3*heartbeat
 			mset.mu.RUnlock()
 			// No longer leader.
 			if !isLeader {
@@ -2170,6 +2172,14 @@ func (mset *stream) processMirrorMsgs(mirror *sourceInfo, ready *sync.WaitGroup)
 				mset.retryMirrorConsumer()
 			}
 		}
+	}
+}
+
+func (mset *stream) getMirrorHeartbeat() time.Duration {
+	if mset.cfg.Mirror.Heartbeat == 0 {
+		return sourceHealthCheckInterval
+	} else {
+		return mset.cfg.Mirror.Heartbeat
 	}
 }
 
@@ -2478,7 +2488,7 @@ func (mset *stream) setupMirrorConsumer() error {
 			AckPolicy:      AckNone,
 			AckWait:        22 * time.Hour,
 			MaxDeliver:     1,
-			Heartbeat:      sourceHealthCheckInterval,
+			Heartbeat:      mset.getMirrorHeartbeat(),
 			FlowControl:    true,
 			Direct:         true,
 		},
@@ -2813,7 +2823,7 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64, startTime time.T
 			AckPolicy:      AckNone,
 			AckWait:        22 * time.Hour,
 			MaxDeliver:     1,
-			Heartbeat:      sourceHealthCheckInterval,
+			Heartbeat:      ssi.getStreamSourceHeartbeat(),
 			FlowControl:    true,
 			Direct:         true,
 		},
@@ -2994,12 +3004,13 @@ func (mset *stream) processSourceMsgs(si *sourceInfo, ready *sync.WaitGroup) {
 	msgs, qch, siqch, iname := si.msgs, mset.qch, si.qch, si.iname
 	// Set the last seen as now so that we don't fail at the first check.
 	si.last = time.Now()
+	heartbeat := mset.getSourceHeartbeat(iname)
 	mset.mu.Unlock()
 
 	// Signal the caller that we have captured the above fields.
 	ready.Done()
 
-	t := time.NewTicker(sourceHealthCheckInterval)
+	t := time.NewTicker(heartbeat)
 	defer t.Stop()
 
 	for {
@@ -3021,7 +3032,7 @@ func (mset *stream) processSourceMsgs(si *sourceInfo, ready *sync.WaitGroup) {
 		case <-t.C:
 			mset.mu.RLock()
 			isLeader := mset.isLeader()
-			stalled := time.Since(si.last) > 3*sourceHealthCheckInterval
+			stalled := time.Since(si.last) > 3*heartbeat
 			mset.mu.RUnlock()
 			// No longer leader.
 			if !isLeader {
@@ -5698,4 +5709,21 @@ func (mset *stream) clearMonitorRunning() {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 	mset.inMonitor = false
+}
+
+func (mset *stream) getSourceHeartbeat(iname string) time.Duration {
+	ssi := mset.streamSource(iname)
+	if ssi == nil {
+		return sourceHealthCheckInterval
+	}
+
+	return ssi.getStreamSourceHeartbeat()
+}
+
+func (ssi *StreamSource) getStreamSourceHeartbeat() time.Duration {
+	if ssi.Heartbeat == 0 {
+		return sourceHealthCheckInterval
+	} else {
+		return ssi.Heartbeat
+	}
 }
