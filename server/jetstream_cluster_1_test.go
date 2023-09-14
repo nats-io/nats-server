@@ -3738,6 +3738,8 @@ func TestJetStreamClusterAccountPurge(t *testing.T) {
 	updateJwt(t, c.randomServer().ClientURL(), sysCreds, sysJwt, 3)
 	updateJwt(t, c.randomServer().ClientURL(), sysCreds, accJwt, 3)
 
+	c.waitOnAccount(accpub)
+
 	createTestData := func(t *testing.T) {
 		nc, js := jsClientConnect(t, c.randomNonLeader(), nats.UserCredentials(accCreds))
 		defer nc.Close()
