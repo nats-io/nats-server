@@ -1816,8 +1816,12 @@ func (o *consumer) loopAndForwardProposals(qch chan struct{}) {
 		return
 	}
 
-	forwardProposals := func() {
+	forwardProposals := func() error {
 		o.mu.Lock()
+		if o.node != node || node.State() != Leader {
+			o.mu.Unlock()
+			return errors.New("no longer leader")
+		}
 		proposal := o.phead
 		o.phead, o.ptail = nil, nil
 		o.mu.Unlock()
@@ -1839,6 +1843,7 @@ func (o *consumer) loopAndForwardProposals(qch chan struct{}) {
 		if len(entries) > 0 {
 			node.ProposeDirect(entries)
 		}
+		return nil
 	}
 
 	// In case we have anything pending on entry.
@@ -1850,7 +1855,9 @@ func (o *consumer) loopAndForwardProposals(qch chan struct{}) {
 			forwardProposals()
 			return
 		case <-pch:
-			forwardProposals()
+			if err := forwardProposals(); err != nil {
+				return
+			}
 		}
 	}
 }
