@@ -152,6 +152,30 @@ func (at *authTest) Connect(clientOptions ...nats.Option) *nats.Conn {
 	return conn
 }
 
+func (at *authTest) WSNewClient(clientOptions ...nats.Option) (*nats.Conn, error) {
+	pi := at.srv.PortsInfo(10 * time.Millisecond)
+	require_False(at.t, pi == nil)
+
+	// test cert is SAN to DNS localhost, not local IPs returned by server in test environments
+	wssUrl := strings.Replace(pi.WebSocket[0], "127.0.0.1", "localhost", 1)
+
+	// Seeing 127.0.1.1 in some test environments...
+	wssUrl = strings.Replace(wssUrl, "127.0.1.1", "localhost", 1)
+
+	conn, err := nats.Connect(wssUrl, clientOptions...)
+	if err != nil {
+		return nil, err
+	}
+	at.clients = append(at.clients, conn)
+	return conn, nil
+}
+
+func (at *authTest) WSConnect(clientOptions ...nats.Option) *nats.Conn {
+	conn, err := at.WSNewClient(clientOptions...)
+	require_NoError(at.t, err)
+	return conn
+}
+
 func (at *authTest) RequireConnectError(clientOptions ...nats.Option) {
 	_, err := at.NewClient(clientOptions...)
 	require_Error(at.t, err)
@@ -1422,4 +1446,83 @@ func TestAuthCalloutOperator_AnyAccount(t *testing.T) {
 	require_NoError(t, err)
 	userInfo = response.Data.(*UserInfo)
 	require_Equal(t, userInfo.Account, bpk)
+}
+
+func TestAuthCalloutWSClientTLSCerts(t *testing.T) {
+	conf := `
+		server_name: T
+		listen: "localhost:-1"
+
+		tls {
+			cert_file = "../test/configs/certs/tlsauth/server.pem"
+			key_file = "../test/configs/certs/tlsauth/server-key.pem"
+			ca_file = "../test/configs/certs/tlsauth/ca.pem"
+			verify = true
+		}
+
+		websocket: {
+			listen: "localhost:-1"
+			tls {
+				cert_file = "../test/configs/certs/tlsauth/server.pem"
+				key_file = "../test/configs/certs/tlsauth/server-key.pem"
+				ca_file = "../test/configs/certs/tlsauth/ca.pem"
+				verify = true
+			}
+		}
+
+		accounts {
+            AUTH { users [ {user: "auth", password: "pwd"} ] }
+			FOO {}
+		}
+		authorization {
+			timeout: 1s
+			auth_callout {
+				# Needs to be a public account nkey, will work for both server config and operator mode.
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				account: AUTH
+				auth_users: [ auth ]
+			}
+		}
+	`
+	handler := func(m *nats.Msg) {
+		user, si, ci, _, ctls := decodeAuthRequest(t, m.Data)
+		require_Equal(t, si.Name, "T")
+		require_Equal(t, ci.Host, "127.0.0.1")
+		require_NotEqual(t, ctls, nil)
+		// Zero since we are verified and will be under verified chains.
+		require_Equal(t, len(ctls.Certs), 0)
+		require_Equal(t, len(ctls.VerifiedChains), 1)
+		// Since we have a CA.
+		require_Equal(t, len(ctls.VerifiedChains[0]), 2)
+		blk, _ := pem.Decode([]byte(ctls.VerifiedChains[0][0]))
+		cert, err := x509.ParseCertificate(blk.Bytes)
+		require_NoError(t, err)
+		if strings.HasPrefix(cert.Subject.String(), "CN=example.com") {
+			// Override blank name here, server will substitute.
+			ujwt := createAuthUser(t, user, "dlc", "FOO", "", nil, 0, nil)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+		}
+	}
+
+	ac := NewAuthTest(t, conf, handler,
+		nats.UserInfo("auth", "pwd"),
+		nats.ClientCert("../test/configs/certs/tlsauth/client2.pem", "../test/configs/certs/tlsauth/client2-key.pem"),
+		nats.RootCAs("../test/configs/certs/tlsauth/ca.pem"))
+	defer ac.Cleanup()
+
+	// Will use client cert to determine user.
+	nc := ac.WSConnect(
+		nats.ClientCert("../test/configs/certs/tlsauth/client2.pem", "../test/configs/certs/tlsauth/client2-key.pem"),
+		nats.RootCAs("../test/configs/certs/tlsauth/ca.pem"),
+	)
+
+	resp, err := nc.Request(userDirectInfoSubj, nil, time.Second)
+	require_NoError(t, err)
+	response := ServerAPIResponse{Data: &UserInfo{}}
+	err = json.Unmarshal(resp.Data, &response)
+	require_NoError(t, err)
+	userInfo := response.Data.(*UserInfo)
+
+	require_Equal(t, userInfo.UserID, "dlc")
+	require_Equal(t, userInfo.Account, "FOO")
 }
