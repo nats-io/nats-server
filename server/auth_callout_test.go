@@ -1486,14 +1486,14 @@ func TestAuthCalloutWSClientTLSCerts(t *testing.T) {
 	`
 	handler := func(m *nats.Msg) {
 		user, si, ci, _, ctls := decodeAuthRequest(t, m.Data)
-		require_True(t, si.Name == "T")
-		require_True(t, ci.Host == "127.0.0.1")
-		require_True(t, ctls != nil)
+		require_Equal(t, si.Name, "T")
+		require_Equal(t, ci.Host, "127.0.0.1")
+		require_NotEqual(t, ctls, nil)
 		// Zero since we are verified and will be under verified chains.
-		require_True(t, len(ctls.Certs) == 0)
-		require_True(t, len(ctls.VerifiedChains) == 1)
+		require_Equal(t, len(ctls.Certs), 0)
+		require_Equal(t, len(ctls.VerifiedChains), 1)
 		// Since we have a CA.
-		require_True(t, len(ctls.VerifiedChains[0]) == 2)
+		require_Equal(t, len(ctls.VerifiedChains[0]), 2)
 		blk, _ := pem.Decode([]byte(ctls.VerifiedChains[0][0]))
 		cert, err := x509.ParseCertificate(blk.Bytes)
 		require_NoError(t, err)
@@ -1523,6 +1523,6 @@ func TestAuthCalloutWSClientTLSCerts(t *testing.T) {
 	require_NoError(t, err)
 	userInfo := response.Data.(*UserInfo)
 
-	require_True(t, userInfo.UserID == "dlc")
-	require_True(t, userInfo.Account == "FOO")
+	require_Equal(t, userInfo.UserID, "dlc")
+	require_Equal(t, userInfo.Account, "FOO")
 }
