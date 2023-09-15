@@ -3794,7 +3794,9 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			sz       int
 			wrn, wrb int
 		)
+
 		o.mu.Lock()
+
 		// consumer is closed when mset is set to nil.
 		if o.mset == nil {
 			o.mu.Unlock()
@@ -3816,6 +3818,13 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 
 		// Grab our next msg.
 		pmsg, dc, err = o.getNextMsg()
+
+		// We can release the lock now under getNextMsg so need to check this condition again here.
+		// consumer is closed when mset is set to nil.
+		if o.mset == nil {
+			o.mu.Unlock()
+			return
+		}
 
 		// On error either wait or return.
 		if err != nil || pmsg == nil {
