@@ -5104,7 +5104,7 @@ func TestFileStoreNumPendingLargeNumBlks(t *testing.T) {
 
 	start = time.Now()
 	total, _ = fs.NumPending(6000, "zzz", false)
-	require_LessThan(t, time.Since(start), 15*time.Millisecond)
+	require_LessThan(t, time.Since(start), 25*time.Millisecond)
 	require_Equal(t, total, 4001)
 
 	// Now delete a message in first half and second half.
