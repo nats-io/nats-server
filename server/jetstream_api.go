@@ -4231,6 +4231,8 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 				// We have been assigned but have not created a node yet. If we are a member return
 				// our config and defaults for state and no cluster info.
 				if isMember {
+					// Since we access consumerAssignment, need js lock.
+					js.mu.RLock()
 					resp.ConsumerInfo = &ConsumerInfo{
 						Stream:    ca.Stream,
 						Name:      ca.Name,
@@ -4238,7 +4240,9 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 						Config:    ca.Config,
 						TimeStamp: time.Now().UTC(),
 					}
-					s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+					b := s.jsonResponse(resp)
+					js.mu.RUnlock()
+					s.sendAPIResponse(ci, acc, subject, reply, string(msg), b)
 				}
 				return
 			}
