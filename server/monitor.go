@@ -561,12 +561,13 @@ func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time, auth bool) 
 	// Exclude clients that are still doing handshake so we don't block in
 	// ConnectionState().
 	if client.flags.isSet(handshakeComplete) && nc != nil {
-		conn := nc.(*tls.Conn)
-		cs := conn.ConnectionState()
-		ci.TLSVersion = tlsVersion(cs.Version)
-		ci.TLSCipher = tlsCipher(cs.CipherSuite)
-		if auth && len(cs.PeerCertificates) > 0 {
-			ci.TLSPeerCerts = makePeerCerts(cs.PeerCertificates)
+		if conn, ok := nc.(*tls.Conn); ok {
+			cs := conn.ConnectionState()
+			ci.TLSVersion = tlsVersion(cs.Version)
+			ci.TLSCipher = tlsCipher(cs.CipherSuite)
+			if auth && len(cs.PeerCertificates) > 0 {
+				ci.TLSPeerCerts = makePeerCerts(cs.PeerCertificates)
+			}
 		}
 	}
 
