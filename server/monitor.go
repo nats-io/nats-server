@@ -384,7 +384,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 				}
 
 				// Do client kind filtering
-				if kind != _EMPTY_ && client.kindString() != kind {
+				if kind != _EMPTY_ && !strings.EqualFold(client.kindString(), kind) {
 					continue
 				}
 
