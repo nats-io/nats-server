@@ -674,7 +674,9 @@ func (n *raft) Propose(data []byte) error {
 func (n *raft) ProposeDirect(entries []*Entry) error {
 	n.RLock()
 	if n.state != Leader {
+		group := n.group
 		n.RUnlock()
+		fmt.Printf("Direct proposal ignored, not leader (state: %v, group: %v)\n", n.state, group)
 		n.debug("Direct proposal ignored, not leader (state: %v)", n.state)
 		return errNotLeader
 	}

@@ -18,6 +18,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -5681,4 +5682,113 @@ func TestJetStreamClusterDetectOrphanNRGs(t *testing.T) {
 	require_True(t, s.numRaftNodes() == 1)
 	require_True(t, s.lookupRaftNode(sgn) == nil)
 	require_True(t, s.lookupRaftNode(ogn) == nil)
+}
+
+func TestJetStreamClusterRestartThenScaleStreamReplicas(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	s := c.randomNonLeader()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	nc2, producer := jsClientConnect(t, s)
+	defer nc2.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	end := time.Now().Add(10 * time.Second)
+	for time.Now().Before(end) {
+		select {
+		case <-ctx.Done():
+		default:
+		}
+		producer.Publish("foo", []byte(strings.Repeat("A", 128)))
+		time.Sleep(time.Millisecond)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		sub, err := js.PullSubscribe("foo", fmt.Sprintf("C-%d", i))
+		require_NoError(t, err)
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range time.NewTicker(10 * time.Millisecond).C {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+
+				msgs, err := sub.Fetch(1)
+				if err != nil && !errors.Is(err, nats.ErrTimeout) {
+					t.Logf("Pull Error: %v", err)
+				}
+				for _, msg := range msgs {
+					msg.Ack()
+				}
+			}
+		}()
+	}
+
+	c.lameDuckRestartAll()
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	// Start publishing again for a while.
+	end = time.Now().Add(10 * time.Second)
+	for time.Now().Before(end) {
+		select {
+		case <-ctx.Done():
+		default:
+		}
+		producer.Publish("foo", []byte(strings.Repeat("A", 128)))
+	}
+
+	fmt.Printf("SCALE DOWN TO R1\n")
+
+	// Try to do a stream edit back to R=1 after doing all the upgrade.
+	info, _ := js.StreamInfo("TEST")
+	sconfig := info.Config
+	sconfig.Replicas = 1
+	_, err = js.UpdateStream(&sconfig)
+	require_NoError(t, err)
+
+	// Let running for some time.
+	time.Sleep(10 * time.Second)
+
+	fmt.Printf("SCALE UP TO R3\n")
+
+	info, _ = js.StreamInfo("TEST")
+	sconfig = info.Config
+	sconfig.Replicas = 3
+	_, err = js.UpdateStream(&sconfig)
+	require_NoError(t, err)
+	// Let running after the update...
+	time.Sleep(10 * time.Second)
+
+	// Start publishing again for a while.
+	end = time.Now().Add(30 * time.Second)
+	for time.Now().Before(end) {
+		select {
+		case <-ctx.Done():
+		default:
+		}
+		producer.Publish("foo", []byte(strings.Repeat("A", 128)))
+		time.Sleep(time.Millisecond)
+	}
+
+	// Stop goroutines and wait for them to exit.
+	cancel()
+	wg.Wait()
 }

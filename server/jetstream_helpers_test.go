@@ -1541,6 +1541,21 @@ func (c *cluster) restartAll() {
 	c.waitOnClusterReady()
 }
 
+func (c *cluster) lameDuckRestartAll() {
+	c.t.Helper()
+	for i, s := range c.servers {
+		s.lameDuckMode()
+		s.WaitForShutdown()
+		if !s.Running() {
+			opts := c.opts[i]
+			s, o := RunServerWithConfig(opts.ConfigFile)
+			c.servers[i] = s
+			c.opts[i] = o
+		}
+	}
+	c.waitOnClusterReady()
+}
+
 func (c *cluster) restartAllSamePorts() {
 	c.t.Helper()
 	for i, s := range c.servers {
