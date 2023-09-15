@@ -155,7 +155,14 @@ func (at *authTest) Connect(clientOptions ...nats.Option) *nats.Conn {
 func (at *authTest) WSNewClient(clientOptions ...nats.Option) (*nats.Conn, error) {
 	pi := at.srv.PortsInfo(10 * time.Millisecond)
 	require_False(at.t, pi == nil)
-	conn, err := nats.Connect(strings.Replace(pi.WebSocket[0], "127.0.0.1", "localhost", 1), clientOptions...)
+
+	// test cert is SAN to DNS localhost, not local IPs returned by server in test environments
+	wssUrl := strings.Replace(pi.WebSocket[0], "127.0.0.1", "localhost", 1)
+
+	// Seeing 127.0.1.1 in some test environments...
+	wssUrl = strings.Replace(wssUrl, "127.0.1.1", "localhost", 1)
+
+	conn, err := nats.Connect(wssUrl, clientOptions...)
 	if err != nil {
 		return nil, err
 	}
