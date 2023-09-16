@@ -343,7 +343,7 @@ func (s *Server) bootstrapRaftNode(cfg *RaftConfig, knownPeers []string, allPeer
 }
 
 // startRaftNode will start the raft node.
-func (s *Server) startRaftNode(accName string, cfg *RaftConfig) (RaftNode, error) {
+func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabels) (RaftNode, error) {
 	if cfg == nil {
 		return nil, errNilCfg
 	}
@@ -497,8 +497,9 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig) (RaftNode, error
 	n.llqrt = time.Now()
 	n.Unlock()
 
+	labels["group"] = n.group
 	s.registerRaftNode(n.group, n)
-	s.startGoRoutine(n.run)
+	s.startGoRoutine(n.run, labels)
 	s.startGoRoutine(n.fileWriter)
 
 	return n, nil
@@ -653,7 +654,7 @@ func (n *raft) Propose(data []byte) error {
 	n.RLock()
 	if n.state != Leader {
 		n.RUnlock()
-		n.debug("Proposal ignored, not leader")
+		n.debug("Proposal ignored, not leader (state: %v)", n.state)
 		return errNotLeader
 	}
 	// Error if we had a previous write error.
@@ -674,7 +675,7 @@ func (n *raft) ProposeDirect(entries []*Entry) error {
 	n.RLock()
 	if n.state != Leader {
 		n.RUnlock()
-		n.debug("Proposal ignored, not leader")
+		n.debug("Direct proposal ignored, not leader (state: %v)", n.state)
 		return errNotLeader
 	}
 	// Error if we had a previous write error.
