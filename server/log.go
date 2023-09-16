@@ -72,14 +72,14 @@ func (s *Server) ConfigureLogger() {
 				l.SetSizeLimit(opts.LogSizeLimit)
 			}
 		}
-		if opts.LogMaxArchives > 0 {
+		if opts.LogMaxFiles > 0 {
 			if l, ok := log.(*srvlog.Logger); ok {
-				al := int(opts.LogMaxArchives)
-				if int64(al) != opts.LogMaxArchives {
+				al := int(opts.LogMaxFiles)
+				if int64(al) != opts.LogMaxFiles {
 					// set to default (no max) on overflow
 					al = 0
 				}
-				l.SetArchiveLimit(al)
+				l.SetMaxNumFiles(al)
 			}
 		}
 	} else if opts.RemoteSyslog != "" {

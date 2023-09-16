@@ -39,7 +39,7 @@ func TestLogMaxArchives(t *testing.T) {
 		totEntriesExpected int
 	}{
 		{
-			"Default implicit, no max archives, expect 0 purged archives",
+			"Default implicit, no max logs, expect 0 purged logs",
 			`
 				port: -1
 				log_file: %s
@@ -48,52 +48,52 @@ func TestLogMaxArchives(t *testing.T) {
 			9,
 		},
 		{
-			"Default explicit, no max archives, expect 0 purged archives",
+			"Default explicit, no max logs, expect 0 purged logs",
 			`
 				port: -1
 				log_file: %s
 				logfile_size_limit: 100
-				logfile_max_archives: 0
+				logfile_max_num: 0
 			`,
 			9,
 		},
 		{
-			"Default explicit - negative val, no max archives, expect 0 purged archives",
+			"Default explicit - negative val, no max logs, expect 0 purged logs",
 			`
 				port: -1
 				log_file: %s
 				logfile_size_limit: 100
-				logfile_max_archives: -42
+				logfile_max_num: -42
 			`,
 			9,
 		},
 		{
-			"1-archive limit, expect 7 purged archives",
+			"1-max num, expect 8 purged logs",
 			`
 				port: -1
 				log_file: %s
 				logfile_size_limit: 100
-				logfile_max_archives: 1
+				logfile_max_num: 1
 			`,
-			2,
+			1,
 		},
 		{
-			"5-archive limit, expect 4 purged archives",
+			"5-max num, expect 4 purged logs; use opt alias",
 			`
 				port: -1
 				log_file: %s
-				logfile_size_limit: 100
-				logfile_max_archives: 5
+				log_size_limit: 100
+				log_max_num: 5
 			`,
-			6,
+			5,
 		},
 		{
-			"100-archive limit, expect 0 purged archives",
+			"100-max num, expect 0 purged logs",
 			`
 				port: -1
 				log_file: %s
 				logfile_size_limit: 100
-				logfile_max_archives: 100
+				logfile_max_num: 100
 			`,
 			9,
 		},
@@ -117,6 +117,8 @@ func TestLogMaxArchives(t *testing.T) {
 				t.Fatalf("No NATS Server object returned")
 			}
 			s.Shutdown()
+			// Windows filesystem can be a little pokey on the flush, so wait a bit after shutdown...
+			time.Sleep(500 * time.Millisecond)
 			entries, err := os.ReadDir(d)
 			if err != nil {
 				t.Fatalf("Error reading dir: %v", err)
