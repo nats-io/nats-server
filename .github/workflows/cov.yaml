@@ -18,7 +18,6 @@ jobs:
         uses: actions/checkout@v3
         with:
           path: src/github.com/nats-io/nats-server
-          ref: dev
 
       - name: Set up Go
         uses: actions/setup-go@v4
