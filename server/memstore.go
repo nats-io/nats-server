@@ -913,8 +913,8 @@ func (ms *memStore) LoadLastMsg(subject string, smp *StoreMsg) (*StoreMsg, error
 // LoadNextMsg will find the next message matching the filter subject starting at the start sequence.
 // The filter subject can be a wildcard.
 func (ms *memStore) LoadNextMsg(filter string, wc bool, start uint64, smp *StoreMsg) (*StoreMsg, uint64, error) {
-	ms.mu.RLock()
-	defer ms.mu.RUnlock()
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
 
 	if start < ms.state.FirstSeq {
 		start = ms.state.FirstSeq
@@ -1063,6 +1063,7 @@ func (ms *memStore) removeSeqPerSubject(subj string, seq uint64) {
 }
 
 // Will recalulate the first sequence for this subject in this block.
+// Lock should be held.
 func (ms *memStore) recalculateFirstForSubj(subj string, startSeq uint64, ss *SimpleState) {
 	for tseq := startSeq + 1; tseq <= ss.Last; tseq++ {
 		if sm := ms.msgs[tseq]; sm != nil && sm.subj == subj {
