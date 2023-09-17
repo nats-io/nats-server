@@ -2159,9 +2159,9 @@ func (s *Server) accountConnectEvent(c *client) {
 			MQTTClient: c.getMQTTClientID(),
 		},
 	}
+	subj := fmt.Sprintf(connectEventSubj, c.acc.Name)
 	c.mu.Unlock()
 
-	subj := fmt.Sprintf(connectEventSubj, c.acc.Name)
 	s.sendInternalMsgLocked(subj, _EMPTY_, &m.Server, &m)
 }
 
