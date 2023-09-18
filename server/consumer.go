@@ -1122,6 +1122,16 @@ func (o *consumer) isLeader() bool {
 	return true
 }
 
+func (o *consumer) clearLoopAndForward() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.qch != nil {
+		close(o.qch)
+		// Note can not close pch here.
+		o.qch, o.pch = nil, nil
+	}
+}
+
 func (o *consumer) setLeader(isLeader bool) {
 	o.mu.RLock()
 	mset := o.mset
@@ -2003,9 +2013,13 @@ func (o *consumer) loopAndForwardProposals(qch chan struct{}) {
 
 	forwardProposals := func() {
 		o.mu.Lock()
+		node, pch = o.node, o.pch
 		proposal := o.phead
 		o.phead, o.ptail = nil, nil
 		o.mu.Unlock()
+		if node == nil || pch == nil || node.State() != Leader {
+			return
+		}
 		// 256k max for now per batch.
 		const maxBatch = 256 * 1024
 		var entries []*Entry
