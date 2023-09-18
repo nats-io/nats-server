@@ -206,7 +206,7 @@ func (c *client) processRoutedOriginClusterMsgArgs(arg []byte) error {
 	case 0, 1, 2, 3, 4:
 		return fmt.Errorf("processRoutedOriginClusterMsgArgs Parse Error: '%s'", args)
 	case 5:
-		c.pa.reply = c.pa.reply[:0]
+		c.pa.reply = nil
 		c.pa.queues = c.pa.queues[:0]
 		c.pa.hdb = append(c.pa.hdb[:0], args[3]...)
 		c.pa.hdr = parseSize(args[3])
@@ -228,7 +228,7 @@ func (c *client) processRoutedOriginClusterMsgArgs(arg []byte) error {
 		case '+':
 			c.pa.reply = append(c.pa.reply[:0], args[4]...)
 		case '|':
-			c.pa.reply = c.pa.reply[:0]
+			c.pa.reply = nil
 		default:
 			return fmt.Errorf("processRoutedOriginClusterMsgArgs Bad or Missing Reply Indicator: '%s'", args[3])
 		}
@@ -243,9 +243,9 @@ func (c *client) processRoutedOriginClusterMsgArgs(arg []byte) error {
 
 		// Grab queue names.
 		if c.pa.reply != nil {
-			c.pa.queues = append(c.pa.queues[:0], args[5 : len(args)-2]...)
+			c.pa.queues = append(c.pa.queues[:0], args[5:len(args)-2]...)
 		} else {
-			c.pa.queues = append(c.pa.queues[:0], args[4 : len(args)-2]...)
+			c.pa.queues = append(c.pa.queues[:0], args[4:len(args)-2]...)
 		}
 	}
 	if c.pa.hdr < 0 {
@@ -265,7 +265,7 @@ func (c *client) processRoutedOriginClusterMsgArgs(arg []byte) error {
 	if len(an) > 0 {
 		c.pa.pacache = append(c.pa.pacache[:0], c.pa.subject...)
 	} else {
-		c.pa.pacache = append(c.pa.pacache[:0], arg[len(args[0])+1 : len(args[0])+len(args[1])+len(args[2])+2]...)
+		c.pa.pacache = append(c.pa.pacache[:0], arg[len(args[0])+1:len(args[0])+len(args[1])+len(args[2])+2]...)
 	}
 	return nil
 }
@@ -304,7 +304,7 @@ func (c *client) processRoutedHeaderMsgArgs(arg []byte) error {
 	case 0, 1, 2, 3:
 		return fmt.Errorf("processRoutedHeaderMsgArgs Parse Error: '%s'", args)
 	case 4:
-		c.pa.reply = c.pa.reply[:0] 
+		c.pa.reply = nil
 		c.pa.queues = c.pa.queues[:0]
 		c.pa.hdb = append(c.pa.hdb[:0], args[2]...)
 		c.pa.hdr = parseSize(args[2])
@@ -326,7 +326,7 @@ func (c *client) processRoutedHeaderMsgArgs(arg []byte) error {
 		case '+':
 			c.pa.reply = append(c.pa.reply[:0], args[3]...)
 		case '|':
-			c.pa.reply = c.pa.reply[:0]
+			c.pa.reply = nil
 		default:
 			return fmt.Errorf("processRoutedHeaderMsgArgs Bad or Missing Reply Indicator: '%s'", args[2])
 		}
@@ -341,9 +341,9 @@ func (c *client) processRoutedHeaderMsgArgs(arg []byte) error {
 
 		// Grab queue names.
 		if c.pa.reply != nil {
-			c.pa.queues = append(c.pa.queues[:0], args[4 : len(args)-2]...)
+			c.pa.queues = append(c.pa.queues[:0], args[4:len(args)-2]...)
 		} else {
-			c.pa.queues = append(c.pa.queues[:0], args[3 : len(args)-2]...)
+			c.pa.queues = append(c.pa.queues[:0], args[3:len(args)-2]...)
 		}
 	}
 	if c.pa.hdr < 0 {
@@ -401,7 +401,7 @@ func (c *client) processRoutedMsgArgs(arg []byte) error {
 	case 0, 1, 2:
 		return fmt.Errorf("processRoutedMsgArgs Parse Error: '%s'", args)
 	case 3:
-		c.pa.reply = c.pa.reply[:0]
+		c.pa.reply = nil
 		c.pa.queues = c.pa.queues[:0]
 		c.pa.szb = append(c.pa.szb[:0], args[2]...)
 		c.pa.size = parseSize(args[2])
@@ -419,7 +419,7 @@ func (c *client) processRoutedMsgArgs(arg []byte) error {
 		case '+':
 			c.pa.reply = append(c.pa.reply[:0], args[3]...)
 		case '|':
-			c.pa.reply = c.pa.reply[:0]
+			c.pa.reply = nil
 		default:
 			return fmt.Errorf("processRoutedMsgArgs Bad or Missing Reply Indicator: '%s'", args[2])
 		}
@@ -429,9 +429,9 @@ func (c *client) processRoutedMsgArgs(arg []byte) error {
 
 		// Grab queue names.
 		if c.pa.reply != nil {
-			c.pa.queues = append(c.pa.queues[:0], args[4 : len(args)-1]...)
+			c.pa.queues = append(c.pa.queues[:0], args[4:len(args)-1]...)
 		} else {
-			c.pa.queues = append(c.pa.queues[:0], args[3 : len(args)-1]...)
+			c.pa.queues = append(c.pa.queues[:0], args[3:len(args)-1]...)
 		}
 	}
 	if c.pa.size < 0 {
