@@ -396,19 +396,19 @@ func (c *client) processRoutedMsgArgs(arg []byte) error {
 		args = append(args, arg[start:])
 	}
 
-	c.pa.arg = arg
+	c.pa.arg = append(c.pa.arg[:0], arg...)
 	switch len(args) {
 	case 0, 1, 2:
 		return fmt.Errorf("processRoutedMsgArgs Parse Error: '%s'", args)
 	case 3:
-		c.pa.reply = nil
-		c.pa.queues = nil
-		c.pa.szb = args[2]
+		c.pa.reply = c.pa.reply[:0]
+		c.pa.queues = c.pa.queues[:0]
+		c.pa.szb = append(c.pa.szb[:0], args[2]...)
 		c.pa.size = parseSize(args[2])
 	case 4:
-		c.pa.reply = args[2]
-		c.pa.queues = nil
-		c.pa.szb = args[3]
+		c.pa.reply = append(c.pa.reply[:0], args[2]...)
+		c.pa.queues = c.pa.queues[:0]
+		c.pa.szb = append(c.pa.szb, args[3]...)
 		c.pa.size = parseSize(args[3])
 	default:
 		// args[2] is our reply indicator. Should be + or | normally.
@@ -417,21 +417,21 @@ func (c *client) processRoutedMsgArgs(arg []byte) error {
 		}
 		switch args[2][0] {
 		case '+':
-			c.pa.reply = args[3]
+			c.pa.reply = append(c.pa.reply[:0], args[3]...)
 		case '|':
-			c.pa.reply = nil
+			c.pa.reply = c.pa.reply[:0]
 		default:
 			return fmt.Errorf("processRoutedMsgArgs Bad or Missing Reply Indicator: '%s'", args[2])
 		}
 		// Grab size.
-		c.pa.szb = args[len(args)-1]
+		c.pa.szb = append(c.pa.szb[:0], args[len(args)-1]...)
 		c.pa.size = parseSize(c.pa.szb)
 
 		// Grab queue names.
 		if c.pa.reply != nil {
-			c.pa.queues = args[4 : len(args)-1]
+			c.pa.queues = append(c.pa.queues[:0], args[4 : len(args)-1]...)
 		} else {
-			c.pa.queues = args[3 : len(args)-1]
+			c.pa.queues = append(c.pa.queues[:0], args[3 : len(args)-1]...)
 		}
 	}
 	if c.pa.size < 0 {
@@ -439,12 +439,12 @@ func (c *client) processRoutedMsgArgs(arg []byte) error {
 	}
 
 	// Common ones processed after check for arg length
-	c.pa.account = args[0]
-	c.pa.subject = args[1]
+	c.pa.account = append(c.pa.account[:0], args[0]...)
+	c.pa.subject = append(c.pa.subject[:0], args[1]...)
 	if len(an) > 0 {
-		c.pa.pacache = c.pa.subject
+		c.pa.pacache = append(c.pa.pacache[:0], c.pa.subject...)
 	} else {
-		c.pa.pacache = arg[:len(args[0])+len(args[1])+1]
+		c.pa.pacache = append(c.pa.pacache[:0], arg[:len(args[0])+len(args[1])+1]...)
 	}
 	return nil
 }
