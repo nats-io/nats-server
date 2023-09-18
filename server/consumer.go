@@ -1122,16 +1122,6 @@ func (o *consumer) isLeader() bool {
 	return true
 }
 
-func (o *consumer) clearLoopAndForward() {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if o.qch != nil {
-		close(o.qch)
-		// Note can not close pch here.
-		o.qch, o.pch = nil, nil
-	}
-}
-
 func (o *consumer) setLeader(isLeader bool) {
 	o.mu.RLock()
 	mset := o.mset
@@ -2011,15 +2001,15 @@ func (o *consumer) loopAndForwardProposals(qch chan struct{}) {
 		return
 	}
 
-	forwardProposals := func() {
+	forwardProposals := func() error {
 		o.mu.Lock()
-		node, pch = o.node, o.pch
+		if o.node != node || node.State() != Leader {
+			o.mu.Unlock()
+			return errors.New("no longer leader")
+		}
 		proposal := o.phead
 		o.phead, o.ptail = nil, nil
 		o.mu.Unlock()
-		if node == nil || pch == nil || node.State() != Leader {
-			return
-		}
 		// 256k max for now per batch.
 		const maxBatch = 256 * 1024
 		var entries []*Entry
@@ -2038,6 +2028,7 @@ func (o *consumer) loopAndForwardProposals(qch chan struct{}) {
 		if len(entries) > 0 {
 			node.ProposeDirect(entries)
 		}
+		return nil
 	}
 
 	// In case we have anything pending on entry.
@@ -2049,7 +2040,9 @@ func (o *consumer) loopAndForwardProposals(qch chan struct{}) {
 			forwardProposals()
 			return
 		case <-pch:
-			forwardProposals()
+			if err := forwardProposals(); err != nil {
+				return
+			}
 		}
 	}
 }
