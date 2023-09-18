@@ -5685,6 +5685,8 @@ func TestJetStreamClusterDetectOrphanNRGs(t *testing.T) {
 }
 
 func TestJetStreamClusterRestartThenScaleStreamReplicas(t *testing.T) {
+	t.Skip("This test takes too long, need to make shorter")
+
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 

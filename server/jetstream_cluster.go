@@ -4264,7 +4264,8 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 		} else {
 			// Check for scale down to 1..
 			if rg.node != nil && len(rg.Peers) == 1 {
-				// Need to pop loopAndForward by closing qch and nil out both qch and pch.
+				// Need to pop loopAndForward by closing qch and nil out both qch and pch
+				// to avoid leaving a closed raft node forwarding proposals.
 				o.clearLoopAndForward()
 				o.clearNode()
 				o.setLeader(true)
