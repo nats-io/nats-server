@@ -5981,6 +5981,121 @@ func TestFileStoreSelectBlockWithFirstSeqRemovals(t *testing.T) {
 	})
 }
 
+func TestFileStoreMsgBlockHolesAndIndexing(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage, MaxMsgsPer: 1},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Grab the message block by hand and manipulate at that level.
+	mb := fs.getFirstBlock()
+	writeMsg := func(subj string, seq uint64) {
+		rl := fileStoreMsgSize(subj, nil, []byte(subj))
+		require_NoError(t, mb.writeMsgRecord(rl, seq, subj, nil, []byte(subj), time.Now().UnixNano(), true))
+	}
+	readMsg := func(seq uint64, expectedSubj string) {
+		// Clear cache so we load back in from disk and need to properly process anyholes.
+		ld, tombs, err := mb.rebuildState()
+		require_NoError(t, err)
+		require_Equal(t, ld, nil)
+		require_Equal(t, len(tombs), 0)
+		fs.rebuildState(nil)
+		sm, _, err := mb.fetchMsg(seq, nil)
+		require_NoError(t, err)
+		require_Equal(t, sm.subj, expectedSubj)
+		require_True(t, bytes.Equal(sm.buf, []byte(expectedSubj)))
+	}
+
+	writeMsg("A", 2)
+	require_Equal(t, mb.first.seq, 2)
+	require_Equal(t, mb.last.seq, 2)
+
+	writeMsg("B", 4)
+	require_Equal(t, mb.first.seq, 2)
+	require_Equal(t, mb.last.seq, 4)
+
+	writeMsg("C", 12)
+
+	readMsg(4, "B")
+	require_True(t, mb.dmap.Exists(3))
+
+	readMsg(12, "C")
+	readMsg(2, "A")
+
+	// Check that we get deleted for the right ones etc.
+	checkDeleted := func(seq uint64) {
+		_, _, err = mb.fetchMsg(seq, nil)
+		require_Error(t, err, ErrStoreMsgNotFound, errDeletedMsg)
+		mb.mu.RLock()
+		shouldExist, exists := seq >= mb.first.seq, mb.dmap.Exists(seq)
+		mb.mu.RUnlock()
+		if shouldExist {
+			require_True(t, exists)
+		}
+	}
+	checkDeleted(1)
+	checkDeleted(3)
+	for seq := 5; seq < 12; seq++ {
+		checkDeleted(uint64(seq))
+	}
+}
+
+func TestFileStoreMsgBlockCompactionAndHoles(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage, MaxMsgsPer: 1},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := bytes.Repeat([]byte("Z"), 1024)
+	for _, subj := range []string{"A", "B", "C", "D", "E", "F", "G", "H", "I", "J"} {
+		fs.StoreMsg(subj, nil, msg)
+	}
+	// Leave first one but delete the rest.
+	for seq := uint64(2); seq < 10; seq++ {
+		fs.RemoveMsg(seq)
+	}
+	require_Equal(t, fs.numMsgBlocks(), 1)
+	mb := fs.getFirstBlock()
+	require_NotNil(t, mb)
+
+	_, ub, _ := fs.Utilization()
+
+	// Do compaction, should remove all excess now.
+	mb.mu.Lock()
+	mb.compact()
+	mb.mu.Unlock()
+
+	ta, ua, _ := fs.Utilization()
+	require_Equal(t, ub, ua)
+	require_Equal(t, ta, ua)
+}
+
+func TestFileStoreRemoveLastNoDoubleTombstones(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage, MaxMsgsPer: 1},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	fs.StoreMsg("A", nil, []byte("hello"))
+	fs.mu.Lock()
+	fs.removeMsgViaLimits(1)
+	fs.mu.Unlock()
+
+	require_Equal(t, fs.numMsgBlocks(), 1)
+	mb := fs.getFirstBlock()
+	require_NotNil(t, mb)
+	mb.loadMsgs()
+	rbytes, _, err := fs.Utilization()
+	require_NoError(t, err)
+	require_Equal(t, rbytes, emptyRecordLen)
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////
