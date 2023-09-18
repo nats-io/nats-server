@@ -2667,12 +2667,16 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, doSample bool) {
 
 	mset := o.mset
 	clustered := o.node != nil
+
+	// In case retention changes for a stream, this ought to have been updated
+	// using the consumer lock to avoid a race.
+	retention := o.retention
 	o.mu.Unlock()
 
 	// Let the owning stream know if we are interest or workqueue retention based.
 	// If this consumer is clustered this will be handled by processReplicatedAck
 	// after the ack has propagated.
-	if !clustered && mset != nil && mset.cfg.Retention != LimitsPolicy {
+	if !clustered && mset != nil && retention != LimitsPolicy {
 		if sagap > 1 {
 			// FIXME(dlc) - This is very inefficient, will need to fix.
 			for seq := sseq; seq > sseq-sagap; seq-- {
