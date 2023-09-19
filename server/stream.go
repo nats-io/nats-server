@@ -186,7 +186,7 @@ type StreamSourceInfo struct {
 	Active               time.Duration            `json:"active"`
 	Error                *ApiError                `json:"error,omitempty"`
 	FilterSubject        string                   `json:"filter_subject,omitempty"`
-	SubjectTransformDest string                   `json:"subject_transform_dest,omitempty"`
+	SubjectTransformDest string                   `json:"-"`
 	SubjectTransforms    []SubjectTransformConfig `json:"subject_transforms,omitempty"`
 }
 
@@ -196,7 +196,7 @@ type StreamSource struct {
 	OptStartSeq          uint64                   `json:"opt_start_seq,omitempty"`
 	OptStartTime         *time.Time               `json:"opt_start_time,omitempty"`
 	FilterSubject        string                   `json:"filter_subject,omitempty"`
-	SubjectTransformDest string                   `json:"subject_transform_dest,omitempty"`
+	SubjectTransformDest string                   `json:"-"`
 	SubjectTransforms    []SubjectTransformConfig `json:"subject_transforms,omitempty"`
 	External             *ExternalStream          `json:"external,omitempty"`
 

@@ -11575,7 +11575,7 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 	createStreamServerStreamConfig(&StreamConfig{
 		Name:    "M5",
 		Storage: FileStorage,
-		Mirror:  &StreamSource{Name: "S1", FilterSubject: "foo", SubjectTransformDest: "foo2"},
+		Mirror:  &StreamSource{Name: "S1", SubjectTransforms: []SubjectTransformConfig{{Source: "foo", Destination: "foo2"}}},
 	}, 0)
 
 	createStreamServerStreamConfig(&StreamConfig{
@@ -11688,7 +11688,7 @@ func TestJetStreamSourceBasics(t *testing.T) {
 		Name:    "MS",
 		Storage: FileStorage,
 		Sources: []*StreamSource{
-			{Name: "foo", SubjectTransformDest: "foo2.>"},
+			{Name: "foo", SubjectTransforms: []SubjectTransformConfig{{Source: ">", Destination: "foo2.>"}}},
 			{Name: "bar"},
 			{Name: "baz"},
 		},
@@ -11770,7 +11770,7 @@ func TestJetStreamSourceBasics(t *testing.T) {
 		Name:    "FMS2",
 		Storage: FileStorage,
 		Sources: []*StreamSource{
-			{Name: "TEST", OptStartSeq: 11, FilterSubject: "dlc", SubjectTransformDest: "dlc2"},
+			{Name: "TEST", OptStartSeq: 11, SubjectTransforms: []SubjectTransformConfig{{Source: "dlc", Destination: "dlc2"}}},
 		},
 	}
 	createStream(cfg)
