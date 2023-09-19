@@ -2009,6 +2009,8 @@ func (s *Server) clientHasMovedToDifferentAccount(c *client) bool {
 		nu *NkeyUser
 		u  *User
 	)
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.opts.Nkey != "" {
 		if s.nkeys != nil {
 			nu = s.nkeys[c.opts.Nkey]
@@ -2021,12 +2023,10 @@ func (s *Server) clientHasMovedToDifferentAccount(c *client) bool {
 		return false
 	}
 	// Get the current account name
-	c.mu.Lock()
 	var curAccName string
 	if c.acc != nil {
 		curAccName = c.acc.Name
 	}
-	c.mu.Unlock()
 	if nu != nil && nu.Account != nil {
 		return curAccName != nu.Account.Name
 	} else if u != nil && u.Account != nil {
