@@ -2011,11 +2011,11 @@ func (s *Server) clientHasMovedToDifferentAccount(c *client) bool {
 	)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.opts.Nkey != "" {
+	if c.opts.Nkey != _EMPTY_ {
 		if s.nkeys != nil {
 			nu = s.nkeys[c.opts.Nkey]
 		}
-	} else if c.opts.Username != "" {
+	} else if c.opts.Username != _EMPTY_ {
 		if s.users != nil {
 			u = s.users[c.opts.Username]
 		}
