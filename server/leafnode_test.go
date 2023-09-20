@@ -4996,6 +4996,55 @@ func TestLeafNodeTLSHandshakeFirst(t *testing.T) {
 	checkLeafNodeConnected(t, s2)
 }
 
+func TestLeafNodeTLSHandshakeEvenForRemoteWithNoTLSBlock(t *testing.T) {
+	confHub := createConfFile(t, []byte(`
+		port : -1
+		leafnodes : {
+			port : -1
+			tls {
+				cert_file: "../test/configs/certs/server-cert.pem"
+				key_file:  "../test/configs/certs/server-key.pem"
+				ca_file: "../test/configs/certs/ca.pem"
+				timeout: 2
+			}
+		}
+	`))
+	s1, o1 := RunServerWithConfig(confHub)
+	defer s1.Shutdown()
+
+	tmpl2 := `
+		port: -1
+		leafnodes : {
+			port : -1
+			remotes : [
+				{
+					urls : [tls://127.0.0.1:%d]
+				}
+			]
+		}
+	`
+	confSpoke := createConfFile(t, []byte(fmt.Sprintf(tmpl2, o1.LeafNode.Port)))
+	s2, _ := RunServerWithConfig(confSpoke)
+	defer s2.Shutdown()
+
+	l := &captureDebugLogger{dbgCh: make(chan string, 100)}
+	s2.SetLogger(l, true, false)
+
+	tm := time.NewTimer(2 * time.Second)
+	defer tm.Stop()
+	for {
+		select {
+		case l := <-l.dbgCh:
+			if strings.Contains(l, "Starting TLS") {
+				// OK!
+				return
+			}
+		case <-tm.C:
+			t.Fatalf("Did not perform a TLS handshake")
+		}
+	}
+}
+
 func TestLeafNodeCompressionOptions(t *testing.T) {
 	org := testDefaultLeafNodeCompression
 	testDefaultLeafNodeCompression = _EMPTY_

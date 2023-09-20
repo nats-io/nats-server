@@ -1160,6 +1160,12 @@ func (c *client) processLeafnodeInfo(info *Info) {
 	// So check only for non websocket connections and for configurations
 	// where the TLS Handshake was not done first.
 	if didSolicit && !c.flags.isSet(handshakeComplete) && !c.isWebsocket() && !remote.TLSHandshakeFirst {
+		// If the server requires TLS, we need to set this in the remote
+		// otherwise if there is no TLS configuration block for the remote,
+		// the solicit side will not attempt to perform the TLS handshake.
+		if firstINFO && info.TLSRequired {
+			remote.TLS = true
+		}
 		if _, err := c.leafClientHandshakeIfNeeded(remote, opts); err != nil {
 			c.mu.Unlock()
 			return
