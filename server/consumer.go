@@ -437,6 +437,12 @@ func setConsumerConfigDefaults(config *ConsumerConfig, streamCfg *StreamConfig, 
 	if len(config.BackOff) > 0 {
 		config.AckWait = config.BackOff[0]
 	}
+	if config.MaxAckPending == 0 {
+		config.MaxAckPending = streamCfg.ConsumerLimits.MaxAckPending
+	}
+	if config.InactiveThreshold == 0 {
+		config.InactiveThreshold = streamCfg.ConsumerLimits.InactiveThreshold
+	}
 	// Set proper default for max ack pending if we are ack explicit and none has been set.
 	if (config.AckPolicy == AckExplicit || config.AckPolicy == AckAll) && config.MaxAckPending == 0 {
 		accPending := JsDefaultMaxAckPending
@@ -451,12 +457,6 @@ func setConsumerConfigDefaults(config *ConsumerConfig, streamCfg *StreamConfig, 
 	// if applicable set max request batch size
 	if config.DeliverSubject == _EMPTY_ && config.MaxRequestBatch == 0 && lim.MaxRequestBatch > 0 {
 		config.MaxRequestBatch = lim.MaxRequestBatch
-	}
-	if config.MaxAckPending == 0 {
-		config.MaxAckPending = streamCfg.ConsumerLimits.MaxAckPending
-	}
-	if config.InactiveThreshold == 0 {
-		config.InactiveThreshold = streamCfg.ConsumerLimits.InactiveThreshold
 	}
 }
 

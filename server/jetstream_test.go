@@ -21718,7 +21718,8 @@ func TestJetStreamConsumerDefaultsFromStream(t *testing.T) {
 
 	t.Run("InheritDefaultsFromStream", func(t *testing.T) {
 		ci, err := js.AddConsumer("test", &nats.ConsumerConfig{
-			Name: "InheritDefaultsFromStream",
+			Name:      "InheritDefaultsFromStream",
+			AckPolicy: nats.AckExplicitPolicy,
 		})
 		require_NoError(t, err)
 
