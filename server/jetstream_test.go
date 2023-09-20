@@ -21853,3 +21853,78 @@ func TestJetStreamSyncInterval(t *testing.T) {
 		})
 	}
 }
+
+func TestJetStreamFilteredSubjectUsesNewConsumerCreateSubject(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	extEndpoint := make(chan *nats.Msg, 1)
+	normalEndpoint := make(chan *nats.Msg, 1)
+
+	_, err := nc.ChanSubscribe(JSApiConsumerCreateEx, extEndpoint)
+	require_NoError(t, err)
+
+	_, err = nc.ChanSubscribe(JSApiConsumerCreate, normalEndpoint)
+	require_NoError(t, err)
+
+	testStreamSource := func(name string, shouldBeExtended bool, ss StreamSource) {
+		t.Run(name, func(t *testing.T) {
+			req := StreamConfig{
+				Name:     name,
+				Storage:  MemoryStorage,
+				Subjects: []string{fmt.Sprintf("foo.%s", name)},
+				Sources:  []*StreamSource{&ss},
+			}
+			reqJson, err := json.Marshal(req)
+			require_NoError(t, err)
+
+			_, err = nc.Request(fmt.Sprintf(JSApiStreamCreateT, name), reqJson, time.Second)
+			require_NoError(t, err)
+
+			select {
+			case <-time.After(time.Second * 5):
+				t.Fatalf("Timed out waiting for receive consumer create")
+			case <-extEndpoint:
+				if !shouldBeExtended {
+					t.Fatalf("Expected normal consumer create, got extended")
+				}
+			case <-normalEndpoint:
+				if shouldBeExtended {
+					t.Fatalf("Expected extended consumer create, got normal")
+				}
+			}
+		})
+	}
+
+	testStreamSource("OneFilterSubject", true, StreamSource{
+		Name:          "source",
+		FilterSubject: "bar.>",
+	})
+
+	testStreamSource("OneTransform", true, StreamSource{
+		Name: "source",
+		SubjectTransforms: []SubjectTransformConfig{
+			{
+				Source:      "bar.one.>",
+				Destination: "bar.two.>",
+			},
+		},
+	})
+
+	testStreamSource("TwoTransforms", false, StreamSource{
+		Name: "source",
+		SubjectTransforms: []SubjectTransformConfig{
+			{
+				Source:      "bar.one.>",
+				Destination: "bar.two.>",
+			},
+			{
+				Source:      "baz.one.>",
+				Destination: "baz.two.>",
+			},
+		},
+	})
+}

@@ -2893,6 +2893,13 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64, startTime time.T
 	if req.Config.FilterSubject != _EMPTY_ {
 		req.Config.Name = fmt.Sprintf("src-%s", createConsumerName())
 		subject = fmt.Sprintf(JSApiConsumerCreateExT, si.name, req.Config.Name, req.Config.FilterSubject)
+	} else if len(req.Config.FilterSubjects) == 1 {
+		req.Config.Name = fmt.Sprintf("src-%s", createConsumerName())
+		// It is necessary to switch to using FilterSubject here as the extended consumer
+		// create API checks for it, so as to not accidentally allow multiple filtered subjects.
+		req.Config.FilterSubject = req.Config.FilterSubjects[0]
+		req.Config.FilterSubjects = nil
+		subject = fmt.Sprintf(JSApiConsumerCreateExT, si.name, req.Config.Name, req.Config.FilterSubject)
 	} else {
 		subject = fmt.Sprintf(JSApiConsumerCreateT, si.name)
 	}
