@@ -2134,7 +2134,7 @@ func (o *consumer) checkAndSetPendingRequestsOk() {
 				if !versionAtLeast(si.(nodeInfo).version, 2, 7, 1) {
 					// We expect all of our peers to eventually be up to date.
 					// So check again in awhile.
-					time.AfterFunc(eventsHBInterval, func() { o.checkAndSetPendingRequestsOk() })
+					time.AfterFunc(s.opts.HBInterval, func() { o.checkAndSetPendingRequestsOk() })
 					o.setPendingRequestsOk(false)
 					return
 				}

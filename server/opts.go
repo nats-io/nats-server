@@ -278,6 +278,7 @@ type Options struct {
 	AuthCallout           *AuthCallout  `json:"-"`
 	PingInterval          time.Duration `json:"ping_interval"`
 	MaxPingsOut           int           `json:"ping_max"`
+	HBInterval            time.Duration `json:"hb_interval"`
 	HTTPHost              string        `json:"http_host"`
 	HTTPPort              int           `json:"http_port"`
 	HTTPBasePath          string        `json:"http_base_path"`
@@ -1044,6 +1045,8 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		} else {
 			o.MaxSubTokens = uint8(n)
 		}
+	case "hb_interval":
+		o.HBInterval = parseDuration("hb_interval", tk, v, errors, warnings)
 	case "ping_interval":
 		o.PingInterval = parseDuration("ping_interval", tk, v, errors, warnings)
 	case "ping_max":
@@ -4862,6 +4865,9 @@ func setBaselineOptions(opts *Options) {
 	}
 	if opts.MaxConn == 0 {
 		opts.MaxConn = DEFAULT_MAX_CONNECTIONS
+	}
+	if opts.HBInterval == 0 {
+		opts.HBInterval = DEFAULT_HB_INTERVAL
 	}
 	if opts.PingInterval == 0 {
 		opts.PingInterval = DEFAULT_PING_INTERVAL

@@ -3837,14 +3837,11 @@ func TestJetStreamSuperClusterGWReplyRewrite(t *testing.T) {
 }
 
 func TestJetStreamSuperClusterGWOfflineSatus(t *testing.T) {
-	orgEventsHBInterval := eventsHBInterval
-	eventsHBInterval = 500 * time.Millisecond //time.Second
-	defer func() { eventsHBInterval = orgEventsHBInterval }()
-
 	tmpl := `
 		listen: 127.0.0.1:-1
 		server_name: %s
 		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+		hb_interval: 500ms
 
 		gateway {
 			name: "local"
@@ -3883,6 +3880,7 @@ func TestJetStreamSuperClusterGWOfflineSatus(t *testing.T) {
 		listen: 127.0.0.1:-1
 		server_name: %s
 		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+		hb_interval: 500ms
 
 		gateway {
 			name: "remote"

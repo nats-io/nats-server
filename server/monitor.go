@@ -1173,6 +1173,7 @@ type Varz struct {
 	WSConnectURLs         []string              `json:"ws_connect_urls,omitempty"`
 	MaxConn               int                   `json:"max_connections"`
 	MaxSubs               int                   `json:"max_subscriptions,omitempty"`
+	HBInterval            time.Duration         `json:"hb_interval"`
 	PingInterval          time.Duration         `json:"ping_interval"`
 	MaxPingsOut           int                   `json:"ping_max"`
 	HTTPHost              string                `json:"http_host"`
@@ -1642,6 +1643,7 @@ func (s *Server) updateVarzConfigReloadableFields(v *Varz) {
 	v.TLSRequired = info.TLSRequired
 	v.TLSVerify = info.TLSVerify
 	v.MaxConn = opts.MaxConn
+	v.HBInterval = opts.HBInterval
 	v.PingInterval = opts.PingInterval
 	v.MaxPingsOut = opts.MaxPingsOut
 	v.AuthTimeout = opts.AuthTimeout

@@ -95,9 +95,6 @@ const (
 	ocspPeerChainlinkInvalidEventSubj = "$SYS.SERVER.%s.OCSP.PEER.LINK.INVALID"
 )
 
-// FIXME(dlc) - make configurable.
-var eventsHBInterval = 30 * time.Second
-
 type sysMsgHandler func(sub *subscription, client *client, acc *Account, subject, reply string, hdr, msg []byte)
 
 // Used if we have to queue things internally to avoid the route/gw path.
@@ -2065,9 +2062,9 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 	} else {
 		// Check to see if we have an HB running and update.
 		if a.ctmr == nil {
-			a.ctmr = time.AfterFunc(eventsHBInterval, func() { s.accConnsUpdate(a) })
+			a.ctmr = time.AfterFunc(s.opts.HBInterval, func() { s.accConnsUpdate(a) })
 		} else {
-			a.ctmr.Reset(eventsHBInterval)
+			a.ctmr.Reset(s.opts.HBInterval)
 		}
 	}
 	for _, sub := range subj {

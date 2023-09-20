@@ -85,6 +85,9 @@ const (
 	// AUTH_TIMEOUT is the authorization wait time.
 	AUTH_TIMEOUT = 2 * time.Second
 
+	// DEFAULT_HB_INTERVAL is how often miscellaneous HeartBeat operations occur.
+	DEFAULT_HB_INTERVAL = 30 * time.Second
+
 	// DEFAULT_PING_INTERVAL is how often pings are sent to clients, etc...
 	DEFAULT_PING_INTERVAL = 2 * time.Minute
 

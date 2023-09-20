@@ -83,7 +83,7 @@ func runTrustedServer(t *testing.T) (*Server, *Options) {
 	return s, opts
 }
 
-func runTrustedCluster(t *testing.T) (*Server, *Options, *Server, *Options, nkeys.KeyPair) {
+func startTrustedCluster(t *testing.T, optsA *Options) (*Server, *Options, *Server, *Options, nkeys.KeyPair) {
 	t.Helper()
 
 	kp, _ := nkeys.FromSeed(oSeed)
@@ -102,7 +102,6 @@ func runTrustedCluster(t *testing.T) (*Server, *Options, *Server, *Options, nkey
 
 	mr.Store(apub, jwt)
 
-	optsA := DefaultOptions()
 	optsA.Cluster.Name = "TEST CLUSTER 22"
 	optsA.Cluster.Host = "127.0.0.1"
 	optsA.TrustedKeys = []string{pub}
@@ -125,6 +124,11 @@ func runTrustedCluster(t *testing.T) (*Server, *Options, *Server, *Options, nkey
 	checkClusterFormed(t, sa, sb)
 
 	return sa, optsA, sb, optsB, akp
+}
+
+func runTrustedCluster(t *testing.T) (*Server, *Options, *Server, *Options, nkeys.KeyPair) {
+	opts := DefaultOptions()
+	return startTrustedCluster(t, opts)
 }
 
 func runTrustedGateways(t *testing.T) (*Server, *Options, *Server, *Options, nkeys.KeyPair) {
@@ -1783,13 +1787,10 @@ func TestSystemAccountNoAuthUser(t *testing.T) {
 }
 
 func TestServerAccountConns(t *testing.T) {
-	// speed up hb
-	orgHBInterval := eventsHBInterval
-	eventsHBInterval = time.Millisecond * 100
-	defer func() { eventsHBInterval = orgHBInterval }()
 	conf := createConfFile(t, []byte(`
 	   host: 127.0.0.1
 	   port: -1
+	   hb_interval: 100ms # speed up hb
 	   system_account: SYS
 	   accounts: {
 			   SYS: {users: [{user: s, password: s}]}
@@ -3102,11 +3103,10 @@ func (sr *slowAccResolver) Fetch(name string) (string, error) {
 }
 
 func TestConnectionUpdatesTimerProperlySet(t *testing.T) {
-	origEventsHBInterval := eventsHBInterval
-	eventsHBInterval = 50 * time.Millisecond
-	defer func() { eventsHBInterval = origEventsHBInterval }()
+	opts := DefaultOptions()
+	opts.HBInterval = 50 * time.Millisecond
+	sa, _, sb, optsB, _ := startTrustedCluster(t, opts)
 
-	sa, _, sb, optsB, _ := runTrustedCluster(t)
 	defer sa.Shutdown()
 	defer sb.Shutdown()
 

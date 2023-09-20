@@ -612,6 +612,19 @@ func (m *maxPayloadOption) Apply(server *Server) {
 	server.Noticef("Reloaded: max_payload = %d", m.newValue)
 }
 
+// hbIntervalOption implements the option interface for the `hb_interval`
+// setting.
+type hbIntervalOption struct {
+	noopOption
+	newValue time.Duration
+}
+
+// Apply is a no-op because the heartbeat interval will be reloaded after
+// options are applied.
+func (p *hbIntervalOption) Apply(server *Server) {
+	server.Noticef("Reloaded: hb_interval = %s", p.newValue)
+}
+
 // pingIntervalOption implements the option interface for the `ping_interval`
 // setting.
 type pingIntervalOption struct {
@@ -1267,6 +1280,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &maxControlLineOption{newValue: newValue.(int32)})
 		case "maxpayload":
 			diffOpts = append(diffOpts, &maxPayloadOption{newValue: newValue.(int32)})
+		case "hbinterval":
+			diffOpts = append(diffOpts, &hbIntervalOption{newValue: newValue.(time.Duration)})
 		case "pinginterval":
 			diffOpts = append(diffOpts, &pingIntervalOption{newValue: newValue.(time.Duration)})
 		case "maxpingsout":
