@@ -572,13 +572,18 @@ func selectS2AutoModeBasedOnRTT(rtt time.Duration, rttThresholds []time.Duration
 // with a nil []s2.WriterOption, but not with a nil s2.WriterOption, so
 // this is more versatile.
 func s2WriterOptions(cm string) []s2.WriterOption {
+	_opts := [2]s2.WriterOption{}
+	opts := append(
+		_opts[:0],
+		s2.WriterConcurrency(1), // Stop asynchronous flushing in separate goroutines
+	)
 	switch cm {
 	case CompressionS2Uncompressed:
-		return []s2.WriterOption{s2.WriterUncompressed()}
+		return append(opts, s2.WriterUncompressed())
 	case CompressionS2Best:
-		return []s2.WriterOption{s2.WriterBestCompression()}
+		return append(opts, s2.WriterBestCompression())
 	case CompressionS2Better:
-		return []s2.WriterOption{s2.WriterBetterCompression()}
+		return append(opts, s2.WriterBetterCompression())
 	default:
 		return nil
 	}
