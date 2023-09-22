@@ -2229,7 +2229,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		if err := n.InstallSnapshot(mset.stateSnapshot()); err == nil {
 			lastState, lastSnapTime = curState, time.Now()
 		} else if err != errNoSnapAvailable && err != errNodeClosed {
-			s.Warnf("Failed to install snapshot for '%s > %s' [%s]: %v", mset.acc.Name, mset.name(), n.Group(), err)
+			s.RateLimitWarnf("Failed to install snapshot for '%s > %s' [%s]: %v", mset.acc.Name, mset.name(), n.Group(), err)
 		}
 	}
 
