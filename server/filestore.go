@@ -1576,7 +1576,11 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 					return errCorruptState
 				}
 				mb.dmap = *dmap
-				mb.msgs -= numDeleted
+				if mb.msgs > numDeleted {
+					mb.msgs -= numDeleted
+				} else {
+					mb.msgs = 0
+				}
 				bi += n
 			}
 			// Only add in if not empty or the lmb.
