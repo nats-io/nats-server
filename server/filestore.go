@@ -1837,7 +1837,10 @@ func (fs *fileStore) recoverMsgs() error {
 			}
 		}
 		for _, mb := range emptyBlks {
+			// Need the mb lock here.
+			mb.mu.Lock()
 			fs.removeMsgBlock(mb)
+			mb.mu.Unlock()
 		}
 	}
 
