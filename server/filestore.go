@@ -3089,7 +3089,9 @@ func (fs *fileStore) rebuildFirst() {
 	isEmpty := fmb.msgs == 0
 	fmb.mu.RUnlock()
 	if isEmpty {
+		fmb.mu.Lock()
 		fs.removeMsgBlock(fmb)
+		fmb.mu.Unlock()
 	}
 	fs.selectNextFirst()
 	fs.rebuildStateLocked(ld)
