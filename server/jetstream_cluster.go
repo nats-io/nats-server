@@ -2423,6 +2423,10 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				// We are not current, but current means exactly caught up. Under heavy publish
 				// loads we may never reach this, so check if we are within 90% caught up.
 				_, c, a := mset.node.Progress()
+				if c == 0 {
+					mset.mu.Unlock()
+					continue
+				}
 				if p := float64(a) / float64(c) * 100.0; p < syncThreshold {
 					mset.mu.Unlock()
 					continue
