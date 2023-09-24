@@ -1412,7 +1412,13 @@ func (o *consumer) deleteNotActive() {
 			// Check to make sure we went away.
 			// Don't think this needs to be a monitored go routine.
 			go func() {
-				ticker := time.NewTicker(10 * time.Second)
+				const (
+					startInterval = 30 * time.Second
+					maxInterval   = 5 * time.Minute
+				)
+				jitter := time.Duration(rand.Int63n(int64(startInterval)))
+				interval := startInterval + jitter
+				ticker := time.NewTicker(interval)
 				defer ticker.Stop()
 				for range ticker.C {
 					js.mu.RLock()
