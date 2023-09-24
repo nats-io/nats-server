@@ -588,14 +588,15 @@ func (s *Server) stepdownRaftNodes() {
 		s.Debugf("Stepping down all leader raft nodes")
 	}
 	for _, n := range s.raftNodes {
-		if n.Leader() {
-			nodes = append(nodes, n)
-		}
+		nodes = append(nodes, n)
 	}
 	s.rnMu.RUnlock()
 
 	for _, node := range nodes {
-		node.StepDown()
+		if node.Leader() {
+			node.StepDown()
+		}
+		node.SetObserver(true)
 	}
 }
 

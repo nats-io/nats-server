@@ -3472,13 +3472,13 @@ func TestJetStreamClusterNoR1AssetsDuringLameDuck(t *testing.T) {
 
 	// Make sure we do not have any R1 assets placed on the lameduck server.
 	for s.isRunning() {
-		s.rnMu.RLock()
+		s.mu.RLock()
 		if s.js == nil || s.js.srv == nil || s.js.srv.gacc == nil {
-			s.rnMu.RUnlock()
+			s.mu.RUnlock()
 			break
 		}
 		hasAsset := len(s.js.srv.gacc.streams()) > 0
-		s.rnMu.RUnlock()
+		s.mu.RUnlock()
 		if hasAsset {
 			t.Fatalf("Server had an R1 asset when it should not due to lameduck mode")
 		}
