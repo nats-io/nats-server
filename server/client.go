@@ -4558,6 +4558,12 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 				continue
 			}
 
+			// If we are a spoke leaf node make sure to not forward across routes.
+			// This mimics same behavior for normal subs above.
+			if c.kind == LEAF && c.isSpokeLeafNode() && sub.client.kind == ROUTER {
+				continue
+			}
+
 			// We have taken care of preferring local subs for a message from a route above.
 			// Here we just care about a client or leaf and skipping a leaf and preferring locals.
 			if dst := sub.client.kind; dst == ROUTER || dst == LEAF {
