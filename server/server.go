@@ -2380,7 +2380,7 @@ func (s *Server) Shutdown() {
 		accRes.Close()
 	}
 
-	// Now check jetstream.
+	// Now check and shutdown jetstream.
 	s.shutdownJetStream()
 
 	// Now shutdown the nodes
@@ -3944,7 +3944,8 @@ func (s *Server) isLameDuckMode() bool {
 }
 
 // This function will close the client listener then close the clients
-// at some interval to avoid a reconnecting storm.
+// at some interval to avoid a reconnect storm.
+// We will also transfer any raft leaders and shutdown JetStream.
 func (s *Server) lameDuckMode() {
 	s.mu.Lock()
 	// Check if there is actually anything to do
@@ -3984,6 +3985,12 @@ func (s *Server) lameDuckMode() {
 			return
 		}
 	}
+
+	// Now check and shutdown jetstream.
+	s.shutdownJetStream()
+
+	// Now shutdown the nodes
+	s.shutdownRaftNodes()
 
 	// Wait for accept loops to be done to make sure that no new
 	// client can connect

@@ -1564,7 +1564,7 @@ func (o *consumer) deleteNotActive() {
 			// Don't think this needs to be a monitored go routine.
 			go func() {
 				const (
-					startInterval = 5 * time.Second
+					startInterval = 30 * time.Second
 					maxInterval   = 5 * time.Minute
 				)
 				jitter := time.Duration(rand.Int63n(int64(startInterval)))
