@@ -1222,9 +1222,7 @@ func TestServerValidateGatewaysOptions(t *testing.T) {
 func TestAcceptError(t *testing.T) {
 	o := DefaultOptions()
 	s := New(o)
-	s.mu.Lock()
-	s.running = true
-	s.mu.Unlock()
+	s.running.Store(true)
 	defer s.Shutdown()
 	orgDelay := time.Hour
 	delay := s.acceptError("Test", fmt.Errorf("any error"), orgDelay)

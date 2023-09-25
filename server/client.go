@@ -3735,7 +3735,7 @@ func (c *client) processInboundMsg(msg []byte) {
 	}
 }
 
-// selectMappedSubject will chose the mapped subject based on the client's inbound subject.
+// selectMappedSubject will choose the mapped subject based on the client's inbound subject.
 func (c *client) selectMappedSubject() bool {
 	nsubj, changed := c.acc.selectMappedSubject(string(c.pa.subject))
 	if changed {
@@ -5225,7 +5225,7 @@ func (c *client) reconnect() {
 
 		// It is possible that the server is being shutdown.
 		// If so, don't try to reconnect
-		if !srv.running {
+		if !srv.isRunning() {
 			return
 		}
 
