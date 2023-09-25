@@ -1834,7 +1834,7 @@ func (s *Server) addRoute(c *client, didSolicit bool, info *Info, accName string
 	id := info.ID
 
 	s.mu.Lock()
-	if !s.running || s.routesReject {
+	if !s.isRunning() || s.routesReject {
 		s.mu.Unlock()
 		return false
 	}

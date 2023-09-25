@@ -1220,7 +1220,7 @@ func (s *Server) createWSClient(conn net.Conn, ws *websocket) *client {
 	c.mu.Unlock()
 
 	s.mu.Lock()
-	if !s.running || s.ldm {
+	if !s.isRunning() || s.ldm {
 		if s.shutdown {
 			conn.Close()
 		}

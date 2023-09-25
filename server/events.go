@@ -715,7 +715,7 @@ func (s *Server) eventsRunning() bool {
 		return false
 	}
 	s.mu.RLock()
-	er := s.running && s.eventsEnabled()
+	er := s.isRunning() && s.eventsEnabled()
 	s.mu.RUnlock()
 	return er
 }
@@ -739,7 +739,7 @@ func (s *Server) eventsEnabled() bool {
 func (s *Server) TrackedRemoteServers() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if !s.running || !s.eventsEnabled() {
+	if !s.isRunning() || !s.eventsEnabled() {
 		return -1
 	}
 	return len(s.sys.servers)
@@ -1484,7 +1484,7 @@ func (s *Server) remoteServerUpdate(sub *subscription, c *client, _ *Account, su
 
 	// Should do normal updates before bailing if wrong domain.
 	s.mu.Lock()
-	if s.running && s.eventsEnabled() && ssm.Server.ID != s.info.ID {
+	if s.isRunning() && s.eventsEnabled() && ssm.Server.ID != s.info.ID {
 		s.updateRemoteServer(&si)
 	}
 	s.mu.Unlock()
@@ -1943,7 +1943,7 @@ func (s *Server) remoteConnsUpdate(sub *subscription, c *client, _ *Account, sub
 	s.mu.Lock()
 
 	// check again here if we have been shutdown.
-	if !s.running || !s.eventsEnabled() {
+	if !s.isRunning() || !s.eventsEnabled() {
 		s.mu.Unlock()
 		return
 	}

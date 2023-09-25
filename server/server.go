@@ -131,7 +131,7 @@ type Server struct {
 	configFile          string
 	optsMu              sync.RWMutex
 	opts                *Options
-	running             bool
+	running             atomic.Bool
 	shutdown            bool
 	listener            net.Listener
 	listenerErr         error
@@ -1482,10 +1482,7 @@ func (s *Server) Running() bool {
 
 // Protected check on running state
 func (s *Server) isRunning() bool {
-	s.mu.RLock()
-	running := s.running
-	s.mu.RUnlock()
-	return running
+	return s.running.Load()
 }
 
 func (s *Server) logPid() error {
@@ -2083,8 +2080,8 @@ func (s *Server) Start() {
 	s.checkAuthforWarnings()
 
 	// Avoid RACE between Start() and Shutdown()
+	s.running.Store(true)
 	s.mu.Lock()
-	s.running = true
 	// Update leafNodeEnabled in case options have changed post NewServer()
 	// and before Start() (we should not be able to allow that, but server has
 	// direct reference to user-provided options - at least before a Reload() is
@@ -2375,7 +2372,7 @@ func (s *Server) Shutdown() {
 	opts := s.getOpts()
 
 	s.shutdown = true
-	s.running = false
+	s.running.Store(false)
 	s.grMu.Lock()
 	s.grRunning = false
 	s.grMu.Unlock()
@@ -3041,7 +3038,7 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 	// list of connections to close. It won't contain this one, so we need
 	// to bail out now otherwise the readLoop started down there would not
 	// be interrupted. Skip also if in lame duck mode.
-	if !s.running || s.ldm {
+	if !s.isRunning() || s.ldm {
 		// There are some tests that create a server but don't start it,
 		// and use "async" clients and perform the parsing manually. Such
 		// clients would branch here (since server is not running). However,

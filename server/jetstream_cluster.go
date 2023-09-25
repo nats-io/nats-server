@@ -183,7 +183,7 @@ const (
 func (s *Server) trackedJetStreamServers() (js, total int) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if !s.running || !s.eventsEnabled() {
+	if !s.isRunning() || !s.eventsEnabled() {
 		return -1, -1
 	}
 	s.nodeToInfo.Range(func(k, v interface{}) bool {
