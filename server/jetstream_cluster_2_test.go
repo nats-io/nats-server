@@ -2734,25 +2734,6 @@ func TestJetStreamClusterFlowControlRequiresHeartbeats(t *testing.T) {
 	}
 }
 
-var jsClusterAccountLimitsTempl = `
-	listen: 127.0.0.1:-1
-	server_name: %s
-	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
-
-	cluster {
-		name: %s
-		listen: 127.0.0.1:%d
-		routes = [%s]
-	}
-
-	no_auth_user: js
-
-	accounts {
-		$JS { users = [ { user: "js", pass: "p" } ]; jetstream: {max_store: 1MB, max_mem: 0} }
-		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
-	}
-`
-
 func TestJetStreamClusterMixedModeColdStartPrune(t *testing.T) {
 	// Purposely make this unbalanced. Without changes this will never form a quorum to elect the meta-leader.
 	c := createMixedModeCluster(t, jsMixedModeGlobalAccountTempl, "MMCS5", _EMPTY_, 3, 4, false)
@@ -5552,10 +5533,8 @@ func TestJetStreamClusterConsumerOverrides(t *testing.T) {
 	o := mset.lookupConsumer("m")
 	require_True(t, o != nil)
 
-	o.mu.RLock()
 	st := o.store.Type()
 	n := o.raftNode()
-	o.mu.RUnlock()
 	require_True(t, n != nil)
 	rn := n.(*raft)
 	rn.RLock()

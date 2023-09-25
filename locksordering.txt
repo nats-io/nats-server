@@ -14,3 +14,5 @@ allow that lock to be held and the acquire a client lock which is not
 possible with the normal account lock.
 
 accountLeafList -> client
+
+AccountResolver interface has various implementations, but assume: AccountResolver -> Server

@@ -1372,7 +1372,7 @@ func TestJetStreamClusterPullConsumerAcksExtendInactivityThreshold(t *testing.T)
 }
 
 // https://github.com/nats-io/nats-server/issues/3677
-func TestJetStreamParallelStreamCreation(t *testing.T) {
+func TestJetStreamClusterParallelStreamCreation(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -1414,7 +1414,7 @@ func TestJetStreamParallelStreamCreation(t *testing.T) {
 
 // In addition to test above, if streams were attempted to be created in parallel
 // it could be that multiple raft groups would be created for the same asset.
-func TestJetStreamParallelStreamCreationDupeRaftGroups(t *testing.T) {
+func TestJetStreamClusterParallelStreamCreationDupeRaftGroups(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -1463,19 +1463,19 @@ func TestJetStreamParallelStreamCreationDupeRaftGroups(t *testing.T) {
 	expected := 2
 	rg := make(map[string]struct{})
 	for _, s := range c.servers {
-		s.mu.RLock()
+		s.rnMu.RLock()
 		for _, ni := range s.raftNodes {
 			n := ni.(*raft)
 			rg[n.Group()] = struct{}{}
 		}
-		s.mu.RUnlock()
+		s.rnMu.RUnlock()
 	}
 	if len(rg) != expected {
 		t.Fatalf("Expected only %d distinct raft groups for all servers, go %d", expected, len(rg))
 	}
 }
 
-func TestJetStreamParallelConsumerCreation(t *testing.T) {
+func TestJetStreamClusterParallelConsumerCreation(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -1538,19 +1538,19 @@ func TestJetStreamParallelConsumerCreation(t *testing.T) {
 	expected := 3
 	rg := make(map[string]struct{})
 	for _, s := range c.servers {
-		s.mu.RLock()
+		s.rnMu.RLock()
 		for _, ni := range s.raftNodes {
 			n := ni.(*raft)
 			rg[n.Group()] = struct{}{}
 		}
-		s.mu.RUnlock()
+		s.rnMu.RUnlock()
 	}
 	if len(rg) != expected {
 		t.Fatalf("Expected only %d distinct raft groups for all servers, go %d", expected, len(rg))
 	}
 }
 
-func TestJetStreamGhostEphemeralsAfterRestart(t *testing.T) {
+func TestJetStreamClusterGhostEphemeralsAfterRestart(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -3470,19 +3470,20 @@ func TestJetStreamClusterNoR1AssetsDuringLameDuck(t *testing.T) {
 	}()
 	defer close(qch)
 
+	s.mu.RLock()
+	gacc := s.gacc
+	s.mu.RUnlock()
+	if gacc == nil {
+		t.Fatalf("No global account")
+	}
 	// Make sure we do not have any R1 assets placed on the lameduck server.
 	for s.isRunning() {
-		s.mu.RLock()
-		if s.js == nil || s.js.srv == nil || s.js.srv.gacc == nil {
-			s.mu.RUnlock()
-			break
-		}
-		hasAsset := len(s.js.srv.gacc.streams()) > 0
-		s.mu.RUnlock()
-		if hasAsset {
+		if len(gacc.streams()) > 0 {
 			t.Fatalf("Server had an R1 asset when it should not due to lameduck mode")
 		}
+		time.Sleep(15 * time.Millisecond)
 	}
+	s.WaitForShutdown()
 }
 
 // If a consumer has not been registered (possible in heavily loaded systems with lots  of assets)
@@ -3999,9 +4000,14 @@ func TestJetStreamClusterStreamScaleUpNoGroupCluster(t *testing.T) {
 	sa.Group.Cluster = _EMPTY_
 	sa.Group.Preferred = _EMPTY_
 	// Insert into meta layer.
-	s.mu.RLock()
-	s.js.cluster.meta.ForwardProposal(encodeUpdateStreamAssignment(sa))
-	s.mu.RUnlock()
+	if sjs := s.getJetStream(); sjs != nil {
+		sjs.mu.RLock()
+		meta := sjs.cluster.meta
+		sjs.mu.RUnlock()
+		if meta != nil {
+			meta.ForwardProposal(encodeUpdateStreamAssignment(sa))
+		}
+	}
 	// Make sure it got propagated..
 	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
 		sa := mset.streamAssignment().copyGroup()
@@ -4714,7 +4720,7 @@ func TestJetStreamClusterSnapshotAndRestoreWithHealthz(t *testing.T) {
 	require_True(t, si.State.Msgs == uint64(toSend))
 }
 
-func TestJetStreamBinaryStreamSnapshotCapability(t *testing.T) {
+func TestJetStreamClusterBinaryStreamSnapshotCapability(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "NATS", 3)
 	defer c.shutdown()
 
@@ -4783,7 +4789,7 @@ func TestJetStreamClusterBadEncryptKey(t *testing.T) {
 	}
 }
 
-func TestJetStreamAccountUsageDrifts(t *testing.T) {
+func TestJetStreamClusterAccountUsageDrifts(t *testing.T) {
 	tmpl := `
 			listen: 127.0.0.1:-1
 			server_name: %s

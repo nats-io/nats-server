@@ -1272,6 +1272,7 @@ func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) 
 
 // Setup the account resolver. For memory resolver, make sure the JWTs are
 // properly formed but do not enforce expiration etc.
+// Lock is held on entry, but may be released/reacquired during this call.
 func (s *Server) configureResolver() error {
 	opts := s.getOpts()
 	s.accResolver = opts.AccountResolver
@@ -1286,7 +1287,12 @@ func (s *Server) configureResolver() error {
 			}
 		}
 		if len(opts.resolverPreloads) > 0 {
-			if s.accResolver.IsReadOnly() {
+			// Lock ordering is account resolver -> server, so we need to release
+			// the lock and reacquire it when done with account resolver's calls.
+			ar := s.accResolver
+			s.mu.Unlock()
+			defer s.mu.Lock()
+			if ar.IsReadOnly() {
 				return fmt.Errorf("resolver preloads only available for writeable resolver types MEM/DIR/CACHE_DIR")
 			}
 			for k, v := range opts.resolverPreloads {
@@ -1294,7 +1300,7 @@ func (s *Server) configureResolver() error {
 				if err != nil {
 					return fmt.Errorf("preload account error for %q: %v", k, err)
 				}
-				s.accResolver.Store(k, v)
+				ar.Store(k, v)
 			}
 		}
 	}
