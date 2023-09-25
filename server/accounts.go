@@ -1716,15 +1716,21 @@ func (a *Account) checkForReverseEntries(reply string, checkInterest, recursed b
 
 	var _rs [64]string
 	rs := _rs[:0]
+
+	if n := len(a.imports.rrMap); n > cap(rs) {
+		rs = make([]string, 0, n)
+	}
+
 	for k := range a.imports.rrMap {
-		if subjectIsSubsetMatch(k, reply) {
-			rs = append(rs, k)
-		}
+		rs = append(rs, k)
 	}
 	a.mu.RUnlock()
 
+	// subjectIsSubsetMatch is heavy so make sure we do this without the lock.
 	for _, r := range rs {
-		a._checkForReverseEntry(r, nil, checkInterest, recursed)
+		if subjectIsSubsetMatch(r, reply) {
+			a._checkForReverseEntry(r, nil, checkInterest, recursed)
+		}
 	}
 }
 
