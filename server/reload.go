@@ -1589,6 +1589,10 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &ocspOption{newValue: newValue.(*OCSPConfig)})
 		case "ocspcacheconfig":
 			diffOpts = append(diffOpts, &ocspResponseCacheOption{newValue: newValue.(*OCSPResponseCacheConfig)})
+		case "configdigest":
+			// skip changes in config digest, this is handled already while
+			// processing the config.
+			continue
 		default:
 			// TODO(ik): Implement String() on those options to have a nice print.
 			// %v is difficult to figure what's what, %+v print private fields and
@@ -1745,7 +1749,7 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 		}
 	}
 
-	s.Noticef("Reloaded server configuration")
+	s.Noticef("Reloaded server configuration (%s)", newOpts.ConfigDigest)
 }
 
 // This will send a reset to the internal send loop.

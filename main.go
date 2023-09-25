@@ -110,7 +110,7 @@ func main() {
 	if err != nil {
 		server.PrintAndDie(fmt.Sprintf("%s: %s", exe, err))
 	} else if opts.CheckConfig {
-		fmt.Fprintf(os.Stderr, "%s: configuration file %s is valid\n", exe, opts.ConfigFile)
+		fmt.Fprintf(os.Stderr, "%s: configuration file %s is valid (%s)\n", exe, opts.ConfigFile, opts.ConfigDigest)
 		os.Exit(0)
 	}
 
@@ -120,7 +120,7 @@ func main() {
 		server.PrintAndDie(fmt.Sprintf("%s: %s", exe, err))
 	}
 
-	// Configure the logger based on the flags
+	// Configure the logger based on the flags.
 	s.ConfigureLogger()
 
 	// Start things up. Block here until done.
