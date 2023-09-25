@@ -2933,6 +2933,10 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				// If we are the leader or recovering, meaning we own the snapshot,
 				// we should stepdown and clear our raft state since our snapshot is bad.
 				if isRecovering || mset.IsLeader() {
+					mset.mu.RLock()
+					s, accName, streamName := mset.srv, mset.acc.GetName(), mset.cfg.Name
+					mset.mu.RUnlock()
+					s.Warnf("Detected bad stream state, resetting '%s > %s'", accName, streamName)
 					mset.resetClusteredState(err)
 				}
 			}
