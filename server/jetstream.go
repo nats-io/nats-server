@@ -920,6 +920,11 @@ func (s *Server) shutdownJetStream() {
 	s.Noticef("Initiating JetStream Shutdown...")
 	defer s.Noticef("JetStream Shutdown")
 
+	s.Warnf("JS API IPQ at start:", s.jsAPIRoutedReqs.len())
+	defer func() {
+		s.Warnf("JS API IPQ at end:", s.jsAPIRoutedReqs.len())
+	}()
+
 	// If we have folks blocked on sync requests, unblock.
 	// Send 1 is enough, but use select in case they were all present.
 	select {
