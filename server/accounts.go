@@ -1716,6 +1716,11 @@ func (a *Account) checkForReverseEntries(reply string, checkInterest, recursed b
 
 	var _rs [64]string
 	rs := _rs[:0]
+
+	if n := len(a.imports.rrMap); n > cap(rs) {
+		rs = make([]string, 0, n)
+	}
+
 	for k := range a.imports.rrMap {
 		rs = append(rs, k)
 	}
