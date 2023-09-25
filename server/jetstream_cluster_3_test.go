@@ -5815,3 +5815,44 @@ func TestJetStreamClusterRestartThenScaleStreamReplicas(t *testing.T) {
 	cancel()
 	wg.Wait()
 }
+
+func TestJetStreamClusterReportsObserverMode(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	s := c.randomNonLeader()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	// The transferRaftLeaders function is called when a server
+	// enters LDM and will put all of the Raft nodes into observer
+	// state. Other nodes will now be notified about this by the
+	// EntryObserver proposal.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	require_True(t, sl.transferRaftLeaders())
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	c.waitOnAllCurrent()
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+
+	// The former stream leader should now report observer state.
+	found := false
+	for _, r := range si.Cluster.Replicas {
+		if sl.Name() == r.Name {
+			found = r.Observer
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("Expected previous stream leader %q to now be observer", sl.Name())
+	}
+}

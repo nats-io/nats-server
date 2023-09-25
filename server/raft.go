@@ -228,6 +228,7 @@ type lps struct {
 	ts int64
 	li uint64
 	kp bool // marks as known peer.
+	ob bool // marks as observer.
 }
 
 const (
@@ -238,7 +239,6 @@ const (
 	hbIntervalDefault              = 1 * time.Second
 	lostQuorumIntervalDefault      = hbIntervalDefault * 10 // 10 seconds
 	lostQuorumCheckIntervalDefault = hbIntervalDefault * 10 // 10 seconds
-
 )
 
 var (
@@ -470,12 +470,12 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 	n.apply.push(nil)
 
 	// Make sure to track ourselves.
-	n.peers[n.id] = &lps{time.Now().UnixNano(), 0, true}
+	n.peers[n.id] = &lps{time.Now().UnixNano(), 0, true, false}
 	// Track known peers
 	for _, peer := range ps.knownPeers {
 		// Set these to 0 to start but mark as known peer.
 		if peer != n.id {
-			n.peers[peer] = &lps{0, 0, true}
+			n.peers[peer] = &lps{0, 0, true, false}
 		}
 	}
 
@@ -1466,7 +1466,7 @@ func (n *raft) Peers() []*Peer {
 		p := &Peer{
 			ID:       id,
 			Current:  id == n.leader || ps.li >= n.applied,
-			Observer: n.observer,
+			Observer: ps.ob,
 			Last:     time.Unix(0, ps.ts),
 			Lag:      lag,
 		}
@@ -1768,6 +1768,15 @@ func (n *raft) setObserver(isObserver bool, extSt extensionState) {
 	defer n.Unlock()
 	n.observer = isObserver
 	n.extSt = extSt
+
+	var data []byte
+	if isObserver {
+		data = append(data, 1)
+	} else {
+		data = append(data, 0)
+	}
+	data = append(data, n.id...)
+	n.prop.push(newEntry(EntryObserverAdvisory, data))
 }
 
 // Invoked when being notified that there is something in the entryc's queue
@@ -1936,6 +1945,7 @@ const (
 	EntryRemovePeer
 	EntryLeaderTransfer
 	EntrySnapshot
+	EntryObserverAdvisory
 )
 
 func (t EntryType) String() string {
@@ -1954,6 +1964,8 @@ func (t EntryType) String() string {
 		return "LeaderTransfer"
 	case EntrySnapshot:
 		return "Snapshot"
+	case EntryObserverAdvisory:
+		return "ObserverAdvisory"
 	}
 	return fmt.Sprintf("Unknown [%d]", uint8(t))
 }
@@ -2619,7 +2631,7 @@ func (n *raft) applyCommit(index uint64) error {
 
 			if lp, ok := n.peers[newPeer]; !ok {
 				// We are not tracking this one automatically so we need to bump cluster size.
-				n.peers[newPeer] = &lps{time.Now().UnixNano(), 0, true}
+				n.peers[newPeer] = &lps{time.Now().UnixNano(), 0, true, false}
 			} else {
 				// Mark as added.
 				lp.kp = true
@@ -2659,6 +2671,15 @@ func (n *raft) applyCommit(index uint64) error {
 
 			// We pass these up as well.
 			committed = append(committed, e)
+
+		case EntryObserverAdvisory:
+			if len(e.Data) < 2 {
+				n.debug("Malformed observer advisory entry")
+				continue
+			}
+			if p, ok := n.peers[string(e.Data[1:])]; ok {
+				p.ob = e.Data[0] == 1
+			}
 		}
 	}
 	// Pass to the upper layers if we have normal entries.
@@ -2762,7 +2783,7 @@ func (n *raft) trackPeer(peer string) error {
 	if ps := n.peers[peer]; ps != nil {
 		ps.ts = time.Now().UnixNano()
 	} else if !isRemoved {
-		n.peers[peer] = &lps{time.Now().UnixNano(), 0, false}
+		n.peers[peer] = &lps{time.Now().UnixNano(), 0, false, false}
 	}
 	n.Unlock()
 
@@ -3017,7 +3038,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		if ps := n.peers[ae.leader]; ps != nil {
 			ps.ts = time.Now().UnixNano()
 		} else {
-			n.peers[ae.leader] = &lps{time.Now().UnixNano(), 0, true}
+			n.peers[ae.leader] = &lps{time.Now().UnixNano(), 0, true, false}
 		}
 	}
 
@@ -3224,7 +3245,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				if ps := n.peers[newPeer]; ps != nil {
 					ps.ts = time.Now().UnixNano()
 				} else {
-					n.peers[newPeer] = &lps{time.Now().UnixNano(), 0, false}
+					n.peers[newPeer] = &lps{time.Now().UnixNano(), 0, false, false}
 				}
 				// Store our peer in our global peer map for all peers.
 				peers.LoadOrStore(newPeer, newPeer)
@@ -3272,7 +3293,7 @@ func (n *raft) processPeerState(ps *peerState) {
 			lp.kp = true
 			n.peers[peer] = lp
 		} else {
-			n.peers[peer] = &lps{0, 0, true}
+			n.peers[peer] = &lps{0, 0, true, false}
 		}
 	}
 	n.debug("Update peers from leader to %+v", n.peers)

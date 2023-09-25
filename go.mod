@@ -1,5 +1,7 @@
 module github.com/nats-io/nats-server/v2
 
+replace github.com/nats-io/nats.go => github.com/nats-io/nats.go v1.30.1-0.20230925101945-66fd3c30ab7b
+
 go 1.20
 
 require (
