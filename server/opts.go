@@ -307,6 +307,7 @@ type Options struct {
 	Websocket             WebsocketOpts     `json:"-"`
 	MQTT                  MQTTOpts          `json:"-"`
 	ProfPort              int               `json:"-"`
+	ProfBlockRate         int               `json:"-"`
 	PidFile               string            `json:"-"`
 	PortsFileDir          string            `json:"-"`
 	LogFile               string            `json:"-"`
@@ -1013,6 +1014,8 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		o.PortsFileDir = v.(string)
 	case "prof_port":
 		o.ProfPort = int(v.(int64))
+	case "prof_block_rate":
+		o.ProfBlockRate = int(v.(int64))
 	case "max_control_line":
 		if v.(int64) > 1<<31-1 {
 			err := &configErr{tk, fmt.Sprintf("%s value is too big", k)}
