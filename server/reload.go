@@ -805,6 +805,16 @@ func (o *mqttInactiveThresholdReload) Apply(s *Server) {
 	s.Noticef("Reloaded: MQTT consumer_inactive_threshold = %v", o.newValue)
 }
 
+type profBlockRateReload struct {
+	noopOption
+	newValue int
+}
+
+func (o *profBlockRateReload) Apply(s *Server) {
+	s.setBlockProfileRate(o.newValue)
+	s.Noticef("Reloaded: block_prof_rate = %v", o.newValue)
+}
+
 type leafNodeOption struct {
 	noopOption
 	tlsFirstChanged    bool
@@ -1589,6 +1599,12 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &ocspOption{newValue: newValue.(*OCSPConfig)})
 		case "ocspcacheconfig":
 			diffOpts = append(diffOpts, &ocspResponseCacheOption{newValue: newValue.(*OCSPResponseCacheConfig)})
+		case "profblockrate":
+			new := newValue.(int)
+			old := oldValue.(int)
+			if new != old {
+				diffOpts = append(diffOpts, &profBlockRateReload{newValue: new})
+			}
 		default:
 			// TODO(ik): Implement String() on those options to have a nice print.
 			// %v is difficult to figure what's what, %+v print private fields and

@@ -2098,6 +2098,10 @@ func (s *Server) Start() {
 	// Pprof http endpoint for the profiler.
 	if opts.ProfPort != 0 {
 		s.StartProfiler()
+	} else {
+		// It's still possible to access this profile via a SYS endpoint, so set
+		// this anyway. (Otherwise StartProfiler would have called it.)
+		s.setBlockProfileRate(opts.ProfBlockRate)
 	}
 
 	if opts.ConfigFile != _EMPTY_ {
@@ -2701,6 +2705,8 @@ func (s *Server) StartProfiler() {
 	s.profiler = l
 	s.profilingServer = srv
 
+	s.setBlockProfileRate(opts.ProfBlockRate)
+
 	go func() {
 		// if this errors out, it's probably because the server is being shutdown
 		err := srv.Serve(l)
@@ -2716,6 +2722,15 @@ func (s *Server) StartProfiler() {
 		s.done <- true
 	}()
 	s.mu.Unlock()
+}
+
+func (s *Server) setBlockProfileRate(rate int) {
+	// Passing i ProfBlockRate <= 0 here will disable or > 0 will enable.
+	runtime.SetBlockProfileRate(rate)
+
+	if rate > 0 {
+		s.Warnf("Block profiling is enabled (rate %d), this may have a performance impact", rate)
+	}
 }
 
 // StartHTTPMonitoring will enable the HTTP monitoring port.
