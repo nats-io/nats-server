@@ -90,10 +90,11 @@ type WAL interface {
 }
 
 type Peer struct {
-	ID      string
-	Current bool
-	Last    time.Time
-	Lag     uint64
+	ID       string
+	Current  bool
+	Observer bool
+	Last     time.Time
+	Lag      uint64
 }
 
 type RaftState uint8
@@ -1463,10 +1464,11 @@ func (n *raft) Peers() []*Peer {
 			lag = n.commit - ps.li
 		}
 		p := &Peer{
-			ID:      id,
-			Current: id == n.leader || ps.li >= n.applied,
-			Last:    time.Unix(0, ps.ts),
-			Lag:     lag,
+			ID:       id,
+			Current:  id == n.leader || ps.li >= n.applied,
+			Observer: n.observer,
+			Last:     time.Unix(0, ps.ts),
+			Lag:      lag,
 		}
 		peers = append(peers, p)
 	}

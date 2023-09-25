@@ -3010,7 +3010,7 @@ func (s *Server) replicas(node RaftNode) []*PeerInfo {
 	for _, rp := range node.Peers() {
 		if sir, ok := s.nodeToInfo.Load(rp.ID); ok && sir != nil {
 			si := sir.(nodeInfo)
-			pi := &PeerInfo{Peer: rp.ID, Name: si.name, Current: rp.Current, Active: now.Sub(rp.Last), Offline: si.offline, Lag: rp.Lag}
+			pi := &PeerInfo{Peer: rp.ID, Name: si.name, Current: rp.Current, Observer: rp.Observer, Active: now.Sub(rp.Last), Offline: si.offline, Lag: rp.Lag}
 			replicas = append(replicas, pi)
 		}
 	}
@@ -4006,7 +4006,7 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 				// Select a new peer to transfer to. If we are a migrating make sure its from the new cluster.
 				var npeer string
 				for _, r := range peers {
-					if !r.Current {
+					if !r.Current { // TODO(nat): Should this check r.Observer?
 						continue
 					}
 					if !migrating {
@@ -8176,11 +8176,12 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 			// yet (which can happen after the whole cluster is stopped and only some
 			// of the nodes are restarted).
 			pi := &PeerInfo{
-				Current: current,
-				Offline: true,
-				Active:  lastSeen,
-				Lag:     rp.Lag,
-				Peer:    rp.ID,
+				Current:  current,
+				Observer: rp.Observer,
+				Offline:  true,
+				Active:   lastSeen,
+				Lag:      rp.Lag,
+				Peer:     rp.ID,
 			}
 			// If node is found, complete/update the settings.
 			if sir, ok := s.nodeToInfo.Load(rp.ID); ok && sir != nil {
