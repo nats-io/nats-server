@@ -404,12 +404,21 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	}
 
 	// Make sure we are ok when these are done in parallel.
-	v, loaded := jsa.inflight.LoadOrStore(cfg.Name, &sync.WaitGroup{})
+	// We used to call Add(1) in the "else" clause of the "if loaded"
+	// statement. This caused a data race because it was possible
+	// that one go routine stores (with count==0) and another routine
+	// gets "loaded==true" and calls wg.Wait() while the other routine
+	// then calls wg.Add(1). It also could mean that two routines execute
+	// the rest of the code concurrently.
+	swg := &sync.WaitGroup{}
+	swg.Add(1)
+	v, loaded := jsa.inflight.LoadOrStore(cfg.Name, swg)
 	wg := v.(*sync.WaitGroup)
 	if loaded {
 		wg.Wait()
+		// This waitgroup is "thrown away" (since there was an existing one).
+		swg.Done()
 	} else {
-		wg.Add(1)
 		defer func() {
 			jsa.inflight.Delete(cfg.Name)
 			wg.Done()
