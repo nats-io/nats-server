@@ -1,6 +1,6 @@
 # Maintainers
 
-Maintainership is on a per project basis. Reference [NATS Governance Model](https://github.com/nats-io/general/GOVERNANCE.md).
+Maintainership is on a per project basis. Reference [NATS Governance Model](https://github.com/nats-io/nats-general/blob/main/GOVERNANCE.md).
 
 ### Maintainers
   - Derek Collison <derek@nats.io> [@derekcollison](https://github.com/derekcollison)

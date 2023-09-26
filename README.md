@@ -53,7 +53,7 @@ The NATS product roadmap can be found [here](https://nats.io/about/#roadmap).
 
 ### Security Audit
 
-A third party security audit was performed by Cure53, you can see the full report [here](https://github.com/nats-io/nats-general/blob/master/reports/Cure53_NATS_Audit.pdf).
+A third party security audit was performed by Cure53, you can see the full report [here](https://github.com/nats-io/nats-general/blob/main/reports/Cure53_NATS_Audit.pdf).
 
 ### Reporting Security Vulnerabilities
 
