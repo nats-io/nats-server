@@ -563,11 +563,6 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 					b.Run(
 						name,
 						func(b *testing.B) {
-							// Skip short runs, benchmark gets re-executed with a larger N
-							if b.N < bc.minMessages {
-								b.ResetTimer()
-								return
-							}
 
 							subjects := make([]string, bc.numSubjects)
 							for i := 0; i < bc.numSubjects; i++ {
@@ -869,12 +864,6 @@ func BenchmarkJetStreamInterestStreamWithLimit(b *testing.B) {
 								b.Run(
 									limitDescription,
 									func(b *testing.B) {
-										// Stop timer during setup
-										b.StopTimer()
-										b.ResetTimer()
-
-										// Set size of each operation, for throughput calculation
-										b.SetBytes(messageSize)
 
 										// Print benchmark parameters
 										if verbose {
@@ -970,7 +959,6 @@ func BenchmarkJetStreamKV(b *testing.B) {
 		kvName    = "BUCKET"
 		keyPrefix = "K_"
 		seed      = 12345
-		minOps    = 1_000
 	)
 
 	runKVGet := func(b *testing.B, kv nats.KeyValue, keys []string) int {
@@ -1097,11 +1085,6 @@ func BenchmarkJetStreamKV(b *testing.B) {
 					b.Run(
 						wName,
 						func(b *testing.B) {
-							// Skip short runs, benchmark gets re-executed with a larger N
-							if b.N < minOps {
-								b.ResetTimer()
-								return
-							}
 
 							if verbose {
 								b.Logf("Running %s workload %s with %d messages", wName, bName, b.N)
