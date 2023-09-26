@@ -82,7 +82,6 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 
 			uniqueConsumed++
 			bitset.set(index, true)
-			b.SetBytes(int64(len(msg.Data)))
 
 			if verbose && uniqueConsumed%1000 == 0 {
 				b.Logf("Consumed: %d/%d", bitset.count(), b.N)
@@ -128,7 +127,6 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 
 			uniqueConsumed++
 			bitset.set(index, true)
-			b.SetBytes(int64(len(msg.Data)))
 
 			if uniqueConsumed == b.N {
 				msg.Sub.Unsubscribe()
@@ -224,7 +222,6 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 
 				uniqueConsumed++
 				bitset.set(index, true)
-				b.SetBytes(int64(len(msg.Data)))
 
 				if uniqueConsumed == b.N {
 					msg.Sub.Unsubscribe()
@@ -369,6 +366,9 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 								}
 							}
 
+							// Set size of each operation, for throughput calculation
+							b.SetBytes(int64(bc.messageSize))
+
 							// Discard time spent during setup
 							// Consumer may reset again further in
 							b.ResetTimer()
@@ -439,7 +439,6 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 				errors++
 			} else {
 				published++
-				b.SetBytes(int64(messageSize))
 			}
 
 			if verbose && i%1000 == 0 {
@@ -459,7 +458,6 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 
 		published, errors := 0, 0
 
-		b.SetBytes(int64(messageSize))
 		b.ResetTimer()
 
 		for published < b.N {
@@ -650,6 +648,8 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 							if verbose {
 								b.Logf("Running %v publisher with message size: %dB", pc.pType, bc.messageSize)
 							}
+
+							b.SetBytes(int64(bc.messageSize))
 
 							// Benchmark starts here
 							b.ResetTimer()
@@ -873,7 +873,7 @@ func BenchmarkJetStreamInterestStreamWithLimit(b *testing.B) {
 										b.StopTimer()
 										b.ResetTimer()
 
-										// Set per-iteration bytes to calculate throughput (a.k.a. speed)
+										// Set size of each operation, for throughput calculation
 										b.SetBytes(messageSize)
 
 										// Print benchmark parameters
@@ -931,8 +931,11 @@ func BenchmarkJetStreamInterestStreamWithLimit(b *testing.B) {
 										// Wait for all publishers to be ready
 										pubCtx.readyWg.Wait()
 
+										// Set size of each operation, for throughput calculation
+										b.SetBytes(messageSize)
+
 										// Benchmark starts here
-										b.StartTimer()
+										b.ResetTimer()
 
 										// Unblock the publishers
 										pubCtx.lock.Unlock()
@@ -978,13 +981,11 @@ func BenchmarkJetStreamKV(b *testing.B) {
 
 		for i := 1; i <= b.N; i++ {
 			key := keys[rng.Intn(len(keys))]
-			kve, err := kv.Get(key)
+			_, err := kv.Get(key)
 			if err != nil {
 				errors++
 				continue
 			}
-
-			b.SetBytes(int64(len(kve.Value())))
 
 			if verbose && i%1000 == 0 {
 				b.Logf("Completed %d/%d Get ops", i, b.N)
@@ -1010,8 +1011,6 @@ func BenchmarkJetStreamKV(b *testing.B) {
 				errors++
 				continue
 			}
-
-			b.SetBytes(int64(valueSize))
 
 			if verbose && i%1000 == 0 {
 				b.Logf("Completed %d/%d Put ops", i, b.N)
@@ -1044,8 +1043,6 @@ func BenchmarkJetStreamKV(b *testing.B) {
 				errors++
 				continue
 			}
-
-			b.SetBytes(int64(valueSize))
 
 			if verbose && i%1000 == 0 {
 				b.Logf("Completed %d/%d Update ops", i, b.N)
@@ -1174,6 +1171,9 @@ func BenchmarkJetStreamKV(b *testing.B) {
 							if err != nil {
 								b.Fatalf("Error binding to KV: %v", err)
 							}
+
+							// Set size of each operation, for throughput calculation
+							b.SetBytes(int64(bc.valueSize))
 
 							// Discard time spent during setup
 							// May reset again further in
