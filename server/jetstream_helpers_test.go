@@ -281,6 +281,25 @@ var jsMixedModeGlobalAccountTempl = `
 
 var jsGWTempl = `%s{name: %s, urls: [%s]}`
 
+var jsClusterAccountLimitsTempl = `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+
+	no_auth_user: js
+
+	accounts {
+		$JS { users = [ { user: "js", pass: "p" } ]; jetstream: {max_store: 1MB, max_mem: 0} }
+		$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+	}
+`
+
 func createJetStreamTaggedSuperCluster(t *testing.T) *supercluster {
 	return createJetStreamTaggedSuperClusterWithGWProxy(t, nil)
 }
