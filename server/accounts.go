@@ -1702,21 +1702,19 @@ func (a *Account) addReverseRespMapEntry(acc *Account, reply, from string) {
 // This will be called from checkForReverseEntry when the reply arg is a wildcard subject.
 // This will usually be called in a go routine since we need to walk all the entries.
 func (a *Account) checkForReverseEntries(reply string, checkInterest, recursed bool) {
+	if subjectIsLiteral(reply) {
+		a._checkForReverseEntry(reply, nil, checkInterest, recursed)
+		return
+	}
+
 	a.mu.RLock()
 	if len(a.imports.rrMap) == 0 {
 		a.mu.RUnlock()
 		return
 	}
 
-	if subjectIsLiteral(reply) {
-		a.mu.RUnlock()
-		a._checkForReverseEntry(reply, nil, checkInterest, recursed)
-		return
-	}
-
 	var _rs [64]string
 	rs := _rs[:0]
-
 	if n := len(a.imports.rrMap); n > cap(rs) {
 		rs = make([]string, 0, n)
 	}
@@ -1726,9 +1724,14 @@ func (a *Account) checkForReverseEntries(reply string, checkInterest, recursed b
 	}
 	a.mu.RUnlock()
 
-	// subjectIsSubsetMatch is heavy so make sure we do this without the lock.
+	tsa := [32]string{}
+	tts := tokenizeSubjectIntoSlice(tsa[:0], reply)
+
+	rsa := [32]string{}
 	for _, r := range rs {
-		if subjectIsSubsetMatch(r, reply) {
+		rts := tokenizeSubjectIntoSlice(rsa[:0], r)
+		//  isSubsetMatchTokenized is heavy so make sure we do this without the lock.
+		if isSubsetMatchTokenized(rts, tts) {
 			a._checkForReverseEntry(r, nil, checkInterest, recursed)
 		}
 	}
