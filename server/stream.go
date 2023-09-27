@@ -3665,14 +3665,14 @@ func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
 			fsCfg.Cipher = s.getOpts().JetStreamCipher
 		}
 		oldprf := s.jsKeyGen(s.getOpts().JetStreamOldKey, mset.acc.Name)
-		fs, err := newFileStoreWithCreated(*fsCfg, mset.cfg, mset.created, prf, oldprf)
+		cfg := *fsCfg
+		cfg.srv = s
+		fs, err := newFileStoreWithCreated(cfg, mset.cfg, mset.created, prf, oldprf)
 		if err != nil {
 			mset.mu.Unlock()
 			return err
 		}
 		mset.store = fs
-		// Register our server.
-		fs.registerServer(s)
 	}
 	// This will fire the callback but we do not require the lock since md will be 0 here.
 	mset.store.RegisterStorageUpdates(mset.storeUpdates)

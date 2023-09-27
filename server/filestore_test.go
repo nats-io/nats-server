@@ -6096,6 +6096,75 @@ func TestFileStoreRemoveLastNoDoubleTombstones(t *testing.T) {
 	require_Equal(t, rbytes, emptyRecordLen)
 }
 
+func TestFileStoreFullStateMultiBlockPastWAL(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize = 100
+		scfg := StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage}
+
+		prf := func(context []byte) ([]byte, error) {
+			h := hmac.New(sha256.New, []byte("dlc22"))
+			if _, err := h.Write(context); err != nil {
+				return nil, err
+			}
+			return h.Sum(nil), nil
+		}
+		if fcfg.Cipher == NoCipher {
+			prf = nil
+		}
+
+		fs, err := newFileStoreWithCreated(fcfg, scfg, time.Now(), prf, nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// This yields an internal record length of 50 bytes. So 2 msgs per blk.
+		msgLen := 19
+		msgA := bytes.Repeat([]byte("A"), msgLen)
+		msgZ := bytes.Repeat([]byte("Z"), msgLen)
+
+		// Store 2 msgs
+		fs.StoreMsg("A", nil, msgA)
+		fs.StoreMsg("B", nil, msgZ)
+		require_Equal(t, fs.numMsgBlocks(), 1)
+		fs.Stop()
+
+		// Grab the state from this stop.
+		sfile := filepath.Join(fcfg.StoreDir, msgDir, streamStreamStateFile)
+		buf, err := os.ReadFile(sfile)
+		require_NoError(t, err)
+
+		fs, err = newFileStoreWithCreated(fcfg, scfg, time.Now(), prf, nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// Store 2 more msgs and delete 2 & 4, then another 2 msgs.
+		fs.StoreMsg("C", nil, msgA)
+		fs.StoreMsg("D", nil, msgZ)
+		fs.StoreMsg("E", nil, msgA)
+		fs.StoreMsg("F", nil, msgZ)
+		fs.StoreMsg("G", nil, msgA)
+		fs.StoreMsg("H", nil, msgZ)
+		require_Equal(t, fs.numMsgBlocks(), 4)
+		state := fs.State()
+		fs.Stop()
+
+		// Put back old stream state.
+		// This will test that we properly walk multiple blocks past where we snapshotted state.
+		fs.Stop()
+		err = os.WriteFile(sfile, buf, defaultFilePerms)
+		require_NoError(t, err)
+
+		fs, err = newFileStoreWithCreated(fcfg, scfg, time.Now(), prf, nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		if newState := fs.State(); !reflect.DeepEqual(state, newState) {
+			t.Fatalf("Restore state does not match:\n%+v\n%+v",
+				state, newState)
+		}
+		require_True(t, !state.FirstTime.IsZero())
+	})
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////

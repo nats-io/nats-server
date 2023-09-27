@@ -60,6 +60,9 @@ type FileStoreConfig struct {
 	Cipher StoreCipher
 	// Compression is the algorithm to use when compressing.
 	Compression StoreCompression
+
+	// Internal reference to our server.
+	srv *Server
 }
 
 // FileStreamInfo allows us to remember created time.
@@ -387,6 +390,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		qch:    make(chan struct{}),
 		fch:    make(chan struct{}, 1),
 		fsld:   make(chan struct{}),
+		srv:    fcfg.srv,
 	}
 
 	// Set flush in place to AsyncFlush which by default is false.
@@ -525,12 +529,6 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	go fs.flushStreamStateLoop(fs.fch, fs.qch, fs.fsld)
 
 	return fs, nil
-}
-
-func (fs *fileStore) registerServer(s *Server) {
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-	fs.srv = s
 }
 
 // Lock all existing message blocks.
@@ -1436,6 +1434,16 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 	return nil, tombstones, nil
 }
 
+// For doing warn logging.
+// Lock should be held.
+func (fs *fileStore) warn(format string, args ...any) {
+	// No-op if no server configured.
+	if fs.srv == nil {
+		return
+	}
+	fs.srv.Warnf(fmt.Sprintf("Filestore [%s] %s", fs.cfg.Name, format), args...)
+}
+
 // recoverFullState will attempt to receover our last full state and re-process any state changes
 // that happened afterwards.
 func (fs *fileStore) recoverFullState() (rerr error) {
@@ -1455,12 +1463,16 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 	dios <- struct{}{}
 
 	if err != nil {
+		if !os.IsNotExist(err) {
+			fs.warn("Could not read stream state file: %v", err)
+		}
 		return err
 	}
 
 	const minLen = 32
 	if len(buf) < minLen {
 		os.Remove(fn)
+		fs.warn("Stream state too short (%d bytes)", len(buf))
 		return errCorruptState
 	}
 
@@ -1471,6 +1483,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 	fs.hh.Write(buf)
 	if !bytes.Equal(h, fs.hh.Sum(nil)) {
 		os.Remove(fn)
+		fs.warn("Stream state checksum did not match")
 		return errCorruptState
 	}
 
@@ -1482,6 +1495,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 			ns := fs.aek.NonceSize()
 			buf, err = fs.aek.Open(nil, buf[:ns], buf[ns:], nil)
 			if err != nil {
+				fs.warn("Stream state error reading encryption key: %v", err)
 				return err
 			}
 		}
@@ -1489,6 +1503,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 
 	if buf[0] != fullStateMagic || buf[1] != fullStateVersion {
 		os.Remove(fn)
+		fs.warn("Stream state magic and version mismatch")
 		return errCorruptState
 	}
 
@@ -1543,6 +1558,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 			if lsubj := int(readU64()); lsubj > 0 {
 				if bi+lsubj > len(buf) {
 					os.Remove(fn)
+					fs.warn("Stream state bad subject len (%d)", lsubj)
 					return errCorruptState
 				}
 				subj := fs.subjString(buf[bi : bi+lsubj])
@@ -1573,6 +1589,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 				dmap, n, err := avl.Decode(buf[bi:])
 				if err != nil {
 					os.Remove(fn)
+					fs.warn("Stream state error decoding avl dmap: %v", err)
 					return errCorruptState
 				}
 				mb.dmap = *dmap
@@ -1605,6 +1622,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 	// Check if we had any errors.
 	if bi < 0 {
 		os.Remove(fn)
+		fs.warn("Stream state has no checksum present")
 		return errCorruptState
 	}
 
@@ -1621,9 +1639,9 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 			if ld, _, _ := mb.rebuildState(); ld != nil {
 				fs.addLostData(ld)
 			}
+			fs.warn("Stream state detected prior state, could not locate msg block %d", blkIndex)
 			return errPriorState
 		}
-
 		if matched = bytes.Equal(mb.lastChecksum(), lchk[:]); !matched {
 			// Remove the last message block since we will re-process below.
 			fs.removeMsgBlockFromList(mb)
@@ -1644,12 +1662,14 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 				return nil
 			}
 			os.Remove(fn)
+			fs.warn("Stream state could not recover msg block %d", bi)
 			return err
 		}
 		if nmb != nil {
 			// Check if we have to account for a partial message block.
 			if !matched && mb != nil && mb.index == nmb.index {
 				if err := fs.adjustAccounting(mb, nmb); err != nil {
+					fs.warn("Stream state could not adjust accounting: %v", err)
 					return err
 				}
 			}
