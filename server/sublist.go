@@ -540,6 +540,7 @@ func (s *Sublist) match(subject string, doLock bool) *SublistResult {
 	if doLock {
 		s.RLock()
 	}
+	cacheEnabled := s.cache != nil
 	r, ok := s.cache[subject]
 	if doLock {
 		s.RUnlock()
@@ -574,7 +575,11 @@ func (s *Sublist) match(subject string, doLock bool) *SublistResult {
 	var n int
 
 	if doLock {
-		s.Lock()
+		if cacheEnabled {
+			s.Lock()
+		} else {
+			s.RLock()
+		}
 	}
 
 	matchLevel(s.root, tokens, result)
@@ -582,16 +587,20 @@ func (s *Sublist) match(subject string, doLock bool) *SublistResult {
 	if len(result.psubs) == 0 && len(result.qsubs) == 0 {
 		result = emptyResult
 	}
-	if s.cache != nil {
+	if cacheEnabled {
 		s.cache[subject] = result
 		n = len(s.cache)
 	}
 	if doLock {
-		s.Unlock()
+		if cacheEnabled {
+			s.Unlock()
+		} else {
+			s.RUnlock()
+		}
 	}
 
 	// Reduce the cache count if we have exceeded our set maximum.
-	if n > slCacheMax && atomic.CompareAndSwapInt32(&s.ccSweep, 0, 1) {
+	if cacheEnabled && n > slCacheMax && atomic.CompareAndSwapInt32(&s.ccSweep, 0, 1) {
 		go s.reduceCacheCount()
 	}
 
