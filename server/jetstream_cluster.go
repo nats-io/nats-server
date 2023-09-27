@@ -755,7 +755,7 @@ func (js *jetStream) setupMetaGroup() error {
 	storeDir := filepath.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, defaultMetaGroupName)
 
 	fs, err := newFileStoreWithCreated(
-		FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMetaFSBlkSize, AsyncFlush: false},
+		FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMetaFSBlkSize, AsyncFlush: false, srv: s},
 		StreamConfig{Name: defaultMetaGroupName, Storage: FileStorage},
 		time.Now().UTC(),
 		s.jsKeyGen(s.getOpts().JetStreamKey, defaultMetaGroupName),
@@ -765,9 +765,6 @@ func (js *jetStream) setupMetaGroup() error {
 		s.Errorf("Error creating filestore: %v", err)
 		return err
 	}
-
-	// Register our server.
-	fs.registerServer(s)
 
 	cfg := &RaftConfig{Name: defaultMetaGroupName, Store: storeDir, Log: fs}
 
@@ -2032,7 +2029,7 @@ func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, storage Stor
 	var store StreamStore
 	if storage == FileStorage {
 		fs, err := newFileStoreWithCreated(
-			FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMediumBlockSize, AsyncFlush: false, SyncInterval: 5 * time.Minute},
+			FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMediumBlockSize, AsyncFlush: false, SyncInterval: 5 * time.Minute, srv: s},
 			StreamConfig{Name: rg.Name, Storage: FileStorage},
 			time.Now().UTC(),
 			s.jsKeyGen(s.getOpts().JetStreamKey, rg.Name),
@@ -2042,8 +2039,6 @@ func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, storage Stor
 			s.Errorf("Error creating filestore WAL: %v", err)
 			return err
 		}
-		// Register our server.
-		fs.registerServer(s)
 		store = fs
 	} else {
 		ms, err := newMemStore(&StreamConfig{Name: rg.Name, Storage: MemoryStorage})
