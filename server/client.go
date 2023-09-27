@@ -3071,7 +3071,8 @@ func (c *client) unsubscribe(acc *Account, sub *subscription, force, remove bool
 	}
 
 	// Now check to see if this was part of a respMap entry for service imports.
-	if acc != nil {
+	// We can skip subscriptions on reserved replies.
+	if acc != nil && !isReservedReply(sub.subject) {
 		acc.checkForReverseEntry(string(sub.subject), nil, true)
 	}
 }
