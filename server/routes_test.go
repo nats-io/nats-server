@@ -2777,9 +2777,7 @@ func TestRoutePoolAndPerAccountWithServiceLatencyNoDataRace(t *testing.T) {
 			defer nc.Close()
 
 			// The service listener.
-			// serviceTime := 25 * time.Millisecond
 			natsSub(t, nc, "req.echo", func(msg *nats.Msg) {
-				// time.Sleep(serviceTime)
 				msg.Respond(msg.Data)
 			})
 
