@@ -977,7 +977,7 @@ func (s *Server) updateRemoteRoutePerms(c *client, info *Info) {
 func (s *Server) sendAsyncInfoToClients(regCli, wsCli bool) {
 	// If there are no clients supporting async INFO protocols, we are done.
 	// Also don't send if we are shutting down...
-	if s.cproto == 0 || s.shutdown {
+	if s.cproto == 0 || s.isShuttingDown() {
 		return
 	}
 	info := s.copyInfo()
@@ -2302,6 +2302,10 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 // is detected that the server has already been shutdown.
 // It will also start soliciting explicit routes.
 func (s *Server) startRouteAcceptLoop() {
+	if s.isShuttingDown() {
+		return
+	}
+
 	// Snapshot server options.
 	opts := s.getOpts()
 
@@ -2316,10 +2320,6 @@ func (s *Server) startRouteAcceptLoop() {
 	clusterName := s.ClusterName()
 
 	s.mu.Lock()
-	if s.shutdown {
-		s.mu.Unlock()
-		return
-	}
 	s.Noticef("Cluster name is %s", clusterName)
 	if s.isClusterNameDynamic() {
 		s.Warnf("Cluster name was dynamically generated, consider setting one")
