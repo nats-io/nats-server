@@ -473,6 +473,10 @@ func (s *Server) startGateways() {
 // This starts the gateway accept loop in a go routine, unless it
 // is detected that the server has already been shutdown.
 func (s *Server) startGatewayAcceptLoop() {
+	if s.isShuttingDown() {
+		return
+	}
+
 	// Snapshot server options.
 	opts := s.getOpts()
 
@@ -482,10 +486,6 @@ func (s *Server) startGatewayAcceptLoop() {
 	}
 
 	s.mu.Lock()
-	if s.shutdown {
-		s.mu.Unlock()
-		return
-	}
 	hp := net.JoinHostPort(opts.Gateway.Host, strconv.Itoa(port))
 	l, e := natsListen("tcp", hp)
 	s.gatewayListenerErr = e
@@ -1575,7 +1575,7 @@ func (s *Server) addGatewayURL(urlStr string) bool {
 // Returns true if the URL has been removed, false otherwise.
 // Server lock held on entry
 func (s *Server) removeGatewayURL(urlStr string) bool {
-	if s.shutdown {
+	if s.isShuttingDown() {
 		return false
 	}
 	s.gateway.Lock()

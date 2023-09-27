@@ -773,10 +773,7 @@ func TestLameDuckMode(t *testing.T) {
 
 	// Check that if there is no client, server is shutdown
 	srvA.lameDuckMode()
-	srvA.mu.Lock()
-	shutdown := srvA.shutdown
-	srvA.mu.Unlock()
-	if !shutdown {
+	if !srvA.isShuttingDown() {
 		t.Fatalf("Server should have shutdown")
 	}
 

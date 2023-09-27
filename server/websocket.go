@@ -1050,6 +1050,10 @@ func (s *Server) wsConfigAuth(opts *WebsocketOpts) {
 }
 
 func (s *Server) startWebsocketServer() {
+	if s.isShuttingDown() {
+		return
+	}
+
 	sopts := s.getOpts()
 	o := &sopts.Websocket
 
@@ -1071,10 +1075,6 @@ func (s *Server) startWebsocketServer() {
 	// avoid the possibility of it being "intercepted".
 
 	s.mu.Lock()
-	if s.shutdown {
-		s.mu.Unlock()
-		return
-	}
 	// Do not check o.NoTLS here. If a TLS configuration is available, use it,
 	// regardless of NoTLS. If we don't have a TLS config, it means that the
 	// user has configured NoTLS because otherwise the server would have failed
@@ -1221,7 +1221,7 @@ func (s *Server) createWSClient(conn net.Conn, ws *websocket) *client {
 
 	s.mu.Lock()
 	if !s.isRunning() || s.ldm {
-		if s.shutdown {
+		if s.isShuttingDown() {
 			conn.Close()
 		}
 		s.mu.Unlock()

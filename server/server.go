@@ -132,7 +132,7 @@ type Server struct {
 	optsMu              sync.RWMutex
 	opts                *Options
 	running             atomic.Bool
-	shutdown            bool
+	shutdown            atomic.Bool
 	listener            net.Listener
 	listenerErr         error
 	gacc                *Account
@@ -2350,6 +2350,10 @@ func (s *Server) Start() {
 	s.startOCSPResponseCache()
 }
 
+func (s *Server) isShuttingDown() bool {
+	return s.shutdown.Load()
+}
+
 // Shutdown will shutdown the server instance by kicking out the AcceptLoop
 // and closing all associated clients.
 func (s *Server) Shutdown() {
@@ -2369,19 +2373,19 @@ func (s *Server) Shutdown() {
 	// eventing items associated with accounts.
 	s.shutdownEventing()
 
-	s.mu.Lock()
 	// Prevent issues with multiple calls.
-	if s.shutdown {
-		s.mu.Unlock()
+	if s.isShuttingDown() {
 		return
 	}
+
+	s.mu.Lock()
 	s.Noticef("Initiating Shutdown...")
 
 	accRes := s.accResolver
 
 	opts := s.getOpts()
 
-	s.shutdown = true
+	s.shutdown.Store(true)
 	s.running.Store(false)
 	s.grMu.Lock()
 	s.grRunning = false
@@ -2545,16 +2549,15 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 		}
 	}()
 
+	if s.isShuttingDown() {
+		return
+	}
+
 	// Snapshot server options.
 	opts := s.getOpts()
 
 	// Setup state that can enable shutdown
 	s.mu.Lock()
-	if s.shutdown {
-		s.mu.Unlock()
-		return
-	}
-
 	hp := net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port))
 	l, e := natsListen("tcp", hp)
 	s.listenerErr = e
@@ -2677,6 +2680,10 @@ func (s *Server) setInfoHostPort() error {
 
 // StartProfiler is called to enable dynamic profiling.
 func (s *Server) StartProfiler() {
+	if s.isShuttingDown() {
+		return
+	}
+
 	// Snapshot server options.
 	opts := s.getOpts()
 
@@ -2688,12 +2695,7 @@ func (s *Server) StartProfiler() {
 	}
 
 	s.mu.Lock()
-	if s.shutdown {
-		s.mu.Unlock()
-		return
-	}
 	hp := net.JoinHostPort(opts.Host, strconv.Itoa(port))
-
 	l, err := net.Listen("tcp", hp)
 
 	if err != nil {
@@ -2717,10 +2719,7 @@ func (s *Server) StartProfiler() {
 		// if this errors out, it's probably because the server is being shutdown
 		err := srv.Serve(l)
 		if err != nil {
-			s.mu.Lock()
-			shutdown := s.shutdown
-			s.mu.Unlock()
-			if !shutdown {
+			if !s.isShuttingDown() {
 				s.Fatalf("error starting profiler: %s", err)
 			}
 		}
@@ -2827,6 +2826,10 @@ func (s *Server) getMonitoringTLSConfig(_ *tls.ClientHelloInfo) (*tls.Config, er
 
 // Start the monitoring server
 func (s *Server) startMonitoring(secure bool) error {
+	if s.isShuttingDown() {
+		return nil
+	}
+
 	// Snapshot server options.
 	opts := s.getOpts()
 
@@ -2908,11 +2911,6 @@ func (s *Server) startMonitoring(secure bool) error {
 		ErrorLog:       log.New(&captureHTTPServerLog{s, "monitoring: "}, _EMPTY_, 0),
 	}
 	s.mu.Lock()
-	if s.shutdown {
-		httpListener.Close()
-		s.mu.Unlock()
-		return nil
-	}
 	s.http = httpListener
 	s.httpHandler = mux
 	s.monitoringServer = srv
@@ -2920,10 +2918,7 @@ func (s *Server) startMonitoring(secure bool) error {
 
 	go func() {
 		if err := srv.Serve(httpListener); err != nil {
-			s.mu.Lock()
-			shutdown := s.shutdown
-			s.mu.Unlock()
-			if !shutdown {
+			if !s.isShuttingDown() {
 				s.Fatalf("Error starting monitor on %q: %v", hp, err)
 			}
 		}
@@ -3065,7 +3060,7 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 		// clients would branch here (since server is not running). However,
 		// when a server was really running and has been shutdown, we must
 		// close this connection.
-		if s.shutdown {
+		if s.isShuttingDown() {
 			conn.Close()
 		}
 		s.mu.Unlock()
@@ -3972,7 +3967,7 @@ func (s *Server) isLameDuckMode() bool {
 func (s *Server) lameDuckMode() {
 	s.mu.Lock()
 	// Check if there is actually anything to do
-	if s.shutdown || s.ldm || s.listener == nil {
+	if s.isShuttingDown() || s.ldm || s.listener == nil {
 		s.mu.Unlock()
 		return
 	}
@@ -4023,7 +4018,7 @@ func (s *Server) lameDuckMode() {
 
 	s.mu.Lock()
 	// Need to recheck few things
-	if s.shutdown || len(s.clients) == 0 {
+	if s.isShuttingDown() || len(s.clients) == 0 {
 		s.mu.Unlock()
 		// If there is no client, we need to call Shutdown() to complete
 		// the LDMode. If server has been shutdown while lock was released,

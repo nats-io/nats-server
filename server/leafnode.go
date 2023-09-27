@@ -681,11 +681,11 @@ func (s *Server) startLeafNodeAcceptLoop() {
 		port = 0
 	}
 
-	s.mu.Lock()
-	if s.shutdown {
-		s.mu.Unlock()
+	if s.isShuttingDown() {
 		return
 	}
+
+	s.mu.Lock()
 	hp := net.JoinHostPort(opts.LeafNode.Host, strconv.Itoa(port))
 	l, e := natsListen("tcp", hp)
 	s.leafNodeListenerErr = e
@@ -878,7 +878,7 @@ func (s *Server) addLeafNodeURL(urlStr string) bool {
 func (s *Server) removeLeafNodeURL(urlStr string) bool {
 	// Don't need to do this if we are removing the route connection because
 	// we are shuting down...
-	if s.shutdown {
+	if s.isShuttingDown() {
 		return false
 	}
 	if s.leafURLsMap.removeUrl(urlStr) {
