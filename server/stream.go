@@ -246,8 +246,9 @@ type stream struct {
 	mirror *sourceInfo
 
 	// Sources
-	sources       map[string]*sourceInfo
-	sourceRetries map[string]*time.Timer
+	sources              map[string]*sourceInfo
+	sourceRetries        map[string]*time.Timer
+	sourcesConsumerSetup *time.Timer
 
 	// Indicates we have direct consumers.
 	directs int
@@ -821,6 +822,11 @@ func (mset *stream) setLeader(isLeader bool) error {
 			return err
 		}
 	} else {
+		// cancel timer to create the source consumers if not fired yet
+		if mset.sourcesConsumerSetup != nil {
+			mset.sourcesConsumerSetup.Stop()
+			mset.sourcesConsumerSetup = nil
+		}
 		// Stop responding to sync requests.
 		mset.stopClusterSubs()
 		// Unsubscribe from direct stream.
@@ -2389,7 +2395,7 @@ func (mset *stream) scheduleSetupMirrorConsumerRetryAsap() {
 	}
 	// To make *sure* that the next request will not fail, add a bit of buffer
 	// and some randomness.
-	next += time.Duration(rand.Intn(50)) + 10*time.Millisecond
+	next += time.Duration(rand.Intn(int(10*time.Millisecond))) + 10*time.Millisecond
 	time.AfterFunc(next, func() {
 		mset.mu.Lock()
 		mset.setupMirrorConsumer()
@@ -2736,7 +2742,7 @@ func (mset *stream) scheduleSetSourceConsumerRetryAsap(si *sourceInfo, seq uint6
 	}
 	// To make *sure* that the next request will not fail, add a bit of buffer
 	// and some randomness.
-	next += time.Duration(rand.Intn(50)) + 10*time.Millisecond
+	next += time.Duration(rand.Intn(int(10*time.Millisecond))) + 10*time.Millisecond
 	mset.scheduleSetSourceConsumerRetry(si.iname, seq, next, startTime)
 }
 
@@ -3295,16 +3301,9 @@ func (mset *stream) setStartingSequenceForSource(iName string, external *Externa
 	}
 }
 
-// Lock should be held.
-// This will do a reverse scan on startup or leader election
-// searching for the starting sequence number.
-// This can be slow in degenerative cases.
-// Lock should be held.
-func (mset *stream) startingSequenceForSources() {
-	if len(mset.cfg.Sources) == 0 {
-		return
-	}
-	// Always reset here.
+// lock should be held.
+// Resets the SourceInfo for all the sources
+func (mset *stream) resetSourceInfo() {
 	mset.sources = make(map[string]*sourceInfo)
 
 	for _, ssi := range mset.cfg.Sources {
@@ -3331,6 +3330,20 @@ func (mset *stream) startingSequenceForSources() {
 		}
 		mset.sources[ssi.iname] = si
 	}
+}
+
+// Lock should be held.
+// This will do a reverse scan on startup or leader election
+// searching for the starting sequence number.
+// This can be slow in degenerative cases.
+// Lock should be held.
+func (mset *stream) startingSequenceForSources() {
+	if len(mset.cfg.Sources) == 0 {
+		return
+	}
+
+	// Always reset here.
+	mset.resetSourceInfo()
 
 	var state StreamState
 	mset.store.FastState(&state)
@@ -3414,6 +3427,11 @@ func (mset *stream) setupSourceConsumers() error {
 		}
 	}
 
+	// If we are no longer the leader, give up
+	if !mset.isLeader() {
+		return nil
+	}
+
 	mset.startingSequenceForSources()
 
 	// Setup our consumers at the proper starting position.
@@ -3439,13 +3457,35 @@ func (mset *stream) subscribeToStream() error {
 	}
 	// Check if we need to setup mirroring.
 	if mset.cfg.Mirror != nil {
-		if err := mset.setupMirrorConsumer(); err != nil {
-			return err
+		// setup the initial mirror sourceInfo
+		mset.mirror = &sourceInfo{name: mset.cfg.Mirror.Name}
+		sfs := make([]string, len(mset.cfg.Mirror.SubjectTransforms))
+		trs := make([]*subjectTransform, len(mset.cfg.Mirror.SubjectTransforms))
+
+		for i, tr := range mset.cfg.Mirror.SubjectTransforms {
+			// will not fail as already checked before that the transform will work
+			subjectTransform, err := NewSubjectTransform(tr.Source, tr.Destination)
+			if err != nil {
+				mset.srv.Errorf("Unable to get transform for mirror consumer: %v", err)
+			}
+
+			sfs[i] = tr.Source
+			trs[i] = subjectTransform
 		}
+		mset.mirror.sfs = sfs
+		mset.mirror.trs = trs
+		// delay the actual mirror consumer creation for after a delay
+		mset.scheduleSetupMirrorConsumerRetryAsap()
 	} else if len(mset.cfg.Sources) > 0 {
-		if err := mset.setupSourceConsumers(); err != nil {
-			return err
-		}
+		// Setup the initial source infos for the sources
+		mset.resetSourceInfo()
+		// Delay the actual source consumer(s) creation(s) for after a delay
+
+		mset.sourcesConsumerSetup = time.AfterFunc(time.Duration(rand.Intn(int(10*time.Millisecond)))+10*time.Millisecond, func() {
+			mset.mu.Lock()
+			mset.setupSourceConsumers()
+			mset.mu.Unlock()
+		})
 	}
 	// Check for direct get access.
 	// We spin up followers for clustered streams in monitorStream().
