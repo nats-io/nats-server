@@ -2529,6 +2529,243 @@ func TestRoutePerAccountConnectRace(t *testing.T) {
 	}
 }
 
+func TestRoutePerAccountGossipWorks(t *testing.T) {
+	tmplA := `
+		port: -1
+		server_name: "A"
+		accounts {
+			A { users: [{user: "A", password: "pwd"}] }
+			B { users: [{user: "B", password: "pwd"}] }
+		}
+		cluster {
+			port: %d
+			name: "local"
+			accounts: ["A"]
+			%s
+		}
+	`
+	conf1 := createConfFile(t, []byte(fmt.Sprintf(tmplA, -1, _EMPTY_)))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	tmplBC := `
+		port: -1
+		server_name: "%s"
+		accounts {
+			A { users: [{user: "A", password: "pwd"}] }
+			B { users: [{user: "B", password: "pwd"}] }
+		}
+		cluster {
+			port: -1
+			name: "local"
+			%s
+			accounts: ["A"]
+		}
+	`
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(tmplBC, "B",
+		fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", o1.Cluster.Port))))
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	// Now connect s3 to s1 and make sure that s2 connects properly to s3.
+	conf3 := createConfFile(t, []byte(fmt.Sprintf(tmplBC, "C",
+		fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", o1.Cluster.Port))))
+	s3, _ := RunServerWithConfig(conf3)
+	defer s3.Shutdown()
+
+	checkClusterFormed(t, s1, s2, s3)
+
+	s3.Shutdown()
+	s2.Shutdown()
+	s1.Shutdown()
+
+	// Slightly different version where s2 is connecting to s1, while s1
+	// connects to s3 (and s3 does not solicit connections).
+
+	conf1 = createConfFile(t, []byte(fmt.Sprintf(tmplA, -1, _EMPTY_)))
+	s1, o1 = RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	conf2 = createConfFile(t, []byte(fmt.Sprintf(tmplBC, "B",
+		fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", o1.Cluster.Port))))
+	s2, _ = RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	// Start s3 first that will simply accept connections
+	conf3 = createConfFile(t, []byte(fmt.Sprintf(tmplBC, "C", _EMPTY_)))
+	s3, o3 := RunServerWithConfig(conf3)
+	defer s3.Shutdown()
+
+	// Now config reload s1 so that it points to s3.
+	reloadUpdateConfig(t, s1, conf1,
+		fmt.Sprintf(tmplA, o1.Cluster.Port, fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", o3.Cluster.Port)))
+
+	checkClusterFormed(t, s1, s2, s3)
+}
+
+func TestRoutePerAccountGossipWorksWithOldServerNotSeed(t *testing.T) {
+	tmplA := `
+		port: -1
+		server_name: "A"
+		accounts {
+			A { users: [{user: "A", password: "pwd"}] }
+			B { users: [{user: "B", password: "pwd"}] }
+		}
+		cluster {
+			port: %d
+			name: "local"
+			accounts: ["A"]
+		}
+	`
+	conf1 := createConfFile(t, []byte(fmt.Sprintf(tmplA, -1)))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	// Here, server "B" will have no pooling/accounts.
+	tmplB := `
+		port: -1
+		server_name: "B"
+		accounts {
+			A { users: [{user: "A", password: "pwd"}] }
+			B { users: [{user: "B", password: "pwd"}] }
+		}
+		cluster {
+			port: -1
+			name: "local"
+			routes: ["nats://127.0.0.1:%d"]
+			pool_size: -1
+		}
+	`
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(tmplB, o1.Cluster.Port)))
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	l := &captureErrorLogger{errCh: make(chan string, 100)}
+	s2.SetLogger(l, false, false)
+
+	// Now connect s3 to s1. Server s1 should not gossip to s2 information
+	// about pinned-account routes or extra routes from the pool.
+	tmplC := `
+		port: -1
+		server_name: "C"
+		accounts {
+			A { users: [{user: "A", password: "pwd"}] }
+			B { users: [{user: "B", password: "pwd"}] }
+		}
+		cluster {
+			port: -1
+			name: "local"
+			routes: ["nats://127.0.0.1:%d"]
+			accounts: ["A"]
+		}
+	`
+	conf3 := createConfFile(t, []byte(fmt.Sprintf(tmplC, o1.Cluster.Port)))
+	s3, _ := RunServerWithConfig(conf3)
+	defer s3.Shutdown()
+
+	checkClusterFormed(t, s1, s2, s3)
+
+	// We should not have had s2 try to create dedicated routes for "A" or "$SYS"
+	tm := time.NewTimer(time.Second)
+	defer tm.Stop()
+	for {
+		select {
+		case err := <-l.errCh:
+			if strings.Contains(err, "dedicated route") {
+				t.Fatalf("Server s2 should not have tried to create a dedicated route: %s", err)
+			}
+		case <-tm.C:
+			return
+		}
+	}
+}
+
+func TestRoutePerAccountGossipWorksWithOldServerSeed(t *testing.T) {
+	tmplA := `
+		port: -1
+		server_name: "A"
+		accounts {
+			A { users: [{user: "A", password: "pwd"}] }
+			B { users: [{user: "B", password: "pwd"}] }
+		}
+		cluster {
+			port: %d
+			name: "local"
+			pool_size: %d
+			%s
+		}
+	`
+	// Start with s1 being an "old" server, which does not support pooling/pinned-accounts.
+	conf1 := createConfFile(t, []byte(fmt.Sprintf(tmplA, -1, -1, _EMPTY_)))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	tmplBC := `
+		port: -1
+		server_name: "%s"
+		accounts {
+			A { users: [{user: "A", password: "pwd"}] }
+			B { users: [{user: "B", password: "pwd"}] }
+		}
+		cluster {
+			port: -1
+			name: "local"
+			pool_size: 3
+			routes: ["nats://127.0.0.1:%d"]
+			accounts: ["A"]
+		}
+	`
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(tmplBC, "B", o1.Cluster.Port)))
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	// Now connect s3 to s1 and make sure that s2 connects properly to s3.
+	conf3 := createConfFile(t, []byte(fmt.Sprintf(tmplBC, "C", o1.Cluster.Port)))
+	s3, _ := RunServerWithConfig(conf3)
+	defer s3.Shutdown()
+
+	checkClusterFormed(t, s1, s2, s3)
+
+	checkRoutes := func(s *Server, expected int) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+			if nr := s.NumRoutes(); nr != expected {
+				return fmt.Errorf("Server %q should have %v routes, got %v", s.Name(), expected, nr)
+			}
+			return nil
+		})
+	}
+	// Since s1 has no pooling/pinned-accounts, there should be only 2 routes,
+	// one to s2 and one to s3.
+	checkRoutes(s1, 2)
+	// s2 and s3 should have 1 route to s1 and 3(pool)+"A"+"$SYS" == 6
+	checkRoutes(s2, 6)
+	checkRoutes(s3, 6)
+
+	s1.Shutdown()
+
+	// The server s1 will now support pooling and accounts pinning.
+	// Restart the server s1 with the same cluster port otherwise
+	// s2/s3 would not be able to reconnect.
+	conf1 = createConfFile(t, []byte(fmt.Sprintf(tmplA, o1.Cluster.Port, 3, "accounts: [\"A\"]")))
+	s1, _ = RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+	// Make sure reconnect occurs. We should now have 5 routes.
+	checkClusterFormed(t, s1, s2, s3)
+	// Now all servers should have 3+2 to each other, so 10 total.
+	checkRoutes(s1, 10)
+	checkRoutes(s2, 10)
+	checkRoutes(s3, 10)
+}
+
 func TestRoutePoolPerAccountSubUnsubProtoParsing(t *testing.T) {
 	for _, test := range []struct {
 		name  string
@@ -2930,9 +3167,11 @@ func TestRoutePoolAndPerAccountOperatorMode(t *testing.T) {
 			return nil
 		})
 	}
-	// Route for account "apub" should be a dedicated route
+	// Route for accounts "apub" and "spub" should be a dedicated route
 	checkRoute(s1, apub, true)
 	checkRoute(s2, apub, true)
+	checkRoute(s1, spub, true)
+	checkRoute(s2, spub, true)
 	// Route for account "bpub" should not
 	checkRoute(s1, bpub, false)
 	checkRoute(s2, bpub, false)
@@ -2959,9 +3198,12 @@ func TestRoutePoolAndPerAccountOperatorMode(t *testing.T) {
 	// before doing the config reload on s2.
 	checkRoute(s1, bpub, true)
 	checkRoute(s2, bpub, true)
-	// Account "aoub" should still have its dedicated route
+	// Account "apub" should still have its dedicated route
 	checkRoute(s1, apub, true)
 	checkRoute(s2, apub, true)
+	// So the system account
+	checkRoute(s1, spub, true)
+	checkRoute(s2, spub, true)
 	// Let's complete the config reload on srvb
 	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl, "B", fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", o1.Cluster.Port),
 		fmt.Sprintf(",\"%s\"", bpub)))
