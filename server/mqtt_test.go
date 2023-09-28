@@ -4667,6 +4667,19 @@ func TestMQTTLockedSession(t *testing.T) {
 		t.Fatalf("account session manager not found")
 	}
 
+	// It is possible, however unlikely, to have received CONNACK while
+	// mqttProcessConnect is still running, and the session remains locked. Wait
+	// for it to finish.
+	stillLocked := true
+	for stillLocked {
+		asm.mu.RLock()
+		_, stillLocked = asm.sessLocked["sub"]
+		asm.mu.RUnlock()
+		if stillLocked {
+			time.Sleep(1 * time.Millisecond)
+		}
+	}
+
 	// Get the session for "sub"
 	cli := testMQTTGetClient(t, s, "sub")
 	sess := cli.mqtt.sess
