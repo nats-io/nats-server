@@ -520,19 +520,25 @@ func (s *Sublist) addToCache(subject string, sub *subscription) {
 
 // removeFromCache will remove the sub from any active cache entries.
 // Assumes write lock is held.
-func (s *Sublist) removeFromCache(subject string, sub *subscription) {
+func (s *Sublist) removeFromCache(subject string, _ *subscription) {
 	if s.cache == nil {
 		return
 	}
 	// If literal we can direct match.
 	if subjectIsLiteral(subject) {
-		delete(s.cache, subject)
+		if entry, ok := s.cache[subject]; ok {
+			s.cacheOrd.Remove(entry.elem)
+			delete(s.cache, subject)
+		}
 		return
 	}
 	// Wildcard here.
 	for key := range s.cache {
 		if matchLiteral(key, subject) {
-			delete(s.cache, key)
+			if entry, ok := s.cache[key]; ok {
+				s.cacheOrd.Remove(entry.elem)
+				delete(s.cache, key)
+			}
 		}
 	}
 }

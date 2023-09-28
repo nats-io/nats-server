@@ -420,6 +420,70 @@ func testSublistInvalidSubjectsInsert(t *testing.T, s *Sublist) {
 	}
 }
 
+func TestSublistLRUCache(t *testing.T) {
+	s := NewSublistWithCache()
+	extra := 1000
+
+	// Populate the sublist. Doing this does not implicitly
+	// populate the cache, so the cache size should be 0.
+	for i := 0; i < slCacheMax+extra; i++ {
+		s.Insert(newSub(fmt.Sprintf("a.b.c.%d", i)))
+	}
+	require_Equal(t, len(s.cache), 0)
+	require_Equal(t, s.cacheOrd.Len(), 0)
+
+	// Now try matching all of the entries in ascending
+	// order. This should mean that anything [n < extra]
+	// will get dropped, so the second loop will only try
+	// to hit entries in the range [n >= extra].
+	for i := 0; i < slCacheMax+extra; i++ {
+		require_NotEqual(t, s.Match(fmt.Sprintf("a.b.c.%d", i)), emptyResult)
+	}
+	for i := extra; i < slCacheMax+extra; i++ {
+		require_NotEqual(t, s.Match(fmt.Sprintf("a.b.c.%d", i)), emptyResult)
+	}
+
+	// We expect both the cache map and the linked list
+	// to be the same size and for the number of hits to
+	// exactly match the cache size, since we only tried
+	// to hit entries in the cached range.
+	require_Equal(t, len(s.cache), slCacheMax)
+	require_Equal(t, s.cacheOrd.Len(), slCacheMax)
+	require_Equal(t, s.cacheHits, slCacheMax)
+	for i := 0; i < extra; i++ {
+		_, ok := s.cache[fmt.Sprintf("a.b.c.%d", i)]
+		require_False(t, ok)
+	}
+	for i := extra; i < slCacheMax+extra; i++ {
+		_, ok := s.cache[fmt.Sprintf("a.b.c.%d", i)]
+		require_True(t, ok)
+	}
+
+	// Now we're going to try hitting an entry we know
+	// has been evicted. The first time, it should result
+	// in a cache miss but then populate the cache, so
+	// cacheHits should be the same as before.
+	subj := fmt.Sprintf("a.b.c.%d", 0)
+	require_NotEqual(t, s.Match(subj), emptyResult)
+	require_Equal(t, len(s.cache), slCacheMax)
+	require_Equal(t, s.cacheOrd.Len(), slCacheMax)
+	require_Equal(t, s.cacheHits, slCacheMax)
+
+	// On the second attempt, that same entry should now be
+	// present in the cache, so we'll get a hit and the number
+	// of cacheHits will be increased.
+	require_NotEqual(t, s.Match(subj), emptyResult)
+	require_Equal(t, len(s.cache), slCacheMax)
+	require_Equal(t, s.cacheOrd.Len(), slCacheMax)
+	require_Equal(t, s.cacheHits, slCacheMax+1)
+
+	// Now we'll remove that entry just to make sure the
+	// entry gets cleaned up properly.
+	s.removeFromCache(subj, nil)
+	require_Equal(t, len(s.cache), slCacheMax-1)
+	require_Equal(t, s.cacheOrd.Len(), slCacheMax-1)
+}
+
 func TestSublistCache(t *testing.T) {
 	s := NewSublistWithCache()
 
