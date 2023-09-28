@@ -105,7 +105,8 @@ func TestRouteConfig(t *testing.T) {
 			NoAdvertise:    true,
 			ConnectRetries: 2,
 		},
-		PidFile: "/tmp/nats-server/nats_cluster_test.pid",
+		PidFile:          "/tmp/nats-server/nats_cluster_test.pid",
+		authBlockDefined: true,
 	}
 
 	// Setup URLs

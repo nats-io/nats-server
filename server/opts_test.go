@@ -120,6 +120,7 @@ func TestConfigFile(t *testing.T) {
 		LameDuckDuration:      4 * time.Minute,
 		ConnectErrorReports:   86400,
 		ReconnectErrorReports: 5,
+		authBlockDefined:      true,
 	}
 
 	opts, err := ProcessConfigFile("./configs/test.conf")
@@ -132,13 +133,14 @@ func TestConfigFile(t *testing.T) {
 
 func TestTLSConfigFile(t *testing.T) {
 	golden := &Options{
-		ConfigFile:  "./configs/tls.conf",
-		Host:        "127.0.0.1",
-		Port:        4443,
-		Username:    "derek",
-		Password:    "foo",
-		AuthTimeout: 1.0,
-		TLSTimeout:  2.0,
+		ConfigFile:       "./configs/tls.conf",
+		Host:             "127.0.0.1",
+		Port:             4443,
+		Username:         "derek",
+		Password:         "foo",
+		AuthTimeout:      1.0,
+		TLSTimeout:       2.0,
+		authBlockDefined: true,
 	}
 	opts, err := ProcessConfigFile("./configs/tls.conf")
 	if err != nil {
@@ -283,6 +285,7 @@ func TestMergeOverrides(t *testing.T) {
 		LameDuckDuration:      4 * time.Minute,
 		ConnectErrorReports:   86400,
 		ReconnectErrorReports: 5,
+		authBlockDefined:      true,
 	}
 	fopts, err := ProcessConfigFile("./configs/test.conf")
 	if err != nil {
