@@ -1874,7 +1874,6 @@ func TestNoRaceJetStreamSuperClusterSources(t *testing.T) {
 			msg := fmt.Sprintf("R-MSG-%d", i+1)
 			for _, sname := range []string{"foo", "bar", "baz"} {
 				m := nats.NewMsg(sname)
-				m.Header.Set(nats.MsgIdHdr, sname+"-"+msg)
 				m.Data = []byte(msg)
 				if _, err := js.PublishMsg(m); err != nil {
 					t.Errorf("Unexpected publish error: %v", err)
@@ -1891,7 +1890,7 @@ func TestNoRaceJetStreamSuperClusterSources(t *testing.T) {
 	sc.clusterForName("C3").waitOnStreamLeader("$G", "MS2")
 	<-doneCh
 
-	checkFor(t, 15*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 15*time.Second, time.Second, func() error {
 		si, err := js2.StreamInfo("MS2")
 		if err != nil {
 			return err
