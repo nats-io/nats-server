@@ -4654,7 +4654,8 @@ func TestMQTTLockedSession(t *testing.T) {
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownServer(s)
 
-	ci := &mqttConnInfo{clientID: "sub", cleanSess: false}
+	subClientID := "sub"
+	ci := &mqttConnInfo{clientID: subClientID, cleanSess: false}
 	c, r := testMQTTConnect(t, ci, o.MQTT.Host, o.MQTT.Port)
 	defer c.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
@@ -4670,18 +4671,17 @@ func TestMQTTLockedSession(t *testing.T) {
 	// It is possible, however unlikely, to have received CONNACK while
 	// mqttProcessConnect is still running, and the session remains locked. Wait
 	// for it to finish.
-	for stillLocked := true; stillLocked; {
+	checkFor(t, 250*time.Millisecond, 10*time.Millisecond, func() error {
 		asm.mu.RLock()
-		_, stillLocked = asm.sessLocked["sub"]
-		asm.mu.RUnlock()
-
-		if stillLocked {
-			time.Sleep(1 * time.Millisecond)
+		defer asm.mu.RUnlock()
+		if _, stillLocked := asm.sessLocked[subClientID]; stillLocked {
+			return fmt.Errorf("session still locked")
 		}
-	}
+		return nil
+	})
 
 	// Get the session for "sub"
-	cli := testMQTTGetClient(t, s, "sub")
+	cli := testMQTTGetClient(t, s, subClientID)
 	sess := cli.mqtt.sess
 
 	// Pretend that the session above is locked.
