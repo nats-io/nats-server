@@ -3470,9 +3470,7 @@ func TestJetStreamClusterNoR1AssetsDuringLameDuck(t *testing.T) {
 	}()
 	defer close(qch)
 
-	s.mu.RLock()
-	gacc := s.gacc
-	s.mu.RUnlock()
+	gacc := s.GlobalAccount()
 	if gacc == nil {
 		t.Fatalf("No global account")
 	}
