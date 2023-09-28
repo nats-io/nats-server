@@ -3225,6 +3225,7 @@ func (fs *fileStore) enforceMsgPerSubjectLimit() {
 	// We had an issue with a use case where psim (and hence fss) were correct but idx was not and was not properly being caught.
 	// So do a quick sanity check here. If we detect a skew do a rebuild then re-check.
 	if numMsgs != fs.state.Msgs {
+		fs.warn("Detected skew in subject-based total (%d) vs raw total (%d), rebuilding", numMsgs, fs.state.Msgs)
 		// Clear any global subject state.
 		fs.psim = make(map[string]*psi)
 		for _, mb := range fs.blks {
