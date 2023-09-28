@@ -452,7 +452,7 @@ func TestSublistCache(t *testing.T) {
 	verifyLen(r.psubs, 0, t)
 
 	for i := 0; i < 2*slCacheMax; i++ {
-		s.Match(fmt.Sprintf("foo-%d\n", i))
+		s.Match(fmt.Sprintf("foo-%d", i))
 	}
 
 	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {

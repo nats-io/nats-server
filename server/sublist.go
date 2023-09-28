@@ -15,6 +15,7 @@ package server
 
 import (
 	"bytes"
+	"container/list"
 	"errors"
 	"strings"
 	"sync"
@@ -46,9 +47,7 @@ var (
 
 const (
 	// cacheMax is used to bound limit the frontend cache
-	slCacheMax = 1024
-	// If we run a sweeper we will drain to this count.
-	slCacheSweep = 256
+	slCacheMax = 10240
 	// plistMin is our lower bounds to create a fast plist for Match.
 	plistMin = 256
 )
@@ -57,6 +56,18 @@ const (
 type SublistResult struct {
 	psubs []*subscription
 	qsubs [][]*subscription // don't make this a map, too expensive to iterate
+}
+
+type sublistCacheEntry struct {
+	*SublistResult
+	subj string
+	elem *list.Element // Refers to self for cacheOrd tracking
+}
+
+var sublistCachePool = &sync.Pool{
+	New: func() any {
+		return &sublistCacheEntry{}
+	},
 }
 
 // A Sublist stores and efficiently retrieves subscriptions.
@@ -68,8 +79,8 @@ type Sublist struct {
 	inserts   uint64
 	removes   uint64
 	root      *level
-	cache     map[string]*SublistResult
-	ccSweep   int32
+	cache     map[string]*sublistCacheEntry
+	cacheOrd  *list.List // keep subjects in order of access
 	notify    *notifyMaps
 	count     uint32
 }
@@ -114,7 +125,11 @@ func newLevel() *level {
 // NewSublist will create a default sublist with caching enabled per the flag.
 func NewSublist(enableCache bool) *Sublist {
 	if enableCache {
-		return &Sublist{root: newLevel(), cache: make(map[string]*SublistResult)}
+		return &Sublist{
+			root:     newLevel(),
+			cache:    make(map[string]*sublistCacheEntry),
+			cacheOrd: list.New(),
+		}
 	}
 	return &Sublist{root: newLevel()}
 }
@@ -490,13 +505,15 @@ func (s *Sublist) addToCache(subject string, sub *subscription) {
 	// If literal we can direct match.
 	if subjectIsLiteral(subject) {
 		if r := s.cache[subject]; r != nil {
-			s.cache[subject] = r.addSubToResult(sub)
+			r.SublistResult = r.addSubToResult(sub)
+			s.cacheOrd.MoveToFront(r.elem)
 		}
 		return
 	}
 	for key, r := range s.cache {
 		if matchLiteral(key, subject) {
-			s.cache[key] = r.addSubToResult(sub)
+			r.SublistResult = r.addSubToResult(sub)
+			s.cacheOrd.MoveToFront(r.elem)
 		}
 	}
 }
@@ -547,7 +564,10 @@ func (s *Sublist) match(subject string, doLock bool) *SublistResult {
 	}
 	if ok {
 		atomic.AddUint64(&s.cacheHits, 1)
-		return r
+		s.Lock()
+		defer s.Unlock()
+		s.cacheOrd.MoveToFront(r.elem)
+		return r.SublistResult
 	}
 
 	tsa := [32]string{}
@@ -572,54 +592,59 @@ func (s *Sublist) match(subject string, doLock bool) *SublistResult {
 
 	// Get result from the main structure and place into the shared cache.
 	// Hold the read lock to avoid race between match and store.
-	var n int
-
 	if doLock {
 		if cacheEnabled {
 			s.Lock()
+			defer s.Unlock()
 		} else {
 			s.RLock()
+			defer s.RUnlock()
 		}
 	}
 
 	matchLevel(s.root, tokens, result)
 	// Check for empty result.
 	if len(result.psubs) == 0 && len(result.qsubs) == 0 {
-		result = emptyResult
+		return emptyResult
 	}
-	if cacheEnabled {
-		s.cache[subject] = result
-		n = len(s.cache)
-	}
-	if doLock {
-		if cacheEnabled {
-			s.Unlock()
-		} else {
-			s.RUnlock()
+	if cacheEnabled && result != emptyResult {
+		if r, ok := s.cache[subject]; ok {
+			// This is a cache hit, so just move up the element to the top
+			// of the cache ordering.
+			s.cacheOrd.MoveToFront(r.elem)
+			return r.SublistResult
 		}
-	}
 
-	// Reduce the cache count if we have exceeded our set maximum.
-	if cacheEnabled && n > slCacheMax && atomic.CompareAndSwapInt32(&s.ccSweep, 0, 1) {
-		go s.reduceCacheCount()
+		// We have no cache entry for this item yet so we'll add one.
+		entry := sublistCachePool.Get().(*sublistCacheEntry)
+		entry.SublistResult = result
+		entry.subj = subject
+
+		// If we've reached the maximum cache size then there's no point in
+		// popping the last element just to push a new one, instead we'll just
+		// try to reuse it.
+		if last := s.cacheOrd.Back(); last != nil && len(s.cache) >= slCacheMax {
+			// Whatever the last cache entry referred to, remove it.
+			delete(s.cache, last.Value.(*sublistCacheEntry).subj)
+
+			// Now we'll overwrite the ordering entry with this entry instead,
+			// we'll also move it up to the front of the list as it is a fresh
+			// entry.
+			last.Value = entry
+			entry.elem = last
+			s.cacheOrd.MoveToFront(last)
+			s.cache[subject] = entry
+			return entry.SublistResult
+		}
+
+		// If we have reached this point then we don't have a cache entry for
+		// this item but we also haven't reached the max cache size either, so
+		// we'll just add a new item by pushing it to the front of the cache.
+		entry.elem = s.cacheOrd.PushFront(entry)
+		s.cache[subject] = entry
 	}
 
 	return result
-}
-
-// Remove entries in the cache until we are under the maximum.
-// TODO(dlc) this could be smarter now that its not inline.
-func (s *Sublist) reduceCacheCount() {
-	defer atomic.StoreInt32(&s.ccSweep, 0)
-	// If we are over the cache limit randomly drop until under the limit.
-	s.Lock()
-	for key := range s.cache {
-		delete(s.cache, key)
-		if len(s.cache) <= slCacheSweep {
-			break
-		}
-	}
-	s.Unlock()
 }
 
 // Helper function for auto-expanding remote qsubs.
@@ -841,7 +866,7 @@ func (s *Sublist) RemoveBatch(subs []*subscription) error {
 	// Turn caching back on here.
 	atomic.AddUint64(&s.genid, 1)
 	if wasEnabled {
-		s.cache = make(map[string]*SublistResult)
+		s.cache = make(map[string]*sublistCacheEntry)
 	}
 	return err
 }
