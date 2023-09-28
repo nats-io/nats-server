@@ -1239,8 +1239,8 @@ func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) 
 		// If we have defined a system account here check to see if its just us and the $G account.
 		// We would do this to add user/pass to the system account. If this is the case add in
 		// no-auth-user for $G.
-		// Only do this if non-operator mode.
-		if len(opts.TrustedOperators) == 0 && numAccounts == 2 && opts.NoAuthUser == _EMPTY_ {
+		// Only do this if non-operator mode and we did not have an authorization block defined.
+		if len(opts.TrustedOperators) == 0 && numAccounts == 2 && opts.NoAuthUser == _EMPTY_ && !opts.authBlockDefined {
 			// If we come here from config reload, let's not recreate the fake user name otherwise
 			// it will cause currently clients to be disconnected.
 			uname := s.sysAccOnlyNoAuthUser
