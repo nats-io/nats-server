@@ -4670,11 +4670,11 @@ func TestMQTTLockedSession(t *testing.T) {
 	// It is possible, however unlikely, to have received CONNACK while
 	// mqttProcessConnect is still running, and the session remains locked. Wait
 	// for it to finish.
-	stillLocked := true
-	for stillLocked {
+	for stillLocked := true; stillLocked; {
 		asm.mu.RLock()
 		_, stillLocked = asm.sessLocked["sub"]
 		asm.mu.RUnlock()
+
 		if stillLocked {
 			time.Sleep(1 * time.Millisecond)
 		}
