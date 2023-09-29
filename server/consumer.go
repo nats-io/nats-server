@@ -2493,7 +2493,7 @@ func (o *consumer) infoWithSnap(snap bool) *ConsumerInfo {
 func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 	o.mu.Lock()
 	mset := o.mset
-	if mset == nil || mset.srv == nil {
+	if o.closed || mset == nil || mset.srv == nil {
 		o.mu.Unlock()
 		return nil
 	}
