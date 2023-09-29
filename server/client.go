@@ -3292,9 +3292,11 @@ func (c *client) stalledWait(producer *client) {
 	c.mu.Unlock()
 	defer c.mu.Lock()
 
+	t := time.NewTimer(ttl)
+	defer t.Stop()
 	select {
 	case <-stall:
-	case <-time.After(ttl):
+	case <-t.C:
 		producer.Debugf("Timed out of fast producer stall (%v)", ttl)
 	}
 }

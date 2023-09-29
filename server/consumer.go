@@ -3707,8 +3707,10 @@ func (o *consumer) processInboundAcks(qch chan struct{}) {
 	var ackFloorCheck = time.Minute + delta
 
 	for {
+		t := time.NewTimer(ackFloorCheck)
 		select {
 		case <-o.ackMsgs.ch:
+			t.Stop()
 			acks := o.ackMsgs.pop()
 			for _, ack := range acks {
 				o.processAck(ack.subject, ack.reply, ack.hdr, ack.msg)
@@ -3719,11 +3721,13 @@ func (o *consumer) processInboundAcks(qch chan struct{}) {
 			if hasInactiveThresh {
 				o.suppressDeletion()
 			}
-		case <-time.After(ackFloorCheck):
+		case <-t.C:
 			o.checkAckFloor()
 		case <-qch:
+			t.Stop()
 			return
 		case <-s.quitCh:
+			t.Stop()
 			return
 		}
 	}
