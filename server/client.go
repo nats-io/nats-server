@@ -3775,10 +3775,15 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 	genidAddr := &acc.sl.genid
 
 	// Check pub permissions
-	if c.perms != nil && (c.perms.pub.allow != nil || c.perms.pub.deny != nil) && !c.pubAllowedFullCheck(string(c.pa.subject), true, true) {
-		c.mu.Unlock()
-		c.pubPermissionViolation(c.pa.subject)
-		return false, true
+	if c.perms != nil && (c.perms.pub.allow != nil || c.perms.pub.deny != nil) {
+		switch {
+		case !c.pubAllowedFullCheck(string(c.pa.subject), true, true):
+			fallthrough
+		case len(c.pa.reply) > 0 && !c.pubAllowedFullCheck(string(c.pa.reply), true, true):
+			c.mu.Unlock()
+			c.pubPermissionViolation(c.pa.subject)
+			return false, true
+		}
 	}
 	c.mu.Unlock()
 
