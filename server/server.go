@@ -3608,22 +3608,28 @@ func (s *Server) String() string {
 
 type pprofLabels map[string]string
 
+func setGoRoutineLabels(tags ...pprofLabels) {
+	var labels []string
+	for _, m := range tags {
+		for k, v := range m {
+			labels = append(labels, k, v)
+		}
+	}
+	if len(labels) > 0 {
+		pprof.SetGoroutineLabels(
+			pprof.WithLabels(context.Background(), pprof.Labels(labels...)),
+		)
+	}
+}
+
 func (s *Server) startGoRoutine(f func(), tags ...pprofLabels) bool {
 	var started bool
 	s.grMu.Lock()
 	defer s.grMu.Unlock()
 	if s.grRunning {
-		var labels []string
-		for _, m := range tags {
-			for k, v := range m {
-				labels = append(labels, k, v)
-			}
-		}
 		s.grWG.Add(1)
 		go func() {
-			pprof.SetGoroutineLabels(
-				pprof.WithLabels(context.Background(), pprof.Labels(labels...)),
-			)
+			setGoRoutineLabels(tags...)
 			f()
 		}()
 		started = true
