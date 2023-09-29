@@ -1255,15 +1255,32 @@ func (o *consumer) setLeader(isLeader bool) {
 		// Snapshot initial info.
 		o.infoWithSnap(true)
 
+		// These are the labels we will use to annotate our goroutines.
+		labels := pprofLabels{
+			"type":     "consumer",
+			"account":  mset.accName(),
+			"stream":   mset.name(),
+			"consumer": o.name,
+		}
+
 		// Now start up Go routine to deliver msgs.
-		go o.loopAndGatherMsgs(qch)
+		go func() {
+			setGoRoutineLabels(labels)
+			o.loopAndGatherMsgs(qch)
+		}()
 
 		// Now start up Go routine to process acks.
-		go o.processInboundAcks(qch)
+		go func() {
+			setGoRoutineLabels(labels)
+			o.processInboundAcks(qch)
+		}()
 
 		if pullMode {
 			// Now start up Go routine to process inbound next message requests.
-			go o.processInboundNextMsgReqs(qch)
+			go func() {
+				setGoRoutineLabels(labels)
+				o.processInboundNextMsgReqs(qch)
+			}()
 		}
 
 		// If we are R>1 spin up our proposal loop.
@@ -1272,7 +1289,10 @@ func (o *consumer) setLeader(isLeader bool) {
 			// They must be on server versions >= 2.7.1
 			o.checkAndSetPendingRequestsOk()
 			o.checkPendingRequests()
-			go o.loopAndForwardProposals(qch)
+			go func() {
+				setGoRoutineLabels(labels)
+				o.loopAndForwardProposals(qch)
+			}()
 		}
 
 	} else {

@@ -2635,9 +2635,10 @@ func (mset *stream) setupMirrorConsumer() error {
 				if !mset.srv.startGoRoutine(
 					func() { mset.processMirrorMsgs(mirror, &ready) },
 					pprofLabels{
-						"type":    "mirror",
-						"account": mset.acc.Name,
-						"stream":  mset.cfg.Name,
+						"type":     "mirror",
+						"account":  mset.acc.Name,
+						"stream":   mset.cfg.Name,
+						"consumer": mirror.cname,
 					},
 				) {
 					ready.Done()
@@ -2965,9 +2966,10 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64, startTime time.T
 					if !mset.srv.startGoRoutine(
 						func() { mset.processSourceMsgs(si, &ready) },
 						pprofLabels{
-							"type":    "source",
-							"account": mset.acc.Name,
-							"stream":  mset.cfg.Name,
+							"type":     "source",
+							"account":  mset.acc.Name,
+							"stream":   mset.cfg.Name,
+							"consumer": si.cname,
 						},
 					) {
 						ready.Done()
