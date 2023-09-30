@@ -117,9 +117,11 @@ type jetStream struct {
 	// Some bools regarding general state.
 	metaRecovering bool
 	standAlone     bool
-	disabled       bool
 	oos            bool
 	shuttingDown   bool
+
+	// Atomic versions
+	disabled atomic.Bool
 }
 
 type remoteUsage struct {
@@ -372,9 +374,7 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 	}
 	s.gcbMu.Unlock()
 
-	s.mu.Lock()
-	s.js = js
-	s.mu.Unlock()
+	s.js.Store(js)
 
 	// FIXME(dlc) - Allow memory only operation?
 	if stat, err := os.Stat(cfg.StoreDir); os.IsNotExist(err) {
@@ -530,10 +530,7 @@ func (s *Server) setupJetStreamExports() {
 }
 
 func (s *Server) jetStreamOOSPending() (wasPending bool) {
-	s.mu.Lock()
-	js := s.js
-	s.mu.Unlock()
-	if js != nil {
+	if js := s.getJetStream(); js != nil {
 		js.mu.Lock()
 		wasPending = js.oos
 		js.oos = true
@@ -543,13 +540,8 @@ func (s *Server) jetStreamOOSPending() (wasPending bool) {
 }
 
 func (s *Server) setJetStreamDisabled() {
-	s.mu.Lock()
-	js := s.js
-	s.mu.Unlock()
-	if js != nil {
-		js.mu.Lock()
-		js.disabled = true
-		js.mu.Unlock()
+	if js := s.getJetStream(); js != nil {
+		js.disabled.Store(true)
 	}
 }
 
@@ -738,16 +730,15 @@ func (s *Server) configAllJetStreamAccounts() error {
 	// a non-default system account.
 	s.checkJetStreamExports()
 
-	// Snapshot into our own list. Might not be needed.
-	s.mu.Lock()
 	// Bail if server not enabled. If it was enabled and a reload turns it off
 	// that will be handled elsewhere.
-	js := s.js
+	js := s.getJetStream()
 	if js == nil {
-		s.mu.Unlock()
 		return nil
 	}
 
+	// Snapshot into our own list. Might not be needed.
+	s.mu.RLock()
 	if s.sys != nil {
 		// clustered stream removal will perform this cleanup as well
 		// this is mainly for initial cleanup
@@ -764,12 +755,12 @@ func (s *Server) configAllJetStreamAccounts() error {
 	}
 
 	var jsAccounts []*Account
-	s.accounts.Range(func(k, v interface{}) bool {
+	s.accounts.Range(func(k, v any) bool {
 		jsAccounts = append(jsAccounts, v.(*Account))
 		return true
 	})
 	accounts := &s.accounts
-	s.mu.Unlock()
+	s.mu.RUnlock()
 
 	// Process any jetstream enabled accounts here. These will be accounts we are
 	// already aware of at startup etc.
@@ -809,9 +800,7 @@ func (js *jetStream) isEnabled() bool {
 	if js == nil {
 		return false
 	}
-	js.mu.RLock()
-	defer js.mu.RUnlock()
-	return !js.disabled
+	return !js.disabled.Load()
 }
 
 // Mark that we will be in standlone mode.
@@ -821,9 +810,9 @@ func (js *jetStream) setJetStreamStandAlone(isStandAlone bool) {
 	}
 	js.mu.Lock()
 	defer js.mu.Unlock()
-	js.standAlone = isStandAlone
-
-	if isStandAlone {
+	if js.standAlone = isStandAlone; js.standAlone {
+		// Update our server atomic.
+		js.srv.isMetaLeader.Store(true)
 		js.accountPurge, _ = js.srv.systemSubscribe(JSApiAccountPurge, _EMPTY_, false, nil, js.srv.jsLeaderAccountPurgeRequest)
 	} else if js.accountPurge != nil {
 		js.srv.sysUnsubscribe(js.accountPurge)
@@ -832,11 +821,7 @@ func (js *jetStream) setJetStreamStandAlone(isStandAlone bool) {
 
 // JetStreamEnabled reports if jetstream is enabled for this server.
 func (s *Server) JetStreamEnabled() bool {
-	var js *jetStream
-	s.mu.RLock()
-	js = s.js
-	s.mu.RUnlock()
-	return js.isEnabled()
+	return s.getJetStream().isEnabled()
 }
 
 // JetStreamEnabledForDomain will report if any servers have JetStream enabled within this domain.
@@ -909,10 +894,7 @@ func (js *jetStream) isShuttingDown() bool {
 
 // Shutdown jetstream for this server.
 func (s *Server) shutdownJetStream() {
-	s.mu.RLock()
-	js := s.js
-	s.mu.RUnlock()
-
+	js := s.getJetStream()
 	if js == nil {
 		return
 	}
@@ -951,9 +933,7 @@ func (s *Server) shutdownJetStream() {
 		a.removeJetStream()
 	}
 
-	s.mu.Lock()
-	s.js = nil
-	s.mu.Unlock()
+	s.js.Store(nil)
 
 	js.mu.Lock()
 	js.accounts = nil
@@ -994,23 +974,20 @@ func (s *Server) shutdownJetStream() {
 // created a dynamic configuration. A copy is returned.
 func (s *Server) JetStreamConfig() *JetStreamConfig {
 	var c *JetStreamConfig
-	s.mu.Lock()
-	if s.js != nil {
-		copy := s.js.config
+	if js := s.getJetStream(); js != nil {
+		copy := js.config
 		c = &(copy)
 	}
-	s.mu.Unlock()
 	return c
 }
 
 // StoreDir returns the current JetStream directory.
 func (s *Server) StoreDir() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.js == nil {
+	js := s.getJetStream()
+	if js == nil {
 		return _EMPTY_
 	}
-	return s.js.config.StoreDir
+	return js.config.StoreDir
 }
 
 // JetStreamNumAccounts returns the number of enabled accounts this server is tracking.
@@ -1036,10 +1013,7 @@ func (s *Server) JetStreamReservedResources() (int64, int64, error) {
 }
 
 func (s *Server) getJetStream() *jetStream {
-	s.mu.RLock()
-	js := s.js
-	s.mu.RUnlock()
-	return js
+	return s.js.Load()
 }
 
 func (a *Account) assignJetStreamLimits(limits map[string]JetStreamAccountLimits) {

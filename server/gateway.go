@@ -1128,8 +1128,8 @@ func (c *client) processGatewayInfo(info *Info) {
 		// connect events to switch those accounts into interest only mode.
 		s.mu.Lock()
 		s.ensureGWsInterestOnlyForLeafNodes()
-		js := s.js
 		s.mu.Unlock()
+		js := s.js.Load()
 
 		// If running in some tests, maintain the original behavior.
 		if gwDoNotForceInterestOnlyMode && js != nil {

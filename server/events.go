@@ -875,7 +875,7 @@ func (s *Server) sendStatsz(subj string) {
 	m.Stats.ActiveServers = len(s.sys.servers) + 1
 
 	// JetStream
-	if js := s.js; js != nil {
+	if js := s.js.Load(); js != nil {
 		jStat := &JetStreamVarz{}
 		s.mu.RUnlock()
 		js.mu.RLock()

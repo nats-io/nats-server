@@ -1465,14 +1465,14 @@ func (s *Server) Varz(varzOpts *VarzOptions) (*Varz, error) {
 	// We want to do that outside of the lock.
 	pse.ProcUsage(&pcpu, &rss, &vss)
 
-	s.mu.Lock()
-	js := s.js
+	s.mu.RLock()
 	// We need to create a new instance of Varz (with no reference
 	// whatsoever to anything stored in the server) since the user
 	// has access to the returned value.
 	v := s.createVarz(pcpu, rss)
-	s.mu.Unlock()
-	if js != nil {
+	s.mu.RUnlock()
+
+	if js := s.getJetStream(); js != nil {
 		s.updateJszVarz(js, &v.JetStream, true)
 	}
 
@@ -1798,7 +1798,6 @@ func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
 	// Use server lock to create/update the server's varz object.
 	s.mu.Lock()
 	var created bool
-	js := s.js
 	s.httpReqStats[VarzPath]++
 	if s.varz == nil {
 		s.varz = s.createVarz(pcpu, rss)
@@ -1809,19 +1808,20 @@ func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	// Since locking is jetStream -> Server, need to update jetstream
 	// varz outside of server lock.
-	if js != nil {
+
+	if js := s.getJetStream(); js != nil {
 		var v JetStreamVarz
 		// Work on stack variable
 		s.updateJszVarz(js, &v, created)
 		// Now update server's varz
-		s.mu.Lock()
+		s.mu.RLock()
 		sv := &s.varz.JetStream
 		if created {
 			sv.Config = v.Config
 		}
 		sv.Stats = v.Stats
 		sv.Meta = v.Meta
-		s.mu.Unlock()
+		s.mu.RUnlock()
 	}
 
 	// Do the marshaling outside of server lock, but under varzMu lock.
@@ -2835,10 +2835,10 @@ func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optCfg,
 	}
 	jsa.mu.RUnlock()
 
-	if optStreams {
+	if js := s.getJetStream(); js != nil && optStreams {
 		for _, stream := range streams {
 			rgroup := stream.raftGroup()
-			ci := s.js.clusterInfo(rgroup)
+			ci := js.clusterInfo(rgroup)
 			var cfg *StreamConfig
 			if optCfg {
 				c := stream.config()
@@ -2884,7 +2884,8 @@ func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optCfg,
 }
 
 func (s *Server) JszAccount(opts *JSzOptions) (*AccountDetail, error) {
-	if s.js == nil {
+	js := s.getJetStream()
+	if js == nil {
 		return nil, fmt.Errorf("jetstream not enabled")
 	}
 	acc := opts.Account
@@ -2892,9 +2893,9 @@ func (s *Server) JszAccount(opts *JSzOptions) (*AccountDetail, error) {
 	if !ok {
 		return nil, fmt.Errorf("account %q not found", acc)
 	}
-	s.js.mu.RLock()
-	jsa, ok := s.js.accounts[account.(*Account).Name]
-	s.js.mu.RUnlock()
+	js.mu.RLock()
+	jsa, ok := js.accounts[account.(*Account).Name]
+	js.mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("account %q not jetstream enabled", acc)
 	}
@@ -2916,7 +2917,7 @@ func (s *Server) raftNodeToClusterInfo(node RaftNode) *ClusterInfo {
 		Peers: peerList,
 		node:  node,
 	}
-	return s.js.clusterInfo(group)
+	return s.getJetStream().clusterInfo(group)
 }
 
 // Jsz returns a Jsz structure containing information about JetStream.

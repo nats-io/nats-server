@@ -137,7 +137,8 @@ type Server struct {
 	listenerErr         error
 	gacc                *Account
 	sys                 *internal
-	js                  *jetStream
+	js                  atomic.Pointer[jetStream]
+	isMetaLeader        atomic.Bool
 	accounts            sync.Map
 	tmpAccounts         sync.Map // Temporarily stores accounts that are being built
 	activeAccounts      int32

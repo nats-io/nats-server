@@ -2314,14 +2314,15 @@ func (s *Server) peerSetToNames(ps []string) []string {
 // looks up the peer id for a given server name. Cluster and domain name are optional filter criteria
 func (s *Server) nameToPeer(js *jetStream, serverName, clusterName, domainName string) string {
 	js.mu.RLock()
-	cc := js.cluster
 	defer js.mu.RUnlock()
-	for _, p := range cc.meta.Peers() {
-		si, ok := s.nodeToInfo.Load(p.ID)
-		if ok && si.(nodeInfo).name == serverName {
-			if clusterName == _EMPTY_ || clusterName == si.(nodeInfo).cluster {
-				if domainName == _EMPTY_ || domainName == si.(nodeInfo).domain {
-					return p.ID
+	if cc := js.cluster; cc != nil {
+		for _, p := range cc.meta.Peers() {
+			si, ok := s.nodeToInfo.Load(p.ID)
+			if ok && si.(nodeInfo).name == serverName {
+				if clusterName == _EMPTY_ || clusterName == si.(nodeInfo).cluster {
+					if domainName == _EMPTY_ || domainName == si.(nodeInfo).domain {
+						return p.ID
+					}
 				}
 			}
 		}
@@ -4217,11 +4218,11 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 			}
 			// We have a consumer assignment.
 			js.mu.RLock()
-
-			var node RaftNode
-			var leaderNotPartOfGroup bool
-			var isMember bool
-
+			var (
+				node                 RaftNode
+				leaderNotPartOfGroup bool
+				isMember             bool
+			)
 			rg := ca.Group
 			if rg != nil && rg.isMember(ourID) {
 				isMember = true
@@ -4233,6 +4234,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 				}
 			}
 			js.mu.RUnlock()
+
 			// Check if we should ignore all together.
 			if node == nil {
 				// We have been assigned but have not created a node yet. If we are a member return

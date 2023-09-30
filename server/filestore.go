@@ -4729,29 +4729,30 @@ func (fs *fileStore) syncBlocks() {
 			mb.mu.Unlock()
 			continue
 		}
+		// See if we can close FDs due to being idle.
+		if mb.mfd != nil && mb.sinceLastWriteActivity() > closeFDsIdle {
+			mb.dirtyCloseWithRemove(false)
+		}
+		// Check if we need to sync. We will not hold lock during actual sync.
+		var fn string
 		if mb.needSync {
 			// Flush anything that may be pending.
 			if mb.pendingWriteSizeLocked() > 0 {
 				mb.flushPendingMsgsLocked()
 			}
-			if mb.mfd != nil {
-				mb.mfd.Sync()
-			} else {
-				fd, err := os.OpenFile(mb.mfn, os.O_RDWR, defaultFilePerms)
-				if err != nil {
-					mb.mu.Unlock()
-					continue
-				}
+			fn = mb.mfn
+			mb.needSync = false
+		}
+		mb.mu.Unlock()
+
+		// Check if we need to sync.
+		// This is done not holding any locks.
+		if fn != _EMPTY_ {
+			if fd, _ := os.OpenFile(fn, os.O_RDWR, defaultFilePerms); fd != nil {
 				fd.Sync()
 				fd.Close()
 			}
-			mb.needSync = false
 		}
-		// See if we can close FDs due to being idle.
-		if mb.mfd != nil && mb.sinceLastWriteActivity() > closeFDsIdle {
-			mb.dirtyCloseWithRemove(false)
-		}
-		mb.mu.Unlock()
 	}
 
 	fs.mu.Lock()
