@@ -202,10 +202,7 @@ func (s *Server) getJetStreamCluster() (*jetStream, *jetStreamCluster) {
 		return nil, nil
 	}
 
-	s.mu.RLock()
-	js := s.js
-	s.mu.RUnlock()
-
+	js := s.getJetStream()
 	if js == nil {
 		return nil, nil
 	}
@@ -223,13 +220,7 @@ func (s *Server) JetStreamIsClustered() bool {
 }
 
 func (s *Server) JetStreamIsLeader() bool {
-	js := s.getJetStream()
-	if js == nil {
-		return false
-	}
-	js.mu.RLock()
-	defer js.mu.RUnlock()
-	return js.cluster.isLeader()
+	return s.isMetaLeader.Load()
 }
 
 func (s *Server) JetStreamIsCurrent() bool {
@@ -237,9 +228,20 @@ func (s *Server) JetStreamIsCurrent() bool {
 	if js == nil {
 		return false
 	}
+	// Grab what we need and release js lock.
 	js.mu.RLock()
-	defer js.mu.RUnlock()
-	return js.cluster.isCurrent()
+	var meta RaftNode
+	cc := js.cluster
+	if cc != nil {
+		meta = cc.meta
+	}
+	js.mu.RUnlock()
+
+	if cc == nil {
+		// Non-clustered mode
+		return true
+	}
+	return meta.Current()
 }
 
 func (s *Server) JetStreamSnapshotMeta() error {
@@ -383,19 +385,6 @@ func (cc *jetStreamCluster) isLeader() bool {
 		return true
 	}
 	return cc.meta != nil && cc.meta.Leader()
-}
-
-// isCurrent will determine if this node is a leader or an up to date follower.
-// Read lock should be held.
-func (cc *jetStreamCluster) isCurrent() bool {
-	if cc == nil {
-		// Non-clustered mode
-		return true
-	}
-	if cc.meta == nil {
-		return false
-	}
-	return cc.meta.Current()
 }
 
 // isStreamCurrent will determine if the stream is up to date.
@@ -647,9 +636,8 @@ func (a *Account) getJetStreamFromAccount() (*Server, *jetStream, *jsAccount) {
 	if js == nil {
 		return nil, nil, nil
 	}
-	js.mu.RLock()
+	// Lock not needed, set on creation.
 	s := js.srv
-	js.mu.RUnlock()
 	return s, js, jsa
 }
 
@@ -860,10 +848,8 @@ func (js *jetStream) getMetaGroup() RaftNode {
 }
 
 func (js *jetStream) server() *Server {
-	js.mu.RLock()
-	s := js.srv
-	js.mu.RUnlock()
-	return s
+	// Lock not needed, only set once on creation.
+	return js.srv
 }
 
 // Will respond if we do not think we have a metacontroller leader.
@@ -1241,6 +1227,7 @@ func (js *jetStream) monitorCluster() {
 
 	// Make sure to stop the raft group on exit to prevent accidental memory bloat.
 	defer n.Stop()
+	defer s.isMetaLeader.Store(false)
 
 	const compactInterval = time.Minute
 	t := time.NewTicker(compactInterval)
@@ -1728,6 +1715,11 @@ func (js *jetStream) processAddPeer(peer string) {
 }
 
 func (js *jetStream) processRemovePeer(peer string) {
+	// We may be already disabled.
+	if js == nil || js.disabled.Load() {
+		return
+	}
+
 	js.mu.Lock()
 	s, cc := js.srv, js.cluster
 	if cc == nil || cc.meta == nil {
@@ -1737,13 +1729,7 @@ func (js *jetStream) processRemovePeer(peer string) {
 	isLeader := cc.isLeader()
 	// All nodes will check if this is them.
 	isUs := cc.meta.ID() == peer
-	disabled := js.disabled
 	js.mu.Unlock()
-
-	// We may be already disabled.
-	if disabled {
-		return
-	}
 
 	if isUs {
 		s.Errorf("JetStream being DISABLED, our server was removed from the cluster")
@@ -5282,21 +5268,31 @@ func (js *jetStream) stopUpdatesSub() {
 }
 
 func (js *jetStream) processLeaderChange(isLeader bool) {
+	if js == nil {
+		return
+	}
+	s := js.srv
+	if s == nil {
+		return
+	}
+	// Update our server atomic.
+	s.isMetaLeader.Store(isLeader)
+
 	if isLeader {
-		js.srv.Noticef("Self is new JetStream cluster metadata leader")
+		s.Noticef("Self is new JetStream cluster metadata leader")
 	} else {
 		var node string
 		if meta := js.getMetaGroup(); meta != nil {
 			node = meta.GroupLeader()
 		}
 		if node == _EMPTY_ {
-			js.srv.Noticef("JetStream cluster no metadata leader")
+			s.Noticef("JetStream cluster no metadata leader")
 		} else if srv := js.srv.serverNameForNode(node); srv == _EMPTY_ {
-			js.srv.Noticef("JetStream cluster new remote metadata leader")
+			s.Noticef("JetStream cluster new remote metadata leader")
 		} else if clst := js.srv.clusterNameForNode(node); clst == _EMPTY_ {
-			js.srv.Noticef("JetStream cluster new metadata leader: %s", srv)
+			s.Noticef("JetStream cluster new metadata leader: %s", srv)
 		} else {
-			js.srv.Noticef("JetStream cluster new metadata leader: %s/%s", srv, clst)
+			s.Noticef("JetStream cluster new metadata leader: %s/%s", srv, clst)
 		}
 	}
 
@@ -5317,7 +5313,7 @@ func (js *jetStream) processLeaderChange(isLeader bool) {
 		for acc, asa := range cc.streams {
 			for _, sa := range asa {
 				if sa.Sync == _EMPTY_ {
-					js.srv.Warnf("Stream assigment corrupt for stream '%s > %s'", acc, sa.Config.Name)
+					s.Warnf("Stream assigment corrupt for stream '%s > %s'", acc, sa.Config.Name)
 					nsa := &streamAssignment{Group: sa.Group, Config: sa.Config, Subject: sa.Subject, Reply: sa.Reply, Client: sa.Client}
 					nsa.Sync = syncSubjForStream()
 					cc.meta.Propose(encodeUpdateStreamAssignment(nsa))
@@ -8141,19 +8137,18 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 	s := js.srv
 	if rg == nil || rg.node == nil {
 		return &ClusterInfo{
-			Name:   s.ClusterName(),
+			Name:   s.cachedClusterName(),
 			Leader: s.Name(),
 		}
 	}
-	n := rg.node
 
+	n := rg.node
 	ci := &ClusterInfo{
-		Name:   s.ClusterName(),
+		Name:   s.cachedClusterName(),
 		Leader: s.serverNameForNode(n.GroupLeader()),
 	}
 
 	now := time.Now()
-
 	id, peers := n.ID(), n.Peers()
 
 	// If we are leaderless, do not suppress putting us in the peer list.
@@ -8274,7 +8269,7 @@ func (mset *stream) handleClusterStreamInfoRequest(_ *subscription, c *client, _
 
 func (mset *stream) processClusterStreamInfoRequest(reply string) {
 	mset.mu.RLock()
-	sysc, js, sa, config := mset.sysc, mset.srv.js, mset.sa, mset.cfg
+	sysc, js, sa, config := mset.sysc, mset.srv.js.Load(), mset.sa, mset.cfg
 	isLeader := mset.isLeader()
 	mset.mu.RUnlock()
 

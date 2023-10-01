@@ -1873,7 +1873,7 @@ func (s *Server) reloadAuthorization() {
 		awcsti, _ = s.configureAccounts(true)
 		s.configureAuthorization()
 		// Double check any JetStream configs.
-		checkJetStream = s.js != nil
+		checkJetStream = s.getJetStream() != nil
 	} else if opts.AccountResolver != nil {
 		s.configureResolver()
 		if _, ok := s.accResolver.(*MemAccResolver); ok {

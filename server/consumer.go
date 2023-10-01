@@ -1556,7 +1556,7 @@ func (o *consumer) deleteNotActive() {
 		}
 	}
 
-	s, js := o.mset.srv, o.mset.srv.js
+	s, js := o.mset.srv, o.srv.js.Load()
 	acc, stream, name, isDirect := o.acc.Name, o.stream, o.name, o.cfg.Direct
 	o.mu.Unlock()
 
