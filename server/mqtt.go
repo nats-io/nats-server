@@ -3915,6 +3915,14 @@ func (c *client) mqttEnqueuePubResponse(packetType byte, pi uint16, trace bool) 
 	proto := [4]byte{packetType, 0x2, 0, 0}
 	proto[2] = byte(pi >> 8)
 	proto[3] = byte(pi)
+
+	// Bits 3,2,1 and 0 of the fixed header in the PUBREL Control Packet are
+	// reserved and MUST be set to 0,0,1 and 0 respectively. The Server MUST treat
+	// any other value as malformed and close the Network Connection [MQTT-3.6.1-1].
+	if packetType == mqttPacketPubRel {
+		proto[0] |= 0x2
+	}
+
 	c.mu.Lock()
 	c.enqueueProto(proto[:4])
 	c.mu.Unlock()
