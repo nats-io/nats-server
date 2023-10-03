@@ -7722,8 +7722,8 @@ func (mset *stream) isCurrent() bool {
 	return mset.node.Current() && !mset.catchup
 }
 
-// Maximum requests for the whole server that can be in flight.
-const maxConcurrentSyncRequests = 8
+// Maximum requests for the whole server that can be in flight at the same time.
+const maxConcurrentSyncRequests = 16
 
 var (
 	errCatchupCorruptSnapshot = errors.New("corrupt stream snapshot detected")
@@ -7900,11 +7900,11 @@ RETRY:
 
 	// Grab sync request again on failures.
 	if sreq == nil {
-		mset.mu.Lock()
+		mset.mu.RLock()
 		var state StreamState
 		mset.store.FastState(&state)
 		sreq = mset.calculateSyncRequest(&state, snap)
-		mset.mu.Unlock()
+		mset.mu.RUnlock()
 		if sreq == nil {
 			return nil
 		}
