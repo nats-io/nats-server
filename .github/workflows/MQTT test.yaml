@@ -1,0 +1,37 @@
+name: MQTT Compliance 
+on: [push, pull_request]
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        go: ["1.21"]
+    env:
+      GOPATH: /home/runner/work/nats-server
+      GO111MODULE: "on"
+
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          path: src/github.com/nats-io/nats-server
+
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{matrix.go}}
+
+      - name: Install deps
+        shell: bash --noprofile --norc -x -eo pipefail {0}
+        run: |
+          wget https://github.com/hivemq/mqtt-cli/releases/download/v4.20.0/mqtt-cli-4.20.0.deb
+          sudo apt install ./mqtt-cli-4.20.0.deb
+
+      - name: Run tests
+        shell: bash --noprofile --norc -x -eo pipefail {0}
+        run: |
+          set -e
+          cd src/github.com/nats-io/nats-server/server
+          go test -v -vet=off --run=TestMQTTCLICompliance
+          set +e
