@@ -115,7 +115,6 @@ type websocket struct {
 	nocompfrag bool // No fragment for compressed frames
 	maskread   bool
 	maskwrite  bool
-	compressor *flate.Writer
 	cookieJwt  string
 	clientIP   string
 }
@@ -1295,15 +1294,8 @@ func (c *client) wsCollapsePtoNB() (net.Buffers, int64) {
 		if mfs > 0 && c.ws.nocompfrag {
 			mfs = 0
 		}
-		buf := &bytes.Buffer{}
-
-		cp := c.ws.compressor
-		if cp == nil {
-			c.ws.compressor, _ = flate.NewWriter(buf, flate.BestSpeed)
-			cp = c.ws.compressor
-		} else {
-			cp.Reset(buf)
-		}
+		buf := bytes.NewBuffer(nbPoolGet(usz))
+		cp, _ := flate.NewWriter(buf, flate.BestSpeed)
 		var csz int
 		for _, b := range nb {
 			cp.Write(b)
@@ -1352,6 +1344,7 @@ func (c *client) wsCollapsePtoNB() (net.Buffers, int64) {
 			}
 			csz = len(h) + ol
 		}
+		nbPoolPut(b) // No longer needed as we copied from above.
 		// Add to pb the compressed data size (including headers), but
 		// remove the original uncompressed data size that was added
 		// during the queueing.
