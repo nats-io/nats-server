@@ -654,9 +654,9 @@ func (s *Server) transferRaftLeaders() bool {
 // This should only be called on the leader.
 func (n *raft) Propose(data []byte) error {
 	n.RLock()
-	if n.state != Leader {
+	if state := n.state; state != Leader {
 		n.RUnlock()
-		n.debug("Proposal ignored, not leader (state: %v)", n.state)
+		n.debug("Proposal ignored, not leader (state: %v)", state)
 		return errNotLeader
 	}
 	// Error if we had a previous write error.
