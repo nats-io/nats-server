@@ -1593,6 +1593,10 @@ func (o *consumer) deleteNotActive() {
 				defer ticker.Stop()
 				for range ticker.C {
 					js.mu.RLock()
+					if js.shuttingDown {
+						js.mu.RUnlock()
+						return
+					}
 					nca := js.consumerAssignment(acc, stream, name)
 					js.mu.RUnlock()
 					// Make sure this is not a new consumer with the same name.
