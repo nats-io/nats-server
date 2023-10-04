@@ -346,23 +346,20 @@ func nbPoolGet(sz int) []byte {
 	}
 }
 
-func nbPoolPut(in []byte) {
-	ca := cap(in)
-	for in = in[:ca]; ca >= nbPoolSizeSmall; ca = cap(in) {
-		switch {
-		case ca >= nbPoolSizeLarge:
-			b := (*[nbPoolSizeLarge]byte)(in[0:nbPoolSizeLarge:nbPoolSizeLarge])
-			nbPoolLarge.Put(b)
-			in = in[nbPoolSizeLarge:]
-		case ca >= nbPoolSizeMedium:
-			b := (*[nbPoolSizeMedium]byte)(in[0:nbPoolSizeMedium:nbPoolSizeMedium])
-			nbPoolMedium.Put(b)
-			in = in[nbPoolSizeMedium:]
-		case ca >= nbPoolSizeSmall:
-			b := (*[nbPoolSizeSmall]byte)(in[0:nbPoolSizeSmall:nbPoolSizeSmall])
-			nbPoolSmall.Put(b)
-			in = in[nbPoolSizeSmall:]
-		}
+func nbPoolPut(b []byte) {
+	switch cap(b) {
+	case nbPoolSizeSmall:
+		b := (*[nbPoolSizeSmall]byte)(b[0:nbPoolSizeSmall])
+		nbPoolSmall.Put(b)
+	case nbPoolSizeMedium:
+		b := (*[nbPoolSizeMedium]byte)(b[0:nbPoolSizeMedium])
+		nbPoolMedium.Put(b)
+	case nbPoolSizeLarge:
+		b := (*[nbPoolSizeLarge]byte)(b[0:nbPoolSizeLarge])
+		nbPoolLarge.Put(b)
+	default:
+		// Ignore frames that are the wrong size, this might happen
+		// with WebSocket/MQTT messages as they are framed
 	}
 }
 

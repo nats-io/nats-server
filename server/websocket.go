@@ -1345,6 +1345,11 @@ func (c *client) wsCollapsePtoNB() (net.Buffers, int64) {
 			}
 			csz = len(h) + ol
 		}
+		// Make sure that the compressor no longer holds a reference to
+		// the bytes.Buffer, so that the underlying memory gets cleaned
+		// up after flushOutbound/flushAndClose. For this to be safe, we
+		// always cp.Reset(...) before reusing the compressor again.
+		cp.Reset(nil)
 		// Add to pb the compressed data size (including headers), but
 		// remove the original uncompressed data size that was added
 		// during the queueing.
