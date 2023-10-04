@@ -1340,7 +1340,9 @@ func (c *client) wsCollapsePtoNB() (net.Buffers, int64) {
 			if mask {
 				wsMaskBuf(key, p)
 			}
-			bufs = append(bufs, h, p)
+			if ol > 0 {
+				bufs = append(bufs, h, p)
+			}
 			csz = len(h) + ol
 		}
 		// Add to pb the compressed data size (including headers), but
