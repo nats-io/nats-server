@@ -2704,6 +2704,11 @@ func (mset *stream) resetClusteredState(err error) bool {
 
 		if sa != nil {
 			js.mu.Lock()
+			if js.shuttingDown {
+				js.mu.Unlock()
+				return
+			}
+
 			s.Warnf("Resetting stream cluster state for '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
 			// Now wipe groups from assignments.
 			sa.Group.node = nil
@@ -3825,6 +3830,7 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 	s, cc := js.srv, js.cluster
 	accName, stream, consumerName := ca.Client.serviceAccount(), ca.Stream, ca.Name
 	noMeta := cc == nil || cc.meta == nil
+	shuttingDown := js.shuttingDown
 	var ourID string
 	if !noMeta {
 		ourID = cc.meta.ID()
@@ -3835,7 +3841,7 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 	}
 	js.mu.RUnlock()
 
-	if s == nil || noMeta {
+	if s == nil || noMeta || shuttingDown {
 		return
 	}
 
