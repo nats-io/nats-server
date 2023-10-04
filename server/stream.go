@@ -341,6 +341,7 @@ const (
 
 // Headers for republished messages and direct gets.
 const (
+	JSHeaderPrefix = "Nats-"
 	JSStream       = "Nats-Stream"
 	JSSequence     = "Nats-Sequence"
 	JSTimeStamp    = "Nats-Time-Stamp"
@@ -4051,6 +4052,8 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 		hdr = []byte(fmt.Sprintf(ht, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano)))
 	} else {
 		hdr = copyBytes(hdr)
+		// streams that onboarded via republish could contain the original stream headers
+		hdr = removeStreamIdentityHeaders(hdr)
 		hdr = genHeader(hdr, JSStream, name)
 		hdr = genHeader(hdr, JSSubject, sm.subj)
 		hdr = genHeader(hdr, JSSequence, strconv.FormatUint(sm.seq, 10))
@@ -4397,6 +4400,11 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		if sm, _ := store.LoadLastMsg(subject, &smv); sm != nil {
 			tlseq = sm.seq
 		}
+	}
+
+	// if we are NOT doing subject remapping, this is a message to on-board it shouldn't store Nats-* headers
+	if tsubj == _EMPTY_ {
+		hdr = removeStreamIdentityHeaders(hdr)
 	}
 
 	// Store actual msg.

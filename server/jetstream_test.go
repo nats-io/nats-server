@@ -21931,3 +21931,114 @@ func TestJetStreamFilteredSubjectUsesNewConsumerCreateSubject(t *testing.T) {
 		},
 	})
 }
+
+func TestJetStreamNoDuplicateHeadersOnDirectGet(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	name := nuid.Next()
+
+	req := StreamConfig{
+		Name:     name,
+		Storage:  MemoryStorage,
+		Subjects: []string{fmt.Sprintf("%s.>", name)},
+		RePublish: &RePublish{
+			Source:      ">",
+			Destination: fmt.Sprintf("X%s.>", name),
+		},
+	}
+	reqJson, err := json.Marshal(req)
+	require_NoError(t, err)
+	_, err = nc.Request(fmt.Sprintf(JSApiStreamCreateT, name), reqJson, time.Second)
+	require_NoError(t, err)
+
+	targetStream := fmt.Sprintf("%s-2", name)
+	req = StreamConfig{
+		Name:        targetStream,
+		Storage:     MemoryStorage,
+		Subjects:    []string{fmt.Sprintf("X%s.>", name)},
+		AllowDirect: true,
+	}
+	reqJson, err = json.Marshal(req)
+	require_NoError(t, err)
+	_, err = nc.Request(fmt.Sprintf(JSApiStreamCreateT, req.Name), reqJson, time.Second)
+	require_NoError(t, err)
+
+	// Now publish a message to the source stream.
+	sendStreamMsg(t, nc, fmt.Sprintf("%s.data", name), "data")
+
+	getSubj := fmt.Sprintf(JSDirectMsgGetT, targetStream)
+
+	r, err := nc.Request(getSubj, []byte("{\"seq\":1}"), time.Second)
+	require_NoError(t, err)
+
+	require_Equal(t, len(r.Header.Values(JSStream)), 1)
+	require_Equal(t, len(r.Header.Values(JSSubject)), 1)
+	require_Equal(t, len(r.Header.Values(JSSequence)), 1)
+	require_Equal(t, len(r.Header.Values(JSTimeStamp)), 1)
+}
+
+func TestRemoveAllJetStreamHeadersIfPresent(t *testing.T) {
+	// copied private fn from nats.go
+	headerBytes := func(h nats.Header) ([]byte, error) {
+		var hdr []byte
+		if len(h) == 0 {
+			return hdr, nil
+		}
+
+		var b bytes.Buffer
+		_, err := b.WriteString(hdrLine)
+		if err != nil {
+			return nil, err
+		}
+
+		err = http.Header(h).Write(&b)
+		if err != nil {
+			return nil, err
+		}
+
+		_, err = b.WriteString("\r\n")
+		if err != nil {
+			return nil, err
+		}
+
+		return b.Bytes(), nil
+	}
+
+	// test nil input
+	v := removeStreamIdentityHeaders(nil)
+	if v != nil {
+		t.Fatalf("expected headers to be nil")
+	}
+
+	h := nats.Header{}
+	// expect empty to become nil
+	hb, err := headerBytes(h)
+	require_NoError(t, err)
+	hb = removeStreamIdentityHeaders(hb)
+	if hb != nil {
+		t.Fatalf("expected headers to be nil")
+	}
+
+	// expect Nats-Stream|Sequence|Subject|Time-Stamp to be removed
+	h.Add(JSStream, "test")
+	h.Add(JSSequence, "1")
+	h.Add(JSSubject, "test.bar")
+	h.Add(JSTimeStamp, "something")
+	hb, err = headerBytes(h)
+	require_NoError(t, err)
+	hb = removeStreamIdentityHeaders(hb)
+	if hb != nil {
+		t.Fatalf("expected headers to be nil")
+	}
+
+	// expect one header to remain
+	h.Add("Something-Else", "hey")
+	hb, err = headerBytes(h)
+	require_NoError(t, err)
+	hb = removeStreamIdentityHeaders(hb)
+	require_Equal(t, "NATS/1.0\r\nSomething-Else: hey\r\n\r\n", string(hb))
+}

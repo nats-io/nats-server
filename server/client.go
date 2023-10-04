@@ -3968,6 +3968,19 @@ func (c *client) setupResponseServiceImport(acc *Account, si *serviceImport, tra
 	return rsi
 }
 
+func removeStreamIdentityHeaders(hdr []byte) []byte {
+	if hdr == nil {
+		return hdr
+	}
+	if idx := bytes.Index(hdr, []byte(JSHeaderPrefix)); idx == -1 {
+		return hdr
+	}
+	for _, h := range []string{JSStream, JSSequence, JSTimeStamp, JSSubject} {
+		hdr = removeHeaderIfPresent(hdr, h)
+	}
+	return hdr
+}
+
 // Will remove a header if present.
 func removeHeaderIfPresent(hdr []byte, key string) []byte {
 	start := bytes.Index(hdr, []byte(key))
