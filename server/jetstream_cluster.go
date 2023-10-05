@@ -1266,13 +1266,13 @@ func (js *jetStream) monitorCluster() {
 	js.setMetaRecovering()
 
 	// Snapshotting function.
-	doSnapshot := func() {
+	doSnapshot := func(force bool) {
 		// Suppress during recovery.
 		if js.isMetaRecovering() {
 			return
 		}
 		// For the meta layer we want to snapshot when asked if we need one or have any entries that we can compact.
-		if ne, _ := n.Size(); ne > 0 || n.NeedSnapshot() {
+		if ne, _ := n.Size(); ne > 0 || n.NeedSnapshot() || force {
 			if err := n.InstallSnapshot(js.metaSnapshot()); err == nil {
 				lastSnapTime = time.Now()
 			} else if err != errNoSnapAvailable && err != errNodeClosed {
@@ -1280,6 +1280,10 @@ func (js *jetStream) monitorCluster() {
 			}
 		}
 	}
+
+	// Try our best to take a snapshot of the meta state when shutting down,
+	// regardless of how we were notified about it.
+	defer doSnapshot(true)
 
 	ru := &recoveryUpdates{
 		removeStreams:   make(map[string]*streamAssignment),
@@ -1295,8 +1299,6 @@ func (js *jetStream) monitorCluster() {
 		case <-rqch:
 			return
 		case <-qch:
-			// Clean signal from shutdown routine so do best effort attempt to snapshot meta layer.
-			doSnapshot()
 			// Return the signal back since shutdown will be waiting.
 			close(qch)
 			return
@@ -1332,11 +1334,11 @@ func (js *jetStream) monitorCluster() {
 				if didSnap, didStreamRemoval, didConsumerRemoval, err := js.applyMetaEntries(ce.Entries, ru); err == nil {
 					_, nb := n.Applied(ce.Index)
 					if js.hasPeerEntries(ce.Entries) || didStreamRemoval || (didSnap && !isLeader) {
-						doSnapshot()
+						doSnapshot(false)
 					} else if didConsumerRemoval && time.Since(lastSnapTime) > minSnapDelta/2 {
-						doSnapshot()
+						doSnapshot(false)
 					} else if nb > compactSizeMin && time.Since(lastSnapTime) > minSnapDelta {
-						doSnapshot()
+						doSnapshot(false)
 					}
 					ce.ReturnToPool()
 				} else {
@@ -1356,11 +1358,11 @@ func (js *jetStream) monitorCluster() {
 				s.sendInternalMsgLocked(serverStatsPingReqSubj, _EMPTY_, nil, nil)
 				// Install a snapshot as we become leader.
 				js.checkClusterSize()
-				doSnapshot()
+				doSnapshot(false)
 			}
 
 		case <-t.C:
-			doSnapshot()
+			doSnapshot(false)
 			// Periodically check the cluster size.
 			if n.Leader() {
 				js.checkClusterSize()

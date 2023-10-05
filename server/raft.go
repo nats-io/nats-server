@@ -2663,7 +2663,7 @@ func (n *raft) applyCommit(index uint64) error {
 			delete(n.pae, index)
 		}
 		n.apply.push(newCommittedEntry(index, committed))
-	} else {
+	} else if index > n.applied {
 		// If we processed inline update our applied index.
 		n.applied = index
 	}
