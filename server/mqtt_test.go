@@ -27,7 +27,9 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"os/exec"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -6995,6 +6997,41 @@ func TestMQTTJetStreamRepublishAndQoS0Subscribers(t *testing.T) {
 
 	testMQTTCheckPubMsg(t, mc, r, "mqtt/foo", 0, msg)
 	testMQTTExpectNothing(t, r)
+}
+
+func TestMQTTCLICompliance(t *testing.T) {
+	mqttPath := os.Getenv("MQTT_CLI")
+	if mqttPath == "" {
+		if p, err := exec.LookPath("mqtt"); err == nil {
+			mqttPath = p
+		}
+	}
+	if mqttPath == "" {
+		t.Skip(`"mqtt" command is not found in $PATH nor $MQTT_CLI. See https://hivemq.github.io/mqtt-cli/docs/installation/#debian-package for installation instructions`)
+	}
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		server_name: mqtt
+		jetstream {
+			store_dir = %q
+		}
+		mqtt {
+			listen: 127.0.0.1:-1
+		}
+	`, t.TempDir())))
+	s, o := RunServerWithConfig(conf)
+	defer testMQTTShutdownServer(s)
+
+	cmd := exec.Command(mqttPath, "test", "-V", "3", "-p", strconv.Itoa(o.MQTT.Port))
+
+	output, err := cmd.CombinedOutput()
+	t.Log(string(output))
+	if err != nil {
+		if exitError, ok := err.(*exec.ExitError); ok {
+			t.Fatalf("mqtt cli exited with error: %v", exitError)
+		}
+	}
 }
 
 //////////////////////////////////////////////////////////////////////////
