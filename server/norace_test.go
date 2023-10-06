@@ -8736,10 +8736,10 @@ func TestNoRaceBinaryStreamSnapshotEncodingBasic(t *testing.T) {
 	ss, err := DecodeStreamState(snap)
 	require_NoError(t, err)
 
-	require_True(t, ss.FirstSeq == 1)
-	require_True(t, ss.LastSeq == 3000)
-	require_True(t, ss.Msgs == 1000)
-	require_True(t, ss.Deleted.NumDeleted() == 2000)
+	require_Equal(t, ss.FirstSeq, 1)
+	require_Equal(t, ss.LastSeq, 3000)
+	require_Equal(t, ss.Msgs, 1000)
+	require_Equal(t, ss.Deleted.NumDeleted(), 2000)
 }
 
 func TestNoRaceFilestoreBinaryStreamSnapshotEncodingLargeGaps(t *testing.T) {
