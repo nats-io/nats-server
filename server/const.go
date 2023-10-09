@@ -82,6 +82,12 @@ const (
 	// TLS_TIMEOUT is the TLS wait time.
 	TLS_TIMEOUT = 2 * time.Second
 
+	// DEFAULT_TLS_HANDSHAKE_FIRST_FALLBACK_DELAY is the default amount of
+	// time for the server to wait for the TLS handshake with a client to
+	// be initiated before falling back to sending the INFO protocol first.
+	// See TLSHandshakeFirst and TLSHandshakeFirstFallback options.
+	DEFAULT_TLS_HANDSHAKE_FIRST_FALLBACK_DELAY = 50 * time.Millisecond
+
 	// AUTH_TIMEOUT is the authorization wait time.
 	AUTH_TIMEOUT = 2 * time.Second
 

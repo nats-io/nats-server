@@ -327,11 +327,23 @@ type Options struct {
 	TLSConfig             *tls.Config       `json:"-"`
 	TLSPinnedCerts        PinnedCertSet     `json:"-"`
 	TLSRateLimit          int64             `json:"-"`
-	AllowNonTLS           bool              `json:"-"`
-	WriteDeadline         time.Duration     `json:"-"`
-	MaxClosedClients      int               `json:"-"`
-	LameDuckDuration      time.Duration     `json:"-"`
-	LameDuckGracePeriod   time.Duration     `json:"-"`
+	// When set to true, the server will perform the TLS handshake before
+	// sending the INFO protocol. For clients that are not configured
+	// with a similar option, their connection will fail with some sort
+	// of timeout or EOF error since they are expecting to receive an
+	// INFO protocol first.
+	TLSHandshakeFirst bool `json:"-"`
+	// If TLSHandshakeFirst is true and this value is strictly positive,
+	// the server will wait for that amount of time for the TLS handshake
+	// to start before falling back to previous behavior of sending the
+	// INFO protocol first. It allows for a mix of newer clients that can
+	// require a TLS handshake first, and older clients that can't.
+	TLSHandshakeFirstFallback time.Duration `json:"-"`
+	AllowNonTLS               bool          `json:"-"`
+	WriteDeadline             time.Duration `json:"-"`
+	MaxClosedClients          int           `json:"-"`
+	LameDuckDuration          time.Duration `json:"-"`
+	LameDuckGracePeriod       time.Duration `json:"-"`
 
 	// MaxTracedMsgLen is the maximum printable length for traced messages.
 	MaxTracedMsgLen int `json:"-"`
@@ -638,7 +650,8 @@ type TLSConfigOpts struct {
 	Insecure          bool
 	Map               bool
 	TLSCheckKnownURLs bool
-	HandshakeFirst    bool // Indicate that the TLS handshake should occur first, before sending the INFO protocol
+	HandshakeFirst    bool          // Indicate that the TLS handshake should occur first, before sending the INFO protocol.
+	FallbackDelay     time.Duration // Where supported, indicates how long to wait for the handshake before falling back to sending the INFO protocol first.
 	Timeout           float64
 	RateLimit         int64
 	Ciphers           []uint16
@@ -1072,6 +1085,8 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		o.TLSMap = tc.Map
 		o.TLSPinnedCerts = tc.PinnedCerts
 		o.TLSRateLimit = tc.RateLimit
+		o.TLSHandshakeFirst = tc.HandshakeFirst
+		o.TLSHandshakeFirstFallback = tc.FallbackDelay
 
 		// Need to keep track of path of the original TLS config
 		// and certs path for OCSP Stapling monitoring.
@@ -4312,7 +4327,30 @@ func parseTLS(v interface{}, isClientCtx bool) (t *TLSConfigOpts, retErr error) 
 			}
 			tc.CertMatch = certMatch
 		case "handshake_first", "first", "immediate":
-			tc.HandshakeFirst = mv.(bool)
+			switch mv := mv.(type) {
+			case bool:
+				tc.HandshakeFirst = mv
+			case string:
+				switch strings.ToLower(mv) {
+				case "true", "on":
+					tc.HandshakeFirst = true
+				case "false", "off":
+					tc.HandshakeFirst = false
+				case "auto", "auto_fallback":
+					tc.HandshakeFirst = true
+					tc.FallbackDelay = DEFAULT_TLS_HANDSHAKE_FIRST_FALLBACK_DELAY
+				default:
+					// Check to see if this is a duration.
+					if dur, err := time.ParseDuration(mv); err == nil {
+						tc.HandshakeFirst = true
+						tc.FallbackDelay = dur
+						break
+					}
+					return nil, &configErr{tk, fmt.Sprintf("field %q's value %q is invalid", mk, mv)}
+				}
+			default:
+				return nil, &configErr{tk, fmt.Sprintf("field %q should be a boolean or a string, got %T", mk, mv)}
+			}
 		case "ocsp_peer":
 			switch vv := mv.(type) {
 			case bool:
