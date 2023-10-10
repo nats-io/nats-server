@@ -49,8 +49,13 @@ type LogUTC bool
 
 func (l LogUTC) isLoggerOption() {}
 
-func logFlags(time bool, opts ...LogOption) int {
+type Prefix string
+
+func (l Prefix) isLoggerOption() {}
+
+func logFlags(time bool, opts ...LogOption) (int, string) {
 	flags := 0
+	pre := ""
 	if time {
 		flags = log.LstdFlags | log.Lmicroseconds
 	}
@@ -61,17 +66,18 @@ func logFlags(time bool, opts ...LogOption) int {
 			if time && bool(v) {
 				flags |= log.LUTC
 			}
+		case Prefix:
+			pre = string(v)
 		}
 	}
 
-	return flags
+	return flags, pre
 }
 
 // NewStdLogger creates a logger with output directed to Stderr
 func NewStdLogger(time, debug, trace, colors, pid bool, opts ...LogOption) *Logger {
-	flags := logFlags(time, opts...)
+	flags, pre := logFlags(time, opts...)
 
-	pre := ""
 	if pid {
 		pre = pidPrefix()
 	}
@@ -93,9 +99,8 @@ func NewStdLogger(time, debug, trace, colors, pid bool, opts ...LogOption) *Logg
 
 // NewFileLogger creates a logger with output directed to a file
 func NewFileLogger(filename string, time, debug, trace, pid bool, opts ...LogOption) *Logger {
-	flags := logFlags(time, opts...)
+	flags, pre := logFlags(time, opts...)
 
-	pre := ""
 	if pid {
 		pre = pidPrefix()
 	}

@@ -24,6 +24,7 @@ import (
 	"time"
 
 	jwt "github.com/nats-io/jwt/v2"
+	"github.com/nats-io/nats-server/v2/logger"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 )
@@ -1241,4 +1242,204 @@ func TestJetStreamLeafNodeSvcImportExportCycle(t *testing.T) {
 
 	_, err = js.Publish("foo", []byte("msg"))
 	require_NoError(t, err)
+}
+
+func TestJetStreamLeafNodeSourcingHealthcheck(t *testing.T) {
+	accounts := `
+		accounts {
+			SYS: {
+				users: [{user: admin, password: admin}]
+			}
+			CUSTOMER: {
+				users: [{user: customer, password: customer}]
+				jetstream: enabled
+			}
+		}
+		system_account: SYS
+	`
+
+	hubConf := fmt.Sprintf(`
+		%s
+		server_name: hub-server
+		jetstream {
+			store_dir: '%s'
+			domain=hub
+		}
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			listen: "127.0.0.1:-1"
+		}
+	`, accounts, t.TempDir())
+
+	hs, ho := RunServerWithConfig(createConfFile(t, []byte(hubConf)))
+	defer hs.Shutdown()
+
+	leafConf := fmt.Sprintf(`
+		%s
+		server_name: leaf-server
+		jetstream {
+			store_dir: '%s'
+			domain=leaf
+		}
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			remotes = [
+				{
+					urls: [%q]
+					account: "CUSTOMER"
+				}
+			]
+		}
+	`, accounts, t.TempDir(), fmt.Sprintf("nats://customer:customer@127.0.0.1:%v", ho.LeafNode.Port))
+	ls, lo := RunServerWithConfig(createConfFile(t, []byte(leafConf)))
+	defer ls.Shutdown()
+
+	hlog := logger.NewStdLogger(false, true, true, true, false, logger.Prefix("[\u001b[35mHUB\u001b[0m] "))
+	llog := logger.NewStdLogger(false, true, true, true, false, logger.Prefix("[\u001b[34mLFN\u001b[0m] "))
+
+	hs.SetLoggerV2(hlog, true, true, false)
+	ls.SetLoggerV2(llog, true, true, false)
+
+	/*
+		defer func() {
+			var defaultBuf [defaultStackBufSize]byte
+			size := defaultStackBufSize
+			buf := defaultBuf[:size]
+			n := 0
+			for {
+				n = runtime.Stack(buf, true)
+				if n < size {
+					break
+				}
+				size *= 2
+				buf = make([]byte, size)
+			}
+			t.Log(string(buf))
+		}()
+	*/
+
+	checkLeafNodeConnected(t, ls)
+
+	hc := natsConnect(t, fmt.Sprintf("nats://customer:customer@127.0.0.1:%v", ho.Port))
+	defer hc.Close()
+
+	lc := natsConnect(t, fmt.Sprintf("nats://customer:customer@127.0.0.1:%v", lo.Port))
+	defer lc.Close()
+
+	hjs, _ := hc.JetStream(nats.Domain("hub"))
+	ljs, _ := lc.JetStream(nats.Domain("leaf"))
+
+	// Create a stream on the leafnode side.
+	_, err := ljs.AddStream(&nats.StreamConfig{
+		Name:     "origin",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	// Create a stream on the hub side which sources from the leafnode.
+	_, err = hjs.AddStream(&nats.StreamConfig{
+		Name: "copy",
+		Sources: []*nats.StreamSource{
+			{
+				Name:   "origin",
+				Domain: "leaf",
+			},
+		},
+	})
+	require_NoError(t, err)
+
+	time.Sleep(time.Second)
+
+	// Look up the stream and consumers on the leafnode side. We expect there to
+	// be a single consumer because the sourcing stream from the hub should have
+	// created one.
+	lca, ok := ls.accounts.Load("CUSTOMER")
+	require_True(t, ok)
+	acc := lca.(*Account)
+	acc.mu.RLock()
+	lstr := acc.js.streams["origin"]
+	acc.mu.RUnlock()
+	lstr.mu.RLock()
+	require_Len(t, len(lstr.consumers), 1)
+	lstr.mu.RUnlock()
+
+	for i := 0; i < 1000; i++ {
+		fmt.Println()
+		fmt.Println("---------------------------")
+		fmt.Println()
+
+		// We don't know the name of the ephemeral consumer yet, so just iterate over
+		// the map a single time to find it.
+		var lcon *consumer
+		lstr.mu.RLock()
+		for _, c := range lstr.consumers {
+			lcon = c
+			break
+		}
+		lstr.mu.RUnlock()
+
+		// Listen to the delivery subject for a little while. We want to know that
+		// the heartbeats are being sent.
+		t.Logf("Existing delivery subject is %q", lcon.dsubj)
+		wait := make(chan struct{}, 1)
+		heartbeats, err := hc.Subscribe(lcon.dsubj, func(msg *nats.Msg) {
+			t.Logf("Received heartbeat on %s\n", lcon.dsubj)
+			wait <- struct{}{}
+		})
+		require_NoError(t, err)
+		select {
+		case <-wait:
+			require_NoError(t, heartbeats.Unsubscribe())
+		case <-time.After(sourceHealthCheckInterval * 10):
+			t.Fatalf("Failed to receive heartbeat on %s", lcon.dsubj)
+		}
+
+		// Now we're going to sabotage the sourcing by stopping the leafnode side
+		// consumer. Ordinarily this shouldn't happen but this is the condition
+		// we have observed.
+		t.Logf("Killing sourcing consumer...")
+		require_NoError(t, lcon.stop())
+		lstr.mu.RLock()
+		require_Len(t, len(lstr.consumers), 0)
+		lstr.mu.RUnlock()
+
+		// Wait long enough for the hub side to notice. The hub will wait for
+		// interval*3 before hopefully creating a new consumer, so we'll wait
+		// for interval*5 just to be sure.
+		time.Sleep(sourceHealthCheckInterval * 5)
+
+		// At this point we expect a new consumer to have been created by the
+		// sourcing stream on the hub. Let's look it up.
+		lstr.mu.RLock()
+		require_Len(t, len(lstr.consumers), 1)
+		for _, c := range lstr.consumers {
+			lcon = c
+			break
+		}
+		lstr.mu.RUnlock()
+		require_True(t, lcon != nil)
+		t.Logf("Recreated delivery subject is now %q", lcon.dsubj)
+
+		// Let's check whether the leafnode thinks the hub has interest for the
+		// delivery subject.
+		acc.mu.RLock()
+		sm := acc.sl.Match(lcon.dsubj)
+		require_True(t, sm != nil)
+		require_Len(t, len(sm.psubs), 1)
+		acc.mu.RUnlock()
+
+		// Let's subscribe to the new delivery subject. We should now receive
+		// heartbeats there.
+		heartbeats, err = hc.Subscribe(lcon.dsubj, func(msg *nats.Msg) {
+			t.Logf("Received heartbeat on %s\n", lcon.dsubj)
+			wait <- struct{}{}
+		})
+		require_NoError(t, err)
+		select {
+		case <-wait:
+			require_NoError(t, heartbeats.Unsubscribe())
+		case <-time.After(sourceHealthCheckInterval * 10):
+			t.Fatalf("Failed to receive heartbeat on %s", lcon.dsubj)
+		}
+	}
 }

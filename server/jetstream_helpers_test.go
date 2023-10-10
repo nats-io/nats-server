@@ -1684,18 +1684,23 @@ func newNetProxy(rtt time.Duration, upRate, downRate int, serverURL string) *net
 }
 
 func createNetProxy(rtt time.Duration, upRate, downRate int, serverURL string, start bool) *netProxy {
+	u, err := url.Parse(serverURL)
+	if err != nil {
+		panic(fmt.Sprintf("Error parsing URL %q: %s", serverURL, err))
+	}
 	hp := net.JoinHostPort("127.0.0.1", "0")
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
 		panic(fmt.Sprintf("Error listening on port: %s, %q", hp, e))
 	}
 	port := l.Addr().(*net.TCPAddr).Port
+	u.Host = net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", port))
 	proxy := &netProxy{
 		listener: l,
 		rtt:      rtt,
 		up:       upRate,
 		down:     downRate,
-		url:      fmt.Sprintf("nats://127.0.0.1:%d", port),
+		url:      u.String(),
 		surl:     serverURL,
 	}
 	if start {
@@ -1734,6 +1739,10 @@ func (np *netProxy) clientURL() string {
 
 func (np *netProxy) routeURL() string {
 	return strings.Replace(np.url, "nats", "nats-route", 1)
+}
+
+func (np *netProxy) leafURL() string {
+	return strings.Replace(np.url, "nats", "nats-leaf", 1)
 }
 
 func (np *netProxy) loop(tbw int, r, w net.Conn) {

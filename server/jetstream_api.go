@@ -3737,6 +3737,8 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 		return
 	}
 
+	s.Debugf("Got consumer create request %#v", req)
+
 	var js *jetStream
 	isClustered := s.JetStreamIsClustered()
 
@@ -3912,6 +3914,7 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 	}
 	resp.ConsumerInfo = o.initialInfo()
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+	s.Debugf("Sent consumer create response to %q", reply)
 }
 
 // Request for the list of all consumer names.

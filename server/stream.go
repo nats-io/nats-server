@@ -2854,18 +2854,22 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64, startTime time.T
 
 	respCh := make(chan *JSApiConsumerCreateResponse, 1)
 	reply := infoReplySubject()
+	mset.srv.Debugf("Reply subject for CCR is %q", reply)
 	crSub, err := mset.subscribeInternal(reply, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
-		mset.unsubscribeUnlocked(sub)
+		// defer mset.unsubscribeUnlocked(sub)
 		_, msg := c.msgParts(rmsg)
 		var ccr JSApiConsumerCreateResponse
 		if err := json.Unmarshal(msg, &ccr); err != nil {
 			c.Warnf("JetStream bad source consumer create response: %q", msg)
 			return
 		}
+		mset.srv.Debugf("About to queue up CCR, there are %d entries already", len(respCh))
 		respCh <- &ccr
+		mset.srv.Debugf("Queued up CCR")
 	})
 	if err != nil {
 		si.err = NewJSSourceConsumerSetupFailedError(err, Unless(err))
+		mset.srv.Debugf("Failed to create CCR subscription: %s", si.err)
 		mset.scheduleSetSourceConsumerRetryAsap(si, seq, startTime)
 		return
 	}
@@ -2918,7 +2922,6 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64, startTime time.T
 	mset.outq.send(newJSPubMsg(subject, _EMPTY_, reply, nil, b, nil, 0))
 
 	go func() {
-
 		var retry bool
 		defer func() {
 			mset.mu.Lock()
@@ -2927,6 +2930,7 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64, startTime time.T
 				si.sip = false
 				// If we need to retry, schedule now
 				if retry {
+					mset.srv.Debugf("RETRYING")
 					mset.scheduleSetSourceConsumerRetryAsap(si, seq, startTime)
 				}
 			}
@@ -2939,11 +2943,15 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64, startTime time.T
 
 		select {
 		case ccr := <-respCh:
+			mset.srv.Debugf("Got consumer create response %#v", ccr)
 			ready := sync.WaitGroup{}
 			mset.mu.Lock()
 			// Check that it has not been removed or canceled (si.sub would be nil)
 			if si := mset.sources[iname]; si != nil && si.sub != nil {
+				mset.srv.Debugf("Consumer create response has source info")
 				si.err = nil
+				mset.srv.Debugf("Consumer create info: %v", ccr.ConsumerInfo)
+				mset.srv.Debugf("Consumer create error: %v", ccr.Error)
 				if ccr.Error != nil || ccr.ConsumerInfo == nil {
 					// Note: this warning can happen a few times when starting up the server when sourcing streams are
 					// defined, this is normal as the streams are re-created in no particular order and it is possible
@@ -2953,6 +2961,7 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64, startTime time.T
 					// Let's retry as soon as possible, but we are gated by sourceConsumerRetryThreshold
 					retry = true
 				} else {
+					mset.srv.Debugf("Proceeding with scheduling processSourceMsgs")
 					if si.sseq != ccr.ConsumerInfo.Delivered.Stream {
 						si.sseq = ccr.ConsumerInfo.Delivered.Stream + 1
 					}
@@ -2979,6 +2988,7 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64, startTime time.T
 			mset.mu.Unlock()
 			ready.Wait()
 		case <-time.After(5 * time.Second):
+			mset.srv.Debugf("Didn't get consumer create response, retrying")
 			mset.unsubscribeUnlocked(crSub)
 			// We already waited 5 seconds, let's retry now.
 			retry = true
@@ -2987,6 +2997,9 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64, startTime time.T
 }
 
 func (mset *stream) processSourceMsgs(si *sourceInfo, ready *sync.WaitGroup) {
+	mset.srv.Debugf("processSourceMsgs started for %s", si.name)
+	defer mset.srv.Debugf("processSourceMsgs stopped for %s", si.name)
+
 	s := mset.srv
 	defer func() {
 		si.wg.Done()
@@ -3009,13 +3022,17 @@ func (mset *stream) processSourceMsgs(si *sourceInfo, ready *sync.WaitGroup) {
 	for {
 		select {
 		case <-s.quitCh:
+			mset.srv.Debugf("processSourceMsgs: stopping for s.quitCh")
 			return
 		case <-qch:
+			mset.srv.Debugf("processSourceMsgs: stopping for qch")
 			return
 		case <-siqch:
+			mset.srv.Debugf("processSourceMsgs: stopping for siqch")
 			return
 		case <-msgs.ch:
 			ims := msgs.pop()
+			mset.srv.Debugf("processSourceMsgs: received %d message(s)", len(ims))
 			for _, im := range ims {
 				if !mset.processInboundSourceMsg(si, im) {
 					break
@@ -3027,6 +3044,7 @@ func (mset *stream) processSourceMsgs(si *sourceInfo, ready *sync.WaitGroup) {
 			isLeader := mset.isLeader()
 			stalled := time.Since(si.last) > 3*sourceHealthCheckInterval
 			mset.mu.RUnlock()
+			mset.srv.Debugf("processSourceMsgs: health check timer (isLeader %v, stalled %v)", isLeader, stalled)
 			// No longer leader.
 			if !isLeader {
 				mset.mu.Lock()
@@ -3089,6 +3107,8 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 		mset.mu.Unlock()
 		return false
 	}
+
+	mset.srv.Debugf("Process inbound source msg on %s", m.subj)
 
 	si.last = time.Now()
 	node := mset.node
