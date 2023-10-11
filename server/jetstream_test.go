@@ -16773,6 +16773,8 @@ func TestJetStreamWorkQueueSourceRestart(t *testing.T) {
 	sub, err := js.PullSubscribe("foo", "dur", nats.BindStream("TEST"))
 	require_NoError(t, err)
 
+	time.Sleep(100 * time.Millisecond)
+
 	ci, err := js.ConsumerInfo("TEST", "dur")
 	require_NoError(t, err)
 	require_True(t, ci.NumPending == uint64(sent))
