@@ -6235,6 +6235,75 @@ func TestFileStoreFullStateMidBlockPastWAL(t *testing.T) {
 	})
 }
 
+func TestFileStoreCompactingBlocksOnSync(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize = 1000 // 20 msgs per block.
+		fcfg.SyncInterval = 100 * time.Millisecond
+		scfg := StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage, MaxMsgsPer: 1}
+
+		prf := func(context []byte) ([]byte, error) {
+			h := hmac.New(sha256.New, []byte("dlc22"))
+			if _, err := h.Write(context); err != nil {
+				return nil, err
+			}
+			return h.Sum(nil), nil
+		}
+		if fcfg.Cipher == NoCipher {
+			prf = nil
+		}
+
+		fs, err := newFileStoreWithCreated(fcfg, scfg, time.Now(), prf, nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// This yields an internal record length of 50 bytes. So 20 msgs per blk.
+		msg := bytes.Repeat([]byte("Z"), 19)
+		subjects := "ABCDEFGHIJKLMNOPQRST"
+		for _, subj := range subjects {
+			fs.StoreMsg(string(subj), nil, msg)
+		}
+		require_Equal(t, fs.numMsgBlocks(), 1)
+		total, reported, err := fs.Utilization()
+		require_NoError(t, err)
+
+		require_Equal(t, total, reported)
+
+		// Now start removing, since we are small this should not kick in any inline logic.
+		// Remove all interior messages, leave 1 and 20. So write B-S
+		for i := 1; i < 19; i++ {
+			fs.StoreMsg(string(subjects[i]), nil, msg)
+		}
+		require_Equal(t, fs.numMsgBlocks(), 2)
+
+		blkUtil := func() (uint64, uint64) {
+			fs.mu.RLock()
+			fmb := fs.blks[0]
+			fs.mu.RUnlock()
+			fmb.mu.RLock()
+			defer fmb.mu.RUnlock()
+			return fmb.rbytes, fmb.bytes
+		}
+
+		total, reported = blkUtil()
+		require_Equal(t, reported, 100)
+		// Raw bytes will be 1000, but due to compression could be less.
+		if fcfg.Compression != NoCompression {
+			require_True(t, total > reported)
+		} else {
+			require_Equal(t, total, 1000)
+		}
+
+		// Make sure the sync interval when kicked in compacts down to rbytes == 100.
+		checkFor(t, time.Second, 100*time.Millisecond, func() error {
+			if total, reported := blkUtil(); total <= reported {
+				return nil
+			}
+			return fmt.Errorf("Not compacted yet, raw %v vs reported %v",
+				friendlyBytes(total), friendlyBytes(reported))
+		})
+	})
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////
