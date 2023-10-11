@@ -6,7 +6,7 @@ vm:
 
 language: go
 go:
-  - "1.20.8"
+  - "1.20.10"
 
 go_import_path: github.com/nats-io/nats-server
 
@@ -38,7 +38,7 @@ jobs:
     - name: "Run all tests from all other packages"
       env: TEST_SUITE=non_srv_pkg_tests
     - name: "Compile with older Go release"
-      go: 1.19.12
+      go: "1.19"
       env: TEST_SUITE=build_only
 
 script: ./scripts/runTestsOnTravis.sh $TEST_SUITE
