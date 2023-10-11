@@ -4758,7 +4758,7 @@ func (fs *fileStore) syncBlocks() {
 		}
 
 		// Check if we need to sync. We will not hold lock during actual sync.
-		needSync := mb.needSync
+		needSync, fn := mb.needSync, mb.mfn
 		if needSync {
 			// Flush anything that may be pending.
 			mb.flushPendingMsgsLocked()
@@ -4768,7 +4768,7 @@ func (fs *fileStore) syncBlocks() {
 		// Check if we need to sync.
 		// This is done not holding any locks.
 		if needSync {
-			if fd, _ := os.OpenFile(mb.mfn, os.O_RDWR, defaultFilePerms); fd != nil {
+			if fd, _ := os.OpenFile(fn, os.O_RDWR, defaultFilePerms); fd != nil {
 				canClear := fd.Sync() == nil
 				fd.Close()
 				// Only clear sync flag on success.
