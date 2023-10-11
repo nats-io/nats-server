@@ -18,6 +18,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -5305,7 +5306,7 @@ func TestJetStreamClusterCheckFileStoreBlkSizes(t *testing.T) {
 	nc, js := jsClientConnect(t, c.randomServer())
 	defer nc.Close()
 
-	// Nowmal Stream
+	// Normal Stream
 	_, err := js.AddStream(&nats.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"*"},
@@ -5383,4 +5384,178 @@ func TestJetStreamClusterCheckFileStoreBlkSizes(t *testing.T) {
 		fs = n.(*raft).wal.(*fileStore)
 		require_True(t, blkSize(fs) == defaultMediumBlockSize)
 	}
+}
+
+func TestJetStreamClusterDetectOrphanNRGs(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Normal Stream
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"*"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "DC",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	// We will force an orphan for a certain server.
+	s := c.randomNonStreamLeader(globalAccountName, "TEST")
+
+	mset, err := s.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	sgn := mset.raftNode().Group()
+	mset.clearRaftNode()
+
+	o := mset.lookupConsumer("DC")
+	require_True(t, o != nil)
+	ogn := o.raftNode().Group()
+	o.clearRaftNode()
+
+	require_NoError(t, js.DeleteStream("TEST"))
+
+	// Check that we do in fact have orphans.
+	require_True(t, s.numRaftNodes() > 1)
+
+	// This function will detect orphans and clean them up.
+	s.checkForNRGOrphans()
+
+	// Should only be meta NRG left.
+	require_True(t, s.numRaftNodes() == 1)
+	require_True(t, s.lookupRaftNode(sgn) == nil)
+	require_True(t, s.lookupRaftNode(ogn) == nil)
+}
+
+func TestJetStreamClusterRestartThenScaleStreamReplicas(t *testing.T) {
+	t.Skip("This test takes too long, need to make shorter")
+
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	s := c.randomNonLeader()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	nc2, producer := jsClientConnect(t, s)
+	defer nc2.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	end := time.Now().Add(2 * time.Second)
+	for time.Now().Before(end) {
+		producer.Publish("foo", []byte(strings.Repeat("A", 128)))
+		time.Sleep(time.Millisecond)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		sub, err := js.PullSubscribe("foo", fmt.Sprintf("C-%d", i))
+		require_NoError(t, err)
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range time.NewTicker(10 * time.Millisecond).C {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+
+				msgs, err := sub.Fetch(1)
+				if err != nil && !errors.Is(err, nats.ErrTimeout) && !errors.Is(err, nats.ErrConnectionClosed) {
+					t.Logf("Pull Error: %v", err)
+				}
+				for _, msg := range msgs {
+					msg.Ack()
+				}
+			}
+		}()
+	}
+	c.lameDuckRestartAll()
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	// Swap the logger to try to detect the condition after the restart.
+	loggers := make([]*captureDebugLogger, 3)
+	for i, srv := range c.servers {
+		l := &captureDebugLogger{dbgCh: make(chan string, 10)}
+		loggers[i] = l
+		srv.SetLogger(l, true, false)
+	}
+	condition := `Direct proposal ignored, not leader (state: CLOSED)`
+	errCh := make(chan error, 10)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case dl := <-loggers[0].dbgCh:
+				if strings.Contains(dl, condition) {
+					errCh <- fmt.Errorf(condition)
+				}
+			case dl := <-loggers[1].dbgCh:
+				if strings.Contains(dl, condition) {
+					errCh <- fmt.Errorf(condition)
+				}
+			case dl := <-loggers[2].dbgCh:
+				if strings.Contains(dl, condition) {
+					errCh <- fmt.Errorf(condition)
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// Start publishing again for a while.
+	end = time.Now().Add(2 * time.Second)
+	for time.Now().Before(end) {
+		producer.Publish("foo", []byte(strings.Repeat("A", 128)))
+		time.Sleep(time.Millisecond)
+	}
+
+	// Try to do a stream edit back to R=1 after doing all the upgrade.
+	info, _ := js.StreamInfo("TEST")
+	sconfig := info.Config
+	sconfig.Replicas = 1
+	_, err = js.UpdateStream(&sconfig)
+	require_NoError(t, err)
+
+	// Leave running for some time after the update.
+	time.Sleep(2 * time.Second)
+
+	info, _ = js.StreamInfo("TEST")
+	sconfig = info.Config
+	sconfig.Replicas = 3
+	_, err = js.UpdateStream(&sconfig)
+	require_NoError(t, err)
+
+	select {
+	case e := <-errCh:
+		t.Fatalf("Bad condition on raft node: %v", e)
+	case <-time.After(2 * time.Second):
+		// Done
+	}
+
+	// Stop goroutines and wait for them to exit.
+	cancel()
+	wg.Wait()
 }

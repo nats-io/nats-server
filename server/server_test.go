@@ -19,6 +19,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -2067,4 +2068,30 @@ func TestServerRateLimitLogging(t *testing.T) {
 	c2.RateLimitWarnf("Warning number 2")
 
 	checkLog(c1, c2)
+}
+
+// https://github.com/nats-io/nats-server/discussions/4535
+func TestServerAuthBlockAndSysAccounts(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		server_name: s-test
+		authorization {
+			users = [ { user: "u", password: "pass"} ]
+		}
+		accounts {
+			$SYS: { users: [ { user: admin, password: pwd } ] }
+		}
+	`))
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// This should work of course.
+	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("u", "pass"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	// This should not.
+	_, err = nats.Connect(s.ClientURL())
+	require_Error(t, err, nats.ErrAuthorization, errors.New("nats: Authorization Violation"))
 }

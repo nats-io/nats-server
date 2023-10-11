@@ -5561,3 +5561,78 @@ func TestLeafNodeWithWeightedDQResponsesWithStreamImportAccountsWithUnsub(t *tes
 	closeSubs(rsubs)
 	checkFor(t, time.Second, 200*time.Millisecond, checkInterest)
 }
+
+// https://github.com/nats-io/nats-server/issues/4367
+func TestLeafNodeDQMultiAccountExportImport(t *testing.T) {
+	bConf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		server_name: cluster-b-0
+		accounts {
+			$SYS: { users: [ { user: admin, password: pwd } ] },
+			AGG: {
+				exports: [ { service: "PING.>" } ]
+				users: [ { user: agg, password: agg } ]
+			}
+		}
+		leaf { listen: 127.0.0.1:-1 }
+	`))
+
+	sb, ob := RunServerWithConfig(bConf)
+	defer sb.Shutdown()
+
+	tmpl := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: { store_dir: '%s' }
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+		accounts {
+			$SYS: { users: [ { user: admin, password: pwd } ] },
+			A: {
+				mappings: { "A.>" : ">" }
+				exports: [ { service: A.> } ]
+				users: [ { user: a, password: a } ]
+			},
+			AGG: {
+				imports: [ { service: { subject: A.>, account: A } } ]
+				users: [ { user: agg, password: agg } ]
+			},
+		}
+		leaf {
+			remotes: [ {
+				urls: [ nats-leaf://agg:agg@127.0.0.1:{LEAF_PORT} ]
+				account: AGG
+			} ]
+		}
+	`
+	tmpl = strings.Replace(tmpl, "{LEAF_PORT}", fmt.Sprintf("%d", ob.LeafNode.Port), 1)
+	c := createJetStreamCluster(t, tmpl, "cluster-a", "cluster-a-", 3, 22110, false)
+	defer c.shutdown()
+
+	// Make sure all servers are connected via leafnode to the hub, the b server.
+	for _, s := range c.servers {
+		checkLeafNodeConnectedCount(t, s, 1)
+	}
+
+	// Connect to a server in the cluster and create a DQ listener.
+	nc, _ := jsClientConnect(t, c.randomServer(), nats.UserInfo("a", "a"))
+	defer nc.Close()
+
+	var got atomic.Int32
+
+	natsQueueSub(t, nc, "PING", "Q", func(m *nats.Msg) {
+		got.Add(1)
+		m.Respond([]byte("REPLY"))
+	})
+
+	// Now connect to B and send the request.
+	ncb, _ := jsClientConnect(t, sb, nats.UserInfo("agg", "agg"))
+	defer ncb.Close()
+
+	_, err := ncb.Request("A.PING", []byte("REQUEST"), time.Second)
+	require_NoError(t, err)
+	require_Equal(t, got.Load(), 1)
+}

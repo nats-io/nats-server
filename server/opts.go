@@ -345,6 +345,9 @@ type Options struct {
 
 	// OCSP Cache config enables next-gen cache for OCSP features
 	OCSPCacheConfig *OCSPResponseCacheConfig
+
+	// Used to mark that we had a top level authorization block.
+	authBlockDefined bool
 }
 
 // WebsocketOpts are options for websocket
@@ -829,7 +832,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			*errors = append(*errors, err)
 			return
 		}
-
+		o.authBlockDefined = true
 		o.Username = auth.user
 		o.Password = auth.pass
 		o.Authorization = auth.token
