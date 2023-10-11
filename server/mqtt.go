@@ -2891,10 +2891,11 @@ func (sess *mqttSession) trackAsPubRel(pi uint16, jsAckSubject string) {
 
 	sseq, _, _ := ackReplyInfo(jsAckSubject)
 
-	var sseqToPi map[uint64]uint16
 	if sess.cpending == nil {
 		sess.cpending = make(map[string]map[uint64]uint16)
-	} else if sseqToPi = sess.cpending[jsDur]; sseqToPi == nil {
+	}
+	sseqToPi := sess.cpending[jsDur]
+	if sseqToPi == nil {
 		sseqToPi = make(map[uint64]uint16)
 		sess.cpending[jsDur] = sseqToPi
 	}
