@@ -21931,3 +21931,61 @@ func TestJetStreamFilteredSubjectUsesNewConsumerCreateSubject(t *testing.T) {
 		},
 	})
 }
+
+// Make sure when we downgrade history to a smaller number that the account info
+// is properly updated and all keys are still accessible.
+// There was a bug calculating next first that was not taking into account the dbit slots.
+func TestJetStreamKVReductionInHistory(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	startHistory := 4
+	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: "TEST", History: uint8(startHistory)})
+	require_NoError(t, err)
+
+	numKeys, msg := 1000, bytes.Repeat([]byte("ABC"), 330) // ~1000bytes
+	for {
+		key := fmt.Sprintf("%X", rand.Intn(numKeys)+1)
+		_, err = kv.Put(key, msg)
+		require_NoError(t, err)
+		status, err := kv.Status()
+		require_NoError(t, err)
+		if status.Values() >= uint64(startHistory*numKeys) {
+			break
+		}
+	}
+	info, err := js.AccountInfo()
+	require_NoError(t, err)
+
+	checkAllKeys := func() {
+		// Make sure we can retrieve all of the keys.
+		keys, err := kv.Keys()
+		require_NoError(t, err)
+		require_Equal(t, len(keys), numKeys)
+		for _, key := range keys {
+			_, err := kv.Get(key)
+			require_NoError(t, err)
+		}
+	}
+
+	// Quick sanity check.
+	checkAllKeys()
+
+	si, err := js.StreamInfo("KV_TEST")
+	require_NoError(t, err)
+	// Adjust down to history of 1.
+	cfg := si.Config
+	cfg.MaxMsgsPerSubject = 1
+	_, err = js.UpdateStream(&cfg)
+	require_NoError(t, err)
+	// Make sure the accounting was updated.
+	ninfo, err := js.AccountInfo()
+	require_NoError(t, err)
+	require_True(t, info.Store > ninfo.Store)
+
+	// Make sure all keys still accessible.
+	checkAllKeys()
+}

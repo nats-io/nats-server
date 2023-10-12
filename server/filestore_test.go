@@ -6304,6 +6304,36 @@ func TestFileStoreCompactingBlocksOnSync(t *testing.T) {
 	})
 }
 
+// Make sure a call to Compact() updates PSIM correctly.
+func TestFileStoreCompactAndPSIMWhenDeletingBlocks(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 512},
+		StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	subj, msg := "A", bytes.Repeat([]byte("ABC"), 33) // ~100bytes
+
+	// Add in 10 As
+	for i := 0; i < 10; i++ {
+		fs.StoreMsg(subj, nil, msg)
+	}
+	require_Equal(t, fs.numMsgBlocks(), 4)
+
+	// Should leave 1.
+	n, err := fs.Compact(10)
+	require_NoError(t, err)
+	require_Equal(t, n, 9)
+	require_Equal(t, fs.numMsgBlocks(), 1)
+
+	fs.mu.RLock()
+	psi := fs.psim[subj]
+	fs.mu.RUnlock()
+
+	require_Equal(t, psi.total, 1)
+	require_Equal(t, psi.fblk, psi.lblk)
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////
