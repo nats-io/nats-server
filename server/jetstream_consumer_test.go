@@ -534,6 +534,81 @@ func TestJetStreamConsumerActions(t *testing.T) {
 	require_Error(t, err)
 }
 
+func TestJetStreamConsumerActionsOnWorkQueuePolicyStream(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+	acc := s.GlobalAccount()
+
+	mset, err := acc.addStream(&StreamConfig{
+		Name:      "TEST",
+		Retention: WorkQueuePolicy,
+		Subjects:  []string{"one", "two", "three", "four", "five.>"},
+	})
+	require_NoError(t, err)
+
+	_, err = mset.addConsumerWithAction(&ConsumerConfig{
+		Durable:        "C1",
+		FilterSubjects: []string{"one", "two"},
+		AckPolicy:      AckExplicit,
+	}, ActionCreate)
+	require_NoError(t, err)
+
+	_, err = mset.addConsumerWithAction(&ConsumerConfig{
+		Durable:        "C2",
+		FilterSubjects: []string{"three", "four"},
+		AckPolicy:      AckExplicit,
+	}, ActionCreate)
+	require_NoError(t, err)
+
+	_, err = mset.addConsumerWithAction(&ConsumerConfig{
+		Durable:        "C3",
+		FilterSubjects: []string{"five.*"},
+		AckPolicy:      AckExplicit,
+	}, ActionCreate)
+	require_NoError(t, err)
+
+	// Updating a consumer by removing a previous subject filter.
+	_, err = mset.addConsumerWithAction(&ConsumerConfig{
+		Durable:        "C1",
+		FilterSubjects: []string{"one"}, // Remove a subject.
+		AckPolicy:      AckExplicit,
+	}, ActionUpdate)
+	require_NoError(t, err)
+
+	// Updating a consumer without overlapping subjects.
+	_, err = mset.addConsumerWithAction(&ConsumerConfig{
+		Durable:        "C2",
+		FilterSubjects: []string{"three", "four", "two"}, // Add previously removed subject.
+		AckPolicy:      AckExplicit,
+	}, ActionUpdate)
+	require_NoError(t, err)
+
+	// Creating a consumer with overlapping subjects should return an error.
+	_, err = mset.addConsumerWithAction(&ConsumerConfig{
+		Durable:        "C4",
+		FilterSubjects: []string{"one", "two", "three", "four"},
+		AckPolicy:      AckExplicit,
+	}, ActionCreate)
+	require_Error(t, err)
+	if !IsNatsErr(err, JSConsumerWQConsumerNotUniqueErr) {
+		t.Errorf("want error %q, got %q", ApiErrors[JSConsumerWQConsumerNotUniqueErr], err)
+	}
+
+	// Updating a consumer with overlapping subjects should return an error.
+	_, err = mset.addConsumerWithAction(&ConsumerConfig{
+		Durable:        "C3",
+		FilterSubjects: []string{"one", "two", "three", "four"},
+		AckPolicy:      AckExplicit,
+	}, ActionUpdate)
+	require_Error(t, err)
+	if !IsNatsErr(err, JSConsumerWQConsumerNotUniqueErr) {
+		t.Errorf("want error %q, got %q", ApiErrors[JSConsumerWQConsumerNotUniqueErr], err)
+	}
+}
+
 func TestJetStreamConsumerActionsViaAPI(t *testing.T) {
 
 	s := RunBasicJetStreamServer(t)

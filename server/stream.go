@@ -5266,9 +5266,13 @@ func (mset *stream) Store() StreamStore {
 
 // Determines if the new proposed partition is unique amongst all consumers.
 // Lock should be held.
-func (mset *stream) partitionUnique(partitions []string) bool {
+func (mset *stream) partitionUnique(name string, partitions []string) bool {
 	for _, partition := range partitions {
-		for _, o := range mset.consumers {
+		for n, o := range mset.consumers {
+			// Skip the consumer being checked.
+			if n == name {
+				continue
+			}
 			if o.subjf == nil {
 				return false
 			}

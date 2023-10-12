@@ -767,6 +767,13 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 			if action == ActionCreate && !reflect.DeepEqual(*config, eo.config()) {
 				return nil, NewJSConsumerAlreadyExistsError()
 			}
+			// Check for overlapping subjects.
+			if mset.cfg.Retention == WorkQueuePolicy {
+				subjects := gatherSubjectFilters(config.FilterSubject, config.FilterSubjects)
+				if !mset.partitionUnique(cName, subjects) {
+					return nil, NewJSConsumerWQConsumerNotUniqueError()
+				}
+			}
 			err := eo.updateConfig(config)
 			if err == nil {
 				return eo, nil
@@ -805,7 +812,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 			if len(subjects) == 0 {
 				mset.mu.Unlock()
 				return nil, NewJSConsumerWQMultipleUnfilteredError()
-			} else if !mset.partitionUnique(subjects) {
+			} else if !mset.partitionUnique(cName, subjects) {
 				// Prior to v2.9.7, on a stream with WorkQueue policy, the servers
 				// were not catching the error of having multiple consumers with
 				// overlapping filter subjects depending on the scope, for instance
