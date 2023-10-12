@@ -4740,7 +4740,7 @@ func (fs *fileStore) syncBlocks() {
 	lmb := fs.lmb
 	fs.mu.RUnlock()
 
-	var shouldWriteState bool
+	var markDirty bool
 	for _, mb := range blks {
 		// Do actual sync. Hold lock for consistency.
 		mb.mu.Lock()
@@ -4756,7 +4756,7 @@ func (fs *fileStore) syncBlocks() {
 		// Do not compact last mb.
 		if mb != lmb && mb.ensureRawBytesLoaded() == nil && mb.rbytes > mb.bytes {
 			mb.compact()
-			shouldWriteState = true
+			markDirty = true
 		}
 
 		// Check if we need to sync. We will not hold lock during actual sync.
@@ -4787,12 +4787,11 @@ func (fs *fileStore) syncBlocks() {
 	fs.syncTmr = time.AfterFunc(fs.fcfg.SyncInterval, fs.syncBlocks)
 	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile)
 	syncAlways := fs.fcfg.SyncAlways
+	if markDirty {
+		fs.dirty++
+	}
 	fs.mu.Unlock()
 
-	// Check if we should write out our state due to compaction of one or more msg blocks.
-	if shouldWriteState {
-		fs.writeFullState()
-	}
 	// Sync state file if we are not running with sync always.
 	if !syncAlways {
 		if fd, _ := os.OpenFile(fn, os.O_RDWR, defaultFilePerms); fd != nil {
