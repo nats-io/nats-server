@@ -486,7 +486,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 
 	// If we have max msgs per subject make sure the is also enforced.
 	if fs.cfg.MaxMsgsPer > 0 {
-		fs.enforceMsgPerSubjectLimit()
+		fs.enforceMsgPerSubjectLimit(false)
 	}
 
 	// Grab first sequence for check below while we have lock.
@@ -589,7 +589,7 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 	}
 
 	if fs.cfg.MaxMsgsPer > 0 && fs.cfg.MaxMsgsPer < old_cfg.MaxMsgsPer {
-		fs.enforceMsgPerSubjectLimit()
+		fs.enforceMsgPerSubjectLimit(true)
 	}
 	fs.mu.Unlock()
 
@@ -1907,13 +1907,10 @@ func (fs *fileStore) expireMsgsOnRecover() {
 		}
 		// Make sure we do subject cleanup as well.
 		mb.ensurePerSubjectInfoLoaded()
-		for subj := range mb.fss {
-			fs.removePerSubject(subj)
-		}
-		// Make sure we do subject cleanup as well.
-		mb.ensurePerSubjectInfoLoaded()
-		for subj := range mb.fss {
-			fs.removePerSubject(subj)
+		for subj, ss := range mb.fss {
+			for i := uint64(0); i < ss.Msgs; i++ {
+				fs.removePerSubject(subj)
+			}
 		}
 		mb.dirtyCloseWithRemove(true)
 		deleted++
@@ -3190,14 +3187,16 @@ func (fs *fileStore) enforceBytesLimit() {
 // We will make sure to go through all msg blocks etc. but in practice this
 // will most likely only be the last one, so can take a more conservative approach.
 // Lock should be held.
-func (fs *fileStore) enforceMsgPerSubjectLimit() {
+func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 	maxMsgsPer := uint64(fs.cfg.MaxMsgsPer)
 
-	// We want to suppress callbacks from remove during this process
+	// We may want to suppress callbacks from remove during this process
 	// since these should have already been deleted and accounted for.
-	cb := fs.scb
-	fs.scb = nil
-	defer func() { fs.scb = cb }()
+	if !fireCallback {
+		cb := fs.scb
+		fs.scb = nil
+		defer func() { fs.scb = cb }()
+	}
 
 	var numMsgs uint64
 
@@ -3251,6 +3250,9 @@ func (fs *fileStore) enforceMsgPerSubjectLimit() {
 			}
 			// Grab the ss entry for this subject in case sparse.
 			mb.mu.Lock()
+			if mb.cacheNotLoaded() {
+				mb.loadMsgsWithLock()
+			}
 			mb.ensurePerSubjectInfoLoaded()
 			ss := mb.fss[subj]
 			if ss != nil && ss.firstNeedsUpdate {
@@ -6227,8 +6229,10 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 		bytes += mb.bytes
 		// Make sure we do subject cleanup as well.
 		mb.ensurePerSubjectInfoLoaded()
-		for subj := range mb.fss {
-			fs.removePerSubject(subj)
+		for subj, ss := range mb.fss {
+			for i := uint64(0); i < ss.Msgs; i++ {
+				fs.removePerSubject(subj)
+			}
 		}
 		// Now close.
 		mb.dirtyCloseWithRemove(true)
@@ -6671,7 +6675,12 @@ func (mb *msgBlock) recalculateFirstForSubj(subj string, startSeq uint64, ss *Si
 
 	var le = binary.LittleEndian
 	for slot := startSlot; slot < len(mb.cache.idx); slot++ {
-		li := int(mb.cache.idx[slot]&^hbit) - mb.cache.off
+		bi := mb.cache.idx[slot] &^ hbit
+		if bi == dbit {
+			// delete marker so skip.
+			continue
+		}
+		li := int(bi) - mb.cache.off
 		if li >= len(mb.cache.buf) {
 			ss.First = ss.Last
 			return
@@ -6681,10 +6690,7 @@ func (mb *msgBlock) recalculateFirstForSubj(subj string, startSeq uint64, ss *Si
 		slen := int(le.Uint16(hdr[20:]))
 		if subj == string(buf[msgHdrSize:msgHdrSize+slen]) {
 			seq := le.Uint64(hdr[4:])
-			if seq < mb.first.seq || seq&ebit != 0 {
-				continue
-			}
-			if mb.dmap.Exists(seq) {
+			if seq < mb.first.seq || seq&ebit != 0 || mb.dmap.Exists(seq) {
 				continue
 			}
 			ss.First = seq
