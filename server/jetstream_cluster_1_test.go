@@ -145,6 +145,59 @@ func TestJetStreamClusterStreamLimitWithAccountDefaults(t *testing.T) {
 	require_Contains(t, err.Error(), "no suitable peers for placement", "insufficient storage")
 }
 
+func TestJetStreamClusterInfoRaftGroup(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R1S", 3)
+	defer c.shutdown()
+
+	s := c.randomNonLeader()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	acc := s.GlobalAccount()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar"},
+		Storage:  nats.FileStorage,
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	nfoResp, err := nc.Request("$JS.API.STREAM.INFO.TEST", nil, time.Second)
+	require_NoError(t, err)
+
+	var si StreamInfo
+	err = json.Unmarshal(nfoResp.Data, &si)
+	require_NoError(t, err)
+
+	if si.Cluster == nil {
+		t.Fatalf("Expected cluster info, got none")
+	}
+
+	stream, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+
+	if si.Cluster.RaftGroup != stream.raftGroup().Name {
+		t.Fatalf("Expected raft group %q to equal %q", si.Cluster.RaftGroup, stream.raftGroup().Name)
+	}
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "DURABLE", Replicas: 3})
+	require_NoError(t, err)
+
+	consumer := stream.lookupConsumer("DURABLE")
+
+	var ci ConsumerInfo
+	nfoResp, err = nc.Request("$JS.API.CONSUMER.INFO.TEST.DURABLE", nil, time.Second)
+	require_NoError(t, err)
+
+	err = json.Unmarshal(nfoResp.Data, &ci)
+	require_NoError(t, err)
+
+	if ci.Cluster.RaftGroup != consumer.raftGroup().Name {
+		t.Fatalf("Expected raft group %q to equal %q", ci.Cluster.RaftGroup, consumer.raftGroup().Name)
+	}
+}
+
 func TestJetStreamClusterSingleReplicaStreams(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R1S", 3)
 	defer c.shutdown()

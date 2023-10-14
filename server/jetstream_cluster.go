@@ -6472,7 +6472,7 @@ func (s *Server) jsClusteredStreamListRequest(acc *Account, ci *ClientInfo, filt
 	s.sys.replies[inbox] = func(sub *subscription, _ *client, _ *Account, subject, _ string, msg []byte) {
 		var si StreamInfo
 		if err := json.Unmarshal(msg, &si); err != nil {
-			s.Warnf("Error unmarshaling clustered stream info response:%v", err)
+			s.Warnf("Error unmarshalling clustered stream info response:%v", err)
 			return
 		}
 		select {
@@ -8121,7 +8121,7 @@ func (mset *stream) handleClusterSyncRequest(sub *subscription, c *client, _ *Ac
 func (js *jetStream) offlineClusterInfo(rg *raftGroup) *ClusterInfo {
 	s := js.srv
 
-	ci := &ClusterInfo{Name: s.ClusterName()}
+	ci := &ClusterInfo{Name: s.ClusterName(), RaftGroup: rg.Name}
 	for _, peer := range rg.Peers {
 		if sir, ok := s.nodeToInfo.Load(peer); ok && sir != nil {
 			si := sir.(nodeInfo)
@@ -8150,8 +8150,9 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 
 	n := rg.node
 	ci := &ClusterInfo{
-		Name:   s.cachedClusterName(),
-		Leader: s.serverNameForNode(n.GroupLeader()),
+		Name:      s.cachedClusterName(),
+		Leader:    s.serverNameForNode(n.GroupLeader()),
+		RaftGroup: rg.Name,
 	}
 
 	now := time.Now()
