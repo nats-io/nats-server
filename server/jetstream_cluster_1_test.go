@@ -181,6 +181,15 @@ func TestJetStreamClusterInfoRaftGroup(t *testing.T) {
 		t.Fatalf("Expected raft group %q to equal %q", si.Cluster.RaftGroup, stream.raftGroup().Name)
 	}
 
+	var sscfg StreamConfig
+	rCfgData, err := os.ReadFile(filepath.Join(s.opts.StoreDir, "jetstream", "$SYS", "_js_", stream.raftGroup().Name, "meta.inf"))
+	require_NoError(t, err)
+	err = json.Unmarshal(rCfgData, &sscfg)
+	require_NoError(t, err)
+	if !reflect.DeepEqual(sscfg.Metadata, map[string]string{"account": "$G", "stream": "TEST", "type": "stream"}) {
+		t.Fatalf("Invalid raft stream metadata: %v", sscfg.Metadata)
+	}
+
 	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "DURABLE", Replicas: 3})
 	require_NoError(t, err)
 
@@ -189,6 +198,15 @@ func TestJetStreamClusterInfoRaftGroup(t *testing.T) {
 	var ci ConsumerInfo
 	nfoResp, err = nc.Request("$JS.API.CONSUMER.INFO.TEST.DURABLE", nil, time.Second)
 	require_NoError(t, err)
+
+	var cscfg ConsumerConfig
+	rCfgData, err = os.ReadFile(filepath.Join(s.opts.StoreDir, "jetstream", "$SYS", "_js_", consumer.raftGroup().Name, "meta.inf"))
+	require_NoError(t, err)
+	err = json.Unmarshal(rCfgData, &cscfg)
+	require_NoError(t, err)
+	if !reflect.DeepEqual(cscfg.Metadata, map[string]string{"account": "$G", "consumer": "DURABLE", "stream": "TEST", "type": "consumer"}) {
+		t.Fatalf("Invalid raft stream metadata: %v", cscfg.Metadata)
+	}
 
 	err = json.Unmarshal(nfoResp.Data, &ci)
 	require_NoError(t, err)
