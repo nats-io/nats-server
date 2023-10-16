@@ -6100,3 +6100,41 @@ func TestConfigReloadLeafNodeCompressionS2Auto(t *testing.T) {
 		t.Fatalf("Expected compression info to have stayed the same, was %q - %p, got %q - %p", cm, cw, ncm, ncw)
 	}
 }
+
+func TestConfigReloadNoPanicOnShutdown(t *testing.T) {
+	tmpl := `
+		port: -1
+		jetstream: true
+		accounts {
+			A {
+				users: [{user: A, password: pwd}]
+				%s
+			}
+			B {
+				users: [{user: B, password: pwd}]
+			}
+		}
+	`
+	for i := 0; i < 50; i++ {
+		conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, _EMPTY_)))
+		s, _ := RunServerWithConfig(conf)
+		// Don't use a defer s.Shutdown() here since it would prevent the panic
+		// to be reported (but the test would still fail because of a runtime timeout).
+
+		err := os.WriteFile(conf, []byte(fmt.Sprintf(tmpl, "jetstream: true")), 0666)
+		require_NoError(t, err)
+
+		wg := sync.WaitGroup{}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			time.Sleep(10 * time.Millisecond)
+			s.Shutdown()
+		}()
+
+		time.Sleep(8 * time.Millisecond)
+		err = s.Reload()
+		require_NoError(t, err)
+		wg.Wait()
+	}
+}

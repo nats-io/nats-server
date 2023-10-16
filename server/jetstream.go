@@ -1038,6 +1038,10 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 	}
 
 	s.mu.RLock()
+	if s.sys == nil {
+		s.mu.RUnlock()
+		return ErrServerNotRunning
+	}
 	sendq := s.sys.sendq
 	s.mu.RUnlock()
 

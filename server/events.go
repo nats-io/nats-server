@@ -1598,14 +1598,16 @@ func (s *Server) shutdownEventing() {
 	s.mu.Lock()
 	clearTimer(&s.sys.sweeper)
 	clearTimer(&s.sys.stmr)
-	sys := s.sys
+	rc := s.sys.resetCh
+	s.sys.resetCh = nil
+	wg := &s.sys.wg
 	s.mu.Unlock()
 
 	// We will queue up a shutdown event and wait for the
 	// internal send loop to exit.
 	s.sendShutdownEvent()
-	sys.wg.Wait()
-	close(sys.resetCh)
+	wg.Wait()
+	close(rc)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
