@@ -3101,6 +3101,26 @@ func TestMQTTRetainedMsgNetworkUpdates(t *testing.T) {
 	}
 }
 
+func TestMQTTRetainedMsgDel(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+	mc, _ := testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mc.Close()
+
+	c := testMQTTGetClient(t, s, "sub")
+	asm := c.mqtt.asm
+	var i uint64
+	for i = 0; i < 3; i++ {
+		rf := &mqttRetainedMsgRef{sseq: i}
+		asm.handleRetainedMsg("subject", rf)
+	}
+	asm.handleRetainedMsgDel("subject", 2)
+	if asm.sl.count > 0 {
+		t.Fatalf("all retained messages subs should be removed, but %d still present", asm.sl.count)
+	}
+}
+
 func TestMQTTRetainedMsgMigration(t *testing.T) {
 	o := testMQTTDefaultOptions()
 	s := testMQTTRunServer(t, o)

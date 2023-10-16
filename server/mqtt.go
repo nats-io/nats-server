@@ -2029,9 +2029,6 @@ func (as *mqttAccountSessionManager) sendJSAPIrequests(s *Server, c *client, acc
 // Add/Replace this message from the retained messages map.
 // If a message for this topic already existed, the existing record is updated
 // with the provided information.
-// This function will return the stream sequence of the record before its update,
-// or 0 if the record was added instead of updated.
-//
 // Lock not held on entry.
 func (as *mqttAccountSessionManager) handleRetainedMsg(key string, rm *mqttRetainedMsgRef) {
 	as.mu.Lock()
@@ -2040,7 +2037,7 @@ func (as *mqttAccountSessionManager) handleRetainedMsg(key string, rm *mqttRetai
 		as.retmsgs = make(map[string]*mqttRetainedMsgRef)
 		as.sl = NewSublistWithCache()
 	} else {
-		// Check if we already had one. If so, update the existing one.
+		// Check if we already had one retained message. If so, update the existing one.
 		if erm, exists := as.retmsgs[key]; exists {
 			// If the new sequence is below the floor or the existing one,
 			// then ignore the new one.
@@ -2057,6 +2054,7 @@ func (as *mqttAccountSessionManager) handleRetainedMsg(key string, rm *mqttRetai
 				erm.sub = &subscription{subject: []byte(key)}
 				as.sl.Insert(erm.sub)
 			}
+			return
 		}
 	}
 	rm.sub = &subscription{subject: []byte(key)}
