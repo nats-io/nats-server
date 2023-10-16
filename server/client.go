@@ -141,6 +141,7 @@ const (
 	expectConnect                                 // Marks if this connection is expected to send a CONNECT
 	connectProcessFinished                        // Marks if this connection has finished the connect process.
 	compressionNegotiated                         // Marks if this connection has negotiated compression level with remote.
+	didTLSFirst                                   // Marks if this connection requested and was accepted doing the TLS handshake first (prior to INFO).
 )
 
 // set the flag (would be equivalent to set the boolean to true)

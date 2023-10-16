@@ -82,6 +82,7 @@ func TestTLSInProcessConnection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer nc.Close()
 
 	if nc.TLSRequired() {
 		t.Fatalf("Shouldn't have required TLS for in-process connection")

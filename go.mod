@@ -6,7 +6,7 @@ require (
 	github.com/klauspost/compress v1.17.0
 	github.com/minio/highwayhash v1.0.2
 	github.com/nats-io/jwt/v2 v2.5.2
-	github.com/nats-io/nats.go v1.30.2
+	github.com/nats-io/nats.go v1.30.3-0.20231009181226-1941a1a4f14f
 	github.com/nats-io/nkeys v0.4.5
 	github.com/nats-io/nuid v1.0.1
 	go.uber.org/automaxprocs v1.5.3

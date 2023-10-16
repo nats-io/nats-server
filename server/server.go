@@ -2573,6 +2573,9 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 	// Alert of TLS enabled.
 	if opts.TLSConfig != nil {
 		s.Noticef("TLS required for client connections")
+		if opts.TLSHandshakeFirst && opts.TLSHandshakeFirstFallback == 0 {
+			s.Warnf("Clients that are not using \"TLS Handshake First\" option will fail to connect")
+		}
 	}
 
 	// If server was started with RANDOM_PORT (-1), opts.Port would be equal
@@ -3041,10 +3044,37 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 
 	c.Debugf("Client connection created")
 
-	// Send our information.
-	// Need to be sent in place since writeLoop cannot be started until
-	// TLS handshake is done (if applicable).
-	c.sendProtoNow(c.generateClientInfoJSON(info))
+	// Save info.TLSRequired value since we may neeed to change it back and forth.
+	orgInfoTLSReq := info.TLSRequired
+
+	var tlsFirstFallback time.Duration
+	// Check if we should do TLS first.
+	tlsFirst := opts.TLSConfig != nil && opts.TLSHandshakeFirst
+	if tlsFirst {
+		// Make sure info.TLSRequired is set to true (it could be false
+		// if AllowNonTLS is enabled).
+		info.TLSRequired = true
+		// Get the fallback delay value if applicable.
+		if f := opts.TLSHandshakeFirstFallback; f > 0 {
+			tlsFirstFallback = f
+		} else if inProcess {
+			// For in-process connection, we will always have a fallback
+			// delay. It allows support for non-TLS, TLS and "TLS First"
+			// in-process clients to successfully connect.
+			tlsFirstFallback = DEFAULT_TLS_HANDSHAKE_FIRST_FALLBACK_DELAY
+		}
+	}
+
+	// Decide if we are going to require TLS or not and generate INFO json.
+	tlsRequired := info.TLSRequired
+	infoBytes := c.generateClientInfoJSON(info)
+
+	// Send our information, except if TLS and TLSHandshakeFirst is requested.
+	if !tlsFirst {
+		// Need to be sent in place since writeLoop cannot be started until
+		// TLS handshake is done (if applicable).
+		c.sendProtoNow(infoBytes)
+	}
 
 	// Unlock to register
 	c.mu.Unlock()
@@ -3077,20 +3107,50 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 	}
 	s.clients[c.cid] = c
 
-	tlsRequired := info.TLSRequired
 	s.mu.Unlock()
 
 	// Re-Grab lock
 	c.mu.Lock()
 
-	// Connection could have been closed while sending the INFO proto.
 	isClosed := c.isClosed()
-
 	var pre []byte
+	// We need first to check for "TLS First" fallback delay.
+	if !isClosed && tlsFirstFallback > 0 {
+		// We wait and see if we are getting any data. Since we did not send
+		// the INFO protocol yet, only clients that use TLS first should be
+		// sending data (the TLS handshake). We don't really check the content:
+		// if it is a rogue agent and not an actual client performing the
+		// TLS handshake, the error will be detected when performing the
+		// handshake on our side.
+		pre = make([]byte, 4)
+		c.nc.SetReadDeadline(time.Now().Add(tlsFirstFallback))
+		n, _ := io.ReadFull(c.nc, pre[:])
+		c.nc.SetReadDeadline(time.Time{})
+		// If we get any data (regardless of possible timeout), we will proceed
+		// with the TLS handshake.
+		if n > 0 {
+			pre = pre[:n]
+		} else {
+			// We did not get anything so we will send the INFO protocol.
+			pre = nil
+
+			// Restore the original info.TLSRequired value if it is
+			// different that the current value and regenerate infoBytes.
+			if orgInfoTLSReq != info.TLSRequired {
+				info.TLSRequired = orgInfoTLSReq
+				infoBytes = c.generateClientInfoJSON(info)
+			}
+			c.sendProtoNow(infoBytes)
+			// Set the boolean to false for the rest of the function.
+			tlsFirst = false
+			// Check closed status again
+			isClosed = c.isClosed()
+		}
+	}
 	// If we have both TLS and non-TLS allowed we need to see which
 	// one the client wants. We'll always allow this for in-process
 	// connections.
-	if !isClosed && opts.TLSConfig != nil && (inProcess || opts.AllowNonTLS) {
+	if !isClosed && !tlsFirst && opts.TLSConfig != nil && (inProcess || opts.AllowNonTLS) {
 		pre = make([]byte, 4)
 		c.nc.SetReadDeadline(time.Now().Add(secondsToDuration(opts.TLSTimeout)))
 		n, _ := io.ReadFull(c.nc, pre[:])
@@ -3125,12 +3185,18 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 		}
 	}
 
-	// If connection is marked as closed, bail out.
+	// Now, send the INFO if it was delayed
+	if !isClosed && tlsFirst {
+		c.flags.set(didTLSFirst)
+		c.sendProtoNow(infoBytes)
+		// Check closed status
+		isClosed = c.isClosed()
+	}
+
+	// Connection could have been closed while sending the INFO proto.
 	if isClosed {
 		c.mu.Unlock()
-		// Connection could have been closed due to TLS timeout or while trying
-		// to send the INFO protocol. We need to call closeConnection() to make
-		// sure that proper cleanup is done.
+		// We need to call closeConnection() to make sure that proper cleanup is done.
 		c.closeConnection(WriteError)
 		return nil
 	}

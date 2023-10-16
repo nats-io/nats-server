@@ -1808,6 +1808,30 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:   0,
 			reason:     "",
 		},
+		{
+			name: "TLS handshake first, wrong type",
+			config: `
+				port: -1
+				tls {
+					first: 123
+				}
+			`,
+			err:       fmt.Errorf("field %q should be a boolean or a string, got int64", "first"),
+			errorLine: 4,
+			errorPos:  6,
+		},
+		{
+			name: "TLS handshake first, wrong value",
+			config: `
+				port: -1
+				tls {
+					first: "123"
+				}
+			`,
+			err:       fmt.Errorf("field %q's value %q is invalid", "first", "123"),
+			errorLine: 4,
+			errorPos:  6,
+		},
 	}
 
 	checkConfig := func(config string) error {

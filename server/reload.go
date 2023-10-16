@@ -266,6 +266,28 @@ func (t *tlsPinnedCertOption) Apply(server *Server) {
 	server.Noticef("Reloaded: %d pinned_certs", len(t.newValue))
 }
 
+// tlsHandshakeFirst implements the option interface for the tls `handshake first` setting.
+type tlsHandshakeFirst struct {
+	noopOption
+	newValue bool
+}
+
+// Apply is a no-op because the timeout will be reloaded after options are applied.
+func (t *tlsHandshakeFirst) Apply(server *Server) {
+	server.Noticef("Reloaded: Client TLS handshake first: %v", t.newValue)
+}
+
+// tlsHandshakeFirstFallback implements the option interface for the tls `handshake first fallback delay` setting.
+type tlsHandshakeFirstFallback struct {
+	noopOption
+	newValue time.Duration
+}
+
+// Apply is a no-op because the timeout will be reloaded after options are applied.
+func (t *tlsHandshakeFirstFallback) Apply(server *Server) {
+	server.Noticef("Reloaded: Client TLS handshake first fallback delay: %v", t.newValue)
+}
+
 // authOption is a base struct that provides default option behaviors.
 type authOption struct {
 	noopOption
@@ -1222,6 +1244,10 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &tlsTimeoutOption{newValue: newValue.(float64)})
 		case "tlspinnedcerts":
 			diffOpts = append(diffOpts, &tlsPinnedCertOption{newValue: newValue.(PinnedCertSet)})
+		case "tlshandshakefirst":
+			diffOpts = append(diffOpts, &tlsHandshakeFirst{newValue: newValue.(bool)})
+		case "tlshandshakefirstfallback":
+			diffOpts = append(diffOpts, &tlsHandshakeFirstFallback{newValue: newValue.(time.Duration)})
 		case "username":
 			diffOpts = append(diffOpts, &usernameOption{})
 		case "password":

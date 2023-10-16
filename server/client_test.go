@@ -2602,3 +2602,345 @@ func TestClientUserInfoReq(t *testing.T) {
 		t.Fatalf("User info for %q did not match", "admin")
 	}
 }
+
+func TestTLSClientHandshakeFirst(t *testing.T) {
+	tmpl := `
+		listen: "127.0.0.1:-1"
+		tls {
+			cert_file: 	"../test/configs/certs/server-cert.pem"
+			key_file:  	"../test/configs/certs/server-key.pem"
+			timeout: 	1
+			first: 		%s
+		}
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, "true")))
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	connect := func(tlsfirst, expectedOk bool) {
+		opts := []nats.Option{nats.RootCAs("../test/configs/certs/ca.pem")}
+		if tlsfirst {
+			opts = append(opts, nats.TLSHandshakeFirst())
+		}
+		nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", o.Port), opts...)
+		if expectedOk {
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if tlsfirst {
+				cz, err := s.Connz(nil)
+				if err != nil {
+					t.Fatalf("Error getting connz: %v", err)
+				}
+				if !cz.Conns[0].TLSFirst {
+					t.Fatal("Expected TLSFirst boolean to be set, it was not")
+				}
+			}
+		} else if !expectedOk && err == nil {
+			nc.Close()
+			t.Fatal("Expected error, got none")
+		}
+	}
+
+	// Server is TLS first, but client is not, so should fail.
+	connect(false, false)
+
+	// Now client is TLS first too, so should work.
+	connect(true, true)
+
+	// Config reload the server and disable tls first
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmpl, "false"))
+
+	// Now if client wants TLS first, connection should fail.
+	connect(true, false)
+
+	// But if it does not, should be ok.
+	connect(false, true)
+
+	// Config reload the server again and enable tls first
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmpl, "true"))
+
+	// If both client and server are TLS first, this should work.
+	connect(true, true)
+}
+
+func TestTLSClientHandshakeFirstFallbackDelayConfigValues(t *testing.T) {
+	tmpl := `
+		listen: "127.0.0.1:-1"
+		tls {
+			cert_file: 	"../test/configs/certs/server-cert.pem"
+			key_file:  	"../test/configs/certs/server-key.pem"
+			timeout: 	1
+			first: 		%s
+		}
+	`
+	for _, test := range []struct {
+		name  string
+		val   string
+		first bool
+		delay time.Duration
+	}{
+		{"first as boolean true", "true", true, 0},
+		{"first as boolean false", "false", false, 0},
+		{"first as string true", "\"true\"", true, 0},
+		{"first as string false", "\"false\"", false, 0},
+		{"first as string on", "on", true, 0},
+		{"first as string off", "off", false, 0},
+		{"first as string auto", "auto", true, DEFAULT_TLS_HANDSHAKE_FIRST_FALLBACK_DELAY},
+		{"first as string auto_fallback", "auto_fallback", true, DEFAULT_TLS_HANDSHAKE_FIRST_FALLBACK_DELAY},
+		{"first as fallback duration", "300ms", true, 300 * time.Millisecond},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, test.val)))
+			s, o := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			if test.first {
+				if !o.TLSHandshakeFirst {
+					t.Fatal("Expected tls first to be true, was not")
+				}
+				if test.delay != o.TLSHandshakeFirstFallback {
+					t.Fatalf("Expected fallback delay to be %v, got %v", test.delay, o.TLSHandshakeFirstFallback)
+				}
+			} else {
+				if o.TLSHandshakeFirst {
+					t.Fatal("Expected tls first to be false, was not")
+				}
+				if o.TLSHandshakeFirstFallback != 0 {
+					t.Fatalf("Expected fallback delay to be 0, got %v", o.TLSHandshakeFirstFallback)
+				}
+			}
+		})
+	}
+}
+
+type pauseAfterDial struct {
+	delay time.Duration
+}
+
+func (d *pauseAfterDial) Dial(network, address string) (net.Conn, error) {
+	c, err := net.Dial(network, address)
+	if err != nil {
+		return nil, err
+	}
+	time.Sleep(d.delay)
+	return c, nil
+}
+
+func TestTLSClientHandshakeFirstFallbackDelay(t *testing.T) {
+	// Using certificates with RSA 4K to make sure that the fallback does
+	// not prevent a client with TLS first to successfully connect.
+	tmpl := `
+		listen: "127.0.0.1:-1"
+		tls {
+			cert_file:  "./configs/certs/tls/benchmark-server-cert-rsa-4096.pem"
+			key_file:   "./configs/certs/tls/benchmark-server-key-rsa-4096.pem"
+			timeout: 	1
+			first: 		%s
+		}
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, "auto")))
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	url := fmt.Sprintf("tls://localhost:%d", o.Port)
+	d := &pauseAfterDial{delay: DEFAULT_TLS_HANDSHAKE_FIRST_FALLBACK_DELAY + 100*time.Millisecond}
+
+	// Connect a client without "TLS first" and it should be accepted.
+	nc, err := nats.Connect(url,
+		nats.SetCustomDialer(d),
+		nats.Secure(&tls.Config{
+			ServerName: "reuben.nats.io",
+			MinVersion: tls.VersionTLS12,
+		}),
+		nats.RootCAs("./configs/certs/tls/benchmark-ca-cert.pem"))
+	require_NoError(t, err)
+	defer nc.Close()
+	// Check that the TLS first in monitoring is set to false
+	cs, err := s.Connz(nil)
+	require_NoError(t, err)
+	if cs.Conns[0].TLSFirst {
+		t.Fatal("Expected monitoring ConnInfo.TLSFirst to be false, it was not")
+	}
+	nc.Close()
+
+	// Wait for the client to be removed
+	checkClientsCount(t, s, 0)
+
+	// Increase the fallback delay with config reload.
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmpl, "\"1s\""))
+
+	// This time, start the client with "TLS first".
+	// We will also make sure that we did not wait for the fallback delay
+	// in order to connect.
+	start := time.Now()
+	nc, err = nats.Connect(url,
+		nats.SetCustomDialer(d),
+		nats.Secure(&tls.Config{
+			ServerName: "reuben.nats.io",
+			MinVersion: tls.VersionTLS12,
+		}),
+		nats.RootCAs("./configs/certs/tls/benchmark-ca-cert.pem"),
+		nats.TLSHandshakeFirst())
+	require_NoError(t, err)
+	require_True(t, time.Since(start) < 500*time.Millisecond)
+	defer nc.Close()
+
+	// Check that the TLS first in monitoring is set to true.
+	cs, err = s.Connz(nil)
+	require_NoError(t, err)
+	if !cs.Conns[0].TLSFirst {
+		t.Fatal("Expected monitoring ConnInfo.TLSFirst to be true, it was not")
+	}
+	nc.Close()
+}
+
+func TestTLSClientHandshakeFirstFallbackDelayAndAllowNonTLS(t *testing.T) {
+	tmpl := `
+		listen: "127.0.0.1:-1"
+		tls {
+			cert_file: 	"../test/configs/certs/server-cert.pem"
+			key_file:  	"../test/configs/certs/server-key.pem"
+			timeout: 	1
+			first: 		%s
+		}
+		allow_non_tls: true
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, "true")))
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// We first start with a server that has handshake first set to true
+	// and allow_non_tls. In that case, only "TLS first" clients should be
+	// accepted.
+	url := fmt.Sprintf("tls://localhost:%d", o.Port)
+	nc, err := nats.Connect(url,
+		nats.RootCAs("../test/configs/certs/ca.pem"),
+		nats.TLSHandshakeFirst())
+	require_NoError(t, err)
+	defer nc.Close()
+	// Check that the TLS first in monitoring is set to true
+	cs, err := s.Connz(nil)
+	require_NoError(t, err)
+	if !cs.Conns[0].TLSFirst {
+		t.Fatal("Expected monitoring ConnInfo.TLSFirst to be true, it was not")
+	}
+	nc.Close()
+
+	// Client not using "TLS First" should fail.
+	nc, err = nats.Connect(url, nats.RootCAs("../test/configs/certs/ca.pem"))
+	if err == nil {
+		nc.Close()
+		t.Fatal("Expected connection to fail, it did not")
+	}
+
+	// And non TLS clients should also fail to connect.
+	nc, err = nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", o.Port))
+	if err == nil {
+		nc.Close()
+		t.Fatal("Expected connection to fail, it did not")
+	}
+
+	// Now we will replace TLS first in server with a fallback delay.
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmpl, "\"25ms\""))
+
+	// Clients with "TLS first" should still be able to connect
+	nc, err = nats.Connect(url,
+		nats.RootCAs("../test/configs/certs/ca.pem"),
+		nats.TLSHandshakeFirst())
+	require_NoError(t, err)
+	defer nc.Close()
+
+	checkConnInfo := func(isTLS, isTLSFirst bool) {
+		t.Helper()
+		cs, err = s.Connz(nil)
+		require_NoError(t, err)
+		conn := cs.Conns[0]
+		if !isTLS {
+			if conn.TLSVersion != _EMPTY_ {
+				t.Fatalf("Being a non TLS client, there should not be TLSVersion set, got %v", conn.TLSVersion)
+			}
+			if conn.TLSFirst {
+				t.Fatal("Being a non TLS client, TLSFirst should not be set, but it was")
+			}
+			return
+		}
+		if isTLSFirst && !conn.TLSFirst {
+			t.Fatal("Expected monitoring ConnInfo.TLSFirst to be true, it was not")
+		} else if !isTLSFirst && conn.TLSFirst {
+			t.Fatal("Expected monitoring ConnInfo.TLSFirst to be false, it was not")
+		}
+		nc.Close()
+
+		checkClientsCount(t, s, 0)
+	}
+	checkConnInfo(true, true)
+
+	// Clients with TLS but not "TLS first" should also be able to connect.
+	nc, err = nats.Connect(url, nats.RootCAs("../test/configs/certs/ca.pem"))
+	require_NoError(t, err)
+	defer nc.Close()
+	checkConnInfo(true, false)
+
+	// And non TLS clients should also be able to connect.
+	nc, err = nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", o.Port))
+	require_NoError(t, err)
+	defer nc.Close()
+	checkConnInfo(false, false)
+}
+
+func TestTLSClientHandshakeFirstAndInProcessConnection(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		tls {
+			cert_file: 	"../test/configs/certs/server-cert.pem"
+			key_file:  	"../test/configs/certs/server-key.pem"
+			timeout: 	1
+			first: 		true
+		}
+	`))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// Check that we can create an in process connection that does not use TLS
+	nc, err := nats.Connect(_EMPTY_, nats.InProcessServer(s))
+	require_NoError(t, err)
+	defer nc.Close()
+	if nc.TLSRequired() {
+		t.Fatalf("Shouldn't have required TLS for in-process connection")
+	}
+	if _, err = nc.TLSConnectionState(); err == nil {
+		t.Fatal("Should have got an error retrieving TLS connection state")
+	}
+	nc.Close()
+
+	// If the client wants TLS, it should get a TLS connection.
+	nc, err = nats.Connect(_EMPTY_,
+		nats.InProcessServer(s),
+		nats.RootCAs("../test/configs/certs/ca.pem"))
+	require_NoError(t, err)
+	defer nc.Close()
+	if _, err = nc.TLSConnectionState(); err != nil {
+		t.Fatal("Should have not got an error retrieving TLS connection state")
+	}
+	// However, the server would not have sent that TLS was required,
+	// but instead it is available.
+	if nc.TLSRequired() {
+		t.Fatalf("Shouldn't have required TLS for in-process connection")
+	}
+	nc.Close()
+
+	// The in-process connection with TLS and "TLS first" should also be working.
+	nc, err = nats.Connect(_EMPTY_,
+		nats.InProcessServer(s),
+		nats.RootCAs("../test/configs/certs/ca.pem"),
+		nats.TLSHandshakeFirst())
+	require_NoError(t, err)
+	defer nc.Close()
+	if !nc.TLSRequired() {
+		t.Fatalf("The server should have sent that TLS is required")
+	}
+	if _, err = nc.TLSConnectionState(); err != nil {
+		t.Fatal("Should have not got an error retrieving TLS connection state")
+	}
+}

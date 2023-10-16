@@ -130,6 +130,7 @@ type ConnInfo struct {
 	TLSVersion     string         `json:"tls_version,omitempty"`
 	TLSCipher      string         `json:"tls_cipher_suite,omitempty"`
 	TLSPeerCerts   []*TLSPeerCert `json:"tls_peer_certs,omitempty"`
+	TLSFirst       bool           `json:"tls_first,omitempty"`
 	AuthorizedUser string         `json:"authorized_user,omitempty"`
 	Account        string         `json:"account,omitempty"`
 	Subs           []string       `json:"subscriptions_list,omitempty"`
@@ -568,6 +569,7 @@ func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time, auth bool) 
 			if auth && len(cs.PeerCertificates) > 0 {
 				ci.TLSPeerCerts = makePeerCerts(cs.PeerCertificates)
 			}
+			ci.TLSFirst = client.flags.isSet(didTLSFirst)
 		}
 	}
 
