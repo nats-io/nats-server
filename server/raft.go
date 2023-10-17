@@ -2951,6 +2951,7 @@ func (n *raft) updateLeader(newLeader string) {
 	if !n.pleader && newLeader != noLeader {
 		n.pleader = true
 	}
+	n.isLeader.Store(newLeader == n.id)
 }
 
 // processAppendEntry will process an appendEntry.
