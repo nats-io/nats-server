@@ -24,7 +24,7 @@
 
 If you are interested in contributing to NATS, read about our...
 
-- [Contributing guide](https://nats.io/community/#contribute)
+- [Contributing guide](./CONTRIBUTING.md)
 - [Report issues or propose Pull Requests](https://github.com/nats-io)
 
 [License-Url]: https://www.apache.org/licenses/LICENSE-2.0
