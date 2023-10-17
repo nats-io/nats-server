@@ -5,30 +5,24 @@ labels:
   - proposal
 body:
   - type: textarea
-    id: usecase
-    attributes:
-      label: What motivated this proposal?
-      description: Describe the use case justifying this request.
-    validations:
-      required: true
-  - type: textarea
     id: change
     attributes:
-      label: What is the proposed change?
-      description: This could be a behavior change, enhanced API, or a branch new feature.
+      label: Proposed change
+      description: This could be a behavior change, enhanced API, or a new feature.
     validations:
       required: true
   - type: textarea
-    id: benefits
+    id: usecase
     attributes:
-      label: Who benefits from this change?
-      description: Describe how this not only benefits you.
+      label: Use case
+      description: What is the use case or general motivation for this proposal?
     validations:
-      required: false
+      required: true
   - type: textarea
-    id: alternates
+    id: contribute
     attributes:
-      label: What alternatives have you evaluated?
-      description: This could be using existing features or relying on an external dependency.
+      label: Contribution
+      description: |-
+        Are you intending or interested in contributing code for this proposal if accepted?
     validations:
       required: false
