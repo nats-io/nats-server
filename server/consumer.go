@@ -2543,7 +2543,11 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 
 	// If we are replicated and we are not the leader we need to pull certain data from our store.
 	if rg != nil && rg.node != nil && !o.isLeader() && o.store != nil {
-		state, _ := o.store.BorrowState()
+		state, err := o.store.BorrowState()
+		if err != nil {
+			o.mu.Unlock()
+			return nil
+		}
 		info.Delivered.Consumer, info.Delivered.Stream = state.Delivered.Consumer, state.Delivered.Stream
 		info.AckFloor.Consumer, info.AckFloor.Stream = state.AckFloor.Consumer, state.AckFloor.Stream
 		info.NumAckPending = len(state.Pending)

@@ -4120,7 +4120,9 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, _ *Account,
 	}
 
 	for _, o := range obs[offset:] {
-		resp.Consumers = append(resp.Consumers, o.info())
+		if cinfo := o.info(); cinfo != nil {
+			resp.Consumers = append(resp.Consumers, cinfo)
+		}
 		if len(resp.Consumers) >= JSApiListLimit {
 			break
 		}
