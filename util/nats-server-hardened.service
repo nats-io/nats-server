@@ -1,6 +1,6 @@
 [Unit]
 Description=NATS Server
-After=network.target ntp.service
+After=network-online.target ntp.service
 
 [Service]
 Type=simple
