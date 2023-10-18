@@ -5,37 +5,43 @@ labels:
   - defect
 body:
   - type: textarea
-    id: versions
+    id: observed
     attributes:
-      label: What version were you using?
-      description: Include the server version (`nats-server --version`) and any client versions when observing the issue.
-    validations:
-      required: true
-  - type: textarea
-    id: environment
-    attributes:
-      label: What environment was the server running in?
-      description: This pertains to the operating system, CPU architecture, and/or Docker image that was used.
-    validations:
-      required: true
-  - type: textarea
-    id: steps
-    attributes:
-      label: Is this defect reproducible?
-      description: Provide best-effort steps to showcase the defect.
+      label: Observed behavior
+      description: Describe the unexpected behavior or performance regression you are observing.
     validations:
       required: true
   - type: textarea
     id: expected
     attributes:
-      label: Given the capability you are leveraging, describe your expectation?
-      description: This may be the expected behavior or performance characteristics.
+      label: Expected behavior
+      description: Describe the expected behavior or performance characteristics.
     validations:
       required: true
   - type: textarea
-    id: actual
+    id: versions
     attributes:
-      label: Given the expectation, what is the defect you are observing?
-      description: This may be an unexpected behavior or regression in performance.
+      label: Server and client version
+      description: |-
+        Provide the versions you were using when the detect was observed.
+        For the server, use `nats-server --version`, check the startup log output, or the image tag pulled from Docker.
+        For the CLI client, use `nats --version`.
+        For language-specific clients, check the version downloaded by the language dependency manager.
     validations:
       required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Host environment
+      description: |-
+        Specify any relevant details about the host environment the server and/or client was running in,
+        such as operating system, CPU architecture, container runtime, etc.
+    validations:
+      required: false
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Provide as many concrete steps to reproduce the defect.
+    validations:
+      required: false
