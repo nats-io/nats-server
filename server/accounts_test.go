@@ -3578,13 +3578,13 @@ func TestAccountReloadServiceImportPanic(t *testing.T) {
 
 	// Now connect up the subscriber for HELP. No-op for this test.
 	nc, _ := jsClientConnect(t, s, nats.UserInfo("a", "p"))
+	defer nc.Close()
+
 	_, err := nc.Subscribe("HELP", func(m *nats.Msg) { m.Respond([]byte("OK")) })
 	require_NoError(t, err)
-	defer nc.Close()
 
 	// Now create connection to account b where we will publish to HELP.
 	nc, _ = jsClientConnect(t, s, nats.UserInfo("b", "p"))
-	require_NoError(t, err)
 	defer nc.Close()
 
 	// We want to continually be publishing messages that will trigger the service import while calling reload.
@@ -3612,8 +3612,7 @@ func TestAccountReloadServiceImportPanic(t *testing.T) {
 
 	// Perform a bunch of reloads.
 	for i := 0; i < 1000; i++ {
-		err := s.Reload()
-		require_NoError(t, err)
+		require_NoError(t, s.Reload())
 	}
 
 	close(done)
@@ -3627,4 +3626,47 @@ func TestAccountReloadServiceImportPanic(t *testing.T) {
 		}
 		return fmt.Errorf("Have not received all responses, want %d got %d", totalRequests, resp)
 	})
+}
+
+// https://github.com/nats-io/nats-server/issues/4674
+func TestAccountServiceAndStreamExportDoubleDelivery(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		accounts: {
+			tenant1: {
+				jetstream: enabled
+				users: [ { user: "one", password: "one" } ]
+				exports: [
+					{ stream: "DW.>" }
+					{ service: "DW.>" }
+				]
+ 			}
+			global: {
+				jetstream: enabled
+				users: [ { user: "global", password: "global" } ]
+				imports: [
+					{ stream: { account: tenant1, subject: "DW.>" }, prefix: tenant1 }
+					{ service: { account: tenant1, subject: "DW.>" }, to: "tenant1.DW.>" }
+				]
+			}
+			$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+		}
+	`))
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// Now connect up the subscriber for HELP. No-op for this test.
+	nc, _ := jsClientConnect(t, s, nats.UserInfo("one", "one"))
+	defer nc.Close()
+
+	var msgs atomic.Int32
+	_, err := nc.Subscribe(">", func(m *nats.Msg) {
+		msgs.Add(1)
+	})
+	require_NoError(t, err)
+
+	nc.Publish("DW.test.123", []byte("test"))
+	time.Sleep(200 * time.Millisecond)
+	require_Equal(t, msgs.Load(), 1)
 }

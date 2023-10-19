@@ -2801,6 +2801,11 @@ func (c *client) addShadowSubscriptions(acc *Account, sub *subscription) error {
 	)
 
 	acc.mu.RLock()
+	// If this is from a service import, ignore.
+	if sub.si {
+		acc.mu.RUnlock()
+		return nil
+	}
 	subj := string(sub.subject)
 	if len(acc.imports.streams) > 0 {
 		tokens = tokenizeSubjectIntoSlice(tsa[:0], subj)
