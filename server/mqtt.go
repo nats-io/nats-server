@@ -2508,6 +2508,8 @@ func (as *mqttAccountSessionManager) transferUniqueSessStreamsToMuxed(log *Serve
 }
 
 func (as *mqttAccountSessionManager) transferRetainedToPerKeySubjectStream(log *Server) bool {
+	defer timethis("transferRetainedToPerKeySubjectStream", "")()
+
 	jsa := &as.jsa
 	var count, errors int
 
