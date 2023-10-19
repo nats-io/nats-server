@@ -1455,6 +1455,7 @@ func (jsa *mqttJSA) prefixDomain(subject string) string {
 }
 
 func (jsa *mqttJSA) newRequestEx(kind, subject string, hdr int, msg []byte, timeout time.Duration) (interface{}, error) {
+	defer timethis("jsa.newRequestEx", kind+": "+subject)()
 	jsa.mu.Lock()
 	// Either we use nuid.Next() which uses a global lock, or our own nuid object, but
 	// then it needs to be "write" protected. This approach will reduce across account
@@ -5037,6 +5038,16 @@ func (w *mqttWriter) WriteVarInt(value int) {
 		w.WriteByte(b)
 		if value == 0 {
 			break
+		}
+	}
+}
+
+func timethis(op, id string) func() {
+	start := time.Now()
+	return func() {
+		t := time.Since(start)
+		if t > 10*time.Millisecond {
+			fmt.Printf("<>/<> SLOW: %s %q took %v\n", op, id, t)
 		}
 	}
 }
