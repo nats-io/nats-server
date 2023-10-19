@@ -1455,7 +1455,7 @@ func (jsa *mqttJSA) prefixDomain(subject string) string {
 }
 
 func (jsa *mqttJSA) newRequestEx(kind, subject string, hdr int, msg []byte, timeout time.Duration) (interface{}, error) {
-	defer timethis("jsa.newRequestEx", kind+": "+subject)()
+	defer timethis(jsa.c, "jsa.newRequestEx", kind+": "+subject)()
 	jsa.mu.Lock()
 	// Either we use nuid.Next() which uses a global lock, or our own nuid object, but
 	// then it needs to be "write" protected. This approach will reduce across account
@@ -2508,7 +2508,7 @@ func (as *mqttAccountSessionManager) transferUniqueSessStreamsToMuxed(log *Serve
 }
 
 func (as *mqttAccountSessionManager) transferRetainedToPerKeySubjectStream(log *Server) bool {
-	defer timethis("transferRetainedToPerKeySubjectStream", "")()
+	defer timethis(log, "transferRetainedToPerKeySubjectStream", "")()
 
 	jsa := &as.jsa
 	var count, errors int
@@ -5044,12 +5044,16 @@ func (w *mqttWriter) WriteVarInt(value int) {
 	}
 }
 
-func timethis(op, id string) func() {
+type errorer interface {
+	Errorf(format string, args ...interface{})
+}
+
+func timethis(e errorer, op, id string) func() {
 	start := time.Now()
 	return func() {
 		t := time.Since(start)
 		if t > 10*time.Millisecond {
-			fmt.Printf("<>/<> SLOW: %s %q took %v\n", op, id, t)
+			e.Errorf("<>/<> SLOW: %s %q took %v\n", op, id, t)
 		}
 	}
 }
