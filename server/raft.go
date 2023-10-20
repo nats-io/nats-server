@@ -1499,14 +1499,18 @@ func (n *raft) Delete() {
 }
 
 func (n *raft) shutdown(shouldDelete bool) {
-	// Needs to be a Swap operation in order to prevent races if
-	// more than one caller hits shutdown() at once, the returned
-	// value will be the previous state.
+	n.Lock()
+
+	// Returned swap value is the previous state. It looks counter-intuitive
+	// to do this atomic operation with the lock held, but we have to do so in
+	// order to make sure that switchState() is not already running. If it is
+	// then it can potentially update the n.state back to a non-closed state,
+	// allowing shutdown() to be called again. If that happens then the below
+	// close(n.quit) will panic from trying to close an already-closed channel.
 	if n.state.Swap(int32(Closed)) == int32(Closed) {
+		n.Unlock()
 		return
 	}
-
-	n.Lock()
 
 	close(n.quit)
 	if c := n.c; c != nil {
