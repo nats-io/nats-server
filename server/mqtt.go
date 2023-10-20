@@ -197,6 +197,7 @@ var (
 	errMQTTTopicFilterCannotBeEmpty = errors.New("topic filter cannot be empty")
 	errMQTTMalformedVarInt          = errors.New("malformed variable int")
 	errMQTTSecondConnectPacket      = errors.New("received a second CONNECT packet")
+	errMQTTServerNameMustBeSet      = errors.New("mqtt requires server name to be explicitly set")
 	errMQTTUserMixWithUsersNKeys    = errors.New("mqtt authentication username not compatible with presence of users/nkeys")
 	errMQTTTokenMixWIthUsersNKeys   = errors.New("mqtt authentication token not compatible with presence of users/nkeys")
 	errMQTTAckWaitMustBePositive    = errors.New("ack wait must be a positive value")
@@ -596,6 +597,11 @@ func validateMQTTOptions(o *Options) error {
 	// If no port is defined, we don't care about other options
 	if mo.Port == 0 {
 		return nil
+	}
+	// We have to force the server name to be explicitly set and be unique when
+	// in cluster mode.
+	if o.ServerName == _EMPTY_ && o.Cluster.Port != 0 {
+		return errMQTTServerNameMustBeSet
 	}
 	// If there is a NoAuthUser, we need to have Users defined and
 	// the user to be present.
