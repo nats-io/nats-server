@@ -387,7 +387,7 @@ func TestMQTTServerNameRequired(t *testing.T) {
 		t.Fatalf("Error processing config file: %v", err)
 	}
 	if _, err := NewServer(o); err == nil || err.Error() != errMQTTServerNameMustBeSet.Error() {
-		t.Fatalf("Expected error about requiring server name to be set, got %v %v", err, o.Cluster.Port)
+		t.Fatalf("Expected error about requiring server name to be set, got %v", err)
 	}
 
 	conf = createConfFile(t, []byte(`
