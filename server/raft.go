@@ -649,12 +649,11 @@ func (s *Server) transferRaftLeaders() bool {
 // Propose will propose a new entry to the group.
 // This should only be called on the leader.
 func (n *raft) Propose(data []byte) error {
-	n.RLock()
 	if state := n.State(); state != Leader {
-		n.RUnlock()
-		n.debug("Proposal ignored, not leader")
+		n.debug("Proposal ignored, not leader (state: %v)", state)
 		return errNotLeader
 	}
+	n.RLock()
 	// Error if we had a previous write error.
 	if werr := n.werr; werr != nil {
 		n.RUnlock()
@@ -670,12 +669,11 @@ func (n *raft) Propose(data []byte) error {
 // ProposeDirect will propose entries directly.
 // This should only be called on the leader.
 func (n *raft) ProposeDirect(entries []*Entry) error {
-	n.RLock()
 	if state := n.State(); state != Leader {
-		n.RUnlock()
 		n.debug("Direct proposal ignored, not leader (state: %v)", state)
 		return errNotLeader
 	}
+	n.RLock()
 	// Error if we had a previous write error.
 	if werr := n.werr; werr != nil {
 		n.RUnlock()
@@ -702,11 +700,10 @@ func (n *raft) ForwardProposal(entry []byte) error {
 
 // ProposeAddPeer is called to add a peer to the group.
 func (n *raft) ProposeAddPeer(peer string) error {
-	n.RLock()
 	if n.State() != Leader {
-		n.RUnlock()
 		return errNotLeader
 	}
+	n.RLock()
 	// Error if we had a previous write error.
 	if werr := n.werr; werr != nil {
 		n.RUnlock()
@@ -790,11 +787,10 @@ func (n *raft) AdjustBootClusterSize(csz int) error {
 // AdjustClusterSize will change the cluster set size.
 // Must be the leader.
 func (n *raft) AdjustClusterSize(csz int) error {
-	n.Lock()
 	if n.State() != Leader {
-		n.Unlock()
 		return errNotLeader
 	}
+	n.Lock()
 	// Same floor as bootstrap.
 	if csz < 2 {
 		csz = 2
@@ -812,12 +808,13 @@ func (n *raft) AdjustClusterSize(csz int) error {
 // PauseApply will allow us to pause processing of append entries onto our
 // external apply chan.
 func (n *raft) PauseApply() error {
-	n.Lock()
-	defer n.Unlock()
-
 	if n.State() == Leader {
 		return errAlreadyLeader
 	}
+
+	n.Lock()
+	defer n.Unlock()
+
 	// If we are currently a candidate make sure we step down.
 	if n.State() == Candidate {
 		n.stepdown.push(noLeader)
@@ -940,11 +937,11 @@ func (n *raft) SendSnapshot(data []byte) error {
 // all of the log entries up to and including index. This should not be called with
 // entries that have been applied to the FSM but have not been applied to the raft state.
 func (n *raft) InstallSnapshot(data []byte) error {
-	n.Lock()
 	if n.State() == Closed {
-		n.Unlock()
 		return errNodeClosed
 	}
+
+	n.Lock()
 
 	if werr := n.werr; werr != nil {
 		n.Unlock()
@@ -1499,11 +1496,12 @@ func (n *raft) Delete() {
 }
 
 func (n *raft) shutdown(shouldDelete bool) {
-	n.Lock()
 	if n.State() == Closed {
-		n.Unlock()
 		return
 	}
+
+	n.state.Store(int32(Closed))
+	n.Lock()
 
 	close(n.quit)
 	if c := n.c; c != nil {
@@ -1518,7 +1516,6 @@ func (n *raft) shutdown(shouldDelete bool) {
 		}
 		c.closeConnection(InternalClient)
 	}
-	n.state.Store(int32(Closed))
 	s, g, wal := n.s, n.group, n.wal
 
 	// Delete our peer state and vote state and any snapshots.
@@ -2150,11 +2147,11 @@ func (n *raft) handleForwardedProposal(sub *subscription, c *client, _ *Account,
 }
 
 func (n *raft) runAsLeader() {
-	n.RLock()
 	if n.State() == Closed {
-		n.RUnlock()
 		return
 	}
+
+	n.RLock()
 	psubj, rpsubj := n.psubj, n.rpsubj
 	n.RUnlock()
 
@@ -2668,11 +2665,11 @@ func (n *raft) applyCommit(index uint64) error {
 
 // Used to track a success response and apply entries.
 func (n *raft) trackResponse(ar *appendEntryResponse) {
-	n.Lock()
 	if n.State() == Closed {
-		n.Unlock()
 		return
 	}
+
+	n.Lock()
 
 	// Update peer's last index.
 	if ps := n.peers[ar.peer]; ps != nil && ar.index > ps.li {
@@ -3592,8 +3589,6 @@ func (n *raft) setWriteErrLocked(err error) {
 
 // Helper to check if we are closed when we do not hold a lock already.
 func (n *raft) isClosed() bool {
-	n.RLock()
-	defer n.RUnlock()
 	return n.State() == Closed
 }
 
@@ -3870,11 +3865,13 @@ const (
 )
 
 func (n *raft) switchToFollower(leader string) {
-	n.Lock()
-	defer n.Unlock()
 	if n.State() == Closed {
 		return
 	}
+
+	n.Lock()
+	defer n.Unlock()
+
 	n.debug("Switching to follower")
 
 	n.lxfer = false
@@ -3883,11 +3880,13 @@ func (n *raft) switchToFollower(leader string) {
 }
 
 func (n *raft) switchToCandidate() {
-	n.Lock()
-	defer n.Unlock()
 	if n.State() == Closed {
 		return
 	}
+
+	n.Lock()
+	defer n.Unlock()
+
 	// If we are catching up or are in observer mode we can not switch.
 	if n.observer || n.paused {
 		return
@@ -3910,11 +3909,12 @@ func (n *raft) switchToCandidate() {
 }
 
 func (n *raft) switchToLeader() {
-	n.Lock()
 	if n.State() == Closed {
-		n.Unlock()
 		return
 	}
+
+	n.Lock()
+
 	n.debug("Switching to leader")
 
 	var state StreamState
