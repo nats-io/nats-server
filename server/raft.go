@@ -1499,11 +1499,13 @@ func (n *raft) Delete() {
 }
 
 func (n *raft) shutdown(shouldDelete bool) {
-	if n.State() == Closed {
+	// Needs to be a Swap operation in order to prevent races if
+	// more than one caller hits shutdown() at once, the returned
+	// value will be the previous state.
+	if n.state.Swap(int32(Closed)) == int32(Closed) {
 		return
 	}
 
-	n.state.Store(int32(Closed))
 	n.Lock()
 
 	close(n.quit)
