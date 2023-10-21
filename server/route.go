@@ -1860,6 +1860,17 @@ const (
 func (s *Server) addRoute(c *client, didSolicit bool, info *Info, accName string) bool {
 	id := info.ID
 
+	var acc *Account
+	if accName != _EMPTY_ {
+		var err error
+		acc, err = s.LookupAccount(accName)
+		if err != nil {
+			c.sendErrAndErr(fmt.Sprintf("Unable to lookup account %q: %v", accName, err))
+			c.closeConnection(MissingAccount)
+			return false
+		}
+	}
+
 	s.mu.Lock()
 	if !s.isRunning() || s.routesReject {
 		s.mu.Unlock()
@@ -1934,6 +1945,9 @@ func (s *Server) addRoute(c *client, didSolicit bool, info *Info, accName string
 			cid := c.cid
 			if c.last.IsZero() {
 				c.last = time.Now()
+			}
+			if acc != nil {
+				c.acc = acc
 			}
 			c.mu.Unlock()
 
