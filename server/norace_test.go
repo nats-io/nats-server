@@ -8023,7 +8023,7 @@ func TestNoRaceRoutePool(t *testing.T) {
 	t.Logf("Gain      : %.2fx", perf2/perf1)
 }
 
-func TestNoRaceRoutePerAccount(t *testing.T) {
+func testNoRaceRoutePerAccount(t *testing.T, useWildCard bool) {
 	var dur1 time.Duration
 	var dur2 time.Duration
 
@@ -8047,6 +8047,7 @@ func TestNoRaceRoutePerAccount(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			tmpl := `
+			server_name: "%s"
 			port: -1
 			accounts {
 				%s { users: [{user: "0", password: "0"}] }
@@ -8068,13 +8069,13 @@ func TestNoRaceRoutePerAccount(t *testing.T) {
 			} else {
 				racc = _EMPTY_
 			}
-			conf1 := createConfFile(t, []byte(fmt.Sprintf(tmpl,
+			conf1 := createConfFile(t, []byte(fmt.Sprintf(tmpl, "A",
 				accounts[0], accounts[1], accounts[2], accounts[3],
 				accounts[4], _EMPTY_, racc)))
 			s1, o1 := RunServerWithConfig(conf1)
 			defer s1.Shutdown()
 
-			conf2 := createConfFile(t, []byte(fmt.Sprintf(tmpl,
+			conf2 := createConfFile(t, []byte(fmt.Sprintf(tmpl, "B",
 				accounts[0], accounts[1], accounts[2], accounts[3], accounts[4],
 				fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", o1.Cluster.Port),
 				racc)))
@@ -8091,7 +8092,14 @@ func TestNoRaceRoutePerAccount(t *testing.T) {
 
 				s2nc := natsConnect(t, s2.ClientURL(), nats.UserInfo(user, user))
 				count := 0
-				natsSub(t, s2nc, "foo", func(_ *nats.Msg) {
+				var subj string
+				var checkSubj string
+				if useWildCard {
+					subj, checkSubj = "foo.*", "foo.0"
+				} else {
+					subj, checkSubj = "foo", "foo"
+				}
+				natsSub(t, s2nc, subj, func(_ *nats.Msg) {
 					if count++; count == total {
 						wg.Done()
 					}
@@ -8100,7 +8108,7 @@ func TestNoRaceRoutePerAccount(t *testing.T) {
 
 				s1nc := natsConnect(t, s1.ClientURL(), nats.UserInfo(user, user))
 
-				checkSubInterest(t, s1, acc, "foo", time.Second)
+				checkSubInterest(t, s1, acc, checkSubj, time.Second)
 				return s2nc, s1nc
 			}
 
@@ -8119,7 +8127,13 @@ func TestNoRaceRoutePerAccount(t *testing.T) {
 			for i := 0; i < 5; i++ {
 				go func(idx int) {
 					for i := 0; i < total; i++ {
-						snd[idx].Publish("foo", payload)
+						var subj string
+						if useWildCard {
+							subj = fmt.Sprintf("foo.%d", i)
+						} else {
+							subj = "foo"
+						}
+						snd[idx].Publish(subj, payload)
 					}
 				}(i)
 			}
@@ -8138,6 +8152,14 @@ func TestNoRaceRoutePerAccount(t *testing.T) {
 	perf2 := float64(total*5) / dur2.Seconds()
 	t.Logf("Route per account     : %.0f msgs/sec", perf2)
 	t.Logf("Gain                  : %.2fx", perf2/perf1)
+}
+
+func TestNoRaceRoutePerAccount(t *testing.T) {
+	testNoRaceRoutePerAccount(t, false)
+}
+
+func TestNoRaceRoutePerAccountSubWithWildcard(t *testing.T) {
+	testNoRaceRoutePerAccount(t, true)
 }
 
 // This test, which checks that messages are not duplicated when pooling or

@@ -1858,6 +1858,10 @@ func TestRoutePoolAndPerAccountErrors(t *testing.T) {
 
 	conf1 := createConfFile(t, []byte(`
 		port: -1
+		accounts {
+			abc { users: [{user:abc, password: pwd}] }
+			def { users: [{user:def, password: pwd}] }
+		}
 		cluster {
 			port: -1
 			name: "local"
@@ -1872,6 +1876,10 @@ func TestRoutePoolAndPerAccountErrors(t *testing.T) {
 
 	conf2 := createConfFile(t, []byte(fmt.Sprintf(`
 		port: -1
+		accounts {
+			abc { users: [{user:abc, password: pwd}] }
+			def { users: [{user:def, password: pwd}] }
+		}
 		cluster {
 			port: -1
 			name: "local"

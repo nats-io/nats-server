@@ -5311,10 +5311,10 @@ func (c *client) getAccAndResultFromCache() (*Account, *SublistResult) {
 	// Check our cache.
 	if pac, ok = c.in.pacache[string(c.pa.pacache)]; ok {
 		// Check the genid to see if it's still valid.
-		// sl could be swapped out on reload so need to lock.
-		pac.acc.mu.RLock()
+		// Since v2.10.0, the config reload of accounts has been fixed
+		// and an account's sublist pointer should not change, so no need to
+		// lock to access it.
 		sl := pac.acc.sl
-		pac.acc.mu.RUnlock()
 
 		if genid := atomic.LoadUint64(&sl.genid); genid != pac.genid {
 			ok = false
@@ -5326,15 +5326,15 @@ func (c *client) getAccAndResultFromCache() (*Account, *SublistResult) {
 	}
 
 	if !ok {
-		// Match correct account and sublist.
-		if acc, _ = c.srv.LookupAccount(string(c.pa.account)); acc == nil {
-			return nil, nil
+		if c.kind == ROUTER && len(c.route.accName) > 0 {
+			acc = c.acc
+		} else {
+			// Match correct account and sublist.
+			if acc, _ = c.srv.LookupAccount(string(c.pa.account)); acc == nil {
+				return nil, nil
+			}
 		}
-
-		// sl could be swapped out on reload so need to lock.
-		acc.mu.RLock()
 		sl := acc.sl
-		acc.mu.RUnlock()
 
 		// Match against the account sublist.
 		r = sl.Match(string(c.pa.subject))

@@ -831,7 +831,10 @@ func TestMaxControlLine(t *testing.T) {
 				c.setNoReconnect()
 				c.flags.set(connectReceived)
 				c.kind = test.kind
-				if test.kind == GATEWAY {
+				switch test.kind {
+				case ROUTER:
+					c.route = &route{}
+				case GATEWAY:
 					c.gw = &gateway{outbound: false, connected: true, insim: make(map[string]*insie)}
 				}
 				c.mcl = 8
