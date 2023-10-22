@@ -176,6 +176,7 @@ type fileStore struct {
 	blks        []*msgBlock
 	bim         map[uint32]*msgBlock
 	psim        map[string]*psi
+	tsl         int
 	hh          hash.Hash64
 	qch         chan struct{}
 	fch         chan struct{}
@@ -428,7 +429,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		prior := fs.state
 		// Reset anything that could have been set from above.
 		fs.state = StreamState{}
-		fs.psim = make(map[string]*psi)
+		fs.psim, fs.tsl = make(map[string]*psi), 0
 		fs.bim = make(map[uint32]*msgBlock)
 		fs.blks = nil
 		fs.tombs = nil
@@ -1553,7 +1554,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 
 	// Check for per subject info.
 	if numSubjects := int(readU64()); numSubjects > 0 {
-		fs.psim = make(map[string]*psi, numSubjects)
+		fs.psim, fs.tsl = make(map[string]*psi, numSubjects), 0
 		for i := 0; i < numSubjects; i++ {
 			if lsubj := int(readU64()); lsubj > 0 {
 				if bi+lsubj > len(buf) {
@@ -1570,6 +1571,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 					psi.lblk = psi.fblk
 				}
 				fs.psim[subj] = psi
+				fs.tsl += len(subj)
 			}
 		}
 	}
@@ -2041,7 +2043,7 @@ func (fs *fileStore) expireMsgsOnRecover() {
 			lmb.writeTombstone(last.seq, last.ts)
 		}
 		// Clear any global subject state.
-		fs.psim = make(map[string]*psi)
+		fs.psim, fs.tsl = make(map[string]*psi), 0
 	}
 
 	// If we purged anything, make sure we kick flush state loop.
@@ -2940,6 +2942,7 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 			}
 		} else {
 			fs.psim[subj] = &psi{total: 1, fblk: index, lblk: index}
+			fs.tsl += len(subj)
 		}
 	}
 
@@ -3214,7 +3217,7 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 	if numMsgs != fs.state.Msgs {
 		fs.warn("Detected skew in subject-based total (%d) vs raw total (%d), rebuilding", numMsgs, fs.state.Msgs)
 		// Clear any global subject state.
-		fs.psim = make(map[string]*psi)
+		fs.psim, fs.tsl = make(map[string]*psi), 0
 		for _, mb := range fs.blks {
 			ld, _, err := mb.rebuildState()
 			if err != nil && ld != nil {
@@ -3323,6 +3326,7 @@ func (fs *fileStore) removePerSubject(subj string) {
 			info.fblk = info.lblk
 		} else if info.total == 0 {
 			delete(fs.psim, subj)
+			fs.tsl -= len(subj)
 		}
 	}
 }
@@ -4268,7 +4272,7 @@ func (fs *fileStore) checkMsgs() *LostStreamData {
 	fs.checkAndFlushAllBlocks()
 
 	// Clear any global subject state.
-	fs.psim = make(map[string]*psi)
+	fs.psim, fs.tsl = make(map[string]*psi), 0
 
 	for _, mb := range fs.blks {
 		// Make sure encryption loaded if needed for the block.
@@ -6141,7 +6145,7 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 	fs.lmb = nil
 	fs.bim = make(map[uint32]*msgBlock)
 	// Clear any per subject tracking.
-	fs.psim = make(map[string]*psi)
+	fs.psim, fs.tsl = make(map[string]*psi), 0
 	// Mark dirty
 	fs.dirty++
 
@@ -6414,7 +6418,7 @@ func (fs *fileStore) reset() error {
 	fs.blks, fs.lmb = nil, nil
 
 	// Reset subject mappings.
-	fs.psim = make(map[string]*psi)
+	fs.psim, fs.tsl = make(map[string]*psi), 0
 	fs.bim = make(map[uint32]*msgBlock)
 
 	// If we purged anything, make sure we kick flush state loop.
@@ -6701,7 +6705,7 @@ func (mb *msgBlock) recalculateFirstForSubj(subj string, startSeq uint64, ss *Si
 // Lock should be held.
 func (fs *fileStore) resetGlobalPerSubjectInfo() {
 	// Clear any global subject state.
-	fs.psim = make(map[string]*psi)
+	fs.psim, fs.tsl = make(map[string]*psi), 0
 	for _, mb := range fs.blks {
 		fs.populateGlobalPerSubjectInfo(mb)
 	}
@@ -6799,6 +6803,7 @@ func (fs *fileStore) populateGlobalPerSubjectInfo(mb *msgBlock) {
 				}
 			} else {
 				fs.psim[subj] = &psi{total: ss.Msgs, fblk: mb.index, lblk: mb.index}
+				fs.tsl += len(subj)
 			}
 		}
 	}
