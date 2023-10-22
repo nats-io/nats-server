@@ -29,6 +29,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -6332,6 +6333,112 @@ func TestFileStoreCompactAndPSIMWhenDeletingBlocks(t *testing.T) {
 
 	require_Equal(t, psi.total, 1)
 	require_Equal(t, psi.fblk, psi.lblk)
+}
+
+func TestFileStoreTrackSubjLenForPSIM(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd},
+		StreamConfig{Name: "zzz", Subjects: []string{">"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Place 1000 msgs with varying subjects.
+	// Make sure we track the subject length properly.
+	smap := make(map[string]int, 1000)
+	buf := make([]byte, 10)
+	for i := 0; i < 1000; i++ {
+		var b strings.Builder
+		// 1-6 tokens.
+		numTokens := rand.Intn(6) + 1
+		for i := 0; i < numTokens; i++ {
+			tlen := rand.Intn(4) + 2
+			tok := buf[:tlen]
+			crand.Read(tok)
+			b.WriteString(hex.EncodeToString(tok))
+			if i != numTokens-1 {
+				b.WriteString(".")
+			}
+		}
+		subj := b.String()
+		smap[subj] = len(subj)
+		fs.StoreMsg(subj, nil, nil)
+	}
+
+	check := func() {
+		t.Helper()
+
+		var total int
+		for _, slen := range smap {
+			total += slen
+		}
+		fs.mu.RLock()
+		tsl := fs.tsl
+		fs.mu.RUnlock()
+		require_Equal(t, tsl, total)
+	}
+
+	check()
+
+	// Delete ~half
+	var smv StoreMsg
+	for i := 0; i < 500; i++ {
+		seq := uint64(rand.Intn(1000) + 1)
+		sm, err := fs.LoadMsg(seq, &smv)
+		if err != nil {
+			continue
+		}
+		fs.RemoveMsg(seq)
+		delete(smap, sm.subj)
+	}
+
+	check()
+
+	// Make sure we can recover same after restart.
+	fs.Stop()
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: sd},
+		StreamConfig{Name: "zzz", Subjects: []string{">"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	check()
+
+	// Drain the rest through purge.
+	fs.Purge()
+	smap = nil
+	check()
+}
+
+// This was used to make sure our estimate was correct, but not needed normally.
+func TestFileStoreLargeFullStatePSIM(t *testing.T) {
+	t.Skip()
+
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd},
+		StreamConfig{Name: "zzz", Subjects: []string{">"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	buf := make([]byte, 20)
+	for i := 0; i < 100_000; i++ {
+		var b strings.Builder
+		// 1-6 tokens.
+		numTokens := rand.Intn(6) + 1
+		for i := 0; i < numTokens; i++ {
+			tlen := rand.Intn(8) + 2
+			tok := buf[:tlen]
+			crand.Read(tok)
+			b.WriteString(hex.EncodeToString(tok))
+			if i != numTokens-1 {
+				b.WriteString(".")
+			}
+		}
+		subj := b.String()
+		fs.StoreMsg(subj, nil, nil)
+	}
+	fs.Stop()
 }
 
 ///////////////////////////////////////////////////////////////////////////
