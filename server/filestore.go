@@ -6954,10 +6954,19 @@ func (fs *fileStore) writeFullState() error {
 		return nil
 	}
 
-	var _buf [32 * 1024]byte
-	_buf[0], _buf[1] = fullStateMagic, fullStateVersion
-	buf := _buf[:hdrLen]
+	// For calculating size.
+	numSubjects := len(fs.psim)
 
+	// Calculate and estimate of the uper bound on the  size to avoid multiple allocations.
+	sz := 2 + // Magic and Version
+		(binary.MaxVarintLen64 * 6) + // FS data
+		binary.MaxVarintLen64 + fs.tsl + // NumSubjects + total subject length
+		numSubjects*(binary.MaxVarintLen64*4) + // psi record
+		len(fs.blks)*((binary.MaxVarintLen64*6)+512) + // msg blocks, 512 is est for dmap
+		binary.MaxVarintLen64 + 8 // last index + checksum
+
+	buf := make([]byte, hdrLen, sz)
+	buf[0], buf[1] = fullStateMagic, fullStateVersion
 	buf = binary.AppendUvarint(buf, fs.state.Msgs)
 	buf = binary.AppendUvarint(buf, fs.state.Bytes)
 	buf = binary.AppendUvarint(buf, fs.state.FirstSeq)
@@ -6966,9 +6975,7 @@ func (fs *fileStore) writeFullState() error {
 	buf = binary.AppendVarint(buf, timestampNormalized(fs.state.LastTime))
 
 	// Do per subject information map if applicable.
-	numSubjects := len(fs.psim)
 	buf = binary.AppendUvarint(buf, uint64(numSubjects))
-
 	if numSubjects > 0 {
 		for subj, psi := range fs.psim {
 			buf = binary.AppendUvarint(buf, uint64(len(subj)))
@@ -6990,6 +6997,7 @@ func (fs *fileStore) writeFullState() error {
 
 	// Use basetime to save some space.
 	baseTime := timestampNormalized(fs.state.FirstTime)
+	var scratch [8 * 1024]byte
 
 	for _, mb := range fs.blks {
 		mb.mu.RLock()
@@ -7003,7 +7011,6 @@ func (fs *fileStore) writeFullState() error {
 		numDeleted := mb.dmap.Size()
 		buf = binary.AppendUvarint(buf, uint64(numDeleted))
 		if numDeleted > 0 {
-			var scratch [8 * 1024]byte
 			dmap, _ := mb.dmap.Encode(scratch[:0])
 			buf = append(buf, dmap...)
 		}
@@ -7042,6 +7049,10 @@ func (fs *fileStore) writeFullState() error {
 	priorDirty := fs.dirty
 	// Release lock.
 	fs.mu.Unlock()
+
+	if cap(buf) > sz {
+		fs.warn("WriteFullState reallocated from %d to %d", sz, cap(buf))
+	}
 
 	// Write to a tmp file and rename.
 	const tmpPre = streamStreamStateFile + tsep

@@ -6410,6 +6410,37 @@ func TestFileStoreTrackSubjLenForPSIM(t *testing.T) {
 	check()
 }
 
+// This was used to make sure our estimate was correct, but not needed normally.
+func TestFileStoreLargeFullStatePSIM(t *testing.T) {
+	t.Skip()
+
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd},
+		StreamConfig{Name: "zzz", Subjects: []string{">"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	buf := make([]byte, 20)
+	for i := 0; i < 100_000; i++ {
+		var b strings.Builder
+		// 1-6 tokens.
+		numTokens := rand.Intn(6) + 1
+		for i := 0; i < numTokens; i++ {
+			tlen := rand.Intn(8) + 2
+			tok := buf[:tlen]
+			crand.Read(tok)
+			b.WriteString(hex.EncodeToString(tok))
+			if i != numTokens-1 {
+				b.WriteString(".")
+			}
+		}
+		subj := b.String()
+		fs.StoreMsg(subj, nil, nil)
+	}
+	fs.Stop()
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////
