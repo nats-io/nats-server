@@ -28,33 +28,46 @@ type ipQueue[T any] struct {
 	elts []T
 	pos  int
 	pool *sync.Pool
-	mrs  int
+	mrs  int              // Max recycle size
+	calc func(e T) uint64 // Per-entry size calculator
+	sz   atomic.Uint64    // Calculated size (only if calc != nil)
 	name string
 	m    *sync.Map
 }
 
-type ipQueueOpts struct {
+type ipQueueOpts[T any] struct {
 	maxRecycleSize int
+	calc           func(e T) uint64
 }
 
-type ipQueueOpt func(*ipQueueOpts)
+type ipQueueOpt[T any] func(*ipQueueOpts[T])
 
 // This option allows to set the maximum recycle size when attempting
 // to put back a slice to the pool.
-func ipQueue_MaxRecycleSize(max int) ipQueueOpt {
-	return func(o *ipQueueOpts) {
+func ipQueue_MaxRecycleSize[T any](max int) ipQueueOpt[T] {
+	return func(o *ipQueueOpts[T]) {
 		o.maxRecycleSize = max
 	}
 }
 
-func newIPQueue[T any](s *Server, name string, opts ...ipQueueOpt) *ipQueue[T] {
-	qo := ipQueueOpts{maxRecycleSize: ipQueueDefaultMaxRecycleSize}
+// This option enables total queue size counting by passing in a function
+// that evaluates the size of each entry as it is pushed/popped. This option
+// enables the size() function.
+func ipQueue_SizeCalculation[T any](calc func(e T) uint64) ipQueueOpt[T] {
+	return func(o *ipQueueOpts[T]) {
+		o.calc = calc
+	}
+}
+
+func newIPQueue[T any](s *Server, name string, opts ...ipQueueOpt[T]) *ipQueue[T] {
+	qo := ipQueueOpts[T]{maxRecycleSize: ipQueueDefaultMaxRecycleSize}
 	for _, o := range opts {
 		o(&qo)
 	}
 	q := &ipQueue[T]{
 		ch:   make(chan struct{}, 1),
 		mrs:  qo.maxRecycleSize,
+		calc: qo.calc,
 		pool: &sync.Pool{},
 		name: name,
 		m:    &s.ipQueues,
@@ -83,6 +96,9 @@ func (q *ipQueue[T]) push(e T) int {
 		}
 	}
 	q.elts = append(q.elts, e)
+	if q.calc != nil {
+		q.sz.Add(q.calc(e))
+	}
 	l++
 	q.Unlock()
 	if signal {
@@ -116,6 +132,11 @@ func (q *ipQueue[T]) pop() []T {
 	}
 	q.elts, q.pos = nil, 0
 	atomic.AddInt64(&q.inprogress, int64(len(elts)))
+	if q.calc != nil {
+		for _, e := range elts {
+			q.sz.Add(-q.calc(e))
+		}
+	}
 	q.Unlock()
 	return elts
 }
@@ -140,6 +161,9 @@ func (q *ipQueue[T]) popOne() (T, bool) {
 	}
 	e := q.elts[q.pos]
 	q.pos++
+	if q.calc != nil {
+		q.sz.Add(-q.calc(e))
+	}
 	l--
 	if l > 0 {
 		// We need to re-signal
@@ -189,6 +213,12 @@ func (q *ipQueue[T]) len() int {
 	return l
 }
 
+// Returns the calculated size of the queue (if ipQueue_SizeCalculation has been
+// passed in), otherwise returns zero.
+func (q *ipQueue[T]) size() uint64 {
+	return q.sz.Load()
+}
+
 // Empty the queue and consumes the notification signal if present.
 // Note that this could cause a reader go routine that has been
 // notified that there is something in the queue (reading from queue's `ch`)
@@ -202,6 +232,7 @@ func (q *ipQueue[T]) drain() {
 		q.resetAndReturnToPool(&q.elts)
 		q.elts, q.pos = nil, 0
 	}
+	q.sz.Store(0)
 	// Consume the signal if it was present to reduce the chance of a reader
 	// routine to be think that there is something in the queue...
 	select {

@@ -73,6 +73,7 @@ type RaftNode interface {
 	LeadChangeC() <-chan bool
 	QuitC() <-chan struct{}
 	Created() time.Time
+	Overloaded() bool
 	Stop()
 	Delete()
 	Wipe()
@@ -239,14 +240,15 @@ const (
 )
 
 var (
-	minElectionTimeout   = minElectionTimeoutDefault
-	maxElectionTimeout   = maxElectionTimeoutDefault
-	minCampaignTimeout   = minCampaignTimeoutDefault
-	maxCampaignTimeout   = maxCampaignTimeoutDefault
-	hbInterval           = hbIntervalDefault
-	lostQuorumInterval   = lostQuorumIntervalDefault
-	lostQuorumCheck      = lostQuorumCheckIntervalDefault
-	observerModeInterval = observerModeIntervalDefault
+	minElectionTimeout          = minElectionTimeoutDefault
+	maxElectionTimeout          = maxElectionTimeoutDefault
+	minCampaignTimeout          = minCampaignTimeoutDefault
+	maxCampaignTimeout          = maxCampaignTimeoutDefault
+	hbInterval                  = hbIntervalDefault
+	lostQuorumInterval          = lostQuorumIntervalDefault
+	lostQuorumCheck             = lostQuorumCheckIntervalDefault
+	observerModeInterval        = observerModeIntervalDefault
+	overloadThreshold    uint64 = 1024 * 1024 * 8
 )
 
 type RaftConfig struct {
@@ -341,6 +343,19 @@ func (s *Server) bootstrapRaftNode(cfg *RaftConfig, knownPeers []string, allPeer
 	return writePeerState(cfg.Store, &peerState{knownPeers, expected, extUndetermined})
 }
 
+// calculateCommittedEntrySizeForIPQ is passed into the ipQueue to
+// help with tracking the size of the committed entries in the queue.
+func calculateCommittedEntrySizeForIPQ(e *CommittedEntry) uint64 {
+	if e == nil {
+		return 0
+	}
+	sz := uint64(8) // 64-bit index
+	for _, ent := range e.Entries {
+		sz += uint64(1 + len(ent.Data))
+	}
+	return sz
+}
+
 // startRaftNode will start the raft node.
 func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabels) (RaftNode, error) {
 	if cfg == nil {
@@ -365,6 +380,7 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 		return nil, errNoPeerState
 	}
 
+	calc := ipQueue_SizeCalculation[*CommittedEntry](calculateCommittedEntrySizeForIPQ)
 	qpfx := fmt.Sprintf("[ACC:%s] RAFT '%s' ", accName, cfg.Name)
 	n := &raft{
 		created:  time.Now(),
@@ -389,13 +405,14 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 		prop:     newIPQueue[*Entry](s, qpfx+"entry"),
 		entry:    newIPQueue[*appendEntry](s, qpfx+"appendEntry"),
 		resp:     newIPQueue[*appendEntryResponse](s, qpfx+"appendEntryResponse"),
-		apply:    newIPQueue[*CommittedEntry](s, qpfx+"committedEntry"),
+		apply:    newIPQueue[*CommittedEntry](s, qpfx+"committedEntry", calc),
 		stepdown: newIPQueue[string](s, qpfx+"stepdown"),
 		accName:  accName,
 		leadc:    make(chan bool, 32),
 		observer: cfg.Observer,
 		extSt:    ps.domainExt,
 	}
+
 	n.c.registerWithAccount(sacc)
 
 	if atomic.LoadInt32(&s.logging.debug) > 0 {
@@ -1195,7 +1212,7 @@ func (n *raft) setupLastSnapshot() {
 	n.pterm = snap.lastTerm
 	n.commit = snap.lastIndex
 	n.applied = snap.lastIndex
-	n.apply.push(newCommittedEntry(n.commit, []*Entry{{EntrySnapshot, snap.data}}))
+	n.pushToApply(newCommittedEntry(n.commit, []*Entry{{EntrySnapshot, snap.data}}))
 	if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
 		n.setWriteErrLocked(err)
 	}
@@ -1375,6 +1392,18 @@ func (n *raft) Healthy() bool {
 	n.Lock()
 	defer n.Unlock()
 	return n.isCurrent(true)
+}
+
+func (n *raft) Overloaded() bool {
+	if n == nil {
+		return false
+	}
+	return n.apply.size() >= overloadThreshold
+}
+
+// Pushes to the apply queue and updates the overloaded state. Lock must be held.
+func (n *raft) pushToApply(ce *CommittedEntry) {
+	n.apply.push(ce)
 }
 
 // HadPreviousLeader indicates if this group ever had a leader.
@@ -2825,12 +2854,13 @@ func (n *raft) applyCommit(index uint64) error {
 			committed = append(committed, e)
 		}
 	}
-	// Pass to the upper layers if we have normal entries. It is
-	// entirely possible that 'committed' might be an empty slice here,
-	// which will happen if we've processed updates inline (like peer
-	// states). In which case the upper layer will just call down with
-	// Applied() with no further action.
-	n.apply.push(newCommittedEntry(index, committed))
+	// Pass to the upper layers if we have normal entries.
+	if len(committed) > 0 {
+		n.pushToApply(newCommittedEntry(index, committed))
+	} else {
+		// If we processed inline update our applied index.
+		n.applied = index
+	}
 	// Place back in the pool.
 	ae.returnToPool()
 	return nil
@@ -3010,6 +3040,13 @@ func (n *raft) runAsCandidate() {
 // handleAppendEntry handles an append entry from the wire. This function
 // is an internal callback from the "asubj" append entry subscription.
 func (n *raft) handleAppendEntry(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
+	// If we are overwhelmed, i.e. the upper layer is not applying entries
+	// fast enough and our apply queue is building up, start to drop new
+	// append entries instead.
+	if n.Overloaded() {
+		return
+	}
+
 	msg = copyBytes(msg)
 	if ae, err := n.decodeAppendEntry(msg, sub, reply); err == nil {
 		// Push to the new entry channel. From here one of the worker
@@ -3358,7 +3395,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			}
 
 			// Now send snapshot to upper levels. Only send the snapshot, not the peerstate entry.
-			n.apply.push(newCommittedEntry(n.commit, ae.entries[:1]))
+			n.pushToApply(newCommittedEntry(n.commit, ae.entries[:1]))
 			n.Unlock()
 			return
 

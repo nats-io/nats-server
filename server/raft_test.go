@@ -518,3 +518,35 @@ func TestNRGElectionTimerAfterObserver(t *testing.T) {
 		require_True(t, etlr.After(before))
 	}
 }
+
+func TestNRGDetectOverload(t *testing.T) {
+	origOverloadThreshold := overloadThreshold
+	defer func() {
+		overloadThreshold = origOverloadThreshold
+	}()
+	iterations := 32
+	overloadThreshold = uint64(iterations-2) * 8
+
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	rg.wedge()
+
+	sa := rg.leader().(*stateAdder)
+	sn := sa.node()
+
+	for i := 0; i < iterations; i++ {
+		sa.proposeDelta(1)
+		time.Sleep(time.Millisecond * 5)
+	}
+
+	require_True(t, sn.Overloaded())
+
+	rg.unwedge()
+	rg.waitOnTotal(t, int64(iterations))
+
+	require_False(t, sn.Overloaded())
+}
