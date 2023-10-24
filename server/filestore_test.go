@@ -5546,9 +5546,9 @@ func TestFileStoreFullStateBasics(t *testing.T) {
 		require_True(t, len(matches) == 0)
 
 		state := fs.State()
-		require_True(t, state.Msgs == 2)
-		require_True(t, state.FirstSeq == 1)
-		require_True(t, state.LastSeq == 2)
+		require_Equal(t, state.Msgs, 2)
+		require_Equal(t, state.FirstSeq, 1)
+		require_Equal(t, state.LastSeq, 2)
 
 		// Now make sure we can read in values.
 		var smv StoreMsg
@@ -5587,20 +5587,20 @@ func TestFileStoreFullStateBasics(t *testing.T) {
 		defer fs.Stop()
 
 		state = fs.State()
-		require_True(t, state.Msgs == 4)
-		require_True(t, state.Bytes == 4*recLen)
-		require_True(t, state.FirstSeq == 1)
-		require_True(t, state.LastSeq == 4)
-		require_True(t, fs.numMsgBlocks() == 2)
+		require_Equal(t, state.Msgs, 4)
+		require_Equal(t, state.Bytes, 4*recLen)
+		require_Equal(t, state.FirstSeq, 1)
+		require_Equal(t, state.LastSeq, 4)
+		require_Equal(t, fs.numMsgBlocks(), 2)
 
 		// Make sure we are tracking subjects correctly.
 		fs.mu.RLock()
 		psi := *fs.psim[subj]
 		fs.mu.RUnlock()
 
-		require_True(t, psi.total == 4)
-		require_True(t, psi.fblk == 1)
-		require_True(t, psi.lblk == 2)
+		require_Equal(t, psi.total, 4)
+		require_Equal(t, psi.fblk, 1)
+		require_Equal(t, psi.lblk, 2)
 
 		// Store 1 more
 		fs.StoreMsg(subj, nil, msgA)
@@ -5614,17 +5614,17 @@ func TestFileStoreFullStateBasics(t *testing.T) {
 		defer fs.Stop()
 
 		state = fs.State()
-		require_True(t, state.Msgs == 5)
-		require_True(t, state.FirstSeq == 1)
-		require_True(t, state.LastSeq == 5)
-		require_True(t, fs.numMsgBlocks() == 3)
+		require_Equal(t, state.Msgs, 5)
+		require_Equal(t, state.FirstSeq, 1)
+		require_Equal(t, state.LastSeq, 5)
+		require_Equal(t, fs.numMsgBlocks(), 3)
 		// Make sure we are tracking subjects correctly.
 		fs.mu.RLock()
 		psi = *fs.psim[subj]
 		fs.mu.RUnlock()
-		require_True(t, psi.total == 5)
-		require_True(t, psi.fblk == 1)
-		require_True(t, psi.lblk == 3)
+		require_Equal(t, psi.total, 5)
+		require_Equal(t, psi.fblk, 1)
+		require_Equal(t, psi.lblk, 3)
 	})
 }
 
@@ -5657,7 +5657,7 @@ func TestFileStoreFullStatePurge(t *testing.T) {
 		}
 		n, err := fs.Purge()
 		require_NoError(t, err)
-		require_True(t, n == 10)
+		require_Equal(t, n, 10)
 		state := fs.State()
 		fs.Stop()
 
@@ -5678,7 +5678,7 @@ func TestFileStoreFullStatePurge(t *testing.T) {
 
 		n, err = fs.PurgeEx("B", 0, 0)
 		require_NoError(t, err)
-		require_True(t, n == 5)
+		require_Equal(t, n, 5)
 
 		state = fs.State()
 		fs.Stop()
@@ -5695,14 +5695,14 @@ func TestFileStoreFullStatePurge(t *testing.T) {
 		// Purge with keep.
 		n, err = fs.PurgeEx(_EMPTY_, 0, 2)
 		require_NoError(t, err)
-		require_True(t, n == 3)
+		require_Equal(t, n, 3)
 
 		state = fs.State()
 
 		// Do some quick checks here, keep had a bug.
-		require_True(t, state.Msgs == 2)
-		require_True(t, state.FirstSeq == 18)
-		require_True(t, state.LastSeq == 20)
+		require_Equal(t, state.Msgs, 2)
+		require_Equal(t, state.FirstSeq, 18)
+		require_Equal(t, state.LastSeq, 20)
 
 		fs.Stop()
 
@@ -5719,7 +5719,7 @@ func TestFileStoreFullStatePurge(t *testing.T) {
 		// This used to be provided by the idx file and is now tombstones and the full stream state snapshot.
 		n, err = fs.Purge()
 		require_NoError(t, err)
-		require_True(t, n == 2)
+		require_Equal(t, n, 2)
 		state = fs.State()
 		fs.Stop()
 
@@ -5772,7 +5772,7 @@ func TestFileStoreFullStateTestUserRemoveWAL(t *testing.T) {
 		require_NoError(t, err)
 		require_True(t, bytes.Equal(sm.msg, msgZ))
 
-		require_True(t, fs.numMsgBlocks() == 1)
+		require_Equal(t, fs.numMsgBlocks(), 1)
 		state := fs.State()
 		fs.Stop()
 
@@ -5804,7 +5804,7 @@ func TestFileStoreFullStateTestUserRemoveWAL(t *testing.T) {
 		fs.RemoveMsg(4)
 
 		state = fs.State()
-		require_True(t, len(state.Deleted) == state.NumDeleted)
+		require_Equal(t, len(state.Deleted), state.NumDeleted)
 		fs.Stop()
 
 		fs, err = newFileStoreWithCreated(fcfg, scfg, time.Now(), prf, nil)
@@ -5870,9 +5870,9 @@ func TestFileStoreFullStateTestSysRemovals(t *testing.T) {
 		}
 
 		state := fs.State()
-		require_True(t, state.Msgs == 2)
-		require_True(t, state.FirstSeq == 3)
-		require_True(t, state.LastSeq == 4)
+		require_Equal(t, state.Msgs, 2)
+		require_Equal(t, state.FirstSeq, 3)
+		require_Equal(t, state.LastSeq, 4)
 		fs.Stop()
 
 		fs, err = newFileStoreWithCreated(fcfg, scfg, time.Now(), prf, nil)
@@ -5889,9 +5889,9 @@ func TestFileStoreFullStateTestSysRemovals(t *testing.T) {
 		}
 
 		state = fs.State()
-		require_True(t, state.Msgs == 10)
-		require_True(t, state.FirstSeq == 3)
-		require_True(t, state.LastSeq == 12)
+		require_Equal(t, state.Msgs, 10)
+		require_Equal(t, state.FirstSeq, 3)
+		require_Equal(t, state.LastSeq, 12)
 		fs.Stop()
 
 		fs, err = newFileStoreWithCreated(fcfg, scfg, time.Now(), prf, nil)
@@ -5907,9 +5907,9 @@ func TestFileStoreFullStateTestSysRemovals(t *testing.T) {
 		fs.StoreMsg("ZZZ", nil, msg)
 
 		state = fs.State()
-		require_True(t, state.Msgs == 10)
-		require_True(t, state.FirstSeq == 4)
-		require_True(t, state.LastSeq == 13)
+		require_Equal(t, state.Msgs, 10)
+		require_Equal(t, state.FirstSeq, 4)
+		require_Equal(t, state.LastSeq, 13)
 		fs.Stop()
 
 		fs, err = newFileStoreWithCreated(fcfg, scfg, time.Now(), prf, nil)
@@ -5958,7 +5958,7 @@ func TestFileStoreSelectBlockWithFirstSeqRemovals(t *testing.T) {
 			subj := string(subjects[i])
 			fs.StoreMsg(subj, nil, msg)
 		}
-		require_True(t, fs.numMsgBlocks() == 33)
+		require_Equal(t, fs.numMsgBlocks(), 33)
 
 		// Now we want to delete the first msg of each block to move the first sequence.
 		// Want to do this via system removes, not user initiated moves.
@@ -5977,7 +5977,7 @@ func TestFileStoreSelectBlockWithFirstSeqRemovals(t *testing.T) {
 			fs.mu.RUnlock()
 			require_True(t, index >= 0)
 			require_True(t, mb != nil)
-			require_True(t, (seq-1)/2 == uint64(index))
+			require_Equal(t, (seq-1)/2, uint64(index))
 		}
 	})
 }
@@ -6214,7 +6214,7 @@ func TestFileStoreFullStateMidBlockPastWAL(t *testing.T) {
 		fs.StoreMsg("H", nil, msg)
 		fs.StoreMsg("I", nil, msg)
 		fs.StoreMsg("J", nil, msg)
-		fs.EraseMsg(2)
+		fs.RemoveMsg(2)
 
 		require_Equal(t, fs.numMsgBlocks(), 1)
 		state := fs.State()

@@ -468,7 +468,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	// Check if we have any left over tombstones to process.
 	if len(fs.tombs) > 0 {
 		for _, seq := range fs.tombs {
-			fs.removeMsg(seq, false, false, false)
+			fs.removeMsg(seq, false, true, false)
 			fs.removeFromLostData(seq)
 		}
 		// Not needed after this phase.
@@ -936,6 +936,16 @@ func (mb *msgBlock) ensureLastChecksumLoaded() {
 		return
 	}
 	copy(mb.lchk[0:], mb.lastChecksum())
+}
+
+// Perform a recover but do not update PSIM.
+// Lock should be held.
+func (fs *fileStore) recoverMsgBlockNoSubjectUpdates(index uint32) (*msgBlock, error) {
+	psim := fs.psim
+	fs.psim = nil
+	mb, err := fs.recoverMsgBlock(index)
+	fs.psim = psim
+	return mb, err
 }
 
 // Lock held on entry
@@ -1648,18 +1658,18 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 		return errPriorState
 	}
 	if matched = bytes.Equal(mb.lastChecksum(), lchk[:]); !matched {
-		// Remove the last message block since we will re-process below.
+		// Remove the last message block since recover will add in the new one.
 		fs.removeMsgBlockFromList(mb)
+		if nmb, err := fs.recoverMsgBlockNoSubjectUpdates(mb.index); err != nil && !os.IsNotExist(err) {
+			os.Remove(fn)
+			return errCorruptState
+		} else if nmb != nil {
+			fs.adjustAccounting(mb, nmb)
+		}
 	}
 
 	// We may need to check other blocks. Even if we matched last checksum we will see if there is another block.
-	// If we did not match we re-process the last block.
-	start := blkIndex
-	if matched {
-		start++
-	}
-
-	for bi := start; ; bi++ {
+	for bi := blkIndex + 1; ; bi++ {
 		nmb, err := fs.recoverMsgBlock(bi)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -1670,13 +1680,6 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 			return err
 		}
 		if nmb != nil {
-			// Check if we have to account for a partial message block.
-			if !matched && mb != nil && mb.index == nmb.index {
-				if err := fs.adjustAccounting(mb, nmb); err != nil {
-					fs.warn("Stream state could not adjust accounting")
-					return err
-				}
-			}
 			// Update top level accounting.
 			if fs.state.FirstSeq == 0 || nmb.first.seq < fs.state.FirstSeq {
 				fs.state.FirstSeq = nmb.first.seq
@@ -1693,9 +1696,9 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 }
 
 // adjustAccounting will be called when a stream state was only partially accounted for
-// with a message block, e.g. additional records were added after the stream state.
+// within a message block, e.g. additional records were added after the stream state.
 // Lock should be held.
-func (fs *fileStore) adjustAccounting(mb, nmb *msgBlock) error {
+func (fs *fileStore) adjustAccounting(mb, nmb *msgBlock) {
 	nmb.mu.Lock()
 	defer nmb.mu.Unlock()
 
@@ -1705,23 +1708,29 @@ func (fs *fileStore) adjustAccounting(mb, nmb *msgBlock) error {
 	}
 	nmb.ensurePerSubjectInfoLoaded()
 
-	// Walk all the original mb's sequences that were included in the stream state.
+	// Walk only new messages and update accounting at fs level. Any messages that should have
+	// triggered limits exceeded will be handled after the recovery and prior to the stream
+	// being available to the system.
 	var smv StoreMsg
-	for seq := mb.first.seq; seq <= mb.last.seq; seq++ {
-		// If we had already declared it deleted we can move on since you can not undelete.
-		if mb.dmap.Exists(seq) {
-			continue
-		}
-		// Lookup the message.
+	for seq := mb.last.seq + 1; seq <= nmb.last.seq; seq++ {
+		// Lookup the message. If an error will be deleted, so can skip.
 		sm, err := nmb.cacheLookup(seq, &smv)
 		if err != nil {
-			return err
+			continue
 		}
 		// Since we found it we just need to adjust fs totals and psim.
-		fs.state.Msgs--
-		fs.state.Bytes -= fileStoreMsgSize(sm.subj, sm.hdr, sm.msg)
+		fs.state.Msgs++
+		fs.state.Bytes += fileStoreMsgSize(sm.subj, sm.hdr, sm.msg)
 		if len(sm.subj) > 0 && fs.psim != nil {
-			fs.removePerSubject(sm.subj)
+			if info, ok := fs.psim[sm.subj]; ok {
+				info.total++
+				if nmb.index > info.lblk {
+					info.lblk = nmb.index
+				}
+			} else {
+				fs.psim[sm.subj] = &psi{total: 1, fblk: nmb.index, lblk: nmb.index}
+				fs.tsl += len(sm.subj)
+			}
 		}
 	}
 
@@ -1731,7 +1740,15 @@ func (fs *fileStore) adjustAccounting(mb, nmb *msgBlock) error {
 		nmb.first = mb.first
 	}
 
-	return nil
+	// Update top level accounting.
+	if fs.state.FirstSeq == 0 || nmb.first.seq < fs.state.FirstSeq {
+		fs.state.FirstSeq = nmb.first.seq
+		fs.state.FirstTime = time.Unix(0, nmb.first.ts).UTC()
+	}
+	if nmb.last.seq > fs.state.LastSeq {
+		fs.state.LastSeq = nmb.last.seq
+		fs.state.LastTime = time.Unix(0, nmb.last.ts).UTC()
+	}
 }
 
 // Grabs last checksum for the named block file.
