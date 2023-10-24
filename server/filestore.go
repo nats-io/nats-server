@@ -1229,6 +1229,8 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 	mb.clearCacheAndOffset()
 
 	buf, err := mb.loadBlock(nil)
+	defer recycleMsgBlockBuf(buf)
+
 	if err != nil || len(buf) == 0 {
 		var ld *LostStreamData
 		// No data to rebuild from here.
@@ -7349,6 +7351,9 @@ func (fs *fileStore) Snapshot(deadline time.Duration, checkMsgs, includeConsumer
 			return nil, fmt.Errorf("snapshot check detected %d bad messages", len(ld.Msgs))
 		}
 	}
+
+	// Write out full state as well before proceeding.
+	fs.writeFullState()
 
 	pr, pw := net.Pipe()
 
