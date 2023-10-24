@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	mrand "math/rand"
 	"net"
 	"os"
 	"reflect"
@@ -5812,4 +5813,127 @@ func TestJetStreamClusterRestartThenScaleStreamReplicas(t *testing.T) {
 	// Stop goroutines and wait for them to exit.
 	cancel()
 	wg.Wait()
+}
+
+func TestJetStreamClusterConsumerHang(t *testing.T) {
+	streamCfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	}
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+	servers := c.servers
+	_, err := js.AddStream(streamCfg)
+	require_NoError(t, err)
+
+	var restartInProgress bool
+	mx := sync.Mutex{}
+
+	// Run continuous publisher
+	go func() {
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+		var i int
+
+		for {
+			_, err := js.Publish("foo", []byte("OK"))
+			if err != nil {
+				fmt.Println("Publish error: ", err)
+				continue
+			}
+			i++
+			if i%10000 == 0 {
+				fmt.Printf("Published %d messages\n", i)
+			}
+		}
+	}()
+
+	sub, err := js.SubscribeSync("",
+		nats.BindStream("TEST"),
+		nats.OrderedConsumer(),
+	)
+	require_NoError(t, err)
+
+	// Restart stream leader after 5 seconds of activity
+	go func() {
+		for {
+			time.Sleep(5 * time.Second)
+			mx.Lock()
+			if restartInProgress {
+				mx.Unlock()
+				continue
+			}
+			mx.Unlock()
+			cons, err := sub.ConsumerInfo()
+			if err != nil {
+				fmt.Println("ConsumerInfo error: ", err)
+				continue
+			}
+			si, err := js.StreamInfo("TEST")
+			if err != nil {
+				fmt.Println("StreamInfo error: ", err)
+				continue
+			}
+			sl, cl := si.Cluster.Leader, cons.Cluster.Leader
+			var restartSrv *Server
+			for server := range servers {
+				if servers[server].Name() == sl {
+					restartSrv = servers[server]
+					break
+				}
+			}
+			if restartSrv == nil {
+				fmt.Println("Could not find server to restart")
+				continue
+			}
+			fmt.Printf("Stream leader: %q, Consumer leader: %q\n", sl, cl)
+			fmt.Printf("Restarting server %q\n", restartSrv.Name())
+			restartSrv.Shutdown()
+
+			// sleep between 2 and 12 seconds
+			randTime := mrand.Intn(10) + 2
+			time.Sleep(time.Duration(randTime) * time.Second)
+
+			c.restartServer(restartSrv)
+			fmt.Printf("Restarted server %q\n", restartSrv.Name())
+		}
+	}()
+
+	var countTimeouts int
+	for {
+		if countTimeouts > 30 {
+			ci, err := sub.ConsumerInfo()
+			require_NoError(t, err)
+			consJSON, err := json.MarshalIndent(ci, "", "  ")
+			require_NoError(t, err)
+			fmt.Printf("ConsumerInfo: %s\n", string(consJSON))
+			si, err := js.StreamInfo("TEST")
+			require_NoError(t, err)
+			streamJSON, err := json.MarshalIndent(si, "", "  ")
+			require_NoError(t, err)
+			fmt.Printf("StreamInfo: %s\n", string(streamJSON))
+			t.Fatalf("Got too many timeout errors waiting for next message: %d", countTimeouts)
+		}
+
+		// wait for next message
+		// this will return error when consumer leader or publisher is offline
+		// but should recover after all servers are back online
+		_, err := sub.NextMsg(2 * time.Second)
+		if err != nil {
+			mx.Lock()
+			restartInProgress = true
+			mx.Unlock()
+			fmt.Println("err getting msg", err)
+			countTimeouts++
+			continue
+		}
+		mx.Lock()
+		restartInProgress = false
+		mx.Unlock()
+		countTimeouts = 0
+	}
 }
