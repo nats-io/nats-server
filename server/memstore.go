@@ -636,7 +636,7 @@ func (ms *memStore) expireMsgs() {
 // Will return the number of purged messages.
 func (ms *memStore) PurgeEx(subject string, sequence, keep uint64) (purged uint64, err error) {
 	if subject == _EMPTY_ || subject == fwcs {
-		if keep == 0 && (sequence == 0 || sequence == 1) {
+		if keep == 0 && sequence == 0 {
 			return ms.Purge()
 		}
 		if sequence > 1 {

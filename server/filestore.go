@@ -6006,7 +6006,7 @@ func compareFn(subject string) func(string, string) bool {
 // Will return the number of purged messages.
 func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint64, err error) {
 	if subject == _EMPTY_ || subject == fwcs {
-		if keep == 0 && (sequence == 0 || sequence == 1) {
+		if keep == 0 && sequence == 0 {
 			return fs.Purge()
 		}
 		if sequence > 1 {
