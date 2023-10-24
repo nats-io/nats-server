@@ -21989,3 +21989,60 @@ func TestJetStreamKVReductionInHistory(t *testing.T) {
 	// Make sure all keys still accessible.
 	checkAllKeys()
 }
+
+// Server issue 4685
+func TestJetStreamConsumerPendingForKV(t *testing.T) {
+	for _, st := range []nats.StorageType{nats.FileStorage, nats.MemoryStorage} {
+		t.Run(st.String(), func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:              "TEST",
+				Subjects:          []string{"test.>"},
+				Storage:           st,
+				MaxMsgsPerSubject: 10,
+				Discard:           nats.DiscardNew,
+			})
+			require_NoError(t, err)
+
+			_, err = js.Publish("test.1", []byte("x"))
+			require_NoError(t, err)
+
+			var msg *nats.Msg
+
+			// this is the detail that triggers the off by one, remove this code and all tests pass
+			msg = nats.NewMsg("test.1")
+			msg.Data = []byte("y")
+			msg.Header.Add(nats.ExpectedLastSeqHdr, "1")
+			_, err = js.PublishMsg(msg)
+			require_NoError(t, err)
+
+			_, err = js.Publish("test.2", []byte("x"))
+			require_NoError(t, err)
+			_, err = js.Publish("test.3", []byte("x"))
+			require_NoError(t, err)
+			_, err = js.Publish("test.4", []byte("x"))
+			require_NoError(t, err)
+			_, err = js.Publish("test.5", []byte("x"))
+			require_NoError(t, err)
+
+			nfo, err := js.StreamInfo("TEST", &nats.StreamInfoRequest{SubjectsFilter: ">"})
+			require_NoError(t, err)
+
+			require_Equal(t, len(nfo.State.Subjects), 5)
+
+			sub, err := js.SubscribeSync("test.>", nats.DeliverLastPerSubject())
+			require_NoError(t, err)
+
+			msg, err = sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			meta, err := msg.Metadata()
+			require_NoError(t, err)
+			require_Equal(t, meta.NumPending, 4)
+		})
+	}
+}

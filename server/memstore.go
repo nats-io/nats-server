@@ -427,9 +427,17 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 		// We will adjust from the totals above by scanning what we need to exclude.
 		ss.First = first
 		var adjust uint64
+		var tss *SimpleState
+
 		for seq := ms.state.FirstSeq; seq < first; seq++ {
 			if sm, ok := ms.msgs[seq]; ok && !seen[sm.subj] && isMatch(sm.subj) {
-				adjust++
+				if lastPerSubject {
+					tss = ms.fss[sm.subj]
+				}
+				// If we are last per subject, make sure to only adjust if all messages are before our first.
+				if tss == nil || tss.Last < first {
+					adjust++
+				}
 				if seen != nil {
 					seen[sm.subj] = true
 				}
@@ -515,8 +523,7 @@ func (ms *memStore) SubjectsTotals(filterSubject string) map[string]uint64 {
 
 // NumPending will return the number of pending messages matching the filter subject starting at sequence.
 func (ms *memStore) NumPending(sseq uint64, filter string, lastPerSubject bool) (total, validThrough uint64) {
-	// This needs to be a write lock, as filteredStateLocked can
-	// mutate the per-subject state.
+	// This needs to be a write lock, as filteredStateLocked can mutate the per-subject state.
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
 
