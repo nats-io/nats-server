@@ -2127,6 +2127,14 @@ func (mset *stream) processMirrorMsgs(mirror *sourceInfo, ready *sync.WaitGroup)
 	// Signal the caller that we have captured the above fields.
 	ready.Done()
 
+	// Make sure we have valid ipq for msgs.
+	if msgs == nil {
+		mset.mu.Lock()
+		mset.cancelMirrorConsumer()
+		mset.mu.Unlock()
+		return
+	}
+
 	t := time.NewTicker(sourceHealthCheckInterval)
 	defer t.Stop()
 
