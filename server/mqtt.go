@@ -598,9 +598,9 @@ func validateMQTTOptions(o *Options) error {
 	if mo.Port == 0 {
 		return nil
 	}
-	// We have to force the server name to be explicitly set. There are conditions
-	// where we need a unique, repeatable name.
-	if o.ServerName == _EMPTY_ {
+	// We have to force the server name to be explicitly set and be unique when
+	// in cluster mode.
+	if o.ServerName == _EMPTY_ && (o.Cluster.Port != 0 || o.Gateway.Port != 0) {
 		return errMQTTServerNameMustBeSet
 	}
 	// If there is a NoAuthUser, we need to have Users defined and

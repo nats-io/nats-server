@@ -375,6 +375,9 @@ func testMQTTDefaultTLSOptions(t *testing.T, verify bool) *Options {
 
 func TestMQTTServerNameRequired(t *testing.T) {
 	conf := createConfFile(t, []byte(`
+		cluster {
+			port: -1
+		}
 		mqtt {
 			port: -1
 		}
@@ -385,6 +388,19 @@ func TestMQTTServerNameRequired(t *testing.T) {
 	}
 	if _, err := NewServer(o); err == nil || err.Error() != errMQTTServerNameMustBeSet.Error() {
 		t.Fatalf("Expected error about requiring server name to be set, got %v", err)
+	}
+
+	conf = createConfFile(t, []byte(`
+		mqtt {
+			port: -1
+		}
+	`))
+	o, err = ProcessConfigFile(conf)
+	if err != nil {
+		t.Fatalf("Error processing config file: %v", err)
+	}
+	if _, err := NewServer(o); err == nil || err.Error() != errMQTTStandaloneNeedsJetStream.Error() {
+		t.Fatalf(`Expected errMQTTStandaloneNeedsJetStream ("next in line"), got %v`, err)
 	}
 }
 
