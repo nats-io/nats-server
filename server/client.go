@@ -5232,7 +5232,7 @@ func (c *client) reconnect() {
 
 	// Check for a solicited route. If it was, start up a reconnect unless
 	// we are already connected to the other end.
-	if c.isSolicitedRoute() || retryImplicit {
+	if didSolicit := c.isSolicitedRoute(); didSolicit || retryImplicit {
 		srv.mu.Lock()
 		defer srv.mu.Unlock()
 
@@ -5242,7 +5242,7 @@ func (c *client) reconnect() {
 		rtype := c.route.routeType
 		rurl := c.route.url
 		accName := string(c.route.accName)
-		checkRID := accName == _EMPTY_ && srv.routesPoolSize <= 1 && rid != _EMPTY_
+		checkRID := accName == _EMPTY_ && srv.getOpts().Cluster.PoolSize < 1 && rid != _EMPTY_
 		c.mu.Unlock()
 
 		// It is possible that the server is being shutdown.
@@ -5252,6 +5252,14 @@ func (c *client) reconnect() {
 		}
 
 		if checkRID && srv.routes[rid] != nil {
+			// This is the case of "no pool". Make sure that the registered one
+			// is upgraded to solicited if the connection trying to reconnect
+			// was a solicited one.
+			if didSolicit {
+				if remote := srv.routes[rid][0]; remote != nil {
+					upgradeRouteToSolicited(remote, rurl, rtype)
+				}
+			}
 			srv.Debugf("Not attempting reconnect for solicited route, already connected to %q", rid)
 			return
 		} else if rid == srv.info.ID {
