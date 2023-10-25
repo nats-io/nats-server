@@ -2019,6 +2019,11 @@ func (s *Server) addRoute(c *client, didSolicit bool, info *Info, accName string
 				s.mu.Unlock()
 				return false
 			}
+			// Look if there is a solicited route in the pool. If there is one,
+			// they should all be, so stop at the first.
+			if url, rtype, hasSolicited := hasSolicitedRoute(conns); hasSolicited {
+				upgradeRouteToSolicited(c, url, rtype)
+			}
 		} else {
 			// If we solicit, upgrade to solicited all non-solicited routes that
 			// we may have registered.
@@ -2027,17 +2032,7 @@ func (s *Server) addRoute(c *client, didSolicit bool, info *Info, accName string
 			rtype := c.route.routeType
 			c.mu.Unlock()
 			for _, r := range conns {
-				if r != nil {
-					r.mu.Lock()
-					if !r.route.didSolicit {
-						r.route.didSolicit = true
-						r.route.url = url
-					}
-					if rtype == Explicit {
-						r.route.routeType = Explicit
-					}
-					r.mu.Unlock()
-				}
+				upgradeRouteToSolicited(r, url, rtype)
 			}
 		}
 		// For all cases (solicited and not) we need to count how many connections
@@ -2162,6 +2157,41 @@ func (s *Server) addRoute(c *client, didSolicit bool, info *Info, accName string
 	}
 
 	return !exists
+}
+
+func hasSolicitedRoute(conns []*client) (*url.URL, RouteType, bool) {
+	var url *url.URL
+	var rtype RouteType
+	for _, r := range conns {
+		if r == nil {
+			continue
+		}
+		r.mu.Lock()
+		if r.route.didSolicit {
+			url = r.route.url
+			rtype = r.route.routeType
+		}
+		r.mu.Unlock()
+		if url != nil {
+			return url, rtype, true
+		}
+	}
+	return nil, 0, false
+}
+
+func upgradeRouteToSolicited(r *client, url *url.URL, rtype RouteType) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	if !r.route.didSolicit {
+		r.route.didSolicit = true
+		r.route.url = url
+	}
+	if rtype == Explicit {
+		r.route.routeType = Explicit
+	}
+	r.mu.Unlock()
 }
 
 func handleDuplicateRoute(remote, c *client, setNoReconnect bool) {
