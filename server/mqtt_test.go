@@ -592,6 +592,28 @@ func TestMQTTParseOptions(t *testing.T) {
 				}
 				return nil
 			}, ""},
+		{"reject_qos2_publish",
+			`
+			mqtt {
+				reject_qos2_publish: true
+			}
+			`, func(o *MQTTOpts) error {
+				if !o.rejectQoS2Pub {
+					return fmt.Errorf("Invalid: expected rejectQoS2Pub to be set")
+				}
+				return nil
+			}, ""},
+		{"downgrade_qos2_subscribe",
+			`
+			mqtt {
+				downgrade_qos2_subscribe: true
+			}
+			`, func(o *MQTTOpts) error {
+				if !o.downgradeQoS2Sub {
+					return fmt.Errorf("Invalid: expected downgradeQoS2Sub to be set")
+				}
+				return nil
+			}, ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf := createConfFile(t, []byte(test.content))
@@ -1928,6 +1950,27 @@ func TestMQTTSubAck(t *testing.T) {
 	testMQTTSub(t, 1, mc, r, subs, expected)
 }
 
+func TestMQTTQoS2SubDowngrade(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	o.MQTT.downgradeQoS2Sub = true
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+
+	subs := []*mqttFilter{
+		{filter: "bar", qos: 1},
+		{filter: "baz", qos: 2},
+	}
+	expected := []byte{
+		1,
+		1,
+	}
+	testMQTTSub(t, 1, mc, r, subs, expected)
+}
+
 func testMQTTFlush(t testing.TB, c net.Conn, bw *bufio.Writer, r *mqttReader) {
 	t.Helper()
 	w := &mqttWriter{}
@@ -2158,6 +2201,28 @@ func TestMQTTPublish(t *testing.T) {
 	testMQTTPublish(t, mcp, mpr, 0, false, false, "foo", 0, []byte("msg"))
 	testMQTTPublish(t, mcp, mpr, 1, false, false, "foo", 1, []byte("msg"))
 	testMQTTPublish(t, mcp, mpr, 2, false, false, "foo", 2, []byte("msg"))
+}
+
+func TestMQTTQoS2PubReject(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	o.MQTT.rejectQoS2Pub = true
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+
+	mcp, mpr := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mcp.Close()
+	testMQTTCheckConnAck(t, mpr, mqttConnAckRCConnectionAccepted, false)
+
+	testMQTTPublish(t, mcp, mpr, 1, false, false, "foo", 1, []byte("msg"))
+
+	testMQTTPublishNoAcks(t, mcp, 2, false, false, "foo", 2, []byte("msg"))
+	_, err := mpr.readByte("failed attempt")
+	if err == nil || !strings.Contains(err.Error(), "error reading failed attempt: EOF") {
+		t.Fatalf("Expected error about QoS 2 publish rejected, got %v", err)
+	}
 }
 
 func TestMQTTSub(t *testing.T) {

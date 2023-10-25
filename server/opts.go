@@ -562,6 +562,14 @@ type MQTTOpts struct {
 
 	// Snapshot of configured TLS options.
 	tlsConfigOpts *TLSConfigOpts
+
+	// rejectQoS2Pub tells the MQTT client to not accept QoS2 PUBLISH, instead
+	// error and terminate the connection.
+	rejectQoS2Pub bool
+
+	// downgradeQOS2Sub tells the MQTT client to downgrade QoS2 SUBSCRIBE
+	// requests to QoS1.
+	downgradeQoS2Sub bool
 }
 
 type netResolver interface {
@@ -4630,6 +4638,11 @@ func parseMQTT(v interface{}, o *Options, errors *[]error, warnings *[]error) er
 			o.MQTT.ConsumerMemoryStorage = mv.(bool)
 		case "consumer_inactive_threshold", "consumer_auto_cleanup":
 			o.MQTT.ConsumerInactiveThreshold = parseDuration("consumer_inactive_threshold", tk, mv, errors, warnings)
+
+		case "reject_qos2_publish":
+			o.MQTT.rejectQoS2Pub, _ = mv.(bool)
+		case "downgrade_qos2_subscribe":
+			o.MQTT.downgradeQoS2Sub, _ = mv.(bool)
 
 		default:
 			if !tk.IsUsedVariable() {

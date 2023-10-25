@@ -345,6 +345,14 @@ type mqtt struct {
 	asm  *mqttAccountSessionManager // quick reference to account session manager, immutable after processConnect()
 	sess *mqttSession               // quick reference to session, immutable after processConnect()
 	cid  string                     // client ID
+
+	// rejectQoS2Pub tells the MQTT client to not accept QoS2 PUBLISH, instead
+	// error and terminate the connection.
+	rejectQoS2Pub bool
+
+	// downgradeQOS2Sub tells the MQTT client to downgrade QoS2 SUBSCRIBE
+	// requests to QoS1.
+	downgradeQoS2Sub bool
 }
 
 type mqttPending struct {
@@ -475,7 +483,11 @@ func (s *Server) createMQTTClient(conn net.Conn, ws *websocket) *client {
 	}
 	now := time.Now()
 
-	c := &client{srv: s, nc: conn, mpay: maxPay, msubs: maxSubs, start: now, last: now, mqtt: &mqtt{}, ws: ws}
+	mqtt := &mqtt{
+		rejectQoS2Pub:    opts.MQTT.rejectQoS2Pub,
+		downgradeQoS2Sub: opts.MQTT.downgradeQoS2Sub,
+	}
+	c := &client{srv: s, nc: conn, mpay: maxPay, msubs: maxSubs, start: now, last: now, mqtt: mqtt, ws: ws}
 	c.headers = true
 	c.mqtt.pp = &mqttPublish{}
 	// MQTT clients don't send NATS CONNECT protocols. So make it an "echo"
@@ -2226,6 +2238,10 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 		if f.qos > 2 {
 			f.qos = 2
 		}
+		if c.mqtt.downgradeQoS2Sub && f.qos == 2 {
+			c.Warnf("Downgrading subscription QoS2 to QoS1 for %q, as configured", f.filter)
+			f.qos = 1
+		}
 		subject := f.filter
 		sid := subject
 
@@ -2328,6 +2344,10 @@ func (as *mqttAccountSessionManager) serializeRetainedMsgsForSub(sess *mqttSessi
 		qos := mqttGetQoS(rm.Flags)
 		if qos > sub.mqtt.qos {
 			qos = sub.mqtt.qos
+		}
+		if c.mqtt.rejectQoS2Pub && qos == 2 {
+			c.Warnf("Rejecting retained message with QoS2 for subscription %q, as configured", sub.subject)
+			continue
 		}
 		if qos > 0 {
 			pi = sess.trackPublishRetained()
@@ -3001,6 +3021,10 @@ func (c *client) mqttParseConnect(r *mqttReader, pl int, hasMappings bool) (byte
 		hasWill = true
 	}
 
+	if c.mqtt.rejectQoS2Pub && hasWill && wqos == 2 {
+		return 0, nil, fmt.Errorf("server does not accept QoS2 for Will messages")
+	}
+
 	// Spec [MQTT-3.1.2-19]
 	hasUser := cp.flags&mqttConnFlagUsernameFlag != 0
 	// Spec [MQTT-3.1.2-21]
@@ -3385,6 +3409,11 @@ func (c *client) mqttParsePub(r *mqttReader, pl int, pp *mqttPublish, hasMapping
 	if qos > 2 {
 		return fmt.Errorf("QoS=%v is invalid in MQTT", qos)
 	}
+
+	if c.mqtt.rejectQoS2Pub && qos == 2 {
+		return fmt.Errorf("QoS=2 is disabled for PUBLISH messages")
+	}
+
 	// Keep track of where we are when starting to read the variable header
 	start := r.pos
 
