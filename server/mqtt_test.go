@@ -375,6 +375,9 @@ func testMQTTDefaultTLSOptions(t *testing.T, verify bool) *Options {
 
 func TestMQTTServerNameRequired(t *testing.T) {
 	conf := createConfFile(t, []byte(`
+		cluster {
+			port: -1
+		}
 		mqtt {
 			port: -1
 		}
@@ -385,6 +388,19 @@ func TestMQTTServerNameRequired(t *testing.T) {
 	}
 	if _, err := NewServer(o); err == nil || err.Error() != errMQTTServerNameMustBeSet.Error() {
 		t.Fatalf("Expected error about requiring server name to be set, got %v", err)
+	}
+
+	conf = createConfFile(t, []byte(`
+		mqtt {
+			port: -1
+		}
+	`))
+	o, err = ProcessConfigFile(conf)
+	if err != nil {
+		t.Fatalf("Error processing config file: %v", err)
+	}
+	if _, err := NewServer(o); err == nil || err.Error() != errMQTTStandaloneNeedsJetStream.Error() {
+		t.Fatalf(`Expected errMQTTStandaloneNeedsJetStream ("next in line"), got %v`, err)
 	}
 }
 
@@ -589,6 +605,28 @@ func TestMQTTParseOptions(t *testing.T) {
 			`, func(o *MQTTOpts) error {
 				if o.MaxAckPending != 123 {
 					return fmt.Errorf("Invalid max ack pending: %v", o.MaxAckPending)
+				}
+				return nil
+			}, ""},
+		{"reject_qos2_publish",
+			`
+			mqtt {
+				reject_qos2_publish: true
+			}
+			`, func(o *MQTTOpts) error {
+				if !o.rejectQoS2Pub {
+					return fmt.Errorf("Invalid: expected rejectQoS2Pub to be set")
+				}
+				return nil
+			}, ""},
+		{"downgrade_qos2_subscribe",
+			`
+			mqtt {
+				downgrade_qos2_subscribe: true
+			}
+			`, func(o *MQTTOpts) error {
+				if !o.downgradeQoS2Sub {
+					return fmt.Errorf("Invalid: expected downgradeQoS2Sub to be set")
 				}
 				return nil
 			}, ""},
@@ -1928,6 +1966,27 @@ func TestMQTTSubAck(t *testing.T) {
 	testMQTTSub(t, 1, mc, r, subs, expected)
 }
 
+func TestMQTTQoS2SubDowngrade(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	o.MQTT.downgradeQoS2Sub = true
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+
+	subs := []*mqttFilter{
+		{filter: "bar", qos: 1},
+		{filter: "baz", qos: 2},
+	}
+	expected := []byte{
+		1,
+		1,
+	}
+	testMQTTSub(t, 1, mc, r, subs, expected)
+}
+
 func testMQTTFlush(t testing.TB, c net.Conn, bw *bufio.Writer, r *mqttReader) {
 	t.Helper()
 	w := &mqttWriter{}
@@ -2158,6 +2217,25 @@ func TestMQTTPublish(t *testing.T) {
 	testMQTTPublish(t, mcp, mpr, 0, false, false, "foo", 0, []byte("msg"))
 	testMQTTPublish(t, mcp, mpr, 1, false, false, "foo", 1, []byte("msg"))
 	testMQTTPublish(t, mcp, mpr, 2, false, false, "foo", 2, []byte("msg"))
+}
+
+func TestMQTTQoS2PubReject(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	o.MQTT.rejectQoS2Pub = true
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+
+	mcp, mpr := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mcp.Close()
+	testMQTTCheckConnAck(t, mpr, mqttConnAckRCConnectionAccepted, false)
+
+	testMQTTPublish(t, mcp, mpr, 1, false, false, "foo", 1, []byte("msg"))
+
+	testMQTTPublishNoAcks(t, mcp, 2, false, false, "foo", 2, []byte("msg"))
+	testMQTTExpectDisconnect(t, mcp)
 }
 
 func TestMQTTSub(t *testing.T) {
@@ -3814,6 +3892,7 @@ func TestMQTTWill(t *testing.T) {
 	}{
 		{"will qos 0", true, 0},
 		{"will qos 1", true, 1},
+		{"will qos 2", true, 2},
 		{"proper disconnect no will", false, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -3821,7 +3900,7 @@ func TestMQTTWill(t *testing.T) {
 			defer mcs.Close()
 			testMQTTCheckConnAck(t, rs, mqttConnAckRCConnectionAccepted, false)
 
-			testMQTTSub(t, 1, mcs, rs, []*mqttFilter{{filter: "will/#", qos: 1}}, []byte{1})
+			testMQTTSub(t, 1, mcs, rs, []*mqttFilter{{filter: "will/#", qos: 2}}, []byte{2})
 			testMQTTFlush(t, mcs, nil, rs)
 
 			mc, r := testMQTTConnect(t,
@@ -3853,6 +3932,32 @@ func TestMQTTWill(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMQTTQoS2WillReject(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	o.MQTT.rejectQoS2Pub = true
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	mcs, rs := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mcs.Close()
+	testMQTTCheckConnAck(t, rs, mqttConnAckRCConnectionAccepted, false)
+
+	testMQTTSub(t, 1, mcs, rs, []*mqttFilter{{filter: "will/#", qos: 2}}, []byte{2})
+	testMQTTFlush(t, mcs, nil, rs)
+
+	mc, r := testMQTTConnect(t,
+		&mqttConnInfo{
+			cleanSess: true,
+			will: &mqttWill{
+				topic:   []byte("will/topic"),
+				message: []byte("bye"),
+				qos:     2,
+			},
+		}, o.MQTT.Host, o.MQTT.Port)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCQoS2WillRejected, false)
 }
 
 func TestMQTTWillRetain(t *testing.T) {
@@ -4085,6 +4190,41 @@ func TestMQTTPublishRetain(t *testing.T) {
 			testMQTTDisconnect(t, mc2, nil)
 		})
 	}
+}
+
+func TestMQTTQoS2RetainedReject(t *testing.T) {
+	// Start the server with QOS2 enabled, and submit retained messages with QoS
+	// 1 and 2.
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	mc1, rs1 := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	testMQTTCheckConnAck(t, rs1, mqttConnAckRCConnectionAccepted, false)
+	testMQTTPublish(t, mc1, rs1, 2, false, true, "foo", 1, []byte("qos2 failed"))
+	testMQTTPublish(t, mc1, rs1, 1, false, true, "bar", 2, []byte("qos1 retained"))
+	testMQTTFlush(t, mc1, nil, rs1)
+	testMQTTDisconnect(t, mc1, nil)
+	mc1.Close()
+	s.Shutdown()
+
+	// Restart the server with QOS2 disabled; we should be using the same
+	// JetStream store, so the retained message should still be there.
+	o.MQTT.rejectQoS2Pub = true
+	s = testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	mc2, rs2 := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mc2.Close()
+	testMQTTCheckConnAck(t, rs2, mqttConnAckRCConnectionAccepted, false)
+
+	testMQTTSub(t, 1, mc2, rs2, []*mqttFilter{{filter: "bar/#", qos: 2}}, []byte{2})
+	pflags, _ := testMQTTGetPubMsg(t, mc2, rs2, "bar", []byte("qos1 retained"))
+	if !mqttIsRetained(pflags) {
+		t.Fatalf("retain flag should have been set, it was not: flags=%v", pflags)
+	}
+
+	testMQTTSub(t, 1, mc2, rs2, []*mqttFilter{{filter: "foo/#", qos: 2}}, []byte{2})
+	testMQTTExpectNothing(t, rs2)
+	testMQTTDisconnect(t, mc2, nil)
 }
 
 func TestMQTTRetainFlag(t *testing.T) {
