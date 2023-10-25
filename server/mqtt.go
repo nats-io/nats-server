@@ -85,6 +85,7 @@ const (
 	mqttConnAckRCServerUnavailable           = byte(0x3)
 	mqttConnAckRCBadUserOrPassword           = byte(0x4)
 	mqttConnAckRCNotAuthorized               = byte(0x5)
+	mqttConnAckRCQoS2WillRejected            = byte(0x10)
 
 	// Maximum payload size of a control packet
 	mqttMaxPayloadSize = 0xFFFFFFF
@@ -3022,7 +3023,7 @@ func (c *client) mqttParseConnect(r *mqttReader, pl int, hasMappings bool) (byte
 	}
 
 	if c.mqtt.rejectQoS2Pub && hasWill && wqos == 2 {
-		return 0, nil, fmt.Errorf("server does not accept QoS2 for Will messages")
+		return mqttConnAckRCQoS2WillRejected, nil, fmt.Errorf("server does not accept QoS2 for Will messages")
 	}
 
 	// Spec [MQTT-3.1.2-19]

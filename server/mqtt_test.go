@@ -2219,10 +2219,7 @@ func TestMQTTQoS2PubReject(t *testing.T) {
 	testMQTTPublish(t, mcp, mpr, 1, false, false, "foo", 1, []byte("msg"))
 
 	testMQTTPublishNoAcks(t, mcp, 2, false, false, "foo", 2, []byte("msg"))
-	_, err := mpr.readByte("failed attempt")
-	if err == nil || !strings.Contains(err.Error(), "error reading failed attempt: EOF") {
-		t.Fatalf("Expected error about QoS 2 publish rejected, got %v", err)
-	}
+	testMQTTExpectDisconnect(t, mcp)
 }
 
 func TestMQTTSub(t *testing.T) {
@@ -3879,6 +3876,7 @@ func TestMQTTWill(t *testing.T) {
 	}{
 		{"will qos 0", true, 0},
 		{"will qos 1", true, 1},
+		{"will qos 2", true, 2},
 		{"proper disconnect no will", false, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -3886,7 +3884,7 @@ func TestMQTTWill(t *testing.T) {
 			defer mcs.Close()
 			testMQTTCheckConnAck(t, rs, mqttConnAckRCConnectionAccepted, false)
 
-			testMQTTSub(t, 1, mcs, rs, []*mqttFilter{{filter: "will/#", qos: 1}}, []byte{1})
+			testMQTTSub(t, 1, mcs, rs, []*mqttFilter{{filter: "will/#", qos: 2}}, []byte{2})
 			testMQTTFlush(t, mcs, nil, rs)
 
 			mc, r := testMQTTConnect(t,
@@ -3918,6 +3916,35 @@ func TestMQTTWill(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMQTTQoS2WillReject(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	o.MQTT.rejectQoS2Pub = true
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+
+	mcs, rs := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mcs.Close()
+	testMQTTCheckConnAck(t, rs, mqttConnAckRCConnectionAccepted, false)
+
+	testMQTTSub(t, 1, mcs, rs, []*mqttFilter{{filter: "will/#", qos: 2}}, []byte{2})
+	testMQTTFlush(t, mcs, nil, rs)
+
+	mc, r := testMQTTConnect(t,
+		&mqttConnInfo{
+			cleanSess: true,
+			will: &mqttWill{
+				topic:   []byte("will/topic"),
+				message: []byte("bye"),
+				qos:     2,
+			},
+		}, o.MQTT.Host, o.MQTT.Port)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCQoS2WillRejected, false)
 }
 
 func TestMQTTWillRetain(t *testing.T) {
@@ -4150,6 +4177,39 @@ func TestMQTTPublishRetain(t *testing.T) {
 			testMQTTDisconnect(t, mc2, nil)
 		})
 	}
+}
+
+func TestMQTTQoS2RetainedReject(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	mc1, rs1 := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	testMQTTCheckConnAck(t, rs1, mqttConnAckRCConnectionAccepted, false)
+	testMQTTPublish(t, mc1, rs1, 2, false, true, "foo", 1, []byte("qos2 failed"))
+	testMQTTPublish(t, mc1, rs1, 1, false, true, "bar", 2, []byte("qos1 retained"))
+	testMQTTFlush(t, mc1, nil, rs1)
+	testMQTTDisconnect(t, mc1, nil)
+	mc1.Close()
+	s.Shutdown()
+
+	// restart the server with MQTT disabled; we should be using the same
+	// JetStream store, so the retained message should still be there.
+	o.MQTT.rejectQoS2Pub = true
+	s = testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	mc2, rs2 := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mc2.Close()
+	testMQTTCheckConnAck(t, rs2, mqttConnAckRCConnectionAccepted, false)
+
+	testMQTTSub(t, 1, mc2, rs2, []*mqttFilter{{filter: "bar/#", qos: 2}}, []byte{2})
+	pflags, _ := testMQTTGetPubMsg(t, mc2, rs2, "bar", []byte("qos1 retained"))
+	if !mqttIsRetained(pflags) {
+		t.Fatalf("retain flag should have been set, it was not: flags=%v", pflags)
+	}
+
+	testMQTTSub(t, 1, mc2, rs2, []*mqttFilter{{filter: "foo/#", qos: 2}}, []byte{2})
+	testMQTTExpectNothing(t, rs2)
+	testMQTTDisconnect(t, mc2, nil)
 }
 
 func TestMQTTRetainFlag(t *testing.T) {

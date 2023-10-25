@@ -4640,9 +4640,9 @@ func parseMQTT(v interface{}, o *Options, errors *[]error, warnings *[]error) er
 			o.MQTT.ConsumerInactiveThreshold = parseDuration("consumer_inactive_threshold", tk, mv, errors, warnings)
 
 		case "reject_qos2_publish":
-			o.MQTT.rejectQoS2Pub, _ = mv.(bool)
+			o.MQTT.rejectQoS2Pub = mv.(bool)
 		case "downgrade_qos2_subscribe":
-			o.MQTT.downgradeQoS2Sub, _ = mv.(bool)
+			o.MQTT.downgradeQoS2Sub = mv.(bool)
 
 		default:
 			if !tk.IsUsedVariable() {
