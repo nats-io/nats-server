@@ -1998,6 +1998,26 @@ func (s *Server) addRoute(c *client, didSolicit bool, info *Info, accName string
 				s.mu.Unlock()
 				return false
 			}
+		} else {
+			// If we solicit, upgrade to solicited all non-solicited routes that
+			// we may have registered.
+			c.mu.Lock()
+			url := c.route.url
+			rtype := c.route.routeType
+			c.mu.Unlock()
+			for _, r := range conns {
+				if r != nil {
+					r.mu.Lock()
+					if !r.route.didSolicit {
+						r.route.didSolicit = true
+						r.route.url = url
+					}
+					if rtype == Explicit {
+						r.route.routeType = Explicit
+					}
+					r.mu.Unlock()
+				}
+			}
 		}
 		// For all cases (solicited and not) we need to count how many connections
 		// we already have, and for solicited route, we will find a free spot in
