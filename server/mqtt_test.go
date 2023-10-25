@@ -3924,9 +3924,6 @@ func TestMQTTQoS2WillReject(t *testing.T) {
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownServer(s)
 
-	nc := natsConnect(t, s.ClientURL())
-	defer nc.Close()
-
 	mcs, rs := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
 	defer mcs.Close()
 	testMQTTCheckConnAck(t, rs, mqttConnAckRCConnectionAccepted, false)
@@ -4180,6 +4177,8 @@ func TestMQTTPublishRetain(t *testing.T) {
 }
 
 func TestMQTTQoS2RetainedReject(t *testing.T) {
+	// Start the server with QOS2 enabled, and submit retained messages with QoS
+	// 1 and 2.
 	o := testMQTTDefaultOptions()
 	s := testMQTTRunServer(t, o)
 	mc1, rs1 := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
@@ -4191,7 +4190,7 @@ func TestMQTTQoS2RetainedReject(t *testing.T) {
 	mc1.Close()
 	s.Shutdown()
 
-	// restart the server with MQTT disabled; we should be using the same
+	// Restart the server with QOS2 disabled; we should be using the same
 	// JetStream store, so the retained message should still be there.
 	o.MQTT.rejectQoS2Pub = true
 	s = testMQTTRunServer(t, o)
