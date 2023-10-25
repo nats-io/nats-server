@@ -2127,6 +2127,20 @@ func TestRoutePoolConnectRace(t *testing.T) {
 		}
 	}
 
+	// Also, check that they all report as solicited and configured in monitoring.
+	for _, s := range servers {
+		routes, err := s.Routez(nil)
+		require_NoError(t, err)
+		for _, r := range routes.Routes {
+			if !r.DidSolicit {
+				t.Fatalf("All routes should have been marked as solicited, this one was not: %+v", r)
+			}
+			if !r.IsConfigured {
+				t.Fatalf("All routes should have been marked as configured, this one was not: %+v", r)
+			}
+		}
+	}
+
 	for _, s := range servers {
 		s.Shutdown()
 		s.WaitForShutdown()
@@ -2529,6 +2543,20 @@ func TestRoutePerAccountConnectRace(t *testing.T) {
 		case <-time.After(DEFAULT_ROUTE_RECONNECT + 250*time.Millisecond):
 			// More than reconnect and some, and no reconnect, so we are good.
 			done = true
+		}
+	}
+
+	// Also, check that they all report as solicited and configured in monitoring.
+	for _, s := range servers {
+		routes, err := s.Routez(nil)
+		require_NoError(t, err)
+		for _, r := range routes.Routes {
+			if !r.DidSolicit {
+				t.Fatalf("All routes should have been marked as solicited, this one was not: %+v", r)
+			}
+			if !r.IsConfigured {
+				t.Fatalf("All routes should have been marked as configured, this one was not: %+v", r)
+			}
 		}
 	}
 
