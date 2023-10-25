@@ -292,6 +292,7 @@ type consumer struct {
 	// This will be checked in checkPending to abort processing
 	// and let ack be processed in priority.
 	awl               int64
+	leader            atomic.Bool
 	mu                sync.RWMutex
 	js                *jetStream
 	mset              *stream
@@ -1131,19 +1132,21 @@ func (o *consumer) isLeader() bool {
 
 func (o *consumer) setLeader(isLeader bool) {
 	o.mu.RLock()
-	mset := o.mset
-	isRunning := o.ackSub != nil
+	mset, closed := o.mset, o.closed
+	movingToClustered := o.node != nil && o.pch == nil
+	wasLeader := o.leader.Swap(isLeader)
 	o.mu.RUnlock()
 
 	// If we are here we have a change in leader status.
 	if isLeader {
-		if mset == nil {
+		if closed || mset == nil {
 			return
 		}
-		if isRunning {
+
+		if wasLeader {
 			// If we detect we are scaling up, make sure to create clustered routines and channels.
-			o.mu.Lock()
-			if o.node != nil && o.pch == nil {
+			if movingToClustered {
+				o.mu.Lock()
 				// We are moving from R1 to clustered.
 				o.pch = make(chan struct{}, 1)
 				go o.loopAndForwardProposals(o.qch)
@@ -1153,8 +1156,8 @@ func (o *consumer) setLeader(isLeader bool) {
 					default:
 					}
 				}
+				o.mu.Unlock()
 			}
-			o.mu.Unlock()
 			return
 		}
 
