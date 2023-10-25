@@ -1071,9 +1071,30 @@ func (s *Server) processImplicitRoute(info *Info, routeNoPool bool) {
 // in the server's opts.Routes, false otherwise.
 // Server lock is assumed to be held by caller.
 func (s *Server) hasThisRouteConfigured(info *Info) bool {
-	urlToCheckExplicit := strings.ToLower(net.JoinHostPort(info.Host, strconv.Itoa(info.Port)))
-	for _, ri := range s.getOpts().Routes {
-		if strings.ToLower(ri.Host) == urlToCheckExplicit {
+	routes := s.getOpts().Routes
+	if len(routes) == 0 {
+		return false
+	}
+	// This could possibly be a 0.0.0.0 host so we will also construct a second
+	// url with the host section of the `info.IP` (if present).
+	sPort := strconv.Itoa(info.Port)
+	urlOne := strings.ToLower(net.JoinHostPort(info.Host, sPort))
+	var urlTwo string
+	if info.IP != _EMPTY_ {
+		if u, _ := url.Parse(info.IP); u != nil {
+			urlTwo = strings.ToLower(net.JoinHostPort(u.Hostname(), sPort))
+			// Ignore if same than the first
+			if urlTwo == urlOne {
+				urlTwo = _EMPTY_
+			}
+		}
+	}
+	for _, ri := range routes {
+		rHost := strings.ToLower(ri.Host)
+		if rHost == urlOne {
+			return true
+		}
+		if urlTwo != _EMPTY_ && rHost == urlTwo {
 			return true
 		}
 	}
