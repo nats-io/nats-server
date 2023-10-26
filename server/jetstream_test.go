@@ -2935,7 +2935,7 @@ func TestJetStreamWorkQueueTerminateDelivery(t *testing.T) {
 			// We should get 1 back.
 			m := getMsg(1, 2)
 			// Now terminate
-			m.Respond(AckTerm)
+			m.Respond([]byte(fmt.Sprintf("%s with reason", string(AckTerm))))
 			time.Sleep(ackWait * 2)
 
 			// We should get 2 here, not 1 since we have indicated we wanted to terminate.
@@ -2962,6 +2962,9 @@ func TestJetStreamWorkQueueTerminateDelivery(t *testing.T) {
 			}
 			if adv.Deliveries != 2 {
 				t.Fatalf("Expected delivery count of %d, got %d", 2, adv.Deliveries)
+			}
+			if adv.Reason != "with reason" {
+				t.Fatalf("Advisory did not have a reason")
 			}
 		})
 	}
