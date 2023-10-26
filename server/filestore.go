@@ -2453,8 +2453,12 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 		}
 
 		mb.mu.Lock()
-		// Make sure we have fss loaded.
-		mb.ensurePerSubjectInfoLoaded()
+		var shouldExpire bool
+		if mb.cacheNotLoaded() {
+			// Make sure we have fss loaded.
+			mb.loadMsgsWithLock()
+			shouldExpire = true
+		}
 		for subj, ss := range mb.fss {
 			if subject == _EMPTY_ || subject == fwcs || subjectIsSubsetMatch(subj, subject) {
 				if ss.firstNeedsUpdate {
@@ -2469,6 +2473,10 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 					fss[subj] = oss
 				}
 			}
+		}
+		if shouldExpire {
+			// Expire this cache before moving on.
+			mb.tryForceExpireCacheLocked()
 		}
 		mb.mu.Unlock()
 
@@ -6748,7 +6756,7 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 		if err := mb.loadMsgsWithLock(); err != nil {
 			return err
 		}
-		// indexCaceheBuf can produce fss now, so if non-nil we are good.
+		// indexCacheBuf can produce fss now, so if non-nil we are good.
 		if mb.fss != nil {
 			return nil
 		}
