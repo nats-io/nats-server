@@ -2426,7 +2426,7 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 
-	if fs.state.Msgs == 0 {
+	if fs.state.Msgs == 0 || fs.noTrackSubjects() {
 		return nil
 	}
 
@@ -2454,7 +2454,7 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 
 		mb.mu.Lock()
 		var shouldExpire bool
-		if mb.cacheNotLoaded() {
+		if mb.fss == nil {
 			// Make sure we have fss loaded.
 			mb.loadMsgsWithLock()
 			shouldExpire = true
