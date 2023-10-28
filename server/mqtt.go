@@ -2676,19 +2676,22 @@ func (sess *mqttSession) clear() error {
 	sess.pubRelConsumer = nil
 	sess.seq = 0
 	sess.tmaxack = 0
-	sess.mu.Unlock()
 
 	for _, dur := range durs {
 		if _, err := sess.jsa.deleteConsumer(mqttStreamName, dur); isErrorOtherThan(err, JSConsumerNotFoundErr) {
+			sess.mu.Unlock()
 			return fmt.Errorf("unable to delete consumer %q for session %q: %v", dur, sess.id, err)
 		}
 	}
 	if pubRelDur != "" {
 		_, err := sess.jsa.deleteConsumer(mqttOutStreamName, pubRelDur)
 		if isErrorOtherThan(err, JSConsumerNotFoundErr) {
+			sess.mu.Unlock()
 			return fmt.Errorf("unable to delete consumer %q for session %q: %v", pubRelDur, sess.id, err)
 		}
 	}
+
+	sess.mu.Unlock()
 
 	if seq > 0 {
 		if err := sess.jsa.deleteMsg(mqttSessStreamName, seq, true); err != nil {
