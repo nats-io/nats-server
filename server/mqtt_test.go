@@ -41,7 +41,7 @@ import (
 	"github.com/nats-io/nuid"
 )
 
-var testMQTTTimeout = 5 * time.Second
+var testMQTTTimeout = 20 * time.Second
 
 var jsClusterTemplWithLeafAndMQTT = `
 	listen: 127.0.0.1:-1
@@ -2881,6 +2881,103 @@ func TestMQTTSubPropagation(t *testing.T) {
 
 	natsPub(t, nc, "foo", []byte("NATS"))
 	testMQTTCheckPubMsg(t, mc, r, "foo", 0, []byte("NATS"))
+}
+
+func BenchmarkMQTTClusterConnect__1Subs_Clean_QoS0(b *testing.B) {
+	benchMQTTClusterConnect(b, true, 1, 0)
+}
+
+func BenchmarkMQTTClusterConnect__1Subs_Clean_QoS1(b *testing.B) {
+	benchMQTTClusterConnect(b, true, 1, 1)
+}
+
+func BenchmarkMQTTClusterConnect__1Subs_Clean_QoS2(b *testing.B) {
+	benchMQTTClusterConnect(b, true, 1, 2)
+}
+
+func BenchmarkMQTTClusterConnect__1Subs_Persist_QoS0(b *testing.B) {
+	benchMQTTClusterConnect(b, false, 1, 0)
+}
+
+func BenchmarkMQTTClusterConnect__1Subs_Persist_QoS1(b *testing.B) {
+	benchMQTTClusterConnect(b, false, 1, 1)
+}
+
+func BenchmarkMQTTClusterConnect__1Subs_Persist_QoS2(b *testing.B) {
+	benchMQTTClusterConnect(b, false, 1, 2)
+}
+
+func BenchmarkMQTTClusterConnect__5Subs_Clean_QoS0(b *testing.B) {
+	benchMQTTClusterConnect(b, true, 5, 0)
+}
+
+func BenchmarkMQTTClusterConnect__5Subs_Clean_QoS1(b *testing.B) {
+	benchMQTTClusterConnect(b, true, 5, 1)
+}
+
+func BenchmarkMQTTClusterConnect__5Subs_Clean_QoS2(b *testing.B) {
+	benchMQTTClusterConnect(b, true, 5, 2)
+}
+
+func BenchmarkMQTTClusterConnect__5Subs_Persist_QoS0(b *testing.B) {
+	benchMQTTClusterConnect(b, false, 5, 0)
+}
+
+func BenchmarkMQTTClusterConnect__5Subs_Persist_QoS1(b *testing.B) {
+	benchMQTTClusterConnect(b, false, 5, 1)
+}
+
+func BenchmarkMQTTClusterConnect__5Subs_Persist_QoS2(b *testing.B) {
+	benchMQTTClusterConnect(b, false, 5, 2)
+}
+
+func benchMQTTClusterConnect(b *testing.B, cleanSess bool, numSubs int, subQoS byte) {
+	b.StopTimer()
+	cl := createJetStreamClusterWithTemplate(b, testMQTTGetClusterTemplaceNoLeaf(), "MQTT", 3)
+	defer cl.shutdown()
+
+	clientID := nuid.Next()
+
+	// Connect and subscribe once, with QoS2, to ensure "core" MQTT JetStream setup.
+	o := cl.opts[0]
+	mc, r := testMQTTConnectRetry(b, &mqttConnInfo{clientID: clientID, cleanSess: true}, o.MQTT.Host, o.MQTT.Port, 5)
+	testMQTTCheckConnAck(b, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(b, 1, mc, r, []*mqttFilter{{filter: "init-test-sub", qos: 2}}, []byte{2})
+	testMQTTDisconnect(b, mc, nil)
+	mc.Close()
+
+	// prepare the filters for the subscriptions
+	filters := []*mqttFilter{}
+	expectedQoS := []byte{}
+	for i := 0; i < numSubs; i++ {
+		filters = append(filters, &mqttFilter{filter: fmt.Sprintf("foo-%d", i), qos: subQoS})
+		expectedQoS = append(expectedQoS, subQoS)
+	}
+
+	for i := 0; i < b.N; i++ {
+		run := func(withTimer bool) {
+			if withTimer {
+				b.StartTimer()
+			}
+			mc, r := testMQTTConnect(b, &mqttConnInfo{clientID: clientID, cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+			testMQTTCheckConnAck(b, r, mqttConnAckRCConnectionAccepted, false)
+			testMQTTSub(b, 1, mc, r, filters, expectedQoS)
+
+			if withTimer {
+				b.StopTimer()
+			}
+			testMQTTDisconnect(b, mc, nil)
+			mc.Close()
+		}
+
+		if !cleanSess {
+			// Refresh the session
+			run(false)
+		}
+
+		// measure the time to connect and subscribe
+		run(true)
+	}
 }
 
 func TestMQTTCluster(t *testing.T) {

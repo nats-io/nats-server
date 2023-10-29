@@ -23,6 +23,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -1467,7 +1468,19 @@ func (jsa *mqttJSA) prefixDomain(subject string) string {
 	return subject
 }
 
+var logMQTTSlowCalls = os.Getenv("NATS_MQTT_LOG_SLOW_CALLS") != _EMPTY_
+
 func (jsa *mqttJSA) newRequestEx(kind, subject string, hdr int, msg []byte, timeout time.Duration) (interface{}, error) {
+	if logMQTTSlowCalls {
+		start := time.Now()
+		defer func() {
+			elapsed := time.Since(start)
+			if elapsed > 50*time.Millisecond {
+				fmt.Printf("SLOW!!! API call %q on %q took %v\n", kind, subject, elapsed)
+			}
+		}()
+	}
+
 	jsa.mu.Lock()
 	// Either we use nuid.Next() which uses a global lock, or our own nuid object, but
 	// then it needs to be "write" protected. This approach will reduce across account
