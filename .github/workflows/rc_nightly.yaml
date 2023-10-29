@@ -15,10 +15,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           path: src/github.com/nats-io/nats-server
-          ref: ${{ inputs.target || 'v2.9.22' }}
+          ref: ${{ inputs.target || 'v2.10.4' }}
 
       - uses: ./src/github.com/nats-io/nats-server/.github/actions/nightly-release
         with:
