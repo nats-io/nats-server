@@ -31,7 +31,7 @@ runs:
         go-version: "${{ inputs.go }}"
 
     - name: goreleaser
-      uses: goreleaser/goreleaser-action@v3
+      uses: goreleaser/goreleaser-action@v5
       with:
         workdir: "${{ inputs.workdir }}"
         version: latest
