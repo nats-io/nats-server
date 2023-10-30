@@ -1,4 +1,4 @@
-name: "NATS Server Nightly: DEV"
+name: Docker Nightly
 on:
   workflow_dispatch:
     inputs:
@@ -11,7 +11,7 @@ on:
     - cron: "40 4 * * *"
 
 jobs:
-  nightly_release:
+  run:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
