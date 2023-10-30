@@ -1787,7 +1787,7 @@ func (n *raft) processAppendEntries() {
 }
 
 func (n *raft) runAsFollower() {
-	for n.State() == Follower {
+	for {
 		elect := n.electTimer()
 
 		select {
@@ -2779,7 +2779,7 @@ func (n *raft) runAsCandidate() {
 	// We vote for ourselves.
 	votes := 1
 
-	for n.State() == Candidate {
+	for {
 		elect := n.electTimer()
 		select {
 		case <-n.entry.ch:
