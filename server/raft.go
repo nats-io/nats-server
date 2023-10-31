@@ -188,9 +188,9 @@ type raft struct {
 	progress map[string]*ipQueue[uint64]
 
 	// For when we have paused our applyC.
-	paused    bool
-	hcommit   uint64
-	pobserver bool
+	paused  bool
+	hcommit uint64
+	pstate  RaftState
 
 	// Queues and Channels
 	prop     *ipQueue[*Entry]
@@ -827,7 +827,7 @@ func (n *raft) PauseApply() error {
 	n.paused = true
 	n.hcommit = n.commit
 	// Also prevent us from trying to become a leader while paused and catching up.
-	n.pobserver = n.switchState(Observer) == Observer
+	n.pstate = n.switchState(Observer)
 	n.resetElect(48 * time.Hour)
 
 	return nil
@@ -842,8 +842,8 @@ func (n *raft) ResumeApply() {
 	}
 
 	n.debug("Resuming our apply channel")
-	n.switchState(Follower)
-	n.pobserver = false
+	n.switchState(n.pstate)
+	n.pstate = Follower
 	n.paused = false
 	// Run catchup..
 	if n.hcommit > n.commit {
@@ -3241,7 +3241,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 					if !n.IsObserver() && !n.paused {
 						n.lxfer = true
 						n.xferCampaign()
-					} else if n.paused && !n.pobserver {
+					} else if n.paused && n.pstate != Observer {
 						// Here we can become a leader but need to wait for resume of the apply channel.
 						n.lxfer = true
 					}
