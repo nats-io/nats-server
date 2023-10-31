@@ -103,6 +103,7 @@ const (
 	Follower RaftState = iota
 	Leader
 	Candidate
+	Observer
 	Closed
 )
 
@@ -156,7 +157,6 @@ type raft struct {
 	js       *jetStream
 	dflag    bool
 	pleader  bool
-	observer bool
 	extSt    extensionState
 
 	// Subjects for votes, updates, replays.
@@ -400,9 +400,11 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 		stepdown: newIPQueue[string](s, qpfx+"stepdown"),
 		accName:  accName,
 		leadc:    make(chan bool, 1),
-		observer: cfg.Observer,
 		extSt:    ps.domainExt,
 		prand:    rand.New(rand.NewSource(rsrc)),
+	}
+	if cfg.Observer {
+		n.state.Store(int32(Observer))
 	}
 	n.c.registerWithAccount(sacc)
 
@@ -823,7 +825,7 @@ func (n *raft) PauseApply() error {
 	n.paused = true
 	n.hcommit = n.commit
 	// Also prevent us from trying to become a leader while paused and catching up.
-	n.pobserver, n.observer = n.observer, true
+	n.pobserver = n.switchState(Observer) == Observer
 	n.resetElect(48 * time.Hour)
 
 	return nil
@@ -838,7 +840,8 @@ func (n *raft) ResumeApply() {
 	}
 
 	n.debug("Resuming our apply channel")
-	n.observer, n.pobserver = n.pobserver, false
+	n.switchState(Follower)
+	n.pobserver = false
 	n.paused = false
 	// Run catchup..
 	if n.hcommit > n.commit {
@@ -1712,6 +1715,8 @@ func (n *raft) run() {
 			n.runAsCandidate()
 		case Leader:
 			n.runAsLeader()
+		case Observer:
+			n.runAsObserver()
 		case Closed:
 			return
 		}
@@ -1742,9 +1747,7 @@ func (n *raft) electTimer() *time.Timer {
 }
 
 func (n *raft) IsObserver() bool {
-	n.RLock()
-	defer n.RUnlock()
-	return n.observer
+	return n.state.Load() == int32(Observer)
 }
 
 // Sets the state to observer only.
@@ -1755,7 +1758,11 @@ func (n *raft) SetObserver(isObserver bool) {
 func (n *raft) setObserver(isObserver bool, extSt extensionState) {
 	n.Lock()
 	defer n.Unlock()
-	n.observer = isObserver
+	if isObserver {
+		n.switchState(Observer)
+	} else {
+		n.switchState(Follower)
+	}
 	n.extSt = extSt
 }
 
@@ -1815,6 +1822,36 @@ func (n *raft) runAsFollower() {
 			}
 		case <-n.votes.ch:
 			n.debug("Ignoring old vote response, we have stepped down")
+			n.votes.popOne()
+		case <-n.resp.ch:
+			// Ignore
+			n.resp.popOne()
+		case <-n.reqs.ch:
+			// Because of drain() it is possible that we get nil from popOne().
+			if voteReq, ok := n.reqs.popOne(); ok {
+				n.processVoteRequest(voteReq)
+			}
+		case <-n.stepdown.ch:
+			if newLeader, ok := n.stepdown.popOne(); ok {
+				n.switchToFollower(newLeader)
+				return
+			}
+		}
+	}
+}
+
+func (n *raft) runAsObserver() {
+	for {
+		select {
+		case <-n.entry.ch:
+			n.processAppendEntries()
+		case <-n.s.quitCh:
+			n.shutdown(false)
+			return
+		case <-n.quit:
+			return
+		case <-n.votes.ch:
+			n.debug("Ignoring old vote response, we are an observer")
 			n.votes.popOne()
 		case <-n.resp.ch:
 			// Ignore
@@ -3194,7 +3231,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				// This is us. We need to check if we can become the leader.
 				if maybeLeader == n.id {
 					// If not an observer and not paused we are good to go.
-					if !n.observer && !n.paused {
+					if !n.IsObserver() && !n.paused {
 						n.lxfer = true
 						n.xferCampaign()
 					} else if n.paused && !n.pobserver {
@@ -3777,11 +3814,10 @@ func (n *raft) handleVoteRequest(sub *subscription, c *client, _ *Account, subje
 }
 
 func (n *raft) requestVote() {
-	n.Lock()
 	if n.State() != Candidate {
-		n.Unlock()
 		return
 	}
+	n.Lock()
 	n.vote = n.id
 	n.writeTermVote()
 	vr := voteRequest{n.term, n.pterm, n.pindex, n.id, _EMPTY_}
@@ -3837,10 +3873,10 @@ func (n *raft) updateLeadChange(isLeader bool) {
 	}
 }
 
-// Lock should be held.
-func (n *raft) switchState(state RaftState) {
+// Lock should be held. Returns the previous state.
+func (n *raft) switchState(state RaftState) RaftState {
 	if n.State() == Closed {
-		return
+		return Closed
 	}
 
 	// Reset the election timer.
@@ -3857,8 +3893,9 @@ func (n *raft) switchState(state RaftState) {
 		n.updateLeadChange(true)
 	}
 
-	n.state.Store(int32(state))
+	previous := n.state.Swap(int32(state))
 	n.writeTermVote()
+	return RaftState(previous)
 }
 
 const (
@@ -3882,15 +3919,18 @@ func (n *raft) switchToFollower(leader string) {
 }
 
 func (n *raft) switchToCandidate() {
-	if n.State() == Closed {
+	switch n.State() {
+	case Closed:
+		return
+	case Observer:
 		return
 	}
 
 	n.Lock()
 	defer n.Unlock()
 
-	// If we are catching up or are in observer mode we can not switch.
-	if n.observer || n.paused {
+	// If we are catching up we can not switch.
+	if n.paused {
 		return
 	}
 
@@ -3911,7 +3951,10 @@ func (n *raft) switchToCandidate() {
 }
 
 func (n *raft) switchToLeader() {
-	if n.State() == Closed {
+	switch n.State() {
+	case Closed:
+		return
+	case Observer:
 		return
 	}
 
