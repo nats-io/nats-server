@@ -3990,7 +3990,7 @@ func (n *raft) switchToCandidate() {
 	case Closed:
 		return
 	case Observer:
-		return
+		//	return
 	}
 
 	n.Lock()
@@ -4022,7 +4022,7 @@ func (n *raft) switchToLeader() {
 	case Closed:
 		return
 	case Observer:
-		return
+		//	return
 	}
 
 	n.Lock()
