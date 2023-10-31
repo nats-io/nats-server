@@ -115,6 +115,8 @@ func (state RaftState) String() string {
 		return "CANDIDATE"
 	case Leader:
 		return "LEADER"
+	case Observer:
+		return "OBSERVER"
 	case Closed:
 		return "CLOSED"
 	}
@@ -1788,7 +1790,7 @@ func (n *raft) processAppendEntries() {
 }
 
 func (n *raft) runAsFollower() {
-	for {
+	for n.State() == Follower {
 		elect := n.electTimer()
 
 		select {
@@ -1841,7 +1843,9 @@ func (n *raft) runAsFollower() {
 }
 
 func (n *raft) runAsObserver() {
-	for {
+	for n.State() == Observer {
+		elect := n.electTimer()
+
 		select {
 		case <-n.entry.ch:
 			n.processAppendEntries()
@@ -1850,6 +1854,9 @@ func (n *raft) runAsObserver() {
 			return
 		case <-n.quit:
 			return
+		case <-elect.C:
+			n.resetElectWithLock(48 * time.Hour)
+			n.debug("Not switching to candidate, observer only")
 		case <-n.votes.ch:
 			n.debug("Ignoring old vote response, we are an observer")
 			n.votes.popOne()
@@ -2810,7 +2817,7 @@ func (n *raft) runAsCandidate() {
 	// We vote for ourselves.
 	votes := 1
 
-	for {
+	for n.State() == Candidate {
 		elect := n.electTimer()
 		select {
 		case <-n.entry.ch:
@@ -3873,10 +3880,70 @@ func (n *raft) updateLeadChange(isLeader bool) {
 	}
 }
 
+// Returns true if the state transition makes sense and false otherwise.
+func (n *raft) isSwitchStateAllowed(old, new RaftState) bool {
+	switch {
+	case new == Closed:
+		// Any state can go to Closed
+		return true
+	case old == new:
+		// No change of state is taking place
+		return true
+	}
+	switch old {
+	case Follower:
+		switch new {
+		case Candidate:
+			// Follower wants to call an election to become the leader
+		case Observer:
+			// Follower is becoming an observer — we could be shutting
+			// down or the applies were paused, i.e. for a catchup
+		default:
+			return false
+		}
+	case Candidate:
+		switch new {
+		case Leader:
+			// Candidate won the election and is becoming the leader
+		case Follower:
+			// Candidate lost the election and is returning to the
+			// follower state
+		case Observer:
+			// Ordinarily shouldn't happen, but it can during shutdown
+		default:
+			return false
+		}
+	case Leader:
+		switch new {
+		case Follower:
+			// Leader is standing down to follower a new leader
+		case Observer:
+			// Ordinarily shouldn't happen, but it can during shutdown
+		default:
+			return false
+		}
+	case Observer:
+		switch new {
+		case Follower:
+			// Observer is becoming a follower — applies were probably
+			// resumed, i.e. because a catchup finished
+		default:
+			return false
+		}
+	default:
+		return false
+	}
+	return true
+}
+
 // Lock should be held. Returns the previous state.
 func (n *raft) switchState(state RaftState) RaftState {
-	if n.State() == Closed {
+	previous := n.State()
+	if previous == Closed {
 		return Closed
+	}
+	if !n.isSwitchStateAllowed(previous, state) {
+		panic(fmt.Sprintf("Illegal Raft state transition %q -> %q", previous, state))
 	}
 
 	// Reset the election timer.
@@ -3893,7 +3960,7 @@ func (n *raft) switchState(state RaftState) RaftState {
 		n.updateLeadChange(true)
 	}
 
-	previous := n.state.Swap(int32(state))
+	n.state.Store(int32(state))
 	n.writeTermVote()
 	return RaftState(previous)
 }
