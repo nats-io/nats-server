@@ -103,7 +103,6 @@ const (
 	Follower RaftState = iota
 	Leader
 	Candidate
-	Observer
 	Closed
 )
 
@@ -115,8 +114,6 @@ func (state RaftState) String() string {
 		return "CANDIDATE"
 	case Leader:
 		return "LEADER"
-	case Observer:
-		return "OBSERVER"
 	case Closed:
 		return "CLOSED"
 	}
@@ -1715,9 +1712,6 @@ func (n *raft) run() {
 			n.runAsCandidate()
 		case Leader:
 			n.runAsLeader()
-		case Observer:
-			// TODO(dlc) - fix.
-			n.runAsFollower()
 		case Closed:
 			return
 		}
