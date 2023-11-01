@@ -177,6 +177,7 @@ type fileStore struct {
 	bim         map[uint32]*msgBlock
 	psim        map[string]*psi
 	tsl         int
+	adml        int
 	hh          hash.Hash64
 	qch         chan struct{}
 	fch         chan struct{}
@@ -6942,12 +6943,39 @@ const (
 // This will get kicked when we create a new block or when we delete a block in general.
 // This is also called during Stop().
 func (fs *fileStore) flushStreamStateLoop(fch, qch, done chan struct{}) {
+	// Make sure we do not try to write these out too fast.
+	const writeThreshold = time.Second * 10
+	lastWrite := time.Time{}
+
+	// We will use these to complete the full state write while not doing them too fast.
+	var dt *time.Timer
+	var dtc <-chan time.Time
+
+	defer close(done)
+
 	for {
 		select {
 		case <-fch:
+			if elapsed := time.Since(lastWrite); elapsed > writeThreshold {
+				fs.writeFullState()
+				lastWrite = time.Now()
+				if dt != nil {
+					dt.Stop()
+					dt, dtc = nil, nil
+				}
+			} else if dtc == nil {
+				fireIn := time.Until(lastWrite.Add(writeThreshold))
+				if fireIn < 0 {
+					fireIn = 100 * time.Millisecond
+				}
+				dt = time.NewTimer(fireIn)
+				dtc = dt.C
+			}
+		case <-dtc:
 			fs.writeFullState()
+			lastWrite = time.Now()
+			dt, dtc = nil, nil
 		case <-qch:
-			close(done)
 			return
 		}
 	}
@@ -6981,6 +7009,13 @@ func (fs *fileStore) writeFullState() error {
 		return nil
 	}
 
+	// We track this through subsequent runs to get an avg per blk used for subsequent runs.
+	avgDmapLen := fs.adml
+	// If first time through could be 0
+	if avgDmapLen == 0 && ((fs.state.LastSeq-fs.state.FirstSeq+1)-fs.state.Msgs) > 0 {
+		avgDmapLen = 1024
+	}
+
 	// For calculating size.
 	numSubjects := len(fs.psim)
 
@@ -6989,7 +7024,7 @@ func (fs *fileStore) writeFullState() error {
 		(binary.MaxVarintLen64 * 6) + // FS data
 		binary.MaxVarintLen64 + fs.tsl + // NumSubjects + total subject length
 		numSubjects*(binary.MaxVarintLen64*4) + // psi record
-		len(fs.blks)*((binary.MaxVarintLen64*6)+512) + // msg blocks, 512 is est for dmap
+		len(fs.blks)*((binary.MaxVarintLen64*7)+avgDmapLen) + // msg blocks, avgDmapLen is est for dmaps
 		binary.MaxVarintLen64 + 8 // last index + checksum
 
 	buf := make([]byte, hdrLen, sz)
@@ -7026,6 +7061,7 @@ func (fs *fileStore) writeFullState() error {
 	baseTime := timestampNormalized(fs.state.FirstTime)
 	var scratch [8 * 1024]byte
 
+	var dmapTotalLen int
 	for _, mb := range fs.blks {
 		mb.mu.RLock()
 		buf = binary.AppendUvarint(buf, uint64(mb.index))
@@ -7039,6 +7075,7 @@ func (fs *fileStore) writeFullState() error {
 		buf = binary.AppendUvarint(buf, uint64(numDeleted))
 		if numDeleted > 0 {
 			dmap, _ := mb.dmap.Encode(scratch[:0])
+			dmapTotalLen += len(dmap)
 			buf = append(buf, dmap...)
 		}
 		// If this is the last one grab the last checksum and the block index, e.g. 22.blk, 22 is the block index.
@@ -7049,6 +7086,11 @@ func (fs *fileStore) writeFullState() error {
 			copy(lchk[0:], mb.lchk[:])
 		}
 		mb.mu.RUnlock()
+	}
+	if dmapTotalLen > 0 {
+		fs.adml = dmapTotalLen / len(fs.blks)
+	} else {
+		fs.adml = 8 // Place holder so we do not set back to 1k after we have actually processed the first state write.
 	}
 
 	// Place block index and hash onto the end.
