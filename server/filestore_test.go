@@ -6441,6 +6441,44 @@ func TestFileStoreLargeFullStatePSIM(t *testing.T) {
 	fs.Stop()
 }
 
+func TestFileStoreLargeFullStateMetaCleanup(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd},
+		StreamConfig{Name: "zzz", Subjects: []string{">"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	subj, msg := "foo.bar.baz", bytes.Repeat([]byte("ABC"), 33) // ~100bytes
+	for i := 0; i < 1000; i++ {
+		fs.StoreMsg(subj, nil, nil)
+	}
+	fs.Stop()
+
+	mdir := filepath.Join(sd, msgDir)
+	idxFile := filepath.Join(mdir, "1.idx")
+	fssFile := filepath.Join(mdir, "1.fss")
+	require_NoError(t, os.WriteFile(idxFile, msg, defaultFilePerms))
+	require_NoError(t, os.WriteFile(fssFile, msg, defaultFilePerms))
+
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: sd},
+		StreamConfig{Name: "zzz", Subjects: []string{">"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	checkFor(t, time.Second, 50*time.Millisecond, func() error {
+		if _, err := os.Stat(idxFile); err == nil {
+			return errors.New("idx file still exists")
+		}
+		if _, err := os.Stat(fssFile); err == nil {
+			return errors.New("fss file still exists")
+		}
+		return nil
+	})
+
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////
