@@ -525,7 +525,7 @@ func processUserPermissionsTemplate(lim jwt.UserPermissionLimits, ujwt *jwt.User
 				for _, valueList := range nArrayCartesianProduct(tagValues...) {
 					b := strings.Builder{}
 					for i, token := range newTokens {
-						if token == _EMPTY_ {
+						if token == _EMPTY_ && len(valueList) > 0 {
 							b.WriteString(valueList[0])
 							valueList = valueList[1:]
 						} else {
