@@ -32,6 +32,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -273,10 +274,6 @@ const (
 	newScan = "%d.new"
 	// used to scan index file names.
 	indexScan = "%d.idx"
-	// to look for orphans
-	indexScanAll = "*.idx"
-	// to look for orphans
-	fssScanAll = "*.fss"
 	// used to store our block encryption key.
 	keyScan = "%d.key"
 	// to look for orphans
@@ -457,10 +454,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	// Also make sure we get rid of old idx and fss files on return.
 	// Do this in separate go routine vs inline and at end of processing.
 	defer func() {
-		go func() {
-			os.RemoveAll(filepath.Join(fs.fcfg.StoreDir, msgDir, indexScanAll))
-			os.RemoveAll(filepath.Join(fs.fcfg.StoreDir, msgDir, fssScanAll))
-		}()
+		go fs.cleanupOldMeta()
 	}()
 
 	// Lock while do enforcements and removals.
@@ -1791,6 +1785,32 @@ func (mb *msgBlock) lastChecksum() []byte {
 		f.ReadAt(lchk[:], int64(mb.rbytes)-checksumSize)
 	}
 	return lchk[:]
+}
+
+// This will make sure we clean up old idx and fss files.
+func (fs *fileStore) cleanupOldMeta() {
+	fs.mu.RLock()
+	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
+	fs.mu.RUnlock()
+
+	f, err := os.Open(mdir)
+	if err != nil {
+		return
+	}
+
+	dirs, _ := f.ReadDir(-1)
+	f.Close()
+
+	const (
+		minLen    = 4
+		idxSuffix = ".idx"
+		fssSuffix = ".fss"
+	)
+	for _, fi := range dirs {
+		if name := fi.Name(); strings.HasSuffix(name, idxSuffix) || strings.HasSuffix(name, fssSuffix) {
+			os.Remove(filepath.Join(mdir, name))
+		}
+	}
 }
 
 func (fs *fileStore) recoverMsgs() error {
