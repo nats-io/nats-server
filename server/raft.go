@@ -103,7 +103,6 @@ const (
 	Follower RaftState = iota
 	Leader
 	Candidate
-	Observer
 	Closed
 )
 
@@ -115,8 +114,6 @@ func (state RaftState) String() string {
 		return "CANDIDATE"
 	case Leader:
 		return "LEADER"
-	case Observer:
-		return "OBSERVER"
 	case Closed:
 		return "CLOSED"
 	}
@@ -1715,9 +1712,6 @@ func (n *raft) run() {
 			n.runAsCandidate()
 		case Leader:
 			n.runAsLeader()
-		case Observer:
-			// TODO(dlc) - fix.
-			n.runAsFollower()
 		case Closed:
 			return
 		}
@@ -1787,7 +1781,7 @@ func (n *raft) processAppendEntries() {
 }
 
 func (n *raft) runAsFollower() {
-	for n.State() == Follower {
+	for {
 		elect := n.electTimer()
 
 		select {
@@ -2779,7 +2773,7 @@ func (n *raft) runAsCandidate() {
 	// We vote for ourselves.
 	votes := 1
 
-	for n.State() == Candidate {
+	for {
 		elect := n.electTimer()
 		select {
 		case <-n.entry.ch:

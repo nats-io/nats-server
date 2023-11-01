@@ -745,3 +745,50 @@ func TestJetStreamConsumerActionsUnmarshal(t *testing.T) {
 		})
 	}
 }
+
+func TestJetStreamConsumerMultipleFiltersLastPerSubject(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, error := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"one", "two"},
+		Replicas: 3,
+	})
+	require_NoError(t, error)
+
+	sendStreamMsg(t, nc, "one", "1")
+	sendStreamMsg(t, nc, "one", "2")
+	sendStreamMsg(t, nc, "one", "3")
+	sendStreamMsg(t, nc, "two", "1")
+	sendStreamMsg(t, nc, "two", "2")
+	sendStreamMsg(t, nc, "two", "3")
+
+	_, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Name:           "C",
+		FilterSubjects: []string{"one", "two"},
+		DeliverPolicy:  nats.DeliverLastPerSubjectPolicy,
+		Replicas:       3,
+		DeliverSubject: "deliver",
+	})
+	require_NoError(t, err)
+
+	consumer, err := js.SubscribeSync("", nats.Bind("TEST", "C"))
+	require_NoError(t, err)
+
+	// expect last message for subject "one"
+	msg, err := consumer.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_Equal(t, "3", string(msg.Data))
+	require_Equal(t, "one", msg.Subject)
+
+	// expect last message for subject "two"
+	msg, err = consumer.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_Equal(t, "3", string(msg.Data))
+	require_Equal(t, "two", msg.Subject)
+
+}
