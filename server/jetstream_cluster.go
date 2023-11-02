@@ -6086,6 +6086,12 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	if isReplicaChange {
 		// We are adding new peers here.
 		if newCfg.Replicas > len(rg.Peers) {
+			// Check that we have the allocation available.
+			if err := js.jsClusteredStreamLimitsCheck(acc, newCfg); err != nil {
+				resp.Error = err
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+				return
+			}
 			// Check if we do not have a cluster assigned, and if we do not make sure we
 			// try to pick one. This could happen with older streams that were assigned by
 			// previous servers.
