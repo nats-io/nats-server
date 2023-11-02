@@ -138,3 +138,79 @@ func TestNRGAppendEntryDecode(t *testing.T) {
 		}
 	}
 }
+
+func TestNRGRecoverFromFollowingNoLeader(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	// Find out what term we are on.
+	term := rg.leader().node().Term()
+
+	// Start by pausing all of the nodes. This will stop them from
+	// processing new entries.
+	for _, n := range rg {
+		n.node().PauseApply()
+	}
+
+	// Now drain all of the ApplyQ entries from them, which will stop
+	// them from automatically trying to follow a previous leader if
+	// they happened to have received an apply entry from one. Then
+	// we're going to force them into a state where they are all
+	// followers but they don't have a leader.
+	for _, n := range rg {
+		rn := n.node().(*raft)
+		rn.ApplyQ().drain()
+		rn.switchToFollower("")
+	}
+
+	// Resume the nodes.
+	for _, n := range rg {
+		n.node().ResumeApply()
+	}
+
+	// Wait a while. The nodes should notice that they haven't heard
+	// from a leader lately and will switch to voting. After an
+	// election we should find a new leader and be on a new term.
+	rg.waitOnLeader()
+	require_True(t, rg.leader() != nil)
+	require_NotEqual(t, rg.leader().node().Term(), term)
+}
+
+func TestNRGObserverMode(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	// Put all of the followers into observer mode. In this state
+	// they will not participate in an election but they will continue
+	// to apply incoming commits.
+	for _, n := range rg {
+		if n.node().Leader() {
+			continue
+		}
+		n.node().SetObserver(true)
+	}
+
+	// Propose a change from the leader.
+	adder := rg.leader().(*stateAdder)
+	adder.proposeDelta(1)
+	adder.proposeDelta(2)
+	adder.proposeDelta(3)
+
+	// Wait for the followers to apply it.
+	rg.waitOnTotal(t, 6)
+
+	// Confirm the followers are still just observers and weren't
+	// reset out of that state for some reason.
+	for _, n := range rg {
+		if n.node().Leader() {
+			continue
+		}
+		require_True(t, n.node().IsObserver())
+	}
+}
