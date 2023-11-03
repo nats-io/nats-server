@@ -3149,6 +3149,9 @@ func (c *client) mqttConnectTrace(cp *mqttConnectProto) string {
 		trace += fmt.Sprintf(" will=(topic=%s QoS=%v retain=%v)",
 			cp.will.topic, cp.will.qos, cp.will.retain)
 	}
+	if cp.flags&mqttConnFlagCleanSession != 0 {
+		trace += " clean"
+	}
 	if c.opts.Username != _EMPTY_ {
 		trace += fmt.Sprintf(" username=%s", c.opts.Username)
 	}
