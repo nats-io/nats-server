@@ -27,6 +27,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -1453,6 +1454,12 @@ func (js *jetStream) clusterStreamConfig(accName, streamName string) (StreamConf
 	return StreamConfig{}, false
 }
 
+var jsMetaPool = &sync.Pool{
+	New: func() any {
+		return bytes.NewBuffer(nil)
+	},
+}
+
 func (js *jetStream) metaSnapshot() []byte {
 	var streams []writeableStreamAssignment
 
@@ -1479,10 +1486,13 @@ func (js *jetStream) metaSnapshot() []byte {
 		return nil
 	}
 
-	b, _ := json.Marshal(streams)
+	b := jsMetaPool.Get().(*bytes.Buffer)
+	b.Reset()
+	defer jsMetaPool.Put(b)
+	_ = json.NewEncoder(b).Encode(streams)
 	js.mu.RUnlock()
 
-	return s2.EncodeBetter(nil, b)
+	return s2.EncodeBetter(nil, b.Bytes())
 }
 
 func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecovering bool) error {
