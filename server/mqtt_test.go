@@ -2992,6 +2992,58 @@ func TestMQTTCluster(t *testing.T) {
 	}
 }
 
+func testMQTTConnectDisconnect(t *testing.T, o *Options, clientID string, clean bool, found bool) {
+	t.Helper()
+	start := time.Now()
+	mc, r := testMQTTConnect(t, &mqttConnInfo{clientID: clientID, cleanSess: clean}, o.MQTT.Host, o.MQTT.Port)
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, found)
+	testMQTTDisconnectEx(t, mc, nil, false)
+	mc.Close()
+	if clean {
+		t.Logf("OK with server %v:%v, elapsed %v -- clean", o.MQTT.Host, o.MQTT.Port, time.Since(start))
+	} else {
+		t.Logf("OK with server %v:%v, elapsed %v", o.MQTT.Host, o.MQTT.Port, time.Since(start))
+	}
+}
+
+func TestMQTTClusterConnectDisconnectClean(t *testing.T) {
+	nServers := 3
+	cl := createJetStreamClusterWithTemplate(t, testMQTTGetClusterTemplaceNoLeaf(), "MQTT", nServers)
+	defer cl.shutdown()
+
+	clientID := nuid.Next()
+
+	// test runs a connect/disconnect against a random server in the cluster, as
+	// specified.
+	N := 100
+	for n := 0; n < N; n++ {
+		testMQTTConnectDisconnect(t, cl.opts[rand.Intn(nServers)], clientID, true, false)
+	}
+}
+
+func TestMQTTClusterConnectDisconnectPersist(t *testing.T) {
+	nServers := 3
+	cl := createJetStreamClusterWithTemplate(t, testMQTTGetClusterTemplaceNoLeaf(), "MQTT", nServers)
+	defer cl.shutdown()
+
+	clientID := nuid.Next()
+
+	// test runs a connect/disconnect against a random server in the cluster, as
+	// specified.
+	N := 20
+	for n := 0; n < N; n++ {
+		// First clean sessions on all servers
+		for i := 0; i < nServers; i++ {
+			testMQTTConnectDisconnect(t, cl.opts[i], clientID, true, false)
+		}
+
+		testMQTTConnectDisconnect(t, cl.opts[0], clientID, false, false)
+		testMQTTConnectDisconnect(t, cl.opts[1], clientID, false, true)
+		testMQTTConnectDisconnect(t, cl.opts[2], clientID, false, true)
+		testMQTTConnectDisconnect(t, cl.opts[0], clientID, false, true)
+	}
+}
+
 func TestMQTTClusterRetainedMsg(t *testing.T) {
 	cl := createJetStreamClusterWithTemplate(t, testMQTTGetClusterTemplaceNoLeaf(), "MQTT", 2)
 	defer cl.shutdown()
@@ -3860,6 +3912,11 @@ func TestMQTTPublishTopicErrors(t *testing.T) {
 
 func testMQTTDisconnect(t testing.TB, c net.Conn, bw *bufio.Writer) {
 	t.Helper()
+	testMQTTDisconnectEx(t, c, bw, true)
+}
+
+func testMQTTDisconnectEx(t testing.TB, c net.Conn, bw *bufio.Writer, wait bool) {
+	t.Helper()
 	w := &mqttWriter{}
 	w.WriteByte(mqttPacketDisconnect)
 	w.WriteByte(0)
@@ -3869,7 +3926,9 @@ func testMQTTDisconnect(t testing.TB, c net.Conn, bw *bufio.Writer) {
 	} else {
 		c.Write(w.Bytes())
 	}
-	testMQTTExpectDisconnect(t, c)
+	if wait {
+		testMQTTExpectDisconnect(t, c)
+	}
 }
 
 func TestMQTTWill(t *testing.T) {
