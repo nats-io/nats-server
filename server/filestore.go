@@ -7044,10 +7044,20 @@ func (fs *fileStore) writeFullState() error {
 		(binary.MaxVarintLen64 * 6) + // FS data
 		binary.MaxVarintLen64 + fs.tsl + // NumSubjects + total subject length
 		numSubjects*(binary.MaxVarintLen64*4) + // psi record
+		binary.MaxVarintLen64 + // Num blocks.
 		len(fs.blks)*((binary.MaxVarintLen64*7)+avgDmapLen) + // msg blocks, avgDmapLen is est for dmaps
-		binary.MaxVarintLen64 + 8 // last index + checksum
+		binary.MaxVarintLen64 + 8 + 8 // last index + record checksum + full state checksum
 
-	buf := make([]byte, hdrLen, sz)
+	// Do 4k on stack if possible.
+	var raw [4 * 1024]byte
+	var buf []byte
+
+	if sz <= cap(raw) {
+		buf, sz = raw[0:2:cap(raw)], cap(raw)
+	} else {
+		buf = make([]byte, hdrLen, sz)
+	}
+
 	buf[0], buf[1] = fullStateMagic, fullStateVersion
 	buf = binary.AppendUvarint(buf, fs.state.Msgs)
 	buf = binary.AppendUvarint(buf, fs.state.Bytes)
@@ -7109,8 +7119,6 @@ func (fs *fileStore) writeFullState() error {
 	}
 	if dmapTotalLen > 0 {
 		fs.adml = dmapTotalLen / len(fs.blks)
-	} else {
-		fs.adml = 8 // Place holder so we do not set back to 1k after we have actually processed the first state write.
 	}
 
 	// Place block index and hash onto the end.
