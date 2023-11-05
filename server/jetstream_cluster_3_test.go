@@ -5911,7 +5911,7 @@ func TestJetStreamClusterKVWithServerKill(t *testing.T) {
 
 		// Fairly low number of subjects to try to cause contention
 		// on the expected sequence.
-		numsubs := 100
+		numKeys := 100
 
 		for {
 			select {
@@ -5920,7 +5920,7 @@ func TestJetStreamClusterKVWithServerKill(t *testing.T) {
 
 			case <-tk.C:
 				// Pick a random key within the range.
-				n := rand.Intn(numsubs)
+				n := rand.Intn(numKeys)
 				k := fmt.Sprintf("key.%d", n)
 
 				// Track operation for logging.
@@ -5957,6 +5957,20 @@ func TestJetStreamClusterKVWithServerKill(t *testing.T) {
 				}
 			}
 		}
+	}
+
+	type fullState struct {
+		state *StreamState
+		lseq  uint64
+		clfs  uint64
+	}
+
+	grabState := func(mset *stream) *fullState {
+		mset.mu.RLock()
+		defer mset.mu.RUnlock()
+		state := &StreamState{}
+		mset.store.FastState(state)
+		return &fullState{state, mset.lseq, mset.clfs}
 	}
 
 	// Get the current stream leader. This reference will be updated as
@@ -5996,21 +6010,35 @@ func TestJetStreamClusterKVWithServerKill(t *testing.T) {
 		c.restartServer(s)
 
 		t.Logf("%d: waiting for server to be ready...", i+1)
-		time.Sleep(500 * time.Millisecond)
+		c.waitOnServerCurrent(s)
 		// TODO: not sure why this always fails...
 		//c.waitOnServerHealthz(s)
 
-		// Get the stream leader for current messages.
-		sl = c.streamLeader(globalAccountName, "KV_TEST")
-		sljsi, err := sl.Jsz(nil)
-		require_NoError(t, err)
+		c.waitOnStreamLeader(globalAccountName, "KV_TEST")
+		c.waitOnPeerCount(3)
 
-		// Iterate the servers and ensure they have the same number of messages
-		// as the stream leader.
+		// Get the stream leader for current state.
+		sl = c.streamLeader(globalAccountName, "KV_TEST")
+		mset, err := sl.GlobalAccount().lookupStream("KV_TEST")
+		require_NoError(t, err)
+		lstate := grabState(mset)
+
+		// Report messages per server.
 		for _, s := range c.servers {
-			jsi, err := s.Jsz(nil)
+			if s == sl {
+				continue
+			}
+
+			mset, err := s.GlobalAccount().lookupStream("KV_TEST")
 			require_NoError(t, err)
-			require_Equal(t, jsi.Messages, sljsi.Messages)
+
+			state := grabState(mset)
+			if !reflect.DeepEqual(state, lstate) {
+				t.Logf("\n*** DRIFT DETECTED! ***\n\n")
+				t.Logf("L %v IS %+v LSEQ %d CLFS %d\n", sl, lstate.state, lstate.lseq, lstate.clfs)
+				t.Logf("S %v IS %+v LSEQ %d CLFS %d\n", s, state.state, state.lseq, state.clfs)
+				require_Equal(t, state, lstate)
+			}
 		}
 	}
 }
