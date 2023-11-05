@@ -157,6 +157,7 @@ type psi struct {
 	total uint64
 	fblk  uint32
 	lblk  uint32
+	subj  string
 }
 
 type fileStore struct {
@@ -936,10 +937,10 @@ func (mb *msgBlock) ensureLastChecksumLoaded() {
 // Perform a recover but do not update PSIM.
 // Lock should be held.
 func (fs *fileStore) recoverMsgBlockNoSubjectUpdates(index uint32) (*msgBlock, error) {
-	psim := fs.psim
+	psim, tsl := fs.psim, fs.tsl
 	fs.psim = nil
 	mb, err := fs.recoverMsgBlock(index)
-	fs.psim = psim
+	fs.psim, fs.tsl = psim, tsl
 	return mb, err
 }
 
@@ -1569,9 +1570,9 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 					fs.warn("Stream state bad subject len (%d)", lsubj)
 					return errCorruptState
 				}
-				subj := fs.subjString(buf[bi : bi+lsubj])
+				subj := string(buf[bi : bi+lsubj])
 				bi += lsubj
-				psi := &psi{total: readU64(), fblk: uint32(readU64())}
+				psi := &psi{total: readU64(), fblk: uint32(readU64()), subj: subj}
 				if psi.total > 1 {
 					psi.lblk = uint32(readU64())
 				} else {
@@ -1725,7 +1726,7 @@ func (fs *fileStore) adjustAccounting(mb, nmb *msgBlock) {
 					info.lblk = nmb.index
 				}
 			} else {
-				fs.psim[sm.subj] = &psi{total: 1, fblk: nmb.index, lblk: nmb.index}
+				fs.psim[sm.subj] = &psi{total: 1, fblk: nmb.index, lblk: nmb.index, subj: sm.subj}
 				fs.tsl += len(sm.subj)
 			}
 		}
@@ -2981,7 +2982,7 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 	}
 
 	// Adjust top level tracking of per subject msg counts.
-	if len(subj) > 0 {
+	if len(subj) > 0 && fs.psim != nil {
 		index := fs.lmb.index
 		if info, ok := fs.psim[subj]; ok {
 			info.total++
@@ -2989,7 +2990,7 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 				info.lblk = index
 			}
 		} else {
-			fs.psim[subj] = &psi{total: 1, fblk: index, lblk: index}
+			fs.psim[subj] = &psi{total: 1, fblk: index, lblk: index, subj: subj}
 			fs.tsl += len(subj)
 		}
 	}
@@ -3364,7 +3365,7 @@ func (fs *fileStore) EraseMsg(seq uint64) (bool, error) {
 // Convenience function to remove per subject tracking at the filestore level.
 // Lock should be held.
 func (fs *fileStore) removePerSubject(subj string) {
-	if len(subj) == 0 {
+	if len(subj) == 0 || fs.psim == nil {
 		return
 	}
 	// We do not update sense of fblk here but will do so when we resolve during lookup.
@@ -4328,7 +4329,7 @@ func (fs *fileStore) checkMsgs() *LostStreamData {
 		// FIXME(dlc) - check tombstones here too?
 		if ld, _, err := mb.rebuildState(); err != nil && ld != nil {
 			// Rebuild fs state too.
-			mb.fs.rebuildStateLocked(ld)
+			fs.rebuildStateLocked(ld)
 		}
 		fs.populateGlobalPerSubjectInfo(mb)
 	}
@@ -5587,50 +5588,22 @@ func (mb *msgBlock) msgFromBuf(buf []byte, sm *StoreMsg, hh hash.Hash64) (*Store
 	return sm, nil
 }
 
-// Used to intern strings for subjects.
-// Based on idea from https://github.com/josharian/intern/blob/master/intern.go
-var subjPool = sync.Pool{
-	New: func() any {
-		return make(map[string]string)
-	},
-}
-
-// Get an interned string from a byte slice.
-func subjFromBytes(b []byte) string {
-	sm := subjPool.Get().(map[string]string)
-	defer subjPool.Put(sm)
-	subj, ok := sm[string(b)]
-	if ok {
-		return subj
-	}
-	s := string(b)
-	sm[s] = s
-	return s
-}
-
 // Given the `key` byte slice, this function will return the subject
 // as an interned string of `key` or a configured subject as to minimize memory allocations.
+// We used to have a pool structure when we leaned on block fss, which could duplicate subjects.
+// Now we have fs scoped PSIM that is always present and is already tracking all in-use subjects.
 // Lock should be held.
 func (fs *fileStore) subjString(skey []byte) string {
 	if fs == nil || len(skey) == 0 {
 		return _EMPTY_
 	}
-
-	if lsubjs := len(fs.cfg.Subjects); lsubjs > 0 {
-		if lsubjs == 1 {
-			// The cast for the comparison does not make a copy
-			if string(skey) == fs.cfg.Subjects[0] {
-				return fs.cfg.Subjects[0]
-			}
-		} else {
-			for _, subj := range fs.cfg.Subjects {
-				if string(skey) == subj {
-					return subj
-				}
-			}
+	if len(fs.psim) > 0 {
+		// Cast in place below to avoid allocation for lookup.
+		if psi := fs.psim[string(skey)]; psi != nil {
+			return psi.subj
 		}
 	}
-	return subjFromBytes(skey)
+	return string(skey)
 }
 
 // Given the `key` byte slice, this function will return the subject
@@ -6850,7 +6823,7 @@ func (fs *fileStore) populateGlobalPerSubjectInfo(mb *msgBlock) {
 					info.lblk = mb.index
 				}
 			} else {
-				fs.psim[subj] = &psi{total: ss.Msgs, fblk: mb.index, lblk: mb.index}
+				fs.psim[subj] = &psi{total: ss.Msgs, fblk: mb.index, lblk: mb.index, subj: subj}
 				fs.tsl += len(subj)
 			}
 		}
