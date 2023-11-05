@@ -5881,3 +5881,130 @@ func TestJetStreamClusterStreamLimitsOnScaleUpAndMove(t *testing.T) {
 	})
 	require_Error(t, err, errors.New("insufficient storage resources"))
 }
+
+func TestJetStreamClusterKVWithServerKill(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Setup the KV bucket and use for making assertions.
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+	_, err := js.CreateKeyValue(&nats.KeyValueConfig{
+		Bucket:   "TEST",
+		Replicas: 3,
+		History:  3,
+	})
+	require_NoError(t, err)
+
+	// ID is the server id to explicitly connect to.
+	work := func(ctx context.Context, id int) {
+		nc, js := jsClientConnect(t, c.servers[id])
+		defer nc.Close()
+
+		kv, err := js.KeyValue("TEST")
+		require_NoError(t, err)
+
+		// 10 messages a second for each single client.
+		tk := time.NewTicker(50 * time.Millisecond)
+
+		numsubs := 300
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+
+			case <-tk.C:
+				// Pick a random key within the range.
+				n := rand.Intn(numsubs)
+				k := fmt.Sprintf("key.%d", n)
+
+				var op string
+				// Attempt to get a key.
+				e, err := kv.Get(k)
+				// If found, attempt to update or delete.
+				if err == nil {
+					if rand.Intn(10) < 3 {
+						op = "delete"
+						err = kv.Delete(k, nats.LastRevision(e.Revision()))
+					} else {
+						op = "update"
+						_, err = kv.Update(k, nil, e.Revision())
+					}
+				} else if errors.Is(err, nats.ErrKeyNotFound) {
+					op = "create"
+					_, err = kv.Create(k, nil)
+				} else {
+					t.Logf("error getting key: %q: %v", k, err)
+					continue
+				}
+
+				// Report if there is an error while performing the operation.
+				if err != nil {
+					t.Logf("error on %s for key: %q: %v", op, k, err)
+				}
+			}
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go work(ctx, 0)
+	go work(ctx, 1)
+	go work(ctx, 2)
+
+	// Populate some keys.
+	time.Sleep(3 * time.Second)
+
+	// Current stream leader.
+	sl := c.streamLeader(globalAccountName, "KV_TEST")
+
+	// Simulate server stop and start.
+	for i := 0; i < 10; i++ {
+		// TODO: coordinate client shutdown as well?
+		s := c.randomServer()
+		if s == sl {
+			t.Logf("shutting down server (stream leader): %s", s.serverName())
+		} else {
+			t.Logf("shutting down server (stream follower): %s", s.serverName())
+		}
+		s.Shutdown()
+		c.waitOnLeader()
+		c.waitOnStreamLeader(globalAccountName, "KV_TEST")
+
+		// Stop the workload.
+		cancel()
+
+		// Wait for a bit and then start the server again.
+		d := time.Duration(rand.Intn(3000)) * time.Millisecond
+		t.Logf("restarting server in %s...", d)
+		time.Sleep(d)
+		c.restartServer(s)
+		time.Sleep(time.Second)
+		t.Log("waiting for server to be ready...")
+		// Not sure why this always fails...
+		//c.waitOnServerHealthz(s)
+		c.waitOnLeader()
+		c.waitOnStreamLeader(globalAccountName, "KV_TEST")
+
+		// Report messages per server.
+		msgs := make(map[string]uint64, 3)
+		for _, s := range c.servers {
+			jsi, err := s.Jsz(nil)
+			require_NoError(t, err)
+			msgs[s.serverName()] = jsi.Messages
+		}
+		t.Logf("server messages: %v", msgs)
+
+		// Resume clients.
+		ctx, cancel = context.WithCancel(context.Background())
+		defer cancel()
+
+		go work(ctx, 0)
+		go work(ctx, 1)
+		go work(ctx, 2)
+
+		time.Sleep(3 * time.Second)
+	}
+}
