@@ -5886,17 +5886,18 @@ func TestJetStreamClusterKVWithServerKill(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
-	// Setup the KV bucket and use for making assertions.
+	// Setup the KV bucket.
 	nc, js := jsClientConnect(t, c.randomServer())
-	defer nc.Close()
 	_, err := js.CreateKeyValue(&nats.KeyValueConfig{
 		Bucket:   "TEST",
 		Replicas: 3,
 		History:  10,
 	})
 	require_NoError(t, err)
+	nc.Close()
 
-	// ID is the server id to explicitly connect to.
+	// Function to simulate a client doing various KV operations
+	// connected to a specific server, identified by the id.
 	work := func(ctx context.Context, id int) {
 		nc, js := jsClientConnect(t, c.servers[id])
 		defer nc.Close()
@@ -5904,10 +5905,12 @@ func TestJetStreamClusterKVWithServerKill(t *testing.T) {
 		kv, err := js.KeyValue("TEST")
 		require_NoError(t, err)
 
-		// 10 messages a second for each single client.
+		// 200 messages a second for each single client.
 		tk := time.NewTicker(50 * time.Millisecond)
 		defer tk.Stop()
 
+		// Fairly low number of subjects to try to cause contention
+		// on the expected sequence.
 		numsubs := 100
 
 		for {
@@ -5920,11 +5923,16 @@ func TestJetStreamClusterKVWithServerKill(t *testing.T) {
 				n := rand.Intn(numsubs)
 				k := fmt.Sprintf("key.%d", n)
 
+				// Track operation for logging.
 				var op string
+
 				// Attempt to get a key.
 				e, err := kv.Get(k)
-				// If found, attempt to update or delete.
-				if err == nil {
+
+				switch {
+				// Entry found. Attempt to update or delete.
+				// 30% chance of delete, 70% chance of update.
+				case err == nil:
 					if rand.Intn(10) < 3 {
 						op = "delete"
 						err = kv.Delete(k, nats.LastRevision(e.Revision()))
@@ -5932,12 +5940,15 @@ func TestJetStreamClusterKVWithServerKill(t *testing.T) {
 						op = "update"
 						_, err = kv.Update(k, nil, e.Revision())
 					}
-				} else if errors.Is(err, nats.ErrKeyNotFound) {
+
+					// Entry not found, attempt to create.
+				case errors.Is(err, nats.ErrKeyNotFound):
 					op = "create"
 					_, err = kv.Create(k, nil)
-				} else {
-					t.Logf("error getting key: %q: %v", k, err)
-					continue
+
+					// Some other error, report it.
+				default:
+					op = "get"
 				}
 
 				// Report if there is an error while performing the operation.
@@ -5948,22 +5959,22 @@ func TestJetStreamClusterKVWithServerKill(t *testing.T) {
 		}
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go work(ctx, 0)
-	go work(ctx, 1)
-	go work(ctx, 2)
-
-	// Do some work.
-	time.Sleep(3 * time.Second)
-
-	// Current stream leader.
+	// Get the current stream leader. This reference will be updated as
+	// servers are stopped and started.
 	sl := c.streamLeader(globalAccountName, "KV_TEST")
 
 	// Simulate server stop and start.
 	for i := 0; i < 50; i++ {
-		// TODO: coordinate client shutdown as well?
+		// Start clients that can be canceled before the assertions.
+		ctx, cancel := context.WithCancel(context.Background())
+
+		go work(ctx, 0)
+		go work(ctx, 1)
+		go work(ctx, 2)
+
+		// Do more work before the next iteration.
+		time.Sleep(time.Second)
+
 		s := c.randomServer()
 		if s == sl {
 			t.Logf("shutting down server (stream leader): %s", s.serverName())
@@ -5971,48 +5982,37 @@ func TestJetStreamClusterKVWithServerKill(t *testing.T) {
 			t.Logf("shutting down server (stream follower): %s", s.serverName())
 		}
 		s.Shutdown()
+
+		// Wait until the other two nodes elect the new leaders.
 		c.waitOnLeader()
 		c.waitOnStreamLeader(globalAccountName, "KV_TEST")
 
-		// Stop the workload.
+		// Stop the workload. This ensures no new messages are being sent.
+		// while the assertions are being made below.
 		cancel()
 
-		// Wait for a bit and then start the server again.
+		// Wait a bit and then start the server again.
 		d := time.Duration(rand.Intn(3000)) * time.Millisecond
 		t.Logf("restarting server in %s...", d)
 		time.Sleep(d)
 		c.restartServer(s)
-		time.Sleep(time.Second)
+
 		t.Log("waiting for server to be ready...")
+		time.Sleep(time.Second)
 		// Not sure why this always fails...
 		//c.waitOnServerHealthz(s)
-		c.waitOnLeader()
-		c.waitOnStreamLeader(globalAccountName, "KV_TEST")
 
 		// Get the stream leader for current messages.
 		sl = c.streamLeader(globalAccountName, "KV_TEST")
 		sljsi, err := sl.Jsz(nil)
 		require_NoError(t, err)
 
-		// Report messages per server.
-		msgs := make(map[string]uint64, 3)
+		// Iterate the servers and ensure they have the same number of messages
+		// as the stream leader.
 		for _, s := range c.servers {
 			jsi, err := s.Jsz(nil)
 			require_NoError(t, err)
-			msgs[s.serverName()] = jsi.Messages
 			require_Equal(t, jsi.Messages, sljsi.Messages)
 		}
-		t.Logf("server messages: %v", msgs)
-
-		// Resume clients.
-		ctx, cancel = context.WithCancel(context.Background())
-		defer cancel()
-
-		go work(ctx, 0)
-		go work(ctx, 1)
-		go work(ctx, 2)
-
-		// Do more work.
-		time.Sleep(3 * time.Second)
 	}
 }
