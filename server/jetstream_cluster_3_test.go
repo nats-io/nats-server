@@ -5955,7 +5955,7 @@ func TestJetStreamClusterKVWithServerKill(t *testing.T) {
 	go work(ctx, 1)
 	go work(ctx, 2)
 
-	// Populate some keys.
+	// Do some work.
 	time.Sleep(3 * time.Second)
 
 	// Current stream leader.
@@ -5990,7 +5990,7 @@ func TestJetStreamClusterKVWithServerKill(t *testing.T) {
 		c.waitOnStreamLeader(globalAccountName, "KV_TEST")
 
 		// Get the stream leader for current messages.
-		sl := c.streamLeader(globalAccountName, "KV_TEST")
+		sl = c.streamLeader(globalAccountName, "KV_TEST")
 		sljsi, err := sl.Jsz(nil)
 		require_NoError(t, err)
 
@@ -6012,6 +6012,7 @@ func TestJetStreamClusterKVWithServerKill(t *testing.T) {
 		go work(ctx, 1)
 		go work(ctx, 2)
 
+		// Do more work.
 		time.Sleep(3 * time.Second)
 	}
 }
