@@ -5892,7 +5892,7 @@ func TestJetStreamClusterKVWithServerKill(t *testing.T) {
 	_, err := js.CreateKeyValue(&nats.KeyValueConfig{
 		Bucket:   "TEST",
 		Replicas: 3,
-		History:  3,
+		History:  10,
 	})
 	require_NoError(t, err)
 
@@ -5906,8 +5906,9 @@ func TestJetStreamClusterKVWithServerKill(t *testing.T) {
 
 		// 10 messages a second for each single client.
 		tk := time.NewTicker(50 * time.Millisecond)
+		defer tk.Stop()
 
-		numsubs := 300
+		numsubs := 100
 
 		for {
 			select {
@@ -5961,7 +5962,7 @@ func TestJetStreamClusterKVWithServerKill(t *testing.T) {
 	sl := c.streamLeader(globalAccountName, "KV_TEST")
 
 	// Simulate server stop and start.
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 50; i++ {
 		// TODO: coordinate client shutdown as well?
 		s := c.randomServer()
 		if s == sl {
@@ -5988,12 +5989,18 @@ func TestJetStreamClusterKVWithServerKill(t *testing.T) {
 		c.waitOnLeader()
 		c.waitOnStreamLeader(globalAccountName, "KV_TEST")
 
+		// Get the stream leader for current messages.
+		sl := c.streamLeader(globalAccountName, "KV_TEST")
+		sljsi, err := sl.Jsz(nil)
+		require_NoError(t, err)
+
 		// Report messages per server.
 		msgs := make(map[string]uint64, 3)
 		for _, s := range c.servers {
 			jsi, err := s.Jsz(nil)
 			require_NoError(t, err)
 			msgs[s.serverName()] = jsi.Messages
+			require_Equal(t, jsi.Messages, sljsi.Messages)
 		}
 		t.Logf("server messages: %v", msgs)
 
