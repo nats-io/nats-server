@@ -5977,9 +5977,9 @@ func TestJetStreamClusterKVWithServerKill(t *testing.T) {
 
 		s := c.randomServer()
 		if s == sl {
-			t.Logf("shutting down server (stream leader): %s", s.serverName())
+			t.Logf("%d: shutting down server (stream leader): %s", i+1, s.serverName())
 		} else {
-			t.Logf("shutting down server (stream follower): %s", s.serverName())
+			t.Logf("%d: shutting down server (stream follower): %s", i+1, s.serverName())
 		}
 		s.Shutdown()
 
@@ -5992,14 +5992,12 @@ func TestJetStreamClusterKVWithServerKill(t *testing.T) {
 		cancel()
 
 		// Wait a bit and then start the server again.
-		d := time.Duration(rand.Intn(3000)) * time.Millisecond
-		t.Logf("restarting server in %s...", d)
-		time.Sleep(d)
+		time.Sleep(100 * time.Millisecond)
 		c.restartServer(s)
 
-		t.Log("waiting for server to be ready...")
-		time.Sleep(time.Second)
-		// Not sure why this always fails...
+		t.Logf("%d: waiting for server to be ready...", i+1)
+		time.Sleep(500 * time.Millisecond)
+		// TODO: not sure why this always fails...
 		//c.waitOnServerHealthz(s)
 
 		// Get the stream leader for current messages.
