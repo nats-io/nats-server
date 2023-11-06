@@ -2187,8 +2187,7 @@ func (sess *mqttSession) setupSub(c *client, subject, sid, jsDur string, qos byt
 	sub.mqtt.qos = qos
 
 	if qos == 2 {
-		err = sess.ensurePubRelConsumerSubscription(c)
-		if err != nil {
+		if err = sess.ensurePubRelConsumerSubscription(c); err != nil {
 			return nil, err
 		}
 	}
