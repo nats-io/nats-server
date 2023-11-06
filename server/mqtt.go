@@ -2178,25 +2178,17 @@ func (as *mqttAccountSessionManager) removeSession(sess *mqttSession, lock bool)
 func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 	filters []*mqttFilter, fromSubProto, trace bool) ([]*subscription, error) {
 
-	// Helpers to lock/unlock both account manager and session.
-	asAndSessLock := func() {
-		as.mu.Lock()
-		sess.mu.Lock()
-	}
-	asAndSessUnlock := func() {
-		sess.mu.Unlock()
-		as.mu.Unlock()
-	}
-
 	// Small helper to add the consumer config to the session.
 	addJSConsToSess := func(sid string, cc *ConsumerConfig) {
 		if cc == nil {
 			return
 		}
+		sess.mu.Lock()
 		if sess.cons == nil {
 			sess.cons = make(map[string]*ConsumerConfig)
 		}
 		sess.cons[sid] = cc
+		sess.mu.Unlock()
 	}
 
 	// Helper that sets the sub's mqtt fields and possibly serialize retained messages.
@@ -2241,15 +2233,15 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 
 		// Note that if a subscription already exists on this subject,
 		// the existing sub is returned. Need to update the qos.
-		asAndSessLock()
 		sub, err := c.processSub([]byte(subject), nil, []byte(sid), mqttDeliverMsgCbQoS0, false)
 		if err == nil {
 			setupSub(sub, f.qos)
 		}
+		sess.mu.Lock()
 		if f.qos == 2 {
 			err = sess.ensurePubRelConsumerSubscription(c)
 		}
-		asAndSessUnlock()
+		sess.mu.Unlock()
 
 		if err == nil {
 			// This will create (if not already exist) a JS consumer for subscriptions
@@ -2274,12 +2266,10 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 			// Change the sid to "foo fwc"
 			fwcsid := fwcsubject + mqttMultiLevelSidSuffix
 			// See note above about existing subscription.
-			asAndSessLock()
 			fwcsub, err = c.processSub([]byte(fwcsubject), nil, []byte(fwcsid), mqttDeliverMsgCbQoS0, false)
 			if err == nil {
 				setupSub(fwcsub, f.qos)
 			}
-			asAndSessUnlock()
 			if err == nil {
 				fwjscons, fwjssub, err = sess.processJSConsumer(c, fwcsubject, fwcsid, f.qos, fromSubProto)
 			}
@@ -2311,16 +2301,18 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 // registered subscription.
 //
 // Runs from the client's readLoop.
-// Account session manager lock held on entry.
-// Session lock held on entry.
 func (as *mqttAccountSessionManager) serializeRetainedMsgsForSub(sess *mqttSession, c *client, sub *subscription, trace bool) {
+	as.mu.Lock()
 	if len(as.retmsgs) == 0 {
+		as.mu.Unlock()
 		return
 	}
+	as.mu.Unlock()
 	var rmsa [64]*mqttRetainedMsg
 	rms := rmsa[:0]
 
 	as.getRetainedPublishMsgs(string(sub.subject), &rms)
+
 	for _, rm := range rms {
 		if sub.mqtt.prm == nil {
 			sub.mqtt.prm = &mqttWriter{}
@@ -2336,7 +2328,9 @@ func (as *mqttAccountSessionManager) serializeRetainedMsgsForSub(sess *mqttSessi
 			continue
 		}
 		if qos > 0 {
+			sess.mu.Lock()
 			pi = sess.trackPublishRetained()
+			sess.mu.Unlock()
 
 			// If we failed to get a PI for this message, send it as a QoS0, the
 			// best we can do?
