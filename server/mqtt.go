@@ -2199,11 +2199,13 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 			subs = append(subs, sub.shadow...)
 		}
 		for _, sub := range subs {
+			sess.mu.Lock()
 			if sub.mqtt == nil {
 				sub.mqtt = &mqttSub{}
 			}
 			sub.mqtt.qos = qos
 			sub.mqtt.reserved = isMQTTReservedSubscription(string(sub.subject))
+			sess.mu.Unlock()
 			if fromSubProto {
 				as.serializeRetainedMsgsForSub(sess, c, sub, trace)
 			}
@@ -2237,11 +2239,9 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 		if err == nil {
 			setupSub(sub, f.qos)
 		}
-		sess.mu.Lock()
 		if f.qos == 2 {
 			err = sess.ensurePubRelConsumerSubscription(c)
 		}
-		sess.mu.Unlock()
 
 		if err == nil {
 			// This will create (if not already exist) a JS consumer for subscriptions
@@ -4335,11 +4335,11 @@ func mqttIsReservedSub(sub *subscription, subject string) bool {
 
 // Check if a sub is a reserved wildcard. E.g. '#', '*', or '*/" prefix.
 func isMQTTReservedSubscription(subject string) bool {
-	if len(subject) == 1 && subject[0] == fwc || subject[0] == pwc {
+	if len(subject) == 1 && (subject[0] == fwc || subject[0] == pwc) {
 		return true
 	}
 	// Match "*.<>"
-	if len(subject) > 1 && subject[0] == pwc && subject[1] == btsep {
+	if len(subject) > 1 && (subject[0] == pwc && subject[1] == btsep) {
 		return true
 	}
 	return false
@@ -4454,8 +4454,7 @@ func (sess *mqttSession) cleanupFailedSub(c *client, sub *subscription, cc *Cons
 // Make sure we are set up to deliver PUBREL messages to this QoS2-subscribed
 // session.
 //
-// Session lock held on entry. Need to make sure no other subscribe packet races
-// to do the same.
+// Will take session lock to ensure other subscriptions don't race here.
 func (sess *mqttSession) ensurePubRelConsumerSubscription(c *client) error {
 	opts := c.srv.getOpts()
 	ackWait := opts.MQTT.AckWait
@@ -4466,6 +4465,9 @@ func (sess *mqttSession) ensurePubRelConsumerSubscription(c *client) error {
 	if maxAckPending == 0 {
 		maxAckPending = mqttDefaultMaxAckPending
 	}
+
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
 
 	// Subscribe before the consumer is created so we don't loose any messages.
 	if !sess.pubRelSubscribed {
@@ -4502,7 +4504,10 @@ func (sess *mqttSession) ensurePubRelConsumerSubscription(c *client) error {
 		if opts.MQTT.ConsumerInactiveThreshold > 0 {
 			ccr.Config.InactiveThreshold = opts.MQTT.ConsumerInactiveThreshold
 		}
-		if _, err := sess.jsa.createConsumer(ccr); err != nil {
+		sess.mu.Unlock()
+		_, err := sess.jsa.createConsumer(ccr)
+		sess.mu.Lock()
+		if err != nil {
 			c.Errorf("Unable to add JetStream consumer for PUBREL for client %q: err=%v", sess.id, err)
 			return err
 		}
