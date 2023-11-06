@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -330,6 +331,8 @@ type mqttRetainedMsgRef struct {
 }
 
 type mqttSub struct {
+	ready atomic.Value
+
 	qos byte
 	// Pending serialization of retained messages to be sent when subscription is registered
 	prm *mqttWriter
@@ -2161,6 +2164,37 @@ func (as *mqttAccountSessionManager) removeSession(sess *mqttSession, lock bool)
 	}
 }
 
+func (as *mqttAccountSessionManager) processRetainedForNewSub(sub *subscription, c *client, sess *mqttSession, trace bool) {
+	for _, s := range append([]*subscription{sub}, sub.shadow...) {
+		as.serializeRetainedMsgsForSub(sess, c, s, trace)
+	}
+}
+
+func (sess *mqttSession) setupSub(c *client, subject, sid, jsDur string, qos byte, isReserved bool, h msgHandler) (*subscription, error) {
+	msub := &mqttSub{
+		qos:      qos,
+		reserved: isReserved,
+		jsDur:    jsDur,
+	}
+	msub.ready.Store(false)
+	sub, err := c.processSubEx([]byte(subject), nil, []byte(sid), h, false, false, false, msub)
+	if err != nil {
+		return nil, err
+	}
+
+	// Update QOS again since if there was an existing subscription, it was
+	// returned unchanged.
+	sub.mqtt.qos = qos
+
+	if qos == 2 {
+		err = sess.ensurePubRelConsumerSubscription(c)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return sub, nil
+}
+
 // Process subscriptions for the given session/client.
 //
 // When `fromSubProto` is false, it means that this is invoked from the CONNECT
@@ -2199,25 +2233,6 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 		sess.cons[sid] = cc
 	}
 
-	// Helper that sets the sub's mqtt fields and possibly serialize retained messages.
-	// Assumes account manager and session lock held.
-	setupSub := func(sub *subscription, qos byte) {
-		subs := []*subscription{sub}
-		if len(sub.shadow) > 0 {
-			subs = append(subs, sub.shadow...)
-		}
-		for _, sub := range subs {
-			if sub.mqtt == nil {
-				sub.mqtt = &mqttSub{}
-			}
-			sub.mqtt.qos = qos
-			sub.mqtt.reserved = isMQTTReservedSubscription(string(sub.subject))
-			if fromSubProto {
-				as.serializeRetainedMsgsForSub(sess, c, sub, trace)
-			}
-		}
-	}
-
 	var err error
 	subs := make([]*subscription, 0, len(filters))
 	for _, f := range filters {
@@ -2242,12 +2257,9 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 		// Note that if a subscription already exists on this subject,
 		// the existing sub is returned. Need to update the qos.
 		asAndSessLock()
-		sub, err := c.processSub([]byte(subject), nil, []byte(sid), mqttDeliverMsgCbQoS0, false)
-		if err == nil {
-			setupSub(sub, f.qos)
-		}
-		if f.qos == 2 {
-			err = sess.ensurePubRelConsumerSubscription(c)
+		sub, err := sess.setupSub(c, subject, sid, "", f.qos, isMQTTReservedSubscription(subject), mqttDeliverMsgCbQoS0)
+		if err == nil && fromSubProto {
+			as.processRetainedForNewSub(sub, c, sess, trace)
 		}
 		asAndSessUnlock()
 
@@ -2275,9 +2287,9 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 			fwcsid := fwcsubject + mqttMultiLevelSidSuffix
 			// See note above about existing subscription.
 			asAndSessLock()
-			fwcsub, err = c.processSub([]byte(fwcsubject), nil, []byte(fwcsid), mqttDeliverMsgCbQoS0, false)
-			if err == nil {
-				setupSub(fwcsub, f.qos)
+			fwcsub, err = sess.setupSub(c, fwcsubject, fwcsid, "", f.qos, isMQTTReservedSubscription(fwcsubject), mqttDeliverMsgCbQoS0)
+			if err == nil && fromSubProto {
+				as.processRetainedForNewSub(fwcsub, c, sess, trace)
 			}
 			asAndSessUnlock()
 			if err == nil {
@@ -2297,6 +2309,12 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 		subs = append(subs, sub)
 		addJSConsToSess(sid, jscons)
 	}
+
+	// Mark subscriptions as ready so the callbacks deliver messages.
+	for _, sub := range subs {
+		sub.mqtt.ready.Store(true)
+	}
+
 	if fromSubProto {
 		err = sess.update(filters, true)
 	}
@@ -4165,6 +4183,11 @@ func mqttDeliverMsgCbQoS0(sub *subscription, pc *client, _ *Account, subject, re
 		return
 	}
 
+	// The subcription may still be initializing.
+	if ready := sub.mqtt.ready.Load(); ready == nil || !ready.(bool) {
+		return
+	}
+
 	hdr, msg := pc.msgParts(rmsg)
 
 	// This is the client associated with the subscription.
@@ -4232,6 +4255,11 @@ func mqttDeliverMsgCbQoS12(sub *subscription, pc *client, _ *Account, subject, r
 	// at least as long as the stream subject prefix "$MQTT.msgs.", and after removing
 	// the prefix, has to be at least 1 character long.
 	if len(subject) < len(mqttStreamSubjectPrefix)+1 {
+		return
+	}
+
+	// The subcription may still be initializing.
+	if ready := sub.mqtt.ready.Load(); ready == nil || !ready.(bool) {
 		return
 	}
 
@@ -4341,11 +4369,11 @@ func mqttIsReservedSub(sub *subscription, subject string) bool {
 
 // Check if a sub is a reserved wildcard. E.g. '#', '*', or '*/" prefix.
 func isMQTTReservedSubscription(subject string) bool {
-	if len(subject) == 1 && subject[0] == fwc || subject[0] == pwc {
+	if len(subject) == 1 && (subject[0] == fwc || subject[0] == pwc) {
 		return true
 	}
 	// Match "*.<>"
-	if len(subject) > 1 && subject[0] == pwc && subject[1] == btsep {
+	if len(subject) > 1 && (subject[0] == pwc && subject[1] == btsep) {
 		return true
 	}
 	return false
@@ -4607,19 +4635,14 @@ func (sess *mqttSession) processJSConsumer(c *client, subject, sid string,
 	// This is an internal subscription on subject like "$MQTT.sub.<nuid>" that is setup
 	// for the JS durable's deliver subject.
 	sess.mu.Lock()
-	sub, err := c.processSub([]byte(inbox), nil, []byte(inbox), mqttDeliverMsgCbQoS12, false)
+	sub, err := sess.setupSub(c, inbox, inbox, cc.Durable, qos, isMQTTReservedSubscription(subject), mqttDeliverMsgCbQoS12)
 	if err != nil {
 		sess.mu.Unlock()
 		sess.deleteConsumer(cc)
 		c.Errorf("Unable to create subscription for JetStream consumer on %q: %v", subject, err)
 		return nil, nil, err
 	}
-	if sub.mqtt == nil {
-		sub.mqtt = &mqttSub{}
-	}
-	sub.mqtt.qos = qos
-	sub.mqtt.jsDur = cc.Durable
-	sub.mqtt.reserved = isMQTTReservedSubscription(subject)
+	sub.mqtt.ready.Store(true)
 	sess.mu.Unlock()
 	return cc, sub, nil
 }

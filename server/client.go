@@ -2657,12 +2657,12 @@ func (c *client) parseSub(argo []byte, noForward bool) error {
 }
 
 func (c *client) processSub(subject, queue, bsid []byte, cb msgHandler, noForward bool) (*subscription, error) {
-	return c.processSubEx(subject, queue, bsid, cb, noForward, false, false)
+	return c.processSubEx(subject, queue, bsid, cb, noForward, false, false, nil)
 }
 
-func (c *client) processSubEx(subject, queue, bsid []byte, cb msgHandler, noForward, si, rsi bool) (*subscription, error) {
+func (c *client) processSubEx(subject, queue, bsid []byte, cb msgHandler, noForward, si, rsi bool, mqtt *mqttSub) (*subscription, error) {
 	// Create the subscription
-	sub := &subscription{client: c, subject: subject, queue: queue, sid: bsid, icb: cb, si: si, rsi: rsi}
+	sub := &subscription{client: c, subject: subject, queue: queue, sid: bsid, icb: cb, si: si, rsi: rsi, mqtt: mqtt}
 
 	c.mu.Lock()
 

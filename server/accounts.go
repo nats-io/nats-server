@@ -1971,7 +1971,7 @@ func (a *Account) subscribeInternalEx(subject string, cb msgHandler, ri bool) (*
 		return nil, fmt.Errorf("no internal account client")
 	}
 
-	return c.processSubEx([]byte(subject), nil, []byte(sid), cb, false, false, ri)
+	return c.processSubEx([]byte(subject), nil, []byte(sid), cb, false, false, ri, nil)
 }
 
 // This will add an account subscription that matches the "from" from a service import entry.
@@ -1996,7 +1996,7 @@ func (a *Account) addServiceImportSub(si *serviceImport) error {
 	cb := func(sub *subscription, c *client, acc *Account, subject, reply string, msg []byte) {
 		c.processServiceImport(si, acc, msg)
 	}
-	sub, err := c.processSubEx([]byte(subject), nil, []byte(sid), cb, true, true, false)
+	sub, err := c.processSubEx([]byte(subject), nil, []byte(sid), cb, true, true, false, nil)
 	if err != nil {
 		return err
 	}

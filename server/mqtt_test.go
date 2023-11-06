@@ -2557,7 +2557,7 @@ func TestMQTTSubWithSpaces(t *testing.T) {
 	defer mcp.Close()
 	testMQTTCheckConnAck(t, mpr, mqttConnAckRCConnectionAccepted, false)
 
-	mc, r := testMQTTConnect(t, &mqttConnInfo{user: "sub", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
 	defer mc.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 
@@ -2994,16 +2994,10 @@ func TestMQTTCluster(t *testing.T) {
 
 func testMQTTConnectDisconnect(t *testing.T, o *Options, clientID string, clean bool, found bool) {
 	t.Helper()
-	start := time.Now()
 	mc, r := testMQTTConnect(t, &mqttConnInfo{clientID: clientID, cleanSess: clean}, o.MQTT.Host, o.MQTT.Port)
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, found)
 	testMQTTDisconnectEx(t, mc, nil, false)
 	mc.Close()
-	if clean {
-		t.Logf("OK with server %v:%v, elapsed %v -- clean", o.MQTT.Host, o.MQTT.Port, time.Since(start))
-	} else {
-		t.Logf("OK with server %v:%v, elapsed %v", o.MQTT.Host, o.MQTT.Port, time.Since(start))
-	}
 }
 
 func TestMQTTClusterConnectDisconnectClean(t *testing.T) {
@@ -7005,6 +6999,47 @@ func TestMQTTSubjectMappingWithImportExport(t *testing.T) {
 	nc = natsConnect(t, fmt.Sprintf("nats://a:pwd@%s:%d", o.Host, o.Port))
 	defer nc.Close()
 	check(nc, "$MQTT.msgs.foo")
+}
+
+func TestMQTTNewSubRetainedRace(t *testing.T) {
+	pubTopic := "/bar"
+
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	for _, subTopic := range []string{"#", "/#", "/bar"} {
+		t.Run(subTopic, func(t *testing.T) {
+			for _, qos := range []byte{0, 1, 2} {
+				t.Run(fmt.Sprintf("QOS%d", qos), func(t *testing.T) {
+					testMQTTNewSubRetainedRace(t, o, subTopic, pubTopic, qos)
+				})
+			}
+		})
+	}
+}
+
+func testMQTTNewSubRetainedRace(t *testing.T, o *Options, subTopic, pubTopic string, QOS byte) {
+	expectedFlags := (QOS << 1) | mqttPubFlagRetain
+	payload := []byte("testmsg")
+
+	pubID := nuid.Next()
+	pubc, pubr := testMQTTConnectRetry(t, &mqttConnInfo{clientID: pubID, cleanSess: true}, o.MQTT.Host, o.MQTT.Port, 3)
+	testMQTTCheckConnAck(t, pubr, mqttConnAckRCConnectionAccepted, false)
+	defer testMQTTDisconnectEx(t, pubc, nil, true)
+	defer pubc.Close()
+	testMQTTPublish(t, pubc, pubr, QOS, false, true, pubTopic, 1, payload)
+
+	subID := nuid.Next()
+	subc, subr := testMQTTConnect(t, &mqttConnInfo{clientID: subID, cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	testMQTTCheckConnAck(t, subr, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, subc, subr, []*mqttFilter{{filter: subTopic, qos: QOS}}, []byte{QOS})
+
+	testMQTTCheckPubMsg(t, subc, subr, pubTopic, expectedFlags, payload)
+
+	// Disconnect and connect again
+	testMQTTDisconnectEx(t, subc, nil, true)
+	subc.Close()
 }
 
 // Issue https://github.com/nats-io/nats-server/issues/3924
