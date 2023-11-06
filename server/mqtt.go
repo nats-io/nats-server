@@ -331,7 +331,7 @@ type mqttRetainedMsgRef struct {
 }
 
 type mqttSub struct {
-	ready atomic.Value
+	ready atomic.Bool
 
 	qos byte
 	// Pending serialization of retained messages to be sent when subscription is registered
@@ -4184,7 +4184,7 @@ func mqttDeliverMsgCbQoS0(sub *subscription, pc *client, _ *Account, subject, re
 	}
 
 	// The subcription may still be initializing.
-	if ready := sub.mqtt.ready.Load(); ready == nil || !ready.(bool) {
+	if ready := sub.mqtt.ready.Load(); !ready {
 		return
 	}
 
@@ -4259,7 +4259,7 @@ func mqttDeliverMsgCbQoS12(sub *subscription, pc *client, _ *Account, subject, r
 	}
 
 	// The subcription may still be initializing.
-	if ready := sub.mqtt.ready.Load(); ready == nil || !ready.(bool) {
+	if ready := sub.mqtt.ready.Load(); !ready {
 		return
 	}
 
