@@ -2557,7 +2557,7 @@ func TestMQTTSubWithSpaces(t *testing.T) {
 	defer mcp.Close()
 	testMQTTCheckConnAck(t, mpr, mqttConnAckRCConnectionAccepted, false)
 
-	mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	mc, r := testMQTTConnect(t, &mqttConnInfo{user: "sub", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
 	defer mc.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 
