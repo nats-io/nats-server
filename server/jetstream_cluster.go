@@ -2349,19 +2349,16 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 		case isLeader = <-lch:
 			if isLeader {
-				if mset != nil && n != nil {
-					// Send a snapshot if being asked or if we are tracking
-					// a failed state so that followers sync.
-					if clfs := mset.clearCLFS(); clfs > 0 || sendSnapshot {
-						n.SendSnapshot(mset.stateSnapshot())
-						sendSnapshot = false
-					}
+				if mset != nil && n != nil && sendSnapshot {
+					n.SendSnapshot(mset.stateSnapshot())
+					sendSnapshot = false
+
 				}
 				if isRestore {
 					acc, _ := s.LookupAccount(sa.Client.serviceAccount())
 					restoreDoneCh = s.processStreamRestore(sa.Client, acc, sa.Config, _EMPTY_, sa.Reply, _EMPTY_)
 					continue
-				} else if n.NeedSnapshot() {
+				} else if n != nil && n.NeedSnapshot() {
 					doSnapshot()
 				}
 				// Always cancel if this was running.
