@@ -1,4 +1,4 @@
-// Copyright 2012-2022 The NATS Authors
+// Copyright 2012-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -3298,9 +3298,12 @@ func (c *client) stalledWait(producer *client) {
 	c.mu.Unlock()
 	defer c.mu.Lock()
 
+	delay := time.NewTimer(ttl)
+	defer delay.Stop()
+
 	select {
 	case <-stall:
-	case <-time.After(ttl):
+	case <-delay.C:
 		producer.Debugf("Timed out of fast producer stall (%v)", ttl)
 	}
 }

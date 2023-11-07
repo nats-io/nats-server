@@ -5950,10 +5950,13 @@ func sysRequest[T any](s *Server, subjFormat string, args ...interface{}) (*T, e
 		}
 	}()
 
+	ttl := time.NewTimer(2 * time.Second)
+	defer ttl.Stop()
+
 	select {
 	case <-s.quitCh:
 		return nil, errReqSrvExit
-	case <-time.After(2 * time.Second):
+	case <-ttl.C:
 		return nil, errReqTimeout
 	case data := <-results:
 		return data, nil
