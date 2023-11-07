@@ -5318,8 +5318,9 @@ func TestFileStoreFullStateBasics(t *testing.T) {
 		fs.mu.RUnlock()
 
 		require_Equal(t, psi.total, 4)
-		require_Equal(t, psi.fblk, 1)
-		require_Equal(t, psi.lblk, 2)
+		fblk, lblk := psi.blks.MinMax()
+		require_Equal(t, fblk, 1)
+		require_Equal(t, lblk, 2)
 
 		// Store 1 more
 		fs.StoreMsg(subj, nil, msgA)
@@ -5342,8 +5343,9 @@ func TestFileStoreFullStateBasics(t *testing.T) {
 		psi = *fs.psim[subj]
 		fs.mu.RUnlock()
 		require_Equal(t, psi.total, 5)
-		require_Equal(t, psi.fblk, 1)
-		require_Equal(t, psi.lblk, 3)
+		fblk, lblk = psi.blks.MinMax()
+		require_Equal(t, fblk, 1)
+		require_Equal(t, lblk, 3)
 	})
 }
 
@@ -5973,7 +5975,8 @@ func TestFileStoreCompactAndPSIMWhenDeletingBlocks(t *testing.T) {
 	fs.mu.RUnlock()
 
 	require_Equal(t, psi.total, 1)
-	require_Equal(t, psi.fblk, psi.lblk)
+	fblk, lblk := psi.blks.MinMax()
+	require_Equal(t, fblk, lblk)
 }
 
 func TestFileStoreTrackSubjLenForPSIM(t *testing.T) {
@@ -6053,7 +6056,7 @@ func TestFileStoreTrackSubjLenForPSIM(t *testing.T) {
 
 // This was used to make sure our estimate was correct, but not needed normally.
 func TestFileStoreLargeFullStatePSIM(t *testing.T) {
-	t.Skip()
+	//	t.Skip()
 
 	sd := t.TempDir()
 	fs, err := newFileStore(

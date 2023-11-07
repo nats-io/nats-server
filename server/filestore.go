@@ -155,8 +155,8 @@ const (
 
 type psi struct {
 	total uint64
-	fblk  uint32
-	lblk  uint32
+	blks  *avl.SequenceSet
+	subj  string
 }
 
 type fileStore struct {
@@ -1591,12 +1591,13 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 				// number of blocks is large and subjects is low, since we would reference buf.
 				subj := string(buf[bi : bi+lsubj])
 				bi += lsubj
-				psi := &psi{total: readU64(), fblk: uint32(readU64())}
-				if psi.total > 1 {
-					psi.lblk = uint32(readU64())
-				} else {
-					psi.lblk = psi.fblk
+				psi := &psi{total: readU64(), subj: subj}
+				// TODO(nat): Need to handle converting to/from old format here
+				var n int
+				if psi.blks, n, err = avl.Decode(buf[bi:]); err != nil {
+					return errCorruptState
 				}
+				bi += n
 				fs.psim[subj] = psi
 				fs.tsl += len(subj)
 			}
@@ -1763,15 +1764,14 @@ func (fs *fileStore) adjustAccounting(mb, nmb *msgBlock) {
 		fs.state.Msgs++
 		fs.state.Bytes += fileStoreMsgSize(sm.subj, sm.hdr, sm.msg)
 		if len(sm.subj) > 0 && fs.psim != nil {
-			if info, ok := fs.psim[sm.subj]; ok {
-				info.total++
-				if nmb.index > info.lblk {
-					info.lblk = nmb.index
-				}
-			} else {
-				fs.psim[sm.subj] = &psi{total: 1, fblk: nmb.index, lblk: nmb.index}
+			info, ok := fs.psim[sm.subj]
+			if !ok {
+				fs.psim[sm.subj] = &psi{total: 0, blks: &avl.SequenceSet{}, subj: sm.subj}
 				fs.tsl += len(sm.subj)
+				info = fs.psim[sm.subj]
 			}
+			info.total++
+			info.blks.Insert(uint64(nmb.index))
 		}
 	}
 
@@ -2461,11 +2461,12 @@ func (fs *fileStore) numFilteredPending(filter string, ss *SimpleState) {
 			if isSubsetMatchTokenized(tts, fts) {
 				ss.Msgs += psi.total
 				// Keep track of start and stop indexes for this subject.
-				if psi.fblk < start {
-					start = psi.fblk
+				fblk, lblk := psi.blks.MinMax()
+				if f := uint32(fblk); f < start {
+					start = f
 				}
-				if psi.lblk > stop {
-					stop = psi.lblk
+				if l := uint32(lblk); l > stop {
+					stop = l
 				}
 			}
 		}
@@ -2516,7 +2517,8 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 		if info == nil {
 			return nil
 		}
-		start, stop = fs.bim[info.fblk], fs.bim[info.lblk]
+		fblk, lblk := info.blks.MinMax()
+		start, stop = fs.bim[uint32(fblk)], fs.bim[uint32(lblk)]
 	}
 
 	// Aggregate fss.
@@ -2711,14 +2713,16 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 				total++
 				// Keep track of start index for this subject.
 				// Use last block in this case.
-				if psi.lblk < start {
-					start = psi.lblk
+				_, lblk := psi.blks.MinMax()
+				if l := uint32(lblk); l < start {
+					start = l
 				}
 			} else {
 				total += psi.total
 				// Keep track of start index for this subject.
-				if psi.fblk < start {
-					start = psi.fblk
+				fblk, _ := psi.blks.MinMax()
+				if f := uint32(fblk); f < start {
+					start = f
 				}
 			}
 		}
@@ -3036,16 +3040,14 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 
 	// Adjust top level tracking of per subject msg counts.
 	if len(subj) > 0 && fs.psim != nil {
-		index := fs.lmb.index
-		if info, ok := fs.psim[subj]; ok {
-			info.total++
-			if index > info.lblk {
-				info.lblk = index
-			}
-		} else {
-			fs.psim[subj] = &psi{total: 1, fblk: index, lblk: index}
+		info, ok := fs.psim[subj]
+		if !ok {
+			fs.psim[subj] = &psi{total: 0, blks: &avl.SequenceSet{}, subj: subj}
 			fs.tsl += len(subj)
+			info = fs.psim[subj]
 		}
+		info.total++
+		info.blks.Insert(uint64(fs.lmb.index))
 	}
 
 	// Adjust first if needed.
@@ -3227,37 +3229,44 @@ func (fs *fileStore) firstSeqForSubj(subj string) (uint64, error) {
 	}
 
 	// See if we can optimize where we start.
-	start, stop := fs.blks[0].index, fs.lmb.index
-	if info, ok := fs.psim[subj]; ok {
-		start, stop = info.fblk, info.lblk
+	start := fs.blks[0].index
+	info, ok := fs.psim[subj]
+	if !ok {
+		// TODO(nat): Probably not right
+		return uint64(start), nil
 	}
 
-	for i := start; i <= stop; i++ {
+	var first uint64
+	var err error
+	info.blks.Range(func(u uint64) bool {
+		i := uint32(u)
 		mb := fs.bim[i]
 		if mb == nil {
-			continue
+			return true
 		}
 		mb.mu.Lock()
-		if err := mb.ensurePerSubjectInfoLoaded(); err != nil {
+		if err = mb.ensurePerSubjectInfoLoaded(); err != nil {
 			mb.mu.Unlock()
-			return 0, err
+			return false
 		}
 		if ss := mb.fss[subj]; ss != nil {
 			// Adjust first if it was not where we thought it should be.
 			if i != start {
 				if info, ok := fs.psim[subj]; ok {
-					info.fblk = i
+					info.blks.Insert(uint64(i))
 				}
 			}
 			if ss.firstNeedsUpdate {
 				mb.recalculateFirstForSubj(subj, ss.First, ss)
 			}
 			mb.mu.Unlock()
-			return ss.First, nil
+			first = ss.First
+			return false
 		}
 		mb.mu.Unlock()
-	}
-	return 0, nil
+		return true
+	})
+	return first, err
 }
 
 // Will check the msg limit and drop firstSeq msg if needed.
@@ -3352,12 +3361,13 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 
 	// Walk all subjects that need attention here.
 	for subj, info := range needAttention {
-		total, start, stop := info.total, info.fblk, info.lblk
+		total := info.total
 
-		for i := start; i <= stop; i++ {
+		info.blks.Range(func(u uint64) bool {
+			i := uint32(u)
 			mb := fs.bim[i]
 			if mb == nil {
-				continue
+				return true
 			}
 			// Grab the ss entry for this subject in case sparse.
 			mb.mu.Lock()
@@ -3371,7 +3381,7 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 			}
 			mb.mu.Unlock()
 			if ss == nil {
-				continue
+				return true
 			}
 			for seq := ss.First; seq <= ss.Last && total > maxMsgsPer; {
 				m, _, err := mb.firstMatching(subj, false, seq, &sm)
@@ -3386,7 +3396,8 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 					seq++
 				}
 			}
-		}
+			return true
+		})
 	}
 
 	// Expire the cache if we can.
@@ -3431,7 +3442,9 @@ func (fs *fileStore) removePerSubject(subj string) {
 	if info, ok := fs.psim[subj]; ok {
 		info.total--
 		if info.total == 1 {
-			info.fblk = info.lblk
+			_, lblk := info.blks.MinMax()
+			info.blks.Empty()
+			info.blks.Insert(lblk)
 		} else if info.total == 0 {
 			delete(fs.psim, subj)
 			fs.tsl -= len(subj)
@@ -5698,7 +5711,8 @@ func (fs *fileStore) loadLast(subj string, sm *StoreMsg) (lsm *StoreMsg, err err
 		if info := fs.psim[subj]; info == nil {
 			return nil, ErrStoreMsgNotFound
 		} else {
-			start, stop = info.lblk, info.fblk
+			start64, stop64 := info.blks.MinMax()
+			start, stop = uint32(stop64), uint32(start64)
 		}
 	}
 
@@ -6717,6 +6731,17 @@ func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64) {
 
 	if ss.Msgs == 1 {
 		delete(mb.fss, subj)
+		// Tell the filestore that we no longer have anything belonging to this
+		// subject within this block.
+		if psi, ok := mb.fs.psim[subj]; ok {
+			if !psi.blks.Delete(uint64(mb.index)) {
+				// TODO(nat): Remove this panic when happy this all works.
+				panic(fmt.Sprintf("filestore-level per-subject tracking for subject %q doesn't contain block index %d", subj, mb.index))
+			}
+		} else {
+			// TODO(nat): Remove this panic when happy this all works.
+			panic(fmt.Sprintf("no filestore-level per-subject tracking for subject %q", subj))
+		}
 		return
 	}
 
@@ -6879,15 +6904,14 @@ func (fs *fileStore) populateGlobalPerSubjectInfo(mb *msgBlock) {
 	// Now populate psim.
 	for subj, ss := range mb.fss {
 		if len(subj) > 0 {
-			if info, ok := fs.psim[subj]; ok {
-				info.total += ss.Msgs
-				if mb.index > info.lblk {
-					info.lblk = mb.index
-				}
-			} else {
-				fs.psim[subj] = &psi{total: ss.Msgs, fblk: mb.index, lblk: mb.index}
+			info, ok := fs.psim[subj]
+			if !ok {
+				fs.psim[subj] = &psi{total: 0, blks: &avl.SequenceSet{}, subj: subj}
 				fs.tsl += len(subj)
+				info = fs.psim[subj]
 			}
+			info.total += ss.Msgs
+			info.blks.Insert(uint64(mb.index))
 		}
 	}
 }
@@ -7130,10 +7154,11 @@ func (fs *fileStore) writeFullState() error {
 			buf = binary.AppendUvarint(buf, uint64(len(subj)))
 			buf = append(buf, subj...)
 			buf = binary.AppendUvarint(buf, psi.total)
-			buf = binary.AppendUvarint(buf, uint64(psi.fblk))
-			if psi.total > 1 {
-				buf = binary.AppendUvarint(buf, uint64(psi.lblk))
+			psib, err := psi.blks.Encode(buf[len(buf):])
+			if err != nil {
+				panic(err) // TODO(nat): don't panic!
 			}
+			buf = append(buf, psib...)
 		}
 	}
 
