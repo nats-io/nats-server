@@ -1401,9 +1401,12 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 	}
 
 	if lastSeq > 0 {
+		ttl := time.NewTimer(mqttJSAPITimeout)
+		defer ttl.Stop()
+
 		select {
 		case <-rmDoneCh:
-		case <-time.After(mqttJSAPITimeout):
+		case <-ttl.C:
 			s.Warnf("Timing out waiting to load %v retained messages", st.Msgs)
 		case <-quitCh:
 			return nil, ErrServerNotRunning
@@ -3137,6 +3140,9 @@ func (c *client) mqttConnectTrace(cp *mqttConnectProto) string {
 	if cp.will != nil {
 		trace += fmt.Sprintf(" will=(topic=%s QoS=%v retain=%v)",
 			cp.will.topic, cp.will.qos, cp.will.retain)
+	}
+	if cp.flags&mqttConnFlagCleanSession != 0 {
+		trace += " clean"
 	}
 	if c.opts.Username != _EMPTY_ {
 		trace += fmt.Sprintf(" username=%s", c.opts.Username)

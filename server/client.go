@@ -1,4 +1,4 @@
-// Copyright 2012-2022 The NATS Authors
+// Copyright 2012-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -1340,6 +1340,7 @@ func (c *client) readLoop(pre []byte) {
 					c.Errorf("read error: %v", err)
 				}
 				c.closeConnection(closedStateForErr(err))
+				return
 			} else if bufs == nil {
 				continue
 			}
@@ -1496,15 +1497,6 @@ func (c *client) collapsePtoNB() (net.Buffers, int64) {
 		return c.wsCollapsePtoNB()
 	}
 	return c.out.nb, c.out.pb
-}
-
-// This will handle the fixup needed on a partial write.
-// Assume pending has been already calculated correctly.
-func (c *client) handlePartialWrite(pnb net.Buffers) {
-	if c.isWebsocket() {
-		c.ws.frames = append(pnb, c.ws.frames...)
-		return
-	}
 }
 
 // flushOutbound will flush outbound buffer to a client.
@@ -1675,12 +1667,6 @@ func (c *client) flushOutbound() bool {
 	c.out.pb -= n
 	if c.isWebsocket() {
 		c.ws.fs -= n
-	}
-
-	// Check for partial writes
-	// TODO(dlc) - zero write with no error will cause lost message and the writeloop to spin.
-	if n != attempted && n > 0 {
-		c.handlePartialWrite(c.out.nb)
 	}
 
 	// Check that if there is still data to send and writeLoop is in wait,
@@ -3298,9 +3284,12 @@ func (c *client) stalledWait(producer *client) {
 	c.mu.Unlock()
 	defer c.mu.Lock()
 
+	delay := time.NewTimer(ttl)
+	defer delay.Stop()
+
 	select {
 	case <-stall:
-	case <-time.After(ttl):
+	case <-delay.C:
 		producer.Debugf("Timed out of fast producer stall (%v)", ttl)
 	}
 }

@@ -3731,7 +3731,8 @@ func (o *consumer) processInboundAcks(qch chan struct{}) {
 	// How often we will check for ack floor drift.
 	// Spread these out for large numbers on a server restart.
 	delta := time.Duration(rand.Int63n(int64(time.Minute)))
-	var ackFloorCheck = time.Minute + delta
+	ticker := time.NewTicker(time.Minute + delta)
+	defer ticker.Stop()
 
 	for {
 		select {
@@ -3746,7 +3747,7 @@ func (o *consumer) processInboundAcks(qch chan struct{}) {
 			if hasInactiveThresh {
 				o.suppressDeletion()
 			}
-		case <-time.After(ackFloorCheck):
+		case <-ticker.C:
 			o.checkAckFloor()
 		case <-qch:
 			return

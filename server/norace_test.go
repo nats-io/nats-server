@@ -8962,3 +8962,127 @@ func TestNoRaceStoreStreamEncoderDecoder(t *testing.T) {
 		}
 	}
 }
+
+func TestNoRaceJetStreamClusterKVWithServerKill(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Setup the KV bucket and use for making assertions.
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+	_, err := js.CreateKeyValue(&nats.KeyValueConfig{
+		Bucket:   "TEST",
+		Replicas: 3,
+		History:  10,
+	})
+	require_NoError(t, err)
+
+	// Total number of keys to range over.
+	numKeys := 50
+
+	// ID is the server id to explicitly connect to.
+	work := func(ctx context.Context, wg *sync.WaitGroup, id int) {
+		defer wg.Done()
+
+		nc, js := jsClientConnect(t, c.servers[id])
+		defer nc.Close()
+
+		kv, err := js.KeyValue("TEST")
+		require_NoError(t, err)
+
+		// 100 messages a second for each single client.
+		tk := time.NewTicker(10 * time.Millisecond)
+		defer tk.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+
+			case <-tk.C:
+				// Pick a random key within the range.
+				k := fmt.Sprintf("key.%d", rand.Intn(numKeys))
+				// Attempt to get a key.
+				e, err := kv.Get(k)
+				// If found, attempt to update or delete.
+				if err == nil {
+					if rand.Intn(10) < 3 {
+						kv.Delete(k, nats.LastRevision(e.Revision()))
+					} else {
+						kv.Update(k, nil, e.Revision())
+					}
+				} else if errors.Is(err, nats.ErrKeyNotFound) {
+					kv.Create(k, nil)
+				}
+			}
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	go work(ctx, &wg, 0)
+	go work(ctx, &wg, 1)
+	go work(ctx, &wg, 2)
+
+	time.Sleep(time.Second)
+
+	// Simulate server stop and restart.
+	for i := 0; i < 10; i++ {
+		s := c.randomServer()
+		s.Shutdown()
+		c.waitOnLeader()
+		c.waitOnStreamLeader(globalAccountName, "KV_TEST")
+
+		// Wait for a bit and then start the server again.
+		time.Sleep(time.Duration(rand.Intn(1500)) * time.Millisecond)
+		s = c.restartServer(s)
+		c.waitOnServerCurrent(s)
+		c.waitOnLeader()
+		c.waitOnStreamLeader(globalAccountName, "KV_TEST")
+		c.waitOnPeerCount(3)
+	}
+
+	// Stop the workload.
+	cancel()
+	wg.Wait()
+
+	type fullState struct {
+		state StreamState
+		lseq  uint64
+		clfs  uint64
+	}
+
+	grabState := func(mset *stream) *fullState {
+		mset.mu.RLock()
+		defer mset.mu.RUnlock()
+		var state StreamState
+		mset.store.FastState(&state)
+		return &fullState{state, mset.lseq, mset.clfs}
+	}
+
+	checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+		// Current stream leader.
+		sl := c.streamLeader(globalAccountName, "KV_TEST")
+		mset, err := sl.GlobalAccount().lookupStream("KV_TEST")
+		require_NoError(t, err)
+		lstate := grabState(mset)
+
+		// Report messages per server.
+		for _, s := range c.servers {
+			if s == sl {
+				continue
+			}
+			mset, err := s.GlobalAccount().lookupStream("KV_TEST")
+			require_NoError(t, err)
+			state := grabState(mset)
+			if !reflect.DeepEqual(state, lstate) {
+				return fmt.Errorf("Expected follower state\n%+v\nto match leader's\n %+v", state, lstate)
+			}
+		}
+		return nil
+	})
+}
