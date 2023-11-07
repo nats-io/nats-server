@@ -4145,6 +4145,30 @@ func mqttSubscribeTrace(pi uint16, filters []*mqttFilter) string {
 	return sb.String()
 }
 
+// mqttDoNotDeliverSubject returns true if the subject starts with $JS or $MQTT
+// since we don't want to deliver them, avoiding session deadlocks with JSAPI
+// invocations.
+func mqttDoNotDeliverSubject(subject string) bool {
+	l := len(subject)
+	if l == 0 {
+		return true
+	}
+	if subject[0] != '$' {
+		return false
+	}
+	if l > 3 &&
+		subject[1] == 'J' && subject[2] == 'S' && subject[3] == '.' {
+		return true
+	}
+	if l > 10 &&
+		subject[1] == 'M' && subject[2] == 'Q' && subject[3] == 'T' && subject[4] == 'T' &&
+		subject[5] == '.' &&
+		subject[6] == 'J' && subject[7] == 'S' && subject[8] == 'A' && subject[9] == '.' {
+		return true
+	}
+	return false
+}
+
 // For a MQTT QoS0 subscription, we create a single NATS subscription on the
 // actual subject, for instance "foo.bar".
 //
@@ -4164,6 +4188,11 @@ func mqttSubscribeTrace(pi uint16, filters []*mqttFilter) string {
 // case, it will be handled by the other callback. This avoid getting duplicate
 // deliveries.
 func mqttDeliverMsgCbQoS0(sub *subscription, pc *client, _ *Account, subject, reply string, rmsg []byte) {
+	// Filter out all internal requests. An attempt to deliver them might result
+	// in a deadlock if the requestor is holding the session lock.
+	if mqttDoNotDeliverSubject(subject) {
+		return
+	}
 	if pc.kind == JETSTREAM && len(reply) > 0 && strings.HasPrefix(reply, jsAckPre) {
 		return
 	}
@@ -4231,6 +4260,13 @@ func mqttDeliverMsgCbQoS0(sub *subscription, pc *client, _ *Account, subject, re
 // the message contains a NATS/MQTT header that indicates that this is a
 // published QoS1+ message.
 func mqttDeliverMsgCbQoS12(sub *subscription, pc *client, _ *Account, subject, reply string, rmsg []byte) {
+	// This is for consistency with mqttDeliverMsgCbQoS0. This callback does not
+	// present the risk of deadlocking with JS API calls since it is filtering
+	// on the header.
+	if mqttDoNotDeliverSubject(subject) {
+		return
+	}
+
 	// Message on foo.bar is stored under $MQTT.msgs.foo.bar, so the subject has to be
 	// at least as long as the stream subject prefix "$MQTT.msgs.", and after removing
 	// the prefix, has to be at least 1 character long.

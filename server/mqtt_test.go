@@ -19,12 +19,13 @@ package server
 import (
 	"bufio"
 	"bytes"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
+	mathrand "math/rand"
 	"net"
 	"os"
 	"os/exec"
@@ -2994,16 +2995,10 @@ func TestMQTTCluster(t *testing.T) {
 
 func testMQTTConnectDisconnect(t *testing.T, o *Options, clientID string, clean bool, found bool) {
 	t.Helper()
-	start := time.Now()
 	mc, r := testMQTTConnect(t, &mqttConnInfo{clientID: clientID, cleanSess: clean}, o.MQTT.Host, o.MQTT.Port)
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, found)
 	testMQTTDisconnectEx(t, mc, nil, false)
 	mc.Close()
-	if clean {
-		t.Logf("OK with server %v:%v, elapsed %v -- clean", o.MQTT.Host, o.MQTT.Port, time.Since(start))
-	} else {
-		t.Logf("OK with server %v:%v, elapsed %v", o.MQTT.Host, o.MQTT.Port, time.Since(start))
-	}
 }
 
 func TestMQTTClusterConnectDisconnectClean(t *testing.T) {
@@ -3017,7 +3012,7 @@ func TestMQTTClusterConnectDisconnectClean(t *testing.T) {
 	// specified.
 	N := 100
 	for n := 0; n < N; n++ {
-		testMQTTConnectDisconnect(t, cl.opts[rand.Intn(nServers)], clientID, true, false)
+		testMQTTConnectDisconnect(t, cl.opts[mathrand.Intn(nServers)], clientID, true, false)
 	}
 }
 
@@ -5914,7 +5909,7 @@ type chunkWriteConn struct {
 
 func (cwc *chunkWriteConn) Write(p []byte) (int, error) {
 	max := len(p)
-	cs := rand.Intn(max) + 1
+	cs := mathrand.Intn(max) + 1
 	if cs < max {
 		if pn, perr := cwc.Conn.Write(p[:cs]); perr != nil {
 			return pn, perr
@@ -7007,6 +7002,115 @@ func TestMQTTSubjectMappingWithImportExport(t *testing.T) {
 	check(nc, "$MQTT.msgs.foo")
 }
 
+func TestMQTTNewSubRetainedRace(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	useCases := []struct {
+		name string
+		f    func(t *testing.T, o *Options, subTopic, pubTopic string, QOS byte)
+	}{
+		{"new top level", testMQTTNewSubRetainedRace},
+		{"existing top level", testMQTTNewSubWithExistingTopLevelRetainedRace},
+	}
+	pubTopic := "/bar"
+	subTopics := []string{"#", "/bar", "/+", "/#"}
+	QOS := []byte{0, 1, 2}
+	for _, tc := range useCases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, subTopic := range subTopics {
+				t.Run(subTopic, func(t *testing.T) {
+					for _, qos := range QOS {
+						t.Run(fmt.Sprintf("QOS%d", qos), func(t *testing.T) {
+							tc.f(t, o, subTopic, pubTopic, qos)
+						})
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestMQTTDoNotDeliverSubject(t *testing.T) {
+	for _, tc := range []struct {
+		expected bool
+		subject  string
+	}{
+		{true, mqttJSARepliesPrefix + "foo"},
+		{true, mqttJSARepliesPrefix + "foo.bar"},
+		{true, "$JS.foo"},
+		{false, "$MQTTfoo"},
+		{false, "$MQTT.foo"},
+		{false, "$JSbar"},
+		{false, "abracadabra"},
+	} {
+		if got := mqttDoNotDeliverSubject(tc.subject); got != tc.expected {
+			t.Fatalf("Expected %v for %q, got %v", tc.expected, tc.subject, got)
+		}
+	}
+}
+
+func testMQTTNewSubRetainedRace(t *testing.T, o *Options, subTopic, pubTopic string, QOS byte) {
+	expectedFlags := (QOS << 1) | mqttPubFlagRetain
+	payload := []byte("testmsg")
+
+	pubID := nuid.Next()
+	pubc, pubr := testMQTTConnectRetry(t, &mqttConnInfo{clientID: pubID, cleanSess: true}, o.MQTT.Host, o.MQTT.Port, 3)
+	testMQTTCheckConnAck(t, pubr, mqttConnAckRCConnectionAccepted, false)
+	defer testMQTTDisconnectEx(t, pubc, nil, true)
+	defer pubc.Close()
+	testMQTTPublish(t, pubc, pubr, QOS, false, true, pubTopic, 1, payload)
+
+	subID := nuid.Next()
+	subc, subr := testMQTTConnect(t, &mqttConnInfo{clientID: subID, cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	testMQTTCheckConnAck(t, subr, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, subc, subr, []*mqttFilter{{filter: subTopic, qos: QOS}}, []byte{QOS})
+
+	testMQTTCheckPubMsg(t, subc, subr, pubTopic, expectedFlags, payload)
+
+	testMQTTDisconnectEx(t, subc, nil, true)
+	subc.Close()
+}
+
+func testMQTTNewSubWithExistingTopLevelRetainedRace(t *testing.T, o *Options, subTopic, pubTopic string, QOS byte) {
+	expectedFlags := (QOS << 1) | mqttPubFlagRetain
+	payload := []byte("testmsg")
+
+	pubID := nuid.Next()
+	pubc, pubr := testMQTTConnectRetry(t, &mqttConnInfo{clientID: pubID, cleanSess: true}, o.MQTT.Host, o.MQTT.Port, 3)
+	testMQTTCheckConnAck(t, pubr, mqttConnAckRCConnectionAccepted, false)
+	defer testMQTTDisconnectEx(t, pubc, nil, true)
+	defer pubc.Close()
+
+	subID := nuid.Next()
+	subc, subr := testMQTTConnect(t, &mqttConnInfo{clientID: subID, cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	testMQTTCheckConnAck(t, subr, mqttConnAckRCConnectionAccepted, false)
+
+	// Clear retained messages from the prior run, and sleep a little to
+	// ensure the change is propagated.
+	testMQTTPublish(t, pubc, pubr, 0, false, true, pubTopic, 1, nil)
+	time.Sleep(1 * time.Millisecond)
+
+	// Subscribe to `#` first, make sure we can get get the retained message
+	// there. It's a QOS0 sub, so expect a QOS0 message.
+	testMQTTSub(t, 1, subc, subr, []*mqttFilter{{filter: `#`, qos: 0}}, []byte{0})
+	testMQTTExpectNothing(t, subr)
+
+	// Publish the retained message with QOS2, see that the `#` subscriber gets it.
+	testMQTTPublish(t, pubc, pubr, 2, false, true, pubTopic, 1, payload)
+	testMQTTCheckPubMsg(t, subc, subr, pubTopic, 0, payload)
+	testMQTTExpectNothing(t, subr)
+
+	// Now subscribe to the topic we want to test. We should get the retained
+	// message there.
+	testMQTTSub(t, 1, subc, subr, []*mqttFilter{{filter: subTopic, qos: QOS}}, []byte{QOS})
+	testMQTTCheckPubMsg(t, subc, subr, pubTopic, expectedFlags, payload)
+
+	testMQTTDisconnectEx(t, subc, nil, true)
+	subc.Close()
+}
+
 // Issue https://github.com/nats-io/nats-server/issues/3924
 // The MQTT Server MUST NOT match Topic Filters starting with a wildcard character (# or +),
 // with Topic Names beginning with a $ character [MQTT-4.7.2-1]
@@ -7632,4 +7736,35 @@ func BenchmarkMQTT_QoS1_PubSub2_256b_Payload(b *testing.B) {
 
 func BenchmarkMQTT_QoS1_PubSub2___1K_Payload(b *testing.B) {
 	mqttBenchPubQoS1(b, mqttPubSubj, sizedString(1024), 2)
+}
+
+func BenchmarkMQTTDoNotDeliverSubject(b *testing.B) {
+	buf := make([]byte, 32)
+	jsSubjects := make([]string, 100)
+	mqttSubjects := make([]string, 100)
+	noSubjects := make([]string, 1000)
+
+	for i := 0; i < 100; i++ {
+		_, _ = rand.Read(buf)
+		jsSubjects[i] = "$JS." + string(buf)
+		mqttSubjects[i] = "$MQTT." + string(buf)
+	}
+	for i := 0; i < 1000; i++ {
+		_, _ = rand.Read(buf)
+		noSubjects[i] = string(buf)
+	}
+	subjects := append(mqttSubjects, noSubjects...)
+	subjects = append(subjects, jsSubjects...)
+
+	b.Run("original", func(b *testing.B) {
+		mqttBenchMQTTDoNotDeliverSubject(b, subjects, mqttDoNotDeliverSubject)
+	})
+}
+
+func mqttBenchMQTTDoNotDeliverSubject(b *testing.B, subjects []string, f func(string) bool) {
+	for i := 0; i < b.N; i++ {
+		for _, subject := range subjects {
+			_ = f(subject)
+		}
+	}
 }
