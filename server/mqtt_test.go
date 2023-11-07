@@ -19,13 +19,12 @@ package server
 import (
 	"bufio"
 	"bytes"
-	"crypto/rand"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	mathrand "math/rand"
+	"math/rand"
 	"net"
 	"os"
 	"os/exec"
@@ -3012,7 +3011,7 @@ func TestMQTTClusterConnectDisconnectClean(t *testing.T) {
 	// specified.
 	N := 100
 	for n := 0; n < N; n++ {
-		testMQTTConnectDisconnect(t, cl.opts[mathrand.Intn(nServers)], clientID, true, false)
+		testMQTTConnectDisconnect(t, cl.opts[rand.Intn(nServers)], clientID, true, false)
 	}
 }
 
@@ -5909,7 +5908,7 @@ type chunkWriteConn struct {
 
 func (cwc *chunkWriteConn) Write(p []byte) (int, error) {
 	max := len(p)
-	cs := mathrand.Intn(max) + 1
+	cs := rand.Intn(max) + 1
 	if cs < max {
 		if pn, perr := cwc.Conn.Write(p[:cs]); perr != nil {
 			return pn, perr
@@ -7032,25 +7031,6 @@ func TestMQTTNewSubRetainedRace(t *testing.T) {
 	}
 }
 
-func TestMQTTDoNotDeliverSubject(t *testing.T) {
-	for _, tc := range []struct {
-		expected bool
-		subject  string
-	}{
-		{true, mqttJSARepliesPrefix + "foo"},
-		{true, mqttJSARepliesPrefix + "foo.bar"},
-		{true, "$JS.foo"},
-		{false, "$MQTTfoo"},
-		{false, "$MQTT.foo"},
-		{false, "$JSbar"},
-		{false, "abracadabra"},
-	} {
-		if got := mqttDoNotDeliverSubject(tc.subject); got != tc.expected {
-			t.Fatalf("Expected %v for %q, got %v", tc.expected, tc.subject, got)
-		}
-	}
-}
-
 func testMQTTNewSubRetainedRace(t *testing.T, o *Options, subTopic, pubTopic string, QOS byte) {
 	expectedFlags := (QOS << 1) | mqttPubFlagRetain
 	payload := []byte("testmsg")
@@ -7736,35 +7716,4 @@ func BenchmarkMQTT_QoS1_PubSub2_256b_Payload(b *testing.B) {
 
 func BenchmarkMQTT_QoS1_PubSub2___1K_Payload(b *testing.B) {
 	mqttBenchPubQoS1(b, mqttPubSubj, sizedString(1024), 2)
-}
-
-func BenchmarkMQTTDoNotDeliverSubject(b *testing.B) {
-	buf := make([]byte, 32)
-	jsSubjects := make([]string, 100)
-	mqttSubjects := make([]string, 100)
-	noSubjects := make([]string, 1000)
-
-	for i := 0; i < 100; i++ {
-		_, _ = rand.Read(buf)
-		jsSubjects[i] = "$JS." + string(buf)
-		mqttSubjects[i] = "$MQTT." + string(buf)
-	}
-	for i := 0; i < 1000; i++ {
-		_, _ = rand.Read(buf)
-		noSubjects[i] = string(buf)
-	}
-	subjects := append(mqttSubjects, noSubjects...)
-	subjects = append(subjects, jsSubjects...)
-
-	b.Run("original", func(b *testing.B) {
-		mqttBenchMQTTDoNotDeliverSubject(b, subjects, mqttDoNotDeliverSubject)
-	})
-}
-
-func mqttBenchMQTTDoNotDeliverSubject(b *testing.B, subjects []string, f func(string) bool) {
-	for i := 0; i < b.N; i++ {
-		for _, subject := range subjects {
-			_ = f(subject)
-		}
-	}
 }

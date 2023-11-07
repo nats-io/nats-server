@@ -2349,7 +2349,7 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 
 	// Only add in shadow subs if a new sub or qsub.
 	if osub == nil {
-		if err := c.addShadowSubscriptions(acc, sub); err != nil {
+		if err := c.addShadowSubscriptions(acc, sub, true); err != nil {
 			c.Errorf(err.Error())
 		}
 	}
