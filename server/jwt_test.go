@@ -4362,6 +4362,27 @@ func TestJwtTemplates(t *testing.T) {
 	require_Contains(t, err.Error(), "generated invalid subject")
 }
 
+func TestJwtTemplateGoodTagAfterBadTag(t *testing.T) {
+	kp, _ := nkeys.CreateAccount()
+	aPub, _ := kp.PublicKey()
+	ukp, _ := nkeys.CreateUser()
+	upub, _ := ukp.PublicKey()
+	uclaim := newJWTTestUserClaims()
+	uclaim.Name = "myname"
+	uclaim.Subject = upub
+	uclaim.SetScoped(true)
+	uclaim.IssuerAccount = aPub
+	uclaim.Tags.Add("foo:foo1")
+
+	lim := jwt.UserPermissionLimits{}
+	lim.Pub.Deny.Add("{{tag(NOT_THERE)}}.{{tag(foo)}}")
+	acc := &Account{nameTag: "accname", tags: []string{"acc:acc1", "acc:acc2"}}
+
+	_, err := processUserPermissionsTemplate(lim, uclaim, acc)
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "generated invalid subject")
+}
+
 func TestJWTLimitsTemplate(t *testing.T) {
 	kp, _ := nkeys.CreateAccount()
 	aPub, _ := kp.PublicKey()

@@ -4000,6 +4000,72 @@ func TestWSXForwardedFor(t *testing.T) {
 	}
 }
 
+type partialWriteConn struct {
+	net.Conn
+}
+
+func (c *partialWriteConn) Write(b []byte) (int, error) {
+	max := len(b)
+	if max > 0 {
+		max = rand.Intn(max)
+		if max == 0 {
+			max = 1
+		}
+	}
+	n, err := c.Conn.Write(b[:max])
+	if err == nil && max != len(b) {
+		err = io.ErrShortWrite
+	}
+	return n, err
+}
+
+func TestWSWithPartialWrite(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		websocket {
+			listen: "127.0.0.1:-1"
+			no_tls: true
+		}
+	`))
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc1 := natsConnect(t, fmt.Sprintf("ws://127.0.0.1:%d", o.Websocket.Port))
+	defer nc1.Close()
+
+	sub := natsSubSync(t, nc1, "foo")
+	sub.SetPendingLimits(-1, -1)
+	natsFlush(t, nc1)
+
+	nc2 := natsConnect(t, fmt.Sprintf("ws://127.0.0.1:%d", o.Websocket.Port))
+	defer nc2.Close()
+
+	// Replace websocket connections with ones that will produce short writes.
+	s.mu.RLock()
+	for _, c := range s.clients {
+		c.mu.Lock()
+		c.nc = &partialWriteConn{Conn: c.nc}
+		c.mu.Unlock()
+	}
+	s.mu.RUnlock()
+
+	var msgs [][]byte
+	for i := 0; i < 100; i++ {
+		msg := make([]byte, rand.Intn(10000)+10)
+		for j := 0; j < len(msg); j++ {
+			msg[j] = byte('A' + j%26)
+		}
+		msgs = append(msgs, msg)
+		natsPub(t, nc2, "foo", msg)
+	}
+	for i := 0; i < 100; i++ {
+		rmsg := natsNexMsg(t, sub, time.Second)
+		if !bytes.Equal(msgs[i], rmsg.Data) {
+			t.Fatalf("Expected message %q, got %q", msgs[i], rmsg.Data)
+		}
+	}
+}
+
 // ==================================================================
 // = Benchmark tests
 // ==================================================================
