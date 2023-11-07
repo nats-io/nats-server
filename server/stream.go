@@ -985,14 +985,6 @@ func (mset *stream) lastSeqAndCLFS() (uint64, uint64) {
 	return mset.lseq, mset.getCLFS()
 }
 
-func (mset *stream) clearCLFS() uint64 {
-	mset.clMu.Lock()
-	defer mset.clMu.Unlock()
-	clfs := mset.clfs
-	mset.clfs, mset.clseq = 0, 0
-	return clfs
-}
-
 func (mset *stream) getCLFS() uint64 {
 	mset.clMu.Lock()
 	defer mset.clMu.Unlock()
