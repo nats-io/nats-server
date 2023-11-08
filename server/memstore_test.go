@@ -15,6 +15,7 @@ package server
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"math/rand"
 	"reflect"
@@ -131,6 +132,39 @@ func TestMemStoreBytesLimit(t *testing.T) {
 	}
 	if state.LastSeq != toStore+10 {
 		t.Fatalf("Expected last sequence to be %d, got %d", toStore+10, state.LastSeq)
+	}
+}
+
+// https://github.com/nats-io/nats-server/issues/4771
+func TestMemStoreBytesLimitWithDiscardNew(t *testing.T) {
+	subj, msg := "tiny", make([]byte, 7)
+	storedMsgSize := memStoreMsgSize(subj, nil, msg)
+
+	toStore := uint64(3)
+	maxBytes := 100
+
+	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage, MaxBytes: int64(maxBytes), Discard: DiscardNew})
+	if err != nil {
+		t.Fatalf("Unexpected error creating store: %v", err)
+	}
+
+	// Now send 10 messages and check that bytes limit enforced.
+	for i := 0; i < 10; i++ {
+		_, _, err := ms.StoreMsg(subj, nil, msg)
+		if i < int(toStore) {
+			if err != nil {
+				t.Fatalf("Error storing msg: %v", err)
+			}
+		} else if !errors.Is(err, ErrMaxBytes) {
+			t.Fatalf("Storing msg should result in: %v", ErrMaxBytes)
+		}
+	}
+	state := ms.State()
+	if state.Msgs != toStore {
+		t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
+	}
+	if state.Bytes != storedMsgSize*toStore {
+		t.Fatalf("Expected bytes to be %d, got %d", storedMsgSize*toStore, state.Bytes)
 	}
 }
 
