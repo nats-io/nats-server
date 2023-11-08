@@ -4322,13 +4322,6 @@ func mqttDeliverMsgCbQoS0(sub *subscription, pc *client, _ *Account, subject, re
 // the message contains a NATS/MQTT header that indicates that this is a
 // published QoS1+ message.
 func mqttDeliverMsgCbQoS12(sub *subscription, pc *client, _ *Account, subject, reply string, rmsg []byte) {
-	// This is for consistency with mqttDeliverMsgCbQoS0. This callback does not
-	// present the risk of deadlocking with JS API calls since it is filtering
-	// on the header.
-	// if mqttDoNotDeliverSubject(subject) {
-	// 	return
-	// }
-
 	// Message on foo.bar is stored under $MQTT.msgs.foo.bar, so the subject has to be
 	// at least as long as the stream subject prefix "$MQTT.msgs.", and after removing
 	// the prefix, has to be at least 1 character long.
