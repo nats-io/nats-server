@@ -2225,7 +2225,10 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 			subject: subject,
 			sid:     subject,
 		}
-		if err := c.addShadowSubscriptions(c.acc, sub, false); err != nil {
+		c.mu.Lock()
+		acc := c.acc
+		c.mu.Unlock()
+		if err := c.addShadowSubscriptions(acc, sub, false); err != nil {
 			return err
 		}
 		// Best-effort loading the messages, logs on errors (to c.srv), loads
