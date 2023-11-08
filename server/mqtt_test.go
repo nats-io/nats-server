@@ -973,6 +973,16 @@ func testMQTTCheckConnAck(t testing.TB, r *mqttReader, rc byte, sessionPresent b
 	}
 }
 
+func testMQTTCheckPubAck(t testing.TB, r *mqttReader, packetType byte) {
+	t.Helper()
+	b, pl := testMQTTReadPacket(t, r)
+	pt := b & mqttPacketMask
+	if pt != packetType {
+		t.Fatalf("Expected %x, got %x", packetType, pt)
+	}
+	r.pos += pl
+}
+
 func TestMQTTRequiresJSEnabled(t *testing.T) {
 	o := testMQTTDefaultOptions()
 	acc := NewAccount("mqtt")
@@ -7001,7 +7011,7 @@ func TestMQTTSubjectMappingWithImportExport(t *testing.T) {
 	check(nc, "$MQTT.msgs.foo")
 }
 
-func TestMQTTNewSubRetainedRace(t *testing.T) {
+func TestMQTTSubRetainedRace(t *testing.T) {
 	o := testMQTTDefaultOptions()
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownServer(s)
@@ -7048,6 +7058,10 @@ func testMQTTNewSubRetainedRace(t *testing.T, o *Options, subTopic, pubTopic str
 	testMQTTSub(t, 1, subc, subr, []*mqttFilter{{filter: subTopic, qos: QOS}}, []byte{QOS})
 
 	testMQTTCheckPubMsg(t, subc, subr, pubTopic, expectedFlags, payload)
+	if QOS == 2 {
+		testMQTTCheckPubAck(t, subr, mqttPacketPubRel)
+		testMQTTSendPIPacket(mqttPacketPubComp, t, subc, 1)
+	}
 
 	testMQTTDisconnectEx(t, subc, nil, true)
 	subc.Close()
@@ -7086,6 +7100,10 @@ func testMQTTNewSubWithExistingTopLevelRetainedRace(t *testing.T, o *Options, su
 	// message there.
 	testMQTTSub(t, 1, subc, subr, []*mqttFilter{{filter: subTopic, qos: QOS}}, []byte{QOS})
 	testMQTTCheckPubMsg(t, subc, subr, pubTopic, expectedFlags, payload)
+	if QOS == 2 {
+		testMQTTCheckPubAck(t, subr, mqttPacketPubRel)
+		testMQTTSendPIPacket(mqttPacketPubComp, t, subc, 1)
+	}
 
 	testMQTTDisconnectEx(t, subc, nil, true)
 	subc.Close()
