@@ -6,7 +6,7 @@ vm:
 
 language: go
 go:
-  - "1.20.10"
+  - "1.20.11"
 
 go_import_path: github.com/nats-io/nats-server
 
