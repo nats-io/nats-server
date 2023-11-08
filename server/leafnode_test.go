@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"reflect"
 	"strings"
@@ -3007,6 +3009,48 @@ func TestLeafNodeWSNoMaskingRejected(t *testing.T) {
 
 	if !maskWrite {
 		t.Fatal("Leafnode remote connection should mask writes, it does not")
+	}
+}
+
+func TestLeafNodeWSSubPath(t *testing.T) {
+	o := testDefaultLeafNodeWSOptions()
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	lo := testDefaultRemoteLeafNodeWSOptions(t, o, false)
+	ln := RunServer(lo)
+	defer ln.Shutdown()
+
+	// Confirm that it can connect using the subpath.
+	checkLeafNodeConnected(t, s)
+	checkLeafNodeConnected(t, ln)
+
+	// Add another leafnode that tries to connect to the subpath
+	// but intercept the attempt for the test.
+	o2 := testDefaultLeafNodeWSOptions()
+	lo2 := testDefaultRemoteLeafNodeWSOptions(t, o2, false)
+	attempts := make(chan string, 2)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts <- r.URL.String()
+	}))
+	u, _ := url.Parse(fmt.Sprintf("%v/some/path", ts.URL))
+	u.Scheme = "ws"
+	lo2.LeafNode.Remotes = []*RemoteLeafOpts{
+		{
+			URLs: []*url.URL{u},
+		},
+	}
+	ln2 := RunServer(lo2)
+	defer ln2.Shutdown()
+
+	expected := "/some/path/leafnode"
+	select {
+	case got := <-attempts:
+		if got != expected {
+			t.Fatalf("Expected: %v, got: %v", expected, got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timed out waiting for leaf ws connect attempt")
 	}
 }
 

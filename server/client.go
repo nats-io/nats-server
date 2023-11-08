@@ -2741,7 +2741,7 @@ func (c *client) processSubEx(subject, queue, bsid []byte, cb msgHandler, noForw
 		return sub, nil
 	}
 
-	if err := c.addShadowSubscriptions(acc, sub); err != nil {
+	if err := c.addShadowSubscriptions(acc, sub, true); err != nil {
 		c.Errorf(err.Error())
 	}
 
@@ -2768,10 +2768,13 @@ type ime struct {
 	dyn         bool
 }
 
-// If the client's account has stream imports and there are matches for
-// this subscription's subject, then add shadow subscriptions in the
-// other accounts that export this subject.
-func (c *client) addShadowSubscriptions(acc *Account, sub *subscription) error {
+// If the client's account has stream imports and there are matches for this
+// subscription's subject, then add shadow subscriptions in the other accounts
+// that export this subject.
+//
+// enact=false allows MQTT clients to get the list of shadow subscriptions
+// without enacting them, in order to first obtain matching "retained" messages.
+func (c *client) addShadowSubscriptions(acc *Account, sub *subscription, enact bool) error {
 	if acc == nil {
 		return ErrMissingAccount
 	}
@@ -2874,7 +2877,7 @@ func (c *client) addShadowSubscriptions(acc *Account, sub *subscription) error {
 	for i := 0; i < len(ims); i++ {
 		ime := &ims[i]
 		// We will create a shadow subscription.
-		nsub, err := c.addShadowSub(sub, ime)
+		nsub, err := c.addShadowSub(sub, ime, enact)
 		if err != nil {
 			return err
 		}
@@ -2891,7 +2894,7 @@ func (c *client) addShadowSubscriptions(acc *Account, sub *subscription) error {
 }
 
 // Add in the shadow subscription.
-func (c *client) addShadowSub(sub *subscription, ime *ime) (*subscription, error) {
+func (c *client) addShadowSub(sub *subscription, ime *ime, enact bool) (*subscription, error) {
 	im := ime.im
 	nsub := *sub // copy
 	nsub.im = im
@@ -2915,6 +2918,11 @@ func (c *client) addShadowSub(sub *subscription, ime *ime) (*subscription, error
 		}
 	}
 	// Else use original subject
+
+	if !enact {
+		return &nsub, nil
+	}
+
 	c.Debugf("Creating import subscription on %q from account %q", nsub.subject, im.acc.Name)
 
 	if err := im.acc.sl.Insert(&nsub); err != nil {
@@ -5034,7 +5042,7 @@ func (c *client) processSubsOnConfigReload(awcsti map[string]struct{}) {
 		oldShadows := sub.shadow
 		sub.shadow = nil
 		c.mu.Unlock()
-		c.addShadowSubscriptions(acc, sub)
+		c.addShadowSubscriptions(acc, sub, true)
 		for _, nsub := range oldShadows {
 			nsub.im.acc.sl.Remove(nsub)
 		}

@@ -575,6 +575,39 @@ func TestFileStoreBytesLimit(t *testing.T) {
 	})
 }
 
+// https://github.com/nats-io/nats-server/issues/4771
+func TestFileStoreBytesLimitWithDiscardNew(t *testing.T) {
+	subj, msg := "tiny", make([]byte, 7)
+	storedMsgSize := fileStoreMsgSize(subj, nil, msg)
+
+	toStore := uint64(2)
+	maxBytes := 100
+
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fs, err := newFileStore(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage, MaxBytes: int64(maxBytes), Discard: DiscardNew})
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		for i := 0; i < 10; i++ {
+			_, _, err := fs.StoreMsg(subj, nil, msg)
+			if i < int(toStore) {
+				if err != nil {
+					t.Fatalf("Error storing msg: %v", err)
+				}
+			} else if !errors.Is(err, ErrMaxBytes) {
+				t.Fatalf("Storing msg should result in: %v", ErrMaxBytes)
+			}
+		}
+		state := fs.State()
+		if state.Msgs != toStore {
+			t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
+		}
+		if state.Bytes != storedMsgSize*toStore {
+			t.Fatalf("Expected bytes to be %d, got %d", storedMsgSize*toStore, state.Bytes)
+		}
+	})
+}
+
 func TestFileStoreAgeLimit(t *testing.T) {
 	maxAge := 250 * time.Millisecond
 
