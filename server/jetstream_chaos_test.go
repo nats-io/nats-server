@@ -864,11 +864,11 @@ const (
 )
 
 // Creates KV store (a.k.a. bucket).
-func createBucketForKvChaosTest(t *testing.T, c *cluster, replicas int) {
+func createBucketForKvChaosTest(t *testing.T, c *cluster, replicas int, allowDirectGet bool) {
 	t.Helper()
 
-	pubNc, pubJs := jsClientConnectCluster(t, c)
-	defer pubNc.Close()
+	nc, js := jsClientConnectCluster(t, c)
+	defer nc.Close()
 
 	config := nats.KeyValueConfig{
 		Bucket:      chaosKvTestsBucketName,
@@ -876,9 +876,29 @@ func createBucketForKvChaosTest(t *testing.T, c *cluster, replicas int) {
 		Description: "Test bucket",
 	}
 
-	kvs, err := pubJs.CreateKeyValue(&config)
+	kvs, err := js.CreateKeyValue(&config)
 	if err != nil {
 		t.Fatalf("Error creating bucket: %v", err)
+	}
+
+	if !allowDirectGet {
+		// Manually disable DirectGet on underlying stream, routing get request through the leader
+		streamInfo, err := js.StreamInfo("KV_" + chaosKvTestsBucketName)
+		if err != nil {
+			t.Fatalf("Failed to get stream info: %s", err)
+		}
+		streamInfo.Config.AllowDirect = false
+		streamInfo, err = js.UpdateStream(&streamInfo.Config)
+		if err != nil {
+			t.Fatalf("Failed to update KV stream: %s", err)
+		} else if streamInfo.Config.AllowDirect {
+			t.Fatalf("Failed to disable 'DirectGet'")
+		}
+
+		kvs, err = js.KeyValue(chaosKvTestsBucketName)
+		if err != nil {
+			t.Fatalf("Failed reopen KV handle: %s", err)
+		}
 	}
 
 	status, err := kvs.Status()
@@ -897,12 +917,12 @@ func TestJetStreamChaosKvPutGet(t *testing.T) {
 	const clusterSize = 3
 	const replicas = 3
 	const key = "key"
-	const staleReadsOk = true // Set to false to check for violations of 'read committed' consistency
+	const allowDirectGet = true // Set to false to check for violations of 'read committed' consistency
 
 	c := createJetStreamClusterExplicit(t, chaosKvTestsClusterName, clusterSize)
 	defer c.shutdown()
 
-	createBucketForKvChaosTest(t, c, replicas)
+	createBucketForKvChaosTest(t, c, replicas, allowDirectGet)
 
 	chaos := createClusterChaosMonkeyController(
 		t,
@@ -978,7 +998,7 @@ putGetLoop:
 
 		if putRevision > getRevision {
 			// Stale read, violates 'read committed' consistency criteria
-			if !staleReadsOk {
+			if !allowDirectGet {
 				t.Fatalf("PUT value %s (rev: %d) then read value %s (rev: %d)", putValue, putRevision, getValue, getRevision)
 			} else {
 				staleReadsCount += 1
@@ -1011,11 +1031,12 @@ func TestJetStreamChaosKvPutGetWithRetries(t *testing.T) {
 	const clusterSize = 3
 	const replicas = 3
 	const key = "key"
+	const allowDirectGet = true
 
 	c := createJetStreamClusterExplicit(t, chaosKvTestsClusterName, clusterSize)
 	defer c.shutdown()
 
-	createBucketForKvChaosTest(t, c, replicas)
+	createBucketForKvChaosTest(t, c, replicas, allowDirectGet)
 
 	chaos := createClusterChaosMonkeyController(
 		t,
@@ -1139,11 +1160,12 @@ func TestJetStreamChaosKvCAS(t *testing.T) {
 	const replicas = 3
 	const numKeys = 15
 	const numClients = 5
+	const allowDirectGet = true
 
 	c := createJetStreamClusterExplicit(t, chaosKvTestsClusterName, clusterSize)
 	defer c.shutdown()
 
-	createBucketForKvChaosTest(t, c, replicas)
+	createBucketForKvChaosTest(t, c, replicas, allowDirectGet)
 
 	chaos := createClusterChaosMonkeyController(
 		t,
