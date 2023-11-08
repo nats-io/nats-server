@@ -3043,7 +3043,7 @@ func TestLeafNodeWSSubPath(t *testing.T) {
 	ln2 := RunServer(lo2)
 	defer ln2.Shutdown()
 
-	expected := "/leafnode/some/path"
+	expected := "/some/path/leafnode"
 	select {
 	case got := <-attempts:
 		if got != expected {

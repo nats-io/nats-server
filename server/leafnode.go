@@ -2790,9 +2790,11 @@ func (c *client) leafNodeSolicitWSConnection(opts *Options, rURL *url.URL, remot
 		if curPath[0] == '/' {
 			curPath = curPath[1:]
 		}
-		lpath = path.Join(lpath, curPath)
+		lpath = path.Join(curPath, lpath)
+	} else {
+		lpath = lpath[1:]
 	}
-	ustr := fmt.Sprintf("%s://%s%s", scheme, rURL.Host, lpath)
+	ustr := fmt.Sprintf("%s://%s/%s", scheme, rURL.Host, lpath)
 	u, _ := url.Parse(ustr)
 	req := &http.Request{
 		Method:     "GET",
