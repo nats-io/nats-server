@@ -2165,6 +2165,27 @@ func (as *mqttAccountSessionManager) removeSession(sess *mqttSession, lock bool)
 	}
 }
 
+// Helpers that sets the sub's mqtt fields and possibly serialize
+// (pre-loaded) retained messages.
+// Account manager and session lock held.
+func (sess *mqttSession) processSub(c *client, subject, sid []byte, isReserved bool, qos byte, jsDurName string, h msgHandler) (*subscription, error) {
+	sub, err := c.processSub(subject, nil, sid, h, false)
+
+	if err != nil {
+		// c.processSub already called c.Errorf(), so no need here.
+		return nil, err
+	}
+	for _, ss := range append([]*subscription{sub}, sub.shadow...) {
+		if ss.mqtt == nil {
+			ss.mqtt = &mqttSub{}
+		}
+		ss.mqtt.qos = qos
+		ss.mqtt.reserved = isReserved
+		ss.mqtt.jsDur = jsDurName
+	}
+	return sub, nil
+}
+
 // Process subscriptions for the given session/client.
 //
 // When `fromSubProto` is false, it means that this is invoked from the CONNECT
@@ -2271,39 +2292,6 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 		sess.cons[sid] = cc
 	}
 
-	// Helpers that sets the sub's mqtt fields and possibly serialize
-	// (pre-loaded) retained messages. Assumes account manager and session lock
-	// held.
-	initSub := func(sub *subscription, qos byte) {
-		if sub.mqtt == nil {
-			sub.mqtt = &mqttSub{}
-		}
-		sub.mqtt.qos = qos
-		sub.mqtt.reserved = isMQTTReservedSubscription(string(sub.subject))
-	}
-
-	lockAndInitializeSub := func(subject, sid []byte, qos byte, h msgHandler) (*subscription, error) {
-		as.mu.Lock()
-		defer as.mu.Unlock()
-		sess.mu.Lock()
-		defer sess.mu.Unlock()
-
-		sub, err := c.processSub(subject, nil, sid, h, false)
-
-		if err != nil {
-			// c.processSub already called c.Errorf(), so no need here.
-			return nil, err
-		}
-		initSub(sub, qos)
-		for _, ss := range sub.shadow {
-			initSub(ss, qos)
-		}
-		if fromSubProto {
-			as.serializeRetainedMsgsForSub(rms, sess, c, sub, trace)
-		}
-		return sub, nil
-	}
-
 	var err error
 	subs := make([]*subscription, 0, len(filters))
 	for _, f := range filters {
@@ -2322,7 +2310,15 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 
 		// Note that if a subscription already exists on this subject, the
 		// existing sub is returned. Need to update the qos.
-		sub, err := lockAndInitializeSub(bsubject, bsid, f.qos, mqttDeliverMsgCbQoS0)
+		as.mu.Lock()
+		sess.mu.Lock()
+		sub, err := sess.processSub(c, bsubject, bsid,
+			isMQTTReservedSubscription(subject), f.qos, _EMPTY_, mqttDeliverMsgCbQoS0)
+		if err == nil {
+			as.serializeRetainedMsgsForSub(rms, sess, c, sub, trace)
+		}
+		sess.mu.Unlock()
+		as.mu.Unlock()
 		if err != nil {
 			f.qos = mqttSubAckFailure
 			sess.cleanupFailedSub(c, sub, jscons, jssub)
@@ -2347,7 +2343,15 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 			var fwcsub *subscription
 
 			// See note above about existing subscription.
-			fwcsub, err = lockAndInitializeSub([]byte(fwcsubject), []byte(fwcsid), f.qos, mqttDeliverMsgCbQoS0)
+			as.mu.Lock()
+			sess.mu.Lock()
+			fwcsub, err = sess.processSub(c, []byte(fwcsubject), []byte(fwcsid),
+				isMQTTReservedSubscription(subject), f.qos, _EMPTY_, mqttDeliverMsgCbQoS0)
+			if err == nil {
+				as.serializeRetainedMsgsForSub(rms, sess, c, fwcsub, trace)
+			}
+			sess.mu.Unlock()
+			as.mu.Unlock()
 			if err != nil {
 				// c.processSub already called c.Errorf(), so no need here.
 				f.qos = mqttSubAckFailure
@@ -4438,11 +4442,11 @@ func mqttIsReservedSub(sub *subscription, subject string) bool {
 
 // Check if a sub is a reserved wildcard. E.g. '#', '*', or '*/" prefix.
 func isMQTTReservedSubscription(subject string) bool {
-	if len(subject) == 1 && subject[0] == fwc || subject[0] == pwc {
+	if len(subject) == 1 && (subject[0] == fwc || subject[0] == pwc) {
 		return true
 	}
 	// Match "*.<>"
-	if len(subject) > 1 && subject[0] == pwc && subject[1] == btsep {
+	if len(subject) > 1 && (subject[0] == pwc && subject[1] == btsep) {
 		return true
 	}
 	return false
@@ -4556,9 +4560,6 @@ func (sess *mqttSession) cleanupFailedSub(c *client, sub *subscription, cc *Cons
 
 // Make sure we are set up to deliver PUBREL messages to this QoS2-subscribed
 // session.
-//
-// Locks the session for the entire duration. There is no deadlock potential
-// because we subscribe mqttDeliverPubRelCb to the delivery subject only.
 func (sess *mqttSession) ensurePubRelConsumerSubscription(c *client) error {
 	opts := c.srv.getOpts()
 	ackWait := opts.MQTT.AckWait
@@ -4635,15 +4636,22 @@ func (sess *mqttSession) ensurePubRelConsumerSubscription(c *client) error {
 // When invoked with a QoS of 0, looks for an existing JS durable consumer for
 // the given sid and if one is found, delete the JS durable consumer and unsub
 // the NATS subscription on the delivery subject.
+//
 // With a QoS > 0, creates or update the existing JS durable consumer along with
 // its NATS subscription on a delivery subject.
 //
-// Lock not held on entry, but session is in the locked map.
+// Session lock is acquired and released as needed. Session is in the locked
+// map.
 func (sess *mqttSession) processJSConsumer(c *client, subject, sid string,
 	qos byte, fromSubProto bool) (*ConsumerConfig, *subscription, error) {
 
-	// Check if we are already a JS consumer for this SID.
+	sess.mu.Lock()
 	cc, exists := sess.cons[sid]
+	tmaxack := sess.tmaxack
+	idHash := sess.idHash
+	sess.mu.Unlock()
+
+	// Check if we are already a JS consumer for this SID.
 	if exists {
 		// If current QoS is 0, it means that we need to delete the existing
 		// one (that was QoS > 0)
@@ -4652,7 +4660,11 @@ func (sess *mqttSession) processJSConsumer(c *client, subject, sid string,
 			// the form: mqttSubPrefix + <nuid>. It is also used as the sid
 			// for the NATS subscription, so use that for the lookup.
 			sub := c.subs[cc.DeliverSubject]
+
+			sess.mu.Lock()
 			delete(sess.cons, sid)
+			sess.mu.Unlock()
+
 			sess.deleteConsumer(cc)
 			if sub != nil {
 				c.processUnsub(sub.sid)
@@ -4688,12 +4700,12 @@ func (sess *mqttSession) processJSConsumer(c *client, subject, sid string,
 		}
 
 		// Check that the limit of subs' maxAckPending are not going over the limit
-		if after := sess.tmaxack + maxAckPending; after > mqttMaxAckTotalLimit {
+		if after := tmaxack + maxAckPending; after > mqttMaxAckTotalLimit {
 			return nil, nil, fmt.Errorf("max_ack_pending for all consumers would be %v which exceeds the limit of %v",
 				after, mqttMaxAckTotalLimit)
 		}
 
-		durName := sess.idHash + "_" + nuid.Next()
+		durName := idHash + "_" + nuid.Next()
 		ccr := &CreateConsumerRequest{
 			Stream: mqttStreamName,
 			Config: ConsumerConfig{
@@ -4711,29 +4723,28 @@ func (sess *mqttSession) processJSConsumer(c *client, subject, sid string,
 			ccr.Config.InactiveThreshold = opts.MQTT.ConsumerInactiveThreshold
 		}
 		if _, err := sess.jsa.createConsumer(ccr); err != nil {
+			// <>/<> FIXME handle already exists error
 			c.Errorf("Unable to add JetStream consumer for subscription on %q: err=%v", subject, err)
 			return nil, nil, err
 		}
 		cc = &ccr.Config
-		sess.tmaxack += maxAckPending
+
+		tmaxack += maxAckPending
 	}
+
 	// This is an internal subscription on subject like "$MQTT.sub.<nuid>" that is setup
 	// for the JS durable's deliver subject.
 	sess.mu.Lock()
-	sub, err := c.processSub([]byte(inbox), nil, []byte(inbox), mqttDeliverMsgCbQoS12, false)
+	sess.tmaxack = tmaxack
+	sub, err := sess.processSub(c, []byte(inbox), []byte(inbox),
+		isMQTTReservedSubscription(subject), qos, cc.Durable, mqttDeliverMsgCbQoS12)
+	sess.mu.Unlock()
+
 	if err != nil {
-		sess.mu.Unlock()
 		sess.deleteConsumer(cc)
 		c.Errorf("Unable to create subscription for JetStream consumer on %q: %v", subject, err)
 		return nil, nil, err
 	}
-	if sub.mqtt == nil {
-		sub.mqtt = &mqttSub{}
-	}
-	sub.mqtt.qos = qos
-	sub.mqtt.jsDur = cc.Durable
-	sub.mqtt.reserved = isMQTTReservedSubscription(subject)
-	sess.mu.Unlock()
 	return cc, sub, nil
 }
 
