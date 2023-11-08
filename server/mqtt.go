@@ -2166,7 +2166,7 @@ func (as *mqttAccountSessionManager) removeSession(sess *mqttSession, lock bool)
 
 // Helpers that sets the sub's mqtt fields and possibly serialize
 // (pre-loaded) retained messages.
-// Account manager and session lock held.
+// Session lock held on entry.
 func (sess *mqttSession) processSub(c *client, subject, sid []byte, isReserved bool, qos byte, jsDurName string, h msgHandler, initShadow bool) (*subscription, error) {
 	sub, err := c.processSub(subject, nil, sid, h, false)
 	if err != nil {
