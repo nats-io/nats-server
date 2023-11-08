@@ -4729,7 +4729,6 @@ func (sess *mqttSession) processJSConsumer(c *client, subject, sid string,
 			ccr.Config.InactiveThreshold = opts.MQTT.ConsumerInactiveThreshold
 		}
 		if _, err := sess.jsa.createConsumer(ccr); err != nil {
-			// <>/<> FIXME handle already exists error
 			c.Errorf("Unable to add JetStream consumer for subscription on %q: err=%v", subject, err)
 			return nil, nil, err
 		}
