@@ -4584,6 +4584,7 @@ func (sess *mqttSession) ensurePubRelConsumerSubscription(c *client) error {
 	pubRelConsumer := sess.pubRelConsumer
 	tmaxack := sess.tmaxack
 	idHash := sess.idHash
+	id := sess.id
 	sess.mu.Unlock()
 
 	// Subscribe before the consumer is created so we don't loose any messages.
@@ -4622,7 +4623,7 @@ func (sess *mqttSession) ensurePubRelConsumerSubscription(c *client) error {
 			ccr.Config.InactiveThreshold = opts.MQTT.ConsumerInactiveThreshold
 		}
 		if _, err := sess.jsa.createConsumer(ccr); err != nil {
-			c.Errorf("Unable to add JetStream consumer for PUBREL for client %q: err=%v", sess.id, err)
+			c.Errorf("Unable to add JetStream consumer for PUBREL for client %q: err=%v", id, err)
 			return err
 		}
 		pubRelConsumer = &ccr.Config
