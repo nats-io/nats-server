@@ -520,7 +520,8 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		}
 	}
 
-	fs.syncTmr = time.AfterFunc(fs.fcfg.SyncInterval, fs.syncBlocks)
+	// Setup our sync timer.
+	fs.setSyncTimer()
 
 	// Spin up the go routine that will write out or full state stream index.
 	go fs.flushStreamStateLoop(fs.fch, fs.qch, fs.fsld)
@@ -4817,7 +4818,7 @@ func (fs *fileStore) syncBlocks() {
 	lmb := fs.lmb
 	fs.mu.RUnlock()
 
-	var markDirty bool
+	var markDirty, needsCompact bool
 	for _, mb := range blks {
 		// Do actual sync. Hold lock for consistency.
 		mb.mu.Lock()
@@ -4832,7 +4833,7 @@ func (fs *fileStore) syncBlocks() {
 		// Check if we should compact here as well.
 		// Do not compact last mb.
 		if mb != lmb && mb.ensureRawBytesLoaded() == nil && mb.rbytes > mb.bytes {
-			mb.compact()
+			needsCompact = true
 			markDirty = true
 		}
 
@@ -4843,6 +4844,16 @@ func (fs *fileStore) syncBlocks() {
 			mb.flushPendingMsgsLocked()
 		}
 		mb.mu.Unlock()
+
+		// Check if we should compact here.
+		// Need to hold fs lock in case we reference psim when loading in the mb.
+		if needsCompact {
+			fs.mu.RLock()
+			mb.mu.Lock()
+			mb.compact()
+			mb.mu.Unlock()
+			fs.mu.RUnlock()
+		}
 
 		// Check if we need to sync.
 		// This is done not holding any locks.
@@ -4861,7 +4872,11 @@ func (fs *fileStore) syncBlocks() {
 	}
 
 	fs.mu.Lock()
-	fs.syncTmr = time.AfterFunc(fs.fcfg.SyncInterval, fs.syncBlocks)
+	if fs.closed {
+		fs.mu.Unlock()
+		return
+	}
+	fs.setSyncTimer()
 	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile)
 	syncAlways := fs.fcfg.SyncAlways
 	if markDirty {
@@ -6942,6 +6957,15 @@ func (fs *fileStore) Delete() error {
 		}
 	}
 	return err
+}
+
+// Lock should be held.
+func (fs *fileStore) setSyncTimer() {
+	if fs.syncTmr != nil {
+		fs.syncTmr.Reset(fs.fcfg.SyncInterval)
+	} else {
+		fs.syncTmr = time.AfterFunc(fs.fcfg.SyncInterval, fs.syncBlocks)
+	}
 }
 
 // Lock should be held.
