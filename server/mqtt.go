@@ -4733,7 +4733,6 @@ func (sess *mqttSession) processJSConsumer(c *client, subject, sid string,
 			return nil, nil, err
 		}
 		cc = &ccr.Config
-
 		tmaxack += maxAckPending
 	}
 
