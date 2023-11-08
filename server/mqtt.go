@@ -2297,6 +2297,14 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 		sess.cons[sid] = cc
 	}
 
+	serializeRMS := func(sub *subscription) {
+		if fromSubProto {
+			for _, ss := range append([]*subscription{sub}, sub.shadow...) {
+				as.serializeRetainedMsgsForSub(rms, sess, c, ss, trace)
+			}
+		}
+	}
+
 	var err error
 	subs := make([]*subscription, 0, len(filters))
 	for _, f := range filters {
@@ -2320,7 +2328,7 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 		sub, err := sess.processSub(c, bsubject, bsid,
 			isMQTTReservedSubscription(subject), f.qos, _EMPTY_, mqttDeliverMsgCbQoS0, true)
 		if err == nil {
-			as.serializeRetainedMsgsForSub(rms, sess, c, sub, trace)
+			serializeRMS(sub)
 		}
 		sess.mu.Unlock()
 		as.mu.Unlock()
@@ -2353,7 +2361,7 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 			fwcsub, err = sess.processSub(c, []byte(fwcsubject), []byte(fwcsid),
 				isMQTTReservedSubscription(subject), f.qos, _EMPTY_, mqttDeliverMsgCbQoS0, true)
 			if err == nil {
-				as.serializeRetainedMsgsForSub(rms, sess, c, fwcsub, trace)
+				serializeRMS(fwcsub)
 			}
 			sess.mu.Unlock()
 			as.mu.Unlock()
