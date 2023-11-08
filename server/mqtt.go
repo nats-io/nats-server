@@ -2167,14 +2167,17 @@ func (as *mqttAccountSessionManager) removeSession(sess *mqttSession, lock bool)
 // Helpers that sets the sub's mqtt fields and possibly serialize
 // (pre-loaded) retained messages.
 // Account manager and session lock held.
-func (sess *mqttSession) processSub(c *client, subject, sid []byte, isReserved bool, qos byte, jsDurName string, h msgHandler) (*subscription, error) {
+func (sess *mqttSession) processSub(c *client, subject, sid []byte, isReserved bool, qos byte, jsDurName string, h msgHandler, initShadow bool) (*subscription, error) {
 	sub, err := c.processSub(subject, nil, sid, h, false)
-
 	if err != nil {
 		// c.processSub already called c.Errorf(), so no need here.
 		return nil, err
 	}
-	for _, ss := range append([]*subscription{sub}, sub.shadow...) {
+	subs := []*subscription{sub}
+	if initShadow {
+		subs = append(subs, sub.shadow...)
+	}
+	for _, ss := range subs {
 		if ss.mqtt == nil {
 			ss.mqtt = &mqttSub{}
 		}
@@ -2315,7 +2318,7 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 		as.mu.Lock()
 		sess.mu.Lock()
 		sub, err := sess.processSub(c, bsubject, bsid,
-			isMQTTReservedSubscription(subject), f.qos, _EMPTY_, mqttDeliverMsgCbQoS0)
+			isMQTTReservedSubscription(subject), f.qos, _EMPTY_, mqttDeliverMsgCbQoS0, true)
 		if err == nil {
 			as.serializeRetainedMsgsForSub(rms, sess, c, sub, trace)
 		}
@@ -2348,7 +2351,7 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 			as.mu.Lock()
 			sess.mu.Lock()
 			fwcsub, err = sess.processSub(c, []byte(fwcsubject), []byte(fwcsid),
-				isMQTTReservedSubscription(subject), f.qos, _EMPTY_, mqttDeliverMsgCbQoS0)
+				isMQTTReservedSubscription(subject), f.qos, _EMPTY_, mqttDeliverMsgCbQoS0, true)
 			if err == nil {
 				as.serializeRetainedMsgsForSub(rms, sess, c, fwcsub, trace)
 			}
@@ -4733,7 +4736,7 @@ func (sess *mqttSession) processJSConsumer(c *client, subject, sid string,
 	sess.mu.Lock()
 	sess.tmaxack = tmaxack
 	sub, err := sess.processSub(c, []byte(inbox), []byte(inbox),
-		isMQTTReservedSubscription(subject), qos, cc.Durable, mqttDeliverMsgCbQoS12)
+		isMQTTReservedSubscription(subject), qos, cc.Durable, mqttDeliverMsgCbQoS12, false)
 	sess.mu.Unlock()
 
 	if err != nil {
