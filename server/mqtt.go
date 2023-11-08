@@ -2037,28 +2037,27 @@ func (as *mqttAccountSessionManager) handleRetainedMsg(key string, rm *mqttRetai
 	if as.retmsgs == nil {
 		as.retmsgs = make(map[string]*mqttRetainedMsgRef)
 		as.sl = NewSublistWithCache()
-	}
-
-	// Check if we already had one retained message. If so, update the existing one.
-	if erm, exists := as.retmsgs[key]; exists {
-		// If the new sequence is below the floor or the existing one,
-		// then ignore the new one.
-		if rm.sseq <= erm.sseq || rm.sseq <= erm.floor {
+	} else {
+		// Check if we already had one retained message. If so, update the existing one.
+		if erm, exists := as.retmsgs[key]; exists {
+			// If the new sequence is below the floor or the existing one,
+			// then ignore the new one.
+			if rm.sseq <= erm.sseq || rm.sseq <= erm.floor {
+				return
+			}
+			// Capture existing sequence number so we can return it as the old sequence.
+			erm.sseq = rm.sseq
+			// Clear the floor
+			erm.floor = 0
+			// If sub is nil, it means that it was removed from sublist following a
+			// network delete. So need to add it now.
+			if erm.sub == nil {
+				erm.sub = &subscription{subject: []byte(key)}
+				as.sl.Insert(erm.sub)
+			}
 			return
 		}
-		// Capture existing sequence number so we can return it as the old sequence.
-		erm.sseq = rm.sseq
-		// Clear the floor
-		erm.floor = 0
-		// If sub is nil, it means that it was removed from sublist following a
-		// network delete. So need to add it now.
-		if erm.sub == nil {
-			erm.sub = &subscription{subject: []byte(key)}
-			as.sl.Insert(erm.sub)
-		}
-		return
 	}
-
 	rm.sub = &subscription{subject: []byte(key)}
 	as.retmsgs[key] = rm
 	as.sl.Insert(rm.sub)
