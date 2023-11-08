@@ -2473,6 +2473,7 @@ func (as *mqttAccountSessionManager) loadRetainedMessagesForSubject(rms map[stri
 		var rm mqttRetainedMsg
 		if err := json.Unmarshal(jsm.Data, &rm); err != nil {
 			log.Warnf("failed to decode retained message for subject %q: %v", loadSubject, err)
+			continue
 		}
 		rms[subject] = &rm
 	}
