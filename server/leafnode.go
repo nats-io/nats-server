@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"reflect"
 	"regexp"
 	"runtime"
@@ -2784,14 +2785,14 @@ func (c *client) leafNodeSolicitWSConnection(opts *Options, rURL *url.URL, remot
 	// create a LEAF connection, not a CLIENT.
 	// In case we use the user's URL path in the future, make sure we append the user's
 	// path to our `/leafnode` path.
-	path := leafNodeWSPath
+	lpath := leafNodeWSPath
 	if curPath := rURL.EscapedPath(); curPath != _EMPTY_ {
 		if curPath[0] == '/' {
 			curPath = curPath[1:]
 		}
-		path += curPath
+		lpath = path.Join(lpath, curPath)
 	}
-	ustr := fmt.Sprintf("%s://%s%s", scheme, rURL.Host, path)
+	ustr := fmt.Sprintf("%s://%s%s", scheme, rURL.Host, lpath)
 	u, _ := url.Parse(ustr)
 	req := &http.Request{
 		Method:     "GET",
