@@ -693,9 +693,9 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 	kind := CLIENT
 	if r.URL != nil {
 		ep := r.URL.EscapedPath()
-		if strings.HasPrefix(ep, leafNodeWSPath) {
+		if strings.HasSuffix(ep, leafNodeWSPath) {
 			kind = LEAF
-		} else if strings.HasPrefix(ep, mqttWSPath) {
+		} else if strings.HasSuffix(ep, mqttWSPath) {
 			kind = MQTT
 		}
 	}
