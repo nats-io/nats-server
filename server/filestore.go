@@ -187,6 +187,7 @@ type fileStore struct {
 	cfs         []ConsumerStore
 	sips        int
 	dirty       int
+	closing     bool
 	closed      bool
 	fip         bool
 	receivedAny bool
@@ -7207,10 +7208,14 @@ func (fs *fileStore) writeFullState() error {
 // Stop the current filestore.
 func (fs *fileStore) Stop() error {
 	fs.mu.Lock()
-	if fs.closed {
+	if fs.closed || fs.closing {
 		fs.mu.Unlock()
 		return ErrStoreClosed
 	}
+
+	// Mark as closing. Do before releasing the lock to writeFullState
+	// so we don't end up with this function running more than once.
+	fs.closing = true
 
 	fs.checkAndFlushAllBlocks()
 	fs.closeAllMsgBlocks(false)
@@ -7219,7 +7224,10 @@ func (fs *fileStore) Stop() error {
 	fs.cancelAgeChk()
 
 	// Release the state flusher loop.
-	close(fs.qch)
+	if fs.qch != nil {
+		close(fs.qch)
+		fs.qch = nil
+	}
 
 	// Wait for the state flush loop to exit.
 	fsld := fs.fsld
@@ -7229,7 +7237,8 @@ func (fs *fileStore) Stop() error {
 	fs.writeFullState()
 	fs.mu.Lock()
 
-	// Mark as closed.
+	// Mark as closed. Last message block needs to be cleared after
+	// writeFullState has completed.
 	fs.closed = true
 	fs.lmb = nil
 
