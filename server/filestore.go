@@ -7212,6 +7212,10 @@ func (fs *fileStore) Stop() error {
 		return ErrStoreClosed
 	}
 
+	// Mark as closed. Do before releasing the lock to writeFullState
+	// so we don't end up with this function running more than once.
+	fs.closed = true
+
 	fs.checkAndFlushAllBlocks()
 	fs.closeAllMsgBlocks(false)
 
@@ -7229,8 +7233,7 @@ func (fs *fileStore) Stop() error {
 	fs.writeFullState()
 	fs.mu.Lock()
 
-	// Mark as closed.
-	fs.closed = true
+	// Needs to be cleared after writeFullState has completed.
 	fs.lmb = nil
 
 	// We should update the upper usage layer on a stop.
