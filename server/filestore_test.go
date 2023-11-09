@@ -6509,7 +6509,6 @@ func TestFileStoreLargeFullStateMetaCleanup(t *testing.T) {
 		}
 		return nil
 	})
-
 }
 
 func TestFileStoreIndexDBExistsAfterShutdown(t *testing.T) {
