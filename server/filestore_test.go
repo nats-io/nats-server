@@ -6509,7 +6509,37 @@ func TestFileStoreLargeFullStateMetaCleanup(t *testing.T) {
 		}
 		return nil
 	})
+}
 
+func TestFileStoreIndexDBExistsAfterShutdown(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd},
+		StreamConfig{Name: "zzz", Subjects: []string{">"}, Storage: FileStorage})
+	require_NoError(t, err)
+
+	subj, _ := "foo.bar.baz", bytes.Repeat([]byte("ABC"), 33) // ~100bytes
+	for i := 0; i < 1000; i++ {
+		fs.StoreMsg(subj, nil, nil)
+	}
+
+	idxFile := filepath.Join(sd, msgDir, streamStreamStateFile)
+
+	fs.mu.Lock()
+	fs.dirty = 1
+	if err := os.Remove(idxFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	fs.mu.Unlock()
+
+	fs.Stop()
+
+	checkFor(t, time.Second, 50*time.Millisecond, func() error {
+		if _, err := os.Stat(idxFile); err != nil {
+			return fmt.Errorf("%q doesn't exist", idxFile)
+		}
+		return nil
+	})
 }
 
 ///////////////////////////////////////////////////////////////////////////

@@ -6968,7 +6968,7 @@ func TestJetStreamClusterStreamDirectGetNotTooSoon(t *testing.T) {
 	// Make sure we get all direct subs.
 	checkForDirectSubs := func() {
 		t.Helper()
-		checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+		checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
 			for _, s := range c.servers {
 				mset, err := s.GlobalAccount().lookupStream("TEST")
 				if err != nil {

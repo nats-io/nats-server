@@ -9064,12 +9064,28 @@ func TestNoRaceJetStreamClusterKVWithServerKill(t *testing.T) {
 		return &fullState{state, mset.lseq, mset.clfs}
 	}
 
+	grabStore := func(mset *stream) map[string][]uint64 {
+		mset.mu.RLock()
+		store := mset.store
+		mset.mu.RUnlock()
+		var state StreamState
+		store.FastState(&state)
+		storeMap := make(map[string][]uint64)
+		for seq := state.FirstSeq; seq <= state.LastSeq; seq++ {
+			if sm, err := store.LoadMsg(seq, nil); err == nil {
+				storeMap[sm.subj] = append(storeMap[sm.subj], sm.seq)
+			}
+		}
+		return storeMap
+	}
+
 	checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
 		// Current stream leader.
 		sl := c.streamLeader(globalAccountName, "KV_TEST")
 		mset, err := sl.GlobalAccount().lookupStream("KV_TEST")
 		require_NoError(t, err)
 		lstate := grabState(mset)
+		golden := grabStore(mset)
 
 		// Report messages per server.
 		for _, s := range c.servers {
@@ -9082,7 +9098,46 @@ func TestNoRaceJetStreamClusterKVWithServerKill(t *testing.T) {
 			if !reflect.DeepEqual(state, lstate) {
 				return fmt.Errorf("Expected follower state\n%+v\nto match leader's\n %+v", state, lstate)
 			}
+			sm := grabStore(mset)
+			if !reflect.DeepEqual(sm, golden) {
+				t.Fatalf("Expected follower store for %v\n%+v\nto match leader's %v\n %+v", s, sm, sl, golden)
+			}
 		}
 		return nil
 	})
+}
+
+func TestNoRaceFileStoreLargeMsgsAndFirstMatching(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 8 * 1024 * 1024},
+		StreamConfig{Name: "zzz", Subjects: []string{">"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	for i := 0; i < 150_000; i++ {
+		fs.StoreMsg(fmt.Sprintf("foo.bar.%d", i), nil, nil)
+	}
+	for i := 0; i < 150_000; i++ {
+		fs.StoreMsg(fmt.Sprintf("foo.baz.%d", i), nil, nil)
+	}
+	require_Equal(t, fs.numMsgBlocks(), 2)
+	fs.mu.RLock()
+	mb := fs.blks[1]
+	fs.mu.RUnlock()
+	fseq := atomic.LoadUint64(&mb.first.seq)
+	// The -40 leaves enough mb.fss entries to kick in linear scan.
+	for seq := fseq; seq < 300_000-40; seq++ {
+		fs.RemoveMsg(uint64(seq))
+	}
+	start := time.Now()
+	fs.LoadNextMsg("*.baz.*", true, fseq, nil)
+	require_True(t, time.Since(start) < 200*time.Microsecond)
+	// Now remove more to kick into non-linear logic.
+	for seq := 300_000 - 40; seq < 300_000; seq++ {
+		fs.RemoveMsg(uint64(seq))
+	}
+	start = time.Now()
+	fs.LoadNextMsg("*.baz.*", true, fseq, nil)
+	require_True(t, time.Since(start) < 200*time.Microsecond)
 }
