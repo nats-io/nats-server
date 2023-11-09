@@ -2182,8 +2182,12 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 	// Skip scan of mb.fss if number of messages in the block are less than
 	// 1/2 the number of subjects in mb.fss. Or we have a wc and lots of fss entries.
 	const linearScanMaxFSS = 32
+	// Make sure to start at mb.first.seq if fseq < mb.first.seq
+	if seq := atomic.LoadUint64(&mb.first.seq); seq > fseq {
+		fseq = seq
+	}
 	lseq := atomic.LoadUint64(&mb.last.seq)
-	doLinearScan := isAll || 2*int(lseq-start) < len(mb.fss) || (wc && len(mb.fss) > linearScanMaxFSS)
+	doLinearScan := isAll || 2*int(lseq-fseq) < len(mb.fss) || (wc && len(mb.fss) > linearScanMaxFSS)
 
 	if !doLinearScan {
 		// If we have a wildcard match against all tracked subjects we know about.
