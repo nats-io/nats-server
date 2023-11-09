@@ -4818,7 +4818,7 @@ func (fs *fileStore) syncBlocks() {
 	lmb := fs.lmb
 	fs.mu.RUnlock()
 
-	var markDirty, needsCompact bool
+	var markDirty bool
 	for _, mb := range blks {
 		// Do actual sync. Hold lock for consistency.
 		mb.mu.Lock()
@@ -4832,6 +4832,7 @@ func (fs *fileStore) syncBlocks() {
 		}
 		// Check if we should compact here as well.
 		// Do not compact last mb.
+		var needsCompact bool
 		if mb != lmb && mb.ensureRawBytesLoaded() == nil && mb.rbytes > mb.bytes {
 			needsCompact = true
 			markDirty = true
