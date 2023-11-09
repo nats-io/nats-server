@@ -5048,9 +5048,12 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 		js.releaseStreamResources(&mset.cfg)
 		// cleanup directories after the stream
 		accDir := filepath.Join(js.config.StoreDir, accName)
-		// no op if not empty
-		os.Remove(filepath.Join(accDir, streamsDir))
-		os.Remove(accDir)
+		// Do cleanup in separate go routine similar to how fs will use purge here..
+		go func() {
+			// no op if not empty
+			os.Remove(filepath.Join(accDir, streamsDir))
+			os.Remove(accDir)
+		}()
 	} else if store != nil {
 		// Ignore errors.
 		store.Stop()
