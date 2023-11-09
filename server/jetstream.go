@@ -1197,6 +1197,11 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 	fis, _ := os.ReadDir(sdir)
 	for _, fi := range fis {
 		mdir := filepath.Join(sdir, fi.Name())
+		// Check for partially deleted streams. They are marked with "." prefix.
+		if strings.HasPrefix(fi.Name(), tsep) {
+			go os.RemoveAll(mdir)
+			continue
+		}
 		key := sha256.Sum256([]byte(fi.Name()))
 		hh, err := highwayhash.New64(key[:])
 		if err != nil {
