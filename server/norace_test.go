@@ -9064,12 +9064,28 @@ func TestNoRaceJetStreamClusterKVWithServerKill(t *testing.T) {
 		return &fullState{state, mset.lseq, mset.clfs}
 	}
 
+	grabStore := func(mset *stream) map[string][]uint64 {
+		mset.mu.RLock()
+		store := mset.store
+		mset.mu.RUnlock()
+		var state StreamState
+		store.FastState(&state)
+		storeMap := make(map[string][]uint64)
+		for seq := state.FirstSeq; seq <= state.LastSeq; seq++ {
+			if sm, err := store.LoadMsg(seq, nil); err == nil {
+				storeMap[sm.subj] = append(storeMap[sm.subj], sm.seq)
+			}
+		}
+		return storeMap
+	}
+
 	checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
 		// Current stream leader.
 		sl := c.streamLeader(globalAccountName, "KV_TEST")
 		mset, err := sl.GlobalAccount().lookupStream("KV_TEST")
 		require_NoError(t, err)
 		lstate := grabState(mset)
+		golden := grabStore(mset)
 
 		// Report messages per server.
 		for _, s := range c.servers {
@@ -9081,6 +9097,10 @@ func TestNoRaceJetStreamClusterKVWithServerKill(t *testing.T) {
 			state := grabState(mset)
 			if !reflect.DeepEqual(state, lstate) {
 				return fmt.Errorf("Expected follower state\n%+v\nto match leader's\n %+v", state, lstate)
+			}
+			sm := grabStore(mset)
+			if !reflect.DeepEqual(sm, golden) {
+				t.Fatalf("Expected follower store for %v\n%+v\nto match leader's %v\n %+v", s, sm, sl, golden)
 			}
 		}
 		return nil

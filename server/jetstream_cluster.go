@@ -2143,7 +2143,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	// from underneath the one that is running since it will be the same raft node.
 	defer n.Stop()
 
-	qch, lch, aq, uch, ourPeerId := n.QuitC(), n.LeadChangeC(), n.ApplyQ(), mset.updateC(), meta.ID()
+	qch, mqch, lch, aq, uch, ourPeerId := n.QuitC(), mset.monitorQuitC(), n.LeadChangeC(), n.ApplyQ(), mset.updateC(), meta.ID()
 
 	s.Debugf("Starting stream monitor for '%s > %s' [%s]", sa.Client.serviceAccount(), sa.Config.Name, n.Group())
 	defer s.Debugf("Exiting stream monitor for '%s > %s' [%s]", sa.Client.serviceAccount(), sa.Config.Name, n.Group())
@@ -2249,7 +2249,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 	startDirectAccessMonitoring := func() {
 		if dat == nil {
-			dat = time.NewTicker(1 * time.Second)
+			dat = time.NewTicker(2 * time.Second)
 			datc = dat.C
 		}
 	}
@@ -2301,6 +2301,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		select {
 		case <-s.quitCh:
 			return
+		case <-mqch:
+			return
 		case <-qch:
 			return
 		case <-aq.ch:
@@ -2322,6 +2324,10 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					ne, nb = n.Applied(ce.Index)
 					ce.ReturnToPool()
 				} else {
+					// Our stream was closed out from underneath of us, simply return here.
+					if err == errStreamClosed {
+						return
+					}
 					s.Warnf("Error applying entries to '%s > %s': %v", accName, sa.Config.Name, err)
 					if isClusterResetErr(err) {
 						if mset.isMirror() && mset.IsLeader() {
@@ -2352,7 +2358,6 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				if mset != nil && n != nil && sendSnapshot {
 					n.SendSnapshot(mset.stateSnapshot())
 					sendSnapshot = false
-
 				}
 				if isRestore {
 					acc, _ := s.LookupAccount(sa.Client.serviceAccount())
@@ -2385,17 +2390,22 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			// Here we are checking if we are not the leader but we have been asked to allow
 			// direct access. We now allow non-leaders to participate in the queue group.
 			if !isLeader && mset != nil {
-				startDirectAccessMonitoring()
+				mset.mu.RLock()
+				ad, md := mset.cfg.AllowDirect, mset.cfg.MirrorDirect
+				mset.mu.RUnlock()
+				if ad || md {
+					startDirectAccessMonitoring()
+				}
 			}
 
 		case <-datc:
 			if mset == nil || isRecovering {
-				return
+				continue
 			}
 			// If we are leader we can stop, we know this is setup now.
 			if isLeader {
 				stopDirectMonitoring()
-				return
+				continue
 			}
 
 			mset.mu.Lock()
@@ -2547,6 +2557,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					mset.setStreamAssignment(sa)
 					// Make sure to update our updateC which would have been nil.
 					uch = mset.updateC()
+					// Also update our mqch
+					mqch = mset.monitorQuitC()
 				}
 			}
 			if err != nil {
@@ -2779,6 +2791,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 
 				// Grab last sequence and CLFS.
 				last, clfs := mset.lastSeqAndCLFS()
+
 				// We can skip if we know this is less than what we already have.
 				if lseq-clfs < last {
 					s.Debugf("Apply stream entries for '%s > %s' skipping message with sequence %d with last of %d",
@@ -2809,13 +2822,14 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 
 				// Process the actual message here.
 				if err := mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts); err != nil {
-					// Only return in place if we are going to reset stream or we are out of space.
-					if isClusterResetErr(err) || isOutOfSpaceErr(err) {
+					// Only return in place if we are going to reset our stream or we are out of space, or we are closed.
+					if isClusterResetErr(err) || isOutOfSpaceErr(err) || err == errStreamClosed {
 						return err
 					}
 					s.Debugf("Apply stream entries for '%s > %s' got error processing message: %v",
 						mset.account(), mset.name(), err)
 				}
+
 			case deleteMsgOp:
 				md, err := decodeMsgDelete(buf[1:])
 				if err != nil {
@@ -7388,7 +7402,7 @@ func (mset *stream) stateSnapshotLocked() []byte {
 		Bytes:    state.Bytes,
 		FirstSeq: state.FirstSeq,
 		LastSeq:  state.LastSeq,
-		Failed:   mset.clfs,
+		Failed:   mset.getCLFS(),
 		Deleted:  state.Deleted,
 	}
 	b, _ := json.Marshal(snap)
@@ -7425,7 +7439,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 
 	mset.mu.RLock()
 	canRespond := !mset.cfg.NoAck && len(reply) > 0
-	name, stype, store := mset.cfg.Name, mset.cfg.Storage, mset.store
+	name, stype := mset.cfg.Name, mset.cfg.Storage
 	s, js, jsa, st, rf, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.tier, mset.outq, mset.node
 	maxMsgSize, lseq, clfs := int(mset.cfg.MaxMsgSize), mset.lseq, mset.clfs
 	isLeader, isSealed := mset.isLeader(), mset.cfg.Sealed
@@ -7525,26 +7539,6 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 
 	// Some header checks can be checked pre proposal. Most can not.
 	if len(hdr) > 0 {
-		// For CAS operations, e.g. ExpectedLastSeqPerSubject, we can also check here and not have to go through.
-		// Can only precheck for seq != 0.
-		if seq, exists := getExpectedLastSeqPerSubject(hdr); exists && store != nil && seq > 0 {
-			var smv StoreMsg
-			var fseq uint64
-			sm, err := store.LoadLastMsg(subject, &smv)
-			if sm != nil {
-				fseq = sm.seq
-			}
-			if err != nil || fseq != seq {
-				if canRespond {
-					var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
-					resp.PubAck = &PubAck{Stream: name}
-					resp.Error = NewJSStreamWrongLastSequenceError(fseq)
-					b, _ := json.Marshal(resp)
-					outq.sendMsg(reply, b)
-				}
-				return fmt.Errorf("last sequence by subject mismatch: %d vs %d", seq, fseq)
-			}
-		}
 		// Expected stream name can also be pre-checked.
 		if sname := getExpectedStream(hdr); sname != _EMPTY_ && sname != name {
 			if canRespond {
@@ -7752,8 +7746,8 @@ func (mset *stream) processSnapshot(snap *StreamReplicatedState) (e error) {
 
 	mset.mu.Lock()
 	var state StreamState
-	mset.clfs = snap.Failed
 	mset.store.FastState(&state)
+	mset.setCLFS(snap.Failed)
 	sreq := mset.calculateSyncRequest(&state, snap)
 
 	s, js, subject, n := mset.srv, mset.js, mset.sa.Sync, mset.node
