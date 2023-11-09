@@ -2160,12 +2160,15 @@ func (n *raft) runAsLeader() {
 	// For forwarded proposals, both normal and remove peer proposals.
 	fsub, err := n.subscribe(psubj, n.handleForwardedProposal)
 	if err != nil {
-		n.debug("Error subscribing to forwarded proposals: %v", err)
+		n.warn("Error subscribing to forwarded proposals: %v", err)
+		n.stepdown.push(noLeader)
 		return
 	}
 	rpsub, err := n.subscribe(rpsubj, n.handleForwardedRemovePeerProposal)
 	if err != nil {
-		n.debug("Error subscribing to forwarded proposals: %v", err)
+		n.warn("Error subscribing to forwarded remove peer proposals: %v", err)
+		n.unsubscribe(fsub)
+		n.stepdown.push(noLeader)
 		return
 	}
 
