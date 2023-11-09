@@ -142,8 +142,8 @@ type raft struct {
 	qn    int             // Number of nodes needed to establish quorum
 	peers map[string]*lps // Other peers in the Raft group
 
-	removed map[string]struct{}            //
-	acks    map[uint64]map[string]struct{} //
+	removed map[string]struct{}            // Peers that were removed from the group
+	acks    map[uint64]map[string]struct{} // Append entry responses/acks, map of entry index -> peer ID
 	pae     map[uint64]*appendEntry        // Pending append entries
 
 	elect  *time.Timer // Election timer, normally accessed via electTimer
@@ -859,7 +859,7 @@ func (n *raft) PauseApply() error {
 		n.stepdown.push(noLeader)
 	}
 
-	n.debug("Pausing our apply queue")
+	n.debug("Pausing our apply channel")
 	n.paused = true
 	n.hcommit = n.commit
 	// Also prevent us from trying to become a leader while paused and catching up.
@@ -879,7 +879,7 @@ func (n *raft) ResumeApply() {
 		return
 	}
 
-	n.debug("Resuming our apply queue")
+	n.debug("Resuming our apply channel")
 	n.observer, n.pobserver = n.pobserver, false
 	n.paused = false
 	// Run catchup..
