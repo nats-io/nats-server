@@ -2107,3 +2107,14 @@ func TestServerAuthBlockAndSysAccounts(t *testing.T) {
 	_, err = nats.Connect(s.ClientURL())
 	require_Error(t, err, nats.ErrAuthorization, errors.New("nats: Authorization Violation"))
 }
+
+// https://github.com/nats-io/nats-server/issues/4789
+func TestServerRestartAfterShutdown(t *testing.T) {
+	opts := DefaultTestOptions
+	opts.Port = -1
+	s := RunServer(&opts)
+	s.Shutdown()
+	s.WaitForShutdown()
+	s.Start()
+	defer s.Shutdown()
+}

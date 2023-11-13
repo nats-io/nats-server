@@ -2083,6 +2083,11 @@ func (s *Server) Start() {
 
 	defer s.Noticef("Server is ready")
 
+	// Check is this may be a restart.
+	if s.startupComplete == nil {
+		s.startupComplete = make(chan struct{})
+	}
+
 	// Check for insecure configurations.
 	s.checkAuthforWarnings()
 
@@ -2340,7 +2345,10 @@ func (s *Server) Start() {
 	}
 
 	// We've finished starting up.
-	close(s.startupComplete)
+	if s.startupComplete != nil {
+		close(s.startupComplete)
+		s.startupComplete = nil
+	}
 
 	// Wait for clients.
 	if !opts.DontListen {
