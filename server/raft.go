@@ -3575,6 +3575,7 @@ func (n *raft) sendAppendEntry(entries []*Entry) {
 	var scratch [1024]byte
 	ae.buf, err = ae.encode(scratch[:])
 	if err != nil {
+		log.Printf("OHDBG: error caught, but not displayed calling ae.encode(scratch[:]) in sendAppendEntry, err=[%s]", err)
 		return
 	}
 
@@ -3582,6 +3583,7 @@ func (n *raft) sendAppendEntry(entries []*Entry) {
 	shouldStore := ae.shouldStore()
 	if shouldStore {
 		if err := n.storeToWAL(ae); err != nil {
+			log.Printf("OHDBG: error caught, but not displayed calling n.storeToWAL(ae) in sendAppendEntry, err=[%s]", err)
 			return
 		}
 		// We count ourselves.
