@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math/rand"
 	"net"
 	"net/http"
@@ -1297,6 +1298,7 @@ func (c *client) readLoop(pre []byte) {
 	}()
 
 	// Start read buffer.
+	log.Printf("OHDBG: using start read buffer make, size=[%d]", c.in.rsz)
 	b := make([]byte, c.in.rsz)
 
 	// Websocket clients will return several slices if there are multiple
@@ -1434,15 +1436,16 @@ func (c *client) readLoop(pre []byte) {
 		} else if n < cap(b)/2 { // divide by 2 b/c we want less than what we would shrink to.
 			c.in.srs++
 		}
-
 		// Update read buffer size as/if needed.
 		if n >= cap(b) && cap(b) < maxBufSize {
 			// Grow
 			c.in.rsz = int32(cap(b) * 2)
+			log.Printf("OHDBG: using 'grow' make, size=[%d]", c.in.rsz)
 			b = make([]byte, c.in.rsz)
 		} else if n < cap(b) && cap(b) > minBufSize && c.in.srs > shortsToShrink {
 			// Shrink, for now don't accelerate, ping/pong will eventually sort it out.
 			c.in.rsz = int32(cap(b) / 2)
+			log.Printf("OHDBG: using 'shrink' make, size=[%d]", c.in.rsz)
 			b = make([]byte, c.in.rsz)
 		}
 		// re-snapshot the account since it can change during reload, etc.

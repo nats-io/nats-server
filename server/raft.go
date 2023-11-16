@@ -3590,6 +3590,7 @@ func (n *raft) sendAppendEntry(entries []*Entry) {
 
 		// Save in memory for faster processing during applyCommit.
 		n.pae[n.pindex] = ae
+		log.Printf("OHDBG: how much has n.pae[n.pindex] grown now? len(n.pae)=[%d] ", len(n.pae))
 		if l := len(n.pae); l > paeWarnThreshold && l%paeWarnModulo == 0 {
 			n.warn("%d append entries pending", len(n.pae))
 		}
