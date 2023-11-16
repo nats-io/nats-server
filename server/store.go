@@ -21,6 +21,7 @@ import (
 	"io"
 	"strings"
 	"time"
+	"unsafe"
 
 	"github.com/nats-io/nats-server/v2/server/avl"
 )
@@ -713,4 +714,24 @@ func (sm *StoreMsg) clear() {
 	if len(sm.buf) > 0 {
 		sm.buf = sm.buf[:0]
 	}
+}
+
+// Note this will avoid a copy of the data used for the string, but it will also reference the existing slice's data pointer.
+// So this should be used sparingly when we know the encompassing byte slice's lifetime is the same.
+func bytesToString(b []byte) string {
+	if len(b) == 0 {
+		return _EMPTY_
+	}
+	p := unsafe.SliceData(b)
+	return unsafe.String(p, len(b))
+}
+
+// Same in reverse. Used less often.
+func stringToBytes(s string) []byte {
+	if len(s) == 0 {
+		return nil
+	}
+	p := unsafe.StringData(s)
+	b := unsafe.Slice(p, len(s))
+	return b
 }
