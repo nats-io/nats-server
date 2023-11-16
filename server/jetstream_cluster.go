@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"math/rand"
 	"os"
@@ -2038,7 +2039,10 @@ func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, storage Stor
 	cfg := &RaftConfig{Name: rg.Name, Store: storeDir, Log: store, Track: true}
 
 	if _, err := readPeerState(storeDir); err != nil {
-		s.bootstrapRaftNode(cfg, rg.Peers, true)
+		oherr := s.bootstrapRaftNode(cfg, rg.Peers, true)
+		if oherr != nil {
+			log.Printf("OHDBG: unhandled error calling s.bootstrapRaftNode(cfg, rg.Peers, true) in createRaftGroup, err=[%s]", oherr)
+		}
 	}
 
 	n, err := s.startRaftNode(accName, cfg, labels)
@@ -3426,11 +3430,14 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 		if !alreadyRunning && numReplicas > 1 {
 			if needsNode {
 				mset.setLeader(false)
-				js.createRaftGroup(acc.GetName(), rg, storage, pprofLabels{
+				oherr := js.createRaftGroup(acc.GetName(), rg, storage, pprofLabels{
 					"type":    "stream",
 					"account": mset.accName(),
 					"stream":  mset.name(),
 				})
+				if oherr != nil {
+					log.Printf("OHDBG: unhandled error calling js.createRaftGroup(acc.GetName() ...  in processClusterUpdateStream, err=[%s]", oherr)
+				}
 			}
 			mset.monitorWg.Add(1)
 			// Start monitoring..
@@ -3607,11 +3614,14 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 				s.Warnf("JetStream cluster error updating stream %q for account %q: %v", sa.Config.Name, acc.Name, err)
 				if osa != nil {
 					// Process the raft group and make sure it's running if needed.
-					js.createRaftGroup(acc.GetName(), osa.Group, storage, pprofLabels{
+					oherr := js.createRaftGroup(acc.GetName(), osa.Group, storage, pprofLabels{
 						"type":    "stream",
 						"account": mset.accName(),
 						"stream":  mset.name(),
 					})
+					if oherr != nil {
+						log.Printf("OHDBG: unhandled error calling js.createRaftGroup(acc.GetName(), osa.Group, s ...  in processClusterCreateStream, err=[%s]", oherr)
+					}
 					mset.setStreamAssignment(osa)
 				}
 				if rg.node != nil {
@@ -4130,12 +4140,15 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 			storage = MemoryStorage
 		}
 		// No-op if R1.
-		js.createRaftGroup(accName, rg, storage, pprofLabels{
+		oherr := js.createRaftGroup(accName, rg, storage, pprofLabels{
 			"type":     "consumer",
 			"account":  mset.accName(),
 			"stream":   ca.Stream,
 			"consumer": ca.Name,
 		})
+		if oherr != nil {
+			log.Printf("OHDBG: unhandled error calling os.Remove(tmpfile.Name()) in bootstrapRaftNode, err=[%s]", oherr)
+		}
 	} else {
 		// If we are clustered update the known peers.
 		js.mu.RLock()
