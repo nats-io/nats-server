@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"log"
 	"math"
 	"math/rand"
 	"net"
@@ -305,7 +306,10 @@ func (s *Server) bootstrapRaftNode(cfg *RaftConfig, knownPeers []string, allPeer
 				if net.ParseIP(host) != nil {
 					ngwps++
 				} else {
-					addrs, _ := net.LookupHost(host)
+					addrs, oherr := net.LookupHost(host)
+					if oherr != nil {
+						log.Printf("OHDBG: unhandled error calling net.LookupHost(host) in bootstrapRaftNode, err=[%s]", oherr)
+					}
 					ngwps += len(addrs)
 				}
 			}
@@ -329,8 +333,14 @@ func (s *Server) bootstrapRaftNode(cfg *RaftConfig, knownPeers []string, allPeer
 	if err != nil {
 		return fmt.Errorf("raft: storage directory is not writable")
 	}
-	tmpfile.Close()
-	os.Remove(tmpfile.Name())
+	oherr := tmpfile.Close()
+	if oherr != nil {
+		log.Printf("OHDBG: unhandled error calling tmpfile.Close() in bootstrapRaftNode, err=[%s]", oherr)
+	}
+	oherr = os.Remove(tmpfile.Name())
+	if oherr != nil {
+		log.Printf("OHDBG: unhandled error calling os.Remove(tmpfile.Name()) in bootstrapRaftNode, err=[%s]", oherr)
+	}
 
 	return writePeerState(cfg.Store, &peerState{knownPeers, expected, extUndetermined})
 }
@@ -399,7 +409,10 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 		extSt:    ps.domainExt,
 		prand:    rand.New(rand.NewSource(rsrc)),
 	}
-	n.c.registerWithAccount(sacc)
+	oherr := n.c.registerWithAccount(sacc)
+	if oherr != nil {
+		log.Printf("OHDBG: unhandled error calling n.c.registerWithAccount(sacc) in startRaftNode, err=[%s]", oherr)
+	}
 
 	if atomic.LoadInt32(&s.logging.debug) > 0 {
 		n.dflag = true
@@ -424,7 +437,10 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 
 	// Can't recover snapshots if memory based.
 	if _, ok := n.wal.(*memStore); ok {
-		os.Remove(filepath.Join(n.sd, snapshotsDir, "*"))
+		oherr := os.Remove(filepath.Join(n.sd, snapshotsDir, "*"))
+		if oherr != nil {
+			log.Printf("OHDBG: unhandled error calling os.Remove(filepath.Join(n.sd, snapshotsDir ... in startRaftNode, err=[%s]", oherr)
+		}
 	} else {
 		// See if we have any snapshots and if so load and process on startup.
 		n.setupLastSnapshot()
@@ -617,7 +633,10 @@ func (s *Server) stepdownRaftNodes() {
 
 	for _, node := range nodes {
 		if node.Leader() {
-			node.StepDown()
+			oherr := node.StepDown()
+			if oherr != nil {
+				log.Printf("OHDBG: unhandled error calling node.StepDown() in stepdownRaftNodes, err=[%s]", oherr)
+			}
 		}
 		node.SetObserver(true)
 	}
@@ -668,7 +687,10 @@ func (s *Server) transferRaftLeaders() bool {
 	var didTransfer bool
 	for _, node := range nodes {
 		if node.Leader() {
-			node.StepDown()
+			oherr := node.StepDown()
+			if oherr != nil {
+				log.Printf("OHDBG: unhandled error calling node.StepDown() in transferRaftLeaders, err=[%s]", oherr)
+			}
 			didTransfer = true
 		}
 		node.SetObserver(true)
@@ -895,7 +917,10 @@ func (n *raft) ResumeApply() {
 
 	// If we had been selected to be the next leader campaign here now that we have resumed.
 	if n.lxfer {
-		n.xferCampaign()
+		oherr := n.xferCampaign()
+		if oherr != nil {
+			log.Printf("OHDBG: unhandled error calling os.Remove(tmpfile.Name()) in bootstrapRaftNode, err=[%s]", oherr)
+		}
 	} else {
 		n.resetElectionTimeout()
 	}
@@ -1012,15 +1037,28 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	n.debug("Installing snapshot of %d bytes", len(data))
 
 	var term uint64
-	if ae, _ := n.loadEntry(n.applied); ae != nil {
+	var oherrTheSecond error
+	if ae, oherr := n.loadEntry(n.applied); ae != nil {
 		// Use the term from the most recently applied entry if possible.
 		term = ae.term
-	} else if ae, _ = n.loadFirstEntry(); ae != nil {
+		if oherr != nil {
+			log.Printf("OHDBG: unhandled error calling n.loadEntry(n.applied) in InstallSnapshot, err=[%s]", oherr)
+		}
+	} else if ae, oherrTheSecond = n.loadFirstEntry(); ae != nil {
 		// Otherwise see if we can find the term from the first entry.
 		term = ae.term
+		if oherr != nil {
+			log.Printf("OHDBG: unhandled error calling n.loadEntry(n.applied) in InstallSnapshot, err=[%s]", oherr)
+		}
+		if oherrTheSecond != nil {
+			log.Printf("OHDBG: unhandled error calling n.loadEntry(n.applied) in InstallSnapshot, err=[%s]", oherr)
+		}
 	} else {
 		// Last resort is to use the last pterm that we knew of.
 		term = n.pterm
+		if oherr != nil {
+			log.Printf("OHDBG: unhandled error calling n.loadEntry(n.applied) in InstallSnapshot, err=[%s]", oherr)
+		}
 	}
 
 	snap := &snapshot{
@@ -1050,7 +1088,10 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	}
 	n.Unlock()
 
-	psnaps, _ := os.ReadDir(snapDir)
+	psnaps, oherr := os.ReadDir(snapDir)
+	if oherr != nil {
+		log.Printf("OHDBG: unhandled error calling os.ReadDir(snapDir) in InstallSnapshot, err=[%s]", oherr)
+	}
 	// Remove any old snapshots.
 	for _, fi := range psnaps {
 		pn := fi.Name()
@@ -1625,9 +1666,15 @@ func (n *raft) shutdown(shouldDelete bool) {
 	}
 	if wal != nil {
 		if shouldDelete {
-			wal.Delete()
+			oherr := wal.Delete()
+			if oherr != nil {
+				log.Printf("OHDBG: unhandled error calling wal.Delete() in shutdown, err=[%s]", oherr)
+			}
 		} else {
-			wal.Stop()
+			oherr := wal.Stop()
+			if oherr != nil {
+				log.Printf("OHDBG: unhandled error calling wal.Stop() in shutdown, err=[%s]", oherr)
+			}
 		}
 	}
 }
@@ -1640,7 +1687,10 @@ func (n *raft) Wipe() {
 	n.RUnlock()
 	// Delete our underlying storage.
 	if wal != nil {
-		wal.Delete()
+		oherr := wal.Delete()
+		if oherr != nil {
+			log.Printf("OHDBG: unhandled error calling wal.Delete() in wipe, err=[%s]", oherr)
+		}
 	}
 	// Now call delete.
 	n.Delete()
@@ -1686,7 +1736,10 @@ func (n *raft) subscribe(subject string, cb msgHandler) (*subscription, error) {
 // Lock should be held.
 func (n *raft) unsubscribe(sub *subscription) {
 	if sub != nil {
-		n.c.processUnsub(sub.sid)
+		oherr := n.c.processUnsub(sub.sid)
+		if oherr != nil {
+			log.Printf("OHDBG: unhandled error calling n.c.processUnsub(sub.sid) in unsubscribe, err=[%s]", oherr)
+		}
 	}
 }
 
@@ -1915,7 +1968,10 @@ func (n *raft) runAsFollower() {
 			// We've just received a vote request from the network.
 			// Because of drain() it is possible that we get nil from popOne().
 			if voteReq, ok := n.reqs.popOne(); ok {
-				n.processVoteRequest(voteReq)
+				oherr := n.processVoteRequest(voteReq)
+				if oherr != nil {
+					log.Printf("OHDBG: unhandled error calling n.processVoteRequest(voteReq) in runAsFollower, err=[%s]", oherr)
+				}
 			}
 		case <-n.stepdown.ch:
 			// We've received a stepdown request, start following the new leader if
@@ -2350,11 +2406,17 @@ func (n *raft) runAsLeader() {
 				n.switchToFollower(noLeader)
 				return
 			}
-			n.trackPeer(vresp.peer)
+			oherr := n.trackPeer(vresp.peer)
+			if oherr != nil {
+				log.Printf("OHDBG: unhandled error calling n.trackPeer(vresp.peer) in runAsLeader, err=[%s]", oherr)
+			}
 		case <-n.reqs.ch:
 			// Because of drain() it is possible that we get nil from popOne().
 			if voteReq, ok := n.reqs.popOne(); ok {
-				n.processVoteRequest(voteReq)
+				oherr := n.processVoteRequest(voteReq)
+				if oherr != nil {
+					log.Printf("OHDBG: unhandled error calling n.processVoteRequest(voteReq) in runAsLeader, err=[%s]", oherr)
+				}
 			}
 		case <-n.stepdown.ch:
 			if newLeader, ok := n.stepdown.popOne(); ok {
@@ -2450,7 +2512,10 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue[uint64
 		n.Unlock()
 		if !exists {
 			n.debug("Catchup done for %q, will add into peers", peer)
-			n.ProposeAddPeer(peer)
+			oherr := n.ProposeAddPeer(peer)
+			if oherr != nil {
+				log.Printf("OHDBG: unhandled error calling n.ProposeAddPeer(peer) in runCatchup, err=[%s]", oherr)
+			}
 		}
 		indexUpdatesQ.unregister()
 	}()
@@ -2858,7 +2923,12 @@ func (n *raft) trackPeer(peer string) error {
 	n.Unlock()
 
 	if needPeerAdd {
-		n.ProposeAddPeer(peer)
+		oherr := n.ProposeAddPeer(peer)
+		if oherr != nil {
+			log.Printf("OHDBG: unhandled error calling n.ProposeAddPeer(peer) in trackPeer, err=[%s]", oherr)
+			// adding this won't "break" (fix) anything as nothing that calls it checks the error anyway
+			return oherr
+		}
 	}
 	return nil
 }
@@ -2903,7 +2973,10 @@ func (n *raft) runAsCandidate() {
 
 			if vresp.granted && nterm >= vresp.term {
 				// only track peers that would be our followers
-				n.trackPeer(vresp.peer)
+				oherr := n.trackPeer(vresp.peer)
+				if oherr != nil {
+					log.Printf("OHDBG: unhandled error calling n.trackPeer(vresp.peer) in runAsCandidate, err=[%s]", oherr)
+				}
 				votes++
 				if n.wonElection(votes) {
 					// Become LEADER if we have won and gotten a quorum with everyone we should hear from.
@@ -2925,7 +2998,10 @@ func (n *raft) runAsCandidate() {
 		case <-n.reqs.ch:
 			// Because of drain() it is possible that we get nil from popOne().
 			if voteReq, ok := n.reqs.popOne(); ok {
-				n.processVoteRequest(voteReq)
+				oherr := n.processVoteRequest(voteReq)
+				if oherr != nil {
+					log.Printf("OHDBG: unhandled error calling n.processVoteRequest(voteReq) in runAsCandidate, err=[%s]", oherr)
+				}
 			}
 		case <-n.stepdown.ch:
 			if newLeader, ok := n.stepdown.popOne(); ok {
@@ -2995,7 +3071,10 @@ func (n *raft) createCatchup(ae *appendEntry) string {
 		active: time.Now(),
 	}
 	inbox := n.newCatchupInbox()
-	sub, _ := n.subscribe(inbox, n.handleAppendEntry)
+	sub, oherr := n.subscribe(inbox, n.handleAppendEntry)
+	if oherr != nil {
+		log.Printf("OHDBG: unhandled error calling n.subscribe(inbox, n.handleAppendEntry) in createCatchup, err=[%s]", oherr)
+	}
 	n.catchup.sub = sub
 
 	return inbox
@@ -3013,7 +3092,10 @@ func (n *raft) truncateWAL(term, index uint64) {
 	defer func() {
 		// Check to see if we invalidated any snapshots that might have held state
 		// from the entries we are truncating.
-		if snap, _ := n.loadLastSnapshot(); snap != nil && snap.lastIndex >= index {
+		if snap, oherr := n.loadLastSnapshot(); snap != nil && snap.lastIndex >= index {
+			if oherr != nil {
+				log.Printf("OHDBG: unhandled error calling n.loadLastSnapshot() in truncateWAL, err=[%s]", oherr)
+			}
 			os.Remove(n.snapfile)
 			n.snapfile = _EMPTY_
 		}
@@ -3030,7 +3112,10 @@ func (n *raft) truncateWAL(term, index uint64) {
 		// If we get an invalid sequence, reset our wal all together.
 		if err == ErrInvalidSequence {
 			n.debug("Resetting WAL")
-			n.wal.Truncate(0)
+			oherr := n.wal.Truncate(0)
+			if oherr != nil {
+				log.Printf("OHDBG: unhandled error calling n.wal.Truncate(0) in truncateWAL, err=[%s]", oherr)
+			}
 			index, n.term, n.pterm, n.pindex = 0, 0, 0, 0
 		} else {
 			n.warn("Error truncating WAL: %v", err)
@@ -3189,7 +3274,10 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			var ar *appendEntryResponse
 
 			var success bool
-			if eae, _ := n.loadEntry(ae.pindex); eae == nil {
+			if eae, oherr := n.loadEntry(ae.pindex); eae == nil {
+				if oherr != nil {
+					log.Printf("OHDBG: unhandled error calling n.loadEntry(ae.pindex) in processAppendEntry, err=[%s]", oherr)
+				}
 				n.resetWAL()
 			} else {
 				// If terms mismatched, or we got an error loading, delete that entry and all others past it.
@@ -3312,7 +3400,10 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 					// If not an observer and not paused we are good to go.
 					if !n.observer && !n.paused {
 						n.lxfer = true
-						n.xferCampaign()
+						oherr := n.xferCampaign()
+						if oherr != nil {
+							log.Printf("OHDBG: unhandled error calling n.xferCampaign() in processAppendEntry, err=[%s]", oherr)
+						}
 					} else if n.paused && !n.pobserver {
 						// Here we can become a leader but need to wait for resume of the apply queue.
 						n.lxfer = true
@@ -3391,7 +3482,10 @@ func (n *raft) processPeerState(ps *peerState) {
 // response from another node. They will send a confirmation to tell us
 // whether they successfully committed the entry or not.
 func (n *raft) processAppendEntryResponse(ar *appendEntryResponse) {
-	n.trackPeer(ar.peer)
+	oherr := n.trackPeer(ar.peer)
+	if oherr != nil {
+		log.Printf("OHDBG: unhandled error calling n.trackPeer(ar.peer) in processAppendEntryResponse, err=[%s]", oherr)
+	}
 
 	if ar.success {
 		// The remote node successfully committed the append entry.
