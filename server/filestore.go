@@ -1605,6 +1605,9 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 					fs.warn("Stream state bad subject len (%d)", lsubj)
 					return errCorruptState
 				}
+				// If we have lots of subjects this will alloc for each one.
+				// We could reference the underlying buffer, but we could guess wrong if
+				// number of blocks is large and subjects is low, since we would reference buf.
 				subj := string(buf[bi : bi+lsubj])
 				bi += lsubj
 				psi := &psi{total: readU64(), fblk: uint32(readU64()), subj: subj}
@@ -5675,8 +5678,8 @@ func (mb *msgBlock) msgFromBuf(buf []byte, sm *StoreMsg, hh hash.Hash64) (*Store
 		sm.msg = sm.buf[0 : end-slen]
 	}
 	sm.seq, sm.ts = seq, ts
-	// Treat subject a bit different to not reference underlying buf.
 	if slen > 0 {
+		// Treat subject a bit different to not reference underlying buf.
 		sm.subj = mb.subjString(data[:slen])
 	}
 
@@ -6809,7 +6812,7 @@ func (mb *msgBlock) recalculateFirstForSubj(subj string, startSeq uint64, ss *Si
 		buf := mb.cache.buf[li:]
 		hdr := buf[:msgHdrSize]
 		slen := int(le.Uint16(hdr[20:]))
-		if subj == string(buf[msgHdrSize:msgHdrSize+slen]) {
+		if subj == bytesToString(buf[msgHdrSize:msgHdrSize+slen]) {
 			seq := le.Uint64(hdr[4:])
 			if seq < fseq || seq&ebit != 0 || mb.dmap.Exists(seq) {
 				continue
