@@ -3237,6 +3237,9 @@ func (fs *fileStore) firstSeqForSubj(subj string) (uint64, error) {
 // Will check the msg limit and drop firstSeq msg if needed.
 // Lock should be held.
 func (fs *fileStore) enforceMsgLimit() {
+	if fs.cfg.Discard != DiscardOld {
+		return
+	}
 	if fs.cfg.MaxMsgs <= 0 || fs.state.Msgs <= uint64(fs.cfg.MaxMsgs) {
 		return
 	}
@@ -3251,6 +3254,9 @@ func (fs *fileStore) enforceMsgLimit() {
 // Will check the bytes limit and drop msgs if needed.
 // Lock should be held.
 func (fs *fileStore) enforceBytesLimit() {
+	if fs.cfg.Discard != DiscardOld {
+		return
+	}
 	if fs.cfg.MaxBytes <= 0 || fs.state.Bytes <= uint64(fs.cfg.MaxBytes) {
 		return
 	}
