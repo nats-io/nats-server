@@ -157,7 +157,6 @@ type psi struct {
 	total uint64
 	fblk  uint32
 	lblk  uint32
-	subj  string
 }
 
 type fileStore struct {
@@ -560,9 +559,8 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 	fs.mu.Lock()
 	new_cfg := FileStreamInfo{Created: fs.cfg.Created, StreamConfig: *cfg}
 	old_cfg := fs.cfg
-	// Messages block reference fs.cfg.Subjects (in subjString) under the
-	// mb's lock, not fs' lock. So do the switch here under all existing
-	// message blocks' lock in order to silence the DATA RACE detector.
+	// The reference story has changed here, so this full msg block lock
+	// may not be needed.
 	fs.lockAllMsgBlocks()
 	fs.cfg = new_cfg
 	fs.unlockAllMsgBlocks()
@@ -1407,23 +1405,6 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 		if !mb.dmap.Exists(seq) {
 			mb.msgs++
 			mb.bytes += uint64(rl)
-
-			// Rebuild per subject info if needed.
-			if slen > 0 {
-				if mb.fss == nil {
-					mb.fss = make(map[string]*SimpleState)
-				}
-				// For the lookup, we cast the byte slice and there won't be any copy
-				if ss := mb.fss[string(data[:slen])]; ss != nil {
-					ss.Msgs++
-					ss.Last = seq
-				} else {
-					// This will either use a subject from the config, or make a copy
-					// so we don't reference the underlying buffer.
-					subj := mb.subjString(data[:slen])
-					mb.fss[subj] = &SimpleState{Msgs: 1, First: seq, Last: seq}
-				}
-			}
 		}
 
 		// Always set last
@@ -1610,7 +1591,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 				// number of blocks is large and subjects is low, since we would reference buf.
 				subj := string(buf[bi : bi+lsubj])
 				bi += lsubj
-				psi := &psi{total: readU64(), fblk: uint32(readU64()), subj: subj}
+				psi := &psi{total: readU64(), fblk: uint32(readU64())}
 				if psi.total > 1 {
 					psi.lblk = uint32(readU64())
 				} else {
@@ -1788,7 +1769,7 @@ func (fs *fileStore) adjustAccounting(mb, nmb *msgBlock) {
 					info.lblk = nmb.index
 				}
 			} else {
-				fs.psim[sm.subj] = &psi{total: 1, fblk: nmb.index, lblk: nmb.index, subj: sm.subj}
+				fs.psim[sm.subj] = &psi{total: 1, fblk: nmb.index, lblk: nmb.index}
 				fs.tsl += len(sm.subj)
 			}
 		}
@@ -3062,7 +3043,7 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 				info.lblk = index
 			}
 		} else {
-			fs.psim[subj] = &psi{total: 1, fblk: index, lblk: index, subj: subj}
+			fs.psim[subj] = &psi{total: 1, fblk: index, lblk: index}
 			fs.tsl += len(subj)
 		}
 	}
@@ -5112,7 +5093,13 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 					ss.Msgs++
 					ss.Last = seq
 				} else {
-					mb.fss[mb.subjString(bsubj)] = &SimpleState{Msgs: 1, First: seq, Last: seq}
+					// Note the fss cache and the underlying buffer cache are considered
+					// linked and exists and are removed at the same time.
+					mb.fss[bytesToString(bsubj)] = &SimpleState{
+						Msgs:  1,
+						First: seq,
+						Last:  seq,
+					}
 				}
 			}
 		}
@@ -5679,36 +5666,11 @@ func (mb *msgBlock) msgFromBuf(buf []byte, sm *StoreMsg, hh hash.Hash64) (*Store
 	}
 	sm.seq, sm.ts = seq, ts
 	if slen > 0 {
-		// Treat subject a bit different to not reference underlying buf.
-		sm.subj = mb.subjString(data[:slen])
+		// Make a copy since sm.subj lifetime may last longer.
+		sm.subj = string(data[:slen])
 	}
 
 	return sm, nil
-}
-
-// Given the `key` byte slice, this function will return the subject
-// as an interned string of `key` or a configured subject as to minimize memory allocations.
-// We used to have a pool structure when we leaned on block fss, which could duplicate subjects.
-// Now we have fs scoped PSIM that is always present and is already tracking all in-use subjects.
-// Lock should be held.
-func (fs *fileStore) subjString(skey []byte) string {
-	if fs == nil || len(skey) == 0 {
-		return _EMPTY_
-	}
-	if len(fs.psim) > 0 {
-		// Cast in place below to avoid allocation for lookup.
-		if psi := fs.psim[string(skey)]; psi != nil {
-			return psi.subj
-		}
-	}
-	return string(skey)
-}
-
-// Given the `key` byte slice, this function will return the subject
-// as an interned string of `key` or a configured subject as to minimize memory allocations.
-// Lock should be held.
-func (mb *msgBlock) subjString(skey []byte) string {
-	return mb.fs.subjString(skey)
 }
 
 // LoadMsg will lookup the message by sequence number and return it if found.
@@ -6923,7 +6885,7 @@ func (fs *fileStore) populateGlobalPerSubjectInfo(mb *msgBlock) {
 					info.lblk = mb.index
 				}
 			} else {
-				fs.psim[subj] = &psi{total: ss.Msgs, fblk: mb.index, lblk: mb.index, subj: subj}
+				fs.psim[subj] = &psi{total: ss.Msgs, fblk: mb.index, lblk: mb.index}
 				fs.tsl += len(subj)
 			}
 		}
@@ -8869,4 +8831,5 @@ func (alg StoreCompression) Decompress(buf []byte) ([]byte, error) {
 	output = append(output, checksum...)
 
 	return output, reader.Close()
+
 }
