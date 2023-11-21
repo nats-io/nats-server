@@ -270,6 +270,7 @@ type mqttRetMsgDel struct {
 
 type mqttSession struct {
 	mu                     sync.Mutex
+	subsMu                 sync.RWMutex
 	id                     string // client ID
 	idHash                 string // client ID hash
 	c                      *client
@@ -329,13 +330,24 @@ type mqttRetainedMsgRef struct {
 	sub   *subscription
 }
 
+// mqttSub contains fields associated with a MQTT subscription, and is added to
+// the main subscription struct for MQTT message delivery subscriptions. The
+// delivery callbacks may get invoked before sub.mqtt is set up, so they should
+// acquire either sess.mu or sess.subsMu before accessing it.
 type mqttSub struct {
-	qos byte
-	// Pending serialization of retained messages to be sent when subscription is registered
-	prm *mqttWriter
-	// This is the JS durable name this subscription is attached to.
+	// The sub's QOS and the JS durable name. They can change when
+	// re-subscribing, and are used in the delivery callbacks. They can be
+	// quickly accessed using sess.subsMu.RLock, or under the main session lock.
+	qos   byte
 	jsDur string
-	// If this subscription needs to be checked for being reserved. E.g. # or * or */
+
+	// Pending serialization of retained messages to be sent when subscription
+	// is registered. Protected by the (sub's) client lock.
+	prm *mqttWriter
+
+	// If this subscription needs to be checked for being reserved. E.g. '#' or
+	// '*' or '*/'.  It is set up at the time of subscription and is immutable
+	// after that.
 	reserved bool
 }
 
@@ -1090,7 +1102,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 	c := s.createInternalAccountClient()
 	c.acc = acc
 
-	id := getHash(s.Name())
+	id := s.NodeName()
 	replicas := opts.MQTT.StreamReplicas
 	if replicas <= 0 {
 		replicas = s.mqttDetermineReplicas()
@@ -1466,10 +1478,13 @@ func (jsa *mqttJSA) prefixDomain(subject string) string {
 
 func (jsa *mqttJSA) newRequestEx(kind, subject, cidHash string, hdr int, msg []byte, timeout time.Duration) (interface{}, error) {
 	var sb strings.Builder
-	jsa.mu.Lock()
 	// Either we use nuid.Next() which uses a global lock, or our own nuid object, but
 	// then it needs to be "write" protected. This approach will reduce across account
 	// contention since we won't use the global nuid's lock.
+	jsa.mu.Lock()
+	uid := jsa.nuid.Next()
+	jsa.mu.Unlock()
+
 	sb.WriteString(jsa.rplyr)
 	sb.WriteString(kind)
 	sb.WriteByte(btsep)
@@ -1477,9 +1492,7 @@ func (jsa *mqttJSA) newRequestEx(kind, subject, cidHash string, hdr int, msg []b
 		sb.WriteString(cidHash)
 		sb.WriteByte(btsep)
 	}
-	sb.WriteString(jsa.nuid.Next())
-	jsa.mu.Unlock()
-
+	sb.WriteString(uid)
 	reply := sb.String()
 
 	ch := make(chan interface{}, 1)
@@ -2164,10 +2177,16 @@ func (as *mqttAccountSessionManager) removeSession(sess *mqttSession, lock bool)
 	}
 }
 
-// Helpers that sets the sub's mqtt fields and possibly serialize
-// (pre-loaded) retained messages.
-// Session lock held on entry.
+// Helpers that sets the sub's mqtt fields and possibly serialize (pre-loaded)
+// retained messages.
+//
+// Session lock held on entry. Acquires the session subs lock and holds it for
+// the duration. Non-MQTT messages coming into mqttDeliverMsgCbQoS0 will be
+// waiting.
 func (sess *mqttSession) processSub(c *client, subject, sid []byte, isReserved bool, qos byte, jsDurName string, h msgHandler, initShadow bool) (*subscription, error) {
+	sess.subsMu.Lock()
+	defer sess.subsMu.Unlock()
+
 	sub, err := c.processSub(subject, nil, sid, h, false)
 	if err != nil {
 		// c.processSub already called c.Errorf(), so no need here.
@@ -2179,10 +2198,15 @@ func (sess *mqttSession) processSub(c *client, subject, sid []byte, isReserved b
 	}
 	for _, ss := range subs {
 		if ss.mqtt == nil {
-			ss.mqtt = &mqttSub{}
+			// reserved is set only once and once the subscription has been
+			// created it can be considered immutable.
+			ss.mqtt = &mqttSub{
+				reserved: isReserved,
+			}
 		}
+		// QOS and jsDurName can be changed on an existing subscription, so
+		// accessing it later requires a lock.
 		ss.mqtt.qos = qos
-		ss.mqtt.reserved = isReserved
 		ss.mqtt.jsDur = jsDurName
 	}
 	return sub, nil
@@ -2415,10 +2439,12 @@ func (as *mqttAccountSessionManager) serializeRetainedMsgsForSub(rms map[string]
 		if !ok {
 			continue
 		}
+		c.mu.Lock()
 		if sub.mqtt.prm == nil {
 			sub.mqtt.prm = &mqttWriter{}
 		}
 		prm := sub.mqtt.prm
+		c.mu.Unlock()
 		var pi uint16
 		qos := mqttGetQoS(rm.Flags)
 		if qos > sub.mqtt.qos {
@@ -4271,32 +4297,32 @@ func mqttDeliverMsgCbQoS0(sub *subscription, pc *client, _ *Account, subject, re
 		return
 	}
 
-	hdr, msg := pc.msgParts(rmsg)
-
 	// This is the client associated with the subscription.
 	cc := sub.client
 
 	// This is immutable
 	sess := cc.mqtt.sess
 
-	// Check the subscription's QoS. This needs to be protected because
-	// the client may change an existing subscription at any time.
-	sess.mu.Lock()
+	// Lock here, otherwise we may be called with sub.mqtt == nil. Ignore
+	// wildcard subscriptions if this subject starts with '$', per Spec
+	// [MQTT-4.7.2-1].
+	sess.subsMu.RLock()
 	subQoS := sub.mqtt.qos
-	isReservedSub := mqttIsReservedSub(sub, subject)
-	sess.mu.Unlock()
+	ignore := mqttMustIgnoreForReservedSub(sub, subject)
+	sess.subsMu.RUnlock()
 
-	// We have a wildcard subscription and this subject starts with '$' so ignore per Spec [MQTT-4.7.2-1].
-	if isReservedSub {
+	if ignore {
 		return
 	}
 
+	hdr, msg := pc.msgParts(rmsg)
 	var topic []byte
 	if pc.isMqtt() {
 		// This is an MQTT publisher directly connected to this server.
 
-		// If the message was published with a QoS > 0 and the sub has the QoS >
-		// 0 then the message will be delivered by the other callback.
+		// Check the subscription's QoS. If the message was published with a
+		// QoS>0 and the sub has the QoS>0 then the message will be delivered by
+		// mqttDeliverMsgCbQoS12.
 		msgQoS := mqttGetQoS(pc.mqtt.pp.flags)
 		if subQoS > 0 && msgQoS > 0 {
 			return
@@ -4310,8 +4336,13 @@ func mqttDeliverMsgCbQoS0(sub *subscription, pc *client, _ *Account, subject, re
 	} else {
 		// Non MQTT client, could be NATS publisher, or ROUTER, etc..
 		h := mqttParsePublishNATSHeader(hdr)
-		if subQoS > 0 && h != nil && h.qos > 0 {
-			// will be delivered by the JetStream callback
+
+		// If the message does not have the MQTT header, it is not a MQTT and
+		// should be delivered here, at QOS0. If it does have the header, we
+		// need to lock the session to check the sub QoS, and then ignore the
+		// message if the Sub wants higher QOS delivery. It will be delivered by
+		// mqttDeliverMsgCbQoS12.
+		if h != nil && h.qos > 0 && subQoS > 0 {
 			return
 		}
 
@@ -4356,8 +4387,9 @@ func mqttDeliverMsgCbQoS12(sub *subscription, pc *client, _ *Account, subject, r
 	// This is immutable
 	sess := cc.mqtt.sess
 
-	// We lock to check some of the subscription's fields and if we need to
-	// keep track of pending acks, etc..
+	// We lock to check some of the subscription's fields and if we need to keep
+	// track of pending acks, etc. There is no need to acquire the subsMu RLock
+	// since sess.Lock is overarching for modifying subscriptions.
 	sess.mu.Lock()
 	if sess.c != cc || sub.mqtt == nil {
 		sess.mu.Unlock()
@@ -4382,8 +4414,7 @@ func mqttDeliverMsgCbQoS12(sub *subscription, pc *client, _ *Account, subject, r
 	// Check for reserved subject violation. If so, we will send the ack to
 	// remove the message, and do nothing else.
 	strippedSubj := string(subject[len(mqttStreamSubjectPrefix):])
-	isReservedSub := mqttIsReservedSub(sub, strippedSubj)
-	if isReservedSub {
+	if mqttMustIgnoreForReservedSub(sub, strippedSubj) {
 		sess.mu.Unlock()
 		sess.jsa.sendAck(reply)
 		return
@@ -4432,12 +4463,12 @@ func mqttDeliverPubRelCb(sub *subscription, pc *client, _ *Account, subject, rep
 	cc.mqttEnqueuePubResponse(mqttPacketPubRel, pi, trace)
 }
 
-// The MQTT Server MUST NOT match Topic Filters starting with a wildcard character (# or +)
-// with Topic Names beginning with a $ character, Spec [MQTT-4.7.2-1].
-// We will return true if there is a violation.
+// The MQTT Server MUST NOT match Topic Filters starting with a wildcard
+// character (# or +) with Topic Names beginning with a $ character, Spec
+// [MQTT-4.7.2-1]. We will return true if there is a violation.
 //
-// Session lock must be held on entry to protect access to sub.mqtt.reserved.
-func mqttIsReservedSub(sub *subscription, subject string) bool {
+// Session or subMu lock must be held on entry to protect access to sub.mqtt.
+func mqttMustIgnoreForReservedSub(sub *subscription, subject string) bool {
 	// If the subject does not start with $ nothing to do here.
 	if !sub.mqtt.reserved || len(subject) == 0 || subject[0] != mqttReservedPre {
 		return false
