@@ -336,6 +336,9 @@ var nbPoolLarge = &sync.Pool{
 	},
 }
 
+// nbPoolGet returns a frame that is a best-effort match for the given size.
+// Once a pooled frame is no longer needed, it should be recycled by passing
+// it to nbPoolPut.
 func nbPoolGet(sz int) []byte {
 	switch {
 	case sz <= nbPoolSizeSmall:
@@ -347,6 +350,10 @@ func nbPoolGet(sz int) []byte {
 	}
 }
 
+// nbPoolPut recycles a frame that was retrieved from nbPoolGet. It is not
+// safe to return multiple slices referring to chunks of the same underlying
+// array as this may create overlaps when the buffers are returned to their
+// original size, resulting in race conditions.
 func nbPoolPut(b []byte) {
 	switch cap(b) {
 	case nbPoolSizeSmall:
@@ -1490,8 +1497,8 @@ func closedStateForErr(err error) ClosedState {
 	return ReadError
 }
 
-// collapsePtoNB will place primary onto nb buffer as needed in prep for WriteTo.
-// This will return a copy on purpose.
+// collapsePtoNB will either returned framed WebSocket buffers or it will
+// return a reference to c.out.nb.
 func (c *client) collapsePtoNB() (net.Buffers, int64) {
 	if c.isWebsocket() {
 		return c.wsCollapsePtoNB()
