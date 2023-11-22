@@ -965,7 +965,7 @@ func (s *Server) updateRemoteRoutePerms(c *client, info *Info) {
 
 	c.mu.Lock()
 	c.sendRouteSubProtos(allSubs, false, func(sub *subscription) bool {
-		subj := bytesToString(sub.subject)
+		subj := string(sub.subject)
 		// If the remote can now export but could not before, and this server can import this
 		// subject, then send SUB protocol.
 		if newPermsTester.canExport(subj) && !oldPermsTester.canExport(subj) && c.canImport(subj) {
@@ -1239,7 +1239,7 @@ func (c *client) parseUnsubProto(arg []byte) (string, []byte, []byte, error) {
 	subjIdx := 1
 	c.mu.Lock()
 	if c.kind == ROUTER && c.route != nil {
-		if accountName = bytesToString(c.route.accName); accountName != _EMPTY_ {
+		if accountName = string(c.route.accName); accountName != _EMPTY_ {
 			subjIdx = 0
 		}
 	}
@@ -1253,7 +1253,7 @@ func (c *client) parseUnsubProto(arg []byte) (string, []byte, []byte, error) {
 		return _EMPTY_, nil, nil, fmt.Errorf("parse error: '%s'", arg)
 	}
 	if accountName == _EMPTY_ {
-		accountName = bytesToString(args[0])
+		accountName = string(args[0])
 	}
 	return accountName, args[subjIdx], queue, nil
 }
@@ -1343,7 +1343,7 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 		accPos = len(sub.origin) + 1
 	}
 	c.mu.Lock()
-	accountName := bytesToString(c.route.accName)
+	accountName := string(c.route.accName)
 	c.mu.Unlock()
 	// If the route is dedicated to an account, accountName will not
 	// be empty. If it is, then the account must be in the protocol.
@@ -1411,7 +1411,7 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 	}
 
 	// Check permissions if applicable.
-	if !c.canExport(bytesToString(sub.subject)) {
+	if c.perms != nil && !c.canExport(string(sub.subject)) {
 		c.mu.Unlock()
 		c.Debugf("Can not export %q, ignoring remote subscription request", sub.subject)
 		return nil
@@ -2230,7 +2230,10 @@ func handleDuplicateRoute(remote, c *client, setNoReconnect bool) {
 
 // Import filter check.
 func (c *client) importFilter(sub *subscription) bool {
-	return c.canImport(bytesToString(sub.subject))
+	if c.perms == nil {
+		return true
+	}
+	return c.canImport(string(sub.subject))
 }
 
 // updateRouteSubscriptionMap will make sure to update the route map for the subscription. Will

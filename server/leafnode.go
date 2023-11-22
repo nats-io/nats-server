@@ -158,7 +158,7 @@ func (s *Server) solicitLeafNodeRemotes(remotes []*RemoteLeafOpts) {
 				s.Errorf("LeafNode Remote Credentials file %q malformed", creds)
 			} else if _, err := nkeys.FromSeed(items[1][1]); err != nil {
 				s.Errorf("LeafNode Remote Credentials file %q has malformed seed", creds)
-			} else if uc, err := jwt.DecodeUserClaims(bytesToString(items[0][1])); err != nil {
+			} else if uc, err := jwt.DecodeUserClaims(string(items[0][1])); err != nil {
 				s.Errorf("LeafNode Remote Credentials file %q has malformed user jwt", creds)
 			} else if isSysAccRemote {
 				if !uc.Permissions.Pub.Empty() || !uc.Permissions.Sub.Empty() || uc.Permissions.Resp != nil {
@@ -1971,7 +1971,7 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 	c.leaf.smap = make(map[string]int32)
 	for _, sub := range subs {
 		// Check perms regardless of role.
-		if !c.canSubscribe(bytesToString(sub.subject)) {
+		if c.perms != nil && !c.canSubscribe(string(sub.subject)) {
 			c.Debugf("Not permitted to subscribe to %q on behalf of %s%s", sub.subject, accName, accNTag)
 			continue
 		}
@@ -2086,7 +2086,7 @@ func (acc *Account) updateLeafNodes(sub *subscription, delta int32) {
 	defer acc.lmu.RUnlock()
 
 	// Do this once.
-	subject := bytesToString(sub.subject)
+	subject := string(sub.subject)
 
 	// Walk the connected leafnodes.
 	for _, ln := range acc.lleafs {
@@ -2200,7 +2200,7 @@ func keyFromSub(sub *subscription) string {
 	sb.Write(sub.subject)
 	if sub.queue != nil {
 		// Just make the key subject spc group, e.g. 'foo bar'
-		sb.WriteString(" ")
+		sb.WriteByte(' ')
 		sb.Write(sub.queue)
 	}
 	return sb.String()
@@ -2294,7 +2294,7 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 
 	// If we are a hub check that we can publish to this subject.
 	if checkPerms {
-		subj := bytesToString(sub.subject)
+		subj := string(sub.subject)
 		if subjectIsLiteral(subj) && !c.pubAllowedFullCheck(subj, true, true) {
 			c.mu.Unlock()
 			c.leafSubPermViolation(sub.subject)
