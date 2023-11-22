@@ -1963,7 +1963,7 @@ func (c *client) processGatewayRSub(arg []byte) error {
 	// If callUpdate is true, srv and sub will be not nil.
 	defer func() {
 		if callUpdate {
-			srv.updateInterestForAccountOnGateway(bytesToString(accName), sub, 1)
+			srv.updateInterestForAccountOnGateway(string(accName), sub, 1)
 		}
 	}()
 

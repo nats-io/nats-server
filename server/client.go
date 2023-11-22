@@ -4153,7 +4153,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	}
 
 	// Pick correct "to" subject. If we matched on a wildcard use the literal publish subject.
-	to, subject := si.to, bytesToString(c.pa.subject)
+	to, subject := si.to, string(c.pa.subject)
 
 	if si.tr != nil {
 		// FIXME(dlc) - This could be slow, may want to look at adding cache to bare transforms?
@@ -5024,8 +5024,8 @@ func (c *client) processSubsOnConfigReload(awcsti map[string]struct{}) {
 	for _, sub := range c.subs {
 		// Just checking to rebuild mperms under the lock, will collect removed though here.
 		// Only collect under subs array of canSubscribe and checkAcc true.
-		canSub := c.canSubscribe(bytesToString(sub.subject))
-		canQSub := sub.queue != nil && c.canSubscribe(bytesToString(sub.subject), bytesToString(sub.queue))
+		canSub := c.canSubscribe(string(sub.subject))
+		canQSub := sub.queue != nil && c.canSubscribe(string(sub.subject), string(sub.queue))
 
 		if !canSub && !canQSub {
 			removed = append(removed, sub)
@@ -5238,7 +5238,7 @@ func (c *client) reconnect() {
 		rid := c.route.remoteID
 		rtype := c.route.routeType
 		rurl := c.route.url
-		accName := bytesToString(c.route.accName)
+		accName := string(c.route.accName)
 		checkRID := accName == _EMPTY_ && srv.getOpts().Cluster.PoolSize < 1 && rid != _EMPTY_
 		c.mu.Unlock()
 
@@ -5335,7 +5335,7 @@ func (c *client) getAccAndResultFromCache() (*Account, *SublistResult) {
 			acc = c.acc
 		} else {
 			// Match correct account and sublist.
-			if acc, _ = c.srv.LookupAccount(bytesToString(c.pa.account)); acc == nil {
+			if acc, _ = c.srv.LookupAccount(string(c.pa.account)); acc == nil {
 				return nil, nil
 			}
 		}
