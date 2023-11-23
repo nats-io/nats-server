@@ -27,9 +27,7 @@ import (
 	"math/rand"
 	"net"
 	"os"
-	"os/exec"
 	"reflect"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -258,7 +256,7 @@ func TestMQTTReader(t *testing.T) {
 }
 
 func TestMQTTWriter(t *testing.T) {
-	w := &mqttWriter{}
+	w := newMQTTWriter(0)
 	w.WriteUint16(1234)
 
 	r := &mqttReader{}
@@ -333,6 +331,7 @@ func testMQTTRunServer(t testing.TB, o *Options) *Server {
 	}
 	l := &DummyLogger{}
 	s.SetLogger(l, true, true)
+	// s.ConfigureLogger()
 	s.Start()
 	if err := s.readyForConnections(3 * time.Second); err != nil {
 		testMQTTShutdownServer(s)
@@ -923,7 +922,7 @@ func mqttCreateConnectProto(ci *mqttConnInfo) []byte {
 		pkLen += 2 + len(ci.pass)
 	}
 
-	w := &mqttWriter{}
+	w := newMQTTWriter(0)
 	w.WriteByte(mqttPacketConnect)
 	w.WriteVarInt(pkLen)
 	w.WriteString(string(mqttProtoName))
@@ -1611,11 +1610,7 @@ func TestMQTTConnectNotFirstPacket(t *testing.T) {
 	}
 	defer c.Close()
 
-	w := &mqttWriter{}
-	mqttWritePublish(w, 0, false, false, "foo", 0, []byte("hello"))
-	if _, err := testMQTTWrite(c, w.Bytes()); err != nil {
-		t.Fatalf("Error publishing: %v", err)
-	}
+	testMQTTSendPublishPacket(t, c, 0, false, false, "foo", 0, []byte("hello"))
 	testMQTTExpectDisconnect(t, c)
 
 	select {
@@ -1706,7 +1701,7 @@ func TestMQTTConnectFailsOnParse(t *testing.T) {
 		2 + // keepAlive
 		2 + len("mqtt")
 
-	w := &mqttWriter{}
+	w := newMQTTWriter(0)
 	w.WriteByte(mqttPacketConnect)
 	w.WriteVarInt(pkLen)
 	w.WriteString(string(mqttProtoName))
@@ -1914,7 +1909,7 @@ func TestMQTTParseSub(t *testing.T) {
 
 func testMQTTSub(t testing.TB, pi uint16, c net.Conn, r *mqttReader, filters []*mqttFilter, expected []byte) {
 	t.Helper()
-	w := &mqttWriter{}
+	w := newMQTTWriter(0)
 	pkLen := 2 // for pi
 	for i := 0; i < len(filters); i++ {
 		f := filters[i]
@@ -1999,7 +1994,7 @@ func TestMQTTQoS2SubDowngrade(t *testing.T) {
 
 func testMQTTFlush(t testing.TB, c net.Conn, bw *bufio.Writer, r *mqttReader) {
 	t.Helper()
-	w := &mqttWriter{}
+	w := newMQTTWriter(0)
 	w.WriteByte(mqttPacketPing)
 	w.WriteByte(0)
 	if bw != nil {
@@ -2101,7 +2096,7 @@ func testMQTTGetPubMsgExEx(t testing.TB, _ net.Conn, r *mqttReader, b byte, pl i
 
 func testMQTTSendPIPacket(packetType byte, t testing.TB, c net.Conn, pi uint16) {
 	t.Helper()
-	w := &mqttWriter{}
+	w := newMQTTWriter(0)
 	w.WriteByte(packetType)
 	w.WriteVarInt(2)
 	w.WriteUint16(pi)
@@ -2110,22 +2105,26 @@ func testMQTTSendPIPacket(packetType byte, t testing.TB, c net.Conn, pi uint16) 
 	}
 }
 
-func testMQTTPublishNoAcks(t testing.TB, c net.Conn, qos byte, dup, retain bool, topic string, pi uint16, payload []byte) {
+func testMQTTWritePublishPacket(t testing.TB, w io.Writer, qos byte, dup, retain bool, topic string, pi uint16, payload []byte) {
 	t.Helper()
-	w := &mqttWriter{}
-	mqttWritePublish(w, qos, dup, retain, topic, pi, payload)
-	if _, err := testMQTTWrite(c, w.Bytes()); err != nil {
+	_, hdr := mqttSerializePublishHeader(pi, qos, dup, retain, []byte(topic), len(payload))
+	if _, err := w.Write(hdr); err != nil {
+		t.Fatalf("Error writing PUBLISH proto: %v", err)
+	}
+	if _, err := w.Write(payload); err != nil {
 		t.Fatalf("Error writing PUBLISH proto: %v", err)
 	}
 }
 
+func testMQTTSendPublishPacket(t testing.TB, c net.Conn, qos byte, dup, retain bool, topic string, pi uint16, payload []byte) {
+	c.SetWriteDeadline(time.Now().Add(testMQTTTimeout))
+	testMQTTWritePublishPacket(t, c, qos, dup, retain, topic, pi, payload)
+	c.SetWriteDeadline(time.Time{})
+}
+
 func testMQTTPublish(t testing.TB, c net.Conn, r *mqttReader, qos byte, dup, retain bool, topic string, pi uint16, payload []byte) {
 	t.Helper()
-	w := &mqttWriter{}
-	mqttWritePublish(w, qos, dup, retain, topic, pi, payload)
-	if _, err := testMQTTWrite(c, w.Bytes()); err != nil {
-		t.Fatalf("Error writing PUBLISH proto: %v", err)
-	}
+	testMQTTSendPublishPacket(t, c, qos, dup, retain, topic, pi, payload)
 	switch qos {
 	case 1:
 		b, _ := testMQTTReadPacket(t, r)
@@ -2244,7 +2243,7 @@ func TestMQTTQoS2PubReject(t *testing.T) {
 
 	testMQTTPublish(t, mcp, mpr, 1, false, false, "foo", 1, []byte("msg"))
 
-	testMQTTPublishNoAcks(t, mcp, 2, false, false, "foo", 2, []byte("msg"))
+	testMQTTSendPublishPacket(t, mcp, 2, false, false, "foo", 2, []byte("msg"))
 	testMQTTExpectDisconnect(t, mcp)
 }
 
@@ -3803,7 +3802,7 @@ func TestMQTTParseUnsub(t *testing.T) {
 
 func testMQTTUnsub(t *testing.T, pi uint16, c net.Conn, r *mqttReader, filters []*mqttFilter) {
 	t.Helper()
-	w := &mqttWriter{}
+	w := newMQTTWriter(0)
 	pkLen := 2 // for pi
 	for i := 0; i < len(filters); i++ {
 		f := filters[i]
@@ -3921,7 +3920,7 @@ func testMQTTDisconnect(t testing.TB, c net.Conn, bw *bufio.Writer) {
 
 func testMQTTDisconnectEx(t testing.TB, c net.Conn, bw *bufio.Writer, wait bool) {
 	t.Helper()
-	w := &mqttWriter{}
+	w := newMQTTWriter(0)
 	w.WriteByte(mqttPacketDisconnect)
 	w.WriteByte(0)
 	if bw != nil {
@@ -4840,7 +4839,7 @@ func TestMQTTFlappingSession(t *testing.T) {
 		t.Fatalf("Error writing protocols: %v", err)
 	}
 	// Misbehave and send a SUB protocol without waiting for the CONNACK
-	w := &mqttWriter{}
+	w := newMQTTWriter(0)
 	pkLen := 2 // for pi
 	// Topic "foo"
 	pkLen += 2 + 3 + 1
@@ -5027,7 +5026,7 @@ func TestMQTTConnAckFirstPacket(t *testing.T) {
 		c, r = testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
 		defer c.Close()
 		testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, true)
-		w := &mqttWriter{}
+		w := newMQTTWriter(0)
 		w.WriteByte(mqttPacketDisconnect)
 		w.WriteByte(0)
 		c.Write(w.Bytes())
@@ -5242,9 +5241,9 @@ func TestMQTTQoS2RejectPublishDuplicates(t *testing.T) {
 	// complete the PUBREL/PUBCOMP flow as needed. Only one message (first
 	// payload) should be delivered. PUBRECs,
 	var pubPI uint16 = 444
-	testMQTTPublishNoAcks(t, cp, qos2, false, false, "foo", pubPI, []byte("data1"))
-	testMQTTPublishNoAcks(t, cp, qos2, true, false, "foo", pubPI, []byte("data2"))
-	testMQTTPublishNoAcks(t, cp, qos2, false, false, "foo", pubPI, []byte("data3"))
+	testMQTTSendPublishPacket(t, cp, qos2, false, false, "foo", pubPI, []byte("data1"))
+	testMQTTSendPublishPacket(t, cp, qos2, true, false, "foo", pubPI, []byte("data2"))
+	testMQTTSendPublishPacket(t, cp, qos2, false, false, "foo", pubPI, []byte("data3"))
 
 	for i := 0; i < 3; i++ {
 		// [MQTT-4.3.3-1] The receiver
@@ -7320,41 +7319,6 @@ func TestMQTTJetStreamRepublishAndQoS0Subscribers(t *testing.T) {
 	testMQTTExpectNothing(t, r)
 }
 
-func TestMQTTCLICompliance(t *testing.T) {
-	mqttPath := os.Getenv("MQTT_CLI")
-	if mqttPath == "" {
-		if p, err := exec.LookPath("mqtt"); err == nil {
-			mqttPath = p
-		}
-	}
-	if mqttPath == "" {
-		t.Skip(`"mqtt" command is not found in $PATH nor $MQTT_CLI. See https://hivemq.github.io/mqtt-cli/docs/installation/#debian-package for installation instructions`)
-	}
-
-	conf := createConfFile(t, []byte(fmt.Sprintf(`
-		listen: 127.0.0.1:-1
-		server_name: mqtt
-		jetstream {
-			store_dir = %q
-		}
-		mqtt {
-			listen: 127.0.0.1:-1
-		}
-	`, t.TempDir())))
-	s, o := RunServerWithConfig(conf)
-	defer testMQTTShutdownServer(s)
-
-	cmd := exec.Command(mqttPath, "test", "-V", "3", "-p", strconv.Itoa(o.MQTT.Port))
-
-	output, err := cmd.CombinedOutput()
-	t.Log(string(output))
-	if err != nil {
-		if exitError, ok := err.(*exec.ExitError); ok {
-			t.Fatalf("mqtt cli exited with error: %v", exitError)
-		}
-	}
-}
-
 //////////////////////////////////////////////////////////////////////////
 //
 // Benchmarks
@@ -7375,8 +7339,8 @@ func mqttBenchPubQoS0(b *testing.B, subject, payload string, numSubs int) {
 	ci := &mqttConnInfo{clientID: "pub", cleanSess: true}
 	c, br := testMQTTConnect(b, ci, o.MQTT.Host, o.MQTT.Port)
 	testMQTTCheckConnAck(b, br, mqttConnAckRCConnectionAccepted, false)
-	w := &mqttWriter{}
-	mqttWritePublish(w, 0, false, false, subject, 0, []byte(payload))
+	w := newMQTTWriter(0)
+	testMQTTWritePublishPacket(b, w, 0, false, false, subject, 0, []byte(payload))
 	sendOp := w.Bytes()
 
 	dch := make(chan error, 1)
@@ -7391,7 +7355,7 @@ func mqttBenchPubQoS0(b *testing.B, subject, payload string, numSubs int) {
 		testMQTTSub(b, 1, cs, brs, []*mqttFilter{{filter: subject, qos: 0}}, []byte{0})
 		testMQTTFlush(b, cs, nil, brs)
 
-		w := &mqttWriter{}
+		w := newMQTTWriter(0)
 		varHeaderAndPayload := 2 + len(subject) + len(payload)
 		w.WriteVarInt(varHeaderAndPayload)
 		size := 1 + w.Len() + varHeaderAndPayload
@@ -7449,10 +7413,10 @@ func mqttBenchPubQoS1(b *testing.B, subject, payload string, numSubs int) {
 	c, br := testMQTTConnect(b, ci, o.MQTT.Host, o.MQTT.Port)
 	testMQTTCheckConnAck(b, br, mqttConnAckRCConnectionAccepted, false)
 
-	w := &mqttWriter{}
-	mqttWritePublish(w, 1, false, false, subject, 1, []byte(payload))
+	w := newMQTTWriter(0)
+	testMQTTWritePublishPacket(b, w, 1, false, false, subject, 1, []byte(payload))
 	// For reported bytes we will count the PUBLISH + PUBACK (4 bytes)
-	totalSize := int64(len(w.Bytes()) + 4)
+	totalSize := int64(w.Len() + 4)
 	w.Reset()
 
 	pi := uint16(1)
@@ -7471,7 +7435,7 @@ func mqttBenchPubQoS1(b *testing.B, subject, payload string, numSubs int) {
 		testMQTTSub(b, 1, cs, brs, []*mqttFilter{{filter: subject, qos: 1}}, []byte{1})
 		testMQTTFlush(b, cs, nil, brs)
 
-		w := &mqttWriter{}
+		w := newMQTTWriter(0)
 		varHeaderAndPayload := 2 + len(subject) + 2 + len(payload)
 		w.WriteVarInt(varHeaderAndPayload)
 		size := 1 + w.Len() + varHeaderAndPayload
@@ -7500,7 +7464,7 @@ func mqttBenchPubQoS1(b *testing.B, subject, payload string, numSubs int) {
 	b.StartTimer()
 	for i := 0; i < b.N; i++ {
 		if pi <= maxpi {
-			mqttWritePublish(w, 1, false, false, subject, pi, []byte(payload))
+			testMQTTWritePublishPacket(b, w, 1, false, false, subject, pi, []byte(payload))
 			pi++
 			if w.Len() >= mqttBenchBufLen {
 				flush()

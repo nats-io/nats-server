@@ -183,6 +183,10 @@ const (
 
 	// For Websocket URLs
 	mqttWSPath = "/mqtt"
+
+	mqttInitialPRMCapacity = 32 * 1024
+	mqttInitialPubHeader   = 16 // An overkill, should need 7 bytes max
+	mqttProcessSubTooLong  = 100 * time.Millisecond
 )
 
 var (
@@ -343,7 +347,7 @@ type mqttSub struct {
 
 	// Pending serialization of retained messages to be sent when subscription
 	// is registered. Protected by the (sub's) client lock.
-	prm *mqttWriter
+	prm [][]byte
 
 	// If this subscription needs to be checked for being reserved. E.g. '#' or
 	// '*' or '*/'.  It is set up at the time of subscription and is immutable
@@ -394,7 +398,7 @@ type mqttReader struct {
 }
 
 type mqttWriter struct {
-	bytes.Buffer
+	*bytes.Buffer
 }
 
 type mqttWill struct {
@@ -443,6 +447,13 @@ type mqttParsedPublishNATSHeader struct {
 	qos     byte
 	subject []byte
 	mapped  []byte
+}
+
+type MQTTBenchmarkResult struct {
+	Ops   int           `json:"ops"`
+	NS    time.Duration `json:"ns"`
+	Unit  string        `json:"unit"`
+	Bytes int64         `json:"bytes"`
 }
 
 func (s *Server) startMQTT() {
@@ -2183,7 +2194,31 @@ func (as *mqttAccountSessionManager) removeSession(sess *mqttSession, lock bool)
 // Session lock held on entry. Acquires the session subs lock and holds it for
 // the duration. Non-MQTT messages coming into mqttDeliverMsgCbQoS0 will be
 // waiting.
-func (sess *mqttSession) processSub(c *client, subject, sid []byte, isReserved bool, qos byte, jsDurName string, h msgHandler, initShadow bool) (*subscription, error) {
+func (as *mqttAccountSessionManager) processSubWithRetained(sess *mqttSession, c *client,
+	rms map[string]*mqttRetainedMsg, subject, sid []byte, isReserved bool, qos byte,
+	jsDurName string, h msgHandler, trace bool,
+) (*subscription, error) {
+	return mqttProcessSubImpl(sess, c, subject, sid, isReserved, qos, jsDurName, h, true, trace, rms, as)
+}
+
+func (sess *mqttSession) processSub(c *client, subject, sid []byte, isReserved bool, qos byte,
+	jsDurName string, h msgHandler, initShadow bool) (*subscription, error) {
+	return mqttProcessSubImpl(sess, c, subject, sid, isReserved, qos, jsDurName, h, initShadow, false, nil, nil)
+}
+
+// if rms == nil no retained messages will be serialized, as must be passed in only for that.
+func mqttProcessSubImpl(sess *mqttSession, c *client,
+	subject, sid []byte, isReserved bool, qos byte, jsDurName string, h msgHandler,
+	initShadow, trace bool,
+	rms map[string]*mqttRetainedMsg, as *mqttAccountSessionManager,
+) (*subscription, error) {
+	var retainedElapsed time.Duration
+	defer func() {
+		if retainedElapsed > mqttProcessSubTooLong {
+			c.Warnf("Took too long to process subscription for %q: %v", subject, retainedElapsed)
+		}
+	}()
+
 	sess.subsMu.Lock()
 	defer sess.subsMu.Unlock()
 
@@ -2208,7 +2243,14 @@ func (sess *mqttSession) processSub(c *client, subject, sid []byte, isReserved b
 		// accessing it later requires a lock.
 		ss.mqtt.qos = qos
 		ss.mqtt.jsDur = jsDurName
+
+		if len(rms) > 0 {
+			start := time.Now()
+			as.serializeRetainedMsgsForSub(rms, sess, c, ss, trace)
+			retainedElapsed = time.Since(start)
+		}
 	}
+
 	return sub, nil
 }
 
@@ -2321,12 +2363,6 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 		sess.cons[sid] = cc
 	}
 
-	serializeRMS := func(sub *subscription) {
-		for _, ss := range append([]*subscription{sub}, sub.shadow...) {
-			as.serializeRetainedMsgsForSub(rms, sess, c, ss, trace)
-		}
-	}
-
 	var err error
 	subs := make([]*subscription, 0, len(filters))
 	for _, f := range filters {
@@ -2339,18 +2375,23 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 		bsubject := []byte(subject)
 		sid := subject
 		bsid := bsubject
+		isReserved := isMQTTReservedSubscription(subject)
 
 		var jscons *ConsumerConfig
 		var jssub *subscription
 
 		// Note that if a subscription already exists on this subject, the
 		// existing sub is returned. Need to update the qos.
+		var sub *subscription
+		var err error
 		as.mu.Lock()
 		sess.mu.Lock()
-		sub, err := sess.processSub(c, bsubject, bsid,
-			isMQTTReservedSubscription(subject), f.qos, _EMPTY_, mqttDeliverMsgCbQoS0, true)
-		if err == nil && fromSubProto {
-			serializeRMS(sub)
+		if fromSubProto {
+			sub, err = as.processSubWithRetained(sess, c, rms, bsubject, bsid,
+				isReserved, f.qos, _EMPTY_, mqttDeliverMsgCbQoS0, trace)
+		} else {
+			sub, err = sess.processSub(c, bsubject, bsid,
+				isReserved, f.qos, _EMPTY_, mqttDeliverMsgCbQoS0, true)
 		}
 		sess.mu.Unlock()
 		as.mu.Unlock()
@@ -2380,10 +2421,12 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 			// See note above about existing subscription.
 			as.mu.Lock()
 			sess.mu.Lock()
-			fwcsub, err = sess.processSub(c, []byte(fwcsubject), []byte(fwcsid),
-				isMQTTReservedSubscription(subject), f.qos, _EMPTY_, mqttDeliverMsgCbQoS0, true)
-			if err == nil && fromSubProto {
-				serializeRMS(fwcsub)
+			if fromSubProto {
+				fwcsub, err = as.processSubWithRetained(sess, c, rms, []byte(fwcsubject), []byte(fwcsid),
+					isReserved, f.qos, _EMPTY_, mqttDeliverMsgCbQoS0, trace)
+			} else {
+				fwcsub, err = sess.processSub(c, []byte(fwcsubject), []byte(fwcsid),
+					isReserved, f.qos, _EMPTY_, mqttDeliverMsgCbQoS0, true)
 			}
 			sess.mu.Unlock()
 			as.mu.Unlock()
@@ -2439,12 +2482,6 @@ func (as *mqttAccountSessionManager) serializeRetainedMsgsForSub(rms map[string]
 		if !ok {
 			continue
 		}
-		c.mu.Lock()
-		if sub.mqtt.prm == nil {
-			sub.mqtt.prm = &mqttWriter{}
-		}
-		prm := sub.mqtt.prm
-		c.mu.Unlock()
 		var pi uint16
 		qos := mqttGetQoS(rm.Flags)
 		if qos > sub.mqtt.qos {
@@ -2467,7 +2504,10 @@ func (as *mqttAccountSessionManager) serializeRetainedMsgsForSub(rms map[string]
 		// Need to use the subject for the retained message, not the `sub` subject.
 		// We can find the published retained message in rm.sub.subject.
 		// Set the RETAIN flag: [MQTT-3.3.1-8].
-		flags := mqttSerializePublishMsg(prm, pi, qos, false, true, []byte(rm.Topic), rm.Msg)
+		flags, headerBytes := mqttSerializePublishHeader(pi, qos, false, true, []byte(rm.Topic), len(rm.Msg))
+		c.mu.Lock()
+		sub.mqtt.prm = append(sub.mqtt.prm, headerBytes, rm.Msg)
+		c.mu.Unlock()
 		if trace {
 			pp := mqttPublish{
 				topic: []byte(rm.Topic),
@@ -3879,7 +3919,10 @@ func (c *client) mqttHandlePubRetain() {
 			Source:  c.opts.Username,
 		}
 		rmBytes, _ := json.Marshal(rm)
+		// start := time.Now()
+		// time.Sleep(500 * time.Millisecond)
 		smr, err := asm.jsa.storeMsg(mqttRetainedMsgsStreamSubject+key, -1, rmBytes)
+		// fmt.Printf("<>/<> mqttHandlePubRetain: storeMsg took %v\n", time.Since(start))
 		if err == nil {
 			// Update the new sequence
 			rf := &mqttRetainedMsgRef{
@@ -4040,28 +4083,6 @@ func pubAllowed(perms *perm, subject string) bool {
 		allowed = len(r.psubs) == 0
 	}
 	return allowed
-}
-
-func mqttWritePublish(w *mqttWriter, qos byte, dup, retain bool, subject string, pi uint16, payload []byte) {
-	flags := qos << 1
-	if dup {
-		flags |= mqttPubFlagDup
-	}
-	if retain {
-		flags |= mqttPubFlagRetain
-	}
-
-	w.WriteByte(mqttPacketPub | flags)
-	pkLen := 2 + len(subject) + len(payload)
-	if qos > 0 {
-		pkLen += 2
-	}
-	w.WriteVarInt(pkLen)
-	w.WriteString(subject)
-	if qos > 0 {
-		w.WriteUint16(pi)
-	}
-	w.Write([]byte(payload))
 }
 
 func (c *client) mqttEnqueuePubResponse(packetType byte, pi uint16, trace bool) {
@@ -4491,17 +4512,15 @@ func isMQTTReservedSubscription(subject string) bool {
 // Common function to mqtt delivery callbacks to serialize and send the message
 // to the `cc` client.
 func (c *client) mqttEnqueuePublishMsgTo(cc *client, sub *subscription, pi uint16, qos byte, dup bool, topic, msg []byte) {
-	sw := mqttWriter{}
-	w := &sw
-
-	flags := mqttSerializePublishMsg(w, pi, qos, dup, false, topic, msg)
+	flags, headerBytes := mqttSerializePublishHeader(pi, qos, dup, false, topic, len(msg))
 
 	cc.mu.Lock()
-	if sub.mqtt.prm != nil {
-		cc.queueOutbound(sub.mqtt.prm.Bytes())
-		sub.mqtt.prm = nil
+	for _, data := range sub.mqtt.prm {
+		cc.queueOutbound(data)
 	}
-	cc.queueOutbound(w.Bytes())
+	sub.mqtt.prm = nil
+	cc.queueOutbound(headerBytes)
+	cc.queueOutbound(msg)
 	c.addToPCD(cc)
 	trace := cc.trace
 	cc.mu.Unlock()
@@ -4518,10 +4537,9 @@ func (c *client) mqttEnqueuePublishMsgTo(cc *client, sub *subscription, pi uint1
 }
 
 // Serializes to the given writer the message for the given subject.
-func mqttSerializePublishMsg(w *mqttWriter, pi uint16, qos byte, dup, retained bool, topic, msg []byte) byte {
+func mqttSerializePublishHeader(pi uint16, qos byte, dup, retained bool, topic []byte, msgLen int) (byte, []byte) {
 	// Compute len (will have to add packet id if message is sent as QoS>=1)
-	pkLen := 2 + len(topic) + len(msg)
-
+	pkLen := 2 + len(topic) + msgLen
 	var flags byte
 
 	// Set flags for dup/retained/qos1
@@ -4531,21 +4549,20 @@ func mqttSerializePublishMsg(w *mqttWriter, pi uint16, qos byte, dup, retained b
 	if retained {
 		flags |= mqttPubFlagRetain
 	}
-	// For now, we have only QoS 1
-	if pi > 0 {
+	if qos > 0 {
 		pkLen += 2
 		flags |= qos << 1
 	}
 
-	w.WriteByte(mqttPacketPub | flags)
-	w.WriteVarInt(pkLen)
-	w.WriteBytes(topic)
-	if pi > 0 {
-		w.WriteUint16(pi)
+	headerBuf := newMQTTWriter(mqttInitialPubHeader + len(topic))
+	headerBuf.WriteByte(mqttPacketPub | flags)
+	headerBuf.WriteVarInt(pkLen)
+	headerBuf.WriteBytes(topic)
+	if qos > 0 {
+		headerBuf.WriteUint16(pi)
 	}
-	w.Write(msg)
 
-	return flags
+	return flags, headerBuf.Bytes()
 }
 
 // Process the SUBSCRIBE packet.
@@ -4789,7 +4806,9 @@ func (c *client) mqttSendRetainedMsgsToNewSubs(subs []*subscription) {
 	c.mu.Lock()
 	for _, sub := range subs {
 		if sub.mqtt != nil && sub.mqtt.prm != nil {
-			c.queueOutbound(sub.mqtt.prm.Bytes())
+			for _, data := range sub.mqtt.prm {
+				c.queueOutbound(data)
+			}
 			sub.mqtt.prm = nil
 		}
 	}
@@ -4798,7 +4817,7 @@ func (c *client) mqttSendRetainedMsgsToNewSubs(subs []*subscription) {
 }
 
 func (c *client) mqttEnqueueSubAck(pi uint16, filters []*mqttFilter) {
-	w := &mqttWriter{}
+	w := newMQTTWriter(7 + len(filters))
 	w.WriteByte(mqttPacketSubAck)
 	// packet length is 2 (for packet identifier) and 1 byte per filter.
 	w.WriteVarInt(2 + len(filters))
@@ -4880,7 +4899,7 @@ func (c *client) mqttProcessUnsubs(filters []*mqttFilter) error {
 }
 
 func (c *client) mqttEnqueueUnsubAck(pi uint16) {
-	w := &mqttWriter{}
+	w := newMQTTWriter(4)
 	w.WriteByte(mqttPacketUnsubAck)
 	w.WriteVarInt(2)
 	w.WriteUint16(pi)
@@ -5209,15 +5228,27 @@ func (w *mqttWriter) WriteBytes(bs []byte) {
 }
 
 func (w *mqttWriter) WriteVarInt(value int) {
+	w.Write(mqttSerializeVarInt(value))
+}
+
+func mqttSerializeVarInt(value int) []byte {
+	bb := make([]byte, 0, 4)
 	for {
 		b := byte(value & 0x7f)
 		value >>= 7
 		if value > 0 {
 			b |= 0x80
 		}
-		w.WriteByte(b)
+		bb = append(bb, b)
 		if value == 0 {
 			break
 		}
+	}
+	return bb
+}
+
+func newMQTTWriter(cap int) *mqttWriter {
+	return &mqttWriter{
+		bytes.NewBuffer(make([]byte, 0, cap)),
 	}
 }
