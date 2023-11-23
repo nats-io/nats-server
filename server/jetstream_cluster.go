@@ -7245,7 +7245,7 @@ func decodeStreamMsg(buf []byte) (subject, reply string, hdr, msg []byte, lseq u
 	if len(buf) < rl {
 		return _EMPTY_, _EMPTY_, nil, nil, 0, 0, errBadStreamMsg
 	}
-	reply = bytesToString(buf[:rl])
+	reply = string(buf[:rl])
 	buf = buf[rl:]
 	if len(buf) < 2 {
 		return _EMPTY_, _EMPTY_, nil, nil, 0, 0, errBadStreamMsg
