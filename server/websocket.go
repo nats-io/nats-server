@@ -1380,6 +1380,7 @@ func (c *client) wsCollapsePtoNB() (net.Buffers, int64) {
 					buf := nbPoolGet(len(b))
 					bufs = append(bufs, append(buf, b...))
 					total += len(b)
+					nbPoolPut(nb[i])
 					continue
 				}
 				for len(b) > 0 {
