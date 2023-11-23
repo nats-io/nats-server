@@ -289,7 +289,7 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 		}
 
 		// Check if we need to set an auth timer if the user jwt expires.
-		c.setExpiration(arc.Claims(), expiration)
+		c.setRenewal(arc.Claims(), expiration)
 
 		respCh <- _EMPTY_
 	}

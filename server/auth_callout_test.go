@@ -207,18 +207,23 @@ func TestAuthCalloutBasics(t *testing.T) {
 		}
 	`
 	callouts := uint32(0)
+	waitForCallout := make(chan struct{})
 	handler := func(m *nats.Msg) {
-		atomic.AddUint32(&callouts, 1)
+		calls := atomic.AddUint32(&callouts, 1)
 		user, si, ci, opts, _ := decodeAuthRequest(t, m.Data)
 		require_True(t, si.Name == "A")
 		require_True(t, ci.Host == "127.0.0.1")
 		// Allow dlc user.
-		if opts.Username == "dlc" && opts.Password == "zzz" {
+		if calls <= 3 && opts.Username == "dlc" && opts.Password == "zzz" {
 			var j jwt.UserPermissionLimits
 			j.Pub.Allow.Add("$SYS.>")
+			if calls == 3 {
+				j.Pub.Allow.Add("ramon.>")
+			}
 			j.Payload = 1024
-			ujwt := createAuthUser(t, user, _EMPTY_, globalAccountName, "", nil, 10*time.Minute, &j)
+			ujwt := createAuthUser(t, user, _EMPTY_, globalAccountName, "", nil, 10*time.Second, &j)
 			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+			waitForCallout <- struct{}{}
 		} else {
 			// Nil response signals no authentication.
 			m.Respond(nil)
@@ -233,33 +238,54 @@ func TestAuthCalloutBasics(t *testing.T) {
 	// This one will use callout since not defined in server config.
 	nc := at.Connect(nats.UserInfo("dlc", "zzz"))
 
-	resp, err := nc.Request(userDirectInfoSubj, nil, time.Second)
-	require_NoError(t, err)
-	response := ServerAPIResponse{Data: &UserInfo{}}
-	err = json.Unmarshal(resp.Data, &response)
-	require_NoError(t, err)
+	compareUserInfo := func(perm ...string) {
+		time.Sleep(100 * time.Millisecond)
+		resp, err := nc.Request(userDirectInfoSubj, nil, time.Second)
+		require_NoError(t, err)
+		response := ServerAPIResponse{Data: &UserInfo{}}
+		err = json.Unmarshal(resp.Data, &response)
+		require_NoError(t, err)
 
-	userInfo := response.Data.(*UserInfo)
+		userInfo := response.Data.(*UserInfo)
 
-	dlc := &UserInfo{
-		UserID:  "dlc",
-		Account: globalAccountName,
-		Permissions: &Permissions{
-			Publish: &SubjectPermission{
-				Allow: []string{"$SYS.>"},
-				Deny:  []string{AuthCalloutSubject}, // Will be auto-added since in auth account.
+		dlc := &UserInfo{
+			UserID:  "dlc",
+			Account: globalAccountName,
+			Permissions: &Permissions{
+				Publish: &SubjectPermission{
+					Allow: append([]string{"$SYS.>"}, perm...),
+					Deny:  []string{AuthCalloutSubject}, // Will be auto-added since in auth account.
+				},
+				Subscribe: &SubjectPermission{},
 			},
-			Subscribe: &SubjectPermission{},
-		},
+		}
+		expires := userInfo.Expires
+		userInfo.Expires = 0
+		if !reflect.DeepEqual(dlc, userInfo) {
+			dlcJson, _ := json.MarshalIndent(dlc, "", "  ")
+			userInfoJson, _ := json.MarshalIndent(userInfo, "", "  ")
+			t.Fatalf("User info for %q did not match %s %s", "dlc", dlcJson, userInfoJson)
+		}
+		if expires > 10*time.Second || expires < (10*time.Second-5*time.Second) {
+			t.Fatalf("Expected expires of ~%v, got %v", 10*time.Second, expires)
+		}
 	}
-	expires := userInfo.Expires
-	userInfo.Expires = 0
-	if !reflect.DeepEqual(dlc, userInfo) {
-		t.Fatalf("User info for %q did not match", "dlc")
-	}
-	if expires > 10*time.Minute || expires < (10*time.Minute-5*time.Second) {
-		t.Fatalf("Expected expires of ~%v, got %v", 10*time.Minute, expires)
-	}
+
+	<-waitForCallout
+	compareUserInfo()
+
+	// Wait for a second valid callout with a new permission.
+	<-waitForCallout
+	compareUserInfo("ramon.>")
+
+	disconnected := make(chan struct{})
+	nc.SetErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+		if err != nats.ErrAuthExpired {
+			t.Fatalf("Expected %v, got %v", nats.ErrAuthExpired, err)
+		}
+		close(disconnected)
+	})
+	<-disconnected
 }
 
 func TestAuthCalloutMultiAccounts(t *testing.T) {

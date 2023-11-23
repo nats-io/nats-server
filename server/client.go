@@ -254,6 +254,7 @@ type client struct {
 	darray     []string
 	pcd        map[*client]struct{}
 	atmr       *time.Timer
+	rtmr       *time.Timer // renew timer.
 	expires    time.Time
 	ping       pinfo
 	msgb       [msgScratchSize]byte
@@ -1144,9 +1145,17 @@ func (c *client) mergeDenyPermissionsLocked(what denyType, denyPubs []string) {
 // Check to see if we have an expiration for the user JWT via base claims.
 // FIXME(dlc) - Clear on connect with new JWT.
 func (c *client) setExpiration(claims *jwt.ClaimsData, validFor time.Duration) {
+	c.setTimer(claims, validFor, c.setExpirationTimer)
+}
+
+func (c *client) setRenewal(claims *jwt.ClaimsData, validFor time.Duration) {
+	c.setTimer(claims, validFor, c.setRenewalTimer)
+}
+
+func (c *client) setTimer(claims *jwt.ClaimsData, validFor time.Duration, f func(time.Duration)) {
 	if claims.Expires == 0 {
 		if validFor != 0 {
-			c.setExpirationTimer(validFor)
+			f(validFor)
 		}
 		return
 	}
@@ -1156,9 +1165,9 @@ func (c *client) setExpiration(claims *jwt.ClaimsData, validFor time.Duration) {
 		expiresAt = time.Duration(claims.Expires-tn) * time.Second
 	}
 	if validFor != 0 && validFor < expiresAt {
-		c.setExpirationTimer(validFor)
+		f(validFor)
 	} else {
-		c.setExpirationTimer(expiresAt)
+		f(expiresAt)
 	}
 }
 
@@ -4872,6 +4881,10 @@ func (c *client) clearTlsToTimer() {
 
 // Lock should be held
 func (c *client) setAuthTimer(d time.Duration) {
+	if c.atmr != nil {
+		c.atmr.Stop()
+	}
+
 	c.atmr = time.AfterFunc(d, c.authTimeout)
 }
 
@@ -4882,6 +4895,16 @@ func (c *client) clearAuthTimer() bool {
 	}
 	stopped := c.atmr.Stop()
 	c.atmr = nil
+	return stopped
+}
+
+// Lock should be held
+func (c *client) clearRenewTimer() bool {
+	if c.rtmr == nil {
+		return true
+	}
+	stopped := c.rtmr.Stop()
+	c.rtmr = nil
 	return stopped
 }
 
@@ -4902,10 +4925,51 @@ func (c *client) setExpirationTimer(d time.Duration) {
 
 // This will set the atmr for the JWT expiration time. client lock should be held before call
 func (c *client) setExpirationTimerUnlocked(d time.Duration) {
+	// Stop any previous timer
+	if c.atmr != nil {
+		c.atmr.Stop()
+	}
 	c.atmr = time.AfterFunc(d, c.authExpired)
 	// This is an JWT expiration.
 	if c.flags.isSet(connectReceived) {
 		c.expires = time.Now().Add(d).Truncate(time.Second)
+	}
+}
+
+func (c *client) setRenewalTimer(d time.Duration) {
+	c.mu.Lock()
+	c.setRenewalTimerUnlocked(d)
+	c.mu.Unlock()
+}
+
+func (c *client) setRenewalTimerUnlocked(d time.Duration) {
+	// Stop any previous timer
+	if c.rtmr != nil {
+		c.rtmr.Stop()
+	}
+	c.rtmr = time.AfterFunc(d, c.renewCallout)
+	// This is an JWT expiration.
+	if c.flags.isSet(connectReceived) {
+		c.expires = time.Now().Add(d).Truncate(time.Second)
+	}
+}
+
+func (c *client) renewCallout() {
+	c.mu.Lock()
+	srv := c.srv
+	c.mu.Unlock()
+	if srv == nil {
+		return
+	}
+
+	authorized, _ := srv.processClientOrLeafCallout(c, srv.getOpts())
+	// If we are authorized, we will set the renewal timer again.
+	// Deny the Callout subject.
+	if authorized {
+		c.mergeDenyPermissionsLocked(pub, []string{AuthCalloutSubject})
+	} else {
+		// If we are not authorized, we will close the connection in the expiration handler.
+		c.authExpired()
 	}
 }
 
@@ -5075,6 +5139,7 @@ func (c *client) closeConnection(reason ClosedState) {
 	c.rref++
 	c.flags.set(closeConnection)
 	c.clearAuthTimer()
+	c.clearRenewTimer()
 	c.clearPingTimer()
 	c.clearTlsToTimer()
 	c.markConnAsClosed(reason)
