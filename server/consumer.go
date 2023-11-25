@@ -1790,6 +1790,10 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
+	if o.closed || o.mset == nil {
+		return NewJSConsumerDoesNotExistError()
+	}
+
 	if err := o.acc.checkNewConsumerConfig(&o.cfg, cfg); err != nil {
 		return err
 	}
