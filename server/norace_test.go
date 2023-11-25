@@ -9141,3 +9141,7 @@ func TestNoRaceFileStoreLargeMsgsAndFirstMatching(t *testing.T) {
 	fs.LoadNextMsg("*.baz.*", true, fseq, nil)
 	require_True(t, time.Since(start) < 200*time.Microsecond)
 }
+
+func TestNoRaceWSNoCorruptionWithFrameSizeLimit(t *testing.T) {
+	testWSNoCorruptionWithFrameSizeLimit(t, 50000)
+}
