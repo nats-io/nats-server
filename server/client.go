@@ -1841,11 +1841,11 @@ func (c *client) traceOutOp(op string, arg []byte) {
 
 func (c *client) traceOp(format, op string, arg []byte) {
 	opa := []interface{}{}
-	if op != "" {
+	if op != _EMPTY_ {
 		opa = append(opa, op)
 	}
 	if arg != nil {
-		opa = append(opa, string(arg))
+		opa = append(opa, bytesToString(arg))
 	}
 	c.Tracef(format, opa)
 }
@@ -2538,7 +2538,7 @@ func (c *client) processHeaderPub(arg []byte) error {
 		c.maxPayloadViolation(c.pa.size, maxPayload)
 		return ErrMaxPayload
 	}
-	if c.opts.Pedantic && !IsValidLiteralSubject(string(c.pa.subject)) {
+	if c.opts.Pedantic && !IsValidLiteralSubject(bytesToString(c.pa.subject)) {
 		c.sendErr("Invalid Publish Subject")
 	}
 	return nil
@@ -2591,7 +2591,7 @@ func (c *client) processPub(arg []byte) error {
 		c.maxPayloadViolation(c.pa.size, maxPayload)
 		return ErrMaxPayload
 	}
-	if c.opts.Pedantic && !IsValidLiteralSubject(string(c.pa.subject)) {
+	if c.opts.Pedantic && !IsValidLiteralSubject(bytesToString(c.pa.subject)) {
 		c.sendErr("Invalid Publish Subject")
 	}
 	return nil
@@ -2667,7 +2667,7 @@ func (c *client) processSubEx(subject, queue, bsid []byte, cb msgHandler, noForw
 	acc := c.acc
 	srv := c.srv
 
-	sid := string(sub.sid)
+	sid := bytesToString(sub.sid)
 
 	// This check does not apply to SYSTEM or JETSTREAM or ACCOUNT clients (because they don't have a `nc`...)
 	if c.isClosed() && (kind != SYSTEM && kind != JETSTREAM && kind != ACCOUNT) {
@@ -2802,7 +2802,7 @@ func (c *client) addShadowSubscriptions(acc *Account, sub *subscription, enact b
 		acc.mu.RUnlock()
 		return nil
 	}
-	subj := string(sub.subject)
+	subj := bytesToString(sub.subject)
 	if len(acc.imports.streams) > 0 {
 		tokens = tokenizeSubjectIntoSlice(tsa[:0], subj)
 		for _, tk := range tokens {
@@ -2910,7 +2910,7 @@ func (c *client) addShadowSub(sub *subscription, ime *ime, enact bool) (*subscri
 		if im.rtr == nil {
 			im.rtr = im.tr.reverse()
 		}
-		s := string(nsub.subject)
+		s := bytesToString(nsub.subject)
 		if ime.overlapSubj != _EMPTY_ {
 			s = ime.overlapSubj
 		}
@@ -3007,7 +3007,7 @@ func queueMatches(queue string, qsubs [][]*subscription) bool {
 	}
 	for _, qsub := range qsubs {
 		qs := qsub[0]
-		qname := string(qs.queue)
+		qname := bytesToString(qs.queue)
 
 		// NOTE: '*' and '>' tokens can also be valid
 		// queue names so we first check against the
@@ -3027,9 +3027,7 @@ func (c *client) unsubscribe(acc *Account, sub *subscription, force, remove bool
 
 	c.mu.Lock()
 	if !force && sub.max > 0 && sub.nm < sub.max {
-		c.Debugf(
-			"Deferring actual UNSUB(%s): %d max, %d received",
-			string(sub.subject), sub.max, sub.nm)
+		c.Debugf("Deferring actual UNSUB(%s): %d max, %d received", sub.subject, sub.max, sub.nm)
 		c.mu.Unlock()
 		return
 	}
@@ -3041,7 +3039,7 @@ func (c *client) unsubscribe(acc *Account, sub *subscription, force, remove bool
 	// Remove accounting if requested. This will be false when we close a connection
 	// with open subscriptions.
 	if remove {
-		delete(c.subs, string(sub.sid))
+		delete(c.subs, bytesToString(sub.sid))
 		if acc != nil {
 			acc.sl.Remove(sub)
 		}
@@ -3201,7 +3199,7 @@ func (c *client) msgHeaderForRouteOrLeaf(subj, reply []byte, rt *routeTarget, ac
 		// Remap subject if its a shadow subscription, treat like a normal client.
 		if rt.sub.im != nil {
 			if rt.sub.im.tr != nil {
-				to := rt.sub.im.tr.TransformSubject(string(subj))
+				to := rt.sub.im.tr.TransformSubject(bytesToString(subj))
 				subj = []byte(to)
 			} else if !rt.sub.im.usePub {
 				subj = []byte(rt.sub.im.to)
@@ -3374,7 +3372,7 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 			// still process the message in hand, otherwise
 			// unsubscribe and drop message on the floor.
 			if sub.nm == sub.max {
-				client.Debugf("Auto-unsubscribe limit of %d reached for sid '%s'", sub.max, string(sub.sid))
+				client.Debugf("Auto-unsubscribe limit of %d reached for sid '%s'", sub.max, sub.sid)
 				// Due to defer, reverse the code order so that execution
 				// is consistent with other cases where we unsubscribe.
 				if shouldForward {
@@ -3510,7 +3508,7 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 	c.addToPCD(client)
 
 	if client.trace {
-		client.traceOutOp(string(mh[:len(mh)-LEN_CR_LF]), nil)
+		client.traceOutOp(bytesToString(mh[:len(mh)-LEN_CR_LF]), nil)
 	}
 
 	client.mu.Unlock()
@@ -3706,7 +3704,7 @@ func (c *client) pubAllowedFullCheck(subject string, fullCheck, hasLock bool) bo
 		}
 	} else {
 		// Update our cache here.
-		c.perms.pcache.Store(string(subject), allowed)
+		c.perms.pcache.Store(subject, allowed)
 		if n := atomic.AddInt32(&c.perms.pcsz, 1); n > maxPermCacheSize {
 			c.prunePubPermsCache()
 		}
@@ -3718,7 +3716,7 @@ func (c *client) pubAllowedFullCheck(subject string, fullCheck, hasLock bool) bo
 func isServiceReply(reply []byte) bool {
 	// This function is inlined and checking this way is actually faster
 	// than byte-by-byte comparison.
-	return len(reply) > 3 && string(reply[:4]) == replyPrefix
+	return len(reply) > 3 && bytesToString(reply[:4]) == replyPrefix
 }
 
 // Test whether a reply subject is a service import or a gateway routed reply.
@@ -3728,9 +3726,9 @@ func isReservedReply(reply []byte) bool {
 	}
 	rLen := len(reply)
 	// Faster to check with string([:]) than byte-by-byte
-	if rLen > jsAckPreLen && string(reply[:jsAckPreLen]) == jsAckPre {
+	if rLen > jsAckPreLen && bytesToString(reply[:jsAckPreLen]) == jsAckPre {
 		return true
-	} else if rLen > gwReplyPrefixLen && string(reply[:gwReplyPrefixLen]) == gwReplyPrefix {
+	} else if rLen > gwReplyPrefixLen && bytesToString(reply[:gwReplyPrefixLen]) == gwReplyPrefix {
 		return true
 	}
 	return false
@@ -3752,7 +3750,7 @@ func (c *client) processInboundMsg(msg []byte) {
 
 // selectMappedSubject will choose the mapped subject based on the client's inbound subject.
 func (c *client) selectMappedSubject() bool {
-	nsubj, changed := c.acc.selectMappedSubject(string(c.pa.subject))
+	nsubj, changed := c.acc.selectMappedSubject(bytesToString(c.pa.subject))
 	if changed {
 		c.pa.mapped = c.pa.subject
 		c.pa.subject = []byte(nsubj)
@@ -3828,7 +3826,7 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 		c.mu.Lock()
 		rl := c.rrTracking.rmap[string(c.pa.subject)]
 		if rl != nil {
-			delete(c.rrTracking.rmap, string(c.pa.subject))
+			delete(c.rrTracking.rmap, bytesToString(c.pa.subject))
 		}
 		c.mu.Unlock()
 
@@ -3868,6 +3866,7 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 
 	// Go back to the sublist data structure.
 	if !ok {
+		// Match may use the subject here to populate a cache, so can not use bytesToString here.
 		r = acc.sl.Match(string(c.pa.subject))
 		if len(r.psubs)+len(r.qsubs) > 0 {
 			c.in.results[string(c.pa.subject)] = r
@@ -4112,7 +4111,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	var checkJS bool
 	shouldReturn := si.invalid || acc.sl == nil
 	if !shouldReturn && !isResponse && si.to == jsAllAPI {
-		subj := string(c.pa.subject)
+		subj := bytesToString(c.pa.subject)
 		if strings.HasPrefix(subj, jsRequestNextPre) || strings.HasPrefix(subj, jsDirectGetPre) {
 			checkJS = true
 		}
@@ -4222,7 +4221,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 		// Set clientInfo if present.
 		if ci != nil {
 			if b, _ := json.Marshal(ci); b != nil {
-				msg = c.setHeader(ClientInfoHdr, string(b), msg)
+				msg = c.setHeader(ClientInfoHdr, bytesToString(b), msg)
 			}
 		}
 	}
@@ -4454,7 +4453,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 				continue
 			}
 			if sub.im.tr != nil {
-				to := sub.im.tr.TransformSubject(string(subject))
+				to := sub.im.tr.TransformSubject(bytesToString(subject))
 				dsubj = append(_dsubj[:0], to...)
 			} else if sub.im.usePub {
 				dsubj = append(_dsubj[:0], subj...)
@@ -4607,7 +4606,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 					continue
 				}
 				if sub.im.tr != nil {
-					to := sub.im.tr.TransformSubject(string(subject))
+					to := sub.im.tr.TransformSubject(bytesToString(subject))
 					dsubj = append(_dsubj[:0], to...)
 				} else if sub.im.usePub {
 					dsubj = append(_dsubj[:0], subj...)
@@ -4684,7 +4683,7 @@ sendToRoutesOrLeafs:
 		if dc.kind == LEAF {
 			// Check two scenarios. One is inbound from a route (c.pa.origin)
 			if c.kind == ROUTER && len(c.pa.origin) > 0 {
-				if string(c.pa.origin) == dc.remoteCluster() {
+				if bytesToString(c.pa.origin) == dc.remoteCluster() {
 					continue
 				}
 			}
@@ -4744,7 +4743,7 @@ func (c *client) checkLeafClientInfoHeader(msg []byte) (dmsg []byte, setHdr bool
 			if ci.Account != remoteAcc {
 				ci.Account = remoteAcc
 				if b, _ := json.Marshal(ci); b != nil {
-					dmsg, setHdr = c.setHeader(ClientInfoHdr, string(b), msg), true
+					dmsg, setHdr = c.setHeader(ClientInfoHdr, bytesToString(b), msg), true
 				}
 			}
 		}
@@ -5169,7 +5168,8 @@ func (c *client) closeConnection(reason ClosedState) {
 					if kind == LEAF {
 						num = sub.qw
 					}
-					key := string(sub.subject) + " " + string(sub.queue)
+					// TODO(dlc) - Better to use string builder?
+					key := bytesToString(sub.subject) + " " + bytesToString(sub.queue)
 					if esub, ok := qsubs[key]; ok {
 						esub.n += num
 					} else {
@@ -5330,7 +5330,7 @@ func (c *client) getAccAndResultFromCache() (*Account, *SublistResult) {
 
 		if genid := atomic.LoadUint64(&sl.genid); genid != pac.genid {
 			ok = false
-			delete(c.in.pacache, string(c.pa.pacache))
+			delete(c.in.pacache, bytesToString(c.pa.pacache))
 		} else {
 			acc = pac.acc
 			r = pac.results

@@ -146,27 +146,25 @@ func (c *client) removeReplySub(sub *subscription) {
 	// Lookup the account based on sub.sid.
 	if i := bytes.Index(sub.sid, []byte(" ")); i > 0 {
 		// First part of SID for route is account name.
-		if v, ok := c.srv.accounts.Load(string(sub.sid[:i])); ok {
+		if v, ok := c.srv.accounts.Load(bytesToString(sub.sid[:i])); ok {
 			(v.(*Account)).sl.Remove(sub)
 		}
 		c.mu.Lock()
-		delete(c.subs, string(sub.sid))
+		delete(c.subs, bytesToString(sub.sid))
 		c.mu.Unlock()
 	}
 }
 
 func (c *client) processAccountSub(arg []byte) error {
-	accName := string(arg)
 	if c.kind == GATEWAY {
-		return c.processGatewayAccountSub(accName)
+		return c.processGatewayAccountSub(string(arg))
 	}
 	return nil
 }
 
 func (c *client) processAccountUnsub(arg []byte) {
-	accName := string(arg)
 	if c.kind == GATEWAY {
-		c.processGatewayAccountUnsub(accName)
+		c.processGatewayAccountUnsub(string(arg))
 	}
 }
 
@@ -705,7 +703,7 @@ func (c *client) processRouteInfo(info *Info) {
 	// First INFO, check if this server is configured for compression because
 	// if that is the case, we need to negotiate it with the remote server.
 	if needsCompression(opts.Cluster.Compression.Mode) {
-		accName := string(c.route.accName)
+		accName := bytesToString(c.route.accName)
 		// If we did not yet negotiate...
 		if !c.flags.isSet(compressionNegotiated) {
 			// Prevent from getting back here.
@@ -935,7 +933,7 @@ func (s *Server) updateRemoteRoutePerms(c *client, info *Info) {
 	c.opts.Import = info.Import
 	c.opts.Export = info.Export
 
-	routeAcc, poolIdx, noPool := string(c.route.accName), c.route.poolIdx, c.route.noPool
+	routeAcc, poolIdx, noPool := bytesToString(c.route.accName), c.route.poolIdx, c.route.noPool
 	c.mu.Unlock()
 
 	var (
@@ -1290,9 +1288,9 @@ func (c *client) processRemoteUnsub(arg []byte) (err error) {
 	// RS- will have the arg exactly as the key.
 	var key string
 	if c.kind == ROUTER && c.route != nil && len(c.route.accName) > 0 {
-		key = accountName + " " + string(arg)
+		key = accountName + " " + bytesToString(arg)
 	} else {
-		key = string(arg)
+		key = bytesToString(arg)
 	}
 	sub, ok := c.subs[key]
 	if ok {
@@ -1367,7 +1365,7 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 	// If the account name is empty (not a "per-account" route), the account
 	// is at the index prior to the subject.
 	if accountName == _EMPTY_ {
-		accountName = string(args[subjIdx-1])
+		accountName = bytesToString(args[subjIdx-1])
 	}
 	// Lookup account while avoiding fetch.
 	// A slow fetch delays subsequent remote messages. It also avoids the expired check (see below).
@@ -1413,7 +1411,7 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 	}
 
 	// Check permissions if applicable.
-	if !c.canExport(string(sub.subject)) {
+	if c.perms != nil && !c.canExport(string(sub.subject)) {
 		c.mu.Unlock()
 		c.Debugf("Can not export %q, ignoring remote subscription request", sub.subject)
 		return nil
@@ -1451,7 +1449,7 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 		sub.sid = append(sub.sid, ' ')
 		sub.sid = append(sub.sid, sub.subject...)
 	}
-	key := string(sub.sid)
+	key := bytesToString(sub.sid)
 
 	acc.mu.RLock()
 	// For routes (this can be called by leafnodes), check if the account is
@@ -2232,6 +2230,9 @@ func handleDuplicateRoute(remote, c *client, setNoReconnect bool) {
 
 // Import filter check.
 func (c *client) importFilter(sub *subscription) bool {
+	if c.perms == nil {
+		return true
+	}
 	return c.canImport(string(sub.subject))
 }
 
@@ -2854,7 +2855,7 @@ func (s *Server) removeRoute(c *client) {
 		idHash = r.idHash
 		gwURL = r.gatewayURL
 		poolIdx = r.poolIdx
-		accName = string(r.accName)
+		accName = bytesToString(r.accName)
 		if r.noPool {
 			s.routesNoPool--
 			noPool = true

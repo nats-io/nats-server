@@ -828,7 +828,7 @@ func (c *client) sendLeafConnect(clusterName string, headers bool) error {
 
 		sigraw, _ := kp.Sign(c.nonce)
 		sig := base64.RawURLEncoding.EncodeToString(sigraw)
-		cinfo.JWT = string(tmp)
+		cinfo.JWT = bytesToString(tmp)
 		cinfo.Sig = sig
 	} else if userInfo := c.leaf.remote.curURL.User; userInfo != nil {
 		cinfo.User = userInfo.Username()
@@ -1039,7 +1039,7 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 		// Remember the nonce we sent here for signatures, etc.
 		c.nonce = make([]byte, nonceLen)
 		copy(c.nonce, nonce[:])
-		info.Nonce = string(c.nonce)
+		info.Nonce = bytesToString(c.nonce)
 		info.CID = c.cid
 		proto := generateInfoJSON(info)
 		if !opts.LeafNode.TLSHandshakeFirst {
@@ -1363,7 +1363,7 @@ func (s *Server) negotiateLeafCompression(c *client, didSolicit bool, infoCompre
 	cid := c.cid
 	var nonce string
 	if !didSolicit {
-		nonce = string(c.nonce)
+		nonce = bytesToString(c.nonce)
 	}
 	c.mu.Unlock()
 
@@ -1970,16 +1970,15 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 	rc := c.leaf.remoteCluster
 	c.leaf.smap = make(map[string]int32)
 	for _, sub := range subs {
-		subj := string(sub.subject)
 		// Check perms regardless of role.
-		if !c.canSubscribe(subj) {
-			c.Debugf("Not permitted to subscribe to %q on behalf of %s%s", subj, accName, accNTag)
+		if c.perms != nil && !c.canSubscribe(string(sub.subject)) {
+			c.Debugf("Not permitted to subscribe to %q on behalf of %s%s", sub.subject, accName, accNTag)
 			continue
 		}
 		// We ignore ourselves here.
 		// Also don't add the subscription if it has a origin cluster and the
 		// cluster name matches the one of the client we are sending to.
-		if c != sub.client && (sub.origin == nil || (string(sub.origin) != rc)) {
+		if c != sub.client && (sub.origin == nil || (bytesToString(sub.origin) != rc)) {
 			count := int32(1)
 			if len(sub.queue) > 0 && sub.qw > 0 {
 				count = sub.qw
@@ -2069,7 +2068,7 @@ func (acc *Account) updateLeafNodes(sub *subscription, delta int32) {
 	// Capture the cluster even if its empty.
 	cluster := _EMPTY_
 	if sub.origin != nil {
-		cluster = string(sub.origin)
+		cluster = bytesToString(sub.origin)
 	}
 
 	// If we have an isolated cluster we can return early, as long as it is not a loop detection subject.
@@ -2196,19 +2195,15 @@ func (c *client) sendLeafNodeSubUpdate(key string, n int32) {
 
 // Helper function to build the key.
 func keyFromSub(sub *subscription) string {
-	var _rkey [1024]byte
-	var key []byte
-
+	var sb strings.Builder
+	sb.Grow(len(sub.subject) + len(sub.queue) + 1)
+	sb.Write(sub.subject)
 	if sub.queue != nil {
 		// Just make the key subject spc group, e.g. 'foo bar'
-		key = _rkey[:0]
-		key = append(key, sub.subject...)
-		key = append(key, byte(' '))
-		key = append(key, sub.queue...)
-	} else {
-		key = sub.subject
+		sb.WriteByte(' ')
+		sb.Write(sub.queue)
 	}
-	return string(key)
+	return sb.String()
 }
 
 // Lock should be held.
@@ -2281,7 +2276,7 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 	acc := c.acc
 	// Check if we have a loop.
 	ldsPrefix := bytes.HasPrefix(sub.subject, []byte(leafNodeLoopDetectionSubjectPrefix))
-	if ldsPrefix && string(sub.subject) == acc.getLDSubject() {
+	if ldsPrefix && bytesToString(sub.subject) == acc.getLDSubject() {
 		c.mu.Unlock()
 		c.handleLeafNodeLoop(true)
 		return nil
@@ -2298,11 +2293,14 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 	}
 
 	// If we are a hub check that we can publish to this subject.
-	if checkPerms && subjectIsLiteral(string(sub.subject)) && !c.pubAllowedFullCheck(string(sub.subject), true, true) {
-		c.mu.Unlock()
-		c.leafSubPermViolation(sub.subject)
-		c.Debugf(fmt.Sprintf("Permissions Violation for Subscription to %q", sub.subject))
-		return nil
+	if checkPerms {
+		subj := string(sub.subject)
+		if subjectIsLiteral(subj) && !c.pubAllowedFullCheck(subj, true, true) {
+			c.mu.Unlock()
+			c.leafSubPermViolation(sub.subject)
+			c.Debugf(fmt.Sprintf("Permissions Violation for Subscription to %q", sub.subject))
+			return nil
+		}
 	}
 
 	// Check if we have a maximum on the number of subscriptions.
@@ -2324,7 +2322,7 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 	} else {
 		sub.sid = arg
 	}
-	key := string(sub.sid)
+	key := bytesToString(sub.sid)
 	osub := c.subs[key]
 	updateGWs := false
 	delta := int32(1)

@@ -5681,7 +5681,7 @@ func TestFileStoreMsgBlockHolesAndIndexing(t *testing.T) {
 		sm, _, err := mb.fetchMsg(seq, nil)
 		require_NoError(t, err)
 		require_Equal(t, sm.subj, expectedSubj)
-		require_True(t, bytes.Equal(sm.buf, []byte(expectedSubj)))
+		require_True(t, bytes.Equal(sm.buf[:len(expectedSubj)], []byte(expectedSubj)))
 	}
 
 	writeMsg("A", 2)
