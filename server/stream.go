@@ -5190,6 +5190,11 @@ func (mset *stream) swapSigSubs(o *consumer, newFilters []string) {
 	mset.clsMu.Lock()
 	o.mu.Lock()
 
+	if o.closed || o.mset == nil {
+		o.mu.Unlock()
+		return
+	}
+
 	if o.sigSubs != nil {
 		if mset.csl != nil {
 			for _, sub := range o.sigSubs {
@@ -5206,13 +5211,13 @@ func (mset *stream) swapSigSubs(o *consumer, newFilters []string) {
 		// If no filters are preset, add fwcs to sublist for that consumer.
 		if newFilters == nil {
 			sub := &subscription{subject: []byte(fwcs), icb: o.processStreamSignal}
-			o.mset.csl.Insert(sub)
+			mset.csl.Insert(sub)
 			o.sigSubs = append(o.sigSubs, sub)
 			// If there are filters, add their subjects to sublist.
 		} else {
 			for _, filter := range newFilters {
 				sub := &subscription{subject: []byte(filter), icb: o.processStreamSignal}
-				o.mset.csl.Insert(sub)
+				mset.csl.Insert(sub)
 				o.sigSubs = append(o.sigSubs, sub)
 			}
 		}
