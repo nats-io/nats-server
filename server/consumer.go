@@ -812,8 +812,8 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 			return nil, NewJSConsumerWQRequiresExplicitAckError()
 		}
 
-		subjects := gatherSubjectFilters(config.FilterSubject, config.FilterSubjects)
 		if len(mset.consumers) > 0 {
+			subjects := gatherSubjectFilters(config.FilterSubject, config.FilterSubjects)
 			if len(subjects) == 0 {
 				mset.mu.Unlock()
 				return nil, NewJSConsumerWQMultipleUnfilteredError()
