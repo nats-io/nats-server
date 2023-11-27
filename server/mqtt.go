@@ -3903,40 +3903,44 @@ func (c *client) mqttHandlePubRetain() {
 	// but should still be delivered as a normal message.
 	if pp.sz == 0 {
 		if seqToRemove := asm.handleRetainedMsgDel(key, 0); seqToRemove > 0 {
-			asm.deleteRetainedMsg(seqToRemove)
-			asm.notifyRetainedMsgDeleted(key, seqToRemove)
+			go func() {
+				asm.deleteRetainedMsg(seqToRemove)
+				asm.notifyRetainedMsgDeleted(key, seqToRemove)
+			}()
 		}
 	} else {
 		// Spec [MQTT-3.3.1-5]. Store the retained message with its QoS.
 		// When coming from a publish protocol, `pp` is referencing a stack
 		// variable that itself possibly references the read buffer.
+
+		// TODO: (levb) consider storing the JSON in the header, and pp.msg
+		// directly; no need to encode it to JSON.
 		rm := &mqttRetainedMsg{
 			Origin:  asm.jsa.id,
 			Subject: key,
 			Topic:   string(pp.topic),
-			Msg:     copyBytes(pp.msg),
+			Msg:     pp.msg,
 			Flags:   pp.flags,
 			Source:  c.opts.Username,
 		}
 		rmBytes, _ := json.Marshal(rm)
-		// start := time.Now()
-		// time.Sleep(500 * time.Millisecond)
-		smr, err := asm.jsa.storeMsg(mqttRetainedMsgsStreamSubject+key, -1, rmBytes)
-		// fmt.Printf("<>/<> mqttHandlePubRetain: storeMsg took %v\n", time.Since(start))
-		if err == nil {
-			// Update the new sequence
-			rf := &mqttRetainedMsgRef{
-				sseq: smr.Sequence,
+		go func() {
+			smr, err := asm.jsa.storeMsg(mqttRetainedMsgsStreamSubject+key, -1, rmBytes)
+			if err == nil {
+				// Update the new sequence
+				rf := &mqttRetainedMsgRef{
+					sseq: smr.Sequence,
+				}
+				// Add/update the map
+				asm.handleRetainedMsg(key, rf)
+			} else {
+				c.mu.Lock()
+				acc := c.acc
+				c.mu.Unlock()
+				c.Errorf("unable to store retained message for account %q, subject %q: %v",
+					acc.GetName(), key, err)
 			}
-			// Add/update the map
-			asm.handleRetainedMsg(key, rf)
-		} else {
-			c.mu.Lock()
-			acc := c.acc
-			c.mu.Unlock()
-			c.Errorf("unable to store retained message for account %q, subject %q: %v",
-				acc.GetName(), key, err)
-		}
+		}()
 	}
 
 	// Clear the retain flag for a normal published message.
