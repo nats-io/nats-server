@@ -346,8 +346,10 @@ type mqttSub struct {
 	jsDur string
 
 	// Pending serialization of retained messages to be sent when subscription
-	// is registered. Protected by the (sub's) client lock.
-	prm [][]byte
+	// is registered. The sub's delivery callbacks must wait until `prm` is
+	// ready.
+	prm      [][]byte
+	prmReady *sync.WaitGroup
 
 	// If this subscription needs to be checked for being reserved. E.g. '#' or
 	// '*' or '*/'.  It is set up at the time of subscription and is immutable
@@ -2219,12 +2221,16 @@ func mqttProcessSubImpl(sess *mqttSession, c *client,
 		}
 	}()
 
+	var prmReady *sync.WaitGroup
+
+	// Hold subsMu to prevent QOS0 messages callback from doing anything until
+	// the (MQTT) sub is initialized.
 	sess.subsMu.Lock()
-	defer sess.subsMu.Unlock()
 
 	sub, err := c.processSub(subject, nil, sid, h, false)
 	if err != nil {
 		// c.processSub already called c.Errorf(), so no need here.
+		sess.subsMu.Unlock()
 		return nil, err
 	}
 	subs := []*subscription{sub}
@@ -2237,18 +2243,30 @@ func mqttProcessSubImpl(sess *mqttSession, c *client,
 			// created it can be considered immutable.
 			ss.mqtt = &mqttSub{
 				reserved: isReserved,
+				prmReady: prmReady,
 			}
 		}
 		// QOS and jsDurName can be changed on an existing subscription, so
 		// accessing it later requires a lock.
 		ss.mqtt.qos = qos
 		ss.mqtt.jsDur = jsDurName
+	}
 
-		if len(rms) > 0 {
+	if len(rms) > 0 {
+		prmReady = &sync.WaitGroup{}
+		prmReady.Add(1)
+	}
+	sess.subsMu.Unlock()
+
+	// QOS0 delivery callback may now proceed, but rmMu may still be held if
+	// there are retained messages to serialize.
+	if len(rms) > 0 {
+		for _, ss := range subs {
 			start := time.Now()
 			as.serializeRetainedMsgsForSub(rms, sess, c, ss, trace)
 			retainedElapsed = time.Since(start)
 		}
+		prmReady.Done()
 	}
 
 	return sub, nil
@@ -4334,10 +4352,17 @@ func mqttDeliverMsgCbQoS0(sub *subscription, pc *client, _ *Account, subject, re
 	sess.subsMu.RLock()
 	subQoS := sub.mqtt.qos
 	ignore := mqttMustIgnoreForReservedSub(sub, subject)
+	prmReady := sub.mqtt.prmReady
 	sess.subsMu.RUnlock()
 
 	if ignore {
 		return
+	}
+
+	// Do not proceed until  all retained messages for the sub have been
+	// serialized.
+	if prmReady != nil {
+		prmReady.Wait()
 	}
 
 	hdr, msg := pc.msgParts(rmsg)
