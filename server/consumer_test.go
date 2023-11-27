@@ -25,8 +25,9 @@ func consumerWithFilterSubjects(filterSubjects []string) *consumer {
 	c := consumer{}
 	for _, filter := range filterSubjects {
 		sub := &subjectFilter{
-			subject:     filter,
-			hasWildcard: subjectHasWildcard(filter),
+			subject:          filter,
+			hasWildcard:      subjectHasWildcard(filter),
+			tokenizedSubject: tokenizeSubjectIntoSlice(nil, filter),
 		}
 		c.subjf = append(c.subjf, sub)
 	}
