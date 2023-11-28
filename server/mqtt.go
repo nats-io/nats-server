@@ -3914,10 +3914,8 @@ func (c *client) mqttHandlePubRetain() {
 	// but should still be delivered as a normal message.
 	if pp.sz == 0 {
 		if seqToRemove := asm.handleRetainedMsgDel(key, 0); seqToRemove > 0 {
-			go func() {
-				asm.deleteRetainedMsg(seqToRemove)
-				asm.notifyRetainedMsgDeleted(key, seqToRemove)
-			}()
+			asm.deleteRetainedMsg(seqToRemove)
+			asm.notifyRetainedMsgDeleted(key, seqToRemove)
 		}
 	} else {
 		// Spec [MQTT-3.3.1-5]. Store the retained message with its QoS.
@@ -3932,23 +3930,21 @@ func (c *client) mqttHandlePubRetain() {
 			Source:  c.opts.Username,
 		}
 		rmBytes, _ := json.Marshal(rm)
-		go func() {
-			smr, err := asm.jsa.storeMsg(mqttRetainedMsgsStreamSubject+key, -1, rmBytes)
-			if err == nil {
-				// Update the new sequence
-				rf := &mqttRetainedMsgRef{
-					sseq: smr.Sequence,
-				}
-				// Add/update the map
-				asm.handleRetainedMsg(key, rf)
-			} else {
-				c.mu.Lock()
-				acc := c.acc
-				c.mu.Unlock()
-				c.Errorf("unable to store retained message for account %q, subject %q: %v",
-					acc.GetName(), key, err)
+		smr, err := asm.jsa.storeMsg(mqttRetainedMsgsStreamSubject+key, -1, rmBytes)
+		if err == nil {
+			// Update the new sequence
+			rf := &mqttRetainedMsgRef{
+				sseq: smr.Sequence,
 			}
-		}()
+			// Add/update the map
+			asm.handleRetainedMsg(key, rf)
+		} else {
+			c.mu.Lock()
+			acc := c.acc
+			c.mu.Unlock()
+			c.Errorf("unable to store retained message for account %q, subject %q: %v",
+				acc.GetName(), key, err)
+		}
 	}
 
 	// Clear the retain flag for a normal published message.
