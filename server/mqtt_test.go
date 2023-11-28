@@ -2104,20 +2104,24 @@ func testMQTTSendPIPacket(packetType byte, t testing.TB, c net.Conn, pi uint16) 
 	}
 }
 
-func testMQTTWritePublishPacket(t testing.TB, w io.Writer, qos byte, dup, retain bool, topic string, pi uint16, payload []byte) {
+func testMQTTWritePublishPacket(t testing.TB, w *mqttWriter, qos byte, dup, retain bool, topic string, pi uint16, payload []byte) {
 	t.Helper()
-	_, hdr := mqttSerializePublishHeader(pi, qos, dup, retain, []byte(topic), len(payload))
-	if _, err := w.Write(hdr); err != nil {
-		t.Fatalf("Error writing PUBLISH proto: %v", err)
-	}
+	w.WritePublishHeader(pi, qos, dup, retain, []byte(topic), len(payload))
 	if _, err := w.Write(payload); err != nil {
 		t.Fatalf("Error writing PUBLISH proto: %v", err)
 	}
 }
 
 func testMQTTSendPublishPacket(t testing.TB, c net.Conn, qos byte, dup, retain bool, topic string, pi uint16, payload []byte) {
+	t.Helper()
 	c.SetWriteDeadline(time.Now().Add(testMQTTTimeout))
-	testMQTTWritePublishPacket(t, c, qos, dup, retain, topic, pi, payload)
+	_, header := mqttMakePublishHeader(pi, qos, dup, retain, []byte(topic), len(payload))
+	if _, err := c.Write(header); err != nil {
+		t.Fatalf("Error writing PUBLISH header: %v", err)
+	}
+	if _, err := c.Write(payload); err != nil {
+		t.Fatalf("Error writing PUBLISH payload: %v", err)
+	}
 	c.SetWriteDeadline(time.Time{})
 }
 
@@ -7331,6 +7335,7 @@ const (
 
 func mqttBenchPubQoS0(b *testing.B, subject, payload string, numSubs int) {
 	b.StopTimer()
+	b.ReportAllocs()
 	o := testMQTTDefaultOptions()
 	s := RunServer(o)
 	defer testMQTTShutdownServer(s)

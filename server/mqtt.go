@@ -2515,7 +2515,7 @@ func (as *mqttAccountSessionManager) serializeRetainedMsgsForSub(rms map[string]
 		// Need to use the subject for the retained message, not the `sub` subject.
 		// We can find the published retained message in rm.sub.subject.
 		// Set the RETAIN flag: [MQTT-3.3.1-8].
-		flags, headerBytes := mqttSerializePublishHeader(pi, qos, false, true, []byte(rm.Topic), len(rm.Msg))
+		flags, headerBytes := mqttMakePublishHeader(pi, qos, false, true, []byte(rm.Topic), len(rm.Msg))
 		c.mu.Lock()
 		sub.mqtt.prm = append(sub.mqtt.prm, headerBytes, rm.Msg)
 		c.mu.Unlock()
@@ -4527,7 +4527,7 @@ func isMQTTReservedSubscription(subject string) bool {
 // Common function to mqtt delivery callbacks to serialize and send the message
 // to the `cc` client.
 func (c *client) mqttEnqueuePublishMsgTo(cc *client, sub *subscription, pi uint16, qos byte, dup bool, topic, msg []byte) {
-	flags, headerBytes := mqttSerializePublishHeader(pi, qos, dup, false, topic, len(msg))
+	flags, headerBytes := mqttMakePublishHeader(pi, qos, dup, false, topic, len(msg))
 
 	cc.mu.Lock()
 	for _, data := range sub.mqtt.prm {
@@ -4552,7 +4552,7 @@ func (c *client) mqttEnqueuePublishMsgTo(cc *client, sub *subscription, pi uint1
 }
 
 // Serializes to the given writer the message for the given subject.
-func mqttSerializePublishHeader(pi uint16, qos byte, dup, retained bool, topic []byte, msgLen int) (byte, []byte) {
+func (w *mqttWriter) WritePublishHeader(pi uint16, qos byte, dup, retained bool, topic []byte, msgLen int) byte {
 	// Compute len (will have to add packet id if message is sent as QoS>=1)
 	pkLen := 2 + len(topic) + msgLen
 	var flags byte
@@ -4569,14 +4569,20 @@ func mqttSerializePublishHeader(pi uint16, qos byte, dup, retained bool, topic [
 		flags |= qos << 1
 	}
 
-	headerBuf := newMQTTWriter(mqttInitialPubHeader + len(topic))
-	headerBuf.WriteByte(mqttPacketPub | flags)
-	headerBuf.WriteVarInt(pkLen)
-	headerBuf.WriteBytes(topic)
+	w.WriteByte(mqttPacketPub | flags)
+	w.WriteVarInt(pkLen)
+	w.WriteBytes(topic)
 	if qos > 0 {
-		headerBuf.WriteUint16(pi)
+		w.WriteUint16(pi)
 	}
 
+	return flags
+}
+
+// Serializes to the given writer the message for the given subject.
+func mqttMakePublishHeader(pi uint16, qos byte, dup, retained bool, topic []byte, msgLen int) (byte, []byte) {
+	headerBuf := newMQTTWriter(mqttInitialPubHeader + len(topic))
+	flags := headerBuf.WritePublishHeader(pi, qos, dup, retained, topic, msgLen)
 	return flags, headerBuf.Bytes()
 }
 
