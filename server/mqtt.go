@@ -400,7 +400,7 @@ type mqttReader struct {
 }
 
 type mqttWriter struct {
-	*bytes.Buffer
+	bytes.Buffer
 }
 
 type mqttWill struct {
@@ -5243,27 +5243,21 @@ func (w *mqttWriter) WriteBytes(bs []byte) {
 }
 
 func (w *mqttWriter) WriteVarInt(value int) {
-	w.Write(mqttSerializeVarInt(value))
-}
-
-func mqttSerializeVarInt(value int) []byte {
-	bb := make([]byte, 0, 4)
 	for {
 		b := byte(value & 0x7f)
 		value >>= 7
 		if value > 0 {
 			b |= 0x80
 		}
-		bb = append(bb, b)
+		w.WriteByte(b)
 		if value == 0 {
 			break
 		}
 	}
-	return bb
 }
 
 func newMQTTWriter(cap int) *mqttWriter {
-	return &mqttWriter{
-		bytes.NewBuffer(make([]byte, 0, cap)),
-	}
+	w := &mqttWriter{}
+	w.Grow(cap)
+	return w
 }
