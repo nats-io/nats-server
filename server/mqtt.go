@@ -1802,9 +1802,9 @@ func (as *mqttAccountSessionManager) processJSAPIReplies(_ *subscription, pc *cl
 // Run from various go routines (JS consumer, etc..).
 // No lock held on entry.
 func (as *mqttAccountSessionManager) processRetainedMsg(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
-	_, m := c.msgParts(rmsg)
+	_, msg := c.msgParts(rmsg)
 	rm := &mqttRetainedMsg{}
-	if err := json.Unmarshal(m, rm); err != nil {
+	if err := json.Unmarshal(msg, rm); err != nil {
 		return
 	}
 	// If lastSeq is 0 (nothing to recover, or done doing it) and this is
