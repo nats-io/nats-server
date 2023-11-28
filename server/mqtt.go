@@ -439,11 +439,10 @@ type mqttPublish struct {
 // When we submit a PUBREL for delivery, we add a "Nmqtt-PubRel" header that
 // contains the PI.
 const (
-	mqttNatsHeader                = "Nmqtt-Pub"
-	mqttNatsRetainedMessageHeader = "Nmqtt-Ret"
-	mqttNatsPubRelHeader          = "Nmqtt-PubRel"
-	mqttNatsHeaderSubject         = "Nmqtt-Subject"
-	mqttNatsHeaderMapped          = "Nmqtt-Mapped"
+	mqttNatsHeader        = "Nmqtt-Pub"
+	mqttNatsPubRelHeader  = "Nmqtt-PubRel"
+	mqttNatsHeaderSubject = "Nmqtt-Subject"
+	mqttNatsHeaderMapped  = "Nmqtt-Mapped"
 )
 
 type mqttParsedPublishNATSHeader struct {
