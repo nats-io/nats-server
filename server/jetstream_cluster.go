@@ -4300,8 +4300,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 		} else {
 			// Clustered consumer.
 			// Start our monitoring routine if needed.
-			if !alreadyRunning && !o.isMonitorRunning() {
-				o.monitorWg.Add(1)
+			if !alreadyRunning && o.shouldStartMonitor() {
 				s.startGoRoutine(
 					func() { js.monitorConsumer(o, ca) },
 					pprofLabels{
@@ -4508,18 +4507,12 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	s, n, cc := js.server(), o.raftNode(), js.cluster
 	defer s.grWG.Done()
 
-	defer o.monitorWg.Done()
+	defer o.clearMonitorRunning()
 
 	if n == nil {
 		s.Warnf("No RAFT group for '%s > %s > %s'", o.acc.Name, ca.Stream, ca.Name)
 		return
 	}
-
-	// Make sure only one is running.
-	if o.checkInMonitor() {
-		return
-	}
-	defer o.clearMonitorRunning()
 
 	// Make sure to stop the raft group on exit to prevent accidental memory bloat.
 	// This should be below the checkInMonitor call though to avoid stopping it out
