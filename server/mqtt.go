@@ -2014,10 +2014,7 @@ func (as *mqttAccountSessionManager) cleaupRetainedMessageCache(s *Server, close
 					as.rmsCache.Delete(key)
 				}
 				i++
-				if i >= maxScan {
-					return false
-				}
-				return true
+				return i < maxScan
 			})
 
 		case <-closeCh:
