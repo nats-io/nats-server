@@ -1374,21 +1374,27 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		}
 	}
 
-	// Try to transfer regardless if we have already updated the stream or not
-	// in case not all messages were transferred and the server was restarted.
-	if needToTransfer {
+	transferRMS := func() {
+		if !needToTransfer {
+			return
+		}
 		err = as.transferRetainedToPerKeySubjectStream(s)
 		if err != nil {
-			return nil, err
+			return
 		}
-
 		// We need another lookup to have up-to-date si.State values in order
 		// to load all retained messages.
 		si, err = lookupStream(mqttRetainedMsgsStreamName, "retained messages")
 		if err != nil {
-			return nil, err
+			return
 		}
+		needToTransfer = false
 	}
+
+	// Attempt to transfer all "single subject" retained messages to new
+	// subjects. It may fail, will log its own error; ignore and proceed to
+	// updating MaxMsgsPer.
+	transferRMS()
 
 	// Now, if the stream does not have MaxMsgsPer set to 1, and there are no
 	// more messages on the single $MQTT.rmsgs subject, update the stream again.
@@ -1399,6 +1405,11 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 			return nil, fmt.Errorf("failed to update stream config: %w", err)
 		}
 	}
+
+	// If we failed the first time, there is now at most one lingering message
+	// in the old subject. Try again (it will be a NO-OP if succeeded the first
+	// time).
+	transferRMS()
 
 	var lastSeq uint64
 	var rmDoneCh chan struct{}
@@ -2783,7 +2794,7 @@ func (as *mqttAccountSessionManager) transferRetainedToPerKeySubjectStream(log *
 	var processed int
 	var transferred int
 
-	const timeoutAfter = 1 * time.Second
+	const timeoutAfter = 5 * time.Second
 
 	start := time.Now()
 	deadline := start.Add(timeoutAfter)
@@ -2800,7 +2811,6 @@ func (as *mqttAccountSessionManager) transferRetainedToPerKeySubjectStream(log *
 			return err
 		}
 
-		transferOK := false
 		// Unmarshal the message so that we can obtain the subject name.
 		var rmsg mqttRetainedMsg
 		if err = json.Unmarshal(smsg.Data, &rmsg); err == nil {
@@ -2809,7 +2819,7 @@ func (as *mqttAccountSessionManager) transferRetainedToPerKeySubjectStream(log *
 			if _, err = jsa.storeMsg(subject, 0, smsg.Data); err != nil {
 				log.Errorf("    Unable to transfer the retained message with sequence %d: %v", smsg.Sequence, err)
 			}
-			transferOK = true
+			transferred++
 		} else {
 			log.Warnf("    Unable to unmarshal retained message with sequence %d, skipping", smsg.Sequence)
 		}
@@ -2820,13 +2830,10 @@ func (as *mqttAccountSessionManager) transferRetainedToPerKeySubjectStream(log *
 			return err
 		}
 		processed++
-		if transferOK {
-			transferred++
-		}
 
 		now := time.Now()
 		if now.After(deadline) {
-			err := fmt.Errorf("timed out while transfering retained messages from '$MQTT.rmsgs' after %v, %d processed, %d successfully transferred", now.Sub(start), processed, transferred)
+			err := fmt.Errorf("timed out while transferring retained messages from '$MQTT.rmsgs' after %v, %d processed, %d successfully transferred", now.Sub(start), processed, transferred)
 			log.Noticef(err.Error())
 			return err
 		}
