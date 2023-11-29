@@ -1474,11 +1474,13 @@ func TestOCSPResponseCacheMonitor(t *testing.T) {
 			s, _ := RunServerWithConfig(conf)
 			defer s.Shutdown()
 			v := monitorGetVarzHelper(t, 8222)
-			if v.OCSPResponseCache == nil {
-				t.Fatalf("Expected OCSP statistics to be in varz")
+			fmt.Println("Expect:", test.expect)
+			var ct string
+			if v.OCSPResponseCache != nil {
+				ct = v.OCSPResponseCache.Type
 			}
-			if v.OCSPResponseCache.Type != test.expect {
-				t.Fatalf("Expected OCSP Response Cache to be %s, got %s", test.expect, v.OCSPResponseCache.Type)
+			if ct != test.expect {
+				t.Fatalf("Expected OCSP Response Cache to be %s, got %s", test.expect, ct)
 			}
 		})
 	}
@@ -1509,10 +1511,11 @@ func TestOCSPResponseCacheChangeAndReload(t *testing.T) {
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
 	v := monitorGetVarzHelper(t, 8222)
-	if v.OCSPResponseCache == nil {
-		t.Fatalf("Expected OCSP statistics to be in varz")
+	var ct string
+	if v.OCSPResponseCache != nil {
+		ct = v.OCSPResponseCache.Type
 	}
-	if v.OCSPResponseCache.Type != "" {
+	if ct != "" {
 		t.Fatalf("Expected OCSP Response Cache to have empty type in varz indicating none")
 	}
 
@@ -1542,11 +1545,12 @@ func TestOCSPResponseCacheChangeAndReload(t *testing.T) {
 	}
 	time.Sleep(2 * time.Second)
 	v = monitorGetVarzHelper(t, 8222)
-	if v.OCSPResponseCache == nil {
-		t.Fatalf("Expected OCSP statistics to be in varz")
+	ct = ""
+	if v.OCSPResponseCache != nil {
+		ct = v.OCSPResponseCache.Type
 	}
-	if v.OCSPResponseCache.Type != "local" {
-		t.Fatalf("Expected OCSP Response Cache type to be local, got %q", v.OCSPResponseCache.Type)
+	if ct != "local" {
+		t.Fatalf("Expected OCSP Response Cache type to be local, got %q", ct)
 	}
 }
 
