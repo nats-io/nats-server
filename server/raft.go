@@ -3190,7 +3190,13 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 
 			var success bool
 			if eae, _ := n.loadEntry(ae.pindex); eae == nil {
-				n.resetWAL()
+				// If terms are equal, and we are not catching up, we have simply already processed this message.
+				// So we will ACK back to the leader. This can happen on server restarts based on timings of snapshots.
+				if ae.pterm == n.pterm && !catchingUp {
+					success = true
+				} else {
+					n.resetWAL()
+				}
 			} else {
 				// If terms mismatched, or we got an error loading, delete that entry and all others past it.
 				// Make sure to cancel any catchups in progress.
