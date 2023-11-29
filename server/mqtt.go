@@ -242,6 +242,7 @@ type mqttAccountSessionManager struct {
 	flapTimer  *time.Timer                    // Timer to perform some cleanup of the flappers map
 	sl         *Sublist                       // sublist allowing to find retained messages for given subscription
 	retmsgs    map[string]*mqttRetainedMsgRef // retained messages
+	rmsCache   sync.Map                       // map[string(subject)]mqttRetainedMsg
 	jsa        mqttJSA
 	rrmLastSeq uint64        // Restore retained messages expected last sequence
 	rrmDoneCh  chan struct{} // To notify the caller that all retained messages have been loaded
@@ -332,10 +333,9 @@ type mqttRetainedMsg struct {
 }
 
 type mqttRetainedMsgRef struct {
-	sseq   uint64
-	floor  uint64
-	sub    *subscription
-	loaded *mqttRetainedMsg
+	sseq  uint64
+	floor uint64
+	sub   *subscription
 }
 
 // mqttSub contains fields associated with a MQTT subscription, and is added to
@@ -1837,12 +1837,11 @@ func (as *mqttAccountSessionManager) processRetainedMsg(_ *subscription, c *clie
 
 	// Handle this retained message
 	rf := &mqttRetainedMsgRef{
-		sseq:   seq,
-		loaded: rm,
+		sseq: seq,
 	}
 
 	rf.sseq = seq
-	as.handleRetainedMsg(rm.Subject, rf)
+	as.handleRetainedMsg(rm.Subject, rf, rm)
 
 	// If we were recovering (lastSeq > 0), then check if we are done.
 	if as.rrmLastSeq > 0 && seq >= as.rrmLastSeq {
@@ -1997,17 +1996,18 @@ func (as *mqttAccountSessionManager) cleaupRetainedMessageCache(s *Server, close
 			i := 0
 			maxScan := 10 * 1000
 			now := time.Now()
-			as.mu.Lock()
-			for _, rm := range as.retmsgs {
-				if rm.loaded != nil && now.After(rm.loaded.expiresFromCache) {
-					rm.loaded = nil
+
+			as.rmsCache.Range(func(key, value interface{}) bool {
+				rm := value.(mqttRetainedMsg)
+				if now.After(rm.expiresFromCache) {
+					as.rmsCache.Delete(key)
 				}
 				i++
 				if i >= maxScan {
-					break
+					return false
 				}
-			}
-			as.mu.Unlock()
+				return true
+			})
 
 		case <-closeCh:
 			return
@@ -2111,7 +2111,7 @@ func (as *mqttAccountSessionManager) sendJSAPIrequests(s *Server, c *client, acc
 // If a message for this topic already existed, the existing record is updated
 // with the provided information.
 // Lock not held on entry.
-func (as *mqttAccountSessionManager) handleRetainedMsg(key string, rm *mqttRetainedMsgRef) {
+func (as *mqttAccountSessionManager) handleRetainedMsg(key string, rf *mqttRetainedMsgRef, rm *mqttRetainedMsg) {
 	as.mu.Lock()
 	defer as.mu.Unlock()
 	if as.retmsgs == nil {
@@ -2122,11 +2122,11 @@ func (as *mqttAccountSessionManager) handleRetainedMsg(key string, rm *mqttRetai
 		if erm, exists := as.retmsgs[key]; exists {
 			// If the new sequence is below the floor or the existing one,
 			// then ignore the new one.
-			if rm.sseq <= erm.sseq || rm.sseq <= erm.floor {
+			if rf.sseq <= erm.sseq || rf.sseq <= erm.floor {
 				return
 			}
 			// Capture existing sequence number so we can return it as the old sequence.
-			erm.sseq = rm.sseq
+			erm.sseq = rf.sseq
 			// Clear the floor
 			erm.floor = 0
 			// If sub is nil, it means that it was removed from sublist following a
@@ -2138,20 +2138,20 @@ func (as *mqttAccountSessionManager) handleRetainedMsg(key string, rm *mqttRetai
 
 			// Update the in-memory retained message cache but only for messages
 			// that are already in the cache, i.e. have been (recently) used.
-			if erm.loaded != nil {
-				erm.loaded = rm.loaded
-				erm.loaded.expiresFromCache = time.Now().Add(mqttRetainedCacheTTL)
+			if rm != nil {
+				if _, ok := as.rmsCache.Load(key); ok {
+					toStore := *rm
+					toStore.expiresFromCache = time.Now().Add(mqttRetainedCacheTTL)
+					as.rmsCache.Store(rm.Subject, toStore)
+				}
 			}
 			return
 		}
 	}
 
-	// Do not cache retained messages that are not already in the cache, since
-	// we don't know if there'll be interest in them.
-	rm.loaded = nil
-	rm.sub = &subscription{subject: []byte(key)}
-	as.retmsgs[key] = rm
-	as.sl.Insert(rm.sub)
+	rf.sub = &subscription{subject: []byte(key)}
+	as.retmsgs[key] = rf
+	as.sl.Insert(rf.sub)
 }
 
 // Removes the retained message for the given `subject` if present, and returns the
@@ -2168,7 +2168,7 @@ func (as *mqttAccountSessionManager) handleRetainedMsgDel(subject string, seq ui
 		as.sl = NewSublistWithCache()
 	}
 	if erm, ok := as.retmsgs[subject]; ok {
-		erm.loaded = nil
+		as.rmsCache.Delete(subject)
 		if erm.sub != nil {
 			as.sl.Remove(erm.sub)
 			erm.sub = nil
@@ -2551,16 +2551,15 @@ func (as *mqttAccountSessionManager) serializeRetainedMsgsForSub(sess *mqttSessi
 		return
 	}
 	for _, psub := range result.psubs {
-		rmref, ok := as.retmsgs[string(psub.subject)]
-		if !ok {
-			continue
-		}
-		rm := rmref.loaded
-		if rm == nil {
+
+		strsubj := string(psub.subject)
+		rmv, _ := as.rmsCache.Load(strsubj)
+		if rmv == nil {
 			// This should not happen since we pre-load messages into the cache
 			// before calling serialize.
 			continue
 		}
+		rm := rmv.(mqttRetainedMsg)
 		var pi uint16
 		qos := mqttGetQoS(rm.Flags)
 		if qos > sub.mqtt.qos {
@@ -2624,9 +2623,13 @@ func (as *mqttAccountSessionManager) loadRetainedMessagesForSubject(topSubject [
 			// not happen.
 			continue
 		}
-		if ref.loaded != nil && ref.loaded.expiresFromCache.After(time.Now()) {
-			numToDeliver++
-			continue // already loaded and still good
+		rmv, ok := as.rmsCache.Load(subject)
+		if ok {
+			rm := rmv.(mqttRetainedMsg)
+			if rm.expiresFromCache.After(time.Now()) {
+				numToDeliver++
+				continue // already loaded and still good
+			}
 		}
 		loadSubject := mqttRetainedMsgsStreamSubject + subject
 		jsm, err := as.jsa.loadLastMsgFor(mqttRetainedMsgsStreamName, loadSubject)
@@ -2641,8 +2644,8 @@ func (as *mqttAccountSessionManager) loadRetainedMessagesForSubject(topSubject [
 		}
 
 		// Add the loaded retained message to the cache.
-		ref.loaded = &rm
-		ref.loaded.expiresFromCache = time.Now().Add(mqttRetainedCacheTTL)
+		rm.expiresFromCache = time.Now().Add(mqttRetainedCacheTTL)
+		as.rmsCache.Store(subject, rm)
 		numToDeliver++
 	}
 
@@ -4026,11 +4029,10 @@ func (c *client) mqttHandlePubRetain() {
 		if err == nil {
 			// Update the new sequence
 			rf := &mqttRetainedMsgRef{
-				sseq:   smr.Sequence,
-				loaded: rm,
+				sseq: smr.Sequence,
 			}
 			// Add/update the map
-			asm.handleRetainedMsg(key, rf)
+			asm.handleRetainedMsg(key, rf, rm)
 		} else {
 			c.mu.Lock()
 			acc := c.acc
