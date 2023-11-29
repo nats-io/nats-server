@@ -1328,10 +1328,13 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 	}
 
 	// This is the only case where we need "si" after lookup/create
+	needToTransfer := true
 	si, err := lookupStream(mqttRetainedMsgsStreamName, "retained messages")
-	if err != nil {
+	switch {
+	case err != nil:
 		return nil, err
-	} else if si == nil {
+
+	case si == nil:
 		// Create the stream for retained messages.
 		cfg := &StreamConfig{
 			Name:       mqttRetainedMsgsStreamName,
@@ -1354,7 +1357,12 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 				return nil, err
 			}
 		}
+		needToTransfer = false
+
+	default:
+		needToTransfer = si.Config.MaxMsgsPer != 1
 	}
+
 	// Doing this check outside of above if/else due to possible race when
 	// creating the stream.
 	wantedSubj := mqttRetainedMsgsStreamSubject + ">"
@@ -1365,9 +1373,15 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 			return nil, fmt.Errorf("failed to update stream config: %w", err)
 		}
 	}
+
 	// Try to transfer regardless if we have already updated the stream or not
 	// in case not all messages were transferred and the server was restarted.
-	if as.transferRetainedToPerKeySubjectStream(s) {
+	if needToTransfer {
+		err = as.transferRetainedToPerKeySubjectStream(s)
+		if err != nil {
+			return nil, err
+		}
+
 		// We need another lookup to have up-to-date si.State values in order
 		// to load all retained messages.
 		si, err = lookupStream(mqttRetainedMsgsStreamName, "retained messages")
@@ -1375,17 +1389,14 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 			return nil, err
 		}
 	}
+
 	// Now, if the stream does not have MaxMsgsPer set to 1, and there are no
 	// more messages on the single $MQTT.rmsgs subject, update the stream again.
 	if si.Config.MaxMsgsPer != 1 {
-		_, err := jsa.loadNextMsgFor(mqttRetainedMsgsStreamName, "$MQTT.rmsgs")
-		// Looking for an error indicated that there is no such message.
-		if err != nil && IsNatsErr(err, JSNoMessageFoundErr) {
-			si.Config.MaxMsgsPer = 1
-			// We will need an up-to-date si, so don't use local variable here.
-			if si, err = jsa.updateStream(&si.Config); err != nil {
-				return nil, fmt.Errorf("failed to update stream config: %w", err)
-			}
+		si.Config.MaxMsgsPer = 1
+		// We will need an up-to-date si, so don't use local variable here.
+		if si, err = jsa.updateStream(&si.Config); err != nil {
+			return nil, fmt.Errorf("failed to update stream config: %w", err)
 		}
 	}
 
@@ -2764,55 +2775,65 @@ func (as *mqttAccountSessionManager) transferUniqueSessStreamsToMuxed(log *Serve
 	retry = false
 }
 
-func (as *mqttAccountSessionManager) transferRetainedToPerKeySubjectStream(log *Server) bool {
+func (as *mqttAccountSessionManager) transferRetainedToPerKeySubjectStream(log *Server) error {
 	jsa := &as.jsa
-	var count, errors int
+	var processed int
+	var transferred int
 
+	const timeoutAfter = 1 * time.Second
+
+	start := time.Now()
+	deadline := start.Add(timeoutAfter)
 	for {
 		// Try and look up messages on the original undivided "$MQTT.rmsgs" subject.
 		// If nothing is returned here, we assume to have migrated all old messages.
 		smsg, err := jsa.loadNextMsgFor(mqttRetainedMsgsStreamName, "$MQTT.rmsgs")
-		if err != nil {
-			if IsNatsErr(err, JSNoMessageFoundErr) {
-				// We've ran out of messages to transfer so give up.
-				break
-			}
-			log.Warnf("    Unable to load retained message from '$MQTT.rmsgs': %s", err)
-			errors++
+		if IsNatsErr(err, JSNoMessageFoundErr) {
+			// We've ran out of messages to transfer, done.
 			break
 		}
+		if err != nil {
+			log.Warnf("    Unable to transfer a retained message: failed to load from '$MQTT.rmsgs': %s", err)
+			return err
+		}
+
+		transferOK := false
 		// Unmarshal the message so that we can obtain the subject name.
 		var rmsg mqttRetainedMsg
-		if err := json.Unmarshal(smsg.Data, &rmsg); err != nil {
+		if err = json.Unmarshal(smsg.Data, &rmsg); err == nil {
+			// Store the message again, this time with the new per-key subject.
+			subject := mqttRetainedMsgsStreamSubject + rmsg.Subject
+			if _, err = jsa.storeMsg(subject, 0, smsg.Data); err != nil {
+				log.Errorf("    Unable to transfer the retained message with sequence %d: %v", smsg.Sequence, err)
+			}
+			transferOK = true
+		} else {
 			log.Warnf("    Unable to unmarshal retained message with sequence %d, skipping", smsg.Sequence)
-			errors++
-			continue
 		}
-		// Store the message again, this time with the new per-key subject.
-		subject := mqttRetainedMsgsStreamSubject + rmsg.Subject
 
-		if _, err := jsa.storeMsg(subject, 0, smsg.Data); err != nil {
-			log.Errorf("    Unable to transfer the retained message with sequence %d: %v", smsg.Sequence, err)
-			errors++
-			continue
-		}
 		// Delete the original message.
 		if err := jsa.deleteMsg(mqttRetainedMsgsStreamName, smsg.Sequence, true); err != nil {
 			log.Errorf("    Unable to clean up the retained message with sequence %d: %v", smsg.Sequence, err)
-			errors++
-			continue
+			return err
 		}
-		count++
+		processed++
+		if transferOK {
+			transferred++
+		}
+
+		now := time.Now()
+		if now.After(deadline) {
+			err := fmt.Errorf("timed out while transfering retained messages from '$MQTT.rmsgs' after %v, %d processed, %d successfully transferred", now.Sub(start), processed, transferred)
+			log.Noticef(err.Error())
+			return err
+		}
 	}
-	if errors > 0 {
-		next := mqttDefaultTransferRetry
-		log.Warnf("Failed to transfer %d MQTT retained messages, will try again in %v", errors, next)
-		time.AfterFunc(next, func() { as.transferRetainedToPerKeySubjectStream(log) })
-	} else if count > 0 {
-		log.Noticef("Transfer of %d MQTT retained messages done!", count)
+	if processed > 0 {
+		log.Noticef("Processed %d messages from '$MQTT.rmsgs', successfully transferred %d in %v", processed, transferred, time.Since(start))
+	} else {
+		log.Debugf("No messages found to transfer from '$MQTT.rmsgs'")
 	}
-	// Signal if there was any activity (either some transferred or some errors)
-	return errors > 0 || count > 0
+	return nil
 }
 
 //////////////////////////////////////////////////////////////////////////////
