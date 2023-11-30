@@ -274,8 +274,13 @@ type mqttRetMsgDel struct {
 }
 
 type mqttSession struct {
-	mu                     sync.Mutex
-	subsMu                 sync.RWMutex
+	// subsMu is a "quick" version of the session lock, sufficient for the QoS0
+	// callback. It only guarantees that a new subscription is initialized, and
+	// its retained messages if any have been queued up for delivery. The QoS12
+	// callback uses the session lock.
+	mu     sync.Mutex
+	subsMu sync.RWMutex
+
 	id                     string // client ID
 	idHash                 string // client ID hash
 	c                      *client
@@ -1851,11 +1856,7 @@ func (as *mqttAccountSessionManager) processRetainedMsg(_ *subscription, c *clie
 	seq, _, _ := ackReplyInfo(reply)
 
 	// Handle this retained message
-	rf := &mqttRetainedMsgRef{
-		sseq: seq,
-	}
-
-	as.handleRetainedMsg(rm.Subject, rf, rm)
+	as.handleRetainedMsg(rm.Subject, &mqttRetainedMsgRef{sseq: seq}, rm)
 
 	// If we were recovering (lastSeq > 0), then check if we are done.
 	if as.rrmLastSeq > 0 && seq >= as.rrmLastSeq {
@@ -2001,16 +2002,15 @@ func (as *mqttAccountSessionManager) createSubscription(subject string, cb msgHa
 // No lock held on entry.
 func (as *mqttAccountSessionManager) cleaupRetainedMessageCache(s *Server, closeCh chan struct{}) {
 	tt := time.NewTicker(mqttRetainedCacheTTL)
+	defer tt.Stop()
 	for {
 		select {
 		case <-tt.C:
 			// Set a limit to the number of retained messages to scan since we
 			// lock as for it. Since the map enumeration gives random order we
 			// should eventually clean up everything.
-			i := 0
-			maxScan := 10 * 1000
+			i, maxScan := 0, 10*1000
 			now := time.Now()
-
 			as.rmsCache.Range(func(key, value interface{}) bool {
 				rm := value.(mqttRetainedMsg)
 				if now.After(rm.expiresFromCache) {
