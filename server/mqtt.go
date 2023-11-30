@@ -421,11 +421,10 @@ type mqttPublish struct {
 // When we submit a PUBREL for delivery, we add a "Nmqtt-PubRel" header that
 // contains the PI.
 const (
-	mqttNatsHeader                = "Nmqtt-Pub"
-	mqttNatsRetainedMessageHeader = "Nmqtt-Ret"
-	mqttNatsPubRelHeader          = "Nmqtt-PubRel"
-	mqttNatsHeaderSubject         = "Nmqtt-Subject"
-	mqttNatsHeaderMapped          = "Nmqtt-Mapped"
+	mqttNatsHeader        = "Nmqtt-Pub"
+	mqttNatsPubRelHeader  = "Nmqtt-PubRel"
+	mqttNatsHeaderSubject = "Nmqtt-Subject"
+	mqttNatsHeaderMapped  = "Nmqtt-Mapped"
 )
 
 type mqttParsedPublishNATSHeader struct {
@@ -1784,9 +1783,9 @@ func (as *mqttAccountSessionManager) processJSAPIReplies(_ *subscription, pc *cl
 // Run from various go routines (JS consumer, etc..).
 // No lock held on entry.
 func (as *mqttAccountSessionManager) processRetainedMsg(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
-	h, m := c.msgParts(rmsg)
-	rm, err := mqttDecodeRetainedMessage(h, m)
-	if err != nil {
+	_, msg := c.msgParts(rmsg)
+	rm := &mqttRetainedMsg{}
+	if err := json.Unmarshal(msg, rm); err != nil {
 		return
 	}
 	// If lastSeq is 0 (nothing to recover, or done doing it) and this is
@@ -2482,54 +2481,13 @@ func (as *mqttAccountSessionManager) loadRetainedMessagesForSubject(rms map[stri
 			log.Warnf("failed to load retained message for subject %q: %v", loadSubject, err)
 			continue
 		}
-		rm, err := mqttDecodeRetainedMessage(jsm.Header, jsm.Data)
-		if err != nil {
+		var rm mqttRetainedMsg
+		if err := json.Unmarshal(jsm.Data, &rm); err != nil {
 			log.Warnf("failed to decode retained message for subject %q: %v", loadSubject, err)
 			continue
 		}
-		rms[subject] = rm
+		rms[subject] = &rm
 	}
-}
-
-// Composes a NATS message for a storeable mqttRetainedMsg.
-func mqttEncodeRetainedMessage(rm *mqttRetainedMsg) (natsMsg []byte, headerLen int) {
-	// 128 bytes should be enough for the JSON overhead
-	buf := bytes.NewBuffer(make([]byte, 0, 128+
-		len(mqttNatsRetainedMessageHeader)+
-		len(rm.Msg)+len(rm.Subject)+len(rm.Origin)+len(rm.Topic)+len(rm.Source)))
-
-	msg := rm.Msg
-	rm.Msg = nil
-
-	buf.WriteString(hdrLine)
-	buf.WriteString(mqttNatsRetainedMessageHeader)
-	buf.WriteByte(':')
-	json.NewEncoder(buf).Encode(rm)
-	buf.WriteString(_CRLF_)
-
-	// End of header
-	buf.WriteString(_CRLF_)
-
-	headerLen = buf.Len()
-
-	buf.Write(msg)
-	return buf.Bytes(), headerLen
-}
-
-func mqttDecodeRetainedMessage(h, m []byte) (*mqttRetainedMsg, error) {
-	var rm mqttRetainedMsg
-	retainedHeaderBytes := getHeader(mqttNatsRetainedMessageHeader, h)
-	if len(retainedHeaderBytes) > 0 {
-		if err := json.Unmarshal(retainedHeaderBytes, &rm); err != nil {
-			return nil, err
-		}
-		rm.Msg = m
-	} else {
-		if err := json.Unmarshal(m, &rm); err != nil {
-			return nil, err
-		}
-	}
-	return &rm, nil
 }
 
 // Creates the session stream (limit msgs of 1) for this client ID if it does
@@ -2675,10 +2633,7 @@ func (as *mqttAccountSessionManager) transferRetainedToPerKeySubjectStream(log *
 			errors++
 			break
 		}
-
-		// Unmarshal the message so that we can obtain the subject name. Do not
-		// use mqttDecodeRetainedMessage() here because these messages are from
-		// older versions, and contain the full JSON encoding in payload.
+		// Unmarshal the message so that we can obtain the subject name.
 		var rmsg mqttRetainedMsg
 		if err := json.Unmarshal(smsg.Data, &rmsg); err != nil {
 			log.Warnf("    Unable to unmarshal retained message with sequence %d, skipping", smsg.Sequence)
@@ -3889,15 +3844,16 @@ func (c *client) mqttHandlePubRetain() {
 		// Spec [MQTT-3.3.1-5]. Store the retained message with its QoS.
 		// When coming from a publish protocol, `pp` is referencing a stack
 		// variable that itself possibly references the read buffer.
-		rmBytes, hdr := mqttEncodeRetainedMessage(&mqttRetainedMsg{
+		rm := &mqttRetainedMsg{
 			Origin:  asm.jsa.id,
 			Subject: key,
 			Topic:   string(pp.topic),
-			Msg:     pp.msg, // will copy these bytes
+			Msg:     copyBytes(pp.msg),
 			Flags:   pp.flags,
 			Source:  c.opts.Username,
-		})
-		smr, err := asm.jsa.storeMsg(mqttRetainedMsgsStreamSubject+key, hdr, rmBytes)
+		}
+		rmBytes, _ := json.Marshal(rm)
+		smr, err := asm.jsa.storeMsg(mqttRetainedMsgsStreamSubject+key, -1, rmBytes)
 		if err == nil {
 			// Update the new sequence
 			rf := &mqttRetainedMsgRef{
@@ -3981,8 +3937,8 @@ func (s *Server) mqttCheckPubRetainedPerms() {
 			if err != nil || jsm == nil {
 				continue
 			}
-			rm, err := mqttDecodeRetainedMessage(jsm.Header, jsm.Data)
-			if err != nil {
+			var rm mqttRetainedMsg
+			if err := json.Unmarshal(jsm.Data, &rm); err != nil {
 				continue
 			}
 			if rm.Source == _EMPTY_ {
