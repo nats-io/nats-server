@@ -1394,7 +1394,9 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 	// subjects. It may fail, will log its own error; ignore it the first time
 	// and proceed to updating MaxMsgsPer. Then we invoke transferRMS() again,
 	// which will get another chance to resolve the error; if not we bail there.
-	transferRMS()
+	if err = transferRMS(); err != nil {
+		return nil, err
+	}
 
 	// Now, if the stream does not have MaxMsgsPer set to 1, and there are no
 	// more messages on the single $MQTT.rmsgs subject, update the stream again.
@@ -1409,8 +1411,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 	// If we failed the first time, there is now at most one lingering message
 	// in the old subject. Try again (it will be a NO-OP if succeeded the first
 	// time).
-	err = transferRMS()
-	if err != nil {
+	if err = transferRMS(); err != nil {
 		return nil, err
 	}
 
