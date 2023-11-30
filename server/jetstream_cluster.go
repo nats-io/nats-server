@@ -4300,8 +4300,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 		} else {
 			// Clustered consumer.
 			// Start our monitoring routine if needed.
-			if !alreadyRunning && !o.isMonitorRunning() {
-				o.monitorWg.Add(1)
+			if !alreadyRunning && o.shouldStartMonitor() {
 				s.startGoRoutine(
 					func() { js.monitorConsumer(o, ca) },
 					pprofLabels{
@@ -4508,18 +4507,12 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	s, n, cc := js.server(), o.raftNode(), js.cluster
 	defer s.grWG.Done()
 
-	defer o.monitorWg.Done()
+	defer o.clearMonitorRunning()
 
 	if n == nil {
 		s.Warnf("No RAFT group for '%s > %s > %s'", o.acc.Name, ca.Stream, ca.Name)
 		return
 	}
-
-	// Make sure only one is running.
-	if o.checkInMonitor() {
-		return
-	}
-	defer o.clearMonitorRunning()
 
 	// Make sure to stop the raft group on exit to prevent accidental memory bloat.
 	// This should be below the checkInMonitor call though to avoid stopping it out
@@ -7439,7 +7432,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 
 	mset.mu.RLock()
 	canRespond := !mset.cfg.NoAck && len(reply) > 0
-	name, stype := mset.cfg.Name, mset.cfg.Storage
+	name, stype, store := mset.cfg.Name, mset.cfg.Storage, mset.store
 	s, js, jsa, st, rf, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.tier, mset.outq, mset.node
 	maxMsgSize, lseq, clfs := int(mset.cfg.MaxMsgSize), mset.lseq, mset.clfs
 	isLeader, isSealed := mset.isLeader(), mset.cfg.Sealed
@@ -7539,6 +7532,26 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 
 	// Some header checks can be checked pre proposal. Most can not.
 	if len(hdr) > 0 {
+		// Expected last sequence per subject.
+		// We can check for last sequence per subject but only if the expected seq <= lseq.
+		if seq, exists := getExpectedLastSeqPerSubject(hdr); exists && store != nil && seq > 0 && seq <= lseq {
+			var smv StoreMsg
+			var fseq uint64
+			sm, err := store.LoadLastMsg(subject, &smv)
+			if sm != nil {
+				fseq = sm.seq
+			}
+			if err != nil || fseq != seq {
+				if canRespond {
+					var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
+					resp.PubAck = &PubAck{Stream: name}
+					resp.Error = NewJSStreamWrongLastSequenceError(fseq)
+					b, _ := json.Marshal(resp)
+					outq.sendMsg(reply, b)
+				}
+				return fmt.Errorf("last sequence by subject mismatch: %d vs %d", seq, fseq)
+			}
+		}
 		// Expected stream name can also be pre-checked.
 		if sname := getExpectedStream(hdr); sname != _EMPTY_ && sname != name {
 			if canRespond {
