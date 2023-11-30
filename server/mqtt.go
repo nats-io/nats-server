@@ -184,10 +184,9 @@ const (
 	// For Websocket URLs
 	mqttWSPath = "/mqtt"
 
-	mqttInitialPRMCapacity = 32 * 1024
-	mqttInitialPubHeader   = 16 // An overkill, should need 7 bytes max
-	mqttProcessSubTooLong  = 100 * time.Millisecond
-	mqttRetainedCacheTTL   = 1 * time.Minute
+	mqttInitialPubHeader  = 16 // An overkill, should need 7 bytes max
+	mqttProcessSubTooLong = 100 * time.Millisecond
+	mqttRetainedCacheTTL  = 1 * time.Minute
 )
 
 var (
@@ -1855,7 +1854,6 @@ func (as *mqttAccountSessionManager) processRetainedMsg(_ *subscription, c *clie
 		sseq: seq,
 	}
 
-	rf.sseq = seq
 	as.handleRetainedMsg(rm.Subject, rf, rm)
 
 	// If we were recovering (lastSeq > 0), then check if we are done.
@@ -4614,10 +4612,12 @@ func (c *client) mqttEnqueuePublishMsgTo(cc *client, sub *subscription, pi uint1
 	flags, headerBytes := mqttMakePublishHeader(pi, qos, dup, false, topic, len(msg))
 
 	cc.mu.Lock()
-	for _, data := range sub.mqtt.prm {
-		cc.queueOutbound(data)
+	if sub.mqtt.prm != nil {
+		for _, data := range sub.mqtt.prm {
+			cc.queueOutbound(data)
+		}
+		sub.mqtt.prm = nil
 	}
-	sub.mqtt.prm = nil
 	cc.queueOutbound(headerBytes)
 	cc.queueOutbound(msg)
 	c.addToPCD(cc)
