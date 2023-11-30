@@ -184,9 +184,10 @@ const (
 	// For Websocket URLs
 	mqttWSPath = "/mqtt"
 
-	mqttInitialPubHeader  = 16 // An overkill, should need 7 bytes max
-	mqttProcessSubTooLong = 100 * time.Millisecond
-	mqttRetainedCacheTTL  = 1 * time.Minute
+	mqttInitialPubHeader        = 16 // An overkill, should need 7 bytes max
+	mqttProcessSubTooLong       = 100 * time.Millisecond
+	mqttRetainedCacheTTL        = 2 * time.Minute
+	mqttRetainedTransferTimeout = 10 * time.Second
 )
 
 var (
@@ -2782,10 +2783,8 @@ func (as *mqttAccountSessionManager) transferRetainedToPerKeySubjectStream(log *
 	var processed int
 	var transferred int
 
-	const timeoutAfter = 5 * time.Second
-
 	start := time.Now()
-	deadline := start.Add(timeoutAfter)
+	deadline := start.Add(mqttRetainedTransferTimeout)
 	for {
 		// Try and look up messages on the original undivided "$MQTT.rmsgs" subject.
 		// If nothing is returned here, we assume to have migrated all old messages.
