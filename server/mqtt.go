@@ -2304,7 +2304,7 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 		return true, fwcsubject, fwcsid
 	}
 
-	rmsUniqueSubjects := map[string]struct{}{}
+	rmSubjects := map[string]struct{}{}
 	// Preload retained messages for all requested subscriptions.  Also, since
 	// it's the first iteration over the filter list, do some cleanup.
 	for _, f := range filters {
@@ -2336,7 +2336,7 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 
 		// Find retained messages.
 		if fromSubProto {
-			appendRMS := func(subject string) error {
+			addRMSubjects := func(subject string) error {
 				sub := &subscription{
 					client:  c,
 					subject: []byte(subject),
@@ -2354,20 +2354,20 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 					subject := string(sub.subject)
 					// Best-effort loading the messages, logs on errors (to c.srv), loads
 					// once for subject.
-					as.addRetainedSubjectsForSubject(rmsUniqueSubjects, subject)
+					as.addRetainedSubjectsForSubject(rmSubjects, subject)
 					for _, ss := range sub.shadow {
-						as.addRetainedSubjectsForSubject(rmsUniqueSubjects, string(ss.subject))
+						as.addRetainedSubjectsForSubject(rmSubjects, string(ss.subject))
 					}
 				}
 				return nil
 			}
 
-			if err := appendRMS(f.filter); err != nil {
+			if err := addRMSubjects(f.filter); err != nil {
 				f.qos = mqttSubAckFailure
 				continue
 			}
 			if need, subject, _ := fwc(f.filter); need {
-				if err := appendRMS(subject); err != nil {
+				if err := addRMSubjects(subject); err != nil {
 					f.qos = mqttSubAckFailure
 					continue
 				}
@@ -2379,7 +2379,7 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 	if fromSubProto {
 		// Make the best effort to load retained messages. We will identify
 		// errors in the next pass.
-		rms = as.loadRetainedMessages(rmsUniqueSubjects, c)
+		rms = as.loadRetainedMessages(rmSubjects, c)
 	}
 
 	// Small helper to add the consumer config to the session.
