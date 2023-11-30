@@ -405,7 +405,6 @@ type mqttFilter struct {
 	// Used only for tracing and should not be used after parsing of (un)sub protocols.
 	ttopic []byte
 	// Used only while processing SUBSCRIBE requests
-	// hasRetainedMsgs bool
 }
 
 type mqttPublish struct {
@@ -2356,10 +2355,8 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 					subject := string(sub.subject)
 					// Best-effort loading the messages, logs on errors (to c.srv), loads
 					// once for subject.
-					// f.hasRetainedMsgs = f.hasRetainedMsgs ||
 					as.addRetainedSubjectsForSubject(rmsUniqueSubjects, subject)
 					for _, ss := range sub.shadow {
-						// f.hasRetainedMsgs = f.hasRetainedMsgs ||
 						as.addRetainedSubjectsForSubject(rmsUniqueSubjects, string(ss.subject))
 					}
 				}
@@ -2428,7 +2425,7 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 		sess.mu.Lock()
 		sub, err := sess.processSub(c, bsubject, bsid,
 			isMQTTReservedSubscription(subject), f.qos, _EMPTY_, mqttDeliverMsgCbQoS0, true)
-		if err == nil && /*f.hasRetainedMsgs && */ fromSubProto {
+		if err == nil && fromSubProto {
 			// fail the subscription if we thought we should send it retained
 			// messages, but failed.
 			err = serializeRMS(sub)
@@ -2463,7 +2460,7 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 			sess.mu.Lock()
 			fwcsub, err = sess.processSub(c, []byte(fwcsubject), []byte(fwcsid),
 				isMQTTReservedSubscription(subject), f.qos, _EMPTY_, mqttDeliverMsgCbQoS0, true)
-			if err == nil && fromSubProto /* && f.hasRetainedMsgs */ {
+			if err == nil && fromSubProto {
 				// fail the subscription if we thought we should send it retained
 				// messages, but failed.
 				err = serializeRMS(fwcsub)
