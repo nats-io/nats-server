@@ -1374,26 +1374,27 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		}
 	}
 
-	transferRMS := func() {
+	transferRMS := func() error {
 		if !needToTransfer {
-			return
+			return nil
 		}
-		err = as.transferRetainedToPerKeySubjectStream(s)
-		if err != nil {
-			return
-		}
+
+		as.transferRetainedToPerKeySubjectStream(s)
+
 		// We need another lookup to have up-to-date si.State values in order
 		// to load all retained messages.
 		si, err = lookupStream(mqttRetainedMsgsStreamName, "retained messages")
 		if err != nil {
-			return
+			return err
 		}
 		needToTransfer = false
+		return nil
 	}
 
 	// Attempt to transfer all "single subject" retained messages to new
-	// subjects. It may fail, will log its own error; ignore and proceed to
-	// updating MaxMsgsPer.
+	// subjects. It may fail, will log its own error; ignore it the first time
+	// and proceed to updating MaxMsgsPer. Then we invoke transferRMS() again,
+	// which will get another chance to resolve the error; if not we bail there.
 	transferRMS()
 
 	// Now, if the stream does not have MaxMsgsPer set to 1, and there are no
@@ -1409,7 +1410,10 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 	// If we failed the first time, there is now at most one lingering message
 	// in the old subject. Try again (it will be a NO-OP if succeeded the first
 	// time).
-	transferRMS()
+	err = transferRMS()
+	if err != nil {
+		return nil, err
+	}
 
 	var lastSeq uint64
 	var rmDoneCh chan struct{}
