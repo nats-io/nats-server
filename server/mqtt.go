@@ -2493,9 +2493,10 @@ func (as *mqttAccountSessionManager) loadRetainedMessagesForSubject(rms map[stri
 
 // Composes a NATS message for a storeable mqttRetainedMsg.
 func mqttEncodeRetainedMessage(rm *mqttRetainedMsg) (natsMsg []byte, headerLen int) {
-	// Overallocate, 2K for all the header, JSON overhead
-	buf := bytes.NewBuffer(make([]byte, 0,
-		len(rm.Msg)+len(rm.Subject)+len(rm.Origin)+len(rm.Topic)+len(rm.Source)+2*1024))
+	// 128 bytes should be enough for the JSON overhead
+	buf := bytes.NewBuffer(make([]byte, 0, 128+
+		len(mqttNatsRetainedMessageHeader)+
+		len(rm.Msg)+len(rm.Subject)+len(rm.Origin)+len(rm.Topic)+len(rm.Source)))
 
 	msg := rm.Msg
 	rm.Msg = nil
