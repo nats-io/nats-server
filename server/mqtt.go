@@ -404,7 +404,6 @@ type mqttFilter struct {
 	qos    byte
 	// Used only for tracing and should not be used after parsing of (un)sub protocols.
 	ttopic []byte
-	// Used only while processing SUBSCRIBE requests
 }
 
 type mqttPublish struct {
