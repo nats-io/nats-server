@@ -1991,9 +1991,9 @@ func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, storage Stor
 		js.mu.Unlock()
 		return nil
 	}
-	js.mu.Unlock()
 
 	s.Debugf("JetStream cluster creating raft group:%+v", rg)
+	js.mu.Unlock()
 
 	sysAcc := s.SystemAccount()
 	if sysAcc == nil {
