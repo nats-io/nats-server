@@ -250,7 +250,7 @@ type mqttAccountSessionManager struct {
 }
 
 type mqttJSAResponse struct {
-	reply string
+	reply string // will be used to map to the original request in jsa.NewRequestExMulti
 	value any
 }
 
@@ -1528,38 +1528,6 @@ func (jsa *mqttJSA) prefixDomain(subject string) string {
 	return subject
 }
 
-func (jsa *mqttJSA) queueRequest(kind, subject, cidHash string, hdr int, msg []byte, ch chan *mqttJSAResponse) string {
-	var sb strings.Builder
-	// Either we use nuid.Next() which uses a global lock, or our own nuid object, but
-	// then it needs to be "write" protected. This approach will reduce across account
-	// contention since we won't use the global nuid's lock.
-	jsa.mu.Lock()
-	uid := jsa.nuid.Next()
-	sb.WriteString(jsa.rplyr)
-	jsa.mu.Unlock()
-
-	sb.WriteString(kind)
-	sb.WriteByte(btsep)
-	if cidHash != _EMPTY_ {
-		sb.WriteString(cidHash)
-		sb.WriteByte(btsep)
-	}
-	sb.WriteString(uid)
-	reply := sb.String()
-
-	jsa.replies.Store(reply, ch)
-
-	subject = jsa.prefixDomain(subject)
-	jsa.sendq.push(&mqttJSPubMsg{
-		subj:  subject,
-		reply: reply,
-		hdr:   hdr,
-		msg:   msg,
-	})
-
-	return reply
-}
-
 func (jsa *mqttJSA) newRequestEx(kind, subject, cidHash string, hdr int, msg []byte, timeout time.Duration) (any, error) {
 	responses, err := jsa.newRequestExMulti(kind, subject, cidHash, []int{hdr}, [][]byte{msg}, timeout)
 	if err != nil {
@@ -1596,7 +1564,33 @@ func (jsa *mqttJSA) newRequestExMulti(kind, subject, cidHash string, hdrs []int,
 	r2i := map[string]int{}
 	for i, msg := range msgs {
 		hdr := hdrs[i]
-		reply := jsa.queueRequest(kind, subject, cidHash, hdr, msg, responseCh)
+		var sb strings.Builder
+		// Either we use nuid.Next() which uses a global lock, or our own nuid object, but
+		// then it needs to be "write" protected. This approach will reduce across account
+		// contention since we won't use the global nuid's lock.
+		jsa.mu.Lock()
+		uid := jsa.nuid.Next()
+		sb.WriteString(jsa.rplyr)
+		jsa.mu.Unlock()
+
+		sb.WriteString(kind)
+		sb.WriteByte(btsep)
+		if cidHash != _EMPTY_ {
+			sb.WriteString(cidHash)
+			sb.WriteByte(btsep)
+		}
+		sb.WriteString(uid)
+		reply := sb.String()
+
+		jsa.replies.Store(reply, responseCh)
+
+		subject = jsa.prefixDomain(subject)
+		jsa.sendq.push(&mqttJSPubMsg{
+			subj:  subject,
+			reply: reply,
+			hdr:   hdr,
+			msg:   msg,
+		})
 		r2i[reply] = i
 	}
 
