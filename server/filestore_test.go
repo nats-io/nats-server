@@ -6125,8 +6125,9 @@ func TestFileStoreIndexDBExistsAfterShutdown(t *testing.T) {
 		FileStoreConfig{StoreDir: sd},
 		StreamConfig{Name: "zzz", Subjects: []string{">"}, Storage: FileStorage})
 	require_NoError(t, err)
+	defer fs.Stop()
 
-	subj, _ := "foo.bar.baz", bytes.Repeat([]byte("ABC"), 33) // ~100bytes
+	subj := "foo.bar.baz"
 	for i := 0; i < 1000; i++ {
 		fs.StoreMsg(subj, nil, nil)
 	}
@@ -6148,6 +6149,39 @@ func TestFileStoreIndexDBExistsAfterShutdown(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+// https://github.com/nats-io/nats-server/issues/4842
+func TestFileStoreSubjectCorruption(t *testing.T) {
+	sd, blkSize := t.TempDir(), uint64(2*1024*1024)
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: blkSize},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	numSubjects := 100
+	msgs := [][]byte{bytes.Repeat([]byte("ABC"), 333), bytes.Repeat([]byte("ABC"), 888), bytes.Repeat([]byte("ABC"), 555)}
+	for i := 0; i < 10_000; i++ {
+		subj := fmt.Sprintf("foo.%d", rand.Intn(numSubjects)+1)
+		msg := msgs[rand.Intn(len(msgs))]
+		fs.StoreMsg(subj, nil, msg)
+	}
+	fs.Stop()
+
+	require_NoError(t, os.Remove(filepath.Join(sd, msgDir, streamStreamStateFile)))
+
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: blkSize},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	for subj := range fs.SubjectsTotals(">") {
+		var n int
+		_, err := fmt.Sscanf(subj, "foo.%d", &n)
+		require_NoError(t, err)
+	}
 }
 
 ///////////////////////////////////////////////////////////////////////////
