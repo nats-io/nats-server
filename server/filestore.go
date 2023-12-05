@@ -5093,9 +5093,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 					ss.Msgs++
 					ss.Last = seq
 				} else {
-					// Note the fss cache and the underlying buffer cache are considered
-					// linked and exists and are removed at the same time.
-					mb.fss[bytesToString(bsubj)] = &SimpleState{
+					mb.fss[string(bsubj)] = &SimpleState{
 						Msgs:  1,
 						First: seq,
 						Last:  seq,
