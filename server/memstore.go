@@ -284,7 +284,18 @@ func (ms *memStore) GetSeqFromTime(t time.Time) uint64 {
 	if ts <= ms.msgs[ms.state.FirstSeq].ts {
 		return ms.state.FirstSeq
 	}
-	last := ms.msgs[ms.state.LastSeq].ts
+	// LastSeq is not guaranteed to be present since last does not go backwards.
+	var lmsg *StoreMsg
+	for lseq := ms.state.LastSeq; lseq > ms.state.FirstSeq; lseq-- {
+		if lmsg = ms.msgs[lseq]; lmsg != nil {
+			break
+		}
+	}
+	if lmsg == nil {
+		return ms.state.FirstSeq
+	}
+
+	last := lmsg.ts
 	if ts == last {
 		return ms.state.LastSeq
 	}
@@ -292,7 +303,10 @@ func (ms *memStore) GetSeqFromTime(t time.Time) uint64 {
 		return ms.state.LastSeq + 1
 	}
 	index := sort.Search(len(ms.msgs), func(i int) bool {
-		return ms.msgs[uint64(i)+ms.state.FirstSeq].ts >= ts
+		if msg := ms.msgs[ms.state.FirstSeq+uint64(i)]; msg != nil {
+			return msg.ts >= ts
+		}
+		return false
 	})
 	return uint64(index) + ms.state.FirstSeq
 }

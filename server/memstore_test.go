@@ -25,9 +25,8 @@ import (
 
 func TestMemStoreBasics(t *testing.T) {
 	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage})
-	if err != nil {
-		t.Fatalf("Unexpected error creating store: %v", err)
-	}
+	require_NoError(t, err)
+	defer ms.Stop()
 
 	subj, msg := "foo", []byte("Hello World")
 	now := time.Now().UnixNano()
@@ -61,9 +60,9 @@ func TestMemStoreBasics(t *testing.T) {
 
 func TestMemStoreMsgLimit(t *testing.T) {
 	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage, MaxMsgs: 10})
-	if err != nil {
-		t.Fatalf("Unexpected error creating store: %v", err)
-	}
+	require_NoError(t, err)
+	defer ms.Stop()
+
 	subj, msg := "foo", []byte("Hello World")
 	for i := 0; i < 10; i++ {
 		ms.StoreMsg(subj, nil, msg)
@@ -99,9 +98,8 @@ func TestMemStoreBytesLimit(t *testing.T) {
 	maxBytes := storedMsgSize * toStore
 
 	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage, MaxBytes: int64(maxBytes)})
-	if err != nil {
-		t.Fatalf("Unexpected error creating store: %v", err)
-	}
+	require_NoError(t, err)
+	defer ms.Stop()
 
 	for i := uint64(0); i < toStore; i++ {
 		ms.StoreMsg(subj, nil, msg)
@@ -144,9 +142,8 @@ func TestMemStoreBytesLimitWithDiscardNew(t *testing.T) {
 	maxBytes := 100
 
 	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage, MaxBytes: int64(maxBytes), Discard: DiscardNew})
-	if err != nil {
-		t.Fatalf("Unexpected error creating store: %v", err)
-	}
+	require_NoError(t, err)
+	defer ms.Stop()
 
 	// Now send 10 messages and check that bytes limit enforced.
 	for i := 0; i < 10; i++ {
@@ -171,9 +168,9 @@ func TestMemStoreBytesLimitWithDiscardNew(t *testing.T) {
 func TestMemStoreAgeLimit(t *testing.T) {
 	maxAge := 10 * time.Millisecond
 	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage, MaxAge: maxAge})
-	if err != nil {
-		t.Fatalf("Unexpected error creating store: %v", err)
-	}
+	require_NoError(t, err)
+	defer ms.Stop()
+
 	// Store some messages. Does not really matter how many.
 	subj, msg := "foo", []byte("Hello World")
 	toStore := 100
@@ -212,9 +209,9 @@ func TestMemStoreAgeLimit(t *testing.T) {
 
 func TestMemStoreTimeStamps(t *testing.T) {
 	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage})
-	if err != nil {
-		t.Fatalf("Unexpected error creating store: %v", err)
-	}
+	require_NoError(t, err)
+	defer ms.Stop()
+
 	last := time.Now().UnixNano()
 	subj, msg := "foo", []byte("Hello World")
 	for i := 0; i < 10; i++ {
@@ -237,9 +234,8 @@ func TestMemStoreTimeStamps(t *testing.T) {
 
 func TestMemStorePurge(t *testing.T) {
 	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage})
-	if err != nil {
-		t.Fatalf("Unexpected error creating store: %v", err)
-	}
+	require_NoError(t, err)
+	defer ms.Stop()
 
 	subj, msg := "foo", []byte("Hello World")
 	for i := 0; i < 10; i++ {
@@ -256,9 +252,8 @@ func TestMemStorePurge(t *testing.T) {
 
 func TestMemStoreCompact(t *testing.T) {
 	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage})
-	if err != nil {
-		t.Fatalf("Unexpected error creating store: %v", err)
-	}
+	require_NoError(t, err)
+	defer ms.Stop()
 
 	subj, msg := "foo", []byte("Hello World")
 	for i := 0; i < 10; i++ {
@@ -296,9 +291,9 @@ func TestMemStoreCompact(t *testing.T) {
 
 func TestMemStoreEraseMsg(t *testing.T) {
 	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage})
-	if err != nil {
-		t.Fatalf("Unexpected error creating store: %v", err)
-	}
+	require_NoError(t, err)
+	defer ms.Stop()
+
 	subj, msg := "foo", []byte("Hello World")
 	ms.StoreMsg(subj, nil, msg)
 	sm, err := ms.LoadMsg(1, nil)
@@ -315,9 +310,9 @@ func TestMemStoreEraseMsg(t *testing.T) {
 
 func TestMemStoreMsgHeaders(t *testing.T) {
 	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage})
-	if err != nil {
-		t.Fatalf("Unexpected error creating store: %v", err)
-	}
+	require_NoError(t, err)
+	defer ms.Stop()
+
 	subj, hdr, msg := "foo", []byte("name:derek"), []byte("Hello World")
 	if sz := int(memStoreMsgSize(subj, hdr, msg)); sz != (len(subj) + len(hdr) + len(msg) + 16) {
 		t.Fatalf("Wrong size for stored msg with header")
@@ -340,9 +335,8 @@ func TestMemStoreMsgHeaders(t *testing.T) {
 
 func TestMemStoreStreamStateDeleted(t *testing.T) {
 	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage})
-	if err != nil {
-		t.Fatalf("Unexpected error creating store: %v", err)
-	}
+	require_NoError(t, err)
+	defer ms.Stop()
 
 	subj, toStore := "foo", uint64(10)
 	for i := uint64(1); i <= toStore; i++ {
@@ -384,9 +378,8 @@ func TestMemStoreStreamStateDeleted(t *testing.T) {
 
 func TestMemStoreStreamTruncate(t *testing.T) {
 	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage})
-	if err != nil {
-		t.Fatalf("Unexpected error creating store: %v", err)
-	}
+	require_NoError(t, err)
+	defer ms.Stop()
 
 	tseq := uint64(50)
 
@@ -443,6 +436,7 @@ func TestMemStoreStreamTruncate(t *testing.T) {
 func TestMemStorePurgeExWithSubject(t *testing.T) {
 	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage})
 	require_NoError(t, err)
+	defer ms.Stop()
 
 	for i := 0; i < 100; i++ {
 		_, _, err = ms.StoreMsg("foo", nil, nil)
@@ -463,6 +457,7 @@ func TestMemStoreUpdateMaxMsgsPerSubject(t *testing.T) {
 	}
 	ms, err := newMemStore(cfg)
 	require_NoError(t, err)
+	defer ms.Stop()
 
 	// Make sure this is honored on an update.
 	cfg.MaxMsgsPer = 50
@@ -499,6 +494,7 @@ func TestMemStoreStreamTruncateReset(t *testing.T) {
 	}
 	ms, err := newMemStore(cfg)
 	require_NoError(t, err)
+	defer ms.Stop()
 
 	subj, msg := "foo", []byte("Hello World")
 	for i := 0; i < 1000; i++ {
@@ -539,6 +535,7 @@ func TestMemStoreStreamCompactMultiBlockSubjectInfo(t *testing.T) {
 	}
 	ms, err := newMemStore(cfg)
 	require_NoError(t, err)
+	defer ms.Stop()
 
 	for i := 0; i < 1000; i++ {
 		subj := fmt.Sprintf("foo.%d", i)
@@ -564,6 +561,7 @@ func TestMemStoreSubjectsTotals(t *testing.T) {
 	}
 	ms, err := newMemStore(cfg)
 	require_NoError(t, err)
+	defer ms.Stop()
 
 	fmap := make(map[int]int)
 	bmap := make(map[int]int)
@@ -643,6 +641,7 @@ func TestMemStoreNumPending(t *testing.T) {
 	}
 	ms, err := newMemStore(cfg)
 	require_NoError(t, err)
+	defer ms.Stop()
 
 	tokens := []string{"foo", "bar", "baz"}
 	genSubj := func() string {
@@ -764,6 +763,7 @@ func TestMemStoreInitialFirstSeq(t *testing.T) {
 	}
 	ms, err := newMemStore(cfg)
 	require_NoError(t, err)
+	defer ms.Stop()
 
 	seq, _, err := ms.StoreMsg("A", nil, []byte("OK"))
 	require_NoError(t, err)
@@ -797,6 +797,7 @@ func TestMemStoreDeleteBlocks(t *testing.T) {
 	}
 	ms, err := newMemStore(cfg)
 	require_NoError(t, err)
+	defer ms.Stop()
 
 	// Put in 10_000 msgs.
 	total := 10_000
@@ -825,4 +826,36 @@ func TestMemStoreDeleteBlocks(t *testing.T) {
 	ms.mu.RUnlock()
 
 	require_True(t, dmap.Size() == state.NumDeleted)
+}
+
+// https://github.com/nats-io/nats-server/issues/4850
+func TestMemStoreGetSeqFromTimeWithLastDeleted(t *testing.T) {
+	cfg := &StreamConfig{
+		Name:     "zzz",
+		Subjects: []string{"*"},
+		Storage:  MemoryStorage,
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(t, err)
+
+	// Put in 1000 msgs.
+	total := 1000
+	var st time.Time
+	for i := 1; i <= total; i++ {
+		_, _, err := ms.StoreMsg("A", nil, []byte("OK"))
+		require_NoError(t, err)
+		if i == total/2 {
+			time.Sleep(100 * time.Millisecond)
+			st = time.Now()
+		}
+	}
+	// Delete last 100
+	for seq := total - 100; seq <= total; seq++ {
+		ms.RemoveMsg(uint64(seq))
+	}
+
+	// Make sure this does not panic with last sequence no longer accessible.
+	seq := ms.GetSeqFromTime(st)
+	// Make sure we get the right value.
+	require_Equal(t, seq, 501)
 }
