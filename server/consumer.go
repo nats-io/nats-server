@@ -700,9 +700,14 @@ func (mset *stream) addConsumer(config *ConsumerConfig) (*consumer, error) {
 
 func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname string, ca *consumerAssignment, isRecovering bool, action ConsumerAction) (*consumer, error) {
 	mset.mu.RLock()
-	s, jsa, tierName, cfg, acc := mset.srv, mset.jsa, mset.tier, mset.cfg, mset.acc
+	s, jsa, tierName, cfg, acc, closed := mset.srv, mset.jsa, mset.tier, mset.cfg, mset.acc, mset.closed
 	retention := cfg.Retention
 	mset.mu.RUnlock()
+
+	// Check if this stream has closed.
+	if closed {
+		return nil, NewJSStreamInvalidError()
+	}
 
 	// If we do not have the consumer currently assigned to us in cluster mode we will proceed but warn.
 	// This can happen on startup with restored state where on meta replay we still do not have
