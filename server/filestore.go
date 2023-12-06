@@ -7020,7 +7020,7 @@ const (
 // This is also called during Stop().
 func (fs *fileStore) flushStreamStateLoop(fch, qch, done chan struct{}) {
 	// Make sure we do not try to write these out too fast.
-	const writeThreshold = time.Second * 10
+	const writeThreshold = time.Minute
 	lastWrite := time.Time{}
 
 	// We will use these to complete the full state write while not doing them too fast.
