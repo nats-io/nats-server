@@ -8512,6 +8512,12 @@ func decodeConsumerState(buf []byte) (*ConsumerState, error) {
 		}
 	}
 
+	// Protect ourselves against rolling backwards.
+	const hbit = 1 << 63
+	if state.AckFloor.Stream&hbit != 0 || state.Delivered.Stream&hbit != 0 {
+		return nil, errCorruptState
+	}
+
 	// We have additional stuff.
 	if numPending := readLen(); numPending > 0 {
 		mints := readTimeStamp()

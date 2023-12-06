@@ -2460,8 +2460,11 @@ func (o *consumer) setStoreState(state *ConsumerState) error {
 	if state == nil || o.store == nil {
 		return nil
 	}
-	o.applyState(state)
-	return o.store.Update(state)
+	err := o.store.Update(state)
+	if err == nil {
+		o.applyState(state)
+	}
+	return err
 }
 
 // Update our state to the store.
@@ -4494,7 +4497,7 @@ func (o *consumer) checkPending() {
 	}
 
 	// Since we can update timestamps, we have to review all pending.
-	// We will now bail if we see an ack pending in bound to us via o.awl.
+	// We will now bail if we see an ack pending inbound to us via o.awl.
 	var expired []uint64
 	check := len(o.pending) > 1024
 	for seq, p := range o.pending {
@@ -5312,11 +5315,16 @@ func (o *consumer) checkStateForInterestStream() {
 		return
 	}
 
+	asflr := state.AckFloor.Stream
+	// Protect ourselves against rolling backwards.
+	if asflr&(1<<63) != 0 {
+		return
+	}
+
 	// We should make sure to update the acks.
 	var ss StreamState
 	mset.store.FastState(&ss)
 
-	asflr := state.AckFloor.Stream
 	for seq := ss.FirstSeq; seq <= asflr; seq++ {
 		mset.ackMsg(o, seq)
 	}
