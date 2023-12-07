@@ -834,7 +834,7 @@ type profBlockRateReload struct {
 
 func (o *profBlockRateReload) Apply(s *Server) {
 	s.setBlockProfileRate(o.newValue)
-	s.Noticef("Reloaded: block_prof_rate = %v", o.newValue)
+	s.Noticef("Reloaded: prof_block_rate = %v", o.newValue)
 }
 
 type leafNodeOption struct {
