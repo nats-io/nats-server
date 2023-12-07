@@ -140,6 +140,17 @@ func require_LessThan[T ordered](t *testing.T, a, b T) {
 	}
 }
 
+func require_ChanRead[T any](t *testing.T, ch chan T, timeout time.Duration) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(timeout):
+		t.Fatalf("require read from channel within %v but didn't get anything", timeout)
+	}
+	panic("this shouldn't be possible")
+}
+
 func checkNatsError(t *testing.T, e *ApiError, id ErrorIdentifier) {
 	t.Helper()
 	ae, ok := ApiErrors[id]
