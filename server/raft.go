@@ -3616,7 +3616,7 @@ func (vr *voteRequest) encode() []byte {
 	return buf[:voteRequestLen]
 }
 
-func (n *raft) decodeVoteRequest(msg []byte, reply string) *voteRequest {
+func decodeVoteRequest(msg []byte, reply string) *voteRequest {
 	if len(msg) != voteRequestLen {
 		return nil
 	}
@@ -3818,7 +3818,7 @@ func (vr *voteResponse) encode() []byte {
 	return buf[:voteResponseLen]
 }
 
-func (n *raft) decodeVoteResponse(msg []byte) *voteResponse {
+func decodeVoteResponse(msg []byte) *voteResponse {
 	if len(msg) != voteResponseLen {
 		return nil
 	}
@@ -3829,7 +3829,7 @@ func (n *raft) decodeVoteResponse(msg []byte) *voteResponse {
 }
 
 func (n *raft) handleVoteResponse(sub *subscription, c *client, _ *Account, _, reply string, msg []byte) {
-	vr := n.decodeVoteResponse(msg)
+	vr := decodeVoteResponse(msg)
 	n.debug("Received a voteResponse %+v", vr)
 	if vr == nil {
 		n.error("Received malformed vote response for %q", n.group)
@@ -3903,7 +3903,7 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 }
 
 func (n *raft) handleVoteRequest(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
-	vr := n.decodeVoteRequest(msg, reply)
+	vr := decodeVoteRequest(msg, reply)
 	if vr == nil {
 		n.error("Received malformed vote request for %q", n.group)
 		return
