@@ -2424,10 +2424,10 @@ func TestClientLimits(t *testing.T) {
 			}
 			c.applyAccountLimits()
 			if c.mpay != test.expect {
-				t.Fatalf("payload %d not as ecpected %d", c.mpay, test.expect)
+				t.Fatalf("payload %d not as expected %d", c.mpay, test.expect)
 			}
 			if c.msubs != test.expect {
-				t.Fatalf("subscriber %d not as ecpected %d", c.msubs, test.expect)
+				t.Fatalf("subscriber %d not as expected %d", c.msubs, test.expect)
 			}
 		})
 	}

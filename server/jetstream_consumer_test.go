@@ -735,7 +735,7 @@ func TestJetStreamConsumerActionsUnmarshal(t *testing.T) {
 
 			var request CreateConsumerRequest
 			err := json.Unmarshal(test.given, &request)
-			fmt.Printf("given: %v, expecetd: %v\n", test.expectErr, err)
+			fmt.Printf("given: %v, expected: %v\n", test.expectErr, err)
 			if !test.expectErr {
 				require_NoError(t, err)
 			} else {

@@ -714,7 +714,7 @@ func TestClientConnectToRoutePort(t *testing.T) {
 	for i := 0; i < total; i++ {
 		nc, err := nats.Connect(url)
 		if err != nil {
-			t.Fatalf("Unexepected error on connect: %v", err)
+			t.Fatalf("Unexpected error on connect: %v", err)
 		}
 		defer nc.Close()
 		if nc.ConnectedUrl() != clientURL {
