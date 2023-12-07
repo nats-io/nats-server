@@ -1439,7 +1439,7 @@ func TestFileStoreMeta(t *testing.T) {
 	oname := "obs22"
 	obs, err := fs.ConsumerStore(oname, &oconfig)
 	if err != nil {
-		t.Fatalf("Unexepected error: %v", err)
+		t.Fatalf("Unexpected error: %v", err)
 	}
 
 	ometafile := filepath.Join(fcfg.StoreDir, consumerDir, oname, JetStreamMetaFile)
@@ -1740,11 +1740,11 @@ func TestFileStoreSnapshot(t *testing.T) {
 		// Create a few consumers.
 		o1, err := fs.ConsumerStore("o22", &ConsumerConfig{})
 		if err != nil {
-			t.Fatalf("Unexepected error: %v", err)
+			t.Fatalf("Unexpected error: %v", err)
 		}
 		o2, err := fs.ConsumerStore("o33", &ConsumerConfig{})
 		if err != nil {
-			t.Fatalf("Unexepected error: %v", err)
+			t.Fatalf("Unexpected error: %v", err)
 		}
 		state := &ConsumerState{}
 		state.Delivered.Consumer = 100
@@ -1753,13 +1753,13 @@ func TestFileStoreSnapshot(t *testing.T) {
 		state.AckFloor.Stream = 22
 
 		if err := o1.Update(state); err != nil {
-			t.Fatalf("Unexepected error updating state: %v", err)
+			t.Fatalf("Unexpected error updating state: %v", err)
 		}
 		state.AckFloor.Consumer = 33
 		state.AckFloor.Stream = 33
 
 		if err := o2.Update(state); err != nil {
-			t.Fatalf("Unexepected error updating state: %v", err)
+			t.Fatalf("Unexpected error updating state: %v", err)
 		}
 
 		snapshot := func() []byte {
@@ -1908,7 +1908,7 @@ func TestFileStoreConsumer(t *testing.T) {
 
 		o, err := fs.ConsumerStore("obs22", &ConsumerConfig{})
 		if err != nil {
-			t.Fatalf("Unexepected error: %v", err)
+			t.Fatalf("Unexpected error: %v", err)
 		}
 		if state, err := o.State(); err != nil || state.Delivered.Consumer != 0 {
 			t.Fatalf("Unexpected state or error: %v", err)
@@ -1919,11 +1919,11 @@ func TestFileStoreConsumer(t *testing.T) {
 		updateAndCheck := func() {
 			t.Helper()
 			if err := o.Update(state); err != nil {
-				t.Fatalf("Unexepected error updating state: %v", err)
+				t.Fatalf("Unexpected error updating state: %v", err)
 			}
 			s2, err := o.State()
 			if err != nil {
-				t.Fatalf("Unexepected error getting state: %v", err)
+				t.Fatalf("Unexpected error getting state: %v", err)
 			}
 			if !reflect.DeepEqual(state, s2) {
 				t.Fatalf("State is not the same: wanted %+v got %+v", state, s2)
@@ -2435,7 +2435,7 @@ func TestFileStoreConsumerRedeliveredLost(t *testing.T) {
 		cfg := &ConsumerConfig{AckPolicy: AckExplicit}
 		o, err := fs.ConsumerStore("o22", cfg)
 		if err != nil {
-			t.Fatalf("Unexepected error: %v", err)
+			t.Fatalf("Unexpected error: %v", err)
 		}
 
 		restartConsumer := func() {
@@ -2444,12 +2444,12 @@ func TestFileStoreConsumerRedeliveredLost(t *testing.T) {
 			time.Sleep(20 * time.Millisecond) // Wait for all things to settle.
 			o, err = fs.ConsumerStore("o22", cfg)
 			if err != nil {
-				t.Fatalf("Unexepected error: %v", err)
+				t.Fatalf("Unexpected error: %v", err)
 			}
 			// Make sure we recovered Redelivered.
 			state, err := o.State()
 			if err != nil {
-				t.Fatalf("Unexepected error: %v", err)
+				t.Fatalf("Unexpected error: %v", err)
 			}
 			if state == nil {
 				t.Fatalf("Did not recover state")
@@ -2500,7 +2500,7 @@ func TestFileStoreConsumerFlusher(t *testing.T) {
 
 		o, err := fs.ConsumerStore("o22", &ConsumerConfig{})
 		if err != nil {
-			t.Fatalf("Unexepected error: %v", err)
+			t.Fatalf("Unexpected error: %v", err)
 		}
 		// Get the underlying impl.
 		oc := o.(*consumerFileStore)
@@ -2532,7 +2532,7 @@ func TestFileStoreConsumerDeliveredUpdates(t *testing.T) {
 		// Simple consumer, no ack policy configured.
 		o, err := fs.ConsumerStore("o22", &ConsumerConfig{})
 		if err != nil {
-			t.Fatalf("Unexepected error: %v", err)
+			t.Fatalf("Unexpected error: %v", err)
 		}
 		defer o.Stop()
 
@@ -2586,7 +2586,7 @@ func TestFileStoreConsumerDeliveredAndAckUpdates(t *testing.T) {
 		// Simple consumer, no ack policy configured.
 		o, err := fs.ConsumerStore("o22", &ConsumerConfig{AckPolicy: AckExplicit})
 		if err != nil {
-			t.Fatalf("Unexepected error: %v", err)
+			t.Fatalf("Unexpected error: %v", err)
 		}
 		defer o.Stop()
 
@@ -2676,7 +2676,7 @@ func TestFileStoreConsumerDeliveredAndAckUpdates(t *testing.T) {
 
 		o, err = fs.ConsumerStore("o22", &ConsumerConfig{AckPolicy: AckExplicit})
 		if err != nil {
-			t.Fatalf("Unexepected error: %v", err)
+			t.Fatalf("Unexpected error: %v", err)
 		}
 		defer o.Stop()
 
@@ -2778,7 +2778,7 @@ func TestFileStoreConsumerPerf(t *testing.T) {
 
 		o, err := fs.ConsumerStore("o22", &ConsumerConfig{AckPolicy: AckExplicit})
 		if err != nil {
-			t.Fatalf("Unexepected error: %v", err)
+			t.Fatalf("Unexpected error: %v", err)
 		}
 		// Get the underlying impl.
 		oc := o.(*consumerFileStore)
