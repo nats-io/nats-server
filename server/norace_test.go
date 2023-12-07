@@ -3326,7 +3326,7 @@ func TestNoRaceJetStreamClusterInterestPolicyAckNone(t *testing.T) {
 			}
 			_, err = js.Subscribe("cluster.created", mh, opts...)
 			if err != nil {
-				t.Fatalf("Unexepected error: %v", err)
+				t.Fatalf("Unexpected error: %v", err)
 			}
 
 			msg := []byte("ACK ME")
