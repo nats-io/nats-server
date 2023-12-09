@@ -7433,7 +7433,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	mset.mu.RLock()
 	canRespond := !mset.cfg.NoAck && len(reply) > 0
 	name, stype, store := mset.cfg.Name, mset.cfg.Storage, mset.store
-	s, js, jsa, st, rf, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.tier, mset.outq, mset.node
+	s, js, jsa, st, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.tier, mset.outq, mset.node
 	maxMsgSize, lseq, clfs := int(mset.cfg.MaxMsgSize), mset.lseq, mset.clfs
 	isLeader, isSealed := mset.isLeader(), mset.cfg.Sealed
 	mset.mu.RUnlock()
@@ -7492,12 +7492,12 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		jsa.usage[tierName] = t
 	}
 	if st == MemoryStorage {
-		total := t.total.store + int64(memStoreMsgSize(subject, hdr, msg)*uint64(rf))
+		total := t.total.store + int64(memStoreMsgSize(subject, hdr, msg))
 		if jsaLimits.MaxMemory > 0 && total > jsaLimits.MaxMemory {
 			exceeded = true
 		}
 	} else {
-		total := t.total.store + int64(fileStoreMsgSize(subject, hdr, msg)*uint64(rf))
+		total := t.total.store + int64(fileStoreMsgSize(subject, hdr, msg))
 		if jsaLimits.MaxStore > 0 && total > jsaLimits.MaxStore {
 			exceeded = true
 		}
