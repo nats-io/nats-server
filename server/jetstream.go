@@ -2086,7 +2086,7 @@ func (jsa *jsAccount) storageTotals() (uint64, uint64) {
 	return mem, store
 }
 
-func (jsa *jsAccount) limitsExceeded(storeType StorageType, tierName string) (bool, *ApiError) {
+func (jsa *jsAccount) limitsExceeded(storeType StorageType, tierName string, replicas int) (bool, *ApiError) {
 	jsa.usageMu.RLock()
 	defer jsa.usageMu.RUnlock()
 
@@ -2099,20 +2099,25 @@ func (jsa *jsAccount) limitsExceeded(storeType StorageType, tierName string) (bo
 		// Imply totals of 0
 		return false, nil
 	}
+	r := int64(replicas)
+	if r < 1 || tierName == _EMPTY_ {
+		r = 1
+	}
+	// Since tiers are flat we need to scale limit up by replicas when checking.
 	if storeType == MemoryStorage {
 		totalMem := inUse.total.mem
-		if selectedLimits.MemoryMaxStreamBytes > 0 && totalMem > selectedLimits.MemoryMaxStreamBytes {
+		if selectedLimits.MemoryMaxStreamBytes > 0 && totalMem > selectedLimits.MemoryMaxStreamBytes*r {
 			return true, nil
 		}
-		if selectedLimits.MaxMemory >= 0 && totalMem > selectedLimits.MaxMemory {
+		if selectedLimits.MaxMemory >= 0 && totalMem > selectedLimits.MaxMemory*r {
 			return true, nil
 		}
 	} else {
 		totalStore := inUse.total.store
-		if selectedLimits.StoreMaxStreamBytes > 0 && totalStore > selectedLimits.StoreMaxStreamBytes {
+		if selectedLimits.StoreMaxStreamBytes > 0 && totalStore > selectedLimits.StoreMaxStreamBytes*r {
 			return true, nil
 		}
-		if selectedLimits.MaxStore >= 0 && totalStore > selectedLimits.MaxStore {
+		if selectedLimits.MaxStore >= 0 && totalStore > selectedLimits.MaxStore*r {
 			return true, nil
 		}
 	}
@@ -2141,28 +2146,22 @@ func (js *jetStream) checkLimits(selected *JetStreamAccountLimits, config *Strea
 	}
 	// stream limit is checked separately on stream create only!
 	// Check storage, memory or disk.
-	return js.checkBytesLimits(selected, config.MaxBytes, config.Storage, config.Replicas, checkServer, currentRes, maxBytesOffset)
+	return js.checkBytesLimits(selected, config.MaxBytes, config.Storage, checkServer, currentRes, maxBytesOffset)
 }
 
 // Check if additional bytes will exceed our account limits and optionally the server itself.
-// This should account for replicas.
 // Read Lock should be held.
-func (js *jetStream) checkBytesLimits(selectedLimits *JetStreamAccountLimits, addBytes int64, storage StorageType, replicas int, checkServer bool, currentRes, maxBytesOffset int64) error {
-	if replicas < 1 {
-		replicas = 1
-	}
+func (js *jetStream) checkBytesLimits(selectedLimits *JetStreamAccountLimits, addBytes int64, storage StorageType, checkServer bool, currentRes, maxBytesOffset int64) error {
 	if addBytes < 0 {
 		addBytes = 1
 	}
-	totalBytes := (addBytes * int64(replicas)) + maxBytesOffset
+	totalBytes := addBytes + maxBytesOffset
 
 	switch storage {
 	case MemoryStorage:
 		// Account limits defined.
-		if selectedLimits.MaxMemory >= 0 {
-			if currentRes+totalBytes > selectedLimits.MaxMemory {
-				return NewJSMemoryResourcesExceededError()
-			}
+		if selectedLimits.MaxMemory >= 0 && currentRes+totalBytes > selectedLimits.MaxMemory {
+			return NewJSMemoryResourcesExceededError()
 		}
 		// Check if this server can handle request.
 		if checkServer && js.memReserved+addBytes > js.config.MaxMemory {
@@ -2170,10 +2169,8 @@ func (js *jetStream) checkBytesLimits(selectedLimits *JetStreamAccountLimits, ad
 		}
 	case FileStorage:
 		// Account limits defined.
-		if selectedLimits.MaxStore >= 0 {
-			if currentRes+totalBytes > selectedLimits.MaxStore {
-				return NewJSStorageResourcesExceededError()
-			}
+		if selectedLimits.MaxStore >= 0 && currentRes+totalBytes > selectedLimits.MaxStore {
+			return NewJSStorageResourcesExceededError()
 		}
 		// Check if this server can handle request.
 		if checkServer && js.storeReserved+addBytes > js.config.MaxStore {

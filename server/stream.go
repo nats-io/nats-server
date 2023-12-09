@@ -4453,7 +4453,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		return err
 	}
 
-	if exceeded, apiErr := jsa.limitsExceeded(stype, tierName); exceeded {
+	if exceeded, apiErr := jsa.limitsExceeded(stype, tierName, mset.cfg.Replicas); exceeded {
 		s.RateLimitWarnf("JetStream resource limits exceeded for account: %q", accName)
 		if canRespond {
 			resp.PubAck = &PubAck{Stream: name}
