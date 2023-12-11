@@ -1994,20 +1994,6 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 		fseq = ss.First
 	}
 
-	equalOrSubsetMatch := func(subject string, filters subjectFilters) bool {
-		tsa := [32]string{}
-		tts := tokenizeSubjectIntoSlice(tsa[:0], subject)
-		for _, filter := range filters {
-			if subject == filter.subject {
-				return true
-			}
-			if isSubsetMatchTokenized(filter.tokenizedSubject, tts) {
-				return true
-			}
-		}
-		return false
-	}
-
 	mset.clsMu.RLock()
 	for _, o := range mset.cList {
 		o.mu.RLock()
@@ -2018,7 +2004,7 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 			// consumer filter subject is equal to purged subject
 			// or consumer filter subject is subset of purged subject,
 			// but not the other way around.
-			equalOrSubsetMatch(preq.Subject, o.subjf)
+			o.isEqualOrSubsetMatch(preq.Subject)
 		o.mu.RUnlock()
 		if doPurge {
 			o.purge(fseq, lseq)
