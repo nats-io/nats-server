@@ -2671,7 +2671,7 @@ func (mset *stream) isMigrating() bool {
 func (mset *stream) resetClusteredState(err error) bool {
 	mset.mu.RLock()
 	s, js, jsa, sa, acc, node := mset.srv, mset.js, mset.jsa, mset.sa, mset.acc, mset.node
-	stype, isLeader, tierName := mset.cfg.Storage, mset.isLeader(), mset.tier
+	stype, isLeader, tierName, replicas := mset.cfg.Storage, mset.isLeader(), mset.tier, mset.cfg.Replicas
 	mset.mu.RUnlock()
 
 	// Stepdown regardless if we are the leader here.
@@ -2692,7 +2692,7 @@ func (mset *stream) resetClusteredState(err error) bool {
 	}
 
 	// Account
-	if exceeded, _ := jsa.limitsExceeded(stype, tierName); exceeded {
+	if exceeded, _ := jsa.limitsExceeded(stype, tierName, replicas); exceeded {
 		s.Warnf("stream '%s > %s' errored, account resources exceeded", acc, mset.name())
 		return false
 	}
@@ -7433,7 +7433,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	mset.mu.RLock()
 	canRespond := !mset.cfg.NoAck && len(reply) > 0
 	name, stype, store := mset.cfg.Name, mset.cfg.Storage, mset.store
-	s, js, jsa, st, rf, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.tier, mset.outq, mset.node
+	s, js, jsa, st, r, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, int64(mset.cfg.Replicas), mset.tier, mset.outq, mset.node
 	maxMsgSize, lseq, clfs := int(mset.cfg.MaxMsgSize), mset.lseq, mset.clfs
 	isLeader, isSealed := mset.isLeader(), mset.cfg.Sealed
 	mset.mu.RUnlock()
@@ -7491,16 +7491,20 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		t = &jsaStorage{}
 		jsa.usage[tierName] = t
 	}
-	if st == MemoryStorage {
-		total := t.total.store + int64(memStoreMsgSize(subject, hdr, msg)*uint64(rf))
-		if jsaLimits.MaxMemory > 0 && total > jsaLimits.MaxMemory {
-			exceeded = true
-		}
-	} else {
-		total := t.total.store + int64(fileStoreMsgSize(subject, hdr, msg)*uint64(rf))
-		if jsaLimits.MaxStore > 0 && total > jsaLimits.MaxStore {
-			exceeded = true
-		}
+	// Make sure replicas is correct.
+	if r < 1 {
+		r = 1
+	}
+	// This is for limits. If we have no tier, consider all to be flat, vs tiers like R3 where we want to scale limit by replication.
+	lr := r
+	if tierName == _EMPTY_ {
+		lr = 1
+	}
+	// Tiers are flat, meaning the limit for R3 will be 100GB, not 300GB, so compare to total but adjust limits.
+	if st == MemoryStorage && jsaLimits.MaxMemory > 0 {
+		exceeded = t.total.mem+(int64(memStoreMsgSize(subject, hdr, msg))*r) > (jsaLimits.MaxMemory * lr)
+	} else if jsaLimits.MaxStore > 0 {
+		exceeded = t.total.store+(int64(fileStoreMsgSize(subject, hdr, msg))*r) > (jsaLimits.MaxStore * lr)
 	}
 	jsa.usageMu.Unlock()
 
@@ -8086,7 +8090,7 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 
 	if mset.js.limitsExceeded(st) {
 		return 0, NewJSInsufficientResourcesError()
-	} else if exceeded, apiErr := mset.jsa.limitsExceeded(st, tierName); apiErr != nil {
+	} else if exceeded, apiErr := mset.jsa.limitsExceeded(st, tierName, mset.cfg.Replicas); apiErr != nil {
 		return 0, apiErr
 	} else if exceeded {
 		return 0, NewJSInsufficientResourcesError()
