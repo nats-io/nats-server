@@ -5291,6 +5291,8 @@ func (mset *stream) Store() StreamStore {
 // Lock should be held.
 func (mset *stream) partitionUnique(name string, partitions []string) bool {
 	for _, partition := range partitions {
+		psa := [32]string{}
+		pts := tokenizeSubjectIntoSlice(psa[:0], partition)
 		for n, o := range mset.consumers {
 			// Skip the consumer being checked.
 			if n == name {
@@ -5300,8 +5302,8 @@ func (mset *stream) partitionUnique(name string, partitions []string) bool {
 				return false
 			}
 			for _, filter := range o.subjf {
-				if subjectIsSubsetMatch(partition, filter.subject) ||
-					subjectIsSubsetMatch(filter.subject, partition) {
+				if isSubsetMatchTokenized(pts, filter.tokenizedSubject) ||
+					isSubsetMatchTokenized(filter.tokenizedSubject, pts) {
 					return false
 				}
 			}
