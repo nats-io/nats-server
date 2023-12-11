@@ -18,6 +18,8 @@ import (
 	"math/rand"
 	"testing"
 	"time"
+
+	"github.com/nats-io/nats.go"
 )
 
 func TestNRGSimple(t *testing.T) {
@@ -212,5 +214,82 @@ func TestNRGObserverMode(t *testing.T) {
 			continue
 		}
 		require_True(t, n.node().IsObserver())
+	}
+}
+
+// TestNRGSimpleElection tests that a simple election succeeds. It is
+// simple because the group hasn't processed any entries and hasn't
+// suffered any interruptions of any kind, therefore there should be
+// no way that the conditions for granting the votes can fail.
+func TestNRGSimpleElection(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 9)
+	defer c.shutdown()
+	c.waitOnLeader()
+
+	nc, _ := jsClientConnect(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
+	defer nc.Close()
+
+	rg := c.createRaftGroup("TEST", 9, newStateAdder)
+	rg.waitOnLeader()
+
+	voteReqs := make(chan *nats.Msg, 1)
+	voteResps := make(chan *nats.Msg, len(rg)-1)
+
+	// Keep a record of the term when we started.
+	leader := rg.leader().node().(*raft)
+	startTerm := leader.term
+
+	// Subscribe to the vote request subject, this should be the
+	// same across all nodes in the group.
+	_, err := nc.ChanSubscribe(leader.vsubj, voteReqs)
+	require_NoError(t, err)
+
+	// Subscribe to all of the vote response inboxes for all nodes
+	// in the Raft group, as they can differ.
+	for _, n := range rg {
+		rn := n.node().(*raft)
+		_, err = nc.ChanSubscribe(rn.vreply, voteResps)
+		require_NoError(t, err)
+	}
+
+	// Step down, this will start a new voting session.
+	require_NoError(t, rg.leader().node().StepDown())
+
+	// Wait for a vote request to come in.
+	msg := require_ChanRead(t, voteReqs, time.Second)
+	vr := decodeVoteRequest(msg.Data, msg.Reply)
+	require_True(t, vr != nil)
+	require_NotEqual(t, vr.candidate, "")
+
+	// The leader should have bumped their term in order to start
+	// an election.
+	require_Equal(t, vr.term, startTerm+1)
+	require_Equal(t, vr.lastTerm, startTerm)
+
+	// Wait for all of the vote responses to come in. There should
+	// be as many vote responses as there are followers.
+	for i := 0; i < len(rg)-1; i++ {
+		msg := require_ChanRead(t, voteResps, time.Second)
+		re := decodeVoteResponse(msg.Data)
+		require_True(t, re != nil)
+
+		// The new term hasn't started yet, so the vote responses
+		// should contain the term from before the election. It is
+		// possible that candidates are listening to this to work
+		// out if they are in previous terms.
+		require_Equal(t, re.term, vr.lastTerm)
+		require_Equal(t, re.term, startTerm)
+
+		// The vote should have been granted.
+		require_Equal(t, re.granted, true)
+	}
+
+	// Everyone in the group should have voted for our candidate
+	// and arrived at the term from the vote request.
+	for _, n := range rg {
+		rn := n.node().(*raft)
+		require_Equal(t, rn.term, vr.term)
+		require_Equal(t, rn.term, startTerm+1)
+		require_Equal(t, rn.vote, vr.candidate)
 	}
 }

@@ -386,12 +386,13 @@ type consumer struct {
 
 // A single subject filter.
 type subjectFilter struct {
-	subject     string
-	nextSeq     uint64
-	currentSeq  uint64
-	pmsg        *jsPubMsg
-	err         error
-	hasWildcard bool
+	subject          string
+	nextSeq          uint64
+	currentSeq       uint64
+	pmsg             *jsPubMsg
+	err              error
+	hasWildcard      bool
+	tokenizedSubject []string
 }
 
 type subjectFilters []*subjectFilter
@@ -936,8 +937,9 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	subjects := gatherSubjectFilters(o.cfg.FilterSubject, o.cfg.FilterSubjects)
 	for _, filter := range subjects {
 		sub := &subjectFilter{
-			subject:     filter,
-			hasWildcard: subjectHasWildcard(filter),
+			subject:          filter,
+			hasWildcard:      subjectHasWildcard(filter),
+			tokenizedSubject: tokenizeSubjectIntoSlice(nil, filter),
 		}
 		o.subjf = append(o.subjf, sub)
 	}
@@ -1858,8 +1860,9 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 		newSubjf := make(subjectFilters, 0, len(newSubjects))
 		for _, newFilter := range newSubjects {
 			fs := &subjectFilter{
-				subject:     newFilter,
-				hasWildcard: subjectHasWildcard(newFilter),
+				subject:          newFilter,
+				hasWildcard:      subjectHasWildcard(newFilter),
+				tokenizedSubject: tokenizeSubjectIntoSlice(nil, newFilter),
 			}
 			// If given subject was present, we will retain its fields values
 			// so `getNextMgs` can take advantage of already buffered `pmsgs`.
@@ -3361,9 +3364,10 @@ func (o *consumer) isFilteredMatch(subj string) bool {
 	}
 	// It's quicker to first check for non-wildcard filters, then
 	// iterate again to check for subset match.
-	// TODO(dlc) at speed might be better to just do a sublist with L2 and/or possibly L1.
+	tsa := [32]string{}
+	tts := tokenizeSubjectIntoSlice(tsa[:0], subj)
 	for _, filter := range o.subjf {
-		if subjectIsSubsetMatch(subj, filter.subject) {
+		if isSubsetMatchTokenized(tts, filter.tokenizedSubject) {
 			return true
 		}
 	}
@@ -3945,8 +3949,10 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			}
 		} else {
 			if o.subjf != nil {
+				tsa := [32]string{}
+				tts := tokenizeSubjectIntoSlice(tsa[:0], pmsg.subj)
 				for i, filter := range o.subjf {
-					if subjectIsSubsetMatch(pmsg.subj, filter.subject) {
+					if isSubsetMatchTokenized(tts, filter.tokenizedSubject) {
 						o.subjf[i].currentSeq--
 						o.subjf[i].nextSeq--
 						break
