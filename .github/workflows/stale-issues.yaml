@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/stale@v8
+      - uses: actions/stale@v9
         with:
           debug-only: true # Set until the behavior is tuned.
           days-before-stale: 56 # Mark stale after 8 weeks (56 days) of inactivity
