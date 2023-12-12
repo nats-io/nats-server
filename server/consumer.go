@@ -3379,7 +3379,7 @@ func (o *consumer) isFilteredMatch(subj string) bool {
 // Lock should be held.
 func (o *consumer) isEqualOrSubsetMatch(subj string) bool {
 	for _, filter := range o.subjf {
-		if subj == filter.subject {
+		if !filter.hasWildcard && subj == filter.subject {
 			return true
 		}
 	}
