@@ -2001,11 +2001,10 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 		// no subject was specified, we can purge all consumers sequences
 		doPurge := preq == nil ||
 			preq.Subject == _EMPTY_ ||
-			// or consumer filter subject is equal to purged subject
-			preq.Subject == o.cfg.FilterSubject ||
-			// or consumer subject is subset of purged subject,
+			// consumer filter subject is equal to purged subject
+			// or consumer filter subject is subset of purged subject,
 			// but not the other way around.
-			subjectIsSubsetMatch(o.cfg.FilterSubject, preq.Subject)
+			o.isEqualOrSubsetMatch(preq.Subject)
 		o.mu.RUnlock()
 		if doPurge {
 			o.purge(fseq, lseq)
