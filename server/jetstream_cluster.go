@@ -8080,6 +8080,7 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 	st := mset.cfg.Storage
 	ddloaded := mset.ddloaded
 	tierName := mset.tier
+	replicas := mset.cfg.Replicas
 
 	if mset.hasAllPreAcks(seq, subj) {
 		mset.clearAllPreAcks(seq)
@@ -8090,7 +8091,7 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 
 	if mset.js.limitsExceeded(st) {
 		return 0, NewJSInsufficientResourcesError()
-	} else if exceeded, apiErr := mset.jsa.limitsExceeded(st, tierName, mset.cfg.Replicas); apiErr != nil {
+	} else if exceeded, apiErr := mset.jsa.limitsExceeded(st, tierName, replicas); apiErr != nil {
 		return 0, apiErr
 	} else if exceeded {
 		return 0, NewJSInsufficientResourcesError()
