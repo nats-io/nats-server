@@ -2591,8 +2591,6 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 		}
 	}
 
-	var tsa, fsa [32]string
-	fts := tokenizeSubjectIntoSlice(fsa[:0], filter)
 	isAll := filter == _EMPTY_ || filter == fwcs
 	wc := subjectHasWildcard(filter)
 
@@ -2608,6 +2606,9 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 		}
 		return fs.state.LastSeq - sseq + 1, validThrough
 	}
+
+	var tsa, fsa [32]string
+	fts := tokenizeSubjectIntoSlice(fsa[:0], filter)
 
 	isMatch := func(subj string) bool {
 		if isAll {
