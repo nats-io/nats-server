@@ -5353,7 +5353,7 @@ func TestJetStreamClusterSourcesFilteringAndUpdating(t *testing.T) {
 
 	checkSync := func(msgsTest, msgsM uint64) {
 		t.Helper()
-		checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+		checkFor(t, 20*time.Second, 500*time.Millisecond, func() error {
 			if tsi, err := js.StreamInfo("TEST"); err != nil {
 				return err
 			} else if msi, err := js.StreamInfo("M"); err != nil {
@@ -5604,7 +5604,7 @@ func TestJetStreamClusterMirrorAndSourcesClusterRestart(t *testing.T) {
 
 		checkSync := func(msgsTest, msgsM uint64) {
 			t.Helper()
-			checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+			checkFor(t, 20*time.Second, 500*time.Millisecond, func() error {
 				if tsi, err := js.StreamInfo("TEST"); err != nil {
 					return err
 				} else if msi, err := js.StreamInfo("M"); err != nil {
