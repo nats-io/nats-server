@@ -21,6 +21,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -749,7 +750,7 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, sub
 		}
 	}
 
-	// Shortcircuit.
+	// Short circuit for no interest.
 	if len(rr.psubs)+len(rr.qsubs) == 0 {
 		return
 	}
@@ -774,20 +775,30 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, sub
 
 	// If we are here we have received this request over a non-client connection.
 	// We need to make sure not to block. We will send the request to a long-lived
-	// go routine.
+	// pool of go routines.
+
+	// Increment inflight. Do this before queueing.
+	atomic.AddInt64(&js.apiInflight, 1)
 
 	// Copy the state. Note the JSAPI only uses the hdr index to piece apart the
 	// header from the msg body. No other references are needed.
-	s.jsAPIRoutedReqs.push(&jsAPIRoutedReq{jsub, sub, acc, subject, reply, copyBytes(rmsg), c.pa})
+	// Check pending and warn if getting backed up.
+	const warnThresh = 32
+	pending := s.jsAPIRoutedReqs.push(&jsAPIRoutedReq{jsub, sub, acc, subject, reply, copyBytes(rmsg), c.pa})
+	if pending > warnThresh {
+		s.RateLimitWarnf("JetStream request queue has high pending count: %d", pending)
+	}
 }
 
 func (s *Server) processJSAPIRoutedRequests() {
 	defer s.grWG.Done()
 
-	s.mu.Lock()
+	s.mu.RLock()
 	queue := s.jsAPIRoutedReqs
 	client := &client{srv: s, kind: JETSTREAM}
-	s.mu.Unlock()
+	s.mu.RUnlock()
+
+	js := s.getJetStream()
 
 	for {
 		select {
@@ -800,6 +811,7 @@ func (s *Server) processJSAPIRoutedRequests() {
 				if dur := time.Since(start); dur >= readLoopReportThreshold {
 					s.Warnf("Internal subscription on %q took too long: %v", r.subject, dur)
 				}
+				atomic.AddInt64(&js.apiInflight, -1)
 			}
 			queue.recycle(&reqs)
 		case <-s.quitCh:
@@ -816,8 +828,16 @@ func (s *Server) setJetStreamExportSubs() error {
 
 	// Start the go routine that will process API requests received by the
 	// subscription below when they are coming from routes, etc..
+	const maxProcs = 16
+	mp := runtime.GOMAXPROCS(0)
+	// Cap at 16 max for now on larger core setups.
+	if mp > maxProcs {
+		mp = maxProcs
+	}
 	s.jsAPIRoutedReqs = newIPQueue[*jsAPIRoutedReq](s, "Routed JS API Requests")
-	s.startGoRoutine(s.processJSAPIRoutedRequests)
+	for i := 0; i < mp; i++ {
+		s.startGoRoutine(s.processJSAPIRoutedRequests)
+	}
 
 	// This is the catch all now for all JetStream API calls.
 	if _, err := s.sysSubscribe(jsAllAPI, js.apiDispatch); err != nil {
