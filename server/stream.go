@@ -2582,26 +2582,9 @@ func (mset *stream) setupMirrorConsumer() error {
 		subject = strings.ReplaceAll(subject, "..", ".")
 	}
 
-	// We need to create the subscription that will receive the messages prior
-	// to sending the consumer create request, because in some complex topologies
-	// with gateways and optimistic mode, it is possible that the consumer starts
-	// delivering messages as soon as the consumer request is received.
-	qname := fmt.Sprintf("[ACC:%s] stream mirror '%s' of '%s' msgs", mset.acc.Name, mset.cfg.Name, mset.cfg.Mirror.Name)
-	// Create a new queue each time
-	mirror.msgs = newIPQueue[*inMsg](mset.srv, qname)
-	msgs := mirror.msgs
-	sub, err := mset.subscribeInternal(deliverSubject, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
-		hdr, msg := c.msgParts(copyBytes(rmsg)) // Need to copy.
-		mset.queueInbound(msgs, subject, reply, hdr, msg)
-	})
-	if err != nil {
-		mirror.err = NewJSMirrorConsumerSetupFailedError(err, Unless(err))
-		mset.unsubscribeUnlocked(crSub)
-		mset.scheduleSetupMirrorConsumerRetry()
-		return nil
-	}
+	// Reset
+	mirror.msgs = nil
 	mirror.err = nil
-	mirror.sub = sub
 	mirror.sip = true
 
 	// Send the consumer create request
@@ -2618,6 +2601,8 @@ func (mset *stream) setupMirrorConsumer() error {
 				// If we need to retry, schedule now
 				if retry {
 					mset.mirror.fails++
+					// Cancel here since we can not do anything with this consumer at this point.
+					mset.cancelSourceInfo(mset.mirror)
 					mset.scheduleSetupMirrorConsumerRetry()
 				} else {
 					// Clear on success.
@@ -2647,7 +2632,26 @@ func (mset *stream) setupMirrorConsumer() error {
 				mirror.err = ccr.Error
 				// Let's retry as soon as possible, but we are gated by sourceConsumerRetryThreshold
 				retry = true
+				mset.mu.Unlock()
+				return
 			} else {
+				// Setup actual subscription to process messages from our source.
+				qname := fmt.Sprintf("[ACC:%s] stream mirror '%s' of '%s' msgs", mset.acc.Name, mset.cfg.Name, mset.cfg.Mirror.Name)
+				// Create a new queue each time
+				mirror.msgs = newIPQueue[*inMsg](mset.srv, qname)
+				msgs := mirror.msgs
+				sub, err := mset.subscribeInternal(deliverSubject, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
+					hdr, msg := c.msgParts(copyBytes(rmsg)) // Need to copy.
+					mset.queueInbound(msgs, subject, reply, hdr, msg)
+				})
+				if err != nil {
+					mirror.err = NewJSMirrorConsumerSetupFailedError(err, Unless(err))
+					retry = true
+					mset.mu.Unlock()
+					return
+				}
+				// Save our sub.
+				mirror.sub = sub
 
 				// When an upstream stream expires messages or in general has messages that we want
 				// that are no longer available we need to adjust here.
@@ -2763,8 +2767,10 @@ func (mset *stream) cancelSourceInfo(si *sourceInfo) {
 		close(si.qch)
 		si.qch = nil
 	}
-	si.msgs.drain()
-	si.msgs.unregister()
+	if si.msgs != nil {
+		si.msgs.drain()
+		si.msgs.unregister()
+	}
 }
 
 const sourceConsumerRetryThreshold = 2 * time.Second
@@ -2941,26 +2947,9 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64, startTime time.T
 	// Marshal request.
 	b, _ := json.Marshal(req)
 
-	// We need to create the subscription that will receive the messages prior
-	// to sending the consumer create request, because in some complex topologies
-	// with gateways and optimistic mode, it is possible that the consumer starts
-	// delivering messages as soon as the consumer request is received.
-	qname := fmt.Sprintf("[ACC:%s] stream source '%s' from '%s' msgs", mset.acc.Name, mset.cfg.Name, si.name)
-	// Create a new queue each time
-	si.msgs = newIPQueue[*inMsg](mset.srv, qname)
-	msgs := si.msgs
-	sub, err := mset.subscribeInternal(deliverSubject, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
-		hdr, msg := c.msgParts(copyBytes(rmsg)) // Need to copy.
-		mset.queueInbound(msgs, subject, reply, hdr, msg)
-	})
-	if err != nil {
-		si.err = NewJSSourceConsumerSetupFailedError(err, Unless(err))
-		mset.unsubscribeUnlocked(crSub)
-		mset.scheduleSetSourceConsumerRetry(si, seq, startTime)
-		return
-	}
+	// Reset
+	si.msgs = nil
 	si.err = nil
-	si.sub = sub
 	si.sip = true
 
 	// Send the consumer create request
@@ -2977,6 +2966,8 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64, startTime time.T
 				// If we need to retry, schedule now
 				if retry {
 					si.fails++
+					// Cancel here since we can not do anything with this consumer at this point.
+					mset.cancelSourceInfo(si)
 					mset.scheduleSetSourceConsumerRetry(si, seq, startTime)
 				} else {
 					// Clear on success.
@@ -2995,7 +2986,7 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64, startTime time.T
 			ready := sync.WaitGroup{}
 			mset.mu.Lock()
 			// Check that it has not been removed or canceled (si.sub would be nil)
-			if si := mset.sources[iname]; si != nil && si.sub != nil {
+			if si := mset.sources[iname]; si != nil {
 				si.err = nil
 				if ccr.Error != nil || ccr.ConsumerInfo == nil {
 					// Note: this warning can happen a few times when starting up the server when sourcing streams are
@@ -3005,7 +2996,27 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64, startTime time.T
 					si.err = ccr.Error
 					// Let's retry as soon as possible, but we are gated by sourceConsumerRetryThreshold
 					retry = true
+					mset.mu.Unlock()
+					return
 				} else {
+					// Setup actual subscription to process messages from our source.
+					qname := fmt.Sprintf("[ACC:%s] stream source '%s' from '%s' msgs", mset.acc.Name, mset.cfg.Name, si.name)
+					// Create a new queue each time
+					si.msgs = newIPQueue[*inMsg](mset.srv, qname)
+					msgs := si.msgs
+					sub, err := mset.subscribeInternal(deliverSubject, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
+						hdr, msg := c.msgParts(copyBytes(rmsg)) // Need to copy.
+						mset.queueInbound(msgs, subject, reply, hdr, msg)
+					})
+					if err != nil {
+						si.err = NewJSSourceConsumerSetupFailedError(err, Unless(err))
+						retry = true
+						mset.mu.Unlock()
+						return
+					}
+					// Save our sub.
+					si.sub = sub
+
 					if si.sseq != ccr.ConsumerInfo.Delivered.Stream {
 						si.sseq = ccr.ConsumerInfo.Delivered.Stream + 1
 					}
