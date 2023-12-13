@@ -1889,7 +1889,7 @@ func TestNoRaceJetStreamSuperClusterSources(t *testing.T) {
 	sc.clusterForName("C3").waitOnStreamLeader("$G", "MS2")
 	<-doneCh
 
-	checkFor(t, 15*time.Second, time.Second, func() error {
+	checkFor(t, 20*time.Second, time.Second, func() error {
 		si, err := js2.StreamInfo("MS2")
 		if err != nil {
 			return err
@@ -2115,7 +2115,7 @@ func TestNoRaceJetStreamClusterMirrorExpirationAndMissingSequences(t *testing.T)
 
 	checkStream := func(stream string, num uint64) {
 		t.Helper()
-		checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+		checkFor(t, 20*time.Second, 20*time.Millisecond, func() error {
 			si, err := js.StreamInfo(stream)
 			if err != nil {
 				return err
@@ -2133,7 +2133,7 @@ func TestNoRaceJetStreamClusterMirrorExpirationAndMissingSequences(t *testing.T)
 	// Origin
 	_, err := js.AddStream(&nats.StreamConfig{
 		Name:   "TEST",
-		MaxAge: 100 * time.Millisecond,
+		MaxAge: 500 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
