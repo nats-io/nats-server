@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/s2"
+	"github.com/nats-io/nats-server/v2/subject"
 	"github.com/nats-io/nuid"
 )
 
@@ -5185,7 +5186,7 @@ func (mset *stream) removeConsumerAsLeader(o *consumer) {
 
 // swapSigSubs will update signal Subs for a new subject filter.
 // consumer lock should not be held.
-func (mset *stream) swapSigSubs(o *consumer, newFilters []string) {
+func (mset *stream) swapSigSubs(o *consumer, newFilters []*subject.Subject) {
 	mset.clsMu.Lock()
 	o.mu.Lock()
 
@@ -5215,7 +5216,7 @@ func (mset *stream) swapSigSubs(o *consumer, newFilters []string) {
 			// If there are filters, add their subjects to sublist.
 		} else {
 			for _, filter := range newFilters {
-				sub := &subscription{subject: []byte(filter), icb: o.processStreamSignal}
+				sub := &subscription{subject: []byte(filter.String()), icb: o.processStreamSignal}
 				mset.csl.Insert(sub)
 				o.sigSubs = append(o.sigSubs, sub)
 			}
@@ -5288,10 +5289,8 @@ func (mset *stream) Store() StreamStore {
 
 // Determines if the new proposed partition is unique amongst all consumers.
 // Lock should be held.
-func (mset *stream) partitionUnique(name string, partitions []string) bool {
+func (mset *stream) partitionUnique(name string, partitions []*subject.Subject) bool {
 	for _, partition := range partitions {
-		psa := [32]string{}
-		pts := tokenizeSubjectIntoSlice(psa[:0], partition)
 		for n, o := range mset.consumers {
 			// Skip the consumer being checked.
 			if n == name {
@@ -5301,8 +5300,8 @@ func (mset *stream) partitionUnique(name string, partitions []string) bool {
 				return false
 			}
 			for _, filter := range o.subjf {
-				if isSubsetMatchTokenized(pts, filter.tokenizedSubject) ||
-					isSubsetMatchTokenized(filter.tokenizedSubject, pts) {
+				if partition.IsSubsetMatch(filter.subject) ||
+					filter.subject.IsSubsetMatch(partition) {
 					return false
 				}
 			}

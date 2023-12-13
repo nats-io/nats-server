@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats-server/v2/subject"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nuid"
 )
@@ -798,11 +799,8 @@ func TestJetStreamConsumerMultipleFiltersLastPerSubject(t *testing.T) {
 func consumerWithFilterSubjects(filterSubjects []string) *consumer {
 	c := consumer{}
 	for _, filter := range filterSubjects {
-		sub := &subjectFilter{
-			subject:          filter,
-			hasWildcard:      subjectHasWildcard(filter),
-			tokenizedSubject: tokenizeSubjectIntoSlice(nil, filter),
-		}
+		s, _ := subject.New(filter)
+		sub := &subjectFilter{subject: s}
 		c.subjf = append(c.subjf, sub)
 	}
 
