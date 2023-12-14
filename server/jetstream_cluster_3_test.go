@@ -1010,7 +1010,7 @@ func TestJetStreamClusterSourceWithOptStartTime(t *testing.T) {
 
 		checkCount := func(sname string, expected int) {
 			t.Helper()
-			checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+			checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
 				si, err := js.StreamInfo(sname)
 				if err != nil {
 					return err
