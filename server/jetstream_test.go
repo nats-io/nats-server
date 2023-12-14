@@ -21964,6 +21964,7 @@ func TestJetStreamKVReductionInHistory(t *testing.T) {
 	require_NoError(t, err)
 
 	checkAllKeys := func() {
+		t.Helper()
 		// Make sure we can retrieve all of the keys.
 		keys, err := kv.Keys()
 		require_NoError(t, err)
