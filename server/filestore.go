@@ -1590,6 +1590,13 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 				// We could reference the underlying buffer, but we could guess wrong if
 				// number of blocks is large and subjects is low, since we would reference buf.
 				subj := string(buf[bi : bi+lsubj])
+				// We had a bug that could cause memory corruption in the PSIM that could have gotten stored to disk.
+				// Only would affect subjects, so do quick check.
+				if !isValidSubject(subj, true) {
+					os.Remove(fn)
+					fs.warn("Stream state corrupt subject detected")
+					return errCorruptState
+				}
 				bi += lsubj
 				psi := &psi{total: readU64(), fblk: uint32(readU64())}
 				if psi.total > 1 {
