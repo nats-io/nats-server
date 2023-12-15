@@ -6242,6 +6242,46 @@ func TestFileStoreNumPendingLastBySubject(t *testing.T) {
 	}
 }
 
+// We had a bug that could cause internal memory corruption of the psim keys in memory
+// which could have been written to disk via index.db.
+func TestFileStoreCorruptPSIMOnDisk(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	fs.StoreMsg("foo.bar", nil, []byte("ABC"))
+	fs.StoreMsg("foo.baz", nil, []byte("XYZ"))
+
+	// Force bad subject.
+	fs.mu.Lock()
+	psi := fs.psim["foo.bar"]
+	bad := make([]byte, 7)
+	crand.Read(bad)
+	fs.psim[string(bad)] = psi
+	delete(fs.psim, "foo.bar")
+	fs.dirty++
+	fs.mu.Unlock()
+
+	// Restart
+	fs.Stop()
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: sd},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	sm, err := fs.LoadLastMsg("foo.bar", nil)
+	require_NoError(t, err)
+	require_True(t, bytes.Equal(sm.msg, []byte("ABC")))
+
+	sm, err = fs.LoadLastMsg("foo.baz", nil)
+	require_NoError(t, err)
+	require_True(t, bytes.Equal(sm.msg, []byte("XYZ")))
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////
