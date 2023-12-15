@@ -336,7 +336,7 @@ func (s *Server) bootstrapRaftNode(cfg *RaftConfig, knownPeers []string, allPeer
 }
 
 // startRaftNode will start the raft node.
-func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabels) (RaftNode, error) {
+func (s *Server) startRaftNode(accName string, cfg *RaftConfig, startObserver bool, labels pprofLabels) (RaftNode, error) {
 	if cfg == nil {
 		return nil, errNilCfg
 	}
@@ -398,6 +398,9 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 		observer: cfg.Observer,
 		extSt:    ps.domainExt,
 		prand:    rand.New(rand.NewSource(rsrc)),
+	}
+	if startObserver {
+		n.setObserver(true, 0)
 	}
 	n.c.registerWithAccount(sacc)
 
@@ -468,6 +471,9 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 
 	// Send nil entry to signal the upper layers we are done doing replay/restore.
 	n.apply.push(nil)
+	if startObserver {
+		n.setObserver(false, 0)
+	}
 
 	// Make sure to track ourselves.
 	n.peers[n.id] = &lps{time.Now().UnixNano(), 0, true}

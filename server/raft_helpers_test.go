@@ -115,7 +115,7 @@ func (c *cluster) createRaftGroupWithPeers(name string, servers []*Server, smf s
 		require_NoError(c.t, err)
 		cfg := &RaftConfig{Name: name, Store: c.t.TempDir(), Log: fs}
 		s.bootstrapRaftNode(cfg, peers, true)
-		n, err := s.startRaftNode(globalAccountName, cfg, pprofLabels{})
+		n, err := s.startRaftNode(globalAccountName, cfg, false, pprofLabels{})
 		require_NoError(c.t, err)
 		sm := smf(s, cfg, n)
 		sg = append(sg, sm)
@@ -230,7 +230,7 @@ func (a *stateAdder) restart() {
 	if err != nil {
 		panic(err)
 	}
-	a.n, err = a.s.startRaftNode(globalAccountName, a.cfg, pprofLabels{})
+	a.n, err = a.s.startRaftNode(globalAccountName, a.cfg, false, pprofLabels{})
 	if err != nil {
 		panic(err)
 	}
