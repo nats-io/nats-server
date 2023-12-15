@@ -2312,6 +2312,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				// No special processing needed for when we are caught up on restart.
 				if ce == nil {
 					isRecovering = false
+					n.SetObserver(false)
 					// Check on startup if we should snapshot/compact.
 					if _, b := n.Size(); b > compactSizeMin || n.NeedSnapshot() {
 						doSnapshot()

@@ -395,12 +395,9 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, startObserver bo
 		stepdown: newIPQueue[string](s, qpfx+"stepdown"),
 		accName:  accName,
 		leadc:    make(chan bool, 1),
-		observer: cfg.Observer,
+		observer: startObserver || cfg.Observer,
 		extSt:    ps.domainExt,
 		prand:    rand.New(rand.NewSource(rsrc)),
-	}
-	if startObserver {
-		n.setObserver(true, 0)
 	}
 	n.c.registerWithAccount(sacc)
 
@@ -471,9 +468,6 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, startObserver bo
 
 	// Send nil entry to signal the upper layers we are done doing replay/restore.
 	n.apply.push(nil)
-	if startObserver {
-		n.setObserver(false, 0)
-	}
 
 	// Make sure to track ourselves.
 	n.peers[n.id] = &lps{time.Now().UnixNano(), 0, true}
