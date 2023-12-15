@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode/utf8"
 )
 
 // Sublist is a routing mechanism to handle subject distribution and
@@ -1075,8 +1076,21 @@ func IsValidPublishSubject(subject string) bool {
 
 // IsValidSubject returns true if a subject is valid, false otherwise
 func IsValidSubject(subject string) bool {
+	return isValidSubject(subject, false)
+}
+
+func isValidSubject(subject string, checkRunes bool) bool {
 	if subject == _EMPTY_ {
 		return false
+	}
+	if checkRunes {
+		// Since casting to a string will always produce valid UTF-8, we need to look for replacement runes.
+		// This signals something is off or corrupt.
+		for _, r := range subject {
+			if r == utf8.RuneError {
+				return false
+			}
+		}
 	}
 	sfwc := false
 	tokens := strings.Split(subject, tsep)
