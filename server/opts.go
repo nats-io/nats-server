@@ -669,6 +669,13 @@ type TLSConfigOpts struct {
 	CertMatchBy       certstore.MatchByType
 	CertMatch         string
 	OCSPPeerConfig    *certidp.OCSPPeerConfig
+	Certificates      []*TLSCertPairOpt
+}
+
+// TLSCertPairOpt are the paths to a certificate and private key.
+type TLSCertPairOpt struct {
+	CertFile string
+	KeyFile  string
 }
 
 // OCSPConfig represents the options of OCSP stapling options.
@@ -4180,7 +4187,7 @@ func parseTLS(v interface{}, isClientCtx bool) (t *TLSConfigOpts, retErr error) 
 	)
 	defer convertPanicToError(&lt, &retErr)
 
-	_, v = unwrapValue(v, &lt)
+	tk, v := unwrapValue(v, &lt)
 	tlsm = v.(map[string]interface{})
 	for mk, mv := range tlsm {
 		tk, mv := unwrapValue(mv, &lt)
@@ -4381,9 +4388,45 @@ func parseTLS(v interface{}, isClientCtx bool) (t *TLSConfigOpts, retErr error) 
 			default:
 				return nil, &configErr{tk, fmt.Sprintf("error parsing ocsp peer config: unsupported type %T", v)}
 			}
+		case "certs", "certificates":
+			certs, ok := mv.([]interface{})
+			if !ok {
+				return nil, &configErr{tk, fmt.Sprintf("error parsing certificates config: unsupported type %T", v)}
+			}
+			tc.Certificates = make([]*TLSCertPairOpt, len(certs))
+			for i, v := range certs {
+				tk, vv := unwrapValue(v, &lt)
+				pair, ok := vv.(map[string]interface{})
+				if !ok {
+					return nil, &configErr{tk, fmt.Sprintf("error parsing certificates config: unsupported type %T", vv)}
+				}
+				certPair := &TLSCertPairOpt{}
+				for k, v := range pair {
+					tk, vv = unwrapValue(v, &lt)
+					file, ok := vv.(string)
+					if !ok {
+						return nil, &configErr{tk, fmt.Sprintf("error parsing certificates config: unsupported type %T", vv)}
+					}
+					switch k {
+					case "cert_file":
+						certPair.CertFile = file
+					case "key_file":
+						certPair.KeyFile = file
+					default:
+						return nil, &configErr{tk, fmt.Sprintf("error parsing tls certs config, unknown field %q", k)}
+					}
+				}
+				if certPair.CertFile == _EMPTY_ || certPair.KeyFile == _EMPTY_ {
+					return nil, &configErr{tk, "error parsing certificates config: both 'cert_file' and 'cert_key' options are required"}
+				}
+				tc.Certificates[i] = certPair
+			}
 		default:
-			return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, unknown field [%q]", mk)}
+			return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, unknown field %q", mk)}
 		}
+	}
+	if len(tc.Certificates) > 0 && tc.CertFile != _EMPTY_ {
+		return nil, &configErr{tk, "error parsing tls config, cannot combine 'cert_file' option with 'certs' option"}
 	}
 
 	// If cipher suites were not specified then use the defaults
@@ -4695,6 +4738,20 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 		err := certstore.TLSConfig(tc.CertStore, tc.CertMatchBy, tc.CertMatch, &config)
 		if err != nil {
 			return nil, err
+		}
+	case tc.Certificates != nil:
+		// Multiple certificate support.
+		config.Certificates = make([]tls.Certificate, len(tc.Certificates))
+		for i, certPair := range tc.Certificates {
+			cert, err := tls.LoadX509KeyPair(certPair.CertFile, certPair.KeyFile)
+			if err != nil {
+				return nil, fmt.Errorf("error parsing X509 certificate/key pair %d/%d: %v", i+1, len(tc.Certificates), err)
+			}
+			cert.Leaf, err = x509.ParseCertificate(cert.Certificate[0])
+			if err != nil {
+				return nil, fmt.Errorf("error parsing certificate %d/%d: %v", i+1, len(tc.Certificates), err)
+			}
+			config.Certificates[i] = cert
 		}
 	}
 

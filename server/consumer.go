@@ -3350,7 +3350,7 @@ func (o *consumer) notifyDeliveryExceeded(sseq, dc uint64) {
 	o.sendAdvisory(o.deliveryExcEventT, j)
 }
 
-// Check to see if the candidate subject matches a filter if its present.
+// Check if the candidate subject matches a filter if its present.
 // Lock should be held.
 func (o *consumer) isFilteredMatch(subj string) bool {
 	// No filter is automatic match.
@@ -3368,6 +3368,25 @@ func (o *consumer) isFilteredMatch(subj string) bool {
 	tts := tokenizeSubjectIntoSlice(tsa[:0], subj)
 	for _, filter := range o.subjf {
 		if isSubsetMatchTokenized(tts, filter.tokenizedSubject) {
+			return true
+		}
+	}
+	return false
+}
+
+// Check if the candidate filter subject is equal to or a subset match
+// of one of the filter subjects.
+// Lock should be held.
+func (o *consumer) isEqualOrSubsetMatch(subj string) bool {
+	for _, filter := range o.subjf {
+		if !filter.hasWildcard && subj == filter.subject {
+			return true
+		}
+	}
+	tsa := [32]string{}
+	tts := tokenizeSubjectIntoSlice(tsa[:0], subj)
+	for _, filter := range o.subjf {
+		if isSubsetMatchTokenized(filter.tokenizedSubject, tts) {
 			return true
 		}
 	}

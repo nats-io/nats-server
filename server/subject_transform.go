@@ -561,3 +561,29 @@ func (tr *subjectTransform) reverse() *subjectTransform {
 	rtr, _ := NewSubjectTransformStrict(nsrc, ndest)
 	return rtr
 }
+
+// Will share relevant info regarding the subject.
+// Returns valid, tokens, num pwcs, has fwc.
+func subjectInfo(subject string) (bool, []string, int, bool) {
+	if subject == "" {
+		return false, nil, 0, false
+	}
+	npwcs := 0
+	sfwc := false
+	tokens := strings.Split(subject, tsep)
+	for _, t := range tokens {
+		if len(t) == 0 || sfwc {
+			return false, nil, 0, false
+		}
+		if len(t) > 1 {
+			continue
+		}
+		switch t[0] {
+		case fwc:
+			sfwc = true
+		case pwc:
+			npwcs++
+		}
+	}
+	return true, tokens, npwcs, sfwc
+}

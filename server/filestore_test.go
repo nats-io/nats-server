@@ -6184,6 +6184,104 @@ func TestFileStoreSubjectCorruption(t *testing.T) {
 	}
 }
 
+// Since 2.10 we no longer have fss, and the approach for calculating NumPending would branch
+// based on the old fss metadata being present. This meant that calculating NumPending in >= 2.10.x
+// would load all blocks to complete. This test makes sure we do not do that anymore.
+func TestFileStoreNumPendingLastBySubject(t *testing.T) {
+	sd, blkSize := t.TempDir(), uint64(1024)
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: blkSize},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	numSubjects := 20
+	msg := bytes.Repeat([]byte("ABC"), 25)
+	for i := 1; i <= 1000; i++ {
+		subj := fmt.Sprintf("foo.%d.%d", rand.Intn(numSubjects)+1, i)
+		fs.StoreMsg(subj, nil, msg)
+	}
+	// Each block has ~8 msgs.
+	require_True(t, fs.numMsgBlocks() > 100)
+
+	calcCacheLoads := func() (cloads uint64) {
+		fs.mu.RLock()
+		defer fs.mu.RUnlock()
+		for _, mb := range fs.blks {
+			mb.mu.RLock()
+			cloads += mb.cloads
+			mb.mu.RUnlock()
+		}
+		return cloads
+	}
+
+	total, _ := fs.NumPending(0, "foo.*.*", true)
+	require_Equal(t, total, 1000)
+	// Make sure no blocks were loaded to calculate this as a new consumer.
+	require_Equal(t, calcCacheLoads(), 0)
+
+	checkResult := func(sseq, np uint64, filter string) {
+		t.Helper()
+		var checkTotal uint64
+		var smv StoreMsg
+		for seq := sseq; seq <= 1000; seq++ {
+			sm, err := fs.LoadMsg(seq, &smv)
+			require_NoError(t, err)
+			if subjectIsSubsetMatch(sm.subj, filter) {
+				checkTotal++
+			}
+		}
+		require_Equal(t, np, checkTotal)
+	}
+
+	// Make sure partials work properly.
+	for _, filter := range []string{"foo.10.*", "*.22.*", "*.*.222", "foo.5.999", "*.2.*"} {
+		sseq := uint64(rand.Intn(250) + 200) // Between 200-450
+		total, _ = fs.NumPending(sseq, filter, true)
+		checkResult(sseq, total, filter)
+	}
+}
+
+// We had a bug that could cause internal memory corruption of the psim keys in memory
+// which could have been written to disk via index.db.
+func TestFileStoreCorruptPSIMOnDisk(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	fs.StoreMsg("foo.bar", nil, []byte("ABC"))
+	fs.StoreMsg("foo.baz", nil, []byte("XYZ"))
+
+	// Force bad subject.
+	fs.mu.Lock()
+	psi := fs.psim["foo.bar"]
+	bad := make([]byte, 7)
+	crand.Read(bad)
+	fs.psim[string(bad)] = psi
+	delete(fs.psim, "foo.bar")
+	fs.dirty++
+	fs.mu.Unlock()
+
+	// Restart
+	fs.Stop()
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: sd},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	sm, err := fs.LoadLastMsg("foo.bar", nil)
+	require_NoError(t, err)
+	require_True(t, bytes.Equal(sm.msg, []byte("ABC")))
+
+	sm, err = fs.LoadLastMsg("foo.baz", nil)
+	require_NoError(t, err)
+	require_True(t, bytes.Equal(sm.msg, []byte("XYZ")))
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////

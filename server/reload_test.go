@@ -492,6 +492,102 @@ func TestConfigReloadDisableTLS(t *testing.T) {
 	nc.Close()
 }
 
+func TestConfigReloadRotateTLSMultiCert(t *testing.T) {
+	server, opts, config := runReloadServerWithConfig(t, "./configs/reload/tls_multi_cert_1.conf")
+	defer server.Shutdown()
+
+	// Ensure we can connect as a sanity check.
+	addr := fmt.Sprintf("nats://%s:%d", opts.Host, server.Addr().(*net.TCPAddr).Port)
+
+	rawCerts := make(chan []byte, 3)
+	nc, err := nats.Connect(addr, nats.Secure(&tls.Config{
+		VerifyConnection: func(s tls.ConnectionState) error {
+			rawCerts <- s.PeerCertificates[0].Raw
+			return nil
+		},
+		InsecureSkipVerify: true,
+	}))
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	defer nc.Close()
+	sub, err := nc.SubscribeSync("foo")
+	if err != nil {
+		t.Fatalf("Error subscribing: %v", err)
+	}
+	defer sub.Unsubscribe()
+
+	// Rotate cert and enable client verification.
+	changeCurrentConfigContent(t, config, "./configs/reload/tls_multi_cert_2.conf")
+	if err := server.Reload(); err != nil {
+		t.Fatalf("Error reloading config: %v", err)
+	}
+
+	// Ensure connecting fails.
+	if _, err := nats.Connect(addr, nats.Secure(&tls.Config{InsecureSkipVerify: true})); err == nil {
+		t.Fatal("Expected connect to fail")
+	}
+
+	// Ensure connecting succeeds when client presents cert.
+	cert := nats.ClientCert("../test/configs/certs/client-cert.pem", "../test/configs/certs/client-key.pem")
+	conn, err := nats.Connect(addr, cert, nats.RootCAs("../test/configs/certs/ca.pem"), nats.Secure(&tls.Config{
+		VerifyConnection: func(s tls.ConnectionState) error {
+			rawCerts <- s.PeerCertificates[0].Raw
+			return nil
+		},
+	}))
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	conn.Close()
+
+	// Ensure the original connection can still publish/receive.
+	if err := nc.Publish("foo", []byte("hello")); err != nil {
+		t.Fatalf("Error publishing: %v", err)
+	}
+	nc.Flush()
+	msg, err := sub.NextMsg(2 * time.Second)
+	if err != nil {
+		t.Fatalf("Error receiving msg: %v", err)
+	}
+	if string(msg.Data) != "hello" {
+		t.Fatalf("Msg is incorrect.\nexpected: %+v\ngot: %+v", []byte("hello"), msg.Data)
+	}
+
+	// Rotate cert and disable client verification.
+	changeCurrentConfigContent(t, config, "./configs/reload/tls_multi_cert_3.conf")
+	if err := server.Reload(); err != nil {
+		t.Fatalf("Error reloading config: %v", err)
+	}
+
+	nc, err = nats.Connect(addr, nats.Secure(&tls.Config{
+		VerifyConnection: func(s tls.ConnectionState) error {
+			rawCerts <- s.PeerCertificates[0].Raw
+			return nil
+		},
+		InsecureSkipVerify: true,
+	}))
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	defer nc.Close()
+	sub, err = nc.SubscribeSync("foo")
+	if err != nil {
+		t.Fatalf("Error subscribing: %v", err)
+	}
+	defer sub.Unsubscribe()
+
+	certA := <-rawCerts
+	certB := <-rawCerts
+	certC := <-rawCerts
+	if !bytes.Equal(certA, certB) {
+		t.Error("Expected the same cert")
+	}
+	if bytes.Equal(certB, certC) {
+		t.Error("Expected a different cert")
+	}
+}
+
 // Ensure Reload supports single user authentication config changes. Test this
 // by starting a server with authentication enabled, connect to it to verify,
 // reload config using a different username/password, ensure reconnect fails,

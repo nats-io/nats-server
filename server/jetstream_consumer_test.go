@@ -871,6 +871,36 @@ func TestJetStreamConsumerIsFilteredMatch(t *testing.T) {
 	}
 }
 
+func TestJetStreamConsumerIsEqualOrSubsetMatch(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		filterSubjects []string
+		subject        string
+		result         bool
+	}{
+		{"no filter", []string{}, "foo.bar", false},
+		{"literal match", []string{"foo.baz", "foo.bar"}, "foo.bar", true},
+		{"literal mismatch", []string{"foo.baz", "foo.bar"}, "foo.ban", false},
+		{"literal match", []string{"bar.>", "foo.>"}, "foo.>", true},
+		{"subset match", []string{"bar.foo.>", "foo.bar.>"}, "bar.>", true},
+		{"subset mismatch", []string{"bar.>", "foo.>"}, "baz.foo.>", false},
+		{"literal match", filterSubjects(100), "foo.bar.*.xyz.abcdef", true},
+		{"subset match", filterSubjects(100), "foo.bar.>", true},
+	} {
+		test := test
+
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := consumerWithFilterSubjects(test.filterSubjects)
+			if res := c.isEqualOrSubsetMatch(test.subject); res != test.result {
+				t.Fatalf("Subject %q subset match of %v, should be %v, got %v",
+					test.subject, test.filterSubjects, test.result, res)
+			}
+		})
+	}
+}
+
 func Benchmark____JetStreamConsumerIsFilteredMatch(b *testing.B) {
 	subject := "foo.bar.do.not.match.any.filter.subject"
 	for n := 1; n <= 1024; n *= 2 {

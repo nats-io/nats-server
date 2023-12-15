@@ -1590,6 +1590,13 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 				// We could reference the underlying buffer, but we could guess wrong if
 				// number of blocks is large and subjects is low, since we would reference buf.
 				subj := string(buf[bi : bi+lsubj])
+				// We had a bug that could cause memory corruption in the PSIM that could have gotten stored to disk.
+				// Only would affect subjects, so do quick check.
+				if !isValidSubject(subj, true) {
+					os.Remove(fn)
+					fs.warn("Stream state corrupt subject detected")
+					return errCorruptState
+				}
 				bi += lsubj
 				psi := &psi{total: readU64(), fblk: uint32(readU64())}
 				if psi.total > 1 {
@@ -2581,8 +2588,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 	}
 
 	// Track starting for both block for the sseq and staring block that matches any subject.
-	var seqStart, subjStart int
-
+	var seqStart int
 	// See if we need to figure out starting block per sseq.
 	if sseq > fs.state.FirstSeq {
 		// This should not, but can return -1, so make sure we check to avoid panic below.
@@ -2591,8 +2597,6 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 		}
 	}
 
-	var tsa, fsa [32]string
-	fts := tokenizeSubjectIntoSlice(fsa[:0], filter)
 	isAll := filter == _EMPTY_ || filter == fwcs
 	wc := subjectHasWildcard(filter)
 
@@ -2602,12 +2606,15 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 	}
 
 	// If we are isAll and have no deleted we can do a simpler calculation.
-	if isAll && (fs.state.LastSeq-fs.state.FirstSeq+1) == fs.state.Msgs {
+	if !lastPerSubject && isAll && (fs.state.LastSeq-fs.state.FirstSeq+1) == fs.state.Msgs {
 		if sseq == 0 {
 			return fs.state.Msgs, validThrough
 		}
 		return fs.state.LastSeq - sseq + 1, validThrough
 	}
+
+	var tsa, fsa [32]string
+	fts := tokenizeSubjectIntoSlice(fsa[:0], filter)
 
 	isMatch := func(subj string) bool {
 		if isAll {
@@ -2620,58 +2627,112 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 		return isSubsetMatchTokenized(tts, fts)
 	}
 
+	// Handle last by subject a bit differently.
+	// We will scan PSIM since we accurately track the last block we have seen the subject in. This
+	// allows us to only need to load at most one block now.
+	// For the last block, we need to track the subjects that we know are in that block, and track seen
+	// while in the block itself, but complexity there worth it.
+	if lastPerSubject {
+		// If we want all and our start sequence is equal or less than first return number of subjects.
+		if isAll && sseq <= fs.state.FirstSeq {
+			return uint64(len(fs.psim)), validThrough
+		}
+		// If we are here we need to scan. We are going to scan the PSIM looking for lblks that are >= seqStart.
+		// This will build up a list of all subjects from the selected block onward.
+		lbm := make(map[string]bool)
+		mb := fs.blks[seqStart]
+		bi := mb.index
+
+		for subj, psi := range fs.psim {
+			// If the select blk start is greater than entry's last blk skip.
+			if bi > psi.lblk {
+				continue
+			}
+			if isMatch(subj) {
+				total++
+				// We will track the subjects that are an exact match to the last block.
+				// This is needed for last block processing.
+				if psi.lblk == bi {
+					lbm[subj] = true
+				}
+			}
+		}
+		// Now check if we need to inspect the seqStart block.
+		// Grab write lock in case we need to load in msgs.
+		mb.mu.Lock()
+		var shouldExpire bool
+		// We need to walk this block to correct accounting from above.
+		if sseq > mb.first.seq {
+			// Track the ones we add back in case more than one.
+			seen := make(map[string]bool)
+			// We need to discount the total by subjects seen before sseq, but also add them right back in if they are >= sseq for this blk.
+			// This only should be subjects we know have the last blk in this block.
+			if mb.cacheNotLoaded() {
+				mb.loadMsgsWithLock()
+				shouldExpire = true
+			}
+			var smv StoreMsg
+			for seq, lseq := atomic.LoadUint64(&mb.first.seq), atomic.LoadUint64(&mb.last.seq); seq <= lseq; seq++ {
+				sm, _ := mb.cacheLookup(seq, &smv)
+				if sm == nil || sm.subj == _EMPTY_ || !lbm[sm.subj] {
+					continue
+				}
+				if isMatch(sm.subj) {
+					// If less than sseq adjust off of total as long as this subject matched the last block.
+					if seq < sseq {
+						if !seen[sm.subj] {
+							total--
+							seen[sm.subj] = true
+						}
+					} else if seen[sm.subj] {
+						// This is equal or more than sseq, so add back in.
+						total++
+						// Make sure to not process anymore.
+						delete(seen, sm.subj)
+					}
+				}
+			}
+		}
+		// If we loaded the block try to force expire.
+		if shouldExpire {
+			mb.tryForceExpireCacheLocked()
+		}
+		mb.mu.Unlock()
+		return total, validThrough
+	}
+
 	// If we would need to scan more from the beginning, revert back to calculating directly here.
 	// TODO(dlc) - Redo properly with sublists etc for subject-based filtering.
-	if lastPerSubject || seqStart >= (len(fs.blks)/2) {
-		// If we need to track seen for last per subject.
-		var seen map[string]bool
-		if lastPerSubject {
-			seen = make(map[string]bool)
-		}
-
+	if seqStart >= (len(fs.blks) / 2) {
 		for i := seqStart; i < len(fs.blks); i++ {
+			var shouldExpire bool
 			mb := fs.blks[i]
+			// Hold write lock in case we need to load cache.
 			mb.mu.Lock()
 			var t uint64
 			if isAll && sseq <= atomic.LoadUint64(&mb.first.seq) {
-				if lastPerSubject {
-					mb.ensurePerSubjectInfoLoaded()
-					for subj := range mb.fss {
-						if !seen[subj] {
-							total++
-							seen[subj] = true
-						}
-					}
-				} else {
-					total += mb.msgs
-				}
+				total += mb.msgs
 				mb.mu.Unlock()
 				continue
 			}
-
 			// If we are here we need to at least scan the subject fss.
 			// Make sure we have fss loaded.
-			mb.ensurePerSubjectInfoLoaded()
+			if mb.cacheNotLoaded() {
+				mb.loadMsgsWithLock()
+				shouldExpire = true
+			}
 			var havePartial bool
 			for subj, ss := range mb.fss {
-				if !seen[subj] && isMatch(subj) {
-					if lastPerSubject {
-						// Can't have a partials with last by subject.
-						if sseq <= ss.Last {
-							t++
-							seen[subj] = true
-						}
-					} else {
-						if ss.firstNeedsUpdate {
-							mb.recalculateFirstForSubj(subj, ss.First, ss)
-						}
-						if sseq <= ss.First {
-							t += ss.Msgs
-						} else if sseq <= ss.Last {
-							// We matched but its a partial.
-							havePartial = true
-							break
-						}
+				if isMatch(subj) {
+					if ss.firstNeedsUpdate {
+						mb.recalculateFirstForSubj(subj, ss.First, ss)
+					}
+					if sseq <= ss.First {
+						t += ss.Msgs
+					} else if sseq <= ss.Last {
+						// We matched but its a partial.
+						havePartial = true
+						break
 					}
 				}
 			}
@@ -2679,22 +2740,16 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 			if havePartial {
 				// Clear on partial.
 				t = 0
-				// If we load the cache for a linear scan we want to expire that cache upon exit.
-				var shouldExpire bool
-				if mb.cacheNotLoaded() {
-					mb.loadMsgsWithLock()
-					shouldExpire = true
-				}
 				var smv StoreMsg
 				for seq, lseq := sseq, atomic.LoadUint64(&mb.last.seq); seq <= lseq; seq++ {
-					if sm, _ := mb.cacheLookup(seq, &smv); sm != nil && (isAll || isMatch(sm.subj)) {
+					if sm, _ := mb.cacheLookup(seq, &smv); sm != nil && isMatch(sm.subj) {
 						t++
 					}
 				}
-				// If we loaded this block for this operation go ahead and expire it here.
-				if shouldExpire {
-					mb.tryForceExpireCacheLocked()
-				}
+			}
+			// If we loaded this block for this operation go ahead and expire it here.
+			if shouldExpire {
+				mb.tryForceExpireCacheLocked()
 			}
 			mb.mu.Unlock()
 			total += t
@@ -2702,24 +2757,15 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 		return total, validThrough
 	}
 
-	// If we are here its better to calculate totals from psim and adjust downward by scanning less blocks.
+	// If we are here it's better to calculate totals from psim and adjust downward by scanning less blocks.
 	// TODO(dlc) - Eventually when sublist uses generics, make this sublist driven instead.
 	start := uint32(math.MaxUint32)
 	for subj, psi := range fs.psim {
 		if isMatch(subj) {
-			if lastPerSubject {
-				total++
-				// Keep track of start index for this subject.
-				// Use last block in this case.
-				if psi.lblk < start {
-					start = psi.lblk
-				}
-			} else {
-				total += psi.total
-				// Keep track of start index for this subject.
-				if psi.fblk < start {
-					start = psi.fblk
-				}
+			total += psi.total
+			// Keep track of start index for this subject.
+			if psi.fblk < start {
+				start = psi.fblk
 			}
 		}
 	}
@@ -2729,11 +2775,8 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 	}
 
 	// If we are here we need to calculate partials for the first blocks.
-	subjStart = int(start)
-	firstSubjBlk := fs.bim[uint32(subjStart)]
+	firstSubjBlk := fs.bim[start]
 	var firstSubjBlkFound bool
-	var smv StoreMsg
-
 	// Adjust in case not found.
 	if firstSubjBlk == nil {
 		firstSubjBlkFound = true
@@ -2741,62 +2784,53 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 
 	// Track how many we need to adjust against the total.
 	var adjust uint64
-
 	for i := 0; i <= seqStart; i++ {
 		mb := fs.blks[i]
-
 		// We can skip blks if we know they are below the first one that has any subject matches.
 		if !firstSubjBlkFound {
-			if mb == firstSubjBlk {
-				firstSubjBlkFound = true
-			} else {
+			if firstSubjBlkFound = (mb == firstSubjBlk); !firstSubjBlkFound {
 				continue
 			}
 		}
-
 		// We need to scan this block.
 		var shouldExpire bool
 		mb.mu.Lock()
 		// Check if we should include all of this block in adjusting. If so work with metadata.
 		if sseq > atomic.LoadUint64(&mb.last.seq) {
-			if isAll && !lastPerSubject {
+			if isAll {
 				adjust += mb.msgs
 			} else {
 				// We need to adjust for all matches in this block.
-				// We will scan fss state vs messages themselves.
-				// Make sure we have fss loaded.
-				mb.ensurePerSubjectInfoLoaded()
+				// Make sure we have fss loaded. This loads whole block now.
+				if mb.cacheNotLoaded() {
+					mb.loadMsgsWithLock()
+					shouldExpire = true
+				}
 				for subj, ss := range mb.fss {
 					if isMatch(subj) {
-						if lastPerSubject {
-							adjust++
-						} else {
-							adjust += ss.Msgs
-						}
+						adjust += ss.Msgs
 					}
 				}
 			}
 		} else {
 			// This is the last block. We need to scan per message here.
 			if mb.cacheNotLoaded() {
-				if err := mb.loadMsgsWithLock(); err != nil {
-					mb.mu.Unlock()
-					return 0, 0
-				}
+				mb.loadMsgsWithLock()
 				shouldExpire = true
 			}
-
 			var last = atomic.LoadUint64(&mb.last.seq)
 			if sseq < last {
 				last = sseq
 			}
+			// We need to walk all messages in this block
+			var smv StoreMsg
 			for seq := atomic.LoadUint64(&mb.first.seq); seq < last; seq++ {
 				sm, _ := mb.cacheLookup(seq, &smv)
-				if sm == nil {
+				if sm == nil || sm.subj == _EMPTY_ {
 					continue
 				}
 				// Check if it matches our filter.
-				if isMatch(sm.subj) && sm.seq < sseq {
+				if sm.seq < sseq && isMatch(sm.subj) {
 					adjust++
 				}
 			}
