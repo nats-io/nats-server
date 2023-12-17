@@ -6826,10 +6826,10 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 		sm, err := mb.cacheLookup(seq, &smv)
 		if err != nil {
 			// Since we are walking by sequence we can ignore some errors that are benign to rebuilding our state.
-			if err == ErrStoreMsgNotFound || err == errDeletedMsg {
+			if errors.Is(err, ErrStoreMsgNotFound) || errors.Is(err, errDeletedMsg) {
 				continue
 			}
-			if err == errNoCache {
+			if errors.Is(err, errNoCache) {
 				return nil
 			}
 			return err

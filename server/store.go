@@ -691,7 +691,7 @@ func isOutOfSpaceErr(err error) bool {
 var errFirstSequenceMismatch = errors.New("first sequence mismatch")
 
 func isClusterResetErr(err error) bool {
-	return err == errLastSeqMismatch || err == ErrStoreEOF || err == errFirstSequenceMismatch
+	return errors.Is(err, errLastSeqMismatch) || errors.Is(err, ErrStoreEOF) || errors.Is(err, errFirstSequenceMismatch)
 }
 
 // Copy all fields.

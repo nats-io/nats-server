@@ -4219,7 +4219,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			if sm != nil {
 				fseq = sm.seq
 			}
-			if err == ErrStoreMsgNotFound && seq == 0 {
+			if errors.Is(err, ErrStoreMsgNotFound) && seq == 0 {
 				fseq, err = 0, nil
 			}
 			if err != nil || fseq != seq {
@@ -5345,7 +5345,7 @@ func (mset *stream) checkForInterest(seq uint64, obs *consumer) bool {
 		defer pmsg.returnToPool()
 		sm, err := mset.store.LoadMsg(seq, &pmsg.StoreMsg)
 		if err != nil {
-			if err == ErrStoreEOF {
+			if errors.Is(err, ErrStoreEOF) {
 				// Register this as a preAck.
 				mset.registerPreAck(obs, seq)
 				return true
@@ -5499,7 +5499,7 @@ func (mset *stream) ackMsg(o *consumer, seq uint64) {
 	}
 
 	// If we are here we should attempt to remove.
-	if _, err := mset.store.RemoveMsg(seq); err == ErrStoreEOF {
+	if _, err := mset.store.RemoveMsg(seq); errors.Is(err, ErrStoreEOF) {
 		// This should not happen, but being pedantic.
 		mset.registerPreAckLock(o, seq)
 	}

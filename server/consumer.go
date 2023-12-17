@@ -3479,7 +3479,7 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 		o.mu.Lock()
 		if sseq >= o.sseq {
 			o.sseq = sseq + 1
-			if err == ErrStoreEOF {
+			if errors.Is(err, ErrStoreEOF) {
 				o.updateSkipped(o.sseq)
 			}
 		}
@@ -3550,7 +3550,7 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 		filter.pmsg = nil
 		return returned, 1, err
 	}
-	if err == ErrStoreEOF {
+	if errors.Is(err, ErrStoreEOF) {
 		o.updateSkipped(filter.nextSeq)
 	}
 
@@ -3923,12 +3923,12 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		// On error either wait or return.
 		if err != nil || pmsg == nil {
 			// On EOF we can optionally fast sync num pending state.
-			if err == ErrStoreEOF {
+			if errors.Is(err, ErrStoreEOF) {
 				o.checkNumPendingOnEOF()
 			}
-			if err == ErrStoreMsgNotFound || err == errDeletedMsg || err == ErrStoreEOF || err == errMaxAckPending {
+			if errors.Is(err, ErrStoreMsgNotFound) || errors.Is(err, errDeletedMsg) || errors.Is(err, ErrStoreEOF) || errors.Is(err, errMaxAckPending) {
 				goto waitForMsgs
-			} else if err == errPartialCache {
+			} else if errors.Is(err, errPartialCache) {
 				s.Warnf("Unexpected partial cache error looking up message for consumer '%s > %s > %s'",
 					o.mset.acc, o.mset.cfg.Name, o.cfg.Name)
 				goto waitForMsgs

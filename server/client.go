@@ -752,7 +752,7 @@ func (c *client) RemoteAddress() net.Addr {
 
 // Helper function to report errors.
 func (c *client) reportErrRegisterAccount(acc *Account, err error) {
-	if err == ErrTooManyAccountConnections {
+	if errors.Is(err, ErrTooManyAccountConnections) {
 		c.maxAccountConnExceeded()
 		return
 	}
@@ -1376,7 +1376,7 @@ func (c *client) readLoop(pre []byte) {
 		// to process messages, etc.
 		for i := 0; i < len(bufs); i++ {
 			if err := c.parse(bufs[i]); err != nil {
-				if err == ErrMinimumVersionRequired {
+				if errors.Is(err, ErrMinimumVersionRequired) {
 					// Special case here, currently only for leaf node connections.
 					// When process the CONNECT protocol, if the minimum version
 					// required was not met, an error was printed and sent back to

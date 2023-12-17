@@ -19,6 +19,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"strings"
@@ -385,7 +386,7 @@ func TestJetStreamChaosConsumerOrdered(t *testing.T) {
 				break nextMsgRetryLoop
 			} else if r == maxRetries {
 				t.Fatalf("Exceeded max retries for NextMsg")
-			} else if nextMsgErr == nats.ErrBadSubscription {
+			} else if errors.Is(nextMsgErr, nats.ErrBadSubscription) {
 				t.Fatalf("Subscription is invalid: %s", toIndentedJsonString(sub))
 			} else {
 				time.Sleep(retryDelay)
@@ -805,7 +806,7 @@ func TestJetStreamChaosConsumerPull(t *testing.T) {
 				break fetchRetryLoop
 			} else if r == maxRetries {
 				t.Fatalf("Exceeded max retries for Fetch, last error: %s", fetchErr)
-			} else if fetchErr == nats.ErrBadSubscription {
+			} else if errors.Is(fetchErr, nats.ErrBadSubscription) {
 				t.Fatalf("Subscription is invalid: %s", toIndentedJsonString(sub))
 			} else {
 				// t.Logf("Fetch error: %v", fetchErr)
@@ -966,7 +967,7 @@ putGetLoop:
 
 		// If PUT was successful, GET the same
 		kve, err := kv.Get(key)
-		if err == nats.ErrKeyNotFound {
+		if errors.Is(err, nats.ErrKeyNotFound) {
 			t.Fatalf("GET key not found, but key does exists (last PUT revision: %d)", putRevision)
 		} else if err != nil {
 			t.Logf("GET error: %v", err)

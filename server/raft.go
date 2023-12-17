@@ -3698,12 +3698,12 @@ func (n *raft) setWriteErrLocked(err error) {
 	}
 	// Ignore non-write errors.
 	if err != nil {
-		if err == ErrStoreClosed ||
-			err == ErrStoreEOF ||
-			err == ErrInvalidSequence ||
-			err == ErrStoreMsgNotFound ||
-			err == errNoPending ||
-			err == errPartialCache {
+		if errors.Is(err, ErrStoreClosed) ||
+			errors.Is(err, ErrStoreEOF) ||
+			errors.Is(err, ErrInvalidSequence) ||
+			errors.Is(err, ErrStoreMsgNotFound) ||
+			errors.Is(err, errNoPending) ||
+			errors.Is(err, errPartialCache) {
 			return
 		}
 		// If this is a not found report but do not disable.

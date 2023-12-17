@@ -2325,7 +2325,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					ce.ReturnToPool()
 				} else {
 					// Our stream was closed out from underneath of us, simply return here.
-					if err == errStreamClosed {
+					if errors.Is(err, errStreamClosed) {
 						return
 					}
 					s.Warnf("Error applying entries to '%s > %s': %v", accName, sa.Config.Name, err)
@@ -2703,7 +2703,7 @@ func (mset *stream) resetClusteredState(err error) bool {
 	}
 
 	// Preserve our current state and messages unless we have a first sequence mismatch.
-	shouldDelete := err == errFirstSequenceMismatch
+	shouldDelete := errors.Is(err, errFirstSequenceMismatch)
 
 	// Need to do the rest in a separate Go routine.
 	go func() {
@@ -2823,7 +2823,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				// Process the actual message here.
 				if err := mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts); err != nil {
 					// Only return in place if we are going to reset our stream or we are out of space, or we are closed.
-					if isClusterResetErr(err) || isOutOfSpaceErr(err) || err == errStreamClosed {
+					if isClusterResetErr(err) || isOutOfSpaceErr(err) || errors.Is(err, errStreamClosed) {
 						return err
 					}
 					s.Debugf("Apply stream entries for '%s > %s' got error processing message: %v",
@@ -2850,7 +2850,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				}
 
 				// Cluster reset error.
-				if err == ErrStoreEOF {
+				if errors.Is(err, ErrStoreEOF) {
 					return err
 				}
 
@@ -3466,7 +3466,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 	}
 
 	// If not found we must be expanding into this node since if we are here we know we are a member.
-	if err == ErrJetStreamStreamNotFound {
+	if errors.Is(err, ErrJetStreamStreamNotFound) {
 		js.processStreamAssignment(sa)
 		return
 	}
