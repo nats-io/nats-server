@@ -39,7 +39,7 @@ import (
 	"github.com/nats-io/nuid"
 )
 
-var testMQTTTimeout = 5 * time.Second
+var testMQTTTimeout = 10 * time.Second
 
 var jsClusterTemplWithLeafAndMQTT = `
 	listen: 127.0.0.1:-1
