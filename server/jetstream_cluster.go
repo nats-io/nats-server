@@ -3604,20 +3604,23 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 				}
 			}
 			mset.setStreamAssignment(sa)
-			if err = mset.updateWithAdvisory(sa.Config, false); err != nil {
-				s.Warnf("JetStream cluster error updating stream %q for account %q: %v", sa.Config.Name, acc.Name, err)
-				if osa != nil {
-					// Process the raft group and make sure it's running if needed.
-					js.createRaftGroup(acc.GetName(), osa.Group, storage, pprofLabels{
-						"type":    "stream",
-						"account": mset.accName(),
-						"stream":  mset.name(),
-					})
-					mset.setStreamAssignment(osa)
-				}
-				if rg.node != nil {
-					rg.node.Delete()
-					rg.node = nil
+			// Check if our config has really been updated.
+			if !reflect.DeepEqual(mset.config(), sa.Config) {
+				if err = mset.updateWithAdvisory(sa.Config, false); err != nil {
+					s.Warnf("JetStream cluster error updating stream %q for account %q: %v", sa.Config.Name, acc.Name, err)
+					if osa != nil {
+						// Process the raft group and make sure it's running if needed.
+						js.createRaftGroup(acc.GetName(), osa.Group, storage, pprofLabels{
+							"type":    "stream",
+							"account": mset.accName(),
+							"stream":  mset.name(),
+						})
+						mset.setStreamAssignment(osa)
+					}
+					if rg.node != nil {
+						rg.node.Delete()
+						rg.node = nil
+					}
 				}
 			}
 		} else if err == NewJSStreamNotFoundError() {
