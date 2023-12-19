@@ -18,7 +18,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"hash/maphash"
 	"io"
 	"io/fs"
 	"math"
@@ -86,10 +85,10 @@ type Account struct {
 	incomplete   bool
 	signingKeys  map[string]jwt.Scope
 	extAuth      *jwt.ExternalAuthorization
-	srv          *Server // server this account is registered with (possibly nil)
-	lds          string  // loop detection subject for leaf nodes
-	siReply      []byte  // service reply prefix, will form wildcard subscription.
-	prand        *rand.Rand
+	srv          *Server    // server this account is registered with (possibly nil)
+	lds          string     // loop detection subject for leaf nodes
+	siReply      []byte     // service reply prefix, will form wildcard subscription.
+	prand        *rand.Rand // NOT threadsafe, must have WRITE lock on Account
 	eventIds     *nuid.NUID
 	eventIdsMu   sync.Mutex
 	defaultPerms *Permissions
@@ -239,6 +238,7 @@ func NewAccount(name string) *Account {
 		Name:     name,
 		limits:   limits{-1, -1, -1, -1, false},
 		eventIds: nuid.New(),
+		prand:    rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 	return a
 }
@@ -290,9 +290,7 @@ func (a *Account) shallowCopy(na *Account) {
 		}
 	}
 	na.mappings = a.mappings
-	if len(na.mappings) > 0 && na.prand == nil {
-		na.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
-	}
+	na.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
 	na.hasMapped.Store(len(na.mappings) > 0)
 
 	// JetStream
@@ -605,11 +603,6 @@ func (a *Account) AddWeightedMappings(src string, dests ...*MapDest) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// We use this for selecting between multiple weighted destinations.
-	if a.prand == nil {
-		a.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
-	}
-
 	if !IsValidSubject(src) {
 		return ErrBadSubject
 	}
@@ -756,7 +749,7 @@ func (a *Account) selectMappedSubject(dest string) (string, bool) {
 		return dest, false
 	}
 
-	a.mu.RLock()
+	a.mu.Lock()
 	// In case we have to tokenize for subset matching.
 	tsa := [32]string{}
 	tts := tsa[:0]
@@ -787,7 +780,7 @@ func (a *Account) selectMappedSubject(dest string) (string, bool) {
 	}
 
 	if m == nil {
-		a.mu.RUnlock()
+		a.mu.Unlock()
 		return dest, false
 	}
 
@@ -826,7 +819,7 @@ func (a *Account) selectMappedSubject(dest string) (string, bool) {
 		}
 	}
 
-	a.mu.RUnlock()
+	a.mu.Unlock()
 	return ndest, true
 }
 
@@ -2212,11 +2205,6 @@ func isTrackedReply(reply []byte) bool {
 func (a *Account) newServiceReply(tracking bool) []byte {
 	a.mu.Lock()
 	s := a.srv
-	if a.prand == nil {
-		var h maphash.Hash
-		h.WriteString(nuid.Next())
-		a.prand = rand.New(rand.NewSource(int64(h.Sum64())))
-	}
 	rn := a.prand.Uint64()
 
 	// Check if we need to create the reply here.
