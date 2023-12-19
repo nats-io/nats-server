@@ -338,15 +338,16 @@ func (s *Server) JetStreamSnapshotStream(account, stream string) error {
 		return err
 	}
 
-	mset.mu.RLock()
-	if !mset.node.Leader() {
-		mset.mu.RUnlock()
-		return NewJSNotEnabledForAccountError()
+	// Hold lock when installing snapshot.
+	mset.mu.Lock()
+	if mset.node == nil {
+		mset.mu.Unlock()
+		return nil
 	}
-	n := mset.node
-	mset.mu.RUnlock()
+	err = mset.node.InstallSnapshot(mset.stateSnapshotLocked())
+	mset.mu.Unlock()
 
-	return n.InstallSnapshot(mset.stateSnapshot())
+	return err
 }
 
 func (s *Server) JetStreamClusterPeers() []string {
@@ -2687,7 +2688,7 @@ func (mset *stream) resetClusteredState(err error) bool {
 
 	// Server
 	if js.limitsExceeded(stype) {
-		s.Debugf("Will not reset stream, server resources exceeded")
+		s.Warnf("Will not reset stream, server resources exceeded")
 		return false
 	}
 
@@ -7955,8 +7956,7 @@ RETRY:
 	// Send our catchup request here.
 	reply := syncReplySubject()
 	sub, err = s.sysSubscribe(reply, func(_ *subscription, _ *client, _ *Account, _, reply string, msg []byte) {
-		// Make copies
-		// TODO(dlc) - Since we are using a buffer from the inbound client/route.
+		// Make copy since we are using a buffer from the inbound client/route.
 		msgsQ.push(&im{copyBytes(msg), reply})
 	})
 	if err != nil {
