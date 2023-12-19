@@ -31,6 +31,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nats-io/nats-server/v2/internal/fastrand"
+
 	"github.com/minio/highwayhash"
 )
 
@@ -202,8 +204,6 @@ type raft struct {
 	stepdown *ipQueue[string]               // Stepdown requests
 	leadc    chan bool                      // Leader changes
 	quit     chan struct{}                  // Raft group shutdown
-
-	prand *rand.Rand // Random generator, used to generate inboxes for instance
 }
 
 // cacthupState structure that holds our subscription, and catchup term and index
@@ -349,7 +349,6 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 	sq := s.sys.sq
 	sacc := s.sys.account
 	hash := s.sys.shash
-	pub := s.info.ID
 	s.mu.RUnlock()
 
 	// Do this here to process error quicker.
@@ -362,12 +361,6 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 	}
 
 	qpfx := fmt.Sprintf("[ACC:%s] RAFT '%s' ", accName, cfg.Name)
-	rsrc := time.Now().UnixNano()
-	if len(pub) >= 32 {
-		if h, _ := highwayhash.New64([]byte(pub[:32])); h != nil {
-			rsrc += int64(h.Sum64())
-		}
-	}
 	n := &raft{
 		created:  time.Now(),
 		id:       hash[:idLen],
@@ -399,7 +392,6 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 		leadc:    make(chan bool, 1),
 		observer: cfg.Observer,
 		extSt:    ps.domainExt,
-		prand:    rand.New(rand.NewSource(rsrc)),
 	}
 	n.c.registerWithAccount(sacc)
 
@@ -1685,7 +1677,7 @@ const (
 // Lock should be held (due to use of random generator)
 func (n *raft) newCatchupInbox() string {
 	var b [replySuffixLen]byte
-	rn := n.prand.Int63()
+	rn := fastrand.Uint64()
 	for i, l := 0, rn; i < len(b); i++ {
 		b[i] = digits[l%base]
 		l /= base
@@ -1695,7 +1687,7 @@ func (n *raft) newCatchupInbox() string {
 
 func (n *raft) newInbox() string {
 	var b [replySuffixLen]byte
-	rn := n.prand.Int63()
+	rn := fastrand.Uint64()
 	for i, l := 0, rn; i < len(b); i++ {
 		b[i] = digits[l%base]
 		l /= base
