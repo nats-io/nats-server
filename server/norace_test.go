@@ -8803,10 +8803,8 @@ func TestNoRaceJetStreamClusterStreamSnapshotCatchup(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
-	s := c.randomServer()
-
 	// Client based API
-	nc, js := jsClientConnect(t, s)
+	nc, js := jsClientConnect(t, c.randomServer())
 	defer nc.Close()
 
 	_, err := js.AddStream(&nats.StreamConfig{
@@ -8834,7 +8832,11 @@ func TestNoRaceJetStreamClusterStreamSnapshotCatchup(t *testing.T) {
 	sr := c.randomNonStreamLeader(globalAccountName, "TEST")
 	sr.Shutdown()
 
-	// Now create larger gap.
+	// In case we were connected to sr.
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Now create a large gap.
 	for i := 0; i < 50_000; i++ {
 		_, err := js.PublishAsync("bar", msg)
 		require_NoError(t, err)
@@ -8850,30 +8852,29 @@ func TestNoRaceJetStreamClusterStreamSnapshotCatchup(t *testing.T) {
 
 	sr = c.restartServer(sr)
 	c.checkClusterFormed()
-
 	c.waitOnServerCurrent(sr)
 	c.waitOnStreamCurrent(sr, globalAccountName, "TEST")
 
 	mset, err := sr.GlobalAccount().lookupStream("TEST")
 	require_NoError(t, err)
 
+	// Make sure it's caught up
 	var state StreamState
 	mset.store.FastState(&state)
-
-	require_True(t, state.Msgs == 2)
-	require_True(t, state.FirstSeq == 1)
-	require_True(t, state.LastSeq == 51_000)
-	require_True(t, state.NumDeleted == 51_000-2)
+	require_Equal(t, state.Msgs, 2)
+	require_Equal(t, state.FirstSeq, 1)
+	require_Equal(t, state.LastSeq, 51_000)
+	require_Equal(t, state.NumDeleted, 51_000-2)
 
 	sr.Shutdown()
 
 	_, err = js.Publish("baz", msg)
 	require_NoError(t, err)
+
 	sl.JetStreamSnapshotStream(globalAccountName, "TEST")
 
 	sr = c.restartServer(sr)
 	c.checkClusterFormed()
-
 	c.waitOnServerCurrent(sr)
 	c.waitOnStreamCurrent(sr, globalAccountName, "TEST")
 
@@ -8881,10 +8882,10 @@ func TestNoRaceJetStreamClusterStreamSnapshotCatchup(t *testing.T) {
 	require_NoError(t, err)
 	mset.store.FastState(&state)
 
-	require_True(t, state.Msgs == 3)
-	require_True(t, state.FirstSeq == 1)
-	require_True(t, state.LastSeq == 51_001)
-	require_True(t, state.NumDeleted == 51_001-3)
+	require_Equal(t, state.Msgs, 3)
+	require_Equal(t, state.FirstSeq, 1)
+	require_Equal(t, state.LastSeq, 51_001)
+	require_Equal(t, state.NumDeleted, 51_001-3)
 }
 
 func TestNoRaceStoreStreamEncoderDecoder(t *testing.T) {

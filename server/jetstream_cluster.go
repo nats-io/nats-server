@@ -338,15 +338,16 @@ func (s *Server) JetStreamSnapshotStream(account, stream string) error {
 		return err
 	}
 
-	mset.mu.RLock()
-	if !mset.node.Leader() {
-		mset.mu.RUnlock()
-		return NewJSNotEnabledForAccountError()
+	// Hold lock when installing snapshot.
+	mset.mu.Lock()
+	if mset.node == nil {
+		mset.mu.Unlock()
+		return nil
 	}
-	n := mset.node
-	mset.mu.RUnlock()
+	err = mset.node.InstallSnapshot(mset.stateSnapshotLocked())
+	mset.mu.Unlock()
 
-	return n.InstallSnapshot(mset.stateSnapshot())
+	return err
 }
 
 func (s *Server) JetStreamClusterPeers() []string {
@@ -2687,7 +2688,7 @@ func (mset *stream) resetClusteredState(err error) bool {
 
 	// Server
 	if js.limitsExceeded(stype) {
-		s.Debugf("Will not reset stream, server resources exceeded")
+		s.Warnf("Will not reset stream, server resources exceeded")
 		return false
 	}
 
@@ -5812,51 +5813,24 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	js.mu.Lock()
 	defer js.mu.Unlock()
 
-	// Capture if we have existing assignment first.
-	osa := js.streamAssignment(acc.Name, cfg.Name)
-	var areEqual bool
-	if osa != nil {
-		areEqual = reflect.DeepEqual(osa.Config, cfg)
-	}
+	var self *streamAssignment
+	var rg *raftGroup
 
-	// If this stream already exists, turn this into a stream info call.
-	if osa != nil {
-		// If they are the same then we will forward on as a stream info request.
-		// This now matches single server behavior.
-		if areEqual {
-			// This works when we have a stream leader. If we have no leader let the dupe
-			// go through as normal. We will handle properly on the other end.
-			// We must check interest at the $SYS account layer, not user account since import
-			// will always show interest.
-			sisubj := fmt.Sprintf(clusterStreamInfoT, acc.Name, cfg.Name)
-			if s.SystemAccount().Interest(sisubj) > 0 {
-				isubj := fmt.Sprintf(JSApiStreamInfoT, cfg.Name)
-				// We want to make sure we send along the client info.
-				cij, _ := json.Marshal(ci)
-				hdr := map[string]string{
-					ClientInfoHdr:  string(cij),
-					JSResponseType: jsCreateResponse,
-				}
-				// Send this as system account, but include client info header.
-				s.sendInternalAccountMsgWithReply(nil, isubj, reply, hdr, nil, true)
-				return
-			}
-		} else {
+	// Capture if we have existing assignment first.
+	if osa := js.streamAssignment(acc.Name, cfg.Name); osa != nil {
+		if !reflect.DeepEqual(osa.Config, cfg) {
 			resp.Error = NewJSStreamNameExistError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 			return
 		}
+		// This is an equal assignment.
+		self, rg = osa, osa.Group
 	}
 
 	if cfg.Sealed {
 		resp.Error = NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration for create can not be sealed"))
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
-	}
-
-	var self *streamAssignment
-	if osa != nil && areEqual {
-		self = osa
 	}
 
 	// Check for subject collisions here.
@@ -5875,10 +5849,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	}
 
 	// Raft group selection and placement.
-	var rg *raftGroup
-	if osa != nil && areEqual {
-		rg = osa.Group
-	} else {
+	if rg == nil {
 		// Check inflight before proposing in case we have an existing inflight proposal.
 		if cc.inflight == nil {
 			cc.inflight = make(map[string]map[string]*raftGroup)
@@ -5892,7 +5863,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 			rg = existing
 		}
 	}
-	// Create a new one here.
+	// Create a new one here if needed.
 	if rg == nil {
 		nrg, err := js.createGroupForStream(ci, cfg)
 		if err != nil {
@@ -7955,8 +7926,7 @@ RETRY:
 	// Send our catchup request here.
 	reply := syncReplySubject()
 	sub, err = s.sysSubscribe(reply, func(_ *subscription, _ *client, _ *Account, _, reply string, msg []byte) {
-		// Make copies
-		// TODO(dlc) - Since we are using a buffer from the inbound client/route.
+		// Make copy since we are using a buffer from the inbound client/route.
 		msgsQ.push(&im{copyBytes(msg), reply})
 	})
 	if err != nil {
