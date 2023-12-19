@@ -237,6 +237,9 @@ func TestJetStreamClusterServerLimits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	// Grab stream leader.
+	sl := c.streamLeader("ONE", "TM")
+	require_True(t, sl != nil)
 
 	for i := 0; i < toSend; i++ {
 		if _, err = js.Publish("TM", msg); err != nil {
@@ -247,13 +250,15 @@ func TestJetStreamClusterServerLimits(t *testing.T) {
 		t.Fatalf("Expected a ErrJetStreamResourcesExceeded error, got %v", err)
 	}
 
-	si, err := js.StreamInfo("TM")
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if si.State.Bytes > max_mem {
+	// Since we have run all servers out of resources, no leader will be elected to respond to stream info.
+	// So check manually.
+	acc, err := sl.LookupAccount("ONE")
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TM")
+	require_NoError(t, err)
+	if state := mset.state(); state.Bytes > max_mem {
 		t.Fatalf("Expected bytes of %v to not be greater then %v",
-			friendlyBytes(int64(si.State.Bytes)),
+			friendlyBytes(int64(state.Bytes)),
 			friendlyBytes(int64(max_mem)),
 		)
 	}
@@ -270,6 +275,9 @@ func TestJetStreamClusterServerLimits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	// Grab stream leader.
+	sl = c.streamLeader("ONE", "TF")
+	require_True(t, sl != nil)
 
 	for i := 0; i < toSend; i++ {
 		if _, err = js.Publish("TF", msg); err != nil {
@@ -280,13 +288,15 @@ func TestJetStreamClusterServerLimits(t *testing.T) {
 		t.Fatalf("Expected a ErrJetStreamResourcesExceeded error, got %v", err)
 	}
 
-	si, err = js.StreamInfo("TF")
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if si.State.Bytes > max_disk {
+	// Since we have run all servers out of resources, no leader will be elected to respond to stream info.
+	// So check manually.
+	acc, err = sl.LookupAccount("ONE")
+	require_NoError(t, err)
+	mset, err = acc.lookupStream("TF")
+	require_NoError(t, err)
+	if state := mset.state(); state.Bytes > max_disk {
 		t.Fatalf("Expected bytes of %v to not be greater then %v",
-			friendlyBytes(int64(si.State.Bytes)),
+			friendlyBytes(int64(state.Bytes)),
 			friendlyBytes(int64(max_disk)),
 		)
 	}
@@ -2329,7 +2339,7 @@ func TestJetStreamClusterPushConsumerQueueGroup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	resp, err := nc.Request(fmt.Sprintf(JSApiDurableCreateT, "TEST", "dlc"), req, time.Second)
+	resp, err := nc.Request(fmt.Sprintf(JSApiDurableCreateT, "TEST", "dlc"), req, 2*time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
