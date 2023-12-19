@@ -35,6 +35,7 @@ import (
 
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
+	"github.com/nats-io/nats-server/v2/internal/fastrand"
 )
 
 // Type of client connection.
@@ -441,8 +442,6 @@ type readCache struct {
 	// This is for when we deliver messages across a route. We use this structure
 	// to make sure to only send one message and properly scope to queues as needed.
 	rts []routeTarget
-
-	prand *rand.Rand
 
 	// These are all temporary totals for an invocation of a read in readloop.
 	msgs  int32
@@ -4505,12 +4504,6 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		goto sendToRoutesOrLeafs
 	}
 
-	// Check to see if we have our own rand yet. Global rand
-	// has contention with lots of clients, etc.
-	if c.in.prand == nil {
-		c.in.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
-	}
-
 	// Process queue subs
 	for i := 0; i < len(r.qsubs); i++ {
 		qsubs := r.qsubs[i]
@@ -4558,7 +4551,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		sindex := 0
 		lqs := len(qsubs)
 		if lqs > 1 {
-			sindex = c.in.prand.Int() % lqs
+			sindex = int(fastrand.Uint32()) % lqs
 		}
 
 		// Find a subscription that is able to deliver this message starting at a random index.
