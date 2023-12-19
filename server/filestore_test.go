@@ -6002,6 +6002,10 @@ func TestFileStoreTrackSubjLenForPSIM(t *testing.T) {
 			}
 		}
 		subj := b.String()
+		// Avoid dupes since will cause check to fail after we delete messages.
+		if _, ok := smap[subj]; ok {
+			continue
+		}
 		smap[subj] = len(subj)
 		fs.StoreMsg(subj, nil, nil)
 	}
