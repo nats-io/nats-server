@@ -4162,7 +4162,7 @@ func (o *consumer) streamNumPendingLocked() uint64 {
 // Depends on delivery policy, for last per subject we calculate differently.
 // Lock should be held.
 func (o *consumer) streamNumPending() uint64 {
-	if o.mset == nil || o.mset.store == nil {
+	if o.mset == nil || o.mset.store == nil || o.cfg.Direct {
 		o.npc, o.npf = 0, 0
 		return 0
 	}
