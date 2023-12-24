@@ -5694,25 +5694,18 @@ func groupName(prefix string, peers []string, storage StorageType) string {
 // returns stream count for this tier as well as applicable reservation size (not including reservations for cfg)
 // jetStream read lock should be held
 func tieredStreamAndReservationCount(asa map[string]*streamAssignment, tier string, cfg *StreamConfig) (int, int64) {
-	numStreams := len(asa)
-	reservation := int64(0)
-	if tier == _EMPTY_ {
-		for _, sa := range asa {
-			if sa.Config.MaxBytes > 0 && sa.Config.Name != cfg.Name {
-				if sa.Config.Storage == cfg.Storage {
-					reservation += (int64(sa.Config.Replicas) * sa.Config.MaxBytes)
-				}
-			}
-		}
-	} else {
-		numStreams = 0
-		for _, sa := range asa {
-			if isSameTier(sa.Config, cfg) {
-				numStreams++
-				if sa.Config.MaxBytes > 0 {
-					if sa.Config.Storage == cfg.Storage && sa.Config.Name != cfg.Name {
-						reservation += (int64(sa.Config.Replicas) * sa.Config.MaxBytes)
-					}
+	var numStreams int
+	var reservation int64
+	for _, sa := range asa {
+		if tier == _EMPTY_ || isSameTier(sa.Config, cfg) {
+			numStreams++
+			if sa.Config.MaxBytes > 0 && sa.Config.Storage == cfg.Storage && sa.Config.Name != cfg.Name {
+				// If tier is empty, all storage is flat and we should adjust for replicas.
+				// Otherwise if tiered, storage replication already taken into consideration.
+				if tier == _EMPTY_ && cfg.Replicas > 1 {
+					reservation += sa.Config.MaxBytes * int64(cfg.Replicas)
+				} else {
+					reservation += sa.Config.MaxBytes
 				}
 			}
 		}

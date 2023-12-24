@@ -1,4 +1,4 @@
-// Copyright 2020-2022 The NATS Authors
+// Copyright 2020-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -23,6 +23,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -3642,14 +3643,15 @@ func TestJetStreamClusterAccountReservations(t *testing.T) {
 	defer nc.Close()
 	accMax := 3
 
+	errResources := errors.New("nats: insufficient storage resources available")
+
 	test := func(t *testing.T, replica int) {
 		mb := int64((1+accMax)-replica) * 1024 * 1024 * 1024 // GB, corrected for replication factor
 		_, err := js.AddStream(&nats.StreamConfig{Name: "S1", Subjects: []string{"s1"}, MaxBytes: mb, Replicas: replica})
 		require_NoError(t, err)
 
 		_, err = js.AddStream(&nats.StreamConfig{Name: "S2", Subjects: []string{"s2"}, MaxBytes: 1024, Replicas: replica})
-		require_Error(t, err)
-		require_Equal(t, err.Error(), "nats: insufficient storage resources available")
+		require_Error(t, err, errResources)
 
 		_, err = js.UpdateStream(&nats.StreamConfig{Name: "S1", Subjects: []string{"s1"}, MaxBytes: mb / 2, Replicas: replica})
 		require_NoError(t, err)
@@ -3658,12 +3660,10 @@ func TestJetStreamClusterAccountReservations(t *testing.T) {
 		require_NoError(t, err)
 
 		_, err = js.AddStream(&nats.StreamConfig{Name: "S3", Subjects: []string{"s3"}, MaxBytes: 1024, Replicas: replica})
-		require_Error(t, err)
-		require_Equal(t, err.Error(), "nats: insufficient storage resources available")
+		require_Error(t, err, errResources)
 
 		_, err = js.UpdateStream(&nats.StreamConfig{Name: "S2", Subjects: []string{"s2"}, MaxBytes: mb/2 + 1, Replicas: replica})
-		require_Error(t, err)
-		require_Equal(t, err.Error(), "nats: insufficient storage resources available")
+		require_Error(t, err, errResources)
 
 		require_NoError(t, js.DeleteStream("S1"))
 		require_NoError(t, js.DeleteStream("S2"))
