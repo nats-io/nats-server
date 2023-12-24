@@ -1,4 +1,4 @@
-// Copyright 2020-2022 The NATS Authors
+// Copyright 2020-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -576,7 +576,7 @@ func TestJetStreamJWTClusteredTiersChange(t *testing.T) {
 	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
 		DiskStorage: 1000, MemoryStorage: 0, Consumer: 1, Streams: 1}
 	accClaim.Limits.JetStreamTieredLimits["R3"] = jwt.JetStreamLimits{
-		DiskStorage: 1500, MemoryStorage: 0, Consumer: 1, Streams: 1}
+		DiskStorage: 500, MemoryStorage: 0, Consumer: 1, Streams: 1}
 	accJwt1 := encodeClaim(t, accClaim, aExpPub)
 	accCreds := newUser(t, accKp)
 	start := time.Now()
@@ -622,12 +622,11 @@ func TestJetStreamJWTClusteredTiersChange(t *testing.T) {
 
 	cfg.Replicas = 3
 	_, err = js.UpdateStream(cfg)
-	require_Error(t, err)
-	require_Equal(t, err.Error(), "nats: insufficient storage resources available")
+	require_Error(t, err, errors.New("nats: insufficient storage resources available"))
 
 	time.Sleep(time.Second - time.Since(start)) // make sure the time stamp changes
 	accClaim.Limits.JetStreamTieredLimits["R3"] = jwt.JetStreamLimits{
-		DiskStorage: 3000, MemoryStorage: 0, Consumer: 1, Streams: 1}
+		DiskStorage: 1000, MemoryStorage: 0, Consumer: 1, Streams: 1}
 	accJwt2 := encodeClaim(t, accClaim, aExpPub)
 
 	updateJwt(t, c.randomServer().ClientURL(), sysCreds, accJwt2, 3)
@@ -1361,4 +1360,103 @@ func TestJetStreamJWTHAStorageLimitsAndAccounting(t *testing.T) {
 	// Make sure we are no more then 1 msg below our max in terms of size.
 	delta = maxMemStorage - int64(si.State.Bytes)
 	require_True(t, int(delta) < len(msg))
+}
+
+func TestJetStreamJWTHAStorageLimitsOnScaleAndUpdate(t *testing.T) {
+	sysKp, syspub := createKey(t)
+	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+	newUser(t, sysKp)
+
+	maxFileStorage := int64(5 * 1024 * 1024)
+	maxMemStorage := int64(1 * 1024 * 1024)
+
+	accKp, aExpPub := createKey(t)
+	accClaim := jwt.NewAccountClaims(aExpPub)
+	accClaim.Name = "acc"
+	accClaim.Limits.JetStreamTieredLimits["R3"] = jwt.JetStreamLimits{DiskStorage: maxFileStorage, MemoryStorage: maxMemStorage}
+	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{DiskStorage: maxFileStorage, MemoryStorage: maxMemStorage}
+
+	accJwt := encodeClaim(t, accClaim, aExpPub)
+	accCreds := newUser(t, accKp)
+	tmlp := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+		leaf { listen: 127.0.0.1:-1 }
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+	` + fmt.Sprintf(`
+		operator: %s
+		system_account: %s
+		resolver = MEMORY
+		resolver_preload = {
+			%s : %s
+			%s : %s
+		}
+	`, ojwt, syspub, syspub, sysJwt, aExpPub, accJwt)
+
+	c := createJetStreamClusterWithTemplate(t, tmlp, "cluster", 3)
+	defer c.shutdown()
+
+	nc := natsConnect(t, c.randomServer().ClientURL(), nats.UserCredentials(accCreds))
+	defer nc.Close()
+
+	js, err := nc.JetStream()
+	require_NoError(t, err)
+
+	// Test max bytes first.
+	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3, MaxBytes: maxFileStorage, Subjects: []string{"foo"}})
+	require_NoError(t, err)
+	// Now delete
+	require_NoError(t, js.DeleteStream("TEST"))
+	// Now do 5 1MB streams.
+	for i := 1; i <= 5; i++ {
+		sname := fmt.Sprintf("TEST%d", i)
+		_, err = js.AddStream(&nats.StreamConfig{Name: sname, Replicas: 3, MaxBytes: 1 * 1024 * 1024})
+		require_NoError(t, err)
+	}
+	// Should fail.
+	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST6", Replicas: 3, MaxBytes: 1 * 1024 * 1024})
+	require_Error(t, err, errors.New("insufficient storage resources"))
+
+	// Update Test1 and Test2 to smaller reservations.
+	_, err = js.UpdateStream(&nats.StreamConfig{Name: "TEST1", Replicas: 3, MaxBytes: 512 * 1024})
+	require_NoError(t, err)
+	_, err = js.UpdateStream(&nats.StreamConfig{Name: "TEST2", Replicas: 3, MaxBytes: 512 * 1024})
+	require_NoError(t, err)
+	// Now make sure TEST6 succeeds.
+	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST6", Replicas: 3, MaxBytes: 1 * 1024 * 1024})
+	require_NoError(t, err)
+	// Now delete the R3 version.
+	require_NoError(t, js.DeleteStream("TEST6"))
+	// Now do R1 version and then we will scale up.
+	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST6", Replicas: 1, MaxBytes: 1 * 1024 * 1024})
+	require_NoError(t, err)
+	// Now make sure scale up works.
+	_, err = js.UpdateStream(&nats.StreamConfig{Name: "TEST6", Replicas: 3, MaxBytes: 1 * 1024 * 1024})
+	require_NoError(t, err)
+	// Add in a few more streams to check reserved reporting in account info.
+	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST7", Replicas: 1, MaxBytes: 2 * 1024 * 1024})
+	require_NoError(t, err)
+	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST8", Replicas: 1, MaxBytes: 256 * 1024, Storage: nats.MemoryStorage})
+	require_NoError(t, err)
+	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST9", Replicas: 3, MaxBytes: 22 * 1024, Storage: nats.MemoryStorage})
+	require_NoError(t, err)
+
+	// Now make sure we report reserved correctly.
+	// Do this direct to server since client does not support it yet.
+	var info JSApiAccountInfoResponse
+	resp, err := nc.Request("$JS.API.INFO", nil, time.Second)
+	require_NoError(t, err)
+	require_NoError(t, json.Unmarshal(resp.Data, &info))
+	stats := info.JetStreamAccountStats
+	r1, r3 := stats.Tiers["R1"], stats.Tiers["R3"]
+
+	require_Equal(t, r1.ReservedMemory, 256*1024)   // TEST8
+	require_Equal(t, r1.ReservedStore, 2*1024*1024) // TEST7
+	require_Equal(t, r3.ReservedMemory, 22*1024)    // TEST9
+	require_Equal(t, r3.ReservedStore, 5*1024*1024) // TEST1-TEST6
 }
