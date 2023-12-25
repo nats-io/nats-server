@@ -218,6 +218,9 @@ const (
 	JSApiServerStreamCancelMove  = "$JS.API.ACCOUNT.STREAM.CANCEL_MOVE.*.*"
 	JSApiServerStreamCancelMoveT = "$JS.API.ACCOUNT.STREAM.CANCEL_MOVE.%s.%s"
 
+	// The prefix for system level account API.
+	jsAPIAccountPre = "$JS.API.ACCOUNT."
+
 	// jsAckT is the template for the ack message stream coming back from a consumer
 	// when they ACK/NAK, etc a message.
 	jsAckT      = "$JS.ACK.%s.%s"
@@ -346,6 +349,8 @@ type ApiResponse struct {
 	Type  string    `json:"type"`
 	Error *ApiError `json:"error,omitempty"`
 }
+
+const JSApiSystemResponseType = "io.nats.jetstream.api.v1.system_response"
 
 // When passing back to the clients generalize store failures.
 var (
@@ -739,26 +744,59 @@ type jsAPIRoutedReq struct {
 }
 
 func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, subject, reply string, rmsg []byte) {
+	// Ignore system level directives meta stepdown and peer remove requests here.
+	if subject == JSApiLeaderStepDown ||
+		subject == JSApiRemoveServer ||
+		strings.HasPrefix(subject, jsAPIAccountPre) {
+		return
+	}
 	// No lock needed, those are immutable.
 	s, rr := js.srv, js.apiSubs.Match(subject)
 
-	hdr, _ := c.msgParts(rmsg)
+	hdr, msg := c.msgParts(rmsg)
 	if len(getHeader(ClientInfoHdr, hdr)) == 0 {
 		// Check if this is the system account. We will let these through for the account info only.
-		if s.SystemAccount() != acc || subject != JSApiAccountInfo {
+		sacc := s.SystemAccount()
+		if sacc != acc {
+			return
+		}
+		if subject != JSApiAccountInfo {
+			// Only respond from the initial server entry to the NATS system.
+			if c.kind == CLIENT || c.kind == LEAF {
+				var resp = ApiResponse{
+					Type:  JSApiSystemResponseType,
+					Error: NewJSNotEnabledForAccountError(),
+				}
+				s.sendAPIErrResponse(nil, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			}
 			return
 		}
 	}
 
 	// Short circuit for no interest.
 	if len(rr.psubs)+len(rr.qsubs) == 0 {
+		if (c.kind == CLIENT || c.kind == LEAF) && acc != s.SystemAccount() {
+			ci, acc, _, _, _ := s.getRequestInfo(c, rmsg)
+			var resp = ApiResponse{
+				Type:  JSApiSystemResponseType,
+				Error: NewJSBadRequestError(),
+			}
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 
 	// We should only have psubs and only 1 per result.
-	// FIXME(dlc) - Should we respond here with NoResponders or error?
 	if len(rr.psubs) != 1 {
 		s.Warnf("Malformed JetStream API Request: [%s] %q", subject, rmsg)
+		if c.kind == CLIENT || c.kind == LEAF {
+			ci, acc, _, _, _ := s.getRequestInfo(c, rmsg)
+			var resp = ApiResponse{
+				Type:  JSApiSystemResponseType,
+				Error: NewJSBadRequestError(),
+			}
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 		return
 	}
 	jsub := rr.psubs[0]

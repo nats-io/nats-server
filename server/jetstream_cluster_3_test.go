@@ -5893,3 +5893,31 @@ func TestJetStreamClusterStreamLimitsOnScaleUpAndMove(t *testing.T) {
 	})
 	require_Error(t, err, errors.New("insufficient storage resources"))
 }
+
+func TestJetStreamClusterAPIAccessViaSystemAccount(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Connect to system account.
+	nc, js := jsClientConnect(t, c.randomServer(), nats.UserInfo("admin", "s3cr3t!"))
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST"})
+	require_Error(t, err, NewJSNotEnabledForAccountError())
+
+	// Make sure same behavior swith single server.
+	tmpl := `
+		listen: 127.0.0.1:-1
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+		accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, t.TempDir())))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc, js = jsClientConnect(t, s, nats.UserInfo("admin", "s3cr3t!"))
+	defer nc.Close()
+
+	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST"})
+	require_Error(t, err, NewJSNotEnabledForAccountError())
+}
