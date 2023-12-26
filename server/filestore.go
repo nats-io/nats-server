@@ -795,7 +795,7 @@ var blkPoolSmall sync.Pool  // 2MB
 
 // Get a new msg block based on sz estimate.
 func getMsgBlockBuf(sz int) (buf []byte) {
-	var pb interface{}
+	var pb any
 	if sz <= defaultSmallBlockSize {
 		pb = blkPoolSmall.Get()
 	} else if sz <= defaultMediumBlockSize {
@@ -6132,21 +6132,23 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 	for i := 0; i < len(fs.blks); i++ {
 		mb := fs.blks[i]
 		mb.mu.Lock()
-		if err := mb.ensurePerSubjectInfoLoaded(); err != nil {
-			mb.mu.Unlock()
-			continue
-		}
-		t, f, l := mb.filteredPendingLocked(subject, wc, atomic.LoadUint64(&mb.first.seq))
-		if t == 0 {
-			mb.mu.Unlock()
-			continue
-		}
-
 		var shouldExpire bool
 		if mb.cacheNotLoaded() {
 			mb.loadMsgsWithLock()
 			shouldExpire = true
 		}
+
+		t, f, l := mb.filteredPendingLocked(subject, wc, atomic.LoadUint64(&mb.first.seq))
+		if t == 0 {
+			// Expire if we were responsible for loading.
+			if shouldExpire {
+				// Expire this cache before moving on.
+				mb.tryForceExpireCacheLocked()
+			}
+			mb.mu.Unlock()
+			continue
+		}
+
 		if sequence > 1 && sequence <= l {
 			l = sequence - 1
 		}

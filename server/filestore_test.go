@@ -6286,6 +6286,38 @@ func TestFileStoreCorruptPSIMOnDisk(t *testing.T) {
 	require_True(t, bytes.Equal(sm.msg, []byte("XYZ")))
 }
 
+func TestFileStorePurgeExBufPool(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 1024},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := bytes.Repeat([]byte("ABC"), 33) // ~100bytes
+	for i := 0; i < 1000; i++ {
+		fs.StoreMsg("foo.foo", nil, msg)
+		fs.StoreMsg("foo.bar", nil, msg)
+	}
+
+	p, err := fs.PurgeEx("foo.bar", 1, 0)
+	require_NoError(t, err)
+	require_Equal(t, p, 1000)
+
+	// Now make sure we do not have all of the msg blocks cache's loaded.
+	var loaded int
+	fs.mu.RLock()
+	for _, mb := range fs.blks {
+		mb.mu.RLock()
+		if mb.cacheAlreadyLoaded() {
+			loaded++
+		}
+		mb.mu.RUnlock()
+	}
+	fs.mu.RUnlock()
+	require_Equal(t, loaded, 1)
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////

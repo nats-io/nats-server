@@ -369,9 +369,7 @@ type ddentry struct {
 }
 
 // Replicas Range
-const (
-	StreamMaxReplicas = 5
-)
+const StreamMaxReplicas = 5
 
 // AddStream adds a stream for the given account.
 func (a *Account) addStream(config *StreamConfig) (*stream, error) {
@@ -1255,6 +1253,7 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		}
 		return exists, cfg
 	}
+
 	hasStream := func(streamName string) (bool, int32, []string) {
 		exists, cfg := getStream(streamName)
 		return exists, cfg.MaxMsgSize, cfg.Subjects
@@ -1633,13 +1632,7 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, s *Server) (*Str
 
 	// Save the user configured MaxBytes.
 	newMaxBytes := cfg.MaxBytes
-
 	maxBytesOffset := int64(0)
-	if old.MaxBytes > 0 {
-		if excessRep := cfg.Replicas - old.Replicas; excessRep > 0 {
-			maxBytesOffset = old.MaxBytes * int64(excessRep)
-		}
-	}
 
 	// We temporarily set cfg.MaxBytes to maxBytesDiff because checkAllLimits
 	// adds cfg.MaxBytes to the current reserved limit and checks if we've gone
@@ -1671,7 +1664,11 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, s *Server) (*Str
 		_, reserved = tieredStreamAndReservationCount(js.cluster.streams[acc.Name], tier, &cfg)
 	}
 	// reservation does not account for this stream, hence add the old value
-	reserved += int64(old.Replicas) * old.MaxBytes
+	if tier == _EMPTY_ && old.Replicas > 1 {
+		reserved += old.MaxBytes * int64(old.Replicas)
+	} else {
+		reserved += old.MaxBytes
+	}
 	if err := js.checkAllLimits(&selected, &cfg, reserved, maxBytesOffset); err != nil {
 		return nil, err
 	}

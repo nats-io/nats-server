@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/nats-io/jwt/v2"
+	"github.com/nats-io/nats-server/v2/internal/fastrand"
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
 )
@@ -85,10 +86,9 @@ type Account struct {
 	incomplete   bool
 	signingKeys  map[string]jwt.Scope
 	extAuth      *jwt.ExternalAuthorization
-	srv          *Server    // server this account is registered with (possibly nil)
-	lds          string     // loop detection subject for leaf nodes
-	siReply      []byte     // service reply prefix, will form wildcard subscription.
-	prand        *rand.Rand // NOT threadsafe, must have WRITE lock on Account
+	srv          *Server // server this account is registered with (possibly nil)
+	lds          string  // loop detection subject for leaf nodes
+	siReply      []byte  // service reply prefix, will form wildcard subscription.
 	eventIds     *nuid.NUID
 	eventIdsMu   sync.Mutex
 	defaultPerms *Permissions
@@ -238,7 +238,6 @@ func NewAccount(name string) *Account {
 		Name:     name,
 		limits:   limits{-1, -1, -1, -1, false},
 		eventIds: nuid.New(),
-		prand:    rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 	return a
 }
@@ -290,7 +289,6 @@ func (a *Account) shallowCopy(na *Account) {
 		}
 	}
 	na.mappings = a.mappings
-	na.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
 	na.hasMapped.Store(len(na.mappings) > 0)
 
 	// JetStream
@@ -802,7 +800,7 @@ func (a *Account) selectMappedSubject(dest string) (string, bool) {
 	if len(dests) == 1 && dests[0].weight == 100 {
 		d = dests[0]
 	} else {
-		w := uint8(a.prand.Int31n(100))
+		w := uint8(fastrand.Uint32n(100))
 		for _, rm := range dests {
 			if w < rm.weight {
 				d = rm
@@ -2186,7 +2184,7 @@ func (a *Account) processServiceImportResponse(sub *subscription, c *client, _ *
 // Lock should be held.
 func (a *Account) createRespWildcard() {
 	var b = [baseServerLen]byte{'_', 'R', '_', '.'}
-	rn := a.prand.Uint64()
+	rn := fastrand.Uint64()
 	for i, l := replyPrefixLen, rn; i < len(b); i++ {
 		b[i] = digits[l%base]
 		l /= base
@@ -2205,7 +2203,7 @@ func isTrackedReply(reply []byte) bool {
 func (a *Account) newServiceReply(tracking bool) []byte {
 	a.mu.Lock()
 	s := a.srv
-	rn := a.prand.Uint64()
+	rn := fastrand.Uint64()
 
 	// Check if we need to create the reply here.
 	var createdSiReply bool
