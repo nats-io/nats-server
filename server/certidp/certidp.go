@@ -54,12 +54,10 @@ var (
 
 // GetStatusAssertionStr returns the corresponding string representation of the StatusAssertion.
 func GetStatusAssertionStr(sa int) string {
-	/*
-	 If the provided status assertion value is not found in the map (StatusAssertionIntToVal),
-	 the function defaults to "unknown" to avoid defaulting to "good," which is the default iota value
-	 for the ocsp.StatusAssertion enumeration (https://pkg.go.dev/golang.org/x/crypto/ocsp#pkg-constants).
-	 This ensures that we don't unintentionally default to "good" when there's no map entry.
-	*/
+	// If the provided status assertion value is not found in the map (StatusAssertionIntToVal),
+	// the function defaults to "unknown" to avoid defaulting to "good," which is the default iota value
+	// for the ocsp.StatusAssertion enumeration (https://pkg.go.dev/golang.org/x/crypto/ocsp#pkg-constants).
+	// This ensures that we don't unintentionally default to "good" when there's no map entry.
 	v, ok := StatusAssertionIntToVal[sa]
 	if !ok {
 		// set unknown as fallback
