@@ -3788,6 +3788,7 @@ func TestFileStoreExpireSubjectMeta(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fcfg.BlockSize = 1024
 		fcfg.CacheExpire = time.Second
+		fcfg.SyncInterval = time.Second
 		cfg := StreamConfig{Name: "zzz", Subjects: []string{"kv.>"}, Storage: FileStorage, MaxMsgsPer: 1}
 		fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
 		require_NoError(t, err)
@@ -3916,6 +3917,7 @@ func TestFileStoreSubjectStateCacheExpiration(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fcfg.BlockSize = 32
 		fcfg.CacheExpire = time.Second
+		fcfg.SyncInterval = time.Second
 		cfg := StreamConfig{Name: "zzz", Subjects: []string{"kv.>"}, Storage: FileStorage, MaxMsgsPer: 2}
 		fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
 		require_NoError(t, err)
@@ -6316,6 +6318,129 @@ func TestFileStorePurgeExBufPool(t *testing.T) {
 	}
 	fs.mu.RUnlock()
 	require_Equal(t, loaded, 1)
+}
+
+func TestFileStoreFSSMeta(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 100, CacheExpire: 200 * time.Millisecond, SyncInterval: time.Second},
+		StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// This yields an internal record length of 50 bytes. So 2 msgs per blk with subject len of 1, e.g. "A" or "Z".
+	msg := bytes.Repeat([]byte("Z"), 19)
+
+	// Should leave us with |A-Z| |Z-Z| |Z-Z| |Z-A|
+	fs.StoreMsg("A", nil, msg)
+	for i := 0; i < 6; i++ {
+		fs.StoreMsg("Z", nil, msg)
+	}
+	fs.StoreMsg("A", nil, msg)
+
+	// Let cache's expire before PurgeEx which will load them back in.
+	time.Sleep(250 * time.Millisecond)
+
+	p, err := fs.PurgeEx("A", 1, 0)
+	require_NoError(t, err)
+	require_Equal(t, p, 2)
+
+	// Make sure cache is not loaded but fss state still is.
+	var stillHasCache, noFSS bool
+	fs.mu.RLock()
+	for _, mb := range fs.blks {
+		mb.mu.RLock()
+		stillHasCache = stillHasCache || mb.cacheAlreadyLoaded()
+		noFSS = noFSS || mb.fssNotLoaded()
+		mb.mu.RUnlock()
+	}
+	fs.mu.RUnlock()
+
+	require_False(t, stillHasCache)
+	require_False(t, noFSS)
+
+	// Let fss expire via syncInterval.
+	time.Sleep(time.Second)
+
+	fs.mu.RLock()
+	for _, mb := range fs.blks {
+		mb.mu.RLock()
+		noFSS = noFSS || mb.fssNotLoaded()
+		mb.mu.RUnlock()
+	}
+	fs.mu.RUnlock()
+
+	require_True(t, noFSS)
+}
+
+func TestFileStoreExpireCacheOnLinearWalk(t *testing.T) {
+	sd := t.TempDir()
+	expire := 250 * time.Millisecond
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, CacheExpire: expire},
+		StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// This yields an internal record length of 50 bytes.
+	subj, msg := "Z", bytes.Repeat([]byte("Z"), 19)
+
+	// Store 10 messages, so 5 blocks.
+	for i := 0; i < 10; i++ {
+		fs.StoreMsg(subj, nil, msg)
+	}
+	// Let them all expire. This way we load as we walk and can test that we expire all blocks without
+	// needing to worry about last write times blocking forced expiration.
+	time.Sleep(expire)
+
+	checkNoCache := func() {
+		t.Helper()
+		fs.mu.RLock()
+		var stillHasCache bool
+		for _, mb := range fs.blks {
+			mb.mu.RLock()
+			stillHasCache = stillHasCache || mb.cacheAlreadyLoaded()
+			mb.mu.RUnlock()
+		}
+		fs.mu.RUnlock()
+		require_False(t, stillHasCache)
+	}
+
+	// Walk forward.
+	var smv StoreMsg
+	for seq := uint64(1); seq <= 10; seq++ {
+		_, err := fs.LoadMsg(seq, &smv)
+		require_NoError(t, err)
+	}
+	checkNoCache()
+
+	// No test walking backwards. We have this scenario when we search for starting points for sourced streams.
+	// Noticed some memory bloat when we have to search many blocks looking for a source that may be closer to the
+	// beginning of the stream (infrequently updated sourced stream).
+	for seq := uint64(10); seq >= 1; seq-- {
+		_, err := fs.LoadMsg(seq, &smv)
+		require_NoError(t, err)
+	}
+	checkNoCache()
+
+	// Now make sure still expires properly on linear scans with deleted msgs.
+	// We want to make sure we track linear updates even if message deleted.
+	_, err = fs.RemoveMsg(2)
+	require_NoError(t, err)
+	_, err = fs.RemoveMsg(9)
+	require_NoError(t, err)
+
+	// Walk forward.
+	for seq := uint64(1); seq <= 10; seq++ {
+		_, err := fs.LoadMsg(seq, &smv)
+		if seq == 2 || seq == 9 {
+			require_Error(t, err, errDeletedMsg)
+		} else {
+			require_NoError(t, err)
+		}
+	}
+	checkNoCache()
+
 }
 
 ///////////////////////////////////////////////////////////////////////////
