@@ -1052,7 +1052,7 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	sn := fmt.Sprintf(snapFileT, snap.lastTerm, snap.lastIndex)
 	sfile := filepath.Join(snapDir, sn)
 
-	if err := os.WriteFile(sfile, n.encodeSnapshot(snap), 0640); err != nil {
+	if err := os.WriteFile(sfile, n.encodeSnapshot(snap), defaultFilePerms); err != nil {
 		n.Unlock()
 		// We could set write err here, but if this is a temporary situation, too many open files etc.
 		// we want to retry and snapshots are not fatal.
@@ -3678,7 +3678,7 @@ func writePeerState(sd string, ps *peerState) error {
 	if _, err := os.Stat(psf); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if err := os.WriteFile(psf, encodePeerState(ps), 0640); err != nil {
+	if err := os.WriteFile(psf, encodePeerState(ps), defaultFilePerms); err != nil {
 		return err
 	}
 	return nil
@@ -3778,7 +3778,7 @@ func (n *raft) fileWriter() {
 			copy(buf[0:], n.wtv)
 			n.RUnlock()
 			<-dios
-			err := os.WriteFile(tvf, buf[:], 0640)
+			err := os.WriteFile(tvf, buf[:], defaultFilePerms)
 			dios <- struct{}{}
 			if err != nil && !n.isClosed() {
 				n.setWriteErr(err)
@@ -3790,7 +3790,7 @@ func (n *raft) fileWriter() {
 			buf := copyBytes(n.wps)
 			n.RUnlock()
 			<-dios
-			err := os.WriteFile(psf, buf, 0640)
+			err := os.WriteFile(psf, buf, defaultFilePerms)
 			dios <- struct{}{}
 			if err != nil && !n.isClosed() {
 				n.setWriteErr(err)
