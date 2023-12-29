@@ -53,7 +53,13 @@ var (
 )
 
 func GetStatusAssertionStr(sa int) string {
-	return StatusAssertionValToStr[StatusAssertionIntToVal[sa]]
+	v, ok := StatusAssertionIntToVal[sa]
+	if !ok {
+		// set unknown as fallback
+		v = ocsp.Unknown
+	}
+
+	return StatusAssertionValToStr[v]
 }
 
 func (sa StatusAssertion) MarshalJSON() ([]byte, error) {
