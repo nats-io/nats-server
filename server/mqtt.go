@@ -1744,16 +1744,14 @@ func (jsa *mqttJSA) loadLastMsgForMulti(streamName string, subjects []string) ([
 	}
 
 	all, err := jsa.newRequestExMulti(mqttJSAMsgLoad, fmt.Sprintf(JSApiMsgGetT, streamName), _EMPTY_, headerBytes, marshaled, mqttJSAPITimeout)
-	if err != nil {
-		return nil, err
-	}
-
 	// all has the same order as subjects, preserve it as we unmarshal
-	responses := []*JSApiMsgGetResponse{}
-	for _, v := range all {
-		responses = append(responses, v.value.(*JSApiMsgGetResponse))
+	responses := make([]*JSApiMsgGetResponse, len(all))
+	for i, v := range all {
+		if v != nil {
+			responses[i] = v.value.(*JSApiMsgGetResponse)
+		}
 	}
-	return responses, nil
+	return responses, err
 }
 
 func (jsa *mqttJSA) loadNextMsgFor(streamName string, subject string) (*StoredMsg, error) {
@@ -2758,12 +2756,11 @@ func (as *mqttAccountSessionManager) loadRetainedMessages(subjects map[string]st
 		return rms
 	}
 
-	results, err := as.jsa.loadLastMsgForMulti(mqttRetainedMsgsStreamName, ss)
-	if err != nil {
-		return nil
-	}
-
+	results, _ := as.jsa.loadLastMsgForMulti(mqttRetainedMsgsStreamName, ss)
 	for i, result := range results {
+		if result == nil {
+			continue // skip requests that timed out
+		}
 		if result.ToError() != nil {
 			continue
 		}
