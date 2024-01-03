@@ -2503,12 +2503,9 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 					subs = append(subs, sub.shadow...)
 				}
 				for _, sub := range subs {
-					subject := string(sub.subject)
-					// Best-effort loading the messages, logs on errors (to c.srv), loads
-					// once for subject.
-					as.addRetainedSubjectsForSubject(rmSubjects, subject)
+					as.addRetainedSubjectsForSubject(rmSubjects, bytesToString(sub.subject))
 					for _, ss := range sub.shadow {
-						as.addRetainedSubjectsForSubject(rmSubjects, string(ss.subject))
+						as.addRetainedSubjectsForSubject(rmSubjects, bytesToString(ss.subject))
 					}
 				}
 				return nil
@@ -2720,7 +2717,7 @@ func (as *mqttAccountSessionManager) addRetainedSubjectsForSubject(list map[stri
 		as.mu.RUnlock()
 		return false
 	}
-	result := as.sl.ReverseMatch(string(topSubject))
+	result := as.sl.ReverseMatch(topSubject)
 	as.mu.RUnlock()
 
 	added := false
