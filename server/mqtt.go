@@ -1536,19 +1536,23 @@ func (jsa *mqttJSA) newRequestEx(kind, subject, cidHash string, hdr int, msg []b
 	if len(responses) != 1 {
 		return nil, fmt.Errorf("unreachable: invalid number of responses (%d)", len(responses))
 	}
-	r := responses[0]
-	type errorer interface{ ToError() error }
-	if e, ok := r.value.(errorer); ok {
+	v := responses[0].value
+	if e, ok := v.(interface{ ToError() error }); ok {
 		if err := e.ToError(); err != nil {
 			return nil, err
 		}
 	}
-	return r.value, nil
+	return v, nil
 }
 
 // newRequestExMulti sends multiple messages on the same subject and waits for
-// all responses. Unless it times out, it returns the same number of responses
-// in the same order as msgs parameter.
+// all responses. It returns the same number of responses in the same order as
+// msgs parameter. In case of a timeout it returns an error as well as all
+// responses received as a sparsely populated array, matching msgs, with nils
+// for the values that have not yet been received.
+//
+// Note that each response may represent an error and should be inspected as
+// such by the caller.
 func (jsa *mqttJSA) newRequestExMulti(kind, subject, cidHash string, hdrs []int, msgs [][]byte, timeout time.Duration) ([]*mqttJSAResponse, error) {
 	if len(msgs) == 0 {
 		return nil, nil
@@ -1624,9 +1628,9 @@ func (jsa *mqttJSA) newRequestExMulti(kind, subject, cidHash string, hdrs []int,
 			}
 
 			if len(msgs) == 1 {
-				return nil, fmt.Errorf("timeout after %v: request type %q on %q (reply=%q)", now.Sub(start), kind, subject, reply)
+				return responses, fmt.Errorf("timeout after %v: request type %q on %q (reply=%q)", now.Sub(start), kind, subject, reply)
 			} else {
-				return nil, fmt.Errorf("timeout after %v: request type %q on %q: got %d out of %d", now.Sub(start), kind, subject, c, len(msgs))
+				return responses, fmt.Errorf("timeout after %v: request type %q on %q: got %d out of %d", now.Sub(start), kind, subject, c, len(msgs))
 			}
 		}
 	}
