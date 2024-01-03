@@ -1734,8 +1734,8 @@ func (jsa *mqttJSA) loadLastMsgFor(streamName string, subject string) (*StoredMs
 }
 
 func (jsa *mqttJSA) loadLastMsgForMulti(streamName string, subjects []string) ([]*JSApiMsgGetResponse, error) {
-	marshaled := [][]byte{}
-	headerBytes := []int{}
+	marshaled := make([][]byte, 0, len(subjects))
+	headerBytes := make([]int, 0, len(subjects))
 	for _, subject := range subjects {
 		mreq := &JSApiMsgGetRequest{LastFor: subject}
 		bb, err := json.Marshal(mreq)
