@@ -17,8 +17,8 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
+	"github.com/goccy/go-json"
 	"net/url"
 	"strings"
 	"time"
@@ -145,7 +145,7 @@ For client, leaf spoke (remotes), and leaf hub connections, you may enable OCSP 
         ...
         # short form enables peer verify and takes option defaults
         ocsp_peer: true
-        
+
         # long form includes settable options
         ocsp_peer {
            # Enable OCSP peer validation (default false)

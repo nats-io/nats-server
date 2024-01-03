@@ -15,9 +15,9 @@ package server
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/goccy/go-json"
 	"math/rand"
 	"os"
 	"path/filepath"

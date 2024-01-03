@@ -18,8 +18,8 @@ package server
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
+	"github.com/goccy/go-json"
 	"math/rand"
 	"strings"
 	"sync"

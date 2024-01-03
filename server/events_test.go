@@ -16,9 +16,9 @@ package server
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/goccy/go-json"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"

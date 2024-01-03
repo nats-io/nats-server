@@ -17,8 +17,8 @@
 package server
 
 import (
-	"encoding/json"
 	"fmt"
+	"github.com/goccy/go-json"
 	"math/rand"
 	"sort"
 	"strings"

@@ -4,8 +4,8 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
+	"github.com/goccy/go-json"
 	"log"
 	"os"
 	"os/exec"

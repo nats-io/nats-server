@@ -16,8 +16,8 @@ package server
 import (
 	"bytes"
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
+	"github.com/goccy/go-json"
 	"math/rand"
 	"net"
 	"net/url"

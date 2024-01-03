@@ -14,8 +14,8 @@
 package test
 
 import (
-	"encoding/json"
 	"fmt"
+	"github.com/goccy/go-json"
 	"net"
 	"testing"
 	"time"

@@ -16,9 +16,9 @@ package server
 import (
 	"bytes"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/goccy/go-json"
 	"math/rand"
 	"reflect"
 	"sort"

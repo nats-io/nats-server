@@ -14,8 +14,8 @@
 package test
 
 import (
-	"encoding/json"
 	"fmt"
+	"github.com/goccy/go-json"
 	"math/rand"
 	"net/http"
 	"os"

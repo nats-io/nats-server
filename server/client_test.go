@@ -16,8 +16,8 @@ package server
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"fmt"
+	"github.com/goccy/go-json"
 	"io"
 	"math"
 	"net"

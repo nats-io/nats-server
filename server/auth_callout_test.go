@@ -16,10 +16,10 @@ package server
 import (
 	"bytes"
 	"crypto/x509"
-	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"github.com/goccy/go-json"
 	"reflect"
 	"sort"
 	"strings"

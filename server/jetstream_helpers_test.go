@@ -18,8 +18,8 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"github.com/goccy/go-json"
 	"math/rand"
 	"net"
 	"net/url"

@@ -15,8 +15,8 @@ package test
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
+	"github.com/goccy/go-json"
 	"io"
 	"net"
 	"net/http"

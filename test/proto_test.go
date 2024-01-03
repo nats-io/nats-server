@@ -14,7 +14,7 @@
 package test
 
 import (
-	"encoding/json"
+	"github.com/goccy/go-json"
 	"testing"
 	"time"
 

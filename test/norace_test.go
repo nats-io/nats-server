@@ -19,8 +19,8 @@ package test
 import (
 	"context"
 	crand "crypto/rand"
-	"encoding/json"
 	"fmt"
+	"github.com/goccy/go-json"
 	"net"
 	"net/url"
 	"os"
