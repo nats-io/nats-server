@@ -1583,6 +1583,9 @@ func (jsa *mqttJSA) newRequestExMulti(kind, subject, cidHash string, hdrs []int,
 		sb.WriteString(uid)
 		reply := sb.String()
 
+		// Add responseCh to the reply channel map. It will be cleaned out on
+		// timeout (see below), or in processJSAPIReplies upon receiving the
+		// response.
 		jsa.replies.Store(reply, responseCh)
 
 		subject = jsa.prefixDomain(subject)
