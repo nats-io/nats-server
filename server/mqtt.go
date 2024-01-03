@@ -2739,7 +2739,7 @@ type warner interface {
 
 // Loads a list of retained messages given a list of stored message subjects.
 func (as *mqttAccountSessionManager) loadRetainedMessages(subjects map[string]struct{}, w warner) map[string]*mqttRetainedMsg {
-	rms := make(map[string]*mqttRetainedMsg)
+	rms := make(map[string]*mqttRetainedMsg, len(subjects))
 	ss := []string{}
 	for s := range subjects {
 		if rm := as.getCachedRetainedMsg(s); rm != nil {
