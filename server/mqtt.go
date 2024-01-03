@@ -217,7 +217,7 @@ var (
 	errMQTTEmptyUsername            = errors.New("empty user name not allowed")
 	errMQTTTopicIsEmpty             = errors.New("topic cannot be empty")
 	errMQTTPacketIdentifierIsZero   = errors.New("packet identifier cannot be 0")
-	errMQTTUnsupportedCharacters    = errors.New("characters ' ' and '.' not supported for MQTT topics")
+	errMQTTUnsupportedCharacters    = errors.New("character ' ' not supported for MQTT topics")
 	errMQTTInvalidSession           = errors.New("invalid MQTT session")
 )
 

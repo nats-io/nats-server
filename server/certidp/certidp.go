@@ -52,11 +52,24 @@ var (
 	}
 )
 
+// GetStatusAssertionStr returns the corresponding string representation of the StatusAssertion.
 func GetStatusAssertionStr(sa int) string {
-	return StatusAssertionValToStr[StatusAssertionIntToVal[sa]]
+	// If the provided status assertion value is not found in the map (StatusAssertionIntToVal),
+	// the function defaults to "unknown" to avoid defaulting to "good," which is the default iota value
+	// for the ocsp.StatusAssertion enumeration (https://pkg.go.dev/golang.org/x/crypto/ocsp#pkg-constants).
+	// This ensures that we don't unintentionally default to "good" when there's no map entry.
+	v, ok := StatusAssertionIntToVal[sa]
+	if !ok {
+		// set unknown as fallback
+		v = ocsp.Unknown
+	}
+
+	return StatusAssertionValToStr[v]
 }
 
 func (sa StatusAssertion) MarshalJSON() ([]byte, error) {
+	// This ensures that we don't unintentionally default to "good" when there's no map entry.
+	// (see more details in the GetStatusAssertionStr() comment)
 	str, ok := StatusAssertionValToStr[sa]
 	if !ok {
 		// set unknown as fallback
@@ -66,6 +79,8 @@ func (sa StatusAssertion) MarshalJSON() ([]byte, error) {
 }
 
 func (sa *StatusAssertion) UnmarshalJSON(in []byte) error {
+	// This ensures that we don't unintentionally default to "good" when there's no map entry.
+	// (see more details in the GetStatusAssertionStr() comment)
 	v, ok := StatusAssertionStrToVal[strings.ReplaceAll(string(in), "\"", "")]
 	if !ok {
 		// set unknown as fallback

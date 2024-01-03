@@ -25,10 +25,13 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/nats-io/nats-server/v2/internal/fastrand"
 
 	"github.com/minio/highwayhash"
 )
@@ -201,8 +204,6 @@ type raft struct {
 	stepdown *ipQueue[string]               // Stepdown requests
 	leadc    chan bool                      // Leader changes
 	quit     chan struct{}                  // Raft group shutdown
-
-	prand *rand.Rand // Random generator, used to generate inboxes for instance
 }
 
 // cacthupState structure that holds our subscription, and catchup term and index
@@ -348,9 +349,9 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 	sq := s.sys.sq
 	sacc := s.sys.account
 	hash := s.sys.shash
-	pub := s.info.ID
 	s.mu.RUnlock()
 
+	// Do this here to process error quicker.
 	ps, err := readPeerState(cfg.Store)
 	if err != nil {
 		return nil, err
@@ -360,12 +361,6 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 	}
 
 	qpfx := fmt.Sprintf("[ACC:%s] RAFT '%s' ", accName, cfg.Name)
-	rsrc := time.Now().UnixNano()
-	if len(pub) >= 32 {
-		if h, _ := highwayhash.New64([]byte(pub[:32])); h != nil {
-			rsrc += int64(h.Sum64())
-		}
-	}
 	n := &raft{
 		created:  time.Now(),
 		id:       hash[:idLen],
@@ -397,7 +392,6 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 		leadc:    make(chan bool, 1),
 		observer: cfg.Observer,
 		extSt:    ps.domainExt,
-		prand:    rand.New(rand.NewSource(rsrc)),
 	}
 	n.c.registerWithAccount(sacc)
 
@@ -430,13 +424,19 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 		n.setupLastSnapshot()
 	}
 
+	truncateAndErr := func(index uint64) {
+		if err := n.wal.Truncate(index); err != nil {
+			n.setWriteErr(err)
+		}
+	}
+
 	// Retrieve the stream state from the WAL. If there are pending append
 	// entries that were committed but not applied before we last shut down,
 	// we will try to replay them and process them here.
 	var state StreamState
 	n.wal.FastState(&state)
 	if state.Msgs > 0 {
-		// TODO(dlc) - Recover our state here.
+		n.debug("Replaying state of %d entries", state.Msgs)
 		if first, err := n.loadFirstEntry(); err == nil {
 			n.pterm, n.pindex = first.pterm, first.pindex
 			if first.commit > 0 && first.commit > n.commit {
@@ -444,30 +444,35 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 			}
 		}
 
+		// This process will queue up entries on our applied queue but prior to the upper
+		// state machine running. So we will monitor how much we have queued and if we
+		// reach a limit will pause the apply queue and resume inside of run() go routine.
+		const maxQsz = 32 * 1024 * 1024 // 32MB max
+
 		// It looks like there are entries we have committed but not applied
 		// yet. Replay them.
-		for index := state.FirstSeq; index <= state.LastSeq; index++ {
+		for index, qsz := state.FirstSeq, 0; index <= state.LastSeq; index++ {
 			ae, err := n.loadEntry(index)
 			if err != nil {
 				n.warn("Could not load %d from WAL [%+v]: %v", index, state, err)
-				if err := n.wal.Truncate(index); err != nil {
-					n.setWriteErrLocked(err)
-				}
+				truncateAndErr(index)
 				break
 			}
 			if ae.pindex != index-1 {
 				n.warn("Corrupt WAL, will truncate")
-				if err := n.wal.Truncate(index); err != nil {
-					n.setWriteErrLocked(err)
-				}
+				truncateAndErr(index)
 				break
 			}
 			n.processAppendEntry(ae, nil)
+			// Check how much we have queued up so far to determine if we should pause.
+			for _, e := range ae.entries {
+				qsz += len(e.Data)
+				if qsz > maxQsz && !n.paused {
+					n.PauseApply()
+				}
+			}
 		}
 	}
-
-	// Send nil entry to signal the upper layers we are done doing replay/restore.
-	n.apply.push(nil)
 
 	// Make sure to track ourselves.
 	n.peers[n.id] = &lps{time.Now().UnixNano(), 0, true}
@@ -510,8 +515,9 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 	labels["group"] = n.group
 	s.registerRaftNode(n.group, n)
 
-	// Start the goroutines for the Raft state machine and the file writer.
+	// Start the run goroutine for the Raft state machine.
 	s.startGoRoutine(n.run, labels)
+	// Start the filewriter.
 	s.startGoRoutine(n.fileWriter)
 
 	return n, nil
@@ -887,7 +893,19 @@ func (n *raft) ResumeApply() {
 		n.debug("Resuming %d replays", n.hcommit+1-n.commit)
 		for index := n.commit + 1; index <= n.hcommit; index++ {
 			if err := n.applyCommit(index); err != nil {
+				n.warn("Got error on apply commit during replay: %v", err)
 				break
+			}
+			// We want to unlock here to allow the upper layers to call Applied() without blocking.
+			n.Unlock()
+			// Give hint to let other Go routines run.
+			// Might not be necessary but seems to make it more fine grained interleaving.
+			runtime.Gosched()
+			// Simply re-acquire
+			n.Lock()
+			// Need to check if we got closed or if we were paused again.
+			if n.State() == Closed || n.paused {
+				return
 			}
 		}
 	}
@@ -1034,7 +1052,7 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	sn := fmt.Sprintf(snapFileT, snap.lastTerm, snap.lastIndex)
 	sfile := filepath.Join(snapDir, sn)
 
-	if err := os.WriteFile(sfile, n.encodeSnapshot(snap), 0640); err != nil {
+	if err := os.WriteFile(sfile, n.encodeSnapshot(snap), defaultFilePerms); err != nil {
 		n.Unlock()
 		// We could set write err here, but if this is a temporary situation, too many open files etc.
 		// we want to retry and snapshots are not fatal.
@@ -1659,7 +1677,7 @@ const (
 // Lock should be held (due to use of random generator)
 func (n *raft) newCatchupInbox() string {
 	var b [replySuffixLen]byte
-	rn := n.prand.Int63()
+	rn := fastrand.Uint64()
 	for i, l := 0, rn; i < len(b); i++ {
 		b[i] = digits[l%base]
 		l /= base
@@ -1669,7 +1687,7 @@ func (n *raft) newCatchupInbox() string {
 
 func (n *raft) newInbox() string {
 	var b [replySuffixLen]byte
-	rn := n.prand.Int63()
+	rn := fastrand.Uint64()
 	for i, l := 0, rn; i < len(b); i++ {
 		b[i] = digits[l%base]
 		l /= base
@@ -1765,14 +1783,14 @@ func (n *raft) run() {
 	// at least a route, leaf or gateway connection to be established before
 	// starting the run loop.
 	for gw := s.gateway; ; {
-		s.mu.Lock()
-		ready := s.numRemotes()+len(s.leafs) > 0
-		if !ready && gw.enabled {
+		s.mu.RLock()
+		ready, gwEnabled := s.numRemotes()+len(s.leafs) > 0, gw.enabled
+		s.mu.RUnlock()
+		if !ready && gwEnabled {
 			gw.RLock()
 			ready = len(gw.out)+len(gw.in) > 0
 			gw.RUnlock()
 		}
-		s.mu.Unlock()
 		if !ready {
 			select {
 			case <-s.quitCh:
@@ -1784,6 +1802,13 @@ func (n *raft) run() {
 			break
 		}
 	}
+
+	// We may have paused adding entries to apply queue, resume here.
+	// No-op if not paused.
+	n.ResumeApply()
+
+	// Send nil entry to signal the upper layers we are done doing replay/restore.
+	n.apply.push(nil)
 
 	for s.isRunning() {
 		switch n.State() {
@@ -3323,7 +3348,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 						// Here we can become a leader but need to wait for resume of the apply queue.
 						n.lxfer = true
 					}
-				} else {
+				} else if n.vote != noVote {
 					// Since we are here we are not the chosen one but we should clear any vote preference.
 					n.vote = noVote
 					n.writeTermVote()
@@ -3616,7 +3641,7 @@ func (vr *voteRequest) encode() []byte {
 	return buf[:voteRequestLen]
 }
 
-func (n *raft) decodeVoteRequest(msg []byte, reply string) *voteRequest {
+func decodeVoteRequest(msg []byte, reply string) *voteRequest {
 	if len(msg) != voteRequestLen {
 		return nil
 	}
@@ -3653,7 +3678,7 @@ func writePeerState(sd string, ps *peerState) error {
 	if _, err := os.Stat(psf); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if err := os.WriteFile(psf, encodePeerState(ps), 0640); err != nil {
+	if err := os.WriteFile(psf, encodePeerState(ps), defaultFilePerms); err != nil {
 		return err
 	}
 	return nil
@@ -3753,7 +3778,7 @@ func (n *raft) fileWriter() {
 			copy(buf[0:], n.wtv)
 			n.RUnlock()
 			<-dios
-			err := os.WriteFile(tvf, buf[:], 0640)
+			err := os.WriteFile(tvf, buf[:], defaultFilePerms)
 			dios <- struct{}{}
 			if err != nil && !n.isClosed() {
 				n.setWriteErr(err)
@@ -3765,7 +3790,7 @@ func (n *raft) fileWriter() {
 			buf := copyBytes(n.wps)
 			n.RUnlock()
 			<-dios
-			err := os.WriteFile(psf, buf, 0640)
+			err := os.WriteFile(psf, buf, defaultFilePerms)
 			dios <- struct{}{}
 			if err != nil && !n.isClosed() {
 				n.setWriteErr(err)
@@ -3818,7 +3843,7 @@ func (vr *voteResponse) encode() []byte {
 	return buf[:voteResponseLen]
 }
 
-func (n *raft) decodeVoteResponse(msg []byte) *voteResponse {
+func decodeVoteResponse(msg []byte) *voteResponse {
 	if len(msg) != voteResponseLen {
 		return nil
 	}
@@ -3829,7 +3854,7 @@ func (n *raft) decodeVoteResponse(msg []byte) *voteResponse {
 }
 
 func (n *raft) handleVoteResponse(sub *subscription, c *client, _ *Account, _, reply string, msg []byte) {
-	vr := n.decodeVoteResponse(msg)
+	vr := decodeVoteResponse(msg)
 	n.debug("Received a voteResponse %+v", vr)
 	if vr == nil {
 		n.error("Received malformed vote response for %q", n.group)
@@ -3903,7 +3928,7 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 }
 
 func (n *raft) handleVoteRequest(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
-	vr := n.decodeVoteRequest(msg, reply)
+	vr := decodeVoteRequest(msg, reply)
 	if vr == nil {
 		n.error("Received malformed vote request for %q", n.group)
 		return

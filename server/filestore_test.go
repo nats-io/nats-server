@@ -1439,7 +1439,7 @@ func TestFileStoreMeta(t *testing.T) {
 	oname := "obs22"
 	obs, err := fs.ConsumerStore(oname, &oconfig)
 	if err != nil {
-		t.Fatalf("Unexepected error: %v", err)
+		t.Fatalf("Unexpected error: %v", err)
 	}
 
 	ometafile := filepath.Join(fcfg.StoreDir, consumerDir, oname, JetStreamMetaFile)
@@ -1740,11 +1740,11 @@ func TestFileStoreSnapshot(t *testing.T) {
 		// Create a few consumers.
 		o1, err := fs.ConsumerStore("o22", &ConsumerConfig{})
 		if err != nil {
-			t.Fatalf("Unexepected error: %v", err)
+			t.Fatalf("Unexpected error: %v", err)
 		}
 		o2, err := fs.ConsumerStore("o33", &ConsumerConfig{})
 		if err != nil {
-			t.Fatalf("Unexepected error: %v", err)
+			t.Fatalf("Unexpected error: %v", err)
 		}
 		state := &ConsumerState{}
 		state.Delivered.Consumer = 100
@@ -1753,13 +1753,13 @@ func TestFileStoreSnapshot(t *testing.T) {
 		state.AckFloor.Stream = 22
 
 		if err := o1.Update(state); err != nil {
-			t.Fatalf("Unexepected error updating state: %v", err)
+			t.Fatalf("Unexpected error updating state: %v", err)
 		}
 		state.AckFloor.Consumer = 33
 		state.AckFloor.Stream = 33
 
 		if err := o2.Update(state); err != nil {
-			t.Fatalf("Unexepected error updating state: %v", err)
+			t.Fatalf("Unexpected error updating state: %v", err)
 		}
 
 		snapshot := func() []byte {
@@ -1908,7 +1908,7 @@ func TestFileStoreConsumer(t *testing.T) {
 
 		o, err := fs.ConsumerStore("obs22", &ConsumerConfig{})
 		if err != nil {
-			t.Fatalf("Unexepected error: %v", err)
+			t.Fatalf("Unexpected error: %v", err)
 		}
 		if state, err := o.State(); err != nil || state.Delivered.Consumer != 0 {
 			t.Fatalf("Unexpected state or error: %v", err)
@@ -1919,11 +1919,11 @@ func TestFileStoreConsumer(t *testing.T) {
 		updateAndCheck := func() {
 			t.Helper()
 			if err := o.Update(state); err != nil {
-				t.Fatalf("Unexepected error updating state: %v", err)
+				t.Fatalf("Unexpected error updating state: %v", err)
 			}
 			s2, err := o.State()
 			if err != nil {
-				t.Fatalf("Unexepected error getting state: %v", err)
+				t.Fatalf("Unexpected error getting state: %v", err)
 			}
 			if !reflect.DeepEqual(state, s2) {
 				t.Fatalf("State is not the same: wanted %+v got %+v", state, s2)
@@ -2435,7 +2435,7 @@ func TestFileStoreConsumerRedeliveredLost(t *testing.T) {
 		cfg := &ConsumerConfig{AckPolicy: AckExplicit}
 		o, err := fs.ConsumerStore("o22", cfg)
 		if err != nil {
-			t.Fatalf("Unexepected error: %v", err)
+			t.Fatalf("Unexpected error: %v", err)
 		}
 
 		restartConsumer := func() {
@@ -2444,12 +2444,12 @@ func TestFileStoreConsumerRedeliveredLost(t *testing.T) {
 			time.Sleep(20 * time.Millisecond) // Wait for all things to settle.
 			o, err = fs.ConsumerStore("o22", cfg)
 			if err != nil {
-				t.Fatalf("Unexepected error: %v", err)
+				t.Fatalf("Unexpected error: %v", err)
 			}
 			// Make sure we recovered Redelivered.
 			state, err := o.State()
 			if err != nil {
-				t.Fatalf("Unexepected error: %v", err)
+				t.Fatalf("Unexpected error: %v", err)
 			}
 			if state == nil {
 				t.Fatalf("Did not recover state")
@@ -2500,7 +2500,7 @@ func TestFileStoreConsumerFlusher(t *testing.T) {
 
 		o, err := fs.ConsumerStore("o22", &ConsumerConfig{})
 		if err != nil {
-			t.Fatalf("Unexepected error: %v", err)
+			t.Fatalf("Unexpected error: %v", err)
 		}
 		// Get the underlying impl.
 		oc := o.(*consumerFileStore)
@@ -2532,7 +2532,7 @@ func TestFileStoreConsumerDeliveredUpdates(t *testing.T) {
 		// Simple consumer, no ack policy configured.
 		o, err := fs.ConsumerStore("o22", &ConsumerConfig{})
 		if err != nil {
-			t.Fatalf("Unexepected error: %v", err)
+			t.Fatalf("Unexpected error: %v", err)
 		}
 		defer o.Stop()
 
@@ -2586,7 +2586,7 @@ func TestFileStoreConsumerDeliveredAndAckUpdates(t *testing.T) {
 		// Simple consumer, no ack policy configured.
 		o, err := fs.ConsumerStore("o22", &ConsumerConfig{AckPolicy: AckExplicit})
 		if err != nil {
-			t.Fatalf("Unexepected error: %v", err)
+			t.Fatalf("Unexpected error: %v", err)
 		}
 		defer o.Stop()
 
@@ -2676,7 +2676,7 @@ func TestFileStoreConsumerDeliveredAndAckUpdates(t *testing.T) {
 
 		o, err = fs.ConsumerStore("o22", &ConsumerConfig{AckPolicy: AckExplicit})
 		if err != nil {
-			t.Fatalf("Unexepected error: %v", err)
+			t.Fatalf("Unexpected error: %v", err)
 		}
 		defer o.Stop()
 
@@ -2778,7 +2778,7 @@ func TestFileStoreConsumerPerf(t *testing.T) {
 
 		o, err := fs.ConsumerStore("o22", &ConsumerConfig{AckPolicy: AckExplicit})
 		if err != nil {
-			t.Fatalf("Unexepected error: %v", err)
+			t.Fatalf("Unexpected error: %v", err)
 		}
 		// Get the underlying impl.
 		oc := o.(*consumerFileStore)
@@ -3788,6 +3788,7 @@ func TestFileStoreExpireSubjectMeta(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fcfg.BlockSize = 1024
 		fcfg.CacheExpire = time.Second
+		fcfg.SyncInterval = time.Second
 		cfg := StreamConfig{Name: "zzz", Subjects: []string{"kv.>"}, Storage: FileStorage, MaxMsgsPer: 1}
 		fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
 		require_NoError(t, err)
@@ -3916,6 +3917,7 @@ func TestFileStoreSubjectStateCacheExpiration(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fcfg.BlockSize = 32
 		fcfg.CacheExpire = time.Second
+		fcfg.SyncInterval = time.Second
 		cfg := StreamConfig{Name: "zzz", Subjects: []string{"kv.>"}, Storage: FileStorage, MaxMsgsPer: 2}
 		fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
 		require_NoError(t, err)
@@ -6002,6 +6004,10 @@ func TestFileStoreTrackSubjLenForPSIM(t *testing.T) {
 			}
 		}
 		subj := b.String()
+		// Avoid dupes since will cause check to fail after we delete messages.
+		if _, ok := smap[subj]; ok {
+			continue
+		}
 		smap[subj] = len(subj)
 		fs.StoreMsg(subj, nil, nil)
 	}
@@ -6182,6 +6188,259 @@ func TestFileStoreSubjectCorruption(t *testing.T) {
 		_, err := fmt.Sscanf(subj, "foo.%d", &n)
 		require_NoError(t, err)
 	}
+}
+
+// Since 2.10 we no longer have fss, and the approach for calculating NumPending would branch
+// based on the old fss metadata being present. This meant that calculating NumPending in >= 2.10.x
+// would load all blocks to complete. This test makes sure we do not do that anymore.
+func TestFileStoreNumPendingLastBySubject(t *testing.T) {
+	sd, blkSize := t.TempDir(), uint64(1024)
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: blkSize},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	numSubjects := 20
+	msg := bytes.Repeat([]byte("ABC"), 25)
+	for i := 1; i <= 1000; i++ {
+		subj := fmt.Sprintf("foo.%d.%d", rand.Intn(numSubjects)+1, i)
+		fs.StoreMsg(subj, nil, msg)
+	}
+	// Each block has ~8 msgs.
+	require_True(t, fs.numMsgBlocks() > 100)
+
+	calcCacheLoads := func() (cloads uint64) {
+		fs.mu.RLock()
+		defer fs.mu.RUnlock()
+		for _, mb := range fs.blks {
+			mb.mu.RLock()
+			cloads += mb.cloads
+			mb.mu.RUnlock()
+		}
+		return cloads
+	}
+
+	total, _ := fs.NumPending(0, "foo.*.*", true)
+	require_Equal(t, total, 1000)
+	// Make sure no blocks were loaded to calculate this as a new consumer.
+	require_Equal(t, calcCacheLoads(), 0)
+
+	checkResult := func(sseq, np uint64, filter string) {
+		t.Helper()
+		var checkTotal uint64
+		var smv StoreMsg
+		for seq := sseq; seq <= 1000; seq++ {
+			sm, err := fs.LoadMsg(seq, &smv)
+			require_NoError(t, err)
+			if subjectIsSubsetMatch(sm.subj, filter) {
+				checkTotal++
+			}
+		}
+		require_Equal(t, np, checkTotal)
+	}
+
+	// Make sure partials work properly.
+	for _, filter := range []string{"foo.10.*", "*.22.*", "*.*.222", "foo.5.999", "*.2.*"} {
+		sseq := uint64(rand.Intn(250) + 200) // Between 200-450
+		total, _ = fs.NumPending(sseq, filter, true)
+		checkResult(sseq, total, filter)
+	}
+}
+
+// We had a bug that could cause internal memory corruption of the psim keys in memory
+// which could have been written to disk via index.db.
+func TestFileStoreCorruptPSIMOnDisk(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	fs.StoreMsg("foo.bar", nil, []byte("ABC"))
+	fs.StoreMsg("foo.baz", nil, []byte("XYZ"))
+
+	// Force bad subject.
+	fs.mu.Lock()
+	psi := fs.psim["foo.bar"]
+	bad := make([]byte, 7)
+	crand.Read(bad)
+	fs.psim[string(bad)] = psi
+	delete(fs.psim, "foo.bar")
+	fs.dirty++
+	fs.mu.Unlock()
+
+	// Restart
+	fs.Stop()
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: sd},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	sm, err := fs.LoadLastMsg("foo.bar", nil)
+	require_NoError(t, err)
+	require_True(t, bytes.Equal(sm.msg, []byte("ABC")))
+
+	sm, err = fs.LoadLastMsg("foo.baz", nil)
+	require_NoError(t, err)
+	require_True(t, bytes.Equal(sm.msg, []byte("XYZ")))
+}
+
+func TestFileStorePurgeExBufPool(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 1024},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := bytes.Repeat([]byte("ABC"), 33) // ~100bytes
+	for i := 0; i < 1000; i++ {
+		fs.StoreMsg("foo.foo", nil, msg)
+		fs.StoreMsg("foo.bar", nil, msg)
+	}
+
+	p, err := fs.PurgeEx("foo.bar", 1, 0)
+	require_NoError(t, err)
+	require_Equal(t, p, 1000)
+
+	// Now make sure we do not have all of the msg blocks cache's loaded.
+	var loaded int
+	fs.mu.RLock()
+	for _, mb := range fs.blks {
+		mb.mu.RLock()
+		if mb.cacheAlreadyLoaded() {
+			loaded++
+		}
+		mb.mu.RUnlock()
+	}
+	fs.mu.RUnlock()
+	require_Equal(t, loaded, 1)
+}
+
+func TestFileStoreFSSMeta(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 100, CacheExpire: 200 * time.Millisecond, SyncInterval: time.Second},
+		StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// This yields an internal record length of 50 bytes. So 2 msgs per blk with subject len of 1, e.g. "A" or "Z".
+	msg := bytes.Repeat([]byte("Z"), 19)
+
+	// Should leave us with |A-Z| |Z-Z| |Z-Z| |Z-A|
+	fs.StoreMsg("A", nil, msg)
+	for i := 0; i < 6; i++ {
+		fs.StoreMsg("Z", nil, msg)
+	}
+	fs.StoreMsg("A", nil, msg)
+
+	// Let cache's expire before PurgeEx which will load them back in.
+	time.Sleep(250 * time.Millisecond)
+
+	p, err := fs.PurgeEx("A", 1, 0)
+	require_NoError(t, err)
+	require_Equal(t, p, 2)
+
+	// Make sure cache is not loaded but fss state still is.
+	var stillHasCache, noFSS bool
+	fs.mu.RLock()
+	for _, mb := range fs.blks {
+		mb.mu.RLock()
+		stillHasCache = stillHasCache || mb.cacheAlreadyLoaded()
+		noFSS = noFSS || mb.fssNotLoaded()
+		mb.mu.RUnlock()
+	}
+	fs.mu.RUnlock()
+
+	require_False(t, stillHasCache)
+	require_False(t, noFSS)
+
+	// Let fss expire via syncInterval.
+	time.Sleep(time.Second)
+
+	fs.mu.RLock()
+	for _, mb := range fs.blks {
+		mb.mu.RLock()
+		noFSS = noFSS || mb.fssNotLoaded()
+		mb.mu.RUnlock()
+	}
+	fs.mu.RUnlock()
+
+	require_True(t, noFSS)
+}
+
+func TestFileStoreExpireCacheOnLinearWalk(t *testing.T) {
+	sd := t.TempDir()
+	expire := 250 * time.Millisecond
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, CacheExpire: expire},
+		StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// This yields an internal record length of 50 bytes.
+	subj, msg := "Z", bytes.Repeat([]byte("Z"), 19)
+
+	// Store 10 messages, so 5 blocks.
+	for i := 0; i < 10; i++ {
+		fs.StoreMsg(subj, nil, msg)
+	}
+	// Let them all expire. This way we load as we walk and can test that we expire all blocks without
+	// needing to worry about last write times blocking forced expiration.
+	time.Sleep(expire)
+
+	checkNoCache := func() {
+		t.Helper()
+		fs.mu.RLock()
+		var stillHasCache bool
+		for _, mb := range fs.blks {
+			mb.mu.RLock()
+			stillHasCache = stillHasCache || mb.cacheAlreadyLoaded()
+			mb.mu.RUnlock()
+		}
+		fs.mu.RUnlock()
+		require_False(t, stillHasCache)
+	}
+
+	// Walk forward.
+	var smv StoreMsg
+	for seq := uint64(1); seq <= 10; seq++ {
+		_, err := fs.LoadMsg(seq, &smv)
+		require_NoError(t, err)
+	}
+	checkNoCache()
+
+	// No test walking backwards. We have this scenario when we search for starting points for sourced streams.
+	// Noticed some memory bloat when we have to search many blocks looking for a source that may be closer to the
+	// beginning of the stream (infrequently updated sourced stream).
+	for seq := uint64(10); seq >= 1; seq-- {
+		_, err := fs.LoadMsg(seq, &smv)
+		require_NoError(t, err)
+	}
+	checkNoCache()
+
+	// Now make sure still expires properly on linear scans with deleted msgs.
+	// We want to make sure we track linear updates even if message deleted.
+	_, err = fs.RemoveMsg(2)
+	require_NoError(t, err)
+	_, err = fs.RemoveMsg(9)
+	require_NoError(t, err)
+
+	// Walk forward.
+	for seq := uint64(1); seq <= 10; seq++ {
+		_, err := fs.LoadMsg(seq, &smv)
+		if seq == 2 || seq == 9 {
+			require_Error(t, err, errDeletedMsg)
+		} else {
+			require_NoError(t, err)
+		}
+	}
+	checkNoCache()
+
 }
 
 ///////////////////////////////////////////////////////////////////////////

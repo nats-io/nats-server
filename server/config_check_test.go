@@ -298,7 +298,7 @@ func TestConfigCheck(t *testing.T) {
 		  hello = "world"
 		}
 		`,
-			err:       errors.New(`error parsing tls config, unknown field ["hello"]`),
+			err:       errors.New(`error parsing tls config, unknown field "hello"`),
 			errorLine: 3,
 			errorPos:  5,
 		},
@@ -311,7 +311,7 @@ func TestConfigCheck(t *testing.T) {
 		  }
 		}
 		`,
-			err:       errors.New(`error parsing tls config, unknown field ["foo"]`),
+			err:       errors.New(`error parsing tls config, unknown field "foo"`),
 			errorLine: 4,
 			errorPos:  7,
 		},
@@ -326,7 +326,7 @@ func TestConfigCheck(t *testing.T) {
 		    preferences = []
 		}
 		`,
-			err:       errors.New(`error parsing tls config, unknown field ["preferences"]`),
+			err:       errors.New(`error parsing tls config, unknown field "preferences"`),
 			errorLine: 7,
 			errorPos:  7,
 		},
@@ -342,7 +342,7 @@ func TestConfigCheck(t *testing.T) {
 		    suites = []
 		}
 		`,
-			err:       errors.New(`error parsing tls config, unknown field ["suites"]`),
+			err:       errors.New(`error parsing tls config, unknown field "suites"`),
 			errorLine: 8,
 			errorPos:  7,
 		},
@@ -1831,6 +1831,93 @@ func TestConfigCheck(t *testing.T) {
 			err:       fmt.Errorf("field %q's value %q is invalid", "first", "123"),
 			errorLine: 4,
 			errorPos:  6,
+		},
+		{
+			name: "TLS multiple certs",
+			config: `
+				port: -1
+				tls {
+					certs: [
+					  { cert_file: "configs/certs/server.pem", key_file: "configs/certs/key.pem"},
+					  { cert_file: "configs/certs/cert.new.pem", key_file: "configs/certs/key.new.pem"},
+					]
+				}
+			`,
+			err: nil,
+		},
+		{
+			name: "TLS multiple certs, bad type",
+			config: `
+				port: -1
+				tls {
+					certs: [
+					  { cert_file: "configs/certs/server.pem", key_file: 123 },
+					  { cert_file: "configs/certs/cert.new.pem", key_file: "configs/certs/key.new.pem"},
+					]
+				}
+			`,
+			err:       fmt.Errorf("error parsing certificates config: unsupported type int64"),
+			errorLine: 5,
+			errorPos:  49,
+		},
+		{
+			name: "TLS multiple certs, missing key_file",
+			config: `
+				port: -1
+				tls {
+					certs: [
+					  { cert_file: "configs/certs/server.pem" }
+					  { cert_file: "configs/certs/cert.new.pem", key_file: "configs/certs/key.new.pem"}
+					]
+				}
+			`,
+			err:       fmt.Errorf("error parsing certificates config: both 'cert_file' and 'cert_key' options are required"),
+			errorLine: 5,
+			errorPos:  10,
+		},
+		{
+			name: "TLS multiple certs and single cert options at the same time",
+			config: `
+				port: -1
+				tls {
+					cert_file: "configs/certs/server.pem"
+					key_file: "configs/certs/key.pem"
+					certs: [
+					  { cert_file: "configs/certs/server.pem", key_file: "configs/certs/key.pem"},
+					  { cert_file: "configs/certs/cert.new.pem", key_file: "configs/certs/key.new.pem"},
+					]
+				}
+			`,
+			err:       fmt.Errorf("error parsing tls config, cannot combine 'cert_file' option with 'certs' option"),
+			errorLine: 3,
+			errorPos:  5,
+		},
+		{
+			name: "TLS multiple certs used but not configured, but cert_file configured",
+			config: `
+				port: -1
+				tls {
+					cert_file: "configs/certs/server.pem"
+					key_file: "configs/certs/key.pem"
+					certs: []
+				}
+			`,
+			err: nil,
+		},
+		{
+			name: "TLS multiple certs, missing bad path",
+			config: `
+				port: -1
+				tls {
+					certs: [
+					  { cert_file: "configs/certs/cert.new.pem", key_file: "configs/certs/key.new.pem"}
+					  { cert_file: "configs/certs/server.pem", key_file: "configs/certs/key.new.pom" }
+					]
+				}
+			`,
+			err:       fmt.Errorf("error parsing X509 certificate/key pair 2/2: open configs/certs/key.new.pom: no such file or directory"),
+			errorLine: 3,
+			errorPos:  5,
 		},
 	}
 

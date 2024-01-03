@@ -386,12 +386,13 @@ type consumer struct {
 
 // A single subject filter.
 type subjectFilter struct {
-	subject     string
-	nextSeq     uint64
-	currentSeq  uint64
-	pmsg        *jsPubMsg
-	err         error
-	hasWildcard bool
+	subject          string
+	nextSeq          uint64
+	currentSeq       uint64
+	pmsg             *jsPubMsg
+	err              error
+	hasWildcard      bool
+	tokenizedSubject []string
 }
 
 type subjectFilters []*subjectFilter
@@ -936,8 +937,9 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	subjects := gatherSubjectFilters(o.cfg.FilterSubject, o.cfg.FilterSubjects)
 	for _, filter := range subjects {
 		sub := &subjectFilter{
-			subject:     filter,
-			hasWildcard: subjectHasWildcard(filter),
+			subject:          filter,
+			hasWildcard:      subjectHasWildcard(filter),
+			tokenizedSubject: tokenizeSubjectIntoSlice(nil, filter),
 		}
 		o.subjf = append(o.subjf, sub)
 	}
@@ -1858,8 +1860,9 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 		newSubjf := make(subjectFilters, 0, len(newSubjects))
 		for _, newFilter := range newSubjects {
 			fs := &subjectFilter{
-				subject:     newFilter,
-				hasWildcard: subjectHasWildcard(newFilter),
+				subject:          newFilter,
+				hasWildcard:      subjectHasWildcard(newFilter),
+				tokenizedSubject: tokenizeSubjectIntoSlice(nil, newFilter),
 			}
 			// If given subject was present, we will retain its fields values
 			// so `getNextMgs` can take advantage of already buffered `pmsgs`.
@@ -2460,8 +2463,11 @@ func (o *consumer) setStoreState(state *ConsumerState) error {
 	if state == nil || o.store == nil {
 		return nil
 	}
-	o.applyState(state)
-	return o.store.Update(state)
+	err := o.store.Update(state)
+	if err == nil {
+		o.applyState(state)
+	}
+	return err
 }
 
 // Update our state to the store.
@@ -3344,7 +3350,7 @@ func (o *consumer) notifyDeliveryExceeded(sseq, dc uint64) {
 	o.sendAdvisory(o.deliveryExcEventT, j)
 }
 
-// Check to see if the candidate subject matches a filter if its present.
+// Check if the candidate subject matches a filter if its present.
 // Lock should be held.
 func (o *consumer) isFilteredMatch(subj string) bool {
 	// No filter is automatic match.
@@ -3358,9 +3364,29 @@ func (o *consumer) isFilteredMatch(subj string) bool {
 	}
 	// It's quicker to first check for non-wildcard filters, then
 	// iterate again to check for subset match.
-	// TODO(dlc) at speed might be better to just do a sublist with L2 and/or possibly L1.
+	tsa := [32]string{}
+	tts := tokenizeSubjectIntoSlice(tsa[:0], subj)
 	for _, filter := range o.subjf {
-		if subjectIsSubsetMatch(subj, filter.subject) {
+		if isSubsetMatchTokenized(tts, filter.tokenizedSubject) {
+			return true
+		}
+	}
+	return false
+}
+
+// Check if the candidate filter subject is equal to or a subset match
+// of one of the filter subjects.
+// Lock should be held.
+func (o *consumer) isEqualOrSubsetMatch(subj string) bool {
+	for _, filter := range o.subjf {
+		if !filter.hasWildcard && subj == filter.subject {
+			return true
+		}
+	}
+	tsa := [32]string{}
+	tts := tokenizeSubjectIntoSlice(tsa[:0], subj)
+	for _, filter := range o.subjf {
+		if isSubsetMatchTokenized(filter.tokenizedSubject, tts) {
 			return true
 		}
 	}
@@ -3942,8 +3968,10 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			}
 		} else {
 			if o.subjf != nil {
+				tsa := [32]string{}
+				tts := tokenizeSubjectIntoSlice(tsa[:0], pmsg.subj)
 				for i, filter := range o.subjf {
-					if subjectIsSubsetMatch(pmsg.subj, filter.subject) {
+					if isSubsetMatchTokenized(tts, filter.tokenizedSubject) {
 						o.subjf[i].currentSeq--
 						o.subjf[i].nextSeq--
 						break
@@ -4494,7 +4522,7 @@ func (o *consumer) checkPending() {
 	}
 
 	// Since we can update timestamps, we have to review all pending.
-	// We will now bail if we see an ack pending in bound to us via o.awl.
+	// We will now bail if we see an ack pending inbound to us via o.awl.
 	var expired []uint64
 	check := len(o.pending) > 1024
 	for seq, p := range o.pending {
@@ -5312,11 +5340,16 @@ func (o *consumer) checkStateForInterestStream() {
 		return
 	}
 
+	asflr := state.AckFloor.Stream
+	// Protect ourselves against rolling backwards.
+	if asflr&(1<<63) != 0 {
+		return
+	}
+
 	// We should make sure to update the acks.
 	var ss StreamState
 	mset.store.FastState(&ss)
 
-	asflr := state.AckFloor.Stream
 	for seq := ss.FirstSeq; seq <= asflr; seq++ {
 		mset.ackMsg(o, seq)
 	}

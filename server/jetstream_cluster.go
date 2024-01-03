@@ -338,15 +338,16 @@ func (s *Server) JetStreamSnapshotStream(account, stream string) error {
 		return err
 	}
 
-	mset.mu.RLock()
-	if !mset.node.Leader() {
-		mset.mu.RUnlock()
-		return NewJSNotEnabledForAccountError()
+	// Hold lock when installing snapshot.
+	mset.mu.Lock()
+	if mset.node == nil {
+		mset.mu.Unlock()
+		return nil
 	}
-	n := mset.node
-	mset.mu.RUnlock()
+	err = mset.node.InstallSnapshot(mset.stateSnapshotLocked())
+	mset.mu.Unlock()
 
-	return n.InstallSnapshot(mset.stateSnapshot())
+	return err
 }
 
 func (s *Server) JetStreamClusterPeers() []string {
@@ -2671,7 +2672,7 @@ func (mset *stream) isMigrating() bool {
 func (mset *stream) resetClusteredState(err error) bool {
 	mset.mu.RLock()
 	s, js, jsa, sa, acc, node := mset.srv, mset.js, mset.jsa, mset.sa, mset.acc, mset.node
-	stype, isLeader, tierName := mset.cfg.Storage, mset.isLeader(), mset.tier
+	stype, isLeader, tierName, replicas := mset.cfg.Storage, mset.isLeader(), mset.tier, mset.cfg.Replicas
 	mset.mu.RUnlock()
 
 	// Stepdown regardless if we are the leader here.
@@ -2687,12 +2688,12 @@ func (mset *stream) resetClusteredState(err error) bool {
 
 	// Server
 	if js.limitsExceeded(stype) {
-		s.Debugf("Will not reset stream, server resources exceeded")
+		s.Warnf("Will not reset stream, server resources exceeded")
 		return false
 	}
 
 	// Account
-	if exceeded, _ := jsa.limitsExceeded(stype, tierName); exceeded {
+	if exceeded, _ := jsa.limitsExceeded(stype, tierName, replicas); exceeded {
 		s.Warnf("stream '%s > %s' errored, account resources exceeded", acc, mset.name())
 		return false
 	}
@@ -3603,20 +3604,23 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 				}
 			}
 			mset.setStreamAssignment(sa)
-			if err = mset.updateWithAdvisory(sa.Config, false); err != nil {
-				s.Warnf("JetStream cluster error updating stream %q for account %q: %v", sa.Config.Name, acc.Name, err)
-				if osa != nil {
-					// Process the raft group and make sure it's running if needed.
-					js.createRaftGroup(acc.GetName(), osa.Group, storage, pprofLabels{
-						"type":    "stream",
-						"account": mset.accName(),
-						"stream":  mset.name(),
-					})
-					mset.setStreamAssignment(osa)
-				}
-				if rg.node != nil {
-					rg.node.Delete()
-					rg.node = nil
+			// Check if our config has really been updated.
+			if !reflect.DeepEqual(mset.config(), sa.Config) {
+				if err = mset.updateWithAdvisory(sa.Config, false); err != nil {
+					s.Warnf("JetStream cluster error updating stream %q for account %q: %v", sa.Config.Name, acc.Name, err)
+					if osa != nil {
+						// Process the raft group and make sure it's running if needed.
+						js.createRaftGroup(acc.GetName(), osa.Group, storage, pprofLabels{
+							"type":    "stream",
+							"account": mset.accName(),
+							"stream":  mset.name(),
+						})
+						mset.setStreamAssignment(osa)
+					}
+					if rg.node != nil {
+						rg.node.Delete()
+						rg.node = nil
+					}
 				}
 			}
 		} else if err == NewJSStreamNotFoundError() {
@@ -5690,25 +5694,18 @@ func groupName(prefix string, peers []string, storage StorageType) string {
 // returns stream count for this tier as well as applicable reservation size (not including reservations for cfg)
 // jetStream read lock should be held
 func tieredStreamAndReservationCount(asa map[string]*streamAssignment, tier string, cfg *StreamConfig) (int, int64) {
-	numStreams := len(asa)
-	reservation := int64(0)
-	if tier == _EMPTY_ {
-		for _, sa := range asa {
-			if sa.Config.MaxBytes > 0 && sa.Config.Name != cfg.Name {
-				if sa.Config.Storage == cfg.Storage {
-					reservation += (int64(sa.Config.Replicas) * sa.Config.MaxBytes)
-				}
-			}
-		}
-	} else {
-		numStreams = 0
-		for _, sa := range asa {
-			if isSameTier(sa.Config, cfg) {
-				numStreams++
-				if sa.Config.MaxBytes > 0 {
-					if sa.Config.Storage == cfg.Storage && sa.Config.Name != cfg.Name {
-						reservation += (int64(sa.Config.Replicas) * sa.Config.MaxBytes)
-					}
+	var numStreams int
+	var reservation int64
+	for _, sa := range asa {
+		if tier == _EMPTY_ || isSameTier(sa.Config, cfg) {
+			numStreams++
+			if sa.Config.MaxBytes > 0 && sa.Config.Storage == cfg.Storage && sa.Config.Name != cfg.Name {
+				// If tier is empty, all storage is flat and we should adjust for replicas.
+				// Otherwise if tiered, storage replication already taken into consideration.
+				if tier == _EMPTY_ && cfg.Replicas > 1 {
+					reservation += sa.Config.MaxBytes * int64(cfg.Replicas)
+				} else {
+					reservation += sa.Config.MaxBytes
 				}
 			}
 		}
@@ -5812,51 +5809,24 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	js.mu.Lock()
 	defer js.mu.Unlock()
 
-	// Capture if we have existing assignment first.
-	osa := js.streamAssignment(acc.Name, cfg.Name)
-	var areEqual bool
-	if osa != nil {
-		areEqual = reflect.DeepEqual(osa.Config, cfg)
-	}
+	var self *streamAssignment
+	var rg *raftGroup
 
-	// If this stream already exists, turn this into a stream info call.
-	if osa != nil {
-		// If they are the same then we will forward on as a stream info request.
-		// This now matches single server behavior.
-		if areEqual {
-			// This works when we have a stream leader. If we have no leader let the dupe
-			// go through as normal. We will handle properly on the other end.
-			// We must check interest at the $SYS account layer, not user account since import
-			// will always show interest.
-			sisubj := fmt.Sprintf(clusterStreamInfoT, acc.Name, cfg.Name)
-			if s.SystemAccount().Interest(sisubj) > 0 {
-				isubj := fmt.Sprintf(JSApiStreamInfoT, cfg.Name)
-				// We want to make sure we send along the client info.
-				cij, _ := json.Marshal(ci)
-				hdr := map[string]string{
-					ClientInfoHdr:  string(cij),
-					JSResponseType: jsCreateResponse,
-				}
-				// Send this as system account, but include client info header.
-				s.sendInternalAccountMsgWithReply(nil, isubj, reply, hdr, nil, true)
-				return
-			}
-		} else {
+	// Capture if we have existing assignment first.
+	if osa := js.streamAssignment(acc.Name, cfg.Name); osa != nil {
+		if !reflect.DeepEqual(osa.Config, cfg) {
 			resp.Error = NewJSStreamNameExistError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 			return
 		}
+		// This is an equal assignment.
+		self, rg = osa, osa.Group
 	}
 
 	if cfg.Sealed {
 		resp.Error = NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration for create can not be sealed"))
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
-	}
-
-	var self *streamAssignment
-	if osa != nil && areEqual {
-		self = osa
 	}
 
 	// Check for subject collisions here.
@@ -5875,10 +5845,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	}
 
 	// Raft group selection and placement.
-	var rg *raftGroup
-	if osa != nil && areEqual {
-		rg = osa.Group
-	} else {
+	if rg == nil {
 		// Check inflight before proposing in case we have an existing inflight proposal.
 		if cc.inflight == nil {
 			cc.inflight = make(map[string]map[string]*raftGroup)
@@ -5892,7 +5859,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 			rg = existing
 		}
 	}
-	// Create a new one here.
+	// Create a new one here if needed.
 	if rg == nil {
 		nrg, err := js.createGroupForStream(ci, cfg)
 		if err != nil {
@@ -7433,7 +7400,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	mset.mu.RLock()
 	canRespond := !mset.cfg.NoAck && len(reply) > 0
 	name, stype, store := mset.cfg.Name, mset.cfg.Storage, mset.store
-	s, js, jsa, st, rf, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.tier, mset.outq, mset.node
+	s, js, jsa, st, r, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, int64(mset.cfg.Replicas), mset.tier, mset.outq, mset.node
 	maxMsgSize, lseq, clfs := int(mset.cfg.MaxMsgSize), mset.lseq, mset.clfs
 	isLeader, isSealed := mset.isLeader(), mset.cfg.Sealed
 	mset.mu.RUnlock()
@@ -7491,16 +7458,20 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		t = &jsaStorage{}
 		jsa.usage[tierName] = t
 	}
-	if st == MemoryStorage {
-		total := t.total.store + int64(memStoreMsgSize(subject, hdr, msg)*uint64(rf))
-		if jsaLimits.MaxMemory > 0 && total > jsaLimits.MaxMemory {
-			exceeded = true
-		}
-	} else {
-		total := t.total.store + int64(fileStoreMsgSize(subject, hdr, msg)*uint64(rf))
-		if jsaLimits.MaxStore > 0 && total > jsaLimits.MaxStore {
-			exceeded = true
-		}
+	// Make sure replicas is correct.
+	if r < 1 {
+		r = 1
+	}
+	// This is for limits. If we have no tier, consider all to be flat, vs tiers like R3 where we want to scale limit by replication.
+	lr := r
+	if tierName == _EMPTY_ {
+		lr = 1
+	}
+	// Tiers are flat, meaning the limit for R3 will be 100GB, not 300GB, so compare to total but adjust limits.
+	if st == MemoryStorage && jsaLimits.MaxMemory > 0 {
+		exceeded = t.total.mem+(int64(memStoreMsgSize(subject, hdr, msg))*r) > (jsaLimits.MaxMemory * lr)
+	} else if jsaLimits.MaxStore > 0 {
+		exceeded = t.total.store+(int64(fileStoreMsgSize(subject, hdr, msg))*r) > (jsaLimits.MaxStore * lr)
 	}
 	jsa.usageMu.Unlock()
 
@@ -7951,8 +7922,7 @@ RETRY:
 	// Send our catchup request here.
 	reply := syncReplySubject()
 	sub, err = s.sysSubscribe(reply, func(_ *subscription, _ *client, _ *Account, _, reply string, msg []byte) {
-		// Make copies
-		// TODO(dlc) - Since we are using a buffer from the inbound client/route.
+		// Make copy since we are using a buffer from the inbound client/route.
 		msgsQ.push(&im{copyBytes(msg), reply})
 	})
 	if err != nil {
@@ -8076,6 +8046,7 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 	st := mset.cfg.Storage
 	ddloaded := mset.ddloaded
 	tierName := mset.tier
+	replicas := mset.cfg.Replicas
 
 	if mset.hasAllPreAcks(seq, subj) {
 		mset.clearAllPreAcks(seq)
@@ -8086,7 +8057,7 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 
 	if mset.js.limitsExceeded(st) {
 		return 0, NewJSInsufficientResourcesError()
-	} else if exceeded, apiErr := mset.jsa.limitsExceeded(st, tierName); apiErr != nil {
+	} else if exceeded, apiErr := mset.jsa.limitsExceeded(st, tierName, replicas); apiErr != nil {
 		return 0, apiErr
 	} else if exceeded {
 		return 0, NewJSInsufficientResourcesError()
