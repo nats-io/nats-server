@@ -1554,9 +1554,6 @@ func (jsa *mqttJSA) newRequestEx(kind, subject, cidHash string, hdr int, msg []b
 // Note that each response may represent an error and should be inspected as
 // such by the caller.
 func (jsa *mqttJSA) newRequestExMulti(kind, subject, cidHash string, hdrs []int, msgs [][]byte, timeout time.Duration) ([]*mqttJSAResponse, error) {
-	if len(msgs) == 0 {
-		return nil, nil
-	}
 	if len(hdrs) != len(msgs) {
 		return nil, fmt.Errorf("unreachable: invalid number of messages (%d) or header offsets (%d)", len(msgs), len(hdrs))
 	}
