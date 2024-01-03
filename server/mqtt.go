@@ -242,7 +242,7 @@ type mqttAccountSessionManager struct {
 	flapTimer  *time.Timer                    // Timer to perform some cleanup of the flappers map
 	sl         *Sublist                       // sublist allowing to find retained messages for given subscription
 	retmsgs    map[string]*mqttRetainedMsgRef // retained messages
-	rmsCache   sync.Map                       // map[string(subject)]mqttRetainedMsg
+	rmsCache   sync.Map                       // map[subject]*mqttRetainedMsg
 	jsa        mqttJSA
 	rrmLastSeq uint64        // Restore retained messages expected last sequence
 	rrmDoneCh  chan struct{} // To notify the caller that all retained messages have been loaded
@@ -2244,7 +2244,7 @@ func (as *mqttAccountSessionManager) handleRetainedMsg(key string, rf *mqttRetai
 			// Update the in-memory retained message cache but only for messages
 			// that are already in the cache, i.e. have been (recently) used.
 			if rm != nil {
-				as.setCachedRetainedMsg(key, *rm, true)
+				as.setCachedRetainedMsg(key, rm, true)
 			}
 			return
 		}
@@ -2772,7 +2772,7 @@ func (as *mqttAccountSessionManager) loadRetainedMessages(subjects map[string]st
 		}
 		// Add the loaded retained message to the cache, and to the results map.
 		key := ss[i][len(mqttRetainedMsgsStreamSubject):]
-		as.setCachedRetainedMsg(key, rm, false)
+		as.setCachedRetainedMsg(key, &rm, false)
 		rms[key] = &rm
 	}
 	return rms
@@ -2964,15 +2964,15 @@ func (as *mqttAccountSessionManager) getCachedRetainedMsg(subject string) *mqttR
 	if !ok {
 		return nil
 	}
-	rm := v.(mqttRetainedMsg)
+	rm := v.(*mqttRetainedMsg)
 	if rm.expiresFromCache.Before(time.Now()) {
 		as.rmsCache.Delete(subject)
 		return nil
 	}
-	return &rm
+	return rm
 }
 
-func (as *mqttAccountSessionManager) setCachedRetainedMsg(subject string, rm mqttRetainedMsg, onlyReplace bool) {
+func (as *mqttAccountSessionManager) setCachedRetainedMsg(subject string, rm *mqttRetainedMsg, onlyReplace bool) {
 	rm.expiresFromCache = time.Now().Add(mqttRetainedCacheTTL)
 	if onlyReplace {
 		if _, ok := as.rmsCache.Load(subject); ok {
