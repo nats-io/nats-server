@@ -2753,12 +2753,17 @@ func (as *mqttAccountSessionManager) loadRetainedMessages(subjects map[string]st
 		return rms
 	}
 
-	results, _ := as.jsa.loadLastMsgForMulti(mqttRetainedMsgsStreamName, ss)
+	results, err := as.jsa.loadLastMsgForMulti(mqttRetainedMsgsStreamName, ss)
+	// If an error occurred, warn, but then proceed with what we got.
+	if err != nil {
+		w.Warnf("error loading retained messages: %v", err)
+	}
 	for i, result := range results {
 		if result == nil {
 			continue // skip requests that timed out
 		}
 		if result.ToError() != nil {
+			w.Warnf("failed to load retained message for subject %q: %v", ss[i], err)
 			continue
 		}
 		var rm mqttRetainedMsg
