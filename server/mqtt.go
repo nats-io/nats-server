@@ -2501,11 +2501,7 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 					return err
 				}
 
-				subs := []*subscription{sub}
-				if len(sub.shadow) > 0 {
-					subs = append(subs, sub.shadow...)
-				}
-				for _, sub := range subs {
+				for _, sub := range append([]*subscription{sub}, sub.shadow...) {
 					as.addRetainedSubjectsForSubject(rmSubjects, bytesToString(sub.subject))
 					for _, ss := range sub.shadow {
 						as.addRetainedSubjectsForSubject(rmSubjects, bytesToString(ss.subject))
