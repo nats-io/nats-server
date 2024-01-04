@@ -3148,17 +3148,17 @@ func (t HealthZErrorType) MarshalJSON() ([]byte, error) {
 
 func (t *HealthZErrorType) UnmarshalJSON(data []byte) error {
 	switch string(data) {
-	case jsonString("CONNECTION"):
+	case `"CONNECTION"`:
 		*t = HealthzErrorConn
-	case jsonString("BAD_REQUEST"):
+	case `"BAD_REQUEST"`:
 		*t = HealthzErrorBadRequest
-	case jsonString("JETSTREAM"):
+	case `"JETSTREAM"`:
 		*t = HealthzErrorJetStream
-	case jsonString("ACCOUNT"):
+	case `"ACCOUNT"`:
 		*t = HealthzErrorAccount
-	case jsonString("STREAM"):
+	case `"STREAM"`:
 		*t = HealthzErrorStream
-	case jsonString("CONSUMER"):
+	case `"CONSUMER"`:
 		*t = HealthzErrorConsumer
 	default:
 		return fmt.Errorf("unknown healthz error type %q", data)

@@ -128,30 +128,31 @@ const (
 )
 
 const (
-	actionUpdateString         = "update"
-	actionCreateString         = "create"
-	actionCreateOrUpdateString = ""
+	actionUpdateJSONString         = `"update"`
+	actionCreateJSONString         = `"create"`
+	actionCreateOrUpdateJSONString = `""`
 )
 
 func (a ConsumerAction) String() string {
 	switch a {
 	case ActionCreateOrUpdate:
-		return actionCreateOrUpdateString
+		return actionCreateOrUpdateJSONString
 	case ActionCreate:
-		return actionCreateString
+		return actionCreateJSONString
 	case ActionUpdate:
-		return actionUpdateString
+		return actionUpdateJSONString
 	}
-	return actionCreateOrUpdateString
+	return actionCreateOrUpdateJSONString
 }
+
 func (a ConsumerAction) MarshalJSON() ([]byte, error) {
 	switch a {
 	case ActionCreate:
-		return json.Marshal(actionCreateString)
+		return []byte(actionCreateJSONString), nil
 	case ActionUpdate:
-		return json.Marshal(actionUpdateString)
+		return []byte(actionUpdateJSONString), nil
 	case ActionCreateOrUpdate:
-		return json.Marshal(actionCreateOrUpdateString)
+		return []byte(actionCreateOrUpdateJSONString), nil
 	default:
 		return nil, fmt.Errorf("can not marshal %v", a)
 	}
@@ -159,11 +160,11 @@ func (a ConsumerAction) MarshalJSON() ([]byte, error) {
 
 func (a *ConsumerAction) UnmarshalJSON(data []byte) error {
 	switch string(data) {
-	case jsonString("create"):
+	case actionCreateJSONString:
 		*a = ActionCreate
-	case jsonString("update"):
+	case actionUpdateJSONString:
 		*a = ActionUpdate
-	case jsonString(""):
+	case actionCreateOrUpdateJSONString:
 		*a = ActionCreateOrUpdate
 	default:
 		return fmt.Errorf("unknown consumer action: %v", string(data))
@@ -249,9 +250,9 @@ const (
 func (r ReplayPolicy) String() string {
 	switch r {
 	case ReplayInstant:
-		return "instant"
+		return replayInstantPolicyJSONString
 	default:
-		return "original"
+		return replayOriginalPolicyJSONString
 	}
 }
 
