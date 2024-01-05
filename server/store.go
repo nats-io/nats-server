@@ -447,6 +447,12 @@ const (
 	workQueuePolicyJSONString = `"workqueue"`
 )
 
+var (
+	limitsPolicyJSONBytes    = []byte(limitsPolicyJSONString)
+	interestPolicyJSONBytes  = []byte(interestPolicyJSONString)
+	workQueuePolicyJSONBytes = []byte(workQueuePolicyJSONString)
+)
+
 func (rp RetentionPolicy) String() string {
 	switch rp {
 	case LimitsPolicy:
@@ -463,11 +469,11 @@ func (rp RetentionPolicy) String() string {
 func (rp RetentionPolicy) MarshalJSON() ([]byte, error) {
 	switch rp {
 	case LimitsPolicy:
-		return []byte(limitsPolicyJSONString), nil
+		return limitsPolicyJSONBytes, nil
 	case InterestPolicy:
-		return []byte(interestPolicyJSONString), nil
+		return interestPolicyJSONBytes, nil
 	case WorkQueuePolicy:
-		return []byte(workQueuePolicyJSONString), nil
+		return workQueuePolicyJSONBytes, nil
 	default:
 		return nil, fmt.Errorf("can not marshal %v", rp)
 	}
@@ -527,6 +533,12 @@ const (
 	anyStorageJSONString    = `"any"`
 )
 
+var (
+	memoryStorageJSONBytes = []byte(memoryStorageJSONString)
+	fileStorageJSONBytes   = []byte(fileStorageJSONString)
+	anyStorageJSONBytes    = []byte(anyStorageJSONString)
+)
+
 func (st StorageType) String() string {
 	switch st {
 	case MemoryStorage:
@@ -543,11 +555,11 @@ func (st StorageType) String() string {
 func (st StorageType) MarshalJSON() ([]byte, error) {
 	switch st {
 	case MemoryStorage:
-		return []byte(memoryStorageJSONString), nil
+		return memoryStorageJSONBytes, nil
 	case FileStorage:
-		return []byte(fileStorageJSONString), nil
+		return fileStorageJSONBytes, nil
 	case AnyStorage:
-		return []byte(anyStorageJSONString), nil
+		return anyStorageJSONBytes, nil
 	default:
 		return nil, fmt.Errorf("can not marshal %v", st)
 	}
@@ -573,14 +585,20 @@ const (
 	ackExplicitPolicyJSONString = `"explicit"`
 )
 
+var (
+	ackNonePolicyJSONBytes     = []byte(ackNonePolicyJSONString)
+	ackAllPolicyJSONBytes      = []byte(ackAllPolicyJSONString)
+	ackExplicitPolicyJSONBytes = []byte(ackExplicitPolicyJSONString)
+)
+
 func (ap AckPolicy) MarshalJSON() ([]byte, error) {
 	switch ap {
 	case AckNone:
-		return []byte(ackNonePolicyJSONString), nil
+		return ackNonePolicyJSONBytes, nil
 	case AckAll:
-		return []byte(ackAllPolicyJSONString), nil
+		return ackAllPolicyJSONBytes, nil
 	case AckExplicit:
-		return []byte(ackExplicitPolicyJSONString), nil
+		return ackExplicitPolicyJSONBytes, nil
 	default:
 		return nil, fmt.Errorf("can not marshal %v", ap)
 	}
@@ -605,12 +623,17 @@ const (
 	replayOriginalPolicyJSONString = `"original"`
 )
 
+var (
+	replayInstantPolicyJSONBytes  = []byte(replayInstantPolicyJSONString)
+	replayOriginalPolicyJSONBytes = []byte(replayOriginalPolicyJSONString)
+)
+
 func (rp ReplayPolicy) MarshalJSON() ([]byte, error) {
 	switch rp {
 	case ReplayInstant:
-		return []byte(replayInstantPolicyJSONString), nil
+		return replayInstantPolicyJSONBytes, nil
 	case ReplayOriginal:
-		return []byte(replayOriginalPolicyJSONString), nil
+		return replayOriginalPolicyJSONBytes, nil
 	default:
 		return nil, fmt.Errorf("can not marshal %v", rp)
 	}
@@ -638,6 +661,16 @@ const (
 	deliverUndefinedJSONString       = `"undefined"`
 )
 
+var (
+	deliverAllPolicyJSONBytes       = []byte(deliverAllPolicyJSONString)
+	deliverLastPolicyJSONBytes      = []byte(deliverLastPolicyJSONString)
+	deliverNewPolicyJSONBytes       = []byte(deliverNewPolicyJSONString)
+	deliverByStartSequenceJSONBytes = []byte(deliverByStartSequenceJSONString)
+	deliverByStartTimeJSONBytes     = []byte(deliverByStartTimeJSONString)
+	deliverLastPerPolicyJSONBytes   = []byte(deliverLastPerPolicyJSONString)
+	deliverUndefinedJSONBytes       = []byte(deliverUndefinedJSONString)
+)
+
 func (p *DeliverPolicy) UnmarshalJSON(data []byte) error {
 	switch string(data) {
 	case deliverAllPolicyJSONString, deliverUndefinedJSONString:
@@ -662,19 +695,19 @@ func (p *DeliverPolicy) UnmarshalJSON(data []byte) error {
 func (p DeliverPolicy) MarshalJSON() ([]byte, error) {
 	switch p {
 	case DeliverAll:
-		return []byte(deliverAllPolicyJSONString), nil
+		return deliverAllPolicyJSONBytes, nil
 	case DeliverLast:
-		return []byte(deliverLastPolicyJSONString), nil
+		return deliverLastPolicyJSONBytes, nil
 	case DeliverLastPerSubject:
-		return []byte(deliverLastPerPolicyJSONString), nil
+		return deliverLastPerPolicyJSONBytes, nil
 	case DeliverNew:
-		return []byte(deliverNewPolicyJSONString), nil
+		return deliverNewPolicyJSONBytes, nil
 	case DeliverByStartSequence:
-		return []byte(deliverByStartSequenceJSONString), nil
+		return deliverByStartSequenceJSONBytes, nil
 	case DeliverByStartTime:
-		return []byte(deliverByStartTimeJSONString), nil
+		return deliverByStartTimeJSONBytes, nil
 	default:
-		return []byte(deliverUndefinedJSONString), nil
+		return deliverUndefinedJSONBytes, nil
 	}
 }
 
