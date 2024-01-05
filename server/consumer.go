@@ -133,6 +133,12 @@ const (
 	actionCreateOrUpdateJSONString = `""`
 )
 
+var (
+	actionUpdateJSONBytes         = []byte(actionUpdateJSONString)
+	actionCreateJSONBytes         = []byte(actionCreateJSONString)
+	actionCreateOrUpdateJSONBytes = []byte(actionCreateOrUpdateJSONString)
+)
+
 func (a ConsumerAction) String() string {
 	switch a {
 	case ActionCreateOrUpdate:
@@ -148,11 +154,11 @@ func (a ConsumerAction) String() string {
 func (a ConsumerAction) MarshalJSON() ([]byte, error) {
 	switch a {
 	case ActionCreate:
-		return []byte(actionCreateJSONString), nil
+		return actionCreateJSONBytes, nil
 	case ActionUpdate:
-		return []byte(actionUpdateJSONString), nil
+		return actionUpdateJSONBytes, nil
 	case ActionCreateOrUpdate:
-		return []byte(actionCreateOrUpdateJSONString), nil
+		return actionCreateOrUpdateJSONBytes, nil
 	default:
 		return nil, fmt.Errorf("can not marshal %v", a)
 	}
