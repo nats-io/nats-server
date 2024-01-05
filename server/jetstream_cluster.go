@@ -1455,18 +1455,22 @@ func (js *jetStream) clusterStreamConfig(accName, streamName string) (StreamConf
 }
 
 func (js *jetStream) metaSnapshot() []byte {
-	var streams []writeableStreamAssignment
-
 	js.mu.RLock()
 	cc := js.cluster
+	nsa := 0
+	for _, asa := range cc.streams {
+		nsa += len(asa)
+	}
+	streams := make([]writeableStreamAssignment, 0, nsa)
 	for _, asa := range cc.streams {
 		for _, sa := range asa {
 			wsa := writeableStreamAssignment{
-				Client:  sa.Client,
-				Created: sa.Created,
-				Config:  sa.Config,
-				Group:   sa.Group,
-				Sync:    sa.Sync,
+				Client:    sa.Client,
+				Created:   sa.Created,
+				Config:    sa.Config,
+				Group:     sa.Group,
+				Sync:      sa.Sync,
+				Consumers: make([]*consumerAssignment, 0, len(sa.consumers)),
 			}
 			for _, ca := range sa.consumers {
 				wsa.Consumers = append(wsa.Consumers, ca)

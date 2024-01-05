@@ -15,7 +15,6 @@ package server
 
 import (
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -442,14 +441,16 @@ type TemplateStore interface {
 	Delete(*streamTemplate) error
 }
 
-func jsonString(s string) string {
-	return "\"" + s + "\""
-}
-
 const (
-	limitsPolicyString    = "limits"
-	interestPolicyString  = "interest"
-	workQueuePolicyString = "workqueue"
+	limitsPolicyJSONString    = `"limits"`
+	interestPolicyJSONString  = `"interest"`
+	workQueuePolicyJSONString = `"workqueue"`
+)
+
+var (
+	limitsPolicyJSONBytes    = []byte(limitsPolicyJSONString)
+	interestPolicyJSONBytes  = []byte(interestPolicyJSONString)
+	workQueuePolicyJSONBytes = []byte(workQueuePolicyJSONString)
 )
 
 func (rp RetentionPolicy) String() string {
@@ -468,11 +469,11 @@ func (rp RetentionPolicy) String() string {
 func (rp RetentionPolicy) MarshalJSON() ([]byte, error) {
 	switch rp {
 	case LimitsPolicy:
-		return json.Marshal(limitsPolicyString)
+		return limitsPolicyJSONBytes, nil
 	case InterestPolicy:
-		return json.Marshal(interestPolicyString)
+		return interestPolicyJSONBytes, nil
 	case WorkQueuePolicy:
-		return json.Marshal(workQueuePolicyString)
+		return workQueuePolicyJSONBytes, nil
 	default:
 		return nil, fmt.Errorf("can not marshal %v", rp)
 	}
@@ -480,11 +481,11 @@ func (rp RetentionPolicy) MarshalJSON() ([]byte, error) {
 
 func (rp *RetentionPolicy) UnmarshalJSON(data []byte) error {
 	switch string(data) {
-	case jsonString(limitsPolicyString):
+	case limitsPolicyJSONString:
 		*rp = LimitsPolicy
-	case jsonString(interestPolicyString):
+	case interestPolicyJSONString:
 		*rp = InterestPolicy
-	case jsonString(workQueuePolicyString):
+	case workQueuePolicyJSONString:
 		*rp = WorkQueuePolicy
 	default:
 		return fmt.Errorf("can not unmarshal %q", data)
@@ -506,9 +507,9 @@ func (dp DiscardPolicy) String() string {
 func (dp DiscardPolicy) MarshalJSON() ([]byte, error) {
 	switch dp {
 	case DiscardOld:
-		return json.Marshal("old")
+		return []byte(`"old"`), nil
 	case DiscardNew:
-		return json.Marshal("new")
+		return []byte(`"new"`), nil
 	default:
 		return nil, fmt.Errorf("can not marshal %v", dp)
 	}
@@ -516,9 +517,9 @@ func (dp DiscardPolicy) MarshalJSON() ([]byte, error) {
 
 func (dp *DiscardPolicy) UnmarshalJSON(data []byte) error {
 	switch strings.ToLower(string(data)) {
-	case jsonString("old"):
+	case `"old"`:
 		*dp = DiscardOld
-	case jsonString("new"):
+	case `"new"`:
 		*dp = DiscardNew
 	default:
 		return fmt.Errorf("can not unmarshal %q", data)
@@ -527,9 +528,15 @@ func (dp *DiscardPolicy) UnmarshalJSON(data []byte) error {
 }
 
 const (
-	memoryStorageString = "memory"
-	fileStorageString   = "file"
-	anyStorageString    = "any"
+	memoryStorageJSONString = `"memory"`
+	fileStorageJSONString   = `"file"`
+	anyStorageJSONString    = `"any"`
+)
+
+var (
+	memoryStorageJSONBytes = []byte(memoryStorageJSONString)
+	fileStorageJSONBytes   = []byte(fileStorageJSONString)
+	anyStorageJSONBytes    = []byte(anyStorageJSONString)
 )
 
 func (st StorageType) String() string {
@@ -548,11 +555,11 @@ func (st StorageType) String() string {
 func (st StorageType) MarshalJSON() ([]byte, error) {
 	switch st {
 	case MemoryStorage:
-		return json.Marshal(memoryStorageString)
+		return memoryStorageJSONBytes, nil
 	case FileStorage:
-		return json.Marshal(fileStorageString)
+		return fileStorageJSONBytes, nil
 	case AnyStorage:
-		return json.Marshal(anyStorageString)
+		return anyStorageJSONBytes, nil
 	default:
 		return nil, fmt.Errorf("can not marshal %v", st)
 	}
@@ -560,11 +567,11 @@ func (st StorageType) MarshalJSON() ([]byte, error) {
 
 func (st *StorageType) UnmarshalJSON(data []byte) error {
 	switch string(data) {
-	case jsonString(memoryStorageString):
+	case memoryStorageJSONString:
 		*st = MemoryStorage
-	case jsonString(fileStorageString):
+	case fileStorageJSONString:
 		*st = FileStorage
-	case jsonString(anyStorageString):
+	case anyStorageJSONString:
 		*st = AnyStorage
 	default:
 		return fmt.Errorf("can not unmarshal %q", data)
@@ -573,19 +580,25 @@ func (st *StorageType) UnmarshalJSON(data []byte) error {
 }
 
 const (
-	ackNonePolicyString     = "none"
-	ackAllPolicyString      = "all"
-	ackExplicitPolicyString = "explicit"
+	ackNonePolicyJSONString     = `"none"`
+	ackAllPolicyJSONString      = `"all"`
+	ackExplicitPolicyJSONString = `"explicit"`
+)
+
+var (
+	ackNonePolicyJSONBytes     = []byte(ackNonePolicyJSONString)
+	ackAllPolicyJSONBytes      = []byte(ackAllPolicyJSONString)
+	ackExplicitPolicyJSONBytes = []byte(ackExplicitPolicyJSONString)
 )
 
 func (ap AckPolicy) MarshalJSON() ([]byte, error) {
 	switch ap {
 	case AckNone:
-		return json.Marshal(ackNonePolicyString)
+		return ackNonePolicyJSONBytes, nil
 	case AckAll:
-		return json.Marshal(ackAllPolicyString)
+		return ackAllPolicyJSONBytes, nil
 	case AckExplicit:
-		return json.Marshal(ackExplicitPolicyString)
+		return ackExplicitPolicyJSONBytes, nil
 	default:
 		return nil, fmt.Errorf("can not marshal %v", ap)
 	}
@@ -593,11 +606,11 @@ func (ap AckPolicy) MarshalJSON() ([]byte, error) {
 
 func (ap *AckPolicy) UnmarshalJSON(data []byte) error {
 	switch string(data) {
-	case jsonString(ackNonePolicyString):
+	case ackNonePolicyJSONString:
 		*ap = AckNone
-	case jsonString(ackAllPolicyString):
+	case ackAllPolicyJSONString:
 		*ap = AckAll
-	case jsonString(ackExplicitPolicyString):
+	case ackExplicitPolicyJSONString:
 		*ap = AckExplicit
 	default:
 		return fmt.Errorf("can not unmarshal %q", data)
@@ -606,16 +619,21 @@ func (ap *AckPolicy) UnmarshalJSON(data []byte) error {
 }
 
 const (
-	replayInstantPolicyString  = "instant"
-	replayOriginalPolicyString = "original"
+	replayInstantPolicyJSONString  = `"instant"`
+	replayOriginalPolicyJSONString = `"original"`
+)
+
+var (
+	replayInstantPolicyJSONBytes  = []byte(replayInstantPolicyJSONString)
+	replayOriginalPolicyJSONBytes = []byte(replayOriginalPolicyJSONString)
 )
 
 func (rp ReplayPolicy) MarshalJSON() ([]byte, error) {
 	switch rp {
 	case ReplayInstant:
-		return json.Marshal(replayInstantPolicyString)
+		return replayInstantPolicyJSONBytes, nil
 	case ReplayOriginal:
-		return json.Marshal(replayOriginalPolicyString)
+		return replayOriginalPolicyJSONBytes, nil
 	default:
 		return nil, fmt.Errorf("can not marshal %v", rp)
 	}
@@ -623,9 +641,9 @@ func (rp ReplayPolicy) MarshalJSON() ([]byte, error) {
 
 func (rp *ReplayPolicy) UnmarshalJSON(data []byte) error {
 	switch string(data) {
-	case jsonString(replayInstantPolicyString):
+	case replayInstantPolicyJSONString:
 		*rp = ReplayInstant
-	case jsonString(replayOriginalPolicyString):
+	case replayOriginalPolicyJSONString:
 		*rp = ReplayOriginal
 	default:
 		return fmt.Errorf("can not unmarshal %q", data)
@@ -634,28 +652,38 @@ func (rp *ReplayPolicy) UnmarshalJSON(data []byte) error {
 }
 
 const (
-	deliverAllPolicyString       = "all"
-	deliverLastPolicyString      = "last"
-	deliverNewPolicyString       = "new"
-	deliverByStartSequenceString = "by_start_sequence"
-	deliverByStartTimeString     = "by_start_time"
-	deliverLastPerPolicyString   = "last_per_subject"
-	deliverUndefinedString       = "undefined"
+	deliverAllPolicyJSONString       = `"all"`
+	deliverLastPolicyJSONString      = `"last"`
+	deliverNewPolicyJSONString       = `"new"`
+	deliverByStartSequenceJSONString = `"by_start_sequence"`
+	deliverByStartTimeJSONString     = `"by_start_time"`
+	deliverLastPerPolicyJSONString   = `"last_per_subject"`
+	deliverUndefinedJSONString       = `"undefined"`
+)
+
+var (
+	deliverAllPolicyJSONBytes       = []byte(deliverAllPolicyJSONString)
+	deliverLastPolicyJSONBytes      = []byte(deliverLastPolicyJSONString)
+	deliverNewPolicyJSONBytes       = []byte(deliverNewPolicyJSONString)
+	deliverByStartSequenceJSONBytes = []byte(deliverByStartSequenceJSONString)
+	deliverByStartTimeJSONBytes     = []byte(deliverByStartTimeJSONString)
+	deliverLastPerPolicyJSONBytes   = []byte(deliverLastPerPolicyJSONString)
+	deliverUndefinedJSONBytes       = []byte(deliverUndefinedJSONString)
 )
 
 func (p *DeliverPolicy) UnmarshalJSON(data []byte) error {
 	switch string(data) {
-	case jsonString(deliverAllPolicyString), jsonString(deliverUndefinedString):
+	case deliverAllPolicyJSONString, deliverUndefinedJSONString:
 		*p = DeliverAll
-	case jsonString(deliverLastPolicyString):
+	case deliverLastPolicyJSONString:
 		*p = DeliverLast
-	case jsonString(deliverLastPerPolicyString):
+	case deliverLastPerPolicyJSONString:
 		*p = DeliverLastPerSubject
-	case jsonString(deliverNewPolicyString):
+	case deliverNewPolicyJSONString:
 		*p = DeliverNew
-	case jsonString(deliverByStartSequenceString):
+	case deliverByStartSequenceJSONString:
 		*p = DeliverByStartSequence
-	case jsonString(deliverByStartTimeString):
+	case deliverByStartTimeJSONString:
 		*p = DeliverByStartTime
 	default:
 		return fmt.Errorf("can not unmarshal %q", data)
@@ -667,19 +695,19 @@ func (p *DeliverPolicy) UnmarshalJSON(data []byte) error {
 func (p DeliverPolicy) MarshalJSON() ([]byte, error) {
 	switch p {
 	case DeliverAll:
-		return json.Marshal(deliverAllPolicyString)
+		return deliverAllPolicyJSONBytes, nil
 	case DeliverLast:
-		return json.Marshal(deliverLastPolicyString)
+		return deliverLastPolicyJSONBytes, nil
 	case DeliverLastPerSubject:
-		return json.Marshal(deliverLastPerPolicyString)
+		return deliverLastPerPolicyJSONBytes, nil
 	case DeliverNew:
-		return json.Marshal(deliverNewPolicyString)
+		return deliverNewPolicyJSONBytes, nil
 	case DeliverByStartSequence:
-		return json.Marshal(deliverByStartSequenceString)
+		return deliverByStartSequenceJSONBytes, nil
 	case DeliverByStartTime:
-		return json.Marshal(deliverByStartTimeString)
+		return deliverByStartTimeJSONBytes, nil
 	default:
-		return json.Marshal(deliverUndefinedString)
+		return deliverUndefinedJSONBytes, nil
 	}
 }
 
