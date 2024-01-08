@@ -1075,10 +1075,12 @@ func (js *jetStream) setMetaRecovering() {
 }
 
 // Mark that the meta layer is no longer recovering.
-func (js *jetStream) clearMetaRecovering() {
+func (js *jetStream) clearMetaRecovering() bool {
 	js.mu.Lock()
 	defer js.mu.Unlock()
+	wasRecovering := js.metaRecovering
 	js.metaRecovering = false
+	return wasRecovering
 }
 
 // Return whether the meta layer is recovering.
@@ -1265,6 +1267,7 @@ func (js *jetStream) monitorCluster() {
 
 	// Set to true to start.
 	js.setMetaRecovering()
+	recoveryCh := make(chan struct{})
 
 	// Snapshotting function.
 	doSnapshot := func() {
@@ -1306,7 +1309,9 @@ func (js *jetStream) monitorCluster() {
 			for _, ce := range ces {
 				if ce == nil {
 					// Signals we have replayed all of our metadata.
-					js.clearMetaRecovering()
+					if js.clearMetaRecovering() {
+						close(recoveryCh)
+					}
 					// Process any removes that are still valid after recovery.
 					for _, ca := range ru.removeConsumers {
 						js.processConsumerRemoval(ca)
@@ -1349,6 +1354,16 @@ func (js *jetStream) monitorCluster() {
 		case isLeader = <-lch:
 			// For meta layer synchronize everyone to our state on becoming leader.
 			if isLeader {
+				// If we're recovering then wait for it to complete.
+				if js.isMetaRecovering() {
+					select {
+					case <-recoveryCh:
+					case <-qch:
+						return
+					case <-s.quitCh:
+						return
+					}
+				}
 				n.SendSnapshot(js.metaSnapshot())
 			}
 			// Process the change.
@@ -2200,6 +2215,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	// Don't allow the upper layer to install snapshots until we have
 	// fully recovered from disk.
 	isRecovering := true
+	recoveryCh := make(chan struct{})
 
 	// Should only to be called from leader.
 	doSnapshot := func() {
@@ -2319,7 +2335,12 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			for _, ce := range ces {
 				// No special processing needed for when we are caught up on restart.
 				if ce == nil {
-					isRecovering = false
+					// If the node is still recovering then wait for it to complete before
+					// we send an out-of-date snapshot to the rest of the group.
+					if isRecovering {
+						isRecovering = false
+						close(recoveryCh)
+					}
 					// Check on startup if we should snapshot/compact.
 					if _, b := n.Size(); b > compactSizeMin || n.NeedSnapshot() {
 						doSnapshot()
@@ -2363,6 +2384,15 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 		case isLeader = <-lch:
 			if isLeader {
+				if isRecovering {
+					select {
+					case <-recoveryCh:
+					case <-qch:
+						return
+					case <-s.quitCh:
+						return
+					}
+				}
 				if mset != nil && n != nil && sendSnapshot {
 					n.SendSnapshot(mset.stateSnapshot())
 					sendSnapshot = false
@@ -4558,6 +4588,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	// Don't allow the upper layer to install snapshots until we have
 	// fully recovered from disk.
 	recovering := true
+	recoveryCh := make(chan struct{})
 
 	doSnapshot := func(force bool) {
 		// Bail if trying too fast and not in a forced situation.
@@ -4624,7 +4655,12 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			for _, ce := range ces {
 				// No special processing needed for when we are caught up on restart.
 				if ce == nil {
-					recovering = false
+					// If the node is still recovering then wait for it to complete before
+					// we send an out-of-date snapshot to the rest of the group.
+					if recovering {
+						recovering = false
+						close(recoveryCh)
+					}
 					if n.NeedSnapshot() {
 						doSnapshot(true)
 					}
@@ -4649,6 +4685,16 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 
 			// Synchronize everyone to our state.
 			if isLeader && n != nil {
+				// If we're recovering then wait for it to complete.
+				if recovering {
+					select {
+					case <-recoveryCh:
+					case <-qch:
+						return
+					case <-s.quitCh:
+						return
+					}
+				}
 				// Only send out if we have state.
 				if _, _, applied := n.Progress(); applied > 0 {
 					if snap, err := o.store.EncodedState(); err == nil {
