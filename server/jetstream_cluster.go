@@ -2197,9 +2197,13 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	var lastState SimpleState
 	var lastSnapTime time.Time
 
+	// Don't allow the upper layer to install snapshots until we have
+	// fully recovered from disk.
+	isRecovering := true
+
 	// Should only to be called from leader.
 	doSnapshot := func() {
-		if mset == nil || isRestore || time.Since(lastSnapTime) < minSnapDelta {
+		if mset == nil || isRecovering || isRestore || time.Since(lastSnapTime) < minSnapDelta {
 			return
 		}
 
@@ -2226,7 +2230,6 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	// We will establish a restoreDoneCh no matter what. Will never be triggered unless
 	// we replace with the restore chan.
 	restoreDoneCh := make(<-chan error)
-	isRecovering := true
 
 	// For migration tracking.
 	var mmt *time.Ticker
@@ -4552,9 +4555,13 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	var lastSnap []byte
 	var lastSnapTime time.Time
 
+	// Don't allow the upper layer to install snapshots until we have
+	// fully recovered from disk.
+	recovering := true
+
 	doSnapshot := func(force bool) {
 		// Bail if trying too fast and not in a forced situation.
-		if !force && time.Since(lastSnapTime) < minSnapDelta {
+		if recovering || (!force && time.Since(lastSnapTime) < minSnapDelta) {
 			return
 		}
 
@@ -4605,7 +4612,6 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 
 	// Track if we are leader.
 	var isLeader bool
-	recovering := true
 
 	for {
 		select {
