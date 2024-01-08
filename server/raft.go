@@ -40,6 +40,7 @@ type RaftNode interface {
 	Propose(entry []byte) error
 	ProposeDirect(entries []*Entry) error
 	ForwardProposal(entry []byte) error
+	RecoveryFinished()
 	InstallSnapshot(snap []byte) error
 	SendSnapshot(snap []byte) error
 	NeedSnapshot() bool
@@ -132,10 +133,11 @@ type raft struct {
 	sd      string    // Store directory
 	id      string    // Node ID
 
-	wal   WAL         // WAL store (filestore or memstore)
-	wtype StorageType // WAL type, e.g. FileStorage or MemoryStorage
-	track bool        //
-	werr  error       // Last write error
+	wal       WAL         // WAL store (filestore or memstore)
+	wtype     StorageType // WAL type, e.g. FileStorage or MemoryStorage
+	track     bool        //
+	werr      error       // Last write error
+	recovered atomic.Bool // Did recovery finish?
 
 	state    atomic.Int32 // RaftState
 	hh       hash.Hash64  // Highwayhash, used for snapshots
@@ -270,6 +272,7 @@ var (
 	errLeaderLen         = fmt.Errorf("raft: leader should be exactly %d bytes", idLen)
 	errTooManyEntries    = errors.New("raft: append entry can contain a max of 64k entries")
 	errBadAppendEntry    = errors.New("raft: append entry corrupt")
+	errSnapshotRejected  = errors.New("raft: snapshot rejected as recovery not completed")
 )
 
 // This will bootstrap a raftNode by writing its config into the store directory.
@@ -472,6 +475,10 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 				}
 			}
 		}
+	} else {
+		// It doesn't look as though there's anything to recover, so we don't
+		// need the upper layer to inform us that recovery has finished explicitly.
+		n.RecoveryFinished()
 	}
 
 	// Make sure to track ourselves.
@@ -1002,6 +1009,9 @@ func (n *raft) SendSnapshot(data []byte) error {
 func (n *raft) InstallSnapshot(data []byte) error {
 	if n.State() == Closed {
 		return errNodeClosed
+	}
+	if !n.recovered.Load() {
+		return errSnapshotRejected
 	}
 
 	n.Lock()
@@ -4093,4 +4103,13 @@ func (n *raft) switchToLeader() {
 	if sendHB {
 		n.sendHeartbeat()
 	}
+}
+
+// RecoveryFinished is called from the upper layer state machine when it has
+// finished processing entries from on-disk recovery. This should typically be
+// called after the "nil guard" has been reached on the apply queue. Until this
+// is called, the Raft node will not accept snapshots from the upper layer state
+// machine.
+func (n *raft) RecoveryFinished() {
+	n.recovered.Store(true)
 }

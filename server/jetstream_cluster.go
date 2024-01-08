@@ -1305,6 +1305,7 @@ func (js *jetStream) monitorCluster() {
 			ces := aq.pop()
 			for _, ce := range ces {
 				if ce == nil {
+					n.RecoveryFinished()
 					// Signals we have replayed all of our metadata.
 					js.clearMetaRecovering()
 					// Process any removes that are still valid after recovery.
@@ -2319,6 +2320,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			for _, ce := range ces {
 				// No special processing needed for when we are caught up on restart.
 				if ce == nil {
+					n.RecoveryFinished()
 					isRecovering = false
 					// Check on startup if we should snapshot/compact.
 					if _, b := n.Size(); b > compactSizeMin || n.NeedSnapshot() {
@@ -4624,6 +4626,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			for _, ce := range ces {
 				// No special processing needed for when we are caught up on restart.
 				if ce == nil {
+					n.RecoveryFinished()
 					recovering = false
 					if n.NeedSnapshot() {
 						doSnapshot(true)
