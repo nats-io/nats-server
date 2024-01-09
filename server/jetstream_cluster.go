@@ -1275,19 +1275,22 @@ func (js *jetStream) monitorCluster() {
 	js.setMetaRecovering()
 
 	// Snapshotting function.
-	doSnapshot := func() {
+	doSnapshot := func() []byte {
 		// Suppress during recovery.
 		if js.isMetaRecovering() {
-			return
+			return nil
 		}
 		// For the meta layer we want to snapshot when asked if we need one or have any entries that we can compact.
 		if ne, _ := n.Size(); ne > 0 || n.NeedSnapshot() {
-			if err := n.InstallSnapshot(js.metaSnapshot()); err == nil {
+			snap := js.metaSnapshot()
+			if err := n.InstallSnapshot(snap); err == nil {
 				lastSnapTime = time.Now()
+				return snap
 			} else if err != errNoSnapAvailable && err != errNodeClosed {
 				s.Warnf("Error snapshotting JetStream cluster state: %v", err)
 			}
 		}
+		return nil
 	}
 
 	ru := &recoveryUpdates{
@@ -1334,6 +1337,14 @@ func (js *jetStream) monitorCluster() {
 					ru = nil
 					s.Debugf("Recovered JetStream cluster metadata")
 					js.checkForOrphans()
+					// If we became the leader during this time then once
+					// we have finished recovering, we can create and send
+					// a snapshot.
+					if isLeader {
+						if snap := doSnapshot(); snap != nil {
+							n.SendSnapshot(snap)
+						}
+					}
 					// Do a health check here as well.
 					go checkHealth()
 					continue
@@ -2213,9 +2224,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	isRecovering := true
 
 	// Should only to be called from leader.
-	doSnapshot := func() {
+	doSnapshot := func() []byte {
 		if mset == nil || isRecovering || isRestore || time.Since(lastSnapTime) < minSnapDelta {
-			return
+			return nil
 		}
 
 		// Before we actually calculate the detailed state and encode it, let's check the
@@ -2228,14 +2239,16 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		// consumers on idle streams but better to be safe than sorry!
 		ne, nb := n.Size()
 		if curState == lastState && ne < compactNumMin && nb < compactSizeMin {
-			return
+			return nil
 		}
-
-		if err := n.InstallSnapshot(mset.stateSnapshot()); err == nil {
+		snap := mset.stateSnapshot()
+		if err := n.InstallSnapshot(snap); err == nil {
 			lastState, lastSnapTime = curState, time.Now()
+			return snap
 		} else if err != errNoSnapAvailable && err != errNodeClosed {
 			s.RateLimitWarnf("Failed to install snapshot for '%s > %s' [%s]: %v", mset.acc.Name, mset.name(), n.Group(), err)
 		}
+		return nil
 	}
 
 	// We will establish a restoreDoneCh no matter what. Will never be triggered unless
@@ -2331,9 +2344,12 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				// No special processing needed for when we are caught up on restart.
 				if ce == nil {
 					isRecovering = false
-					// Check on startup if we should snapshot/compact.
-					if _, b := n.Size(); b > compactSizeMin || n.NeedSnapshot() {
-						doSnapshot()
+					// Check on startup if we should snapshot/compact. We might also
+					// need to send a snapshot if we became leader in this time.
+					if _, b := n.Size(); b > compactSizeMin || n.NeedSnapshot() || sendSnapshot || isLeader {
+						if snap := doSnapshot(); snap != nil && isLeader {
+							n.SendSnapshot(snap)
+						}
 					}
 					continue
 				}
@@ -2368,13 +2384,13 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 			// Check about snapshotting
 			// If we have at least min entries to compact, go ahead and try to snapshot/compact.
-			if ne >= compactNumMin || nb > compactSizeMin {
+			if !isRecovering && (ne >= compactNumMin || nb > compactSizeMin) {
 				doSnapshot()
 			}
 
 		case isLeader = <-lch:
 			if isLeader {
-				if mset != nil && n != nil && sendSnapshot {
+				if mset != nil && n != nil && sendSnapshot && !isRecovering {
 					n.SendSnapshot(mset.stateSnapshot())
 					sendSnapshot = false
 				}
@@ -2382,7 +2398,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					acc, _ := s.LookupAccount(sa.Client.serviceAccount())
 					restoreDoneCh = s.processStreamRestore(sa.Client, acc, sa.Config, _EMPTY_, sa.Reply, _EMPTY_)
 					continue
-				} else if n != nil && n.NeedSnapshot() {
+				} else if n != nil && n.NeedSnapshot() && !isRecovering {
 					doSnapshot()
 				}
 				// Always cancel if this was running.
@@ -4570,10 +4586,10 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	// fully recovered from disk.
 	recovering := true
 
-	doSnapshot := func(force bool) {
+	doSnapshot := func(force bool) []byte {
 		// Bail if trying too fast and not in a forced situation.
 		if recovering || (!force && time.Since(lastSnapTime) < minSnapDelta) {
-			return
+			return nil
 		}
 
 		// Check several things to see if we need a snapshot.
@@ -4581,7 +4597,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 		if !n.NeedSnapshot() {
 			// Check if we should compact etc. based on size of log.
 			if !force && ne < compactNumMin && nb < compactSizeMin {
-				return
+				return nil
 			}
 		}
 
@@ -4595,11 +4611,13 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			if !bytes.Equal(hash[:], lastSnap) || ne >= compactNumMin || nb >= compactSizeMin {
 				if err := n.InstallSnapshot(snap); err == nil {
 					lastSnap, lastSnapTime = hash[:], time.Now()
+					return snap
 				} else if err != errNoSnapAvailable && err != errNodeClosed {
 					s.Warnf("Failed to install snapshot for '%s > %s > %s' [%s]: %v", o.acc.Name, ca.Stream, ca.Name, n.Group(), err)
 				}
 			}
 		}
+		return nil
 	}
 
 	// For migration tracking.
@@ -4636,8 +4654,10 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 				// No special processing needed for when we are caught up on restart.
 				if ce == nil {
 					recovering = false
-					if n.NeedSnapshot() {
-						doSnapshot(true)
+					if n.NeedSnapshot() || isLeader {
+						if snap := doSnapshot(true); snap != nil {
+							n.SendSnapshot(snap)
+						}
 					}
 					// Check our state if we are under an interest based stream.
 					o.checkStateForInterestStream()
@@ -4659,7 +4679,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			}
 
 			// Synchronize everyone to our state.
-			if isLeader && n != nil {
+			if isLeader && n != nil && !recovering {
 				// Only send out if we have state.
 				if _, _, applied := n.Progress(); applied > 0 {
 					if snap, err := o.store.EncodedState(); err == nil {
@@ -4669,7 +4689,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			}
 
 			// Process the change.
-			if err := js.processConsumerLeaderChange(o, isLeader); err == nil && isLeader {
+			if err := js.processConsumerLeaderChange(o, isLeader); err == nil && isLeader && !recovering {
 				doSnapshot(true)
 			}
 
