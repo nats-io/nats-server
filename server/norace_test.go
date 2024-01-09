@@ -9314,3 +9314,79 @@ func TestNoRaceJetStreamMirrorAndSourceConsumerFailBackoff(t *testing.T) {
 	require_True(t, si != nil)
 	require_Equal(t, si.fails, 1)
 }
+
+func TestNoRaceJetStreamClusterStreamCatchupLargeInteriorDeletes(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:              "TEST",
+		Subjects:          []string{"foo.*"},
+		MaxMsgsPerSubject: 100,
+		Replicas:          1,
+	}
+
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	msg := bytes.Repeat([]byte("Z"), 2*1024)
+	// We will create lots of interior deletes on our R1 then scale up.
+	_, err = js.Publish("foo.0", msg)
+	require_NoError(t, err)
+
+	// Create 50k messages randomly from 1-100
+	for i := 0; i < 50_000; i++ {
+		subj := fmt.Sprintf("foo.%d", rand.Intn(100)+1)
+		js.PublishAsync(subj, msg)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+	// Now create a large gap.
+	for i := 0; i < 100_000; i++ {
+		js.PublishAsync("foo.2", msg)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+	// Do 50k random again at end.
+	for i := 0; i < 50_000; i++ {
+		subj := fmt.Sprintf("foo.%d", rand.Intn(100)+1)
+		js.PublishAsync(subj, msg)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+
+	cfg.Replicas = 2
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+
+	// Let catchup start.
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	nl := c.randomNonStreamLeader(globalAccountName, "TEST")
+	require_True(t, nl != nil)
+	mset, err := nl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+		state := mset.state()
+		if state.Msgs == si.State.Msgs {
+			return nil
+		}
+		return fmt.Errorf("Msgs not equal %d vs %d", state.Msgs, si.State.Msgs)
+	})
+}
