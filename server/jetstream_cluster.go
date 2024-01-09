@@ -103,6 +103,8 @@ const (
 	removePendingRequest
 	// For sending compressed streams, either through RAFT or catchup.
 	compressedStreamMsgOp
+	// For sending deleted gaps on catchups for replicas.
+	deleteRangeOp
 )
 
 // raftGroups are controlled by the metagroup controller.
@@ -490,29 +492,34 @@ func (js *jetStream) restartStream(acc *Account, csa *streamAssignment) {
 // isStreamHealthy will determine if the stream is up to date or very close.
 // For R1 it will make sure the stream is present on this server.
 func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) bool {
-	js.mu.Lock()
+	js.mu.RLock()
 	s, cc := js.srv, js.cluster
 	if cc == nil {
 		// Non-clustered mode
-		js.mu.Unlock()
+		js.mu.RUnlock()
 		return true
 	}
 
 	// Pull the group out.
 	rg := sa.Group
 	if rg == nil {
-		js.mu.Unlock()
+		js.mu.RUnlock()
 		return false
 	}
 
 	streamName := sa.Config.Name
 	node := rg.node
-	js.mu.Unlock()
+	js.mu.RUnlock()
 
 	// First lookup stream and make sure its there.
 	mset, err := acc.lookupStream(streamName)
 	if err != nil {
 		js.restartStream(acc, sa)
+		return false
+	}
+
+	// If we are catching up return false.
+	if mset.isCatchingUp() {
 		return false
 	}
 
@@ -1239,7 +1246,8 @@ func (js *jetStream) monitorCluster() {
 	lt := time.NewTicker(leaderCheckInterval)
 	defer lt.Stop()
 
-	const healthCheckInterval = 2 * time.Minute
+	// Check the general health once an hour.
+	const healthCheckInterval = 1 * time.Hour
 	ht := time.NewTicker(healthCheckInterval)
 	defer ht.Stop()
 
@@ -1939,6 +1947,9 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					delete(ru.removeStreams, key)
 				} else {
 					js.processUpdateStreamAssignment(sa)
+					// Since an update can be lowering replica count, we want upper layer to treat
+					// similar to a removal and snapshot to collapse old entries.
+					didRemoveStream = true
 				}
 			default:
 				panic(fmt.Sprintf("JetStream Cluster Unknown meta entry op type: %v", entryOp(buf[0])))
@@ -6837,6 +6848,22 @@ func decodeStreamAssignment(buf []byte) (*streamAssignment, error) {
 	return &sa, err
 }
 
+func encodeDeleteRange(dr *DeleteRange) []byte {
+	var bb bytes.Buffer
+	bb.WriteByte(byte(deleteRangeOp))
+	json.NewEncoder(&bb).Encode(dr)
+	return bb.Bytes()
+}
+
+func decodeDeleteRange(buf []byte) (*DeleteRange, error) {
+	var dr DeleteRange
+	err := json.Unmarshal(buf, &dr)
+	if err != nil {
+		return nil, err
+	}
+	return &dr, err
+}
+
 // createGroupForConsumer will create a new group from same peer set as the stream.
 func (cc *jetStreamCluster) createGroupForConsumer(cfg *ConsumerConfig, sa *streamAssignment) *raftGroup {
 	if len(sa.Group.Peers) == 0 || cfg.Replicas > len(sa.Group.Peers) {
@@ -7607,9 +7634,10 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 // For requesting messages post raft snapshot to catch up streams post server restart.
 // Any deleted msgs etc will be handled inline on catchup.
 type streamSyncRequest struct {
-	Peer     string `json:"peer,omitempty"`
-	FirstSeq uint64 `json:"first_seq"`
-	LastSeq  uint64 `json:"last_seq"`
+	Peer           string `json:"peer,omitempty"`
+	FirstSeq       uint64 `json:"first_seq"`
+	LastSeq        uint64 `json:"last_seq"`
+	DeleteRangesOk bool   `json:"delete_ranges"`
 }
 
 // Given a stream state that represents a snapshot, calculate the sync request based on our current state.
@@ -7618,7 +7646,7 @@ func (mset *stream) calculateSyncRequest(state *StreamState, snap *StreamReplica
 	if state.LastSeq >= snap.LastSeq {
 		return nil
 	}
-	return &streamSyncRequest{FirstSeq: state.LastSeq + 1, LastSeq: snap.LastSeq, Peer: mset.node.ID()}
+	return &streamSyncRequest{FirstSeq: state.LastSeq + 1, LastSeq: snap.LastSeq, Peer: mset.node.ID(), DeleteRangesOk: true}
 }
 
 // processSnapshotDeletes will update our current store based on the snapshot
@@ -7628,13 +7656,21 @@ func (mset *stream) processSnapshotDeletes(snap *StreamReplicatedState) {
 	var state StreamState
 	mset.store.FastState(&state)
 	// Always adjust if FirstSeq has moved beyond our state.
+	var didReset bool
 	if snap.FirstSeq > state.FirstSeq {
 		mset.store.Compact(snap.FirstSeq)
 		mset.store.FastState(&state)
 		mset.lseq = state.LastSeq
 		mset.clearAllPreAcksBelowFloor(state.FirstSeq)
+		didReset = true
 	}
+	s := mset.srv
 	mset.mu.Unlock()
+
+	if didReset {
+		s.Warnf("Catchup for stream '%s > %s' resetting first sequence: %d on catchup request",
+			mset.account(), mset.name(), snap.FirstSeq)
+	}
 
 	if len(snap.Deleted) > 0 {
 		mset.store.SyncDeleted(snap.Deleted)
@@ -7661,6 +7697,22 @@ func (mset *stream) updateCatchupPeer(peer string) {
 	mset.mu.Lock()
 	if lag := mset.catchups[peer]; lag > 0 {
 		mset.catchups[peer] = lag - 1
+	}
+	mset.mu.Unlock()
+}
+
+func (mset *stream) decrementCatchupPeer(peer string, num uint64) {
+	if peer == _EMPTY_ {
+		return
+	}
+	mset.mu.Lock()
+	if lag := mset.catchups[peer]; lag > 0 {
+		if lag >= num {
+			lag -= num
+		} else {
+			lag = 0
+		}
+		mset.catchups[peer] = lag
 	}
 	mset.mu.Unlock()
 }
@@ -7743,7 +7795,6 @@ func (mset *stream) processSnapshot(snap *StreamReplicatedState) (e error) {
 	mset.store.FastState(&state)
 	mset.setCLFS(snap.Failed)
 	sreq := mset.calculateSyncRequest(&state, snap)
-
 	s, js, subject, n := mset.srv, mset.js, mset.sa.Sync, mset.node
 	qname := fmt.Sprintf("[ACC:%s] stream '%s' snapshot", mset.acc.Name, mset.cfg.Name)
 	mset.mu.Unlock()
@@ -7777,7 +7828,7 @@ func (mset *stream) processSnapshot(snap *StreamReplicatedState) (e error) {
 	var sub *subscription
 	var err error
 
-	const activityInterval = 10 * time.Second
+	const activityInterval = 30 * time.Second
 	notActive := time.NewTimer(activityInterval)
 	defer notActive.Stop()
 
@@ -7813,36 +7864,12 @@ func (mset *stream) processSnapshot(snap *StreamReplicatedState) (e error) {
 	defer releaseSyncOutSem()
 
 	// Check our final state when we exit cleanly.
-	// If this snapshot was for messages no longer held by the leader we want to make sure
-	// we are synched for the next message sequence properly.
-	lastRequested := sreq.LastSeq
+	// This will make sure we have interest consumers updated.
 	checkFinalState := func() {
 		// Bail if no stream.
 		if mset == nil {
 			return
 		}
-
-		mset.mu.Lock()
-		var state StreamState
-		mset.store.FastState(&state)
-		var didReset bool
-		firstExpected := lastRequested + 1
-		if state.FirstSeq != firstExpected {
-			// Reset our notion of first.
-			mset.store.Compact(firstExpected)
-			mset.store.FastState(&state)
-			// Make sure last is also correct in case this also moved.
-			mset.lseq = state.LastSeq
-			mset.clearAllPreAcksBelowFloor(state.FirstSeq)
-			didReset = true
-		}
-		mset.mu.Unlock()
-
-		if didReset {
-			s.Warnf("Catchup for stream '%s > %s' resetting first sequence: %d on catchup complete",
-				mset.account(), mset.name(), firstExpected)
-		}
-
 		mset.mu.RLock()
 		consumers := make([]*consumer, 0, len(mset.consumers))
 		for _, o := range mset.consumers {
@@ -7888,7 +7915,7 @@ RETRY:
 	<-s.syncOutSem
 	releaseSem = true
 
-	// We may have been blocked for a bit, so the reset need to ensure that we
+	// We may have been blocked for a bit, so the reset needs to ensure that we
 	// consume the already fired timer.
 	if !notActive.Stop() {
 		select {
@@ -7908,8 +7935,6 @@ RETRY:
 		if sreq == nil {
 			return nil
 		}
-		// Reset notion of lastRequested
-		lastRequested = sreq.LastSeq
 	}
 
 	// Used to transfer message from the wire to another Go routine internally.
@@ -7939,14 +7964,13 @@ RETRY:
 		s.Errorf("Could not subscribe to stream catchup: %v", err)
 		goto RETRY
 	}
+
 	// Send our sync request.
 	b, _ := json.Marshal(sreq)
 	s.sendInternalMsgLocked(subject, reply, nil, b)
-	// Remember when we sent this out to avoimd loop spins on errors below.
+	// Remember when we sent this out to avoid loop spins on errors below.
 	reqSendTime := time.Now()
-
-	// Clear our sync request and capture last.
-	last := sreq.LastSeq
+	// Clear our sync request.
 	sreq = nil
 
 	// Run our own select loop here.
@@ -7956,23 +7980,17 @@ RETRY:
 			notActive.Reset(activityInterval)
 
 			mrecs := msgsQ.pop()
-
 			for _, mrec := range mrecs {
 				msg := mrec.msg
-
 				// Check for eof signaling.
 				if len(msg) == 0 {
 					msgsQ.recycle(&mrecs)
 					checkFinalState()
 					return nil
 				}
-				if lseq, err := mset.processCatchupMsg(msg); err == nil {
+				if _, err := mset.processCatchupMsg(msg); err == nil {
 					if mrec.reply != _EMPTY_ {
 						s.sendInternalMsgLocked(mrec.reply, _EMPTY_, nil, nil)
-					}
-					if lseq >= last {
-						msgsQ.recycle(&mrecs)
-						return nil
 					}
 				} else if isOutOfSpaceErr(err) {
 					notifyLeaderStopCatchup(mrec, err)
@@ -8006,6 +8024,7 @@ RETRY:
 					goto RETRY
 				}
 			}
+			notActive.Reset(activityInterval)
 			msgsQ.recycle(&mrecs)
 		case <-notActive.C:
 			if mrecs := msgsQ.pop(); len(mrecs) > 0 {
@@ -8034,11 +8053,34 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 		return 0, errCatchupBadMsg
 	}
 	op := entryOp(msg[0])
-	if op != streamMsgOp && op != compressedStreamMsgOp {
+	if op != streamMsgOp && op != compressedStreamMsgOp && op != deleteRangeOp {
 		return 0, errCatchupBadMsg
 	}
 
 	mbuf := msg[1:]
+	if op == deleteRangeOp {
+		dr, err := decodeDeleteRange(mbuf)
+		if err != nil {
+			return 0, errCatchupBadMsg
+		}
+		// Handle the delete range.
+		// Make sure the sequences match up properly.
+		mset.mu.Lock()
+		if len(mset.preAcks) > 0 {
+			for seq := dr.First; seq < dr.First+dr.Num; seq++ {
+				mset.clearAllPreAcks(seq)
+			}
+		}
+		if err = mset.store.SkipMsgs(dr.First, dr.Num); err != nil {
+			mset.mu.Unlock()
+			return 0, errCatchupWrongSeqForSkip
+		}
+		mset.lseq = dr.First + dr.Num - 1
+		lseq := mset.lseq
+		mset.mu.Unlock()
+		return lseq, nil
+	}
+
 	if op == compressedStreamMsgOp {
 		var err error
 		mbuf, err = s2.Decode(nil, mbuf)
@@ -8381,8 +8423,8 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 	s := mset.srv
 	defer s.grWG.Done()
 
-	const maxOutBytes = int64(8 * 1024 * 1024) // 8MB for now, these are all internal, from server to server
-	const maxOutMsgs = int32(32 * 1024)
+	const maxOutBytes = int64(64 * 1024 * 1024) // 64MB for now, these are all internal, from server to server
+	const maxOutMsgs = int32(256 * 1024)        // 256k in case we have lots of small messages or skip msgs.
 	outb := int64(0)
 	outm := int32(0)
 
@@ -8401,6 +8443,10 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 	nextBatchC <- struct{}{}
 	remoteQuitCh := make(chan struct{})
 
+	const activityInterval = 30 * time.Second
+	notActive := time.NewTimer(activityInterval)
+	defer notActive.Stop()
+
 	// Setup ackReply for flow control.
 	ackReply := syncAckSubject()
 	ackSub, _ := s.sysSubscribe(ackReply, func(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
@@ -8418,15 +8464,13 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 		// Kick ourselves and anyone else who might have stalled on global state.
 		select {
 		case nextBatchC <- struct{}{}:
+			// Reset our activity
+			notActive.Reset(activityInterval)
 		default:
 		}
 	})
 	defer s.sysUnsubscribe(ackSub)
 	ackReplyT := strings.ReplaceAll(ackReply, ".*", ".%d")
-
-	const activityInterval = 5 * time.Second
-	notActive := time.NewTimer(activityInterval)
-	defer notActive.Stop()
 
 	// Grab our state.
 	var state StreamState
@@ -8450,10 +8494,9 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 	compressOk := mset.compressAllowed()
 
 	var spb int
-	sendNextBatchAndContinue := func(qch chan struct{}) bool {
-		// Update our activity timer.
-		notActive.Reset(activityInterval)
+	const minWait = 5 * time.Second
 
+	sendNextBatchAndContinue := func(qch chan struct{}) bool {
 		// Check if we know we will not enter the loop because we are done.
 		if seq > last {
 			s.Noticef("Catchup for stream '%s > %s' complete", mset.account(), mset.name())
@@ -8462,15 +8505,23 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 			return false
 		}
 
-		// If we already sent a batch, we will try to make sure we process around
-		// half the FC responses - or reach a certain amount of time - before sending
-		// the next batch.
+		// If we already sent a batch, we will try to make sure we can at least send a minimum
+		// batch before sending the next batch.
 		if spb > 0 {
-			mw := time.NewTimer(100 * time.Millisecond)
+			// Wait til we can send at least 4k
+			const minBatchWait = int32(4 * 1024)
+			mw := time.NewTimer(minWait)
 			for done := false; !done; {
 				select {
 				case <-nextBatchC:
-					done = int(atomic.LoadInt32(&outm)) <= spb/2
+					done = maxOutMsgs-atomic.LoadInt32(&outm) > minBatchWait
+					if !done {
+						// Wait for a small bit.
+						time.Sleep(50 * time.Millisecond)
+					} else {
+						// GC friendly.
+						mw.Stop()
+					}
 				case <-mw.C:
 					done = true
 				case <-s.quitCh:
@@ -8484,8 +8535,38 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 			spb = 0
 		}
 
-		var smv StoreMsg
+		// Send an encoded msg.
+		sendEM := func(em []byte) {
+			// Place size in reply subject for flow control.
+			l := int64(len(em))
+			reply := fmt.Sprintf(ackReplyT, l)
+			s.gcbAdd(&outb, l)
+			atomic.AddInt32(&outm, 1)
+			s.sendInternalMsgLocked(sendSubject, reply, nil, em)
+			spb++
+		}
 
+		// If we support gap markers.
+		var dr DeleteRange
+		drOk := sreq.DeleteRangesOk
+
+		// Will send our delete range.
+		// Should already be checked for being valid.
+		sendDR := func() {
+			if dr.Num == 1 {
+				// Send like a normal skip msg.
+				sendEM(encodeStreamMsg(_EMPTY_, _EMPTY_, nil, nil, dr.First, 0))
+			} else {
+				// We have a run, send a gap record. We send these without reply or tracking.
+				s.sendInternalMsgLocked(sendSubject, _EMPTY_, nil, encodeDeleteRange(&dr))
+				// Clear out the pending for catchup.
+				mset.decrementCatchupPeer(sreq.Peer, dr.Num)
+			}
+			// Reset always.
+			dr.First, dr.Num = 0, 0
+		}
+
+		var smv StoreMsg
 		for ; seq <= last && atomic.LoadInt64(&outb) <= maxOutBytes && atomic.LoadInt32(&outm) <= maxOutMsgs && s.gcbBelowMax(); seq++ {
 			sm, err := mset.store.LoadMsg(seq, &smv)
 			// if this is not a deleted msg, bail out.
@@ -8511,22 +8592,33 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 				s.Warnf("Error loading message for catchup '%s > %s': %v", mset.account(), mset.name(), err)
 				return false
 			}
-			var em []byte
+
 			if sm != nil {
-				em = encodeStreamMsgAllowCompress(sm.subj, _EMPTY_, sm.hdr, sm.msg, sm.seq, sm.ts, compressOk)
+				// If we allow gap markers check if we have one pending.
+				if drOk && dr.First > 0 {
+					sendDR()
+				}
+				// Send the normal message now.
+				sendEM(encodeStreamMsgAllowCompress(sm.subj, _EMPTY_, sm.hdr, sm.msg, sm.seq, sm.ts, compressOk))
 			} else {
-				// Skip record for deleted msg.
-				em = encodeStreamMsg(_EMPTY_, _EMPTY_, nil, nil, seq, 0)
+				if drOk {
+					if dr.First == 0 {
+						dr.First, dr.Num = seq, 1
+					} else {
+						dr.Num++
+					}
+				} else {
+					// Skip record for deleted msg.
+					sendEM(encodeStreamMsg(_EMPTY_, _EMPTY_, nil, nil, seq, 0))
+				}
 			}
 
-			// Place size in reply subject for flow control.
-			l := int64(len(em))
-			reply := fmt.Sprintf(ackReplyT, l)
-			s.gcbAdd(&outb, l)
-			atomic.AddInt32(&outm, 1)
-			s.sendInternalMsgLocked(sendSubject, reply, nil, em)
-			spb++
+			// Check if we are done.
 			if seq == last {
+				// Need to see if we have a pending delete range.
+				if drOk && dr.First > 0 {
+					sendDR()
+				}
 				s.Noticef("Catchup for stream '%s > %s' complete", mset.account(), mset.name())
 				// EOF
 				s.sendInternalMsgLocked(sendSubject, _EMPTY_, nil, nil)
@@ -8538,10 +8630,14 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 			default:
 			}
 		}
+		if drOk && dr.First > 0 {
+			sendDR()
+		}
+
 		return true
 	}
 
-	// Grab stream quit channel.
+	// Check is this stream got closed.
 	mset.mu.RLock()
 	qch := mset.qch
 	mset.mu.RUnlock()
@@ -8565,6 +8661,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 			return
 		case <-notActive.C:
 			s.Warnf("Catchup for stream '%s > %s' stalled", mset.account(), mset.name())
+			mset.clearCatchupPeer(sreq.Peer)
 			return
 		case <-nextBatchC:
 			if !sendNextBatchAndContinue(qch) {

@@ -85,6 +85,7 @@ type StreamStore interface {
 	StoreMsg(subject string, hdr, msg []byte) (uint64, int64, error)
 	StoreRawMsg(subject string, hdr, msg []byte, seq uint64, ts int64) error
 	SkipMsg() uint64
+	SkipMsgs(seq uint64, num uint64) error
 	LoadMsg(seq uint64, sm *StoreMsg) (*StoreMsg, error)
 	LoadNextMsg(filter string, wc bool, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error)
 	LoadLastMsg(subject string, sm *StoreMsg) (*StoreMsg, error)
