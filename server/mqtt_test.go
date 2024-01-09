@@ -5070,6 +5070,37 @@ func TestMQTTPersistRetainedMsg(t *testing.T) {
 	c.Close()
 }
 
+func TestMQTTRetainedMsgCleanup(t *testing.T) {
+	mqttRetainedCacheTTL = 250 * time.Millisecond
+	defer func() { mqttRetainedCacheTTL = mqttDefaultRetainedCacheTTL }()
+
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	ci := &mqttConnInfo{clientID: "cache", cleanSess: true}
+	c, r := testMQTTConnect(t, ci, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+
+	// Send a retained message.
+	testMQTTPublish(t, c, r, 1, false, true, "foo", 1, []byte("msg"))
+	testMQTTFlush(t, c, nil, r)
+
+	// Start a subscription.
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTCheckPubMsg(t, c, r, "foo", mqttPubQos1|mqttPubFlagRetain, []byte("msg"))
+
+	time.Sleep(2 * mqttRetainedCacheTTL)
+
+	// Make sure not in cache anymore
+	cli := testMQTTGetClient(t, s, "cache")
+	asm := cli.mqtt.asm
+	if v, ok := asm.rmsCache.Load("foo"); ok {
+		t.Fatalf("Should not be in cache, got %+v", v)
+	}
+}
+
 func TestMQTTConnAckFirstPacket(t *testing.T) {
 	o := testMQTTDefaultOptions()
 	o.NoLog, o.Debug, o.Trace = true, false, false

@@ -186,17 +186,18 @@ const (
 
 	mqttInitialPubHeader        = 16 // An overkill, should need 7 bytes max
 	mqttProcessSubTooLong       = 100 * time.Millisecond
-	mqttRetainedCacheTTL        = 2 * time.Minute
+	mqttDefaultRetainedCacheTTL = 2 * time.Minute
 	mqttRetainedTransferTimeout = 10 * time.Second
 )
 
 var (
-	mqttPingResponse  = []byte{mqttPacketPingResp, 0x0}
-	mqttProtoName     = []byte("MQTT")
-	mqttOldProtoName  = []byte("MQIsdp")
-	mqttSessJailDur   = mqttSessFlappingJailDur
-	mqttFlapCleanItvl = mqttSessFlappingCleanupInterval
-	mqttJSAPITimeout  = 4 * time.Second
+	mqttPingResponse     = []byte{mqttPacketPingResp, 0x0}
+	mqttProtoName        = []byte("MQTT")
+	mqttOldProtoName     = []byte("MQIsdp")
+	mqttSessJailDur      = mqttSessFlappingJailDur
+	mqttFlapCleanItvl    = mqttSessFlappingCleanupInterval
+	mqttJSAPITimeout     = 4 * time.Second
+	mqttRetainedCacheTTL = mqttDefaultRetainedCacheTTL
 )
 
 var (
@@ -1237,7 +1238,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 	// Start the go routine that will clean up cached retained messages that expired.
 	s.startGoRoutine(func() {
 		defer s.grWG.Done()
-		as.cleaupRetainedMessageCache(s, closeCh)
+		as.cleanupRetainedMessageCache(s, closeCh)
 	})
 
 	lookupStream := func(stream, txt string) (*StreamInfo, error) {
@@ -2088,7 +2089,7 @@ func (as *mqttAccountSessionManager) createSubscription(subject string, cb msgHa
 // only used when the server shutdown.
 //
 // No lock held on entry.
-func (as *mqttAccountSessionManager) cleaupRetainedMessageCache(s *Server, closeCh chan struct{}) {
+func (as *mqttAccountSessionManager) cleanupRetainedMessageCache(s *Server, closeCh chan struct{}) {
 	tt := time.NewTicker(mqttRetainedCacheTTL)
 	defer tt.Stop()
 	for {
