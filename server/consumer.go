@@ -1,4 +1,4 @@
-// Copyright 2019-2023 The NATS Authors
+// Copyright 2019-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -128,30 +128,37 @@ const (
 )
 
 const (
-	actionUpdateString         = "update"
-	actionCreateString         = "create"
-	actionCreateOrUpdateString = ""
+	actionUpdateJSONString         = `"update"`
+	actionCreateJSONString         = `"create"`
+	actionCreateOrUpdateJSONString = `""`
+)
+
+var (
+	actionUpdateJSONBytes         = []byte(actionUpdateJSONString)
+	actionCreateJSONBytes         = []byte(actionCreateJSONString)
+	actionCreateOrUpdateJSONBytes = []byte(actionCreateOrUpdateJSONString)
 )
 
 func (a ConsumerAction) String() string {
 	switch a {
 	case ActionCreateOrUpdate:
-		return actionCreateOrUpdateString
+		return actionCreateOrUpdateJSONString
 	case ActionCreate:
-		return actionCreateString
+		return actionCreateJSONString
 	case ActionUpdate:
-		return actionUpdateString
+		return actionUpdateJSONString
 	}
-	return actionCreateOrUpdateString
+	return actionCreateOrUpdateJSONString
 }
+
 func (a ConsumerAction) MarshalJSON() ([]byte, error) {
 	switch a {
 	case ActionCreate:
-		return json.Marshal(actionCreateString)
+		return actionCreateJSONBytes, nil
 	case ActionUpdate:
-		return json.Marshal(actionUpdateString)
+		return actionUpdateJSONBytes, nil
 	case ActionCreateOrUpdate:
-		return json.Marshal(actionCreateOrUpdateString)
+		return actionCreateOrUpdateJSONBytes, nil
 	default:
 		return nil, fmt.Errorf("can not marshal %v", a)
 	}
@@ -159,11 +166,11 @@ func (a ConsumerAction) MarshalJSON() ([]byte, error) {
 
 func (a *ConsumerAction) UnmarshalJSON(data []byte) error {
 	switch string(data) {
-	case jsonString("create"):
+	case actionCreateJSONString:
 		*a = ActionCreate
-	case jsonString("update"):
+	case actionUpdateJSONString:
 		*a = ActionUpdate
-	case jsonString(""):
+	case actionCreateOrUpdateJSONString:
 		*a = ActionCreateOrUpdate
 	default:
 		return fmt.Errorf("unknown consumer action: %v", string(data))
@@ -249,9 +256,9 @@ const (
 func (r ReplayPolicy) String() string {
 	switch r {
 	case ReplayInstant:
-		return "instant"
+		return replayInstantPolicyJSONString
 	default:
-		return "original"
+		return replayOriginalPolicyJSONString
 	}
 }
 
@@ -700,15 +707,15 @@ func (mset *stream) addConsumer(config *ConsumerConfig) (*consumer, error) {
 }
 
 func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname string, ca *consumerAssignment, isRecovering bool, action ConsumerAction) (*consumer, error) {
-	mset.mu.RLock()
-	s, jsa, tierName, cfg, acc, closed := mset.srv, mset.jsa, mset.tier, mset.cfg, mset.acc, mset.closed
-	retention := cfg.Retention
-	mset.mu.RUnlock()
-
 	// Check if this stream has closed.
-	if closed {
+	if mset.closed.Load() {
 		return nil, NewJSStreamInvalidError()
 	}
+
+	mset.mu.RLock()
+	s, jsa, tierName, cfg, acc := mset.srv, mset.jsa, mset.tier, mset.cfg, mset.acc
+	retention := cfg.Retention
+	mset.mu.RUnlock()
 
 	// If we do not have the consumer currently assigned to us in cluster mode we will proceed but warn.
 	// This can happen on startup with restored state where on meta replay we still do not have

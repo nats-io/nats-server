@@ -256,10 +256,40 @@ func (ms *memStore) SkipMsg() uint64 {
 	if ms.state.Msgs == 0 {
 		ms.state.FirstSeq = seq
 		ms.state.FirstTime = now
+	} else {
+		ms.dmap.Insert(seq)
 	}
-	ms.updateFirstSeq(seq)
 	ms.mu.Unlock()
 	return seq
+}
+
+// Skip multiple msgs.
+func (ms *memStore) SkipMsgs(seq uint64, num uint64) error {
+	// Grab time.
+	now := time.Now().UTC()
+
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	// Check sequence matches our last sequence.
+	if seq != ms.state.LastSeq+1 {
+		if seq > 0 {
+			return ErrSequenceMismatch
+		}
+		seq = ms.state.LastSeq + 1
+	}
+	lseq := seq + num - 1
+
+	ms.state.LastSeq = lseq
+	ms.state.LastTime = now
+	if ms.state.Msgs == 0 {
+		ms.state.FirstSeq, ms.state.FirstTime = lseq+1, now
+	} else {
+		for ; seq <= lseq; seq++ {
+			ms.dmap.Insert(seq)
+		}
+	}
+	return nil
 }
 
 // RegisterStorageUpdates registers a callback for updates to storage changes.
@@ -1058,9 +1088,6 @@ func (ms *memStore) updateFirstSeq(seq uint64) {
 			ms.dmap.Delete(seq)
 		}
 	}
-	if ms.dmap.IsEmpty() {
-		ms.dmap.SetInitialMin(ms.state.FirstSeq)
-	}
 }
 
 // Remove a seq from the fss and select new first.
@@ -1186,13 +1213,16 @@ func (ms *memStore) State() StreamState {
 
 	// Calculate interior delete details.
 	if numDeleted := int((state.LastSeq - state.FirstSeq + 1) - state.Msgs); numDeleted > 0 {
-		state.Deleted = make([]uint64, 0, state.NumDeleted)
-		// TODO(dlc) - Too Simplistic, once state is updated to allow runs etc redo.
-		for seq := state.FirstSeq + 1; seq < ms.state.LastSeq; seq++ {
-			if _, ok := ms.msgs[seq]; !ok {
+		state.Deleted = make([]uint64, 0, numDeleted)
+		fseq, lseq := state.FirstSeq, state.LastSeq
+		ms.dmap.Range(func(seq uint64) bool {
+			if seq < fseq || seq > lseq {
+				ms.dmap.Delete(seq)
+			} else {
 				state.Deleted = append(state.Deleted, seq)
 			}
-		}
+			return true
+		})
 	}
 	if len(state.Deleted) > 0 {
 		state.NumDeleted = len(state.Deleted)
