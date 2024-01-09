@@ -3717,7 +3717,7 @@ func (s *Server) streamSnapshot(ci *ClientInfo, acc *Account, mset *stream, sr *
 
 	// We will place sequence number and size of chunk sent in the reply.
 	ackSubj := fmt.Sprintf(jsSnapshotAckT, mset.name(), nuid.Next())
-	ackSub, _ := mset.subscribeInternalUnlocked(ackSubj+".>", func(_ *subscription, _ *client, _ *Account, subject, _ string, _ []byte) {
+	ackSub, _ := mset.subscribeInternal(ackSubj+".>", func(_ *subscription, _ *client, _ *Account, subject, _ string, _ []byte) {
 		cs, _ := strconv.Atoi(tokenAt(subject, 6))
 		// This is very crude and simple, but ok for now.
 		// This only matters when sending multiple chunks.
@@ -3728,7 +3728,7 @@ func (s *Server) streamSnapshot(ci *ClientInfo, acc *Account, mset *stream, sr *
 			}
 		}
 	})
-	defer mset.unsubscribeUnlocked(ackSub)
+	defer mset.unsubscribe(ackSub)
 
 	// TODO(dlc) - Add in NATS-Chunked-Sequence header
 
