@@ -277,7 +277,7 @@ type stream struct {
 	// Clustered mode.
 	sa         *streamAssignment
 	node       RaftNode
-	catchup    bool
+	catchup    atomic.Bool
 	syncSub    *subscription
 	infoSub    *subscription
 	clMu       sync.Mutex

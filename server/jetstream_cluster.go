@@ -7748,21 +7748,15 @@ func (mset *stream) hasCatchupPeers() bool {
 }
 
 func (mset *stream) setCatchingUp() {
-	mset.mu.Lock()
-	mset.catchup = true
-	mset.mu.Unlock()
+	mset.catchup.Store(true)
 }
 
 func (mset *stream) clearCatchingUp() {
-	mset.mu.Lock()
-	mset.catchup = false
-	mset.mu.Unlock()
+	mset.catchup.Store(false)
 }
 
 func (mset *stream) isCatchingUp() bool {
-	mset.mu.RLock()
-	defer mset.mu.RUnlock()
-	return mset.catchup
+	return mset.catchup.Load()
 }
 
 // Determine if a non-leader is current.
@@ -7771,7 +7765,7 @@ func (mset *stream) isCurrent() bool {
 	if mset.node == nil {
 		return true
 	}
-	return mset.node.Current() && !mset.catchup
+	return mset.node.Current() && !mset.catchup.Load()
 }
 
 // Maximum requests for the whole server that can be in flight at the same time.
