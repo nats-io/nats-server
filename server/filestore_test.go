@@ -6440,7 +6440,60 @@ func TestFileStoreExpireCacheOnLinearWalk(t *testing.T) {
 		}
 	}
 	checkNoCache()
+}
 
+func TestFileStoreSkipMsgs(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 1024},
+		StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Test on empty FS first.
+	// Make sure wrong starting sequence fails.
+	err = fs.SkipMsgs(10, 100)
+	require_Error(t, err, ErrSequenceMismatch)
+
+	err = fs.SkipMsgs(1, 100)
+	require_NoError(t, err)
+
+	state := fs.State()
+	require_Equal(t, state.FirstSeq, 101)
+	require_Equal(t, state.LastSeq, 100)
+	require_Equal(t, fs.numMsgBlocks(), 1)
+
+	// Now add alot.
+	err = fs.SkipMsgs(101, 100_000)
+	require_NoError(t, err)
+	state = fs.State()
+	require_Equal(t, state.FirstSeq, 100_101)
+	require_Equal(t, state.LastSeq, 100_100)
+	require_Equal(t, fs.numMsgBlocks(), 1)
+
+	// Now add in a message, and then skip to check dmap.
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 1024},
+		StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	fs.StoreMsg("foo", nil, nil)
+	err = fs.SkipMsgs(2, 10)
+	require_NoError(t, err)
+	state = fs.State()
+	require_Equal(t, state.FirstSeq, 1)
+	require_Equal(t, state.LastSeq, 11)
+	require_Equal(t, state.Msgs, 1)
+	require_Equal(t, state.NumDeleted, 10)
+	require_Equal(t, len(state.Deleted), 10)
+
+	// Check Fast State too.
+	state.Deleted = nil
+	fs.FastState(&state)
+	require_Equal(t, state.FirstSeq, 1)
+	require_Equal(t, state.LastSeq, 11)
+	require_Equal(t, state.Msgs, 1)
+	require_Equal(t, state.NumDeleted, 10)
 }
 
 ///////////////////////////////////////////////////////////////////////////
