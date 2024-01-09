@@ -1214,9 +1214,9 @@ func (ms *memStore) State() StreamState {
 	// Calculate interior delete details.
 	if numDeleted := int((state.LastSeq - state.FirstSeq + 1) - state.Msgs); numDeleted > 0 {
 		state.Deleted = make([]uint64, 0, numDeleted)
-		fseq := state.FirstSeq
+		fseq, lseq := state.FirstSeq, state.LastSeq
 		ms.dmap.Range(func(seq uint64) bool {
-			if seq < fseq {
+			if seq < fseq || seq > lseq {
 				ms.dmap.Delete(seq)
 			} else {
 				state.Deleted = append(state.Deleted, seq)
