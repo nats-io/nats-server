@@ -1536,13 +1536,7 @@ func (jsa *mqttJSA) newRequestEx(kind, subject, cidHash string, hdr int, msg []b
 	if len(responses) != 1 {
 		return nil, fmt.Errorf("unreachable: invalid number of responses (%d)", len(responses))
 	}
-	v := responses[0].value
-	if e, ok := v.(interface{ ToError() error }); ok {
-		if err := e.ToError(); err != nil {
-			return nil, err
-		}
-	}
-	return v, nil
+	return responses[0].value, nil
 }
 
 // newRequestExMulti sends multiple messages on the same subject and waits for
@@ -1949,8 +1943,8 @@ func (as *mqttAccountSessionManager) processRetainedMsg(_ *subscription, c *clie
 	// At this point we either recover from our own server, or process a remote retained message.
 	seq, _, _ := ackReplyInfo(reply)
 
-	// Handle this retained message
-	as.handleRetainedMsg(rm.Subject, &mqttRetainedMsgRef{sseq: seq}, rm)
+	// Handle this retained message, no need to copy the bytes.
+	as.handleRetainedMsg(rm.Subject, &mqttRetainedMsgRef{sseq: seq}, rm, false)
 
 	// If we were recovering (lastSeq > 0), then check if we are done.
 	if as.rrmLastSeq > 0 && seq >= as.rrmLastSeq {
@@ -2106,7 +2100,7 @@ func (as *mqttAccountSessionManager) cleaupRetainedMessageCache(s *Server, close
 			i, maxScan := 0, 10*1000
 			now := time.Now()
 			as.rmsCache.Range(func(key, value interface{}) bool {
-				rm := value.(mqttRetainedMsg)
+				rm := value.(*mqttRetainedMsg)
 				if now.After(rm.expiresFromCache) {
 					as.rmsCache.Delete(key)
 				}
@@ -2216,7 +2210,7 @@ func (as *mqttAccountSessionManager) sendJSAPIrequests(s *Server, c *client, acc
 // If a message for this topic already existed, the existing record is updated
 // with the provided information.
 // Lock not held on entry.
-func (as *mqttAccountSessionManager) handleRetainedMsg(key string, rf *mqttRetainedMsgRef, rm *mqttRetainedMsg) {
+func (as *mqttAccountSessionManager) handleRetainedMsg(key string, rf *mqttRetainedMsgRef, rm *mqttRetainedMsg, copyBytesToCache bool) {
 	as.mu.Lock()
 	defer as.mu.Unlock()
 	if as.retmsgs == nil {
@@ -2244,7 +2238,7 @@ func (as *mqttAccountSessionManager) handleRetainedMsg(key string, rf *mqttRetai
 			// Update the in-memory retained message cache but only for messages
 			// that are already in the cache, i.e. have been (recently) used.
 			if rm != nil {
-				as.setCachedRetainedMsg(key, rm, true)
+				as.setCachedRetainedMsg(key, rm, true, copyBytesToCache)
 			}
 			return
 		}
@@ -2772,7 +2766,7 @@ func (as *mqttAccountSessionManager) loadRetainedMessages(subjects map[string]st
 		}
 		// Add the loaded retained message to the cache, and to the results map.
 		key := ss[i][len(mqttRetainedMsgsStreamSubject):]
-		as.setCachedRetainedMsg(key, &rm, false)
+		as.setCachedRetainedMsg(key, &rm, false, false)
 		rms[key] = &rm
 	}
 	return rms
@@ -2972,15 +2966,17 @@ func (as *mqttAccountSessionManager) getCachedRetainedMsg(subject string) *mqttR
 	return rm
 }
 
-func (as *mqttAccountSessionManager) setCachedRetainedMsg(subject string, rm *mqttRetainedMsg, onlyReplace bool) {
+func (as *mqttAccountSessionManager) setCachedRetainedMsg(subject string, rm *mqttRetainedMsg, onlyReplace bool, copyBytesToCache bool) {
 	rm.expiresFromCache = time.Now().Add(mqttRetainedCacheTTL)
 	if onlyReplace {
-		if _, ok := as.rmsCache.Load(subject); ok {
-			as.rmsCache.Store(subject, rm)
+		if _, ok := as.rmsCache.Load(subject); !ok {
+			return
 		}
-	} else {
-		as.rmsCache.Store(subject, rm)
 	}
+	if copyBytesToCache {
+		rm.Msg = append([]byte(nil), rm.Msg...)
+	}
+	as.rmsCache.Store(subject, rm)
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -4176,7 +4172,7 @@ func (c *client) mqttHandlePubRetain() {
 				sseq: smr.Sequence,
 			}
 			// Add/update the map
-			asm.handleRetainedMsg(key, rf, rm)
+			asm.handleRetainedMsg(key, rf, rm, true) // will copy the payload bytes if needs to update rmsCache
 		} else {
 			c.mu.Lock()
 			acc := c.acc
