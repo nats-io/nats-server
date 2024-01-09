@@ -2975,7 +2975,7 @@ func (as *mqttAccountSessionManager) setCachedRetainedMsg(subject string, rm *mq
 		}
 	}
 	if copyBytesToCache {
-		rm.Msg = append([]byte(nil), rm.Msg...)
+		rm.Msg = copyBytes(rm.Msg)
 	}
 	as.rmsCache.Store(subject, rm)
 }
