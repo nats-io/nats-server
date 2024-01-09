@@ -2689,9 +2689,9 @@ func (mset *stream) setupMirrorConsumer() error {
 			}
 			mset.mu.Unlock()
 			ready.Wait()
-		case <-time.After(30 * time.Second):
+		case <-time.After(5 * time.Second):
 			mset.unsubscribe(crSub)
-			// We already waited 30 seconds, let's retry now.
+			// We already waited 5 seconds, let's retry now.
 			retry = true
 		}
 	}()
@@ -3043,9 +3043,9 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64, startTime time.T
 			}
 			mset.mu.Unlock()
 			ready.Wait()
-		case <-time.After(30 * time.Second):
+		case <-time.After(5 * time.Second):
 			mset.unsubscribe(crSub)
-			// We already waited 30 seconds, let's retry now.
+			// We already waited 5 seconds, let's retry now.
 			retry = true
 		}
 	}()
