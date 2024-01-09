@@ -1,4 +1,4 @@
-// Copyright 2019-2023 The NATS Authors
+// Copyright 2019-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -29,6 +29,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/klauspost/compress/s2"
@@ -219,7 +220,7 @@ type stream struct {
 	srv       *Server
 	client    *client
 	sysc      *client
-	sid       int
+	sid       atomic.Uint64
 	pubAck    []byte
 	outq      *jsOutQ
 	msgs      *ipQueue[*inMsg]
@@ -242,7 +243,7 @@ type stream struct {
 	mqch      chan struct{}
 	active    bool
 	ddloaded  bool
-	closed    bool
+	closed    atomic.Bool
 
 	// Mirror
 	mirror *sourceInfo
@@ -1955,9 +1956,9 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 // Purge will remove all messages from the stream and underlying store based on the request.
 func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err error) {
 	mset.mu.RLock()
-	if mset.client == nil || mset.store == nil {
+	if mset.closed.Load() {
 		mset.mu.RUnlock()
-		return 0, errors.New("invalid stream")
+		return 0, errStreamClosed
 	}
 	if mset.cfg.Sealed {
 		mset.mu.RUnlock()
@@ -2022,24 +2023,17 @@ func (mset *stream) removeMsg(seq uint64) (bool, error) {
 
 // DeleteMsg will remove a message from a stream.
 func (mset *stream) deleteMsg(seq uint64) (bool, error) {
-	mset.mu.RLock()
-	if mset.client == nil {
-		mset.mu.RUnlock()
-		return false, fmt.Errorf("invalid stream")
+	if mset.closed.Load() {
+		return false, errStreamClosed
 	}
-	mset.mu.RUnlock()
-
 	return mset.store.RemoveMsg(seq)
 }
 
 // EraseMsg will securely remove a message and rewrite the data with random data.
 func (mset *stream) eraseMsg(seq uint64) (bool, error) {
-	mset.mu.RLock()
-	if mset.client == nil {
-		mset.mu.RUnlock()
-		return false, fmt.Errorf("invalid stream")
+	if mset.closed.Load() {
+		return false, errStreamClosed
 	}
-	mset.mu.RUnlock()
 	return mset.store.EraseMsg(seq)
 }
 
@@ -2440,7 +2434,7 @@ func (mset *stream) scheduleSetupMirrorConsumerRetry() {
 // Setup our mirror consumer.
 // Lock should be held.
 func (mset *stream) setupMirrorConsumer() error {
-	if mset.closed {
+	if mset.closed.Load() {
 		return errStreamClosed
 	}
 	if mset.outq == nil {
@@ -2561,7 +2555,10 @@ func (mset *stream) setupMirrorConsumer() error {
 			mset.setMirrorErr(ApiErrors[JSInvalidJSONErr])
 			return
 		}
-		respCh <- &ccr
+		select {
+		case respCh <- &ccr:
+		default:
+		}
 	})
 	if err != nil {
 		mirror.err = NewJSMirrorConsumerSetupFailedError(err, Unless(err))
@@ -2692,9 +2689,9 @@ func (mset *stream) setupMirrorConsumer() error {
 			}
 			mset.mu.Unlock()
 			ready.Wait()
-		case <-time.After(5 * time.Second):
+		case <-time.After(30 * time.Second):
 			mset.unsubscribeUnlocked(crSub)
-			// We already waited 5 seconds, let's retry now.
+			// We already waited 30 seconds, let's retry now.
 			retry = true
 		}
 	}()
@@ -2824,7 +2821,7 @@ func (mset *stream) scheduleSetSourceConsumer(iname string, seq uint64, delay ti
 // Lock should be held.
 func (mset *stream) setSourceConsumer(iname string, seq uint64, startTime time.Time) {
 	// Ignore if closed.
-	if mset.closed {
+	if mset.closed.Load() {
 		return
 	}
 
@@ -2918,7 +2915,10 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64, startTime time.T
 			c.Warnf("JetStream bad source consumer create response: %q", msg)
 			return
 		}
-		respCh <- &ccr
+		select {
+		case respCh <- &ccr:
+		default:
+		}
 	})
 	if err != nil {
 		si.err = NewJSSourceConsumerSetupFailedError(err, Unless(err))
@@ -3043,9 +3043,9 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64, startTime time.T
 			}
 			mset.mu.Unlock()
 			ready.Wait()
-		case <-time.After(5 * time.Second):
+		case <-time.After(30 * time.Second):
 			mset.unsubscribeUnlocked(crSub)
-			// We already waited 5 seconds, let's retry now.
+			// We already waited 30 seconds, let's retry now.
 			retry = true
 		}
 	}()
@@ -3673,55 +3673,43 @@ func (mset *stream) unsubscribeToStream(stopping bool) error {
 	return nil
 }
 
-// Lock should be held.
+// Lock does NOT need to be held, we set the client on setup and never change it at this point.
 func (mset *stream) subscribeInternal(subject string, cb msgHandler) (*subscription, error) {
-	c := mset.client
-	if c == nil {
-		return nil, fmt.Errorf("invalid stream")
+	if mset.closed.Load() {
+		return nil, errStreamClosed
 	}
 	if cb == nil {
-		return nil, fmt.Errorf("undefined message handler")
+		return nil, errInvalidMsgHandler
 	}
-
-	mset.sid++
-
+	c := mset.client
+	sid := int(mset.sid.Add(1))
 	// Now create the subscription
-	return c.processSub([]byte(subject), nil, []byte(strconv.Itoa(mset.sid)), cb, false)
+	return c.processSub([]byte(subject), nil, []byte(strconv.Itoa(sid)), cb, false)
 }
 
-// Helper for unlocked stream.
-func (mset *stream) subscribeInternalUnlocked(subject string, cb msgHandler) (*subscription, error) {
-	mset.mu.Lock()
-	defer mset.mu.Unlock()
-	return mset.subscribeInternal(subject, cb)
-}
-
-// Lock should be held.
+// Lock does NOT need to be held, we set the client on setup and never change it at this point.
 func (mset *stream) queueSubscribeInternal(subject, group string, cb msgHandler) (*subscription, error) {
-	c := mset.client
-	if c == nil {
-		return nil, fmt.Errorf("invalid stream")
+	if mset.closed.Load() {
+		return nil, errStreamClosed
 	}
 	if cb == nil {
-		return nil, fmt.Errorf("undefined message handler")
+		return nil, errInvalidMsgHandler
 	}
-
-	mset.sid++
-
+	c := mset.client
+	sid := int(mset.sid.Add(1))
 	// Now create the subscription
-	return c.processSub([]byte(subject), []byte(group), []byte(strconv.Itoa(mset.sid)), cb, false)
+	return c.processSub([]byte(subject), []byte(group), []byte(strconv.Itoa(sid)), cb, false)
 }
 
 // This will unsubscribe us from the exact subject given.
 // We do not currently track the subs so do not have the sid.
 // This should be called only on an update.
-// Lock should be held.
+// Lock does NOT need to be held, we set the client on setup and never change it at this point.
 func (mset *stream) unsubscribeInternal(subject string) error {
-	c := mset.client
-	if c == nil {
-		return fmt.Errorf("invalid stream")
+	if mset.closed.Load() {
+		return errStreamClosed
 	}
-
+	c := mset.client
 	var sid []byte
 	c.mu.Lock()
 	for _, sub := range c.subs {
@@ -3740,7 +3728,7 @@ func (mset *stream) unsubscribeInternal(subject string) error {
 
 // Lock should be held.
 func (mset *stream) unsubscribe(sub *subscription) {
-	if sub == nil || mset.client == nil {
+	if sub == nil || mset.closed.Load() {
 		return
 	}
 	mset.client.processUnsub(sub.sid)
@@ -4131,19 +4119,20 @@ func (mset *stream) processInboundJetStreamMsg(_ *subscription, c *client, _ *Ac
 }
 
 var (
-	errLastSeqMismatch = errors.New("last sequence mismatch")
-	errMsgIdDuplicate  = errors.New("msgid is duplicate")
-	errStreamClosed    = errors.New("stream closed")
+	errLastSeqMismatch   = errors.New("last sequence mismatch")
+	errMsgIdDuplicate    = errors.New("msgid is duplicate")
+	errStreamClosed      = errors.New("stream closed")
+	errInvalidMsgHandler = errors.New("undefined message handler")
 )
 
 // processJetStreamMsg is where we try to actually process the stream msg.
 func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, lseq uint64, ts int64) error {
-	mset.mu.Lock()
-	c, s, store := mset.client, mset.srv, mset.store
-	if mset.closed || c == nil {
-		mset.mu.Unlock()
+	if mset.closed.Load() {
 		return errStreamClosed
 	}
+
+	mset.mu.Lock()
+	s, store := mset.srv, mset.store
 
 	// Apply the input subject transform if any
 	if mset.itr != nil {
@@ -4964,8 +4953,9 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	jsa.mu.Unlock()
 
 	// Mark as closed, kick monitor and collect consumers first.
+	mset.closed.Store(true)
+
 	mset.mu.Lock()
-	mset.closed = true
 	// Signal to the monitor loop.
 	// Can't use qch here.
 	if mset.mqch != nil {
@@ -5069,7 +5059,6 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	// Snapshot store.
 	store := mset.store
 	c := mset.client
-	mset.client = nil
 
 	// Clustered cleanup.
 	mset.mu.Unlock()
@@ -5514,7 +5503,7 @@ func (mset *stream) ackMsg(o *consumer, seq uint64) {
 
 	// Don't make this RLock(). We need to have only 1 running at a time to gauge interest across all consumers.
 	mset.mu.Lock()
-	if mset.closed || mset.store == nil || mset.cfg.Retention == LimitsPolicy {
+	if mset.closed.Load() || mset.cfg.Retention == LimitsPolicy {
 		mset.mu.Unlock()
 		return
 	}
@@ -5561,14 +5550,10 @@ func (mset *stream) ackMsg(o *consumer, seq uint64) {
 
 // Snapshot creates a snapshot for the stream and possibly consumers.
 func (mset *stream) snapshot(deadline time.Duration, checkMsgs, includeConsumers bool) (*SnapshotResult, error) {
-	mset.mu.RLock()
-	if mset.client == nil || mset.store == nil {
-		mset.mu.RUnlock()
-		return nil, errors.New("invalid stream")
+	if mset.closed.Load() {
+		return nil, errStreamClosed
 	}
 	store := mset.store
-	mset.mu.RUnlock()
-
 	return store.Snapshot(deadline, checkMsgs, includeConsumers)
 }
 
