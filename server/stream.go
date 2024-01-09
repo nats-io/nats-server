@@ -2546,7 +2546,7 @@ func (mset *stream) setupMirrorConsumer() error {
 	respCh := make(chan *JSApiConsumerCreateResponse, 1)
 	reply := infoReplySubject()
 	crSub, err := mset.subscribeInternal(reply, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
-		mset.unsubscribeUnlocked(sub)
+		mset.unsubscribe(sub)
 		_, msg := c.msgParts(rmsg)
 
 		var ccr JSApiConsumerCreateResponse
@@ -2690,7 +2690,7 @@ func (mset *stream) setupMirrorConsumer() error {
 			mset.mu.Unlock()
 			ready.Wait()
 		case <-time.After(30 * time.Second):
-			mset.unsubscribeUnlocked(crSub)
+			mset.unsubscribe(crSub)
 			// We already waited 30 seconds, let's retry now.
 			retry = true
 		}
@@ -2908,7 +2908,7 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64, startTime time.T
 	respCh := make(chan *JSApiConsumerCreateResponse, 1)
 	reply := infoReplySubject()
 	crSub, err := mset.subscribeInternal(reply, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
-		mset.unsubscribeUnlocked(sub)
+		mset.unsubscribe(sub)
 		_, msg := c.msgParts(rmsg)
 		var ccr JSApiConsumerCreateResponse
 		if err := json.Unmarshal(msg, &ccr); err != nil {
@@ -3044,7 +3044,7 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64, startTime time.T
 			mset.mu.Unlock()
 			ready.Wait()
 		case <-time.After(30 * time.Second):
-			mset.unsubscribeUnlocked(crSub)
+			mset.unsubscribe(crSub)
 			// We already waited 30 seconds, let's retry now.
 			retry = true
 		}
@@ -3732,12 +3732,6 @@ func (mset *stream) unsubscribe(sub *subscription) {
 		return
 	}
 	mset.client.processUnsub(sub.sid)
-}
-
-func (mset *stream) unsubscribeUnlocked(sub *subscription) {
-	mset.mu.Lock()
-	mset.unsubscribe(sub)
-	mset.mu.Unlock()
 }
 
 func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
