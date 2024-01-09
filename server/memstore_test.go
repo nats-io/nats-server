@@ -859,3 +859,54 @@ func TestMemStoreGetSeqFromTimeWithLastDeleted(t *testing.T) {
 	// Make sure we get the right value.
 	require_Equal(t, seq, 501)
 }
+
+func TestMemStoreSkipMsgs(t *testing.T) {
+	cfg := &StreamConfig{
+		Name:     "zzz",
+		Subjects: []string{"*"},
+		Storage:  MemoryStorage,
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(t, err)
+
+	// Test on empty FS first.
+	// Make sure wrong starting sequence fails.
+	err = ms.SkipMsgs(10, 100)
+	require_Error(t, err, ErrSequenceMismatch)
+
+	err = ms.SkipMsgs(1, 100)
+	require_NoError(t, err)
+
+	state := ms.State()
+	require_Equal(t, state.FirstSeq, 101)
+	require_Equal(t, state.LastSeq, 100)
+
+	// Now add alot.
+	err = ms.SkipMsgs(101, 100_000)
+	require_NoError(t, err)
+	state = ms.State()
+	require_Equal(t, state.FirstSeq, 100_101)
+	require_Equal(t, state.LastSeq, 100_100)
+
+	// Now add in a message, and then skip to check dmap.
+	ms, err = newMemStore(cfg)
+	require_NoError(t, err)
+	ms.StoreMsg("foo", nil, nil)
+
+	err = ms.SkipMsgs(2, 10)
+	require_NoError(t, err)
+	state = ms.State()
+	require_Equal(t, state.FirstSeq, 1)
+	require_Equal(t, state.LastSeq, 11)
+	require_Equal(t, state.Msgs, 1)
+	require_Equal(t, state.NumDeleted, 10)
+	require_Equal(t, len(state.Deleted), 10)
+
+	// Check Fast State too.
+	state.Deleted = nil
+	ms.FastState(&state)
+	require_Equal(t, state.FirstSeq, 1)
+	require_Equal(t, state.LastSeq, 11)
+	require_Equal(t, state.Msgs, 1)
+	require_Equal(t, state.NumDeleted, 10)
+}

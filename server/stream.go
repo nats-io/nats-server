@@ -2367,23 +2367,28 @@ func (mset *stream) retryMirrorConsumer() error {
 // Lock should be held.
 func (mset *stream) skipMsgs(start, end uint64) {
 	node, store := mset.node, mset.store
+	// If we are not clustered we can short circuit now with store.SkipMsgs
+	if node == nil {
+		store.SkipMsgs(start, end-start+1)
+		mset.lseq = end
+		return
+	}
+
+	// FIXME (dlc) - We should allow proposals of DeleteEange, but would need to make sure all peers support.
+	// With syncRequest was easy to add bool into request.
 	var entries []*Entry
 	for seq := start; seq <= end; seq++ {
-		if node != nil {
-			entries = append(entries, &Entry{EntryNormal, encodeStreamMsg(_EMPTY_, _EMPTY_, nil, nil, seq-1, 0)})
-			// So a single message does not get too big.
-			if len(entries) > 10_000 {
-				node.ProposeDirect(entries)
-				// We need to re-craete `entries` because there is a reference
-				// to it in the node's pae map.
-				entries = entries[:0]
-			}
-		} else {
-			mset.lseq = store.SkipMsg()
+		entries = append(entries, &Entry{EntryNormal, encodeStreamMsg(_EMPTY_, _EMPTY_, nil, nil, seq-1, 0)})
+		// So a single message does not get too big.
+		if len(entries) > 10_000 {
+			node.ProposeDirect(entries)
+			// We need to re-create `entries` because there is a reference
+			// to it in the node's pae map.
+			entries = entries[:0]
 		}
 	}
 	// Send all at once.
-	if node != nil && len(entries) > 0 {
+	if len(entries) > 0 {
 		node.ProposeDirect(entries)
 	}
 }
