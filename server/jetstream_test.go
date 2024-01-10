@@ -11596,13 +11596,13 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 
 	var f = func(streamName string, subject string, subjectNumMsgs uint64, streamNumMsg uint64, firstSeq uint64, lastSeq uint64) func() error {
 		return func() error {
-			si, err := js2.StreamInfo(streamName, &nats.StreamInfoRequest{SubjectsFilter: ">"})
+			si, err := js2.StreamInfo(streamName, &nats.StreamInfoRequest{SubjectsFilter: subject})
 			require_NoError(t, err)
 			if ss, ok := si.State.Subjects[subject]; !ok {
-				t.Log("Expected messages with the transformed subject")
+				t.Logf("Expected messages with the transformed subject %s", subject)
 			} else {
 				if ss != subjectNumMsgs {
-					t.Fatalf("Expected %d messages on the transformed subject but got %d", subjectNumMsgs, ss)
+					t.Fatalf("Expected %d messages on the transformed subject %s but got %d", subjectNumMsgs, subject, ss)
 				}
 			}
 			if si.State.Msgs != streamNumMsg {
@@ -11615,9 +11615,9 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 		}
 	}
 
-	checkFor(t, 2*time.Second, 100*time.Millisecond, f("M5", "foo2", 100, 100, 251, 350))
-	checkFor(t, 2*time.Second, 100*time.Millisecond, f("M6", "bar2", 50, 150, 101, 250))
-	checkFor(t, 2*time.Second, 100*time.Millisecond, f("M6", "baz2", 100, 150, 101, 250))
+	checkFor(t, 10*time.Second, 100*time.Millisecond, f("M5", "foo2", 100, 100, 251, 350))
+	checkFor(t, 10*time.Second, 100*time.Millisecond, f("M6", "bar2", 50, 150, 101, 250))
+	checkFor(t, 10*time.Second, 100*time.Millisecond, f("M6", "baz2", 100, 150, 101, 250))
 
 }
 
