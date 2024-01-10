@@ -726,6 +726,18 @@ func (a *Account) RemoveMapping(src string) bool {
 			a.mappings[len(a.mappings)-1] = nil // gc
 			a.mappings = a.mappings[:len(a.mappings)-1]
 			a.hasMapped.Store(len(a.mappings) > 0)
+			// If we have connected leafnodes make sure to update.
+			if a.nleafs > 0 {
+				// Need to release because lock ordering is client -> account
+				a.mu.Unlock()
+				// Now grab the leaf list lock. We can hold client lock under this one.
+				a.lmu.RLock()
+				for _, lc := range a.lleafs {
+					lc.forceRemoveFromSmap(src)
+				}
+				a.lmu.RUnlock()
+				a.mu.Lock()
+			}
 			return true
 		}
 	}

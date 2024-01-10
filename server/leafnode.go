@@ -1,4 +1,4 @@
-// Copyright 2019-2023 The NATS Authors
+// Copyright 2019-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -2167,6 +2167,28 @@ func (c *client) forceAddToSmap(subj string) {
 	// Place into the map since it was not there.
 	c.leaf.smap[subj] = 1
 	c.sendLeafNodeSubUpdate(subj, 1)
+}
+
+// Used to force remove a subject from the subject map.
+func (c *client) forceRemoveFromSmap(subj string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.leaf.smap == nil {
+		return
+	}
+	n := c.leaf.smap[subj]
+	if n == 0 {
+		return
+	}
+	n--
+	if n == 0 {
+		// Remove is now zero
+		delete(c.leaf.smap, subj)
+		c.sendLeafNodeSubUpdate(subj, 0)
+	} else {
+		c.leaf.smap[subj] = n
+	}
 }
 
 // Send the subscription interest change to the other side.
