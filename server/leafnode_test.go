@@ -2549,7 +2549,7 @@ func TestLeafNodeOperatorBadCfg(t *testing.T) {
 	}{
 		{
 			name:      "Operator with Leafnode",
-			errorText: "operator mode does not allow specifying user in leafnode config",
+			errorText: "operator mode does not allow specifying users in leafnode config",
 			cfg: `
 			port: -1
 			authorization {
@@ -2587,7 +2587,7 @@ func TestLeafNodeOperatorBadCfg(t *testing.T) {
 			// let's manually close the account resolver to avoid leaking go routines.
 			opts.AccountResolver.Close()
 			if err.Error() != c.errorText {
-				t.Fatalf("Expected error %s but got %s", c.errorText, err)
+				t.Fatalf("Expected error %q but got %q", c.errorText, err)
 			}
 		})
 	}
@@ -7396,4 +7396,66 @@ func TestLeafNodeServerReloadSubjectMappings(t *testing.T) {
 
 	// Also make sure we do not have subscription interest for source1 on leaf anymore.
 	checkSubNoInterest(t, l, globalAccountName, "source1", 2*time.Second)
+}
+
+func TestLeafNodeNkeyAuth(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		server_name: test-server
+		leaf {
+			listen: 127.0.0.1:-1
+			authorization: { nkey: UCSTG5CRF5GEJERAFKUUYRODGABTBVWY2NPE4GGKRQVQOH74PIAKTVKO }
+		}
+	`))
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	tmpl := `
+		listen: 127.0.0.1:-1
+		server_name: test-leaf
+		leaf {
+			remotes: [ {
+				url:  nats-leaf://127.0.0.1:{LEAF_PORT}
+				seed: SUACJN3OSKWWPQXME4JUNFJ3PARXPO657GGNWNU7PK7G3AUQQYHLW26XH4
+			} ]
+		}
+	`
+	tmpl = strings.Replace(tmpl, "{LEAF_PORT}", fmt.Sprintf("%d", o.LeafNode.Port), 1)
+	lConf := createConfFile(t, []byte(tmpl))
+	l, _ := RunServerWithConfig(lConf)
+	defer l.Shutdown()
+
+	checkLeafNodeConnected(t, l)
+}
+
+func TestLeafNodeAccountNkeysAuth(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		server_name: test-server
+		leaf {
+			listen: 127.0.0.1:-1
+		}
+		accounts {
+            A { users [ {nkey: UCSTG5CRF5GEJERAFKUUYRODGABTBVWY2NPE4GGKRQVQOH74PIAKTVKO } ] }
+		}
+	`))
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	tmpl := `
+		listen: 127.0.0.1:-1
+		server_name: test-leaf
+		leaf {
+			remotes: [ {
+				url:  nats-leaf://127.0.0.1:{LEAF_PORT}
+				seed: SUACJN3OSKWWPQXME4JUNFJ3PARXPO657GGNWNU7PK7G3AUQQYHLW26XH4
+			} ]
+		}
+	`
+	tmpl = strings.Replace(tmpl, "{LEAF_PORT}", fmt.Sprintf("%d", o.LeafNode.Port), 1)
+	lConf := createConfFile(t, []byte(tmpl))
+	l, _ := RunServerWithConfig(lConf)
+	defer l.Shutdown()
+
+	checkLeafNodeConnected(t, l)
 }
