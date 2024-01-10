@@ -1322,6 +1322,33 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 	// with that user (from the leafnode's authorization{} config).
 	if opts.LeafNode.Username != _EMPTY_ {
 		return isAuthorized(opts.LeafNode.Username, opts.LeafNode.Password, opts.LeafNode.Account)
+	} else if opts.LeafNode.Nkey != _EMPTY_ {
+		if c.opts.Nkey != opts.LeafNode.Nkey {
+			return false
+		}
+		if c.opts.Sig == _EMPTY_ {
+			c.Debugf("Signature missing")
+			return false
+		}
+		sig, err := base64.RawURLEncoding.DecodeString(c.opts.Sig)
+		if err != nil {
+			// Allow fallback to normal base64.
+			sig, err = base64.StdEncoding.DecodeString(c.opts.Sig)
+			if err != nil {
+				c.Debugf("Signature not valid base64")
+				return false
+			}
+		}
+		pub, err := nkeys.FromPublicKey(c.opts.Nkey)
+		if err != nil {
+			c.Debugf("User nkey not valid: %v", err)
+			return false
+		}
+		if err := pub.Verify(c.nonce, sig); err != nil {
+			c.Debugf("Signature not verified")
+			return false
+		}
+		return s.registerLeafWithAccount(c, opts.LeafNode.Account)
 	} else if len(opts.LeafNode.Users) > 0 {
 		if opts.LeafNode.TLSMap {
 			var user *User
