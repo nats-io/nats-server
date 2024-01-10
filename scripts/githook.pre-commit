@@ -24,9 +24,6 @@ declare -i failures=0
 warn() { stderr "$@"; failures+=1; }
 have_command() { command -v "$1" >/dev/null 2>&1; }
 
-## FIXME: check for diffs HOOK/REPO
-## FIXME: ensure in top-dir
-
 for c in git go; do
 	have_command "$c" || warn "missing required command: $c"
 done
