@@ -25,7 +25,6 @@ import (
 
 // Logger interface of the NATS Server
 type Logger interface {
-
 	// Log a notice statement
 	Noticef(format string, v ...interface{})
 

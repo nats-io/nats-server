@@ -608,7 +608,7 @@ func (a *Account) AddWeightedMappings(src string, dests ...*MapDest) error {
 	m := &mapping{src: src, wc: subjectHasWildcard(src), dests: make([]*destination, 0, len(dests)+1)}
 	seen := make(map[string]struct{})
 
-	var tw = make(map[string]uint8)
+	tw := make(map[string]uint8)
 	for _, d := range dests {
 		if _, ok := seen[d.Subject]; ok {
 			return fmt.Errorf("duplicate entry for %q", d.Subject)
@@ -1007,7 +1007,8 @@ func (a *Account) AddServiceExportWithResponse(subject string, respType ServiceR
 
 // AddServiceExportWithresponse will configure the account with the defined export and response type.
 func (a *Account) addServiceExportWithResponseAndAccountPos(
-	subject string, respType ServiceRespType, accounts []*Account, accountPos uint) error {
+	subject string, respType ServiceRespType, accounts []*Account, accountPos uint,
+) error {
 	if a == nil {
 		return ErrMissingAccount
 	}
@@ -2195,7 +2196,7 @@ func (a *Account) processServiceImportResponse(sub *subscription, c *client, _ *
 // for all service replies, unless we are bound to a leafnode.
 // Lock should be held.
 func (a *Account) createRespWildcard() {
-	var b = [baseServerLen]byte{'_', 'R', '_', '.'}
+	b := [baseServerLen]byte{'_', 'R', '_', '.'}
 	rn := fastrand.Uint64()
 	for i, l := replyPrefixLen, rn; i < len(b); i++ {
 		b[i] = digits[l%base]
@@ -3704,7 +3705,7 @@ func buildInternalNkeyUser(uc *jwt.UserClaims, acts map[string]struct{}, acc *Ac
 	}
 
 	// Now check for permissions.
-	var p = buildPermissionsFromJwt(&uc.Permissions)
+	p := buildPermissionsFromJwt(&uc.Permissions)
 	if p == nil && acc.defaultPerms != nil {
 		p = acc.defaultPerms.clone()
 	}

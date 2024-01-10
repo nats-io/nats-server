@@ -208,8 +208,10 @@ func TestJetStreamSuperClusterUniquePlacementTag(t *testing.T) {
 	t.Run("scale-up-test", func(t *testing.T) {
 		// create enough streams so we hit it eventually
 		for i := 0; i < 10; i++ {
-			cfg := &nats.StreamConfig{Name: fmt.Sprintf("scale-up-%d", i), Replicas: 1,
-				Placement: &nats.Placement{Tags: []string{"cloud:C2-tag"}}}
+			cfg := &nats.StreamConfig{
+				Name: fmt.Sprintf("scale-up-%d", i), Replicas: 1,
+				Placement: &nats.Placement{Tags: []string{"cloud:C2-tag"}},
+			}
 			si, err := js.AddStream(cfg)
 			require_NoError(t, err)
 			require_Equal(t, si.Cluster.Name, "C2")
@@ -539,7 +541,8 @@ func TestJetStreamSuperClusterConnectionCount(t *testing.T) {
 			_, err = js.AddStream(&nats.StreamConfig{
 				Name:     name,
 				Subjects: []string{name},
-				Replicas: 3})
+				Replicas: 3,
+			})
 			require_NoError(t, err)
 		}()
 	}
@@ -551,7 +554,8 @@ func TestJetStreamSuperClusterConnectionCount(t *testing.T) {
 		_, err = js.AddStream(&nats.StreamConfig{
 			Name:     "src",
 			Sources:  []*nats.StreamSource{{Name: "foo1"}, {Name: "foo2"}},
-			Replicas: 3})
+			Replicas: 3,
+		})
 		require_NoError(t, err)
 	}()
 	func() {
@@ -562,7 +566,8 @@ func TestJetStreamSuperClusterConnectionCount(t *testing.T) {
 		_, err = js.AddStream(&nats.StreamConfig{
 			Name:     "mir",
 			Mirror:   &nats.StreamSource{Name: "foo2"},
-			Replicas: 3})
+			Replicas: 3,
+		})
 		require_NoError(t, err)
 	}()
 
@@ -2053,7 +2058,6 @@ func TestJetStreamSuperClusterMovingStreamsWithMirror(t *testing.T) {
 		}
 		return nil
 	})
-
 }
 
 func TestJetStreamSuperClusterMovingStreamAndMoveBack(t *testing.T) {
@@ -2942,7 +2946,8 @@ func TestJetStreamSuperClusterDoubleStreamMove(t *testing.T) {
 		require_True(t, jszBefore.Streams == 1)
 
 		moveReq, err := json.Marshal(&JSApiMetaServerStreamMoveRequest{
-			Server: fromSrv, Tags: toTags})
+			Server: fromSrv, Tags: toTags,
+		})
 		require_NoError(t, err)
 		rmsg, err := ncsys.Request(fmt.Sprintf(JSApiServerStreamMoveT, "$G", "TEST"), moveReq, 100*time.Second)
 		require_NoError(t, err)
@@ -3838,7 +3843,7 @@ func TestJetStreamSuperClusterGWReplyRewrite(t *testing.T) {
 
 func TestJetStreamSuperClusterGWOfflineSatus(t *testing.T) {
 	orgEventsHBInterval := eventsHBInterval
-	eventsHBInterval = 500 * time.Millisecond //time.Second
+	eventsHBInterval = 500 * time.Millisecond // time.Second
 	defer func() { eventsHBInterval = orgEventsHBInterval }()
 
 	tmpl := `

@@ -21,6 +21,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -42,9 +44,7 @@ import (
 	"testing"
 	"time"
 
-	"crypto/hmac"
 	crand "crypto/rand"
-	"crypto/sha256"
 
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
@@ -646,7 +646,6 @@ func TestNoRaceRouteCache(t *testing.T) {
 		{"queue_sub", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-
 			oa := DefaultOptions()
 			oa.NoSystemAccount = true
 			oa.Cluster.PoolSize = -1
@@ -1948,7 +1947,6 @@ func TestNoRaceJetStreamClusterSourcesMuxd(t *testing.T) {
 		}
 		return nil
 	})
-
 }
 
 func TestNoRaceJetStreamSuperClusterMixedModeSources(t *testing.T) {
@@ -3253,7 +3251,6 @@ func TestNoRaceJetStreamOrderedConsumerMissingMsg(t *testing.T) {
 				case errCh <- fmt.Errorf("Error creating sub: %v", err):
 				default:
 				}
-
 			}
 		}(nc, js)
 	}
@@ -3282,7 +3279,6 @@ func TestNoRaceJetStreamOrderedConsumerMissingMsg(t *testing.T) {
 			t.Fatal("Did not receive all messages for all consumers in time")
 		}
 	}
-
 }
 
 // Issue #2488 - Bad accounting, can not reproduce the stalled consumers after last several PRs.
@@ -3334,7 +3330,7 @@ func TestNoRaceJetStreamClusterInterestPolicyAckNone(t *testing.T) {
 				if _, err := js.Publish("cluster.created", msg); err != nil {
 					t.Fatalf("Unexpected error: %v", err)
 				}
-				//time.Sleep(100 * time.Microsecond)
+				// time.Sleep(100 * time.Microsecond)
 			}
 
 			// Wait for all messages to be received.
@@ -4308,10 +4304,14 @@ func TestNoRaceJetStreamSparseConsumers(t *testing.T) {
 		name    string
 		mconfig *nats.StreamConfig
 	}{
-		{"MemoryStore", &nats.StreamConfig{Name: "TEST", Storage: nats.MemoryStorage, MaxMsgsPerSubject: 25_000_000,
-			Subjects: []string{"*"}}},
-		{"FileStore", &nats.StreamConfig{Name: "TEST", Storage: nats.FileStorage, MaxMsgsPerSubject: 25_000_000,
-			Subjects: []string{"*"}}},
+		{"MemoryStore", &nats.StreamConfig{
+			Name: "TEST", Storage: nats.MemoryStorage, MaxMsgsPerSubject: 25_000_000,
+			Subjects: []string{"*"},
+		}},
+		{"FileStore", &nats.StreamConfig{
+			Name: "TEST", Storage: nats.FileStorage, MaxMsgsPerSubject: 25_000_000,
+			Subjects: []string{"*"},
+		}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -4511,7 +4511,7 @@ func TestNoRaceJetStreamMsgIdPerfDuringCatchup(t *testing.T) {
 		m.Header.Set(JSMsgId, strconv.Itoa(i))
 		_, err := js.PublishMsgAsync(m)
 		require_NoError(t, err)
-		//time.Sleep(42 * time.Microsecond)
+		// time.Sleep(42 * time.Microsecond)
 		if i == ss {
 			fmt.Printf("SD")
 			sl.Shutdown()
@@ -5300,7 +5300,6 @@ func TestNoRaceJetStreamClusterDirectAccessAllPeersSubs(t *testing.T) {
 		}
 		return nil
 	})
-
 }
 
 func TestNoRaceJetStreamClusterStreamNamesAndInfosMoreThanAPILimit(t *testing.T) {
@@ -6188,10 +6187,12 @@ func TestNoRaceFileStoreStreamMaxAgePerformance(t *testing.T) {
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir},
-		StreamConfig{Name: "MA",
+		StreamConfig{
+			Name:     "MA",
 			Subjects: []string{"foo.*"},
 			MaxAge:   maxAge,
-			Storage:  FileStorage},
+			Storage:  FileStorage,
+		},
 	)
 	require_NoError(t, err)
 	defer fs.Stop()
@@ -6756,7 +6757,6 @@ func TestNoRaceJetStreamClusterF3Setup(t *testing.T) {
 	var streamSources []*nats.StreamSource
 	for _, src := range sources {
 		streamSources = append(streamSources, &nats.StreamSource{Name: src})
-
 	}
 
 	t.Log("Creating Aggregate Stream")
@@ -6949,7 +6949,6 @@ func TestNoRaceJetStreamClusterF3Setup(t *testing.T) {
 			fseq, lseq = si.State.FirstSeq, si.State.LastSeq
 			time.Sleep(5 * time.Second)
 		}
-
 	}()
 
 	select {
@@ -7986,8 +7985,8 @@ func TestNoRaceRoutePool(t *testing.T) {
 				return s2nc, s1nc
 			}
 
-			var rcv = [5]*nats.Conn{}
-			var snd = [5]*nats.Conn{}
+			rcv := [5]*nats.Conn{}
+			snd := [5]*nats.Conn{}
 			accs := []string{"A", "B", "C", "D", "E"}
 
 			for i := 0; i < 5; i++ {
@@ -8111,8 +8110,8 @@ func testNoRaceRoutePerAccount(t *testing.T, useWildCard bool) {
 				return s2nc, s1nc
 			}
 
-			var rcv = [5]*nats.Conn{}
-			var snd = [5]*nats.Conn{}
+			rcv := [5]*nats.Conn{}
+			snd := [5]*nats.Conn{}
 			users := []string{"0", "1", "2", "3", "4"}
 
 			for i := 0; i < 5; i++ {
@@ -8551,7 +8550,6 @@ func TestNoRaceJetStreamClusterDifferentRTTInterestBasedStreamPreAck(t *testing.
 		}
 		return fmt.Errorf("Still have %d msgs left", state.Msgs)
 	})
-
 }
 
 func TestNoRaceCheckAckFloorWithVeryLargeFirstSeqAndNewConsumers(t *testing.T) {

@@ -17,7 +17,6 @@
 package server
 
 func (s *Server) handleSignals() {
-
 }
 
 func ProcessSignal(command Command, service string) error {

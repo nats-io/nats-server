@@ -1290,8 +1290,10 @@ func TestAccountReqMonitoring(t *testing.T) {
 	// query statz/conns for account
 	resp, err = ncSys.Request(statz(acc.Name), nil, time.Second)
 	require_NoError(t, err)
-	respContentAcc := []string{`"conns":1,`, `"total_conns":1`, `"slow_consumers":0`, `"sent":{"msgs":0,"bytes":0}`,
-		`"received":{"msgs":0,"bytes":0}`, `"num_subscriptions":`, fmt.Sprintf(`"acc":"%s"`, acc.Name)}
+	respContentAcc := []string{
+		`"conns":1,`, `"total_conns":1`, `"slow_consumers":0`, `"sent":{"msgs":0,"bytes":0}`,
+		`"received":{"msgs":0,"bytes":0}`, `"num_subscriptions":`, fmt.Sprintf(`"acc":"%s"`, acc.Name),
+	}
 	require_Contains(t, string(resp.Data), respContentAcc...)
 
 	rIb := ncSys.NewRespInbox()
@@ -1317,8 +1319,10 @@ func TestAccountReqMonitoring(t *testing.T) {
 	require_Contains(t, string(m.Data), respContentAcc...)
 
 	// Test include unused for statz and ping of statz
-	unusedContent := []string{`"conns":0,`, `"total_conns":0`, `"slow_consumers":0`,
-		fmt.Sprintf(`"acc":"%s"`, unusedAcc.Name)}
+	unusedContent := []string{
+		`"conns":0,`, `"total_conns":0`, `"slow_consumers":0`,
+		fmt.Sprintf(`"acc":"%s"`, unusedAcc.Name),
+	}
 
 	resp, err = ncSys.Request(statz(unusedAcc.Name),
 		[]byte(fmt.Sprintf(`{"accounts":["%s"], "include_unused":true}`, unusedAcc.Name)),
@@ -2742,7 +2746,6 @@ func TestServerEventsHealthZClustered_NoReplicas(t *testing.T) {
 			t.Fatalf("Expected timeout error; got: %v", err)
 		}
 	})
-
 }
 
 func TestServerEventsHealthZJetStreamNotEnabled(t *testing.T) {
@@ -2933,57 +2936,105 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 		resp      interface{}
 		respField []string
 	}{
-		{"VARZ", nil, &Varz{},
-			[]string{"now", "cpu", "system_account"}},
-		{"SUBSZ", nil, &Subsz{},
-			[]string{"num_subscriptions", "num_cache"}},
-		{"CONNZ", nil, &Connz{},
-			[]string{"now", "connections"}},
-		{"ROUTEZ", nil, &Routez{},
-			[]string{"now", "routes"}},
-		{"GATEWAYZ", nil, &Gatewayz{},
-			[]string{"now", "outbound_gateways", "inbound_gateways"}},
-		{"LEAFZ", nil, &Leafz{},
-			[]string{"now", "leafs"}},
+		{
+			"VARZ", nil, &Varz{},
+			[]string{"now", "cpu", "system_account"},
+		},
+		{
+			"SUBSZ", nil, &Subsz{},
+			[]string{"num_subscriptions", "num_cache"},
+		},
+		{
+			"CONNZ", nil, &Connz{},
+			[]string{"now", "connections"},
+		},
+		{
+			"ROUTEZ", nil, &Routez{},
+			[]string{"now", "routes"},
+		},
+		{
+			"GATEWAYZ", nil, &Gatewayz{},
+			[]string{"now", "outbound_gateways", "inbound_gateways"},
+		},
+		{
+			"LEAFZ", nil, &Leafz{},
+			[]string{"now", "leafs"},
+		},
 
-		{"SUBSZ", &SubszOptions{}, &Subsz{},
-			[]string{"num_subscriptions", "num_cache"}},
-		{"CONNZ", &ConnzOptions{}, &Connz{},
-			[]string{"now", "connections"}},
-		{"ROUTEZ", &RoutezOptions{}, &Routez{},
-			[]string{"now", "routes"}},
-		{"GATEWAYZ", &GatewayzOptions{}, &Gatewayz{},
-			[]string{"now", "outbound_gateways", "inbound_gateways"}},
-		{"LEAFZ", &LeafzOptions{}, &Leafz{},
-			[]string{"now", "leafs"}},
-		{"ACCOUNTZ", &AccountzOptions{}, &Accountz{},
-			[]string{"now", "accounts"}},
+		{
+			"SUBSZ", &SubszOptions{}, &Subsz{},
+			[]string{"num_subscriptions", "num_cache"},
+		},
+		{
+			"CONNZ", &ConnzOptions{}, &Connz{},
+			[]string{"now", "connections"},
+		},
+		{
+			"ROUTEZ", &RoutezOptions{}, &Routez{},
+			[]string{"now", "routes"},
+		},
+		{
+			"GATEWAYZ", &GatewayzOptions{}, &Gatewayz{},
+			[]string{"now", "outbound_gateways", "inbound_gateways"},
+		},
+		{
+			"LEAFZ", &LeafzOptions{}, &Leafz{},
+			[]string{"now", "leafs"},
+		},
+		{
+			"ACCOUNTZ", &AccountzOptions{}, &Accountz{},
+			[]string{"now", "accounts"},
+		},
 
-		{"SUBSZ", &SubszOptions{Limit: 5}, &Subsz{},
-			[]string{"num_subscriptions", "num_cache"}},
-		{"CONNZ", &ConnzOptions{Limit: 5}, &Connz{},
-			[]string{"now", "connections"}},
-		{"ROUTEZ", &RoutezOptions{SubscriptionsDetail: true}, &Routez{},
-			[]string{"now", "routes"}},
-		{"GATEWAYZ", &GatewayzOptions{Accounts: true}, &Gatewayz{},
-			[]string{"now", "outbound_gateways", "inbound_gateways"}},
-		{"LEAFZ", &LeafzOptions{Subscriptions: true}, &Leafz{},
-			[]string{"now", "leafs"}},
-		{"ACCOUNTZ", &AccountzOptions{Account: sysAcc}, &Accountz{},
-			[]string{"now", "account_detail"}},
-		{"LEAFZ", &LeafzOptions{Account: sysAcc}, &Leafz{},
-			[]string{"now", "leafs"}},
+		{
+			"SUBSZ", &SubszOptions{Limit: 5}, &Subsz{},
+			[]string{"num_subscriptions", "num_cache"},
+		},
+		{
+			"CONNZ", &ConnzOptions{Limit: 5}, &Connz{},
+			[]string{"now", "connections"},
+		},
+		{
+			"ROUTEZ", &RoutezOptions{SubscriptionsDetail: true}, &Routez{},
+			[]string{"now", "routes"},
+		},
+		{
+			"GATEWAYZ", &GatewayzOptions{Accounts: true}, &Gatewayz{},
+			[]string{"now", "outbound_gateways", "inbound_gateways"},
+		},
+		{
+			"LEAFZ", &LeafzOptions{Subscriptions: true}, &Leafz{},
+			[]string{"now", "leafs"},
+		},
+		{
+			"ACCOUNTZ", &AccountzOptions{Account: sysAcc}, &Accountz{},
+			[]string{"now", "account_detail"},
+		},
+		{
+			"LEAFZ", &LeafzOptions{Account: sysAcc}, &Leafz{},
+			[]string{"now", "leafs"},
+		},
 
-		{"ROUTEZ", json.RawMessage(`{"cluster":""}`), &Routez{},
-			[]string{"now", "routes"}},
-		{"ROUTEZ", json.RawMessage(`{"name":""}`), &Routez{},
-			[]string{"now", "routes"}},
-		{"ROUTEZ", json.RawMessage(`{"cluster":"TEST CLUSTER 22"}`), &Routez{},
-			[]string{"now", "routes"}},
-		{"ROUTEZ", json.RawMessage(`{"cluster":"CLUSTER"}`), &Routez{},
-			[]string{"now", "routes"}},
-		{"ROUTEZ", json.RawMessage(`{"cluster":"TEST CLUSTER 22", "subscriptions":true}`), &Routez{},
-			[]string{"now", "routes"}},
+		{
+			"ROUTEZ", json.RawMessage(`{"cluster":""}`), &Routez{},
+			[]string{"now", "routes"},
+		},
+		{
+			"ROUTEZ", json.RawMessage(`{"name":""}`), &Routez{},
+			[]string{"now", "routes"},
+		},
+		{
+			"ROUTEZ", json.RawMessage(`{"cluster":"TEST CLUSTER 22"}`), &Routez{},
+			[]string{"now", "routes"},
+		},
+		{
+			"ROUTEZ", json.RawMessage(`{"cluster":"CLUSTER"}`), &Routez{},
+			[]string{"now", "routes"},
+		},
+		{
+			"ROUTEZ", json.RawMessage(`{"cluster":"TEST CLUSTER 22", "subscriptions":true}`), &Routez{},
+			[]string{"now", "routes"},
+		},
 
 		{"JSZ", nil, &JSzOptions{}, []string{"now", "disabled"}},
 
@@ -3384,13 +3435,13 @@ func TestServerEventsReload(t *testing.T) {
 			test { users [{user: "foo", password: "bar"}]}
 		}
 		ping_interval: "200ms"
-	`), 0666)
+	`), 0o666)
 	require_NoError(t, err)
 
 	msg, err := nc.Request(subject, nil, time.Second)
 	require_NoError(t, err)
 
-	var apiResp = ServerAPIResponse{}
+	apiResp := ServerAPIResponse{}
 	err = json.Unmarshal(msg.Data, &apiResp)
 	require_NoError(t, err)
 
@@ -3401,7 +3452,7 @@ func TestServerEventsReload(t *testing.T) {
 	require_True(t, s.getOpts().PingInterval == 200*time.Millisecond)
 
 	// rewrite the config file with a different ping interval
-	err = os.WriteFile(conf, []byte(`garbage and nonsense`), 0666)
+	err = os.WriteFile(conf, []byte(`garbage and nonsense`), 0o666)
 	require_NoError(t, err)
 
 	// Request the server to reload and wait for the response.

@@ -1069,6 +1069,7 @@ func (s *Server) ReloadOptions(newOpts *Options) error {
 	s.mu.Unlock()
 	return nil
 }
+
 func applyBoolFlags(newOpts, flagOpts *Options) {
 	// Reset fields that may have been set to `true` in
 	// MergeOptions() when some of the flags default to `true`

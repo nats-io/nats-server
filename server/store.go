@@ -224,7 +224,7 @@ func DecodeStreamState(buf []byte) (*StreamReplicatedState, error) {
 	if len(buf) < hdrLen || buf[0] != streamStateMagic || buf[1] != streamStateVersion {
 		return nil, ErrBadStreamStateEncoding
 	}
-	var bi = hdrLen
+	bi := hdrLen
 
 	readU64 := func() uint64 {
 		if bi < 0 || bi >= len(buf) {

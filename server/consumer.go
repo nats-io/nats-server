@@ -482,7 +482,6 @@ func checkConsumerCfg(
 	accLim *JetStreamAccountLimits,
 	isRecovering bool,
 ) *ApiError {
-
 	// Check if replicas is defined but exceeds parent stream.
 	if config.Replicas > 0 && config.Replicas > cfg.Replicas {
 		return NewJSConsumerReplicasExceedsStreamError()
@@ -2048,7 +2047,7 @@ func (o *consumer) updateSkipped(seq uint64) {
 	}
 	var b [1 + 8]byte
 	b[0] = byte(updateSkipOp)
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	le.PutUint64(b[1:], seq)
 	o.propose(b[:])
 }
@@ -5250,7 +5249,7 @@ func (o *consumer) signalSubs() []*subscription {
 // us with the signaling sublist.
 // We do need the sequence of the message however and we use the msg as the encoded seq.
 func (o *consumer) processStreamSignal(_ *subscription, _ *client, _ *Account, subject, _ string, seqb []byte) {
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	seq := le.Uint64(seqb)
 
 	o.mu.Lock()

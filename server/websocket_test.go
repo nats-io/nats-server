@@ -1506,7 +1506,8 @@ func TestWSParseOptions(t *testing.T) {
 			}
 			return nil
 		}, ""},
-		{"allowed origins array",
+		{
+			"allowed origins array",
 			`
 			websocket {
 				allowed_origins: [
@@ -1520,7 +1521,8 @@ func TestWSParseOptions(t *testing.T) {
 					return fmt.Errorf("expected allowed origins to be %q, got %q", expected, wo.AllowedOrigins)
 				}
 				return nil
-			}, ""},
+			}, "",
+		},
 		{"handshake timeout in whole seconds", `websocket { handshake_timeout: 3 }`, func(wo *WebsocketOpts) error {
 			if wo.HandshakeTimeout != 3*time.Second {
 				return fmt.Errorf("expected handshake to be 3s, got %v", wo.HandshakeTimeout)
@@ -1533,7 +1535,8 @@ func TestWSParseOptions(t *testing.T) {
 			}
 			return nil
 		}, ""},
-		{"tls config",
+		{
+			"tls config",
 			`
 			websocket {
 				tls {
@@ -1546,8 +1549,10 @@ func TestWSParseOptions(t *testing.T) {
 					return fmt.Errorf("TLSConfig should have been set")
 				}
 				return nil
-			}, ""},
-		{"compression",
+			}, "",
+		},
+		{
+			"compression",
 			`
 			websocket {
 				compression: true
@@ -1557,8 +1562,10 @@ func TestWSParseOptions(t *testing.T) {
 					return fmt.Errorf("Compression should have been set")
 				}
 				return nil
-			}, ""},
-		{"jwt cookie",
+			}, "",
+		},
+		{
+			"jwt cookie",
 			`
 			websocket {
 				jwt_cookie: "jwtcookie"
@@ -1568,8 +1575,10 @@ func TestWSParseOptions(t *testing.T) {
 					return fmt.Errorf("Invalid JWTCookie value: %q", wo.JWTCookie)
 				}
 				return nil
-			}, ""},
-		{"no auth user",
+			}, "",
+		},
+		{
+			"no auth user",
 			`
 			websocket {
 				no_auth_user: "noauthuser"
@@ -1579,8 +1588,10 @@ func TestWSParseOptions(t *testing.T) {
 					return fmt.Errorf("Invalid NoAuthUser value: %q", wo.NoAuthUser)
 				}
 				return nil
-			}, ""},
-		{"auth block",
+			}, "",
+		},
+		{
+			"auth block",
 			`
 			websocket {
 				authorization {
@@ -1595,8 +1606,10 @@ func TestWSParseOptions(t *testing.T) {
 					return fmt.Errorf("Invalid auth block: %+v", wo)
 				}
 				return nil
-			}, ""},
-		{"auth timeout as int",
+			}, "",
+		},
+		{
+			"auth timeout as int",
 			`
 			websocket {
 				authorization {
@@ -1608,7 +1621,8 @@ func TestWSParseOptions(t *testing.T) {
 					return fmt.Errorf("Invalid auth timeout: %v", wo.AuthTimeout)
 				}
 				return nil
-			}, ""},
+			}, "",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf := createConfFile(t, []byte(test.content))
@@ -1696,7 +1710,6 @@ func TestWSSetOriginOptions(t *testing.T) {
 			case <-time.After(50 * time.Millisecond):
 				t.Fatalf("Did not get the error")
 			}
-
 		})
 	}
 }
@@ -3735,7 +3748,6 @@ func TestWSJWTWithAllowedConnectionTypes(t *testing.T) {
 }
 
 func TestWSJWTCookieUser(t *testing.T) {
-
 	nucSigFunc := func() *jwt.UserClaims { return newJWTTestUserClaims() }
 	nucBearerFunc := func() *jwt.UserClaims {
 		ret := newJWTTestUserClaims()

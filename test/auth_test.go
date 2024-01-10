@@ -49,8 +49,10 @@ func expectAuthRequired(t tLogger, c net.Conn) {
 // The authorization token version
 ////////////////////////////////////////////////////////////
 
-const AUTH_PORT = 10422
-const AUTH_TOKEN = "_YZZ22_"
+const (
+	AUTH_PORT  = 10422
+	AUTH_TOKEN = "_YZZ22_"
+)
 
 func runAuthServerWithToken() *server.Server {
 	opts := DefaultTestOptions
@@ -114,8 +116,10 @@ func TestAuthClientFailOnEverythingElse(t *testing.T) {
 // The username/password version
 ////////////////////////////////////////////////////////////
 
-const AUTH_USER = "derek"
-const AUTH_PASS = "foobar"
+const (
+	AUTH_USER = "derek"
+	AUTH_PASS = "foobar"
+)
 
 func runAuthServerWithUserPass() *server.Server {
 	opts := DefaultTestOptions
@@ -170,8 +174,10 @@ func TestPasswordClientGoodConnect(t *testing.T) {
 ////////////////////////////////////////////////////////////
 
 // Generated with nats server passwd (Cost 4 because of cost of --race, default is 11)
-const BCRYPT_AUTH_PASS = "IW@$6v(y1(t@fhPDvf!5^%"
-const BCRYPT_AUTH_HASH = "$2a$04$Q.CgCP2Sl9pkcTXEZHazaeMwPaAkSHk7AI51HkyMt5iJQQyUA4qxq"
+const (
+	BCRYPT_AUTH_PASS = "IW@$6v(y1(t@fhPDvf!5^%"
+	BCRYPT_AUTH_HASH = "$2a$04$Q.CgCP2Sl9pkcTXEZHazaeMwPaAkSHk7AI51HkyMt5iJQQyUA4qxq"
+)
 
 func runAuthServerWithBcryptUserPass() *server.Server {
 	opts := DefaultTestOptions
@@ -205,8 +211,10 @@ func TestGoodBcryptPassword(t *testing.T) {
 // The bcrypt authorization token version
 ////////////////////////////////////////////////////////////
 
-const BCRYPT_AUTH_TOKEN = "0uhJOSr3GW7xvHvtd^K6pa"
-const BCRYPT_AUTH_TOKEN_HASH = "$2a$04$u5ZClXpcjHgpfc61Ee0VKuwI1K3vTC4zq7SjphjnlHMeb1Llkb5Y6"
+const (
+	BCRYPT_AUTH_TOKEN      = "0uhJOSr3GW7xvHvtd^K6pa"
+	BCRYPT_AUTH_TOKEN_HASH = "$2a$04$u5ZClXpcjHgpfc61Ee0VKuwI1K3vTC4zq7SjphjnlHMeb1Llkb5Y6"
+)
 
 func runAuthServerWithBcryptToken() *server.Server {
 	opts := DefaultTestOptions

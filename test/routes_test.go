@@ -1075,7 +1075,7 @@ func TestRouteBasicPermissions(t *testing.T) {
 	case <-ch:
 		t.Fatal("Message should not have been received")
 	case <-time.After(100 * time.Millisecond):
-		//ok
+		// ok
 	}
 	// Subscribe on "baz" on B
 	if _, err := ncb.Subscribe("baz", cb); err != nil {
@@ -1104,7 +1104,7 @@ func createConfFile(t testing.TB, content []byte) string {
 	conf := createTempFile(t, "")
 	fName := conf.Name()
 	conf.Close()
-	if err := os.WriteFile(fName, content, 0666); err != nil {
+	if err := os.WriteFile(fName, content, 0o666); err != nil {
 		t.Fatalf("Error writing conf file: %v", err)
 	}
 	return fName

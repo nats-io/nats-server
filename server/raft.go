@@ -320,7 +320,7 @@ func (s *Server) bootstrapRaftNode(cfg *RaftConfig, knownPeers []string, allPeer
 
 	// Check the store directory. If we have a memory based WAL we need to make sure the directory is setup.
 	if stat, err := os.Stat(cfg.Store); os.IsNotExist(err) {
-		if err := os.MkdirAll(cfg.Store, 0750); err != nil {
+		if err := os.MkdirAll(cfg.Store, 0o750); err != nil {
 			return fmt.Errorf("raft: could not create storage directory - %v", err)
 		}
 	} else if stat == nil || !stat.IsDir() {
@@ -412,7 +412,7 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 	}
 
 	// Make sure that the snapshots directory exists.
-	if err := os.MkdirAll(filepath.Join(n.sd, snapshotsDir), 0750); err != nil {
+	if err := os.MkdirAll(filepath.Join(n.sd, snapshotsDir), 0o750); err != nil {
 		return nil, fmt.Errorf("could not create snapshots directory - %v", err)
 	}
 
@@ -966,7 +966,7 @@ func (n *raft) encodeSnapshot(snap *snapshot) []byte {
 	if snap == nil {
 		return nil
 	}
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	buf := make([]byte, minSnapshotLen+len(snap.peerstate)+len(snap.data))
 	le.PutUint64(buf[0:], snap.lastTerm)
 	le.PutUint64(buf[8:], snap.lastIndex)
@@ -1213,7 +1213,7 @@ func (n *raft) loadLastSnapshot() (*snapshot, error) {
 		return nil, errSnapshotCorrupt
 	}
 
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	lps := le.Uint32(buf[16:])
 	snap := &snapshot{
 		lastTerm:  le.Uint64(buf[0:]),
@@ -2104,7 +2104,7 @@ func (ae *appendEntry) encode(b []byte) ([]byte, error) {
 		buf = make([]byte, tlen)
 	}
 
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	copy(buf[:idLen], ae.leader)
 	le.PutUint64(buf[8:], ae.term)
 	le.PutUint64(buf[16:], ae.commit)
@@ -2129,7 +2129,7 @@ func (n *raft) decodeAppendEntry(msg []byte, sub *subscription, reply string) (*
 		return nil, errBadAppendEntry
 	}
 
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 
 	ae := newAppendEntry(string(msg[:idLen]), le.Uint64(msg[8:]), le.Uint64(msg[16:]), le.Uint64(msg[24:]), le.Uint64(msg[32:]), nil)
 	ae.reply, ae.sub = reply, sub
@@ -2161,8 +2161,10 @@ var arPool = sync.Pool{
 }
 
 // We want to make sure this does not change from system changing length of syshash.
-const idLen = 8
-const appendEntryResponseLen = 24 + 1
+const (
+	idLen                  = 8
+	appendEntryResponseLen = 24 + 1
+)
 
 // appendEntryResponse is our response to a received appendEntry.
 type appendEntryResponse struct {
@@ -2189,7 +2191,7 @@ func (ar *appendEntryResponse) encode(b []byte) []byte {
 	} else {
 		buf = make([]byte, appendEntryResponseLen)
 	}
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	le.PutUint64(buf[0:], ar.term)
 	le.PutUint64(buf[8:], ar.index)
 	copy(buf[16:16+idLen], ar.peer)
@@ -2208,7 +2210,7 @@ func (n *raft) decodeAppendEntryResponse(msg []byte) *appendEntryResponse {
 	if len(msg) != appendEntryResponseLen {
 		return nil
 	}
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	ar := arPool.Get().(*appendEntryResponse)
 	ar.term = le.Uint64(msg[0:])
 	ar.index = le.Uint64(msg[8:])
@@ -3556,7 +3558,7 @@ func peerStateBufSize(ps *peerState) int {
 }
 
 func encodePeerState(ps *peerState) []byte {
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	buf := make([]byte, peerStateBufSize(ps))
 	le.PutUint32(buf[0:], uint32(ps.clusterSize))
 	le.PutUint32(buf[4:], uint32(len(ps.knownPeers)))
@@ -3573,7 +3575,7 @@ func decodePeerState(buf []byte) (*peerState, error) {
 	if len(buf) < 8 {
 		return nil, errCorruptPeers
 	}
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	ps := &peerState{clusterSize: int(le.Uint32(buf[0:]))}
 	expectedPeers := int(le.Uint32(buf[4:]))
 	buf = buf[8:]
@@ -3632,7 +3634,7 @@ const voteRequestLen = 24 + idLen
 
 func (vr *voteRequest) encode() []byte {
 	var buf [voteRequestLen]byte
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	le.PutUint64(buf[0:], vr.term)
 	le.PutUint64(buf[8:], vr.lastTerm)
 	le.PutUint64(buf[16:], vr.lastIndex)
@@ -3646,7 +3648,7 @@ func decodeVoteRequest(msg []byte, reply string) *voteRequest {
 		return nil
 	}
 
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	return &voteRequest{
 		term:      le.Uint64(msg[0:]),
 		lastTerm:  le.Uint64(msg[8:]),
@@ -3692,8 +3694,10 @@ func readPeerState(sd string) (ps *peerState, err error) {
 	return decodePeerState(buf)
 }
 
-const termVoteFile = "tav.idx"
-const termVoteLen = idLen + 8
+const (
+	termVoteFile = "tav.idx"
+	termVoteLen  = idLen + 8
+)
 
 // readTermVote will read the largest term and who we voted from to stable storage.
 // Lock should be held.
@@ -3705,7 +3709,7 @@ func (n *raft) readTermVote() (term uint64, voted string, err error) {
 	if len(buf) < termVoteLen {
 		return 0, noVote, nil
 	}
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	term = le.Uint64(buf[0:])
 	voted = string(buf[8:])
 	return term, voted, nil
@@ -3804,7 +3808,7 @@ func (n *raft) fileWriter() {
 // Lock should be held.
 func (n *raft) writeTermVote() {
 	var buf [termVoteLen]byte
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	le.PutUint64(buf[0:], n.term)
 	copy(buf[8:], n.vote)
 	b := buf[:8+len(n.vote)]
@@ -3832,7 +3836,7 @@ const voteResponseLen = 8 + 8 + 1
 
 func (vr *voteResponse) encode() []byte {
 	var buf [voteResponseLen]byte
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	le.PutUint64(buf[0:], vr.term)
 	copy(buf[8:], vr.peer)
 	if vr.granted {
@@ -3847,7 +3851,7 @@ func decodeVoteResponse(msg []byte) *voteResponse {
 	if len(msg) != voteResponseLen {
 		return nil
 	}
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	vr := &voteResponse{term: le.Uint64(msg[0:]), peer: string(msg[8:16])}
 	vr.granted = msg[16] == 1
 	return vr

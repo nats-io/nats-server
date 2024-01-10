@@ -1209,7 +1209,7 @@ func TestConfigCheck(t *testing.T) {
 		    }
 		  ]
 		}`,
-			//Unexpected error after processing config: /var/folders/9h/6g_c9l6n6bb8gp331d_9y0_w0000gn/T/057996446:8:5:
+			// Unexpected error after processing config: /var/folders/9h/6g_c9l6n6bb8gp331d_9y0_w0000gn/T/057996446:8:5:
 			err:       errors.New("verify_cert_and_check_known_urls not supported in this context"),
 			errorLine: 8,
 			errorPos:  5,

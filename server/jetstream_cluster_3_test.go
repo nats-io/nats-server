@@ -965,7 +965,6 @@ func TestJetStreamClusterSourceWithOptStartTime(t *testing.T) {
 	defer c.shutdown()
 
 	test := func(t *testing.T, c *cluster, s *Server) {
-
 		replicas := 1
 		if c != nil {
 			s = c.randomServer()
@@ -1638,7 +1637,7 @@ func TestJetStreamClusterReplacementPolicyAfterPeerRemove(t *testing.T) {
 
 	tags := []string{"cloud:aws", "cloud:aws", "cloud:aws", "cloud:gcp", "cloud:gcp", "cloud:gcp", "cloud:az", "cloud:az", "cloud:az"}
 
-	var serverUTags = make(map[string]string)
+	serverUTags := make(map[string]string)
 
 	for i, s := range sc.servers {
 		s.optsMu.Lock()
@@ -1695,7 +1694,7 @@ func TestJetStreamClusterReplacementPolicyAfterPeerRemove(t *testing.T) {
 	require_NoError(t, err)
 
 	// Double check original placement honors unique_tag
-	var uTags = make(map[string]struct{})
+	uTags := make(map[string]struct{})
 
 	uTags[serverUTags[osi.Cluster.Leader]] = struct{}{}
 	for _, replica := range osi.Cluster.Replicas {
@@ -1739,7 +1738,7 @@ func TestJetStreamClusterReplacementPolicyAfterPeerRemove(t *testing.T) {
 		})
 
 		// Validate that replacement with new peer still honors
-		uTags = make(map[string]struct{}) //reset
+		uTags = make(map[string]struct{}) // reset
 
 		uTags[serverUTags[osi.Cluster.Leader]] = struct{}{}
 		for _, replica := range osi.Cluster.Replicas {
@@ -1773,7 +1772,7 @@ func TestJetStreamClusterReplacementPolicyAfterPeerRemoveNoPlace(t *testing.T) {
 
 	tags := []string{"cloud:aws", "cloud:gcp", "cloud:az"}
 
-	var serverUTags = make(map[string]string)
+	serverUTags := make(map[string]string)
 
 	for i, s := range sc.servers {
 		s.optsMu.Lock()
@@ -1830,7 +1829,7 @@ func TestJetStreamClusterReplacementPolicyAfterPeerRemoveNoPlace(t *testing.T) {
 	require_NoError(t, err)
 
 	// Double check original placement honors unique_tag
-	var uTags = make(map[string]struct{})
+	uTags := make(map[string]struct{})
 
 	uTags[serverUTags[osi.Cluster.Leader]] = struct{}{}
 	for _, replica := range osi.Cluster.Replicas {
@@ -1860,7 +1859,7 @@ func TestJetStreamClusterReplacementPolicyAfterPeerRemoveNoPlace(t *testing.T) {
 	})
 
 	// Validate that remaining members still honor unique tags
-	uTags = make(map[string]struct{}) //reset
+	uTags = make(map[string]struct{}) // reset
 
 	uTags[serverUTags[osi.Cluster.Leader]] = struct{}{}
 	for _, replica := range osi.Cluster.Replicas {
@@ -2051,7 +2050,7 @@ func TestJetStreamClusterLeafnodeDuplicateConsumerMessages(t *testing.T) {
 }
 
 func snapRGSet(pFlag bool, banner string, osi *nats.StreamInfo) *map[string]struct{} {
-	var snapSet = make(map[string]struct{})
+	snapSet := make(map[string]struct{})
 	if pFlag {
 		fmt.Println(banner)
 	}
@@ -2869,7 +2868,6 @@ func TestJetStreamClusterStreamMaxAgeScaleUp(t *testing.T) {
 		{name: "file with purge", storage: nats.FileStorage, stream: "C", purge: true},
 		{name: "memory with purge", storage: nats.MemoryStorage, stream: "D", purge: true},
 	} {
-
 		t.Run(test.name, func(t *testing.T) {
 			ttl := time.Second * 5
 			// Add stream with one replica and short MaxAge.
@@ -3664,7 +3662,7 @@ func TestJetStreamClusterChangeClusterAfterStreamCreate(t *testing.T) {
 		buf, err := os.ReadFile(o.ConfigFile)
 		require_NoError(t, err)
 		nbuf := bytes.Replace(buf, []byte("name: NATS"), []byte("name: FOO"), 1)
-		err = os.WriteFile(o.ConfigFile, nbuf, 0640)
+		err = os.WriteFile(o.ConfigFile, nbuf, 0o640)
 		require_NoError(t, err)
 	}
 
@@ -4111,7 +4109,7 @@ func TestJetStreamClusterStaleDirectGetOnRestart(t *testing.T) {
 // We broke basic connectivity in 2.9.17 from publishing in eu for delivery in cn on same account which is daisy chained through ap.
 // We will also test cross account delivery in this test as well.
 func TestJetStreamClusterLeafnodePlusDaisyChainSetup(t *testing.T) {
-	var cloudTmpl = `
+	cloudTmpl := `
 		listen: 127.0.0.1:-1
 		server_name: %s
 		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, domain: CLOUD, store_dir: '%s'}
@@ -4143,7 +4141,7 @@ func TestJetStreamClusterLeafnodePlusDaisyChainSetup(t *testing.T) {
 	c := createJetStreamCluster(t, cloudTmpl, "CLOUD", _EMPTY_, 3, 22020, false)
 	defer c.shutdown()
 
-	var lnTmpl = `
+	lnTmpl := `
 		listen: 127.0.0.1:-1
 		server_name: %s
 		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
@@ -4170,7 +4168,7 @@ func TestJetStreamClusterLeafnodePlusDaisyChainSetup(t *testing.T) {
 			$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
 		}`
 
-	var leafFrag = `
+	leafFrag := `
 			leaf {
 				listen: 127.0.0.1:-1
 				remotes [ { urls: [ %s ], account: "T" }, { urls: [ %s ], account: "F" } ]
@@ -4515,6 +4513,7 @@ func TestJetStreamClusterConsumerCleanupWithSameName(t *testing.T) {
 	// Make sure no other errors showed up
 	require_True(t, len(errCh) == 0)
 }
+
 func TestJetStreamClusterConsumerActions(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3F", 3)
 	defer c.shutdown()
@@ -4780,7 +4779,7 @@ func TestJetStreamClusterBadEncryptKey(t *testing.T) {
 	buf, err := os.ReadFile(opts.ConfigFile)
 	require_NoError(t, err)
 	nbuf := bytes.Replace(buf, []byte("key: \"s3cr3t!\""), []byte("key: \"\""), 1)
-	err = os.WriteFile(opts.ConfigFile, nbuf, 0640)
+	err = os.WriteFile(opts.ConfigFile, nbuf, 0o640)
 	require_NoError(t, err)
 
 	// Make sure trying to start the server now fails.
@@ -4823,9 +4822,11 @@ func TestJetStreamClusterAccountUsageDrifts(t *testing.T) {
 	accKp, aExpPub := createKey(t)
 	accClaim := jwt.NewAccountClaims(aExpPub)
 	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
-		DiskStorage: -1, Consumer: 1, Streams: 1}
+		DiskStorage: -1, Consumer: 1, Streams: 1,
+	}
 	accClaim.Limits.JetStreamTieredLimits["R3"] = jwt.JetStreamLimits{
-		DiskStorage: -1, Consumer: 1, Streams: 1}
+		DiskStorage: -1, Consumer: 1, Streams: 1,
+	}
 	accJwt := encodeClaim(t, accClaim, aExpPub)
 	accCreds := newUser(t, accKp)
 
@@ -5854,9 +5855,11 @@ func TestJetStreamClusterStreamLimitsOnScaleUpAndMove(t *testing.T) {
 	accKp, aExpPub := createKey(t)
 	accClaim := jwt.NewAccountClaims(aExpPub)
 	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
-		DiskStorage: -1, Consumer: -1, Streams: 1}
+		DiskStorage: -1, Consumer: -1, Streams: 1,
+	}
 	accClaim.Limits.JetStreamTieredLimits["R3"] = jwt.JetStreamLimits{
-		DiskStorage: 0, Consumer: -1, Streams: 1}
+		DiskStorage: 0, Consumer: -1, Streams: 1,
+	}
 	accJwt := encodeClaim(t, accClaim, aExpPub)
 	accCreds := newUser(t, accKp)
 

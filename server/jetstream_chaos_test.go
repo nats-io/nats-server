@@ -214,7 +214,6 @@ func toIndentedJsonString(v any) string {
 // Bounces the entire set of nodes, then brings them back up.
 // Fail if some nodes don't come back online.
 func TestJetStreamChaosClusterBounce(t *testing.T) {
-
 	const duration = 60 * time.Second
 	const clusterSize = 3
 
@@ -241,7 +240,6 @@ func TestJetStreamChaosClusterBounce(t *testing.T) {
 // Bounces a subset of the nodes, then brings them back up.
 // Fails if some nodes don't come back online.
 func TestJetStreamChaosClusterBounceSubset(t *testing.T) {
-
 	const duration = 60 * time.Second
 	const clusterSize = 3
 
@@ -328,7 +326,6 @@ func createStreamForConsumerChaosTest(t *testing.T, c *cluster, replicas, numMes
 
 // Verify ordered delivery despite cluster-wide outages
 func TestJetStreamChaosConsumerOrdered(t *testing.T) {
-
 	const numMessages = 5_000
 	const numBatch = 500
 	const maxRetries = 100
@@ -376,7 +373,7 @@ func TestJetStreamChaosConsumerOrdered(t *testing.T) {
 	for i := 1; i <= numMessages; i++ {
 		var msg *nats.Msg
 		var nextMsgErr error
-		var expectedMsgData = []byte(fmt.Sprintf("%d", i))
+		expectedMsgData := []byte(fmt.Sprintf("%d", i))
 
 	nextMsgRetryLoop:
 		for r := 0; r <= maxRetries; r++ {
@@ -416,7 +413,6 @@ func TestJetStreamChaosConsumerOrdered(t *testing.T) {
 
 // Verify ordered delivery despite cluster-wide outages
 func TestJetStreamChaosConsumerAsync(t *testing.T) {
-
 	const numMessages = 5_000
 	const numBatch = 500
 	const timeout = 30 * time.Second // No (new) messages for 30s => terminate
@@ -458,7 +454,7 @@ func TestJetStreamChaosConsumerAsync(t *testing.T) {
 		}
 		seq := metadata.Sequence.Stream
 
-		var expectedMsgData = []byte(fmt.Sprintf("%d", seq))
+		expectedMsgData := []byte(fmt.Sprintf("%d", seq))
 		if !bytes.Equal(msg.Data, expectedMsgData) {
 			t.Fatalf("Expecting message content '%s', got '%s' instead", expectedMsgData, msg.Data)
 		}
@@ -536,7 +532,6 @@ func TestJetStreamChaosConsumerAsync(t *testing.T) {
 // Verify durable consumer retains state despite cluster-wide outages
 // The consumer connection is also periodically closed, and the consumer 'resumes' on a different one
 func TestJetStreamChaosConsumerDurable(t *testing.T) {
-
 	const numMessages = 5_000
 	const numBatch = 500
 	const timeout = 30 * time.Second // No (new) messages for 60s => terminate
@@ -650,7 +645,6 @@ func TestJetStreamChaosConsumerDurable(t *testing.T) {
 	received := NewBitset(numMessages)
 
 	handleMsgFun = func(msg *nats.Msg) {
-
 		subLock.Lock()
 		if msg.Sub != sub {
 			// Message from a previous instance of durable consumer, drop
@@ -667,7 +661,7 @@ func TestJetStreamChaosConsumerDurable(t *testing.T) {
 		}
 		seq := metadata.Sequence.Stream
 
-		var expectedMsgData = []byte(fmt.Sprintf("%d", seq))
+		expectedMsgData := []byte(fmt.Sprintf("%d", seq))
 		if !bytes.Equal(msg.Data, expectedMsgData) {
 			t.Fatalf("Expecting message content '%s', got '%s' instead", expectedMsgData, msg.Data)
 		}
@@ -742,7 +736,6 @@ func TestJetStreamChaosConsumerDurable(t *testing.T) {
 }
 
 func TestJetStreamChaosConsumerPull(t *testing.T) {
-
 	const numMessages = 5_000
 	const numBatch = 500
 	const maxRetries = 100
@@ -892,7 +885,6 @@ func createBucketForKvChaosTest(t *testing.T, c *cluster, replicas int) {
 // If PUT is successful, perform a GET on the same key.
 // If GET is successful, ensure key revision and value match the most recent successful write.
 func TestJetStreamChaosKvPutGet(t *testing.T) {
-
 	const numOps = 100_000
 	const clusterSize = 3
 	const replicas = 3
@@ -1004,7 +996,6 @@ putGetLoop:
 // A variant TestJetStreamChaosKvPutGet where PUT is retried until successful, and GET is retried until it returns the latest known key revision.
 // This validates than a confirmed PUT value is never lost, and becomes eventually visible.
 func TestJetStreamChaosKvPutGetWithRetries(t *testing.T) {
-
 	const numOps = 10_000
 	const maxRetries = 20
 	const retryDelay = 100 * time.Millisecond
@@ -1232,7 +1223,6 @@ func TestJetStreamChaosKvCAS(t *testing.T) {
 						if currentRevision < knownRevisions[key] {
 							// Revision number moved backward, this should never happen
 							t.Fatalf("Current revision for key %s is %d, which is lower than the last known revision %d", key, currentRevision, knownRevisions[key])
-
 						}
 
 						knownRevisions[key] = currentRevision

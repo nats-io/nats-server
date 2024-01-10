@@ -259,7 +259,7 @@ func indexPlaceHolders(token string) (int16, []int, int32, string, error) {
 					if err != nil {
 						return BadTransform, []int{}, -1, _EMPTY_, &mappingDestinationErr{token, ErrMappingDestinationInvalidArg}
 					}
-					var numPositions = len(args[1:])
+					numPositions := len(args[1:])
 					tokenIndexes := make([]int, numPositions)
 					for ti, t := range args[1:] {
 						i, err := strconv.Atoi(strings.Trim(t, " "))

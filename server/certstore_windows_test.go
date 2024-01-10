@@ -42,7 +42,6 @@ func runPowershellScript(scriptFile string, args []string) error {
 }
 
 func runConfiguredLeaf(t *testing.T, hubPort int, certStore string, matchBy string, match string, expectedLeafCount int) {
-
 	// Fire up the leaf
 	u, err := url.Parse(fmt.Sprintf("nats://localhost:%d", hubPort))
 	if err != nil {
@@ -88,7 +87,6 @@ func runConfiguredLeaf(t *testing.T, hubPort int, certStore string, matchBy stri
 // TestLeafTLSWindowsCertStore tests the topology of two NATS Servers connected as leaf and hub with authentication of
 // leaf to hub via mTLS with leaf's certificate and signing key provisioned in the Windows certificate store.
 func TestLeafTLSWindowsCertStore(t *testing.T) {
-
 	// Client Identity (client.pem)
 	// Issuer: O = Synadia Communications Inc., OU = NATS.io, CN = localhost
 	// Subject: OU = NATS.io, CN = example.com
@@ -167,7 +165,6 @@ func TestLeafTLSWindowsCertStore(t *testing.T) {
 // TestServerTLSWindowsCertStore tests the topology of a NATS server requiring TLS and gettings it own server
 // cert identiy (as used when accepting NATS client connections and negotiating TLS) from Windows certificate store.
 func TestServerTLSWindowsCertStore(t *testing.T) {
-
 	// Server Identity (server.pem)
 	// Issuer: O = Synadia Communications Inc., OU = NATS.io, CN = localhost
 	// Subject: OU = NATS.io Operators, CN = localhost

@@ -515,7 +515,6 @@ func (c *client) sendRouteConnect(clusterName string, tlsRequired bool) error {
 
 // Process the info message if we are a route.
 func (c *client) processRouteInfo(info *Info) {
-
 	supportsHeaders := c.srv.supportsHeaders()
 	clusterName := c.srv.ClusterName()
 	srvName := c.srv.Name()
@@ -1532,7 +1531,7 @@ func (c *client) addRouteSubOrUnsubProtoToBuf(buf []byte, accName string, sub *s
 		if isSubProto {
 			buf = append(buf, ' ')
 			var b [12]byte
-			var i = len(b)
+			i := len(b)
 			for l := sub.qw; l > 0; l /= 10 {
 				i--
 				b[i] = digits[l%10]
@@ -2540,7 +2539,7 @@ func (s *Server) startRouteAcceptLoop() {
 				localIPs = append(localIPs, ipStr)
 			}
 		}
-		var portStr = strconv.FormatInt(int64(s.routeInfo.Port), 10)
+		portStr := strconv.FormatInt(int64(s.routeInfo.Port), 10)
 		for _, ip := range localIPs {
 			ipPort := net.JoinHostPort(ip, portStr)
 			s.routesToSelf[ipPort] = struct{}{}
@@ -2586,7 +2585,6 @@ func (s *Server) StartRouting(clientListenReady chan struct{}) {
 
 	// Start the accept loop and solicitation of explicit routes (if applicable)
 	s.startRouteAcceptLoop()
-
 }
 
 func (s *Server) reConnectToRoute(rURL *url.URL, rtype RouteType, accName string) {

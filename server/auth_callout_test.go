@@ -1404,7 +1404,6 @@ func TestAuthCalloutOperator_AnyAccount(t *testing.T) {
 		} else {
 			m.Respond(nil)
 		}
-
 	}
 
 	ac := NewAuthTest(t, conf, handler, nats.UserCredentials(creds))

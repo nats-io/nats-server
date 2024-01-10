@@ -309,7 +309,7 @@ func (p *parser) processItem(it item, fp string) error {
 		}
 		setValue(it, dt)
 	case itemArrayStart:
-		var array = make([]interface{}, 0)
+		array := make([]interface{}, 0)
 		p.pushContext(array)
 	case itemArrayEnd:
 		array := p.ctx

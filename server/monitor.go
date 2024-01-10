@@ -1947,7 +1947,7 @@ func (s *Server) createOutboundsRemoteGatewayz(opts *GatewayzOptions, now time.T
 	}
 
 	var connsa [16]*client
-	var conns = connsa[:0]
+	conns := connsa[:0]
 
 	s.getOutboundGatewayConnections(&conns)
 
@@ -2044,7 +2044,7 @@ func (s *Server) createInboundsRemoteGatewayz(opts *GatewayzOptions, now time.Ti
 	targetGWName, doAccs := getMonitorGWOptions(opts)
 
 	var connsa [16]*client
-	var conns = connsa[:0]
+	conns := connsa[:0]
 	s.getInboundGatewayConnections(&conns)
 
 	m := make(map[string][]*RemoteGatewayz)
@@ -3221,7 +3221,7 @@ func (s *Server) HandleHealthz(w http.ResponseWriter, r *http.Request) {
 
 // Generate health status.
 func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
-	var health = &HealthStatus{Status: "ok"}
+	health := &HealthStatus{Status: "ok"}
 
 	// set option defaults
 	if opts == nil {

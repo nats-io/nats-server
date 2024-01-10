@@ -310,8 +310,10 @@ func setupConnWithUserPass(t tLogger, c net.Conn, username, password string) (se
 	return sendCommand(t, c), expectLefMostCommand(t, c)
 }
 
-type sendFun func(string)
-type expectFun func(*regexp.Regexp) []byte
+type (
+	sendFun   func(string)
+	expectFun func(*regexp.Regexp) []byte
+)
 
 // Closure version for easier reading
 func sendCommand(t tLogger, c net.Conn) sendFun {
@@ -626,7 +628,6 @@ func checkForPubSids(t tLogger, matches [][][]byte, sids []string) {
 	for sid, n := range seen {
 		if n != 1 {
 			stackFatalf(t, "Did not get a msg for sid[%s]: expected 1 got %d\n", sid, n)
-
 		}
 	}
 }

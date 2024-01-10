@@ -23,8 +23,10 @@ import (
 
 type StoreType int
 
-const MATCHBYEMPTY = 0
-const STOREEMPTY = 0
+const (
+	MATCHBYEMPTY = 0
+	STOREEMPTY   = 0
+)
 
 const (
 	windowsCurrentUser StoreType = iota + 1

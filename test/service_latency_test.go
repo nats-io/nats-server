@@ -47,9 +47,11 @@ func (sc *supercluster) shutdown() {
 	}
 }
 
-const digits = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-const base = 36
-const cnlen = 8
+const (
+	digits = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	base   = 36
+	cnlen  = 8
+)
 
 func randClusterName() string {
 	var name []byte
@@ -1488,7 +1490,7 @@ func TestServiceLatencyRequestorSharesConfig(t *testing.T) {
 
 		system_account: SYS
 	`)
-	if err := os.WriteFile(conf, newConf, 0600); err != nil {
+	if err := os.WriteFile(conf, newConf, 0o600); err != nil {
 		t.Fatalf("Error rewriting server's config file: %v", err)
 	}
 	if err := srv.Reload(); err != nil {
@@ -1592,8 +1594,10 @@ func TestServiceLatencyLossTest(t *testing.T) {
 	nc2.Flush()
 	// use dedicated send that publishes requests using same reply subject
 	send := func(msg string) {
-		if err := nc2.PublishMsg(&nats.Msg{Subject: "SVC", Data: []byte(msg), Reply: reply,
-			Header: nats.Header{"X-B3-Sampled": []string{"1"}}}); err != nil {
+		if err := nc2.PublishMsg(&nats.Msg{
+			Subject: "SVC", Data: []byte(msg), Reply: reply,
+			Header: nats.Header{"X-B3-Sampled": []string{"1"}},
+		}); err != nil {
 			t.Fatalf("Expected a response got: %v", err)
 		}
 	}

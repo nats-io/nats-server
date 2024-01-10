@@ -71,7 +71,7 @@ func createConfFile(t testing.TB, content []byte) string {
 	conf := createTempFile(t, _EMPTY_)
 	fName := conf.Name()
 	conf.Close()
-	if err := os.WriteFile(fName, content, 0666); err != nil {
+	if err := os.WriteFile(fName, content, 0o666); err != nil {
 		t.Fatalf("Error writing conf file: %v", err)
 	}
 	return fName
@@ -106,7 +106,7 @@ func changeCurrentConfigContent(t *testing.T, curConfig, newConfig string) {
 
 func changeCurrentConfigContentWithNewContent(t *testing.T, curConfig string, content []byte) {
 	t.Helper()
-	if err := os.WriteFile(curConfig, content, 0666); err != nil {
+	if err := os.WriteFile(curConfig, content, 0o666); err != nil {
 		t.Fatalf("Error writing config: %v", err)
 	}
 }
@@ -260,7 +260,7 @@ func TestConfigReload(t *testing.T) {
 		`)
 	}
 	platformConf := filepath.Join(filepath.Dir(config), "platform.conf")
-	if err := os.WriteFile(platformConf, content, 0666); err != nil {
+	if err := os.WriteFile(platformConf, content, 0o666); err != nil {
 		t.Fatalf("Unable to write config file: %v", err)
 	}
 
@@ -1698,7 +1698,7 @@ func TestConfigReloadClusterRemoveSolicitedRoutes(t *testing.T) {
 
 func reloadUpdateConfig(t *testing.T, s *Server, conf, content string) {
 	t.Helper()
-	if err := os.WriteFile(conf, []byte(content), 0666); err != nil {
+	if err := os.WriteFile(conf, []byte(content), 0o666); err != nil {
 		t.Fatalf("Error creating config file: %v", err)
 	}
 	if err := s.Reload(); err != nil {
@@ -1858,7 +1858,7 @@ func TestConfigReloadMaxSubsUnsupported(t *testing.T) {
 		`))
 	defer s.Shutdown()
 
-	if err := os.WriteFile(conf, []byte(`max_subs: 10`), 0666); err != nil {
+	if err := os.WriteFile(conf, []byte(`max_subs: 10`), 0o666); err != nil {
 		t.Fatalf("Error writing config file: %v", err)
 	}
 	if err := s.Reload(); err == nil {
@@ -4289,7 +4289,7 @@ func TestConfigReloadLogging(t *testing.T) {
 		if !valid(log) {
 			t.Fatalf("%s is not valid: %s", filename, log)
 		}
-		//t.Logf("%s contains: %s\n", filename, log)
+		// t.Logf("%s contains: %s\n", filename, log)
 	}
 
 	// common configuration setting up system accounts. trace_verbose needs this to cause traces
@@ -5385,7 +5385,7 @@ func TestConfigReloadRoutePoolCannotBeDisabledIfAccountsPresent(t *testing.T) {
 
 	checkClusterFormed(t, s1, s2)
 
-	err := os.WriteFile(conf1, []byte(fmt.Sprintf(tmpl, "A", "accounts: [\"A\"]", "pool_size: -1", _EMPTY_)), 0666)
+	err := os.WriteFile(conf1, []byte(fmt.Sprintf(tmpl, "A", "accounts: [\"A\"]", "pool_size: -1", _EMPTY_)), 0o666)
 	require_NoError(t, err)
 	if err := s1.Reload(); err == nil || !strings.Contains(err.Error(), "accounts") {
 		t.Fatalf("Expected error regarding presence of accounts, got %v", err)
@@ -6217,7 +6217,7 @@ func TestConfigReloadNoPanicOnShutdown(t *testing.T) {
 		// Don't use a defer s.Shutdown() here since it would prevent the panic
 		// to be reported (but the test would still fail because of a runtime timeout).
 
-		err := os.WriteFile(conf, []byte(fmt.Sprintf(tmpl, "jetstream: true")), 0666)
+		err := os.WriteFile(conf, []byte(fmt.Sprintf(tmpl, "jetstream: true")), 0o666)
 		require_NoError(t, err)
 
 		wg := sync.WaitGroup{}

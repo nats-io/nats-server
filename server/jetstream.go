@@ -463,8 +463,10 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 	return nil
 }
 
-const jsNoExtend = "no_extend"
-const jsWillExtend = "will_extend"
+const (
+	jsNoExtend   = "no_extend"
+	jsWillExtend = "will_extend"
+)
 
 // This will check if we have a solicited leafnode that shares the system account
 // and extension is not manually disabled
@@ -1837,7 +1839,7 @@ func (jsa *jsAccount) remoteUpdateUsage(sub *subscription, c *client, _ *Account
 		total.total.store += storeUsed
 	}
 
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	apiTotal, apiErrors := le.Uint64(msg[16:]), le.Uint64(msg[24:])
 	memUsed, storeUsed := int64(le.Uint64(msg[0:])), int64(le.Uint64(msg[8:]))
 
@@ -2049,7 +2051,7 @@ func (jsa *jsAccount) sendClusterUsageUpdate() {
 	}
 
 	var i int
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	for tier, usage := range jsa.usage {
 		le.PutUint64(b[i+0:], uint64(usage.local.mem))
 		le.PutUint64(b[i+8:], uint64(usage.local.store))

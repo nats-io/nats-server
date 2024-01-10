@@ -2883,7 +2883,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				js.mu.RUnlock()
 
 				if isLeader && !isRecovering {
-					var resp = JSApiMsgDeleteResponse{ApiResponse: ApiResponse{Type: JSApiMsgDeleteResponseType}}
+					resp := JSApiMsgDeleteResponse{ApiResponse: ApiResponse{Type: JSApiMsgDeleteResponseType}}
 					if err != nil {
 						resp.Error = NewJSStreamMsgDeleteFailedError(err, Unless(err))
 						s.sendAPIErrResponse(md.Client, mset.account(), md.Subject, md.Reply, _EMPTY_, s.jsonResponse(resp))
@@ -2928,7 +2928,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				js.mu.RUnlock()
 
 				if isLeader && !isRecovering {
-					var resp = JSApiStreamPurgeResponse{ApiResponse: ApiResponse{Type: JSApiStreamPurgeResponseType}}
+					resp := JSApiStreamPurgeResponse{ApiResponse: ApiResponse{Type: JSApiStreamPurgeResponseType}}
 					if err != nil {
 						resp.Error = NewJSStreamGeneralError(err, Unless(err))
 						s.sendAPIErrResponse(sp.Client, mset.account(), sp.Subject, sp.Reply, _EMPTY_, s.jsonResponse(resp))
@@ -3099,7 +3099,7 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 	}
 
 	// Send our response.
-	var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
+	resp := JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
 	if err != nil {
 		resp.Error = NewJSStreamCreateError(err, Unless(err))
 		s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
@@ -3528,7 +3528,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 	}
 
 	// Send our response.
-	var resp = JSApiStreamUpdateResponse{ApiResponse: ApiResponse{Type: JSApiStreamUpdateResponseType}}
+	resp := JSApiStreamUpdateResponse{ApiResponse: ApiResponse{Type: JSApiStreamUpdateResponseType}}
 	resp.StreamInfo = &StreamInfo{
 		Created:   mset.createdTime(),
 		State:     mset.state(),
@@ -3595,7 +3595,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 						js.mu.RUnlock()
 
 						if !recovering {
-							var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
+							resp := JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
 							resp.StreamInfo = &StreamInfo{
 								Created:   mset.createdTime(),
 								State:     mset.state(),
@@ -3847,7 +3847,7 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 	js.mu.RUnlock()
 
 	stopped := false
-	var resp = JSApiStreamDeleteResponse{ApiResponse: ApiResponse{Type: JSApiStreamDeleteResponseType}}
+	resp := JSApiStreamDeleteResponse{ApiResponse: ApiResponse{Type: JSApiStreamDeleteResponseType}}
 	var err error
 	var acc *Account
 
@@ -4303,7 +4303,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 				rg.node = nil
 				client, subject, reply := ca.Client, ca.Subject, ca.Reply
 				js.mu.Unlock()
-				var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
+				resp := JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
 				resp.ConsumerInfo = o.info()
 				s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 				return
@@ -4341,7 +4341,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 					client, subject, reply, recovering := ca.Client, ca.Subject, ca.Reply, ca.recovering
 					js.mu.RUnlock()
 					if !recovering {
-						var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
+						resp := JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
 						resp.ConsumerInfo = o.info()
 						s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 					}
@@ -4367,7 +4367,7 @@ func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, isMemb
 	js.mu.RUnlock()
 
 	stopped := false
-	var resp = JSApiConsumerDeleteResponse{ApiResponse: ApiResponse{Type: JSApiConsumerDeleteResponseType}}
+	resp := JSApiConsumerDeleteResponse{ApiResponse: ApiResponse{Type: JSApiConsumerDeleteResponseType}}
 	var err error
 	var acc *Account
 
@@ -4789,7 +4789,6 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 					o.checkStateForInterestStream()
 				}
 			}
-
 		} else if e.Type == EntryRemovePeer {
 			js.mu.RLock()
 			var ourID string
@@ -4851,7 +4850,7 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 			case updateSkipOp:
 				o.mu.Lock()
 				if !o.isLeader() {
-					var le = binary.LittleEndian
+					le := binary.LittleEndian
 					if sseq := le.Uint64(buf[1:]); sseq > o.sseq {
 						o.sseq = sseq
 					}
@@ -4928,8 +4927,10 @@ func (o *consumer) processReplicatedAck(dseq, sseq uint64) {
 	}
 }
 
-var errBadAckUpdate = errors.New("jetstream cluster bad replicated ack update")
-var errBadDeliveredUpdate = errors.New("jetstream cluster bad replicated delivered update")
+var (
+	errBadAckUpdate       = errors.New("jetstream cluster bad replicated ack update")
+	errBadDeliveredUpdate = errors.New("jetstream cluster bad replicated delivered update")
+)
 
 func decodeAckUpdate(buf []byte) (dseq, sseq uint64, err error) {
 	var bi, n int
@@ -5014,7 +5015,7 @@ func (js *jetStream) processConsumerLeaderChange(o *consumer, isLeader bool) err
 		return nil
 	}
 
-	var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
+	resp := JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
 	if err != nil {
 		resp.Error = NewJSConsumerCreateError(err, Unless(err))
 		s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
@@ -5506,7 +5507,7 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 			}
 		}
 	}
-	var uniqueTags = make(map[string]*nodeInfo)
+	uniqueTags := make(map[string]*nodeInfo)
 
 	checkUniqueTag := func(ni *nodeInfo) (bool, *nodeInfo) {
 		for _, t := range ni.tags {
@@ -5816,7 +5817,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 		return
 	}
 
-	var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
+	resp := JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
 
 	ccfg, apiErr := s.checkStreamCfg(config, acc)
 	if apiErr != nil {
@@ -5969,7 +5970,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 		return
 	}
 
-	var resp = JSApiStreamUpdateResponse{ApiResponse: ApiResponse{Type: JSApiStreamUpdateResponseType}}
+	resp := JSApiStreamUpdateResponse{ApiResponse: ApiResponse{Type: JSApiStreamUpdateResponseType}}
 
 	osa := js.streamAssignment(acc.Name, cfg.Name)
 
@@ -6274,7 +6275,7 @@ func (s *Server) jsClusteredStreamDeleteRequest(ci *ClientInfo, acc *Account, st
 
 	osa := js.streamAssignment(acc.Name, stream)
 	if osa == nil {
-		var resp = JSApiStreamDeleteResponse{ApiResponse: ApiResponse{Type: JSApiStreamDeleteResponseType}}
+		resp := JSApiStreamDeleteResponse{ApiResponse: ApiResponse{Type: JSApiStreamDeleteResponseType}}
 		resp.Error = NewJSStreamNotFoundError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
@@ -6320,7 +6321,7 @@ func (s *Server) jsClusteredStreamPurgeRequest(
 		return
 	}
 
-	var resp = JSApiStreamPurgeResponse{ApiResponse: ApiResponse{Type: JSApiStreamPurgeResponseType}}
+	resp := JSApiStreamPurgeResponse{ApiResponse: ApiResponse{Type: JSApiStreamPurgeResponseType}}
 	purged, err := mset.purge(preq)
 	if err != nil {
 		resp.Error = NewJSStreamGeneralError(err, Unless(err))
@@ -6335,8 +6336,8 @@ func (s *Server) jsClusteredStreamRestoreRequest(
 	ci *ClientInfo,
 	acc *Account,
 	req *JSApiStreamRestoreRequest,
-	stream, subject, reply string, rmsg []byte) {
-
+	stream, subject, reply string, rmsg []byte,
+) {
 	js, cc := s.getJetStreamCluster()
 	if js == nil || cc == nil {
 		return
@@ -6450,7 +6451,7 @@ func (s *Server) jsClusteredStreamListRequest(acc *Account, ci *ClientInfo, filt
 		streams = streams[:JSApiListLimit]
 	}
 
-	var resp = JSApiStreamListResponse{
+	resp := JSApiStreamListResponse{
 		ApiResponse: ApiResponse{Type: JSApiStreamListResponseType},
 		Streams:     make([]*StreamInfo, 0, len(streams)),
 	}
@@ -6601,7 +6602,7 @@ func (s *Server) jsClusteredConsumerListRequest(acc *Account, ci *ClientInfo, of
 	}
 
 	// Send out our requests here.
-	var resp = JSApiConsumerListResponse{
+	resp := JSApiConsumerListResponse{
 		ApiResponse: ApiResponse{Type: JSApiConsumerListResponseType},
 		Consumers:   []*ConsumerInfo{},
 	}
@@ -6734,7 +6735,7 @@ func (s *Server) jsClusteredConsumerDeleteRequest(ci *ClientInfo, acc *Account, 
 		return
 	}
 
-	var resp = JSApiConsumerDeleteResponse{ApiResponse: ApiResponse{Type: JSApiConsumerDeleteResponseType}}
+	resp := JSApiConsumerDeleteResponse{ApiResponse: ApiResponse{Type: JSApiConsumerDeleteResponseType}}
 
 	sa := js.streamAssignment(acc.Name, stream)
 	if sa == nil {
@@ -6806,7 +6807,7 @@ func (s *Server) jsClusteredMsgDeleteRequest(ci *ClientInfo, acc *Account, mset 
 	} else {
 		removed, err = mset.eraseMsg(req.Seq)
 	}
-	var resp = JSApiMsgDeleteResponse{ApiResponse: ApiResponse{Type: JSApiMsgDeleteResponseType}}
+	resp := JSApiMsgDeleteResponse{ApiResponse: ApiResponse{Type: JSApiMsgDeleteResponseType}}
 	if err != nil {
 		resp.Error = NewJSStreamMsgDeleteFailedError(err, Unless(err))
 	} else if !removed {
@@ -6911,7 +6912,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		return
 	}
 
-	var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
+	resp := JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
 
 	streamCfg, ok := js.clusterStreamConfig(acc.Name, stream)
 	if !ok {
@@ -7219,7 +7220,7 @@ func decodeConsumerAssignmentCompressed(buf []byte) (*consumerAssignment, error)
 var errBadStreamMsg = errors.New("jetstream cluster bad replicated stream msg")
 
 func decodeStreamMsg(buf []byte) (subject, reply string, hdr, msg []byte, lseq uint64, ts int64, err error) {
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	if len(buf) < 26 {
 		return _EMPTY_, _EMPTY_, nil, nil, 0, 0, errBadStreamMsg
 	}
@@ -7294,7 +7295,7 @@ func encodeStreamMsgAllowCompress(subject, reply string, hdr, msg []byte, lseq u
 	// TODO(dlc) - check sizes of subject, reply and hdr, make sure uint16 ok.
 	buf := make([]byte, elen)
 	buf[0] = byte(streamMsgOp)
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	wi := 1
 	le.PutUint64(buf[wi:], lseq)
 	wi += 8
@@ -7454,7 +7455,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 
 	// Bail here if sealed.
 	if isSealed {
-		var resp = JSPubAckResponse{PubAck: &PubAck{Stream: mset.name()}, Error: NewJSStreamSealedError()}
+		resp := JSPubAckResponse{PubAck: &PubAck{Stream: mset.name()}, Error: NewJSStreamSealedError()}
 		b, _ := json.Marshal(resp)
 		mset.outq.sendMsg(reply, b)
 		return NewJSStreamSealedError()
@@ -7483,7 +7484,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		err := fmt.Errorf("no JetStream resource limits found account: %q", jsa.acc().Name)
 		s.RateLimitWarnf(err.Error())
 		if canRespond {
-			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
+			resp := &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
 			resp.Error = NewJSNoLimitsError()
 			response, _ = json.Marshal(resp)
 			outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
@@ -7517,7 +7518,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		err := fmt.Errorf("JetStream resource limits exceeded for account: %q", jsa.acc().Name)
 		s.RateLimitWarnf(err.Error())
 		if canRespond {
-			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
+			resp := &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
 			resp.Error = NewJSAccountResourcesExceededError()
 			response, _ = json.Marshal(resp)
 			outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
@@ -7530,7 +7531,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		err := fmt.Errorf("JetStream message size exceeds limits for '%s > %s'", jsa.acc().Name, mset.cfg.Name)
 		s.RateLimitWarnf(err.Error())
 		if canRespond {
-			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
+			resp := &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
 			resp.Error = NewJSStreamMessageExceedsMaximumError()
 			response, _ = json.Marshal(resp)
 			outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
@@ -7551,7 +7552,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 			}
 			if err != nil || fseq != seq {
 				if canRespond {
-					var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
+					resp := &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
 					resp.PubAck = &PubAck{Stream: name}
 					resp.Error = NewJSStreamWrongLastSequenceError(fseq)
 					b, _ := json.Marshal(resp)
@@ -7563,7 +7564,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		// Expected stream name can also be pre-checked.
 		if sname := getExpectedStream(hdr); sname != _EMPTY_ && sname != name {
 			if canRespond {
-				var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
+				resp := &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
 				resp.PubAck = &PubAck{Stream: name}
 				resp.Error = NewJSStreamNotMatchError()
 				b, _ := json.Marshal(resp)
@@ -7579,7 +7580,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		err := fmt.Errorf("JetStream header size exceeds limits for '%s > %s'", jsa.acc().Name, mset.cfg.Name)
 		s.RateLimitWarnf(err.Error())
 		if canRespond {
-			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
+			resp := &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
 			resp.Error = NewJSStreamHeaderExceedsMaximumError()
 			response, _ = json.Marshal(resp)
 			outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
@@ -7616,7 +7617,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 
 	if err != nil {
 		if canRespond {
-			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: mset.cfg.Name}}
+			resp := &JSPubAckResponse{PubAck: &PubAck{Stream: mset.cfg.Name}}
 			resp.Error = &ApiError{Code: 503, Description: err.Error()}
 			response, _ = json.Marshal(resp)
 			// If we errored out respond here.

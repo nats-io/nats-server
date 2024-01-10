@@ -157,7 +157,7 @@ func TestClusterTLSInsecure(t *testing.T) {
 	// Need to add "insecure: true" and reload
 	if err := os.WriteFile(confB,
 		[]byte(fmt.Sprintf(bConfigTemplate, "insecure: true", optsA.Cluster.Host, optsA.Cluster.Port)),
-		0666); err != nil {
+		0o666); err != nil {
 		t.Fatalf("Error rewriting file: %v", err)
 	}
 	if err := srvB.Reload(); err != nil {

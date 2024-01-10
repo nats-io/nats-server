@@ -1132,7 +1132,7 @@ func TestBadNkeyConfig(t *testing.T) {
     authorization {
       users = [ {nkey: "Ufoo"}]
     }`
-	if err := os.WriteFile(confFileName, []byte(content), 0666); err != nil {
+	if err := os.WriteFile(confFileName, []byte(content), 0o666); err != nil {
 		t.Fatalf("Error writing config file: %v", err)
 	}
 	defer removeFile(t, confFileName)
@@ -1149,7 +1149,7 @@ func TestNkeyWithPassConfig(t *testing.T) {
         {nkey: "UDKTV7HZVYJFJN64LLMYQBUR6MTNNYCDC3LAZH4VHURW3GZLL3FULBXV", pass: "foo"}
       ]
     }`
-	if err := os.WriteFile(confFileName, []byte(content), 0666); err != nil {
+	if err := os.WriteFile(confFileName, []byte(content), 0o666); err != nil {
 		t.Fatalf("Error writing config file: %v", err)
 	}
 	defer removeFile(t, confFileName)
@@ -1166,7 +1166,7 @@ func TestTokenWithUserPass(t *testing.T) {
 		pass: password
 		token: $2a$11$whatever
 	}`
-	if err := os.WriteFile(confFileName, []byte(content), 0666); err != nil {
+	if err := os.WriteFile(confFileName, []byte(content), 0o666); err != nil {
 		t.Fatalf("Error writing config file: %v", err)
 	}
 	defer removeFile(t, confFileName)
@@ -1188,7 +1188,7 @@ func TestTokenWithUsers(t *testing.T) {
 			{user: test, password: test}
 		]
 	}`
-	if err := os.WriteFile(confFileName, []byte(content), 0666); err != nil {
+	if err := os.WriteFile(confFileName, []byte(content), 0o666); err != nil {
 		t.Fatalf("Error writing config file: %v", err)
 	}
 	defer removeFile(t, confFileName)
@@ -1317,7 +1317,6 @@ func TestOptionsCloneNil(t *testing.T) {
 
 func TestEmptyConfig(t *testing.T) {
 	opts, err := ProcessConfigFile("")
-
 	if err != nil {
 		t.Fatalf("Expected no error from empty config, got: %+v", err)
 	}
@@ -1993,7 +1992,7 @@ func TestParseExport(t *testing.T) {
 		require_NoError(t, err)
 		nc.Flush()
 	}
-	//Subscribe to CONNS events
+	// Subscribe to CONNS events
 	subscribe(nc1, "$SYS.SERVER.ACCOUNT.accI1.CONNS")
 	subscribe(nc2, "$SYS.SERVER.ACCOUNT.accI2.CONNS")
 	// Trigger 2 CONNS event
@@ -2089,7 +2088,7 @@ func TestParsingGateways(t *testing.T) {
 	}
 	`
 	file := "server_config_gateways.conf"
-	if err := os.WriteFile(file, []byte(content), 0600); err != nil {
+	if err := os.WriteFile(file, []byte(content), 0o600); err != nil {
 		t.Fatalf("Error writing config file: %v", err)
 	}
 	defer removeFile(t, file)
@@ -2343,7 +2342,7 @@ func TestParsingGatewaysErrors(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			file := fmt.Sprintf("server_config_gateways_%s.conf", test.name)
-			if err := os.WriteFile(file, []byte(test.content), 0600); err != nil {
+			if err := os.WriteFile(file, []byte(test.content), 0o600); err != nil {
 				t.Fatalf("Error writing config file: %v", err)
 			}
 			defer removeFile(t, file)
@@ -2779,8 +2778,10 @@ func TestExpandPath(t *testing.T) {
 
 			// Set all environment variables. HOMEDRIVE and HOMEPATH take
 			// precedence.
-			{path: "~/Fizz", userProfile: `C:\Foo\Bar`,
-				homeDrive: "X:", homePath: `\Foo\Bar`, wantPath: `X:\Foo\Bar\Fizz`},
+			{
+				path: "~/Fizz", userProfile: `C:\Foo\Bar`,
+				homeDrive: "X:", homePath: `\Foo\Bar`, wantPath: `X:\Foo\Bar\Fizz`,
+			},
 
 			// Missing all environment variables.
 			{path: "~/Fizz", wantErr: true},
@@ -2908,7 +2909,6 @@ func TestNoAuthUserCode(t *testing.T) {
 			t.Fatalf("Received no error, where no_auth_user error was expected")
 		})
 	}
-
 }
 
 const operatorJwtWithSysAccAndUrlResolver = `
@@ -3146,7 +3146,6 @@ func TestQueuePermissions(t *testing.T) {
 				}
 			}
 		})
-
 	}
 }
 
@@ -3228,7 +3227,6 @@ func TestGetStorageSize(t *testing.T) {
 			t.Errorf("Got: %v, want %v with error: %v", got, v.want, testErr)
 		}
 	}
-
 }
 
 func TestAuthorizationAndAccountsMisconfigurations(t *testing.T) {

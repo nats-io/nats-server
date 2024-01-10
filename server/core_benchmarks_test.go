@@ -41,7 +41,6 @@ func BenchmarkCoreRequestReply(b *testing.B) {
 
 	for _, messageSize := range messageSizes {
 		b.Run(fmt.Sprintf("msgSz=%db", messageSize), func(b *testing.B) {
-
 			// Start server
 			serverOpts := DefaultOptions()
 			server := RunServer(serverOpts)
@@ -71,7 +70,7 @@ func BenchmarkCoreRequestReply(b *testing.B) {
 			}
 			defer ncPub.Close()
 
-			var errors = 0
+			errors := 0
 
 			// Create message (reused for all requests)
 			messageData := make([]byte, messageSize)
@@ -127,16 +126,13 @@ func BenchmarkCoreTLSFanOut(b *testing.B) {
 	}
 
 	for _, keyType := range keyTypeCases {
-
 		b.Run(
 			fmt.Sprintf("keyType=%s", keyType),
 			func(b *testing.B) {
-
 				for _, messageSize := range messageSizeCases {
 					b.Run(
 						fmt.Sprintf("msgSz=%db", messageSize),
 						func(b *testing.B) {
-
 							for _, numSubs := range numSubsCases {
 								b.Run(
 									fmt.Sprintf("subs=%d", numSubs),
@@ -201,7 +197,7 @@ func BenchmarkCoreTLSFanOut(b *testing.B) {
 										}
 										defer ncPub.Close()
 
-										var errorCount = 0
+										errorCount := 0
 
 										// random bytes as payload
 										messageData := make([]byte, messageSize)
@@ -340,7 +336,7 @@ func BenchmarkCoreFanOut(b *testing.B) {
 							}
 							defer ncPub.Close()
 
-							var errorCount = 0
+							errorCount := 0
 
 							// random bytes as payload
 							messageData := make([]byte, messageSize)
@@ -435,7 +431,6 @@ func BenchmarkCoreFanIn(b *testing.B) {
 					b.Run(
 						fmt.Sprintf("pubs=%d", numPubs),
 						func(b *testing.B) {
-
 							// start server
 							defaultOpts := DefaultOptions()
 							server := RunServer(defaultOpts)
@@ -577,7 +572,6 @@ func BenchmarkCoreFanIn(b *testing.B) {
 
 							// report error rate
 							b.ReportMetric(errorRate, "%error")
-
 						})
 				}
 			})

@@ -963,7 +963,6 @@ func TestClientTLSAndNonTLSConnections(t *testing.T) {
 		}
 		return nil
 	})
-
 }
 
 func stressConnect(t *testing.T, wg *sync.WaitGroup, errCh chan error, url string, index int) {
@@ -1857,7 +1856,7 @@ func TestTLSPinnedCertsClient(t *testing.T) {
 		t.Fatalf("Expected error trying to connect without a certificate in pinned_certs")
 	}
 
-	os.WriteFile(confFileName, []byte(fmt.Sprintf(tmpl, "bf6f821f09fde09451411ba3b42c0f74727d61a974c69fd3cf5257f39c75f0e9")), 0660)
+	os.WriteFile(confFileName, []byte(fmt.Sprintf(tmpl, "bf6f821f09fde09451411ba3b42c0f74727d61a974c69fd3cf5257f39c75f0e9")), 0o660)
 	if err := srv.Reload(); err != nil {
 		t.Fatalf("on Reload got %v", err)
 	}
@@ -1978,7 +1977,7 @@ func TestTLSPinnedCertsRoute(t *testing.T) {
 	checkClusterFormed(t, srvSeed, srv)
 
 	// this change will result in the server being and remaining disconnected
-	os.WriteFile(confSrv, []byte(fmt.Sprintf(tmplSrv, o.Cluster.Port, "aaaaaaaa09fde09451411ba3b42c0f74727d61a974c69fd3cf5257f39c75f0e9")), 0660)
+	os.WriteFile(confSrv, []byte(fmt.Sprintf(tmplSrv, o.Cluster.Port, "aaaaaaaa09fde09451411ba3b42c0f74727d61a974c69fd3cf5257f39c75f0e9")), 0o660)
 	if err := srv.Reload(); err != nil {
 		t.Fatalf("on Reload got %v", err)
 	}
@@ -2016,7 +2015,7 @@ func TestAllowNonTLSReload(t *testing.T) {
 	}
 	check()
 
-	os.WriteFile(conf, []byte(fmt.Sprintf(tmpl, "20s")), 0660)
+	os.WriteFile(conf, []byte(fmt.Sprintf(tmpl, "20s")), 0o660)
 	if err := s.Reload(); err != nil {
 		t.Fatalf("Error on reload: %v", err)
 	}

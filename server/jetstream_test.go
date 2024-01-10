@@ -177,22 +177,26 @@ func TestJetStreamAddStream(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{name: "MemoryStore",
+		{
+			name: "MemoryStore",
 			mconfig: &StreamConfig{
 				Name:      "foo",
 				Retention: LimitsPolicy,
 				MaxAge:    time.Hour,
 				Storage:   MemoryStorage,
 				Replicas:  1,
-			}},
-		{name: "FileStore",
+			},
+		},
+		{
+			name: "FileStore",
 			mconfig: &StreamConfig{
 				Name:      "foo",
 				Retention: LimitsPolicy,
 				MaxAge:    time.Hour,
 				Storage:   FileStorage,
 				Replicas:  1,
-			}},
+			},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -235,7 +239,8 @@ func TestJetStreamAddStreamDiscardNew(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{name: "MemoryStore",
+		{
+			name: "MemoryStore",
 			mconfig: &StreamConfig{
 				Name:     "foo",
 				MaxMsgs:  10,
@@ -243,8 +248,10 @@ func TestJetStreamAddStreamDiscardNew(t *testing.T) {
 				Discard:  DiscardNew,
 				Storage:  MemoryStorage,
 				Replicas: 1,
-			}},
-		{name: "FileStore",
+			},
+		},
+		{
+			name: "FileStore",
 			mconfig: &StreamConfig{
 				Name:     "foo",
 				MaxMsgs:  10,
@@ -252,7 +259,8 @@ func TestJetStreamAddStreamDiscardNew(t *testing.T) {
 				Discard:  DiscardNew,
 				Storage:  FileStorage,
 				Replicas: 1,
-			}},
+			},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -365,7 +373,8 @@ func TestJetStreamConsumerAndStreamDescriptions(t *testing.T) {
 	o, err := mset.addConsumer(&ConsumerConfig{
 		Description:    edescr,
 		DeliverSubject: "to",
-		AckPolicy:      AckNone})
+		AckPolicy:      AckNone,
+	})
 	if err != nil {
 		t.Fatalf("Unexpected error adding consumer: %v", err)
 	}
@@ -386,11 +395,13 @@ func TestJetStreamConsumerAndStreamDescriptions(t *testing.T) {
 	_, err = mset.addConsumer(&ConsumerConfig{
 		Description:    bigDescr,
 		DeliverSubject: "to",
-		AckPolicy:      AckNone})
+		AckPolicy:      AckNone,
+	})
 	if err == nil || !strings.Contains(err.Error(), "description is too long") {
 		t.Fatalf("Expected an error but got none")
 	}
 }
+
 func TestJetStreamConsumerWithNameAndDurable(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
@@ -414,7 +425,8 @@ func TestJetStreamConsumerWithNameAndDurable(t *testing.T) {
 		DeliverSubject: "to",
 		Durable:        "consumer",
 		Name:           "consumer",
-		AckPolicy:      AckNone})
+		AckPolicy:      AckNone,
+	})
 	if err != nil {
 		t.Fatalf("Unexpected error adding consumer: %v", err)
 	}
@@ -424,12 +436,12 @@ func TestJetStreamConsumerWithNameAndDurable(t *testing.T) {
 		DeliverSubject: "to",
 		Durable:        durable,
 		Name:           name,
-		AckPolicy:      AckNone})
+		AckPolicy:      AckNone,
+	})
 
 	if !strings.Contains(err.Error(), "Consumer Durable and Name have to be equal") {
 		t.Fatalf("Wrong error while adding consumer with not matching Name and Durable: %v", err)
 	}
-
 }
 
 func TestJetStreamPubAck(t *testing.T) {
@@ -809,7 +821,8 @@ func TestJetStreamAddStreamMaxMsgSize(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{name: "MemoryStore",
+		{
+			name: "MemoryStore",
 			mconfig: &StreamConfig{
 				Name:       "foo",
 				Retention:  LimitsPolicy,
@@ -817,8 +830,10 @@ func TestJetStreamAddStreamMaxMsgSize(t *testing.T) {
 				Storage:    MemoryStorage,
 				MaxMsgSize: 22,
 				Replicas:   1,
-			}},
-		{name: "FileStore",
+			},
+		},
+		{
+			name: "FileStore",
 			mconfig: &StreamConfig{
 				Name:       "foo",
 				Retention:  LimitsPolicy,
@@ -826,7 +841,8 @@ func TestJetStreamAddStreamMaxMsgSize(t *testing.T) {
 				Storage:    FileStorage,
 				MaxMsgSize: 22,
 				Replicas:   1,
-			}},
+			},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -2198,17 +2214,21 @@ func TestJetStreamWorkQueueRetentionStream(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{name: "MemoryStore", mconfig: &StreamConfig{
-			Name:      "MWQ",
-			Storage:   MemoryStorage,
-			Subjects:  []string{"MY_WORK_QUEUE.>"},
-			Retention: WorkQueuePolicy},
+		{
+			name: "MemoryStore", mconfig: &StreamConfig{
+				Name:      "MWQ",
+				Storage:   MemoryStorage,
+				Subjects:  []string{"MY_WORK_QUEUE.>"},
+				Retention: WorkQueuePolicy,
+			},
 		},
-		{name: "FileStore", mconfig: &StreamConfig{
-			Name:      "MWQ",
-			Storage:   FileStorage,
-			Subjects:  []string{"MY_WORK_QUEUE.>"},
-			Retention: WorkQueuePolicy},
+		{
+			name: "FileStore", mconfig: &StreamConfig{
+				Name:      "MWQ",
+				Storage:   FileStorage,
+				Subjects:  []string{"MY_WORK_QUEUE.>"},
+				Retention: WorkQueuePolicy,
+			},
 		},
 	}
 	for _, c := range cases {
@@ -3087,7 +3107,6 @@ func TestJetStreamAckNext(t *testing.T) {
 				t.Fatalf("did not receive all messages")
 			}
 		}
-
 	}
 
 	getMsgs(1, 5)
@@ -3480,7 +3499,8 @@ func TestJetStreamConsumerRateLimit(t *testing.T) {
 		Durable:        "rate",
 		DeliverSubject: "to",
 		RateLimit:      rateLimit,
-		AckPolicy:      AckNone})
+		AckPolicy:      AckNone,
+	})
 	require_NoError(t, err)
 	defer o.delete()
 
@@ -4757,7 +4777,8 @@ func TestJetStreamDurableConsumerReconnect(t *testing.T) {
 				Durable:        dname,
 				DeliverSubject: subj1,
 				AckPolicy:      AckExplicit,
-				AckWait:        50 * time.Millisecond})
+				AckWait:        50 * time.Millisecond,
+			})
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
@@ -4822,7 +4843,8 @@ func TestJetStreamDurableConsumerReconnect(t *testing.T) {
 				Durable:        dname,
 				DeliverSubject: subj2,
 				AckPolicy:      AckExplicit,
-				AckWait:        50 * time.Millisecond})
+				AckWait:        50 * time.Millisecond,
+			})
 			if err != nil {
 				t.Fatalf("Unexpected error trying to add a new durable consumer: %v", err)
 			}
@@ -4865,7 +4887,8 @@ func TestJetStreamDurableConsumerReconnectWithOnlyPending(t *testing.T) {
 				Durable:        dname,
 				DeliverSubject: subj1,
 				AckPolicy:      AckExplicit,
-				AckWait:        25 * time.Millisecond})
+				AckWait:        25 * time.Millisecond,
+			})
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
@@ -4907,7 +4930,8 @@ func TestJetStreamDurableConsumerReconnectWithOnlyPending(t *testing.T) {
 				Durable:        dname,
 				DeliverSubject: subj2,
 				AckPolicy:      AckExplicit,
-				AckWait:        25 * time.Millisecond})
+				AckWait:        25 * time.Millisecond,
+			})
 			if err != nil {
 				t.Fatalf("Unexpected error trying to add a new durable consumer: %v", err)
 			}
@@ -5235,6 +5259,7 @@ func TestJetStreamMetadata(t *testing.T) {
 		})
 	}
 }
+
 func TestJetStreamRedeliverCount(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -7998,22 +8023,26 @@ func TestJetStreamUpdateStream(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{name: "MemoryStore",
+		{
+			name: "MemoryStore",
 			mconfig: &StreamConfig{
 				Name:      "foo",
 				Retention: LimitsPolicy,
 				MaxAge:    time.Hour,
 				Storage:   MemoryStorage,
 				Replicas:  1,
-			}},
-		{name: "FileStore",
+			},
+		},
+		{
+			name: "FileStore",
 			mconfig: &StreamConfig{
 				Name:      "foo",
 				Retention: LimitsPolicy,
 				MaxAge:    time.Hour,
 				Storage:   FileStorage,
 				Replicas:  1,
-			}},
+			},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -8217,27 +8246,30 @@ func TestJetStreamDeleteMsg(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{name: "MemoryStore",
+		{
+			name: "MemoryStore",
 			mconfig: &StreamConfig{
 				Name:      "foo",
 				Retention: LimitsPolicy,
 				MaxAge:    time.Hour,
 				Storage:   MemoryStorage,
 				Replicas:  1,
-			}},
-		{name: "FileStore",
+			},
+		},
+		{
+			name: "FileStore",
 			mconfig: &StreamConfig{
 				Name:      "foo",
 				Retention: LimitsPolicy,
 				MaxAge:    time.Hour,
 				Storage:   FileStorage,
 				Replicas:  1,
-			}},
+			},
+		},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-
 			s := RunBasicJetStreamServer(t)
 			defer s.Shutdown()
 
@@ -8378,27 +8410,30 @@ func TestJetStreamLimitLockBug(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{name: "MemoryStore",
+		{
+			name: "MemoryStore",
 			mconfig: &StreamConfig{
 				Name:      "foo",
 				Retention: LimitsPolicy,
 				MaxMsgs:   10,
 				Storage:   MemoryStorage,
 				Replicas:  1,
-			}},
-		{name: "FileStore",
+			},
+		},
+		{
+			name: "FileStore",
 			mconfig: &StreamConfig{
 				Name:      "foo",
 				Retention: LimitsPolicy,
 				MaxMsgs:   10,
 				Storage:   FileStorage,
 				Replicas:  1,
-			}},
+			},
+		},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-
 			s := RunBasicJetStreamServer(t)
 			defer s.Shutdown()
 
@@ -8427,22 +8462,26 @@ func TestJetStreamNextMsgNoInterest(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{name: "MemoryStore",
+		{
+			name: "MemoryStore",
 			mconfig: &StreamConfig{
 				Name:      "foo",
 				Retention: LimitsPolicy,
 				MaxAge:    time.Hour,
 				Storage:   MemoryStorage,
 				Replicas:  1,
-			}},
-		{name: "FileStore",
+			},
+		},
+		{
+			name: "FileStore",
 			mconfig: &StreamConfig{
 				Name:      "foo",
 				Retention: LimitsPolicy,
 				MaxAge:    time.Hour,
 				Storage:   FileStorage,
 				Replicas:  1,
-			}},
+			},
+		},
 	}
 
 	for _, c := range cases {
@@ -8512,22 +8551,26 @@ func TestJetStreamMsgHeaders(t *testing.T) {
 		name    string
 		mconfig *StreamConfig
 	}{
-		{name: "MemoryStore",
+		{
+			name: "MemoryStore",
 			mconfig: &StreamConfig{
 				Name:      "foo",
 				Retention: LimitsPolicy,
 				MaxAge:    time.Hour,
 				Storage:   MemoryStorage,
 				Replicas:  1,
-			}},
-		{name: "FileStore",
+			},
+		},
+		{
+			name: "FileStore",
 			mconfig: &StreamConfig{
 				Name:      "foo",
 				Retention: LimitsPolicy,
 				MaxAge:    time.Hour,
 				Storage:   FileStorage,
 				Replicas:  1,
-			}},
+			},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -8977,7 +9020,7 @@ func TestJetStreamMultipleAccountsBasics(t *testing.T) {
 			},
 		}
 	`, tdir))
-	if err := os.WriteFile(conf, newConf, 0600); err != nil {
+	if err := os.WriteFile(conf, newConf, 0o600); err != nil {
 		t.Fatalf("Error rewriting server's config file: %v", err)
 	}
 	if err := s.Reload(); err != nil {
@@ -9511,7 +9554,7 @@ func TestJetStreamPubSubPerf(t *testing.T) {
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
 
-	var toSend = 1_000_000
+	toSend := 1_000_000
 	var received int
 	done := make(chan bool)
 
@@ -10941,7 +10984,7 @@ func TestJetStreamConfigReloadWithGlobalAccount(t *testing.T) {
 		t.Fatalf("Expected %d msgs after restart, got %d", toSend, si.State.Msgs)
 	}
 
-	if err := os.WriteFile(conf, []byte(fmt.Sprintf(template, "pwd2", tdir)), 0666); err != nil {
+	if err := os.WriteFile(conf, []byte(fmt.Sprintf(template, "pwd2", tdir)), 0o666); err != nil {
 		t.Fatalf("Error writing config: %v", err)
 	}
 
@@ -11337,7 +11380,6 @@ func TestJetStreamMirrorAndSourcesFilteredConsumers(t *testing.T) {
 		t.Helper()
 		_, err = js.AddConsumer(sn, &nats.ConsumerConfig{DeliverSubject: dsubj, FilterSubject: fs})
 		require_NoError(t, err)
-
 	}
 
 	createConsumer("M", "foo")
@@ -11594,7 +11636,7 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 		}
 	}
 
-	var f = func(streamName string, subject string, subjectNumMsgs uint64, streamNumMsg uint64, firstSeq uint64, lastSeq uint64) func() error {
+	f := func(streamName string, subject string, subjectNumMsgs uint64, streamNumMsg uint64, firstSeq uint64, lastSeq uint64) func() error {
 		return func() error {
 			si, err := js2.StreamInfo(streamName, &nats.StreamInfoRequest{SubjectsFilter: ">"})
 			require_NoError(t, err)
@@ -11618,7 +11660,6 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 	checkFor(t, 2*time.Second, 100*time.Millisecond, f("M5", "foo2", 100, 100, 251, 350))
 	checkFor(t, 2*time.Second, 100*time.Millisecond, f("M6", "bar2", 50, 150, 101, 250))
 	checkFor(t, 2*time.Second, 100*time.Millisecond, f("M6", "baz2", 100, 150, 101, 250))
-
 }
 
 func TestJetStreamMirrorUpdatePreventsSubjects(t *testing.T) {
@@ -12733,7 +12774,6 @@ func TestJetStreamConsumerPendingBugWithKV(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-
 			s := RunBasicJetStreamServer(t)
 			defer s.Shutdown()
 
@@ -13096,7 +13136,6 @@ func TestJetStreamLongStreamNamesAndPubAck(t *testing.T) {
 func TestJetStreamPerSubjectPending(t *testing.T) {
 	for _, st := range []nats.StorageType{nats.FileStorage, nats.MemoryStorage} {
 		t.Run(st.String(), func(t *testing.T) {
-
 			s := RunBasicJetStreamServer(t)
 			defer s.Shutdown()
 
@@ -16516,7 +16555,8 @@ func TestJetStreamImportConsumerStreamSubjectRemapSingle(t *testing.T) {
 		_, err := js.AddStream(&nats.StreamConfig{
 			Name:     "ORDERS",
 			Subjects: []string{"foo"}, // The JS subject.
-			Storage:  nats.MemoryStorage},
+			Storage:  nats.MemoryStorage,
+		},
 		)
 		require_NoError(t, err)
 
@@ -16611,7 +16651,8 @@ func TestJetStreamWorkQueueSourceRestart(t *testing.T) {
 		Replicas: 1,
 		// TODO test will pass when retention commented out
 		Retention: nats.WorkQueuePolicy,
-		Sources:   []*nats.StreamSource{{Name: "FOO"}}})
+		Sources:   []*nats.StreamSource{{Name: "FOO"}},
+	})
 	require_NoError(t, err)
 
 	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "dur", AckPolicy: nats.AckExplicitPolicy})
@@ -16672,7 +16713,7 @@ func TestJetStreamWorkQueueSourceRestart(t *testing.T) {
 	ctest, err := js.ConsumerInfo("TEST", "dur")
 	require_NoError(t, err)
 
-	//TODO (mh) I have experienced in other tests that NumPending has a value of 1 post restart.
+	// TODO (mh) I have experienced in other tests that NumPending has a value of 1 post restart.
 	// seems to go awary in single server setup. It's also unrelated to work queue
 	// but that error seems benign.
 	if ctest.NumPending != 0 {
@@ -18912,8 +18953,10 @@ func TestJetStreamAccountPurge(t *testing.T) {
 		})
 		require_NoError(t, err)
 		_, err = js.AddConsumer("TEST1",
-			&nats.ConsumerConfig{Durable: "DUR1",
-				AckPolicy: nats.AckExplicitPolicy})
+			&nats.ConsumerConfig{
+				Durable:   "DUR1",
+				AckPolicy: nats.AckExplicitPolicy,
+			})
 		require_NoError(t, err)
 	}
 
@@ -19393,8 +19436,8 @@ func TestJetStreamConsumerMultipleSubjectsLastPerSubject(t *testing.T) {
 	require_True(t, info.Delivered.Consumer == 3)
 
 	require_NoError(t, err)
-
 }
+
 func TestJetStreamConsumerMultipleSubjects(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	if config := s.JetStreamConfig(); config != nil {
@@ -19439,7 +19482,6 @@ func TestJetStreamConsumerMultipleSubjects(t *testing.T) {
 	require_True(t, info.NumPending == 0)
 	require_True(t, info.AckFloor.Consumer == 20)
 	require_True(t, info.AckFloor.Stream == 20)
-
 }
 
 func TestJetStreamConsumerMultipleSubjectsWithEmpty(t *testing.T) {
@@ -19468,7 +19510,8 @@ func TestJetStreamConsumerMultipleSubjectsWithEmpty(t *testing.T) {
 		DeliverSubject: "deliver",
 		FilterSubject:  "",
 		Durable:        durable,
-		AckPolicy:      nats.AckExplicitPolicy})
+		AckPolicy:      nats.AckExplicitPolicy,
+	})
 	require_NoError(t, err)
 
 	sub, err := js.SubscribeSync("", nats.Bind("name", durable))
@@ -19643,6 +19686,7 @@ func TestJetStreamMultipleSubjectsPushBasic(t *testing.T) {
 	require_True(t, info.AckFloor.Consumer == 6)
 	require_True(t, info.AckFloor.Stream == 8)
 }
+
 func TestJetStreamMultipleSubjectsBasic(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	if config := s.JetStreamConfig(); config != nil {
@@ -19871,7 +19915,6 @@ func TestJetStreamConsumerMultipleSubjectsAck(t *testing.T) {
 	if info.NumPending != 4 {
 		t.Fatalf("bad num pending. Expected %v, got %v", 2, info.NumPending)
 	}
-
 }
 
 func TestJetStreamConsumerMultipleSubjectAndNewAPI(t *testing.T) {
@@ -19909,7 +19952,6 @@ func TestJetStreamConsumerMultipleSubjectAndNewAPI(t *testing.T) {
 	if apiResp.Error.ErrCode != 10137 {
 		t.Fatal("this should error as multiple subject filters is incompatible with new API and didn't")
 	}
-
 }
 
 func TestJetStreamConsumerMultipleSubjectsWithAddedMessages(t *testing.T) {
@@ -20099,6 +20141,7 @@ func TestJetStreamConsumerUpdateFilterSubjects(t *testing.T) {
 		require_NoError(t, msg.AckSync())
 	}
 }
+
 func TestJetStreamStreamUpdateSubjectsOverlapOthers(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
@@ -20229,7 +20272,6 @@ func TestJetstreamConsumerSingleTokenSubject(t *testing.T) {
 		FilterSubject: filterSubject,
 		Name:          "name",
 	}})
-
 	if err != nil {
 		t.Fatalf("failed to marshal consumer create request: %v", err)
 	}
@@ -20401,7 +20443,8 @@ func TestJetStreamConsumerAndStreamMetadata(t *testing.T) {
 	o, err := mset.addConsumer(&ConsumerConfig{
 		Metadata:       metadata,
 		DeliverSubject: "to",
-		AckPolicy:      AckNone})
+		AckPolicy:      AckNone,
+	})
 	if err != nil {
 		t.Fatalf("Unexpected error adding consumer: %v", err)
 	}
@@ -20427,7 +20470,8 @@ func TestJetStreamConsumerAndStreamMetadata(t *testing.T) {
 	_, err = mset.addConsumer(&ConsumerConfig{
 		Metadata:       bigMetadata,
 		DeliverSubject: "to",
-		AckPolicy:      AckNone})
+		AckPolicy:      AckNone,
+	})
 	if err == nil || !strings.Contains(err.Error(), "consumer metadata exceeds") {
 		t.Fatalf("Expected an error but got none")
 	}
@@ -20488,7 +20532,6 @@ func TestJetStreamConsumerPurge(t *testing.T) {
 	// This time expect error, as we purged whole stream,
 	_, err = sub.Fetch(1)
 	require_Error(t, err)
-
 }
 
 func TestJetStreamConsumerFilterUpdate(t *testing.T) {
@@ -20569,18 +20612,22 @@ func TestJetStreamPurgeExAndAccounting(t *testing.T) {
 		name string
 		cfg  *nats.StreamConfig
 	}{
-		{name: "MemoryStore",
+		{
+			name: "MemoryStore",
 			cfg: &nats.StreamConfig{
 				Name:     "TEST",
 				Storage:  nats.MemoryStorage,
 				Subjects: []string{"*"},
-			}},
-		{name: "FileStore",
+			},
+		},
+		{
+			name: "FileStore",
 			cfg: &nats.StreamConfig{
 				Name:     "TEST",
 				Storage:  nats.FileStorage,
 				Subjects: []string{"*"},
-			}},
+			},
+		},
 	}
 	for _, c := range cases {
 		s := RunBasicJetStreamServer(t)

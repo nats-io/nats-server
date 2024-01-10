@@ -39,9 +39,11 @@ import (
 	"github.com/nats-io/nkeys"
 )
 
-const CLIENT_PORT = -1
-const MONITOR_PORT = -1
-const CLUSTER_PORT = -1
+const (
+	CLIENT_PORT  = -1
+	MONITOR_PORT = -1
+	CLUSTER_PORT = -1
+)
 
 func DefaultMonitorOptions() *Options {
 	return &Options{
@@ -485,8 +487,10 @@ func TestClosedConnzWithSubsDetail(t *testing.T) {
 
 	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
 	for mode := 0; mode < 2; mode++ {
-		c := pollConz(t, s, mode, url+"connz?state=closed&subs=detail", &ConnzOptions{State: ConnClosed,
-			SubscriptionsDetail: true})
+		c := pollConz(t, s, mode, url+"connz?state=closed&subs=detail", &ConnzOptions{
+			State:               ConnClosed,
+			SubscriptionsDetail: true,
+		})
 		// Test inside details of each connection
 		ci := c.Conns[0]
 		if len(ci.SubsDetail) != 1 || ci.SubsDetail[0].Subject != "hello.foo" {
@@ -5218,7 +5222,6 @@ func TestHealthzStatusUnavailable(t *testing.T) {
 	}
 
 	err := s.DisableJetStream()
-
 	if err != nil {
 		t.Fatalf("got an error disabling JetStream: %v", err)
 	}

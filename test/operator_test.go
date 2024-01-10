@@ -421,7 +421,7 @@ func TestReloadDoesNotWipeAccountsWithOperatorMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	newConf := bytes.Replace(b, []byte("2.2"), []byte("3.3"), 1)
-	err = os.WriteFile(conf, newConf, 0644)
+	err = os.WriteFile(conf, newConf, 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -505,7 +505,7 @@ func TestReloadDoesUpdateAccountsWithMemoryResolver(t *testing.T) {
 	accJWT2, accKP2 := createAccountForConfig(t)
 	accPub2, _ := accKP2.PublicKey()
 	contents = strings.Replace(fmt.Sprintf(cf, "", sysPub, sysPub, sysJWT, accPub2, accJWT2), "\n\t", "\n", -1)
-	err = os.WriteFile(conf, []byte(contents), 0644)
+	err = os.WriteFile(conf, []byte(contents), 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -580,7 +580,7 @@ func TestReloadFailsWithBadAccountsWithMemoryResolver(t *testing.T) {
 
 	// Now add in bogus account for second item and make sure reload fails.
 	contents = strings.Replace(fmt.Sprintf(cf, "", sysPub, sysPub, sysJWT, "foo", "bar"), "\n\t", "\n", -1)
-	err = os.WriteFile(conf, []byte(contents), 0644)
+	err = os.WriteFile(conf, []byte(contents), 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -594,7 +594,7 @@ func TestReloadFailsWithBadAccountsWithMemoryResolver(t *testing.T) {
 	accPub, _ := accKP.PublicKey()
 
 	contents = strings.Replace(fmt.Sprintf(cf, "", sysPub, sysPub, sysJWT, accPub, accJWT), "\n\t", "\n", -1)
-	err = os.WriteFile(conf, []byte(contents), 0644)
+	err = os.WriteFile(conf, []byte(contents), 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}

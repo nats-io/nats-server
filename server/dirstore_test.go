@@ -677,7 +677,7 @@ func TestReload(t *testing.T) {
 		jwt, err := account.Encode(accKey)
 		require_NoError(t, err)
 		file := fmt.Sprintf("%s/%s.jwt", dir, pKey)
-		err = os.WriteFile(file, []byte(jwt), 0644)
+		err = os.WriteFile(file, []byte(jwt), 0o644)
 		require_NoError(t, err)
 		return file
 	}
@@ -953,7 +953,7 @@ func TestNotificationOnPackWalk(t *testing.T) {
 		require_NoError(t, err)
 		store[i] = mergeStore
 	}
-	for i := 0; i < iterCnt; i++ { //iterations
+	for i := 0; i < iterCnt; i++ { // iterations
 		jwts := make(map[string]string)
 		for j := 0; j < keyCnt; j++ {
 			kp, _ := nkeys.CreateAccount()

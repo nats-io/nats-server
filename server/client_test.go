@@ -16,6 +16,7 @@ package server
 import (
 	"bufio"
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,8 +31,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"crypto/tls"
 
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
@@ -815,16 +814,26 @@ func TestSplitSubjectQueue(t *testing.T) {
 		wantQueue   []byte
 		wantErr     bool
 	}{
-		{name: "single subject",
-			sq: "foo", wantSubject: []byte("foo"), wantQueue: nil},
-		{name: "subject and queue",
-			sq: "foo bar", wantSubject: []byte("foo"), wantQueue: []byte("bar")},
-		{name: "subject and queue with surrounding spaces",
-			sq: " foo bar ", wantSubject: []byte("foo"), wantQueue: []byte("bar")},
-		{name: "subject and queue with extra spaces in the middle",
-			sq: "foo  bar", wantSubject: []byte("foo"), wantQueue: []byte("bar")},
-		{name: "subject, queue, and extra token",
-			sq: "foo  bar fizz", wantSubject: []byte(nil), wantQueue: []byte(nil), wantErr: true},
+		{
+			name: "single subject",
+			sq:   "foo", wantSubject: []byte("foo"), wantQueue: nil,
+		},
+		{
+			name: "subject and queue",
+			sq:   "foo bar", wantSubject: []byte("foo"), wantQueue: []byte("bar"),
+		},
+		{
+			name: "subject and queue with surrounding spaces",
+			sq:   " foo bar ", wantSubject: []byte("foo"), wantQueue: []byte("bar"),
+		},
+		{
+			name: "subject and queue with extra spaces in the middle",
+			sq:   "foo  bar", wantSubject: []byte("foo"), wantQueue: []byte("bar"),
+		},
+		{
+			name: "subject, queue, and extra token",
+			sq:   "foo  bar fizz", wantSubject: []byte(nil), wantQueue: []byte(nil), wantErr: true,
+		},
 	}
 
 	for _, c := range cases {

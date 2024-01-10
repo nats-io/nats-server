@@ -167,7 +167,6 @@ func getProcessImageName() (name string) {
 
 // initialize our counters
 func initCounters() (err error) {
-
 	processPid = os.Getpid()
 	// require an addressible nil pointer
 	var source uint16

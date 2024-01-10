@@ -963,6 +963,7 @@ var jsLeafFrag = `
 		]
 	}
 `
+
 var jsLeafNoSysFrag = `
 	leaf {
 		remotes [
@@ -1531,7 +1532,7 @@ func (c *cluster) removeJetStream(s *Server) {
 			sb.WriteString(l + "\n")
 		}
 	}
-	if err := os.WriteFile(cf, []byte(sb.String()), 0644); err != nil {
+	if err := os.WriteFile(cf, []byte(sb.String()), 0o644); err != nil {
 		c.t.Fatalf("Error writing updated config file: %v", err)
 	}
 	if err := s.Reload(); err != nil {
@@ -1606,7 +1607,6 @@ func (c *cluster) stableTotalSubs() (total int) {
 		return fmt.Errorf("Still stabilizing")
 	})
 	return nsubs
-
 }
 
 func addStream(t *testing.T, nc *nats.Conn, cfg *StreamConfig) *StreamInfo {
@@ -1793,7 +1793,7 @@ type bitset struct {
 }
 
 func NewBitset(size uint64) *bitset {
-	byteSize := (size + 7) / 8 //Round up to the nearest byte
+	byteSize := (size + 7) / 8 // Round up to the nearest byte
 
 	return &bitset{
 		bitmap:       make([]uint8, int(byteSize)),

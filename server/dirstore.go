@@ -148,7 +148,8 @@ const (
 // * true - Evict based on lru strategy
 // * false - return an error
 func NewExpiringDirJWTStore(dirPath string, shard bool, create bool, delete deleteType, expireCheck time.Duration, limit int64,
-	evictOnLimit bool, ttl time.Duration, changeNotification JWTChanged, _ ...dirJWTStoreOption) (*DirJWTStore, error) {
+	evictOnLimit bool, ttl time.Duration, changeNotification JWTChanged, _ ...dirJWTStoreOption,
+) (*DirJWTStore, error) {
 	fullPath, err := newDir(dirPath, create)
 	if err != nil {
 		return nil, err

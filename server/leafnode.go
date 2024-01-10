@@ -2239,7 +2239,7 @@ func (c *client) writeLeafSub(w *bytes.Buffer, key string, n int32) {
 		if strings.Contains(key, " ") {
 			w.WriteString(" ")
 			var b [12]byte
-			var i = len(b)
+			i := len(b)
 			for l := n; l > 0; l /= 10 {
 				i--
 				b[i] = digits[l%10]

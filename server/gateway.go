@@ -127,7 +127,7 @@ func GatewayDoNotForceInterestOnlyMode(doNotForce bool) {
 }
 
 type srvGateway struct {
-	totalQSubs int64 //total number of queue subs in all remote gateways (used with atomic operations)
+	totalQSubs int64 // total number of queue subs in all remote gateways (used with atomic operations)
 	sync.RWMutex
 	enabled  bool                   // Immutable, true if both a name and port are configured
 	name     string                 // Name of the Gateway on this server
@@ -1750,7 +1750,7 @@ func (s *Server) removeRemoteGatewayConnection(c *client) {
 
 	} else {
 		var subsa [1024]*subscription
-		var subs = subsa[:0]
+		subs := subsa[:0]
 
 		// For inbound GW connection, if we have subs, those are
 		// local subs on "_R_." subjects.
@@ -2904,7 +2904,7 @@ func (c *client) handleGatewayReply(msg []byte) (processed bool) {
 		// Only if we are a gateway connection should we try to route
 		// to the server where the request originated.
 		var bufa [256]byte
-		var buf = bufa[:0]
+		buf := bufa[:0]
 		buf = append(buf, msgHeadProto...)
 		if !perAccount {
 			buf = append(buf, acc.Name...)

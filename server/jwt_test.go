@@ -2151,7 +2151,7 @@ func TestJWTAccountURLResolverFetchFailureInCluster(t *testing.T) {
 	chanRecv(t, chanImpA, 10*time.Second)
 	chanRecv(t, chanExpA, 10*time.Second)
 	assertChanLen(0, chanImpA, chanImpB, chanExpA, chanExpB)
-	//time.Sleep(10 * time.Second)
+	// time.Sleep(10 * time.Second)
 	// create second client, directly connect to B
 	urlB := fmt.Sprintf("nats://%s:%d", sB.opts.Host, sB.opts.Port)
 	ncB, err := nats.Connect(urlB, nats.UserCredentials(creds), nats.NoReconnect())
@@ -3144,7 +3144,7 @@ func TestJWTExpiredUserCredentialsRenewal(t *testing.T) {
 		conf := createTempFile(t, _EMPTY_)
 		fName := conf.Name()
 		conf.Close()
-		if err := os.WriteFile(fName, content, 0666); err != nil {
+		if err := os.WriteFile(fName, content, 0o666); err != nil {
 			t.Fatalf("Error writing conf file: %v", err)
 		}
 		return fName
@@ -3227,7 +3227,7 @@ func TestJWTExpiredUserCredentialsRenewal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error encoding credentials: %v", err)
 	}
-	if err := os.WriteFile(chainedFile, creds, 0666); err != nil {
+	if err := os.WriteFile(chainedFile, creds, 0o666); err != nil {
 		t.Fatalf("Error writing conf file: %v", err)
 	}
 
@@ -3330,7 +3330,7 @@ func removeFile(t testing.TB, p string) {
 
 func writeJWT(t *testing.T, dir string, pub string, jwt string) {
 	t.Helper()
-	err := os.WriteFile(filepath.Join(dir, pub+".jwt"), []byte(jwt), 0644)
+	err := os.WriteFile(filepath.Join(dir, pub+".jwt"), []byte(jwt), 0o644)
 	require_NoError(t, err)
 }
 
@@ -3574,7 +3574,7 @@ func TestJWTAccountNATSResolverFetch(t *testing.T) {
 	time.Sleep(500 * time.Millisecond) // wait for the protocol to converge
 	// Restart server C. this is a workaround to force C to do a lookup in the absence of account cleanup
 	sC.Shutdown()
-	sC, _ = RunServerWithConfig(confClongTTL) //TODO remove this once we clean up accounts
+	sC, _ = RunServerWithConfig(confClongTTL) // TODO remove this once we clean up accounts
 	defer sC.Shutdown()
 	require_JWTEqual(t, dirA, apub, ajwt2) // was copied from server B
 	require_JWTEqual(t, dirB, apub, ajwt2) // was restarted with this
@@ -3584,7 +3584,7 @@ func TestJWTAccountNATSResolverFetch(t *testing.T) {
 	require_1Connection(sC.ClientURL(), aCreds, apub, sA, sB, sC)
 	// Restart server C. this is a workaround to force C to do a lookup in the absence of account cleanup
 	sC.Shutdown()
-	sC, _ = RunServerWithConfig(confCshortTTL) //TODO remove this once we clean up accounts
+	sC, _ = RunServerWithConfig(confCshortTTL) // TODO remove this once we clean up accounts
 	defer sC.Shutdown()
 	require_JWTEqual(t, dirC, apub, ajwt1) // still contains old cached value
 	checkClusterFormed(t, sA, sB, sC)
@@ -4345,8 +4345,10 @@ func TestJwtTemplates(t *testing.T) {
 		}
 	}
 
-	test(resLim.Pub.Allow, []string{"foo1.none.bar1", "foo1.none.bar2", "foo1.none.bar3",
-		"foo2.none.bar1", "foo2.none.bar2", "foo2.none.bar3"})
+	test(resLim.Pub.Allow, []string{
+		"foo1.none.bar1", "foo1.none.bar2", "foo1.none.bar3",
+		"foo2.none.bar1", "foo2.none.bar2", "foo2.none.bar3",
+	})
 
 	test(resLim.Pub.Deny, []string{"foo1.acc1", "foo1.acc2", "foo2.acc1", "foo2.acc2"})
 
@@ -4986,7 +4988,9 @@ func TestJWTHeader(t *testing.T) {
 		_, err = impNc.RequestMsg(&nats.Msg{
 			Subject: "srvc", Data: []byte("msg2"), Header: nats.Header{
 				"X-B3-Sampled": []string{"1"},
-				"Share":        []string{"Me"}}}, time.Second)
+				"Share":        []string{"Me"},
+			},
+		}, time.Second)
 		require_NoError(t, err)
 		select {
 		case <-time.After(time.Second):
@@ -5376,7 +5380,8 @@ func TestJWTJetStreamTiers(t *testing.T) {
 	accClaim := jwt.NewAccountClaims(accPub)
 	accClaim.Name = "acc"
 	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
-		DiskStorage: 1100, MemoryStorage: 0, Consumer: 2, Streams: 2}
+		DiskStorage: 1100, MemoryStorage: 0, Consumer: 2, Streams: 2,
+	}
 	accJwt1 := encodeClaim(t, accClaim, accPub)
 	accCreds := newUser(t, accKp)
 
@@ -5451,7 +5456,8 @@ func TestJWTJetStreamTiers(t *testing.T) {
 
 	time.Sleep(time.Second - time.Since(start)) // make sure the time stamp changes
 	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
-		DiskStorage: 1650, MemoryStorage: 0, Consumer: 1, Streams: 3}
+		DiskStorage: 1650, MemoryStorage: 0, Consumer: 1, Streams: 3,
+	}
 	accJwt2 := encodeClaim(t, accClaim, accPub)
 	updateJwt(t, s.ClientURL(), sysCreds, accJwt2, 1)
 
@@ -5471,7 +5477,6 @@ func TestJWTJetStreamTiers(t *testing.T) {
 	_, err = js.Publish("testR1-3", []byte("1"))
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: resource limits exceeded for account")
-
 }
 
 func TestJWTJetStreamMaxAckPending(t *testing.T) {
@@ -5525,29 +5530,34 @@ func TestJWTJetStreamMaxAckPending(t *testing.T) {
 	require_NoError(t, err)
 
 	_, err = js.AddConsumer("foo", &nats.ConsumerConfig{
-		Durable: "dur1", AckPolicy: nats.AckAllPolicy, MaxAckPending: 2000})
+		Durable: "dur1", AckPolicy: nats.AckAllPolicy, MaxAckPending: 2000,
+	})
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: consumer max ack pending exceeds system limit of 1000")
 
 	ci, err := js.AddConsumer("foo", &nats.ConsumerConfig{
-		Durable: "dur2", AckPolicy: nats.AckAllPolicy, MaxAckPending: 500})
+		Durable: "dur2", AckPolicy: nats.AckAllPolicy, MaxAckPending: 500,
+	})
 	require_NoError(t, err)
 	require_True(t, ci.Config.MaxAckPending == 500)
 
 	_, err = js.UpdateConsumer("foo", &nats.ConsumerConfig{
-		Durable: "dur2", AckPolicy: nats.AckAllPolicy, MaxAckPending: 2000})
+		Durable: "dur2", AckPolicy: nats.AckAllPolicy, MaxAckPending: 2000,
+	})
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: consumer max ack pending exceeds system limit of 1000")
 
 	time.Sleep(time.Second - time.Since(start)) // make sure the time stamp changes
 	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
 		DiskStorage: jwt.NoLimit, MemoryStorage: jwt.NoLimit, Consumer: jwt.NoLimit,
-		Streams: jwt.NoLimit, MaxAckPending: int64(2000)}
+		Streams: jwt.NoLimit, MaxAckPending: int64(2000),
+	}
 	accJwt2 := encodeClaim(t, accClaim, accPub)
 	updateJwt(t, s.ClientURL(), sysCreds, accJwt2, 1)
 
 	ci, err = js.UpdateConsumer("foo", &nats.ConsumerConfig{
-		Durable: "dur2", AckPolicy: nats.AckAllPolicy, MaxAckPending: 2000})
+		Durable: "dur2", AckPolicy: nats.AckAllPolicy, MaxAckPending: 2000,
+	})
 	require_NoError(t, err)
 	require_True(t, ci.Config.MaxAckPending == 2000)
 }
@@ -5618,7 +5628,8 @@ func TestJWTJetStreamMaxStreamBytes(t *testing.T) {
 	time.Sleep(time.Second - time.Since(start)) // make sure the time stamp changes
 	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
 		DiskStorage: jwt.NoLimit, MemoryStorage: jwt.NoLimit, Consumer: jwt.NoLimit, Streams: jwt.NoLimit,
-		DiskMaxStreamBytes: 2048, MaxBytesRequired: true}
+		DiskMaxStreamBytes: 2048, MaxBytesRequired: true,
+	}
 	accJwt2 := encodeClaim(t, accClaim, accPub)
 	updateJwt(t, s.ClientURL(), sysCreds, accJwt2, 1)
 
@@ -5724,7 +5735,6 @@ func TestJWTQueuePermissions(t *testing.T) {
 				}
 			}
 		})
-
 	}
 }
 

@@ -647,7 +647,7 @@ func TestOCSPReloadRotateTLSCertWithNoURL(t *testing.T) {
 			timeout: 5
 		}
 	`
-	if err := os.WriteFile(conf, []byte(content), 0666); err != nil {
+	if err := os.WriteFile(conf, []byte(content), 0o666); err != nil {
 		t.Fatalf("Error writing config: %v", err)
 	}
 	// Reload show warning because of cert missing OCSP Url so cannot be used
@@ -784,7 +784,7 @@ func TestOCSPReloadRotateTLSCertDisableMustStaple(t *testing.T) {
 		}
 	`
 	content = fmt.Sprintf(updatedContent, storeDir)
-	if err := os.WriteFile(conf, []byte(content), 0666); err != nil {
+	if err := os.WriteFile(conf, []byte(content), 0o666); err != nil {
 		t.Fatalf("Error writing config: %v", err)
 	}
 	if err := s.Reload(); err != nil {
@@ -813,7 +813,7 @@ func TestOCSPReloadRotateTLSCertDisableMustStaple(t *testing.T) {
 
 	// Re-enable OCSP Stapling
 	content = fmt.Sprintf(originalContent, storeDir)
-	if err := os.WriteFile(conf, []byte(content), 0666); err != nil {
+	if err := os.WriteFile(conf, []byte(content), 0o666); err != nil {
 		t.Fatalf("Error writing config: %v", err)
 	}
 	if err := s.Reload(); err != nil {
@@ -943,7 +943,7 @@ func TestOCSPReloadRotateTLSCertEnableMustStaple(t *testing.T) {
 			timeout: 5
 		}
 	`
-	if err := os.WriteFile(conf, []byte(content), 0666); err != nil {
+	if err := os.WriteFile(conf, []byte(content), 0o666); err != nil {
 		t.Fatalf("Error writing config: %v", err)
 	}
 	if err := s.Reload(); err != nil {
@@ -1227,7 +1227,7 @@ func TestOCSPCluster(t *testing.T) {
 		}
 	`
 	srvConfA = fmt.Sprintf(srvConfA, storeDirA)
-	if err := os.WriteFile(sconfA, []byte(srvConfA), 0666); err != nil {
+	if err := os.WriteFile(sconfA, []byte(srvConfA), 0o666); err != nil {
 		t.Fatalf("Error writing config: %v", err)
 	}
 	if err := srvA.Reload(); err != nil {
@@ -1490,7 +1490,7 @@ func TestOCSPLeaf(t *testing.T) {
 		}
 	`
 	srvConfA = fmt.Sprintf(srvConfA, storeDirA)
-	if err := os.WriteFile(sconfA, []byte(srvConfA), 0666); err != nil {
+	if err := os.WriteFile(sconfA, []byte(srvConfA), 0o666); err != nil {
 		t.Fatalf("Error writing config: %v", err)
 	}
 	if err := srvA.Reload(); err != nil {
@@ -1764,7 +1764,7 @@ func TestOCSPLeafNoVerify(t *testing.T) {
 		}
 	`
 	srvConfA = fmt.Sprintf(srvConfA, storeDirA)
-	if err := os.WriteFile(sconfA, []byte(srvConfA), 0666); err != nil {
+	if err := os.WriteFile(sconfA, []byte(srvConfA), 0o666); err != nil {
 		t.Fatalf("Error writing config: %v", err)
 	}
 	if err := srvA.Reload(); err != nil {
@@ -2282,7 +2282,7 @@ func TestOCSPGateway(t *testing.T) {
 	`
 
 	srvConfA = fmt.Sprintf(srvConfA, storeDirA)
-	if err := os.WriteFile(sconfA, []byte(srvConfA), 0666); err != nil {
+	if err := os.WriteFile(sconfA, []byte(srvConfA), 0o666); err != nil {
 		t.Fatalf("Error writing config: %v", err)
 	}
 	if err := srvA.Reload(); err != nil {
@@ -2738,7 +2738,7 @@ func TestOCSPCustomConfigReloadDisable(t *testing.T) {
 			timeout: 5
 		}
 	`
-	if err := os.WriteFile(conf, []byte(content), 0666); err != nil {
+	if err := os.WriteFile(conf, []byte(content), 0o666); err != nil {
 		t.Fatalf("Error writing config: %v", err)
 	}
 	if err := s.Reload(); err != nil {
@@ -2840,7 +2840,7 @@ func TestOCSPCustomConfigReloadEnable(t *testing.T) {
 			timeout: 5
 		}
 	`
-	if err := os.WriteFile(conf, []byte(content), 0666); err != nil {
+	if err := os.WriteFile(conf, []byte(content), 0o666); err != nil {
 		t.Fatalf("Error writing config: %v", err)
 	}
 	if err := s.Reload(); err != nil {
@@ -3237,7 +3237,6 @@ func TestOCSPSuperCluster(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatal(err)
-
 	}
 	defer cA.Close()
 
@@ -3453,9 +3452,7 @@ func TestOCSPLocalIssuerDetermination(t *testing.T) {
 	clientTrustBundle := "configs/certs/ocsp_peer/mini-ca/misc/trust_config1_bundle.pem"
 	serverCert := "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_cert.pem"
 
-	var (
-		errMissingStaple = fmt.Errorf("missing OCSP Staple from server")
-	)
+	errMissingStaple := fmt.Errorf("missing OCSP Staple from server")
 
 	for _, test := range []struct {
 		name        string
@@ -3837,7 +3834,6 @@ func TestMixedCAOCSPSuperCluster(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatal(err)
-
 	}
 	defer cA.Close()
 

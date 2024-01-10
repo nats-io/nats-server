@@ -301,7 +301,7 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 	var rawResp []byte
 	var ocspr *ocsp.Response
 	var useCachedResp bool
-	var rc = s.ocsprc
+	rc := s.ocsprc
 	var cachedRevocation bool
 	// Check our cache before calling out to the CA OCSP responder
 	s.Debugf(certidp.DbgCheckingCacheForCert, subj, fingerprint)

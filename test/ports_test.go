@@ -126,7 +126,7 @@ func TestPortsFileReload(t *testing.T) {
 
 	// make child temp dir A
 	dirA := filepath.Join(tempDir, "A")
-	os.MkdirAll(dirA, 0777)
+	os.MkdirAll(dirA, 0o777)
 
 	// write the config file with a reference to A
 	config := fmt.Sprintf(`
@@ -135,7 +135,7 @@ func TestPortsFileReload(t *testing.T) {
 	`, dirA)
 	config = strings.Replace(config, "\\", "/", -1)
 	confPath := filepath.Join(tempDir, fmt.Sprintf("%d.conf", os.Getpid()))
-	if err := os.WriteFile(confPath, []byte(config), 0666); err != nil {
+	if err := os.WriteFile(confPath, []byte(config), 0o666); err != nil {
 		t.Fatalf("Error writing ports file (%s): %v", confPath, err)
 	}
 
@@ -169,14 +169,14 @@ func TestPortsFileReload(t *testing.T) {
 
 	// change the configuration for the ports file to dirB
 	dirB := filepath.Join(tempDir, "B")
-	os.MkdirAll(dirB, 0777)
+	os.MkdirAll(dirB, 0o777)
 
 	config = fmt.Sprintf(`
 		ports_file_dir: "%s"
 		port: -1
 	`, dirB)
 	config = strings.Replace(config, "\\", "/", -1)
-	if err := os.WriteFile(confPath, []byte(config), 0666); err != nil {
+	if err := os.WriteFile(confPath, []byte(config), 0o666); err != nil {
 		t.Fatalf("Error writing ports file (%s): %v", confPath, err)
 	}
 

@@ -693,7 +693,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 // Composes  the index name. Contains the stream name, subject filter, and transform destination
 // when the stream is external we will use additional information in case the (external)  stream names are the same.
 func (ssi *StreamSource) composeIName() string {
-	var iName = ssi.Name
+	iName := ssi.Name
 
 	if ssi.External != nil {
 		iName = iName + ":" + getHash(ssi.External.ApiPrefix)
@@ -1332,7 +1332,7 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 	}
 
 	// check for duplicates
-	var iNames = make(map[string]struct{})
+	iNames := make(map[string]struct{})
 	for _, src := range cfg.Sources {
 		if !isValidName(src.Name) {
 			return StreamConfig{}, NewJSSourceInvalidStreamNameError()
@@ -2016,7 +2016,6 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 		o.mu.RUnlock()
 		if doPurge {
 			o.purge(fseq, lseq)
-
 		}
 	}
 	mset.clsMu.RUnlock()
@@ -2068,7 +2067,7 @@ func (mset *stream) sourceInfo(si *sourceInfo) *StreamSourceInfo {
 		return nil
 	}
 
-	var ssi = StreamSourceInfo{Name: si.name, Lag: si.lag, Error: si.err, FilterSubject: si.sf}
+	ssi := StreamSourceInfo{Name: si.name, Lag: si.lag, Error: si.err, FilterSubject: si.sf}
 
 	trConfigs := make([]SubjectTransformConfig, len(si.sfs))
 	for i := range si.sfs {
@@ -2598,7 +2597,6 @@ func (mset *stream) setupMirrorConsumer() error {
 	mset.outq.send(newJSPubMsg(subject, _EMPTY_, reply, nil, b, nil, 0))
 
 	go func() {
-
 		var retry bool
 		defer func() {
 			mset.mu.Lock()
@@ -2725,7 +2723,7 @@ func (mset *stream) retrySourceConsumer(iName string) {
 	if si == nil {
 		return
 	}
-	var ss = mset.streamSource(iName)
+	ss := mset.streamSource(iName)
 	if ss != nil {
 		iNameMap := map[string]struct{}{
 			iName: {},
@@ -2969,7 +2967,6 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64, startTime time.T
 	mset.outq.send(newJSPubMsg(subject, _EMPTY_, reply, nil, b, nil, 0))
 
 	go func() {
-
 		var retry bool
 		defer func() {
 			mset.mu.Lock()
@@ -3342,7 +3339,6 @@ func streamAndSeq(shdr string) (string, string, uint64) {
 	} else {
 		return fields[0], _EMPTY_, uint64(parseAckReplyNum(fields[1]))
 	}
-
 }
 
 // Lock should be held.
@@ -3485,7 +3481,7 @@ func (mset *stream) startingSequenceForSources() {
 			continue
 		}
 
-		var update = func(iName string, seq uint64) {
+		update := func(iName string, seq uint64) {
 			// Only update active in case we have older ones in here that got configured out.
 			if si := mset.sources[iName]; si != nil {
 				if _, ok := seqs[iName]; !ok {
@@ -4180,7 +4176,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	isLeader, isSealed := mset.isLeader(), mset.cfg.Sealed
 	canRespond := doAck && len(reply) > 0 && isLeader
 
-	var resp = &JSPubAckResponse{}
+	resp := &JSPubAckResponse{}
 
 	// Bail here if sealed.
 	if isSealed {
@@ -4675,7 +4671,7 @@ func (mset *stream) signalConsumers(subj string, seq uint64) {
 	}
 	// Encode the sequence here.
 	var eseq [8]byte
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	le.PutUint64(eseq[:], seq)
 	msg := eseq[:]
 	for _, sub := range r.psubs {
@@ -5643,7 +5639,7 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 			return nil, logAndReturnError()
 		}
 		os.MkdirAll(filepath.Dir(fpath), defaultDirPerms)
-		fd, err := os.OpenFile(fpath, os.O_CREATE|os.O_RDWR, 0600)
+		fd, err := os.OpenFile(fpath, os.O_CREATE|os.O_RDWR, 0o600)
 		if err != nil {
 			return nil, err
 		}

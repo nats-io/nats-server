@@ -165,6 +165,7 @@ func (a *stateAdder) server() *Server {
 	defer a.Unlock()
 	return a.s
 }
+
 func (a *stateAdder) node() RaftNode {
 	a.Lock()
 	defer a.Unlock()

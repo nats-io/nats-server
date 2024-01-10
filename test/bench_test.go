@@ -42,8 +42,10 @@ func runBenchServer() *server.Server {
 	return RunServer(&opts)
 }
 
-const defaultRecBufSize = 32768
-const defaultSendBufSize = 32768
+const (
+	defaultRecBufSize  = 32768
+	defaultSendBufSize = 32768
+)
 
 func flushConnection(b *testing.B, c net.Conn) {
 	buf := make([]byte, 32)
@@ -302,7 +304,7 @@ func benchOptionsForServiceImports() *server.Options {
 
 func addServiceImports(b *testing.B, s *server.Server) {
 	// Add a bunch of service exports with wildcards, similar to JS.
-	var exports = []string{
+	exports := []string{
 		server.JSApiAccountInfo,
 		server.JSApiTemplateCreate,
 		server.JSApiTemplates,
@@ -918,8 +920,10 @@ func doFanout(b *testing.B, numServers, numConnections, subsPerConnection int, s
 	b.StopTimer()
 }
 
-var sub = "x"
-var payload = "12345678"
+var (
+	sub     = "x"
+	payload = "12345678"
+)
 
 func Benchmark______FanOut_8x1x10(b *testing.B) {
 	doFanout(b, 1, 1, 10, sub, payload)

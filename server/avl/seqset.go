@@ -251,7 +251,7 @@ func (ss SequenceSet) Encode(buf []byte) ([]byte, error) {
 	// Once 1.20 is out we could change this over.
 	// Also binary.Write() is way slower, do not use.
 
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	buf[0], buf[1] = magic, version
 	i := hdrLen
 	le.PutUint32(buf[i:], uint32(nn))
@@ -295,7 +295,7 @@ func Decode(buf []byte) (*SequenceSet, int, error) {
 
 // Helper to decode v2.
 func decodev2(buf []byte) (*SequenceSet, int, error) {
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	index := 2
 	nn := int(le.Uint32(buf[index:]))
 	sz := int(le.Uint32(buf[index+4:]))
@@ -326,7 +326,7 @@ func decodev2(buf []byte) (*SequenceSet, int, error) {
 
 // Helper to decode v1 into v2 which has fixed buckets of 32 vs 64 originally.
 func decodev1(buf []byte) (*SequenceSet, int, error) {
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	index := 2
 	nn := int(le.Uint32(buf[index:]))
 	sz := int(le.Uint32(buf[index+4:]))
@@ -365,7 +365,6 @@ func decodev1(buf []byte) (*SequenceSet, int, error) {
 	}
 
 	return &ss, index, nil
-
 }
 
 // insertNode places a decoded node into the tree.
@@ -404,7 +403,7 @@ const (
 )
 
 type node struct {
-	//v dvalue
+	// v dvalue
 	base uint64
 	bits [numBuckets]uint64
 	l    *node

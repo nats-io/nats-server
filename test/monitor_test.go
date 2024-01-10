@@ -32,8 +32,10 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-const CLIENT_PORT = 11422
-const MONITOR_PORT = 11522
+const (
+	CLIENT_PORT  = 11422
+	MONITOR_PORT = 11522
+)
 
 func runMonitorServer() *server.Server {
 	resetPreviousHTTPConnections()
@@ -396,7 +398,6 @@ func TestTLSConnz(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
-
 	if err != nil {
 		t.Fatalf("Got an error reading the body: %v\n", err)
 	}

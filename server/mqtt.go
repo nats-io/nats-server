@@ -1862,61 +1862,61 @@ func (as *mqttAccountSessionManager) processJSAPIReplies(_ *subscription, pc *cl
 	}
 	switch token {
 	case mqttJSAStreamCreate:
-		var resp = &JSApiStreamCreateResponse{}
+		resp := &JSApiStreamCreateResponse{}
 		if err := json.Unmarshal(msg, resp); err != nil {
 			resp.Error = NewJSInvalidJSONError()
 		}
 		out(resp)
 	case mqttJSAStreamUpdate:
-		var resp = &JSApiStreamUpdateResponse{}
+		resp := &JSApiStreamUpdateResponse{}
 		if err := json.Unmarshal(msg, resp); err != nil {
 			resp.Error = NewJSInvalidJSONError()
 		}
 		out(resp)
 	case mqttJSAStreamLookup:
-		var resp = &JSApiStreamInfoResponse{}
+		resp := &JSApiStreamInfoResponse{}
 		if err := json.Unmarshal(msg, &resp); err != nil {
 			resp.Error = NewJSInvalidJSONError()
 		}
 		out(resp)
 	case mqttJSAStreamDel:
-		var resp = &JSApiStreamDeleteResponse{}
+		resp := &JSApiStreamDeleteResponse{}
 		if err := json.Unmarshal(msg, &resp); err != nil {
 			resp.Error = NewJSInvalidJSONError()
 		}
 		out(resp)
 	case mqttJSAConsumerCreate:
-		var resp = &JSApiConsumerCreateResponse{}
+		resp := &JSApiConsumerCreateResponse{}
 		if err := json.Unmarshal(msg, resp); err != nil {
 			resp.Error = NewJSInvalidJSONError()
 		}
 		out(resp)
 	case mqttJSAConsumerDel:
-		var resp = &JSApiConsumerDeleteResponse{}
+		resp := &JSApiConsumerDeleteResponse{}
 		if err := json.Unmarshal(msg, resp); err != nil {
 			resp.Error = NewJSInvalidJSONError()
 		}
 		out(resp)
 	case mqttJSAMsgStore, mqttJSASessPersist:
-		var resp = &JSPubAckResponse{}
+		resp := &JSPubAckResponse{}
 		if err := json.Unmarshal(msg, resp); err != nil {
 			resp.Error = NewJSInvalidJSONError()
 		}
 		out(resp)
 	case mqttJSAMsgLoad:
-		var resp = &JSApiMsgGetResponse{}
+		resp := &JSApiMsgGetResponse{}
 		if err := json.Unmarshal(msg, &resp); err != nil {
 			resp.Error = NewJSInvalidJSONError()
 		}
 		out(resp)
 	case mqttJSAStreamNames:
-		var resp = &JSApiStreamNamesResponse{}
+		resp := &JSApiStreamNamesResponse{}
 		if err := json.Unmarshal(msg, resp); err != nil {
 			resp.Error = NewJSInvalidJSONError()
 		}
 		out(resp)
 	case mqttJSAMsgDelete:
-		var resp = &JSApiMsgDeleteResponse{}
+		resp := &JSApiMsgDeleteResponse{}
 		if err := json.Unmarshal(msg, resp); err != nil {
 			resp.Error = NewJSInvalidJSONError()
 		}
@@ -1989,7 +1989,7 @@ func (as *mqttAccountSessionManager) processSessionPersist(_ *subscription, pc *
 	if len(msg) < LEN_CR_LF {
 		return
 	}
-	var par = &JSPubAckResponse{}
+	par := &JSPubAckResponse{}
 	if err := json.Unmarshal(msg, par); err != nil {
 		return
 	}
@@ -2434,8 +2434,8 @@ func (sess *mqttSession) processSub(
 // Runs from the client's readLoop.
 // Lock not held on entry, but session is in the locked map.
 func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
-	filters []*mqttFilter, fromSubProto, trace bool) ([]*subscription, error) {
-
+	filters []*mqttFilter, fromSubProto, trace bool,
+) ([]*subscription, error) {
 	c.mu.Lock()
 	acc := c.acc
 	c.mu.Unlock()
@@ -4949,8 +4949,8 @@ func (sess *mqttSession) ensurePubRelConsumerSubscription(c *client) error {
 // Session lock is acquired and released as needed. Session is in the locked
 // map.
 func (sess *mqttSession) processJSConsumer(c *client, subject, sid string,
-	qos byte, fromSubProto bool) (*ConsumerConfig, *subscription, error) {
-
+	qos byte, fromSubProto bool,
+) (*ConsumerConfig, *subscription, error) {
 	sess.mu.Lock()
 	cc, exists := sess.cons[sid]
 	tmaxack := sess.tmaxack

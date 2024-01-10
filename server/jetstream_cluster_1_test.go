@@ -2241,7 +2241,6 @@ func TestJetStreamClusterWorkQueueRetention(t *testing.T) {
 		}
 		return nil
 	})
-
 }
 
 func TestJetStreamClusterMirrorAndSourceWorkQueues(t *testing.T) {
@@ -2298,7 +2297,6 @@ func TestJetStreamClusterMirrorAndSourceWorkQueues(t *testing.T) {
 		}
 		return nil
 	})
-
 }
 
 func TestJetStreamClusterMirrorAndSourceInterestPolicyStream(t *testing.T) {
@@ -3829,15 +3827,19 @@ func TestJetStreamClusterAccountPurge(t *testing.T) {
 		c.waitOnStreamLeader(accpub, "TEST1")
 
 		ci, err := js.AddConsumer("TEST1",
-			&nats.ConsumerConfig{Durable: "DUR1",
-				AckPolicy: nats.AckExplicitPolicy})
+			&nats.ConsumerConfig{
+				Durable:   "DUR1",
+				AckPolicy: nats.AckExplicitPolicy,
+			})
 		require_NoError(t, err)
 		require_True(t, ci.Config.Replicas == 0)
 
 		ci, err = js.AddConsumer("TEST1",
-			&nats.ConsumerConfig{Durable: "DUR2",
+			&nats.ConsumerConfig{
+				Durable:   "DUR2",
 				AckPolicy: nats.AckExplicitPolicy,
-				Replicas:  1})
+				Replicas:  1,
+			})
 		require_NoError(t, err)
 		require_True(t, ci.Config.Replicas == 1)
 
@@ -3855,9 +3857,11 @@ func TestJetStreamClusterAccountPurge(t *testing.T) {
 		require_NoError(t, err)
 
 		ci, err = js.AddConsumer("TEST2",
-			&nats.ConsumerConfig{Durable: "DUR1",
+			&nats.ConsumerConfig{
+				Durable:   "DUR1",
 				AckPolicy: nats.AckExplicitPolicy,
-				Replicas:  0})
+				Replicas:  0,
+			})
 		require_NoError(t, err)
 		require_True(t, ci.Config.Replicas == 0)
 
@@ -4100,7 +4104,8 @@ func TestJetStreamClusterConsumerScaleUp(t *testing.T) {
 	dcfg := nats.ConsumerConfig{
 		Durable:   "DUR",
 		AckPolicy: nats.AckExplicitPolicy,
-		Replicas:  0}
+		Replicas:  0,
+	}
 	_, err = js.AddConsumer("TEST", &dcfg)
 	require_NoError(t, err)
 
@@ -5851,7 +5856,6 @@ func TestJetStreamClusterCrossAccountMirrorsAndSources(t *testing.T) {
 		}
 		return nil
 	})
-
 }
 
 func TestJetStreamClusterFailMirrorsAndSources(t *testing.T) {
@@ -5906,13 +5910,14 @@ func TestJetStreamClusterFailMirrorsAndSources(t *testing.T) {
 	testPrefix("source-bad-apiprefix", JSStreamExternalApiOverlapErrF, StreamConfig{
 		Name:    "MY_SOURCE_TEST",
 		Storage: FileStorage,
-		Sources: []*StreamSource{{
-			Name: "TEST",
-			External: &ExternalStream{
-				ApiPrefix:     "$JS.API",
-				DeliverPrefix: "here",
+		Sources: []*StreamSource{
+			{
+				Name: "TEST",
+				External: &ExternalStream{
+					ApiPrefix:     "$JS.API",
+					DeliverPrefix: "here",
+				},
 			},
-		},
 		},
 	})
 }

@@ -21,18 +21,20 @@ import (
 	"net/textproto"
 )
 
-type parserState int
-type parseState struct {
-	state   parserState
-	op      byte
-	as      int
-	drop    int
-	pa      pubArg
-	argBuf  []byte
-	msgBuf  []byte
-	header  http.Header // access via getHeader
-	scratch [MAX_CONTROL_LINE_SIZE]byte
-}
+type (
+	parserState int
+	parseState  struct {
+		state   parserState
+		op      byte
+		as      int
+		drop    int
+		pa      pubArg
+		argBuf  []byte
+		msgBuf  []byte
+		header  http.Header // access via getHeader
+		scratch [MAX_CONTROL_LINE_SIZE]byte
+	}
+)
 
 type pubArg struct {
 	arg     []byte

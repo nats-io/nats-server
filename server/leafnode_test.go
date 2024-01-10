@@ -634,7 +634,6 @@ func TestLeafNodeBasicAuthSingleton(t *testing.T) {
 		{"user creds required so binds to ACC1", "user: \"ln\"\npass: \"pwd\"", "ln:pwd@", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-
 			conf := createConfFile(t, []byte(fmt.Sprintf(template, test.userSpec)))
 			s1, o1 := RunServerWithConfig(conf)
 			defer s1.Shutdown()
@@ -2575,7 +2574,6 @@ func TestLeafNodeOperatorBadCfg(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-
 			conf := createConfFile(t, []byte(fmt.Sprintf(configTmpl, ojwt, sysAccPk, tmpDir, c.cfg)))
 			opts := LoadConfig(conf)
 			s, err := NewServer(opts)
@@ -4879,7 +4877,6 @@ func TestLeafNodeDuplicateMsg(t *testing.T) {
 	checkLeafNodeConnectedCount(t, b2, 2)
 
 	check := func(t *testing.T, subSrv *Server, pubSrv *Server) {
-
 		sc := natsConnect(t, subSrv.ClientURL(), nats.UserInfo("userb", "userb"))
 		defer sc.Close()
 
@@ -6156,7 +6153,7 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithSeparateAccounts(t *tes
 	defer sc.shutdown()
 
 	// Now create a leafnode cluster that has 2 LNs, one to each cluster but on separate accounts, ONE and TWO.
-	var lnTmpl = `
+	lnTmpl := `
 		listen: 127.0.0.1:-1
 		server_name: %s
 		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
@@ -6172,7 +6169,7 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithSeparateAccounts(t *tes
 		accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }}
 		`
 
-	var leafFrag = `
+	leafFrag := `
 		leaf {
 			listen: 127.0.0.1:-1
 			remotes [
@@ -6375,7 +6372,7 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithSeparateAccounts(t *tes
 }
 
 func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithStreamImportAccounts(t *testing.T) {
-	var tmpl = `
+	tmpl := `
 	listen: 127.0.0.1:-1
 
 	server_name: %s
@@ -6416,7 +6413,7 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithStreamImportAccounts(t 
 	defer sc.shutdown()
 
 	// Now create a leafnode cluster that has 2 LNs, one to each cluster but on separate accounts, STL and KSC.
-	var lnTmpl = `
+	lnTmpl := `
 		listen: 127.0.0.1:-1
 		server_name: %s
 		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
@@ -6432,7 +6429,7 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithStreamImportAccounts(t 
 		accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }}
 		`
 
-	var leafFrag = `
+	leafFrag := `
 		leaf {
 			listen: 127.0.0.1:-1
 			remotes [
@@ -6687,7 +6684,7 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithStreamImportAccounts(t 
 }
 
 func TestLeafNodeWithWeightedDQResponsesWithStreamImportAccountsWithUnsub(t *testing.T) {
-	var tmpl = `
+	tmpl := `
 	listen: 127.0.0.1:-1
 
 	server_name: %s
@@ -6722,7 +6719,7 @@ func TestLeafNodeWithWeightedDQResponsesWithStreamImportAccountsWithUnsub(t *tes
 	defer c.shutdown()
 
 	// Now create a leafnode cluster that has 2 LNs, one to each cluster but on separate accounts, STL and KSC.
-	var lnTmpl = `
+	lnTmpl := `
 		listen: 127.0.0.1:-1
 		server_name: %s
 		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
@@ -6738,7 +6735,7 @@ func TestLeafNodeWithWeightedDQResponsesWithStreamImportAccountsWithUnsub(t *tes
 		accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }}
 		`
 
-	var leafFrag = `
+	leafFrag := `
 		leaf {
 			listen: 127.0.0.1:-1
 			remotes [ { urls: [ %s ] } ]

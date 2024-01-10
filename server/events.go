@@ -365,8 +365,8 @@ type pubMsg struct {
 var pubMsgPool sync.Pool
 
 func newPubMsg(c *client, sub, rply string, si *ServerInfo, hdr map[string]string,
-	msg interface{}, oct compressionType, echo, last bool) *pubMsg {
-
+	msg interface{}, oct compressionType, echo, last bool,
+) *pubMsg {
 	var m *pubMsg
 	pm := pubMsgPool.Get()
 	if pm != nil {
@@ -1350,7 +1350,7 @@ func (s *Server) addSystemAccountExports(sacc *Account) {
 	if !sacc.hasServiceExportMatching(accConnzSubj) {
 		// pick export type that clamps importing account id into subject
 		if err := sacc.addServiceExportWithResponseAndAccountPos(accConnzSubj, Streamed, nil, 4); err != nil {
-			//if err := sacc.AddServiceExportWithResponse(accConnzSubj, Streamed, nil); err != nil {
+			// if err := sacc.AddServiceExportWithResponse(accConnzSubj, Streamed, nil); err != nil {
 			s.Errorf("Error adding system service export for %q: %v", accConnzSubj, err)
 		}
 	}
@@ -2657,7 +2657,7 @@ func (s *Server) debugSubscribers(sub *subscription, c *client, _ *Account, subj
 	}
 
 	// We should have an idea of how many responses to expect from remote servers.
-	var expected = acc.expectedRemoteResponses()
+	expected := acc.expectedRemoteResponses()
 
 	// If we are only local, go ahead and return.
 	if expected == 0 {
@@ -2791,7 +2791,6 @@ func (s *Server) kickClient(_ *subscription, c *client, _ *Account, subject, rep
 	s.zReq(c, reply, hdr, msg, optz, optz, func() (interface{}, error) {
 		return nil, s.DisconnectClientByID(req.CID)
 	})
-
 }
 
 func (s *Server) ldmClient(_ *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {

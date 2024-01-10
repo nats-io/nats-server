@@ -41,8 +41,10 @@ type winServiceWrapper struct {
 	server *Server
 }
 
-var dockerized = false
-var startupDelay = 10 * time.Second
+var (
+	dockerized   = false
+	startupDelay = 10 * time.Second
+)
 
 func init() {
 	if v, exists := os.LookupEnv("NATS_DOCKERIZED"); exists && v == "1" {
@@ -62,8 +64,8 @@ func init() {
 // if any, is service specific or not by using svcSpecificEC
 // parameter.
 func (w *winServiceWrapper) Execute(args []string, changes <-chan svc.ChangeRequest,
-	status chan<- svc.Status) (bool, uint32) {
-
+	status chan<- svc.Status,
+) (bool, uint32) {
 	status <- svc.Status{State: svc.StartPending}
 	go w.server.Start()
 

@@ -3226,7 +3226,6 @@ func TestGatewaySendQSubsBufSize(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-
 			o2 := testDefaultOptionsForGateway("B")
 			o2.Gateway.sendQSubsBufSize = test.bufSize
 			s2 := runGatewayServer(o2)
@@ -3314,7 +3313,7 @@ func TestGatewayRaceBetweenPubAndSub(t *testing.T) {
 
 	s1Url := fmt.Sprintf("nats://127.0.0.1:%d", o1.Port)
 	var ncaa [5]*nats.Conn
-	var nca = ncaa[:0]
+	nca := ncaa[:0]
 	for i := 0; i < 5; i++ {
 		nc := natsConnect(t, s1Url)
 		defer nc.Close()
@@ -3349,7 +3348,7 @@ func TestGatewayRaceBetweenPubAndSub(t *testing.T) {
 // Returns the first (if any) of the inbound connections for this name.
 func getInboundGatewayConnection(s *Server, name string) *client {
 	var gwsa [4]*client
-	var gws = gwsa[:0]
+	gws := gwsa[:0]
 	s.getInboundGatewayConnections(&gws)
 	if len(gws) > 0 {
 		return gws[0]
@@ -4625,7 +4624,6 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-
 			// Setup first A1 and B1 to ensure that they have GWs
 			// connections as described above.
 

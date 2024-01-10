@@ -142,7 +142,7 @@ type fileLogger struct {
 
 func newFileLogger(filename, pidPrefix string, time bool) (*fileLogger, error) {
 	fileflags := os.O_WRONLY | os.O_APPEND | os.O_CREATE
-	f, err := os.OpenFile(filename, fileflags, 0660)
+	f, err := os.OpenFile(filename, fileflags, 0o660)
 	if err != nil {
 		return nil, err
 	}
@@ -179,8 +179,8 @@ func (l *fileLogger) setMaxNumFiles(max int) {
 }
 
 func (l *fileLogger) logDirect(label, format string, v ...interface{}) int {
-	var entrya = [256]byte{}
-	var entry = entrya[:0]
+	entrya := [256]byte{}
+	entry := entrya[:0]
 	if l.pid != "" {
 		entry = append(entry, l.pid...)
 	}
@@ -260,7 +260,7 @@ func (l *fileLogger) Write(b []byte) (int, error) {
 				now.Second(), now.Nanosecond())
 			os.Rename(fname, bak)
 			fileflags := os.O_WRONLY | os.O_APPEND | os.O_CREATE
-			f, err := os.OpenFile(fname, fileflags, 0660)
+			f, err := os.OpenFile(fname, fileflags, 0o660)
 			if err != nil {
 				l.Unlock()
 				panic(fmt.Sprintf("Unable to re-open the logfile %q after rotation: %v", fname, err))

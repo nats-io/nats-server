@@ -27,7 +27,6 @@ import (
 )
 
 func BenchmarkJetStreamConsume(b *testing.B) {
-
 	const (
 		verbose          = false
 		streamName       = "S"
@@ -261,7 +260,7 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 		{3, 3, 1024, 1_000}, // Cluster, R3, 1KB messages, ~1MiB minimum
 	}
 
-	//Each of the cases above is run with each of the consumer types
+	// Each of the cases above is run with each of the consumer types
 	consumerTypes := []ConsumerType{
 		PushSync,
 		PushAsync,
@@ -283,7 +282,6 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 		b.Run(
 			name,
 			func(b *testing.B) {
-
 				for _, ct := range consumerTypes {
 					name := fmt.Sprintf(
 						"%v",
@@ -403,7 +401,6 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 }
 
 func BenchmarkJetStreamPublish(b *testing.B) {
-
 	const (
 		verbose    = false
 		seed       = 12345
@@ -539,7 +536,6 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 		b.Run(
 			name,
 			func(b *testing.B) {
-
 				for _, pc := range publisherCases {
 					name := fmt.Sprintf("%v", pc.pType)
 					if pc.pType == Async && pc.asyncWindow > 0 {
@@ -549,7 +545,6 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 					b.Run(
 						name,
 						func(b *testing.B) {
-
 							subjects := make([]string, bc.numSubjects)
 							for i := 0; i < bc.numSubjects; i++ {
 								subjects[i] = fmt.Sprintf("s-%d", i+1)
@@ -641,7 +636,6 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 }
 
 func BenchmarkJetStreamInterestStreamWithLimit(b *testing.B) {
-
 	const (
 		verbose          = true
 		seed             = 12345
@@ -785,12 +779,10 @@ func BenchmarkJetStreamInterestStreamWithLimit(b *testing.B) {
 					b.Run(
 						fmt.Sprintf("Storage=%v", storageType),
 						func(b *testing.B) {
-
 							for limitDescription, limitConfigFunc := range limitConfigCases {
 								b.Run(
 									limitDescription,
 									func(b *testing.B) {
-
 										// Print benchmark parameters
 										if verbose {
 											b.Logf(
@@ -889,7 +881,6 @@ func BenchmarkJetStreamInterestStreamWithLimit(b *testing.B) {
 }
 
 func BenchmarkJetStreamKV(b *testing.B) {
-
 	const (
 		verbose   = false
 		kvName    = "BUCKET"
@@ -1021,7 +1012,6 @@ func BenchmarkJetStreamKV(b *testing.B) {
 					b.Run(
 						wName,
 						func(b *testing.B) {
-
 							if verbose {
 								b.Logf("Running %s workload %s with %d messages", wName, bName, b.N)
 							}
@@ -1221,7 +1211,6 @@ func BenchmarkJetStreamObjStore(b *testing.B) {
 								b.Run(
 									bName,
 									func(b *testing.B) {
-
 										// Test setup
 										rng := rand.New(rand.NewSource(int64(seed)))
 
@@ -1283,7 +1272,6 @@ func BenchmarkJetStreamObjStore(b *testing.B) {
 										b.ReportMetric(float64(errors)*100/float64(b.N), "%error")
 										b.ReportMetric(float64(reads), "reads")
 										b.ReportMetric(float64(writes), "writes")
-
 									},
 								)
 							}

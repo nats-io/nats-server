@@ -52,30 +52,35 @@ func (l *DummyLogger) Noticef(format string, v ...interface{}) {
 	l.Msg = fmt.Sprintf(format, v...)
 	l.aggregate()
 }
+
 func (l *DummyLogger) Errorf(format string, v ...interface{}) {
 	l.Lock()
 	defer l.Unlock()
 	l.Msg = fmt.Sprintf(format, v...)
 	l.aggregate()
 }
+
 func (l *DummyLogger) Warnf(format string, v ...interface{}) {
 	l.Lock()
 	defer l.Unlock()
 	l.Msg = fmt.Sprintf(format, v...)
 	l.aggregate()
 }
+
 func (l *DummyLogger) Fatalf(format string, v ...interface{}) {
 	l.Lock()
 	defer l.Unlock()
 	l.Msg = fmt.Sprintf(format, v...)
 	l.aggregate()
 }
+
 func (l *DummyLogger) Debugf(format string, v ...interface{}) {
 	l.Lock()
 	defer l.Unlock()
 	l.Msg = fmt.Sprintf(format, v...)
 	l.aggregate()
 }
+
 func (l *DummyLogger) Tracef(format string, v ...interface{}) {
 	l.Lock()
 	defer l.Unlock()

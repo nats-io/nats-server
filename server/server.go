@@ -1524,7 +1524,7 @@ func (s *Server) isRunning() bool {
 
 func (s *Server) logPid() error {
 	pidStr := strconv.Itoa(os.Getpid())
-	return os.WriteFile(s.getOpts().PidFile, []byte(pidStr), 0660)
+	return os.WriteFile(s.getOpts().PidFile, []byte(pidStr), 0o660)
 }
 
 // numReservedAccounts will return the number of reserved accounts configured in the server.
@@ -2731,7 +2731,6 @@ func (s *Server) StartProfiler() {
 	s.mu.Lock()
 	hp := net.JoinHostPort(opts.Host, strconv.Itoa(port))
 	l, err := net.Listen("tcp", hp)
-
 	if err != nil {
 		s.mu.Unlock()
 		s.Fatalf("error starting profiler: %s", err)
@@ -2833,7 +2832,7 @@ type captureHTTPServerLog struct {
 
 func (cl *captureHTTPServerLog) Write(p []byte) (int, error) {
 	var buf [128]byte
-	var b = buf[:0]
+	b := buf[:0]
 
 	b = append(b, []byte(cl.prefix)...)
 	offset := 0
@@ -3996,11 +3995,10 @@ func (s *Server) logPorts() {
 				s.Errorf("Error marshaling ports file: %v", err)
 				return
 			}
-			if err := os.WriteFile(portsFile, data, 0666); err != nil {
+			if err := os.WriteFile(portsFile, data, 0o666); err != nil {
 				s.Errorf("Error writing ports file (%s): %v", portsFile, err)
 				return
 			}
-
 		}()
 	}
 }

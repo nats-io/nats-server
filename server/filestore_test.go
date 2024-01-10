@@ -774,7 +774,7 @@ func TestFileStorePurge(t *testing.T) {
 		mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
 		pdir := filepath.Join(fs.fcfg.StoreDir, "ptest")
 		os.Rename(mdir, pdir)
-		os.MkdirAll(mdir, 0755)
+		os.MkdirAll(mdir, 0o755)
 
 		fs.Purge()
 		checkPurgeState(toStore * 2)
@@ -1241,7 +1241,7 @@ func TestFileStoreBitRot(t *testing.T) {
 					break
 				}
 			}
-			os.WriteFile(lmb.mfn, contents, 0644)
+			os.WriteFile(lmb.mfn, contents, 0o644)
 			fs.mu.Unlock()
 
 			ld := fs.checkMsgs()
@@ -1794,8 +1794,8 @@ func TestFileStoreSnapshot(t *testing.T) {
 				}
 				fpath := filepath.Join(rstoreDir, filepath.Clean(hdr.Name))
 				pdir := filepath.Dir(fpath)
-				os.MkdirAll(pdir, 0755)
-				fd, err := os.OpenFile(fpath, os.O_CREATE|os.O_RDWR, 0600)
+				os.MkdirAll(pdir, 0o755)
+				fd, err := os.OpenFile(fpath, os.O_CREATE|os.O_RDWR, 0o600)
 				if err != nil {
 					t.Fatalf("Error opening file[%s]: %v", fpath, err)
 				}
@@ -2080,7 +2080,7 @@ func TestFileStoreWriteFailures(t *testing.T) {
 	}
 
 	storeDir := filepath.Join(tdir, JetStreamStoreDir)
-	os.MkdirAll(storeDir, 0755)
+	os.MkdirAll(storeDir, 0o755)
 
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fcfg.StoreDir = storeDir
@@ -2268,7 +2268,7 @@ func TestFileStorePerf(t *testing.T) {
 
 		start = time.Now()
 		// For reverse order.
-		//for i := toStore; i > 0; i-- {
+		// for i := toStore; i > 0; i-- {
 		for i := uint64(1); i <= toStore; i++ {
 			fs.RemoveMsg(i)
 		}

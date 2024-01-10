@@ -1412,8 +1412,10 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 				if key, ok := mv.(string); ok {
 					o.resolverPinnedAccounts[key] = struct{}{}
 				} else {
-					err := &configErr{tk,
-						fmt.Sprintf("error parsing resolver_pinned_accounts: unsupported type in array %T", mv)}
+					err := &configErr{
+						tk,
+						fmt.Sprintf("error parsing resolver_pinned_accounts: unsupported type in array %T", mv),
+					}
 					*errors = append(*errors, err)
 					continue
 				}
@@ -1948,8 +1950,10 @@ func parseGateway(v interface{}, o *Options, errors *[]error, warnings *[]error)
 	return nil
 }
 
-var dynamicJSAccountLimits = JetStreamAccountLimits{-1, -1, -1, -1, -1, -1, -1, false}
-var defaultJSAccountTiers = map[string]JetStreamAccountLimits{_EMPTY_: dynamicJSAccountLimits}
+var (
+	dynamicJSAccountLimits = JetStreamAccountLimits{-1, -1, -1, -1, -1, -1, -1, false}
+	defaultJSAccountTiers  = map[string]JetStreamAccountLimits{_EMPTY_: dynamicJSAccountLimits}
+)
 
 // Parses jetstream account limits for an account. Simple setup with boolen is allowed, and we will
 // use dynamic account limits.
@@ -3218,9 +3222,11 @@ func parseAccountImports(v interface{}, acc *Account, errors, warnings *[]error)
 		if service != nil {
 			if dup := svcSubjects[service.to]; dup != nil {
 				tk, _ := unwrapValue(v, &lt)
-				err := &configErr{tk,
+				err := &configErr{
+					tk,
 					fmt.Sprintf("Duplicate service import subject %q, previously used in import for account %q, subject %q",
-						service.to, dup.an, dup.sub)}
+						service.to, dup.an, dup.sub),
+				}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -3469,8 +3475,10 @@ func parseServiceLatency(root token, v interface{}) (l *serviceLatency, retErr e
 
 	latency, ok := v.(map[string]interface{})
 	if !ok {
-		return nil, &configErr{token: root,
-			reason: fmt.Sprintf("Expected latency entry to be a map/struct or string, got %T", v)}
+		return nil, &configErr{
+			token:  root,
+			reason: fmt.Sprintf("Expected latency entry to be a map/struct or string, got %T", v),
+		}
 	}
 
 	sl := serviceLatency{
@@ -3496,18 +3504,24 @@ func parseServiceLatency(root token, v interface{}) (l *serviceLatency, retErr e
 			s := strings.TrimSuffix(vv, "%")
 			n, err := strconv.Atoi(s)
 			if err != nil {
-				return nil, &configErr{token: tk,
-					reason: fmt.Sprintf("Failed to parse latency sample: %v", err)}
+				return nil, &configErr{
+					token:  tk,
+					reason: fmt.Sprintf("Failed to parse latency sample: %v", err),
+				}
 			}
 			sample = int64(n)
 		default:
-			return nil, &configErr{token: tk,
-				reason: fmt.Sprintf("Expected latency sample to be a string or map/struct, got %T", v)}
+			return nil, &configErr{
+				token:  tk,
+				reason: fmt.Sprintf("Expected latency sample to be a string or map/struct, got %T", v),
+			}
 		}
 		if !header {
 			if sample < 1 || sample > 100 {
-				return nil, &configErr{token: tk,
-					reason: ErrBadSampling.Error()}
+				return nil, &configErr{
+					token:  tk,
+					reason: ErrBadSampling.Error(),
+				}
 			}
 		}
 
@@ -3517,15 +3531,19 @@ func parseServiceLatency(root token, v interface{}) (l *serviceLatency, retErr e
 	// Read subject value.
 	v, ok = latency["subject"]
 	if !ok {
-		return nil, &configErr{token: root,
-			reason: "Latency subject required, but missing"}
+		return nil, &configErr{
+			token:  root,
+			reason: "Latency subject required, but missing",
+		}
 	}
 
 	tk, v := unwrapValue(v, &lt)
 	subject, ok := v.(string)
 	if !ok {
-		return nil, &configErr{token: tk,
-			reason: fmt.Sprintf("Expected latency subject to be a string, got %T", subject)}
+		return nil, &configErr{
+			token:  tk,
+			reason: fmt.Sprintf("Expected latency subject to be a string, got %T", subject),
+		}
 	}
 	sl.subject = subject
 

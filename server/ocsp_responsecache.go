@@ -517,7 +517,7 @@ func (s *Server) initOCSPResponseCache() {
 	if so.OCSPCacheConfig == nil {
 		so.OCSPCacheConfig = NewOCSPResponseCacheConfig()
 	}
-	var cc = so.OCSPCacheConfig
+	cc := so.OCSPCacheConfig
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch cc.Type {

@@ -1537,7 +1537,7 @@ func TestOCSPResponseCacheChangeAndReload(t *testing.T) {
 			type: local
 		}
 	`
-	if err := os.WriteFile(conf, []byte(content), 0666); err != nil {
+	if err := os.WriteFile(conf, []byte(content), 0o666); err != nil {
 		t.Fatalf("Error writing config: %v", err)
 	}
 	if err := s.Reload(); err != nil {

@@ -149,8 +149,8 @@ type FileConsumerInfo struct {
 
 // Default file and directory permissions.
 const (
-	defaultDirPerms  = os.FileMode(0750)
-	defaultFilePerms = os.FileMode(0640)
+	defaultDirPerms  = os.FileMode(0o750)
+	defaultFilePerms = os.FileMode(0o640)
 )
 
 type psi struct {
@@ -789,9 +789,11 @@ func (fs *fileStore) writeStreamMeta() error {
 }
 
 // Pools to recycle the blocks to help with memory pressure.
-var blkPoolBig sync.Pool    // 16MB
-var blkPoolMedium sync.Pool // 8MB
-var blkPoolSmall sync.Pool  // 2MB
+var (
+	blkPoolBig    sync.Pool // 16MB
+	blkPoolMedium sync.Pool // 8MB
+	blkPoolSmall  sync.Pool // 2MB
+)
 
 // Get a new msg block based on sz estimate.
 func getMsgBlockBuf(sz int) (buf []byte) {
@@ -1278,7 +1280,7 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 		mb.dmap.Insert(seq)
 	}
 
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 
 	truncate := func(index uint32) {
 		var fd *os.File
@@ -1986,7 +1988,7 @@ func (fs *fileStore) expireMsgsOnRecover() {
 		return
 	}
 
-	var minAge = time.Now().UnixNano() - int64(fs.cfg.MaxAge)
+	minAge := time.Now().UnixNano() - int64(fs.cfg.MaxAge)
 	var purged, bytes uint64
 	var deleted int
 	var nts int64
@@ -2826,7 +2828,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 				mb.loadMsgsWithLock()
 				shouldExpire = true
 			}
-			var last = atomic.LoadUint64(&mb.last.seq)
+			last := atomic.LoadUint64(&mb.last.seq)
 			if sseq < last {
 				last = sseq
 			}
@@ -3612,7 +3614,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	}
 
 	if fs.state.Msgs == 0 {
-		var err = ErrStoreEOF
+		err := ErrStoreEOF
 		if seq <= fs.state.LastSeq {
 			err = ErrStoreMsgNotFound
 		}
@@ -3622,7 +3624,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 
 	mb := fs.selectMsgBlock(seq)
 	if mb == nil {
-		var err = ErrStoreEOF
+		err := ErrStoreEOF
 		if seq <= fs.state.LastSeq {
 			err = ErrStoreMsgNotFound
 		}
@@ -3830,7 +3832,7 @@ func (mb *msgBlock) compact() {
 	// Recycle our nbuf when we are done.
 	defer recycleMsgBlockBuf(nbuf)
 
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	var firstSet bool
 
 	fseq := atomic.LoadUint64(&mb.first.seq)
@@ -4055,7 +4057,7 @@ func (mb *msgBlock) flushLoop(fch, qch chan struct{}) {
 
 // Lock should be held.
 func (mb *msgBlock) eraseMsg(seq uint64, ri, rl int) error {
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	var hdr [msgHdrSize]byte
 
 	le.PutUint32(hdr[0:], uint32(rl))
@@ -4610,7 +4612,7 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 	// total_len(4) sequence(8) timestamp(8) subj_len(2) subj hdr_len(4) hdr msg hash(8)
 
 	// First write header, etc.
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	var hdr [msgHdrSize]byte
 
 	l := uint32(rl)
@@ -5150,7 +5152,7 @@ func (fs *fileStore) selectMsgBlockForStart(minTime time.Time) *msgBlock {
 // Index a raw msg buffer.
 // Lock should be held.
 func (mb *msgBlock) indexCacheBuf(buf []byte) error {
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 
 	var fseq uint64
 	var idx []uint32
@@ -5777,7 +5779,7 @@ func (fs *fileStore) msgForSeq(seq uint64, sm *StoreMsg) (*StoreMsg, error) {
 	fs.mu.RUnlock()
 
 	if mb == nil {
-		var err = ErrStoreEOF
+		err := ErrStoreEOF
 		if seq <= lseq {
 			err = ErrStoreMsgNotFound
 		}
@@ -5804,7 +5806,7 @@ func (mb *msgBlock) msgFromBuf(buf []byte, sm *StoreMsg, hh hash.Hash64) (*Store
 	if len(buf) < emptyRecordLen {
 		return nil, errBadMsg
 	}
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 
 	hdr := buf[:msgHdrSize]
 	rl := le.Uint32(hdr[0:])
@@ -6976,7 +6978,7 @@ func (mb *msgBlock) recalculateFirstForSubj(subj string, startSeq uint64, ss *Si
 		startSlot = 0
 	}
 
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	for slot, fseq := startSlot, atomic.LoadUint64(&mb.first.seq); slot < len(mb.cache.idx); slot++ {
 		bi := mb.cache.idx[slot] &^ hbit
 		if bi == dbit {
@@ -7561,7 +7563,7 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, state *StreamState, includ
 	writeFile := func(name string, buf []byte) error {
 		hdr := &tar.Header{
 			Name:    name,
-			Mode:    0600,
+			Mode:    0o600,
 			ModTime: modTime,
 			Uname:   "nats",
 			Gname:   "nats",
@@ -8135,7 +8137,6 @@ func (o *consumerFileStore) inFlusher() bool {
 
 // flushLoop watches for consumer updates and the quit channel.
 func (o *consumerFileStore) flushLoop(fch, qch chan struct{}) {
-
 	o.setInFlusher()
 	defer o.clearInFlusher()
 

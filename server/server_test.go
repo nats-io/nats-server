@@ -593,7 +593,6 @@ func TestRandomPorts(t *testing.T) {
 	if s.MonitorAddr() == nil || s.MonitorAddr().Port <= 0 {
 		t.Fatal("Should have dynamically assigned monitoring port.")
 	}
-
 }
 
 func TestNilMonitoringPort(t *testing.T) {

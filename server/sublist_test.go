@@ -697,7 +697,6 @@ func TestValidateDestinationSubject(t *testing.T) {
 	checkError(ValidateMappingDestination("foo.{{unknown(1)}}"), ErrInvalidMappingDestination, t)
 	checkError(ValidateMappingDestination("foo..}"), ErrInvalidMappingDestination, t)
 	checkError(ValidateMappingDestination("foo. bar}"), ErrInvalidMappingDestinationSubject, t)
-
 }
 
 func TestSubjectToken(t *testing.T) {
@@ -1576,8 +1575,10 @@ func TestSublistAddCacheHitRate(t *testing.T) {
 
 // -- Benchmarks Setup --
 
-var benchSublistSubs []*subscription
-var benchSublistSl = NewSublistWithCache()
+var (
+	benchSublistSubs []*subscription
+	benchSublistSl   = NewSublistWithCache()
+)
 
 // https://github.com/golang/go/issues/31859
 func TestMain(m *testing.M) {
@@ -1744,7 +1745,7 @@ func Benchmark________________SublistMatchLiteral(b *testing.B) {
 }
 
 func Benchmark_____SublistMatch10kSubsWithNoCache(b *testing.B) {
-	var nsubs = 512
+	nsubs := 512
 	s := NewSublistNoCache()
 	subject := "foo"
 	for i := 0; i < nsubs; i++ {

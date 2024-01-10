@@ -1008,7 +1008,6 @@ func getFirstRoute(s *Server) *client {
 }
 
 func TestRoutePermsAppliedOnInboundAndOutboundRoute(t *testing.T) {
-
 	perms := &RoutePermissions{
 		Import: &SubjectPermission{
 			Allow: []string{"imp.foo"},
@@ -2250,7 +2249,6 @@ func (l *captureRMsgTrace) Tracef(format string, args ...interface{}) {
 }
 
 func TestRoutePerAccount(t *testing.T) {
-
 	akp1, _ := nkeys.CreateAccount()
 	acc1, _ := akp1.PublicKey()
 
@@ -3274,7 +3272,7 @@ func TestRoutePoolAndPerAccountOperatorMode(t *testing.T) {
 	checkComm(cpub, ckp, "bat")
 
 	// Finally, let's try to add an account that the account server rejects.
-	err := os.WriteFile(conf1, []byte(fmt.Sprintf(tmpl, "A", _EMPTY_, fmt.Sprintf(",\"%s\",\"%s\"", cpub, dpub))), 0666)
+	err := os.WriteFile(conf1, []byte(fmt.Sprintf(tmpl, "A", _EMPTY_, fmt.Sprintf(",\"%s\",\"%s\"", cpub, dpub))), 0o666)
 	require_NoError(t, err)
 	if err := s1.Reload(); err == nil || !strings.Contains(err.Error(), dpub) {
 		t.Fatalf("Expected error about not being able to lookup this account, got %q", err)

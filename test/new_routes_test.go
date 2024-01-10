@@ -1211,7 +1211,7 @@ func TestNewRouteReservedReply(t *testing.T) {
 
 func TestNewRouteServiceImport(t *testing.T) {
 	// To quickly enable trace and debug logging
-	//doLog, doTrace, doDebug = true, true, true
+	// doLog, doTrace, doDebug = true, true, true
 	srvA, srvB, optsA, optsB := runServers(t)
 	defer srvA.Shutdown()
 	defer srvB.Shutdown()

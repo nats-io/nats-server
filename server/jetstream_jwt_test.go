@@ -334,8 +334,10 @@ func TestJetStreamJWTMove(t *testing.T) {
 		js, err := nc.JetStream()
 		require_NoError(t, err)
 
-		ci, err := js.AddStream(&nats.StreamConfig{Name: "MOVE-ME", Replicas: replicas,
-			Placement: &nats.Placement{Tags: []string{"cloud:C1-tag"}}})
+		ci, err := js.AddStream(&nats.StreamConfig{
+			Name: "MOVE-ME", Replicas: replicas,
+			Placement: &nats.Placement{Tags: []string{"cloud:C1-tag"}},
+		})
 		require_NoError(t, err)
 		require_Equal(t, ci.Cluster.Name, "C1")
 
@@ -345,8 +347,10 @@ func TestJetStreamJWTMove(t *testing.T) {
 		require_NoError(t, err)
 
 		// Perform actual move
-		ci, err = js.UpdateStream(&nats.StreamConfig{Name: "MOVE-ME", Replicas: replicas,
-			Placement: &nats.Placement{Tags: []string{"cloud:C2-tag"}}})
+		ci, err = js.UpdateStream(&nats.StreamConfig{
+			Name: "MOVE-ME", Replicas: replicas,
+			Placement: &nats.Placement{Tags: []string{"cloud:C2-tag"}},
+		})
 		require_NoError(t, err)
 		require_Equal(t, ci.Cluster.Name, "C1")
 
@@ -385,9 +389,11 @@ func TestJetStreamJWTMove(t *testing.T) {
 	t.Run("tiered", func(t *testing.T) {
 		accClaim := jwt.NewAccountClaims(aExpPub)
 		accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
-			DiskStorage: 1100, Consumer: 1, Streams: 1}
+			DiskStorage: 1100, Consumer: 1, Streams: 1,
+		}
 		accClaim.Limits.JetStreamTieredLimits["R3"] = jwt.JetStreamLimits{
-			DiskStorage: 3300, Consumer: 1, Streams: 1}
+			DiskStorage: 3300, Consumer: 1, Streams: 1,
+		}
 
 		t.Run("R3", func(t *testing.T) {
 			test(t, 3, accClaim)
@@ -400,7 +406,8 @@ func TestJetStreamJWTMove(t *testing.T) {
 	t.Run("non-tiered", func(t *testing.T) {
 		accClaim := jwt.NewAccountClaims(aExpPub)
 		accClaim.Limits.JetStreamLimits = jwt.JetStreamLimits{
-			DiskStorage: 4400, Consumer: 2, Streams: 2}
+			DiskStorage: 4400, Consumer: 2, Streams: 2,
+		}
 
 		t.Run("R3", func(t *testing.T) {
 			test(t, 3, accClaim)
@@ -420,9 +427,11 @@ func TestJetStreamJWTClusteredTiers(t *testing.T) {
 	accClaim := jwt.NewAccountClaims(aExpPub)
 	accClaim.Name = "acc"
 	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
-		DiskStorage: 1100, Consumer: 2, Streams: 2}
+		DiskStorage: 1100, Consumer: 2, Streams: 2,
+	}
 	accClaim.Limits.JetStreamTieredLimits["R3"] = jwt.JetStreamLimits{
-		DiskStorage: 1100, Consumer: 1, Streams: 1}
+		DiskStorage: 1100, Consumer: 1, Streams: 1,
+	}
 	accJwt := encodeClaim(t, accClaim, aExpPub)
 	accCreds := newUser(t, accKp)
 	tmlp := `
@@ -574,9 +583,11 @@ func TestJetStreamJWTClusteredTiersChange(t *testing.T) {
 	accClaim := jwt.NewAccountClaims(aExpPub)
 	accClaim.Name = "acc"
 	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
-		DiskStorage: 1000, MemoryStorage: 0, Consumer: 1, Streams: 1}
+		DiskStorage: 1000, MemoryStorage: 0, Consumer: 1, Streams: 1,
+	}
 	accClaim.Limits.JetStreamTieredLimits["R3"] = jwt.JetStreamLimits{
-		DiskStorage: 500, MemoryStorage: 0, Consumer: 1, Streams: 1}
+		DiskStorage: 500, MemoryStorage: 0, Consumer: 1, Streams: 1,
+	}
 	accJwt1 := encodeClaim(t, accClaim, aExpPub)
 	accCreds := newUser(t, accKp)
 	start := time.Now()
@@ -626,7 +637,8 @@ func TestJetStreamJWTClusteredTiersChange(t *testing.T) {
 
 	time.Sleep(time.Second - time.Since(start)) // make sure the time stamp changes
 	accClaim.Limits.JetStreamTieredLimits["R3"] = jwt.JetStreamLimits{
-		DiskStorage: 1000, MemoryStorage: 0, Consumer: 1, Streams: 1}
+		DiskStorage: 1000, MemoryStorage: 0, Consumer: 1, Streams: 1,
+	}
 	accJwt2 := encodeClaim(t, accClaim, aExpPub)
 
 	updateJwt(t, c.randomServer().ClientURL(), sysCreds, accJwt2, 3)
@@ -658,9 +670,11 @@ func TestJetStreamJWTClusteredDeleteTierWithStreamAndMove(t *testing.T) {
 	accClaim := jwt.NewAccountClaims(aExpPub)
 	accClaim.Name = "acc"
 	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
-		DiskStorage: 1000, MemoryStorage: 0, Consumer: 1, Streams: 1}
+		DiskStorage: 1000, MemoryStorage: 0, Consumer: 1, Streams: 1,
+	}
 	accClaim.Limits.JetStreamTieredLimits["R3"] = jwt.JetStreamLimits{
-		DiskStorage: 3000, MemoryStorage: 0, Consumer: 1, Streams: 1}
+		DiskStorage: 3000, MemoryStorage: 0, Consumer: 1, Streams: 1,
+	}
 	accJwt1 := encodeClaim(t, accClaim, aExpPub)
 	accCreds := newUser(t, accKp)
 	start := time.Now()

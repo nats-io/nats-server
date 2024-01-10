@@ -72,7 +72,7 @@ func TestTokenInConfig(t *testing.T) {
 		timeout: 5
 	}`
 	confFile := createConfFile(t, []byte(content))
-	if err := os.WriteFile(confFile, []byte(content), 0666); err != nil {
+	if err := os.WriteFile(confFile, []byte(content), 0o666); err != nil {
 		t.Fatalf("Error writing config file: %v", err)
 	}
 	s, opts := RunServerWithConfig(confFile)

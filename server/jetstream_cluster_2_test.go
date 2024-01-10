@@ -447,7 +447,6 @@ func TestJetStreamClusterMixedMode(t *testing.T) {
 		{"global-account", jsMixedModeGlobalAccountTempl},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-
 			c := createMixedModeCluster(t, test.tmpl, "MM5", _EMPTY_, 3, 2, true)
 			defer c.shutdown()
 
@@ -1922,7 +1921,6 @@ func TestJetStreamClusterVarzReporting(t *testing.T) {
 func TestJetStreamClusterPurgeBySequence(t *testing.T) {
 	for _, st := range []StorageType{FileStorage, MemoryStorage} {
 		t.Run(st.String(), func(t *testing.T) {
-
 			c := createJetStreamClusterExplicit(t, "JSC", 3)
 			defer c.shutdown()
 
@@ -2190,7 +2188,6 @@ func TestJetStreamClusterPanicDecodingConsumerState(t *testing.T) {
 	}
 
 	sub, err := js.PullSubscribe("ORDERS.created", "durable", nats.MaxAckPending(1000))
-
 	if err != nil {
 		t.Fatalf("Error creating pull subscriber: %v", err)
 	}
@@ -3060,7 +3057,7 @@ func TestJetStreamClusterRollups(t *testing.T) {
 	addStream(t, nc, cfg)
 
 	var bt [16]byte
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 
 	// Generate 1000 random measurements for 10 sensors
 	for i := 0; i < 1000; i++ {
@@ -3572,7 +3569,6 @@ func TestJetStreamClusterConsumerUpdates(t *testing.T) {
 		ncfg.FlowControl = true
 		_, err = js.UpdateConsumer("TEST", &ncfg)
 		require_Error(t, err)
-
 	}
 
 	t.Run("Single", func(t *testing.T) { testConsumerUpdate(t, s, 1) })
@@ -4717,7 +4713,6 @@ func TestJetStreamClusterStreamAdvisories(t *testing.T) {
 	var testN int
 
 	checkAdvisories := func(t *testing.T, s *Server, replicas int) {
-
 		nc, js := jsClientConnect(t, s)
 		defer nc.Close()
 
@@ -7279,7 +7274,7 @@ func TestJetStreamClusterMaxOutstandingCatchup(t *testing.T) {
 	require_NoError(t, err)
 	conf := string(content)
 	conf = strings.ReplaceAll(conf, "max_outstanding_catchup: 1KB,", "max_outstanding_catchup: 1MB,")
-	err = os.WriteFile(cfile, []byte(conf), 0644)
+	err = os.WriteFile(cfile, []byte(conf), 0o644)
 	require_NoError(t, err)
 	err = s.Reload()
 	require_Error(t, err, fmt.Errorf("config reload not supported for JetStreamMaxCatchup: old=1024, new=1048576"))

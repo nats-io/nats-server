@@ -23,7 +23,6 @@ import (
 )
 
 func BenchmarkPublish(b *testing.B) {
-
 	const (
 		verbose     = false
 		seed        = 12345
@@ -80,7 +79,6 @@ func BenchmarkPublish(b *testing.B) {
 		b.Run(
 			bcName,
 			func(b *testing.B) {
-
 				for _, sc := range subscribersCases {
 
 					scName := fmt.Sprintf("Subs=%dx%v", sc.numSubs, sc.subType)

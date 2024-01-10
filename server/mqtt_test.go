@@ -530,7 +530,8 @@ func TestMQTTParseOptions(t *testing.T) {
 			}
 			return nil
 		}, ""},
-		{"tls config",
+		{
+			"tls config",
 			`
 			mqtt {
 				tls {
@@ -543,8 +544,10 @@ func TestMQTTParseOptions(t *testing.T) {
 					return fmt.Errorf("TLSConfig should have been set")
 				}
 				return nil
-			}, ""},
-		{"no auth user",
+			}, "",
+		},
+		{
+			"no auth user",
 			`
 			mqtt {
 				no_auth_user: "noauthuser"
@@ -554,8 +557,10 @@ func TestMQTTParseOptions(t *testing.T) {
 					return fmt.Errorf("Invalid NoAuthUser value: %q", o.NoAuthUser)
 				}
 				return nil
-			}, ""},
-		{"auth block",
+			}, "",
+		},
+		{
+			"auth block",
 			`
 			mqtt {
 				authorization {
@@ -570,8 +575,10 @@ func TestMQTTParseOptions(t *testing.T) {
 					return fmt.Errorf("Invalid auth block: %+v", o)
 				}
 				return nil
-			}, ""},
-		{"auth timeout as int",
+			}, "",
+		},
+		{
+			"auth timeout as int",
 			`
 			mqtt {
 				authorization {
@@ -583,8 +590,10 @@ func TestMQTTParseOptions(t *testing.T) {
 					return fmt.Errorf("Invalid auth timeout: %v", o.AuthTimeout)
 				}
 				return nil
-			}, ""},
-		{"ack wait",
+			}, "",
+		},
+		{
+			"ack wait",
 			`
 			mqtt {
 				ack_wait: "10s"
@@ -594,8 +603,10 @@ func TestMQTTParseOptions(t *testing.T) {
 					return fmt.Errorf("Invalid ack wait: %v", o.AckWait)
 				}
 				return nil
-			}, ""},
-		{"max ack pending",
+			}, "",
+		},
+		{
+			"max ack pending",
 			`
 			mqtt {
 				max_ack_pending: 123
@@ -605,8 +616,10 @@ func TestMQTTParseOptions(t *testing.T) {
 					return fmt.Errorf("Invalid max ack pending: %v", o.MaxAckPending)
 				}
 				return nil
-			}, ""},
-		{"reject_qos2_publish",
+			}, "",
+		},
+		{
+			"reject_qos2_publish",
 			`
 			mqtt {
 				reject_qos2_publish: true
@@ -616,8 +629,10 @@ func TestMQTTParseOptions(t *testing.T) {
 					return fmt.Errorf("Invalid: expected rejectQoS2Pub to be set")
 				}
 				return nil
-			}, ""},
-		{"downgrade_qos2_subscribe",
+			}, "",
+		},
+		{
+			"downgrade_qos2_subscribe",
 			`
 			mqtt {
 				downgrade_qos2_subscribe: true
@@ -627,7 +642,8 @@ func TestMQTTParseOptions(t *testing.T) {
 					return fmt.Errorf("Invalid: expected downgradeQoS2Sub to be set")
 				}
 				return nil
-			}, ""},
+			}, "",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf := createConfFile(t, []byte(test.content))
@@ -1400,7 +1416,6 @@ func TestMQTTJWTWithAllowedConnectionTypes(t *testing.T) {
 		{"not allowed with unknown", []string{"SomeNewType"}, mqttConnAckRCNotAuthorized},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-
 			nuc := newJWTTestUserClaims()
 			nuc.AllowedConnectionTypes = test.connectionTypes
 			nuc.BearerToken = true
@@ -6197,7 +6212,7 @@ func TestMQTTTransferSessionStreamsToMuxed(t *testing.T) {
 	testMQTTCheckConnAck(t, sr, mqttConnAckRCConnectionAccepted, true)
 
 	// Check that old session stream is gone, but the non session stream is still present.
-	var gotIt = false
+	gotIt := false
 	for info := range js.StreamsInfo() {
 		if strings.HasPrefix(info.Config.Name, mqttSessionsStreamNamePrefix) {
 			if strings.HasSuffix(info.Config.Name, "_ivan") {
@@ -6943,7 +6958,8 @@ func TestMQTTSubjectMapping(t *testing.T) {
 			mcp, rp = testMQTTConnect(t, &mqttConnInfo{
 				clientID:  "pub",
 				cleanSess: true,
-				will:      &mqttWill{topic: []byte(foo), qos: 0, message: []byte("willmsg1")}},
+				will:      &mqttWill{topic: []byte(foo), qos: 0, message: []byte("willmsg1")},
+			},
 				o.MQTT.Host, o.MQTT.Port)
 			defer mcp.Close()
 			testMQTTCheckConnAck(t, rp, mqttConnAckRCConnectionAccepted, false)
@@ -6957,7 +6973,8 @@ func TestMQTTSubjectMapping(t *testing.T) {
 			mcp, rp = testMQTTConnect(t, &mqttConnInfo{
 				clientID:  "pub",
 				cleanSess: true,
-				will:      &mqttWill{topic: []byte(foo), qos: 1, message: []byte("willmsg2")}},
+				will:      &mqttWill{topic: []byte(foo), qos: 1, message: []byte("willmsg2")},
+			},
 				o.MQTT.Host, o.MQTT.Port)
 			defer mcp.Close()
 			testMQTTCheckConnAck(t, rp, mqttConnAckRCConnectionAccepted, false)

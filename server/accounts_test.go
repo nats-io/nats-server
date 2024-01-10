@@ -3295,10 +3295,12 @@ func TestImportSubscriptionPartialOverlapWithTransform(t *testing.T) {
 	ncY := natsConnect(t, fmt.Sprintf("nats://%s:%s@127.0.0.1:%d", "subscriber", "", opts.Port))
 	defer ncY.Close()
 
-	for _, subj := range []string{">", "*.*.*.>", "*.2.*.>", "*.*.1.>", "*.2.1.>", "*.*.*.*", "*.2.1.*", "*.*.*.test",
+	for _, subj := range []string{
+		">", "*.*.*.>", "*.2.*.>", "*.*.1.>", "*.2.1.>", "*.*.*.*", "*.2.1.*", "*.*.*.test",
 		"*.*.1.test", "*.2.*.test", "*.2.1.test", "myprefix.*.*.*", "myprefix.>", "myprefix.*.>", "myprefix.*.*.>",
 		"myprefix.2.>", "myprefix.2.1.>", "myprefix.*.1.>", "myprefix.2.*.>", "myprefix.2.1.*", "myprefix.*.*.test",
-		"myprefix.2.1.test"} {
+		"myprefix.2.1.test",
+	} {
 		t.Run(subj, func(t *testing.T) {
 			sub, err := ncY.SubscribeSync(subj)
 			sub.AutoUnsubscribe(1)

@@ -319,10 +319,12 @@ func TestIncludes(t *testing.T) {
 			"users": []interface{}{
 				map[string]interface{}{
 					"user":     "alice",
-					"password": "$2a$10$UHR6GhotWhpLsKtVP0/i6.Nh9.fuY73cWjLoJjb2sKT8KISBcUW5q"},
+					"password": "$2a$10$UHR6GhotWhpLsKtVP0/i6.Nh9.fuY73cWjLoJjb2sKT8KISBcUW5q",
+				},
 				map[string]interface{}{
 					"user":     "bob",
-					"password": "$2a$11$dZM98SpGeI7dCFFGSpt.JObQcix8YHml4TBUZoge9R1uxnMIln5ly"},
+					"password": "$2a$11$dZM98SpGeI7dCFFGSpt.JObQcix8YHml4TBUZoge9R1uxnMIln5ly",
+				},
 			},
 			"timeout": float64(0.5),
 		},
@@ -575,7 +577,7 @@ func TestParseWithNoValuesIncludes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(f.Name(), []byte(test.input), 066); err != nil {
+			if err := os.WriteFile(f.Name(), []byte(test.input), 0o66); err != nil {
 				t.Error(err)
 			}
 			if test.includes != nil {
@@ -584,7 +586,7 @@ func TestParseWithNoValuesIncludes(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if err := os.WriteFile(inf.Name(), []byte(contents), 066); err != nil {
+					if err := os.WriteFile(inf.Name(), []byte(contents), 0o66); err != nil {
 						t.Error(err)
 					}
 				}
@@ -716,7 +718,7 @@ func TestJSONParseCompat(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(f.Name(), []byte(test.input), 066); err != nil {
+			if err := os.WriteFile(f.Name(), []byte(test.input), 0o66); err != nil {
 				t.Error(err)
 			}
 			if test.includes != nil {
@@ -725,7 +727,7 @@ func TestJSONParseCompat(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if err := os.WriteFile(inf.Name(), []byte(contents), 066); err != nil {
+					if err := os.WriteFile(inf.Name(), []byte(contents), 0o66); err != nil {
 						t.Error(err)
 					}
 				}

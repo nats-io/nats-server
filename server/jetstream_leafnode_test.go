@@ -138,7 +138,8 @@ func TestJetStreamLeafNodeJwtPermsAndJSDomains(t *testing.T) {
 			claim.Limits.JetStreamLimits = jwt.JetStreamLimits{
 				MemoryStorage: 1024 * 1024,
 				DiskStorage:   1024 * 1024,
-				Streams:       1, Consumer: 2}
+				Streams:       1, Consumer: 2,
+			}
 		}
 		aJwt, err := claim.Encode(oKp)
 		require_NoError(t, err)
@@ -400,7 +401,8 @@ leafnodes:{
 		{true, true},
 		{true, false},
 		{false, true},
-		{false, false}} {
+		{false, false},
+	} {
 		t.Run(fmt.Sprintf("%t-%t", testCase.same, testCase.leafFunctionPreJoin), func(t *testing.T) {
 			sd1 := t.TempDir()
 			confA := createConfFile(t, []byte(fmt.Sprintf(tmplA, sd1)))
@@ -449,8 +451,10 @@ leafnodes:{
 				if placementCluster == "" {
 					return &nats.StreamConfig{Name: name, Replicas: 1, Subjects: []string{name}}
 				}
-				return &nats.StreamConfig{Name: name, Replicas: 1, Subjects: []string{name},
-					Placement: &nats.Placement{Cluster: placementCluster}}
+				return &nats.StreamConfig{
+					Name: name, Replicas: 1, Subjects: []string{name},
+					Placement: &nats.Placement{Cluster: placementCluster},
+				}
 			}
 			// Only after the system account is fully connected can streams be placed anywhere.
 			testJSFunctions := func(pass bool) {
@@ -698,8 +702,10 @@ cluster: { name: clustL }
 				if placementCluster == "" {
 					return &nats.StreamConfig{Name: name, Replicas: 1, Subjects: []string{name}}
 				}
-				return &nats.StreamConfig{Name: name, Replicas: 1, Subjects: []string{name},
-					Placement: &nats.Placement{Cluster: placementCluster}}
+				return &nats.StreamConfig{
+					Name: name, Replicas: 1, Subjects: []string{name},
+					Placement: &nats.Placement{Cluster: placementCluster},
+				}
 			}
 
 			test := func(port int, expectedDefPlacement string) {
@@ -866,7 +872,7 @@ leafnodes: {
 			"disabled",
 			"disabled",
 			sHub.opts.LeafNode.Port,
-			fmt.Sprintf(`default_js_domain: {A:"%s"}`, domain))), 0664))
+			fmt.Sprintf(`default_js_domain: {A:"%s"}`, domain))), 0o664))
 
 		sHub.Shutdown()
 		sHub.WaitForShutdown()
@@ -888,7 +894,7 @@ leafnodes: {
 			"disabled",
 			jsEnabled,
 			sHubUpd1.opts.LeafNode.Port,
-			fmt.Sprintf(`default_js_domain: {A:"%s"}`, domain))), 0664))
+			fmt.Sprintf(`default_js_domain: {A:"%s"}`, domain))), 0o664))
 
 		sHubUpd1.Shutdown()
 		sHubUpd1.WaitForShutdown()
@@ -909,7 +915,7 @@ leafnodes: {
 			"enabled",
 			jsEnabled,
 			sHubUpd2.opts.LeafNode.Port,
-			fmt.Sprintf(`default_js_domain: {A:"%s"}`, domain))), 0664))
+			fmt.Sprintf(`default_js_domain: {A:"%s"}`, domain))), 0o664))
 
 		if domain != _EMPTY_ {
 			// in case no domain name exists there are no additional guard rails, hence no error
@@ -1018,7 +1024,7 @@ leafnodes: {
 		// Add in default domain and restart server
 		require_NoError(t, os.WriteFile(confHub, []byte(fmt.Sprintf(tmplHub,
 			sHub.opts.Port, ojwt, syspub, syspub, sysJwt, aPub, aJwt, sHub.opts.LeafNode.Port,
-			fmt.Sprintf(`default_js_domain: {%s:"%s"}`, aPub, domain))), 0664))
+			fmt.Sprintf(`default_js_domain: {%s:"%s"}`, aPub, domain))), 0o664))
 
 		sHub.Shutdown()
 		sHub.WaitForShutdown()

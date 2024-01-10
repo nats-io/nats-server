@@ -825,7 +825,6 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 
 // Will completely reset our store.
 func (ms *memStore) reset() error {
-
 	ms.mu.Lock()
 	var purged, bytes uint64
 	cb := ms.scb
@@ -922,7 +921,7 @@ func (ms *memStore) LoadMsg(seq uint64, smp *StoreMsg) (*StoreMsg, error) {
 	ms.mu.RUnlock()
 
 	if !ok || sm == nil {
-		var err = ErrStoreEOF
+		err := ErrStoreEOF
 		if seq <= last {
 			err = ErrStoreMsgNotFound
 		}

@@ -202,6 +202,7 @@ func TestGetNetworkAndAddrUnix(t *testing.T) {
 		t.Fatalf("Unexpected addr %s\n", a)
 	}
 }
+
 func expectSyslogOutput(t *testing.T, line string, expected string) {
 	data := strings.Split(line, "]: ")
 	if len(data) != 2 {

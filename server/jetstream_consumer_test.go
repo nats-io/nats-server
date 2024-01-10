@@ -32,7 +32,6 @@ import (
 )
 
 func TestJetStreamConsumerMultipleFiltersRemoveFilters(t *testing.T) {
-
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
@@ -78,7 +77,6 @@ func TestJetStreamConsumerMultipleFiltersRemoveFilters(t *testing.T) {
 	msgs, err = consumer.Fetch(1)
 	require_NoError(t, err)
 	require_True(t, len(msgs) == 1)
-
 }
 
 func TestJetStreamConsumerMultipleFiltersRace(t *testing.T) {
@@ -116,7 +114,6 @@ func TestJetStreamConsumerMultipleFiltersRace(t *testing.T) {
 	done := make(chan struct{})
 	for i := 0; i < 10; i++ {
 		go func(t *testing.T) {
-
 			c, err := js.PullSubscribe("", "consumer", nats.Bind("TEST", "consumer"))
 			require_NoError(t, err)
 
@@ -166,7 +163,6 @@ func TestJetStreamConsumerMultipleFiltersRace(t *testing.T) {
 	})
 
 	close(done)
-
 }
 
 func TestJetStreamConsumerMultipleConsumersSingleFilter(t *testing.T) {
@@ -231,7 +227,6 @@ func TestJetStreamConsumerMultipleConsumersSingleFilter(t *testing.T) {
 				require_NoError(t, m.Ack())
 				require_NoError(t, err)
 				consumers[c].delivered.Add(1)
-
 			}, nats.Bind("TEST", name))
 			require_NoError(t, err)
 		}(c, consumer.name)
@@ -271,13 +266,11 @@ func TestJetStreamConsumerMultipleConsumersSingleFilter(t *testing.T) {
 				return fmt.Errorf("%v: expected consumer ack floor %v, got %v", consumer.name, totalMsgs, info.AckFloor.Consumer)
 			}
 			if consumer.delivered.Load() != int32(consumer.expectedMsgs) {
-
 				return fmt.Errorf("%v: expected %v, got %v", consumer.name, consumer.expectedMsgs, consumer.delivered.Load())
 			}
 		}
 		return nil
 	})
-
 }
 
 func TestJetStreamConsumerMultipleConsumersMultipleFilters(t *testing.T) {
@@ -342,7 +335,6 @@ func TestJetStreamConsumerMultipleConsumersMultipleFilters(t *testing.T) {
 				require_NoError(t, m.Ack())
 				require_NoError(t, err)
 				consumers[c].delivered.Add(1)
-
 			}, nats.Bind("TEST", name))
 			require_NoError(t, err)
 		}(c, consumer.name)
@@ -396,13 +388,11 @@ func TestJetStreamConsumerMultipleConsumersMultipleFilters(t *testing.T) {
 				return fmt.Errorf("%v: expected consumer ack floor %v, got %v", consumer.name, totalMsgs, info.AckFloor.Consumer)
 			}
 			if consumer.delivered.Load() != int32(consumer.expectedMsgs) {
-
 				return fmt.Errorf("%v: expected %v, got %v", consumer.name, consumer.expectedMsgs, consumer.delivered.Load())
 			}
 		}
 		return nil
 	})
-
 }
 
 func TestJetStreamConsumerMultipleFiltersSequence(t *testing.T) {
@@ -612,7 +602,6 @@ func TestJetStreamConsumerActionsOnWorkQueuePolicyStream(t *testing.T) {
 }
 
 func TestJetStreamConsumerActionsViaAPI(t *testing.T) {
-
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
@@ -734,7 +723,6 @@ func TestJetStreamConsumerActionsUnmarshal(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-
 			var request CreateConsumerRequest
 			err := json.Unmarshal(test.given, &request)
 			fmt.Printf("given: %v, expected: %v\n", test.expectErr, err)
@@ -792,7 +780,6 @@ func TestJetStreamConsumerMultipleFiltersLastPerSubject(t *testing.T) {
 	require_NoError(t, err)
 	require_Equal(t, "3", string(msg.Data))
 	require_Equal(t, "two", msg.Subject)
-
 }
 
 func consumerWithFilterSubjects(filterSubjects []string) *consumer {
