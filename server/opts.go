@@ -147,6 +147,7 @@ type LeafNodeOpts struct {
 	Port              int           `json:"port,omitempty"`
 	Username          string        `json:"-"`
 	Password          string        `json:"-"`
+	Nkey              string        `json:"-"`
 	Account           string        `json:"-"`
 	Users             []*User       `json:"-"`
 	AuthTimeout       float64       `json:"auth_timeout,omitempty"`
@@ -192,6 +193,7 @@ type RemoteLeafOpts struct {
 	NoRandomize       bool             `json:"-"`
 	URLs              []*url.URL       `json:"urls,omitempty"`
 	Credentials       string           `json:"-"`
+	Nkey              string           `json:"-"`
 	SignatureCB       SignatureHandler `json:"-"`
 	TLS               bool             `json:"-"`
 	TLSConfig         *tls.Config      `json:"-"`
@@ -638,6 +640,7 @@ type authorization struct {
 	user  string
 	pass  string
 	token string
+	nkey  string
 	acc   string
 	// Multiple Nkeys/Users
 	nkeys              []*NkeyUser
@@ -2266,6 +2269,7 @@ func parseLeafNodes(v interface{}, opts *Options, errors *[]error, warnings *[]e
 			opts.LeafNode.AuthTimeout = auth.timeout
 			opts.LeafNode.Account = auth.acc
 			opts.LeafNode.Users = auth.users
+			opts.LeafNode.Nkey = auth.nkey
 			// Validate user info config for leafnode authorization
 			if err := validateLeafNodeAuthOptions(opts); err != nil {
 				*errors = append(*errors, &configErr{tk, err.Error()})
@@ -2351,6 +2355,12 @@ func parseLeafAuthorization(v interface{}, errors *[]error, warnings *[]error) (
 			auth.user = mv.(string)
 		case "pass", "password":
 			auth.pass = mv.(string)
+		case "nkey":
+			nk := mv.(string)
+			if !nkeys.IsValidPublicUserKey(nk) {
+				*errors = append(*errors, &configErr{tk, "Not a valid public nkey for leafnode authorization"})
+			}
+			auth.nkey = nk
 		case "timeout":
 			at := float64(1)
 			switch mv := mv.(type) {
@@ -2496,7 +2506,24 @@ func parseRemoteLeafNodes(v interface{}, errors *[]error, warnings *[]error) ([]
 					*errors = append(*errors, &configErr{tk, err.Error()})
 					continue
 				}
+				// Can't have both creds and nkey
+				if remote.Nkey != _EMPTY_ {
+					*errors = append(*errors, &configErr{tk, "Remote leafnode can not have both creds and nkey defined"})
+					continue
+				}
 				remote.Credentials = p
+			case "nkey", "seed":
+				nk := v.(string)
+				if pb, _, err := nkeys.DecodeSeed([]byte(nk)); err != nil || pb != nkeys.PrefixByteUser {
+					err := &configErr{tk, fmt.Sprintf("Remote leafnode nkey is not a valid seed: %q", v)}
+					*errors = append(*errors, err)
+					continue
+				}
+				if remote.Credentials != _EMPTY_ {
+					*errors = append(*errors, &configErr{tk, "Remote leafnode can not have both creds and nkey defined"})
+					continue
+				}
+				remote.Nkey = nk
 			case "tls":
 				tc, err := parseTLS(tk, true)
 				if err != nil {
