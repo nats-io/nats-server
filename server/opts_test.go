@@ -2890,7 +2890,7 @@ func TestNoAuthUserCode(t *testing.T) {
 		})
 	}
 
-	for _, badUser := range []string{"notthere", "UBAAQWTW6CG2G6ANGNKB5U2B7HRWHSGMZEZX3AQSAJOQDAUGJD46LD2E"} {
+	for _, badUser := range []string{"notthere", "UBAAQWTW6CG2G6ANGNKB5U2B7HRWHSGMZEZX3AQSAJOQDAUGJD46LD2F"} {
 		t.Run(badUser, func(t *testing.T) {
 			os.Setenv("NO_AUTH_USER", badUser)
 			opts, err := ProcessConfigFile(confFileName)

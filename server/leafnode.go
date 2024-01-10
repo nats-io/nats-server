@@ -1,4 +1,4 @@
-// Copyright 2019-2023 The NATS Authors
+// Copyright 2019-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -239,7 +239,7 @@ func validateLeafNode(o *Options) error {
 		}
 	} else {
 		if len(o.LeafNode.Users) != 0 {
-			return fmt.Errorf("operator mode does not allow specifying user in leafnode config")
+			return fmt.Errorf("operator mode does not allow specifying users in leafnode config")
 		}
 		for _, r := range o.LeafNode.Remotes {
 			if !nkeys.IsValidPublicAccountKey(r.LocalAccount) {
@@ -299,12 +299,12 @@ func validateLeafNode(o *Options) error {
 	// with gateways. So if an option validation needs to be done regardless,
 	// it MUST be done before this point!
 
-	if o.Gateway.Name == "" && o.Gateway.Port == 0 {
+	if o.Gateway.Name == _EMPTY_ && o.Gateway.Port == 0 {
 		return nil
 	}
 	// If we are here we have both leaf nodes and gateways defined, make sure there
 	// is a system account defined.
-	if o.SystemAccount == "" {
+	if o.SystemAccount == _EMPTY_ {
 		return fmt.Errorf("leaf nodes and gateways (both being defined) require a system account to also be configured")
 	}
 	if err := validatePinnedCerts(o.LeafNode.TLSPinnedCerts); err != nil {
@@ -333,6 +333,9 @@ func validateLeafNodeAuthOptions(o *Options) error {
 	}
 	if o.LeafNode.Username != _EMPTY_ {
 		return fmt.Errorf("can not have a single user/pass and a users array")
+	}
+	if o.LeafNode.Nkey != _EMPTY_ {
+		return fmt.Errorf("can not have a single nkey and a users array")
 	}
 	users := map[string]struct{}{}
 	for _, u := range o.LeafNode.Users {
@@ -830,6 +833,19 @@ func (c *client) sendLeafConnect(clusterName string, headers bool) error {
 		sig := base64.RawURLEncoding.EncodeToString(sigraw)
 		cinfo.JWT = bytesToString(tmp)
 		cinfo.Sig = sig
+	} else if nkey := c.leaf.remote.Nkey; nkey != _EMPTY_ {
+		kp, err := nkeys.FromSeed([]byte(nkey))
+		if err != nil {
+			c.Errorf("Remote nkey has malformed seed")
+			return err
+		}
+		// Wipe our key on exit.
+		defer kp.Wipe()
+		sigraw, _ := kp.Sign(c.nonce)
+		sig := base64.RawURLEncoding.EncodeToString(sigraw)
+		pkey, _ := kp.PublicKey()
+		cinfo.Nkey = pkey
+		cinfo.Sig = sig
 	} else if userInfo := c.leaf.remote.curURL.User; userInfo != nil {
 		cinfo.User = userInfo.Username()
 		cinfo.Pass, _ = userInfo.Password()
@@ -839,7 +855,7 @@ func (c *client) sendLeafConnect(clusterName string, headers bool) error {
 	}
 	b, err := json.Marshal(cinfo)
 	if err != nil {
-		c.Errorf("Error marshaling CONNECT to route: %v\n", err)
+		c.Errorf("Error marshaling CONNECT to remote leafnode: %v\n", err)
 		return err
 	}
 	// Although this call is made before the writeLoop is created,
@@ -1688,6 +1704,7 @@ func (s *Server) removeLeafNodeConnection(c *client) {
 // Connect information for solicited leafnodes.
 type leafConnectInfo struct {
 	Version   string   `json:"version,omitempty"`
+	Nkey      string   `json:"nkey,omitempty"`
 	JWT       string   `json:"jwt,omitempty"`
 	Sig       string   `json:"sig,omitempty"`
 	User      string   `json:"user,omitempty"`
@@ -2167,6 +2184,28 @@ func (c *client) forceAddToSmap(subj string) {
 	// Place into the map since it was not there.
 	c.leaf.smap[subj] = 1
 	c.sendLeafNodeSubUpdate(subj, 1)
+}
+
+// Used to force remove a subject from the subject map.
+func (c *client) forceRemoveFromSmap(subj string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.leaf.smap == nil {
+		return
+	}
+	n := c.leaf.smap[subj]
+	if n == 0 {
+		return
+	}
+	n--
+	if n == 0 {
+		// Remove is now zero
+		delete(c.leaf.smap, subj)
+		c.sendLeafNodeSubUpdate(subj, 0)
+	} else {
+		c.leaf.smap[subj] = n
+	}
 }
 
 // Send the subscription interest change to the other side.

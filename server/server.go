@@ -1,4 +1,4 @@
-// Copyright 2012-2022 The NATS Authors
+// Copyright 2012-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -1117,9 +1117,14 @@ func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) 
 				create = false
 			}
 		}
+		// Track old mappings if global account.
+		var oldGMappings []*mapping
 		if create {
 			if acc.Name == globalAccountName {
 				a = s.gacc
+				a.mu.Lock()
+				oldGMappings = append(oldGMappings, a.mappings...)
+				a.mu.Unlock()
 			} else {
 				a = NewAccount(acc.Name)
 			}
@@ -1130,8 +1135,33 @@ func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) 
 			// Will be a no-op in case of the global account since it is already registered.
 			s.registerAccountNoLock(a)
 		}
+
 		// The `acc` account is stored in options, not in the server, and these can be cleared.
 		acc.sl, acc.clients, acc.mappings = nil, nil, nil
+
+		// Check here if we have been reloaded and we have a global account with mappings that may have changed.
+		// If we have leafnodes they need to be updated.
+		if reloading && a == s.gacc {
+			a.mu.Lock()
+			var mappings []*mapping
+			if len(a.mappings) > 0 && a.nleafs > 0 {
+				mappings = append(mappings, a.mappings...)
+			}
+			a.mu.Unlock()
+			if len(mappings) > 0 || len(oldGMappings) > 0 {
+				a.lmu.RLock()
+				for _, lc := range a.lleafs {
+					for _, em := range mappings {
+						lc.forceAddToSmap(em.src)
+					}
+					// Remove any old ones if needed.
+					for _, em := range oldGMappings {
+						lc.forceRemoveFromSmap(em.src)
+					}
+				}
+				a.lmu.RUnlock()
+			}
+		}
 
 		// If we see an account defined using $SYS we will make sure that is set as system account.
 		if acc.Name == DEFAULT_SYSTEM_ACCOUNT && opts.SystemAccount == _EMPTY_ {

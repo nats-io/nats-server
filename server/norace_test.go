@@ -6647,7 +6647,7 @@ func TestNoRaceJetStreamClusterGhostConsumers(t *testing.T) {
 	})
 }
 
-// This is to test a publish slowdown and general instability experienced in a setup simular to this.
+// This is to test a publish slowdown and general instability experienced in a setup similar to this.
 // We have feeder streams that are all sourced to an aggregate stream. All streams are interest retention.
 // We want to monitor the avg publish time for the sync publishers to the feeder streams, the ingest rate to
 // the aggregate stream, and general health of the consumers on the aggregate stream.

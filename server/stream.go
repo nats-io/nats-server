@@ -1773,6 +1773,8 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 		// Check for Sources.
 		if len(cfg.Sources) > 0 || len(ocfg.Sources) > 0 {
 			currentIName := make(map[string]struct{})
+			needsStartingSeqNum := make(map[string]struct{})
+
 			for _, s := range ocfg.Sources {
 				currentIName[s.iname] = struct{}{}
 			}
@@ -1806,17 +1808,24 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 					}
 
 					mset.sources[s.iname] = si
-					mset.setStartingSequenceForSource(s.iname, s.External)
-					mset.setSourceConsumer(s.iname, si.sseq+1, time.Time{})
+					needsStartingSeqNum[s.iname] = struct{}{}
 				} else {
 					// source already exists
 					delete(currentIName, s.iname)
 				}
 			}
-			// What is left in cuurentIName needs to be deleted.
+			// What is left in currentIName needs to be deleted.
 			for iName := range currentIName {
 				mset.cancelSourceConsumer(iName)
 				delete(mset.sources, iName)
+			}
+			neededCopy := make(map[string]struct{}, len(needsStartingSeqNum))
+			for iName := range needsStartingSeqNum {
+				neededCopy[iName] = struct{}{}
+			}
+			mset.setStartingSequenceForSources(needsStartingSeqNum)
+			for iName := range neededCopy {
+				mset.setSourceConsumer(iName, mset.sources[iName].sseq+1, time.Time{})
 			}
 		}
 	}
@@ -2718,7 +2727,10 @@ func (mset *stream) retrySourceConsumer(iName string) {
 	}
 	var ss = mset.streamSource(iName)
 	if ss != nil {
-		mset.setStartingSequenceForSource(iName, ss.External)
+		iNameMap := map[string]struct{}{
+			iName: {},
+		}
+		mset.setStartingSequenceForSources(iNameMap)
 		mset.retrySourceConsumerAtSeq(iName, si.sseq+1)
 	}
 }
@@ -3334,18 +3346,20 @@ func streamAndSeq(shdr string) (string, string, uint64) {
 }
 
 // Lock should be held.
-func (mset *stream) setStartingSequenceForSource(iName string, external *ExternalStream) {
-	si := mset.sources[iName]
-	if si == nil {
-		return
-	}
-
+func (mset *stream) setStartingSequenceForSources(iNames map[string]struct{}) {
 	var state StreamState
 	mset.store.FastState(&state)
 
 	// Do not reset sseq here so we can remember when purge/expiration happens.
 	if state.Msgs == 0 {
-		si.dseq = 0
+		for iName := range iNames {
+			si := mset.sources[iName]
+			if si == nil {
+				continue
+			} else {
+				si.dseq = 0
+			}
+		}
 		return
 	}
 
@@ -3360,10 +3374,25 @@ func (mset *stream) setStartingSequenceForSource(iName string, external *Externa
 			continue
 		}
 		streamName, indexName, sseq := streamAndSeq(string(ss))
-		if indexName == si.iname || (indexName == _EMPTY_ && (streamName == si.name || (external != nil && streamName == si.name+":"+getHash(external.ApiPrefix)))) {
+
+		if _, ok := iNames[indexName]; ok {
+			si := mset.sources[indexName]
 			si.sseq = sseq
 			si.dseq = 0
-			return
+			delete(iNames, indexName)
+		} else if indexName == _EMPTY_ && streamName != _EMPTY_ {
+			for iName := range iNames {
+				if streamName == mset.sources[iName].name ||
+					(mset.streamSource(iName).External != nil && streamName == mset.sources[iName].name+":"+getHash(mset.streamSource(iName).External.ApiPrefix)) {
+					si := mset.sources[indexName]
+					si.sseq = sseq
+					si.dseq = 0
+					break
+				}
+			}
+		}
+		if len(iNames) == 0 {
+			break
 		}
 	}
 }

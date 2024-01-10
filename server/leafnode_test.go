@@ -1,4 +1,4 @@
-// Copyright 2019-2023 The NATS Authors
+// Copyright 2019-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -2549,7 +2549,7 @@ func TestLeafNodeOperatorBadCfg(t *testing.T) {
 	}{
 		{
 			name:      "Operator with Leafnode",
-			errorText: "operator mode does not allow specifying user in leafnode config",
+			errorText: "operator mode does not allow specifying users in leafnode config",
 			cfg: `
 			port: -1
 			authorization {
@@ -2587,7 +2587,7 @@ func TestLeafNodeOperatorBadCfg(t *testing.T) {
 			// let's manually close the account resolver to avoid leaking go routines.
 			opts.AccountResolver.Close()
 			if err.Error() != c.errorText {
-				t.Fatalf("Expected error %s but got %s", c.errorText, err)
+				t.Fatalf("Expected error %q but got %q", c.errorText, err)
 			}
 		})
 	}
@@ -7338,4 +7338,124 @@ func TestLeafNodeDQMultiAccountExportImport(t *testing.T) {
 	_, err := ncb.Request("A.PING", []byte("REQUEST"), time.Second)
 	require_NoError(t, err)
 	require_Equal(t, got.Load(), 1)
+}
+
+// https://github.com/nats-io/nats-server/issues/4934
+func TestLeafNodeServerReloadSubjectMappings(t *testing.T) {
+	stmpl := `
+		listen: 127.0.0.1:-1
+		server_name: test-server
+		mappings = { "source1": "target" }
+		leaf { listen: 127.0.0.1:-1 }
+	`
+	conf := createConfFile(t, []byte(stmpl))
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	tmpl := `
+		listen: 127.0.0.1:-1
+		server_name: test-leaf
+		leaf {
+			remotes: [ {
+				urls: [ nats-leaf://127.0.0.1:{LEAF_PORT} ]
+			} ]
+		}
+	`
+	tmpl = strings.Replace(tmpl, "{LEAF_PORT}", fmt.Sprintf("%d", o.LeafNode.Port), 1)
+	lConf := createConfFile(t, []byte(tmpl))
+	l, _ := RunServerWithConfig(lConf)
+	defer l.Shutdown()
+
+	checkLeafNodeConnected(t, l)
+
+	// Create our subscriber.
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+	sub := natsSubSync(t, nc, "target")
+	natsFlush(t, nc)
+
+	// Create our publisher.
+	ncl := natsConnect(t, l.ClientURL())
+	defer ncl.Close()
+	// Publish our message.
+	ncl.Publish("source1", []byte("OK"))
+
+	// Make sure we receive it.
+	checkSubsPending(t, sub, 1)
+
+	// Now change mapping.
+	reloadUpdateConfig(t, s, conf, strings.Replace(stmpl, "source1", "source2", 1))
+	// Also make sure we do not have subscription interest for source1 on leaf anymore.
+	checkSubInterest(t, l, globalAccountName, "source2", 2*time.Second)
+
+	// Publish our new message.
+	ncl.Publish("source2", []byte("OK"))
+
+	// Make sure we receive it.
+	checkSubsPending(t, sub, 2)
+
+	// Also make sure we do not have subscription interest for source1 on leaf anymore.
+	checkSubNoInterest(t, l, globalAccountName, "source1", 2*time.Second)
+}
+
+func TestLeafNodeNkeyAuth(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		server_name: test-server
+		leaf {
+			listen: 127.0.0.1:-1
+			authorization: { nkey: UCSTG5CRF5GEJERAFKUUYRODGABTBVWY2NPE4GGKRQVQOH74PIAKTVKO }
+		}
+	`))
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	tmpl := `
+		listen: 127.0.0.1:-1
+		server_name: test-leaf
+		leaf {
+			remotes: [ {
+				url:  nats-leaf://127.0.0.1:{LEAF_PORT}
+				seed: SUACJN3OSKWWPQXME4JUNFJ3PARXPO657GGNWNU7PK7G3AUQQYHLW26XH4
+			} ]
+		}
+	`
+	tmpl = strings.Replace(tmpl, "{LEAF_PORT}", fmt.Sprintf("%d", o.LeafNode.Port), 1)
+	lConf := createConfFile(t, []byte(tmpl))
+	l, _ := RunServerWithConfig(lConf)
+	defer l.Shutdown()
+
+	checkLeafNodeConnected(t, l)
+}
+
+func TestLeafNodeAccountNkeysAuth(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		server_name: test-server
+		leaf {
+			listen: 127.0.0.1:-1
+		}
+		accounts {
+            A { users [ {nkey: UCSTG5CRF5GEJERAFKUUYRODGABTBVWY2NPE4GGKRQVQOH74PIAKTVKO } ] }
+		}
+	`))
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	tmpl := `
+		listen: 127.0.0.1:-1
+		server_name: test-leaf
+		leaf {
+			remotes: [ {
+				url:  nats-leaf://127.0.0.1:{LEAF_PORT}
+				seed: SUACJN3OSKWWPQXME4JUNFJ3PARXPO657GGNWNU7PK7G3AUQQYHLW26XH4
+			} ]
+		}
+	`
+	tmpl = strings.Replace(tmpl, "{LEAF_PORT}", fmt.Sprintf("%d", o.LeafNode.Port), 1)
+	lConf := createConfFile(t, []byte(tmpl))
+	l, _ := RunServerWithConfig(lConf)
+	defer l.Shutdown()
+
+	checkLeafNodeConnected(t, l)
 }
