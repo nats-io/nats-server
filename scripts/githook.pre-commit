@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+declare -r GIT_HOOKNAME='pre-commit'
+declare -r IN_REPO_SCRIPT="scripts/githook.$GIT_HOOKNAME"
+
+# We try to not use features of bash which require newer than bash 3.2,
+# for portability reasons.
+#
+# No associative arrays please.  Nor parameter transformations.
+
+# These will be installed if needed, or if UPDATE_GO_TOOLS
+# is non-empty in the environment.
+declare -ra go_tools_needed=(
+	'staticcheck:honnef.co/go/tools/cmd/staticcheck@latest'
+	'misspell:github.com/client9/misspell/cmd/misspell@latest'
+)
+
+# ########################################################################
+
+stderr() { printf >&2 '%s: %s\n' "$GIT_HOOKNAME" "$*"; }
+die() { stderr "$@"; exit 1; }
+declare -i failures=0
+warn() { stderr "$@"; failures+=1; }
+have_command() { command -v "$1" >/dev/null 2>&1; }
+
+## FIXME: check for diffs HOOK/REPO
+## FIXME: ensure in top-dir
+
+for c in git go; do
+	have_command "$c" || warn "missing required command: $c"
+done
+(( failures == 0 )) || die "missing pre-requisites"
+
+cdup=$(git rev-parse --show-toplevel)
+cd "$cdup" || die "failed to chdir($cdup) to top of git repo"
+
+installed_hook_file="$(git rev-parse --absolute-git-dir)/hooks/$GIT_HOOKNAME"
+in_repo_hook_file="$(git rev-parse --show-toplevel)/$IN_REPO_SCRIPT"
+if [[ -f "$installed_hook_file" ]]; then
+	# We don't hard-require readlink, it's not so portable, but if we have it,
+	# then use it.
+	if have_command readlink && readlink >/dev/null 2>&1 "$installed_hook_file"; then
+		warn "should not be a symlink: $installed_hook_file"
+	fi
+
+	if ! cmp >/dev/null 2>&1 "$in_repo_hook_file" "$installed_hook_file"; then
+		stderr "git hook file on local disk differs from that in repo tree"
+		diff -u -- "$installed_hook_file" "$in_repo_hook_file" || true
+		stderr "install -v '$in_repo_hook_file' '$installed_hook_file'"
+	fi
+else
+	stderr "WARNING: does not exist: $installed_hook_file"
+	stderr "Do not symlink this script in, copy and review on diffs"
+	# don't use @Q as I think that parameter transformations are newer than bash 3.2
+	stderr "install -v '$in_repo_hook_file' '$installed_hook_file'"
+fi
+
+
+for cp in "${go_tools_needed[@]}"; do
+	# If there's a break, then not updating by default will bite us.
+	# But this installs into a global namespace of binaries, and one repo's
+	# configs shouldn't update/touch existing binaries unless requested, or
+	# that risks biting us somewhere else.
+	# There's problems either way, but bias in favor of "not stomping over
+	# shared binaries".
+	if [[ -n "${UPDATE_GO_TOOLS:-}" ]] || ! have_command "${cp%%:*}"; then
+		stderr "updating ${cp%%:*} from ${cp#*:}"
+		go install -v "${cp#*:}"
+	else
+		stderr "using existing ${cp%%:*} (run with UPDATE_GO_TOOLS=t to update)"
+	fi
+done
+
+export GO_LIST=($(go list ./...))
+
+stderr misspell
+find . -type f -name "*.go" | grep -v "vendor/" | xargs misspell -error -locale US
+
+stderr go fmt
+go fmt "${GO_LIST[@]}"
+
+stderr go vet
+go vet "${GO_LIST[@]}"
+
+stderr staticcheck
+staticcheck "${GO_LIST[@]}"
+
+stderr "FYI: check for newly introduced fmt.Printf"
+git diff | grep "fmt.Printf" || true
