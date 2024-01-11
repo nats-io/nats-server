@@ -3382,11 +3382,12 @@ func (mset *stream) setStartingSequenceForSources(iNames map[string]struct{}) {
 			delete(iNames, indexName)
 		} else if indexName == _EMPTY_ && streamName != _EMPTY_ {
 			for iName := range iNames {
-				if streamName == mset.sources[iName].name ||
-					(mset.streamSource(iName).External != nil && streamName == mset.sources[iName].name+":"+getHash(mset.streamSource(iName).External.ApiPrefix)) {
-					si := mset.sources[indexName]
+				// TODO streamSource is a linear walk, to optimize later
+				if si := mset.sources[iName]; si != nil && streamName == si.name ||
+					(mset.streamSource(iName).External != nil && streamName == si.name+":"+getHash(mset.streamSource(iName).External.ApiPrefix)) {
 					si.sseq = sseq
 					si.dseq = 0
+					delete(iNames, iName)
 					break
 				}
 			}
