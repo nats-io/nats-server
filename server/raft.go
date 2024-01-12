@@ -1174,7 +1174,8 @@ func (n *raft) setupLastSnapshot() {
 	n.pindex = snap.lastIndex
 	n.pterm = snap.lastTerm
 	n.commit = snap.lastIndex
-	n.applied = snap.lastIndex
+	// n.applied will be populated by the upper layer callback when it has
+	// processed either the recovery messages or the snapshot below.
 	n.apply.push(newCommittedEntry(n.commit, []*Entry{{EntrySnapshot, snap.data}}))
 	if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
 		n.setWriteErrLocked(err)
