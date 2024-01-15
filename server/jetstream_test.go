@@ -410,11 +410,11 @@ func TestJetStreamConsumerWithNameAndDurable(t *testing.T) {
 	}
 
 	// it's ok to specify  both durable and name, but they have to be the same.
-	_, err = mset.addConsumer(&ConsumerConfig{
+	_, err = mset.addConsumerWithAction(&ConsumerConfig{
 		DeliverSubject: "to",
 		Durable:        "consumer",
 		Name:           "consumer",
-		AckPolicy:      AckNone})
+		AckPolicy:      AckNone}, ConsumerAction(ActionCreate))
 	if err != nil {
 		t.Fatalf("Unexpected error adding consumer: %v", err)
 	}
@@ -430,6 +430,15 @@ func TestJetStreamConsumerWithNameAndDurable(t *testing.T) {
 		t.Fatalf("Wrong error while adding consumer with not matching Name and Durable: %v", err)
 	}
 
+	// check consumer action "create" returns an error as the consumer already exists
+	_, err = mset.addConsumerWithAction(&ConsumerConfig{
+		DeliverSubject: "to",
+		Durable:        "consumer",
+		Name:           "consumer",
+		AckPolicy:      AckNone}, ConsumerAction(ActionCreate))
+	if err == nil || !strings.Contains(err.Error(), "consumer already exists") {
+		t.Fatalf("Wrong error while trying to create a pre-existing consumer with consumer action create: %v", err)
+	}
 }
 
 func TestJetStreamPubAck(t *testing.T) {

@@ -782,7 +782,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	if cName != _EMPTY_ {
 		if eo, ok := mset.consumers[cName]; ok {
 			mset.mu.Unlock()
-			if action == ActionCreate && !reflect.DeepEqual(*config, eo.config()) {
+			if action == ActionCreate && reflect.DeepEqual(*config, eo.config()) {
 				return nil, NewJSConsumerAlreadyExistsError()
 			}
 			// Check for overlapping subjects.
