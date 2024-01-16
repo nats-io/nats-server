@@ -1123,6 +1123,7 @@ func (js *jetStream) checkForOrphans() {
 
 	for accName, jsa := range js.accounts {
 		asa := cc.streams[accName]
+		jsa.mu.RLock()
 		for stream, mset := range jsa.streams {
 			if sa := asa[stream]; sa == nil {
 				streams = append(streams, mset)
@@ -1136,6 +1137,7 @@ func (js *jetStream) checkForOrphans() {
 				}
 			}
 		}
+		jsa.mu.RUnlock()
 	}
 	js.mu.Unlock()
 
