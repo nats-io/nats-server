@@ -5316,7 +5316,8 @@ func TestFileStoreFullStateBasics(t *testing.T) {
 
 		// Make sure we are tracking subjects correctly.
 		fs.mu.RLock()
-		psi := *fs.psim[subj]
+		info, _ := fs.psim.Find(stringToBytes(subj))
+		psi := *info
 		fs.mu.RUnlock()
 
 		require_Equal(t, psi.total, 4)
@@ -5341,7 +5342,8 @@ func TestFileStoreFullStateBasics(t *testing.T) {
 		require_Equal(t, fs.numMsgBlocks(), 3)
 		// Make sure we are tracking subjects correctly.
 		fs.mu.RLock()
-		psi = *fs.psim[subj]
+		info, _ = fs.psim.Find(stringToBytes(subj))
+		psi = *info
 		fs.mu.RUnlock()
 		require_Equal(t, psi.total, 5)
 		require_Equal(t, psi.fblk, 1)
@@ -5971,7 +5973,8 @@ func TestFileStoreCompactAndPSIMWhenDeletingBlocks(t *testing.T) {
 	require_Equal(t, fs.numMsgBlocks(), 1)
 
 	fs.mu.RLock()
-	psi := fs.psim[subj]
+	info, _ := fs.psim.Find(stringToBytes(subj))
+	psi := *info
 	fs.mu.RUnlock()
 
 	require_Equal(t, psi.total, 1)
@@ -6014,7 +6017,6 @@ func TestFileStoreTrackSubjLenForPSIM(t *testing.T) {
 
 	check := func() {
 		t.Helper()
-
 		var total int
 		for _, slen := range smap {
 			total += slen
@@ -6197,7 +6199,7 @@ func TestFileStoreNumPendingLastBySubject(t *testing.T) {
 	sd, blkSize := t.TempDir(), uint64(1024)
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: sd, BlockSize: blkSize},
-		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*.*"}, Storage: FileStorage})
 	require_NoError(t, err)
 	defer fs.Stop()
 
@@ -6263,11 +6265,11 @@ func TestFileStoreCorruptPSIMOnDisk(t *testing.T) {
 
 	// Force bad subject.
 	fs.mu.Lock()
-	psi := fs.psim["foo.bar"]
+	psi, _ := fs.psim.Find(stringToBytes("foo.bar"))
 	bad := make([]byte, 7)
 	crand.Read(bad)
-	fs.psim[string(bad)] = psi
-	delete(fs.psim, "foo.bar")
+	fs.psim.Insert(bad, *psi)
+	fs.psim.Delete(stringToBytes("foo.bar"))
 	fs.dirty++
 	fs.mu.Unlock()
 
