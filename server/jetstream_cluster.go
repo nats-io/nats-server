@@ -4660,16 +4660,6 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 				js.setConsumerAssignmentRecovering(ca)
 			}
 
-			// Synchronize everyone to our state.
-			if isLeader && n != nil {
-				// Only send out if we have state.
-				if _, _, applied := n.Progress(); applied > 0 {
-					if snap, err := o.store.EncodedState(); err == nil {
-						n.SendSnapshot(snap)
-					}
-				}
-			}
-
 			// Process the change.
 			if err := js.processConsumerLeaderChange(o, isLeader); err == nil && isLeader {
 				doSnapshot(true)
