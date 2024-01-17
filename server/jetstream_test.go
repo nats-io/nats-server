@@ -2935,7 +2935,7 @@ func TestJetStreamWorkQueueTerminateDelivery(t *testing.T) {
 			// We should get 1 back.
 			m := getMsg(1, 2)
 			// Now terminate
-			m.Respond(AckTerm)
+			m.Respond([]byte(fmt.Sprintf("%s with reason", string(AckTerm))))
 			time.Sleep(ackWait * 2)
 
 			// We should get 2 here, not 1 since we have indicated we wanted to terminate.
@@ -2962,6 +2962,9 @@ func TestJetStreamWorkQueueTerminateDelivery(t *testing.T) {
 			}
 			if adv.Deliveries != 2 {
 				t.Fatalf("Expected delivery count of %d, got %d", 2, adv.Deliveries)
+			}
+			if adv.Reason != "with reason" {
+				t.Fatalf("Advisory did not have a reason")
 			}
 		})
 	}
@@ -11593,13 +11596,13 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 
 	var f = func(streamName string, subject string, subjectNumMsgs uint64, streamNumMsg uint64, firstSeq uint64, lastSeq uint64) func() error {
 		return func() error {
-			si, err := js2.StreamInfo(streamName, &nats.StreamInfoRequest{SubjectsFilter: ">"})
+			si, err := js2.StreamInfo(streamName, &nats.StreamInfoRequest{SubjectsFilter: subject})
 			require_NoError(t, err)
 			if ss, ok := si.State.Subjects[subject]; !ok {
-				t.Log("Expected messages with the transformed subject")
+				t.Logf("Expected messages with the transformed subject %s", subject)
 			} else {
 				if ss != subjectNumMsgs {
-					t.Fatalf("Expected %d messages on the transformed subject but got %d", subjectNumMsgs, ss)
+					t.Fatalf("Expected %d messages on the transformed subject %s but got %d", subjectNumMsgs, subject, ss)
 				}
 			}
 			if si.State.Msgs != streamNumMsg {
@@ -11612,9 +11615,9 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 		}
 	}
 
-	checkFor(t, 2*time.Second, 100*time.Millisecond, f("M5", "foo2", 100, 100, 251, 350))
-	checkFor(t, 2*time.Second, 100*time.Millisecond, f("M6", "bar2", 50, 150, 101, 250))
-	checkFor(t, 2*time.Second, 100*time.Millisecond, f("M6", "baz2", 100, 150, 101, 250))
+	checkFor(t, 10*time.Second, 100*time.Millisecond, f("M5", "foo2", 100, 100, 251, 350))
+	checkFor(t, 10*time.Second, 100*time.Millisecond, f("M6", "bar2", 50, 150, 101, 250))
+	checkFor(t, 10*time.Second, 100*time.Millisecond, f("M6", "baz2", 100, 150, 101, 250))
 
 }
 
@@ -21961,6 +21964,7 @@ func TestJetStreamKVReductionInHistory(t *testing.T) {
 	require_NoError(t, err)
 
 	checkAllKeys := func() {
+		t.Helper()
 		// Make sure we can retrieve all of the keys.
 		keys, err := kv.Keys()
 		require_NoError(t, err)
@@ -21988,4 +21992,61 @@ func TestJetStreamKVReductionInHistory(t *testing.T) {
 
 	// Make sure all keys still accessible.
 	checkAllKeys()
+}
+
+// Server issue 4685
+func TestJetStreamConsumerPendingForKV(t *testing.T) {
+	for _, st := range []nats.StorageType{nats.FileStorage, nats.MemoryStorage} {
+		t.Run(st.String(), func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:              "TEST",
+				Subjects:          []string{"test.>"},
+				Storage:           st,
+				MaxMsgsPerSubject: 10,
+				Discard:           nats.DiscardNew,
+			})
+			require_NoError(t, err)
+
+			_, err = js.Publish("test.1", []byte("x"))
+			require_NoError(t, err)
+
+			var msg *nats.Msg
+
+			// this is the detail that triggers the off by one, remove this code and all tests pass
+			msg = nats.NewMsg("test.1")
+			msg.Data = []byte("y")
+			msg.Header.Add(nats.ExpectedLastSeqHdr, "1")
+			_, err = js.PublishMsg(msg)
+			require_NoError(t, err)
+
+			_, err = js.Publish("test.2", []byte("x"))
+			require_NoError(t, err)
+			_, err = js.Publish("test.3", []byte("x"))
+			require_NoError(t, err)
+			_, err = js.Publish("test.4", []byte("x"))
+			require_NoError(t, err)
+			_, err = js.Publish("test.5", []byte("x"))
+			require_NoError(t, err)
+
+			nfo, err := js.StreamInfo("TEST", &nats.StreamInfoRequest{SubjectsFilter: ">"})
+			require_NoError(t, err)
+
+			require_Equal(t, len(nfo.State.Subjects), 5)
+
+			sub, err := js.SubscribeSync("test.>", nats.DeliverLastPerSubject())
+			require_NoError(t, err)
+
+			msg, err = sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			meta, err := msg.Metadata()
+			require_NoError(t, err)
+			require_Equal(t, meta.NumPending, 4)
+		})
+	}
 }

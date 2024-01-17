@@ -1622,7 +1622,7 @@ func addStreamWithError(t *testing.T, nc *nats.Conn, cfg *StreamConfig) (*Stream
 	t.Helper()
 	req, err := json.Marshal(cfg)
 	require_NoError(t, err)
-	rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
+	rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, 5*time.Second)
 	require_NoError(t, err)
 	var resp JSApiStreamCreateResponse
 	err = json.Unmarshal(rmsg.Data, &resp)

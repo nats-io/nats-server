@@ -810,8 +810,26 @@ func (s *Server) sendStatsz(subj string) {
 		return
 	}
 
+	shouldCheckInterest := func() bool {
+		opts := s.getOpts()
+		if opts.Cluster.Port != 0 || opts.Gateway.Port != 0 || opts.LeafNode.Port != 0 {
+			return false
+		}
+		// If we are here we have no clustering or gateways and are not a leafnode hub.
+		// Check for leafnode remotes that connect the system account.
+		if len(opts.LeafNode.Remotes) > 0 {
+			sysAcc := s.sys.account.GetName()
+			for _, r := range opts.LeafNode.Remotes {
+				if r.LocalAccount == sysAcc {
+					return false
+				}
+			}
+		}
+		return true
+	}
+
 	// if we are running standalone, check for interest.
-	if s.standAloneMode() {
+	if shouldCheckInterest() {
 		// Check if we even have interest in this subject.
 		sacc := s.sys.account
 		rr := sacc.sl.Match(subj)

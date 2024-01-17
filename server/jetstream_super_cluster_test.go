@@ -659,7 +659,7 @@ func TestJetStreamSuperClusterConsumersBrokenGateways(t *testing.T) {
 	}
 
 	// Make sure we can deal with data loss at the end.
-	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+	checkFor(t, 20*time.Second, 250*time.Millisecond, func() error {
 		si, err := js.StreamInfo("S")
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)

@@ -1010,7 +1010,7 @@ func TestJetStreamClusterSourceWithOptStartTime(t *testing.T) {
 
 		checkCount := func(sname string, expected int) {
 			t.Helper()
-			checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+			checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
 				si, err := js.StreamInfo(sname)
 				if err != nil {
 					return err
@@ -1376,13 +1376,17 @@ func TestJetStreamClusterParallelStreamCreation(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
-	np := 20
+	np := 100
 
 	startCh := make(chan bool)
 	errCh := make(chan error, np)
 
 	wg := sync.WaitGroup{}
 	wg.Add(np)
+
+	start := sync.WaitGroup{}
+	start.Add(np)
+
 	for i := 0; i < np; i++ {
 		go func() {
 			defer wg.Done()
@@ -1390,7 +1394,8 @@ func TestJetStreamClusterParallelStreamCreation(t *testing.T) {
 			// Individual connection
 			nc, js := jsClientConnect(t, c.randomServer())
 			defer nc.Close()
-
+			// Signal we are ready
+			start.Done()
 			// Make them all fire at once.
 			<-startCh
 
@@ -1404,6 +1409,7 @@ func TestJetStreamClusterParallelStreamCreation(t *testing.T) {
 		}()
 	}
 
+	start.Wait()
 	close(startCh)
 	wg.Wait()
 
@@ -4845,14 +4851,14 @@ func TestJetStreamClusterAccountUsageDrifts(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	// These expected store values can come directory from stream info's state bytes.
+	// These expected store values can come directly from stream info's state bytes.
 	// We will *= 3 for R3
 	checkAccount := func(r1u, r3u uint64) {
 		t.Helper()
 		r3u *= 3
 
 		// Remote usage updates can be delayed, so wait for a bit for values we want.
-		checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+		checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
 			info, err := js.AccountInfo()
 			require_NoError(t, err)
 			require_True(t, len(info.Tiers) >= 2)
@@ -4971,6 +4977,7 @@ func TestJetStreamClusterAccountUsageDrifts(t *testing.T) {
 	}
 
 	// Now test cluster reset operations where we internally reset the NRG and optionally the stream too.
+	// Only applicable to TEST1 stream which is R3.
 	nl := c.randomNonStreamLeader(aExpPub, "TEST1")
 	acc, err := nl.LookupAccount(aExpPub)
 	require_NoError(t, err)
@@ -4979,6 +4986,11 @@ func TestJetStreamClusterAccountUsageDrifts(t *testing.T) {
 	// NRG only
 	mset.resetClusteredState(nil)
 	checkAccount(sir1.State.Bytes, sir3.State.Bytes)
+	// Need to re-lookup this stream since we will recreate from reset above.
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		mset, err = acc.lookupStream("TEST1")
+		return err
+	})
 	// Now NRG and Stream state itself.
 	mset.resetClusteredState(errFirstSequenceMismatch)
 	checkAccount(sir1.State.Bytes, sir3.State.Bytes)
@@ -5812,4 +5824,100 @@ func TestJetStreamClusterRestartThenScaleStreamReplicas(t *testing.T) {
 	// Stop goroutines and wait for them to exit.
 	cancel()
 	wg.Wait()
+}
+
+// https://github.com/nats-io/nats-server/issues/4732
+func TestJetStreamClusterStreamLimitsOnScaleUpAndMove(t *testing.T) {
+	tmpl := `
+			listen: 127.0.0.1:-1
+			server_name: %s
+			jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+			cluster {
+				name: %s
+				listen: 127.0.0.1:%d
+				routes = [%s]
+			}
+	`
+	opFrag := `
+			operator: %s
+			system_account: %s
+			resolver: { type: MEM }
+			resolver_preload = {
+				%s : %s
+				%s : %s
+			}
+		`
+
+	_, syspub := createKey(t)
+	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+
+	accKp, aExpPub := createKey(t)
+	accClaim := jwt.NewAccountClaims(aExpPub)
+	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
+		DiskStorage: -1, Consumer: -1, Streams: 1}
+	accClaim.Limits.JetStreamTieredLimits["R3"] = jwt.JetStreamLimits{
+		DiskStorage: 0, Consumer: -1, Streams: 1}
+	accJwt := encodeClaim(t, accClaim, aExpPub)
+	accCreds := newUser(t, accKp)
+
+	template := tmpl + fmt.Sprintf(opFrag, ojwt, syspub, syspub, sysJwt, aExpPub, accJwt)
+
+	c := createJetStreamCluster(t, template, "CLOUD", _EMPTY_, 3, 22020, true)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer(), nats.UserCredentials(accCreds))
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	toSend, msg := 100, bytes.Repeat([]byte("Z"), 1024)
+	for i := 0; i < toSend; i++ {
+		_, err := js.PublishAsync("foo", msg)
+		require_NoError(t, err)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	// Scale up should fail here since no R3 storage.
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_Error(t, err, errors.New("insufficient storage resources"))
+}
+
+func TestJetStreamClusterAPIAccessViaSystemAccount(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Connect to system account.
+	nc, js := jsClientConnect(t, c.randomServer(), nats.UserInfo("admin", "s3cr3t!"))
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST"})
+	require_Error(t, err, NewJSNotEnabledForAccountError())
+
+	// Make sure same behavior swith single server.
+	tmpl := `
+		listen: 127.0.0.1:-1
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+		accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, t.TempDir())))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc, js = jsClientConnect(t, s, nats.UserInfo("admin", "s3cr3t!"))
+	defer nc.Close()
+
+	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST"})
+	require_Error(t, err, NewJSNotEnabledForAccountError())
 }

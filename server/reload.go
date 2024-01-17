@@ -834,7 +834,7 @@ type profBlockRateReload struct {
 
 func (o *profBlockRateReload) Apply(s *Server) {
 	s.setBlockProfileRate(o.newValue)
-	s.Noticef("Reloaded: block_prof_rate = %v", o.newValue)
+	s.Noticef("Reloaded: prof_block_rate = %v", o.newValue)
 }
 
 type leafNodeOption struct {
@@ -1703,7 +1703,6 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 		reloadClientTrcLvl = false
 		reloadJetstream    = false
 		jsEnabled          = false
-		reloadTLS          = false
 		isStatszChange     = false
 		co                 *clusterOption
 	)
@@ -1717,9 +1716,6 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 		}
 		if opt.IsAuthChange() {
 			reloadAuth = true
-		}
-		if opt.IsTLSChange() {
-			reloadTLS = true
 		}
 		if opt.IsClusterPoolSizeOrAccountsChange() {
 			co = opt.(*clusterOption)
@@ -1778,13 +1774,9 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 		s.updateRemoteLeafNodesTLSConfig(newOpts)
 	}
 
-	// This will fire if TLS enabled at root (NATS listener) -or- if ocsp or ocsp_cache
-	// appear in the config.
-	if reloadTLS {
-		// Restart OCSP monitoring.
-		if err := s.reloadOCSP(); err != nil {
-			s.Warnf("Can't restart OCSP features: %v", err)
-		}
+	// Always restart OCSP monitoring on reload.
+	if err := s.reloadOCSP(); err != nil {
+		s.Warnf("Can't restart OCSP features: %v", err)
 	}
 
 	s.Noticef("Reloaded server configuration")

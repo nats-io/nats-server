@@ -1,4 +1,4 @@
-// Copyright 2019-2023 The NATS Authors
+// Copyright 2019-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"reflect"
 	"regexp"
 	"runtime"
@@ -238,7 +239,7 @@ func validateLeafNode(o *Options) error {
 		}
 	} else {
 		if len(o.LeafNode.Users) != 0 {
-			return fmt.Errorf("operator mode does not allow specifying user in leafnode config")
+			return fmt.Errorf("operator mode does not allow specifying users in leafnode config")
 		}
 		for _, r := range o.LeafNode.Remotes {
 			if !nkeys.IsValidPublicAccountKey(r.LocalAccount) {
@@ -298,12 +299,12 @@ func validateLeafNode(o *Options) error {
 	// with gateways. So if an option validation needs to be done regardless,
 	// it MUST be done before this point!
 
-	if o.Gateway.Name == "" && o.Gateway.Port == 0 {
+	if o.Gateway.Name == _EMPTY_ && o.Gateway.Port == 0 {
 		return nil
 	}
 	// If we are here we have both leaf nodes and gateways defined, make sure there
 	// is a system account defined.
-	if o.SystemAccount == "" {
+	if o.SystemAccount == _EMPTY_ {
 		return fmt.Errorf("leaf nodes and gateways (both being defined) require a system account to also be configured")
 	}
 	if err := validatePinnedCerts(o.LeafNode.TLSPinnedCerts); err != nil {
@@ -332,6 +333,9 @@ func validateLeafNodeAuthOptions(o *Options) error {
 	}
 	if o.LeafNode.Username != _EMPTY_ {
 		return fmt.Errorf("can not have a single user/pass and a users array")
+	}
+	if o.LeafNode.Nkey != _EMPTY_ {
+		return fmt.Errorf("can not have a single nkey and a users array")
 	}
 	users := map[string]struct{}{}
 	for _, u := range o.LeafNode.Users {
@@ -827,7 +831,20 @@ func (c *client) sendLeafConnect(clusterName string, headers bool) error {
 
 		sigraw, _ := kp.Sign(c.nonce)
 		sig := base64.RawURLEncoding.EncodeToString(sigraw)
-		cinfo.JWT = string(tmp)
+		cinfo.JWT = bytesToString(tmp)
+		cinfo.Sig = sig
+	} else if nkey := c.leaf.remote.Nkey; nkey != _EMPTY_ {
+		kp, err := nkeys.FromSeed([]byte(nkey))
+		if err != nil {
+			c.Errorf("Remote nkey has malformed seed")
+			return err
+		}
+		// Wipe our key on exit.
+		defer kp.Wipe()
+		sigraw, _ := kp.Sign(c.nonce)
+		sig := base64.RawURLEncoding.EncodeToString(sigraw)
+		pkey, _ := kp.PublicKey()
+		cinfo.Nkey = pkey
 		cinfo.Sig = sig
 	} else if userInfo := c.leaf.remote.curURL.User; userInfo != nil {
 		cinfo.User = userInfo.Username()
@@ -838,7 +855,7 @@ func (c *client) sendLeafConnect(clusterName string, headers bool) error {
 	}
 	b, err := json.Marshal(cinfo)
 	if err != nil {
-		c.Errorf("Error marshaling CONNECT to route: %v\n", err)
+		c.Errorf("Error marshaling CONNECT to remote leafnode: %v\n", err)
 		return err
 	}
 	// Although this call is made before the writeLoop is created,
@@ -1038,7 +1055,7 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 		// Remember the nonce we sent here for signatures, etc.
 		c.nonce = make([]byte, nonceLen)
 		copy(c.nonce, nonce[:])
-		info.Nonce = string(c.nonce)
+		info.Nonce = bytesToString(c.nonce)
 		info.CID = c.cid
 		proto := generateInfoJSON(info)
 		if !opts.LeafNode.TLSHandshakeFirst {
@@ -1362,7 +1379,7 @@ func (s *Server) negotiateLeafCompression(c *client, didSolicit bool, infoCompre
 	cid := c.cid
 	var nonce string
 	if !didSolicit {
-		nonce = string(c.nonce)
+		nonce = bytesToString(c.nonce)
 	}
 	c.mu.Unlock()
 
@@ -1687,6 +1704,7 @@ func (s *Server) removeLeafNodeConnection(c *client) {
 // Connect information for solicited leafnodes.
 type leafConnectInfo struct {
 	Version   string   `json:"version,omitempty"`
+	Nkey      string   `json:"nkey,omitempty"`
 	JWT       string   `json:"jwt,omitempty"`
 	Sig       string   `json:"sig,omitempty"`
 	User      string   `json:"user,omitempty"`
@@ -1969,16 +1987,15 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 	rc := c.leaf.remoteCluster
 	c.leaf.smap = make(map[string]int32)
 	for _, sub := range subs {
-		subj := string(sub.subject)
 		// Check perms regardless of role.
-		if !c.canSubscribe(subj) {
-			c.Debugf("Not permitted to subscribe to %q on behalf of %s%s", subj, accName, accNTag)
+		if c.perms != nil && !c.canSubscribe(string(sub.subject)) {
+			c.Debugf("Not permitted to subscribe to %q on behalf of %s%s", sub.subject, accName, accNTag)
 			continue
 		}
 		// We ignore ourselves here.
 		// Also don't add the subscription if it has a origin cluster and the
 		// cluster name matches the one of the client we are sending to.
-		if c != sub.client && (sub.origin == nil || (string(sub.origin) != rc)) {
+		if c != sub.client && (sub.origin == nil || (bytesToString(sub.origin) != rc)) {
 			count := int32(1)
 			if len(sub.queue) > 0 && sub.qw > 0 {
 				count = sub.qw
@@ -2068,7 +2085,7 @@ func (acc *Account) updateLeafNodes(sub *subscription, delta int32) {
 	// Capture the cluster even if its empty.
 	cluster := _EMPTY_
 	if sub.origin != nil {
-		cluster = string(sub.origin)
+		cluster = bytesToString(sub.origin)
 	}
 
 	// If we have an isolated cluster we can return early, as long as it is not a loop detection subject.
@@ -2169,6 +2186,28 @@ func (c *client) forceAddToSmap(subj string) {
 	c.sendLeafNodeSubUpdate(subj, 1)
 }
 
+// Used to force remove a subject from the subject map.
+func (c *client) forceRemoveFromSmap(subj string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.leaf.smap == nil {
+		return
+	}
+	n := c.leaf.smap[subj]
+	if n == 0 {
+		return
+	}
+	n--
+	if n == 0 {
+		// Remove is now zero
+		delete(c.leaf.smap, subj)
+		c.sendLeafNodeSubUpdate(subj, 0)
+	} else {
+		c.leaf.smap[subj] = n
+	}
+}
+
 // Send the subscription interest change to the other side.
 // Lock should be held.
 func (c *client) sendLeafNodeSubUpdate(key string, n int32) {
@@ -2195,19 +2234,15 @@ func (c *client) sendLeafNodeSubUpdate(key string, n int32) {
 
 // Helper function to build the key.
 func keyFromSub(sub *subscription) string {
-	var _rkey [1024]byte
-	var key []byte
-
+	var sb strings.Builder
+	sb.Grow(len(sub.subject) + len(sub.queue) + 1)
+	sb.Write(sub.subject)
 	if sub.queue != nil {
 		// Just make the key subject spc group, e.g. 'foo bar'
-		key = _rkey[:0]
-		key = append(key, sub.subject...)
-		key = append(key, byte(' '))
-		key = append(key, sub.queue...)
-	} else {
-		key = sub.subject
+		sb.WriteByte(' ')
+		sb.Write(sub.queue)
 	}
-	return string(key)
+	return sb.String()
 }
 
 // Lock should be held.
@@ -2280,7 +2315,7 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 	acc := c.acc
 	// Check if we have a loop.
 	ldsPrefix := bytes.HasPrefix(sub.subject, []byte(leafNodeLoopDetectionSubjectPrefix))
-	if ldsPrefix && string(sub.subject) == acc.getLDSubject() {
+	if ldsPrefix && bytesToString(sub.subject) == acc.getLDSubject() {
 		c.mu.Unlock()
 		c.handleLeafNodeLoop(true)
 		return nil
@@ -2297,11 +2332,14 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 	}
 
 	// If we are a hub check that we can publish to this subject.
-	if checkPerms && subjectIsLiteral(string(sub.subject)) && !c.pubAllowedFullCheck(string(sub.subject), true, true) {
-		c.mu.Unlock()
-		c.leafSubPermViolation(sub.subject)
-		c.Debugf(fmt.Sprintf("Permissions Violation for Subscription to %q", sub.subject))
-		return nil
+	if checkPerms {
+		subj := string(sub.subject)
+		if subjectIsLiteral(subj) && !c.pubAllowedFullCheck(subj, true, true) {
+			c.mu.Unlock()
+			c.leafSubPermViolation(sub.subject)
+			c.Debugf(fmt.Sprintf("Permissions Violation for Subscription to %q", sub.subject))
+			return nil
+		}
 	}
 
 	// Check if we have a maximum on the number of subscriptions.
@@ -2323,7 +2361,7 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 	} else {
 		sub.sid = arg
 	}
-	key := string(sub.sid)
+	key := bytesToString(sub.sid)
 	osub := c.subs[key]
 	updateGWs := false
 	delta := int32(1)
@@ -2349,7 +2387,7 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 
 	// Only add in shadow subs if a new sub or qsub.
 	if osub == nil {
-		if err := c.addShadowSubscriptions(acc, sub); err != nil {
+		if err := c.addShadowSubscriptions(acc, sub, true); err != nil {
 			c.Errorf(err.Error())
 		}
 	}
@@ -2784,14 +2822,16 @@ func (c *client) leafNodeSolicitWSConnection(opts *Options, rURL *url.URL, remot
 	// create a LEAF connection, not a CLIENT.
 	// In case we use the user's URL path in the future, make sure we append the user's
 	// path to our `/leafnode` path.
-	path := leafNodeWSPath
+	lpath := leafNodeWSPath
 	if curPath := rURL.EscapedPath(); curPath != _EMPTY_ {
 		if curPath[0] == '/' {
 			curPath = curPath[1:]
 		}
-		path += curPath
+		lpath = path.Join(curPath, lpath)
+	} else {
+		lpath = lpath[1:]
 	}
-	ustr := fmt.Sprintf("%s://%s%s", scheme, rURL.Host, path)
+	ustr := fmt.Sprintf("%s://%s/%s", scheme, rURL.Host, lpath)
 	u, _ := url.Parse(ustr)
 	req := &http.Request{
 		Method:     "GET",

@@ -714,7 +714,7 @@ func TestClientConnectToRoutePort(t *testing.T) {
 	for i := 0; i < total; i++ {
 		nc, err := nats.Connect(url)
 		if err != nil {
-			t.Fatalf("Unexepected error on connect: %v", err)
+			t.Fatalf("Unexpected error on connect: %v", err)
 		}
 		defer nc.Close()
 		if nc.ConnectedUrl() != clientURL {
@@ -2079,57 +2079,82 @@ func TestRoutePool(t *testing.T) {
 }
 
 func TestRoutePoolConnectRace(t *testing.T) {
-	// This test will have each server point to each other and that is causing
-	// each one to attempt to connect routes to each other which should lead
-	// to connections needing to be dropped. We make sure that there is still
-	// resolution and there is the expected number of routes.
-	createSrv := func(name string, port int) *Server {
-		o := DefaultOptions()
-		o.Port = -1
-		o.ServerName = name
-		o.Cluster.PoolSize = 5
-		o.Cluster.Name = "local"
-		o.Cluster.Port = port
-		o.Routes = RoutesFromStr("nats://127.0.0.1:1234,nats://127.0.0.1:1235,nats://127.0.0.1:1236")
-		s, err := NewServer(o)
-		if err != nil {
-			t.Fatalf("Error creating server: %v", err)
-		}
-		return s
-	}
-	s1 := createSrv("A", 1234)
-	s2 := createSrv("B", 1235)
-	s3 := createSrv("C", 1236)
+	for _, test := range []struct {
+		name     string
+		poolSize int
+	}{
+		{"no pool", -1},
+		{"pool size 1", 1},
+		{"pool size 5", 5},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// This test will have each server point to each other and that is causing
+			// each one to attempt to connect routes to each other which should lead
+			// to connections needing to be dropped. We make sure that there is still
+			// resolution and there is the expected number of routes.
+			createSrv := func(name string, port int) *Server {
+				o := DefaultOptions()
+				o.Port = -1
+				o.ServerName = name
+				o.Cluster.PoolSize = test.poolSize
+				o.Cluster.Name = "local"
+				o.Cluster.Port = port
+				o.Routes = RoutesFromStr("nats://127.0.0.1:1234,nats://127.0.0.1:1235,nats://127.0.0.1:1236")
+				s, err := NewServer(o)
+				if err != nil {
+					t.Fatalf("Error creating server: %v", err)
+				}
+				return s
+			}
+			s1 := createSrv("A", 1234)
+			s2 := createSrv("B", 1235)
+			s3 := createSrv("C", 1236)
 
-	l := &captureDebugLogger{dbgCh: make(chan string, 100)}
-	s1.SetLogger(l, true, false)
+			l := &captureDebugLogger{dbgCh: make(chan string, 100)}
+			s1.SetLogger(l, true, false)
 
-	servers := []*Server{s1, s2, s3}
+			servers := []*Server{s1, s2, s3}
 
-	for _, s := range servers {
-		go s.Start()
-		defer s.Shutdown()
-	}
+			for _, s := range servers {
+				go s.Start()
+				defer s.Shutdown()
+			}
 
-	checkClusterFormed(t, s1, s2, s3)
+			checkClusterFormed(t, s1, s2, s3)
 
-	for done, duplicate := false, 0; !done; {
-		select {
-		case e := <-l.dbgCh:
-			if strings.Contains(e, "duplicate") {
-				if duplicate++; duplicate > 20 {
-					t.Fatalf("Routes are constantly reconnecting: %v", e)
+			for done, duplicate := false, 0; !done; {
+				select {
+				case e := <-l.dbgCh:
+					if strings.Contains(e, "duplicate") {
+						if duplicate++; duplicate > 20 {
+							t.Fatalf("Routes are constantly reconnecting: %v", e)
+						}
+					}
+				case <-time.After(DEFAULT_ROUTE_RECONNECT + 250*time.Millisecond):
+					// More than reconnect and some, and no reconnect, so we are good.
+					done = true
 				}
 			}
-		case <-time.After(DEFAULT_ROUTE_RECONNECT + 250*time.Millisecond):
-			// More than reconnect and some, and no reconnect, so we are good.
-			done = true
-		}
-	}
 
-	for _, s := range servers {
-		s.Shutdown()
-		s.WaitForShutdown()
+			// Also, check that they all report as solicited and configured in monitoring.
+			for _, s := range servers {
+				routes, err := s.Routez(nil)
+				require_NoError(t, err)
+				for _, r := range routes.Routes {
+					if !r.DidSolicit {
+						t.Fatalf("All routes should have been marked as solicited, this one was not: %+v", r)
+					}
+					if !r.IsConfigured {
+						t.Fatalf("All routes should have been marked as configured, this one was not: %+v", r)
+					}
+				}
+			}
+
+			for _, s := range servers {
+				s.Shutdown()
+				s.WaitForShutdown()
+			}
+		})
 	}
 }
 
@@ -2529,6 +2554,20 @@ func TestRoutePerAccountConnectRace(t *testing.T) {
 		case <-time.After(DEFAULT_ROUTE_RECONNECT + 250*time.Millisecond):
 			// More than reconnect and some, and no reconnect, so we are good.
 			done = true
+		}
+	}
+
+	// Also, check that they all report as solicited and configured in monitoring.
+	for _, s := range servers {
+		routes, err := s.Routez(nil)
+		require_NoError(t, err)
+		for _, r := range routes.Routes {
+			if !r.DidSolicit {
+				t.Fatalf("All routes should have been marked as solicited, this one was not: %+v", r)
+			}
+			if !r.IsConfigured {
+				t.Fatalf("All routes should have been marked as configured, this one was not: %+v", r)
+			}
 		}
 	}
 

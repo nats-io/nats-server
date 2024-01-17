@@ -30,10 +30,12 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/nats-io/jwt/v2"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 
 	"github.com/klauspost/compress/flate"
@@ -3998,6 +4000,189 @@ func TestWSXForwardedFor(t *testing.T) {
 			}
 		})
 	}
+}
+
+type partialWriteConn struct {
+	net.Conn
+}
+
+func (c *partialWriteConn) Write(b []byte) (int, error) {
+	max := len(b)
+	if max > 0 {
+		max = rand.Intn(max)
+		if max == 0 {
+			max = 1
+		}
+	}
+	n, err := c.Conn.Write(b[:max])
+	if err == nil && max != len(b) {
+		err = io.ErrShortWrite
+	}
+	return n, err
+}
+
+func TestWSWithPartialWrite(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		websocket {
+			listen: "127.0.0.1:-1"
+			no_tls: true
+		}
+	`))
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc1 := natsConnect(t, fmt.Sprintf("ws://127.0.0.1:%d", o.Websocket.Port))
+	defer nc1.Close()
+
+	sub := natsSubSync(t, nc1, "foo")
+	sub.SetPendingLimits(-1, -1)
+	natsFlush(t, nc1)
+
+	nc2 := natsConnect(t, fmt.Sprintf("ws://127.0.0.1:%d", o.Websocket.Port))
+	defer nc2.Close()
+
+	// Replace websocket connections with ones that will produce short writes.
+	s.mu.RLock()
+	for _, c := range s.clients {
+		c.mu.Lock()
+		c.nc = &partialWriteConn{Conn: c.nc}
+		c.mu.Unlock()
+	}
+	s.mu.RUnlock()
+
+	var msgs [][]byte
+	for i := 0; i < 100; i++ {
+		msg := make([]byte, rand.Intn(10000)+10)
+		for j := 0; j < len(msg); j++ {
+			msg[j] = byte('A' + j%26)
+		}
+		msgs = append(msgs, msg)
+		natsPub(t, nc2, "foo", msg)
+	}
+	for i := 0; i < 100; i++ {
+		rmsg := natsNexMsg(t, sub, time.Second)
+		if !bytes.Equal(msgs[i], rmsg.Data) {
+			t.Fatalf("Expected message %q, got %q", msgs[i], rmsg.Data)
+		}
+	}
+}
+
+func testWSNoCorruptionWithFrameSizeLimit(t *testing.T, total int) {
+	tmpl := `
+               listen: "127.0.0.1:-1"
+               cluster {
+                       name: "local"
+                       port: -1
+                       %s
+               }
+               websocket {
+                       listen: "127.0.0.1:-1"
+                       no_tls: true
+               }
+       `
+	conf1 := createConfFile(t, []byte(fmt.Sprintf(tmpl, _EMPTY_)))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	routes := fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", o1.Cluster.Port)
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(tmpl, routes)))
+	s2, o2 := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	conf3 := createConfFile(t, []byte(fmt.Sprintf(tmpl, routes)))
+	s3, o3 := RunServerWithConfig(conf3)
+	defer s3.Shutdown()
+
+	checkClusterFormed(t, s1, s2, s3)
+
+	nc3 := natsConnect(t, fmt.Sprintf("ws://127.0.0.1:%d", o3.Websocket.Port))
+	defer nc3.Close()
+
+	nc2 := natsConnect(t, fmt.Sprintf("ws://127.0.0.1:%d", o2.Websocket.Port))
+	defer nc2.Close()
+
+	payload := make([]byte, 100000)
+	for i := 0; i < len(payload); i++ {
+		payload[i] = 'A' + byte(i%26)
+	}
+	errCh := make(chan error, 1)
+	doneCh := make(chan struct{}, 1)
+	count := int32(0)
+
+	createSub := func(nc *nats.Conn) {
+		sub := natsSub(t, nc, "foo", func(m *nats.Msg) {
+			if !bytes.Equal(m.Data, payload) {
+				stop := len(m.Data)
+				if l := len(payload); l < stop {
+					stop = l
+				}
+				start := 0
+				for i := 0; i < stop; i++ {
+					if m.Data[i] != payload[i] {
+						start = i
+						break
+					}
+				}
+				if stop-start > 20 {
+					stop = start + 20
+				}
+				select {
+				case errCh <- fmt.Errorf("Invalid message: [%d bytes same]%s[...]", start, m.Data[start:stop]):
+				default:
+				}
+				return
+			}
+			if n := atomic.AddInt32(&count, 1); int(n) == 2*total {
+				doneCh <- struct{}{}
+			}
+		})
+		sub.SetPendingLimits(-1, -1)
+	}
+	createSub(nc2)
+	createSub(nc3)
+
+	checkSubInterest(t, s1, globalAccountName, "foo", time.Second)
+
+	nc1 := natsConnect(t, fmt.Sprintf("ws://127.0.0.1:%d", o1.Websocket.Port))
+	defer nc1.Close()
+	natsFlush(t, nc1)
+
+	// Change websocket connections to force a max frame size.
+	for _, s := range []*Server{s1, s2, s3} {
+		s.mu.RLock()
+		for _, c := range s.clients {
+			c.mu.Lock()
+			if c.ws != nil {
+				c.ws.browser = true
+			}
+			c.mu.Unlock()
+		}
+		s.mu.RUnlock()
+	}
+
+	for i := 0; i < total; i++ {
+		natsPub(t, nc1, "foo", payload)
+		if i%100 == 0 {
+			select {
+			case err := <-errCh:
+				t.Fatalf("Error: %v", err)
+			default:
+			}
+		}
+	}
+	select {
+	case err := <-errCh:
+		t.Fatalf("Error: %v", err)
+	case <-doneCh:
+		return
+	case <-time.After(10 * time.Second):
+		t.Fatalf("Test timed out")
+	}
+}
+
+func TestWSNoCorruptionWithFrameSizeLimit(t *testing.T) {
+	testWSNoCorruptionWithFrameSizeLimit(t, 1000)
 }
 
 // ==================================================================

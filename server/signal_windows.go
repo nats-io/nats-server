@@ -34,10 +34,15 @@ func (s *Server) handleSignals() {
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
-		for sig := range c {
-			s.Debugf("Trapped %q signal", sig)
-			s.Shutdown()
-			os.Exit(0)
+		for {
+			select {
+			case sig := <-c:
+				s.Debugf("Trapped %q signal", sig)
+				s.Shutdown()
+				os.Exit(0)
+			case <-s.quitCh:
+				return
+			}
 		}
 	}()
 }

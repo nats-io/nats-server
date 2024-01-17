@@ -1,4 +1,4 @@
-// Copyright 2012-2022 The NATS Authors
+// Copyright 2012-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -15,6 +15,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
@@ -275,6 +276,30 @@ func TestNoAuthUser(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNoAuthUserNkey(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		accounts {
+			FOO { users [{user: "foo", password: "pwd1"}] }
+			BAR { users [{nkey: "UBO2MQV67TQTVIRV3XFTEZOACM4WLOCMCDMAWN5QVN5PI2N6JHTVDRON"}] }
+		}
+		no_auth_user: "UBO2MQV67TQTVIRV3XFTEZOACM4WLOCMCDMAWN5QVN5PI2N6JHTVDRON"
+	`))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// Make sure we connect ok and to the correct account.
+	nc := natsConnect(t, s.ClientURL())
+	resp, err := nc.Request(userDirectInfoSubj, nil, time.Second)
+	require_NoError(t, err)
+	response := ServerAPIResponse{Data: &UserInfo{}}
+	err = json.Unmarshal(resp.Data, &response)
+	require_NoError(t, err)
+	userInfo := response.Data.(*UserInfo)
+	require_Equal(t, userInfo.UserID, "UBO2MQV67TQTVIRV3XFTEZOACM4WLOCMCDMAWN5QVN5PI2N6JHTVDRON")
+	require_Equal(t, userInfo.Account, "BAR")
 }
 
 func TestUserConnectionDeadline(t *testing.T) {
