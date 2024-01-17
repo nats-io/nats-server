@@ -11845,6 +11845,45 @@ func TestJetStreamSourceBasics(t *testing.T) {
 		}
 		return nil
 	})
+
+	// pre 2.10 backwards compatibility
+	transformConfig := nats.SubjectTransformConfig{Source: "B.*", Destination: "A.{{Wildcard(1)}}"}
+	aConfig := nats.StreamConfig{Name: "A", Subjects: []string{"B.*"}, SubjectTransform: &transformConfig}
+	if _, err := js.AddStream(&aConfig); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	sendBatch("B.A", 1)
+	sendBatch("B.B", 1)
+	bConfig := nats.StreamConfig{Name: "B", Subjects: []string{"A.*"}}
+
+	if _, err := js.AddStream(&bConfig); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// fake a message that would have been sourced with pre 2.10
+	msg := nats.NewMsg("A.A")
+	// pre 2.10 header format just stream name and sequence number
+	msg.Header.Set(JSStreamSource, "A 1")
+	msg.Data = []byte("OK")
+
+	if _, err := js.PublishMsg(msg); err != nil {
+		t.Fatalf("Unexpected publish error: %v", err)
+	}
+
+	bConfig.Sources = []*nats.StreamSource{{Name: "A"}}
+	if _, err := js.UpdateStream(&bConfig); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		si, err := js2.StreamInfo("B")
+		require_NoError(t, err)
+		if si.State.Msgs != 2 {
+			return fmt.Errorf("Expected 2 msgs, got state: %+v", si.State)
+		}
+		return nil
+	})
 }
 
 func TestJetStreamInputTransform(t *testing.T) {
