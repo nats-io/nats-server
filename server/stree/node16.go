@@ -77,6 +77,8 @@ func (n *node16) deleteChild(c byte) {
 			if i < last {
 				n.keys[i] = n.keys[last]
 				n.children[i] = n.children[last]
+				n.keys[last] = 0
+				n.children[last] = nil
 			} else {
 				n.keys[i] = 0
 				n.children[i] = nil
