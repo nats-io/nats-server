@@ -597,7 +597,7 @@ func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consum
 			mset.mu.RLock()
 			accName, streamName := mset.acc.GetName(), mset.cfg.Name
 			mset.mu.RUnlock()
-			s.Warnf("Detected consumer cluster node skew '%s > %s'", accName, streamName, consumer)
+			s.Warnf("Detected consumer cluster node skew '%s > %s > %s'", accName, streamName, consumer)
 			node.Delete()
 			o.deleteWithoutAdvisory()
 			restartConsumer()
