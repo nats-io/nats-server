@@ -6496,6 +6496,43 @@ func TestFileStoreSkipMsgs(t *testing.T) {
 	require_Equal(t, state.NumDeleted, 10)
 }
 
+func TestFileStoreOptimizeFirstLoadNextMsgWithSequenceZero(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 4096},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := bytes.Repeat([]byte("ZZZ"), 33) // ~100bytes
+
+	for i := 0; i < 5000; i++ {
+		fs.StoreMsg("foo.A", nil, msg)
+	}
+	// This will create alot of blocks, ~167.
+	// Just used to check that we do not load these in when searching.
+	// Now add in 10 for foo.bar at the end.
+	for i := 0; i < 10; i++ {
+		fs.StoreMsg("foo.B", nil, msg)
+	}
+	// The bug would not be visible on running server per se since we would have had fss loaded
+	// and that sticks around a bit longer, we would use that to skip over the early blocks. So stop
+	// and restart the filestore.
+	fs.Stop()
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 4096},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Now fetch the next message for foo.B but set starting sequence to 0.
+	_, nseq, err := fs.LoadNextMsg("foo.B", false, 0, nil)
+	require_NoError(t, err)
+	require_Equal(t, nseq, 5001)
+	// Now check how many blks are loaded, should be only 1.
+	require_Equal(t, fs.cacheLoads(), 1)
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////
