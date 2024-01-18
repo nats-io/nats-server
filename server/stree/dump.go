@@ -19,8 +19,6 @@ import (
 	"strings"
 )
 
-// TODO(dlc) - This I used alot for debugging and testing. Probably should be made to return a string vs using fmt.Printf.
-
 // For dumping out a text representation of a tree.
 func (t *SubjectTree[T]) Dump(w io.Writer) {
 	t.dump(w, t.root, 0)
