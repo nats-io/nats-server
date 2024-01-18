@@ -5960,6 +5960,16 @@ func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64, sm *Store
 		start = fs.state.FirstSeq
 	}
 
+	// If start is less than or equal to beginning of our stream, meaning our first call,
+	// let's check the psim to see if we can skip ahead.
+	if start <= fs.state.FirstSeq {
+		var ss SimpleState
+		fs.numFilteredPending(filter, &ss)
+		if ss.First > start {
+			start = ss.First
+		}
+	}
+
 	if bi, _ := fs.selectMsgBlockWithIndex(start); bi >= 0 {
 		for i := bi; i < len(fs.blks); i++ {
 			mb := fs.blks[i]
