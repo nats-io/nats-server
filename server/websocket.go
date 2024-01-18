@@ -693,9 +693,9 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 	kind := CLIENT
 	if r.URL != nil {
 		ep := r.URL.EscapedPath()
-		if strings.HasPrefix(ep, leafNodeWSPath) {
+		if strings.HasSuffix(ep, leafNodeWSPath) {
 			kind = LEAF
-		} else if strings.HasPrefix(ep, mqttWSPath) {
+		} else if strings.HasSuffix(ep, mqttWSPath) {
 			kind = MQTT
 		}
 	}
@@ -1269,13 +1269,12 @@ func (s *Server) createWSClient(conn net.Conn, ws *websocket) *client {
 }
 
 func (c *client) wsCollapsePtoNB() (net.Buffers, int64) {
-	var nb net.Buffers
+	nb := c.out.nb
 	var mfs int
 	var usz int
 	if c.ws.browser {
 		mfs = wsFrameSizeForBrowsers
 	}
-	nb = c.out.nb
 	mask := c.ws.maskwrite
 	// Start with possible already framed buffers (that we could have
 	// got from partials or control messages such as ws pings or pongs).
@@ -1378,8 +1377,10 @@ func (c *client) wsCollapsePtoNB() (net.Buffers, int64) {
 			for i := 0; i < len(nb); i++ {
 				b := nb[i]
 				if total+len(b) <= mfs {
-					bufs = append(bufs, b)
+					buf := nbPoolGet(len(b))
+					bufs = append(bufs, append(buf, b...))
 					total += len(b)
+					nbPoolPut(nb[i])
 					continue
 				}
 				for len(b) > 0 {
@@ -1394,9 +1395,11 @@ func (c *client) wsCollapsePtoNB() (net.Buffers, int64) {
 					if endStart {
 						fhIdx = startFrame()
 					}
-					bufs = append(bufs, b[:total])
+					buf := nbPoolGet(total)
+					bufs = append(bufs, append(buf, b[:total]...))
 					b = b[total:]
 				}
+				nbPoolPut(nb[i]) // No longer needed as copied into smaller frames.
 			}
 			if total > 0 {
 				endFrame(fhIdx, total)

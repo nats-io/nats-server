@@ -1,4 +1,4 @@
-// Copyright 2020-2022 The NATS Authors
+// Copyright 2020-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -23,6 +23,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -237,6 +238,9 @@ func TestJetStreamClusterServerLimits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	// Grab stream leader.
+	sl := c.streamLeader("ONE", "TM")
+	require_True(t, sl != nil)
 
 	for i := 0; i < toSend; i++ {
 		if _, err = js.Publish("TM", msg); err != nil {
@@ -247,13 +251,15 @@ func TestJetStreamClusterServerLimits(t *testing.T) {
 		t.Fatalf("Expected a ErrJetStreamResourcesExceeded error, got %v", err)
 	}
 
-	si, err := js.StreamInfo("TM")
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if si.State.Bytes > max_mem {
+	// Since we have run all servers out of resources, no leader will be elected to respond to stream info.
+	// So check manually.
+	acc, err := sl.LookupAccount("ONE")
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TM")
+	require_NoError(t, err)
+	if state := mset.state(); state.Bytes > max_mem {
 		t.Fatalf("Expected bytes of %v to not be greater then %v",
-			friendlyBytes(int64(si.State.Bytes)),
+			friendlyBytes(int64(state.Bytes)),
 			friendlyBytes(int64(max_mem)),
 		)
 	}
@@ -270,6 +276,9 @@ func TestJetStreamClusterServerLimits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	// Grab stream leader.
+	sl = c.streamLeader("ONE", "TF")
+	require_True(t, sl != nil)
 
 	for i := 0; i < toSend; i++ {
 		if _, err = js.Publish("TF", msg); err != nil {
@@ -280,13 +289,15 @@ func TestJetStreamClusterServerLimits(t *testing.T) {
 		t.Fatalf("Expected a ErrJetStreamResourcesExceeded error, got %v", err)
 	}
 
-	si, err = js.StreamInfo("TF")
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if si.State.Bytes > max_disk {
+	// Since we have run all servers out of resources, no leader will be elected to respond to stream info.
+	// So check manually.
+	acc, err = sl.LookupAccount("ONE")
+	require_NoError(t, err)
+	mset, err = acc.lookupStream("TF")
+	require_NoError(t, err)
+	if state := mset.state(); state.Bytes > max_disk {
 		t.Fatalf("Expected bytes of %v to not be greater then %v",
-			friendlyBytes(int64(si.State.Bytes)),
+			friendlyBytes(int64(state.Bytes)),
 			friendlyBytes(int64(max_disk)),
 		)
 	}
@@ -2329,7 +2340,7 @@ func TestJetStreamClusterPushConsumerQueueGroup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	resp, err := nc.Request(fmt.Sprintf(JSApiDurableCreateT, "TEST", "dlc"), req, time.Second)
+	resp, err := nc.Request(fmt.Sprintf(JSApiDurableCreateT, "TEST", "dlc"), req, 2*time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -3632,14 +3643,15 @@ func TestJetStreamClusterAccountReservations(t *testing.T) {
 	defer nc.Close()
 	accMax := 3
 
+	errResources := errors.New("nats: insufficient storage resources available")
+
 	test := func(t *testing.T, replica int) {
 		mb := int64((1+accMax)-replica) * 1024 * 1024 * 1024 // GB, corrected for replication factor
 		_, err := js.AddStream(&nats.StreamConfig{Name: "S1", Subjects: []string{"s1"}, MaxBytes: mb, Replicas: replica})
 		require_NoError(t, err)
 
 		_, err = js.AddStream(&nats.StreamConfig{Name: "S2", Subjects: []string{"s2"}, MaxBytes: 1024, Replicas: replica})
-		require_Error(t, err)
-		require_Equal(t, err.Error(), "nats: insufficient storage resources available")
+		require_Error(t, err, errResources)
 
 		_, err = js.UpdateStream(&nats.StreamConfig{Name: "S1", Subjects: []string{"s1"}, MaxBytes: mb / 2, Replicas: replica})
 		require_NoError(t, err)
@@ -3648,12 +3660,10 @@ func TestJetStreamClusterAccountReservations(t *testing.T) {
 		require_NoError(t, err)
 
 		_, err = js.AddStream(&nats.StreamConfig{Name: "S3", Subjects: []string{"s3"}, MaxBytes: 1024, Replicas: replica})
-		require_Error(t, err)
-		require_Equal(t, err.Error(), "nats: insufficient storage resources available")
+		require_Error(t, err, errResources)
 
 		_, err = js.UpdateStream(&nats.StreamConfig{Name: "S2", Subjects: []string{"s2"}, MaxBytes: mb/2 + 1, Replicas: replica})
-		require_Error(t, err)
-		require_Equal(t, err.Error(), "nats: insufficient storage resources available")
+		require_Error(t, err, errResources)
 
 		require_NoError(t, js.DeleteStream("S1"))
 		require_NoError(t, js.DeleteStream("S2"))
@@ -6968,7 +6978,7 @@ func TestJetStreamClusterStreamDirectGetNotTooSoon(t *testing.T) {
 	// Make sure we get all direct subs.
 	checkForDirectSubs := func() {
 		t.Helper()
-		checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+		checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
 			for _, s := range c.servers {
 				mset, err := s.GlobalAccount().lookupStream("TEST")
 				if err != nil {

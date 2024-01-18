@@ -1,4 +1,4 @@
-// Copyright 2019-2023 The NATS Authors
+// Copyright 2019-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -128,30 +128,37 @@ const (
 )
 
 const (
-	actionUpdateString         = "update"
-	actionCreateString         = "create"
-	actionCreateOrUpdateString = ""
+	actionUpdateJSONString         = `"update"`
+	actionCreateJSONString         = `"create"`
+	actionCreateOrUpdateJSONString = `""`
+)
+
+var (
+	actionUpdateJSONBytes         = []byte(actionUpdateJSONString)
+	actionCreateJSONBytes         = []byte(actionCreateJSONString)
+	actionCreateOrUpdateJSONBytes = []byte(actionCreateOrUpdateJSONString)
 )
 
 func (a ConsumerAction) String() string {
 	switch a {
 	case ActionCreateOrUpdate:
-		return actionCreateOrUpdateString
+		return actionCreateOrUpdateJSONString
 	case ActionCreate:
-		return actionCreateString
+		return actionCreateJSONString
 	case ActionUpdate:
-		return actionUpdateString
+		return actionUpdateJSONString
 	}
-	return actionCreateOrUpdateString
+	return actionCreateOrUpdateJSONString
 }
+
 func (a ConsumerAction) MarshalJSON() ([]byte, error) {
 	switch a {
 	case ActionCreate:
-		return json.Marshal(actionCreateString)
+		return actionCreateJSONBytes, nil
 	case ActionUpdate:
-		return json.Marshal(actionUpdateString)
+		return actionUpdateJSONBytes, nil
 	case ActionCreateOrUpdate:
-		return json.Marshal(actionCreateOrUpdateString)
+		return actionCreateOrUpdateJSONBytes, nil
 	default:
 		return nil, fmt.Errorf("can not marshal %v", a)
 	}
@@ -159,11 +166,11 @@ func (a ConsumerAction) MarshalJSON() ([]byte, error) {
 
 func (a *ConsumerAction) UnmarshalJSON(data []byte) error {
 	switch string(data) {
-	case jsonString("create"):
+	case actionCreateJSONString:
 		*a = ActionCreate
-	case jsonString("update"):
+	case actionUpdateJSONString:
 		*a = ActionUpdate
-	case jsonString(""):
+	case actionCreateOrUpdateJSONString:
 		*a = ActionCreateOrUpdate
 	default:
 		return fmt.Errorf("unknown consumer action: %v", string(data))
@@ -249,9 +256,9 @@ const (
 func (r ReplayPolicy) String() string {
 	switch r {
 	case ReplayInstant:
-		return "instant"
+		return replayInstantPolicyJSONString
 	default:
-		return "original"
+		return replayOriginalPolicyJSONString
 	}
 }
 
@@ -272,6 +279,10 @@ var (
 	AckNext = []byte("+NXT")
 	// Terminate delivery of the message.
 	AckTerm = []byte("+TERM")
+
+	// reasons to supply when terminating messages using limits
+	ackTermLimitsReason        = "Message deleted by stream limits"
+	ackTermUnackedLimitsReason = "Unacknowledged message was deleted"
 )
 
 // Calculate accurate replicas for the consumer config with the parent stream config.
@@ -292,6 +303,7 @@ type consumer struct {
 	// This will be checked in checkPending to abort processing
 	// and let ack be processed in priority.
 	awl               int64
+	leader            atomic.Bool
 	mu                sync.RWMutex
 	js                *jetStream
 	mset              *stream
@@ -381,12 +393,13 @@ type consumer struct {
 
 // A single subject filter.
 type subjectFilter struct {
-	subject     string
-	nextSeq     uint64
-	currentSeq  uint64
-	pmsg        *jsPubMsg
-	err         error
-	hasWildcard bool
+	subject          string
+	nextSeq          uint64
+	currentSeq       uint64
+	pmsg             *jsPubMsg
+	err              error
+	hasWildcard      bool
+	tokenizedSubject []string
 }
 
 type subjectFilters []*subjectFilter
@@ -694,6 +707,11 @@ func (mset *stream) addConsumer(config *ConsumerConfig) (*consumer, error) {
 }
 
 func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname string, ca *consumerAssignment, isRecovering bool, action ConsumerAction) (*consumer, error) {
+	// Check if this stream has closed.
+	if mset.closed.Load() {
+		return nil, NewJSStreamInvalidError()
+	}
+
 	mset.mu.RLock()
 	s, jsa, tierName, cfg, acc := mset.srv, mset.jsa, mset.tier, mset.cfg, mset.acc
 	retention := cfg.Retention
@@ -807,8 +825,8 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 			return nil, NewJSConsumerWQRequiresExplicitAckError()
 		}
 
-		subjects := gatherSubjectFilters(config.FilterSubject, config.FilterSubjects)
 		if len(mset.consumers) > 0 {
+			subjects := gatherSubjectFilters(config.FilterSubject, config.FilterSubjects)
 			if len(subjects) == 0 {
 				mset.mu.Unlock()
 				return nil, NewJSConsumerWQMultipleUnfilteredError()
@@ -926,8 +944,9 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	subjects := gatherSubjectFilters(o.cfg.FilterSubject, o.cfg.FilterSubjects)
 	for _, filter := range subjects {
 		sub := &subjectFilter{
-			subject:     filter,
-			hasWildcard: subjectHasWildcard(filter),
+			subject:          filter,
+			hasWildcard:      subjectHasWildcard(filter),
+			tokenizedSubject: tokenizeSubjectIntoSlice(nil, filter),
 		}
 		o.subjf = append(o.subjf, sub)
 	}
@@ -1131,19 +1150,21 @@ func (o *consumer) isLeader() bool {
 
 func (o *consumer) setLeader(isLeader bool) {
 	o.mu.RLock()
-	mset := o.mset
-	isRunning := o.ackSub != nil
+	mset, closed := o.mset, o.closed
+	movingToClustered := o.node != nil && o.pch == nil
+	wasLeader := o.leader.Swap(isLeader)
 	o.mu.RUnlock()
 
 	// If we are here we have a change in leader status.
 	if isLeader {
-		if mset == nil {
+		if closed || mset == nil {
 			return
 		}
-		if isRunning {
+
+		if wasLeader {
 			// If we detect we are scaling up, make sure to create clustered routines and channels.
-			o.mu.Lock()
-			if o.node != nil && o.pch == nil {
+			if movingToClustered {
+				o.mu.Lock()
 				// We are moving from R1 to clustered.
 				o.pch = make(chan struct{}, 1)
 				go o.loopAndForwardProposals(o.qch)
@@ -1153,8 +1174,8 @@ func (o *consumer) setLeader(isLeader bool) {
 					default:
 					}
 				}
+				o.mu.Unlock()
 			}
-			o.mu.Unlock()
 			return
 		}
 
@@ -1783,6 +1804,10 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
+	if o.closed || o.mset == nil {
+		return NewJSConsumerDoesNotExistError()
+	}
+
 	if err := o.acc.checkNewConsumerConfig(&o.cfg, cfg); err != nil {
 		return err
 	}
@@ -1842,8 +1867,9 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 		newSubjf := make(subjectFilters, 0, len(newSubjects))
 		for _, newFilter := range newSubjects {
 			fs := &subjectFilter{
-				subject:     newFilter,
-				hasWildcard: subjectHasWildcard(newFilter),
+				subject:          newFilter,
+				hasWildcard:      subjectHasWildcard(newFilter),
+				tokenizedSubject: tokenizeSubjectIntoSlice(nil, newFilter),
 			}
 			// If given subject was present, we will retain its fields values
 			// so `getNextMgs` can take advantage of already buffered `pmsgs`.
@@ -1988,8 +2014,12 @@ func (o *consumer) processAck(subject, reply string, hdr int, rmsg []byte) {
 		o.processNak(sseq, dseq, dc, msg)
 	case bytes.Equal(msg, AckProgress):
 		o.progressUpdate(sseq)
-	case bytes.Equal(msg, AckTerm):
-		o.processTerm(sseq, dseq, dc)
+	case bytes.HasPrefix(msg, AckTerm):
+		var reason string
+		if buf := msg[len(AckTerm):]; len(buf) > 0 {
+			reason = string(bytes.TrimSpace(buf))
+		}
+		o.processTerm(sseq, dseq, dc, reason)
 	}
 
 	// Ack the ack if requested.
@@ -2316,7 +2346,7 @@ func (o *consumer) processNak(sseq, dseq, dc uint64, nak []byte) {
 }
 
 // Process a TERM
-func (o *consumer) processTerm(sseq, dseq, dc uint64) {
+func (o *consumer) processTerm(sseq, dseq, dc uint64, reason string) {
 	// Treat like an ack to suppress redelivery.
 	o.processAckMsg(sseq, dseq, dc, false)
 
@@ -2335,6 +2365,7 @@ func (o *consumer) processTerm(sseq, dseq, dc uint64) {
 		ConsumerSeq: dseq,
 		StreamSeq:   sseq,
 		Deliveries:  dc,
+		Reason:      reason,
 		Domain:      o.srv.getOpts().JetStreamDomain,
 	}
 
@@ -2439,8 +2470,11 @@ func (o *consumer) setStoreState(state *ConsumerState) error {
 	if state == nil || o.store == nil {
 		return nil
 	}
-	o.applyState(state)
-	return o.store.Update(state)
+	err := o.store.Update(state)
+	if err == nil {
+		o.applyState(state)
+	}
+	return err
 }
 
 // Update our state to the store.
@@ -3323,7 +3357,7 @@ func (o *consumer) notifyDeliveryExceeded(sseq, dc uint64) {
 	o.sendAdvisory(o.deliveryExcEventT, j)
 }
 
-// Check to see if the candidate subject matches a filter if its present.
+// Check if the candidate subject matches a filter if its present.
 // Lock should be held.
 func (o *consumer) isFilteredMatch(subj string) bool {
 	// No filter is automatic match.
@@ -3337,9 +3371,29 @@ func (o *consumer) isFilteredMatch(subj string) bool {
 	}
 	// It's quicker to first check for non-wildcard filters, then
 	// iterate again to check for subset match.
-	// TODO(dlc) at speed might be better to just do a sublist with L2 and/or possibly L1.
+	tsa := [32]string{}
+	tts := tokenizeSubjectIntoSlice(tsa[:0], subj)
 	for _, filter := range o.subjf {
-		if subjectIsSubsetMatch(subj, filter.subject) {
+		if isSubsetMatchTokenized(tts, filter.tokenizedSubject) {
+			return true
+		}
+	}
+	return false
+}
+
+// Check if the candidate filter subject is equal to or a subset match
+// of one of the filter subjects.
+// Lock should be held.
+func (o *consumer) isEqualOrSubsetMatch(subj string) bool {
+	for _, filter := range o.subjf {
+		if !filter.hasWildcard && subj == filter.subject {
+			return true
+		}
+	}
+	tsa := [32]string{}
+	tts := tokenizeSubjectIntoSlice(tsa[:0], subj)
+	for _, filter := range o.subjf {
+		if isSubsetMatchTokenized(filter.tokenizedSubject, tts) {
 			return true
 		}
 	}
@@ -3647,7 +3701,7 @@ func (o *consumer) checkAckFloor() {
 			o.mu.RUnlock()
 			// If it was pending for us, get rid of it.
 			if isPending {
-				o.processTerm(seq, p.Sequence, rdc)
+				o.processTerm(seq, p.Sequence, rdc, ackTermLimitsReason)
 			}
 		}
 	} else if numPending > 0 {
@@ -3672,7 +3726,7 @@ func (o *consumer) checkAckFloor() {
 
 		for i := 0; i < len(toTerm); i += 3 {
 			seq, dseq, rdc := toTerm[i], toTerm[i+1], toTerm[i+2]
-			o.processTerm(seq, dseq, rdc)
+			o.processTerm(seq, dseq, rdc, ackTermLimitsReason)
 		}
 	}
 
@@ -3719,7 +3773,8 @@ func (o *consumer) processInboundAcks(qch chan struct{}) {
 	// How often we will check for ack floor drift.
 	// Spread these out for large numbers on a server restart.
 	delta := time.Duration(rand.Int63n(int64(time.Minute)))
-	var ackFloorCheck = time.Minute + delta
+	ticker := time.NewTicker(time.Minute + delta)
+	defer ticker.Stop()
 
 	for {
 		select {
@@ -3734,7 +3789,7 @@ func (o *consumer) processInboundAcks(qch chan struct{}) {
 			if hasInactiveThresh {
 				o.suppressDeletion()
 			}
-		case <-time.After(ackFloorCheck):
+		case <-ticker.C:
 			o.checkAckFloor()
 		case <-qch:
 			return
@@ -3920,8 +3975,10 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			}
 		} else {
 			if o.subjf != nil {
+				tsa := [32]string{}
+				tts := tokenizeSubjectIntoSlice(tsa[:0], pmsg.subj)
 				for i, filter := range o.subjf {
-					if subjectIsSubsetMatch(pmsg.subj, filter.subject) {
+					if isSubsetMatchTokenized(tts, filter.tokenizedSubject) {
 						o.subjf[i].currentSeq--
 						o.subjf[i].nextSeq--
 						break
@@ -4472,7 +4529,7 @@ func (o *consumer) checkPending() {
 	}
 
 	// Since we can update timestamps, we have to review all pending.
-	// We will now bail if we see an ack pending in bound to us via o.awl.
+	// We will now bail if we see an ack pending inbound to us via o.awl.
 	var expired []uint64
 	check := len(o.pending) > 1024
 	for seq, p := range o.pending {
@@ -4645,16 +4702,6 @@ type lastSeqSkipList struct {
 	seqs   []uint64
 }
 
-// Will create a skip list for us from a store's subjects state.
-func createLastSeqSkipList(mss map[string]SimpleState) []uint64 {
-	seqs := make([]uint64, 0, len(mss))
-	for _, ss := range mss {
-		seqs = append(seqs, ss.Last)
-	}
-	sort.Slice(seqs, func(i, j int) bool { return seqs[i] < seqs[j] })
-	return seqs
-}
-
 // Let's us know we have a skip list, which is for deliver last per subject and we are just starting.
 // Lock should be held.
 func (o *consumer) hasSkipListPending() bool {
@@ -4685,37 +4732,49 @@ func (o *consumer) selectStartingSeqNo() {
 					}
 				}
 			} else if o.cfg.DeliverPolicy == DeliverLastPerSubject {
-				if o.subjf == nil {
-					if mss := o.mset.store.SubjectsState(o.cfg.FilterSubject); len(mss) > 0 {
-						o.lss = &lastSeqSkipList{
-							resume: state.LastSeq,
-							seqs:   createLastSeqSkipList(mss),
-						}
-						o.sseq = o.lss.seqs[0]
+				// If our parent stream is set to max msgs per subject of 1 this is just
+				// a normal consumer at this point. We can avoid any heavy lifting.
+				if o.mset.cfg.MaxMsgsPer == 1 {
+					o.sseq = state.FirstSeq
+				} else {
+					// A threshold for when we switch from get last msg to subjects state.
+					const numSubjectsThresh = 256
+					lss := &lastSeqSkipList{resume: state.LastSeq}
+					var filters []string
+					if o.subjf == nil {
+						filters = append(filters, o.cfg.FilterSubject)
 					} else {
-						// If no mapping info just set to last.
+						for _, filter := range o.subjf {
+							filters = append(filters, filter.subject)
+						}
+					}
+					for _, filter := range filters {
+						if st := o.mset.store.SubjectsTotals(filter); len(st) < numSubjectsThresh {
+							var smv StoreMsg
+							for subj := range st {
+								if sm, err := o.mset.store.LoadLastMsg(subj, &smv); err == nil {
+									lss.seqs = append(lss.seqs, sm.seq)
+								}
+							}
+						} else if mss := o.mset.store.SubjectsState(filter); len(mss) > 0 {
+							for _, ss := range mss {
+								lss.seqs = append(lss.seqs, ss.Last)
+							}
+						}
+					}
+					// Sort the skip list if needed.
+					if len(lss.seqs) > 1 {
+						sort.Slice(lss.seqs, func(i, j int) bool {
+							return lss.seqs[j] > lss.seqs[i]
+						})
+					}
+					if len(lss.seqs) == 0 {
 						o.sseq = state.LastSeq
+					} else {
+						o.sseq = lss.seqs[0]
 					}
-					return
-				}
-				lss := &lastSeqSkipList{
-					resume: state.LastSeq,
-				}
-				for _, filter := range o.subjf {
-					if mss := o.mset.store.SubjectsState(filter.subject); len(mss) > 0 {
-						lss.seqs = append(lss.seqs, createLastSeqSkipList(mss)...)
-					}
-				}
-				if len(lss.seqs) == 0 {
-					o.sseq = state.LastSeq
-				}
-				// Sort the skip list
-				sort.Slice(lss.seqs, func(i, j int) bool {
-					return lss.seqs[j] > lss.seqs[i]
-				})
-				o.lss = lss
-				if len(o.lss.seqs) != 0 {
-					o.sseq = o.lss.seqs[0]
+					// Assign skip list.
+					o.lss = lss
 				}
 			} else if o.cfg.OptStartTime != nil {
 				// If we are here we are time based.
@@ -5148,11 +5207,10 @@ func (o *consumer) decStreamPending(sseq uint64, subj string) {
 	o.mu.Unlock()
 
 	// If it was pending process it like an ack.
-	// TODO(dlc) - we could do a term here instead with a reason to generate the advisory.
 	if wasPending {
 		// We could have lock for stream so do this in a go routine.
 		// TODO(dlc) - We should do this with ipq vs naked go routines.
-		go o.processTerm(sseq, p.Sequence, rdc)
+		go o.processTerm(sseq, p.Sequence, rdc, ackTermUnackedLimitsReason)
 	}
 }
 
@@ -5239,23 +5297,30 @@ func gatherSubjectFilters(filter string, filters []string) []string {
 	return filters
 }
 
-// Will check if we are running in the monitor already and if not set the appropriate flag.
-func (o *consumer) checkInMonitor() bool {
+// shouldStartMonitor will return true if we should start a monitor
+// goroutine or will return false if one is already running.
+func (o *consumer) shouldStartMonitor() bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
 	if o.inMonitor {
-		return true
+		return false
 	}
+	o.monitorWg.Add(1)
 	o.inMonitor = true
-	return false
+	return true
 }
 
-// Clear us being in the monitor routine.
+// Clear the monitor running state. The monitor goroutine should
+// call this in a defer to clean up on exit.
 func (o *consumer) clearMonitorRunning() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	o.inMonitor = false
+
+	if o.inMonitor {
+		o.monitorWg.Done()
+		o.inMonitor = false
+	}
 }
 
 // Test whether we are in the monitor routine.
@@ -5282,11 +5347,16 @@ func (o *consumer) checkStateForInterestStream() {
 		return
 	}
 
+	asflr := state.AckFloor.Stream
+	// Protect ourselves against rolling backwards.
+	if asflr&(1<<63) != 0 {
+		return
+	}
+
 	// We should make sure to update the acks.
 	var ss StreamState
 	mset.store.FastState(&ss)
 
-	asflr := state.AckFloor.Stream
 	for seq := ss.FirstSeq; seq <= asflr; seq++ {
 		mset.ackMsg(o, seq)
 	}

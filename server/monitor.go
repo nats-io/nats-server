@@ -1159,68 +1159,68 @@ func (s *Server) HandleIPQueuesz(w http.ResponseWriter, r *http.Request) {
 
 // Varz will output server information on the monitoring port at /varz.
 type Varz struct {
-	ID                    string                `json:"server_id"`
-	Name                  string                `json:"server_name"`
-	Version               string                `json:"version"`
-	Proto                 int                   `json:"proto"`
-	GitCommit             string                `json:"git_commit,omitempty"`
-	GoVersion             string                `json:"go"`
-	Host                  string                `json:"host"`
-	Port                  int                   `json:"port"`
-	AuthRequired          bool                  `json:"auth_required,omitempty"`
-	TLSRequired           bool                  `json:"tls_required,omitempty"`
-	TLSVerify             bool                  `json:"tls_verify,omitempty"`
-	TLSOCSPPeerVerify     bool                  `json:"tls_ocsp_peer_verify,omitempty"`
-	IP                    string                `json:"ip,omitempty"`
-	ClientConnectURLs     []string              `json:"connect_urls,omitempty"`
-	WSConnectURLs         []string              `json:"ws_connect_urls,omitempty"`
-	MaxConn               int                   `json:"max_connections"`
-	MaxSubs               int                   `json:"max_subscriptions,omitempty"`
-	PingInterval          time.Duration         `json:"ping_interval"`
-	MaxPingsOut           int                   `json:"ping_max"`
-	HTTPHost              string                `json:"http_host"`
-	HTTPPort              int                   `json:"http_port"`
-	HTTPBasePath          string                `json:"http_base_path"`
-	HTTPSPort             int                   `json:"https_port"`
-	AuthTimeout           float64               `json:"auth_timeout"`
-	MaxControlLine        int32                 `json:"max_control_line"`
-	MaxPayload            int                   `json:"max_payload"`
-	MaxPending            int64                 `json:"max_pending"`
-	Cluster               ClusterOptsVarz       `json:"cluster,omitempty"`
-	Gateway               GatewayOptsVarz       `json:"gateway,omitempty"`
-	LeafNode              LeafNodeOptsVarz      `json:"leaf,omitempty"`
-	MQTT                  MQTTOptsVarz          `json:"mqtt,omitempty"`
-	Websocket             WebsocketOptsVarz     `json:"websocket,omitempty"`
-	JetStream             JetStreamVarz         `json:"jetstream,omitempty"`
-	TLSTimeout            float64               `json:"tls_timeout"`
-	WriteDeadline         time.Duration         `json:"write_deadline"`
-	Start                 time.Time             `json:"start"`
-	Now                   time.Time             `json:"now"`
-	Uptime                string                `json:"uptime"`
-	Mem                   int64                 `json:"mem"`
-	Cores                 int                   `json:"cores"`
-	MaxProcs              int                   `json:"gomaxprocs"`
-	CPU                   float64               `json:"cpu"`
-	Connections           int                   `json:"connections"`
-	TotalConnections      uint64                `json:"total_connections"`
-	Routes                int                   `json:"routes"`
-	Remotes               int                   `json:"remotes"`
-	Leafs                 int                   `json:"leafnodes"`
-	InMsgs                int64                 `json:"in_msgs"`
-	OutMsgs               int64                 `json:"out_msgs"`
-	InBytes               int64                 `json:"in_bytes"`
-	OutBytes              int64                 `json:"out_bytes"`
-	SlowConsumers         int64                 `json:"slow_consumers"`
-	Subscriptions         uint32                `json:"subscriptions"`
-	HTTPReqStats          map[string]uint64     `json:"http_req_stats"`
-	ConfigLoadTime        time.Time             `json:"config_load_time"`
-	Tags                  jwt.TagList           `json:"tags,omitempty"`
-	TrustedOperatorsJwt   []string              `json:"trusted_operators_jwt,omitempty"`
-	TrustedOperatorsClaim []*jwt.OperatorClaims `json:"trusted_operators_claim,omitempty"`
-	SystemAccount         string                `json:"system_account,omitempty"`
-	PinnedAccountFail     uint64                `json:"pinned_account_fails,omitempty"`
-	OCSPResponseCache     OCSPResponseCacheVarz `json:"ocsp_peer_cache,omitempty"`
-	SlowConsumersStats    *SlowConsumersStats   `json:"slow_consumer_stats"`
+	ID                    string                 `json:"server_id"`
+	Name                  string                 `json:"server_name"`
+	Version               string                 `json:"version"`
+	Proto                 int                    `json:"proto"`
+	GitCommit             string                 `json:"git_commit,omitempty"`
+	GoVersion             string                 `json:"go"`
+	Host                  string                 `json:"host"`
+	Port                  int                    `json:"port"`
+	AuthRequired          bool                   `json:"auth_required,omitempty"`
+	TLSRequired           bool                   `json:"tls_required,omitempty"`
+	TLSVerify             bool                   `json:"tls_verify,omitempty"`
+	TLSOCSPPeerVerify     bool                   `json:"tls_ocsp_peer_verify,omitempty"`
+	IP                    string                 `json:"ip,omitempty"`
+	ClientConnectURLs     []string               `json:"connect_urls,omitempty"`
+	WSConnectURLs         []string               `json:"ws_connect_urls,omitempty"`
+	MaxConn               int                    `json:"max_connections"`
+	MaxSubs               int                    `json:"max_subscriptions,omitempty"`
+	PingInterval          time.Duration          `json:"ping_interval"`
+	MaxPingsOut           int                    `json:"ping_max"`
+	HTTPHost              string                 `json:"http_host"`
+	HTTPPort              int                    `json:"http_port"`
+	HTTPBasePath          string                 `json:"http_base_path"`
+	HTTPSPort             int                    `json:"https_port"`
+	AuthTimeout           float64                `json:"auth_timeout"`
+	MaxControlLine        int32                  `json:"max_control_line"`
+	MaxPayload            int                    `json:"max_payload"`
+	MaxPending            int64                  `json:"max_pending"`
+	Cluster               ClusterOptsVarz        `json:"cluster,omitempty"`
+	Gateway               GatewayOptsVarz        `json:"gateway,omitempty"`
+	LeafNode              LeafNodeOptsVarz       `json:"leaf,omitempty"`
+	MQTT                  MQTTOptsVarz           `json:"mqtt,omitempty"`
+	Websocket             WebsocketOptsVarz      `json:"websocket,omitempty"`
+	JetStream             JetStreamVarz          `json:"jetstream,omitempty"`
+	TLSTimeout            float64                `json:"tls_timeout"`
+	WriteDeadline         time.Duration          `json:"write_deadline"`
+	Start                 time.Time              `json:"start"`
+	Now                   time.Time              `json:"now"`
+	Uptime                string                 `json:"uptime"`
+	Mem                   int64                  `json:"mem"`
+	Cores                 int                    `json:"cores"`
+	MaxProcs              int                    `json:"gomaxprocs"`
+	CPU                   float64                `json:"cpu"`
+	Connections           int                    `json:"connections"`
+	TotalConnections      uint64                 `json:"total_connections"`
+	Routes                int                    `json:"routes"`
+	Remotes               int                    `json:"remotes"`
+	Leafs                 int                    `json:"leafnodes"`
+	InMsgs                int64                  `json:"in_msgs"`
+	OutMsgs               int64                  `json:"out_msgs"`
+	InBytes               int64                  `json:"in_bytes"`
+	OutBytes              int64                  `json:"out_bytes"`
+	SlowConsumers         int64                  `json:"slow_consumers"`
+	Subscriptions         uint32                 `json:"subscriptions"`
+	HTTPReqStats          map[string]uint64      `json:"http_req_stats"`
+	ConfigLoadTime        time.Time              `json:"config_load_time"`
+	Tags                  jwt.TagList            `json:"tags,omitempty"`
+	TrustedOperatorsJwt   []string               `json:"trusted_operators_jwt,omitempty"`
+	TrustedOperatorsClaim []*jwt.OperatorClaims  `json:"trusted_operators_claim,omitempty"`
+	SystemAccount         string                 `json:"system_account,omitempty"`
+	PinnedAccountFail     uint64                 `json:"pinned_account_fails,omitempty"`
+	OCSPResponseCache     *OCSPResponseCacheVarz `json:"ocsp_peer_cache,omitempty"`
+	SlowConsumersStats    *SlowConsumersStats    `json:"slow_consumer_stats"`
 }
 
 // JetStreamVarz contains basic runtime information about jetstream
@@ -1767,7 +1767,7 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 	if s.ocsprc != nil && s.ocsprc.Type() != "none" {
 		stats := s.ocsprc.Stats()
 		if stats != nil {
-			v.OCSPResponseCache = OCSPResponseCacheVarz{
+			v.OCSPResponseCache = &OCSPResponseCacheVarz{
 				s.ocsprc.Type(),
 				stats.Hits,
 				stats.Misses,
@@ -3148,17 +3148,17 @@ func (t HealthZErrorType) MarshalJSON() ([]byte, error) {
 
 func (t *HealthZErrorType) UnmarshalJSON(data []byte) error {
 	switch string(data) {
-	case jsonString("CONNECTION"):
+	case `"CONNECTION"`:
 		*t = HealthzErrorConn
-	case jsonString("BAD_REQUEST"):
+	case `"BAD_REQUEST"`:
 		*t = HealthzErrorBadRequest
-	case jsonString("JETSTREAM"):
+	case `"JETSTREAM"`:
 		*t = HealthzErrorJetStream
-	case jsonString("ACCOUNT"):
+	case `"ACCOUNT"`:
 		*t = HealthzErrorAccount
-	case jsonString("STREAM"):
+	case `"STREAM"`:
 		*t = HealthzErrorStream
-	case jsonString("CONSUMER"):
+	case `"CONSUMER"`:
 		*t = HealthzErrorConsumer
 	default:
 		return fmt.Errorf("unknown healthz error type %q", data)

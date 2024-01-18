@@ -2774,7 +2774,7 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 	req, _ = json.Marshal(rreq)
 
 	// Make sure a restore to an existing stream fails.
-	rmsg, err = nc.Request(fmt.Sprintf(JSApiStreamRestoreT, "TEST"), req, time.Second)
+	rmsg, err = nc.Request(fmt.Sprintf(JSApiStreamRestoreT, "TEST"), req, 2*time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -2807,7 +2807,9 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 	if rresp.Error != nil {
 		t.Fatalf("Got an unexpected error response: %+v", rresp.Error)
 	}
-
+	if rresp.DeliverSubject == _EMPTY_ {
+		t.Fatalf("No deliver subject set on response: %+v", rresp)
+	}
 	// Send our snapshot back in to restore the stream.
 	// Can be any size message.
 	var chunk [1024]byte
@@ -2818,7 +2820,7 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 		}
 		nc.Request(rresp.DeliverSubject, chunk[:n], time.Second)
 	}
-	rmsg, err = nc.Request(rresp.DeliverSubject, nil, time.Second)
+	rmsg, err = nc.Request(rresp.DeliverSubject, nil, 2*time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -3008,6 +3010,9 @@ func TestJetStreamClusterUserSnapshotAndRestoreConfigChanges(t *testing.T) {
 		if rresp.Error != nil {
 			t.Fatalf("Got an unexpected error response: %+v", rresp.Error)
 		}
+		if rresp.DeliverSubject == _EMPTY_ {
+			t.Fatalf("No deliver subject set on response: %+v", rresp)
+		}
 		// Send our snapshot back in to restore the stream.
 		// Can be any size message.
 		var chunk [1024]byte
@@ -3018,7 +3023,7 @@ func TestJetStreamClusterUserSnapshotAndRestoreConfigChanges(t *testing.T) {
 			}
 			nc.Request(rresp.DeliverSubject, chunk[:n], time.Second)
 		}
-		rmsg, err = nc.Request(rresp.DeliverSubject, nil, time.Second)
+		rmsg, err = nc.Request(rresp.DeliverSubject, nil, 2*time.Second)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -5353,7 +5358,7 @@ func TestJetStreamClusterSourcesFilteringAndUpdating(t *testing.T) {
 
 	checkSync := func(msgsTest, msgsM uint64) {
 		t.Helper()
-		checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+		checkFor(t, 20*time.Second, 500*time.Millisecond, func() error {
 			if tsi, err := js.StreamInfo("TEST"); err != nil {
 				return err
 			} else if msi, err := js.StreamInfo("M"); err != nil {
@@ -5604,7 +5609,7 @@ func TestJetStreamClusterMirrorAndSourcesClusterRestart(t *testing.T) {
 
 		checkSync := func(msgsTest, msgsM uint64) {
 			t.Helper()
-			checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+			checkFor(t, 20*time.Second, 500*time.Millisecond, func() error {
 				if tsi, err := js.StreamInfo("TEST"); err != nil {
 					return err
 				} else if msi, err := js.StreamInfo("M"); err != nil {

@@ -18,7 +18,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"hash/maphash"
 	"io"
 	"io/fs"
 	"math"
@@ -34,6 +33,7 @@ import (
 	"time"
 
 	"github.com/nats-io/jwt/v2"
+	"github.com/nats-io/nats-server/v2/internal/fastrand"
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
 )
@@ -89,7 +89,6 @@ type Account struct {
 	srv          *Server // server this account is registered with (possibly nil)
 	lds          string  // loop detection subject for leaf nodes
 	siReply      []byte  // service reply prefix, will form wildcard subscription.
-	prand        *rand.Rand
 	eventIds     *nuid.NUID
 	eventIdsMu   sync.Mutex
 	defaultPerms *Permissions
@@ -290,9 +289,6 @@ func (a *Account) shallowCopy(na *Account) {
 		}
 	}
 	na.mappings = a.mappings
-	if len(na.mappings) > 0 && na.prand == nil {
-		na.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
-	}
 	na.hasMapped.Store(len(na.mappings) > 0)
 
 	// JetStream
@@ -605,11 +601,6 @@ func (a *Account) AddWeightedMappings(src string, dests ...*MapDest) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// We use this for selecting between multiple weighted destinations.
-	if a.prand == nil {
-		a.prand = rand.New(rand.NewSource(time.Now().UnixNano()))
-	}
-
 	if !IsValidSubject(src) {
 		return ErrBadSubject
 	}
@@ -735,6 +726,18 @@ func (a *Account) RemoveMapping(src string) bool {
 			a.mappings[len(a.mappings)-1] = nil // gc
 			a.mappings = a.mappings[:len(a.mappings)-1]
 			a.hasMapped.Store(len(a.mappings) > 0)
+			// If we have connected leafnodes make sure to update.
+			if a.nleafs > 0 {
+				// Need to release because lock ordering is client -> account
+				a.mu.Unlock()
+				// Now grab the leaf list lock. We can hold client lock under this one.
+				a.lmu.RLock()
+				for _, lc := range a.lleafs {
+					lc.forceRemoveFromSmap(src)
+				}
+				a.lmu.RUnlock()
+				a.mu.Lock()
+			}
 			return true
 		}
 	}
@@ -756,7 +759,7 @@ func (a *Account) selectMappedSubject(dest string) (string, bool) {
 		return dest, false
 	}
 
-	a.mu.RLock()
+	a.mu.Lock()
 	// In case we have to tokenize for subset matching.
 	tsa := [32]string{}
 	tts := tsa[:0]
@@ -787,7 +790,7 @@ func (a *Account) selectMappedSubject(dest string) (string, bool) {
 	}
 
 	if m == nil {
-		a.mu.RUnlock()
+		a.mu.Unlock()
 		return dest, false
 	}
 
@@ -809,7 +812,7 @@ func (a *Account) selectMappedSubject(dest string) (string, bool) {
 	if len(dests) == 1 && dests[0].weight == 100 {
 		d = dests[0]
 	} else {
-		w := uint8(a.prand.Int31n(100))
+		w := uint8(fastrand.Uint32n(100))
 		for _, rm := range dests {
 			if w < rm.weight {
 				d = rm
@@ -826,7 +829,7 @@ func (a *Account) selectMappedSubject(dest string) (string, bool) {
 		}
 	}
 
-	a.mu.RUnlock()
+	a.mu.Unlock()
 	return ndest, true
 }
 
@@ -2193,7 +2196,7 @@ func (a *Account) processServiceImportResponse(sub *subscription, c *client, _ *
 // Lock should be held.
 func (a *Account) createRespWildcard() {
 	var b = [baseServerLen]byte{'_', 'R', '_', '.'}
-	rn := a.prand.Uint64()
+	rn := fastrand.Uint64()
 	for i, l := replyPrefixLen, rn; i < len(b); i++ {
 		b[i] = digits[l%base]
 		l /= base
@@ -2212,12 +2215,7 @@ func isTrackedReply(reply []byte) bool {
 func (a *Account) newServiceReply(tracking bool) []byte {
 	a.mu.Lock()
 	s := a.srv
-	if a.prand == nil {
-		var h maphash.Hash
-		h.WriteString(nuid.Next())
-		a.prand = rand.New(rand.NewSource(int64(h.Sum64())))
-	}
-	rn := a.prand.Uint64()
+	rn := fastrand.Uint64()
 
 	// Check if we need to create the reply here.
 	var createdSiReply bool
@@ -3845,6 +3843,25 @@ func (dr *DirAccResolver) Reload() error {
 	return dr.DirJWTStore.Reload()
 }
 
+// ServerAPIClaimUpdateResponse is the response to $SYS.REQ.ACCOUNT.<id>.CLAIMS.UPDATE and $SYS.REQ.CLAIMS.UPDATE
+type ServerAPIClaimUpdateResponse struct {
+	Server *ServerInfo        `json:"server"`
+	Data   *ClaimUpdateStatus `json:"data,omitempty"`
+	Error  *ClaimUpdateError  `json:"error,omitempty"`
+}
+
+type ClaimUpdateError struct {
+	Account     string `json:"account,omitempty"`
+	Code        int    `json:"code"`
+	Description string `json:"description,omitempty"`
+}
+
+type ClaimUpdateStatus struct {
+	Account string `json:"account,omitempty"`
+	Code    int    `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
 func respondToUpdate(s *Server, respSubj string, acc string, message string, err error) {
 	if err == nil {
 		if acc == _EMPTY_ {
@@ -3862,22 +3879,26 @@ func respondToUpdate(s *Server, respSubj string, acc string, message string, err
 	if respSubj == _EMPTY_ {
 		return
 	}
-	server := &ServerInfo{}
-	response := map[string]interface{}{"server": server}
-	m := map[string]interface{}{}
-	if acc != _EMPTY_ {
-		m["account"] = acc
+
+	response := ServerAPIClaimUpdateResponse{
+		Server: &ServerInfo{},
 	}
+
 	if err == nil {
-		m["code"] = http.StatusOK
-		m["message"] = message
-		response["data"] = m
+		response.Data = &ClaimUpdateStatus{
+			Account: acc,
+			Code:    http.StatusOK,
+			Message: message,
+		}
 	} else {
-		m["code"] = http.StatusInternalServerError
-		m["description"] = fmt.Sprintf("%s - %v", message, err)
-		response["error"] = m
+		response.Error = &ClaimUpdateError{
+			Account:     acc,
+			Code:        http.StatusInternalServerError,
+			Description: fmt.Sprintf("%s - %v", message, err),
+		}
 	}
-	s.sendInternalMsgLocked(respSubj, _EMPTY_, server, response)
+
+	s.sendInternalMsgLocked(respSubj, _EMPTY_, response.Server, response)
 }
 
 func handleListRequest(store *DirJWTStore, s *Server, reply string) {

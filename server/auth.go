@@ -1,4 +1,4 @@
-// Copyright 2012-2023 The NATS Authors
+// Copyright 2012-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -525,7 +525,7 @@ func processUserPermissionsTemplate(lim jwt.UserPermissionLimits, ujwt *jwt.User
 				for _, valueList := range nArrayCartesianProduct(tagValues...) {
 					b := strings.Builder{}
 					for i, token := range newTokens {
-						if token == _EMPTY_ {
+						if token == _EMPTY_ && len(valueList) > 0 {
 							b.WriteString(valueList[0])
 							valueList = valueList[1:]
 						} else {
@@ -743,13 +743,24 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 	// Check if we have nkeys or users for client.
 	hasNkeys := len(s.nkeys) > 0
 	hasUsers := len(s.users) > 0
-	if hasNkeys && c.opts.Nkey != _EMPTY_ {
-		nkey, ok = s.nkeys[c.opts.Nkey]
-		if !ok || !c.connectionTypeAllowed(nkey.AllowedConnectionTypes) {
-			s.mu.Unlock()
-			return false
+	if hasNkeys {
+		if (c.kind == CLIENT || c.kind == LEAF) && noAuthUser != _EMPTY_ &&
+			c.opts.Username == _EMPTY_ && c.opts.Password == _EMPTY_ && c.opts.Token == _EMPTY_ && c.opts.Nkey == _EMPTY_ {
+			if _, exists := s.nkeys[noAuthUser]; exists {
+				c.mu.Lock()
+				c.opts.Nkey = noAuthUser
+				c.mu.Unlock()
+			}
 		}
-	} else if hasUsers {
+		if c.opts.Nkey != _EMPTY_ {
+			nkey, ok = s.nkeys[c.opts.Nkey]
+			if !ok || !c.connectionTypeAllowed(nkey.AllowedConnectionTypes) {
+				s.mu.Unlock()
+				return false
+			}
+		}
+	}
+	if hasUsers && nkey == nil {
 		// Check if we are tls verify and are mapping users from the client_certificate.
 		if tlsMap {
 			authorized := checkClientTLSCertSubject(c, func(u string, certDN *ldap.DN, _ bool) (string, bool) {
@@ -989,27 +1000,30 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 	}
 
 	if nkey != nil {
-		if c.opts.Sig == _EMPTY_ {
-			c.Debugf("Signature missing")
-			return false
-		}
-		sig, err := base64.RawURLEncoding.DecodeString(c.opts.Sig)
-		if err != nil {
-			// Allow fallback to normal base64.
-			sig, err = base64.StdEncoding.DecodeString(c.opts.Sig)
-			if err != nil {
-				c.Debugf("Signature not valid base64")
+		// If we did not match noAuthUser check signature which is required.
+		if nkey.Nkey != noAuthUser {
+			if c.opts.Sig == _EMPTY_ {
+				c.Debugf("Signature missing")
 				return false
 			}
-		}
-		pub, err := nkeys.FromPublicKey(c.opts.Nkey)
-		if err != nil {
-			c.Debugf("User nkey not valid: %v", err)
-			return false
-		}
-		if err := pub.Verify(c.nonce, sig); err != nil {
-			c.Debugf("Signature not verified")
-			return false
+			sig, err := base64.RawURLEncoding.DecodeString(c.opts.Sig)
+			if err != nil {
+				// Allow fallback to normal base64.
+				sig, err = base64.StdEncoding.DecodeString(c.opts.Sig)
+				if err != nil {
+					c.Debugf("Signature not valid base64")
+					return false
+				}
+			}
+			pub, err := nkeys.FromPublicKey(c.opts.Nkey)
+			if err != nil {
+				c.Debugf("User nkey not valid: %v", err)
+				return false
+			}
+			if err := pub.Verify(c.nonce, sig); err != nil {
+				c.Debugf("Signature not verified")
+				return false
+			}
 		}
 		if err := c.RegisterNkeyUser(nkey); err != nil {
 			return false
@@ -1308,6 +1322,33 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 	// with that user (from the leafnode's authorization{} config).
 	if opts.LeafNode.Username != _EMPTY_ {
 		return isAuthorized(opts.LeafNode.Username, opts.LeafNode.Password, opts.LeafNode.Account)
+	} else if opts.LeafNode.Nkey != _EMPTY_ {
+		if c.opts.Nkey != opts.LeafNode.Nkey {
+			return false
+		}
+		if c.opts.Sig == _EMPTY_ {
+			c.Debugf("Signature missing")
+			return false
+		}
+		sig, err := base64.RawURLEncoding.DecodeString(c.opts.Sig)
+		if err != nil {
+			// Allow fallback to normal base64.
+			sig, err = base64.StdEncoding.DecodeString(c.opts.Sig)
+			if err != nil {
+				c.Debugf("Signature not valid base64")
+				return false
+			}
+		}
+		pub, err := nkeys.FromPublicKey(c.opts.Nkey)
+		if err != nil {
+			c.Debugf("User nkey not valid: %v", err)
+			return false
+		}
+		if err := pub.Verify(c.nonce, sig); err != nil {
+			c.Debugf("Signature not verified")
+			return false
+		}
+		return s.registerLeafWithAccount(c, opts.LeafNode.Account)
 	} else if len(opts.LeafNode.Users) > 0 {
 		if opts.LeafNode.TLSMap {
 			var user *User
@@ -1425,15 +1466,21 @@ func validateNoAuthUser(o *Options, noAuthUser string) error {
 	if len(o.TrustedOperators) > 0 {
 		return fmt.Errorf("no_auth_user not compatible with Trusted Operator")
 	}
-	if o.Users == nil {
-		return fmt.Errorf(`no_auth_user: "%s" present, but users are not defined`, noAuthUser)
+
+	if o.Nkeys == nil && o.Users == nil {
+		return fmt.Errorf(`no_auth_user: "%s" present, but users/nkeys are not defined`, noAuthUser)
 	}
 	for _, u := range o.Users {
 		if u.Username == noAuthUser {
 			return nil
 		}
 	}
+	for _, u := range o.Nkeys {
+		if u.Nkey == noAuthUser {
+			return nil
+		}
+	}
 	return fmt.Errorf(
-		`no_auth_user: "%s" not present as user in authorization block or account configuration`,
+		`no_auth_user: "%s" not present as user or nkey in authorization block or account configuration`,
 		noAuthUser)
 }
