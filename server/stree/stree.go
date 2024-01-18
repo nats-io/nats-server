@@ -262,22 +262,11 @@ func (t *SubjectTree[T]) delete(np *node, subject []byte, si uint16) (*T, bool) 
 // Internal function which can be called recursively to match all leaf nodes to a given filter subject which
 // once here has been decomposed to parts. These parts only care about wildcards, both pwc and fwc.
 func (t *SubjectTree[T]) match(n node, parts [][]byte, pre []byte, cb func(subject []byte, val *T)) {
-	// We do not want to use the original pre so copy and append our prefix here.
-	// Try to keep this from allocation.
-	var _pre [256]byte
-	// Updated our pre
-	pre = append(_pre[:0], pre...)
-
 	// Capture if we are sitting on a terminal fwc.
 	var hasFWC bool
 	if lp := len(parts); lp > 0 && parts[lp-1][0] == fwc {
 		hasFWC = true
 	}
-
-	// Used to copy nparts if we recursively call into ourselves.
-	// This is due to the fact that the low level matchParts can
-	// update an individual part on a partial match.
-	var cparts [64][]byte
 
 	for n != nil {
 		nparts, matched := n.matchParts(parts)
@@ -297,6 +286,7 @@ func (t *SubjectTree[T]) match(n node, parts [][]byte, pre []byte, cb func(subje
 		// We need to append our prefix
 		bn := n.base()
 		if bn.prefixLen > 0 {
+			// Note that this append may reallocate, but it doesn't modify "pre" at the "match" callsite.
 			pre = append(pre, bn.prefix[:bn.prefixLen]...)
 		}
 
@@ -321,7 +311,7 @@ func (t *SubjectTree[T]) match(n node, parts [][]byte, pre []byte, cb func(subje
 					}
 				} else if hasTermPWC {
 					// We have terminal pwc so call into match again with the child node.
-					t.match(cn, append(cparts[:0], nparts...), pre, cb)
+					t.match(cn, nparts, pre, cb)
 				}
 				return true
 			})
@@ -343,12 +333,12 @@ func (t *SubjectTree[T]) match(n node, parts [][]byte, pre []byte, cb func(subje
 				// We need to iterate over all children here for the current node
 				// to see if we match further down.
 				n.iter(func(cn node) bool {
-					t.match(cn, append(cparts[:0], nparts...), pre, cb)
+					t.match(cn, nparts, pre, cb)
 					return true
 				})
 			} else if p == fwc {
 				n.iter(func(cn node) bool {
-					t.match(cn, append(cparts[:0], nparts...), pre, cb)
+					t.match(cn, nparts, pre, cb)
 					return true
 				})
 			}
@@ -364,17 +354,13 @@ func (t *SubjectTree[T]) match(n node, parts [][]byte, pre []byte, cb func(subje
 
 // Interal iter function to walk nodes in lexigraphical order.
 func (t *SubjectTree[T]) iter(n node, pre []byte, cb func(subject []byte, val *T) bool) bool {
-	// We do not want to use the original pre so copy and append our prefix here.
-	// Try to keep this from allocation.
-	var _pre [256]byte
-	pre = append(_pre[:0], pre...)
-
 	if n.isLeaf() {
 		ln := n.(*leaf[T])
 		return cb(append(pre, ln.suffix...), &ln.value)
 	}
 	// We are normal node here.
 	bn := n.base()
+	// Note that this append may reallocate, but it doesn't modify "pre" at the "iter" callsite.
 	pre = append(pre, bn.prefix[:bn.prefixLen]...)
 	// Collect nodes since unsorted.
 	nodes := make([]node, 0, n.numChildren())
