@@ -103,7 +103,8 @@ func (t *SubjectTree[T]) Match(filter []byte, cb func(subject []byte, val *T)) {
 	// We need to break this up into chunks based on wildcards, either pwc '*' or fwc '>'.
 	var raw [16][]byte
 	parts := genParts(filter, raw[:0])
-	t.match(t.root, parts, nil, cb)
+	var _pre [256]byte
+	t.match(t.root, parts, _pre[:0], cb)
 }
 
 // Iter will walk all entries in the SubjectTree lexographically. The callback can return false to terminate the walk.
@@ -111,7 +112,8 @@ func (t *SubjectTree[T]) Iter(cb func(subject []byte, val *T) bool) {
 	if t == nil || t.root == nil {
 		return
 	}
-	t.iter(t.root, nil, cb)
+	var _pre [256]byte
+	t.iter(t.root, _pre[:0], cb)
 }
 
 // Internal methods
