@@ -18,6 +18,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	mrand "math/rand"
 	"os"
 	"strconv"
 	"sync"
@@ -400,6 +401,7 @@ func BenchmarkCoreFanIn(b *testing.B) {
 		quitCh chan bool
 		// message data buffer
 		messageData []byte
+		rng         *mrand.Rand
 	}
 
 	const subjectBaseName = "test-subject"
@@ -461,6 +463,7 @@ func BenchmarkCoreFanIn(b *testing.B) {
 				publishCounter: 0,
 				quitCh:         make(chan bool, 1),
 				messageData:    make([]byte, messageSize),
+				rng:            mrand.New(mrand.NewSource(int64(i))),
 			}
 			publishers[i] = publisher
 		}
@@ -524,7 +527,7 @@ func BenchmarkCoreFanIn(b *testing.B) {
 					default:
 						// continue publishing
 					}
-					rand.Read(publisher.messageData)
+					publisher.rng.Read(publisher.messageData)
 					err := publisher.conn.Publish(subject, publisher.messageData)
 					if err != nil {
 						publisher.publishErrors += 1
