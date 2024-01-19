@@ -363,7 +363,8 @@ func (t *SubjectTree[T]) iter(n node, pre []byte, cb func(subject []byte, val *T
 	// Note that this append may reallocate, but it doesn't modify "pre" at the "iter" callsite.
 	pre = append(pre, bn.prefix[:bn.prefixLen]...)
 	// Collect nodes since unsorted.
-	nodes := make([]node, 0, n.numChildren())
+	var _nodes [256]node
+	nodes := _nodes[:0]
 	n.iter(func(cn node) bool {
 		nodes = append(nodes, cn)
 		return true
@@ -371,8 +372,8 @@ func (t *SubjectTree[T]) iter(n node, pre []byte, cb func(subject []byte, val *T
 	// Now sort.
 	sort.SliceStable(nodes, func(i, j int) bool { return bytes.Compare(nodes[i].path(), nodes[j].path()) < 0 })
 	// Now walk the nodes in order and call into next iter.
-	for _, cn := range nodes {
-		if shouldContinue := t.iter(cn, pre, cb); !shouldContinue {
+	for i := range nodes {
+		if !t.iter(nodes[i], pre, cb) {
 			return false
 		}
 	}
