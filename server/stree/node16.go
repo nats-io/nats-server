@@ -16,8 +16,8 @@ package stree
 // Node with 16 children
 type node16 struct {
 	meta
-	children [16]node
-	keys     [16]byte
+	child [16]node
+	key   [16]byte
 }
 
 func newNode16(prefix []byte) *node16 {
@@ -42,8 +42,8 @@ func (n *node16) addChild(c byte, nn node) {
 	if n.size >= 16 {
 		panic("node16 full!")
 	}
-	n.keys[n.size] = c
-	n.children[n.size] = nn
+	n.key[n.size] = c
+	n.child[n.size] = nn
 	n.size++
 }
 
@@ -52,8 +52,8 @@ func (n *node16) path() []byte        { return n.prefix[:n.prefixLen] }
 
 func (n *node16) findChild(c byte) *node {
 	for i := uint16(0); i < n.size; i++ {
-		if n.keys[i] == c {
-			return &n.children[i]
+		if n.key[i] == c {
+			return &n.child[i]
 		}
 	}
 	return nil
@@ -64,7 +64,7 @@ func (n *node16) isFull() bool { return n.size >= 16 }
 func (n *node16) grow() node {
 	nn := newNode256(n.prefix[:n.prefixLen])
 	for i := 0; i < 16; i++ {
-		nn.addChild(n.keys[i], n.children[i])
+		nn.addChild(n.key[i], n.child[i])
 	}
 	return nn
 }
@@ -72,16 +72,16 @@ func (n *node16) grow() node {
 // Deletes a child from the node.
 func (n *node16) deleteChild(c byte) {
 	for i, last := uint16(0), n.size-1; i < n.size; i++ {
-		if n.keys[i] == c {
+		if n.key[i] == c {
 			// Unsorted so just swap in last one here, else nil if last.
 			if i < last {
-				n.keys[i] = n.keys[last]
-				n.children[i] = n.children[last]
-				n.keys[last] = 0
-				n.children[last] = nil
+				n.key[i] = n.key[last]
+				n.child[i] = n.child[last]
+				n.key[last] = 0
+				n.child[last] = nil
 			} else {
-				n.keys[i] = 0
-				n.children[i] = nil
+				n.key[i] = 0
+				n.child[i] = nil
 			}
 			n.size--
 			return
@@ -96,7 +96,7 @@ func (n *node16) shrink() node {
 	}
 	nn := newNode4(nil)
 	for i := uint16(0); i < n.size; i++ {
-		nn.addChild(n.keys[i], n.children[i])
+		nn.addChild(n.key[i], n.child[i])
 	}
 	return nn
 }
@@ -109,8 +109,13 @@ func (n *node16) matchParts(parts [][]byte) ([][]byte, bool) {
 // Iterate over all children calling func f.
 func (n *node16) iter(f func(node) bool) {
 	for i := uint16(0); i < n.size; i++ {
-		if !f(n.children[i]) {
+		if !f(n.child[i]) {
 			return
 		}
 	}
+}
+
+// Return our children as a slice.
+func (n *node16) children() []node {
+	return n.child[:n.size]
 }

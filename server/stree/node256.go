@@ -16,7 +16,7 @@ package stree
 // Node with 256 children
 type node256 struct {
 	meta
-	children [256]node
+	child [256]node
 }
 
 func newNode256(prefix []byte) *node256 {
@@ -36,7 +36,7 @@ func (n *node256) setPrefix(pre []byte) {
 }
 
 func (n *node256) addChild(c byte, nn node) {
-	n.children[c] = nn
+	n.child[c] = nn
 	n.size++
 }
 
@@ -44,8 +44,8 @@ func (n *node256) numChildren() uint16 { return n.size }
 func (n *node256) path() []byte        { return n.prefix[:n.prefixLen] }
 
 func (n *node256) findChild(c byte) *node {
-	if n.children[c] != nil {
-		return &n.children[c]
+	if n.child[c] != nil {
+		return &n.child[c]
 	}
 	return nil
 }
@@ -55,8 +55,8 @@ func (n *node256) grow() node   { panic("grow can not be called on node256") }
 
 // Deletes a child from the node.
 func (n *node256) deleteChild(c byte) {
-	if n.children[c] != nil {
-		n.children[c] = nil
+	if n.child[c] != nil {
+		n.child[c] = nil
 		n.size--
 	}
 }
@@ -67,9 +67,9 @@ func (n *node256) shrink() node {
 		return nil
 	}
 	nn := newNode16(nil)
-	for c, child := range n.children {
+	for c, child := range n.child {
 		if child != nil {
-			nn.addChild(byte(c), n.children[c])
+			nn.addChild(byte(c), n.child[c])
 		}
 	}
 	return nn
@@ -83,10 +83,15 @@ func (n *node256) matchParts(parts [][]byte) ([][]byte, bool) {
 // Iterate over all children calling func f.
 func (n *node256) iter(f func(node) bool) {
 	for i := 0; i < 256; i++ {
-		if n.children[i] != nil {
-			if !f(n.children[i]) {
+		if n.child[i] != nil {
+			if !f(n.child[i]) {
 				return
 			}
 		}
 	}
+}
+
+// Return our children as a slice.
+func (n *node256) children() []node {
+	return n.child[:256]
 }

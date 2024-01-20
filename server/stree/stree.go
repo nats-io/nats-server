@@ -303,7 +303,10 @@ func (t *SubjectTree[T]) match(n node, parts [][]byte, pre []byte, cb func(subje
 				nparts = parts[len(parts)-1:]
 				hasTermPWC = true
 			}
-			n.iter(func(cn node) bool {
+			for _, cn := range n.children() {
+				if cn == nil {
+					continue
+				}
 				if cn.isLeaf() {
 					ln := cn.(*leaf[T])
 					if len(ln.suffix) == 0 {
@@ -315,8 +318,7 @@ func (t *SubjectTree[T]) match(n node, parts [][]byte, pre []byte, cb func(subje
 					// We have terminal pwc so call into match again with the child node.
 					t.match(cn, nparts, pre, cb)
 				}
-				return true
-			})
+			}
 			// Return regardless.
 			return
 		}
@@ -330,19 +332,13 @@ func (t *SubjectTree[T]) match(n node, parts [][]byte, pre []byte, cb func(subje
 		fp := nparts[0]
 		p := pivot(fp, 0)
 		// Check if we have a pwc/fwc part here. This will cause us to iterate.
-		if len(fp) == 1 {
-			if p == pwc {
-				// We need to iterate over all children here for the current node
-				// to see if we match further down.
-				n.iter(func(cn node) bool {
+		if len(fp) == 1 && (p == pwc || p == fwc) {
+			// We need to iterate over all children here for the current node
+			// to see if we match further down.
+			for _, cn := range n.children() {
+				if cn != nil {
 					t.match(cn, nparts, pre, cb)
-					return true
-				})
-			} else if p == fwc {
-				n.iter(func(cn node) bool {
-					t.match(cn, nparts, pre, cb)
-					return true
-				})
+				}
 			}
 		}
 		// Here we have normal traversal, so find the next child.
@@ -367,10 +363,11 @@ func (t *SubjectTree[T]) iter(n node, pre []byte, cb func(subject []byte, val *T
 	// Collect nodes since unsorted.
 	var _nodes [256]node
 	nodes := _nodes[:0]
-	n.iter(func(cn node) bool {
-		nodes = append(nodes, cn)
-		return true
-	})
+	for _, cn := range n.children() {
+		if cn != nil {
+			nodes = append(nodes, cn)
+		}
+	}
 	// Now sort.
 	sort.SliceStable(nodes, func(i, j int) bool { return bytes.Compare(nodes[i].path(), nodes[j].path()) < 0 })
 	// Now walk the nodes in order and call into next iter.

@@ -27,6 +27,7 @@ type node interface {
 	matchParts(parts [][]byte) ([][]byte, bool)
 	kind() string
 	iter(f func(node) bool)
+	children() []node
 	numChildren() uint16
 	path() []byte
 }

@@ -37,10 +37,11 @@ func (n *leaf[T]) setSuffix(suffix []byte)                    { n.suffix = copyB
 func (n *leaf[T]) isFull() bool                               { return true }
 func (n *leaf[T]) matchParts(parts [][]byte) ([][]byte, bool) { return matchParts(parts, n.suffix) }
 func (n *leaf[T]) iter(f func(node) bool)                     {}
+func (n *leaf[T]) children() []node                           { return nil }
 func (n *leaf[T]) numChildren() uint16                        { return 0 }
 func (n *leaf[T]) path() []byte                               { return n.suffix }
 
-// Not applicable to leafs.
+// Not applicable to leafs and should not be called, so panic if we do.
 func (n *leaf[T]) setPrefix(pre []byte)    { panic("setPrefix called on leaf") }
 func (n *leaf[T]) addChild(_ byte, _ node) { panic("addChild called on leaf") }
 func (n *leaf[T]) findChild(_ byte) *node  { panic("findChild called on leaf") }

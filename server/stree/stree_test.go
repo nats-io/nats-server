@@ -16,12 +16,18 @@ package stree
 import (
 	crand "crypto/rand"
 	"encoding/hex"
+	"flag"
 	"fmt"
 	"math/rand"
 	"strings"
 	"testing"
+	"time"
 	"unsafe"
 )
+
+// Print Results: go test -v  --args --results
+// For some benchmarks.
+var runResults = flag.Bool("results", false, "Enable Results Tests")
 
 func TestSubjectTreeBasics(t *testing.T) {
 	st := NewSubjectTree[int]()
@@ -565,4 +571,34 @@ func TestSubjectTreeMetaSize(t *testing.T) {
 
 func b(s string) []byte {
 	return []byte(s)
+}
+
+func TestSubjectTreeMatchAllPerf(t *testing.T) {
+	if !*runResults {
+		t.Skip()
+	}
+	st := NewSubjectTree[int]()
+
+	for i := 0; i < 1_000_000; i++ {
+		subj := fmt.Sprintf("subj.%d.%d", rand.Intn(100)+1, i)
+		st.Insert(b(subj), 22)
+	}
+
+	for _, f := range [][]byte{
+		[]byte(">"),
+		[]byte("subj.>"),
+		[]byte("subj.*.*"),
+		[]byte("*.*.*"),
+		[]byte("subj.1.*"),
+		[]byte("subj.1.>"),
+		[]byte("subj.*.1"),
+		[]byte("*.*.1"),
+	} {
+		start := time.Now()
+		count := 0
+		st.Match(f, func(_ []byte, _ *int) {
+			count++
+		})
+		t.Logf("Match %q took %s and matched %d entries", f, time.Since(start), count)
+	}
 }
