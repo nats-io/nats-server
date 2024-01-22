@@ -22169,7 +22169,7 @@ func TestJetStreamDirectGetBatch(t *testing.T) {
 				// Check description is EOB
 				require_Equal(t, msg.Header.Get("Description"), "EOB")
 				// Check we have NumPending and its correct.
-				require_Equal(t, strconv.Itoa(numPending), msg.Header.Get("Nats-Num-Pending"))
+				require_Equal(t, strconv.Itoa(numPending), msg.Header.Get("Nats-Pending-Messages"))
 			}
 		}
 	}
