@@ -14,16 +14,18 @@
 package server
 
 import (
-	"crypto/rand"
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"math"
+	"math/rand"
 	"os"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats-server/v2/internal/fastrand"
 	"github.com/nats-io/nats.go"
 )
 
@@ -73,14 +75,17 @@ func BenchmarkCoreRequestReply(b *testing.B) {
 
 			var errors = 0
 
-			// Create message (reused for all requests)
+			// Create message
 			messageData := make([]byte, messageSize)
+			rand.New(rand.NewSource(12345)).Read(messageData)
+
 			b.SetBytes(messageSize)
-			rand.Read(messageData)
 
 			// Benchmark
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
+				fastRandomMutation(messageData, 10)
+
 				_, err := ncPub.Request(subject, messageData, time.Second)
 				if err != nil {
 					errors++
@@ -205,7 +210,7 @@ func BenchmarkCoreTLSFanOut(b *testing.B) {
 
 										// random bytes as payload
 										messageData := make([]byte, messageSize)
-										rand.Read(messageData)
+										rand.New(rand.NewSource(12345)).Read(messageData)
 
 										quitCh := make(chan bool, 1)
 
@@ -218,6 +223,7 @@ func BenchmarkCoreTLSFanOut(b *testing.B) {
 													// continue publishing
 												}
 
+												fastRandomMutation(messageData, 10)
 												err := ncPub.Publish(subject, messageData)
 												if err != nil {
 													errorCount += 1
@@ -344,7 +350,7 @@ func BenchmarkCoreFanOut(b *testing.B) {
 
 							// random bytes as payload
 							messageData := make([]byte, messageSize)
-							rand.Read(messageData)
+							rand.New(rand.NewSource(123456)).Read(messageData)
 
 							quitCh := make(chan bool, 1)
 
@@ -357,6 +363,7 @@ func BenchmarkCoreFanOut(b *testing.B) {
 										// continue publishing
 									}
 
+									fastRandomMutation(messageData, 10)
 									err := ncPub.Publish(subject, messageData)
 									if err != nil {
 										errorCount += 1
@@ -462,6 +469,7 @@ func BenchmarkCoreFanIn(b *testing.B) {
 				quitCh:         make(chan bool, 1),
 				messageData:    make([]byte, messageSize),
 			}
+			rand.New(rand.NewSource(int64(i))).Read(publisher.messageData)
 			publishers[i] = publisher
 		}
 
@@ -524,7 +532,7 @@ func BenchmarkCoreFanIn(b *testing.B) {
 					default:
 						// continue publishing
 					}
-					rand.Read(publisher.messageData)
+					fastRandomMutation(publisher.messageData, 10)
 					err := publisher.conn.Publish(subject, publisher.messageData)
 					if err != nil {
 						publisher.publishErrors += 1
@@ -593,5 +601,14 @@ func BenchmarkCoreFanIn(b *testing.B) {
 						})
 				}
 			})
+	}
+}
+
+// fastRandomMutation performs a minor in-place mutation to the given buffer.
+// This is useful in benchmark to avoid sending the same payload every time (which could result in some optimizations
+// we do not want to measure), while not slowing down the benchmark with a full payload generated for each operation.
+func fastRandomMutation(data []byte, mutations int) {
+	for i := 0; i < mutations; i++ {
+		data[fastrand.Uint32n(uint32(len(data)))] = byte(fastrand.Uint32() % math.MaxUint8)
 	}
 }
