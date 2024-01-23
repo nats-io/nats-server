@@ -40,6 +40,7 @@ import (
 	"github.com/klauspost/compress/s2"
 	"github.com/minio/highwayhash"
 	"github.com/nats-io/nats-server/v2/server/avl"
+	"github.com/nats-io/nats-server/v2/server/stree"
 	"golang.org/x/crypto/chacha20"
 	"golang.org/x/crypto/chacha20poly1305"
 )
@@ -176,7 +177,7 @@ type fileStore struct {
 	lmb         *msgBlock
 	blks        []*msgBlock
 	bim         map[uint32]*msgBlock
-	psim        map[string]*psi
+	psim        *stree.SubjectTree[psi]
 	tsl         int
 	adml        int
 	hh          hash.Hash64
@@ -382,7 +383,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 
 	fs := &fileStore{
 		fcfg:   fcfg,
-		psim:   make(map[string]*psi),
+		psim:   stree.NewSubjectTree[psi](),
 		bim:    make(map[uint32]*msgBlock),
 		cfg:    FileStreamInfo{Created: created, StreamConfig: cfg},
 		prf:    prf,
@@ -428,7 +429,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		prior := fs.state
 		// Reset anything that could have been set from above.
 		fs.state = StreamState{}
-		fs.psim, fs.tsl = make(map[string]*psi), 0
+		fs.psim, fs.tsl = fs.psim.Empty(), 0
 		fs.bim = make(map[uint32]*msgBlock)
 		fs.blks = nil
 		fs.tombs = nil
@@ -847,7 +848,7 @@ const (
 
 // Lock should be held.
 func (fs *fileStore) noTrackSubjects() bool {
-	return !(len(fs.psim) > 0 || len(fs.cfg.Subjects) > 0 || fs.cfg.Mirror != nil || len(fs.cfg.Sources) > 0)
+	return !(fs.psim.Size() > 0 || len(fs.cfg.Subjects) > 0 || fs.cfg.Mirror != nil || len(fs.cfg.Sources) > 0)
 }
 
 // Will init the basics for a message block.
@@ -1577,7 +1578,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 
 	// Check for per subject info.
 	if numSubjects := int(readU64()); numSubjects > 0 {
-		fs.psim, fs.tsl = make(map[string]*psi, numSubjects), 0
+		fs.psim, fs.tsl = fs.psim.Empty(), 0
 		for i := 0; i < numSubjects; i++ {
 			if lsubj := int(readU64()); lsubj > 0 {
 				if bi+lsubj > len(buf) {
@@ -1588,23 +1589,23 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 				// If we have lots of subjects this will alloc for each one.
 				// We could reference the underlying buffer, but we could guess wrong if
 				// number of blocks is large and subjects is low, since we would reference buf.
-				subj := string(buf[bi : bi+lsubj])
+				subj := buf[bi : bi+lsubj]
 				// We had a bug that could cause memory corruption in the PSIM that could have gotten stored to disk.
 				// Only would affect subjects, so do quick check.
-				if !isValidSubject(subj, true) {
+				if !isValidSubject(string(subj), true) {
 					os.Remove(fn)
 					fs.warn("Stream state corrupt subject detected")
 					return errCorruptState
 				}
 				bi += lsubj
-				psi := &psi{total: readU64(), fblk: uint32(readU64())}
+				psi := psi{total: readU64(), fblk: uint32(readU64())}
 				if psi.total > 1 {
 					psi.lblk = uint32(readU64())
 				} else {
 					psi.lblk = psi.fblk
 				}
-				fs.psim[subj] = psi
-				fs.tsl += len(subj)
+				fs.psim.Insert(subj, psi)
+				fs.tsl += lsubj
 			}
 		}
 	}
@@ -1769,13 +1770,13 @@ func (fs *fileStore) adjustAccounting(mb, nmb *msgBlock) {
 		fs.state.Msgs++
 		fs.state.Bytes += fileStoreMsgSize(sm.subj, sm.hdr, sm.msg)
 		if len(sm.subj) > 0 && fs.psim != nil {
-			if info, ok := fs.psim[sm.subj]; ok {
+			if info, ok := fs.psim.Find(stringToBytes(sm.subj)); ok {
 				info.total++
 				if nmb.index > info.lblk {
 					info.lblk = nmb.index
 				}
 			} else {
-				fs.psim[sm.subj] = &psi{total: 1, fblk: nmb.index, lblk: nmb.index}
+				fs.psim.Insert(stringToBytes(sm.subj), psi{total: 1, fblk: nmb.index, lblk: nmb.index})
 				fs.tsl += len(sm.subj)
 			}
 		}
@@ -2142,7 +2143,7 @@ func (fs *fileStore) expireMsgsOnRecover() {
 			lmb.writeTombstone(last.seq, last.ts)
 		}
 		// Clear any global subject state.
-		fs.psim, fs.tsl = make(map[string]*psi), 0
+		fs.psim, fs.tsl = fs.psim.Empty(), 0
 	}
 
 	// If we purged anything, make sure we kick flush state loop.
@@ -2458,55 +2459,42 @@ func (fs *fileStore) numFilteredPending(filter string, ss *SimpleState) {
 		return
 	}
 
-	tsa := [32]string{}
-	fsa := [32]string{}
-	fts := tokenizeSubjectIntoSlice(fsa[:0], filter)
-
 	start, stop := uint32(math.MaxUint32), uint32(0)
-	for subj, psi := range fs.psim {
-		if isAll {
-			ss.Msgs += psi.total
-		} else {
-			tts := tokenizeSubjectIntoSlice(tsa[:0], subj)
-			if isSubsetMatchTokenized(tts, fts) {
-				ss.Msgs += psi.total
-				// Keep track of start and stop indexes for this subject.
-				if psi.fblk < start {
-					start = psi.fblk
-				}
-				if psi.lblk > stop {
-					stop = psi.lblk
-				}
+	fs.psim.Match(stringToBytes(filter), func(_ []byte, psi *psi) {
+		ss.Msgs += psi.total
+		// Keep track of start and stop indexes for this subject.
+		if psi.fblk < start {
+			start = psi.fblk
+		}
+		if psi.lblk > stop {
+			stop = psi.lblk
+		}
+	})
+	// We do need to figure out the first and last sequences.
+	wc := subjectHasWildcard(filter)
+	// Do start
+	mb := fs.bim[start]
+	if mb != nil {
+		_, f, _ := mb.filteredPending(filter, wc, 0)
+		ss.First = f
+	}
+	if ss.First == 0 {
+		// This is a miss. This can happen since psi.fblk is lazy, but should be very rare.
+		for i := start + 1; i <= stop; i++ {
+			mb := fs.bim[i]
+			if mb == nil {
+				continue
+			}
+			if _, f, _ := mb.filteredPending(filter, wc, 0); f > 0 {
+				ss.First = f
+				break
 			}
 		}
 	}
-	// If not collecting all we do need to figure out the first and last sequences.
-	if !isAll {
-		wc := subjectHasWildcard(filter)
-		// Do start
-		mb := fs.bim[start]
-		if mb != nil {
-			_, f, _ := mb.filteredPending(filter, wc, 0)
-			ss.First = f
-		}
-		if ss.First == 0 {
-			// This is a miss. This can happen since psi.fblk is lazy, but should be very rare.
-			for i := start + 1; i <= stop; i++ {
-				mb := fs.bim[i]
-				if mb == nil {
-					continue
-				}
-				if _, f, _ := mb.filteredPending(filter, wc, 0); f > 0 {
-					ss.First = f
-					break
-				}
-			}
-		}
-		// Now last
-		if mb = fs.bim[stop]; mb != nil {
-			_, _, l := mb.filteredPending(filter, wc, 0)
-			ss.Last = l
-		}
+	// Now last
+	if mb = fs.bim[stop]; mb != nil {
+		_, _, l := mb.filteredPending(filter, wc, 0)
+		ss.Last = l
 	}
 }
 
@@ -2522,8 +2510,8 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 	start, stop := fs.blks[0], fs.lmb
 	// We can short circuit if not a wildcard using psim for start and stop.
 	if !subjectHasWildcard(subject) {
-		info := fs.psim[subject]
-		if info == nil {
+		info, ok := fs.psim.Find(stringToBytes(subject))
+		if !ok {
 			return nil
 		}
 		start, stop = fs.bim[info.fblk], fs.bim[info.lblk]
@@ -2604,10 +2592,14 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 	wc := subjectHasWildcard(filter)
 
 	// See if filter was provided but its the only subject.
-	if !isAll && !wc && len(fs.psim) == 1 && fs.psim[filter] != nil {
-		isAll = true
+	if !isAll && !wc && fs.psim.Size() == 1 {
+		if _, ok := fs.psim.Find(stringToBytes(filter)); ok {
+			isAll = true
+		}
 	}
-
+	if isAll && filter == _EMPTY_ {
+		filter = fwcs
+	}
 	// If we are isAll and have no deleted we can do a simpler calculation.
 	if !lastPerSubject && isAll && (fs.state.LastSeq-fs.state.FirstSeq+1) == fs.state.Msgs {
 		if sseq == 0 {
@@ -2638,7 +2630,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 	if lastPerSubject {
 		// If we want all and our start sequence is equal or less than first return number of subjects.
 		if isAll && sseq <= fs.state.FirstSeq {
-			return uint64(len(fs.psim)), validThrough
+			return uint64(fs.psim.Size()), validThrough
 		}
 		// If we are here we need to scan. We are going to scan the PSIM looking for lblks that are >= seqStart.
 		// This will build up a list of all subjects from the selected block onward.
@@ -2646,20 +2638,19 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 		mb := fs.blks[seqStart]
 		bi := mb.index
 
-		for subj, psi := range fs.psim {
+		fs.psim.Match(stringToBytes(filter), func(subj []byte, psi *psi) {
 			// If the select blk start is greater than entry's last blk skip.
 			if bi > psi.lblk {
-				continue
+				return
 			}
-			if isMatch(subj) {
-				total++
-				// We will track the subjects that are an exact match to the last block.
-				// This is needed for last block processing.
-				if psi.lblk == bi {
-					lbm[subj] = true
-				}
+			total++
+			// We will track the subjects that are an exact match to the last block.
+			// This is needed for last block processing.
+			if psi.lblk == bi {
+				lbm[string(subj)] = true
 			}
-		}
+		})
+
 		// Now check if we need to inspect the seqStart block.
 		// Grab write lock in case we need to load in msgs.
 		mb.mu.Lock()
@@ -2768,15 +2759,13 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 	// If we are here it's better to calculate totals from psim and adjust downward by scanning less blocks.
 	// TODO(dlc) - Eventually when sublist uses generics, make this sublist driven instead.
 	start := uint32(math.MaxUint32)
-	for subj, psi := range fs.psim {
-		if isMatch(subj) {
-			total += psi.total
-			// Keep track of start index for this subject.
-			if psi.fblk < start {
-				start = psi.fblk
-			}
+	fs.psim.Match(stringToBytes(filter), func(_ []byte, psi *psi) {
+		total += psi.total
+		// Keep track of start index for this subject.
+		if psi.fblk < start {
+			start = psi.fblk
 		}
-	}
+	})
 	// See if we were asked for all, if so we are done.
 	if sseq <= fs.state.FirstSeq {
 		return total, validThrough
@@ -2860,30 +2849,14 @@ func (fs *fileStore) SubjectsTotals(filter string) map[string]uint64 {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 
-	if len(fs.psim) == 0 {
+	if fs.psim.Size() == 0 {
 		return nil
 	}
 
-	tsa := [32]string{}
-	fsa := [32]string{}
-	fts := tokenizeSubjectIntoSlice(fsa[:0], filter)
-	isAll := filter == _EMPTY_ || filter == fwcs
-	wc := subjectHasWildcard(filter)
-
-	isMatch := func(subj string) bool {
-		if !wc {
-			return subj == filter
-		}
-		tts := tokenizeSubjectIntoSlice(tsa[:0], subj)
-		return isSubsetMatchTokenized(tts, fts)
-	}
-
 	fst := make(map[string]uint64)
-	for subj, psi := range fs.psim {
-		if isAll || isMatch(subj) {
-			fst[subj] = psi.total
-		}
-	}
+	fs.psim.Match(stringToBytes(filter), func(subj []byte, psi *psi) {
+		fst[string(subj)] = psi.total
+	})
 	return fst
 }
 
@@ -3033,7 +3006,7 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 	var psmc uint64
 	psmax := mmp > 0 && len(subj) > 0
 	if psmax {
-		if info, ok := fs.psim[subj]; ok {
+		if info, ok := fs.psim.Find(stringToBytes(subj)); ok {
 			psmc = info.total
 		}
 	}
@@ -3079,13 +3052,13 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 	// Adjust top level tracking of per subject msg counts.
 	if len(subj) > 0 && fs.psim != nil {
 		index := fs.lmb.index
-		if info, ok := fs.psim[subj]; ok {
+		if info, ok := fs.psim.Find(stringToBytes(subj)); ok {
 			info.total++
 			if index > info.lblk {
 				info.lblk = index
 			}
 		} else {
-			fs.psim[subj] = &psi{total: 1, fblk: index, lblk: index}
+			fs.psim.Insert(stringToBytes(subj), psi{total: 1, fblk: index, lblk: index})
 			fs.tsl += len(subj)
 		}
 	}
@@ -3112,7 +3085,8 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 		if ok, _ := fs.removeMsgViaLimits(fseq); ok {
 			// Make sure we are below the limit.
 			if psmc--; psmc >= mmp {
-				for info, ok := fs.psim[subj]; ok && info.total > mmp; info, ok = fs.psim[subj] {
+				bsubj := stringToBytes(subj)
+				for info, ok := fs.psim.Find(bsubj); ok && info.total > mmp; info, ok = fs.psim.Find(bsubj) {
 					if seq, _ := fs.firstSeqForSubj(subj); seq > 0 {
 						if ok, _ := fs.removeMsgViaLimits(seq); !ok {
 							break
@@ -3362,7 +3336,7 @@ func (fs *fileStore) firstSeqForSubj(subj string) (uint64, error) {
 
 	// See if we can optimize where we start.
 	start, stop := fs.blks[0].index, fs.lmb.index
-	if info, ok := fs.psim[subj]; ok {
+	if info, ok := fs.psim.Find(stringToBytes(subj)); ok {
 		start, stop = info.fblk, info.lblk
 	}
 
@@ -3384,7 +3358,7 @@ func (fs *fileStore) firstSeqForSubj(subj string) (uint64, error) {
 		if ss := mb.fss[subj]; ss != nil {
 			// Adjust first if it was not where we thought it should be.
 			if i != start {
-				if info, ok := fs.psim[subj]; ok {
+				if info, ok := fs.psim.Find(stringToBytes(subj)); ok {
 					info.fblk = i
 				}
 			}
@@ -3457,19 +3431,20 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 
 	// collect all that are not correct.
 	needAttention := make(map[string]*psi)
-	for subj, psi := range fs.psim {
+	fs.psim.Iter(func(subj []byte, psi *psi) bool {
 		numMsgs += psi.total
 		if psi.total > maxMsgsPer {
-			needAttention[subj] = psi
+			needAttention[string(subj)] = psi
 		}
-	}
+		return true
+	})
 
 	// We had an issue with a use case where psim (and hence fss) were correct but idx was not and was not properly being caught.
 	// So do a quick sanity check here. If we detect a skew do a rebuild then re-check.
 	if numMsgs != fs.state.Msgs {
 		fs.warn("Detected skew in subject-based total (%d) vs raw total (%d), rebuilding", numMsgs, fs.state.Msgs)
 		// Clear any global subject state.
-		fs.psim, fs.tsl = make(map[string]*psi), 0
+		fs.psim, fs.tsl = fs.psim.Empty(), 0
 		for _, mb := range fs.blks {
 			ld, _, err := mb.rebuildState()
 			if err != nil && ld != nil {
@@ -3481,11 +3456,12 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 		fs.rebuildStateLocked(nil)
 		// Need to redo blocks that need attention.
 		needAttention = make(map[string]*psi)
-		for subj, psi := range fs.psim {
+		fs.psim.Iter(func(subj []byte, psi *psi) bool {
 			if psi.total > maxMsgsPer {
-				needAttention[subj] = psi
+				needAttention[string(subj)] = psi
 			}
-		}
+			return true
+		})
 	}
 
 	// Collect all the msgBlks we alter.
@@ -3569,13 +3545,15 @@ func (fs *fileStore) removePerSubject(subj string) {
 		return
 	}
 	// We do not update sense of fblk here but will do so when we resolve during lookup.
-	if info, ok := fs.psim[subj]; ok {
+	bsubj := stringToBytes(subj)
+	if info, ok := fs.psim.Find(bsubj); ok {
 		info.total--
 		if info.total == 1 {
 			info.fblk = info.lblk
 		} else if info.total == 0 {
-			delete(fs.psim, subj)
-			fs.tsl -= len(subj)
+			if _, ok = fs.psim.Delete(bsubj); ok {
+				fs.tsl -= len(subj)
+			}
 		}
 	}
 }
@@ -4523,7 +4501,7 @@ func (fs *fileStore) checkMsgs() *LostStreamData {
 	fs.checkAndFlushAllBlocks()
 
 	// Clear any global subject state.
-	fs.psim, fs.tsl = make(map[string]*psi), 0
+	fs.psim, fs.tsl = fs.psim.Empty(), 0
 
 	for _, mb := range fs.blks {
 		// Make sure encryption loaded if needed for the block.
@@ -5890,7 +5868,7 @@ func (fs *fileStore) loadLast(subj string, sm *StoreMsg) (lsm *StoreMsg, err err
 	wc := subjectHasWildcard(subj)
 	// If literal subject check for presence.
 	if !wc {
-		if info := fs.psim[subj]; info == nil {
+		if info, ok := fs.psim.Find(stringToBytes(subj)); !ok {
 			return nil, ErrStoreMsgNotFound
 		} else {
 			start, stop = info.lblk, info.fblk
@@ -5960,6 +5938,16 @@ func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64, sm *Store
 		start = fs.state.FirstSeq
 	}
 
+	// If start is less than or equal to beginning of our stream, meaning our first call,
+	// let's check the psim to see if we can skip ahead.
+	if start <= fs.state.FirstSeq {
+		var ss SimpleState
+		fs.numFilteredPending(filter, &ss)
+		if ss.First > start {
+			start = ss.First
+		}
+	}
+
 	if bi, _ := fs.selectMsgBlockWithIndex(start); bi >= 0 {
 		for i := bi; i < len(fs.blks); i++ {
 			mb := fs.blks[i]
@@ -5987,7 +5975,7 @@ func (fs *fileStore) Type() StorageType {
 // Returns number of subjects in this store.
 // Lock should be held.
 func (fs *fileStore) numSubjects() int {
-	return len(fs.psim)
+	return fs.psim.Size()
 }
 
 // FastState will fill in state with only the following.
@@ -6443,7 +6431,7 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 	fs.lmb = nil
 	fs.bim = make(map[uint32]*msgBlock)
 	// Clear any per subject tracking.
-	fs.psim, fs.tsl = make(map[string]*psi), 0
+	fs.psim, fs.tsl = fs.psim.Empty(), 0
 	// Mark dirty
 	fs.dirty++
 
@@ -6718,7 +6706,7 @@ func (fs *fileStore) reset() error {
 	fs.blks, fs.lmb = nil, nil
 
 	// Reset subject mappings.
-	fs.psim, fs.tsl = make(map[string]*psi), 0
+	fs.psim, fs.tsl = fs.psim.Empty(), 0
 	fs.bim = make(map[uint32]*msgBlock)
 
 	// If we purged anything, make sure we kick flush state loop.
@@ -7005,7 +6993,7 @@ func (mb *msgBlock) recalculateFirstForSubj(subj string, startSeq uint64, ss *Si
 // Lock should be held.
 func (fs *fileStore) resetGlobalPerSubjectInfo() {
 	// Clear any global subject state.
-	fs.psim, fs.tsl = make(map[string]*psi), 0
+	fs.psim, fs.tsl = fs.psim.Empty(), 0
 	for _, mb := range fs.blks {
 		fs.populateGlobalPerSubjectInfo(mb)
 	}
@@ -7096,13 +7084,14 @@ func (fs *fileStore) populateGlobalPerSubjectInfo(mb *msgBlock) {
 	// Now populate psim.
 	for subj, ss := range mb.fss {
 		if len(subj) > 0 {
-			if info, ok := fs.psim[subj]; ok {
+			bsubj := stringToBytes(subj)
+			if info, ok := fs.psim.Find(bsubj); ok {
 				info.total += ss.Msgs
 				if mb.index > info.lblk {
 					info.lblk = mb.index
 				}
 			} else {
-				fs.psim[subj] = &psi{total: ss.Msgs, fblk: mb.index, lblk: mb.index}
+				fs.psim.Insert(bsubj, psi{total: ss.Msgs, fblk: mb.index, lblk: mb.index})
 				fs.tsl += len(subj)
 			}
 		}
@@ -7312,7 +7301,7 @@ func (fs *fileStore) writeFullState() error {
 	}
 
 	// For calculating size.
-	numSubjects := len(fs.psim)
+	numSubjects := fs.psim.Size()
 
 	// Calculate and estimate of the uper bound on the  size to avoid multiple allocations.
 	sz := 2 + // Magic and Version
@@ -7344,7 +7333,7 @@ func (fs *fileStore) writeFullState() error {
 	// Do per subject information map if applicable.
 	buf = binary.AppendUvarint(buf, uint64(numSubjects))
 	if numSubjects > 0 {
-		for subj, psi := range fs.psim {
+		fs.psim.Iter(func(subj []byte, psi *psi) bool {
 			buf = binary.AppendUvarint(buf, uint64(len(subj)))
 			buf = append(buf, subj...)
 			buf = binary.AppendUvarint(buf, psi.total)
@@ -7352,7 +7341,8 @@ func (fs *fileStore) writeFullState() error {
 			if psi.total > 1 {
 				buf = binary.AppendUvarint(buf, uint64(psi.lblk))
 			}
-		}
+			return true
+		})
 	}
 
 	// Now walk all blocks and write out first and last and optional dmap encoding.

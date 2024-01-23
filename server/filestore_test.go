@@ -5316,7 +5316,8 @@ func TestFileStoreFullStateBasics(t *testing.T) {
 
 		// Make sure we are tracking subjects correctly.
 		fs.mu.RLock()
-		psi := *fs.psim[subj]
+		info, _ := fs.psim.Find(stringToBytes(subj))
+		psi := *info
 		fs.mu.RUnlock()
 
 		require_Equal(t, psi.total, 4)
@@ -5341,7 +5342,8 @@ func TestFileStoreFullStateBasics(t *testing.T) {
 		require_Equal(t, fs.numMsgBlocks(), 3)
 		// Make sure we are tracking subjects correctly.
 		fs.mu.RLock()
-		psi = *fs.psim[subj]
+		info, _ = fs.psim.Find(stringToBytes(subj))
+		psi = *info
 		fs.mu.RUnlock()
 		require_Equal(t, psi.total, 5)
 		require_Equal(t, psi.fblk, 1)
@@ -5971,7 +5973,8 @@ func TestFileStoreCompactAndPSIMWhenDeletingBlocks(t *testing.T) {
 	require_Equal(t, fs.numMsgBlocks(), 1)
 
 	fs.mu.RLock()
-	psi := fs.psim[subj]
+	info, _ := fs.psim.Find(stringToBytes(subj))
+	psi := *info
 	fs.mu.RUnlock()
 
 	require_Equal(t, psi.total, 1)
@@ -6014,7 +6017,6 @@ func TestFileStoreTrackSubjLenForPSIM(t *testing.T) {
 
 	check := func() {
 		t.Helper()
-
 		var total int
 		for _, slen := range smap {
 			total += slen
@@ -6197,7 +6199,7 @@ func TestFileStoreNumPendingLastBySubject(t *testing.T) {
 	sd, blkSize := t.TempDir(), uint64(1024)
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: sd, BlockSize: blkSize},
-		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*.*"}, Storage: FileStorage})
 	require_NoError(t, err)
 	defer fs.Stop()
 
@@ -6263,11 +6265,11 @@ func TestFileStoreCorruptPSIMOnDisk(t *testing.T) {
 
 	// Force bad subject.
 	fs.mu.Lock()
-	psi := fs.psim["foo.bar"]
+	psi, _ := fs.psim.Find(stringToBytes("foo.bar"))
 	bad := make([]byte, 7)
 	crand.Read(bad)
-	fs.psim[string(bad)] = psi
-	delete(fs.psim, "foo.bar")
+	fs.psim.Insert(bad, *psi)
+	fs.psim.Delete(stringToBytes("foo.bar"))
 	fs.dirty++
 	fs.mu.Unlock()
 
@@ -6494,6 +6496,43 @@ func TestFileStoreSkipMsgs(t *testing.T) {
 	require_Equal(t, state.LastSeq, 11)
 	require_Equal(t, state.Msgs, 1)
 	require_Equal(t, state.NumDeleted, 10)
+}
+
+func TestFileStoreOptimizeFirstLoadNextMsgWithSequenceZero(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 4096},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := bytes.Repeat([]byte("ZZZ"), 33) // ~100bytes
+
+	for i := 0; i < 5000; i++ {
+		fs.StoreMsg("foo.A", nil, msg)
+	}
+	// This will create alot of blocks, ~167.
+	// Just used to check that we do not load these in when searching.
+	// Now add in 10 for foo.bar at the end.
+	for i := 0; i < 10; i++ {
+		fs.StoreMsg("foo.B", nil, msg)
+	}
+	// The bug would not be visible on running server per se since we would have had fss loaded
+	// and that sticks around a bit longer, we would use that to skip over the early blocks. So stop
+	// and restart the filestore.
+	fs.Stop()
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 4096},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Now fetch the next message for foo.B but set starting sequence to 0.
+	_, nseq, err := fs.LoadNextMsg("foo.B", false, 0, nil)
+	require_NoError(t, err)
+	require_Equal(t, nseq, 5001)
+	// Now check how many blks are loaded, should be only 1.
+	require_Equal(t, fs.cacheLoads(), 1)
 }
 
 ///////////////////////////////////////////////////////////////////////////

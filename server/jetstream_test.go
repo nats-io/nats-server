@@ -11845,6 +11845,45 @@ func TestJetStreamSourceBasics(t *testing.T) {
 		}
 		return nil
 	})
+
+	// pre 2.10 backwards compatibility
+	transformConfig := nats.SubjectTransformConfig{Source: "B.*", Destination: "A.{{Wildcard(1)}}"}
+	aConfig := nats.StreamConfig{Name: "A", Subjects: []string{"B.*"}, SubjectTransform: &transformConfig}
+	if _, err := js.AddStream(&aConfig); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	sendBatch("B.A", 1)
+	sendBatch("B.B", 1)
+	bConfig := nats.StreamConfig{Name: "B", Subjects: []string{"A.*"}}
+
+	if _, err := js.AddStream(&bConfig); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// fake a message that would have been sourced with pre 2.10
+	msg := nats.NewMsg("A.A")
+	// pre 2.10 header format just stream name and sequence number
+	msg.Header.Set(JSStreamSource, "A 1")
+	msg.Data = []byte("OK")
+
+	if _, err := js.PublishMsg(msg); err != nil {
+		t.Fatalf("Unexpected publish error: %v", err)
+	}
+
+	bConfig.Sources = []*nats.StreamSource{{Name: "A"}}
+	if _, err := js.UpdateStream(&bConfig); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		si, err := js2.StreamInfo("B")
+		require_NoError(t, err)
+		if si.State.Msgs != 2 {
+			return fmt.Errorf("Expected 2 msgs, got state: %+v", si.State)
+		}
+		return nil
+	})
 }
 
 func TestJetStreamInputTransform(t *testing.T) {
@@ -22049,4 +22088,162 @@ func TestJetStreamConsumerPendingForKV(t *testing.T) {
 			require_Equal(t, meta.NumPending, 4)
 		})
 	}
+}
+
+func TestJetStreamDirectGetBatch(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.*"},
+	})
+	require_NoError(t, err)
+
+	// Add in messages
+	for i := 0; i < 333; i++ {
+		js.PublishAsync("foo.foo", []byte("HELLO"))
+		js.PublishAsync("foo.bar", []byte("WORLD"))
+		js.PublishAsync("foo.baz", []byte("AGAIN"))
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	// DirectGet is required for batch. Make sure we error correctly if not enabled.
+	mreq := &JSApiMsgGetRequest{Seq: 1, Batch: 10}
+	req, _ := json.Marshal(mreq)
+	rr, err := nc.Request("$JS.API.STREAM.MSG.GET.TEST", req, time.Second)
+	require_NoError(t, err)
+	var resp JSApiMsgGetResponse
+	json.Unmarshal(rr.Data, &resp)
+	require_True(t, resp.Error != nil)
+	require_Equal(t, resp.Error.Code, NewJSBadRequestError().Code)
+
+	// Update stream to support direct.
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo.*"},
+		AllowDirect: true,
+	})
+	require_NoError(t, err)
+
+	// Direct subjects.
+	sendRequest := func(mreq *JSApiMsgGetRequest) *nats.Subscription {
+		t.Helper()
+		req, _ := json.Marshal(mreq)
+		// We will get multiple responses so can't do normal request.
+		reply := nats.NewInbox()
+		sub, err := nc.SubscribeSync(reply)
+		require_NoError(t, err)
+		err = nc.PublishRequest("$JS.API.DIRECT.GET.TEST", reply, req)
+		require_NoError(t, err)
+		return sub
+	}
+
+	// Batch sizes greater than 1 will have a nil message as the end marker.
+	checkResponses := func(sub *nats.Subscription, numPending int, expected ...string) {
+		t.Helper()
+		defer sub.Unsubscribe()
+		checkSubsPending(t, sub, len(expected))
+		for i := 0; i < len(expected); i++ {
+			msg, err := sub.NextMsg(10 * time.Millisecond)
+			require_NoError(t, err)
+			// If expected is _EMPTY_ that signals we expect a EOB marker.
+			if subj := expected[i]; subj != _EMPTY_ {
+				// Make sure subject is correct.
+				require_Equal(t, expected[i], msg.Header.Get("Nats-Subject"))
+				// Should have Data field non-zero
+				require_True(t, len(msg.Data) > 0)
+			} else {
+				// Check for properly formatted EOB marker.
+				// Should have no body.
+				require_Equal(t, len(msg.Data), 0)
+				// We mark status as 204 - No Content
+				require_Equal(t, msg.Header.Get("Status"), "204")
+				// Check description is EOB
+				require_Equal(t, msg.Header.Get("Description"), "EOB")
+				// Check we have NumPending and its correct.
+				require_Equal(t, strconv.Itoa(numPending), msg.Header.Get("Nats-Pending-Messages"))
+			}
+		}
+	}
+
+	// Run some simple tests.
+	sub := sendRequest(&JSApiMsgGetRequest{Seq: 1, Batch: 2})
+	checkResponses(sub, 997, "foo.foo", "foo.bar", _EMPTY_)
+
+	sub = sendRequest(&JSApiMsgGetRequest{Seq: 1, Batch: 3})
+	checkResponses(sub, 996, "foo.foo", "foo.bar", "foo.baz", _EMPTY_)
+
+	// Test NextFor works
+	sub = sendRequest(&JSApiMsgGetRequest{Seq: 1, Batch: 3, NextFor: "foo.*"})
+	checkResponses(sub, 996, "foo.foo", "foo.bar", "foo.baz", _EMPTY_)
+
+	sub = sendRequest(&JSApiMsgGetRequest{Seq: 1, Batch: 3, NextFor: "foo.baz"})
+	checkResponses(sub, 330, "foo.baz", "foo.baz", "foo.baz", _EMPTY_)
+
+	// Test stopping early by starting at 997 with only 3 messages.
+	sub = sendRequest(&JSApiMsgGetRequest{Seq: 997, Batch: 10, NextFor: "foo.*"})
+	checkResponses(sub, 0, "foo.foo", "foo.bar", "foo.baz", _EMPTY_)
+}
+
+func TestJetStreamDirectGetBatchMaxBytes(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo.*"},
+		AllowDirect: true,
+		Compression: nats.S2Compression,
+	})
+	require_NoError(t, err)
+
+	msg := bytes.Repeat([]byte("Z"), 512*1024)
+	// Add in messages
+	for i := 0; i < 333; i++ {
+		js.PublishAsync("foo.foo", msg)
+		js.PublishAsync("foo.bar", msg)
+		js.PublishAsync("foo.baz", msg)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	sendRequestAndCheck := func(mreq *JSApiMsgGetRequest, numExpected int) {
+		t.Helper()
+		req, _ := json.Marshal(mreq)
+		// We will get multiple responses so can't do normal request.
+		reply := nats.NewInbox()
+		sub, err := nc.SubscribeSync(reply)
+		require_NoError(t, err)
+		defer sub.Unsubscribe()
+		err = nc.PublishRequest("$JS.API.DIRECT.GET.TEST", reply, req)
+		require_NoError(t, err)
+		// Make sure we get correct number of responses.
+		checkSubsPending(t, sub, numExpected)
+	}
+
+	// Total msg size being sent back to us.
+	msgSize := len(msg) + len("foo.foo")
+	// We should get 1 msg and 1 EOB
+	sendRequestAndCheck(&JSApiMsgGetRequest{Seq: 1, Batch: 3, MaxBytes: msgSize}, 2)
+
+	// Test NextFor tracks as well.
+	sendRequestAndCheck(&JSApiMsgGetRequest{Seq: 1, NextFor: "foo.bar", Batch: 3, MaxBytes: 2 * msgSize}, 3)
+
+	// Now test no MaxBytes to inherit server max_num_pending.
+	expected := (int(s.getOpts().MaxPending) / msgSize) + 1
+	sendRequestAndCheck(&JSApiMsgGetRequest{Seq: 1, Batch: 200}, expected+1)
 }
