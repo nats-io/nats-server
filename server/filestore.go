@@ -5399,7 +5399,7 @@ func (mb *msgBlock) cacheAlreadyLoaded() bool {
 	if mb.cache == nil || mb.cache.off != 0 || mb.cache.fseq == 0 || len(mb.cache.buf) == 0 {
 		return false
 	}
-	numEntries := mb.msgs + uint64(mb.dmap.Size()) + (atomic.LoadUint64(&mb.first.seq) - mb.cache.fseq)
+	numEntries := mb.msgs + (atomic.LoadUint64(&mb.first.seq) - mb.cache.fseq)
 	return numEntries == uint64(len(mb.cache.idx))
 }
 
