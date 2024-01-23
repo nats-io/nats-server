@@ -350,6 +350,7 @@ const (
 	JSTimeStamp    = "Nats-Time-Stamp"
 	JSSubject      = "Nats-Subject"
 	JSLastSequence = "Nats-Last-Sequence"
+	JSNumPending   = "Nats-Num-Pending"
 )
 
 // Rollups, can be subject only or all messages.
@@ -4032,12 +4033,10 @@ func (mset *stream) processDirectGetRequest(_ *subscription, c *client, _ *Accou
 		return
 	}
 	// Check that we do not have both options set.
-	if req.Seq > 0 && req.LastFor != _EMPTY_ {
-		hdr := []byte("NATS/1.0 408 Bad Request\r\n\r\n")
-		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
-		return
-	}
-	if req.LastFor != _EMPTY_ && req.NextFor != _EMPTY_ {
+	// We do not allow batch mode for lastFor requests.
+	if (req.Seq > 0 && req.LastFor != _EMPTY_) ||
+		(req.LastFor != _EMPTY_ && req.NextFor != _EMPTY_) ||
+		(req.LastFor != _EMPTY_ && req.Batch > 0) {
 		hdr := []byte("NATS/1.0 408 Bad Request\r\n\r\n")
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 		return
@@ -4099,41 +4098,86 @@ func (mset *stream) processDirectGetLastBySubjectRequest(_ *subscription, c *cli
 // Do actual work on a direct msg request.
 // This could be called in a Go routine if we are inline for a non-client connection.
 func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
-	var svp StoreMsg
-	var sm *StoreMsg
-	var err error
-
 	mset.mu.RLock()
-	store, name := mset.store, mset.cfg.Name
+	store, name, s := mset.store, mset.cfg.Name, mset.srv
 	mset.mu.RUnlock()
 
-	if req.Seq > 0 && req.NextFor == _EMPTY_ {
-		sm, err = store.LoadMsg(req.Seq, &svp)
-	} else if req.NextFor != _EMPTY_ {
-		sm, _, err = store.LoadNextMsg(req.NextFor, subjectHasWildcard(req.NextFor), req.Seq, &svp)
-	} else {
-		sm, err = store.LoadLastMsg(req.LastFor, &svp)
+	seq := req.Seq
+	wc := subjectHasWildcard(req.NextFor)
+	batch := req.Batch
+	if batch == 0 {
+		batch = 1
 	}
-	if err != nil {
-		hdr := []byte("NATS/1.0 404 Message Not Found\r\n\r\n")
+	// Grab MaxBytes
+	mb := req.MaxBytes
+	if mb == 0 && s != nil {
+		// Fill in with the server's MaxPending.
+		mb = int(s.opts.MaxPending)
+	}
+	// Track what we have sent.
+	var sentBytes int
+
+	// Loop over batch, which defaults to 1.
+	for i := 0; i < batch; i++ {
+		var (
+			svp StoreMsg
+			sm  *StoreMsg
+			err error
+		)
+		if seq > 0 && req.NextFor == _EMPTY_ {
+			// Only do direct lookup for first in a batch.
+			if i == 0 {
+				sm, err = store.LoadMsg(seq, &svp)
+			} else {
+				// We want to use load next with fwcs to step over deleted msgs.
+				sm, seq, err = store.LoadNextMsg(fwcs, true, seq, &svp)
+			}
+			// Bump for next loop if applicable.
+			seq++
+		} else if req.NextFor != _EMPTY_ {
+			sm, seq, err = store.LoadNextMsg(req.NextFor, wc, seq, &svp)
+			seq++
+		} else {
+			// Batch is not applicable here, this is checked before we get here.
+			sm, err = store.LoadLastMsg(req.LastFor, &svp)
+		}
+		if err != nil {
+			// For batches, if we stop early we want to do EOB logic below.
+			if batch > 1 && i > 0 {
+				break
+			}
+			hdr := []byte("NATS/1.0 404 Message Not Found\r\n\r\n")
+			mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+			return
+		}
+
+		hdr := sm.hdr
+		ts := time.Unix(0, sm.ts).UTC()
+
+		if len(hdr) == 0 {
+			const ht = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\n\r\n"
+			hdr = []byte(fmt.Sprintf(ht, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano)))
+		} else {
+			hdr = copyBytes(hdr)
+			hdr = genHeader(hdr, JSStream, name)
+			hdr = genHeader(hdr, JSSubject, sm.subj)
+			hdr = genHeader(hdr, JSSequence, strconv.FormatUint(sm.seq, 10))
+			hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
+		}
+		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, sm.msg, nil, 0))
+		// Check if we have exceeded max bytes.
+		sentBytes += len(sm.subj) + len(sm.hdr) + len(sm.msg)
+		if sentBytes >= mb {
+			break
+		}
+	}
+
+	// If batch was requested send EOB.
+	if batch > 1 {
+		np, _ := store.NumPending(seq, req.NextFor, false)
+		hdr := []byte(fmt.Sprintf("NATS/1.0 204 EOB\r\nNats-Pending-Messages: %d\r\n\r\n", np))
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
-		return
 	}
-
-	hdr := sm.hdr
-	ts := time.Unix(0, sm.ts).UTC()
-
-	if len(hdr) == 0 {
-		const ht = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\n\r\n"
-		hdr = []byte(fmt.Sprintf(ht, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano)))
-	} else {
-		hdr = copyBytes(hdr)
-		hdr = genHeader(hdr, JSStream, name)
-		hdr = genHeader(hdr, JSSubject, sm.subj)
-		hdr = genHeader(hdr, JSSequence, strconv.FormatUint(sm.seq, 10))
-		hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
-	}
-	mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, sm.msg, nil, 0))
 }
 
 // processInboundJetStreamMsg handles processing messages bound for a stream.

@@ -631,6 +631,13 @@ type JSApiMsgGetRequest struct {
 	Seq     uint64 `json:"seq,omitempty"`
 	LastFor string `json:"last_by_subj,omitempty"`
 	NextFor string `json:"next_by_subj,omitempty"`
+
+	// Batch support. Used to request more then one msg at a time.
+	// Can be used with simple starting seq, but also NextFor with wildcards.
+	Batch int `json:"batch,omitempty"`
+	// This will make sure we limit how much data we blast out. If not set we will
+	// inherit the slow consumer default max setting of the server. Default is MAX_PENDING_SIZE.
+	MaxBytes int `json:"max_bytes,omitempty"`
 }
 
 type JSApiMsgGetResponse struct {
@@ -3090,6 +3097,13 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, _ *Account, subje
 	var req JSApiMsgGetRequest
 	if err := json.Unmarshal(msg, &req); err != nil {
 		resp.Error = NewJSInvalidJSONError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	// This version does not support batch.
+	if req.Batch > 0 || req.MaxBytes > 0 {
+		resp.Error = NewJSBadRequestError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
