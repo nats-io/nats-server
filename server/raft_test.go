@@ -165,7 +165,7 @@ func TestNRGRecoverFromFollowingNoLeader(t *testing.T) {
 	for _, n := range rg {
 		rn := n.node().(*raft)
 		rn.ApplyQ().drain()
-		rn.switchToFollower("")
+		rn.switchToFollower("", false)
 	}
 
 	// Resume the nodes.
