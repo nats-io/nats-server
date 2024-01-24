@@ -588,3 +588,18 @@ func TestNRGLeavesObserverAfterPause(t *testing.T) {
 	n.ResumeApply()
 	checkState(false, false)
 }
+
+func TestNRGInlineStepdown(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	// When StepDown() completes, we should not be the leader. Before,
+	// this would not be guaranteed as the stepdown could be processed
+	// some time later.
+	n := rg.leader().node().(*raft)
+	require_NoError(t, n.StepDown())
+	require_NotEqual(t, n.State(), Leader)
+}
