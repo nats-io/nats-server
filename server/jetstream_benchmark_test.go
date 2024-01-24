@@ -1560,7 +1560,7 @@ func BenchmarkJetStreamObjStore(b *testing.B) {
 	}
 }
 
-func BenchmarkJetStreamMultiProducer(b *testing.B) {
+func BenchmarkJetStreamPublishConcurrent(b *testing.B) {
 	const (
 		subject    = "test-subject"
 		streamName = "test-stream"
@@ -1580,15 +1580,12 @@ func BenchmarkJetStreamMultiProducer(b *testing.B) {
 	}
 
 	messageSizeCases := []int64{
-		100,        // 100B
-		1024,       // 1KiB
-		10240,      // 10KiB
-		512 * 1024, // 512KiB
+		10,     // 10B
+		1024,   // 1KiB
+		102400, // 100KiB
 	}
 	numPubsCases := []int{
-		3,
-		5,
-		10,
+		12,
 	}
 
 	replicasCases := []struct {
