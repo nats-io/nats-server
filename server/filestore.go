@@ -5135,10 +5135,11 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 	var index uint32
 
 	mbFirstSeq := atomic.LoadUint64(&mb.first.seq)
+	mbLastSeq := atomic.LoadUint64(&mb.last.seq)
 
 	// Capture beginning size of dmap.
 	dms := uint64(mb.dmap.Size())
-	idxSz := atomic.LoadUint64(&mb.last.seq) - mbFirstSeq + 1
+	idxSz := mbLastSeq - mbFirstSeq + 1
 
 	if mb.cache == nil {
 		// Approximation, may adjust below.
@@ -5163,12 +5164,14 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 	}
 
 	lbuf := uint32(len(buf))
+	var seq uint64
 	for index < lbuf {
 		if index+msgHdrSize > lbuf {
 			return errCorruptState
 		}
 		hdr := buf[index : index+msgHdrSize]
-		rl, seq, slen := le.Uint32(hdr[0:]), le.Uint64(hdr[4:]), int(le.Uint16(hdr[20:]))
+		rl, slen := le.Uint32(hdr[0:]), int(le.Uint16(hdr[20:]))
+		seq = le.Uint64(hdr[4:])
 
 		// Clear any headers bit that could be set.
 		rl &^= hbit
@@ -5233,6 +5236,19 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 			}
 		}
 		index += rl
+	}
+
+	// Track holes at the end of the block, these would be missed in the
+	// earlier loop if we've ran out of block file to look at, but should
+	// be easily noticed because the seq will be below the last seq from
+	// the index.
+	if seq > 0 && seq < mbLastSeq {
+		for dseq := seq; dseq < mbLastSeq; dseq++ {
+			idx = append(idx, dbit)
+			if dms == 0 {
+				mb.dmap.Insert(dseq)
+			}
+		}
 	}
 
 	mb.cache.buf = buf
