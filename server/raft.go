@@ -196,14 +196,15 @@ type raft struct {
 	hcommit   uint64 // The commit at the time that applies were paused
 	pobserver bool   // Whether we were an observer at the time that applies were paused
 
-	prop  *ipQueue[*Entry]               // Proposals
-	entry *ipQueue[*appendEntry]         // Append entries
-	resp  *ipQueue[*appendEntryResponse] // Append entries responses
-	apply *ipQueue[*CommittedEntry]      // Apply queue (committed entries to be passed to upper layer)
-	reqs  *ipQueue[*voteRequest]         // Vote requests
-	votes *ipQueue[*voteResponse]        // Vote responses
-	leadc chan bool                      // Leader changes
-	quit  chan struct{}                  // Raft group shutdown
+	prop   *ipQueue[*Entry]               // Proposals
+	entry  *ipQueue[*appendEntry]         // Append entries
+	resp   *ipQueue[*appendEntryResponse] // Append entries responses
+	apply  *ipQueue[*CommittedEntry]      // Apply queue (committed entries to be passed to upper layer)
+	reqs   *ipQueue[*voteRequest]         // Vote requests
+	votes  *ipQueue[*voteResponse]        // Vote responses
+	statec chan struct{}                  // When a change of state happens (i.e. follower/candidate/leader)
+	leadc  chan bool                      // Leader changes
+	quit   chan struct{}                  // Raft group shutdown
 }
 
 // cacthupState structure that holds our subscription, and catchup term and index
@@ -389,6 +390,7 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 		apply:    newIPQueue[*CommittedEntry](s, qpfx+"committedEntry"),
 		accName:  accName,
 		leadc:    make(chan bool, 1),
+		statec:   make(chan struct{}),
 		observer: cfg.Observer,
 		extSt:    ps.domainExt,
 	}
@@ -1242,6 +1244,18 @@ func (n *raft) Leader() bool {
 	return n.State() == Leader
 }
 
+// notifyStateChange will notify the runAs goroutines about
+// a change in node state, so that they re-evaluate quickly
+// whether they should continue running in that state or not.
+// Otherwise they may be sat blocking on another channel
+// before they notice anything happened.
+func (n *raft) notifyStateChange() {
+	select {
+	case n.statec <- struct{}{}:
+	default:
+	}
+}
+
 // stepdown immediately steps down the Raft node to the
 // follower state. The locked bool should specify whether
 // the lock has already been taken, if false then this
@@ -1914,6 +1928,9 @@ func (n *raft) runAsFollower() {
 		elect := n.electTimer()
 
 		select {
+		case <-n.statec:
+			// The state has changed, if we are no longer a follower this loop will stop
+			// on the next iteration.
 		case <-n.entry.ch:
 			// New append entries have arrived over the network.
 			n.processAppendEntries()
@@ -2327,6 +2344,9 @@ func (n *raft) runAsLeader() {
 
 	for n.State() == Leader {
 		select {
+		case <-n.statec:
+			// The state has changed, if we are no longer the leader this loop will stop
+			// on the next iteration.
 		case <-n.s.quitCh:
 			n.shutdown(false)
 			return
@@ -2910,6 +2930,9 @@ func (n *raft) runAsCandidate() {
 	for n.State() == Candidate {
 		elect := n.electTimer()
 		select {
+		case <-n.statec:
+			// The state has changed, if we are no longer a candidate this loop will stop
+			// on the next iteration.
 		case <-n.entry.ch:
 			n.processAppendEntries()
 		case <-n.resp.ch:
@@ -4001,6 +4024,7 @@ func (n *raft) updateLeadChange(isLeader bool) {
 
 // Lock should be held.
 func (n *raft) switchState(state RaftState) {
+	defer n.notifyStateChange()
 	if n.State() == Closed {
 		return
 	}
