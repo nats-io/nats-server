@@ -7329,11 +7329,12 @@ func (fs *fileStore) writeFullState() error {
 		binary.MaxVarintLen64 + 8 + 8 // last index + record checksum + full state checksum
 
 	// Do 4k on stack if possible.
-	var raw [4 * 1024]byte
+	const ssz = 4 * 1024
 	var buf []byte
 
-	if sz <= cap(raw) {
-		buf, sz = raw[0:2:cap(raw)], cap(raw)
+	if sz <= ssz {
+		var _buf [ssz]byte
+		buf, sz = _buf[0:2:ssz], ssz
 	} else {
 		buf = make([]byte, hdrLen, sz)
 	}
@@ -7349,7 +7350,7 @@ func (fs *fileStore) writeFullState() error {
 	// Do per subject information map if applicable.
 	buf = binary.AppendUvarint(buf, uint64(numSubjects))
 	if numSubjects > 0 {
-		fs.psim.Iter(func(subj []byte, psi *psi) bool {
+		fs.psim.Match([]byte(fwcs), func(subj []byte, psi *psi) {
 			buf = binary.AppendUvarint(buf, uint64(len(subj)))
 			buf = append(buf, subj...)
 			buf = binary.AppendUvarint(buf, psi.total)
@@ -7357,7 +7358,6 @@ func (fs *fileStore) writeFullState() error {
 			if psi.total > 1 {
 				buf = binary.AppendUvarint(buf, uint64(psi.lblk))
 			}
-			return true
 		})
 	}
 
