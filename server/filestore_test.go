@@ -6535,6 +6535,29 @@ func TestFileStoreOptimizeFirstLoadNextMsgWithSequenceZero(t *testing.T) {
 	require_Equal(t, fs.cacheLoads(), 1)
 }
 
+func TestFileStoreWriteFullStateHighSubjectCardinality(t *testing.T) {
+	t.Skip()
+
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 4096},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := []byte{1, 2, 3}
+
+	for i := 0; i < 1_000_000; i++ {
+		subj := fmt.Sprintf("subj_%d", i)
+		_, _, err := fs.StoreMsg(subj, nil, msg)
+		require_NoError(t, err)
+	}
+
+	start := time.Now()
+	require_NoError(t, fs.writeFullState())
+	t.Logf("Took %s to writeFullState", time.Since(start))
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////
