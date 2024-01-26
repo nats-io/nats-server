@@ -17326,6 +17326,45 @@ func TestJetStreamStreamRepublishHeadersOnly(t *testing.T) {
 	}
 }
 
+func TestJetStreamStreamRepublishNoInterest(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Do by hand for now.
+	cfg := &StreamConfig{
+		Name:     "RPC",
+		Storage:  MemoryStorage,
+		Subjects: []string{"foo", "bar", "baz"},
+		RePublish: &RePublish{
+			Destination: "RP.>",
+		},
+		Retention: RetentionPolicy(nats.InterestPolicy),
+	}
+	addStream(t, nc, cfg)
+
+	// No consumers, so there's no interest on the stream.
+
+	sub, err := nc.SubscribeSync("RP.>")
+	require_NoError(t, err)
+
+	msg, toSend := bytes.Repeat([]byte("Z"), 512), 100
+	for i := 0; i < toSend; i++ {
+		js.PublishAsync("foo", msg)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	checkSubsPending(t, sub, toSend)
+	_, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+}
+
 func TestJetStreamConsumerDeliverNewNotConsumingBeforeRestart(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
