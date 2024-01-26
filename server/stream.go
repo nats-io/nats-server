@@ -4452,6 +4452,53 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		return NewJSInsufficientResourcesError()
 	}
 
+	// Republish state if needed.
+	var tsubj string
+	var tlseq uint64
+	var thdrsOnly bool
+	if mset.tr != nil {
+		tsubj, _ = mset.tr.Match(subject)
+		if mset.cfg.RePublish != nil {
+			thdrsOnly = mset.cfg.RePublish.HeadersOnly
+		}
+	}
+
+	// Check for republish. Do this before interest checks, otherwise an interest retention
+	// stream that has no consumers will not republish correctly.
+	if republish := tsubj != _EMPTY_ && isLeader; republish {
+		// If we are republishing grab last sequence for this exact subject. Aids in gap detection for lightweight clients.
+		var smv StoreMsg
+		if sm, _ := store.LoadLastMsg(subject, &smv); sm != nil {
+			tlseq = sm.seq
+		}
+
+		tsStr := time.Unix(0, ts).UTC().Format(time.RFC3339Nano)
+		var rpMsg []byte
+		if len(hdr) == 0 {
+			const ht = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\nNats-Last-Sequence: %d\r\n\r\n"
+			const htho = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\nNats-Last-Sequence: %d\r\nNats-Msg-Size: %d\r\n\r\n"
+			if !thdrsOnly {
+				hdr = []byte(fmt.Sprintf(ht, name, subject, seq, tsStr, tlseq))
+				rpMsg = copyBytes(msg)
+			} else {
+				hdr = []byte(fmt.Sprintf(htho, name, subject, seq, tsStr, tlseq, len(msg)))
+			}
+		} else {
+			// Slow path.
+			hdr = genHeader(hdr, JSStream, name)
+			hdr = genHeader(hdr, JSSubject, subject)
+			hdr = genHeader(hdr, JSSequence, strconv.FormatUint(seq, 10))
+			hdr = genHeader(hdr, JSTimeStamp, tsStr)
+			hdr = genHeader(hdr, JSLastSequence, strconv.FormatUint(tlseq, 10))
+			if !thdrsOnly {
+				rpMsg = copyBytes(msg)
+			} else {
+				hdr = genHeader(hdr, JSMsgSize, strconv.Itoa(len(msg)))
+			}
+		}
+		mset.outq.send(newJSPubMsg(tsubj, _EMPTY_, _EMPTY_, copyBytes(hdr), rpMsg, nil, seq))
+	}
+
 	var noInterest bool
 
 	// If we are interest based retention and have no consumers then we can skip.
@@ -4501,26 +4548,6 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	clfs := mset.clfs
 	mset.lseq++
 	tierName := mset.tier
-
-	// Republish state if needed.
-	var tsubj string
-	var tlseq uint64
-	var thdrsOnly bool
-	if mset.tr != nil {
-		tsubj, _ = mset.tr.Match(subject)
-		if mset.cfg.RePublish != nil {
-			thdrsOnly = mset.cfg.RePublish.HeadersOnly
-		}
-	}
-	republish := tsubj != _EMPTY_ && isLeader
-
-	// If we are republishing grab last sequence for this exact subject. Aids in gap detection for lightweight clients.
-	if republish {
-		var smv StoreMsg
-		if sm, _ := store.LoadLastMsg(subject, &smv); sm != nil {
-			tlseq = sm.seq
-		}
-	}
 
 	// Store actual msg.
 	if lseq == 0 && ts == 0 {
@@ -4598,35 +4625,6 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		mset.purge(&JSApiStreamPurgeRequest{Subject: subject, Keep: 1})
 	} else if rollupAll {
 		mset.purge(&JSApiStreamPurgeRequest{Keep: 1})
-	}
-
-	// Check for republish.
-	if republish {
-		tsStr := time.Unix(0, ts).UTC().Format(time.RFC3339Nano)
-		var rpMsg []byte
-		if len(hdr) == 0 {
-			const ht = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\nNats-Last-Sequence: %d\r\n\r\n"
-			const htho = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\nNats-Last-Sequence: %d\r\nNats-Msg-Size: %d\r\n\r\n"
-			if !thdrsOnly {
-				hdr = []byte(fmt.Sprintf(ht, name, subject, seq, tsStr, tlseq))
-				rpMsg = copyBytes(msg)
-			} else {
-				hdr = []byte(fmt.Sprintf(htho, name, subject, seq, tsStr, tlseq, len(msg)))
-			}
-		} else {
-			// Slow path.
-			hdr = genHeader(hdr, JSStream, name)
-			hdr = genHeader(hdr, JSSubject, subject)
-			hdr = genHeader(hdr, JSSequence, strconv.FormatUint(seq, 10))
-			hdr = genHeader(hdr, JSTimeStamp, tsStr)
-			hdr = genHeader(hdr, JSLastSequence, strconv.FormatUint(tlseq, 10))
-			if !thdrsOnly {
-				rpMsg = copyBytes(msg)
-			} else {
-				hdr = genHeader(hdr, JSMsgSize, strconv.Itoa(len(msg)))
-			}
-		}
-		mset.outq.send(newJSPubMsg(tsubj, _EMPTY_, _EMPTY_, copyBytes(hdr), rpMsg, nil, seq))
 	}
 
 	// Send response here.
