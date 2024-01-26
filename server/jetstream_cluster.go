@@ -2313,7 +2313,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	// We can arrive here NOT being the leader, so we send the snapshot only if we are, and in this case
 	// reset the notion that we need to send the snapshot. If we are not, then the first time the server
 	// will switch to leader (in the loop below), we will send the snapshot.
-	if sendSnapshot && isLeader && mset != nil && n != nil {
+	if sendSnapshot && isLeader && mset != nil && n != nil && !isRecovering {
 		n.SendSnapshot(mset.stateSnapshot())
 		sendSnapshot = false
 	}
@@ -2336,6 +2336,12 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					// Check on startup if we should snapshot/compact.
 					if _, b := n.Size(); b > compactSizeMin || n.NeedSnapshot() {
 						doSnapshot()
+					}
+					// If we became leader during this time and we need to send a snapshot to our
+					// followers, i.e. as a result of a scale-up from R1, do it now.
+					if sendSnapshot && isLeader && mset != nil && n != nil {
+						n.SendSnapshot(mset.stateSnapshot())
+						sendSnapshot = false
 					}
 					continue
 				}
@@ -2376,7 +2382,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 		case isLeader = <-lch:
 			if isLeader {
-				if mset != nil && n != nil && sendSnapshot {
+				if mset != nil && n != nil && sendSnapshot && !isRecovering {
+					// If we *are* recovering at the time then this will get done when the apply queue
+					// handles the nil guard to show the catchup ended.
 					n.SendSnapshot(mset.stateSnapshot())
 					sendSnapshot = false
 				}
