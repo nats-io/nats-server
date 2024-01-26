@@ -32,6 +32,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nats-io/nats-server/v2/server/avl"
+
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/nuid"
 )
@@ -271,7 +273,7 @@ type stream struct {
 
 	// For non limits policy streams when they process an ack before the actual msg.
 	// Can happen in stretch clusters, multi-cloud, or during catchup for a restarted server.
-	preAcks map[uint64]map[*consumer]struct{}
+	preAcks map[*consumer]*avl.SequenceSet
 
 	// TODO(dlc) - Hide everything below behind two pointers.
 	// Clustered mode.
@@ -5491,19 +5493,20 @@ func (mset *stream) hasPreAck(o *consumer, seq uint64) bool {
 	if o == nil || len(mset.preAcks) == 0 {
 		return false
 	}
-	consumers := mset.preAcks[seq]
-	if len(consumers) == 0 {
-		return false
-	}
-	_, found := consumers[o]
-	return found
+	preacks, ok := mset.preAcks[o]
+	return ok && preacks.Exists(seq)
 }
 
 // Check if we have all consumers pre-acked for this sequence and subject.
 // Write lock should be held.
 func (mset *stream) hasAllPreAcks(seq uint64, subj string) bool {
-	if len(mset.preAcks) == 0 || len(mset.preAcks[seq]) == 0 {
+	if len(mset.preAcks) == 0 {
 		return false
+	}
+	for _, ss := range mset.preAcks {
+		if !ss.Exists(seq) {
+			return false
+		}
 	}
 	// Since these can be filtered and mutually exclusive,
 	// if we have some preAcks we need to check all interest here.
@@ -5513,15 +5516,30 @@ func (mset *stream) hasAllPreAcks(seq uint64, subj string) bool {
 // Check if we have all consumers pre-acked.
 // Write lock should be held.
 func (mset *stream) clearAllPreAcks(seq uint64) {
-	delete(mset.preAcks, seq)
+	for o, ss := range mset.preAcks {
+		if ss.Delete(seq) && ss.Size() == 0 {
+			delete(mset.preAcks, o)
+		}
+	}
 }
 
 // Clear all preAcks below floor.
 // Write lock should be held.
 func (mset *stream) clearAllPreAcksBelowFloor(floor uint64) {
-	for seq := range mset.preAcks {
-		if seq < floor {
-			delete(mset.preAcks, seq)
+	for o, ss := range mset.preAcks {
+		min, max := ss.MinMax()
+		if max < floor {
+			delete(mset.preAcks, o)
+			continue
+		}
+		if min > floor {
+			continue
+		}
+		for i := min; i < floor; i++ {
+			if ss.Delete(i) && ss.Size() == 0 {
+				delete(mset.preAcks, o)
+				break
+			}
 		}
 	}
 }
@@ -5541,12 +5559,12 @@ func (mset *stream) registerPreAck(o *consumer, seq uint64) {
 		return
 	}
 	if mset.preAcks == nil {
-		mset.preAcks = make(map[uint64]map[*consumer]struct{})
+		mset.preAcks = make(map[*consumer]*avl.SequenceSet)
 	}
-	if mset.preAcks[seq] == nil {
-		mset.preAcks[seq] = make(map[*consumer]struct{})
+	if mset.preAcks[o] == nil {
+		mset.preAcks[o] = &avl.SequenceSet{}
 	}
-	mset.preAcks[seq][o] = struct{}{}
+	mset.preAcks[o].Insert(seq)
 }
 
 // This will clear an ack for a consumer.
@@ -5555,10 +5573,9 @@ func (mset *stream) clearPreAck(o *consumer, seq uint64) {
 	if o == nil || len(mset.preAcks) == 0 {
 		return
 	}
-	if consumers := mset.preAcks[seq]; len(consumers) > 0 {
-		delete(consumers, o)
-		if len(consumers) == 0 {
-			delete(mset.preAcks, seq)
+	if ss, ok := mset.preAcks[o]; ok {
+		if ss.Delete(seq) && ss.Size() == 0 {
+			delete(mset.preAcks, o)
 		}
 	}
 }
