@@ -4384,8 +4384,9 @@ func (o *consumer) trackPending(sseq, dseq uint64) {
 		o.ptmr = time.AfterFunc(o.ackWait(0), o.checkPending)
 	}
 	if p, ok := o.pending[sseq]; ok {
+		// Update timestamp but keep original consumer delivery sequence.
+		// So do not update p.Sequence.
 		p.Timestamp = time.Now().UnixNano()
-		p.Sequence = dseq
 	} else {
 		o.pending[sseq] = &Pending{dseq, time.Now().UnixNano()}
 	}
@@ -4606,6 +4607,8 @@ func (o *consumer) checkPending() {
 		o.rdq = nil
 		o.rdqi.Empty()
 		o.pending = nil
+		// Mimic behavior in processAckMsg when pending is empty.
+		o.adflr, o.asflr = o.dseq-1, o.sseq-1
 	}
 
 	// Update our state if needed.
@@ -4936,6 +4939,7 @@ func (o *consumer) purge(sseq uint64, slseq uint64) {
 	// This means we can reset everything at this point.
 	if len(o.pending) == 0 {
 		o.pending, o.rdc = nil, nil
+		o.adflr, o.asflr = o.dseq-1, o.sseq-1
 	}
 
 	// We need to remove all those being queued for redelivery under o.rdq
