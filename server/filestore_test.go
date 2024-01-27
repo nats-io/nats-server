@@ -6558,6 +6558,61 @@ func TestFileStoreWriteFullStateHighSubjectCardinality(t *testing.T) {
 	t.Logf("Took %s to writeFullState", time.Since(start))
 }
 
+func TestFileStoreEraseMsgWithDbitSlots(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	fs.StoreMsg("foo", nil, []byte("abd"))
+	for i := 0; i < 10; i++ {
+		fs.SkipMsg()
+	}
+	fs.StoreMsg("foo", nil, []byte("abd"))
+	// Now grab that first block and compact away the skips which will
+	// introduce dbits into our idx.
+	fs.mu.RLock()
+	mb := fs.blks[0]
+	fs.mu.RUnlock()
+	// Compact.
+	mb.mu.Lock()
+	mb.compact()
+	mb.mu.Unlock()
+
+	removed, err := fs.EraseMsg(1)
+	require_NoError(t, err)
+	require_True(t, removed)
+}
+
+func TestFileStoreEraseMsgWithAllTrailingDbitSlots(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	fs.StoreMsg("foo", nil, []byte("abc"))
+	fs.StoreMsg("foo", nil, []byte("abcdefg"))
+
+	for i := 0; i < 10; i++ {
+		fs.SkipMsg()
+	}
+	// Now grab that first block and compact away the skips which will
+	// introduce dbits into our idx.
+	fs.mu.RLock()
+	mb := fs.blks[0]
+	fs.mu.RUnlock()
+	// Compact.
+	mb.mu.Lock()
+	mb.compact()
+	mb.mu.Unlock()
+
+	removed, err := fs.EraseMsg(2)
+	require_NoError(t, err)
+	require_True(t, removed)
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////

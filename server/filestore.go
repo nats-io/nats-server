@@ -3921,11 +3921,24 @@ func (mb *msgBlock) slotInfo(slot int) (uint32, uint32, bool, error) {
 
 	// Determine record length
 	var rl uint32
-	if len(mb.cache.idx) > slot+1 {
-		ni := mb.cache.idx[slot+1] &^ hbit
-		rl = ni - ri
-	} else {
+	if slot >= len(mb.cache.idx) {
 		rl = mb.cache.lrl
+	} else {
+		// Need to account for dbit markers in idx.
+		// So we will walk until we find valid idx slot to calculate rl.
+		for i := 1; slot+i < len(mb.cache.idx); i++ {
+			ni := mb.cache.idx[slot+i] &^ hbit
+			if ni == dbit {
+				continue
+			}
+			rl = ni - ri
+			break
+		}
+		// check if we had all trailing dbits.
+		// If so use len of cache buf minus ri.
+		if rl == 0 {
+			rl = uint32(len(mb.cache.buf)) - ri
+		}
 	}
 	if rl < msgHdrSize {
 		return 0, 0, false, errBadMsg
@@ -5659,7 +5672,7 @@ const (
 	ebit = 1 << 63
 	// Used for marking tombstone sequences.
 	tbit = 1 << 62
-	// Used to mark a bad index as deleted.
+	// Used to mark an index as deleted and non-existent.
 	dbit = 1 << 30
 )
 
