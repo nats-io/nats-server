@@ -22247,3 +22247,70 @@ func TestJetStreamDirectGetBatchMaxBytes(t *testing.T) {
 	expected := (int(s.getOpts().MaxPending) / msgSize) + 1
 	sendRequestAndCheck(&JSApiMsgGetRequest{Seq: 1, Batch: 200}, expected+1)
 }
+
+func TestJetStreamConsumerNakThenAckFloorMove(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 11; i++ {
+		js.Publish("foo", []byte("OK"))
+	}
+
+	sub, err := js.PullSubscribe("foo", "dlc", nats.AckWait(100*time.Millisecond))
+	require_NoError(t, err)
+
+	msgs, err := sub.Fetch(11)
+	require_NoError(t, err)
+
+	// Nak first one
+	msgs[0].Nak()
+
+	// Ack 2-10
+	for i := 1; i < 10; i++ {
+		msgs[i].AckSync()
+	}
+	// Hold onto last.
+	lastMsg := msgs[10]
+
+	ci, err := sub.ConsumerInfo()
+	require_NoError(t, err)
+
+	require_Equal(t, ci.AckFloor.Consumer, 0)
+	require_Equal(t, ci.AckFloor.Stream, 0)
+	require_Equal(t, ci.NumAckPending, 2)
+
+	// Grab first messsage again and ack this time.
+	msgs, err = sub.Fetch(1)
+	require_NoError(t, err)
+	msgs[0].AckSync()
+
+	ci, err = sub.ConsumerInfo()
+	require_NoError(t, err)
+
+	require_Equal(t, ci.Delivered.Consumer, 12)
+	require_Equal(t, ci.Delivered.Stream, 11)
+	require_Equal(t, ci.AckFloor.Consumer, 10)
+	require_Equal(t, ci.AckFloor.Stream, 10)
+	require_Equal(t, ci.NumAckPending, 1)
+
+	// Make sure when we ack last one we collapse the AckFloor.Consumer
+	// with the higher delivered due to re-deliveries.
+	lastMsg.AckSync()
+	ci, err = sub.ConsumerInfo()
+	require_NoError(t, err)
+
+	require_Equal(t, ci.Delivered.Consumer, 12)
+	require_Equal(t, ci.Delivered.Stream, 11)
+	require_Equal(t, ci.AckFloor.Consumer, 12)
+	require_Equal(t, ci.AckFloor.Stream, 11)
+	require_Equal(t, ci.NumAckPending, 0)
+}
