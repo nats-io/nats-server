@@ -1625,7 +1625,6 @@ func (s *Server) shutdownEventing() {
 	// internal send loop to exit.
 	s.sendShutdownEvent()
 	wg.Wait()
-	close(rc)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1637,6 +1636,9 @@ func (s *Server) shutdownEventing() {
 	})
 	// Turn everything off here.
 	s.sys = nil
+	// Make sure this is done after s.sys = nil, so that we don't
+	// get sends to closed channels on badly-timed config reloads.
+	close(rc)
 }
 
 // Request for our local connection count.
