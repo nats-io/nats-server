@@ -4642,6 +4642,10 @@ func TestFileStoreAllFilteredStateWithDeleted(t *testing.T) {
 		checkFilteredState(6, 95, 6, 100)
 		remove(8, 10, 12, 14, 16, 18)
 		checkFilteredState(7, 88, 7, 100)
+
+		// Now check when purged that we return first and last sequences properly.
+		fs.Purge()
+		checkFilteredState(0, 0, 101, 100)
 	})
 }
 

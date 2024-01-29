@@ -2415,6 +2415,9 @@ func (fs *fileStore) FilteredState(sseq uint64, subj string) SimpleState {
 
 	// If past the end no results.
 	if sseq > lseq {
+		// Make sure we track sequences
+		ss.First = fs.state.FirstSeq
+		ss.Last = fs.state.LastSeq
 		return ss
 	}
 
