@@ -637,9 +637,9 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	mset.store.FastState(&state)
 
 	// Possible race with consumer.setLeader during recovery.
-	mset.mu.Lock()
+	mset.mu.RLock()
 	mset.lseq = state.LastSeq
-	mset.mu.Unlock()
+	mset.mu.RUnlock()
 
 	// If no msgs (new stream), set dedupe state loaded to true.
 	if state.Msgs == 0 {
@@ -5763,7 +5763,7 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 	return mset, nil
 }
 
-// This is to check for dangling messages on interest retention streams.
+// This is to check for dangling messages on interest retention streams. Only called on account enable.
 // Issue https://github.com/nats-io/nats-server/issues/3612
 func (mset *stream) checkForOrphanMsgs() {
 	mset.mu.RLock()
@@ -5771,9 +5771,23 @@ func (mset *stream) checkForOrphanMsgs() {
 	for _, o := range mset.consumers {
 		consumers = append(consumers, o)
 	}
+	accName, stream := mset.acc.Name, mset.cfg.Name
+
+	var ss StreamState
+	mset.store.FastState(&ss)
 	mset.mu.RUnlock()
+
 	for _, o := range consumers {
-		o.checkStateForInterestStream()
+		if err := o.checkStateForInterestStream(); err == errAckFloorHigherThanLastSeq {
+			o.mu.RLock()
+			s, consumer := o.srv, o.name
+			state, _ := o.store.State()
+			asflr := state.AckFloor.Stream
+			o.mu.RUnlock()
+			// Warn about stream state vs our ack floor.
+			s.RateLimitWarnf("Detected consumer '%s > %s > %s' ack floor %d is ahead of stream's last sequence %d",
+				accName, stream, consumer, asflr, ss.LastSeq)
+		}
 	}
 }
 
