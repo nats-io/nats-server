@@ -1,4 +1,4 @@
-// Copyright 2013-2023 The NATS Authors
+// Copyright 2013-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -98,6 +98,8 @@ type route struct {
 	// Selected compression mode, which may be different from the
 	// server configured mode.
 	compression string
+	// Indicate if message traces can be routed
+	msgTraceOk bool
 }
 
 type connectInfo struct {
@@ -768,6 +770,7 @@ func (c *client) processRouteInfo(info *Info) {
 	c.route.remoteName = info.Name
 	c.route.lnoc = info.LNOC
 	c.route.jetstream = info.JetStream
+	c.route.msgTraceOk = info.MsgTraceOk
 
 	// When sent through route INFO, if the field is set, it should be of size 1.
 	if len(info.LeafNodeURLs) == 1 {
@@ -2487,6 +2490,7 @@ func (s *Server) startRouteAcceptLoop() {
 		Domain:       s.info.Domain,
 		Dynamic:      s.isClusterNameDynamic(),
 		LNOC:         true,
+		MsgTraceOk:   true,
 	}
 	// For tests that want to simulate old servers, do not set the compression
 	// on the INFO protocol if configured with CompressionNotSupported.

@@ -96,6 +96,8 @@ type leaf struct {
 	tsubt *time.Timer
 	// Selected compression mode, which may be different from the server configured mode.
 	compression string
+	// Indicate if message traces can be routed
+	msgTraceOk bool
 }
 
 // Used for remote (solicited) leafnodes.
@@ -721,6 +723,7 @@ func (s *Server) startLeafNodeAcceptLoop() {
 		Domain:        opts.JetStreamDomain,
 		Proto:         1, // Fixed for now.
 		InfoOnConnect: true,
+		MsgTraceOk:    true,
 	}
 	// If we have selected a random port...
 	if port == 0 {
@@ -783,6 +786,7 @@ func (c *client) sendLeafConnect(clusterName string, headers bool) error {
 		DenyPub:       c.leaf.remote.DenyImports,
 		Compression:   c.leaf.compression,
 		RemoteAccount: c.acc.GetName(),
+		MsgTrace:      true,
 	}
 
 	// If a signature callback is specified, this takes precedence over anything else.
@@ -1296,6 +1300,7 @@ func (c *client) processLeafnodeInfo(info *Info) {
 		}
 		c.leaf.remoteDomain = info.Domain
 		c.leaf.remoteCluster = info.Cluster
+		c.leaf.msgTraceOk = info.MsgTraceOk
 	}
 
 	// For both initial INFO and async INFO protocols, Possibly
@@ -1716,6 +1721,7 @@ type leafConnectInfo struct {
 	Cluster   string   `json:"cluster,omitempty"`
 	Headers   bool     `json:"headers,omitempty"`
 	JetStream bool     `json:"jetstream,omitempty"`
+	MsgTrace  bool     `json:"msg_trace,omitempty"`
 	DenyPub   []string `json:"deny_pub,omitempty"`
 
 	// There was an existing field called:
@@ -1812,6 +1818,8 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	c.leaf.remoteServer = proto.Name
 	// Remember the remote account name
 	c.leaf.remoteAccName = proto.RemoteAccount
+	// Does the remote support message tracing
+	c.leaf.msgTraceOk = proto.MsgTrace
 
 	// If the other side has declared itself a hub, so we will take on the spoke role.
 	if proto.Hub {
