@@ -4047,3 +4047,88 @@ func TestJetStreamSuperClusterR1StreamPeerRemove(t *testing.T) {
 	_, err = js.StreamInfo("TEST")
 	require_NoError(t, err)
 }
+
+func TestJetStreamSuperClusterConsumerPauseAdvisories(t *testing.T) {
+	sc := createJetStreamSuperCluster(t, 3, 3)
+	defer sc.shutdown()
+
+	nc, js := jsClientConnect(t, sc.randomServer())
+	defer nc.Close()
+
+	pauseReq := func(consumer string, deadline time.Time) time.Time {
+		j, err := json.Marshal(JSApiConsumerPauseRequest{
+			PauseUntil: deadline,
+		})
+		require_NoError(t, err)
+		msg, err := nc.Request(fmt.Sprintf(JSApiConsumerPauseT, "TEST", consumer), j, time.Second)
+		require_NoError(t, err)
+		var res JSApiConsumerPauseResponse
+		err = json.Unmarshal(msg.Data, &res)
+		require_NoError(t, err)
+		return res.PauseUntil
+	}
+
+	checkAdvisory := func(msg *nats.Msg, shouldBePaused bool, deadline time.Time) {
+		t.Helper()
+		var advisory JSConsumerPauseAdvisory
+		require_NoError(t, json.Unmarshal(msg.Data, &advisory))
+		require_Equal(t, advisory.Stream, "TEST")
+		require_Equal(t, advisory.Consumer, "my_consumer")
+		require_Equal(t, advisory.Paused, shouldBePaused)
+		require_True(t, advisory.PauseUntil.Equal(deadline))
+	}
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	ch := make(chan *nats.Msg, 10)
+	_, err = nc.ChanSubscribe(JSAdvisoryConsumerPausePre+".TEST.my_consumer", ch)
+	require_NoError(t, err)
+
+	deadline := time.Now().Add(time.Second)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Name:       "my_consumer",
+		PauseUntil: deadline,
+		Replicas:   3,
+	})
+	require_NoError(t, err)
+
+	// First advisory should tell us that the consumer was paused
+	// on creation.
+	msg := require_ChanRead(t, ch, time.Second*2)
+	checkAdvisory(msg, true, deadline)
+	require_Len(t, len(ch), 0) // Should only receive one advisory.
+
+	// The second one for the unpause.
+	msg = require_ChanRead(t, ch, time.Second*2)
+	checkAdvisory(msg, false, deadline)
+	require_Len(t, len(ch), 0) // Should only receive one advisory.
+
+	// Now we'll pause the consumer for a second using the API.
+	deadline = time.Now().Add(time.Second)
+	require_True(t, pauseReq("my_consumer", deadline).Equal(deadline))
+
+	// Third advisory should tell us about the pause via the API.
+	msg = require_ChanRead(t, ch, time.Second*2)
+	checkAdvisory(msg, true, deadline)
+	require_Len(t, len(ch), 0) // Should only receive one advisory.
+
+	// Finally that should unpause.
+	msg = require_ChanRead(t, ch, time.Second*2)
+	checkAdvisory(msg, false, deadline)
+	require_Len(t, len(ch), 0) // Should only receive one advisory.
+
+	// Now we're going to set the deadline into the future so we can
+	// see what happens when we kick leaders or restart.
+	deadline = time.Now().Add(time.Hour)
+	require_True(t, pauseReq("my_consumer", deadline).Equal(deadline))
+
+	// Setting the deadline should have generated an advisory.
+	msg = require_ChanRead(t, ch, time.Second*2)
+	checkAdvisory(msg, true, deadline)
+	require_Len(t, len(ch), 0) // Should only receive one advisory.
+}

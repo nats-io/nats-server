@@ -80,6 +80,18 @@ type JSConsumerActionAdvisory struct {
 
 const JSConsumerActionAdvisoryType = "io.nats.jetstream.advisory.v1.consumer_action"
 
+// JSConsumerPauseAdvisory indicates that a consumer was paused or unpaused
+type JSConsumerPauseAdvisory struct {
+	TypedEvent
+	Stream     string    `json:"stream"`
+	Consumer   string    `json:"consumer"`
+	Paused     bool      `json:"paused"`
+	PauseUntil time.Time `json:"pause_until,omitempty"`
+	Domain     string    `json:"domain,omitempty"`
+}
+
+const JSConsumerPauseAdvisoryType = "io.nats.jetstream.advisory.v1.consumer_pause"
+
 // JSConsumerAckMetric is a metric published when a user acknowledges a message, the
 // number of these that will be published is dependent on SampleFrequency
 type JSConsumerAckMetric struct {
