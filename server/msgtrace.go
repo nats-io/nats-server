@@ -15,6 +15,7 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -110,6 +111,11 @@ type MsgTraceEgress struct {
 	Subscription string `json:"sub,omitempty"`
 	Queue        string `json:"queue,omitempty"`
 	Error        string `json:"error,omitempty"`
+
+	// This is for applications that unmarshal the trace events
+	// and want to link an egress to route/leaf/gateway with
+	// the MsgTraceEvent from that server.
+	Link *MsgTraceEvent `json:"-"`
 }
 
 // -------------------------------------------------------------
@@ -121,6 +127,40 @@ func (_ MsgTraceStreamExport) new() MsgTrace   { return &MsgTraceStreamExport{} 
 func (_ MsgTraceServiceImport) new() MsgTrace  { return &MsgTraceServiceImport{} }
 func (_ MsgTraceJetStream) new() MsgTrace      { return &MsgTraceJetStream{} }
 func (_ MsgTraceEgress) new() MsgTrace         { return &MsgTraceEgress{} }
+
+var msgTraceInterfaces = map[MsgTraceType]MsgTrace{
+	MsgTraceIngressType:        MsgTraceIngress{},
+	MsgTraceSubjectMappingType: MsgTraceSubjectMapping{},
+	MsgTraceStreamExportType:   MsgTraceStreamExport{},
+	MsgTraceServiceImportType:  MsgTraceServiceImport{},
+	MsgTraceJetStreamType:      MsgTraceJetStream{},
+	MsgTraceEgressType:         MsgTraceEgress{},
+}
+
+func (t *MsgTraceEvents) UnmarshalJSON(data []byte) error {
+	var raw []json.RawMessage
+	err := json.Unmarshal(data, &raw)
+	if err != nil {
+		return err
+	}
+	*t = make(MsgTraceEvents, len(raw))
+	var tt MsgTraceBase
+	for i, r := range raw {
+		if err = json.Unmarshal(r, &tt); err != nil {
+			return err
+		}
+		tr, ok := msgTraceInterfaces[tt.Type]
+		if !ok {
+			return fmt.Errorf("Unknown trace type %v", tt.Type)
+		}
+		te := tr.new()
+		if err := json.Unmarshal(r, te); err != nil {
+			return err
+		}
+		(*t)[i] = te
+	}
+	return nil
+}
 
 func getTraceAs[T MsgTrace](e any) *T {
 	v, ok := e.(*T)

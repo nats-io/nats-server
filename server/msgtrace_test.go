@@ -29,42 +29,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-var msgTraceInterfaces = map[MsgTraceType]MsgTrace{
-	MsgTraceIngressType:        MsgTraceIngress{},
-	MsgTraceSubjectMappingType: MsgTraceSubjectMapping{},
-	MsgTraceStreamExportType:   MsgTraceStreamExport{},
-	MsgTraceServiceImportType:  MsgTraceServiceImport{},
-	MsgTraceJetStreamType:      MsgTraceJetStream{},
-	MsgTraceEgressType:         MsgTraceEgress{},
-}
-
 func init() {
 	msgTraceRunInTests = true
-}
-
-func (t *MsgTraceEvents) UnmarshalJSON(data []byte) error {
-	var raw []json.RawMessage
-	err := json.Unmarshal(data, &raw)
-	if err != nil {
-		return err
-	}
-	*t = make(MsgTraceEvents, len(raw))
-	var tt MsgTraceBase
-	for i, r := range raw {
-		if err = json.Unmarshal(r, &tt); err != nil {
-			return err
-		}
-		tr, ok := msgTraceInterfaces[tt.Type]
-		if !ok {
-			return fmt.Errorf("Unknown trace type %v", tt.Type)
-		}
-		te := tr.new()
-		if err := json.Unmarshal(r, te); err != nil {
-			return err
-		}
-		(*t)[i] = te
-	}
-	return nil
 }
 
 func TestMsgTraceConnName(t *testing.T) {
