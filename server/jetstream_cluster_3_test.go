@@ -1,4 +1,4 @@
-// Copyright 2022-2023 The NATS Authors
+// Copyright 2022-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -25,6 +25,7 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -5920,4 +5921,77 @@ func TestJetStreamClusterAPIAccessViaSystemAccount(t *testing.T) {
 
 	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST"})
 	require_Error(t, err, NewJSNotEnabledForAccountError())
+}
+
+func TestJetStreamClusterStreamResetPreacks(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.InterestPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	err = js.PurgeStream("TEST", &nats.StreamPurgeRequest{Sequence: 100_000_000})
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe("foo", "dlc")
+	require_NoError(t, err)
+
+	// Put 20 msgs in.
+	for i := 0; i < 20; i++ {
+		_, err := js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	// Consume and ack 10.
+	msgs, err := sub.Fetch(10, nats.MaxWait(time.Second))
+	require_NoError(t, err)
+	require_Equal(t, len(msgs), 10)
+
+	for _, msg := range msgs {
+		msg.AckSync()
+	}
+
+	// Now grab a non-leader server.
+	// We will shut it down and remove the stream data.
+	nl := c.randomNonStreamLeader(globalAccountName, "TEST")
+	mset, err := nl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	fs := mset.store.(*fileStore)
+	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
+	nl.Shutdown()
+	// In case that was the consumer leader.
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "dlc")
+
+	// Now consume the remaining 10 and ack.
+	msgs, err = sub.Fetch(10, nats.MaxWait(time.Second))
+	require_NoError(t, err)
+	require_Equal(t, len(msgs), 10)
+
+	for _, msg := range msgs {
+		msg.AckSync()
+	}
+
+	// Now remove the stream manually.
+	require_NoError(t, os.RemoveAll(mdir))
+	nl = c.restartServer(nl)
+	c.waitOnServerCurrent(nl)
+
+	mset, err = nl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		state := mset.state()
+		if state.Msgs != 0 || state.FirstSeq != 100_000_020 {
+			return fmt.Errorf("Not correct state yet: %+v", state)
+		}
+		return nil
+	})
 }

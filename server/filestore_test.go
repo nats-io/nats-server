@@ -4642,6 +4642,10 @@ func TestFileStoreAllFilteredStateWithDeleted(t *testing.T) {
 		checkFilteredState(6, 95, 6, 100)
 		remove(8, 10, 12, 14, 16, 18)
 		checkFilteredState(7, 88, 7, 100)
+
+		// Now check when purged that we return first and last sequences properly.
+		fs.Purge()
+		checkFilteredState(0, 0, 101, 100)
 	})
 }
 
@@ -5316,7 +5320,8 @@ func TestFileStoreFullStateBasics(t *testing.T) {
 
 		// Make sure we are tracking subjects correctly.
 		fs.mu.RLock()
-		psi := *fs.psim[subj]
+		info, _ := fs.psim.Find(stringToBytes(subj))
+		psi := *info
 		fs.mu.RUnlock()
 
 		require_Equal(t, psi.total, 4)
@@ -5341,7 +5346,8 @@ func TestFileStoreFullStateBasics(t *testing.T) {
 		require_Equal(t, fs.numMsgBlocks(), 3)
 		// Make sure we are tracking subjects correctly.
 		fs.mu.RLock()
-		psi = *fs.psim[subj]
+		info, _ = fs.psim.Find(stringToBytes(subj))
+		psi = *info
 		fs.mu.RUnlock()
 		require_Equal(t, psi.total, 5)
 		require_Equal(t, psi.fblk, 1)
@@ -5971,7 +5977,8 @@ func TestFileStoreCompactAndPSIMWhenDeletingBlocks(t *testing.T) {
 	require_Equal(t, fs.numMsgBlocks(), 1)
 
 	fs.mu.RLock()
-	psi := fs.psim[subj]
+	info, _ := fs.psim.Find(stringToBytes(subj))
+	psi := *info
 	fs.mu.RUnlock()
 
 	require_Equal(t, psi.total, 1)
@@ -6014,7 +6021,6 @@ func TestFileStoreTrackSubjLenForPSIM(t *testing.T) {
 
 	check := func() {
 		t.Helper()
-
 		var total int
 		for _, slen := range smap {
 			total += slen
@@ -6197,7 +6203,7 @@ func TestFileStoreNumPendingLastBySubject(t *testing.T) {
 	sd, blkSize := t.TempDir(), uint64(1024)
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: sd, BlockSize: blkSize},
-		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*.*"}, Storage: FileStorage})
 	require_NoError(t, err)
 	defer fs.Stop()
 
@@ -6263,11 +6269,11 @@ func TestFileStoreCorruptPSIMOnDisk(t *testing.T) {
 
 	// Force bad subject.
 	fs.mu.Lock()
-	psi := fs.psim["foo.bar"]
+	psi, _ := fs.psim.Find(stringToBytes("foo.bar"))
 	bad := make([]byte, 7)
 	crand.Read(bad)
-	fs.psim[string(bad)] = psi
-	delete(fs.psim, "foo.bar")
+	fs.psim.Insert(bad, *psi)
+	fs.psim.Delete(stringToBytes("foo.bar"))
 	fs.dirty++
 	fs.mu.Unlock()
 
@@ -6531,6 +6537,84 @@ func TestFileStoreOptimizeFirstLoadNextMsgWithSequenceZero(t *testing.T) {
 	require_Equal(t, nseq, 5001)
 	// Now check how many blks are loaded, should be only 1.
 	require_Equal(t, fs.cacheLoads(), 1)
+}
+
+func TestFileStoreWriteFullStateHighSubjectCardinality(t *testing.T) {
+	t.Skip()
+
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 4096},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := []byte{1, 2, 3}
+
+	for i := 0; i < 1_000_000; i++ {
+		subj := fmt.Sprintf("subj_%d", i)
+		_, _, err := fs.StoreMsg(subj, nil, msg)
+		require_NoError(t, err)
+	}
+
+	start := time.Now()
+	require_NoError(t, fs.writeFullState())
+	t.Logf("Took %s to writeFullState", time.Since(start))
+}
+
+func TestFileStoreEraseMsgWithDbitSlots(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	fs.StoreMsg("foo", nil, []byte("abd"))
+	for i := 0; i < 10; i++ {
+		fs.SkipMsg()
+	}
+	fs.StoreMsg("foo", nil, []byte("abd"))
+	// Now grab that first block and compact away the skips which will
+	// introduce dbits into our idx.
+	fs.mu.RLock()
+	mb := fs.blks[0]
+	fs.mu.RUnlock()
+	// Compact.
+	mb.mu.Lock()
+	mb.compact()
+	mb.mu.Unlock()
+
+	removed, err := fs.EraseMsg(1)
+	require_NoError(t, err)
+	require_True(t, removed)
+}
+
+func TestFileStoreEraseMsgWithAllTrailingDbitSlots(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	fs.StoreMsg("foo", nil, []byte("abc"))
+	fs.StoreMsg("foo", nil, []byte("abcdefg"))
+
+	for i := 0; i < 10; i++ {
+		fs.SkipMsg()
+	}
+	// Now grab that first block and compact away the skips which will
+	// introduce dbits into our idx.
+	fs.mu.RLock()
+	mb := fs.blks[0]
+	fs.mu.RUnlock()
+	// Compact.
+	mb.mu.Lock()
+	mb.compact()
+	mb.mu.Unlock()
+
+	removed, err := fs.EraseMsg(2)
+	require_NoError(t, err)
+	require_True(t, removed)
 }
 
 ///////////////////////////////////////////////////////////////////////////

@@ -4384,8 +4384,9 @@ func (o *consumer) trackPending(sseq, dseq uint64) {
 		o.ptmr = time.AfterFunc(o.ackWait(0), o.checkPending)
 	}
 	if p, ok := o.pending[sseq]; ok {
+		// Update timestamp but keep original consumer delivery sequence.
+		// So do not update p.Sequence.
 		p.Timestamp = time.Now().UnixNano()
-		p.Sequence = dseq
 	} else {
 		o.pending[sseq] = &Pending{dseq, time.Now().UnixNano()}
 	}
@@ -4606,6 +4607,8 @@ func (o *consumer) checkPending() {
 		o.rdq = nil
 		o.rdqi.Empty()
 		o.pending = nil
+		// Mimic behavior in processAckMsg when pending is empty.
+		o.adflr, o.asflr = o.dseq-1, o.sseq-1
 	}
 
 	// Update our state if needed.
@@ -4936,6 +4939,7 @@ func (o *consumer) purge(sseq uint64, slseq uint64) {
 	// This means we can reset everything at this point.
 	if len(o.pending) == 0 {
 		o.pending, o.rdc = nil, nil
+		o.adflr, o.asflr = o.dseq-1, o.sseq-1
 	}
 
 	// We need to remove all those being queued for redelivery under o.rdq
@@ -5330,32 +5334,41 @@ func (o *consumer) isMonitorRunning() bool {
 	return o.inMonitor
 }
 
+// If we detect that our ackfloor is higher than the stream's last sequence, return this error.
+var errAckFloorHigherThanLastSeq = errors.New("consumer ack floor is higher than streams last sequence")
+
 // If we are a consumer of an interest or workqueue policy stream, process that state and make sure consistent.
-func (o *consumer) checkStateForInterestStream() {
-	o.mu.Lock()
+func (o *consumer) checkStateForInterestStream() error {
+	o.mu.RLock()
 	// See if we need to process this update if our parent stream is not a limits policy stream.
 	mset := o.mset
 	shouldProcessState := mset != nil && o.retention != LimitsPolicy
 	if o.closed || !shouldProcessState {
-		o.mu.Unlock()
-		return
+		o.mu.RUnlock()
+		return nil
 	}
 	state, err := o.store.State()
-	o.mu.Unlock()
+	o.mu.RUnlock()
 
 	if err != nil {
-		return
+		return err
 	}
 
 	asflr := state.AckFloor.Stream
 	// Protect ourselves against rolling backwards.
 	if asflr&(1<<63) != 0 {
-		return
+		return nil
 	}
 
 	// We should make sure to update the acks.
 	var ss StreamState
 	mset.store.FastState(&ss)
+
+	// Check if the underlying stream's last sequence is less than our floor.
+	// This can happen if the stream has been reset and has not caught up yet.
+	if asflr > ss.LastSeq {
+		return errAckFloorHigherThanLastSeq
+	}
 
 	for seq := ss.FirstSeq; seq <= asflr; seq++ {
 		mset.ackMsg(o, seq)
@@ -5374,4 +5387,5 @@ func (o *consumer) checkStateForInterestStream() {
 			}
 		}
 	}
+	return nil
 }

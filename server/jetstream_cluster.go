@@ -2235,7 +2235,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 		if err := n.InstallSnapshot(mset.stateSnapshot()); err == nil {
 			lastState, lastSnapTime = curState, time.Now()
-		} else if err != errNoSnapAvailable && err != errNodeClosed {
+		} else if err != errNoSnapAvailable && err != errNodeClosed && err != errCatchupsRunning {
 			s.RateLimitWarnf("Failed to install snapshot for '%s > %s' [%s]: %v", mset.acc.Name, mset.name(), n.Group(), err)
 		}
 	}
@@ -2300,7 +2300,11 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				if mset.numConsumers() >= numExpectedConsumers {
 					break
 				}
-				time.Sleep(sleepTime)
+				select {
+				case <-s.quitCh:
+					return
+				case <-time.After(sleepTime):
+				}
 			}
 			if actual := mset.numConsumers(); actual < numExpectedConsumers {
 				s.Warnf("All consumers not online for '%s > %s': expected %d but only have %d", accName, mset.name(), numExpectedConsumers, actual)
@@ -2313,7 +2317,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	// We can arrive here NOT being the leader, so we send the snapshot only if we are, and in this case
 	// reset the notion that we need to send the snapshot. If we are not, then the first time the server
 	// will switch to leader (in the loop below), we will send the snapshot.
-	if sendSnapshot && isLeader && mset != nil && n != nil {
+	if sendSnapshot && isLeader && mset != nil && n != nil && !isRecovering {
 		n.SendSnapshot(mset.stateSnapshot())
 		sendSnapshot = false
 	}
@@ -2333,9 +2337,14 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				// No special processing needed for when we are caught up on restart.
 				if ce == nil {
 					isRecovering = false
-					// Check on startup if we should snapshot/compact.
-					if _, b := n.Size(); b > compactSizeMin || n.NeedSnapshot() {
-						doSnapshot()
+					// Make sure we create a new snapshot in case things have changed such that any existing
+					// snapshot may no longer be valid.
+					doSnapshot()
+					// If we became leader during this time and we need to send a snapshot to our
+					// followers, i.e. as a result of a scale-up from R1, do it now.
+					if sendSnapshot && isLeader && mset != nil && n != nil {
+						n.SendSnapshot(mset.stateSnapshot())
+						sendSnapshot = false
 					}
 					continue
 				}
@@ -2376,7 +2385,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 		case isLeader = <-lch:
 			if isLeader {
-				if mset != nil && n != nil && sendSnapshot {
+				if mset != nil && n != nil && sendSnapshot && !isRecovering {
+					// If we *are* recovering at the time then this will get done when the apply queue
+					// handles the nil guard to show the catchup ended.
 					n.SendSnapshot(mset.stateSnapshot())
 					sendSnapshot = false
 				}
@@ -2843,6 +2854,19 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 
 				// Process the actual message here.
 				if err := mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts); err != nil {
+					if err == errLastSeqMismatch {
+						var state StreamState
+						mset.store.FastState(&state)
+						// If we have no msgs and the other side is delivering us a sequence past where we
+						// should be reset. This is possible if the other side has a stale snapshot and no longer
+						// has those messages. So compact and retry to reset.
+						if state.Msgs == 0 {
+							mset.store.Compact(lseq + 1)
+							// Retry
+							err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts)
+						}
+					}
+
 					// Only return in place if we are going to reset our stream or we are out of space, or we are closed.
 					if isClusterResetErr(err) || isOutOfSpaceErr(err) || err == errStreamClosed {
 						return err
@@ -4597,8 +4621,8 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			if !bytes.Equal(hash[:], lastSnap) || ne >= compactNumMin || nb >= compactSizeMin {
 				if err := n.InstallSnapshot(snap); err == nil {
 					lastSnap, lastSnapTime = hash[:], time.Now()
-				} else if err != errNoSnapAvailable && err != errNodeClosed {
-					s.Warnf("Failed to install snapshot for '%s > %s > %s' [%s]: %v", o.acc.Name, ca.Stream, ca.Name, n.Group(), err)
+				} else if err != errNoSnapAvailable && err != errNodeClosed && err != errCatchupsRunning {
+					s.RateLimitWarnf("Failed to install snapshot for '%s > %s > %s' [%s]: %v", o.acc.Name, ca.Stream, ca.Name, n.Group(), err)
 				}
 			}
 		}
@@ -7781,6 +7805,7 @@ func (mset *stream) processSnapshot(snap *StreamReplicatedState) (e error) {
 	mset.store.FastState(&state)
 	mset.setCLFS(snap.Failed)
 	sreq := mset.calculateSyncRequest(&state, snap)
+
 	s, js, subject, n := mset.srv, mset.js, mset.sa.Sync, mset.node
 	qname := fmt.Sprintf("[ACC:%s] stream '%s' snapshot", mset.acc.Name, mset.cfg.Name)
 	mset.mu.Unlock()
