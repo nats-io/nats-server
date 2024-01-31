@@ -3026,10 +3026,22 @@ func TestMQTTCluster(t *testing.T) {
 				for _, sn := range streams {
 					cl.waitOnStreamLeader(globalAccountName, sn)
 				}
-				// <>/<> TODO: need to find a way to wait for the consumer
-				// leader, but the names are unique and not predictable.
-				// cl.waitOnConsumerLeader(globalAccountName, mqttRetainedMsgsStreamName, "$MQTT_rmsgs_esFhDys3")
-				// cl.waitOnConsumerLeader(globalAccountName, mqttRetainedMsgsStreamName, "$MQTT_rmsgs_z3WIzPtj")
+
+				mset, err := cl.randomServer().GlobalAccount().lookupStream(mqttRetainedMsgsStreamName)
+				if err != nil {
+					t.Fatalf("Expected to find a stream for %q", mqttRetainedMsgsStreamName)
+				}
+
+				rmConsumerNames := []string{}
+				mset.mu.RLock()
+				for _, o := range mset.consumers {
+					rmConsumerNames = append(rmConsumerNames, o.name)
+				}
+				mset.mu.RUnlock()
+
+				for _, consumerName := range rmConsumerNames {
+					cl.waitOnConsumerLeader(globalAccountName, mqttRetainedMsgsStreamName, consumerName)
+				}
 			}
 		})
 	}
