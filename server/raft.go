@@ -3953,6 +3953,10 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 			n.resetElect(randCampaignTimeout())
 		}
 	}
+
+	// Term might have changed, make sure response has the most current
+	vresp.term = n.term
+
 	n.Unlock()
 
 	n.sendReply(vr.reply, vresp.encode())
