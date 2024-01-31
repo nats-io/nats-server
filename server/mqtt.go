@@ -1439,11 +1439,10 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		}
 	}
 
-	// Delete the old (legacy) consumer, from v2.10.10 and before.
+	// Opportunistically delete the old (legacy) consumer, from v2.10.10 and
+	// before. Ignore any errors that might arise.
 	rmLegacyDurName := mqttRetainedMsgsStreamName + "_" + jsa.id
-	if _, err := jsa.deleteConsumer(mqttRetainedMsgsStreamName, rmLegacyDurName); isErrorOtherThan(err, JSConsumerNotFoundErr) {
-		return nil, err
-	}
+	jsa.deleteConsumer(mqttRetainedMsgsStreamName, rmLegacyDurName)
 
 	// Using ephemeral consumer is too risky because if this server were to be
 	// disconnected from the rest for few seconds, then the leader would remove
