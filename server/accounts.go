@@ -1877,6 +1877,10 @@ func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Im
 	rt := Singleton
 	var lat *serviceLatency
 
+	if dest == nil {
+		return nil, ErrMissingAccount
+	}
+
 	dest.mu.RLock()
 	se := dest.getServiceExport(to)
 	if se != nil {
