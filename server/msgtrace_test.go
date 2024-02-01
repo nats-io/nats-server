@@ -113,6 +113,7 @@ func TestMsgTraceBasic(t *testing.T) {
 	ingress := e.Ingress()
 	require_True(t, ingress != nil)
 	require_True(t, ingress.Kind == CLIENT)
+	require_True(t, ingress.Timestamp != time.Time{})
 	require_Equal[uint64](t, ingress.CID, cid)
 	require_Equal[string](t, ingress.Name, _EMPTY_)
 	require_Equal[string](t, ingress.Account, globalAccountName)
@@ -192,10 +193,12 @@ func TestMsgTraceBasic(t *testing.T) {
 			require_True(t, e.Request.MsgSize > 20)
 			ingress := e.Ingress()
 			require_True(t, ingress.Kind == CLIENT)
+			require_True(t, ingress.Timestamp != time.Time{})
 			require_Equal[string](t, ingress.Account, globalAccountName)
 			require_Equal[string](t, ingress.Subject, "foo")
 			sm := e.SubjectMapping()
 			require_True(t, sm != nil)
+			require_True(t, sm.Timestamp != time.Time{})
 			require_Equal[string](t, sm.MappedTo, "bar")
 			egress := e.Egresses()
 			require_Equal[int](t, len(egress), 3)
@@ -203,6 +206,7 @@ func TestMsgTraceBasic(t *testing.T) {
 			for _, eg := range egress {
 				// All Egress should be clients
 				require_True(t, eg.Kind == CLIENT)
+				require_True(t, eg.Timestamp != time.Time{})
 				// For nc2CID, we should have two egress
 				if eg.CID == nc2CID {
 					// Check name
@@ -1763,6 +1767,7 @@ func TestMsgTraceServiceImport(t *testing.T) {
 					}
 					require_Equal[int](t, len(simps), expectedServices)
 					for _, si := range simps {
+						require_True(t, si.Timestamp != time.Time{})
 						switch si.Account {
 						case "C":
 							require_Equal[string](t, si.From, "baz")
@@ -2578,6 +2583,7 @@ func TestMsgTraceStreamExport(t *testing.T) {
 			require_True(t, stexps != nil)
 			require_Equal[int](t, len(stexps), 2)
 			for _, se := range stexps {
+				require_True(t, se.Timestamp != time.Time{})
 				switch se.Account {
 				case "B":
 					require_Equal[string](t, se.To, "B.info.22.11.bar")
@@ -3243,6 +3249,7 @@ func TestMsgTraceJetStream(t *testing.T) {
 			require_Equal[int](t, len(e.Egresses()), 0)
 			js := e.JetStream()
 			require_True(t, js != nil)
+			require_True(t, js.Timestamp != time.Time{})
 			require_Equal[string](t, js.Stream, "TEST")
 			require_Equal[string](t, js.Subject, "bar")
 			require_False(t, js.NoInterest)

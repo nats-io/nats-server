@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"strings"
 	"sync/atomic"
+	"time"
 )
 
 const (
@@ -62,7 +63,8 @@ type MsgTrace interface {
 }
 
 type MsgTraceBase struct {
-	Type MsgTraceType `json:"type"`
+	Type      MsgTraceType `json:"type"`
+	Timestamp time.Time    `json:"ts"`
 }
 
 type MsgTraceIngress struct {
@@ -435,12 +437,15 @@ func (c *client) initMsgTrace() *msgTrace {
 				MsgSize: c.pa.size,
 			},
 			Events: append(MsgTraceEvents(nil), &MsgTraceIngress{
-				MsgTraceBase: MsgTraceBase{Type: MsgTraceIngressType},
-				Kind:         c.kind,
-				CID:          c.cid,
-				Name:         getConnName(c),
-				Account:      ian,
-				Subject:      string(c.pa.subject),
+				MsgTraceBase: MsgTraceBase{
+					Type:      MsgTraceIngressType,
+					Timestamp: time.Now(),
+				},
+				Kind:    c.kind,
+				CID:     c.cid,
+				Name:    getConnName(c),
+				Account: ian,
+				Subject: string(c.pa.subject),
 			}),
 		},
 		dm: !traceOnly,
@@ -464,11 +469,14 @@ func (c *client) initAndSendIngressErrEvent(hdr []byte, dest string, ingressErro
 		event: &MsgTraceEvent{
 			Request: MsgTraceRequest{MsgSize: c.pa.size},
 			Events: append(MsgTraceEvents(nil), &MsgTraceIngress{
-				MsgTraceBase: MsgTraceBase{Type: MsgTraceIngressType},
-				Kind:         c.kind,
-				CID:          c.cid,
-				Name:         getConnName(c),
-				Error:        ingressError.Error(),
+				MsgTraceBase: MsgTraceBase{
+					Type:      MsgTraceIngressType,
+					Timestamp: time.Now(),
+				},
+				Kind:  c.kind,
+				CID:   c.cid,
+				Name:  getConnName(c),
+				Error: ingressError.Error(),
 			}),
 		},
 	}
@@ -559,19 +567,25 @@ func (t *msgTrace) setIngressError(err string) {
 
 func (t *msgTrace) addSubjectMappingEvent(subj []byte) {
 	t.event.Events = append(t.event.Events, &MsgTraceSubjectMapping{
-		MsgTraceBase: MsgTraceBase{Type: MsgTraceSubjectMappingType},
-		MappedTo:     string(subj),
+		MsgTraceBase: MsgTraceBase{
+			Type:      MsgTraceSubjectMappingType,
+			Timestamp: time.Now(),
+		},
+		MappedTo: string(subj),
 	})
 }
 
 func (t *msgTrace) addEgressEvent(dc *client, sub *subscription, err string) {
 	e := &MsgTraceEgress{
-		MsgTraceBase: MsgTraceBase{Type: MsgTraceEgressType},
-		Kind:         dc.kind,
-		CID:          dc.cid,
-		Name:         getConnName(dc),
-		Hop:          t.nhop,
-		Error:        err,
+		MsgTraceBase: MsgTraceBase{
+			Type:      MsgTraceEgressType,
+			Timestamp: time.Now(),
+		},
+		Kind:  dc.kind,
+		CID:   dc.cid,
+		Name:  getConnName(dc),
+		Hop:   t.nhop,
+		Error: err,
 	}
 	t.nhop = _EMPTY_
 	// Specific to CLIENT connections...
@@ -600,25 +614,34 @@ func (t *msgTrace) addStreamExportEvent(dc *client, to []byte) {
 	accName := dc.acc.GetName()
 	dc.mu.Unlock()
 	t.event.Events = append(t.event.Events, &MsgTraceStreamExport{
-		MsgTraceBase: MsgTraceBase{Type: MsgTraceStreamExportType},
-		Account:      accName,
-		To:           string(to),
+		MsgTraceBase: MsgTraceBase{
+			Type:      MsgTraceStreamExportType,
+			Timestamp: time.Now(),
+		},
+		Account: accName,
+		To:      string(to),
 	})
 }
 
 func (t *msgTrace) addServiceImportEvent(accName, from, to string) {
 	t.event.Events = append(t.event.Events, &MsgTraceServiceImport{
-		MsgTraceBase: MsgTraceBase{Type: MsgTraceServiceImportType},
-		Account:      accName,
-		From:         from,
-		To:           to,
+		MsgTraceBase: MsgTraceBase{
+			Type:      MsgTraceServiceImportType,
+			Timestamp: time.Now(),
+		},
+		Account: accName,
+		From:    from,
+		To:      to,
 	})
 }
 
 func (t *msgTrace) addJetStreamEvent(streamName string) {
 	t.js = &MsgTraceJetStream{
-		MsgTraceBase: MsgTraceBase{Type: MsgTraceJetStreamType},
-		Stream:       streamName,
+		MsgTraceBase: MsgTraceBase{
+			Type:      MsgTraceJetStreamType,
+			Timestamp: time.Now(),
+		},
+		Stream: streamName,
 	}
 	t.event.Events = append(t.event.Events, t.js)
 }
