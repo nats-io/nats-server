@@ -654,7 +654,8 @@ func (a *Account) enableAllJetStreamServiceImportsAndMappings() error {
 
 	if !a.serviceImportExists(jsAllAPI) {
 		// Capture si so we can turn on implicit sharing with JetStream layer.
-		si, err := a.addServiceImport(s.SystemAccount(), jsAllAPI, _EMPTY_, nil)
+		// Make sure to set "to" otherwise will incur performance slow down.
+		si, err := a.addServiceImport(s.SystemAccount(), jsAllAPI, jsAllAPI, nil)
 		if err != nil {
 			return fmt.Errorf("Error setting up jetstream service imports for account: %v", err)
 		}
