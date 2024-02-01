@@ -184,6 +184,7 @@ type fileStore struct {
 	qch         chan struct{}
 	fch         chan struct{}
 	fsld        chan struct{}
+	cmu         sync.RWMutex
 	cfs         []ConsumerStore
 	sips        int
 	dirty       int
@@ -745,7 +746,10 @@ func (fs *fileStore) setupAEK() error {
 		if _, err := os.Stat(keyFile); err != nil && !os.IsNotExist(err) {
 			return err
 		}
-		if err := os.WriteFile(keyFile, encrypted, defaultFilePerms); err != nil {
+		<-dios
+		err = os.WriteFile(keyFile, encrypted, defaultFilePerms)
+		dios <- struct{}{}
+		if err != nil {
 			return err
 		}
 		// Set our aek.
@@ -776,14 +780,20 @@ func (fs *fileStore) writeStreamMeta() error {
 		b = fs.aek.Seal(nonce, nonce, b, nil)
 	}
 
-	if err := os.WriteFile(meta, b, defaultFilePerms); err != nil {
+	<-dios
+	err = os.WriteFile(meta, b, defaultFilePerms)
+	dios <- struct{}{}
+	if err != nil {
 		return err
 	}
 	fs.hh.Reset()
 	fs.hh.Write(b)
 	checksum := hex.EncodeToString(fs.hh.Sum(nil))
 	sum := filepath.Join(fs.fcfg.StoreDir, JetStreamMetaFileSum)
-	if err := os.WriteFile(sum, []byte(checksum), defaultFilePerms); err != nil {
+	<-dios
+	err = os.WriteFile(sum, []byte(checksum), defaultFilePerms)
+	dios <- struct{}{}
+	if err != nil {
 		return err
 	}
 	return nil
@@ -951,7 +961,7 @@ func (fs *fileStore) recoverMsgBlock(index uint32) (*msgBlock, error) {
 
 	// Open up the message file, but we will try to recover from the index file.
 	// We will check that the last checksums match.
-	file, err := os.Open(mb.mfn)
+	file, err := mb.openBlock()
 	if err != nil {
 		return nil, err
 	}
@@ -1175,11 +1185,16 @@ func (mb *msgBlock) convertCipher() error {
 		// the old keyfile back.
 		if err := fs.genEncryptionKeysForBlock(mb); err != nil {
 			keyFile := filepath.Join(mdir, fmt.Sprintf(keyScan, mb.index))
+			<-dios
 			os.WriteFile(keyFile, ekey, defaultFilePerms)
+			dios <- struct{}{}
 			return err
 		}
 		mb.bek.XORKeyStream(buf, buf)
-		if err := os.WriteFile(mb.mfn, buf, defaultFilePerms); err != nil {
+		<-dios
+		err = os.WriteFile(mb.mfn, buf, defaultFilePerms)
+		dios <- struct{}{}
+		if err != nil {
 			return err
 		}
 		return nil
@@ -1204,7 +1219,10 @@ func (mb *msgBlock) convertToEncrypted() error {
 	// Undo cache from above for later.
 	mb.cache = nil
 	mb.bek.XORKeyStream(buf, buf)
-	if err := os.WriteFile(mb.mfn, buf, defaultFilePerms); err != nil {
+	<-dios
+	err = os.WriteFile(mb.mfn, buf, defaultFilePerms)
+	dios <- struct{}{}
+	if err != nil {
 		return err
 	}
 	return nil
@@ -1286,7 +1304,9 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 		if mb.mfd != nil {
 			fd = mb.mfd
 		} else {
+			<-dios
 			fd, err = os.OpenFile(mb.mfn, os.O_RDWR, defaultFilePerms)
+			dios <- struct{}{}
 			if err == nil {
 				defer fd.Close()
 			}
@@ -1802,7 +1822,7 @@ func (fs *fileStore) adjustAccounting(mb, nmb *msgBlock) {
 // Grabs last checksum for the named block file.
 // Takes into account encryption etc.
 func (mb *msgBlock) lastChecksum() []byte {
-	f, err := os.Open(mb.mfn)
+	f, err := mb.openBlock()
 	if err != nil {
 		return nil
 	}
@@ -1844,7 +1864,9 @@ func (fs *fileStore) cleanupOldMeta() {
 	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
 	fs.mu.RUnlock()
 
+	<-dios
 	f, err := os.Open(mdir)
+	dios <- struct{}{}
 	if err != nil {
 		return
 	}
@@ -2946,7 +2968,10 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	}
 	mb.hh = hh
 
+	<-dios
 	mfd, err := os.OpenFile(mb.mfn, os.O_CREATE|os.O_RDWR, defaultFilePerms)
+	dios <- struct{}{}
+
 	if err != nil {
 		mb.dirtyCloseWithRemove(true)
 		return nil, fmt.Errorf("Error creating msg block file: %v", err)
@@ -2990,7 +3015,10 @@ func (fs *fileStore) genEncryptionKeysForBlock(mb *msgBlock) error {
 	if _, err := os.Stat(keyFile); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if err := os.WriteFile(keyFile, encrypted, defaultFilePerms); err != nil {
+	<-dios
+	err = os.WriteFile(keyFile, encrypted, defaultFilePerms)
+	dios <- struct{}{}
+	if err != nil {
 		return err
 	}
 	mb.kfn = keyFile
@@ -3883,7 +3911,10 @@ func (mb *msgBlock) compact() {
 
 	// We will write to a new file and mv/rename it in case of failure.
 	mfn := filepath.Join(mb.fs.fcfg.StoreDir, msgDir, fmt.Sprintf(newScan, mb.index))
-	if err := os.WriteFile(mfn, nbuf, defaultFilePerms); err != nil {
+	<-dios
+	err := os.WriteFile(mfn, nbuf, defaultFilePerms)
+	dios <- struct{}{}
+	if err != nil {
 		os.Remove(mfn)
 		return
 	}
@@ -4086,7 +4117,9 @@ func (mb *msgBlock) eraseMsg(seq uint64, ri, rl int) error {
 
 	// Disk
 	if mb.cache.off+mb.cache.wp > ri {
+		<-dios
 		mfd, err := os.OpenFile(mb.mfn, os.O_RDWR, defaultFilePerms)
+		dios <- struct{}{}
 		if err != nil {
 			return err
 		}
@@ -4541,7 +4574,9 @@ func (mb *msgBlock) enableForWriting(fip bool) error {
 	if mb.mfd != nil {
 		return nil
 	}
+	<-dios
 	mfd, err := os.OpenFile(mb.mfn, os.O_CREATE|os.O_RDWR, defaultFilePerms)
+	dios <- struct{}{}
 	if err != nil {
 		return fmt.Errorf("error opening msg block file [%q]: %v", mb.mfn, err)
 	}
@@ -4874,7 +4909,9 @@ func (mb *msgBlock) recompressOnDiskIfNeeded() error {
 	// operation if something goes wrong), create a new temporary file. We will
 	// write out the new block here and then swap the files around afterwards
 	// once everything else has succeeded correctly.
+	<-dios
 	tmpFD, err := os.OpenFile(tmpFN, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, defaultFilePerms)
+	dios <- struct{}{}
 	if err != nil {
 		return fmt.Errorf("failed to create temporary file: %w", err)
 	}
@@ -4964,7 +5001,7 @@ func (mb *msgBlock) ensureRawBytesLoaded() error {
 	if mb.rbytes > 0 {
 		return nil
 	}
-	f, err := os.Open(mb.mfn)
+	f, err := mb.openBlock()
 	if err != nil {
 		return err
 	}
@@ -5036,7 +5073,11 @@ func (fs *fileStore) syncBlocks() {
 		// Check if we need to sync.
 		// This is done not holding any locks.
 		if needSync {
-			if fd, _ := os.OpenFile(fn, os.O_RDWR, defaultFilePerms); fd != nil {
+			<-dios
+			fd, _ := os.OpenFile(fn, os.O_RDWR, defaultFilePerms)
+			dios <- struct{}{}
+			// If we have an fd.
+			if fd != nil {
 				canClear := fd.Sync() == nil
 				fd.Close()
 				// Only clear sync flag on success.
@@ -5064,7 +5105,10 @@ func (fs *fileStore) syncBlocks() {
 
 	// Sync state file if we are not running with sync always.
 	if !syncAlways {
-		if fd, _ := os.OpenFile(fn, os.O_RDWR, defaultFilePerms); fd != nil {
+		<-dios
+		fd, _ := os.OpenFile(fn, os.O_RDWR, defaultFilePerms)
+		dios <- struct{}{}
+		if fd != nil {
 			fd.Sync()
 			fd.Close()
 		}
@@ -5452,6 +5496,16 @@ func (mb *msgBlock) fssLoaded() bool {
 	return mb.fss != nil
 }
 
+// Wrap openBlock for the gated semaphore processing.
+// Lock should be held
+func (mb *msgBlock) openBlock() (*os.File, error) {
+	// Gate with concurrent IO semaphore.
+	<-dios
+	f, err := os.Open(mb.mfn)
+	dios <- struct{}{}
+	return f, err
+}
+
 // Used to load in the block contents.
 // Lock should be held and all conditionals satisfied prior.
 func (mb *msgBlock) loadBlock(buf []byte) ([]byte, error) {
@@ -5466,7 +5520,7 @@ func (mb *msgBlock) loadBlock(buf []byte) ([]byte, error) {
 	}
 	if f == nil {
 		var err error
-		f, err = os.Open(mb.mfn)
+		f, err = mb.openBlock()
 		if err != nil {
 			if os.IsNotExist(err) {
 				err = errNoBlkData
@@ -6010,6 +6064,13 @@ func (fs *fileStore) numSubjects() int {
 	return fs.psim.Size()
 }
 
+// numConsumers uses new lock.
+func (fs *fileStore) numConsumers() int {
+	fs.cmu.RLock()
+	defer fs.cmu.RUnlock()
+	return len(fs.cfs)
+}
+
 // FastState will fill in state with only the following.
 // Msgs, Bytes, First and Last Sequence and Time and NumDeleted.
 func (fs *fileStore) FastState(state *StreamState) {
@@ -6026,7 +6087,7 @@ func (fs *fileStore) FastState(state *StreamState) {
 			state.NumDeleted = 0
 		}
 	}
-	state.Consumers = len(fs.cfs)
+	state.Consumers = fs.numConsumers()
 	state.NumSubjects = fs.numSubjects()
 	fs.mu.RUnlock()
 }
@@ -6035,7 +6096,7 @@ func (fs *fileStore) FastState(state *StreamState) {
 func (fs *fileStore) State() StreamState {
 	fs.mu.RLock()
 	state := fs.state
-	state.Consumers = len(fs.cfs)
+	state.Consumers = fs.numConsumers()
 	state.NumSubjects = fs.numSubjects()
 	state.Deleted = nil // make sure.
 
@@ -6474,14 +6535,25 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 	// If purge directory still exists then we need to wait
 	// in place and remove since rename would fail.
 	if _, err := os.Stat(pdir); err == nil {
+		<-dios
 		os.RemoveAll(pdir)
+		dios <- struct{}{}
 	}
-	os.Rename(mdir, pdir)
 
-	go os.RemoveAll(pdir)
+	<-dios
+	os.Rename(mdir, pdir)
+	dios <- struct{}{}
+
+	go func() {
+		<-dios
+		os.RemoveAll(pdir)
+		dios <- struct{}{}
+	}()
 
 	// Create new one.
+	<-dios
 	os.MkdirAll(mdir, defaultDirPerms)
+	dios <- struct{}{}
 
 	// Make sure we have a lmb to write to.
 	if _, err := fs.newMsgBlockForWrite(); err != nil {
@@ -6649,7 +6721,10 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 			if nbuf, err = smb.cmp.Compress(nbuf); err != nil {
 				goto SKIP
 			}
-			if err = os.WriteFile(smb.mfn, nbuf, defaultFilePerms); err != nil {
+			<-dios
+			err = os.WriteFile(smb.mfn, nbuf, defaultFilePerms)
+			dios <- struct{}{}
+			if err != nil {
 				goto SKIP
 			}
 			// Make sure to remove fss state.
@@ -7543,11 +7618,13 @@ func (fs *fileStore) stop(writeState bool) error {
 
 	// We should update the upper usage layer on a stop.
 	cb, bytes := fs.scb, int64(fs.state.Bytes)
+	fs.mu.Unlock()
 
+	fs.cmu.Lock()
 	var _cfs [256]ConsumerStore
 	cfs := append(_cfs[:0], fs.cfs...)
 	fs.cfs = nil
-	fs.mu.Unlock()
+	fs.cmu.Unlock()
 
 	for _, o := range cfs {
 		o.Stop()
@@ -7695,9 +7772,9 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, state *StreamState, includ
 	}
 
 	// Do consumers' state last.
-	fs.mu.RLock()
+	fs.cmu.RLock()
 	cfs := fs.cfs
-	fs.mu.RUnlock()
+	fs.cmu.RUnlock()
 
 	for _, cs := range cfs {
 		o, ok := cs.(*consumerFileStore)
@@ -8040,7 +8117,10 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 			// Redo the state file as well here if we have one and we can tell it was plaintext.
 			if buf, err := os.ReadFile(o.ifn); err == nil {
 				if _, err := decodeConsumerState(buf); err == nil {
-					if err := os.WriteFile(o.ifn, o.encryptState(buf), defaultFilePerms); err != nil {
+					<-dios
+					err := os.WriteFile(o.ifn, o.encryptState(buf), defaultFilePerms)
+					dios <- struct{}{}
+					if err != nil {
 						if didCreate {
 							os.RemoveAll(odir)
 						}
@@ -8530,7 +8610,10 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 		if _, err := os.Stat(keyFile); err != nil && !os.IsNotExist(err) {
 			return err
 		}
-		if err := os.WriteFile(keyFile, encrypted, defaultFilePerms); err != nil {
+		<-dios
+		err = os.WriteFile(keyFile, encrypted, defaultFilePerms)
+		dios <- struct{}{}
+		if err != nil {
 			return err
 		}
 	}
@@ -8546,14 +8629,21 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 		b = cfs.aek.Seal(nonce, nonce, b, nil)
 	}
 
-	if err := os.WriteFile(meta, b, defaultFilePerms); err != nil {
+	<-dios
+	err = os.WriteFile(meta, b, defaultFilePerms)
+	dios <- struct{}{}
+	if err != nil {
 		return err
 	}
 	cfs.hh.Reset()
 	cfs.hh.Write(b)
 	checksum := hex.EncodeToString(cfs.hh.Sum(nil))
 	sum := filepath.Join(cfs.odir, JetStreamMetaFileSum)
-	if err := os.WriteFile(sum, []byte(checksum), defaultFilePerms); err != nil {
+
+	<-dios
+	err = os.WriteFile(sum, []byte(checksum), defaultFilePerms)
+	dios <- struct{}{}
+	if err != nil {
 		return err
 	}
 	return nil
@@ -8639,7 +8729,10 @@ func (o *consumerFileStore) stateWithCopyLocked(doCopy bool) (*ConsumerState, er
 	}
 
 	// Read the state in here from disk..
+	<-dios
 	buf, err := os.ReadFile(o.ifn)
+	dios <- struct{}{}
+
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
@@ -8905,15 +8998,15 @@ func (o *consumerFileStore) delete(streamDeleted bool) error {
 }
 
 func (fs *fileStore) AddConsumer(o ConsumerStore) error {
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
+	fs.cmu.Lock()
+	defer fs.cmu.Unlock()
 	fs.cfs = append(fs.cfs, o)
 	return nil
 }
 
 func (fs *fileStore) RemoveConsumer(o ConsumerStore) error {
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
+	fs.cmu.Lock()
+	defer fs.cmu.Unlock()
 	for i, cfs := range fs.cfs {
 		if o == cfs {
 			fs.cfs = append(fs.cfs[:i], fs.cfs[i+1:]...)
