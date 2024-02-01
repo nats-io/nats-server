@@ -4846,11 +4846,6 @@ func (fs *fileStore) writeMsgRecord(seq uint64, ts int64, subj string, hdr, msg 
 }
 
 func (mb *msgBlock) recompressOnDiskIfNeeded() error {
-	// Wait for disk I/O slots to become available. This prevents us from
-	// running away with system resources.
-	<-dios
-	defer func() { dios <- struct{}{} }()
-
 	alg := mb.fs.fcfg.Compression
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
@@ -4864,7 +4859,10 @@ func (mb *msgBlock) recompressOnDiskIfNeeded() error {
 	//    header, in which case we do nothing.
 	// 2. The block will be uncompressed, in which case we will compress it
 	//    and then write it back out to disk, reencrypting if necessary.
+	<-dios
 	origBuf, err := os.ReadFile(origFN)
+	dios <- struct{}{}
+
 	if err != nil {
 		return fmt.Errorf("failed to read original block from disk: %w", err)
 	}
