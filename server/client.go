@@ -4089,6 +4089,12 @@ func getHeader(key string, hdr []byte) []byte {
 	return value
 }
 
+// For bytes.HasPrefix below.
+var (
+	jsRequestNextPreB = []byte(jsRequestNextPre)
+	jsDirectGetPreB   = []byte(jsDirectGetPre)
+)
+
 // processServiceImport is an internal callback when a subscription matches an imported service
 // from another account. This includes response mappings as well.
 func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byte) {
@@ -4110,8 +4116,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	var checkJS bool
 	shouldReturn := si.invalid || acc.sl == nil
 	if !shouldReturn && !isResponse && si.to == jsAllAPI {
-		subj := bytesToString(c.pa.subject)
-		if strings.HasPrefix(subj, jsRequestNextPre) || strings.HasPrefix(subj, jsDirectGetPre) {
+		if bytes.HasPrefix(c.pa.subject, jsDirectGetPreB) || bytes.HasPrefix(c.pa.subject, jsRequestNextPreB) {
 			checkJS = true
 		}
 	}
