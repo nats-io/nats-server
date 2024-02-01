@@ -1439,26 +1439,31 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 		}
 	}
 
+	// Opportunistically delete the old (legacy) consumer, from v2.10.10 and
+	// before. Ignore any errors that might arise.
+	rmLegacyDurName := mqttRetainedMsgsStreamName + "_" + jsa.id
+	jsa.deleteConsumer(mqttRetainedMsgsStreamName, rmLegacyDurName)
+
 	// Using ephemeral consumer is too risky because if this server were to be
 	// disconnected from the rest for few seconds, then the leader would remove
 	// the consumer, so even after a reconnect, we would no longer receive
-	// retained messages. Delete any existing durable that we have for that
-	// and recreate here.
-	// The name for the durable is $MQTT_rmsgs_<server name hash> (which is jsa.id)
-	rmDurName := mqttRetainedMsgsStreamName + "_" + jsa.id
-	// If error other than "not found" then fail, otherwise proceed with creating
-	// the durable consumer.
-	if _, err := jsa.deleteConsumer(mqttRetainedMsgsStreamName, rmDurName); isErrorOtherThan(err, JSConsumerNotFoundErr) {
-		return nil, err
-	}
+	// retained messages.
+	//
+	// So we use a durable consumer, and create a new one each time we start.
+	// The old one should expire and get deleted due to inactivity. The name for
+	// the durable is $MQTT_rmsgs_{uuid}_{server-name}, the server name is just
+	// for readability.
+	rmDurName := mqttRetainedMsgsStreamName + "_" + nuid.Next() + "_" + s.String()
+
 	ccfg := &CreateConsumerRequest{
 		Stream: mqttRetainedMsgsStreamName,
 		Config: ConsumerConfig{
-			Durable:        rmDurName,
-			FilterSubject:  mqttRetainedMsgsStreamSubject + ">",
-			DeliverSubject: rmsubj,
-			ReplayPolicy:   ReplayInstant,
-			AckPolicy:      AckNone,
+			Durable:           rmDurName,
+			FilterSubject:     mqttRetainedMsgsStreamSubject + ">",
+			DeliverSubject:    rmsubj,
+			ReplayPolicy:      ReplayInstant,
+			AckPolicy:         AckNone,
+			InactiveThreshold: 5 * time.Minute,
 		},
 	}
 	if _, err := jsa.createConsumer(ccfg); err != nil {
