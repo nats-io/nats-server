@@ -273,15 +273,13 @@ func TestNRGSimpleElection(t *testing.T) {
 		re := decodeVoteResponse(msg.Data)
 		require_True(t, re != nil)
 
-		// The new term hasn't started yet, so the vote responses
-		// should contain the term from before the election. It is
-		// possible that candidates are listening to this to work
-		// out if they are in previous terms.
-		require_Equal(t, re.term, vr.lastTerm)
-		require_Equal(t, re.term, startTerm)
-
 		// The vote should have been granted.
 		require_Equal(t, re.granted, true)
+
+		// The node granted the vote, therefore the term in the vote
+		// response should have advanced as well.
+		require_Equal(t, re.term, vr.term)
+		require_Equal(t, re.term, startTerm+1)
 	}
 
 	// Everyone in the group should have voted for our candidate
