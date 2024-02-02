@@ -1780,7 +1780,15 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL, accName string) *clie
 	// the connection as stale based on the ping interval and max out values,
 	// but without actually sending pings.
 	if compressionConfigured {
-		c.ping.tmr = time.AfterFunc(opts.PingInterval*time.Duration(opts.MaxPingsOut+1), func() {
+		pingInterval := opts.PingInterval
+		pingMax := opts.MaxPingsOut
+		if opts.Cluster.PingInterval > 0 {
+			pingInterval = opts.Cluster.PingInterval
+		}
+		if opts.Cluster.MaxPingsOut > 0 {
+			pingMax = opts.MaxPingsOut
+		}
+		c.ping.tmr = time.AfterFunc(pingInterval*time.Duration(pingMax+1), func() {
 			c.mu.Lock()
 			c.Debugf("Stale Client Connection - Closing")
 			c.enqueueProto([]byte(fmt.Sprintf(errProto, "Stale Connection")))
