@@ -1,4 +1,4 @@
-// Copyright 2020-2023 The NATS Authors
+// Copyright 2020-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -432,10 +432,10 @@ func (cc *jetStreamCluster) isStreamCurrent(account, stream string) bool {
 }
 
 // Restart the stream in question.
-// Should only be called when the stream is know in a bad state.
+// Should only be called when the stream is known to be in a bad state.
 func (js *jetStream) restartStream(acc *Account, csa *streamAssignment) {
 	js.mu.Lock()
-	cc := js.cluster
+	s, cc := js.srv, js.cluster
 	if cc == nil {
 		js.mu.Unlock()
 		return
@@ -458,9 +458,18 @@ func (js *jetStream) restartStream(acc *Account, csa *streamAssignment) {
 		}
 		rg.node = nil
 	}
+	sinceCreation := time.Since(sa.Created)
 	js.mu.Unlock()
 
 	// Process stream assignment to recreate.
+	// Check that we have given system enough time to start us up.
+	// This will be longer than obvious, and matches consumer logic in case system very busy.
+	if sinceCreation < 10*time.Second {
+		s.Debugf("Not restarting missing stream '%s > %s', too soon since creation %v",
+			acc, csa.Config.Name, sinceCreation)
+		return
+	}
+
 	js.processStreamAssignment(sa)
 
 	// If we had consumers assigned to this server they will be present in the copy, csa.
@@ -569,13 +578,24 @@ func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consum
 	// When we try to restart we nil out the node if applicable
 	// and reprocess the consumer assignment.
 	restartConsumer := func() {
+		mset.mu.RLock()
+		accName, streamName := mset.acc.GetName(), mset.cfg.Name
+		mset.mu.RUnlock()
+
 		js.mu.Lock()
+		deleted := ca.deleted
+		// Check that we have not just been created.
+		if !deleted && time.Since(ca.Created) < 10*time.Second {
+			s.Debugf("Not restarting missing consumer '%s > %s > %s', too soon since creation %v",
+				accName, streamName, consumer, time.Since(ca.Created))
+			js.mu.Unlock()
+			return
+		}
 		// Make sure the node is stopped if still running.
 		if node != nil && node.State() != Closed {
 			node.Stop()
 		}
 		ca.Group.node = nil
-		deleted := ca.deleted
 		js.mu.Unlock()
 		if !deleted {
 			js.processConsumerAssignment(ca)
@@ -4112,6 +4132,7 @@ func (js *jetStream) processConsumerRemoval(ca *consumerAssignment) {
 			// Make sure this removal is for what we have, otherwise ignore.
 			if ca.Group != nil && oca.Group != nil && ca.Group.Name == oca.Group.Name {
 				needDelete = true
+				oca.deleted = true
 				delete(sa.consumers, ca.Name)
 			}
 		}
