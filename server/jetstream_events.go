@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-func (s *Server) publishAdvisory(acc *Account, subject string, adv interface{}) {
+func (s *Server) publishAdvisory(acc *Account, subject string, adv any) {
 	if acc == nil {
 		acc = s.SystemAccount()
 		if acc == nil {

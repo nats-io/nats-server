@@ -10631,8 +10631,14 @@ func TestJetStreamAccountImportJSAdvisoriesAsService(t *testing.T) {
 	gotEvents = map[string]int{}
 	for i := 0; i < 2; i++ {
 		msg, err := subAgg.NextMsg(time.Second * 2)
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
+		require_NoError(t, err)
+		var adv JSAPIAudit
+		require_NoError(t, json.Unmarshal(msg.Data, &adv))
+		// Make sure we have full fidelity info via implicit share.
+		if adv.Client != nil {
+			require_True(t, adv.Client.Host != _EMPTY_)
+			require_True(t, adv.Client.User != _EMPTY_)
+			require_True(t, adv.Client.Lang != _EMPTY_)
 		}
 		gotEvents[msg.Subject]++
 	}

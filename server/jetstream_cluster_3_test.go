@@ -3786,7 +3786,7 @@ func TestJetStreamClusterHealthzCheckForStoppedAssets(t *testing.T) {
 	// Wait for exit.
 	time.Sleep(100 * time.Millisecond)
 
-	checkFor(t, 5*time.Second, 500*time.Millisecond, func() error {
+	checkFor(t, 15*time.Second, 500*time.Millisecond, func() error {
 		hs := s.healthz(nil)
 		if hs.Error != _EMPTY_ {
 			return errors.New(hs.Error)

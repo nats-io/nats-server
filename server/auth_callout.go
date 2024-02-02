@@ -230,7 +230,6 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 				}
 			}
 		}
-
 		return targetAcc, nil
 	}
 
@@ -269,6 +268,14 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 			respCh <- titleCase(err.Error())
 			return
 		}
+
+		// the JWT is cleared, because if in operator mode it may hold the JWT
+		// for the bearer token that connected to the callout if in operator mode
+		// the permissions are already set on the client, this prevents a decode
+		// on c.RegisterNKeyUser which would have wrong values
+		c.mu.Lock()
+		c.opts.JWT = _EMPTY_
+		c.mu.Unlock()
 
 		// Build internal user and bind to the targeted account.
 		nkuser := buildInternalNkeyUser(arc, allowedConnTypes, targetAcc)

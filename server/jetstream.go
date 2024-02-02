@@ -1,4 +1,4 @@
-// Copyright 2019-2023 The NATS Authors
+// Copyright 2019-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -653,9 +653,15 @@ func (a *Account) enableAllJetStreamServiceImportsAndMappings() error {
 	}
 
 	if !a.serviceImportExists(jsAllAPI) {
-		if err := a.AddServiceImport(s.SystemAccount(), jsAllAPI, _EMPTY_); err != nil {
+		// Capture si so we can turn on implicit sharing with JetStream layer.
+		// Make sure to set "to" otherwise will incur performance slow down.
+		si, err := a.addServiceImport(s.SystemAccount(), jsAllAPI, jsAllAPI, nil)
+		if err != nil {
 			return fmt.Errorf("Error setting up jetstream service imports for account: %v", err)
 		}
+		a.mu.Lock()
+		si.share = true
+		a.mu.Unlock()
 	}
 
 	// Check if we have a Domain specified.

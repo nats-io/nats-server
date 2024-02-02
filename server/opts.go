@@ -80,6 +80,8 @@ type ClusterOpts struct {
 	PoolSize          int               `json:"-"`
 	PinnedAccounts    []string          `json:"-"`
 	Compression       CompressionOpts   `json:"-"`
+	PingInterval      time.Duration     `json:"-"`
+	MaxPingsOut       int               `json:"-"`
 
 	// Not exported (used in tests)
 	resolver netResolver
@@ -1755,6 +1757,13 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 				*errors = append(*errors, err)
 				continue
 			}
+		case "ping_interval":
+			opts.Cluster.PingInterval = parseDuration("ping_interval", tk, mv, errors, warnings)
+			if opts.Cluster.PingInterval > routeMaxPingInterval {
+				*warnings = append(*warnings, &configErr{tk, fmt.Sprintf("Cluster 'ping_interval' will reset to %v which is the max for routes", routeMaxPingInterval)})
+			}
+		case "ping_max":
+			opts.Cluster.MaxPingsOut = int(mv.(int64))
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
