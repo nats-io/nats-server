@@ -348,6 +348,12 @@ func TestConfigReload(t *testing.T) {
 	if !updated.Cluster.NoAdvertise {
 		t.Fatal("Expected NoAdvertise to be true")
 	}
+	if updated.Cluster.PingInterval != 20*time.Second {
+		t.Fatalf("Cluster PingInterval is incorrect.\nexpected: 20s\ngot: %v", updated.Cluster.PingInterval)
+	}
+	if updated.Cluster.MaxPingsOut != 8 {
+		t.Fatalf("Cluster MaxPingsOut is incorrect.\nexpected: 6\ngot: %v", updated.Cluster.MaxPingsOut)
+	}
 	if updated.PidFile != "nats-server.pid" {
 		t.Fatalf("PidFile is incorrect.\nexpected: nats-server.pid\ngot: %s", updated.PidFile)
 	}

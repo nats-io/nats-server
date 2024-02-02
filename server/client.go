@@ -4795,7 +4795,11 @@ func (c *client) processPingTimer() {
 
 	var sendPing bool
 
-	pingInterval := c.srv.getOpts().PingInterval
+	opts := c.srv.getOpts()
+	pingInterval := opts.PingInterval
+	if c.kind == ROUTER && opts.Cluster.PingInterval > 0 {
+		pingInterval = opts.Cluster.PingInterval
+	}
 	pingInterval = adjustPingInterval(c.kind, pingInterval)
 	now := time.Now()
 	needRTT := c.rtt == 0 || now.Sub(c.rttStart) > DEFAULT_RTT_MEASUREMENT_INTERVAL
@@ -4815,7 +4819,11 @@ func (c *client) processPingTimer() {
 
 	if sendPing {
 		// Check for violation
-		if c.ping.out+1 > c.srv.getOpts().MaxPingsOut {
+		maxPingsOut := opts.MaxPingsOut
+		if c.kind == ROUTER && opts.Cluster.MaxPingsOut > 0 {
+			maxPingsOut = opts.Cluster.MaxPingsOut
+		}
+		if c.ping.out+1 > maxPingsOut {
 			c.Debugf("Stale Client Connection - Closing")
 			c.enqueueProto([]byte(fmt.Sprintf(errProto, "Stale Connection")))
 			c.mu.Unlock()
@@ -4852,7 +4860,11 @@ func (c *client) setPingTimer() {
 	if c.srv == nil {
 		return
 	}
-	d := c.srv.getOpts().PingInterval
+	opts := c.srv.getOpts()
+	d := opts.PingInterval
+	if c.kind == ROUTER && opts.Cluster.PingInterval > 0 {
+		d = opts.Cluster.PingInterval
+	}
 	d = adjustPingInterval(c.kind, d)
 	c.ping.tmr = time.AfterFunc(d, c.processPingTimer)
 }
@@ -5745,6 +5757,9 @@ func (c *client) setFirstPingTimer() {
 	opts := s.getOpts()
 	d := opts.PingInterval
 
+	if c.kind == ROUTER && opts.Cluster.PingInterval > 0 {
+		d = opts.Cluster.PingInterval
+	}
 	if !opts.DisableShortFirstPing {
 		if c.kind != CLIENT {
 			if d > firstPingInterval {

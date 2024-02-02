@@ -4059,6 +4059,40 @@ func TestRoutePings(t *testing.T) {
 	}
 }
 
+func TestRouteCustomPing(t *testing.T) {
+	pingInterval := 50 * time.Millisecond
+	o1 := DefaultOptions()
+	o1.Cluster.PingInterval = pingInterval
+	o1.Cluster.MaxPingsOut = 2
+	s1 := RunServer(o1)
+	defer s1.Shutdown()
+
+	o2 := DefaultOptions()
+	o2.Cluster.PingInterval = pingInterval
+	o2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port))
+	s2 := RunServer(o2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	ch := make(chan struct{}, 1)
+	s1.mu.RLock()
+	s1.forEachRemote(func(r *client) {
+		r.mu.Lock()
+		r.nc = &capturePingConn{r.nc, ch}
+		r.mu.Unlock()
+	})
+	s1.mu.RUnlock()
+
+	for i := 0; i < 5; i++ {
+		select {
+		case <-ch:
+		case <-time.After(250 * time.Millisecond):
+			t.Fatalf("Did not send PING")
+		}
+	}
+}
+
 func TestRouteNoLeakOnSlowConsumer(t *testing.T) {
 	o1 := DefaultOptions()
 	o1.Cluster.PoolSize = -1
