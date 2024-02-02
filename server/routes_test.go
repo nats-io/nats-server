@@ -3939,8 +3939,8 @@ func TestRouteCompressionAuto(t *testing.T) {
 	np := createNetProxy(0, 1024*1024*1024, 1024*1024*1024, fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port), true)
 	routes := fmt.Sprintf("routes: [\"%s\"]", np.routeURL())
 
-	rtts := "{mode: s2_auto, rtt_thresholds: [10ms, 20ms, 30ms]}"
-	conf2 := createConfFile(t, []byte(fmt.Sprintf(tmpl, "B", "100ms", rtts, routes)))
+	rtts := "{mode: s2_auto, rtt_thresholds: [100ms, 200ms, 300ms]}"
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(tmpl, "B", "500ms", rtts, routes)))
 	s2, _ := RunServerWithConfig(conf2)
 	defer s2.Shutdown()
 	defer np.stop()
@@ -3949,7 +3949,7 @@ func TestRouteCompressionAuto(t *testing.T) {
 
 	checkComp := func(expected string) {
 		t.Helper()
-		checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		checkFor(t, 4*time.Second, 50*time.Millisecond, func() error {
 			s2.mu.RLock()
 			defer s2.mu.RUnlock()
 			if n := s2.numRoutes(); n != 4 {
@@ -3973,15 +3973,15 @@ func TestRouteCompressionAuto(t *testing.T) {
 	checkComp(CompressionS2Uncompressed)
 
 	// Change the proxy RTT and we should get compression "fast"
-	np.updateRTT(15 * time.Millisecond)
+	np.updateRTT(150 * time.Millisecond)
 	checkComp(CompressionS2Fast)
 
-	// Now 25ms, and get "better"
-	np.updateRTT(25 * time.Millisecond)
+	// Now 250ms, and get "better"
+	np.updateRTT(250 * time.Millisecond)
 	checkComp(CompressionS2Better)
 
-	// Above 35 and we should get "best"
-	np.updateRTT(35 * time.Millisecond)
+	// Above 350 and we should get "best"
+	np.updateRTT(350 * time.Millisecond)
 	checkComp(CompressionS2Best)
 
 	// Down to 1ms and again should get "uncompressed"
@@ -3989,28 +3989,28 @@ func TestRouteCompressionAuto(t *testing.T) {
 	checkComp(CompressionS2Uncompressed)
 
 	// Do a config reload with disabling uncompressed
-	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl, "B", "100ms", "{mode: s2_auto, rtt_thresholds: [0ms, 10ms, 0ms, 30ms]}", routes))
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl, "B", "500ms", "{mode: s2_auto, rtt_thresholds: [0ms, 100ms, 0ms, 300ms]}", routes))
 	// Change the RTT back down to 1ms, but we should not go uncompressed,
 	// we should have "fast" compression.
 	np.updateRTT(1 * time.Millisecond)
 	checkComp(CompressionS2Fast)
-	// Now bump to 15ms and we should be using "best", not the "better" mode
-	np.updateRTT(15 * time.Millisecond)
+	// Now bump to 150ms and we should be using "best", not the "better" mode
+	np.updateRTT(150 * time.Millisecond)
 	checkComp(CompressionS2Best)
-	// Try 40ms and we should still be using "best"
-	np.updateRTT(40 * time.Millisecond)
+	// Try 400ms and we should still be using "best"
+	np.updateRTT(400 * time.Millisecond)
 	checkComp(CompressionS2Best)
 
 	// Try other variations
-	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl, "B", "100ms", "{mode: s2_auto, rtt_thresholds: [5ms, 15ms, 0ms, 0ms]}", routes))
-	np.updateRTT(1 * time.Millisecond)
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl, "B", "500ms", "{mode: s2_auto, rtt_thresholds: [50ms, 150ms, 0ms, 0ms]}", routes))
+	np.updateRTT(0 * time.Millisecond)
 	checkComp(CompressionS2Uncompressed)
-	np.updateRTT(10 * time.Millisecond)
+	np.updateRTT(100 * time.Millisecond)
 	checkComp(CompressionS2Fast)
 	// Since we expect the same compression level, just wait before doing
 	// the update and the next check.
 	time.Sleep(100 * time.Millisecond)
-	np.updateRTT(25 * time.Millisecond)
+	np.updateRTT(250 * time.Millisecond)
 	checkComp(CompressionS2Fast)
 
 	// Now disable compression on s1
@@ -4020,7 +4020,7 @@ func TestRouteCompressionAuto(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	checkClusterFormed(t, s1, s2)
 	// Now change the RTT values in the proxy.
-	np.updateRTT(1 * time.Millisecond)
+	np.updateRTT(0 * time.Millisecond)
 	// Now check that s2 also shows as "off". Wait for some ping intervals.
 	time.Sleep(200 * time.Millisecond)
 	checkComp(CompressionOff)
@@ -4035,6 +4035,40 @@ func TestRoutePings(t *testing.T) {
 	defer s1.Shutdown()
 
 	o2 := DefaultOptions()
+	o2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port))
+	s2 := RunServer(o2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	ch := make(chan struct{}, 1)
+	s1.mu.RLock()
+	s1.forEachRemote(func(r *client) {
+		r.mu.Lock()
+		r.nc = &capturePingConn{r.nc, ch}
+		r.mu.Unlock()
+	})
+	s1.mu.RUnlock()
+
+	for i := 0; i < 5; i++ {
+		select {
+		case <-ch:
+		case <-time.After(250 * time.Millisecond):
+			t.Fatalf("Did not send PING")
+		}
+	}
+}
+
+func TestRouteCustomPing(t *testing.T) {
+	pingInterval := 50 * time.Millisecond
+	o1 := DefaultOptions()
+	o1.Cluster.PingInterval = pingInterval
+	o1.Cluster.MaxPingsOut = 2
+	s1 := RunServer(o1)
+	defer s1.Shutdown()
+
+	o2 := DefaultOptions()
+	o2.Cluster.PingInterval = pingInterval
 	o2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port))
 	s2 := RunServer(o2)
 	defer s2.Shutdown()

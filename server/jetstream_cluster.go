@@ -1358,7 +1358,7 @@ func (js *jetStream) monitorCluster() {
 
 		case isLeader = <-lch:
 			// For meta layer synchronize everyone to our state on becoming leader.
-			if isLeader {
+			if isLeader && n.ApplyQ().len() == 0 {
 				n.SendSnapshot(js.metaSnapshot())
 			}
 			// Process the change.
@@ -4392,7 +4392,6 @@ func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, isMemb
 	recovering := ca.recovering
 	js.mu.RUnlock()
 
-	stopped := false
 	var resp = JSApiConsumerDeleteResponse{ApiResponse: ApiResponse{Type: JSApiConsumerDeleteResponseType}}
 	var err error
 	var acc *Account
@@ -4402,23 +4401,18 @@ func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, isMemb
 		if mset, _ := acc.lookupStream(ca.Stream); mset != nil {
 			if o := mset.lookupConsumer(ca.Name); o != nil {
 				err = o.stopWithFlags(true, false, true, wasLeader)
-				stopped = true
 			}
+		}
+	} else if ca.Group != nil {
+		// We have a missing account, see if we can cleanup.
+		if sacc := s.SystemAccount(); sacc != nil {
+			os.RemoveAll(filepath.Join(js.config.StoreDir, sacc.GetName(), defaultStoreDirName, ca.Group.Name))
 		}
 	}
 
 	// Always delete the node if present.
 	if node != nil {
 		node.Delete()
-	}
-
-	// This is a stop gap cleanup in case
-	// 1) the account does not exist (and mset consumer couldn't be stopped) and/or
-	// 2) node was nil (and couldn't be deleted)
-	if !stopped || node == nil {
-		if sacc := s.SystemAccount(); sacc != nil {
-			os.RemoveAll(filepath.Join(js.config.StoreDir, sacc.GetName(), defaultStoreDirName, ca.Group.Name))
-		}
 	}
 
 	if !wasLeader || ca.Reply == _EMPTY_ {
