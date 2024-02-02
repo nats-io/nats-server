@@ -1580,7 +1580,7 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  6,
 		},
 		{
-			name: "wrong type for cluter pool size",
+			name: "wrong type for cluster pool size",
 			config: `
 				cluster {
 					port: -1
@@ -1592,7 +1592,7 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  6,
 		},
 		{
-			name: "wrong type for cluter accounts",
+			name: "wrong type for cluster accounts",
 			config: `
 				cluster {
 					port: -1
@@ -1604,7 +1604,7 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  6,
 		},
 		{
-			name: "wrong type for cluter compression",
+			name: "wrong type for cluster compression",
 			config: `
 				cluster {
 					port: -1
@@ -1616,7 +1616,7 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  6,
 		},
 		{
-			name: "wrong type for cluter compression mode",
+			name: "wrong type for cluster compression mode",
 			config: `
 				cluster {
 					port: -1
@@ -1630,7 +1630,7 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  7,
 		},
 		{
-			name: "wrong type for cluter compression rtt thresholds",
+			name: "wrong type for cluster compression rtt thresholds",
 			config: `
 				cluster {
 					port: -1
@@ -1645,7 +1645,7 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  7,
 		},
 		{
-			name: "invalid durations for cluter compression rtt thresholds",
+			name: "invalid durations for cluster compression rtt thresholds",
 			config: `
 				cluster {
 					port: -1
@@ -1658,6 +1658,32 @@ func TestConfigCheck(t *testing.T) {
 			err:       fmt.Errorf("time: invalid duration %q", "abc"),
 			errorLine: 6,
 			errorPos:  7,
+		},
+		{
+			name: "invalid durations for cluster ping interval",
+			config: `
+				cluster {
+					port: -1
+					ping_interval: -1
+					ping_max: 6
+				}
+			`,
+			err:       fmt.Errorf(`invalid use of field "ping_interval": ping_interval should be converted to a duration`),
+			errorLine: 4,
+			errorPos:  6,
+		},
+		{
+			name: "invalid durations for cluster ping interval",
+			config: `
+				cluster {
+					port: -1
+					ping_interval: '2m'
+					ping_max: 6
+				}
+			`,
+			warningErr: fmt.Errorf(`Cluster 'ping_interval' will reset to 30s which is the max for routes`),
+			errorLine:  4,
+			errorPos:   6,
 		},
 		{
 			name: "wrong type for leafnodes compression",
