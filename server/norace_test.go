@@ -9390,3 +9390,127 @@ func TestNoRaceJetStreamClusterStreamCatchupLargeInteriorDeletes(t *testing.T) {
 		return fmt.Errorf("Msgs not equal %d vs %d", state.Msgs, si.State.Msgs)
 	})
 }
+
+func TestNoRaceJetStreamClusterBadRestartsWithHealthzPolling(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.>"},
+		Replicas: 3,
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	// We will poll healthz at a decent clip and make sure any restart logic works
+	// correctly with assets coming and going.
+	ch := make(chan struct{})
+	defer close(ch)
+
+	go func() {
+		for {
+			select {
+			case <-ch:
+				return
+			case <-time.After(50 * time.Millisecond):
+				for _, s := range c.servers {
+					s.healthz(nil)
+				}
+			}
+		}
+	}()
+
+	numConsumers := 500
+	consumers := make([]string, 0, numConsumers)
+
+	var wg sync.WaitGroup
+
+	for i := 0; i < numConsumers; i++ {
+		cname := fmt.Sprintf("CONS-%d", i+1)
+		consumers = append(consumers, cname)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := js.PullSubscribe("foo.>", cname, nats.BindStream("TEST"))
+			require_NoError(t, err)
+		}()
+	}
+	wg.Wait()
+
+	// Make sure all are reported.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			jsz, _ := s.Jsz(nil)
+			if jsz.Consumers != numConsumers {
+				return fmt.Errorf("%v wrong number of consumers: %d vs %d", s, jsz.Consumers, numConsumers)
+			}
+		}
+		return nil
+	})
+
+	// Now do same for streams.
+	numStreams := 200
+	streams := make([]string, 0, numStreams)
+
+	for i := 0; i < numStreams; i++ {
+		sname := fmt.Sprintf("TEST-%d", i+1)
+		streams = append(streams, sname)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := js.AddStream(&nats.StreamConfig{Name: sname, Replicas: 3})
+			require_NoError(t, err)
+		}()
+	}
+	wg.Wait()
+
+	// Make sure all are reported.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			jsz, _ := s.Jsz(nil)
+			if jsz.Streams != numStreams+1 {
+				return fmt.Errorf("%v wrong number of streams: %d vs %d", s, jsz.Streams, numStreams+1)
+			}
+		}
+		return nil
+	})
+
+	// Delete consumers.
+	for _, cname := range consumers {
+		err := js.DeleteConsumer("TEST", cname)
+		require_NoError(t, err)
+	}
+	// Make sure reporting goes to zero.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			jsz, _ := s.Jsz(nil)
+			if jsz.Consumers != 0 {
+				return fmt.Errorf("%v still has %d consumers", s, jsz.Consumers)
+			}
+		}
+		return nil
+	})
+
+	// Delete streams
+	for _, sname := range streams {
+		err := js.DeleteStream(sname)
+		require_NoError(t, err)
+	}
+	err = js.DeleteStream("TEST")
+	require_NoError(t, err)
+
+	// Make sure reporting goes to zero.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			jsz, _ := s.Jsz(nil)
+			if jsz.Streams != 0 {
+				return fmt.Errorf("%v still has %d streams", s, jsz.Streams)
+			}
+		}
+		return nil
+	})
+}
