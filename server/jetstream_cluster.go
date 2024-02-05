@@ -2890,7 +2890,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 						if state.Msgs == 0 {
 							mset.store.Compact(lseq + 1)
 							// Retry
-							err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, nil)
+							err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt)
 						}
 					}
 
@@ -7484,7 +7484,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	//
 	// We also invoke this in clustering mode for message tracing when not
 	// performing message delivery.
-	if node == nil || (mt != nil && !mt.deliverMsg()) {
+	if node == nil || mt.traceOnly() {
 		return mset.processJetStreamMsg(subject, reply, hdr, msg, 0, 0, mt)
 	}
 
@@ -7677,9 +7677,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 
 	if err != nil {
 		if mt != nil {
-			mset.clMu.Lock()
-			delete(mset.mt, mtKey)
-			mset.clMu.Unlock()
+			mset.getAndDeleteMsgTrace(mtKey)
 		}
 		if canRespond {
 			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: mset.cfg.Name}}

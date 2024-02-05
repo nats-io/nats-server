@@ -4183,11 +4183,11 @@ func (mset *stream) processInboundJetStreamMsg(_ *subscription, c *client, _ *Ac
 	if len(msg) > 0 {
 		msg = copyBytes(msg)
 	}
-	if mt, mtd := c.isMsgTraceEnabled(); mt != nil {
+	if mt, traceOnly := c.isMsgTraceEnabled(); mt != nil {
 		// If message is delivered, we need to disable the message trace destination
 		// header to prevent a trace event to be generated when a stored message
 		// is delivered to a consumer and routed.
-		if mtd {
+		if !traceOnly {
 			mt.disableTraceHeader(c, hdr)
 		}
 		// This will add the jetstream event while in the client read loop.
@@ -4223,13 +4223,10 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	mset.mu.Lock()
 	s, store := mset.srv, mset.store
 
-	var mtd bool
-	if mt != nil {
-		mtd = mt.deliverMsg()
-	}
+	traceOnly := mt.traceOnly()
 	bumpCLFS := func() {
 		// Do not bump if tracing and not doing message delivery.
-		if mt != nil && !mtd {
+		if traceOnly {
 			return
 		}
 		mset.clfs++
@@ -4328,7 +4325,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		// Certain checks have already been performed if in clustered mode, so only check if not.
 		// Note, for cluster mode but with message tracing (without message delivery), we need
 		// to do this check here since it was not done in processClusteredInboundMsg().
-		if !isClustered || (mt != nil && !mtd) {
+		if !isClustered || traceOnly {
 			// Expected stream.
 			if sname := getExpectedStream(hdr); sname != _EMPTY_ && sname != name {
 				bumpCLFS()
@@ -4521,12 +4518,10 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		ts = time.Now().UnixNano()
 	}
 
-	if mt != nil {
-		mt.updateJetStreamEvent(subject, noInterest)
-		if !mtd {
-			mset.mu.Unlock()
-			return nil
-		}
+	mt.updateJetStreamEvent(subject, noInterest)
+	if traceOnly {
+		mset.mu.Unlock()
+		return nil
 	}
 
 	// Skip msg here.

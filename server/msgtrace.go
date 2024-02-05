@@ -249,7 +249,7 @@ type msgTrace struct {
 	js    *MsgTraceJetStream
 	hop   string
 	nhop  string
-	dm    bool // Deliver message to client/LN/service import/etc...
+	tonly bool // Will only trace the message, not do delivery.
 	ct    compressionType
 }
 
@@ -262,14 +262,13 @@ var (
 )
 
 // Returns the message trace object, if message is being traced,
-// and `true` if message will be delivered to applications, or
-// `false` if only a trace events message needs to be produced.
+// and `true` if we want to only trace, not actually deliver the message.
 func (c *client) isMsgTraceEnabled() (*msgTrace, bool) {
 	t := c.pa.trace
 	if t == nil {
 		return nil, false
 	}
-	return t, t.dm
+	return t, t.tonly
 }
 
 // For LEAF/ROUTER/GATEWAY, return false if the remote does not support
@@ -448,7 +447,7 @@ func (c *client) initMsgTrace() *msgTrace {
 				Subject: string(c.pa.subject),
 			}),
 		},
-		dm: !traceOnly,
+		tonly: traceOnly,
 	}
 	return c.pa.trace
 }
@@ -483,8 +482,11 @@ func (c *client) initAndSendIngressErrEvent(hdr []byte, dest string, ingressErro
 	t.sendEvent()
 }
 
-func (t *msgTrace) deliverMsg() bool {
-	return t != nil && t.dm
+// Returns `true` if message tracing is enabled and we are tracing only,
+// that is, we are not going to deliver the inbound message, returns
+// `false` otherwise (no tracing, or tracing and message delivery).
+func (t *msgTrace) traceOnly() bool {
+	return t != nil && t.tonly
 }
 
 func (t *msgTrace) setOriginAccountHeaderIfNeeded(c *client, acc *Account, msg []byte) []byte {
@@ -566,6 +568,9 @@ func (t *msgTrace) setIngressError(err string) {
 }
 
 func (t *msgTrace) addSubjectMappingEvent(subj []byte) {
+	if t == nil {
+		return
+	}
 	t.event.Events = append(t.event.Events, &MsgTraceSubjectMapping{
 		MsgTraceBase: MsgTraceBase{
 			Type:      MsgTraceSubjectMappingType,
@@ -576,6 +581,9 @@ func (t *msgTrace) addSubjectMappingEvent(subj []byte) {
 }
 
 func (t *msgTrace) addEgressEvent(dc *client, sub *subscription, err string) {
+	if t == nil {
+		return
+	}
 	e := &MsgTraceEgress{
 		MsgTraceBase: MsgTraceBase{
 			Type:      MsgTraceEgressType,
@@ -610,6 +618,9 @@ func (t *msgTrace) addEgressEvent(dc *client, sub *subscription, err string) {
 }
 
 func (t *msgTrace) addStreamExportEvent(dc *client, to []byte) {
+	if t == nil {
+		return
+	}
 	dc.mu.Lock()
 	accName := dc.acc.GetName()
 	dc.mu.Unlock()
@@ -624,6 +635,9 @@ func (t *msgTrace) addStreamExportEvent(dc *client, to []byte) {
 }
 
 func (t *msgTrace) addServiceImportEvent(accName, from, to string) {
+	if t == nil {
+		return
+	}
 	t.event.Events = append(t.event.Events, &MsgTraceServiceImport{
 		MsgTraceBase: MsgTraceBase{
 			Type:      MsgTraceServiceImportType,
@@ -636,6 +650,9 @@ func (t *msgTrace) addServiceImportEvent(accName, from, to string) {
 }
 
 func (t *msgTrace) addJetStreamEvent(streamName string) {
+	if t == nil {
+		return
+	}
 	t.js = &MsgTraceJetStream{
 		MsgTraceBase: MsgTraceBase{
 			Type:      MsgTraceJetStreamType,
@@ -647,6 +664,9 @@ func (t *msgTrace) addJetStreamEvent(streamName string) {
 }
 
 func (t *msgTrace) updateJetStreamEvent(subject string, noInterest bool) {
+	if t == nil {
+		return
+	}
 	// JetStream event should have been created in addJetStreamEvent
 	if t.js == nil {
 		return
@@ -656,6 +676,9 @@ func (t *msgTrace) updateJetStreamEvent(subject string, noInterest bool) {
 }
 
 func (t *msgTrace) sendEventFromJetStream(err error) {
+	if t == nil {
+		return
+	}
 	// JetStream event should have been created in addJetStreamEvent
 	if t.js == nil {
 		return
@@ -667,6 +690,9 @@ func (t *msgTrace) sendEventFromJetStream(err error) {
 }
 
 func (t *msgTrace) sendEvent() {
+	if t == nil {
+		return
+	}
 	if t.js != nil {
 		ready := atomic.AddInt32(&t.ready, 1) == 2
 		if !ready {

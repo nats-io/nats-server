@@ -3335,7 +3335,7 @@ var needFlush = struct{}{}
 // We process all connection/client types. mh is the part that will be protocol/client specific.
 func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, subject, reply, mh, msg []byte, gwrply bool) bool {
 	// Check if message tracing is enabled.
-	mt, mtd := c.isMsgTraceEnabled()
+	mt, traceOnly := c.isMsgTraceEnabled()
 
 	client := sub.client
 	// Check sub client and check echo. Only do this if not a service import.
@@ -3353,18 +3353,14 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 	// Check if we have a subscribe deny clause. This will trigger us to check the subject
 	// for a match against the denied subjects.
 	if client.mperms != nil && client.checkDenySub(string(subject)) {
-		if mt != nil {
-			mt.addEgressEvent(client, sub, errMsgTraceSubDeny)
-		}
+		mt.addEgressEvent(client, sub, errMsgTraceSubDeny)
 		client.mu.Unlock()
 		return false
 	}
 
 	// New race detector forces this now.
 	if sub.isClosed() {
-		if mt != nil {
-			mt.addEgressEvent(client, sub, errMsgTraceSubClosed)
-		}
+		mt.addEgressEvent(client, sub, errMsgTraceSubClosed)
 		client.mu.Unlock()
 		return false
 	}
@@ -3372,9 +3368,7 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 	// Check if we are a leafnode and have perms to check.
 	if client.kind == LEAF && client.perms != nil {
 		if !client.pubAllowedFullCheck(string(subject), true, true) {
-			if mt != nil {
-				mt.addEgressEvent(client, sub, errMsgTracePubViolation)
-			}
+			mt.addEgressEvent(client, sub, errMsgTracePubViolation)
 			client.mu.Unlock()
 			client.Debugf("Not permitted to deliver to %q", subject)
 			return false
@@ -3386,12 +3380,7 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 		// For non internal subscription, and if the remote does not support
 		// the tracing feature...
 		if sub.icb == nil && !client.msgTraceSupport() {
-			// If we are doing delivery, we will still forward the message,
-			// but we add an error to the Egress event to hint that one should
-			// not expect a tracing event from that remote.
-			if mtd {
-				mtErr = errMsgTraceNoSupport
-			} else {
+			if traceOnly {
 				// We are not sending the message at all because the user
 				// expects a trace-only and the remote does not support
 				// tracing, which means that it would process/deliver this
@@ -3401,15 +3390,19 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 				client.mu.Unlock()
 				return false
 			}
+			// If we are doing delivery, we will still forward the message,
+			// but we add an error to the Egress event to hint that one should
+			// not expect a tracing event from that remote.
+			mtErr = errMsgTraceNoSupport
 		}
 		// For ROUTER, GATEWAY and LEAF, even if we intend to do tracing only,
 		// we will still deliver the message. The remote side will
 		// generate an event based on what happened on that server.
-		if !mtd && (client.kind == ROUTER || client.kind == GATEWAY || client.kind == LEAF) {
-			mtd = true
+		if traceOnly && (client.kind == ROUTER || client.kind == GATEWAY || client.kind == LEAF) {
+			traceOnly = false
 		}
 		// If we skip delivery and this is not for a service import, we are done.
-		if !mtd && (sub.icb == nil || c.noIcb) {
+		if traceOnly && (sub.icb == nil || c.noIcb) {
 			mt.addEgressEvent(client, sub, _EMPTY_)
 			client.mu.Unlock()
 			// Although the message is not actually delivered, for the
@@ -3420,7 +3413,9 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 
 	srv := client.srv
 
-	if mt == nil || mtd {
+	// We don't want to bump the number of delivered messages to the subscription
+	// if we are doing trace-only (since really we are not sending it to the sub).
+	if !traceOnly {
 		sub.nm++
 	}
 
@@ -3446,9 +3441,7 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 				defer client.unsubscribe(client.acc, sub, true, true)
 			} else if sub.nm > sub.max {
 				client.Debugf("Auto-unsubscribe limit [%d] exceeded", sub.max)
-				if mt != nil {
-					mt.addEgressEvent(client, sub, errMsgTraceAutoSubExceeded)
-				}
+				mt.addEgressEvent(client, sub, errMsgTraceAutoSubExceeded)
 				client.mu.Unlock()
 				client.unsubscribe(client.acc, sub, true, true)
 				if shouldForward {
@@ -3476,7 +3469,9 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 		msgSize -= int64(LEN_CR_LF)
 	}
 
-	if mt == nil || mtd {
+	// We do not update the outbound stats if we are doing trace only since
+	// this message will not be sent out.
+	if !traceOnly {
 		// No atomic needed since accessed under client lock.
 		// Monitor is reading those also under client's lock.
 		client.outMsgs++
@@ -3514,9 +3509,7 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 
 	// Check for closed connection
 	if client.isClosed() {
-		if mt != nil {
-			mt.addEgressEvent(client, sub, errMsgTraceClientClosed)
-		}
+		mt.addEgressEvent(client, sub, errMsgTraceClientClosed)
 		client.mu.Unlock()
 		return false
 	}
@@ -4211,7 +4204,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 		return
 	}
 
-	mt, mtd := c.isMsgTraceEnabled()
+	mt, traceOnly := c.isMsgTraceEnabled()
 
 	var nrr []byte
 	var rsi *serviceImport
@@ -4347,7 +4340,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 		mt.addServiceImportEvent(siAcc.GetName(), string(pacopy.subject), to)
 		// If we are not sharing and doing trace only, we stop at this level.
 		if !share {
-			if !mtd {
+			if traceOnly {
 				skipProcessing = true
 			} else {
 				// We are going to do normal processing, and possibly chainning
@@ -4385,7 +4378,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 
 	// If this was a message trace but we skip last-mile delivery, we need to
 	// do the remove, so:
-	if mt != nil && !mtd && didDeliver {
+	if mt != nil && traceOnly && didDeliver {
 		didDeliver = false
 	}
 
@@ -4580,9 +4573,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 				dsubj = append(_dsubj[:0], sub.im.to...)
 			}
 
-			if mt != nil {
-				mt.addStreamExportEvent(sub.client, dsubj)
-			}
+			mt.addStreamExportEvent(sub.client, dsubj)
 
 			// Make sure deliver is set if inbound from a route.
 			if remapped && (c.kind == GATEWAY || c.kind == ROUTER || c.kind == LEAF) {
@@ -4731,9 +4722,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 					dsubj = append(_dsubj[:0], sub.im.to...)
 				}
 
-				if mt != nil {
-					mt.addStreamExportEvent(sub.client, dsubj)
-				}
+				mt.addStreamExportEvent(sub.client, dsubj)
 
 				// Make sure deliver is set if inbound from a route.
 				if remapped && (c.kind == GATEWAY || c.kind == ROUTER || c.kind == LEAF) {

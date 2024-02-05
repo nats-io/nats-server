@@ -647,7 +647,7 @@ func (s *Server) sendInternalAccountMsgWithReply(a *Account, subject, reply stri
 }
 
 // Send system style message to an account scope.
-func (s *Server) sendInternalAccountSysMsg(a *Account, subj string, si *ServerInfo, msg interface{}, ct compressionType) {
+func (s *Server) sendInternalAccountSysMsg(a *Account, subj string, si *ServerInfo, msg any, ct compressionType) {
 	s.mu.RLock()
 	if s.sys == nil || s.sys.sendq == nil || a == nil {
 		s.mu.RUnlock()

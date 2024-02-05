@@ -497,10 +497,8 @@ func (c *client) parse(buf []byte) error {
 				changed := c.selectMappedSubject()
 				if (trace || mt != nil) && changed {
 					c.traceInOp("MAPPING", []byte(fmt.Sprintf("%s -> %s", c.pa.mapped, c.pa.subject)))
-					if mt != nil {
-						// c.pa.subject is the subject the original is now mapped to.
-						mt.addSubjectMappingEvent(c.pa.subject)
-					}
+					// c.pa.subject is the subject the original is now mapped to.
+					mt.addSubjectMappingEvent(c.pa.subject)
 				}
 			}
 			if trace {
@@ -509,9 +507,7 @@ func (c *client) parse(buf []byte) error {
 
 			c.processInboundMsg(c.msgBuf)
 
-			if mt != nil {
-				mt.sendEvent()
-			}
+			mt.sendEvent()
 			c.argBuf, c.msgBuf, c.header = nil, nil, nil
 			c.drop, c.as, c.state = 0, i+1, OP_START
 			// Drop all pub args
