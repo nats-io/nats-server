@@ -820,7 +820,6 @@ func testAuthCalloutScopedUser(t *testing.T, allowAnyAccount bool) {
 	// Send the signing key token. This should switch us to the test account, but the user
 	// is signed with the account signing key
 	nc := ac.Connect(nats.UserCredentials(creds), nats.Token(scopedToken))
-	require_NoError(t, err)
 
 	resp, err = nc.Request(userDirectInfoSubj, nil, time.Second)
 	require_NoError(t, err)
@@ -1712,4 +1711,119 @@ func TestAuthCalloutWSClientTLSCerts(t *testing.T) {
 
 	require_Equal(t, userInfo.UserID, "dlc")
 	require_Equal(t, userInfo.Account, "FOO")
+}
+
+func testConfClientClose(t *testing.T, respondNil bool) {
+	conf := `
+		listen: "127.0.0.1:-1"
+		server_name: ZZ
+		accounts {
+            AUTH { users [ {user: "auth", password: "pwd"} ] }
+		}
+		authorization {
+			timeout: 1s
+			auth_callout {
+				# Needs to be a public account nkey, will work for both server config and operator mode.
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				account: AUTH
+				auth_users: [ auth ]
+			}
+		}
+	`
+	handler := func(m *nats.Msg) {
+		user, si, _, _, _ := decodeAuthRequest(t, m.Data)
+		if respondNil {
+			m.Respond(nil)
+		} else {
+			m.Respond(serviceResponse(t, user, si.ID, "", "not today", 0))
+		}
+	}
+
+	at := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer at.Cleanup()
+
+	// This one will use callout since not defined in server config.
+	_, err := at.NewClient(nats.UserInfo("a", "x"))
+	require_Error(t, err)
+	require_True(t, strings.Contains(strings.ToLower(err.Error()), nats.AUTHORIZATION_ERR))
+}
+
+func TestAuthCallout_ClientAuthErrorConf(t *testing.T) {
+	testConfClientClose(t, true)
+	testConfClientClose(t, false)
+}
+
+func testAuthCall_ClientAuthErrorOperatorMode(t *testing.T, respondNil bool) {
+	_, spub := createKey(t)
+	sysClaim := jwt.NewAccountClaims(spub)
+	sysClaim.Name = "$SYS"
+	sysJwt, err := sysClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// AUTH service account.
+	akp, err := nkeys.FromSeed([]byte(authCalloutIssuerSeed))
+	require_NoError(t, err)
+
+	apub, err := akp.PublicKey()
+	require_NoError(t, err)
+
+	// The authorized user for the service.
+	upub, creds := createAuthServiceUser(t, akp)
+	defer removeFile(t, creds)
+
+	authClaim := jwt.NewAccountClaims(apub)
+	authClaim.Name = "AUTH"
+	authClaim.EnableExternalAuthorization(upub)
+	authClaim.Authorization.AllowedAccounts.Add("*")
+
+	// the scope for the bearer token which has no permissions
+	sentinelScope, authKP := newScopedRole(t, "sentinel", nil, nil, false)
+	sentinelScope.Template.Sub.Deny.Add(">")
+	sentinelScope.Template.Pub.Deny.Add(">")
+	sentinelScope.Template.Limits.Subs = 0
+	sentinelScope.Template.Payload = 0
+	authClaim.SigningKeys.AddScopedSigner(sentinelScope)
+
+	authJwt, err := authClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	conf := fmt.Sprintf(`
+        listen: 127.0.0.1:-1
+        operator: %s
+        system_account: %s
+        resolver: MEM
+        resolver_preload: {
+            %s: %s
+            %s: %s
+        }
+    `, ojwt, spub, apub, authJwt, spub, sysJwt)
+
+	handler := func(m *nats.Msg) {
+		user, si, _, _, _ := decodeAuthRequest(t, m.Data)
+		if respondNil {
+			m.Respond(nil)
+		} else {
+			m.Respond(serviceResponse(t, user, si.ID, "", "not today", 0))
+		}
+	}
+
+	ac := NewAuthTest(t, conf, handler, nats.UserCredentials(creds))
+	defer ac.Cleanup()
+
+	// Bearer token - this has no permissions see sentinelScope
+	// This is used by all users, and the customization will be in other connect args.
+	// This needs to also be bound to the authorization account.
+	creds = createScopedUser(t, akp, authKP)
+	defer removeFile(t, creds)
+
+	// Send the signing key token. This should switch us to the test account, but the user
+	// is signed with the account signing key
+	_, err = ac.NewClient(nats.UserCredentials(creds))
+	require_Error(t, err)
+	require_True(t, strings.Contains(strings.ToLower(err.Error()), nats.AUTHORIZATION_ERR))
+}
+
+func TestAuthCallout_ClientAuthErrorOperatorMode(t *testing.T) {
+	testAuthCall_ClientAuthErrorOperatorMode(t, true)
+	testAuthCall_ClientAuthErrorOperatorMode(t, false)
 }
