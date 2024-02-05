@@ -28,20 +28,10 @@ func newNode256(prefix []byte) *node256 {
 func (n *node256) isLeaf() bool { return false }
 func (n *node256) base() *meta  { return &n.meta }
 
-func (n *node256) setPrefix(pre []byte) {
-	n.prefixLen = uint16(min(len(pre), maxPrefixLen))
-	for i := uint16(0); i < n.prefixLen; i++ {
-		n.prefix[i] = pre[i]
-	}
-}
-
 func (n *node256) addChild(c byte, nn node) {
 	n.child[c] = nn
 	n.size++
 }
-
-func (n *node256) numChildren() uint16 { return n.size }
-func (n *node256) path() []byte        { return n.prefix[:n.prefixLen] }
 
 func (n *node256) findChild(c byte) *node {
 	if n.child[c] != nil {
@@ -77,7 +67,7 @@ func (n *node256) shrink() node {
 
 // Will match parts against our prefix.
 func (n *node256) matchParts(parts [][]byte) ([][]byte, bool) {
-	return matchParts(parts, n.prefix[:n.prefixLen])
+	return matchParts(parts, n.prefix)
 }
 
 // Iterate over all children calling func f.
