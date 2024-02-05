@@ -5333,6 +5333,30 @@ func (js *jetStream) stopUpdatesSub() {
 	}
 }
 
+func (s *Server) sendDomainLeaderElectAdvisory() {
+	js, cc := s.getJetStreamCluster()
+	if js == nil || cc == nil {
+		return
+	}
+
+	js.mu.RLock()
+	node := cc.meta
+	js.mu.RUnlock()
+
+	adv := &JSDomainLeaderElectedAdvisory{
+		TypedEvent: TypedEvent{
+			Type: JSDomainLeaderElectedAdvisoryType,
+			ID:   nuid.Next(),
+			Time: time.Now().UTC(),
+		},
+		Leader:   node.GroupLeader(),
+		Replicas: s.replicas(node),
+		Domain:   s.getOpts().JetStreamDomain,
+	}
+
+	s.publishAdvisory(nil, JSAdvisoryDomainLeaderElected, adv)
+}
+
 func (js *jetStream) processLeaderChange(isLeader bool) {
 	if js == nil {
 		return
@@ -5346,6 +5370,7 @@ func (js *jetStream) processLeaderChange(isLeader bool) {
 
 	if isLeader {
 		s.Noticef("Self is new JetStream cluster metadata leader")
+		s.sendDomainLeaderElectAdvisory()
 	} else {
 		var node string
 		if meta := js.getMetaGroup(); meta != nil {
