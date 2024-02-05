@@ -4105,7 +4105,7 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 	seq := req.Seq
 	wc := subjectHasWildcard(req.NextFor)
 	// For tracking num pending if we are batch.
-	var np, lseq uint64
+	var np, lseq, validThrough uint64
 	var isBatchRequest bool
 	batch := req.Batch
 	if batch == 0 {
@@ -4113,7 +4113,7 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 	} else {
 		// This is a batch request, capture initial numPending.
 		isBatchRequest = true
-		np, _ = store.NumPending(seq, req.NextFor, false)
+		np, validThrough = store.NumPending(seq, req.NextFor, false)
 	}
 
 	// Grab MaxBytes
@@ -4199,8 +4199,11 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 	}
 
 	// If batch was requested send EOB.
-	if batch > 1 {
-		// TODO(dlc) - Should we recalculate num pending here to account for new messages?
+	if isBatchRequest {
+		// Update if the stream's lasts sequence has moved past our validThrough.
+		if mset.lastSeq() > validThrough {
+			np, _ = store.NumPending(seq, req.NextFor, false)
+		}
 		hdr := []byte(fmt.Sprintf("NATS/1.0 204 EOB\r\nNats-Pending-Messages: %d\r\nNats-Last-Sequence: %d\r\n\r\n", np, lseq))
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 	}
