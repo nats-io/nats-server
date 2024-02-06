@@ -4194,6 +4194,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 		}
 	}
 	siAcc := si.acc
+	allowTrace := si.se != nil && si.se.atrc
 	acc.mu.RUnlock()
 
 	// We have a special case where JetStream pulls in all service imports through one export.
@@ -4338,8 +4339,8 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	// If message tracing enabled, add the service import trace.
 	if mt != nil {
 		mt.addServiceImportEvent(siAcc.GetName(), string(pacopy.subject), to)
-		// If we are not sharing and doing trace only, we stop at this level.
-		if !share {
+		// If we are not allowing tracing and doing trace only, we stop at this level.
+		if !allowTrace {
 			if traceOnly {
 				skipProcessing = true
 			} else {
@@ -4528,7 +4529,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		}
 	}
 
-	mt, _ := c.isMsgTraceEnabled()
+	mt, traceOnly := c.isMsgTraceEnabled()
 
 	// Loop over all normal subscriptions that match.
 	for _, sub := range r.psubs {
@@ -4558,6 +4559,11 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		// Assume delivery subject is the normal subject to this point.
 		dsubj = subj
 
+		// We may need to disable tracing, by setting c.pa.trace to `nil`
+		// before the call to deliverMsg, if so, this will indicate that
+		// we need to put it back.
+		var restorePaTrace bool
+
 		// Check for stream import mapped subs (shadow subs). These apply to local subs only.
 		if sub.im != nil {
 			// If this message was a service import do not re-export to an exported stream.
@@ -4573,7 +4579,24 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 				dsubj = append(_dsubj[:0], sub.im.to...)
 			}
 
-			mt.addStreamExportEvent(sub.client, dsubj)
+			if mt != nil {
+				mt.addStreamExportEvent(sub.client, dsubj)
+				// If allow_trace is false...
+				if !sub.im.atrc {
+					// If we are doing only message tracing, we can move to the
+					//  next sub.
+					if traceOnly {
+						// Although the message was not delivered, for the purpose
+						// of didDeliver, we need to set to true (to avoid possible
+						// no responders).
+						didDeliver = true
+						continue
+					}
+					// If we are delivering the message, we need to disable tracing
+					// before calling deliverMsg().
+					c.pa.trace, restorePaTrace = nil, true
+				}
+			}
 
 			// Make sure deliver is set if inbound from a route.
 			if remapped && (c.kind == GATEWAY || c.kind == ROUTER || c.kind == LEAF) {
@@ -4600,6 +4623,9 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 				dlvMsgs++
 			}
 			didDeliver = true
+		}
+		if restorePaTrace {
+			c.pa.trace = mt
 		}
 	}
 
@@ -4707,6 +4733,13 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 
 			// Assume delivery subject is normal subject to this point.
 			dsubj = subj
+
+			// We may need to disable tracing, by setting c.pa.trace to `nil`
+			// before the call to deliverMsg, if so, this will indicate that
+			// we need to put it back.
+			var restorePaTrace bool
+			var skipDelivery bool
+
 			// Check for stream import mapped subs. These apply to local subs only.
 			if sub.im != nil {
 				// If this message was a service import do not re-export to an exported stream.
@@ -4722,7 +4755,21 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 					dsubj = append(_dsubj[:0], sub.im.to...)
 				}
 
-				mt.addStreamExportEvent(sub.client, dsubj)
+				if mt != nil {
+					mt.addStreamExportEvent(sub.client, dsubj)
+					// If allow_trace is false...
+					if !sub.im.atrc {
+						// If we are doing only message tracing, we are done
+						// with this queue group.
+						if traceOnly {
+							skipDelivery = true
+						} else {
+							// If we are delivering, we need to disable tracing
+							// before the call to deliverMsg()
+							c.pa.trace, restorePaTrace = nil, true
+						}
+					}
+				}
 
 				// Make sure deliver is set if inbound from a route.
 				if remapped && (c.kind == GATEWAY || c.kind == ROUTER || c.kind == LEAF) {
@@ -4736,11 +4783,20 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 				}
 			}
 
-			mh := c.msgHeader(dsubj, creply, sub)
-			if c.deliverMsg(prodIsMQTT, sub, acc, subject, creply, mh, msg, rplyHasGWPrefix) {
-				if sub.icb == nil {
+			var delivered bool
+			if !skipDelivery {
+				mh := c.msgHeader(dsubj, creply, sub)
+				delivered = c.deliverMsg(prodIsMQTT, sub, acc, subject, creply, mh, msg, rplyHasGWPrefix)
+				if restorePaTrace {
+					c.pa.trace = mt
+				}
+			}
+			if skipDelivery || delivered {
+				// Update only if not skipped.
+				if !skipDelivery && sub.icb == nil {
 					dlvMsgs++
 				}
+				// Do the rest even when message delivery was skipped.
 				didDeliver = true
 				// Clear rsub
 				rsub = nil

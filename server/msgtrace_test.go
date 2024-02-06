@@ -1638,11 +1638,11 @@ func TestMsgTraceWithGatewayToOldServer(t *testing.T) {
 
 func TestMsgTraceServiceImport(t *testing.T) {
 	for _, mainTest := range []struct {
-		name    string
-		sharing bool
+		name  string
+		allow bool
 	}{
-		{"sharing", true},
-		{"not sharing", false},
+		{"allowed", true},
+		{"not allowed", false},
 	} {
 		t.Run(mainTest.name, func(t *testing.T) {
 			conf := createConfFile(t, []byte(fmt.Sprintf(`
@@ -1650,32 +1650,32 @@ func TestMsgTraceServiceImport(t *testing.T) {
 			accounts {
 				A {
 					users: [{user: a, password: pwd}]
-					exports: [ { service: ">"} ]
+					exports: [ { service: ">", allow_trace: %v} ]
 					mappings = {
 						bar: bozo
 					}
 				}
 				B {
 					users: [{user: b, password: pwd}]
-					imports: [ { service: {account: "A", subject:">"}, share: true } ]
-					exports: [ { service: ">"} ]
+					imports: [ { service: {account: "A", subject:">"} } ]
+					exports: [ { service: ">", allow_trace: %v} ]
 				}
 				C {
 					users: [{user: c, password: pwd}]
-					exports: [ { service: ">"} ]
+					exports: [ { service: ">", allow_trace: %v } ]
 				}
 				D {
 					users: [{user: d, password: pwd}]
 					imports: [
-						{ service: {account: "B", subject:"bar"}, to: baz, share: %v }
-						{ service: {account: "C", subject:">"}, share: %v }
+						{ service: {account: "B", subject:"bar"}, to: baz }
+						{ service: {account: "C", subject:">"} }
 					]
 					mappings = {
 							bat: baz
 					}
 				}
 			}
-		`, mainTest.sharing, mainTest.sharing)))
+		`, mainTest.allow, mainTest.allow, mainTest.allow)))
 			s, _ := RunServerWithConfig(conf)
 			defer s.Shutdown()
 
@@ -1760,7 +1760,7 @@ func TestMsgTraceServiceImport(t *testing.T) {
 					simps := e.ServiceImports()
 					require_True(t, simps != nil)
 					var expectedServices int
-					if mainTest.sharing {
+					if mainTest.allow {
 						expectedServices = 3
 					} else {
 						expectedServices = 2
@@ -1776,8 +1776,8 @@ func TestMsgTraceServiceImport(t *testing.T) {
 							require_Equal[string](t, si.From, "baz")
 							require_Equal[string](t, si.To, "bar")
 						case "A":
-							if !mainTest.sharing {
-								t.Fatalf("Without sharing, we should not see service for account A")
+							if !mainTest.allow {
+								t.Fatalf("Without allow_trace, we should not see service for account A")
 							}
 							require_Equal[string](t, si.From, "bar")
 							require_Equal[string](t, si.To, "bozo")
@@ -1786,7 +1786,7 @@ func TestMsgTraceServiceImport(t *testing.T) {
 						}
 					}
 					egress := e.Egresses()
-					if !mainTest.sharing {
+					if !mainTest.allow {
 						require_Equal[int](t, len(egress), 0)
 					} else {
 						require_Equal[int](t, len(egress), 2)
@@ -1836,12 +1836,12 @@ func TestMsgTraceServiceImport(t *testing.T) {
 
 func TestMsgTraceServiceImportWithSuperCluster(t *testing.T) {
 	for _, mainTest := range []struct {
-		name    string
-		share   string
-		sharing bool
+		name     string
+		allowStr string
+		allow    bool
 	}{
-		{"sharing", "true", true},
-		{"not sharing", "false", false},
+		{"allowed", "true", true},
+		{"not allowed", "false", false},
 	} {
 		t.Run(mainTest.name, func(t *testing.T) {
 			tmpl := `
@@ -1857,25 +1857,25 @@ func TestMsgTraceServiceImportWithSuperCluster(t *testing.T) {
 				accounts {
 					A {
 						users: [{user: a, password: pwd}]
-						exports: [ { service: ">"} ]
+						exports: [ { service: ">", allow_trace: ` + mainTest.allowStr + ` } ]
 						mappings = {
 							bar: bozo
 						}
 					}
 					B {
 						users: [{user: b, password: pwd}]
-						imports: [ { service: {account: "A", subject:">"}, share: true } ]
-						exports: [ { service: ">"} ]
+						imports: [ { service: {account: "A", subject:">"} } ]
+						exports: [ { service: ">" , allow_trace: ` + mainTest.allowStr + ` } ]
 					}
 					C {
 						users: [{user: c, password: pwd}]
-						exports: [ { service: ">"} ]
+						exports: [ { service: ">" , allow_trace: ` + mainTest.allowStr + ` } ]
 					}
 					D {
 						users: [{user: d, password: pwd}]
 						imports: [
-							{ service: {account: "B", subject:"bar"}, to: baz, share: ` + mainTest.share + ` }
-							{ service: {account: "C", subject:">"}, share: ` + mainTest.share + ` }
+							{ service: {account: "B", subject:"bar"}, to: baz }
+							{ service: {account: "C", subject:">"} }
 						]
 						mappings = {
 								bat: baz
@@ -1934,13 +1934,13 @@ func TestMsgTraceServiceImportWithSuperCluster(t *testing.T) {
 							t.Helper()
 							appMsg := natsNexMsg(t, sub, time.Second)
 							// This test causes a message to be routed to the
-							// service responders. When not sharing, we need
+							// service responders. When not allowing, we need
 							// to make sure that the trace header has been
 							// disabled. Not receiving the trace event from
 							// the remote is not enough to verify since the
 							// trace would not reach the origin server because
 							// the origin account header will not be present.
-							if mainTest.sharing {
+							if mainTest.allow {
 								if hv := appMsg.Header.Get(MsgTraceSendTo); hv != traceSub.Subject {
 									t.Fatalf("Expecting header with %q, but got %q", traceSub.Subject, hv)
 								}
@@ -2001,7 +2001,7 @@ func TestMsgTraceServiceImportWithSuperCluster(t *testing.T) {
 							simps := e.ServiceImports()
 							require_True(t, simps != nil)
 							var expectedServices int
-							if mainTest.sharing {
+							if mainTest.allow {
 								expectedServices = 3
 							} else {
 								expectedServices = 2
@@ -2016,8 +2016,8 @@ func TestMsgTraceServiceImportWithSuperCluster(t *testing.T) {
 									require_Equal[string](t, si.From, "baz")
 									require_Equal[string](t, si.To, "bar")
 								case "A":
-									if !mainTest.sharing {
-										t.Fatalf("Without sharing, we should not see service for account A")
+									if !mainTest.allow {
+										t.Fatalf("Without allow_trace, we should not see service for account A")
 									}
 									require_Equal[string](t, si.From, "bar")
 									require_Equal[string](t, si.To, "bozo")
@@ -2026,7 +2026,7 @@ func TestMsgTraceServiceImportWithSuperCluster(t *testing.T) {
 								}
 							}
 							egress := e.Egresses()
-							if !mainTest.sharing {
+							if !mainTest.allow {
 								require_Equal[int](t, len(egress), 0)
 							} else {
 								require_Equal[int](t, len(egress), 2)
@@ -2069,9 +2069,9 @@ func TestMsgTraceServiceImportWithSuperCluster(t *testing.T) {
 							t.Fatalf("Unexpected ingress: %+v", ingress)
 						}
 					}
-					// We should receive 3 events when sharing, a single when we are not.
+					// We should receive 3 events when allowed, a single when not.
 					check()
-					if mainTest.sharing {
+					if mainTest.allow {
 						check()
 						check()
 					}
@@ -2109,25 +2109,25 @@ func TestMsgTraceServiceImportWithLeafNodeHub(t *testing.T) {
 		accounts {
 			A {
 				users: [{user: a, password: pwd}]
-				exports: [ { service: ">"} ]
+				exports: [ { service: ">", allow_trace: true } ]
 				mappings = {
 					bar: bozo
 				}
 			}
 			B {
 				users: [{user: b, password: pwd}]
-				imports: [ { service: {account: "A", subject:">"}, share: true } ]
-				exports: [ { service: ">"} ]
+				imports: [ { service: {account: "A", subject:">"} } ]
+				exports: [ { service: ">", allow_trace: true } ]
 			}
 			C {
 				users: [{user: c, password: pwd}]
-				exports: [ { service: ">"} ]
+				exports: [ { service: ">", allow_trace: true } ]
 			}
 			D {
 				users: [{user: d, password: pwd}]
 				imports: [
-					{ service: {account: "B", subject:"bar"}, to: baz, share: true }
-					{ service: {account: "C", subject:">"}, share: true }
+					{ service: {account: "B", subject:"bar"}, to: baz }
+					{ service: {account: "C", subject:">"} }
 				]
 				mappings = {
 						bat: baz
@@ -2321,11 +2321,11 @@ func TestMsgTraceServiceImportWithLeafNodeLeaf(t *testing.T) {
 		accounts {
 			A {
 				users: [{user: a, password: pwd}]
-				exports: [ { service: "bar"} ]
+				exports: [ { service: "bar", allow_trace: true } ]
 			}
 			B {
 				users: [{user: b, password: pwd}]
-				imports: [{ service: {account: "A", subject:"bar"}, to: baz, share: true }]
+				imports: [{ service: {account: "A", subject:"bar"}, to: baz }]
 			}
 			$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
 		}
@@ -2500,287 +2500,320 @@ func TestMsgTraceServiceImportWithLeafNodeLeaf(t *testing.T) {
 }
 
 func TestMsgTraceStreamExport(t *testing.T) {
-	conf := createConfFile(t, []byte(`
-		listen: 127.0.0.1:-1
-		accounts {
-			A {
-				users: [{user: a, password: pwd}]
-				exports: [
-					{ stream: "info.*.*.>"}
-				]
-			}
-			B {
-				users: [{user: b, password: pwd}]
-				imports: [ { stream: {account: "A", subject:"info.*.*.>"}, to: "B.info.$2.$1.>" } ]
-			}
-			C {
-				users: [{user: c, password: pwd}]
-				imports: [ { stream: {account: "A", subject:"info.*.*.>"}, to: "C.info.$1.$2.>" } ]
-			}
-		}
-	`))
-	s, _ := RunServerWithConfig(conf)
-	defer s.Shutdown()
-
-	nc := natsConnect(t, s.ClientURL(), nats.UserInfo("a", "pwd"), nats.Name("Tracer"))
-	defer nc.Close()
-	traceSub := natsSubSync(t, nc, "my.trace.subj")
-
-	nc2 := natsConnect(t, s.ClientURL(), nats.UserInfo("b", "pwd"), nats.Name("sub1"))
-	defer nc2.Close()
-	sub1 := natsSubSync(t, nc2, "B.info.*.*.>")
-	natsFlush(t, nc2)
-
-	nc3 := natsConnect(t, s.ClientURL(), nats.UserInfo("c", "pwd"), nats.Name("sub2"))
-	defer nc3.Close()
-	sub2 := natsQueueSubSync(t, nc3, "C.info.>", "my_queue")
-	natsFlush(t, nc3)
-
-	for _, test := range []struct {
-		name       string
-		deliverMsg bool
+	for _, mainTest := range []struct {
+		name  string
+		allow bool
 	}{
-		{"just trace", false},
-		{"deliver msg", true},
+		{"allowed", true},
+		{"not allowed", false},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			msg := nats.NewMsg("info.11.22.bar")
-			msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
-			if !test.deliverMsg {
-				msg.Header.Set(MsgTraceOnly, "true")
-			}
-			msg.Data = []byte("hello")
-
-			err := nc.PublishMsg(msg)
-			require_NoError(t, err)
-
-			if test.deliverMsg {
-				appMsg := natsNexMsg(t, sub1, time.Second)
-				require_Equal[string](t, appMsg.Subject, "B.info.22.11.bar")
-				appMsg = natsNexMsg(t, sub2, time.Second)
-				require_Equal[string](t, appMsg.Subject, "C.info.11.22.bar")
-			}
-			// Check that no (more) messages are received.
-			for _, sub := range []*nats.Subscription{sub1, sub2} {
-				if msg, err := sub.NextMsg(100 * time.Millisecond); msg != nil || err != nats.ErrTimeout {
-					t.Fatalf("Did not expect application message, got msg=%v err=%v", msg, err)
+		t.Run(mainTest.name, func(t *testing.T) {
+			conf := createConfFile(t, []byte(fmt.Sprintf(`
+				listen: 127.0.0.1:-1
+				accounts {
+					A {
+						users: [{user: a, password: pwd}]
+						exports: [
+							{ stream: "info.*.*.>"}
+						]
+					}
+					B {
+						users: [{user: b, password: pwd}]
+						imports: [ { stream: {account: "A", subject:"info.*.*.>"}, to: "B.info.$2.$1.>", allow_trace: %v } ]
+					}
+					C {
+						users: [{user: c, password: pwd}]
+						imports: [ { stream: {account: "A", subject:"info.*.*.>"}, to: "C.info.$1.$2.>", allow_trace: %v } ]
+					}
 				}
-			}
+			`, mainTest.allow, mainTest.allow)))
+			s, _ := RunServerWithConfig(conf)
+			defer s.Shutdown()
 
-			traceMsg := natsNexMsg(t, traceSub, time.Second)
-			var e MsgTraceEvent
-			json.Unmarshal(traceMsg.Data, &e)
+			nc := natsConnect(t, s.ClientURL(), nats.UserInfo("a", "pwd"), nats.Name("Tracer"))
+			defer nc.Close()
+			traceSub := natsSubSync(t, nc, "my.trace.subj")
 
-			require_Equal[string](t, e.Server.Name, s.Name())
-			ingress := e.Ingress()
-			require_True(t, ingress != nil)
-			require_True(t, ingress.Kind == CLIENT)
-			require_Equal[string](t, ingress.Account, "A")
-			require_Equal[string](t, ingress.Subject, "info.11.22.bar")
-			require_True(t, e.SubjectMapping() == nil)
-			require_True(t, e.ServiceImports() == nil)
-			stexps := e.StreamExports()
-			require_True(t, stexps != nil)
-			require_Equal[int](t, len(stexps), 2)
-			for _, se := range stexps {
-				require_True(t, se.Timestamp != time.Time{})
-				switch se.Account {
-				case "B":
-					require_Equal[string](t, se.To, "B.info.22.11.bar")
-				case "C":
-					require_Equal[string](t, se.To, "C.info.11.22.bar")
-				default:
-					t.Fatalf("Unexpected stream export: %+v", se)
-				}
-			}
-			egress := e.Egresses()
-			require_Equal[int](t, len(egress), 2)
-			for _, eg := range egress {
-				require_True(t, eg.Kind == CLIENT)
-				switch eg.Account {
-				case "B":
-					require_Equal[string](t, eg.Name, "sub1")
-					require_Equal[string](t, eg.Subscription, "info.*.*.>")
-					require_Equal[string](t, eg.Queue, _EMPTY_)
-				case "C":
-					require_Equal[string](t, eg.Name, "sub2")
-					require_Equal[string](t, eg.Subscription, "info.*.*.>")
-					require_Equal[string](t, eg.Queue, "my_queue")
-				default:
-					t.Fatalf("Unexpected egress: %+v", eg)
-				}
+			nc2 := natsConnect(t, s.ClientURL(), nats.UserInfo("b", "pwd"), nats.Name("sub1"))
+			defer nc2.Close()
+			sub1 := natsSubSync(t, nc2, "B.info.*.*.>")
+			natsFlush(t, nc2)
+
+			nc3 := natsConnect(t, s.ClientURL(), nats.UserInfo("c", "pwd"), nats.Name("sub2"))
+			defer nc3.Close()
+			sub2 := natsQueueSubSync(t, nc3, "C.info.>", "my_queue")
+			natsFlush(t, nc3)
+
+			for _, test := range []struct {
+				name       string
+				deliverMsg bool
+			}{
+				{"just trace", false},
+				{"deliver msg", true},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					msg := nats.NewMsg("info.11.22.bar")
+					msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+					if !test.deliverMsg {
+						msg.Header.Set(MsgTraceOnly, "true")
+					}
+					msg.Data = []byte("hello")
+
+					err := nc.PublishMsg(msg)
+					require_NoError(t, err)
+
+					if test.deliverMsg {
+						appMsg := natsNexMsg(t, sub1, time.Second)
+						require_Equal[string](t, appMsg.Subject, "B.info.22.11.bar")
+						appMsg = natsNexMsg(t, sub2, time.Second)
+						require_Equal[string](t, appMsg.Subject, "C.info.11.22.bar")
+					}
+					// Check that no (more) messages are received.
+					for _, sub := range []*nats.Subscription{sub1, sub2} {
+						if msg, err := sub.NextMsg(100 * time.Millisecond); msg != nil || err != nats.ErrTimeout {
+							t.Fatalf("Did not expect application message, got msg=%v err=%v", msg, err)
+						}
+					}
+
+					traceMsg := natsNexMsg(t, traceSub, time.Second)
+					var e MsgTraceEvent
+					json.Unmarshal(traceMsg.Data, &e)
+
+					require_Equal[string](t, e.Server.Name, s.Name())
+					ingress := e.Ingress()
+					require_True(t, ingress != nil)
+					require_True(t, ingress.Kind == CLIENT)
+					require_Equal[string](t, ingress.Account, "A")
+					require_Equal[string](t, ingress.Subject, "info.11.22.bar")
+					require_True(t, e.SubjectMapping() == nil)
+					require_True(t, e.ServiceImports() == nil)
+					stexps := e.StreamExports()
+					require_True(t, stexps != nil)
+					require_Equal[int](t, len(stexps), 2)
+					for _, se := range stexps {
+						require_True(t, se.Timestamp != time.Time{})
+						switch se.Account {
+						case "B":
+							require_Equal[string](t, se.To, "B.info.22.11.bar")
+						case "C":
+							require_Equal[string](t, se.To, "C.info.11.22.bar")
+						default:
+							t.Fatalf("Unexpected stream export: %+v", se)
+						}
+					}
+					egress := e.Egresses()
+					if mainTest.allow {
+						require_Equal[int](t, len(egress), 2)
+						for _, eg := range egress {
+							require_True(t, eg.Kind == CLIENT)
+							switch eg.Account {
+							case "B":
+								require_Equal[string](t, eg.Name, "sub1")
+								require_Equal[string](t, eg.Subscription, "info.*.*.>")
+								require_Equal[string](t, eg.Queue, _EMPTY_)
+							case "C":
+								require_Equal[string](t, eg.Name, "sub2")
+								require_Equal[string](t, eg.Subscription, "info.*.*.>")
+								require_Equal[string](t, eg.Queue, "my_queue")
+							default:
+								t.Fatalf("Unexpected egress: %+v", eg)
+							}
+						}
+					} else {
+						require_Equal[int](t, len(egress), 0)
+					}
+				})
 			}
 		})
 	}
 }
 
 func TestMsgTraceStreamExportWithSuperCluster(t *testing.T) {
-	tmpl := `
-		listen: 127.0.0.1:-1
-		server_name: %s
-		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
-
-		cluster {
-			name: %s
-			listen: 127.0.0.1:%d
-			routes = [%s]
-		}
-		accounts {
-			A {
-				users: [{user: a, password: pwd}]
-				exports: [
-					{ stream: "info.*.*.>"}
-				]
-			}
-			B {
-				users: [{user: b, password: pwd}]
-				imports: [ { stream: {account: "A", subject:"info.*.*.>"}, to: "B.info.$2.$1.>" } ]
-			}
-			C {
-				users: [{user: c, password: pwd}]
-				imports: [ { stream: {account: "A", subject:"info.*.*.>"}, to: "C.info.$1.$2.>" } ]
-			}
-			$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
-		}
-	`
-	sc := createJetStreamSuperClusterWithTemplate(t, tmpl, 2, 2)
-	defer sc.shutdown()
-
-	sfornc := sc.clusters[0].servers[0]
-	nc := natsConnect(t, sfornc.ClientURL(), nats.UserInfo("a", "pwd"), nats.Name("Tracer"))
-	defer nc.Close()
-	traceSub := natsSubSync(t, nc, "my.trace.subj")
-
-	sfornc2 := sc.clusters[0].servers[1]
-	nc2 := natsConnect(t, sfornc2.ClientURL(), nats.UserInfo("b", "pwd"), nats.Name("sub1"))
-	defer nc2.Close()
-	sub1 := natsSubSync(t, nc2, "B.info.*.*.>")
-	natsFlush(t, nc2)
-	checkSubInterest(t, sfornc2, "A", traceSub.Subject, time.Second)
-
-	sfornc3 := sc.clusters[1].servers[0]
-	nc3 := natsConnect(t, sfornc3.ClientURL(), nats.UserInfo("c", "pwd"), nats.Name("sub2"))
-	defer nc3.Close()
-	sub2 := natsQueueSubSync(t, nc3, "C.info.>", "my_queue")
-	natsFlush(t, nc3)
-
-	checkSubInterest(t, sfornc, "A", "info.1.2.3.4", time.Second)
-	for _, s := range sc.clusters[0].servers {
-		checkForRegisteredQSubInterest(t, s, "C2", "A", "info.1.2.3", 1, time.Second)
-	}
-
-	for _, test := range []struct {
-		name       string
-		deliverMsg bool
+	for _, mainTest := range []struct {
+		name     string
+		allowStr string
+		allow    bool
 	}{
-		{"just trace", false},
-		{"deliver msg", true},
+		{"allowed", "true", true},
+		{"not allowed", "false", false},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			msg := nats.NewMsg("info.11.22.bar")
-			msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
-			if !test.deliverMsg {
-				msg.Header.Set(MsgTraceOnly, "true")
-			}
-			msg.Data = []byte("hello")
+		t.Run(mainTest.name, func(t *testing.T) {
+			tmpl := `
+				listen: 127.0.0.1:-1
+				server_name: %s
+				jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
 
-			err := nc.PublishMsg(msg)
-			require_NoError(t, err)
-
-			if test.deliverMsg {
-				appMsg := natsNexMsg(t, sub1, time.Second)
-				require_Equal[string](t, appMsg.Subject, "B.info.22.11.bar")
-				appMsg = natsNexMsg(t, sub2, time.Second)
-				require_Equal[string](t, appMsg.Subject, "C.info.11.22.bar")
-			}
-			// Check that no (more) messages are received.
-			for _, sub := range []*nats.Subscription{sub1, sub2} {
-				if msg, err := sub.NextMsg(100 * time.Millisecond); msg != nil || err != nats.ErrTimeout {
-					t.Fatalf("Did not expect application message, got msg=%v err=%v", msg, err)
+				cluster {
+					name: %s
+					listen: 127.0.0.1:%d
+					routes = [%s]
 				}
+				accounts {
+					A {
+						users: [{user: a, password: pwd}]
+						exports: [
+							{ stream: "info.*.*.>"}
+						]
+					}
+					B {
+						users: [{user: b, password: pwd}]
+						imports: [ { stream: {account: "A", subject:"info.*.*.>"}, to: "B.info.$2.$1.>", allow_trace: ` + mainTest.allowStr + ` } ]
+					}
+					C {
+						users: [{user: c, password: pwd}]
+						imports: [ { stream: {account: "A", subject:"info.*.*.>"}, to: "C.info.$1.$2.>", allow_trace: ` + mainTest.allowStr + ` } ]
+					}
+					$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+				}
+			`
+			sc := createJetStreamSuperClusterWithTemplate(t, tmpl, 2, 2)
+			defer sc.shutdown()
+
+			sfornc := sc.clusters[0].servers[0]
+			nc := natsConnect(t, sfornc.ClientURL(), nats.UserInfo("a", "pwd"), nats.Name("Tracer"))
+			defer nc.Close()
+			traceSub := natsSubSync(t, nc, "my.trace.subj")
+
+			sfornc2 := sc.clusters[0].servers[1]
+			nc2 := natsConnect(t, sfornc2.ClientURL(), nats.UserInfo("b", "pwd"), nats.Name("sub1"))
+			defer nc2.Close()
+			sub1 := natsSubSync(t, nc2, "B.info.*.*.>")
+			natsFlush(t, nc2)
+			checkSubInterest(t, sfornc2, "A", traceSub.Subject, time.Second)
+
+			sfornc3 := sc.clusters[1].servers[0]
+			nc3 := natsConnect(t, sfornc3.ClientURL(), nats.UserInfo("c", "pwd"), nats.Name("sub2"))
+			defer nc3.Close()
+			sub2 := natsQueueSubSync(t, nc3, "C.info.>", "my_queue")
+			natsFlush(t, nc3)
+
+			checkSubInterest(t, sfornc, "A", "info.1.2.3.4", time.Second)
+			for _, s := range sc.clusters[0].servers {
+				checkForRegisteredQSubInterest(t, s, "C2", "A", "info.1.2.3", 1, time.Second)
 			}
 
-			check := func() {
-				traceMsg := natsNexMsg(t, traceSub, time.Second)
-				var e MsgTraceEvent
-				json.Unmarshal(traceMsg.Data, &e)
+			for _, test := range []struct {
+				name       string
+				deliverMsg bool
+			}{
+				{"just trace", false},
+				{"deliver msg", true},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					msg := nats.NewMsg("info.11.22.bar")
+					msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+					if !test.deliverMsg {
+						msg.Header.Set(MsgTraceOnly, "true")
+					}
+					msg.Data = []byte("hello")
 
-				ingress := e.Ingress()
-				require_True(t, ingress != nil)
-				switch ingress.Kind {
-				case CLIENT:
-					require_Equal[string](t, e.Server.Name, sfornc.Name())
-					require_Equal[string](t, ingress.Name, "Tracer")
-					require_Equal[string](t, ingress.Account, "A")
-					require_Equal[string](t, ingress.Subject, "info.11.22.bar")
-					require_True(t, e.SubjectMapping() == nil)
-					require_True(t, e.ServiceImports() == nil)
-					require_True(t, e.StreamExports() == nil)
-					egress := e.Egresses()
-					require_Equal[int](t, len(egress), 2)
-					for _, eg := range egress {
-						switch eg.Kind {
-						case ROUTER:
-							require_Equal[string](t, eg.Name, sfornc2.Name())
-							require_Equal[string](t, eg.Account, _EMPTY_)
-						case GATEWAY:
-							require_Equal[string](t, eg.Name, sfornc3.Name())
-							require_Equal[string](t, eg.Account, _EMPTY_)
-						default:
-							t.Fatalf("Unexpected egress: %+v", eg)
+					err := nc.PublishMsg(msg)
+					require_NoError(t, err)
+
+					if test.deliverMsg {
+						appMsg := natsNexMsg(t, sub1, time.Second)
+						require_Equal[string](t, appMsg.Subject, "B.info.22.11.bar")
+						appMsg = natsNexMsg(t, sub2, time.Second)
+						require_Equal[string](t, appMsg.Subject, "C.info.11.22.bar")
+					}
+					// Check that no (more) messages are received.
+					for _, sub := range []*nats.Subscription{sub1, sub2} {
+						if msg, err := sub.NextMsg(100 * time.Millisecond); msg != nil || err != nats.ErrTimeout {
+							t.Fatalf("Did not expect application message, got msg=%v err=%v", msg, err)
 						}
 					}
-				case ROUTER:
-					require_Equal[string](t, e.Server.Name, sfornc2.Name())
-					require_Equal[string](t, ingress.Name, sfornc.Name())
-					require_Equal[string](t, ingress.Account, "A")
-					require_Equal[string](t, ingress.Subject, "info.11.22.bar")
-					require_True(t, e.SubjectMapping() == nil)
-					require_True(t, e.ServiceImports() == nil)
-					stexps := e.StreamExports()
-					require_True(t, stexps != nil)
-					require_Equal[int](t, len(stexps), 1)
-					se := stexps[0]
-					require_Equal[string](t, se.Account, "B")
-					require_Equal[string](t, se.To, "B.info.22.11.bar")
-					egress := e.Egresses()
-					require_Equal[int](t, len(egress), 1)
-					eg := egress[0]
-					require_True(t, eg.Kind == CLIENT)
-					require_Equal[string](t, eg.Name, "sub1")
-					require_Equal[string](t, eg.Subscription, "info.*.*.>")
-					require_Equal[string](t, eg.Queue, _EMPTY_)
-				case GATEWAY:
-					require_Equal[string](t, e.Server.Name, sfornc3.Name())
-					require_Equal[string](t, ingress.Name, sfornc.Name())
-					require_Equal[string](t, ingress.Account, "A")
-					require_Equal[string](t, ingress.Subject, "info.11.22.bar")
-					require_True(t, e.SubjectMapping() == nil)
-					require_True(t, e.ServiceImports() == nil)
-					stexps := e.StreamExports()
-					require_True(t, stexps != nil)
-					require_Equal[int](t, len(stexps), 1)
-					se := stexps[0]
-					require_Equal[string](t, se.Account, "C")
-					require_Equal[string](t, se.To, "C.info.11.22.bar")
-					egress := e.Egresses()
-					require_Equal[int](t, len(egress), 1)
-					eg := egress[0]
-					require_True(t, eg.Kind == CLIENT)
-					require_Equal[string](t, eg.Name, "sub2")
-					require_Equal[string](t, eg.Subscription, "info.*.*.>")
-					require_Equal[string](t, eg.Queue, "my_queue")
-				default:
-					t.Fatalf("Unexpected ingress: %+v", ingress)
-				}
-			}
-			// We expect 3 events
-			check()
-			check()
-			check()
-			// Make sure we are not receiving more traces
-			if tm, err := traceSub.NextMsg(250 * time.Millisecond); err == nil {
-				t.Fatalf("Should not have received trace message: %s", tm.Data)
+
+					check := func() {
+						traceMsg := natsNexMsg(t, traceSub, time.Second)
+						var e MsgTraceEvent
+						json.Unmarshal(traceMsg.Data, &e)
+
+						ingress := e.Ingress()
+						require_True(t, ingress != nil)
+						switch ingress.Kind {
+						case CLIENT:
+							require_Equal[string](t, e.Server.Name, sfornc.Name())
+							require_Equal[string](t, ingress.Name, "Tracer")
+							require_Equal[string](t, ingress.Account, "A")
+							require_Equal[string](t, ingress.Subject, "info.11.22.bar")
+							require_True(t, e.SubjectMapping() == nil)
+							require_True(t, e.ServiceImports() == nil)
+							require_True(t, e.StreamExports() == nil)
+							egress := e.Egresses()
+							require_Equal[int](t, len(egress), 2)
+							for _, eg := range egress {
+								switch eg.Kind {
+								case ROUTER:
+									require_Equal[string](t, eg.Name, sfornc2.Name())
+									require_Equal[string](t, eg.Account, _EMPTY_)
+								case GATEWAY:
+									require_Equal[string](t, eg.Name, sfornc3.Name())
+									require_Equal[string](t, eg.Account, _EMPTY_)
+								default:
+									t.Fatalf("Unexpected egress: %+v", eg)
+								}
+							}
+						case ROUTER:
+							require_Equal[string](t, e.Server.Name, sfornc2.Name())
+							require_Equal[string](t, ingress.Name, sfornc.Name())
+							require_Equal[string](t, ingress.Account, "A")
+							require_Equal[string](t, ingress.Subject, "info.11.22.bar")
+							require_True(t, e.SubjectMapping() == nil)
+							require_True(t, e.ServiceImports() == nil)
+							stexps := e.StreamExports()
+							require_True(t, stexps != nil)
+							require_Equal[int](t, len(stexps), 1)
+							se := stexps[0]
+							require_Equal[string](t, se.Account, "B")
+							require_Equal[string](t, se.To, "B.info.22.11.bar")
+							egress := e.Egresses()
+							if mainTest.allow {
+								require_Equal[int](t, len(egress), 1)
+								eg := egress[0]
+								require_True(t, eg.Kind == CLIENT)
+								require_Equal[string](t, eg.Name, "sub1")
+								require_Equal[string](t, eg.Subscription, "info.*.*.>")
+								require_Equal[string](t, eg.Queue, _EMPTY_)
+							} else {
+								require_Equal[int](t, len(egress), 0)
+							}
+						case GATEWAY:
+							require_Equal[string](t, e.Server.Name, sfornc3.Name())
+							require_Equal[string](t, ingress.Name, sfornc.Name())
+							require_Equal[string](t, ingress.Account, "A")
+							require_Equal[string](t, ingress.Subject, "info.11.22.bar")
+							require_True(t, e.SubjectMapping() == nil)
+							require_True(t, e.ServiceImports() == nil)
+							stexps := e.StreamExports()
+							require_True(t, stexps != nil)
+							require_Equal[int](t, len(stexps), 1)
+							se := stexps[0]
+							require_Equal[string](t, se.Account, "C")
+							require_Equal[string](t, se.To, "C.info.11.22.bar")
+							egress := e.Egresses()
+							if mainTest.allow {
+								require_Equal[int](t, len(egress), 1)
+								eg := egress[0]
+								require_True(t, eg.Kind == CLIENT)
+								require_Equal[string](t, eg.Name, "sub2")
+								require_Equal[string](t, eg.Subscription, "info.*.*.>")
+								require_Equal[string](t, eg.Queue, "my_queue")
+							} else {
+								require_Equal[int](t, len(egress), 0)
+							}
+						default:
+							t.Fatalf("Unexpected ingress: %+v", ingress)
+						}
+					}
+					// We expect 3 events
+					check()
+					check()
+					check()
+					// Make sure we are not receiving more traces
+					if tm, err := traceSub.NextMsg(250 * time.Millisecond); err == nil {
+						t.Fatalf("Should not have received trace message: %s", tm.Data)
+					}
+				})
 			}
 		})
 	}
@@ -2799,11 +2832,11 @@ func TestMsgTraceStreamExportWithLeafNode_Hub(t *testing.T) {
 			}
 			B {
 				users: [{user: b, password: pwd}]
-				imports: [ { stream: {account: "A", subject:"info.*.*.>"}, to: "B.info.$2.$1.>" } ]
+				imports: [ { stream: {account: "A", subject:"info.*.*.>"}, to: "B.info.$2.$1.>", allow_trace: true } ]
 			}
 			C {
 				users: [{user: c, password: pwd}]
-				imports: [ { stream: {account: "A", subject:"info.*.*.>"}, to: "C.info.$1.$2.>" } ]
+				imports: [ { stream: {account: "A", subject:"info.*.*.>"}, to: "C.info.$1.$2.>", allow_trace: true } ]
 			}
 		}
 		leafnodes {
@@ -2999,11 +3032,11 @@ func TestMsgTraceStreamExportWithLeafNode_Leaf(t *testing.T) {
 			}
 			B {
 				users: [{user: b, password: pwd}]
-				imports: [ { stream: {account: "A", subject:"info.*.*.>"}, to: "B.info.$2.$1.>" } ]
+				imports: [ { stream: {account: "A", subject:"info.*.*.>"}, to: "B.info.$2.$1.>", allow_trace: true } ]
 			}
 			C {
 				users: [{user: c, password: pwd}]
-				imports: [ { stream: {account: "A", subject:"info.*.*.>"}, to: "C.info.$1.$2.>" } ]
+				imports: [ { stream: {account: "A", subject:"info.*.*.>"}, to: "C.info.$1.$2.>", allow_trace: true } ]
 			}
 		}
 		leafnodes {
