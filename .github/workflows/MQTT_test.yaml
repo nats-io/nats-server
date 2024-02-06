@@ -1,15 +1,15 @@
-name: MQTT Compliance 
+name: MQTTEx
 on: [push, pull_request]
+
+permissions:
+  pull-requests: write # to comment on PRs
+  contents: write # to comment on commits (to upload artifacts?)
 
 jobs:
   test:
-    strategy:
-      matrix:
-        go: ["1.21"]
     env:
       GOPATH: /home/runner/work/nats-server
       GO111MODULE: "on"
-
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -20,18 +20,48 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: ${{matrix.go}}
+          go-version-file: src/github.com/nats-io/nats-server/go.mod
+          cache-dependency-path: src/github.com/nats-io/nats-server/go.sum
 
-      - name: Install deps
-        shell: bash --noprofile --norc -x -eo pipefail {0}
+      - name: Set up testing tools and environment
+        shell: bash --noprofile --norc -eo pipefail {0}
+        id: setup
         run: |
           wget https://github.com/hivemq/mqtt-cli/releases/download/v4.20.0/mqtt-cli-4.20.0.deb
           sudo apt install ./mqtt-cli-4.20.0.deb
+          go install github.com/ConnectEverything/mqtt-test@latest
 
-      - name: Run tests
-        shell: bash --noprofile --norc -x -eo pipefail {0}
+      # - name: Download benchmark result for ${{ github.base_ref || github.ref_name }}
+      #   uses: dawidd6/action-download-artifact@v2
+      #   continue-on-error: true
+      #   with:
+      #     path: src/github.com/nats-io/nats-server/bench
+      #     name: bench-output-${{ runner.os }}
+      #     branch: ${{ github.base_ref || github.ref }}
+
+      - name: Run tests and benchmarks
+        shell: bash --noprofile --norc -eo pipefail {0}
         run: |
-          set -e
-          cd src/github.com/nats-io/nats-server/server
-          go test -v -vet=off --run=TestMQTTCLICompliance
-          set +e
+          cd src/github.com/nats-io/nats-server
+          go test -v --run='MQTTEx' ./server
+          # go test --run='-' --count=10 --bench 'MQTT_' ./server | tee output.txt
+          # go test --run='-' --count=10 --bench 'MQTTEx' --timeout=20m --benchtime=100x ./server | tee -a output.txt
+          go test --run='-' --count=3 --bench 'MQTTEx' --benchtime=100x ./server
+
+      # - name: Compare benchmarks
+      #   uses: benchmark-action/github-action-benchmark@v1
+      #   with:
+      #     tool: go
+      #     output-file-path: src/github.com/nats-io/nats-server/output.txt
+      #     github-token: ${{ secrets.GITHUB_TOKEN }}
+      #     alert-threshold: 140%
+      #     comment-on-alert: true
+      #     # fail-on-alert: true
+      #     external-data-json-path: src/github.com/nats-io/nats-server/bench/benchmark-data.json
+
+      # - name: Store benchmark result for ${{ github.ref_name }}
+      #   if: always()
+      #   uses: actions/upload-artifact@v3
+      #   with:
+      #     path: src/github.com/nats-io/nats-server/bench
+      #     name: bench-output-${{ runner.os }}
