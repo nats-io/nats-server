@@ -218,8 +218,6 @@ type gateway struct {
 	interestOnlyMode bool
 	// Name of the remote server
 	remoteName string
-	// Indicate if message traces can be sent over the gateway
-	msgTraceOk bool
 }
 
 // Outbound subject interest entry.
@@ -515,7 +513,7 @@ func (s *Server) startGatewayAcceptLoop() {
 		Gateway:      opts.Gateway.Name,
 		GatewayNRP:   true,
 		Headers:      s.supportsHeaders(),
-		MsgTraceOk:   true,
+		Proto:        s.getServerProto(),
 	}
 	// Unless in some tests we want to keep the old behavior, we are now
 	// (since v2.9.0) indicate that this server will switch all accounts
@@ -988,7 +986,9 @@ func (c *client) processGatewayInfo(info *Info) {
 	}
 	if isFirstINFO {
 		c.opts.Name = info.ID
-		c.gw.msgTraceOk = info.MsgTraceOk
+		// Get the protocol version from the INFO protocol. This will be checked
+		// to see if this connection supports message tracing for instance.
+		c.opts.Protocol = info.Proto
 		c.gw.remoteName = info.Name
 	}
 	c.mu.Unlock()

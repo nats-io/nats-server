@@ -402,7 +402,7 @@ type Options struct {
 
 	// private fields, used for testing
 	gatewaysSolicitDelay time.Duration
-	routeProto           int
+	overrideProto        int
 
 	// JetStream
 	maxMemSet   bool

@@ -274,16 +274,8 @@ func (c *client) isMsgTraceEnabled() (*msgTrace, bool) {
 // For LEAF/ROUTER/GATEWAY, return false if the remote does not support
 // message tracing (important if the tracing requests trace-only).
 func (c *client) msgTraceSupport() bool {
-	switch c.kind {
-	case ROUTER:
-		return c.route.msgTraceOk
-	case GATEWAY:
-		return c.gw.msgTraceOk
-	case LEAF:
-		return c.leaf.msgTraceOk
-	default:
-		return true
-	}
+	// Exclude client connection from the protocol check.
+	return c.kind == CLIENT || c.opts.Protocol >= MsgTraceProto
 }
 
 func getConnName(c *client) string {
@@ -319,7 +311,7 @@ func getCompressionType(cts string) compressionType {
 }
 
 func (c *client) initMsgTrace() *msgTrace {
-	// The code in if the "if" statement is only running in test mode.
+	// The code in the "if" statement is only running in test mode.
 	if msgTraceRunInTests {
 		// Check the type of client that tries to initialize a trace struct.
 		if !(c.kind == CLIENT || c.kind == ROUTER || c.kind == GATEWAY || c.kind == LEAF) {
@@ -329,19 +321,7 @@ func (c *client) initMsgTrace() *msgTrace {
 		// and so even if a trace header is received, we want the server to
 		// simply ignore it.
 		if msgTraceCheckSupport {
-			if c.srv == nil {
-				return nil
-			}
-			ok := true
-			switch c.kind {
-			case ROUTER:
-				ok = c.srv.routeInfo.MsgTraceOk
-			case GATEWAY:
-				ok = c.srv.gateway.info.MsgTraceOk
-			case LEAF:
-				ok = c.srv.leafNodeInfo.MsgTraceOk
-			}
-			if !ok {
+			if c.srv == nil || c.srv.getServerProto() < MsgTraceProto {
 				return nil
 			}
 		}

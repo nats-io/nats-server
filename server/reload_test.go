@@ -2557,7 +2557,7 @@ func TestConfigReloadClusterPermsOldServer(t *testing.T) {
 	optsB := DefaultOptions()
 	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", srva.ClusterAddr().Port))
 	// Make server B behave like an old server
-	optsB.routeProto = setRouteProtoForTest(RouteProtoZero)
+	optsB.overrideProto = setServerProtoForTest(RouteProtoZero)
 	srvb := RunServer(optsB)
 	defer srvb.Shutdown()
 

@@ -96,8 +96,6 @@ type leaf struct {
 	tsubt *time.Timer
 	// Selected compression mode, which may be different from the server configured mode.
 	compression string
-	// Indicate if message traces can be routed
-	msgTraceOk bool
 }
 
 // Used for remote (solicited) leafnodes.
@@ -721,9 +719,8 @@ func (s *Server) startLeafNodeAcceptLoop() {
 		Headers:       s.supportsHeaders(),
 		JetStream:     opts.JetStream,
 		Domain:        opts.JetStreamDomain,
-		Proto:         1, // Fixed for now.
+		Proto:         s.getServerProto(),
 		InfoOnConnect: true,
-		MsgTraceOk:    true,
 	}
 	// If we have selected a random port...
 	if port == 0 {
@@ -786,7 +783,7 @@ func (c *client) sendLeafConnect(clusterName string, headers bool) error {
 		DenyPub:       c.leaf.remote.DenyImports,
 		Compression:   c.leaf.compression,
 		RemoteAccount: c.acc.GetName(),
-		MsgTrace:      true,
+		Proto:         c.srv.getServerProto(),
 	}
 
 	// If a signature callback is specified, this takes precedence over anything else.
@@ -1300,7 +1297,10 @@ func (c *client) processLeafnodeInfo(info *Info) {
 		}
 		c.leaf.remoteDomain = info.Domain
 		c.leaf.remoteCluster = info.Cluster
-		c.leaf.msgTraceOk = info.MsgTraceOk
+		// We send the protocol version in the INFO protocol.
+		// Keep track of it, so we know if this connection supports message
+		// tracing for instance.
+		c.opts.Protocol = info.Proto
 	}
 
 	// For both initial INFO and async INFO protocols, Possibly
@@ -1721,7 +1721,6 @@ type leafConnectInfo struct {
 	Cluster   string   `json:"cluster,omitempty"`
 	Headers   bool     `json:"headers,omitempty"`
 	JetStream bool     `json:"jetstream,omitempty"`
-	MsgTrace  bool     `json:"msg_trace,omitempty"`
 	DenyPub   []string `json:"deny_pub,omitempty"`
 
 	// There was an existing field called:
@@ -1735,6 +1734,14 @@ type leafConnectInfo struct {
 
 	// Tells the accept side which account the remote is binding to.
 	RemoteAccount string `json:"remote_account,omitempty"`
+
+	// The accept side of a LEAF connection, unlike ROUTER and GATEWAY, receives
+	// only the CONNECT protocol, and no INFO. So we need to send the protocol
+	// version as part of the CONNECT. It will indicate if a connection supports
+	// some features, such as message tracing.
+	// We use `protocol` as the JSON tag, so this is automatically unmarshal'ed
+	// in the low level process CONNECT.
+	Proto int `json:"protocol,omitempty"`
 }
 
 // processLeafNodeConnect will process the inbound connect args.
@@ -1818,8 +1825,6 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	c.leaf.remoteServer = proto.Name
 	// Remember the remote account name
 	c.leaf.remoteAccName = proto.RemoteAccount
-	// Does the remote support message tracing
-	c.leaf.msgTraceOk = proto.MsgTrace
 
 	// If the other side has declared itself a hub, so we will take on the spoke role.
 	if proto.Hub {

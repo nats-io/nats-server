@@ -804,23 +804,13 @@ func TestMsgTraceWithRouteToOldServer(t *testing.T) {
 	defer s1.Shutdown()
 
 	conf2 := createConfFile(t, []byte(fmt.Sprintf(tmpl, fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", o1.Cluster.Port))))
-	s2, _ := RunServerWithConfig(conf2)
+	o2 := LoadConfig(conf2)
+	// Make this server behave like an older server
+	o2.overrideProto = setServerProtoForTest(MsgTraceProto - 1)
+	s2 := RunServer(o2)
 	defer s2.Shutdown()
 
 	checkClusterFormed(t, s1, s2)
-
-	// Make route as if it was to an older server that does
-	// not support the feature.
-	s1.mu.RLock()
-	s1.forEachRoute(func(r *client) {
-		r.mu.Lock()
-		r.route.msgTraceOk = false
-		r.mu.Unlock()
-	})
-	s1.mu.RUnlock()
-	s2.mu.Lock()
-	s2.routeInfo.MsgTraceOk = false
-	s2.mu.Unlock()
 
 	// Now create subscriptions on both s1 and s2
 	nc2 := natsConnect(t, s2.ClientURL(), nats.Name("sub2"))
@@ -1106,7 +1096,12 @@ func TestMsgTraceWithLeafNodeToOldServer(t *testing.T) {
 					port: -1
 				}
 			`))
-			hub, ohub := RunServerWithConfig(confHub)
+			ohub := LoadConfig(confHub)
+			if !mainTest.fromHub {
+				// Make this server behave like an older server
+				ohub.overrideProto = setServerProtoForTest(MsgTraceProto - 1)
+			}
+			hub := RunServer(ohub)
 			defer hub.Shutdown()
 
 			confLeaf := createConfFile(t, []byte(fmt.Sprintf(`
@@ -1116,7 +1111,12 @@ func TestMsgTraceWithLeafNodeToOldServer(t *testing.T) {
 					remotes [{url: "nats://127.0.0.1:%d"}]
 				}
 				`, ohub.LeafNode.Port)))
-			leaf, _ := RunServerWithConfig(confLeaf)
+			oleaf := LoadConfig(confLeaf)
+			if mainTest.fromHub {
+				// Make this server behave like an older server
+				oleaf.overrideProto = setServerProtoForTest(MsgTraceProto - 1)
+			}
+			leaf := RunServer(oleaf)
 			defer leaf.Shutdown()
 
 			checkLeafNodeConnected(t, hub)
@@ -1128,17 +1128,6 @@ func TestMsgTraceWithLeafNodeToOldServer(t *testing.T) {
 			} else {
 				s1, s2 = leaf, hub
 			}
-
-			s1.mu.Lock()
-			for _, l := range s1.leafs {
-				l.mu.Lock()
-				l.leaf.msgTraceOk = false
-				l.mu.Unlock()
-			}
-			s1.mu.Unlock()
-			s2.mu.Lock()
-			s2.leafNodeInfo.MsgTraceOk = false
-			s2.mu.Unlock()
 
 			// Now create subscriptions on both s1 and s2
 			nc2 := natsConnect(t, s2.ClientURL(), nats.Name("sub2"))
@@ -1532,6 +1521,8 @@ func TestMsgTraceWithGatewayToOldServer(t *testing.T) {
 
 	o2 := testDefaultOptionsForGateway("B")
 	o2.NoSystemAccount = false
+	// Make this server behave like an older server
+	o2.overrideProto = setServerProtoForTest(MsgTraceProto - 1)
 	s2 := runGatewayServer(o2)
 	defer s2.Shutdown()
 
@@ -1543,17 +1534,6 @@ func TestMsgTraceWithGatewayToOldServer(t *testing.T) {
 	waitForOutboundGateways(t, s1, 1, time.Second)
 	waitForInboundGateways(t, s2, 1, time.Second)
 	waitForOutboundGateways(t, s2, 1, time.Second)
-
-	s1.mu.RLock()
-	for _, g := range s1.gateway.out {
-		g.mu.Lock()
-		g.gw.msgTraceOk = false
-		g.mu.Unlock()
-	}
-	s1.mu.RUnlock()
-	s2.mu.Lock()
-	s2.gateway.info.MsgTraceOk = false
-	s2.mu.Unlock()
 
 	nc2 := natsConnect(t, s2.ClientURL(), nats.Name("sub2"))
 	defer nc2.Close()
