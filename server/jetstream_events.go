@@ -201,6 +201,7 @@ type JSDomainLeaderElectedAdvisory struct {
 	TypedEvent
 	Leader   string      `json:"leader"`
 	Replicas []*PeerInfo `json:"replicas"`
+	Cluster  string      `json:"cluster"`
 	Domain   string      `json:"domain,omitempty"`
 }
 

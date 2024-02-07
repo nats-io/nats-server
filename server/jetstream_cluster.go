@@ -5351,6 +5351,7 @@ func (s *Server) sendDomainLeaderElectAdvisory() {
 		},
 		Leader:   node.GroupLeader(),
 		Replicas: s.replicas(node),
+		Cluster:  s.cachedClusterName(),
 		Domain:   s.getOpts().JetStreamDomain,
 	}
 
