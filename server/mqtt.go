@@ -1458,9 +1458,8 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 	//
 	// So we use a durable consumer, and create a new one each time we start.
 	// The old one should expire and get deleted due to inactivity. The name for
-	// the durable is $MQTT_rmsgs_{uuid}_{server-name}, the server name is just
-	// for readability.
-	rmDurName := mqttRetainedMsgsStreamName + "_" + nuid.Next() + "_" + s.String()
+	// the durable is $MQTT_rmsgs_{uuid}.
+	rmDurName := mqttRetainedMsgsStreamName + "_" + nuid.Next()
 
 	ccfg := &CreateConsumerRequest{
 		Stream: mqttRetainedMsgsStreamName,
