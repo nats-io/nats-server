@@ -6028,5 +6028,6 @@ func TestJetStreamClusterDomainAdvisory(t *testing.T) {
 
 	require_Equal(t, adv.Leader, peer)
 	require_Equal(t, adv.Domain, "NGS")
+	require_Equal(t, adv.Cluster, "R3S")
 	require_Equal(t, len(adv.Replicas), 3)
 }
