@@ -5995,3 +5995,39 @@ func TestJetStreamClusterStreamResetPreacks(t *testing.T) {
 		return nil
 	})
 }
+
+func TestJetStreamClusterDomainAdvisory(t *testing.T) {
+	tmpl := strings.Replace(jsClusterAccountsTempl, "store_dir:", "domain: NGS, store_dir:", 1)
+	c := createJetStreamCluster(t, tmpl, "R3S", _EMPTY_, 3, 18033, true)
+	defer c.shutdown()
+
+	// Connect to system account.
+	nc, _ := jsClientConnect(t, c.randomServer(), nats.UserInfo("admin", "s3cr3t!"))
+	defer nc.Close()
+
+	sub, err := nc.SubscribeSync(JSAdvisoryDomainLeaderElected)
+	require_NoError(t, err)
+
+	// Ask meta leader to move and make sure we get an advisory.
+	nc.Request(JSApiLeaderStepDown, nil, time.Second)
+	c.waitOnLeader()
+
+	checkSubsPending(t, sub, 1)
+
+	m, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+
+	var adv JSDomainLeaderElectedAdvisory
+	require_NoError(t, json.Unmarshal(m.Data, &adv))
+
+	ml := c.leader()
+	js, cc := ml.getJetStreamCluster()
+	js.mu.RLock()
+	peer := cc.meta.ID()
+	js.mu.RUnlock()
+
+	require_Equal(t, adv.Leader, peer)
+	require_Equal(t, adv.Domain, "NGS")
+	require_Equal(t, adv.Cluster, "R3S")
+	require_Equal(t, len(adv.Replicas), 3)
+}
