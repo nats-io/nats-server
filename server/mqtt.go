@@ -1464,7 +1464,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 			InactiveThreshold: 5 * time.Minute,
 		},
 	}
-	if _, err := jsa.createConsumer(ccfg); err != nil {
+	if _, err := jsa.createEphemeralConsumer(ccfg); err != nil {
 		return nil, fmt.Errorf("create retained messages consumer for account %q: %v", accName, err)
 	}
 
@@ -1644,7 +1644,7 @@ func (jsa *mqttJSA) sendAck(ackSubject string) {
 	jsa.sendq.push(&mqttJSPubMsg{subj: ackSubject, hdr: -1})
 }
 
-func (jsa *mqttJSA) createConsumer(cfg *CreateConsumerRequest) (*JSApiConsumerCreateResponse, error) {
+func (jsa *mqttJSA) createEphemeralConsumer(cfg *CreateConsumerRequest) (*JSApiConsumerCreateResponse, error) {
 	cfgb, err := json.Marshal(cfg)
 	if err != nil {
 		return nil, err
