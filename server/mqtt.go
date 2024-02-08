@@ -1961,6 +1961,7 @@ func (as *mqttAccountSessionManager) processRetainedMsg(_ *subscription, c *clie
 	as.handleRetainedMsg(rm.Subject, &mqttRetainedMsgRef{sseq: seq}, rm, false)
 
 	// If we were recovering (lastSeq > 0), then check if we are done.
+	// TODO <>/<> does this work with ReplayImmediate?
 	if as.rrmLastSeq > 0 && seq >= as.rrmLastSeq {
 		as.rrmLastSeq = 0
 		close(as.rrmDoneCh)
@@ -2773,16 +2774,16 @@ func (as *mqttAccountSessionManager) loadRetainedMessages(subjects map[string]st
 			w.Warnf("failed to load retained message for subject %q: %v", ss[i], err)
 			continue
 		}
-		rm, err := mqttDecodeRetainedMessage(jsm.Header, jsm.Data)
+		rm, err := mqttDecodeRetainedMessage(result.Message.Header, result.Message.Data)
 		if err != nil {
-			log.Warnf("failed to decode retained message for subject %q: %v", loadSubject, err)
+			w.Warnf("failed to decode retained message for subject %q: %v", ss[i], err)
 			continue
 		}
 
 		// Add the loaded retained message to the cache, and to the results map.
 		key := ss[i][len(mqttRetainedMsgsStreamSubject):]
-		as.setCachedRetainedMsg(key, &rm, false, false)
-		rms[key] = &rm
+		as.setCachedRetainedMsg(key, rm, false, false)
+		rms[key] = rm
 	}
 	return rms
 }
@@ -2794,13 +2795,16 @@ func mqttEncodeRetainedMessage(rm *mqttRetainedMsg) (natsMsg []byte, headerLen i
 		len(mqttNatsRetainedMessageHeader)+
 		len(rm.Msg)+len(rm.Subject)+len(rm.Origin)+len(rm.Topic)+len(rm.Source)))
 
-	msg := rm.Msg
-	rm.Msg = nil
-
 	buf.WriteString(hdrLine)
 	buf.WriteString(mqttNatsRetainedMessageHeader)
 	buf.WriteByte(':')
+
+	// Encode rm as JSON, but just the metadata.
+	msg := rm.Msg
+	rm.Msg = nil
 	json.NewEncoder(buf).Encode(rm)
+	rm.Msg = msg
+
 	buf.WriteString(_CRLF_)
 
 	// End of header
@@ -2973,7 +2977,6 @@ func (as *mqttAccountSessionManager) transferRetainedToPerKeySubjectStream(log *
 			log.Warnf("    Unable to transfer a retained message: failed to load from '$MQTT.rmsgs': %s", err)
 			return err
 		}
-
 
 		// Unmarshal the message so that we can obtain the subject name. Do not
 		// use mqttDecodeRetainedMessage() here because these messages are from
@@ -4219,24 +4222,27 @@ func (c *client) mqttHandlePubRetain() {
 		}
 	} else {
 		// Spec [MQTT-3.3.1-5]. Store the retained message with its QoS.
+		//
 		// When coming from a publish protocol, `pp` is referencing a stack
 		// variable that itself possibly references the read buffer.
-		rmBytes, hdr := mqttEncodeRetainedMessage(&mqttRetainedMsg{
+		rm := &mqttRetainedMsg{
 			Origin:  asm.jsa.id,
 			Subject: key,
 			Topic:   string(pp.topic),
-			Msg:     pp.msg, // will copy these bytes
+			Msg:     pp.msg, // will copy these bytes later as we process rm.
 			Flags:   pp.flags,
 			Source:  c.opts.Username,
-		})
+		}
+		rmBytes, hdr := mqttEncodeRetainedMessage(rm) // will copy the payload bytes
 		smr, err := asm.jsa.storeMsg(mqttRetainedMsgsStreamSubject+key, hdr, rmBytes)
 		if err == nil {
-			// Update the new sequence
+			// Update the new sequence.
 			rf := &mqttRetainedMsgRef{
 				sseq: smr.Sequence,
 			}
-			// Add/update the map
-			asm.handleRetainedMsg(key, rf, rm, true) // will copy the payload bytes if needs to update rmsCache
+			// Add/update the map. `true` to copy the payload bytes if needs to
+			// update rmsCache.
+			asm.handleRetainedMsg(key, rf, rm, true)
 		} else {
 			c.mu.Lock()
 			acc := c.acc
