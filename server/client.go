@@ -1,4 +1,4 @@
-// Copyright 2012-2023 The NATS Authors
+// Copyright 2012-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -2476,7 +2476,7 @@ func (c *client) msgParts(data []byte) (hdr []byte, msg []byte) {
 }
 
 // Header pubs take form HPUB <subject> [reply] <hdr_len> <total_len>\r\n
-func (c *client) processHeaderPub(arg []byte) error {
+func (c *client) processHeaderPub(arg, remaining []byte) error {
 	if !c.headers {
 		return ErrMsgHeadersNotSupported
 	}
@@ -2534,6 +2534,16 @@ func (c *client) processHeaderPub(arg []byte) error {
 	maxPayload := atomic.LoadInt32(&c.mpay)
 	// Use int64() to avoid int32 overrun...
 	if maxPayload != jwt.NoLimit && int64(c.pa.size) > int64(maxPayload) {
+		// If we are given the remaining read buffer (since we do blind reads
+		// we may have the beginning of the message header/payload), we will
+		// look for the tracing header and if found, we will generate a
+		// trace event with the max payload ingress error.
+		// Do this only for CLIENT connections.
+		if c.kind == CLIENT && len(remaining) > 0 {
+			if td := getHeader(MsgTraceSendTo, remaining); len(td) > 0 {
+				c.initAndSendIngressErrEvent(remaining, string(td), ErrMaxPayload)
+			}
+		}
 		c.maxPayloadViolation(c.pa.size, maxPayload)
 		return ErrMaxPayload
 	}
@@ -3324,23 +3334,33 @@ var needFlush = struct{}{}
 // deliverMsg will deliver a message to a matching subscription and its underlying client.
 // We process all connection/client types. mh is the part that will be protocol/client specific.
 func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, subject, reply, mh, msg []byte, gwrply bool) bool {
+	// Check if message tracing is enabled.
+	mt, traceOnly := c.isMsgTraceEnabled()
+
+	client := sub.client
 	// Check sub client and check echo. Only do this if not a service import.
-	if sub.client == nil || (c == sub.client && !sub.client.echo && !sub.si) {
+	if client == nil || (c == client && !client.echo && !sub.si) {
+		if client != nil && mt != nil {
+			client.mu.Lock()
+			mt.addEgressEvent(client, sub, errMsgTraceNoEcho)
+			client.mu.Unlock()
+		}
 		return false
 	}
 
-	client := sub.client
 	client.mu.Lock()
 
 	// Check if we have a subscribe deny clause. This will trigger us to check the subject
 	// for a match against the denied subjects.
 	if client.mperms != nil && client.checkDenySub(string(subject)) {
+		mt.addEgressEvent(client, sub, errMsgTraceSubDeny)
 		client.mu.Unlock()
 		return false
 	}
 
 	// New race detector forces this now.
 	if sub.isClosed() {
+		mt.addEgressEvent(client, sub, errMsgTraceSubClosed)
 		client.mu.Unlock()
 		return false
 	}
@@ -3348,15 +3368,56 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 	// Check if we are a leafnode and have perms to check.
 	if client.kind == LEAF && client.perms != nil {
 		if !client.pubAllowedFullCheck(string(subject), true, true) {
+			mt.addEgressEvent(client, sub, errMsgTracePubViolation)
 			client.mu.Unlock()
 			client.Debugf("Not permitted to deliver to %q", subject)
 			return false
 		}
 	}
 
+	var mtErr string
+	if mt != nil {
+		// For non internal subscription, and if the remote does not support
+		// the tracing feature...
+		if sub.icb == nil && !client.msgTraceSupport() {
+			if traceOnly {
+				// We are not sending the message at all because the user
+				// expects a trace-only and the remote does not support
+				// tracing, which means that it would process/deliver this
+				// message, which may break applications.
+				// Add the Egress with the no-support error message.
+				mt.addEgressEvent(client, sub, errMsgTraceOnlyNoSupport)
+				client.mu.Unlock()
+				return false
+			}
+			// If we are doing delivery, we will still forward the message,
+			// but we add an error to the Egress event to hint that one should
+			// not expect a tracing event from that remote.
+			mtErr = errMsgTraceNoSupport
+		}
+		// For ROUTER, GATEWAY and LEAF, even if we intend to do tracing only,
+		// we will still deliver the message. The remote side will
+		// generate an event based on what happened on that server.
+		if traceOnly && (client.kind == ROUTER || client.kind == GATEWAY || client.kind == LEAF) {
+			traceOnly = false
+		}
+		// If we skip delivery and this is not for a service import, we are done.
+		if traceOnly && (sub.icb == nil || c.noIcb) {
+			mt.addEgressEvent(client, sub, _EMPTY_)
+			client.mu.Unlock()
+			// Although the message is not actually delivered, for the
+			// purpose of "didDeliver", we need to return "true" here.
+			return true
+		}
+	}
+
 	srv := client.srv
 
-	sub.nm++
+	// We don't want to bump the number of delivered messages to the subscription
+	// if we are doing trace-only (since really we are not sending it to the sub).
+	if !traceOnly {
+		sub.nm++
+	}
 
 	// Check if we should auto-unsubscribe.
 	if sub.max > 0 {
@@ -3380,6 +3441,7 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 				defer client.unsubscribe(client.acc, sub, true, true)
 			} else if sub.nm > sub.max {
 				client.Debugf("Auto-unsubscribe limit [%d] exceeded", sub.max)
+				mt.addEgressEvent(client, sub, errMsgTraceAutoSubExceeded)
 				client.mu.Unlock()
 				client.unsubscribe(client.acc, sub, true, true)
 				if shouldForward {
@@ -3407,10 +3469,14 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 		msgSize -= int64(LEN_CR_LF)
 	}
 
-	// No atomic needed since accessed under client lock.
-	// Monitor is reading those also under client's lock.
-	client.outMsgs++
-	client.outBytes += msgSize
+	// We do not update the outbound stats if we are doing trace only since
+	// this message will not be sent out.
+	if !traceOnly {
+		// No atomic needed since accessed under client lock.
+		// Monitor is reading those also under client's lock.
+		client.outMsgs++
+		client.outBytes += msgSize
+	}
 
 	// Check for internal subscriptions.
 	if sub.icb != nil && !c.noIcb {
@@ -3443,8 +3509,15 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 
 	// Check for closed connection
 	if client.isClosed() {
+		mt.addEgressEvent(client, sub, errMsgTraceClientClosed)
 		client.mu.Unlock()
 		return false
+	}
+
+	// We have passed cases where we could possibly fail to deliver.
+	// Do not call for service-import.
+	if mt != nil && sub.icb == nil {
+		mt.addEgressEvent(client, sub, mtErr)
 	}
 
 	// Do a fast check here to see if we should be tracking this from a latency
@@ -4121,6 +4194,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 		}
 	}
 	siAcc := si.acc
+	allowTrace := si.se != nil && si.se.atrc
 	acc.mu.RUnlock()
 
 	// We have a special case where JetStream pulls in all service imports through one export.
@@ -4130,6 +4204,8 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	if shouldReturn || (checkJS && si.se != nil && si.se.acc == c.srv.SystemAccount()) {
 		return
 	}
+
+	mt, traceOnly := c.isMsgTraceEnabled()
 
 	var nrr []byte
 	var rsi *serviceImport
@@ -4259,22 +4335,53 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	var lrts [routeTargetInit]routeTarget
 	c.in.rts = lrts[:0]
 
+	var skipProcessing bool
+	// If message tracing enabled, add the service import trace.
+	if mt != nil {
+		mt.addServiceImportEvent(siAcc.GetName(), string(pacopy.subject), to)
+		// If we are not allowing tracing and doing trace only, we stop at this level.
+		if !allowTrace {
+			if traceOnly {
+				skipProcessing = true
+			} else {
+				// We are going to do normal processing, and possibly chainning
+				// with other server imports, but the rest won't be traced.
+				// We do so by setting the c.pa.trace to nil (it will be restored
+				// with c.pa = pacopy).
+				c.pa.trace = nil
+				// We also need to disable the trace destination header so that
+				// if message is routed, it does not initialize tracing in the
+				// remote.
+				pos := mt.disableTraceHeader(c, msg)
+				defer mt.enableTraceHeader(c, msg, pos)
+			}
+		}
+	}
+
 	var didDeliver bool
 
-	// If this is not a gateway connection but gateway is enabled,
-	// try to send this converted message to all gateways.
-	if c.srv.gateway.enabled {
-		flags |= pmrCollectQueueNames
-		var queues [][]byte
-		didDeliver, queues = c.processMsgResults(siAcc, rr, msg, c.pa.deliver, []byte(to), nrr, flags)
-		didDeliver = c.sendMsgToGateways(siAcc, msg, []byte(to), nrr, queues) || didDeliver
-	} else {
-		didDeliver, _ = c.processMsgResults(siAcc, rr, msg, c.pa.deliver, []byte(to), nrr, flags)
+	if !skipProcessing {
+		// If this is not a gateway connection but gateway is enabled,
+		// try to send this converted message to all gateways.
+		if c.srv.gateway.enabled {
+			flags |= pmrCollectQueueNames
+			var queues [][]byte
+			didDeliver, queues = c.processMsgResults(siAcc, rr, msg, c.pa.deliver, []byte(to), nrr, flags)
+			didDeliver = c.sendMsgToGateways(siAcc, msg, []byte(to), nrr, queues) || didDeliver
+		} else {
+			didDeliver, _ = c.processMsgResults(siAcc, rr, msg, c.pa.deliver, []byte(to), nrr, flags)
+		}
 	}
 
 	// Restore to original values.
 	c.in.rts = orts
 	c.pa = pacopy
+
+	// If this was a message trace but we skip last-mile delivery, we need to
+	// do the remove, so:
+	if mt != nil && traceOnly && didDeliver {
+		didDeliver = false
+	}
 
 	// Determine if we should remove this service import. This is for response service imports.
 	// We will remove if we did not deliver, or if we are a response service import and we are
@@ -4422,6 +4529,8 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		}
 	}
 
+	mt, traceOnly := c.isMsgTraceEnabled()
+
 	// Loop over all normal subscriptions that match.
 	for _, sub := range r.psubs {
 		// Check if this is a send to a ROUTER. We now process
@@ -4450,6 +4559,11 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		// Assume delivery subject is the normal subject to this point.
 		dsubj = subj
 
+		// We may need to disable tracing, by setting c.pa.trace to `nil`
+		// before the call to deliverMsg, if so, this will indicate that
+		// we need to put it back.
+		var restorePaTrace bool
+
 		// Check for stream import mapped subs (shadow subs). These apply to local subs only.
 		if sub.im != nil {
 			// If this message was a service import do not re-export to an exported stream.
@@ -4463,6 +4577,25 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 				dsubj = append(_dsubj[:0], subj...)
 			} else {
 				dsubj = append(_dsubj[:0], sub.im.to...)
+			}
+
+			if mt != nil {
+				mt.addStreamExportEvent(sub.client, dsubj)
+				// If allow_trace is false...
+				if !sub.im.atrc {
+					// If we are doing only message tracing, we can move to the
+					//  next sub.
+					if traceOnly {
+						// Although the message was not delivered, for the purpose
+						// of didDeliver, we need to set to true (to avoid possible
+						// no responders).
+						didDeliver = true
+						continue
+					}
+					// If we are delivering the message, we need to disable tracing
+					// before calling deliverMsg().
+					c.pa.trace, restorePaTrace = nil, true
+				}
 			}
 
 			// Make sure deliver is set if inbound from a route.
@@ -4490,6 +4623,9 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 				dlvMsgs++
 			}
 			didDeliver = true
+		}
+		if restorePaTrace {
+			c.pa.trace = mt
 		}
 	}
 
@@ -4597,6 +4733,13 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 
 			// Assume delivery subject is normal subject to this point.
 			dsubj = subj
+
+			// We may need to disable tracing, by setting c.pa.trace to `nil`
+			// before the call to deliverMsg, if so, this will indicate that
+			// we need to put it back.
+			var restorePaTrace bool
+			var skipDelivery bool
+
 			// Check for stream import mapped subs. These apply to local subs only.
 			if sub.im != nil {
 				// If this message was a service import do not re-export to an exported stream.
@@ -4611,6 +4754,23 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 				} else {
 					dsubj = append(_dsubj[:0], sub.im.to...)
 				}
+
+				if mt != nil {
+					mt.addStreamExportEvent(sub.client, dsubj)
+					// If allow_trace is false...
+					if !sub.im.atrc {
+						// If we are doing only message tracing, we are done
+						// with this queue group.
+						if traceOnly {
+							skipDelivery = true
+						} else {
+							// If we are delivering, we need to disable tracing
+							// before the call to deliverMsg()
+							c.pa.trace, restorePaTrace = nil, true
+						}
+					}
+				}
+
 				// Make sure deliver is set if inbound from a route.
 				if remapped && (c.kind == GATEWAY || c.kind == ROUTER || c.kind == LEAF) {
 					deliver = subj
@@ -4623,11 +4783,20 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 				}
 			}
 
-			mh := c.msgHeader(dsubj, creply, sub)
-			if c.deliverMsg(prodIsMQTT, sub, acc, subject, creply, mh, msg, rplyHasGWPrefix) {
-				if sub.icb == nil {
+			var delivered bool
+			if !skipDelivery {
+				mh := c.msgHeader(dsubj, creply, sub)
+				delivered = c.deliverMsg(prodIsMQTT, sub, acc, subject, creply, mh, msg, rplyHasGWPrefix)
+				if restorePaTrace {
+					c.pa.trace = mt
+				}
+			}
+			if skipDelivery || delivered {
+				// Update only if not skipped.
+				if !skipDelivery && sub.icb == nil {
 					dlvMsgs++
 				}
+				// Do the rest even when message delivery was skipped.
 				didDeliver = true
 				// Clear rsub
 				rsub = nil
@@ -4668,6 +4837,16 @@ sendToRoutesOrLeafs:
 	// Copy off original pa in case it changes.
 	pa := c.pa
 
+	if mt != nil {
+		// We are going to replace "pa" with our copy of c.pa, but to restore
+		// to the original copy of c.pa, we need to save it again.
+		cpa := pa
+		msg = mt.setOriginAccountHeaderIfNeeded(c, acc, msg)
+		defer func() { c.pa = cpa }()
+		// Update pa with our current c.pa state.
+		pa = c.pa
+	}
+
 	// We address by index to avoid struct copy.
 	// We have inline structs for memory layout and cache coherency.
 	for i := range c.in.rts {
@@ -4702,6 +4881,11 @@ sendToRoutesOrLeafs:
 			if len(c.pa.reply) > 0 && c.pa.hdr >= 0 {
 				dmsg, hset = c.checkLeafClientInfoHeader(msg)
 			}
+		}
+
+		if mt != nil {
+			dmsg = mt.setHopHeader(c, dmsg)
+			hset = true
 		}
 
 		mh := c.msgHeaderForRouteOrLeaf(subject, reply, rt, acc)
@@ -4750,7 +4934,11 @@ func (c *client) checkLeafClientInfoHeader(msg []byte) (dmsg []byte, setHdr bool
 }
 
 func (c *client) pubPermissionViolation(subject []byte) {
-	c.sendErr(fmt.Sprintf("Permissions Violation for Publish to %q", subject))
+	errTxt := fmt.Sprintf("Permissions Violation for Publish to %q", subject)
+	if mt, _ := c.isMsgTraceEnabled(); mt != nil {
+		mt.setIngressError(errTxt)
+	}
+	c.sendErr(errTxt)
 	c.Errorf("Publish Violation - %s, Subject %q", c.getAuthUser(), subject)
 }
 
@@ -4770,7 +4958,11 @@ func (c *client) subPermissionViolation(sub *subscription) {
 }
 
 func (c *client) replySubjectViolation(reply []byte) {
-	c.sendErr(fmt.Sprintf("Permissions Violation for Publish with Reply of %q", reply))
+	errTxt := fmt.Sprintf("Permissions Violation for Publish with Reply of %q", reply)
+	if mt, _ := c.isMsgTraceEnabled(); mt != nil {
+		mt.setIngressError(errTxt)
+	}
+	c.sendErr(errTxt)
 	c.Errorf("Publish Violation - %s, Reply %q", c.getAuthUser(), reply)
 }
 

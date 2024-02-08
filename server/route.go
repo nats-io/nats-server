@@ -1,4 +1,4 @@
-// Copyright 2013-2023 The NATS Authors
+// Copyright 2013-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -42,17 +42,6 @@ const (
 	Explicit
 )
 
-const (
-	// RouteProtoZero is the original Route protocol from 2009.
-	// http://nats.io/documentation/internals/nats-protocol/
-	RouteProtoZero = iota
-	// RouteProtoInfo signals a route can receive more then the original INFO block.
-	// This can be used to update remote cluster permissions, etc...
-	RouteProtoInfo
-	// RouteProtoV2 is the new route/cluster protocol that provides account support.
-	RouteProtoV2
-)
-
 // Include the space for the proto
 var (
 	aSubBytes   = []byte{'A', '+', ' '}
@@ -62,11 +51,6 @@ var (
 	lSubBytes   = []byte{'L', 'S', '+', ' '}
 	lUnsubBytes = []byte{'L', 'S', '-', ' '}
 )
-
-// Used by tests
-func setRouteProtoForTest(wantedProto int) int {
-	return (wantedProto + 1) * -1
-}
 
 type route struct {
 	remoteID     string
@@ -754,7 +738,8 @@ func (c *client) processRouteInfo(info *Info) {
 	// Mark that the INFO protocol has been received, so we can detect updates.
 	c.flags.set(infoReceived)
 
-	// Get the route's proto version
+	// Get the route's proto version. It will be used to check if the connection
+	// supports certain features, such as message tracing.
 	c.opts.Protocol = info.Proto
 
 	// Headers
@@ -2457,17 +2442,6 @@ func (s *Server) startRouteAcceptLoop() {
 	s.Noticef("Listening for route connections on %s",
 		net.JoinHostPort(opts.Cluster.Host, strconv.Itoa(l.Addr().(*net.TCPAddr).Port)))
 
-	proto := RouteProtoV2
-	// For tests, we want to be able to make this server behave
-	// as an older server so check this option to see if we should override
-	if opts.routeProto < 0 {
-		// We have a private option that allows test to override the route
-		// protocol. We want this option initial value to be 0, however,
-		// since original proto is RouteProtoZero, tests call setRouteProtoForTest(),
-		// which sets as negative value the (desired proto + 1) * -1.
-		// Here we compute back the real value.
-		proto = (opts.routeProto * -1) - 1
-	}
 	// Check for TLSConfig
 	tlsReq := opts.Cluster.TLSConfig != nil
 	info := Info{
@@ -2480,7 +2454,7 @@ func (s *Server) startRouteAcceptLoop() {
 		TLSVerify:    tlsReq,
 		MaxPayload:   s.info.MaxPayload,
 		JetStream:    s.info.JetStream,
-		Proto:        proto,
+		Proto:        s.getServerProto(),
 		GatewayURL:   s.getGatewayURL(),
 		Headers:      s.supportsHeaders(),
 		Cluster:      s.info.Cluster,

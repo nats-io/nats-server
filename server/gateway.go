@@ -1,4 +1,4 @@
-// Copyright 2018-2023 The NATS Authors
+// Copyright 2018-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -216,6 +216,8 @@ type gateway struct {
 	// interest-only mode "immediately", so the outbound should disregard
 	// the optimistic mode when checking for interest.
 	interestOnlyMode bool
+	// Name of the remote server
+	remoteName string
 }
 
 // Outbound subject interest entry.
@@ -511,6 +513,7 @@ func (s *Server) startGatewayAcceptLoop() {
 		Gateway:      opts.Gateway.Name,
 		GatewayNRP:   true,
 		Headers:      s.supportsHeaders(),
+		Proto:        s.getServerProto(),
 	}
 	// Unless in some tests we want to keep the old behavior, we are now
 	// (since v2.9.0) indicate that this server will switch all accounts
@@ -983,6 +986,10 @@ func (c *client) processGatewayInfo(info *Info) {
 	}
 	if isFirstINFO {
 		c.opts.Name = info.ID
+		// Get the protocol version from the INFO protocol. This will be checked
+		// to see if this connection supports message tracing for instance.
+		c.opts.Protocol = info.Proto
+		c.gw.remoteName = info.Name
 	}
 	c.mu.Unlock()
 
@@ -2454,6 +2461,14 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 	if len(gws) == 0 {
 		return false
 	}
+
+	mt, _ := c.isMsgTraceEnabled()
+	if mt != nil {
+		pa := c.pa
+		msg = mt.setOriginAccountHeaderIfNeeded(c, acc, msg)
+		defer func() { c.pa = pa }()
+	}
+
 	var (
 		queuesa    = [512]byte{}
 		queues     = queuesa[:0]
@@ -2546,6 +2561,11 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 				mreply = append(mreply, reply...)
 			}
 		}
+
+		if mt != nil {
+			msg = mt.setHopHeader(c, msg)
+		}
+
 		// Setup the message header.
 		// Make sure we are an 'R' proto by default
 		c.msgb[0] = 'R'

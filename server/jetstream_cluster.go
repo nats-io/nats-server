@@ -2872,8 +2872,15 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					continue
 				}
 
+				var mt *msgTrace
+				// If not recovering, see if we find a message trace object for this
+				// sequence. Only the leader that has proposed this entry will have
+				// stored the trace info.
+				if !isRecovering {
+					mt = mset.getAndDeleteMsgTrace(lseq)
+				}
 				// Process the actual message here.
-				if err := mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts); err != nil {
+				if err := mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt); err != nil {
 					if err == errLastSeqMismatch {
 						var state StreamState
 						mset.store.FastState(&state)
@@ -2883,7 +2890,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 						if state.Msgs == 0 {
 							mset.store.Compact(lseq + 1)
 							// Retry
-							err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts)
+							err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt)
 						}
 					}
 
@@ -7487,7 +7494,7 @@ func (mset *stream) checkAllowMsgCompress(peers []string) {
 const streamLagWarnThreshold = 10_000
 
 // processClusteredMsg will propose the inbound message to the underlying raft group.
-func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg []byte) error {
+func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg []byte, mt *msgTrace) (retErr error) {
 	// For possible error response.
 	var response []byte
 
@@ -7500,8 +7507,23 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	mset.mu.RUnlock()
 
 	// This should not happen but possible now that we allow scale up, and scale down where this could trigger.
-	if node == nil {
-		return mset.processJetStreamMsg(subject, reply, hdr, msg, 0, 0)
+	//
+	// We also invoke this in clustering mode for message tracing when not
+	// performing message delivery.
+	if node == nil || mt.traceOnly() {
+		return mset.processJetStreamMsg(subject, reply, hdr, msg, 0, 0, mt)
+	}
+
+	// If message tracing (with message delivery), we will need to send the
+	// event on exit in case there was an error (if message was not proposed).
+	// Otherwise, the event will be sent from processJetStreamMsg when
+	// invoked by the leader (from applyStreamEntries).
+	if mt != nil {
+		defer func() {
+			if retErr != nil {
+				mt.sendEventFromJetStream(retErr)
+			}
+		}()
 	}
 
 	// Check that we are the leader. This can be false if we have scaled up from an R1 that had inbound queued messages.
@@ -7655,6 +7677,14 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		mset.clseq = lseq + clfs
 	}
 	esm := encodeStreamMsgAllowCompress(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano(), mset.compressOK)
+	var mtKey uint64
+	if mt != nil {
+		mtKey = mset.clseq
+		if mset.mt == nil {
+			mset.mt = make(map[uint64]*msgTrace)
+		}
+		mset.mt[mtKey] = mt
+	}
 	mset.clseq++
 
 	// Do proposal.
@@ -7672,6 +7702,9 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	mset.clMu.Unlock()
 
 	if err != nil {
+		if mt != nil {
+			mset.getAndDeleteMsgTrace(mtKey)
+		}
 		if canRespond {
 			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: mset.cfg.Name}}
 			resp.Error = &ApiError{Code: 503, Description: err.Error()}
@@ -7686,6 +7719,19 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	}
 
 	return err
+}
+
+func (mset *stream) getAndDeleteMsgTrace(lseq uint64) *msgTrace {
+	if mset == nil {
+		return nil
+	}
+	mset.clMu.Lock()
+	mt, ok := mset.mt[lseq]
+	if ok {
+		delete(mset.mt, lseq)
+	}
+	mset.clMu.Unlock()
+	return mt
 }
 
 // For requesting messages post raft snapshot to catch up streams post server restart.
