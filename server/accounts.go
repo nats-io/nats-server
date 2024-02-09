@@ -1,4 +1,4 @@
-// Copyright 2018-2023 The NATS Authors
+// Copyright 2018-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -128,6 +128,10 @@ type streamImport struct {
 	claim   *jwt.Import
 	usePub  bool
 	invalid bool
+	// This is `allow_trace` and when true and message tracing is happening,
+	// we will trace egresses past the account boundary, if `false`, we stop
+	// at the account boundary.
+	atrc bool
 }
 
 const ClientInfoHdr = "Nats-Request-Info"
@@ -209,6 +213,11 @@ type serviceExport struct {
 	latency    *serviceLatency
 	rtmr       *time.Timer
 	respThresh time.Duration
+	// This is `allow_trace` and when true and message tracing is happening,
+	// when processing a service import we will go through account boundary
+	// and trace egresses on that other account. If `false`, we stop at the
+	// account boundary.
+	atrc bool
 }
 
 // Used to track service latency.
@@ -2367,6 +2376,18 @@ func (a *Account) SetServiceExportResponseThreshold(export string, maxTime time.
 	return nil
 }
 
+func (a *Account) SetServiceExportAllowTrace(export string, allowTrace bool) error {
+	a.mu.Lock()
+	se := a.getServiceExport(export)
+	if se == nil {
+		a.mu.Unlock()
+		return fmt.Errorf("no export defined for %q", export)
+	}
+	se.atrc = allowTrace
+	a.mu.Unlock()
+	return nil
+}
+
 // This is for internal service import responses.
 func (a *Account) addRespServiceImport(dest *Account, to string, osi *serviceImport, tracking bool, header http.Header) *serviceImport {
 	nrr := string(osi.acc.newServiceReply(tracking))
@@ -2405,6 +2426,10 @@ func (a *Account) addRespServiceImport(dest *Account, to string, osi *serviceImp
 
 // AddStreamImportWithClaim will add in the stream import from a specific account with optional token.
 func (a *Account) AddStreamImportWithClaim(account *Account, from, prefix string, imClaim *jwt.Import) error {
+	return a.addStreamImportWithClaim(account, from, prefix, false, imClaim)
+}
+
+func (a *Account) addStreamImportWithClaim(account *Account, from, prefix string, allowTrace bool, imClaim *jwt.Import) error {
 	if account == nil {
 		return ErrMissingAccount
 	}
@@ -2427,7 +2452,7 @@ func (a *Account) AddStreamImportWithClaim(account *Account, from, prefix string
 		}
 	}
 
-	return a.AddMappedStreamImportWithClaim(account, from, prefix+from, imClaim)
+	return a.addMappedStreamImportWithClaim(account, from, prefix+from, allowTrace, imClaim)
 }
 
 // AddMappedStreamImport helper for AddMappedStreamImportWithClaim
@@ -2437,6 +2462,10 @@ func (a *Account) AddMappedStreamImport(account *Account, from, to string) error
 
 // AddMappedStreamImportWithClaim will add in the stream import from a specific account with optional token.
 func (a *Account) AddMappedStreamImportWithClaim(account *Account, from, to string, imClaim *jwt.Import) error {
+	return a.addMappedStreamImportWithClaim(account, from, to, false, imClaim)
+}
+
+func (a *Account) addMappedStreamImportWithClaim(account *Account, from, to string, allowTrace bool, imClaim *jwt.Import) error {
 	if account == nil {
 		return ErrMissingAccount
 	}
@@ -2478,7 +2507,11 @@ func (a *Account) AddMappedStreamImportWithClaim(account *Account, from, to stri
 		a.mu.Unlock()
 		return ErrStreamImportDuplicate
 	}
-	a.imports.streams = append(a.imports.streams, &streamImport{account, from, to, tr, nil, imClaim, usePub, false})
+	// TODO(ik): When AllowTrace is added to JWT, uncomment those lines:
+	// if imClaim != nil {
+	// 	allowTrace = imClaim.AllowTrace
+	// }
+	a.imports.streams = append(a.imports.streams, &streamImport{account, from, to, tr, nil, imClaim, usePub, false, allowTrace})
 	a.mu.Unlock()
 	return nil
 }
@@ -2496,7 +2529,7 @@ func (a *Account) isStreamImportDuplicate(acc *Account, from string) bool {
 
 // AddStreamImport will add in the stream import from a specific account.
 func (a *Account) AddStreamImport(account *Account, from, prefix string) error {
-	return a.AddStreamImportWithClaim(account, from, prefix, nil)
+	return a.addStreamImportWithClaim(account, from, prefix, false, nil)
 }
 
 // IsPublicExport is a placeholder to denote a public export.

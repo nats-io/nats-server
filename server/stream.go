@@ -268,6 +268,9 @@ type stream struct {
 	sch   chan struct{}
 	sigq  *ipQueue[*cMsg]
 	csl   *Sublist // Consumer Sublist
+	// Leader will store seq/msgTrace in clustering mode. Used in applyStreamEntries
+	// to know if trace event should be sent after processing.
+	mt map[uint64]*msgTrace
 
 	// For non limits policy streams when they process an ack before the actual msg.
 	// Can happen in stretch clusters, multi-cloud, or during catchup for a restarted server.
@@ -2304,7 +2307,7 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 			err = node.Propose(encodeStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts))
 		}
 	} else {
-		err = mset.processJetStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts)
+		err = mset.processJetStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts, nil)
 	}
 	if err != nil {
 		if strings.Contains(err.Error(), "no space left") {
@@ -2650,7 +2653,7 @@ func (mset *stream) setupMirrorConsumer() error {
 				msgs := mirror.msgs
 				sub, err := mset.subscribeInternal(deliverSubject, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 					hdr, msg := c.msgParts(copyBytes(rmsg)) // Need to copy.
-					mset.queueInbound(msgs, subject, reply, hdr, msg)
+					mset.queueInbound(msgs, subject, reply, hdr, msg, nil)
 				})
 				if err != nil {
 					mirror.err = NewJSMirrorConsumerSetupFailedError(err, Unless(err))
@@ -3020,7 +3023,7 @@ func (mset *stream) setSourceConsumer(iname string, seq uint64, startTime time.T
 					msgs := si.msgs
 					sub, err := mset.subscribeInternal(deliverSubject, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 						hdr, msg := c.msgParts(copyBytes(rmsg)) // Need to copy.
-						mset.queueInbound(msgs, subject, reply, hdr, msg)
+						mset.queueInbound(msgs, subject, reply, hdr, msg, nil)
 					})
 					if err != nil {
 						si.err = NewJSSourceConsumerSetupFailedError(err, Unless(err))
@@ -3249,9 +3252,9 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 	var err error
 	// If we are clustered we need to propose this message to the underlying raft group.
 	if node != nil {
-		err = mset.processClusteredInboundMsg(m.subj, _EMPTY_, hdr, msg)
+		err = mset.processClusteredInboundMsg(m.subj, _EMPTY_, hdr, msg, nil)
 	} else {
-		err = mset.processJetStreamMsg(m.subj, _EMPTY_, hdr, msg, 0, 0)
+		err = mset.processJetStreamMsg(m.subj, _EMPTY_, hdr, msg, 0, 0, nil)
 	}
 
 	if err != nil {
@@ -3978,21 +3981,11 @@ type inMsg struct {
 	rply string
 	hdr  []byte
 	msg  []byte
+	mt   *msgTrace
 }
 
-func (mset *stream) queueInbound(ib *ipQueue[*inMsg], subj, rply string, hdr, msg []byte) {
-	ib.push(&inMsg{subj, rply, hdr, msg})
-}
-
-func (mset *stream) queueInboundMsg(subj, rply string, hdr, msg []byte) {
-	// Copy these.
-	if len(hdr) > 0 {
-		hdr = copyBytes(hdr)
-	}
-	if len(msg) > 0 {
-		msg = copyBytes(msg)
-	}
-	mset.queueInbound(mset.msgs, subj, rply, hdr, msg)
+func (mset *stream) queueInbound(ib *ipQueue[*inMsg], subj, rply string, hdr, msg []byte, mt *msgTrace) {
+	ib.push(&inMsg{subj, rply, hdr, msg, mt})
 }
 
 var dgPool = sync.Pool{
@@ -4183,7 +4176,27 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 // processInboundJetStreamMsg handles processing messages bound for a stream.
 func (mset *stream) processInboundJetStreamMsg(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	hdr, msg := c.msgParts(rmsg)
-	mset.queueInboundMsg(subject, reply, hdr, msg)
+	// Copy these.
+	if len(hdr) > 0 {
+		hdr = copyBytes(hdr)
+	}
+	if len(msg) > 0 {
+		msg = copyBytes(msg)
+	}
+	if mt, traceOnly := c.isMsgTraceEnabled(); mt != nil {
+		// If message is delivered, we need to disable the message trace destination
+		// header to prevent a trace event to be generated when a stored message
+		// is delivered to a consumer and routed.
+		if !traceOnly {
+			mt.disableTraceHeader(c, hdr)
+		}
+		// This will add the jetstream event while in the client read loop.
+		// Since the event will be updated in a different go routine, the
+		// tracing object will have a separate reference to the JS trace
+		// object.
+		mt.addJetStreamEvent(mset.name())
+	}
+	mset.queueInbound(mset.msgs, subject, reply, hdr, msg, c.pa.trace)
 }
 
 var (
@@ -4194,13 +4207,30 @@ var (
 )
 
 // processJetStreamMsg is where we try to actually process the stream msg.
-func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, lseq uint64, ts int64) error {
+func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, mt *msgTrace) (retErr error) {
+	if mt != nil {
+		// Only the leader/standalone will have mt!=nil. On exit, send the
+		// message trace event.
+		defer func() {
+			mt.sendEventFromJetStream(retErr)
+		}()
+	}
+
 	if mset.closed.Load() {
 		return errStreamClosed
 	}
 
 	mset.mu.Lock()
 	s, store := mset.srv, mset.store
+
+	traceOnly := mt.traceOnly()
+	bumpCLFS := func() {
+		// Do not bump if tracing and not doing message delivery.
+		if traceOnly {
+			return
+		}
+		mset.clfs++
+	}
 
 	// Apply the input subject transform if any
 	if mset.itr != nil {
@@ -4230,6 +4260,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	// Bail here if sealed.
 	if isSealed {
 		outq := mset.outq
+		bumpCLFS()
 		mset.mu.Unlock()
 		if canRespond && outq != nil {
 			resp.PubAck = &PubAck{Stream: name}
@@ -4292,10 +4323,12 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		isClustered := mset.isClustered()
 
 		// Certain checks have already been performed if in clustered mode, so only check if not.
-		if !isClustered {
+		// Note, for cluster mode but with message tracing (without message delivery), we need
+		// to do this check here since it was not done in processClusteredInboundMsg().
+		if !isClustered || traceOnly {
 			// Expected stream.
 			if sname := getExpectedStream(hdr); sname != _EMPTY_ && sname != name {
-				mset.clfs++
+				bumpCLFS()
 				mset.mu.Unlock()
 				if canRespond {
 					resp.PubAck = &PubAck{Stream: name}
@@ -4310,7 +4343,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		// Dedupe detection.
 		if msgId = getMsgId(hdr); msgId != _EMPTY_ {
 			if dde := mset.checkMsgId(msgId); dde != nil {
-				mset.clfs++
+				bumpCLFS()
 				mset.mu.Unlock()
 				if canRespond {
 					response := append(pubAck, strconv.FormatUint(dde.seq, 10)...)
@@ -4334,7 +4367,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				fseq, err = 0, nil
 			}
 			if err != nil || fseq != seq {
-				mset.clfs++
+				bumpCLFS()
 				mset.mu.Unlock()
 				if canRespond {
 					resp.PubAck = &PubAck{Stream: name}
@@ -4349,7 +4382,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		// Expected last sequence.
 		if seq, exists := getExpectedLastSeq(hdr); exists && seq != mset.lseq {
 			mlseq := mset.lseq
-			mset.clfs++
+			bumpCLFS()
 			mset.mu.Unlock()
 			if canRespond {
 				resp.PubAck = &PubAck{Stream: name}
@@ -4366,7 +4399,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			}
 			if lmsgId != mset.lmsgId {
 				last := mset.lmsgId
-				mset.clfs++
+				bumpCLFS()
 				mset.mu.Unlock()
 				if canRespond {
 					resp.PubAck = &PubAck{Stream: name}
@@ -4380,7 +4413,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		// Check for any rollups.
 		if rollup := getRollup(hdr); rollup != _EMPTY_ {
 			if !mset.cfg.AllowRollup || mset.cfg.DenyPurge {
-				mset.clfs++
+				bumpCLFS()
 				mset.mu.Unlock()
 				if canRespond {
 					resp.PubAck = &PubAck{Stream: name}
@@ -4396,8 +4429,16 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			case JSMsgRollupAll:
 				rollupAll = true
 			default:
+				bumpCLFS()
 				mset.mu.Unlock()
-				return fmt.Errorf("rollup value invalid: %q", rollup)
+				err := fmt.Errorf("rollup value invalid: %q", rollup)
+				if canRespond {
+					resp.PubAck = &PubAck{Stream: name}
+					resp.Error = NewJSStreamRollupFailedError(err)
+					b, _ := json.Marshal(resp)
+					outq.sendMsg(reply, b)
+				}
+				return err
 			}
 		}
 	}
@@ -4411,7 +4452,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	// Check to see if we are over the max msg size.
 	if maxMsgSize >= 0 && (len(hdr)+len(msg)) > maxMsgSize {
-		mset.clfs++
+		bumpCLFS()
 		mset.mu.Unlock()
 		if canRespond {
 			resp.PubAck = &PubAck{Stream: name}
@@ -4423,7 +4464,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	}
 
 	if len(hdr) > math.MaxUint16 {
-		mset.clfs++
+		bumpCLFS()
 		mset.mu.Unlock()
 		if canRespond {
 			resp.PubAck = &PubAck{Stream: name}
@@ -4437,7 +4478,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	// Check to see if we have exceeded our limits.
 	if js.limitsExceeded(stype) {
 		s.resourcesExceededError()
-		mset.clfs++
+		bumpCLFS()
 		mset.mu.Unlock()
 		if canRespond {
 			resp.PubAck = &PubAck{Stream: name}
@@ -4475,6 +4516,12 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	// Grab timestamp if not already set.
 	if ts == 0 && lseq > 0 {
 		ts = time.Now().UnixNano()
+	}
+
+	mt.updateJetStreamEvent(subject, noInterest)
+	if traceOnly {
+		mset.mu.Unlock()
+		return nil
 	}
 
 	// Skip msg here.
@@ -4543,7 +4590,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		mset.store.FastState(&state)
 		mset.lseq = state.LastSeq
 		mset.lmsgId = olmsgId
-		mset.clfs++
+		bumpCLFS()
 		mset.mu.Unlock()
 
 		switch err {
@@ -4946,9 +4993,9 @@ func (mset *stream) internalLoop() {
 			for _, im := range ims {
 				// If we are clustered we need to propose this message to the underlying raft group.
 				if isClustered {
-					mset.processClusteredInboundMsg(im.subj, im.rply, im.hdr, im.msg)
+					mset.processClusteredInboundMsg(im.subj, im.rply, im.hdr, im.msg, im.mt)
 				} else {
-					mset.processJetStreamMsg(im.subj, im.rply, im.hdr, im.msg, 0, 0)
+					mset.processJetStreamMsg(im.subj, im.rply, im.hdr, im.msg, 0, 0, im.mt)
 				}
 			}
 			msgs.recycle(&ims)

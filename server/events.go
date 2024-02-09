@@ -1,4 +1,4 @@
-// Copyright 2018-2023 The NATS Authors
+// Copyright 2018-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -647,7 +647,7 @@ func (s *Server) sendInternalAccountMsgWithReply(a *Account, subject, reply stri
 }
 
 // Send system style message to an account scope.
-func (s *Server) sendInternalAccountSysMsg(a *Account, subj string, si *ServerInfo, msg interface{}) {
+func (s *Server) sendInternalAccountSysMsg(a *Account, subj string, si *ServerInfo, msg any, ct compressionType) {
 	s.mu.RLock()
 	if s.sys == nil || s.sys.sendq == nil || a == nil {
 		s.mu.RUnlock()
@@ -660,7 +660,7 @@ func (s *Server) sendInternalAccountSysMsg(a *Account, subj string, si *ServerIn
 	c := a.internalClient()
 	a.mu.Unlock()
 
-	sendq.push(newPubMsg(c, subj, _EMPTY_, si, nil, msg, noCompression, false, false))
+	sendq.push(newPubMsg(c, subj, _EMPTY_, si, nil, msg, ct, false, false))
 }
 
 // This will queue up a message to be sent.
@@ -2356,7 +2356,7 @@ func (s *Server) sendAccountAuthErrorEvent(c *client, acc *Account, reason strin
 	}
 	c.mu.Unlock()
 
-	s.sendInternalAccountSysMsg(acc, authErrorAccountEventSubj, &m.Server, &m)
+	s.sendInternalAccountSysMsg(acc, authErrorAccountEventSubj, &m.Server, &m, noCompression)
 }
 
 // Internal message callback.

@@ -1345,6 +1345,76 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  25,
 		},
 		{
+			name: "when setting allow_trace on a stream export (after)",
+			config: `
+                system_account = sys
+                accounts {
+                  sys { users = [ {user: sys, pass: "" } ] }
+
+                  nats.io: {
+                    users = [ { user : bar, pass: "" } ]
+                    exports = [ { stream: "nats.add", allow_trace: true } ]
+                  }
+                }
+                `,
+			err:       errors.New(`Detected allow_trace directive on non-service`),
+			errorLine: 8,
+			errorPos:  55,
+		},
+		{
+			name: "when setting allow_trace on a stream export (before)",
+			config: `
+                system_account = sys
+                accounts {
+                  sys { users = [ {user: sys, pass: "" } ] }
+
+                  nats.io: {
+                    users = [ { user : bar, pass: "" } ]
+                    exports = [ { allow_trace: true, stream: "nats.add" } ]
+                  }
+                }
+                `,
+			err:       errors.New(`Detected allow_trace directive on non-service`),
+			errorLine: 8,
+			errorPos:  35,
+		},
+		{
+			name: "when setting allow_trace on a service import (after)",
+			config: `
+                accounts {
+                  A: {
+                    users = [ {user: user1, pass: ""} ]
+                    exports = [{service: "foo"}]
+                  }
+                  B: {
+                    users = [ {user: user2, pass: ""} ]
+                    imports = [ { service: {account: "A", subject: "foo"}, allow_trace: true } ]
+                  }
+                }
+                `,
+			err:       errors.New(`Detected allow_trace directive on a non-stream`),
+			errorLine: 9,
+			errorPos:  76,
+		},
+		{
+			name: "when setting allow_trace on a service import (before)",
+			config: `
+                accounts {
+                  A: {
+                    users = [ {user: user1, pass: ""} ]
+                    exports = [{service: "foo"}]
+                  }
+                  B: {
+                    users = [ {user: user2, pass: ""} ]
+                    imports = [ { allow_trace: true, service: {account: "A", subject: "foo"} } ]
+                  }
+                }
+                `,
+			err:       errors.New(`Detected allow_trace directive on a non-stream`),
+			errorLine: 9,
+			errorPos:  35,
+		},
+		{
 			name: "when using duplicate service import subject",
 			config: `
 								accounts {

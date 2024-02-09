@@ -44,7 +44,7 @@ func TestNewRouteInfoOnConnect(t *testing.T) {
 
 	// Make sure we advertise new proto.
 	if info.Proto < server.RouteProtoV2 {
-		t.Fatalf("Expected routeProtoV2, got %d", info.Proto)
+		t.Fatalf("Expected routeProtoV2 or above, got %d", info.Proto)
 	}
 	// New proto should always send nonce too.
 	if info.Nonce == "" {

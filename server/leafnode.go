@@ -719,7 +719,7 @@ func (s *Server) startLeafNodeAcceptLoop() {
 		Headers:       s.supportsHeaders(),
 		JetStream:     opts.JetStream,
 		Domain:        opts.JetStreamDomain,
-		Proto:         1, // Fixed for now.
+		Proto:         s.getServerProto(),
 		InfoOnConnect: true,
 	}
 	// If we have selected a random port...
@@ -783,6 +783,7 @@ func (c *client) sendLeafConnect(clusterName string, headers bool) error {
 		DenyPub:       c.leaf.remote.DenyImports,
 		Compression:   c.leaf.compression,
 		RemoteAccount: c.acc.GetName(),
+		Proto:         c.srv.getServerProto(),
 	}
 
 	// If a signature callback is specified, this takes precedence over anything else.
@@ -1296,6 +1297,10 @@ func (c *client) processLeafnodeInfo(info *Info) {
 		}
 		c.leaf.remoteDomain = info.Domain
 		c.leaf.remoteCluster = info.Cluster
+		// We send the protocol version in the INFO protocol.
+		// Keep track of it, so we know if this connection supports message
+		// tracing for instance.
+		c.opts.Protocol = info.Proto
 	}
 
 	// For both initial INFO and async INFO protocols, Possibly
@@ -1729,6 +1734,14 @@ type leafConnectInfo struct {
 
 	// Tells the accept side which account the remote is binding to.
 	RemoteAccount string `json:"remote_account,omitempty"`
+
+	// The accept side of a LEAF connection, unlike ROUTER and GATEWAY, receives
+	// only the CONNECT protocol, and no INFO. So we need to send the protocol
+	// version as part of the CONNECT. It will indicate if a connection supports
+	// some features, such as message tracing.
+	// We use `protocol` as the JSON tag, so this is automatically unmarshal'ed
+	// in the low level process CONNECT.
+	Proto int `json:"protocol,omitempty"`
 }
 
 // processLeafNodeConnect will process the inbound connect args.
