@@ -6031,3 +6031,324 @@ func TestJetStreamClusterDomainAdvisory(t *testing.T) {
 	require_Equal(t, adv.Cluster, "R3S")
 	require_Equal(t, len(adv.Replicas), 3)
 }
+
+func TestJetStreamClusterLimitsBasedStreamFileStoreDesync(t *testing.T) {
+	conf := `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {
+		store_dir: '%s',
+	}
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+        system_account: sys
+        no_auth_user: js
+	accounts {
+	  sys {
+	    users = [
+	      { user: sys, pass: sys }
+	    ]
+	  }
+	  js {
+	    jetstream = { store_max_stream_bytes = 3mb }
+	    users = [
+	      { user: js, pass: js }
+	    ]
+	  }
+	}`
+	c := createJetStreamClusterWithTemplate(t, conf, "limits", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cnc, cjs := jsClientConnect(t, c.randomServer())
+	defer cnc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "LTEST",
+		Subjects: []string{"messages.*"},
+		Replicas: 3,
+		MaxAge:   10 * time.Minute,
+		MaxMsgs:  100_000,
+	})
+	require_NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	psub, err := cjs.PullSubscribe("messages.*", "consumer")
+	require_NoError(t, err)
+
+	var (
+		wg          sync.WaitGroup
+		received    uint64
+		errCh       = make(chan error, 100_000)
+		receivedMap = make(map[string]*nats.Msg)
+	)
+	wg.Add(1)
+	go func() {
+		tick := time.NewTicker(20 * time.Millisecond)
+		for {
+			select {
+			case <-ctx.Done():
+				wg.Done()
+				return
+			case <-tick.C:
+				msgs, err := psub.Fetch(10, nats.MaxWait(200*time.Millisecond))
+				if err != nil {
+					continue
+				}
+				for _, msg := range msgs {
+					received++
+					receivedMap[msg.Subject] = msg
+					if meta, _ := msg.Metadata(); meta.NumDelivered > 1 {
+						t.Logf("GOT MSG: %s :: %+v :: %d", msg.Subject, meta, len(msg.Data))
+					}
+					msg.Ack()
+				}
+			}
+		}
+	}()
+
+	// Send 20_000 msgs at roughly 1 msg per msec
+	shouldDrop := make(map[string]error)
+	wg.Add(1)
+	go func() {
+		payload := []byte(strings.Repeat("A", 1024))
+		tick := time.NewTicker(1 * time.Millisecond)
+		for i := 1; i < 100_000; {
+			select {
+			case <-ctx.Done():
+				wg.Done()
+				return
+			case <-tick.C:
+				// This should run into 3MB quota and get errors right away
+				// before the max msgs limit does.
+				subject := fmt.Sprintf("messages.%d", i)
+				_, err := js.Publish(subject, payload, nats.RetryAttempts(0))
+				if err != nil {
+					errCh <- err
+				}
+				i++
+
+				// Any message over this number should not be a success
+				// since the stream should be full due to the quota.
+				// Here we capture that the messages have failed to confirm.
+				if err != nil && i > 1000 {
+					shouldDrop[subject] = err
+				}
+			}
+		}
+	}()
+
+	// Collect enough errors to cause things to get out of sync.
+	var errCount int
+Setup:
+	for {
+		select {
+		case err = <-errCh:
+			errCount++
+			if errCount >= 20_000 {
+				// Stop both producing and consuming.
+				cancel()
+				break Setup
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("Timed out waiting for limits error")
+		}
+	}
+
+	// Both goroutines should be exiting now..
+	wg.Wait()
+
+	// Check messages that ought to have been dropped.
+	for subject := range receivedMap {
+		found, ok := shouldDrop[subject]
+		if ok {
+			t.Errorf("Should have dropped message published on %q since got error: %v", subject, found)
+		}
+	}
+
+	getStreamDetails := func(t *testing.T, srv *Server) *StreamDetail {
+		t.Helper()
+		jsz, err := srv.Jsz(&JSzOptions{Accounts: true, Streams: true, Consumer: true})
+		require_NoError(t, err)
+		if len(jsz.AccountDetails) > 0 && len(jsz.AccountDetails[0].Streams) > 0 {
+			details := jsz.AccountDetails[0]
+			stream := details.Streams[0]
+			return &stream
+		}
+		t.Error("Could not find account details")
+		return nil
+	}
+	checkState := func(t *testing.T) error {
+		t.Helper()
+
+		leaderSrv := c.streamLeader("js", "LTEST")
+		streamLeader := getStreamDetails(t, leaderSrv)
+		// t.Logf("Stream Leader: %+v", streamLeader.State)
+		errs := make([]error, 0)
+		for _, srv := range c.servers {
+			if srv == leaderSrv {
+				// Skip self
+				continue
+			}
+			stream := getStreamDetails(t, srv)
+			if stream.State.Msgs != streamLeader.State.Msgs {
+				err := fmt.Errorf("Leader %v has %d messages, Follower %v has %d messages",
+					stream.Cluster.Leader, streamLeader.State.Msgs,
+					srv.Name(), stream.State.Msgs,
+				)
+				errs = append(errs, err)
+			}
+		}
+		if len(errs) > 0 {
+			return errors.Join(errs...)
+		}
+		return nil
+	}
+
+	// Confirm state of the leader.
+	leaderSrv := c.streamLeader("js", "LTEST")
+	streamLeader := getStreamDetails(t, leaderSrv)
+	if streamLeader.State.Msgs != received {
+		t.Errorf("Leader %v has %d messages stored but %d messages were received (delta: %d)",
+			leaderSrv.Name(), streamLeader.State.Msgs, received, received-streamLeader.State.Msgs)
+	}
+	cinfo, err := psub.ConsumerInfo()
+	require_NoError(t, err)
+	if received != cinfo.Delivered.Consumer {
+		t.Errorf("Unexpected consumer sequence. Got: %v, expected: %v",
+			cinfo.Delivered.Consumer, received)
+	}
+
+	// Check whether there was a drift among the leader and followers.
+	var (
+		lastErr  error
+		attempts int
+	)
+Check:
+	for range time.NewTicker(1 * time.Second).C {
+		lastErr = checkState(t)
+		if attempts > 5 {
+			break Check
+		}
+		attempts++
+	}
+
+	// Read the stream
+	psub2, err := cjs.PullSubscribe("messages.*", "")
+	require_NoError(t, err)
+
+Consume2:
+	for {
+		msgs, err := psub2.Fetch(100)
+		if err != nil {
+			continue
+		}
+		for _, msg := range msgs {
+			msg.Ack()
+
+			meta, _ := msg.Metadata()
+			if meta.NumPending == 0 {
+				break Consume2
+			}
+		}
+	}
+
+	cinfo2, err := psub2.ConsumerInfo()
+	require_NoError(t, err)
+
+	a := cinfo.Delivered.Consumer
+	b := cinfo2.Delivered.Consumer
+	if a != b {
+		t.Errorf("Consumers to same stream are at different sequences: %d vs %d", a, b)
+	}
+
+	// Test is done but replicas were in sync so can stop testing at this point.
+	if lastErr == nil {
+		return
+	}
+
+	// Now we will cause a few step downs while out of sync to get different results.
+	t.Errorf("Replicas are out of sync:\n%v", lastErr)
+
+	stepDown := func() {
+		_, err = nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "LTEST"), nil, time.Second)
+	}
+	// Check StreamInfo in this state then trigger a few step downs.
+	var prevLeaderMsgs uint64
+	leaderSrv = c.streamLeader("js", "LTEST")
+	sinfo, err := js.StreamInfo("LTEST")
+	prevLeaderMsgs = sinfo.State.Msgs
+	for i := 0; i < 10; i++ {
+		stepDown()
+		time.Sleep(2 * time.Second)
+
+		leaderSrv = c.streamLeader("js", "LTEST")
+		sinfo, err = js.StreamInfo("LTEST")
+		if err != nil {
+			t.Logf("Error: %v", err)
+			continue
+		}
+		if leaderSrv != nil && sinfo != nil {
+			t.Logf("When leader is %v, Messages: %d", leaderSrv.Name(), sinfo.State.Msgs)
+
+			// Leave the leader as the replica with less messages that was out of sync.
+			if prevLeaderMsgs > sinfo.State.Msgs {
+				break
+			}
+		}
+	}
+	t.Logf("Changed to use leader %v which has %d messages", leaderSrv.Name(), sinfo.State.Msgs)
+
+	// Read the stream again
+	psub3, err := cjs.PullSubscribe("messages.*", "")
+	require_NoError(t, err)
+
+Consume3:
+	for {
+		msgs, err := psub3.Fetch(100)
+		if err != nil {
+			continue
+		}
+		for _, msg := range msgs {
+			msg.Ack()
+
+			meta, _ := msg.Metadata()
+			if meta.NumPending == 0 {
+				break Consume3
+			}
+		}
+	}
+
+	cinfo3, err := psub3.ConsumerInfo()
+	require_NoError(t, err)
+
+	// Compare against consumer that was created before resource limits error
+	// with one created before the step down.
+	a = cinfo.Delivered.Consumer
+	b = cinfo2.Delivered.Consumer
+	if a != b {
+		t.Errorf("Consumers to same stream are at different sequences: %d vs %d", a, b)
+	}
+
+	// Compare against consumer that was created before resource limits error
+	// with one created AFTER the step down.
+	a = cinfo.Delivered.Consumer
+	b = cinfo3.Delivered.Consumer
+	if a != b {
+		t.Errorf("Consumers to same stream are at different sequences: %d vs %d", a, b)
+	}
+
+	// Compare consumers created after the resource limits error.
+	a = cinfo2.Delivered.Consumer
+	b = cinfo3.Delivered.Consumer
+	if a != b {
+		t.Errorf("Consumers to same stream are at different sequences: %d vs %d", a, b)
+	}
+}
