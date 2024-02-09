@@ -4097,10 +4097,18 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 
 	seq := req.Seq
 	wc := subjectHasWildcard(req.NextFor)
+	// For tracking num pending if we are batch.
+	var np, lseq, validThrough uint64
+	var isBatchRequest bool
 	batch := req.Batch
 	if batch == 0 {
 		batch = 1
+	} else {
+		// This is a batch request, capture initial numPending.
+		isBatchRequest = true
+		np, validThrough = store.NumPending(seq, req.NextFor, false)
 	}
+
 	// Grab MaxBytes
 	mb := req.MaxBytes
 	if mb == 0 && s != nil {
@@ -4147,16 +4155,34 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 		hdr := sm.hdr
 		ts := time.Unix(0, sm.ts).UTC()
 
-		if len(hdr) == 0 {
-			const ht = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\n\r\n"
-			hdr = []byte(fmt.Sprintf(ht, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano)))
+		if isBatchRequest {
+			if len(hdr) == 0 {
+				hdr = []byte(fmt.Sprintf(dgb, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), np, lseq))
+			} else {
+				hdr = copyBytes(hdr)
+				hdr = genHeader(hdr, JSStream, name)
+				hdr = genHeader(hdr, JSSubject, sm.subj)
+				hdr = genHeader(hdr, JSSequence, strconv.FormatUint(sm.seq, 10))
+				hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
+				hdr = genHeader(hdr, JSNumPending, strconv.FormatUint(np, 10))
+				hdr = genHeader(hdr, JSLastSequence, strconv.FormatUint(lseq, 10))
+			}
+			// Decrement num pending. This is optimization and we do not continue to look it up for these operations.
+			np--
 		} else {
-			hdr = copyBytes(hdr)
-			hdr = genHeader(hdr, JSStream, name)
-			hdr = genHeader(hdr, JSSubject, sm.subj)
-			hdr = genHeader(hdr, JSSequence, strconv.FormatUint(sm.seq, 10))
-			hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
+			if len(hdr) == 0 {
+				hdr = []byte(fmt.Sprintf(dg, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano)))
+			} else {
+				hdr = copyBytes(hdr)
+				hdr = genHeader(hdr, JSStream, name)
+				hdr = genHeader(hdr, JSSubject, sm.subj)
+				hdr = genHeader(hdr, JSSequence, strconv.FormatUint(sm.seq, 10))
+				hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
+			}
 		}
+		// Track our lseq
+		lseq = sm.seq
+		// Send out our message.
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, sm.msg, nil, 0))
 		// Check if we have exceeded max bytes.
 		sentBytes += len(sm.subj) + len(sm.hdr) + len(sm.msg)
@@ -4166,9 +4192,12 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 	}
 
 	// If batch was requested send EOB.
-	if batch > 1 {
-		np, _ := store.NumPending(seq, req.NextFor, false)
-		hdr := []byte(fmt.Sprintf("NATS/1.0 204 EOB\r\nNats-Pending-Messages: %d\r\n\r\n", np))
+	if isBatchRequest {
+		// Update if the stream's lasts sequence has moved past our validThrough.
+		if mset.lastSeq() > validThrough {
+			np, _ = store.NumPending(seq, req.NextFor, false)
+		}
+		hdr := []byte(fmt.Sprintf("NATS/1.0 204 EOB\r\nNats-Pending-Messages: %d\r\nNats-Last-Sequence: %d\r\n\r\n", np, lseq))
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 	}
 }

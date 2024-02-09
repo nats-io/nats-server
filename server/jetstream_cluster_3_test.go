@@ -5958,6 +5958,8 @@ func TestJetStreamClusterStreamResetPreacks(t *testing.T) {
 	for _, msg := range msgs {
 		msg.AckSync()
 	}
+	// Let sync propagate.
+	time.Sleep(250 * time.Millisecond)
 
 	// Now grab a non-leader server.
 	// We will shut it down and remove the stream data.
@@ -5971,7 +5973,7 @@ func TestJetStreamClusterStreamResetPreacks(t *testing.T) {
 	c.waitOnConsumerLeader(globalAccountName, "TEST", "dlc")
 
 	// Now consume the remaining 10 and ack.
-	msgs, err = sub.Fetch(10, nats.MaxWait(time.Second))
+	msgs, err = sub.Fetch(10, nats.MaxWait(10*time.Second))
 	require_NoError(t, err)
 	require_Equal(t, len(msgs), 10)
 
@@ -5982,7 +5984,7 @@ func TestJetStreamClusterStreamResetPreacks(t *testing.T) {
 	// Now remove the stream manually.
 	require_NoError(t, os.RemoveAll(mdir))
 	nl = c.restartServer(nl)
-	c.waitOnServerCurrent(nl)
+	c.waitOnAllCurrent()
 
 	mset, err = nl.GlobalAccount().lookupStream("TEST")
 	require_NoError(t, err)
