@@ -1964,7 +1964,6 @@ func (as *mqttAccountSessionManager) processRetainedMsg(_ *subscription, c *clie
 	as.handleRetainedMsg(rm.Subject, &mqttRetainedMsgRef{sseq: seq}, rm, false)
 
 	// If we were recovering (lastSeq > 0), then check if we are done.
-	// TODO <>/<> does this work with ReplayImmediate?
 	if as.rrmLastSeq > 0 && seq >= as.rrmLastSeq {
 		as.rrmLastSeq = 0
 		close(as.rrmDoneCh)
