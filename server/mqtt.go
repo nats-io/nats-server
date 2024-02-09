@@ -456,7 +456,10 @@ type mqttPublish struct {
 // contains the PI.
 const (
 	mqttNatsHeader                = "Nmqtt-Pub"
-	mqttNatsRetainedMessageHeader = "Nmqtt-Ret"
+	mqttNatsRetainedMessageTopic  = "Nmqtt-RTopic"
+	mqttNatsRetainedMessageOrigin = "Nmqtt-ROrigin"
+	mqttNatsRetainedMessageFlags  = "Nmqtt-RFlags"
+	mqttNatsRetainedMessageSource = "Nmqtt-RSource"
 	mqttNatsPubRelHeader          = "Nmqtt-PubRel"
 	mqttNatsHeaderSubject         = "Nmqtt-Subject"
 	mqttNatsHeaderMapped          = "Nmqtt-Mapped"
@@ -2790,46 +2793,76 @@ func (as *mqttAccountSessionManager) loadRetainedMessages(subjects map[string]st
 
 // Composes a NATS message for a storeable mqttRetainedMsg.
 func mqttEncodeRetainedMessage(rm *mqttRetainedMsg) (natsMsg []byte, headerLen int) {
-	// 128 bytes should be enough for the JSON overhead
-	buf := bytes.NewBuffer(make([]byte, 0, 128+
-		len(mqttNatsRetainedMessageHeader)+
-		len(rm.Msg)+len(rm.Subject)+len(rm.Origin)+len(rm.Topic)+len(rm.Source)))
+	// No need to encode the subject, we can restore it from topic.
+	l := len(mqttNatsRetainedMessageTopic) + 1 + len(rm.Topic) + 2 // 1 byte for ':', 2 bytes for CRLF
+	if rm.Origin != "" {
+		l += len(mqttNatsRetainedMessageOrigin) + 1 + len(rm.Origin) + 2 // 1 byte for ':', 2 bytes for CRLF
+	}
+	if rm.Source != "" {
+		l += len(mqttNatsRetainedMessageSource) + 1 + len(rm.Source) + 2 // 1 byte for ':', 2 bytes for CRLF
+	}
+	l = len(mqttNatsRetainedMessageFlags) + 1 + 2 + 2 // 1 byte for ':', 2 bytes for the flags, 2 bytes for CRLF
+	l += 2                                            // 2 bytes for the extra CRLF after the header
+	l += len(rm.Msg)
+
+	buf := bytes.NewBuffer(make([]byte, l))
 
 	buf.WriteString(hdrLine)
-	buf.WriteString(mqttNatsRetainedMessageHeader)
+
+	buf.WriteString(mqttNatsRetainedMessageTopic)
 	buf.WriteByte(':')
-
-	// Encode rm as JSON, but just the metadata.
-	msg := rm.Msg
-	rm.Msg = nil
-	json.NewEncoder(buf).Encode(rm)
-	rm.Msg = msg
-
+	buf.WriteString(rm.Topic)
 	buf.WriteString(_CRLF_)
 
-	// End of header
+	buf.WriteString(mqttNatsRetainedMessageFlags)
+	buf.WriteByte(':')
+	buf.WriteString(strconv.FormatUint(uint64(rm.Flags), 16))
 	buf.WriteString(_CRLF_)
 
+	if rm.Origin != "" {
+		buf.WriteString(mqttNatsRetainedMessageOrigin)
+		buf.WriteByte(':')
+		buf.WriteString(rm.Origin)
+		buf.WriteString(_CRLF_)
+	}
+	if rm.Source != "" {
+		buf.WriteString(mqttNatsRetainedMessageSource)
+		buf.WriteByte(':')
+		buf.WriteString(rm.Source)
+		buf.WriteString(_CRLF_)
+	}
+
+	// End of header, finalize
+	buf.WriteString(_CRLF_)
 	headerLen = buf.Len()
-
-	buf.Write(msg)
+	buf.Write(rm.Msg)
 	return buf.Bytes(), headerLen
 }
 
 func mqttDecodeRetainedMessage(h, m []byte) (*mqttRetainedMsg, error) {
-	var rm mqttRetainedMsg
-	retainedHeaderBytes := getHeader(mqttNatsRetainedMessageHeader, h)
-	if len(retainedHeaderBytes) > 0 {
-		if err := json.Unmarshal(retainedHeaderBytes, &rm); err != nil {
-			return nil, err
+	fHeader := getHeader(mqttNatsRetainedMessageFlags, h)
+	if len(fHeader) > 0 {
+		flags, err := strconv.ParseUint(string(fHeader), 16, 8)
+		if err != nil {
+			return nil, fmt.Errorf("invalid retained message flags: %v", err)
 		}
-		rm.Msg = m
+		topic := getHeader(mqttNatsRetainedMessageTopic, h)
+		subj, _ := mqttToNATSSubjectConversion(topic, false)
+		return &mqttRetainedMsg{
+			Flags:   byte(flags),
+			Subject: string(subj),
+			Topic:   string(topic),
+			Origin:  string(getHeader(mqttNatsRetainedMessageOrigin, h)),
+			Source:  string(getHeader(mqttNatsRetainedMessageSource, h)),
+			Msg:     m,
+		}, nil
 	} else {
+		var rm mqttRetainedMsg
 		if err := json.Unmarshal(m, &rm); err != nil {
 			return nil, err
 		}
+		return &rm, nil
 	}
-	return &rm, nil
 }
 
 // Creates the session stream (limit msgs of 1) for this client ID if it does
