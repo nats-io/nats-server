@@ -6352,3 +6352,168 @@ Consume3:
 		t.Errorf("Consumers to same stream are at different sequences: %d vs %d", a, b)
 	}
 }
+
+func TestJetStreamClusterWorkQueueStreamDiscardNewDesync(t *testing.T) {
+	t.Run("max msgs", func(t *testing.T) {
+		testJetStreamClusterWorkQueueStreamDiscardNewDesync(t, &nats.StreamConfig{
+			Name:      "WQTEST_MM",
+			Subjects:  []string{"messages.*"},
+			Replicas:  3,
+			MaxAge:    10 * time.Minute,
+			MaxMsgs:   100,
+			Retention: nats.WorkQueuePolicy,
+			Discard:   nats.DiscardNew,
+		})
+	})
+	t.Run("max bytes", func(t *testing.T) {
+		testJetStreamClusterWorkQueueStreamDiscardNewDesync(t, &nats.StreamConfig{
+			Name:      "WQTEST_MB",
+			Subjects:  []string{"messages.*"},
+			Replicas:  3,
+			MaxAge:    10 * time.Minute,
+			MaxBytes:  1 * 1024 * 1024,
+			Retention: nats.WorkQueuePolicy,
+			Discard:   nats.DiscardNew,
+		})
+	})
+}
+
+func testJetStreamClusterWorkQueueStreamDiscardNewDesync(t *testing.T, sc *nats.StreamConfig) {
+	conf := `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {
+		store_dir: '%s',
+	}
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+        system_account: sys
+        no_auth_user: js
+	accounts {
+	  sys {
+	    users = [
+	      { user: sys, pass: sys }
+	    ]
+	  }
+	  js {
+	    jetstream = enabled
+	    users = [
+	      { user: js, pass: js }
+	    ]
+	  }
+	}`
+	c := createJetStreamClusterWithTemplate(t, conf, sc.Name, 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cnc, cjs := jsClientConnect(t, c.randomServer())
+	defer cnc.Close()
+
+	_, err := js.AddStream(sc)
+	require_NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	psub, err := cjs.PullSubscribe("messages.*", "consumer")
+	require_NoError(t, err)
+
+	stepDown := func() {
+		_, err = nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, sc.Name), nil, time.Second)
+	}
+
+	// Messages will be produced and consumed in parallel, then once there are
+	// enough errors a leader election will be triggered.
+	var (
+		wg          sync.WaitGroup
+		received    uint64
+		errCh       = make(chan error, 100_000)
+		receivedMap = make(map[string]*nats.Msg)
+	)
+	wg.Add(1)
+	go func() {
+		tick := time.NewTicker(20 * time.Millisecond)
+		for {
+			select {
+			case <-ctx.Done():
+				wg.Done()
+				return
+			case <-tick.C:
+				msgs, err := psub.Fetch(10, nats.MaxWait(200*time.Millisecond))
+				if err != nil {
+					// The consumer will continue to timeout here eventually.
+					continue
+				}
+				for _, msg := range msgs {
+					received++
+					receivedMap[msg.Subject] = msg
+					msg.Ack()
+				}
+			}
+		}
+	}()
+
+	shouldDrop := make(map[string]error)
+	wg.Add(1)
+	go func() {
+		payload := []byte(strings.Repeat("A", 1024))
+		tick := time.NewTicker(1 * time.Millisecond)
+		for i := 1; ; i++ {
+			select {
+			case <-ctx.Done():
+				wg.Done()
+				return
+			case <-tick.C:
+				subject := fmt.Sprintf("messages.%d", i)
+				_, err := js.Publish(subject, payload, nats.RetryAttempts(0))
+				if err != nil {
+					errCh <- err
+				}
+				// Capture the messages that have failed.
+				if err != nil {
+					shouldDrop[subject] = err
+				}
+			}
+		}
+	}()
+
+	// Collect enough errors to cause things to get out of sync.
+	var errCount int
+Setup:
+	for {
+		select {
+		case err = <-errCh:
+			errCount++
+			if errCount%500 == 0 {
+				stepDown()
+			} else if errCount >= 2000 {
+				// Stop both producing and consuming.
+				cancel()
+				break Setup
+			}
+		case <-time.After(5 * time.Second):
+			// Unblock the test and continue.
+			cancel()
+			break Setup
+		}
+	}
+
+	// Both goroutines should be exiting now..
+	wg.Wait()
+
+	// Let acks propagate for stream checks.
+	time.Sleep(250 * time.Millisecond)
+
+	// Check messages that ought to have been dropped.
+	for subject := range receivedMap {
+		found, ok := shouldDrop[subject]
+		if ok {
+			t.Errorf("Should have dropped message published on %q since got error: %v", subject, found)
+		}
+	}
+}
