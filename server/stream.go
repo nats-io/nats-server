@@ -4242,10 +4242,10 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	// Process additional msg headers if still present.
 	var msgId string
 	var rollupSub, rollupAll bool
+	isClustered := mset.isClustered()
 
 	if len(hdr) > 0 {
 		outq := mset.outq
-		isClustered := mset.isClustered()
 
 		// Certain checks have already been performed if in clustered mode, so only check if not.
 		if !isClustered {
@@ -4478,6 +4478,22 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		}
 	}
 
+	// If clustered this was already checked and we do not want to check here and possibly introduce skew.
+	if !isClustered {
+		if exceeded, err := jsa.wouldExceedLimits(stype, tierName, mset.cfg.Replicas, subject, hdr, msg); exceeded {
+			if err == nil {
+				err = NewJSAccountResourcesExceededError()
+			}
+			s.RateLimitWarnf("JetStream resource limits exceeded for account: %q", accName)
+			if canRespond {
+				resp.PubAck = &PubAck{Stream: name}
+				resp.Error = err
+				response, _ = json.Marshal(resp)
+				mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
+			}
+		}
+	}
+
 	// Store actual msg.
 	if lseq == 0 && ts == 0 {
 		seq, ts, err = store.StoreMsg(subject, hdr, msg)
@@ -4517,28 +4533,6 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			mset.outq.sendMsg(reply, response)
 		}
 		return err
-	}
-
-	if exceeded, apiErr := jsa.limitsExceeded(stype, tierName, mset.cfg.Replicas); exceeded {
-		s.RateLimitWarnf("JetStream resource limits exceeded for account: %q", accName)
-		if canRespond {
-			resp.PubAck = &PubAck{Stream: name}
-			if apiErr == nil {
-				resp.Error = NewJSAccountResourcesExceededError()
-			} else {
-				resp.Error = apiErr
-			}
-			response, _ = json.Marshal(resp)
-			mset.outq.sendMsg(reply, response)
-		}
-		// If we did not succeed put those values back.
-		var state StreamState
-		mset.store.FastState(&state)
-		mset.lseq = state.LastSeq
-		mset.lmsgId = olmsgId
-		mset.mu.Unlock()
-		store.RemoveMsg(seq)
-		return nil
 	}
 
 	// If we have a msgId make sure to save.
