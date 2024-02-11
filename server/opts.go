@@ -3027,7 +3027,7 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 					}
 				case "trace_dest", "trace_destination", "trace_subject":
 					td := mv.(string)
-					if !IsValidSubject(td) {
+					if !IsValidPublishSubject(td) {
 						err := &configErr{tk, fmt.Sprintf("Trace destination %q is not valid", mv)}
 						*errors = append(*errors, err)
 						continue

@@ -1051,7 +1051,7 @@ func validateOptions(o *Options) error {
 		if acc.TraceDest == _EMPTY_ {
 			continue
 		}
-		if !IsValidSubject(acc.TraceDest) {
+		if !IsValidPublishSubject(acc.TraceDest) {
 			return fmt.Errorf("trace_dest %q of account %q is not valid", acc.TraceDest, acc.Name)
 		}
 	}

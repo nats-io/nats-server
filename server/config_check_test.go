@@ -936,6 +936,17 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  23,
 		},
 		{
+			name: "when account trace destination is not a valid publish subject",
+			config: `
+                accounts {
+                  A { trace_dest: "invalid.publish.*.subject" }
+                }
+			`,
+			err:       errors.New(`Trace destination "invalid.publish.*.subject" is not valid`),
+			errorLine: 3,
+			errorPos:  23,
+		},
+		{
 			name: "when user authorization config has both token and users",
 			config: `
 		authorization = {

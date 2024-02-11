@@ -575,12 +575,12 @@ func (t *msgTrace) disableTraceHeaders(c *client, msg []byte) []int {
 // Changes back the character at the given position `pos` in the `msg`
 // byte slice to the first character of the MsgTraceSendTo header.
 func (t *msgTrace) enableTraceHeaders(c *client, msg []byte, positions []int) {
-	headers := [2]string{MsgTraceSendTo, trcCtx}
+	firstChar := [2]byte{MsgTraceSendTo[0], trcCtx[0]}
 	for i, pos := range positions {
 		if pos == -1 {
 			continue
 		}
-		msg[pos] = headers[i][0]
+		msg[pos] = firstChar[i]
 	}
 }
 

@@ -4502,18 +4502,25 @@ func TestMsgTraceTriggeredByExternalHeader(t *testing.T) {
 	s1.Shutdown()
 	s1 = nil
 
-	t.Run("check account trace destination valid when specified programmatically", func(t *testing.T) {
-		o1.Accounts[0].TraceDest = "invalid..dest"
-		o1.Accounts = o1.Accounts[:1]
-		accName := o1.Accounts[0].Name
-		o1.Port, o1.Cluster.Port = -1, -1
-		s1, err := NewServer(o1)
-		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("trace_dest %q of account %q is not valid", "invalid..dest", accName)) {
-			if s1 != nil {
-				s1.Shutdown()
-			}
+	o1.Accounts = o1.Accounts[:1]
+	accName := o1.Accounts[0].Name
+	o1.Port, o1.Cluster.Port = -1, -1
 
-		}
-		s1.Shutdown()
-	})
+	for _, test := range []struct {
+		name      string
+		traceDest string
+	}{
+		{"account trace invalid subject", "invalid..subject"},
+		{"account trace invalid publish subject", "invalid.publish.*.subject"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			o1.Accounts[0].TraceDest = test.traceDest
+			s1, err := NewServer(o1)
+			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("trace_dest %q of account %q is not valid", test.traceDest, accName)) {
+				if s1 != nil {
+					s1.Shutdown()
+				}
+			}
+		})
+	}
 }
