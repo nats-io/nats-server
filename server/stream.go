@@ -283,6 +283,7 @@ type stream struct {
 	clMu       sync.Mutex
 	clseq      uint64
 	clfs       uint64
+	inflight   map[uint64]uint64
 	leader     string
 	lqsent     time.Time
 	catchups   map[string]uint64
