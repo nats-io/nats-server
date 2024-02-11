@@ -330,12 +330,25 @@ func (c *client) initMsgTrace() *msgTrace {
 		return nil
 	}
 	hdr := c.msgBuf[:c.pa.hdr]
+	var external bool
 	// Do not call c.parseState.getHeader() yet for performance reasons.
 	// We first do a "manual" search of the "send-to" destination's header.
 	// If not present, no need to lift the message headers.
 	td := getHeader(MsgTraceSendTo, hdr)
 	if len(td) <= 0 {
-		return nil
+		// If the NATS trace destination header is not present, look for
+		// the external trace header.
+		trcCtxHdrVal := getHeader(trcCtx, hdr)
+		if len(trcCtxHdrVal) <= 0 {
+			return nil
+		}
+		// See if we need to trigger the race based on the last token
+		// that should be set to "01".
+		tk := bytes.Split(trcCtxHdrVal, stringToBytes("-"))
+		if len(tk) != 4 || len([]byte(tk[3])) != 2 || !bytes.Equal(tk[3], stringToBytes("01")) {
+			return nil
+		}
+		external = true
 	}
 	// Now we know that this is a message that requested tracing, we
 	// will lift the headers since we also need to transfer them to
@@ -346,11 +359,14 @@ func (c *client) initMsgTrace() *msgTrace {
 	}
 	ct := getCompressionType(headers.Get(acceptEncodingHeader))
 	var traceOnly bool
-	if to := headers.Get(MsgTraceOnly); to != _EMPTY_ {
-		tos := strings.ToLower(to)
-		switch tos {
-		case "1", "true", "on":
-			traceOnly = true
+	// Check for traceOnly only if not external.
+	if !external {
+		if to := headers.Get(MsgTraceOnly); to != _EMPTY_ {
+			tos := strings.ToLower(to)
+			switch tos {
+			case "1", "true", "on":
+				traceOnly = true
+			}
 		}
 	}
 	var (
@@ -403,11 +419,26 @@ func (c *client) initMsgTrace() *msgTrace {
 		acc = c.acc
 		ian = acc.GetName()
 	}
+	// If external, we need to have the account's trace destination set,
+	// otherwise, we are not enabling tracing.
+	var dest string
+	if external {
+		if acc != nil {
+			acc.mu.RLock()
+			dest = acc.TraceDest
+			acc.mu.RUnlock()
+		}
+		if dest == _EMPTY_ {
+			return nil
+		}
+	} else {
+		dest = string(td)
+	}
 	c.pa.trace = &msgTrace{
 		srv:  c.srv,
 		acc:  acc,
 		oan:  oan,
-		dest: string(td),
+		dest: dest,
 		ct:   ct,
 		hop:  hop,
 		event: &MsgTraceEvent{
@@ -496,49 +527,61 @@ func (t *msgTrace) setHopHeader(c *client, msg []byte) []byte {
 	return c.setHeader(MsgTraceHop, t.nhop, msg)
 }
 
-// Will look for the MsgTraceSendTo header and change the first character
-// to an 'X' so that if this message is sent to a remote, the remote will
-// not initialize tracing since it won't find the actual MsgTraceSendTo
-// header. The function returns the position of the header so it can
-// efficiently be re-enabled by calling enableTraceHeader.
+// Will look for the MsgTraceSendTo and trcCtx headers and change the first
+// character to an 'X' so that if this message is sent to a remote, the remote
+// will not initialize tracing since it won't find the actual trace headers.
+// The function returns the position of the headers so it can efficiently be
+// re-enabled by calling enableTraceHeaders.
 // Note that if `msg` can be either the header alone or the full message
 // (header and payload). This function will use c.pa.hdr to limit the
 // search to the header section alone.
-func (t *msgTrace) disableTraceHeader(c *client, msg []byte) int {
+func (t *msgTrace) disableTraceHeaders(c *client, msg []byte) []int {
 	// Code largely copied from getHeader(), except that we don't need the value
 	if c.pa.hdr <= 0 {
-		return -1
+		return []int{-1, -1}
 	}
 	hdr := msg[:c.pa.hdr]
-	key := stringToBytes(MsgTraceSendTo)
-	pos := bytes.Index(hdr, key)
-	if pos < 0 {
-		return -1
+	headers := [2]string{MsgTraceSendTo, trcCtx}
+	positions := [2]int{}
+	for i := 0; i < 2; i++ {
+		key := stringToBytes(headers[i])
+		pos := bytes.Index(hdr, key)
+		if pos < 0 {
+			positions[i] = -1
+			continue
+		}
+		// Make sure this key does not have additional prefix.
+		if pos < 2 || hdr[pos-1] != '\n' || hdr[pos-2] != '\r' {
+			positions[i] = -1
+			continue
+		}
+		index := pos + len(key)
+		if index >= len(hdr) {
+			positions[i] = -1
+			continue
+		}
+		if hdr[index] != ':' {
+			positions[i] = -1
+			continue
+		}
+		// Disable the trace by altering the first character of the header
+		hdr[pos] = 'X'
+		positions[i] = pos
 	}
-	// Make sure this key does not have additional prefix.
-	if pos < 2 || hdr[pos-1] != '\n' || hdr[pos-2] != '\r' {
-		return -1
-	}
-	index := pos + len(key)
-	if index >= len(hdr) {
-		return -1
-	}
-	if hdr[index] != ':' {
-		return -1
-	}
-	// Disable the trace by altering the first character of the header
-	hdr[pos] = 'X'
-	// Return the position of that character so we can re-enable it.
-	return pos
+	// Return the positions of those characters so we can re-enable the headers.
+	return positions[:2]
 }
 
 // Changes back the character at the given position `pos` in the `msg`
 // byte slice to the first character of the MsgTraceSendTo header.
-func (t *msgTrace) enableTraceHeader(c *client, msg []byte, pos int) {
-	if pos <= 0 {
-		return
+func (t *msgTrace) enableTraceHeaders(c *client, msg []byte, positions []int) {
+	headers := [2]string{MsgTraceSendTo, trcCtx}
+	for i, pos := range positions {
+		if pos == -1 {
+			continue
+		}
+		msg[pos] = headers[i][0]
 	}
-	msg[pos] = MsgTraceSendTo[0]
 }
 
 func (t *msgTrace) setIngressError(err string) {

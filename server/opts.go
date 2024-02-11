@@ -3025,6 +3025,14 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 						*errors = append(*errors, err)
 						continue
 					}
+				case "trace_dest", "trace_destination", "trace_subject":
+					td := mv.(string)
+					if !IsValidSubject(td) {
+						err := &configErr{tk, fmt.Sprintf("Trace destination %q is not valid", mv)}
+						*errors = append(*errors, err)
+						continue
+					}
+					acc.TraceDest = td
 				default:
 					if !tk.IsUsedVariable() {
 						err := &unknownConfigFieldErr{

@@ -54,6 +54,7 @@ type Account struct {
 	Name         string
 	Nkey         string
 	Issuer       string
+	TraceDest    string
 	claimJWT     string
 	updated      time.Time
 	mu           sync.RWMutex
@@ -260,6 +261,7 @@ func (a *Account) String() string {
 func (a *Account) shallowCopy(na *Account) {
 	na.Nkey = a.Nkey
 	na.Issuer = a.Issuer
+	na.TraceDest = a.TraceDest
 
 	if a.imports.streams != nil {
 		na.imports.streams = make([]*streamImport, 0, len(a.imports.streams))

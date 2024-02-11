@@ -4349,11 +4349,11 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 				// We do so by setting the c.pa.trace to nil (it will be restored
 				// with c.pa = pacopy).
 				c.pa.trace = nil
-				// We also need to disable the trace destination header so that
-				// if message is routed, it does not initialize tracing in the
+				// We also need to disable the message trace headers so that
+				// if the message is routed, it does not initialize tracing in the
 				// remote.
-				pos := mt.disableTraceHeader(c, msg)
-				defer mt.enableTraceHeader(c, msg, pos)
+				positions := mt.disableTraceHeaders(c, msg)
+				defer mt.enableTraceHeaders(c, msg, positions)
 			}
 		}
 	}
