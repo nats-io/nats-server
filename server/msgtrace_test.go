@@ -73,6 +73,86 @@ func TestMsgTraceConnName(t *testing.T) {
 	require_Equal[string](t, val, "someid")
 }
 
+func TestMsgTraceGenHeaderMap(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		header   []byte
+		expected map[string][]string
+		external bool
+	}{
+		{"missing header line", []byte("Nats-Trace-Dest: val\r\n"), nil, false},
+		{"no trace header present", []byte(hdrLine + "Header1: val1\r\nHeader2: val2\r\n"), nil, false},
+		{"trace header with some prefix", []byte(hdrLine + "Some-Prefix-" + MsgTraceSendTo + ": some value\r\n"), nil, false},
+		{"trace header with some suffix", []byte(hdrLine + MsgTraceSendTo + "-Some-Suffix: some value\r\n"), nil, false},
+		{"trace header with space before colon", []byte(hdrLine + MsgTraceSendTo + " : some value\r\n"), nil, false},
+		{"trace header with missing cr_lf for value", []byte(hdrLine + MsgTraceSendTo + " : bogus"), nil, false},
+		{"external trace header with some prefix", []byte(hdrLine + "Some-Prefix-" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n"), nil, false},
+		{"external trace header with some suffix", []byte(hdrLine + traceParentHdr + "-Some-Suffix: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n"), nil, false},
+		{"external header with space before colon", []byte(hdrLine + traceParentHdr + " : 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n"), nil, false},
+		{"external header with missing cr_lf for value", []byte(hdrLine + traceParentHdr + " : 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"), nil, false},
+		{"trace header first", []byte(hdrLine + MsgTraceSendTo + ": some.dest\r\nSome-Header: some value\r\n"),
+			map[string][]string{"Some-Header": {"some value"}, MsgTraceSendTo: {"some.dest"}}, false},
+		{"trace header last", []byte(hdrLine + "Some-Header: some value\r\n" + MsgTraceSendTo + ": some.dest\r\n"),
+			map[string][]string{"Some-Header": {"some value"}, MsgTraceSendTo: {"some.dest"}}, false},
+		{"trace header multiple values", []byte(hdrLine + MsgTraceSendTo + ": some.dest\r\nSome-Header: some value\r\n" + MsgTraceSendTo + ": some.dest.2"),
+			map[string][]string{"Some-Header": {"some value"}, MsgTraceSendTo: {"some.dest", "some.dest.2"}}, false},
+		{"trace header and some empty key", []byte(hdrLine + MsgTraceSendTo + ": some.dest\r\n: bogus\r\nSome-Header: some value\r\n"),
+			map[string][]string{"Some-Header": {"some value"}, MsgTraceSendTo: {"some.dest"}}, false},
+		{"trace header and some header missing cr_lf for value", []byte(hdrLine + MsgTraceSendTo + ": some.dest\r\nSome-Header: bogus"),
+			map[string][]string{MsgTraceSendTo: {"some.dest"}}, false},
+		{"trace header and external after", []byte(hdrLine + MsgTraceSendTo + ": some.dest\r\n" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\nSome-Header: some value\r\n"),
+			map[string][]string{"Some-Header": {"some value"}, MsgTraceSendTo: {"some.dest"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, false},
+		{"trace header and external before", []byte(hdrLine + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n" + MsgTraceSendTo + ": some.dest\r\nSome-Header: some value\r\n"),
+			map[string][]string{"Some-Header": {"some value"}, MsgTraceSendTo: {"some.dest"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, false},
+		{"external malformed", []byte(hdrLine + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-01\r\n"), nil, false},
+		{"external first and sampling", []byte(hdrLine + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\nSome-Header: some value\r\n"),
+			map[string][]string{"Some-Header": {"some value"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, true},
+		{"external middle and sampling", []byte(hdrLine + "Some-Header: some value1\r\n" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\nSome-Header: some value2\r\n"),
+			map[string][]string{"Some-Header": {"some value1", "some value2"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, true},
+		{"external last and sampling", []byte(hdrLine + "Some-Header: some value\r\n" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n"),
+			map[string][]string{"Some-Header": {"some value"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, true},
+		{"external sampling with not just 01", []byte(hdrLine + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-27\r\nSome-Header: some value\r\n"),
+			map[string][]string{"Some-Header": {"some value"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-27"}}, true},
+		{"external with different case and sampling", []byte(hdrLine + "TrAcEpArEnT: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\nSome-Header: some value\r\n"),
+			map[string][]string{"Some-Header": {"some value"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, true},
+		{"external first and not sampling", []byte(hdrLine + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00\r\nSome-Header: some value\r\n"), nil, false},
+		{"external middle and not sampling", []byte(hdrLine + "Some-Header: some value1\r\n" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00\r\nSome-Header: some value2\r\n"), nil, false},
+		{"external last and not sampling", []byte(hdrLine + "Some-Header: some value\r\n" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00\r\n"), nil, false},
+		{"external not sampling with not just 00", []byte(hdrLine + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-22\r\nSome-Header: some value\r\n"), nil, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			m, ext := genHeaderMapIfTraceHeadersPresent(test.header)
+			if test.external != ext {
+				t.Fatalf("Expected external to be %v, got %v", test.external, ext)
+			}
+			if len(test.expected) != len(m) {
+				t.Fatalf("Expected map to be of size %v, got %v", len(test.expected), len(m))
+			}
+			// If external, we should find traceParentHdr
+			if test.external {
+				if _, ok := m[traceParentHdr]; !ok {
+					t.Fatalf("Expected traceparent header to be present, it was not: %+v", m)
+				}
+				// Header should have been rewritten, so we should find it in original header.
+				if !bytes.Contains(test.header, []byte(traceParentHdr)) {
+					t.Fatalf("Header should have been rewritten to have the traceparent in lower case: %s", test.header)
+				}
+			}
+			for k, vv := range m {
+				evv, ok := test.expected[k]
+				if !ok {
+					t.Fatalf("Did not find header %q in resulting map: %+v", k, m)
+				}
+				for i, v := range vv {
+					if evv[i] != v {
+						t.Fatalf("Expected value %v of key %q to be %q, got %q", i, k, evv[i], v)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestMsgTraceBasic(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 		listen: 127.0.0.1:-1
@@ -187,7 +267,7 @@ func TestMsgTraceBasic(t *testing.T) {
 				expected++
 			}
 			require_Equal[int](t, len(e.Request.Header), expected)
-			require_Equal[string](t, e.Request.Header.Get("Some-App-Header"), "some value")
+			require_Equal[string](t, e.Request.Header["Some-App-Header"][0], "some value")
 			// The message size is 6 + whatever size for the 2 trace headers.
 			// Let's just make sure that size is > 20...
 			require_True(t, e.Request.MsgSize > 20)
@@ -1912,10 +1992,11 @@ func TestMsgTraceServiceImportWithSuperCluster(t *testing.T) {
 					if !test.deliverMsg {
 						msg.Header.Set(MsgTraceOnly, "true")
 					}
-					// We add the trcCtx header to make sure that it is deactivated
-					// in addition to the Nats-Trace-Dest header too when needed.
-					trcCtxVal := "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
-					msg.Header.Set(trcCtx, trcCtxVal)
+					// We add the traceParentHdr header to make sure that it is
+					// deactivated in addition to the Nats-Trace-Dest header too
+					// when needed.
+					traceParentHdrVal := "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+					msg.Header.Set(traceParentHdr, traceParentHdrVal)
 					if !test.deliverMsg {
 						msg.Data = []byte("request1")
 					} else {
@@ -1941,14 +2022,14 @@ func TestMsgTraceServiceImportWithSuperCluster(t *testing.T) {
 								if hv := appMsg.Header.Get(MsgTraceSendTo); hv != traceSub.Subject {
 									t.Fatalf("Expecting header with %q, but got %q", traceSub.Subject, hv)
 								}
-								if hv := appMsg.Header.Get(trcCtx); hv != trcCtxVal {
-									t.Fatalf("Expecting header with %q, but got %q", trcCtxVal, hv)
+								if hv := appMsg.Header.Get(traceParentHdr); hv != traceParentHdrVal {
+									t.Fatalf("Expecting header with %q, but got %q", traceParentHdrVal, hv)
 								}
 							} else {
 								if hv := appMsg.Header.Get(MsgTraceSendTo); hv != _EMPTY_ {
 									t.Fatalf("Expecting no header, but header was present with value: %q", hv)
 								}
-								if hv := appMsg.Header.Get(trcCtx); hv != _EMPTY_ {
+								if hv := appMsg.Header.Get(traceParentHdr); hv != _EMPTY_ {
 									t.Fatalf("Expecting no header, but header was present with value: %q", hv)
 								}
 								// We don't really need to check that, but we
@@ -1960,11 +2041,11 @@ func TestMsgTraceServiceImportWithSuperCluster(t *testing.T) {
 								if hv := appMsg.Header.Get(hn); hv != traceSub.Subject {
 									t.Fatalf("Expected header %q to be %q, got %q", hn, traceSub.Subject, hv)
 								}
-								hnb = []byte(trcCtx)
+								hnb = []byte(traceParentHdr)
 								hnb[0] = 'X'
 								hn = string(hnb)
-								if hv := appMsg.Header.Get(hn); hv != trcCtxVal {
-									t.Fatalf("Expected header %q to be %q, got %q", hn, trcCtxVal, hv)
+								if hv := appMsg.Header.Get(hn); hv != traceParentHdrVal {
+									t.Fatalf("Expected header %q to be %q, got %q", hn, traceParentHdrVal, hv)
 								}
 							}
 							appMsg.Respond(appMsg.Data)
@@ -3438,7 +3519,7 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 	traceDest := "my.trace.subj"
 
 	// Hack to set the trace destination for the global account in order
-	// to make sure that the trcCtx header is disabled when a message
+	// to make sure that the traceParentHdr header is disabled when a message
 	// is stored in JetStream, which will prevent emitting a trace
 	// when such message is retrieved and traverses a route.
 	// Without the account destination set, the trace would not be
@@ -3533,9 +3614,10 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 					if !test.deliverMsg {
 						msg.Header.Set(MsgTraceOnly, "true")
 					}
-					// We add the trcCtx header to make sure that it is deactivated
-					// in addition to the Nats-Trace-Dest header too when needed.
-					msg.Header.Set(trcCtx, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+					// We add the traceParentHdr header to make sure that it
+					// is deactivated in addition to the Nats-Trace-Dest
+					// header too when needed.
+					msg.Header.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
 					msg.Header.Set(JSMsgId, "MyId")
 					msg.Data = payload
 					err = nct.PublishMsg(msg)
@@ -3646,7 +3728,7 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 				msg := nats.NewMsg(mainTest.stream)
 				msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
 				msg.Header.Set(MsgTraceOnly, "true")
-				msg.Header.Set(trcCtx, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+				msg.Header.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
 				msg.Data = []byte("hello")
 				return msg
 			}
@@ -4086,7 +4168,10 @@ func TestMsgTraceHops(t *testing.T) {
 		var e MsgTraceEvent
 		json.Unmarshal(traceMsg.Data, &e)
 
-		hop := e.Request.Header.Get(MsgTraceHop)
+		var hop string
+		if hopVals := e.Request.Header[MsgTraceHop]; len(hopVals) > 0 {
+			hop = hopVals[0]
+		}
 		events[hop] = &e
 	}
 	// Make sure we are not receiving more traces
@@ -4102,7 +4187,11 @@ func TestMsgTraceHops(t *testing.T) {
 		require_Equal[string](t, ingress.Account, "A")
 		require_Equal[string](t, ingress.Subject, "foo")
 		require_Equal[string](t, ingress.Name, name)
-		require_Equal[string](t, e.Request.Header.Get(MsgTraceHop), hop)
+		var hhop string
+		if hopVals := e.Request.Header[MsgTraceHop]; len(hopVals) > 0 {
+			hhop = hopVals[0]
+		}
+		require_Equal[string](t, hhop, hop)
 		return ingress
 	}
 
@@ -4319,21 +4408,35 @@ func TestMsgTraceTriggeredByExternalHeader(t *testing.T) {
 		// to the application.
 		{"only external header sampling",
 			func(h nats.Header) {
-				h.Set(trcCtx, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+				h.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+			},
+			true,
+			false,
+			true},
+		{"only external header with different case and sampling",
+			func(h nats.Header) {
+				h.Set("TraceParent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+			},
+			true,
+			false,
+			true},
+		{"only external header sampling but not simply 01",
+			func(h nats.Header) {
+				h.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-25")
 			},
 			true,
 			false,
 			true},
 		{"only external header no sampling",
 			func(h nats.Header) {
-				h.Set(trcCtx, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00")
+				h.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00")
 			},
 			false,
 			false,
 			false},
 		{"external header sampling and trace only",
 			func(h nats.Header) {
-				h.Set(trcCtx, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+				h.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
 				h.Set(MsgTraceOnly, "true")
 			},
 			true,
@@ -4341,7 +4444,7 @@ func TestMsgTraceTriggeredByExternalHeader(t *testing.T) {
 			true},
 		{"external header no sampling and trace only",
 			func(h nats.Header) {
-				h.Set(trcCtx, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00")
+				h.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00")
 				h.Set(MsgTraceOnly, "true")
 			},
 			false,
@@ -4352,7 +4455,7 @@ func TestMsgTraceTriggeredByExternalHeader(t *testing.T) {
 		{"trace dest and external header sampling",
 			func(h nats.Header) {
 				h.Set(MsgTraceSendTo, traceSub.Subject)
-				h.Set(trcCtx, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+				h.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
 			},
 			true,
 			false,
@@ -4360,7 +4463,7 @@ func TestMsgTraceTriggeredByExternalHeader(t *testing.T) {
 		{"trace dest and external header no sampling",
 			func(h nats.Header) {
 				h.Set(MsgTraceSendTo, traceSub.Subject)
-				h.Set(trcCtx, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00")
+				h.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00")
 			},
 			true,
 			false,
@@ -4369,7 +4472,7 @@ func TestMsgTraceTriggeredByExternalHeader(t *testing.T) {
 			func(h nats.Header) {
 				h.Set(MsgTraceSendTo, traceSub.Subject)
 				h.Set(MsgTraceOnly, "true")
-				h.Set(trcCtx, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+				h.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
 			},
 			true,
 			true,
@@ -4378,7 +4481,7 @@ func TestMsgTraceTriggeredByExternalHeader(t *testing.T) {
 			func(h nats.Header) {
 				h.Set(MsgTraceSendTo, traceSub.Subject)
 				h.Set(MsgTraceOnly, "true")
-				h.Set(trcCtx, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00")
+				h.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00")
 			},
 			true,
 			true,
@@ -4459,7 +4562,7 @@ func TestMsgTraceTriggeredByExternalHeader(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			msg := nats.NewMsg("foo")
-			msg.Header.Set(trcCtx, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+			msg.Header.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
 			msg.Data = []byte("hello")
 			err := nc1.PublishMsg(msg)
 			require_NoError(t, err)
