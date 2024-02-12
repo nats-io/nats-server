@@ -53,6 +53,10 @@ If you are interested in contributing to NATS, read about our...
 
 The NATS product roadmap can be found [here](https://nats.io/about/#roadmap).
 
+## Adopters
+
+Who uses NATS? See our [list of users](https://nats.io/#who-uses-nats) on [https://nats.io](https://nats.io).
+
 ## Security
 
 ### Security Audit

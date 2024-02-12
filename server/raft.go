@@ -154,11 +154,12 @@ type raft struct {
 	llqrt  time.Time   // Last quorum lost time
 	lsut   time.Time   // Last scale-up time
 
-	term    uint64 // The current vote term
-	pterm   uint64 // Previous term from the last snapshot
-	pindex  uint64 // Previous index from the last snapshot
-	commit  uint64 // Sequence number of the most recent commit
-	applied uint64 // Sequence number of the most recently applied commit
+	term     uint64 // The current vote term
+	pterm    uint64 // Previous term from the last snapshot
+	pindex   uint64 // Previous index from the last snapshot
+	commit   uint64 // Sequence number of the most recent commit
+	applied  uint64 // Sequence number of the most recently applied commit
+	hcbehind bool   // Were we falling behind at the last health check? (see: isCurrent)
 
 	leader string // The ID of the leader
 	vote   string // Our current vote state
@@ -1052,7 +1053,11 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	sn := fmt.Sprintf(snapFileT, snap.lastTerm, snap.lastIndex)
 	sfile := filepath.Join(snapDir, sn)
 
-	if err := os.WriteFile(sfile, n.encodeSnapshot(snap), defaultFilePerms); err != nil {
+	<-dios
+	err := os.WriteFile(sfile, n.encodeSnapshot(snap), defaultFilePerms)
+	dios <- struct{}{}
+
+	if err != nil {
 		n.Unlock()
 		// We could set write err here, but if this is a temporary situation, too many open files etc.
 		// we want to retry and snapshots are not fatal.
@@ -1187,7 +1192,11 @@ func (n *raft) loadLastSnapshot() (*snapshot, error) {
 	if n.snapfile == _EMPTY_ {
 		return nil, errNoSnapAvailable
 	}
+
+	<-dios
 	buf, err := os.ReadFile(n.snapfile)
+	dios <- struct{}{}
+
 	if err != nil {
 		n.warn("Error reading snapshot: %v", err)
 		os.Remove(n.snapfile)
@@ -1269,8 +1278,18 @@ func (n *raft) isCurrent(includeForwardProgress bool) bool {
 		return false
 	}
 
+	// If we were previously logging about falling behind, also log when the problem
+	// was cleared.
+	clearBehindState := func() {
+		if n.hcbehind {
+			n.warn("Health check OK, no longer falling behind")
+			n.hcbehind = false
+		}
+	}
+
 	// Make sure we are the leader or we know we have heard from the leader recently.
 	if n.State() == Leader {
+		clearBehindState()
 		return true
 	}
 
@@ -1294,6 +1313,7 @@ func (n *raft) isCurrent(includeForwardProgress bool) bool {
 
 	if n.commit == n.applied {
 		// At this point if we are current, we can return saying so.
+		clearBehindState()
 		return true
 	} else if !includeForwardProgress {
 		// Otherwise, if we aren't allowed to include forward progress
@@ -1311,11 +1331,13 @@ func (n *raft) isCurrent(includeForwardProgress bool) bool {
 			n.Lock()
 			if n.commit-n.applied < startDelta {
 				// The gap is getting smaller, so we're making forward progress.
+				clearBehindState()
 				return true
 			}
 		}
 	}
 
+	n.hcbehind = true
 	n.warn("Falling behind in health check, commit %d != applied %d", n.commit, n.applied)
 	return false
 }
@@ -3678,14 +3700,22 @@ func writePeerState(sd string, ps *peerState) error {
 	if _, err := os.Stat(psf); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if err := os.WriteFile(psf, encodePeerState(ps), defaultFilePerms); err != nil {
+
+	<-dios
+	err := os.WriteFile(psf, encodePeerState(ps), defaultFilePerms)
+	dios <- struct{}{}
+
+	if err != nil {
 		return err
 	}
 	return nil
 }
 
 func readPeerState(sd string) (ps *peerState, err error) {
+	<-dios
 	buf, err := os.ReadFile(filepath.Join(sd, peerStateFile))
+	dios <- struct{}{}
+
 	if err != nil {
 		return nil, err
 	}
@@ -3698,7 +3728,10 @@ const termVoteLen = idLen + 8
 // readTermVote will read the largest term and who we voted from to stable storage.
 // Lock should be held.
 func (n *raft) readTermVote() (term uint64, voted string, err error) {
+	<-dios
 	buf, err := os.ReadFile(filepath.Join(n.sd, termVoteFile))
+	dios <- struct{}{}
+
 	if err != nil {
 		return 0, noVote, err
 	}
@@ -3920,6 +3953,10 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 			n.resetElect(randCampaignTimeout())
 		}
 	}
+
+	// Term might have changed, make sure response has the most current
+	vresp.term = n.term
+
 	n.Unlock()
 
 	n.sendReply(vr.reply, vresp.encode())

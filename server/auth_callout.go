@@ -230,7 +230,6 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 				}
 			}
 		}
-
 		return targetAcc, nil
 	}
 
@@ -242,37 +241,51 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 
 		arc, err := decodeResponse(rc, rmsg, racc)
 		if err != nil {
+			c.authViolation()
 			respCh <- titleCase(err.Error())
 			return
 		}
 		vr := jwt.CreateValidationResults()
 		arc.Validate(vr)
 		if len(vr.Issues) > 0 {
+			c.authViolation()
 			respCh <- fmt.Sprintf("Error validating user JWT: %v", vr.Issues[0])
 			return
 		}
 
 		// Make sure that the user is what we requested.
 		if arc.Subject != pub {
+			c.authViolation()
 			respCh <- fmt.Sprintf("Expected authorized user of %q but got %q on account %q", pub, arc.Subject, racc.Name)
 			return
 		}
 
 		expiration, allowedConnTypes, err := getExpirationAndAllowedConnections(arc, racc.Name)
 		if err != nil {
+			c.authViolation()
 			respCh <- titleCase(err.Error())
 			return
 		}
 
 		targetAcc, err := assignAccountAndPermissions(arc, racc.Name)
 		if err != nil {
+			c.authViolation()
 			respCh <- titleCase(err.Error())
 			return
 		}
 
+		// the JWT is cleared, because if in operator mode it may hold the JWT
+		// for the bearer token that connected to the callout if in operator mode
+		// the permissions are already set on the client, this prevents a decode
+		// on c.RegisterNKeyUser which would have wrong values
+		c.mu.Lock()
+		c.opts.JWT = _EMPTY_
+		c.mu.Unlock()
+
 		// Build internal user and bind to the targeted account.
 		nkuser := buildInternalNkeyUser(arc, allowedConnTypes, targetAcc)
 		if err := c.RegisterNkeyUser(nkuser); err != nil {
+			c.authViolation()
 			respCh <- fmt.Sprintf("Could not register auth callout user: %v", err)
 			return
 		}

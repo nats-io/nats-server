@@ -45,6 +45,7 @@ const (
 	authCalloutSeed       = "SUAP277QP7U4JMFFPVZHLJYEQJ2UHOTYVEIZJYAWRJXQLP4FRSEHYZJJOU"
 	authCalloutIssuer     = "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
 	authCalloutIssuerSeed = "SAANDLKMXL6CUS3CP52WIXBEDN6YJ545GDKC65U5JZPPV6WH6ESWUA6YAI"
+	authCalloutIssuerSK   = "SAAE46BB675HKZKSVJEUZAKKWIV6BJJO6XYE46Z3ZHO7TCI647M3V42IJE"
 )
 
 func serviceResponse(t *testing.T, userID string, serverID string, uJwt string, errMsg string, expires time.Duration) []byte {
@@ -62,12 +63,18 @@ func serviceResponse(t *testing.T, userID string, serverID string, uJwt string, 
 	return []byte(token)
 }
 
-func makeScopedRole(t *testing.T, role string, pub []string, sub []string) (jwt.Scope, nkeys.KeyPair) {
+func newScopedRole(t *testing.T, role string, pub []string, sub []string, allowResponses bool) (*jwt.UserScope, nkeys.KeyPair) {
 	akp, pk := createKey(t)
 	r := jwt.NewUserScope()
 	r.Key = pk
 	r.Template.Sub.Allow.Add(sub...)
 	r.Template.Pub.Allow.Add(pub...)
+	if allowResponses {
+		r.Template.Resp = &jwt.ResponsePermission{
+			MaxMsgs: 1,
+			Expires: time.Second * 3,
+		}
+	}
 	r.Role = role
 	return r, akp
 }
@@ -131,7 +138,7 @@ func NewAuthTest(t *testing.T, config string, authHandler nats.MsgHandler, clien
 	a.srv, _ = RunServerWithConfig(a.conf)
 
 	var err error
-	a.authClient = a.Connect(clientOptions...)
+	a.authClient = a.ConnectCallout(clientOptions...)
 	_, err = a.authClient.Subscribe(AuthCalloutSubject, authHandler)
 	require_NoError(t, err)
 	return a
@@ -144,6 +151,15 @@ func (at *authTest) NewClient(clientOptions ...nats.Option) (*nats.Conn, error) 
 	}
 	at.clients = append(at.clients, conn)
 	return conn, nil
+}
+
+func (at *authTest) ConnectCallout(clientOptions ...nats.Option) *nats.Conn {
+	conn, err := at.NewClient(clientOptions...)
+	if err != nil {
+		err = fmt.Errorf("callout client failed: %w", err)
+	}
+	require_NoError(at.t, err)
+	return conn
 }
 
 func (at *authTest) Connect(clientOptions ...nats.Option) *nats.Conn {
@@ -457,6 +473,7 @@ func createAuthServiceUser(t *testing.T, accKp nkeys.KeyPair) (pub, creds string
 	seed, _ := ukp.Seed()
 	upub, _ := ukp.PublicKey()
 	uclaim := newJWTTestUserClaims()
+	uclaim.Name = "auth-service"
 	uclaim.Subject = upub
 	vr := jwt.ValidationResults{}
 	uclaim.Validate(&vr)
@@ -473,6 +490,7 @@ func createBasicAccountUser(t *testing.T, accKp nkeys.KeyPair) (creds string) {
 	upub, _ := ukp.PublicKey()
 	uclaim := newJWTTestUserClaims()
 	uclaim.Subject = upub
+	uclaim.Name = "auth-client"
 	// For these deny all permission
 	uclaim.Permissions.Pub.Deny.Add(">")
 	uclaim.Permissions.Sub.Deny.Add(">")
@@ -480,6 +498,28 @@ func createBasicAccountUser(t *testing.T, accKp nkeys.KeyPair) (creds string) {
 	uclaim.Validate(&vr)
 	require_Len(t, len(vr.Errors()), 0)
 	ujwt, err := uclaim.Encode(accKp)
+	require_NoError(t, err)
+	return genCredsFile(t, ujwt, seed)
+}
+
+func createScopedUser(t *testing.T, accKp nkeys.KeyPair, sk nkeys.KeyPair) (creds string) {
+	t.Helper()
+	ukp, _ := nkeys.CreateUser()
+	seed, _ := ukp.Seed()
+	upub, _ := ukp.PublicKey()
+	uclaim := newJWTTestUserClaims()
+	apk, _ := accKp.PublicKey()
+	uclaim.IssuerAccount = apk
+	uclaim.Subject = upub
+	uclaim.Name = "scoped-user"
+	uclaim.SetScoped(true)
+
+	// Uncomment this to set the sub limits
+	// uclaim.Limits.Subs = 0
+	vr := jwt.ValidationResults{}
+	uclaim.Validate(&vr)
+	require_Len(t, len(vr.Errors()), 0)
+	ujwt, err := uclaim.Encode(sk)
 	require_NoError(t, err)
 	return genCredsFile(t, ujwt, seed)
 }
@@ -516,7 +556,7 @@ func TestAuthCalloutOperatorModeBasics(t *testing.T) {
 	accClaim := jwt.NewAccountClaims(tpub)
 	accClaim.Name = "TEST"
 	accClaim.SigningKeys.Add(tSigningPub)
-	scope, scopedKp := makeScopedRole(t, "foo", []string{"foo.>", "$SYS.REQ.USER.INFO"}, []string{"foo.>", "_INBOX.>"})
+	scope, scopedKp := newScopedRole(t, "foo", []string{"foo.>", "$SYS.REQ.USER.INFO"}, []string{"foo.>", "_INBOX.>"}, false)
 	accClaim.SigningKeys.AddScopedSigner(scope)
 	accJwt, err := accClaim.Encode(oKp)
 	require_NoError(t, err)
@@ -672,6 +712,152 @@ func TestAuthCalloutOperatorModeBasics(t *testing.T) {
 	sort.Strings(userInfo.Permissions.Subscribe.Allow)
 	require_True(t, len(userInfo.Permissions.Subscribe.Allow) == 2)
 	require_Equal(t, "foo.>", userInfo.Permissions.Subscribe.Allow[1])
+}
+
+func testAuthCalloutScopedUser(t *testing.T, allowAnyAccount bool) {
+	_, spub := createKey(t)
+	sysClaim := jwt.NewAccountClaims(spub)
+	sysClaim.Name = "$SYS"
+	sysJwt, err := sysClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// TEST account.
+	_, tpub := createKey(t)
+	_, tSigningPub := createKey(t)
+	accClaim := jwt.NewAccountClaims(tpub)
+	accClaim.Name = "TEST"
+	accClaim.SigningKeys.Add(tSigningPub)
+	scope, scopedKp := newScopedRole(t, "foo", []string{"foo.>", "$SYS.REQ.USER.INFO"}, []string{"foo.>", "_INBOX.>"}, true)
+	scope.Template.Limits.Subs = 10
+	scope.Template.Limits.Payload = 512
+	accClaim.SigningKeys.AddScopedSigner(scope)
+	accJwt, err := accClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// AUTH service account.
+	akp, err := nkeys.FromSeed([]byte(authCalloutIssuerSeed))
+	require_NoError(t, err)
+
+	apub, err := akp.PublicKey()
+	require_NoError(t, err)
+
+	// The authorized user for the service.
+	upub, creds := createAuthServiceUser(t, akp)
+	defer removeFile(t, creds)
+
+	authClaim := jwt.NewAccountClaims(apub)
+	authClaim.Name = "AUTH"
+	authClaim.EnableExternalAuthorization(upub)
+	if allowAnyAccount {
+		authClaim.Authorization.AllowedAccounts.Add("*")
+	} else {
+		authClaim.Authorization.AllowedAccounts.Add(tpub)
+	}
+	// the scope for the bearer token which has no permissions
+	sentinelScope, authKP := newScopedRole(t, "sentinel", nil, nil, false)
+	sentinelScope.Template.Sub.Deny.Add(">")
+	sentinelScope.Template.Pub.Deny.Add(">")
+	sentinelScope.Template.Limits.Subs = 0
+	sentinelScope.Template.Payload = 0
+	authClaim.SigningKeys.AddScopedSigner(sentinelScope)
+
+	authJwt, err := authClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	conf := fmt.Sprintf(`
+        listen: 127.0.0.1:-1
+        operator: %s
+        system_account: %s
+        resolver: MEM
+        resolver_preload: {
+            %s: %s
+            %s: %s
+            %s: %s
+        }
+    `, ojwt, spub, apub, authJwt, tpub, accJwt, spub, sysJwt)
+
+	const scopedToken = "--Scoped--"
+	handler := func(m *nats.Msg) {
+		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
+		if opts.Token == scopedToken {
+			// must have no limits set
+			ujwt := createAuthUser(t, user, "scoped", tpub, tpub, scopedKp, 0, &jwt.UserPermissionLimits{})
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+		} else {
+			m.Respond(nil)
+		}
+	}
+
+	ac := NewAuthTest(t, conf, handler, nats.UserCredentials(creds))
+	defer ac.Cleanup()
+	resp, err := ac.authClient.Request(userDirectInfoSubj, nil, time.Second)
+	require_NoError(t, err)
+	response := ServerAPIResponse{Data: &UserInfo{}}
+	err = json.Unmarshal(resp.Data, &response)
+	require_NoError(t, err)
+
+	userInfo := response.Data.(*UserInfo)
+	expected := &UserInfo{
+		UserID:  upub,
+		Account: apub,
+		Permissions: &Permissions{
+			Publish: &SubjectPermission{
+				Deny: []string{AuthCalloutSubject}, // Will be auto-added since in auth account.
+			},
+			Subscribe: &SubjectPermission{},
+		},
+	}
+	if !reflect.DeepEqual(expected, userInfo) {
+		t.Fatalf("User info did not match expected, expected auto-deny permissions on callout subject")
+	}
+
+	// Bearer token - this has no permissions see sentinelScope
+	// This is used by all users, and the customization will be in other connect args.
+	// This needs to also be bound to the authorization account.
+	creds = createScopedUser(t, akp, authKP)
+	defer removeFile(t, creds)
+
+	// Send the signing key token. This should switch us to the test account, but the user
+	// is signed with the account signing key
+	nc := ac.Connect(nats.UserCredentials(creds), nats.Token(scopedToken))
+
+	resp, err = nc.Request(userDirectInfoSubj, nil, time.Second)
+	require_NoError(t, err)
+	response = ServerAPIResponse{Data: &UserInfo{}}
+	err = json.Unmarshal(resp.Data, &response)
+	require_NoError(t, err)
+
+	userInfo = response.Data.(*UserInfo)
+	if userInfo.Account != tpub {
+		t.Fatalf("Expected to be switched to %q, but got %q", tpub, userInfo.Account)
+	}
+	require_True(t, len(userInfo.Permissions.Publish.Allow) == 2)
+	sort.Strings(userInfo.Permissions.Publish.Allow)
+	require_Equal(t, "foo.>", userInfo.Permissions.Publish.Allow[1])
+	sort.Strings(userInfo.Permissions.Subscribe.Allow)
+	require_True(t, len(userInfo.Permissions.Subscribe.Allow) == 2)
+	require_Equal(t, "foo.>", userInfo.Permissions.Subscribe.Allow[1])
+
+	_, err = nc.Subscribe("foo.>", func(msg *nats.Msg) {
+		t.Log("got request on foo.>")
+		require_NoError(t, msg.Respond(nil))
+	})
+	require_NoError(t, err)
+
+	m, err := nc.Request("foo.bar", nil, time.Second)
+	require_NoError(t, err)
+	require_NotNil(t, m)
+	t.Log("go response from foo.bar")
+
+	nc.Close()
+}
+
+func TestAuthCalloutScopedUserAssignedAccount(t *testing.T) {
+	testAuthCalloutScopedUser(t, false)
+}
+
+func TestAuthCalloutScopedUserAllAccount(t *testing.T) {
+	testAuthCalloutScopedUser(t, true)
 }
 
 const (
@@ -1525,4 +1711,119 @@ func TestAuthCalloutWSClientTLSCerts(t *testing.T) {
 
 	require_Equal(t, userInfo.UserID, "dlc")
 	require_Equal(t, userInfo.Account, "FOO")
+}
+
+func testConfClientClose(t *testing.T, respondNil bool) {
+	conf := `
+		listen: "127.0.0.1:-1"
+		server_name: ZZ
+		accounts {
+            AUTH { users [ {user: "auth", password: "pwd"} ] }
+		}
+		authorization {
+			timeout: 1s
+			auth_callout {
+				# Needs to be a public account nkey, will work for both server config and operator mode.
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				account: AUTH
+				auth_users: [ auth ]
+			}
+		}
+	`
+	handler := func(m *nats.Msg) {
+		user, si, _, _, _ := decodeAuthRequest(t, m.Data)
+		if respondNil {
+			m.Respond(nil)
+		} else {
+			m.Respond(serviceResponse(t, user, si.ID, "", "not today", 0))
+		}
+	}
+
+	at := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer at.Cleanup()
+
+	// This one will use callout since not defined in server config.
+	_, err := at.NewClient(nats.UserInfo("a", "x"))
+	require_Error(t, err)
+	require_True(t, strings.Contains(strings.ToLower(err.Error()), nats.AUTHORIZATION_ERR))
+}
+
+func TestAuthCallout_ClientAuthErrorConf(t *testing.T) {
+	testConfClientClose(t, true)
+	testConfClientClose(t, false)
+}
+
+func testAuthCall_ClientAuthErrorOperatorMode(t *testing.T, respondNil bool) {
+	_, spub := createKey(t)
+	sysClaim := jwt.NewAccountClaims(spub)
+	sysClaim.Name = "$SYS"
+	sysJwt, err := sysClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// AUTH service account.
+	akp, err := nkeys.FromSeed([]byte(authCalloutIssuerSeed))
+	require_NoError(t, err)
+
+	apub, err := akp.PublicKey()
+	require_NoError(t, err)
+
+	// The authorized user for the service.
+	upub, creds := createAuthServiceUser(t, akp)
+	defer removeFile(t, creds)
+
+	authClaim := jwt.NewAccountClaims(apub)
+	authClaim.Name = "AUTH"
+	authClaim.EnableExternalAuthorization(upub)
+	authClaim.Authorization.AllowedAccounts.Add("*")
+
+	// the scope for the bearer token which has no permissions
+	sentinelScope, authKP := newScopedRole(t, "sentinel", nil, nil, false)
+	sentinelScope.Template.Sub.Deny.Add(">")
+	sentinelScope.Template.Pub.Deny.Add(">")
+	sentinelScope.Template.Limits.Subs = 0
+	sentinelScope.Template.Payload = 0
+	authClaim.SigningKeys.AddScopedSigner(sentinelScope)
+
+	authJwt, err := authClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	conf := fmt.Sprintf(`
+        listen: 127.0.0.1:-1
+        operator: %s
+        system_account: %s
+        resolver: MEM
+        resolver_preload: {
+            %s: %s
+            %s: %s
+        }
+    `, ojwt, spub, apub, authJwt, spub, sysJwt)
+
+	handler := func(m *nats.Msg) {
+		user, si, _, _, _ := decodeAuthRequest(t, m.Data)
+		if respondNil {
+			m.Respond(nil)
+		} else {
+			m.Respond(serviceResponse(t, user, si.ID, "", "not today", 0))
+		}
+	}
+
+	ac := NewAuthTest(t, conf, handler, nats.UserCredentials(creds))
+	defer ac.Cleanup()
+
+	// Bearer token - this has no permissions see sentinelScope
+	// This is used by all users, and the customization will be in other connect args.
+	// This needs to also be bound to the authorization account.
+	creds = createScopedUser(t, akp, authKP)
+	defer removeFile(t, creds)
+
+	// Send the signing key token. This should switch us to the test account, but the user
+	// is signed with the account signing key
+	_, err = ac.NewClient(nats.UserCredentials(creds))
+	require_Error(t, err)
+	require_True(t, strings.Contains(strings.ToLower(err.Error()), nats.AUTHORIZATION_ERR))
+}
+
+func TestAuthCallout_ClientAuthErrorOperatorMode(t *testing.T) {
+	testAuthCall_ClientAuthErrorOperatorMode(t, true)
+	testAuthCall_ClientAuthErrorOperatorMode(t, false)
 }

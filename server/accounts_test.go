@@ -622,6 +622,13 @@ func TestAccountParseConfigImportsExports(t *testing.T) {
 	if lis := len(natsAcc.imports.streams); lis != 2 {
 		t.Fatalf("Expected 2 imported streams, got %d\n", lis)
 	}
+	for _, si := range natsAcc.imports.streams {
+		if si.from == "public.synadia" {
+			require_True(t, si.atrc)
+		} else {
+			require_False(t, si.atrc)
+		}
+	}
 	if lis := len(natsAcc.imports.services); lis != 1 {
 		t.Fatalf("Expected 1 imported service, got %d\n", lis)
 	}
@@ -639,6 +646,7 @@ func TestAccountParseConfigImportsExports(t *testing.T) {
 	if ea.respType != Streamed {
 		t.Fatalf("Expected to get a Streamed response type, got %q", ea.respType)
 	}
+	require_True(t, ea.atrc)
 	ea = natsAcc.exports.services["nats.photo"]
 	if ea == nil {
 		t.Fatalf("Expected to get a non-nil exportAuth for service")
@@ -646,6 +654,7 @@ func TestAccountParseConfigImportsExports(t *testing.T) {
 	if ea.respType != Chunked {
 		t.Fatalf("Expected to get a Chunked response type, got %q", ea.respType)
 	}
+	require_False(t, ea.atrc)
 	ea = natsAcc.exports.services["nats.add"]
 	if ea == nil {
 		t.Fatalf("Expected to get a non-nil exportAuth for service")
@@ -653,6 +662,7 @@ func TestAccountParseConfigImportsExports(t *testing.T) {
 	if ea.respType != Singleton {
 		t.Fatalf("Expected to get a Singleton response type, got %q", ea.respType)
 	}
+	require_True(t, ea.atrc)
 
 	if synAcc == nil {
 		t.Fatalf("Error retrieving account for 'synadia'")

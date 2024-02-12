@@ -10631,8 +10631,14 @@ func TestJetStreamAccountImportJSAdvisoriesAsService(t *testing.T) {
 	gotEvents = map[string]int{}
 	for i := 0; i < 2; i++ {
 		msg, err := subAgg.NextMsg(time.Second * 2)
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
+		require_NoError(t, err)
+		var adv JSAPIAudit
+		require_NoError(t, json.Unmarshal(msg.Data, &adv))
+		// Make sure we have full fidelity info via implicit share.
+		if adv.Client != nil {
+			require_True(t, adv.Client.Host != _EMPTY_)
+			require_True(t, adv.Client.User != _EMPTY_)
+			require_True(t, adv.Client.Lang != _EMPTY_)
 		}
 		gotEvents[msg.Subject]++
 	}
@@ -22147,10 +22153,11 @@ func TestJetStreamDirectGetBatch(t *testing.T) {
 	}
 
 	// Batch sizes greater than 1 will have a nil message as the end marker.
-	checkResponses := func(sub *nats.Subscription, numPending int, expected ...string) {
+	checkResponses := func(sub *nats.Subscription, numPendingStart int, expected ...string) {
 		t.Helper()
 		defer sub.Unsubscribe()
 		checkSubsPending(t, sub, len(expected))
+		np := numPendingStart
 		for i := 0; i < len(expected); i++ {
 			msg, err := sub.NextMsg(10 * time.Millisecond)
 			require_NoError(t, err)
@@ -22160,6 +22167,10 @@ func TestJetStreamDirectGetBatch(t *testing.T) {
 				require_Equal(t, expected[i], msg.Header.Get("Nats-Subject"))
 				// Should have Data field non-zero
 				require_True(t, len(msg.Data) > 0)
+				// Check we have NumPending and its correct.
+				require_Equal(t, strconv.Itoa(np), msg.Header.Get("Nats-Pending-Messages"))
+				np--
+
 			} else {
 				// Check for properly formatted EOB marker.
 				// Should have no body.
@@ -22169,28 +22180,28 @@ func TestJetStreamDirectGetBatch(t *testing.T) {
 				// Check description is EOB
 				require_Equal(t, msg.Header.Get("Description"), "EOB")
 				// Check we have NumPending and its correct.
-				require_Equal(t, strconv.Itoa(numPending), msg.Header.Get("Nats-Pending-Messages"))
+				require_Equal(t, strconv.Itoa(np), msg.Header.Get("Nats-Pending-Messages"))
 			}
 		}
 	}
 
 	// Run some simple tests.
 	sub := sendRequest(&JSApiMsgGetRequest{Seq: 1, Batch: 2})
-	checkResponses(sub, 997, "foo.foo", "foo.bar", _EMPTY_)
+	checkResponses(sub, 999, "foo.foo", "foo.bar", _EMPTY_)
 
 	sub = sendRequest(&JSApiMsgGetRequest{Seq: 1, Batch: 3})
-	checkResponses(sub, 996, "foo.foo", "foo.bar", "foo.baz", _EMPTY_)
+	checkResponses(sub, 999, "foo.foo", "foo.bar", "foo.baz", _EMPTY_)
 
 	// Test NextFor works
 	sub = sendRequest(&JSApiMsgGetRequest{Seq: 1, Batch: 3, NextFor: "foo.*"})
-	checkResponses(sub, 996, "foo.foo", "foo.bar", "foo.baz", _EMPTY_)
+	checkResponses(sub, 999, "foo.foo", "foo.bar", "foo.baz", _EMPTY_)
 
 	sub = sendRequest(&JSApiMsgGetRequest{Seq: 1, Batch: 3, NextFor: "foo.baz"})
-	checkResponses(sub, 330, "foo.baz", "foo.baz", "foo.baz", _EMPTY_)
+	checkResponses(sub, 333, "foo.baz", "foo.baz", "foo.baz", _EMPTY_)
 
 	// Test stopping early by starting at 997 with only 3 messages.
 	sub = sendRequest(&JSApiMsgGetRequest{Seq: 997, Batch: 10, NextFor: "foo.*"})
-	checkResponses(sub, 0, "foo.foo", "foo.bar", "foo.baz", _EMPTY_)
+	checkResponses(sub, 3, "foo.foo", "foo.bar", "foo.baz", _EMPTY_)
 }
 
 func TestJetStreamDirectGetBatchMaxBytes(t *testing.T) {
@@ -22246,4 +22257,71 @@ func TestJetStreamDirectGetBatchMaxBytes(t *testing.T) {
 	// Now test no MaxBytes to inherit server max_num_pending.
 	expected := (int(s.getOpts().MaxPending) / msgSize) + 1
 	sendRequestAndCheck(&JSApiMsgGetRequest{Seq: 1, Batch: 200}, expected+1)
+}
+
+func TestJetStreamConsumerNakThenAckFloorMove(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 11; i++ {
+		js.Publish("foo", []byte("OK"))
+	}
+
+	sub, err := js.PullSubscribe("foo", "dlc", nats.AckWait(100*time.Millisecond))
+	require_NoError(t, err)
+
+	msgs, err := sub.Fetch(11)
+	require_NoError(t, err)
+
+	// Nak first one
+	msgs[0].Nak()
+
+	// Ack 2-10
+	for i := 1; i < 10; i++ {
+		msgs[i].AckSync()
+	}
+	// Hold onto last.
+	lastMsg := msgs[10]
+
+	ci, err := sub.ConsumerInfo()
+	require_NoError(t, err)
+
+	require_Equal(t, ci.AckFloor.Consumer, 0)
+	require_Equal(t, ci.AckFloor.Stream, 0)
+	require_Equal(t, ci.NumAckPending, 2)
+
+	// Grab first messsage again and ack this time.
+	msgs, err = sub.Fetch(1)
+	require_NoError(t, err)
+	msgs[0].AckSync()
+
+	ci, err = sub.ConsumerInfo()
+	require_NoError(t, err)
+
+	require_Equal(t, ci.Delivered.Consumer, 12)
+	require_Equal(t, ci.Delivered.Stream, 11)
+	require_Equal(t, ci.AckFloor.Consumer, 10)
+	require_Equal(t, ci.AckFloor.Stream, 10)
+	require_Equal(t, ci.NumAckPending, 1)
+
+	// Make sure when we ack last one we collapse the AckFloor.Consumer
+	// with the higher delivered due to re-deliveries.
+	lastMsg.AckSync()
+	ci, err = sub.ConsumerInfo()
+	require_NoError(t, err)
+
+	require_Equal(t, ci.Delivered.Consumer, 12)
+	require_Equal(t, ci.Delivered.Stream, 11)
+	require_Equal(t, ci.AckFloor.Consumer, 12)
+	require_Equal(t, ci.AckFloor.Stream, 11)
+	require_Equal(t, ci.NumAckPending, 0)
 }

@@ -1345,6 +1345,76 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  25,
 		},
 		{
+			name: "when setting allow_trace on a stream export (after)",
+			config: `
+                system_account = sys
+                accounts {
+                  sys { users = [ {user: sys, pass: "" } ] }
+
+                  nats.io: {
+                    users = [ { user : bar, pass: "" } ]
+                    exports = [ { stream: "nats.add", allow_trace: true } ]
+                  }
+                }
+                `,
+			err:       errors.New(`Detected allow_trace directive on non-service`),
+			errorLine: 8,
+			errorPos:  55,
+		},
+		{
+			name: "when setting allow_trace on a stream export (before)",
+			config: `
+                system_account = sys
+                accounts {
+                  sys { users = [ {user: sys, pass: "" } ] }
+
+                  nats.io: {
+                    users = [ { user : bar, pass: "" } ]
+                    exports = [ { allow_trace: true, stream: "nats.add" } ]
+                  }
+                }
+                `,
+			err:       errors.New(`Detected allow_trace directive on non-service`),
+			errorLine: 8,
+			errorPos:  35,
+		},
+		{
+			name: "when setting allow_trace on a service import (after)",
+			config: `
+                accounts {
+                  A: {
+                    users = [ {user: user1, pass: ""} ]
+                    exports = [{service: "foo"}]
+                  }
+                  B: {
+                    users = [ {user: user2, pass: ""} ]
+                    imports = [ { service: {account: "A", subject: "foo"}, allow_trace: true } ]
+                  }
+                }
+                `,
+			err:       errors.New(`Detected allow_trace directive on a non-stream`),
+			errorLine: 9,
+			errorPos:  76,
+		},
+		{
+			name: "when setting allow_trace on a service import (before)",
+			config: `
+                accounts {
+                  A: {
+                    users = [ {user: user1, pass: ""} ]
+                    exports = [{service: "foo"}]
+                  }
+                  B: {
+                    users = [ {user: user2, pass: ""} ]
+                    imports = [ { allow_trace: true, service: {account: "A", subject: "foo"} } ]
+                  }
+                }
+                `,
+			err:       errors.New(`Detected allow_trace directive on a non-stream`),
+			errorLine: 9,
+			errorPos:  35,
+		},
+		{
 			name: "when using duplicate service import subject",
 			config: `
 								accounts {
@@ -1580,7 +1650,7 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  6,
 		},
 		{
-			name: "wrong type for cluter pool size",
+			name: "wrong type for cluster pool size",
 			config: `
 				cluster {
 					port: -1
@@ -1592,7 +1662,7 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  6,
 		},
 		{
-			name: "wrong type for cluter accounts",
+			name: "wrong type for cluster accounts",
 			config: `
 				cluster {
 					port: -1
@@ -1604,7 +1674,7 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  6,
 		},
 		{
-			name: "wrong type for cluter compression",
+			name: "wrong type for cluster compression",
 			config: `
 				cluster {
 					port: -1
@@ -1616,7 +1686,7 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  6,
 		},
 		{
-			name: "wrong type for cluter compression mode",
+			name: "wrong type for cluster compression mode",
 			config: `
 				cluster {
 					port: -1
@@ -1630,7 +1700,7 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  7,
 		},
 		{
-			name: "wrong type for cluter compression rtt thresholds",
+			name: "wrong type for cluster compression rtt thresholds",
 			config: `
 				cluster {
 					port: -1
@@ -1645,7 +1715,7 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  7,
 		},
 		{
-			name: "invalid durations for cluter compression rtt thresholds",
+			name: "invalid durations for cluster compression rtt thresholds",
 			config: `
 				cluster {
 					port: -1
@@ -1658,6 +1728,32 @@ func TestConfigCheck(t *testing.T) {
 			err:       fmt.Errorf("time: invalid duration %q", "abc"),
 			errorLine: 6,
 			errorPos:  7,
+		},
+		{
+			name: "invalid durations for cluster ping interval",
+			config: `
+				cluster {
+					port: -1
+					ping_interval: -1
+					ping_max: 6
+				}
+			`,
+			err:       fmt.Errorf(`invalid use of field "ping_interval": ping_interval should be converted to a duration`),
+			errorLine: 4,
+			errorPos:  6,
+		},
+		{
+			name: "invalid durations for cluster ping interval",
+			config: `
+				cluster {
+					port: -1
+					ping_interval: '2m'
+					ping_max: 6
+				}
+			`,
+			warningErr: fmt.Errorf(`Cluster 'ping_interval' will reset to 30s which is the max for routes`),
+			errorLine:  4,
+			errorPos:   6,
 		},
 		{
 			name: "wrong type for leafnodes compression",

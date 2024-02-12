@@ -277,6 +277,9 @@ const (
 	// JSAdvisoryStreamRestoreCompletePre notification that a restore was completed.
 	JSAdvisoryStreamRestoreCompletePre = "$JS.EVENT.ADVISORY.STREAM.RESTORE_COMPLETE"
 
+	// JSAdvisoryDomainLeaderElectedPre notification that a jetstream domain has elected a leader.
+	JSAdvisoryDomainLeaderElected = "$JS.EVENT.ADVISORY.DOMAIN.LEADER_ELECTED"
+
 	// JSAdvisoryStreamLeaderElectedPre notification that a replicated stream has elected a leader.
 	JSAdvisoryStreamLeaderElectedPre = "$JS.EVENT.ADVISORY.STREAM.LEADER_ELECTED"
 

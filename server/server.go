@@ -58,6 +58,49 @@ const (
 	firstClientPingInterval = 2 * time.Second
 )
 
+// These are protocol versions sent between server connections: ROUTER, LEAF and
+// GATEWAY. We may have protocol versions that have a meaning only for a certain
+// type of connections, but we don't have to have separate enums for that.
+// However, it is CRITICAL to not change the order of those constants since they
+// are exchanged between servers. When adding a new protocol version, add to the
+// end of the list, don't try to group them by connection types.
+const (
+	// RouteProtoZero is the original Route protocol from 2009.
+	// http://nats.io/documentation/internals/nats-protocol/
+	RouteProtoZero = iota
+	// RouteProtoInfo signals a route can receive more then the original INFO block.
+	// This can be used to update remote cluster permissions, etc...
+	RouteProtoInfo
+	// RouteProtoV2 is the new route/cluster protocol that provides account support.
+	RouteProtoV2
+	// MsgTraceProto indicates that this server understands distributed message tracing.
+	MsgTraceProto
+)
+
+// Will return the latest server-to-server protocol versions, unless the
+// option to override it is set.
+func (s *Server) getServerProto() int {
+	opts := s.getOpts()
+	// Initialize with the latest protocol version.
+	proto := MsgTraceProto
+	// For tests, we want to be able to make this server behave
+	// as an older server so check this option to see if we should override.
+	if opts.overrideProto < 0 {
+		// The option overrideProto is set to 0 by default (when creating an
+		// Options structure). Since this is the same value than the original
+		// proto RouteProtoZero, tests call setServerProtoForTest() with the
+		// desired protocol level, which sets it as negative value equal to:
+		// (wantedProto + 1) * -1. Here we compute back the real value.
+		proto = (opts.overrideProto * -1) - 1
+	}
+	return proto
+}
+
+// Used by tests.
+func setServerProtoForTest(wantedProto int) int {
+	return (wantedProto + 1) * -1
+}
+
 // Info is the information sent to clients, routes, gateways, and leaf nodes,
 // to help them understand information about this server.
 type Info struct {

@@ -80,6 +80,8 @@ type ClusterOpts struct {
 	PoolSize          int               `json:"-"`
 	PinnedAccounts    []string          `json:"-"`
 	Compression       CompressionOpts   `json:"-"`
+	PingInterval      time.Duration     `json:"-"`
+	MaxPingsOut       int               `json:"-"`
 
 	// Not exported (used in tests)
 	resolver netResolver
@@ -400,7 +402,7 @@ type Options struct {
 
 	// private fields, used for testing
 	gatewaysSolicitDelay time.Duration
-	routeProto           int
+	overrideProto        int
 
 	// JetStream
 	maxMemSet   bool
@@ -1755,6 +1757,13 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 				*errors = append(*errors, err)
 				continue
 			}
+		case "ping_interval":
+			opts.Cluster.PingInterval = parseDuration("ping_interval", tk, mv, errors, warnings)
+			if opts.Cluster.PingInterval > routeMaxPingInterval {
+				*warnings = append(*warnings, &configErr{tk, fmt.Sprintf("Cluster 'ping_interval' will reset to %v which is the max for routes", routeMaxPingInterval)})
+			}
+		case "ping_max":
+			opts.Cluster.MaxPingsOut = int(mv.(int64))
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
@@ -2700,14 +2709,16 @@ type export struct {
 	lat  *serviceLatency
 	rthr time.Duration
 	tPos uint
+	atrc bool // allow_trace
 }
 
 type importStream struct {
-	acc *Account
-	an  string
-	sub string
-	to  string
-	pre string
+	acc  *Account
+	an   string
+	sub  string
+	to   string
+	pre  string
+	atrc bool // allow_trace
 }
 
 type importService struct {
@@ -3138,6 +3149,14 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 				continue
 			}
 		}
+
+		if service.atrc {
+			if err := service.acc.SetServiceExportAllowTrace(service.sub, true); err != nil {
+				msg := fmt.Sprintf("Error adding allow_trace for %q: %v", service.sub, err)
+				*errors = append(*errors, &configErr{tk, msg})
+				continue
+			}
+		}
 	}
 	for _, stream := range importStreams {
 		ta := am[stream.an]
@@ -3147,13 +3166,13 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 			continue
 		}
 		if stream.pre != _EMPTY_ {
-			if err := stream.acc.AddStreamImport(ta, stream.sub, stream.pre); err != nil {
+			if err := stream.acc.addStreamImportWithClaim(ta, stream.sub, stream.pre, stream.atrc, nil); err != nil {
 				msg := fmt.Sprintf("Error adding stream import %q: %v", stream.sub, err)
 				*errors = append(*errors, &configErr{tk, msg})
 				continue
 			}
 		} else {
-			if err := stream.acc.AddMappedStreamImport(ta, stream.sub, stream.to); err != nil {
+			if err := stream.acc.addMappedStreamImportWithClaim(ta, stream.sub, stream.to, stream.atrc, nil); err != nil {
 				msg := fmt.Sprintf("Error adding stream import %q: %v", stream.sub, err)
 				*errors = append(*errors, &configErr{tk, msg})
 				continue
@@ -3311,6 +3330,9 @@ func parseExportStreamOrService(v interface{}, errors, warnings *[]error) (*expo
 		latToken   token
 		lt         token
 		accTokPos  uint
+		atrc       bool
+		atrcSeen   bool
+		atrcToken  token
 	)
 	defer convertPanicToErrorList(&lt, errors)
 
@@ -3335,6 +3357,11 @@ func parseExportStreamOrService(v interface{}, errors, warnings *[]error) (*expo
 			}
 			if latToken != nil {
 				err := &configErr{latToken, "Detected latency directive on non-service"}
+				*errors = append(*errors, err)
+				continue
+			}
+			if atrcToken != nil {
+				err := &configErr{atrcToken, "Detected allow_trace directive on non-service"}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -3372,6 +3399,9 @@ func parseExportStreamOrService(v interface{}, errors, warnings *[]error) (*expo
 			}
 			if threshSeen {
 				curService.rthr = thresh
+			}
+			if atrcSeen {
+				curService.atrc = atrc
 			}
 		case "response", "response_type":
 			if rtSeen {
@@ -3461,6 +3491,18 @@ func parseExportStreamOrService(v interface{}, errors, warnings *[]error) (*expo
 			}
 		case "account_token_position":
 			accTokPos = uint(mv.(int64))
+		case "allow_trace":
+			atrcSeen = true
+			atrcToken = tk
+			atrc = mv.(bool)
+			if curStream != nil {
+				*errors = append(*errors,
+					&configErr{tk, "Detected allow_trace directive on non-service"})
+				continue
+			}
+			if curService != nil {
+				curService.atrc = atrc
+			}
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
@@ -3571,6 +3613,9 @@ func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*impo
 		pre, to    string
 		share      bool
 		lt         token
+		atrc       bool
+		atrcSeen   bool
+		atrcToken  token
 	)
 	defer convertPanicToErrorList(&lt, errors)
 
@@ -3612,9 +3657,17 @@ func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*impo
 			if pre != _EMPTY_ {
 				curStream.pre = pre
 			}
+			if atrcSeen {
+				curStream.atrc = atrc
+			}
 		case "service":
 			if curStream != nil {
 				err := &configErr{tk, "Detected service but already saw a stream"}
+				*errors = append(*errors, err)
+				continue
+			}
+			if atrcToken != nil {
+				err := &configErr{atrcToken, "Detected allow_trace directive on a non-stream"}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -3664,6 +3717,18 @@ func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*impo
 			share = mv.(bool)
 			if curService != nil {
 				curService.share = share
+			}
+		case "allow_trace":
+			if curService != nil {
+				err := &configErr{tk, "Detected allow_trace directive on a non-stream"}
+				*errors = append(*errors, err)
+				continue
+			}
+			atrcSeen = true
+			atrc = mv.(bool)
+			atrcToken = tk
+			if curStream != nil {
+				curStream.atrc = atrc
 			}
 		default:
 			if !tk.IsUsedVariable() {

@@ -9390,3 +9390,212 @@ func TestNoRaceJetStreamClusterStreamCatchupLargeInteriorDeletes(t *testing.T) {
 		return fmt.Errorf("Msgs not equal %d vs %d", state.Msgs, si.State.Msgs)
 	})
 }
+
+func TestNoRaceJetStreamClusterBadRestartsWithHealthzPolling(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.>"},
+		Replicas: 3,
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	// We will poll healthz at a decent clip and make sure any restart logic works
+	// correctly with assets coming and going.
+	ch := make(chan struct{})
+	defer close(ch)
+
+	go func() {
+		for {
+			select {
+			case <-ch:
+				return
+			case <-time.After(50 * time.Millisecond):
+				for _, s := range c.servers {
+					s.healthz(nil)
+				}
+			}
+		}
+	}()
+
+	numConsumers := 500
+	consumers := make([]string, 0, numConsumers)
+
+	var wg sync.WaitGroup
+
+	for i := 0; i < numConsumers; i++ {
+		cname := fmt.Sprintf("CONS-%d", i+1)
+		consumers = append(consumers, cname)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := js.PullSubscribe("foo.>", cname, nats.BindStream("TEST"))
+			require_NoError(t, err)
+		}()
+	}
+	wg.Wait()
+
+	// Make sure all are reported.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			jsz, _ := s.Jsz(nil)
+			if jsz.Consumers != numConsumers {
+				return fmt.Errorf("%v wrong number of consumers: %d vs %d", s, jsz.Consumers, numConsumers)
+			}
+		}
+		return nil
+	})
+
+	// Now do same for streams.
+	numStreams := 200
+	streams := make([]string, 0, numStreams)
+
+	for i := 0; i < numStreams; i++ {
+		sname := fmt.Sprintf("TEST-%d", i+1)
+		streams = append(streams, sname)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := js.AddStream(&nats.StreamConfig{Name: sname, Replicas: 3})
+			require_NoError(t, err)
+		}()
+	}
+	wg.Wait()
+
+	// Make sure all are reported.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			jsz, _ := s.Jsz(nil)
+			if jsz.Streams != numStreams+1 {
+				return fmt.Errorf("%v wrong number of streams: %d vs %d", s, jsz.Streams, numStreams+1)
+			}
+		}
+		return nil
+	})
+
+	// Delete consumers.
+	for _, cname := range consumers {
+		err := js.DeleteConsumer("TEST", cname)
+		require_NoError(t, err)
+	}
+	// Make sure reporting goes to zero.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			jsz, _ := s.Jsz(nil)
+			if jsz.Consumers != 0 {
+				return fmt.Errorf("%v still has %d consumers", s, jsz.Consumers)
+			}
+		}
+		return nil
+	})
+
+	// Delete streams
+	for _, sname := range streams {
+		err := js.DeleteStream(sname)
+		require_NoError(t, err)
+	}
+	err = js.DeleteStream("TEST")
+	require_NoError(t, err)
+
+	// Make sure reporting goes to zero.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			jsz, _ := s.Jsz(nil)
+			if jsz.Streams != 0 {
+				return fmt.Errorf("%v still has %d streams", s, jsz.Streams)
+			}
+		}
+		return nil
+	})
+}
+
+func TestNoRaceJetStreamKVReplaceWithServerRestart(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, _ := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+	// Shorten wait time for disconnects.
+	js, err := nc.JetStream(nats.MaxWait(time.Second))
+	require_NoError(t, err)
+
+	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
+		Bucket:   "TEST",
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	createData := func(n int) []byte {
+		const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+		b := make([]byte, n)
+		for i := range b {
+			b[i] = letterBytes[rand.Intn(len(letterBytes))]
+		}
+		return b
+	}
+
+	_, err = kv.Create("foo", createData(160))
+	require_NoError(t, err)
+
+	ch := make(chan struct{})
+	wg := sync.WaitGroup{}
+
+	// For counting errors that should not happen.
+	errCh := make(chan error, 1024)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		var lastData []byte
+		var revision uint64
+
+		for {
+			select {
+			case <-ch:
+				return
+			default:
+				k, err := kv.Get("foo")
+				if err == nats.ErrKeyNotFound {
+					errCh <- err
+				} else if k != nil {
+					if lastData != nil && k.Revision() == revision && !bytes.Equal(lastData, k.Value()) {
+						errCh <- fmt.Errorf("data loss [%s][rev:%d] expected:[%q] is:[%q]\n", "foo", revision, lastData, k.Value())
+					}
+					newData := createData(160)
+					if revision, err = kv.Update("foo", newData, k.Revision()); err == nil {
+						lastData = newData
+					}
+				}
+			}
+		}
+	}()
+
+	// Wait a short bit.
+	time.Sleep(2 * time.Second)
+	for _, s := range c.servers {
+		s.Shutdown()
+		// Need to leave servers down for awhile to trigger bug properly.
+		time.Sleep(5 * time.Second)
+		s = c.restartServer(s)
+		c.waitOnServerHealthz(s)
+	}
+
+	// Shutdown the go routine above.
+	close(ch)
+	// Wait for it to finish.
+	wg.Wait()
+
+	if len(errCh) != 0 {
+		for err := range errCh {
+			t.Logf("Received err %v during test", err)
+		}
+		t.Fatalf("Encountered errors")
+	}
+}
