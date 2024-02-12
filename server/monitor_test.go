@@ -706,6 +706,14 @@ func TestConnzLastActivity(t *testing.T) {
 		if fooLA.Equal(nextLA) {
 			t.Fatalf("Message delivery should have triggered update to LastActivity\n")
 		}
+
+		// Ping also updates LastActivity.
+		prevLA := ciFoo.LastActivity
+		ncFoo.Flush()
+		ciFoo, _ = getFooAndBar(t, createConnMap(t, pollConz(t, s, mode, url, opts)))
+		if prevLA.Equal(ciFoo.LastActivity) {
+			t.Fatalf("Ping should have triggered update to LastActivity\n")
+		}
 	}
 
 	for mode := 0; mode < 2; mode++ {

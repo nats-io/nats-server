@@ -133,6 +133,10 @@ func TestParsePong(t *testing.T) {
 	// Should be adjusting c.pout (Pings Outstanding): reset to 0
 	c.state = OP_START
 	c.ping.out = 10
+
+	// Snapshot to check that last activity is updated on pongs.
+	t0 := c.last
+
 	pong = []byte("PONG\r\n")
 	err = c.parse(pong)
 	if err != nil || c.state != OP_START {
@@ -140,6 +144,11 @@ func TestParsePong(t *testing.T) {
 	}
 	if c.ping.out != 0 {
 		t.Fatalf("Unexpected ping.out: %d vs 0\n", c.ping.out)
+	}
+
+	t1 := c.last
+	if t1.Equal(t0) {
+		t.Fatal("LastActivity should be updated when receiving pong.")
 	}
 }
 
