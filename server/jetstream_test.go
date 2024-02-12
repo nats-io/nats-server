@@ -22164,11 +22164,11 @@ func TestJetStreamDirectGetBatch(t *testing.T) {
 			// If expected is _EMPTY_ that signals we expect a EOB marker.
 			if subj := expected[i]; subj != _EMPTY_ {
 				// Make sure subject is correct.
-				require_Equal(t, expected[i], msg.Header.Get("Nats-Subject"))
+				require_Equal(t, expected[i], msg.Header.Get(JSSubject))
 				// Should have Data field non-zero
 				require_True(t, len(msg.Data) > 0)
 				// Check we have NumPending and its correct.
-				require_Equal(t, strconv.Itoa(np), msg.Header.Get("Nats-Pending-Messages"))
+				require_Equal(t, strconv.Itoa(np), msg.Header.Get(JSNumPending))
 				np--
 
 			} else {
@@ -22180,7 +22180,7 @@ func TestJetStreamDirectGetBatch(t *testing.T) {
 				// Check description is EOB
 				require_Equal(t, msg.Header.Get("Description"), "EOB")
 				// Check we have NumPending and its correct.
-				require_Equal(t, strconv.Itoa(np), msg.Header.Get("Nats-Pending-Messages"))
+				require_Equal(t, strconv.Itoa(np), msg.Header.Get(JSNumPending))
 			}
 		}
 	}
