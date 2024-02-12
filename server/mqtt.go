@@ -2794,10 +2794,10 @@ func (as *mqttAccountSessionManager) loadRetainedMessages(subjects map[string]st
 func mqttEncodeRetainedMessage(rm *mqttRetainedMsg) (natsMsg []byte, headerLen int) {
 	// No need to encode the subject, we can restore it from topic.
 	l := len(mqttNatsRetainedMessageTopic) + 1 + len(rm.Topic) + 2 // 1 byte for ':', 2 bytes for CRLF
-	if rm.Origin != "" {
+	if rm.Origin != _EMPTY_ {
 		l += len(mqttNatsRetainedMessageOrigin) + 1 + len(rm.Origin) + 2 // 1 byte for ':', 2 bytes for CRLF
 	}
-	if rm.Source != "" {
+	if rm.Source != _EMPTY_ {
 		l += len(mqttNatsRetainedMessageSource) + 1 + len(rm.Source) + 2 // 1 byte for ':', 2 bytes for CRLF
 	}
 	l += len(mqttNatsRetainedMessageFlags) + 1 + 2 + 2 // 1 byte for ':', 2 bytes for the flags, 2 bytes for CRLF
@@ -2818,13 +2818,13 @@ func mqttEncodeRetainedMessage(rm *mqttRetainedMsg) (natsMsg []byte, headerLen i
 	buf.WriteString(strconv.FormatUint(uint64(rm.Flags), 16))
 	buf.WriteString(_CRLF_)
 
-	if rm.Origin != "" {
+	if rm.Origin != _EMPTY_ {
 		buf.WriteString(mqttNatsRetainedMessageOrigin)
 		buf.WriteByte(':')
 		buf.WriteString(rm.Origin)
 		buf.WriteString(_CRLF_)
 	}
-	if rm.Source != "" {
+	if rm.Source != _EMPTY_ {
 		buf.WriteString(mqttNatsRetainedMessageSource)
 		buf.WriteByte(':')
 		buf.WriteString(rm.Source)
@@ -3185,7 +3185,7 @@ func (sess *mqttSession) clear() error {
 			return fmt.Errorf("unable to delete consumer %q for session %q: %v", dur, sess.id, err)
 		}
 	}
-	if pubRelDur != "" {
+	if pubRelDur != _EMPTY_ {
 		_, err := sess.jsa.deleteConsumer(mqttOutStreamName, pubRelDur)
 		if isErrorOtherThan(err, JSConsumerNotFoundErr) {
 			return fmt.Errorf("unable to delete consumer %q for session %q: %v", pubRelDur, sess.id, err)
