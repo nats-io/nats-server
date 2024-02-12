@@ -4198,7 +4198,7 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 		if mset.lastSeq() > validThrough {
 			np, _ = store.NumPending(seq, req.NextFor, false)
 		}
-		hdr := []byte(fmt.Sprintf("NATS/1.0 204 EOB\r\nNats-Pending-Messages: %d\r\nNats-Last-Sequence: %d\r\n\r\n", np, lseq))
+		hdr := []byte(fmt.Sprintf("NATS/1.0 204 EOB\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\n\r\n", np, lseq))
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 	}
 }
