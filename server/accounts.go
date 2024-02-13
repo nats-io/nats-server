@@ -54,6 +54,7 @@ type Account struct {
 	Name         string
 	Nkey         string
 	Issuer       string
+	TraceDest    string
 	claimJWT     string
 	updated      time.Time
 	mu           sync.RWMutex
@@ -260,6 +261,7 @@ func (a *Account) String() string {
 func (a *Account) shallowCopy(na *Account) {
 	na.Nkey = a.Nkey
 	na.Issuer = a.Issuer
+	na.TraceDest = a.TraceDest
 
 	if a.imports.streams != nil {
 		na.imports.streams = make([]*streamImport, 0, len(a.imports.streams))
@@ -2162,9 +2164,15 @@ func shouldSample(l *serviceLatency, c *client) (bool, http.Header) {
 		}
 		return true, http.Header{trcB3: b3} // sampling allowed or left to recipient of header
 	} else if tId := h[trcCtx]; len(tId) != 0 {
+		var sample bool
 		// sample 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
 		tk := strings.Split(tId[0], "-")
-		if len(tk) == 4 && len([]byte(tk[3])) == 2 && tk[3] == "01" {
+		if len(tk) == 4 && len([]byte(tk[3])) == 2 {
+			if hexVal, err := strconv.ParseInt(tk[3], 16, 8); err == nil {
+				sample = hexVal&0x1 == 0x1
+			}
+		}
+		if sample {
 			return true, newTraceCtxHeader(h, tId)
 		} else {
 			return false, nil

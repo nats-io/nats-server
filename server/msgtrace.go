@@ -17,17 +17,23 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 )
 
 const (
-	MsgTraceSendTo        = "Nats-Trace-Dest"
+	MsgTraceDest          = "Nats-Trace-Dest"
 	MsgTraceHop           = "Nats-Trace-Hop"
 	MsgTraceOriginAccount = "Nats-Trace-Origin-Account"
 	MsgTraceOnly          = "Nats-Trace-Only"
+
+	// External trace header. Note that this header is normally in lower
+	// case (https://www.w3.org/TR/trace-context/#header-name). Vendors
+	// MUST expect the header in any case (upper, lower, mixed), and
+	// SHOULD send the header name in lowercase.
+	traceParentHdr = "traceparent"
 )
 
 type MsgTraceType string
@@ -51,8 +57,9 @@ type MsgTraceEvent struct {
 }
 
 type MsgTraceRequest struct {
-	Header  http.Header `json:"header,omitempty"`
-	MsgSize int         `json:"msgsize,omitempty"`
+	// We are not making this an http.Header so that header name case is preserved.
+	Header  map[string][]string `json:"header,omitempty"`
+	MsgSize int                 `json:"msgsize,omitempty"`
 }
 
 type MsgTraceEvents []MsgTrace
@@ -330,27 +337,44 @@ func (c *client) initMsgTrace() *msgTrace {
 		return nil
 	}
 	hdr := c.msgBuf[:c.pa.hdr]
-	// Do not call c.parseState.getHeader() yet for performance reasons.
-	// We first do a "manual" search of the "send-to" destination's header.
-	// If not present, no need to lift the message headers.
-	td := getHeader(MsgTraceSendTo, hdr)
-	if len(td) <= 0 {
+	headers, external := genHeaderMapIfTraceHeadersPresent(hdr)
+	if len(headers) == 0 {
 		return nil
 	}
-	// Now we know that this is a message that requested tracing, we
-	// will lift the headers since we also need to transfer them to
-	// the produced trace message.
-	headers := c.parseState.getHeader()
-	if headers == nil {
-		return nil
+	// Little helper to give us the first value of a given header, or _EMPTY_
+	// if key is not present.
+	getHdrVal := func(key string) string {
+		vv, ok := headers[key]
+		if !ok {
+			return _EMPTY_
+		}
+		return vv[0]
 	}
-	ct := getCompressionType(headers.Get(acceptEncodingHeader))
-	var traceOnly bool
-	if to := headers.Get(MsgTraceOnly); to != _EMPTY_ {
-		tos := strings.ToLower(to)
-		switch tos {
-		case "1", "true", "on":
-			traceOnly = true
+	ct := getCompressionType(getHdrVal(acceptEncodingHeader))
+	var (
+		dest      string
+		traceOnly bool
+	)
+	// Check for traceOnly only if not external.
+	if !external {
+		if to := getHdrVal(MsgTraceOnly); to != _EMPTY_ {
+			tos := strings.ToLower(to)
+			switch tos {
+			case "1", "true", "on":
+				traceOnly = true
+			}
+		}
+		dest = getHdrVal(MsgTraceDest)
+		// Check the destination to see if this is a valid public subject.
+		if !IsValidPublishSubject(dest) {
+			// We still have to return a msgTrace object (if traceOnly is set)
+			// because if we don't, the message will end-up being delivered to
+			// applications, which may break them. We report the error in any case.
+			c.Errorf("Destination %q is not valid, won't be able to trace events", dest)
+			if !traceOnly {
+				// We can bail, tracing will be disabled for this message.
+				return nil
+			}
 		}
 	}
 	var (
@@ -373,7 +397,7 @@ func (c *client) initMsgTrace() *msgTrace {
 		}
 		// The remote will have set the origin account header only if the
 		// message changed account (think of service imports).
-		oan = headers.Get(MsgTraceOriginAccount)
+		oan = getHdrVal(MsgTraceOriginAccount)
 		if oan == _EMPTY_ {
 			// For LEAF or ROUTER with pinned-account, we can use the c.acc.
 			if c.kind == LEAF || (c.kind == ROUTER && len(c.route.accName) > 0) {
@@ -385,29 +409,47 @@ func (c *client) initMsgTrace() *msgTrace {
 		}
 		// Unless we already got the account, we need to look it up.
 		if acc == nil {
-			// We don't want to do account resolving here, and we have to return
-			// a msgTrace object because if we don't and if the user wanted to do
-			// trace-only, the message would end-up being delivered.
+			// We don't want to do account resolving here.
 			if acci, ok := c.srv.accounts.Load(oan); ok {
 				acc = acci.(*Account)
 				// Since we have looked-up the account, we don't need oan, so
 				// clear it in case it was set.
 				oan = _EMPTY_
 			} else {
+				// We still have to return a msgTrace object (if traceOnly is set)
+				// because if we don't, the message will end-up being delivered to
+				// applications, which may break them. We report the error in any case.
 				c.Errorf("Account %q was not found, won't be able to trace events", oan)
+				if !traceOnly {
+					// We can bail, tracing will be disabled for this message.
+					return nil
+				}
 			}
 		}
 		// Check the hop header
-		hop = headers.Get(MsgTraceHop)
+		hop = getHdrVal(MsgTraceHop)
 	} else {
 		acc = c.acc
 		ian = acc.GetName()
+	}
+	// If external, we need to have the account's trace destination set,
+	// otherwise, we are not enabling tracing.
+	if external {
+		if acc != nil {
+			acc.mu.RLock()
+			dest = acc.TraceDest
+			acc.mu.RUnlock()
+		}
+		if dest == _EMPTY_ {
+			// No account destination, no tracing for external trace headers.
+			return nil
+		}
 	}
 	c.pa.trace = &msgTrace{
 		srv:  c.srv,
 		acc:  acc,
 		oan:  oan,
-		dest: string(td),
+		dest: dest,
 		ct:   ct,
 		hop:  hop,
 		event: &MsgTraceEvent{
@@ -430,6 +472,99 @@ func (c *client) initMsgTrace() *msgTrace {
 		tonly: traceOnly,
 	}
 	return c.pa.trace
+}
+
+// This function will return the header as a map (instead of http.Header because
+// we want to preserve the header names' case) and a boolean that indicates if
+// the headers have been lifted due to the presence of the external trace header
+// only.
+// Note that because of the traceParentHdr, the search is done in a case
+// insensitive way, but if the header is found, it is rewritten in lower case
+// as suggested by the spec, but also to make it easier to disable the header
+// when needed.
+func genHeaderMapIfTraceHeadersPresent(hdr []byte) (map[string][]string, bool) {
+
+	var (
+		_keys               = [64][]byte{}
+		_vals               = [64][]byte{}
+		m                   map[string][]string
+		traceDestHdrFound   bool
+		traceParentHdrFound bool
+	)
+	// Skip the hdrLine
+	if !bytes.HasPrefix(hdr, stringToBytes(hdrLine)) {
+		return nil, false
+	}
+
+	traceDestHdrAsBytes := stringToBytes(MsgTraceDest)
+	traceParentHdrAsBytes := stringToBytes(traceParentHdr)
+	crLFAsBytes := stringToBytes(CR_LF)
+	dashAsBytes := stringToBytes("-")
+
+	keys := _keys[:0]
+	vals := _vals[:0]
+
+	for i := len(hdrLine); i < len(hdr); {
+		// Search for key/val delimiter
+		del := bytes.IndexByte(hdr[i:], ':')
+		if del < 0 {
+			break
+		}
+		keyStart := i
+		key := hdr[keyStart : keyStart+del]
+		i += del + 1
+		valStart := i
+		nl := bytes.Index(hdr[valStart:], crLFAsBytes)
+		if nl < 0 {
+			break
+		}
+		if len(key) > 0 {
+			val := bytes.Trim(hdr[valStart:valStart+nl], " \t")
+			vals = append(vals, val)
+
+			// Check for the external trace header.
+			if bytes.EqualFold(key, traceParentHdrAsBytes) {
+				// Rewrite the header using lower case if needed.
+				if !bytes.Equal(key, traceParentHdrAsBytes) {
+					copy(hdr[keyStart:], traceParentHdrAsBytes)
+				}
+				// We will now check if the value has sampling or not.
+				// TODO(ik): Not sure if this header can have multiple values
+				// or not, and if so, what would be the rule to check for
+				// sampling. What is done here is to check them all until we
+				// found one with sampling.
+				if !traceParentHdrFound {
+					tk := bytes.Split(val, dashAsBytes)
+					if len(tk) == 4 && len([]byte(tk[3])) == 2 {
+						if hexVal, err := strconv.ParseInt(bytesToString(tk[3]), 16, 8); err == nil {
+							if hexVal&0x1 == 0x1 {
+								traceParentHdrFound = true
+							}
+						}
+					}
+				}
+				// Add to the keys with the external trace header in lower case.
+				keys = append(keys, traceParentHdrAsBytes)
+			} else {
+				// Is the key the Nats-Trace-Dest header?
+				if bytes.EqualFold(key, traceDestHdrAsBytes) {
+					traceDestHdrFound = true
+				}
+				// Add to the keys and preserve the key's case
+				keys = append(keys, key)
+			}
+		}
+		i += nl + 2
+	}
+	if !traceDestHdrFound && !traceParentHdrFound {
+		return nil, false
+	}
+	m = make(map[string][]string, len(keys))
+	for i, k := range keys {
+		hname := string(k)
+		m[hname] = append(m[hname], string(vals[i]))
+	}
+	return m, !traceDestHdrFound && traceParentHdrFound
 }
 
 // Special case where we create a trace event before parsing the message.
@@ -496,49 +631,57 @@ func (t *msgTrace) setHopHeader(c *client, msg []byte) []byte {
 	return c.setHeader(MsgTraceHop, t.nhop, msg)
 }
 
-// Will look for the MsgTraceSendTo header and change the first character
-// to an 'X' so that if this message is sent to a remote, the remote will
-// not initialize tracing since it won't find the actual MsgTraceSendTo
-// header. The function returns the position of the header so it can
-// efficiently be re-enabled by calling enableTraceHeader.
+// Will look for the MsgTraceSendTo and traceParentHdr headers and change the first
+// character to an 'X' so that if this message is sent to a remote, the remote
+// will not initialize tracing since it won't find the actual trace headers.
+// The function returns the position of the headers so it can efficiently be
+// re-enabled by calling enableTraceHeaders.
 // Note that if `msg` can be either the header alone or the full message
 // (header and payload). This function will use c.pa.hdr to limit the
 // search to the header section alone.
-func (t *msgTrace) disableTraceHeader(c *client, msg []byte) int {
+func (t *msgTrace) disableTraceHeaders(c *client, msg []byte) []int {
 	// Code largely copied from getHeader(), except that we don't need the value
 	if c.pa.hdr <= 0 {
-		return -1
+		return []int{-1, -1}
 	}
 	hdr := msg[:c.pa.hdr]
-	key := stringToBytes(MsgTraceSendTo)
-	pos := bytes.Index(hdr, key)
-	if pos < 0 {
-		return -1
+	headers := [2]string{MsgTraceDest, traceParentHdr}
+	positions := [2]int{-1, -1}
+	for i := 0; i < 2; i++ {
+		key := stringToBytes(headers[i])
+		pos := bytes.Index(hdr, key)
+		if pos < 0 {
+			continue
+		}
+		// Make sure this key does not have additional prefix.
+		if pos < 2 || hdr[pos-1] != '\n' || hdr[pos-2] != '\r' {
+			continue
+		}
+		index := pos + len(key)
+		if index >= len(hdr) {
+			continue
+		}
+		if hdr[index] != ':' {
+			continue
+		}
+		// Disable the trace by altering the first character of the header
+		hdr[pos] = 'X'
+		positions[i] = pos
 	}
-	// Make sure this key does not have additional prefix.
-	if pos < 2 || hdr[pos-1] != '\n' || hdr[pos-2] != '\r' {
-		return -1
-	}
-	index := pos + len(key)
-	if index >= len(hdr) {
-		return -1
-	}
-	if hdr[index] != ':' {
-		return -1
-	}
-	// Disable the trace by altering the first character of the header
-	hdr[pos] = 'X'
-	// Return the position of that character so we can re-enable it.
-	return pos
+	// Return the positions of those characters so we can re-enable the headers.
+	return positions[:2]
 }
 
 // Changes back the character at the given position `pos` in the `msg`
 // byte slice to the first character of the MsgTraceSendTo header.
-func (t *msgTrace) enableTraceHeader(c *client, msg []byte, pos int) {
-	if pos <= 0 {
-		return
+func (t *msgTrace) enableTraceHeaders(c *client, msg []byte, positions []int) {
+	firstChar := [2]byte{MsgTraceDest[0], traceParentHdr[0]}
+	for i, pos := range positions {
+		if pos == -1 {
+			continue
+		}
+		msg[pos] = firstChar[i]
 	}
-	msg[pos] = MsgTraceSendTo[0]
 }
 
 func (t *msgTrace) setIngressError(err string) {
@@ -653,6 +796,9 @@ func (t *msgTrace) updateJetStreamEvent(subject string, noInterest bool) {
 	}
 	t.js.Subject = subject
 	t.js.NoInterest = noInterest
+	// Update the timestamp since this is more accurate than when it
+	// was first added in addJetStreamEvent().
+	t.js.Timestamp = time.Now()
 }
 
 func (t *msgTrace) sendEventFromJetStream(err error) {

@@ -914,6 +914,39 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  25,
 		},
 		{
+			name: "when account trace destination is of the wrong type",
+			config: `
+                accounts {
+                  A { trace_dest: 123 }
+                }
+			`,
+			err:       errors.New(`interface conversion: interface {} is int64, not string`),
+			errorLine: 3,
+			errorPos:  23,
+		},
+		{
+			name: "when account trace destination is not a valid destination",
+			config: `
+                accounts {
+                  A { trace_dest: "invalid..dest" }
+                }
+			`,
+			err:       errors.New(`Trace destination "invalid..dest" is not valid`),
+			errorLine: 3,
+			errorPos:  23,
+		},
+		{
+			name: "when account trace destination is not a valid publish subject",
+			config: `
+                accounts {
+                  A { trace_dest: "invalid.publish.*.subject" }
+                }
+			`,
+			err:       errors.New(`Trace destination "invalid.publish.*.subject" is not valid`),
+			errorLine: 3,
+			errorPos:  23,
+		},
+		{
 			name: "when user authorization config has both token and users",
 			config: `
 		authorization = {

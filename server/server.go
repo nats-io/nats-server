@@ -1046,6 +1046,15 @@ func validateOptions(o *Options) error {
 		return fmt.Errorf("max_payload (%v) cannot be higher than max_pending (%v)",
 			o.MaxPayload, o.MaxPending)
 	}
+	// Check that account's trace_dest is a valid subject.
+	for _, acc := range o.Accounts {
+		if acc.TraceDest == _EMPTY_ {
+			continue
+		}
+		if !IsValidPublishSubject(acc.TraceDest) {
+			return fmt.Errorf("trace_dest %q of account %q is not valid", acc.TraceDest, acc.Name)
+		}
+	}
 	// Check that the trust configuration is correct.
 	if err := validateTrustedOperators(o); err != nil {
 		return err
