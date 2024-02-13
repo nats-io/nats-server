@@ -7468,10 +7468,12 @@ func TestMQTTDecodeRetainedMessage(t *testing.T) {
 	`
 	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, tdir, "0.2s")))
 	s, o := RunServerWithConfig(conf)
+	defer testMQTTShutdownServer(s)
 
 	// Connect and publish a retained message, this will be in the "newer" form,
 	// with the metadata in the header.
 	mc, r := testMQTTConnectRetry(t, &mqttConnInfo{clientID: "test", cleanSess: true}, o.MQTT.Host, o.MQTT.Port, 5)
+	defer mc.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 	testMQTTPublish(t, mc, r, 0, false, true, "foo/1", 0, []byte("msg1"))
 	mc.Close()
@@ -7499,9 +7501,11 @@ func TestMQTTDecodeRetainedMessage(t *testing.T) {
 	// Restart the server to see that it picks up both retained messages on restart.
 	s.Shutdown()
 	s = RunServer(o)
+	defer testMQTTShutdownServer(s)
 
 	// Connect again, subscribe, and check that we get both messages.
 	mc, r = testMQTTConnectRetry(t, &mqttConnInfo{clientID: "test", cleanSess: true}, o.MQTT.Host, o.MQTT.Port, 5)
+	defer mc.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo/+", qos: 0}}, []byte{0})
 	testMQTTCheckPubMsg(t, mc, r, "foo/1", mqttPubFlagRetain, []byte("msg1"))
@@ -7511,6 +7515,7 @@ func TestMQTTDecodeRetainedMessage(t *testing.T) {
 
 	// Clear both retained messages.
 	mc, r = testMQTTConnectRetry(t, &mqttConnInfo{clientID: "test", cleanSess: true}, o.MQTT.Host, o.MQTT.Port, 5)
+	defer mc.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 	testMQTTPublish(t, mc, r, 0, false, true, "foo/1", 0, []byte{})
 	testMQTTPublish(t, mc, r, 0, false, true, "foo/2", 0, []byte{})
@@ -7518,12 +7523,10 @@ func TestMQTTDecodeRetainedMessage(t *testing.T) {
 
 	// Connect again, subscribe, and check that we get nothing.
 	mc, r = testMQTTConnectRetry(t, &mqttConnInfo{clientID: "test", cleanSess: true}, o.MQTT.Host, o.MQTT.Port, 5)
+	defer mc.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo/+", qos: 0}}, []byte{0})
 	testMQTTExpectNothing(t, r)
-	mc.Close()
-
-	testMQTTShutdownServer(s)
 }
 
 //////////////////////////////////////////////////////////////////////////
