@@ -2540,7 +2540,7 @@ func (c *client) processHeaderPub(arg, remaining []byte) error {
 		// trace event with the max payload ingress error.
 		// Do this only for CLIENT connections.
 		if c.kind == CLIENT && len(remaining) > 0 {
-			if td := getHeader(MsgTraceSendTo, remaining); len(td) > 0 {
+			if td := getHeader(MsgTraceDest, remaining); len(td) > 0 {
 				c.initAndSendIngressErrEvent(remaining, string(td), ErrMaxPayload)
 			}
 		}

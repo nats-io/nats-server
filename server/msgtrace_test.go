@@ -82,28 +82,28 @@ func TestMsgTraceGenHeaderMap(t *testing.T) {
 	}{
 		{"missing header line", []byte("Nats-Trace-Dest: val\r\n"), nil, false},
 		{"no trace header present", []byte(hdrLine + "Header1: val1\r\nHeader2: val2\r\n"), nil, false},
-		{"trace header with some prefix", []byte(hdrLine + "Some-Prefix-" + MsgTraceSendTo + ": some value\r\n"), nil, false},
-		{"trace header with some suffix", []byte(hdrLine + MsgTraceSendTo + "-Some-Suffix: some value\r\n"), nil, false},
-		{"trace header with space before colon", []byte(hdrLine + MsgTraceSendTo + " : some value\r\n"), nil, false},
-		{"trace header with missing cr_lf for value", []byte(hdrLine + MsgTraceSendTo + " : bogus"), nil, false},
+		{"trace header with some prefix", []byte(hdrLine + "Some-Prefix-" + MsgTraceDest + ": some value\r\n"), nil, false},
+		{"trace header with some suffix", []byte(hdrLine + MsgTraceDest + "-Some-Suffix: some value\r\n"), nil, false},
+		{"trace header with space before colon", []byte(hdrLine + MsgTraceDest + " : some value\r\n"), nil, false},
+		{"trace header with missing cr_lf for value", []byte(hdrLine + MsgTraceDest + " : bogus"), nil, false},
 		{"external trace header with some prefix", []byte(hdrLine + "Some-Prefix-" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n"), nil, false},
 		{"external trace header with some suffix", []byte(hdrLine + traceParentHdr + "-Some-Suffix: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n"), nil, false},
 		{"external header with space before colon", []byte(hdrLine + traceParentHdr + " : 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n"), nil, false},
 		{"external header with missing cr_lf for value", []byte(hdrLine + traceParentHdr + " : 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"), nil, false},
-		{"trace header first", []byte(hdrLine + MsgTraceSendTo + ": some.dest\r\nSome-Header: some value\r\n"),
-			map[string][]string{"Some-Header": {"some value"}, MsgTraceSendTo: {"some.dest"}}, false},
-		{"trace header last", []byte(hdrLine + "Some-Header: some value\r\n" + MsgTraceSendTo + ": some.dest\r\n"),
-			map[string][]string{"Some-Header": {"some value"}, MsgTraceSendTo: {"some.dest"}}, false},
-		{"trace header multiple values", []byte(hdrLine + MsgTraceSendTo + ": some.dest\r\nSome-Header: some value\r\n" + MsgTraceSendTo + ": some.dest.2"),
-			map[string][]string{"Some-Header": {"some value"}, MsgTraceSendTo: {"some.dest", "some.dest.2"}}, false},
-		{"trace header and some empty key", []byte(hdrLine + MsgTraceSendTo + ": some.dest\r\n: bogus\r\nSome-Header: some value\r\n"),
-			map[string][]string{"Some-Header": {"some value"}, MsgTraceSendTo: {"some.dest"}}, false},
-		{"trace header and some header missing cr_lf for value", []byte(hdrLine + MsgTraceSendTo + ": some.dest\r\nSome-Header: bogus"),
-			map[string][]string{MsgTraceSendTo: {"some.dest"}}, false},
-		{"trace header and external after", []byte(hdrLine + MsgTraceSendTo + ": some.dest\r\n" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\nSome-Header: some value\r\n"),
-			map[string][]string{"Some-Header": {"some value"}, MsgTraceSendTo: {"some.dest"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, false},
-		{"trace header and external before", []byte(hdrLine + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n" + MsgTraceSendTo + ": some.dest\r\nSome-Header: some value\r\n"),
-			map[string][]string{"Some-Header": {"some value"}, MsgTraceSendTo: {"some.dest"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, false},
+		{"trace header first", []byte(hdrLine + MsgTraceDest + ": some.dest\r\nSome-Header: some value\r\n"),
+			map[string][]string{"Some-Header": {"some value"}, MsgTraceDest: {"some.dest"}}, false},
+		{"trace header last", []byte(hdrLine + "Some-Header: some value\r\n" + MsgTraceDest + ": some.dest\r\n"),
+			map[string][]string{"Some-Header": {"some value"}, MsgTraceDest: {"some.dest"}}, false},
+		{"trace header multiple values", []byte(hdrLine + MsgTraceDest + ": some.dest\r\nSome-Header: some value\r\n" + MsgTraceDest + ": some.dest.2"),
+			map[string][]string{"Some-Header": {"some value"}, MsgTraceDest: {"some.dest", "some.dest.2"}}, false},
+		{"trace header and some empty key", []byte(hdrLine + MsgTraceDest + ": some.dest\r\n: bogus\r\nSome-Header: some value\r\n"),
+			map[string][]string{"Some-Header": {"some value"}, MsgTraceDest: {"some.dest"}}, false},
+		{"trace header and some header missing cr_lf for value", []byte(hdrLine + MsgTraceDest + ": some.dest\r\nSome-Header: bogus"),
+			map[string][]string{MsgTraceDest: {"some.dest"}}, false},
+		{"trace header and external after", []byte(hdrLine + MsgTraceDest + ": some.dest\r\n" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\nSome-Header: some value\r\n"),
+			map[string][]string{"Some-Header": {"some value"}, MsgTraceDest: {"some.dest"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, false},
+		{"trace header and external before", []byte(hdrLine + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n" + MsgTraceDest + ": some.dest\r\nSome-Header: some value\r\n"),
+			map[string][]string{"Some-Header": {"some value"}, MsgTraceDest: {"some.dest"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, false},
 		{"external malformed", []byte(hdrLine + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-01\r\n"), nil, false},
 		{"external first and sampling", []byte(hdrLine + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\nSome-Header: some value\r\n"),
 			map[string][]string{"Some-Header": {"some value"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, true},
@@ -174,7 +174,7 @@ func TestMsgTraceBasic(t *testing.T) {
 	// Send trace message to a dummy subject to check that resulting trace's
 	// SubjectMapping and Egress are nil.
 	msg := nats.NewMsg("dummy")
-	msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+	msg.Header.Set(MsgTraceDest, traceSub.Subject)
 	msg.Header.Set(MsgTraceOnly, "true")
 	msg.Data = []byte("hello!")
 	err = nc.PublishMsg(msg)
@@ -228,7 +228,7 @@ func TestMsgTraceBasic(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			msg = nats.NewMsg("foo")
 			msg.Header.Set("Some-App-Header", "some value")
-			msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+			msg.Header.Set(MsgTraceDest, traceSub.Subject)
 			if !test.deliverMsg {
 				msg.Header.Set(MsgTraceOnly, "true")
 			}
@@ -244,7 +244,7 @@ func TestMsgTraceBasic(t *testing.T) {
 					// 2 headers (the app + trace destination)
 					require_True(t, len(appMsg.Header) == 2)
 					require_Equal[string](t, appMsg.Header.Get("Some-App-Header"), "some value")
-					require_Equal[string](t, appMsg.Header.Get(MsgTraceSendTo), traceSub.Subject)
+					require_Equal[string](t, appMsg.Header.Get(MsgTraceDest), traceSub.Subject)
 				}
 				// Check that no (more) messages are received.
 				if msg, err := sub.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
@@ -335,7 +335,7 @@ func TestMsgTraceIngressMaxPayloadError(t *testing.T) {
 			if !test.deliverMsg {
 				traceOnlyHdr = fmt.Sprintf("%s:true\r\n", MsgTraceOnly)
 			}
-			hdr := fmt.Sprintf("%s%s:%s\r\n%s\r\n", hdrLine, MsgTraceSendTo, traceSub.Subject, traceOnlyHdr)
+			hdr := fmt.Sprintf("%s%s:%s\r\n%s\r\n", hdrLine, MsgTraceDest, traceSub.Subject, traceOnlyHdr)
 			hPub := fmt.Sprintf("HPUB foo %d 2048\r\n%sAAAAAAAAAAAAAAAAAA...", len(hdr), hdr)
 			nc2.Write([]byte(hPub))
 
@@ -395,7 +395,7 @@ func TestMsgTraceIngressErrors(t *testing.T) {
 
 			sendMsg := func(subj, reply, errTxt string) {
 				msg := nats.NewMsg(subj)
-				msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+				msg.Header.Set(MsgTraceDest, traceSub.Subject)
 				if !test.deliverMsg {
 					msg.Header.Set(MsgTraceOnly, "true")
 				}
@@ -469,7 +469,7 @@ func TestMsgTraceEgressErrors(t *testing.T) {
 				t.Helper()
 
 				msg := nats.NewMsg(subj)
-				msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+				msg.Header.Set(MsgTraceDest, traceSub.Subject)
 				if !test.deliverMsg {
 					msg.Header.Set(MsgTraceOnly, "true")
 				}
@@ -554,7 +554,7 @@ func TestMsgTraceEgressErrors(t *testing.T) {
 				c.out.stc = make(chan struct{})
 				c.mu.Unlock()
 				msg := nats.NewMsg("bar.bar")
-				msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+				msg.Header.Set(MsgTraceDest, traceSub.Subject)
 				if !test.deliverMsg {
 					msg.Header.Set(MsgTraceOnly, "true")
 				}
@@ -615,7 +615,7 @@ func TestMsgTraceWithQueueSub(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			msg := nats.NewMsg("foo")
-			msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+			msg.Header.Set(MsgTraceDest, traceSub.Subject)
 			if !test.deliverMsg {
 				msg.Header.Set(MsgTraceOnly, "true")
 			}
@@ -715,7 +715,7 @@ func TestMsgTraceWithRoutes(t *testing.T) {
 		// Send trace message to a dummy subject to check that resulting trace
 		// is as expected.
 		msg := nats.NewMsg("dummy")
-		msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+		msg.Header.Set(MsgTraceDest, traceSub.Subject)
 		msg.Header.Set(MsgTraceOnly, "true")
 		msg.Data = []byte("hello!")
 		err := nc.PublishMsg(msg)
@@ -779,7 +779,7 @@ func TestMsgTraceWithRoutes(t *testing.T) {
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					msg := nats.NewMsg("foo.bar")
-					msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+					msg.Header.Set(MsgTraceDest, traceSub.Subject)
 					if !test.deliverMsg {
 						msg.Header.Set(MsgTraceOnly, "true")
 					}
@@ -916,7 +916,7 @@ func TestMsgTraceWithRouteToOldServer(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			msg := nats.NewMsg("foo")
-			msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+			msg.Header.Set(MsgTraceDest, traceSub.Subject)
 			if !test.deliverMsg {
 				msg.Header.Set(MsgTraceOnly, "true")
 			}
@@ -1089,7 +1089,7 @@ func TestMsgTraceWithLeafNode(t *testing.T) {
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					msg := nats.NewMsg("foo")
-					msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+					msg.Header.Set(MsgTraceDest, traceSub.Subject)
 					if !test.deliverMsg {
 						msg.Header.Set(MsgTraceOnly, "true")
 					}
@@ -1233,7 +1233,7 @@ func TestMsgTraceWithLeafNodeToOldServer(t *testing.T) {
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					msg := nats.NewMsg("foo")
-					msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+					msg.Header.Set(MsgTraceDest, traceSub.Subject)
 					if !test.deliverMsg {
 						msg.Header.Set(MsgTraceOnly, "true")
 					}
@@ -1370,7 +1370,7 @@ func TestMsgTraceWithLeafNodeDaisyChain(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			msg := nats.NewMsg("foo.bar")
-			msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+			msg.Header.Set(MsgTraceDest, traceSub.Subject)
 			if !test.deliverMsg {
 				msg.Header.Set(MsgTraceOnly, "true")
 			}
@@ -1504,7 +1504,7 @@ func TestMsgTraceWithGateways(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			msg := nats.NewMsg("foo.bar")
-			msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+			msg.Header.Set(MsgTraceDest, traceSub.Subject)
 			if !test.deliverMsg {
 				msg.Header.Set(MsgTraceOnly, "true")
 			}
@@ -1636,7 +1636,7 @@ func TestMsgTraceWithGatewayToOldServer(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			msg := nats.NewMsg("foo")
-			msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+			msg.Header.Set(MsgTraceDest, traceSub.Subject)
 			if !test.deliverMsg {
 				msg.Header.Set(MsgTraceOnly, "true")
 			}
@@ -1771,7 +1771,7 @@ func TestMsgTraceServiceImport(t *testing.T) {
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					msg := nats.NewMsg("bat")
-					msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+					msg.Header.Set(MsgTraceDest, traceSub.Subject)
 					if !test.deliverMsg {
 						msg.Header.Set(MsgTraceOnly, "true")
 					}
@@ -1988,7 +1988,7 @@ func TestMsgTraceServiceImportWithSuperCluster(t *testing.T) {
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					msg := nats.NewMsg("bat")
-					msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+					msg.Header.Set(MsgTraceDest, traceSub.Subject)
 					if !test.deliverMsg {
 						msg.Header.Set(MsgTraceOnly, "true")
 					}
@@ -2019,14 +2019,14 @@ func TestMsgTraceServiceImportWithSuperCluster(t *testing.T) {
 							// trace would not reach the origin server because
 							// the origin account header will not be present.
 							if mainTest.allow {
-								if hv := appMsg.Header.Get(MsgTraceSendTo); hv != traceSub.Subject {
+								if hv := appMsg.Header.Get(MsgTraceDest); hv != traceSub.Subject {
 									t.Fatalf("Expecting header with %q, but got %q", traceSub.Subject, hv)
 								}
 								if hv := appMsg.Header.Get(traceParentHdr); hv != traceParentHdrVal {
 									t.Fatalf("Expecting header with %q, but got %q", traceParentHdrVal, hv)
 								}
 							} else {
-								if hv := appMsg.Header.Get(MsgTraceSendTo); hv != _EMPTY_ {
+								if hv := appMsg.Header.Get(MsgTraceDest); hv != _EMPTY_ {
 									t.Fatalf("Expecting no header, but header was present with value: %q", hv)
 								}
 								if hv := appMsg.Header.Get(traceParentHdr); hv != _EMPTY_ {
@@ -2035,7 +2035,7 @@ func TestMsgTraceServiceImportWithSuperCluster(t *testing.T) {
 								// We don't really need to check that, but we
 								// should see the header with the first letter
 								// being an `X`.
-								hnb := []byte(MsgTraceSendTo)
+								hnb := []byte(MsgTraceDest)
 								hnb[0] = 'X'
 								hn := string(hnb)
 								if hv := appMsg.Header.Get(hn); hv != traceSub.Subject {
@@ -2285,7 +2285,7 @@ func TestMsgTraceServiceImportWithLeafNodeHub(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			msg := nats.NewMsg("bat")
-			msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+			msg.Header.Set(MsgTraceDest, traceSub.Subject)
 			if !test.deliverMsg {
 				msg.Header.Set(MsgTraceOnly, "true")
 			}
@@ -2491,7 +2491,7 @@ func TestMsgTraceServiceImportWithLeafNodeLeaf(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			msg := nats.NewMsg("baz")
-			msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+			msg.Header.Set(MsgTraceDest, traceSub.Subject)
 			if !test.deliverMsg {
 				msg.Header.Set(MsgTraceOnly, "true")
 			}
@@ -2649,7 +2649,7 @@ func TestMsgTraceStreamExport(t *testing.T) {
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					msg := nats.NewMsg("info.11.22.bar")
-					msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+					msg.Header.Set(MsgTraceDest, traceSub.Subject)
 					if !test.deliverMsg {
 						msg.Header.Set(MsgTraceOnly, "true")
 					}
@@ -2797,7 +2797,7 @@ func TestMsgTraceStreamExportWithSuperCluster(t *testing.T) {
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					msg := nats.NewMsg("info.11.22.bar")
-					msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+					msg.Header.Set(MsgTraceDest, traceSub.Subject)
 					if !test.deliverMsg {
 						msg.Header.Set(MsgTraceOnly, "true")
 					}
@@ -3004,7 +3004,7 @@ func TestMsgTraceStreamExportWithLeafNode_Hub(t *testing.T) {
 
 		t.Run(test.name, func(t *testing.T) {
 			msg := nats.NewMsg("info.11.22.bar")
-			msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+			msg.Header.Set(MsgTraceDest, traceSub.Subject)
 			if !test.deliverMsg {
 				msg.Header.Set(MsgTraceOnly, "true")
 			}
@@ -3191,7 +3191,7 @@ func TestMsgTraceStreamExportWithLeafNode_Leaf(t *testing.T) {
 
 		t.Run(test.name, func(t *testing.T) {
 			msg := nats.NewMsg("info.11.22.bar")
-			msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+			msg.Header.Set(MsgTraceDest, traceSub.Subject)
 			if !test.deliverMsg {
 				msg.Header.Set(MsgTraceOnly, "true")
 			}
@@ -3351,7 +3351,7 @@ func TestMsgTraceJetStream(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			msg := nats.NewMsg("foo")
-			msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+			msg.Header.Set(MsgTraceDest, traceSub.Subject)
 			if !test.deliverMsg {
 				msg.Header.Set(MsgTraceOnly, "true")
 			}
@@ -3397,7 +3397,7 @@ func TestMsgTraceJetStream(t *testing.T) {
 	// increased, and that the JS trace shows the error.
 	newMsg := func() *nats.Msg {
 		msg = nats.NewMsg("foo")
-		msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+		msg.Header.Set(MsgTraceDest, traceSub.Subject)
 		msg.Header.Set(MsgTraceOnly, "true")
 		msg.Data = []byte("hello")
 		return msg
@@ -3489,7 +3489,7 @@ func TestMsgTraceJetStream(t *testing.T) {
 	})
 	require_NoError(t, err)
 	msg = nats.NewMsg("baz")
-	msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+	msg.Header.Set(MsgTraceDest, traceSub.Subject)
 	msg.Header.Set(MsgTraceOnly, "true")
 	msg.Data = []byte("hello")
 	err = nct.PublishMsg(msg)
@@ -3610,7 +3610,7 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					msg := nats.NewMsg(mainTest.stream)
-					msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+					msg.Header.Set(MsgTraceDest, traceSub.Subject)
 					if !test.deliverMsg {
 						msg.Header.Set(MsgTraceOnly, "true")
 					}
@@ -3726,7 +3726,7 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 
 			newMsg := func() *nats.Msg {
 				msg := nats.NewMsg(mainTest.stream)
-				msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+				msg.Header.Set(MsgTraceDest, traceSub.Subject)
 				msg.Header.Set(MsgTraceOnly, "true")
 				msg.Header.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
 				msg.Data = []byte("hello")
@@ -3873,7 +3873,7 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 	for i := 0; i < 7; i++ {
 		jmsg, err := sub.NextMsg(time.Second)
 		require_NoError(t, err)
-		require_Equal[string](t, jmsg.Header.Get(MsgTraceSendTo), _EMPTY_)
+		require_Equal[string](t, jmsg.Header.Get(MsgTraceDest), _EMPTY_)
 	}
 
 	msg, err := traceSub.NextMsg(250 * time.Millisecond)
@@ -3908,7 +3908,7 @@ func TestMsgTraceWithCompression(t *testing.T) {
 	} {
 		t.Run(test.compressAlgo, func(t *testing.T) {
 			msg := nats.NewMsg("foo")
-			msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+			msg.Header.Set(MsgTraceDest, traceSub.Subject)
 			msg.Header.Set(acceptEncodingHeader, test.compressAlgo)
 			msg.Data = []byte("hello!")
 			err := nc.PublishMsg(msg)
@@ -4143,7 +4143,7 @@ func TestMsgTraceHops(t *testing.T) {
 
 	// Now send a trace message from c1s1
 	msg := nats.NewMsg("foo")
-	msg.Header.Set(MsgTraceSendTo, traceSub.Subject)
+	msg.Header.Set(MsgTraceDest, traceSub.Subject)
 	msg.Data = []byte("hello!")
 	err := nct.PublishMsg(msg)
 	require_NoError(t, err)
@@ -4454,7 +4454,7 @@ func TestMsgTraceTriggeredByExternalHeader(t *testing.T) {
 		// always deliver to the Nats-Trace-Dest, not the account.
 		{"trace dest and external header sampling",
 			func(h nats.Header) {
-				h.Set(MsgTraceSendTo, traceSub.Subject)
+				h.Set(MsgTraceDest, traceSub.Subject)
 				h.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
 			},
 			true,
@@ -4462,7 +4462,7 @@ func TestMsgTraceTriggeredByExternalHeader(t *testing.T) {
 			false},
 		{"trace dest and external header no sampling",
 			func(h nats.Header) {
-				h.Set(MsgTraceSendTo, traceSub.Subject)
+				h.Set(MsgTraceDest, traceSub.Subject)
 				h.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00")
 			},
 			true,
@@ -4470,7 +4470,7 @@ func TestMsgTraceTriggeredByExternalHeader(t *testing.T) {
 			false},
 		{"trace dest with trace only and external header sampling",
 			func(h nats.Header) {
-				h.Set(MsgTraceSendTo, traceSub.Subject)
+				h.Set(MsgTraceDest, traceSub.Subject)
 				h.Set(MsgTraceOnly, "true")
 				h.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
 			},
@@ -4479,7 +4479,7 @@ func TestMsgTraceTriggeredByExternalHeader(t *testing.T) {
 			false},
 		{"trace dest with trace only and external header no sampling",
 			func(h nats.Header) {
-				h.Set(MsgTraceSendTo, traceSub.Subject)
+				h.Set(MsgTraceDest, traceSub.Subject)
 				h.Set(MsgTraceOnly, "true")
 				h.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00")
 			},

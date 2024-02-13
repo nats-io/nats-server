@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	MsgTraceSendTo        = "Nats-Trace-Dest"
+	MsgTraceDest          = "Nats-Trace-Dest"
 	MsgTraceHop           = "Nats-Trace-Hop"
 	MsgTraceOriginAccount = "Nats-Trace-Origin-Account"
 	MsgTraceOnly          = "Nats-Trace-Only"
@@ -351,7 +351,10 @@ func (c *client) initMsgTrace() *msgTrace {
 		return vv[0]
 	}
 	ct := getCompressionType(getHdrVal(acceptEncodingHeader))
-	var traceOnly bool
+	var (
+		dest      string
+		traceOnly bool
+	)
 	// Check for traceOnly only if not external.
 	if !external {
 		if to := getHdrVal(MsgTraceOnly); to != _EMPTY_ {
@@ -359,6 +362,18 @@ func (c *client) initMsgTrace() *msgTrace {
 			switch tos {
 			case "1", "true", "on":
 				traceOnly = true
+			}
+		}
+		dest = getHdrVal(MsgTraceDest)
+		// Check the destination to see if this is a valid public subject.
+		if !IsValidPublishSubject(dest) {
+			// We still have to return a msgTrace object (if traceOnly is set)
+			// because if we don't, the message will end-up being delivered to
+			// applications, which may break them. We report the error in any case.
+			c.Errorf("Destination %q is not valid, won't be able to trace events", dest)
+			if !traceOnly {
+				// We can bail, tracing will be disabled for this message.
+				return nil
 			}
 		}
 	}
@@ -394,16 +409,21 @@ func (c *client) initMsgTrace() *msgTrace {
 		}
 		// Unless we already got the account, we need to look it up.
 		if acc == nil {
-			// We don't want to do account resolving here, and we have to return
-			// a msgTrace object because if we don't and if the user wanted to do
-			// trace-only, the message would end-up being delivered.
+			// We don't want to do account resolving here.
 			if acci, ok := c.srv.accounts.Load(oan); ok {
 				acc = acci.(*Account)
 				// Since we have looked-up the account, we don't need oan, so
 				// clear it in case it was set.
 				oan = _EMPTY_
 			} else {
+				// We still have to return a msgTrace object (if traceOnly is set)
+				// because if we don't, the message will end-up being delivered to
+				// applications, which may break them. We report the error in any case.
 				c.Errorf("Account %q was not found, won't be able to trace events", oan)
+				if !traceOnly {
+					// We can bail, tracing will be disabled for this message.
+					return nil
+				}
 			}
 		}
 		// Check the hop header
@@ -414,7 +434,6 @@ func (c *client) initMsgTrace() *msgTrace {
 	}
 	// If external, we need to have the account's trace destination set,
 	// otherwise, we are not enabling tracing.
-	var dest string
 	if external {
 		if acc != nil {
 			acc.mu.RLock()
@@ -422,10 +441,9 @@ func (c *client) initMsgTrace() *msgTrace {
 			acc.mu.RUnlock()
 		}
 		if dest == _EMPTY_ {
+			// No account destination, no tracing for external trace headers.
 			return nil
 		}
-	} else {
-		dest = getHdrVal(MsgTraceSendTo)
 	}
 	c.pa.trace = &msgTrace{
 		srv:  c.srv,
@@ -478,7 +496,7 @@ func genHeaderMapIfTraceHeadersPresent(hdr []byte) (map[string][]string, bool) {
 		return nil, false
 	}
 
-	traceDestHdrAsBytes := stringToBytes(MsgTraceSendTo)
+	traceDestHdrAsBytes := stringToBytes(MsgTraceDest)
 	traceParentHdrAsBytes := stringToBytes(traceParentHdr)
 	crLFAsBytes := stringToBytes(CR_LF)
 	dashAsBytes := stringToBytes("-")
@@ -627,7 +645,7 @@ func (t *msgTrace) disableTraceHeaders(c *client, msg []byte) []int {
 		return []int{-1, -1}
 	}
 	hdr := msg[:c.pa.hdr]
-	headers := [2]string{MsgTraceSendTo, traceParentHdr}
+	headers := [2]string{MsgTraceDest, traceParentHdr}
 	positions := [2]int{-1, -1}
 	for i := 0; i < 2; i++ {
 		key := stringToBytes(headers[i])
@@ -657,7 +675,7 @@ func (t *msgTrace) disableTraceHeaders(c *client, msg []byte) []int {
 // Changes back the character at the given position `pos` in the `msg`
 // byte slice to the first character of the MsgTraceSendTo header.
 func (t *msgTrace) enableTraceHeaders(c *client, msg []byte, positions []int) {
-	firstChar := [2]byte{MsgTraceSendTo[0], traceParentHdr[0]}
+	firstChar := [2]byte{MsgTraceDest[0], traceParentHdr[0]}
 	for i, pos := range positions {
 		if pos == -1 {
 			continue
