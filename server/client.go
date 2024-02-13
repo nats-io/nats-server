@@ -854,8 +854,12 @@ func (c *client) applyAccountLimits() {
 			}
 		}
 	}
+
+	c.acc.mu.RLock()
 	minLimit(&c.mpay, c.acc.mpay)
 	minLimit(&c.msubs, c.acc.msubs)
+	c.acc.mu.RUnlock()
+
 	s := c.srv
 	opts := s.getOpts()
 	mPay := opts.MaxPayload
