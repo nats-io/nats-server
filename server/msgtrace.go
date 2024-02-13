@@ -122,13 +122,13 @@ type MsgTraceEgress struct {
 
 // -------------------------------------------------------------
 
-func (t MsgTraceBase) typ() MsgTraceType       { return t.Type }
-func (_ MsgTraceIngress) new() MsgTrace        { return &MsgTraceIngress{} }
-func (_ MsgTraceSubjectMapping) new() MsgTrace { return &MsgTraceSubjectMapping{} }
-func (_ MsgTraceStreamExport) new() MsgTrace   { return &MsgTraceStreamExport{} }
-func (_ MsgTraceServiceImport) new() MsgTrace  { return &MsgTraceServiceImport{} }
-func (_ MsgTraceJetStream) new() MsgTrace      { return &MsgTraceJetStream{} }
-func (_ MsgTraceEgress) new() MsgTrace         { return &MsgTraceEgress{} }
+func (t MsgTraceBase) typ() MsgTraceType     { return t.Type }
+func (MsgTraceIngress) new() MsgTrace        { return &MsgTraceIngress{} }
+func (MsgTraceSubjectMapping) new() MsgTrace { return &MsgTraceSubjectMapping{} }
+func (MsgTraceStreamExport) new() MsgTrace   { return &MsgTraceStreamExport{} }
+func (MsgTraceServiceImport) new() MsgTrace  { return &MsgTraceServiceImport{} }
+func (MsgTraceJetStream) new() MsgTrace      { return &MsgTraceJetStream{} }
+func (MsgTraceEgress) new() MsgTrace         { return &MsgTraceEgress{} }
 
 var msgTraceInterfaces = map[MsgTraceType]MsgTrace{
 	MsgTraceIngressType:        MsgTraceIngress{},
@@ -153,7 +153,7 @@ func (t *MsgTraceEvents) UnmarshalJSON(data []byte) error {
 		}
 		tr, ok := msgTraceInterfaces[tt.Type]
 		if !ok {
-			return fmt.Errorf("Unknown trace type %v", tt.Type)
+			return fmt.Errorf("unknown trace type %v", tt.Type)
 		}
 		te := tr.new()
 		if err := json.Unmarshal(r, te); err != nil {
@@ -315,7 +315,7 @@ func (c *client) initMsgTrace() *msgTrace {
 	if msgTraceRunInTests {
 		// Check the type of client that tries to initialize a trace struct.
 		if !(c.kind == CLIENT || c.kind == ROUTER || c.kind == GATEWAY || c.kind == LEAF) {
-			panic(fmt.Errorf("Unexpected client type %q trying to initialize msgTrace", c.kindString()))
+			panic(fmt.Sprintf("Unexpected client type %q trying to initialize msgTrace", c.kindString()))
 		}
 		// In some tests, we want to make a server behave like an old server
 		// and so even if a trace header is received, we want the server to

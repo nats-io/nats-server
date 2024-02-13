@@ -9514,3 +9514,88 @@ func TestNoRaceJetStreamClusterBadRestartsWithHealthzPolling(t *testing.T) {
 		return nil
 	})
 }
+
+func TestNoRaceJetStreamKVReplaceWithServerRestart(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, _ := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+	// Shorten wait time for disconnects.
+	js, err := nc.JetStream(nats.MaxWait(time.Second))
+	require_NoError(t, err)
+
+	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
+		Bucket:   "TEST",
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	createData := func(n int) []byte {
+		const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+		b := make([]byte, n)
+		for i := range b {
+			b[i] = letterBytes[rand.Intn(len(letterBytes))]
+		}
+		return b
+	}
+
+	_, err = kv.Create("foo", createData(160))
+	require_NoError(t, err)
+
+	ch := make(chan struct{})
+	wg := sync.WaitGroup{}
+
+	// For counting errors that should not happen.
+	errCh := make(chan error, 1024)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		var lastData []byte
+		var revision uint64
+
+		for {
+			select {
+			case <-ch:
+				return
+			default:
+				k, err := kv.Get("foo")
+				if err == nats.ErrKeyNotFound {
+					errCh <- err
+				} else if k != nil {
+					if lastData != nil && k.Revision() == revision && !bytes.Equal(lastData, k.Value()) {
+						errCh <- fmt.Errorf("data loss [%s][rev:%d] expected:[%q] is:[%q]\n", "foo", revision, lastData, k.Value())
+					}
+					newData := createData(160)
+					if revision, err = kv.Update("foo", newData, k.Revision()); err == nil {
+						lastData = newData
+					}
+				}
+			}
+		}
+	}()
+
+	// Wait a short bit.
+	time.Sleep(2 * time.Second)
+	for _, s := range c.servers {
+		s.Shutdown()
+		// Need to leave servers down for awhile to trigger bug properly.
+		time.Sleep(5 * time.Second)
+		s = c.restartServer(s)
+		c.waitOnServerHealthz(s)
+	}
+
+	// Shutdown the go routine above.
+	close(ch)
+	// Wait for it to finish.
+	wg.Wait()
+
+	if len(errCh) != 0 {
+		for err := range errCh {
+			t.Logf("Received err %v during test", err)
+		}
+		t.Fatalf("Encountered errors")
+	}
+}

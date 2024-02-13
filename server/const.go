@@ -1,4 +1,4 @@
-// Copyright 2012-2023 The NATS Authors
+// Copyright 2012-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -217,4 +217,10 @@ const (
 
 	// DEFAULT_FETCH_TIMEOUT is the default time that the system will wait for an account fetch to return.
 	DEFAULT_ACCOUNT_FETCH_TIMEOUT = 1900 * time.Millisecond
+)
+
+// For direct get batch requests.
+const (
+	dg  = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\n\r\n"
+	dgb = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\n\r\n"
 )

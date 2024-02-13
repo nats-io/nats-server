@@ -286,6 +286,7 @@ type stream struct {
 	clMu       sync.Mutex
 	clseq      uint64
 	clfs       uint64
+	inflight   map[uint64]uint64
 	leader     string
 	lqsent     time.Time
 	catchups   map[string]uint64
@@ -4097,10 +4098,18 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 
 	seq := req.Seq
 	wc := subjectHasWildcard(req.NextFor)
+	// For tracking num pending if we are batch.
+	var np, lseq, validThrough uint64
+	var isBatchRequest bool
 	batch := req.Batch
 	if batch == 0 {
 		batch = 1
+	} else {
+		// This is a batch request, capture initial numPending.
+		isBatchRequest = true
+		np, validThrough = store.NumPending(seq, req.NextFor, false)
 	}
+
 	// Grab MaxBytes
 	mb := req.MaxBytes
 	if mb == 0 && s != nil {
@@ -4147,16 +4156,34 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 		hdr := sm.hdr
 		ts := time.Unix(0, sm.ts).UTC()
 
-		if len(hdr) == 0 {
-			const ht = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\n\r\n"
-			hdr = []byte(fmt.Sprintf(ht, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano)))
+		if isBatchRequest {
+			if len(hdr) == 0 {
+				hdr = []byte(fmt.Sprintf(dgb, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), np, lseq))
+			} else {
+				hdr = copyBytes(hdr)
+				hdr = genHeader(hdr, JSStream, name)
+				hdr = genHeader(hdr, JSSubject, sm.subj)
+				hdr = genHeader(hdr, JSSequence, strconv.FormatUint(sm.seq, 10))
+				hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
+				hdr = genHeader(hdr, JSNumPending, strconv.FormatUint(np, 10))
+				hdr = genHeader(hdr, JSLastSequence, strconv.FormatUint(lseq, 10))
+			}
+			// Decrement num pending. This is optimization and we do not continue to look it up for these operations.
+			np--
 		} else {
-			hdr = copyBytes(hdr)
-			hdr = genHeader(hdr, JSStream, name)
-			hdr = genHeader(hdr, JSSubject, sm.subj)
-			hdr = genHeader(hdr, JSSequence, strconv.FormatUint(sm.seq, 10))
-			hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
+			if len(hdr) == 0 {
+				hdr = []byte(fmt.Sprintf(dg, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano)))
+			} else {
+				hdr = copyBytes(hdr)
+				hdr = genHeader(hdr, JSStream, name)
+				hdr = genHeader(hdr, JSSubject, sm.subj)
+				hdr = genHeader(hdr, JSSequence, strconv.FormatUint(sm.seq, 10))
+				hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
+			}
 		}
+		// Track our lseq
+		lseq = sm.seq
+		// Send out our message.
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, sm.msg, nil, 0))
 		// Check if we have exceeded max bytes.
 		sentBytes += len(sm.subj) + len(sm.hdr) + len(sm.msg)
@@ -4166,9 +4193,12 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 	}
 
 	// If batch was requested send EOB.
-	if batch > 1 {
-		np, _ := store.NumPending(seq, req.NextFor, false)
-		hdr := []byte(fmt.Sprintf("NATS/1.0 204 EOB\r\nNats-Pending-Messages: %d\r\n\r\n", np))
+	if isBatchRequest {
+		// Update if the stream's lasts sequence has moved past our validThrough.
+		if mset.lastSeq() > validThrough {
+			np, _ = store.NumPending(seq, req.NextFor, false)
+		}
+		hdr := []byte(fmt.Sprintf("NATS/1.0 204 EOB\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\n\r\n", np, lseq))
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 	}
 }
@@ -4317,10 +4347,10 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	// Process additional msg headers if still present.
 	var msgId string
 	var rollupSub, rollupAll bool
+	isClustered := mset.isClustered()
 
 	if len(hdr) > 0 {
 		outq := mset.outq
-		isClustered := mset.isClustered()
 
 		// Certain checks have already been performed if in clustered mode, so only check if not.
 		// Note, for cluster mode but with message tracing (without message delivery), we need
@@ -4569,6 +4599,22 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		}
 	}
 
+	// If clustered this was already checked and we do not want to check here and possibly introduce skew.
+	if !isClustered {
+		if exceeded, err := jsa.wouldExceedLimits(stype, tierName, mset.cfg.Replicas, subject, hdr, msg); exceeded {
+			if err == nil {
+				err = NewJSAccountResourcesExceededError()
+			}
+			s.RateLimitWarnf("JetStream resource limits exceeded for account: %q", accName)
+			if canRespond {
+				resp.PubAck = &PubAck{Stream: name}
+				resp.Error = err
+				response, _ = json.Marshal(resp)
+				mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
+			}
+		}
+	}
+
 	// Store actual msg.
 	if lseq == 0 && ts == 0 {
 		seq, ts, err = store.StoreMsg(subject, hdr, msg)
@@ -4608,28 +4654,6 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			mset.outq.sendMsg(reply, response)
 		}
 		return err
-	}
-
-	if exceeded, apiErr := jsa.limitsExceeded(stype, tierName, mset.cfg.Replicas); exceeded {
-		s.RateLimitWarnf("JetStream resource limits exceeded for account: %q", accName)
-		if canRespond {
-			resp.PubAck = &PubAck{Stream: name}
-			if apiErr == nil {
-				resp.Error = NewJSAccountResourcesExceededError()
-			} else {
-				resp.Error = apiErr
-			}
-			response, _ = json.Marshal(resp)
-			mset.outq.sendMsg(reply, response)
-		}
-		// If we did not succeed put those values back.
-		var state StreamState
-		mset.store.FastState(&state)
-		mset.lseq = state.LastSeq
-		mset.lmsgId = olmsgId
-		mset.mu.Unlock()
-		store.RemoveMsg(seq)
-		return nil
 	}
 
 	// If we have a msgId make sure to save.

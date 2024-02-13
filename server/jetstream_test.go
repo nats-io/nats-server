@@ -22153,19 +22153,24 @@ func TestJetStreamDirectGetBatch(t *testing.T) {
 	}
 
 	// Batch sizes greater than 1 will have a nil message as the end marker.
-	checkResponses := func(sub *nats.Subscription, numPending int, expected ...string) {
+	checkResponses := func(sub *nats.Subscription, numPendingStart int, expected ...string) {
 		t.Helper()
 		defer sub.Unsubscribe()
 		checkSubsPending(t, sub, len(expected))
+		np := numPendingStart
 		for i := 0; i < len(expected); i++ {
 			msg, err := sub.NextMsg(10 * time.Millisecond)
 			require_NoError(t, err)
 			// If expected is _EMPTY_ that signals we expect a EOB marker.
 			if subj := expected[i]; subj != _EMPTY_ {
 				// Make sure subject is correct.
-				require_Equal(t, expected[i], msg.Header.Get("Nats-Subject"))
+				require_Equal(t, expected[i], msg.Header.Get(JSSubject))
 				// Should have Data field non-zero
 				require_True(t, len(msg.Data) > 0)
+				// Check we have NumPending and its correct.
+				require_Equal(t, strconv.Itoa(np), msg.Header.Get(JSNumPending))
+				np--
+
 			} else {
 				// Check for properly formatted EOB marker.
 				// Should have no body.
@@ -22175,28 +22180,28 @@ func TestJetStreamDirectGetBatch(t *testing.T) {
 				// Check description is EOB
 				require_Equal(t, msg.Header.Get("Description"), "EOB")
 				// Check we have NumPending and its correct.
-				require_Equal(t, strconv.Itoa(numPending), msg.Header.Get("Nats-Pending-Messages"))
+				require_Equal(t, strconv.Itoa(np), msg.Header.Get(JSNumPending))
 			}
 		}
 	}
 
 	// Run some simple tests.
 	sub := sendRequest(&JSApiMsgGetRequest{Seq: 1, Batch: 2})
-	checkResponses(sub, 997, "foo.foo", "foo.bar", _EMPTY_)
+	checkResponses(sub, 999, "foo.foo", "foo.bar", _EMPTY_)
 
 	sub = sendRequest(&JSApiMsgGetRequest{Seq: 1, Batch: 3})
-	checkResponses(sub, 996, "foo.foo", "foo.bar", "foo.baz", _EMPTY_)
+	checkResponses(sub, 999, "foo.foo", "foo.bar", "foo.baz", _EMPTY_)
 
 	// Test NextFor works
 	sub = sendRequest(&JSApiMsgGetRequest{Seq: 1, Batch: 3, NextFor: "foo.*"})
-	checkResponses(sub, 996, "foo.foo", "foo.bar", "foo.baz", _EMPTY_)
+	checkResponses(sub, 999, "foo.foo", "foo.bar", "foo.baz", _EMPTY_)
 
 	sub = sendRequest(&JSApiMsgGetRequest{Seq: 1, Batch: 3, NextFor: "foo.baz"})
-	checkResponses(sub, 330, "foo.baz", "foo.baz", "foo.baz", _EMPTY_)
+	checkResponses(sub, 333, "foo.baz", "foo.baz", "foo.baz", _EMPTY_)
 
 	// Test stopping early by starting at 997 with only 3 messages.
 	sub = sendRequest(&JSApiMsgGetRequest{Seq: 997, Batch: 10, NextFor: "foo.*"})
-	checkResponses(sub, 0, "foo.foo", "foo.bar", "foo.baz", _EMPTY_)
+	checkResponses(sub, 3, "foo.foo", "foo.bar", "foo.baz", _EMPTY_)
 }
 
 func TestJetStreamDirectGetBatchMaxBytes(t *testing.T) {

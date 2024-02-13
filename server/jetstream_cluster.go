@@ -2880,7 +2880,18 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					mt = mset.getAndDeleteMsgTrace(lseq)
 				}
 				// Process the actual message here.
-				if err := mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt); err != nil {
+				err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt)
+
+				// If we have inflight make sure to clear after processing.
+				// TODO(dlc) - technically check on inflight != nil could cause datarace.
+				// But do not want to acquire lock since tracking this will be rare.
+				if mset.inflight != nil {
+					mset.clMu.Lock()
+					delete(mset.inflight, lseq)
+					mset.clMu.Unlock()
+				}
+
+				if err != nil {
 					if err == errLastSeqMismatch {
 						var state StreamState
 						mset.store.FastState(&state)
@@ -3115,6 +3126,12 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 	if sa == nil {
 		return
 	}
+
+	// Clear inflight if we have it.
+	mset.clMu.Lock()
+	mset.inflight = nil
+	mset.clMu.Unlock()
+
 	js.mu.Lock()
 	s, account, err := js.srv, sa.Client.serviceAccount(), sa.err
 	client, subject, reply := sa.Client, sa.Subject, sa.Reply
@@ -7501,9 +7518,16 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	mset.mu.RLock()
 	canRespond := !mset.cfg.NoAck && len(reply) > 0
 	name, stype, store := mset.cfg.Name, mset.cfg.Storage, mset.store
-	s, js, jsa, st, r, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, int64(mset.cfg.Replicas), mset.tier, mset.outq, mset.node
+	s, js, jsa, st, r, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.tier, mset.outq, mset.node
 	maxMsgSize, lseq, clfs := int(mset.cfg.MaxMsgSize), mset.lseq, mset.clfs
+	interestPolicy, discard, maxMsgs, maxBytes := mset.cfg.Retention != LimitsPolicy, mset.cfg.Discard, mset.cfg.MaxMsgs, mset.cfg.MaxBytes
 	isLeader, isSealed := mset.isLeader(), mset.cfg.Sealed
+
+	// We need to track state to check limits if interest retention and discard new with max msgs or bytes.
+	var state StreamState
+	if interestPolicy && discard == DiscardNew && (maxMsgs > 0 || maxBytes > 0) {
+		mset.store.FastState(&state)
+	}
 	mset.mu.RUnlock()
 
 	// This should not happen but possible now that we allow scale up, and scale down where this could trigger.
@@ -7554,50 +7578,14 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	}
 
 	// Check here pre-emptively if we have exceeded our account limits.
-	var exceeded bool
-	jsa.usageMu.Lock()
-	jsaLimits, ok := jsa.limits[tierName]
-	if !ok {
-		jsa.usageMu.Unlock()
-		err := fmt.Errorf("no JetStream resource limits found account: %q", jsa.acc().Name)
-		s.RateLimitWarnf(err.Error())
-		if canRespond {
-			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
-			resp.Error = NewJSNoLimitsError()
-			response, _ = json.Marshal(resp)
-			outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
+	if exceeded, err := jsa.wouldExceedLimits(st, tierName, r, subject, hdr, msg); exceeded {
+		if err == nil {
+			err = NewJSAccountResourcesExceededError()
 		}
-		return err
-	}
-	t, ok := jsa.usage[tierName]
-	if !ok {
-		t = &jsaStorage{}
-		jsa.usage[tierName] = t
-	}
-	// Make sure replicas is correct.
-	if r < 1 {
-		r = 1
-	}
-	// This is for limits. If we have no tier, consider all to be flat, vs tiers like R3 where we want to scale limit by replication.
-	lr := r
-	if tierName == _EMPTY_ {
-		lr = 1
-	}
-	// Tiers are flat, meaning the limit for R3 will be 100GB, not 300GB, so compare to total but adjust limits.
-	if st == MemoryStorage && jsaLimits.MaxMemory > 0 {
-		exceeded = t.total.mem+(int64(memStoreMsgSize(subject, hdr, msg))*r) > (jsaLimits.MaxMemory * lr)
-	} else if jsaLimits.MaxStore > 0 {
-		exceeded = t.total.store+(int64(fileStoreMsgSize(subject, hdr, msg))*r) > (jsaLimits.MaxStore * lr)
-	}
-	jsa.usageMu.Unlock()
-
-	// If we have exceeded our account limits go ahead and return.
-	if exceeded {
-		err := fmt.Errorf("JetStream resource limits exceeded for account: %q", jsa.acc().Name)
 		s.RateLimitWarnf(err.Error())
 		if canRespond {
 			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
-			resp.Error = NewJSAccountResourcesExceededError()
+			resp.Error = err
 			response, _ = json.Marshal(resp)
 			outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
 		}
@@ -7676,6 +7664,48 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		lseq, clfs = mset.lseq, mset.clfs
 		mset.clseq = lseq + clfs
 	}
+
+	// Check if we have an interest policy and discard new with max msgs or bytes.
+	// We need to deny here otherwise it could succeed on some peers and not others
+	// depending on consumer ack state. So we deny here, if we allow that means we know
+	// it would succeed on every peer.
+	if interestPolicy && discard == DiscardNew && (maxMsgs > 0 || maxBytes > 0) {
+		// Track inflight.
+		if mset.inflight == nil {
+			mset.inflight = make(map[uint64]uint64)
+		}
+		if mset.cfg.Storage == FileStorage {
+			mset.inflight[mset.clseq] = fileStoreMsgSize(subject, hdr, msg)
+		} else {
+			mset.inflight[mset.clseq] = memStoreMsgSize(subject, hdr, msg)
+		}
+
+		var err error
+		if maxMsgs > 0 && state.Msgs+uint64(len(mset.inflight)) > uint64(maxMsgs) {
+			err = ErrMaxMsgs
+		} else if maxBytes > 0 {
+			// TODO(dlc) - Could track this rollup independently.
+			var bytesPending uint64
+			for _, nb := range mset.inflight {
+				bytesPending += nb
+			}
+			if state.Bytes+bytesPending > uint64(maxBytes) {
+				err = ErrMaxBytes
+			}
+		}
+		if err != nil {
+			delete(mset.inflight, mset.clseq)
+			mset.clMu.Unlock()
+			if canRespond {
+				var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
+				resp.Error = NewJSStreamStoreFailedError(err, Unless(err))
+				response, _ = json.Marshal(resp)
+				outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
+			}
+			return err
+		}
+	}
+
 	esm := encodeStreamMsgAllowCompress(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano(), mset.compressOK)
 	var mtKey uint64
 	if mt != nil {
@@ -8578,10 +8608,13 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 
 	// Reset notion of first if this request wants sequences before our starting sequence
 	// and we would have nothing to send. If we have partial messages still need to send skips for those.
+	// We will keep sreq's first sequence to not create sequence mismatches on the follower, but we extend the last to our current state.
 	if sreq.FirstSeq < state.FirstSeq && state.FirstSeq > sreq.LastSeq {
 		s.Debugf("Catchup for stream '%s > %s' resetting request first sequence from %d to %d",
 			mset.account(), mset.name(), sreq.FirstSeq, state.FirstSeq)
-		sreq.FirstSeq = state.FirstSeq
+		if state.LastSeq > sreq.LastSeq {
+			sreq.LastSeq = state.LastSeq
+		}
 	}
 
 	// Setup sequences to walk through.
@@ -8717,10 +8750,22 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 				if drOk && dr.First > 0 {
 					sendDR()
 				}
-				s.Noticef("Catchup for stream '%s > %s' complete", mset.account(), mset.name())
-				// EOF
-				s.sendInternalMsgLocked(sendSubject, _EMPTY_, nil, nil)
-				return false
+				// Check for a condition where our state's first is now past the last that we could have sent.
+				// If so reset last and continue sending.
+				var state StreamState
+				mset.mu.RLock()
+				mset.store.FastState(&state)
+				mset.mu.RUnlock()
+				if last < state.FirstSeq {
+					last = state.LastSeq
+				}
+				// Recheck our exit condition.
+				if seq == last {
+					s.Noticef("Catchup for stream '%s > %s' complete", mset.account(), mset.name())
+					// EOF
+					s.sendInternalMsgLocked(sendSubject, _EMPTY_, nil, nil)
+					return false
+				}
 			}
 			select {
 			case <-remoteQuitCh:
