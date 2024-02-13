@@ -4901,15 +4901,24 @@ func (o *consumer) hasNoLocalInterest() bool {
 
 // This is when the underlying stream has been purged.
 // sseq is the new first seq for the stream after purge.
-// Lock should be held.
-func (o *consumer) purge(sseq uint64, slseq uint64) {
+// Lock should NOT be held.
+func (o *consumer) purge(sseq uint64, slseq uint64, isWider bool) {
 	// Do not update our state unless we know we are the leader.
 	if !o.isLeader() {
 		return
 	}
 	// Signals all have been purged for this consumer.
-	if sseq == 0 {
+	if sseq == 0 && !isWider {
 		sseq = slseq + 1
+	}
+
+	var store StreamStore
+	if isWider {
+		o.mu.RLock()
+		if o.mset != nil {
+			store = o.mset.store
+		}
+		o.mu.RUnlock()
 	}
 
 	o.mu.Lock()
@@ -4920,7 +4929,6 @@ func (o *consumer) purge(sseq uint64, slseq uint64) {
 
 	if o.asflr < sseq {
 		o.asflr = sseq - 1
-
 		// We need to remove those no longer relevant from pending.
 		for seq, p := range o.pending {
 			if seq <= o.asflr {
@@ -4934,8 +4942,24 @@ func (o *consumer) purge(sseq uint64, slseq uint64) {
 				delete(o.rdc, seq)
 				// rdq handled below.
 			}
+			if isWider && store != nil {
+				// Our filtered subject, which could be all, is wider than the underlying purge.
+				// We need to check if the pending items left are still valid.
+				var smv StoreMsg
+				if _, err := store.LoadMsg(seq, &smv); err == errDeletedMsg || err == ErrStoreMsgNotFound {
+					if p.Sequence > o.adflr {
+						o.adflr = p.Sequence
+						if o.adflr > o.dseq {
+							o.dseq = o.adflr
+						}
+					}
+					delete(o.pending, seq)
+					delete(o.rdc, seq)
+				}
+			}
 		}
 	}
+
 	// This means we can reset everything at this point.
 	if len(o.pending) == 0 {
 		o.pending, o.rdc = nil, nil
