@@ -13534,6 +13534,13 @@ func TestJetStreamPurgeAndFilteredConsumers(t *testing.T) {
 		t.Fatalf("Expected NumPending to be 10, got %d", ci.NumPending)
 	}
 
+	// Also check unfiltered with interleaving messages.
+	_, err = js.AddConsumer("S", &nats.ConsumerConfig{
+		Durable:   "all",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
 	// Now purge only adam.
 	jr, _ := json.Marshal(&JSApiStreamPurgeRequest{Subject: "FOO.adam"})
 	_, err = nc.Request(fmt.Sprintf(JSApiStreamPurgeT, "S"), jr, time.Second)
@@ -13558,6 +13565,12 @@ func TestJetStreamPurgeAndFilteredConsumers(t *testing.T) {
 	}
 	if ci.AckFloor.Stream != 20 {
 		t.Fatalf("Expected AckFloor for stream to be 20, got %d", ci.AckFloor.Stream)
+	}
+
+	ci, err = js.ConsumerInfo("S", "all")
+	require_NoError(t, err)
+	if ci.NumPending != 10 {
+		t.Fatalf("Expected NumPending to be 10, got %d", ci.NumPending)
 	}
 }
 
@@ -22324,4 +22337,68 @@ func TestJetStreamConsumerNakThenAckFloorMove(t *testing.T) {
 	require_Equal(t, ci.AckFloor.Consumer, 12)
 	require_Equal(t, ci.AckFloor.Stream, 11)
 	require_Equal(t, ci.NumAckPending, 0)
+}
+
+func TestJetStreamSubjectFilteredPurgeClearsPendingAcks(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo", "bar"},
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 5; i++ {
+		js.Publish("foo", []byte("OK"))
+		js.Publish("bar", []byte("OK"))
+	}
+
+	// Note that there are no subject filters here, this is deliberate
+	// as previously the purge with filter code was checking for them.
+	// We want to prove that unfiltered consumers also get purged.
+	ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Name:          "my_consumer",
+		AckPolicy:     nats.AckExplicitPolicy,
+		MaxAckPending: 10,
+	})
+	require_NoError(t, err)
+	require_Equal(t, ci.NumPending, 10)
+	require_Equal(t, ci.NumAckPending, 0)
+
+	sub, err := js.PullSubscribe(">", "", nats.Bind("TEST", "my_consumer"))
+	require_NoError(t, err)
+
+	msgs, err := sub.Fetch(10)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 10)
+
+	ci, err = js.ConsumerInfo("TEST", "my_consumer")
+	require_NoError(t, err)
+	require_Equal(t, ci.NumPending, 0)
+	require_Equal(t, ci.NumAckPending, 10)
+
+	require_NoError(t, js.PurgeStream("TEST", &nats.StreamPurgeRequest{
+		Subject: "foo",
+	}))
+
+	ci, err = js.ConsumerInfo("TEST", "my_consumer")
+	require_NoError(t, err)
+	require_Equal(t, ci.NumPending, 0)
+	require_Equal(t, ci.NumAckPending, 5)
+
+	for i := 0; i < 5; i++ {
+		js.Publish("foo", []byte("OK"))
+	}
+	msgs, err = sub.Fetch(5)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 5)
+
+	ci, err = js.ConsumerInfo("TEST", "my_consumer")
+	require_NoError(t, err)
+	require_Equal(t, ci.NumPending, 0)
+	require_Equal(t, ci.NumAckPending, 10)
 }
