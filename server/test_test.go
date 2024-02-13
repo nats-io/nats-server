@@ -140,7 +140,7 @@ func require_LessThan[T ordered](t *testing.T, a, b T) {
 	}
 }
 
-func require_ChanRead[T any](t *testing.T, ch chan T, timeout time.Duration) T {
+func require_ChanRead[T any](t *testing.T, ch <-chan T, timeout time.Duration) T {
 	t.Helper()
 	select {
 	case v := <-ch:

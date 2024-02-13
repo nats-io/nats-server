@@ -2003,8 +2003,9 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 	// Purge consumers.
 	// Check for filtered purge.
 	if preq != nil && preq.Subject != _EMPTY_ {
-		ss := store.FilteredState(state.FirstSeq, preq.Subject)
-		fseq = ss.First
+		if ss := store.FilteredState(state.FirstSeq, preq.Subject); ss.Msgs > 0 {
+			fseq = ss.First
+		}
 	}
 
 	mset.clsMu.RLock()
@@ -2017,11 +2018,12 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 			// consumer filter subject is equal to purged subject
 			// or consumer filter subject is subset of purged subject,
 			// but not the other way around.
-			o.isEqualOrSubsetMatch(preq.Subject)
+			o.isEqualOrSubsetMatch(preq.Subject) ||
+			// A subject was given but the consumer isn't filtered.
+			!o.isFiltered()
 		o.mu.RUnlock()
 		if doPurge {
 			o.purge(fseq, lseq)
-
 		}
 	}
 	mset.clsMu.RUnlock()
