@@ -5543,6 +5543,7 @@ func (e *selectPeerError) accumulate(eAdd *selectPeerError) {
 
 // selectPeerGroup will select a group of peers to start a raft group.
 // when peers exist already the unique tag prefix check for the replaceFirstExisting will be skipped
+// js lock should be held.
 func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamConfig, existing []string, replaceFirstExisting int, ignore []string) ([]string, *selectPeerError) {
 	if cluster == _EMPTY_ || cfg == nil {
 		return nil, &selectPeerError{misc: true}
@@ -5564,6 +5565,7 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 		id    string
 		avail uint64
 		ha    int
+		ns    int
 	}
 
 	var nodes []wn
@@ -5625,6 +5627,22 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 		ip = make(map[string]struct{})
 		for _, p := range ignore {
 			ip[p] = struct{}{}
+		}
+	}
+
+	// Grab the number of streams and HA assets currently assigned to each peer.
+	// HAAssets under usage is async, so calculate here in realtime based on assignments.
+	peerStreams := make(map[string]int, len(peers))
+	peerHA := make(map[string]int, len(peers))
+	for _, asa := range cc.streams {
+		for _, sa := range asa {
+			isHA := len(sa.Group.Peers) > 1
+			for _, peer := range sa.Group.Peers {
+				peerStreams[peer]++
+				if isHA {
+					peerHA[peer]++
+				}
+			}
 		}
 	}
 
@@ -5690,7 +5708,6 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 		}
 
 		var available uint64
-		var ha int
 		if ni.stats != nil {
 			switch cfg.Storage {
 			case MemoryStorage:
@@ -5710,7 +5727,6 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 					available = uint64(ni.cfg.MaxStore) - used
 				}
 			}
-			ha = ni.stats.HAAssets
 		}
 
 		// Otherwise check if we have enough room if maxBytes set.
@@ -5742,7 +5758,7 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 			}
 		}
 		// Add to our list of potential nodes.
-		nodes = append(nodes, wn{p.ID, available, ha})
+		nodes = append(nodes, wn{p.ID, available, peerHA[p.ID], peerStreams[p.ID]})
 	}
 
 	// If we could not select enough peers, fail.
@@ -5754,10 +5770,14 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 		}
 		return nil, &err
 	}
-	// Sort based on available from most to least.
-	sort.Slice(nodes, func(i, j int) bool { return nodes[i].avail > nodes[j].avail })
-
-	// If we are placing a replicated stream, let's sort based in haAssets, as that is more important to balance.
+	// Sort based on available from most to least, breaking ties by number of total streams assigned to the peer.
+	sort.Slice(nodes, func(i, j int) bool {
+		if nodes[i].avail == nodes[j].avail {
+			return nodes[i].ns < nodes[j].ns
+		}
+		return nodes[i].avail > nodes[j].avail
+	})
+	// If we are placing a replicated stream, let's sort based on HAAssets, as that is more important to balance.
 	if cfg.Replicas > 1 {
 		sort.SliceStable(nodes, func(i, j int) bool { return nodes[i].ha < nodes[j].ha })
 	}

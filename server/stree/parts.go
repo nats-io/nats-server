@@ -99,10 +99,9 @@ func matchParts(parts [][]byte, frag []byte) ([][]byte, bool) {
 		}
 		end := min(si+lp, len(frag))
 		// If part is bigger then the fragment, adjust to a portion on the part.
-		partialPart := lp > end
-		if partialPart {
+		if partialPart := lp > end; partialPart {
 			// Frag is smaller then part itself.
-			part = part[:end]
+			part = part[:end-si]
 		}
 		if !bytes.Equal(part, frag[si:end]) {
 			return parts, false
@@ -117,7 +116,7 @@ func matchParts(parts [][]byte, frag []byte) ([][]byte, bool) {
 		if end < lp {
 			if end >= lf {
 				parts = append([][]byte{}, parts...) // Create a copy before modifying.
-				parts[i] = parts[i][lf:]
+				parts[i] = parts[i][lf-si:]
 			} else {
 				i++
 			}
