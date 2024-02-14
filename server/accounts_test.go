@@ -550,7 +550,7 @@ func TestAccountParseConfig(t *testing.T) {
 	if natsAcc == nil {
 		t.Fatalf("Error retrieving account for 'nats.io'")
 	}
-	require_Equal[string](t, natsAcc.TraceDest, traceDest)
+	require_Equal[string](t, natsAcc.getTraceDest(), traceDest)
 
 	for _, u := range opts.Users {
 		if u.Username == "derek" {

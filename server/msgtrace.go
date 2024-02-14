@@ -436,9 +436,7 @@ func (c *client) initMsgTrace() *msgTrace {
 	// otherwise, we are not enabling tracing.
 	if external {
 		if acc != nil {
-			acc.mu.RLock()
-			dest = acc.TraceDest
-			acc.mu.RUnlock()
+			dest = acc.getTraceDest()
 		}
 		if dest == _EMPTY_ {
 			// No account destination, no tracing for external trace headers.
