@@ -2824,7 +2824,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 			} else {
 				// We need to adjust for all matches in this block.
 				// Make sure we have fss loaded. This loads whole block now.
-				if mb.cacheNotLoaded() {
+				if mb.fssNotLoaded() {
 					mb.loadMsgsWithLock()
 					shouldExpire = true
 				}
