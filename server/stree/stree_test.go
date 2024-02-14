@@ -577,7 +577,7 @@ func TestSubjectTreeRandomTrackEntries(t *testing.T) {
 
 func TestSubjectTreeMetaSize(t *testing.T) {
 	var base meta
-	require_Equal(t, unsafe.Sizeof(base), 64)
+	require_Equal(t, unsafe.Sizeof(base), 28)
 }
 
 func b(s string) []byte {
