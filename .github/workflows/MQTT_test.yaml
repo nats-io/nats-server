@@ -1,10 +1,6 @@
 name: MQTTEx
 on: [push, pull_request]
 
-permissions:
-  pull-requests: write # to comment on PRs
-  contents: write # to comment on commits (to upload artifacts?)
-
 jobs:
   test:
     env:
@@ -29,39 +25,13 @@ jobs:
         run: |
           wget https://github.com/hivemq/mqtt-cli/releases/download/v4.20.0/mqtt-cli-4.20.0.deb
           sudo apt install ./mqtt-cli-4.20.0.deb
-          go install github.com/ConnectEverything/mqtt-test@latest
-
-      # - name: Download benchmark result for ${{ github.base_ref || github.ref_name }}
-      #   uses: dawidd6/action-download-artifact@v2
-      #   continue-on-error: true
-      #   with:
-      #     path: src/github.com/nats-io/nats-server/bench
-      #     name: bench-output-${{ runner.os }}
-      #     branch: ${{ github.base_ref || github.ref }}
+          go install github.com/ConnectEverything/mqtt-test@27cdbf032ee67b8d46015548fc360cf2eee4317a
 
       - name: Run tests and benchmarks
         shell: bash --noprofile --norc -eo pipefail {0}
         run: |
           cd src/github.com/nats-io/nats-server
           go test -v --run='MQTTEx' ./server
-          # go test --run='-' --count=10 --bench 'MQTT_' ./server | tee output.txt
-          # go test --run='-' --count=10 --bench 'MQTTEx' --timeout=20m --benchtime=100x ./server | tee -a output.txt
           go test --run='-' --count=3 --bench 'MQTTEx' --benchtime=100x ./server
 
-      # - name: Compare benchmarks
-      #   uses: benchmark-action/github-action-benchmark@v1
-      #   with:
-      #     tool: go
-      #     output-file-path: src/github.com/nats-io/nats-server/output.txt
-      #     github-token: ${{ secrets.GITHUB_TOKEN }}
-      #     alert-threshold: 140%
-      #     comment-on-alert: true
-      #     # fail-on-alert: true
-      #     external-data-json-path: src/github.com/nats-io/nats-server/bench/benchmark-data.json
-
-      # - name: Store benchmark result for ${{ github.ref_name }}
-      #   if: always()
-      #   uses: actions/upload-artifact@v3
-      #   with:
-      #     path: src/github.com/nats-io/nats-server/bench
-      #     name: bench-output-${{ runner.os }}
+      # TODO: compare benchmarks
