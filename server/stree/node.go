@@ -34,8 +34,7 @@ type node interface {
 
 // Maximum prefix len
 // We expect the most savings to come from long shared prefixes.
-// This also makes the meta base layer exactly 64 bytes, a normal L1 cache line.
-const maxPrefixLen = 60
+const maxPrefixLen = 24
 
 // 64 bytes total - an L1 cache line.
 type meta struct {

@@ -522,6 +522,18 @@ func TestSubjectTreeInsertSamePivotBug(t *testing.T) {
 	}
 }
 
+func TestSubjectTreeMatchTsepSecondThenPartialPartBug(t *testing.T) {
+	st := NewSubjectTree[int]()
+	st.Insert(b("foo.xxxxx.foo1234.zz"), 22)
+	st.Insert(b("foo.yyy.foo123.zz"), 22)
+	st.Insert(b("foo.yyybar789.zz"), 22)
+	st.Insert(b("foo.yyy.foo12345.zz"), 22)
+	st.Insert(b("foo.yyy.foo12345.yy"), 22)
+	st.Insert(b("foo.yyy.foo123456789.zz"), 22)
+	match(t, st, "foo.*.foo123456789.*", 1)
+	match(t, st, "foo.*.*.zzz.foo.>", 0)
+}
+
 func TestSubjectTreeRandomTrackEntries(t *testing.T) {
 	st := NewSubjectTree[int]()
 	smap := make(map[string]struct{}, 1000)
@@ -566,7 +578,7 @@ func TestSubjectTreeRandomTrackEntries(t *testing.T) {
 
 func TestSubjectTreeMetaSize(t *testing.T) {
 	var base meta
-	require_Equal(t, unsafe.Sizeof(base), 64)
+	require_Equal(t, unsafe.Sizeof(base), 28)
 }
 
 func b(s string) []byte {

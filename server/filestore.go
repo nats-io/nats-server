@@ -2824,7 +2824,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 			} else {
 				// We need to adjust for all matches in this block.
 				// Make sure we have fss loaded. This loads whole block now.
-				if mb.cacheNotLoaded() {
+				if mb.fssNotLoaded() {
 					mb.loadMsgsWithLock()
 					shouldExpire = true
 				}
@@ -2877,7 +2877,10 @@ func (fs *fileStore) SubjectsTotals(filter string) map[string]uint64 {
 	if fs.psim.Size() == 0 {
 		return nil
 	}
-
+	// Match all if no filter given.
+	if filter == _EMPTY_ {
+		filter = fwcs
+	}
 	fst := make(map[string]uint64)
 	fs.psim.Match(stringToBytes(filter), func(subj []byte, psi *psi) {
 		fst[string(subj)] = psi.total
