@@ -2225,8 +2225,11 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 
 	fseq, isAll, subs := start, filter == _EMPTY_ || filter == fwcs, []string{filter}
 
-	if err := mb.ensurePerSubjectInfoLoaded(); err != nil {
-		return nil, false, err
+	var didLoad bool
+	if mb.fssNotLoaded() {
+		// Make sure we have fss loaded.
+		mb.loadMsgsWithLock()
+		didLoad = true
 	}
 
 	// If we only have 1 subject currently and it matches our filter we can also set isAll.
@@ -2271,10 +2274,9 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 	}
 
 	if fseq > lseq {
-		return nil, false, ErrStoreMsgNotFound
+		return nil, didLoad, ErrStoreMsgNotFound
 	}
 
-	var didLoad bool
 	// Need messages loaded from here on out.
 	if mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
