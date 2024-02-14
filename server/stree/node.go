@@ -37,9 +37,15 @@ type node interface {
 // This also makes the meta base layer exactly 64 bytes, a normal L1 cache line.
 const maxPrefixLen = 60
 
-// 64 bytes total - an L1 cache line.
 type meta struct {
-	prefix    [maxPrefixLen]byte
-	prefixLen uint16
-	size      uint16
+	prefix []byte
+	size   uint16
 }
+
+func (m *meta) setPrefix(pre []byte) {
+	max := min(len(pre), maxPrefixLen)
+	m.prefix = append(m.prefix[:0], pre[:max]...)
+}
+
+func (m *meta) numChildren() uint16 { return m.size }
+func (m *meta) path() []byte        { return m.prefix }

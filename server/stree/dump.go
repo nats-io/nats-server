@@ -38,7 +38,7 @@ func (t *SubjectTree[T]) dump(w io.Writer, n node, depth int) {
 	} else {
 		// We are a node type here, grab meta portion.
 		bn := n.base()
-		fmt.Fprintf(w, "%s %s Prefix: %q\n", dumpPre(depth), n.kind(), bn.prefix[:bn.prefixLen])
+		fmt.Fprintf(w, "%s %s Prefix: %q\n", dumpPre(depth), n.kind(), bn.prefix)
 		depth++
 		n.iter(func(n node) bool {
 			t.dump(w, n, depth)
