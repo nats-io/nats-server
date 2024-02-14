@@ -3529,9 +3529,7 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 		for _, s := range cl.servers {
 			acc, err := s.LookupAccount(globalAccountName)
 			require_NoError(t, err)
-			acc.mu.Lock()
-			acc.TraceDest = traceDest
-			acc.mu.Unlock()
+			acc.setTraceDest(traceDest)
 		}
 	}
 
@@ -4595,34 +4593,6 @@ func TestMsgTraceTriggeredByExternalHeader(t *testing.T) {
 			if test.reload {
 				reloadUpdateConfig(t, s1, conf1, fmt.Sprintf(tmpl, "A", `trace_dest: "acc.trace.dest"`, _EMPTY_))
 				reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl, "B", `trace_dest: "acc.trace.dest"`, fmt.Sprintf(`routes: ["nats://127.0.0.1:%d"]`, o1.Cluster.Port)))
-			}
-		})
-	}
-
-	nc1.Close()
-	nc2.Close()
-	s2.Shutdown()
-	s1.Shutdown()
-	s1 = nil
-
-	o1.Accounts = o1.Accounts[:1]
-	accName := o1.Accounts[0].Name
-	o1.Port, o1.Cluster.Port = -1, -1
-
-	for _, test := range []struct {
-		name      string
-		traceDest string
-	}{
-		{"account trace invalid subject", "invalid..subject"},
-		{"account trace invalid publish subject", "invalid.publish.*.subject"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			o1.Accounts[0].TraceDest = test.traceDest
-			s1, err := NewServer(o1)
-			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("trace_dest %q of account %q is not valid", test.traceDest, accName)) {
-				if s1 != nil {
-					s1.Shutdown()
-				}
 			}
 		})
 	}

@@ -54,7 +54,6 @@ type Account struct {
 	Name         string
 	Nkey         string
 	Issuer       string
-	TraceDest    string
 	claimJWT     string
 	updated      time.Time
 	mu           sync.RWMutex
@@ -97,6 +96,7 @@ type Account struct {
 	nameTag      string
 	lastLimErr   int64
 	routePoolIdx int
+	traceDest    string
 }
 
 const (
@@ -256,12 +256,28 @@ func (a *Account) String() string {
 	return a.Name
 }
 
+func (a *Account) setTraceDest(dest string) {
+	a.mu.Lock()
+	a.traceDest = dest
+	a.mu.Unlock()
+}
+
+func (a *Account) getTraceDest() string {
+	a.mu.RLock()
+	dest := a.traceDest
+	a.mu.RUnlock()
+	return dest
+}
+
 // Used to create shallow copies of accounts for transfer
 // from opts to real accounts in server struct.
+// Account `na` write lock is expected to be held on entry
+// while account `a` is the one from the Options struct
+// being loaded/reloaded and do not need locking.
 func (a *Account) shallowCopy(na *Account) {
 	na.Nkey = a.Nkey
 	na.Issuer = a.Issuer
-	na.TraceDest = a.TraceDest
+	na.traceDest = a.traceDest
 
 	if a.imports.streams != nil {
 		na.imports.streams = make([]*streamImport, 0, len(a.imports.streams))

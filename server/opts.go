@@ -3032,7 +3032,7 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 						*errors = append(*errors, err)
 						continue
 					}
-					acc.TraceDest = td
+					acc.traceDest = td
 				default:
 					if !tk.IsUsedVariable() {
 						err := &unknownConfigFieldErr{
