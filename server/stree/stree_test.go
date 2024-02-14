@@ -531,6 +531,7 @@ func TestSubjectTreeMatchTsepSecondThenPartialPartBug(t *testing.T) {
 	st.Insert(b("foo.yyy.foo12345.yy"), 22)
 	st.Insert(b("foo.yyy.foo123456789.zz"), 22)
 	match(t, st, "foo.*.foo123456789.*", 1)
+	match(t, st, "foo.*.*.zzz.foo.>", 0)
 }
 
 func TestSubjectTreeRandomTrackEntries(t *testing.T) {

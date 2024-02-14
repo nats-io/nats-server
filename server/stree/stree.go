@@ -278,7 +278,7 @@ func (t *SubjectTree[T]) match(n node, parts [][]byte, pre []byte, cb func(subje
 		}
 		// We have matched here. If we are a leaf and have exhausted all parts or he have a FWC fire callback.
 		if n.isLeaf() {
-			if len(nparts) == 0 || hasFWC {
+			if len(nparts) == 0 || (hasFWC && len(nparts) == 1) {
 				ln := n.(*leaf[T])
 				cb(append(pre, ln.suffix...), &ln.value)
 			}
