@@ -23,6 +23,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -2151,6 +2152,10 @@ func (jsa *jsAccount) storageTotals() (uint64, uint64) {
 }
 
 func (jsa *jsAccount) limitsExceeded(storeType StorageType, tierName string, replicas int) (bool, *ApiError) {
+	return jsa.wouldExceedLimits(storeType, tierName, replicas, _EMPTY_, nil, nil)
+}
+
+func (jsa *jsAccount) wouldExceedLimits(storeType StorageType, tierName string, replicas int, subj string, hdr, msg []byte) (bool, *ApiError) {
 	jsa.usageMu.RLock()
 	defer jsa.usageMu.RUnlock()
 
@@ -2164,24 +2169,31 @@ func (jsa *jsAccount) limitsExceeded(storeType StorageType, tierName string, rep
 		return false, nil
 	}
 	r := int64(replicas)
-	if r < 1 || tierName == _EMPTY_ {
+	// Make sure replicas is correct.
+	if r < 1 {
 		r = 1
 	}
+	// This is for limits. If we have no tier, consider all to be flat, vs tiers like R3 where we want to scale limit by replication.
+	lr := r
+	if tierName == _EMPTY_ {
+		lr = 1
+	}
+
 	// Since tiers are flat we need to scale limit up by replicas when checking.
 	if storeType == MemoryStorage {
-		totalMem := inUse.total.mem
-		if selectedLimits.MemoryMaxStreamBytes > 0 && totalMem > selectedLimits.MemoryMaxStreamBytes*r {
+		totalMem := inUse.total.mem + (int64(memStoreMsgSize(subj, hdr, msg)) * r)
+		if selectedLimits.MemoryMaxStreamBytes > 0 && totalMem > selectedLimits.MemoryMaxStreamBytes*lr {
 			return true, nil
 		}
-		if selectedLimits.MaxMemory >= 0 && totalMem > selectedLimits.MaxMemory*r {
+		if selectedLimits.MaxMemory >= 0 && totalMem > selectedLimits.MaxMemory*lr {
 			return true, nil
 		}
 	} else {
-		totalStore := inUse.total.store
-		if selectedLimits.StoreMaxStreamBytes > 0 && totalStore > selectedLimits.StoreMaxStreamBytes*r {
+		totalStore := inUse.total.store + (int64(fileStoreMsgSize(subj, hdr, msg)) * r)
+		if selectedLimits.StoreMaxStreamBytes > 0 && totalStore > selectedLimits.StoreMaxStreamBytes*lr {
 			return true, nil
 		}
-		if selectedLimits.MaxStore >= 0 && totalStore > selectedLimits.MaxStore*r {
+		if selectedLimits.MaxStore >= 0 && totalStore > selectedLimits.MaxStore*lr {
 			return true, nil
 		}
 	}
@@ -2463,6 +2475,11 @@ func (s *Server) dynJetStreamConfig(storeDir string, maxStore, maxMem int64) *Je
 	} else {
 		// Estimate to 75% of total memory if we can determine system memory.
 		if sysMem := sysmem.Memory(); sysMem > 0 {
+			// Check if we have been limited with GOMEMLIMIT and if lower use that value.
+			if gml := debug.SetMemoryLimit(-1); gml != math.MaxInt64 && gml < sysMem {
+				s.Debugf("JetStream detected GOMEMLIMIT of %v", friendlyBytes(gml))
+				sysMem = gml
+			}
 			jsc.MaxMemory = sysMem / 4 * 3
 		} else {
 			jsc.MaxMemory = JetStreamMaxMemDefault

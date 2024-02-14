@@ -5553,7 +5553,9 @@ func (mb *msgBlock) loadBlock(buf []byte) ([]byte, error) {
 		buf = buf[:sz]
 	}
 
+	<-dios
 	n, err := io.ReadFull(f, buf)
+	dios <- struct{}{}
 	// On success capture raw bytes size.
 	if err == nil {
 		mb.rbytes = uint64(n)

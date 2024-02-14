@@ -7448,6 +7448,95 @@ func TestMQTTJetStreamRepublishAndQoS0Subscribers(t *testing.T) {
 	testMQTTExpectNothing(t, r)
 }
 
+// Test for auto-cleanup of consumers.
+func TestMQTTDecodeRetainedMessage(t *testing.T) {
+	tdir := t.TempDir()
+	tmpl := `
+		listen: 127.0.0.1:-1
+		server_name: mqtt
+		jetstream {
+			store_dir = %q
+		}
+
+		mqtt {
+			listen: 127.0.0.1:-1
+			consumer_inactive_threshold: %q
+		}
+
+		# For access to system account.
+		accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, tdir, "0.2s")))
+	s, o := RunServerWithConfig(conf)
+	defer testMQTTShutdownServer(s)
+
+	// Connect and publish a retained message, this will be in the "newer" form,
+	// with the metadata in the header.
+	mc, r := testMQTTConnectRetry(t, &mqttConnInfo{clientID: "test", cleanSess: true}, o.MQTT.Host, o.MQTT.Port, 5)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTPublish(t, mc, r, 0, false, true, "foo/1", 0, []byte("msg1"))
+	mc.Close()
+
+	// Store a "legacy", JSON-encoded payload directly into the stream.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	rm := mqttRetainedMsg{
+		Origin:  "test",
+		Subject: "foo.2",
+		Topic:   "foo/2",
+		Flags:   mqttPubFlagRetain,
+		Msg:     []byte("msg2"),
+	}
+	jsonData, _ := json.Marshal(rm)
+	_, err := js.PublishMsg(&nats.Msg{
+		Subject: mqttRetainedMsgsStreamSubject + rm.Subject,
+		Data:    jsonData,
+	})
+	if err != nil {
+		t.Fatalf("Error publishing retained message to JS directly: %v", err)
+	}
+
+	// Restart the server to see that it picks up both retained messages on restart.
+	s.Shutdown()
+	s = RunServer(o)
+	defer testMQTTShutdownServer(s)
+
+	// Connect again, subscribe, and check that we get both messages.
+	mc, r = testMQTTConnectRetry(t, &mqttConnInfo{clientID: "test", cleanSess: true}, o.MQTT.Host, o.MQTT.Port, 5)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo/+", qos: 0}}, []byte{0})
+	for i := 0; i < 2; i++ {
+		b, pl := testMQTTReadPacket(t, r)
+		if pt := b & mqttPacketMask; pt != mqttPacketPub {
+			t.Fatalf("Expected PUBLISH packet %x, got %x", mqttPacketPub, pt)
+		}
+		_, _, topic := testMQTTGetPubMsgExEx(t, mc, r, mqttPubFlagRetain, pl, "", nil)
+		if string(topic) != "foo/1" && string(topic) != "foo/2" {
+			t.Fatalf("Expected foo/1 or foo/2, got %q", topic)
+		}
+	}
+	testMQTTExpectNothing(t, r)
+	mc.Close()
+
+	// Clear both retained messages.
+	mc, r = testMQTTConnectRetry(t, &mqttConnInfo{clientID: "test", cleanSess: true}, o.MQTT.Host, o.MQTT.Port, 5)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTPublish(t, mc, r, 0, false, true, "foo/1", 0, []byte{})
+	testMQTTPublish(t, mc, r, 0, false, true, "foo/2", 0, []byte{})
+	mc.Close()
+
+	// Connect again, subscribe, and check that we get nothing.
+	mc, r = testMQTTConnectRetry(t, &mqttConnInfo{clientID: "test", cleanSess: true}, o.MQTT.Host, o.MQTT.Port, 5)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo/+", qos: 0}}, []byte{0})
+	testMQTTExpectNothing(t, r)
+}
+
 //////////////////////////////////////////////////////////////////////////
 //
 // Benchmarks

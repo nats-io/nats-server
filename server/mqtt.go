@@ -234,6 +234,8 @@ type mqttSessionManager struct {
 	sessions map[string]*mqttAccountSessionManager // key is account name
 }
 
+var testDisableRMSCache = false
+
 type mqttAccountSessionManager struct {
 	mu         sync.RWMutex
 	sessions   map[string]*mqttSession        // key is MQTT client ID
@@ -243,7 +245,7 @@ type mqttAccountSessionManager struct {
 	flapTimer  *time.Timer                    // Timer to perform some cleanup of the flappers map
 	sl         *Sublist                       // sublist allowing to find retained messages for given subscription
 	retmsgs    map[string]*mqttRetainedMsgRef // retained messages
-	rmsCache   sync.Map                       // map[subject]*mqttRetainedMsg
+	rmsCache   *sync.Map                      // map[subject]mqttRetainedMsg
 	jsa        mqttJSA
 	rrmLastSeq uint64        // Restore retained messages expected last sequence
 	rrmDoneCh  chan struct{} // To notify the caller that all retained messages have been loaded
@@ -1142,6 +1144,9 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 			quitCh: quitCh,
 		},
 	}
+	if !testDisableRMSCache {
+		as.rmsCache = &sync.Map{}
+	}
 	// TODO record domain name in as here
 
 	// The domain to communicate with may be required for JS calls.
@@ -1236,10 +1241,12 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 	})
 
 	// Start the go routine that will clean up cached retained messages that expired.
-	s.startGoRoutine(func() {
-		defer s.grWG.Done()
-		as.cleanupRetainedMessageCache(s, closeCh)
-	})
+	if as.rmsCache != nil {
+		s.startGoRoutine(func() {
+			defer s.grWG.Done()
+			as.cleanupRetainedMessageCache(s, closeCh)
+		})
+	}
 
 	lookupStream := func(stream, txt string) (*StreamInfo, error) {
 		si, err := jsa.lookupStream(stream)
@@ -1444,21 +1451,12 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 	rmLegacyDurName := mqttRetainedMsgsStreamName + "_" + jsa.id
 	jsa.deleteConsumer(mqttRetainedMsgsStreamName, rmLegacyDurName)
 
-	// Using ephemeral consumer is too risky because if this server were to be
-	// disconnected from the rest for few seconds, then the leader would remove
-	// the consumer, so even after a reconnect, we would no longer receive
-	// retained messages.
-	//
-	// So we use a durable consumer, and create a new one each time we start.
-	// The old one should expire and get deleted due to inactivity. The name for
-	// the durable is $MQTT_rmsgs_{uuid}_{server-name}, the server name is just
-	// for readability.
-	rmDurName := mqttRetainedMsgsStreamName + "_" + nuid.Next() + "_" + s.String()
-
+	// Create a new, uniquely names consumer for retained messages for this
+	// server. The prior one will expire eventually.
 	ccfg := &CreateConsumerRequest{
 		Stream: mqttRetainedMsgsStreamName,
 		Config: ConsumerConfig{
-			Durable:           rmDurName,
+			Name:              mqttRetainedMsgsStreamName + "_" + nuid.Next(),
 			FilterSubject:     mqttRetainedMsgsStreamSubject + ">",
 			DeliverSubject:    rmsubj,
 			ReplayPolicy:      ReplayInstant,
@@ -1466,7 +1464,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 			InactiveThreshold: 5 * time.Minute,
 		},
 	}
-	if _, err := jsa.createConsumer(ccfg); err != nil {
+	if _, err := jsa.createEphemeralConsumer(ccfg); err != nil {
 		return nil, fmt.Errorf("create retained messages consumer for account %q: %v", accName, err)
 	}
 
@@ -1646,17 +1644,26 @@ func (jsa *mqttJSA) sendAck(ackSubject string) {
 	jsa.sendq.push(&mqttJSPubMsg{subj: ackSubject, hdr: -1})
 }
 
-func (jsa *mqttJSA) createConsumer(cfg *CreateConsumerRequest) (*JSApiConsumerCreateResponse, error) {
+func (jsa *mqttJSA) createEphemeralConsumer(cfg *CreateConsumerRequest) (*JSApiConsumerCreateResponse, error) {
 	cfgb, err := json.Marshal(cfg)
 	if err != nil {
 		return nil, err
 	}
-	var subj string
-	if cfg.Config.Durable != _EMPTY_ {
-		subj = fmt.Sprintf(JSApiDurableCreateT, cfg.Stream, cfg.Config.Durable)
-	} else {
-		subj = fmt.Sprintf(JSApiConsumerCreateT, cfg.Stream)
+	subj := fmt.Sprintf(JSApiConsumerCreateT, cfg.Stream)
+	ccri, err := jsa.newRequest(mqttJSAConsumerCreate, subj, 0, cfgb)
+	if err != nil {
+		return nil, err
 	}
+	ccr := ccri.(*JSApiConsumerCreateResponse)
+	return ccr, ccr.ToError()
+}
+
+func (jsa *mqttJSA) createDurableConsumer(cfg *CreateConsumerRequest) (*JSApiConsumerCreateResponse, error) {
+	cfgb, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, err
+	}
+	subj := fmt.Sprintf(JSApiDurableCreateT, cfg.Stream, cfg.Config.Durable)
 	ccri, err := jsa.newRequest(mqttJSAConsumerCreate, subj, 0, cfgb)
 	if err != nil {
 		return nil, err
@@ -2243,9 +2250,7 @@ func (as *mqttAccountSessionManager) handleRetainedMsg(key string, rf *mqttRetai
 
 			// Update the in-memory retained message cache but only for messages
 			// that are already in the cache, i.e. have been (recently) used.
-			if rm != nil {
-				as.setCachedRetainedMsg(key, rm, true, copyBytesToCache)
-			}
+			as.setCachedRetainedMsg(key, rm, true, copyBytesToCache)
 			return
 		}
 	}
@@ -2269,7 +2274,9 @@ func (as *mqttAccountSessionManager) handleRetainedMsgDel(subject string, seq ui
 		as.sl = NewSublistWithCache()
 	}
 	if erm, ok := as.retmsgs[subject]; ok {
-		as.rmsCache.Delete(subject)
+		if as.rmsCache != nil {
+			as.rmsCache.Delete(subject)
+		}
 		if erm.sub != nil {
 			as.sl.Remove(erm.sub)
 			erm.sub = nil
@@ -2770,6 +2777,7 @@ func (as *mqttAccountSessionManager) loadRetainedMessages(subjects map[string]st
 			w.Warnf("failed to decode retained message for subject %q: %v", ss[i], err)
 			continue
 		}
+
 		// Add the loaded retained message to the cache, and to the results map.
 		key := ss[i][len(mqttRetainedMsgsStreamSubject):]
 		as.setCachedRetainedMsg(key, &rm, false, false)
@@ -2960,6 +2968,9 @@ func (as *mqttAccountSessionManager) transferRetainedToPerKeySubjectStream(log *
 }
 
 func (as *mqttAccountSessionManager) getCachedRetainedMsg(subject string) *mqttRetainedMsg {
+	if as.rmsCache == nil {
+		return nil
+	}
 	v, ok := as.rmsCache.Load(subject)
 	if !ok {
 		return nil
@@ -2973,6 +2984,9 @@ func (as *mqttAccountSessionManager) getCachedRetainedMsg(subject string) *mqttR
 }
 
 func (as *mqttAccountSessionManager) setCachedRetainedMsg(subject string, rm *mqttRetainedMsg, onlyReplace bool, copyBytesToCache bool) {
+	if as.rmsCache == nil || rm == nil {
+		return
+	}
 	rm.expiresFromCache = time.Now().Add(mqttRetainedCacheTTL)
 	if onlyReplace {
 		if _, ok := as.rmsCache.Load(subject); !ok {
@@ -4927,7 +4941,7 @@ func (sess *mqttSession) ensurePubRelConsumerSubscription(c *client) error {
 		if opts.MQTT.ConsumerInactiveThreshold > 0 {
 			ccr.Config.InactiveThreshold = opts.MQTT.ConsumerInactiveThreshold
 		}
-		if _, err := sess.jsa.createConsumer(ccr); err != nil {
+		if _, err := sess.jsa.createDurableConsumer(ccr); err != nil {
 			c.Errorf("Unable to add JetStream consumer for PUBREL for client %q: err=%v", id, err)
 			return err
 		}
@@ -5033,7 +5047,7 @@ func (sess *mqttSession) processJSConsumer(c *client, subject, sid string,
 		if opts.MQTT.ConsumerInactiveThreshold > 0 {
 			ccr.Config.InactiveThreshold = opts.MQTT.ConsumerInactiveThreshold
 		}
-		if _, err := sess.jsa.createConsumer(ccr); err != nil {
+		if _, err := sess.jsa.createDurableConsumer(ccr); err != nil {
 			c.Errorf("Unable to add JetStream consumer for subscription on %q: err=%v", subject, err)
 			return nil, nil, err
 		}

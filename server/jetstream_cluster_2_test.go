@@ -6586,14 +6586,14 @@ func TestJetStreamClusterSnapshotBeforePurgeAndCatchup(t *testing.T) {
 		}
 	}
 
-	// Send first 100 to everyone.
+	// Send first 1000 to everyone.
 	send1k()
 
 	// Now shutdown a non-leader.
 	c.waitOnStreamCurrent(nl, "$G", "TEST")
 	nl.Shutdown()
 
-	// Send another 100.
+	// Send another 1000.
 	send1k()
 
 	// Force snapshot on the leader.
@@ -6606,7 +6606,7 @@ func TestJetStreamClusterSnapshotBeforePurgeAndCatchup(t *testing.T) {
 	err = js.PurgeStream("TEST")
 	require_NoError(t, err)
 
-	// Send another 100.
+	// Send another 1000.
 	send1k()
 
 	// We want to make sure we do not send unnecessary skip msgs when we know we do not have all of these messages.
@@ -6630,10 +6630,11 @@ func TestJetStreamClusterSnapshotBeforePurgeAndCatchup(t *testing.T) {
 		return nil
 	})
 
-	// Make sure we only sent 1 sync catchup msg.
+	// Make sure we only sent 1002 sync catchup msgs.
+	// This is for the new messages, the delete range, and the EOF.
 	nmsgs, _, _ := sub.Pending()
-	if nmsgs != 1 {
-		t.Fatalf("Expected only 1 sync catchup msg to be sent signaling eof, but got %d", nmsgs)
+	if nmsgs != 1002 {
+		t.Fatalf("Expected only 1002 sync catchup msgs to be sent signaling eof, but got %d", nmsgs)
 	}
 }
 

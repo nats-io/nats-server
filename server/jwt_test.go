@@ -5467,11 +5467,8 @@ func TestJWTJetStreamTiers(t *testing.T) {
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: maximum consumers limit reached")
 	_, err = js.Publish("testR1-3", msg[:])
-	require_NoError(t, err)
-	_, err = js.Publish("testR1-3", []byte("1"))
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: resource limits exceeded for account")
-
 }
 
 func TestJWTJetStreamMaxAckPending(t *testing.T) {
@@ -5629,8 +5626,6 @@ func TestJWTJetStreamMaxStreamBytes(t *testing.T) {
 	require_NoError(t, err)
 
 	// test if we can push more messages into the stream
-	_, err = js.Publish("baz", msg[:])
-	require_NoError(t, err)
 	_, err = js.Publish("baz", msg[:]) // exceeds max stream bytes
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: resource limits exceeded for account")

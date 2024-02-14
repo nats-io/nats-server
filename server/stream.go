@@ -283,6 +283,7 @@ type stream struct {
 	clMu       sync.Mutex
 	clseq      uint64
 	clfs       uint64
+	inflight   map[uint64]uint64
 	leader     string
 	lqsent     time.Time
 	catchups   map[string]uint64
@@ -1998,12 +1999,13 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 	// Purge consumers.
 	// Check for filtered purge.
 	if preq != nil && preq.Subject != _EMPTY_ {
-		ss := store.FilteredState(state.FirstSeq, preq.Subject)
+		ss := store.FilteredState(fseq, preq.Subject)
 		fseq = ss.First
 	}
 
 	mset.clsMu.RLock()
 	for _, o := range mset.cList {
+		start := fseq
 		o.mu.RLock()
 		// we update consumer sequences if:
 		// no subject was specified, we can purge all consumers sequences
@@ -2013,10 +2015,15 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 			// or consumer filter subject is subset of purged subject,
 			// but not the other way around.
 			o.isEqualOrSubsetMatch(preq.Subject)
+		// Check if a consumer has a wider subject space then what we purged
+		var isWider bool
+		if !doPurge && preq != nil && o.isFilteredMatch(preq.Subject) {
+			doPurge, isWider = true, true
+			start = state.FirstSeq
+		}
 		o.mu.RUnlock()
 		if doPurge {
-			o.purge(fseq, lseq)
-
+			o.purge(start, lseq, isWider)
 		}
 	}
 	mset.clsMu.RUnlock()
@@ -4242,10 +4249,10 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	// Process additional msg headers if still present.
 	var msgId string
 	var rollupSub, rollupAll bool
+	isClustered := mset.isClustered()
 
 	if len(hdr) > 0 {
 		outq := mset.outq
-		isClustered := mset.isClustered()
 
 		// Certain checks have already been performed if in clustered mode, so only check if not.
 		if !isClustered {
@@ -4478,6 +4485,22 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		}
 	}
 
+	// If clustered this was already checked and we do not want to check here and possibly introduce skew.
+	if !isClustered {
+		if exceeded, err := jsa.wouldExceedLimits(stype, tierName, mset.cfg.Replicas, subject, hdr, msg); exceeded {
+			if err == nil {
+				err = NewJSAccountResourcesExceededError()
+			}
+			s.RateLimitWarnf("JetStream resource limits exceeded for account: %q", accName)
+			if canRespond {
+				resp.PubAck = &PubAck{Stream: name}
+				resp.Error = err
+				response, _ = json.Marshal(resp)
+				mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
+			}
+		}
+	}
+
 	// Store actual msg.
 	if lseq == 0 && ts == 0 {
 		seq, ts, err = store.StoreMsg(subject, hdr, msg)
@@ -4517,28 +4540,6 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			mset.outq.sendMsg(reply, response)
 		}
 		return err
-	}
-
-	if exceeded, apiErr := jsa.limitsExceeded(stype, tierName, mset.cfg.Replicas); exceeded {
-		s.RateLimitWarnf("JetStream resource limits exceeded for account: %q", accName)
-		if canRespond {
-			resp.PubAck = &PubAck{Stream: name}
-			if apiErr == nil {
-				resp.Error = NewJSAccountResourcesExceededError()
-			} else {
-				resp.Error = apiErr
-			}
-			response, _ = json.Marshal(resp)
-			mset.outq.sendMsg(reply, response)
-		}
-		// If we did not succeed put those values back.
-		var state StreamState
-		mset.store.FastState(&state)
-		mset.lseq = state.LastSeq
-		mset.lmsgId = olmsgId
-		mset.mu.Unlock()
-		store.RemoveMsg(seq)
-		return nil
 	}
 
 	// If we have a msgId make sure to save.
