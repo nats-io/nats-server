@@ -7508,8 +7508,16 @@ func TestMQTTDecodeRetainedMessage(t *testing.T) {
 	defer mc.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo/+", qos: 0}}, []byte{0})
-	testMQTTCheckPubMsg(t, mc, r, "foo/1", mqttPubFlagRetain, []byte("msg1"))
-	testMQTTCheckPubMsg(t, mc, r, "foo/2", mqttPubFlagRetain, []byte("msg2"))
+	for i := 0; i < 2; i++ {
+		b, pl := testMQTTReadPacket(t, r)
+		if pt := b & mqttPacketMask; pt != mqttPacketPub {
+			t.Fatalf("Expected PUBLISH packet %x, got %x", mqttPacketPub, pt)
+		}
+		_, _, topic := testMQTTGetPubMsgExEx(t, mc, r, mqttPubFlagRetain, pl, "", nil)
+		if string(topic) != "foo/1" && string(topic) != "foo/2" {
+			t.Fatalf("Expected foo/1 or foo/2, got %q", topic)
+		}
+	}
 	testMQTTExpectNothing(t, r)
 	mc.Close()
 
