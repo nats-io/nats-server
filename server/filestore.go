@@ -1466,6 +1466,16 @@ func (fs *fileStore) warn(format string, args ...any) {
 	fs.srv.Warnf(fmt.Sprintf("Filestore [%s] %s", fs.cfg.Name, format), args...)
 }
 
+// For doing debug logging.
+// Lock should be held.
+func (fs *fileStore) debug(format string, args ...any) {
+	// No-op if no server configured.
+	if fs.srv == nil {
+		return
+	}
+	fs.srv.Debugf(fmt.Sprintf("Filestore [%s] %s", fs.cfg.Name, format), args...)
+}
+
 // Track local state but ignore timestamps here.
 func updateTrackingState(state *StreamState, mb *msgBlock) {
 	if state.FirstSeq == 0 {
@@ -7542,7 +7552,7 @@ func (fs *fileStore) writeFullState() error {
 	}
 
 	if cap(buf) > sz {
-		fs.warn("WriteFullState reallocated from %d to %d", sz, cap(buf))
+		fs.debug("WriteFullState reallocated from %d to %d", sz, cap(buf))
 	}
 
 	// Write to a tmp file and rename.
