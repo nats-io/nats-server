@@ -2877,7 +2877,10 @@ func (fs *fileStore) SubjectsTotals(filter string) map[string]uint64 {
 	if fs.psim.Size() == 0 {
 		return nil
 	}
-
+	// Match all if no filter given.
+	if filter == _EMPTY_ {
+		filter = fwcs
+	}
 	fst := make(map[string]uint64)
 	fs.psim.Match(stringToBytes(filter), func(subj []byte, psi *psi) {
 		fst[string(subj)] = psi.total
