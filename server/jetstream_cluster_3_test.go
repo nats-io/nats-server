@@ -6519,3 +6519,30 @@ Setup:
 		}
 	}
 }
+
+// https://github.com/nats-io/nats-server/issues/5071
+func TestJetStreamClusterStreamPlacementDistribution(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 5)
+	defer c.shutdown()
+
+	s := c.randomNonLeader()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	for i := 1; i <= 10; i++ {
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     fmt.Sprintf("TEST:%d", i),
+			Subjects: []string{fmt.Sprintf("foo.%d.*", i)},
+			Replicas: 3,
+		})
+		require_NoError(t, err)
+	}
+
+	// 10 streams, 3 replicas div 5 servers.
+	expectedStreams := 10 * 3 / 5
+	for _, s := range c.servers {
+		jsz, err := s.Jsz(nil)
+		require_NoError(t, err)
+		require_Equal(t, jsz.Streams, expectedStreams)
+	}
+}
