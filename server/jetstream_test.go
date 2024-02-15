@@ -11607,7 +11607,7 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 			if ss, ok := si.State.Subjects[subject]; !ok {
 				return fmt.Errorf("expected messages with the transformed subject %s", subject)
 			} else {
-				if ss > subjectNumMsgs || ss < subjectNumMsgs {
+				if ss != subjectNumMsgs {
 					return fmt.Errorf("expected %d messages on the transformed subject %s but got %d", subjectNumMsgs, subject, ss)
 				}
 			}
