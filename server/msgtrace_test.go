@@ -26,7 +26,9 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/s2"
+	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nkeys"
 )
 
 func init() {
@@ -1697,71 +1699,74 @@ func TestMsgTraceWithGatewayToOldServer(t *testing.T) {
 }
 
 func TestMsgTraceServiceImport(t *testing.T) {
-	for _, mainTest := range []struct {
+	tmpl := `
+		listen: 127.0.0.1:-1
+		accounts {
+			A {
+				users: [{user: a, password: pwd}]
+				exports: [ { service: ">", allow_trace: %v} ]
+				mappings = {
+					bar: bozo
+				}
+			}
+			B {
+				users: [{user: b, password: pwd}]
+				imports: [ { service: {account: "A", subject:">"} } ]
+				exports: [ { service: ">", allow_trace: %v} ]
+			}
+			C {
+				users: [{user: c, password: pwd}]
+				exports: [ { service: ">", allow_trace: %v } ]
+			}
+			D {
+				users: [{user: d, password: pwd}]
+				imports: [
+					{ service: {account: "B", subject:"bar"}, to: baz }
+					{ service: {account: "C", subject:">"} }
+				]
+				mappings = {
+						bat: baz
+				}
+			}
+		}
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, false, false, false)))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc := natsConnect(t, s.ClientURL(), nats.UserInfo("d", "pwd"), nats.Name("Requestor"))
+	defer nc.Close()
+
+	traceSub := natsSubSync(t, nc, "my.trace.subj")
+	sub := natsSubSync(t, nc, "my.service.response.inbox")
+
+	nc2 := natsConnect(t, s.ClientURL(), nats.UserInfo("a", "pwd"), nats.Name("ServiceA"))
+	defer nc2.Close()
+	recv := int32(0)
+	natsQueueSub(t, nc2, "*", "my_queue", func(m *nats.Msg) {
+		atomic.AddInt32(&recv, 1)
+		m.Respond(m.Data)
+	})
+	natsFlush(t, nc2)
+
+	nc3 := natsConnect(t, s.ClientURL(), nats.UserInfo("c", "pwd"), nats.Name("ServiceC"))
+	defer nc3.Close()
+	natsSub(t, nc3, "baz", func(m *nats.Msg) {
+		atomic.AddInt32(&recv, 1)
+		m.Respond(m.Data)
+	})
+	natsFlush(t, nc3)
+
+	for mainIter, mainTest := range []struct {
 		name  string
 		allow bool
 	}{
-		{"allowed", true},
 		{"not allowed", false},
+		{"allowed", true},
+		{"not allowed again", false},
 	} {
+		atomic.StoreInt32(&recv, 0)
 		t.Run(mainTest.name, func(t *testing.T) {
-			conf := createConfFile(t, []byte(fmt.Sprintf(`
-			listen: 127.0.0.1:-1
-			accounts {
-				A {
-					users: [{user: a, password: pwd}]
-					exports: [ { service: ">", allow_trace: %v} ]
-					mappings = {
-						bar: bozo
-					}
-				}
-				B {
-					users: [{user: b, password: pwd}]
-					imports: [ { service: {account: "A", subject:">"} } ]
-					exports: [ { service: ">", allow_trace: %v} ]
-				}
-				C {
-					users: [{user: c, password: pwd}]
-					exports: [ { service: ">", allow_trace: %v } ]
-				}
-				D {
-					users: [{user: d, password: pwd}]
-					imports: [
-						{ service: {account: "B", subject:"bar"}, to: baz }
-						{ service: {account: "C", subject:">"} }
-					]
-					mappings = {
-							bat: baz
-					}
-				}
-			}
-		`, mainTest.allow, mainTest.allow, mainTest.allow)))
-			s, _ := RunServerWithConfig(conf)
-			defer s.Shutdown()
-
-			nc := natsConnect(t, s.ClientURL(), nats.UserInfo("d", "pwd"), nats.Name("Requestor"))
-			defer nc.Close()
-
-			traceSub := natsSubSync(t, nc, "my.trace.subj")
-			sub := natsSubSync(t, nc, "my.service.response.inbox")
-
-			nc2 := natsConnect(t, s.ClientURL(), nats.UserInfo("a", "pwd"), nats.Name("ServiceA"))
-			defer nc2.Close()
-			recv := int32(0)
-			natsQueueSub(t, nc2, "*", "my_queue", func(m *nats.Msg) {
-				atomic.AddInt32(&recv, 1)
-				m.Respond(m.Data)
-			})
-			natsFlush(t, nc2)
-
-			nc3 := natsConnect(t, s.ClientURL(), nats.UserInfo("c", "pwd"), nats.Name("ServiceC"))
-			defer nc3.Close()
-			natsSub(t, nc3, "baz", func(m *nats.Msg) {
-				atomic.AddInt32(&recv, 1)
-				m.Respond(m.Data)
-			})
-			natsFlush(t, nc3)
-
 			for _, test := range []struct {
 				name       string
 				deliverMsg bool
@@ -1889,6 +1894,12 @@ func TestMsgTraceServiceImport(t *testing.T) {
 						checkResp(acc)
 					}
 				})
+			}
+			switch mainIter {
+			case 0:
+				reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmpl, true, true, true))
+			case 1:
+				reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmpl, false, false, false))
 			}
 		})
 	}
@@ -2596,50 +2607,52 @@ func TestMsgTraceServiceImportWithLeafNodeLeaf(t *testing.T) {
 }
 
 func TestMsgTraceStreamExport(t *testing.T) {
-	for _, mainTest := range []struct {
+	tmpl := `
+		listen: 127.0.0.1:-1
+		accounts {
+			A {
+				users: [{user: a, password: pwd}]
+				exports: [
+					{ stream: "info.*.*.>"}
+				]
+			}
+			B {
+				users: [{user: b, password: pwd}]
+				imports: [ { stream: {account: "A", subject:"info.*.*.>"}, to: "B.info.$2.$1.>", allow_trace: %v } ]
+			}
+			C {
+				users: [{user: c, password: pwd}]
+				imports: [ { stream: {account: "A", subject:"info.*.*.>"}, to: "C.info.$1.$2.>", allow_trace: %v } ]
+			}
+		}
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, false, false)))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc := natsConnect(t, s.ClientURL(), nats.UserInfo("a", "pwd"), nats.Name("Tracer"))
+	defer nc.Close()
+	traceSub := natsSubSync(t, nc, "my.trace.subj")
+
+	nc2 := natsConnect(t, s.ClientURL(), nats.UserInfo("b", "pwd"), nats.Name("sub1"))
+	defer nc2.Close()
+	sub1 := natsSubSync(t, nc2, "B.info.*.*.>")
+	natsFlush(t, nc2)
+
+	nc3 := natsConnect(t, s.ClientURL(), nats.UserInfo("c", "pwd"), nats.Name("sub2"))
+	defer nc3.Close()
+	sub2 := natsQueueSubSync(t, nc3, "C.info.>", "my_queue")
+	natsFlush(t, nc3)
+
+	for mainIter, mainTest := range []struct {
 		name  string
 		allow bool
 	}{
-		{"allowed", true},
 		{"not allowed", false},
+		{"allowed", true},
+		{"not allowed again", false},
 	} {
 		t.Run(mainTest.name, func(t *testing.T) {
-			conf := createConfFile(t, []byte(fmt.Sprintf(`
-				listen: 127.0.0.1:-1
-				accounts {
-					A {
-						users: [{user: a, password: pwd}]
-						exports: [
-							{ stream: "info.*.*.>"}
-						]
-					}
-					B {
-						users: [{user: b, password: pwd}]
-						imports: [ { stream: {account: "A", subject:"info.*.*.>"}, to: "B.info.$2.$1.>", allow_trace: %v } ]
-					}
-					C {
-						users: [{user: c, password: pwd}]
-						imports: [ { stream: {account: "A", subject:"info.*.*.>"}, to: "C.info.$1.$2.>", allow_trace: %v } ]
-					}
-				}
-			`, mainTest.allow, mainTest.allow)))
-			s, _ := RunServerWithConfig(conf)
-			defer s.Shutdown()
-
-			nc := natsConnect(t, s.ClientURL(), nats.UserInfo("a", "pwd"), nats.Name("Tracer"))
-			defer nc.Close()
-			traceSub := natsSubSync(t, nc, "my.trace.subj")
-
-			nc2 := natsConnect(t, s.ClientURL(), nats.UserInfo("b", "pwd"), nats.Name("sub1"))
-			defer nc2.Close()
-			sub1 := natsSubSync(t, nc2, "B.info.*.*.>")
-			natsFlush(t, nc2)
-
-			nc3 := natsConnect(t, s.ClientURL(), nats.UserInfo("c", "pwd"), nats.Name("sub2"))
-			defer nc3.Close()
-			sub2 := natsQueueSubSync(t, nc3, "C.info.>", "my_queue")
-			natsFlush(t, nc3)
-
 			for _, test := range []struct {
 				name       string
 				deliverMsg bool
@@ -2719,6 +2732,12 @@ func TestMsgTraceStreamExport(t *testing.T) {
 						require_Equal[int](t, len(egress), 0)
 					}
 				})
+			}
+			switch mainIter {
+			case 0:
+				reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmpl, true, true))
+			case 1:
+				reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmpl, false, false))
 			}
 		})
 	}
@@ -4593,6 +4612,288 @@ func TestMsgTraceTriggeredByExternalHeader(t *testing.T) {
 			if test.reload {
 				reloadUpdateConfig(t, s1, conf1, fmt.Sprintf(tmpl, "A", `trace_dest: "acc.trace.dest"`, _EMPTY_))
 				reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl, "B", `trace_dest: "acc.trace.dest"`, fmt.Sprintf(`routes: ["nats://127.0.0.1:%d"]`, o1.Cluster.Port)))
+			}
+		})
+	}
+}
+
+func TestMsgTraceAccountTraceDestJWTUpdate(t *testing.T) {
+	// create system account
+	sysKp, _ := nkeys.CreateAccount()
+	sysPub, _ := sysKp.PublicKey()
+	sysCreds := newUser(t, sysKp)
+	// create account A
+	akp, _ := nkeys.CreateAccount()
+	aPub, _ := akp.PublicKey()
+	claim := jwt.NewAccountClaims(aPub)
+	aJwt, err := claim.Encode(oKp)
+	require_NoError(t, err)
+
+	dir := t.TempDir()
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: -1
+		operator: %s
+		resolver: {
+			type: full
+			dir: '%s'
+		}
+		system_account: %s
+    `, ojwt, dir, sysPub)))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+	updateJwt(t, s.ClientURL(), sysCreds, aJwt, 1)
+
+	nc := natsConnect(t, s.ClientURL(), createUserCreds(t, nil, akp))
+	defer nc.Close()
+
+	sub := natsSubSync(t, nc, "acc.trace.dest")
+	natsFlush(t, nc)
+
+	for i, test := range []struct {
+		name           string
+		traceTriggered bool
+	}{
+		{"no acc dest", false},
+		{"adding trace dest", true},
+		{"removing trace dest", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			msg := nats.NewMsg("foo")
+			msg.Header.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+			msg.Data = []byte("hello")
+			err = nc.PublishMsg(msg)
+			require_NoError(t, err)
+
+			if test.traceTriggered {
+				tm := natsNexMsg(t, sub, time.Second)
+				var e MsgTraceEvent
+				err = json.Unmarshal(tm.Data, &e)
+				require_NoError(t, err)
+				// Simple check
+				require_Equal[string](t, e.Server.Name, s.Name())
+			}
+			// No (more) trace message expected.
+			tm, err := sub.NextMsg(250 * time.Millisecond)
+			if err != nats.ErrTimeout {
+				t.Fatalf("Expected no trace message, got %s", tm.Data)
+			}
+			if i < 2 {
+				if i == 0 {
+					claim.Trace = &jwt.MsgTrace{Destination: "acc.trace.dest"}
+				} else {
+					claim.Trace = nil
+				}
+				aJwt, err = claim.Encode(oKp)
+				require_NoError(t, err)
+				updateJwt(t, s.ClientURL(), sysCreds, aJwt, 1)
+			}
+		})
+	}
+}
+
+func TestMsgTraceServiceJWTUpdate(t *testing.T) {
+	// create system account
+	sysKp, _ := nkeys.CreateAccount()
+	sysPub, _ := sysKp.PublicKey()
+	sysCreds := newUser(t, sysKp)
+	// create account A
+	akp, _ := nkeys.CreateAccount()
+	aPub, _ := akp.PublicKey()
+	aClaim := jwt.NewAccountClaims(aPub)
+	serviceExport := &jwt.Export{Subject: "req", Type: jwt.Service}
+	aClaim.Exports.Add(serviceExport)
+	aJwt, err := aClaim.Encode(oKp)
+	require_NoError(t, err)
+	// create account B
+	bkp, _ := nkeys.CreateAccount()
+	bPub, _ := bkp.PublicKey()
+	bClaim := jwt.NewAccountClaims(bPub)
+	serviceImport := &jwt.Import{Account: aPub, Subject: "req", Type: jwt.Service}
+	bClaim.Imports.Add(serviceImport)
+	bJwt, err := bClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	dir := t.TempDir()
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: -1
+		operator: %s
+		resolver: {
+			type: full
+			dir: '%s'
+		}
+		system_account: %s
+	`, ojwt, dir, sysPub)))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+	updateJwt(t, s.ClientURL(), sysCreds, aJwt, 1)
+	updateJwt(t, s.ClientURL(), sysCreds, bJwt, 1)
+
+	ncA := natsConnect(t, s.ClientURL(), createUserCreds(t, nil, akp), nats.Name("Service"))
+	defer ncA.Close()
+
+	natsSub(t, ncA, "req", func(m *nats.Msg) {
+		m.Respond([]byte("resp"))
+	})
+	natsFlush(t, ncA)
+
+	ncB := natsConnect(t, s.ClientURL(), createUserCreds(t, nil, bkp))
+	defer ncB.Close()
+
+	sub := natsSubSync(t, ncB, "trace.dest")
+	natsFlush(t, ncB)
+
+	for i, test := range []struct {
+		name       string
+		allowTrace bool
+	}{
+		{"trace not allowed", false},
+		{"trace allowed", true},
+		{"trace not allowed again", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			msg := nats.NewMsg("req")
+			msg.Header.Set(MsgTraceDest, sub.Subject)
+			msg.Data = []byte("request")
+			reply, err := ncB.RequestMsg(msg, time.Second)
+			require_NoError(t, err)
+			require_Equal[string](t, string(reply.Data), "resp")
+
+			tm := natsNexMsg(t, sub, time.Second)
+			var e MsgTraceEvent
+			err = json.Unmarshal(tm.Data, &e)
+			require_NoError(t, err)
+			require_Equal[string](t, e.Server.Name, s.Name())
+			require_Equal[string](t, e.Ingress().Account, bPub)
+			sis := e.ServiceImports()
+			require_Equal[int](t, len(sis), 1)
+			si := sis[0]
+			require_Equal[string](t, si.Account, aPub)
+			egresses := e.Egresses()
+			if !test.allowTrace {
+				require_Equal[int](t, len(egresses), 0)
+			} else {
+				require_Equal[int](t, len(egresses), 1)
+				eg := egresses[0]
+				require_Equal[string](t, eg.Name, "Service")
+				require_Equal[string](t, eg.Account, aPub)
+				require_Equal[string](t, eg.Subscription, "req")
+			}
+			// No (more) trace message expected.
+			tm, err = sub.NextMsg(250 * time.Millisecond)
+			if err != nats.ErrTimeout {
+				t.Fatalf("Expected no trace message, got %s", tm.Data)
+			}
+			if i < 2 {
+				// Set AllowTrace to true at the first iteration, then
+				// false at the second.
+				aClaim.Exports[0].AllowTrace = (i == 0)
+				aJwt, err = aClaim.Encode(oKp)
+				require_NoError(t, err)
+				updateJwt(t, s.ClientURL(), sysCreds, aJwt, 1)
+			}
+		})
+	}
+}
+
+func TestMsgTraceStreamJWTUpdate(t *testing.T) {
+	// create system account
+	sysKp, _ := nkeys.CreateAccount()
+	sysPub, _ := sysKp.PublicKey()
+	sysCreds := newUser(t, sysKp)
+	// create account A
+	akp, _ := nkeys.CreateAccount()
+	aPub, _ := akp.PublicKey()
+	aClaim := jwt.NewAccountClaims(aPub)
+	streamExport := &jwt.Export{Subject: "info", Type: jwt.Stream}
+	aClaim.Exports.Add(streamExport)
+	aJwt, err := aClaim.Encode(oKp)
+	require_NoError(t, err)
+	// create account B
+	bkp, _ := nkeys.CreateAccount()
+	bPub, _ := bkp.PublicKey()
+	bClaim := jwt.NewAccountClaims(bPub)
+	streamImport := &jwt.Import{Account: aPub, Subject: "info", To: "b", Type: jwt.Stream}
+	bClaim.Imports.Add(streamImport)
+	bJwt, err := bClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	dir := t.TempDir()
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: -1
+		operator: %s
+		resolver: {
+			type: full
+			dir: '%s'
+		}
+		system_account: %s
+	`, ojwt, dir, sysPub)))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+	updateJwt(t, s.ClientURL(), sysCreds, aJwt, 1)
+	updateJwt(t, s.ClientURL(), sysCreds, bJwt, 1)
+
+	ncA := natsConnect(t, s.ClientURL(), createUserCreds(t, nil, akp))
+	defer ncA.Close()
+
+	traceSub := natsSubSync(t, ncA, "trace.dest")
+	natsFlush(t, ncA)
+
+	ncB := natsConnect(t, s.ClientURL(), createUserCreds(t, nil, bkp), nats.Name("BInfo"))
+	defer ncB.Close()
+
+	appSub := natsSubSync(t, ncB, "b.info")
+	natsFlush(t, ncB)
+
+	for i, test := range []struct {
+		name       string
+		allowTrace bool
+	}{
+		{"trace not allowed", false},
+		{"trace allowed", true},
+		{"trace not allowed again", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			msg := nats.NewMsg("info")
+			msg.Header.Set(MsgTraceDest, traceSub.Subject)
+			msg.Data = []byte("some info")
+			err = ncA.PublishMsg(msg)
+			require_NoError(t, err)
+
+			appMsg := natsNexMsg(t, appSub, time.Second)
+			require_Equal[string](t, string(appMsg.Data), "some info")
+
+			tm := natsNexMsg(t, traceSub, time.Second)
+			var e MsgTraceEvent
+			err = json.Unmarshal(tm.Data, &e)
+			require_NoError(t, err)
+			require_Equal[string](t, e.Server.Name, s.Name())
+			ses := e.StreamExports()
+			require_Equal[int](t, len(ses), 1)
+			se := ses[0]
+			require_Equal[string](t, se.Account, bPub)
+			require_Equal[string](t, se.To, "b.info")
+			egresses := e.Egresses()
+			if !test.allowTrace {
+				require_Equal[int](t, len(egresses), 0)
+			} else {
+				require_Equal[int](t, len(egresses), 1)
+				eg := egresses[0]
+				require_Equal[string](t, eg.Name, "BInfo")
+				require_Equal[string](t, eg.Account, bPub)
+				require_Equal[string](t, eg.Subscription, "info")
+			}
+			// No (more) trace message expected.
+			tm, err = traceSub.NextMsg(250 * time.Millisecond)
+			if err != nats.ErrTimeout {
+				t.Fatalf("Expected no trace message, got %s", tm.Data)
+			}
+			if i < 2 {
+				// Set AllowTrace to true at the first iteration, then
+				// false at the second.
+				bClaim.Imports[0].AllowTrace = (i == 0)
+				bJwt, err = bClaim.Encode(oKp)
+				require_NoError(t, err)
+				updateJwt(t, s.ClientURL(), sysCreds, bJwt, 1)
 			}
 		})
 	}
