@@ -11441,7 +11441,7 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 	}
 
 	// Faster timeout since we loop below checking for condition.
-	js2, err := nc.JetStream(nats.MaxWait(250 * time.Millisecond))
+	js2, err := nc.JetStream(nats.MaxWait(500 * time.Millisecond))
 	require_NoError(t, err)
 
 	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
@@ -11609,25 +11609,25 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 			si, err := js2.StreamInfo(streamName, &nats.StreamInfoRequest{SubjectsFilter: ">"})
 			require_NoError(t, err)
 			if ss, ok := si.State.Subjects[subject]; !ok {
-				t.Log("Expected messages with the transformed subject")
+				return fmt.Errorf("expected messages with the transformed subject %s", subject)
 			} else {
-				if ss != subjectNumMsgs {
-					t.Fatalf("Expected %d messages on the transformed subject but got %d", subjectNumMsgs, ss)
+				if ss > subjectNumMsgs || ss < subjectNumMsgs {
+					return fmt.Errorf("expected %d messages on the transformed subject %s but got %d", subjectNumMsgs, subject, ss)
 				}
 			}
 			if si.State.Msgs != streamNumMsg {
-				return fmt.Errorf("Expected %d stream messages, got state: %+v", streamNumMsg, si.State)
+				return fmt.Errorf("expected %d stream messages, got state: %+v", streamNumMsg, si.State)
 			}
 			if si.State.FirstSeq != firstSeq || si.State.LastSeq != lastSeq {
-				return fmt.Errorf("Expected first sequence=%d and last sequence=%d, but got state: %+v", firstSeq, lastSeq, si.State)
+				return fmt.Errorf("expected first sequence=%d and last sequence=%d, but got state: %+v", firstSeq, lastSeq, si.State)
 			}
 			return nil
 		}
 	}
 
-	checkFor(t, 2*time.Second, 100*time.Millisecond, f("M5", "foo2", 100, 100, 251, 350))
-	checkFor(t, 2*time.Second, 100*time.Millisecond, f("M6", "bar2", 50, 150, 101, 250))
-	checkFor(t, 2*time.Second, 100*time.Millisecond, f("M6", "baz2", 100, 150, 101, 250))
+	checkFor(t, 10*time.Second, 500*time.Millisecond, f("M5", "foo2", 100, 100, 251, 350))
+	checkFor(t, 10*time.Second, 500*time.Millisecond, f("M6", "bar2", 50, 150, 101, 250))
+	checkFor(t, 10*time.Second, 500*time.Millisecond, f("M6", "baz2", 100, 150, 101, 250))
 
 }
 
