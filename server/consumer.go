@@ -4783,6 +4783,23 @@ func (o *consumer) selectStartingSeqNo() {
 				// If we are here we are time based.
 				// TODO(dlc) - Once clustered can't rely on this.
 				o.sseq = o.mset.store.GetSeqFromTime(*o.cfg.OptStartTime)
+				// Here we want to see if we are filtered, and if so possibly close the gap
+				// to the nearest first given our starting sequence from time. This is so we do
+				// not force the system to do a linear walk between o.sseq and the real first.
+				if len(o.subjf) > 0 {
+					nseq := state.LastSeq
+					for _, filter := range o.subjf {
+						// Use first sequence since this is more optimized atm.
+						ss := o.mset.store.FilteredState(state.FirstSeq, filter.subject)
+						if ss.First > o.sseq && ss.First < nseq {
+							nseq = ss.First
+						}
+					}
+					// Skip ahead if possible.
+					if nseq > o.sseq && nseq < state.LastSeq {
+						o.sseq = nseq
+					}
+				}
 			} else {
 				// DeliverNew
 				o.sseq = state.LastSeq + 1
