@@ -1466,6 +1466,16 @@ func (fs *fileStore) warn(format string, args ...any) {
 	fs.srv.Warnf(fmt.Sprintf("Filestore [%s] %s", fs.cfg.Name, format), args...)
 }
 
+// For doing debug logging.
+// Lock should be held.
+func (fs *fileStore) debug(format string, args ...any) {
+	// No-op if no server configured.
+	if fs.srv == nil {
+		return
+	}
+	fs.srv.Debugf(fmt.Sprintf("Filestore [%s] %s", fs.cfg.Name, format), args...)
+}
+
 // Track local state but ignore timestamps here.
 func updateTrackingState(state *StreamState, mb *msgBlock) {
 	if state.FirstSeq == 0 {
@@ -2225,30 +2235,44 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 
 	fseq, isAll, subs := start, filter == _EMPTY_ || filter == fwcs, []string{filter}
 
-	if err := mb.ensurePerSubjectInfoLoaded(); err != nil {
-		return nil, false, err
+	var didLoad bool
+	if mb.fssNotLoaded() {
+		// Make sure we have fss loaded.
+		mb.loadMsgsWithLock()
+		didLoad = true
 	}
 
 	// If we only have 1 subject currently and it matches our filter we can also set isAll.
 	if !isAll && len(mb.fss) == 1 {
 		_, isAll = mb.fss[filter]
 	}
-	// Skip scan of mb.fss if number of messages in the block are less than
-	// 1/2 the number of subjects in mb.fss. Or we have a wc and lots of fss entries.
-	const linearScanMaxFSS = 32
 	// Make sure to start at mb.first.seq if fseq < mb.first.seq
 	if seq := atomic.LoadUint64(&mb.first.seq); seq > fseq {
 		fseq = seq
 	}
 	lseq := atomic.LoadUint64(&mb.last.seq)
-	doLinearScan := isAll || 2*int(lseq-fseq) < len(mb.fss) || (wc && len(mb.fss) > linearScanMaxFSS)
 
+	// Optionally build the isMatch for wildcard filters.
+	tsa := [32]string{}
+	fsa := [32]string{}
+	var fts []string
+	var isMatch func(subj string) bool
+	// Decide to build.
+	if wc {
+		fts = tokenizeSubjectIntoSlice(fsa[:0], filter)
+		isMatch = func(subj string) bool {
+			tts := tokenizeSubjectIntoSlice(tsa[:0], subj)
+			return isSubsetMatchTokenized(tts, fts)
+		}
+	}
+	// Only do linear scan if isAll or we are wildcarded and have to traverse more fss than actual messages.
+	doLinearScan := isAll || (wc && len(mb.fss) > int(lseq-fseq))
 	if !doLinearScan {
 		// If we have a wildcard match against all tracked subjects we know about.
 		if wc {
 			subs = subs[:0]
 			for subj := range mb.fss {
-				if subjectIsSubsetMatch(subj, filter) {
+				if isMatch(subj) {
 					subs = append(subs, subj)
 				}
 			}
@@ -2270,11 +2294,17 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 		}
 	}
 
-	if fseq > lseq {
-		return nil, false, ErrStoreMsgNotFound
+	// If we guess to not do a linear scan, but the above resulted in alot of subs that will
+	// need to be checked for every scanned message, revert.
+	// TODO(dlc) - we could memoize the subs across calls.
+	if len(subs) > int(lseq-fseq) {
+		doLinearScan = true
 	}
 
-	var didLoad bool
+	if fseq > lseq {
+		return nil, didLoad, ErrStoreMsgNotFound
+	}
+
 	// Need messages loaded from here on out.
 	if mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
@@ -2298,7 +2328,7 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 			return fsm, expireOk, nil
 		}
 		if doLinearScan {
-			if wc && subjectIsSubsetMatch(fsm.subj, filter) {
+			if wc && isMatch(sm.subj) {
 				return fsm, expireOk, nil
 			} else if !wc && fsm.subj == filter {
 				return fsm, expireOk, nil
@@ -7540,7 +7570,7 @@ func (fs *fileStore) writeFullState() error {
 	}
 
 	if cap(buf) > sz {
-		fs.warn("WriteFullState reallocated from %d to %d", sz, cap(buf))
+		fs.debug("WriteFullState reallocated from %d to %d", sz, cap(buf))
 	}
 
 	// Write to a tmp file and rename.
