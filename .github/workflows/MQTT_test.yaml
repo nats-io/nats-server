@@ -29,7 +29,7 @@ jobs:
         run: |
           wget https://github.com/hivemq/mqtt-cli/releases/download/v4.20.0/mqtt-cli-4.20.0.deb
           sudo apt install ./mqtt-cli-4.20.0.deb
-          go install github.com/ConnectEverything/mqtt-test@latest
+          go install github.com/ConnectEverything/mqtt-test@4dd571c31318dcfebe5443242f53f262403ceafb
 
       # - name: Download benchmark result for ${{ github.base_ref || github.ref_name }}
       #   uses: dawidd6/action-download-artifact@v2
