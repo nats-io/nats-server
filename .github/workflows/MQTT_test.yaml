@@ -25,7 +25,7 @@ jobs:
         run: |
           wget https://github.com/hivemq/mqtt-cli/releases/download/v4.20.0/mqtt-cli-4.20.0.deb
           sudo apt install ./mqtt-cli-4.20.0.deb
-          go install github.com/ConnectEverything/mqtt-test@27cdbf032ee67b8d46015548fc360cf2eee4317a
+          go install github.com/ConnectEverything/mqtt-test@v0.1
 
       - name: Run tests and benchmarks
         shell: bash --noprofile --norc -eo pipefail {0}
