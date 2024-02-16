@@ -4132,7 +4132,7 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 
 	if len(hdr) == 0 {
 		const ht = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\n\r\n"
-		hdr = []byte(fmt.Sprintf(ht, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano)))
+		hdr = fmt.Appendf(nil, ht, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano))
 	} else {
 		hdr = copyBytes(hdr)
 		hdr = genHeader(hdr, JSStream, name)
@@ -4565,10 +4565,10 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			const ht = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\nNats-Last-Sequence: %d\r\n\r\n"
 			const htho = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\nNats-Last-Sequence: %d\r\nNats-Msg-Size: %d\r\n\r\n"
 			if !thdrsOnly {
-				hdr = []byte(fmt.Sprintf(ht, name, subject, seq, tsStr, tlseq))
+				hdr = fmt.Appendf(nil, ht, name, subject, seq, tsStr, tlseq)
 				rpMsg = copyBytes(msg)
 			} else {
-				hdr = []byte(fmt.Sprintf(htho, name, subject, seq, tsStr, tlseq, len(msg)))
+				hdr = fmt.Appendf(nil, htho, name, subject, seq, tsStr, tlseq, len(msg))
 			}
 		} else {
 			// Slow path.
