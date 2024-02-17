@@ -7398,6 +7398,64 @@ func TestLeafNodeServerReloadSubjectMappings(t *testing.T) {
 	checkSubNoInterest(t, l, globalAccountName, "source1", 2*time.Second)
 }
 
+// https://github.com/nats-io/nats-server/issues/5099
+func TestLeafNodeServerReloadSubjectMappingsWithSameSubject(t *testing.T) {
+	stmpl := `
+		listen: 127.0.0.1:-1
+		server_name: test-server
+		mappings = { "source": "target1" }
+		leaf { listen: 127.0.0.1:-1 }
+	`
+	conf := createConfFile(t, []byte(stmpl))
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	tmpl := `
+		listen: 127.0.0.1:-1
+		server_name: test-leaf
+		leaf {
+			remotes: [ {
+				urls: [ nats-leaf://127.0.0.1:{LEAF_PORT} ]
+			} ]
+		}
+	`
+	tmpl = strings.Replace(tmpl, "{LEAF_PORT}", fmt.Sprintf("%d", o.LeafNode.Port), 1)
+	lConf := createConfFile(t, []byte(tmpl))
+	l, _ := RunServerWithConfig(lConf)
+	defer l.Shutdown()
+
+	checkLeafNodeConnected(t, l)
+
+	// Create our subscriber.
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+	sub1 := natsSubSync(t, nc, "target1")
+	sub2 := natsSubSync(t, nc, "target2")
+	natsFlush(t, nc)
+
+	// Create our publisher.
+	ncl := natsConnect(t, l.ClientURL())
+	defer ncl.Close()
+	// Publish our message.
+	ncl.Publish("source", []byte("OK"))
+
+	// Make sure we receive it.
+	checkSubsPending(t, sub1, 1)
+	// Make sure the other does not.
+	checkSubsPending(t, sub2, 0)
+
+	// Now change mapping, but only the "to" subject, keeping same "from"
+	reloadUpdateConfig(t, s, conf, strings.Replace(stmpl, "target1", "target2", 1))
+
+	// Publish our new message.
+	ncl.Publish("source", []byte("OK"))
+
+	// Make sure we receive it.
+	checkSubsPending(t, sub2, 1)
+	// Make sure the other does not.
+	checkSubsPending(t, sub1, 1)
+}
+
 func TestLeafNodeNkeyAuth(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 		listen: 127.0.0.1:-1
