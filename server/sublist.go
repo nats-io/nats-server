@@ -1,4 +1,4 @@
-// Copyright 2016-2023 The NATS Authors
+// Copyright 2016-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -1052,7 +1052,16 @@ func visitLevel(l *level, depth int) int {
 
 // Determine if a subject has any wildcard tokens.
 func subjectHasWildcard(subject string) bool {
-	return !subjectIsLiteral(subject)
+	// This one exits earlier then !subjectIsLiteral(subject)
+	for i, c := range subject {
+		if c == pwc || c == fwc {
+			if (i == 0 || subject[i-1] == btsep) &&
+				(i+1 == len(subject) || subject[i+1] == btsep) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Determine if the subject has any wildcards. Fast version, does not check for
