@@ -649,6 +649,13 @@ type JSApiMsgGetRequest struct {
 	// This will make sure we limit how much data we blast out. If not set we will
 	// inherit the slow consumer default max setting of the server. Default is MAX_PENDING_SIZE.
 	MaxBytes int `json:"max_bytes,omitempty"`
+
+	// Multiple response support. Will get the last msgs matching the subjects. These can include wildcards.
+	MultiLastFor []string `json:"multi_last,omitempty"`
+	// Only return messages up to this sequence. If not set, will be last sequence for the stream.
+	UpToSeq uint64 `json:"up_to_seq,omitempty"`
+	// Only return messages up to this time.
+	UpToTime *time.Time `json:"up_to_time,omitempty"`
 }
 
 type JSApiMsgGetResponse struct {
