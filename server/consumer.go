@@ -108,7 +108,7 @@ type ConsumerConfig struct {
 	Metadata map[string]string `json:"metadata,omitempty"`
 
 	// PauseUntil is for suspending the consumer until the deadline.
-	PauseUntil time.Time `json:"pause_until,omitempty"`
+	PauseUntil *time.Time `json:"pause_until,omitempty"`
 }
 
 // SequenceInfo has both the consumer and the stream sequence and last activity.
@@ -1090,13 +1090,13 @@ func (o *consumer) updatePauseState(cfg *ConsumerConfig) {
 		// loopAndGatherMsgs.
 		return
 	}
-	if cfg.PauseUntil.IsZero() || cfg.PauseUntil.Before(time.Now()) {
+	if cfg.PauseUntil == nil || cfg.PauseUntil.IsZero() || cfg.PauseUntil.Before(time.Now()) {
 		// Either the PauseUntil is unset (is effectively zero) or the
 		// deadline has already passed, in which case there is nothing
 		// to do.
 		return
 	}
-	o.uptmr = time.AfterFunc(time.Until(cfg.PauseUntil), func() {
+	o.uptmr = time.AfterFunc(time.Until(*cfg.PauseUntil), func() {
 		o.mu.Lock()
 		defer o.mu.Unlock()
 
@@ -1494,11 +1494,14 @@ func (o *consumer) sendPauseAdvisoryLocked(cfg *ConsumerConfig) {
 			ID:   nuid.Next(),
 			Time: time.Now().UTC(),
 		},
-		Stream:     o.stream,
-		Consumer:   o.name,
-		Paused:     time.Now().Before(cfg.PauseUntil),
-		PauseUntil: cfg.PauseUntil,
-		Domain:     o.srv.getOpts().JetStreamDomain,
+		Stream:   o.stream,
+		Consumer: o.name,
+		Domain:   o.srv.getOpts().JetStreamDomain,
+	}
+
+	if cfg.PauseUntil != nil {
+		e.PauseUntil = *cfg.PauseUntil
+		e.Paused = time.Now().Before(e.PauseUntil)
 	}
 
 	j, err := json.Marshal(e)
@@ -1874,7 +1877,10 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 	}
 
 	// Make sure we always store PauseUntil in UTC.
-	cfg.PauseUntil = cfg.PauseUntil.UTC()
+	if cfg.PauseUntil != nil {
+		utc := (*cfg.PauseUntil).UTC()
+		cfg.PauseUntil = &utc
+	}
 
 	if o.store != nil {
 		// Update local state always.
@@ -1924,10 +1930,20 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 			o.dtmr = time.AfterFunc(o.dthresh, o.deleteNotActive)
 		}
 	}
-	if !cfg.PauseUntil.Equal(o.cfg.PauseUntil) {
-		o.updatePauseState(cfg)
-		if o.isLeader() {
-			o.sendPauseAdvisoryLocked(cfg)
+	// heck whether the pause has changed
+	{
+		var old, new time.Time
+		if o.cfg.PauseUntil != nil {
+			old = *o.cfg.PauseUntil
+		}
+		if cfg.PauseUntil != nil {
+			new = *cfg.PauseUntil
+		}
+		if !old.Equal(new) {
+			o.updatePauseState(cfg)
+			if o.isLeader() {
+				o.sendPauseAdvisoryLocked(cfg)
+			}
 		}
 	}
 
@@ -2643,10 +2659,12 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		NumPending:     o.checkNumPending(),
 		PushBound:      o.isPushMode() && o.active,
 		TimeStamp:      time.Now().UTC(),
-		Paused:         time.Now().Before(o.cfg.PauseUntil),
 	}
-	if info.Paused {
-		info.PauseRemaining = time.Until(o.cfg.PauseUntil)
+	if o.cfg.PauseUntil != nil {
+		p := *o.cfg.PauseUntil
+		if info.Paused = time.Now().Before(p); info.Paused {
+			info.PauseRemaining = time.Until(p)
+		}
 	}
 
 	// If we are replicated and we are not the leader we need to pull certain data from our store.
@@ -3984,7 +4002,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		err = nil
 
 		// If the consumer is paused then stop sending.
-		if !o.cfg.PauseUntil.IsZero() && time.Now().Before(o.cfg.PauseUntil) {
+		if o.cfg.PauseUntil != nil && !o.cfg.PauseUntil.IsZero() && time.Now().Before(*o.cfg.PauseUntil) {
 			// If the consumer is paused and we haven't reached the deadline yet then
 			// go back to waiting.
 			goto waitForMsgs

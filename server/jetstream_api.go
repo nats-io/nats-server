@@ -4016,7 +4016,7 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 	resp.ConsumerInfo = o.initialInfo()
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 
-	if !o.cfg.PauseUntil.IsZero() && time.Now().Before(o.cfg.PauseUntil) {
+	if o.cfg.PauseUntil != nil && !o.cfg.PauseUntil.IsZero() && time.Now().Before(*o.cfg.PauseUntil) {
 		o.sendPauseAdvisoryLocked(&o.cfg)
 	}
 }
@@ -4554,13 +4554,16 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 		}
 
 		nca := *ca
-		nca.Config.PauseUntil = req.PauseUntil.UTC()
+		pauseUTC := req.PauseUntil.UTC()
+		if !pauseUTC.IsZero() {
+			nca.Config.PauseUntil = &pauseUTC
+		}
 		eca := encodeAddConsumerAssignment(&nca)
 		cc.meta.Propose(eca)
 
-		resp.PauseUntil = nca.Config.PauseUntil
-		if resp.Paused = time.Now().Before(nca.Config.PauseUntil); resp.Paused {
-			resp.PauseRemaining = time.Until(nca.Config.PauseUntil)
+		resp.PauseUntil = pauseUTC
+		if resp.Paused = time.Now().Before(pauseUTC); resp.Paused {
+			resp.PauseRemaining = time.Until(pauseUTC)
 		}
 		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 		return
@@ -4581,7 +4584,10 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 	}
 
 	ncfg := obs.cfg
-	ncfg.PauseUntil = req.PauseUntil.UTC()
+	pauseUTC := req.PauseUntil.UTC()
+	if !pauseUTC.IsZero() {
+		ncfg.PauseUntil = &pauseUTC
+	}
 
 	if err := obs.updateConfig(&ncfg); err != nil {
 		// The only type of error that should be returned here is from o.store,
@@ -4591,9 +4597,9 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 		return
 	}
 
-	resp.PauseUntil = ncfg.PauseUntil
-	if resp.Paused = time.Now().Before(ncfg.PauseUntil); resp.Paused {
-		resp.PauseRemaining = time.Until(ncfg.PauseUntil)
+	resp.PauseUntil = pauseUTC
+	if resp.Paused = time.Now().Before(pauseUTC); resp.Paused {
+		resp.PauseRemaining = time.Until(pauseUTC)
 	}
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }

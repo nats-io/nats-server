@@ -5084,7 +5084,7 @@ func (js *jetStream) processConsumerLeaderChange(o *consumer, isLeader bool) err
 	// Only send a pause advisory on consumer create if we're
 	// actually paused. The timer would have been kicked by now
 	// by the call to o.setLeader() above.
-	if isLeader && !o.cfg.PauseUntil.IsZero() && time.Now().Before(o.cfg.PauseUntil) {
+	if isLeader && o.cfg.PauseUntil != nil && !o.cfg.PauseUntil.IsZero() && time.Now().Before(*o.cfg.PauseUntil) {
 		o.sendPauseAdvisoryLocked(&o.cfg)
 	}
 
