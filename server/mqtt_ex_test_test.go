@@ -33,10 +33,10 @@ import (
 type mqttExDial string
 
 type mqttExTarget struct {
-	servers  []*Server
-	clusters []*cluster
-	configs  []mqttExTestConfig
-	all      []mqttExDial
+	singleServers []*Server
+	clusters      []*cluster
+	configs       []mqttExTestConfig
+	all           []mqttExDial
 }
 
 type mqttExTestConfig struct {
@@ -113,16 +113,31 @@ func TestMQTTExRetainedMessages(t *testing.T) {
 			for _, dial := range target.all {
 				mqttExInitServer(t, dial)
 			}
-			target.Reload(t)
 
 			numRMS := 100
 			strNumRMS := strconv.Itoa(numRMS)
-			for _, tc := range target.configs {
-				t.Run(tc.name, func(t *testing.T) {
-					topic := "subret_" + nuid.Next()
+			topics := make([]string, len(target.configs))
 
-					// publish numRMS retained messages, one at a time,
-					// round-robin across pub nodes.
+			// checkSubRetained is a helper to check retained messages for a
+			// topic, on a specific server.
+			checkSubRetained := func(t *testing.T, nameFormat string, dial mqttExDial, i int) {
+				_, _, _, name := dial.Get()
+				t.Run(fmt.Sprintf(nameFormat, name), func(t *testing.T) {
+					mqttexRunTest(t, "sub", dial,
+						"--retained", strNumRMS,
+						"--qos", "0",
+						"--topic", topics[i],
+					)
+				})
+			}
+
+			for i, tc := range target.configs {
+				t.Run(tc.name, func(t *testing.T) {
+					// Publish numRMS retained messages one at a time,
+					// round-robin across pub nodes. Remember the topic for each
+					// test config to check the subs after reload.
+					topic := "subret_" + nuid.Next()
+					topics[i] = topic
 					iNode := 0
 					for i := 0; i < numRMS; i++ {
 						pubTopic := fmt.Sprintf("%s/%d", topic, i)
@@ -136,26 +151,25 @@ func TestMQTTExRetainedMessages(t *testing.T) {
 						iNode++
 					}
 
-					check := func(testNameFormat string) {
-						for _, dial := range tc.sub {
-							_, _, _, name := dial.Get()
-							t.Run(fmt.Sprintf(testNameFormat, name), func(t *testing.T) {
-								mqttexRunTest(t, "sub", dial,
-									"--retained", strNumRMS,
-									"--qos", "0",
-									"--topic", topic,
-								)
-							})
-						}
-					}
-
 					// Subscribe and receive all retained on each sub node. Then
 					// reload the entire target cluster, and repeat to ensure
 					// retained messages are persisted and re-delivered after
 					// restart.
-					check("subscribe at %s")
-					target.Reload(t)
-					check("subscribe after reload at %s")
+					for _, dial := range tc.sub {
+						checkSubRetained(t, "subscribe at %s", dial, i)
+					}
+				})
+			}
+
+			// Reload the target
+			target.Reload(t)
+
+			// Now check again
+			for i, tc := range target.configs {
+				t.Run(strconv.Itoa(i), func(t *testing.T) {
+					for _, dial := range tc.sub {
+						checkSubRetained(t, "subscribe after reload at %s", dial, i)
+					}
 				})
 			}
 		})
@@ -164,7 +178,24 @@ func TestMQTTExRetainedMessages(t *testing.T) {
 
 func mqttExInitServer(tb testing.TB, dial mqttExDial) {
 	tb.Helper()
-	mqttexRunTest(tb, "pub", dial, "--id", "__init__")
+	if mqttexTestCommandPath == "" {
+		tb.Skip(`"mqtt-test" command is not found in $PATH.`)
+	}
+
+	// try to publish a message, up to 5 attempts. If successful, try pubsub.
+	for _, subCommand := range []string{"pub", "pubsub"} {
+		for i := 0; i < 5; i++ {
+			out, err := exec.Command(mqttexTestCommandPath, subCommand, "-s", string(dial)).CombinedOutput()
+			if err == nil {
+				break
+			}
+			if i < 4 {
+				tb.Logf("failed to %s on attempt %v, will retry", subCommand, i)
+			} else {
+				tb.Fatalf("failed to publish 5 times, give up: %v\n\n%s", err, string(out))
+			}
+		}
+	}
 }
 
 func mqttExNewDialForServer(s *Server, username, password string) mqttExDial {
@@ -214,13 +245,18 @@ func (t *mqttExTarget) Reload(tb testing.TB) {
 	tb.Helper()
 
 	for _, c := range t.clusters {
+		c.stopAll()
 		c.restartAllSamePorts()
 	}
 
-	for i, s := range t.servers {
+	for i, s := range t.singleServers {
 		o := s.getOpts()
 		s.Shutdown()
-		t.servers[i] = testMQTTRunServer(tb, o)
+		t.singleServers[i] = testMQTTRunServer(tb, o)
+	}
+
+	for _, dial := range t.all {
+		mqttExInitServer(tb, dial)
 	}
 }
 
@@ -228,7 +264,7 @@ func (t *mqttExTarget) Shutdown() {
 	for _, c := range t.clusters {
 		c.shutdown()
 	}
-	for _, s := range t.servers {
+	for _, s := range t.singleServers {
 		testMQTTShutdownServer(s)
 	}
 }
@@ -239,8 +275,8 @@ func mqttExMakeServer(tb testing.TB) *mqttExTarget {
 	s := testMQTTRunServer(tb, o)
 	all := []mqttExDial{mqttExNewDialForServer(s, "", "")}
 	return &mqttExTarget{
-		servers: []*Server{s},
-		all:     all,
+		singleServers: []*Server{s},
+		all:           all,
 		configs: []mqttExTestConfig{
 			{
 				name: "single server",
@@ -323,8 +359,8 @@ mqtt {
 			mqttExNewDialForServer(leafServer, "one", "p"),
 		}
 		return &mqttExTarget{
-			servers: []*Server{hubServer, leafServer},
-			all:     both,
+			singleServers: []*Server{hubServer, leafServer},
+			all:           both,
 			configs: []mqttExTestConfig{
 				{name: "pub to all", pub: both, sub: both},
 				{name: "pub to SPOKE", pub: both[1:], sub: both},
