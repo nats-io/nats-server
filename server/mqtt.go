@@ -1954,9 +1954,13 @@ func (as *mqttAccountSessionManager) processRetainedMsg(_ *subscription, c *clie
 	}
 	// If lastSeq is 0 (nothing to recover, or done doing it) and this is
 	// from our own server, ignore.
+	as.mu.RLock()
 	if as.rrmLastSeq == 0 && rm.Origin == as.jsa.id {
+		as.mu.RUnlock()
 		return
 	}
+	as.mu.RUnlock()
+
 	// At this point we either recover from our own server, or process a remote retained message.
 	seq, _, _ := ackReplyInfo(reply)
 
@@ -1964,11 +1968,13 @@ func (as *mqttAccountSessionManager) processRetainedMsg(_ *subscription, c *clie
 	as.handleRetainedMsg(rm.Subject, &mqttRetainedMsgRef{sseq: seq}, rm, false)
 
 	// If we were recovering (lastSeq > 0), then check if we are done.
+	as.mu.Lock()
 	if as.rrmLastSeq > 0 && seq >= as.rrmLastSeq {
 		as.rrmLastSeq = 0
 		close(as.rrmDoneCh)
 		as.rrmDoneCh = nil
 	}
+	as.mu.Unlock()
 }
 
 func (as *mqttAccountSessionManager) processRetainedMsgDel(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {

@@ -32,6 +32,7 @@ jobs:
         run: |
           cd src/github.com/nats-io/nats-server
           go test -v --run='MQTTEx' ./server
+          go test -v --race --failfast --run='MQTTEx' ./server
           go test --run='-' --count=3 --bench 'MQTTEx' --benchtime=100x ./server
 
       # TODO: compare benchmarks

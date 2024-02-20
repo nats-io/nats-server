@@ -46,7 +46,7 @@ type mqttExTestConfig struct {
 }
 
 func TestMQTTExCompliance(t *testing.T) {
-	if mqttexCLICommandPath == "" {
+	if mqttexCLICommandPath == _EMPTY_ {
 		t.Skip(`"mqtt" command is not found in $PATH nor $MQTT_CLI. See https://hivemq.github.io/mqtt-cli/docs/installation/#debian-package for installation instructions`)
 	}
 
@@ -67,7 +67,7 @@ func TestMQTTExCompliance(t *testing.T) {
 }
 
 func TestMQTTExRetainedMessages(t *testing.T) {
-	if mqttexTestCommandPath == "" {
+	if mqttexTestCommandPath == _EMPTY_ {
 		t.Skip(`"mqtt-test" command is not found in $PATH.`)
 	}
 
@@ -108,11 +108,6 @@ func TestMQTTExRetainedMessages(t *testing.T) {
 			target := topo.makef(t)
 			t.Cleanup(target.Shutdown)
 
-			// TODO (levb): if we do not pre-initialize the streams and
-			// consumers, they fail to receive the retained messages in the
-			// configurations with different JetStream domains. Not sure if it
-			// is a bug.
-
 			// initialize the MQTT assets by "touching" all nodes in the
 			// cluster, but then reload to start with fresh server state.
 			for _, dial := range target.all {
@@ -136,7 +131,7 @@ func TestMQTTExRetainedMessages(t *testing.T) {
 							"--retain",
 							"--topic", pubTopic,
 							"--qos", "0",
-							"--size", "100",
+							"--size", "128", // message size 128 bytes
 						)
 						iNode++
 					}
