@@ -119,9 +119,10 @@ type SequenceInfo struct {
 }
 
 type CreateConsumerRequest struct {
-	Stream string         `json:"stream_name"`
-	Config ConsumerConfig `json:"config"`
-	Action ConsumerAction `json:"action"`
+	Stream   string         `json:"stream_name"`
+	Config   ConsumerConfig `json:"config"`
+	Action   ConsumerAction `json:"action"`
+	Pedantic bool           `json:"pedantic"`
 }
 
 type ConsumerAction int
@@ -437,7 +438,7 @@ const (
 )
 
 // Helper function to set consumer config defaults from above.
-func setConsumerConfigDefaults(config *ConsumerConfig, streamCfg *StreamConfig, lim *JSLimitOpts, accLim *JetStreamAccountLimits) {
+func setConsumerConfigDefaults(config *ConsumerConfig, streamCfg *StreamConfig, lim *JSLimitOpts, accLim *JetStreamAccountLimits, pedantic bool) *ApiError {
 	// Set to default if not specified.
 	if config.DeliverSubject == _EMPTY_ && config.MaxWaiting == 0 {
 		config.MaxWaiting = JSWaitQueueDefaultMax
@@ -452,12 +453,21 @@ func setConsumerConfigDefaults(config *ConsumerConfig, streamCfg *StreamConfig, 
 	}
 	// If BackOff was specified that will override the AckWait and the MaxDeliver.
 	if len(config.BackOff) > 0 {
+		if pedantic && config.AckWait != config.BackOff[0] {
+			return NewJSPedanticError(errors.New("first backoff value has to equal batch AckWait"))
+		}
 		config.AckWait = config.BackOff[0]
 	}
 	if config.MaxAckPending == 0 {
+		if pedantic && streamCfg.ConsumerLimits.MaxAckPending > 0 {
+			return NewJSPedanticError(errors.New("max_ack_pending must be set if it's configured in stream limits"))
+		}
 		config.MaxAckPending = streamCfg.ConsumerLimits.MaxAckPending
 	}
 	if config.InactiveThreshold == 0 {
+		if pedantic && streamCfg.ConsumerLimits.InactiveThreshold > 0 {
+			return NewJSPedanticError(errors.New("inactive_threshold must be set if it's configured in stream limits"))
+		}
 		config.InactiveThreshold = streamCfg.ConsumerLimits.InactiveThreshold
 	}
 	// Set proper default for max ack pending if we are ack explicit and none has been set.
@@ -473,8 +483,12 @@ func setConsumerConfigDefaults(config *ConsumerConfig, streamCfg *StreamConfig, 
 	}
 	// if applicable set max request batch size
 	if config.DeliverSubject == _EMPTY_ && config.MaxRequestBatch == 0 && lim.MaxRequestBatch > 0 {
+		if pedantic {
+			return NewJSPedanticError(errors.New("max_request_batch must be set if it's JetStream limits are set"))
+		}
 		config.MaxRequestBatch = lim.MaxRequestBatch
 	}
+	return nil
 }
 
 // Check the consumer config. If we are recovering don't check filter subjects.
@@ -702,15 +716,15 @@ func checkConsumerCfg(
 	return nil
 }
 
-func (mset *stream) addConsumerWithAction(config *ConsumerConfig, action ConsumerAction) (*consumer, error) {
-	return mset.addConsumerWithAssignment(config, _EMPTY_, nil, false, action)
+func (mset *stream) addConsumerWithAction(config *ConsumerConfig, action ConsumerAction, pedantic bool) (*consumer, error) {
+	return mset.addConsumerWithAssignment(config, _EMPTY_, nil, false, action, pedantic)
 }
 
 func (mset *stream) addConsumer(config *ConsumerConfig) (*consumer, error) {
-	return mset.addConsumerWithAction(config, ActionCreateOrUpdate)
+	return mset.addConsumerWithAction(config, ActionCreateOrUpdate, false)
 }
 
-func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname string, ca *consumerAssignment, isRecovering bool, action ConsumerAction) (*consumer, error) {
+func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname string, ca *consumerAssignment, isRecovering bool, action ConsumerAction, pedantic bool) (*consumer, error) {
 	// Check if this stream has closed.
 	if mset.closed.Load() {
 		return nil, NewJSStreamInvalidError()
@@ -740,8 +754,11 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	// Make sure we have sane defaults. Do so with the JS lock, otherwise a
 	// badly timed meta snapshot can result in a race condition.
 	mset.js.mu.Lock()
-	setConsumerConfigDefaults(config, &cfg, srvLim, selectedLimits)
+	err := setConsumerConfigDefaults(config, &cfg, srvLim, selectedLimits, pedantic)
 	mset.js.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
 
 	if err := checkConsumerCfg(config, srvLim, &cfg, acc, selectedLimits, isRecovering); err != nil {
 		return nil, err

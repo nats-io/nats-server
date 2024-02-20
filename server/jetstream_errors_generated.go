@@ -284,6 +284,9 @@ const (
 	// JSNotEnabledForAccountErr JetStream not enabled for account
 	JSNotEnabledForAccountErr ErrorIdentifier = 10039
 
+	// JSPedanticErrF pedantic mode: {err}
+	JSPedanticErrF ErrorIdentifier = 10157
+
 	// JSPeerRemapErr peer remap failed
 	JSPeerRemapErr ErrorIdentifier = 10075
 
@@ -566,6 +569,7 @@ var (
 		JSNotEmptyRequestErr:                       {Code: 400, ErrCode: 10038, Description: "expected an empty request payload"},
 		JSNotEnabledErr:                            {Code: 503, ErrCode: 10076, Description: "JetStream not enabled"},
 		JSNotEnabledForAccountErr:                  {Code: 503, ErrCode: 10039, Description: "JetStream not enabled for account"},
+		JSPedanticErrF:                             {Code: 400, ErrCode: 10157, Description: "pedantic mode: {err}"},
 		JSPeerRemapErr:                             {Code: 503, ErrCode: 10075, Description: "peer remap failed"},
 		JSRaftGeneralErrF:                          {Code: 500, ErrCode: 10041, Description: "{err}"},
 		JSReplicasCountCannotBeNegative:            {Code: 400, ErrCode: 10133, Description: "replicas count cannot be negative"},
@@ -1665,6 +1669,22 @@ func NewJSNotEnabledForAccountError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSNotEnabledForAccountErr]
+}
+
+// NewJSPedanticError creates a new JSPedanticErrF error: "pedantic mode: {err}"
+func NewJSPedanticError(err error, opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	e := ApiErrors[JSPedanticErrF]
+	args := e.toReplacerArgs([]interface{}{"{err}", err})
+	return &ApiError{
+		Code:        e.Code,
+		ErrCode:     e.ErrCode,
+		Description: strings.NewReplacer(args...).Replace(e.Description),
+	}
 }
 
 // NewJSPeerRemapError creates a new JSPeerRemapErr error: "peer remap failed"

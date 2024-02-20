@@ -1548,5 +1548,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSPedanticErrF",
+    "code": 400,
+    "error_code": 10157,
+    "description": "pedantic mode: {err}",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

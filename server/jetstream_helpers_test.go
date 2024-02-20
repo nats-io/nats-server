@@ -1617,6 +1617,36 @@ func (c *cluster) stableTotalSubs() (total int) {
 
 }
 
+func addStreamPedanticWithError(t *testing.T, nc *nats.Conn, cfg *StreamRequest) (*StreamInfo, *ApiError) {
+	t.Helper()
+	req, err := json.Marshal(cfg)
+	require_NoError(t, err)
+	rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, 5*time.Second)
+	require_NoError(t, err)
+	var resp JSApiStreamCreateResponse
+	err = json.Unmarshal(rmsg.Data, &resp)
+	require_NoError(t, err)
+	if resp.Type != JSApiStreamCreateResponseType {
+		t.Fatalf("Invalid response type %s expected %s", resp.Type, JSApiStreamCreateResponseType)
+	}
+	return resp.StreamInfo, resp.Error
+}
+
+func updateStreamPedanticWithError(t *testing.T, nc *nats.Conn, cfg *StreamRequest) (*StreamInfo, *ApiError) {
+	t.Helper()
+	req, err := json.Marshal(cfg)
+	require_NoError(t, err)
+	rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamUpdateT, cfg.Name), req, time.Second)
+	require_NoError(t, err)
+	var resp JSApiStreamCreateResponse
+	err = json.Unmarshal(rmsg.Data, &resp)
+	require_NoError(t, err)
+	if resp.Type != JSApiStreamUpdateResponseType {
+		t.Fatalf("Invalid response type %s expected %s", resp.Type, JSApiStreamUpdateResponseType)
+	}
+	return resp.StreamInfo, resp.Error
+}
+
 func addStream(t *testing.T, nc *nats.Conn, cfg *StreamConfig) *StreamInfo {
 	t.Helper()
 	si, err := addStreamWithError(t, nc, cfg)
