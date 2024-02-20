@@ -4198,7 +4198,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 		}
 	}
 	siAcc := si.acc
-	allowTrace := si.se != nil && si.se.atrc
+	allowTrace := si.atrc
 	acc.mu.RUnlock()
 
 	// We have a special case where JetStream pulls in all service imports through one export.
