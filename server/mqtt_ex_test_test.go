@@ -118,47 +118,35 @@ func TestMQTTExRetainedMessages(t *testing.T) {
 			strNumRMS := strconv.Itoa(numRMS)
 			topics := make([]string, len(target.configs))
 
-			// checkSubRetained is a helper to check retained messages for a
-			// topic, on a specific server.
-			checkSubRetained := func(t *testing.T, nameFormat string, dial mqttExDial, i int) {
-				_, _, _, name := dial.Get()
-				t.Run(fmt.Sprintf(nameFormat, name), func(t *testing.T) {
+			for i, tc := range target.configs {
+				// Publish numRMS retained messages one at a time,
+				// round-robin across pub nodes. Remember the topic for each
+				// test config to check the subs after reload.
+				topic := "subret_" + nuid.Next()
+				topics[i] = topic
+				iNode := 0
+				for i := 0; i < numRMS; i++ {
+					pubTopic := fmt.Sprintf("%s/%d", topic, i)
+					dial := tc.pub[iNode%len(tc.pub)]
+					mqttexRunTest(t, "pub", dial,
+						"--retain",
+						"--topic", pubTopic,
+						"--qos", "0",
+						"--size", "128", // message size 128 bytes
+					)
+					iNode++
+				}
+			}
+
+			// Check all sub nodes for retained messages
+			for i, tc := range target.configs {
+				for _, dial := range tc.sub {
 					mqttexRunTest(t, "sub", dial,
 						"--retained", strNumRMS,
 						"--qos", "0",
 						"--topic", topics[i],
 					)
-				})
-			}
-
-			for i, tc := range target.configs {
-				t.Run(tc.name, func(t *testing.T) {
-					// Publish numRMS retained messages one at a time,
-					// round-robin across pub nodes. Remember the topic for each
-					// test config to check the subs after reload.
-					topic := "subret_" + nuid.Next()
-					topics[i] = topic
-					iNode := 0
-					for i := 0; i < numRMS; i++ {
-						pubTopic := fmt.Sprintf("%s/%d", topic, i)
-						dial := tc.pub[iNode%len(tc.pub)]
-						mqttexRunTest(t, "pub", dial,
-							"--retain",
-							"--topic", pubTopic,
-							"--qos", "0",
-							"--size", "128", // message size 128 bytes
-						)
-						iNode++
-					}
-
-					// Subscribe and receive all retained on each sub node. Then
-					// reload the entire target cluster, and repeat to ensure
-					// retained messages are persisted and re-delivered after
-					// restart.
-					for _, dial := range tc.sub {
-						checkSubRetained(t, "subscribe at %s", dial, i)
-					}
-				})
+				}
 			}
 
 			// Reload the target
@@ -166,11 +154,13 @@ func TestMQTTExRetainedMessages(t *testing.T) {
 
 			// Now check again
 			for i, tc := range target.configs {
-				t.Run(strconv.Itoa(i), func(t *testing.T) {
-					for _, dial := range tc.sub {
-						checkSubRetained(t, "subscribe after reload at %s", dial, i)
-					}
-				})
+				for _, dial := range tc.sub {
+					mqttexRunTestRetry(t, 1, "sub", dial,
+						"--retained", strNumRMS,
+						"--qos", "0",
+						"--topic", topics[i],
+					)
+				}
 			}
 		})
 	}
@@ -178,24 +168,7 @@ func TestMQTTExRetainedMessages(t *testing.T) {
 
 func mqttExInitServer(tb testing.TB, dial mqttExDial) {
 	tb.Helper()
-	if mqttexTestCommandPath == "" {
-		tb.Skip(`"mqtt-test" command is not found in $PATH.`)
-	}
-
-	// try to publish a message, up to 5 attempts. If successful, try pubsub.
-	for _, subCommand := range []string{"pub", "pubsub"} {
-		for i := 0; i < 5; i++ {
-			out, err := exec.Command(mqttexTestCommandPath, subCommand, "-s", string(dial)).CombinedOutput()
-			if err == nil {
-				break
-			}
-			if i < 4 {
-				tb.Logf("failed to %s on attempt %v, will retry", subCommand, i)
-			} else {
-				tb.Fatalf("failed to publish 5 times, give up: %v\n\n%s", err, string(out))
-			}
-		}
-	}
+	mqttexRunTestRetry(tb, 5, "pub", dial)
 }
 
 func mqttExNewDialForServer(s *Server, username, password string) mqttExDial {
@@ -239,6 +212,11 @@ func (d mqttExDial) Get() (u, p, s, c string) {
 	}
 	s = in
 	return u, p, s, c
+}
+
+func (d mqttExDial) Name() string {
+	_, _, _, c := d.Get()
+	return c
 }
 
 func (t *mqttExTarget) Reload(tb testing.TB) {
@@ -563,7 +541,28 @@ var mqttexTestCommandPath = func() string {
 
 func mqttexRunTest(tb testing.TB, subCommand string, dial mqttExDial, extraArgs ...string) *MQTTBenchmarkResult {
 	tb.Helper()
+	return mqttexRunTestRetry(tb, 1, subCommand, dial, extraArgs...)
+}
 
+func mqttexRunTestRetry(tb testing.TB, n int, subCommand string, dial mqttExDial, extraArgs ...string) (r *MQTTBenchmarkResult) {
+	tb.Helper()
+	var err error
+	for i := 0; i < n; i++ {
+		if r, err = mqttexTryTest(tb, subCommand, dial, extraArgs...); err == nil {
+			return r
+		}
+
+		if i < (n - 1) {
+			tb.Logf("failed to %q %s to %q on attempt %v, will retry.", subCommand, extraArgs, dial.Name(), i)
+		} else {
+			tb.Fatal(err)
+		}
+	}
+	return nil
+}
+
+func mqttexTryTest(tb testing.TB, subCommand string, dial mqttExDial, extraArgs ...string) (r *MQTTBenchmarkResult, err error) {
+	tb.Helper()
 	if mqttexTestCommandPath == "" {
 		tb.Skip(`"mqtt-test" command is not found in $PATH.`)
 	}
@@ -572,29 +571,29 @@ func mqttexRunTest(tb testing.TB, subCommand string, dial mqttExDial, extraArgs 
 		"-s", string(dial),
 	}
 	args = append(args, extraArgs...)
-
 	cmd := exec.Command(mqttexTestCommandPath, args...)
+
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		tb.Fatalf("Error executing %q: %v", cmd.String(), err)
+		return nil, fmt.Errorf("error executing %q: %v", cmd.String(), err)
 	}
 	defer stdout.Close()
 	errbuf := bytes.Buffer{}
 	cmd.Stderr = &errbuf
 	if err = cmd.Start(); err != nil {
-		tb.Fatalf("Error executing %q: %v", cmd.String(), err)
+		return nil, fmt.Errorf("error executing %q: %v", cmd.String(), err)
 	}
 	out, err := io.ReadAll(stdout)
 	if err != nil {
-		tb.Fatalf("Error executing %q: failed to read output: %v", cmd.String(), err)
+		return nil, fmt.Errorf("error executing %q: failed to read output: %v", cmd.String(), err)
 	}
 	if err = cmd.Wait(); err != nil {
-		tb.Fatalf("Error executing %q: %v\n\n%s\n\n%s", cmd.String(), err, string(out), errbuf.String())
+		return nil, fmt.Errorf("error executing %q: %v\n\n%s\n\n%s", cmd.String(), err, string(out), errbuf.String())
 	}
 
-	r := &MQTTBenchmarkResult{}
+	r = &MQTTBenchmarkResult{}
 	if err := json.Unmarshal(out, r); err != nil {
-		tb.Fatalf("Error executing %q: failed to decode output: %v\n\n%s\n\n%s", cmd.String(), err, string(out), errbuf.String())
+		tb.Fatalf("error executing %q: failed to decode output: %v\n\n%s\n\n%s", cmd.String(), err, string(out), errbuf.String())
 	}
-	return r
+	return r, nil
 }
