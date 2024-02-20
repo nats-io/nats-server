@@ -2251,12 +2251,17 @@ func (o *consumer) releaseAnyPendingRequests() {
 	if o.mset == nil || o.outq == nil || o.waiting.len() == 0 {
 		return
 	}
-	hdr := []byte("NATS/1.0 409 Consumer Deleted\r\n\r\n")
+	var hdr []byte
+	if !o.js.cluster.isConsumerAssigned(o.acc, o.stream, o.name) {
+		hdr = []byte("NATS/1.0 409 Consumer Deleted\r\n\r\n")
+	}
 	wq := o.waiting
 	o.waiting = nil
 	for i, rp := 0, wq.rp; i < wq.n; i++ {
 		if wr := wq.reqs[rp]; wr != nil {
-			o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+			if hdr != nil {
+				o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+			}
 			wr.recycle()
 		}
 		rp = (rp + 1) % cap(wq.reqs)
