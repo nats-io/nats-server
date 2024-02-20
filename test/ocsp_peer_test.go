@@ -2821,7 +2821,7 @@ func TestOCSPPeerNextUpdateUnset(t *testing.T) {
 	respCertPEM := "configs/certs/ocsp_peer/mini-ca/ocsp1/ocsp1_bundle.pem"
 	respKeyPEM := "configs/certs/ocsp_peer/mini-ca/ocsp1/private/ocsp1_keypair.pem"
 	issuerCertPEM := "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem"
-	intermediateCA1Responder := newOCSPResponderBase(t, issuerCertPEM, respCertPEM, respKeyPEM, true, "127.0.0.1:18888", 0)
+	intermediateCA1Responder := newOCSPResponderBase(t, issuerCertPEM, respCertPEM, respKeyPEM, true, "127.0.0.1:18888", 0, "")
 	intermediateCA1ResponderURL := fmt.Sprintf("http://%s", intermediateCA1Responder.Addr)
 	defer intermediateCA1Responder.Shutdown(ctx)
 	setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
