@@ -230,11 +230,13 @@ func (oc *OCSPMonitor) getRemoteStatus() ([]byte, *ocsp.Response, error) {
 		// Prefer to make POST requests first.
 		raw, postErr = postRequestBytes(u, reqDER, hc)
 		if postErr == nil {
+			err = nil
 			break
 		} else {
 			// Fallback to use a GET request.
 			raw, getErr = getRequestBytes(u, reqDER, hc)
 			if getErr == nil {
+				err = nil
 				break
 			} else {
 				err = errors.Join(postErr, getErr)

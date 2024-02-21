@@ -4245,6 +4245,11 @@ func testOCSPResponderHTTPMethods(t *testing.T, method string) {
 	addr := fmt.Sprintf("http://%s", ocspr.Addr)
 	setOCSPStatus(t, addr, serverCert, ocsp.Good)
 
+	// Add another responder that fails.
+	badaddr := "http://127.0.0.1:8889"
+	badocsp := newOCSPResponderCustomAddress(t, caCert, caKey, badaddr)
+	defer badocsp.Shutdown(ctx)
+
 	opts := server.Options{}
 	opts.Host = "127.0.0.1"
 	opts.NoLog = true
@@ -4270,7 +4275,7 @@ func testOCSPResponderHTTPMethods(t *testing.T, method string) {
 
 	opts.OCSPConfig = &server.OCSPConfig{
 		Mode:         server.OCSPModeAlways,
-		OverrideURLs: []string{addr},
+		OverrideURLs: []string{badaddr, addr},
 	}
 	srv := RunServer(&opts)
 	defer srv.Shutdown()
