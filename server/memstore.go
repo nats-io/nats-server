@@ -792,11 +792,11 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 			ms.mu.Unlock()
 			return 0, ErrStoreMsgNotFound
 		}
-		oldFirstSeq := ms.state.FirstSeq - 1
+		fseq := ms.state.FirstSeq
 		ms.state.FirstSeq = seq
 		ms.state.FirstTime = time.Unix(0, sm.ts).UTC()
 
-		for seq := seq - 1; seq > oldFirstSeq; seq-- {
+		for seq := seq - 1; seq >= fseq; seq-- {
 			if sm := ms.msgs[seq]; sm != nil {
 				bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.msg)
 				purged++
