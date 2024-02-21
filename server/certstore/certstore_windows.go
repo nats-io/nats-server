@@ -112,7 +112,10 @@ var (
 	}
 
 	// MY is well-known system store on Windows that holds personal certificates
-	winMyStore = winWide("MY")
+	winMyStore             = winWide("MY")
+	winIntermediateCAStore = winWide("CA")
+	winRootStore           = winWide("Root")
+	winAuthRootStore       = winWide("AuthRoot")
 
 	// These DLLs must be available on all Windows hosts
 	winCrypt32 = windows.MustLoadDLL("crypt32.dll")
@@ -137,9 +140,38 @@ type winPSSPaddingInfo struct {
 	cbSalt   uint32
 }
 
+// createCACertsPool generates a CertPool from the Windows certificate store,
+// adding all matching certificates from the caCertsMatch array to the pool.
+// All matching certificates (vs first) are added to the pool based on a user
+// request. If no certificates are found an error is returned.
+func createCACertsPool(cs *winCertStore, storeType uint32, caCertsMatch []string) (*x509.CertPool, error) {
+	var errs []error
+	var count int
+	caPool := x509.NewCertPool()
+	for _, s := range caCertsMatch {
+		lfs, err := cs.caCertsBySubjectMatch(s, storeType)
+		if err != nil {
+			if errs == nil {
+				errs = make([]error, 0)
+			}
+			errs = append(errs, err)
+		} else {
+			for _, lf := range lfs {
+				caPool.AddCert(lf)
+				count++
+			}
+		}
+	}
+	// If no certs were added, return the errors.
+	if count == 0 {
+		return nil, fmt.Errorf("unable to match any CA certificate: %v", errs)
+	}
+	return caPool, nil
+}
+
 // TLSConfig fulfills the same function as reading cert and key pair from pem files but
 // sources the Windows certificate store instead
-func TLSConfig(certStore StoreType, certMatchBy MatchByType, certMatch string, config *tls.Config) error {
+func TLSConfig(certStore StoreType, certMatchBy MatchByType, certMatch string, caCertsMatch []string, config *tls.Config) error {
 	var (
 		leaf     *x509.Certificate
 		leafCtx  *windows.CertContext
@@ -185,6 +217,14 @@ func TLSConfig(certStore StoreType, certMatchBy MatchByType, certMatch string, c
 		}
 		if pk == nil {
 			return ErrNoPrivateKeyStoreRef
+		}
+		// Look for CA Certificates
+		if caCertsMatch != nil {
+			caPool, err := createCACertsPool(cs, scope, caCertsMatch)
+			if err != nil {
+				return err
+			}
+			config.ClientCAs = caPool
 		}
 	} else {
 		return ErrBadCertStore
@@ -317,6 +357,42 @@ func (w *winCertStore) certByIssuer(issuer string, storeType uint32) (*x509.Cert
 // See CERT_FIND_SUBJECT_STR description at https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-certfindcertificateinstore
 func (w *winCertStore) certBySubject(subject string, storeType uint32) (*x509.Certificate, *windows.CertContext, error) {
 	return w.certSearch(winFindSubjectStr, subject, winMyStore, storeType)
+}
+
+// caCertBySubject matches and returns the all matching certificates of the subject field.
+//
+// The following locations are searched:
+// 1) Root (Trusted Root Certification Authorities)
+// 2) AuthRoot (Third-Party Root Certification Authorities)
+// 3) CA (Intermediate Certification Authorities)
+//
+// Caller specifies current user's personal certs or local machine's personal certs using storeType.
+// See CERT_FIND_SUBJECT_STR description at https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-certfindcertificateinstore
+func (w *winCertStore) caCertsBySubjectMatch(subject string, storeType uint32) ([]*x509.Certificate, error) {
+	var (
+		leaf            *x509.Certificate
+		searchLocations = [3]*uint16{winRootStore, winAuthRootStore, winIntermediateCAStore}
+	)
+	// surprisingly, an empty string returns a result. We'll treat this as an error.
+	if subject == "" {
+		return nil, ErrFailedCertSearch
+	}
+	rv := make([]*x509.Certificate, 0)
+	for _, sr := range searchLocations {
+		var err error
+		if leaf, _, err = w.certSearch(winFindSubjectStr, subject, sr, storeType); err == nil {
+			rv = append(rv, leaf)
+		} else {
+			if err != ErrFailedCertSearch {
+				return nil, err
+			}
+		}
+	}
+	// Not found anywhere
+	if len(rv) == 0 {
+		return nil, ErrFailedCertSearch
+	}
+	return rv, nil
 }
 
 // certSearch is a helper function to lookup certificates based on search type and match value.

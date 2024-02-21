@@ -6,6 +6,10 @@ Refresh PKCS12 files when test certificates and keys (PEM files) are refreshed (
 
 `openssl pkcs12 -export -inkey ./client-key.pem -in ./client.pem -out client.p12`
 
+To add the CA, use the following:
+
+`openssl pkcs12 -export -nokeys -in ..\ca.pem -out ca.p12`
+
 > Note: set the PKCS12 bundle password to `s3cr3t` as required by provisioning scripts
 
 ## Cert Store Provisioning Scripts
