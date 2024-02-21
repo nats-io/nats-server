@@ -4278,12 +4278,9 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	if mset.itr != nil {
 		ts, err := mset.itr.Match(subject)
 		if err == nil {
-			// no filtering: if the subject doesn't map the source of the transform, don't change it
 			subject = ts
-		} else if errors.Is(err, ErrBadSubject) {
-			mset.mu.Unlock()
-			return err
-		}
+		} // otherwise: if the subject doesn't map the source of the transform (or contains a wildcard)
+		// don't change it or filter out the message
 	}
 
 	var accName string
