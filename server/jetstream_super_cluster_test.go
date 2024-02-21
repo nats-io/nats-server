@@ -4090,12 +4090,11 @@ func TestJetStreamSuperClusterConsumerPauseAdvisories(t *testing.T) {
 	require_NoError(t, err)
 
 	deadline := time.Now().Add(time.Second)
-	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+	jsTestPause_CreateOrUpdateConsumer(t, nc, ActionCreate, "TEST", ConsumerConfig{
 		Name:       "my_consumer",
-		PauseUntil: deadline,
+		PauseUntil: &deadline,
 		Replicas:   3,
 	})
-	require_NoError(t, err)
 
 	// First advisory should tell us that the consumer was paused
 	// on creation.

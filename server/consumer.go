@@ -1930,7 +1930,7 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 			o.dtmr = time.AfterFunc(o.dthresh, o.deleteNotActive)
 		}
 	}
-	// heck whether the pause has changed
+	// Check whether the pause has changed
 	{
 		var old, new time.Time
 		if o.cfg.PauseUntil != nil {

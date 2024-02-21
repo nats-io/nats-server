@@ -6561,11 +6561,10 @@ func TestJetStreamClusterConsumerPauseViaConfig(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+	jsTestPause_CreateOrUpdateConsumer(t, nc, ActionCreate, "TEST", ConsumerConfig{
 		Name:     "my_consumer",
 		Replicas: 3,
 	})
-	require_NoError(t, err)
 
 	sub, err := js.PullSubscribe("foo", "", nats.Bind("TEST", "my_consumer"))
 	require_NoError(t, err)
@@ -6592,13 +6591,11 @@ func TestJetStreamClusterConsumerPauseViaConfig(t *testing.T) {
 	publish(time.Second)
 
 	// Now we're going to set the deadline.
-	ci.Config.PauseUntil = time.Now().Add(time.Second * 3)
-	ci, err = js.UpdateConsumer("TEST", &ci.Config)
-	require_NoError(t, err)
+	deadline := jsTestPause_PauseConsumer(t, nc, "TEST", "my_consumer", time.Now().Add(time.Second*3))
 
 	// It will now take longer than 3 seconds.
 	publish(time.Second * 5)
-	require_True(t, time.Now().After(ci.Config.PauseUntil))
+	require_True(t, time.Now().After(deadline))
 
 	// The next set of publishes after the deadline should now be fast.
 	publish(time.Second)
@@ -6610,11 +6607,9 @@ func TestJetStreamClusterConsumerPauseViaConfig(t *testing.T) {
 
 	// Now we're going to do an update and then immediately kick the
 	// leader. The pause should still be in effect afterwards.
-	ci.Config.PauseUntil = time.Now().Add(time.Second * 3)
-	ci, err = js.UpdateConsumer("TEST", &ci.Config)
-	require_NoError(t, err)
+	deadline = jsTestPause_PauseConsumer(t, nc, "TEST", "my_consumer", time.Now().Add(time.Second*3))
 	publish(time.Second * 5)
-	require_True(t, time.Now().After(ci.Config.PauseUntil))
+	require_True(t, time.Now().After(deadline))
 
 	// The next set of publishes after the deadline should now be fast.
 	publish(time.Second)
@@ -6626,19 +6621,6 @@ func TestJetStreamClusterConsumerPauseViaEndpoint(t *testing.T) {
 
 	nc, js := jsClientConnect(t, c.randomServer())
 	defer nc.Close()
-
-	pauseReq := func(consumer string, deadline time.Time) time.Time {
-		j, err := json.Marshal(JSApiConsumerPauseRequest{
-			PauseUntil: deadline,
-		})
-		require_NoError(t, err)
-		msg, err := nc.Request(fmt.Sprintf(JSApiConsumerPauseT, "TEST", consumer), j, time.Second*2)
-		require_NoError(t, err)
-		var res JSApiConsumerPauseResponse
-		err = json.Unmarshal(msg.Data, &res)
-		require_NoError(t, err)
-		return res.PauseUntil
-	}
 
 	_, err := js.AddStream(&nats.StreamConfig{
 		Name:     "TEST",
@@ -6668,7 +6650,7 @@ func TestJetStreamClusterConsumerPauseViaEndpoint(t *testing.T) {
 
 		// Now we'll pause the consumer for 3 seconds.
 		deadline := time.Now().Add(time.Second * 3)
-		require_True(t, pauseReq("pull_consumer", deadline).Equal(deadline))
+		require_True(t, jsTestPause_PauseConsumer(t, nc, "TEST", "pull_consumer", deadline).Equal(deadline))
 
 		// This should fail as we'll wait for only half of the deadline.
 		for i := 0; i < 10; i++ {
@@ -6695,7 +6677,7 @@ func TestJetStreamClusterConsumerPauseViaEndpoint(t *testing.T) {
 		require_NoError(t, err)
 		require_Equal(t, len(msgs), 10)
 
-		require_True(t, pauseReq("pull_consumer", time.Time{}).Equal(time.Time{}))
+		require_True(t, jsTestPause_PauseConsumer(t, nc, "TEST", "pull_consumer", time.Time{}).Equal(time.Time{}))
 
 		// This should succeed as there's no pause, so it definitely
 		// shouldn't take more than a second.
@@ -6726,7 +6708,7 @@ func TestJetStreamClusterConsumerPauseViaEndpoint(t *testing.T) {
 
 		// Now we'll pause the consumer for 3 seconds.
 		deadline := time.Now().Add(time.Second * 3)
-		require_True(t, pauseReq("push_consumer", deadline).Equal(deadline))
+		require_True(t, jsTestPause_PauseConsumer(t, nc, "TEST", "push_consumer", deadline).Equal(deadline))
 
 		// This should succeed after a short wait, and when we're done,
 		// we should be after the deadline.
@@ -6751,7 +6733,7 @@ func TestJetStreamClusterConsumerPauseViaEndpoint(t *testing.T) {
 			require_NotEqual(t, msg, nil)
 		}
 
-		require_True(t, pauseReq("push_consumer", time.Time{}).Equal(time.Time{}))
+		require_True(t, jsTestPause_PauseConsumer(t, nc, "TEST", "push_consumer", time.Time{}).Equal(time.Time{}))
 
 		// This should succeed as there's no pause, so it definitely
 		// shouldn't take more than a second.
@@ -6780,12 +6762,12 @@ func TestJetStreamClusterConsumerPauseTimerFollowsLeader(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+	deadline := time.Now().Add(time.Hour)
+	jsTestPause_CreateOrUpdateConsumer(t, nc, ActionCreate, "TEST", ConsumerConfig{
 		Name:       "my_consumer",
-		PauseUntil: time.Now().Add(time.Hour),
+		PauseUntil: &deadline,
 		Replicas:   3,
 	})
-	require_NoError(t, err)
 
 	for i := 0; i < 10; i++ {
 		c.waitOnConsumerLeader(globalAccountName, "TEST", "my_consumer")
@@ -6829,13 +6811,12 @@ func TestJetStreamClusterConsumerPauseHeartbeats(t *testing.T) {
 	deadline := time.Now().Add(time.Hour)
 	dsubj := "deliver_subj"
 
-	ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+	ci := jsTestPause_CreateOrUpdateConsumer(t, nc, ActionCreate, "TEST", ConsumerConfig{
 		Name:           "my_consumer",
-		PauseUntil:     deadline,
+		PauseUntil:     &deadline,
 		Heartbeat:      time.Millisecond * 100,
 		DeliverSubject: dsubj,
 	})
-	require_NoError(t, err)
 	require_True(t, ci.Config.PauseUntil.Equal(deadline))
 
 	ch := make(chan *nats.Msg, 10)
@@ -6855,19 +6836,6 @@ func TestJetStreamClusterConsumerPauseAdvisories(t *testing.T) {
 
 	nc, js := jsClientConnect(t, c.randomServer())
 	defer nc.Close()
-
-	pauseReq := func(consumer string, deadline time.Time) time.Time {
-		j, err := json.Marshal(JSApiConsumerPauseRequest{
-			PauseUntil: deadline,
-		})
-		require_NoError(t, err)
-		msg, err := nc.Request(fmt.Sprintf(JSApiConsumerPauseT, "TEST", consumer), j, time.Second)
-		require_NoError(t, err)
-		var res JSApiConsumerPauseResponse
-		err = json.Unmarshal(msg.Data, &res)
-		require_NoError(t, err)
-		return res.PauseUntil
-	}
 
 	checkAdvisory := func(msg *nats.Msg, shouldBePaused bool, deadline time.Time) {
 		t.Helper()
@@ -6891,12 +6859,11 @@ func TestJetStreamClusterConsumerPauseAdvisories(t *testing.T) {
 	require_NoError(t, err)
 
 	deadline := time.Now().Add(time.Second)
-	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+	jsTestPause_CreateOrUpdateConsumer(t, nc, ActionCreate, "TEST", ConsumerConfig{
 		Name:       "my_consumer",
-		PauseUntil: deadline,
+		PauseUntil: &deadline,
 		Replicas:   3,
 	})
-	require_NoError(t, err)
 
 	// First advisory should tell us that the consumer was paused
 	// on creation.
@@ -6911,7 +6878,7 @@ func TestJetStreamClusterConsumerPauseAdvisories(t *testing.T) {
 
 	// Now we'll pause the consumer for a second using the API.
 	deadline = time.Now().Add(time.Second)
-	require_True(t, pauseReq("my_consumer", deadline).Equal(deadline))
+	require_True(t, jsTestPause_PauseConsumer(t, nc, "TEST", "my_consumer", deadline).Equal(deadline))
 
 	// Third advisory should tell us about the pause via the API.
 	msg = require_ChanRead(t, ch, time.Second*2)
@@ -6926,7 +6893,7 @@ func TestJetStreamClusterConsumerPauseAdvisories(t *testing.T) {
 	// Now we're going to set the deadline into the future so we can
 	// see what happens when we kick leaders or restart.
 	deadline = time.Now().Add(time.Hour)
-	require_True(t, pauseReq("my_consumer", deadline).Equal(deadline))
+	require_True(t, jsTestPause_PauseConsumer(t, nc, "TEST", "my_consumer", deadline).Equal(deadline))
 
 	// Setting the deadline should have generated an advisory.
 	msg = require_ChanRead(t, ch, time.Second)
@@ -6970,12 +6937,11 @@ func TestJetStreamClusterConsumerPauseSurvivesRestart(t *testing.T) {
 	require_NoError(t, err)
 
 	deadline := time.Now().Add(time.Hour)
-	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+	jsTestPause_CreateOrUpdateConsumer(t, nc, ActionCreate, "TEST", ConsumerConfig{
 		Name:       "my_consumer",
-		PauseUntil: deadline,
+		PauseUntil: &deadline,
 		Replicas:   3,
 	})
-	require_NoError(t, err)
 
 	// First try with just restarting the consumer leader.
 	srv := c.consumerLeader(globalAccountName, "TEST", "my_consumer")

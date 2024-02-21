@@ -22403,6 +22403,39 @@ func TestJetStreamSubjectFilteredPurgeClearsPendingAcks(t *testing.T) {
 	require_Equal(t, ci.NumAckPending, 10)
 }
 
+// Helper function for TestJetStreamConsumerPause*, TestJetStreamClusterConsumerPause*, TestJetStreamSuperClusterConsumerPause*
+func jsTestPause_CreateOrUpdateConsumer(t *testing.T, nc *nats.Conn, action ConsumerAction, stream string, cc ConsumerConfig) *JSApiConsumerCreateResponse {
+	t.Helper()
+	j, err := json.Marshal(CreateConsumerRequest{
+		Stream: stream,
+		Config: cc,
+		Action: action,
+	})
+	require_NoError(t, err)
+	subj := fmt.Sprintf("$JS.API.CONSUMER.CREATE.%s.%s", stream, cc.Name)
+	m, err := nc.Request(subj, j, time.Second*3)
+	require_NoError(t, err)
+	var res JSApiConsumerCreateResponse
+	require_NoError(t, json.Unmarshal(m.Data, &res))
+	require_True(t, res.Config != nil)
+	return &res
+}
+
+// Helper function for TestJetStreamConsumerPause*, TestJetStreamClusterConsumerPause*, TestJetStreamSuperClusterConsumerPause*
+func jsTestPause_PauseConsumer(t *testing.T, nc *nats.Conn, stream, consumer string, deadline time.Time) time.Time {
+	t.Helper()
+	j, err := json.Marshal(JSApiConsumerPauseRequest{
+		PauseUntil: deadline,
+	})
+	require_NoError(t, err)
+	subj := fmt.Sprintf("$JS.API.CONSUMER.PAUSE.%s.%s", stream, consumer)
+	msg, err := nc.Request(subj, j, time.Second)
+	require_NoError(t, err)
+	var res JSApiConsumerPauseResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &res))
+	return res.PauseUntil
+}
+
 func TestJetStreamConsumerPauseViaConfig(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
@@ -22418,27 +22451,35 @@ func TestJetStreamConsumerPauseViaConfig(t *testing.T) {
 
 	t.Run("CreateShouldSucceed", func(t *testing.T) {
 		deadline := time.Now().Add(time.Hour)
-		ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+		ci := jsTestPause_CreateOrUpdateConsumer(t, nc, ActionCreate, "TEST", ConsumerConfig{
 			Name:       "my_consumer_1",
-			PauseUntil: deadline,
+			PauseUntil: &deadline,
 		})
-		require_NoError(t, err)
+		require_True(t, ci != nil)
+		require_True(t, ci.Config != nil)
+		require_True(t, ci.Config.PauseUntil != nil)
 		require_True(t, ci.Config.PauseUntil.Equal(deadline))
 	})
 
 	t.Run("UpdateShouldFail", func(t *testing.T) {
 		deadline := time.Now().Add(time.Hour)
-		ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+		ci := jsTestPause_CreateOrUpdateConsumer(t, nc, ActionCreate, "TEST", ConsumerConfig{
 			Name: "my_consumer_2",
 		})
-		require_NoError(t, err)
-		require_True(t, ci.Config.PauseUntil.Equal(time.Time{}))
+		require_True(t, ci != nil)
+		require_True(t, ci.Config != nil)
+		require_True(t, ci.Config.PauseUntil == nil || ci.Config.PauseUntil.IsZero())
 
-		ci.Config.PauseUntil = deadline
-		ci, err = js.UpdateConsumer("TEST", &ci.Config)
+		var cc ConsumerConfig
+		j, err := json.Marshal(ci.Config)
 		require_NoError(t, err)
-		require_False(t, ci.Config.PauseUntil.Equal(deadline))
-		require_True(t, ci.Config.PauseUntil.Equal(time.Time{}))
+		require_NoError(t, json.Unmarshal(j, &cc))
+
+		pauseUntil := time.Now().Add(time.Hour)
+		cc.PauseUntil = &pauseUntil
+		ci2 := jsTestPause_CreateOrUpdateConsumer(t, nc, ActionUpdate, "TEST", cc)
+		require_False(t, ci2.Config.PauseUntil != nil && ci2.Config.PauseUntil.Equal(deadline))
+		require_True(t, ci2.Config.PauseUntil == nil || ci2.Config.PauseUntil.Equal(time.Time{}))
 	})
 }
 
@@ -22448,19 +22489,6 @@ func TestJetStreamConsumerPauseViaEndpoint(t *testing.T) {
 
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
-
-	pauseReq := func(consumer string, deadline time.Time) time.Time {
-		j, err := json.Marshal(JSApiConsumerPauseRequest{
-			PauseUntil: deadline,
-		})
-		require_NoError(t, err)
-		msg, err := nc.Request(fmt.Sprintf(JSApiConsumerPauseT, "TEST", consumer), j, time.Second)
-		require_NoError(t, err)
-		var res JSApiConsumerPauseResponse
-		err = json.Unmarshal(msg.Data, &res)
-		require_NoError(t, err)
-		return res.PauseUntil
-	}
 
 	_, err := js.AddStream(&nats.StreamConfig{
 		Name:     "TEST",
@@ -22489,7 +22517,7 @@ func TestJetStreamConsumerPauseViaEndpoint(t *testing.T) {
 
 		// Now we'll pause the consumer for 3 seconds.
 		deadline := time.Now().Add(time.Second * 3)
-		require_True(t, pauseReq("pull_consumer", deadline).Equal(deadline))
+		require_True(t, jsTestPause_PauseConsumer(t, nc, "TEST", "pull_consumer", deadline).Equal(deadline))
 
 		// This should fail as we'll wait for only half of the deadline.
 		for i := 0; i < 10; i++ {
@@ -22516,7 +22544,7 @@ func TestJetStreamConsumerPauseViaEndpoint(t *testing.T) {
 		require_NoError(t, err)
 		require_Equal(t, len(msgs), 10)
 
-		require_True(t, pauseReq("pull_consumer", time.Time{}).Equal(time.Time{}))
+		require_True(t, jsTestPause_PauseConsumer(t, nc, "TEST", "pull_consumer", time.Time{}).Equal(time.Time{}))
 
 		// This should succeed as there's no pause, so it definitely
 		// shouldn't take more than a second.
@@ -22547,7 +22575,7 @@ func TestJetStreamConsumerPauseViaEndpoint(t *testing.T) {
 
 		// Now we'll pause the consumer for 3 seconds.
 		deadline := time.Now().Add(time.Second * 3)
-		require_True(t, pauseReq("push_consumer", deadline).Equal(deadline))
+		require_True(t, jsTestPause_PauseConsumer(t, nc, "TEST", "push_consumer", deadline).Equal(deadline))
 
 		// This should succeed after a short wait, and when we're done,
 		// we should be after the deadline.
@@ -22572,7 +22600,7 @@ func TestJetStreamConsumerPauseViaEndpoint(t *testing.T) {
 			require_NotEqual(t, msg, nil)
 		}
 
-		require_True(t, pauseReq("push_consumer", time.Time{}).Equal(time.Time{}))
+		require_True(t, jsTestPause_PauseConsumer(t, nc, "TEST", "push_consumer", time.Time{}).Equal(time.Time{}))
 
 		// This should succeed as there's no pause, so it definitely
 		// shouldn't take more than a second.
@@ -22603,13 +22631,12 @@ func TestJetStreamConsumerPauseHeartbeats(t *testing.T) {
 	deadline := time.Now().Add(time.Hour)
 	dsubj := "deliver_subj"
 
-	ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+	ci := jsTestPause_CreateOrUpdateConsumer(t, nc, ActionCreate, "TEST", ConsumerConfig{
 		Name:           "my_consumer",
-		PauseUntil:     deadline,
+		PauseUntil:     &deadline,
 		Heartbeat:      time.Millisecond * 100,
 		DeliverSubject: dsubj,
 	})
-	require_NoError(t, err)
 	require_True(t, ci.Config.PauseUntil.Equal(deadline))
 
 	ch := make(chan *nats.Msg, 10)
@@ -22629,19 +22656,6 @@ func TestJetStreamConsumerPauseAdvisories(t *testing.T) {
 
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
-
-	pauseReq := func(consumer string, deadline time.Time) time.Time {
-		j, err := json.Marshal(JSApiConsumerPauseRequest{
-			PauseUntil: deadline,
-		})
-		require_NoError(t, err)
-		msg, err := nc.Request(fmt.Sprintf(JSApiConsumerPauseT, "TEST", consumer), j, time.Second)
-		require_NoError(t, err)
-		var res JSApiConsumerPauseResponse
-		err = json.Unmarshal(msg.Data, &res)
-		require_NoError(t, err)
-		return res.PauseUntil
-	}
 
 	checkAdvisory := func(msg *nats.Msg, shouldBePaused bool, deadline time.Time) {
 		t.Helper()
@@ -22664,11 +22678,10 @@ func TestJetStreamConsumerPauseAdvisories(t *testing.T) {
 	require_NoError(t, err)
 
 	deadline := time.Now().Add(time.Second)
-	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+	jsTestPause_CreateOrUpdateConsumer(t, nc, ActionCreate, "TEST", ConsumerConfig{
 		Name:       "my_consumer",
-		PauseUntil: deadline,
+		PauseUntil: &deadline,
 	})
-	require_NoError(t, err)
 
 	// First advisory should tell us that the consumer was paused
 	// on creation.
@@ -22681,7 +22694,7 @@ func TestJetStreamConsumerPauseAdvisories(t *testing.T) {
 
 	// Now we'll pause the consumer using the API.
 	deadline = time.Now().Add(time.Second)
-	require_True(t, pauseReq("my_consumer", deadline).Equal(deadline))
+	require_True(t, jsTestPause_PauseConsumer(t, nc, "TEST", "my_consumer", deadline).Equal(deadline))
 
 	// Third advisory should tell us about the pause via the API.
 	msg = require_ChanRead(t, ch, time.Second*2)
@@ -22706,11 +22719,10 @@ func TestJetStreamConsumerSurvivesRestart(t *testing.T) {
 	require_NoError(t, err)
 
 	deadline := time.Now().Add(time.Hour)
-	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+	jsTestPause_CreateOrUpdateConsumer(t, nc, ActionCreate, "TEST", ConsumerConfig{
 		Name:       "my_consumer",
-		PauseUntil: deadline,
+		PauseUntil: &deadline,
 	})
-	require_NoError(t, err)
 
 	sd := s.JetStreamConfig().StoreDir
 	s.Shutdown()
