@@ -2141,6 +2141,19 @@ func parseJetStreamForAccount(v any, acc *Account, errors *[]error) error {
 					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
 				}
 				jsLimits.MaxAckPending = int(vv)
+			case "cluster_traffic":
+				vv, ok := mv.(string)
+				if !ok {
+					return &configErr{tk, fmt.Sprintf("Expected either 'system' or 'account' string value for %q, got %v", mk, mv)}
+				}
+				switch tokens := strings.SplitN(vv, ":", 2); strings.ToLower(tokens[0]) {
+				case "system":
+					acc.js.nrgAccount = _EMPTY_
+				case "owner":
+					acc.js.nrgAccount = acc.Name
+				default:
+					return &configErr{tk, fmt.Sprintf("Expected 'system' or 'owner' string value for %q, got %v", mk, mv)}
+				}
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{

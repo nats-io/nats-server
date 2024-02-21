@@ -76,6 +76,7 @@ type RaftNode interface {
 	Stop()
 	Delete()
 	Wipe()
+	RecreateInternalSubs() error
 }
 
 type WAL interface {
@@ -129,6 +130,7 @@ type raft struct {
 
 	created time.Time // Time that the group was created
 	accName string    // Account name of the asset this raft group is for
+	acc     *Account  // Account that NRG traffic will be sent/received in
 	group   string    // Raft group
 	sd      string    // Store directory
 	id      string    // Node ID
@@ -351,8 +353,6 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 		s.mu.RUnlock()
 		return nil, ErrNoSysAccount
 	}
-	sq := s.sys.sq
-	sacc := s.sys.account
 	hash := s.sys.shash
 	s.mu.RUnlock()
 
@@ -380,9 +380,7 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 		acks:     make(map[uint64]map[string]struct{}),
 		pae:      make(map[uint64]*appendEntry),
 		s:        s,
-		c:        s.createInternalSystemClient(),
 		js:       s.getJetStream(),
-		sq:       sq,
 		quit:     make(chan struct{}),
 		reqs:     newIPQueue[*voteRequest](s, qpfx+"vreq"),
 		votes:    newIPQueue[*voteResponse](s, qpfx+"vresp"),
@@ -395,7 +393,14 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 		observer: cfg.Observer,
 		extSt:    ps.domainExt,
 	}
-	n.c.registerWithAccount(sacc)
+
+	// Setup our internal subscriptions for proposals, votes and append entries.
+	// If we fail to do this for some reason then this is fatal — we cannot
+	// continue setting up or the Raft node may be partially/totally isolated.
+	if err := n.RecreateInternalSubs(); err != nil {
+		n.shutdown(false)
+		return nil, err
+	}
 
 	if atomic.LoadInt32(&s.logging.debug) > 0 {
 		n.dflag = true
@@ -493,14 +498,6 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 		}
 	}
 
-	// Setup our internal subscriptions for proposals, votes and append entries.
-	// If we fail to do this for some reason then this is fatal — we cannot
-	// continue setting up or the Raft node may be partially/totally isolated.
-	if err := n.createInternalSubs(); err != nil {
-		n.shutdown(false)
-		return nil, err
-	}
-
 	n.debug("Started")
 
 	// Check if we need to start in observer mode due to lame duck status.
@@ -527,6 +524,109 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 	s.startGoRoutine(n.run, labels)
 
 	return n, nil
+}
+
+// Returns whether peers within this group claim to support
+// moving NRG traffic into the asset account.
+// Lock must be held.
+func (n *raft) checkAccountNRGStatus() bool {
+	if !n.s.accountNRGAllowed.Load() {
+		return false
+	}
+	enabled := true
+	for pn := range n.peers {
+		if si, ok := n.s.nodeToInfo.Load(pn); ok && si != nil {
+			enabled = enabled && si.(nodeInfo).accountNRG
+		}
+	}
+	return enabled
+}
+
+func (n *raft) RecreateInternalSubs() error {
+	n.Lock()
+	defer n.Unlock()
+	return n.recreateInternalSubsLocked()
+}
+
+func (n *raft) recreateInternalSubsLocked() error {
+	// Sanity check for system account, as it can disappear when
+	// the system is shutting down.
+	if n.s == nil {
+		return fmt.Errorf("server not found")
+	}
+	n.s.mu.RLock()
+	sys := n.s.sys
+	n.s.mu.RUnlock()
+	if sys == nil {
+		return fmt.Errorf("system account not found")
+	}
+
+	// Default is the system account.
+	nrgAcc := sys.account
+
+	// Is account NRG enabled in this account and do all group
+	// peers claim to also support account NRG?
+	if n.checkAccountNRGStatus() {
+		// Check whether the account that the asset belongs to
+		// has volunteered a different NRG account.
+		target := nrgAcc.Name
+		if a, _ := n.s.lookupAccount(n.accName); a != nil {
+			a.mu.RLock()
+			if a.js != nil {
+				target = a.js.nrgAccount
+			}
+			a.mu.RUnlock()
+		}
+
+		// If the target account exists, then we'll use that.
+		if target != _EMPTY_ {
+			if a, _ := n.s.lookupAccount(target); a != nil {
+				nrgAcc = a
+			}
+		}
+	}
+	if n.aesub != nil && n.acc == nrgAcc {
+		// Subscriptions already exist and the account NRG state
+		// hasn't changed.
+		return nil
+	}
+
+	// Need to cancel any in-progress catch-ups, otherwise the
+	// inboxes are about to be pulled out from underneath it in
+	// the next step...
+	n.cancelCatchup()
+
+	// If we have an existing client then tear down any existing
+	// subscriptions and close the internal client.
+	if c := n.c; c != nil {
+		c.mu.Lock()
+		subs := make([]*subscription, 0, len(c.subs))
+		for _, sub := range c.subs {
+			subs = append(subs, sub)
+		}
+		c.mu.Unlock()
+		for _, sub := range subs {
+			n.unsubscribe(sub)
+		}
+		c.closeConnection(InternalClient)
+	}
+
+	if n.acc != nrgAcc {
+		n.debug("Subscribing in '%s'", nrgAcc.GetName())
+	}
+
+	c := n.s.createInternalSystemClient()
+	c.registerWithAccount(nrgAcc)
+	if nrgAcc.sq == nil {
+		nrgAcc.sq = n.s.newSendQ(nrgAcc)
+	}
+	n.c = c
+	n.sq = nrgAcc.sq
+	n.acc = nrgAcc
+
+	// Recreate any internal subscriptions for voting, append
+	// entries etc in the new account.
+	return n.createInternalSubs()
 }
 
 // outOfResources checks to see if we are out of resources.
@@ -1753,9 +1853,8 @@ func (n *raft) unsubscribe(sub *subscription) {
 	}
 }
 
+// Lock should be held.
 func (n *raft) createInternalSubs() error {
-	n.Lock()
-	defer n.Unlock()
 	n.vsubj, n.vreply = fmt.Sprintf(raftVoteSubj, n.group), n.newInbox()
 	n.asubj, n.areply = fmt.Sprintf(raftAppendSubj, n.group), n.newInbox()
 	n.psubj = fmt.Sprintf(raftPropSubj, n.group)
@@ -2904,6 +3003,9 @@ func (n *raft) adjustClusterSizeAndQuorum() {
 		if n.State() == Leader {
 			go n.sendHeartbeat()
 		}
+	}
+	if ncsz != pcsz {
+		n.recreateInternalSubsLocked()
 	}
 }
 

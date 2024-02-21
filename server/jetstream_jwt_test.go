@@ -1532,3 +1532,110 @@ func TestJetStreamJWTClusteredTiersR3StreamWithR1ConsumersAndAccounting(t *testi
 	require_Equal(t, r3.Streams, 1)
 	require_Equal(t, r3.Consumers, 0)
 }
+
+func TestJetStreamJWTClusterAccountNRG(t *testing.T) {
+	_, syspub := createKey(t)
+	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+
+	_, aExpPub := createKey(t)
+	accClaim := jwt.NewAccountClaims(aExpPub)
+	accClaim.Name = "acc"
+	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{DiskStorage: 1100, Consumer: 10, Streams: 1}
+	accClaim.Limits.JetStreamTieredLimits["R3"] = jwt.JetStreamLimits{DiskStorage: 1100, Consumer: 1, Streams: 1}
+	accJwt := encodeClaim(t, accClaim, aExpPub)
+
+	_, aExpPub2 := createKey(t)
+	accClaim2 := jwt.NewAccountClaims(aExpPub2)
+	accClaim2.Name = "another_acc"
+	accJwt2 := encodeClaim(t, accClaim2, aExpPub2)
+
+	tmlp := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+		leaf {
+			listen: 127.0.0.1:-1
+		}
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+	` + fmt.Sprintf(`
+		operator: %s
+		system_account: %s
+		resolver = MEMORY
+		resolver_preload = {
+			%s : %s
+			%s : %s
+			%s : %s
+		}
+	`, ojwt, syspub, syspub, sysJwt, aExpPub, accJwt, aExpPub2, accJwt2)
+
+	c := createJetStreamClusterWithTemplate(t, tmlp, "cluster", 3)
+	defer c.shutdown()
+
+	// We'll try flipping the state a few times and then do some sanity
+	// checks to check that it took effect.
+	thirdAcc := fmt.Sprintf("account:%s", aExpPub2)
+	// TODO: Not currently testing thirdAcc because we haven't enabled this
+	// functionality yet. If/when we do enable, this test is ready just by
+	// uncommenting the third state below.
+	for _, state := range []string{"system", "owner" /*, thirdAcc */} {
+		accClaim.ClusterTraffic = state
+		accJwt = encodeClaim(t, accClaim, aExpPub)
+
+		for _, s := range c.servers {
+			// Update the account claim for our "third account".
+			acc, err := s.lookupAccount(aExpPub2)
+			require_NoError(t, err)
+			require_NoError(t, s.updateAccountWithClaimJWT(acc, accJwt2))
+
+			// Then update the account claim for the asset account.
+			acc, err = s.lookupAccount(aExpPub)
+			require_NoError(t, err)
+			require_NoError(t, s.updateAccountWithClaimJWT(acc, accJwt))
+
+			// Check that everything looks like it should.
+			require_True(t, acc != nil)
+			require_True(t, acc.js != nil)
+			switch state {
+			case "system":
+				require_Equal(t, acc.js.nrgAccount, _EMPTY_)
+			case "owner":
+				require_Equal(t, acc.js.nrgAccount, aExpPub)
+			case thirdAcc:
+				require_Equal(t, acc.js.nrgAccount, aExpPub2)
+			}
+
+			// Now get a list of all of the Raft nodes that should
+			// have been updated by now.
+			s.rnMu.Lock()
+			raftNodes := make([]*raft, 0, len(s.raftNodes))
+			for _, n := range s.raftNodes {
+				rg := n.(*raft)
+				if rg.accName != acc.Name {
+					continue
+				}
+				raftNodes = append(raftNodes, rg)
+			}
+			s.rnMu.Unlock()
+
+			// Check whether each of the Raft nodes reports being
+			// in-account or not.
+			for _, rg := range raftNodes {
+				rg.Lock()
+				rgAcc := rg.acc
+				rg.Unlock()
+				switch state {
+				case "system":
+					require_Equal(t, rgAcc.Name, syspub)
+				case "owner":
+					require_Equal(t, rgAcc.Name, aExpPub)
+				case thirdAcc:
+					require_Equal(t, rgAcc.Name, aExpPub2)
+				}
+			}
+		}
+	}
+}
