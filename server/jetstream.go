@@ -48,6 +48,7 @@ type JetStreamConfig struct {
 	Domain       string        `json:"domain,omitempty"`
 	CompressOK   bool          `json:"compress_ok,omitempty"`
 	UniqueTag    string        `json:"unique_tag,omitempty"`
+	AccountNRG   bool          `json:"account_nrg_enabled,omitempty"`
 }
 
 // Statistics about JetStream for this server.
@@ -544,6 +545,7 @@ func (s *Server) restartJetStream() error {
 		MaxMemory:    opts.JetStreamMaxMemory,
 		MaxStore:     opts.JetStreamMaxStore,
 		Domain:       opts.JetStreamDomain,
+		AccountNRG:   opts.JetStreamAccountNRG,
 	}
 	s.Noticef("Restarting JetStream")
 	err := s.EnableJetStream(&cfg)
@@ -2513,6 +2515,7 @@ func (s *Server) dynJetStreamConfig(storeDir string, maxStore, maxMem int64) *Je
 	}
 
 	opts := s.getOpts()
+	jsc.AccountNRG = opts.JetStreamAccountNRG
 
 	// Sync options.
 	jsc.SyncInterval = opts.SyncInterval
