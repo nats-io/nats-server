@@ -2298,6 +2298,9 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 			if err == nil {
 				m.subj = tsubj
 				break
+			} else if errors.Is(err, ErrBadSubject) {
+				mset.mu.Unlock()
+				return false
 			}
 		}
 	}
@@ -3252,6 +3255,9 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 			if err == nil {
 				m.subj = tsubj
 				break
+			} else if errors.Is(err, ErrBadSubject) {
+				mset.mu.Unlock()
+				return false
 			}
 		}
 	}
@@ -4274,6 +4280,9 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		if err == nil {
 			// no filtering: if the subject doesn't map the source of the transform, don't change it
 			subject = ts
+		} else if errors.Is(err, ErrBadSubject) {
+			mset.mu.Unlock()
+			return err
 		}
 	}
 
@@ -4595,6 +4604,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			thdrsOnly = mset.cfg.RePublish.HeadersOnly
 		}
 	}
+	// catches all errors returned by Match() as in that case tsubj is empty
 	republish := tsubj != _EMPTY_ && isLeader
 
 	// If we are republishing grab last sequence for this exact subject. Aids in gap detection for lightweight clients.
