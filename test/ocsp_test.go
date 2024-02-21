@@ -3091,20 +3091,25 @@ func TestOCSPCustomConfigReloadEnable(t *testing.T) {
 
 func newOCSPResponderCustomAddress(t *testing.T, issuerCertPEM, issuerKeyPEM string, addr string) *http.Server {
 	t.Helper()
-	return newOCSPResponderBase(t, issuerCertPEM, issuerCertPEM, issuerKeyPEM, false, addr, defaultResponseTTL)
+	return newOCSPResponderBase(t, issuerCertPEM, issuerCertPEM, issuerKeyPEM, false, addr, defaultResponseTTL, "")
 }
 
 func newOCSPResponder(t *testing.T, issuerCertPEM, issuerKeyPEM string) *http.Server {
 	t.Helper()
-	return newOCSPResponderBase(t, issuerCertPEM, issuerCertPEM, issuerKeyPEM, false, defaultAddress, defaultResponseTTL)
+	return newOCSPResponderBase(t, issuerCertPEM, issuerCertPEM, issuerKeyPEM, false, defaultAddress, defaultResponseTTL, "")
 }
 
 func newOCSPResponderDesignatedCustomAddress(t *testing.T, issuerCertPEM, respCertPEM, respKeyPEM string, addr string) *http.Server {
 	t.Helper()
-	return newOCSPResponderBase(t, issuerCertPEM, respCertPEM, respKeyPEM, true, addr, defaultResponseTTL)
+	return newOCSPResponderBase(t, issuerCertPEM, respCertPEM, respKeyPEM, true, addr, defaultResponseTTL, "")
 }
 
-func newOCSPResponderBase(t *testing.T, issuerCertPEM, respCertPEM, respKeyPEM string, embed bool, addr string, responseTTL time.Duration) *http.Server {
+func newOCSPResponderPreferringHTTPMethod(t *testing.T, issuerCertPEM, issuerKeyPEM, method string) *http.Server {
+	t.Helper()
+	return newOCSPResponderBase(t, issuerCertPEM, issuerCertPEM, issuerKeyPEM, false, defaultAddress, defaultResponseTTL, method)
+}
+
+func newOCSPResponderBase(t *testing.T, issuerCertPEM, respCertPEM, respKeyPEM string, embed bool, addr string, responseTTL time.Duration, method string) *http.Server {
 	t.Helper()
 	var mu sync.Mutex
 	status := make(map[string]int)
@@ -3157,12 +3162,26 @@ func newOCSPResponderBase(t *testing.T, issuerCertPEM, respCertPEM, respKeyPEM s
 	// OCSP status request and signs a response with a CA. Lightly based off:
 	// https://www.ietf.org/rfc/rfc2560.txt
 	mux.HandleFunc("/", func(rw http.ResponseWriter, r *http.Request) {
-		if r.Method != "GET" {
+		var reqData []byte
+		var err error
+
+		switch {
+		case r.Method == "GET":
+			if method != "" && r.Method != method {
+				http.Error(rw, "", http.StatusBadRequest)
+				return
+			}
+			reqData, err = base64.StdEncoding.DecodeString(r.URL.Path[1:])
+		case r.Method == "POST":
+			if method != "" && r.Method != method {
+				http.Error(rw, "", http.StatusBadRequest)
+				return
+			}
+			reqData, err = io.ReadAll(r.Body)
+		default:
 			http.Error(rw, "Method Not Allowed", http.StatusMethodNotAllowed)
 			return
 		}
-
-		reqData, err := base64.StdEncoding.DecodeString(r.URL.Path[1:])
 		if err != nil {
 			http.Error(rw, err.Error(), http.StatusBadRequest)
 			return
@@ -4196,5 +4215,153 @@ func TestMixedCAOCSPSuperCluster(t *testing.T) {
 	}
 	if lerr != nil {
 		t.Errorf("Unexpected error: %v", lerr)
+	}
+}
+
+func TestOCSPResponderHTTPMethods(t *testing.T) {
+	t.Run("prefer get", func(t *testing.T) {
+		testOCSPResponderHTTPMethods(t, "GET")
+	})
+	t.Run("prefer post", func(t *testing.T) {
+		testOCSPResponderHTTPMethods(t, "POST")
+	})
+	t.Run("all methods failing", func(t *testing.T) {
+		testOCSPResponderFailing(t, "TEST")
+	})
+}
+
+func testOCSPResponderHTTPMethods(t *testing.T, method string) {
+	const (
+		caCert     = "configs/certs/ocsp/ca-cert.pem"
+		caKey      = "configs/certs/ocsp/ca-key.pem"
+		serverCert = "configs/certs/ocsp/server-cert.pem"
+		serverKey  = "configs/certs/ocsp/server-key.pem"
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ocspr := newOCSPResponderPreferringHTTPMethod(t, caCert, caKey, method)
+	defer ocspr.Shutdown(ctx)
+	addr := fmt.Sprintf("http://%s", ocspr.Addr)
+	setOCSPStatus(t, addr, serverCert, ocsp.Good)
+
+	// Add another responder that fails.
+	badaddr := "http://127.0.0.1:8889"
+	badocsp := newOCSPResponderCustomAddress(t, caCert, caKey, badaddr)
+	defer badocsp.Shutdown(ctx)
+
+	opts := server.Options{}
+	opts.Host = "127.0.0.1"
+	opts.NoLog = true
+	opts.NoSigs = true
+	opts.MaxControlLine = 4096
+	opts.Port = -1
+	opts.TLSCert = serverCert
+	opts.TLSKey = serverKey
+	opts.TLSCaCert = caCert
+	opts.TLSTimeout = 5
+	tcOpts := &server.TLSConfigOpts{
+		CertFile: opts.TLSCert,
+		KeyFile:  opts.TLSKey,
+		CaFile:   opts.TLSCaCert,
+		Timeout:  opts.TLSTimeout,
+	}
+
+	tlsConf, err := server.GenTLSConfig(tcOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts.TLSConfig = tlsConf
+
+	opts.OCSPConfig = &server.OCSPConfig{
+		Mode:         server.OCSPModeAlways,
+		OverrideURLs: []string{badaddr, addr},
+	}
+	srv := RunServer(&opts)
+	defer srv.Shutdown()
+
+	nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port),
+		nats.Secure(&tls.Config{
+			VerifyConnection: func(s tls.ConnectionState) error {
+				resp, err := getOCSPStatus(s)
+				if err != nil {
+					return err
+				}
+				if resp.Status != ocsp.Good {
+					return fmt.Errorf("invalid staple")
+				}
+				return nil
+			},
+		}),
+		nats.RootCAs(caCert),
+		nats.ErrorHandler(noOpErrHandler),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+	sub, err := nc.SubscribeSync("foo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc.Publish("foo", []byte("hello world"))
+	nc.Flush()
+
+	_, err = sub.NextMsg(1 * time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc.Close()
+}
+
+func testOCSPResponderFailing(t *testing.T, method string) {
+	const (
+		caCert     = "configs/certs/ocsp/ca-cert.pem"
+		caKey      = "configs/certs/ocsp/ca-key.pem"
+		serverCert = "configs/certs/ocsp/server-cert.pem"
+		serverKey  = "configs/certs/ocsp/server-key.pem"
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ocspr := newOCSPResponderPreferringHTTPMethod(t, caCert, caKey, method)
+	defer ocspr.Shutdown(ctx)
+	addr := fmt.Sprintf("http://%s", ocspr.Addr)
+	setOCSPStatus(t, addr, serverCert, ocsp.Good)
+
+	opts := server.Options{}
+	opts.Host = "127.0.0.1"
+	opts.NoLog = true
+	opts.NoSigs = true
+	opts.MaxControlLine = 4096
+	opts.Port = -1
+	opts.TLSCert = serverCert
+	opts.TLSKey = serverKey
+	opts.TLSCaCert = caCert
+	opts.TLSTimeout = 5
+	tcOpts := &server.TLSConfigOpts{
+		CertFile: opts.TLSCert,
+		KeyFile:  opts.TLSKey,
+		CaFile:   opts.TLSCaCert,
+		Timeout:  opts.TLSTimeout,
+	}
+
+	tlsConf, err := server.GenTLSConfig(tcOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts.TLSConfig = tlsConf
+
+	opts.OCSPConfig = &server.OCSPConfig{
+		Mode:         server.OCSPModeAlways,
+		OverrideURLs: []string{addr},
+	}
+	expected := "bad OCSP status update for certificate at 'configs/certs/ocsp/server-cert.pem': "
+	expected += "exhausted ocsp servers: non-ok http status on POST request (reqlen=68): 400\nnon-ok http status on GET request (reqlen=92): 400"
+	_, err = server.NewServer(&opts)
+	if err == nil {
+		t.Error("Unexpected success setting up server")
+	} else if err.Error() != expected {
+		t.Errorf("Expected %q, got: %q", expected, err.Error())
 	}
 }

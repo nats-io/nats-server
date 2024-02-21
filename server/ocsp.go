@@ -14,12 +14,14 @@
 package server
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -161,16 +163,43 @@ func (oc *OCSPMonitor) getRemoteStatus() ([]byte, *ocsp.Response, error) {
 	if config := opts.OCSPConfig; config != nil {
 		overrideURLs = config.OverrideURLs
 	}
-	getRequestBytes := func(u string, hc *http.Client) ([]byte, error) {
+	getRequestBytes := func(u string, reqDER []byte, hc *http.Client) ([]byte, error) {
+		reqEnc := base64.StdEncoding.EncodeToString(reqDER)
+		u = fmt.Sprintf("%s/%s", u, reqEnc)
+		start := time.Now()
 		resp, err := hc.Get(u)
 		if err != nil {
 			return nil, err
 		}
 		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("non-ok http status: %d", resp.StatusCode)
-		}
 
+		oc.srv.Debugf("Received OCSP response (method=GET, status=%v, url=%s, duration=%.3fs)",
+			resp.StatusCode, u, time.Since(start).Seconds())
+		if resp.StatusCode > 299 {
+			return nil, fmt.Errorf("non-ok http status on GET request (reqlen=%d): %d", len(reqEnc), resp.StatusCode)
+		}
+		return io.ReadAll(resp.Body)
+	}
+	postRequestBytes := func(u string, body []byte, hc *http.Client) ([]byte, error) {
+		hreq, err := http.NewRequest("POST", u, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		hreq.Header.Add("Content-Type", "application/ocsp-request")
+		hreq.Header.Add("Accept", "application/ocsp-response")
+
+		start := time.Now()
+		resp, err := hc.Do(hreq)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+
+		oc.srv.Debugf("Received OCSP response (method=POST, status=%v, url=%s, duration=%.3fs)",
+			resp.StatusCode, u, time.Since(start).Seconds())
+		if resp.StatusCode > 299 {
+			return nil, fmt.Errorf("non-ok http status on POST request (reqlen=%d): %d", len(body), resp.StatusCode)
+		}
 		return io.ReadAll(resp.Body)
 	}
 
@@ -181,8 +210,6 @@ func (oc *OCSPMonitor) getRemoteStatus() ([]byte, *ocsp.Response, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-
-	reqEnc := base64.StdEncoding.EncodeToString(reqDER)
 
 	responders := oc.Leaf.OCSPServer
 	if len(overrideURLs) > 0 {
@@ -195,18 +222,30 @@ func (oc *OCSPMonitor) getRemoteStatus() ([]byte, *ocsp.Response, error) {
 	oc.mu.Lock()
 	hc := oc.hc
 	oc.mu.Unlock()
+
 	var raw []byte
 	for _, u := range responders {
+		var postErr, getErr error
 		u = strings.TrimSuffix(u, "/")
-		raw, err = getRequestBytes(fmt.Sprintf("%s/%s", u, reqEnc), hc)
-		if err == nil {
+		// Prefer to make POST requests first.
+		raw, postErr = postRequestBytes(u, reqDER, hc)
+		if postErr == nil {
+			err = nil
 			break
+		} else {
+			// Fallback to use a GET request.
+			raw, getErr = getRequestBytes(u, reqDER, hc)
+			if getErr == nil {
+				err = nil
+				break
+			} else {
+				err = errors.Join(postErr, getErr)
+			}
 		}
 	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("exhausted ocsp servers: %w", err)
 	}
-
 	resp, err := ocsp.ParseResponse(raw, oc.Issuer)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get remote status: %w", err)
