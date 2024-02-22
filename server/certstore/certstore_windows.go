@@ -1,4 +1,4 @@
-// Copyright 2022-2023 The NATS Authors
+// Copyright 2022-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -111,7 +111,13 @@ var (
 		crypto.SHA512: winWide("SHA512"), // BCRYPT_SHA512_ALGORITHM
 	}
 
-	// MY is well-known system store on Windows that holds personal certificates
+	// MY is well-known system store on Windows that holds personal certificates. Read
+	// More about the CA locations here:
+	// https://learn.microsoft.com/en-us/dotnet/framework/configure-apps/file-schema/wcf/certificate-of-clientcertificate-element?redirectedfrom=MSDN
+	// https://superuser.com/questions/217719/what-are-the-windows-system-certificate-stores
+	// https://docs.microsoft.com/en-us/windows/win32/seccrypto/certificate-stores
+	// https://learn.microsoft.com/en-us/windows/win32/seccrypto/system-store-locations
+	// https://stackoverflow.com/questions/63286085/which-x509-storename-refers-to-the-certificates-stored-beneath-trusted-root-cert#:~:text=4-,StoreName.,is%20%22Intermediate%20Certification%20Authorities%22.
 	winMyStore             = winWide("MY")
 	winIntermediateCAStore = winWide("CA")
 	winRootStore           = winWide("Root")
@@ -146,31 +152,33 @@ type winPSSPaddingInfo struct {
 // request. If no certificates are found an error is returned.
 func createCACertsPool(cs *winCertStore, storeType uint32, caCertsMatch []string) (*x509.CertPool, error) {
 	var errs []error
-	var count int
 	caPool := x509.NewCertPool()
 	for _, s := range caCertsMatch {
 		lfs, err := cs.caCertsBySubjectMatch(s, storeType)
 		if err != nil {
-			if errs == nil {
-				errs = make([]error, 0)
-			}
 			errs = append(errs, err)
 		} else {
 			for _, lf := range lfs {
 				caPool.AddCert(lf)
-				count++
 			}
 		}
 	}
-	// If no certs were added, return the errors.
-	if count == 0 {
+	// If every lookup failed return the errors.
+	if len(errs) == len(caCertsMatch) {
 		return nil, fmt.Errorf("unable to match any CA certificate: %v", errs)
 	}
 	return caPool, nil
 }
 
-// TLSConfig fulfills the same function as reading cert and key pair from pem files but
-// sources the Windows certificate store instead
+// TLSConfig fulfills the same function as reading cert and key pair from
+// pem files but sources the Windows certificate store instead. The
+// certMatchBy and certMatch fields search the "MY" certificate location
+// for the first certificate that matches the certMatch field. The
+// caCertsMatch field is used to search the Trusted Root, Third Party Root,
+// and Intermediate Certificate Authority locations for certificates with
+// Subjects matching the provided strings. If a match is found, the
+// certificate is added to the pool that is used to verify the certificate
+// chain.
 func TLSConfig(certStore StoreType, certMatchBy MatchByType, certMatch string, caCertsMatch []string, config *tls.Config) error {
 	var (
 		leaf     *x509.Certificate
@@ -219,7 +227,7 @@ func TLSConfig(certStore StoreType, certMatchBy MatchByType, certMatch string, c
 			return ErrNoPrivateKeyStoreRef
 		}
 		// Look for CA Certificates
-		if caCertsMatch != nil {
+		if len(caCertsMatch) != 0 {
 			caPool, err := createCACertsPool(cs, scope, caCertsMatch)
 			if err != nil {
 				return err
@@ -372,17 +380,22 @@ func (w *winCertStore) caCertsBySubjectMatch(subject string, storeType uint32) (
 	var (
 		leaf            *x509.Certificate
 		searchLocations = [3]*uint16{winRootStore, winAuthRootStore, winIntermediateCAStore}
+		rv              []*x509.Certificate
 	)
 	// surprisingly, an empty string returns a result. We'll treat this as an error.
 	if subject == "" {
-		return nil, ErrFailedCertSearch
+		return nil, ErrBadCaCertMatchField
 	}
-	rv := make([]*x509.Certificate, 0)
 	for _, sr := range searchLocations {
 		var err error
 		if leaf, _, err = w.certSearch(winFindSubjectStr, subject, sr, storeType); err == nil {
 			rv = append(rv, leaf)
 		} else {
+			// Ignore the failed search from a single location. Errors we catch include
+			// ErrFailedX509Extract (resulting from a malformed certificate) and errors
+			// around invalid attributes, unsupported algorithms, etc. These are corner
+			// cases as certificates with these errors shouldn't have been allowed
+			// to be added to the store in the first place.
 			if err != ErrFailedCertSearch {
 				return nil, err
 			}

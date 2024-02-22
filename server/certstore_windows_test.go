@@ -1,4 +1,4 @@
-// Copyright 2022-2023 The NATS Authors
+// Copyright 2022-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -61,7 +61,7 @@ func runConfiguredLeaf(t *testing.T, hubPort int, certStore string, matchBy stri
 						cert_match: "%s"
 						ca_certs_match: %s
 
-						# Above should be equivalent to:
+						# Test settings that succeed should be equivalent to:
 						# cert_file: "../test/configs/certs/tlsauth/client.pem"
 						# key_file: "../test/configs/certs/tlsauth/client-key.pem"
 						# ca_file: "../test/configs/certs/tlsauth/ca.pem"
