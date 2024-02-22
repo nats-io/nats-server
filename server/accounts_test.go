@@ -510,6 +510,7 @@ func TestAccountSimpleConfig(t *testing.T) {
 
 func TestAccountParseConfig(t *testing.T) {
 	traceDest := "my.trace.dest"
+	traceSampling := 50
 	confFileName := createConfFile(t, []byte(fmt.Sprintf(`
     accounts {
       synadia {
@@ -519,14 +520,14 @@ func TestAccountParseConfig(t *testing.T) {
         ]
       }
       nats.io {
-		trace_dest: %q
+		msg_trace: {dest: %q, sampling: %d%%}
         users = [
           {user: derek, password: foo}
           {user: ivan, password: bar}
         ]
       }
     }
-    `, traceDest)))
+    `, traceDest, traceSampling)))
 	opts, err := ProcessConfigFile(confFileName)
 	if err != nil {
 		t.Fatalf("Received an error processing config file: %v", err)
@@ -550,7 +551,9 @@ func TestAccountParseConfig(t *testing.T) {
 	if natsAcc == nil {
 		t.Fatalf("Error retrieving account for 'nats.io'")
 	}
-	require_Equal[string](t, natsAcc.getTraceDest(), traceDest)
+	td, tds := natsAcc.getTraceDestAndSampling()
+	require_Equal[string](t, td, traceDest)
+	require_Equal[int](t, tds, traceSampling)
 
 	for _, u := range opts.Users {
 		if u.Username == "derek" {
