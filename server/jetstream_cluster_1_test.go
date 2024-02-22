@@ -3568,6 +3568,10 @@ func TestJetStreamClusterPeerRemovalAndStreamReassignment(t *testing.T) {
 	if resp.Error != nil {
 		t.Fatalf("Unexpected error: %+v", resp.Error)
 	}
+	if !resp.Success {
+		t.Fatal("Unexpected success")
+	}
+
 	// In case that server was also meta-leader.
 	c.waitOnLeader()
 
@@ -3599,6 +3603,42 @@ func TestJetStreamClusterPeerRemovalAndStreamReassignment(t *testing.T) {
 			return fmt.Errorf("Expected 2 replicas, got %d", len(si.Cluster.Replicas))
 		}
 		return nil
+	})
+
+	// Restore the node.
+	toAdd := toRemove
+	reqAdd := JSApiMetaServerAddRequest{Server: toAdd}
+	jsAddReq, err := json.Marshal(reqAdd)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	rAddMsg, err := nc.Request(JSApiAddServer, jsAddReq, time.Second)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var addResp JSApiMetaServerAddResponse
+	if err := json.Unmarshal(rAddMsg.Data, &addResp); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if addResp.Error != nil {
+		t.Fatalf("Unexpected error: %+v", addResp.Error)
+	}
+
+	if !addResp.Success {
+		t.Fatal("Unexpected success")
+	}
+
+	// In case that server was also meta-leader.
+	c.waitOnLeader()
+
+	checkFor(t, 15*time.Second, 250*time.Millisecond, func() error {
+		for _, s := range ml.JetStreamClusterPeers() {
+			if s == toAdd {
+				return nil
+			}
+		}
+		return fmt.Errorf("Server not in the peer list")
 	})
 }
 

@@ -59,6 +59,8 @@ type jetStreamCluster struct {
 	consumerResults *subscription
 	// System level request to have the leader stepdown.
 	stepdown *subscription
+	// System level requests to add a peer.
+	peerAdd *subscription
 	// System level requests to remove a peer.
 	peerRemove *subscription
 	// System level request to move a stream
@@ -5309,6 +5311,9 @@ func (js *jetStream) startUpdatesSub() {
 	}
 	if cc.stepdown == nil {
 		cc.stepdown, _ = s.systemSubscribe(JSApiLeaderStepDown, _EMPTY_, false, c, s.jsLeaderStepDownRequest)
+	}
+	if cc.peerAdd == nil {
+		cc.peerAdd, _ = s.systemSubscribe(JSApiAddServer, _EMPTY_, false, c, s.jsLeaderServerAddRequest)
 	}
 	if cc.peerRemove == nil {
 		cc.peerRemove, _ = s.systemSubscribe(JSApiRemoveServer, _EMPTY_, false, c, s.jsLeaderServerRemoveRequest)

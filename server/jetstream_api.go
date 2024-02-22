@@ -195,6 +195,12 @@ const (
 	// Will return JSON response.
 	JSApiLeaderStepDown = "$JS.API.META.LEADER.STEPDOWN"
 
+	// JSApiAddServer is the endpoint to add a peer server to the cluster.
+	// Only allow to add peer previously removed.
+	// Only works from system account.
+	// Will return JSON response.
+	JSApiAddServer = "$JS.API.SERVER.ADD"
+
 	// JSApiRemoveServer is the endpoint to remove a peer server from the cluster.
 	// Only works from system account.
 	// Will return JSON response.
@@ -591,6 +597,23 @@ type JSApiLeaderStepDownResponse struct {
 
 const JSApiLeaderStepDownResponseType = "io.nats.jetstream.api.v1.meta_leader_stepdown_response"
 
+// JSApiMetaServerAddRequest will add a peer to the meta group.
+type JSApiMetaServerAddRequest struct {
+	// Server name of the peer to be added.
+	Server string `json:"peer"`
+	// Peer ID of the peer to be added. If specified this is used
+	// instead of the server name.
+	Peer string `json:"peer_id,omitempty"`
+}
+
+// JSApiMetaServerAddResponse is the response to a peer addition request in the meta group.
+type JSApiMetaServerAddResponse struct {
+	ApiResponse
+	Success bool `json:"success,omitempty"`
+}
+
+const JSApiMetaServerAddResponseType = "io.nats.jetstream.api.v1.meta_server_add_response"
+
 // JSApiMetaServerRemoveRequest will remove a peer from the meta group.
 type JSApiMetaServerRemoveRequest struct {
 	// Server name of the peer to be removed.
@@ -757,6 +780,7 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, sub
 	// Ignore system level directives meta stepdown and peer remove requests here.
 	if subject == JSApiLeaderStepDown ||
 		subject == JSApiRemoveServer ||
+		subject == JSApiAddServer ||
 		strings.HasPrefix(subject, jsAPIAccountPre) {
 		return
 	}
@@ -2290,6 +2314,78 @@ func (s *Server) jsStreamRemovePeerRequest(sub *subscription, c *client, _ *Acco
 
 	resp.Success = true
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+}
+
+// Request to have the metaleader add a peer to the system.
+func (s *Server) jsLeaderServerAddRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
+	if c == nil || !s.JetStreamEnabled() {
+		return
+	}
+
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+
+	js, cc := s.getJetStreamCluster()
+	if js == nil || cc == nil || cc.meta == nil {
+		return
+	}
+
+	js.mu.RLock()
+	isLeader := cc.isLeader()
+	js.mu.RUnlock()
+
+	if !isLeader {
+		return
+	}
+
+	var resp = JSApiMetaServerAddResponse{ApiResponse: ApiResponse{Type: JSApiMetaServerAddResponseType}}
+
+	if isEmptyRequest(msg) {
+		resp.Error = NewJSBadRequestError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	var req JSApiMetaServerAddRequest
+	if err := json.Unmarshal(msg, &req); err != nil {
+		resp.Error = NewJSInvalidJSONError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	var found string
+	js.mu.RLock()
+	// Use nodeToInfo because cc.meta.Peers() does not have peer.
+	if req.Peer != _EMPTY_ {
+		_, ok := s.nodeToInfo.Load(req.Peer)
+		if ok {
+			found = req.Peer
+		}
+	} else {
+		s.nodeToInfo.Range(func(id, ni interface{}) bool {
+			if req.Server == ni.(nodeInfo).name {
+				found = id.(string)
+				return false
+			}
+			return true
+		})
+	}
+	js.mu.RUnlock()
+
+	if found == _EMPTY_ {
+		resp.Error = NewJSClusterServerNotMemberError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+	}
+
+	js.mu.Lock()
+	cc.meta.ProposeAddPeer(found)
+	js.mu.Unlock()
+
+	resp.Success = true
+	s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 }
 
 // Request to have the metaleader remove a peer from the system.
