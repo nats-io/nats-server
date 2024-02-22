@@ -17,7 +17,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"math"
 	"math/rand"
 	"reflect"
 	"testing"
@@ -88,67 +87,6 @@ func TestMemStoreMsgLimit(t *testing.T) {
 	// Make sure we can not lookup seq 1.
 	if _, err := ms.LoadMsg(1, nil); err == nil {
 		t.Fatalf("Expected error looking up seq 1 but got none")
-	}
-}
-
-func TestMemStorePerformance(t *testing.T) {
-	subj, msg := "foo", make([]byte, 1000)
-	storedMsgSize := memStoreMsgSize(subj, nil, msg)
-
-	toStore := uint64(500_000)
-	maxBytes := storedMsgSize * toStore
-
-	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage, MaxBytes: int64(maxBytes)})
-	require_NoError(t, err)
-	defer ms.Stop()
-
-	for i := uint64(0); i < toStore; i++ {
-		ms.StoreMsg(subj, nil, msg)
-	}
-	state := ms.State()
-	if state.Msgs != toStore {
-		t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
-	}
-	if state.Bytes != storedMsgSize*toStore {
-		t.Fatalf("Expected bytes to be %d, got %d", storedMsgSize*toStore, state.Bytes)
-	}
-
-	iteration := 10
-	msgAddPerIteration := 1_000_000
-	maxTime := int64(0)
-	minTime := int64(math.MaxInt64)
-	maxIteration := 0
-	for j := 0; j < iteration; j++ {
-		// Now send 10 more and check that bytes limit enforced.
-		for i := 0; i < msgAddPerIteration; i++ {
-			if _, _, err := ms.StoreMsg(subj, nil, msg); err != nil {
-				t.Fatalf("Error storing msg: %v", err)
-			}
-		}
-		compactStart := toStore + uint64((j+1)*msgAddPerIteration) - 200_000
-		start := time.Now()
-		purged, errorVal := ms.Compact(compactStart)
-		end := time.Now()
-		elapsed := end.Sub(start)
-		fmt.Printf("Compact took: %d us in iteration %d. purged = %d. error: %s", elapsed.Microseconds(), j, purged, errorVal)
-		fmt.Println()
-		if purged != 299_999 {
-			t.Fatalf("unexpected value of purge. Expected %d vs. Received %d", 299_999, purged)
-		}
-
-		if maxTime < elapsed.Microseconds() {
-			maxTime = elapsed.Microseconds()
-			maxIteration = j
-		}
-		if minTime > elapsed.Microseconds() {
-			minTime = elapsed.Microseconds()
-		}
-	}
-	delta := (maxTime - minTime) / 1000.0
-	fmt.Printf("Compact took max: %d us on iteration %d out of %d. Delta between min/max %d msec", maxTime, maxIteration, iteration, delta)
-	fmt.Println()
-	if delta > 100 {
-		t.Fatalf("Compact duration varied to much - Max %d usec and Min %d usec duration have to be within 100 msec but is %d msec", maxTime, minTime, delta)
 	}
 }
 

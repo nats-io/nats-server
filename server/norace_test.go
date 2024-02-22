@@ -9599,3 +9599,58 @@ func TestNoRaceJetStreamKVReplaceWithServerRestart(t *testing.T) {
 		t.Fatalf("Encountered errors")
 	}
 }
+
+func TestNoRaceMemStoreCompactDuration(t *testing.T) {
+	//Load MemStore so that it is full
+	subj, msg := "foo", make([]byte, 1000)
+	storedMsgSize := memStoreMsgSize(subj, nil, msg)
+
+	toStore := uint64(500_000)
+	maxBytes := storedMsgSize * toStore
+
+	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage, MaxBytes: int64(maxBytes)})
+	require_NoError(t, err)
+	defer ms.Stop()
+
+	for i := uint64(0); i < toStore; i++ {
+		ms.StoreMsg(subj, nil, msg)
+	}
+	state := ms.State()
+	if state.Msgs != toStore {
+		t.Fatalf("Expected %d msgs, got %d", toStore, state.Msgs)
+	}
+	if state.Bytes != storedMsgSize*toStore {
+		t.Fatalf("Expected bytes to be %d, got %d", storedMsgSize*toStore, state.Bytes)
+	}
+
+	toStoreOnTop := uint64(10_000_000)
+
+	//1st run: Load additional 10 Mio messages then compact
+	for i := uint64(0); i < toStoreOnTop; i++ {
+		ms.StoreMsg(subj, nil, msg)
+	}
+	startFirstRun := time.Now()
+	purgedFirstRun, _ := ms.Compact(10_300_000)
+	elapsedFirstRun := time.Now().Sub(startFirstRun).Microseconds()
+	if purgedFirstRun != 299_999 {
+		t.Fatalf("unexpected value of purge. Expected %d vs. Received %d", 299_999, purgedFirstRun)
+	}
+
+	//2nd run: Load additional 10 Mio messages then compact
+	for i := uint64(0); i < toStoreOnTop; i++ {
+		ms.StoreMsg(subj, nil, msg)
+	}
+	startSecondRun := time.Now()
+	purgedSecondRun, _ := ms.Compact(20_300_000)
+	elapsedSecondRun := time.Now().Sub(startSecondRun).Microseconds()
+	if purgedSecondRun != 299_999 {
+		t.Fatalf("unexpected value of purge. Expected %d vs. Received %d", 299_999, purgedSecondRun)
+	}
+
+	//Calculate delta between runs and fail if it is too high
+	delta := (elapsedSecondRun - elapsedFirstRun) / 1000.0
+	if delta > 100 {
+		t.Fatalf("Compact duration varied to much between First Run %dus and Second Run %dus have to be within 100 msec but is %d msec",
+			elapsedFirstRun, elapsedSecondRun, delta)
+	}
+}
