@@ -9631,7 +9631,7 @@ func TestNoRaceMemStoreCompactDuration(t *testing.T) {
 	}
 	startFirstRun := time.Now()
 	purgedFirstRun, _ := ms.Compact(10_300_000)
-	elapsedFirstRun := time.Now().Sub(startFirstRun).Microseconds()
+	elapsedFirstRun := time.Since(startFirstRun).Microseconds()
 	if purgedFirstRun != 299_999 {
 		t.Fatalf("unexpected value of purge. Expected %d vs. Received %d", 299_999, purgedFirstRun)
 	}
@@ -9642,7 +9642,7 @@ func TestNoRaceMemStoreCompactDuration(t *testing.T) {
 	}
 	startSecondRun := time.Now()
 	purgedSecondRun, _ := ms.Compact(20_300_000)
-	elapsedSecondRun := time.Now().Sub(startSecondRun).Microseconds()
+	elapsedSecondRun := time.Since(startSecondRun).Microseconds()
 	if purgedSecondRun != 299_999 {
 		t.Fatalf("unexpected value of purge. Expected %d vs. Received %d", 299_999, purgedSecondRun)
 	}
