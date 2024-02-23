@@ -1,4 +1,4 @@
-// Copyright 2019-2023 The NATS Authors
+// Copyright 2019-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -392,7 +392,7 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 
 	// 1. See if we match any subs from fss.
 	// 2. If we match and the sseq is past ss.Last then we can use meta only.
-	// 3. If we match and we need to do a partial, break and clear any totals and do a full scan like num pending.
+	// 3. If we match we need to do a partial, break and clear any totals and do a full scan like num pending.
 
 	isMatch := func(subj string) bool {
 		if isAll {
@@ -429,7 +429,7 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 		if sseq <= fss.First {
 			update(fss)
 		} else if sseq <= fss.Last {
-			// We matched but its a partial.
+			// We matched but it is a partial.
 			havePartial = true
 			// Don't break here, we will update to keep tracking last.
 			update(fss)
@@ -444,7 +444,7 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 	// If we are here we need to scan the msgs.
 	// Capture first and last sequences for scan and then clear what we had.
 	first, last := ss.First, ss.Last
-	// To track if we decide to exclude and we need to calculate first.
+	// To track if we decide to exclude we need to calculate first.
 	var needScanFirst bool
 	if first < sseq {
 		first = sseq
@@ -792,10 +792,11 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 			ms.mu.Unlock()
 			return 0, ErrStoreMsgNotFound
 		}
+		fseq := ms.state.FirstSeq
 		ms.state.FirstSeq = seq
 		ms.state.FirstTime = time.Unix(0, sm.ts).UTC()
 
-		for seq := seq - 1; seq > 0; seq-- {
+		for seq := seq - 1; seq >= fseq; seq-- {
 			if sm := ms.msgs[seq]; sm != nil {
 				bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.msg)
 				purged++
@@ -1127,7 +1128,7 @@ func (ms *memStore) removeSeqPerSubject(subj string, seq uint64) {
 	}
 }
 
-// Will recalulate the first sequence for this subject in this block.
+// Will recalculate the first sequence for this subject in this block.
 // Lock should be held.
 func (ms *memStore) recalculateFirstForSubj(subj string, startSeq uint64, ss *SimpleState) {
 	for tseq := startSeq + 1; tseq <= ss.Last; tseq++ {
@@ -1140,7 +1141,7 @@ func (ms *memStore) recalculateFirstForSubj(subj string, startSeq uint64, ss *Si
 }
 
 // Removes the message referenced by seq.
-// Lock should he held.
+// Lock should be held.
 func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 	var ss uint64
 	sm, ok := ms.msgs[seq]
@@ -1479,7 +1480,7 @@ func (o *consumerMemStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) erro
 			if o.state.Redelivered == nil {
 				o.state.Redelivered = make(map[uint64]uint64)
 			}
-			// Only update if greater then what we already have.
+			// Only update if greater than what we already have.
 			if o.state.Redelivered[sseq] < dc-1 {
 				o.state.Redelivered[sseq] = dc - 1
 			}
