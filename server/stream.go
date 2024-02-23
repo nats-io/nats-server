@@ -4098,16 +4098,30 @@ func (mset *stream) processDirectGetLastBySubjectRequest(_ *subscription, c *cli
 	}
 }
 
+// For direct get batch and multi requests.
+const (
+	dg  = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\n\r\n"
+	dgb = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\n\r\n"
+	eob = "NATS/1.0 204 EOB\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\n\r\n"
+)
+
 // Handle a multi request.
 func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 	// TODO(dlc) - Make configurable?
-	const maxAllowedResponses = 64
+	const maxAllowedResponses = 1024
 
 	// We hold the lock here to try to avoid changes out from underneath of us.
 	mset.mu.RLock()
 	defer mset.mu.RUnlock()
 	// Grab store and name.
-	store, name := mset.store, mset.cfg.Name
+	store, name, s := mset.store, mset.cfg.Name, mset.srv
+
+	// Grab MaxBytes
+	mb := req.MaxBytes
+	if mb == 0 && s != nil {
+		// Fill in with the server's MaxPending.
+		mb = int(s.opts.MaxPending)
+	}
 
 	upToSeq := req.UpToSeq
 	// If we have UpToTime set get the proper sequence.
@@ -4135,8 +4149,14 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 		return
 	}
 
-	np, lseq := uint64(len(seqs)-1), uint64(0)
+	np, lseq, sentBytes, sent := uint64(len(seqs)-1), uint64(0), 0, 0
 	for _, seq := range seqs {
+		if seq < req.Seq {
+			if np > 0 {
+				np--
+			}
+			continue
+		}
 		var svp StoreMsg
 		sm, err := store.LoadMsg(seq, &svp)
 		if err != nil {
@@ -4160,12 +4180,27 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 			hdr = genHeader(hdr, JSLastSequence, strconv.FormatUint(lseq, 10))
 		}
 		// Decrement num pending. This is optimization and we do not continue to look it up for these operations.
-		np--
+		if np > 0 {
+			np--
+		}
 		// Track our lseq
 		lseq = sm.seq
 		// Send out our message.
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, sm.msg, nil, 0))
+		// Check if we have exceeded max bytes.
+		sentBytes += len(sm.subj) + len(sm.hdr) + len(sm.msg)
+		if sentBytes >= mb {
+			break
+		}
+		sent++
+		if req.Batch > 0 && sent >= req.Batch {
+			break
+		}
 	}
+
+	// Send out EOB
+	hdr := fmt.Appendf(nil, eob, np, lseq)
+	mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 }
 
 // Do actual work on a direct msg request.
@@ -4283,7 +4318,7 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 		if mset.lastSeq() > validThrough {
 			np, _ = store.NumPending(seq, req.NextFor, false)
 		}
-		hdr := fmt.Appendf(nil, "NATS/1.0 204 EOB\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\n\r\n", np, lseq)
+		hdr := fmt.Appendf(nil, eob, np, lseq)
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 	}
 }
