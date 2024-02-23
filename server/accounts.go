@@ -96,7 +96,12 @@ type Account struct {
 	nameTag      string
 	lastLimErr   int64
 	routePoolIdx int
-	traceDest    string
+	// If the trace destination is specified and a message with a traceParentHdr
+	// is received, and has the least significant bit of the last token set to 1,
+	// then if traceDestSampling is > 0 and < 100, a random value will be selected
+	// and if it falls between 0 and that value, message tracing will be triggered.
+	traceDest         string
+	traceDestSampling int
 }
 
 const (
@@ -263,11 +268,12 @@ func (a *Account) setTraceDest(dest string) {
 	a.mu.Unlock()
 }
 
-func (a *Account) getTraceDest() string {
+func (a *Account) getTraceDestAndSampling() (string, int) {
 	a.mu.RLock()
 	dest := a.traceDest
+	sampling := a.traceDestSampling
 	a.mu.RUnlock()
-	return dest
+	return dest, sampling
 }
 
 // Used to create shallow copies of accounts for transfer
@@ -278,7 +284,7 @@ func (a *Account) getTraceDest() string {
 func (a *Account) shallowCopy(na *Account) {
 	na.Nkey = a.Nkey
 	na.Issuer = a.Issuer
-	na.traceDest = a.traceDest
+	na.traceDest, na.traceDestSampling = a.traceDest, a.traceDestSampling
 
 	if a.imports.streams != nil {
 		na.imports.streams = make([]*streamImport, 0, len(a.imports.streams))
@@ -3239,12 +3245,18 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 	a.nameTag = ac.Name
 	a.tags = ac.Tags
 
+	var td string
+	var tds int
 	if ac.Trace != nil {
-		// Update TraceDest
-		a.traceDest = string(ac.Trace.Destination)
-	} else {
-		a.traceDest = _EMPTY_
+		// Update trace destination and sampling
+		td, tds = string(ac.Trace.Destination), ac.Trace.Sampling
+		if !IsValidPublishSubject(td) {
+			td, tds = _EMPTY_, 0
+		} else if tds <= 0 || tds > 100 {
+			tds = 100
+		}
 	}
+	a.traceDest, a.traceDestSampling = td, tds
 
 	// Check for external authorization.
 	if ac.HasExternalAuthorization() {
