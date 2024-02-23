@@ -920,7 +920,7 @@ func TestConfigCheck(t *testing.T) {
                   A { trace_dest: 123 }
                 }
 			`,
-			err:       errors.New(`interface conversion: interface {} is int64, not string`),
+			err:       errors.New(`Expected account message trace "trace_dest" to be a string or a map/struct, got int64`),
 			errorLine: 3,
 			errorPos:  23,
 		},
@@ -945,6 +945,94 @@ func TestConfigCheck(t *testing.T) {
 			err:       errors.New(`Trace destination "invalid.publish.*.subject" is not valid`),
 			errorLine: 3,
 			errorPos:  23,
+		},
+		{
+			name: "when account message trace dest is wrong type",
+			config: `
+                accounts {
+                  A { msg_trace: {dest: 123} }
+                }
+			`,
+			err:       errors.New(`Field "dest" should be a string, got int64`),
+			errorLine: 3,
+			errorPos:  35,
+		},
+		{
+			name: "when account message trace dest is invalid",
+			config: `
+                accounts {
+                  A { msg_trace: {dest: "invalid..dest"} }
+                }
+			`,
+			err:       errors.New(`Trace destination "invalid..dest" is not valid`),
+			errorLine: 3,
+			errorPos:  35,
+		},
+		{
+			name: "when account message trace sampling is wrong type",
+			config: `
+                accounts {
+                  A { msg_trace: {dest: "acc.dest", sampling: {wront: "type"}} }
+                }
+			`,
+			err:       errors.New(`Trace destination sampling field "sampling" should be an integer or a percentage, got map[string]interface {}`),
+			errorLine: 3,
+			errorPos:  53,
+		},
+		{
+			name: "when account message trace sampling is wrong string",
+			config: `
+                accounts {
+                  A { msg_trace: {dest: "acc.dest", sampling: abc%} }
+                }
+			`,
+			err:       errors.New(`Invalid trace destination sampling value "abc%"`),
+			errorLine: 3,
+			errorPos:  53,
+		},
+		{
+			name: "when account message trace sampling is negative",
+			config: `
+                accounts {
+                  A { msg_trace: {dest: "acc.dest", sampling: -1} }
+                }
+			`,
+			err:       errors.New(`Ttrace destination sampling value -1 is invalid, needs to be [1..100]`),
+			errorLine: 3,
+			errorPos:  53,
+		},
+		{
+			name: "when account message trace sampling is zero",
+			config: `
+                accounts {
+                  A { msg_trace: {dest: "acc.dest", sampling: 0} }
+                }
+			`,
+			err:       errors.New(`Ttrace destination sampling value 0 is invalid, needs to be [1..100]`),
+			errorLine: 3,
+			errorPos:  53,
+		},
+		{
+			name: "when account message trace sampling is more than 100",
+			config: `
+                accounts {
+                  A { msg_trace: {dest: "acc.dest", sampling: 101} }
+                }
+			`,
+			err:       errors.New(`Ttrace destination sampling value 101 is invalid, needs to be [1..100]`),
+			errorLine: 3,
+			errorPos:  53,
+		},
+		{
+			name: "when account message trace has unknown field",
+			config: `
+                accounts {
+                  A { msg_trace: {wrong: "field"} }
+                }
+			`,
+			err:       errors.New(`Unknown field "wrong" parsing account message trace map/struct "msg_trace"`),
+			errorLine: 3,
+			errorPos:  35,
 		},
 		{
 			name: "when user authorization config has both token and users",

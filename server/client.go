@@ -4356,8 +4356,8 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 				// We also need to disable the message trace headers so that
 				// if the message is routed, it does not initialize tracing in the
 				// remote.
-				positions := mt.disableTraceHeaders(c, msg)
-				defer mt.enableTraceHeaders(c, msg, positions)
+				positions := disableTraceHeaders(c, msg)
+				defer enableTraceHeaders(c, msg, positions)
 			}
 		}
 	}
