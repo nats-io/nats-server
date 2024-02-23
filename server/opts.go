@@ -2896,6 +2896,69 @@ func parseAccountLimits(mv interface{}, acc *Account, errors *[]error, warnings 
 	return nil
 }
 
+func parseAccountMsgTrace(mv any, topKey string, acc *Account) error {
+	processDest := func(tk token, k string, v any) error {
+		td, ok := v.(string)
+		if !ok {
+			return &configErr{tk, fmt.Sprintf("Field %q should be a string, got %T", k, v)}
+		}
+		if !IsValidPublishSubject(td) {
+			return &configErr{tk, fmt.Sprintf("Trace destination %q is not valid", td)}
+		}
+		acc.traceDest = td
+		return nil
+	}
+	processSampling := func(tk token, n int) error {
+		if n <= 0 || n > 100 {
+			return &configErr{tk, fmt.Sprintf("Ttrace destination sampling value %d is invalid, needs to be [1..100]", n)}
+		}
+		acc.traceDestSampling = n
+		return nil
+	}
+
+	var lt token
+	tk, v := unwrapValue(mv, &lt)
+	switch vv := v.(type) {
+	case string:
+		return processDest(tk, topKey, v)
+	case map[string]any:
+		for k, v := range vv {
+			tk, v := unwrapValue(v, &lt)
+			switch strings.ToLower(k) {
+			case "dest":
+				if err := processDest(tk, k, v); err != nil {
+					return err
+				}
+			case "sampling":
+				switch vv := v.(type) {
+				case int64:
+					if err := processSampling(tk, int(vv)); err != nil {
+						return err
+					}
+				case string:
+					s := strings.TrimSuffix(vv, "%")
+					n, err := strconv.Atoi(s)
+					if err != nil {
+						return &configErr{tk, fmt.Sprintf("Invalid trace destination sampling value %q", vv)}
+					}
+					if err := processSampling(tk, n); err != nil {
+						return err
+					}
+				default:
+					return &configErr{tk, fmt.Sprintf("Trace destination sampling field %q should be an integer or a percentage, got %T", k, v)}
+				}
+			default:
+				if !tk.IsUsedVariable() {
+					return &configErr{tk, fmt.Sprintf("Unknown field %q parsing account message trace map/struct %q", k, topKey)}
+				}
+			}
+		}
+	default:
+		return &configErr{tk, fmt.Sprintf("Expected account message trace %q to be a string or a map/struct, got %T", topKey, v)}
+	}
+	return nil
+}
+
 // parseAccounts will parse the different accounts syntax.
 func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]error) error {
 	var (
@@ -3025,14 +3088,23 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 						*errors = append(*errors, err)
 						continue
 					}
-				case "trace_dest", "trace_destination", "trace_subject":
-					td := mv.(string)
-					if !IsValidPublishSubject(td) {
-						err := &configErr{tk, fmt.Sprintf("Trace destination %q is not valid", mv)}
+				case "msg_trace", "trace_dest":
+					if err := parseAccountMsgTrace(tk, k, acc); err != nil {
 						*errors = append(*errors, err)
 						continue
 					}
-					acc.traceDest = td
+					// If trace destination is set but no sampling, set it to 100%.
+					if acc.traceDest != _EMPTY_ && acc.traceDestSampling == 0 {
+						acc.traceDestSampling = 100
+					} else if acc.traceDestSampling > 0 && acc.traceDest == _EMPTY_ {
+						// If no trace destination is provided, no trace would be
+						// triggered, so if the user set a sampling value expecting
+						// something to happen, want and set the value to 0 for good
+						// measure.
+						*warnings = append(*warnings,
+							&configErr{tk, "Trace destination sampling ignored since no destination was set"})
+						acc.traceDestSampling = 0
+					}
 				default:
 					if !tk.IsUsedVariable() {
 						err := &unknownConfigFieldErr{

@@ -4224,7 +4224,7 @@ func (mset *stream) processInboundJetStreamMsg(_ *subscription, c *client, _ *Ac
 		// to prevent a trace event to be generated when a stored message
 		// is delivered to a consumer and routed.
 		if !traceOnly {
-			mt.disableTraceHeaders(c, hdr)
+			disableTraceHeaders(c, hdr)
 		}
 		// This will add the jetstream event while in the client read loop.
 		// Since the event will be updated in a different go routine, the
