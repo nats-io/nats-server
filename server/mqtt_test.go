@@ -4262,6 +4262,14 @@ func TestMQTTPublishRetain(t *testing.T) {
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownServer(s)
 
+	buf := strings.Builder{}
+	for i := 0; i < 128; i++ { // 128Kb
+		for j := 0; j < 64; j++ { // 16 * 64 = 1Kb
+			buf.Write([]byte("0123456789abcdef"))
+		}
+	}
+	large := buf.String()
+
 	for _, test := range []struct {
 		name          string
 		retained      bool
@@ -4269,6 +4277,7 @@ func TestMQTTPublishRetain(t *testing.T) {
 		expectedValue string
 		subGetsIt     bool
 	}{
+		{"publish large retained", true, large, large, true},
 		{"publish retained", true, "retained", "retained", true},
 		{"publish not retained", false, "not retained", "retained", true},
 		{"remove retained", true, "", "", false},
