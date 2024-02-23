@@ -9606,9 +9606,7 @@ func TestNoRaceMemStoreCompactPerformance(t *testing.T) {
 	storedMsgSize := memStoreMsgSize(subj, nil, msg)
 
 	toStore := uint64(10_000)
-	toStoreOnTopFirst := uint64(1_000)
-	toStoreOnTopSecond := uint64(1_000_000)
-	expectedPurge := toStore - 1
+	toStoreOnTop := uint64(1_000_000)
 	maxBytes := storedMsgSize * toStore
 
 	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage, MaxBytes: int64(maxBytes)})
@@ -9622,24 +9620,19 @@ func TestNoRaceMemStoreCompactPerformance(t *testing.T) {
 	require_Equal(t, toStore, state.Msgs)
 	require_Equal(t, state.Bytes, storedMsgSize*toStore)
 
-	//1st run: Load additional 10 Mio messages then compact
-	for i := uint64(0); i < toStoreOnTopFirst; i++ {
+	//Load additional messages then compact
+	for i := uint64(0); i < toStoreOnTop; i++ {
 		ms.StoreMsg(subj, nil, msg)
 	}
-	startFirstRun := time.Now()
-	purgedFirstRun, _ := ms.Compact(toStore + toStoreOnTopFirst)
-	elapsedFirstRun := time.Since(startFirstRun)
-	require_Equal(t, expectedPurge, purgedFirstRun)
-
-	//2nd run: Load additional 10 Mio messages then compact
-	for i := uint64(0); i < toStoreOnTopSecond; i++ {
-		ms.StoreMsg(subj, nil, msg)
-	}
-	startSecondRun := time.Now()
-	purgedSecondRun, _ := ms.Compact(toStore + toStoreOnTopFirst + toStoreOnTopSecond)
-	elapsedSecondRun := time.Since(startSecondRun)
-	require_Equal(t, expectedPurge, purgedSecondRun)
+	//Compact to set seq to a high number
+	purged, _ := ms.Compact((toStore + toStoreOnTop - 9))
+	require_Equal(t, toStore-10, purged)
+	//Now test if compact with 10 msgs in the store is essentially a noop
+	start := time.Now()
+	purged, _ = ms.Compact(toStore + toStoreOnTop)
+	elapsed := time.Since(start)
+	require_Equal(t, 9, purged)
 
 	//Calculate delta between runs and fail if it is too high
-	require_LessThan(t, elapsedSecondRun-elapsedFirstRun, time.Duration(3)*time.Millisecond)
+	require_LessThan(t, elapsed, time.Duration(100)*time.Microsecond)
 }
