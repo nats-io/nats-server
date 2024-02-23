@@ -9599,3 +9599,52 @@ func TestNoRaceJetStreamKVReplaceWithServerRestart(t *testing.T) {
 		t.Fatalf("Encountered errors")
 	}
 }
+
+func TestNoRaceMemStoreCompactPerformance(t *testing.T) {
+	//Load MemStore so that it is full
+	subj, msg := "foo", make([]byte, 1000)
+	storedMsgSize := memStoreMsgSize(subj, nil, msg)
+
+	toStore := uint64(10_000)
+	toStoreOnTop := uint64(1_000)
+	setSeqNo := uint64(10_000_000_000)
+
+	expectedPurge := toStore - 1
+	maxBytes := storedMsgSize * toStore
+
+	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage, MaxBytes: int64(maxBytes)})
+	require_NoError(t, err)
+	defer ms.Stop()
+
+	for i := uint64(0); i < toStore; i++ {
+		ms.StoreMsg(subj, nil, msg)
+	}
+	state := ms.State()
+	require_Equal(t, toStore, state.Msgs)
+	require_Equal(t, state.Bytes, storedMsgSize*toStore)
+
+	//1st run: Load additional messages then compact
+	for i := uint64(0); i < toStoreOnTop; i++ {
+		ms.StoreMsg(subj, nil, msg)
+	}
+	startFirstRun := time.Now()
+	purgedFirstRun, _ := ms.Compact(toStore + toStoreOnTop)
+	elapsedFirstRun := time.Since(startFirstRun)
+	require_Equal(t, expectedPurge, purgedFirstRun)
+
+	//set the seq number to a very high value by compacting with a too high seq number
+	purgedFull, _ := ms.Compact(setSeqNo)
+	require_Equal(t, 1, purgedFull)
+
+	//2nd run: Compact again
+	for i := uint64(0); i < toStore; i++ {
+		ms.StoreMsg(subj, nil, msg)
+	}
+	startSecondRun := time.Now()
+	purgedSecondRun, _ := ms.Compact(setSeqNo + toStore - 1)
+	elapsedSecondRun := time.Since(startSecondRun)
+	require_Equal(t, expectedPurge, purgedSecondRun)
+
+	//Calculate delta between runs and fail if it is too high
+	require_LessThan(t, elapsedSecondRun-elapsedFirstRun, time.Duration(1)*time.Second)
+}
