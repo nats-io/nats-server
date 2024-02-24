@@ -4160,6 +4160,129 @@ func TestRouteNoLeakOnSlowConsumer(t *testing.T) {
 	}
 }
 
+func TestRouteSlowConsumerRecover(t *testing.T) {
+	o1 := DefaultOptions()
+	o1.Cluster.PoolSize = -1
+	s1 := RunServer(o1)
+	defer s1.Shutdown()
+
+	rtt := 1500 * time.Nanosecond
+	upRate := 1024 * 1024
+	downRate := 128 * 1024
+	np := createNetProxy(rtt, upRate, downRate, fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port), true)
+	defer np.stop()
+
+	o2 := DefaultOptions()
+	o2.Cluster.PoolSize = -1
+	o2.Routes = RoutesFromStr(np.routeURL())
+	s2 := RunServer(o2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	changeWriteDeadline := func(s *Server, duration time.Duration) {
+		s.mu.Lock()
+		for _, cl := range s.routes {
+			for _, c := range cl {
+				c.mu.Lock()
+				c.out.wdl = duration
+				c.mu.Unlock()
+			}
+		}
+		s.mu.Unlock()
+	}
+	hasSlowConsumerRoutes := func(s *Server) bool {
+		var sc bool
+		s.mu.Lock()
+	Loop:
+		for _, cl := range s.routes {
+			for _, c := range cl {
+				c.mu.Lock()
+				sc = c.flags.isSet(isSlowConsumer)
+				c.mu.Unlock()
+				if sc {
+					break Loop
+				}
+			}
+		}
+		s.mu.Unlock()
+		return sc
+	}
+
+	// Start with a shorter write deadline to cause errors
+	// then bump it again later to let it recover.
+	changeWriteDeadline(s1, 1*time.Second)
+
+	ncA, err := nats.Connect(s1.Addr().String())
+	require_NoError(t, err)
+
+	ncB, err := nats.Connect(s2.Addr().String())
+	require_NoError(t, err)
+
+	var wg sync.WaitGroup
+	ncB.Subscribe("test", func(*nats.Msg) {
+		ncB.Close()
+	})
+	ncB.Flush()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+	defer cancel()
+
+	go func() {
+		var total int
+		payload := fmt.Appendf(nil, strings.Repeat("A", 132*1024))
+		for range time.NewTicker(30 * time.Millisecond).C {
+			select {
+			case <-ctx.Done():
+				wg.Done()
+				return
+			default:
+			}
+			ncA.Publish("test", payload)
+			ncA.Flush()
+			total++
+		}
+	}()
+	wg.Add(1)
+
+	checkFor(t, 20*time.Second, 2*time.Millisecond, func() error {
+		if s1.NumRoutes() < 1 {
+			return fmt.Errorf("No routes connected")
+		}
+		if !hasSlowConsumerRoutes(s1) {
+			if s1.NumSlowConsumersRoutes() > 0 {
+				// In case it has recovered already.
+				return nil
+			}
+			return fmt.Errorf("Expected Slow Consumer routes")
+		}
+		return nil
+	})
+	cancel()
+	changeWriteDeadline(s1, 5*time.Second)
+	np.updateRTT(0)
+	checkFor(t, 20*time.Second, 10*time.Millisecond, func() error {
+		if s1.NumRoutes() < 1 {
+			return fmt.Errorf("No routes connected")
+		}
+		if hasSlowConsumerRoutes(s1) {
+			return fmt.Errorf("Expected Slow Consumer routes to recover")
+		}
+		return nil
+	})
+
+	checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
+		var got, expected int64
+		got = int64(s1.NumSlowConsumersRoutes())
+		expected = 1
+		if got != expected {
+			return fmt.Errorf("got: %d, expected: %d", got, expected)
+		}
+		return nil
+	})
+	wg.Wait()
+}
+
 func TestRouteNoLeakOnAuthTimeout(t *testing.T) {
 	opts := DefaultOptions()
 	opts.Cluster.Username = "foo"
