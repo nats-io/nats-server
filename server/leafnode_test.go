@@ -837,6 +837,7 @@ func TestLeafNodeLoop(t *testing.T) {
 		// This test requires that we set the port to known value because
 		// we want A point to B and B to A.
 		oa := DefaultOptions()
+		oa.ServerName = "A"
 		if !cluster {
 			oa.Cluster.Port = 0
 			oa.Cluster.Name = _EMPTY_
@@ -849,10 +850,11 @@ func TestLeafNodeLoop(t *testing.T) {
 		sa := RunServer(oa)
 		defer sa.Shutdown()
 
-		l := &loopDetectedLogger{ch: make(chan string, 1)}
-		sa.SetLogger(l, false, false)
+		la := &loopDetectedLogger{ch: make(chan string, 1)}
+		sa.SetLogger(la, false, false)
 
 		ob := DefaultOptions()
+		ob.ServerName = "B"
 		if !cluster {
 			ob.Cluster.Port = 0
 			ob.Cluster.Name = _EMPTY_
@@ -867,10 +869,15 @@ func TestLeafNodeLoop(t *testing.T) {
 		sb := RunServer(ob)
 		defer sb.Shutdown()
 
+		lb := &loopDetectedLogger{ch: make(chan string, 1)}
+		sb.SetLogger(lb, false, false)
+
 		select {
-		case <-l.ch:
+		case <-la.ch:
 			// OK!
-		case <-time.After(2 * time.Second):
+		case <-lb.ch:
+			// OK!
+		case <-time.After(5 * time.Second):
 			t.Fatalf("Did not get any error regarding loop")
 		}
 
@@ -892,6 +899,7 @@ func TestLeafNodeLoopFromDAG(t *testing.T) {
 	// We need to cancel clustering since now this will suppress on its own.
 	oa := DefaultOptions()
 	oa.ServerName = "A"
+	oa.LeafNode.connDelay = 50 * time.Millisecond
 	oa.LeafNode.ReconnectInterval = 10 * time.Millisecond
 	oa.LeafNode.Port = -1
 	oa.Cluster = ClusterOpts{}
@@ -903,6 +911,7 @@ func TestLeafNodeLoopFromDAG(t *testing.T) {
 	// B will point to A
 	ob := DefaultOptions()
 	ob.ServerName = "B"
+	ob.LeafNode.connDelay = 50 * time.Millisecond
 	ob.LeafNode.ReconnectInterval = 10 * time.Millisecond
 	ob.LeafNode.Port = -1
 	ob.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{ua}}}
@@ -918,6 +927,7 @@ func TestLeafNodeLoopFromDAG(t *testing.T) {
 	// C will point to A and B
 	oc := DefaultOptions()
 	oc.ServerName = "C"
+	oc.LeafNode.connDelay = 50 * time.Millisecond
 	oc.LeafNode.ReconnectInterval = 10 * time.Millisecond
 	oc.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{ua}}, {URLs: []*url.URL{ub}}}
 	oc.LeafNode.connDelay = 100 * time.Millisecond // Allow logger to be attached before connecting.
@@ -944,6 +954,7 @@ func TestLeafNodeLoopFromDAG(t *testing.T) {
 	// Shutdown C and restart without the loop.
 	sc.Shutdown()
 	oc.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{ub}}}
+
 	sc = RunServer(oc)
 	defer sc.Shutdown()
 
@@ -7516,4 +7527,84 @@ func TestLeafNodeAccountNkeysAuth(t *testing.T) {
 	defer l.Shutdown()
 
 	checkLeafNodeConnected(t, l)
+}
+
+// https://github.com/nats-io/nats-server/issues/5117
+func TestLeafNodeLoopDetectionOnActualLoop(t *testing.T) {
+	// Setup:  B --[leaf]--> A    C --[leaf]--> A    C --[leaf] --> B
+	accConf := `
+		accounts: {
+			APP: {
+				users: [ { user:u, password: u,
+					permissions: { publish = "u.>", subscribe = "u.>" }} ]
+			}
+			$SYS: { users = [ {user: "s", password: "s"} ] }
+		}`
+
+	confA := createConfFile(t, []byte(fmt.Sprintf(`
+		server_name: a1
+		port: -1
+		cluster: { name: A }
+		leafnodes {
+			port: 17422
+		}
+		%s`, accConf)))
+
+	confB := createConfFile(t, []byte(fmt.Sprintf(`
+		server_name: b1
+		port: -1
+		cluster: { name: B }
+		leafnodes {
+			port: 17432
+			remotes [
+				{ urls: ["nats-leaf://u:u@localhost:17422"], account: "APP" }
+			]
+			reconnect: "2s"
+		}
+		%s`, accConf)))
+
+	confC := createConfFile(t, []byte(fmt.Sprintf(`
+		server_name: c1
+		port: -1
+		cluster: { name: C }
+		leafnodes {
+			port: 17442
+			remotes [
+				{ urls: ["nats-leaf://u:u@localhost:17422"], account: "APP" }
+				# This one creates the loop
+				{ urls: ["nats-leaf://u:u@localhost:17432"], account: "APP" }
+			]
+			reconnect: "0.5s"
+		}
+		%s`, accConf)))
+
+	// Start order will be B -> C -> A
+	// We will force C to connect to A first before B using different reconnect intervals.
+	// If B connects first we detect loops fine. If C connects first we do not.
+
+	srvB, _ := RunServerWithConfig(confB)
+	defer srvB.Shutdown()
+	lb := &loopDetectedLogger{ch: make(chan string, 1)}
+	srvB.SetLogger(lb, false, false)
+
+	srvC, _ := RunServerWithConfig(confC)
+	defer srvC.Shutdown()
+	lc := &loopDetectedLogger{ch: make(chan string, 1)}
+	srvC.SetLogger(lc, false, false)
+
+	// C should connect to B
+	checkLeafNodeConnectedCount(t, srvC, 1)
+
+	srvA, _ := RunServerWithConfig(confA)
+	defer srvA.Shutdown()
+	la := &loopDetectedLogger{ch: make(chan string, 1)}
+	srvA.SetLogger(la, false, false)
+
+	select {
+	case <-la.ch:
+	case <-lb.ch:
+	case <-lc.ch:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not get any error regarding loop")
+	}
 }

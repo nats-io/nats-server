@@ -928,6 +928,13 @@ func (a *Account) registerLeafNodeCluster(cluster string) {
 	a.leafClusters[cluster]++
 }
 
+// Check to see if we already have this cluster registered.
+func (a *Account) hasLeafNodeCluster(cluster string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.leafClusters[cluster] > 0
+}
+
 // Check to see if this cluster is isolated, meaning the only one.
 // Read Lock should be held.
 func (a *Account) isLeafNodeClusterIsolated(cluster string) bool {
