@@ -2793,7 +2793,8 @@ func (as *mqttAccountSessionManager) loadRetainedMessages(subjects map[string]st
 // Composes a NATS message for a storeable mqttRetainedMsg.
 func mqttEncodeRetainedMessage(rm *mqttRetainedMsg) (natsMsg []byte, headerLen int) {
 	// No need to encode the subject, we can restore it from topic.
-	l := len(mqttNatsRetainedMessageTopic) + 1 + len(rm.Topic) + 2 // 1 byte for ':', 2 bytes for CRLF
+	l := len(hdrLine)
+	l += len(mqttNatsRetainedMessageTopic) + 1 + len(rm.Topic) + 2 // 1 byte for ':', 2 bytes for CRLF
 	if rm.Origin != _EMPTY_ {
 		l += len(mqttNatsRetainedMessageOrigin) + 1 + len(rm.Origin) + 2 // 1 byte for ':', 2 bytes for CRLF
 	}
@@ -2804,7 +2805,7 @@ func mqttEncodeRetainedMessage(rm *mqttRetainedMsg) (natsMsg []byte, headerLen i
 	l += 2                                             // 2 bytes for the extra CRLF after the header
 	l += len(rm.Msg)
 
-	buf := bytes.NewBuffer(make([]byte, l))
+	buf := bytes.NewBuffer(make([]byte, 0, l))
 
 	buf.WriteString(hdrLine)
 
