@@ -7414,9 +7414,7 @@ func TestLeafNodeServerReloadSubjectMappingsWithSameSubject(t *testing.T) {
 		listen: 127.0.0.1:-1
 		server_name: test-leaf
 		leaf {
-			remotes: [ {
-				urls: [ nats-leaf://127.0.0.1:{LEAF_PORT} ]
-			} ]
+			remotes: [ { urls: [ nats-leaf://127.0.0.1:{LEAF_PORT} ] } ]
 		}
 	`
 	tmpl = strings.Replace(tmpl, "{LEAF_PORT}", fmt.Sprintf("%d", o.LeafNode.Port), 1)
@@ -7446,6 +7444,7 @@ func TestLeafNodeServerReloadSubjectMappingsWithSameSubject(t *testing.T) {
 
 	// Now change mapping, but only the "to" subject, keeping same "from"
 	reloadUpdateConfig(t, s, conf, strings.Replace(stmpl, "target1", "target2", 1))
+	checkLeafNodeConnected(t, l)
 
 	// Publish our new message.
 	ncl.Publish("source", []byte("OK"))
