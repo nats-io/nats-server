@@ -355,6 +355,7 @@ const (
 	JSSubject      = "Nats-Subject"
 	JSLastSequence = "Nats-Last-Sequence"
 	JSNumPending   = "Nats-Num-Pending"
+	JSUpToSequence = "Nats-UpTo-Sequence"
 )
 
 // Rollups, can be subject only or all messages.
@@ -4027,7 +4028,7 @@ func (mset *stream) processDirectGetRequest(_ *subscription, c *client, _ *Accou
 		return
 	}
 	// Check if nothing set.
-	if req.Seq == 0 && req.LastFor == _EMPTY_ && req.NextFor == _EMPTY_ {
+	if req.Seq == 0 && req.LastFor == _EMPTY_ && req.NextFor == _EMPTY_ && len(req.MultiLastFor) == 0 {
 		hdr := []byte("NATS/1.0 408 Empty Request\r\n\r\n")
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 		return
@@ -4100,9 +4101,10 @@ func (mset *stream) processDirectGetLastBySubjectRequest(_ *subscription, c *cli
 
 // For direct get batch and multi requests.
 const (
-	dg  = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\n\r\n"
-	dgb = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\n\r\n"
-	eob = "NATS/1.0 204 EOB\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\n\r\n"
+	dg   = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\n\r\n"
+	dgb  = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\n\r\n"
+	eob  = "NATS/1.0 204 EOB\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\n\r\n"
+	eobm = "NATS/1.0 204 EOB\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\nNats-UpTo-Sequence: %d\r\n\r\n"
 )
 
 // Handle a multi request.
@@ -4130,6 +4132,12 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 		// We need to back off one since this is used to determine start sequence normally,
 		// were as here we want it to be the ceiling.
 		upToSeq--
+	}
+	// If not set, set to the last sequence and remember that for EOB.
+	if upToSeq == 0 {
+		var state StreamState
+		mset.store.FastState(&state)
+		upToSeq = state.LastSeq
 	}
 
 	seqs, err := store.MultiLastSeqs(req.MultiLastFor, upToSeq, maxAllowedResponses)
@@ -4199,7 +4207,7 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 	}
 
 	// Send out EOB
-	hdr := fmt.Appendf(nil, eob, np, lseq)
+	hdr := fmt.Appendf(nil, eobm, np, lseq, upToSeq)
 	mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 }
 
