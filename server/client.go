@@ -2031,10 +2031,26 @@ func (c *client) processConnect(arg []byte) error {
 		}
 	}
 
-	// If websocket client and JWT not in the CONNECT, use the cookie JWT (possibly empty).
-	if ws := c.ws; ws != nil && c.opts.JWT == "" {
-		c.opts.JWT = ws.cookieJwt
+	// if websocket client, maybe some options through cookies
+	if ws := c.ws; ws != nil {
+		// if JWT not in the CONNECT, use the cookie JWT (possibly empty).
+		if c.opts.JWT == _EMPTY_ {
+			c.opts.JWT = ws.cookieJwt
+		}
+		// if user not in the CONNECT, use the cookie user (possibly empty)
+		if c.opts.Username == _EMPTY_ {
+			c.opts.Username = ws.cookieUsername
+		}
+		// if pass not in the CONNECT, use the cookie password (possibly empty).
+		if c.opts.Password == _EMPTY_ {
+			c.opts.Password = ws.cookiePassword
+		}
+		// if token not in the CONNECT, use the cookie token (possibly empty).
+		if c.opts.Token == _EMPTY_ {
+			c.opts.Token = ws.cookieToken
+		}
 	}
+
 	// when not in operator mode, discard the jwt
 	if srv != nil && srv.trustedKeys == nil {
 		c.opts.JWT = _EMPTY_
