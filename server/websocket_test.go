@@ -1,4 +1,4 @@
-// Copyright 2020-2023 The NATS Authors
+// Copyright 2020-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -1956,14 +1956,20 @@ func setupAddCookie(o *Options) {
 	o.Websocket.JWTCookie = "jwt"
 }
 
-func testWSCreateClientGetInfo(t testing.TB, compress, web bool, host string, port int) (net.Conn, *bufio.Reader, []byte) {
+func testWSCreateClientGetInfo(t testing.TB, compress, web bool, host string, port int, cookies ...string) (net.Conn, *bufio.Reader, []byte) {
 	t.Helper()
-	return testNewWSClient(t, testWSClientOptions{
+	opts := testWSClientOptions{
 		compress: compress,
 		web:      web,
 		host:     host,
 		port:     port,
-	})
+	}
+
+	if len(cookies) > 0 {
+		opts.extraHeaders = map[string][]string{}
+		opts.extraHeaders["Cookie"] = cookies
+	}
+	return testNewWSClient(t, opts)
 }
 
 func testWSCreateClient(t testing.TB, compress, web bool, host string, port int) (net.Conn, *bufio.Reader) {
@@ -3140,11 +3146,12 @@ func TestWSCompressionFrameSizeLimit(t *testing.T) {
 
 func TestWSBasicAuth(t *testing.T) {
 	for _, test := range []struct {
-		name string
-		opts func() *Options
-		user string
-		pass string
-		err  string
+		name    string
+		opts    func() *Options
+		user    string
+		pass    string
+		err     string
+		cookies []string
 	}{
 		{
 			"top level auth, no override, wrong u/p",
@@ -3155,6 +3162,7 @@ func TestWSBasicAuth(t *testing.T) {
 				return o
 			},
 			"websocket", "client", "-ERR 'Authorization Violation'",
+			nil,
 		},
 		{
 			"top level auth, no override, correct u/p",
@@ -3165,6 +3173,7 @@ func TestWSBasicAuth(t *testing.T) {
 				return o
 			},
 			"normal", "client", "",
+			nil,
 		},
 		{
 			"no top level auth, ws auth, wrong u/p",
@@ -3175,6 +3184,7 @@ func TestWSBasicAuth(t *testing.T) {
 				return o
 			},
 			"normal", "client", "-ERR 'Authorization Violation'",
+			nil,
 		},
 		{
 			"no top level auth, ws auth, correct u/p",
@@ -3185,6 +3195,7 @@ func TestWSBasicAuth(t *testing.T) {
 				return o
 			},
 			"websocket", "client", "",
+			nil,
 		},
 		{
 			"top level auth, ws override, wrong u/p",
@@ -3197,6 +3208,7 @@ func TestWSBasicAuth(t *testing.T) {
 				return o
 			},
 			"normal", "client", "-ERR 'Authorization Violation'",
+			nil,
 		},
 		{
 			"top level auth, ws override, correct u/p",
@@ -3209,6 +3221,68 @@ func TestWSBasicAuth(t *testing.T) {
 				return o
 			},
 			"websocket", "client", "",
+			nil,
+		},
+		{
+			"username/password from cookies",
+			func() *Options {
+				o := testWSOptions()
+				o.Websocket.UsernameCookie = "un"
+				o.Websocket.PasswordCookie = "pw"
+				o.Username = "me"
+				o.Password = "s3cr3t!"
+				return o
+			},
+			"", "", "",
+			[]string{"un=me", "pw=s3cr3t!"},
+		},
+		{
+			"bad username/ good password from cookies",
+			func() *Options {
+				o := testWSOptions()
+				o.Websocket.UsernameCookie = "un"
+				o.Websocket.PasswordCookie = "pw"
+				o.Username = "me"
+				o.Password = "s3cr3t!"
+				return o
+			},
+			"", "", "-ERR 'Authorization Violation",
+			[]string{"un=m", "pw=s3cr3t!"},
+		},
+		{
+			"good username/ bad password from cookies",
+			func() *Options {
+				o := testWSOptions()
+				o.Websocket.UsernameCookie = "un"
+				o.Websocket.PasswordCookie = "pw"
+				o.Username = "me"
+				o.Password = "s3cr3t!"
+				return o
+			},
+			"", "", "-ERR 'Authorization Violation",
+			[]string{"un=me", "pw=hi!"},
+		},
+		{
+			"token from cookie",
+			func() *Options {
+				o := testWSOptions()
+				o.Websocket.TokenCookie = "tok"
+				o.Authorization = "l3tm31n!"
+				return o
+			},
+			"", "", "",
+			[]string{"tok=l3tm31n!"},
+		},
+		{
+			"bad token from cookie",
+			func() *Options {
+				o := testWSOptions()
+				o.Websocket.TokenCookie = "tok"
+				o.Authorization = "l3tm31n!"
+				return o
+			},
+			"", "", "-ERR 'Authorization Violation",
+			[]string{"tok=hello!"},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -3216,7 +3290,7 @@ func TestWSBasicAuth(t *testing.T) {
 			s := RunServer(o)
 			defer s.Shutdown()
 
-			wsc, br, _ := testWSCreateClientGetInfo(t, false, false, o.Websocket.Host, o.Websocket.Port)
+			wsc, br, _ := testWSCreateClientGetInfo(t, false, false, o.Websocket.Host, o.Websocket.Port, test.cookies...)
 			defer wsc.Close()
 
 			connectProto := fmt.Sprintf("CONNECT {\"verbose\":false,\"protocol\":1,\"user\":\"%s\",\"pass\":\"%s\"}\r\nPING\r\n",
@@ -3735,7 +3809,6 @@ func TestWSJWTWithAllowedConnectionTypes(t *testing.T) {
 }
 
 func TestWSJWTCookieUser(t *testing.T) {
-
 	nucSigFunc := func() *jwt.UserClaims { return newJWTTestUserClaims() }
 	nucBearerFunc := func() *jwt.UserClaims {
 		ret := newJWTTestUserClaims()

@@ -1,4 +1,4 @@
-// Copyright 2012-2023 The NATS Authors
+// Copyright 2012-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -433,6 +433,26 @@ type WebsocketOpts struct {
 	// will be treated as JWT during CONNECT phase as long as
 	// "jwt" specified in the CONNECT options is missing or empty.
 	JWTCookie string
+
+	// Name of the cookie, which if present in WebSocket upgrade headers,
+	// will be treated as Username during CONNECT phase as long as
+	// "user" specified in the CONNECT options is missing or empty.
+	UsernameCookie string
+
+	// Name of the cookie, which if present in WebSocket upgrade headers,
+	// will be treated as Password during CONNECT phase as long as
+	// "pass" specified in the CONNECT options is missing or empty.
+	PasswordCookie string
+
+	// Name of the cookie, which if present in WebSocket upgrade headers,
+	// will be treated as Token during CONNECT phase as long as
+	// "auth_token" specified in the CONNECT options is missing or empty.
+	// Note that when this is useful for passing a JWT to an cuth callout
+	// when the server uses delegated authentication ("operator mode") or
+	// when using delegated authentication, but the auth callout validates some
+	// other JWT or string. Note that this does map to an actual server-wide
+	// "auth_token", note that using it for that purpose is greatly discouraged.
+	TokenCookie string
 
 	// Authentication section. If anything is configured in this section,
 	// it will override the authorization configuration of regular clients.
@@ -4759,6 +4779,12 @@ func parseWebsocket(v interface{}, o *Options, errors *[]error, warnings *[]erro
 			o.Websocket.AuthTimeout = auth.timeout
 		case "jwt_cookie":
 			o.Websocket.JWTCookie = mv.(string)
+		case "user_cookie":
+			o.Websocket.UsernameCookie = mv.(string)
+		case "pass_cookie":
+			o.Websocket.PasswordCookie = mv.(string)
+		case "token_cookie":
+			o.Websocket.TokenCookie = mv.(string)
 		case "no_auth_user":
 			o.Websocket.NoAuthUser = mv.(string)
 		default:
