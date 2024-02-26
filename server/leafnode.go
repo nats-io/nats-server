@@ -2128,7 +2128,7 @@ func (acc *Account) updateLeafNodes(sub *subscription, delta int32) {
 		// If skipped, make sure that we still let go the "$LDS." subscription that allows
 		// the detection of loops as long as different cluster.
 		clusterDifferent := cluster != ln.remoteCluster()
-		if (isLDS && clusterDifferent) || (cluster == _EMPTY_ || clusterDifferent) && (delta <= 0 || ln.canSubscribe(subject)) {
+		if (isLDS && clusterDifferent) || ((cluster == _EMPTY_ || clusterDifferent) && (delta <= 0 || ln.canSubscribe(subject))) {
 			ln.updateSmap(sub, delta, isLDS)
 		}
 		ln.mu.Unlock()
