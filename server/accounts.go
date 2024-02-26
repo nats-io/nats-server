@@ -930,8 +930,8 @@ func (a *Account) registerLeafNodeCluster(cluster string) {
 
 // Check to see if we already have this cluster registered.
 func (a *Account) hasLeafNodeCluster(cluster string) bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	return a.leafClusters[cluster] > 0
 }
 
