@@ -5081,6 +5081,13 @@ func (js *jetStream) processConsumerLeaderChange(o *consumer, isLeader bool) err
 		}
 	}
 
+	// Only send a pause advisory on consumer create if we're
+	// actually paused. The timer would have been kicked by now
+	// by the call to o.setLeader() above.
+	if isLeader && o.cfg.PauseUntil != nil && !o.cfg.PauseUntil.IsZero() && time.Now().Before(*o.cfg.PauseUntil) {
+		o.sendPauseAdvisoryLocked(&o.cfg)
+	}
+
 	return nil
 }
 
@@ -7191,6 +7198,10 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 			Created: time.Now().UTC(),
 		}
 	} else {
+		// If the consumer already exists then don't allow updating the PauseUntil, just set
+		// it back to whatever the current configured value is.
+		cfg.PauseUntil = ca.Config.PauseUntil
+
 		nca := ca.copyGroup()
 
 		rBefore := nca.Config.replicas(sa.Config)

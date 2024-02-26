@@ -22402,3 +22402,341 @@ func TestJetStreamSubjectFilteredPurgeClearsPendingAcks(t *testing.T) {
 	require_Equal(t, ci.NumPending, 0)
 	require_Equal(t, ci.NumAckPending, 10)
 }
+
+// Helper function for TestJetStreamConsumerPause*, TestJetStreamClusterConsumerPause*, TestJetStreamSuperClusterConsumerPause*
+func jsTestPause_CreateOrUpdateConsumer(t *testing.T, nc *nats.Conn, action ConsumerAction, stream string, cc ConsumerConfig) *JSApiConsumerCreateResponse {
+	t.Helper()
+	j, err := json.Marshal(CreateConsumerRequest{
+		Stream: stream,
+		Config: cc,
+		Action: action,
+	})
+	require_NoError(t, err)
+	subj := fmt.Sprintf("$JS.API.CONSUMER.CREATE.%s.%s", stream, cc.Name)
+	m, err := nc.Request(subj, j, time.Second*3)
+	require_NoError(t, err)
+	var res JSApiConsumerCreateResponse
+	require_NoError(t, json.Unmarshal(m.Data, &res))
+	require_True(t, res.Config != nil)
+	return &res
+}
+
+// Helper function for TestJetStreamConsumerPause*, TestJetStreamClusterConsumerPause*, TestJetStreamSuperClusterConsumerPause*
+func jsTestPause_PauseConsumer(t *testing.T, nc *nats.Conn, stream, consumer string, deadline time.Time) time.Time {
+	t.Helper()
+	j, err := json.Marshal(JSApiConsumerPauseRequest{
+		PauseUntil: deadline,
+	})
+	require_NoError(t, err)
+	subj := fmt.Sprintf("$JS.API.CONSUMER.PAUSE.%s.%s", stream, consumer)
+	msg, err := nc.Request(subj, j, time.Second)
+	require_NoError(t, err)
+	var res JSApiConsumerPauseResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &res))
+	return res.PauseUntil
+}
+
+func TestJetStreamConsumerPauseViaConfig(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	t.Run("CreateShouldSucceed", func(t *testing.T) {
+		deadline := time.Now().Add(time.Hour)
+		ci := jsTestPause_CreateOrUpdateConsumer(t, nc, ActionCreate, "TEST", ConsumerConfig{
+			Name:       "my_consumer_1",
+			PauseUntil: &deadline,
+		})
+		require_True(t, ci != nil)
+		require_True(t, ci.Config != nil)
+		require_True(t, ci.Config.PauseUntil != nil)
+		require_True(t, ci.Config.PauseUntil.Equal(deadline))
+	})
+
+	t.Run("UpdateShouldFail", func(t *testing.T) {
+		deadline := time.Now().Add(time.Hour)
+		ci := jsTestPause_CreateOrUpdateConsumer(t, nc, ActionCreate, "TEST", ConsumerConfig{
+			Name: "my_consumer_2",
+		})
+		require_True(t, ci != nil)
+		require_True(t, ci.Config != nil)
+		require_True(t, ci.Config.PauseUntil == nil || ci.Config.PauseUntil.IsZero())
+
+		var cc ConsumerConfig
+		j, err := json.Marshal(ci.Config)
+		require_NoError(t, err)
+		require_NoError(t, json.Unmarshal(j, &cc))
+
+		pauseUntil := time.Now().Add(time.Hour)
+		cc.PauseUntil = &pauseUntil
+		ci2 := jsTestPause_CreateOrUpdateConsumer(t, nc, ActionUpdate, "TEST", cc)
+		require_False(t, ci2.Config.PauseUntil != nil && ci2.Config.PauseUntil.Equal(deadline))
+		require_True(t, ci2.Config.PauseUntil == nil || ci2.Config.PauseUntil.Equal(time.Time{}))
+	})
+}
+
+func TestJetStreamConsumerPauseViaEndpoint(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"push", "pull"},
+	})
+	require_NoError(t, err)
+
+	t.Run("PullConsumer", func(t *testing.T) {
+		_, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+			Name: "pull_consumer",
+		})
+		require_NoError(t, err)
+
+		sub, err := js.PullSubscribe("pull", "", nats.Bind("TEST", "pull_consumer"))
+		require_NoError(t, err)
+
+		// This should succeed as there's no pause, so it definitely
+		// shouldn't take more than a second.
+		for i := 0; i < 10; i++ {
+			_, err = js.Publish("pull", []byte("OK"))
+			require_NoError(t, err)
+		}
+		msgs, err := sub.Fetch(10, nats.MaxWait(time.Second))
+		require_NoError(t, err)
+		require_Equal(t, len(msgs), 10)
+
+		// Now we'll pause the consumer for 3 seconds.
+		deadline := time.Now().Add(time.Second * 3)
+		require_True(t, jsTestPause_PauseConsumer(t, nc, "TEST", "pull_consumer", deadline).Equal(deadline))
+
+		// This should fail as we'll wait for only half of the deadline.
+		for i := 0; i < 10; i++ {
+			_, err = js.Publish("pull", []byte("OK"))
+			require_NoError(t, err)
+		}
+		_, err = sub.Fetch(10, nats.MaxWait(time.Until(deadline)/2))
+		require_Error(t, err, nats.ErrTimeout)
+
+		// This should succeed after a short wait, and when we're done,
+		// we should be after the deadline.
+		msgs, err = sub.Fetch(10)
+		require_NoError(t, err)
+		require_Equal(t, len(msgs), 10)
+		require_True(t, time.Now().After(deadline))
+
+		// This should succeed as there's no pause, so it definitely
+		// shouldn't take more than a second.
+		for i := 0; i < 10; i++ {
+			_, err = js.Publish("pull", []byte("OK"))
+			require_NoError(t, err)
+		}
+		msgs, err = sub.Fetch(10, nats.MaxWait(time.Second))
+		require_NoError(t, err)
+		require_Equal(t, len(msgs), 10)
+
+		require_True(t, jsTestPause_PauseConsumer(t, nc, "TEST", "pull_consumer", time.Time{}).Equal(time.Time{}))
+
+		// This should succeed as there's no pause, so it definitely
+		// shouldn't take more than a second.
+		for i := 0; i < 10; i++ {
+			_, err = js.Publish("pull", []byte("OK"))
+			require_NoError(t, err)
+		}
+		msgs, err = sub.Fetch(10, nats.MaxWait(time.Second))
+		require_NoError(t, err)
+		require_Equal(t, len(msgs), 10)
+	})
+
+	t.Run("PushConsumer", func(t *testing.T) {
+		ch := make(chan *nats.Msg, 100)
+		_, err = js.ChanSubscribe("push", ch, nats.BindStream("TEST"), nats.ConsumerName("push_consumer"))
+		require_NoError(t, err)
+
+		// This should succeed as there's no pause, so it definitely
+		// shouldn't take more than a second.
+		for i := 0; i < 10; i++ {
+			_, err = js.Publish("push", []byte("OK"))
+			require_NoError(t, err)
+		}
+		for i := 0; i < 10; i++ {
+			msg := require_ChanRead(t, ch, time.Second)
+			require_NotEqual(t, msg, nil)
+		}
+
+		// Now we'll pause the consumer for 3 seconds.
+		deadline := time.Now().Add(time.Second * 3)
+		require_True(t, jsTestPause_PauseConsumer(t, nc, "TEST", "push_consumer", deadline).Equal(deadline))
+
+		// This should succeed after a short wait, and when we're done,
+		// we should be after the deadline.
+		for i := 0; i < 10; i++ {
+			_, err = js.Publish("push", []byte("OK"))
+			require_NoError(t, err)
+		}
+		for i := 0; i < 10; i++ {
+			msg := require_ChanRead(t, ch, time.Second*5)
+			require_NotEqual(t, msg, nil)
+			require_True(t, time.Now().After(deadline))
+		}
+
+		// This should succeed as there's no pause, so it definitely
+		// shouldn't take more than a second.
+		for i := 0; i < 10; i++ {
+			_, err = js.Publish("push", []byte("OK"))
+			require_NoError(t, err)
+		}
+		for i := 0; i < 10; i++ {
+			msg := require_ChanRead(t, ch, time.Second)
+			require_NotEqual(t, msg, nil)
+		}
+
+		require_True(t, jsTestPause_PauseConsumer(t, nc, "TEST", "push_consumer", time.Time{}).Equal(time.Time{}))
+
+		// This should succeed as there's no pause, so it definitely
+		// shouldn't take more than a second.
+		for i := 0; i < 10; i++ {
+			_, err = js.Publish("push", []byte("OK"))
+			require_NoError(t, err)
+		}
+		for i := 0; i < 10; i++ {
+			msg := require_ChanRead(t, ch, time.Second)
+			require_NotEqual(t, msg, nil)
+		}
+	})
+}
+
+func TestJetStreamConsumerPauseHeartbeats(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	deadline := time.Now().Add(time.Hour)
+	dsubj := "deliver_subj"
+
+	ci := jsTestPause_CreateOrUpdateConsumer(t, nc, ActionCreate, "TEST", ConsumerConfig{
+		Name:           "my_consumer",
+		PauseUntil:     &deadline,
+		Heartbeat:      time.Millisecond * 100,
+		DeliverSubject: dsubj,
+	})
+	require_True(t, ci.Config.PauseUntil.Equal(deadline))
+
+	ch := make(chan *nats.Msg, 10)
+	_, err = nc.ChanSubscribe(dsubj, ch)
+	require_NoError(t, err)
+
+	for i := 0; i < 20; i++ {
+		msg := require_ChanRead(t, ch, time.Millisecond*200)
+		require_Equal(t, msg.Header.Get("Status"), "100")
+		require_Equal(t, msg.Header.Get("Description"), "Idle Heartbeat")
+	}
+}
+
+func TestJetStreamConsumerPauseAdvisories(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	checkAdvisory := func(msg *nats.Msg, shouldBePaused bool, deadline time.Time) {
+		t.Helper()
+		var advisory JSConsumerPauseAdvisory
+		require_NoError(t, json.Unmarshal(msg.Data, &advisory))
+		require_Equal(t, advisory.Stream, "TEST")
+		require_Equal(t, advisory.Consumer, "my_consumer")
+		require_Equal(t, advisory.Paused, shouldBePaused)
+		require_True(t, advisory.PauseUntil.Equal(deadline))
+	}
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	ch := make(chan *nats.Msg, 10)
+	_, err = nc.ChanSubscribe(JSAdvisoryConsumerPausePre+".TEST.my_consumer", ch)
+	require_NoError(t, err)
+
+	deadline := time.Now().Add(time.Second)
+	jsTestPause_CreateOrUpdateConsumer(t, nc, ActionCreate, "TEST", ConsumerConfig{
+		Name:       "my_consumer",
+		PauseUntil: &deadline,
+	})
+
+	// First advisory should tell us that the consumer was paused
+	// on creation.
+	msg := require_ChanRead(t, ch, time.Second*2)
+	checkAdvisory(msg, true, deadline)
+
+	// The second one for the unpause.
+	msg = require_ChanRead(t, ch, time.Second*2)
+	checkAdvisory(msg, false, deadline)
+
+	// Now we'll pause the consumer using the API.
+	deadline = time.Now().Add(time.Second)
+	require_True(t, jsTestPause_PauseConsumer(t, nc, "TEST", "my_consumer", deadline).Equal(deadline))
+
+	// Third advisory should tell us about the pause via the API.
+	msg = require_ChanRead(t, ch, time.Second*2)
+	checkAdvisory(msg, true, deadline)
+
+	// Finally that should unpause.
+	msg = require_ChanRead(t, ch, time.Second*2)
+	checkAdvisory(msg, false, deadline)
+}
+
+func TestJetStreamConsumerSurvivesRestart(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	deadline := time.Now().Add(time.Hour)
+	jsTestPause_CreateOrUpdateConsumer(t, nc, ActionCreate, "TEST", ConsumerConfig{
+		Name:       "my_consumer",
+		PauseUntil: &deadline,
+	})
+
+	sd := s.JetStreamConfig().StoreDir
+	s.Shutdown()
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	stream, err := s.gacc.lookupStream("TEST")
+	require_NoError(t, err)
+
+	consumer := stream.lookupConsumer("my_consumer")
+	require_NotEqual(t, consumer, nil)
+
+	consumer.mu.RLock()
+	timer := consumer.uptmr
+	consumer.mu.RUnlock()
+	require_True(t, timer != nil)
+}

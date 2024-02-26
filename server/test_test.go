@@ -151,6 +151,15 @@ func require_ChanRead[T any](t *testing.T, ch chan T, timeout time.Duration) T {
 	panic("this shouldn't be possible")
 }
 
+func require_NoChanRead[T any](t *testing.T, ch chan T, timeout time.Duration) {
+	t.Helper()
+	select {
+	case <-ch:
+		t.Fatalf("require no read from channel within %v but got something", timeout)
+	case <-time.After(timeout):
+	}
+}
+
 func checkNatsError(t *testing.T, e *ApiError, id ErrorIdentifier) {
 	t.Helper()
 	ae, ok := ApiErrors[id]

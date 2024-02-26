@@ -165,6 +165,11 @@ const (
 	JSApiConsumerDelete  = "$JS.API.CONSUMER.DELETE.*.*"
 	JSApiConsumerDeleteT = "$JS.API.CONSUMER.DELETE.%s.%s"
 
+	// JSApiConsumerPause is the endpoint to pause or unpause consumers.
+	// Will return JSON response.
+	JSApiConsumerPause  = "$JS.API.CONSUMER.PAUSE.*.*"
+	JSApiConsumerPauseT = "$JS.API.CONSUMER.PAUSE.%s.%s"
+
 	// JSApiRequestNextT is the prefix for the request next message(s) for a consumer in worker/pull mode.
 	JSApiRequestNextT = "$JS.API.CONSUMER.MSG.NEXT.%s.%s"
 
@@ -264,6 +269,9 @@ const (
 
 	// JSAdvisoryConsumerDeletedPre notification that a template deleted.
 	JSAdvisoryConsumerDeletedPre = "$JS.EVENT.ADVISORY.CONSUMER.DELETED"
+
+	// JSAdvisoryConsumerPausePre notification that a consumer paused/unpaused.
+	JSAdvisoryConsumerPausePre = "$JS.EVENT.ADVISORY.CONSUMER.PAUSE"
 
 	// JSAdvisoryStreamSnapshotCreatePre notification that a snapshot was created.
 	JSAdvisoryStreamSnapshotCreatePre = "$JS.EVENT.ADVISORY.STREAM.SNAPSHOT_CREATE"
@@ -667,6 +675,19 @@ type JSApiConsumerDeleteResponse struct {
 
 const JSApiConsumerDeleteResponseType = "io.nats.jetstream.api.v1.consumer_delete_response"
 
+type JSApiConsumerPauseRequest struct {
+	PauseUntil time.Time `json:"pause_until,omitempty"`
+}
+
+const JSApiConsumerPauseResponseType = "io.nats.jetstream.api.v1.consumer_pause_response"
+
+type JSApiConsumerPauseResponse struct {
+	ApiResponse
+	Paused         bool          `json:"paused"`
+	PauseUntil     time.Time     `json:"pause_until"`
+	PauseRemaining time.Duration `json:"pause_remaining,omitempty"`
+}
+
 type JSApiConsumerInfoResponse struct {
 	ApiResponse
 	*ConsumerInfo
@@ -928,6 +949,7 @@ func (s *Server) setJetStreamExportSubs() error {
 		{JSApiConsumerList, s.jsConsumerListRequest},
 		{JSApiConsumerInfo, s.jsConsumerInfoRequest},
 		{JSApiConsumerDelete, s.jsConsumerDeleteRequest},
+		{JSApiConsumerPause, s.jsConsumerPauseRequest},
 	}
 
 	js.mu.Lock()
@@ -3973,6 +3995,12 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 		return
 	}
 
+	// If the consumer already exists then don't allow updating the PauseUntil, just set
+	// it back to whatever the current configured value is.
+	if o := stream.lookupConsumer(consumerName); o != nil {
+		req.Config.PauseUntil = o.cfg.PauseUntil
+	}
+
 	o, err := stream.addConsumerWithAction(&req.Config, req.Action)
 
 	if err != nil {
@@ -3987,6 +4015,10 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 	}
 	resp.ConsumerInfo = o.initialInfo()
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+
+	if o.cfg.PauseUntil != nil && !o.cfg.PauseUntil.IsZero() && time.Now().Before(*o.cfg.PauseUntil) {
+		o.sendPauseAdvisoryLocked(&o.cfg)
+	}
 }
 
 // Request for the list of all consumer names.
@@ -4452,6 +4484,123 @@ func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, _ *Accoun
 		return
 	}
 	resp.Success = true
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+}
+
+// Request to pause or unpause a Consumer.
+func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
+	if c == nil || !s.JetStreamEnabled() {
+		return
+	}
+	ci, acc, _, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+
+	var req JSApiConsumerPauseRequest
+	var resp = JSApiConsumerPauseResponse{ApiResponse: ApiResponse{Type: JSApiConsumerPauseResponseType}}
+
+	if !isEmptyRequest(msg) {
+		if err := json.Unmarshal(msg, &req); err != nil {
+			resp.Error = NewJSInvalidJSONError()
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+	}
+
+	// Determine if we should proceed here when we are in clustered mode.
+	isClustered := s.JetStreamIsClustered()
+	js, cc := s.getJetStreamCluster()
+	if isClustered {
+		if js == nil || cc == nil {
+			return
+		}
+		if js.isLeaderless() {
+			resp.Error = NewJSClusterNotAvailError()
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+		// Make sure we are meta leader.
+		if !s.JetStreamIsLeader() {
+			return
+		}
+	}
+
+	if hasJS, doErr := acc.checkJetStream(); !hasJS {
+		if doErr {
+			resp.Error = NewJSNotEnabledForAccountError()
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
+		return
+	}
+
+	stream := streamNameFromSubject(subject)
+	consumer := consumerNameFromSubject(subject)
+
+	if isClustered {
+		sa := js.streamAssignment(acc.Name, stream)
+		if sa == nil {
+			resp.Error = NewJSStreamNotFoundError(Unless(err))
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+
+		ca, ok := sa.consumers[consumer]
+		if !ok || ca == nil {
+			resp.Error = NewJSConsumerNotFoundError()
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+
+		nca := *ca
+		pauseUTC := req.PauseUntil.UTC()
+		if !pauseUTC.IsZero() {
+			nca.Config.PauseUntil = &pauseUTC
+		}
+		eca := encodeAddConsumerAssignment(&nca)
+		cc.meta.Propose(eca)
+
+		resp.PauseUntil = pauseUTC
+		if resp.Paused = time.Now().Before(pauseUTC); resp.Paused {
+			resp.PauseRemaining = time.Until(pauseUTC)
+		}
+		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+		return
+	}
+
+	mset, err := acc.lookupStream(stream)
+	if err != nil {
+		resp.Error = NewJSStreamNotFoundError(Unless(err))
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	obs := mset.lookupConsumer(consumer)
+	if obs == nil {
+		resp.Error = NewJSConsumerNotFoundError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	ncfg := obs.cfg
+	pauseUTC := req.PauseUntil.UTC()
+	if !pauseUTC.IsZero() {
+		ncfg.PauseUntil = &pauseUTC
+	}
+
+	if err := obs.updateConfig(&ncfg); err != nil {
+		// The only type of error that should be returned here is from o.store,
+		// so use a store failed error type.
+		resp.Error = NewJSConsumerStoreFailedError(err)
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	resp.PauseUntil = pauseUTC
+	if resp.Paused = time.Now().Before(pauseUTC); resp.Paused {
+		resp.PauseRemaining = time.Until(pauseUTC)
+	}
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
