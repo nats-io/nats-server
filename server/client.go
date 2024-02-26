@@ -798,8 +798,14 @@ func (c *client) registerWithAccount(acc *Account) error {
 	// Check if we have a max connections violation
 	if kind == CLIENT && acc.MaxTotalConnectionsReached() {
 		return ErrTooManyAccountConnections
-	} else if kind == LEAF && acc.MaxTotalLeafNodesReached() {
-		return ErrTooManyAccountConnections
+	} else if kind == LEAF {
+		// Check if we are already connected to this cluster.
+		if rc := c.remoteCluster(); rc != _EMPTY_ && acc.hasLeafNodeCluster(rc) {
+			return ErrLeafNodeLoop
+		}
+		if acc.MaxTotalLeafNodesReached() {
+			return ErrTooManyAccountConnections
+		}
 	}
 
 	// Add in new one.
