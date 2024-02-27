@@ -4175,27 +4175,27 @@ func getHeader(key string, hdr []byte) []byte {
 		return nil
 	}
 	index := bytes.Index(hdr, []byte(key))
-	if index < 0 {
-		return nil
-	}
-	// Make sure this key does not have additional prefix.
-	if index < 2 || hdr[index-1] != '\n' || hdr[index-2] != '\r' {
-		return nil
-	}
-	index += len(key)
-	if index >= len(hdr) {
-		return nil
-	}
-	if hdr[index] != ':' {
-		return nil
-	}
-	index++
-
-	var value []byte
 	hdrLen := len(hdr)
-	for hdr[index] == ' ' && index < hdrLen {
+	// Check that we have enough characters, this will handle the -1 case of the key not
+	// being found and will also handle not having enough characters for trailing CRLF.
+	if index < 2 {
+		return nil
+	}
+	// There should be a terminating CRLF.
+	if index >= hdrLen-1 || hdr[index-1] != '\n' || hdr[index-2] != '\r' {
+		return nil
+	}
+	// The key should be immediately followed by a : separator.
+	index += len(key) + 1
+	if index >= hdrLen || hdr[index-1] != ':' {
+		return nil
+	}
+	// Skip over whitespace before the value.
+	for index < hdrLen && hdr[index] == ' ' {
 		index++
 	}
+	// Collect together the rest of the value until we hit a CRLF.
+	var value []byte
 	for index < hdrLen {
 		if hdr[index] == '\r' && index < hdrLen-1 && hdr[index+1] == '\n' {
 			break
