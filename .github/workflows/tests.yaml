@@ -1,7 +1,7 @@
 name: NATS Server Tests
 
 on:
-  # push:
+  push:
   # pull_request:
   schedule:
     - cron: "15 * * * *" # Hourly, 15 mins past the hour
@@ -32,7 +32,7 @@ jobs:
           args: --timeout=5m --config=.golangci.yml
 
   build-latest:
-    name: Build (Latest Go, ${{ matrix.os }})
+    name: Build (Latest Go)
     runs-on: ${{ vars.GHA_WORKER_SMALL }}
     steps:
       - name: Checkout
@@ -47,7 +47,7 @@ jobs:
         run: go build
 
   build-supported:
-    name: Build (Minimum Go, ${{ matrix.os }})
+    name: Build (Minimum Go)
     runs-on: ${{ vars.GHA_WORKER_SMALL }}
     steps:
       - name: Checkout
