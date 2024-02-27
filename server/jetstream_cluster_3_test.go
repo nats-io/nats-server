@@ -6592,6 +6592,7 @@ func TestJetStreamClusterConsumerPauseViaConfig(t *testing.T) {
 
 	// Now we're going to set the deadline.
 	deadline := jsTestPause_PauseConsumer(t, nc, "TEST", "my_consumer", time.Now().Add(time.Second*3))
+	c.waitOnAllCurrent()
 
 	// It will now take longer than 3 seconds.
 	publish(time.Second * 5)
@@ -6608,6 +6609,7 @@ func TestJetStreamClusterConsumerPauseViaConfig(t *testing.T) {
 	// Now we're going to do an update and then immediately kick the
 	// leader. The pause should still be in effect afterwards.
 	deadline = jsTestPause_PauseConsumer(t, nc, "TEST", "my_consumer", time.Now().Add(time.Second*3))
+	c.waitOnAllCurrent()
 	publish(time.Second * 5)
 	require_True(t, time.Now().After(deadline))
 
@@ -6651,6 +6653,7 @@ func TestJetStreamClusterConsumerPauseViaEndpoint(t *testing.T) {
 		// Now we'll pause the consumer for 3 seconds.
 		deadline := time.Now().Add(time.Second * 3)
 		require_True(t, jsTestPause_PauseConsumer(t, nc, "TEST", "pull_consumer", deadline).Equal(deadline))
+		c.waitOnAllCurrent()
 
 		// This should fail as we'll wait for only half of the deadline.
 		for i := 0; i < 10; i++ {
@@ -6678,6 +6681,7 @@ func TestJetStreamClusterConsumerPauseViaEndpoint(t *testing.T) {
 		require_Equal(t, len(msgs), 10)
 
 		require_True(t, jsTestPause_PauseConsumer(t, nc, "TEST", "pull_consumer", time.Time{}).Equal(time.Time{}))
+		c.waitOnAllCurrent()
 
 		// This should succeed as there's no pause, so it definitely
 		// shouldn't take more than a second.
@@ -6709,6 +6713,7 @@ func TestJetStreamClusterConsumerPauseViaEndpoint(t *testing.T) {
 		// Now we'll pause the consumer for 3 seconds.
 		deadline := time.Now().Add(time.Second * 3)
 		require_True(t, jsTestPause_PauseConsumer(t, nc, "TEST", "push_consumer", deadline).Equal(deadline))
+		c.waitOnAllCurrent()
 
 		// This should succeed after a short wait, and when we're done,
 		// we should be after the deadline.
@@ -6734,6 +6739,7 @@ func TestJetStreamClusterConsumerPauseViaEndpoint(t *testing.T) {
 		}
 
 		require_True(t, jsTestPause_PauseConsumer(t, nc, "TEST", "push_consumer", time.Time{}).Equal(time.Time{}))
+		c.waitOnAllCurrent()
 
 		// This should succeed as there's no pause, so it definitely
 		// shouldn't take more than a second.
