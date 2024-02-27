@@ -5060,11 +5060,12 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 		// just that the consumer node is being removed, so we send delete
 		// advisories only if the consumer assignment is gone, which means
 		// actual consumer removal happened.
-		isConsumerAssigned := o.js.cluster.isConsumerAssigned(o.acc, o.stream, o.name)
-		if !isConsumerAssigned {
-			if advisory {
-				o.sendDeleteAdvisoryLocked()
-			}
+		isConsumerAssigned := true
+		if o.acc == nil || o.acc.js == nil || !o.acc.js.consumerAssigned(o.stream, o.name) {
+			isConsumerAssigned = false
+		}
+		if !isConsumerAssigned && advisory {
+			o.sendDeleteAdvisoryLocked()
 		}
 		if o.isPullMode() {
 			// Release any pending.
