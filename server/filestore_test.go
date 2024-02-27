@@ -6617,6 +6617,107 @@ func TestFileStoreEraseMsgWithAllTrailingDbitSlots(t *testing.T) {
 	require_True(t, removed)
 }
 
+func TestFileStoreMultiLastSeqs(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 256}, // Make block size small to test multiblock selections with maxSeq
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := []byte("abc")
+	for i := 0; i < 33; i++ {
+		fs.StoreMsg("foo.foo", nil, msg)
+		fs.StoreMsg("foo.bar", nil, msg)
+		fs.StoreMsg("foo.baz", nil, msg)
+	}
+	for i := 0; i < 33; i++ {
+		fs.StoreMsg("bar.foo", nil, msg)
+		fs.StoreMsg("bar.bar", nil, msg)
+		fs.StoreMsg("bar.baz", nil, msg)
+	}
+
+	checkResults := func(seqs, expected []uint64) {
+		t.Helper()
+		if len(seqs) != len(expected) {
+			t.Fatalf("Expected %+v got %+v", expected, seqs)
+		}
+		for i := range seqs {
+			if seqs[i] != expected[i] {
+				t.Fatalf("Expected %+v got %+v", expected, seqs)
+			}
+		}
+	}
+
+	// UpTo sequence 3. Tests block split.
+	seqs, err := fs.MultiLastSeqs([]string{"foo.*"}, 3, -1)
+	require_NoError(t, err)
+	checkResults(seqs, []uint64{1, 2, 3})
+	// Up to last sequence of the stream.
+	seqs, err = fs.MultiLastSeqs([]string{"foo.*"}, 0, -1)
+	require_NoError(t, err)
+	checkResults(seqs, []uint64{97, 98, 99})
+	// Check for bar.* at the end.
+	seqs, err = fs.MultiLastSeqs([]string{"bar.*"}, 0, -1)
+	require_NoError(t, err)
+	checkResults(seqs, []uint64{196, 197, 198})
+	// This should find nothing.
+	seqs, err = fs.MultiLastSeqs([]string{"bar.*"}, 99, -1)
+	require_NoError(t, err)
+	checkResults(seqs, nil)
+
+	// Do multiple subjects explicitly.
+	seqs, err = fs.MultiLastSeqs([]string{"foo.foo", "foo.bar", "foo.baz"}, 3, -1)
+	require_NoError(t, err)
+	checkResults(seqs, []uint64{1, 2, 3})
+	seqs, err = fs.MultiLastSeqs([]string{"foo.foo", "foo.bar", "foo.baz"}, 0, -1)
+	require_NoError(t, err)
+	checkResults(seqs, []uint64{97, 98, 99})
+	seqs, err = fs.MultiLastSeqs([]string{"bar.foo", "bar.bar", "bar.baz"}, 0, -1)
+	require_NoError(t, err)
+	checkResults(seqs, []uint64{196, 197, 198})
+	seqs, err = fs.MultiLastSeqs([]string{"bar.foo", "bar.bar", "bar.baz"}, 99, -1)
+	require_NoError(t, err)
+	checkResults(seqs, nil)
+
+	// Check single works
+	seqs, err = fs.MultiLastSeqs([]string{"foo.foo"}, 3, -1)
+	require_NoError(t, err)
+	checkResults(seqs, []uint64{1})
+
+	// Now test that we properly de-duplicate between filters.
+	seqs, err = fs.MultiLastSeqs([]string{"foo.*", "foo.bar"}, 3, -1)
+	require_NoError(t, err)
+	checkResults(seqs, []uint64{1, 2, 3})
+	seqs, err = fs.MultiLastSeqs([]string{"bar.>", "bar.bar", "bar.baz"}, 0, -1)
+	require_NoError(t, err)
+	checkResults(seqs, []uint64{196, 197, 198})
+
+	// All
+	seqs, err = fs.MultiLastSeqs([]string{">"}, 0, -1)
+	require_NoError(t, err)
+	checkResults(seqs, []uint64{97, 98, 99, 196, 197, 198})
+	seqs, err = fs.MultiLastSeqs([]string{">"}, 99, -1)
+	require_NoError(t, err)
+	checkResults(seqs, []uint64{97, 98, 99})
+}
+
+func TestFileStoreMultiLastSeqsMaxAllowed(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := []byte("abc")
+	for i := 1; i <= 100; i++ {
+		fs.StoreMsg(fmt.Sprintf("foo.%d", i), nil, msg)
+	}
+	// Test that if we specify maxAllowed that we get the correct error.
+	seqs, err := fs.MultiLastSeqs([]string{"foo.*"}, 0, 10)
+	require_True(t, seqs == nil)
+	require_Error(t, err, ErrTooManyResults)
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////

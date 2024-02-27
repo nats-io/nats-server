@@ -355,6 +355,7 @@ const (
 	JSSubject      = "Nats-Subject"
 	JSLastSequence = "Nats-Last-Sequence"
 	JSNumPending   = "Nats-Num-Pending"
+	JSUpToSequence = "Nats-UpTo-Sequence"
 )
 
 // Rollups, can be subject only or all messages.
@@ -4027,7 +4028,7 @@ func (mset *stream) processDirectGetRequest(_ *subscription, c *client, _ *Accou
 		return
 	}
 	// Check if nothing set.
-	if req.Seq == 0 && req.LastFor == _EMPTY_ && req.NextFor == _EMPTY_ {
+	if req.Seq == 0 && req.LastFor == _EMPTY_ && req.NextFor == _EMPTY_ && len(req.MultiLastFor) == 0 {
 		hdr := []byte("NATS/1.0 408 Empty Request\r\n\r\n")
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 		return
@@ -4036,7 +4037,10 @@ func (mset *stream) processDirectGetRequest(_ *subscription, c *client, _ *Accou
 	// We do not allow batch mode for lastFor requests.
 	if (req.Seq > 0 && req.LastFor != _EMPTY_) ||
 		(req.LastFor != _EMPTY_ && req.NextFor != _EMPTY_) ||
-		(req.LastFor != _EMPTY_ && req.Batch > 0) {
+		(req.LastFor != _EMPTY_ && req.Batch > 0) ||
+		(req.LastFor != _EMPTY_ && len(req.MultiLastFor) > 0) ||
+		(req.NextFor != _EMPTY_ && len(req.MultiLastFor) > 0) ||
+		(req.UpToSeq > 0 && req.UpToTime != nil) {
 		hdr := []byte("NATS/1.0 408 Bad Request\r\n\r\n")
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 		return
@@ -4095,9 +4099,127 @@ func (mset *stream) processDirectGetLastBySubjectRequest(_ *subscription, c *cli
 	}
 }
 
+// For direct get batch and multi requests.
+const (
+	dg   = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\n\r\n"
+	dgb  = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\n\r\n"
+	eob  = "NATS/1.0 204 EOB\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\n\r\n"
+	eobm = "NATS/1.0 204 EOB\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\nNats-UpTo-Sequence: %d\r\n\r\n"
+)
+
+// Handle a multi request.
+func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
+	// TODO(dlc) - Make configurable?
+	const maxAllowedResponses = 1024
+
+	// We hold the lock here to try to avoid changes out from underneath of us.
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
+	// Grab store and name.
+	store, name, s := mset.store, mset.cfg.Name, mset.srv
+
+	// Grab MaxBytes
+	mb := req.MaxBytes
+	if mb == 0 && s != nil {
+		// Fill in with the server's MaxPending.
+		mb = int(s.opts.MaxPending)
+	}
+
+	upToSeq := req.UpToSeq
+	// If we have UpToTime set get the proper sequence.
+	if req.UpToTime != nil {
+		upToSeq = store.GetSeqFromTime((*req.UpToTime).UTC())
+		// We need to back off one since this is used to determine start sequence normally,
+		// were as here we want it to be the ceiling.
+		upToSeq--
+	}
+	// If not set, set to the last sequence and remember that for EOB.
+	if upToSeq == 0 {
+		var state StreamState
+		mset.store.FastState(&state)
+		upToSeq = state.LastSeq
+	}
+
+	seqs, err := store.MultiLastSeqs(req.MultiLastFor, upToSeq, maxAllowedResponses)
+	if err != nil {
+		var hdr []byte
+		if err == ErrTooManyResults {
+			hdr = []byte("NATS/1.0 413 Too Many Results\r\n\r\n")
+		} else {
+			hdr = []byte(fmt.Sprintf("NATS/1.0 500 %v\r\n\r\n", err))
+		}
+		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		return
+	}
+	if len(seqs) == 0 {
+		hdr := []byte("NATS/1.0 404 No Results\r\n\r\n")
+		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		return
+	}
+
+	np, lseq, sentBytes, sent := uint64(len(seqs)-1), uint64(0), 0, 0
+	for _, seq := range seqs {
+		if seq < req.Seq {
+			if np > 0 {
+				np--
+			}
+			continue
+		}
+		var svp StoreMsg
+		sm, err := store.LoadMsg(seq, &svp)
+		if err != nil {
+			hdr := []byte("NATS/1.0 404 Message Not Found\r\n\r\n")
+			mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+			return
+		}
+
+		hdr := sm.hdr
+		ts := time.Unix(0, sm.ts).UTC()
+
+		if len(hdr) == 0 {
+			hdr = fmt.Appendf(nil, dgb, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), np, lseq)
+		} else {
+			hdr = copyBytes(hdr)
+			hdr = genHeader(hdr, JSStream, name)
+			hdr = genHeader(hdr, JSSubject, sm.subj)
+			hdr = genHeader(hdr, JSSequence, strconv.FormatUint(sm.seq, 10))
+			hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
+			hdr = genHeader(hdr, JSNumPending, strconv.FormatUint(np, 10))
+			hdr = genHeader(hdr, JSLastSequence, strconv.FormatUint(lseq, 10))
+		}
+		// Decrement num pending. This is optimization and we do not continue to look it up for these operations.
+		if np > 0 {
+			np--
+		}
+		// Track our lseq
+		lseq = sm.seq
+		// Send out our message.
+		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, sm.msg, nil, 0))
+		// Check if we have exceeded max bytes.
+		sentBytes += len(sm.subj) + len(sm.hdr) + len(sm.msg)
+		if sentBytes >= mb {
+			break
+		}
+		sent++
+		if req.Batch > 0 && sent >= req.Batch {
+			break
+		}
+	}
+
+	// Send out EOB
+	hdr := fmt.Appendf(nil, eobm, np, lseq, upToSeq)
+	mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+}
+
 // Do actual work on a direct msg request.
 // This could be called in a Go routine if we are inline for a non-client connection.
 func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
+	// Handle multi in separate function.
+	if len(req.MultiLastFor) > 0 {
+		mset.getDirectMulti(req, reply)
+		return
+	}
+
 	mset.mu.RLock()
 	store, name, s := mset.store, mset.cfg.Name, mset.srv
 	mset.mu.RUnlock()
@@ -4204,7 +4326,7 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 		if mset.lastSeq() > validThrough {
 			np, _ = store.NumPending(seq, req.NextFor, false)
 		}
-		hdr := fmt.Appendf(nil, "NATS/1.0 204 EOB\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\n\r\n", np, lseq)
+		hdr := fmt.Appendf(nil, eob, np, lseq)
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 	}
 }

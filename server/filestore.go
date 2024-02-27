@@ -2620,6 +2620,119 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 	return fss
 }
 
+// MultiLastSeqs will return a sorted list of sequences that match all subjects presented in filters.
+// We will not exceed the maxSeq, which if 0 becomes the store's last sequence.
+func (fs *fileStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed int) ([]uint64, error) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	if fs.state.Msgs == 0 || fs.noTrackSubjects() {
+		return nil, nil
+	}
+
+	lastBlkIndex := len(fs.blks) - 1
+	lastMB := fs.blks[lastBlkIndex]
+
+	// Implied last sequence.
+	if maxSeq == 0 {
+		maxSeq = fs.state.LastSeq
+	} else {
+		// Udate last mb index if not last seq.
+		lastBlkIndex, lastMB = fs.selectMsgBlockWithIndex(maxSeq)
+	}
+	//Make sure non-nil
+	if lastMB == nil {
+		return nil, nil
+	}
+
+	// Grab our last mb index (not same as blk index).
+	lastMB.mu.RLock()
+	lastMBIndex := lastMB.index
+	lastMB.mu.RUnlock()
+
+	subs := make(map[string]*psi)
+	ltSeen := make(map[string]uint32)
+	for _, filter := range filters {
+		fs.psim.Match(stringToBytes(filter), func(subj []byte, psi *psi) {
+			s := string(subj)
+			subs[s] = psi
+			if psi.lblk < lastMBIndex {
+				ltSeen[s] = psi.lblk
+			}
+		})
+	}
+
+	// If all subjects have a lower last index, select the largest for our walk backwards.
+	if len(ltSeen) == len(subs) {
+		max := uint32(0)
+		for _, mbi := range ltSeen {
+			if mbi > max {
+				max = mbi
+			}
+		}
+		lastMB = fs.bim[max]
+	}
+
+	// Collect all sequences needed.
+	seqs := make([]uint64, 0, len(subs))
+	for i, lnf := lastBlkIndex, false; i >= 0; i-- {
+		if len(subs) == 0 {
+			break
+		}
+		mb := fs.blks[i]
+		if !lnf {
+			if mb != lastMB {
+				continue
+			}
+			lnf = true
+		}
+		// We can start properly looking here.
+		mb.mu.Lock()
+		mb.ensurePerSubjectInfoLoaded()
+		for subj, psi := range subs {
+			if ss := mb.fss[subj]; ss != nil {
+				if ss.Last <= maxSeq {
+					seqs = append(seqs, ss.Last)
+					delete(subs, subj)
+				} else {
+					// Need to search for it since last is > maxSeq.
+					if mb.cacheNotLoaded() {
+						mb.loadMsgsWithLock()
+					}
+					var smv StoreMsg
+					fseq := atomic.LoadUint64(&mb.first.seq)
+					for seq := maxSeq; seq >= fseq; seq-- {
+						sm, _ := mb.cacheLookup(seq, &smv)
+						if sm == nil || sm.subj != subj {
+							continue
+						}
+						seqs = append(seqs, sm.seq)
+						delete(subs, subj)
+						break
+					}
+				}
+			} else if mb.index <= psi.fblk {
+				// Track which subs are no longer applicable, meaning we will not find a valid msg at this point.
+				delete(subs, subj)
+			}
+			// TODO(dlc) we could track lblk like above in case some subs are very far apart.
+			// Not too bad if fss loaded since we will skip over quickly with it loaded, but might be worth it.
+		}
+		mb.mu.Unlock()
+
+		// If maxAllowed was sepcified check that we will not exceed that.
+		if maxAllowed > 0 && len(seqs) > maxAllowed {
+			return nil, ErrTooManyResults
+		}
+
+	}
+	if len(seqs) == 0 {
+		return nil, nil
+	}
+	sort.Slice(seqs, func(i, j int) bool { return seqs[i] < seqs[j] })
+	return seqs, nil
+}
+
 // NumPending will return the number of pending messages matching the filter subject starting at sequence.
 // Optimized for stream num pending calculations for consumers.
 func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool) (total, validThrough uint64) {
