@@ -4,7 +4,7 @@ on:
   # push:
   # pull_request:
   schedule:
-    - cron: "0 * * * *" # Hourly
+    - cron: "15 * * * *" # Hourly, 15 mins past the hour
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -31,14 +31,9 @@ jobs:
           skip-build-cache: true
           args: --timeout=5m --config=.golangci.yml
 
-  build:
-    name: Build (Go ${{ matrix.go }}, ${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: ["${{ vars.GHA_WORKER_SMALL }}"]
-        go: [stable, oldstable] # Stable is Go N, oldstable is Go N-1
-    runs-on: ${{ matrix.os }}
+  build-latest:
+    name: Build (Latest Go, ${{ matrix.os }})
+    runs-on: ${{ vars.GHA_WORKER_SMALL }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -46,7 +41,22 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v5
         with:
-          go-version: ${{ matrix.go }}
+          go-version: stable
+
+      - name: Build NATS Server
+        run: go build
+
+  build-supported:
+    name: Build (Minimum Go, ${{ matrix.os }})
+    runs-on: ${{ vars.GHA_WORKER_SMALL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: "go.mod"
 
       - name: Build NATS Server
         run: go build
@@ -55,12 +65,11 @@ jobs:
   # Note that the below testing steps depend on the Linux build
   # only, as the Windows builds take a fair bit longer to set up.
   build-windows:
-    name: Build (Go ${{ matrix.go }}, ${{ matrix.os }})
+    name: Build (Minimum Go, ${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
         os: [windows-2019, windows-2022]
-        go: [stable, oldstable]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -69,14 +78,14 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v5
         with:
-          go-version: ${{ matrix.go }}
+          go-version-file: "go.mod"
 
       - name: Build NATS Server
         run: go build
 
   js-no-cluster:
     name: JetStream tests
-    needs: [build, lint]
+    needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_LARGE }}
     steps:
       - name: Checkout
@@ -92,7 +101,7 @@ jobs:
 
   js-cluster-1:
     name: JetStream Cluster tests (1)
-    needs: [build, lint]
+    needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_LARGE }}
     steps:
       - name: Checkout
@@ -108,7 +117,7 @@ jobs:
 
   js-cluster-2:
     name: JetStream Cluster tests (2)
-    needs: [build, lint]
+    needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_LARGE }}
     steps:
       - name: Checkout
@@ -124,7 +133,7 @@ jobs:
 
   js-cluster-3:
     name: JetStream Cluster tests (3)
-    needs: [build, lint]
+    needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_LARGE }}
     steps:
       - name: Checkout
@@ -140,7 +149,7 @@ jobs:
 
   js-supercluster:
     name: JetStream Supercluster tests
-    needs: [build, lint]
+    needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_LARGE }}
     steps:
       - name: Checkout
@@ -156,7 +165,7 @@ jobs:
 
   no-race:
     name: No-race tests
-    needs: [build, lint]
+    needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_LARGE }}
     steps:
       - name: Checkout
@@ -173,7 +182,7 @@ jobs:
   js-chaos:
     name: JetStream chaos tests
     if: ${{ false }} # Don't run for now
-    needs: [build, lint]
+    needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_LARGE }}
     steps:
       - name: Checkout
@@ -189,7 +198,7 @@ jobs:
 
   mqtt:
     name: MQTT tests
-    needs: [build, lint]
+    needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_MEDIUM }}
     steps:
       - name: Checkout
@@ -205,7 +214,7 @@ jobs:
 
   server-pkg-non-js:
     name: Non-JetStream/MQTT tests
-    needs: [build, lint]
+    needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_LARGE }}
     steps:
       - name: Checkout
@@ -221,7 +230,7 @@ jobs:
 
   non-server-pkg:
     name: Tests from all other packages
-    needs: [build, lint]
+    needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_MEDIUM }}
     steps:
       - name: Checkout
