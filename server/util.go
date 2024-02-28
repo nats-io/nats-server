@@ -23,7 +23,6 @@ import (
 	"net"
 	"net/url"
 	"reflect"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -39,11 +38,9 @@ const (
 	asciiNine = 57
 )
 
-var semVerRe = regexp.MustCompile(`\Av?([0-9]+)\.?([0-9]+)?\.?([0-9]+)?`)
-
 func versionComponents(version string) (major, minor, patch int, err error) {
 	m := semVerRe.FindStringSubmatch(version)
-	if m == nil {
+	if len(m) == 0 {
 		return 0, 0, 0, errors.New("invalid semver")
 	}
 	major, err = strconv.Atoi(m[1])

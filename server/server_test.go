@@ -113,6 +113,12 @@ func RunServerWithConfig(configFile string) (srv *Server, opts *Options) {
 	return
 }
 
+func TestSemanticVersion(t *testing.T) {
+	if !semVerRe.MatchString(VERSION) {
+		t.Fatalf("Version (%s) is not a valid SemVer string", VERSION)
+	}
+}
+
 func TestVersionMatchesTag(t *testing.T) {
 	tag := os.Getenv("TRAVIS_TAG")
 	// Travis started to return '' when no tag is set. Support both now.
