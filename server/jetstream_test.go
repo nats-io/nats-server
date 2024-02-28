@@ -639,7 +639,7 @@ func TestJetStreamConsumerMaxDeliveries(t *testing.T) {
 
 func TestJetStreamNextReqFromMsg(t *testing.T) {
 	bef := time.Now()
-	expires, _, _, _, _, _, err := nextReqFromMsg([]byte(`{"expires":5000000000}`)) // nanoseconds
+	expires, _, _, _, _, _, _, err := nextReqFromMsg([]byte(`{"expires":5000000000}`)) // nanoseconds
 	require_NoError(t, err)
 	now := time.Now()
 	if expires.Before(bef.Add(5*time.Second)) || expires.After(now.Add(5*time.Second)) {
@@ -23076,5 +23076,84 @@ func TestJetStreamDirectGetMultiPaging(t *testing.T) {
 	start, seq, np, b = 1, 1, sent-1, 100
 	for i := 0; i < 5; i++ {
 		processPartial(b + 1) // 100 + EOB
+	}
+}
+
+func TestJetStreamPullConsumerNextMetadata(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	msgSize := 128
+	msg := make([]byte, msgSize)
+	crand.Read(msg)
+
+	for i := 0; i < 1; i++ {
+		_, err := js.Publish("foo", msg)
+		require_NoError(t, err)
+	}
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "dur",
+		AckPolicy: nats.AckExplicitPolicy,
+		Metadata: map[string]string{"foo": "bar",
+			"foo2": "bar"},
+	})
+	require_NoError(t, err)
+
+	sub := natsSubSync(t, nc, nats.NewInbox())
+
+	req := JSApiConsumerGetNextRequest{Batch: 0, MaxBytes: 1024, Expires: 250 * time.Millisecond, Metadata: map[string]string{"foo": "bar", "foo2": "bar2"}}
+	reqb, _ := json.Marshal(req)
+	err = nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.dur", sub.Subject, reqb)
+	require_NoError(t, err)
+
+	// Expect an error status as the metadata doesn't match (wrong value for key "foo2").
+	pullMsg, err := sub.NextMsg(time.Second * 1)
+	require_NoError(t, err)
+
+	if v := pullMsg.Header.Get("Status"); v != "409" {
+		t.Fatalf("Expected 409, got: %s", v)
+	}
+
+	req = JSApiConsumerGetNextRequest{Batch: 0, MaxBytes: 1024, Expires: 250 * time.Millisecond, Metadata: map[string]string{"foo": "bar", "foo2": "bar", "foo3": "bar"}}
+	reqb, _ = json.Marshal(req)
+	err = nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.dur", sub.Subject, reqb)
+	require_NoError(t, err)
+
+	// Expect an error status as the metadata doesn't match (foo3 missing).
+	pullMsg, err = sub.NextMsg(time.Second * 1)
+	require_NoError(t, err)
+
+	if v := pullMsg.Header.Get("Status"); v != "409" {
+		t.Fatalf("Expected 409, got: %s", v)
+	}
+
+	req = JSApiConsumerGetNextRequest{Batch: 0, MaxBytes: 1024, Expires: 250 * time.Millisecond, Metadata: map[string]string{"foo": "bar", "foo2": "bar"}}
+	reqb, _ = json.Marshal(req)
+	err = nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.dur", sub.Subject, reqb)
+	require_NoError(t, err)
+
+	// This time should be no error
+	pullMsg, err = sub.NextMsg(time.Second * 1)
+	require_NoError(t, err)
+
+	if len(pullMsg.Header) != 0 {
+		t.Fatalf("Expected no header, got: %v", pullMsg.Header)
+	}
+
+	pullMsg, err = sub.NextMsg(time.Second * 1)
+	require_NoError(t, err)
+
+	if v := pullMsg.Header.Get("Description"); v != "Batch Completed" {
+		t.Fatalf("Expected Batch Completed, got: %s", v)
 	}
 }

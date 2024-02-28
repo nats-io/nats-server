@@ -2965,36 +2965,36 @@ func (o *consumer) needAck(sseq uint64, subj string) bool {
 }
 
 // Helper for the next message requests.
-func nextReqFromMsg(msg []byte) (time.Time, int, int, bool, time.Duration, time.Time, error) {
+func nextReqFromMsg(msg []byte) (time.Time, int, int, bool, time.Duration, time.Time, map[string]string, error) {
 	req := bytes.TrimSpace(msg)
 
 	switch {
 	case len(req) == 0:
-		return time.Time{}, 1, 0, false, 0, time.Time{}, nil
+		return time.Time{}, 1, 0, false, 0, time.Time{}, nil, nil
 
 	case req[0] == '{':
 		var cr JSApiConsumerGetNextRequest
 		if err := json.Unmarshal(req, &cr); err != nil {
-			return time.Time{}, -1, 0, false, 0, time.Time{}, err
+			return time.Time{}, -1, 0, false, 0, time.Time{}, nil, err
 		}
 		var hbt time.Time
 		if cr.Heartbeat > 0 {
 			if cr.Heartbeat*2 > cr.Expires {
-				return time.Time{}, 1, 0, false, 0, time.Time{}, errors.New("heartbeat value too large")
+				return time.Time{}, 1, 0, false, 0, time.Time{}, nil, errors.New("heartbeat value too large")
 			}
 			hbt = time.Now().Add(cr.Heartbeat)
 		}
 		if cr.Expires == time.Duration(0) {
-			return time.Time{}, cr.Batch, cr.MaxBytes, cr.NoWait, cr.Heartbeat, hbt, nil
+			return time.Time{}, cr.Batch, cr.MaxBytes, cr.NoWait, cr.Heartbeat, hbt, nil, nil
 		}
-		return time.Now().Add(cr.Expires), cr.Batch, cr.MaxBytes, cr.NoWait, cr.Heartbeat, hbt, nil
+		return time.Now().Add(cr.Expires), cr.Batch, cr.MaxBytes, cr.NoWait, cr.Heartbeat, hbt, cr.Metadata, nil
 	default:
 		if n, err := strconv.Atoi(string(req)); err == nil {
-			return time.Time{}, n, 0, false, 0, time.Time{}, nil
+			return time.Time{}, n, 0, false, 0, time.Time{}, nil, nil
 		}
 	}
 
-	return time.Time{}, 1, 0, false, 0, time.Time{}, nil
+	return time.Time{}, 1, 0, false, 0, time.Time{}, nil, nil
 }
 
 // Represents a request that is on the internal waiting queue
@@ -3310,7 +3310,7 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 	}
 
 	// Check payload here to see if they sent in batch size or a formal request.
-	expires, batchSize, maxBytes, noWait, hb, hbt, err := nextReqFromMsg(msg)
+	expires, batchSize, maxBytes, noWait, hb, hbt, consumerMetaData, err := nextReqFromMsg(msg)
 	if err != nil {
 		sendErr(400, fmt.Sprintf("Bad Request - %v", err))
 		return
@@ -3330,6 +3330,26 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 	if maxBytes > 0 && o.cfg.MaxRequestMaxBytes > 0 && maxBytes > o.cfg.MaxRequestMaxBytes {
 		sendErr(409, fmt.Sprintf("Exceeded MaxRequestMaxBytes of %v", o.cfg.MaxRequestMaxBytes))
 		return
+	}
+
+	if len(consumerMetaData) > 0 && len(o.cfg.Metadata) > 0 {
+		var matching = true
+		for k, v := range consumerMetaData {
+			configValue, ok := o.cfg.Metadata[k]
+			if ok {
+				if configValue != v {
+					matching = false
+					break
+				}
+			} else {
+				matching = false
+				break
+			}
+		}
+		if !matching {
+			sendErr(409, "Request's medata does not match the consumer's")
+			return
+		}
 	}
 
 	// If we have the max number of requests already pending try to expire.
