@@ -1822,7 +1822,13 @@ func (acc *Account) checkNewConsumerConfig(cfg, ncfg *ConsumerConfig) error {
 	if cfg.OptStartSeq != ncfg.OptStartSeq {
 		return errors.New("start sequence can not be updated")
 	}
-	if cfg.OptStartTime != ncfg.OptStartTime {
+	if cfg.OptStartTime != nil && ncfg.OptStartTime != nil {
+		// Both have start times set, compare them directly:
+		if !cfg.OptStartTime.Equal(*ncfg.OptStartTime) {
+			return errors.New("start time can not be updated")
+		}
+	} else if cfg.OptStartTime != nil || ncfg.OptStartTime != nil {
+		// At least one start time is set and the other is not
 		return errors.New("start time can not be updated")
 	}
 	if cfg.AckPolicy != ncfg.AckPolicy {
