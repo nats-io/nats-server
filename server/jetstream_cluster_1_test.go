@@ -4632,6 +4632,30 @@ func TestJetStreamClusterStreamRemovePeer(t *testing.T) {
 	}
 	checkSubsPending(t, esub, toSend)
 
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "pull", AckPolicy: nats.AckNonePolicy})
+	require_NoError(t, err)
+
+	pullSub, err := js.PullSubscribe("TEST", "pull")
+	require_NoError(t, err)
+
+	// First fetch the messages that are already there.
+	msgs, err := pullSub.Fetch(toSend, nats.MaxWait(500*time.Millisecond))
+	require_NoError(t, err)
+	require_Equal(t, toSend, len(msgs))
+
+	// Now prepare a check to see if we get unwated `Consumer Deleted` error on peer remove.
+	pullResults := make(chan error, 1)
+	go func() {
+		_, err := pullSub.Fetch(1, nats.MaxWait(30*time.Second))
+		// Let's check if we get unwted `Consumer Deleted` error on peer remove.
+		// Everything else is fine (Leader Changed, Timeout, etc.)
+		if err != nats.ErrConsumerDeleted {
+			close(pullResults)
+		} else {
+			pullResults <- err
+		}
+	}()
+
 	ci, err := esub.ConsumerInfo()
 	if err != nil {
 		t.Fatalf("Could not fetch consumer info: %v", err)
@@ -4716,6 +4740,7 @@ func TestJetStreamClusterStreamRemovePeer(t *testing.T) {
 	})
 
 	c.waitOnConsumerLeader("$G", "TEST", "cat")
+	c.waitOnConsumerLeader("$G", "TEST", "pull")
 
 	// Now check consumer info as well.
 	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
@@ -4741,6 +4766,15 @@ func TestJetStreamClusterStreamRemovePeer(t *testing.T) {
 		}
 		return nil
 	})
+
+	// Check if we got the `Consumer Deleted` error on the pull consumer.
+	select {
+	case err := <-pullResults:
+		if err != nil {
+			t.Fatalf("Expected timeout error or nil, got %v", err)
+		}
+	default:
+	}
 
 	// Now check ephemeral consumer info.
 	// Make sure we did not stamp same new group into the ephemeral where R=1.
