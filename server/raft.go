@@ -31,6 +31,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/antithesishq/antithesis-sdk-go/assert"
 	"github.com/nats-io/nats-server/v2/internal/fastrand"
 
 	"github.com/minio/highwayhash"
@@ -939,12 +940,22 @@ func (n *raft) Applied(index uint64) (entries uint64, bytes uint64) {
 
 	// Ignore if not applicable. This can happen during a reset.
 	if index > n.commit {
+		assert.Unreachable("New applied index is higher than commit index", map[string]any{
+			"new_applied_index": index,
+			"commit_index":      n.commit,
+		})
 		return 0, 0
 	}
 
 	// Ignore if already applied.
 	if index > n.applied {
 		n.applied = index
+	} else {
+		assert.Unreachable("New applied is equal or lower than existing applied index", map[string]any{
+			"new_applied_index": index,
+			"applied_index":     n.applied,
+		})
+
 	}
 
 	// Calculate the number of entries and estimate the byte size that

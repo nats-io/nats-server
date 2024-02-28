@@ -14,6 +14,7 @@
 package main
 
 //go:generate go run server/errors_gen.go
+//go:generate antithesis-go-instrumentor -assert_only .
 
 import (
 	"flag"
