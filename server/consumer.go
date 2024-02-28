@@ -2333,16 +2333,21 @@ func (o *consumer) checkPendingRequests() {
 // This will release any pending pull requests if applicable.
 // Should be called only by the leader being deleted or stopped.
 // Lock should be held.
-func (o *consumer) releaseAnyPendingRequests() {
+func (o *consumer) releaseAnyPendingRequests(isConsumerAssigned bool) {
 	if o.mset == nil || o.outq == nil || o.waiting.len() == 0 {
 		return
 	}
-	hdr := []byte("NATS/1.0 409 Consumer Deleted\r\n\r\n")
+	var hdr []byte
+	if !isConsumerAssigned {
+		hdr = []byte("NATS/1.0 409 Consumer Deleted\r\n\r\n")
+	}
 	wq := o.waiting
 	o.waiting = nil
 	for i, rp := 0, wq.rp; i < wq.n; i++ {
 		if wr := wq.reqs[rp]; wr != nil {
-			o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+			if hdr != nil {
+				o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+			}
 			wr.recycle()
 		}
 		rp = (rp + 1) % cap(wq.reqs)
@@ -5145,18 +5150,27 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	}
 	o.closed = true
 
-	// Check if we are the leader and are being deleted.
+	// Check if we are the leader and are being deleted (as a node).
 	if dflag && o.isLeader() {
 		// If we are clustered and node leader (probable from above), stepdown.
 		if node := o.node; node != nil && node.Leader() {
 			node.StepDown()
 		}
-		if advisory {
+
+		// dflag does not mean that the whole consumer is being deleted,
+		// just that the consumer node is being removed, so we send delete
+		// advisories only if the consumer assignment is gone, which means
+		// actual consumer removal happened.
+		isConsumerAssigned := true
+		if o.acc == nil || o.acc.js == nil || !o.acc.js.consumerAssigned(o.stream, o.name) {
+			isConsumerAssigned = false
+		}
+		if !isConsumerAssigned && advisory {
 			o.sendDeleteAdvisoryLocked()
 		}
 		if o.isPullMode() {
 			// Release any pending.
-			o.releaseAnyPendingRequests()
+			o.releaseAnyPendingRequests(isConsumerAssigned)
 		}
 	}
 
