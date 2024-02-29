@@ -5069,8 +5069,6 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	}
 
 	o.mu.Lock()
-	js := o.js
-
 	if o.closed {
 		o.mu.Unlock()
 		return nil
@@ -5143,6 +5141,7 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 		ca = o.ca
 	}
 	sigSubs := o.sigSubs
+	js := o.js
 	o.mu.Unlock()
 
 	if c != nil {
