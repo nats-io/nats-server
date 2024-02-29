@@ -5048,7 +5048,7 @@ func (o *consumer) isClosed() bool {
 func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	// If dflag is true determine if we are still assigned.
 	var isConsumerAssigned bool
-	if dflag && advisory {
+	if dflag {
 		o.mu.RLock()
 		acc, stream, consumer := o.acc, o.stream, o.name
 		o.mu.RUnlock()
