@@ -5147,9 +5147,26 @@ func (o *consumer) isClosed() bool {
 }
 
 func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
-	o.mu.Lock()
-	js := o.js
+	// If dflag is true determine if we are still assigned.
+	var isConsumerAssigned bool
+	if dflag && advisory {
+		o.mu.RLock()
+		acc, stream, consumer := o.acc, o.stream, o.name
+		o.mu.RUnlock()
+		// Grab jsa to check assignment.
+		var jsa *jsAccount
+		if acc != nil {
+			// Need lock here to avoid data race.
+			acc.mu.RLock()
+			jsa = acc.js
+			acc.mu.RUnlock()
+		}
+		if jsa != nil {
+			isConsumerAssigned = jsa.consumerAssigned(stream, consumer)
+		}
+	}
 
+	o.mu.Lock()
 	if o.closed {
 		o.mu.Unlock()
 		return nil
@@ -5163,14 +5180,9 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 			node.StepDown()
 		}
 
-		// dflag does not mean that the whole consumer is being deleted,
-		// just that the consumer node is being removed, so we send delete
-		// advisories only if the consumer assignment is gone, which means
-		// actual consumer removal happened.
-		isConsumerAssigned := true
-		if o.acc == nil || o.acc.js == nil || !o.acc.js.consumerAssigned(o.stream, o.name) {
-			isConsumerAssigned = false
-		}
+		// dflag does not necessarily mean that the consumer is being deleted,
+		// just that the consumer node is being removed from this peer, so we
+		// send delete advisories only if we are no longer assigned at the meta layer.
 		if !isConsumerAssigned && advisory {
 			o.sendDeleteAdvisoryLocked()
 		}
@@ -5226,6 +5238,7 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 		ca = o.ca
 	}
 	sigSubs := o.sigSubs
+	js := o.js
 	o.mu.Unlock()
 
 	if c != nil {
