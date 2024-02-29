@@ -3712,7 +3712,13 @@ func (s *Server) streamSnapshot(ci *ClientInfo, acc *Account, mset *stream, sr *
 
 	// Create our ack flow handler.
 	// This is very simple for now.
-	acks := make(chan struct{}, 1)
+	ackSize := defaultSnapshotWindowSize / chunkSize
+	if ackSize < 8 {
+		ackSize = 8
+	} else if ackSize > 8*1024 {
+		ackSize = 8 * 1024
+	}
+	acks := make(chan struct{}, ackSize)
 	acks <- struct{}{}
 
 	// Track bytes outstanding.
