@@ -644,7 +644,11 @@ func (ms *memStore) resetAgeChk(delta int64) {
 
 	fireIn := ms.cfg.MaxAge
 	if delta > 0 && time.Duration(delta) < fireIn {
-		fireIn = time.Duration(delta)
+		if fireIn = time.Duration(delta); fireIn < time.Second {
+			// Only fire at most once a second.
+			// Excessive firing can effect ingest performance.
+			fireIn = time.Second
+		}
 	}
 	if ms.ageChk != nil {
 		ms.ageChk.Reset(fireIn)
@@ -655,19 +659,21 @@ func (ms *memStore) resetAgeChk(delta int64) {
 
 // Will expire msgs that are too old.
 func (ms *memStore) expireMsgs() {
-	ms.mu.Lock()
-	defer ms.mu.Unlock()
-
+	ms.mu.RLock()
 	now := time.Now().UnixNano()
 	minAge := now - int64(ms.cfg.MaxAge)
+	ms.mu.RUnlock()
+
 	for {
+		ms.mu.Lock()
 		if sm, ok := ms.msgs[ms.state.FirstSeq]; ok && sm.ts <= minAge {
 			ms.deleteFirstMsgOrPanic()
 			// Recalculate in case we are expiring a bunch.
 			now = time.Now().UnixNano()
 			minAge = now - int64(ms.cfg.MaxAge)
-
+			ms.mu.Unlock()
 		} else {
+			// We will exit here
 			if len(ms.msgs) == 0 {
 				if ms.ageChk != nil {
 					ms.ageChk.Stop()
@@ -686,7 +692,8 @@ func (ms *memStore) expireMsgs() {
 					ms.ageChk = time.AfterFunc(fireIn, ms.expireMsgs)
 				}
 			}
-			return
+			ms.mu.Unlock()
+			break
 		}
 	}
 }

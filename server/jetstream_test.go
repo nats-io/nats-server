@@ -2403,7 +2403,7 @@ func TestJetStreamAckReplyStreamPending(t *testing.T) {
 		Name:      "MY_WQ",
 		Subjects:  []string{"foo.*"},
 		Storage:   MemoryStorage,
-		MaxAge:    250 * time.Millisecond,
+		MaxAge:    1 * time.Second,
 		Retention: WorkQueuePolicy,
 	}
 	fsc := msc
@@ -2498,7 +2498,7 @@ func TestJetStreamAckReplyStreamPending(t *testing.T) {
 			nc.Flush()
 
 			// Wait for expiration to kick in.
-			checkFor(t, time.Second, 10*time.Millisecond, func() error {
+			checkFor(t, 5*time.Second, time.Second, func() error {
 				if state := mset.state(); state.Msgs != 0 {
 					return fmt.Errorf("Stream still has messages")
 				}
@@ -8125,12 +8125,12 @@ func TestJetStreamUpdateStream(t *testing.T) {
 
 			// Now do age.
 			cfg = *c.mconfig
-			cfg.MaxAge = 100 * time.Millisecond
+			cfg.MaxAge = time.Second
 			if err := mset.update(&cfg); err != nil {
 				t.Fatalf("Unexpected error %v", err)
 			}
 			// Just wait a bit for expiration.
-			time.Sleep(200 * time.Millisecond)
+			time.Sleep(2 * time.Second)
 			if mset.config().MaxAge != cfg.MaxAge {
 				t.Fatalf("Expected the change to take effect, %d vs %d", mset.config().MaxAge, cfg.MaxAge)
 			}
