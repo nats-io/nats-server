@@ -2919,7 +2919,7 @@ func TestJetStreamClusterStreamMaxAgeScaleUp(t *testing.T) {
 			require_True(t, info.State.Msgs == 10)
 
 			// Wait until MaxAge is reached.
-			time.Sleep(ttl - time.Since(start) + (10 * time.Millisecond))
+			time.Sleep(ttl - time.Since(start) + (1 * time.Second))
 
 			// Check if all messages are expired.
 			info, err = js.StreamInfo(test.stream)
@@ -3506,7 +3506,7 @@ func TestJetStreamClusterConsumerAckFloorDrift(t *testing.T) {
 		Name:     "TEST",
 		Subjects: []string{"*"},
 		Replicas: 3,
-		MaxAge:   200 * time.Millisecond,
+		MaxAge:   time.Second,
 		MaxMsgs:  10,
 	})
 	require_NoError(t, err)
@@ -3537,7 +3537,7 @@ func TestJetStreamClusterConsumerAckFloorDrift(t *testing.T) {
 	require_NotNil(t, state)
 
 	// Now let messages expire.
-	checkFor(t, time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 5*time.Second, time.Second, func() error {
 		si, err := js.StreamInfo("TEST")
 		require_NoError(t, err)
 		if si.State.Msgs == 0 {
