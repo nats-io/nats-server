@@ -83,6 +83,27 @@ func (sg smGroup) nonLeader() stateMachine {
 	return nil
 }
 
+// Causes the upper layer to purposefully block on receipt of
+// append entries until unwedge is called, simulating the scenario
+// that the upper layer is stuck on processing something.
+// Note that this is different from PauseApply, which stops the
+// Raft layer from sending applies to the upper layer at all.
+func (sg smGroup) wedge() {
+	for _, n := range sg {
+		n.(*stateAdder).wedge.Lock()
+	}
+}
+
+// Unwedges the upper layer. Any append entries that have built
+// up in the apply queue will start to apply.
+// Note that this is different from ResumeApply, which starts the
+// Raft layer sending applies to the upper layer again.
+func (sg smGroup) unwedge() {
+	for _, n := range sg {
+		n.(*stateAdder).wedge.Unlock()
+	}
+}
+
 // Create a raft group and place on numMembers servers at random.
 func (c *cluster) createRaftGroup(name string, numMembers int, smf smFactory) smGroup {
 	c.t.Helper()
@@ -153,10 +174,11 @@ func smLoop(sm stateMachine) {
 // The adder state just sums up int64 values.
 type stateAdder struct {
 	sync.Mutex
-	s   *Server
-	n   RaftNode
-	cfg *RaftConfig
-	sum int64
+	s     *Server
+	n     RaftNode
+	cfg   *RaftConfig
+	sum   int64
+	wedge sync.Mutex
 }
 
 // Simple getters for server and the raft node.
@@ -178,6 +200,8 @@ func (a *stateAdder) propose(data []byte) {
 }
 
 func (a *stateAdder) applyEntry(ce *CommittedEntry) {
+	a.wedge.Lock()
+	defer a.wedge.Unlock()
 	a.Lock()
 	defer a.Unlock()
 	if ce == nil {
