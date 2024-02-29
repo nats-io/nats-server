@@ -2798,16 +2798,15 @@ func (n *raft) applyCommit(index uint64) error {
 			committed = append(committed, e)
 		}
 	}
-	// Pass to the upper layers if we have normal entries.
-	if len(committed) > 0 {
-		if fpae {
-			delete(n.pae, index)
-		}
-		n.apply.push(newCommittedEntry(index, committed))
-	} else {
-		// If we processed inline update our applied index.
-		n.applied = index
+	if fpae {
+		delete(n.pae, index)
 	}
+	// Pass to the upper layers if we have normal entries. It is
+	// entirely possible that 'committed' might be an empty slice here,
+	// which will happen if we've processed updates inline (like peer
+	// states). In which case the upper layer will just call down with
+	// Applied() with no further action.
+	n.apply.push(newCommittedEntry(index, committed))
 	// Place back in the pool.
 	ae.returnToPool()
 	return nil
