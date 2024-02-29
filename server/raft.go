@@ -2918,7 +2918,9 @@ func (n *raft) runAsCandidate() {
 	n.requestVote()
 
 	// We vote for ourselves.
-	votes := 1
+	votes := map[string]struct{}{
+		n.ID(): {},
+	}
 
 	for n.State() == Candidate {
 		elect := n.electTimer()
@@ -2946,11 +2948,11 @@ func (n *raft) runAsCandidate() {
 			nterm := n.term
 			n.RUnlock()
 
-			if vresp.granted && nterm >= vresp.term {
+			if vresp.granted && nterm == vresp.term {
 				// only track peers that would be our followers
 				n.trackPeer(vresp.peer)
-				votes++
-				if n.wonElection(votes) {
+				votes[vresp.peer] = struct{}{}
+				if n.wonElection(len(votes)) {
 					// Become LEADER if we have won and gotten a quorum with everyone we should hear from.
 					n.switchToLeader()
 					return
