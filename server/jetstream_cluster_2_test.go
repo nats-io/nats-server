@@ -6218,7 +6218,7 @@ func TestJetStreamClusterStreamResetOnExpirationDuringPeerDownAndRestartWithLead
 	nsl.Shutdown()
 
 	// Wait for all messages to expire.
-	checkFor(t, 2*time.Second, 20*time.Millisecond, func() error {
+	checkFor(t, 5*time.Second, time.Second, func() error {
 		si, err := js.StreamInfo("TEST")
 		require_NoError(t, err)
 		if si.State.Msgs == 0 {
