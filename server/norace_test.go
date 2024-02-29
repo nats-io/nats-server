@@ -9648,3 +9648,65 @@ func TestNoRaceMemStoreCompactPerformance(t *testing.T) {
 	//Calculate delta between runs and fail if it is too high
 	require_LessThan(t, elapsedSecondRun-elapsedFirstRun, time.Duration(1)*time.Second)
 }
+
+func TestNoRaceJetStreamSnapshotsWithSlowAckDontSlowConsumer(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	ech := make(chan error)
+	ecb := func(_ *nats.Conn, _ *nats.Subscription, err error) {
+		if err != nil {
+			ech <- err
+		}
+	}
+	nc, js := jsClientConnect(t, s, nats.ErrorHandler(ecb))
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	// Put in over 64MB.
+	msg, toSend := make([]byte, 1024*1024), 80
+	crand.Read(msg)
+
+	for i := 0; i < toSend; i++ {
+		_, err := js.Publish("foo", msg)
+		require_NoError(t, err)
+	}
+
+	sreq := &JSApiStreamSnapshotRequest{
+		DeliverSubject: nats.NewInbox(),
+		ChunkSize:      1024 * 1024,
+	}
+	req, _ := json.Marshal(sreq)
+	rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamSnapshotT, "TEST"), req, time.Second)
+	require_NoError(t, err)
+
+	var resp JSApiStreamSnapshotResponse
+	json.Unmarshal(rmsg.Data, &resp)
+	require_True(t, resp.Error == nil)
+
+	done := make(chan *nats.Msg)
+	sub, _ := nc.Subscribe(sreq.DeliverSubject, func(m *nats.Msg) {
+		// EOF
+		if len(m.Data) == 0 {
+			done <- m
+			return
+		}
+	})
+	defer sub.Unsubscribe()
+
+	// Check that we do not get disconnected due to slow consumer.
+	select {
+	case msg := <-done:
+		require_Equal(t, msg.Header.Get("Status"), "408")
+		require_Equal(t, msg.Header.Get("Description"), "No Flow Response")
+	case <-ech:
+		t.Fatalf("Got disconnected: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Should have received EOF with error status")
+	}
+}
