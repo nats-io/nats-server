@@ -4509,7 +4509,11 @@ func (fs *fileStore) resetAgeChk(delta int64) {
 
 	fireIn := fs.cfg.MaxAge
 	if delta > 0 && time.Duration(delta) < fireIn {
-		fireIn = time.Duration(delta)
+		if fireIn = time.Duration(delta); fireIn < time.Second {
+			// Only fire at most once a second.
+			// Excessive firing can effect ingest performance.
+			fireIn = time.Second
+		}
 	}
 	if fs.ageChk != nil {
 		fs.ageChk.Reset(fireIn)
