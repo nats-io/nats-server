@@ -2247,12 +2247,12 @@ func (o *consumer) checkPendingRequests() {
 // This will release any pending pull requests if applicable.
 // Should be called only by the leader being deleted or stopped.
 // Lock should be held.
-func (o *consumer) releaseAnyPendingRequests(isConsumerAssigned bool) {
+func (o *consumer) releaseAnyPendingRequests(isAssigned bool) {
 	if o.mset == nil || o.outq == nil || o.waiting.len() == 0 {
 		return
 	}
 	var hdr []byte
-	if !isConsumerAssigned {
+	if !isAssigned {
 		hdr = []byte("NATS/1.0 409 Consumer Deleted\r\n\r\n")
 	}
 	wq := o.waiting
@@ -5040,6 +5040,28 @@ func (o *consumer) isClosed() bool {
 }
 
 func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
+	// If dflag is true determine if we are still assigned.
+	var isAssigned bool
+	if dflag {
+		o.mu.RLock()
+		acc, stream, consumer := o.acc, o.stream, o.name
+		isClustered := o.js != nil && o.js.isClustered()
+		o.mu.RUnlock()
+		if isClustered {
+			// Grab jsa to check assignment.
+			var jsa *jsAccount
+			if acc != nil {
+				// Need lock here to avoid data race.
+				acc.mu.RLock()
+				jsa = acc.js
+				acc.mu.RUnlock()
+			}
+			if jsa != nil {
+				isAssigned = jsa.consumerAssigned(stream, consumer)
+			}
+		}
+	}
+
 	o.mu.Lock()
 	js := o.js
 
@@ -5056,20 +5078,16 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 			node.StepDown()
 		}
 
-		// dflag does not mean that the whole consumer is being deleted,
-		// just that the consumer node is being removed, so we send delete
-		// advisories only if the consumer assignment is gone, which means
-		// actual consumer removal happened.
-		isConsumerAssigned := true
-		if o.acc == nil || o.acc.js == nil || !o.acc.js.consumerAssigned(o.stream, o.name) {
-			isConsumerAssigned = false
-		}
-		if !isConsumerAssigned && advisory {
+		// dflag does not necessarily mean that the consumer is being deleted,
+		// just that the consumer node is being removed from this peer, so we
+		// send delete advisories only if we are no longer assigned at the meta layer,
+		// or we are not clustered.
+		if !isAssigned && advisory {
 			o.sendDeleteAdvisoryLocked()
 		}
 		if o.isPullMode() {
 			// Release any pending.
-			o.releaseAnyPendingRequests(isConsumerAssigned)
+			o.releaseAnyPendingRequests(isAssigned)
 		}
 	}
 
