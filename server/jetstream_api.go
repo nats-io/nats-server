@@ -730,6 +730,7 @@ type JSApiConsumerGetNextRequest struct {
 	MaxBytes  int           `json:"max_bytes,omitempty"`
 	NoWait    bool          `json:"no_wait,omitempty"`
 	Heartbeat time.Duration `json:"idle_heartbeat,omitempty"`
+	OwnerID   string        `json:"owner_id,omitempty"`
 }
 
 // JSApiStreamTemplateCreateResponse for creating templates.

@@ -31,6 +31,126 @@ import (
 	"github.com/nats-io/nuid"
 )
 
+func TestJetStreamConsumerExclusive(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+	acc := s.GlobalAccount()
+
+	mset, err := acc.addStream(&StreamConfig{
+		Name:      "TEST",
+		Retention: LimitsPolicy,
+		Subjects:  []string{"events.>"},
+		MaxAge:    time.Second * 90,
+	})
+	require_NoError(t, err)
+
+	_, err = mset.addConsumer(&ConsumerConfig{
+		Durable:       "consumer",
+		AckPolicy:     AckExplicit,
+		DeliverPolicy: DeliverAll,
+		FilterSubject: "events.>",
+		OwnerID:       "me",
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 10; i++ {
+		_, err = js.Publish("events.1", []byte("hello"))
+		require_NoError(t, err)
+	}
+
+	// set ID that is not owned by us.
+	cr := JSApiConsumerGetNextRequest{
+		Batch:   1,
+		OwnerID: "notMe",
+	}
+	crBytes, err := json.Marshal(cr)
+	require_NoError(t, err)
+
+	inbox := nats.NewInbox()
+	err = nc.PublishRequest(fmt.Sprintf(JSApiRequestNextT, "TEST", "consumer"), inbox, crBytes)
+	require_NoError(t, err)
+
+	consumerSub, err := nc.SubscribeSync(inbox)
+	require_NoError(t, err)
+
+	msg, err := consumerSub.NextMsg(time.Second)
+	require_NoError(t, err)
+
+	// check if message header contains error "Consumer is owned by another client"
+	if !strings.Contains(string(msg.Header.Get("Status")), "412") {
+		t.Fatalf("Expected exclusive consumer error, got %q", msg.Header.Get("Description"))
+	}
+
+	// now set our ID
+	cr = JSApiConsumerGetNextRequest{
+		Batch:   2,
+		OwnerID: "me",
+	}
+	crBytes, err = json.Marshal(cr)
+	require_NoError(t, err)
+
+	err = nc.PublishRequest(fmt.Sprintf(JSApiRequestNextT, "TEST", "consumer"), inbox, crBytes)
+	require_NoError(t, err)
+
+	msg, err = consumerSub.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_Equal(t, string(msg.Data), "hello")
+
+	// update the consumer to different ID
+	_, err = mset.addConsumer(&ConsumerConfig{
+		Durable:       "consumer",
+		AckPolicy:     AckExplicit,
+		DeliverPolicy: DeliverAll,
+		FilterSubject: "events.>",
+		OwnerID:       "differentMe",
+	})
+	require_NoError(t, err)
+
+	// we should still get messages from the pending pull requests
+	msg, err = consumerSub.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_Equal(t, string(msg.Data), "hello")
+
+	// check if the previous ID works. It should not
+	cr = JSApiConsumerGetNextRequest{
+		Batch:   1,
+		OwnerID: "me",
+	}
+	crBytes, err = json.Marshal(cr)
+	require_NoError(t, err)
+
+	err = nc.PublishRequest(fmt.Sprintf(JSApiRequestNextT, "TEST", "consumer"), inbox, crBytes)
+	require_NoError(t, err)
+
+	msg, err = consumerSub.NextMsg(time.Second)
+	require_NoError(t, err)
+
+	// we should now get an error
+	if !strings.Contains(string(msg.Header.Get("Status")), "412") {
+		t.Fatalf("Expected exclusive consumer error, got %q", msg.Header.Get("Description"))
+	}
+
+	// and this should work now
+
+	cr = JSApiConsumerGetNextRequest{
+		Batch:   1,
+		OwnerID: "differentMe",
+	}
+	crBytes, err = json.Marshal(cr)
+	require_NoError(t, err)
+
+	err = nc.PublishRequest(fmt.Sprintf(JSApiRequestNextT, "TEST", "consumer"), inbox, crBytes)
+	require_NoError(t, err)
+
+	msg, err = consumerSub.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_Equal(t, string(msg.Data), "hello")
+
+}
+
 func TestJetStreamConsumerMultipleFiltersRemoveFilters(t *testing.T) {
 
 	s := RunBasicJetStreamServer(t)
