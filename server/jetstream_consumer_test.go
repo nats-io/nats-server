@@ -901,6 +901,78 @@ func TestJetStreamConsumerIsEqualOrSubsetMatch(t *testing.T) {
 	}
 }
 
+func TestJetStreamConsumerDelete(t *testing.T) {
+	tests := []struct {
+		name     string
+		replicas int
+	}{
+		{"single server", 1},
+		{"clustered", 3},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var s *Server
+			if test.replicas == 1 {
+				s = RunBasicJetStreamServer(t)
+				defer s.Shutdown()
+			} else {
+				c := createJetStreamClusterExplicit(t, "R3S", test.replicas)
+				defer c.shutdown()
+				s = c.randomServer()
+			}
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"events.>"},
+				MaxAge:   time.Second * 90,
+				Replicas: test.replicas,
+			})
+			require_NoError(t, err)
+
+			_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+				Durable:       "consumer",
+				FilterSubject: "events.>",
+				Replicas:      test.replicas,
+			})
+			require_NoError(t, err)
+
+			js.Publish("events.1", []byte("hello"))
+
+			cr := JSApiConsumerGetNextRequest{
+				Batch:   10,
+				Expires: time.Second * 30,
+			}
+			crBytes, err := json.Marshal(cr)
+			require_NoError(t, err)
+
+			inbox := nats.NewInbox()
+			consumerSub, err := nc.SubscribeSync(inbox)
+			require_NoError(t, err)
+
+			err = nc.PublishRequest(fmt.Sprintf(JSApiRequestNextT, "TEST", "consumer"), inbox, crBytes)
+			require_NoError(t, err)
+
+			msg, err := consumerSub.NextMsg(time.Second * 30)
+			require_NoError(t, err)
+			require_Equal(t, "hello", string(msg.Data))
+
+			js.DeleteConsumer("TEST", "consumer")
+
+			msg, err = consumerSub.NextMsg(time.Second * 30)
+			require_NoError(t, err)
+
+			if !strings.Contains(string(msg.Header.Get("Description")), "Consumer Deleted") {
+				t.Fatalf("Expected exclusive consumer error, got %q", msg.Header.Get("Description"))
+			}
+		})
+
+	}
+}
+
 func Benchmark____JetStreamConsumerIsFilteredMatch(b *testing.B) {
 	subject := "foo.bar.do.not.match.any.filter.subject"
 	for n := 1; n <= 1024; n *= 2 {
