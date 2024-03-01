@@ -22272,6 +22272,127 @@ func TestJetStreamDirectGetBatchMaxBytes(t *testing.T) {
 	sendRequestAndCheck(&JSApiMsgGetRequest{Seq: 1, Batch: 200}, expected+1)
 }
 
+func TestJetStreamMsgGetAsOfTime(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo.*"},
+		AllowDirect: true,
+	})
+	require_NoError(t, err)
+
+	sendRequestAndCheck := func(mreq *JSApiMsgGetRequest, seq uint64, eerr error) {
+		t.Helper()
+		req, _ := json.Marshal(mreq)
+		rep, err := nc.Request(fmt.Sprintf(JSApiMsgGetT, "TEST"), req, time.Second)
+		require_NoError(t, err)
+		var mrep JSApiMsgGetResponse
+		err = json.Unmarshal(rep.Data, &mrep)
+		require_NoError(t, err)
+		if eerr != nil {
+			require_Error(t, mrep.ToError(), eerr)
+			return
+		}
+		require_NoError(t, mrep.ToError())
+		require_Equal(t, seq, mrep.Message.Sequence)
+	}
+	t0 := time.Now()
+
+	// Check for conflicting options.
+	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t0, LastFor: "foo.1"}, 0, NewJSBadRequestError())
+	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t0, Seq: 1}, 0, NewJSBadRequestError())
+
+	// Nothing exists yet in the stream.
+	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t0}, 0, NewJSNoMessageFoundError())
+
+	_, err = js.Publish("foo.1", nil)
+	require_NoError(t, err)
+
+	// Try again with t0 and now it will find the first message.
+	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t0}, 1, nil)
+
+	t1 := time.Now()
+	_, err = js.Publish("foo.2", nil)
+	require_NoError(t, err)
+
+	// At t0, first message will still be returned first.
+	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t0}, 1, nil)
+	// Unless we combine with NextFor...
+	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t0, NextFor: "foo.2"}, 2, nil)
+
+	// At t1 (after first message), the second message will be returned.
+	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t1}, 2, nil)
+
+	t2 := time.Now()
+	// t2 is later than the last message so nothing will be found.
+	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t2}, 0, NewJSNoMessageFoundError())
+}
+
+func TestJetStreamMsgDirectGetAsOfTime(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo.*"},
+		AllowDirect: true,
+	})
+	require_NoError(t, err)
+
+	sendRequestAndCheck := func(mreq *JSApiMsgGetRequest, seq uint64, eerr string) {
+		t.Helper()
+		req, _ := json.Marshal(mreq)
+		rep, err := nc.Request(fmt.Sprintf(JSDirectMsgGetT, "TEST"), req, time.Second)
+		require_NoError(t, err)
+		if eerr != "" {
+			require_Equal(t, rep.Header.Get("Description"), eerr)
+			return
+		}
+
+		mseq, err := strconv.ParseUint(rep.Header.Get("Nats-Sequence"), 10, 64)
+		require_NoError(t, err)
+		require_Equal(t, seq, mseq)
+	}
+	t0 := time.Now()
+
+	// Check for conflicting options.
+	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t0, LastFor: "foo.1"}, 0, "Bad Request")
+	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t0, Seq: 1}, 0, "Bad Request")
+
+	// Nothing exists yet in the stream.
+	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t0}, 0, "Message Not Found")
+
+	_, err = js.Publish("foo.1", nil)
+	require_NoError(t, err)
+
+	// Try again with t0 and now it will find the first message.
+	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t0}, 1, "")
+
+	t1 := time.Now()
+	_, err = js.Publish("foo.2", nil)
+	require_NoError(t, err)
+
+	// At t0, first message will still be returned first.
+	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t0}, 1, "")
+	// Unless we combine with NextFor..
+	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t0, NextFor: "foo.2"}, 2, "")
+
+	// At t1 (after first message), the second message will be returned.
+	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t1}, 2, "")
+
+	t2 := time.Now()
+	// t2 is later than the last message so nothing will be found.
+	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t2}, 0, "Message Not Found")
+}
+
 func TestJetStreamConsumerNakThenAckFloorMove(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
