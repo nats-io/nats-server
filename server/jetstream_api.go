@@ -4608,6 +4608,8 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 	pauseUTC := req.PauseUntil.UTC()
 	if !pauseUTC.IsZero() {
 		ncfg.PauseUntil = &pauseUTC
+	} else {
+		ncfg.PauseUntil = nil
 	}
 
 	if err := obs.updateConfig(&ncfg); err != nil {

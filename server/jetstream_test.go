@@ -22615,6 +22615,51 @@ func TestJetStreamConsumerPauseViaEndpoint(t *testing.T) {
 	})
 }
 
+func TestJetStreamConsumerPauseResumeViaEndpoint(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"TEST"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Name: "CONSUMER",
+	})
+	require_NoError(t, err)
+
+	getConsumerInfo := func() ConsumerInfo {
+		var ci ConsumerInfo
+		infoResp, err := nc.Request("$JS.API.CONSUMER.INFO.TEST.CONSUMER", nil, time.Second)
+		require_NoError(t, err)
+		err = json.Unmarshal(infoResp.Data, &ci)
+		require_NoError(t, err)
+		return ci
+	}
+
+	// Ensure we are not paused
+	require_False(t, getConsumerInfo().Paused)
+
+	// Now we'll pause the consumer for 30 seconds.
+	deadline := time.Now().Add(time.Second * 30)
+	require_True(t, jsTestPause_PauseConsumer(t, nc, "TEST", "CONSUMER", deadline).Equal(deadline))
+
+	// Ensure the consumer reflects being paused
+	require_True(t, getConsumerInfo().Paused)
+
+	subj := fmt.Sprintf("$JS.API.CONSUMER.PAUSE.%s.%s", "TEST", "CONSUMER")
+	_, err = nc.Request(subj, nil, time.Second)
+	require_NoError(t, err)
+
+	// Ensure the consumer reflects being resumed
+	require_False(t, getConsumerInfo().Paused)
+}
+
 func TestJetStreamConsumerPauseHeartbeats(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
