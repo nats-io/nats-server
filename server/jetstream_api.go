@@ -656,8 +656,8 @@ type JSApiMsgGetRequest struct {
 	UpToSeq uint64 `json:"up_to_seq,omitempty"`
 	// Only return messages up to this time.
 	UpToTime *time.Time `json:"up_to_time,omitempty"`
-	// Return messages as of this time.
-	AsOfTime *time.Time `json:"as_of_time,omitempty"`
+	// Return messages as of this start time.
+	StartTime *time.Time `json:"start_time,omitempty"`
 }
 
 type JSApiMsgGetResponse struct {
@@ -3145,9 +3145,9 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, _ *Account, subje
 	// Validate non-conflicting options. Seq, LastFor, and AsOfTime are mutually exclusive.
 	// NextFor can be paired with Seq or AsOfTime indicating a filter subject.
 	if (req.Seq > 0 && req.LastFor != _EMPTY_) ||
-		(req.Seq == 0 && req.LastFor == _EMPTY_ && req.NextFor == _EMPTY_ && req.AsOfTime == nil) ||
-		(req.Seq > 0 && req.AsOfTime != nil) ||
-		(req.AsOfTime != nil && req.LastFor != _EMPTY_) ||
+		(req.Seq == 0 && req.LastFor == _EMPTY_ && req.NextFor == _EMPTY_ && req.StartTime == nil) ||
+		(req.Seq > 0 && req.StartTime != nil) ||
+		(req.StartTime != nil && req.LastFor != _EMPTY_) ||
 		(req.LastFor != _EMPTY_ && req.NextFor != _EMPTY_) {
 		resp.Error = NewJSBadRequestError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -3166,8 +3166,8 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, _ *Account, subje
 
 	// If AsOfTime is set, perform this first to get the sequence.
 	var seq uint64
-	if req.AsOfTime != nil {
-		seq = mset.store.GetSeqFromTime(*req.AsOfTime)
+	if req.StartTime != nil {
+		seq = mset.store.GetSeqFromTime(*req.StartTime)
 	} else {
 		seq = req.Seq
 	}

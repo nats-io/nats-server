@@ -22304,33 +22304,33 @@ func TestJetStreamMsgGetAsOfTime(t *testing.T) {
 	t0 := time.Now()
 
 	// Check for conflicting options.
-	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t0, LastFor: "foo.1"}, 0, NewJSBadRequestError())
-	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t0, Seq: 1}, 0, NewJSBadRequestError())
+	sendRequestAndCheck(&JSApiMsgGetRequest{StartTime: &t0, LastFor: "foo.1"}, 0, NewJSBadRequestError())
+	sendRequestAndCheck(&JSApiMsgGetRequest{StartTime: &t0, Seq: 1}, 0, NewJSBadRequestError())
 
 	// Nothing exists yet in the stream.
-	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t0}, 0, NewJSNoMessageFoundError())
+	sendRequestAndCheck(&JSApiMsgGetRequest{StartTime: &t0}, 0, NewJSNoMessageFoundError())
 
 	_, err = js.Publish("foo.1", nil)
 	require_NoError(t, err)
 
 	// Try again with t0 and now it will find the first message.
-	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t0}, 1, nil)
+	sendRequestAndCheck(&JSApiMsgGetRequest{StartTime: &t0}, 1, nil)
 
 	t1 := time.Now()
 	_, err = js.Publish("foo.2", nil)
 	require_NoError(t, err)
 
 	// At t0, first message will still be returned first.
-	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t0}, 1, nil)
+	sendRequestAndCheck(&JSApiMsgGetRequest{StartTime: &t0}, 1, nil)
 	// Unless we combine with NextFor...
-	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t0, NextFor: "foo.2"}, 2, nil)
+	sendRequestAndCheck(&JSApiMsgGetRequest{StartTime: &t0, NextFor: "foo.2"}, 2, nil)
 
 	// At t1 (after first message), the second message will be returned.
-	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t1}, 2, nil)
+	sendRequestAndCheck(&JSApiMsgGetRequest{StartTime: &t1}, 2, nil)
 
 	t2 := time.Now()
 	// t2 is later than the last message so nothing will be found.
-	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t2}, 0, NewJSNoMessageFoundError())
+	sendRequestAndCheck(&JSApiMsgGetRequest{StartTime: &t2}, 0, NewJSNoMessageFoundError())
 }
 
 func TestJetStreamMsgDirectGetAsOfTime(t *testing.T) {
@@ -22364,33 +22364,33 @@ func TestJetStreamMsgDirectGetAsOfTime(t *testing.T) {
 	t0 := time.Now()
 
 	// Check for conflicting options.
-	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t0, LastFor: "foo.1"}, 0, "Bad Request")
-	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t0, Seq: 1}, 0, "Bad Request")
+	sendRequestAndCheck(&JSApiMsgGetRequest{StartTime: &t0, LastFor: "foo.1"}, 0, "Bad Request")
+	sendRequestAndCheck(&JSApiMsgGetRequest{StartTime: &t0, Seq: 1}, 0, "Bad Request")
 
 	// Nothing exists yet in the stream.
-	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t0}, 0, "Message Not Found")
+	sendRequestAndCheck(&JSApiMsgGetRequest{StartTime: &t0}, 0, "Message Not Found")
 
 	_, err = js.Publish("foo.1", nil)
 	require_NoError(t, err)
 
 	// Try again with t0 and now it will find the first message.
-	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t0}, 1, "")
+	sendRequestAndCheck(&JSApiMsgGetRequest{StartTime: &t0}, 1, "")
 
 	t1 := time.Now()
 	_, err = js.Publish("foo.2", nil)
 	require_NoError(t, err)
 
 	// At t0, first message will still be returned first.
-	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t0}, 1, "")
+	sendRequestAndCheck(&JSApiMsgGetRequest{StartTime: &t0}, 1, "")
 	// Unless we combine with NextFor..
-	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t0, NextFor: "foo.2"}, 2, "")
+	sendRequestAndCheck(&JSApiMsgGetRequest{StartTime: &t0, NextFor: "foo.2"}, 2, "")
 
 	// At t1 (after first message), the second message will be returned.
-	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t1}, 2, "")
+	sendRequestAndCheck(&JSApiMsgGetRequest{StartTime: &t1}, 2, "")
 
 	t2 := time.Now()
 	// t2 is later than the last message so nothing will be found.
-	sendRequestAndCheck(&JSApiMsgGetRequest{AsOfTime: &t2}, 0, "Message Not Found")
+	sendRequestAndCheck(&JSApiMsgGetRequest{StartTime: &t2}, 0, "Message Not Found")
 }
 
 func TestJetStreamConsumerNakThenAckFloorMove(t *testing.T) {

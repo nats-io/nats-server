@@ -4028,7 +4028,7 @@ func (mset *stream) processDirectGetRequest(_ *subscription, c *client, _ *Accou
 		return
 	}
 	// Check if nothing set.
-	if req.Seq == 0 && req.LastFor == _EMPTY_ && req.NextFor == _EMPTY_ && len(req.MultiLastFor) == 0 && req.AsOfTime == nil {
+	if req.Seq == 0 && req.LastFor == _EMPTY_ && req.NextFor == _EMPTY_ && len(req.MultiLastFor) == 0 && req.StartTime == nil {
 		hdr := []byte("NATS/1.0 408 Empty Request\r\n\r\n")
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 		return
@@ -4036,8 +4036,8 @@ func (mset *stream) processDirectGetRequest(_ *subscription, c *client, _ *Accou
 	// Check we don't have conflicting options set.
 	// We do not allow batch mode for lastFor requests.
 	if (req.Seq > 0 && req.LastFor != _EMPTY_) ||
-		(req.Seq > 0 && req.AsOfTime != nil) ||
-		(req.AsOfTime != nil && req.LastFor != _EMPTY_) ||
+		(req.Seq > 0 && req.StartTime != nil) ||
+		(req.StartTime != nil && req.LastFor != _EMPTY_) ||
 		(req.LastFor != _EMPTY_ && req.NextFor != _EMPTY_) ||
 		(req.LastFor != _EMPTY_ && req.Batch > 0) ||
 		(req.LastFor != _EMPTY_ && len(req.MultiLastFor) > 0) ||
@@ -4228,8 +4228,8 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 
 	var seq uint64
 	// Lookup start seq if AsOfTime is set.
-	if req.AsOfTime != nil {
-		seq = store.GetSeqFromTime(*req.AsOfTime)
+	if req.StartTime != nil {
+		seq = store.GetSeqFromTime(*req.StartTime)
 	} else {
 		seq = req.Seq
 	}
