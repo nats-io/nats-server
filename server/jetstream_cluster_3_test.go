@@ -6972,14 +6972,16 @@ func TestJetStreamClusterConsumerPauseSurvivesRestart(t *testing.T) {
 
 func TestJetStreamClusterStreamsHighMsgLagCondition(t *testing.T) {
 	t.Run("limits", func(t *testing.T) {
-		streams := 20
+		streams := 10
 		consumers := 4
-		producers := 10
+		producers := 40
 		testJetStreamClusterStreamsHighMsgLagCondition(t, streams, consumers, producers, nats.StreamConfig{
 			Replicas: 3,
 			// NOTE: This test is usually over before these limits apply.
 			MaxAge:     3 * time.Minute,
 			Duplicates: 2 * time.Minute,
+			// MaxAge:     1 * time.Minute,
+			// Duplicates: 30 * time.Second,
 		})
 	})
 }
@@ -7150,7 +7152,7 @@ func testJetStreamClusterStreamsHighMsgLagCondition(t *testing.T, streams, consu
 							continue
 						}
 
-					NextMsg:
+						// NextMsg:
 						for _, msg := range msgs {
 							msgid := msg.Header.Get("Nats-Msg-Id")
 							if pastMsg, ok := receivedMap[msgid]; !ok {
@@ -7162,13 +7164,8 @@ func testJetStreamClusterStreamsHighMsgLagCondition(t *testing.T, streams, consu
 									// t.Logf("DUPLICATE: %s || \n %+v || %v || %+v\nPAST: %v || %v || %v || %+v", msgid, msg.Subject, msg.Reply, meta1, pastMsg.Subject, pastMsg.Reply, pastMsg.Header.Get("Nats-Msg-Id"), meta2)
 									dups <- &dupPair{msg.Subject, msgid, msg, pastMsg}
 
-									// Do not ack these?
-									continue NextMsg
-
-									// aerr := msg.Ack()
-									// if aerr != nil {
-									// 	t.Logf("Ack Errored for %v", msg.Reply)
-									// }
+									// NOTE: Do not ack these?
+									// continue NextMsg
 								}
 							}
 							aerr := msg.Ack()
@@ -7199,18 +7196,21 @@ func testJetStreamClusterStreamsHighMsgLagCondition(t *testing.T, streams, consu
 		}
 	}()
 
-	producer := func() {
+	producer := func(tctx context.Context, async bool) {
 		wg.Add(1)
 
-		_, ljs := jsClientConnect(t, c.randomServer())
+		nc, ljs := jsClientConnect(t, c.randomServer())
 		defer nc.Close()
 
 		producerid := nuid.Next()
+		if !async {
+			producerid = fmt.Sprintf("%s_SYNC", producerid)
+		}
 		payload := []byte(strings.Repeat("A", 1024*2))
 		tick := time.NewTicker(1 * time.Millisecond)
 		for i := 1; ; i++ {
 			select {
-			case <-pctx.Done():
+			case <-tctx.Done():
 				// t.Logf("Stopped publishing")
 				wg.Done()
 				return
@@ -7222,21 +7222,29 @@ func testJetStreamClusterStreamsHighMsgLagCondition(t *testing.T, streams, consu
 						// Retry until it works
 					Attempts:
 						for {
-							// _, err := ljs.Publish(subject, payload, nats.RetryAttempts(30), nats.MsgId(msgid), nats.AckWait(200*time.Millisecond))
 							// _, err := ljs.Publish(subject, payload, nats.RetryAttempts(30), nats.AckWait(200*time.Millisecond))
-							// Publish very fast, let it fail and get stalled publishing the same msg id as needed.
-							_, err := ljs.PublishAsync(subject, payload, nats.RetryAttempts(30), nats.MsgId(msgid))
-							if err != nil {
-								// t.Logf("ERROR: %v (%s:%s)", err, subject, msgid)
-								select {
-								case <-ljs.PublishAsyncComplete():
-								case <-pctx.Done():
-									wg.Done()
-									return
+							if async {
+								// Publish very fast, let it fail and get stalled publishing the same msg id as needed.
+								_, err := ljs.PublishAsync(subject, payload, nats.RetryAttempts(30), nats.MsgId(msgid))
+								if err != nil {
+									// t.Logf("ERROR: %v (%s:%s)", err, subject, msgid)
+									select {
+									case <-ljs.PublishAsyncComplete():
+									case <-tctx.Done():
+										wg.Done()
+										return
+									}
+									continue Attempts
 								}
-								continue Attempts
+								break Attempts
+							} else {
+								_, err := ljs.Publish(subject, payload, nats.RetryAttempts(10), nats.MsgId(msgid), nats.AckWait(500*time.Millisecond))
+								if err != nil {
+									t.Logf("ERROR: %v (%s:%s)", err, subject, msgid)
+									continue Attempts
+								}
+								break Attempts
 							}
-							break Attempts
 						}
 					}
 				}
@@ -7245,9 +7253,9 @@ func testJetStreamClusterStreamsHighMsgLagCondition(t *testing.T, streams, consu
 	}
 
 	// Start parallel producers on different connections, allow some time for things to settle.
-	time.Sleep(5 * time.Second)
+	time.Sleep(10 * time.Second)
 	for i := 0; i < producers; i++ {
-		go producer()
+		go producer(pctx, true)
 	}
 
 	// Restart and wait on stream leaders.
@@ -7277,6 +7285,7 @@ StreamCheck:
 	}
 
 	// Check the state from all streams a few times.
+	var driftRecovered bool
 	for i := 0; i < 5; i++ {
 		var drift bool
 		for stream := 0; stream < streams; stream++ {
@@ -7301,19 +7310,39 @@ StreamCheck:
 			// checkState(t, streamName, false)
 		}
 		if !drift {
+			t.Logf("There is no drift")
+			driftRecovered = true
 			break
 		}
 		time.Sleep(10 * time.Second)
 	}
+	if !driftRecovered {
+		t.Errorf("Drift among replicas did not recover")
+	}
 
-	// In case there was still a drift, cause a step down to try to recover.
-	// for range time.NewTicker(5 * time.Second).C {
-	// 	t.Logf("---------------------------------------------------------------------------------------------------------------")
-	// 	for stream := 0; stream < streams; stream++ {
-	// 		streamName := fmt.Sprintf("STREAM_%d", stream)
-	// 		checkState(t, streamName, false)
-	// 	}
-	// }
+	// Start publishing again at a better pace with synchronous subscribers.
+	t.Logf("Resume publishing")
+	nctx, ncancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer ncancel()
+
+	for i := 0; i < 5; i++ {
+		go producer(nctx, false)
+	}
+
+	// Check state of the streams.
+Ticker:
+	for range time.NewTicker(5 * time.Second).C {
+		select {
+		case <-nctx.Done():
+			break Ticker
+		default:
+		}
+		t.Logf("---------------------------------------------------------------------------------------------------------------")
+		for stream := 0; stream < streams; stream++ {
+			streamName := fmt.Sprintf("STREAM_%d", stream)
+			checkState(t, streamName, false)
+		}
+	}
 	totalDups := len(dups)
 	if len(dups) > 0 {
 		t.Errorf("Got duplicates with same msg id: %d", totalDups)
@@ -7327,7 +7356,7 @@ StreamCheck:
 		t.Logf("   [2] - %+v", t1)
 	}
 
-	// Both goroutines should be exiting now..
+	// Goroutines should be exiting now...
 	cancel()
 
 	t.Logf("Stopping.")
