@@ -4736,7 +4736,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		sindex := 0
 		lqs := len(qsubs)
 		if lqs > 1 {
-			sindex = int(fastrand.Uint32()) % lqs
+			sindex = int(fastrand.Uint32() % uint32(lqs))
 		}
 
 		// Find a subscription that is able to deliver this message starting at a random index.
