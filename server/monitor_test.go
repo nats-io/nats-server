@@ -4050,7 +4050,9 @@ func TestMonitorAccountz(t *testing.T) {
 
 	body = string(readBody(t, fmt.Sprintf("http://127.0.0.1:%d%s?unused=1", s.MonitorAddr().Port, AccountStatzPath)))
 	require_Contains(t, body, `"acc": "$G"`)
+	require_Contains(t, body, `"acc_name": "$G"`)
 	require_Contains(t, body, `"acc": "$SYS"`)
+	require_Contains(t, body, `"acc_name": "$SYS"`)
 	require_Contains(t, body, `"sent": {`)
 	require_Contains(t, body, `"received": {`)
 	require_Contains(t, body, `"total_conns": 0,`)
