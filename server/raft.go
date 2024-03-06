@@ -3678,7 +3678,7 @@ func (n *raft) writePeerState(ps *peerState) {
 	// Stamp latest and write the peer state file.
 	n.wps = pse
 	if err := writePeerState(n.sd, ps); err != nil && !n.isClosed() {
-		n.setWriteErr(err)
+		n.setWriteErrLocked(err)
 		n.warn("Error writing peer state file for %q: %v", n.group, err)
 	}
 }
@@ -3807,7 +3807,7 @@ func (n *raft) writeTermVote() {
 	// Stamp latest and write the term & vote file.
 	n.wtv = b
 	if err := writeTermVote(n.sd, n.wtv); err != nil && !n.isClosed() {
-		n.setWriteErr(err)
+		n.setWriteErrLocked(err)
 		n.warn("Error writing term and vote file for %q: %v", n.group, err)
 	}
 }
