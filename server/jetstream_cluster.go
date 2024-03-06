@@ -3147,6 +3147,14 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 		if node := mset.raftNode(); node != nil && !node.Quorum() && time.Since(node.Created()) > 5*time.Second {
 			s.sendStreamLostQuorumAdvisory(mset)
 		}
+
+		// Clear clseq. If we become leader again, it will be fixed up
+		// automatically on the next processClusteredInboundMsg call.
+		mset.mu.Lock()
+		if mset.clseq > 0 {
+			mset.clseq = 0
+		}
+		mset.mu.Unlock()
 	}
 
 	// Tell stream to switch leader status.
@@ -7657,7 +7665,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// We only use mset.clseq for clustering and in case we run ahead of actual commits.
 	// Check if we need to set initial value here
 	mset.clMu.Lock()
-	if mset.clseq == 0 || mset.clseq < lseq {
+	if mset.clseq == 0 || mset.clseq < lseq+clfs {
 		// Re-capture
 		lseq, clfs = mset.lseq, mset.clfs
 		mset.clseq = lseq + clfs
