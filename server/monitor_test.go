@@ -4050,7 +4050,78 @@ func TestMonitorAccountz(t *testing.T) {
 
 	body = string(readBody(t, fmt.Sprintf("http://127.0.0.1:%d%s?unused=1", s.MonitorAddr().Port, AccountStatzPath)))
 	require_Contains(t, body, `"acc": "$G"`)
+	require_Contains(t, body, `"name": "$G"`)
 	require_Contains(t, body, `"acc": "$SYS"`)
+	require_Contains(t, body, `"name": "$SYS"`)
+	require_Contains(t, body, `"sent": {`)
+	require_Contains(t, body, `"received": {`)
+	require_Contains(t, body, `"total_conns": 0,`)
+	require_Contains(t, body, `"leafnodes": 0,`)
+}
+
+func TestMonitorAccountzOperatorMode(t *testing.T) {
+	_, sysPub := createKey(t)
+	sysClaim := jwt.NewAccountClaims(sysPub)
+	sysClaim.Name = "SYS"
+	sysJwt := encodeClaim(t, sysClaim, sysPub)
+
+	accKp, accPub := createKey(t)
+	accClaim := jwt.NewAccountClaims(accPub)
+	accClaim.Name = "APP"
+	accJwt := encodeClaim(t, accClaim, accPub)
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		http: 127.0.0.1:-1
+		operator = %s
+		resolver = MEMORY
+		system_account: %s
+		resolver_preload = {
+			%s : %s
+			%s : %s
+		}
+	`, ojwt, sysPub, accPub, accJwt, sysPub, sysJwt)))
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	createUser := func() (string, string) {
+		ukp, _ := nkeys.CreateUser()
+		seed, _ := ukp.Seed()
+		upub, _ := ukp.PublicKey()
+		uclaim := newJWTTestUserClaims()
+		uclaim.Subject = upub
+		ujwt, err := uclaim.Encode(accKp)
+		require_NoError(t, err)
+		return upub, genCredsFile(t, ujwt, seed)
+	}
+
+	_, aCreds := createUser()
+
+	nc, err := nats.Connect(s.ClientURL(), nats.UserCredentials(aCreds))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	body := string(readBody(t, fmt.Sprintf("http://127.0.0.1:%d%s", s.MonitorAddr().Port, AccountzPath)))
+	require_Contains(t, body, accPub)
+	require_Contains(t, body, sysPub)
+	require_Contains(t, body, `"accounts": [`)
+	require_Contains(t, body, fmt.Sprintf(`"system_account": "%s"`, sysPub))
+
+	body = string(readBody(t, fmt.Sprintf("http://127.0.0.1:%d%s?acc=%s", s.MonitorAddr().Port, AccountzPath, sysPub)))
+	require_Contains(t, body, `"account_detail": {`)
+	require_Contains(t, body, fmt.Sprintf(`"account_name": "%s",`, sysPub))
+	require_Contains(t, body, `"subscriptions": 50,`)
+	require_Contains(t, body, `"is_system": true,`)
+	require_Contains(t, body, fmt.Sprintf(`"system_account": "%s"`, sysPub))
+
+	// TODO: understand why the APP account did not show up in the accountz detail
+	// even though unused is set. It required a connection to be made to show up.
+	body = string(readBody(t, fmt.Sprintf("http://127.0.0.1:%d%s?unused=1", s.MonitorAddr().Port, AccountStatzPath)))
+	require_Contains(t, body, fmt.Sprintf(`"acc": "%s"`, accPub))
+	require_Contains(t, body, fmt.Sprintf(`"name": "%s"`, accClaim.Name))
+	require_Contains(t, body, fmt.Sprintf(`"acc": "%s"`, sysPub))
+	require_Contains(t, body, fmt.Sprintf(`"name": "%s"`, sysClaim.Name))
 	require_Contains(t, body, `"sent": {`)
 	require_Contains(t, body, `"received": {`)
 	require_Contains(t, body, `"total_conns": 0,`)

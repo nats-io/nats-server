@@ -52,6 +52,7 @@ type Account struct {
 	stats
 	gwReplyMapping
 	Name         string
+	LogicalName  string
 	Nkey         string
 	Issuer       string
 	claimJWT     string
@@ -251,9 +252,10 @@ type importMap struct {
 // NewAccount creates a new unlimited account with the given name.
 func NewAccount(name string) *Account {
 	a := &Account{
-		Name:     name,
-		limits:   limits{-1, -1, -1, -1, false},
-		eventIds: nuid.New(),
+		Name:        name,
+		LogicalName: name,
+		limits:      limits{-1, -1, -1, -1, false},
+		eventIds:    nuid.New(),
 	}
 	return a
 }
@@ -3752,6 +3754,8 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 func (s *Server) buildInternalAccount(ac *jwt.AccountClaims) *Account {
 	acc := NewAccount(ac.Subject)
 	acc.Issuer = ac.Issuer
+	// Override subject with logical name.
+	acc.LogicalName = ac.Name
 	// Set this here since we are placing in s.tmpAccounts below and may be
 	// referenced by an route RS+, etc.
 	s.setAccountSublist(acc)
