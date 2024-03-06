@@ -206,7 +206,7 @@ type AccountNumConns struct {
 // AccountStat contains the data common between AccountNumConns and AccountStatz
 type AccountStat struct {
 	Account       string    `json:"acc"`
-	AccountName   string    `json:"acc_name"`
+	Name          string    `json:"name"`
 	Conns         int       `json:"conns"`
 	LeafNodes     int       `json:"leafnodes"`
 	TotalConns    int       `json:"total_conns"`
@@ -2105,12 +2105,12 @@ func (a *Account) statz() *AccountStat {
 	localConns := a.numLocalConnections()
 	leafConns := a.numLocalLeafNodes()
 	return &AccountStat{
-		Account:     a.Name,
-		AccountName: a.LogicalName,
-		Conns:       localConns,
-		LeafNodes:   leafConns,
-		TotalConns:  localConns + leafConns,
-		NumSubs:     a.sl.Count(),
+		Account:    a.Name,
+		Name:       a.LogicalName,
+		Conns:      localConns,
+		LeafNodes:  leafConns,
+		TotalConns: localConns + leafConns,
+		NumSubs:    a.sl.Count(),
 		Received: DataStats{
 			Msgs:  atomic.LoadInt64(&a.inMsgs),
 			Bytes: atomic.LoadInt64(&a.inBytes),
