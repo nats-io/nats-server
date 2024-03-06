@@ -534,6 +534,13 @@ func TestSubjectTreeMatchTsepSecondThenPartialPartBug(t *testing.T) {
 	match(t, st, "foo.*.*.zzz.foo.>", 0)
 }
 
+func TestSubjectTreeMatchMultipleWildcardBasic(t *testing.T) {
+	st := NewSubjectTree[int]()
+	st.Insert(b("A.B.C.D.0.G.H.I.0"), 22)
+	st.Insert(b("A.B.C.D.1.G.H.I.0"), 22)
+	match(t, st, "A.B.*.D.1.*.*.I.0", 1)
+}
+
 func TestSubjectTreeRandomTrackEntries(t *testing.T) {
 	st := NewSubjectTree[int]()
 	smap := make(map[string]struct{}, 1000)
