@@ -5489,8 +5489,8 @@ func TestNoRaceJetStreamFileStoreLargeKVAccessTiming(t *testing.T) {
 
 	start := time.Now()
 	sm, err := fs.LoadLastMsg(last, nil)
-	require_NoError(t, err)
 	base := time.Since(start)
+	require_NoError(t, err)
 
 	if !bytes.Equal(sm.msg, val) {
 		t.Fatalf("Retrieved value did not match")
@@ -5498,8 +5498,8 @@ func TestNoRaceJetStreamFileStoreLargeKVAccessTiming(t *testing.T) {
 
 	start = time.Now()
 	_, err = fs.LoadLastMsg(first, nil)
-	require_NoError(t, err)
 	slow := time.Since(start)
+	require_NoError(t, err)
 
 	if slow > 4*base || slow > time.Millisecond {
 		t.Fatalf("Took too long to look up first key vs last: %v vs %v", base, slow)
