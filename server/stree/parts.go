@@ -65,13 +65,13 @@ func genParts(filter []byte, parts [][]byte) [][]byte {
 
 // Match our parts against a fragment, which could be prefix for nodes or a suffix for leafs.
 func matchParts(parts [][]byte, frag []byte) ([][]byte, bool) {
-	if len(frag) == 0 {
+	lf := len(frag)
+	if lf == 0 {
 		return parts, true
 	}
 
 	var si int
 	lpi := len(parts) - 1
-	lf := len(frag)
 
 	for i, part := range parts {
 		if si >= lf {
@@ -97,9 +97,9 @@ func matchParts(parts [][]byte, frag []byte) ([][]byte, bool) {
 				return nil, true
 			}
 		}
-		end := min(si+lp, len(frag))
-		// If part is bigger then the fragment, adjust to a portion on the part.
-		if partialPart := lp > end; partialPart {
+		end := min(si+lp, lf)
+		// If part is bigger then the remaining fragment, adjust to a portion on the part.
+		if si+lp > end {
 			// Frag is smaller then part itself.
 			part = part[:end-si]
 		}
@@ -113,7 +113,7 @@ func matchParts(parts [][]byte, frag []byte) ([][]byte, bool) {
 		}
 		// If we matched a partial, do not move past current part
 		// but update the part to what was consumed. This allows upper layers to continue.
-		if end < lp {
+		if end < si+lp {
 			if end >= lf {
 				parts = append([][]byte{}, parts...) // Create a copy before modifying.
 				parts[i] = parts[i][lf-si:]
