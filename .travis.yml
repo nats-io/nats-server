@@ -52,4 +52,4 @@ deploy:
   script: curl -sL http://git.io/goreleaser | bash
   on:
     tags: true
-    condition: ($TRAVIS_GO_VERSION =~ 1.22) && ($TEST_SUITE = "compile")
+    condition: ($TRAVIS_GO_VERSION =~ 1.21) && ($TEST_SUITE = "compile")
