@@ -7700,7 +7700,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	mset.clMu.Lock()
 	if mset.clseq == 0 || mset.clseq < lseq+clfs {
 		// Re-capture
-		lseq, clfs = mset.lseq, mset.clfs
+		lseq, clfs = mset.lastSeq(), mset.clfs
 		mset.clseq = lseq + clfs
 	}
 
