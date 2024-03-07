@@ -7558,7 +7558,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	canRespond := !mset.cfg.NoAck && len(reply) > 0
 	name, stype, store := mset.cfg.Name, mset.cfg.Storage, mset.store
 	s, js, jsa, st, r, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.tier, mset.outq, mset.node
-	maxMsgSize, lseq, clfs := int(mset.cfg.MaxMsgSize), mset.lseq, mset.clfs
+	maxMsgSize, lseq := int(mset.cfg.MaxMsgSize), mset.lseq
 	interestPolicy, discard, maxMsgs, maxBytes := mset.cfg.Retention != LimitsPolicy, mset.cfg.Discard, mset.cfg.MaxMsgs, mset.cfg.MaxBytes
 	isLeader, isSealed := mset.isLeader(), mset.cfg.Sealed
 
@@ -7698,10 +7698,10 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// We only use mset.clseq for clustering and in case we run ahead of actual commits.
 	// Check if we need to set initial value here
 	mset.clMu.Lock()
-	if mset.clseq == 0 || mset.clseq < lseq+clfs {
+	if mset.clseq == 0 || mset.clseq < lseq+mset.clfs {
 		// Re-capture
-		lseq, clfs = mset.lastSeq(), mset.clfs
-		mset.clseq = lseq + clfs
+		lseq = mset.lastSeq()
+		mset.clseq = lseq + mset.clfs
 	}
 
 	// Check if we have an interest policy and discard new with max msgs or bytes.
@@ -7764,7 +7764,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 
 	// Check to see if we are being overrun.
 	// TODO(dlc) - Make this a limit where we drop messages to protect ourselves, but allow to be configured.
-	if mset.clseq-(lseq+clfs) > streamLagWarnThreshold {
+	if mset.clseq-(lseq+mset.clfs) > streamLagWarnThreshold {
 		lerr := fmt.Errorf("JetStream stream '%s > %s' has high message lag", jsa.acc().Name, name)
 		s.RateLimitWarnf(lerr.Error())
 	}
@@ -7955,11 +7955,11 @@ var (
 func (mset *stream) processSnapshot(snap *StreamReplicatedState) (e error) {
 	// Update any deletes, etc.
 	mset.processSnapshotDeletes(snap)
+	mset.setCLFS(snap.Failed)
 
 	mset.mu.Lock()
 	var state StreamState
 	mset.store.FastState(&state)
-	mset.setCLFS(snap.Failed)
 	sreq := mset.calculateSyncRequest(&state, snap)
 
 	s, js, subject, n, st := mset.srv, mset.js, mset.sa.Sync, mset.node, mset.cfg.Storage
