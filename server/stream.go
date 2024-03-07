@@ -992,9 +992,7 @@ func (mset *stream) rebuildDedupe() {
 }
 
 func (mset *stream) lastSeqAndCLFS() (uint64, uint64) {
-	mset.mu.RLock()
-	defer mset.mu.RUnlock()
-	return mset.lseq, mset.getCLFS()
+	return mset.lastSeq(), mset.getCLFS()
 }
 
 func (mset *stream) getCLFS() uint64 {
@@ -1011,9 +1009,8 @@ func (mset *stream) setCLFS(clfs uint64) {
 
 func (mset *stream) lastSeq() uint64 {
 	mset.mu.RLock()
-	lseq := mset.lseq
-	mset.mu.RUnlock()
-	return lseq
+	defer mset.mu.RUnlock()
+	return mset.lseq
 }
 
 func (mset *stream) setLastSeq(lseq uint64) {
@@ -4165,6 +4162,11 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	mset.mu.Lock()
 	s, store := mset.srv, mset.store
 
+	bumpCLFS := func() {
+		mset.clMu.Lock()
+		mset.clfs++
+		mset.clMu.Unlock()
+	}
 	// Apply the input subject transform if any
 	if mset.itr != nil {
 		ts, err := mset.itr.Match(subject)
@@ -4194,6 +4196,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	if isSealed {
 		outq := mset.outq
 		mset.mu.Unlock()
+		bumpCLFS()
 		if canRespond && outq != nil {
 			resp.PubAck = &PubAck{Stream: name}
 			resp.Error = ApiErrors[JSStreamSealedErr]
@@ -4258,8 +4261,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		if !isClustered {
 			// Expected stream.
 			if sname := getExpectedStream(hdr); sname != _EMPTY_ && sname != name {
-				mset.clfs++
 				mset.mu.Unlock()
+				bumpCLFS()
 				if canRespond {
 					resp.PubAck = &PubAck{Stream: name}
 					resp.Error = NewJSStreamNotMatchError()
@@ -4273,8 +4276,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		// Dedupe detection.
 		if msgId = getMsgId(hdr); msgId != _EMPTY_ {
 			if dde := mset.checkMsgId(msgId); dde != nil {
-				mset.clfs++
 				mset.mu.Unlock()
+				bumpCLFS()
 				if canRespond {
 					response := append(pubAck, strconv.FormatUint(dde.seq, 10)...)
 					response = append(response, ",\"duplicate\": true}"...)
@@ -4297,8 +4300,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				fseq, err = 0, nil
 			}
 			if err != nil || fseq != seq {
-				mset.clfs++
 				mset.mu.Unlock()
+				bumpCLFS()
 				if canRespond {
 					resp.PubAck = &PubAck{Stream: name}
 					resp.Error = NewJSStreamWrongLastSequenceError(fseq)
@@ -4312,8 +4315,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		// Expected last sequence.
 		if seq, exists := getExpectedLastSeq(hdr); exists && seq != mset.lseq {
 			mlseq := mset.lseq
-			mset.clfs++
 			mset.mu.Unlock()
+			bumpCLFS()
 			if canRespond {
 				resp.PubAck = &PubAck{Stream: name}
 				resp.Error = NewJSStreamWrongLastSequenceError(mlseq)
@@ -4329,8 +4332,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			}
 			if lmsgId != mset.lmsgId {
 				last := mset.lmsgId
-				mset.clfs++
 				mset.mu.Unlock()
+				bumpCLFS()
 				if canRespond {
 					resp.PubAck = &PubAck{Stream: name}
 					resp.Error = NewJSStreamWrongLastMsgIDError(last)
@@ -4343,8 +4346,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		// Check for any rollups.
 		if rollup := getRollup(hdr); rollup != _EMPTY_ {
 			if !mset.cfg.AllowRollup || mset.cfg.DenyPurge {
-				mset.clfs++
 				mset.mu.Unlock()
+				bumpCLFS()
 				if canRespond {
 					resp.PubAck = &PubAck{Stream: name}
 					resp.Error = NewJSStreamRollupFailedError(errors.New("rollup not permitted"))
@@ -4360,6 +4363,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				rollupAll = true
 			default:
 				mset.mu.Unlock()
+				bumpCLFS()
 				return fmt.Errorf("rollup value invalid: %q", rollup)
 			}
 		}
@@ -4374,8 +4378,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	// Check to see if we are over the max msg size.
 	if maxMsgSize >= 0 && (len(hdr)+len(msg)) > maxMsgSize {
-		mset.clfs++
 		mset.mu.Unlock()
+		bumpCLFS()
 		if canRespond {
 			resp.PubAck = &PubAck{Stream: name}
 			resp.Error = NewJSStreamMessageExceedsMaximumError()
@@ -4386,8 +4390,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	}
 
 	if len(hdr) > math.MaxUint16 {
-		mset.clfs++
 		mset.mu.Unlock()
+		bumpCLFS()
 		if canRespond {
 			resp.PubAck = &PubAck{Stream: name}
 			resp.Error = NewJSStreamHeaderExceedsMaximumError()
@@ -4400,8 +4404,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	// Check to see if we have exceeded our limits.
 	if js.limitsExceeded(stype) {
 		s.resourcesExceededError()
-		mset.clfs++
 		mset.mu.Unlock()
+		bumpCLFS()
 		if canRespond {
 			resp.PubAck = &PubAck{Stream: name}
 			resp.Error = NewJSInsufficientResourcesError()
@@ -4522,8 +4526,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		mset.store.FastState(&state)
 		mset.lseq = state.LastSeq
 		mset.lmsgId = olmsgId
-		mset.clfs++
 		mset.mu.Unlock()
+		bumpCLFS()
 
 		switch err {
 		case ErrMaxMsgs, ErrMaxBytes, ErrMaxMsgsPerSubject, ErrMsgTooLarge:
