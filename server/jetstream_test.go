@@ -23123,3 +23123,31 @@ func TestJetStreamDirectGetMultiPaging(t *testing.T) {
 		processPartial(b + 1) // 100 + EOB
 	}
 }
+
+func TestJetStreamConsumerInactiveThresholdFromLimits(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Description: "",
+		Subjects:    []string{"foo"},
+		ConsumerLimits: nats.StreamConsumerLimits{
+			InactiveThreshold: time.Second * 1,
+		},
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable: "TEST",
+	})
+	require_NoError(t, err)
+	// Durable consumer should not inherit inactivity threshold limits
+	// from the stream.
+	time.Sleep(5 * time.Second)
+	_, err = js.ConsumerInfo("TEST", "TEST")
+	require_NoError(t, err)
+}

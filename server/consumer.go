@@ -459,7 +459,8 @@ func setConsumerConfigDefaults(config *ConsumerConfig, streamCfg *StreamConfig, 
 	if config.MaxAckPending == 0 {
 		config.MaxAckPending = streamCfg.ConsumerLimits.MaxAckPending
 	}
-	if config.InactiveThreshold == 0 {
+	// Do not inherit inactivity threshold for durable consumers.
+	if config.InactiveThreshold == 0 && config.Durable == _EMPTY_ {
 		config.InactiveThreshold = streamCfg.ConsumerLimits.InactiveThreshold
 	}
 	// Set proper default for max ack pending if we are ack explicit and none has been set.
