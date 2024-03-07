@@ -6969,7 +6969,7 @@ func TestJetStreamClusterConsumerPauseSurvivesRestart(t *testing.T) {
 	checkTimer(leader)
 }
 
-func TestJetStreamClusterCLFSOnDuplicates(t *testing.T) {
+func TestJetStreamClusterCLFSOnDuplicatesTriggersStreamReset(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -6979,7 +6979,7 @@ func TestJetStreamClusterCLFSOnDuplicates(t *testing.T) {
 	nc2, js2 := jsClientConnect(t, c.randomServer())
 	defer nc2.Close()
 
-	streamName := "TESTW"
+	streamName := "TESTW2"
 	_, err := js.AddStream(&nats.StreamConfig{
 		Name:       streamName,
 		Subjects:   []string{"foo"},
@@ -6998,6 +6998,96 @@ func TestJetStreamClusterCLFSOnDuplicates(t *testing.T) {
 	// The test will be successful if it runs for this long without dup issues.
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
 	defer cancel()
+
+	// -----------------------------------------------------------------------------------------------------------------------------
+	checkHealthz := func(t *testing.T) {
+		t.Helper()
+		for _, srv := range c.servers {
+			if srv == nil {
+				continue
+			}
+			rerr := srv.healthz(nil)
+			if rerr != nil {
+				if srv == nil {
+					continue
+				}
+				t.Logf("Healthz: %s - %v", srv.Name(), rerr)
+			}
+		}
+	}
+	getStreamDetails := func(t *testing.T, srv *Server, streamName string) *StreamDetail {
+		t.Helper()
+		jsz, err := srv.Jsz(&JSzOptions{Accounts: true, Streams: true, Consumer: true})
+		require_NoError(t, err)
+		if len(jsz.AccountDetails) > 0 && len(jsz.AccountDetails[0].Streams) > 0 {
+			details := jsz.AccountDetails[0]
+			for _, stream := range details.Streams {
+				if stream.Name == streamName {
+					return &stream
+				}
+			}
+			t.Error("Could not find stream details")
+		}
+		t.Error("Could not find account details")
+		return nil
+	}
+	checkState := func(t *testing.T, streamName string) error {
+		t.Helper()
+
+		leaderSrv := c.streamLeader("$G", streamName)
+		if leaderSrv == nil {
+			return nil
+		}
+		t.Logf("-------------------------------------------------------------------------------------------------------------------")
+		streamLeader := getStreamDetails(t, leaderSrv, streamName)
+		errs := make([]error, 0)
+		t.Logf("| %-10s | %-10s | msgs:%-10d | delta:%-10d | %-10s | first:%-10d | last:%-10d |", leaderSrv.Name(), streamName, streamLeader.State.Msgs, 0, "LEADER", streamLeader.State.FirstSeq, streamLeader.State.LastSeq)
+		for _, srv := range c.servers {
+			if srv == leaderSrv {
+				// Skip self
+				continue
+			}
+			stream := getStreamDetails(t, srv, streamName)
+			if stream == nil {
+				continue
+			}
+			var status string
+			switch {
+			case streamLeader.State.Msgs > stream.State.Msgs:
+				status = "DRIFT+"
+			case streamLeader.State.Msgs == stream.State.Msgs:
+				status = "INSYNC"
+			case streamLeader.State.Msgs < stream.State.Msgs:
+				status = "DRIFT-"
+			}
+			t.Logf("| %-10s | %-10s | msgs:%-10d | delta:%-10d | %-10s | first:%-10d | last:%-10d |", srv.Name(), streamName, stream.State.Msgs, int(streamLeader.State.Msgs)-int(stream.State.Msgs), status, stream.State.FirstSeq, stream.State.LastSeq)
+			if stream.State.Msgs != streamLeader.State.Msgs {
+				err := fmt.Errorf("Leader %v has %d messages, Follower %v has %d messages",
+					stream.Cluster.Leader, streamLeader.State.Msgs,
+					srv.Name(), stream.State.Msgs,
+				)
+				errs = append(errs, err)
+			}
+		}
+		if len(errs) > 0 {
+			return errors.Join(errs...)
+		}
+		return nil
+	}
+
+	go func() {
+		for range time.NewTicker(1 * time.Second).C {
+			select {
+			case <-ctx.Done():
+				wg.Done()
+				return
+			default:
+			}
+			checkHealthz(t)
+			checkState(t, streamName)
+		}
+	}()
+	wg.Add(1)
 
 	go func() {
 		tick := time.NewTicker(10 * time.Second)
@@ -7078,10 +7168,11 @@ Loop:
 			t.Error(e)
 			break Loop
 		default:
+
 		}
 		// Cause a lot of duplicates very fast until producer stalls.
 		for i := 0; i < 128; i++ {
-			msgID := nats.MsgId(fmt.Sprintf("id.%d.%d", n, i))
+			msgID := nats.MsgId(fmt.Sprintf("id.%d.%d", n, 1))
 			js.PublishAsync("foo", []byte("test"), msgID, nats.RetryAttempts(10))
 		}
 	}
