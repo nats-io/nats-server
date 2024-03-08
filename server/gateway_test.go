@@ -6906,3 +6906,47 @@ func TestGatewaySlowConsumer(t *testing.T) {
 		t.Errorf("got: %d, expected: %d", got, expected)
 	}
 }
+
+// https://github.com/nats-io/nats-server/issues/5187
+func TestGatewayConnectEvents(t *testing.T) {
+	checkEvents := func(t *testing.T, name string, queue bool) {
+		t.Run(name, func(t *testing.T) {
+			ca := createClusterEx(t, true, 5*time.Millisecond, true, "A", 2)
+			defer shutdownCluster(ca)
+
+			cb := createClusterEx(t, true, 5*time.Millisecond, true, "B", 2, ca)
+			defer shutdownCluster(cb)
+
+			sysA, err := nats.Connect(ca.randomServer().ClientURL(), nats.UserInfo("sys", "pass"))
+			require_NoError(t, err)
+			defer sysA.Close()
+
+			var sub1 *nats.Subscription
+			if queue {
+				sub1, err = sysA.QueueSubscribeSync("$SYS.ACCOUNT.FOO.CONNECT", "myqueue")
+			} else {
+				sub1, err = sysA.SubscribeSync("$SYS.ACCOUNT.FOO.CONNECT")
+			}
+			require_NoError(t, err)
+
+			cA, err := nats.Connect(ca.randomServer().ClientURL(), nats.UserInfo("foo", "pass"))
+			require_NoError(t, err)
+			defer cA.Close()
+
+			msg, err := sub1.NextMsg(time.Second)
+			require_NoError(t, err)
+			require_Equal(t, msg.Subject, "$SYS.ACCOUNT.FOO.CONNECT")
+
+			cB, err := nats.Connect(cb.randomServer().ClientURL(), nats.UserInfo("foo", "pass"))
+			require_NoError(t, err)
+			defer cB.Close()
+
+			msg, err = sub1.NextMsg(time.Second)
+			require_NoError(t, err)
+			require_Equal(t, msg.Subject, "$SYS.ACCOUNT.FOO.CONNECT")
+		})
+	}
+
+	checkEvents(t, "Unqueued", false)
+	checkEvents(t, "Queued", true)
+}
