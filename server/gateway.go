@@ -2555,7 +2555,7 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 		mh = append(mh, subject...)
 		mh = append(mh, ' ')
 		if len(queues) > 0 {
-			if reply != nil {
+			if len(reply) > 0 {
 				mh = append(mh, "+ "...) // Signal that there is a reply.
 				mh = append(mh, mreply...)
 				mh = append(mh, ' ')
