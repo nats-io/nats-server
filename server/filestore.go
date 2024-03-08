@@ -5379,7 +5379,10 @@ func (mb *msgBlock) writeAt(buf []byte, woff int64) (int, error) {
 		mb.mockWriteErr = false
 		return 0, errors.New("mock write error")
 	}
-	return mb.mfd.WriteAt(buf, woff)
+	<-dios
+	n, err := mb.mfd.WriteAt(buf, woff)
+	dios <- struct{}{}
+	return n, err
 }
 
 // flushPendingMsgsLocked writes out any messages for this message block.
