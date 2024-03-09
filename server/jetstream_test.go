@@ -70,6 +70,10 @@ func TestJetStreamBasicNilConfig(t *testing.T) {
 	// Check dynamic max memory.
 	hwMem := sysmem.Memory()
 	if hwMem != 0 {
+		// Check if memory being limited via GOMEMLIMIT if being set.
+		if gml := debug.SetMemoryLimit(-1); gml != math.MaxInt64 {
+			hwMem = gml
+		}
 		// Make sure its about 75%
 		est := hwMem / 4 * 3
 		if config.MaxMemory != est {
