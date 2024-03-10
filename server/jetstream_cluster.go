@@ -2357,6 +2357,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				// No special processing needed for when we are caught up on restart.
 				if ce == nil {
 					isRecovering = false
+					// If we are interest based make sure to check consumers if interest retention policy.
+					// This is to make sure we process any outstanding acks.
+					mset.checkInterestState()
 					// Make sure we create a new snapshot in case things have changed such that any existing
 					// snapshot may no longer be valid.
 					doSnapshot()
@@ -2888,6 +2891,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					if err == errLastSeqMismatch {
 						var state StreamState
 						mset.store.FastState(&state)
+
 						// If we have no msgs and the other side is delivering us a sequence past where we
 						// should be reset. This is possible if the other side has a stale snapshot and no longer
 						// has those messages. So compact and retry to reset.
@@ -4714,7 +4718,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 					if nb > 0 && ne >= compactNumMin || nb > compactSizeMin {
 						doSnapshot(false)
 					}
-				} else {
+				} else if err != errConsumerClosed {
 					s.Warnf("Error applying consumer entries to '%s > %s'", ca.Client.serviceAccount(), ca.Name)
 				}
 			}
@@ -4903,7 +4907,9 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 					}
 					panic(err.Error())
 				}
-				o.processReplicatedAck(dseq, sseq)
+				if err := o.processReplicatedAck(dseq, sseq); err == errConsumerClosed {
+					return err
+				}
 			case updateSkipOp:
 				o.mu.Lock()
 				if !o.isLeader() {
@@ -4938,13 +4944,14 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 	return nil
 }
 
-func (o *consumer) processReplicatedAck(dseq, sseq uint64) {
-	o.mu.Lock()
+var errConsumerClosed = errors.New("consumer closed")
 
+func (o *consumer) processReplicatedAck(dseq, sseq uint64) error {
+	o.mu.Lock()
 	mset := o.mset
 	if o.closed || mset == nil {
 		o.mu.Unlock()
-		return
+		return errConsumerClosed
 	}
 
 	// Update activity.
@@ -4955,7 +4962,7 @@ func (o *consumer) processReplicatedAck(dseq, sseq uint64) {
 
 	if o.retention == LimitsPolicy {
 		o.mu.Unlock()
-		return
+		return nil
 	}
 
 	var sagap uint64
@@ -4967,7 +4974,7 @@ func (o *consumer) processReplicatedAck(dseq, sseq uint64) {
 			state, err := o.store.State()
 			if err != nil {
 				o.mu.Unlock()
-				return
+				return err
 			}
 			sagap = sseq - state.AckFloor.Stream
 		}
@@ -4982,6 +4989,7 @@ func (o *consumer) processReplicatedAck(dseq, sseq uint64) {
 	} else {
 		mset.ackMsg(o, sseq)
 	}
+	return nil
 }
 
 var errBadAckUpdate = errors.New("jetstream cluster bad replicated ack update")
@@ -7973,24 +7981,6 @@ func (mset *stream) processSnapshot(snap *StreamReplicatedState) (e error) {
 	// On exit, we will release our semaphore if we acquired it.
 	defer releaseSyncOutSem()
 
-	// Check our final state when we exit cleanly.
-	// This will make sure we have interest consumers updated.
-	checkFinalState := func() {
-		// Bail if no stream.
-		if mset == nil {
-			return
-		}
-		mset.mu.RLock()
-		consumers := make([]*consumer, 0, len(mset.consumers))
-		for _, o := range mset.consumers {
-			consumers = append(consumers, o)
-		}
-		mset.mu.RUnlock()
-		for _, o := range consumers {
-			o.checkStateForInterestStream()
-		}
-	}
-
 	// Do not let this go on forever.
 	const maxRetries = 3
 	var numRetries int
@@ -8095,7 +8085,7 @@ RETRY:
 				// Check for eof signaling.
 				if len(msg) == 0 {
 					msgsQ.recycle(&mrecs)
-					checkFinalState()
+					mset.checkInterestState()
 					return nil
 				}
 				if _, err := mset.processCatchupMsg(msg); err == nil {

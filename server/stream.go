@@ -5175,6 +5175,28 @@ func (mset *stream) getPublicConsumers() []*consumer {
 	return obs
 }
 
+// Will check for interest retention and make sure messages
+// that have been acked are processed.
+func (mset *stream) checkInterestState() {
+	if mset == nil {
+		return
+	}
+	mset.mu.RLock()
+	// If we are limits based nothing to do.
+	if mset.cfg.Retention == LimitsPolicy {
+		mset.mu.RUnlock()
+		return
+	}
+	consumers := make([]*consumer, 0, len(mset.consumers))
+	for _, o := range mset.consumers {
+		consumers = append(consumers, o)
+	}
+	mset.mu.RUnlock()
+	for _, o := range consumers {
+		o.checkStateForInterestStream()
+	}
+}
+
 func (mset *stream) isInterestRetention() bool {
 	mset.mu.RLock()
 	defer mset.mu.RUnlock()
