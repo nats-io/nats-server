@@ -5958,8 +5958,6 @@ func TestJetStreamClusterStreamResetPreacks(t *testing.T) {
 	for _, msg := range msgs {
 		msg.AckSync()
 	}
-	// Let sync propagate.
-	time.Sleep(250 * time.Millisecond)
 
 	// Now grab a non-leader server.
 	// We will shut it down and remove the stream data.
