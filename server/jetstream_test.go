@@ -19142,7 +19142,7 @@ func TestJetStreamPullConsumersTimeoutHeaders(t *testing.T) {
 	s.Shutdown()
 
 	// It is possible that the client did not receive, so let's not fail
-	// on that. But if the 409 indicating the the server is shutdown
+	// on that. But if the 409 indicating the server is shutdown
 	// is received, then it should have the new headers.
 	messagesReceived, bytesReceived = 0, 0
 	select {
