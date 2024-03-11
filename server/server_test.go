@@ -35,6 +35,7 @@ import (
 	"testing"
 	"time"
 
+	srvlog "github.com/nats-io/nats-server/v2/logger"
 	"github.com/nats-io/nats.go"
 )
 
@@ -84,6 +85,13 @@ func RunServer(opts *Options) *Server {
 
 	if !opts.NoLog {
 		s.ConfigureLogger()
+	}
+
+	if ll := os.Getenv("NATS_LOGGING"); ll != "" {
+		log := srvlog.NewTestLogger(fmt.Sprintf("[%s] | ", s), true)
+		debug := ll == "debug" || ll == "trace"
+		trace := ll == "trace"
+		s.SetLoggerV2(log, debug, trace, false)
 	}
 
 	// Run server in Go routine.
