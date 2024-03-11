@@ -5501,7 +5501,7 @@ func TestNoRaceJetStreamFileStoreLargeKVAccessTiming(t *testing.T) {
 	require_NoError(t, err)
 	slow := time.Since(start)
 
-	if slow > 4*base || slow > time.Millisecond {
+	if base > 100*time.Microsecond || slow > 200*time.Microsecond {
 		t.Fatalf("Took too long to look up first key vs last: %v vs %v", base, slow)
 	}
 
@@ -5516,7 +5516,7 @@ func TestNoRaceJetStreamFileStoreLargeKVAccessTiming(t *testing.T) {
 	slow = time.Since(start)
 	fs.mu.RUnlock()
 
-	if slow > 4*base || slow > time.Millisecond {
+	if base > 100*time.Microsecond || slow > 200*time.Microsecond {
 		t.Fatalf("Took too long to look up last key by subject vs first: %v vs %v", base, slow)
 	}
 }
