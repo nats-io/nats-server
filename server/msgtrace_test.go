@@ -1353,7 +1353,7 @@ func TestMsgTraceWithLeafNodeDaisyChain(t *testing.T) {
 	sub2 := natsQueueSubSync(t, nc2, "foo.bar", "my_queue")
 	natsFlush(t, nc2)
 
-	// Check the the subject interest makes it to leaf1
+	// Check the subject interest makes it to leaf1
 	checkSubInterest(t, leaf1, "B", "foo.bar", time.Second)
 
 	// Now create the sub on leaf1

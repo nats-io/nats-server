@@ -265,7 +265,7 @@ or the server receiving another `CONNECT` packet with the same client ID. See
 `mqttHandleClosedClient()` and `mqttHandleWill()`. Steps:
 
 1. Send out the Will Message if applicable (if not caused by a `DISCONNECT` packet)
-2. Delete the the JetStream consumers for to QoS 1 and 2 packet delivery through
+2. Delete the JetStream consumers for to QoS 1 and 2 packet delivery through
    JS API calls (if "clean" session flag is set)
 3. Delete the session record from the “$MQTT_sess” stream, based on recorded
    stream sequence. (if "clean" session flag is set)

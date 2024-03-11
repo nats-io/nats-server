@@ -5481,7 +5481,7 @@ func TestGatewaySendReplyAcrossGatewaysServiceImport(t *testing.T) {
 	testServiceImport(t, oa1.Host, oa1.Port)
 	testServiceImport(t, oa2.Host, oa2.Port)
 	// sa1 is the one receiving the reply from GW between B and A.
-	// Check that the server routes directly to the the server
+	// Check that the server routes directly to the server
 	// with the interest.
 	checkRoute := func(t *testing.T, s *Server, expected int64) {
 		t.Helper()
