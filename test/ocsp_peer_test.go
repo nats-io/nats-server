@@ -26,50 +26,50 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/crypto/ocsp"
-
+	. "github.com/nats-io/nats-server/v2/internal/ocsp"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+	"golang.org/x/crypto/ocsp"
 )
 
-func newOCSPResponderRootCA(t *testing.T) *http.Server {
+func NewOCSPResponderRootCA(t *testing.T) *http.Server {
 	t.Helper()
 	respCertPEM := "configs/certs/ocsp_peer/mini-ca/caocsp/caocsp_cert.pem"
 	respKeyPEM := "configs/certs/ocsp_peer/mini-ca/caocsp/private/caocsp_keypair.pem"
 	issuerCertPEM := "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
-	return newOCSPResponderDesignatedCustomAddress(t, issuerCertPEM, respCertPEM, respKeyPEM, "127.0.0.1:8888")
+	return NewOCSPResponderDesignatedCustomAddress(t, issuerCertPEM, respCertPEM, respKeyPEM, "127.0.0.1:8888")
 }
 
-func newOCSPResponderIntermediateCA1(t *testing.T) *http.Server {
+func NewOCSPResponderIntermediateCA1(t *testing.T) *http.Server {
 	t.Helper()
 	respCertPEM := "configs/certs/ocsp_peer/mini-ca/ocsp1/ocsp1_bundle.pem"
 	respKeyPEM := "configs/certs/ocsp_peer/mini-ca/ocsp1/private/ocsp1_keypair.pem"
 	issuerCertPEM := "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem"
-	return newOCSPResponderDesignatedCustomAddress(t, issuerCertPEM, respCertPEM, respKeyPEM, "127.0.0.1:18888")
+	return NewOCSPResponderDesignatedCustomAddress(t, issuerCertPEM, respCertPEM, respKeyPEM, "127.0.0.1:18888")
 }
 
-func newOCSPResponderIntermediateCA1Undelegated(t *testing.T) *http.Server {
+func NewOCSPResponderIntermediateCA1Undelegated(t *testing.T) *http.Server {
 	t.Helper()
 	issuerCertPEM := "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem"
 	issuerCertKey := "configs/certs/ocsp_peer/mini-ca/intermediate1/private/intermediate1_keypair.pem"
-	return newOCSPResponderCustomAddress(t, issuerCertPEM, issuerCertKey, "127.0.0.1:18888")
+	return NewOCSPResponderCustomAddress(t, issuerCertPEM, issuerCertKey, "127.0.0.1:18888")
 }
 
-func newOCSPResponderBadDelegateIntermediateCA1(t *testing.T) *http.Server {
+func NewOCSPResponderBadDelegateIntermediateCA1(t *testing.T) *http.Server {
 	t.Helper()
 	// UserA2 is a cert issued by intermediate1, but intermediate1 did not add OCSP signing extension
 	respCertPEM := "configs/certs/ocsp_peer/mini-ca/client1/UserA2_bundle.pem"
 	respKeyPEM := "configs/certs/ocsp_peer/mini-ca/client1/private/UserA2_keypair.pem"
 	issuerCertPEM := "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem"
-	return newOCSPResponderDesignatedCustomAddress(t, issuerCertPEM, respCertPEM, respKeyPEM, "127.0.0.1:18888")
+	return NewOCSPResponderDesignatedCustomAddress(t, issuerCertPEM, respCertPEM, respKeyPEM, "127.0.0.1:18888")
 }
 
-func newOCSPResponderIntermediateCA2(t *testing.T) *http.Server {
+func NewOCSPResponderIntermediateCA2(t *testing.T) *http.Server {
 	t.Helper()
 	respCertPEM := "configs/certs/ocsp_peer/mini-ca/ocsp2/ocsp2_bundle.pem"
 	respKeyPEM := "configs/certs/ocsp_peer/mini-ca/ocsp2/private/ocsp2_keypair.pem"
 	issuerCertPEM := "configs/certs/ocsp_peer/mini-ca/intermediate2/intermediate2_cert.pem"
-	return newOCSPResponderDesignatedCustomAddress(t, issuerCertPEM, respCertPEM, respKeyPEM, "127.0.0.1:28888")
+	return NewOCSPResponderDesignatedCustomAddress(t, issuerCertPEM, respCertPEM, respKeyPEM, "127.0.0.1:28888")
 }
 
 // TestOCSPPeerGoodClients is test of two NATS client (AIA enabled at leaf and cert) under good path (different intermediates)
@@ -78,21 +78,21 @@ func TestOCSPPeerGoodClients(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	rootCAResponder := newOCSPResponderRootCA(t)
+	rootCAResponder := NewOCSPResponderRootCA(t)
 	rootCAResponderURL := fmt.Sprintf("http://%s", rootCAResponder.Addr)
 	defer rootCAResponder.Shutdown(ctx)
-	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
-	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate2/intermediate2_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate2/intermediate2_cert.pem", ocsp.Good)
 
-	intermediateCA1Responder := newOCSPResponderIntermediateCA1(t)
+	intermediateCA1Responder := NewOCSPResponderIntermediateCA1(t)
 	intermediateCA1ResponderURL := fmt.Sprintf("http://%s", intermediateCA1Responder.Addr)
 	defer intermediateCA1Responder.Shutdown(ctx)
-	setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
 
-	intermediateCA2Responder := newOCSPResponderIntermediateCA2(t)
+	intermediateCA2Responder := NewOCSPResponderIntermediateCA2(t)
 	intermediateCA2ResponderURL := fmt.Sprintf("http://%s", intermediateCA2Responder.Addr)
 	defer intermediateCA2Responder.Shutdown(ctx)
-	setOCSPStatus(t, intermediateCA2ResponderURL, "configs/certs/ocsp_peer/mini-ca/client2/UserB1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, intermediateCA2ResponderURL, "configs/certs/ocsp_peer/mini-ca/client2/UserB1_cert.pem", ocsp.Good)
 
 	for _, test := range []struct {
 		name      string
@@ -223,12 +223,12 @@ func TestOCSPPeerUnknownClient(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	rootCAResponder := newOCSPResponderRootCA(t)
+	rootCAResponder := NewOCSPResponderRootCA(t)
 	rootCAResponderURL := fmt.Sprintf("http://%s", rootCAResponder.Addr)
 	defer rootCAResponder.Shutdown(ctx)
-	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
 
-	intermediateCA1Responder := newOCSPResponderIntermediateCA1(t)
+	intermediateCA1Responder := NewOCSPResponderIntermediateCA1(t)
 	defer intermediateCA1Responder.Shutdown(ctx)
 
 	for _, test := range []struct {
@@ -295,15 +295,15 @@ func TestOCSPPeerRevokedClient(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	rootCAResponder := newOCSPResponderRootCA(t)
+	rootCAResponder := NewOCSPResponderRootCA(t)
 	rootCAResponderURL := fmt.Sprintf("http://%s", rootCAResponder.Addr)
 	defer rootCAResponder.Shutdown(ctx)
-	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
 
-	intermediateCA1Responder := newOCSPResponderIntermediateCA1(t)
+	intermediateCA1Responder := NewOCSPResponderIntermediateCA1(t)
 	intermediateCA1ResponderURL := fmt.Sprintf("http://%s", intermediateCA1Responder.Addr)
 	defer intermediateCA1Responder.Shutdown(ctx)
-	setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Revoked)
+	SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Revoked)
 
 	for _, test := range []struct {
 		name      string
@@ -439,21 +439,21 @@ func TestOCSPPeerUnknownAndRevokedIntermediate(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	rootCAResponder := newOCSPResponderRootCA(t)
+	rootCAResponder := NewOCSPResponderRootCA(t)
 	rootCAResponderURL := fmt.Sprintf("http://%s", rootCAResponder.Addr)
 	defer rootCAResponder.Shutdown(ctx)
-	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Revoked)
+	SetOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Revoked)
 	// No test OCSP status set on intermediate2, so unknown
 
-	intermediateCA1Responder := newOCSPResponderIntermediateCA1(t)
+	intermediateCA1Responder := NewOCSPResponderIntermediateCA1(t)
 	intermediateCA1ResponderURL := fmt.Sprintf("http://%s", intermediateCA1Responder.Addr)
 	defer intermediateCA1Responder.Shutdown(ctx)
-	setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
 
-	intermediateCA2Responder := newOCSPResponderIntermediateCA2(t)
+	intermediateCA2Responder := NewOCSPResponderIntermediateCA2(t)
 	intermediateCA2ResponderURL := fmt.Sprintf("http://%s", intermediateCA2Responder.Addr)
 	defer intermediateCA2Responder.Shutdown(ctx)
-	setOCSPStatus(t, intermediateCA2ResponderURL, "configs/certs/ocsp_peer/mini-ca/client2/UserB1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, intermediateCA2ResponderURL, "configs/certs/ocsp_peer/mini-ca/client2/UserB1_cert.pem", ocsp.Good)
 
 	for _, test := range []struct {
 		name      string
@@ -544,16 +544,16 @@ func TestOCSPPeerLeafGood(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	rootCAResponder := newOCSPResponderRootCA(t)
+	rootCAResponder := NewOCSPResponderRootCA(t)
 	rootCAResponderURL := fmt.Sprintf("http://%s", rootCAResponder.Addr)
 	defer rootCAResponder.Shutdown(ctx)
-	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
 
-	intermediateCA1Responder := newOCSPResponderIntermediateCA1(t)
+	intermediateCA1Responder := NewOCSPResponderIntermediateCA1(t)
 	intermediateCA1ResponderURL := fmt.Sprintf("http://%s", intermediateCA1Responder.Addr)
 	defer intermediateCA1Responder.Shutdown(ctx)
-	setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_cert.pem", ocsp.Good)
-	setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/server1/TestServer2_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/server1/TestServer2_cert.pem", ocsp.Good)
 
 	for _, test := range []struct {
 		name        string
@@ -691,16 +691,16 @@ func TestOCSPPeerLeafReject(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	rootCAResponder := newOCSPResponderRootCA(t)
+	rootCAResponder := NewOCSPResponderRootCA(t)
 	rootCAResponderURL := fmt.Sprintf("http://%s", rootCAResponder.Addr)
 	defer rootCAResponder.Shutdown(ctx)
-	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
 
-	intermediateCA1Responder := newOCSPResponderIntermediateCA1(t)
+	intermediateCA1Responder := NewOCSPResponderIntermediateCA1(t)
 	intermediateCA1ResponderURL := fmt.Sprintf("http://%s", intermediateCA1Responder.Addr)
 	defer intermediateCA1Responder.Shutdown(ctx)
-	setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_cert.pem", ocsp.Revoked)
-	setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/server1/TestServer2_cert.pem", ocsp.Revoked)
+	SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_cert.pem", ocsp.Revoked)
+	SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/server1/TestServer2_cert.pem", ocsp.Revoked)
 
 	for _, test := range []struct {
 		name        string
@@ -849,21 +849,21 @@ func TestOCSPPeerGoodClientsNoneCache(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	rootCAResponder := newOCSPResponderRootCA(t)
+	rootCAResponder := NewOCSPResponderRootCA(t)
 	rootCAResponderURL := fmt.Sprintf("http://%s", rootCAResponder.Addr)
 	defer rootCAResponder.Shutdown(ctx)
-	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
-	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate2/intermediate2_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate2/intermediate2_cert.pem", ocsp.Good)
 
-	intermediateCA1Responder := newOCSPResponderIntermediateCA1(t)
+	intermediateCA1Responder := NewOCSPResponderIntermediateCA1(t)
 	intermediateCA1ResponderURL := fmt.Sprintf("http://%s", intermediateCA1Responder.Addr)
 	defer intermediateCA1Responder.Shutdown(ctx)
-	setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
 
-	intermediateCA2Responder := newOCSPResponderIntermediateCA2(t)
+	intermediateCA2Responder := NewOCSPResponderIntermediateCA2(t)
 	intermediateCA2ResponderURL := fmt.Sprintf("http://%s", intermediateCA2Responder.Addr)
 	defer intermediateCA2Responder.Shutdown(ctx)
-	setOCSPStatus(t, intermediateCA2ResponderURL, "configs/certs/ocsp_peer/mini-ca/client2/UserB1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, intermediateCA2ResponderURL, "configs/certs/ocsp_peer/mini-ca/client2/UserB1_cert.pem", ocsp.Good)
 
 	deleteLocalStore(t, "")
 
@@ -975,21 +975,21 @@ func TestOCSPPeerGoodClientsLocalCache(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	rootCAResponder := newOCSPResponderRootCA(t)
+	rootCAResponder := NewOCSPResponderRootCA(t)
 	rootCAResponderURL := fmt.Sprintf("http://%s", rootCAResponder.Addr)
 	defer rootCAResponder.Shutdown(ctx)
-	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
-	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate2/intermediate2_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate2/intermediate2_cert.pem", ocsp.Good)
 
-	intermediateCA1Responder := newOCSPResponderIntermediateCA1(t)
+	intermediateCA1Responder := NewOCSPResponderIntermediateCA1(t)
 	intermediateCA1ResponderURL := fmt.Sprintf("http://%s", intermediateCA1Responder.Addr)
 	defer intermediateCA1Responder.Shutdown(ctx)
-	setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
 
-	intermediateCA2Responder := newOCSPResponderIntermediateCA2(t)
+	intermediateCA2Responder := NewOCSPResponderIntermediateCA2(t)
 	intermediateCA2ResponderURL := fmt.Sprintf("http://%s", intermediateCA2Responder.Addr)
 	defer intermediateCA2Responder.Shutdown(ctx)
-	setOCSPStatus(t, intermediateCA2ResponderURL, "configs/certs/ocsp_peer/mini-ca/client2/UserB1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, intermediateCA2ResponderURL, "configs/certs/ocsp_peer/mini-ca/client2/UserB1_cert.pem", ocsp.Good)
 
 	for _, test := range []struct {
 		name      string
@@ -1603,10 +1603,10 @@ func TestOCSPPeerPreserveRevokedCacheItem(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	rootCAResponder := newOCSPResponderRootCA(t)
+	rootCAResponder := NewOCSPResponderRootCA(t)
 	rootCAResponderURL := fmt.Sprintf("http://%s", rootCAResponder.Addr)
 	defer rootCAResponder.Shutdown(ctx)
-	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
 
 	for _, test := range []struct {
 		name      string
@@ -1711,9 +1711,9 @@ func TestOCSPPeerPreserveRevokedCacheItem(t *testing.T) {
 					t.Fatal(err)
 				}
 			} else {
-				intermediateCA1Responder = newOCSPResponderIntermediateCA1(t)
+				intermediateCA1Responder = NewOCSPResponderIntermediateCA1(t)
 				intermediateCA1ResponderURL := fmt.Sprintf("http://%s", intermediateCA1Responder.Addr)
-				setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
+				SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
 				defer intermediateCA1Responder.Shutdown(ctx)
 			}
 			content := test.config
@@ -1755,15 +1755,15 @@ func TestOCSPStapleFeatureInterop(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	rootCAResponder := newOCSPResponderRootCA(t)
+	rootCAResponder := NewOCSPResponderRootCA(t)
 	rootCAResponderURL := fmt.Sprintf("http://%s", rootCAResponder.Addr)
 	defer rootCAResponder.Shutdown(ctx)
-	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
 
-	intermediateCA1Responder := newOCSPResponderIntermediateCA1(t)
+	intermediateCA1Responder := NewOCSPResponderIntermediateCA1(t)
 	intermediateCA1ResponderURL := fmt.Sprintf("http://%s", intermediateCA1Responder.Addr)
 	defer intermediateCA1Responder.Shutdown(ctx)
-	setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_cert.pem", ocsp.Good)
 
 	for _, test := range []struct {
 		name      string
@@ -1815,7 +1815,7 @@ func TestOCSPStapleFeatureInterop(t *testing.T) {
 			nil,
 			nil,
 			func() {
-				setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
+				SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
 			},
 		},
 		{
@@ -1860,7 +1860,7 @@ func TestOCSPStapleFeatureInterop(t *testing.T) {
 			fmt.Errorf("remote error: tls: bad certificate"),
 			nil,
 			func() {
-				setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Revoked)
+				SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Revoked)
 			},
 		},
 	} {
@@ -1904,15 +1904,15 @@ func TestOCSPPeerWarnOnlyOption(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	rootCAResponder := newOCSPResponderRootCA(t)
+	rootCAResponder := NewOCSPResponderRootCA(t)
 	rootCAResponderURL := fmt.Sprintf("http://%s", rootCAResponder.Addr)
 	defer rootCAResponder.Shutdown(ctx)
-	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
 
-	intermediateCA1Responder := newOCSPResponderIntermediateCA1(t)
+	intermediateCA1Responder := NewOCSPResponderIntermediateCA1(t)
 	intermediateCA1ResponderURL := fmt.Sprintf("http://%s", intermediateCA1Responder.Addr)
 	defer intermediateCA1Responder.Shutdown(ctx)
-	setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Revoked)
+	SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Revoked)
 
 	for _, test := range []struct {
 		name      string
@@ -2007,12 +2007,12 @@ func TestOCSPPeerUnknownIsGoodOption(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	rootCAResponder := newOCSPResponderRootCA(t)
+	rootCAResponder := NewOCSPResponderRootCA(t)
 	rootCAResponderURL := fmt.Sprintf("http://%s", rootCAResponder.Addr)
 	defer rootCAResponder.Shutdown(ctx)
-	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
 
-	intermediateCA1Responder := newOCSPResponderIntermediateCA1(t)
+	intermediateCA1Responder := NewOCSPResponderIntermediateCA1(t)
 	defer intermediateCA1Responder.Shutdown(ctx)
 
 	for _, test := range []struct {
@@ -2104,10 +2104,10 @@ func TestOCSPPeerAllowWhenCAUnreachableOption(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	rootCAResponder := newOCSPResponderRootCA(t)
+	rootCAResponder := NewOCSPResponderRootCA(t)
 	rootCAResponderURL := fmt.Sprintf("http://%s", rootCAResponder.Addr)
 	defer rootCAResponder.Shutdown(ctx)
-	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
 
 	for _, test := range []struct {
 		name           string
@@ -2310,10 +2310,10 @@ func TestOCSPResponseCacheLocalStoreOpt(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	rootCAResponder := newOCSPResponderRootCA(t)
+	rootCAResponder := NewOCSPResponderRootCA(t)
 	rootCAResponderURL := fmt.Sprintf("http://%s", rootCAResponder.Addr)
 	defer rootCAResponder.Shutdown(ctx)
-	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
 
 	for _, test := range []struct {
 		name           string
@@ -2446,21 +2446,21 @@ func TestOCSPPeerIncrementalSaveLocalCache(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	rootCAResponder := newOCSPResponderRootCA(t)
+	rootCAResponder := NewOCSPResponderRootCA(t)
 	rootCAResponderURL := fmt.Sprintf("http://%s", rootCAResponder.Addr)
 	defer rootCAResponder.Shutdown(ctx)
-	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
-	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate2/intermediate2_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate2/intermediate2_cert.pem", ocsp.Good)
 
-	intermediateCA1Responder := newOCSPResponderIntermediateCA1(t)
+	intermediateCA1Responder := NewOCSPResponderIntermediateCA1(t)
 	intermediateCA1ResponderURL := fmt.Sprintf("http://%s", intermediateCA1Responder.Addr)
 	defer intermediateCA1Responder.Shutdown(ctx)
-	setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
 
-	intermediateCA2Responder := newOCSPResponderIntermediateCA2(t)
+	intermediateCA2Responder := NewOCSPResponderIntermediateCA2(t)
 	intermediateCA2ResponderURL := fmt.Sprintf("http://%s", intermediateCA2Responder.Addr)
 	defer intermediateCA2Responder.Shutdown(ctx)
-	setOCSPStatus(t, intermediateCA2ResponderURL, "configs/certs/ocsp_peer/mini-ca/client2/UserB1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, intermediateCA2ResponderURL, "configs/certs/ocsp_peer/mini-ca/client2/UserB1_cert.pem", ocsp.Good)
 
 	var fi os.FileInfo
 	var err error
@@ -2597,15 +2597,15 @@ func TestOCSPPeerUndelegatedCAResponseSigner(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	rootCAResponder := newOCSPResponderRootCA(t)
+	rootCAResponder := NewOCSPResponderRootCA(t)
 	rootCAResponderURL := fmt.Sprintf("http://%s", rootCAResponder.Addr)
 	defer rootCAResponder.Shutdown(ctx)
-	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
 
-	intermediateCA1Responder := newOCSPResponderIntermediateCA1Undelegated(t)
+	intermediateCA1Responder := NewOCSPResponderIntermediateCA1Undelegated(t)
 	intermediateCA1ResponderURL := fmt.Sprintf("http://%s", intermediateCA1Responder.Addr)
 	defer intermediateCA1Responder.Shutdown(ctx)
-	setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
 
 	for _, test := range []struct {
 		name      string
@@ -2669,15 +2669,15 @@ func TestOCSPPeerDelegatedCAResponseSigner(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	rootCAResponder := newOCSPResponderRootCA(t)
+	rootCAResponder := NewOCSPResponderRootCA(t)
 	rootCAResponderURL := fmt.Sprintf("http://%s", rootCAResponder.Addr)
 	defer rootCAResponder.Shutdown(ctx)
-	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
 
-	intermediateCA1Responder := newOCSPResponderIntermediateCA1(t)
+	intermediateCA1Responder := NewOCSPResponderIntermediateCA1(t)
 	intermediateCA1ResponderURL := fmt.Sprintf("http://%s", intermediateCA1Responder.Addr)
 	defer intermediateCA1Responder.Shutdown(ctx)
-	setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
 
 	for _, test := range []struct {
 		name      string
@@ -2741,15 +2741,15 @@ func TestOCSPPeerBadDelegatedCAResponseSigner(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	rootCAResponder := newOCSPResponderRootCA(t)
+	rootCAResponder := NewOCSPResponderRootCA(t)
 	rootCAResponderURL := fmt.Sprintf("http://%s", rootCAResponder.Addr)
 	defer rootCAResponder.Shutdown(ctx)
-	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
 
-	intermediateCA1Responder := newOCSPResponderBadDelegateIntermediateCA1(t)
+	intermediateCA1Responder := NewOCSPResponderBadDelegateIntermediateCA1(t)
 	intermediateCA1ResponderURL := fmt.Sprintf("http://%s", intermediateCA1Responder.Addr)
 	defer intermediateCA1Responder.Shutdown(ctx)
-	setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
 
 	for _, test := range []struct {
 		name      string
@@ -2813,18 +2813,18 @@ func TestOCSPPeerNextUpdateUnset(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	rootCAResponder := newOCSPResponderRootCA(t)
+	rootCAResponder := NewOCSPResponderRootCA(t)
 	rootCAResponderURL := fmt.Sprintf("http://%s", rootCAResponder.Addr)
 	defer rootCAResponder.Shutdown(ctx)
-	setOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
 
 	respCertPEM := "configs/certs/ocsp_peer/mini-ca/ocsp1/ocsp1_bundle.pem"
 	respKeyPEM := "configs/certs/ocsp_peer/mini-ca/ocsp1/private/ocsp1_keypair.pem"
 	issuerCertPEM := "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem"
-	intermediateCA1Responder := newOCSPResponderBase(t, issuerCertPEM, respCertPEM, respKeyPEM, true, "127.0.0.1:18888", 0, "")
+	intermediateCA1Responder := NewOCSPResponderBase(t, issuerCertPEM, respCertPEM, respKeyPEM, true, "127.0.0.1:18888", 0, "")
 	intermediateCA1ResponderURL := fmt.Sprintf("http://%s", intermediateCA1Responder.Addr)
 	defer intermediateCA1Responder.Shutdown(ctx)
-	setOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
 
 	for _, test := range []struct {
 		name           string
