@@ -167,6 +167,7 @@ type Server struct {
 	stats
 	scStats
 	mu                  sync.RWMutex
+	reloadMu            sync.RWMutex // Write-locked when a config reload is taking place ONLY
 	kp                  nkeys.KeyPair
 	xkp                 nkeys.KeyPair
 	xpub                string
@@ -2728,7 +2729,9 @@ func (s *Server) acceptConnections(l net.Listener, acceptName string, createFunc
 		}
 		tmpDelay = ACCEPT_MIN_SLEEP
 		if !s.startGoRoutine(func() {
+			s.reloadMu.RLock()
 			createFunc(conn)
+			s.reloadMu.RUnlock()
 			s.grWG.Done()
 		}) {
 			conn.Close()
