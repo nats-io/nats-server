@@ -999,6 +999,9 @@ func (s *Server) Reload() error {
 // type. This returns an error if an option which doesn't support
 // hot-swapping was changed.
 func (s *Server) ReloadOptions(newOpts *Options) error {
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+
 	s.mu.Lock()
 
 	curOpts := s.getOpts()
