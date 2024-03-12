@@ -4377,7 +4377,7 @@ type testMissingOCSPStapleLogger struct {
 	ch chan string
 }
 
-func (l *testMissingOCSPStapleLogger) Warnf(format string, v ...interface{}) {
+func (l *testMissingOCSPStapleLogger) Errorf(format string, v ...interface{}) {
 	msg := fmt.Sprintf(format, v...)
 	if strings.Contains(msg, "peer missing OCSP Staple") {
 		select {
@@ -4579,22 +4579,8 @@ func TestOCSPGatewayMissingPeerStaple(t *testing.T) {
 	}
 	cB.Flush()
 
-	// Cause a stale connections.
-	time.Sleep(15 * time.Second)
-	srvA.DisconnectInboundGatewaysAsStale()
 	waitForOutboundGateways(t, srvB, 1, 10*time.Second)
-	waitForOutboundGateways(t, srvC, 1, 10*time.Second)
-
-	time.Sleep(15 * time.Second)
-	srvA.DisconnectOutboundGatewaysAsStale()
-
-	time.Sleep(15 * time.Second)
-	srvB.DisconnectInboundGatewaysAsStale()
-
-	time.Sleep(15 * time.Second)
-	srvB.DisconnectOutboundGatewaysAsStale()
-	waitForOutboundGateways(t, srvB, 1, 5*time.Second)
-	srvC.DisconnectInboundGatewaysAsStale()
+	waitForOutboundGateways(t, srvC, 2, 10*time.Second)
 
 	/////////////////////////////////////////////////////////////////////////////////
 	//                                                                             //
@@ -4663,6 +4649,9 @@ func TestOCSPGatewayMissingPeerStaple(t *testing.T) {
 	lA := &testMissingOCSPStapleLogger{ch: make(chan string, 30)}
 	srvA.SetLogger(lA, false, false)
 
+	lB := &testMissingOCSPStapleLogger{ch: make(chan string, 30)}
+	srvB.SetLogger(lB, false, false)
+
 	var wg sync.WaitGroup
 	go func() {
 		for range time.NewTicker(500 * time.Millisecond).C {
@@ -4695,6 +4684,8 @@ func TestOCSPGatewayMissingPeerStaple(t *testing.T) {
 	select {
 	case <-ctx.Done():
 	case msg := <-lA.ch:
+		t.Fatalf("Got OCSP Staple error: %v", msg)
+	case msg := <-lB.ch:
 		t.Fatalf("Got OCSP Staple error: %v", msg)
 	}
 	wg.Wait()
