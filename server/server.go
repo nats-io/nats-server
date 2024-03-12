@@ -305,7 +305,8 @@ type Server struct {
 	mqtt srvMQTT
 
 	// OCSP monitoring
-	ocsps []*OCSPMonitor
+	ocsps  []*OCSPMonitor
+	pocsps []*OCSPMonitor
 
 	// OCSP peer verification (at least one TLS block)
 	ocspPeerVerify bool
@@ -4463,4 +4464,16 @@ func (s *Server) LDMClientByID(id uint64) error {
 		}
 	}
 	return errors.New("no such client id")
+}
+
+func (s *Server) DisconnectInboundGatewaysAsStale() {
+	for _, client := range s.gateway.in {
+		client.closeConnection(StaleConnection)
+	}
+}
+
+func (s *Server) DisconnectOutboundGatewaysAsStale() {
+	for _, client := range s.gateway.out {
+		client.closeConnection(StaleConnection)
+	}
 }
