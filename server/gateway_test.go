@@ -7243,6 +7243,9 @@ func TestOCSPGatewayMissingPeerStaple(t *testing.T) {
 	lB := &testMissingOCSPStapleLogger{ch: make(chan string, 30)}
 	srvB.SetLogger(lB, false, false)
 
+	lC := &testMissingOCSPStapleLogger{ch: make(chan string, 30)}
+	srvB.SetLogger(lC, false, false)
+
 	var wg sync.WaitGroup
 	go func() {
 		for range time.NewTicker(500 * time.Millisecond).C {
@@ -7253,6 +7256,19 @@ func TestOCSPGatewayMissingPeerStaple(t *testing.T) {
 			default:
 			}
 			disconnectInboundGatewaysAsStale(srvC)
+		}
+	}()
+	wg.Add(1)
+
+	go func() {
+		for range time.NewTicker(500 * time.Millisecond).C {
+			select {
+			case <-ctx.Done():
+				wg.Done()
+				return
+			default:
+			}
+			disconnectInboundGatewaysAsStale(srvA)
 		}
 	}()
 	wg.Add(1)
@@ -7277,6 +7293,8 @@ func TestOCSPGatewayMissingPeerStaple(t *testing.T) {
 	case msg := <-lA.ch:
 		t.Fatalf("Got OCSP Staple error: %v", msg)
 	case msg := <-lB.ch:
+		t.Fatalf("Got OCSP Staple error: %v", msg)
+	case msg := <-lC.ch:
 		t.Fatalf("Got OCSP Staple error: %v", msg)
 	}
 	wg.Wait()
