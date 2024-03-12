@@ -644,8 +644,8 @@ func (ms *memStore) resetAgeChk(delta int64) {
 
 	fireIn := ms.cfg.MaxAge
 	if delta > 0 && time.Duration(delta) < fireIn {
-		if fireIn = time.Duration(delta); fireIn < time.Second {
-			// Only fire at most once a second.
+		if fireIn = time.Duration(delta); fireIn < 250*time.Millisecond {
+			// Only fire at most once every 250ms.
 			// Excessive firing can effect ingest performance.
 			fireIn = time.Second
 		}
