@@ -1,4 +1,4 @@
-// Copyright 2019-2021 The NATS Authors
+// Copyright 2019-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -131,6 +131,7 @@ func NewOCSPResponderBase(t *testing.T, issuerCertPEM, respCertPEM, respKeyPEM s
 				return
 			}
 			reqData, err = io.ReadAll(r.Body)
+			r.Body.Close()
 		default:
 			http.Error(rw, "Method Not Allowed", http.StatusMethodNotAllowed)
 			return
