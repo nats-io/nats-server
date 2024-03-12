@@ -40,7 +40,7 @@ import (
 )
 
 const (
-	defaultResponseTTL = 10 * time.Minute
+	defaultResponseTTL = 4 * time.Second
 	defaultAddress     = "127.0.0.1:8888"
 )
 
@@ -3110,6 +3110,11 @@ func newOCSPResponderPreferringHTTPMethod(t *testing.T, issuerCertPEM, issuerKey
 	return newOCSPResponderBase(t, issuerCertPEM, issuerCertPEM, issuerKeyPEM, false, defaultAddress, defaultResponseTTL, method)
 }
 
+func newOCSPResponderCustomTimeout(t *testing.T, issuerCertPEM, issuerKeyPEM string, responseTTL time.Duration) *http.Server {
+	t.Helper()
+	return newOCSPResponderBase(t, issuerCertPEM, issuerCertPEM, issuerKeyPEM, false, defaultAddress, responseTTL, "")
+}
+
 func newOCSPResponderBase(t *testing.T, issuerCertPEM, respCertPEM, respKeyPEM string, embed bool, addr string, responseTTL time.Duration, method string) *http.Server {
 	t.Helper()
 	var mu sync.Mutex
@@ -4389,7 +4394,7 @@ func TestOCSPGatewayMissingPeerStaple(t *testing.T) {
 	)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	ocspr := newOCSPResponder(t, caCert, caKey)
+	ocspr := newOCSPResponderCustomTimeout(t, caCert, caKey, 10*time.Minute)
 	defer ocspr.Shutdown(ctx)
 	addr := fmt.Sprintf("http://%s", ocspr.Addr)
 
