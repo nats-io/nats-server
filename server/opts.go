@@ -693,6 +693,7 @@ type TLSConfigOpts struct {
 	CertStore         certstore.StoreType
 	CertMatchBy       certstore.MatchByType
 	CertMatch         string
+	CaCertsMatch      []string
 	OCSPPeerConfig    *certidp.OCSPPeerConfig
 	Certificates      []*TLSCertPairOpt
 }
@@ -4533,6 +4534,28 @@ func parseTLS(v interface{}, isClientCtx bool) (t *TLSConfigOpts, retErr error) 
 				return nil, &configErr{tk, certstore.ErrBadCertMatchField.Error()}
 			}
 			tc.CertMatch = certMatch
+		case "ca_certs_match":
+			rv := []string{}
+			switch mv := mv.(type) {
+			case string:
+				rv = append(rv, mv)
+			case []string:
+				rv = append(rv, mv...)
+			case []interface{}:
+				for _, t := range mv {
+					if token, ok := t.(token); ok {
+						if ts, ok := token.Value().(string); ok {
+							rv = append(rv, ts)
+							continue
+						} else {
+							return nil, &configErr{tk, fmt.Sprintf("error parsing ca_cert_match: unsupported type %T where string is expected", token)}
+						}
+					} else {
+						return nil, &configErr{tk, fmt.Sprintf("error parsing ca_cert_match: unsupported type %T", t)}
+					}
+				}
+			}
+			tc.CaCertsMatch = rv
 		case "handshake_first", "first", "immediate":
 			switch mv := mv.(type) {
 			case bool:
@@ -4933,7 +4956,7 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 		}
 		config.Certificates = []tls.Certificate{cert}
 	case tc.CertStore != certstore.STOREEMPTY:
-		err := certstore.TLSConfig(tc.CertStore, tc.CertMatchBy, tc.CertMatch, &config)
+		err := certstore.TLSConfig(tc.CertStore, tc.CertMatchBy, tc.CertMatch, tc.CaCertsMatch, &config)
 		if err != nil {
 			return nil, err
 		}
