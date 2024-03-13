@@ -5191,6 +5191,10 @@ func (c *client) flushAndClose(minimalFlush bool) {
 		nbPoolPut(c.out.nb[i])
 	}
 	c.out.nb = nil
+	for _, b := range c.out.wnb {
+		nbPoolPut(b)
+	}
+	c.out.wnb = nil
 
 	// Close the low level connection.
 	if c.nc != nil {
