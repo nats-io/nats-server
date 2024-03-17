@@ -871,6 +871,53 @@ func TestJetStreamConsumerIsFilteredMatch(t *testing.T) {
 	}
 }
 
+func TestJetStreamConsumerWorkQueuePolicy(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	tests := []struct {
+		name            string
+		streamFilter    []string
+		consumerAFilter []string
+		consumerBFilter []string
+		shouldFail      bool
+	}{
+		{
+			name:            "overlap_without_subset_match",
+			streamFilter:    []string{"foo.*.*"},
+			consumerAFilter: []string{"foo.*.bar"},
+			consumerBFilter: []string{"foo.bar.*"},
+			shouldFail:      true,
+		},
+	}
+
+	for _, test := range tests {
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:      test.name,
+			Subjects:  test.streamFilter,
+			Retention: nats.WorkQueuePolicy,
+		})
+		require_NoError(t, err)
+
+		_, err = js.AddConsumer(test.name, &nats.ConsumerConfig{
+			Durable:        "ConsumerA",
+			FilterSubjects: test.consumerAFilter,
+			AckPolicy:      nats.AckExplicitPolicy,
+		})
+		require_NoError(t, err)
+
+		_, err = js.AddConsumer(test.name, &nats.ConsumerConfig{
+			Durable:        "ConsumerB",
+			FilterSubjects: test.consumerBFilter,
+			AckPolicy:      nats.AckExplicitPolicy,
+		})
+		require_True(t, (err != nil) == test.shouldFail)
+	}
+}
+
 func TestJetStreamConsumerIsEqualOrSubsetMatch(t *testing.T) {
 	for _, test := range []struct {
 		name           string
