@@ -1486,8 +1486,8 @@ func (a *Account) filteredStreams(filter string) []*stream {
 		return nil
 	}
 
-	jsa.mu.Lock()
-	defer jsa.mu.Unlock()
+	jsa.mu.RLock()
+	defer jsa.mu.RUnlock()
 
 	var msets []*stream
 	for _, mset := range jsa.streams {
@@ -1515,8 +1515,8 @@ func (a *Account) lookupStream(name string) (*stream, error) {
 	if jsa == nil {
 		return nil, NewJSNotEnabledForAccountError()
 	}
-	jsa.mu.Lock()
-	defer jsa.mu.Unlock()
+	jsa.mu.RLock()
+	defer jsa.mu.RUnlock()
 
 	mset, ok := jsa.streams[name]
 	if !ok {
