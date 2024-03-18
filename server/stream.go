@@ -1287,7 +1287,7 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 				return StreamConfig{}, NewJSMirrorInvalidSubjectFilterError()
 			}
 			for inner, innertr := range cfg.Mirror.SubjectTransforms {
-				if inner != outer && subjectIsSubsetMatch(tr.Source, innertr.Source) {
+				if inner != outer && SubjectsCollide(tr.Source, innertr.Source) {
 					return StreamConfig{}, NewJSMirrorOverlappingSubjectFiltersError()
 				}
 			}
