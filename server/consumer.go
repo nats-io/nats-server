@@ -606,7 +606,7 @@ func checkConsumerCfg(
 			return NewJSStreamInvalidConfigError(ErrBadSubject)
 		}
 		for inner, ssubject := range subjectFilters {
-			if inner != outer && subjectIsSubsetMatch(subject, ssubject) {
+			if inner != outer && SubjectsCollide(subject, ssubject) {
 				return NewJSConsumerOverlappingSubjectFiltersError()
 			}
 		}
