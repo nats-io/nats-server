@@ -2496,7 +2496,7 @@ func (o *consumer) checkRedelivered(slseq uint64) {
 	}
 	var shouldUpdateState bool
 	for sseq := range o.rdc {
-		if sseq < o.asflr || (lseq > 0 && sseq > lseq) {
+		if sseq <= o.asflr || (lseq > 0 && sseq > lseq) {
 			delete(o.rdc, sseq)
 			o.removeFromRedeliverQueue(sseq)
 			shouldUpdateState = true
@@ -3660,14 +3660,15 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 		filter.pmsg = nil
 		return returned, 1, err
 	}
-	if err == ErrStoreEOF {
-		o.updateSkipped(filter.nextSeq)
-	}
 
 	// set o.sseq to the first subject sequence
 	if filter.nextSeq > o.sseq {
 		o.sseq = filter.nextSeq
+		if err == ErrStoreEOF {
+			o.updateSkipped(o.sseq)
+		}
 	}
+
 	return nil, 0, err
 }
 
@@ -3837,6 +3838,11 @@ func (o *consumer) checkAckFloor() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
+	// If we are closed do not change anything and simply return.
+	if o.closed {
+		return
+	}
+
 	// If we are here, and this should be rare, we still are off with our ack floor.
 	// We will set it explicitly to 1 behind our current lowest in pending, or if
 	// pending is empty, to our current delivered -1.
@@ -3854,6 +3860,10 @@ func (o *consumer) checkAckFloor() {
 			if psseq < ss.FirstSeq-1 {
 				psseq, pdseq = ss.FirstSeq-1, ss.FirstSeq-1
 			}
+		} else {
+			// Since this was set via the pending, we should not include
+			// it directly but set floors to -1.
+			psseq, pdseq = psseq-1, pdseq-1
 		}
 		o.asflr, o.adflr = psseq, pdseq
 	}
