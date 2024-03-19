@@ -898,6 +898,7 @@ func TestJetStreamConsumerWorkQueuePolicyOverlap(t *testing.T) {
 		AckPolicy:     nats.AckExplicitPolicy,
 	})
 	require_Error(t, err)
+	require_True(t, strings.Contains(err.Error(), "unique"))
 }
 
 func TestJetStreamConsumerIsEqualOrSubsetMatch(t *testing.T) {

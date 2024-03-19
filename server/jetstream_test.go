@@ -18865,6 +18865,45 @@ func TestJetStreamStreamSubjectsOverlap(t *testing.T) {
 	})
 	require_Error(t, err)
 	require_True(t, strings.Contains(err.Error(), "overlaps"))
+
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.bar.*", "foo.*.bar"},
+	})
+	require_Error(t, err)
+	require_True(t, strings.Contains(err.Error(), "overlaps"))
+}
+
+func TestJetStreamStreamTransformOverlap(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.>"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name: "MIRROR",
+		Mirror: &nats.StreamSource{Name: "TEST",
+			SubjectTransforms: []nats.SubjectTransformConfig{
+				{
+					Source:      "foo.*.bar",
+					Destination: "baz",
+				},
+				{
+					Source:      "foo.bar.*",
+					Destination: "baz",
+				},
+			},
+		}})
+	require_Error(t, err)
+	require_True(t, strings.Contains(err.Error(), "overlap"))
+
 }
 
 func TestJetStreamSuppressAllowDirect(t *testing.T) {
