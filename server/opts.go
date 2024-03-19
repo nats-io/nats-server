@@ -498,6 +498,10 @@ type WebsocketOpts struct {
 	// time needed for the TLS Handshake.
 	HandshakeTimeout time.Duration
 
+	// Headers to be added to the upgrade response.
+	// Useful for adding custom headers like Strict-Transport-Security.
+	Headers map[string]string
+
 	// Snapshot of configured TLS options.
 	tlsConfigOpts *TLSConfigOpts
 }
@@ -4810,6 +4814,23 @@ func parseWebsocket(v interface{}, o *Options, errors *[]error, warnings *[]erro
 			o.Websocket.TokenCookie = mv.(string)
 		case "no_auth_user":
 			o.Websocket.NoAuthUser = mv.(string)
+		case "headers":
+			m, ok := mv.(map[string]interface{})
+			if !ok {
+				err := &configErr{tk, fmt.Sprintf("error parsing headers: unsupported type %T", mv)}
+				*errors = append(*errors, err)
+				continue
+			}
+			o.Websocket.Headers = make(map[string]string)
+			for key, val := range m {
+				tk, val = unwrapValue(val, &lt)
+				if headerValue, ok := val.(string); !ok {
+					*errors = append(*errors, &configErr{tk, fmt.Sprintf("error parsing header key %s: unsupported type %T", key, val)})
+					continue
+				} else {
+					o.Websocket.Headers[key] = headerValue
+				}
+			}
 		default:
 			if !tk.IsUsedVariable() {
 				err := &unknownConfigFieldErr{
