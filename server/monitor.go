@@ -2934,7 +2934,7 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 	if opts.Consumer {
 		opts.Streams = true
 	}
-	if opts.Streams {
+	if opts.Streams && opts.Account == _EMPTY_ {
 		opts.Accounts = true
 	}
 
