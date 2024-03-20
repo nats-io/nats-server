@@ -4572,7 +4572,15 @@ func TestMonitorJsz(t *testing.T) {
 	})
 	t.Run("account-non-existing", func(t *testing.T) {
 		for _, url := range []string{monUrl1, monUrl2} {
-			info := readJsInfo(url + "?acc=DOES_NOT_EXIT")
+			info := readJsInfo(url + "?acc=DOES_NOT_EXIST")
+			if len(info.AccountDetails) != 0 {
+				t.Fatalf("expected no account to be returned by %s but got %v", url, info)
+			}
+		}
+	})
+	t.Run("account-non-existing-with-stream-details", func(t *testing.T) {
+		for _, url := range []string{monUrl1, monUrl2} {
+			info := readJsInfo(url + "?acc=DOES_NOT_EXIST&streams=true")
 			if len(info.AccountDetails) != 0 {
 				t.Fatalf("expected no account to be returned by %s but got %v", url, info)
 			}
