@@ -364,6 +364,7 @@ type consumer struct {
 	created           time.Time
 	ldt               time.Time
 	lat               time.Time
+	lwqic             time.Time
 	closed            bool
 
 	// Clustered.
@@ -3249,7 +3250,10 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 	// If we have the max number of requests already pending try to expire.
 	if o.waiting.isFull() {
 		// Try to expire some of the requests.
-		o.processWaiting(false)
+		// We do not want to push too hard here so at maximum process once per sec.
+		if time.Since(o.lwqic) > time.Second {
+			o.processWaiting(false)
+		}
 	}
 
 	// If the request is for noWait and we have pending requests already, check if we have room.
@@ -3582,6 +3586,8 @@ func (o *consumer) processWaiting(eos bool) (int, int, int, time.Time) {
 	if o.srv == nil || o.waiting.isEmpty() {
 		return 0, 0, 0, fexp
 	}
+	// Mark our last check time.
+	o.lwqic = time.Now()
 
 	var expired, brp int
 	s, now := o.srv, time.Now()
@@ -3619,7 +3625,6 @@ func (o *consumer) processWaiting(eos bool) (int, int, int, time.Time) {
 				interest = true
 			}
 		}
-
 		// Check if we have interest.
 		if !interest {
 			// No more interest here so go ahead and remove this one from our list.
