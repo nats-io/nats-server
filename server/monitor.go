@@ -2827,8 +2827,8 @@ func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optCfg,
 		detail.JetStreamStats.ReservedMemory = uint64(reserved.MaxMemory)
 		detail.JetStreamStats.ReservedStore = uint64(reserved.MaxStore)
 	}
-
 	jsa.usageMu.RUnlock()
+
 	var streams []*stream
 	if optStreams {
 		for _, stream := range jsa.streams {
@@ -2934,7 +2934,7 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 	if opts.Consumer {
 		opts.Streams = true
 	}
-	if opts.Streams {
+	if opts.Streams && opts.Account == _EMPTY_ {
 		opts.Accounts = true
 	}
 

@@ -9710,3 +9710,147 @@ func TestNoRaceJetStreamSnapshotsWithSlowAckDontSlowConsumer(t *testing.T) {
 		t.Fatalf("Should have received EOF with error status")
 	}
 }
+
+func TestNoRaceJetStreamWQSkippedMsgsOnScaleUp(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	const pre = "CORE_ENT_DR_OTP_22."
+	wcSubj := pre + ">"
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{wcSubj},
+		Retention:   nats.WorkQueuePolicy,
+		AllowDirect: true,
+		Replicas:    3,
+	})
+	require_NoError(t, err)
+
+	cfg := &nats.ConsumerConfig{
+		Durable:           "dlc",
+		FilterSubject:     wcSubj,
+		DeliverPolicy:     nats.DeliverAllPolicy,
+		AckPolicy:         nats.AckExplicitPolicy,
+		MaxAckPending:     10_000,
+		AckWait:           500 * time.Millisecond,
+		MaxWaiting:        100,
+		MaxRequestExpires: 1050 * time.Millisecond,
+	}
+	_, err = js.AddConsumer("TEST", cfg)
+	require_NoError(t, err)
+
+	pdone := make(chan bool)
+	cdone := make(chan bool)
+
+	// Publish routine
+	go func() {
+		publishSubjects := []string{
+			"CORE_ENT_DR_OTP_22.P.H.TC.10011.1010.918886682066",
+			"CORE_ENT_DR_OTP_22.P.H.TC.10011.1010.918886682067",
+			"CORE_ENT_DR_OTP_22.P.H.TC.10011.1010.916596543211",
+			"CORE_ENT_DR_OTP_22.P.H.TC.10011.1010.916596543212",
+			"CORE_ENT_DR_OTP_22.P.H.TC.10011.1010.916596543213",
+			"CORE_ENT_DR_OTP_22.P.H.TC.10011.1010.916596543214",
+			"CORE_ENT_DR_OTP_22.P.H.TC.10011.1010.916596543215",
+			"CORE_ENT_DR_OTP_22.P.H.TC.10011.1010.916596543216",
+			"CORE_ENT_DR_OTP_22.P.H.TC.10011.1010.916596543217",
+		}
+		// ~1.7kb
+		msg := bytes.Repeat([]byte("Z"), 1750)
+
+		// 200 msgs/s
+		st := time.NewTicker(5 * time.Millisecond)
+		defer st.Stop()
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		for {
+			select {
+			case <-st.C:
+				subj := publishSubjects[rand.Intn(len(publishSubjects))]
+				_, err = js.Publish(subj, msg)
+				require_NoError(t, err)
+			case <-pdone:
+				return
+			}
+		}
+	}()
+
+	consumerApp := func(i int) {
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		_, err := js.ConsumerInfo("TEST", "dlc")
+		require_NoError(t, err)
+		_, err = js.UpdateConsumer("TEST", cfg)
+		require_NoError(t, err)
+
+		sub, err := js.PullSubscribe(wcSubj, "dlc")
+		require_NoError(t, err)
+
+		st := time.NewTicker(100 * time.Millisecond)
+		defer st.Stop()
+
+		for {
+			select {
+			case <-st.C:
+				msgs, err := sub.Fetch(1, nats.MaxWait(100*time.Millisecond))
+				if err != nil {
+					continue
+				}
+				require_Equal(t, len(msgs), 1)
+				m := msgs[0]
+				if rand.Intn(10) == 1 {
+					m.Nak()
+				} else {
+					// Wait up to 20ms to ack.
+					time.Sleep(time.Duration(rand.Intn(20)) * time.Millisecond)
+					// This could fail and that is ok, system should recover due to low ack wait.
+					m.Ack()
+				}
+			case <-cdone:
+				return
+			}
+		}
+	}
+
+	// Now consumer side single.
+	go consumerApp(0)
+
+	// Wait for 5s
+	time.Sleep(5 * time.Second)
+
+	// Now spin up 50 more.
+	for i := 1; i <= 50; i++ {
+		if i%5 == 0 {
+			time.Sleep(200 * time.Millisecond)
+		}
+		go consumerApp(i)
+	}
+
+	timeout := time.Now().Add(1 * time.Minute)
+	for time.Now().Before(timeout) {
+		time.Sleep(5 * time.Second)
+		if s := c.consumerLeader(globalAccountName, "TEST", "dlc"); s != nil {
+			s.JetStreamStepdownConsumer(globalAccountName, "TEST", "dlc")
+		}
+	}
+
+	// Close publishers and defer closing consumers.
+	close(pdone)
+	defer close(cdone)
+
+	checkFor(t, 30*time.Second, time.Second, func() error {
+		si, err := js.StreamInfo("TEST")
+		require_NoError(t, err)
+		if si.State.NumDeleted > 0 || si.State.Msgs > 0 {
+			return fmt.Errorf("State not correct: %+v", si.State)
+		}
+		return nil
+	})
+}

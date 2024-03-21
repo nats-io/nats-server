@@ -3495,12 +3495,11 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 
 	// collect all that are not correct.
 	needAttention := make(map[string]*psi)
-	fs.psim.Iter(func(subj []byte, psi *psi) bool {
+	fs.psim.Match([]byte(fwcs), func(subj []byte, psi *psi) {
 		numMsgs += psi.total
 		if psi.total > maxMsgsPer {
 			needAttention[string(subj)] = psi
 		}
-		return true
 	})
 
 	// We had an issue with a use case where psim (and hence fss) were correct but idx was not and was not properly being caught.
@@ -3520,11 +3519,10 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 		fs.rebuildStateLocked(nil)
 		// Need to redo blocks that need attention.
 		needAttention = make(map[string]*psi)
-		fs.psim.Iter(func(subj []byte, psi *psi) bool {
+		fs.psim.Match([]byte(fwcs), func(subj []byte, psi *psi) {
 			if psi.total > maxMsgsPer {
 				needAttention[string(subj)] = psi
 			}
-			return true
 		})
 	}
 

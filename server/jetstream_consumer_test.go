@@ -871,6 +871,36 @@ func TestJetStreamConsumerIsFilteredMatch(t *testing.T) {
 	}
 }
 
+func TestJetStreamConsumerWorkQueuePolicyOverlap(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo.*.*"},
+		Retention: nats.WorkQueuePolicy,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:       "ConsumerA",
+		FilterSubject: "foo.bar.*",
+		AckPolicy:     nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:       "ConsumerB",
+		FilterSubject: "foo.*.bar",
+		AckPolicy:     nats.AckExplicitPolicy,
+	})
+	require_Error(t, err)
+	require_True(t, strings.Contains(err.Error(), "unique"))
+}
+
 func TestJetStreamConsumerIsEqualOrSubsetMatch(t *testing.T) {
 	for _, test := range []struct {
 		name           string
