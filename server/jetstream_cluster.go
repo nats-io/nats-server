@@ -7557,7 +7557,7 @@ func (mset *stream) checkAllowMsgCompress(peers []string) {
 // To warn when we are getting too far behind from what has been proposed vs what has been committed.
 const streamLagWarnThreshold = 10_000
 
-// processClusteredMsg will propose the inbound message to the underlying raft group.
+// processClusteredInboundMsg will propose the inbound message to the underlying raft group.
 func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg []byte, mt *msgTrace) (retErr error) {
 	// For possible error response.
 	var response []byte
