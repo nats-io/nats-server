@@ -1638,7 +1638,7 @@ func (o *consumerMemStore) stateWithCopy(doCopy bool) (*ConsumerState, error) {
 	return state, nil
 }
 
-// EncodeState for this consumer store.
+// EncodedState for this consumer store.
 func (o *consumerMemStore) EncodedState() ([]byte, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
