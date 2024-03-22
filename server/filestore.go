@@ -5343,6 +5343,12 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 	mbFirstSeq := atomic.LoadUint64(&mb.first.seq)
 	mbLastSeq := atomic.LoadUint64(&mb.last.seq)
 
+	// Sanity check here since we calculate size to allocate based on this.
+	if mbFirstSeq > (mbLastSeq + 1) { // Purged state first == last + 1
+		// This would cause idxSz to wrap.
+		return errCorruptState
+	}
+
 	// Capture beginning size of dmap.
 	dms := uint64(mb.dmap.Size())
 	idxSz := mbLastSeq - mbFirstSeq + 1
