@@ -456,6 +456,7 @@ func (srv *Server) NewOCSPMonitor(config *tlsConfigKind) (*tls.Config, *OCSPMoni
 
 		// Callbacks below will be in charge of returning the certificate instead,
 		// so this has to be nil.
+		srv.optsMu.Lock()
 		tc.Certificates = nil
 
 		// GetCertificate returns a certificate that's presented to a client.
@@ -546,6 +547,7 @@ func (srv *Server) NewOCSPMonitor(config *tlsConfigKind) (*tls.Config, *OCSPMoni
 				return &cert, nil
 			}
 		}
+		srv.optsMu.Unlock()
 
 	}
 	return tc, mon, nil
