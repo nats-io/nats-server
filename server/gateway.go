@@ -811,10 +811,26 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 		var timeout float64
 
 		if solicit {
+			s.optsMu.RLock()
+			getClientCertificateCB := s.opts.Gateway.TLSConfig.GetClientCertificate
+			verifyConnectionCB := s.opts.Gateway.TLSConfig.VerifyConnection
+			mustStaple := s.opts.OCSPConfig != nil && s.opts.OCSPConfig.Mode == OCSPModeAlways
+			s.optsMu.RUnlock()
+
 			cfg.RLock()
 			tlsName = cfg.tlsName
 			tlsConfig = cfg.TLSConfig.Clone()
 			timeout = cfg.TLSTimeout
+
+			// Ensure that OCSP callbacks are always setup on gateway reconnect when OCSP policy is set to always.
+			if mustStaple {
+				if getClientCertificateCB != nil && tlsConfig.GetClientCertificate == nil {
+					tlsConfig.GetClientCertificate = getClientCertificateCB
+				}
+				if verifyConnectionCB != nil && tlsConfig.VerifyConnection == nil {
+					tlsConfig.VerifyConnection = verifyConnectionCB
+				}
+			}
 			cfg.RUnlock()
 		} else {
 			tlsConfig = opts.Gateway.TLSConfig
