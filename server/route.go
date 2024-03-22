@@ -431,7 +431,7 @@ func (c *client) processRoutedMsgArgs(arg []byte) error {
 	return nil
 }
 
-// processInboundRouteMsg is called to process an inbound msg from a route.
+// processInboundRoutedMsg is called to process an inbound msg from a route.
 func (c *client) processInboundRoutedMsg(msg []byte) {
 	// Update statistics
 	c.in.msgs++
