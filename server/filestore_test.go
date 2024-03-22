@@ -31,6 +31,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -6617,6 +6618,39 @@ func TestFileStoreEraseMsgWithAllTrailingDbitSlots(t *testing.T) {
 	removed, err := fs.EraseMsg(2)
 	require_NoError(t, err)
 	require_True(t, removed)
+}
+
+// https://github.com/nats-io/nats-server/issues/5236
+// Unclear how the sequences get off here, this is just forcing the situation reported.
+func TestFileStoreMsgBlockFirstAndLastSeqCorrupt(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := []byte("abc")
+	for i := 1; i <= 10; i++ {
+		fs.StoreMsg(fmt.Sprintf("foo.%d", i), nil, msg)
+	}
+	fs.Purge()
+
+	fs.mu.RLock()
+	mb := fs.blks[0]
+	fs.mu.RUnlock()
+
+	mb.mu.Lock()
+	mb.tryForceExpireCacheLocked()
+	atomic.StoreUint64(&mb.last.seq, 9)
+	mb.mu.Unlock()
+
+	// We should rebuild here and return no error.
+	require_NoError(t, mb.loadMsgs())
+	mb.mu.RLock()
+	fseq, lseq := atomic.LoadUint64(&mb.first.seq), atomic.LoadUint64(&mb.last.seq)
+	mb.mu.RUnlock()
+	require_Equal(t, fseq, 11)
+	require_Equal(t, lseq, 10)
 }
 
 ///////////////////////////////////////////////////////////////////////////
