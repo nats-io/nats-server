@@ -64,7 +64,7 @@ const (
 // OCSPMonitor monitors the state of a staple per certificate.
 type OCSPMonitor struct {
 	kind     string
-	mu       sync.Mutex
+	mu       sync.RWMutex
 	raw      []byte
 	srv      *Server
 	certFile string
@@ -113,13 +113,16 @@ func (oc *OCSPMonitor) getStatus() ([]byte, *ocsp.Response, error) {
 		return raw, resp, nil
 	}
 
-	return oc.getRemoteStatus()
+	raw, resp, err = oc.getRemoteStatus()
+	return raw, resp, err
 }
 
 func (oc *OCSPMonitor) getCacheStatus() ([]byte, *ocsp.Response) {
 	oc.mu.Lock()
 	defer oc.mu.Unlock()
-	return oc.raw, oc.resp
+	craw := make([]byte, len(oc.raw))
+	copy(craw, oc.raw)
+	return craw, oc.resp
 }
 
 func (oc *OCSPMonitor) getLocalStatus() ([]byte, *ocsp.Response, error) {
@@ -149,8 +152,11 @@ func (oc *OCSPMonitor) getLocalStatus() ([]byte, *ocsp.Response, error) {
 	}
 
 	// Cache the response.
+	craw := make([]byte, len(raw))
+	copy(craw, oc.raw)
+
 	oc.mu.Lock()
-	oc.raw = raw
+	oc.raw = craw
 	oc.resp = resp
 	oc.mu.Unlock()
 
@@ -261,8 +267,11 @@ func (oc *OCSPMonitor) getRemoteStatus() ([]byte, *ocsp.Response, error) {
 		}
 	}
 
+	craw := make([]byte, len(raw))
+	copy(craw, raw)
+
 	oc.mu.Lock()
-	oc.raw = raw
+	oc.raw = craw
 	oc.resp = resp
 	oc.mu.Unlock()
 
@@ -381,6 +390,11 @@ func (srv *Server) NewOCSPMonitor(config *tlsConfigKind) (*tls.Config, *OCSPMoni
 		caFile = tcOpts.CaFile
 	}
 
+	tc.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) {
+		// Use a clone to avoid races with reload
+		return tc.Clone(), nil
+	}
+
 	// NOTE: Currently OCSP Stapling is enabled only for the first certificate found.
 	var mon *OCSPMonitor
 	for _, currentCert := range tc.Certificates {
@@ -461,19 +475,41 @@ func (srv *Server) NewOCSPMonitor(config *tlsConfigKind) (*tls.Config, *OCSPMoni
 
 		// GetCertificate returns a certificate that's presented to a client.
 		tc.GetCertificate = func(info *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			// srv.reloadMu.RLock()
+			// defer srv.reloadMu.RUnlock()
+			// ccert := cert
+
 			raw, _, err := mon.getStatus()
 			if err != nil {
 				return nil, err
 			}
+			if raw == nil {
+				// In case it was a cache issue during reload
+				// try to get it from the local state as well.
+				raw, _, err = mon.getLocalStatus()
+				if err != nil {
+					return nil, err
+				}
+			}
+			craw := make([]byte, len(raw))
+			copy(craw, raw)
 
 			return &tls.Certificate{
-				OCSPStaple:                   raw,
+				OCSPStaple:                   craw,
 				Certificate:                  cert.Certificate,
 				PrivateKey:                   cert.PrivateKey,
 				SupportedSignatureAlgorithms: cert.SupportedSignatureAlgorithms,
 				SignedCertificateTimestamps:  cert.SignedCertificateTimestamps,
 				Leaf:                         cert.Leaf,
 			}, nil
+			// return &tls.Certificate{
+			// 	OCSPStaple:                   craw,
+			// 	Certificate:                  ccert.Certificate,
+			// 	PrivateKey:                   ccert.PrivateKey,
+			// 	SupportedSignatureAlgorithms: ccert.SupportedSignatureAlgorithms,
+			// 	SignedCertificateTimestamps:  ccert.SignedCertificateTimestamps,
+			// 	Leaf:                         ccert.Leaf,
+			// }, nil
 		}
 
 		// Check whether need to verify staples from a peer router or gateway connection.
@@ -533,13 +569,33 @@ func (srv *Server) NewOCSPMonitor(config *tlsConfigKind) (*tls.Config, *OCSPMoni
 
 			// When server makes a peer connection, need to also present an OCSP Staple.
 			tc.GetClientCertificate = func(info *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+				// sendClientCertificate internally also calls getClientCertificate so if for some reason
+				// this callback is triggered concurrently during a reconnect there can be races.
+				// srv.reloadMu.RLock()
+				// defer srv.reloadMu.RUnlock()
+				ccert := cert
 				raw, _, err := mon.getStatus()
 				if err != nil {
 					return nil, err
 				}
-				cert.OCSPStaple = raw
+				if raw == nil {
+					// In case it was a cache issue during reload
+					// try to get it from the local state as well.
+					raw, _, err = mon.getLocalStatus()
+					if err != nil {
+						return nil, err
+					}
+				}
+				craw := make([]byte, len(raw))
+				copy(craw, raw)
+				// ccert.OCSPStaple = craw
 
-				return &cert, nil
+				// return &ccert, nil
+				mon.mu.Lock()
+				ccert.OCSPStaple = craw
+				mon.mu.Unlock()
+
+				return &ccert, nil
 			}
 		default:
 			// GetClientCertificate returns a certificate that's presented to a server.
@@ -733,7 +789,12 @@ func (s *Server) reloadOCSP() error {
 	}
 
 	s.mu.Lock()
+	// Track the state of the previous set of ocsp monitors.
+	om := make(map[string]*OCSPMonitor)
 	ocsps := s.ocsps
+	for _, o := range ocsps {
+		om[o.certFile] = o
+	}
 	s.mu.Unlock()
 
 	// Stop all OCSP Stapling monitors in case there were any running.
@@ -753,6 +814,7 @@ func (s *Server) reloadOCSP() error {
 	s.stopOCSPResponseCache()
 
 	for _, config := range configs {
+		config := config
 		// We do not staple Leaf Hub and Leaf Spokes, use ocsp_peer
 		if config.kind != kindStringMap[LEAF] {
 			tc, mon, err := s.NewOCSPMonitor(config)
@@ -761,10 +823,15 @@ func (s *Server) reloadOCSP() error {
 			}
 			// Check if an OCSP stapling monitor is required for this certificate.
 			if mon != nil {
+				// Carry over the staple in memory for the cert to avoid starting fresh.
+				if o, ok := om[mon.certFile]; ok {
+					mon.raw = o.raw
+					mon.resp = o.resp
+				}
 				ocspm = append(ocspm, mon)
 
 				// Apply latest TLS configuration.
-				config.apply(tc)
+				defer config.apply(tc)
 			}
 		}
 
@@ -776,7 +843,7 @@ func (s *Server) reloadOCSP() error {
 			}
 			if plugged && tc != nil {
 				s.ocspPeerVerify = true
-				config.apply(tc)
+				defer config.apply(tc)
 			}
 		}
 	}

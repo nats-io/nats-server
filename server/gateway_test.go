@@ -7239,7 +7239,7 @@ func TestOCSPGatewayMissingPeerStapleIssue(t *testing.T) {
 	}
 
 	// Reload and disconnect very fast trying to produce the race.
-	ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	// Swap logger from server to capture the missing peer log.
@@ -7348,5 +7348,8 @@ func TestOCSPGatewayMissingPeerStapleIssue(t *testing.T) {
 	case msg := <-lC.ch:
 		t.Fatalf("Server C: Got OCSP Staple error: %v", msg)
 	}
+	waitForOutboundGateways(t, srvA, 2, 5*time.Second)
+	waitForOutboundGateways(t, srvB, 2, 5*time.Second)
+	waitForOutboundGateways(t, srvC, 2, 5*time.Second)
 	wg.Wait()
 }

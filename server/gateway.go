@@ -432,6 +432,21 @@ func (g *srvGateway) updateRemotesTLSConfig(opts *Options) {
 			} else if opts.Gateway.TLSConfig != nil {
 				cfg.TLSConfig = opts.Gateway.TLSConfig.Clone()
 			}
+			// Ensure that OCSP callbacks are always setup on gateway reconnect when OCSP policy is set to always.
+			if opts.Gateway.TLSConfig != nil {
+				getClientCertificateCB := opts.Gateway.TLSConfig.GetClientCertificate
+				verifyConnectionCB := opts.Gateway.TLSConfig.VerifyConnection
+				mustStaple := opts.OCSPConfig != nil && opts.OCSPConfig.Mode == OCSPModeAlways
+				if mustStaple && cfg.TLSConfig != nil {
+					if getClientCertificateCB != nil && cfg.TLSConfig.GetClientCertificate == nil {
+						cfg.TLSConfig.GetClientCertificate = getClientCertificateCB
+					}
+					if verifyConnectionCB != nil && cfg.TLSConfig.VerifyConnection == nil {
+						cfg.TLSConfig.VerifyConnection = verifyConnectionCB
+					}
+				}
+			}
+
 			cfg.Unlock()
 		}
 	}
@@ -811,11 +826,13 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 		var timeout float64
 
 		if solicit {
+			s.reloadMu.RLock()
 			s.optsMu.RLock()
 			getClientCertificateCB := s.opts.Gateway.TLSConfig.GetClientCertificate
 			verifyConnectionCB := s.opts.Gateway.TLSConfig.VerifyConnection
 			mustStaple := s.opts.OCSPConfig != nil && s.opts.OCSPConfig.Mode == OCSPModeAlways
 			s.optsMu.RUnlock()
+			s.reloadMu.RUnlock()
 
 			cfg.RLock()
 			tlsName = cfg.tlsName
@@ -838,7 +855,9 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 		}
 
 		// Perform (either server or client side) TLS handshake.
+		s.reloadMu.RLock()
 		if resetTLSName, err := c.doTLSHandshake("gateway", solicit, url, tlsConfig, tlsName, timeout, opts.Gateway.TLSPinnedCerts); err != nil {
+			s.reloadMu.RUnlock()
 			if resetTLSName {
 				cfg.Lock()
 				cfg.tlsName = _EMPTY_
@@ -847,6 +866,7 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 			c.mu.Unlock()
 			return
 		}
+		s.reloadMu.RUnlock()
 	}
 
 	// Do final client initialization
@@ -896,7 +916,7 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 // Builds and sends the CONNECT protocol for a gateway.
 // Client lock held on entry.
 func (c *client) sendGatewayConnect(opts *Options) {
-	tlsRequired := c.gw.cfg.TLSConfig != nil
+	tlsRequired := c.gw.cfg.TLSConfig != nil // Use c.gw.cfg.RLock here?
 	url := c.gw.connectURL
 	c.gw.connectURL = nil
 	var user, pass string
