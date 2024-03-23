@@ -14,8 +14,10 @@
 package server
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,10 +32,10 @@ func TestNRGSimple(t *testing.T) {
 	rg.waitOnLeader()
 	// Do several state transitions.
 	rg.randomMember().(*stateAdder).proposeDelta(11)
-	rg.randomMember().(*stateAdder).proposeDelta(11)
-	rg.randomMember().(*stateAdder).proposeDelta(-22)
+	rg.randomMember().(*stateAdder).proposeDelta(22)
+	rg.randomMember().(*stateAdder).proposeDelta(33)
 	// Wait for all members to have the correct state.
-	rg.waitOnTotal(t, 0)
+	rg.waitOnTotal(t, 66)
 }
 
 func TestNRGSnapshotAndRestart(t *testing.T) {
@@ -290,4 +292,444 @@ func TestNRGSimpleElection(t *testing.T) {
 		require_Equal(t, rn.term, startTerm+1)
 		require_Equal(t, rn.vote, vr.candidate)
 	}
+}
+
+func TestRaftChainOneBlockInLockstep(t *testing.T) {
+	const iterations = 50
+	const timeout = 15 * time.Second
+	//RaftChainOptions.verbose = true
+
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createRaftGroup("TEST", 3, newRaftChainStateMachine)
+	rg.waitOnLeader()
+
+	for iteration := uint64(1); iteration <= iterations; iteration++ {
+		rg.leader().(*raftChainStateMachine).proposeBlock()
+
+		// Wait on participants to converge
+		var previousNodeName string
+		var previousNodeHash string
+
+		for _, sm := range rg {
+			stateMachine := sm.(*raftChainStateMachine)
+			nodeName := fmt.Sprintf(
+				"%s/%s",
+				stateMachine.server().Name(),
+				stateMachine.node().ID(),
+			)
+			checkFor(t, timeout, 500*time.Millisecond, func() error {
+				running, blocksCount, currentHash := stateMachine.getCurrentHash()
+				// All nodes always running
+				if !running {
+					return fmt.Errorf(
+						"node %s is not running",
+						nodeName,
+					)
+				}
+				// Node is behind
+				if blocksCount != iteration {
+					return fmt.Errorf(
+						"node %s applied %d blocks out of %d expected",
+						nodeName,
+						blocksCount,
+						iteration,
+					)
+				}
+				// Make sure hash is not empty
+				if currentHash == "" {
+					return fmt.Errorf(
+						"node %s has empty hash after applying %d blocks",
+						nodeName,
+						blocksCount,
+					)
+				}
+				// Check against previous node hash, unless this is the first node to be checked
+				if previousNodeHash != "" && previousNodeHash != currentHash {
+					return fmt.Errorf(
+						"hash mismatch after %d blocks: %s hash: %s != %s hash: %s",
+						iteration,
+						nodeName,
+						currentHash,
+						previousNodeName,
+						previousNodeHash,
+					)
+				}
+				// Set node name and hash for next node to compare against
+				previousNodeName, previousNodeHash = nodeName, currentHash
+				// All is well
+				return nil
+			})
+		}
+		t.Logf(
+			"Verified chain hash %s for %d/%d nodes after %d/%d iterations",
+			previousNodeHash,
+			len(rg),
+			len(rg),
+			iteration,
+			iterations,
+		)
+	}
+}
+
+func TestRaftChainStopAndCatchUp(t *testing.T) {
+	const iterations = 50
+	const blocksPerIteration = 3
+	const timeout = 15 * time.Second
+	//RaftChainOptions.verbose = true
+
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createRaftGroup("TEST", 3, newRaftChainStateMachine)
+	rg.waitOnLeader()
+
+	for iteration := uint64(1); iteration <= iterations; iteration++ {
+
+		// Stop a (non-leader) node
+		stoppedNode := rg.nonLeader()
+		stoppedNode.stop()
+
+		t.Logf(
+			"Iteration %d/%d: stopping node: %s/%s",
+			iteration,
+			iterations,
+			stoppedNode.server().Name(),
+			stoppedNode.node().ID(),
+		)
+
+		// Propose some new blocks
+		for i := 0; i < blocksPerIteration; i++ {
+			rg.leader().(*raftChainStateMachine).proposeBlock()
+		}
+
+		// Restart the stopped node
+		stoppedNode.restart()
+
+		// Wait on participants to converge
+		var previousNodeName string
+		var previousNodeHash string
+		expectedBlocks := iteration * blocksPerIteration
+		for _, sm := range rg {
+			stateMachine := sm.(*raftChainStateMachine)
+			nodeName := fmt.Sprintf(
+				"%s/%s",
+				stateMachine.server().Name(),
+				stateMachine.node().ID(),
+			)
+			checkFor(t, timeout, 500*time.Millisecond, func() error {
+				running, blocksCount, currentHash := stateMachine.getCurrentHash()
+				// All nodes should be running
+				if !running {
+					return fmt.Errorf(
+						"node %s not running",
+						nodeName,
+					)
+				}
+				// Node is behind
+				if blocksCount != expectedBlocks {
+					return fmt.Errorf(
+						"node %s applied %d blocks out of %d expected",
+						nodeName,
+						blocksCount,
+						expectedBlocks,
+					)
+				}
+				// Make sure hash is not empty
+				if currentHash == "" {
+					return fmt.Errorf(
+						"node %s has empty hash after applying %d blocks",
+						nodeName,
+						blocksCount,
+					)
+				}
+				// Check against previous node hash, unless this is the first node to be checked
+				if previousNodeHash != "" && previousNodeHash != currentHash {
+					return fmt.Errorf(
+						"hash mismatch after %d blocks: %s hash: %s != %s hash: %s",
+						expectedBlocks,
+						nodeName,
+						currentHash,
+						previousNodeName,
+						previousNodeHash,
+					)
+				}
+				// Set node name and hash for next node to compare against
+				previousNodeName, previousNodeHash = nodeName, currentHash
+				// All is well
+				return nil
+			})
+		}
+		t.Logf(
+			"Verified chain hash %s for %d/%d nodes after %d blocks, %d/%d iterations",
+			previousNodeHash,
+			len(rg),
+			len(rg),
+			expectedBlocks,
+			iteration,
+			iterations,
+		)
+	}
+}
+
+func FuzzRaftChain(f *testing.F) {
+	const (
+		groupName               = "FUZZ_TEST_RAFT_CHAIN"
+		numPeers                = 3
+		checkConvergenceTimeout = 30 * time.Second
+	)
+
+	RaftChainOptions.verbose = true
+
+	// Cases to run when executed as unit test:
+	//f.Add(100, int64(123456))
+	f.Add(1000, int64(123456))
+
+	// Run in Fuzz mode to repeat maximizing coverage and looking for failing cases
+	// notice that this test execution is not perfectly deterministic!
+	// The same seed may not fail on retry.
+	f.Fuzz(
+		func(t *testing.T, iterations int, rngSeed int64) {
+			rng := rand.New(rand.NewSource(rngSeed))
+
+			c := createJetStreamClusterExplicit(t, "R3S", numPeers)
+			defer c.shutdown()
+
+			rg := c.createRaftGroup(groupName, numPeers, newRaftChainStateMachine)
+			rg.waitOnLeader()
+
+			// Manually track active and stopped nodes
+			activeNodes := make([]stateMachine, 0, numPeers)
+			stoppedNodes := make([]stateMachine, 0, numPeers)
+
+			// Initially all are active
+			activeNodes = append(activeNodes, rg...)
+
+			// Available operations
+			type RaftFuzzTestOperation string
+
+			const (
+				StopOne       RaftFuzzTestOperation = "Stop one active node"
+				StopAll                             = "Stop all active nodes"
+				RestartOne                          = "Restart one stopped node"
+				RestartAll                          = "Restart all stopped nodes"
+				Snapshot                            = "Snapshot one active node"
+				Propose                             = "Propose a value via one active node"
+				ProposeLeader                       = "Propose a value via leader"
+				Pause                               = "Let things run undisturbed for a while"
+				Check                               = "Wait for nodes to converge"
+			)
+
+			// Weighted distribution of operations, one is randomly chosen from this vector in each iteration
+			opsWeighted := []RaftFuzzTestOperation{
+				StopOne,
+				StopAll,
+				RestartOne,
+				RestartOne,
+				RestartAll,
+				RestartAll,
+				RestartAll,
+				Snapshot,
+				Snapshot,
+				Propose,
+				Propose,
+				Propose,
+				Propose,
+				Propose,
+				Propose,
+				ProposeLeader,
+				ProposeLeader,
+				ProposeLeader,
+				ProposeLeader,
+				ProposeLeader,
+				ProposeLeader,
+				Pause,
+				Pause,
+				Pause,
+				Pause,
+				Pause,
+				Pause,
+				Check,
+				Check,
+				Check,
+				Check,
+			}
+
+			pickRandomNode := func(nodes []stateMachine) ([]stateMachine, stateMachine) {
+				if len(nodes) == 0 {
+					// Input list is empty
+					return nodes, nil
+				}
+				// Pick random node
+				i := rng.Intn(len(nodes))
+				node := nodes[i]
+				// Move last element in its place
+				nodes[i] = nodes[len(nodes)-1]
+				// Return slice excluding last element
+				return nodes[:len(nodes)-1], node
+			}
+
+			chainStatusString := func() string {
+				b := strings.Builder{}
+				for _, sm := range rg {
+					csm := sm.(*raftChainStateMachine)
+					running, blocksCount, blockHash := csm.getCurrentHash()
+					if running {
+						b.WriteString(
+							fmt.Sprintf(
+								" [%s (%s): %d blocks, hash=%s],",
+								csm.server().Name(),
+								csm.node().ID(),
+								blocksCount,
+								blockHash,
+							),
+						)
+					} else {
+						b.WriteString(
+							fmt.Sprintf(
+								" [%s (%s): STOPPED],",
+								csm.server().Name(),
+								csm.node().ID(),
+							),
+						)
+
+					}
+				}
+				return b.String()
+			}
+
+			// Track the highest number of blocks applied by any of the replicas
+			highestBlocksCount := uint64(0)
+
+			for iteration := 1; iteration <= iterations; iteration++ {
+				nextOperation := opsWeighted[rng.Intn(len(opsWeighted))]
+				t.Logf("State: %s", chainStatusString())
+				t.Logf("Iteration %d/%d: %s", iteration, iterations, nextOperation)
+
+				switch nextOperation {
+
+				case StopOne:
+					// Stop an active node (if any are left active)
+					var n stateMachine
+					activeNodes, n = pickRandomNode(activeNodes)
+					if n != nil {
+						n.stop()
+						stoppedNodes = append(stoppedNodes, n)
+					}
+
+				case StopAll:
+					// Stop any node which is active
+					for _, node := range activeNodes {
+						node.stop()
+					}
+					stoppedNodes = append(stoppedNodes, activeNodes...)
+					activeNodes = make([]stateMachine, 0, numPeers)
+
+				case RestartOne:
+					// Restart a stopped node (if any are stopped)
+					var n stateMachine
+					stoppedNodes, n = pickRandomNode(stoppedNodes)
+					if n != nil {
+						n.restart()
+						activeNodes = append(activeNodes, n)
+					}
+
+				case RestartAll:
+					// Restart any node which is stopped
+					for _, node := range stoppedNodes {
+						node.restart()
+					}
+					activeNodes = append(activeNodes, stoppedNodes...)
+					stoppedNodes = make([]stateMachine, 0, numPeers)
+
+				case Snapshot:
+					// Make an active node take a snapshot (if any nodes are active)
+					if len(activeNodes) > 0 {
+						n := activeNodes[rng.Intn(len(activeNodes))]
+						n.(*raftChainStateMachine).snapshot()
+					}
+
+				case Propose:
+					// Make an active node propose the next block (if any nodes are active)
+					if len(activeNodes) > 0 {
+						n := activeNodes[rng.Intn(len(activeNodes))]
+						n.(*raftChainStateMachine).proposeBlock()
+					}
+
+				case ProposeLeader:
+					// Make the leader propose the next block (if a leader is active)
+					leader := rg.leader()
+					if leader != nil {
+						leader.(*raftChainStateMachine).proposeBlock()
+					}
+
+				case Pause:
+					// Just sit for a while and let things happen
+					time.Sleep(time.Duration(rng.Intn(250)) * time.Millisecond)
+
+				case Check:
+					// Restart any stopped node
+					for _, node := range stoppedNodes {
+						node.restart()
+					}
+					activeNodes = append(activeNodes, stoppedNodes...)
+					stoppedNodes = make([]stateMachine, 0, numPeers)
+
+					// Ensure all nodes (eventually) converge
+					checkFor(
+						t,
+						checkConvergenceTimeout,
+						1*time.Second,
+						func() error {
+							referenceRunning, referenceBlocksCount, referenceHash := rg[0].(*raftChainStateMachine).getCurrentHash()
+							if !referenceRunning {
+								return fmt.Errorf(
+									"reference node not running",
+								)
+							}
+							for _, n := range rg {
+								sm := n.(*raftChainStateMachine)
+								running, blocksCount, blockHash := sm.getCurrentHash()
+								if !running {
+									return fmt.Errorf(
+										"node not running: %s (%s)",
+										sm.server().Name(),
+										sm.node().ID(),
+									)
+								}
+								// Track the highest block seen
+								if blocksCount > highestBlocksCount {
+									t.Logf(
+										"New highest blocks count: %d (%s (%s))",
+										blocksCount,
+										sm.s.Name(),
+										sm.n.ID(),
+									)
+									highestBlocksCount = blocksCount
+								}
+								// Each replica must match the reference node (given enough time)
+								if blocksCount != referenceBlocksCount || blockHash != referenceHash {
+									return fmt.Errorf(
+										"nodes not converged: %s",
+										chainStatusString(),
+									)
+								}
+							}
+							// Replicas are in sync, but missing some blocks that was previously seen
+							if referenceBlocksCount < highestBlocksCount {
+								return fmt.Errorf(
+									"nodes converged below highest known block count: %d: %s",
+									highestBlocksCount,
+									chainStatusString(),
+								)
+							}
+							// All nodes reached the same state, check passed
+							return nil
+						},
+					)
+				}
+			}
+		},
+	)
 }
