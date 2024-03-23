@@ -543,6 +543,77 @@ func TestConnzWithCID(t *testing.T) {
 	}
 }
 
+func TestConnzWithKind(t *testing.T) {
+	resetPreviousHTTPConnections()
+	opts := DefaultMonitorOptions()
+	opts.ServerName = "HUB"
+	opts.LeafNode.Host = "127.0.0.1"
+	opts.LeafNode.Port = -1
+
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	// Create one leafnode connection
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+port: -1
+leafnodes {
+	remotes = [
+		{ url: nats-leaf://127.0.0.1:%d }
+	]
+}
+`, s.getOpts().LeafNode.Port)))
+
+	leaf, _ := RunServerWithConfig(conf)
+	defer leaf.Shutdown()
+
+	var nc *nats.Conn
+
+	// Create 5 client connections
+	for i := 1; i <= 5; i++ {
+		nc = createClientConnSubscribeAndPublish(t, s)
+		defer nc.Close()
+	}
+
+	// In order to return leafnode connections, we need to make sure we call
+	// Connz with an account. We will use the global account for this test case.
+	urlTmpl := "http://127.0.0.1:%d/connz?acc=$G&kind=%s"
+
+	for mode := 0; mode < 2; mode++ {
+
+		// Test with all connection kinds
+		allUrl := fmt.Sprintf(urlTmpl, s.MonitorAddr().Port, ConnKindAll)
+		c := pollConz(t, s, mode, allUrl, &ConnzOptions{Kind: ConnKindAll, Account: "$G"})
+		if len(c.Conns) != 6 {
+			t.Fatalf("Expected 6 connections, got %d\n", len(c.Conns))
+		}
+		if c.NumConns != 6 {
+			t.Fatalf("Expected NumConns of 6, got %d\n", c.NumConns)
+		}
+
+		// Test with regular connections
+		clientUrl := fmt.Sprintf(urlTmpl, s.MonitorAddr().Port, ConnKindClient)
+		c = pollConz(t, s, mode, clientUrl, &ConnzOptions{Kind: ConnKindClient, Account: "$G"})
+		// Test inside details of each connection
+		if len(c.Conns) != 5 {
+			t.Fatalf("Expected 5 connections, but got %d\n", len(c.Conns))
+		}
+		if c.NumConns != 5 {
+			t.Fatalf("Expected NumConns to be 5, but got %d\n", c.NumConns)
+		}
+
+		// Test with leaf nodes
+		leafUrl := fmt.Sprintf(urlTmpl, s.MonitorAddr().Port, ConnKindLeafNode)
+		c = pollConz(t, s, mode, leafUrl, &ConnzOptions{Kind: ConnKindLeafNode, Account: "$G"})
+		if len(c.Conns) != 1 {
+			t.Fatalf("Expected one connection, got %d\n", len(c.Conns))
+		}
+		if c.NumConns != 1 {
+			t.Fatalf("Expected NumConns of 1, got %d\n", c.NumConns)
+		}
+
+	}
+}
+
 // Helper to map to connection name
 func createConnMap(t *testing.T, cz *Connz) map[string]*ConnInfo {
 	cm := make(map[string]*ConnInfo)
