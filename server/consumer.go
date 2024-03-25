@@ -504,7 +504,7 @@ func checkConsumerCfg(
 	}
 
 	// Check if we have a BackOff defined that MaxDeliver is within range etc.
-	if lbo := len(config.BackOff); lbo > 0 && config.MaxDeliver <= lbo {
+	if lbo := len(config.BackOff); lbo > 0 && config.MaxDeliver != -1 && config.MaxDeliver <= lbo {
 		return NewJSConsumerMaxDeliverBackoffError()
 	}
 
@@ -746,7 +746,6 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	if err := checkConsumerCfg(config, srvLim, &cfg, acc, &selectedLimits, isRecovering); err != nil {
 		return nil, err
 	}
-
 	sampleFreq := 0
 	if config.SampleFrequency != _EMPTY_ {
 		// Can't fail as checkConsumerCfg checks correct format
@@ -1799,7 +1798,7 @@ func (acc *Account) checkNewConsumerConfig(cfg, ncfg *ConsumerConfig) error {
 	}
 
 	// Check if BackOff is defined, MaxDeliver is within range.
-	if lbo := len(ncfg.BackOff); lbo > 0 && ncfg.MaxDeliver <= lbo {
+	if lbo := len(ncfg.BackOff); lbo > 0 && ncfg.MaxDeliver != -1 && ncfg.MaxDeliver <= lbo {
 		return NewJSConsumerMaxDeliverBackoffError()
 	}
 
