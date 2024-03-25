@@ -1821,7 +1821,7 @@ func TestMQTTTopicAndSubjectConversion(t *testing.T) {
 				t.Fatalf("Expected subject %q got %q", test.natsSubject, toNATS)
 			}
 
-			res = natsSubjectToMQTTTopic(string(res))
+			res = natsSubjectToMQTTTopic(res)
 			backToMQTT := string(res)
 			if backToMQTT != test.mqttTopic {
 				t.Fatalf("Expected topic %q got %q (NATS conversion was %q)", test.mqttTopic, backToMQTT, toNATS)

@@ -190,6 +190,17 @@ const (
 	mqttRetainedTransferTimeout = 10 * time.Second
 )
 
+const (
+	sparkbNamespace = "spBv1.0"
+	sparkbNBIRTH    = "NBIRTH"
+	sparkbDBIRTH    = "DBIRTH"
+)
+
+var (
+	sparkbNamespacePrefix    = []byte("spBv1//0.")
+	sparkbCertificatesPrefix = []byte("$sparkplug.certificates.")
+)
+
 var (
 	mqttPingResponse     = []byte{mqttPacketPingResp, 0x0}
 	mqttProtoName        = []byte("MQTT")
@@ -455,14 +466,24 @@ type mqttPublish struct {
 // When we submit a PUBREL for delivery, we add a "Nmqtt-PubRel" header that
 // contains the PI.
 const (
-	mqttNatsHeader                = "Nmqtt-Pub"
+	// NATS header that indicates that the message originated from MQTT and
+	// stores the published message QOS.
+	mqttNatsHeader = "Nmqtt-Pub"
+
+	// NATS headers to store retained message metadata (along with the original
+	// message as binary).
 	mqttNatsRetainedMessageTopic  = "Nmqtt-RTopic"
 	mqttNatsRetainedMessageOrigin = "Nmqtt-ROrigin"
 	mqttNatsRetainedMessageFlags  = "Nmqtt-RFlags"
 	mqttNatsRetainedMessageSource = "Nmqtt-RSource"
-	mqttNatsPubRelHeader          = "Nmqtt-PubRel"
-	mqttNatsHeaderSubject         = "Nmqtt-Subject"
-	mqttNatsHeaderMapped          = "Nmqtt-Mapped"
+
+	// NATS header that indicates that the message is an MQTT PubRel and stores
+	// the PI.
+	mqttNatsPubRelHeader = "Nmqtt-PubRel"
+
+	// NATS headers to store the original MQTT subject and the subject mapping.
+	mqttNatsHeaderSubject = "Nmqtt-Subject"
+	mqttNatsHeaderMapped  = "Nmqtt-Mapped"
 )
 
 type mqttParsedPublishNATSHeader struct {
@@ -1639,13 +1660,16 @@ func (jsa *mqttJSA) newRequestExMulti(kind, subject, cidHash string, hdrs []int,
 }
 
 func (jsa *mqttJSA) sendAck(ackSubject string) {
-	if ackSubject == _EMPTY_ {
-		return
-	}
-
 	// We pass -1 for the hdr so that the send loop does not need to
 	// add the "client info" header. This is not a JS API request per se.
-	jsa.sendq.push(&mqttJSPubMsg{subj: ackSubject, hdr: -1})
+	jsa.sendMsg(ackSubject, nil)
+}
+
+func (jsa *mqttJSA) sendMsg(subj string, msg []byte) {
+	if subj == _EMPTY_ {
+		return
+	}
+	jsa.sendq.push(&mqttJSPubMsg{subj: subj, msg: msg, hdr: -1})
 }
 
 func (jsa *mqttJSA) createEphemeralConsumer(cfg *CreateConsumerRequest) (*JSApiConsumerCreateResponse, error) {
@@ -3609,7 +3633,7 @@ func (c *client) mqttParseConnect(r *mqttReader, pl int, hasMappings bool) (byte
 				cp.will.mapped = c.pa.mapped
 				// We also now need to map the original MQTT topic to the new topic
 				// based on the new subject.
-				topic = natsSubjectToMQTTTopic(string(cp.will.subject))
+				topic = natsSubjectToMQTTTopic(cp.will.subject)
 			}
 			// Reset those now.
 			c.pa.subject, c.pa.mapped = nil, nil
@@ -3958,7 +3982,7 @@ func (c *client) mqttParsePub(r *mqttReader, pl int, pp *mqttPublish, hasMapping
 			pp.mapped = c.pa.mapped
 			// We also now need to map the original MQTT topic to the new topic
 			// based on the new subject.
-			pp.topic = natsSubjectToMQTTTopic(string(pp.subject))
+			pp.topic = natsSubjectToMQTTTopic(pp.subject)
 		}
 		// Reset those now.
 		c.pa.subject, c.pa.mapped = nil, nil
@@ -4014,7 +4038,7 @@ func mqttNewDeliverableMessage(pp *mqttPublish, encodePP bool) (natsMsg []byte, 
 	size := len(hdrLine) +
 		len(mqttNatsHeader) + 2 + 2 + // 2 for ':<qos>', and 2 for CRLF
 		2 + // end-of-header CRLF
-		len(pp.msg)
+		pp.sz
 	if encodePP {
 		size += len(mqttNatsHeaderSubject) + 1 + // +1 for ':'
 			len(pp.subject) + 2 // 2 for CRLF
@@ -4222,7 +4246,7 @@ func (s *Server) mqttProcessPubRel(c *client, pi uint16, trace bool) error {
 	}
 
 	pp := &mqttPublish{
-		topic:   natsSubjectToMQTTTopic(string(h.subject)),
+		topic:   natsSubjectToMQTTTopic(h.subject),
 		subject: h.subject,
 		mapped:  h.mapped,
 		msg:     stored.Data,
@@ -4241,52 +4265,85 @@ func (s *Server) mqttProcessPubRel(c *client, pi uint16, trace bool) error {
 // Invoked from the MQTT publisher's readLoop. No client lock is held on entry.
 func (c *client) mqttHandlePubRetain() {
 	pp := c.mqtt.pp
-	if !mqttIsRetained(pp.flags) {
+	isRetained := mqttIsRetained(pp.flags)
+	isSparkBBirth, typ, groupID, nodeID, deviceID := sparkbIsBirth(pp.subject, sparkbNamespacePrefix)
+	if !isRetained && !isSparkBBirth {
 		return
 	}
-	key := string(pp.subject)
+
+	// Always clear the retain flag to deliver a normal published message.
+	defer func() {
+		pp.flags &= ^mqttPubFlagRetain
+	}()
+
 	asm := c.mqtt.asm
-	// Spec [MQTT-3.3.1-11]. Payload of size 0 removes the retained message,
-	// but should still be delivered as a normal message.
-	if pp.sz == 0 {
+	rm := &mqttRetainedMsg{
+		Origin: asm.jsa.id,
+		Msg:    pp.msg, // will copy these bytes later as we process rm.
+		Flags:  pp.flags,
+		Source: c.opts.Username,
+	}
+
+	key := string(pp.subject)
+	switch {
+	// Spec [MQTT-3.3.1-11]. Payload of size 0 removes the retained message, but
+	// should still be delivered as a normal message. We do not special-case
+	// sparkB BIRTH/DEATH messages since they are neither retained nor empty.
+	case pp.sz == 0:
 		if seqToRemove := asm.handleRetainedMsgDel(key, 0); seqToRemove > 0 {
 			asm.deleteRetainedMsg(seqToRemove)
 			asm.notifyRetainedMsgDeleted(key, seqToRemove)
 		}
-	} else {
+		return
+
+	case isSparkBBirth:
+		// Spec [tck-id-conformance-mqtt-aware-nbirth-mqtt-topic]. A Sparkplug
+		// Aware MQTT Server MUST make NBIRTH messages available on a topic of
+		// the form:
+		// $sparkplug/certificates/namespace/group_id/NBIRTH/edge_node_id
+		rm.Topic = fmt.Sprintf("$sparkplug/certificates/%s/%s/%s/%s", sparkbNamespace, groupID, typ, nodeID)
+		if deviceID != _EMPTY_ {
+			rm.Topic += "/" + deviceID
+		}
+		byteSubject, _ := mqttTopicToNATSPubSubject([]byte(rm.Topic))
+
+		// will use to save the retained message.
+		key = string(byteSubject)
+
+		// Copy the payload out of pp since we will be sending the message
+		// asynchronously.
+		msg := make([]byte, pp.sz)
+		copy(msg, pp.msg[:pp.sz])
+		asm.jsa.sendMsg(key, msg)
+
+	case isRetained:
 		// Spec [MQTT-3.3.1-5]. Store the retained message with its QoS.
 		//
 		// When coming from a publish protocol, `pp` is referencing a stack
 		// variable that itself possibly references the read buffer.
-		rm := &mqttRetainedMsg{
-			Origin:  asm.jsa.id,
-			Subject: key,
-			Topic:   string(pp.topic),
-			Msg:     pp.msg, // will copy these bytes later as we process rm.
-			Flags:   pp.flags,
-			Source:  c.opts.Username,
-		}
-		rmBytes, hdr := mqttEncodeRetainedMessage(rm) // will copy the payload bytes
-		smr, err := asm.jsa.storeMsg(mqttRetainedMsgsStreamSubject+key, hdr, rmBytes)
-		if err == nil {
-			// Update the new sequence.
-			rf := &mqttRetainedMsgRef{
-				sseq: smr.Sequence,
-			}
-			// Add/update the map. `true` to copy the payload bytes if needs to
-			// update rmsCache.
-			asm.handleRetainedMsg(key, rf, rm, true)
-		} else {
-			c.mu.Lock()
-			acc := c.acc
-			c.mu.Unlock()
-			c.Errorf("unable to store retained message for account %q, subject %q: %v",
-				acc.GetName(), key, err)
-		}
+		rm.Topic = string(pp.topic)
 	}
 
-	// Clear the retain flag for a normal published message.
-	pp.flags &= ^mqttPubFlagRetain
+	// Set the key to the subject of the message for retained, or the composed
+	// $sparkplug subject for sparkB.
+	rm.Subject = key
+	rmBytes, hdr := mqttEncodeRetainedMessage(rm) // will copy the payload bytes
+	smr, err := asm.jsa.storeMsg(mqttRetainedMsgsStreamSubject+key, hdr, rmBytes)
+	if err == nil {
+		// Update the new sequence.
+		rf := &mqttRetainedMsgRef{
+			sseq: smr.Sequence,
+		}
+		// Add/update the map. `true` to copy the payload bytes if needs to
+		// update rmsCache.
+		asm.handleRetainedMsg(key, rf, rm, true)
+	} else {
+		c.mu.Lock()
+		acc := c.acc
+		c.mu.Unlock()
+		c.Errorf("unable to store retained message for account %q, subject %q: %v",
+			acc.GetName(), key, err)
+	}
 }
 
 // After a config reload, it is possible that the source of a publish retained
@@ -4550,6 +4607,31 @@ func mqttIsRetained(flags byte) bool {
 	return flags&mqttPubFlagRetain != 0
 }
 
+// Checks if the subject is in the form of a Sparkplug BIRTH or DEATH message,
+// MQTT topic like spBv1.0/{group_id}/{message_type}/{edge_node_id}/{device_id}
+func sparkbIsBirth(natsSubject, prefix []byte) (is bool, typ, groupID, nodeID, deviceID string) {
+	if !bytes.HasPrefix(natsSubject, prefix) {
+		return false, "", "", "", ""
+	}
+	natsSubject = natsSubject[len(sparkbNamespacePrefix):]
+	parts := bytes.Split(natsSubject, []byte("."))
+	if len(parts) < 3 {
+		return false, "", "", "", ""
+	}
+	typ = string(parts[1])
+	isDevice := (typ == sparkbDBIRTH)
+	if typ != sparkbNBIRTH && !isDevice {
+		return false, "", "", "", ""
+	}
+
+	groupID = string(natsSubjectToMQTTTopic(parts[0]))
+	nodeID = string(natsSubjectToMQTTTopic(parts[2]))
+	if isDevice && len(parts) > 3 {
+		deviceID = string(natsSubjectToMQTTTopic(parts[3]))
+	}
+	return true, typ, groupID, nodeID, deviceID
+}
+
 //////////////////////////////////////////////////////////////////////////////
 //
 // SUBSCRIBE related functions
@@ -4682,6 +4764,7 @@ func mqttDeliverMsgCbQoS0(sub *subscription, pc *client, _ *Account, subject, re
 		return
 	}
 
+	retain := false
 	hdr, msg := pc.msgParts(rmsg)
 	var topic []byte
 	if pc.isMqtt() {
@@ -4697,32 +4780,34 @@ func mqttDeliverMsgCbQoS0(sub *subscription, pc *client, _ *Account, subject, re
 		topic = pc.mqtt.pp.topic
 		// Check for service imports where subject mapping is in play.
 		if len(pc.pa.mapped) > 0 && len(pc.pa.psi) > 0 {
-			topic = natsSubjectToMQTTTopic(subject)
+			topic = natsSubjectStrToMQTTTopic(subject)
 		}
 
 	} else {
 		// Non MQTT client, could be NATS publisher, or ROUTER, etc..
 		h := mqttParsePublishNATSHeader(hdr)
 
-		// If the message does not have the MQTT header, it is not a MQTT and
-		// should be delivered here, at QOS0. If it does have the header, we
-		// need to lock the session to check the sub QoS, and then ignore the
-		// message if the Sub wants higher QOS delivery. It will be delivered by
-		// mqttDeliverMsgCbQoS12.
+		// Check the subscription's QoS. If the message was published with a
+		// QoS>0 (in the header) and the sub has the QoS>0 then the message will
+		// be delivered by mqttDeliverMsgCbQoS12.
 		if subQoS > 0 && h != nil && h.qos > 0 {
 			return
 		}
+
+		// Messages on $sparkplug/certificates/... are to be published with the
+		// RETAIN flag on.
+		retain, _, _, _, _ = sparkbIsBirth(stringToBytes(subject), sparkbCertificatesPrefix)
 
 		// If size is more than what a MQTT client can handle, we should probably reject,
 		// for now just truncate.
 		if len(msg) > mqttMaxPayloadSize {
 			msg = msg[:mqttMaxPayloadSize]
 		}
-		topic = natsSubjectToMQTTTopic(subject)
+		topic = natsSubjectStrToMQTTTopic(subject)
 	}
 
 	// Message never has a packet identifier nor is marked as duplicate.
-	pc.mqttEnqueuePublishMsgTo(cc, sub, 0, 0, false, topic, msg)
+	pc.mqttEnqueuePublishMsgTo(cc, sub, 0, 0, false, retain, topic, msg)
 }
 
 // This is the callback attached to a JS durable subscription for a MQTT QoS 1+
@@ -4780,7 +4865,7 @@ func mqttDeliverMsgCbQoS12(sub *subscription, pc *client, _ *Account, subject, r
 
 	// Check for reserved subject violation. If so, we will send the ack to
 	// remove the message, and do nothing else.
-	strippedSubj := string(subject[len(mqttStreamSubjectPrefix):])
+	strippedSubj := subject[len(mqttStreamSubjectPrefix):]
 	if mqttMustIgnoreForReservedSub(sub, strippedSubj) {
 		sess.mu.Unlock()
 		sess.jsa.sendAck(reply)
@@ -4797,8 +4882,8 @@ func mqttDeliverMsgCbQoS12(sub *subscription, pc *client, _ *Account, subject, r
 		return
 	}
 
-	originalTopic := natsSubjectToMQTTTopic(strippedSubj)
-	pc.mqttEnqueuePublishMsgTo(cc, sub, pi, qos, dup, originalTopic, msg)
+	originalTopic := natsSubjectStrToMQTTTopic(strippedSubj)
+	pc.mqttEnqueuePublishMsgTo(cc, sub, pi, qos, dup, false, originalTopic, msg)
 }
 
 func mqttDeliverPubRelCb(sub *subscription, pc *client, _ *Account, subject, reply string, rmsg []byte) {
@@ -4857,8 +4942,8 @@ func isMQTTReservedSubscription(subject string) bool {
 
 // Common function to mqtt delivery callbacks to serialize and send the message
 // to the `cc` client.
-func (c *client) mqttEnqueuePublishMsgTo(cc *client, sub *subscription, pi uint16, qos byte, dup bool, topic, msg []byte) {
-	flags, headerBytes := mqttMakePublishHeader(pi, qos, dup, false, topic, len(msg))
+func (c *client) mqttEnqueuePublishMsgTo(cc *client, sub *subscription, pi uint16, qos byte, dup, retain bool, topic, msg []byte) {
+	flags, headerBytes := mqttMakePublishHeader(pi, qos, dup, retain, topic, len(msg))
 
 	cc.mu.Lock()
 	if sub.mqtt.prm != nil {
@@ -5415,8 +5500,12 @@ func mqttToNATSSubjectConversion(mt []byte, wcOk bool) ([]byte, error) {
 // Converts a NATS subject to MQTT topic. This is for publish
 // messages only, so there is no checking for wildcards.
 // Rules are reversed of mqttToNATSSubjectConversion.
-func natsSubjectToMQTTTopic(subject string) []byte {
-	topic := []byte(subject)
+func natsSubjectStrToMQTTTopic(subject string) []byte {
+	return natsSubjectToMQTTTopic(stringToBytes(subject))
+}
+
+func natsSubjectToMQTTTopic(subject []byte) []byte {
+	topic := make([]byte, len(subject))
 	end := len(subject) - 1
 	var j int
 	for i := 0; i < len(subject); i++ {
