@@ -4266,8 +4266,8 @@ func (s *Server) mqttProcessPubRel(c *client, pi uint16, trace bool) error {
 func (c *client) mqttHandlePubRetain() {
 	pp := c.mqtt.pp
 	isRetained := mqttIsRetained(pp.flags)
-	isSparkBBirth, typ, groupID, nodeID, deviceID := sparkbIsBirth(pp.subject, sparkbNamespacePrefix)
-	if !isRetained && !isSparkBBirth {
+	isSparkbBirth, typ, groupID, nodeID, deviceID := sparkbIsBirth(pp.subject, sparkbNamespacePrefix)
+	if !isRetained && !isSparkbBirth {
 		return
 	}
 
@@ -4296,7 +4296,7 @@ func (c *client) mqttHandlePubRetain() {
 		}
 		return
 
-	case isSparkBBirth:
+	case isSparkbBirth:
 		// Spec [tck-id-conformance-mqtt-aware-nbirth-mqtt-topic]. A Sparkplug
 		// Aware MQTT Server MUST make NBIRTH messages available on a topic of
 		// the form:
