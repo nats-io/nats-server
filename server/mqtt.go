@@ -4297,10 +4297,18 @@ func (c *client) mqttHandlePubRetain() {
 		return
 
 	case isSparkbBirth:
-		// Spec [tck-id-conformance-mqtt-aware-nbirth-mqtt-topic]. A Sparkplug
-		// Aware MQTT Server MUST make NBIRTH messages available on a topic of
-		// the form:
-		// $sparkplug/certificates/namespace/group_id/NBIRTH/edge_node_id
+		// [tck-id-conformance-mqtt-aware-store] A Sparkplug Aware MQTT Server
+		// MUST store NBIRTH and DBIRTH messages as they pass through the MQTT
+		// Server.
+		//
+		// [tck-id-conformance-mqtt-aware-nbirth-mqtt-topic]. A Sparkplug Aware
+		// MQTT Server MUST make NBIRTH messages available on a topic of the
+		// form: $sparkplug/certificates/namespace/group_id/NBIRTH/edge_node_id
+		//
+		// [tck-id-conformance-mqtt-aware-dbirth-mqtt-topic] A Sparkplug Aware
+		// MQTT Server MUST make DBIRTH messages available on a topic of the
+		// form:
+		// $sparkplug/certificates/namespace/group_id/DBIRTH/edge_node_id/device_id
 		rm.Topic = fmt.Sprintf("$sparkplug/certificates/%s/%s/%s/%s", sparkbNamespace, groupID, typ, nodeID)
 		if deviceID != _EMPTY_ {
 			rm.Topic += "/" + deviceID
@@ -4794,8 +4802,15 @@ func mqttDeliverMsgCbQoS0(sub *subscription, pc *client, _ *Account, subject, re
 			return
 		}
 
-		// Messages on $sparkplug/certificates/... are to be published with the
-		// RETAIN flag on.
+		// [tck-id-conformance-mqtt-aware-nbirth-mqtt-retain] A Sparkplug Aware
+		// MQTT Server MUST make NBIRTH messages available on the topic:
+		// $sparkplug/certificates/namespace/group_id/NBIRTH/edge_node_id with
+		// the MQTT retain flag set to true
+		//
+		// [tck-id-conformance-mqtt-aware-dbirth-mqtt-retain] A Sparkplug Aware
+		// MQTT Server MUST make DBIRTH messages available on the topic:
+		// $sparkplug/certificates/namespace/group_id/DBIRTH/edge_node_id/device_id
+		// with the MQTT retain flag set to true
 		retain, _, _, _, _ = sparkbIsBirth(stringToBytes(subject), sparkbCertificatesPrefix)
 
 		// If size is more than what a MQTT client can handle, we should probably reject,
