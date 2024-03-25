@@ -191,14 +191,15 @@ const (
 )
 
 const (
-	sparkbNamespace = "spBv1.0"
-	sparkbNBIRTH    = "NBIRTH"
-	sparkbDBIRTH    = "DBIRTH"
+	sparkbNamespace    = "spBv1.0"
+	sparkbCertificates = "$sparkplug/certificates/spBv1.0"
+	sparkbNBIRTH       = "NBIRTH"
+	sparkbDBIRTH       = "DBIRTH"
 )
 
 var (
 	sparkbNamespacePrefix    = []byte("spBv1//0.")
-	sparkbCertificatesPrefix = []byte("$sparkplug.certificates.")
+	sparkbCertificatesPrefix = []byte("$sparkplug.certificates.spBv1//0.")
 )
 
 var (
@@ -4309,7 +4310,7 @@ func (c *client) mqttHandlePubRetain() {
 		// MQTT Server MUST make DBIRTH messages available on a topic of the
 		// form:
 		// $sparkplug/certificates/namespace/group_id/DBIRTH/edge_node_id/device_id
-		rm.Topic = fmt.Sprintf("$sparkplug/certificates/%s/%s/%s/%s", sparkbNamespace, groupID, typ, nodeID)
+		rm.Topic = fmt.Sprintf(sparkbCertificates+"/%s/%s/%s", groupID, typ, nodeID)
 		if deviceID != _EMPTY_ {
 			rm.Topic += "/" + deviceID
 		}
@@ -4621,7 +4622,7 @@ func sparkbIsBirth(natsSubject, prefix []byte) (is bool, typ, groupID, nodeID, d
 	if !bytes.HasPrefix(natsSubject, prefix) {
 		return false, "", "", "", ""
 	}
-	natsSubject = natsSubject[len(sparkbNamespacePrefix):]
+	natsSubject = natsSubject[len(prefix):]
 	parts := bytes.Split(natsSubject, []byte("."))
 	if len(parts) < 3 {
 		return false, "", "", "", ""

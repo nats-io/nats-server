@@ -7457,7 +7457,6 @@ func TestMQTTJetStreamRepublishAndQoS0Subscribers(t *testing.T) {
 	testMQTTExpectNothing(t, r)
 }
 
-// Test for auto-cleanup of consumers.
 func TestMQTTDecodeRetainedMessage(t *testing.T) {
 	tdir := t.TempDir()
 	tmpl := `
@@ -7544,6 +7543,91 @@ func TestMQTTDecodeRetainedMessage(t *testing.T) {
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo/+", qos: 0}}, []byte{0})
 	testMQTTExpectNothing(t, r)
+}
+
+func TestMQTTSparkbBirthHandling(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	// Publish an NBIRTH message. Make sure it is received as both the original
+	// subject, and as a $sparkplug/certificates one. Since BIRTH messages are
+	// QoS0, use a NATS client/subscriber to monitor.
+
+	const NBORN = "NODE BORN FAKE MESSAGE"
+	const DBORN = "DEVICE BORN FAKE MESSAGE"
+
+	tests := []*struct {
+		topic   string
+		payload string
+		flags   byte
+		mc      net.Conn
+		r       *mqttReader
+	}{
+		{
+			topic:   "spBv1.0/ggg/NBIRTH/nnn",
+			payload: NBORN,
+			flags:   0,
+		},
+		{
+			topic:   "spBv1.0/ggg/DBIRTH/nnn/ddd",
+			payload: DBORN,
+			flags:   0,
+		},
+		{
+			topic:   "$sparkplug/certificates/spBv1.0/ggg/NBIRTH/nnn",
+			payload: NBORN,
+			flags:   mqttPubFlagRetain,
+		},
+		{
+			topic:   "$sparkplug/certificates/spBv1.0/ggg/DBIRTH/nnn/ddd",
+			payload: DBORN,
+			flags:   mqttPubFlagRetain,
+		},
+	}
+
+	t.Run("$sparkplug messages delivered", func(t *testing.T) {
+		// Connect the subscribers, unique for each topic we monitor.
+		for i, test := range tests {
+			test.mc, test.r = testMQTTConnect(t, &mqttConnInfo{cleanSess: true, clientID: fmt.Sprintf("sub-%v", i)}, o.MQTT.Host, o.MQTT.Port)
+			defer test.mc.Close()
+			testMQTTCheckConnAck(t, test.r, mqttConnAckRCConnectionAccepted, false)
+
+			// Subscribne at QoS2 to make sure the messages are posted at QoS0 and
+			// not trucated to sub QoS.
+			testMQTTSub(t, 0, test.mc, test.r, []*mqttFilter{{filter: test.topic, qos: 2}}, []byte{2})
+		}
+
+		// connect the publisher
+		mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true, clientID: "pub"}, o.MQTT.Host, o.MQTT.Port)
+		defer mc.Close()
+		testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+
+		// {Publish} [ND]BIRTH messages. Note that IRL these are protobuf payloads.
+		testMQTTPublish(t, mc, r, 0, false, false, "spBv1.0/ggg/NBIRTH/nnn", 0, []byte("NODE BORN FAKE MESSAGE"))
+		testMQTTPublish(t, mc, r, 0, false, false, "spBv1.0/ggg/DBIRTH/nnn/ddd", 0, []byte("DEVICE BORN FAKE MESSAGE"))
+
+		// Check that the subscribers got the messages.
+		for _, test := range tests {
+			testMQTTCheckPubMsg(t, test.mc, test.r, test.topic, test.flags, []byte(test.payload))
+		}
+	})
+
+	t.Run("$sparkplug messages retained", func(t *testing.T) {
+		// Connect/subscribe again, and m,ake sure that only retained messages are
+		// there.
+		for i, test := range tests {
+			mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true, clientID: fmt.Sprintf("sub-%v", i+100)}, o.MQTT.Host, o.MQTT.Port)
+			defer mc.Close()
+			testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+			testMQTTSub(t, 0, mc, r, []*mqttFilter{{filter: test.topic, qos: 2}}, []byte{2})
+			if test.flags&mqttPubFlagRetain != 0 {
+				testMQTTCheckPubMsg(t, mc, r, test.topic, test.flags, []byte(test.payload))
+			} else {
+				testMQTTExpectNothing(t, r)
+			}
+		}
+	})
 }
 
 //////////////////////////////////////////////////////////////////////////
