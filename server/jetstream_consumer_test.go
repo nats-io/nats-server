@@ -901,6 +901,73 @@ func TestJetStreamConsumerIsEqualOrSubsetMatch(t *testing.T) {
 	}
 }
 
+func TestJetStreamConsumerBackOff(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	for _, test := range []struct {
+		name      string
+		config    nats.ConsumerConfig
+		shouldErr bool
+	}{
+		{
+			name: "backoff_with_max_deliver",
+			config: nats.ConsumerConfig{
+				MaxDeliver: 3,
+				BackOff:    []time.Duration{time.Second, time.Minute},
+			},
+			shouldErr: false,
+		},
+		{
+			name: "backoff_with_max_deliver_smaller",
+			config: nats.ConsumerConfig{
+				MaxDeliver: 2,
+				BackOff:    []time.Duration{time.Second, time.Minute, time.Hour},
+			},
+			shouldErr: true,
+		},
+		{
+			name: "backoff_with_default_max_deliver",
+			config: nats.ConsumerConfig{
+				BackOff: []time.Duration{time.Second, time.Minute, time.Hour},
+			},
+			shouldErr: false,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     test.name,
+				Subjects: []string{test.name},
+			})
+			require_NoError(t, err)
+
+			_, err = js.AddConsumer(test.name, &test.config)
+			require_True(t, test.shouldErr == (err != nil))
+			if test.shouldErr {
+				require_True(t, strings.Contains(err.Error(), "max deliver"))
+			}
+
+			// test if updating consumers works too.
+			test.config.Durable = "consumer"
+			_, err = js.AddConsumer(test.name, &nats.ConsumerConfig{
+				Durable: test.config.Durable,
+			})
+			require_NoError(t, err)
+
+			test.config.Description = "Updated"
+			_, err = js.UpdateConsumer(test.name, &test.config)
+			require_True(t, test.shouldErr == (err != nil))
+			if test.shouldErr {
+				require_True(t, strings.Contains(err.Error(), "max deliver"))
+			}
+		})
+
+	}
+}
+
 func TestJetStreamConsumerDelete(t *testing.T) {
 	tests := []struct {
 		name     string
