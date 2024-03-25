@@ -4984,7 +4984,9 @@ func (sess *mqttSession) processJSConsumer(c *client, subject, sid string,
 			// The JS durable consumer's delivery subject is on a NUID of
 			// the form: mqttSubPrefix + <nuid>. It is also used as the sid
 			// for the NATS subscription, so use that for the lookup.
+			c.mu.Lock()
 			sub := c.subs[cc.DeliverSubject]
+			c.mu.Unlock()
 
 			sess.mu.Lock()
 			delete(sess.cons, sid)

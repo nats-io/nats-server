@@ -859,24 +859,26 @@ func (a *Account) addClient(c *client) int {
 	if a.clients != nil {
 		a.clients[c] = struct{}{}
 	}
-	added := n != len(a.clients)
-	if added {
-		if c.kind != CLIENT && c.kind != LEAF {
-			a.sysclients++
-		} else if c.kind == LEAF {
-			a.nleafs++
-		}
+	// If we did not add it, we are done
+	if n == len(a.clients) {
+		a.mu.Unlock()
+		return n
+	}
+	if c.kind != CLIENT && c.kind != LEAF {
+		a.sysclients++
+	} else if c.kind == LEAF {
+		a.nleafs++
 	}
 	a.mu.Unlock()
 
 	// If we added a new leaf use the list lock and add it to the list.
-	if added && c.kind == LEAF {
+	if c.kind == LEAF {
 		a.lmu.Lock()
 		a.lleafs = append(a.lleafs, c)
 		a.lmu.Unlock()
 	}
 
-	if c != nil && c.srv != nil && added {
+	if c != nil && c.srv != nil {
 		c.srv.accConnsUpdate(a)
 	}
 
@@ -941,31 +943,33 @@ func (a *Account) removeClient(c *client) int {
 	a.mu.Lock()
 	n := len(a.clients)
 	delete(a.clients, c)
-	removed := n != len(a.clients)
-	if removed {
-		if c.kind != CLIENT && c.kind != LEAF {
-			a.sysclients--
-		} else if c.kind == LEAF {
-			a.nleafs--
-			// Need to do cluster accounting here.
-			// Do cluster accounting if we are a hub.
-			if c.isHubLeafNode() {
-				cluster := c.remoteCluster()
-				if count := a.leafClusters[cluster]; count > 1 {
-					a.leafClusters[cluster]--
-				} else if count == 1 {
-					delete(a.leafClusters, cluster)
-				}
+	// If we did not actually remove it, we are done.
+	if n == len(a.clients) {
+		a.mu.Unlock()
+		return n
+	}
+	if c.kind != CLIENT && c.kind != LEAF {
+		a.sysclients--
+	} else if c.kind == LEAF {
+		a.nleafs--
+		// Need to do cluster accounting here.
+		// Do cluster accounting if we are a hub.
+		if c.isHubLeafNode() {
+			cluster := c.remoteCluster()
+			if count := a.leafClusters[cluster]; count > 1 {
+				a.leafClusters[cluster]--
+			} else if count == 1 {
+				delete(a.leafClusters, cluster)
 			}
 		}
 	}
 	a.mu.Unlock()
 
-	if removed && c.kind == LEAF {
+	if c.kind == LEAF {
 		a.removeLeafNode(c)
 	}
 
-	if c != nil && c.srv != nil && removed {
+	if c != nil && c.srv != nil {
 		c.srv.accConnsUpdate(a)
 	}
 

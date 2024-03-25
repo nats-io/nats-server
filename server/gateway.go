@@ -1750,6 +1750,15 @@ func (s *Server) removeRemoteGatewayConnection(c *client) {
 	cid := c.cid
 	isOutbound := c.gw.outbound
 	gwName := c.gw.name
+	if isOutbound && c.gw.outsim != nil {
+		// We do this to allow the GC to release this connection.
+		// Since the map is used by the rest of the code without client lock,
+		// we can't simply set it to nil, instead, just make sure we empty it.
+		c.gw.outsim.Range(func(k, _ any) bool {
+			c.gw.outsim.Delete(k)
+			return true
+		})
+	}
 	c.mu.Unlock()
 
 	gw := s.gateway
@@ -1786,6 +1795,7 @@ func (s *Server) removeRemoteGatewayConnection(c *client) {
 				qSubsRemoved++
 			}
 		}
+		c.subs = nil
 		c.mu.Unlock()
 		// Update total count of qsubs in remote gateways.
 		atomic.AddInt64(&c.srv.gateway.totalQSubs, -qSubsRemoved)
@@ -1800,6 +1810,7 @@ func (s *Server) removeRemoteGatewayConnection(c *client) {
 		for _, sub := range c.subs {
 			subs = append(subs, sub)
 		}
+		c.subs = nil
 		c.mu.Unlock()
 		for _, sub := range subs {
 			c.removeReplySub(sub)
@@ -1911,6 +1922,10 @@ func (c *client) processGatewayRUnsub(arg []byte) error {
 		return nil
 	}
 	defer c.mu.Unlock()
+	// If closed, c.subs map will be nil, so bail out.
+	if c.isClosed() {
+		return nil
+	}
 
 	ei, _ := c.gw.outsim.Load(accName)
 	if ei != nil {
@@ -2017,6 +2032,10 @@ func (c *client) processGatewayRSub(arg []byte) error {
 		return nil
 	}
 	defer c.mu.Unlock()
+	// If closed, c.subs map will be nil, so bail out.
+	if c.isClosed() {
+		return nil
+	}
 
 	ei, _ := c.gw.outsim.Load(bytesToString(accName))
 	// We should always have an existing entry for plain subs because
@@ -2658,6 +2677,8 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 	}
 	// Done with subscription, put back to pool. We don't need
 	// to reset content since we explicitly set when using it.
+	// However, make sure to not hold a reference to a connection.
+	sub.client = nil
 	subPool.Put(sub)
 	return didDeliver
 }

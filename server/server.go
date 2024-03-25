@@ -3288,6 +3288,8 @@ func (s *Server) saveClosedClient(c *client, nc net.Conn, reason ClosedState) {
 		for _, sub := range c.subs {
 			cc.subs = append(cc.subs, newSubDetail(sub))
 		}
+		// Now set this to nil to allow connection to be released.
+		c.subs = nil
 	}
 	// Hold user as well.
 	cc.user = c.getRawAuthUser()
