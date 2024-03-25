@@ -1162,7 +1162,7 @@ func (c *client) removeRemoteSubs() {
 	c.mu.Lock()
 	srv := c.srv
 	subs := c.subs
-	c.subs = make(map[string]*subscription)
+	c.subs = nil
 	c.mu.Unlock()
 
 	for key, sub := range subs {

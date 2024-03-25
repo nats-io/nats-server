@@ -1888,8 +1888,8 @@ func TestServerEventsStatsZ(t *testing.T) {
 	if m.Stats.Connections != 1 {
 		t.Fatalf("Did not match connections of 1, got %d", m.Stats.Connections)
 	}
-	if m.Stats.ActiveAccounts != 2 {
-		t.Fatalf("Did not match active accounts of 2, got %d", m.Stats.ActiveAccounts)
+	if m.Stats.ActiveAccounts != 1 {
+		t.Fatalf("Did not match active accounts of 1, got %d", m.Stats.ActiveAccounts)
 	}
 	if m.Stats.Sent.Msgs < 1 {
 		t.Fatalf("Did not match sent msgs of >=1, got %d", m.Stats.Sent.Msgs)
@@ -1919,8 +1919,8 @@ func TestServerEventsStatsZ(t *testing.T) {
 	if m2.Stats.Connections != 1 {
 		t.Fatalf("Did not match connections of 1, got %d", m2.Stats.Connections)
 	}
-	if m2.Stats.ActiveAccounts != 2 {
-		t.Fatalf("Did not match active accounts of 2, got %d", m2.Stats.ActiveAccounts)
+	if m2.Stats.ActiveAccounts != 1 {
+		t.Fatalf("Did not match active accounts of 1, got %d", m2.Stats.ActiveAccounts)
 	}
 	if m2.Stats.Sent.Msgs < 3 {
 		t.Fatalf("Did not match sent msgs of >= 3, got %d", m2.Stats.Sent.Msgs)
@@ -1946,8 +1946,8 @@ func TestServerEventsStatsZ(t *testing.T) {
 	if m3.Stats.Connections != 1 {
 		t.Fatalf("Did not match connections of 1, got %d", m3.Stats.Connections)
 	}
-	if m3.Stats.ActiveAccounts != 2 {
-		t.Fatalf("Did not match active accounts of 2, got %d", m3.Stats.ActiveAccounts)
+	if m3.Stats.ActiveAccounts != 1 {
+		t.Fatalf("Did not match active accounts of 1, got %d", m3.Stats.ActiveAccounts)
 	}
 	if m3.Stats.Sent.Msgs < 4 {
 		t.Fatalf("Did not match sent msgs of >= 4, got %d", m3.Stats.Sent.Msgs)
