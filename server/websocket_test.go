@@ -1746,7 +1746,7 @@ func TestWSValidateOptions(t *testing.T) {
 			o := wso.Clone()
 			o.Websocket.Headers = map[string]string{"Sec-WebSocket-Key": "123"}
 			return o
-		}, `invalid header "Sec-WebSocket-Key", "Sec-WebSocket-" prefix no allowed`},
+		}, `invalid header "Sec-WebSocket-Key", "Sec-WebSocket-" prefix not allowed`},
 		{"header with host", func() *Options {
 			o := wso.Clone()
 			o.Websocket.Headers = map[string]string{"Host": "http://localhost:8080"}

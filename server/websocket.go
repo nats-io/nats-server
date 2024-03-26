@@ -1037,7 +1037,7 @@ func validateWebsocketOptions(o *Options) error {
 		}
 
 		if strings.HasPrefix(k, "sec-websocket-") {
-			return fmt.Errorf("websocket: invalid header %q, \"Sec-WebSocket-\" prefix no allowed", key)
+			return fmt.Errorf("websocket: invalid header %q, \"Sec-WebSocket-\" prefix not allowed", key)
 		}
 	}
 
