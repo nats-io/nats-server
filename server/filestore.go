@@ -3886,7 +3886,9 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	if secure {
 		// Grab record info.
 		ri, rl, _, _ := mb.slotInfo(int(seq - mb.cache.fseq))
-		mb.eraseMsg(seq, int(ri), int(rl))
+		if err := mb.eraseMsg(seq, int(ri), int(rl)); err != nil {
+			return false, err
+		}
 	}
 
 	fifo := seq == atomic.LoadUint64(&mb.first.seq)
@@ -4244,7 +4246,11 @@ func (mb *msgBlock) eraseMsg(seq uint64, ri, rl int) error {
 
 	// Randomize record
 	data := make([]byte, rl-emptyRecordLen)
-	rand.Read(data)
+	if n, err := rand.Read(data); err != nil {
+		return err
+	} else if n != len(data) {
+		return fmt.Errorf("not enough overwrite bytes read (%d != %d)", n, len(data))
+	}
 
 	// Now write to underlying buffer.
 	var b bytes.Buffer
