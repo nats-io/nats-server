@@ -7118,21 +7118,15 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 		listen: 127.0.0.1:%d
 		routes = [%s]
 	}
-        server_tags: ["test"]
-        system_account: sys
-        no_auth_user: js
+	server_tags: ["test"]
+	system_account: sys
+	no_auth_user: js
 	accounts {
-	  sys {
-	    users = [
-	      { user: sys, pass: sys }
-	    ]
-	  }
-	  js {
-	    jetstream = enabled
-	    users = [
-	      { user: js, pass: js }
-	    ]
-	  }
+		sys { users = [ { user: sys, pass: sys } ] }
+		js {
+			jetstream = enabled
+			users = [ { user: js, pass: js } ]
+	    }
 	}`
 	c := createJetStreamClusterWithTemplate(t, conf, sc.Name, 3)
 	defer c.shutdown()
@@ -7156,7 +7150,7 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 	mp := nats.MaxAckPending(10000)
 	mw := nats.PullMaxWaiting(1000)
 	for i := 0; i < 10; i++ {
-		for _, partition := range []string{"AAAA", "BBB", "CCCCC", "DDD", "EEEEE"} {
+		for _, partition := range []string{"EEEEE"} {
 			subject := fmt.Sprintf("MSGS.%s.*.H.100XY.*.*.WQ.00000000000%d", partition, i)
 			consumer := fmt.Sprintf("consumer:%s:%d", partition, i)
 			_, err := cjs.PullSubscribe(subject, consumer, mp, mw)
@@ -7237,14 +7231,13 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 					pjs.Publish(subject, payload, msgID, nats.AckWait(1*time.Millisecond), nats.RetryAttempts(0), nats.RetryWait(0))
 				}
 			}
-			t.Logf("Stopped publishing.")
 		}()
 	}
 
 	// Let enough messages into the stream then start consumers.
 	time.Sleep(30 * time.Second)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
 	defer cancel()
 
 	for i := 0; i < 10; i++ {
@@ -7315,7 +7308,6 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 				t.Logf("ERROR: %v", err)
 				continue
 			}
-			// require_NoError(t, err)
 
 			wg.Add(1)
 			go func() {
@@ -7360,19 +7352,19 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 			// Find server leader of the stream and restart it.
 			leaderSrv := c.streamLeader("js", sc.Name)
 			leaderSrv.Shutdown()
+			leaderSrv.WaitForShutdown()
 			c.restartServer(leaderSrv)
 		} else {
 			// NOTE (wq): For R=3, not sure which server causes the issue here
 			// so this may be have flaky behavior.
 			s := c.servers[0]
+			s.optsMu.Lock()
+			s.opts.LameDuckDuration = 5 * time.Second
+			s.opts.LameDuckGracePeriod = -5 * time.Second
+			s.optsMu.Unlock()
 			s.lameDuckMode()
 			s.WaitForShutdown()
-			if !s.Running() {
-				opts := c.opts[0]
-				s, o := RunServerWithConfig(opts.ConfigFile)
-				c.servers[0] = s
-				c.opts[0] = o
-			}
+			c.restartServer(s)
 			c.waitOnClusterReady()
 		}
 	})
@@ -7380,16 +7372,16 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 	// Wait until context is done then check state.
 	<-ctx.Done()
 
-	// Check state of streams and consumers.
-	si, err := js.StreamInfo(sc.Name)
-	require_NoError(t, err)
-
 	var consumerPending int
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 10; i++ {
 		ci, err := js.ConsumerInfo(sc.Name, fmt.Sprintf("consumer:EEEEE:%d", i))
 		require_NoError(t, err)
 		consumerPending += int(ci.NumPending)
 	}
+
+	// Check state of streams and consumers.
+	si, err := js.StreamInfo(sc.Name)
+	require_NoError(t, err)
 
 	streamPending := int(si.State.Msgs)
 	if streamPending != consumerPending {

@@ -2788,6 +2788,12 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, doSample bool) {
 		return
 	}
 
+	mset := o.mset
+	if mset == nil || mset.closed.Load() {
+		o.mu.Unlock()
+		return
+	}
+
 	var sagap uint64
 	var needSignal bool
 
@@ -2845,7 +2851,6 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, doSample bool) {
 	// Update underlying store.
 	o.updateAcks(dseq, sseq)
 
-	mset := o.mset
 	clustered := o.node != nil
 
 	// In case retention changes for a stream, this ought to have been updated
@@ -3092,10 +3097,16 @@ func (wq *waitQueue) add(wr *waitingRequest) error {
 }
 
 func (wq *waitQueue) isFull() bool {
+	if wq == nil {
+		return false
+	}
 	return wq.n == wq.max
 }
 
 func (wq *waitQueue) isEmpty() bool {
+	if wq == nil {
+		return true
+	}
 	return wq.n == 0
 }
 
@@ -5549,7 +5560,7 @@ func (o *consumer) checkStateForInterestStream() error {
 		return errAckFloorHigherThanLastSeq
 	}
 
-	for seq := ss.FirstSeq; seq <= asflr; seq++ {
+	for seq := ss.FirstSeq; asflr > 0 && seq <= asflr; seq++ {
 		mset.ackMsg(o, seq)
 	}
 
