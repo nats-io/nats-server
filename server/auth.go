@@ -83,9 +83,10 @@ func (u *User) clone() *User {
 	}
 	clone := &User{}
 	*clone = *u
+	// Account is not cloned because it is always by reference to an existing struct.
 	clone.Permissions = u.Permissions.clone()
 
-	if len(u.AllowedConnectionTypes) > 0 {
+	if u.AllowedConnectionTypes != nil {
 		clone.AllowedConnectionTypes = make(map[string]struct{})
 		for k, v := range u.AllowedConnectionTypes {
 			clone.AllowedConnectionTypes[k] = v
@@ -103,7 +104,16 @@ func (n *NkeyUser) clone() *NkeyUser {
 	}
 	clone := &NkeyUser{}
 	*clone = *n
+	// Account is not cloned because it is always by reference to an existing struct.
 	clone.Permissions = n.Permissions.clone()
+
+	if n.AllowedConnectionTypes != nil {
+		clone.AllowedConnectionTypes = make(map[string]struct{})
+		for k, v := range n.AllowedConnectionTypes {
+			clone.AllowedConnectionTypes[k] = v
+		}
+	}
+
 	return clone
 }
 
