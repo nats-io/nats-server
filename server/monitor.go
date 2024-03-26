@@ -116,8 +116,11 @@ type ConnInfo struct {
 	Stop           *time.Time     `json:"stop,omitempty"`
 	Reason         string         `json:"reason,omitempty"`
 	RTT            string         `json:"rtt,omitempty"`
+	RTTNanos       time.Duration  `json:"rtt_nanos,omitempty"`
 	Uptime         string         `json:"uptime"`
+	UptimeNanos    time.Duration  `json:"uptime_nanos"`
 	Idle           string         `json:"idle"`
+	IdleNanos      time.Duration  `json:"idle_nanos"`
 	Pending        int            `json:"pending_bytes"`
 	InMsgs         int64          `json:"in_msgs"`
 	OutMsgs        int64          `json:"out_msgs"`
@@ -535,6 +538,8 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time, auth bool) {
 	// For fast sort if required.
 	rtt := client.getRTT()
+	uptime := now.Sub(client.start)
+	idle := now.Sub(client.last)
 	ci.rtt = int64(rtt)
 
 	ci.Cid = client.cid
@@ -543,9 +548,12 @@ func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time, auth bool) 
 	ci.Type = client.clientTypeString()
 	ci.Start = client.start
 	ci.LastActivity = client.last
-	ci.Uptime = myUptime(now.Sub(client.start))
-	ci.Idle = myUptime(now.Sub(client.last))
+	ci.Uptime = myUptime(uptime)
+	ci.UptimeNanos = uptime
+	ci.Idle = myUptime(idle)
+	ci.IdleNanos = idle
 	ci.RTT = rtt.String()
+	ci.RTTNanos = rtt
 	ci.OutMsgs = client.outMsgs
 	ci.OutBytes = client.outBytes
 	ci.NumSubs = uint32(len(client.subs))
