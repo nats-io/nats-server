@@ -3555,7 +3555,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 			js.mu.Unlock()
 		}
 		// Call update.
-		if err = mset.updateWithAdvisory(cfg, !recovering); err != nil {
+		if err = mset.updateWithAdvisory(cfg, !recovering, false); err != nil {
 			s.Warnf("JetStream cluster error updating stream %q for account %q: %v", cfg.Name, acc.Name, err)
 		}
 		// Set the new stream assignment.
@@ -3706,7 +3706,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 			mset.setStreamAssignment(sa)
 			// Check if our config has really been updated.
 			if !reflect.DeepEqual(mset.config(), sa.Config) {
-				if err = mset.updateWithAdvisory(sa.Config, false); err != nil {
+				if err = mset.updateWithAdvisory(sa.Config, false, false); err != nil {
 					s.Warnf("JetStream cluster error updating stream %q for account %q: %v", sa.Config.Name, acc.Name, err)
 					if osa != nil {
 						// Process the raft group and make sure it's running if needed.
@@ -3725,7 +3725,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 			}
 		} else if err == NewJSStreamNotFoundError() {
 			// Add in the stream here.
-			mset, err = acc.addStreamWithAssignment(sa.Config, nil, sa)
+			mset, err = acc.addStreamWithAssignment(sa.Config, nil, sa, false)
 		}
 		if mset != nil {
 			mset.setCreatedTime(sa.Created)
@@ -4254,7 +4254,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 	var didCreate, isConfigUpdate, needsLocalResponse bool
 	if o == nil {
 		// Add in the consumer if needed.
-		if o, err = mset.addConsumerWithAssignment(ca.Config, ca.Name, ca, wasExisting, ActionCreateOrUpdate); err == nil {
+		if o, err = mset.addConsumerWithAssignment(ca.Config, ca.Name, ca, wasExisting, ActionCreateOrUpdate, false); err == nil {
 			didCreate = true
 		}
 	} else {
@@ -5934,7 +5934,7 @@ func (js *jetStream) jsClusteredStreamLimitsCheck(acc *Account, cfg *StreamConfi
 	return nil
 }
 
-func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject, reply string, rmsg []byte, config *StreamConfig) {
+func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject, reply string, rmsg []byte, config *StreamRequest) {
 	js, cc := s.getJetStreamCluster()
 	if js == nil || cc == nil {
 		return
@@ -5942,7 +5942,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 
 	var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
 
-	ccfg, apiErr := s.checkStreamCfg(config, acc)
+	ccfg, apiErr := s.checkStreamCfg(&config.StreamConfig, acc, config.Pedantic)
 	if apiErr != nil {
 		resp.Error = apiErr
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
@@ -6079,7 +6079,7 @@ func sysRequest[T any](s *Server, subjFormat string, args ...interface{}) (*T, e
 	}
 }
 
-func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, subject, reply string, rmsg []byte, cfg *StreamConfig, peerSet []string) {
+func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, subject, reply string, rmsg []byte, cfg *StreamConfig, peerSet []string, pedantic bool) {
 	js, cc := s.getJetStreamCluster()
 	if js == nil || cc == nil {
 		return
@@ -6105,7 +6105,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	var newCfg *StreamConfig
 	if jsa := js.accounts[acc.Name]; jsa != nil {
 		js.mu.Unlock()
-		ncfg, err := jsa.configUpdateCheck(osa.Config, cfg, s)
+		ncfg, err := jsa.configUpdateCheck(osa.Config, cfg, s, pedantic)
 		js.mu.Lock()
 		if err != nil {
 			resp.Error = NewJSStreamUpdateError(err, Unless(err))
@@ -6206,6 +6206,8 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 		// We are adding new peers here.
 		if newCfg.Replicas > len(rg.Peers) {
 			// Check that we have the allocation available.
+			// TODO(jrm): Make sure we do not need pedantic mode info here.
+			// We should be fine, as this either errors or not, and we are not changing the stream.
 			if err := js.jsClusteredStreamLimitsCheck(acc, newCfg); err != nil {
 				resp.Error = err
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
@@ -7029,7 +7031,7 @@ func (cc *jetStreamCluster) createGroupForConsumer(cfg *ConsumerConfig, sa *stre
 }
 
 // jsClusteredConsumerRequest is first point of entry to create a consumer with R > 1.
-func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subject, reply string, rmsg []byte, stream string, cfg *ConsumerConfig, action ConsumerAction) {
+func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subject, reply string, rmsg []byte, stream string, cfg *ConsumerConfig, action ConsumerAction, pedantic bool) {
 	js, cc := s.getJetStreamCluster()
 	if js == nil || cc == nil {
 		return
@@ -7051,7 +7053,11 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	}
 	srvLim := &s.getOpts().JetStreamLimits
 	// Make sure we have sane defaults
-	setConsumerConfigDefaults(cfg, &streamCfg, srvLim, selectedLimits)
+	if err := setConsumerConfigDefaults(cfg, &streamCfg, srvLim, selectedLimits, pedantic); err != nil {
+		resp.Error = err
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		return
+	}
 
 	if err := checkConsumerCfg(cfg, srvLim, &streamCfg, acc, selectedLimits, false); err != nil {
 		resp.Error = err

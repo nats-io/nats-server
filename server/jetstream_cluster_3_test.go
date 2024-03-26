@@ -7037,3 +7037,37 @@ func TestJetStreamClusterConsumerPauseSurvivesRestart(t *testing.T) {
 	require_True(t, leader != nil)
 	checkTimer(leader)
 }
+
+func TestJetStreamClusterStreamPedantic(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, _ := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := addStreamPedanticWithError(t, nc, &StreamRequest{
+		StreamConfig: StreamConfig{
+			Name:       "TEST",
+			MaxAge:     1 * time.Minute,
+			Duplicates: 1 * time.Hour,
+			Storage:    FileStorage,
+		},
+		Pedantic: true,
+	})
+	require_Error(t, err)
+	fmt.Printf("Error: %v\n", err.Description)
+
+	_, err = addStreamPedanticWithError(t, nc, &StreamRequest{
+		StreamConfig: StreamConfig{
+			Name:       "TEST",
+			MaxAge:     1 * time.Hour,
+			Duplicates: 1 * time.Minute,
+			Storage:    FileStorage,
+		},
+		Pedantic: true,
+	})
+	if err != nil {
+		t.Fatalf("Error: %v", err)
+	}
+
+}

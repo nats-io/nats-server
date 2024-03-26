@@ -1399,7 +1399,7 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 				// the consumer can reconnect. We will create it as a durable and switch it.
 				cfg.ConsumerConfig.Durable = ofi.Name()
 			}
-			obs, err := e.mset.addConsumerWithAssignment(&cfg.ConsumerConfig, _EMPTY_, nil, true, ActionCreateOrUpdate)
+			obs, err := e.mset.addConsumerWithAssignment(&cfg.ConsumerConfig, _EMPTY_, nil, true, ActionCreateOrUpdate, false)
 			if err != nil {
 				s.Warnf("    Error adding consumer %q: %v", cfg.Name, err)
 				continue
@@ -2549,7 +2549,7 @@ func (a *Account) addStreamTemplate(tc *StreamTemplateConfig) (*streamTemplate, 
 	// FIXME(dlc) - Hacky
 	tcopy := tc.deepCopy()
 	tcopy.Config.Name = "_"
-	cfg, apiErr := s.checkStreamCfg(tcopy.Config, a)
+	cfg, apiErr := s.checkStreamCfg(tcopy.Config, a, false)
 	if apiErr != nil {
 		return nil, apiErr
 	}
