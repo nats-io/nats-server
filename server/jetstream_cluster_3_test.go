@@ -7001,6 +7001,22 @@ func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 			},
 		})
 	})
+	t.Run("R3F_DN", func(t *testing.T) {
+		testJetStreamClusterWorkQueueStreamOrphanIssue(t, &nats.StreamConfig{
+			Name:        "OWQTEST_R3F_DN",
+			Subjects:    []string{"MSGS.>"},
+			Replicas:    3,
+			MaxAge:      30 * time.Minute,
+			MaxMsgs:     100_000,
+			Duplicates:  5 * time.Minute,
+			Retention:   nats.WorkQueuePolicy,
+			Discard:     nats.DiscardNew,
+			AllowRollup: true,
+			Placement: &nats.Placement{
+				Tags: []string{"test"},
+			},
+		})
+	})
 }
 
 func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.StreamConfig) {
