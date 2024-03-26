@@ -641,7 +641,7 @@ func genEncryptionKey(sc StoreCipher, seed []byte) (ek cipher.AEAD, err error) {
 	} else if sc == AES {
 		block, e := aes.NewCipher(seed)
 		if e != nil {
-			return nil, err
+			return nil, e
 		}
 		ek, err = cipher.NewGCMWithNonceSize(block, block.BlockSize())
 	} else {
@@ -671,8 +671,10 @@ func (fs *fileStore) genEncryptionKeys(context string) (aek cipher.AEAD, bek cip
 
 	const seedSize = 32
 	seed = make([]byte, seedSize)
-	if n, err := rand.Read(seed); err != nil || n != seedSize {
+	if n, err := rand.Read(seed); err != nil {
 		return nil, nil, nil, nil, err
+	} else if n != seedSize {
+		return nil, nil, nil, nil, fmt.Errorf("not enough seed bytes read (%d != %d", n, seedSize)
 	}
 
 	aek, err = genEncryptionKey(sc, seed)
@@ -682,7 +684,11 @@ func (fs *fileStore) genEncryptionKeys(context string) (aek cipher.AEAD, bek cip
 
 	// Generate our nonce. Use same buffer to hold encrypted seed.
 	nonce := make([]byte, kek.NonceSize(), kek.NonceSize()+len(seed)+kek.Overhead())
-	rand.Read(nonce)
+	if n, err := rand.Read(nonce); err != nil {
+		return nil, nil, nil, nil, err
+	} else if n != len(nonce) {
+		return nil, nil, nil, nil, fmt.Errorf("not enough nonce bytes read (%d != %d)", n, len(nonce))
+	}
 
 	bek, err = genBlockEncryptionKey(sc, seed[:], nonce)
 	if err != nil {
@@ -776,7 +782,11 @@ func (fs *fileStore) writeStreamMeta() error {
 	// Encrypt if needed.
 	if fs.aek != nil {
 		nonce := make([]byte, fs.aek.NonceSize(), fs.aek.NonceSize()+len(b)+fs.aek.Overhead())
-		rand.Read(nonce)
+		if n, err := rand.Read(nonce); err != nil {
+			return err
+		} else if n != len(nonce) {
+			return fmt.Errorf("not enough nonce bytes read (%d != %d)", n, len(nonce))
+		}
 		b = fs.aek.Seal(nonce, nonce, b, nil)
 	}
 
@@ -7552,7 +7562,11 @@ func (fs *fileStore) writeFullState() error {
 			return err
 		}
 		nonce := make([]byte, fs.aek.NonceSize(), fs.aek.NonceSize()+len(buf)+fs.aek.Overhead())
-		rand.Read(nonce)
+		if n, err := rand.Read(nonce); err != nil {
+			return err
+		} else if n != len(nonce) {
+			return fmt.Errorf("not enough nonce bytes read (%d != %d)", n, len(nonce))
+		}
 		buf = fs.aek.Seal(nonce, nonce, buf, nil)
 	}
 
@@ -8161,8 +8175,12 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 			// Redo the state file as well here if we have one and we can tell it was plaintext.
 			if buf, err := os.ReadFile(o.ifn); err == nil {
 				if _, err := decodeConsumerState(buf); err == nil {
+					state, err := o.encryptState(buf)
+					if err != nil {
+						return nil, err
+					}
 					<-dios
-					err := os.WriteFile(o.ifn, o.encryptState(buf), defaultFilePerms)
+					err = os.WriteFile(o.ifn, state, defaultFilePerms)
 					dios <- struct{}{}
 					if err != nil {
 						if didCreate {
@@ -8568,14 +8586,18 @@ func (o *consumerFileStore) Update(state *ConsumerState) error {
 
 // Will encrypt the state with our asset key. Will be a no-op if encryption not enabled.
 // Lock should be held.
-func (o *consumerFileStore) encryptState(buf []byte) []byte {
+func (o *consumerFileStore) encryptState(buf []byte) ([]byte, error) {
 	if o.aek == nil {
-		return buf
+		return buf, nil
 	}
 	// TODO(dlc) - Optimize on space usage a bit?
 	nonce := make([]byte, o.aek.NonceSize(), o.aek.NonceSize()+len(buf)+o.aek.Overhead())
-	rand.Read(nonce)
-	return o.aek.Seal(nonce, nonce, buf, nil)
+	if n, err := rand.Read(nonce); err != nil {
+		return nil, err
+	} else if n != len(nonce) {
+		return nil, fmt.Errorf("not enough nonce bytes read (%d != %d)", n, len(nonce))
+	}
+	return o.aek.Seal(nonce, nonce, buf, nil), nil
 }
 
 // Used to limit number of disk IO calls in flight since they could all be blocking an OS thread.
@@ -8604,7 +8626,10 @@ func (o *consumerFileStore) writeState(buf []byte) error {
 
 	// Check on encryption.
 	if o.aek != nil {
-		buf = o.encryptState(buf)
+		var err error
+		if buf, err = o.encryptState(buf); err != nil {
+			return err
+		}
 	}
 
 	o.writing = true
@@ -8669,7 +8694,11 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 	// Encrypt if needed.
 	if cfs.aek != nil {
 		nonce := make([]byte, cfs.aek.NonceSize(), cfs.aek.NonceSize()+len(b)+cfs.aek.Overhead())
-		rand.Read(nonce)
+		if n, err := rand.Read(nonce); err != nil {
+			return err
+		} else if n != len(nonce) {
+			return fmt.Errorf("not enough nonce bytes read (%d != %d)", n, len(nonce))
+		}
 		b = cfs.aek.Seal(nonce, nonce, b, nil)
 	}
 
@@ -8965,7 +8994,9 @@ func (o *consumerFileStore) Stop() error {
 		// Make sure to write this out..
 		if buf, err = o.encodeState(); err == nil && len(buf) > 0 {
 			if o.aek != nil {
-				buf = o.encryptState(buf)
+				if buf, err = o.encryptState(buf); err != nil {
+					return err
+				}
 			}
 		}
 	}
