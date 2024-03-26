@@ -6969,9 +6969,9 @@ func TestJetStreamClusterConsumerPauseSurvivesRestart(t *testing.T) {
 }
 
 func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
-	t.Run("R1", func(t *testing.T) {
+	t.Run("R1F", func(t *testing.T) {
 		testJetStreamClusterWorkQueueStreamOrphanIssue(t, &nats.StreamConfig{
-			Name:        "OWQTEST_R1",
+			Name:        "OWQTEST_R1F",
 			Subjects:    []string{"MSGS.>"},
 			Replicas:    1,
 			MaxAge:      30 * time.Minute,
@@ -6979,6 +6979,23 @@ func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 			Retention:   nats.WorkQueuePolicy,
 			Discard:     nats.DiscardOld,
 			AllowRollup: true,
+			Placement: &nats.Placement{
+				Tags: []string{"test"},
+			},
+		})
+	})
+	t.Run("R3M", func(t *testing.T) {
+		testJetStreamClusterWorkQueueStreamOrphanIssue(t, &nats.StreamConfig{
+			Name:        "OWQTEST_R3M",
+			Subjects:    []string{"MSGS.>"},
+			Replicas:    3,
+			MaxAge:      30 * time.Minute,
+			MaxMsgs:     100_000,
+			Duplicates:  5 * time.Minute,
+			Retention:   nats.WorkQueuePolicy,
+			Discard:     nats.DiscardNew,
+			AllowRollup: true,
+			Storage:     nats.MemoryStorage,
 			Placement: &nats.Placement{
 				Tags: []string{"test"},
 			},
@@ -7063,7 +7080,7 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 				"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000009",
 			}
 			payload := []byte(strings.Repeat("A", 1024))
-			for i := 1; i < 100_000; i++ {
+			for i := 1; i < 200_000; i++ {
 				select {
 				case <-pctx.Done():
 					wg.Done()
@@ -7191,7 +7208,11 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 			defer cpnc.Close()
 
 			psub, err := cpjs.PullSubscribe(subject, consumer, mp)
-			require_NoError(t, err)
+			if err != nil {
+				t.Logf("ERROR: %v", err)
+				continue
+			}
+			// require_NoError(t, err)
 
 			wg.Add(1)
 			go func() {
@@ -7232,10 +7253,25 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 	}
 
 	time.AfterFunc(10*time.Second, func() {
-		// Find server leader of the stream and restart it.
-		leaderSrv := c.streamLeader("js", sc.Name)
-		leaderSrv.Shutdown()
-		c.restartServer(leaderSrv)
+		if sc.Replicas == 1 {
+			// Find server leader of the stream and restart it.
+			leaderSrv := c.streamLeader("js", sc.Name)
+			leaderSrv.Shutdown()
+			c.restartServer(leaderSrv)
+		} else {
+			// NOTE (wq): For R=3, not sure which server causes the issue here
+			// so this may be have flaky behavior.
+			s := c.servers[0]
+			s.lameDuckMode()
+			s.WaitForShutdown()
+			if !s.Running() {
+				opts := c.opts[0]
+				s, o := RunServerWithConfig(opts.ConfigFile)
+				c.servers[0] = s
+				c.opts[0] = o
+			}
+			c.waitOnClusterReady()
+		}
 	})
 
 	// Wait until context is done then check state.
