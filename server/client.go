@@ -4211,7 +4211,8 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 		c.mu.Lock()
 		if c.opts.NoResponders {
 			if sub := c.subForReply(c.pa.reply); sub != nil {
-				proto := fmt.Sprintf("HMSG %s %s 16 16\r\nNATS/1.0 503\r\n\r\n\r\n", c.pa.reply, sub.sid)
+				hdrLen := 32 /* header without the subject */ + len(c.pa.subject)
+				proto := fmt.Sprintf("HMSG %s %s %d %d\r\nNATS/1.0 503\r\nNats-Subject: %s\r\n\r\n\r\n", c.pa.reply, sub.sid, hdrLen, hdrLen, c.pa.subject)
 				c.queueOutbound([]byte(proto))
 				c.addToPCD(c)
 			}
