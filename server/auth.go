@@ -15,6 +15,7 @@ package server
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -1428,8 +1429,14 @@ func comparePasswords(serverPassword, clientPassword string) bool {
 		if err := bcrypt.CompareHashAndPassword([]byte(serverPassword), []byte(clientPassword)); err != nil {
 			return false
 		}
-	} else if serverPassword != clientPassword {
-		return false
+	} else {
+		// stringToBytes should be constant-time near enough compared to
+		// turning a string into []byte normally.
+		spass := stringToBytes(serverPassword)
+		cpass := stringToBytes(clientPassword)
+		if subtle.ConstantTimeCompare(spass, cpass) == 0 {
+			return false
+		}
 	}
 	return true
 }
