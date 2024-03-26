@@ -35,6 +35,7 @@ import (
 	"reflect"
 	"runtime"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -9853,4 +9854,218 @@ func TestNoRaceJetStreamWQSkippedMsgsOnScaleUp(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestNoRaceConnectionObjectReleased(t *testing.T) {
+	ob1Conf := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		server_name: "B1"
+		accounts {
+			A { users: [{user: a, password: pwd}] }
+			SYS { users: [{user: sys, password: pwd}] }
+		}
+		cluster {
+			name: "B"
+			listen: "127.0.0.1:-1"
+		}
+		gateway {
+			name: "B"
+			listen: "127.0.0.1:-1"
+		}
+		leaf {
+			listen: "127.0.0.1:-1"
+		}
+		system_account: "SYS"
+	`))
+	sb1, ob1 := RunServerWithConfig(ob1Conf)
+	defer sb1.Shutdown()
+
+	oaConf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: "127.0.0.1:-1"
+		server_name: "A"
+		accounts {
+			A { users: [{user: a, password: pwd}] }
+			SYS { users: [{user: sys, password: pwd}] }
+		}
+		gateway {
+			name: "A"
+			listen: "127.0.0.1:-1"
+			gateways [
+				{
+					name: "B"
+					url: "nats://a:pwd@127.0.0.1:%d"
+				}
+			]
+		}
+		websocket {
+			listen: "127.0.0.1:-1"
+			no_tls: true
+		}
+		system_account: "SYS"
+	`, ob1.Gateway.Port)))
+	sa, oa := RunServerWithConfig(oaConf)
+	defer sa.Shutdown()
+
+	waitForOutboundGateways(t, sa, 1, 2*time.Second)
+	waitForOutboundGateways(t, sb1, 1, 2*time.Second)
+
+	ob2Conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: "127.0.0.1:-1"
+		server_name: "B2"
+		accounts {
+			A { users: [{user: a, password: pwd}] }
+			SYS { users: [{user: sys, password: pwd}] }
+		}
+		cluster {
+			name: "B"
+			listen: "127.0.0.1:-1"
+			routes: ["nats://127.0.0.1:%d"]
+		}
+		gateway {
+			name: "B"
+			listen: "127.0.0.1:-1"
+		}
+		system_account: "SYS"
+	`, ob1.Cluster.Port)))
+	sb2, _ := RunServerWithConfig(ob2Conf)
+	defer sb2.Shutdown()
+
+	checkClusterFormed(t, sb1, sb2)
+	waitForOutboundGateways(t, sb2, 1, 2*time.Second)
+	waitForInboundGateways(t, sa, 2, 2*time.Second)
+
+	leafConf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: "127.0.0.1:-1"
+		server_name: "C"
+		accounts {
+			A { users: [{user: a, password: pwd}] }
+			SYS { users: [{user: sys, password: pwd}] }
+		}
+		leafnodes {
+			remotes [
+				{ url: "nats://a:pwd@127.0.0.1:%d" }
+			]
+		}
+		system_account: "SYS"
+	`, ob1.LeafNode.Port)))
+	leaf, _ := RunServerWithConfig(leafConf)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnected(t, leaf)
+
+	// Start an independent MQTT server to check MQTT client connection.
+	mo := testMQTTDefaultOptions()
+	sm := testMQTTRunServer(t, mo)
+	defer testMQTTShutdownServer(sm)
+
+	mc, mr := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, mo.MQTT.Host, mo.MQTT.Port)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, mr, mqttConnAckRCConnectionAccepted, false)
+
+	nc := natsConnect(t, sb1.ClientURL(), nats.UserInfo("a", "pwd"))
+	defer nc.Close()
+	cid, err := nc.GetClientID()
+	require_NoError(t, err)
+	natsSubSync(t, nc, "foo")
+
+	ncWS := natsConnect(t, fmt.Sprintf("ws://a:pwd@127.0.0.1:%d", oa.Websocket.Port))
+	defer ncWS.Close()
+	cidWS, err := ncWS.GetClientID()
+	require_NoError(t, err)
+
+	var conns []net.Conn
+	var total int
+	var ch chan string
+
+	track := func(c *client) {
+		total++
+		c.mu.Lock()
+		conns = append(conns, c.nc)
+		c.mu.Unlock()
+		runtime.SetFinalizer(c, func(c *client) {
+			ch <- fmt.Sprintf("Server=%s - Kind=%s - Conn=%v", c.srv, c.kindString(), c)
+		})
+	}
+	// Track the connection for the MQTT client
+	sm.mu.RLock()
+	for _, c := range sm.clients {
+		track(c)
+	}
+	sm.mu.RUnlock()
+
+	// Track the connection from the NATS client
+	track(sb1.getClient(cid))
+	// The outbound connection to GW "A"
+	track(sb1.getOutboundGatewayConnection("A"))
+	// The inbound connection from GW "A"
+	var inGW []*client
+	sb1.getInboundGatewayConnections(&inGW)
+	track(inGW[0])
+	// The routes from sb2
+	sb1.forEachRoute(func(r *client) {
+		track(r)
+	})
+	// The leaf form "LEAF"
+	sb1.mu.RLock()
+	for _, l := range sb1.leafs {
+		track(l)
+	}
+	sb1.mu.RUnlock()
+
+	// Now from sb2, the routes to sb1
+	sb2.forEachRoute(func(r *client) {
+		track(r)
+	})
+	// The outbound connection to GW "A"
+	track(sb2.getOutboundGatewayConnection("A"))
+
+	// From server "A", track the outbound GW
+	track(sa.getOutboundGatewayConnection("B"))
+	inGW = inGW[:0]
+	// Track the inbound GW connections
+	sa.getInboundGatewayConnections(&inGW)
+	for _, ig := range inGW {
+		track(ig)
+	}
+	// Track the websocket client
+	track(sa.getClient(cidWS))
+
+	// From the LEAF server, the connection to sb1
+	leaf.mu.RLock()
+	for _, l := range leaf.leafs {
+		track(l)
+	}
+	leaf.mu.RUnlock()
+
+	// Now close all connections and wait to see if all connections
+	// with the finalizer set is invoked.
+	ch = make(chan string, total)
+	// Close the clients and then all other connections to create a disconnect.
+	nc.Close()
+	mc.Close()
+	ncWS.Close()
+	for _, conn := range conns {
+		conn.Close()
+	}
+	// Wait and see if we get them all.
+	tm := time.NewTimer(10 * time.Second)
+	defer tm.Stop()
+	tk := time.NewTicker(10 * time.Millisecond)
+	for clients := make([]string, 0, total); len(clients) < total; {
+		select {
+		case <-tk.C:
+			runtime.GC()
+		case cs := <-ch:
+			clients = append(clients, cs)
+		case <-tm.C:
+			// Don't fail the test since there is no guarantee that
+			// finalizers are invoked.
+			t.Logf("Got %v out of %v finalizers", len(clients), total)
+			sort.Strings(clients)
+			for _, cs := range clients {
+				t.Logf("  => %s", cs)
+			}
+			return
+		}
+	}
 }
