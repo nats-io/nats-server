@@ -191,15 +191,15 @@ const (
 )
 
 const (
-	sparkbNamespace    = "spBv1.0"
-	sparkbCertificates = "$sparkplug/certificates/spBv1.0"
-	sparkbNBIRTH       = "NBIRTH"
-	sparkbDBIRTH       = "DBIRTH"
+	sparkbNBIRTH = "NBIRTH"
+	sparkbDBIRTH = "DBIRTH"
+	sparkbNDEATH = "NDEATH"
+	sparkbDDEATH = "DDEATH"
 )
 
 var (
-	sparkbNamespacePrefix    = []byte("spBv1//0.")
-	sparkbCertificatesPrefix = []byte("$sparkplug.certificates.spBv1//0.")
+	sparkbNamespaceTopicPrefix    = []byte("spBv1.0/")
+	sparkbCertificatesTopicPrefix = []byte("$sparkplug/certificates/")
 )
 
 var (
@@ -4267,8 +4267,9 @@ func (s *Server) mqttProcessPubRel(c *client, pi uint16, trace bool) error {
 func (c *client) mqttHandlePubRetain() {
 	pp := c.mqtt.pp
 	isRetained := mqttIsRetained(pp.flags)
-	isSparkbBirth, typ, groupID, nodeID, deviceID := sparkbIsBirth(pp.subject, sparkbNamespacePrefix)
-	if !isRetained && !isSparkbBirth {
+	isBirth, _, isCertificate := sparkbParseBirthDeathTopic(pp.topic)
+	retainSparkbBirth := isBirth && !isCertificate
+	if !isRetained && !retainSparkbBirth {
 		return
 	}
 	asm := c.mqtt.asm
@@ -4296,7 +4297,7 @@ func (c *client) mqttHandlePubRetain() {
 		Source: c.opts.Username,
 	}
 
-	if isSparkbBirth {
+	if retainSparkbBirth {
 		// [tck-id-conformance-mqtt-aware-store] A Sparkplug Aware MQTT Server
 		// MUST store NBIRTH and DBIRTH messages as they pass through the MQTT
 		// Server.
@@ -4309,14 +4310,13 @@ func (c *client) mqttHandlePubRetain() {
 		// MQTT Server MUST make DBIRTH messages available on a topic of the
 		// form:
 		// $sparkplug/certificates/namespace/group_id/DBIRTH/edge_node_id/device_id
-		rm.Topic = fmt.Sprintf(sparkbCertificates+"/%s/%s/%s", groupID, typ, nodeID)
-		if deviceID != _EMPTY_ {
-			rm.Topic += "/" + deviceID
-		}
-		byteSubject, _ := mqttTopicToNATSPubSubject([]byte(rm.Topic))
+		topic := append(sparkbCertificatesTopicPrefix, pp.topic...)
+		subject, _ := mqttTopicToNATSPubSubject(topic)
+		rm.Topic = string(topic)
+		rm.Subject = string(subject)
 
 		// will use to save the retained message.
-		key = string(byteSubject)
+		key = string(subject)
 
 		// Store the retained message with the RETAIN flag set.
 		rm.Flags |= mqttPubFlagRetain
@@ -4618,29 +4618,30 @@ func mqttIsRetained(flags byte) bool {
 	return flags&mqttPubFlagRetain != 0
 }
 
-// Checks if the subject is in the form of a Sparkplug BIRTH or DEATH message,
-// MQTT topic like spBv1.0/{group_id}/{message_type}/{edge_node_id}/{device_id}
-func sparkbIsBirth(natsSubject, prefix []byte) (is bool, typ, groupID, nodeID, deviceID string) {
-	if !bytes.HasPrefix(natsSubject, prefix) {
-		return false, _EMPTY_, _EMPTY_, _EMPTY_, _EMPTY_
+func sparkbParseBirthDeathTopic(topic []byte) (isBirth, isDeath, isCertificate bool) {
+	if bytes.HasPrefix(topic, sparkbCertificatesTopicPrefix) {
+		isCertificate = true
+		topic = topic[len(sparkbCertificatesTopicPrefix):]
 	}
-	natsSubject = natsSubject[len(prefix):]
-	parts := bytes.Split(natsSubject, []byte("."))
-	if len(parts) < 3 {
-		return false, _EMPTY_, _EMPTY_, _EMPTY_, _EMPTY_
+	if !bytes.HasPrefix(topic, sparkbNamespaceTopicPrefix) {
+		return false, false, false
 	}
-	typ = string(parts[1])
-	isDevice := (typ == sparkbDBIRTH)
-	if typ != sparkbNBIRTH && !isDevice {
-		return false, _EMPTY_, _EMPTY_, _EMPTY_, _EMPTY_
-	}
+	topic = topic[len(sparkbNamespaceTopicPrefix):]
 
-	groupID = string(natsSubjectToMQTTTopic(parts[0]))
-	nodeID = string(natsSubjectToMQTTTopic(parts[2]))
-	if isDevice && len(parts) > 3 {
-		deviceID = string(natsSubjectToMQTTTopic(parts[3]))
+	parts := bytes.Split(topic, []byte("/"))
+	if len(parts) < 3 || len(parts) > 4 {
+		return false, false, false
 	}
-	return true, typ, groupID, nodeID, deviceID
+	typ := string(parts[1])
+	switch typ {
+	case sparkbNBIRTH, sparkbDBIRTH:
+		isBirth = true
+	case sparkbNDEATH, sparkbDDEATH:
+		isDeath = true
+	default:
+		return false, false, false
+	}
+	return isBirth, isDeath, isCertificate
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -4775,7 +4776,6 @@ func mqttDeliverMsgCbQoS0(sub *subscription, pc *client, _ *Account, subject, re
 		return
 	}
 
-	retain := false
 	hdr, msg := pc.msgParts(rmsg)
 	var topic []byte
 	if pc.isMqtt() {
@@ -4805,17 +4805,6 @@ func mqttDeliverMsgCbQoS0(sub *subscription, pc *client, _ *Account, subject, re
 			return
 		}
 
-		// [tck-id-conformance-mqtt-aware-nbirth-mqtt-retain] A Sparkplug Aware
-		// MQTT Server MUST make NBIRTH messages available on the topic:
-		// $sparkplug/certificates/namespace/group_id/NBIRTH/edge_node_id with
-		// the MQTT retain flag set to true
-		//
-		// [tck-id-conformance-mqtt-aware-dbirth-mqtt-retain] A Sparkplug Aware
-		// MQTT Server MUST make DBIRTH messages available on the topic:
-		// $sparkplug/certificates/namespace/group_id/DBIRTH/edge_node_id/device_id
-		// with the MQTT retain flag set to true
-		retain, _, _, _, _ = sparkbIsBirth(stringToBytes(subject), sparkbCertificatesPrefix)
-
 		// If size is more than what a MQTT client can handle, we should probably reject,
 		// for now just truncate.
 		if len(msg) > mqttMaxPayloadSize {
@@ -4825,7 +4814,7 @@ func mqttDeliverMsgCbQoS0(sub *subscription, pc *client, _ *Account, subject, re
 	}
 
 	// Message never has a packet identifier nor is marked as duplicate.
-	pc.mqttEnqueuePublishMsgTo(cc, sub, 0, 0, false, retain, topic, msg)
+	pc.mqttEnqueuePublishMsgTo(cc, sub, 0, 0, false, topic, msg)
 }
 
 // This is the callback attached to a JS durable subscription for a MQTT QoS 1+
@@ -4901,7 +4890,7 @@ func mqttDeliverMsgCbQoS12(sub *subscription, pc *client, _ *Account, subject, r
 	}
 
 	originalTopic := natsSubjectStrToMQTTTopic(strippedSubj)
-	pc.mqttEnqueuePublishMsgTo(cc, sub, pi, qos, dup, false, originalTopic, msg)
+	pc.mqttEnqueuePublishMsgTo(cc, sub, pi, qos, dup, originalTopic, msg)
 }
 
 func mqttDeliverPubRelCb(sub *subscription, pc *client, _ *Account, subject, reply string, rmsg []byte) {
@@ -4958,9 +4947,75 @@ func isMQTTReservedSubscription(subject string) bool {
 	return false
 }
 
+func sparkbReplaceDeathTimestamp(msg []byte) []byte {
+	const VARINT = 0
+	const TIMESTAMP = 1
+
+	orig := msg
+	buf := bytes.NewBuffer(make([]byte, 0, len(msg)+16)) // 16 bytes should be enough if we need to add a timestamp
+	writeDeathTimestamp := func() {
+		// [tck-id-conformance-mqtt-aware-ndeath-timestamp] A Sparkplug Aware
+		// MQTT Server MAY replace the timestmap of NDEATH messages. If it does,
+		// it MUST set the timestamp to the UTC time at which it attempts to
+		// deliver the NDEATH to subscribed clients
+		//
+		// sparkB spec: 6.4.1. Google Protocol Buffer Schema
+		//      optional uint64 timestamp = 1; // Timestamp at message sending time
+		ts := uint64(time.Now().UnixMilli())
+		buf.Write(protoEncodeVarint(TIMESTAMP<<3 | VARINT))
+		buf.Write(protoEncodeVarint(ts))
+	}
+
+	for len(msg) > 0 {
+		numField, typ, size, err := protoScanField(msg)
+		if err != nil {
+			return orig
+		}
+		if typ != VARINT || numField != TIMESTAMP {
+			// Add the field as is
+			buf.Write(msg[:size])
+			msg = msg[size:]
+			continue
+		}
+
+		writeDeathTimestamp()
+
+		// Add the rest of the message as is, we are done
+		buf.Write(msg[size:])
+		return buf.Bytes()
+	}
+
+	// Add timestamp if we did not find one.
+	writeDeathTimestamp()
+
+	return buf.Bytes()
+}
+
 // Common function to mqtt delivery callbacks to serialize and send the message
 // to the `cc` client.
-func (c *client) mqttEnqueuePublishMsgTo(cc *client, sub *subscription, pi uint16, qos byte, dup, retain bool, topic, msg []byte) {
+func (c *client) mqttEnqueuePublishMsgTo(cc *client, sub *subscription, pi uint16, qos byte, dup bool, topic, msg []byte) {
+	// [tck-id-conformance-mqtt-aware-nbirth-mqtt-retain] A Sparkplug Aware
+	// MQTT Server MUST make NBIRTH messages available on the topic:
+	// $sparkplug/certificates/namespace/group_id/NBIRTH/edge_node_id with
+	// the MQTT retain flag set to true
+	//
+	// [tck-id-conformance-mqtt-aware-dbirth-mqtt-retain] A Sparkplug Aware
+	// MQTT Server MUST make DBIRTH messages available on the topic:
+	// $sparkplug/certificates/namespace/group_id/DBIRTH/edge_node_id/device_id
+	// with the MQTT retain flag set to true
+	//
+	// $sparkplug/certificates messages are sent as NATS messages, so we
+	// need to add the retain flag when sending them to MQTT ciients.
+
+	retain := false
+	isBirth, isDeath, isCertificate := sparkbParseBirthDeathTopic(topic)
+	if isBirth && isCertificate {
+		retain = true
+	}
+	if isDeath && !isCertificate {
+		msg = sparkbReplaceDeathTimestamp(msg)
+	}
+
 	flags, headerBytes := mqttMakePublishHeader(pi, qos, dup, retain, topic, len(msg))
 
 	cc.mu.Lock()
