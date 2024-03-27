@@ -5025,8 +5025,7 @@ func (c *client) mqttEnqueuePublishMsgTo(cc *client, sub *subscription, pi uint1
 	isBirth, isDeath, isCertificate := sparkbParseBirthDeathTopic(topic)
 	if isBirth && qos == 0 {
 		retain = isCertificate
-	}
-	if isDeath && !isCertificate {
+	} else if isDeath && !isCertificate {
 		msg = sparkbReplaceDeathTimestamp(msg)
 	}
 
