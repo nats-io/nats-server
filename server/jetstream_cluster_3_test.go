@@ -7166,7 +7166,7 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 	// Let enough messages into the stream then start consumers.
 	time.Sleep(30 * time.Second)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	for i := 0; i < 10; i++ {
@@ -7276,6 +7276,7 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 		}
 	}
 
+	clusterReady := make(chan struct{}, 0)
 	time.AfterFunc(10*time.Second, func() {
 		if sc.Replicas == 1 {
 			// Find server leader of the stream and restart it.
@@ -7288,7 +7289,7 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 			// so this may be have flaky behavior.
 			s := c.servers[0]
 			s.optsMu.Lock()
-			s.opts.LameDuckDuration = 5 * time.Second
+			s.opts.LameDuckDuration = 15 * time.Second
 			s.opts.LameDuckGracePeriod = -5 * time.Second
 			s.optsMu.Unlock()
 			s.lameDuckMode()
@@ -7296,7 +7297,14 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 			c.restartServer(s)
 			c.waitOnClusterReady()
 		}
+		clusterReady <- struct{}{}
 	})
+
+	select {
+	case <-clusterReady:
+	case <-time.After(1*time.Minute):
+		t.Logf("WARN: Cluster was not ready before checking state")
+	}
 
 	// Wait until context is done then check state.
 	<-ctx.Done()
@@ -7314,6 +7322,6 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 
 	streamPending := int(si.State.Msgs)
 	if streamPending != consumerPending {
-		t.Fatalf("Unexpected number of pending messages, stream=%d, consumers=%d", streamPending, consumerPending)
+		t.Errorf("Unexpected number of pending messages, stream=%d, consumers=%d", streamPending, consumerPending)
 	}
 }
