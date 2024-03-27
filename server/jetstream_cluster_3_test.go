@@ -6969,8 +6969,13 @@ func TestJetStreamClusterConsumerPauseSurvivesRestart(t *testing.T) {
 }
 
 func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
+	debug := true
+	sleeps := false
 	t.Run("R1F", func(t *testing.T) {
-		testJetStreamClusterWorkQueueStreamOrphanIssue(t, &nats.StreamConfig{
+		preRestarts := false
+		inflightRestart := true
+		missAcks := false
+		testJetStreamClusterWorkQueueStreamOrphanIssue(t, debug, preRestarts, inflightRestart, missAcks, sleeps, &nats.StreamConfig{
 			Name:        "OWQTEST_R1F",
 			Subjects:    []string{"MSGS.>"},
 			Replicas:    1,
@@ -6985,7 +6990,10 @@ func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 		})
 	})
 	t.Run("R3M", func(t *testing.T) {
-		testJetStreamClusterWorkQueueStreamOrphanIssue(t, &nats.StreamConfig{
+		preRestarts := false
+		inflightRestart := true
+		missAcks := false
+		testJetStreamClusterWorkQueueStreamOrphanIssue(t, debug, preRestarts, inflightRestart, missAcks, sleeps, &nats.StreamConfig{
 			Name:        "OWQTEST_R3M",
 			Subjects:    []string{"MSGS.>"},
 			Replicas:    3,
@@ -7002,7 +7010,10 @@ func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 		})
 	})
 	t.Run("R3F_DN", func(t *testing.T) {
-		testJetStreamClusterWorkQueueStreamOrphanIssue(t, &nats.StreamConfig{
+		preRestarts := false
+		inflightRestart := true
+		missAcks := false
+		testJetStreamClusterWorkQueueStreamOrphanIssue(t, debug, preRestarts, inflightRestart, missAcks, sleeps, &nats.StreamConfig{
 			Name:        "OWQTEST_R3F_DN",
 			Subjects:    []string{"MSGS.>"},
 			Replicas:    3,
@@ -7018,7 +7029,10 @@ func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 		})
 	})
 	t.Run("R3F_DO", func(t *testing.T) {
-		testJetStreamClusterWorkQueueStreamOrphanIssue(t, &nats.StreamConfig{
+		preRestarts := false
+		inflightRestart := true
+		missAcks := false
+		testJetStreamClusterWorkQueueStreamOrphanIssue(t, debug, preRestarts, inflightRestart, missAcks, sleeps, &nats.StreamConfig{
 			Name:        "OWQTEST_R3F_DO",
 			Subjects:    []string{"MSGS.>"},
 			Replicas:    3,
@@ -7035,7 +7049,7 @@ func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 	})
 }
 
-func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.StreamConfig) {
+func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, debug, preRestarts, inflightRestart, missAcks, sleeps bool, sc *nats.StreamConfig) {
 	conf := `
 	listen: 127.0.0.1:-1
 	server_name: %s
@@ -7069,11 +7083,7 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 	_, err := js.AddStream(sc)
 	require_NoError(t, err)
 
-	// Start producers
 	var wg sync.WaitGroup
-
-	pctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
 
 	// First call is just to create the pull subscribers.
 	mp := nats.MaxAckPending(10000)
@@ -7087,52 +7097,89 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 		}
 	}
 
-	// Check state
-	tctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
+	var testDuration time.Duration
+	if sleeps || missAcks {
+		testDuration = 10 * time.Minute
+	} else {
+		testDuration = 2 * time.Minute
+	}
 
-	wg.Add(1)
-	go func() {
-		prefix := "MSGS.EEEEE.P.H.100XY.1.100Z.WQ.00000000000%d"
-		for range time.NewTicker(1 * time.Second).C {
-			select {
-			case <-tctx.Done():
-				wg.Done()
-				return
-			default:
-			}
-			msg, err := nc.Request(fmt.Sprintf("$JS.API.STREAM.INFO.%s", sc.Name), []byte(`{"subjects_filter":">"}`), 2*time.Second)
-			if err != nil {
-				continue
-			}
-			var si *nats.StreamInfo
-			err = json.Unmarshal(msg.Data, &si)
-			if err != nil {
-				continue
-			}
+	// Show a table of the results while debugging.
+	if debug {
+		tctx, cancel := context.WithTimeout(context.Background(), testDuration)
+		defer cancel()
 
-			// Then get the num pending from each.
-			var numPending int
-			for i := 0; i < 10; i++ {
-				ci, err := js.ConsumerInfo(sc.Name, fmt.Sprintf("consumer:EEEEE:%d", i))
+		wg.Add(1)
+		go func() {
+			prefix := "MSGS.EEEEE.P.H.100XY.1.100Z.WQ.00000000000%d"
+			for range time.NewTicker(1 * time.Second).C {
+				select {
+				case <-tctx.Done():
+					wg.Done()
+					return
+				default:
+				}
+				msg, err := nc.Request(fmt.Sprintf("$JS.API.STREAM.INFO.%s", sc.Name), []byte(`{"subjects_filter":">"}`), 2*time.Second)
+				if err != nil {
+					continue
+				}
+				var si *nats.StreamInfo
+				err = json.Unmarshal(msg.Data, &si)
 				if err != nil {
 					continue
 				}
 
-				is, ok := si.State.Subjects[fmt.Sprintf(prefix, i)]
-				if !ok {
-					continue
-				}
-				t.Logf("| %-20s | in_stream_subject:%-30d | num_pending: %-30d |", ci.Name, is, ci.NumPending)
+				// Then get the num pending from each.
+				var numPending, numAckPending int
+				for i := 0; i < 10; i++ {
+					ci, err := js.ConsumerInfo(sc.Name, fmt.Sprintf("consumer:EEEEE:%d", i))
+					if err != nil {
+						continue
+					}
 
-				numPending += int(ci.NumPending)
+					is, ok := si.State.Subjects[fmt.Sprintf(prefix, i)]
+					if !ok {
+						continue
+					}
+					t.Logf("| %-20s | in_stream_subject:%-30d | num_pending: %-10d / ack_pending: %-10d |", ci.Name, is, ci.NumPending, ci.NumAckPending)
+					numPending += int(ci.NumPending)
+					numAckPending += int(ci.NumAckPending)
+				}
+				if numPending > 0 || si.State.Msgs > 0 {
+					t.Logf("| %-20s | in_stream_subject:%-30d | num_pending: %-10d / ack_pending: %-10d |", "TOTAL", si.State.Msgs, numPending, numAckPending)
+					t.Logf("|------------------------------------------------------------------------ HOST: %-20s -----------------------|", nc.ConnectedUrl())
+				} else {
+					t.Logf("No orphan or pending messages found...")
+				}
 			}
-			if numPending > 0 || si.State.Msgs > 0 {
-				t.Logf("| %-20s | in_stream_subject:%-30d | num_pending: %-30d |", "TOTAL", si.State.Msgs, numPending)
-				t.Logf("|------------------------------------------------------------------------ HOST: %-20s -----------------|", nc.ConnectedUrl())
+		}()
+	}
+
+	// Restart all servers before continuing.
+	if preRestarts {
+		time.Sleep(5 * time.Second)
+		for i, s := range c.servers {
+			t.Logf("Restarting: %v", s.Name())
+			if i == 2 {
+				// Do not restart one of them.
+				break
 			}
+			s.optsMu.Lock()
+			s.opts.LameDuckDuration = 15 * time.Second
+			s.opts.LameDuckGracePeriod = -15 * time.Second
+			s.optsMu.Unlock()
+			s.lameDuckMode()
+			s.WaitForShutdown()
+			c.restartServer(s)
+			c.waitOnClusterReady()
+			time.Sleep(10 * time.Second)
 		}
-	}()
+		c.waitOnClusterReady()
+	}
+
+	//  Publishers context
+	pctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
 	for i := 0; i < 50; i++ {
 		wg.Add(1)
@@ -7213,9 +7260,10 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 	// Let enough messages into the stream then start consumers.
 	time.Sleep(30 * time.Second)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), testDuration)
 	defer cancel()
 
+	// These set of consumers will have their connections closed suddenly.
 	for i := 0; i < 10; i++ {
 		subject := fmt.Sprintf("MSGS.EEEEE.*.H.100XY.*.*.WQ.00000000000%d", i)
 		consumer := fmt.Sprintf("consumer:EEEEE:%d", i)
@@ -7233,6 +7281,8 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 			wg.Add(1)
 			go func() {
 				tick := time.NewTicker(1 * time.Millisecond)
+				mw := nats.MaxWait(200 * time.Millisecond)
+				phb := nats.PullHeartbeat(mw / 3)
 				for {
 					if cpnc.IsClosed() {
 						wg.Done()
@@ -7243,15 +7293,7 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 						wg.Done()
 						return
 					case <-tick.C:
-						// Fetch 1 first, then if no errors Fetch 100.
-						msgs, err := psub.Fetch(1, nats.MaxWait(200*time.Millisecond))
-						if err != nil {
-							continue
-						}
-						for _, msg := range msgs {
-							msg.Ack()
-						}
-						msgs, err = psub.Fetch(100, nats.MaxWait(200*time.Millisecond))
+						msgs, err := psub.Fetch(1, mw, phb)
 						if err != nil {
 							continue
 						}
@@ -7259,11 +7301,39 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 							msg.Ack()
 						}
 
-						msgs, err = psub.Fetch(1000, nats.MaxWait(200*time.Millisecond))
+						msgs, err = psub.Fetch(5, mw, phb)
 						if err != nil {
 							continue
 						}
 						for _, msg := range msgs {
+							msg.Ack()
+						}
+
+						msgs, err = psub.Fetch(100, mw, phb)
+						if err != nil {
+							continue
+						}
+						for i, msg := range msgs {
+							if missAcks && i == rand.Intn(len(msgs)) {
+								continue
+							}
+							if sleeps {
+								time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
+							}
+							msg.Ack()
+						}
+
+						msgs, err = psub.Fetch(1000, mw, phb)
+						if err != nil {
+							continue
+						}
+						for i, msg := range msgs {
+							if missAcks && i == rand.Intn(len(msgs)) {
+								continue
+							}
+							if sleeps {
+								time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
+							}
 							msg.Ack()
 						}
 					}
@@ -7288,21 +7358,16 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 			wg.Add(1)
 			go func() {
 				tick := time.NewTicker(1 * time.Millisecond)
+				mw := nats.MaxWait(200 * time.Millisecond)
+				phb := nats.PullHeartbeat(mw / 3)
 				for {
 					select {
 					case <-ctx.Done():
 						wg.Done()
 						return
 					case <-tick.C:
-						// Fetch 1 first, then if no errors Fetch 100.
-						msgs, err := psub.Fetch(1, nats.MaxWait(200*time.Millisecond))
-						if err != nil {
-							continue
-						}
-						for _, msg := range msgs {
-							msg.Ack()
-						}
-						msgs, err = psub.Fetch(100, nats.MaxWait(200*time.Millisecond))
+						// Fetch 1, then 100, then 1000
+						msgs, err := psub.Fetch(1, mw, phb)
 						if err != nil {
 							continue
 						}
@@ -7310,11 +7375,39 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 							msg.Ack()
 						}
 
-						msgs, err = psub.Fetch(1000, nats.MaxWait(200*time.Millisecond))
+						msgs, err = psub.Fetch(5, mw, phb)
 						if err != nil {
 							continue
 						}
 						for _, msg := range msgs {
+							msg.Ack()
+						}
+
+						msgs, err = psub.Fetch(100, mw, phb)
+						if err != nil {
+							continue
+						}
+						for i, msg := range msgs {
+							if missAcks && i == rand.Intn(len(msgs)) {
+								continue
+							}
+							if sleeps {
+								time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
+							}
+							msg.Ack()
+						}
+
+						msgs, err = psub.Fetch(1000, mw, phb)
+						if err != nil {
+							continue
+						}
+						for i, msg := range msgs {
+							if missAcks && i == rand.Intn(len(msgs)) {
+								continue
+							}
+							if sleeps {
+								time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
+							}
 							msg.Ack()
 						}
 					}
@@ -7323,34 +7416,36 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 		}
 	}
 
-	clusterReady := make(chan struct{}, 0)
-	time.AfterFunc(10*time.Second, func() {
-		if sc.Replicas == 1 {
-			// Find server leader of the stream and restart it.
-			leaderSrv := c.streamLeader("js", sc.Name)
-			leaderSrv.Shutdown()
-			leaderSrv.WaitForShutdown()
-			c.restartServer(leaderSrv)
-		} else {
-			// NOTE (wq): For R=3, not sure which server causes the issue here
-			// so this may be have flaky behavior.
-			s := c.servers[0]
-			s.optsMu.Lock()
-			s.opts.LameDuckDuration = 15 * time.Second
-			s.opts.LameDuckGracePeriod = -15 * time.Second
-			s.optsMu.Unlock()
-			s.lameDuckMode()
-			s.WaitForShutdown()
-			c.restartServer(s)
-			c.waitOnClusterReady()
-		}
-		clusterReady <- struct{}{}
-	})
+	if inflightRestart {
+		clusterReady := make(chan struct{}, 0)
+		time.AfterFunc(10*time.Second, func() {
+			if sc.Replicas == 1 {
+				// Find server leader of the stream and restart it.
+				leaderSrv := c.streamLeader("js", sc.Name)
+				leaderSrv.Shutdown()
+				leaderSrv.WaitForShutdown()
+				c.restartServer(leaderSrv)
+			} else {
+				// NOTE (wq): For R=3, not sure which server causes the issue here
+				// so this may be have flaky behavior.
+				s := c.servers[0]
+				s.optsMu.Lock()
+				s.opts.LameDuckDuration = 15 * time.Second
+				s.opts.LameDuckGracePeriod = -15 * time.Second
+				s.optsMu.Unlock()
+				s.lameDuckMode()
+				s.WaitForShutdown()
+				c.restartServer(s)
+				c.waitOnClusterReady()
+			}
+			clusterReady <- struct{}{}
+		})
 
-	select {
-	case <-clusterReady:
-	case <-time.After(1 * time.Minute):
-		t.Logf("WARN: Cluster was not ready before checking state")
+		select {
+		case <-clusterReady:
+		case <-time.After(1 * time.Minute):
+			t.Logf("WARN: Cluster was not ready before checking state")
+		}
 	}
 
 	// Wait until context is done then check state.
