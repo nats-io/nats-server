@@ -4628,11 +4628,11 @@ func sparkbParseBirthDeathTopic(topic []byte) (isBirth, isDeath, isCertificate b
 	}
 	topic = topic[len(sparkbNamespaceTopicPrefix):]
 
-	parts := bytes.Split(topic, []byte("/"))
+	parts := bytes.Split(topic, []byte{'/'})
 	if len(parts) < 3 || len(parts) > 4 {
 		return false, false, false
 	}
-	typ := string(parts[1])
+	typ := bytesToString(parts[1])
 	switch typ {
 	case sparkbNBIRTH, sparkbDBIRTH:
 		isBirth = true
@@ -4961,17 +4961,20 @@ func sparkbReplaceDeathTimestamp(msg []byte) []byte {
 		//
 		// sparkB spec: 6.4.1. Google Protocol Buffer Schema
 		//      optional uint64 timestamp = 1; // Timestamp at message sending time
+		//
+		// SparkplugB timestamps are milliseconds since epoch, represented as
+		// uint64 in go, transmitted as protobuf varint.
 		ts := uint64(time.Now().UnixMilli())
 		buf.Write(protoEncodeVarint(TIMESTAMP<<3 | VARINT))
 		buf.Write(protoEncodeVarint(ts))
 	}
 
 	for len(msg) > 0 {
-		numField, typ, size, err := protoScanField(msg)
+		fieldNumericID, fieldType, size, err := protoScanField(msg)
 		if err != nil {
 			return orig
 		}
-		if typ != VARINT || numField != TIMESTAMP {
+		if fieldType != VARINT || fieldNumericID != TIMESTAMP {
 			// Add the field as is
 			buf.Write(msg[:size])
 			msg = msg[size:]
