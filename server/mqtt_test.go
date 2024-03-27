@@ -7613,8 +7613,7 @@ func TestMQTTSparkbBirthHandling(t *testing.T) {
 	})
 
 	t.Run("$sparkplug messages retained", func(t *testing.T) {
-		// Connect/subscribe again, and m,ake sure that only retained messages are
-		// there.
+		// Connect/subscribe again, and make sure that only retained messages are there.
 		for i, test := range tests {
 			mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true, clientID: fmt.Sprintf("sub-%v", i+100)}, o.MQTT.Host, o.MQTT.Port)
 			defer mc.Close()
