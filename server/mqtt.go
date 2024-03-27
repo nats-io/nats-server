@@ -4266,12 +4266,24 @@ func (s *Server) mqttProcessPubRel(c *client, pi uint16, trace bool) error {
 // Invoked from the MQTT publisher's readLoop. No client lock is held on entry.
 func (c *client) mqttHandlePubRetain() {
 	pp := c.mqtt.pp
-	isRetained := mqttIsRetained(pp.flags)
+	retainMQTT := mqttIsRetained(pp.flags)
 	isBirth, _, isCertificate := sparkbParseBirthDeathTopic(pp.topic)
+
+	// [tck-id-topics-nbirth-mqtt] NBIRTH messages MUST be published with MQTT
+	// QoS equal to 0 and retain equal to false.
+	//
+	// [tck-id-conformance-mqtt-aware-nbirth-mqtt-retain] A Sparkplug Aware MQTT
+	// Server MUST make NBIRTH messages available on the topic:
+	// $sparkplug/certificates/namespace/group_id/NBIRTH/edge_node_id with the
+	// MQTT retain flag set to true.
+
 	retainSparkbBirth := isBirth && !isCertificate
-	if !isRetained && !retainSparkbBirth {
+	if retainMQTT == retainSparkbBirth {
+		// (retainSparkbBirth && retainMQTT) : not valid, so ignore altogether.
+		// (!retainSparkbBirth && !retainMQTT) : nothing to do.
 		return
 	}
+
 	asm := c.mqtt.asm
 	key := string(pp.subject)
 

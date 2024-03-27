@@ -27,7 +27,7 @@ import (
 	"time"
 )
 
-func TestMQTTExCompliance(t *testing.T) {
+func TestMQqqTTExCompliance(t *testing.T) {
 	mqttPath := os.Getenv("MQTT_CLI")
 	if mqttPath == "" {
 		if p, err := exec.LookPath("mqtt"); err == nil {
@@ -102,7 +102,7 @@ type MQTTBenchmarkResult struct {
 	Bytes int64                    `json:"bytes"`
 }
 
-func BenchmarkMQTTEx(b *testing.B) {
+func BenchmarkMQqqTTEx(b *testing.B) {
 	bc := mqttNewBenchEx(b)
 	b.Run("Server", func(b *testing.B) {
 		b.Cleanup(bc.startServer(b, false))
