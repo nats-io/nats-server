@@ -7566,10 +7566,14 @@ func TestMQTTSparkbDeathHandling(t *testing.T) {
 
 	protoDeadbeefTimestamp := []byte{0x08, 0xef, 0xfd, 0xb6, 0xf5, 0xfd, 0xde, 0xef, 0xd6, 0xde, 0x01}
 
-	mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
-	defer mc.Close()
-	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
-	testMQTTSub(t, 0, mc, r, []*mqttFilter{{filter: "spBv1.0/ggg/#", qos: 0}}, []byte{0})
+	mcPub, rPub := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mcPub.Close()
+	testMQTTCheckConnAck(t, rPub, mqttConnAckRCConnectionAccepted, false)
+
+	mcSub, rSub := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mcSub.Close()
+	testMQTTCheckConnAck(t, rSub, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 0, mcSub, rSub, []*mqttFilter{{filter: "spBv1.0/ggg/#", qos: 0}}, []byte{0})
 
 	for _, test := range []*struct {
 		name                  string
@@ -7582,10 +7586,16 @@ func TestMQTTSparkbDeathHandling(t *testing.T) {
 		{"replace at the start", append(protoDeadbeefTimestamp, protoMetrics...), 0, false},
 		{"invalid", []byte{0xde, 0xad, 0xbe, 0xef}, 0, true}, // invalid payload
 	} {
+		var sendPI uint16
 		for _, topic := range []string{"NDEATH/nnn", "DDEATH/nnn/ddd"} {
+			sendPI++
 			t.Run(test.name+" "+topic, func(t *testing.T) {
-				testMQTTPublish(t, mc, r, 0, false, false, "spBv1.0/ggg/"+topic, 0, test.payload)
-				_, _, _, received := testMQTTGetPubMsgEx(t, mc, r, "", nil)
+				testMQTTPublish(t, mcPub, rPub, 1, false, false, "spBv1.0/ggg/"+topic, sendPI, test.payload)
+
+				flags, pi, _, received := testMQTTGetPubMsgEx(t, mcSub, rSub, "", nil)
+				if mqttGetQoS(flags) == 1 {
+					testMQTTSendPIPacket(mqttPacketPubAck, t, mcSub, pi)
+				}
 
 				if test.expectUnchanged {
 					if !bytes.Equal(test.payload, received) {
