@@ -4955,7 +4955,7 @@ func sparkbReplaceDeathTimestamp(msg []byte) []byte {
 	buf := bytes.NewBuffer(make([]byte, 0, len(msg)+16)) // 16 bytes should be enough if we need to add a timestamp
 	writeDeathTimestamp := func() {
 		// [tck-id-conformance-mqtt-aware-ndeath-timestamp] A Sparkplug Aware
-		// MQTT Server MAY replace the timestmap of NDEATH messages. If it does,
+		// MQTT Server MAY replace the timestamp of NDEATH messages. If it does,
 		// it MUST set the timestamp to the UTC time at which it attempts to
 		// deliver the NDEATH to subscribed clients
 		//
