@@ -2048,11 +2048,11 @@ func testMQTTCheckPubMsgNoAck(t testing.TB, c net.Conn, r *mqttReader, topic str
 
 func testMQTTGetPubMsg(t testing.TB, c net.Conn, r *mqttReader, topic string, payload []byte) (byte, uint16) {
 	t.Helper()
-	flags, pi, _ := testMQTTGetPubMsgEx(t, c, r, topic, payload)
+	flags, pi, _, _ := testMQTTGetPubMsgEx(t, c, r, topic, payload)
 	return flags, pi
 }
 
-func testMQTTGetPubMsgEx(t testing.TB, _ net.Conn, r *mqttReader, topic string, payload []byte) (byte, uint16, string) {
+func testMQTTGetPubMsgEx(t testing.TB, _ net.Conn, r *mqttReader, topic string, payload []byte) (byte, uint16, string, []byte) {
 	t.Helper()
 	b, pl := testMQTTReadPacket(t, r)
 	if pt := b & mqttPacketMask; pt != mqttPacketPub {
@@ -2061,7 +2061,7 @@ func testMQTTGetPubMsgEx(t testing.TB, _ net.Conn, r *mqttReader, topic string, 
 	return testMQTTGetPubMsgExEx(t, nil, r, b, pl, topic, payload)
 }
 
-func testMQTTGetPubMsgExEx(t testing.TB, _ net.Conn, r *mqttReader, b byte, pl int, topic string, payload []byte) (byte, uint16, string) {
+func testMQTTGetPubMsgExEx(t testing.TB, _ net.Conn, r *mqttReader, b byte, pl int, topic string, payload []byte) (byte, uint16, string, []byte) {
 	t.Helper()
 	pflags := b & mqttPacketFlagMask
 	qos := (pflags & mqttPubFlagQoS) >> 1
@@ -2090,7 +2090,7 @@ func testMQTTGetPubMsgExEx(t testing.TB, _ net.Conn, r *mqttReader, b byte, pl i
 		t.Fatalf("Expected payload %q, got %q", payload, ppayload)
 	}
 	r.pos += msgLen
-	return pflags, pi, ptopic
+	return pflags, pi, ptopic, ppayload
 }
 
 func testMQTTReadPubPacket(t testing.TB, r *mqttReader) (flags byte, pi uint16, topic string, payload []byte) {
@@ -3349,7 +3349,7 @@ func TestMQTTRetainedMsgMigration(t *testing.T) {
 	testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "+", qos: 0}}, []byte{0})
 	topics := map[string]struct{}{}
 	for i := 0; i < N; i++ {
-		_, _, topic := testMQTTGetPubMsgEx(t, mc, rc, _EMPTY_, []byte("bar"))
+		_, _, topic, _ := testMQTTGetPubMsgEx(t, mc, rc, _EMPTY_, []byte("bar"))
 		topics[topic] = struct{}{}
 	}
 	if len(topics) != N {
@@ -7521,7 +7521,7 @@ func TestMQTTDecodeRetainedMessage(t *testing.T) {
 		if pt := b & mqttPacketMask; pt != mqttPacketPub {
 			t.Fatalf("Expected PUBLISH packet %x, got %x", mqttPacketPub, pt)
 		}
-		_, _, topic := testMQTTGetPubMsgExEx(t, mc, r, mqttPubFlagRetain, pl, "", nil)
+		_, _, topic, _ := testMQTTGetPubMsgExEx(t, mc, r, mqttPubFlagRetain, pl, "", nil)
 		if string(topic) != "foo/1" && string(topic) != "foo/2" {
 			t.Fatalf("Expected foo/1 or foo/2, got %q", topic)
 		}
@@ -7543,6 +7543,95 @@ func TestMQTTDecodeRetainedMessage(t *testing.T) {
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo/+", qos: 0}}, []byte{0})
 	testMQTTExpectNothing(t, r)
+}
+
+func TestMQTTSparkbDeathHandling(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	// protoMetrics is protobuf-encoded test data, with no timestamp.
+	//
+	//	p := &sproto.Payload{
+	// 		Metrics: []*sproto.Payload_Metric{
+	// 			newSparkbMetric_Uint64(sparkbBDSeqMetric, uint64(sparkbBDSeq)),
+	// 			newSparkbMetric(sparkbDeviceMetric1, "value-at-death-1"),
+	// 			newSparkbMetric(sparkbDeviceMetric2, "value-at-death-2"),
+	// 		},
+	// 		Timestamp: nil,
+	// 	}
+	protoMetrics := []byte{0x12, 0x0b, 0x0a, 0x05, 0x62, 0x64, 0x53, 0x65, 0x71, 0x20, 0x04, 0x58, 0x02, 0x12, 0x24, 0x0a, 0x0e, 0x64, 0x65, 0x76, 0x69, 0x63, 0x65, 0x2d, 0x6d, 0x65, 0x74, 0x72, 0x69, 0x63, 0x31, 0x20, 0x0c, 0x7a, 0x10, 0x76, 0x61, 0x6c, 0x75, 0x65, 0x2d, 0x61, 0x74, 0x2d, 0x64, 0x65, 0x61, 0x74, 0x68, 0x2d, 0x31, 0x12, 0x24, 0x0a, 0x0e, 0x64, 0x65, 0x76, 0x69, 0x63, 0x65, 0x2d, 0x6d, 0x65, 0x74, 0x72, 0x69, 0x63, 0x32, 0x20, 0x0c, 0x7a, 0x10, 0x76, 0x61, 0x6c, 0x75, 0x65, 0x2d, 0x61, 0x74, 0x2d, 0x64, 0x65, 0x61, 0x74, 0x68, 0x2d, 0x32}
+
+	proto0Timestamp := []byte{0x08, 0x00}
+
+	protoDeadbeefTimestamp := []byte{0x08, 0xef, 0xfd, 0xb6, 0xf5, 0xfd, 0xde, 0xef, 0xd6, 0xde, 0x01}
+
+	mcPub, rPub := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mcPub.Close()
+	testMQTTCheckConnAck(t, rPub, mqttConnAckRCConnectionAccepted, false)
+
+	mcSub, rSub := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mcSub.Close()
+	testMQTTCheckConnAck(t, rSub, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 0, mcSub, rSub, []*mqttFilter{{filter: "spBv1.0/ggg/#", qos: 0}}, []byte{0})
+
+	for _, test := range []*struct {
+		name                  string
+		payload               []byte
+		expectTimestampOffset int
+		expectUnchanged       bool
+	}{
+		{"append", protoMetrics, len(protoMetrics), false},
+		{"replace at the end", append(protoMetrics, proto0Timestamp...), len(protoMetrics), false},
+		{"replace at the start", append(protoDeadbeefTimestamp, protoMetrics...), 0, false},
+		{"invalid", []byte{0xde, 0xad, 0xbe, 0xef}, 0, true}, // invalid payload
+	} {
+		var sendPI uint16
+		for _, topic := range []string{"NDEATH/nnn", "DDEATH/nnn/ddd"} {
+			sendPI++
+			t.Run(test.name+" "+topic, func(t *testing.T) {
+				testMQTTPublish(t, mcPub, rPub, 1, false, false, "spBv1.0/ggg/"+topic, sendPI, test.payload)
+
+				flags, pi, _, received := testMQTTGetPubMsgEx(t, mcSub, rSub, "", nil)
+				if mqttGetQoS(flags) == 1 {
+					testMQTTSendPIPacket(mqttPacketPubAck, t, mcSub, pi)
+				}
+
+				if test.expectUnchanged {
+					if !bytes.Equal(test.payload, received) {
+						t.Fatalf("Expected payload to be unchanged, got %q", received)
+					}
+					return
+				}
+
+				if test.expectTimestampOffset > len(received) {
+					t.Fatalf("Expected timestamp offset %v to be less than %v", test.expectTimestampOffset, len(received))
+				}
+				if test.expectTimestampOffset > 0 {
+					if !bytes.Equal(protoMetrics, received[:test.expectTimestampOffset]) {
+						t.Fatalf("Expected payload to be unchanged up to %v, got %q", test.expectTimestampOffset, received)
+					}
+				}
+
+				tsBytes := received[test.expectTimestampOffset:]
+				if tsBytes[0] != 0x08 {
+					t.Fatalf("Expected timestamp to start with 0x08, got %x", tsBytes)
+				}
+				v, _, err := protoScanVarint(tsBytes[1:])
+				if err != nil {
+					t.Fatalf("Error scanning varint: %v", err)
+				}
+
+				ts := time.UnixMilli(int64(v))
+				if time.Now().Before(ts) {
+					t.Fatalf("Expected timestamp to be in the past, got %v", ts)
+				}
+				if time.Since(ts) > time.Second {
+					t.Fatalf("Expected timestamp to be within a second, got %v", time.Since(ts))
+				}
+			})
+		}
+	}
 }
 
 func TestMQTTSparkbBirthHandling(t *testing.T) {
