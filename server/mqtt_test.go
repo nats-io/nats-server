@@ -7551,8 +7551,7 @@ func TestMQTTSparkbBirthHandling(t *testing.T) {
 	defer testMQTTShutdownServer(s)
 
 	// Publish an NBIRTH message. Make sure it is received as both the original
-	// subject, and as a $sparkplug/certificates one. Since BIRTH messages are
-	// QoS0, use a NATS client/subscriber to monitor.
+	// subject, and as a $sparkplug/certificates one.
 
 	const NBORN = "NODE BORN FAKE MESSAGE"
 	const DBORN = "DEVICE BORN FAKE MESSAGE"
