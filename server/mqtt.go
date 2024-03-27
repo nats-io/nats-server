@@ -4271,13 +4271,24 @@ func (c *client) mqttHandlePubRetain() {
 	if !isRetained && !isSparkbBirth {
 		return
 	}
+	asm := c.mqtt.asm
+	key := string(pp.subject)
 
 	// Always clear the retain flag to deliver a normal published message.
 	defer func() {
 		pp.flags &= ^mqttPubFlagRetain
 	}()
 
-	asm := c.mqtt.asm
+	// Spec [MQTT-3.3.1-11]. Payload of size 0 removes the retained message, but
+	// should still be delivered as a normal message.
+	if pp.sz == 0 {
+		if seqToRemove := asm.handleRetainedMsgDel(key, 0); seqToRemove > 0 {
+			asm.deleteRetainedMsg(seqToRemove)
+			asm.notifyRetainedMsgDeleted(key, seqToRemove)
+		}
+		return
+	}
+
 	rm := &mqttRetainedMsg{
 		Origin: asm.jsa.id,
 		Msg:    pp.msg, // will copy these bytes later as we process rm.
@@ -4285,19 +4296,7 @@ func (c *client) mqttHandlePubRetain() {
 		Source: c.opts.Username,
 	}
 
-	key := string(pp.subject)
-	switch {
-	// Spec [MQTT-3.3.1-11]. Payload of size 0 removes the retained message, but
-	// should still be delivered as a normal message. We do not special-case
-	// sparkB BIRTH/DEATH messages since they are neither retained nor empty.
-	case pp.sz == 0:
-		if seqToRemove := asm.handleRetainedMsgDel(key, 0); seqToRemove > 0 {
-			asm.deleteRetainedMsg(seqToRemove)
-			asm.notifyRetainedMsgDeleted(key, seqToRemove)
-		}
-		return
-
-	case isSparkbBirth:
+	if isSparkbBirth {
 		// [tck-id-conformance-mqtt-aware-store] A Sparkplug Aware MQTT Server
 		// MUST store NBIRTH and DBIRTH messages as they pass through the MQTT
 		// Server.
@@ -4328,7 +4327,7 @@ func (c *client) mqttHandlePubRetain() {
 		copy(msg, pp.msg[:pp.sz])
 		asm.jsa.sendMsg(key, msg)
 
-	case isRetained:
+	} else { // isRetained
 		// Spec [MQTT-3.3.1-5]. Store the retained message with its QoS.
 		//
 		// When coming from a publish protocol, `pp` is referencing a stack
