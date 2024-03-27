@@ -7069,11 +7069,11 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 	_, err := js.AddStream(sc)
 	require_NoError(t, err)
 
-	pctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
 	// Start producers
 	var wg sync.WaitGroup
+
+	pctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
 	// First call is just to create the pull subscribers.
 	mp := nats.MaxAckPending(10000)
@@ -7086,6 +7086,53 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 			require_NoError(t, err)
 		}
 	}
+
+	// Check state
+	tctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	wg.Add(1)
+	go func() {
+		prefix := "MSGS.EEEEE.P.H.100XY.1.100Z.WQ.00000000000%d"
+		for range time.NewTicker(1 * time.Second).C {
+			select {
+			case <-tctx.Done():
+				wg.Done()
+				return
+			default:
+			}
+			msg, err := nc.Request(fmt.Sprintf("$JS.API.STREAM.INFO.%s", sc.Name), []byte(`{"subjects_filter":">"}`), 2*time.Second)
+			if err != nil {
+				continue
+			}
+			var si *nats.StreamInfo
+			err = json.Unmarshal(msg.Data, &si)
+			if err != nil {
+				continue
+			}
+
+			// Then get the num pending from each.
+			var numPending int
+			for i := 0; i < 10; i++ {
+				ci, err := js.ConsumerInfo(sc.Name, fmt.Sprintf("consumer:EEEEE:%d", i))
+				if err != nil {
+					continue
+				}
+
+				is, ok := si.State.Subjects[fmt.Sprintf(prefix, i)]
+				if !ok {
+					continue
+				}
+				t.Logf("| %-20s | in_stream_subject:%-30d | num_pending: %-30d |", ci.Name, is, ci.NumPending)
+
+				numPending += int(ci.NumPending)
+			}
+			if numPending > 0 || si.State.Msgs > 0 {
+				t.Logf("| %-20s | in_stream_subject:%-30d | num_pending: %-30d |", "TOTAL", si.State.Msgs, numPending)
+				t.Logf("|------------------------------------------------------------------------ HOST: %-20s -----------------|", nc.ConnectedUrl())
+			}
+		}
+	}()
 
 	for i := 0; i < 50; i++ {
 		wg.Add(1)
@@ -7290,7 +7337,7 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 			s := c.servers[0]
 			s.optsMu.Lock()
 			s.opts.LameDuckDuration = 15 * time.Second
-			s.opts.LameDuckGracePeriod = -5 * time.Second
+			s.opts.LameDuckGracePeriod = -15 * time.Second
 			s.optsMu.Unlock()
 			s.lameDuckMode()
 			s.WaitForShutdown()
@@ -7302,7 +7349,7 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 
 	select {
 	case <-clusterReady:
-	case <-time.After(1*time.Minute):
+	case <-time.After(1 * time.Minute):
 		t.Logf("WARN: Cluster was not ready before checking state")
 	}
 
@@ -7324,4 +7371,6 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 	if streamPending != consumerPending {
 		t.Errorf("Unexpected number of pending messages, stream=%d, consumers=%d", streamPending, consumerPending)
 	}
+
+	wg.Wait()
 }
