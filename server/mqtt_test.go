@@ -7593,7 +7593,7 @@ func TestMQTTSparkbBirthHandling(t *testing.T) {
 			testMQTTCheckConnAck(t, test.r, mqttConnAckRCConnectionAccepted, false)
 
 			// Subscribne at QoS2 to make sure the messages are posted at QoS0 and
-			// not trucated to sub QoS.
+			// not truncated to sub QoS.
 			testMQTTSub(t, 0, test.mc, test.r, []*mqttFilter{{filter: test.topic, qos: 2}}, []byte{2})
 		}
 
