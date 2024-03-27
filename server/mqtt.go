@@ -4319,6 +4319,9 @@ func (c *client) mqttHandlePubRetain() {
 		// will use to save the retained message.
 		key = string(byteSubject)
 
+		// Store the retained message with the RETAIN flag set.
+		rm.Flags |= mqttPubFlagRetain
+
 		// Copy the payload out of pp since we will be sending the message
 		// asynchronously.
 		msg := make([]byte, pp.sz)
