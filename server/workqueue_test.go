@@ -137,18 +137,24 @@ func TestWorkQueue(t *testing.T) {
 			default:
 
 			}
+			var missed = make(map[uint64]struct{})
+
 			batchSize = rand.Intn(100) + 1
 			msgs, _ := sub.Fetch(batchSize)
 			for _, m := range msgs {
+				mm, err := m.Metadata()
+				require_NoError(t, err)
+				mseq := mm.Sequence.Stream
 				i++
-				if i%7 == 0 && chaos {
-					fmt.Println("Nak 1")
-					m.Nak()
-				}
 				if i%13 != 0 || !chaos {
 					m.Ack()
 				} else {
-					fmt.Println("Missed 1")
+					if _, ok := missed[mseq]; !ok {
+						missed[mseq] = struct{}{}
+						fmt.Println("Missed 1")
+					} else {
+						m.Ack()
+					}
 				}
 			}
 		}
@@ -187,20 +193,26 @@ func TestWorkQueue(t *testing.T) {
 			case <-cleanupSignal:
 				chaos = false
 			default:
+
 			}
-			batchSize = rand.Intn(50) + 1
+			var missed = make(map[uint64]struct{})
+
+			batchSize = rand.Intn(100) + 1
 			msgs, _ := sub.Fetch(batchSize)
-			require_NoError(t, err)
 			for _, m := range msgs {
+				mm, err := m.Metadata()
+				require_NoError(t, err)
+				mseq := mm.Sequence.Stream
 				i++
-				if i%7 == 0 && chaos {
-					fmt.Println("Nak 2")
-					m.Nak()
-				}
 				if i%13 != 0 || !chaos {
 					m.Ack()
 				} else {
-					fmt.Println("Missed 2")
+					if _, ok := missed[mseq]; !ok {
+						missed[mseq] = struct{}{}
+						fmt.Println("Missed 2")
+					} else {
+						m.Ack()
+					}
 				}
 			}
 		}
@@ -238,20 +250,26 @@ func TestWorkQueue(t *testing.T) {
 			case <-cleanupSignal:
 				chaos = false
 			default:
-			}
 
-			batchSize = rand.Intn(500) + 1
+			}
+			var missed = make(map[uint64]struct{})
+
+			batchSize = rand.Intn(100) + 1
 			msgs, _ := sub.Fetch(batchSize)
 			for _, m := range msgs {
+				mm, err := m.Metadata()
+				require_NoError(t, err)
+				mseq := mm.Sequence.Stream
 				i++
-				if i%7 == 0 && chaos {
-					fmt.Println("Nak 3")
-					m.Nak()
-				}
 				if i%13 != 0 || !chaos {
 					m.Ack()
 				} else {
-					fmt.Println("Missed 3")
+					if _, ok := missed[mseq]; !ok {
+						missed[mseq] = struct{}{}
+						fmt.Println("Missed 3")
+					} else {
+						m.Ack()
+					}
 				}
 			}
 		}
