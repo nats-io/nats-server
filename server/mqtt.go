@@ -4268,6 +4268,7 @@ func (c *client) mqttHandlePubRetain() {
 	pp := c.mqtt.pp
 	retainMQTT := mqttIsRetained(pp.flags)
 	isBirth, _, isCertificate := sparkbParseBirthDeathTopic(pp.topic)
+	retainSparkbBirth := isBirth && !isCertificate
 
 	// [tck-id-topics-nbirth-mqtt] NBIRTH messages MUST be published with MQTT
 	// QoS equal to 0 and retain equal to false.
@@ -4276,8 +4277,6 @@ func (c *client) mqttHandlePubRetain() {
 	// Server MUST make NBIRTH messages available on the topic:
 	// $sparkplug/certificates/namespace/group_id/NBIRTH/edge_node_id with the
 	// MQTT retain flag set to true.
-
-	retainSparkbBirth := isBirth && !isCertificate
 	if retainMQTT == retainSparkbBirth {
 		// (retainSparkbBirth && retainMQTT) : not valid, so ignore altogether.
 		// (!retainSparkbBirth && !retainMQTT) : nothing to do.
