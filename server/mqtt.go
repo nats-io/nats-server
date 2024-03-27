@@ -4622,17 +4622,17 @@ func mqttIsRetained(flags byte) bool {
 // MQTT topic like spBv1.0/{group_id}/{message_type}/{edge_node_id}/{device_id}
 func sparkbIsBirth(natsSubject, prefix []byte) (is bool, typ, groupID, nodeID, deviceID string) {
 	if !bytes.HasPrefix(natsSubject, prefix) {
-		return false, "", "", "", ""
+		return false, _EMPTY_, _EMPTY_, _EMPTY_, _EMPTY_
 	}
 	natsSubject = natsSubject[len(prefix):]
 	parts := bytes.Split(natsSubject, []byte("."))
 	if len(parts) < 3 {
-		return false, "", "", "", ""
+		return false, _EMPTY_, _EMPTY_, _EMPTY_, _EMPTY_
 	}
 	typ = string(parts[1])
 	isDevice := (typ == sparkbDBIRTH)
 	if typ != sparkbNBIRTH && !isDevice {
-		return false, "", "", "", ""
+		return false, _EMPTY_, _EMPTY_, _EMPTY_, _EMPTY_
 	}
 
 	groupID = string(natsSubjectToMQTTTopic(parts[0]))
