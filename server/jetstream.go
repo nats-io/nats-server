@@ -2286,8 +2286,14 @@ func (jsa *jsAccount) delete() {
 	jsa.templates = nil
 	jsa.mu.Unlock()
 
-	for _, ms := range streams {
-		ms.stop(false, false)
+	for _, mset := range streams {
+		// For interest or WQ retention, delete consumers first.
+		if mset.isInterestRetention() {
+			for _, o := range mset.getConsumers() {
+				o.stopWithFlags(false, false, false, false)
+			}
+		}
+		mset.stop(false, false)
 	}
 
 	for _, t := range ts {
