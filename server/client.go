@@ -4131,6 +4131,34 @@ func removeHeaderIfPresent(hdr []byte, key string) []byte {
 	return hdr
 }
 
+func removeHeaderIfPrefixPresent(hdr []byte, prefix string) []byte {
+	var index int
+	for {
+		if index >= len(hdr) {
+			return hdr
+		}
+
+		start := bytes.Index(hdr[index:], []byte(prefix))
+		if start < 0 {
+			return hdr
+		}
+		index += start
+		if index < 1 || hdr[index-1] != '\n' {
+			return hdr
+		}
+
+		end := bytes.Index(hdr[index+len(prefix):], []byte(_CRLF_))
+		if end < 0 {
+			return hdr
+		}
+
+		hdr = append(hdr[:index], hdr[index+end+len(prefix)+len(_CRLF_):]...)
+		if len(hdr) <= len(emptyHdrLine) {
+			return nil
+		}
+	}
+}
+
 // Generate a new header based on optional original header and key value.
 // More used in JetStream layers.
 func genHeader(hdr []byte, key, value string) []byte {
