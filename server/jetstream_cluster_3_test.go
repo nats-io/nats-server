@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
 	"net"
 	"os"
@@ -7087,6 +7088,61 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 		}
 	}
 
+	// Show a table of the results to help debugging.
+	debug := true
+	testDuration := 2 * time.Minute
+	if debug {
+		tctx, cancel := context.WithTimeout(context.Background(), testDuration)
+		defer cancel()
+
+		wg.Add(1)
+		go func() {
+			prefix := "MSGS.EEEEE.P.H.100XY.1.100Z.WQ.00000000000%d"
+			for range time.NewTicker(1 * time.Second).C {
+				select {
+				case <-tctx.Done():
+					wg.Done()
+					return
+				default:
+				}
+				msg, err := nc.Request(fmt.Sprintf("$JS.API.STREAM.INFO.%s", sc.Name), []byte(`{"subjects_filter":">"}`), 2*time.Second)
+				if err != nil {
+					continue
+				}
+				var si *nats.StreamInfo
+				err = json.Unmarshal(msg.Data, &si)
+				if err != nil {
+					continue
+				}
+
+				// Then get the num pending from each.
+				var numPending, numAckPending int
+				for i := 0; i < 10; i++ {
+					ci, err := js.ConsumerInfo(sc.Name, fmt.Sprintf("consumer:EEEEE:%d", i))
+					if err != nil {
+						continue
+					}
+
+					is, ok := si.State.Subjects[fmt.Sprintf(prefix, i)]
+					if !ok {
+						continue
+					}
+					t.Logf("| %-20s | in_stream_subject:%-30d | num_pending: %-10d / ack_pending: %-10d | delivered(stream: %-6d, consumer: %-6d) | ackfloor(stream: %-6d, consumer: %-6d) |",
+						ci.Name, is, ci.NumPending, ci.NumAckPending, ci.Delivered.Stream, ci.Delivered.Consumer, ci.AckFloor.Stream, ci.AckFloor.Consumer)
+					numPending += int(ci.NumPending)
+					numAckPending += int(ci.NumAckPending)
+				}
+				if numPending > 0 || si.State.Msgs > 0 {
+					t.Logf("| %-20s | in_stream_subject:%-30d | num_pending: %-10d / ack_pending: %-10d |", "TOTAL", si.State.Msgs, numPending, numAckPending)
+					t.Logf("|------------------------------------------------------------------------ HOST: %-20s -----------------------|", nc.ConnectedUrl())
+
+				} else {
+					t.Logf("No orphan or pending messages found...")
+				}
+			}
+		}()
+	}
+
 	for i := 0; i < 50; i++ {
 		wg.Add(1)
 		go func() {
@@ -7166,7 +7222,7 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 	// Let enough messages into the stream then start consumers.
 	time.Sleep(30 * time.Second)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), testDuration)
 	defer cancel()
 
 	for i := 0; i < 10; i++ {
@@ -7186,6 +7242,9 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 			wg.Add(1)
 			go func() {
 				tick := time.NewTicker(1 * time.Millisecond)
+				mw := nats.MaxWait(200 * time.Millisecond)
+				phb := nats.PullHeartbeat(mw / 3)
+			NextTick:
 				for {
 					if cpnc.IsClosed() {
 						wg.Done()
@@ -7196,28 +7255,14 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 						wg.Done()
 						return
 					case <-tick.C:
-						// Fetch 1 first, then if no errors Fetch 100.
-						msgs, err := psub.Fetch(1, nats.MaxWait(200*time.Millisecond))
-						if err != nil {
-							continue
-						}
-						for _, msg := range msgs {
-							msg.Ack()
-						}
-						msgs, err = psub.Fetch(100, nats.MaxWait(200*time.Millisecond))
-						if err != nil {
-							continue
-						}
-						for _, msg := range msgs {
-							msg.Ack()
-						}
-
-						msgs, err = psub.Fetch(1000, nats.MaxWait(200*time.Millisecond))
-						if err != nil {
-							continue
-						}
-						for _, msg := range msgs {
-							msg.Ack()
+						for _, bs := range []int{1, 5, 100, 1000} {
+							msgs, err := psub.Fetch(bs, mw, phb)
+							if err != nil {
+								continue NextTick
+							}
+							for _, msg := range msgs {
+								msg.Ack()
+							}
 						}
 					}
 				}
@@ -7241,34 +7286,24 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 			wg.Add(1)
 			go func() {
 				tick := time.NewTicker(1 * time.Millisecond)
+				mw := nats.MaxWait(200 * time.Millisecond)
+				phb := nats.PullHeartbeat(mw / 3)
+
+			NextTick:
 				for {
 					select {
 					case <-ctx.Done():
 						wg.Done()
 						return
 					case <-tick.C:
-						// Fetch 1 first, then if no errors Fetch 100.
-						msgs, err := psub.Fetch(1, nats.MaxWait(200*time.Millisecond))
-						if err != nil {
-							continue
-						}
-						for _, msg := range msgs {
-							msg.Ack()
-						}
-						msgs, err = psub.Fetch(100, nats.MaxWait(200*time.Millisecond))
-						if err != nil {
-							continue
-						}
-						for _, msg := range msgs {
-							msg.Ack()
-						}
-
-						msgs, err = psub.Fetch(1000, nats.MaxWait(200*time.Millisecond))
-						if err != nil {
-							continue
-						}
-						for _, msg := range msgs {
-							msg.Ack()
+						for _, bs := range []int{1, 5, 100, 1000} {
+							msgs, err := psub.Fetch(bs, mw, phb)
+							if err != nil {
+								continue NextTick
+							}
+							for _, msg := range msgs {
+								msg.Ack()
+							}
 						}
 					}
 				}
@@ -7276,27 +7311,65 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 		}
 	}
 
-	time.AfterFunc(10*time.Second, func() {
-		if sc.Replicas == 1 {
-			// Find server leader of the stream and restart it.
-			leaderSrv := c.streamLeader("js", sc.Name)
-			leaderSrv.Shutdown()
-			leaderSrv.WaitForShutdown()
-			c.restartServer(leaderSrv)
-		} else {
-			// NOTE (wq): For R=3, not sure which server causes the issue here
-			// so this may be have flaky behavior.
-			s := c.servers[0]
-			s.optsMu.Lock()
-			s.opts.LameDuckDuration = 5 * time.Second
-			s.opts.LameDuckGracePeriod = -5 * time.Second
-			s.optsMu.Unlock()
-			s.lameDuckMode()
-			s.WaitForShutdown()
-			c.restartServer(s)
-			c.waitOnClusterReady()
+	checkOverflow := func(t *testing.T) bool {
+		for i := 0; i < 10; i++ {
+			ci, err := js.ConsumerInfo(sc.Name, fmt.Sprintf("consumer:EEEEE:%d", i))
+			if err != nil {
+				t.Logf("Error: %v", err)
+				continue
+			}
+			var limit uint64 = math.MaxUint64 - 1_000_000
+			if ci.Delivered.Stream > limit || ci.Delivered.Consumer > limit {
+				t.Errorf("Unexpected overflow in delivered: %d, %d", ci.Delivered.Stream, ci.Delivered.Consumer)
+				return true
+			}
+			if ci.AckFloor.Stream > limit || ci.AckFloor.Consumer > limit {
+				t.Errorf("Unexpected overflow in delivered: %d, %d", ci.Delivered.Stream, ci.Delivered.Consumer)
+				return true
+			}
 		}
-	})
+		return false
+	}
+
+	// restarts
+	for i := 0; i < 10; i++ {
+		clusterReady := make(chan struct{}, 0)
+		time.AfterFunc(10*time.Second, func() {
+			if sc.Replicas == 1 {
+				// Find server leader of the stream and restart it.
+				leaderSrv := c.streamLeader("js", sc.Name)
+				leaderSrv.Shutdown()
+				leaderSrv.WaitForShutdown()
+				c.restartServer(leaderSrv)
+				// c.waitOnClusterReady()
+			} else {
+				// NOTE (wq): For R=3, not sure which server causes the issue here
+				// so this may be have flaky behavior.
+				s := c.servers[0]
+				s.optsMu.Lock()
+				s.opts.LameDuckDuration = 5 * time.Second
+				s.opts.LameDuckGracePeriod = -5 * time.Second
+				s.optsMu.Unlock()
+				s.lameDuckMode()
+				s.WaitForShutdown()
+				c.restartServer(s)
+				c.waitOnClusterReady()
+			}
+			// for j := 0; j < 10; j++ {
+			// 	checkOverflow(t)
+			// 	time.Sleep(1 * time.Second)
+			// }
+			// time.Sleep(15 * time.Second)
+			clusterReady <- struct{}{}
+		})
+
+		select {
+		case <-clusterReady:
+		case <-time.After(1 * time.Minute):
+			t.Logf("WARN: Cluster was not ready before checking state")
+		}
+		checkOverflow(t)
+	}
 
 	// Wait until context is done then check state.
 	<-ctx.Done()
