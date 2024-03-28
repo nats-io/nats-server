@@ -23,7 +23,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,7 +30,6 @@ import (
 	"time"
 
 	"github.com/minio/highwayhash"
-	"github.com/nats-io/nats-server/v2/server/sysmem"
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
 )
@@ -2470,16 +2468,19 @@ func (s *Server) dynJetStreamConfig(storeDir string, maxStore, maxMem int64) *Je
 		jsc.MaxMemory = maxMem
 	} else {
 		// Estimate to 75% of total memory if we can determine system memory.
-		if sysMem := sysmem.Memory(); sysMem > 0 {
-			// Check if we have been limited with GOMEMLIMIT and if lower use that value.
-			if gml := debug.SetMemoryLimit(-1); gml != math.MaxInt64 && gml < sysMem {
-				s.Debugf("JetStream detected GOMEMLIMIT of %v", friendlyBytes(gml))
-				sysMem = gml
+		/*
+			if sysMem := sysmem.Memory(); sysMem > 0 {
+				// Check if we have been limited with GOMEMLIMIT and if lower use that value.
+				if gml := debug.SetMemoryLimit(-1); gml != math.MaxInt64 && gml < sysMem {
+					s.Debugf("JetStream detected GOMEMLIMIT of %v", friendlyBytes(gml))
+					sysMem = gml
+				}
+				jsc.MaxMemory = sysMem / 4 * 3
+			} else {
+				jsc.MaxMemory = JetStreamMaxMemDefault
 			}
-			jsc.MaxMemory = sysMem / 4 * 3
-		} else {
-			jsc.MaxMemory = JetStreamMaxMemDefault
-		}
+		*/
+		jsc.MaxMemory = JetStreamMaxMemDefault
 	}
 
 	return jsc
