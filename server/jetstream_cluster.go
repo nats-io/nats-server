@@ -4913,7 +4913,7 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 					}
 					panic(err.Error())
 				}
-				if err := o.processReplicatedAck(dseq, sseq); err == errConsumerClosed {
+				if err := o.processReplicatedAck(dseq, sseq); err != nil {
 					return err
 				}
 			case updateSkipOp:
@@ -4958,6 +4958,10 @@ func (o *consumer) processReplicatedAck(dseq, sseq uint64) error {
 	if o.closed || mset == nil {
 		o.mu.Unlock()
 		return errConsumerClosed
+	}
+	if mset.closed.Load() {
+		o.mu.Unlock()
+		return errStreamClosed
 	}
 
 	// Update activity.

@@ -859,6 +859,12 @@ func (mset *stream) setLeader(isLeader bool) error {
 		mset.leader = _EMPTY_
 	}
 	mset.mu.Unlock()
+
+	if isLeader {
+		// If we are interest based make sure to check consumers if interest retention policy.
+		// This is to make sure we process any outstanding acks.
+		mset.checkInterestState()
+	}
 	return nil
 }
 
@@ -5230,9 +5236,7 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	accName := jsa.account.Name
 	jsa.mu.Unlock()
 
-	// Mark as closed, kick monitor and collect consumers first.
-	mset.closed.Store(true)
-
+	// Kick monitor and collect consumers first.
 	mset.mu.Lock()
 	// Signal to the monitor loop.
 	// Can't use qch here.
@@ -5293,6 +5297,9 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	if deleteFlag && advisory {
 		mset.sendDeleteAdvisoryLocked()
 	}
+
+	// Mark closed.
+	mset.closed.Store(true)
 
 	// Quit channel, do this after sending the delete advisory
 	if mset.qch != nil {
@@ -5430,18 +5437,11 @@ func (mset *stream) checkInterestState() {
 	if mset == nil {
 		return
 	}
-	mset.mu.RLock()
-	// If we are limits based nothing to do.
-	if mset.cfg.Retention == LimitsPolicy {
-		mset.mu.RUnlock()
+	if !mset.isInterestRetention() {
+		// If we are limits based nothing to do.
 		return
 	}
-	consumers := make([]*consumer, 0, len(mset.consumers))
-	for _, o := range mset.consumers {
-		consumers = append(consumers, o)
-	}
-	mset.mu.RUnlock()
-	for _, o := range consumers {
+	for _, o := range mset.getPublicConsumers() {
 		o.checkStateForInterestStream()
 	}
 }

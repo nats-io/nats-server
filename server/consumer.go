@@ -4657,7 +4657,11 @@ func (o *consumer) checkPending() {
 	check := len(o.pending) > 1024
 	for seq, p := range o.pending {
 		if check && atomic.LoadInt64(&o.awl) > 0 {
-			o.ptmr.Reset(100 * time.Millisecond)
+			if o.ptmr == nil {
+				o.ptmr = time.AfterFunc(100*time.Millisecond, o.checkPending)
+			} else {
+				o.ptmr.Reset(100 * time.Millisecond)
+			}
 			return
 		}
 		// Check if these are no longer valid.
