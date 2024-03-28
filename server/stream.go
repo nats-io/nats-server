@@ -5233,9 +5233,7 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	accName := jsa.account.Name
 	jsa.mu.Unlock()
 
-	// Mark as closed, kick monitor and collect consumers first.
-	mset.closed.Store(true)
-
+	// Kick monitor and collect consumers first.
 	mset.mu.Lock()
 	// Signal to the monitor loop.
 	// Can't use qch here.
@@ -5296,6 +5294,9 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	if deleteFlag && advisory {
 		mset.sendDeleteAdvisoryLocked()
 	}
+
+	// Mark closed.
+	mset.closed.Store(true)
 
 	// Quit channel, do this after sending the delete advisory
 	if mset.qch != nil {
