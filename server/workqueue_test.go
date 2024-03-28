@@ -275,8 +275,8 @@ func TestWorkQueue(t *testing.T) {
 		}
 	}()
 
-	pubTimer := time.NewTimer(5 * time.Minute)
-	finallTimer := time.NewTimer(7 * time.Minute)
+	pubTimer := time.NewTimer(1 * time.Minute)
+	finallTimer := time.NewTimer(2 * time.Minute)
 
 	for {
 		select {
