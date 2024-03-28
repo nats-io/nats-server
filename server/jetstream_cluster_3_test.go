@@ -6972,11 +6972,13 @@ func TestJetStreamClusterConsumerPauseSurvivesRestart(t *testing.T) {
 func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 	debug := true
 	sleeps := false
+	restarts := 0
 	t.Run("R1F", func(t *testing.T) {
 		preRestarts := false
 		inflightRestart := true
 		missAcks := false
-		testJetStreamClusterWorkQueueStreamOrphanIssue(t, debug, preRestarts, inflightRestart, missAcks, sleeps, &nats.StreamConfig{
+		restarts = 5
+		testJetStreamClusterWorkQueueStreamOrphanIssue(t, debug, preRestarts, inflightRestart, missAcks, sleeps, restarts, &nats.StreamConfig{
 			Name:        "OWQTEST_R1F",
 			Subjects:    []string{"MSGS.>"},
 			Replicas:    1,
@@ -6994,7 +6996,8 @@ func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 		preRestarts := false
 		inflightRestart := true
 		missAcks := false
-		testJetStreamClusterWorkQueueStreamOrphanIssue(t, debug, preRestarts, inflightRestart, missAcks, sleeps, &nats.StreamConfig{
+		restarts = 1
+		testJetStreamClusterWorkQueueStreamOrphanIssue(t, debug, preRestarts, inflightRestart, missAcks, sleeps, restarts, &nats.StreamConfig{
 			Name:        "OWQTEST_R3M",
 			Subjects:    []string{"MSGS.>"},
 			Replicas:    3,
@@ -7014,7 +7017,8 @@ func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 		preRestarts := false
 		inflightRestart := true
 		missAcks := false
-		testJetStreamClusterWorkQueueStreamOrphanIssue(t, debug, preRestarts, inflightRestart, missAcks, sleeps, &nats.StreamConfig{
+		restarts = 1
+		testJetStreamClusterWorkQueueStreamOrphanIssue(t, debug, preRestarts, inflightRestart, missAcks, sleeps, restarts, &nats.StreamConfig{
 			Name:        "OWQTEST_R3F_DN",
 			Subjects:    []string{"MSGS.>"},
 			Replicas:    3,
@@ -7033,7 +7037,8 @@ func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 		preRestarts := false
 		inflightRestart := true
 		missAcks := false
-		testJetStreamClusterWorkQueueStreamOrphanIssue(t, debug, preRestarts, inflightRestart, missAcks, sleeps, &nats.StreamConfig{
+		restarts = 1
+		testJetStreamClusterWorkQueueStreamOrphanIssue(t, debug, preRestarts, inflightRestart, missAcks, sleeps, restarts, &nats.StreamConfig{
 			Name:        "OWQTEST_R3F_DO",
 			Subjects:    []string{"MSGS.>"},
 			Replicas:    3,
@@ -7050,7 +7055,7 @@ func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 	})
 }
 
-func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, debug, preRestarts, inflightRestart, missAcks, sleeps bool, sc *nats.StreamConfig) {
+func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, debug, preRestarts, inflightRestart, missAcks, sleeps bool, restarts int, sc *nats.StreamConfig) {
 	conf := `
 	listen: 127.0.0.1:-1
 	server_name: %s
@@ -7419,40 +7424,76 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, debug, preRest
 		}
 	}
 
-	if inflightRestart {
-		clusterReady := make(chan struct{}, 0)
-		time.AfterFunc(10*time.Second, func() {
-			if sc.Replicas == 1 {
-				// Find server leader of the stream and restart it.
-				leaderSrv := c.streamLeader("js", sc.Name)
-				leaderSrv.Shutdown()
-				leaderSrv.WaitForShutdown()
-				c.restartServer(leaderSrv)
-			} else {
-				// NOTE (wq): For R=3, not sure which server causes the issue here
-				// so this may be have flaky behavior.
-				s := c.servers[0]
-				s.optsMu.Lock()
-				s.opts.LameDuckDuration = 15 * time.Second
-				s.opts.LameDuckGracePeriod = -15 * time.Second
-				s.optsMu.Unlock()
-				s.lameDuckMode()
-				s.WaitForShutdown()
-				c.restartServer(s)
-				c.waitOnClusterReady()
+	checkOverflow := func(t *testing.T) bool {
+		for i := 0; i < 10; i++ {
+			ci, err := js.ConsumerInfo(sc.Name, fmt.Sprintf("consumer:EEEEE:%d", i))
+			if err != nil {
+				t.Logf("Error: %v", err)
+				continue
 			}
-			clusterReady <- struct{}{}
-		})
+			var limit uint64 = math.MaxUint64 - 1_000_000
+			if ci.Delivered.Stream > limit || ci.Delivered.Consumer > limit {
+				t.Errorf("Unexpected overflow in delivered: %d, %d", ci.Delivered.Stream, ci.Delivered.Consumer)
+				return true
+			}
+			if ci.AckFloor.Stream > limit || ci.AckFloor.Consumer > limit {
+				t.Errorf("Unexpected overflow in delivered: %d, %d", ci.Delivered.Stream, ci.Delivered.Consumer)
+				return true
+			}
+		}
+		return false
+	}
 
-		select {
-		case <-clusterReady:
-		case <-time.After(1 * time.Minute):
-			t.Logf("WARN: Cluster was not ready before checking state")
+	if inflightRestart {
+		for i := 0; i < restarts; i++ {
+			clusterReady := make(chan struct{}, 0)
+			time.AfterFunc(10*time.Second, func() {
+				if sc.Replicas == 1 {
+					// Find server leader of the stream and restart it.
+					leaderSrv := c.streamLeader("js", sc.Name)
+					leaderSrv.Shutdown()
+					leaderSrv.WaitForShutdown()
+					c.restartServer(leaderSrv)
+					// c.waitOnClusterReady()
+				} else {
+					// NOTE (wq): For R=3, not sure which server causes the issue here
+					// so this may be have flaky behavior.
+					s := c.servers[0]
+					s.optsMu.Lock()
+					s.opts.LameDuckDuration = 15 * time.Second
+					s.opts.LameDuckGracePeriod = -15 * time.Second
+					s.optsMu.Unlock()
+					s.lameDuckMode()
+					s.WaitForShutdown()
+					c.restartServer(s)
+					c.waitOnClusterReady()
+				}
+
+				// for j := 0; j < 10; j++ {
+				// 	checkOverflow(t)
+				// 	time.Sleep(1 * time.Second)
+				// }
+				// Leave running for a bit more before the next restart.
+				// time.Sleep(5 * time.Second)
+
+				clusterReady <- struct{}{}
+			})
+
+			select {
+			case <-clusterReady:
+			case <-time.After(1 * time.Minute):
+				t.Logf("WARN: Cluster was not ready before checking state")
+			}
+			checkOverflow(t)
 		}
 	}
 
 	// Wait until context is done then check state.
 	<-ctx.Done()
+
+	// Check state of streams and consumers.
+	si, err := js.StreamInfo(sc.Name)
+	require_NoError(t, err)
 
 	var consumerPending int
 	for i := 0; i < 10; i++ {
@@ -7469,10 +7510,6 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, debug, preRest
 			t.Errorf("Unexpected overflow in delivered: %d, %d", ci.Delivered.Stream, ci.Delivered.Consumer)
 		}
 	}
-
-	// Check state of streams and consumers.
-	si, err := js.StreamInfo(sc.Name)
-	require_NoError(t, err)
 
 	streamPending := int(si.State.Msgs)
 	if streamPending != consumerPending {
