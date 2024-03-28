@@ -11968,6 +11968,60 @@ func TestJetStreamSourceWorkingQueueWithLimit(t *testing.T) {
 	}
 }
 
+func TestJetStreamStreamSourceFromKV(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	// Client for API reuqests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Create a kv store
+	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: "test"})
+	require_NoError(t, err)
+
+	// Create a stream with a source from the kv store
+	_, err = js.AddStream(&nats.StreamConfig{Name: "test", Retention: nats.InterestPolicy, Sources: []*nats.StreamSource{{Name: "KV_" + kv.Bucket()}}})
+	require_NoError(t, err)
+
+	// Create a interested consumer
+	_, err = js.AddConsumer("test", &nats.ConsumerConfig{Durable: "durable", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	ss, err := js.PullSubscribe("", "", nats.Bind("test", "durable"))
+	require_NoError(t, err)
+
+	rev1, err := kv.Create("key", []byte("value1"))
+	require_NoError(t, err)
+
+	m, err := ss.Fetch(1, nats.MaxWait(500*time.Millisecond))
+	require_NoError(t, err)
+	require_NoError(t, m[0].Ack())
+	if string(m[0].Data) != "value1" {
+		t.Fatalf("Expected value1, got %s", m[0].Data)
+	}
+
+	rev2, err := kv.Update("key", []byte("value2"), rev1)
+	require_NoError(t, err)
+
+	_, err = kv.Update("key", []byte("value3"), rev2)
+	require_NoError(t, err)
+
+	m, err = ss.Fetch(1, nats.MaxWait(500*time.Millisecond))
+	require_NoError(t, err)
+	require_NoError(t, m[0].Ack())
+	if string(m[0].Data) != "value2" {
+		t.Fatalf("Expected value2, got %s", m[0].Data)
+	}
+
+	m, err = ss.Fetch(1, nats.MaxWait(500*time.Millisecond))
+	require_NoError(t, err)
+	require_NoError(t, m[0].Ack())
+	if string(m[0].Data) != "value3" {
+		t.Fatalf("Expected value3, got %s", m[0].Data)
+	}
+}
+
 func TestJetStreamInputTransform(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
