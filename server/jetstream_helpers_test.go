@@ -1184,13 +1184,17 @@ func jsClientConnect(t testing.TB, s *Server, opts ...nats.Option) (*nats.Conn, 
 	return nc, js
 }
 
-func jsClientConnectEx(t testing.TB, s *Server, domain string, opts ...nats.Option) (*nats.Conn, nats.JetStreamContext) {
+func jsClientConnectEx(t testing.TB, s *Server, jsOpts []nats.JSOpt, opts ...nats.Option) (*nats.Conn, nats.JetStreamContext) {
 	t.Helper()
 	nc, err := nats.Connect(s.ClientURL(), opts...)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
-	js, err := nc.JetStream(nats.MaxWait(10*time.Second), nats.Domain(domain))
+	jo := []nats.JSOpt{nats.MaxWait(10 * time.Second)}
+	if len(jsOpts) > 0 {
+		jo = append(jo, jsOpts...)
+	}
+	js, err := nc.JetStream(jo...)
 	if err != nil {
 		t.Fatalf("Unexpected error getting JetStream context: %v", err)
 	}
