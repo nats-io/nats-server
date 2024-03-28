@@ -100,12 +100,21 @@ func TestJetStreamConsumerMultipleFiltersRace(t *testing.T) {
 	var seqs []uint64
 	var mu sync.Mutex
 
-	for i := 0; i < 10_000; i++ {
-		sendStreamMsg(t, nc, "one", "data")
-		sendStreamMsg(t, nc, "two", "data")
-		sendStreamMsg(t, nc, "three", "data")
-		sendStreamMsg(t, nc, "four", "data")
+	total := 10_000
+	wg := sync.WaitGroup{}
+
+	send := func(subj string) {
+		defer wg.Done()
+		for i := 0; i < total; i++ {
+			sendStreamMsg(t, nc, subj, "data")
+		}
 	}
+	wg.Add(4)
+	go send("one")
+	go send("two")
+	go send("three")
+	go send("four")
+	wg.Wait()
 
 	mset.addConsumer(&ConsumerConfig{
 		Durable:        "consumer",
@@ -114,10 +123,12 @@ func TestJetStreamConsumerMultipleFiltersRace(t *testing.T) {
 	})
 
 	done := make(chan struct{})
+	wg.Add(10)
 	for i := 0; i < 10; i++ {
 		go func(t *testing.T) {
+			defer wg.Done()
 
-			c, err := js.PullSubscribe("", "consumer", nats.Bind("TEST", "consumer"))
+			c, err := js.PullSubscribe(_EMPTY_, "consumer", nats.Bind("TEST", "consumer"))
 			require_NoError(t, err)
 
 			for {
@@ -126,7 +137,7 @@ func TestJetStreamConsumerMultipleFiltersRace(t *testing.T) {
 					return
 				default:
 				}
-				msgs, err := c.Fetch(10)
+				msgs, err := c.Fetch(10, nats.MaxWait(2*time.Second))
 				// We don't want to stop before at expected number of messages, as we want
 				// to also test against getting to many messages.
 				// Because of that, we ignore timeout and connection closed errors.
@@ -146,11 +157,11 @@ func TestJetStreamConsumerMultipleFiltersRace(t *testing.T) {
 		}(t)
 	}
 
-	checkFor(t, time.Second*30, time.Second*1, func() error {
+	checkFor(t, 30*time.Second, 100*time.Millisecond, func() error {
 		mu.Lock()
 		defer mu.Unlock()
-		if len(seqs) != 30_000 {
-			return fmt.Errorf("found %d messages instead of %d", len(seqs), 30_000)
+		if len(seqs) != 3*total {
+			return fmt.Errorf("found %d messages instead of %d", len(seqs), 3*total)
 		}
 		sort.Slice(seqs, func(i, j int) bool {
 			return seqs[i] < seqs[j]
@@ -161,12 +172,10 @@ func TestJetStreamConsumerMultipleFiltersRace(t *testing.T) {
 				return fmt.Errorf("sequence mismatch at %v", i)
 			}
 		}
-
 		return nil
 	})
-
 	close(done)
-
+	wg.Wait()
 }
 
 func TestJetStreamConsumerMultipleConsumersSingleFilter(t *testing.T) {

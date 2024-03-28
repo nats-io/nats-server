@@ -83,6 +83,22 @@ jobs:
       - name: Build NATS Server
         run: go build
 
+  filestore:
+    name: FileStore tests
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_MEDIUM }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: go test -race -v -run=TestFileStore ./server/... -count=1 -vet=off -timeout=30m -failfast
+
   js-no-cluster:
     name: JetStream tests
     needs: [build-latest, build-supported, lint]
@@ -212,8 +228,24 @@ jobs:
       - name: Run unit tests
         run: go test -race -v -run=TestMQTT ./server/... -count=1 -vet=off -timeout=30m -failfast
 
+  msgtrace:
+    name: MsgTrace tests
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_MEDIUM }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: go test -race -v -run=TestMsgTrace ./server/... -count=1 -vet=off -timeout=30m -failfast
+
   server-pkg-non-js:
-    name: Non-JetStream/MQTT tests
+    name: Non-JetStream/MQTT/MsgTrace tests
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_LARGE }}
     steps:
@@ -226,7 +258,7 @@ jobs:
           go-version: stable
 
       - name: Run unit tests
-        run: go test -race -v -p=1 ./server/... -tags=skip_js_tests,skip_mqtt_tests -count=1 -vet=off -timeout=30m -failfast
+        run: go test -race -v -p=1 ./server/... -tags=skip_js_tests,skip_fs_tests,skip_mqtt_tests,skip_msgtrace_tests -count=1 -vet=off -timeout=30m -failfast
         timeout-minutes: 15
 
   non-server-pkg:
