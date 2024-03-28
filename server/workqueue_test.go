@@ -35,15 +35,14 @@ func TestWorkQueue(t *testing.T) {
 		Name:                 "QUEUE",
 		Subjects:             []string{"Q.>"},
 		Retention:            nats.WorkQueuePolicy,
-		MaxMsgsPerSubject:    2000,
-		MaxMsgs:              10000,
+		MaxMsgs:              3000,
 		Storage:              nats.FileStorage,
 		Discard:              nats.DiscardNew,
 		Replicas:             3,
 		Duplicates:           time.Duration(2 * time.Minute),
 		AllowDirect:          true,
 		MirrorDirect:         false,
-		DiscardNewPerSubject: true,
+		DiscardNewPerSubject: false,
 	})
 	require_NoError(t, err)
 
