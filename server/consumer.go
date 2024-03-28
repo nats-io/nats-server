@@ -3585,11 +3585,11 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 			pmsg = nil
 		}
 		o.mu.Lock()
-		if err == ErrStoreEOF {
-			o.updateSkipped(o.sseq)
-		}
 		if sseq >= o.sseq {
 			o.sseq = sseq + 1
+			if err == ErrStoreEOF {
+				o.updateSkipped(o.sseq)
+			}
 		}
 		return pmsg, 1, err
 	}
