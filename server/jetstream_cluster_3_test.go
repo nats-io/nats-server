@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
 	"net"
 	"os"
@@ -7141,13 +7142,15 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, debug, preRest
 					if !ok {
 						continue
 					}
-					t.Logf("| %-20s | in_stream_subject:%-30d | num_pending: %-10d / ack_pending: %-10d |", ci.Name, is, ci.NumPending, ci.NumAckPending)
+					t.Logf("| %-20s | in_stream_subject:%-30d | num_pending: %-10d / ack_pending: %-10d | delivered(stream: %-6d, consumer: %-6d) | ackfloor(stream: %-6d, consumer: %-6d) |",
+						ci.Name, is, ci.NumPending, ci.NumAckPending, ci.Delivered.Stream, ci.Delivered.Consumer, ci.AckFloor.Stream, ci.AckFloor.Consumer)
 					numPending += int(ci.NumPending)
 					numAckPending += int(ci.NumAckPending)
 				}
 				if numPending > 0 || si.State.Msgs > 0 {
 					t.Logf("| %-20s | in_stream_subject:%-30d | num_pending: %-10d / ack_pending: %-10d |", "TOTAL", si.State.Msgs, numPending, numAckPending)
 					t.Logf("|------------------------------------------------------------------------ HOST: %-20s -----------------------|", nc.ConnectedUrl())
+
 				} else {
 					t.Logf("No orphan or pending messages found...")
 				}
@@ -7456,6 +7459,15 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, debug, preRest
 		ci, err := js.ConsumerInfo(sc.Name, fmt.Sprintf("consumer:EEEEE:%d", i))
 		require_NoError(t, err)
 		consumerPending += int(ci.NumPending)
+
+		// Check that it has not accidentally overflown
+		var limit uint64 = math.MaxUint64 - 1_000_000
+		if ci.Delivered.Stream > limit || ci.Delivered.Consumer > limit {
+			t.Errorf("Unexpected overflow in delivered: %d, %d", ci.Delivered.Stream, ci.Delivered.Consumer)
+		}
+		if ci.AckFloor.Stream > limit || ci.AckFloor.Consumer > limit {
+			t.Errorf("Unexpected overflow in delivered: %d, %d", ci.Delivered.Stream, ci.Delivered.Consumer)
+		}
 	}
 
 	// Check state of streams and consumers.
