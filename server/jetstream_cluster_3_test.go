@@ -7094,6 +7094,8 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, debug, preRest
 	// First call is just to create the pull subscribers.
 	mp := nats.MaxAckPending(10000)
 	mw := nats.PullMaxWaiting(1000)
+
+	// Do not create all of the pull subscribers so that some are not ready.
 	for i := 0; i < 10; i++ {
 		for _, partition := range []string{"EEEEE"} {
 			subject := fmt.Sprintf("MSGS.%s.*.H.100XY.*.*.WQ.00000000000%d", partition, i)
@@ -7291,6 +7293,7 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, debug, preRest
 				tick := time.NewTicker(1 * time.Millisecond)
 				mw := nats.MaxWait(200 * time.Millisecond)
 				phb := nats.PullHeartbeat(mw / 3)
+			NextTick:
 				for {
 					if cpnc.IsClosed() {
 						wg.Done()
@@ -7301,48 +7304,20 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, debug, preRest
 						wg.Done()
 						return
 					case <-tick.C:
-						msgs, err := psub.Fetch(1, mw, phb)
-						if err != nil {
-							continue
-						}
-						for _, msg := range msgs {
-							msg.Ack()
-						}
-
-						msgs, err = psub.Fetch(5, mw, phb)
-						if err != nil {
-							continue
-						}
-						for _, msg := range msgs {
-							msg.Ack()
-						}
-
-						msgs, err = psub.Fetch(100, mw, phb)
-						if err != nil {
-							continue
-						}
-						for i, msg := range msgs {
-							if missAcks && i == rand.Intn(len(msgs)) {
-								continue
+						for _, bs := range []int{1, 5, 100, 1000} {
+							msgs, err := psub.Fetch(bs, mw, phb)
+							if err != nil {
+								continue NextTick
 							}
-							if sleeps {
-								time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
+							for i, msg := range msgs {
+								if missAcks && i == rand.Intn(len(msgs)) {
+									continue
+								}
+								if sleeps {
+									time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
+								}
+								msg.Ack()
 							}
-							msg.Ack()
-						}
-
-						msgs, err = psub.Fetch(1000, mw, phb)
-						if err != nil {
-							continue
-						}
-						for i, msg := range msgs {
-							if missAcks && i == rand.Intn(len(msgs)) {
-								continue
-							}
-							if sleeps {
-								time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
-							}
-							msg.Ack()
 						}
 					}
 				}
@@ -7368,55 +7343,27 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, debug, preRest
 				tick := time.NewTicker(1 * time.Millisecond)
 				mw := nats.MaxWait(200 * time.Millisecond)
 				phb := nats.PullHeartbeat(mw / 3)
+			NextTick:
 				for {
 					select {
 					case <-ctx.Done():
 						wg.Done()
 						return
 					case <-tick.C:
-						// Fetch 1, then 100, then 1000
-						msgs, err := psub.Fetch(1, mw, phb)
-						if err != nil {
-							continue
-						}
-						for _, msg := range msgs {
-							msg.Ack()
-						}
-
-						msgs, err = psub.Fetch(5, mw, phb)
-						if err != nil {
-							continue
-						}
-						for _, msg := range msgs {
-							msg.Ack()
-						}
-
-						msgs, err = psub.Fetch(100, mw, phb)
-						if err != nil {
-							continue
-						}
-						for i, msg := range msgs {
-							if missAcks && i == rand.Intn(len(msgs)) {
-								continue
+						for _, bs := range []int{1, 5, 100, 1000} {
+							msgs, err := psub.Fetch(bs, mw, phb)
+							if err != nil {
+								continue NextTick
 							}
-							if sleeps {
-								time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
+							for i, msg := range msgs {
+								if missAcks && i == rand.Intn(len(msgs)) {
+									continue
+								}
+								if sleeps {
+									time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
+								}
+								msg.Ack()
 							}
-							msg.Ack()
-						}
-
-						msgs, err = psub.Fetch(1000, mw, phb)
-						if err != nil {
-							continue
-						}
-						for i, msg := range msgs {
-							if missAcks && i == rand.Intn(len(msgs)) {
-								continue
-							}
-							if sleeps {
-								time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
-							}
-							msg.Ack()
 						}
 					}
 				}
