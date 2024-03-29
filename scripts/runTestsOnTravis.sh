@@ -23,10 +23,12 @@ elif [ "$1" = "no_race_tests" ]; then
 
     go test -v -p=1 -run=TestNoRace ./... -count=1 -vet=off -timeout=30m -failfast
 
-elif [ "$1" = "fs_tests" ]; then
+elif [ "$1" = "store_tests" ]; then
 
-    # Run FileStore tests. By convention, all file store tests start with `TestFileStore`.
+    # Run store tests. By convention, all file store tests start with `TestFileStore`,
+    # and memory store tests start with `TestMemStore`.
 
+    go test -race -v -run=TestMemStore ./server -count=1 -vet=off -timeout=30m -failfast
     go test -race -v -run=TestFileStore ./server -count=1 -vet=off -timeout=30m -failfast
 
 elif [ "$1" = "js_tests" ]; then
@@ -91,11 +93,11 @@ elif [ "$1" = "msgtrace_tests" ]; then
 elif [ "$1" = "srv_pkg_non_js_tests" ]; then
 
     # Run all non JetStream tests in the server package. We exclude the
-    # FileStgore tests by using the `skip_fs_tests` build tag, the JS tests
+    # store tests by using the `skip_store_tests` build tag, the JS tests
     # by using `skip_js_tests`, MQTT tests by using `skip_mqtt_tests` and
     # message tracing tests by using `skip_msgtrace_tests`.
 
-    go test -race -v -p=1 ./server/... -tags=skip_fs_tests,skip_js_tests,skip_mqtt_tests,skip_msgtrace_tests -count=1 -vet=off -timeout=30m -failfast
+    go test -race -v -p=1 ./server/... -tags=skip_store_tests,skip_js_tests,skip_mqtt_tests,skip_msgtrace_tests -count=1 -vet=off -timeout=30m -failfast
 
 elif [ "$1" = "non_srv_pkg_tests" ]; then
 

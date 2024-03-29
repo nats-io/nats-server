@@ -24,8 +24,8 @@ jobs:
       env: TEST_SUITE=compile
     - name: "Run TestNoRace tests"
       env: TEST_SUITE=no_race_tests
-    - name: "Run FileStore tests"
-      env: TEST_SUITE=fs_tests
+    - name: "Run Store tests"
+      env: TEST_SUITE=store_tests
     - name: "Run JetStream tests"
       env: TEST_SUITE=js_tests
     - name: "Run JetStream cluster tests (1)"
