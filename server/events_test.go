@@ -68,7 +68,7 @@ func createUserCredsEx(t *testing.T, nuc *jwt.UserClaims, akp nkeys.KeyPair) nat
 	return nats.UserJWT(userCB, sigCB)
 }
 
-func createUserCreds(t *testing.T, s *Server, akp nkeys.KeyPair) nats.Option {
+func createUserCreds(t *testing.T, _ *Server, akp nkeys.KeyPair) nats.Option {
 	return createUserCredsEx(t, jwt.NewUserClaims("test"), akp)
 }
 

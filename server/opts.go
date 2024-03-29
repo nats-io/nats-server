@@ -909,25 +909,25 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		o.Host = v.(string)
 	case "debug":
 		o.Debug = v.(bool)
-		trackExplicitVal(o, &o.inConfig, "Debug", o.Debug)
+		trackExplicitVal(&o.inConfig, "Debug", o.Debug)
 	case "trace":
 		o.Trace = v.(bool)
-		trackExplicitVal(o, &o.inConfig, "Trace", o.Trace)
+		trackExplicitVal(&o.inConfig, "Trace", o.Trace)
 	case "trace_verbose":
 		o.TraceVerbose = v.(bool)
 		o.Trace = v.(bool)
-		trackExplicitVal(o, &o.inConfig, "TraceVerbose", o.TraceVerbose)
-		trackExplicitVal(o, &o.inConfig, "Trace", o.Trace)
+		trackExplicitVal(&o.inConfig, "TraceVerbose", o.TraceVerbose)
+		trackExplicitVal(&o.inConfig, "Trace", o.Trace)
 	case "logtime":
 		o.Logtime = v.(bool)
-		trackExplicitVal(o, &o.inConfig, "Logtime", o.Logtime)
+		trackExplicitVal(&o.inConfig, "Logtime", o.Logtime)
 	case "logtime_utc":
 		o.LogtimeUTC = v.(bool)
-		trackExplicitVal(o, &o.inConfig, "LogtimeUTC", o.LogtimeUTC)
+		trackExplicitVal(&o.inConfig, "LogtimeUTC", o.LogtimeUTC)
 	case "mappings", "maps":
 		gacc := NewAccount(globalAccountName)
 		o.Accounts = append(o.Accounts, gacc)
-		err := parseAccountMappings(tk, gacc, errors, warnings)
+		err := parseAccountMappings(tk, gacc, errors)
 		if err != nil {
 			*errors = append(*errors, err)
 			return
@@ -941,7 +941,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			return
 		}
 	case "authorization":
-		auth, err := parseAuthorization(tk, o, errors, warnings)
+		auth, err := parseAuthorization(tk, errors)
 		if err != nil {
 			*errors = append(*errors, err)
 			return
@@ -1066,7 +1066,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		o.LogMaxFiles = v.(int64)
 	case "syslog":
 		o.Syslog = v.(bool)
-		trackExplicitVal(o, &o.inConfig, "Syslog", o.Syslog)
+		trackExplicitVal(&o.inConfig, "Syslog", o.Syslog)
 	case "remote_syslog":
 		o.RemoteSyslog = v.(string)
 	case "pidfile", "pid_file":
@@ -1498,7 +1498,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 	case "reconnect_error_reports":
 		o.ReconnectErrorReports = int(v.(int64))
 	case "websocket", "ws":
-		if err := parseWebsocket(tk, o, errors, warnings); err != nil {
+		if err := parseWebsocket(tk, o, errors); err != nil {
 			*errors = append(*errors, err)
 			return
 		}
@@ -1623,7 +1623,7 @@ func parseDuration(field string, tk token, v interface{}, errors *[]error, warni
 	}
 }
 
-func trackExplicitVal(opts *Options, pm *map[string]bool, name string, val bool) {
+func trackExplicitVal(pm *map[string]bool, name string, val bool) {
 	m := *pm
 	if m == nil {
 		m = make(map[string]bool)
@@ -1692,7 +1692,7 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 		case "host", "net":
 			opts.Cluster.Host = mv.(string)
 		case "authorization":
-			auth, err := parseAuthorization(tk, opts, errors, warnings)
+			auth, err := parseAuthorization(tk, errors)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
@@ -1756,11 +1756,11 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 			opts.Cluster.Advertise = mv.(string)
 		case "no_advertise":
 			opts.Cluster.NoAdvertise = mv.(bool)
-			trackExplicitVal(opts, &opts.inConfig, "Cluster.NoAdvertise", opts.Cluster.NoAdvertise)
+			trackExplicitVal(&opts.inConfig, "Cluster.NoAdvertise", opts.Cluster.NoAdvertise)
 		case "connect_retries":
 			opts.Cluster.ConnectRetries = int(mv.(int64))
 		case "permissions":
-			perms, err := parseUserPermissions(mv, errors, warnings)
+			perms, err := parseUserPermissions(mv, errors)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
@@ -1776,7 +1776,7 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 		case "pool_size":
 			opts.Cluster.PoolSize = int(mv.(int64))
 		case "accounts":
-			opts.Cluster.PinnedAccounts, _ = parseStringArray("accounts", tk, &lt, mv, errors, warnings)
+			opts.Cluster.PinnedAccounts, _ = parseStringArray("accounts", tk, &lt, mv, errors)
 		case "compression":
 			if err := parseCompression(&opts.Cluster.Compression, CompressionS2Fast, tk, mk, mv); err != nil {
 				*errors = append(*errors, err)
@@ -1922,7 +1922,7 @@ func parseGateway(v interface{}, o *Options, errors *[]error, warnings *[]error)
 		case "host", "net":
 			o.Gateway.Host = mv.(string)
 		case "authorization":
-			auth, err := parseAuthorization(tk, o, errors, warnings)
+			auth, err := parseAuthorization(tk, errors)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
@@ -1990,7 +1990,7 @@ var defaultJSAccountTiers = map[string]JetStreamAccountLimits{_EMPTY_: dynamicJS
 
 // Parses jetstream account limits for an account. Simple setup with boolen is allowed, and we will
 // use dynamic account limits.
-func parseJetStreamForAccount(v interface{}, acc *Account, errors *[]error, warnings *[]error) error {
+func parseJetStreamForAccount(v interface{}, acc *Account, errors *[]error) error {
 	var lt token
 
 	tk, v := unwrapValue(v, &lt)
@@ -2118,7 +2118,7 @@ func getStorageSize(v interface{}) (int64, error) {
 }
 
 // Parse enablement of jetstream for a server.
-func parseJetStreamLimits(v interface{}, opts *Options, errors *[]error, warnings *[]error) error {
+func parseJetStreamLimits(v interface{}, opts *Options, errors *[]error) error {
 	var lt token
 	tk, v := unwrapValue(v, &lt)
 
@@ -2232,7 +2232,7 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 			case "extension_hint":
 				opts.JetStreamExtHint = mv.(string)
 			case "limits":
-				if err := parseJetStreamLimits(tk, opts, errors, warnings); err != nil {
+				if err := parseJetStreamLimits(tk, opts, errors); err != nil {
 					return err
 				}
 			case "unique_tag":
@@ -2293,7 +2293,7 @@ func parseLeafNodes(v interface{}, opts *Options, errors *[]error, warnings *[]e
 		case "host", "net":
 			opts.LeafNode.Host = mv.(string)
 		case "authorization":
-			auth, err := parseLeafAuthorization(tk, errors, warnings)
+			auth, err := parseLeafAuthorization(tk, errors)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
@@ -2339,7 +2339,7 @@ func parseLeafNodes(v interface{}, opts *Options, errors *[]error, warnings *[]e
 			opts.LeafNode.Advertise = mv.(string)
 		case "no_advertise":
 			opts.LeafNode.NoAdvertise = mv.(bool)
-			trackExplicitVal(opts, &opts.inConfig, "LeafNode.NoAdvertise", opts.LeafNode.NoAdvertise)
+			trackExplicitVal(&opts.inConfig, "LeafNode.NoAdvertise", opts.LeafNode.NoAdvertise)
 		case "min_version", "minimum_version":
 			version := mv.(string)
 			if err := checkLeafMinVersionConfig(version); err != nil {
@@ -2371,7 +2371,7 @@ func parseLeafNodes(v interface{}, opts *Options, errors *[]error, warnings *[]e
 
 // This is the authorization parser adapter for the leafnode's
 // authorization config.
-func parseLeafAuthorization(v interface{}, errors *[]error, warnings *[]error) (*authorization, error) {
+func parseLeafAuthorization(v interface{}, errors *[]error) (*authorization, error) {
 	var (
 		am   map[string]interface{}
 		tk   token
@@ -2405,7 +2405,7 @@ func parseLeafAuthorization(v interface{}, errors *[]error, warnings *[]error) (
 			}
 			auth.timeout = at
 		case "users":
-			users, err := parseLeafUsers(tk, errors, warnings)
+			users, err := parseLeafUsers(tk, errors)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
@@ -2432,7 +2432,7 @@ func parseLeafAuthorization(v interface{}, errors *[]error, warnings *[]error) (
 // This is a trimmed down version of parseUsers that is adapted
 // for the users possibly defined in the authorization{} section
 // of leafnodes {}.
-func parseLeafUsers(mv interface{}, errors *[]error, warnings *[]error) ([]*User, error) {
+func parseLeafUsers(mv interface{}, errors *[]error) ([]*User, error) {
 	var (
 		tk    token
 		lt    token
@@ -2582,14 +2582,14 @@ func parseRemoteLeafNodes(v interface{}, errors *[]error, warnings *[]error) ([]
 			case "hub":
 				remote.Hub = v.(bool)
 			case "deny_imports", "deny_import":
-				subjects, err := parsePermSubjects(tk, errors, warnings)
+				subjects, err := parsePermSubjects(tk, errors)
 				if err != nil {
 					*errors = append(*errors, err)
 					continue
 				}
 				remote.DenyImports = subjects
 			case "deny_exports", "deny_export":
-				subjects, err := parsePermSubjects(tk, errors, warnings)
+				subjects, err := parsePermSubjects(tk, errors)
 				if err != nil {
 					*errors = append(*errors, err)
 					continue
@@ -2759,7 +2759,7 @@ func isReservedAccount(name string) bool {
 	return name == globalAccountName
 }
 
-func parseAccountMapDest(v interface{}, tk token, errors *[]error, warnings *[]error) (*MapDest, *configErr) {
+func parseAccountMapDest(v interface{}, tk token, errors *[]error) (*MapDest, *configErr) {
 	// These should be maps.
 	mv, ok := v.(map[string]interface{})
 	if !ok {
@@ -2828,7 +2828,7 @@ func parseAccountMapDest(v interface{}, tk token, errors *[]error, warnings *[]e
 }
 
 // parseAccountMappings is called to parse account mappings.
-func parseAccountMappings(v interface{}, acc *Account, errors *[]error, warnings *[]error) error {
+func parseAccountMappings(v interface{}, acc *Account, errors *[]error) error {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
 
@@ -2853,7 +2853,7 @@ func parseAccountMappings(v interface{}, acc *Account, errors *[]error, warnings
 			var mappings []*MapDest
 			for _, mv := range v.([]interface{}) {
 				tk, amv := unwrapValue(mv, &lt)
-				mdest, err := parseAccountMapDest(amv, tk, errors, warnings)
+				mdest, err := parseAccountMapDest(amv, tk, errors)
 				if err != nil {
 					continue
 				}
@@ -2868,7 +2868,7 @@ func parseAccountMappings(v interface{}, acc *Account, errors *[]error, warnings
 			}
 		case interface{}:
 			tk, amv := unwrapValue(mv, &lt)
-			mdest, err := parseAccountMapDest(amv, tk, errors, warnings)
+			mdest, err := parseAccountMapDest(amv, tk, errors)
 			if err != nil {
 				continue
 			}
@@ -2889,7 +2889,7 @@ func parseAccountMappings(v interface{}, acc *Account, errors *[]error, warnings
 }
 
 // parseAccountLimits is called to parse account limits in a server config.
-func parseAccountLimits(mv interface{}, acc *Account, errors *[]error, warnings *[]error) error {
+func parseAccountLimits(mv interface{}, acc *Account, errors *[]error) error {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
 
@@ -3065,7 +3065,7 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 					}
 					acc.Nkey = nk
 				case "imports":
-					streams, services, err := parseAccountImports(tk, acc, errors, warnings)
+					streams, services, err := parseAccountImports(tk, acc, errors)
 					if err != nil {
 						*errors = append(*errors, err)
 						continue
@@ -3073,7 +3073,7 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 					importStreams = append(importStreams, streams...)
 					importServices = append(importServices, services...)
 				case "exports":
-					streams, services, err := parseAccountExports(tk, acc, errors, warnings)
+					streams, services, err := parseAccountExports(tk, acc, errors)
 					if err != nil {
 						*errors = append(*errors, err)
 						continue
@@ -3081,7 +3081,7 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 					exportStreams = append(exportStreams, streams...)
 					exportServices = append(exportServices, services...)
 				case "jetstream":
-					err := parseJetStreamForAccount(mv, acc, errors, warnings)
+					err := parseJetStreamForAccount(mv, acc, errors)
 					if err != nil {
 						*errors = append(*errors, err)
 						continue
@@ -3089,26 +3089,26 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 				case "users":
 					var err error
 					usersTk = tk
-					nkeyUsr, users, err = parseUsers(mv, opts, errors, warnings)
+					nkeyUsr, users, err = parseUsers(mv, errors)
 					if err != nil {
 						*errors = append(*errors, err)
 						continue
 					}
 				case "default_permissions":
-					permissions, err := parseUserPermissions(tk, errors, warnings)
+					permissions, err := parseUserPermissions(tk, errors)
 					if err != nil {
 						*errors = append(*errors, err)
 						continue
 					}
 					acc.defaultPerms = permissions
 				case "mappings", "maps":
-					err := parseAccountMappings(tk, acc, errors, warnings)
+					err := parseAccountMappings(tk, acc, errors)
 					if err != nil {
 						*errors = append(*errors, err)
 						continue
 					}
 				case "limits":
-					err := parseAccountLimits(tk, acc, errors, warnings)
+					err := parseAccountLimits(tk, acc, errors)
 					if err != nil {
 						*errors = append(*errors, err)
 						continue
@@ -3310,7 +3310,7 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 }
 
 // Parse the account exports
-func parseAccountExports(v interface{}, acc *Account, errors, warnings *[]error) ([]*export, []*export, error) {
+func parseAccountExports(v interface{}, acc *Account, errors *[]error) ([]*export, []*export, error) {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
 
@@ -3326,7 +3326,7 @@ func parseAccountExports(v interface{}, acc *Account, errors, warnings *[]error)
 
 	for _, v := range ims {
 		// Should have stream or service
-		stream, service, err := parseExportStreamOrService(v, errors, warnings)
+		stream, service, err := parseExportStreamOrService(v, errors)
 		if err != nil {
 			*errors = append(*errors, err)
 			continue
@@ -3344,7 +3344,7 @@ func parseAccountExports(v interface{}, acc *Account, errors, warnings *[]error)
 }
 
 // Parse the account imports
-func parseAccountImports(v interface{}, acc *Account, errors, warnings *[]error) ([]*importStream, []*importService, error) {
+func parseAccountImports(v interface{}, acc *Account, errors *[]error) ([]*importStream, []*importService, error) {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
 
@@ -3361,7 +3361,7 @@ func parseAccountImports(v interface{}, acc *Account, errors, warnings *[]error)
 
 	for _, v := range ims {
 		// Should have stream or service
-		stream, service, err := parseImportStreamOrService(v, errors, warnings)
+		stream, service, err := parseImportStreamOrService(v, errors)
 		if err != nil {
 			*errors = append(*errors, err)
 			continue
@@ -3388,7 +3388,7 @@ func parseAccountImports(v interface{}, acc *Account, errors, warnings *[]error)
 }
 
 // Helper to parse an embedded account description for imported services or streams.
-func parseAccount(v map[string]interface{}, errors, warnings *[]error) (string, string, error) {
+func parseAccount(v map[string]interface{}, errors *[]error) (string, string, error) {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
 
@@ -3421,7 +3421,7 @@ func parseAccount(v map[string]interface{}, errors, warnings *[]error) (string, 
 // {stream: "synadia.private.>", accounts: [cncf, natsio]}
 // {service: "pub.request"} # No accounts means public.
 // {service: "pub.special.request", accounts: [nats.io]}
-func parseExportStreamOrService(v interface{}, errors, warnings *[]error) (*export, *export, error) {
+func parseExportStreamOrService(v interface{}, errors *[]error) (*export, *export, error) {
 	var (
 		curStream  *export
 		curService *export
@@ -3711,7 +3711,7 @@ func parseServiceLatency(root token, v interface{}) (l *serviceLatency, retErr e
 // {stream: {account: "synadia", subject:"public.synadia"}, prefix: "imports.synadia"}
 // {stream: {account: "synadia", subject:"synadia.private.*"}}
 // {service: {account: "synadia", subject: "pub.special.request"}, to: "synadia.request"}
-func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*importStream, *importService, error) {
+func parseImportStreamOrService(v interface{}, errors *[]error) (*importStream, *importService, error) {
 	var (
 		curStream  *importStream
 		curService *importService
@@ -3745,7 +3745,7 @@ func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*impo
 				continue
 			}
 			// Make sure this is a map with account and subject
-			accountName, subject, err := parseAccount(ac, errors, warnings)
+			accountName, subject, err := parseAccount(ac, errors)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
@@ -3783,7 +3783,7 @@ func parseImportStreamOrService(v interface{}, errors, warnings *[]error) (*impo
 				continue
 			}
 			// Make sure this is a map with account and subject
-			accountName, subject, err := parseAccount(ac, errors, warnings)
+			accountName, subject, err := parseAccount(ac, errors)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
@@ -3869,7 +3869,7 @@ func applyDefaultPermissions(users []*User, nkeys []*NkeyUser, defaultP *Permiss
 }
 
 // Helper function to parse Authorization configs.
-func parseAuthorization(v interface{}, opts *Options, errors *[]error, warnings *[]error) (*authorization, error) {
+func parseAuthorization(v interface{}, errors *[]error) (*authorization, error) {
 	var (
 		am   map[string]interface{}
 		tk   token
@@ -3899,7 +3899,7 @@ func parseAuthorization(v interface{}, opts *Options, errors *[]error, warnings 
 			}
 			auth.timeout = at
 		case "users":
-			nkeys, users, err := parseUsers(tk, opts, errors, warnings)
+			nkeys, users, err := parseUsers(tk, errors)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
@@ -3907,14 +3907,14 @@ func parseAuthorization(v interface{}, opts *Options, errors *[]error, warnings 
 			auth.users = users
 			auth.nkeys = nkeys
 		case "default_permission", "default_permissions", "permissions":
-			permissions, err := parseUserPermissions(tk, errors, warnings)
+			permissions, err := parseUserPermissions(tk, errors)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
 			}
 			auth.defaultPermissions = permissions
 		case "auth_callout", "auth_hook":
-			ac, err := parseAuthCallout(tk, errors, warnings)
+			ac, err := parseAuthCallout(tk, errors)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
@@ -3939,7 +3939,7 @@ func parseAuthorization(v interface{}, opts *Options, errors *[]error, warnings 
 }
 
 // Helper function to parse multiple users array with optional permissions.
-func parseUsers(mv interface{}, opts *Options, errors *[]error, warnings *[]error) ([]*NkeyUser, []*User, error) {
+func parseUsers(mv interface{}, errors *[]error) ([]*NkeyUser, []*User, error) {
 	var (
 		tk    token
 		lt    token
@@ -3983,13 +3983,13 @@ func parseUsers(mv interface{}, opts *Options, errors *[]error, warnings *[]erro
 			case "pass", "password":
 				user.Password = v.(string)
 			case "permission", "permissions", "authorization":
-				perms, err = parseUserPermissions(tk, errors, warnings)
+				perms, err = parseUserPermissions(tk, errors)
 				if err != nil {
 					*errors = append(*errors, err)
 					continue
 				}
 			case "allowed_connection_types", "connection_types", "clients":
-				cts := parseAllowedConnectionTypes(tk, &lt, v, errors, warnings)
+				cts := parseAllowedConnectionTypes(tk, &lt, v, errors)
 				nkey.AllowedConnectionTypes = cts
 				user.AllowedConnectionTypes = cts
 			default:
@@ -4035,8 +4035,8 @@ func parseUsers(mv interface{}, opts *Options, errors *[]error, warnings *[]erro
 	return keys, users, nil
 }
 
-func parseAllowedConnectionTypes(tk token, lt *token, mv interface{}, errors *[]error, warnings *[]error) map[string]struct{} {
-	cts, err := parseStringArray("allowed connection types", tk, lt, mv, errors, warnings)
+func parseAllowedConnectionTypes(tk token, lt *token, mv interface{}, errors *[]error) map[string]struct{} {
+	cts, err := parseStringArray("allowed connection types", tk, lt, mv, errors)
 	// If error, it has already been added to the `errors` array, simply return
 	if err != nil {
 		return nil
@@ -4049,7 +4049,7 @@ func parseAllowedConnectionTypes(tk token, lt *token, mv interface{}, errors *[]
 }
 
 // Helper function to parse auth callouts.
-func parseAuthCallout(mv interface{}, errors, warnings *[]error) (*AuthCallout, error) {
+func parseAuthCallout(mv interface{}, errors *[]error) (*AuthCallout, error) {
 	var (
 		tk token
 		lt token
@@ -4109,7 +4109,7 @@ func parseAuthCallout(mv interface{}, errors, warnings *[]error) (*AuthCallout, 
 }
 
 // Helper function to parse user/account permissions
-func parseUserPermissions(mv interface{}, errors, warnings *[]error) (*Permissions, error) {
+func parseUserPermissions(mv interface{}, errors *[]error) (*Permissions, error) {
 	var (
 		tk token
 		lt token
@@ -4130,14 +4130,14 @@ func parseUserPermissions(mv interface{}, errors, warnings *[]error) (*Permissio
 		// Import is Publish
 		// Export is Subscribe
 		case "pub", "publish", "import":
-			perms, err := parseVariablePermissions(mv, errors, warnings)
+			perms, err := parseVariablePermissions(mv, errors)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
 			}
 			p.Publish = perms
 		case "sub", "subscribe", "export":
-			perms, err := parseVariablePermissions(mv, errors, warnings)
+			perms, err := parseVariablePermissions(mv, errors)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
@@ -4155,7 +4155,7 @@ func parseUserPermissions(mv interface{}, errors, warnings *[]error) (*Permissio
 					p.Response = rp
 				}
 			} else {
-				p.Response = parseAllowResponses(v, errors, warnings)
+				p.Response = parseAllowResponses(v, errors)
 			}
 			if p.Response != nil {
 				if p.Publish == nil {
@@ -4177,19 +4177,19 @@ func parseUserPermissions(mv interface{}, errors, warnings *[]error) (*Permissio
 }
 
 // Top level parser for authorization configurations.
-func parseVariablePermissions(v interface{}, errors, warnings *[]error) (*SubjectPermission, error) {
+func parseVariablePermissions(v interface{}, errors *[]error) (*SubjectPermission, error) {
 	switch vv := v.(type) {
 	case map[string]interface{}:
 		// New style with allow and/or deny properties.
-		return parseSubjectPermission(vv, errors, warnings)
+		return parseSubjectPermission(vv, errors)
 	default:
 		// Old style
-		return parseOldPermissionStyle(v, errors, warnings)
+		return parseOldPermissionStyle(v, errors)
 	}
 }
 
 // Helper function to parse subject singletons and/or arrays
-func parsePermSubjects(v interface{}, errors, warnings *[]error) ([]string, error) {
+func parsePermSubjects(v interface{}, errors *[]error) ([]string, error) {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
 
@@ -4221,7 +4221,7 @@ func parsePermSubjects(v interface{}, errors, warnings *[]error) ([]string, erro
 }
 
 // Helper function to parse a ResponsePermission.
-func parseAllowResponses(v interface{}, errors, warnings *[]error) *ResponsePermission {
+func parseAllowResponses(v interface{}, errors *[]error) *ResponsePermission {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
 
@@ -4279,8 +4279,8 @@ func parseAllowResponses(v interface{}, errors, warnings *[]error) *ResponsePerm
 }
 
 // Helper function to parse old style authorization configs.
-func parseOldPermissionStyle(v interface{}, errors, warnings *[]error) (*SubjectPermission, error) {
-	subjects, err := parsePermSubjects(v, errors, warnings)
+func parseOldPermissionStyle(v interface{}, errors *[]error) (*SubjectPermission, error) {
+	subjects, err := parsePermSubjects(v, errors)
 	if err != nil {
 		return nil, err
 	}
@@ -4288,7 +4288,7 @@ func parseOldPermissionStyle(v interface{}, errors, warnings *[]error) (*Subject
 }
 
 // Helper function to parse new style authorization into a SubjectPermission with Allow and Deny.
-func parseSubjectPermission(v interface{}, errors, warnings *[]error) (*SubjectPermission, error) {
+func parseSubjectPermission(v interface{}, errors *[]error) (*SubjectPermission, error) {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
 
@@ -4301,14 +4301,14 @@ func parseSubjectPermission(v interface{}, errors, warnings *[]error) (*SubjectP
 		tk, _ := unwrapValue(v, &lt)
 		switch strings.ToLower(k) {
 		case "allow":
-			subjects, err := parsePermSubjects(tk, errors, warnings)
+			subjects, err := parsePermSubjects(tk, errors)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
 			}
 			p.Allow = subjects
 		case "deny":
-			subjects, err := parsePermSubjects(tk, errors, warnings)
+			subjects, err := parsePermSubjects(tk, errors)
 			if err != nil {
 				*errors = append(*errors, err)
 				continue
@@ -4661,7 +4661,7 @@ func parseTLS(v interface{}, isClientCtx bool) (t *TLSConfigOpts, retErr error) 
 	return &tc, nil
 }
 
-func parseSimpleAuth(v interface{}, errors *[]error, warnings *[]error) *authorization {
+func parseSimpleAuth(v interface{}, errors *[]error) *authorization {
 	var (
 		am   map[string]interface{}
 		tk   token
@@ -4706,7 +4706,7 @@ func parseSimpleAuth(v interface{}, errors *[]error, warnings *[]error) *authori
 	return auth
 }
 
-func parseStringArray(fieldName string, tk token, lt *token, mv interface{}, errors *[]error, warnings *[]error) ([]string, error) {
+func parseStringArray(fieldName string, tk token, lt *token, mv interface{}, errors *[]error) ([]string, error) {
 	switch mv := mv.(type) {
 	case string:
 		return []string{mv}, nil
@@ -4730,7 +4730,7 @@ func parseStringArray(fieldName string, tk token, lt *token, mv interface{}, err
 	}
 }
 
-func parseWebsocket(v interface{}, o *Options, errors *[]error, warnings *[]error) error {
+func parseWebsocket(v interface{}, o *Options, errors *[]error) error {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
 
@@ -4777,7 +4777,7 @@ func parseWebsocket(v interface{}, o *Options, errors *[]error, warnings *[]erro
 		case "same_origin":
 			o.Websocket.SameOrigin = mv.(bool)
 		case "allowed_origins", "allowed_origin", "allow_origins", "allow_origin", "origins", "origin":
-			o.Websocket.AllowedOrigins, _ = parseStringArray("allowed origins", tk, &lt, mv, errors, warnings)
+			o.Websocket.AllowedOrigins, _ = parseStringArray("allowed origins", tk, &lt, mv, errors)
 		case "handshake_timeout":
 			ht := time.Duration(0)
 			switch mv := mv.(type) {
@@ -4799,7 +4799,7 @@ func parseWebsocket(v interface{}, o *Options, errors *[]error, warnings *[]erro
 		case "compress", "compression":
 			o.Websocket.Compression = mv.(bool)
 		case "authorization", "authentication":
-			auth := parseSimpleAuth(tk, errors, warnings)
+			auth := parseSimpleAuth(tk, errors)
 			o.Websocket.Username = auth.user
 			o.Websocket.Password = auth.pass
 			o.Websocket.Token = auth.token
@@ -4889,7 +4889,7 @@ func parseMQTT(v interface{}, o *Options, errors *[]error, warnings *[]error) er
 			o.MQTT.TLSPinnedCerts = tc.PinnedCerts
 			o.MQTT.tlsConfigOpts = tc
 		case "authorization", "authentication":
-			auth := parseSimpleAuth(tk, errors, warnings)
+			auth := parseSimpleAuth(tk, errors)
 			o.MQTT.Username = auth.user
 			o.MQTT.Password = auth.pass
 			o.MQTT.Token = auth.token
@@ -5525,33 +5525,33 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "DVV":
-			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Debug", dbgAndTrcAndVerboseTrc)
-			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Trace", dbgAndTrcAndVerboseTrc)
-			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "TraceVerbose", dbgAndTrcAndVerboseTrc)
+			trackExplicitVal(&FlagSnapshot.inCmdLine, "Debug", dbgAndTrcAndVerboseTrc)
+			trackExplicitVal(&FlagSnapshot.inCmdLine, "Trace", dbgAndTrcAndVerboseTrc)
+			trackExplicitVal(&FlagSnapshot.inCmdLine, "TraceVerbose", dbgAndTrcAndVerboseTrc)
 		case "DV":
-			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Debug", dbgAndTrace)
-			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Trace", dbgAndTrace)
+			trackExplicitVal(&FlagSnapshot.inCmdLine, "Debug", dbgAndTrace)
+			trackExplicitVal(&FlagSnapshot.inCmdLine, "Trace", dbgAndTrace)
 		case "D":
 			fallthrough
 		case "debug":
-			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Debug", FlagSnapshot.Debug)
+			trackExplicitVal(&FlagSnapshot.inCmdLine, "Debug", FlagSnapshot.Debug)
 		case "VV":
-			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Trace", trcAndVerboseTrc)
-			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "TraceVerbose", trcAndVerboseTrc)
+			trackExplicitVal(&FlagSnapshot.inCmdLine, "Trace", trcAndVerboseTrc)
+			trackExplicitVal(&FlagSnapshot.inCmdLine, "TraceVerbose", trcAndVerboseTrc)
 		case "V":
 			fallthrough
 		case "trace":
-			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Trace", FlagSnapshot.Trace)
+			trackExplicitVal(&FlagSnapshot.inCmdLine, "Trace", FlagSnapshot.Trace)
 		case "T":
 			fallthrough
 		case "logtime":
-			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Logtime", FlagSnapshot.Logtime)
+			trackExplicitVal(&FlagSnapshot.inCmdLine, "Logtime", FlagSnapshot.Logtime)
 		case "s":
 			fallthrough
 		case "syslog":
-			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Syslog", FlagSnapshot.Syslog)
+			trackExplicitVal(&FlagSnapshot.inCmdLine, "Syslog", FlagSnapshot.Syslog)
 		case "no_advertise":
-			trackExplicitVal(FlagSnapshot, &FlagSnapshot.inCmdLine, "Cluster.NoAdvertise", FlagSnapshot.Cluster.NoAdvertise)
+			trackExplicitVal(&FlagSnapshot.inCmdLine, "Cluster.NoAdvertise", FlagSnapshot.Cluster.NoAdvertise)
 		}
 	})
 

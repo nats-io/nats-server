@@ -4413,7 +4413,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 				// if the message is routed, it does not initialize tracing in the
 				// remote.
 				positions := disableTraceHeaders(c, msg)
-				defer enableTraceHeaders(c, msg, positions)
+				defer enableTraceHeaders(msg, positions)
 			}
 		}
 	}

@@ -628,7 +628,7 @@ func (c *client) processRouteInfo(info *Info) {
 					info.Gateway, remoteID)
 				return
 			}
-			s.processGatewayInfoFromRoute(info, remoteID, c)
+			s.processGatewayInfoFromRoute(info, remoteID)
 			return
 		}
 

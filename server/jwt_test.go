@@ -4889,7 +4889,7 @@ func createKey(t *testing.T) (nkeys.KeyPair, string) {
 	return kp, syspub
 }
 
-func encodeClaim(t *testing.T, claim *jwt.AccountClaims, pub string) string {
+func encodeClaim(t *testing.T, claim *jwt.AccountClaims, _ string) string {
 	t.Helper()
 	theJWT, err := claim.Encode(oKp)
 	require_NoError(t, err)
@@ -5189,7 +5189,6 @@ func TestJWTAccountTokenImportMisuse(t *testing.T) {
 		TokenReq: true,
 	})
 	aExpJwt := encodeClaim(t, aExpClaim, aExpPub)
-	aExpCreds := newUser(t, aExpKp)
 
 	createImportingAccountClaim := func(aImpKp nkeys.KeyPair, aExpPub string, ac *jwt.ActivationClaims) (string, string) {
 		t.Helper()
@@ -5211,7 +5210,7 @@ func TestJWTAccountTokenImportMisuse(t *testing.T) {
 		return aImpJwt, aImpCreds
 	}
 
-	testConnect := func(aExpPub, aExpJwt, aExpCreds, aImpPub, aImpJwt, aImpCreds string) {
+	testConnect := func(aExpPub, aExpJwt, aImpPub, aImpJwt, aImpCreds string) {
 		t.Helper()
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/A/" {
@@ -5269,7 +5268,7 @@ func TestJWTAccountTokenImportMisuse(t *testing.T) {
 		ac.ImportType = jwt.Stream
 
 		aImpJwt, aImpCreds := createImportingAccountClaim(aImpKp, aExpPub, ac)
-		testConnect(aExpPub, aExpJwt, aExpCreds, aImpPub, aImpJwt, aImpCreds)
+		testConnect(aExpPub, aExpJwt, aImpPub, aImpJwt, aImpCreds)
 		testNatsResolver(aImpJwt)
 	})
 
@@ -5281,7 +5280,7 @@ func TestJWTAccountTokenImportMisuse(t *testing.T) {
 		ac.ImportType = jwt.Stream
 
 		aImpJwt, aImpCreds := createImportingAccountClaim(aImpKp, aExpPub, ac)
-		testConnect(aExpPub, aExpJwt, aExpCreds, aImpPub, aImpJwt, aImpCreds)
+		testConnect(aExpPub, aExpJwt, aImpPub, aImpJwt, aImpCreds)
 		testNatsResolver(aImpJwt)
 	})
 
@@ -5293,7 +5292,7 @@ func TestJWTAccountTokenImportMisuse(t *testing.T) {
 		ac.ImportType = jwt.Stream
 
 		aImpJwt, aImpCreds := createImportingAccountClaim(aImpKp, aExpPub, ac)
-		testConnect(aExpPub, aExpJwt, aExpCreds, aImpPub, aImpJwt, aImpCreds)
+		testConnect(aExpPub, aExpJwt, aImpPub, aImpJwt, aImpCreds)
 		testNatsResolver(aImpJwt)
 	})
 }
@@ -6678,7 +6677,7 @@ func TestJWTAccountNATSResolverWrongCreds(t *testing.T) {
 		nc.Close()
 		require_NoLocalOrRemoteConnections(acc, srvs...)
 	}
-	createAccountAndUser := func(limit bool, done chan struct{}, pubKey, jwt1, jwt2, creds *string) {
+	createAccountAndUser := func(pubKey, jwt1, jwt2, creds *string) {
 		t.Helper()
 		kp, _ := nkeys.CreateAccount()
 		*pubKey, _ = kp.PublicKey()
@@ -6696,26 +6695,20 @@ func TestJWTAccountNATSResolverWrongCreds(t *testing.T) {
 		ujwt, err := uclaim.Encode(kp)
 		require_NoError(t, err)
 		*creds = genCredsFile(t, ujwt, seed)
-		done <- struct{}{}
 	}
 	// Create Accounts and corresponding user creds.
-	doneChan := make(chan struct{}, 4)
-	defer close(doneChan)
 	var syspub, sysjwt, dummy1, sysCreds string
-	createAccountAndUser(false, doneChan, &syspub, &sysjwt, &dummy1, &sysCreds)
+	createAccountAndUser(&syspub, &sysjwt, &dummy1, &sysCreds)
 
 	var apub, ajwt1, ajwt2, aCreds string
-	createAccountAndUser(true, doneChan, &apub, &ajwt1, &ajwt2, &aCreds)
+	createAccountAndUser(&apub, &ajwt1, &ajwt2, &aCreds)
 
 	var bpub, bjwt1, bjwt2, bCreds string
-	createAccountAndUser(true, doneChan, &bpub, &bjwt1, &bjwt2, &bCreds)
+	createAccountAndUser(&bpub, &bjwt1, &bjwt2, &bCreds)
 
 	// The one that is going to be missing.
 	var cpub, cjwt1, cjwt2, cCreds string
-	createAccountAndUser(true, doneChan, &cpub, &cjwt1, &cjwt2, &cCreds)
-	for i := 0; i < cap(doneChan); i++ {
-		<-doneChan
-	}
+	createAccountAndUser(&cpub, &cjwt1, &cjwt2, &cCreds)
 	// Create one directory for each server
 	dirA := t.TempDir()
 	dirB := t.TempDir()

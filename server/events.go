@@ -1132,7 +1132,7 @@ func (s *Server) initEventTracking() {
 			s.Errorf("Error setting up internal tracking: %v", err)
 		}
 	}
-	extractAccount := func(c *client, subject string, msg []byte) (string, error) {
+	extractAccount := func(subject string) (string, error) {
 		if tk := strings.Split(subject, tsep); len(tk) != accReqTokens {
 			return _EMPTY_, fmt.Errorf("subject %q is malformed", subject)
 		} else {
@@ -1143,7 +1143,7 @@ func (s *Server) initEventTracking() {
 		"SUBSZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &SubszEventOptions{}
 			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
-				if acc, err := extractAccount(c, subject, msg); err != nil {
+				if acc, err := extractAccount(subject); err != nil {
 					return nil, err
 				} else {
 					optz.SubszOptions.Subscriptions = true
@@ -1155,7 +1155,7 @@ func (s *Server) initEventTracking() {
 		"CONNZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &ConnzEventOptions{}
 			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
-				if acc, err := extractAccount(c, subject, msg); err != nil {
+				if acc, err := extractAccount(subject); err != nil {
 					return nil, err
 				} else {
 					optz.ConnzOptions.Account = acc
@@ -1166,7 +1166,7 @@ func (s *Server) initEventTracking() {
 		"LEAFZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &LeafzEventOptions{}
 			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
-				if acc, err := extractAccount(c, subject, msg); err != nil {
+				if acc, err := extractAccount(subject); err != nil {
 					return nil, err
 				} else {
 					optz.LeafzOptions.Account = acc
@@ -1177,7 +1177,7 @@ func (s *Server) initEventTracking() {
 		"JSZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &JszEventOptions{}
 			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
-				if acc, err := extractAccount(c, subject, msg); err != nil {
+				if acc, err := extractAccount(subject); err != nil {
 					return nil, err
 				} else {
 					optz.Account = acc
@@ -1188,7 +1188,7 @@ func (s *Server) initEventTracking() {
 		"INFO": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &AccInfoEventOptions{}
 			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
-				if acc, err := extractAccount(c, subject, msg); err != nil {
+				if acc, err := extractAccount(subject); err != nil {
 					return nil, err
 				} else {
 					return s.accountInfo(acc)
@@ -1201,7 +1201,7 @@ func (s *Server) initEventTracking() {
 		"STATZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &AccountStatzEventOptions{}
 			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
-				if acc, err := extractAccount(c, subject, msg); err != nil {
+				if acc, err := extractAccount(subject); err != nil {
 					return nil, err
 				} else if acc == "PING" { // Filter PING subject. Happens for server as well. But wildcards are not used
 					return nil, errSkipZreq
@@ -1908,7 +1908,7 @@ func getAcceptEncoding(hdr []byte) compressionType {
 	return unsupportedCompression
 }
 
-func (s *Server) zReq(c *client, reply string, hdr, msg []byte, fOpts *EventFilterOptions, optz interface{}, respf func() (interface{}, error)) {
+func (s *Server) zReq(_ *client, reply string, hdr, msg []byte, fOpts *EventFilterOptions, optz interface{}, respf func() (interface{}, error)) {
 	if !s.EventsEnabled() || reply == _EMPTY_ {
 		return
 	}

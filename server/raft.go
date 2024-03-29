@@ -3761,22 +3761,20 @@ func (n *raft) setWriteErrLocked(err error) {
 		return
 	}
 	// Ignore non-write errors.
-	if err != nil {
-		if err == ErrStoreClosed ||
-			err == ErrStoreEOF ||
-			err == ErrInvalidSequence ||
-			err == ErrStoreMsgNotFound ||
-			err == errNoPending ||
-			err == errPartialCache {
-			return
-		}
-		// If this is a not found report but do not disable.
-		if os.IsNotExist(err) {
-			n.error("Resource not found: %v", err)
-			return
-		}
-		n.error("Critical write error: %v", err)
+	if err == ErrStoreClosed ||
+		err == ErrStoreEOF ||
+		err == ErrInvalidSequence ||
+		err == ErrStoreMsgNotFound ||
+		err == errNoPending ||
+		err == errPartialCache {
+		return
 	}
+	// If this is a not found report but do not disable.
+	if os.IsNotExist(err) {
+		n.error("Resource not found: %v", err)
+		return
+	}
+	n.error("Critical write error: %v", err)
 	n.werr = err
 
 	if isOutOfSpaceErr(err) {

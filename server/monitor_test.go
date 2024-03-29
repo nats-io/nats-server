@@ -544,7 +544,7 @@ func TestConnzWithCID(t *testing.T) {
 }
 
 // Helper to map to connection name
-func createConnMap(t *testing.T, cz *Connz) map[string]*ConnInfo {
+func createConnMap(cz *Connz) map[string]*ConnInfo {
 	cm := make(map[string]*ConnInfo)
 	for _, c := range cz.Conns {
 		cm[c.Name] = c
@@ -552,7 +552,7 @@ func createConnMap(t *testing.T, cz *Connz) map[string]*ConnInfo {
 	return cm
 }
 
-func getFooAndBar(t *testing.T, cm map[string]*ConnInfo) (*ConnInfo, *ConnInfo) {
+func getFooAndBar(cm map[string]*ConnInfo) (*ConnInfo, *ConnInfo) {
 	return cm["foo"], cm["bar"]
 }
 
@@ -640,7 +640,7 @@ func TestConnzLastActivity(t *testing.T) {
 		defer ncBar.Close()
 
 		// Test inside details of each connection
-		ciFoo, ciBar := getFooAndBar(t, createConnMap(t, pollConz(t, s, mode, url, opts)))
+		ciFoo, ciBar := getFooAndBar(createConnMap(pollConz(t, s, mode, url, opts)))
 
 		// Test that LastActivity is non-zero
 		if ciFoo.LastActivity.IsZero() {
@@ -666,7 +666,7 @@ func TestConnzLastActivity(t *testing.T) {
 		sub, _ := ncFoo.Subscribe("hello.world", func(m *nats.Msg) {})
 		ensureServerActivityRecorded(t, ncFoo)
 
-		ciFoo, _ = getFooAndBar(t, createConnMap(t, pollConz(t, s, mode, url, opts)))
+		ciFoo, _ = getFooAndBar(createConnMap(pollConz(t, s, mode, url, opts)))
 		nextLA := ciFoo.LastActivity
 		if fooLA.Equal(nextLA) {
 			t.Fatalf("Subscribe should have triggered update to LastActivity %+v\n", ciFoo)
@@ -682,7 +682,7 @@ func TestConnzLastActivity(t *testing.T) {
 		ensureServerActivityRecorded(t, ncFoo)
 		ensureServerActivityRecorded(t, ncBar)
 
-		ciFoo, ciBar = getFooAndBar(t, createConnMap(t, pollConz(t, s, mode, url, opts)))
+		ciFoo, ciBar = getFooAndBar(createConnMap(pollConz(t, s, mode, url, opts)))
 		nextLA = ciBar.LastActivity
 		if barLA.Equal(nextLA) {
 			t.Fatalf("Publish should have triggered update to LastActivity\n")
@@ -701,7 +701,7 @@ func TestConnzLastActivity(t *testing.T) {
 		sub.Unsubscribe()
 		ensureServerActivityRecorded(t, ncFoo)
 
-		ciFoo, _ = getFooAndBar(t, createConnMap(t, pollConz(t, s, mode, url, opts)))
+		ciFoo, _ = getFooAndBar(createConnMap(pollConz(t, s, mode, url, opts)))
 		nextLA = ciFoo.LastActivity
 		if fooLA.Equal(nextLA) {
 			t.Fatalf("Message delivery should have triggered update to LastActivity\n")

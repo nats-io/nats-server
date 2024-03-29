@@ -3876,7 +3876,7 @@ func TestJetStreamClusterAccountPurge(t *testing.T) {
 			require_NoError(t, err)
 			sysDirs += len(files) - 1 // sub 1 for _meta_
 			files, err = os.ReadDir(filepath.Join(s.getOpts().StoreDir, "jetstream", accpub, "streams"))
-			if err == nil || (err != nil && err.(*os.PathError).Error() == "no such file or directory") {
+			if err == nil || err.(*os.PathError).Error() == "no such file or directory" {
 				accDirs += len(files)
 			}
 		}

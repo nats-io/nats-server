@@ -2222,7 +2222,7 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 		var needsRetry bool
 		// Flow controls have reply subjects.
 		if m.rply != _EMPTY_ {
-			mset.handleFlowControl(mset.mirror, m)
+			mset.handleFlowControl(m)
 		} else {
 			// For idle heartbeats make sure we did not miss anything and check if we are considered stalled.
 			if ldseq := parseInt64(getHeader(JSLastConsumerSeq, m.hdr)); ldseq > 0 && uint64(ldseq) != mset.mirror.dseq {
@@ -3148,7 +3148,7 @@ func (mset *stream) sendFlowControlReply(reply string) {
 
 // handleFlowControl will properly handle flow control messages for both R==1 and R>1.
 // Lock should be held.
-func (mset *stream) handleFlowControl(si *sourceInfo, m *inMsg) {
+func (mset *stream) handleFlowControl(m *inMsg) {
 	// If we are clustered we will send the flow control message through the replication stack.
 	if mset.isClustered() {
 		mset.node.Propose(encodeStreamMsg(_EMPTY_, m.rply, m.hdr, nil, 0, 0))
@@ -3184,7 +3184,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 		var needsRetry bool
 		// Flow controls have reply subjects.
 		if m.rply != _EMPTY_ {
-			mset.handleFlowControl(si, m)
+			mset.handleFlowControl(m)
 		} else {
 			// For idle heartbeats make sure we did not miss anything.
 			if ldseq := parseInt64(getHeader(JSLastConsumerSeq, m.hdr)); ldseq > 0 && uint64(ldseq) != si.dseq {

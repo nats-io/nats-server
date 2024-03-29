@@ -39,13 +39,13 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 		PublishBatchSize = 10000
 	)
 
-	runSyncPushConsumer := func(b *testing.B, js nats.JetStreamContext, streamName, subject string) (int, int, int) {
+	runSyncPushConsumer := func(b *testing.B, js nats.JetStreamContext, streamName string) (int, int, int) {
 		const nextMsgTimeout = 3 * time.Second
 
 		subOpts := []nats.SubOpt{
 			nats.BindStream(streamName),
 		}
-		sub, err := js.SubscribeSync("", subOpts...)
+		sub, err := js.SubscribeSync(_EMPTY_, subOpts...)
 		if err != nil {
 			b.Fatalf("Failed to subscribe: %v", err)
 		}
@@ -95,7 +95,7 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 		return uniqueConsumed, duplicates, errors
 	}
 
-	runAsyncPushConsumer := func(b *testing.B, js nats.JetStreamContext, streamName, subject string, ordered, durable bool) (int, int, int) {
+	runAsyncPushConsumer := func(b *testing.B, js nats.JetStreamContext, streamName string, ordered, durable bool) (int, int, int) {
 		const timeout = 3 * time.Minute
 		bitset := NewBitset(uint64(b.N))
 		doneCh := make(chan bool, 1)
@@ -151,7 +151,7 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 			subOpts = append(subOpts, nats.Durable("c"))
 		}
 
-		sub, err := js.Subscribe("", handleMsg, subOpts...)
+		sub, err := js.Subscribe(_EMPTY_, handleMsg, subOpts...)
 		if err != nil {
 			b.Fatalf("Failed to subscribe: %v", err)
 		}
@@ -169,7 +169,7 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 		return uniqueConsumed, duplicates, errors
 	}
 
-	runPullConsumer := func(b *testing.B, js nats.JetStreamContext, streamName, subject string, durable bool) (int, int, int) {
+	runPullConsumer := func(b *testing.B, js nats.JetStreamContext, streamName string, durable bool) (int, int, int) {
 		const fetchMaxWait = nats.MaxWait(3 * time.Second)
 		const fetchMaxMessages = 1000
 
@@ -180,7 +180,7 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 			nats.BindStream(streamName),
 		}
 
-		consumerName := "" // Default ephemeral
+		consumerName := _EMPTY_ // Default ephemeral
 		if durable {
 			consumerName = "c" // Durable
 		}
@@ -372,17 +372,17 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 
 							switch ct {
 							case PushSync:
-								consumed, duplicates, errors = runSyncPushConsumer(b, js, streamName, subject)
+								consumed, duplicates, errors = runSyncPushConsumer(b, js, streamName)
 							case PushAsync:
-								consumed, duplicates, errors = runAsyncPushConsumer(b, js, streamName, subject, unordered, ephemeral)
+								consumed, duplicates, errors = runAsyncPushConsumer(b, js, streamName, unordered, ephemeral)
 							case PushAsyncOrdered:
-								consumed, duplicates, errors = runAsyncPushConsumer(b, js, streamName, subject, ordered, ephemeral)
+								consumed, duplicates, errors = runAsyncPushConsumer(b, js, streamName, ordered, ephemeral)
 							case PushAsyncDurable:
-								consumed, duplicates, errors = runAsyncPushConsumer(b, js, streamName, subject, unordered, durable)
+								consumed, duplicates, errors = runAsyncPushConsumer(b, js, streamName, unordered, durable)
 							case PullDurable:
-								consumed, duplicates, errors = runPullConsumer(b, js, streamName, subject, durable)
+								consumed, duplicates, errors = runPullConsumer(b, js, streamName, durable)
 							case PullEphemeral:
-								consumed, duplicates, errors = runPullConsumer(b, js, streamName, subject, ephemeral)
+								consumed, duplicates, errors = runPullConsumer(b, js, streamName, ephemeral)
 							default:
 								b.Fatalf("Unknown consumer type: %v", ct)
 							}

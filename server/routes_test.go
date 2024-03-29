@@ -1242,7 +1242,7 @@ func TestRouteRTT(t *testing.T) {
 		attempts := 0
 		timeout := time.Now().Add(2 * firstPingInterval)
 		for time.Now().Before(timeout) {
-			if rtt := checkRTT(t, s); rtt != 0 {
+			if rtt := checkRTT(t, s); rtt != prev {
 				return
 			}
 			attempts++

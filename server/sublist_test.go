@@ -1124,7 +1124,7 @@ func TestSublistRegisterInterestNotification(t *testing.T) {
 	ch := make(chan bool, 1)
 
 	expectErr := func(subject string) {
-		if err := s.RegisterNotification("foo.*", ch); err != ErrInvalidSubject {
+		if err := s.RegisterNotification(subject, ch); err != ErrInvalidSubject {
 			t.Fatalf("Expected err, got %v", err)
 		}
 	}
