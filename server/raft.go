@@ -1840,19 +1840,19 @@ func (n *raft) run() {
 	}
 }
 
-func (n *raft) debug(format string, args ...interface{}) {
+func (n *raft) debug(format string, args ...any) {
 	if n.dflag {
 		nf := fmt.Sprintf("RAFT [%s - %s] %s", n.id, n.group, format)
 		n.s.Debugf(nf, args...)
 	}
 }
 
-func (n *raft) warn(format string, args ...interface{}) {
+func (n *raft) warn(format string, args ...any) {
 	nf := fmt.Sprintf("RAFT [%s - %s] %s", n.id, n.group, format)
 	n.s.RateLimitWarnf(nf, args...)
 }
 
-func (n *raft) error(format string, args ...interface{}) {
+func (n *raft) error(format string, args ...any) {
 	nf := fmt.Sprintf("RAFT [%s - %s] %s", n.id, n.group, format)
 	n.s.Errorf(nf, args...)
 }

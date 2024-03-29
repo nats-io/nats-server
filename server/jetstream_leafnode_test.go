@@ -54,7 +54,7 @@ func TestJetStreamLeafNodeUniqueServerNameCrossJSDomain(t *testing.T) {
 			}
 		}
 		cnt := 0
-		s.nodeToInfo.Range(func(key, value interface{}) bool {
+		s.nodeToInfo.Range(func(key, value any) bool {
 			cnt++
 			require_Equal(t, value.(nodeInfo).name, name)
 			require_Equal(t, value.(nodeInfo).id, sIdExpected)

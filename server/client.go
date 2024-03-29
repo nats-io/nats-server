@@ -1881,7 +1881,7 @@ func (c *client) traceOutOp(op string, arg []byte) {
 }
 
 func (c *client) traceOp(format, op string, arg []byte) {
-	opa := []interface{}{}
+	opa := []any{}
 	if op != _EMPTY_ {
 		opa = append(opa, op)
 	}
@@ -3772,7 +3772,7 @@ func (c *client) prunePubPermsCache() {
 	}
 	const maxPruneAtOnce = 1000
 	r := 0
-	c.perms.pcache.Range(func(k, _ interface{}) bool {
+	c.perms.pcache.Range(func(k, _ any) bool {
 		c.perms.pcache.Delete(k)
 		if r++; (r > pruneSize && atomic.LoadInt32(&c.perms.pcsz) < int32(maxPermCacheSize)) ||
 			(r > maxPruneAtOnce) {
@@ -5985,32 +5985,32 @@ func (c *client) Error(err error) {
 	c.srv.Errors(c, err)
 }
 
-func (c *client) Errorf(format string, v ...interface{}) {
+func (c *client) Errorf(format string, v ...any) {
 	format = fmt.Sprintf("%s - %s", c, format)
 	c.srv.Errorf(format, v...)
 }
 
-func (c *client) Debugf(format string, v ...interface{}) {
+func (c *client) Debugf(format string, v ...any) {
 	format = fmt.Sprintf("%s - %s", c, format)
 	c.srv.Debugf(format, v...)
 }
 
-func (c *client) Noticef(format string, v ...interface{}) {
+func (c *client) Noticef(format string, v ...any) {
 	format = fmt.Sprintf("%s - %s", c, format)
 	c.srv.Noticef(format, v...)
 }
 
-func (c *client) Tracef(format string, v ...interface{}) {
+func (c *client) Tracef(format string, v ...any) {
 	format = fmt.Sprintf("%s - %s", c, format)
 	c.srv.Tracef(format, v...)
 }
 
-func (c *client) Warnf(format string, v ...interface{}) {
+func (c *client) Warnf(format string, v ...any) {
 	format = fmt.Sprintf("%s - %s", c, format)
 	c.srv.Warnf(format, v...)
 }
 
-func (c *client) RateLimitWarnf(format string, v ...interface{}) {
+func (c *client) RateLimitWarnf(format string, v ...any) {
 	// Do the check before adding the client info to the format...
 	statement := fmt.Sprintf(format, v...)
 	if _, loaded := c.srv.rateLimitLogging.LoadOrStore(statement, time.Now()); loaded {

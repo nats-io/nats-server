@@ -6767,7 +6767,7 @@ type captureCatchupWarnLogger struct {
 	ch chan string
 }
 
-func (l *captureCatchupWarnLogger) Warnf(format string, args ...interface{}) {
+func (l *captureCatchupWarnLogger) Warnf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if strings.Contains(msg, "simulate error") {
 		select {

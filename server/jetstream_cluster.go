@@ -188,7 +188,7 @@ func (s *Server) trackedJetStreamServers() (js, total int) {
 	if !s.isRunning() || !s.eventsEnabled() {
 		return -1, -1
 	}
-	s.nodeToInfo.Range(func(k, v interface{}) bool {
+	s.nodeToInfo.Range(func(k, v any) bool {
 		si := v.(nodeInfo)
 		if si.js {
 			js++
@@ -6036,7 +6036,7 @@ var (
 
 // blocking utility call to perform requests on the system account
 // returns (synchronized) v or error
-func sysRequest[T any](s *Server, subjFormat string, args ...interface{}) (*T, error) {
+func sysRequest[T any](s *Server, subjFormat string, args ...any) (*T, error) {
 	isubj := fmt.Sprintf(subjFormat, args...)
 
 	s.mu.Lock()

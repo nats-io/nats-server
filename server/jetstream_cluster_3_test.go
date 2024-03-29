@@ -856,7 +856,7 @@ type testStreamLagWarnLogger struct {
 	ch chan string
 }
 
-func (l *testStreamLagWarnLogger) Warnf(format string, v ...interface{}) {
+func (l *testStreamLagWarnLogger) Warnf(format string, v ...any) {
 	msg := fmt.Sprintf(format, v...)
 	if strings.Contains(msg, "has high message lag") {
 		select {

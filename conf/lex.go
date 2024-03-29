@@ -236,7 +236,7 @@ func (lx *lexer) peek() rune {
 // errorf stops all lexing by emitting an error and returning `nil`.
 // Note that any value that is a character is escaped if it's a special
 // character (new lines, tabs, etc.).
-func (lx *lexer) errorf(format string, values ...interface{}) stateFn {
+func (lx *lexer) errorf(format string, values ...any) stateFn {
 	for i, value := range values {
 		if v, ok := value.(rune); ok {
 			values[i] = escapeSpecial(v)

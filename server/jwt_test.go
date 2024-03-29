@@ -1900,7 +1900,7 @@ type captureDebugLogger struct {
 	dbgCh chan string
 }
 
-func (l *captureDebugLogger) Debugf(format string, v ...interface{}) {
+func (l *captureDebugLogger) Debugf(format string, v ...any) {
 	select {
 	case l.dbgCh <- fmt.Sprintf(format, v...):
 	default:
@@ -3254,7 +3254,7 @@ func updateJwt(t *testing.T, url string, creds string, jwt string, respCnt int) 
 	require_NextMsg := func(sub *nats.Subscription) bool {
 		t.Helper()
 		msg := natsNexMsg(t, sub, time.Second)
-		content := make(map[string]interface{})
+		content := make(map[string]any)
 		json.Unmarshal(msg.Data, &content)
 		if _, ok := content["data"]; ok {
 			return true
@@ -4992,11 +4992,11 @@ func TestJWTHeader(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatalf("should have received a response")
 		case m := <-resChan:
-			obj := map[string]interface{}{}
+			obj := map[string]any{}
 			err = json.Unmarshal(m.Data, &obj)
 			require_NoError(t, err)
 			// test if shared is honored
-			reqInfo := obj["requestor"].(map[string]interface{})
+			reqInfo := obj["requestor"].(map[string]any)
 			// fields always set
 			require_True(t, reqInfo["acc"] != nil)
 			require_True(t, reqInfo["rtt"] != nil)

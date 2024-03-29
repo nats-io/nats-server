@@ -528,8 +528,8 @@ func TestRouteResendsLocalSubsOnReconnect(t *testing.T) {
 
 type ignoreLogger struct{}
 
-func (l *ignoreLogger) Fatalf(f string, args ...interface{}) {}
-func (l *ignoreLogger) Errorf(f string, args ...interface{}) {}
+func (l *ignoreLogger) Fatalf(f string, args ...any) {}
+func (l *ignoreLogger) Errorf(f string, args ...any) {}
 
 func TestRouteConnectOnShutdownRace(t *testing.T) {
 	s, opts := runRouteServer(t)

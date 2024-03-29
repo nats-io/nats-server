@@ -2903,7 +2903,7 @@ func TestServerEventsPingStatsZFailFilter(t *testing.T) {
 	if msg, err := nc.Request(serverStatsPingReqSubj, []byte(`{MALFORMEDJSON`), time.Second/4); err != nil {
 		t.Fatalf("Error: %v", err)
 	} else {
-		resp := make(map[string]map[string]interface{})
+		resp := make(map[string]map[string]any)
 		if err := json.Unmarshal(msg.Data, &resp); err != nil {
 			t.Fatalf("Error unmarshalling the response json: %v", err)
 		}
@@ -2929,8 +2929,8 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 
 	tests := []struct {
 		endpoint  string
-		opt       interface{}
-		resp      interface{}
+		opt       any
+		resp      any
 		respField []string
 	}{
 		{"VARZ", nil, &Varz{},
@@ -3017,7 +3017,7 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Error receiving msg: %v", err)
 			}
-			response1 := make(map[string]map[string]interface{})
+			response1 := make(map[string]map[string]any)
 
 			if err := json.Unmarshal(msg.Data, &response1); err != nil {
 				t.Fatalf("Error unmarshalling response1 json: %v", err)
@@ -3046,7 +3046,7 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Error receiving msg: %v", err)
 			}
-			response2 := make(map[string]map[string]interface{})
+			response2 := make(map[string]map[string]any)
 			if err := json.Unmarshal(msg.Data, &response2); err != nil {
 				t.Fatalf("Error unmarshalling the response2 json: %v", err)
 			}

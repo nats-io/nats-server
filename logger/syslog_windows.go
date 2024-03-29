@@ -70,42 +70,42 @@ func NewRemoteSysLogger(fqn string, debug, trace bool) *SysLogger {
 	}
 }
 
-func formatMsg(tag, format string, v ...interface{}) string {
+func formatMsg(tag, format string, v ...any) string {
 	orig := fmt.Sprintf(format, v...)
 	return fmt.Sprintf("pid[%d][%s]: %s", os.Getpid(), tag, orig)
 }
 
 // Noticef logs a notice statement
-func (l *SysLogger) Noticef(format string, v ...interface{}) {
+func (l *SysLogger) Noticef(format string, v ...any) {
 	l.writer.Info(1, formatMsg("NOTICE", format, v...))
 }
 
 // Warnf logs a warning statement
-func (l *SysLogger) Warnf(format string, v ...interface{}) {
+func (l *SysLogger) Warnf(format string, v ...any) {
 	l.writer.Info(1, formatMsg("WARN", format, v...))
 }
 
 // Fatalf logs a fatal error
-func (l *SysLogger) Fatalf(format string, v ...interface{}) {
+func (l *SysLogger) Fatalf(format string, v ...any) {
 	msg := formatMsg("FATAL", format, v...)
 	l.writer.Error(5, msg)
 	panic(msg)
 }
 
 // Errorf logs an error statement
-func (l *SysLogger) Errorf(format string, v ...interface{}) {
+func (l *SysLogger) Errorf(format string, v ...any) {
 	l.writer.Error(2, formatMsg("ERROR", format, v...))
 }
 
 // Debugf logs a debug statement
-func (l *SysLogger) Debugf(format string, v ...interface{}) {
+func (l *SysLogger) Debugf(format string, v ...any) {
 	if l.debug {
 		l.writer.Info(3, formatMsg("DEBUG", format, v...))
 	}
 }
 
 // Tracef logs a trace statement
-func (l *SysLogger) Tracef(format string, v ...interface{}) {
+func (l *SysLogger) Tracef(format string, v ...any) {
 	if l.trace {
 		l.writer.Info(4, formatMsg("TRACE", format, v...))
 	}

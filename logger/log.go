@@ -178,7 +178,7 @@ func (l *fileLogger) setMaxNumFiles(max int) {
 	l.Unlock()
 }
 
-func (l *fileLogger) logDirect(label, format string, v ...interface{}) int {
+func (l *fileLogger) logDirect(label, format string, v ...any) int {
 	var entrya = [256]byte{}
 	var entry = entrya[:0]
 	if l.pid != "" {
@@ -368,34 +368,34 @@ func setColoredLabelFormats(l *Logger) {
 }
 
 // Noticef logs a notice statement
-func (l *Logger) Noticef(format string, v ...interface{}) {
+func (l *Logger) Noticef(format string, v ...any) {
 	l.logger.Printf(l.infoLabel+format, v...)
 }
 
 // Warnf logs a notice statement
-func (l *Logger) Warnf(format string, v ...interface{}) {
+func (l *Logger) Warnf(format string, v ...any) {
 	l.logger.Printf(l.warnLabel+format, v...)
 }
 
 // Errorf logs an error statement
-func (l *Logger) Errorf(format string, v ...interface{}) {
+func (l *Logger) Errorf(format string, v ...any) {
 	l.logger.Printf(l.errorLabel+format, v...)
 }
 
 // Fatalf logs a fatal error
-func (l *Logger) Fatalf(format string, v ...interface{}) {
+func (l *Logger) Fatalf(format string, v ...any) {
 	l.logger.Fatalf(l.fatalLabel+format, v...)
 }
 
 // Debugf logs a debug statement
-func (l *Logger) Debugf(format string, v ...interface{}) {
+func (l *Logger) Debugf(format string, v ...any) {
 	if l.debug {
 		l.logger.Printf(l.debugLabel+format, v...)
 	}
 }
 
 // Tracef logs a trace statement
-func (l *Logger) Tracef(format string, v ...interface{}) {
+func (l *Logger) Tracef(format string, v ...any) {
 	if l.trace {
 		l.logger.Printf(l.traceLabel+format, v...)
 	}

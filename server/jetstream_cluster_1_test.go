@@ -4149,7 +4149,7 @@ func TestJetStreamClusterPeerOffline(t *testing.T) {
 			}
 
 			var ok bool
-			ml.nodeToInfo.Range(func(k, v interface{}) bool {
+			ml.nodeToInfo.Range(func(k, v any) bool {
 				if si := v.(nodeInfo); si.name == rs.Name() {
 					if shouldBeOffline && si.offline || !shouldBeOffline && !si.offline {
 						ok = true

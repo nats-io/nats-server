@@ -3994,7 +3994,7 @@ func (mset *stream) queueInbound(ib *ipQueue[*inMsg], subj, rply string, hdr, ms
 }
 
 var dgPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return &directGetReq{}
 	},
 }

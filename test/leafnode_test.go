@@ -1268,7 +1268,7 @@ type captureLeafNodeErrLogger struct {
 	ch chan string
 }
 
-func (c *captureLeafNodeErrLogger) Errorf(format string, v ...interface{}) {
+func (c *captureLeafNodeErrLogger) Errorf(format string, v ...any) {
 	msg := fmt.Sprintf(format, v...)
 	select {
 	case c.ch <- msg:

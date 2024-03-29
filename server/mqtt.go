@@ -995,7 +995,7 @@ func (s *Server) mqttHandleClosedClient(c *client) {
 // No lock held on entry.
 func (s *Server) mqttUpdateMaxAckPending(newmaxp uint16) {
 	msm := &s.mqtt.sessmgr
-	s.accounts.Range(func(k, _ interface{}) bool {
+	s.accounts.Range(func(k, _ any) bool {
 		accName := k.(string)
 		msm.mu.RLock()
 		asm := msm.sessions[accName]
@@ -1522,7 +1522,7 @@ func (s *Server) mqttDetermineReplicas() int {
 //
 //////////////////////////////////////////////////////////////////////////////
 
-func (jsa *mqttJSA) newRequest(kind, subject string, hdr int, msg []byte) (interface{}, error) {
+func (jsa *mqttJSA) newRequest(kind, subject string, hdr int, msg []byte) (any, error) {
 	return jsa.newRequestEx(kind, subject, _EMPTY_, hdr, msg, mqttJSAPITimeout)
 }
 
@@ -2116,7 +2116,7 @@ func (as *mqttAccountSessionManager) cleanupRetainedMessageCache(s *Server, clos
 			// should eventually clean up everything.
 			i, maxScan := 0, 10*1000
 			now := time.Now()
-			as.rmsCache.Range(func(key, value interface{}) bool {
+			as.rmsCache.Range(func(key, value any) bool {
 				rm := value.(*mqttRetainedMsg)
 				if now.After(rm.expiresFromCache) {
 					as.rmsCache.Delete(key)

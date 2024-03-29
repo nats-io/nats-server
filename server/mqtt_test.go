@@ -3761,7 +3761,7 @@ type remoteConnSameClientIDLogger struct {
 	warn chan string
 }
 
-func (l *remoteConnSameClientIDLogger) Warnf(format string, args ...interface{}) {
+func (l *remoteConnSameClientIDLogger) Warnf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if strings.Contains(msg, "remote connection has started with the same client ID") {
 		l.warn <- msg
@@ -6406,7 +6406,7 @@ func TestMQTTConnectAndDisconnectEvent(t *testing.T) {
 
 	// Test system events now
 	for _, test := range []struct {
-		opt interface{}
+		opt any
 		cid string
 	}{
 		{&ConnzOptions{MQTTClient: "conn1"}, "conn1"},
@@ -6794,7 +6794,7 @@ type unableToDeleteConsLogger struct {
 	errCh chan string
 }
 
-func (l *unableToDeleteConsLogger) Errorf(format string, args ...interface{}) {
+func (l *unableToDeleteConsLogger) Errorf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if strings.Contains(msg, "unable to delete consumer") {
 		l.errCh <- msg
