@@ -83,8 +83,8 @@ jobs:
       - name: Build NATS Server
         run: go build
 
-  filestore:
-    name: FileStore tests
+  store:
+    name: Store tests
     needs: [build-latest, build-supported, lint]
     runs-on: ${{ vars.GHA_WORKER_MEDIUM }}
     steps:
@@ -97,7 +97,9 @@ jobs:
           go-version: stable
 
       - name: Run unit tests
-        run: go test -race -v -run=TestFileStore ./server/... -count=1 -vet=off -timeout=30m -failfast
+        run: |
+          go test -race -v -run=TestMemStore ./server/... -count=1 -vet=off -timeout=30m -failfast
+          go test -race -v -run=TestFileStore ./server/... -count=1 -vet=off -timeout=30m -failfast
 
   js-no-cluster:
     name: JetStream tests
@@ -258,7 +260,7 @@ jobs:
           go-version: stable
 
       - name: Run unit tests
-        run: go test -race -v -p=1 ./server/... -tags=skip_js_tests,skip_fs_tests,skip_mqtt_tests,skip_msgtrace_tests -count=1 -vet=off -timeout=30m -failfast
+        run: go test -race -v -p=1 ./server/... -tags=skip_js_tests,skip_store_tests,skip_mqtt_tests,skip_msgtrace_tests -count=1 -vet=off -timeout=30m -failfast
         timeout-minutes: 15
 
   non-server-pkg:

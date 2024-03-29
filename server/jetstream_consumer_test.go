@@ -101,7 +101,7 @@ func TestJetStreamConsumerMultipleFiltersRace(t *testing.T) {
 	var mu sync.Mutex
 
 	total := 10_000
-	wg := sync.WaitGroup{}
+	var wg sync.WaitGroup
 
 	send := func(subj string) {
 		defer wg.Done()
