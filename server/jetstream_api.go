@@ -3327,7 +3327,7 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, _ *Account
 	}
 
 	if s.JetStreamIsClustered() {
-		s.jsClusteredStreamRestoreRequest(ci, acc, &req, stream, subject, reply, rmsg)
+		s.jsClusteredStreamRestoreRequest(ci, acc, &req, subject, reply, rmsg)
 		return
 	}
 
@@ -3657,7 +3657,7 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, _ *Accoun
 		})
 
 		// Now do the real streaming.
-		s.streamSnapshot(ci, acc, mset, sr, &req)
+		s.streamSnapshot(acc, mset, sr, &req)
 
 		end := time.Now().UTC()
 
@@ -3687,7 +3687,7 @@ const defaultSnapshotChunkSize = 128 * 1024
 const defaultSnapshotWindowSize = 8 * 1024 * 1024 // 8MB
 
 // streamSnapshot will stream out our snapshot to the reply subject.
-func (s *Server) streamSnapshot(ci *ClientInfo, acc *Account, mset *stream, sr *SnapshotResult, req *JSApiStreamSnapshotRequest) {
+func (s *Server) streamSnapshot(acc *Account, mset *stream, sr *SnapshotResult, req *JSApiStreamSnapshotRequest) {
 	chunkSize := req.ChunkSize
 	if chunkSize == 0 {
 		chunkSize = defaultSnapshotChunkSize

@@ -504,7 +504,7 @@ func (s *Sublist) addToCache(subject string, sub *subscription) {
 
 // removeFromCache will remove the sub from any active cache entries.
 // Assumes write lock is held.
-func (s *Sublist) removeFromCache(subject string, sub *subscription) {
+func (s *Sublist) removeFromCache(subject string) {
 	if s.cache == nil {
 		return
 	}
@@ -635,7 +635,7 @@ func (s *Sublist) UpdateRemoteQSub(sub *subscription) {
 	// it unless we are thrashing the cache. Just remove from our L2 and update
 	// the genid so L1 will be flushed.
 	s.Lock()
-	s.removeFromCache(string(sub.subject), sub)
+	s.removeFromCache(string(sub.subject))
 	atomic.AddUint64(&s.genid, 1)
 	s.Unlock()
 }
@@ -798,7 +798,7 @@ func (s *Sublist) remove(sub *subscription, shouldLock bool, doCacheUpdates bool
 		}
 	}
 	if doCacheUpdates {
-		s.removeFromCache(subject, sub)
+		s.removeFromCache(subject)
 		atomic.AddUint64(&s.genid, 1)
 	}
 

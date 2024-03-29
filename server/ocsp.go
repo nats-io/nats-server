@@ -450,7 +450,7 @@ func (srv *Server) NewOCSPMonitor(config *tlsConfigKind) (*tls.Config, *OCSPMoni
 		// Get the certificate status from the memory, then remote OCSP responder.
 		if _, resp, err := mon.getStatus(); err != nil {
 			return nil, nil, fmt.Errorf("bad OCSP status update for certificate at '%s': %s", certFile, err)
-		} else if err == nil && resp != nil && resp.Status != ocsp.Good && shutdownOnRevoke {
+		} else if resp != nil && resp.Status != ocsp.Good && shutdownOnRevoke {
 			return nil, nil, fmt.Errorf("found existing OCSP status for certificate at '%s': %s", certFile, ocspStatusString(resp.Status))
 		}
 

@@ -40,7 +40,7 @@ jobs:
       env: TEST_SUITE=mqtt_tests
     - name: "Run Message Tracing tests"
       env: TEST_SUITE=msgtrace_tests
-    - name: "Run non JetStream/MQTT tests from the server package"
+    - name: "Run all other tests from the server package"
       env: TEST_SUITE=srv_pkg_non_js_tests
     - name: "Run all tests from all other packages"
       env: TEST_SUITE=non_srv_pkg_tests

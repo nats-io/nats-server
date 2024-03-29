@@ -7704,7 +7704,7 @@ func (fs *fileStore) stop(writeState bool) error {
 const errFile = "errors.txt"
 
 // Stream our snapshot through S2 compression and tar.
-func (fs *fileStore) streamSnapshot(w io.WriteCloser, state *StreamState, includeConsumers bool) {
+func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool) {
 	defer w.Close()
 
 	enc := s2.NewWriter(w)
@@ -7917,7 +7917,7 @@ func (fs *fileStore) Snapshot(deadline time.Duration, checkMsgs, includeConsumer
 	fs.FastState(&state)
 
 	// Stream in separate Go routine.
-	go fs.streamSnapshot(pw, &state, includeConsumers)
+	go fs.streamSnapshot(pw, includeConsumers)
 
 	return &SnapshotResult{pr, state}, nil
 }

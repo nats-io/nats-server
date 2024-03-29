@@ -537,7 +537,7 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) bool {
 		if !mset.isCatchingUp() {
 			return true
 		}
-	} else if node != nil {
+	} else { // node != nil
 		if node != mset.raftNode() {
 			s.Warnf("Detected stream cluster node skew '%s > %s'", acc.GetName(), streamName)
 			node.Delete()
@@ -4150,7 +4150,6 @@ func (js *jetStream) processConsumerRemoval(ca *consumerAssignment) {
 		js.mu.Unlock()
 		return
 	}
-	isMember := ca.Group.isMember(cc.meta.ID())
 	wasLeader := cc.isConsumerLeader(ca.Client.serviceAccount(), ca.Stream, ca.Name)
 
 	// Delete from our state.
@@ -4169,7 +4168,7 @@ func (js *jetStream) processConsumerRemoval(ca *consumerAssignment) {
 	js.mu.Unlock()
 
 	if needDelete {
-		js.processClusterDeleteConsumer(ca, isMember, wasLeader)
+		js.processClusterDeleteConsumer(ca, wasLeader)
 	}
 }
 
@@ -4427,7 +4426,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 	}
 }
 
-func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, isMember, wasLeader bool) {
+func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, wasLeader bool) {
 	if ca == nil {
 		return
 	}
@@ -5221,7 +5220,8 @@ func (js *jetStream) processStreamAssignmentResults(sub *subscription, c *client
 			// If cluster is defined we can not retry.
 			if cfg.Placement == nil || cfg.Placement.Cluster == _EMPTY_ {
 				// If we have additional clusters to try we can retry.
-				if ci != nil && len(ci.Alternates) > 0 {
+				// We have already verified that ci != nil.
+				if len(ci.Alternates) > 0 {
 					if rg, err := js.createGroupForStream(ci, cfg); err != nil {
 						s.Warnf("Retrying cluster placement for stream '%s > %s' failed due to placement error: %+v", result.Account, result.Stream, err)
 					} else {
@@ -6445,7 +6445,7 @@ func (s *Server) jsClusteredStreamRestoreRequest(
 	ci *ClientInfo,
 	acc *Account,
 	req *JSApiStreamRestoreRequest,
-	stream, subject, reply string, rmsg []byte) {
+	subject, reply string, rmsg []byte) {
 
 	js, cc := s.getJetStreamCluster()
 	if js == nil || cc == nil {

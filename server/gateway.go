@@ -1349,7 +1349,7 @@ func (s *Server) sendSubsToGateway(c *client, accountName string) {
 // This function will then execute appropriate function based on the command
 // contained in the protocol.
 // <Invoked from a route connection's readLoop>
-func (s *Server) processGatewayInfoFromRoute(info *Info, routeSrvID string, route *client) {
+func (s *Server) processGatewayInfoFromRoute(info *Info, routeSrvID string) {
 	switch info.GatewayCmd {
 	case gatewayCmdGossip:
 		s.processImplicitGateway(info)
