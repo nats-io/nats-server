@@ -3606,6 +3606,14 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 		return pmsg, 1, err
 	}
 
+	// We use this lock dance to prevent new messages from entering the stream while we chose next msg.
+	// This is temporary and will be changed out for a proper store interface that takes multiple subjects.
+	if len(o.subjf) > 1 {
+		o.mu.Unlock()
+		o.mset.mu.RLock()
+		o.mu.Lock()
+	}
+
 	// if we have filters, iterate over filters and optimize by buffering found messages.
 	for _, filter := range o.subjf {
 		if filter.nextSeq < o.sseq {
@@ -3639,7 +3647,12 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 				break
 			}
 		}
+	}
 
+	if len(o.subjf) > 1 {
+		o.mu.Unlock()
+		o.mset.mu.RUnlock()
+		o.mu.Lock()
 	}
 
 	// Don't sort the o.subjf if it's only one entry

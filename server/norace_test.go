@@ -10121,3 +10121,85 @@ func TestNoRaceConnectionObjectReleased(t *testing.T) {
 		}
 	}
 }
+
+func TestNoRaceWQAndMultiSubjectFilters(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"Z.>"},
+		Retention: nats.WorkQueuePolicy,
+	})
+	require_NoError(t, err)
+
+	stopPubs := make(chan bool)
+
+	publish := func(subject string) {
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		for {
+			select {
+			case <-stopPubs:
+				return
+			default:
+				_, _ = js.Publish(subject, []byte("hello"))
+			}
+		}
+	}
+
+	go publish("Z.foo")
+	go publish("Z.bar")
+	go publish("Z.baz")
+
+	// Cancel pubs after 10s.
+	time.AfterFunc(10*time.Second, func() { close(stopPubs) })
+
+	// Create a consumer
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:        "zzz",
+		AckPolicy:      nats.AckExplicitPolicy,
+		AckWait:        5 * time.Second,
+		FilterSubjects: []string{"Z.foo", "Z.bar", "Z.baz"},
+	})
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe(_EMPTY_, "zzz", nats.Bind("TEST", "zzz"))
+	require_NoError(t, err)
+
+	received := make([]uint64, 0, 256_000)
+	batchSize := 10
+
+	for running := true; running; {
+		msgs, err := sub.Fetch(batchSize, nats.MaxWait(2*time.Second))
+		if err == nats.ErrTimeout {
+			running = false
+			continue
+		}
+		for _, m := range msgs {
+			meta, err := m.Metadata()
+			require_NoError(t, err)
+			received = append(received, meta.Sequence.Stream)
+			m.Ack()
+		}
+	}
+
+	sort.Slice(received, func(i, j int) bool { return received[i] < received[j] })
+
+	var pseq, gaps uint64
+	for _, seq := range received {
+		if pseq != 0 && pseq != seq-1 {
+			gaps += seq - pseq + 1
+		}
+		pseq = seq
+	}
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	if si.State.Msgs != 0 || gaps > 0 {
+		t.Fatalf("Orphaned msgs %d with %d gaps detected", si.State.Msgs, gaps)
+	}
+}
