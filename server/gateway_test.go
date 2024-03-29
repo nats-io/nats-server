@@ -1378,7 +1378,7 @@ type gwReconnAttemptLogger struct {
 	errCh chan string
 }
 
-func (l *gwReconnAttemptLogger) Errorf(format string, v ...interface{}) {
+func (l *gwReconnAttemptLogger) Errorf(format string, v ...any) {
 	msg := fmt.Sprintf(format, v...)
 	if strings.Contains(msg, `Error connecting to implicit gateway "A"`) {
 		select {
@@ -3023,7 +3023,7 @@ type checkErrorLogger struct {
 	gotError      bool
 }
 
-func (l *checkErrorLogger) Errorf(format string, args ...interface{}) {
+func (l *checkErrorLogger) Errorf(format string, args ...any) {
 	l.DummyLogger.Errorf(format, args...)
 	l.Lock()
 	if strings.Contains(l.Msg, l.checkErrorStr) {
@@ -5769,7 +5769,7 @@ type captureGWInterestSwitchLogger struct {
 	imss []string
 }
 
-func (l *captureGWInterestSwitchLogger) Debugf(format string, args ...interface{}) {
+func (l *captureGWInterestSwitchLogger) Debugf(format string, args ...any) {
 	l.Lock()
 	msg := fmt.Sprintf(format, args...)
 	if strings.Contains(msg, fmt.Sprintf("switching account %q to %s mode", globalAccountName, InterestOnly)) ||
@@ -6025,7 +6025,7 @@ func TestGatewayReplyMapTracking(t *testing.T) {
 			t.Fatalf("Client map should have %v entries, got %v", expectLenMap, lenMap)
 		}
 		srvMapEmpty := true
-		sb.gwrm.m.Range(func(_, _ interface{}) bool {
+		sb.gwrm.m.Range(func(_, _ any) bool {
 			srvMapEmpty = false
 			return false
 		})
@@ -6978,7 +6978,7 @@ type testMissingOCSPStapleLogger struct {
 	ch chan string
 }
 
-func (l *testMissingOCSPStapleLogger) Errorf(format string, v ...interface{}) {
+func (l *testMissingOCSPStapleLogger) Errorf(format string, v ...any) {
 	msg := fmt.Sprintf(format, v...)
 	if strings.Contains(msg, "peer missing OCSP Staple") {
 		select {

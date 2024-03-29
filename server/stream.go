@@ -4002,7 +4002,7 @@ func (mset *stream) queueInboundMsg(subj, rply string, hdr, msg []byte) {
 }
 
 var dgPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return &directGetReq{}
 	},
 }

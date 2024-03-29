@@ -40,7 +40,7 @@ func TestJetStreamJWTLimits(t *testing.T) {
 		if msg, err := c.Request(fmt.Sprintf(accUpdateEventSubjNew, pubKey), []byte(jwt), time.Second); err != nil {
 			t.Fatal("error not expected in this test", err)
 		} else {
-			content := make(map[string]interface{})
+			content := make(map[string]any)
 			if err := json.Unmarshal(msg.Data, &content); err != nil {
 				t.Fatalf("%v", err)
 			} else if _, ok := content["data"]; !ok {

@@ -832,7 +832,7 @@ func TestNoRaceFetchAccountDoesNotRegisterAccountTwice(t *testing.T) {
 	checkTmpAccounts := func(t *testing.T, s *Server) {
 		t.Helper()
 		empty := true
-		s.tmpAccounts.Range(func(_, _ interface{}) bool {
+		s.tmpAccounts.Range(func(_, _ any) bool {
 			empty = false
 			return false
 		})

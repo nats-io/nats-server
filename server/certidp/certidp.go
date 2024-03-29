@@ -121,11 +121,11 @@ func NewOCSPPeerConfig() *OCSPPeerConfig {
 
 // Log is a neutral method of passing server loggers to plugins
 type Log struct {
-	Debugf  func(format string, v ...interface{})
-	Noticef func(format string, v ...interface{})
-	Warnf   func(format string, v ...interface{})
-	Errorf  func(format string, v ...interface{})
-	Tracef  func(format string, v ...interface{})
+	Debugf  func(format string, v ...any)
+	Noticef func(format string, v ...any)
+	Warnf   func(format string, v ...any)
+	Errorf  func(format string, v ...any)
+	Tracef  func(format string, v ...any)
 }
 
 type CertInfo struct {
@@ -145,7 +145,7 @@ For client, leaf spoke (remotes), and leaf hub connections, you may enable OCSP 
         ...
         # short form enables peer verify and takes option defaults
         ocsp_peer: true
-        
+
         # long form includes settable options
         ocsp_peer {
            # Enable OCSP peer validation (default false)

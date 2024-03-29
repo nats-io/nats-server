@@ -1632,7 +1632,7 @@ type captureWarnLogger struct {
 	warn chan string
 }
 
-func (l *captureWarnLogger) Warnf(format string, v ...interface{}) {
+func (l *captureWarnLogger) Warnf(format string, v ...any) {
 	select {
 	case l.warn <- fmt.Sprintf(format, v...):
 	default:
@@ -2193,7 +2193,7 @@ type captureNoticeLogger struct {
 	notices []string
 }
 
-func (l *captureNoticeLogger) Noticef(format string, v ...interface{}) {
+func (l *captureNoticeLogger) Noticef(format string, v ...any) {
 	l.Lock()
 	l.notices = append(l.notices, fmt.Sprintf(format, v...))
 	l.Unlock()

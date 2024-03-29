@@ -993,7 +993,7 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 	if subdetail {
 		var raw [4096]*subscription
 		subs := raw[:0]
-		s.accounts.Range(func(k, v interface{}) bool {
+		s.accounts.Range(func(k, v any) bool {
 			acc := v.(*Account)
 			if filterAcc != _EMPTY_ && acc.GetName() != filterAcc {
 				return true
@@ -1034,7 +1034,7 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 		sz.Subs = details[minoff:maxoff]
 		sz.Total = len(sz.Subs)
 	} else {
-		s.accounts.Range(func(k, v interface{}) bool {
+		s.accounts.Range(func(k, v any) bool {
 			acc := v.(*Account)
 			if filterAcc != _EMPTY_ && acc.GetName() != filterAcc {
 				return true
@@ -1714,7 +1714,7 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 
 	// Make sure to reset in case we are re-using.
 	v.Subscriptions = 0
-	s.accounts.Range(func(k, val interface{}) bool {
+	s.accounts.Range(func(k, val any) bool {
 		acc := val.(*Account)
 		v.Subscriptions += acc.sl.Count()
 		return true
@@ -2006,7 +2006,7 @@ func createOutboundAccountsGatewayz(opts *GatewayzOptions, gw *gateway) []*Accou
 	}
 
 	accs := make([]*AccountGatewayz, 0, 4)
-	gw.outsim.Range(func(k, v interface{}) bool {
+	gw.outsim.Range(func(k, v any) bool {
 		name := k.(string)
 		a := createAccountOutboundGatewayz(name, v)
 		accs = append(accs, a)
@@ -2016,7 +2016,7 @@ func createOutboundAccountsGatewayz(opts *GatewayzOptions, gw *gateway) []*Accou
 }
 
 // Returns an AccountGatewayz for this gateway outbound connection
-func createAccountOutboundGatewayz(name string, ei interface{}) *AccountGatewayz {
+func createAccountOutboundGatewayz(name string, ei any) *AccountGatewayz {
 	a := &AccountGatewayz{
 		Name:                  name,
 		InterestOnlyThreshold: gatewayMaxRUnsubBeforeSwitch,
@@ -2285,7 +2285,7 @@ func (s *Server) AccountStatz(opts *AccountStatzOptions) (*AccountStatz, error) 
 		Accounts: []*AccountStat{},
 	}
 	if opts == nil || len(opts.Accounts) == 0 {
-		s.accounts.Range(func(key, a interface{}) bool {
+		s.accounts.Range(func(key, a any) bool {
 			acc := a.(*Account)
 			acc.mu.RLock()
 			if opts.IncludeUnused || acc.numLocalConnections() != 0 {
@@ -2535,7 +2535,7 @@ func (s *Server) Accountz(optz *AccountzOptions) (*Accountz, error) {
 	}
 	if optz == nil || optz.Account == _EMPTY_ {
 		a.Accounts = []string{}
-		s.accounts.Range(func(key, value interface{}) bool {
+		s.accounts.Range(func(key, value any) bool {
 			a.Accounts = append(a.Accounts, key.(string))
 			return true
 		})

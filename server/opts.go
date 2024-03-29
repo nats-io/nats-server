@@ -735,7 +735,7 @@ func ProcessConfigFile(configFile string) (*Options, error) {
 
 // token is an item parsed from the configuration.
 type token interface {
-	Value() interface{}
+	Value() any
 	Line() int
 	IsUsedVariable() bool
 	SourceFile() string
@@ -746,7 +746,7 @@ type token interface {
 // to be able to report the line number in case of an incorrect
 // configuration.
 // also stores the token in lastToken for use in convertPanicToError
-func unwrapValue(v interface{}, lastToken *token) (token, interface{}) {
+func unwrapValue(v any, lastToken *token) (token, any) {
 	switch tk := v.(type) {
 	case token:
 		if lastToken != nil {
@@ -788,10 +788,10 @@ func convertPanicToError(lastToken *token, e *error) {
 
 // configureSystemAccount configures a system account
 // if present in the configuration.
-func configureSystemAccount(o *Options, m map[string]interface{}) (retErr error) {
+func configureSystemAccount(o *Options, m map[string]any) (retErr error) {
 	var lt token
 	defer convertPanicToError(&lt, &retErr)
-	configure := func(v interface{}) error {
+	configure := func(v any) error {
 		tk, v := unwrapValue(v, &lt)
 		sa, ok := v.(string)
 		if !ok {
@@ -860,7 +860,7 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 	return nil
 }
 
-func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error, warnings *[]error) {
+func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnings *[]error) {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
 
@@ -1122,7 +1122,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			} else {
 				o.OCSPConfig = &OCSPConfig{Mode: OCSPModeNever}
 			}
-		case map[string]interface{}:
+		case map[string]any:
 			ocsp := &OCSPConfig{Mode: OCSPModeAuto}
 
 			for kk, kv := range vv {
@@ -1249,7 +1249,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 					o.AccountResolver = ur
 				}
 			}
-		case map[string]interface{}:
+		case map[string]any:
 			del := false
 			hdel := false
 			hdel_set := false
@@ -1378,7 +1378,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		// be used as a client connection, we need to set RootCAs.
 		o.AccountResolverTLSConfig.RootCAs = tlsConfig.ClientCAs
 	case "resolver_preload":
-		mp, ok := v.(map[string]interface{})
+		mp, ok := v.(map[string]any)
 		if !ok {
 			err := &configErr{tk, "preload should be a map of account_public_key:account_jwt"}
 			*errors = append(*errors, err)
@@ -1410,7 +1410,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			for _, mv := range v {
 				o.resolverPinnedAccounts[mv] = struct{}{}
 			}
-		case []interface{}:
+		case []any:
 			o.resolverPinnedAccounts = make(map[string]struct{})
 			for _, mv := range v {
 				tk, mv = unwrapValue(mv, &lt)
@@ -1444,7 +1444,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			o.TrustedKeys = []string{v}
 		case []string:
 			o.TrustedKeys = v
-		case []interface{}:
+		case []any:
 			keys := make([]string, 0, len(v))
 			for _, mv := range v {
 				tk, mv = unwrapValue(mv, &lt)
@@ -1489,7 +1489,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			o.Tags.Add(v)
 		case []string:
 			o.Tags.Add(v...)
-		case []interface{}:
+		case []any:
 			for _, t := range v {
 				if token, ok := t.(token); ok {
 					if ts, ok := token.Value().(string); ok {
@@ -1511,7 +1511,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 			return
 		}
 	case "default_js_domain":
-		vv, ok := v.(map[string]interface{})
+		vv, ok := v.(map[string]any)
 		if !ok {
 			*errors = append(*errors, &configErr{tk, fmt.Sprintf("error default_js_domain config: unsupported type %T", v)})
 			return
@@ -1536,7 +1536,7 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 				pc.Type = NONE
 				o.OCSPCacheConfig = pc
 			}
-		case map[string]interface{}:
+		case map[string]any:
 			pc, err := parseOCSPResponseCache(v)
 			if err != nil {
 				*errors = append(*errors, err)
@@ -1574,7 +1574,7 @@ func setupUsersAndNKeysDuplicateCheckMap(o *Options) map[string]struct{} {
 	return unames
 }
 
-func parseDuration(field string, tk token, v interface{}, errors *[]error, warnings *[]error) time.Duration {
+func parseDuration(field string, tk token, v any, errors *[]error, warnings *[]error) time.Duration {
 	if wd, ok := v.(string); ok {
 		if dur, err := time.ParseDuration(wd); err != nil {
 			err := &configErr{tk, fmt.Sprintf("error parsing %s: %v", field, err)}
@@ -1614,7 +1614,7 @@ type hostPort struct {
 }
 
 // parseListen will parse listen option which is replacing host/net and port
-func parseListen(v interface{}) (*hostPort, error) {
+func parseListen(v any) (*hostPort, error) {
 	hp := &hostPort{}
 	switch vv := v.(type) {
 	// Only a port
@@ -1637,12 +1637,12 @@ func parseListen(v interface{}) (*hostPort, error) {
 }
 
 // parseCluster will parse the cluster config.
-func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]error) error {
+func parseCluster(v any, opts *Options, errors *[]error, warnings *[]error) error {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
 
 	tk, v := unwrapValue(v, &lt)
-	cm, ok := v.(map[string]interface{})
+	cm, ok := v.(map[string]any)
 	if !ok {
 		return &configErr{tk, fmt.Sprintf("Expected map to define cluster, got %T", v)}
 	}
@@ -1708,7 +1708,7 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 				}
 			}
 		case "routes":
-			ra := mv.([]interface{})
+			ra := mv.([]any)
 			routes, errs := parseURLs(ra, "route", warnings)
 			if errs != nil {
 				*errors = append(*errors, errs...)
@@ -1783,7 +1783,7 @@ func parseCluster(v interface{}, opts *Options, errors *[]error, warnings *[]err
 // The parameter `chosenModeForOn` indicates which compression mode to use
 // when the user selects "on" (or enabled, true, etc..). This is because
 // we may have different defaults depending on where the compression is used.
-func parseCompression(c *CompressionOpts, chosenModeForOn string, tk token, mk string, mv interface{}) (retErr error) {
+func parseCompression(c *CompressionOpts, chosenModeForOn string, tk token, mk string, mv any) (retErr error) {
 	var lt token
 	defer convertPanicToError(&lt, &retErr)
 
@@ -1797,14 +1797,14 @@ func parseCompression(c *CompressionOpts, chosenModeForOn string, tk token, mk s
 		} else {
 			c.Mode = CompressionOff
 		}
-	case map[string]interface{}:
+	case map[string]any:
 		for mk, mv := range mv {
 			tk, mv = unwrapValue(mv, &lt)
 			switch strings.ToLower(mk) {
 			case "mode":
 				c.Mode = mv.(string)
 			case "rtt_thresholds", "thresholds", "rtts", "rtt":
-				for _, iv := range mv.([]interface{}) {
+				for _, iv := range mv.([]any) {
 					_, mv := unwrapValue(iv, &lt)
 					dur, err := time.ParseDuration(mv.(string))
 					if err != nil {
@@ -1824,7 +1824,7 @@ func parseCompression(c *CompressionOpts, chosenModeForOn string, tk token, mk s
 	return nil
 }
 
-func parseURLs(a []interface{}, typ string, warnings *[]error) (urls []*url.URL, errors []error) {
+func parseURLs(a []any, typ string, warnings *[]error) (urls []*url.URL, errors []error) {
 	urls = make([]*url.URL, 0, len(a))
 	var lt token
 	defer convertPanicToErrorList(&lt, &errors)
@@ -1868,12 +1868,12 @@ func parseURL(u string, typ string) (*url.URL, error) {
 	return url, nil
 }
 
-func parseGateway(v interface{}, o *Options, errors *[]error, warnings *[]error) error {
+func parseGateway(v any, o *Options, errors *[]error, warnings *[]error) error {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
 
 	tk, v := unwrapValue(v, &lt)
-	gm, ok := v.(map[string]interface{})
+	gm, ok := v.(map[string]any)
 	if !ok {
 		return &configErr{tk, fmt.Sprintf("Expected gateway to be a map, got %T", v)}
 	}
@@ -1965,7 +1965,7 @@ var defaultJSAccountTiers = map[string]JetStreamAccountLimits{_EMPTY_: dynamicJS
 
 // Parses jetstream account limits for an account. Simple setup with boolen is allowed, and we will
 // use dynamic account limits.
-func parseJetStreamForAccount(v interface{}, acc *Account, errors *[]error) error {
+func parseJetStreamForAccount(v any, acc *Account, errors *[]error) error {
 	var lt token
 
 	tk, v := unwrapValue(v, &lt)
@@ -1985,7 +1985,7 @@ func parseJetStreamForAccount(v interface{}, acc *Account, errors *[]error) erro
 		default:
 			return &configErr{tk, fmt.Sprintf("Expected 'enabled' or 'disabled' for string value, got '%s'", vv)}
 		}
-	case map[string]interface{}:
+	case map[string]any:
 		jsLimits := JetStreamAccountLimits{-1, -1, -1, -1, -1, -1, -1, false}
 		for mk, mv := range vv {
 			tk, mv = unwrapValue(mv, &lt)
@@ -2059,7 +2059,7 @@ func parseJetStreamForAccount(v interface{}, acc *Account, errors *[]error) erro
 }
 
 // takes in a storage size as either an int or a string and returns an int64 value based on the input.
-func getStorageSize(v interface{}) (int64, error) {
+func getStorageSize(v any) (int64, error) {
 	_, ok := v.(int64)
 	if ok {
 		return v.(int64), nil
@@ -2093,13 +2093,13 @@ func getStorageSize(v interface{}) (int64, error) {
 }
 
 // Parse enablement of jetstream for a server.
-func parseJetStreamLimits(v interface{}, opts *Options, errors *[]error) error {
+func parseJetStreamLimits(v any, opts *Options, errors *[]error) error {
 	var lt token
 	tk, v := unwrapValue(v, &lt)
 
 	lim := JSLimitOpts{}
 
-	vv, ok := v.(map[string]interface{})
+	vv, ok := v.(map[string]any)
 	if !ok {
 		return &configErr{tk, fmt.Sprintf("Expected a map to define JetStreamLimits, got %T", v)}
 	}
@@ -2136,7 +2136,7 @@ func parseJetStreamLimits(v interface{}, opts *Options, errors *[]error) error {
 }
 
 // Parse enablement of jetstream for a server.
-func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]error) error {
+func parseJetStream(v any, opts *Options, errors *[]error, warnings *[]error) error {
 	var lt token
 
 	tk, v := unwrapValue(v, &lt)
@@ -2154,7 +2154,7 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 		default:
 			return &configErr{tk, fmt.Sprintf("Expected 'enabled' or 'disabled' for string value, got '%s'", vv)}
 		}
-	case map[string]interface{}:
+	case map[string]any:
 		doEnable := true
 		for mk, mv := range vv {
 			tk, mv = unwrapValue(mv, &lt)
@@ -2240,12 +2240,12 @@ func parseJetStream(v interface{}, opts *Options, errors *[]error, warnings *[]e
 }
 
 // parseLeafNodes will parse the leaf node config.
-func parseLeafNodes(v interface{}, opts *Options, errors *[]error, warnings *[]error) error {
+func parseLeafNodes(v any, opts *Options, errors *[]error, warnings *[]error) error {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
 
 	tk, v := unwrapValue(v, &lt)
-	cm, ok := v.(map[string]interface{})
+	cm, ok := v.(map[string]any)
 	if !ok {
 		return &configErr{tk, fmt.Sprintf("Expected map to define a leafnode, got %T", v)}
 	}
@@ -2346,9 +2346,9 @@ func parseLeafNodes(v interface{}, opts *Options, errors *[]error, warnings *[]e
 
 // This is the authorization parser adapter for the leafnode's
 // authorization config.
-func parseLeafAuthorization(v interface{}, errors *[]error) (*authorization, error) {
+func parseLeafAuthorization(v any, errors *[]error) (*authorization, error) {
 	var (
-		am   map[string]interface{}
+		am   map[string]any
 		tk   token
 		lt   token
 		auth = &authorization{}
@@ -2356,7 +2356,7 @@ func parseLeafAuthorization(v interface{}, errors *[]error) (*authorization, err
 	defer convertPanicToErrorList(&lt, errors)
 
 	_, v = unwrapValue(v, &lt)
-	am = v.(map[string]interface{})
+	am = v.(map[string]any)
 	for mk, mv := range am {
 		tk, mv = unwrapValue(mv, &lt)
 		switch strings.ToLower(mk) {
@@ -2407,7 +2407,7 @@ func parseLeafAuthorization(v interface{}, errors *[]error) (*authorization, err
 // This is a trimmed down version of parseUsers that is adapted
 // for the users possibly defined in the authorization{} section
 // of leafnodes {}.
-func parseLeafUsers(mv interface{}, errors *[]error) ([]*User, error) {
+func parseLeafUsers(mv any, errors *[]error) ([]*User, error) {
 	var (
 		tk    token
 		lt    token
@@ -2417,14 +2417,14 @@ func parseLeafUsers(mv interface{}, errors *[]error) ([]*User, error) {
 
 	tk, mv = unwrapValue(mv, &lt)
 	// Make sure we have an array
-	uv, ok := mv.([]interface{})
+	uv, ok := mv.([]any)
 	if !ok {
 		return nil, &configErr{tk, fmt.Sprintf("Expected users field to be an array, got %v", mv)}
 	}
 	for _, u := range uv {
 		tk, u = unwrapValue(u, &lt)
 		// Check its a map/struct
-		um, ok := u.(map[string]interface{})
+		um, ok := u.(map[string]any)
 		if !ok {
 			err := &configErr{tk, fmt.Sprintf("Expected user entry to be a map/struct, got %v", u)}
 			*errors = append(*errors, err)
@@ -2464,11 +2464,11 @@ func parseLeafUsers(mv interface{}, errors *[]error) ([]*User, error) {
 	return users, nil
 }
 
-func parseRemoteLeafNodes(v interface{}, errors *[]error, warnings *[]error) ([]*RemoteLeafOpts, error) {
+func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteLeafOpts, error) {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
 	tk, v := unwrapValue(v, &lt)
-	ra, ok := v.([]interface{})
+	ra, ok := v.([]any)
 	if !ok {
 		return nil, &configErr{tk, fmt.Sprintf("Expected remotes field to be an array, got %T", v)}
 	}
@@ -2476,7 +2476,7 @@ func parseRemoteLeafNodes(v interface{}, errors *[]error, warnings *[]error) ([]
 	for _, r := range ra {
 		tk, r = unwrapValue(r, &lt)
 		// Check its a map/struct
-		rm, ok := r.(map[string]interface{})
+		rm, ok := r.(map[string]any)
 		if !ok {
 			*errors = append(*errors, &configErr{tk, fmt.Sprintf("Expected remote leafnode entry to be a map/struct, got %v", r)})
 			continue
@@ -2489,8 +2489,8 @@ func parseRemoteLeafNodes(v interface{}, errors *[]error, warnings *[]error) ([]
 				remote.NoRandomize = v.(bool)
 			case "url", "urls":
 				switch v := v.(type) {
-				case []interface{}, []string:
-					urls, errs := parseURLs(v.([]interface{}), "leafnode", warnings)
+				case []any, []string:
+					urls, errs := parseURLs(v.([]any), "leafnode", warnings)
 					if errs != nil {
 						*errors = append(*errors, errs...)
 						continue
@@ -2619,13 +2619,13 @@ func getTLSConfig(tk token) (*tls.Config, *TLSConfigOpts, error) {
 	return config, tc, nil
 }
 
-func parseGateways(v interface{}, errors *[]error, warnings *[]error) ([]*RemoteGatewayOpts, error) {
+func parseGateways(v any, errors *[]error, warnings *[]error) ([]*RemoteGatewayOpts, error) {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
 
 	tk, v := unwrapValue(v, &lt)
 	// Make sure we have an array
-	ga, ok := v.([]interface{})
+	ga, ok := v.([]any)
 	if !ok {
 		return nil, &configErr{tk, fmt.Sprintf("Expected gateways field to be an array, got %T", v)}
 	}
@@ -2633,7 +2633,7 @@ func parseGateways(v interface{}, errors *[]error, warnings *[]error) ([]*Remote
 	for _, g := range ga {
 		tk, g = unwrapValue(g, &lt)
 		// Check its a map/struct
-		gm, ok := g.(map[string]interface{})
+		gm, ok := g.(map[string]any)
 		if !ok {
 			*errors = append(*errors, &configErr{tk, fmt.Sprintf("Expected gateway entry to be a map/struct, got %v", g)})
 			continue
@@ -2661,7 +2661,7 @@ func parseGateways(v interface{}, errors *[]error, warnings *[]error) ([]*Remote
 				}
 				gateway.URLs = append(gateway.URLs, url)
 			case "urls":
-				urls, errs := parseURLs(v.([]interface{}), "gateway", warnings)
+				urls, errs := parseURLs(v.([]any), "gateway", warnings)
 				if errs != nil {
 					*errors = append(*errors, errs...)
 					continue
@@ -2732,9 +2732,9 @@ func isReservedAccount(name string) bool {
 	return name == globalAccountName
 }
 
-func parseAccountMapDest(v interface{}, tk token, errors *[]error) (*MapDest, *configErr) {
+func parseAccountMapDest(v any, tk token, errors *[]error) (*MapDest, *configErr) {
 	// These should be maps.
-	mv, ok := v.(map[string]interface{})
+	mv, ok := v.(map[string]any)
 	if !ok {
 		err := &configErr{tk, "Expected an entry for the mapping destination"}
 		*errors = append(*errors, err)
@@ -2801,12 +2801,12 @@ func parseAccountMapDest(v interface{}, tk token, errors *[]error) (*MapDest, *c
 }
 
 // parseAccountMappings is called to parse account mappings.
-func parseAccountMappings(v interface{}, acc *Account, errors *[]error) error {
+func parseAccountMappings(v any, acc *Account, errors *[]error) error {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
 
 	tk, v := unwrapValue(v, &lt)
-	am := v.(map[string]interface{})
+	am := v.(map[string]any)
 	for subj, mv := range am {
 		if !IsValidSubject(subj) {
 			err := &configErr{tk, fmt.Sprintf("Subject %q is not a valid subject", subj)}
@@ -2822,9 +2822,9 @@ func parseAccountMappings(v interface{}, acc *Account, errors *[]error) error {
 				*errors = append(*errors, err)
 				continue
 			}
-		case []interface{}:
+		case []any:
 			var mappings []*MapDest
-			for _, mv := range v.([]interface{}) {
+			for _, mv := range v.([]any) {
 				tk, amv := unwrapValue(mv, &lt)
 				mdest, err := parseAccountMapDest(amv, tk, errors)
 				if err != nil {
@@ -2839,7 +2839,7 @@ func parseAccountMappings(v interface{}, acc *Account, errors *[]error) error {
 				*errors = append(*errors, err)
 				continue
 			}
-		case interface{}:
+		case any:
 			tk, amv := unwrapValue(mv, &lt)
 			mdest, err := parseAccountMapDest(amv, tk, errors)
 			if err != nil {
@@ -2862,12 +2862,12 @@ func parseAccountMappings(v interface{}, acc *Account, errors *[]error) error {
 }
 
 // parseAccountLimits is called to parse account limits in a server config.
-func parseAccountLimits(mv interface{}, acc *Account, errors *[]error) error {
+func parseAccountLimits(mv any, acc *Account, errors *[]error) error {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
 
 	tk, v := unwrapValue(mv, &lt)
-	am, ok := v.(map[string]interface{})
+	am, ok := v.(map[string]any)
 	if !ok {
 		return &configErr{tk, fmt.Sprintf("Expected account limits to be a map/struct, got %+v", v)}
 	}
@@ -2895,7 +2895,7 @@ func parseAccountLimits(mv interface{}, acc *Account, errors *[]error) error {
 }
 
 // parseAccounts will parse the different accounts syntax.
-func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]error) error {
+func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) error {
 	var (
 		importStreams  []*importStream
 		importServices []*importService
@@ -2908,9 +2908,9 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 	tk, v := unwrapValue(v, &lt)
 	switch vv := v.(type) {
 	// Simple array of account names.
-	case []interface{}, []string:
-		m := make(map[string]struct{}, len(v.([]interface{})))
-		for _, n := range v.([]interface{}) {
+	case []any, []string:
+		m := make(map[string]struct{}, len(v.([]any)))
+		for _, n := range v.([]any) {
 			tk, name := unwrapValue(n, &lt)
 			ns := name.(string)
 			// Check for reserved names.
@@ -2928,7 +2928,7 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 			m[ns] = struct{}{}
 		}
 	// More common map entry
-	case map[string]interface{}:
+	case map[string]any:
 		// Track users across accounts, must be unique across
 		// accounts and nkeys vs users.
 		// We also want to check for users that may have been added in
@@ -2944,7 +2944,7 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 			}
 
 			// These should be maps.
-			mv, ok := amv.(map[string]interface{})
+			mv, ok := amv.(map[string]any)
 			if !ok {
 				err := &configErr{tk, "Expected map entries for accounts"}
 				*errors = append(*errors, err)
@@ -3195,13 +3195,13 @@ func parseAccounts(v interface{}, opts *Options, errors *[]error, warnings *[]er
 }
 
 // Parse the account exports
-func parseAccountExports(v interface{}, acc *Account, errors *[]error) ([]*export, []*export, error) {
+func parseAccountExports(v any, acc *Account, errors *[]error) ([]*export, []*export, error) {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
 
 	// This should be an array of objects/maps.
 	tk, v := unwrapValue(v, &lt)
-	ims, ok := v.([]interface{})
+	ims, ok := v.([]any)
 	if !ok {
 		return nil, nil, &configErr{tk, fmt.Sprintf("Exports should be an array, got %T", v)}
 	}
@@ -3229,13 +3229,13 @@ func parseAccountExports(v interface{}, acc *Account, errors *[]error) ([]*expor
 }
 
 // Parse the account imports
-func parseAccountImports(v interface{}, acc *Account, errors *[]error) ([]*importStream, []*importService, error) {
+func parseAccountImports(v any, acc *Account, errors *[]error) ([]*importStream, []*importService, error) {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
 
 	// This should be an array of objects/maps.
 	tk, v := unwrapValue(v, &lt)
-	ims, ok := v.([]interface{})
+	ims, ok := v.([]any)
 	if !ok {
 		return nil, nil, &configErr{tk, fmt.Sprintf("Imports should be an array, got %T", v)}
 	}
@@ -3273,7 +3273,7 @@ func parseAccountImports(v interface{}, acc *Account, errors *[]error) ([]*impor
 }
 
 // Helper to parse an embedded account description for imported services or streams.
-func parseAccount(v map[string]interface{}, errors *[]error) (string, string, error) {
+func parseAccount(v map[string]any, errors *[]error) (string, string, error) {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
 
@@ -3306,7 +3306,7 @@ func parseAccount(v map[string]interface{}, errors *[]error) (string, string, er
 // {stream: "synadia.private.>", accounts: [cncf, natsio]}
 // {service: "pub.request"} # No accounts means public.
 // {service: "pub.special.request", accounts: [nats.io]}
-func parseExportStreamOrService(v interface{}, errors *[]error) (*export, *export, error) {
+func parseExportStreamOrService(v any, errors *[]error) (*export, *export, error) {
 	var (
 		curStream  *export
 		curService *export
@@ -3324,7 +3324,7 @@ func parseExportStreamOrService(v interface{}, errors *[]error) (*export, *expor
 	defer convertPanicToErrorList(&lt, errors)
 
 	tk, v := unwrapValue(v, &lt)
-	vv, ok := v.(map[string]interface{})
+	vv, ok := v.(map[string]any)
 	if !ok {
 		return nil, nil, &configErr{tk, fmt.Sprintf("Export Items should be a map with type entry, got %T", v)}
 	}
@@ -3443,7 +3443,7 @@ func parseExportStreamOrService(v interface{}, errors *[]error) (*export, *expor
 				*errors = append(*errors, err)
 			}
 		case "accounts":
-			for _, iv := range mv.([]interface{}) {
+			for _, iv := range mv.([]any) {
 				_, mv := unwrapValue(iv, &lt)
 				accounts = append(accounts, mv.(string))
 			}
@@ -3492,7 +3492,7 @@ func parseExportStreamOrService(v interface{}, errors *[]error) (*export, *expor
 }
 
 // parseServiceLatency returns a latency config block.
-func parseServiceLatency(root token, v interface{}) (l *serviceLatency, retErr error) {
+func parseServiceLatency(root token, v any) (l *serviceLatency, retErr error) {
 	var lt token
 	defer convertPanicToError(&lt, &retErr)
 
@@ -3503,7 +3503,7 @@ func parseServiceLatency(root token, v interface{}) (l *serviceLatency, retErr e
 		}, nil
 	}
 
-	latency, ok := v.(map[string]interface{})
+	latency, ok := v.(map[string]any)
 	if !ok {
 		return nil, &configErr{token: root,
 			reason: fmt.Sprintf("Expected latency entry to be a map/struct or string, got %T", v)}
@@ -3573,7 +3573,7 @@ func parseServiceLatency(root token, v interface{}) (l *serviceLatency, retErr e
 // {stream: {account: "synadia", subject:"public.synadia"}, prefix: "imports.synadia"}
 // {stream: {account: "synadia", subject:"synadia.private.*"}}
 // {service: {account: "synadia", subject: "pub.special.request"}, to: "synadia.request"}
-func parseImportStreamOrService(v interface{}, errors *[]error) (*importStream, *importService, error) {
+func parseImportStreamOrService(v any, errors *[]error) (*importStream, *importService, error) {
 	var (
 		curStream  *importStream
 		curService *importService
@@ -3584,7 +3584,7 @@ func parseImportStreamOrService(v interface{}, errors *[]error) (*importStream, 
 	defer convertPanicToErrorList(&lt, errors)
 
 	tk, mv := unwrapValue(v, &lt)
-	vv, ok := mv.(map[string]interface{})
+	vv, ok := mv.(map[string]any)
 	if !ok {
 		return nil, nil, &configErr{tk, fmt.Sprintf("Import Items should be a map with type entry, got %T", mv)}
 	}
@@ -3597,7 +3597,7 @@ func parseImportStreamOrService(v interface{}, errors *[]error) (*importStream, 
 				*errors = append(*errors, err)
 				continue
 			}
-			ac, ok := mv.(map[string]interface{})
+			ac, ok := mv.(map[string]any)
 			if !ok {
 				err := &configErr{tk, fmt.Sprintf("Stream entry should be an account map, got %T", mv)}
 				*errors = append(*errors, err)
@@ -3708,9 +3708,9 @@ func applyDefaultPermissions(users []*User, nkeys []*NkeyUser, defaultP *Permiss
 }
 
 // Helper function to parse Authorization configs.
-func parseAuthorization(v interface{}, errors *[]error) (*authorization, error) {
+func parseAuthorization(v any, errors *[]error) (*authorization, error) {
 	var (
-		am   map[string]interface{}
+		am   map[string]any
 		tk   token
 		lt   token
 		auth = &authorization{}
@@ -3718,7 +3718,7 @@ func parseAuthorization(v interface{}, errors *[]error) (*authorization, error) 
 	defer convertPanicToErrorList(&lt, errors)
 
 	_, v = unwrapValue(v, &lt)
-	am = v.(map[string]interface{})
+	am = v.(map[string]any)
 	for mk, mv := range am {
 		tk, mv = unwrapValue(mv, &lt)
 		switch strings.ToLower(mk) {
@@ -3778,7 +3778,7 @@ func parseAuthorization(v interface{}, errors *[]error) (*authorization, error) 
 }
 
 // Helper function to parse multiple users array with optional permissions.
-func parseUsers(mv interface{}, errors *[]error) ([]*NkeyUser, []*User, error) {
+func parseUsers(mv any, errors *[]error) ([]*NkeyUser, []*User, error) {
 	var (
 		tk    token
 		lt    token
@@ -3789,7 +3789,7 @@ func parseUsers(mv interface{}, errors *[]error) ([]*NkeyUser, []*User, error) {
 	tk, mv = unwrapValue(mv, &lt)
 
 	// Make sure we have an array
-	uv, ok := mv.([]interface{})
+	uv, ok := mv.([]any)
 	if !ok {
 		return nil, nil, &configErr{tk, fmt.Sprintf("Expected users field to be an array, got %v", mv)}
 	}
@@ -3797,7 +3797,7 @@ func parseUsers(mv interface{}, errors *[]error) ([]*NkeyUser, []*User, error) {
 		tk, u = unwrapValue(u, &lt)
 
 		// Check its a map/struct
-		um, ok := u.(map[string]interface{})
+		um, ok := u.(map[string]any)
 		if !ok {
 			err := &configErr{tk, fmt.Sprintf("Expected user entry to be a map/struct, got %v", u)}
 			*errors = append(*errors, err)
@@ -3874,7 +3874,7 @@ func parseUsers(mv interface{}, errors *[]error) ([]*NkeyUser, []*User, error) {
 	return keys, users, nil
 }
 
-func parseAllowedConnectionTypes(tk token, lt *token, mv interface{}, errors *[]error) map[string]struct{} {
+func parseAllowedConnectionTypes(tk token, lt *token, mv any, errors *[]error) map[string]struct{} {
 	cts, err := parseStringArray("allowed connection types", tk, lt, mv, errors)
 	// If error, it has already been added to the `errors` array, simply return
 	if err != nil {
@@ -3888,7 +3888,7 @@ func parseAllowedConnectionTypes(tk token, lt *token, mv interface{}, errors *[]
 }
 
 // Helper function to parse auth callouts.
-func parseAuthCallout(mv interface{}, errors *[]error) (*AuthCallout, error) {
+func parseAuthCallout(mv any, errors *[]error) (*AuthCallout, error) {
 	var (
 		tk token
 		lt token
@@ -3897,7 +3897,7 @@ func parseAuthCallout(mv interface{}, errors *[]error) (*AuthCallout, error) {
 	defer convertPanicToErrorList(&lt, errors)
 
 	tk, mv = unwrapValue(mv, &lt)
-	pm, ok := mv.(map[string]interface{})
+	pm, ok := mv.(map[string]any)
 	if !ok {
 		return nil, &configErr{tk, fmt.Sprintf("Expected authorization callout to be a map/struct, got %+v", mv)}
 	}
@@ -3913,7 +3913,7 @@ func parseAuthCallout(mv interface{}, errors *[]error) (*AuthCallout, error) {
 		case "account", "acc":
 			ac.Account = mv.(string)
 		case "auth_users", "users":
-			aua, ok := mv.([]interface{})
+			aua, ok := mv.([]any)
 			if !ok {
 				return nil, &configErr{tk, fmt.Sprintf("Expected auth_users field to be an array, got %T", v)}
 			}
@@ -3948,7 +3948,7 @@ func parseAuthCallout(mv interface{}, errors *[]error) (*AuthCallout, error) {
 }
 
 // Helper function to parse user/account permissions
-func parseUserPermissions(mv interface{}, errors *[]error) (*Permissions, error) {
+func parseUserPermissions(mv any, errors *[]error) (*Permissions, error) {
 	var (
 		tk token
 		lt token
@@ -3957,7 +3957,7 @@ func parseUserPermissions(mv interface{}, errors *[]error) (*Permissions, error)
 	defer convertPanicToErrorList(&lt, errors)
 
 	tk, mv = unwrapValue(mv, &lt)
-	pm, ok := mv.(map[string]interface{})
+	pm, ok := mv.(map[string]any)
 	if !ok {
 		return nil, &configErr{tk, fmt.Sprintf("Expected permissions to be a map/struct, got %+v", mv)}
 	}
@@ -4016,9 +4016,9 @@ func parseUserPermissions(mv interface{}, errors *[]error) (*Permissions, error)
 }
 
 // Top level parser for authorization configurations.
-func parseVariablePermissions(v interface{}, errors *[]error) (*SubjectPermission, error) {
+func parseVariablePermissions(v any, errors *[]error) (*SubjectPermission, error) {
 	switch vv := v.(type) {
-	case map[string]interface{}:
+	case map[string]any:
 		// New style with allow and/or deny properties.
 		return parseSubjectPermission(vv, errors)
 	default:
@@ -4028,7 +4028,7 @@ func parseVariablePermissions(v interface{}, errors *[]error) (*SubjectPermissio
 }
 
 // Helper function to parse subject singletons and/or arrays
-func parsePermSubjects(v interface{}, errors *[]error) ([]string, error) {
+func parsePermSubjects(v any, errors *[]error) ([]string, error) {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
 
@@ -4040,7 +4040,7 @@ func parsePermSubjects(v interface{}, errors *[]error) ([]string, error) {
 		subjects = append(subjects, vv)
 	case []string:
 		subjects = vv
-	case []interface{}:
+	case []any:
 		for _, i := range vv {
 			tk, i := unwrapValue(i, &lt)
 
@@ -4060,13 +4060,13 @@ func parsePermSubjects(v interface{}, errors *[]error) ([]string, error) {
 }
 
 // Helper function to parse a ResponsePermission.
-func parseAllowResponses(v interface{}, errors *[]error) *ResponsePermission {
+func parseAllowResponses(v any, errors *[]error) *ResponsePermission {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
 
 	tk, v := unwrapValue(v, &lt)
 	// Check if this is a map.
-	pm, ok := v.(map[string]interface{})
+	pm, ok := v.(map[string]any)
 	if !ok {
 		err := &configErr{tk, "error parsing response permissions, expected a boolean or a map"}
 		*errors = append(*errors, err)
@@ -4118,7 +4118,7 @@ func parseAllowResponses(v interface{}, errors *[]error) *ResponsePermission {
 }
 
 // Helper function to parse old style authorization configs.
-func parseOldPermissionStyle(v interface{}, errors *[]error) (*SubjectPermission, error) {
+func parseOldPermissionStyle(v any, errors *[]error) (*SubjectPermission, error) {
 	subjects, err := parsePermSubjects(v, errors)
 	if err != nil {
 		return nil, err
@@ -4127,11 +4127,11 @@ func parseOldPermissionStyle(v interface{}, errors *[]error) (*SubjectPermission
 }
 
 // Helper function to parse new style authorization into a SubjectPermission with Allow and Deny.
-func parseSubjectPermission(v interface{}, errors *[]error) (*SubjectPermission, error) {
+func parseSubjectPermission(v any, errors *[]error) (*SubjectPermission, error) {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
 
-	m := v.(map[string]interface{})
+	m := v.(map[string]any)
 	if len(m) == 0 {
 		return nil, nil
 	}
@@ -4215,16 +4215,16 @@ func parseCurvePreferences(curveName string) (tls.CurveID, error) {
 }
 
 // Helper function to parse TLS configs.
-func parseTLS(v interface{}, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
+func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 	var (
-		tlsm map[string]interface{}
+		tlsm map[string]any
 		tc   = TLSConfigOpts{}
 		lt   token
 	)
 	defer convertPanicToError(&lt, &retErr)
 
 	tk, v := unwrapValue(v, &lt)
-	tlsm = v.(map[string]interface{})
+	tlsm = v.(map[string]any)
 	for mk, mv := range tlsm {
 		tk, mv := unwrapValue(mv, &lt)
 		switch strings.ToLower(mk) {
@@ -4280,7 +4280,7 @@ func parseTLS(v interface{}, isClientCtx bool) (t *TLSConfigOpts, retErr error) 
 			}
 			tc.TLSCheckKnownURLs = verify
 		case "cipher_suites":
-			ra := mv.([]interface{})
+			ra := mv.([]any)
 			if len(ra) == 0 {
 				return nil, &configErr{tk, "error parsing tls config, 'cipher_suites' cannot be empty"}
 			}
@@ -4294,7 +4294,7 @@ func parseTLS(v interface{}, isClientCtx bool) (t *TLSConfigOpts, retErr error) 
 				tc.Ciphers = append(tc.Ciphers, cipher)
 			}
 		case "curve_preferences":
-			ra := mv.([]interface{})
+			ra := mv.([]any)
 			if len(ra) == 0 {
 				return nil, &configErr{tk, "error parsing tls config, 'curve_preferences' cannot be empty"}
 			}
@@ -4334,7 +4334,7 @@ func parseTLS(v interface{}, isClientCtx bool) (t *TLSConfigOpts, retErr error) 
 			}
 			tc.RateLimit = at
 		case "pinned_certs":
-			ra, ok := mv.([]interface{})
+			ra, ok := mv.([]any)
 			if !ok {
 				return nil, &configErr{tk, "error parsing tls config, expected 'pinned_certs' to be a list of hex-encoded sha256 of DER encoded SubjectPublicKeyInfo"}
 			}
@@ -4415,7 +4415,7 @@ func parseTLS(v interface{}, isClientCtx bool) (t *TLSConfigOpts, retErr error) 
 					pc.Verify = false
 					tc.OCSPPeerConfig = pc
 				}
-			case map[string]interface{}:
+			case map[string]any:
 				pc, err := parseOCSPPeer(mv)
 				if err != nil {
 					return nil, &configErr{tk, err.Error()}
@@ -4425,14 +4425,14 @@ func parseTLS(v interface{}, isClientCtx bool) (t *TLSConfigOpts, retErr error) 
 				return nil, &configErr{tk, fmt.Sprintf("error parsing ocsp peer config: unsupported type %T", v)}
 			}
 		case "certs", "certificates":
-			certs, ok := mv.([]interface{})
+			certs, ok := mv.([]any)
 			if !ok {
 				return nil, &configErr{tk, fmt.Sprintf("error parsing certificates config: unsupported type %T", v)}
 			}
 			tc.Certificates = make([]*TLSCertPairOpt, len(certs))
 			for i, v := range certs {
 				tk, vv := unwrapValue(v, &lt)
-				pair, ok := vv.(map[string]interface{})
+				pair, ok := vv.(map[string]any)
 				if !ok {
 					return nil, &configErr{tk, fmt.Sprintf("error parsing certificates config: unsupported type %T", vv)}
 				}
@@ -4478,9 +4478,9 @@ func parseTLS(v interface{}, isClientCtx bool) (t *TLSConfigOpts, retErr error) 
 	return &tc, nil
 }
 
-func parseSimpleAuth(v interface{}, errors *[]error) *authorization {
+func parseSimpleAuth(v any, errors *[]error) *authorization {
 	var (
-		am   map[string]interface{}
+		am   map[string]any
 		tk   token
 		lt   token
 		auth = &authorization{}
@@ -4488,7 +4488,7 @@ func parseSimpleAuth(v interface{}, errors *[]error) *authorization {
 	defer convertPanicToErrorList(&lt, errors)
 
 	_, v = unwrapValue(v, &lt)
-	am = v.(map[string]interface{})
+	am = v.(map[string]any)
 	for mk, mv := range am {
 		tk, mv = unwrapValue(mv, &lt)
 		switch strings.ToLower(mk) {
@@ -4523,11 +4523,11 @@ func parseSimpleAuth(v interface{}, errors *[]error) *authorization {
 	return auth
 }
 
-func parseStringArray(fieldName string, tk token, lt *token, mv interface{}, errors *[]error) ([]string, error) {
+func parseStringArray(fieldName string, tk token, lt *token, mv any, errors *[]error) ([]string, error) {
 	switch mv := mv.(type) {
 	case string:
 		return []string{mv}, nil
-	case []interface{}:
+	case []any:
 		strs := make([]string, 0, len(mv))
 		for _, val := range mv {
 			tk, val = unwrapValue(val, lt)
@@ -4547,12 +4547,12 @@ func parseStringArray(fieldName string, tk token, lt *token, mv interface{}, err
 	}
 }
 
-func parseWebsocket(v interface{}, o *Options, errors *[]error) error {
+func parseWebsocket(v any, o *Options, errors *[]error) error {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
 
 	tk, v := unwrapValue(v, &lt)
-	gm, ok := v.(map[string]interface{})
+	gm, ok := v.(map[string]any)
 	if !ok {
 		return &configErr{tk, fmt.Sprintf("Expected websocket to be a map, got %T", v)}
 	}
@@ -4641,12 +4641,12 @@ func parseWebsocket(v interface{}, o *Options, errors *[]error) error {
 	return nil
 }
 
-func parseMQTT(v interface{}, o *Options, errors *[]error, warnings *[]error) error {
+func parseMQTT(v any, o *Options, errors *[]error, warnings *[]error) error {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
 
 	tk, v := unwrapValue(v, &lt)
-	gm, ok := v.(map[string]interface{})
+	gm, ok := v.(map[string]any)
 	if !ok {
 		return &configErr{tk, fmt.Sprintf("Expected mqtt to be a map, got %T", v)}
 	}

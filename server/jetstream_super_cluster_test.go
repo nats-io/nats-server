@@ -3767,7 +3767,7 @@ type captureGWRewriteLogger struct {
 	ch chan string
 }
 
-func (l *captureGWRewriteLogger) Tracef(format string, args ...interface{}) {
+func (l *captureGWRewriteLogger) Tracef(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if strings.Contains(msg, "$JS.SNAPSHOT.ACK.TEST") && strings.Contains(msg, gwReplyPrefix) {
 		select {

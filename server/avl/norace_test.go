@@ -193,7 +193,7 @@ func friendlyBytes[T int | uint64 | int64](bytes T) string {
 	return fmt.Sprintf("%.2f %sB", fbytes/math.Pow(float64(base), float64(exp)), pre[index])
 }
 
-func logResults(format string, args ...interface{}) {
+func logResults(format string, args ...any) {
 	if *printResults {
 		fmt.Printf(format, args...)
 	}
