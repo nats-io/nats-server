@@ -11,6 +11,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build !skip_store_tests
+// +build !skip_store_tests
+
 package server
 
 import (
@@ -3011,7 +3014,7 @@ func TestFileStoreExpireMsgsOnStart(t *testing.T) {
 			fs.mu.RUnlock()
 		}
 
-		lastSeqForBlk := func(index int) uint64 {
+		lastSeqForBlk := func() uint64 {
 			t.Helper()
 			fs.mu.RLock()
 			defer fs.mu.RUnlock()
@@ -3066,7 +3069,7 @@ func TestFileStoreExpireMsgsOnStart(t *testing.T) {
 
 		// Now delete 10 messages from the end of the first block which we will expire on restart.
 		// We will expire up to seq 100, so delete 91-100.
-		lseq := lastSeqForBlk(0)
+		lseq := lastSeqForBlk()
 		for seq := lseq; seq > lseq-10; seq-- {
 			removed, err := fs.RemoveMsg(seq)
 			if err != nil || !removed {

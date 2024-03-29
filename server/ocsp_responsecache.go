@@ -571,11 +571,11 @@ func (s *Server) stopOCSPResponseCache() {
 	s.ocsprc.Stop(s)
 }
 
-func parseOCSPResponseCache(v interface{}) (pcfg *OCSPResponseCacheConfig, retError error) {
+func parseOCSPResponseCache(v any) (pcfg *OCSPResponseCacheConfig, retError error) {
 	var lt token
 	defer convertPanicToError(&lt, &retError)
 	tk, v := unwrapValue(v, &lt)
-	cm, ok := v.(map[string]interface{})
+	cm, ok := v.(map[string]any)
 	if !ok {
 		return nil, &configErr{tk, fmt.Sprintf(certidp.ErrIllegalCacheOptsConfig, v)}
 	}

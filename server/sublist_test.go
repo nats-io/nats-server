@@ -29,7 +29,7 @@ import (
 	"github.com/nats-io/nuid"
 )
 
-func stackFatalf(t *testing.T, f string, args ...interface{}) {
+func stackFatalf(t *testing.T, f string, args ...any) {
 	lines := make([]string, 0, 32)
 	msg := fmt.Sprintf(f, args...)
 	lines = append(lines, msg)
@@ -1124,7 +1124,7 @@ func TestSublistRegisterInterestNotification(t *testing.T) {
 	ch := make(chan bool, 1)
 
 	expectErr := func(subject string) {
-		if err := s.RegisterNotification("foo.*", ch); err != ErrInvalidSubject {
+		if err := s.RegisterNotification(subject, ch); err != ErrInvalidSubject {
 			t.Fatalf("Expected err, got %v", err)
 		}
 	}

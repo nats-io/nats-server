@@ -46,7 +46,7 @@ type captureLeafNodeRandomIPLogger struct {
 	ips [3]int
 }
 
-func (c *captureLeafNodeRandomIPLogger) Debugf(format string, v ...interface{}) {
+func (c *captureLeafNodeRandomIPLogger) Debugf(format string, v ...any) {
 	msg := fmt.Sprintf(format, v...)
 	if strings.Contains(msg, "hostname_to_resolve") {
 		ippos := strings.Index(msg, "127.0.0.")
@@ -340,7 +340,7 @@ type captureErrorLogger struct {
 	errCh chan string
 }
 
-func (l *captureErrorLogger) Errorf(format string, v ...interface{}) {
+func (l *captureErrorLogger) Errorf(format string, v ...any) {
 	select {
 	case l.errCh <- fmt.Sprintf(format, v...):
 	default:
@@ -822,7 +822,7 @@ type loopDetectedLogger struct {
 	ch chan string
 }
 
-func (l *loopDetectedLogger) Errorf(format string, v ...interface{}) {
+func (l *loopDetectedLogger) Errorf(format string, v ...any) {
 	msg := fmt.Sprintf(format, v...)
 	if strings.Contains(msg, "Loop") {
 		select {
@@ -1804,11 +1804,11 @@ type chanLogger struct {
 	triggerChan chan string
 }
 
-func (l *chanLogger) Warnf(format string, v ...interface{}) {
+func (l *chanLogger) Warnf(format string, v ...any) {
 	l.triggerChan <- fmt.Sprintf(format, v...)
 }
 
-func (l *chanLogger) Errorf(format string, v ...interface{}) {
+func (l *chanLogger) Errorf(format string, v ...any) {
 	l.triggerChan <- fmt.Sprintf(format, v...)
 }
 
@@ -2124,14 +2124,14 @@ type oldConnReplacedLogger struct {
 	warnCh chan string
 }
 
-func (l *oldConnReplacedLogger) Errorf(format string, v ...interface{}) {
+func (l *oldConnReplacedLogger) Errorf(format string, v ...any) {
 	select {
 	case l.errCh <- fmt.Sprintf(format, v...):
 	default:
 	}
 }
 
-func (l *oldConnReplacedLogger) Warnf(format string, v ...interface{}) {
+func (l *oldConnReplacedLogger) Warnf(format string, v ...any) {
 	select {
 	case l.warnCh <- fmt.Sprintf(format, v...):
 	default:
@@ -2461,7 +2461,7 @@ type parseRouteLSUnsubLogger struct {
 	gotErr   chan error
 }
 
-func (l *parseRouteLSUnsubLogger) Errorf(format string, v ...interface{}) {
+func (l *parseRouteLSUnsubLogger) Errorf(format string, v ...any) {
 	err := fmt.Errorf(format, v...)
 	select {
 	case l.gotErr <- err:
@@ -2469,7 +2469,7 @@ func (l *parseRouteLSUnsubLogger) Errorf(format string, v ...interface{}) {
 	}
 }
 
-func (l *parseRouteLSUnsubLogger) Tracef(format string, v ...interface{}) {
+func (l *parseRouteLSUnsubLogger) Tracef(format string, v ...any) {
 	trace := fmt.Sprintf(format, v...)
 	if strings.Contains(trace, "LS- $G foo bar") {
 		l.gotTrace <- struct{}{}
@@ -4247,7 +4247,7 @@ type checkLeafMinVersionLogger struct {
 	connCh chan string
 }
 
-func (l *checkLeafMinVersionLogger) Errorf(format string, args ...interface{}) {
+func (l *checkLeafMinVersionLogger) Errorf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if strings.Contains(msg, "minimum version") {
 		select {
@@ -4257,7 +4257,7 @@ func (l *checkLeafMinVersionLogger) Errorf(format string, args ...interface{}) {
 	}
 }
 
-func (l *checkLeafMinVersionLogger) Noticef(format string, args ...interface{}) {
+func (l *checkLeafMinVersionLogger) Noticef(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if strings.Contains(msg, "Leafnode connection created") {
 		select {
@@ -4621,7 +4621,7 @@ type testLeafTraceLogger struct {
 	ch chan string
 }
 
-func (l *testLeafTraceLogger) Tracef(format string, v ...interface{}) {
+func (l *testLeafTraceLogger) Tracef(format string, v ...any) {
 	msg := fmt.Sprintf(format, v...)
 	// We will sub to 'baz' and to 'bar', so filter on 'ba' prefix.
 	if strings.Contains(msg, "[LS+ ba") {

@@ -3027,7 +3027,7 @@ type waitingRequest struct {
 
 // sync.Pool for waiting requests.
 var wrPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return new(waitingRequest)
 	},
 }

@@ -916,7 +916,7 @@ func TestJetStreamSuperClusterGetNextRewrite(t *testing.T) {
 	defer ln.Shutdown()
 
 	c2 := sc.clusterForName("C2")
-	nc, js := jsClientConnectEx(t, c2.randomServer(), "C", nats.UserInfo("nojs", "p"))
+	nc, js := jsClientConnectEx(t, c2.randomServer(), []nats.JSOpt{nats.Domain("C")}, nats.UserInfo("nojs", "p"))
 	defer nc.Close()
 
 	// Create a stream and add messages.
@@ -1079,7 +1079,7 @@ func TestJetStreamSuperClusterGetNextSubRace(t *testing.T) {
 		t.Fatalf("Both servers in C2 had an inbound GW connection!")
 	}
 
-	nc, js := jsClientConnectEx(t, c2Srv, "C", nats.UserInfo("nojs", "p"))
+	nc, js := jsClientConnectEx(t, c2Srv, []nats.JSOpt{nats.Domain("C")}, nats.UserInfo("nojs", "p"))
 	defer nc.Close()
 
 	_, err := js.AddStream(&nats.StreamConfig{Name: "foo"})
@@ -3767,7 +3767,7 @@ type captureGWRewriteLogger struct {
 	ch chan string
 }
 
-func (l *captureGWRewriteLogger) Tracef(format string, args ...interface{}) {
+func (l *captureGWRewriteLogger) Tracef(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if strings.Contains(msg, "$JS.SNAPSHOT.ACK.TEST") && strings.Contains(msg, gwReplyPrefix) {
 		select {

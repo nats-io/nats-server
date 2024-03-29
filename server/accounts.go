@@ -1157,7 +1157,7 @@ func (a *Account) TrackServiceExportWithSampling(service, results string, sampli
 	}
 
 	// Now track down the imports and add in latency as needed to enable.
-	s.accounts.Range(func(k, v interface{}) bool {
+	s.accounts.Range(func(k, v any) bool {
 		acc := v.(*Account)
 		acc.mu.Lock()
 		for _, im := range acc.imports.services {
@@ -1198,7 +1198,7 @@ func (a *Account) UnTrackServiceExport(service string) {
 	}
 
 	// Now track down the imports and clean them up.
-	s.accounts.Range(func(k, v interface{}) bool {
+	s.accounts.Range(func(k, v any) bool {
 		acc := v.(*Account)
 		acc.mu.Lock()
 		for _, im := range acc.imports.services {
@@ -3498,7 +3498,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		clients := map[*client]struct{}{}
 		// We need to check all accounts that have an import claim from this account.
 		awcsti := map[string]struct{}{}
-		s.accounts.Range(func(k, v interface{}) bool {
+		s.accounts.Range(func(k, v any) bool {
 			acc := v.(*Account)
 			// Move to the next if this account is actually account "a".
 			if acc.Name == a.Name {
@@ -3528,7 +3528,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 	}
 	// Now check if service exports have changed.
 	if !a.checkServiceExportsEqual(old) || signersChanged || serviceTokenExpirationChanged {
-		s.accounts.Range(func(k, v interface{}) bool {
+		s.accounts.Range(func(k, v any) bool {
 			acc := v.(*Account)
 			// Move to the next if this account is actually account "a".
 			if acc.Name == a.Name {
@@ -3723,7 +3723,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 
 	if _, ok := s.incompleteAccExporterMap.Load(old.Name); ok && refreshImportingAccounts {
 		s.incompleteAccExporterMap.Delete(old.Name)
-		s.accounts.Range(func(key, value interface{}) bool {
+		s.accounts.Range(func(key, value any) bool {
 			acc := value.(*Account)
 			acc.mu.RLock()
 			incomplete := acc.incomplete
@@ -4026,13 +4026,13 @@ func handleListRequest(store *DirJWTStore, s *Server, reply string) {
 	} else {
 		s.Debugf("list request responded with %d account ids", len(accIds))
 		server := &ServerInfo{}
-		response := map[string]interface{}{"server": server, "data": accIds}
+		response := map[string]any{"server": server, "data": accIds}
 		s.sendInternalMsgLocked(reply, _EMPTY_, server, response)
 	}
 }
 
 func handleDeleteRequest(store *DirJWTStore, s *Server, msg []byte, reply string) {
-	var accIds []interface{}
+	var accIds []any
 	var subj, sysAccName string
 	if sysAcc := s.SystemAccount(); sysAcc != nil {
 		sysAccName = sysAcc.GetName()
@@ -4049,7 +4049,7 @@ func handleDeleteRequest(store *DirJWTStore, s *Server, msg []byte, reply string
 			err = fmt.Errorf("not trusted")
 		} else if list, ok := gk.Data["accounts"]; !ok {
 			err = fmt.Errorf("malformed request")
-		} else if accIds, ok = list.([]interface{}); !ok {
+		} else if accIds, ok = list.([]any); !ok {
 			err = fmt.Errorf("malformed request")
 		} else {
 			for _, entry := range accIds {

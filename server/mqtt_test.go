@@ -1642,41 +1642,40 @@ func TestMQTTParseConnect(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		proto []byte
-		pl    int
 		err   string
 	}{
-		{"packet in buffer error", []byte{0}, 10, io.ErrUnexpectedEOF.Error()},
-		{"bad proto name", []byte{0, 4, 'B', 'A', 'D'}, 5, "protocol name"},
-		{"invalid proto name", []byte{0, 3, 'B', 'A', 'D'}, 5, "expected connect packet with protocol name"},
-		{"old proto not supported", []byte{0, 6, 'M', 'Q', 'I', 's', 'd', 'p'}, 8, "older protocol"},
-		{"error on protocol level", []byte{0, 4, 'M', 'Q', 'T', 'T'}, 6, "protocol level"},
-		{"unacceptable protocol version", []byte{0, 4, 'M', 'Q', 'T', 'T', 10}, 7, "unacceptable protocol version"},
-		{"error on flags", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel}, 7, "flags"},
-		{"reserved flag", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 1}, 8, errMQTTConnFlagReserved.Error()},
-		{"will qos without will flag", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 1 << 3}, 8, "if Will flag is set to 0, Will QoS must be 0 too"},
-		{"will retain without will flag", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 1 << 5}, 8, errMQTTWillAndRetainFlag.Error()},
-		{"will qos", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 3<<3 | 1<<2}, 8, "if Will flag is set to 1, Will QoS can be 0, 1 or 2"},
-		{"no user but password", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagPasswordFlag}, 8, errMQTTPasswordFlagAndNoUser.Error()},
-		{"missing keep alive", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 0}, 8, "keep alive"},
-		{"missing client ID", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 0, 0, 1}, 10, "client ID"},
-		{"empty client ID", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 0, 0, 1, 0, 0}, 12, errMQTTCIDEmptyNeedsCleanFlag.Error()},
-		{"invalid utf8 client ID", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 0, 0, 1, 0, 1, 241}, 13, "invalid utf8 for client ID"},
-		{"missing will topic", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0}, 12, "Will topic"},
-		{"empty will topic", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 0}, 14, errMQTTEmptyWillTopic.Error()},
-		{"invalid utf8 will topic", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, 241}, 15, "invalid utf8 for Will topic"},
-		{"invalid wildcard will topic", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, '#'}, 15, "wildcards not allowed"},
-		{"error on will message", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, 'a', 0, 3}, 17, "Will message"},
-		{"error on username", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagUsernameFlag | mqttConnFlagCleanSession, 0, 0, 0, 0}, 12, "user name"},
-		{"empty username", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagUsernameFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 0}, 14, errMQTTEmptyUsername.Error()},
-		{"invalid utf8 username", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagUsernameFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, 241}, 15, "invalid utf8 for user name"},
-		{"error on password", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagUsernameFlag | mqttConnFlagPasswordFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, 'a'}, 15, "password"},
+		{"packet in buffer error", []byte{0}, io.ErrUnexpectedEOF.Error()},
+		{"bad proto name", []byte{0, 4, 'B', 'A', 'D'}, "protocol name"},
+		{"invalid proto name", []byte{0, 3, 'B', 'A', 'D'}, "expected connect packet with protocol name"},
+		{"old proto not supported", []byte{0, 6, 'M', 'Q', 'I', 's', 'd', 'p'}, "older protocol"},
+		{"error on protocol level", []byte{0, 4, 'M', 'Q', 'T', 'T'}, "protocol level"},
+		{"unacceptable protocol version", []byte{0, 4, 'M', 'Q', 'T', 'T', 10}, "unacceptable protocol version"},
+		{"error on flags", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel}, "flags"},
+		{"reserved flag", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 1}, errMQTTConnFlagReserved.Error()},
+		{"will qos without will flag", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 1 << 3}, "if Will flag is set to 0, Will QoS must be 0 too"},
+		{"will retain without will flag", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 1 << 5}, errMQTTWillAndRetainFlag.Error()},
+		{"will qos", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 3<<3 | 1<<2}, "if Will flag is set to 1, Will QoS can be 0, 1 or 2"},
+		{"no user but password", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagPasswordFlag}, errMQTTPasswordFlagAndNoUser.Error()},
+		{"missing keep alive", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 0}, "keep alive"},
+		{"missing client ID", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 0, 0, 1}, "client ID"},
+		{"empty client ID", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 0, 0, 1, 0, 0}, errMQTTCIDEmptyNeedsCleanFlag.Error()},
+		{"invalid utf8 client ID", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 0, 0, 1, 0, 1, 241}, "invalid utf8 for client ID"},
+		{"missing will topic", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0}, "Will topic"},
+		{"empty will topic", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 0}, errMQTTEmptyWillTopic.Error()},
+		{"invalid utf8 will topic", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, 241}, "invalid utf8 for Will topic"},
+		{"invalid wildcard will topic", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, '#'}, "wildcards not allowed"},
+		{"error on will message", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, 'a', 0, 3}, "Will message"},
+		{"error on username", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagUsernameFlag | mqttConnFlagCleanSession, 0, 0, 0, 0}, "user name"},
+		{"empty username", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagUsernameFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 0}, errMQTTEmptyUsername.Error()},
+		{"invalid utf8 username", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagUsernameFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, 241}, "invalid utf8 for user name"},
+		{"error on password", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagUsernameFlag | mqttConnFlagPasswordFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, 'a'}, "password"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			r := &mqttReader{}
 			r.reset(test.proto)
 			mqtt := &mqtt{r: r}
 			c := &client{mqtt: mqtt}
-			if _, _, err := c.mqttParseConnect(r, test.pl, false); err == nil || !strings.Contains(err.Error(), test.err) {
+			if _, _, err := c.mqttParseConnect(r, false); err == nil || !strings.Contains(err.Error(), test.err) {
 				t.Fatalf("Expected error %q, got %v", test.err, err)
 			}
 		})
@@ -2226,17 +2225,16 @@ func TestMQTTParsePIMsg(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		proto []byte
-		pl    int
 		err   string
 	}{
-		{"packet in buffer error", nil, 10, io.ErrUnexpectedEOF.Error()},
-		{"error reading packet identifier", []byte{0}, 1, "packet identifier"},
-		{"invalid packet identifier", []byte{0, 0}, 2, errMQTTPacketIdentifierIsZero.Error()},
+		{"packet in buffer error", nil, io.ErrUnexpectedEOF.Error()},
+		{"error reading packet identifier", []byte{0}, "packet identifier"},
+		{"invalid packet identifier", []byte{0, 0}, errMQTTPacketIdentifierIsZero.Error()},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			r := &mqttReader{}
 			r.reset(test.proto)
-			if _, err := mqttParsePIPacket(r, test.pl); err == nil || !strings.Contains(err.Error(), test.err) {
+			if _, err := mqttParsePIPacket(r); err == nil || !strings.Contains(err.Error(), test.err) {
 				t.Fatalf("Expected error %q, got %v", test.err, err)
 			}
 		})
@@ -3763,7 +3761,7 @@ type remoteConnSameClientIDLogger struct {
 	warn chan string
 }
 
-func (l *remoteConnSameClientIDLogger) Warnf(format string, args ...interface{}) {
+func (l *remoteConnSameClientIDLogger) Warnf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if strings.Contains(msg, "remote connection has started with the same client ID") {
 		l.warn <- msg
@@ -6408,7 +6406,7 @@ func TestMQTTConnectAndDisconnectEvent(t *testing.T) {
 
 	// Test system events now
 	for _, test := range []struct {
-		opt interface{}
+		opt any
 		cid string
 	}{
 		{&ConnzOptions{MQTTClient: "conn1"}, "conn1"},
@@ -6796,7 +6794,7 @@ type unableToDeleteConsLogger struct {
 	errCh chan string
 }
 
-func (l *unableToDeleteConsLogger) Errorf(format string, args ...interface{}) {
+func (l *unableToDeleteConsLogger) Errorf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if strings.Contains(msg, "unable to delete consumer") {
 		l.errCh <- msg

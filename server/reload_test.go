@@ -4598,7 +4598,7 @@ func TestConfigReloadDefaultSystemAccount(t *testing.T) {
 	testInAccounts := func() {
 		t.Helper()
 		var found bool
-		s.accounts.Range(func(k, v interface{}) bool {
+		s.accounts.Range(func(k, v any) bool {
 			acc := v.(*Account)
 			if acc.GetName() == sname {
 				found = true

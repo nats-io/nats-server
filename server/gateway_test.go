@@ -1378,7 +1378,7 @@ type gwReconnAttemptLogger struct {
 	errCh chan string
 }
 
-func (l *gwReconnAttemptLogger) Errorf(format string, v ...interface{}) {
+func (l *gwReconnAttemptLogger) Errorf(format string, v ...any) {
 	msg := fmt.Sprintf(format, v...)
 	if strings.Contains(msg, `Error connecting to implicit gateway "A"`) {
 		select {
@@ -3023,7 +3023,7 @@ type checkErrorLogger struct {
 	gotError      bool
 }
 
-func (l *checkErrorLogger) Errorf(format string, args ...interface{}) {
+func (l *checkErrorLogger) Errorf(format string, args ...any) {
 	l.DummyLogger.Errorf(format, args...)
 	l.Lock()
 	if strings.Contains(l.Msg, l.checkErrorStr) {
@@ -3354,8 +3354,13 @@ func getInboundGatewayConnection(s *Server, name string) *client {
 	var gwsa [4]*client
 	var gws = gwsa[:0]
 	s.getInboundGatewayConnections(&gws)
-	if len(gws) > 0 {
-		return gws[0]
+	for _, gw := range gws {
+		gw.mu.Lock()
+		ok := gw.gw.name == name
+		gw.mu.Unlock()
+		if ok {
+			return gw
+		}
 	}
 	return nil
 }
@@ -3555,7 +3560,7 @@ func TestGatewaySendAllSubsBadProtocol(t *testing.T) {
 	// For this test, make sure to use inbound from A so
 	// A will reconnect when we send bad proto that
 	// causes connection to be closed.
-	c := getInboundGatewayConnection(sa, "A")
+	c := getInboundGatewayConnection(sa, "B")
 	// Mock an invalid protocol (account name missing)
 	info := &Info{
 		Gateway:    "B",
@@ -3568,7 +3573,7 @@ func TestGatewaySendAllSubsBadProtocol(t *testing.T) {
 
 	orgConn := c
 	checkFor(t, 3*time.Second, 100*time.Millisecond, func() error {
-		curConn := getInboundGatewayConnection(sa, "A")
+		curConn := getInboundGatewayConnection(sa, "B")
 		if orgConn == curConn {
 			return fmt.Errorf("Not reconnected")
 		}
@@ -3581,7 +3586,7 @@ func TestGatewaySendAllSubsBadProtocol(t *testing.T) {
 	// Refresh
 	c = nil
 	checkFor(t, 3*time.Second, 15*time.Millisecond, func() error {
-		c = getInboundGatewayConnection(sa, "A")
+		c = getInboundGatewayConnection(sa, "B")
 		if c == nil {
 			return fmt.Errorf("Did not reconnect")
 		}
@@ -3603,7 +3608,7 @@ func TestGatewaySendAllSubsBadProtocol(t *testing.T) {
 
 	orgConn = c
 	checkFor(t, 3*time.Second, 100*time.Millisecond, func() error {
-		curConn := getInboundGatewayConnection(sa, "A")
+		curConn := getInboundGatewayConnection(sa, "B")
 		if orgConn == curConn {
 			return fmt.Errorf("Not reconnected")
 		}
@@ -4352,7 +4357,7 @@ func TestGatewayServiceImportComplexSetup(t *testing.T) {
 	if c == nil || c.opts.Name != sb2.ID() {
 		t.Fatalf("A2 does not have outbound to B2")
 	}
-	c = getInboundGatewayConnection(sa2, "A")
+	c = getInboundGatewayConnection(sa2, "B")
 	if c != nil {
 		t.Fatalf("Bad setup")
 	}
@@ -4360,7 +4365,7 @@ func TestGatewayServiceImportComplexSetup(t *testing.T) {
 	if c == nil || c.opts.Name != sa1.ID() {
 		t.Fatalf("B2 does not have outbound to A1")
 	}
-	c = getInboundGatewayConnection(sb2, "B")
+	c = getInboundGatewayConnection(sb2, "A")
 	if c == nil || c.opts.Name != sa2.ID() {
 		t.Fatalf("Bad setup")
 	}
@@ -4694,7 +4699,7 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 			if c == nil || c.opts.Name != sb2.ID() {
 				t.Fatalf("A2 does not have outbound to B2")
 			}
-			c = getInboundGatewayConnection(sa2, "A")
+			c = getInboundGatewayConnection(sa2, "B")
 			if c != nil {
 				t.Fatalf("Bad setup")
 			}
@@ -4702,7 +4707,7 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 			if c == nil || c.opts.Name != sa1.ID() {
 				t.Fatalf("B2 does not have outbound to A1")
 			}
-			c = getInboundGatewayConnection(sb2, "B")
+			c = getInboundGatewayConnection(sb2, "A")
 			if c == nil || c.opts.Name != sa2.ID() {
 				t.Fatalf("Bad setup")
 			}
@@ -5764,7 +5769,7 @@ type captureGWInterestSwitchLogger struct {
 	imss []string
 }
 
-func (l *captureGWInterestSwitchLogger) Debugf(format string, args ...interface{}) {
+func (l *captureGWInterestSwitchLogger) Debugf(format string, args ...any) {
 	l.Lock()
 	msg := fmt.Sprintf(format, args...)
 	if strings.Contains(msg, fmt.Sprintf("switching account %q to %s mode", globalAccountName, InterestOnly)) ||
@@ -6020,7 +6025,7 @@ func TestGatewayReplyMapTracking(t *testing.T) {
 			t.Fatalf("Client map should have %v entries, got %v", expectLenMap, lenMap)
 		}
 		srvMapEmpty := true
-		sb.gwrm.m.Range(func(_, _ interface{}) bool {
+		sb.gwrm.m.Range(func(_, _ any) bool {
 			srvMapEmpty = false
 			return false
 		})
@@ -6973,7 +6978,7 @@ type testMissingOCSPStapleLogger struct {
 	ch chan string
 }
 
-func (l *testMissingOCSPStapleLogger) Errorf(format string, v ...interface{}) {
+func (l *testMissingOCSPStapleLogger) Errorf(format string, v ...any) {
 	msg := fmt.Sprintf(format, v...)
 	if strings.Contains(msg, "peer missing OCSP Staple") {
 		select {

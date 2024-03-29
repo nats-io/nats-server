@@ -12,7 +12,7 @@ import (
 
 // Test to make sure we get what we expect.
 
-func test(t *testing.T, data string, ex map[string]interface{}) {
+func test(t *testing.T, data string, ex map[string]any) {
 	t.Helper()
 	m, err := Parse(data)
 	if err != nil {
@@ -28,7 +28,7 @@ func test(t *testing.T, data string, ex map[string]interface{}) {
 }
 
 func TestSimpleTopLevel(t *testing.T) {
-	ex := map[string]interface{}{
+	ex := map[string]any{
 		"foo": "1",
 		"bar": float64(2.2),
 		"baz": true,
@@ -38,7 +38,7 @@ func TestSimpleTopLevel(t *testing.T) {
 }
 
 func TestBools(t *testing.T) {
-	ex := map[string]interface{}{
+	ex := map[string]any{
 		"foo": true,
 	}
 	test(t, "foo=true", ex)
@@ -54,7 +54,7 @@ var varSample = `
 `
 
 func TestSimpleVariable(t *testing.T) {
-	ex := map[string]interface{}{
+	ex := map[string]any{
 		"index": int64(22),
 		"foo":   int64(22),
 	}
@@ -71,9 +71,9 @@ var varNestedSample = `
 `
 
 func TestNestedVariable(t *testing.T) {
-	ex := map[string]interface{}{
+	ex := map[string]any{
 		"index": int64(22),
-		"nest": map[string]interface{}{
+		"nest": map[string]any{
 			"index": int64(11),
 			"foo":   int64(11),
 		},
@@ -93,7 +93,7 @@ func TestMissingVariable(t *testing.T) {
 }
 
 func TestEnvVariable(t *testing.T) {
-	ex := map[string]interface{}{
+	ex := map[string]any{
 		"foo": int64(22),
 	}
 	evar := "__UNIQ22__"
@@ -103,7 +103,7 @@ func TestEnvVariable(t *testing.T) {
 }
 
 func TestEnvVariableString(t *testing.T) {
-	ex := map[string]interface{}{
+	ex := map[string]any{
 		"foo": "xyz",
 	}
 	evar := "__UNIQ22__"
@@ -124,7 +124,7 @@ func TestEnvVariableStringStartingWithNumber(t *testing.T) {
 }
 
 func TestEnvVariableStringStartingWithNumberAndSizeUnit(t *testing.T) {
-	ex := map[string]interface{}{
+	ex := map[string]any{
 		"foo": "3Gyz",
 	}
 	evar := "__UNIQ22__"
@@ -134,7 +134,7 @@ func TestEnvVariableStringStartingWithNumberAndSizeUnit(t *testing.T) {
 }
 
 func TestEnvVariableStringStartingWithNumberUsingQuotes(t *testing.T) {
-	ex := map[string]interface{}{
+	ex := map[string]any{
 		"foo": "3xyz",
 	}
 	evar := "__UNIQ22__"
@@ -144,7 +144,7 @@ func TestEnvVariableStringStartingWithNumberUsingQuotes(t *testing.T) {
 }
 
 func TestBcryptVariable(t *testing.T) {
-	ex := map[string]interface{}{
+	ex := map[string]any{
 		"password": "$2a$11$ooo",
 	}
 	test(t, "password: $2a$11$ooo", ex)
@@ -172,7 +172,7 @@ pib = 22PiB
 `
 
 func TestConvenientNumbers(t *testing.T) {
-	ex := map[string]interface{}{
+	ex := map[string]any{
 		"k":   int64(8 * 1000),
 		"kb":  int64(4 * 1024),
 		"ki":  int64(3 * 1024),
@@ -206,13 +206,13 @@ foo  {
 `
 
 func TestSample1(t *testing.T) {
-	ex := map[string]interface{}{
-		"foo": map[string]interface{}{
-			"host": map[string]interface{}{
+	ex := map[string]any{
+		"foo": map[string]any{
+			"host": map[string]any{
 				"ip":   "127.0.0.1",
 				"port": int64(4242),
 			},
-			"servers": []interface{}{"a.com", "b.com", "c.com"},
+			"servers": []any{"a.com", "b.com", "c.com"},
 		},
 	}
 	test(t, sample1, ex)
@@ -242,15 +242,15 @@ cluster {
 `
 
 func TestSample2(t *testing.T) {
-	ex := map[string]interface{}{
-		"cluster": map[string]interface{}{
+	ex := map[string]any{
+		"cluster": map[string]any{
 			"port": int64(4244),
-			"authorization": map[string]interface{}{
+			"authorization": map[string]any{
 				"user":     "route_user",
 				"password": "top_secret",
 				"timeout":  int64(1),
 			},
-			"routes": []interface{}{
+			"routes": []any{
 				"nats-route://foo:bar@apcera.me:4245",
 				"nats-route://foo:bar@apcera.me:4246",
 			},
@@ -269,8 +269,8 @@ text block.'
 `
 
 func TestSample3(t *testing.T) {
-	ex := map[string]interface{}{
-		"foo": map[string]interface{}{
+	ex := map[string]any{
+		"foo": map[string]any{
 			"expr": "(true == \"false\")",
 			"text": "This is a multi-line\ntext block.",
 		},
@@ -286,10 +286,10 @@ var sample4 = `
 `
 
 func TestSample4(t *testing.T) {
-	ex := map[string]interface{}{
-		"array": []interface{}{
-			map[string]interface{}{"abc": int64(123)},
-			map[string]interface{}{"xyz": "word"},
+	ex := map[string]any{
+		"array": []any{
+			map[string]any{"abc": int64(123)},
+			map[string]any{"xyz": "word"},
 		},
 	}
 	test(t, sample4, ex)
@@ -303,7 +303,7 @@ var sample5 = `
 
 func TestSample5(t *testing.T) {
 	dt, _ := time.Parse("2006-01-02T15:04:05Z", "2016-05-04T18:53:41Z")
-	ex := map[string]interface{}{
+	ex := map[string]any{
 		"now": dt,
 		"gmt": false,
 	}
@@ -311,16 +311,16 @@ func TestSample5(t *testing.T) {
 }
 
 func TestIncludes(t *testing.T) {
-	ex := map[string]interface{}{
+	ex := map[string]any{
 		"listen": "127.0.0.1:4222",
-		"authorization": map[string]interface{}{
+		"authorization": map[string]any{
 			"ALICE_PASS": "$2a$10$UHR6GhotWhpLsKtVP0/i6.Nh9.fuY73cWjLoJjb2sKT8KISBcUW5q",
 			"BOB_PASS":   "$2a$11$dZM98SpGeI7dCFFGSpt.JObQcix8YHml4TBUZoge9R1uxnMIln5ly",
-			"users": []interface{}{
-				map[string]interface{}{
+			"users": []any{
+				map[string]any{
 					"user":     "alice",
 					"password": "$2a$10$UHR6GhotWhpLsKtVP0/i6.Nh9.fuY73cWjLoJjb2sKT8KISBcUW5q"},
-				map[string]interface{}{
+				map[string]any{
 					"user":     "bob",
 					"password": "$2a$11$dZM98SpGeI7dCFFGSpt.JObQcix8YHml4TBUZoge9R1uxnMIln5ly"},
 			},
@@ -366,11 +366,11 @@ func TestIncludeVariablesWithChecks(t *testing.T) {
 	if !ok {
 		t.Errorf("Expected %q to be in the config", key)
 	}
-	expectKeyVal := func(t *testing.T, m interface{}, expectedKey string, expectedVal string, expectedLine, expectedPos int) {
+	expectKeyVal := func(t *testing.T, m any, expectedKey string, expectedVal string, expectedLine, expectedPos int) {
 		t.Helper()
 		tk := m.(*token)
 		v := tk.Value()
-		vv := v.(map[string]interface{})
+		vv := v.(map[string]any)
 		value, ok := vv[expectedKey]
 		if !ok {
 			t.Errorf("Expected key %q", expectedKey)
@@ -603,7 +603,7 @@ func TestJSONParseCompat(t *testing.T) {
 		name     string
 		input    string
 		includes map[string]string
-		expected map[string]interface{}
+		expected map[string]any
 	}{
 		{
 			"JSON with nested blocks",
@@ -623,13 +623,13 @@ func TestJSONParseCompat(t *testing.T) {
                         }
                         `,
 			nil,
-			map[string]interface{}{
+			map[string]any{
 				"http_port":      int64(8227),
 				"port":           int64(4227),
 				"write_deadline": "1h",
-				"cluster": map[string]interface{}{
+				"cluster": map[string]any{
 					"port": int64(6222),
-					"routes": []interface{}{
+					"routes": []any{
 						"nats://127.0.0.1:4222",
 						"nats://127.0.0.1:4223",
 						"nats://127.0.0.1:4224",
@@ -649,8 +649,8 @@ func TestJSONParseCompat(t *testing.T) {
                         }
                         `,
 			nil,
-			map[string]interface{}{
-				"jetstream": map[string]interface{}{
+			map[string]any{
+				"jetstream": map[string]any{
 					"store_dir": "/tmp/nats",
 					"max_mem":   int64(1_000_000),
 				},
@@ -662,7 +662,7 @@ func TestJSONParseCompat(t *testing.T) {
 			"JSON empty object in one line",
 			`{}`,
 			nil,
-			map[string]interface{}{},
+			map[string]any{},
 		},
 		{
 			"JSON empty object with line breaks",
@@ -671,7 +671,7 @@ func TestJSONParseCompat(t *testing.T) {
                         }
                         `,
 			nil,
-			map[string]interface{}{},
+			map[string]any{},
 		},
 		{
 			"JSON includes",
@@ -684,28 +684,28 @@ func TestJSONParseCompat(t *testing.T) {
                         `,
 			map[string]string{
 				"foo.json": `{ "users": [ {"user": "foo"} ] }`,
-				"bar.json": `{ 
-                                  "users": [ {"user": "bar"} ] 
+				"bar.json": `{
+                                  "users": [ {"user": "bar"} ]
                                 }`,
 				"quux.json": `{}`,
 			},
-			map[string]interface{}{
-				"accounts": map[string]interface{}{
-					"foo": map[string]interface{}{
-						"users": []interface{}{
-							map[string]interface{}{
+			map[string]any{
+				"accounts": map[string]any{
+					"foo": map[string]any{
+						"users": []any{
+							map[string]any{
 								"user": "foo",
 							},
 						},
 					},
-					"bar": map[string]interface{}{
-						"users": []interface{}{
-							map[string]interface{}{
+					"bar": map[string]any{
+						"users": []any{
+							map[string]any{
 								"user": "bar",
 							},
 						},
 					},
-					"quux": map[string]interface{}{},
+					"quux": map[string]any{},
 				},
 			},
 		},

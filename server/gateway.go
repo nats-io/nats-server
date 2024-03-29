@@ -1203,7 +1203,7 @@ func (c *client) processGatewayInfo(info *Info) {
 			// Starting 2.9.0, we are phasing out the optimistic mode, so change
 			// all accounts to interest-only mode, unless instructed not to do so
 			// in some tests.
-			s.accounts.Range(func(_, v interface{}) bool {
+			s.accounts.Range(func(_, v any) bool {
 				acc := v.(*Account)
 				s.switchAccountToInterestMode(acc.GetName())
 				return true
@@ -1356,7 +1356,7 @@ func (s *Server) sendSubsToGateway(c *client, accountName string) {
 // This function will then execute appropriate function based on the command
 // contained in the protocol.
 // <Invoked from a route connection's readLoop>
-func (s *Server) processGatewayInfoFromRoute(info *Info, routeSrvID string, route *client) {
+func (s *Server) processGatewayInfoFromRoute(info *Info, routeSrvID string) {
 	switch info.GatewayCmd {
 	case gatewayCmdGossip:
 		s.processImplicitGateway(info)
@@ -2489,7 +2489,7 @@ func (g *srvGateway) shouldMapReplyForGatewaySend(acc *Account, reply []byte) bo
 }
 
 var subPool = &sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return &subscription{}
 	},
 }
@@ -3304,7 +3304,7 @@ func (s *Server) startGWReplyMapExpiration() {
 				}
 				now := time.Now().UnixNano()
 				mapEmpty := true
-				s.gwrm.m.Range(func(k, v interface{}) bool {
+				s.gwrm.m.Range(func(k, v any) bool {
 					g := k.(*gwReplyMapping)
 					l := v.(sync.Locker)
 					l.Lock()

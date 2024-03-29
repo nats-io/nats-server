@@ -76,7 +76,7 @@ func (e *ApiError) Error() string {
 	return fmt.Sprintf("%s (%d)", e.Description, e.ErrCode)
 }
 
-func (e *ApiError) toReplacerArgs(replacements []interface{}) []string {
+func (e *ApiError) toReplacerArgs(replacements []any) []string {
 	var (
 		ra  []string
 		key string

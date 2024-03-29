@@ -1112,7 +1112,7 @@ type captureSlowConsumerLogger struct {
 	gotIt bool
 }
 
-func (l *captureSlowConsumerLogger) Noticef(format string, v ...interface{}) {
+func (l *captureSlowConsumerLogger) Noticef(format string, v ...any) {
 	msg := fmt.Sprintf(format, v...)
 	if strings.Contains(msg, "Slow Consumer") {
 		l.Lock()
@@ -1880,7 +1880,7 @@ func newCaptureWarnLogger() *captureWarnLogger {
 	}
 }
 
-func (l *captureWarnLogger) Warnf(format string, v ...interface{}) {
+func (l *captureWarnLogger) Warnf(format string, v ...any) {
 	l.receive <- fmt.Sprintf(format, v...)
 }
 

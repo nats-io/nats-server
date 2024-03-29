@@ -544,7 +544,7 @@ func TestConnzWithCID(t *testing.T) {
 }
 
 // Helper to map to connection name
-func createConnMap(t *testing.T, cz *Connz) map[string]*ConnInfo {
+func createConnMap(cz *Connz) map[string]*ConnInfo {
 	cm := make(map[string]*ConnInfo)
 	for _, c := range cz.Conns {
 		cm[c.Name] = c
@@ -552,7 +552,7 @@ func createConnMap(t *testing.T, cz *Connz) map[string]*ConnInfo {
 	return cm
 }
 
-func getFooAndBar(t *testing.T, cm map[string]*ConnInfo) (*ConnInfo, *ConnInfo) {
+func getFooAndBar(cm map[string]*ConnInfo) (*ConnInfo, *ConnInfo) {
 	return cm["foo"], cm["bar"]
 }
 
@@ -640,7 +640,7 @@ func TestConnzLastActivity(t *testing.T) {
 		defer ncBar.Close()
 
 		// Test inside details of each connection
-		ciFoo, ciBar := getFooAndBar(t, createConnMap(t, pollConz(t, s, mode, url, opts)))
+		ciFoo, ciBar := getFooAndBar(createConnMap(pollConz(t, s, mode, url, opts)))
 
 		// Test that LastActivity is non-zero
 		if ciFoo.LastActivity.IsZero() {
@@ -666,7 +666,7 @@ func TestConnzLastActivity(t *testing.T) {
 		sub, _ := ncFoo.Subscribe("hello.world", func(m *nats.Msg) {})
 		ensureServerActivityRecorded(t, ncFoo)
 
-		ciFoo, _ = getFooAndBar(t, createConnMap(t, pollConz(t, s, mode, url, opts)))
+		ciFoo, _ = getFooAndBar(createConnMap(pollConz(t, s, mode, url, opts)))
 		nextLA := ciFoo.LastActivity
 		if fooLA.Equal(nextLA) {
 			t.Fatalf("Subscribe should have triggered update to LastActivity %+v\n", ciFoo)
@@ -682,7 +682,7 @@ func TestConnzLastActivity(t *testing.T) {
 		ensureServerActivityRecorded(t, ncFoo)
 		ensureServerActivityRecorded(t, ncBar)
 
-		ciFoo, ciBar = getFooAndBar(t, createConnMap(t, pollConz(t, s, mode, url, opts)))
+		ciFoo, ciBar = getFooAndBar(createConnMap(pollConz(t, s, mode, url, opts)))
 		nextLA = ciBar.LastActivity
 		if barLA.Equal(nextLA) {
 			t.Fatalf("Publish should have triggered update to LastActivity\n")
@@ -701,7 +701,7 @@ func TestConnzLastActivity(t *testing.T) {
 		sub.Unsubscribe()
 		ensureServerActivityRecorded(t, ncFoo)
 
-		ciFoo, _ = getFooAndBar(t, createConnMap(t, pollConz(t, s, mode, url, opts)))
+		ciFoo, _ = getFooAndBar(createConnMap(pollConz(t, s, mode, url, opts)))
 		nextLA = ciFoo.LastActivity
 		if fooLA.Equal(nextLA) {
 			t.Fatalf("Message delivery should have triggered update to LastActivity\n")
@@ -2391,7 +2391,7 @@ func TestClusterEmptyWhenNotDefined(t *testing.T) {
 	defer s.Shutdown()
 
 	body := readBody(t, fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port))
-	var v map[string]interface{}
+	var v map[string]any
 	if err := json.Unmarshal(body, &v); err != nil {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
 	}
@@ -2400,7 +2400,7 @@ func TestClusterEmptyWhenNotDefined(t *testing.T) {
 	if !ok {
 		return
 	}
-	if len(c.(map[string]interface{})) != 0 {
+	if len(c.(map[string]any)) != 0 {
 		t.Fatalf("Expected an empty cluster definition, instead got %+v\n", c)
 	}
 }
@@ -5306,7 +5306,7 @@ func TestHealthzStatusUnavailable(t *testing.T) {
 }
 
 // When we converted ipq to use generics we still were using sync.Map. Currently you can not convert
-// interface{} or any to a generic parameterized type. So this stopped working and panics.
+// any or any to a generic parameterized type. So this stopped working and panics.
 func TestIpqzWithGenerics(t *testing.T) {
 	opts := DefaultMonitorOptions()
 	opts.JetStream = true

@@ -842,7 +842,7 @@ func (s *Server) JetStreamEnabledForDomain() bool {
 	var jsFound bool
 	// If we are here we do not have JetStream enabled for ourselves, but we need to check all connected servers.
 	// TODO(dlc) - Could optimize and memoize this.
-	s.nodeToInfo.Range(func(k, v interface{}) bool {
+	s.nodeToInfo.Range(func(k, v any) bool {
 		// This should not be dependent on online status, so only check js.
 		if v.(nodeInfo).js {
 			jsFound = true

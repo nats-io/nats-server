@@ -1342,7 +1342,7 @@ func (s *Server) jsTemplateDeleteRequest(sub *subscription, c *client, _ *Accoun
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
-func (s *Server) jsonResponse(v interface{}) string {
+func (s *Server) jsonResponse(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {
 		s.Warnf("Problem marshaling JSON for JetStream API:", err)
@@ -2550,7 +2550,7 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 		peers = nil
 
 		clusters := map[string]struct{}{}
-		s.nodeToInfo.Range(func(_, ni interface{}) bool {
+		s.nodeToInfo.Range(func(_, ni any) bool {
 			if currCluster != ni.(nodeInfo).cluster {
 				clusters[ni.(nodeInfo).cluster] = struct{}{}
 			}
@@ -2856,11 +2856,11 @@ func isEmptyRequest(req []byte) bool {
 		return true
 	}
 	// If we are here we didn't get our simple match, but still could be valid.
-	var v interface{}
+	var v any
 	if err := json.Unmarshal(req, &v); err != nil {
 		return false
 	}
-	vm, ok := v.(map[string]interface{})
+	vm, ok := v.(map[string]any)
 	if !ok {
 		return false
 	}
@@ -3379,7 +3379,7 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, _ *Account
 	}
 
 	if s.JetStreamIsClustered() {
-		s.jsClusteredStreamRestoreRequest(ci, acc, &req, stream, subject, reply, rmsg)
+		s.jsClusteredStreamRestoreRequest(ci, acc, &req, subject, reply, rmsg)
 		return
 	}
 
@@ -3709,7 +3709,7 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, _ *Accoun
 		})
 
 		// Now do the real streaming.
-		s.streamSnapshot(ci, acc, mset, sr, &req)
+		s.streamSnapshot(acc, mset, sr, &req)
 
 		end := time.Now().UTC()
 
@@ -3739,7 +3739,7 @@ const defaultSnapshotChunkSize = 128 * 1024
 const defaultSnapshotWindowSize = 8 * 1024 * 1024 // 8MB
 
 // streamSnapshot will stream out our snapshot to the reply subject.
-func (s *Server) streamSnapshot(ci *ClientInfo, acc *Account, mset *stream, sr *SnapshotResult, req *JSApiStreamSnapshotRequest) {
+func (s *Server) streamSnapshot(acc *Account, mset *stream, sr *SnapshotResult, req *JSApiStreamSnapshotRequest) {
 	chunkSize := req.ChunkSize
 	if chunkSize == 0 {
 		chunkSize = defaultSnapshotChunkSize

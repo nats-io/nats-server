@@ -23,6 +23,14 @@ elif [ "$1" = "no_race_tests" ]; then
 
     go test -v -p=1 -run=TestNoRace ./... -count=1 -vet=off -timeout=30m -failfast
 
+elif [ "$1" = "store_tests" ]; then
+
+    # Run store tests. By convention, all file store tests start with `TestFileStore`,
+    # and memory store tests start with `TestMemStore`.
+
+    go test -race -v -run=TestMemStore ./server -count=1 -vet=off -timeout=30m -failfast
+    go test -race -v -run=TestFileStore ./server -count=1 -vet=off -timeout=30m -failfast
+
 elif [ "$1" = "js_tests" ]; then
 
     # Run JetStream non-clustered tests. By convention, all JS tests start
@@ -76,13 +84,20 @@ elif [ "$1" = "mqtt_tests" ]; then
 
     go test -race -v -run=TestMQTT ./server -count=1 -vet=off -timeout=30m -failfast
 
+elif [ "$1" = "msgtrace_tests" ]; then
+
+    # Run Message Tracing tests. By convention, all message tracing tests start with `TestMsgTrace`.
+
+    go test -race -v -run=TestMsgTrace ./server -count=1 -vet=off -timeout=30m -failfast
+
 elif [ "$1" = "srv_pkg_non_js_tests" ]; then
 
     # Run all non JetStream tests in the server package. We exclude the
-    # JS tests by using the `skip_js_tests` build tag and MQTT tests by
-    # using the `skip_mqtt_tests`
+    # store tests by using the `skip_store_tests` build tag, the JS tests
+    # by using `skip_js_tests`, MQTT tests by using `skip_mqtt_tests` and
+    # message tracing tests by using `skip_msgtrace_tests`.
 
-    go test -race -v -p=1 ./server/... -tags=skip_js_tests,skip_mqtt_tests -count=1 -vet=off -timeout=30m -failfast
+    go test -race -v -p=1 ./server/... -tags=skip_store_tests,skip_js_tests,skip_mqtt_tests,skip_msgtrace_tests -count=1 -vet=off -timeout=30m -failfast
 
 elif [ "$1" = "non_srv_pkg_tests" ]; then
 

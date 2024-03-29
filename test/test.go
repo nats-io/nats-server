@@ -33,8 +33,8 @@ import (
 
 // So we can pass tests and benchmarks..
 type tLogger interface {
-	Fatalf(format string, args ...interface{})
-	Errorf(format string, args ...interface{})
+	Fatalf(format string, args ...any)
+	Errorf(format string, args ...any)
 }
 
 // DefaultTestOptions are default options for the unit tests.
@@ -135,7 +135,7 @@ func RunServerWithConfigOverrides(configFile string, optsCallback func(*server.O
 	return
 }
 
-func stackFatalf(t tLogger, f string, args ...interface{}) {
+func stackFatalf(t tLogger, f string, args ...any) {
 	lines := make([]string, 0, 32)
 	msg := fmt.Sprintf(f, args...)
 	lines = append(lines, msg)
