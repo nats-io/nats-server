@@ -79,8 +79,8 @@ func TestFileStoreBasics(t *testing.T) {
 		defer fs.Stop()
 
 		subj, msg := "foo", []byte("Hello World")
-		now := time.Now().UnixNano()
 		for i := 1; i <= 5; i++ {
+			now := time.Now().UnixNano()
 			if seq, ts, err := fs.StoreMsg(subj, nil, msg); err != nil {
 				t.Fatalf("Error storing msg: %v", err)
 			} else if seq != uint64(i) {
