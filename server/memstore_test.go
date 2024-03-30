@@ -1022,3 +1022,32 @@ func TestMemStoreMultiLastSeqsMaxAllowed(t *testing.T) {
 	require_True(t, seqs == nil)
 	require_Error(t, err, ErrTooManyResults)
 }
+
+// Bug would cause PurgeEx to fail if it encountered a deleted msg at sequence to delete up to.
+func TestMemStorePurgeExWithDeletedMsgs(t *testing.T) {
+	cfg := &StreamConfig{
+		Name:     "zzz",
+		Subjects: []string{"foo"},
+		Storage:  MemoryStorage,
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(t, err)
+	defer ms.Stop()
+
+	msg := []byte("abc")
+	for i := 1; i <= 10; i++ {
+		ms.StoreMsg("foo", nil, msg)
+	}
+	ms.RemoveMsg(2)
+	ms.RemoveMsg(9) // This was the bug
+
+	n, err := ms.PurgeEx(_EMPTY_, 9, 0)
+	require_NoError(t, err)
+	require_Equal(t, n, 7)
+
+	var state StreamState
+	ms.FastState(&state)
+	require_Equal(t, state.FirstSeq, 10)
+	require_Equal(t, state.LastSeq, 10)
+	require_Equal(t, state.Msgs, 1)
+}
