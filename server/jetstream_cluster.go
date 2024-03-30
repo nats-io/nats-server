@@ -7725,7 +7725,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		if mset.inflight == nil {
 			mset.inflight = make(map[uint64]uint64)
 		}
-		if mset.cfg.Storage == FileStorage {
+		if stype == FileStorage {
 			mset.inflight[mset.clseq] = fileStoreMsgSize(subject, hdr, msg)
 		} else {
 			mset.inflight[mset.clseq] = memStoreMsgSize(subject, hdr, msg)
