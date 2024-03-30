@@ -794,15 +794,15 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 	ms.mu.Lock()
 	cb := ms.scb
 	if seq <= ms.state.LastSeq {
-		sm, ok := ms.msgs[seq]
-		if !ok {
-			ms.mu.Unlock()
-			return 0, ErrStoreMsgNotFound
-		}
 		fseq := ms.state.FirstSeq
-		ms.state.FirstSeq = seq
-		ms.state.FirstTime = time.Unix(0, sm.ts).UTC()
-
+		// Determine new first sequence.
+		for ; seq <= ms.state.LastSeq; seq++ {
+			if sm, ok := ms.msgs[seq]; ok {
+				ms.state.FirstSeq = seq
+				ms.state.FirstTime = time.Unix(0, sm.ts).UTC()
+				break
+			}
+		}
 		for seq := seq - 1; seq >= fseq; seq-- {
 			if sm := ms.msgs[seq]; sm != nil {
 				bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.msg)
