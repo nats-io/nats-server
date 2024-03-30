@@ -5878,7 +5878,6 @@ func (mset *stream) checkAckFloor(state *StreamState, checkMinTime bool) {
 		mset.clsMu.RUnlock()
 		return
 	}
-	mset.afc = time.Now()
 
 	var lowAckFloor uint64 = math.MaxUint64
 	for _, o := range mset.cList {
@@ -5911,6 +5910,11 @@ func (mset *stream) checkAckFloor(state *StreamState, checkMinTime bool) {
 		mset.clearAllPreAcksBelowFloor(lowAckFloor + 1)
 		mset.mu.Unlock()
 	}
+
+	// Set the time we did the check.
+	mset.clsMu.Lock()
+	mset.afc = time.Now()
+	mset.clsMu.Unlock()
 }
 
 // Snapshot creates a snapshot for the stream and possibly consumers.
