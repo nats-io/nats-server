@@ -267,7 +267,9 @@ type stream struct {
 	cList []*consumer
 	sch   chan struct{}
 	sigq  *ipQueue[*cMsg]
-	csl   *Sublist // Consumer Sublist
+	csl   *Sublist  // Consumer Sublist
+	afc   time.Time // Last time we checked ackfloor
+
 	// Leader will store seq/msgTrace in clustering mode. Used in applyStreamEntries
 	// to know if trace event should be sent after processing.
 	mt map[uint64]*msgTrace
@@ -858,12 +860,18 @@ func (mset *stream) setLeader(isLeader bool) error {
 	} else {
 		mset.leader = _EMPTY_
 	}
+
 	mset.mu.Unlock()
 
-	if isLeader {
+	if isLeader && mset.isInterestRetention() {
 		// If we are interest based make sure to check consumers if interest retention policy.
 		// This is to make sure we process any outstanding acks.
 		mset.checkInterestState()
+		if !mset.isClustered() {
+			var state StreamState
+			mset.store.FastState(&state)
+			mset.checkAckFloor(&state, false)
+		}
 	}
 	return nil
 }
@@ -3989,6 +3997,12 @@ func (mset *stream) isClustered() bool {
 	return mset.node != nil
 }
 
+// Return if any limits are set.
+// Lock should be held.
+func (mset *stream) hasLimitsSet() bool {
+	return mset.cfg.MaxMsgs > 0 || mset.cfg.MaxBytes > 0 || mset.cfg.MaxMsgsPer > 0 || mset.cfg.MaxAge > 0
+}
+
 // Used if we have to queue things internally to avoid the route/gw path.
 type inMsg struct {
 	subj string
@@ -5805,19 +5819,22 @@ func (mset *stream) ackMsg(o *consumer, seq uint64) {
 		return
 	}
 
+	store := mset.store
 	var state StreamState
-	mset.store.FastState(&state)
-
-	// Make sure this sequence is not below our first sequence.
-	if seq < state.FirstSeq {
-		mset.clearPreAck(o, seq)
-		mset.mu.Unlock()
-		return
-	}
+	store.FastState(&state)
 
 	// If this has arrived before we have processed the message itself.
 	if seq > state.LastSeq {
 		mset.registerPreAck(o, seq)
+		mset.mu.Unlock()
+		return
+	}
+
+	// Always clear pre-ack if here.
+	mset.clearPreAck(o, seq)
+
+	// Make sure this sequence is not below our first sequence.
+	if seq < state.FirstSeq {
 		mset.mu.Unlock()
 		return
 	}
@@ -5831,6 +5848,9 @@ func (mset *stream) ackMsg(o *consumer, seq uint64) {
 	case InterestPolicy:
 		shouldRemove = mset.noInterest(seq, o)
 	}
+	// To see if we should check our ack floors vs our first sequence.
+	// We know we are interest retention since we are here, but check for clustered and limits too.
+	checkAckFloor := mset.isClustered() && mset.hasLimitsSet()
 	mset.mu.Unlock()
 
 	// If nothing else to do.
@@ -5839,9 +5859,57 @@ func (mset *stream) ackMsg(o *consumer, seq uint64) {
 	}
 
 	// If we are here we should attempt to remove.
-	if _, err := mset.store.RemoveMsg(seq); err == ErrStoreEOF {
+	if _, err := store.RemoveMsg(seq); err == ErrStoreEOF {
 		// This should not happen, but being pedantic.
 		mset.registerPreAckLock(o, seq)
+	}
+
+	// Only for clustered streams with additional limits set.
+	if checkAckFloor {
+		mset.checkAckFloor(&state, true)
+	}
+}
+
+// This will check if our ack floor has drifted above our first sequence. This requires
+// interest retention and clustered mode and limits to be defined, e.g. MaxMsgs, MaxBytes, etc.
+func (mset *stream) checkAckFloor(state *StreamState, checkMinTime bool) {
+	mset.clsMu.RLock()
+	if checkMinTime && time.Since(mset.afc) < 5*time.Second {
+		mset.clsMu.RUnlock()
+		return
+	}
+	mset.afc = time.Now()
+
+	var lowAckFloor uint64 = math.MaxUint64
+	for _, o := range mset.cList {
+		o.mu.RLock()
+		if o.isLeader() {
+			if o.asflr < lowAckFloor {
+				lowAckFloor = o.asflr
+			}
+		} else {
+			// We are a follower so only have the store state, so read that in.
+			state, err := o.store.State()
+			if err != nil {
+				// On error we will not have enough information so bail.
+				o.mu.RUnlock()
+				mset.clsMu.RUnlock()
+				return
+			}
+			if state.AckFloor.Stream < lowAckFloor {
+				lowAckFloor = state.AckFloor.Stream
+			}
+		}
+		o.mu.RUnlock()
+	}
+	mset.clsMu.RUnlock()
+
+	if lowAckFloor < math.MaxUint64 && lowAckFloor > state.FirstSeq {
+		mset.purge(&JSApiStreamPurgeRequest{Sequence: lowAckFloor + 1})
+		// Also make sure we clear any pending acks.
+		mset.mu.Lock()
+		mset.clearAllPreAcksBelowFloor(lowAckFloor + 1)
+		mset.mu.Unlock()
 	}
 }
 
