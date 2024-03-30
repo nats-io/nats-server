@@ -64,7 +64,7 @@ func TestJetStreamWorkQueueMultiConsumer(t *testing.T) {
 				}
 			}
 		}
-		t.Logf("Published %d messages", cnt)
+		t.Logf("Published %d messages", cnt*3)
 	}()
 
 	wg := &sync.WaitGroup{}
@@ -96,7 +96,7 @@ func TestJetStreamWorkQueueMultiConsumer(t *testing.T) {
 
 			// Keep track of the last message counter which is determined
 			// based on the third token in the subject.
-			rem := 1_000_000
+			rem := 3_000_000
 			lstCnt := 0
 			for rem > 0 {
 				// Randomly drain the consumer and rebind the consumer every so often.
