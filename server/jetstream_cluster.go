@@ -2151,6 +2151,58 @@ func genPeerInfo(peers []string, split int) (newPeers, oldPeers []string, newPee
 	return
 }
 
+// This will wait for a period of time until all consumers are registered and have
+// their consumer assignments assigned.
+// Should only be called from monitorStream.
+func (mset *stream) waitOnConsumerAssignments() {
+	mset.mu.RLock()
+	s, js, acc, sa, name := mset.srv, mset.js, mset.acc, mset.sa, mset.cfg.Name
+	mset.mu.RUnlock()
+
+	if s == nil || js == nil || acc == nil || sa == nil {
+		return
+	}
+
+	js.mu.RLock()
+	numExpectedConsumers := len(sa.consumers)
+	js.mu.RUnlock()
+
+	// Max to wait.
+	const maxWaitTime = 10 * time.Second
+	const sleepTime = 500 * time.Millisecond
+
+	// Wait up to 10s
+	timeout := time.Now().Add(maxWaitTime)
+	for time.Now().Before(timeout) {
+		var numReady int
+		for _, o := range mset.getConsumers() {
+			// Make sure we are registered with our consumer assignment.
+			if ca := o.consumerAssignment(); ca != nil {
+				numReady++
+			} else {
+				break
+			}
+		}
+		// Check if we are good.
+		if numReady >= numExpectedConsumers {
+			break
+		}
+
+		s.Debugf("Waiting for consumers for interest based stream '%s > %s'", acc.Name, name)
+		select {
+		case <-s.quitCh:
+			return
+		case <-mset.monitorQuitC():
+			return
+		case <-time.After(sleepTime):
+		}
+	}
+
+	if actual := mset.numConsumers(); actual < numExpectedConsumers {
+		s.Warnf("All consumers not online for '%s > %s': expected %d but only have %d", acc.Name, name, numExpectedConsumers, actual)
+	}
+}
+
 // Monitor our stream node for this stream.
 func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnapshot bool) {
 	s, cc := js.server(), js.cluster
@@ -2303,32 +2355,22 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	}
 	defer stopDirectMonitoring()
 
-	// Check if we are interest based and if so and we have an active stream wait until we
-	// have the consumers attached. This can become important when a server has lots of assets
-	// since we process streams first then consumers as an asset class.
+	// Timer to check ack floors against our first sequence.
+	// We do this on leader change etc. But if we have limits also
+	// set like max msgs or max bytes these could drift since streams
+	// and consumers operate independently with respect to acks and dropping msgs.
+	var afcc <-chan time.Time
+
 	if mset != nil && mset.isInterestRetention() {
-		js.mu.RLock()
-		numExpectedConsumers := len(sa.consumers)
-		js.mu.RUnlock()
-		if mset.numConsumers() < numExpectedConsumers {
-			s.Debugf("Waiting for consumers for interest based stream '%s > %s'", accName, mset.name())
-			// Wait up to 10s
-			const maxWaitTime = 10 * time.Second
-			const sleepTime = 250 * time.Millisecond
-			timeout := time.Now().Add(maxWaitTime)
-			for time.Now().Before(timeout) {
-				if mset.numConsumers() >= numExpectedConsumers {
-					break
-				}
-				select {
-				case <-s.quitCh:
-					return
-				case <-time.After(sleepTime):
-				}
-			}
-			if actual := mset.numConsumers(); actual < numExpectedConsumers {
-				s.Warnf("All consumers not online for '%s > %s': expected %d but only have %d", accName, mset.name(), numExpectedConsumers, actual)
-			}
+		// Wait on our consumers to be assigned and running before proceeding.
+		// This can become important when a server has lots of assets
+		// since we process streams first then consumers as an asset class.
+		mset.waitOnConsumerAssignments()
+		// Check if we should set up our ack floor checks.
+		if mset.hasLimitsSet() {
+			t = time.NewTicker(10 * time.Second)
+			defer t.Stop()
+			afcc = t.C
 		}
 	}
 
@@ -2358,7 +2400,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				if ce == nil {
 					isRecovering = false
 					// If we are interest based make sure to check consumers if interest retention policy.
-					// This is to make sure we process any outstanding acks.
+					// This is to make sure we process any outstanding acks from all consumers.
 					mset.checkInterestState()
 					// Make sure we create a new snapshot in case things have changed such that any existing
 					// snapshot may no longer be valid.
@@ -2452,6 +2494,10 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					startDirectAccessMonitoring()
 				}
 			}
+
+		case <-afcc:
+			// Check that ack floor for all consumers is equal to our first sequence.
+			mset.checkInterestState()
 
 		case <-datc:
 			if mset == nil || isRecovering {
@@ -4715,8 +4761,6 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 					if n.NeedSnapshot() {
 						doSnapshot(true)
 					}
-					// Check our state if we are under an interest based stream.
-					o.checkStateForInterestStream()
 				} else if err := js.applyConsumerEntries(o, ce, isLeader); err == nil {
 					ne, nb := n.Applied(ce.Index)
 					ce.ReturnToPool()
@@ -4737,6 +4781,14 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			// Process the change.
 			if err := js.processConsumerLeaderChange(o, isLeader); err == nil && isLeader {
 				doSnapshot(true)
+				// Synchronize followers to our state. Only send out if we have state.
+				if isLeader && n != nil {
+					if _, _, applied := n.Progress(); applied > 0 {
+						if snap, err := o.store.EncodedState(); err == nil {
+							n.SendSnapshot(snap)
+						}
+					}
+				}
 			}
 
 			// We may receive a leader change after the consumer assignment which would cancel us
@@ -4851,8 +4903,6 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 					if s != nil && mset != nil {
 						s.Warnf("Consumer '%s > %s > %s' error on store update from snapshot entry: %v", acc, mset.name(), name, err)
 					}
-				} else {
-					o.checkStateForInterestStream()
 				}
 			}
 

@@ -1392,6 +1392,10 @@ func (o *consumer) setLeader(isLeader bool) {
 		} else if o.srv.gateway.enabled {
 			stopAndClearTimer(&o.gwdtmr)
 		}
+		// If we were the leader make sure to drain queued up acks.
+		if wasLeader {
+			o.ackMsgs.drain()
+		}
 		o.mu.Unlock()
 
 		// Unregister as a leader with our parent stream.
@@ -2534,19 +2538,18 @@ func (o *consumer) applyState(state *ConsumerState) {
 		return
 	}
 
-	// If o.sseq is greater don't update. Don't go backwards on o.sseq.
-	if o.sseq <= state.Delivered.Stream {
+	// If o.sseq is greater don't update. Don't go backwards on o.sseq if leader.
+	if !o.isLeader() || o.sseq <= state.Delivered.Stream {
 		o.sseq = state.Delivered.Stream + 1
 	}
 	o.dseq = state.Delivered.Consumer + 1
-
 	o.adflr = state.AckFloor.Consumer
 	o.asflr = state.AckFloor.Stream
 	o.pending = state.Pending
 	o.rdc = state.Redelivered
 
 	// Setup tracking timer if we have restored pending.
-	if len(o.pending) > 0 {
+	if o.isLeader() && len(o.pending) > 0 {
 		// This is on startup or leader change. We want to check pending
 		// sooner in case there are inconsistencies etc. Pick between 500ms - 1.5s
 		delay := 500*time.Millisecond + time.Duration(rand.Int63n(1000))*time.Millisecond
@@ -2809,10 +2812,8 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, doSample bool) {
 			delete(o.pending, sseq)
 			// Use the original deliver sequence from our pending record.
 			dseq = p.Sequence
-			// Only move floors if we matched and existing pending.
-			if len(o.pending) == 0 {
-				o.adflr, o.asflr = o.dseq-1, o.sseq-1
-			} else if dseq == o.adflr+1 {
+			// Only move floors if we matched an existing pending.
+			if dseq == o.adflr+1 {
 				o.adflr, o.asflr = dseq, sseq
 				for ss := sseq + 1; ss < o.sseq; ss++ {
 					if p, ok := o.pending[ss]; ok {
@@ -2821,6 +2822,10 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, doSample bool) {
 						}
 						break
 					}
+				}
+				// If nothing left set to current delivered.
+				if len(o.pending) == 0 {
+					o.adflr, o.asflr = o.dseq-1, o.sseq-1
 				}
 			}
 		}
@@ -4059,8 +4064,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		pmsg, dc, err = o.getNextMsg()
 
 		// We can release the lock now under getNextMsg so need to check this condition again here.
-		// consumer is closed when mset is set to nil.
-		if o.mset == nil {
+		if o.closed || o.mset == nil {
 			o.mu.Unlock()
 			return
 		}
@@ -4311,50 +4315,55 @@ func (o *consumer) streamNumPending() uint64 {
 		o.npc, o.npf = 0, 0
 		return 0
 	}
+	npc, npf := o.calculateNumPending()
+	o.npc, o.npf = int64(npc), npf
+	return o.numPending()
+}
+
+// Will calculate num pending but only requires a read lock.
+// Depends on delivery policy, for last per subject we calculate differently.
+// At least RLock should be held.
+func (o *consumer) calculateNumPending() (npc, npf uint64) {
+	if o.mset == nil || o.mset.store == nil {
+		return 0, 0
+	}
 
 	isLastPerSubject := o.cfg.DeliverPolicy == DeliverLastPerSubject
 
 	// Deliver Last Per Subject calculates num pending differently.
 	if isLastPerSubject {
-		o.npc, o.npf = 0, 0
 		// Consumer without filters.
 		if o.subjf == nil {
-			npc, npf := o.mset.store.NumPending(o.sseq, _EMPTY_, isLastPerSubject)
-			o.npc, o.npf = int64(npc), npf
-			return o.numPending()
+			return o.mset.store.NumPending(o.sseq, _EMPTY_, isLastPerSubject)
 		}
 		// Consumer with filters.
 		for _, filter := range o.subjf {
-			npc, npf := o.mset.store.NumPending(o.sseq, filter.subject, isLastPerSubject)
-			o.npc += int64(npc)
-			if npf > o.npf {
-				o.npf = npf // Always last
+			lnpc, lnpf := o.mset.store.NumPending(o.sseq, filter.subject, isLastPerSubject)
+			npc += lnpc
+			if lnpf > npf {
+				npf = lnpf // Always last
 			}
 		}
-		return o.numPending()
+		return npc, npf
 	}
 	// Every other Delivery Policy is handled here.
 	// Consumer without filters.
 	if o.subjf == nil {
-		npc, npf := o.mset.store.NumPending(o.sseq, o.cfg.FilterSubject, isLastPerSubject)
-		o.npc, o.npf = int64(npc), npf
-		return o.numPending()
+		return o.mset.store.NumPending(o.sseq, _EMPTY_, false)
 	}
 	// Consumer with filters.
-	o.npc, o.npf = 0, 0
 	for _, filter := range o.subjf {
 		// We might loose state of o.subjf, so if we do recover from o.sseq
 		if filter.currentSeq < o.sseq {
 			filter.currentSeq = o.sseq
 		}
-		npc, npf := o.mset.store.NumPending(filter.currentSeq, filter.subject, isLastPerSubject)
-		o.npc += int64(npc)
-		if npf > o.npf {
-			o.npf = npf // Always last
+		lnpc, lnpf := o.mset.store.NumPending(filter.currentSeq, filter.subject, false)
+		npc += lnpc
+		if lnpf > npf {
+			npf = lnpf // Always last
 		}
 	}
-
-	return o.numPending()
+	return npc, npf
 }
 
 func convertToHeadersOnly(pmsg *jsPubMsg) {
@@ -4406,6 +4415,10 @@ func (o *consumer) deliverMsg(dsubj, ackReply string, pmsg *jsPubMsg, dc uint64,
 
 	// Cant touch pmsg after this sending so capture what we need.
 	seq, ts := pmsg.seq, pmsg.ts
+
+	// Update delivered first.
+	o.updateDelivered(dseq, seq, dc, ts)
+
 	// Send message.
 	o.outq.send(pmsg)
 
@@ -4425,9 +4438,6 @@ func (o *consumer) deliverMsg(dsubj, ackReply string, pmsg *jsPubMsg, dc uint64,
 	if o.isPullMode() && o.dthresh > 0 {
 		o.waiting.last = time.Now()
 	}
-
-	// FIXME(dlc) - Capture errors?
-	o.updateDelivered(dseq, seq, dc, ts)
 
 	// If we are ack none and mset is interest only we should make sure stream removes interest.
 	if ap == AckNone && rp != LimitsPolicy {
@@ -5420,7 +5430,7 @@ func (o *consumer) decStreamPending(sseq uint64, subj string) {
 
 	// If it was pending process it like an ack.
 	if wasPending {
-		// We could have lock for stream so do this in a go routine.
+		// We could have the lock for the stream so do this in a go routine.
 		// TODO(dlc) - We should do this with ipq vs naked go routines.
 		go o.processTerm(sseq, p.Sequence, rdc, ackTermUnackedLimitsReason)
 	}

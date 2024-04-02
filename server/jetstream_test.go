@@ -1360,7 +1360,7 @@ func TestJetStreamBasicDeliverSubject(t *testing.T) {
 			}
 			// Check that is is the last msg we sent though.
 			if mseq, _ := strconv.Atoi(string(m.Data)); mseq != 200 {
-				t.Fatalf("Expected messag sequence to be 200, but got %d", mseq)
+				t.Fatalf("Expected message sequence to be 200, but got %d", mseq)
 			}
 
 			checkSubEmpty()

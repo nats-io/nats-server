@@ -1955,9 +1955,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 	// Check if we are a clustered interest retention stream with limits.
 	// If so, check ack floors against our state.
 	if checkAcks {
-		var state StreamState
-		mset.store.FastState(&state)
-		mset.checkAckFloor(&state, false)
+		mset.checkInterestState()
 	}
 
 	resp.StreamInfo = &StreamInfo{

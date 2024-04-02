@@ -267,8 +267,7 @@ type stream struct {
 	cList []*consumer
 	sch   chan struct{}
 	sigq  *ipQueue[*cMsg]
-	csl   *Sublist  // Consumer Sublist
-	afc   time.Time // Last time we checked ackfloor
+	csl   *Sublist // Consumer Sublist
 
 	// Leader will store seq/msgTrace in clustering mode. Used in applyStreamEntries
 	// to know if trace event should be sent after processing.
@@ -860,18 +859,12 @@ func (mset *stream) setLeader(isLeader bool) error {
 	} else {
 		mset.leader = _EMPTY_
 	}
-
 	mset.mu.Unlock()
 
-	if isLeader && mset.isInterestRetention() {
+	if mset.isInterestRetention() {
 		// If we are interest based make sure to check consumers if interest retention policy.
 		// This is to make sure we process any outstanding acks.
 		mset.checkInterestState()
-		if !mset.isClustered() {
-			var state StreamState
-			mset.store.FastState(&state)
-			mset.checkAckFloor(&state, false)
-		}
 	}
 	return nil
 }
@@ -5446,7 +5439,8 @@ func (mset *stream) getPublicConsumers() []*consumer {
 }
 
 // Will check for interest retention and make sure messages
-// that have been acked are processed.
+// that have been acked are processed and removed.
+// This will check the ack floors of all consumers, and adjust our first sequence accordingly.
 func (mset *stream) checkInterestState() {
 	if mset == nil {
 		return
@@ -5455,8 +5449,77 @@ func (mset *stream) checkInterestState() {
 		// If we are limits based nothing to do.
 		return
 	}
-	for _, o := range mset.getPublicConsumers() {
-		o.checkStateForInterestStream()
+
+	mset.clsMu.RLock()
+	var zeroAcks []*consumer
+	var lowAckFloor uint64 = math.MaxUint64
+	for _, o := range mset.cList {
+		o.mu.RLock()
+		if o.isLeader() {
+			// We need to account for consumers with ack floor of zero.
+			// We will collect them and see if we need to check pending below.
+			if o.asflr == 0 {
+				zeroAcks = append(zeroAcks, o)
+			} else if o.asflr < lowAckFloor {
+				lowAckFloor = o.asflr
+			}
+		} else {
+			// We are a follower so only have the store state, so read that in.
+			state, err := o.store.State()
+			if err != nil {
+				// On error we will not have enough information to process correctly so bail.
+				o.mu.RUnlock()
+				mset.clsMu.RUnlock()
+				return
+			}
+			// We need to account for consumers with ack floor of zero.
+			if state.AckFloor.Stream == 0 {
+				zeroAcks = append(zeroAcks, o)
+			} else if state.AckFloor.Stream < lowAckFloor {
+				lowAckFloor = state.AckFloor.Stream
+			}
+			// We are a follower here but if we detect a drift from when we were previous leader correct here.
+			if o.asflr > state.AckFloor.Stream || o.sseq > state.Delivered.Stream+1 {
+				o.applyState(state)
+			}
+		}
+		o.mu.RUnlock()
+	}
+	mset.clsMu.RUnlock()
+
+	// If nothing was set we can bail.
+	if lowAckFloor == math.MaxUint64 {
+		return
+	}
+
+	// Hold stream write lock in case we need to purge.
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+
+	// Capture our current state.
+	var state StreamState
+	mset.store.FastState(&state)
+
+	if lowAckFloor < math.MaxUint64 && lowAckFloor > state.FirstSeq {
+		// Check if we had any zeroAcks, we will need to check them.
+		for _, o := range zeroAcks {
+			var np uint64
+			o.mu.RLock()
+			if o.isLeader() {
+				np = uint64(o.numPending())
+			} else {
+				np, _ = o.calculateNumPending()
+			}
+			o.mu.RUnlock()
+			// This means we have pending and can not remove anything at this time.
+			if np > 0 {
+				return
+			}
+		}
+		// Purge the stream to lowest ack floor + 1
+		mset.store.PurgeEx(_EMPTY_, lowAckFloor+1, 0)
+		// Also make sure we clear any pending acks.
+		mset.clearAllPreAcksBelowFloor(lowAckFloor + 1)
 	}
 }
 
@@ -5848,9 +5911,6 @@ func (mset *stream) ackMsg(o *consumer, seq uint64) {
 	case InterestPolicy:
 		shouldRemove = mset.noInterest(seq, o)
 	}
-	// To see if we should check our ack floors vs our first sequence.
-	// We know we are interest retention since we are here, but check for clustered and limits too.
-	checkAckFloor := mset.isClustered() && mset.hasLimitsSet()
 	mset.mu.Unlock()
 
 	// If nothing else to do.
@@ -5863,58 +5923,6 @@ func (mset *stream) ackMsg(o *consumer, seq uint64) {
 		// This should not happen, but being pedantic.
 		mset.registerPreAckLock(o, seq)
 	}
-
-	// Only for clustered streams with additional limits set.
-	if checkAckFloor {
-		mset.checkAckFloor(&state, true)
-	}
-}
-
-// This will check if our ack floor has drifted above our first sequence. This requires
-// interest retention and clustered mode and limits to be defined, e.g. MaxMsgs, MaxBytes, etc.
-func (mset *stream) checkAckFloor(state *StreamState, checkMinTime bool) {
-	mset.clsMu.RLock()
-	if checkMinTime && time.Since(mset.afc) < 5*time.Second {
-		mset.clsMu.RUnlock()
-		return
-	}
-
-	var lowAckFloor uint64 = math.MaxUint64
-	for _, o := range mset.cList {
-		o.mu.RLock()
-		if o.isLeader() {
-			if o.asflr < lowAckFloor {
-				lowAckFloor = o.asflr
-			}
-		} else {
-			// We are a follower so only have the store state, so read that in.
-			state, err := o.store.State()
-			if err != nil {
-				// On error we will not have enough information so bail.
-				o.mu.RUnlock()
-				mset.clsMu.RUnlock()
-				return
-			}
-			if state.AckFloor.Stream < lowAckFloor {
-				lowAckFloor = state.AckFloor.Stream
-			}
-		}
-		o.mu.RUnlock()
-	}
-	mset.clsMu.RUnlock()
-
-	if lowAckFloor < math.MaxUint64 && lowAckFloor > state.FirstSeq {
-		mset.purge(&JSApiStreamPurgeRequest{Sequence: lowAckFloor + 1})
-		// Also make sure we clear any pending acks.
-		mset.mu.Lock()
-		mset.clearAllPreAcksBelowFloor(lowAckFloor + 1)
-		mset.mu.Unlock()
-	}
-
-	// Set the time we did the check.
-	mset.clsMu.Lock()
-	mset.afc = time.Now()
-	mset.clsMu.Unlock()
 }
 
 // Snapshot creates a snapshot for the stream and possibly consumers.

@@ -2535,6 +2535,10 @@ func (fs *fileStore) numFilteredPending(filter string, ss *SimpleState) {
 			stop = psi.lblk
 		}
 	})
+	// If we have nothing just return.
+	if ss.Msgs == 0 {
+		return
+	}
 	// We do need to figure out the first and last sequences.
 	wc := subjectHasWildcard(filter)
 	// Do start
@@ -8470,7 +8474,7 @@ func (o *consumerFileStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) err
 	}
 
 	// On restarts the old leader may get a replay from the raft logs that are old.
-	if dseq <= o.state.AckFloor.Consumer {
+	if sseq <= o.state.AckFloor.Stream {
 		return nil
 	}
 
@@ -8484,7 +8488,9 @@ func (o *consumerFileStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) err
 		// Check for an update to a message already delivered.
 		if sseq <= o.state.Delivered.Stream {
 			if p = o.state.Pending[sseq]; p != nil {
-				p.Sequence, p.Timestamp = dseq, ts
+				// Update timestamp but keep original consumer delivery sequence.
+				// So do not update p.Sequence.
+				p.Timestamp = ts
 			}
 		} else {
 			// Add to pending.
@@ -8538,7 +8544,7 @@ func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
 	}
 
 	// On restarts the old leader may get a replay from the raft logs that are old.
-	if dseq <= o.state.AckFloor.Consumer {
+	if sseq <= o.state.AckFloor.Stream {
 		return nil
 	}
 
@@ -8567,26 +8573,29 @@ func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
 	if p, ok := o.state.Pending[sseq]; ok {
 		delete(o.state.Pending, sseq)
 		dseq = p.Sequence // Use the original.
-	}
-	if len(o.state.Pending) == 0 {
-		o.state.AckFloor.Consumer = o.state.Delivered.Consumer
-		o.state.AckFloor.Stream = o.state.Delivered.Stream
-	} else if dseq == o.state.AckFloor.Consumer+1 {
-		o.state.AckFloor.Consumer = dseq
-		o.state.AckFloor.Stream = sseq
 
-		if o.state.Delivered.Consumer > dseq {
-			for ss := sseq + 1; ss <= o.state.Delivered.Stream; ss++ {
-				if p, ok := o.state.Pending[ss]; ok {
-					if p.Sequence > 0 {
-						o.state.AckFloor.Consumer = p.Sequence - 1
-						o.state.AckFloor.Stream = ss - 1
+		if dseq == o.state.AckFloor.Consumer+1 {
+			o.state.AckFloor.Consumer = dseq
+			o.state.AckFloor.Stream = sseq
+
+			if o.state.Delivered.Consumer > dseq {
+				for ss := sseq + 1; ss <= o.state.Delivered.Stream; ss++ {
+					if p, ok := o.state.Pending[ss]; ok {
+						if p.Sequence > 0 {
+							o.state.AckFloor.Consumer = p.Sequence - 1
+							o.state.AckFloor.Stream = ss - 1
+						}
+						break
 					}
-					break
 				}
+			}
+			if len(o.state.Pending) == 0 {
+				o.state.AckFloor.Consumer = o.state.Delivered.Consumer
+				o.state.AckFloor.Stream = o.state.Delivered.Stream
 			}
 		}
 	}
+
 	// We do these regardless.
 	delete(o.state.Redelivered, sseq)
 
@@ -8628,11 +8637,6 @@ func (o *consumerFileStore) UpdateConfig(cfg *ConsumerConfig) error {
 func (o *consumerFileStore) Update(state *ConsumerState) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-
-	// Check to see if this is an outdated update.
-	if state.Delivered.Consumer < o.state.Delivered.Consumer || state.AckFloor.Stream < o.state.AckFloor.Stream {
-		return nil
-	}
 
 	// Sanity checks.
 	if state.AckFloor.Consumer > state.Delivered.Consumer {
