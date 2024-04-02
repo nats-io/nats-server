@@ -7140,7 +7140,7 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 	_, err := js.AddStream(sc)
 	require_NoError(t, err)
 
-	pctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	pctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	// Start producers
@@ -7149,14 +7149,35 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 	// First call is just to create the pull subscribers.
 	mp := nats.MaxAckPending(10000)
 	mw := nats.PullMaxWaiting(1000)
+	aw := nats.AckWait(5 * time.Second)
+
 	for i := 0; i < 10; i++ {
 		for _, partition := range []string{"EEEEE"} {
 			subject := fmt.Sprintf("MSGS.%s.*.H.100XY.*.*.WQ.00000000000%d", partition, i)
 			consumer := fmt.Sprintf("consumer:%s:%d", partition, i)
-			_, err := cjs.PullSubscribe(subject, consumer, mp, mw)
+			_, err := cjs.PullSubscribe(subject, consumer, mp, mw, aw)
 			require_NoError(t, err)
 		}
 	}
+
+	// Create a single consumer that does no activity.
+	// Make sure we still calculate low ack properly and cleanup etc.
+	_, err = cjs.PullSubscribe("MSGS.ZZ.>", "consumer:ZZ:0", mp, mw, aw)
+	require_NoError(t, err)
+
+	subjects := []string{
+		"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000000",
+		"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000001",
+		"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000002",
+		"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000003",
+		"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000004",
+		"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000005",
+		"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000006",
+		"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000007",
+		"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000008",
+		"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000009",
+	}
+	payload := []byte(strings.Repeat("A", 1024))
 
 	for i := 0; i < 50; i++ {
 		wg.Add(1)
@@ -7164,19 +7185,6 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 			pnc, pjs := jsClientConnect(t, c.randomServer())
 			defer pnc.Close()
 
-			subjects := []string{
-				"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000000",
-				"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000001",
-				"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000002",
-				"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000003",
-				"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000004",
-				"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000005",
-				"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000006",
-				"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000007",
-				"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000008",
-				"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000009",
-			}
-			payload := []byte(strings.Repeat("A", 1024))
 			for i := 1; i < 200_000; i++ {
 				select {
 				case <-pctx.Done():
@@ -7203,19 +7211,6 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 			pnc, pjs := jsClientConnect(t, c.randomServer())
 			defer pnc.Close()
 
-			subjects := []string{
-				"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000000",
-				"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000001",
-				"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000002",
-				"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000003",
-				"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000004",
-				"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000005",
-				"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000006",
-				"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000007",
-				"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000008",
-				"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000009",
-			}
-			payload := []byte(strings.Repeat("A", 1024))
 			msgID := nats.MsgId("1234567890")
 			for i := 1; ; i++ {
 				select {
@@ -7235,9 +7230,9 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 	}
 
 	// Let enough messages into the stream then start consumers.
-	time.Sleep(30 * time.Second)
+	time.Sleep(15 * time.Second)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
 	for i := 0; i < 10; i++ {
@@ -7282,7 +7277,6 @@ func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.Strea
 						for _, msg := range msgs {
 							msg.Ack()
 						}
-
 						msgs, err = psub.Fetch(1000, nats.MaxWait(200*time.Millisecond))
 						if err != nil {
 							continue
