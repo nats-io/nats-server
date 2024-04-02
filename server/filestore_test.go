@@ -6071,8 +6071,6 @@ func TestFileStoreTrackSubjLenForPSIM(t *testing.T) {
 
 // This was used to make sure our estimate was correct, but not needed normally.
 func TestFileStoreLargeFullStatePSIM(t *testing.T) {
-	t.Skip()
-
 	sd := t.TempDir()
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: sd},
