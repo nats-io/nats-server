@@ -2286,6 +2286,10 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 					subs = append(subs, subj)
 				}
 			}
+			// Check if we matched anything
+			if len(subs) == 0 {
+				return nil, didLoad, ErrStoreMsgNotFound
+			}
 		}
 		fseq = lseq + 1
 		for _, subj := range subs {
@@ -2304,15 +2308,15 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 		}
 	}
 
+	if fseq > lseq {
+		return nil, didLoad, ErrStoreMsgNotFound
+	}
+
 	// If we guess to not do a linear scan, but the above resulted in alot of subs that will
 	// need to be checked for every scanned message, revert.
 	// TODO(dlc) - we could memoize the subs across calls.
 	if len(subs) > int(lseq-fseq) {
 		doLinearScan = true
-	}
-
-	if fseq > lseq {
-		return nil, didLoad, ErrStoreMsgNotFound
 	}
 
 	// Need messages loaded from here on out.
