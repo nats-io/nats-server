@@ -7202,7 +7202,6 @@ func (mb *msgBlock) recalculateFirstForSubj(subj string, startSeq uint64, ss *Si
 
 	// Mark first as updated.
 	ss.firstNeedsUpdate = false
-	startSeq++
 
 	startSlot := int(startSeq - mb.cache.fseq)
 	if startSlot >= len(mb.cache.idx) {
