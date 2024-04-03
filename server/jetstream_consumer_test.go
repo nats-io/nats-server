@@ -32,7 +32,6 @@ import (
 )
 
 func TestJetStreamConsumerMultipleFiltersRemoveFilters(t *testing.T) {
-
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
@@ -78,7 +77,6 @@ func TestJetStreamConsumerMultipleFiltersRemoveFilters(t *testing.T) {
 	msgs, err = consumer.Fetch(1)
 	require_NoError(t, err)
 	require_True(t, len(msgs) == 1)
-
 }
 
 func TestJetStreamConsumerMultipleFiltersRace(t *testing.T) {
@@ -274,7 +272,8 @@ func TestJetStreamConsumerMultipleConsumersSingleFilter(t *testing.T) {
 			info, err := js.ConsumerInfo("TEST", consumer.name)
 			require_NoError(t, err)
 			if info.Delivered.Consumer != uint64(consumer.expectedMsgs) {
-				return fmt.Errorf("%v:expected consumer delivered seq %v, got %v. actually delivered: %v", consumer.name, consumer.expectedMsgs, info.Delivered.Consumer, consumer.delivered.Load())
+				return fmt.Errorf("%v:expected consumer delivered seq %v, got %v. actually delivered: %v",
+					consumer.name, consumer.expectedMsgs, info.Delivered.Consumer, consumer.delivered.Load())
 			}
 			if info.AckFloor.Consumer != uint64(consumer.expectedMsgs) {
 				return fmt.Errorf("%v: expected consumer ack floor %v, got %v", consumer.name, totalMsgs, info.AckFloor.Consumer)
@@ -399,7 +398,8 @@ func TestJetStreamConsumerMultipleConsumersMultipleFilters(t *testing.T) {
 			info, err := js.ConsumerInfo("TEST", consumer.name)
 			require_NoError(t, err)
 			if info.Delivered.Consumer != uint64(consumer.expectedMsgs) {
-				return fmt.Errorf("%v:expected consumer delivered seq %v, got %v. actually delivered: %v", consumer.name, consumer.expectedMsgs, info.Delivered.Consumer, consumer.delivered.Load())
+				return fmt.Errorf("%v:expected consumer delivered seq %v, got %v. actually delivered: %v",
+					consumer.name, consumer.expectedMsgs, info.Delivered.Consumer, consumer.delivered.Load())
 			}
 			if info.AckFloor.Consumer != uint64(consumer.expectedMsgs) {
 				return fmt.Errorf("%v: expected consumer ack floor %v, got %v", consumer.name, totalMsgs, info.AckFloor.Consumer)
@@ -621,7 +621,6 @@ func TestJetStreamConsumerActionsOnWorkQueuePolicyStream(t *testing.T) {
 }
 
 func TestJetStreamConsumerActionsViaAPI(t *testing.T) {
-
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
