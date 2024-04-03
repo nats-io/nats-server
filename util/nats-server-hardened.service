@@ -2,21 +2,35 @@
 Description=NATS Server
 After=network-online.target ntp.service
 
+# If you use a dedicated filesystem for JetStream data, then you might use something like:
+# ConditionPathIsMountPoint=/srv/jetstream
+# See also Service.ReadWritePaths
+
 [Service]
 Type=simple
+EnvironmentFile=-/etc/default/nats-server
 ExecStart=/usr/sbin/nats-server -c /etc/nats-server.conf
 ExecReload=/bin/kill -s HUP $MAINPID
 ExecStop=/bin/kill -s SIGINT $MAINPID
+
 User=nats
 Group=nats
+
+Restart=always
+RestartSec=5
 # The nats-server uses SIGUSR2 to trigger using Lame Duck Mode (LDM) shutdown
 KillSignal=SIGUSR2
 # You might want to adjust TimeoutStopSec too.
 
-# Hardening
-CapabilityBoundingSet=
+# Capacity Limits
 # JetStream requires 2 FDs open per stream.
 LimitNOFILE=800000
+# Environment=GOMEMLIMIT=12GiB
+# You might find it better to set GOMEMLIMIT via /etc/default/nats-server,
+# so that you can change limits without needing a systemd daemon-reload.
+
+# Hardening
+CapabilityBoundingSet=
 LockPersonality=true
 MemoryDenyWriteExecute=true
 NoNewPrivileges=true
@@ -40,6 +54,9 @@ RestrictSUIDSGID=true
 SystemCallFilter=@system-service ~@privileged ~@resources
 UMask=0077
 
+# Consider locking down all areas of /etc which hold machine identity keys, etc
+InaccessiblePaths=/etc/ssh
+
 # If you have systemd >= 247
 ProtectProc=invisible
 
@@ -47,6 +64,7 @@ ProtectProc=invisible
 PrivateIPC=true
 
 # Optional: writable directory for JetStream.
+# See also: Unit.ConditionPathIsMountPoint
 ReadWritePaths=/var/lib/nats
 
 # Optional: resource control.
@@ -63,3 +81,4 @@ ReadWritePaths=/var/lib/nats
 
 [Install]
 WantedBy=multi-user.target
+Alias=nats.service
