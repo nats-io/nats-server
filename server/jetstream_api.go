@@ -1946,7 +1946,17 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 			return
 		}
 	}
-	config := mset.config()
+
+	mset.mu.RLock()
+	config := mset.cfg
+	checkAcks := config.Retention != LimitsPolicy && mset.hasLimitsSet()
+	mset.mu.RUnlock()
+
+	// Check if we are a clustered interest retention stream with limits.
+	// If so, check ack floors against our state.
+	if checkAcks {
+		mset.checkInterestState()
+	}
 
 	resp.StreamInfo = &StreamInfo{
 		Created:    mset.createdTime(),
