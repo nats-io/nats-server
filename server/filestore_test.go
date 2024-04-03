@@ -6654,6 +6654,67 @@ func TestFileStoreMsgBlockFirstAndLastSeqCorrupt(t *testing.T) {
 	require_Equal(t, lseq, 10)
 }
 
+func TestFileStoreMsgLoadNextMsgMulti(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Put 1k msgs in
+	for i := 0; i < 1000; i++ {
+		subj := fmt.Sprintf("foo.%d", i)
+		fs.StoreMsg(subj, nil, []byte("ZZZ"))
+	}
+
+	var smv StoreMsg
+	// Do multi load next with 1 wc entry.
+	sl := NewSublistWithCache()
+	sl.Insert(&subscription{subject: []byte("foo.>")})
+	for i, seq := 0, uint64(1); i < 1000; i++ {
+		sm, nseq, err := fs.LoadNextMsgMulti(sl, seq, &smv)
+		require_NoError(t, err)
+		require_True(t, sm.subj == fmt.Sprintf("foo.%d", i))
+		require_Equal(t, nseq, seq)
+		seq++
+	}
+
+	// Now do multi load next with 1000 literal subjects.
+	sl = NewSublistWithCache()
+	for i := 0; i < 1000; i++ {
+		subj := fmt.Sprintf("foo.%d", i)
+		sl.Insert(&subscription{subject: []byte(subj)})
+	}
+	for i, seq := 0, uint64(1); i < 1000; i++ {
+		sm, nseq, err := fs.LoadNextMsgMulti(sl, seq, &smv)
+		require_NoError(t, err)
+		require_True(t, sm.subj == fmt.Sprintf("foo.%d", i))
+		require_Equal(t, nseq, seq)
+		seq++
+	}
+
+	// Check that we can pull out 3 individuals.
+	sl = NewSublistWithCache()
+	sl.Insert(&subscription{subject: []byte("foo.2")})
+	sl.Insert(&subscription{subject: []byte("foo.222")})
+	sl.Insert(&subscription{subject: []byte("foo.999")})
+	sm, seq, err := fs.LoadNextMsgMulti(sl, 1, &smv)
+	require_NoError(t, err)
+	require_True(t, sm.subj == "foo.2")
+	require_Equal(t, seq, 3)
+	sm, seq, err = fs.LoadNextMsgMulti(sl, seq+1, &smv)
+	require_NoError(t, err)
+	require_True(t, sm.subj == "foo.222")
+	require_Equal(t, seq, 223)
+	sm, seq, err = fs.LoadNextMsgMulti(sl, seq+1, &smv)
+	require_NoError(t, err)
+	require_True(t, sm.subj == "foo.999")
+	require_Equal(t, seq, 1000)
+	_, seq, err = fs.LoadNextMsgMulti(sl, seq+1, &smv)
+	require_Error(t, err)
+	require_Equal(t, seq, 1000)
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////

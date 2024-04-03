@@ -10121,3 +10121,78 @@ func TestNoRaceConnectionObjectReleased(t *testing.T) {
 		}
 	}
 }
+
+func TestNoRaceFileStoreMsgLoadNextMsgMultiPerf(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Put 1k msgs in
+	for i := 0; i < 1000; i++ {
+		subj := fmt.Sprintf("foo.%d", i)
+		fs.StoreMsg(subj, nil, []byte("ZZZ"))
+	}
+
+	var smv StoreMsg
+
+	// Now do normal load next with no filter.
+	// This is baseline.
+	start := time.Now()
+	for i, seq := 0, uint64(1); i < 1000; i++ {
+		sm, nseq, err := fs.LoadNextMsg(_EMPTY_, false, seq, &smv)
+		require_NoError(t, err)
+		require_True(t, sm.subj == fmt.Sprintf("foo.%d", i))
+		require_Equal(t, nseq, seq)
+		seq++
+	}
+	baseline := time.Since(start)
+	t.Logf("Single - No filter %v", baseline)
+
+	// Now do normal load next with wc filter.
+	start = time.Now()
+	for i, seq := 0, uint64(1); i < 1000; i++ {
+		sm, nseq, err := fs.LoadNextMsg("foo.>", true, seq, &smv)
+		require_NoError(t, err)
+		require_True(t, sm.subj == fmt.Sprintf("foo.%d", i))
+		require_Equal(t, nseq, seq)
+		seq++
+	}
+	elapsed := time.Since(start)
+	require_True(t, elapsed < 2*baseline)
+	t.Logf("Single - WC filter %v", elapsed)
+
+	// Now do multi load next with 1 wc entry.
+	sl := NewSublistWithCache()
+	sl.Insert(&subscription{subject: []byte("foo.>")})
+	start = time.Now()
+	for i, seq := 0, uint64(1); i < 1000; i++ {
+		sm, nseq, err := fs.LoadNextMsgMulti(sl, seq, &smv)
+		require_NoError(t, err)
+		require_True(t, sm.subj == fmt.Sprintf("foo.%d", i))
+		require_Equal(t, nseq, seq)
+		seq++
+	}
+	elapsed = time.Since(start)
+	require_True(t, elapsed < 2*baseline)
+	t.Logf("Multi - Single WC filter %v", elapsed)
+
+	// Now do multi load next with 1000 literal subjects.
+	sl = NewSublistWithCache()
+	for i := 0; i < 1000; i++ {
+		subj := fmt.Sprintf("foo.%d", i)
+		sl.Insert(&subscription{subject: []byte(subj)})
+	}
+	start = time.Now()
+	for i, seq := 0, uint64(1); i < 1000; i++ {
+		sm, nseq, err := fs.LoadNextMsgMulti(sl, seq, &smv)
+		require_NoError(t, err)
+		require_True(t, sm.subj == fmt.Sprintf("foo.%d", i))
+		require_Equal(t, nseq, seq)
+		seq++
+	}
+	elapsed = time.Since(start)
+	require_True(t, elapsed < 2*baseline)
+	t.Logf("Multi - 1000 filters %v", elapsed)
+}
