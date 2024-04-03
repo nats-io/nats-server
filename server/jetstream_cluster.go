@@ -3161,11 +3161,11 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 
 		// Clear clseq. If we become leader again, it will be fixed up
 		// automatically on the next processClusteredInboundMsg call.
-		mset.mu.Lock()
+		mset.clMu.Lock()
 		if mset.clseq > 0 {
 			mset.clseq = 0
 		}
-		mset.mu.Unlock()
+		mset.clMu.Unlock()
 	}
 
 	// Tell stream to switch leader status.
@@ -7721,7 +7721,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		if mset.inflight == nil {
 			mset.inflight = make(map[uint64]uint64)
 		}
-		if mset.cfg.Storage == FileStorage {
+		if stype == FileStorage {
 			mset.inflight[mset.clseq] = fileStoreMsgSize(subject, hdr, msg)
 		} else {
 			mset.inflight[mset.clseq] = memStoreMsgSize(subject, hdr, msg)
