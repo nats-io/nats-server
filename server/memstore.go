@@ -1033,6 +1033,40 @@ func (ms *memStore) LoadLastMsg(subject string, smp *StoreMsg) (*StoreMsg, error
 	return smp, nil
 }
 
+// LoadNextMsgMulti will find the next message matching any entry in the sublist.
+func (ms *memStore) LoadNextMsgMulti(sl *Sublist, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error) {
+	// TODO(dlc) - for now simple linear walk to get started.
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+
+	if start < ms.state.FirstSeq {
+		start = ms.state.FirstSeq
+	}
+
+	// If past the end no results.
+	if start > ms.state.LastSeq || ms.state.Msgs == 0 {
+		return nil, ms.state.LastSeq, ErrStoreEOF
+	}
+
+	// Initial setup.
+	fseq, lseq := start, ms.state.LastSeq
+
+	for nseq := fseq; nseq <= lseq; nseq++ {
+		sm, ok := ms.msgs[nseq]
+		if !ok {
+			continue
+		}
+		if r := sl.Match(sm.subj); len(r.psubs) > 0 {
+			if smp == nil {
+				smp = new(StoreMsg)
+			}
+			sm.copy(smp)
+			return smp, nseq, nil
+		}
+	}
+	return nil, ms.state.LastSeq, ErrStoreEOF
+}
+
 // LoadNextMsg will find the next message matching the filter subject starting at the start sequence.
 // The filter subject can be a wildcard.
 func (ms *memStore) LoadNextMsg(filter string, wc bool, start uint64, smp *StoreMsg) (*StoreMsg, uint64, error) {
@@ -1044,7 +1078,7 @@ func (ms *memStore) LoadNextMsg(filter string, wc bool, start uint64, smp *Store
 	}
 
 	// If past the end no results.
-	if start > ms.state.LastSeq {
+	if start > ms.state.LastSeq || ms.state.Msgs == 0 {
 		return nil, ms.state.LastSeq, ErrStoreEOF
 	}
 
@@ -1053,7 +1087,7 @@ func (ms *memStore) LoadNextMsg(filter string, wc bool, start uint64, smp *Store
 	}
 	isAll := filter == fwcs
 
-	// Skip scan of ms.fss is number of messages in the block are less than
+	// Skip scan of ms.fss if number of messages in the block are less than
 	// 1/2 the number of subjects in ms.fss. Or we have a wc and lots of fss entries.
 	const linearScanMaxFSS = 256
 	doLinearScan := isAll || 2*int(ms.state.LastSeq-start) < ms.fss.Size() || (wc && ms.fss.Size() > linearScanMaxFSS)
