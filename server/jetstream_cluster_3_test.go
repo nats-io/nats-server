@@ -35,6 +35,7 @@ import (
 
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nuid"
 )
 
 func TestJetStreamClusterRemovePeerByID(t *testing.T) {
@@ -7036,4 +7037,348 @@ func TestJetStreamClusterConsumerPauseSurvivesRestart(t *testing.T) {
 	leader = c.consumerLeader(globalAccountName, "TEST", "my_consumer")
 	require_True(t, leader != nil)
 	checkTimer(leader)
+}
+
+func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
+	t.Run("R1F", func(t *testing.T) {
+		testJetStreamClusterWorkQueueStreamOrphanIssue(t, &nats.StreamConfig{
+			Name:        "OWQTEST_R1F",
+			Subjects:    []string{"MSGS.>"},
+			Replicas:    1,
+			MaxAge:      30 * time.Minute,
+			Duplicates:  5 * time.Minute,
+			Retention:   nats.WorkQueuePolicy,
+			Discard:     nats.DiscardOld,
+			AllowRollup: true,
+			Placement: &nats.Placement{
+				Tags: []string{"test"},
+			},
+		})
+	})
+	t.Run("R3M", func(t *testing.T) {
+		testJetStreamClusterWorkQueueStreamOrphanIssue(t, &nats.StreamConfig{
+			Name:        "OWQTEST_R3M",
+			Subjects:    []string{"MSGS.>"},
+			Replicas:    3,
+			MaxAge:      30 * time.Minute,
+			MaxMsgs:     100_000,
+			Duplicates:  5 * time.Minute,
+			Retention:   nats.WorkQueuePolicy,
+			Discard:     nats.DiscardNew,
+			AllowRollup: true,
+			Storage:     nats.MemoryStorage,
+			Placement: &nats.Placement{
+				Tags: []string{"test"},
+			},
+		})
+	})
+	t.Run("R3F_DN", func(t *testing.T) {
+		testJetStreamClusterWorkQueueStreamOrphanIssue(t, &nats.StreamConfig{
+			Name:        "OWQTEST_R3F_DN",
+			Subjects:    []string{"MSGS.>"},
+			Replicas:    3,
+			MaxAge:      30 * time.Minute,
+			MaxMsgs:     100_000,
+			Duplicates:  5 * time.Minute,
+			Retention:   nats.WorkQueuePolicy,
+			Discard:     nats.DiscardNew,
+			AllowRollup: true,
+			Placement: &nats.Placement{
+				Tags: []string{"test"},
+			},
+		})
+	})
+	t.Run("R3F_DO", func(t *testing.T) {
+		testJetStreamClusterWorkQueueStreamOrphanIssue(t, &nats.StreamConfig{
+			Name:        "OWQTEST_R3F_DO",
+			Subjects:    []string{"MSGS.>"},
+			Replicas:    3,
+			MaxAge:      30 * time.Minute,
+			MaxMsgs:     100_000,
+			Duplicates:  5 * time.Minute,
+			Retention:   nats.WorkQueuePolicy,
+			Discard:     nats.DiscardOld,
+			AllowRollup: true,
+			Placement: &nats.Placement{
+				Tags: []string{"test"},
+			},
+		})
+	})
+}
+
+func testJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T, sc *nats.StreamConfig) {
+	conf := `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {
+		store_dir: '%s',
+	}
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+	server_tags: ["test"]
+	system_account: sys
+	no_auth_user: js
+	accounts {
+		sys { users = [ { user: sys, pass: sys } ] }
+		js {
+			jetstream = enabled
+			users = [ { user: js, pass: js } ]
+	    }
+	}`
+	c := createJetStreamClusterWithTemplate(t, conf, sc.Name, 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cnc, cjs := jsClientConnect(t, c.randomServer())
+	defer cnc.Close()
+
+	_, err := js.AddStream(sc)
+	require_NoError(t, err)
+
+	pctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Start producers
+	var wg sync.WaitGroup
+
+	// First call is just to create the pull subscribers.
+	mp := nats.MaxAckPending(10000)
+	mw := nats.PullMaxWaiting(1000)
+	aw := nats.AckWait(5 * time.Second)
+
+	for i := 0; i < 10; i++ {
+		for _, partition := range []string{"EEEEE"} {
+			subject := fmt.Sprintf("MSGS.%s.*.H.100XY.*.*.WQ.00000000000%d", partition, i)
+			consumer := fmt.Sprintf("consumer:%s:%d", partition, i)
+			_, err := cjs.PullSubscribe(subject, consumer, mp, mw, aw)
+			require_NoError(t, err)
+		}
+	}
+
+	// Create a single consumer that does no activity.
+	// Make sure we still calculate low ack properly and cleanup etc.
+	_, err = cjs.PullSubscribe("MSGS.ZZ.>", "consumer:ZZ:0", mp, mw, aw)
+	require_NoError(t, err)
+
+	subjects := []string{
+		"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000000",
+		"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000001",
+		"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000002",
+		"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000003",
+		"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000004",
+		"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000005",
+		"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000006",
+		"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000007",
+		"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000008",
+		"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000009",
+	}
+	payload := []byte(strings.Repeat("A", 1024))
+
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			pnc, pjs := jsClientConnect(t, c.randomServer())
+			defer pnc.Close()
+
+			for i := 1; i < 200_000; i++ {
+				select {
+				case <-pctx.Done():
+					wg.Done()
+					return
+				default:
+				}
+				for _, subject := range subjects {
+					// Send each message a few times.
+					msgID := nats.MsgId(nuid.Next())
+					pjs.PublishAsync(subject, payload, msgID)
+					pjs.Publish(subject, payload, msgID, nats.AckWait(250*time.Millisecond))
+					pjs.Publish(subject, payload, msgID, nats.AckWait(250*time.Millisecond))
+				}
+			}
+			t.Logf("Stopped publishing.")
+		}()
+	}
+
+	// Rogue publisher that sends the same msg ID everytime.
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			pnc, pjs := jsClientConnect(t, c.randomServer())
+			defer pnc.Close()
+
+			msgID := nats.MsgId("1234567890")
+			for i := 1; ; i++ {
+				select {
+				case <-pctx.Done():
+					wg.Done()
+					return
+				default:
+				}
+				for _, subject := range subjects {
+					// Send each message a few times.
+					pjs.PublishAsync(subject, payload, msgID, nats.RetryAttempts(0), nats.RetryWait(0))
+					pjs.Publish(subject, payload, msgID, nats.AckWait(1*time.Millisecond), nats.RetryAttempts(0), nats.RetryWait(0))
+					pjs.Publish(subject, payload, msgID, nats.AckWait(1*time.Millisecond), nats.RetryAttempts(0), nats.RetryWait(0))
+				}
+			}
+		}()
+	}
+
+	// Let enough messages into the stream then start consumers.
+	time.Sleep(15 * time.Second)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	for i := 0; i < 10; i++ {
+		subject := fmt.Sprintf("MSGS.EEEEE.*.H.100XY.*.*.WQ.00000000000%d", i)
+		consumer := fmt.Sprintf("consumer:EEEEE:%d", i)
+		for n := 0; n < 5; n++ {
+			cpnc, cpjs := jsClientConnect(t, c.randomServer())
+			defer cpnc.Close()
+
+			psub, err := cpjs.PullSubscribe(subject, consumer, mp)
+			require_NoError(t, err)
+
+			time.AfterFunc(15*time.Second, func() {
+				cpnc.Close()
+			})
+
+			wg.Add(1)
+			go func() {
+				tick := time.NewTicker(1 * time.Millisecond)
+				for {
+					if cpnc.IsClosed() {
+						wg.Done()
+						return
+					}
+					select {
+					case <-ctx.Done():
+						wg.Done()
+						return
+					case <-tick.C:
+						// Fetch 1 first, then if no errors Fetch 100.
+						msgs, err := psub.Fetch(1, nats.MaxWait(200*time.Millisecond))
+						if err != nil {
+							continue
+						}
+						for _, msg := range msgs {
+							msg.Ack()
+						}
+						msgs, err = psub.Fetch(100, nats.MaxWait(200*time.Millisecond))
+						if err != nil {
+							continue
+						}
+						for _, msg := range msgs {
+							msg.Ack()
+						}
+						msgs, err = psub.Fetch(1000, nats.MaxWait(200*time.Millisecond))
+						if err != nil {
+							continue
+						}
+						for _, msg := range msgs {
+							msg.Ack()
+						}
+					}
+				}
+			}()
+		}
+	}
+
+	for i := 0; i < 10; i++ {
+		subject := fmt.Sprintf("MSGS.EEEEE.*.H.100XY.*.*.WQ.00000000000%d", i)
+		consumer := fmt.Sprintf("consumer:EEEEE:%d", i)
+		for n := 0; n < 10; n++ {
+			cpnc, cpjs := jsClientConnect(t, c.randomServer())
+			defer cpnc.Close()
+
+			psub, err := cpjs.PullSubscribe(subject, consumer, mp)
+			if err != nil {
+				t.Logf("ERROR: %v", err)
+				continue
+			}
+
+			wg.Add(1)
+			go func() {
+				tick := time.NewTicker(1 * time.Millisecond)
+				for {
+					select {
+					case <-ctx.Done():
+						wg.Done()
+						return
+					case <-tick.C:
+						// Fetch 1 first, then if no errors Fetch 100.
+						msgs, err := psub.Fetch(1, nats.MaxWait(200*time.Millisecond))
+						if err != nil {
+							continue
+						}
+						for _, msg := range msgs {
+							msg.Ack()
+						}
+						msgs, err = psub.Fetch(100, nats.MaxWait(200*time.Millisecond))
+						if err != nil {
+							continue
+						}
+						for _, msg := range msgs {
+							msg.Ack()
+						}
+
+						msgs, err = psub.Fetch(1000, nats.MaxWait(200*time.Millisecond))
+						if err != nil {
+							continue
+						}
+						for _, msg := range msgs {
+							msg.Ack()
+						}
+					}
+				}
+			}()
+		}
+	}
+
+	time.AfterFunc(10*time.Second, func() {
+		if sc.Replicas == 1 {
+			// Find server leader of the stream and restart it.
+			leaderSrv := c.streamLeader("js", sc.Name)
+			leaderSrv.Shutdown()
+			leaderSrv.WaitForShutdown()
+			c.restartServer(leaderSrv)
+		} else {
+			// NOTE (wq): For R=3, not sure which server causes the issue here
+			// so this may be have flaky behavior.
+			s := c.servers[0]
+			s.optsMu.Lock()
+			s.opts.LameDuckDuration = 5 * time.Second
+			s.opts.LameDuckGracePeriod = -5 * time.Second
+			s.optsMu.Unlock()
+			s.lameDuckMode()
+			s.WaitForShutdown()
+			c.restartServer(s)
+			c.waitOnClusterReady()
+		}
+	})
+
+	// Wait until context is done then check state.
+	<-ctx.Done()
+
+	var consumerPending int
+	for i := 0; i < 10; i++ {
+		ci, err := js.ConsumerInfo(sc.Name, fmt.Sprintf("consumer:EEEEE:%d", i))
+		require_NoError(t, err)
+		consumerPending += int(ci.NumPending)
+	}
+
+	// Check state of streams and consumers.
+	si, err := js.StreamInfo(sc.Name)
+	require_NoError(t, err)
+
+	streamPending := int(si.State.Msgs)
+	if streamPending != consumerPending {
+		t.Fatalf("Unexpected number of pending messages, stream=%d, consumers=%d", streamPending, consumerPending)
+	}
 }

@@ -8471,6 +8471,7 @@ func (mset *stream) processClusterStreamInfoRequest(reply string) {
 	mset.mu.RLock()
 	sysc, js, sa, config := mset.sysc, mset.srv.js.Load(), mset.sa, mset.cfg
 	isLeader := mset.isLeader()
+	checkAcks := isLeader && config.Retention != LimitsPolicy && mset.isClustered() && mset.hasLimitsSet()
 	mset.mu.RUnlock()
 
 	// By design all members will receive this. Normally we only want the leader answering.
@@ -8482,6 +8483,12 @@ func (mset *stream) processClusterStreamInfoRequest(reply string) {
 	// If we are not the leader let someone else possibly respond first.
 	if !isLeader {
 		time.Sleep(500 * time.Millisecond)
+	}
+
+	// Check if we are a clustered interest retention stream with limits.
+	// If so, check ack floors against our state.
+	if checkAcks {
+		mset.checkInterestState()
 	}
 
 	si := &StreamInfo{

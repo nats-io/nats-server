@@ -1410,10 +1410,6 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 			if !cfg.Created.IsZero() {
 				obs.setCreatedTime(cfg.Created)
 			}
-			lseq := e.mset.lastSeq()
-			obs.mu.Lock()
-			err = obs.readStoredState(lseq)
-			obs.mu.Unlock()
 			if err != nil {
 				s.Warnf("    Error restoring consumer %q state: %v", cfg.Name, err)
 			}
@@ -2290,8 +2286,8 @@ func (jsa *jsAccount) delete() {
 	jsa.templates = nil
 	jsa.mu.Unlock()
 
-	for _, ms := range streams {
-		ms.stop(false, false)
+	for _, mset := range streams {
+		mset.stop(false, false)
 	}
 
 	for _, t := range ts {
