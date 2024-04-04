@@ -10121,3 +10121,160 @@ func TestNoRaceConnectionObjectReleased(t *testing.T) {
 		}
 	}
 }
+
+func TestNoRaceFileStoreMsgLoadNextMsgMultiPerf(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Put 1k msgs in
+	for i := 0; i < 1000; i++ {
+		subj := fmt.Sprintf("foo.%d", i)
+		fs.StoreMsg(subj, nil, []byte("ZZZ"))
+	}
+
+	var smv StoreMsg
+
+	// Now do normal load next with no filter.
+	// This is baseline.
+	start := time.Now()
+	for i, seq := 0, uint64(1); i < 1000; i++ {
+		sm, nseq, err := fs.LoadNextMsg(_EMPTY_, false, seq, &smv)
+		require_NoError(t, err)
+		require_True(t, sm.subj == fmt.Sprintf("foo.%d", i))
+		require_Equal(t, nseq, seq)
+		seq++
+	}
+	baseline := time.Since(start)
+	t.Logf("Single - No filter %v", baseline)
+
+	// Now do normal load next with wc filter.
+	start = time.Now()
+	for i, seq := 0, uint64(1); i < 1000; i++ {
+		sm, nseq, err := fs.LoadNextMsg("foo.>", true, seq, &smv)
+		require_NoError(t, err)
+		require_True(t, sm.subj == fmt.Sprintf("foo.%d", i))
+		require_Equal(t, nseq, seq)
+		seq++
+	}
+	elapsed := time.Since(start)
+	require_True(t, elapsed < 2*baseline)
+	t.Logf("Single - WC filter %v", elapsed)
+
+	// Now do multi load next with 1 wc entry.
+	sl := NewSublistWithCache()
+	sl.Insert(&subscription{subject: []byte("foo.>")})
+	start = time.Now()
+	for i, seq := 0, uint64(1); i < 1000; i++ {
+		sm, nseq, err := fs.LoadNextMsgMulti(sl, seq, &smv)
+		require_NoError(t, err)
+		require_True(t, sm.subj == fmt.Sprintf("foo.%d", i))
+		require_Equal(t, nseq, seq)
+		seq++
+	}
+	elapsed = time.Since(start)
+	require_True(t, elapsed < 2*baseline)
+	t.Logf("Multi - Single WC filter %v", elapsed)
+
+	// Now do multi load next with 1000 literal subjects.
+	sl = NewSublistWithCache()
+	for i := 0; i < 1000; i++ {
+		subj := fmt.Sprintf("foo.%d", i)
+		sl.Insert(&subscription{subject: []byte(subj)})
+	}
+	start = time.Now()
+	for i, seq := 0, uint64(1); i < 1000; i++ {
+		sm, nseq, err := fs.LoadNextMsgMulti(sl, seq, &smv)
+		require_NoError(t, err)
+		require_True(t, sm.subj == fmt.Sprintf("foo.%d", i))
+		require_Equal(t, nseq, seq)
+		seq++
+	}
+	elapsed = time.Since(start)
+	require_True(t, elapsed < 2*baseline)
+	t.Logf("Multi - 1000 filters %v", elapsed)
+}
+
+func TestNoRaceWQAndMultiSubjectFilters(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"Z.>"},
+		Retention: nats.WorkQueuePolicy,
+	})
+	require_NoError(t, err)
+
+	stopPubs := make(chan bool)
+
+	publish := func(subject string) {
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		for {
+			select {
+			case <-stopPubs:
+				return
+			default:
+				_, _ = js.Publish(subject, []byte("hello"))
+			}
+		}
+	}
+
+	go publish("Z.foo")
+	go publish("Z.bar")
+	go publish("Z.baz")
+
+	// Cancel pubs after 10s.
+	time.AfterFunc(10*time.Second, func() { close(stopPubs) })
+
+	// Create a consumer
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:        "zzz",
+		AckPolicy:      nats.AckExplicitPolicy,
+		AckWait:        5 * time.Second,
+		FilterSubjects: []string{"Z.foo", "Z.bar", "Z.baz"},
+	})
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe(_EMPTY_, "zzz", nats.Bind("TEST", "zzz"))
+	require_NoError(t, err)
+
+	received := make([]uint64, 0, 256_000)
+	batchSize := 10
+
+	for running := true; running; {
+		msgs, err := sub.Fetch(batchSize, nats.MaxWait(2*time.Second))
+		if err == nats.ErrTimeout {
+			running = false
+		}
+		for _, m := range msgs {
+			meta, err := m.Metadata()
+			require_NoError(t, err)
+			received = append(received, meta.Sequence.Stream)
+			m.Ack()
+		}
+	}
+
+	sort.Slice(received, func(i, j int) bool { return received[i] < received[j] })
+
+	var pseq, gaps uint64
+	for _, seq := range received {
+		if pseq != 0 && pseq != seq-1 {
+			gaps += seq - pseq + 1
+		}
+		pseq = seq
+	}
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+
+	if si.State.Msgs != 0 || gaps > 0 {
+		t.Fatalf("Orphaned msgs %d with %d gaps detected", si.State.Msgs, gaps)
+	}
+}

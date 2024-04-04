@@ -2238,6 +2238,50 @@ func (fs *fileStore) GetSeqFromTime(t time.Time) uint64 {
 	return 0
 }
 
+// Find the first matching message against a sublist.
+func (mb *msgBlock) firstMatchingMulti(sl *Sublist, start uint64, sm *StoreMsg) (*StoreMsg, bool, error) {
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+
+	// Will just do linear walk for now.
+	// TODO(dlc) - Be better at skipping blocks that will not match us regardless.
+
+	var didLoad bool
+	// Need messages loaded from here on out.
+	if mb.cacheNotLoaded() {
+		if err := mb.loadMsgsWithLock(); err != nil {
+			return nil, false, err
+		}
+		didLoad = true
+	}
+
+	// Make sure to start at mb.first.seq if fseq < mb.first.seq
+	if seq := atomic.LoadUint64(&mb.first.seq); seq > start {
+		start = seq
+	}
+	lseq := atomic.LoadUint64(&mb.last.seq)
+
+	if sm == nil {
+		sm = new(StoreMsg)
+	}
+
+	for seq := start; seq <= lseq; seq++ {
+		llseq := mb.llseq
+		fsm, err := mb.cacheLookup(seq, sm)
+		if err != nil {
+			continue
+		}
+		expireOk := seq == lseq && mb.llseq == seq
+
+		if r := sl.Match(fsm.subj); len(r.psubs) > 0 {
+			return fsm, expireOk, nil
+		}
+		// If we are here we did not match, so put the llseq back.
+		mb.llseq = llseq
+	}
+	return nil, didLoad, ErrStoreMsgNotFound
+}
+
 // Find the first matching message.
 func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *StoreMsg) (*StoreMsg, bool, error) {
 	mb.mu.Lock()
@@ -2277,6 +2321,7 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 	}
 	// Only do linear scan if isAll or we are wildcarded and have to traverse more fss than actual messages.
 	doLinearScan := isAll || (wc && len(mb.fss) > int(lseq-fseq))
+
 	if !doLinearScan {
 		// If we have a wildcard match against all tracked subjects we know about.
 		if wc {
@@ -6165,12 +6210,53 @@ func (fs *fileStore) LoadLastMsg(subject string, smv *StoreMsg) (sm *StoreMsg, e
 	return sm, err
 }
 
+// LoadNextMsgMulti will find the next message matching any entry in the sublist.
+func (fs *fileStore) LoadNextMsgMulti(sl *Sublist, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error) {
+	if sl == nil {
+		return fs.LoadNextMsg(_EMPTY_, false, start, smp)
+	}
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	if fs.closed {
+		return nil, 0, ErrStoreClosed
+	}
+	if fs.state.Msgs == 0 {
+		return nil, fs.state.LastSeq, ErrStoreEOF
+	}
+	if start < fs.state.FirstSeq {
+		start = fs.state.FirstSeq
+	}
+
+	if bi, _ := fs.selectMsgBlockWithIndex(start); bi >= 0 {
+		for i := bi; i < len(fs.blks); i++ {
+			mb := fs.blks[i]
+			if sm, expireOk, err := mb.firstMatchingMulti(sl, start, smp); err == nil {
+				if expireOk {
+					mb.tryForceExpireCache()
+				}
+				return sm, sm.seq, nil
+			} else if err != ErrStoreMsgNotFound {
+				return nil, 0, err
+			} else if expireOk {
+				mb.tryForceExpireCache()
+			}
+		}
+	}
+
+	return nil, fs.state.LastSeq, ErrStoreEOF
+
+}
+
 func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64, sm *StoreMsg) (*StoreMsg, uint64, error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 
 	if fs.closed {
 		return nil, 0, ErrStoreClosed
+	}
+	if fs.state.Msgs == 0 {
+		return nil, fs.state.LastSeq, ErrStoreEOF
 	}
 	if start < fs.state.FirstSeq {
 		start = fs.state.FirstSeq
