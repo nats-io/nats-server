@@ -318,7 +318,7 @@ type errCtx struct {
 	ctx string
 }
 
-func NewErrorCtx(err error, format string, args ...interface{}) error {
+func NewErrorCtx(err error, format string, args ...any) error {
 	return &errCtx{err, fmt.Sprintf(format, args...)}
 }
 

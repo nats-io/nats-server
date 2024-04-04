@@ -11,6 +11,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build !skip_store_tests
+// +build !skip_store_tests
+
 package server
 
 import (
@@ -31,6 +34,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -75,8 +79,8 @@ func TestFileStoreBasics(t *testing.T) {
 		defer fs.Stop()
 
 		subj, msg := "foo", []byte("Hello World")
-		now := time.Now().UnixNano()
 		for i := 1; i <= 5; i++ {
+			now := time.Now().UnixNano()
 			if seq, ts, err := fs.StoreMsg(subj, nil, msg); err != nil {
 				t.Fatalf("Error storing msg: %v", err)
 			} else if seq != uint64(i) {
@@ -3010,7 +3014,7 @@ func TestFileStoreExpireMsgsOnStart(t *testing.T) {
 			fs.mu.RUnlock()
 		}
 
-		lastSeqForBlk := func(index int) uint64 {
+		lastSeqForBlk := func() uint64 {
 			t.Helper()
 			fs.mu.RLock()
 			defer fs.mu.RUnlock()
@@ -3065,7 +3069,7 @@ func TestFileStoreExpireMsgsOnStart(t *testing.T) {
 
 		// Now delete 10 messages from the end of the first block which we will expire on restart.
 		// We will expire up to seq 100, so delete 91-100.
-		lseq := lastSeqForBlk(0)
+		lseq := lastSeqForBlk()
 		for seq := lseq; seq > lseq-10; seq-- {
 			removed, err := fs.RemoveMsg(seq)
 			if err != nil || !removed {
@@ -6067,8 +6071,6 @@ func TestFileStoreTrackSubjLenForPSIM(t *testing.T) {
 
 // This was used to make sure our estimate was correct, but not needed normally.
 func TestFileStoreLargeFullStatePSIM(t *testing.T) {
-	t.Skip()
-
 	sd := t.TempDir()
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: sd},
@@ -6617,6 +6619,39 @@ func TestFileStoreEraseMsgWithAllTrailingDbitSlots(t *testing.T) {
 	removed, err := fs.EraseMsg(2)
 	require_NoError(t, err)
 	require_True(t, removed)
+}
+
+// https://github.com/nats-io/nats-server/issues/5236
+// Unclear how the sequences get off here, this is just forcing the situation reported.
+func TestFileStoreMsgBlockFirstAndLastSeqCorrupt(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := []byte("abc")
+	for i := 1; i <= 10; i++ {
+		fs.StoreMsg(fmt.Sprintf("foo.%d", i), nil, msg)
+	}
+	fs.Purge()
+
+	fs.mu.RLock()
+	mb := fs.blks[0]
+	fs.mu.RUnlock()
+
+	mb.mu.Lock()
+	mb.tryForceExpireCacheLocked()
+	atomic.StoreUint64(&mb.last.seq, 9)
+	mb.mu.Unlock()
+
+	// We should rebuild here and return no error.
+	require_NoError(t, mb.loadMsgs())
+	mb.mu.RLock()
+	fseq, lseq := atomic.LoadUint64(&mb.first.seq), atomic.LoadUint64(&mb.last.seq)
+	mb.mu.RUnlock()
+	require_Equal(t, fseq, 11)
+	require_Equal(t, lseq, 10)
 }
 
 ///////////////////////////////////////////////////////////////////////////

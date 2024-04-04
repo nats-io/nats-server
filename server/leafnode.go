@@ -96,6 +96,8 @@ type leaf struct {
 	tsubt *time.Timer
 	// Selected compression mode, which may be different from the server configured mode.
 	compression string
+	// This is for GW map replies.
+	gwSub *subscription
 }
 
 // Used for remote (solicited) leafnodes.
@@ -1690,9 +1692,16 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 func (s *Server) removeLeafNodeConnection(c *client) {
 	c.mu.Lock()
 	cid := c.cid
-	if c.leaf != nil && c.leaf.tsubt != nil {
-		c.leaf.tsubt.Stop()
-		c.leaf.tsubt = nil
+	if c.leaf != nil {
+		if c.leaf.tsubt != nil {
+			c.leaf.tsubt.Stop()
+			c.leaf.tsubt = nil
+		}
+		if c.leaf.gwSub != nil {
+			s.gwLeafSubs.Remove(c.leaf.gwSub)
+			// We need to set this to nil for GC to release the connection
+			c.leaf.gwSub = nil
+		}
 	}
 	c.mu.Unlock()
 	s.mu.Lock()
@@ -1980,7 +1989,10 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 	if c.isSpokeLeafNode() {
 		// Add a fake subscription for this solicited leafnode connection
 		// so that we can send back directly for mapped GW replies.
-		c.srv.gwLeafSubs.Insert(&subscription{client: c, subject: []byte(gwReplyPrefix + ">")})
+		// We need to keep track of this subscription so it can be removed
+		// when the connection is closed so that the GC can release it.
+		c.leaf.gwSub = &subscription{client: c, subject: []byte(gwReplyPrefix + ">")}
+		c.srv.gwLeafSubs.Insert(c.leaf.gwSub)
 	}
 
 	// Now walk the results and add them to our smap

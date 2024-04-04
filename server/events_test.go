@@ -68,7 +68,7 @@ func createUserCredsEx(t *testing.T, nuc *jwt.UserClaims, akp nkeys.KeyPair) nat
 	return nats.UserJWT(userCB, sigCB)
 }
 
-func createUserCreds(t *testing.T, s *Server, akp nkeys.KeyPair) nats.Option {
+func createUserCreds(t *testing.T, _ *Server, akp nkeys.KeyPair) nats.Option {
 	return createUserCredsEx(t, jwt.NewUserClaims("test"), akp)
 }
 
@@ -1888,8 +1888,8 @@ func TestServerEventsStatsZ(t *testing.T) {
 	if m.Stats.Connections != 1 {
 		t.Fatalf("Did not match connections of 1, got %d", m.Stats.Connections)
 	}
-	if m.Stats.ActiveAccounts != 2 {
-		t.Fatalf("Did not match active accounts of 2, got %d", m.Stats.ActiveAccounts)
+	if m.Stats.ActiveAccounts != 1 {
+		t.Fatalf("Did not match active accounts of 1, got %d", m.Stats.ActiveAccounts)
 	}
 	if m.Stats.Sent.Msgs < 1 {
 		t.Fatalf("Did not match sent msgs of >=1, got %d", m.Stats.Sent.Msgs)
@@ -1919,8 +1919,8 @@ func TestServerEventsStatsZ(t *testing.T) {
 	if m2.Stats.Connections != 1 {
 		t.Fatalf("Did not match connections of 1, got %d", m2.Stats.Connections)
 	}
-	if m2.Stats.ActiveAccounts != 2 {
-		t.Fatalf("Did not match active accounts of 2, got %d", m2.Stats.ActiveAccounts)
+	if m2.Stats.ActiveAccounts != 1 {
+		t.Fatalf("Did not match active accounts of 1, got %d", m2.Stats.ActiveAccounts)
 	}
 	if m2.Stats.Sent.Msgs < 3 {
 		t.Fatalf("Did not match sent msgs of >= 3, got %d", m2.Stats.Sent.Msgs)
@@ -1946,8 +1946,8 @@ func TestServerEventsStatsZ(t *testing.T) {
 	if m3.Stats.Connections != 1 {
 		t.Fatalf("Did not match connections of 1, got %d", m3.Stats.Connections)
 	}
-	if m3.Stats.ActiveAccounts != 2 {
-		t.Fatalf("Did not match active accounts of 2, got %d", m3.Stats.ActiveAccounts)
+	if m3.Stats.ActiveAccounts != 1 {
+		t.Fatalf("Did not match active accounts of 1, got %d", m3.Stats.ActiveAccounts)
 	}
 	if m3.Stats.Sent.Msgs < 4 {
 		t.Fatalf("Did not match sent msgs of >= 4, got %d", m3.Stats.Sent.Msgs)
@@ -2903,7 +2903,7 @@ func TestServerEventsPingStatsZFailFilter(t *testing.T) {
 	if msg, err := nc.Request(serverStatsPingReqSubj, []byte(`{MALFORMEDJSON`), time.Second/4); err != nil {
 		t.Fatalf("Error: %v", err)
 	} else {
-		resp := make(map[string]map[string]interface{})
+		resp := make(map[string]map[string]any)
 		if err := json.Unmarshal(msg.Data, &resp); err != nil {
 			t.Fatalf("Error unmarshalling the response json: %v", err)
 		}
@@ -2929,8 +2929,8 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 
 	tests := []struct {
 		endpoint  string
-		opt       interface{}
-		resp      interface{}
+		opt       any
+		resp      any
 		respField []string
 	}{
 		{"VARZ", nil, &Varz{},
@@ -3017,7 +3017,7 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Error receiving msg: %v", err)
 			}
-			response1 := make(map[string]map[string]interface{})
+			response1 := make(map[string]map[string]any)
 
 			if err := json.Unmarshal(msg.Data, &response1); err != nil {
 				t.Fatalf("Error unmarshalling response1 json: %v", err)
@@ -3046,7 +3046,7 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Error receiving msg: %v", err)
 			}
-			response2 := make(map[string]map[string]interface{})
+			response2 := make(map[string]map[string]any)
 			if err := json.Unmarshal(msg.Data, &response2); err != nil {
 				t.Fatalf("Error unmarshalling the response2 json: %v", err)
 			}

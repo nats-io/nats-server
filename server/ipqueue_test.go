@@ -50,7 +50,7 @@ func TestIPQueueBasic(t *testing.T) {
 	// Check that those 2 queues are registered
 	var gotFirst bool
 	var gotSecond bool
-	s.ipQueues.Range(func(k, v interface{}) bool {
+	s.ipQueues.Range(func(k, v any) bool {
 		switch k.(string) {
 		case "test":
 			gotFirst = true
@@ -71,7 +71,7 @@ func TestIPQueueBasic(t *testing.T) {
 	q.unregister()
 	q2.unregister()
 	// They should have been removed from the map
-	s.ipQueues.Range(func(k, v interface{}) bool {
+	s.ipQueues.Range(func(k, v any) bool {
 		t.Fatalf("Got queue %q", k.(string))
 		return false
 	})

@@ -27,22 +27,22 @@ import (
 type Logger interface {
 
 	// Log a notice statement
-	Noticef(format string, v ...interface{})
+	Noticef(format string, v ...any)
 
 	// Log a warning statement
-	Warnf(format string, v ...interface{})
+	Warnf(format string, v ...any)
 
 	// Log a fatal error
-	Fatalf(format string, v ...interface{})
+	Fatalf(format string, v ...any)
 
 	// Log an error
-	Errorf(format string, v ...interface{})
+	Errorf(format string, v ...any)
 
 	// Log a debug statement
-	Debugf(format string, v ...interface{})
+	Debugf(format string, v ...any)
 
 	// Log a trace statement
-	Tracef(format string, v ...interface{})
+	Tracef(format string, v ...any)
 }
 
 // ConfigureLogger configures and sets the logger for the server.
@@ -178,48 +178,48 @@ func (s *Server) ReOpenLogFile() {
 }
 
 // Noticef logs a notice statement
-func (s *Server) Noticef(format string, v ...interface{}) {
-	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+func (s *Server) Noticef(format string, v ...any) {
+	s.executeLogCall(func(logger Logger, format string, v ...any) {
 		logger.Noticef(format, v...)
 	}, format, v...)
 }
 
 // Errorf logs an error
-func (s *Server) Errorf(format string, v ...interface{}) {
-	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+func (s *Server) Errorf(format string, v ...any) {
+	s.executeLogCall(func(logger Logger, format string, v ...any) {
 		logger.Errorf(format, v...)
 	}, format, v...)
 }
 
 // Error logs an error with a scope
-func (s *Server) Errors(scope interface{}, e error) {
-	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+func (s *Server) Errors(scope any, e error) {
+	s.executeLogCall(func(logger Logger, format string, v ...any) {
 		logger.Errorf(format, v...)
 	}, "%s - %s", scope, UnpackIfErrorCtx(e))
 }
 
 // Error logs an error with a context
 func (s *Server) Errorc(ctx string, e error) {
-	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+	s.executeLogCall(func(logger Logger, format string, v ...any) {
 		logger.Errorf(format, v...)
 	}, "%s: %s", ctx, UnpackIfErrorCtx(e))
 }
 
 // Error logs an error with a scope and context
-func (s *Server) Errorsc(scope interface{}, ctx string, e error) {
-	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+func (s *Server) Errorsc(scope any, ctx string, e error) {
+	s.executeLogCall(func(logger Logger, format string, v ...any) {
 		logger.Errorf(format, v...)
 	}, "%s - %s: %s", scope, ctx, UnpackIfErrorCtx(e))
 }
 
 // Warnf logs a warning error
-func (s *Server) Warnf(format string, v ...interface{}) {
-	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+func (s *Server) Warnf(format string, v ...any) {
+	s.executeLogCall(func(logger Logger, format string, v ...any) {
 		logger.Warnf(format, v...)
 	}, format, v...)
 }
 
-func (s *Server) RateLimitWarnf(format string, v ...interface{}) {
+func (s *Server) RateLimitWarnf(format string, v ...any) {
 	statement := fmt.Sprintf(format, v...)
 	if _, loaded := s.rateLimitLogging.LoadOrStore(statement, time.Now()); loaded {
 		return
@@ -227,7 +227,7 @@ func (s *Server) RateLimitWarnf(format string, v ...interface{}) {
 	s.Warnf("%s", statement)
 }
 
-func (s *Server) RateLimitDebugf(format string, v ...interface{}) {
+func (s *Server) RateLimitDebugf(format string, v ...any) {
 	statement := fmt.Sprintf(format, v...)
 	if _, loaded := s.rateLimitLogging.LoadOrStore(statement, time.Now()); loaded {
 		return
@@ -236,35 +236,35 @@ func (s *Server) RateLimitDebugf(format string, v ...interface{}) {
 }
 
 // Fatalf logs a fatal error
-func (s *Server) Fatalf(format string, v ...interface{}) {
-	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+func (s *Server) Fatalf(format string, v ...any) {
+	s.executeLogCall(func(logger Logger, format string, v ...any) {
 		logger.Fatalf(format, v...)
 	}, format, v...)
 }
 
 // Debugf logs a debug statement
-func (s *Server) Debugf(format string, v ...interface{}) {
+func (s *Server) Debugf(format string, v ...any) {
 	if atomic.LoadInt32(&s.logging.debug) == 0 {
 		return
 	}
 
-	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+	s.executeLogCall(func(logger Logger, format string, v ...any) {
 		logger.Debugf(format, v...)
 	}, format, v...)
 }
 
 // Tracef logs a trace statement
-func (s *Server) Tracef(format string, v ...interface{}) {
+func (s *Server) Tracef(format string, v ...any) {
 	if atomic.LoadInt32(&s.logging.trace) == 0 {
 		return
 	}
 
-	s.executeLogCall(func(logger Logger, format string, v ...interface{}) {
+	s.executeLogCall(func(logger Logger, format string, v ...any) {
 		logger.Tracef(format, v...)
 	}, format, v...)
 }
 
-func (s *Server) executeLogCall(f func(logger Logger, format string, v ...interface{}), format string, args ...interface{}) {
+func (s *Server) executeLogCall(f func(logger Logger, format string, v ...any), format string, args ...any) {
 	s.logging.RLock()
 	defer s.logging.RUnlock()
 	if s.logging.logger == nil {

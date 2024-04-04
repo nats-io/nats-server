@@ -2651,7 +2651,7 @@ func TestSublistNoCacheConfigOnAccounts(t *testing.T) {
 		t.Fatalf("Expected to have a server with %d active accounts, got %v", ta, la)
 	}
 
-	s.accounts.Range(func(k, v interface{}) bool {
+	s.accounts.Range(func(k, v any) bool {
 		acc := v.(*Account)
 		if acc == nil {
 			t.Fatalf("Expected non-nil sublist for account")

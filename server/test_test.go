@@ -294,6 +294,7 @@ func (c *cluster) shutdown() {
 	for i, s := range c.servers {
 		sd := s.StoreDir()
 		s.Shutdown()
+		s.WaitForShutdown()
 		if cf := c.opts[i].ConfigFile; cf != _EMPTY_ {
 			os.Remove(cf)
 		}

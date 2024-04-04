@@ -188,7 +188,7 @@ func (s *Server) trackedJetStreamServers() (js, total int) {
 	if !s.isRunning() || !s.eventsEnabled() {
 		return -1, -1
 	}
-	s.nodeToInfo.Range(func(k, v interface{}) bool {
+	s.nodeToInfo.Range(func(k, v any) bool {
 		si := v.(nodeInfo)
 		if si.js {
 			js++
@@ -537,7 +537,7 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) bool {
 		if !mset.isCatchingUp() {
 			return true
 		}
-	} else if node != nil {
+	} else { // node != nil
 		if node != mset.raftNode() {
 			s.Warnf("Detected stream cluster node skew '%s > %s'", acc.GetName(), streamName)
 			node.Delete()
@@ -3154,11 +3154,11 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 
 		// Clear clseq. If we become leader again, it will be fixed up
 		// automatically on the next processClusteredInboundMsg call.
-		mset.mu.Lock()
+		mset.clMu.Lock()
 		if mset.clseq > 0 {
 			mset.clseq = 0
 		}
-		mset.mu.Unlock()
+		mset.clMu.Unlock()
 	}
 
 	// Tell stream to switch leader status.
@@ -4150,7 +4150,6 @@ func (js *jetStream) processConsumerRemoval(ca *consumerAssignment) {
 		js.mu.Unlock()
 		return
 	}
-	isMember := ca.Group.isMember(cc.meta.ID())
 	wasLeader := cc.isConsumerLeader(ca.Client.serviceAccount(), ca.Stream, ca.Name)
 
 	// Delete from our state.
@@ -4169,7 +4168,7 @@ func (js *jetStream) processConsumerRemoval(ca *consumerAssignment) {
 	js.mu.Unlock()
 
 	if needDelete {
-		js.processClusterDeleteConsumer(ca, isMember, wasLeader)
+		js.processClusterDeleteConsumer(ca, wasLeader)
 	}
 }
 
@@ -4427,7 +4426,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 	}
 }
 
-func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, isMember, wasLeader bool) {
+func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, wasLeader bool) {
 	if ca == nil {
 		return
 	}
@@ -5221,7 +5220,8 @@ func (js *jetStream) processStreamAssignmentResults(sub *subscription, c *client
 			// If cluster is defined we can not retry.
 			if cfg.Placement == nil || cfg.Placement.Cluster == _EMPTY_ {
 				// If we have additional clusters to try we can retry.
-				if ci != nil && len(ci.Alternates) > 0 {
+				// We have already verified that ci != nil.
+				if len(ci.Alternates) > 0 {
 					if rg, err := js.createGroupForStream(ci, cfg); err != nil {
 						s.Warnf("Retrying cluster placement for stream '%s > %s' failed due to placement error: %+v", result.Account, result.Stream, err)
 					} else {
@@ -6022,7 +6022,7 @@ var (
 
 // blocking utility call to perform requests on the system account
 // returns (synchronized) v or error
-func sysRequest[T any](s *Server, subjFormat string, args ...interface{}) (*T, error) {
+func sysRequest[T any](s *Server, subjFormat string, args ...any) (*T, error) {
 	isubj := fmt.Sprintf(subjFormat, args...)
 
 	s.mu.Lock()
@@ -6445,7 +6445,7 @@ func (s *Server) jsClusteredStreamRestoreRequest(
 	ci *ClientInfo,
 	acc *Account,
 	req *JSApiStreamRestoreRequest,
-	stream, subject, reply string, rmsg []byte) {
+	subject, reply string, rmsg []byte) {
 
 	js, cc := s.getJetStreamCluster()
 	if js == nil || cc == nil {
@@ -7688,7 +7688,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		if mset.inflight == nil {
 			mset.inflight = make(map[uint64]uint64)
 		}
-		if mset.cfg.Storage == FileStorage {
+		if stype == FileStorage {
 			mset.inflight[mset.clseq] = fileStoreMsgSize(subject, hdr, msg)
 		} else {
 			mset.inflight[mset.clseq] = memStoreMsgSize(subject, hdr, msg)
@@ -8414,6 +8414,7 @@ func (mset *stream) processClusterStreamInfoRequest(reply string) {
 	mset.mu.RLock()
 	sysc, js, sa, config := mset.sysc, mset.srv.js.Load(), mset.sa, mset.cfg
 	isLeader := mset.isLeader()
+	checkAcks := isLeader && config.Retention != LimitsPolicy && mset.isClustered() && mset.hasLimitsSet()
 	mset.mu.RUnlock()
 
 	// By design all members will receive this. Normally we only want the leader answering.
@@ -8425,6 +8426,12 @@ func (mset *stream) processClusterStreamInfoRequest(reply string) {
 	// If we are not the leader let someone else possibly respond first.
 	if !isLeader {
 		time.Sleep(500 * time.Millisecond)
+	}
+
+	// Check if we are a clustered interest retention stream with limits.
+	// If so, check ack floors against our state.
+	if checkAcks {
+		mset.checkInterestState()
 	}
 
 	si := &StreamInfo{

@@ -742,12 +742,12 @@ type checkDuplicateRouteLogger struct {
 	gotDuplicate bool
 }
 
-func (l *checkDuplicateRouteLogger) Noticef(format string, v ...interface{}) {}
-func (l *checkDuplicateRouteLogger) Errorf(format string, v ...interface{})  {}
-func (l *checkDuplicateRouteLogger) Warnf(format string, v ...interface{})   {}
-func (l *checkDuplicateRouteLogger) Fatalf(format string, v ...interface{})  {}
-func (l *checkDuplicateRouteLogger) Tracef(format string, v ...interface{})  {}
-func (l *checkDuplicateRouteLogger) Debugf(format string, v ...interface{}) {
+func (l *checkDuplicateRouteLogger) Noticef(format string, v ...any) {}
+func (l *checkDuplicateRouteLogger) Errorf(format string, v ...any)  {}
+func (l *checkDuplicateRouteLogger) Warnf(format string, v ...any)   {}
+func (l *checkDuplicateRouteLogger) Fatalf(format string, v ...any)  {}
+func (l *checkDuplicateRouteLogger) Tracef(format string, v ...any)  {}
+func (l *checkDuplicateRouteLogger) Debugf(format string, v ...any) {
 	l.Lock()
 	defer l.Unlock()
 	msg := fmt.Sprintf(format, v...)
@@ -1242,7 +1242,7 @@ func TestRouteRTT(t *testing.T) {
 		attempts := 0
 		timeout := time.Now().Add(2 * firstPingInterval)
 		for time.Now().Before(timeout) {
-			if rtt := checkRTT(t, s); rtt != 0 {
+			if rtt := checkRTT(t, s); rtt != prev {
 				return
 			}
 			attempts++
@@ -1399,7 +1399,7 @@ type routeHostLookupLogger struct {
 	count int
 }
 
-func (l *routeHostLookupLogger) Debugf(format string, v ...interface{}) {
+func (l *routeHostLookupLogger) Debugf(format string, v ...any) {
 	l.Lock()
 	defer l.Unlock()
 	msg := fmt.Sprintf(format, v...)
@@ -1680,7 +1680,7 @@ type testRouteReconnectLogger struct {
 	ch chan string
 }
 
-func (l *testRouteReconnectLogger) Debugf(format string, v ...interface{}) {
+func (l *testRouteReconnectLogger) Debugf(format string, v ...any) {
 	msg := fmt.Sprintf(format, v...)
 	if strings.Contains(msg, "Trying to connect to route") {
 		select {
@@ -2239,7 +2239,7 @@ type captureRMsgTrace struct {
 	out    []string
 }
 
-func (l *captureRMsgTrace) Tracef(format string, args ...interface{}) {
+func (l *captureRMsgTrace) Tracef(format string, args ...any) {
 	l.Lock()
 	defer l.Unlock()
 	msg := fmt.Sprintf(format, args...)
@@ -3360,7 +3360,7 @@ type testDuplicateRouteLogger struct {
 	ch chan struct{}
 }
 
-func (l *testDuplicateRouteLogger) Noticef(format string, args ...interface{}) {
+func (l *testDuplicateRouteLogger) Noticef(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if !strings.Contains(msg, DuplicateRoute.String()) {
 		return

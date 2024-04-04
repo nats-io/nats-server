@@ -842,7 +842,7 @@ func (s *Server) JetStreamEnabledForDomain() bool {
 	var jsFound bool
 	// If we are here we do not have JetStream enabled for ourselves, but we need to check all connected servers.
 	// TODO(dlc) - Could optimize and memoize this.
-	s.nodeToInfo.Range(func(k, v interface{}) bool {
+	s.nodeToInfo.Range(func(k, v any) bool {
 		// This should not be dependent on online status, so only check js.
 		if v.(nodeInfo).js {
 			jsFound = true
@@ -1410,10 +1410,6 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 			if !cfg.Created.IsZero() {
 				obs.setCreatedTime(cfg.Created)
 			}
-			lseq := e.mset.lastSeq()
-			obs.mu.Lock()
-			err = obs.readStoredState(lseq)
-			obs.mu.Unlock()
 			if err != nil {
 				s.Warnf("    Error restoring consumer %q state: %v", cfg.Name, err)
 			}
@@ -2290,8 +2286,8 @@ func (jsa *jsAccount) delete() {
 	jsa.templates = nil
 	jsa.mu.Unlock()
 
-	for _, ms := range streams {
-		ms.stop(false, false)
+	for _, mset := range streams {
+		mset.stop(false, false)
 	}
 
 	for _, t := range ts {

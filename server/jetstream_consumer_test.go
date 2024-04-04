@@ -32,7 +32,6 @@ import (
 )
 
 func TestJetStreamConsumerMultipleFiltersRemoveFilters(t *testing.T) {
-
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
@@ -78,7 +77,6 @@ func TestJetStreamConsumerMultipleFiltersRemoveFilters(t *testing.T) {
 	msgs, err = consumer.Fetch(1)
 	require_NoError(t, err)
 	require_True(t, len(msgs) == 1)
-
 }
 
 func TestJetStreamConsumerMultipleFiltersRace(t *testing.T) {
@@ -100,12 +98,21 @@ func TestJetStreamConsumerMultipleFiltersRace(t *testing.T) {
 	var seqs []uint64
 	var mu sync.Mutex
 
-	for i := 0; i < 10_000; i++ {
-		sendStreamMsg(t, nc, "one", "data")
-		sendStreamMsg(t, nc, "two", "data")
-		sendStreamMsg(t, nc, "three", "data")
-		sendStreamMsg(t, nc, "four", "data")
+	total := 10_000
+	var wg sync.WaitGroup
+
+	send := func(subj string) {
+		defer wg.Done()
+		for i := 0; i < total; i++ {
+			sendStreamMsg(t, nc, subj, "data")
+		}
 	}
+	wg.Add(4)
+	go send("one")
+	go send("two")
+	go send("three")
+	go send("four")
+	wg.Wait()
 
 	mset.addConsumer(&ConsumerConfig{
 		Durable:        "consumer",
@@ -114,10 +121,12 @@ func TestJetStreamConsumerMultipleFiltersRace(t *testing.T) {
 	})
 
 	done := make(chan struct{})
+	wg.Add(10)
 	for i := 0; i < 10; i++ {
 		go func(t *testing.T) {
+			defer wg.Done()
 
-			c, err := js.PullSubscribe("", "consumer", nats.Bind("TEST", "consumer"))
+			c, err := js.PullSubscribe(_EMPTY_, "consumer", nats.Bind("TEST", "consumer"))
 			require_NoError(t, err)
 
 			for {
@@ -126,7 +135,7 @@ func TestJetStreamConsumerMultipleFiltersRace(t *testing.T) {
 					return
 				default:
 				}
-				msgs, err := c.Fetch(10)
+				msgs, err := c.Fetch(10, nats.MaxWait(2*time.Second))
 				// We don't want to stop before at expected number of messages, as we want
 				// to also test against getting to many messages.
 				// Because of that, we ignore timeout and connection closed errors.
@@ -146,11 +155,11 @@ func TestJetStreamConsumerMultipleFiltersRace(t *testing.T) {
 		}(t)
 	}
 
-	checkFor(t, time.Second*30, time.Second*1, func() error {
+	checkFor(t, 30*time.Second, 100*time.Millisecond, func() error {
 		mu.Lock()
 		defer mu.Unlock()
-		if len(seqs) != 30_000 {
-			return fmt.Errorf("found %d messages instead of %d", len(seqs), 30_000)
+		if len(seqs) != 3*total {
+			return fmt.Errorf("found %d messages instead of %d", len(seqs), 3*total)
 		}
 		sort.Slice(seqs, func(i, j int) bool {
 			return seqs[i] < seqs[j]
@@ -161,12 +170,10 @@ func TestJetStreamConsumerMultipleFiltersRace(t *testing.T) {
 				return fmt.Errorf("sequence mismatch at %v", i)
 			}
 		}
-
 		return nil
 	})
-
 	close(done)
-
+	wg.Wait()
 }
 
 func TestJetStreamConsumerMultipleConsumersSingleFilter(t *testing.T) {
@@ -265,7 +272,8 @@ func TestJetStreamConsumerMultipleConsumersSingleFilter(t *testing.T) {
 			info, err := js.ConsumerInfo("TEST", consumer.name)
 			require_NoError(t, err)
 			if info.Delivered.Consumer != uint64(consumer.expectedMsgs) {
-				return fmt.Errorf("%v:expected consumer delivered seq %v, got %v. actually delivered: %v", consumer.name, consumer.expectedMsgs, info.Delivered.Consumer, consumer.delivered.Load())
+				return fmt.Errorf("%v:expected consumer delivered seq %v, got %v. actually delivered: %v",
+					consumer.name, consumer.expectedMsgs, info.Delivered.Consumer, consumer.delivered.Load())
 			}
 			if info.AckFloor.Consumer != uint64(consumer.expectedMsgs) {
 				return fmt.Errorf("%v: expected consumer ack floor %v, got %v", consumer.name, totalMsgs, info.AckFloor.Consumer)
@@ -390,7 +398,8 @@ func TestJetStreamConsumerMultipleConsumersMultipleFilters(t *testing.T) {
 			info, err := js.ConsumerInfo("TEST", consumer.name)
 			require_NoError(t, err)
 			if info.Delivered.Consumer != uint64(consumer.expectedMsgs) {
-				return fmt.Errorf("%v:expected consumer delivered seq %v, got %v. actually delivered: %v", consumer.name, consumer.expectedMsgs, info.Delivered.Consumer, consumer.delivered.Load())
+				return fmt.Errorf("%v:expected consumer delivered seq %v, got %v. actually delivered: %v",
+					consumer.name, consumer.expectedMsgs, info.Delivered.Consumer, consumer.delivered.Load())
 			}
 			if info.AckFloor.Consumer != uint64(consumer.expectedMsgs) {
 				return fmt.Errorf("%v: expected consumer ack floor %v, got %v", consumer.name, totalMsgs, info.AckFloor.Consumer)
@@ -612,7 +621,6 @@ func TestJetStreamConsumerActionsOnWorkQueuePolicyStream(t *testing.T) {
 }
 
 func TestJetStreamConsumerActionsViaAPI(t *testing.T) {
-
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
@@ -928,6 +936,73 @@ func TestJetStreamConsumerIsEqualOrSubsetMatch(t *testing.T) {
 					test.subject, test.filterSubjects, test.result, res)
 			}
 		})
+	}
+}
+
+func TestJetStreamConsumerBackOff(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	for _, test := range []struct {
+		name      string
+		config    nats.ConsumerConfig
+		shouldErr bool
+	}{
+		{
+			name: "backoff_with_max_deliver",
+			config: nats.ConsumerConfig{
+				MaxDeliver: 3,
+				BackOff:    []time.Duration{time.Second, time.Minute},
+			},
+			shouldErr: false,
+		},
+		{
+			name: "backoff_with_max_deliver_smaller",
+			config: nats.ConsumerConfig{
+				MaxDeliver: 2,
+				BackOff:    []time.Duration{time.Second, time.Minute, time.Hour},
+			},
+			shouldErr: true,
+		},
+		{
+			name: "backoff_with_default_max_deliver",
+			config: nats.ConsumerConfig{
+				BackOff: []time.Duration{time.Second, time.Minute, time.Hour},
+			},
+			shouldErr: false,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     test.name,
+				Subjects: []string{test.name},
+			})
+			require_NoError(t, err)
+
+			_, err = js.AddConsumer(test.name, &test.config)
+			require_True(t, test.shouldErr == (err != nil))
+			if test.shouldErr {
+				require_True(t, strings.Contains(err.Error(), "max deliver"))
+			}
+
+			// test if updating consumers works too.
+			test.config.Durable = "consumer"
+			_, err = js.AddConsumer(test.name, &nats.ConsumerConfig{
+				Durable: test.config.Durable,
+			})
+			require_NoError(t, err)
+
+			test.config.Description = "Updated"
+			_, err = js.UpdateConsumer(test.name, &test.config)
+			require_True(t, test.shouldErr == (err != nil))
+			if test.shouldErr {
+				require_True(t, strings.Contains(err.Error(), "max deliver"))
+			}
+		})
+
 	}
 }
 

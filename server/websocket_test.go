@@ -1706,7 +1706,7 @@ type captureFatalLogger struct {
 	fatalCh chan string
 }
 
-func (l *captureFatalLogger) Fatalf(format string, v ...interface{}) {
+func (l *captureFatalLogger) Fatalf(format string, v ...any) {
 	select {
 	case l.fatalCh <- fmt.Sprintf(format, v...):
 	default:
@@ -1873,7 +1873,7 @@ func testNewWSClientWithError(t testing.TB, o testWSClientOptions) (net.Conn, *b
 type testClaimsOptions struct {
 	nac            *jwt.AccountClaims
 	nuc            *jwt.UserClaims
-	connectRequest interface{}
+	connectRequest any
 	dontSign       bool
 	expectAnswer   string
 }
@@ -3912,7 +3912,7 @@ type captureClientConnectedLogger struct {
 	ch chan string
 }
 
-func (l *captureClientConnectedLogger) Debugf(format string, v ...interface{}) {
+func (l *captureClientConnectedLogger) Debugf(format string, v ...any) {
 	msg := fmt.Sprintf(format, v...)
 	if !strings.Contains(msg, "Client connection created") {
 		return

@@ -1187,7 +1187,7 @@ func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) 
 		}
 	}
 	var numAccounts int
-	s.accounts.Range(func(k, v interface{}) bool {
+	s.accounts.Range(func(k, v any) bool {
 		numAccounts++
 		acc := v.(*Account)
 		acc.mu.Lock()
@@ -1376,7 +1376,7 @@ func (s *Server) globalAccountOnly() bool {
 	}
 
 	s.mu.RLock()
-	s.accounts.Range(func(k, v interface{}) bool {
+	s.accounts.Range(func(k, v any) bool {
 		acc := v.(*Account)
 		// Ignore global and system
 		if acc == s.gacc || (s.sys != nil && acc == s.sys.account) {
@@ -1402,7 +1402,7 @@ func (s *Server) configuredRoutes() int {
 
 // activePeers is used in bootstrapping raft groups like the JetStream meta controller.
 func (s *Server) ActivePeers() (peers []string) {
-	s.nodeToInfo.Range(func(k, v interface{}) bool {
+	s.nodeToInfo.Range(func(k, v any) bool {
 		si := v.(nodeInfo)
 		if !si.offline {
 			peers = append(peers, k.(string))
@@ -1559,7 +1559,7 @@ func (s *Server) decActiveAccounts() {
 func (s *Server) numAccounts() int {
 	count := 0
 	s.mu.RLock()
-	s.accounts.Range(func(k, v interface{}) bool {
+	s.accounts.Range(func(k, v any) bool {
 		count++
 		return true
 	})
@@ -1722,7 +1722,7 @@ func (s *Server) setSystemAccount(acc *Account) error {
 
 	// If we have existing accounts make sure we enable account tracking.
 	s.mu.Lock()
-	s.accounts.Range(func(k, v interface{}) bool {
+	s.accounts.Range(func(k, v any) bool {
 		acc := v.(*Account)
 		s.enableAccountTracking(acc)
 		return true
@@ -2279,7 +2279,7 @@ func (s *Server) Start() {
 		var hasSys, hasGlobal bool
 		var total int
 
-		s.accounts.Range(func(k, v interface{}) bool {
+		s.accounts.Range(func(k, v any) bool {
 			total++
 			acc := v.(*Account)
 			if acc == sa {
@@ -3288,6 +3288,8 @@ func (s *Server) saveClosedClient(c *client, nc net.Conn, reason ClosedState) {
 		for _, sub := range c.subs {
 			cc.subs = append(cc.subs, newSubDetail(sub))
 		}
+		// Now set this to nil to allow connection to be released.
+		c.subs = nil
 	}
 	// Hold user as well.
 	cc.user = c.getRawAuthUser()
@@ -3533,7 +3535,7 @@ func (s *Server) NumSubscriptions() uint32 {
 // Lock should be held.
 func (s *Server) numSubscriptions() uint32 {
 	var subs int
-	s.accounts.Range(func(k, v interface{}) bool {
+	s.accounts.Range(func(k, v any) bool {
 		acc := v.(*Account)
 		subs += acc.TotalSubs()
 		return true
@@ -4370,7 +4372,7 @@ func (s *Server) startRateLimitLogExpiration() {
 			case interval = <-s.rateLimitLoggingCh:
 				ticker.Reset(interval)
 			case <-ticker.C:
-				s.rateLimitLogging.Range(func(k, v interface{}) bool {
+				s.rateLimitLogging.Range(func(k, v any) bool {
 					start := v.(time.Time)
 					if time.Since(start) >= interval {
 						s.rateLimitLogging.Delete(k)

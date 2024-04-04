@@ -598,7 +598,7 @@ type captureErrLogger struct {
 	ch chan string
 }
 
-func (c *captureErrLogger) Errorf(format string, v ...interface{}) {
+func (c *captureErrLogger) Errorf(format string, v ...any) {
 	msg := fmt.Sprintf(format, v...)
 	select {
 	case c.ch <- msg:

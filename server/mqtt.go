@@ -766,7 +766,7 @@ func (c *client) mqttParse(buf []byte) error {
 		// PUBREC, PUBCOMP.
 		case mqttPacketPubAck:
 			var pi uint16
-			pi, err = mqttParsePIPacket(r, pl)
+			pi, err = mqttParsePIPacket(r)
 			if trace {
 				c.traceInOp("PUBACK", errOrTrace(err, fmt.Sprintf("pi=%v", pi)))
 			}
@@ -776,7 +776,7 @@ func (c *client) mqttParse(buf []byte) error {
 
 		case mqttPacketPubRec:
 			var pi uint16
-			pi, err = mqttParsePIPacket(r, pl)
+			pi, err = mqttParsePIPacket(r)
 			if trace {
 				c.traceInOp("PUBREC", errOrTrace(err, fmt.Sprintf("pi=%v", pi)))
 			}
@@ -786,7 +786,7 @@ func (c *client) mqttParse(buf []byte) error {
 
 		case mqttPacketPubComp:
 			var pi uint16
-			pi, err = mqttParsePIPacket(r, pl)
+			pi, err = mqttParsePIPacket(r)
 			if trace {
 				c.traceInOp("PUBCOMP", errOrTrace(err, fmt.Sprintf("pi=%v", pi)))
 			}
@@ -811,7 +811,7 @@ func (c *client) mqttParse(buf []byte) error {
 
 		case mqttPacketPubRel:
 			var pi uint16
-			pi, err = mqttParsePIPacket(r, pl)
+			pi, err = mqttParsePIPacket(r)
 			if trace {
 				c.traceInOp("PUBREL", errOrTrace(err, fmt.Sprintf("pi=%v", pi)))
 			}
@@ -874,7 +874,7 @@ func (c *client) mqttParse(buf []byte) error {
 			var rc byte
 			var cp *mqttConnectProto
 			var sessp bool
-			rc, cp, err = c.mqttParseConnect(r, pl, hasMappings)
+			rc, cp, err = c.mqttParseConnect(r, hasMappings)
 			// Add the client id to the client's string, regardless of error.
 			// We may still get the client_id if the call above fails somewhere
 			// after parsing the client ID itself.
@@ -991,7 +991,7 @@ func (s *Server) mqttHandleClosedClient(c *client) {
 // No lock held on entry.
 func (s *Server) mqttUpdateMaxAckPending(newmaxp uint16) {
 	msm := &s.mqtt.sessmgr
-	s.accounts.Range(func(k, _ interface{}) bool {
+	s.accounts.Range(func(k, _ any) bool {
 		accName := k.(string)
 		msm.mu.RLock()
 		asm := msm.sessions[accName]
@@ -1075,7 +1075,7 @@ func mqttParsePubRelNATSHeader(headerBytes []byte) uint16 {
 // Returns the MQTT sessions manager for a given account.
 // If new, creates the required JetStream streams/consumers
 // for handling of sessions and messages.
-func (s *Server) getOrCreateMQTTAccountSessionManager(clientID string, c *client) (*mqttAccountSessionManager, error) {
+func (s *Server) getOrCreateMQTTAccountSessionManager(c *client) (*mqttAccountSessionManager, error) {
 	sm := &s.mqtt.sessmgr
 
 	c.mu.Lock()
@@ -1518,7 +1518,7 @@ func (s *Server) mqttDetermineReplicas() int {
 //
 //////////////////////////////////////////////////////////////////////////////
 
-func (jsa *mqttJSA) newRequest(kind, subject string, hdr int, msg []byte) (interface{}, error) {
+func (jsa *mqttJSA) newRequest(kind, subject string, hdr int, msg []byte) (any, error) {
 	return jsa.newRequestEx(kind, subject, _EMPTY_, hdr, msg, mqttJSAPITimeout)
 }
 
@@ -2112,7 +2112,7 @@ func (as *mqttAccountSessionManager) cleanupRetainedMessageCache(s *Server, clos
 			// should eventually clean up everything.
 			i, maxScan := 0, 10*1000
 			now := time.Now()
-			as.rmsCache.Range(func(key, value interface{}) bool {
+			as.rmsCache.Range(func(key, value any) bool {
 				rm := value.(*mqttRetainedMsg)
 				if now.After(rm.expiresFromCache) {
 					as.rmsCache.Delete(key)
@@ -2374,14 +2374,13 @@ func (sess *mqttSession) processQOS12Sub(
 	c *client, // subscribing client.
 	subject, sid []byte, isReserved bool, qos byte, jsDurName string, h msgHandler, // subscription parameters.
 ) (*subscription, error) {
-	return sess.processSub(c, subject, sid, isReserved, qos, jsDurName, h, false, false, nil, false, nil)
+	return sess.processSub(c, subject, sid, isReserved, qos, jsDurName, h, false, nil, false, nil)
 }
 
 func (sess *mqttSession) processSub(
 	c *client, // subscribing client.
 	subject, sid []byte, isReserved bool, qos byte, jsDurName string, h msgHandler, // subscription parameters.
 	initShadow bool, // do we need to scan for shadow subscriptions? (not for QOS1+)
-	serializeRMS bool, // do we need to serialize RMS?
 	rms map[string]*mqttRetainedMsg, // preloaded rms (can be empty, or missing items if errors)
 	trace bool, // trace serialized retained messages in the log?
 	as *mqttAccountSessionManager, // needed only for rms serialization.
@@ -2578,7 +2577,7 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 			bsubject, bsid, isReserved, f.qos, // main subject
 			_EMPTY_, mqttDeliverMsgCbQoS0, // no jsDur for QOS0
 			processShadowSubs,
-			serializeRMS, rms, trace, as)
+			rms, trace, as)
 		sess.mu.Unlock()
 		as.mu.Unlock()
 
@@ -2612,7 +2611,7 @@ func (as *mqttAccountSessionManager) processSubs(sess *mqttSession, c *client,
 				[]byte(fwcsubject), []byte(fwcsid), isReserved, f.qos, // FWC (top-level wildcard) subject
 				_EMPTY_, mqttDeliverMsgCbQoS0, // no jsDur for QOS0
 				processShadowSubs,
-				serializeRMS, rms, trace, as)
+				rms, trace, as)
 			sess.mu.Unlock()
 			as.mu.Unlock()
 			if err != nil {
@@ -3390,7 +3389,7 @@ func (sess *mqttSession) deleteConsumer(cc *ConsumerConfig) {
 //////////////////////////////////////////////////////////////////////////////
 
 // Parse the MQTT connect protocol
-func (c *client) mqttParseConnect(r *mqttReader, pl int, hasMappings bool) (byte, *mqttConnectProto, error) {
+func (c *client) mqttParseConnect(r *mqttReader, hasMappings bool) (byte, *mqttConnectProto, error) {
 	// Protocol name
 	proto, err := r.readBytes("protocol name", false)
 	if err != nil {
@@ -3629,7 +3628,7 @@ func (s *Server) mqttProcessConnect(c *client, cp *mqttConnectProto, trace bool)
 	// Get the account's level MQTT sessions manager. If it does not exists yet,
 	// this will create it along with the streams where sessions and messages
 	// are stored.
-	asm, err := s.getOrCreateMQTTAccountSessionManager(cid, c)
+	asm, err := s.getOrCreateMQTTAccountSessionManager(c)
 	if err != nil {
 		return err
 	}
@@ -4380,7 +4379,7 @@ func (c *client) mqttEnqueuePubResponse(packetType byte, pi uint16, trace bool) 
 	}
 }
 
-func mqttParsePIPacket(r *mqttReader, pl int) (uint16, error) {
+func mqttParsePIPacket(r *mqttReader) (uint16, error) {
 	pi, err := r.readUint16("packet identifier")
 	if err != nil {
 		return 0, err
@@ -4984,7 +4983,9 @@ func (sess *mqttSession) processJSConsumer(c *client, subject, sid string,
 			// The JS durable consumer's delivery subject is on a NUID of
 			// the form: mqttSubPrefix + <nuid>. It is also used as the sid
 			// for the NATS subscription, so use that for the lookup.
+			c.mu.Lock()
 			sub := c.subs[cc.DeliverSubject]
+			c.mu.Unlock()
 
 			sess.mu.Lock()
 			delete(sess.cons, sid)

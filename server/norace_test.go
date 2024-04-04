@@ -35,6 +35,7 @@ import (
 	"reflect"
 	"runtime"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -831,7 +832,7 @@ func TestNoRaceFetchAccountDoesNotRegisterAccountTwice(t *testing.T) {
 	checkTmpAccounts := func(t *testing.T, s *Server) {
 		t.Helper()
 		empty := true
-		s.tmpAccounts.Range(func(_, _ interface{}) bool {
+		s.tmpAccounts.Range(func(_, _ any) bool {
 			empty = false
 			return false
 		})
@@ -1675,7 +1676,7 @@ func TestNoRaceJetStreamSuperClusterMixedModeMirrors(t *testing.T) {
 	// Connect our client to a non JS server
 	c := sc.randomCluster()
 	var s *Server
-	for s == nil {
+	for {
 		if as := c.randomServer(); !as.JetStreamEnabled() {
 			s = as
 			break
@@ -1684,23 +1685,37 @@ func TestNoRaceJetStreamSuperClusterMixedModeMirrors(t *testing.T) {
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
+	numStreams := 10
 	toSend := 1000
+	errCh := make(chan error, numStreams)
+	wg := sync.WaitGroup{}
+	wg.Add(numStreams)
 	// Create 10 origin streams
 	for i := 0; i < 10; i++ {
-		name := fmt.Sprintf("S%d", i+1)
-		if _, err := js.AddStream(&nats.StreamConfig{Name: name}); err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		c.waitOnStreamLeader(globalAccountName, name)
-		// Load them up with a bunch of messages.
-		for n := 0; n < toSend; n++ {
-			m := nats.NewMsg(name)
-			m.Header.Set("stream", name)
-			m.Header.Set("idx", strconv.FormatInt(int64(n+1), 10))
-			if err := nc.PublishMsg(m); err != nil {
-				t.Fatalf("Unexpected publish error: %v", err)
+		go func(idx int) {
+			defer wg.Done()
+			name := fmt.Sprintf("S%d", idx+1)
+			if _, err := js.AddStream(&nats.StreamConfig{Name: name}); err != nil {
+				errCh <- fmt.Errorf("unexpected error: %v", err)
+				return
 			}
-		}
+			c.waitOnStreamLeader(globalAccountName, name)
+			// Load them up with a bunch of messages.
+			for n := 0; n < toSend; n++ {
+				m := nats.NewMsg(name)
+				m.Header.Set("stream", name)
+				m.Header.Set("idx", strconv.FormatInt(int64(n+1), 10))
+				if err := nc.PublishMsg(m); err != nil {
+					errCh <- fmt.Errorf("unexpected publish error: %v", err)
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+	select {
+	case err := <-errCh:
+		t.Fatal(err)
+	default:
 	}
 
 	for i := 0; i < 3; i++ {
@@ -1978,11 +1993,10 @@ func TestNoRaceJetStreamSuperClusterMixedModeSources(t *testing.T) {
 			return conf
 		}, nil)
 	defer sc.shutdown()
-
 	// Connect our client to a non JS server
 	c := sc.randomCluster()
 	var s *Server
-	for s == nil {
+	for {
 		if as := c.randomServer(); !as.JetStreamEnabled() {
 			s = as
 			break
@@ -1991,25 +2005,45 @@ func TestNoRaceJetStreamSuperClusterMixedModeSources(t *testing.T) {
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
+	numStreams := 100
 	toSend := 1000
 	var sources []*nats.StreamSource
+	errCh := make(chan error, numStreams)
+	srcCh := make(chan *nats.StreamSource, numStreams)
+	wg := sync.WaitGroup{}
+	wg.Add(numStreams)
 	// Create 100 origin streams.
-	for i := 1; i <= 100; i++ {
-		name := fmt.Sprintf("O-%d", i)
-		if _, err := js.AddStream(&nats.StreamConfig{Name: name}); err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		c.waitOnStreamLeader(globalAccountName, name)
-		// Load them up with a bunch of messages.
-		for n := 0; n < toSend; n++ {
-			m := nats.NewMsg(name)
-			m.Header.Set("stream", name)
-			m.Header.Set("idx", strconv.FormatInt(int64(n+1), 10))
-			if err := nc.PublishMsg(m); err != nil {
-				t.Fatalf("Unexpected publish error: %v", err)
+	for i := 1; i <= numStreams; i++ {
+		go func(idx int) {
+			defer wg.Done()
+
+			name := fmt.Sprintf("O-%d", idx)
+			if _, err := js.AddStream(&nats.StreamConfig{Name: name}); err != nil {
+				errCh <- fmt.Errorf("unexpected error: %v", err)
+				return
 			}
-		}
-		sources = append(sources, &nats.StreamSource{Name: name})
+			c.waitOnStreamLeader(globalAccountName, name)
+			// Load them up with a bunch of messages.
+			for n := 0; n < toSend; n++ {
+				m := nats.NewMsg(name)
+				m.Header.Set("stream", name)
+				m.Header.Set("idx", strconv.FormatInt(int64(n+1), 10))
+				if err := nc.PublishMsg(m); err != nil {
+					errCh <- fmt.Errorf("unexpected publish error: %v", err)
+					return
+				}
+			}
+			srcCh <- &nats.StreamSource{Name: name}
+		}(i)
+	}
+	wg.Wait()
+	select {
+	case err := <-errCh:
+		t.Fatal(err)
+	default:
+	}
+	for i := 0; i < numStreams; i++ {
+		sources = append(sources, <-srcCh)
 	}
 
 	for i := 0; i < 3; i++ {
@@ -2023,8 +2057,8 @@ func TestNoRaceJetStreamSuperClusterMixedModeSources(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Could not retrieve stream info")
 			}
-			if si.State.Msgs != uint64(100*toSend) {
-				return fmt.Errorf("Expected %d msgs, got state: %+v", toSend*100, si.State)
+			if si.State.Msgs != uint64(numStreams*toSend) {
+				return fmt.Errorf("Expected %d msgs, got state: %+v", numStreams*toSend, si.State)
 			}
 			return nil
 		})
@@ -8984,7 +9018,7 @@ func TestNoRaceJetStreamClusterKVWithServerKill(t *testing.T) {
 	work := func(ctx context.Context, wg *sync.WaitGroup, id int) {
 		defer wg.Done()
 
-		nc, js := jsClientConnect(t, c.servers[id])
+		nc, js := jsClientConnectEx(t, c.servers[id], []nats.JSOpt{nats.Context(ctx)})
 		defer nc.Close()
 
 		kv, err := js.KeyValue("TEST")
@@ -9031,14 +9065,14 @@ func TestNoRaceJetStreamClusterKVWithServerKill(t *testing.T) {
 	time.Sleep(time.Second)
 
 	// Simulate server stop and restart.
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 7; i++ {
 		s := c.randomServer()
 		s.Shutdown()
 		c.waitOnLeader()
 		c.waitOnStreamLeader(globalAccountName, "KV_TEST")
 
 		// Wait for a bit and then start the server again.
-		time.Sleep(time.Duration(rand.Intn(1500)) * time.Millisecond)
+		time.Sleep(time.Duration(rand.Intn(1250)) * time.Millisecond)
 		s = c.restartServer(s)
 		c.waitOnServerCurrent(s)
 		c.waitOnLeader()
@@ -9244,7 +9278,6 @@ func TestNoRaceJetStreamMirrorAndSourceConsumerFailBackoff(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
-	// Setup the KV bucket and use for making assertions.
 	nc, js := jsClientConnect(t, c.randomServer())
 	defer nc.Close()
 
@@ -9267,12 +9300,22 @@ func TestNoRaceJetStreamMirrorAndSourceConsumerFailBackoff(t *testing.T) {
 		require_NoError(t, err)
 		ml = c.streamLeader(globalAccountName, "MIRROR")
 	}
+	// Create a source.
+	srcl := sl
+	for srcl == sl {
+		js.DeleteStream("SOURCE")
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:    "SOURCE",
+			Sources: []*nats.StreamSource{{Name: "TEST"}},
+		})
+		require_NoError(t, err)
+		srcl = c.streamLeader(globalAccountName, "MIRROR")
+	}
 
 	// Create sub to watch for the consumer create requests.
 	nc, _ = jsClientConnect(t, ml)
 	defer nc.Close()
-	sub, err := nc.SubscribeSync("$JS.API.CONSUMER.CREATE.>")
-	require_NoError(t, err)
+	sub := natsSubSync(t, nc, "$JS.API.CONSUMER.CREATE.>")
 
 	// Kill the server where the source is..
 	sldr := c.streamLeader(globalAccountName, "TEST")
@@ -9280,31 +9323,29 @@ func TestNoRaceJetStreamMirrorAndSourceConsumerFailBackoff(t *testing.T) {
 
 	// Wait for just greater than 10s. We should only see 1 request during this time.
 	time.Sleep(11 * time.Second)
+	// There should have been 2 requests, one for mirror, one for source
 	n, _, _ := sub.Pending()
-	require_Equal(t, n, 1)
+	require_Equal(t, n, 2)
+	var mreq, sreq int
+	for i := 0; i < 2; i++ {
+		msg := natsNexMsg(t, sub, time.Second)
+		if bytes.Contains(msg.Data, []byte("$JS.M.")) {
+			mreq++
+		} else if bytes.Contains(msg.Data, []byte("$JS.S.")) {
+			sreq++
+		}
+	}
+	if mreq != 1 || sreq != 1 {
+		t.Fatalf("Consumer create captures invalid: mreq=%v sreq=%v", mreq, sreq)
+	}
 
 	// Now make sure that the fails is set properly.
-	mset, err := ml.GlobalAccount().lookupStream("MIRROR")
+	mset, err := c.streamLeader(globalAccountName, "MIRROR").GlobalAccount().lookupStream("MIRROR")
 	require_NoError(t, err)
 	mset.mu.RLock()
 	fails := mset.mirror.fails
 	mset.mu.RUnlock()
 	require_Equal(t, fails, 1)
-
-	js.DeleteStream("MIRROR")
-	// Clear sub
-	sub.NextMsg(time.Second)
-	// Make sure sources behave similarly.
-	_, err = js.AddStream(&nats.StreamConfig{
-		Name:    "SOURCE",
-		Sources: []*nats.StreamSource{{Name: "TEST"}},
-	})
-	require_NoError(t, err)
-
-	// Wait for just greater than 10s. We should only see 1 request during this time.
-	time.Sleep(11 * time.Second)
-	n, _, _ = sub.Pending()
-	require_Equal(t, n, 1)
 
 	mset, err = c.streamLeader(globalAccountName, "SOURCE").GlobalAccount().lookupStream("SOURCE")
 	require_NoError(t, err)
@@ -9746,8 +9787,15 @@ func TestNoRaceJetStreamWQSkippedMsgsOnScaleUp(t *testing.T) {
 	pdone := make(chan bool)
 	cdone := make(chan bool)
 
+	// We will have 51 consumer apps and a producer app. Make sure to wait for
+	// all go routines to end at the end of the test.
+	wg := sync.WaitGroup{}
+	wg.Add(52)
+
 	// Publish routine
 	go func() {
+		defer wg.Done()
+
 		publishSubjects := []string{
 			"CORE_ENT_DR_OTP_22.P.H.TC.10011.1010.918886682066",
 			"CORE_ENT_DR_OTP_22.P.H.TC.10011.1010.918886682067",
@@ -9781,7 +9829,9 @@ func TestNoRaceJetStreamWQSkippedMsgsOnScaleUp(t *testing.T) {
 		}
 	}()
 
-	consumerApp := func(i int) {
+	consumerApp := func() {
+		defer wg.Done()
+
 		nc, js := jsClientConnect(t, c.randomServer())
 		defer nc.Close()
 
@@ -9820,22 +9870,22 @@ func TestNoRaceJetStreamWQSkippedMsgsOnScaleUp(t *testing.T) {
 	}
 
 	// Now consumer side single.
-	go consumerApp(0)
+	go consumerApp()
 
-	// Wait for 5s
-	time.Sleep(5 * time.Second)
+	// Wait for 2s
+	time.Sleep(2 * time.Second)
 
 	// Now spin up 50 more.
 	for i := 1; i <= 50; i++ {
 		if i%5 == 0 {
 			time.Sleep(200 * time.Millisecond)
 		}
-		go consumerApp(i)
+		go consumerApp()
 	}
 
-	timeout := time.Now().Add(1 * time.Minute)
+	timeout := time.Now().Add(8 * time.Second)
 	for time.Now().Before(timeout) {
-		time.Sleep(5 * time.Second)
+		time.Sleep(750 * time.Millisecond)
 		if s := c.consumerLeader(globalAccountName, "TEST", "dlc"); s != nil {
 			s.JetStreamStepdownConsumer(globalAccountName, "TEST", "dlc")
 		}
@@ -9843,9 +9893,12 @@ func TestNoRaceJetStreamWQSkippedMsgsOnScaleUp(t *testing.T) {
 
 	// Close publishers and defer closing consumers.
 	close(pdone)
-	defer close(cdone)
+	defer func() {
+		close(cdone)
+		wg.Wait()
+	}()
 
-	checkFor(t, 30*time.Second, time.Second, func() error {
+	checkFor(t, 30*time.Second, 50*time.Millisecond, func() error {
 		si, err := js.StreamInfo("TEST")
 		require_NoError(t, err)
 		if si.State.NumDeleted > 0 || si.State.Msgs > 0 {
@@ -9853,4 +9906,375 @@ func TestNoRaceJetStreamWQSkippedMsgsOnScaleUp(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestNoRaceConnectionObjectReleased(t *testing.T) {
+	ob1Conf := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		server_name: "B1"
+		accounts {
+			A { users: [{user: a, password: pwd}] }
+			SYS { users: [{user: sys, password: pwd}] }
+		}
+		cluster {
+			name: "B"
+			listen: "127.0.0.1:-1"
+		}
+		gateway {
+			name: "B"
+			listen: "127.0.0.1:-1"
+		}
+		leaf {
+			listen: "127.0.0.1:-1"
+		}
+		system_account: "SYS"
+	`))
+	sb1, ob1 := RunServerWithConfig(ob1Conf)
+	defer sb1.Shutdown()
+
+	oaConf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: "127.0.0.1:-1"
+		server_name: "A"
+		accounts {
+			A { users: [{user: a, password: pwd}] }
+			SYS { users: [{user: sys, password: pwd}] }
+		}
+		gateway {
+			name: "A"
+			listen: "127.0.0.1:-1"
+			gateways [
+				{
+					name: "B"
+					url: "nats://a:pwd@127.0.0.1:%d"
+				}
+			]
+		}
+		websocket {
+			listen: "127.0.0.1:-1"
+			no_tls: true
+		}
+		system_account: "SYS"
+	`, ob1.Gateway.Port)))
+	sa, oa := RunServerWithConfig(oaConf)
+	defer sa.Shutdown()
+
+	waitForOutboundGateways(t, sa, 1, 2*time.Second)
+	waitForOutboundGateways(t, sb1, 1, 2*time.Second)
+
+	ob2Conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: "127.0.0.1:-1"
+		server_name: "B2"
+		accounts {
+			A { users: [{user: a, password: pwd}] }
+			SYS { users: [{user: sys, password: pwd}] }
+		}
+		cluster {
+			name: "B"
+			listen: "127.0.0.1:-1"
+			routes: ["nats://127.0.0.1:%d"]
+		}
+		gateway {
+			name: "B"
+			listen: "127.0.0.1:-1"
+		}
+		system_account: "SYS"
+	`, ob1.Cluster.Port)))
+	sb2, _ := RunServerWithConfig(ob2Conf)
+	defer sb2.Shutdown()
+
+	checkClusterFormed(t, sb1, sb2)
+	waitForOutboundGateways(t, sb2, 1, 2*time.Second)
+	waitForInboundGateways(t, sa, 2, 2*time.Second)
+
+	leafConf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: "127.0.0.1:-1"
+		server_name: "C"
+		accounts {
+			A { users: [{user: a, password: pwd}] }
+			SYS { users: [{user: sys, password: pwd}] }
+		}
+		leafnodes {
+			remotes [
+				{ url: "nats://a:pwd@127.0.0.1:%d" }
+			]
+		}
+		system_account: "SYS"
+	`, ob1.LeafNode.Port)))
+	leaf, _ := RunServerWithConfig(leafConf)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnected(t, leaf)
+
+	// Start an independent MQTT server to check MQTT client connection.
+	mo := testMQTTDefaultOptions()
+	sm := testMQTTRunServer(t, mo)
+	defer testMQTTShutdownServer(sm)
+
+	mc, mr := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, mo.MQTT.Host, mo.MQTT.Port)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, mr, mqttConnAckRCConnectionAccepted, false)
+
+	nc := natsConnect(t, sb1.ClientURL(), nats.UserInfo("a", "pwd"))
+	defer nc.Close()
+	cid, err := nc.GetClientID()
+	require_NoError(t, err)
+	natsSubSync(t, nc, "foo")
+
+	ncWS := natsConnect(t, fmt.Sprintf("ws://a:pwd@127.0.0.1:%d", oa.Websocket.Port))
+	defer ncWS.Close()
+	cidWS, err := ncWS.GetClientID()
+	require_NoError(t, err)
+
+	var conns []net.Conn
+	var total int
+	var ch chan string
+
+	track := func(c *client) {
+		total++
+		c.mu.Lock()
+		conns = append(conns, c.nc)
+		c.mu.Unlock()
+		runtime.SetFinalizer(c, func(c *client) {
+			ch <- fmt.Sprintf("Server=%s - Kind=%s - Conn=%v", c.srv, c.kindString(), c)
+		})
+	}
+	// Track the connection for the MQTT client
+	sm.mu.RLock()
+	for _, c := range sm.clients {
+		track(c)
+	}
+	sm.mu.RUnlock()
+
+	// Track the connection from the NATS client
+	track(sb1.getClient(cid))
+	// The outbound connection to GW "A"
+	track(sb1.getOutboundGatewayConnection("A"))
+	// The inbound connection from GW "A"
+	var inGW []*client
+	sb1.getInboundGatewayConnections(&inGW)
+	track(inGW[0])
+	// The routes from sb2
+	sb1.forEachRoute(func(r *client) {
+		track(r)
+	})
+	// The leaf form "LEAF"
+	sb1.mu.RLock()
+	for _, l := range sb1.leafs {
+		track(l)
+	}
+	sb1.mu.RUnlock()
+
+	// Now from sb2, the routes to sb1
+	sb2.forEachRoute(func(r *client) {
+		track(r)
+	})
+	// The outbound connection to GW "A"
+	track(sb2.getOutboundGatewayConnection("A"))
+
+	// From server "A", track the outbound GW
+	track(sa.getOutboundGatewayConnection("B"))
+	inGW = inGW[:0]
+	// Track the inbound GW connections
+	sa.getInboundGatewayConnections(&inGW)
+	for _, ig := range inGW {
+		track(ig)
+	}
+	// Track the websocket client
+	track(sa.getClient(cidWS))
+
+	// From the LEAF server, the connection to sb1
+	leaf.mu.RLock()
+	for _, l := range leaf.leafs {
+		track(l)
+	}
+	leaf.mu.RUnlock()
+
+	// Now close all connections and wait to see if all connections
+	// with the finalizer set is invoked.
+	ch = make(chan string, total)
+	// Close the clients and then all other connections to create a disconnect.
+	nc.Close()
+	mc.Close()
+	ncWS.Close()
+	for _, conn := range conns {
+		conn.Close()
+	}
+	// Wait and see if we get them all.
+	tm := time.NewTimer(10 * time.Second)
+	defer tm.Stop()
+	tk := time.NewTicker(10 * time.Millisecond)
+	for clients := make([]string, 0, total); len(clients) < total; {
+		select {
+		case <-tk.C:
+			runtime.GC()
+		case cs := <-ch:
+			clients = append(clients, cs)
+		case <-tm.C:
+			// Don't fail the test since there is no guarantee that
+			// finalizers are invoked.
+			t.Logf("Got %v out of %v finalizers", len(clients), total)
+			sort.Strings(clients)
+			for _, cs := range clients {
+				t.Logf("  => %s", cs)
+			}
+			return
+		}
+	}
+}
+
+func TestNoRaceFileStoreMsgLoadNextMsgMultiPerf(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Put 1k msgs in
+	for i := 0; i < 1000; i++ {
+		subj := fmt.Sprintf("foo.%d", i)
+		fs.StoreMsg(subj, nil, []byte("ZZZ"))
+	}
+
+	var smv StoreMsg
+
+	// Now do normal load next with no filter.
+	// This is baseline.
+	start := time.Now()
+	for i, seq := 0, uint64(1); i < 1000; i++ {
+		sm, nseq, err := fs.LoadNextMsg(_EMPTY_, false, seq, &smv)
+		require_NoError(t, err)
+		require_True(t, sm.subj == fmt.Sprintf("foo.%d", i))
+		require_Equal(t, nseq, seq)
+		seq++
+	}
+	baseline := time.Since(start)
+	t.Logf("Single - No filter %v", baseline)
+
+	// Now do normal load next with wc filter.
+	start = time.Now()
+	for i, seq := 0, uint64(1); i < 1000; i++ {
+		sm, nseq, err := fs.LoadNextMsg("foo.>", true, seq, &smv)
+		require_NoError(t, err)
+		require_True(t, sm.subj == fmt.Sprintf("foo.%d", i))
+		require_Equal(t, nseq, seq)
+		seq++
+	}
+	elapsed := time.Since(start)
+	require_True(t, elapsed < 2*baseline)
+	t.Logf("Single - WC filter %v", elapsed)
+
+	// Now do multi load next with 1 wc entry.
+	sl := NewSublistWithCache()
+	sl.Insert(&subscription{subject: []byte("foo.>")})
+	start = time.Now()
+	for i, seq := 0, uint64(1); i < 1000; i++ {
+		sm, nseq, err := fs.LoadNextMsgMulti(sl, seq, &smv)
+		require_NoError(t, err)
+		require_True(t, sm.subj == fmt.Sprintf("foo.%d", i))
+		require_Equal(t, nseq, seq)
+		seq++
+	}
+	elapsed = time.Since(start)
+	require_True(t, elapsed < 2*baseline)
+	t.Logf("Multi - Single WC filter %v", elapsed)
+
+	// Now do multi load next with 1000 literal subjects.
+	sl = NewSublistWithCache()
+	for i := 0; i < 1000; i++ {
+		subj := fmt.Sprintf("foo.%d", i)
+		sl.Insert(&subscription{subject: []byte(subj)})
+	}
+	start = time.Now()
+	for i, seq := 0, uint64(1); i < 1000; i++ {
+		sm, nseq, err := fs.LoadNextMsgMulti(sl, seq, &smv)
+		require_NoError(t, err)
+		require_True(t, sm.subj == fmt.Sprintf("foo.%d", i))
+		require_Equal(t, nseq, seq)
+		seq++
+	}
+	elapsed = time.Since(start)
+	require_True(t, elapsed < 2*baseline)
+	t.Logf("Multi - 1000 filters %v", elapsed)
+}
+
+func TestNoRaceWQAndMultiSubjectFilters(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"Z.>"},
+		Retention: nats.WorkQueuePolicy,
+	})
+	require_NoError(t, err)
+
+	stopPubs := make(chan bool)
+
+	publish := func(subject string) {
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		for {
+			select {
+			case <-stopPubs:
+				return
+			default:
+				_, _ = js.Publish(subject, []byte("hello"))
+			}
+		}
+	}
+
+	go publish("Z.foo")
+	go publish("Z.bar")
+	go publish("Z.baz")
+
+	// Cancel pubs after 10s.
+	time.AfterFunc(10*time.Second, func() { close(stopPubs) })
+
+	// Create a consumer
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:        "zzz",
+		AckPolicy:      nats.AckExplicitPolicy,
+		AckWait:        5 * time.Second,
+		FilterSubjects: []string{"Z.foo", "Z.bar", "Z.baz"},
+	})
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe(_EMPTY_, "zzz", nats.Bind("TEST", "zzz"))
+	require_NoError(t, err)
+
+	received := make([]uint64, 0, 256_000)
+	batchSize := 10
+
+	for running := true; running; {
+		msgs, err := sub.Fetch(batchSize, nats.MaxWait(2*time.Second))
+		if err == nats.ErrTimeout {
+			running = false
+		}
+		for _, m := range msgs {
+			meta, err := m.Metadata()
+			require_NoError(t, err)
+			received = append(received, meta.Sequence.Stream)
+			m.Ack()
+		}
+	}
+
+	sort.Slice(received, func(i, j int) bool { return received[i] < received[j] })
+
+	var pseq, gaps uint64
+	for _, seq := range received {
+		if pseq != 0 && pseq != seq-1 {
+			gaps += seq - pseq + 1
+		}
+		pseq = seq
+	}
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+
+	if si.State.Msgs != 0 || gaps > 0 {
+		t.Fatalf("Orphaned msgs %d with %d gaps detected", si.State.Msgs, gaps)
+	}
 }

@@ -15,6 +15,7 @@ package server
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -83,9 +84,10 @@ func (u *User) clone() *User {
 	}
 	clone := &User{}
 	*clone = *u
+	// Account is not cloned because it is always by reference to an existing struct.
 	clone.Permissions = u.Permissions.clone()
 
-	if len(u.AllowedConnectionTypes) > 0 {
+	if u.AllowedConnectionTypes != nil {
 		clone.AllowedConnectionTypes = make(map[string]struct{})
 		for k, v := range u.AllowedConnectionTypes {
 			clone.AllowedConnectionTypes[k] = v
@@ -103,7 +105,16 @@ func (n *NkeyUser) clone() *NkeyUser {
 	}
 	clone := &NkeyUser{}
 	*clone = *n
+	// Account is not cloned because it is always by reference to an existing struct.
 	clone.Permissions = n.Permissions.clone()
+
+	if n.AllowedConnectionTypes != nil {
+		clone.AllowedConnectionTypes = make(map[string]struct{})
+		for k, v := range n.AllowedConnectionTypes {
+			clone.AllowedConnectionTypes[k] = v
+		}
+	}
+
 	return clone
 }
 
@@ -1418,8 +1429,14 @@ func comparePasswords(serverPassword, clientPassword string) bool {
 		if err := bcrypt.CompareHashAndPassword([]byte(serverPassword), []byte(clientPassword)); err != nil {
 			return false
 		}
-	} else if serverPassword != clientPassword {
-		return false
+	} else {
+		// stringToBytes should be constant-time near enough compared to
+		// turning a string into []byte normally.
+		spass := stringToBytes(serverPassword)
+		cpass := stringToBytes(clientPassword)
+		if subtle.ConstantTimeCompare(spass, cpass) == 0 {
+			return false
+		}
 	}
 	return true
 }

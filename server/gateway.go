@@ -430,6 +430,22 @@ func (g *srvGateway) updateRemotesTLSConfig(opts *Options) {
 			} else if opts.Gateway.TLSConfig != nil {
 				cfg.TLSConfig = opts.Gateway.TLSConfig.Clone()
 			}
+
+			// Ensure that OCSP callbacks are always setup after a reload if needed.
+			mustStaple := opts.OCSPConfig != nil && opts.OCSPConfig.Mode == OCSPModeAlways
+			if mustStaple && opts.Gateway.TLSConfig != nil {
+				clientCB := opts.Gateway.TLSConfig.GetClientCertificate
+				verifyCB := opts.Gateway.TLSConfig.VerifyConnection
+				if mustStaple && cfg.TLSConfig != nil {
+					if clientCB != nil && cfg.TLSConfig.GetClientCertificate == nil {
+						cfg.TLSConfig.GetClientCertificate = clientCB
+					}
+					if verifyCB != nil && cfg.TLSConfig.VerifyConnection == nil {
+						cfg.TLSConfig.VerifyConnection = verifyCB
+					}
+				}
+			}
+
 			cfg.Unlock()
 		}
 	}
@@ -808,10 +824,35 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 		var timeout float64
 
 		if solicit {
+			var (
+				mustStaple = opts.OCSPConfig != nil && opts.OCSPConfig.Mode == OCSPModeAlways
+				clientCB   func(*tls.CertificateRequestInfo) (*tls.Certificate, error)
+				verifyCB   func(tls.ConnectionState) error
+			)
+			// Snapshot callbacks for OCSP outside an ongoing reload which might be happening.
+			if mustStaple {
+				s.reloadMu.RLock()
+				s.optsMu.RLock()
+				clientCB = s.opts.Gateway.TLSConfig.GetClientCertificate
+				verifyCB = s.opts.Gateway.TLSConfig.VerifyConnection
+				s.optsMu.RUnlock()
+				s.reloadMu.RUnlock()
+			}
+
 			cfg.RLock()
 			tlsName = cfg.tlsName
 			tlsConfig = cfg.TLSConfig.Clone()
 			timeout = cfg.TLSTimeout
+
+			// Ensure that OCSP callbacks are always setup on gateway reconnect when OCSP policy is set to always.
+			if mustStaple {
+				if clientCB != nil && tlsConfig.GetClientCertificate == nil {
+					tlsConfig.GetClientCertificate = clientCB
+				}
+				if verifyCB != nil && tlsConfig.VerifyConnection == nil {
+					tlsConfig.VerifyConnection = verifyCB
+				}
+			}
 			cfg.RUnlock()
 		} else {
 			tlsConfig = opts.Gateway.TLSConfig
@@ -877,6 +918,7 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 // Builds and sends the CONNECT protocol for a gateway.
 // Client lock held on entry.
 func (c *client) sendGatewayConnect(opts *Options) {
+	// FIXME: This can race with updateRemotesTLSConfig
 	tlsRequired := c.gw.cfg.TLSConfig != nil
 	url := c.gw.connectURL
 	c.gw.connectURL = nil
@@ -1154,7 +1196,7 @@ func (c *client) processGatewayInfo(info *Info) {
 			// Starting 2.9.0, we are phasing out the optimistic mode, so change
 			// all accounts to interest-only mode, unless instructed not to do so
 			// in some tests.
-			s.accounts.Range(func(_, v interface{}) bool {
+			s.accounts.Range(func(_, v any) bool {
 				acc := v.(*Account)
 				s.switchAccountToInterestMode(acc.GetName())
 				return true
@@ -1307,7 +1349,7 @@ func (s *Server) sendSubsToGateway(c *client, accountName string) {
 // This function will then execute appropriate function based on the command
 // contained in the protocol.
 // <Invoked from a route connection's readLoop>
-func (s *Server) processGatewayInfoFromRoute(info *Info, routeSrvID string, route *client) {
+func (s *Server) processGatewayInfoFromRoute(info *Info, routeSrvID string) {
 	switch info.GatewayCmd {
 	case gatewayCmdGossip:
 		s.processImplicitGateway(info)
@@ -1708,6 +1750,15 @@ func (s *Server) removeRemoteGatewayConnection(c *client) {
 	cid := c.cid
 	isOutbound := c.gw.outbound
 	gwName := c.gw.name
+	if isOutbound && c.gw.outsim != nil {
+		// We do this to allow the GC to release this connection.
+		// Since the map is used by the rest of the code without client lock,
+		// we can't simply set it to nil, instead, just make sure we empty it.
+		c.gw.outsim.Range(func(k, _ any) bool {
+			c.gw.outsim.Delete(k)
+			return true
+		})
+	}
 	c.mu.Unlock()
 
 	gw := s.gateway
@@ -1744,6 +1795,7 @@ func (s *Server) removeRemoteGatewayConnection(c *client) {
 				qSubsRemoved++
 			}
 		}
+		c.subs = nil
 		c.mu.Unlock()
 		// Update total count of qsubs in remote gateways.
 		atomic.AddInt64(&c.srv.gateway.totalQSubs, -qSubsRemoved)
@@ -1758,6 +1810,7 @@ func (s *Server) removeRemoteGatewayConnection(c *client) {
 		for _, sub := range c.subs {
 			subs = append(subs, sub)
 		}
+		c.subs = nil
 		c.mu.Unlock()
 		for _, sub := range subs {
 			c.removeReplySub(sub)
@@ -1869,6 +1922,10 @@ func (c *client) processGatewayRUnsub(arg []byte) error {
 		return nil
 	}
 	defer c.mu.Unlock()
+	// If closed, c.subs map will be nil, so bail out.
+	if c.isClosed() {
+		return nil
+	}
 
 	ei, _ := c.gw.outsim.Load(accName)
 	if ei != nil {
@@ -1975,6 +2032,10 @@ func (c *client) processGatewayRSub(arg []byte) error {
 		return nil
 	}
 	defer c.mu.Unlock()
+	// If closed, c.subs map will be nil, so bail out.
+	if c.isClosed() {
+		return nil
+	}
 
 	ei, _ := c.gw.outsim.Load(bytesToString(accName))
 	// We should always have an existing entry for plain subs because
@@ -2421,7 +2482,7 @@ func (g *srvGateway) shouldMapReplyForGatewaySend(acc *Account, reply []byte) bo
 }
 
 var subPool = &sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return &subscription{}
 	},
 }
@@ -2616,6 +2677,8 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 	}
 	// Done with subscription, put back to pool. We don't need
 	// to reset content since we explicitly set when using it.
+	// However, make sure to not hold a reference to a connection.
+	sub.client = nil
 	subPool.Put(sub)
 	return didDeliver
 }
@@ -3221,7 +3284,7 @@ func (s *Server) startGWReplyMapExpiration() {
 				}
 				now := time.Now().UnixNano()
 				mapEmpty := true
-				s.gwrm.m.Range(func(k, v interface{}) bool {
+				s.gwrm.m.Range(func(k, v any) bool {
 					g := k.(*gwReplyMapping)
 					l := v.(sync.Locker)
 					l.Lock()

@@ -1529,7 +1529,16 @@ func (c *client) flushOutbound() bool {
 		return false
 	}
 	c.flags.set(flushOutbound)
-	defer c.flags.clear(flushOutbound)
+	defer func() {
+		// Check flushAndClose() for explanation on why we do this.
+		if c.isClosed() {
+			for i := range c.out.wnb {
+				nbPoolPut(c.out.wnb[i])
+			}
+			c.out.wnb = nil
+		}
+		c.flags.clear(flushOutbound)
+	}()
 
 	// Check for nothing to do.
 	if c.nc == nil || c.srv == nil || c.out.pb == 0 {
@@ -1589,6 +1598,8 @@ func (c *client) flushOutbound() bool {
 		}
 		if err != nil {
 			c.Errorf("Error compressing data: %v", err)
+			// We need to grab the lock now before marking as closed and exiting
+			c.mu.Lock()
 			c.markConnAsClosed(WriteError)
 			return false
 		}
@@ -1821,7 +1832,10 @@ func (c *client) markConnAsClosed(reason ClosedState) {
 // flushSignal will use server to queue the flush IO operation to a pool of flushers.
 // Lock must be held.
 func (c *client) flushSignal() {
-	c.out.sg.Signal()
+	// Check that sg is not nil, which will happen if the connection is closed.
+	if c.out.sg != nil {
+		c.out.sg.Signal()
+	}
 }
 
 // Traces a message.
@@ -1849,7 +1863,7 @@ func (c *client) traceOutOp(op string, arg []byte) {
 }
 
 func (c *client) traceOp(format, op string, arg []byte) {
-	opa := []interface{}{}
+	opa := []any{}
 	if op != _EMPTY_ {
 		opa = append(opa, op)
 	}
@@ -2065,7 +2079,8 @@ func (c *client) processConnect(arg []byte) error {
 		}
 
 		// If no account designation.
-		if c.acc == nil {
+		// Do this only for CLIENT and LEAF connections.
+		if c.acc == nil && (c.kind == CLIENT || c.kind == LEAF) {
 			// By default register with the global account.
 			c.registerWithAccount(srv.globalAccount())
 		}
@@ -2679,7 +2694,8 @@ func (c *client) processSubEx(subject, queue, bsid []byte, cb msgHandler, noForw
 	sid := bytesToString(sub.sid)
 
 	// This check does not apply to SYSTEM or JETSTREAM or ACCOUNT clients (because they don't have a `nc`...)
-	if c.isClosed() && (kind != SYSTEM && kind != JETSTREAM && kind != ACCOUNT) {
+	// When a connection is closed though, we set c.subs to nil. So check for the map to not be nil.
+	if (c.isClosed() && (kind != SYSTEM && kind != JETSTREAM && kind != ACCOUNT)) || (c.subs == nil) {
 		c.mu.Unlock()
 		return nil, ErrConnectionClosed
 	}
@@ -3649,7 +3665,7 @@ func (c *client) prunePubPermsCache() {
 	}
 	const maxPruneAtOnce = 1000
 	r := 0
-	c.perms.pcache.Range(func(k, _ interface{}) bool {
+	c.perms.pcache.Range(func(k, _ any) bool {
 		c.perms.pcache.Delete(k)
 		if r++; (r > pruneSize && atomic.LoadInt32(&c.perms.pcsz) < int32(maxPermCacheSize)) ||
 			(r > maxPruneAtOnce) {
@@ -4006,6 +4022,34 @@ func removeHeaderIfPresent(hdr []byte, key string) []byte {
 		return nil
 	}
 	return hdr
+}
+
+func removeHeaderIfPrefixPresent(hdr []byte, prefix string) []byte {
+	var index int
+	for {
+		if index >= len(hdr) {
+			return hdr
+		}
+
+		start := bytes.Index(hdr[index:], []byte(prefix))
+		if start < 0 {
+			return hdr
+		}
+		index += start
+		if index < 1 || hdr[index-1] != '\n' {
+			return hdr
+		}
+
+		end := bytes.Index(hdr[index+len(prefix):], []byte(_CRLF_))
+		if end < 0 {
+			return hdr
+		}
+
+		hdr = append(hdr[:index], hdr[index+end+len(prefix)+len(_CRLF_):]...)
+		if len(hdr) <= len(emptyHdrLine) {
+			return nil
+		}
+	}
 }
 
 // Generate a new header based on optional original header and key value.
@@ -4965,6 +5009,18 @@ func (c *client) flushAndClose(minimalFlush bool) {
 		nbPoolPut(c.out.nb[i])
 	}
 	c.out.nb = nil
+	// We can't touch c.out.wnb when a flushOutbound is in progress since it
+	// is accessed outside the lock there. If in progress, the cleanup will be
+	// done in flushOutbound when detecting that connection is closed.
+	if !c.flags.isSet(flushOutbound) {
+		for i := range c.out.wnb {
+			nbPoolPut(c.out.wnb[i])
+		}
+		c.out.wnb = nil
+	}
+	// This seem to be important (from experimentation) for the GC to release
+	// the connection.
+	c.out.sg = nil
 
 	// Close the low level connection.
 	if c.nc != nil {
@@ -5143,6 +5199,9 @@ func (c *client) closeConnection(reason ClosedState) {
 	if kind == CLIENT || kind == LEAF || kind == JETSTREAM {
 		var _subs [32]*subscription
 		subs = _subs[:0]
+		// Do not set c.subs to nil or delete the sub from c.subs here because
+		// it will be needed in saveClosedClient (which has been started as a
+		// go routine in markConnAsClosed). Cleanup will be done there.
 		for _, sub := range c.subs {
 			// Auto-unsubscribe subscriptions must be unsubscribed forcibly.
 			sub.max = 0
@@ -5230,6 +5289,7 @@ func (c *client) reconnect() {
 		gwName        string
 		gwIsOutbound  bool
 		gwCfg         *gatewayCfg
+		leafCfg       *leafNodeCfg
 	)
 
 	c.mu.Lock()
@@ -5246,10 +5306,15 @@ func (c *client) reconnect() {
 		retryImplicit = c.route.retry || (c.route.didSolicit && c.route.routeType == Implicit)
 	}
 	kind := c.kind
-	if kind == GATEWAY {
+	switch kind {
+	case GATEWAY:
 		gwName = c.gw.name
 		gwIsOutbound = c.gw.outbound
 		gwCfg = c.gw.cfg
+	case LEAF:
+		if c.isSolicitedLeafNode() {
+			leafCfg = c.leaf.remote
+		}
 	}
 	srv := c.srv
 	c.mu.Unlock()
@@ -5305,9 +5370,9 @@ func (c *client) reconnect() {
 		} else {
 			srv.Debugf("Gateway %q not in configuration, not attempting reconnect", gwName)
 		}
-	} else if c.isSolicitedLeafNode() {
+	} else if leafCfg != nil {
 		// Check if this is a solicited leaf node. Start up a reconnect.
-		srv.startGoRoutine(func() { srv.reConnectToRemoteLeafNode(c.leaf.remote) })
+		srv.startGoRoutine(func() { srv.reConnectToRemoteLeafNode(leafCfg) })
 	}
 }
 
@@ -5722,32 +5787,32 @@ func (c *client) Error(err error) {
 	c.srv.Errors(c, err)
 }
 
-func (c *client) Errorf(format string, v ...interface{}) {
+func (c *client) Errorf(format string, v ...any) {
 	format = fmt.Sprintf("%s - %s", c, format)
 	c.srv.Errorf(format, v...)
 }
 
-func (c *client) Debugf(format string, v ...interface{}) {
+func (c *client) Debugf(format string, v ...any) {
 	format = fmt.Sprintf("%s - %s", c, format)
 	c.srv.Debugf(format, v...)
 }
 
-func (c *client) Noticef(format string, v ...interface{}) {
+func (c *client) Noticef(format string, v ...any) {
 	format = fmt.Sprintf("%s - %s", c, format)
 	c.srv.Noticef(format, v...)
 }
 
-func (c *client) Tracef(format string, v ...interface{}) {
+func (c *client) Tracef(format string, v ...any) {
 	format = fmt.Sprintf("%s - %s", c, format)
 	c.srv.Tracef(format, v...)
 }
 
-func (c *client) Warnf(format string, v ...interface{}) {
+func (c *client) Warnf(format string, v ...any) {
 	format = fmt.Sprintf("%s - %s", c, format)
 	c.srv.Warnf(format, v...)
 }
 
-func (c *client) RateLimitWarnf(format string, v ...interface{}) {
+func (c *client) RateLimitWarnf(format string, v ...any) {
 	// Do the check before adding the client info to the format...
 	statement := fmt.Sprintf(format, v...)
 	if _, loaded := c.srv.rateLimitLogging.LoadOrStore(statement, time.Now()); loaded {

@@ -11896,6 +11896,132 @@ func TestJetStreamSourceBasics(t *testing.T) {
 	})
 }
 
+func TestJetStreamSourceWorkingQueueWithLimit(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "test", Subjects: []string{"test"}})
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{Name: "wq", MaxMsgs: 100, Discard: nats.DiscardNew, Retention: nats.WorkQueuePolicy,
+		Sources: []*nats.StreamSource{{Name: "test"}}})
+	require_NoError(t, err)
+
+	sendBatch := func(subject string, n int) {
+		for i := 0; i < n; i++ {
+			_, err = js.Publish(subject, []byte("OK"))
+			require_NoError(t, err)
+		}
+	}
+	// Populate each one.
+	sendBatch("test", 300)
+
+	checkFor(t, 3*time.Second, 250*time.Millisecond, func() error {
+		si, err := js.StreamInfo("wq")
+		require_NoError(t, err)
+		if si.State.Msgs != 100 {
+			return fmt.Errorf("Expected 100 msgs, got state: %+v", si.State)
+		}
+		return nil
+	})
+
+	_, err = js.AddConsumer("wq", &nats.ConsumerConfig{Durable: "wqc", FilterSubject: "test", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	ss, err := js.PullSubscribe("test", "wqc", nats.Bind("wq", "wqc"))
+	require_NoError(t, err)
+	// we must have at least one message on the transformed subject name (ie no timeout)
+	f := func(done chan bool) {
+		for i := 0; i < 300; i++ {
+			m, err := ss.Fetch(1, nats.MaxWait(3*time.Second))
+			require_NoError(t, err)
+			time.Sleep(11 * time.Millisecond)
+			err = m[0].Ack()
+			require_NoError(t, err)
+		}
+		done <- true
+	}
+
+	var doneChan = make(chan bool)
+	go f(doneChan)
+
+	checkFor(t, 6*time.Second, 100*time.Millisecond, func() error {
+		si, err := js.StreamInfo("wq")
+		require_NoError(t, err)
+		if si.State.Msgs > 0 && si.State.Msgs <= 100 {
+			return fmt.Errorf("Expected 0 msgs, got: %d", si.State.Msgs)
+		} else if si.State.Msgs > 100 {
+			t.Fatalf("Got more than our 100 message limit: %+v", si.State)
+		}
+		return nil
+	})
+
+	select {
+	case <-doneChan:
+		ss.Drain()
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+}
+
+func TestJetStreamStreamSourceFromKV(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	// Client for API reuqests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Create a kv store
+	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: "test"})
+	require_NoError(t, err)
+
+	// Create a stream with a source from the kv store
+	_, err = js.AddStream(&nats.StreamConfig{Name: "test", Retention: nats.InterestPolicy, Sources: []*nats.StreamSource{{Name: "KV_" + kv.Bucket()}}})
+	require_NoError(t, err)
+
+	// Create a interested consumer
+	_, err = js.AddConsumer("test", &nats.ConsumerConfig{Durable: "durable", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	ss, err := js.PullSubscribe("", "", nats.Bind("test", "durable"))
+	require_NoError(t, err)
+
+	rev1, err := kv.Create("key", []byte("value1"))
+	require_NoError(t, err)
+
+	m, err := ss.Fetch(1, nats.MaxWait(500*time.Millisecond))
+	require_NoError(t, err)
+	require_NoError(t, m[0].Ack())
+	if string(m[0].Data) != "value1" {
+		t.Fatalf("Expected value1, got %s", m[0].Data)
+	}
+
+	rev2, err := kv.Update("key", []byte("value2"), rev1)
+	require_NoError(t, err)
+
+	_, err = kv.Update("key", []byte("value3"), rev2)
+	require_NoError(t, err)
+
+	m, err = ss.Fetch(1, nats.MaxWait(500*time.Millisecond))
+	require_NoError(t, err)
+	require_NoError(t, m[0].Ack())
+	if string(m[0].Data) != "value2" {
+		t.Fatalf("Expected value2, got %s", m[0].Data)
+	}
+
+	m, err = ss.Fetch(1, nats.MaxWait(500*time.Millisecond))
+	require_NoError(t, err)
+	require_NoError(t, m[0].Ack())
+	if string(m[0].Data) != "value3" {
+		t.Fatalf("Expected value3, got %s", m[0].Data)
+	}
+}
+
 func TestJetStreamInputTransform(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
@@ -13378,7 +13504,7 @@ func TestJetStreamDisabledLimitsEnforcementJWT(t *testing.T) {
 		if msg, err := c.Request(fmt.Sprintf(accUpdateEventSubjNew, pubKey), []byte(jwt), time.Second); err != nil {
 			t.Fatal("error not expected in this test", err)
 		} else {
-			content := make(map[string]interface{})
+			content := make(map[string]any)
 			if err := json.Unmarshal(msg.Data, &content); err != nil {
 				t.Fatalf("%v", err)
 			} else if _, ok := content["data"]; !ok {

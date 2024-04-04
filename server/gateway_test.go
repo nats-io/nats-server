@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -30,8 +31,10 @@ import (
 	"testing"
 	"time"
 
+	. "github.com/nats-io/nats-server/v2/internal/ocsp"
 	"github.com/nats-io/nats-server/v2/logger"
 	"github.com/nats-io/nats.go"
+	"golang.org/x/crypto/ocsp"
 )
 
 func init() {
@@ -1375,7 +1378,7 @@ type gwReconnAttemptLogger struct {
 	errCh chan string
 }
 
-func (l *gwReconnAttemptLogger) Errorf(format string, v ...interface{}) {
+func (l *gwReconnAttemptLogger) Errorf(format string, v ...any) {
 	msg := fmt.Sprintf(format, v...)
 	if strings.Contains(msg, `Error connecting to implicit gateway "A"`) {
 		select {
@@ -3020,7 +3023,7 @@ type checkErrorLogger struct {
 	gotError      bool
 }
 
-func (l *checkErrorLogger) Errorf(format string, args ...interface{}) {
+func (l *checkErrorLogger) Errorf(format string, args ...any) {
 	l.DummyLogger.Errorf(format, args...)
 	l.Lock()
 	if strings.Contains(l.Msg, l.checkErrorStr) {
@@ -3351,8 +3354,13 @@ func getInboundGatewayConnection(s *Server, name string) *client {
 	var gwsa [4]*client
 	var gws = gwsa[:0]
 	s.getInboundGatewayConnections(&gws)
-	if len(gws) > 0 {
-		return gws[0]
+	for _, gw := range gws {
+		gw.mu.Lock()
+		ok := gw.gw.name == name
+		gw.mu.Unlock()
+		if ok {
+			return gw
+		}
 	}
 	return nil
 }
@@ -3552,7 +3560,7 @@ func TestGatewaySendAllSubsBadProtocol(t *testing.T) {
 	// For this test, make sure to use inbound from A so
 	// A will reconnect when we send bad proto that
 	// causes connection to be closed.
-	c := getInboundGatewayConnection(sa, "A")
+	c := getInboundGatewayConnection(sa, "B")
 	// Mock an invalid protocol (account name missing)
 	info := &Info{
 		Gateway:    "B",
@@ -3565,7 +3573,7 @@ func TestGatewaySendAllSubsBadProtocol(t *testing.T) {
 
 	orgConn := c
 	checkFor(t, 3*time.Second, 100*time.Millisecond, func() error {
-		curConn := getInboundGatewayConnection(sa, "A")
+		curConn := getInboundGatewayConnection(sa, "B")
 		if orgConn == curConn {
 			return fmt.Errorf("Not reconnected")
 		}
@@ -3578,7 +3586,7 @@ func TestGatewaySendAllSubsBadProtocol(t *testing.T) {
 	// Refresh
 	c = nil
 	checkFor(t, 3*time.Second, 15*time.Millisecond, func() error {
-		c = getInboundGatewayConnection(sa, "A")
+		c = getInboundGatewayConnection(sa, "B")
 		if c == nil {
 			return fmt.Errorf("Did not reconnect")
 		}
@@ -3600,7 +3608,7 @@ func TestGatewaySendAllSubsBadProtocol(t *testing.T) {
 
 	orgConn = c
 	checkFor(t, 3*time.Second, 100*time.Millisecond, func() error {
-		curConn := getInboundGatewayConnection(sa, "A")
+		curConn := getInboundGatewayConnection(sa, "B")
 		if orgConn == curConn {
 			return fmt.Errorf("Not reconnected")
 		}
@@ -4349,7 +4357,7 @@ func TestGatewayServiceImportComplexSetup(t *testing.T) {
 	if c == nil || c.opts.Name != sb2.ID() {
 		t.Fatalf("A2 does not have outbound to B2")
 	}
-	c = getInboundGatewayConnection(sa2, "A")
+	c = getInboundGatewayConnection(sa2, "B")
 	if c != nil {
 		t.Fatalf("Bad setup")
 	}
@@ -4357,7 +4365,7 @@ func TestGatewayServiceImportComplexSetup(t *testing.T) {
 	if c == nil || c.opts.Name != sa1.ID() {
 		t.Fatalf("B2 does not have outbound to A1")
 	}
-	c = getInboundGatewayConnection(sb2, "B")
+	c = getInboundGatewayConnection(sb2, "A")
 	if c == nil || c.opts.Name != sa2.ID() {
 		t.Fatalf("Bad setup")
 	}
@@ -4691,7 +4699,7 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 			if c == nil || c.opts.Name != sb2.ID() {
 				t.Fatalf("A2 does not have outbound to B2")
 			}
-			c = getInboundGatewayConnection(sa2, "A")
+			c = getInboundGatewayConnection(sa2, "B")
 			if c != nil {
 				t.Fatalf("Bad setup")
 			}
@@ -4699,7 +4707,7 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 			if c == nil || c.opts.Name != sa1.ID() {
 				t.Fatalf("B2 does not have outbound to A1")
 			}
-			c = getInboundGatewayConnection(sb2, "B")
+			c = getInboundGatewayConnection(sb2, "A")
 			if c == nil || c.opts.Name != sa2.ID() {
 				t.Fatalf("Bad setup")
 			}
@@ -5761,7 +5769,7 @@ type captureGWInterestSwitchLogger struct {
 	imss []string
 }
 
-func (l *captureGWInterestSwitchLogger) Debugf(format string, args ...interface{}) {
+func (l *captureGWInterestSwitchLogger) Debugf(format string, args ...any) {
 	l.Lock()
 	msg := fmt.Sprintf(format, args...)
 	if strings.Contains(msg, fmt.Sprintf("switching account %q to %s mode", globalAccountName, InterestOnly)) ||
@@ -6017,7 +6025,7 @@ func TestGatewayReplyMapTracking(t *testing.T) {
 			t.Fatalf("Client map should have %v entries, got %v", expectLenMap, lenMap)
 		}
 		srvMapEmpty := true
-		sb.gwrm.m.Range(func(_, _ interface{}) bool {
+		sb.gwrm.m.Range(func(_, _ any) bool {
 			srvMapEmpty = false
 			return false
 		})
@@ -6949,4 +6957,395 @@ func TestGatewayConnectEvents(t *testing.T) {
 
 	checkEvents(t, "Unqueued", false)
 	checkEvents(t, "Queued", true)
+}
+
+func disconnectInboundGateways(s *Server) {
+	s.gateway.RLock()
+	in := s.gateway.in
+	s.gateway.RUnlock()
+
+	s.gateway.RLock()
+	for _, client := range in {
+		s.gateway.RUnlock()
+		client.closeConnection(ClientClosed)
+		s.gateway.RLock()
+	}
+	s.gateway.RUnlock()
+}
+
+type testMissingOCSPStapleLogger struct {
+	DummyLogger
+	ch chan string
+}
+
+func (l *testMissingOCSPStapleLogger) Errorf(format string, v ...any) {
+	msg := fmt.Sprintf(format, v...)
+	if strings.Contains(msg, "peer missing OCSP Staple") {
+		select {
+		case l.ch <- msg:
+		default:
+		}
+	}
+}
+
+func TestOCSPGatewayMissingPeerStapleIssue(t *testing.T) {
+	const (
+		caCert = "../test/configs/certs/ocsp/ca-cert.pem"
+		caKey  = "../test/configs/certs/ocsp/ca-key.pem"
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ocspr := NewOCSPResponderCustomTimeout(t, caCert, caKey, 10*time.Minute)
+	defer ocspr.Shutdown(ctx)
+	addr := fmt.Sprintf("http://%s", ocspr.Addr)
+
+	// Node A
+	SetOCSPStatus(t, addr, "../test/configs/certs/ocsp/server-status-request-url-01-cert.pem", ocsp.Good)
+	SetOCSPStatus(t, addr, "../test/configs/certs/ocsp/server-status-request-url-02-cert.pem", ocsp.Good)
+
+	// Node B
+	SetOCSPStatus(t, addr, "../test/configs/certs/ocsp/server-status-request-url-03-cert.pem", ocsp.Good)
+	SetOCSPStatus(t, addr, "../test/configs/certs/ocsp/server-status-request-url-04-cert.pem", ocsp.Good)
+
+	// Node C
+	SetOCSPStatus(t, addr, "../test/configs/certs/ocsp/server-status-request-url-05-cert.pem", ocsp.Good)
+	SetOCSPStatus(t, addr, "../test/configs/certs/ocsp/server-status-request-url-06-cert.pem", ocsp.Good)
+
+	// Node A rotated certs
+	SetOCSPStatus(t, addr, "../test/configs/certs/ocsp/server-status-request-url-07-cert.pem", ocsp.Good)
+	SetOCSPStatus(t, addr, "../test/configs/certs/ocsp/server-status-request-url-08-cert.pem", ocsp.Good)
+
+	// Store Dirs
+	storeDirA := t.TempDir()
+	storeDirB := t.TempDir()
+	storeDirC := t.TempDir()
+
+	// Gateway server configuration
+	srvConfA := `
+		host: "127.0.0.1"
+		port: -1
+
+		server_name: "AAA"
+
+		ocsp { mode = always }
+
+                system_account = sys
+                accounts {
+                  sys   { users = [{ user: sys, pass: sys }]}
+                  guest { users = [{ user: guest, pass: guest }]}
+                }
+                no_auth_user = guest
+
+		store_dir: '%s'
+		gateway {
+			name: A
+			host: "127.0.0.1"
+			port: -1
+			advertise: "127.0.0.1"
+
+			tls {
+				cert_file: "../test/configs/certs/ocsp/server-status-request-url-02-cert.pem"
+				key_file: "../test/configs/certs/ocsp/server-status-request-url-02-key.pem"
+				ca_file: "../test/configs/certs/ocsp/ca-cert.pem"
+				timeout: 5
+			}
+		}
+	`
+	srvConfA = fmt.Sprintf(srvConfA, storeDirA)
+	sconfA := createConfFile(t, []byte(srvConfA))
+	srvA, optsA := RunServerWithConfig(sconfA)
+	defer srvA.Shutdown()
+
+	// Gateway B connects to Gateway A.
+	srvConfB := `
+		host: "127.0.0.1"
+		port: -1
+
+		server_name: "BBB"
+
+		ocsp { mode = always }
+
+                system_account = sys
+                accounts {
+                  sys   { users = [{ user: sys, pass: sys }]}
+                  guest { users = [{ user: guest, pass: guest }]}
+                }
+                no_auth_user = guest
+
+		store_dir: '%s'
+		gateway {
+			name: B
+			host: "127.0.0.1"
+			advertise: "127.0.0.1"
+			port: -1
+			gateways: [{
+				name: "A"
+				url: "nats://127.0.0.1:%d"
+			}]
+
+			tls {
+				cert_file: "../test/configs/certs/ocsp/server-status-request-url-04-cert.pem"
+				key_file: "../test/configs/certs/ocsp/server-status-request-url-04-key.pem"
+				ca_file: "../test/configs/certs/ocsp/ca-cert.pem"
+				timeout: 5
+			}
+		}
+	`
+	srvConfB = fmt.Sprintf(srvConfB, storeDirB, optsA.Gateway.Port)
+	conf := createConfFile(t, []byte(srvConfB))
+	srvB, optsB := RunServerWithConfig(conf)
+	defer srvB.Shutdown()
+
+	// Client connects to server A.
+	cA, err := nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", optsA.Port),
+		nats.ErrorHandler(noOpErrHandler),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cA.Close()
+
+	// Wait for connectivity between A and B.
+	waitForOutboundGateways(t, srvB, 1, 5*time.Second)
+
+	// Gateway C also connects to Gateway A.
+	srvConfC := `
+		host: "127.0.0.1"
+		port: -1
+
+		server_name: "CCC"
+
+		ocsp { mode = always }
+
+                system_account = sys
+                accounts {
+                  sys   { users = [{ user: sys, pass: sys }]}
+                  guest { users = [{ user: guest, pass: guest }]}
+                }
+                no_auth_user = guest
+
+		store_dir: '%s'
+		gateway {
+			name: C
+			host: "127.0.0.1"
+			advertise: "127.0.0.1"
+			port: -1
+			gateways: [{name: "A", url: "nats://127.0.0.1:%d" }]
+
+			tls {
+				cert_file: "../test/configs/certs/ocsp/server-status-request-url-06-cert.pem"
+				key_file: "../test/configs/certs/ocsp/server-status-request-url-06-key.pem"
+				ca_file: "../test/configs/certs/ocsp/ca-cert.pem"
+				timeout: 5
+			}
+		}
+	`
+	srvConfC = fmt.Sprintf(srvConfC, storeDirC, optsA.Gateway.Port)
+	conf = createConfFile(t, []byte(srvConfC))
+	srvC, optsC := RunServerWithConfig(conf)
+	defer srvC.Shutdown()
+
+	////////////////////////////////////////////////////////////////////////////
+	//                                                                        //
+	//  A and B are connected at this point and A is starting with certs that //
+	//  will be rotated.
+	//                                                                        //
+	////////////////////////////////////////////////////////////////////////////
+	cB, err := nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", optsB.Port),
+		nats.ErrorHandler(noOpErrHandler),
+	)
+	require_NoError(t, err)
+	defer cB.Close()
+
+	cC, err := nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", optsC.Port),
+		nats.ErrorHandler(noOpErrHandler),
+	)
+	require_NoError(t, err)
+	defer cC.Close()
+
+	_, err = cA.Subscribe("foo", func(m *nats.Msg) {
+		m.Respond(nil)
+	})
+	require_NoError(t, err)
+
+	cA.Flush()
+
+	_, err = cB.Subscribe("bar", func(m *nats.Msg) {
+		m.Respond(nil)
+	})
+	require_NoError(t, err)
+	cB.Flush()
+
+	waitForOutboundGateways(t, srvB, 1, 10*time.Second)
+	waitForOutboundGateways(t, srvC, 2, 10*time.Second)
+
+	/////////////////////////////////////////////////////////////////////////////////
+	//                                                                             //
+	//  Switch all the certs from server A, all OCSP monitors should be restarted  //
+	//  so it should have new staples.                                             //
+	//                                                                             //
+	/////////////////////////////////////////////////////////////////////////////////
+	srvConfA = `
+		host: "127.0.0.1"
+		port: -1
+
+		server_name: "AAA"
+
+		ocsp { mode = always }
+
+                system_account = sys
+                accounts {
+                  sys   { users = [{ user: sys, pass: sys }]}
+                  guest { users = [{ user: guest, pass: guest }]}
+                }
+                no_auth_user = guest
+
+		store_dir: '%s'
+		gateway {
+			name: A
+			host: "127.0.0.1"
+			port: -1
+			advertise: "127.0.0.1"
+
+			tls {
+				cert_file: "../test/configs/certs/ocsp/server-status-request-url-08-cert.pem"
+				key_file: "../test/configs/certs/ocsp/server-status-request-url-08-key.pem"
+				ca_file: "../test/configs/certs/ocsp/ca-cert.pem"
+				timeout: 5
+
+			}
+		}
+	`
+
+	srvConfA = fmt.Sprintf(srvConfA, storeDirA)
+	if err := os.WriteFile(sconfA, []byte(srvConfA), 0666); err != nil {
+		t.Fatalf("Error writing config: %v", err)
+	}
+	if err := srvA.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	waitForOutboundGateways(t, srvA, 2, 5*time.Second)
+	waitForOutboundGateways(t, srvB, 2, 5*time.Second)
+	waitForOutboundGateways(t, srvC, 2, 5*time.Second)
+
+	// Now clients connect to C can communicate with B and A.
+	_, err = cC.Request("foo", nil, 2*time.Second)
+	require_NoError(t, err)
+
+	_, err = cC.Request("bar", nil, 2*time.Second)
+	require_NoError(t, err)
+
+	// Reload and disconnect very fast trying to produce the race.
+	ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// Swap logger from server to capture the missing peer log.
+	lA := &testMissingOCSPStapleLogger{ch: make(chan string, 30)}
+	srvA.SetLogger(lA, false, false)
+
+	lB := &testMissingOCSPStapleLogger{ch: make(chan string, 30)}
+	srvB.SetLogger(lB, false, false)
+
+	lC := &testMissingOCSPStapleLogger{ch: make(chan string, 30)}
+	srvC.SetLogger(lC, false, false)
+
+	// Start with a reload from the last server that connected directly to A.
+	err = srvC.Reload()
+	require_NoError(t, err)
+
+	// Stress reconnections and reloading servers without getting
+	// missing OCSP peer staple errors.
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		for range time.NewTicker(500 * time.Millisecond).C {
+			select {
+			case <-ctx.Done():
+				wg.Done()
+				return
+			default:
+			}
+			disconnectInboundGateways(srvA)
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		for range time.NewTicker(500 * time.Millisecond).C {
+			select {
+			case <-ctx.Done():
+				wg.Done()
+				return
+			default:
+			}
+			disconnectInboundGateways(srvB)
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		for range time.NewTicker(500 * time.Millisecond).C {
+			select {
+			case <-ctx.Done():
+				wg.Done()
+				return
+			default:
+			}
+			disconnectInboundGateways(srvC)
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		for range time.NewTicker(700 * time.Millisecond).C {
+			select {
+			case <-ctx.Done():
+				wg.Done()
+				return
+			default:
+			}
+			srvC.Reload()
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		for range time.NewTicker(800 * time.Millisecond).C {
+			select {
+			case <-ctx.Done():
+				wg.Done()
+				return
+			default:
+			}
+			srvB.Reload()
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		for range time.NewTicker(900 * time.Millisecond).C {
+			select {
+			case <-ctx.Done():
+				wg.Done()
+				return
+			default:
+			}
+			srvA.Reload()
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+	case msg := <-lA.ch:
+		t.Fatalf("Server A: Got OCSP Staple error: %v", msg)
+	case msg := <-lB.ch:
+		t.Fatalf("Server B: Got OCSP Staple error: %v", msg)
+	case msg := <-lC.ch:
+		t.Fatalf("Server C: Got OCSP Staple error: %v", msg)
+	}
+	waitForOutboundGateways(t, srvA, 2, 5*time.Second)
+	waitForOutboundGateways(t, srvB, 2, 5*time.Second)
+	waitForOutboundGateways(t, srvC, 2, 5*time.Second)
+	wg.Wait()
 }

@@ -3876,7 +3876,7 @@ func TestJetStreamClusterAccountPurge(t *testing.T) {
 			require_NoError(t, err)
 			sysDirs += len(files) - 1 // sub 1 for _meta_
 			files, err = os.ReadDir(filepath.Join(s.getOpts().StoreDir, "jetstream", accpub, "streams"))
-			if err == nil || (err != nil && err.(*os.PathError).Error() == "no such file or directory") {
+			if err == nil || err.(*os.PathError).Error() == "no such file or directory" {
 				accDirs += len(files)
 			}
 		}
@@ -4149,7 +4149,7 @@ func TestJetStreamClusterPeerOffline(t *testing.T) {
 			}
 
 			var ok bool
-			ml.nodeToInfo.Range(func(k, v interface{}) bool {
+			ml.nodeToInfo.Range(func(k, v any) bool {
 				if si := v.(nodeInfo); si.name == rs.Name() {
 					if shouldBeOffline && si.offline || !shouldBeOffline && !si.offline {
 						ok = true
