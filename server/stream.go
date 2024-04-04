@@ -5364,6 +5364,7 @@ func (mset *stream) swapSigSubs(o *consumer, newFilters []string) {
 
 	if o.closed || o.mset == nil {
 		o.mu.Unlock()
+		mset.clsMu.Unlock()
 		return
 	}
 
