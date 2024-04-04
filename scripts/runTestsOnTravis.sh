@@ -30,6 +30,7 @@ elif [ "$1" = "store_tests" ]; then
 
     go test -race -v -run=TestMemStore ./server -count=1 -vet=off -timeout=30m -failfast
     go test -race -v -run=TestFileStore ./server -count=1 -vet=off -timeout=30m -failfast
+    go test -race -v -run=TestStore ./server -count=1 -vet=off -timeout=30m -failfast
 
 elif [ "$1" = "js_tests" ]; then
 
