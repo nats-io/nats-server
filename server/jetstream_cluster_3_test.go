@@ -7041,12 +7041,14 @@ func TestJetStreamClusterConsumerPauseSurvivesRestart(t *testing.T) {
 
 func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 	type testParams struct {
-		restartAny     bool
-		restartLeader  bool
-		rolloutRestart bool
-		ldmRestart     bool
-		restarts       int
-		checkHealthz   bool
+		restartAny       bool
+		restartLeader    bool
+		rolloutRestart   bool
+		ldmRestart       bool
+		restarts         int
+		checkHealthz     bool
+		reconnectRoutes  bool
+		reconnectClients bool
 	}
 	test := func(t *testing.T, params *testParams, sc *nats.StreamConfig) {
 		conf := `
@@ -7292,6 +7294,62 @@ func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 			}
 		}
 
+		// Periodically disconnect routes from one of the servers.
+		if params.reconnectRoutes {
+			wg.Add(1)
+			go func() {
+				for range time.NewTicker(10 * time.Second).C {
+					select {
+					case <-ctx.Done():
+						wg.Done()
+						return
+					default:
+					}
+
+					// Force disconnecting routes from one of the servers.
+					s := c.servers[rand.Intn(3)]
+					var routes []*client
+					t.Logf("Disconnecting routes from %v", s.Name())
+					s.mu.Lock()
+					for _, conns := range s.routes {
+						for _, r := range conns {
+							routes = append(routes, r)
+						}
+					}
+					s.mu.Unlock()
+					for _, r := range routes {
+						r.closeConnection(ClientClosed)
+					}
+				}
+			}()
+		}
+
+		// Periodically reconnect clients.
+		if params.reconnectClients {
+			reconnectClients := func(s *Server) {
+				for _, client := range s.clients {
+					client.closeConnection(Kicked)
+				}
+			}
+
+			wg.Add(1)
+			go func() {
+				for range time.NewTicker(10 * time.Second).C {
+					select {
+					case <-ctx.Done():
+						wg.Done()
+						return
+					default:
+					}
+
+					// Force reconnect clients from one of the servers.
+					s := c.servers[rand.Intn(len(c.servers))]
+					reconnectClients(s)
+				}
+			}()
+		}
+
+		// Restarts
 		time.AfterFunc(10*time.Second, func() {
 			for i := 0; i < params.restarts; i++ {
 				switch {
@@ -7419,9 +7477,12 @@ func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 		si, err := js.StreamInfo(sc.Name)
 		require_NoError(t, err)
 
-		streamPending := int(si.State.Msgs)
-		if streamPending != consumerPending {
-			t.Errorf("Unexpected number of pending messages, stream=%d, consumers=%d", streamPending, consumerPending)
+		// Only check if there are any pending messages.
+		if consumerPending > 0 {
+			streamPending := int(si.State.Msgs)
+			if streamPending != consumerPending {
+				t.Errorf("Unexpected number of pending messages, stream=%d, consumers=%d", streamPending, consumerPending)
+			}
 		}
 
 		// If clustered, check whether leader and followers have drifted.
@@ -7430,6 +7491,8 @@ func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 				return checkState(t)
 			})
 		}
+
+		wg.Wait()
 	}
 
 	// Setting up test variations below:
@@ -7525,6 +7588,29 @@ func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 			Retention:   nats.WorkQueuePolicy,
 			Discard:     nats.DiscardOld,
 			AllowRollup: true,
+			Placement: &nats.Placement{
+				Tags: []string{"test"},
+			},
+		})
+	})
+
+	// Clustered file based with discard old policy and short max age limit.
+	t.Run("R3F_DO_NOLIMIT", func(t *testing.T) {
+		params := &testParams{
+			restartAny:       false,
+			ldmRestart:       true,
+			rolloutRestart:   true,
+			restarts:         3,
+			checkHealthz:     true,
+			reconnectRoutes:  true,
+			reconnectClients: true,
+		}
+		test(t, params, &nats.StreamConfig{
+			Name:       "OWQTEST_R3F_DO_NOLIMIT",
+			Subjects:   []string{"MSGS.>"},
+			Replicas:   3,
+			Duplicates: 30 * time.Second,
+			Discard:    nats.DiscardOld,
 			Placement: &nats.Placement{
 				Tags: []string{"test"},
 			},
