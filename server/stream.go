@@ -354,18 +354,19 @@ const (
 
 // Headers for published messages.
 const (
-	JSMsgId               = "Nats-Msg-Id"
-	JSExpectedStream      = "Nats-Expected-Stream"
-	JSExpectedLastSeq     = "Nats-Expected-Last-Sequence"
-	JSExpectedLastSubjSeq = "Nats-Expected-Last-Subject-Sequence"
-	JSExpectedLastMsgId   = "Nats-Expected-Last-Msg-Id"
-	JSStreamSource        = "Nats-Stream-Source"
-	JSLastConsumerSeq     = "Nats-Last-Consumer"
-	JSLastStreamSeq       = "Nats-Last-Stream"
-	JSConsumerStalled     = "Nats-Consumer-Stalled"
-	JSMsgRollup           = "Nats-Rollup"
-	JSMsgSize             = "Nats-Msg-Size"
-	JSResponseType        = "Nats-Response-Type"
+	JSMsgId                   = "Nats-Msg-Id"
+	JSExpectedStream          = "Nats-Expected-Stream"
+	JSExpectedLastSeq         = "Nats-Expected-Last-Sequence"
+	JSExpectedLastSubjSeq     = "Nats-Expected-Last-Subject-Sequence"
+	JSExpectedLastSubjSeqSubj = "Nats-Expected-Last-Subject-Sequence-Subject"
+	JSExpectedLastMsgId       = "Nats-Expected-Last-Msg-Id"
+	JSStreamSource            = "Nats-Stream-Source"
+	JSLastConsumerSeq         = "Nats-Last-Consumer"
+	JSLastStreamSeq           = "Nats-Last-Stream"
+	JSConsumerStalled         = "Nats-Consumer-Stalled"
+	JSMsgRollup               = "Nats-Rollup"
+	JSMsgSize                 = "Nats-Msg-Size"
+	JSResponseType            = "Nats-Response-Type"
 )
 
 // Headers for republished messages and direct gets.
@@ -4114,6 +4115,11 @@ func getExpectedLastSeqPerSubject(hdr []byte) (uint64, bool) {
 	return uint64(parseInt64(bseq)), true
 }
 
+// Fast lookup of expected subject for the expected stream sequence per subject.
+func getExpectedLastSeqPerSubjectForSubject(hdr []byte) string {
+	return string(getHeader(JSExpectedLastSubjSeqSubj, hdr))
+}
+
 // Signal if we are clustered. Will acquire rlock.
 func (mset *stream) IsClustered() bool {
 	mset.mu.RLock()
@@ -4680,10 +4686,16 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 		// Expected last sequence per subject.
 		if seq, exists := getExpectedLastSeqPerSubject(hdr); exists {
+			// Allow override of the subject used for the check.
+			seqSubj := subject
+			if optSubj := getExpectedLastSeqPerSubjectForSubject(hdr); optSubj != _EMPTY_ {
+				seqSubj = optSubj
+			}
+
 			// TODO(dlc) - We could make a new store func that does this all in one.
 			var smv StoreMsg
 			var fseq uint64
-			sm, err := store.LoadLastMsg(subject, &smv)
+			sm, err := store.LoadLastMsg(seqSubj, &smv)
 			if sm != nil {
 				fseq = sm.seq
 			}
