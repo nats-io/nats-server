@@ -389,6 +389,10 @@ func (s *Server) initJetStreamEncryption() (err error) {
 	}
 
 	if opts.JetStreamTpm.Pcr == 0 {
+		// Default PCR to use in the TPM. Values can be 0-23, and most platforms
+		// reserve values 0-12 for the OS, boot locker, disc encryption, etc.
+		// 16 used for debugging. In sticking to NATS tradition, we'll use 22
+		// as the default with the option being configurable.
 		opts.JetStreamTpm.Pcr = 22
 	}
 

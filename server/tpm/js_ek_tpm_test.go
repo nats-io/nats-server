@@ -20,16 +20,15 @@ import (
 	"testing"
 )
 
-func getTempFile() string {
-	return os.TempDir() + "/jskeys.json"
+func getTempFile(t *testing.T) string {
+	return t.TempDir() + "/jskeys.json"
 }
 
 func TestLoadJetStreamEncryptionKeyFromTPM(t *testing.T) {
-	testFile := getTempFile()
-	defer os.Remove(testFile)
+	testFile := getTempFile(t)
 	type args struct {
 		srkPassword   string
-		jsKeydir      string
+		jsKeyFile     string
 		jsKeyPassword string
 		pcr           int
 	}
@@ -46,9 +45,9 @@ func TestLoadJetStreamEncryptionKeyFromTPM(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.clear {
-				os.Remove(tt.args.jsKeydir)
+				os.Remove(tt.args.jsKeyFile)
 			}
-			_, err := LoadJetStreamEncryptionKeyFromTPM(tt.args.srkPassword, tt.args.jsKeydir, tt.args.jsKeyPassword, tt.args.pcr)
+			_, err := LoadJetStreamEncryptionKeyFromTPM(tt.args.srkPassword, tt.args.jsKeyFile, tt.args.jsKeyPassword, tt.args.pcr)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("LoadJetStreamEncryptionKeyFromTPM() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -62,8 +61,7 @@ func TestLoadJetStreamEncryptionKeyFromTPM(t *testing.T) {
 // the second pass will read the keys from disk, decrypt with the TPM (unseal),
 // and return the same key.
 func TestLoadJetStreamEncryptionKeyFromTPMBasic(t *testing.T) {
-	testFile := getTempFile()
-	defer os.Remove(testFile)
+	testFile := getTempFile(t)
 
 	// Create the key file.
 	key1, err := LoadJetStreamEncryptionKeyFromTPM("", testFile, "password", 22)

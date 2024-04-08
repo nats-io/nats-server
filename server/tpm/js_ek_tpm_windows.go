@@ -29,17 +29,17 @@ import (
 )
 
 var (
-	JsKeyTPMVersion    = 1  // Version of the NATS TPM JS implmentation
-	JsKeyTPMDefaultPcr = 22 // Default PCR value for the TPM
+	// Version of the NATS TPM JS implmentation
+	JsKeyTPMVersion = 1
 )
 
 // How this works:
 // Create a Storage Root Key (SRK) in the TPM.
-// If existing JS Encrpytion keys do not exist on disk.
+// If existing JS Encryption keys do not exist on disk.
 // 	  - Create a JetStream encryption key (js key) and seal it to the SRK
 //      using a provided js encryption key password.
 // 	  - Save the public and private blobs to a file on disk.
-//    - Return the new js encrpytion key (the private portion of the nkey)
+//    - Return the new js encryption key (the private portion of the nkey)
 // Otherwise (keys exist on disk)
 //    - Read the public and private blobs from disk
 //    - Load them into the TPM
@@ -75,34 +75,34 @@ func regenerateSRK(rwc io.ReadWriteCloser, srkPassword string) (tpmutil.Handle, 
 }
 
 type natsTPMPersistedKeys struct {
-	Version    int    // json: "version"
-	PrivateKey []byte // json: "privatekey"
-	PublicKey  []byte // json: "publickey"
+	Version    int    `json:"version"`
+	PrivateKey []byte `json:"private_key"`
+	PublicKey  []byte `json:"public_key"`
 }
 
 // Writes the private and public blobs to disk in a single file. If the directory does
 // not exist, it will be created. If the file already exists it will be overwritten.
 func writeTPMKeysToFile(filename string, privateBlob []byte, publicBlob []byte) error {
 	keyDir := filepath.Dir(filename)
-	if err := os.MkdirAll(keyDir, 0755); err != nil {
+	if err := os.MkdirAll(keyDir, 0750); err != nil {
 		return fmt.Errorf("unable to create/access directory %q: %v", keyDir, err)
 	}
 
-	// Create a new set of persisted keys. Note that the private key doesn't necessary
+	// Create a new set of persisted keys. Note that the private key doesn't necessarily
 	// need to be protected as the TPM password is required to use unseal, although it's
 	// a good idea to put this in a secure location accessible to the server.
 	tpmKeys := natsTPMPersistedKeys{
-		Version:    JsKeyTPMVersion,
-		PrivateKey: []byte(base64.StdEncoding.EncodeToString(privateBlob)),
-		PublicKey:  []byte(base64.StdEncoding.EncodeToString(publicBlob)),
+		Version: JsKeyTPMVersion,
 	}
+	tpmKeys.PrivateKey = base64.StdEncoding.AppendEncode([]byte{}, privateBlob)
+	tpmKeys.PublicKey = base64.StdEncoding.AppendEncode([]byte{}, publicBlob)
 	// Convert to JSON
 	keysJSON, err := json.Marshal(tpmKeys)
 	if err != nil {
 		return fmt.Errorf("unable to marshal keys to JSON: %v", err)
 	}
 	// Write the JSON to a file
-	if err := os.WriteFile(filename, keysJSON, 0644); err != nil {
+	if err := os.WriteFile(filename, keysJSON, 0640); err != nil {
 		return fmt.Errorf("unable to write keys file to %q: %v", filename, err)
 	}
 	return nil
@@ -111,13 +111,9 @@ func writeTPMKeysToFile(filename string, privateBlob []byte, publicBlob []byte) 
 // Reads the private and public blobs from a single file. If the file does not exist,
 // or the file cannot be read and the keys decoded, an error is returned.
 func readTPMKeysFromFile(filename string) ([]byte, []byte, error) {
-	if _, err := os.Stat(filename); os.IsNotExist(err) {
-		return nil, nil, err
-	}
-
 	keysJSON, err := os.ReadFile(filename)
 	if err != nil {
-		return nil, nil, fmt.Errorf("unable to read persisted keys from %q: %v", filename, err)
+		return nil, nil, err
 	}
 
 	var tpmKeys natsTPMPersistedKeys
@@ -130,11 +126,11 @@ func readTPMKeysFromFile(filename string) ([]byte, []byte, error) {
 	// handle any changes.
 
 	// Base64 decode the private and public blobs.
-	publicBlob, err := base64.StdEncoding.DecodeString(string(tpmKeys.PublicKey))
+	publicBlob, err := base64.StdEncoding.AppendDecode([]byte{}, tpmKeys.PublicKey)
 	if err != nil {
 		return nil, nil, fmt.Errorf("unable to decode publicBlob from base64: %v", err)
 	}
-	privateBlob, err := base64.StdEncoding.DecodeString(string(tpmKeys.PrivateKey))
+	privateBlob, err := base64.StdEncoding.AppendDecode([]byte{}, tpmKeys.PrivateKey)
 	if err != nil {
 		return nil, nil, fmt.Errorf("unable to decode privateBlob from base64: %v", err)
 	}
@@ -181,9 +177,8 @@ func unsealJsEncrpytionKey(rwc io.ReadWriteCloser, pcr int, srkHandle tpmutil.Ha
 	if err != nil {
 		return "", fmt.Errorf("unable to load data: %v", err)
 	}
-	defer func() {
-		tpm2.FlushContext(rwc, objectHandle)
-	}()
+	defer tpm2.FlushContext(rwc, objectHandle)
+
 	// Create the authorization session with TPM.
 	sessHandle, _, err := policyPCRPasswordSession(rwc, pcr)
 	if err != nil {
@@ -244,7 +239,6 @@ func policyPCRPasswordSession(rwc io.ReadWriteCloser, pcr int) (sessHandle tpmut
 // used to decrypt the key in future sessions will be saved to disk in the file provided.
 // The key will be unsealed and returned only with the correct password and PCR value.
 func LoadJetStreamEncryptionKeyFromTPM(srkPassword, jsKeyFile, jsKeyPassword string, pcr int) (string, error) {
-	var err error
 	rwc, err := tpm2.OpenTPM()
 	if err != nil {
 		return "", fmt.Errorf("could not open the TPM: %v", err)

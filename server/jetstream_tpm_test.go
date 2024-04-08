@@ -86,7 +86,7 @@ var jsTPMConfigInvalidBothOptionsSet = `
 	}`
 
 func getTPMFileName(t *testing.T) string {
-	return os.TempDir() + "/" + t.Name() + "/jskeys.json"
+	return t.TempDir() + "/" + t.Name() + "/jskeys.json"
 }
 
 func clearAndGetStoreDir(t *testing.T) string {
@@ -220,7 +220,6 @@ func TestJetStreamTPMKeyWithPCR(t *testing.T) {
 
 func TestJetStreamTPMAll(t *testing.T) {
 	fileName := getTPMFileName(t)
-	defer (func() { os.Remove(fileName) })()
 
 	// TODO: When the CI/CD environment supports updating the TPM,
 	// expand this test with the SRK password.
