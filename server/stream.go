@@ -855,11 +855,10 @@ func (mset *stream) setLeader(isLeader bool) error {
 	}
 	mset.mu.Unlock()
 
-	if mset.isInterestRetention() {
-		// If we are interest based make sure to check consumers.
-		// This is to make sure we process any outstanding acks.
-		mset.checkInterestState()
-	}
+	// If we are interest based make sure to check consumers.
+	// This is to make sure we process any outstanding acks.
+	mset.checkInterestState()
+
 	return nil
 }
 
@@ -3984,12 +3983,6 @@ func (mset *stream) isClustered() bool {
 	return mset.node != nil
 }
 
-// Return if any limits are set.
-// Lock should be held.
-func (mset *stream) hasLimitsSet() bool {
-	return mset.cfg.MaxMsgs > 0 || mset.cfg.MaxBytes > 0 || mset.cfg.MaxMsgsPer > 0 || mset.cfg.MaxAge > 0
-}
-
 // Used if we have to queue things internally to avoid the route/gw path.
 type inMsg struct {
 	subj string
@@ -4166,6 +4159,7 @@ var (
 	errMsgIdDuplicate    = errors.New("msgid is duplicate")
 	errStreamClosed      = errors.New("stream closed")
 	errInvalidMsgHandler = errors.New("undefined message handler")
+	errStreamMismatch    = errors.New("expected stream does not match")
 )
 
 // processJetStreamMsg is where we try to actually process the stream msg.
@@ -4284,23 +4278,28 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 					b, _ := json.Marshal(resp)
 					outq.sendMsg(reply, b)
 				}
-				return errors.New("expected stream does not match")
+				return errStreamMismatch
 			}
 		}
 
-		// Dedupe detection.
+		// Dedupe detection. This is done at the cluster level for dedupe detectiom above the
+		// lower layers. But we still need to pull out the msgId.
 		if msgId = getMsgId(hdr); msgId != _EMPTY_ {
-			if dde := mset.checkMsgId(msgId); dde != nil {
-				mset.mu.Unlock()
-				bumpCLFS()
-				if canRespond {
-					response := append(pubAck, strconv.FormatUint(dde.seq, 10)...)
-					response = append(response, ",\"duplicate\": true}"...)
-					outq.sendMsg(reply, response)
+			// Do real check only if not clustered or traceOnly flag is set.
+			if !isClustered {
+				if dde := mset.checkMsgId(msgId); dde != nil {
+					mset.mu.Unlock()
+					bumpCLFS()
+					if canRespond {
+						response := append(pubAck, strconv.FormatUint(dde.seq, 10)...)
+						response = append(response, ",\"duplicate\": true}"...)
+						outq.sendMsg(reply, response)
+					}
+					return errMsgIdDuplicate
 				}
-				return errMsgIdDuplicate
 			}
 		}
+
 		// Expected last sequence per subject.
 		// If we are clustered we have prechecked seq > 0.
 		if seq, exists := getExpectedLastSeqPerSubject(hdr); exists {
@@ -4562,8 +4561,18 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	}
 
 	// If we have a msgId make sure to save.
+	// This will replace our estimate from the cluster layer if we are clustered.
 	if msgId != _EMPTY_ {
-		mset.storeMsgIdLocked(&ddentry{msgId, seq, ts})
+		if isClustered && isLeader && mset.ddmap != nil {
+			if dde := mset.ddmap[msgId]; dde != nil {
+				dde.seq, dde.ts = seq, ts
+			} else {
+				mset.storeMsgIdLocked(&ddentry{msgId, seq, ts})
+			}
+		} else {
+			// R1 or not leader..
+			mset.storeMsgIdLocked(&ddentry{msgId, seq, ts})
+		}
 	}
 
 	// If here we succeeded in storing the message.
@@ -5195,18 +5204,18 @@ func (mset *stream) getPublicConsumers() []*consumer {
 // that have been acked are processed and removed.
 // This will check the ack floors of all consumers, and adjust our first sequence accordingly.
 func (mset *stream) checkInterestState() {
-	if mset == nil {
-		return
-	}
-	if !mset.isInterestRetention() {
+	if mset == nil || !mset.isInterestRetention() {
 		// If we are limits based nothing to do.
 		return
 	}
 
-	mset.clsMu.RLock()
 	var zeroAcks []*consumer
 	var lowAckFloor uint64 = math.MaxUint64
-	for _, o := range mset.cList {
+	consumers := mset.getConsumers()
+
+	for _, o := range consumers {
+		o.checkStateForInterestStream()
+
 		o.mu.RLock()
 		if o.isLeader() {
 			// We need to account for consumers with ack floor of zero.
@@ -5222,7 +5231,6 @@ func (mset *stream) checkInterestState() {
 			if err != nil {
 				// On error we will not have enough information to process correctly so bail.
 				o.mu.RUnlock()
-				mset.clsMu.RUnlock()
 				return
 			}
 			// We need to account for consumers with ack floor of zero.
@@ -5238,7 +5246,6 @@ func (mset *stream) checkInterestState() {
 		}
 		o.mu.RUnlock()
 	}
-	mset.clsMu.RUnlock()
 
 	// If nothing was set we can bail.
 	if lowAckFloor == math.MaxUint64 {
@@ -5253,7 +5260,7 @@ func (mset *stream) checkInterestState() {
 	var state StreamState
 	mset.store.FastState(&state)
 
-	if lowAckFloor < math.MaxUint64 && lowAckFloor > state.FirstSeq {
+	if lowAckFloor < math.MaxUint64 && lowAckFloor > state.FirstSeq && lowAckFloor <= state.LastSeq {
 		// Check if we had any zeroAcks, we will need to check them.
 		for _, o := range zeroAcks {
 			var np uint64
@@ -5271,9 +5278,12 @@ func (mset *stream) checkInterestState() {
 		}
 		// Purge the stream to lowest ack floor + 1
 		mset.store.PurgeEx(_EMPTY_, lowAckFloor+1, 0)
-		// Also make sure we clear any pending acks.
-		mset.clearAllPreAcksBelowFloor(lowAckFloor + 1)
 	}
+	// Make sure to reset our local lseq.
+	mset.store.FastState(&state)
+	mset.lseq = state.LastSeq
+	// Also make sure we clear any pending acks.
+	mset.clearAllPreAcksBelowFloor(state.FirstSeq)
 }
 
 func (mset *stream) isInterestRetention() bool {
