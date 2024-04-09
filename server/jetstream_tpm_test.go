@@ -89,12 +89,6 @@ func getTPMFileName(t *testing.T) string {
 	return t.TempDir() + "/" + t.Name() + "/jskeys.json"
 }
 
-func clearAndGetStoreDir(t *testing.T) string {
-	storageDir := os.TempDir() + "/" + t.Name()
-	os.RemoveAll(storageDir)
-	return storageDir
-}
-
 func checkSendMessage(t *testing.T, s *Server) {
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
@@ -130,8 +124,7 @@ func checkReceiveMessage(t *testing.T, s *Server) {
 
 func TestJetStreamTPMBasic(t *testing.T) {
 	fileName := getTPMFileName(t)
-	defer (func() { os.Remove(fileName) })()
-	cf := createConfFile(t, []byte(fmt.Sprintf(jsTPMConfigPassword, clearAndGetStoreDir(t), fileName)))
+	cf := createConfFile(t, []byte(fmt.Sprintf(jsTPMConfigPassword, t.TempDir(), fileName)))
 
 	s, _ := RunServerWithConfig(cf)
 	defer s.Shutdown()
@@ -171,10 +164,8 @@ func TestJetStreamTPMBasic(t *testing.T) {
 // minute healing time (decrementing one failure every 10 minutes).
 func TestJetStreamTPMKeyBadPassword(t *testing.T) {
 	fileName := getTPMFileName(t)
-	storeDir := clearAndGetStoreDir(t)
-	defer (func() { os.Remove(fileName) })()
 	cf := createConfFile(t, []byte(fmt.Sprintf(jsTPMConfigPassword,
-		storeDir, fileName)))
+		t.TempDir(), fileName)))
 
 	s, _ := RunServerWithConfig(cf)
 	defer s.Shutdown()
@@ -190,7 +181,7 @@ func TestJetStreamTPMKeyBadPassword(t *testing.T) {
 		}
 	}()
 	cf2 := createConfFile(t, []byte(fmt.Sprintf(jsTPMConfigBadPassword,
-		storeDir, fileName)))
+		t.TempDir(), fileName)))
 	s, _ = RunServerWithConfig(cf2)
 	time.Sleep(3 * time.Second)
 	if s.Running() {
@@ -200,10 +191,8 @@ func TestJetStreamTPMKeyBadPassword(t *testing.T) {
 }
 
 func TestJetStreamTPMKeyWithPCR(t *testing.T) {
-	fileName := getTPMFileName(t)
-	defer (func() { os.Remove(fileName) })()
 	cf := createConfFile(t, []byte(fmt.Sprintf(jsTPMConfigPasswordPcr,
-		clearAndGetStoreDir(t), fileName, 18)))
+		t.TempDir(), getTPMFileName(t), 18)))
 
 	s, _ := RunServerWithConfig(cf)
 	defer s.Shutdown()
@@ -224,7 +213,7 @@ func TestJetStreamTPMAll(t *testing.T) {
 	// TODO: When the CI/CD environment supports updating the TPM,
 	// expand this test with the SRK password.
 	cf := createConfFile(t, []byte(fmt.Sprintf(jsTPMConfigAllFields,
-		clearAndGetStoreDir(t), fileName, 19, "")))
+		getTPMFileName(t), fileName, 19, "")))
 
 	s, _ := RunServerWithConfig(cf)
 	defer s.Shutdown()
@@ -243,7 +232,7 @@ func TestJetStreamTPMAll(t *testing.T) {
 
 func TestJetStreamInvalidConfig(t *testing.T) {
 	cf := createConfFile(t, []byte(fmt.Sprintf(jsTPMConfigInvalidBothOptionsSet,
-		clearAndGetStoreDir(t))))
+		getTPMFileName(t))))
 
 	defer func() {
 		r := recover()
