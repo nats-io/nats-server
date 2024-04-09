@@ -5477,7 +5477,7 @@ func (mset *stream) checkInterestState() {
 			state, err := o.store.State()
 			if err != nil {
 				// On error we will not have enough information to process correctly so bail.
-				o.mu.RUnlock()
+				o.mu.Unlock()
 				return
 			}
 			// We need to account for consumers with ack floor of zero.
