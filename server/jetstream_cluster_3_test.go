@@ -6617,7 +6617,7 @@ func TestJetStreamClusterSourceWorkingQueueWithLimit(t *testing.T) {
 	}
 }
 
-func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
+func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 	type testParams struct {
 		restartAny       bool
 		restartLeader    bool
@@ -7201,7 +7201,7 @@ func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 		})
 	})
 
-	// Clustered file based with discard old policy and short max age limit.
+	// Clustered file based with discard old policy and no limits.
 	t.Run("R3F_DO_NOLIMIT", func(t *testing.T) {
 		params := &testParams{
 			restartAny:       false,
@@ -7223,4 +7223,50 @@ func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 			},
 		})
 	})
+}
+
+func TestJetStreamClusterConsumerNRGCleanup(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Storage:   nats.MemoryStorage,
+		Retention: nats.WorkQueuePolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	// First call is just to create the pull subscribers.
+	_, err = js.PullSubscribe("foo", "dlc")
+	require_NoError(t, err)
+
+	require_NoError(t, js.DeleteConsumer("TEST", "dlc"))
+
+	// Now delete the stream.
+	require_NoError(t, js.DeleteStream("TEST"))
+
+	// Now make sure we cleaned up the NRG directories for the stream and consumer.
+	var numConsumers, numStreams int
+	for _, s := range c.servers {
+		sd := s.JetStreamConfig().StoreDir
+		nd := filepath.Join(sd, "$SYS", "_js_")
+		f, err := os.Open(nd)
+		require_NoError(t, err)
+		dirs, err := f.ReadDir(-1)
+		require_NoError(t, err)
+		for _, fi := range dirs {
+			if strings.HasPrefix(fi.Name(), "C-") {
+				numConsumers++
+			} else if strings.HasPrefix(fi.Name(), "S-") {
+				numStreams++
+			}
+		}
+	}
+	require_Equal(t, numConsumers, 0)
+	require_Equal(t, numStreams, 0)
 }

@@ -551,7 +551,7 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) bool {
 	return false
 }
 
-// isConsumerCurrent will determine if the consumer is up to date.
+// isConsumerHealthy will determine if the consumer is up to date.
 // For R1 it will make sure the consunmer is present on this server.
 func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consumerAssignment) bool {
 	if mset == nil {
