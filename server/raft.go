@@ -1635,12 +1635,6 @@ func (n *raft) shutdown(shouldDelete bool) {
 	}
 	s, g, wal := n.s, n.group, n.wal
 
-	// Delete our peer state and vote state and any snapshots.
-	if shouldDelete {
-		os.Remove(filepath.Join(n.sd, peerStateFile))
-		os.Remove(filepath.Join(n.sd, termVoteFile))
-		os.RemoveAll(filepath.Join(n.sd, snapshotsDir))
-	}
 	// Unregistering ipQueues do not prevent them from push/pop
 	// just will remove them from the central monitoring map
 	queues := []interface {
@@ -1652,17 +1646,21 @@ func (n *raft) shutdown(shouldDelete bool) {
 	n.Unlock()
 
 	s.unregisterRaftNode(g)
-	if shouldDelete {
-		n.debug("Deleted")
-	} else {
-		n.debug("Shutdown")
-	}
+
 	if wal != nil {
 		if shouldDelete {
 			wal.Delete()
 		} else {
 			wal.Stop()
 		}
+	}
+
+	if shouldDelete {
+		// Delete all our peer state and vote state and any snapshots.
+		os.RemoveAll(n.sd)
+		n.debug("Deleted")
+	} else {
+		n.debug("Shutdown")
 	}
 }
 
