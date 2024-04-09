@@ -1909,16 +1909,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 		}
 	}
 
-	mset.mu.RLock()
-	config := mset.cfg
-	checkAcks := config.Retention != LimitsPolicy && mset.hasLimitsSet()
-	mset.mu.RUnlock()
-
-	// Check if we are a clustered interest retention stream with limits.
-	// If so, check ack floors against our state.
-	if checkAcks {
-		mset.checkInterestState()
-	}
+	config := mset.config()
 
 	resp.StreamInfo = &StreamInfo{
 		Created:    mset.createdTime(),
@@ -4240,7 +4231,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 		return
 	}
 
-	// If we are in clustered mode we need to be the stream leader to proceed.
+	// If we are in clustered mode we need to be the consumer leader to proceed.
 	if s.JetStreamIsClustered() {
 		// Check to make sure the consumer is assigned.
 		js, cc := s.getJetStreamCluster()
