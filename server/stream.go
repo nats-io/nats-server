@@ -5463,7 +5463,7 @@ func (mset *stream) checkInterestState() {
 	for _, o := range consumers {
 		o.checkStateForInterestStream()
 
-		o.mu.RLock()
+		o.mu.Lock()
 		if o.isLeader() {
 			// We need to account for consumers with ack floor of zero.
 			// We will collect them and see if we need to check pending below.
@@ -5491,7 +5491,7 @@ func (mset *stream) checkInterestState() {
 				o.applyState(state)
 			}
 		}
-		o.mu.RUnlock()
+		o.mu.Unlock()
 	}
 
 	// If nothing was set we can bail.
