@@ -16,7 +16,7 @@ func Uint32() uint32
 //go:linkname Uint32n runtime.fastrandn
 func Uint32n(n uint32) uint32
 
-// Uint32 returns a lock free uint64 value.
+// Uint64 returns a lock free uint64 value.
 func Uint64() uint64 {
 	v := uint64(Uint32())
 	return v<<32 | uint64(Uint32())
