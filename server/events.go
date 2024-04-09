@@ -1450,7 +1450,7 @@ func (s *Server) sameDomain(domain string) bool {
 	return domain == _EMPTY_ || s.info.Domain == _EMPTY_ || domain == s.info.Domain
 }
 
-// remoteServerShutdownEvent is called when we get an event from another server shutting down.
+// remoteServerShutdown is called when we get an event from another server shutting down.
 func (s *Server) remoteServerShutdown(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

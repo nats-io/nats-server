@@ -108,7 +108,7 @@ func TestSysLoggerWithDebugAndTrace(t *testing.T) {
 	}
 }
 
-// TestSysLoggerWithDebugAndTrace tests remote event logging
+// TestRemoteSysLoggerWithDebugAndTrace tests remote event logging
 func TestRemoteSysLoggerWithDebugAndTrace(t *testing.T) {
 	checkPrivledges(t)
 	logger := NewRemoteSysLogger("", true, true)
