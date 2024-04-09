@@ -2830,10 +2830,10 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, doSample bool) {
 						break
 					}
 				}
-				// If nothing left set to current delivered.
-				if len(o.pending) == 0 {
-					o.adflr, o.asflr = o.dseq-1, o.sseq-1
-				}
+			}
+			// If nothing left set to current delivered.
+			if len(o.pending) == 0 {
+				o.adflr, o.asflr = o.dseq-1, o.sseq-1
 			}
 		}
 		// We do these regardless.
@@ -5458,7 +5458,7 @@ func (o *consumer) checkStateForInterestStream() error {
 	// See if we need to process this update if our parent stream is not a limits policy stream.
 	mset := o.mset
 	shouldProcessState := mset != nil && o.retention != LimitsPolicy
-	if o.closed || !shouldProcessState {
+	if o.closed || !shouldProcessState || o.store == nil {
 		o.mu.RUnlock()
 		return nil
 	}

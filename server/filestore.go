@@ -1504,7 +1504,7 @@ func updateTrackingState(state *StreamState, mb *msgBlock) {
 func trackingStatesEqual(fs, mb *StreamState) bool {
 	// When a fs is brand new the fs state will have first seq of 0, but tracking mb may have 1.
 	// If either has a first sequence that is not 0 or 1 we will check if they are the same, otherwise skip.
-	if fs.FirstSeq > 1 || mb.FirstSeq > 1 {
+	if (fs.FirstSeq > 1 && mb.FirstSeq > 1) || mb.FirstSeq > 1 {
 		return fs.Msgs == mb.Msgs && fs.FirstSeq == mb.FirstSeq && fs.LastSeq == mb.LastSeq && fs.Bytes == mb.Bytes
 	}
 	return fs.Msgs == mb.Msgs && fs.LastSeq == mb.LastSeq && fs.Bytes == mb.Bytes
@@ -3261,12 +3261,16 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 			}
 			asl = true
 		}
-		if fs.cfg.MaxMsgs > 0 && fs.state.Msgs >= uint64(fs.cfg.MaxMsgs) && !asl {
-			return ErrMaxMsgs
-		}
-		if fs.cfg.MaxBytes > 0 && fs.state.Bytes+fileStoreMsgSize(subj, hdr, msg) >= uint64(fs.cfg.MaxBytes) {
-			if !asl || fs.sizeForSeq(fseq) <= int(fileStoreMsgSize(subj, hdr, msg)) {
-				return ErrMaxBytes
+		// If we are discard new and limits policy and clustered, we do the enforcement
+		// above and should not disqualify the message here since it could cause replicas to drift.
+		if fs.cfg.Retention == LimitsPolicy || fs.cfg.Replicas == 1 {
+			if fs.cfg.MaxMsgs > 0 && fs.state.Msgs >= uint64(fs.cfg.MaxMsgs) && !asl {
+				return ErrMaxMsgs
+			}
+			if fs.cfg.MaxBytes > 0 && fs.state.Bytes+fileStoreMsgSize(subj, hdr, msg) >= uint64(fs.cfg.MaxBytes) {
+				if !asl || fs.sizeForSeq(fseq) <= int(fileStoreMsgSize(subj, hdr, msg)) {
+					return ErrMaxBytes
+				}
 			}
 		}
 	}
@@ -6310,6 +6314,8 @@ func (fs *fileStore) FastState(state *StreamState) {
 	state.FirstTime = fs.state.FirstTime
 	state.LastSeq = fs.state.LastSeq
 	state.LastTime = fs.state.LastTime
+	// Make sure to reset if being re-used.
+	state.Deleted, state.NumDeleted = nil, 0
 	if state.LastSeq > state.FirstSeq {
 		state.NumDeleted = int((state.LastSeq - state.FirstSeq + 1) - state.Msgs)
 		if state.NumDeleted < 0 {
@@ -6864,7 +6870,6 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 
 	var smv StoreMsg
 	var err error
-	var isEmpty bool
 
 	smb.mu.Lock()
 	if atomic.LoadUint64(&smb.first.seq) == seq {
@@ -6904,13 +6909,16 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 	}
 
 	// Check if empty after processing, could happen if tail of messages are all deleted.
-	isEmpty = smb.msgs == 0
-	if isEmpty {
-		smb.dirtyCloseWithRemove(true)
+	if isEmpty := smb.msgs == 0; isEmpty {
+		// Only remove if not the last block.
+		if smb != fs.lmb {
+			smb.dirtyCloseWithRemove(true)
+			deleted++
+		}
 		// Update fs first here as well.
 		fs.state.FirstSeq = atomic.LoadUint64(&smb.last.seq) + 1
 		fs.state.FirstTime = time.Time{}
-		deleted++
+
 	} else {
 		// Make sure to sync changes.
 		smb.needSync = true
@@ -7754,8 +7762,7 @@ func (fs *fileStore) writeFullState() error {
 	// Snapshot prior dirty count.
 	priorDirty := fs.dirty
 
-	// Check tracking state.
-	statesEqual := trackingStatesEqual(&fs.state, &mstate)
+	statesEqual := trackingStatesEqual(&fs.state, &mstate) || len(fs.blks) > 0
 	// Release lock.
 	fs.mu.Unlock()
 

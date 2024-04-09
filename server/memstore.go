@@ -126,23 +126,27 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 		if asl && ms.cfg.DiscardNewPer {
 			return ErrMaxMsgsPerSubject
 		}
-		if ms.cfg.MaxMsgs > 0 && ms.state.Msgs >= uint64(ms.cfg.MaxMsgs) {
-			// If we are tracking max messages per subject and are at the limit we will replace, so this is ok.
-			if !asl {
-				return ErrMaxMsgs
+		// If we are discard new and limits policy and clustered, we do the enforcement
+		// above and should not disqualify the message here since it could cause replicas to drift.
+		if ms.cfg.Retention == LimitsPolicy || ms.cfg.Replicas == 1 {
+			if ms.cfg.MaxMsgs > 0 && ms.state.Msgs >= uint64(ms.cfg.MaxMsgs) {
+				// If we are tracking max messages per subject and are at the limit we will replace, so this is ok.
+				if !asl {
+					return ErrMaxMsgs
+				}
 			}
-		}
-		if ms.cfg.MaxBytes > 0 && ms.state.Bytes+memStoreMsgSize(subj, hdr, msg) >= uint64(ms.cfg.MaxBytes) {
-			if !asl {
-				return ErrMaxBytes
-			}
-			// If we are here we are at a subject maximum, need to determine if dropping last message gives us enough room.
-			if ss.firstNeedsUpdate {
-				ms.recalculateFirstForSubj(subj, ss.First, ss)
-			}
-			sm, ok := ms.msgs[ss.First]
-			if !ok || memStoreMsgSize(sm.subj, sm.hdr, sm.msg) < memStoreMsgSize(subj, hdr, msg) {
-				return ErrMaxBytes
+			if ms.cfg.MaxBytes > 0 && ms.state.Bytes+memStoreMsgSize(subj, hdr, msg) >= uint64(ms.cfg.MaxBytes) {
+				if !asl {
+					return ErrMaxBytes
+				}
+				// If we are here we are at a subject maximum, need to determine if dropping last message gives us enough room.
+				if ss.firstNeedsUpdate {
+					ms.recalculateFirstForSubj(subj, ss.First, ss)
+				}
+				sm, ok := ms.msgs[ss.First]
+				if !ok || memStoreMsgSize(sm.subj, sm.hdr, sm.msg) < memStoreMsgSize(subj, hdr, msg) {
+					return ErrMaxBytes
+				}
 			}
 		}
 	}

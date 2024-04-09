@@ -6755,6 +6755,37 @@ func TestFileStoreMsgBlockFirstAndLastSeqCorrupt(t *testing.T) {
 	require_Equal(t, lseq, 10)
 }
 
+func TestFileStoreWriteFullStateAfterPurgeEx(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := []byte("abc")
+	for i := 1; i <= 10; i++ {
+		fs.StoreMsg(fmt.Sprintf("foo.%d", i), nil, msg)
+	}
+	fs.RemoveMsg(8)
+	fs.RemoveMsg(9)
+	fs.RemoveMsg(10)
+
+	n, err := fs.PurgeEx(">", 8, 0)
+	require_NoError(t, err)
+	require_Equal(t, n, 7)
+
+	var ss StreamState
+	fs.FastState(&ss)
+	require_Equal(t, ss.FirstSeq, 11)
+	require_Equal(t, ss.LastSeq, 10)
+
+	// Make sure this does not reset our state due to skew with msg blocks.
+	fs.writeFullState()
+	fs.FastState(&ss)
+	require_Equal(t, ss.FirstSeq, 11)
+	require_Equal(t, ss.LastSeq, 10)
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////
