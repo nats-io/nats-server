@@ -7039,7 +7039,7 @@ func TestJetStreamClusterConsumerPauseSurvivesRestart(t *testing.T) {
 	checkTimer(leader)
 }
 
-func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
+func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 	type testParams struct {
 		restartAny       bool
 		restartLeader    bool
@@ -7623,7 +7623,7 @@ func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 		})
 	})
 
-	// Clustered file based with discard old policy and short max age limit.
+	// Clustered file based with discard old policy and no limits.
 	t.Run("R3F_DO_NOLIMIT", func(t *testing.T) {
 		params := &testParams{
 			restartAny:       false,
