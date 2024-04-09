@@ -6663,7 +6663,6 @@ func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 
 		nc, js := jsClientConnect(t, c.randomServer())
 		defer nc.Close()
-		t.Logf("Host: %v", nc.ConnectedUrl())
 
 		cnc, cjs := jsClientConnect(t, c.randomServer())
 		defer cnc.Close()
@@ -6731,7 +6730,6 @@ func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 						pjs.Publish(subject, payload, msgID, nats.AckWait(250*time.Millisecond))
 					}
 				}
-				t.Logf("Stopped publishing.")
 			}()
 		}
 
@@ -6773,7 +6771,7 @@ func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 				cpnc, cpjs := jsClientConnect(t, c.randomServer())
 				defer cpnc.Close()
 
-				psub, err := cpjs.PullSubscribe(subject, consumer, mp)
+				psub, err := cpjs.PullSubscribe(subject, consumer, mp, mw, aw)
 				require_NoError(t, err)
 
 				time.AfterFunc(15*time.Second, func() {
@@ -6828,7 +6826,7 @@ func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 				cpnc, cpjs := jsClientConnect(t, c.randomServer())
 				defer cpnc.Close()
 
-				psub, err := cpjs.PullSubscribe(subject, consumer, mp)
+				psub, err := cpjs.PullSubscribe(subject, consumer, mp, mw, aw)
 				if err != nil {
 					t.Logf("ERROR: %v", err)
 					continue
@@ -6890,9 +6888,7 @@ func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 					t.Logf("Disconnecting routes from %v", s.Name())
 					s.mu.Lock()
 					for _, conns := range s.routes {
-						for _, r := range conns {
-							routes = append(routes, r)
-						}
+						routes = append(routes, conns...)
 					}
 					s.mu.Unlock()
 					for _, r := range routes {
@@ -6919,7 +6915,6 @@ func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 						return
 					default:
 					}
-
 					// Force reconnect clients from one of the servers.
 					s := c.servers[rand.Intn(len(c.servers))]
 					reconnectClients(s)
@@ -6997,8 +6992,7 @@ func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 			jsz, err := srv.Jsz(&JSzOptions{Accounts: true, Streams: true, Consumer: true})
 			require_NoError(t, err)
 			if len(jsz.AccountDetails) > 0 && len(jsz.AccountDetails[0].Streams) > 0 {
-				details := jsz.AccountDetails[0]
-				stream := details.Streams[0]
+				stream := jsz.AccountDetails[0].Streams[0]
 				return &stream
 			}
 			t.Error("Could not find account details")
@@ -7013,7 +7007,7 @@ func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 				return fmt.Errorf("no leader found for stream")
 			}
 			streamLeader := getStreamDetails(t, leaderSrv)
-			errs := make([]error, 0)
+			var errs []error
 			for _, srv := range c.servers {
 				if srv == leaderSrv {
 					// Skip self
@@ -7023,24 +7017,25 @@ func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 				if stream == nil {
 					return fmt.Errorf("stream not found")
 				}
+
 				if stream.State.Msgs != streamLeader.State.Msgs {
 					err := fmt.Errorf("Leader %v has %d messages, Follower %v has %d messages",
 						stream.Cluster.Leader, streamLeader.State.Msgs,
-						srv.Name(), stream.State.Msgs,
+						srv, stream.State.Msgs,
 					)
 					errs = append(errs, err)
 				}
 				if stream.State.FirstSeq != streamLeader.State.FirstSeq {
 					err := fmt.Errorf("Leader %v FirstSeq is %d, Follower %v is at %d",
 						stream.Cluster.Leader, streamLeader.State.FirstSeq,
-						srv.Name(), stream.State.FirstSeq,
+						srv, stream.State.FirstSeq,
 					)
 					errs = append(errs, err)
 				}
 				if stream.State.LastSeq != streamLeader.State.LastSeq {
 					err := fmt.Errorf("Leader %v LastSeq is %d, Follower %v is at %d",
 						stream.Cluster.Leader, streamLeader.State.LastSeq,
-						srv.Name(), stream.State.LastSeq,
+						srv, stream.State.LastSeq,
 					)
 					errs = append(errs, err)
 				}
@@ -7049,6 +7044,35 @@ func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 				return errors.Join(errs...)
 			}
 			return nil
+		}
+
+		checkMsgsEqual := func(t *testing.T) {
+			// These have already been checked to be the same for all streams.
+			state := getStreamDetails(t, c.streamLeader("js", sc.Name)).State
+			// Gather all the streams.
+			var msets []*stream
+			for _, s := range c.servers {
+				acc, err := s.LookupAccount("js")
+				require_NoError(t, err)
+				mset, err := acc.lookupStream(sc.Name)
+				require_NoError(t, err)
+				msets = append(msets, mset)
+			}
+			for seq := state.FirstSeq; seq <= state.LastSeq; seq++ {
+				var msgId string
+				var smv StoreMsg
+				for _, mset := range msets {
+					mset.mu.RLock()
+					sm, err := mset.store.LoadMsg(seq, &smv)
+					mset.mu.RUnlock()
+					require_NoError(t, err)
+					if msgId == _EMPTY_ {
+						msgId = string(sm.hdr)
+					} else if msgId != string(sm.hdr) {
+						t.Fatalf("MsgIds do not match for seq %d: %q vs %q", seq, msgId, sm.hdr)
+					}
+				}
+			}
 		}
 
 		// Check state of streams and consumers.
@@ -7065,9 +7089,14 @@ func TestJetStreamClusterWorkQueueStreamOrphanIssue(t *testing.T) {
 
 		// If clustered, check whether leader and followers have drifted.
 		if sc.Replicas > 1 {
-			checkFor(t, 3*time.Minute, 100*time.Millisecond, func() error {
+			// If we have drifted do not have to wait too long, usually its stuck for good.
+			checkFor(t, time.Minute, time.Second, func() error {
 				return checkState(t)
 			})
+			// If we succeeded now let's check that all messages are also the same.
+			// We may have no messages but for tests that do we make sure each msg is the same
+			// across all replicas.
+			checkMsgsEqual(t)
 		}
 
 		wg.Wait()
