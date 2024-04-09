@@ -5507,7 +5507,7 @@ func (mset *stream) checkInterestState() {
 	var state StreamState
 	mset.store.FastState(&state)
 
-	if lowAckFloor < math.MaxUint64 && lowAckFloor > state.FirstSeq && lowAckFloor <= state.LastSeq {
+	if lowAckFloor < math.MaxUint64 && lowAckFloor > state.FirstSeq {
 		// Check if we had any zeroAcks, we will need to check them.
 		for _, o := range zeroAcks {
 			var np uint64
@@ -5523,8 +5523,14 @@ func (mset *stream) checkInterestState() {
 				return
 			}
 		}
-		// Purge the stream to lowest ack floor + 1
-		mset.store.PurgeEx(_EMPTY_, lowAckFloor+1, 0)
+		if lowAckFloor <= state.LastSeq {
+			// Purge the stream to lowest ack floor + 1
+			mset.store.PurgeEx(_EMPTY_, lowAckFloor+1, 0)
+		} else {
+			// Here we have a low ack floor higher then our last seq.
+			// So we will just do normal purge.
+			mset.store.Purge()
+		}
 	}
 	// Make sure to reset our local lseq.
 	mset.store.FastState(&state)
