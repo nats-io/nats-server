@@ -23413,3 +23413,160 @@ func TestJetStreamDirectGetMultiPaging(t *testing.T) {
 		processPartial(b + 1) // 100 + EOB
 	}
 }
+
+func TestJetStreamConsumerLimitsRescalingUpdate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.leader())
+	defer nc.Close()
+	streamCfg := &nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo", "bar"},
+		Retention: nats.WorkQueuePolicy,
+		Storage:   nats.MemoryStorage,
+		Replicas:  3,
+		ConsumerLimits: nats.StreamConsumerLimits{
+			MaxAckPending: 100_000,
+		},
+	}
+	_, err := js.AddStream(streamCfg)
+	require_NoError(t, err)
+
+	cinfo, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Name:          "foo",
+		Durable:       "foo",
+		FilterSubject: "foo",
+		Replicas:      3,
+		AckPolicy:     nats.AckExplicitPolicy,
+		MaxAckPending: 10_000,
+	})
+	require_NoError(t, err)
+	require_Equal(t, cinfo.Config.Replicas, 3)
+	require_Equal(t, cinfo.Config.MaxAckPending, 10_000)
+
+	cinfo, err = js.ConsumerInfo("TEST", "foo")
+	require_NoError(t, err)
+	require_Equal(t, len(cinfo.Cluster.Replicas), 2)
+
+	streamCfg.Replicas = 1
+	_, err = js.UpdateStream(streamCfg)
+	require_NoError(t, err)
+
+	sinfo, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, sinfo.Config.Replicas, 1)
+
+	cinfo, err = js.ConsumerInfo("TEST", "foo")
+	require_NoError(t, err)
+
+	// FIXME: Consumer Replicas stay configured at R3F for the consumer even though it downscaled automatically.
+	got := cinfo.Config.Replicas
+	expected := 1
+	if got != expected {
+		t.Logf("Expected configured replicas to be %d, got: %d", expected, got)
+	}
+
+	// Confirm that downscaling worked.
+	if cinfo.Cluster == nil {
+		t.Logf("WRN: Unexpected missing cluster info")
+	} else {
+		require_Equal(t, len(cinfo.Cluster.Replicas), 0)
+	}
+
+	// Update consumer
+	cinfo, err = js.UpdateConsumer("TEST", &nats.ConsumerConfig{
+		Name:          "foo",
+		Durable:       "foo",
+		FilterSubject: "foo",
+		Replicas:      1,
+		AckPolicy:     nats.AckExplicitPolicy,
+		MaxAckPending: 10_000,
+	})
+	require_NoError(t, err)
+
+	// FIXME: After scale down still report to have configured R3
+	got = cinfo.Config.Replicas
+	expected = 1
+	if got != expected {
+		t.Errorf("Expected configured replicas to be %d, got: %d", expected, got)
+	}
+	require_Equal(t, len(cinfo.Cluster.Replicas), 0)
+	require_Equal(t, cinfo.Config.MaxAckPending, 10_000)
+
+	// Scale up stream again without consumer limits, this will fail because it needs
+	// the ConsumerLimits setup, this could happen with an older natscli release.
+	streamCfg.Replicas = 3
+	streamCfg.ConsumerLimits = nats.StreamConsumerLimits{}
+	_, err = js.UpdateStream(streamCfg)
+	if err == nil || !strings.Contains(err.Error(), "change to limits violates consumers") {
+		t.Error("Expected error about changing limits from consumers")
+	}
+
+	// For update to succeed they consumer limits need to match.
+	streamCfg.Replicas = 3
+	streamCfg.ConsumerLimits = nats.StreamConsumerLimits{
+		MaxAckPending: 100_000,
+	}
+	_, err = js.UpdateStream(streamCfg)
+	if err != nil {
+		t.Error(err)
+	}
+
+	sinfo, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, sinfo.Config.Replicas, 3)
+
+	// Confirm consumer was scaled up again automatically.
+	cinfo, err = js.ConsumerInfo("TEST", "foo")
+	require_NoError(t, err)
+	got = cinfo.Config.Replicas
+	expected = 3
+	if got != expected {
+		t.Errorf("Expected configured replicas: %d, got: %d", expected, got)
+	}
+
+	// FIXME: This can be empty sometimes.
+	if cinfo.Cluster == nil {
+		t.Logf("WRN: Cluster was empty after ConsumerInfo")
+	} else if len(cinfo.Cluster.Replicas) != expected {
+		t.Logf("WRN: ConsumerInfo %+v", cinfo.Cluster)
+		t.Errorf("WRN: Unexpected number of replicas: %d", len(cinfo.Cluster.Replicas))
+	}
+
+	// Wait and then update consumer again.
+	time.Sleep(500 * time.Millisecond)
+
+	// FIXME: This fails with a context deadline exceeded error.
+	_, err = js.UpdateConsumer("TEST", &nats.ConsumerConfig{
+		Name:          "foo",
+		Durable:       "foo",
+		FilterSubject: "foo",
+		Replicas:      3,
+		AckPolicy:     nats.AckExplicitPolicy,
+		MaxAckPending: 10_000,
+	})
+	if err != nil {
+		t.Errorf("WRN: Got error updating consumer: %v", err)
+	}
+
+	// Retrying works sometimes:
+	cinfo, err = js.UpdateConsumer("TEST", &nats.ConsumerConfig{
+		Name:          "foo",
+		Durable:       "foo",
+		FilterSubject: "foo",
+		Replicas:      3,
+		AckPolicy:     nats.AckExplicitPolicy,
+		MaxAckPending: 10_000,
+	})
+	if err != nil {
+		t.Errorf("WRN: Got error updating consumer: %v", err)
+	}
+	require_NoError(t, err)
+	got = cinfo.Config.Replicas
+	expected = 3
+	if got != expected {
+		t.Errorf("Expected: %d, got: %d", expected, got)
+	}
+	require_Equal(t, len(cinfo.Cluster.Replicas), 2)
+}
