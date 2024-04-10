@@ -10278,3 +10278,74 @@ func TestNoRaceWQAndMultiSubjectFilters(t *testing.T) {
 		t.Fatalf("Orphaned msgs %d with %d gaps detected", si.State.Msgs, gaps)
 	}
 }
+
+// https://github.com/nats-io/nats-server/issues/4957
+func TestNoRaceWQAndMultiSubjectFiltersRace(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"Z.>"},
+		Retention: nats.WorkQueuePolicy,
+		Replicas:  1,
+	})
+	require_NoError(t, err)
+
+	// The bug would happen when the stream was on same server as meta-leader.
+	// So make that so.
+	// Make sure stream leader is on S-1
+	sl := c.streamLeader(globalAccountName, "TEST")
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		if sl == c.leader() {
+			return nil
+		}
+		// Move meta-leader since stream can be R1.
+		nc.Request(JSApiLeaderStepDown, nil, time.Second)
+		return fmt.Errorf("stream leader on meta-leader")
+	})
+
+	start := make(chan struct{})
+	var done, ready sync.WaitGroup
+
+	// Create num go routines who will all race to create a consumer with the same filter subject but a different name.
+	num := 10
+	ready.Add(num)
+	done.Add(num)
+
+	for i := 0; i < num; i++ {
+		go func(n int) {
+			// Connect directly to the meta leader but with our own connection.
+			s := c.leader()
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			ready.Done()
+			defer done.Done()
+			<-start
+
+			js.AddConsumer("TEST", &nats.ConsumerConfig{
+				Name:          fmt.Sprintf("C-%d", n),
+				FilterSubject: "Z.foo",
+				AckPolicy:     nats.AckExplicitPolicy,
+			})
+		}(i)
+	}
+
+	// Wait for requestors to be ready
+	ready.Wait()
+	close(start)
+	done.Wait()
+
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST")
+		require_NoError(t, err)
+		if si.State.Consumers != 1 {
+			return fmt.Errorf("Consumer count not correct: %d vs 1", si.State.Consumers)
+		}
+		return nil
+	})
+}
