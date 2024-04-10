@@ -57,7 +57,7 @@ func TestLoadJetStreamEncryptionKeyFromTPM(t *testing.T) {
 }
 
 // TestLoadJetStreamEncryptionKeyFromTPMBasic tests the basic functionality.
-// The first pass will create the keys and generate the js encrpytion key.
+// The first pass will create the keys and generate the js encryption key.
 // the second pass will read the keys from disk, decrypt with the TPM (unseal),
 // and return the same key.
 func TestLoadJetStreamEncryptionKeyFromTPMBasic(t *testing.T) {

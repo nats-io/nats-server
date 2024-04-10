@@ -153,7 +153,7 @@ func createAndSealJsEncryptionKey(rwc io.ReadWriteCloser, srkHandle tpmutil.Hand
 	if err != nil {
 		return "", fmt.Errorf("unable to create seed: %v", err)
 	}
-	// We'll use the seed to represent the encrpytion key.
+	// We'll use the seed to represent the encryption key.
 	jsStoreKey, err := user.Seed()
 	if err != nil {
 		return "", fmt.Errorf("unable to get seed: %v", err)
@@ -268,7 +268,7 @@ func LoadJetStreamEncryptionKeyFromTPM(srkPassword, jsKeyFile, jsKeyPassword str
 		return "", fmt.Errorf("unable to load key from TPM: %v", err)
 	}
 
-	// Unseal the JetStream encrpytion key using the TPM.
+	// Unseal the JetStream encryption key using the TPM.
 	jsek, err := unsealJsEncrpytionKey(rwc, pcr, srkHandle, srkPassword, jsKeyPassword, publicBlob, privateBlob)
 	if err != nil {
 		return "", fmt.Errorf("unable to unseal key from the TPM: %v", err)
