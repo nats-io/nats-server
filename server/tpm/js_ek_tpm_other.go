@@ -19,5 +19,5 @@ import "fmt"
 
 // LoadJetStreamEncryptionKeyFromTPM here is a stub for unsupported platforms.
 func LoadJetStreamEncryptionKeyFromTPM(srkPassword, jsKeyFile, jsKeyPassword string, pcr int) (string, error) {
-	return "", fmt.Errorf("TPM functionality is not supported on this platform.")
+	return "", fmt.Errorf("TPM functionality is not supported on this platform")
 }
