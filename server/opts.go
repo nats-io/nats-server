@@ -234,6 +234,13 @@ type JSLimitOpts struct {
 	Duplicates      time.Duration
 }
 
+type JSTpmOpts struct {
+	KeysFile    string
+	KeyPassword string
+	SrkPassword string
+	Pcr         int
+}
+
 // AuthCallout option used to map external AuthN to NATS based AuthZ.
 type AuthCallout struct {
 	// Must be a public account Nkey.
@@ -303,6 +310,7 @@ type Options struct {
 	JetStreamCipher       StoreCipher   `json:"-"`
 	JetStreamUniqueTag    string
 	JetStreamLimits       JSLimitOpts
+	JetStreamTpm          JSTpmOpts
 	JetStreamMaxCatchup   int64
 	StoreDir              string            `json:"-"`
 	SyncInterval          time.Duration     `json:"-"`
@@ -2160,6 +2168,61 @@ func parseJetStreamLimits(v any, opts *Options, errors *[]error) error {
 	return nil
 }
 
+// Parse the JetStream TPM options.
+func parseJetStreamTPM(v interface{}, opts *Options, errors *[]error) error {
+	var lt token
+	tk, v := unwrapValue(v, &lt)
+
+	tpm := JSTpmOpts{}
+
+	vv, ok := v.(map[string]interface{})
+	if !ok {
+		return &configErr{tk, fmt.Sprintf("Expected a map to define JetStreamLimits, got %T", v)}
+	}
+	for mk, mv := range vv {
+		tk, mv = unwrapValue(mv, &lt)
+		switch strings.ToLower(mk) {
+		case "keys_file":
+			tpm.KeysFile = mv.(string)
+		case "encryption_password":
+			tpm.KeyPassword = mv.(string)
+		case "srk_password":
+			tpm.SrkPassword = mv.(string)
+		case "pcr":
+			tpm.Pcr = int(mv.(int64))
+		case "cipher":
+			if err := setJetStreamEkCipher(opts, mv, tk); err != nil {
+				return err
+			}
+		default:
+			if !tk.IsUsedVariable() {
+				err := &unknownConfigFieldErr{
+					field: mk,
+					configErr: configErr{
+						token: tk,
+					},
+				}
+				*errors = append(*errors, err)
+				continue
+			}
+		}
+	}
+	opts.JetStreamTpm = tpm
+	return nil
+}
+
+func setJetStreamEkCipher(opts *Options, mv interface{}, tk token) error {
+	switch strings.ToLower(mv.(string)) {
+	case "chacha", "chachapoly":
+		opts.JetStreamCipher = ChaCha
+	case "aes":
+		opts.JetStreamCipher = AES
+	default:
+		return &configErr{tk, fmt.Sprintf("Unknown cipher type: %q", mv)}
+	}
+	return nil
+}
+
 // Parse enablement of jetstream for a server.
 func parseJetStream(v any, opts *Options, errors *[]error, warnings *[]error) error {
 	var lt token
@@ -2221,18 +2284,17 @@ func parseJetStream(v any, opts *Options, errors *[]error, warnings *[]error) er
 			case "prev_key", "prev_ek", "prev_encryption_key":
 				opts.JetStreamOldKey = mv.(string)
 			case "cipher":
-				switch strings.ToLower(mv.(string)) {
-				case "chacha", "chachapoly":
-					opts.JetStreamCipher = ChaCha
-				case "aes":
-					opts.JetStreamCipher = AES
-				default:
-					return &configErr{tk, fmt.Sprintf("Unknown cipher type: %q", mv)}
+				if err := setJetStreamEkCipher(opts, mv, tk); err != nil {
+					return err
 				}
 			case "extension_hint":
 				opts.JetStreamExtHint = mv.(string)
 			case "limits":
 				if err := parseJetStreamLimits(tk, opts, errors); err != nil {
+					return err
+				}
+			case "tpm":
+				if err := parseJetStreamTPM(tk, opts, errors); err != nil {
 					return err
 				}
 			case "unique_tag":
