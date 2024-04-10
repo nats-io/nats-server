@@ -3289,6 +3289,11 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 		return health
 	}
 
+	// If JSServerOnly is true, then do not check further accounts, streams and consumers.
+	if opts.JSServerOnly {
+		return health
+	}
+
 	sopts := s.getOpts()
 
 	// If JS is not enabled in the config, we stop.
@@ -3480,11 +3485,6 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 				},
 			}
 		}
-		return health
-	}
-
-	// If JSServerOnly is true, then do not check further accounts, streams and consumers.
-	if opts.JSServerOnly {
 		return health
 	}
 
