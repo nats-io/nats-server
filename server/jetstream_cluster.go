@@ -4276,7 +4276,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 	var didCreate, isConfigUpdate, needsLocalResponse bool
 	if o == nil {
 		// Add in the consumer if needed.
-		if o, err = mset.addConsumerWithAssignment(ca.Config, ca.Name, ca, wasExisting, ActionCreateOrUpdate); err == nil {
+		if o, err = mset.addConsumerWithAssignment(ca.Config, ca.Name, ca, js.isMetaRecovering(), ActionCreateOrUpdate); err == nil {
 			didCreate = true
 		}
 	} else {
@@ -7057,7 +7057,7 @@ func (cc *jetStreamCluster) createGroupForConsumer(cfg *ConsumerConfig, sa *stre
 	return &raftGroup{Name: groupNameForConsumer(peers, storage), Storage: storage, Peers: peers}
 }
 
-// jsClusteredConsumerRequest is first point of entry to create a consumer with R > 1.
+// jsClusteredConsumerRequest is first point of entry to create a consumer in clustered mode.
 func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subject, reply string, rmsg []byte, stream string, cfg *ConsumerConfig, action ConsumerAction) {
 	js, cc := s.getJetStreamCluster()
 	if js == nil || cc == nil {
@@ -7232,6 +7232,40 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 				}
 			}
 		}
+
+		// Check if we are work queue policy.
+		// We will do pre-checks here to avoid thrashing meta layer.
+		if sa.Config.Retention == WorkQueuePolicy && !cfg.Direct {
+			if cfg.AckPolicy != AckExplicit {
+				resp.Error = NewJSConsumerWQRequiresExplicitAckError()
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+				return
+			}
+			subjects := gatherSubjectFilters(cfg.FilterSubject, cfg.FilterSubjects)
+			if len(subjects) == 0 && len(sa.consumers) > 0 {
+				resp.Error = NewJSConsumerWQMultipleUnfilteredError()
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+				return
+			}
+			// Check here to make sure we have not collided with another.
+			if len(sa.consumers) > 0 {
+				for _, oca := range sa.consumers {
+					if oca.Name == oname {
+						continue
+					}
+					for _, psubj := range gatherSubjectFilters(oca.Config.FilterSubject, oca.Config.FilterSubjects) {
+						for _, subj := range subjects {
+							if SubjectsCollide(subj, psubj) {
+								resp.Error = NewJSConsumerWQConsumerNotUniqueError()
+								s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+								return
+							}
+						}
+					}
+				}
+			}
+		}
+
 		ca = &consumerAssignment{
 			Group:   rg,
 			Stream:  stream,
@@ -7315,8 +7349,6 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		ca = nca
 	}
 
-	eca := encodeAddConsumerAssignment(ca)
-
 	// Mark this as pending.
 	if sa.consumers == nil {
 		sa.consumers = make(map[string]*consumerAssignment)
@@ -7324,7 +7356,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	sa.consumers[ca.Name] = ca
 
 	// Do formal proposal.
-	cc.meta.Propose(eca)
+	cc.meta.Propose(encodeAddConsumerAssignment(ca))
 }
 
 func encodeAddConsumerAssignment(ca *consumerAssignment) []byte {
