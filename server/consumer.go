@@ -604,7 +604,7 @@ func checkConsumerCfg(
 	}
 	subjectFilters := gatherSubjectFilters(config.FilterSubject, config.FilterSubjects)
 
-	// Check subject filters overlap.
+	// Check subject filters do not overlap.
 	for outer, subject := range subjectFilters {
 		if !IsValidSubject(subject) {
 			return NewJSStreamInvalidConfigError(ErrBadSubject)
@@ -788,7 +788,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 			if action == ActionCreate && !reflect.DeepEqual(*config, eo.config()) {
 				return nil, NewJSConsumerAlreadyExistsError()
 			}
-			// Check for overlapping subjects.
+			// Check for overlapping subjects if we are a workqueue
 			if mset.cfg.Retention == WorkQueuePolicy {
 				subjects := gatherSubjectFilters(config.FilterSubject, config.FilterSubjects)
 				if !mset.partitionUnique(cName, subjects) {
