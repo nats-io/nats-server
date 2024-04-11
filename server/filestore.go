@@ -5237,7 +5237,7 @@ func (fs *fileStore) syncBlocks() {
 		}
 
 		// Check if we need to sync. We will not hold lock during actual sync.
-		needSync, fn := mb.needSync, mb.mfn
+		needSync := mb.needSync
 		if needSync {
 			// Flush anything that may be pending.
 			mb.flushPendingMsgsLocked()
@@ -5254,23 +5254,32 @@ func (fs *fileStore) syncBlocks() {
 			fs.mu.RUnlock()
 		}
 
-		// Check if we need to sync.
-		// This is done not holding any locks.
+		// Check if we need to sync this block.
 		if needSync {
-			<-dios
-			fd, _ := os.OpenFile(fn, os.O_RDWR, defaultFilePerms)
-			dios <- struct{}{}
+			mb.mu.Lock()
+			var fd *os.File
+			var didOpen bool
+			if mb.mfd != nil {
+				fd = mb.mfd
+			} else {
+				<-dios
+				fd, _ = os.OpenFile(mb.mfn, os.O_RDWR, defaultFilePerms)
+				dios <- struct{}{}
+				didOpen = true
+			}
 			// If we have an fd.
 			if fd != nil {
 				canClear := fd.Sync() == nil
-				fd.Close()
+				// If we opened the file close the fd.
+				if didOpen {
+					fd.Close()
+				}
 				// Only clear sync flag on success.
 				if canClear {
-					mb.mu.Lock()
 					mb.needSync = false
-					mb.mu.Unlock()
 				}
 			}
+			mb.mu.Unlock()
 		}
 	}
 
