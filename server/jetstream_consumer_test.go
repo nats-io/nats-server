@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math/rand"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1079,35 +1080,6 @@ func TestJetStreamConsumerDelete(t *testing.T) {
 }
 
 func TestFetchWithDrain(t *testing.T) {
-
-	processMsg := func(t *testing.T, sub *nats.Subscription, msgs map[int]int) bool {
-
-		msg, err := sub.NextMsg(time.Second * 10)
-		if err != nil {
-			return true
-		}
-		metadata, err := msg.Metadata()
-		require_NoError(t, err)
-		err = msg.Ack()
-		require_NoError(t, err)
-
-		fmt.Printf("DELIVERY seq: %v STREAM seq: %v CONSUMER seq: %v\n", metadata.NumDelivered, metadata.Sequence.Stream, metadata.Sequence.Consumer)
-
-		_, ok := msgs[int(metadata.Sequence.Stream)]
-		if _, ok := msgs[int(metadata.Sequence.Stream-1)]; !ok && len(msgs) > 0 {
-			fmt.Println("SEQUENCE MISMATCH")
-		}
-		if ok {
-			fmt.Printf("seq: %v attempts: %v\n", metadata.Sequence.Stream, metadata.NumDelivered)
-			t.Fatalf("Message has been seen before")
-		}
-
-		msgs[int(metadata.Sequence.Stream)] = int(metadata.NumDelivered)
-
-		require_NoError(t, err)
-		return false
-	}
-
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
@@ -1119,18 +1091,19 @@ func TestFetchWithDrain(t *testing.T) {
 		Subjects:  []string{"foo"},
 		Retention: nats.LimitsPolicy,
 	})
+	require_NoError(t, err)
 
 	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
 		Durable:   "C",
 		AckPolicy: nats.AckExplicitPolicy,
-		AckWait:   time.Second * 3,
+		AckWait:   time.Second * 10,
 	})
 	require_NoError(t, err)
 
 	const messages = 10_000
 
 	for i := 0; i < messages; i++ {
-		sendStreamMsg(t, nc, "foo", fmt.Sprintf("%d", i))
+		sendStreamMsg(t, nc, "foo", fmt.Sprintf("%d", i+1))
 	}
 
 	cr := JSApiConsumerGetNextRequest{
@@ -1141,26 +1114,52 @@ func TestFetchWithDrain(t *testing.T) {
 	require_NoError(t, err)
 
 	msgs := make(map[int]int)
+
+	processMsg := func(t *testing.T, sub *nats.Subscription, msgs map[int]int) bool {
+		msg, err := sub.NextMsg(time.Second * 1)
+		if err != nil {
+			return false
+		}
+		metadata, err := msg.Metadata()
+		require_NoError(t, err)
+		err = msg.Ack()
+		require_NoError(t, err)
+
+		v, err := strconv.Atoi(string(msg.Data))
+		require_NoError(t, err)
+		require_Equal(t, uint64(v), metadata.Sequence.Stream)
+
+		_, ok := msgs[int(metadata.Sequence.Stream)]
+		if _, ok := msgs[int(metadata.Sequence.Stream-1)]; !ok && len(msgs) > 0 {
+			t.Logf("Stream Sequence gap detected: current %d", metadata.Sequence.Stream)
+		}
+		if ok {
+			t.Fatalf("Message has been seen before")
+		}
+
+		msgs[int(metadata.Sequence.Stream)] = int(metadata.NumDelivered)
+
+		require_NoError(t, err)
+		return true
+	}
+
 	for {
-		fmt.Printf("Fetching\n")
-		fmt.Printf("current total len: %v\n", len(msgs))
 		inbox := nats.NewInbox()
 		sub, err := nc.SubscribeSync(inbox)
 		require_NoError(t, err)
 
 		err = nc.PublishRequest(fmt.Sprintf(JSApiRequestNextT, "TEST", "C"), inbox, crBytes)
+		require_NoError(t, err)
 
+		// Drain after first message processed.
 		processMsg(t, sub, msgs)
-
 		sub.Drain()
 
 		for {
 			if !processMsg(t, sub, msgs) {
 				if len(msgs) == messages {
-					fmt.Printf("All messages received\n")
 					return
 				}
-			} else {
 				break
 			}
 		}
