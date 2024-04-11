@@ -1078,6 +1078,94 @@ func TestJetStreamConsumerDelete(t *testing.T) {
 	}
 }
 
+func TestFetchWithDrain(t *testing.T) {
+
+	processMsg := func(t *testing.T, sub *nats.Subscription, msgs map[int]int) bool {
+
+		msg, err := sub.NextMsg(time.Second * 10)
+		if err != nil {
+			return true
+		}
+		metadata, err := msg.Metadata()
+		require_NoError(t, err)
+		err = msg.Ack()
+
+		fmt.Printf("DELIVERY seq: %v STREAM seq: %v\n", metadata.NumDelivered, metadata.Sequence.Stream)
+
+		_, ok := msgs[int(metadata.Sequence.Stream)]
+		if _, ok := msgs[int(metadata.Sequence.Stream-1)]; !ok && len(msgs) > 0 {
+			fmt.Println("SEQUENCE MISMATCH")
+		}
+		if ok {
+			fmt.Printf("seq: %v attempts: %v\n", metadata.Sequence.Stream, metadata.NumDelivered)
+			t.Fatalf("Message has been seen before")
+		}
+
+		msgs[int(metadata.Sequence.Stream)] = int(metadata.NumDelivered)
+
+		require_NoError(t, err)
+		return false
+	}
+
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.LimitsPolicy,
+	})
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "C",
+		AckPolicy: nats.AckExplicitPolicy,
+		AckWait:   time.Second * 3,
+	})
+	require_NoError(t, err)
+
+	const messages = 10_000
+
+	for i := 0; i < messages; i++ {
+		sendStreamMsg(t, nc, "foo", fmt.Sprintf("%d", i))
+	}
+
+	cr := JSApiConsumerGetNextRequest{
+		Batch:   100_000,
+		Expires: time.Second * 10,
+	}
+	crBytes, err := json.Marshal(cr)
+	require_NoError(t, err)
+
+	msgs := make(map[int]int)
+	for {
+		fmt.Printf("Fetching\n")
+		fmt.Printf("current total len: %v\n", len(msgs))
+		inbox := nats.NewInbox()
+		sub, err := nc.SubscribeSync(inbox)
+		require_NoError(t, err)
+
+		err = nc.PublishRequest(fmt.Sprintf(JSApiRequestNextT, "TEST", "C"), inbox, crBytes)
+
+		processMsg(t, sub, msgs)
+
+		sub.Drain()
+
+		for {
+			if !processMsg(t, sub, msgs) {
+				if len(msgs) == messages {
+					fmt.Printf("All messages received\n")
+					return
+				}
+			} else {
+				break
+			}
+		}
+	}
+}
+
 func Benchmark____JetStreamConsumerIsFilteredMatch(b *testing.B) {
 	subject := "foo.bar.do.not.match.any.filter.subject"
 	for n := 1; n <= 1024; n *= 2 {
