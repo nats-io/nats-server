@@ -3947,9 +3947,9 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 				wr.hbt = time.Now().Add(wr.hb)
 			}
 		} else {
-			// We will redo this one.
-			o.sseq--
+			// We will redo this one as long as this is not a redelivery.
 			if dc == 1 {
+				o.sseq--
 				o.npc++
 			}
 			pmsg.returnToPool()
@@ -4391,7 +4391,7 @@ func (o *consumer) didNotDeliver(seq uint64, subj string) {
 		if _, ok := o.pending[seq]; ok {
 			// We found this messsage on pending, we need
 			// to queue it up for immediate redelivery since
-			// we know it was not delivered.
+			// we know it was not delivered
 			if !o.onRedeliverQueue(seq) {
 				o.addToRedeliverQueue(seq)
 				o.signalNewMessages()
