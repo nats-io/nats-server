@@ -1089,8 +1089,9 @@ func TestFetchWithDrain(t *testing.T) {
 		metadata, err := msg.Metadata()
 		require_NoError(t, err)
 		err = msg.Ack()
+		require_NoError(t, err)
 
-		fmt.Printf("DELIVERY seq: %v STREAM seq: %v\n", metadata.NumDelivered, metadata.Sequence.Stream)
+		fmt.Printf("DELIVERY seq: %v STREAM seq: %v CONSUMER seq: %v\n", metadata.NumDelivered, metadata.Sequence.Stream, metadata.Sequence.Consumer)
 
 		_, ok := msgs[int(metadata.Sequence.Stream)]
 		if _, ok := msgs[int(metadata.Sequence.Stream-1)]; !ok && len(msgs) > 0 {
