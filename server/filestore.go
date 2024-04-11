@@ -5176,15 +5176,13 @@ func (fs *fileStore) syncBlocks() {
 		return
 	}
 	fs.setSyncTimer()
-	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile)
-	syncAlways := fs.fcfg.SyncAlways
 	if markDirty {
 		fs.dirty++
 	}
-	fs.mu.Unlock()
 
 	// Sync state file if we are not running with sync always.
-	if !syncAlways {
+	if !fs.fcfg.SyncAlways {
+		fn := filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile)
 		<-dios
 		fd, _ := os.OpenFile(fn, os.O_RDWR, defaultFilePerms)
 		dios <- struct{}{}
@@ -5193,6 +5191,7 @@ func (fs *fileStore) syncBlocks() {
 			fd.Close()
 		}
 	}
+	fs.mu.Unlock()
 }
 
 // Select the message block where this message should be found.
