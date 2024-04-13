@@ -116,3 +116,87 @@ func TestStreamSourcingScalingManySourcing(t *testing.T) {
 	}
 
 }
+
+func TestStreamSourcingScalingSourcingMany(t *testing.T) {
+	var numSourced = 10000
+	var numMessages = uint64(50)
+
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+	s := c.randomServer()
+	urls := s.clientConnectURLs
+	fmt.Printf("Connected to server %+v\n", urls)
+
+	nc, js := jsClientConnect(t, s, nats.Timeout(20*time.Second))
+	defer nc.Close()
+
+	// create n streams to source from
+	for i := 0; i < numSourced; i++ {
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:                 fmt.Sprintf("sourced-%d", i),
+			Subjects:             []string{fmt.Sprintf("foo.%d", i)},
+			Retention:            nats.LimitsPolicy,
+			Storage:              nats.FileStorage,
+			Discard:              nats.DiscardOld,
+			Replicas:             1,
+			AllowDirect:          true,
+			MirrorDirect:         false,
+			DiscardNewPerSubject: false,
+			MaxAge:               time.Duration(60 * time.Minute),
+		})
+		require_NoError(t, err)
+	}
+
+	// create the StreamSources
+	streamSources := make([]*nats.StreamSource, numSourced)
+
+	for i := 0; i < numSourced; i++ {
+		streamSources[i] = &nats.StreamSource{Name: fmt.Sprintf("sourced-%d", i), FilterSubject: fmt.Sprintf("foo.%d", i)}
+	}
+
+	// create a stream that sources from them
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:                 "sourcing",
+		Sources:              streamSources,
+		Retention:            nats.LimitsPolicy,
+		Storage:              nats.FileStorage,
+		Discard:              nats.DiscardOld,
+		Replicas:             3,
+		AllowDirect:          true,
+		MirrorDirect:         false,
+		DiscardNewPerSubject: false,
+		MaxAge:               time.Duration(60 * time.Minute),
+	})
+	require_NoError(t, err)
+
+	fmt.Printf("Streams created\n")
+
+	// publish n messages for each sourced stream
+	for j := uint64(0); j < numMessages; j++ {
+		start := time.Now()
+		for i := 0; i < numSourced; i++ {
+			_, err = js.Publish(fmt.Sprintf("foo.%d", i), []byte("hello"))
+			require_NoError(t, err)
+		}
+		end := time.Now()
+		fmt.Printf("Published round %d, avg pub latency %v\n", j, end.Sub(start)/time.Duration(numSourced))
+	}
+
+	fmt.Printf("Messages published\n")
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		state, err := js.StreamInfo("sourcing")
+		if err != nil {
+			return err
+		}
+		if state.State.Msgs == numMessages*uint64(numSourced) {
+			fmt.Printf("Lucky match Expected %d messages, got %d", numMessages*uint64(numSourced), state.State.Msgs)
+			return nil
+		} else if state.State.Msgs < numMessages*uint64(numSourced) {
+			fmt.Printf("Expected %d messages, got %d", numMessages*uint64(numSourced), state.State.Msgs)
+			return fmt.Errorf("Expected %d messages, got %d", numMessages*uint64(numSourced), state.State.Msgs)
+		} else {
+			println("Too many messages!")
+			return fmt.Errorf("Too many messages, expected %d, got %d", numMessages*uint64(numSourced), state.State.Msgs)
+		}
+	})
+}
