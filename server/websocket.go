@@ -1178,7 +1178,7 @@ func (s *Server) startWebsocketServer() {
 			if !hasLeaf {
 				s.Errorf("Not configured to accept leaf node connections")
 				// Silently close for now. If we want to send an error back, we would
-				// need to create the leafnode client anyway, so that is is handling websocket
+				// need to create the leafnode client anyway, so that is handling websocket
 				// frames, then send the error to the remote.
 				res.conn.Close()
 				return

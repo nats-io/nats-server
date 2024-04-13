@@ -367,7 +367,7 @@ func (w *winCertStore) certBySubject(subject string, storeType uint32) (*x509.Ce
 	return w.certSearch(winFindSubjectStr, subject, winMyStore, storeType)
 }
 
-// caCertBySubject matches and returns all matching certificates of the subject field.
+// caCertsBySubjectMatch matches and returns all matching certificates of the subject field.
 //
 // The following locations are searched:
 // 1) Root (Trusted Root Certification Authorities)

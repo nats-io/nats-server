@@ -2027,7 +2027,7 @@ func TestRoutePool(t *testing.T) {
 				} else {
 					if v := r.stats.inMsgs; v < 1000 {
 						r.mu.Unlock()
-						t.Fatalf("Expected at least 1000 in in msgs for route %v, got %v", i+1, v)
+						t.Fatalf("Expected at least 1000 in msgs for route %v, got %v", i+1, v)
 					}
 				}
 				r.mu.Unlock()

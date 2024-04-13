@@ -1358,7 +1358,7 @@ func TestJetStreamBasicDeliverSubject(t *testing.T) {
 			if seq := o.seqFromReply(m.Reply); seq != 1 {
 				t.Fatalf("Expected sequence to be 1, but got %d", seq)
 			}
-			// Check that is is the last msg we sent though.
+			// Check that is the last msg we sent though.
 			if mseq, _ := strconv.Atoi(string(m.Data)); mseq != 200 {
 				t.Fatalf("Expected messag sequence to be 200, but got %d", mseq)
 			}
