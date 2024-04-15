@@ -4193,6 +4193,12 @@ func (o *consumer) checkNumPending() uint64 {
 		if o.sseq > state.LastSeq && o.npc != 0 || o.npc > int64(state.Msgs) {
 			// Re-calculate.
 			o.streamNumPending()
+			// streamNumPending would have corrected the o.npc condition but
+			// not o.sseq. Fix that here if so, otherwise we may keep calling
+			// through to this again and again.
+			if o.sseq > state.LastSeq+1 {
+				o.sseq = state.LastSeq + 1
+			}
 		}
 	}
 	return o.numPending()
