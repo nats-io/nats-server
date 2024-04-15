@@ -2265,6 +2265,7 @@ func (mb *msgBlock) firstMatchingMulti(sl *Sublist, start uint64, sm *StoreMsg) 
 		sm = new(StoreMsg)
 	}
 
+	var result SublistResult
 	for seq := start; seq <= lseq; seq++ {
 		llseq := mb.llseq
 		fsm, err := mb.cacheLookup(seq, sm)
@@ -2273,7 +2274,7 @@ func (mb *msgBlock) firstMatchingMulti(sl *Sublist, start uint64, sm *StoreMsg) 
 		}
 		expireOk := seq == lseq && mb.llseq == seq
 
-		if r := sl.Match(fsm.subj); len(r.psubs) > 0 {
+		if r := sl.MatchWithResult(fsm.subj, &result); len(r.psubs) > 0 {
 			return fsm, expireOk, nil
 		}
 		// If we are here we did not match, so put the llseq back.
