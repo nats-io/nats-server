@@ -2578,7 +2578,9 @@ func (n *raft) sendSnapshotToFollower(subject string) (uint64, error) {
 	ae.pterm, ae.pindex = snap.lastTerm, snap.lastIndex
 	var state StreamState
 	n.wal.FastState(&state)
-
+	// Make sure that we don't tell others about indices that we no longer
+	// have in our WAL, otherwise they might ask us to catch up from that position
+	// and we won't be able to help them.
 	fpIndex := state.FirstSeq - 1
 	if snap.lastIndex < fpIndex && state.FirstSeq != 0 {
 		snap.lastIndex = fpIndex
@@ -2604,8 +2606,10 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 		q.push(n.pindex)
 	}
 
-	// Check to make sure we have this entry.
-	start := ar.index + 1
+	// Check to make sure we have this entry. We might have got here because the
+	// append entry response claims the other side didn't apply the ar.index, so
+	// we should include that in the catchup to begin with.
+	start := ar.index
 	var state StreamState
 	n.wal.FastState(&state)
 
@@ -2617,6 +2621,8 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 			arPool.Put(ar)
 			return
 		} else {
+			// The snapshot includes the state up to and including the last index
+			// so we can skip that position and start with entries from the next one.
 			start = lastIndex + 1
 			// If no other entries, we can just return here.
 			if state.Msgs == 0 || start > state.LastSeq {
@@ -2625,7 +2631,7 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 				arPool.Put(ar)
 				return
 			}
-			n.debug("Snapshot sent, reset first catchup entry to %d", lastIndex)
+			n.debug("Snapshot sent, reset first catchup entry to %d", start)
 		}
 	}
 
