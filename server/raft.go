@@ -3121,9 +3121,13 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	if n.State() == Leader {
 		// If we are the same we should step down to break the tie.
 		if ae.term >= n.term {
-			n.term = ae.term
-			n.vote = noVote
-			n.writeTermVote()
+			// If the append entry term is newer than the current term, erase our
+			// vote.
+			if ae.term > n.term {
+				n.term = ae.term
+				n.vote = noVote
+				n.writeTermVote()
+			}
 			n.debug("Received append entry from another leader, stepping down to %q", ae.leader)
 			n.stepdown.push(ae.leader)
 		} else {
@@ -3142,13 +3146,18 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	// another node has taken on the leader role already, so we should convert
 	// to a follower of that node instead.
 	if n.State() == Candidate {
-		n.debug("Received append entry in candidate state from %q, converting to follower", ae.leader)
-		if n.term < ae.term {
-			n.term = ae.term
-			n.vote = noVote
-			n.writeTermVote()
+		// Ignore old terms, otherwise we might end up stepping down incorrectly.
+		if ae.term >= n.term {
+			// If the append entry term is newer than the current term, erase our
+			// vote.
+			if ae.term > n.term {
+				n.term = ae.term
+				n.vote = noVote
+				n.writeTermVote()
+			}
+			n.debug("Received append entry in candidate state from %q, converting to follower", ae.leader)
+			n.stepdown.push(ae.leader)
 		}
-		n.stepdown.push(ae.leader)
 	}
 
 	// Catching up state.
