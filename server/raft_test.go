@@ -350,3 +350,51 @@ func TestNRGStepDownOnSameTermDoesntClearVote(t *testing.T) {
 	require_ChanRead(t, lsm.lch, time.Second)
 	require_NotEqual(t, leader.vote, noVote)
 }
+
+func TestNRGUnsuccessfulVoteRequestDoesntResetElectionTimer(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+	c.waitOnLeader()
+
+	nc, _ := jsClientConnect(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
+	defer nc.Close()
+
+	rg := c.createRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+	leader := rg.leader().node().(*raft)
+	follower := rg.nonLeader().node().(*raft)
+
+	// Set up a new inbox for the vote responses to go to.
+	vsubj, vreply := leader.vsubj, nc.NewInbox()
+	ch := make(chan *nats.Msg, 3)
+	_, err := nc.ChanSubscribe(vreply, ch)
+	require_NoError(t, err)
+
+	// Keep a track of the last time the election timer was reset before this.
+	leaderOriginal := leader.etlr
+	followerOriginal := follower.etlr
+
+	// Now send a vote request that's obviously behind, so other nodes should
+	// not do anything with it.
+	vr := &voteRequest{
+		term:      follower.term,
+		lastTerm:  follower.term - 1,
+		lastIndex: 0,
+		candidate: follower.id,
+	}
+	require_NoError(t, nc.PublishMsg(&nats.Msg{
+		Subject: vsubj,
+		Reply:   vreply,
+		Data:    vr.encode(),
+	}))
+
+	// Wait for everyone to respond.
+	require_ChanRead(t, ch, time.Second)
+	require_ChanRead(t, ch, time.Second)
+	require_ChanRead(t, ch, time.Second)
+
+	// Neither the leader nor our chosen follower should have updated their
+	// election timer as a result of this.
+	require_Equal(t, leaderOriginal, leader.etlr)
+	require_Equal(t, followerOriginal, follower.etlr)
+}
