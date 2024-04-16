@@ -24,6 +24,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -785,8 +786,9 @@ func createJetStreamClusterEx(t testing.TB, tmpl, cName, snPre string, numServer
 	}
 
 	for cp := portStart; cp < portStart+numServers; cp++ {
-		storeDir := t.TempDir()
 		sn := fmt.Sprintf("%sS-%d", snPre, cp-portStart+1)
+		storeDir := filepath.Join(t.TempDir(), sn)
+		fmt.Printf("Store dir: %s => %s\n", sn, storeDir)
 		conf := fmt.Sprintf(tmpl, sn, storeDir, cName, cp, routeConfig)
 		if modify != nil {
 			conf = modify(sn, cName, storeDir, conf)

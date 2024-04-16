@@ -1122,6 +1122,7 @@ func (n *raft) setupLastSnapshot() {
 		sfile := filepath.Join(snapDir, sf.Name())
 		var term, index uint64
 		term, index, err := termAndIndexFromSnapFile(sf.Name())
+		fmt.Printf("Found snapshot [term: %d, index: %d] (%s)\n", term, index, sf.Name())
 		if err == nil {
 			if term > lterm {
 				lterm, lindex = term, index
@@ -1178,11 +1179,14 @@ func (n *raft) setupLastSnapshot() {
 	if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
 		n.setWriteErrLocked(err)
 	}
+	fmt.Printf("Loaded last snapshot successfully\n")
 }
 
 // loadLastSnapshot will load and return our last snapshot.
 // Lock should be held.
 func (n *raft) loadLastSnapshot() (*snapshot, error) {
+	fmt.Printf("Loading last snapshot: %s\n", n.snapfile)
+
 	if n.snapfile == _EMPTY_ {
 		return nil, errNoSnapAvailable
 	}
@@ -1234,6 +1238,7 @@ func (n *raft) loadLastSnapshot() (*snapshot, error) {
 		return nil, errSnapshotCorrupt
 	}
 
+	fmt.Printf("Loaded last snapshot: %s\n", n.snapfile)
 	return snap, nil
 }
 
