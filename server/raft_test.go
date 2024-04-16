@@ -291,3 +291,62 @@ func TestNRGSimpleElection(t *testing.T) {
 		require_Equal(t, rn.vote, vr.candidate)
 	}
 }
+
+func TestNRGStepDownOnSameTermDoesntClearVote(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+	c.waitOnLeader()
+
+	nc, _ := jsClientConnect(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
+	defer nc.Close()
+
+	rg := c.createRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	lsm := rg.leader().(*stateAdder)
+	leader := lsm.node().(*raft)
+	follower := rg.nonLeader().node().(*raft)
+
+	// Make sure we handle the leader change notification from above.
+	require_ChanRead(t, lsm.lch, time.Second)
+
+	// Subscribe to the append entry subject.
+	sub, err := nc.SubscribeSync(leader.asubj)
+	require_NoError(t, err)
+
+	// Get the first append entry that we receive.
+	msg, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_NoError(t, sub.Unsubscribe())
+
+	// We're going to modify the append entry that we received so that
+	// we can send it again with modifications.
+	ae, err := leader.decodeAppendEntry(msg.Data, nil, msg.Reply)
+	require_NoError(t, err)
+
+	// First of all we're going to try sending an append entry that
+	// has an old term and a fake leader.
+	msg.Reply = follower.areply
+	ae.leader = follower.id
+	ae.term = leader.term - 1
+	msg.Data, err = ae.encode(msg.Data[:0])
+	require_NoError(t, err)
+	require_NoError(t, nc.PublishMsg(msg))
+
+	// Because the term was old, the fake leader shouldn't matter as
+	// the current leader should ignore it.
+	require_NoChanRead(t, lsm.lch, time.Second)
+
+	// Now we're going to send it on the same term that the current leader
+	// is on. What we expect to happen is that the leader will step down
+	// but it *shouldn't* clear the vote.
+	ae.term = leader.term
+	msg.Data, err = ae.encode(msg.Data[:0])
+	require_NoError(t, err)
+	require_NoError(t, nc.PublishMsg(msg))
+
+	// Wait for the leader transition and ensure that the vote wasn't
+	// cleared.
+	require_ChanRead(t, lsm.lch, time.Second)
+	require_NotEqual(t, leader.vote, noVote)
+}

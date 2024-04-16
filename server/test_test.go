@@ -122,7 +122,7 @@ func require_Equal[T comparable](t *testing.T, a, b T) {
 func require_NotEqual[T comparable](t *testing.T, a, b T) {
 	t.Helper()
 	if a == b {
-		t.Fatalf("require %T not equal, but got: %v != %v", a, a, b)
+		t.Fatalf("require %T not equal, but got: %v == %v", a, a, b)
 	}
 }
 
