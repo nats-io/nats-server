@@ -569,7 +569,7 @@ func TestJetStreamClusterSingleLeafNodeWithoutSharedSystemAccount(t *testing.T) 
 	defer ln.Shutdown()
 
 	// The setup here has a single leafnode server with two accounts. One has JS, the other does not.
-	// We want to to test the following.
+	// We want to test the following.
 	// 1. For the account without JS, we simply will pass through to the HUB. Meaning since our local account
 	//    does not have it, we simply inherit the hub's by default.
 	// 2. For the JS enabled account, we are isolated and use our local one only.

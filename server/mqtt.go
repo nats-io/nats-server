@@ -3417,7 +3417,7 @@ func (sess *mqttSession) untrackPublish(pi uint16) (jsAckSubject string) {
 	return ack.jsAckSubject
 }
 
-// trackPubRel is invoked in 2 cases: (a) when we receive a PUBREC and we need
+// trackAsPubRel is invoked in 2 cases: (a) when we receive a PUBREC and we need
 // to change from tracking the PI as a PUBLISH to a PUBREL; and (b) when we
 // attempt to deliver the PUBREL to record the JS ack subject for it.
 //
@@ -3730,7 +3730,7 @@ func (s *Server) mqttProcessConnect(c *client, cp *mqttConnectProto, trace bool)
 		c.authViolation()
 		return ErrAuthentication
 	}
-	// Now that we are are authenticated, we have the client bound to the account.
+	// Now that we are authenticated, we have the client bound to the account.
 	// Get the account's level MQTT sessions manager. If it does not exists yet,
 	// this will create it along with the streams where sessions and messages
 	// are stored.

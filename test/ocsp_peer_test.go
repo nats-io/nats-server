@@ -686,7 +686,7 @@ func TestOCSPPeerLeafGood(t *testing.T) {
 	}
 }
 
-// TestOCSPPeerLeafRejects tests rejected Leaf Hub, rejected Leaf Spoke, and both rejecting each other
+// TestOCSPPeerLeafReject tests rejected Leaf Hub, rejected Leaf Spoke, and both rejecting each other
 func TestOCSPPeerLeafReject(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -2305,7 +2305,7 @@ func TestOCSPPeerAllowWhenCAUnreachableOption(t *testing.T) {
 	}
 }
 
-// TestOCSPResponseCacheLocalStoreOption is test of default and non-default local_store option
+// TestOCSPResponseCacheLocalStoreOpt is test of default and non-default local_store option
 func TestOCSPResponseCacheLocalStoreOpt(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

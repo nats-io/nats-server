@@ -2562,7 +2562,7 @@ func (s *Server) setRouteInfoHostPortAndIP() error {
 func (s *Server) StartRouting(clientListenReady chan struct{}) {
 	defer s.grWG.Done()
 
-	// Wait for the client and and leafnode listen ports to be opened,
+	// Wait for the client and leafnode listen ports to be opened,
 	// and the possible ephemeral ports to be selected.
 	<-clientListenReady
 

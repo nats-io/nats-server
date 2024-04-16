@@ -697,7 +697,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	return mset, nil
 }
 
-// Composes  the index name. Contains the stream name, subject filter, and transform destination
+// Composes the index name. Contains the stream name, subject filter, and transform destination
 // when the stream is external we will use additional information in case the (external)  stream names are the same.
 func (ssi *StreamSource) composeIName() string {
 	var iName = ssi.Name
@@ -827,7 +827,7 @@ func (mset *stream) isLeader() bool {
 	return true
 }
 
-// TODO(dlc) - Check to see if we can accept being the leader or we should should step down.
+// TODO(dlc) - Check to see if we can accept being the leader or we should step down.
 func (mset *stream) setLeader(isLeader bool) error {
 	mset.mu.Lock()
 	// If we are here we have a change in leader status.

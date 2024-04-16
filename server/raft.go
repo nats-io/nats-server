@@ -914,7 +914,7 @@ func (n *raft) ResumeApply() {
 	}
 }
 
-// Applied is a callback that must be be called by the upper layer when it
+// Applied is a callback that must be called by the upper layer when it
 // has successfully applied the committed entries that it received from the
 // apply queue. It will return the number of entries and an estimation of the
 // byte size that could be removed with a snapshot/compact.
