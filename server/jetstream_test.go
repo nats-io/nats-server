@@ -23413,3 +23413,41 @@ func TestJetStreamDirectGetMultiPaging(t *testing.T) {
 		processPartial(b + 1) // 100 + EOB
 	}
 }
+
+func TestPushConsumerNumPendingDeliverLastPerSubject(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST_STREAM",
+		Subjects: []string{"foo.>"},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	for i := 0; i < 10; i++ {
+		if _, err := js.Publish("foo.123", []byte("hello")); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	}
+	si, err := js.StreamInfo("TEST_STREAM")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	fmt.Printf("Stream info: %+v\n", si)
+
+	c, err := js.AddConsumer("TEST_STREAM", &nats.ConsumerConfig{
+		Name:           "TEST_CONSUMER",
+		FilterSubject:  "\"wrongsub.>\"",
+		DeliverPolicy:  nats.DeliverLastPerSubjectPolicy,
+		DeliverSubject: nats.NewInbox(),
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	fmt.Printf("Info: %+v\n", c)
+}
