@@ -92,10 +92,12 @@ func writeTPMKeysToFile(filename string, privateBlob []byte, publicBlob []byte) 
 	// need to be protected as the TPM password is required to use unseal, although it's
 	// a good idea to put this in a secure location accessible to the server.
 	tpmKeys := natsTPMPersistedKeys{
-		Version: JsKeyTPMVersion,
+		Version:    JsKeyTPMVersion,
+		PrivateKey: make([]byte, base64.StdEncoding.EncodedLen(len(privateBlob))),
+		PublicKey:  make([]byte, base64.StdEncoding.EncodedLen(len(publicBlob))),
 	}
-	tpmKeys.PrivateKey = base64.StdEncoding.AppendEncode([]byte{}, privateBlob)
-	tpmKeys.PublicKey = base64.StdEncoding.AppendEncode([]byte{}, publicBlob)
+	base64.StdEncoding.Encode(tpmKeys.PrivateKey, privateBlob)
+	base64.StdEncoding.Encode(tpmKeys.PublicKey, publicBlob)
 	// Convert to JSON
 	keysJSON, err := json.Marshal(tpmKeys)
 	if err != nil {
@@ -126,15 +128,17 @@ func readTPMKeysFromFile(filename string) ([]byte, []byte, error) {
 	// handle any changes.
 
 	// Base64 decode the private and public blobs.
-	publicBlob, err := base64.StdEncoding.AppendDecode([]byte{}, tpmKeys.PublicKey)
-	if err != nil {
-		return nil, nil, fmt.Errorf("unable to decode publicBlob from base64: %v", err)
-	}
-	privateBlob, err := base64.StdEncoding.AppendDecode([]byte{}, tpmKeys.PrivateKey)
+	privateBlob := make([]byte, base64.StdEncoding.DecodedLen(len(tpmKeys.PrivateKey)))
+	publicBlob := make([]byte, base64.StdEncoding.DecodedLen(len(tpmKeys.PublicKey)))
+	prn, err := base64.StdEncoding.Decode(privateBlob, tpmKeys.PrivateKey)
 	if err != nil {
 		return nil, nil, fmt.Errorf("unable to decode privateBlob from base64: %v", err)
 	}
-	return publicBlob, privateBlob, nil
+	pun, err := base64.StdEncoding.Decode(publicBlob, tpmKeys.PublicKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("unable to decode publicBlob from base64: %v", err)
+	}
+	return publicBlob[:pun], privateBlob[:prn], nil
 }
 
 // Creates a new JetStream encryption key, seals it to the TPM, and saves the public and
