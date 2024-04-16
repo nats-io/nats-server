@@ -157,6 +157,7 @@ type stateAdder struct {
 	n   RaftNode
 	cfg *RaftConfig
 	sum int64
+	lch chan bool
 }
 
 // Simple getters for server and the raft node.
@@ -196,7 +197,12 @@ func (a *stateAdder) applyEntry(ce *CommittedEntry) {
 	a.n.Applied(ce.Index)
 }
 
-func (a *stateAdder) leaderChange(isLeader bool) {}
+func (a *stateAdder) leaderChange(isLeader bool) {
+	select {
+	case a.lch <- isLeader:
+	default:
+	}
+}
 
 // Adder specific to change the total.
 func (a *stateAdder) proposeDelta(delta int64) {
@@ -272,5 +278,5 @@ func (rg smGroup) waitOnTotal(t *testing.T, expected int64) {
 
 // Factory function.
 func newStateAdder(s *Server, cfg *RaftConfig, n RaftNode) stateMachine {
-	return &stateAdder{s: s, n: n, cfg: cfg}
+	return &stateAdder{s: s, n: n, cfg: cfg, lch: make(chan bool, 1)}
 }
