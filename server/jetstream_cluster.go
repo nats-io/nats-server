@@ -7912,7 +7912,13 @@ type streamSyncRequest struct {
 }
 
 // Given a stream state that represents a snapshot, calculate the sync request based on our current state.
+// Stream lock must be held.
 func (mset *stream) calculateSyncRequest(state *StreamState, snap *StreamReplicatedState) *streamSyncRequest {
+	// Shouldn't happen, but consequences are pretty bad if we have the lock held and
+	// our caller tries to take the lock again on panic defer, as in processSnapshot.
+	if state == nil || snap == nil || mset.node == nil {
+		return nil
+	}
 	// Quick check if we are already caught up.
 	if state.LastSeq >= snap.LastSeq {
 		return nil
