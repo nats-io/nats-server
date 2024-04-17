@@ -527,14 +527,21 @@ var emptyResult = &SublistResult{}
 // Match will match all entries to the literal subject.
 // It will return a set of results for both normal and queue subscribers.
 func (s *Sublist) Match(subject string) *SublistResult {
-	return s.match(subject, true)
+	return s.match(subject, true, &SublistResult{})
+}
+
+// MatchWithResult will match all entries to the literal subject, reusing the
+// supplied SublistResult to reduce allocations on hot paths.
+// It will return a set of results for both normal and queue subscribers.
+func (s *Sublist) MatchWithResult(subject string, result *SublistResult) *SublistResult {
+	return s.match(subject, true, result)
 }
 
 func (s *Sublist) matchNoLock(subject string) *SublistResult {
-	return s.match(subject, false)
+	return s.match(subject, false, &SublistResult{})
 }
 
-func (s *Sublist) match(subject string, doLock bool) *SublistResult {
+func (s *Sublist) match(subject string, doLock bool, result *SublistResult) *SublistResult {
 	atomic.AddUint64(&s.matches, 1)
 
 	// Check cache first.
@@ -569,7 +576,8 @@ func (s *Sublist) match(subject string, doLock bool) *SublistResult {
 	tokens = append(tokens, subject[start:])
 
 	// FIXME(dlc) - Make shared pool between sublist and client readLoop?
-	result := &SublistResult{}
+	result.psubs = result.psubs[:0]
+	result.qsubs = result.qsubs[:0]
 
 	// Get result from the main structure and place into the shared cache.
 	// Hold the read lock to avoid race between match and store.
