@@ -541,6 +541,25 @@ func TestSubjectTreeMatchMultipleWildcardBasic(t *testing.T) {
 	match(t, st, "A.B.*.D.1.*.*.I.0", 1)
 }
 
+func TestSubjectTreeMatchInvalidWildcard(t *testing.T) {
+	st := NewSubjectTree[int]()
+	st.Insert(b("foo.123"), 22)
+	st.Insert(b("one.two.three.four.five"), 22)
+	st.Insert(b("'*.123"), 22)
+	match(t, st, "invalid.>", 0)
+	match(t, st, ">", 3)
+	match(t, st, `'*.*`, 1)
+	match(t, st, `'*.*.*'`, 0)
+	// None of these should match.
+	match(t, st, "`>`", 0)
+	match(t, st, `">"`, 0)
+	match(t, st, `'>'`, 0)
+	match(t, st, `'*.>'`, 0)
+	match(t, st, `'*.>.`, 0)
+	match(t, st, "`invalid.>`", 0)
+	match(t, st, `'*.*'`, 0)
+}
+
 func TestSubjectTreeRandomTrackEntries(t *testing.T) {
 	st := NewSubjectTree[int]()
 	smap := make(map[string]struct{}, 1000)

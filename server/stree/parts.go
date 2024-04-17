@@ -45,6 +45,14 @@ func genParts(filter []byte, parts [][]byte) [][]byte {
 				start = i + 1
 			}
 		} else if filter[i] == pwc || filter[i] == fwc {
+			// Wildcard must be at the start or preceded by tsep.
+			if prev := i - 1; prev >= 0 && filter[prev] != tsep {
+				continue
+			}
+			// Wildcard must be at the end or followed by tsep.
+			if next := i + 1; next == e || next < e && filter[next] != tsep {
+				continue
+			}
 			// We start with a pwc or fwc.
 			parts = append(parts, filter[i:i+1])
 			if i+1 <= e {
