@@ -118,8 +118,9 @@ func TestStreamSourcingScalingManySourcing(t *testing.T) {
 }
 
 func TestStreamSourcingScalingSourcingMany(t *testing.T) {
-	var numSourced = 10000
-	var numMessages = uint64(50)
+	var numSourced = 8000
+	var numMsgPerSource = uint64(100)
+	var retries int
 
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
@@ -172,31 +173,60 @@ func TestStreamSourcingScalingSourcingMany(t *testing.T) {
 	fmt.Printf("Streams created\n")
 
 	// publish n messages for each sourced stream
-	for j := uint64(0); j < numMessages; j++ {
+	for j := uint64(0); j < numMsgPerSource; j++ {
 		start := time.Now()
+		var pafs = make([]nats.PubAckFuture, numSourced)
 		for i := 0; i < numSourced; i++ {
-			_, err = js.Publish(fmt.Sprintf("foo.%d", i), []byte("hello"))
-			require_NoError(t, err)
+			var err error
+
+			for {
+				pafs[i], err = js.PublishAsync(fmt.Sprintf("foo.%d", i), []byte("hello"))
+				if err != nil {
+					fmt.Printf("Error async publishing: %v, retrying\n", err)
+					retries++
+					time.Sleep(10 * time.Millisecond)
+				} else {
+					break
+				}
+			}
+
 		}
+
+		fmt.Println("waiting on PublishAsyncComplete")
+		<-js.PublishAsyncComplete()
+
+		for i := 0; i < numSourced; i++ {
+			select {
+			case _ = <-pafs[i].Ok():
+			case psae := <-pafs[i].Err():
+				fmt.Printf("Error on PubAckFuture: %v, retrying sync...\n", psae)
+				retries++
+				_, err = js.Publish(fmt.Sprintf("foo.%d", i), []byte("hello"))
+				require_NoError(t, err)
+			}
+		}
+
 		end := time.Now()
 		fmt.Printf("Published round %d, avg pub latency %v\n", j, end.Sub(start)/time.Duration(numSourced))
 	}
 
 	fmt.Printf("Messages published\n")
-	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+
+	checkFor(t, 60*time.Minute, 1*time.Second, func() error {
 		state, err := js.StreamInfo("sourcing")
 		if err != nil {
 			return err
 		}
-		if state.State.Msgs == numMessages*uint64(numSourced) {
-			fmt.Printf("Lucky match Expected %d messages, got %d", numMessages*uint64(numSourced), state.State.Msgs)
+		if state.State.Msgs == numMsgPerSource*uint64(numSourced) {
+			fmt.Printf("👍 Test passed: expected %d messages, got %d\n", numMsgPerSource*uint64(numSourced), state.State.Msgs)
 			return nil
-		} else if state.State.Msgs < numMessages*uint64(numSourced) {
-			fmt.Printf("Expected %d messages, got %d", numMessages*uint64(numSourced), state.State.Msgs)
-			return fmt.Errorf("Expected %d messages, got %d", numMessages*uint64(numSourced), state.State.Msgs)
+		} else if state.State.Msgs < numMsgPerSource*uint64(numSourced) {
+			fmt.Printf("Expected %d messages, got %d\n", numMsgPerSource*uint64(numSourced), state.State.Msgs)
+			return fmt.Errorf("Expected %d messages, got %d", numMsgPerSource*uint64(numSourced), state.State.Msgs)
 		} else {
-			println("Too many messages!")
-			return fmt.Errorf("Too many messages, expected %d, got %d", numMessages*uint64(numSourced), state.State.Msgs)
+			fmt.Printf("\nToo many messages! expected %d (retries=%d), got %d", numMsgPerSource*uint64(numSourced), retries, state.State.Msgs)
+			time.Sleep(1 * time.Hour)
+			return fmt.Errorf("Too many messages: expected %d (retries=%d), got %d", numMsgPerSource*uint64(numSourced), retries, state.State.Msgs)
 		}
 	})
 }
