@@ -41,7 +41,7 @@ func TestStreamSourcingScalingManySourcing(t *testing.T) {
 		Retention:            nats.LimitsPolicy,
 		Storage:              nats.FileStorage,
 		Discard:              nats.DiscardOld,
-		Replicas:             3,
+		Replicas:             1,
 		AllowDirect:          true,
 		MirrorDirect:         false,
 		DiscardNewPerSubject: false,
