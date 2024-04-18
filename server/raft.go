@@ -31,6 +31,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/antithesishq/antithesis-sdk-go/assert"
 	"github.com/nats-io/nats-server/v2/internal/fastrand"
 
 	"github.com/minio/highwayhash"
@@ -159,6 +160,7 @@ type raft struct {
 	pindex   uint64 // Previous index from the last snapshot
 	commit   uint64 // Sequence number of the most recent commit
 	applied  uint64 // Sequence number of the most recently applied commit
+	trimmed  uint64 // Where did we compact up to in the log?
 	hcbehind bool   // Were we falling behind at the last health check? (see: isCurrent)
 
 	leader string // The ID of the leader
@@ -1066,6 +1068,9 @@ func (n *raft) InstallSnapshot(data []byte) error {
 		return err
 	}
 	n.Unlock()
+
+	// This is where we compacted up to.
+	n.trimmed = snap.lastIndex + 1
 
 	psnaps, _ := os.ReadDir(snapDir)
 	// Remove any old snapshots.
@@ -3200,6 +3205,15 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		}
 	}
 
+	// SPEC: 1. Reply false if term < currentTerm (§5.1)
+	if ae.term < n.term {
+		ar := newAppendEntryResponse(ae.pterm, ae.pindex, n.id, false)
+		n.Unlock()
+		n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
+		arPool.Put(ar)
+		return
+	}
+
 	// If this term is greater than ours.
 	if ae.term > n.term {
 		n.pterm = ae.pterm
@@ -3223,35 +3237,63 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	}
 
 	if (isNew && ae.pterm != n.pterm) || ae.pindex != n.pindex {
+		// Cancel regardless.
+		n.cancelCatchup()
+
 		// Check if this is a lower or equal index than what we were expecting.
 		if ae.pindex <= n.pindex {
 			n.debug("AppendEntry detected pindex less than ours: %d:%d vs %d:%d", ae.pterm, ae.pindex, n.pterm, n.pindex)
 			var ar *appendEntryResponse
 
-			var success bool
+			// var success bool
+			// Possible outcomes:
+			// 1. loadEntry will return nil because the entry was never committed
+			// 2. loadEntry will return nil because it *was* committed but then a snapshot
+			// 3. loadEntry doesn't return nil, so check index/term
+			//
+			// SPEC: 2. Reply false if log doesn’t contain an entry at prevLogIndex
+			//    whose term matches prevLogTerm (§5.3)
 			if eae, _ := n.loadEntry(ae.pindex); eae == nil {
+				if n.trimmed >= ae.pindex {
+					// Might be nil because it was applied, check if so.
+					n.warn("Received AppendEntry with pindex %d less than trimmed %d", ae.pindex, n.trimmed)
+					//return
+				} else {
+					n.warn("Received AppendEntry with pindex %d that we haven't heard of", ae.pindex)
+					// Might be nil because we never heard about it.
+					ar = newAppendEntryResponse(ae.pterm, ae.pindex, n.id, false)
+					n.Unlock()
+					n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
+					arPool.Put(ar)
+					//return
+				}
+
 				// If terms are equal, and we are not catching up, we have simply already processed this message.
 				// So we will ACK back to the leader. This can happen on server restarts based on timings of snapshots.
+
 				if ae.pterm == n.pterm && !catchingUp {
-					success = true
+					//success = true
 				} else {
-					n.resetWAL()
+					assert.Unreachable("Shouldn't have different pterms", map[string]any{
+						"ae.pterm":   ae.pterm,
+						"n.pterm":    n.pterm,
+						"catchingUp": catchingUp,
+					})
 				}
-			} else {
+				return
+			} else if eae.pterm != ae.pterm {
 				// If terms mismatched, or we got an error loading, delete that entry and all others past it.
 				// Make sure to cancel any catchups in progress.
 				// Truncate will reset our pterm and pindex. Only do so if we have an entry.
 				n.truncateWAL(ae.pterm, ae.pindex)
 			}
-			// Cancel regardless.
-			n.cancelCatchup()
 
 			// Create response.
-			ar = newAppendEntryResponse(ae.pterm, ae.pindex, n.id, success)
+			/*ar = newAppendEntryResponse(ae.pterm, ae.pindex, n.id, success)
 			n.Unlock()
 			n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
 			arPool.Put(ar)
-			return
+			return*/
 		}
 
 		// Check if we are catching up. If we are here we know the leader did not have all of the entries
@@ -3306,6 +3348,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.debug("AppendEntry did not match %d %d with %d %d", ae.pterm, ae.pindex, n.pterm, n.pindex)
 			// Reset our term.
 			n.term = n.pterm
+			// We know there's a gap, start a catchup and stop processing.
 			if ae.pindex > n.pindex {
 				// Setup our state for catching up.
 				inbox := n.createCatchup(ae)
