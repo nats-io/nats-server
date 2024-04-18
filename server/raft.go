@@ -1068,10 +1068,10 @@ func (n *raft) InstallSnapshot(data []byte) error {
 		n.Unlock()
 		return err
 	}
-	n.Unlock()
 
 	// This is where we compacted up to.
 	n.trimmed = snap.lastIndex + 1
+	n.Unlock()
 
 	psnaps, _ := os.ReadDir(snapDir)
 	// Remove any old snapshots.
