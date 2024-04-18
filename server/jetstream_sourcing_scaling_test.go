@@ -118,8 +118,9 @@ func TestStreamSourcingScalingManySourcing(t *testing.T) {
 }
 
 func TestStreamSourcingScalingSourcingMany(t *testing.T) {
-	var numSourced = 8000
-	var numMsgPerSource = uint64(100)
+	var numSourced = 10000
+	var numMsgPerSource = uint64(1000)
+	var batchSize = 1000
 	var retries int
 
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
@@ -190,9 +191,12 @@ func TestStreamSourcingScalingSourcingMany(t *testing.T) {
 				}
 			}
 
+			if i != 0 && i%batchSize == 0 {
+				<-js.PublishAsyncComplete()
+			}
+
 		}
 
-		fmt.Println("waiting on PublishAsyncComplete")
 		<-js.PublishAsyncComplete()
 
 		for i := 0; i < numSourced; i++ {
@@ -225,7 +229,6 @@ func TestStreamSourcingScalingSourcingMany(t *testing.T) {
 			return fmt.Errorf("Expected %d messages, got %d", numMsgPerSource*uint64(numSourced), state.State.Msgs)
 		} else {
 			fmt.Printf("\nToo many messages! expected %d (retries=%d), got %d", numMsgPerSource*uint64(numSourced), retries, state.State.Msgs)
-			time.Sleep(1 * time.Hour)
 			return fmt.Errorf("Too many messages: expected %d (retries=%d), got %d", numMsgPerSource*uint64(numSourced), retries, state.State.Msgs)
 		}
 	})
