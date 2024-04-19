@@ -3300,19 +3300,20 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		// so make sure this is a snapshot entry. If it is not start the catchup process again since it
 		// means we may have missed additional messages.
 		if catchingUp {
+			// This means we already entered into a catchup state but what the leader sent us did not match what we expected.
+			// Snapshots and peerstate will always be together when a leader is catching us up in this fashion.
+			if len(ae.entries) != 2 || ae.entries[0].Type != EntrySnapshot || ae.entries[1].Type != EntryPeerState {
+				n.warn("Expected first catchup entry to be a snapshot and peerstate, will retry")
+				n.cancelCatchup()
+				n.Unlock()
+				return
+			}
+
 			// Check if only our terms do not match here.
 			if ae.pindex == n.pindex {
 				// Make sure pterms match and we take on the leader's.
 				// This prevents constant spinning.
 				n.truncateWAL(ae.pterm, ae.pindex)
-				n.cancelCatchup()
-				n.Unlock()
-				return
-			}
-			// This means we already entered into a catchup state but what the leader sent us did not match what we expected.
-			// Snapshots and peerstate will always be together when a leader is catching us up in this fashion.
-			if len(ae.entries) != 2 || ae.entries[0].Type != EntrySnapshot || ae.entries[1].Type != EntryPeerState {
-				n.warn("Expected first catchup entry to be a snapshot and peerstate, will retry")
 				n.cancelCatchup()
 				n.Unlock()
 				return
