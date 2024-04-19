@@ -1847,18 +1847,18 @@ func (n *raft) run() {
 
 func (n *raft) debug(format string, args ...any) {
 	if n.dflag {
-		nf := fmt.Sprintf("RAFT [%s - %s] %s", n.id, n.group, format)
+		nf := fmt.Sprintf("RAFT [%s - %s - %d/%d/%d/%d] %s", n.id, n.group, n.term, n.pindex, n.commit, n.applied, format)
 		n.s.Debugf(nf, args...)
 	}
 }
 
 func (n *raft) warn(format string, args ...any) {
-	nf := fmt.Sprintf("RAFT [%s - %s] %s", n.id, n.group, format)
+	nf := fmt.Sprintf("RAFT [%s - %s- %d/%d/%d/%d] %s", n.id, n.group, n.term, n.pindex, n.commit, n.applied, format)
 	n.s.RateLimitWarnf(nf, args...)
 }
 
 func (n *raft) error(format string, args ...any) {
-	nf := fmt.Sprintf("RAFT [%s - %s] %s", n.id, n.group, format)
+	nf := fmt.Sprintf("RAFT [%s - %s- %d/%d/%d/%d] %s", n.id, n.group, n.term, n.pindex, n.commit, n.applied, format)
 	n.s.Errorf(nf, args...)
 }
 
@@ -2841,6 +2841,7 @@ func (n *raft) trackResponse(ar *appendEntryResponse) {
 					break
 				}
 			}
+			n.debug("Leader has finished committing entries")
 			sendHB = n.prop.len() == 0
 		}
 	}
@@ -2947,6 +2948,7 @@ func (n *raft) runAsCandidate() {
 				if n.wonElection(len(votes)) {
 					// Become LEADER if we have won and gotten a quorum with everyone we should hear from.
 					n.switchToLeader()
+					n.debug("Won election, voted by: %+v", votes)
 					return
 				}
 			} else if vresp.term > nterm {
@@ -3068,7 +3070,7 @@ func (n *raft) truncateWAL(term, index uint64) {
 	if err := n.wal.Truncate(index); err != nil {
 		// If we get an invalid sequence, reset our wal all together.
 		if err == ErrInvalidSequence {
-			n.debug("Resetting WAL")
+			n.debug("Resetting WAL due to invalid sequence error from filestore")
 			n.wal.Truncate(0)
 			index, n.term, n.pterm, n.pindex = 0, 0, 0, 0
 		} else {
@@ -3441,6 +3443,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 					break
 				}
 			}
+			n.debug("Follower has finished committing entries")
 		}
 	}
 
