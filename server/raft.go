@@ -2842,6 +2842,7 @@ func (n *raft) trackResponse(ar *appendEntryResponse) {
 					break
 				}
 			}
+			n.debug("Leader has finished committing entries")
 			sendHB = n.prop.len() == 0
 		}
 	}
@@ -2948,6 +2949,7 @@ func (n *raft) runAsCandidate() {
 				if n.wonElection(len(votes)) {
 					// Become LEADER if we have won and gotten a quorum with everyone we should hear from.
 					n.switchToLeader()
+					n.debug("Won election, voted by: %+v", votes)
 					return
 				}
 			} else if vresp.term > nterm {
@@ -3433,6 +3435,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 					break
 				}
 			}
+			n.debug("Follower has finished committing entries")
 		}
 	}
 
