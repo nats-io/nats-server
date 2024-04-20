@@ -20,6 +20,9 @@ COPY nats-server /bin/nats-server
 COPY --from=builder /nats /bin/nats
 COPY --from=builder /go/bin/nsc /bin/nsc
 
+RUN apk add --no-cache libcap \
+  && setcap cap_net_bind_service=+ep /bin/nats-server
+
 EXPOSE 4222 8222 6222 5222
 
 ENTRYPOINT ["/bin/nats-server"]
