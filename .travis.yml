@@ -34,6 +34,8 @@ jobs:
       env: TEST_SUITE=js_cluster_tests_2
     - name: "Run JetStream cluster tests (3)"
       env: TEST_SUITE=js_cluster_tests_3
+    - name: "Run JetStream cluster tests (4)"
+      env: TEST_SUITE=js_cluster_tests_4
     - name: "Run JetStream super cluster tests"
       env: TEST_SUITE=js_super_cluster_tests
     - name: "Run MQTT tests"

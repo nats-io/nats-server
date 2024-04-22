@@ -38,7 +38,7 @@ elif [ "$1" = "js_tests" ]; then
     # with `TestJetStream`. We exclude the clustered and super-clustered
     # tests by using the appropriate tags.
 
-    go test -race -v -run=TestJetStream ./server -tags=skip_js_cluster_tests,skip_js_cluster_tests_2,skip_js_cluster_tests_3,skip_js_super_cluster_tests -count=1 -vet=off -timeout=30m -failfast
+    go test -race -v -run=TestJetStream ./server -tags=skip_js_cluster_tests,skip_js_cluster_tests_2,skip_js_cluster_tests_3,skip_js_cluster_tests_4,skip_js_super_cluster_tests -count=1 -vet=off -timeout=30m -failfast
 
 elif [ "$1" = "js_cluster_tests_1" ]; then
 
@@ -46,7 +46,7 @@ elif [ "$1" = "js_cluster_tests_1" ]; then
     # start with `TestJetStreamCluster`. Will run the first batch of tests,
     # excluding others with use of proper tags.
 
-    go test -race -v -run=TestJetStreamCluster ./server -tags=skip_js_cluster_tests_2,skip_js_cluster_tests_3 -count=1 -vet=off -timeout=30m -failfast
+    go test -race -v -run=TestJetStreamCluster ./server -tags=skip_js_cluster_tests_2,skip_js_cluster_tests_3,skip_js_cluster_tests_4 -count=1 -vet=off -timeout=30m -failfast
 
 elif [ "$1" = "js_cluster_tests_2" ]; then
 
@@ -54,7 +54,7 @@ elif [ "$1" = "js_cluster_tests_2" ]; then
     # start with `TestJetStreamCluster`. Will run the second batch of tests,
     # excluding others with use of proper tags.
 
-    go test -race -v -run=TestJetStreamCluster ./server -tags=skip_js_cluster_tests,skip_js_cluster_tests_3 -count=1 -vet=off -timeout=30m -failfast
+    go test -race -v -run=TestJetStreamCluster ./server -tags=skip_js_cluster_tests,skip_js_cluster_tests_3,skip_js_cluster_tests_4 -count=1 -vet=off -timeout=30m -failfast
 
 elif [ "$1" = "js_cluster_tests_3" ]; then
 
@@ -63,7 +63,16 @@ elif [ "$1" = "js_cluster_tests_3" ]; then
     # excluding others with use of proper tags.
     #
 
-    go test -race -v -run=TestJetStreamCluster ./server -tags=skip_js_cluster_tests,skip_js_cluster_tests_2 -count=1 -vet=off -timeout=30m -failfast
+    go test -race -v -run=TestJetStreamCluster ./server -tags=skip_js_cluster_tests,skip_js_cluster_tests_2,skip_js_cluster_tests_4 -count=1 -vet=off -timeout=30m -failfast
+
+elif [ "$1" = "js_cluster_tests_4" ]; then
+
+    # Run JetStream clustered tests. By convention, all JS cluster tests
+    # start with `TestJetStreamCluster`. Will run the third batch of tests,
+    # excluding others with use of proper tags.
+    #
+
+    go test -race -v -run=TestJetStreamCluster ./server -tags=skip_js_cluster_tests,skip_js_cluster_tests_2,skip_js_cluster_tests_3 -count=1 -vet=off -timeout=30m -failfast
 
 elif [ "$1" = "js_super_cluster_tests" ]; then
 
