@@ -527,7 +527,7 @@ var emptyResult = &SublistResult{}
 // Match will match all entries to the literal subject.
 // It will return a set of results for both normal and queue subscribers.
 func (s *Sublist) Match(subject string) *SublistResult {
-	return s.match(subject, true, &SublistResult{})
+	return s.match(subject, true, nil)
 }
 
 // MatchWithResult will match all entries to the literal subject, reusing the
@@ -538,7 +538,7 @@ func (s *Sublist) MatchWithResult(subject string, result *SublistResult) *Sublis
 }
 
 func (s *Sublist) matchNoLock(subject string) *SublistResult {
-	return s.match(subject, false, &SublistResult{})
+	return s.match(subject, false, nil)
 }
 
 func (s *Sublist) match(subject string, doLock bool, result *SublistResult) *SublistResult {
@@ -548,7 +548,9 @@ func (s *Sublist) match(subject string, doLock bool, result *SublistResult) *Sub
 	if doLock {
 		s.RLock()
 	}
-	cacheEnabled := s.cache != nil
+	// Writing to the cache is only allowed if not supplying our
+	// own SublistResult, i.e. via call to MatchWithResult.
+	cacheEnabled := result == nil && s.cache != nil
 	r, ok := s.cache[subject]
 	if doLock {
 		s.RUnlock()
@@ -576,6 +578,9 @@ func (s *Sublist) match(subject string, doLock bool, result *SublistResult) *Sub
 	tokens = append(tokens, subject[start:])
 
 	// FIXME(dlc) - Make shared pool between sublist and client readLoop?
+	if result == nil {
+		result = &SublistResult{}
+	}
 	result.psubs = result.psubs[:0]
 	result.qsubs = result.qsubs[:0]
 
