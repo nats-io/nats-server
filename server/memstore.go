@@ -1007,13 +1007,12 @@ func (ms *memStore) LoadNextMsgMulti(sl *Sublist, start uint64, smp *StoreMsg) (
 	// Initial setup.
 	fseq, lseq := start, ms.state.LastSeq
 
-	var result SublistResult
 	for nseq := fseq; nseq <= lseq; nseq++ {
 		sm, ok := ms.msgs[nseq]
 		if !ok {
 			continue
 		}
-		if r := sl.MatchWithResult(sm.subj, &result); len(r.psubs) > 0 {
+		if sl.HasInterest(sm.subj) {
 			if smp == nil {
 				smp = new(StoreMsg)
 			}

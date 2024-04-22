@@ -1602,6 +1602,28 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+func TestSublistHasInterest(t *testing.T) {
+	sl := NewSublistWithCache()
+	fooSub := newSub("foo")
+	sl.Insert(fooSub)
+
+	// Expect to find that "foo" matches but "bar" doesn't.
+	// At this point nothing should be in the cache.
+	require_True(t, sl.HasInterest("foo"))
+	require_False(t, sl.HasInterest("bar"))
+	require_Equal(t, sl.cacheHits, 0)
+
+	// Now call Match(), which will populate the cache.
+	sl.Match("foo")
+	require_Equal(t, sl.cacheHits, 0)
+
+	// Future calls to HasInterest() should hit the cache now.
+	for i := uint64(1); i <= 5; i++ {
+		require_True(t, sl.HasInterest("foo"))
+		require_Equal(t, sl.cacheHits, i)
+	}
+}
+
 func subsInit(pre string, toks []string) {
 	var sub string
 	for _, t := range toks {

@@ -527,30 +527,27 @@ var emptyResult = &SublistResult{}
 // Match will match all entries to the literal subject.
 // It will return a set of results for both normal and queue subscribers.
 func (s *Sublist) Match(subject string) *SublistResult {
-	return s.match(subject, true, nil)
+	return s.match(subject, true)
 }
 
-// MatchWithResult will match all entries to the literal subject, reusing the
-// supplied SublistResult to reduce allocations on hot paths.
-// It will return a set of results for both normal and queue subscribers.
-func (s *Sublist) MatchWithResult(subject string, result *SublistResult) *SublistResult {
-	return s.match(subject, true, result)
+// HasInterest will return whether or not there is any interest in the subject.
+// In cases where more detail is not required, this may be faster than Match.
+func (s *Sublist) HasInterest(subject string) bool {
+	return s.hasInterest(subject, true)
 }
 
 func (s *Sublist) matchNoLock(subject string) *SublistResult {
-	return s.match(subject, false, nil)
+	return s.match(subject, false)
 }
 
-func (s *Sublist) match(subject string, doLock bool, result *SublistResult) *SublistResult {
+func (s *Sublist) match(subject string, doLock bool) *SublistResult {
 	atomic.AddUint64(&s.matches, 1)
 
 	// Check cache first.
 	if doLock {
 		s.RLock()
 	}
-	// Writing to the cache is only allowed if not supplying our
-	// own SublistResult, i.e. via call to MatchWithResult.
-	cacheEnabled := result == nil && s.cache != nil
+	cacheEnabled := s.cache != nil
 	r, ok := s.cache[subject]
 	if doLock {
 		s.RUnlock()
@@ -578,11 +575,7 @@ func (s *Sublist) match(subject string, doLock bool, result *SublistResult) *Sub
 	tokens = append(tokens, subject[start:])
 
 	// FIXME(dlc) - Make shared pool between sublist and client readLoop?
-	if result == nil {
-		result = &SublistResult{}
-	}
-	result.psubs = result.psubs[:0]
-	result.qsubs = result.qsubs[:0]
+	result := &SublistResult{}
 
 	// Get result from the main structure and place into the shared cache.
 	// Hold the read lock to avoid race between match and store.
@@ -619,6 +612,47 @@ func (s *Sublist) match(subject string, doLock bool, result *SublistResult) *Sub
 	}
 
 	return result
+}
+
+func (s *Sublist) hasInterest(subject string, doLock bool) bool {
+	// Check cache first.
+	if doLock {
+		s.RLock()
+	}
+	var matched bool
+	if s.cache != nil {
+		_, matched = s.cache[subject]
+	}
+	if doLock {
+		s.RUnlock()
+	}
+	if matched {
+		atomic.AddUint64(&s.cacheHits, 1)
+		return true
+	}
+
+	tsa := [32]string{}
+	tokens := tsa[:0]
+	start := 0
+	for i := 0; i < len(subject); i++ {
+		if subject[i] == btsep {
+			if i-start == 0 {
+				return false
+			}
+			tokens = append(tokens, subject[start:i])
+			start = i + 1
+		}
+	}
+	if start >= len(subject) {
+		return false
+	}
+	tokens = append(tokens, subject[start:])
+
+	if doLock {
+		s.RLock()
+		defer s.RUnlock()
+	}
+	return matchLevelForAny(s.root, tokens)
 }
 
 // Remove entries in the cache until we are under the maximum.
@@ -731,6 +765,36 @@ func matchLevel(l *level, toks []string, results *SublistResult) {
 	if pwc != nil {
 		addNodeToResults(pwc, results)
 	}
+}
+
+func matchLevelForAny(l *level, toks []string) bool {
+	var pwc, n *node
+	for i, t := range toks {
+		if l == nil {
+			return false
+		}
+		if l.fwc != nil {
+			return true
+		}
+		if pwc = l.pwc; pwc != nil {
+			if match := matchLevelForAny(pwc.next, toks[i+1:]); match {
+				return true
+			}
+		}
+		n = l.nodes[t]
+		if n != nil {
+			l = n.next
+		} else {
+			l = nil
+		}
+	}
+	if n != nil {
+		return true
+	}
+	if pwc != nil {
+		return true
+	}
+	return false
 }
 
 // lnt is used to track descent into levels for a removal for pruning.
