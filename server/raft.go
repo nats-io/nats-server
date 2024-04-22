@@ -162,9 +162,10 @@ type raft struct {
 	applied  uint64 // Sequence number of the most recently applied commit
 	hcbehind bool   // Were we falling behind at the last health check? (see: isCurrent)
 
-	leader string // The ID of the leader
-	vote   string // Our current vote state
-	lxfer  bool   // Are we doing a leadership transfer?
+	leader string    // The ID of the leader
+	vote   string    // Our current vote state
+	lxfer  bool      // Are we doing a leadership transfer?
+	llae   time.Time // Leader last append entry
 
 	s  *Server    // Reference to top-level server
 	c  *client    // Internal client for subscriptions
@@ -3107,6 +3108,12 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		return
 	}
 
+	// Keep a track of when we last heard from who we believe to be the leader.
+	if ae.leader == n.leader {
+		n.llae = time.Now()
+		n.resetElectionTimeout()
+	}
+
 	// Scratch buffer for responses.
 	var scratch [appendEntryResponseLen]byte
 	arbuf := scratch[:]
@@ -3879,6 +3886,19 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 	}
 
 	n.Lock()
+
+	if n.leader != "" {
+		// A node that comes up after state reset or being in its own network partition
+		// for a long time might come back with a very high term number but potentially
+		// be behind in the log. The Raft paper addresses this in section 6 by suggesting
+		// that we should ignore vote requests if we think there's a valid leader still
+		// around so that it doesn't get forced to step down in that case.
+		if time.Since(n.llae) < minElectionTimeout {
+			// If we've heard from our leader recently then we should ignore a vote request.
+			n.Unlock()
+			return nil
+		}
+	}
 
 	vresp := &voteResponse{n.term, n.id, false}
 	defer n.debug("Sending a voteResponse %+v -> %q", vresp, vr.reply)
