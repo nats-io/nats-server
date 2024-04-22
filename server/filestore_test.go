@@ -5844,8 +5844,8 @@ func TestFileStoreFullStateMultiBlockPastWAL(t *testing.T) {
 }
 
 // This tests we can successfully recover without having to rebuild the whole stream from a mid block index.db marker
-// when they updated block has a removed entry.
-// TODO(dlc) - This test will force a rebuild atm, leaving here for later.
+// when the updated block has a removed entry.
+// Make sure this does not cause a recover of the full state.
 func TestFileStoreFullStateMidBlockPastWAL(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		cfg := StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage, MaxMsgsPer: 1}
@@ -5900,6 +5900,9 @@ func TestFileStoreFullStateMidBlockPastWAL(t *testing.T) {
 			t.Fatalf("Restore state does not match:\n%+v\n%+v",
 				state, newState)
 		}
+		// Check that index.db is still there. If we recover by raw data on a corrupt state we delete this.
+		_, err = os.Stat(sfile)
+		require_NoError(t, err)
 	})
 }
 
