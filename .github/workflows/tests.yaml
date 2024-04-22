@@ -131,7 +131,7 @@ jobs:
           go-version: stable
 
       - name: Run unit tests
-        run: go test -race -v -run=TestJetStreamCluster ./server/... -tags=skip_js_cluster_tests_2,skip_js_cluster_tests_3 -count=1 -vet=off -timeout=30m -failfast
+        run: go test -race -v -run=TestJetStreamCluster ./server/... -tags=skip_js_cluster_tests_2,skip_js_cluster_tests_3,skip_js_cluster_tests_4 -count=1 -vet=off -timeout=30m -failfast
 
   js-cluster-2:
     name: JetStream Cluster tests (2)
@@ -147,7 +147,7 @@ jobs:
           go-version: stable
 
       - name: Run unit tests
-        run: go test -race -v -run=TestJetStreamCluster ./server/... -tags=skip_js_cluster_tests,skip_js_cluster_tests_3 -count=1 -vet=off -timeout=30m -failfast
+        run: go test -race -v -run=TestJetStreamCluster ./server/... -tags=skip_js_cluster_tests,skip_js_cluster_tests_3,skip_js_cluster_tests_4 -count=1 -vet=off -timeout=30m -failfast
 
   js-cluster-3:
     name: JetStream Cluster tests (3)
@@ -163,7 +163,23 @@ jobs:
           go-version: stable
 
       - name: Run unit tests
-        run: go test -race -v -run=TestJetStreamCluster ./server/... -tags=skip_js_cluster_tests,skip_js_cluster_tests_2 -count=1 -vet=off -timeout=30m -failfast
+        run: go test -race -v -run=TestJetStreamCluster ./server/... -tags=skip_js_cluster_tests,skip_js_cluster_tests_2,skip_js_cluster_tests_4 -count=1 -vet=off -timeout=30m -failfast
+
+  js-cluster-4:
+    name: JetStream Cluster tests (4)
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_LARGE }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: go test -race -v -run=TestJetStreamCluster ./server/... -tags=skip_js_cluster_tests,skip_js_cluster_tests_2,skip_js_cluster_tests_3 -count=1 -vet=off -timeout=30m -failfast
 
   js-supercluster:
     name: JetStream Supercluster tests
