@@ -29,6 +29,7 @@ func TestPullConsumerMessageRedeliveryAfterUnsub(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 	nc, err := nats.Connect(s.ClientURL())
+	// nc, err := nats.Connect("localhost:4222")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -169,16 +170,16 @@ func TestPullConsumerMessageRedeliveryAfterUnsub(t *testing.T) {
 				lock.Lock()
 				// check if the message was previously delivered to the client
 				if meta, ok := ackedMsgs[num]; ok {
-					t.Fatalf("Duplicate message: %d, %+v", num, meta)
+					t.Errorf("Duplicate message: %d, %+v", num, meta)
 				}
 				lock.Unlock()
 				info, err := js.ConsumerInfo("TEST", "cons")
 				fmt.Printf("consumer info: %+v\n", info)
 				if err != nil {
-					t.Fatalf("Error getting stream info: %v", err)
+					t.Fatalf("Error getting consumer info: %v", err)
 				}
 				fmt.Printf("Metadata: %+v\n", meta)
-				t.Fatalf("Expected 1 delivered, got %d\n", meta.NumDelivered)
+				t.Errorf("Expected 1 delivered, got %d\n", meta.NumDelivered)
 			}
 			if err := msg.Ack(); err != nil {
 				t.Fatalf("Error acking message: %v", err)
