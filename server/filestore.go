@@ -182,7 +182,6 @@ type fileStore struct {
 	adml        int
 	hh          hash.Hash64
 	qch         chan struct{}
-	fch         chan struct{}
 	fsld        chan struct{}
 	cmu         sync.RWMutex
 	cfs         []ConsumerStore
@@ -390,7 +389,6 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		prf:    prf,
 		oldprf: oldprf,
 		qch:    make(chan struct{}),
-		fch:    make(chan struct{}, 1),
 		fsld:   make(chan struct{}),
 		srv:    fcfg.srv,
 	}
@@ -451,7 +449,6 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		}
 		// Since we recovered here, make sure to kick ourselves to write out our stream state.
 		fs.dirty++
-		defer fs.kickFlushStateLoop()
 	}
 
 	// Also make sure we get rid of old idx and fss files on return.
@@ -525,8 +522,8 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	// Setup our sync timer.
 	fs.setSyncTimer()
 
-	// Spin up the go routine that will write out or full state stream index.
-	go fs.flushStreamStateLoop(fs.fch, fs.qch, fs.fsld)
+	// Spin up the go routine that will write out our full state stream index.
+	go fs.flushStreamStateLoop(fs.qch, fs.fsld)
 
 	return fs, nil
 }
@@ -955,16 +952,6 @@ func (mb *msgBlock) ensureLastChecksumLoaded() {
 	copy(mb.lchk[0:], mb.lastChecksum())
 }
 
-// Perform a recover but do not update PSIM.
-// Lock should be held.
-func (fs *fileStore) recoverMsgBlockNoSubjectUpdates(index uint32) (*msgBlock, error) {
-	psim, tsl := fs.psim, fs.tsl
-	fs.psim = nil
-	mb, err := fs.recoverMsgBlock(index)
-	fs.psim, fs.tsl = psim, tsl
-	return mb, err
-}
-
 // Lock held on entry
 func (fs *fileStore) recoverMsgBlock(index uint32) (*msgBlock, error) {
 	mb := fs.initMsgBlock(index)
@@ -1002,6 +989,7 @@ func (fs *fileStore) recoverMsgBlock(index uint32) (*msgBlock, error) {
 	file.Close()
 
 	// Read our index file. Use this as source of truth if possible.
+	// This not applicable in >= 2.10 servers. Here for upgrade paths from < 2.10.
 	if err := mb.readIndexInfo(); err == nil {
 		// Quick sanity check here.
 		// Note this only checks that the message blk file is not newer then this file, or is empty and we expect empty.
@@ -1733,13 +1721,13 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 		// Reverse update of tracking state for this mb, will add new state in below.
 		mstate.Msgs -= mb.msgs
 		mstate.Bytes -= mb.bytes
-		if nmb, err := fs.recoverMsgBlockNoSubjectUpdates(mb.index); err != nil && !os.IsNotExist(err) {
+		if nmb, err := fs.recoverMsgBlock(mb.index); err != nil && !os.IsNotExist(err) {
 			fs.warn("Stream state could not recover last msg block")
 			os.Remove(fn)
 			return errCorruptState
 		} else if nmb != nil {
 			fs.adjustAccounting(mb, nmb)
-			updateTrackingState(&mstate, mb)
+			updateTrackingState(&mstate, nmb)
 		}
 	}
 
@@ -1796,10 +1784,26 @@ func (fs *fileStore) adjustAccounting(mb, nmb *msgBlock) {
 	}
 	nmb.ensurePerSubjectInfoLoaded()
 
+	var smv StoreMsg
+
+	// Need to walk previous messages and undo psim stats.
+	// We already undid msgs and bytes accounting.
+	for seq, lseq := atomic.LoadUint64(&mb.first.seq), atomic.LoadUint64(&mb.last.seq); seq <= lseq; seq++ {
+		// Lookup the message. If an error will be deleted, so can skip.
+		sm, err := nmb.cacheLookup(seq, &smv)
+		if err != nil {
+			continue
+		}
+		if len(sm.subj) > 0 && fs.psim != nil {
+			if info, ok := fs.psim.Find(stringToBytes(sm.subj)); ok {
+				info.total--
+			}
+		}
+	}
+
 	// Walk only new messages and update accounting at fs level. Any messages that should have
 	// triggered limits exceeded will be handled after the recovery and prior to the stream
 	// being available to the system.
-	var smv StoreMsg
 	for seq, lseq := atomic.LoadUint64(&mb.last.seq)+1, atomic.LoadUint64(&nmb.last.seq); seq <= lseq; seq++ {
 		// Lookup the message. If an error will be deleted, so can skip.
 		sm, err := nmb.cacheLookup(seq, &smv)
@@ -1809,17 +1813,6 @@ func (fs *fileStore) adjustAccounting(mb, nmb *msgBlock) {
 		// Since we found it we just need to adjust fs totals and psim.
 		fs.state.Msgs++
 		fs.state.Bytes += fileStoreMsgSize(sm.subj, sm.hdr, sm.msg)
-		if len(sm.subj) > 0 && fs.psim != nil {
-			if info, ok := fs.psim.Find(stringToBytes(sm.subj)); ok {
-				info.total++
-				if nmb.index > info.lblk {
-					info.lblk = nmb.index
-				}
-			} else {
-				fs.psim.Insert(stringToBytes(sm.subj), psi{total: 1, fblk: nmb.index, lblk: nmb.index})
-				fs.tsl += len(sm.subj)
-			}
-		}
 	}
 
 	// Now check to see if we had a higher first for the recovered state mb vs nmb.
@@ -2191,7 +2184,6 @@ func (fs *fileStore) expireMsgsOnRecover() {
 	// If we purged anything, make sure we kick flush state loop.
 	if purged > 0 {
 		fs.dirty++
-		fs.kickFlushStateLoop()
 	}
 }
 
@@ -3089,10 +3081,6 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	// Add to our list of blocks and mark as last.
 	fs.addMsgBlock(mb)
 
-	if fs.dirty > 0 {
-		fs.kickFlushStateLoop()
-	}
-
 	return mb, nil
 }
 
@@ -3829,7 +3817,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		// TODO(dlc) - This should not be inline, should kick the sync routine.
 		if mb.rbytes > compactMinimum && mb.bytes*2 < mb.rbytes && !isLastBlock {
 			mb.compact()
-			fs.kickFlushStateLoop()
 		}
 	}
 
@@ -5813,6 +5800,7 @@ var (
 	errUnknownCipher = errors.New("unknown cipher")
 	errNoMainKey     = errors.New("encrypted store encountered with no main key")
 	errNoBlkData     = errors.New("message block data missing")
+	errStateTooBig   = errors.New("store state too big for optional write")
 )
 
 const (
@@ -6634,8 +6622,6 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 	cb := fs.scb
 	fs.mu.Unlock()
 
-	fs.kickFlushStateLoop()
-
 	if cb != nil {
 		cb(-int64(purged), -int64(bytes), 0, _EMPTY_)
 	}
@@ -6916,7 +6902,6 @@ SKIP:
 	fs.state.Bytes -= bytes
 
 	fs.dirty++
-	fs.kickFlushStateLoop()
 
 	cb := fs.scb
 	fs.mu.Unlock()
@@ -6970,7 +6955,6 @@ func (fs *fileStore) reset() error {
 	// If we purged anything, make sure we kick flush state loop.
 	if purged > 0 {
 		fs.dirty++
-		fs.kickFlushStateLoop()
 	}
 
 	fs.mu.Unlock()
@@ -7057,7 +7041,6 @@ func (fs *fileStore) Truncate(seq uint64) error {
 	fs.resetGlobalPerSubjectInfo()
 
 	fs.dirty++
-	fs.kickFlushStateLoop()
 
 	cb := fs.scb
 	fs.mu.Unlock()
@@ -7165,8 +7148,6 @@ func (mb *msgBlock) dirtyCloseWithRemove(remove bool) {
 		if mb.kfn != _EMPTY_ {
 			os.Remove(mb.kfn)
 		}
-		// Since we are removing a block kick the state flusher.
-		mb.fs.kickFlushStateLoop()
 	}
 }
 
@@ -7485,48 +7466,23 @@ const (
 // This go routine runs and receives kicks to write out our full stream state index.
 // This will get kicked when we create a new block or when we delete a block in general.
 // This is also called during Stop().
-func (fs *fileStore) flushStreamStateLoop(fch, qch, done chan struct{}) {
-	// Make sure we do not try to write these out too fast.
-	const writeThreshold = time.Minute
-	lastWrite := time.Time{}
-
-	// We will use these to complete the full state write while not doing them too fast.
-	var dt *time.Timer
-	var dtc <-chan time.Time
-
+func (fs *fileStore) flushStreamStateLoop(qch, done chan struct{}) {
+	// Signal we are done on exit.
 	defer close(done)
+
+	// Make sure we do not try to write these out too fast.
+	const writeThreshold = 2 * time.Minute
+	t := time.NewTicker(writeThreshold)
+	defer t.Stop()
 
 	for {
 		select {
-		case <-fch:
-			if elapsed := time.Since(lastWrite); elapsed > writeThreshold {
-				fs.writeFullState()
-				lastWrite = time.Now()
-				if dt != nil {
-					dt.Stop()
-					dt, dtc = nil, nil
-				}
-			} else if dtc == nil {
-				fireIn := time.Until(lastWrite.Add(writeThreshold))
-				if fireIn < 0 {
-					fireIn = 100 * time.Millisecond
-				}
-				dt = time.NewTimer(fireIn)
-				dtc = dt.C
-			}
-		case <-dtc:
+		case <-t.C:
 			fs.writeFullState()
-			lastWrite = time.Now()
-			dt, dtc = nil, nil
 		case <-qch:
 			return
 		}
 	}
-}
-
-// Kick the flusher.
-func (fs *fileStore) kickFlushStateLoop() {
-	kickFlusher(fs.fch)
 }
 
 // Helper since unixnano of zero time undefined.
@@ -7537,6 +7493,17 @@ func timestampNormalized(t time.Time) int64 {
 	return t.UnixNano()
 }
 
+// writeFullState will proceed to write the full meta state iff not complex and time consuming.
+// Since this is for quick recovery it is optional and should not block/stall normal operations.
+func (fs *fileStore) writeFullState() error {
+	return fs._writeFullState(false)
+}
+
+// forceWriteFullState will proceed to write the full meta state. This should only be called by stop()
+func (fs *fileStore) forceWriteFullState() error {
+	return fs._writeFullState(true)
+}
+
 // This will write the full binary state for the stream.
 // This plus everything new since last hash will be the total recovered state.
 // This state dump will have the following.
@@ -7544,11 +7511,31 @@ func timestampNormalized(t time.Time) int64 {
 // 2. PSIM - Per Subject Index Map - Tracks first and last blocks with subjects present.
 // 3. MBs - Index, Bytes, First and Last Sequence and Timestamps, and the deleted map (avl.seqset).
 // 4. Last block index and hash of record inclusive to this stream state.
-func (fs *fileStore) writeFullState() error {
+func (fs *fileStore) _writeFullState(force bool) error {
 	fs.mu.Lock()
 	if fs.closed || fs.dirty == 0 {
 		fs.mu.Unlock()
 		return nil
+	}
+
+	// For calculating size and checking time costs for non forced calls.
+	numSubjects := fs.numSubjects()
+
+	// If we are not being forced to write out our state, check the complexity for time costs as to not
+	// block or stall normal operations.
+	// We will base off of number of subjects and interior deletes. A very large number of msg blocks could also
+	// be used, but for next server version will redo all meta handling to be disk based. So this is temporary.
+	if !force {
+		const numThreshold = 1_000_000
+		// Calculate interior deletes.
+		var numDeleted int
+		if fs.state.LastSeq > fs.state.FirstSeq {
+			numDeleted = int((fs.state.LastSeq - fs.state.FirstSeq + 1) - fs.state.Msgs)
+		}
+		if numSubjects > numThreshold || numDeleted > numThreshold {
+			fs.mu.Unlock()
+			return errStateTooBig
+		}
 	}
 
 	// We track this through subsequent runs to get an avg per blk used for subsequent runs.
@@ -7558,11 +7545,8 @@ func (fs *fileStore) writeFullState() error {
 		avgDmapLen = 1024
 	}
 
-	// For calculating size.
-	numSubjects := fs.psim.Size()
-
 	// Calculate and estimate of the uper bound on the  size to avoid multiple allocations.
-	sz := 2 + // Magic and Version
+	sz := hdrLen + // Magic and Version
 		(binary.MaxVarintLen64 * 6) + // FS data
 		binary.MaxVarintLen64 + fs.tsl + // NumSubjects + total subject length
 		numSubjects*(binary.MaxVarintLen64*4) + // psi record
@@ -7576,7 +7560,7 @@ func (fs *fileStore) writeFullState() error {
 
 	if sz <= ssz {
 		var _buf [ssz]byte
-		buf, sz = _buf[0:2:ssz], ssz
+		buf, sz = _buf[0:hdrLen:ssz], ssz
 	} else {
 		buf = make([]byte, hdrLen, sz)
 	}
@@ -7685,8 +7669,6 @@ func (fs *fileStore) writeFullState() error {
 		fs.warn("Stream state encountered internal inconsistency on write")
 		// Rebuild our fs state from the mb state.
 		fs.rebuildState(nil)
-		// Make sure to reprocess.
-		fs.kickFlushStateLoop()
 		return errCorruptState
 	}
 
@@ -7761,7 +7743,7 @@ func (fs *fileStore) stop(writeState bool) error {
 		fs.mu.Unlock()
 		<-fsld
 		// Write full state if needed. If not dirty this is a no-op.
-		fs.writeFullState()
+		fs.forceWriteFullState()
 		fs.mu.Lock()
 	}
 
