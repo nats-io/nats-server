@@ -1166,6 +1166,85 @@ func TestFetchWithDrain(t *testing.T) {
 	}
 }
 
+func TestConsumerLongSubjectHang(t *testing.T) {
+	for i := 0; i < 65; i++ {
+		t.Run(fmt.Sprintf("run-%d", i), func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			readSubj := "a1."
+			purgeSubj := "a2."
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:        "TEST",
+				Subjects:    []string{readSubj + ">", purgeSubj + ">"},
+				AllowRollup: true,
+				Discard:     nats.DiscardNew,
+				AllowDirect: true,
+			})
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+
+			// the subject to which we publish depends on the iteration
+			// the test fails for higher iterations
+			// - a.1 + 22 characters for < v2.10.11
+			// - a.1 + 58 characters for v2.10.11
+			// works fine with <= v2.10.9
+			prefix := strings.Repeat("a", i)
+			for i := 0; i < 2; i++ {
+				subj := readSubj + prefix + fmt.Sprintf("%d", i)
+				fmt.Println("publishing to", subj)
+
+				_, err = js.Publish(subj, []byte("hello"))
+				if err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				chunkSubj := purgeSubj + fmt.Sprintf("%d", i)
+				fmt.Println("publishing to", chunkSubj)
+
+				_, err = js.Publish(chunkSubj, []byte("contents"))
+				if err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+			}
+			fmt.Println("purging subject", purgeSubj+">")
+			err = js.PurgeStream("TEST", &nats.StreamPurgeRequest{Subject: purgeSubj + ">"})
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+
+			si, err := js.StreamInfo("TEST")
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			// we should have 2 msgs left after purge
+			if si.State.Msgs != 2 {
+				t.Fatalf("Expected 2 msgs after purge, got %d", si.State.Msgs)
+			}
+
+			sub, err := js.SubscribeSync(readSubj+">", nats.OrderedConsumer(), nats.DeliverLastPerSubject())
+			if err != nil {
+				t.Fatalf("Error on subscribe: %v", err)
+			}
+			defer sub.Unsubscribe()
+
+			for i := 0; i < 2; i++ {
+				m, err := sub.NextMsg(500 * time.Millisecond)
+				if err != nil {
+					t.Fatalf("Unexpected error on msg %d: %v", i, err)
+				}
+				fmt.Println("got message", i, "subject", m.Subject)
+				if string(m.Data) != "hello" {
+					t.Fatalf("Unexpected message: %q", m.Data)
+				}
+			}
+		})
+	}
+}
+
 func Benchmark____JetStreamConsumerIsFilteredMatch(b *testing.B) {
 	subject := "foo.bar.do.not.match.any.filter.subject"
 	for n := 1; n <= 1024; n *= 2 {
