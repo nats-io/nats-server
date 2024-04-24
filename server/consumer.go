@@ -3448,15 +3448,9 @@ func (o *consumer) incDeliveryCount(sseq uint64) uint64 {
 // Lock should be held.
 func (o *consumer) decDeliveryCount(sseq uint64) {
 	if o.rdc == nil {
-		return
+		o.rdc = make(map[uint64]uint64)
 	}
-	if dc, ok := o.rdc[sseq]; ok {
-		if dc == 1 {
-			delete(o.rdc, sseq)
-		} else {
-			o.rdc[sseq] -= 1
-		}
-	}
+	o.rdc[sseq] -= 1
 }
 
 // send a delivery exceeded advisory.
@@ -3604,21 +3598,23 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 
 	// Grab next message applicable to us.
 	// We will unlock here in case lots of contention, e.g. WQ.
+	filters, subjf, fseq := o.filters, o.subjf, o.sseq
 	o.mu.Unlock()
 	// Check if we are multi-filtered or not.
-	if o.filters != nil {
-		sm, sseq, err = store.LoadNextMsgMulti(o.filters, o.sseq, &pmsg.StoreMsg)
-	} else if o.subjf != nil { // Means single filtered subject since o.filters means > 1.
-		filter, wc := o.subjf[0].subject, o.subjf[0].hasWildcard
-		sm, sseq, err = store.LoadNextMsg(filter, wc, o.sseq, &pmsg.StoreMsg)
+	if filters != nil {
+		sm, sseq, err = store.LoadNextMsgMulti(filters, fseq, &pmsg.StoreMsg)
+	} else if subjf != nil { // Means single filtered subject since o.filters means > 1.
+		filter, wc := subjf[0].subject, subjf[0].hasWildcard
+		sm, sseq, err = store.LoadNextMsg(filter, wc, fseq, &pmsg.StoreMsg)
 	} else {
 		// No filter here.
-		sm, sseq, err = store.LoadNextMsg(_EMPTY_, false, o.sseq, &pmsg.StoreMsg)
+		sm, sseq, err = store.LoadNextMsg(_EMPTY_, false, fseq, &pmsg.StoreMsg)
 	}
 	if sm == nil {
 		pmsg.returnToPool()
 		pmsg = nil
 	}
+	// Re-acquire lock.
 	o.mu.Lock()
 	// Check if we should move our o.sseq.
 	if sseq >= o.sseq {
@@ -4049,9 +4045,17 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			}
 		} else {
 			// We will redo this one as long as this is not a redelivery.
-			if dc == 1 {
+			// Need to also test that this is not going backwards since if
+			// we fail to deliver we can end up here from rdq but we do not
+			// want to decrement o.sseq if that is the case.
+			if dc == 1 && pmsg.seq == o.sseq-1 {
 				o.sseq--
 				o.npc++
+			} else if !o.onRedeliverQueue(pmsg.seq) {
+				// We are not on the rdq so decrement the delivery count
+				// and add it back.
+				o.decDeliveryCount(pmsg.seq)
+				o.addToRedeliverQueue(pmsg.seq)
 			}
 			pmsg.returnToPool()
 			goto waitForMsgs
@@ -4487,6 +4491,9 @@ func (o *consumer) didNotDeliver(seq uint64, subj string) {
 		o.active = false
 		checkDeliveryInterest = true
 	} else if o.pending != nil {
+		// Good chance we did not deliver because no interest so force a check.
+		o.processWaiting(false)
+		// If it is still there credit it back.
 		o.creditWaitingRequest(subj)
 		// pull mode and we have pending.
 		if _, ok := o.pending[seq]; ok {
@@ -4495,7 +4502,9 @@ func (o *consumer) didNotDeliver(seq uint64, subj string) {
 			// we know it was not delivered
 			if !o.onRedeliverQueue(seq) {
 				o.addToRedeliverQueue(seq)
-				o.signalNewMessages()
+				if !o.waiting.isEmpty() {
+					o.signalNewMessages()
+				}
 			}
 		}
 	}
