@@ -36,3 +36,18 @@ type meta struct {
 	prefix []byte
 	size   uint16
 }
+
+func (n *meta) isLeaf() bool { return false }
+func (n *meta) base() *meta  { return n }
+
+func (n *meta) setPrefix(pre []byte) {
+	n.prefix = append([]byte(nil), pre...)
+}
+
+func (n *meta) numChildren() uint16 { return n.size }
+func (n *meta) path() []byte        { return n.prefix }
+
+// Will match parts against our prefix.
+func (n *meta) matchParts(parts [][]byte) ([][]byte, bool) {
+	return matchParts(parts, n.prefix)
+}
