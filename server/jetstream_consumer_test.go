@@ -1079,7 +1079,7 @@ func TestJetStreamConsumerDelete(t *testing.T) {
 	}
 }
 
-func TestFetchWithDrain(t *testing.T) {
+func TestJetStreamConsumerFetchWithDrain(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
@@ -1165,6 +1165,50 @@ func TestFetchWithDrain(t *testing.T) {
 				break
 			}
 		}
+	}
+}
+
+func TestJetStreamConsumerLongSubjectHang(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	readSubj := "a1."
+	purgeSubj := "a2."
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{readSubj + ">", purgeSubj + ">"},
+		AllowRollup: true,
+	})
+	require_NoError(t, err)
+
+	prefix := strings.Repeat("a", 22)
+	for i := 0; i < 2; i++ {
+		subj := readSubj + prefix + fmt.Sprintf("%d", i)
+		_, err = js.Publish(subj, []byte("hello"))
+		require_NoError(t, err)
+		chunkSubj := purgeSubj + fmt.Sprintf("%d", i)
+		_, err = js.Publish(chunkSubj, []byte("contents"))
+		require_NoError(t, err)
+	}
+	err = js.PurgeStream("TEST", &nats.StreamPurgeRequest{Subject: purgeSubj + ">"})
+	require_NoError(t, err)
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	// we should have 2 msgs left after purge
+	require_Equal(t, si.State.Msgs, 2)
+
+	sub, err := js.SubscribeSync(readSubj+">", nats.OrderedConsumer(), nats.DeliverLastPerSubject())
+	require_NoError(t, err)
+	defer sub.Unsubscribe()
+
+	for i := 0; i < 2; i++ {
+		m, err := sub.NextMsg(500 * time.Millisecond)
+		require_NoError(t, err)
+		require_True(t, string(m.Data) == "hello")
 	}
 }
 
