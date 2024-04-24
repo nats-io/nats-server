@@ -150,6 +150,7 @@ type raft struct {
 	pae     map[uint64]*appendEntry        // Pending append entries
 
 	elect  *time.Timer // Election timer, normally accessed via electTimer
+	etlr   time.Time   // Election timer last reset time, for unit tests only
 	active time.Time   // Last activity time, i.e. for heartbeats
 	llqrt  time.Time   // Last quorum lost time
 	lsut   time.Time   // Last scale-up time
@@ -1766,6 +1767,7 @@ func (n *raft) resetElectionTimeoutWithLock() {
 
 // Lock should be held.
 func (n *raft) resetElect(et time.Duration) {
+	n.etlr = time.Now()
 	if n.elect == nil {
 		n.elect = time.NewTimer(et)
 	} else {
@@ -3885,7 +3887,6 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 	}
 
 	n.Lock()
-	n.resetElectionTimeout()
 
 	vresp := &voteResponse{n.term, n.id, false}
 	defer n.debug("Sending a voteResponse %+v -> %q", vresp, vr.reply)
@@ -3917,6 +3918,7 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 		n.term = vr.term
 		n.vote = vr.candidate
 		n.writeTermVote()
+		n.resetElectionTimeout()
 	} else {
 		if vr.term >= n.term && n.vote == noVote {
 			n.term = vr.term
