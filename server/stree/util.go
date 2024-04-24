@@ -29,7 +29,7 @@ func commonPrefixLen(s1, s2 []byte) int {
 			break
 		}
 	}
-	return min(i, maxPrefixLen)
+	return i
 }
 
 // Helper to copy bytes.

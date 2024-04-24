@@ -32,13 +32,7 @@ type node interface {
 	path() []byte
 }
 
-// Maximum prefix len
-// We expect the most savings to come from long shared prefixes.
-const maxPrefixLen = 24
-
-// 64 bytes total - an L1 cache line.
 type meta struct {
-	prefix    [maxPrefixLen]byte
-	prefixLen uint16
-	size      uint16
+	prefix []byte
+	size   uint16
 }

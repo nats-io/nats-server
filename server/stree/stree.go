@@ -60,7 +60,7 @@ func (t *SubjectTree[T]) Insert(subject []byte, value T) (*T, bool) {
 
 // Find will find the value and return it or false if it was not found.
 func (t *SubjectTree[T]) Find(subject []byte) (*T, bool) {
-	var si uint16
+	var si int
 	for n := t.root; n != nil; {
 		if n.isLeaf() {
 			if ln := n.(*leaf[T]); ln.match(subject[si:]) {
@@ -69,13 +69,13 @@ func (t *SubjectTree[T]) Find(subject []byte) (*T, bool) {
 			return nil, false
 		}
 		// We are a node type here, grab meta portion.
-		if bn := n.base(); bn.prefixLen > 0 {
-			end := min(int(si+bn.prefixLen), len(subject))
-			if !bytes.Equal(subject[si:end], bn.prefix[:bn.prefixLen]) {
+		if bn := n.base(); len(bn.prefix) > 0 {
+			end := min(si+len(bn.prefix), len(subject))
+			if !bytes.Equal(subject[si:end], bn.prefix) {
 				return nil, false
 			}
 			// Increment our subject index.
-			si += bn.prefixLen
+			si += len(bn.prefix)
 		}
 		if an := n.findChild(pivot(subject, si)); an != nil {
 			n = *an
@@ -157,9 +157,9 @@ func (t *SubjectTree[T]) insert(np *node, subject []byte, value T, si int) (*T, 
 
 	// Non-leaf nodes.
 	bn := n.base()
-	if bn.prefixLen > 0 {
-		cpi := commonPrefixLen(bn.prefix[:bn.prefixLen], subject[si:])
-		if pli := int(bn.prefixLen); cpi >= pli {
+	if len(bn.prefix) > 0 {
+		cpi := commonPrefixLen(bn.prefix, subject[si:])
+		if pli := len(bn.prefix); cpi >= pli {
 			// Move past this node. We look for an existing child node to recurse into.
 			// If one does not exist we can create a new leaf node.
 			si += pli
@@ -180,7 +180,7 @@ func (t *SubjectTree[T]) insert(np *node, subject []byte, value T, si int) (*T, 
 			// We will insert a new node4 and attach our current node below after adjusting prefix.
 			nn := newNode4(prefix)
 			// Shift the prefix for our original node.
-			n.setPrefix(bn.prefix[cpi:bn.prefixLen])
+			n.setPrefix(bn.prefix[cpi:])
 			nn.addChild(pivot(bn.prefix[:], 0), n)
 			// Add in our new leaf.
 			nn.addChild(pivot(subject[si:], 0), newLeaf(subject[si:], value))
@@ -203,7 +203,7 @@ func (t *SubjectTree[T]) insert(np *node, subject []byte, value T, si int) (*T, 
 }
 
 // internal function to recursively find the leaf to delete. Will do compaction if the item is found and removed.
-func (t *SubjectTree[T]) delete(np *node, subject []byte, si uint16) (*T, bool) {
+func (t *SubjectTree[T]) delete(np *node, subject []byte, si int) (*T, bool) {
 	if t == nil || np == nil || *np == nil || len(subject) == 0 {
 		return nil, false
 	}
@@ -217,12 +217,12 @@ func (t *SubjectTree[T]) delete(np *node, subject []byte, si uint16) (*T, bool) 
 		return nil, false
 	}
 	// Not a leaf node.
-	if bn := n.base(); bn.prefixLen > 0 {
-		if !bytes.Equal(subject[si:si+bn.prefixLen], bn.prefix[:bn.prefixLen]) {
+	if bn := n.base(); len(bn.prefix) > 0 {
+		if !bytes.Equal(subject[si:si+len(bn.prefix)], bn.prefix) {
 			return nil, false
 		}
 		// Increment our subject index.
-		si += bn.prefixLen
+		si += len(bn.prefix)
 	}
 	p := pivot(subject, si)
 	nna := n.findChild(p)
@@ -238,7 +238,7 @@ func (t *SubjectTree[T]) delete(np *node, subject []byte, si uint16) (*T, bool) 
 			if sn := n.shrink(); sn != nil {
 				bn := n.base()
 				// Make sure to set cap so we force an append to copy below.
-				pre := bn.prefix[:bn.prefixLen:bn.prefixLen]
+				pre := bn.prefix[:len(bn.prefix):len(bn.prefix)]
 				// Need to fix up prefixes/suffixes.
 				if sn.isLeaf() {
 					ln := sn.(*leaf[T])
@@ -248,7 +248,7 @@ func (t *SubjectTree[T]) delete(np *node, subject []byte, si uint16) (*T, bool) 
 					// We are a node here, we need to add in the old prefix.
 					if len(pre) > 0 {
 						bsn := sn.base()
-						sn.setPrefix(append(pre, bsn.prefix[:bsn.prefixLen]...))
+						sn.setPrefix(append(pre, bsn.prefix...))
 					}
 				}
 				*np = sn
@@ -287,9 +287,9 @@ func (t *SubjectTree[T]) match(n node, parts [][]byte, pre []byte, cb func(subje
 		// We have normal nodes here.
 		// We need to append our prefix
 		bn := n.base()
-		if bn.prefixLen > 0 {
+		if len(bn.prefix) > 0 {
 			// Note that this append may reallocate, but it doesn't modify "pre" at the "match" callsite.
-			pre = append(pre, bn.prefix[:bn.prefixLen]...)
+			pre = append(pre, bn.prefix...)
 		}
 
 		// Check our remaining parts.
@@ -359,7 +359,7 @@ func (t *SubjectTree[T]) iter(n node, pre []byte, cb func(subject []byte, val *T
 	// We are normal node here.
 	bn := n.base()
 	// Note that this append may reallocate, but it doesn't modify "pre" at the "iter" callsite.
-	pre = append(pre, bn.prefix[:bn.prefixLen]...)
+	pre = append(pre, bn.prefix...)
 	// Collect nodes since unsorted.
 	var _nodes [256]node
 	nodes := _nodes[:0]
