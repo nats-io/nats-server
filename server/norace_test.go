@@ -31,6 +31,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -10348,4 +10349,60 @@ func TestNoRaceWQAndMultiSubjectFiltersRace(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestNoRaceFileStoreWriteFullStateUniqueSubjects(t *testing.T) {
+	fcfg := FileStoreConfig{StoreDir: t.TempDir()}
+	fs, err := newFileStore(fcfg,
+		StreamConfig{Name: "zzz", Subjects: []string{"records.>"}, Storage: FileStorage, MaxMsgsPer: 1, MaxBytes: 15 * 1024 * 1024 * 1024})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	qch := make(chan struct{})
+	defer close(qch)
+
+	go func() {
+		const numThreshold = 1_000_000
+		tick := time.NewTicker(1 * time.Second)
+		for {
+			select {
+			case <-qch:
+				return
+			case <-tick.C:
+				err := fs.writeFullState()
+				var state StreamState
+				fs.FastState(&state)
+				if state.Msgs > numThreshold && err != nil {
+					require_Error(t, err, errStateTooBig)
+				}
+			}
+		}
+	}()
+
+	labels := []string{"AAAAA", "BBBB", "CCCC", "DD", "EEEEE"}
+	msg := []byte(strings.Repeat("Z", 128))
+
+	for i := 0; i < 100; i++ {
+		partA := nuid.Next()
+		for j := 0; j < 100; j++ {
+			partB := nuid.Next()
+			for k := 0; k < 500; k++ {
+				partC := nuid.Next()
+				partD := labels[rand.Intn(len(labels)-1)]
+				subject := fmt.Sprintf("records.%s.%s.%s.%s.%s", partA, partB, partC, partD, nuid.Next())
+				start := time.Now()
+				fs.StoreMsg(subject, nil, msg)
+				elapsed := time.Since(start)
+				if elapsed > 500*time.Millisecond {
+					t.Fatalf("Slow store for %q: %v\n", subject, elapsed)
+				}
+			}
+		}
+	}
+	// Make sure we do write the full state on stop.
+	fs.Stop()
+	fi, err := os.Stat(filepath.Join(fcfg.StoreDir, msgDir, streamStreamStateFile))
+	require_NoError(t, err)
+	// ~500MB, could change if we tweak encodings..
+	require_True(t, fi.Size() > 500*1024*1024)
 }

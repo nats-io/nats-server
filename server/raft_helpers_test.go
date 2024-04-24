@@ -83,6 +83,20 @@ func (sg smGroup) nonLeader() stateMachine {
 	return nil
 }
 
+// Take out the lock on all nodes.
+func (sg smGroup) lockAll() {
+	for _, sm := range sg {
+		sm.node().(*raft).Lock()
+	}
+}
+
+// Release the lock on all nodes.
+func (sg smGroup) unlockAll() {
+	for _, sm := range sg {
+		sm.node().(*raft).Unlock()
+	}
+}
+
 // Create a raft group and place on numMembers servers at random.
 func (c *cluster) createRaftGroup(name string, numMembers int, smf smFactory) smGroup {
 	c.t.Helper()
@@ -157,6 +171,7 @@ type stateAdder struct {
 	n   RaftNode
 	cfg *RaftConfig
 	sum int64
+	lch chan bool
 }
 
 // Simple getters for server and the raft node.
@@ -196,7 +211,12 @@ func (a *stateAdder) applyEntry(ce *CommittedEntry) {
 	a.n.Applied(ce.Index)
 }
 
-func (a *stateAdder) leaderChange(isLeader bool) {}
+func (a *stateAdder) leaderChange(isLeader bool) {
+	select {
+	case a.lch <- isLeader:
+	default:
+	}
+}
 
 // Adder specific to change the total.
 func (a *stateAdder) proposeDelta(delta int64) {
@@ -272,5 +292,5 @@ func (rg smGroup) waitOnTotal(t *testing.T, expected int64) {
 
 // Factory function.
 func newStateAdder(s *Server, cfg *RaftConfig, n RaftNode) stateMachine {
-	return &stateAdder{s: s, n: n, cfg: cfg}
+	return &stateAdder{s: s, n: n, cfg: cfg, lch: make(chan bool, 1)}
 }
