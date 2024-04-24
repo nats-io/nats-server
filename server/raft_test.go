@@ -371,17 +371,22 @@ func TestNRGUnsuccessfulVoteRequestDoesntResetElectionTimer(t *testing.T) {
 	require_NoError(t, err)
 
 	// Keep a track of the last time the election timer was reset before this.
+	// Also build up a vote request that's obviously behind so that the other
+	// nodes should not do anything with it. All locks are taken at the same
+	// time so that it guarantees that both the leader and the follower aren't
+	// operating at the time we take the etlr snapshots.
+	rg.lockAll()
 	leaderOriginal := leader.etlr
 	followerOriginal := follower.etlr
-
-	// Now send a vote request that's obviously behind, so other nodes should
-	// not do anything with it.
 	vr := &voteRequest{
 		term:      follower.term,
 		lastTerm:  follower.term - 1,
 		lastIndex: 0,
 		candidate: follower.id,
 	}
+	rg.unlockAll()
+
+	// Now send a vote request that's obviously behind.
 	require_NoError(t, nc.PublishMsg(&nats.Msg{
 		Subject: vsubj,
 		Reply:   vreply,
@@ -395,6 +400,8 @@ func TestNRGUnsuccessfulVoteRequestDoesntResetElectionTimer(t *testing.T) {
 
 	// Neither the leader nor our chosen follower should have updated their
 	// election timer as a result of this.
-	require_Equal(t, leaderOriginal, leader.etlr)
-	require_Equal(t, followerOriginal, follower.etlr)
+	rg.lockAll()
+	defer rg.unlockAll()
+	require_True(t, leaderOriginal.Equal(leader.etlr))
+	require_True(t, followerOriginal.Equal(follower.etlr))
 }

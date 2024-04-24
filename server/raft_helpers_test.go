@@ -83,6 +83,20 @@ func (sg smGroup) nonLeader() stateMachine {
 	return nil
 }
 
+// Take out the lock on all nodes.
+func (sg smGroup) lockAll() {
+	for _, sm := range sg {
+		sm.node().(*raft).Lock()
+	}
+}
+
+// Release the lock on all nodes.
+func (sg smGroup) unlockAll() {
+	for _, sm := range sg {
+		sm.node().(*raft).Unlock()
+	}
+}
+
 // Create a raft group and place on numMembers servers at random.
 func (c *cluster) createRaftGroup(name string, numMembers int, smf smFactory) smGroup {
 	c.t.Helper()
