@@ -1116,27 +1116,29 @@ func TestFetchWithDrain(t *testing.T) {
 	msgs := make(map[int]int)
 
 	processMsg := func(t *testing.T, sub *nats.Subscription, msgs map[int]int) bool {
-		msg, err := sub.NextMsg(time.Second * 1)
+		msg, err := sub.NextMsg(time.Second)
 		if err != nil {
 			return false
 		}
 		metadata, err := msg.Metadata()
 		require_NoError(t, err)
-		err = msg.Ack()
-		require_NoError(t, err)
+		require_NoError(t, msg.Ack())
 
 		v, err := strconv.Atoi(string(msg.Data))
 		require_NoError(t, err)
 		require_Equal(t, uint64(v), metadata.Sequence.Stream)
 
-		_, ok := msgs[int(metadata.Sequence.Stream)]
 		if _, ok := msgs[int(metadata.Sequence.Stream-1)]; !ok && len(msgs) > 0 {
 			t.Logf("Stream Sequence gap detected: current %d", metadata.Sequence.Stream)
 		}
-		if ok {
-			t.Fatalf("Message has been seen before")
+		if _, ok := msgs[int(metadata.Sequence.Stream)]; ok {
+			t.Fatalf("Message for seq %d has been seen before", metadata.Sequence.Stream)
 		}
-
+		// We do not expect official redeliveries here so this should always be 1.
+		if metadata.NumDelivered != 1 {
+			t.Fatalf("Expected NumDelivered of 1, got %d for seq %d",
+				metadata.NumDelivered, metadata.Sequence.Stream)
+		}
 		msgs[int(metadata.Sequence.Stream)] = int(metadata.NumDelivered)
 
 		require_NoError(t, err)
