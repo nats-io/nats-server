@@ -2684,14 +2684,10 @@ func (n *raft) applyCommit(index uint64) error {
 		n.debug("Ignoring apply commit for %d, already processed", index)
 		return nil
 	}
-	original := n.commit
-	n.commit = index
 
 	if n.State() == Leader {
 		delete(n.acks, index)
 	}
-
-	var fpae bool
 
 	ae := n.pae[index]
 	if ae == nil {
@@ -2710,15 +2706,14 @@ func (n *raft) applyCommit(index uint64) error {
 				// Reset and cancel any catchup.
 				n.resetWAL()
 				n.cancelCatchup()
-			} else {
-				n.commit = original
 			}
 			return errEntryLoadFailed
 		}
 	} else {
-		fpae = true
+		defer delete(n.pae, index)
 	}
 
+	n.commit = index
 	ae.buf = nil
 
 	var committed []*Entry
@@ -2792,9 +2787,6 @@ func (n *raft) applyCommit(index uint64) error {
 			// We pass these up as well.
 			committed = append(committed, e)
 		}
-	}
-	if fpae {
-		delete(n.pae, index)
 	}
 	// Pass to the upper layers if we have normal entries. It is
 	// entirely possible that 'committed' might be an empty slice here,
