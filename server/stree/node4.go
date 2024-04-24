@@ -30,10 +30,7 @@ func (n *node4) isLeaf() bool { return false }
 func (n *node4) base() *meta  { return &n.meta }
 
 func (n *node4) setPrefix(pre []byte) {
-	n.prefixLen = uint16(min(len(pre), maxPrefixLen))
-	for i := uint16(0); i < n.prefixLen; i++ {
-		n.prefix[i] = pre[i]
-	}
+	n.prefix = append([]byte(nil), pre...)
 }
 
 // Currently we do not need to keep sorted for traversal so just add to the end.
@@ -47,7 +44,7 @@ func (n *node4) addChild(c byte, nn node) {
 }
 
 func (n *node4) numChildren() uint16 { return n.size }
-func (n *node4) path() []byte        { return n.prefix[:n.prefixLen] }
+func (n *node4) path() []byte        { return n.prefix }
 
 func (n *node4) findChild(c byte) *node {
 	for i := uint16(0); i < n.size; i++ {
@@ -61,7 +58,7 @@ func (n *node4) findChild(c byte) *node {
 func (n *node4) isFull() bool { return n.size >= 4 }
 
 func (n *node4) grow() node {
-	nn := newNode16(n.prefix[:n.prefixLen])
+	nn := newNode16(n.prefix)
 	for i := 0; i < 4; i++ {
 		nn.addChild(n.key[i], n.child[i])
 	}
@@ -98,7 +95,7 @@ func (n *node4) shrink() node {
 
 // Will match parts against our prefix.
 func (n *node4) matchParts(parts [][]byte) ([][]byte, bool) {
-	return matchParts(parts, n.prefix[:n.prefixLen])
+	return matchParts(parts, n.prefix)
 }
 
 // Iterate over all children calling func f.

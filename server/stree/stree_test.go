@@ -22,7 +22,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unsafe"
 )
 
 // Print Results: go test -v  --args --results
@@ -363,24 +362,6 @@ func TestSubjectTreePartialTerminalWildcardBugMatch(t *testing.T) {
 	match(t, st, "STATE.GLOBAL.CELL1.7PDSGAALXNN000010.*", 3)
 }
 
-func TestSubjectTreeMaxPrefix(t *testing.T) {
-	st := NewSubjectTree[int]()
-	longPre := strings.Repeat("Z", maxPrefixLen+2)
-	for i := 0; i < 2; i++ {
-		subj := b(fmt.Sprintf("%s.%c", longPre, 'A'+i))
-		old, updated := st.Insert(subj, 22)
-		require_True(t, old == nil)
-		require_False(t, updated)
-	}
-	v, found := st.Find(b(fmt.Sprintf("%s.B", longPre)))
-	require_True(t, found)
-	require_Equal(t, *v, 22)
-	v, found = st.Delete(b(fmt.Sprintf("%s.A", longPre)))
-	require_True(t, found)
-	require_Equal(t, *v, 22)
-	require_Equal(t, st.root.numChildren(), 1)
-}
-
 func TestSubjectTreeMatchSubjectParam(t *testing.T) {
 	st := NewSubjectTree[int]()
 	st.Insert(b("foo.bar.A"), 1)
@@ -602,9 +583,24 @@ func TestSubjectTreeRandomTrackEntries(t *testing.T) {
 	}
 }
 
-func TestSubjectTreeMetaSize(t *testing.T) {
-	var base meta
-	require_Equal(t, unsafe.Sizeof(base), 28)
+// Needs to be longer then internal node prefix, which currently is 24.
+func TestSubjectTreeLongTokens(t *testing.T) {
+	st := NewSubjectTree[int]()
+	st.Insert(b("a1.aaaaaaaaaaaaaaaaaaaaaa0"), 1)
+	st.Insert(b("a2.0"), 2)
+	st.Insert(b("a1.aaaaaaaaaaaaaaaaaaaaaa1"), 3)
+	st.Insert(b("a2.1"), 4)
+	// Simulate purge of a2.>
+	// This required to show bug.
+	st.Delete(b("a2.0"))
+	st.Delete(b("a2.1"))
+	require_Equal(t, st.Size(), 2)
+	v, found := st.Find(b("a1.aaaaaaaaaaaaaaaaaaaaaa0"))
+	require_True(t, found)
+	require_Equal(t, *v, 1)
+	v, found = st.Find(b("a1.aaaaaaaaaaaaaaaaaaaaaa1"))
+	require_True(t, found)
+	require_Equal(t, *v, 3)
 }
 
 func b(s string) []byte {
