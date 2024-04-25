@@ -4909,6 +4909,23 @@ func adjustPingInterval(kind int, d time.Duration) time.Duration {
 	return d
 }
 
+// This is used when a connection cannot yet start to send PINGs because
+// the remote would not be able to handle them (case of compression,
+// or outbound gateway, etc...), but we still want to close the connection
+// if the timer has not been reset by the time we reach the time equivalent
+// to have sent the max number of pings.
+//
+// Lock should be held
+func (c *client) watchForStaleConnection(pingInterval time.Duration, pingMax int) {
+	c.ping.tmr = time.AfterFunc(pingInterval*time.Duration(pingMax+1), func() {
+		c.mu.Lock()
+		c.Debugf("Stale Client Connection - Closing")
+		c.enqueueProto([]byte(fmt.Sprintf(errProto, "Stale Connection")))
+		c.mu.Unlock()
+		c.closeConnection(StaleConnection)
+	})
+}
+
 // Lock should be held
 func (c *client) setPingTimer() {
 	if c.srv == nil {

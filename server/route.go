@@ -1788,13 +1788,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL, accName string) *clie
 		if opts.Cluster.MaxPingsOut > 0 {
 			pingMax = opts.MaxPingsOut
 		}
-		c.ping.tmr = time.AfterFunc(pingInterval*time.Duration(pingMax+1), func() {
-			c.mu.Lock()
-			c.Debugf("Stale Client Connection - Closing")
-			c.enqueueProto([]byte(fmt.Sprintf(errProto, "Stale Connection")))
-			c.mu.Unlock()
-			c.closeConnection(StaleConnection)
-		})
+		c.watchForStaleConnection(adjustPingInterval(ROUTER, pingInterval), pingMax)
 	} else {
 		// Set the Ping timer
 		c.setFirstPingTimer()
