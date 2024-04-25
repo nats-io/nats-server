@@ -536,7 +536,7 @@ func (tr *subjectTransform) TransformTokenizedSubject(tokens []string) string {
 				sourceTokenLen := len(sourceToken)
 				sliceSize := int(tr.dtokmfintargs[i])
 				if sliceSize > 0 && sliceSize < sourceTokenLen {
-					b.WriteString(sourceToken[0:2])
+					b.WriteString(sourceToken[0:sliceSize])
 				} else { // too small to slice at the requested size: don't slice
 					b.WriteString(sourceToken)
 				}
