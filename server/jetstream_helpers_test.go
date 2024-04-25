@@ -1564,6 +1564,19 @@ func (c *cluster) restartAll() {
 	c.waitOnClusterReady()
 }
 
+func (c *cluster) lameDuckStopAll() {
+	c.t.Helper()
+	for _, s := range c.servers {
+		s.optsMu.Lock()
+		s.opts.LameDuckDuration = 5 * time.Second
+		s.opts.LameDuckGracePeriod = -5 * time.Second
+		s.optsMu.Unlock()
+
+		s.lameDuckMode()
+		s.WaitForShutdown()
+	}
+}
+
 func (c *cluster) lameDuckRestartAll() {
 	c.t.Helper()
 	for i, s := range c.servers {

@@ -2655,7 +2655,7 @@ func TestJetStreamClusterStreamCatchupNoState(t *testing.T) {
 	}
 
 	nc.Close()
-	c.stopAll()
+	c.lameDuckStopAll()
 	// Remove all state by truncating for the non-leader.
 	for _, fn := range []string{"1.blk", "1.idx", "1.fss"} {
 		fname := filepath.Join(config.StoreDir, "$G", "streams", "TEST", "msgs", fn)
