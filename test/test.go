@@ -28,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	srvlog "github.com/nats-io/nats-server/v2/logger"
 	"github.com/nats-io/nats-server/v2/server"
 )
 
@@ -92,6 +93,13 @@ func RunServerCallback(opts *server.Options, callback func(*server.Server)) *ser
 
 	if doLog {
 		s.ConfigureLogger()
+	}
+
+	if ll := os.Getenv("NATS_LOGGING"); ll != "" {
+		log := srvlog.NewTestLogger(fmt.Sprintf("[%s] | ", s), true)
+		debug := ll == "debug" || ll == "trace"
+		trace := ll == "trace"
+		s.SetLoggerV2(log, debug, trace, false)
 	}
 
 	if callback != nil {
