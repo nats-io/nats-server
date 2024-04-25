@@ -621,7 +621,9 @@ func (s *Sublist) hasInterest(subject string, doLock bool) bool {
 	}
 	var matched bool
 	if s.cache != nil {
-		_, matched = s.cache[subject]
+		if r, ok := s.cache[subject]; ok {
+			matched = len(r.psubs)+len(r.qsubs) > 0
+		}
 	}
 	if doLock {
 		s.RUnlock()
@@ -789,7 +791,7 @@ func matchLevelForAny(l *level, toks []string) bool {
 		}
 	}
 	if n != nil {
-		return true
+		return len(n.plist) > 0 || len(n.psubs) > 0 || len(n.qsubs) > 0
 	}
 	if pwc != nil {
 		return true
