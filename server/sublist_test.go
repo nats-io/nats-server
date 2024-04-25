@@ -1655,6 +1655,26 @@ func TestSublistHasInterest(t *testing.T) {
 	require_False(t, sl.HasInterest("foo.bar"))
 	require_False(t, sl.HasInterest("foo.bar.baz"))
 
+	sub = newSub("*.>")
+	sl.Insert(sub)
+	require_False(t, sl.HasInterest("foo"))
+	require_True(t, sl.HasInterest("foo.bar"))
+	require_True(t, sl.HasInterest("foo.baz"))
+	sl.Remove(sub)
+
+	sub = newSub("*.bar")
+	sl.Insert(sub)
+	require_False(t, sl.HasInterest("foo"))
+	require_True(t, sl.HasInterest("foo.bar"))
+	require_False(t, sl.HasInterest("foo.baz"))
+	sl.Remove(sub)
+
+	sub = newSub("*")
+	sl.Insert(sub)
+	require_True(t, sl.HasInterest("foo"))
+	require_False(t, sl.HasInterest("foo.bar"))
+	sl.Remove(sub)
+
 	// Try with queues now.
 	qsub := newQSub("foo", "bar")
 	sl.Insert(qsub)
@@ -1727,6 +1747,25 @@ func TestSublistHasInterest(t *testing.T) {
 	require_False(t, sl.HasInterest("foo.bar"))
 	require_False(t, sl.HasInterest("foo.bar.baz"))
 
+	qsub = newQSub("*.>", "bar")
+	sl.Insert(qsub)
+	require_False(t, sl.HasInterest("foo"))
+	require_True(t, sl.HasInterest("foo.bar"))
+	require_True(t, sl.HasInterest("foo.baz"))
+	sl.Remove(qsub)
+
+	qsub = newQSub("*.bar", "bar")
+	sl.Insert(qsub)
+	require_False(t, sl.HasInterest("foo"))
+	require_True(t, sl.HasInterest("foo.bar"))
+	require_False(t, sl.HasInterest("foo.baz"))
+	sl.Remove(qsub)
+
+	qsub = newQSub("*", "bar")
+	sl.Insert(qsub)
+	require_True(t, sl.HasInterest("foo"))
+	require_False(t, sl.HasInterest("foo.bar"))
+	sl.Remove(qsub)
 }
 
 func subsInit(pre string, toks []string) {
