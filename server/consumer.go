@@ -3450,7 +3450,9 @@ func (o *consumer) decDeliveryCount(sseq uint64) {
 	if o.rdc == nil {
 		o.rdc = make(map[uint64]uint64)
 	}
-	o.rdc[sseq] -= 1
+	if n := o.rdc[sseq]; n > 0 {
+		o.rdc[sseq] -= 1
+	}
 }
 
 // send a delivery exceeded advisory.
