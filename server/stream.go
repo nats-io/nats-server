@@ -4514,13 +4514,10 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				}
 				return errStreamMismatch
 			}
-		}
 
-		// Dedupe detection. This is done at the cluster level for dedupe detectiom above the
-		// lower layers. But we still need to pull out the msgId.
-		if msgId = getMsgId(hdr); msgId != _EMPTY_ {
-			// Do real check only if not clustered or traceOnly flag is set.
-			if !isClustered || traceOnly {
+			// Dedupe detection. This is done at the cluster level for dedupe detectiom above the
+			// lower layers. But we still need to pull out the msgId.
+			if msgId = getMsgId(hdr); msgId != _EMPTY_ {
 				if dde := mset.checkMsgId(msgId); dde != nil {
 					mset.mu.Unlock()
 					bumpCLFS()
