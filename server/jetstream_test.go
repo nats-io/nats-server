@@ -19512,7 +19512,7 @@ func TestJetStreamConsumerMultipleSubjectsLast(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	sub, err := js.SubscribeSync("", nats.Bind("name", durable))
+	sub, err := js.SubscribeSync(_EMPTY_, nats.Bind("name", durable))
 	require_NoError(t, err)
 
 	msg, err := sub.NextMsg(time.Millisecond * 500)
@@ -19537,7 +19537,9 @@ func TestJetStreamConsumerMultipleSubjectsLast(t *testing.T) {
 	require_NoError(t, err)
 
 	require_True(t, info.NumAckPending == 0)
-	require_True(t, info.AckFloor.Stream == 8)
+	// Should be 6 since we do not pull "other". We used to jump ack floor ahead
+	// but no longer do that.
+	require_True(t, info.AckFloor.Stream == 6)
 	require_True(t, info.AckFloor.Consumer == 1)
 	require_True(t, info.NumPending == 0)
 }
