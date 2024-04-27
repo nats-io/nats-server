@@ -120,7 +120,7 @@ func TestStreamSourcingScalingManySourcing(t *testing.T) {
 }
 
 func TestStreamSourcingScalingSourcingMany(t *testing.T) {
-	t.Skip()
+	//t.Skip()
 
 	var numSourced = 10000
 	var numMsgPerSource = uint64(1000)
@@ -203,7 +203,7 @@ func TestStreamSourcingScalingSourcingMany(t *testing.T) {
 
 		for i := 0; i < numSourced; i++ {
 			select {
-			case _ = <-pafs[i].Ok():
+			case <-pafs[i].Ok():
 			case psae := <-pafs[i].Err():
 				fmt.Printf("Error on PubAckFuture: %v, retrying sync...\n", psae)
 				retries++
