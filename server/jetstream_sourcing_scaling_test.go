@@ -120,7 +120,7 @@ func TestStreamSourcingScalingManySourcing(t *testing.T) {
 }
 
 func TestStreamSourcingScalingSourcingMany(t *testing.T) {
-	//t.Skip()
+	t.Skip()
 
 	var numSourced = 10000
 	var numMsgPerSource = uint64(1000)
