@@ -2831,6 +2831,11 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, doSample bool) {
 					}
 				}
 			}
+			// If nothing left set consumer to current delivered.
+			// Do not update stream.
+			if len(o.pending) == 0 {
+				o.adflr = o.dseq - 1
+			}
 		}
 		// We do these regardless.
 		delete(o.rdc, sseq)
