@@ -2831,9 +2831,10 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, doSample bool) {
 					}
 				}
 			}
-			// If nothing left set to current delivered.
+			// If nothing left set consumer to current delivered.
+			// Do not update stream.
 			if len(o.pending) == 0 {
-				o.adflr, o.asflr = o.dseq-1, o.sseq-1
+				o.adflr = o.dseq - 1
 			}
 		}
 		// We do these regardless.
@@ -3793,9 +3794,12 @@ func (o *consumer) checkAckFloor() {
 	}
 
 	// If we are here, and this should be rare, we still are off with our ack floor.
+	// We will make sure we are not doing un-necessary work here if only off by a bit
+	// since this could be normal for a high activity wq or stream.
 	// We will set it explicitly to 1 behind our current lowest in pending, or if
 	// pending is empty, to our current delivered -1.
-	if o.asflr < ss.FirstSeq-1 {
+	const minOffThreshold = 50
+	if o.asflr < ss.FirstSeq-minOffThreshold {
 		var psseq, pdseq uint64
 		for seq, p := range o.pending {
 			if psseq == 0 || seq < psseq {
@@ -3807,7 +3811,7 @@ func (o *consumer) checkAckFloor() {
 			psseq, pdseq = o.sseq-1, o.dseq-1
 			// If still not adjusted.
 			if psseq < ss.FirstSeq-1 {
-				psseq, pdseq = ss.FirstSeq-1, ss.FirstSeq-1
+				psseq = ss.FirstSeq - 1
 			}
 		} else {
 			// Since this was set via the pending, we should not include
