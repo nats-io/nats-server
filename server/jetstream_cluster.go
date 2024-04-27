@@ -8060,7 +8060,7 @@ func (mset *stream) isCurrent() bool {
 }
 
 // Maximum requests for the whole server that can be in flight at the same time.
-const maxConcurrentSyncRequests = 16
+const maxConcurrentSyncRequests = 32
 
 var (
 	errCatchupCorruptSnapshot = errors.New("corrupt stream snapshot detected")
