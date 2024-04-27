@@ -8075,6 +8075,13 @@ func (mset *stream) processSnapshot(snap *StreamReplicatedState) (e error) {
 			o.mu.Unlock()
 		}
 		mset.mu.Unlock()
+
+		// If we are interest based make sure to check our ack floor state.
+		// We will delay a bit to allow consumer states to also catchup.
+		if mset.isInterestRetention() {
+			fire := time.Duration(rand.Intn(int(10*time.Second))) + 5*time.Second
+			time.AfterFunc(fire, mset.checkInterestState)
+		}
 	}()
 
 	var releaseSem bool
@@ -8196,7 +8203,6 @@ RETRY:
 				// Check for eof signaling.
 				if len(msg) == 0 {
 					msgsQ.recycle(&mrecs)
-					mset.checkInterestState()
 					return nil
 				}
 				if _, err := mset.processCatchupMsg(msg); err == nil {
