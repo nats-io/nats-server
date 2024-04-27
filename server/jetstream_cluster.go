@@ -2363,11 +2363,18 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	}
 	defer stopDirectMonitoring()
 
+	// For checking interest state if applicable.
+	var cist *time.Ticker
+	var cistc <-chan time.Time
+
 	if mset != nil && mset.isInterestRetention() {
 		// Wait on our consumers to be assigned and running before proceeding.
 		// This can become important when a server has lots of assets
 		// since we process streams first then consumers as an asset class.
 		mset.waitOnConsumerAssignments()
+		// Setup a periodic check here.
+		cist = time.NewTicker(30 * time.Second)
+		cistc = cist.C
 	}
 
 	// This is triggered during a scale up from R1 to clustered mode. We need the new followers to catchup,
@@ -2490,6 +2497,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					startDirectAccessMonitoring()
 				}
 			}
+
+		case <-cistc:
+			mset.checkInterestState()
 
 		case <-datc:
 			if mset == nil || isRecovering {
@@ -2652,6 +2662,11 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					uch = mset.updateC()
 					// Also update our mqch
 					mqch = mset.monitorQuitC()
+					// Setup a periodic check here if we are interest based as well.
+					if mset.isInterestRetention() {
+						cist = time.NewTicker(30 * time.Second)
+						cistc = cist.C
+					}
 				}
 			}
 			if err != nil {
