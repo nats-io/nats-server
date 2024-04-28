@@ -2125,7 +2125,7 @@ func (mset *stream) mirrorInfo() *StreamSourceInfo {
 	return mset.sourceInfo(mset.mirror)
 }
 
-const sourceHealthCheckInterval = 20 * time.Second
+const sourceHealthCheckInterval = 10 * time.Second
 
 // Will run as a Go routine to process mirror consumer messages.
 func (mset *stream) processMirrorMsgs(mirror *sourceInfo, ready *sync.WaitGroup) {
