@@ -6490,15 +6490,15 @@ func TestGatewayAuthDiscovered(t *testing.T) {
 	waitForOutboundGateways(t, srvB, 1, time.Second)
 }
 
-func TestTLSGatewaysCertificateImplicitAllowPass(t *testing.T) {
-	testTLSGatewaysCertificateImplicitAllow(t, true)
+func TestGatewayTLSCertificateImplicitAllowPass(t *testing.T) {
+	testGatewayTLSCertificateImplicitAllow(t, true)
 }
 
-func TestTLSGatewaysCertificateImplicitAllowFail(t *testing.T) {
-	testTLSGatewaysCertificateImplicitAllow(t, false)
+func TestGatewayTLSCertificateImplicitAllowFail(t *testing.T) {
+	testGatewayTLSCertificateImplicitAllow(t, false)
 }
 
-func testTLSGatewaysCertificateImplicitAllow(t *testing.T, pass bool) {
+func testGatewayTLSCertificateImplicitAllow(t *testing.T, pass bool) {
 	// Base config for the servers
 	cfg := createTempFile(t, "cfg")
 	cfg.WriteString(fmt.Sprintf(`
@@ -6988,7 +6988,7 @@ func (l *testMissingOCSPStapleLogger) Errorf(format string, v ...any) {
 	}
 }
 
-func TestOCSPGatewayMissingPeerStapleIssue(t *testing.T) {
+func TestGatewayOCSPMissingPeerStapleIssue(t *testing.T) {
 	const (
 		caCert = "../test/configs/certs/ocsp/ca-cert.pem"
 		caKey  = "../test/configs/certs/ocsp/ca-key.pem"
@@ -7348,4 +7348,64 @@ func TestOCSPGatewayMissingPeerStapleIssue(t *testing.T) {
 	waitForOutboundGateways(t, srvB, 2, 5*time.Second)
 	waitForOutboundGateways(t, srvC, 2, 5*time.Second)
 	wg.Wait()
+}
+
+func TestGatewayOutboundDetectsStaleConnectionIfNoInfo(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require_NoError(t, err)
+	defer l.Close()
+
+	ch := make(chan struct{})
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		c, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		<-ch
+	}()
+
+	url := fmt.Sprintf("nats://%s", l.Addr())
+	o := testGatewayOptionsFromToWithURLs(t, "A", "B", []string{url})
+	o.gatewaysSolicitDelay = time.Millisecond
+	o.DisableShortFirstPing = false
+	o.PingInterval = 50 * time.Millisecond
+	o.MaxPingsOut = 3
+	o.NoLog = false
+	s, err := NewServer(o)
+	require_NoError(t, err)
+	defer s.Shutdown()
+
+	log := &captureDebugLogger{dbgCh: make(chan string, 100)}
+	s.SetLogger(log, true, false)
+	s.Start()
+
+	timeout := time.NewTimer(time.Second)
+	defer timeout.Stop()
+	for done := false; !done; {
+		select {
+		case dbg := <-log.dbgCh:
+			// The server should not send PING because the accept side expects
+			// the CONNECT as the first protocol (otherwise it would be a parse
+			// error if that were to happen).
+			if strings.Contains(dbg, "Ping Timer") {
+				t.Fatalf("The server should not have sent a ping, got %q", dbg)
+			}
+			// However, it should detect at one point that the connection is
+			// stale and close it.
+			if strings.Contains(dbg, "Stale") {
+				done = true
+			}
+		case <-timeout.C:
+			t.Fatalf("Did not capture the stale connection condition")
+		}
+	}
+
+	s.Shutdown()
+	close(ch)
+	wg.Wait()
+	s.WaitForShutdown()
 }

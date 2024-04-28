@@ -47,8 +47,8 @@ type jetStreamCluster struct {
 	// concurrent requests that would otherwise be accepted.
 	// We also record the group for the stream. This is needed since if we have
 	// concurrent requests for same account and stream we need to let it process to get
-	// a response but they need to be same group, peers etc.
-	inflight map[string]map[string]*raftGroup
+	// a response but they need to be same group, peers etc. and sync subjects.
+	inflight map[string]map[string]*inflightInfo
 	// Signals meta-leader should check the stream assignments.
 	streamsCheck bool
 	// Server.
@@ -68,6 +68,12 @@ type jetStreamCluster struct {
 	peerStreamCancelMove *subscription
 	// To pop out the monitorCluster before the raft layer.
 	qch chan struct{}
+}
+
+// Used to track inflight stream add requests to properly re-use same group and sync subject.
+type inflightInfo struct {
+	rg   *raftGroup
+	sync string
 }
 
 // Used to guide placement of streams and meta controllers in clustered JetStream.
@@ -1576,6 +1582,7 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 			}
 		}
 	}
+
 	// Now walk the ones to check and process consumers.
 	var caAdd, caDel []*consumerAssignment
 	for _, sa := range saChk {
@@ -2356,11 +2363,18 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	}
 	defer stopDirectMonitoring()
 
+	// For checking interest state if applicable.
+	var cist *time.Ticker
+	var cistc <-chan time.Time
+
 	if mset != nil && mset.isInterestRetention() {
 		// Wait on our consumers to be assigned and running before proceeding.
 		// This can become important when a server has lots of assets
 		// since we process streams first then consumers as an asset class.
 		mset.waitOnConsumerAssignments()
+		// Setup a periodic check here.
+		cist = time.NewTicker(30 * time.Second)
+		cistc = cist.C
 	}
 
 	// This is triggered during a scale up from R1 to clustered mode. We need the new followers to catchup,
@@ -2483,6 +2497,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					startDirectAccessMonitoring()
 				}
 			}
+
+		case <-cistc:
+			mset.checkInterestState()
 
 		case <-datc:
 			if mset == nil || isRecovering {
@@ -2645,6 +2662,11 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					uch = mset.updateC()
 					// Also update our mqch
 					mqch = mset.monitorQuitC()
+					// Setup a periodic check here if we are interest based as well.
+					if mset.isInterestRetention() {
+						cist = time.NewTicker(30 * time.Second)
+						cistc = cist.C
+					}
 				}
 			}
 			if err != nil {
@@ -5481,7 +5503,7 @@ func (js *jetStream) processLeaderChange(isLeader bool) {
 		for acc, asa := range cc.streams {
 			for _, sa := range asa {
 				if sa.Sync == _EMPTY_ {
-					s.Warnf("Stream assigment corrupt for stream '%s > %s'", acc, sa.Config.Name)
+					s.Warnf("Stream assignment corrupt for stream '%s > %s'", acc, sa.Config.Name)
 					nsa := &streamAssignment{Group: sa.Group, Config: sa.Config, Subject: sa.Subject, Reply: sa.Reply, Client: sa.Client}
 					nsa.Sync = syncSubjForStream()
 					cc.meta.Propose(encodeUpdateStreamAssignment(nsa))
@@ -5985,6 +6007,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 
 	var self *streamAssignment
 	var rg *raftGroup
+	var syncSubject string
 
 	// Capture if we have existing assignment first.
 	if osa := js.streamAssignment(acc.Name, cfg.Name); osa != nil {
@@ -5994,7 +6017,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 			return
 		}
 		// This is an equal assignment.
-		self, rg = osa, osa.Group
+		self, rg, syncSubject = osa, osa.Group, osa.Sync
 	}
 
 	if cfg.Sealed {
@@ -6018,19 +6041,22 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 		return
 	}
 
+	// Make sure inflight is setup properly.
+	if cc.inflight == nil {
+		cc.inflight = make(map[string]map[string]*inflightInfo)
+	}
+	streams, ok := cc.inflight[acc.Name]
+	if !ok {
+		streams = make(map[string]*inflightInfo)
+		cc.inflight[acc.Name] = streams
+	}
+
 	// Raft group selection and placement.
 	if rg == nil {
 		// Check inflight before proposing in case we have an existing inflight proposal.
-		if cc.inflight == nil {
-			cc.inflight = make(map[string]map[string]*raftGroup)
-		}
-		streams, ok := cc.inflight[acc.Name]
-		if !ok {
-			streams = make(map[string]*raftGroup)
-			cc.inflight[acc.Name] = streams
-		} else if existing, ok := streams[cfg.Name]; ok {
-			// We have existing for same stream. Re-use same group.
-			rg = existing
+		if existing, ok := streams[cfg.Name]; ok {
+			// We have existing for same stream. Re-use same group and syncSubject.
+			rg, syncSubject = existing.rg, existing.sync
 		}
 	}
 	// Create a new one here if needed.
@@ -6046,14 +6072,17 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 		rg.setPreferred()
 	}
 
+	if syncSubject == _EMPTY_ {
+		syncSubject = syncSubjForStream()
+	}
 	// Sync subject for post snapshot sync.
-	sa := &streamAssignment{Group: rg, Sync: syncSubjForStream(), Config: cfg, Subject: subject, Reply: reply, Client: ci, Created: time.Now().UTC()}
+	sa := &streamAssignment{Group: rg, Sync: syncSubject, Config: cfg, Subject: subject, Reply: reply, Client: ci, Created: time.Now().UTC()}
 	if err := cc.meta.Propose(encodeAddStreamAssignment(sa)); err == nil {
 		// On success, add this as an inflight proposal so we can apply limits
 		// on concurrent create requests while this stream assignment has
 		// possibly not been processed yet.
 		if streams, ok := cc.inflight[acc.Name]; ok {
-			streams[cfg.Name] = rg
+			streams[cfg.Name] = &inflightInfo{rg, syncSubject}
 		}
 	}
 }
@@ -7988,7 +8017,7 @@ func (mset *stream) isCurrent() bool {
 }
 
 // Maximum requests for the whole server that can be in flight at the same time.
-const maxConcurrentSyncRequests = 16
+const maxConcurrentSyncRequests = 32
 
 var (
 	errCatchupCorruptSnapshot = errors.New("corrupt stream snapshot detected")
@@ -7996,6 +8025,7 @@ var (
 	errCatchupStreamStopped   = errors.New("stream has been stopped") // when a catchup is terminated due to the stream going away.
 	errCatchupBadMsg          = errors.New("bad catchup msg")
 	errCatchupWrongSeqForSkip = errors.New("wrong sequence for skipped msg")
+	errCatchupTooManyRetries  = errors.New("catchup failed, too many retries")
 )
 
 // Process a stream snapshot.
@@ -8060,6 +8090,13 @@ func (mset *stream) processSnapshot(snap *StreamReplicatedState) (e error) {
 			o.mu.Unlock()
 		}
 		mset.mu.Unlock()
+
+		// If we are interest based make sure to check our ack floor state.
+		// We will delay a bit to allow consumer states to also catchup.
+		if mset.isInterestRetention() {
+			fire := time.Duration(rand.Intn(int(10*time.Second))) + 5*time.Second
+			time.AfterFunc(fire, mset.checkInterestState)
+		}
 	}()
 
 	var releaseSem bool
@@ -8104,7 +8141,7 @@ RETRY:
 	numRetries++
 	if numRetries >= maxRetries {
 		// Force a hard reset here.
-		return errFirstSequenceMismatch
+		return errCatchupTooManyRetries
 	}
 
 	// Block here if we have too many requests in flight.
@@ -8181,7 +8218,6 @@ RETRY:
 				// Check for eof signaling.
 				if len(msg) == 0 {
 					msgsQ.recycle(&mrecs)
-					mset.checkInterestState()
 					return nil
 				}
 				if _, err := mset.processCatchupMsg(msg); err == nil {

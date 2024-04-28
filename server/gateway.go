@@ -907,6 +907,15 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 		c.Debugf("TLS version %s, cipher suite %s", tlsVersion(cs.Version), tlsCipher(cs.CipherSuite))
 	}
 
+	// For outbound, we can't set the normal ping timer yet since the other
+	// side would fail with a parse error should it receive anything but the
+	// CONNECT protocol as the first protocol. We still want to make sure
+	// that the connection is not stale until the first INFO from the remote
+	// is received.
+	if solicit {
+		c.watchForStaleConnection(adjustPingInterval(GATEWAY, opts.PingInterval), opts.MaxPingsOut)
+	}
+
 	c.mu.Unlock()
 
 	// Announce ourselves again to new connections.

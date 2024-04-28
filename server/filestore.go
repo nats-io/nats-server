@@ -6908,6 +6908,10 @@ SKIP:
 		purged = fs.state.Msgs
 	}
 	fs.state.Msgs -= purged
+	if fs.state.Msgs == 0 {
+		fs.state.FirstSeq = fs.state.LastSeq + 1
+		fs.state.FirstTime = time.Time{}
+	}
 
 	if bytes > fs.state.Bytes {
 		bytes = fs.state.Bytes

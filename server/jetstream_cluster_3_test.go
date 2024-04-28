@@ -1417,6 +1417,48 @@ func TestJetStreamClusterParallelStreamCreation(t *testing.T) {
 	if len(errCh) > 0 {
 		t.Fatalf("Expected no errors, got %d", len(errCh))
 	}
+
+	// We had a bug during parallel stream creation as well that would overwrite the sync subject used for catchups, etc.
+	// Test that here as well by shutting down a non-leader, adding a whole bunch of messages, and making sure on restart
+	// we properly recover.
+	nl := c.randomNonStreamLeader(globalAccountName, "TEST")
+	nl.Shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	msg := bytes.Repeat([]byte("Z"), 128)
+	for i := 0; i < 100; i++ {
+		js.PublishAsync("common.foo.bar", msg)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+	// We need to force the leader to do a snapshot so we kick in upper layer catchup which depends on syncSubject.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	mset, err := sl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	node := mset.raftNode()
+	require_NotNil(t, node)
+	node.InstallSnapshot(mset.stateSnapshot())
+
+	nl = c.restartServer(nl)
+	c.waitOnServerCurrent(nl)
+
+	mset, err = nl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	// Check state directly.
+	mset.mu.Lock()
+	var state StreamState
+	mset.store.FastState(&state)
+	mset.mu.Unlock()
+
+	require_Equal(t, state.Msgs, 100)
+	require_Equal(t, state.FirstSeq, 1)
+	require_Equal(t, state.LastSeq, 100)
 }
 
 // In addition to test above, if streams were attempted to be created in parallel
