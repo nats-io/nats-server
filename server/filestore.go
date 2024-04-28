@@ -3566,7 +3566,7 @@ func (fs *fileStore) rebuildFirst() {
 // Optimized helper function to return first sequence.
 // subj will always be publish subject here, meaning non-wildcard.
 // We assume a fast check that this subj even exists already happened.
-// Lock should be held.
+// Write lock should be held.
 func (fs *fileStore) firstSeqForSubj(subj string) (uint64, error) {
 	if len(fs.blks) == 0 {
 		return 0, nil
