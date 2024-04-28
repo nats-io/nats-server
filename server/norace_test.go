@@ -5541,14 +5541,14 @@ func TestNoRaceJetStreamFileStoreLargeKVAccessTiming(t *testing.T) {
 
 	// time first seq lookup for both as well.
 	// Base will be first in this case.
-	fs.mu.RLock()
+	fs.mu.Lock()
 	start = time.Now()
 	fs.firstSeqForSubj(first)
 	base = time.Since(start)
 	start = time.Now()
 	fs.firstSeqForSubj(last)
 	slow = time.Since(start)
-	fs.mu.RUnlock()
+	fs.mu.Unlock()
 
 	if base > 100*time.Microsecond || slow > 200*time.Microsecond {
 		t.Fatalf("Took too long to look up last key by subject vs first: %v vs %v", base, slow)
