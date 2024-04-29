@@ -2119,7 +2119,7 @@ func (mset *stream) mirrorInfo() *StreamSourceInfo {
 	return mset.sourceInfo(mset.mirror)
 }
 
-const sourceHealthCheckInterval = 1 * time.Second
+const sourceHealthCheckInterval = 5 * time.Second
 
 // Will run as a Go routine to process mirror consumer messages.
 func (mset *stream) processMirrorMsgs(mirror *sourceInfo, ready *sync.WaitGroup) {
@@ -2370,6 +2370,7 @@ func (mset *stream) cancelMirrorConsumer() {
 //
 // Lock is acquired in this function
 func (mset *stream) retryMirrorConsumer() error {
+	mset.cancelMirrorConsumer()
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 	mset.srv.Debugf("Retrying mirror consumer for '%s > %s'", mset.acc.Name, mset.cfg.Name)
@@ -3113,6 +3114,7 @@ func (mset *stream) processSourceMsgs(si *sourceInfo, ready *sync.WaitGroup) {
 			isLeader := mset.isLeader()
 			stalled := time.Since(si.last) > 3*sourceHealthCheckInterval
 			mset.mu.RUnlock()
+
 			// No longer leader.
 			if !isLeader {
 				mset.mu.Lock()
@@ -3120,12 +3122,14 @@ func (mset *stream) processSourceMsgs(si *sourceInfo, ready *sync.WaitGroup) {
 				mset.mu.Unlock()
 				return
 			}
+
 			// We are stalled.
 			if stalled {
 				mset.mu.Lock()
 				// We don't need to schedule here, we are going to simply
 				// call setSourceConsumer with the current state+1.
 				mset.setSourceConsumer(iname, si.sseq+1, time.Time{})
+				si.last = time.Now()
 				mset.mu.Unlock()
 			}
 		}
