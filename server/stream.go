@@ -291,8 +291,8 @@ type stream struct {
 	syncSub    *subscription     // Internal subscription for sync messages (on "$JSC.SYNC").
 	infoSub    *subscription     // Internal subscription for stream info requests.
 	clMu       sync.Mutex        // The mutex for clseq and clfs.
-	clseq      uint64            // The commit log current last sequence number.
-	clfs       uint64            // The count of the commit log failed sequence numbers.
+	clseq      uint64            // The current last seq being proposed to the NRG layer.
+	clfs       uint64            // The count (offset) of the number of failed NRG sequences used to compute clseq.
 	inflight   map[uint64]uint64 // Inflight message sizes per clseq.
 	leader     string            // The current leader for the RAFT group.
 	lqsent     time.Time         // The time at which the last lost quorum advisory was sent. Used to rate limit.
