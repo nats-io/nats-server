@@ -21,6 +21,8 @@ import (
 	"time"
 )
 
+// This test is being skipped by CI as it takes too long to run and is meant to test the scalability of sourcing
+// rather than being a unit test.
 func TestStreamSourcingScalingManySourcing(t *testing.T) {
 	t.Skip()
 
@@ -119,6 +121,8 @@ func TestStreamSourcingScalingManySourcing(t *testing.T) {
 
 }
 
+// This test is being skipped by CI as it takes too long to run and is meant to test the scalability of sourcing
+// rather than being a unit test.
 func TestStreamSourcingScalingSourcingMany(t *testing.T) {
 	t.Skip()
 
