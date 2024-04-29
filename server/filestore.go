@@ -3453,7 +3453,7 @@ func (fs *fileStore) rebuildFirst() {
 // Optimized helper function to return first sequence.
 // subj will always be publish subject here, meaning non-wildcard.
 // We assume a fast check that this subj even exists already happened.
-// Lock should be held.
+// Write lock should be held.
 func (fs *fileStore) firstSeqForSubj(subj string) (uint64, error) {
 	if len(fs.blks) == 0 {
 		return 0, nil
@@ -3470,12 +3470,18 @@ func (fs *fileStore) firstSeqForSubj(subj string) (uint64, error) {
 		if mb == nil {
 			continue
 		}
+		// If we need to load msgs here and we need to walk multiple blocks this
+		// could tie up the upper fs lock, so release while dealing with the block.
+		fs.mu.Unlock()
+
 		mb.mu.Lock()
 		var shouldExpire bool
 		if mb.fssNotLoaded() {
 			// Make sure we have fss loaded.
 			if err := mb.loadMsgsWithLock(); err != nil {
 				mb.mu.Unlock()
+				// Re-acquire fs lock
+				fs.mu.Lock()
 				return 0, err
 			}
 			shouldExpire = true
@@ -3491,6 +3497,8 @@ func (fs *fileStore) firstSeqForSubj(subj string) (uint64, error) {
 				mb.recalculateFirstForSubj(subj, ss.First, ss)
 			}
 			mb.mu.Unlock()
+			// Re-acquire fs lock
+			fs.mu.Lock()
 			return ss.First, nil
 		}
 		// If we did not find it and we loaded this msgBlock try to expire as long as not the last.
@@ -3499,6 +3507,8 @@ func (fs *fileStore) firstSeqForSubj(subj string) (uint64, error) {
 			mb.tryForceExpireCacheLocked()
 		}
 		mb.mu.Unlock()
+		// Re-acquire fs lock
+		fs.mu.Lock()
 	}
 	return 0, nil
 }
