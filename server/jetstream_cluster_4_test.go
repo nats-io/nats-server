@@ -23,6 +23,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -240,7 +241,7 @@ func TestJetStreamClusterSourceWorkingQueueWithLimit(t *testing.T) {
 
 	sendBatch := func(subject string, n int) {
 		for i := 0; i < n; i++ {
-			_, err = js.Publish(subject, []byte("OK"))
+			_, err = js.Publish(subject, []byte(strconv.Itoa(i)))
 			require_NoError(t, err)
 		}
 	}
@@ -266,6 +267,9 @@ func TestJetStreamClusterSourceWorkingQueueWithLimit(t *testing.T) {
 		for i := 0; i < 300; i++ {
 			m, err := ss.Fetch(1, nats.MaxWait(3*time.Second))
 			require_NoError(t, err)
+			p, err := strconv.Atoi(string(m[0].Data))
+			require_NoError(t, err)
+			require_Equal(t, p, i)
 			time.Sleep(11 * time.Millisecond)
 			err = m[0].Ack()
 			require_NoError(t, err)
