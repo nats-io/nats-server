@@ -2389,10 +2389,10 @@ func (mset *stream) cancelMirrorConsumer() {
 //
 // Lock is acquired in this function
 func (mset *stream) retryMirrorConsumer() error {
-	mset.cancelMirrorConsumer()
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 	mset.srv.Debugf("Retrying mirror consumer for '%s > %s'", mset.acc.Name, mset.cfg.Name)
+	mset.cancelMirrorConsumer()
 	return mset.setupMirrorConsumer()
 }
 
