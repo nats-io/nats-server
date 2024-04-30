@@ -3297,15 +3297,25 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 			mset.mu.RLock()
 			accName, sname, iname := mset.acc.Name, mset.cfg.Name, si.iname
 			mset.mu.RUnlock()
-			// Log some warning for errors other than errLastSeqMismatch
-			if err != errLastSeqMismatch {
-				s.RateLimitWarnf("Error processing inbound source %q for '%s' > '%s': %v",
-					iname, accName, sname, err)
+
+			// Can happen temporarily all the time during normal operations when the sourcing stream
+			// is working queue/interest with a limit and discard new.
+			// TODO - Improve sourcing to WQ with limit and new to use flow control rather than re-creating the consumer.
+			if errors.Is(err, ErrMaxMsgs) {
+				// Do not need to do a full retry that includes finding the last sequence in the stream
+				// for that source. Just re-create starting with the seq we couldn't store instead.
+				mset.retrySourceConsumerAtSeq(iname, si.sseq)
+			} else {
+				// Log some warning for errors other than errLastSeqMismatch or errMaxMsgs.
+				if !errors.Is(err, errLastSeqMismatch) {
+					s.RateLimitWarnf("Error processing inbound source %q for '%s' > '%s': %v",
+						iname, accName, sname, err)
+				}
+				// Retry in all type of errors.
+				// This will make sure the source is still in mset.sources map,
+				// find the last sequence and then call setupSourceConsumer.
+				mset.retrySourceConsumer(iname)
 			}
-			// Retry in all type of errors.
-			// This will make sure the source is still in mset.sources map,
-			// find the last sequence and then call setupSourceConsumer.
-			mset.retrySourceConsumer(iname)
 		}
 		return false
 	}
