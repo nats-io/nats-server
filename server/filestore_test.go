@@ -6789,6 +6789,43 @@ func TestFileStoreWriteFullStateAfterPurgeEx(t *testing.T) {
 	require_Equal(t, ss.LastSeq, 10)
 }
 
+func TestFileStoreMB_FSS_Expire(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 8192, CacheExpire: 1 * time.Second, SyncInterval: 2 * time.Second},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, MaxMsgsPer: 1, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := []byte("abc")
+	for i := 1; i <= 1000; i++ {
+		fs.StoreMsg(fmt.Sprintf("foo.%d", i), nil, msg)
+	}
+	// Flush fss by hand, cache should be flushed as well.
+	fs.mu.RLock()
+	for _, mb := range fs.blks {
+		mb.mu.Lock()
+		mb.fss = nil
+		mb.mu.Unlock()
+	}
+	fs.mu.RUnlock()
+
+	fs.StoreMsg("foo.11", nil, msg)
+	time.Sleep(900 * time.Millisecond)
+	// This should keep fss alive in the first block..
+	// As well as cache itself due to remove activity.
+	fs.StoreMsg("foo.22", nil, msg)
+	time.Sleep(300 * time.Millisecond)
+	// Check that fss and the cache are still loaded.
+	fs.mu.RLock()
+	mb := fs.blks[0]
+	fs.mu.RUnlock()
+	mb.mu.RLock()
+	cache, fss := mb.cache, mb.fss
+	mb.mu.RUnlock()
+	require_True(t, fss != nil)
+	require_True(t, cache != nil)
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////
