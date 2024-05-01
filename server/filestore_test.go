@@ -3793,8 +3793,8 @@ func (fs *fileStore) reportMeta() (hasPSIM, hasAnyFSS bool) {
 func TestFileStoreExpireSubjectMeta(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fcfg.BlockSize = 1024
-		fcfg.CacheExpire = time.Second
-		fcfg.SyncInterval = time.Second
+		fcfg.CacheExpire = 500 * time.Millisecond
+		fcfg.SubjectStateExpire = time.Second
 		cfg := StreamConfig{Name: "zzz", Subjects: []string{"kv.>"}, Storage: FileStorage, MaxMsgsPer: 1}
 		fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
 		require_NoError(t, err)
@@ -3821,7 +3821,7 @@ func TestFileStoreExpireSubjectMeta(t *testing.T) {
 		}
 
 		// Make sure we clear mb fss meta
-		checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+		checkFor(t, fcfg.SubjectStateExpire*2, 500*time.Millisecond, func() error {
 			if _, hasAnyFSS := fs.reportMeta(); hasAnyFSS {
 				return fmt.Errorf("Still have mb fss state")
 			}
@@ -3832,7 +3832,7 @@ func TestFileStoreExpireSubjectMeta(t *testing.T) {
 		_, err = fs.LoadLastMsg("kv.22", nil)
 		require_NoError(t, err)
 		// Make sure we clear mb fss meta
-		checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+		checkFor(t, fcfg.SubjectStateExpire*2, 500*time.Millisecond, func() error {
 			if _, hasAnyFSS := fs.reportMeta(); hasAnyFSS {
 				return fmt.Errorf("Still have mb fss state")
 			}
@@ -3923,7 +3923,7 @@ func TestFileStoreSubjectStateCacheExpiration(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fcfg.BlockSize = 32
 		fcfg.CacheExpire = time.Second
-		fcfg.SyncInterval = time.Second
+		fcfg.SubjectStateExpire = time.Second
 		cfg := StreamConfig{Name: "zzz", Subjects: []string{"kv.>"}, Storage: FileStorage, MaxMsgsPer: 2}
 		fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
 		require_NoError(t, err)
@@ -6336,7 +6336,7 @@ func TestFileStorePurgeExBufPool(t *testing.T) {
 func TestFileStoreFSSMeta(t *testing.T) {
 	sd := t.TempDir()
 	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: sd, BlockSize: 100, CacheExpire: 200 * time.Millisecond, SyncInterval: time.Second},
+		FileStoreConfig{StoreDir: sd, BlockSize: 100, CacheExpire: 200 * time.Millisecond, SubjectStateExpire: time.Second},
 		StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
 	require_NoError(t, err)
 	defer fs.Stop()
@@ -6358,23 +6358,22 @@ func TestFileStoreFSSMeta(t *testing.T) {
 	require_NoError(t, err)
 	require_Equal(t, p, 2)
 
-	// Make sure cache is not loaded but fss state still is.
-	var stillHasCache, noFSS bool
+	// Make sure cache is not loaded.
+	var stillHasCache bool
 	fs.mu.RLock()
 	for _, mb := range fs.blks {
 		mb.mu.RLock()
 		stillHasCache = stillHasCache || mb.cacheAlreadyLoaded()
-		noFSS = noFSS || mb.fssNotLoaded()
 		mb.mu.RUnlock()
 	}
 	fs.mu.RUnlock()
 
 	require_False(t, stillHasCache)
-	require_False(t, noFSS)
 
-	// Let fss expire via syncInterval.
+	// Let fss expire via SubjectStateExpire.
 	time.Sleep(time.Second)
 
+	var noFSS bool
 	fs.mu.RLock()
 	for _, mb := range fs.blks {
 		mb.mu.RLock()
