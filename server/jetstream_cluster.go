@@ -7497,7 +7497,7 @@ func encodeStreamMsg(subject, reply string, hdr, msg []byte, lseq uint64, ts int
 
 // Threshold for compression.
 // TODO(dlc) - Eventually make configurable.
-const compressThreshold = 256
+const compressThreshold = 8192 // 8k
 
 // If allowed and contents over the threshold we will compress.
 func encodeStreamMsgAllowCompress(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, compressOK bool) []byte {

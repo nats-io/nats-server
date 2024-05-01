@@ -3793,8 +3793,8 @@ func (fs *fileStore) reportMeta() (hasPSIM, hasAnyFSS bool) {
 func TestFileStoreExpireSubjectMeta(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fcfg.BlockSize = 1024
-		fcfg.CacheExpire = time.Second
-		fcfg.SyncInterval = time.Second
+		fcfg.CacheExpire = 500 * time.Millisecond
+		fcfg.SubjectStateExpire = time.Second
 		cfg := StreamConfig{Name: "zzz", Subjects: []string{"kv.>"}, Storage: FileStorage, MaxMsgsPer: 1}
 		fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
 		require_NoError(t, err)
@@ -3821,7 +3821,7 @@ func TestFileStoreExpireSubjectMeta(t *testing.T) {
 		}
 
 		// Make sure we clear mb fss meta
-		checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+		checkFor(t, fcfg.SubjectStateExpire*2, 500*time.Millisecond, func() error {
 			if _, hasAnyFSS := fs.reportMeta(); hasAnyFSS {
 				return fmt.Errorf("Still have mb fss state")
 			}
@@ -3832,7 +3832,7 @@ func TestFileStoreExpireSubjectMeta(t *testing.T) {
 		_, err = fs.LoadLastMsg("kv.22", nil)
 		require_NoError(t, err)
 		// Make sure we clear mb fss meta
-		checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+		checkFor(t, fcfg.SubjectStateExpire*2, 500*time.Millisecond, func() error {
 			if _, hasAnyFSS := fs.reportMeta(); hasAnyFSS {
 				return fmt.Errorf("Still have mb fss state")
 			}
@@ -3923,7 +3923,7 @@ func TestFileStoreSubjectStateCacheExpiration(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fcfg.BlockSize = 32
 		fcfg.CacheExpire = time.Second
-		fcfg.SyncInterval = time.Second
+		fcfg.SubjectStateExpire = time.Second
 		cfg := StreamConfig{Name: "zzz", Subjects: []string{"kv.>"}, Storage: FileStorage, MaxMsgsPer: 2}
 		fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
 		require_NoError(t, err)
@@ -6336,7 +6336,7 @@ func TestFileStorePurgeExBufPool(t *testing.T) {
 func TestFileStoreFSSMeta(t *testing.T) {
 	sd := t.TempDir()
 	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: sd, BlockSize: 100, CacheExpire: 200 * time.Millisecond, SyncInterval: time.Second},
+		FileStoreConfig{StoreDir: sd, BlockSize: 100, CacheExpire: 200 * time.Millisecond, SubjectStateExpire: time.Second},
 		StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
 	require_NoError(t, err)
 	defer fs.Stop()
@@ -6358,23 +6358,22 @@ func TestFileStoreFSSMeta(t *testing.T) {
 	require_NoError(t, err)
 	require_Equal(t, p, 2)
 
-	// Make sure cache is not loaded but fss state still is.
-	var stillHasCache, noFSS bool
+	// Make sure cache is not loaded.
+	var stillHasCache bool
 	fs.mu.RLock()
 	for _, mb := range fs.blks {
 		mb.mu.RLock()
 		stillHasCache = stillHasCache || mb.cacheAlreadyLoaded()
-		noFSS = noFSS || mb.fssNotLoaded()
 		mb.mu.RUnlock()
 	}
 	fs.mu.RUnlock()
 
 	require_False(t, stillHasCache)
-	require_False(t, noFSS)
 
-	// Let fss expire via syncInterval.
+	// Let fss expire via SubjectStateExpire.
 	time.Sleep(time.Second)
 
+	var noFSS bool
 	fs.mu.RLock()
 	for _, mb := range fs.blks {
 		mb.mu.RLock()
@@ -6686,6 +6685,43 @@ func TestFileStoreWriteFullStateAfterPurgeEx(t *testing.T) {
 	fs.FastState(&ss)
 	require_Equal(t, ss.FirstSeq, 11)
 	require_Equal(t, ss.LastSeq, 10)
+}
+
+func TestFileStoreMB_FSS_Expire(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 8192, CacheExpire: 1 * time.Second, SyncInterval: 2 * time.Second},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, MaxMsgsPer: 1, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := []byte("abc")
+	for i := 1; i <= 1000; i++ {
+		fs.StoreMsg(fmt.Sprintf("foo.%d", i), nil, msg)
+	}
+	// Flush fss by hand, cache should be flushed as well.
+	fs.mu.RLock()
+	for _, mb := range fs.blks {
+		mb.mu.Lock()
+		mb.fss = nil
+		mb.mu.Unlock()
+	}
+	fs.mu.RUnlock()
+
+	fs.StoreMsg("foo.11", nil, msg)
+	time.Sleep(900 * time.Millisecond)
+	// This should keep fss alive in the first block..
+	// As well as cache itself due to remove activity.
+	fs.StoreMsg("foo.22", nil, msg)
+	time.Sleep(300 * time.Millisecond)
+	// Check that fss and the cache are still loaded.
+	fs.mu.RLock()
+	mb := fs.blks[0]
+	fs.mu.RUnlock()
+	mb.mu.RLock()
+	cache, fss := mb.cache, mb.fss
+	mb.mu.RUnlock()
+	require_True(t, fss != nil)
+	require_True(t, cache != nil)
 }
 
 ///////////////////////////////////////////////////////////////////////////

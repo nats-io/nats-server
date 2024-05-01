@@ -52,6 +52,8 @@ type FileStoreConfig struct {
 	BlockSize uint64
 	// CacheExpire is how long with no activity until we expire the cache.
 	CacheExpire time.Duration
+	// SubjectStateExpire is how long with no activity until we expire a msg block's subject state.
+	SubjectStateExpire time.Duration
 	// SyncInterval is how often we sync to disk in the background.
 	SyncInterval time.Duration
 	// SyncAlways is when the stream should sync all data writes.
@@ -222,6 +224,7 @@ type msgBlock struct {
 	cache      *cache
 	cloads     uint64
 	cexp       time.Duration
+	fexp       time.Duration
 	ctmr       *time.Timer
 	werr       error
 	dmap       avl.SequenceSet
@@ -296,6 +299,8 @@ const (
 	defaultSyncInterval = 2 * time.Minute
 	// default idle timeout to close FDs.
 	closeFDsIdle = 30 * time.Second
+	// default expiration time for mb.fss when idle.
+	defaultFssExpiration = 10 * time.Second
 	// coalesceMinimum
 	coalesceMinimum = 16 * 1024
 	// maxFlushWait is maximum we will wait to gather messages to flush.
@@ -358,6 +363,9 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	}
 	if fcfg.CacheExpire == 0 {
 		fcfg.CacheExpire = defaultCacheBufferExpiration
+	}
+	if fcfg.SubjectStateExpire == 0 {
+		fcfg.SubjectStateExpire = defaultFssExpiration
 	}
 	if fcfg.SyncInterval == 0 {
 		fcfg.SyncInterval = defaultSyncInterval
@@ -877,7 +885,14 @@ func (fs *fileStore) noTrackSubjects() bool {
 
 // Will init the basics for a message block.
 func (fs *fileStore) initMsgBlock(index uint32) *msgBlock {
-	mb := &msgBlock{fs: fs, index: index, cexp: fs.fcfg.CacheExpire, noTrack: fs.noTrackSubjects(), syncAlways: fs.fcfg.SyncAlways}
+	mb := &msgBlock{
+		fs:         fs,
+		index:      index,
+		cexp:       fs.fcfg.CacheExpire,
+		fexp:       fs.fcfg.SubjectStateExpire,
+		noTrack:    fs.noTrackSubjects(),
+		syncAlways: fs.fcfg.SyncAlways,
+	}
 
 	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
 	mb.mfn = filepath.Join(mdir, fmt.Sprintf(blkScan, index))
@@ -4430,9 +4445,16 @@ func (mb *msgBlock) clearCacheAndOffset() {
 
 // Lock should be held.
 func (mb *msgBlock) clearCache() {
-	if mb.ctmr != nil && mb.fss == nil {
-		mb.ctmr.Stop()
-		mb.ctmr = nil
+	if mb.ctmr != nil {
+		tsla := mb.sinceLastActivity()
+		if mb.fss == nil || tsla > mb.fexp {
+			// Force
+			mb.fss = nil
+			mb.ctmr.Stop()
+			mb.ctmr = nil
+		} else {
+			mb.resetCacheExpireTimer(mb.fexp - tsla)
+		}
 	}
 
 	if mb.cache == nil {
@@ -4497,7 +4519,7 @@ func (mb *msgBlock) tryExpireWriteCache() []byte {
 
 // Lock should be held.
 func (mb *msgBlock) expireCacheLocked() {
-	if mb.cache == nil {
+	if mb.cache == nil && mb.fss == nil {
 		if mb.ctmr != nil {
 			mb.ctmr.Stop()
 			mb.ctmr = nil
@@ -5105,7 +5127,6 @@ func (fs *fileStore) syncBlocks() {
 	}
 	blks := append([]*msgBlock(nil), fs.blks...)
 	lmb := fs.lmb
-	syncInterval := fs.fcfg.SyncInterval
 	fs.mu.RUnlock()
 
 	var markDirty bool
@@ -5119,11 +5140,6 @@ func (fs *fileStore) syncBlocks() {
 		// See if we can close FDs due to being idle.
 		if mb.mfd != nil && mb.sinceLastWriteActivity() > closeFDsIdle {
 			mb.dirtyCloseWithRemove(false)
-		}
-		// Check our fss subject metadata.
-		// If we have no activity within sync interval remove.
-		if mb.fssLoaded() && mb.sinceLastActivity() > syncInterval {
-			mb.fss = nil
 		}
 
 		// Check if we should compact here as well.
@@ -5589,12 +5605,6 @@ func (mb *msgBlock) cacheNotLoaded() bool {
 // Lock should be held.
 func (mb *msgBlock) fssNotLoaded() bool {
 	return mb.fss == nil && !mb.noTrack
-}
-
-// Report if we have our fss loaded.
-// Lock should be held.
-func (mb *msgBlock) fssLoaded() bool {
-	return mb.fss != nil
 }
 
 // Wrap openBlock for the gated semaphore processing.
@@ -7154,8 +7164,6 @@ func (mb *msgBlock) dirtyCloseWithRemove(remove bool) {
 		mb.ctmr.Stop()
 		mb.ctmr = nil
 	}
-	// Clear any tracking by subject.
-	mb.fss = nil
 	// Close cache
 	mb.clearCacheAndOffset()
 	// Quit our loops.
@@ -7168,6 +7176,8 @@ func (mb *msgBlock) dirtyCloseWithRemove(remove bool) {
 		mb.mfd = nil
 	}
 	if remove {
+		// Clear any tracking by subject if we are removing.
+		mb.fss = nil
 		if mb.mfn != _EMPTY_ {
 			os.Remove(mb.mfn)
 			mb.mfn = _EMPTY_
@@ -7490,9 +7500,7 @@ const (
 	fullStateVersion = uint8(1)
 )
 
-// This go routine runs and receives kicks to write out our full stream state index.
-// This will get kicked when we create a new block or when we delete a block in general.
-// This is also called during Stop().
+// This go routine periodically writes out our full stream state index.
 func (fs *fileStore) flushStreamStateLoop(qch, done chan struct{}) {
 	// Signal we are done on exit.
 	defer close(done)
