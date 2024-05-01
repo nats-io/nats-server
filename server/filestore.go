@@ -296,6 +296,8 @@ const (
 	defaultSyncInterval = 2 * time.Minute
 	// default idle timeout to close FDs.
 	closeFDsIdle = 30 * time.Second
+	// maximum flush time for mb.fss when idle.
+	maxFssFlushInterval = 10 * time.Second
 	// coalesceMinimum
 	coalesceMinimum = 16 * 1024
 	// maxFlushWait is maximum we will wait to gather messages to flush.
@@ -5105,7 +5107,10 @@ func (fs *fileStore) syncBlocks() {
 	}
 	blks := append([]*msgBlock(nil), fs.blks...)
 	lmb := fs.lmb
-	syncInterval := fs.fcfg.SyncInterval
+	fssFlushInterval := fs.fcfg.SyncInterval
+	if fssFlushInterval > maxFssFlushInterval {
+		fssFlushInterval = maxFssFlushInterval
+	}
 	fs.mu.RUnlock()
 
 	var markDirty bool
@@ -5122,7 +5127,7 @@ func (fs *fileStore) syncBlocks() {
 		}
 		// Check our fss subject metadata.
 		// If we have no activity within sync interval remove.
-		if mb.fssLoaded() && mb.sinceLastActivity() > syncInterval {
+		if mb.fssLoaded() && mb.sinceLastActivity() > fssFlushInterval {
 			mb.fss = nil
 		}
 
@@ -7154,8 +7159,6 @@ func (mb *msgBlock) dirtyCloseWithRemove(remove bool) {
 		mb.ctmr.Stop()
 		mb.ctmr = nil
 	}
-	// Clear any tracking by subject.
-	mb.fss = nil
 	// Close cache
 	mb.clearCacheAndOffset()
 	// Quit our loops.
@@ -7168,6 +7171,8 @@ func (mb *msgBlock) dirtyCloseWithRemove(remove bool) {
 		mb.mfd = nil
 	}
 	if remove {
+		// Clear any tracking by subject if we are removing.
+		mb.fss = nil
 		if mb.mfn != _EMPTY_ {
 			os.Remove(mb.mfn)
 			mb.mfn = _EMPTY_
