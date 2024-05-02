@@ -219,6 +219,7 @@ type msgBlock struct {
 	lwts       int64
 	llts       int64
 	lrts       int64
+	lsts       int64
 	llseq      uint64
 	hh         hash.Hash64
 	cache      *cache
@@ -2309,6 +2310,8 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 		mb.loadMsgsWithLock()
 		didLoad = true
 	}
+	// Mark fss activity.
+	mb.lsts = time.Now().UnixNano()
 
 	// If we only have 1 subject currently and it matches our filter we can also set isAll.
 	if !isAll && len(mb.fss) == 1 {
@@ -2667,6 +2670,8 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 			mb.loadMsgsWithLock()
 			shouldExpire = true
 		}
+		// Mark fss activity.
+		mb.lsts = time.Now().UnixNano()
 		for subj, ss := range mb.fss {
 			if subject == _EMPTY_ || subject == fwcs || subjectIsSubsetMatch(subj, subject) {
 				if ss.firstNeedsUpdate {
@@ -2846,6 +2851,9 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 				mb.loadMsgsWithLock()
 				shouldExpire = true
 			}
+			// Mark fss activity.
+			mb.lsts = time.Now().UnixNano()
+
 			var havePartial bool
 			for subj, ss := range mb.fss {
 				if isMatch(subj) {
@@ -2861,6 +2869,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 					}
 				}
 			}
+
 			// See if we need to scan msgs here.
 			if havePartial {
 				// Make sure we have the cache loaded.
@@ -2934,6 +2943,9 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 					mb.loadMsgsWithLock()
 					shouldExpire = true
 				}
+				// Mark fss activity.
+				mb.lsts = time.Now().UnixNano()
+
 				for subj, ss := range mb.fss {
 					if isMatch(subj) {
 						adjust += ss.Msgs
@@ -3501,6 +3513,9 @@ func (fs *fileStore) firstSeqForSubj(subj string) (uint64, error) {
 			}
 			shouldExpire = true
 		}
+		// Mark fss activity.
+		mb.lsts = time.Now().UnixNano()
+
 		if ss := mb.fss[subj]; ss != nil {
 			// Adjust first if it was not where we thought it should be.
 			if i != start {
@@ -4727,6 +4742,8 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 		if err := mb.ensurePerSubjectInfoLoaded(); err != nil {
 			return err
 		}
+		// Mark fss activity.
+		mb.lsts = time.Now().UnixNano()
 		if ss := mb.fss[subj]; ss != nil {
 			ss.Msgs++
 			ss.Last = seq
@@ -5335,6 +5352,8 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 		mb.fss = make(map[string]*SimpleState)
 		popFss = true
 	}
+	// Mark fss activity.
+	mb.lsts = time.Now().UnixNano()
 
 	lbuf := uint32(len(buf))
 	var seq uint64
@@ -6099,6 +6118,9 @@ func (fs *fileStore) loadLast(subj string, sm *StoreMsg) (lsm *StoreMsg, err err
 			mb.mu.Unlock()
 			return nil, err
 		}
+		// Mark fss activity.
+		mb.lsts = time.Now().UnixNano()
+
 		var l uint64
 		// Optimize if subject is not a wildcard.
 		if !wc {
@@ -6346,6 +6368,9 @@ func (mb *msgBlock) sinceLastActivity() time.Duration {
 	}
 	if mb.llts > last {
 		last = mb.llts
+	}
+	if mb.lsts > last {
+		last = mb.lsts
 	}
 	return time.Since(time.Unix(0, last).UTC())
 }
@@ -7329,6 +7354,8 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 	if len(mb.fss) > 0 {
 		// Make sure we run the cache expire timer.
 		mb.llts = time.Now().UnixNano()
+		// Mark fss activity.
+		mb.lsts = time.Now().UnixNano()
 		mb.startCacheExpireTimer()
 	}
 	return nil
@@ -7338,6 +7365,10 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 // Lock should be held
 func (mb *msgBlock) ensurePerSubjectInfoLoaded() error {
 	if mb.fss != nil || mb.noTrack {
+		if mb.fss != nil {
+			// Mark fss activity.
+			mb.lsts = time.Now().UnixNano()
+		}
 		return nil
 	}
 	if mb.msgs == 0 {
