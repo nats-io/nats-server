@@ -2463,6 +2463,9 @@ func (mset *stream) scheduleSetupMirrorConsumerRetry() {
 	})
 }
 
+// How long we wait for a response from a consumer create request for a source or mirror.
+var srcConsumerWaitTime = 30 * time.Second
+
 // Setup our mirror consumer.
 // Lock should be held.
 func (mset *stream) setupMirrorConsumer() error {
@@ -2721,9 +2724,9 @@ func (mset *stream) setupMirrorConsumer() error {
 			}
 			mset.mu.Unlock()
 			ready.Wait()
-		case <-time.After(5 * time.Second):
+		case <-time.After(srcConsumerWaitTime):
 			mset.unsubscribe(crSub)
-			// We already waited 5 seconds, let's retry now.
+			// We already waited 30 seconds, let's retry now.
 			retry = true
 		}
 	}()
@@ -3078,9 +3081,9 @@ func (mset *stream) setupSourceConsumer(iname string, seq uint64, startTime time
 			}
 			mset.mu.Unlock()
 			ready.Wait()
-		case <-time.After(5 * time.Second):
+		case <-time.After(srcConsumerWaitTime):
 			mset.unsubscribe(crSub)
-			// We already waited 5 seconds, let's retry now.
+			// We already waited 30 seconds, let's retry now.
 			retry = true
 		}
 	}()
@@ -3298,7 +3301,9 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 			if errors.Is(err, ErrMaxMsgs) {
 				// Do not need to do a full retry that includes finding the last sequence in the stream
 				// for that source. Just re-create starting with the seq we couldn't store instead.
+				mset.mu.Lock()
 				mset.retrySourceConsumerAtSeq(iname, si.sseq)
+				mset.mu.Unlock()
 			} else {
 				// Log some warning for errors other than errLastSeqMismatch or errMaxMsgs.
 				if !errors.Is(err, errLastSeqMismatch) {
