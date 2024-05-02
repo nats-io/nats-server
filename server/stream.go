@@ -255,7 +255,7 @@ type stream struct {
 
 	// Sources
 	sources              map[string]*sourceInfo
-	sourceRetries        map[string]*time.Timer
+	sourceSetupSchedules map[string]*time.Timer
 	sourcesConsumerSetup *time.Timer
 
 	// Indicates we have direct consumers.
@@ -2749,35 +2749,14 @@ func (mset *stream) streamSource(iname string) *StreamSource {
 	return nil
 }
 
-func (mset *stream) retrySourceConsumer(iName string) {
-	mset.mu.Lock()
-	defer mset.mu.Unlock()
-
-	si := mset.sources[iName]
-	if si == nil {
-		return
-	}
-	var ss = mset.streamSource(iName)
-	if ss != nil {
-		iNameMap := map[string]struct{}{
-			iName: {},
-		}
-		mset.setStartingSequenceForSources(iNameMap)
-		mset.retrySourceConsumerAtSeq(iName, si.sseq+1)
-	}
-}
-
-// Same than setupSourceConsumer but simply issue a debug statement indicating
-// that there is a retry.
-//
 // Lock should be held.
-func (mset *stream) retrySourceConsumerAtSeq(iname string, seq uint64) {
+func (mset *stream) retrySourceConsumerAtSeq(iName string, seq uint64) {
 	s := mset.srv
 
 	s.Debugf("Retrying source consumer for '%s > %s'", mset.acc.Name, mset.cfg.Name)
 
 	// setupSourceConsumer will check that the source is still configured.
-	mset.setupSourceConsumer(iname, seq, time.Time{})
+	mset.setupSourceConsumer(iName, seq, time.Time{})
 }
 
 // Lock should be held.
@@ -2817,53 +2796,55 @@ func (mset *stream) cancelSourceInfo(si *sourceInfo) {
 
 const sourceConsumerRetryThreshold = 2 * time.Second
 
-// This will schedule a call to setupSourceConsumer, taking into account the last
-// time it was retried and determine the soonest setupSourceConsumer can be called
-// without tripping the sourceConsumerRetryThreshold.
-//
-// Lock held on entry
-func (mset *stream) scheduleSetSourceConsumerRetry(si *sourceInfo, seq uint64, startTime time.Time) {
-	// We are trying to figure out how soon we can retry. setupSourceConsumer will reject
-	// a retry if last was done less than "sourceConsumerRetryThreshold" ago.
-	next := sourceConsumerRetryThreshold - time.Since(si.lreq)
-	if next < 0 {
-		// It means that we have passed the threshold and so we are ready to go.
-		next = 0
+// This is the main function to call when needing to setup a new consumer for the source
+// It actually only does the scheduling of the execution of trySetupSourceConsumer in order to implement retry backoff
+// and throttle the number of requests.
+// Lock should be held.
+func (mset *stream) setupSourceConsumer(iname string, seq uint64, startTime time.Time) {
+	if mset.sourceSetupSchedules == nil {
+		mset.sourceSetupSchedules = map[string]*time.Timer{}
 	}
-	// Take into account failures here.
-	next += calculateRetryBackoff(si.fails)
 
-	// To make *sure* that the next request will not fail, add a bit of buffer
-	// and some randomness.
-	next += time.Duration(rand.Intn(int(10*time.Millisecond))) + 10*time.Millisecond
-	mset.scheduleSetSourceConsumer(si.iname, seq, next, startTime)
-}
-
-// Simply schedules setupSourceConsumer at the given delay.
-//
-// Lock held on entry
-func (mset *stream) scheduleSetSourceConsumer(iname string, seq uint64, delay time.Duration, startTime time.Time) {
-	if mset.sourceRetries == nil {
-		mset.sourceRetries = map[string]*time.Timer{}
-	}
-	if t, ok := mset.sourceRetries[iname]; ok && !t.Stop() {
-		// It looks like the goroutine has started running but hasn't taken the
-		// stream lock yet (otherwise the map entry would be deleted). We had
-		// might as well let the running goroutine complete and schedule another
-		// timer only if it needs to.
+	if _, ok := mset.sourceSetupSchedules[iname]; ok {
+		// If there is already a timer scheduled, we don't need to do anything.
 		return
 	}
-	mset.sourceRetries[iname] = time.AfterFunc(delay, func() {
+
+	si := mset.sources[iname]
+	if si == nil || si.sip { // if sourceInfo was removed or setup is in progress, nothing to do
+		return
+	}
+
+	// First calculate the delay until the next time we can
+	var scheduleDelay time.Duration
+
+	if !si.lreq.IsZero() { // it's not the very first time we are called, compute the delay
+		// We want to throttle here in terms of how fast we request new consumers
+		if sinceLast := time.Since(si.lreq); sinceLast < sourceConsumerRetryThreshold {
+			scheduleDelay = sourceConsumerRetryThreshold - sinceLast
+		}
+		// Is it a retry? If so, add a backoff
+		if si.fails > 0 {
+			scheduleDelay += calculateRetryBackoff(si.fails)
+		}
+	}
+
+	// Always add some jitter
+	scheduleDelay += time.Duration(rand.Intn(int(10*time.Millisecond))) + 10*time.Millisecond
+
+	// Schedule the call to trySetupSourceConsumer
+	mset.sourceSetupSchedules[iname] = time.AfterFunc(scheduleDelay, func() {
 		mset.mu.Lock()
 		defer mset.mu.Unlock()
 
-		delete(mset.sourceRetries, iname)
-		mset.setupSourceConsumer(iname, seq, startTime)
+		delete(mset.sourceSetupSchedules, iname)
+		mset.trySetupSourceConsumer(iname, seq, startTime)
 	})
 }
 
+// This is where we will actually try to create a new consumer for the source
 // Lock should be held.
-func (mset *stream) setupSourceConsumer(iname string, seq uint64, startTime time.Time) {
+func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime time.Time) {
 	// Ignore if closed.
 	if mset.closed.Load() {
 		return
@@ -2881,12 +2862,6 @@ func (mset *stream) setupSourceConsumer(iname string, seq uint64, startTime time
 		return
 	}
 
-	// We want to throttle here in terms of how fast we request new consumers,
-	// or if the previous is still in progress.
-	if last := time.Since(si.lreq); last < sourceConsumerRetryThreshold || si.sip {
-		mset.scheduleSetSourceConsumerRetry(si, seq, startTime)
-		return
-	}
 	si.lreq = time.Now()
 
 	// Determine subjects etc.
@@ -2966,7 +2941,7 @@ func (mset *stream) setupSourceConsumer(iname string, seq uint64, startTime time
 	})
 	if err != nil {
 		si.err = NewJSSourceConsumerSetupFailedError(err, Unless(err))
-		mset.scheduleSetSourceConsumerRetry(si, seq, startTime)
+		mset.setupSourceConsumer(iname, seq, startTime)
 		return
 	}
 
@@ -3013,7 +2988,7 @@ func (mset *stream) setupSourceConsumer(iname string, seq uint64, startTime time
 					si.fails++
 					// Cancel here since we can not do anything with this consumer at this point.
 					mset.cancelSourceInfo(si)
-					mset.scheduleSetSourceConsumerRetry(si, seq, startTime)
+					mset.setupSourceConsumer(iname, seq, startTime)
 				} else {
 					// Clear on success.
 					si.fails = 0
@@ -3298,7 +3273,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 			s.DisableJetStream()
 		} else {
 			mset.mu.RLock()
-			accName, sname, iname := mset.acc.Name, mset.cfg.Name, si.iname
+			accName, sname, iName := mset.acc.Name, mset.cfg.Name, si.iname
 			mset.mu.RUnlock()
 
 			// Can happen temporarily all the time during normal operations when the sourcing stream
@@ -3308,18 +3283,24 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 				// Do not need to do a full retry that includes finding the last sequence in the stream
 				// for that source. Just re-create starting with the seq we couldn't store instead.
 				mset.mu.Lock()
-				mset.retrySourceConsumerAtSeq(iname, si.sseq)
+				mset.retrySourceConsumerAtSeq(iName, si.sseq)
 				mset.mu.Unlock()
 			} else {
 				// Log some warning for errors other than errLastSeqMismatch or errMaxMsgs.
 				if !errors.Is(err, errLastSeqMismatch) {
 					s.RateLimitWarnf("Error processing inbound source %q for '%s' > '%s': %v",
-						iname, accName, sname, err)
+						iName, accName, sname, err)
 				}
 				// Retry in all type of errors.
 				// This will make sure the source is still in mset.sources map,
 				// find the last sequence and then call setupSourceConsumer.
-				mset.retrySourceConsumer(iname)
+				iNameMap := map[string]struct{}{
+					iName: {},
+				}
+				mset.setStartingSequenceForSources(iNameMap)
+				mset.mu.Lock()
+				mset.retrySourceConsumerAtSeq(iName, si.sseq+1)
+				mset.mu.Unlock()
 			}
 		}
 		return false
