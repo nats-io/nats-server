@@ -7825,36 +7825,24 @@ func (fs *fileStore) _writeFullState(force bool) error {
 		fs.debug("WriteFullState reallocated from %d to %d", sz, cap(buf))
 	}
 
-	// Write to a tmp file and rename.
-	const tmpPre = streamStreamStateFile + tsep
-	f, err := os.CreateTemp(filepath.Join(fs.fcfg.StoreDir, msgDir), tmpPre)
-	if err != nil {
-		return err
-	}
-	tmpName := f.Name()
-	defer os.Remove(tmpName)
-	if _, err = f.Write(buf); err == nil && fs.fcfg.SyncAlways {
-		f.Sync()
-	}
-	f.Close()
-	if err != nil {
-		return err
-	}
-
-	// Rename into position under our lock, clear prior dirty pending on success.
-	fs.mu.Lock()
-	if !fs.closed {
-		if err := os.Rename(tmpName, fn); err != nil {
-			fs.mu.Unlock()
-			return err
-		}
-		fs.dirty -= priorDirty
-	}
-	fs.mu.Unlock()
-
+	// Only warn about construction time since file write not holding any locks.
 	if took := time.Since(start); took > time.Minute {
 		fs.warn("WriteFullState took %v (%d bytes)", took.Round(time.Millisecond), len(buf))
 	}
+
+	// Write our update index.db
+	// Protect with dios.
+	<-dios
+	err := os.WriteFile(fn, buf, defaultFilePerms)
+	dios <- struct{}{}
+
+	// Update dirty if successful.
+	if err == nil {
+		fs.mu.Lock()
+		fs.dirty -= priorDirty
+		fs.mu.Unlock()
+	}
+
 	return nil
 }
 
