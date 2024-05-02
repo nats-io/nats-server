@@ -1674,8 +1674,8 @@ func TestSystemAccountWithGateways(t *testing.T) {
 	nca.Flush()
 
 	// If this tests fails with wrong number after 10 seconds we may have
-	// added a new inititial subscription for the eventing system.
-	checkExpectedSubs(t, 56, sa)
+	// added a new initial subscription for the eventing system.
+	checkExpectedSubs(t, 58, sa)
 
 	// Create a client on B and see if we receive the event
 	urlb := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)
@@ -2990,6 +2990,7 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 		{"HEALTHZ", nil, &JSzOptions{}, []string{"status"}},
 		{"HEALTHZ", &HealthzOptions{JSEnabledOnly: true}, &JSzOptions{}, []string{"status"}},
 		{"HEALTHZ", &HealthzOptions{JSServerOnly: true}, &JSzOptions{}, []string{"status"}},
+		{"EXPVARZ", nil, &ExpvarzStatus{}, []string{"memstats", "cmdline"}},
 	}
 
 	for i, test := range tests {
@@ -3058,8 +3059,10 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 					strings.ToLower(test.endpoint), string(msg.Data))
 			} else {
 				for _, respField := range test.respField {
-					if _, ok := resp[respField]; !ok {
+					if val, ok := resp[respField]; !ok {
 						t.Fatalf("Error finding: %s in %s", respField, resp)
+					} else if val == nil {
+						t.Fatalf("Nil value found: %s in %s", respField, resp)
 					}
 				}
 			}

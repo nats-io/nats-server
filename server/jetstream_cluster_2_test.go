@@ -5317,6 +5317,10 @@ func TestJetStreamClusterMirrorSourceLoop(t *testing.T) {
 }
 
 func TestJetStreamClusterMirrorDeDupWindow(t *testing.T) {
+	owt := srcConsumerWaitTime
+	srcConsumerWaitTime = 2 * time.Second
+	defer func() { srcConsumerWaitTime = owt }()
+
 	c := createJetStreamClusterExplicit(t, "JSC", 3)
 	defer c.shutdown()
 

@@ -6687,9 +6687,9 @@ func TestFileStoreWriteFullStateAfterPurgeEx(t *testing.T) {
 	require_Equal(t, ss.LastSeq, 10)
 }
 
-func TestFileStoreMB_FSS_Expire(t *testing.T) {
+func TestFileStoreFSSExpire(t *testing.T) {
 	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 8192, CacheExpire: 1 * time.Second, SyncInterval: 2 * time.Second},
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 8192, CacheExpire: 1 * time.Second, SubjectStateExpire: time.Second},
 		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, MaxMsgsPer: 1, Storage: FileStorage})
 	require_NoError(t, err)
 	defer fs.Stop()
@@ -6722,6 +6722,78 @@ func TestFileStoreMB_FSS_Expire(t *testing.T) {
 	mb.mu.RUnlock()
 	require_True(t, fss != nil)
 	require_True(t, cache != nil)
+}
+
+func TestFileStoreFSSExpireNumPending(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 8192, CacheExpire: 1 * time.Second, SubjectStateExpire: 2 * time.Second},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*.*"}, MaxMsgsPer: 1, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := []byte("abc")
+	for i := 1; i <= 100_000; i++ {
+		fs.StoreMsg(fmt.Sprintf("foo.A.%d", i), nil, msg)
+		fs.StoreMsg(fmt.Sprintf("foo.B.%d", i), nil, msg)
+	}
+	// Flush fss by hand, cache should be flushed as well.
+	fs.mu.RLock()
+	for _, mb := range fs.blks {
+		mb.mu.Lock()
+		mb.fss = nil
+		mb.mu.Unlock()
+	}
+	fs.mu.RUnlock()
+
+	nb := fs.numMsgBlocks()
+	// Now execute NumPending() such that we load lots of blocks and make sure fss do not expire.
+	start := time.Now()
+	n, _ := fs.NumPending(100_000, "foo.A.*", false)
+	elapsed := time.Since(start)
+
+	require_Equal(t, n, 50_000)
+	// Make sure we did not force expire the fss. We would have loaded first half of blocks.
+	var noFss bool
+	last := nb/2 - 1
+	fs.mu.RLock()
+	for i, mb := range fs.blks {
+		mb.mu.RLock()
+		noFss = mb.fss == nil
+		mb.mu.RUnlock()
+		if noFss || i == last {
+			break
+		}
+	}
+	fs.mu.RUnlock()
+	require_False(t, noFss)
+
+	// Run again, make sure faster. This is consequence of fss being loaded now.
+	start = time.Now()
+	fs.NumPending(100_000, "foo.A.*", false)
+	require_True(t, elapsed > 2*time.Since(start))
+
+	// Now do with start past the mid-point.
+	start = time.Now()
+	fs.NumPending(150_000, "foo.B.*", false)
+	elapsed = time.Since(start)
+	time.Sleep(time.Second)
+	start = time.Now()
+	fs.NumPending(150_000, "foo.B.*", false)
+	require_True(t, elapsed > time.Since(start))
+
+	// Sleep enough so that all mb.fss should expire, which is 2s above.
+	time.Sleep(3 * time.Second)
+	fs.mu.RLock()
+	for i, mb := range fs.blks {
+		mb.mu.RLock()
+		fss := mb.fss
+		mb.mu.RUnlock()
+		if fss != nil {
+			fs.mu.RUnlock()
+			t.Fatalf("Detected loaded fss for mb %d", i)
+		}
+	}
+	fs.mu.RUnlock()
 }
 
 ///////////////////////////////////////////////////////////////////////////
