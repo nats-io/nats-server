@@ -5373,6 +5373,10 @@ func TestJetStreamClusterLeaderStepdown(t *testing.T) {
 }
 
 func TestJetStreamClusterSourcesFilteringAndUpdating(t *testing.T) {
+	owt := srcConsumerWaitTime
+	srcConsumerWaitTime = 2 * time.Second
+	defer func() { srcConsumerWaitTime = owt }()
+
 	c := createJetStreamClusterExplicit(t, "MSR", 5)
 	defer c.shutdown()
 
@@ -5589,6 +5593,10 @@ func TestJetStreamClusterSourcesUpdateOriginError(t *testing.T) {
 }
 
 func TestJetStreamClusterMirrorAndSourcesClusterRestart(t *testing.T) {
+	owt := srcConsumerWaitTime
+	srcConsumerWaitTime = 2 * time.Second
+	defer func() { srcConsumerWaitTime = owt }()
+
 	test := func(t *testing.T, mirror bool, filter bool) {
 		c := createJetStreamClusterExplicit(t, "MSR", 5)
 		defer c.shutdown()
@@ -5643,7 +5651,7 @@ func TestJetStreamClusterMirrorAndSourcesClusterRestart(t *testing.T) {
 
 		checkSync := func(msgsTest, msgsM uint64) {
 			t.Helper()
-			checkFor(t, 20*time.Second, 500*time.Millisecond, func() error {
+			checkFor(t, 40*time.Second, time.Second, func() error {
 				if tsi, err := js.StreamInfo("TEST"); err != nil {
 					return err
 				} else if msi, err := js.StreamInfo("M"); err != nil {

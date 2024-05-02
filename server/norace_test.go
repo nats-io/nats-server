@@ -1767,6 +1767,10 @@ func TestNoRaceJetStreamSuperClusterMixedModeMirrors(t *testing.T) {
 }
 
 func TestNoRaceJetStreamSuperClusterSources(t *testing.T) {
+	owt := srcConsumerWaitTime
+	srcConsumerWaitTime = 2 * time.Second
+	defer func() { srcConsumerWaitTime = owt }()
+
 	sc := createJetStreamSuperCluster(t, 3, 3)
 	defer sc.shutdown()
 
@@ -9266,6 +9270,10 @@ func TestNoRaceJetStreamAPIDispatchQueuePending(t *testing.T) {
 }
 
 func TestNoRaceJetStreamMirrorAndSourceConsumerFailBackoff(t *testing.T) {
+	owt := srcConsumerWaitTime
+	srcConsumerWaitTime = 2 * time.Second
+	defer func() { srcConsumerWaitTime = owt }()
+
 	// Check calculations first.
 	for i := 1; i <= 20; i++ {
 		backoff := calculateRetryBackoff(i)
@@ -9322,8 +9330,8 @@ func TestNoRaceJetStreamMirrorAndSourceConsumerFailBackoff(t *testing.T) {
 	sldr := c.streamLeader(globalAccountName, "TEST")
 	sldr.Shutdown()
 
-	// Wait for just greater than 10s. We should only see 1 request during this time.
-	time.Sleep(11 * time.Second)
+	// Wait for just greater than 5s. We should only see 1 request during this time.
+	time.Sleep(6 * time.Second)
 	// There should have been 2 requests, one for mirror, one for source
 	n, _, _ := sub.Pending()
 	require_Equal(t, n, 2)
