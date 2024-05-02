@@ -1504,6 +1504,7 @@ func closedStateForErr(err error) ClosedState {
 	if err == io.EOF {
 		return ClientClosed
 	}
+	fmt.Println("---------> ERROR: ", err)
 	return ReadError
 }
 
