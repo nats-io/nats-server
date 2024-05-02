@@ -4044,7 +4044,7 @@ func TestMonitorAccountz(t *testing.T) {
 	body = string(readBody(t, fmt.Sprintf("http://127.0.0.1:%d%s?acc=$SYS", s.MonitorAddr().Port, AccountzPath)))
 	require_Contains(t, body, `"account_detail": {`)
 	require_Contains(t, body, `"account_name": "$SYS",`)
-	require_Contains(t, body, `"subscriptions": 50,`)
+	require_Contains(t, body, `"subscriptions": 52,`)
 	require_Contains(t, body, `"is_system": true,`)
 	require_Contains(t, body, `"system_account": "$SYS"`)
 
@@ -4111,7 +4111,7 @@ func TestMonitorAccountzOperatorMode(t *testing.T) {
 	body = string(readBody(t, fmt.Sprintf("http://127.0.0.1:%d%s?acc=%s", s.MonitorAddr().Port, AccountzPath, sysPub)))
 	require_Contains(t, body, `"account_detail": {`)
 	require_Contains(t, body, fmt.Sprintf(`"account_name": "%s",`, sysPub))
-	require_Contains(t, body, `"subscriptions": 50,`)
+	require_Contains(t, body, `"subscriptions": 52,`)
 	require_Contains(t, body, `"is_system": true,`)
 	require_Contains(t, body, fmt.Sprintf(`"system_account": "%s"`, sysPub))
 
