@@ -5274,9 +5274,9 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 // We need to optionally remove all messages since we are interest based retention.
 // We will do this consistently on all replicas. Note that if in clustered mode the non-leader
 // consumers will need to restore state first.
-// delete marks whether the consumer is being deleted, and should not be counted against interest.
+// ignoreInterest marks whether the consumer should be ignored when determining interest.
 // No lock held on entry.
-func (o *consumer) cleanupNoInterestMessages(mset *stream, delete bool) {
+func (o *consumer) cleanupNoInterestMessages(mset *stream, ignoreInterest bool) {
 	state := mset.state()
 	stop := state.LastSeq
 	o.mu.Lock()
@@ -5290,9 +5290,9 @@ func (o *consumer) cleanupNoInterestMessages(mset *stream, delete bool) {
 		start = state.FirstSeq
 	}
 
-	// Ignore consumer if deleting, don't ignore if updating.
+	// Consumer's interests are ignored by default. If we should not ignore interest, unset.
 	co := o
-	if !delete {
+	if !ignoreInterest {
 		co = nil
 	}
 
