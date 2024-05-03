@@ -4713,25 +4713,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		if numConsumers == 0 {
 			noInterest = true
 		} else if mset.numFilter > 0 {
-			// Assume no interest and check to disqualify.
-			noInterest = true
-			mset.clsMu.RLock()
-		out:
-			for _, o := range mset.cList {
-				subjectFilters := gatherSubjectFilters(o.cfg.FilterSubject, o.cfg.FilterSubjects)
-				if len(subjectFilters) == 0 {
-					noInterest = false
-					break out
-				} else {
-					for _, subjectFilter := range subjectFilters {
-						if subjectIsSubsetMatch(subject, subjectFilter) {
-							noInterest = false
-							break out
-						}
-					}
-				}
-			}
-			mset.clsMu.RUnlock()
+			noInterest = !mset.csl.HasInterest(subject)
 		}
 	}
 
