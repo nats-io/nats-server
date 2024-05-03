@@ -2006,6 +2006,13 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 	// Allowed but considered no-op, [Description, SampleFrequency, MaxWaiting, HeadersOnly]
 	o.cfg = *cfg
 
+	// Cleanup messages that lost interest.
+	if o.retention == InterestPolicy {
+		o.mu.Unlock()
+		o.cleanupNoInterestMessages(o.mset, false)
+		o.mu.Lock()
+	}
+
 	// Re-calculate num pending on update.
 	o.streamNumPending()
 
@@ -5219,36 +5226,9 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 		mset.mu.Unlock()
 	}
 
-	// We need to optionally remove all messages since we are interest based retention.
-	// We will do this consistently on all replicas. Note that if in clustered mode the
-	// non-leader consumers will need to restore state first.
+	// Cleanup messages that lost interest.
 	if dflag && rp == InterestPolicy {
-		state := mset.state()
-		stop := state.LastSeq
-		o.mu.Lock()
-		if !o.isLeader() {
-			o.readStoredState(stop)
-		}
-		start := o.asflr
-		o.mu.Unlock()
-		// Make sure we start at worst with first sequence in the stream.
-		if start < state.FirstSeq {
-			start = state.FirstSeq
-		}
-
-		var rmseqs []uint64
-		mset.mu.Lock()
-		for seq := start; seq <= stop; seq++ {
-			if mset.noInterest(seq, o) {
-				rmseqs = append(rmseqs, seq)
-			}
-		}
-		mset.mu.Unlock()
-
-		// These can be removed.
-		for _, seq := range rmseqs {
-			mset.store.RemoveMsg(seq)
-		}
+		o.cleanupNoInterestMessages(mset, true)
 	}
 
 	// Cluster cleanup.
@@ -5289,6 +5269,46 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	}
 
 	return err
+}
+
+// We need to optionally remove all messages since we are interest based retention.
+// We will do this consistently on all replicas. Note that if in clustered mode the non-leader
+// consumers will need to restore state first.
+// delete marks whether the consumer is being deleted, and should not be counted against interest.
+// No lock held on entry.
+func (o *consumer) cleanupNoInterestMessages(mset *stream, delete bool) {
+	state := mset.state()
+	stop := state.LastSeq
+	o.mu.Lock()
+	if !o.isLeader() {
+		o.readStoredState(stop)
+	}
+	start := o.asflr
+	o.mu.Unlock()
+	// Make sure we start at worst with first sequence in the stream.
+	if start < state.FirstSeq {
+		start = state.FirstSeq
+	}
+
+	// Ignore consumer if deleting, don't ignore if updating.
+	co := o
+	if !delete {
+		co = nil
+	}
+
+	var rmseqs []uint64
+	mset.mu.Lock()
+	for seq := start; seq <= stop; seq++ {
+		if mset.noInterest(seq, co) {
+			rmseqs = append(rmseqs, seq)
+		}
+	}
+	mset.mu.Unlock()
+
+	// These can be removed.
+	for _, seq := range rmseqs {
+		mset.store.RemoveMsg(seq)
+	}
 }
 
 // Check that we do not form a cycle by delivering to a delivery subject
