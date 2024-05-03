@@ -1375,3 +1375,57 @@ func TestJetStreamClusterConsumerNRGCleanup(t *testing.T) {
 	require_Equal(t, numConsumers, 0)
 	require_Equal(t, numStreams, 0)
 }
+
+// https://github.com/nats-io/nats-server/issues/4878
+func TestClusteredInterestConsumerFilterEdit(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	s := c.randomNonLeader()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "INTEREST",
+		Retention: nats.InterestPolicy,
+		Subjects:  []string{"interest.>"},
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("INTEREST", &nats.ConsumerConfig{
+		Durable:       "C0",
+		FilterSubject: "interest.>",
+		AckPolicy:     nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 10; i++ {
+		_, err = js.Publish(fmt.Sprintf("interest.%d", i), []byte(strconv.Itoa(i)))
+		require_NoError(t, err)
+	}
+
+	// we check we got 10 messages
+	nfo, err := js.StreamInfo("INTEREST")
+	require_NoError(t, err)
+	if nfo.State.Msgs != 10 {
+		t.Fatalf("expected 10 messages got %d", nfo.State.Msgs)
+	}
+
+	// now we lower the consumer interest from all subjects to 1,
+	// then check the stream state and check if interest behavior still works
+	_, err = js.UpdateConsumer("INTEREST", &nats.ConsumerConfig{
+		Durable:       "C0",
+		FilterSubject: "interest.1",
+		AckPolicy:     nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	// we should now have only one message left
+	nfo, err = js.StreamInfo("INTEREST")
+	require_NoError(t, err)
+	if nfo.State.Msgs != 1 {
+		t.Fatalf("expected 1 message got %d", nfo.State.Msgs)
+	}
+}
