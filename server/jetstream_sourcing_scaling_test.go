@@ -239,3 +239,128 @@ func TestStreamSourcingScalingSourcingMany(t *testing.T) {
 		}
 	})
 }
+
+// This test is being skipped by CI as it takes too long to run and is meant to test the scalability of sourcing
+// rather than being a unit test.
+func TestStreamSourcingScalingSourcingManyBenchmark(t *testing.T) {
+	t.Skip()
+
+	var numSourced = 500
+	var numMsgPerSource = uint64(10000)
+	var batchSize = 500
+	var retries int
+
+	var err error
+
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+	s := c.randomServer()
+	urls := s.clientConnectURLs
+	fmt.Printf("Connected to server %+v\n", urls)
+
+	nc, js := jsClientConnect(t, s, nats.Timeout(20*time.Second))
+	defer nc.Close()
+
+	// create n streams to source from
+	for i := 0; i < numSourced; i++ {
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:                 fmt.Sprintf("sourced-%d", i),
+			Subjects:             []string{fmt.Sprintf("foo.%d", i)},
+			Retention:            nats.LimitsPolicy,
+			Storage:              nats.FileStorage,
+			Discard:              nats.DiscardOld,
+			Replicas:             1,
+			AllowDirect:          true,
+			MirrorDirect:         false,
+			DiscardNewPerSubject: false,
+		})
+		require_NoError(t, err)
+	}
+
+	fmt.Printf("Streams created\n")
+
+	// publish n messages for each sourced stream
+	for j := uint64(0); j < numMsgPerSource; j++ {
+		start := time.Now()
+		var pafs = make([]nats.PubAckFuture, numSourced)
+		for i := 0; i < numSourced; i++ {
+			var err error
+
+			for {
+				pafs[i], err = js.PublishAsync(fmt.Sprintf("foo.%d", i), []byte("hello"))
+				if err != nil {
+					fmt.Printf("Error async publishing: %v, retrying\n", err)
+					retries++
+					time.Sleep(10 * time.Millisecond)
+				} else {
+					break
+				}
+			}
+
+			if i != 0 && i%batchSize == 0 {
+				<-js.PublishAsyncComplete()
+			}
+
+		}
+
+		<-js.PublishAsyncComplete()
+
+		for i := 0; i < numSourced; i++ {
+			select {
+			case <-pafs[i].Ok():
+			case psae := <-pafs[i].Err():
+				fmt.Printf("Error on PubAckFuture: %v, retrying sync...\n", psae)
+				retries++
+				_, err = js.Publish(fmt.Sprintf("foo.%d", i), []byte("hello"))
+				require_NoError(t, err)
+			}
+		}
+
+		end := time.Now()
+		fmt.Printf("[%v] Published round %d, avg pub latency %v\n", time.Now(), j, end.Sub(start)/time.Duration(numSourced))
+	}
+
+	fmt.Printf("Messages published\n")
+
+	// create the StreamSources
+	streamSources := make([]*nats.StreamSource, numSourced)
+
+	for i := 0; i < numSourced; i++ {
+		streamSources[i] = &nats.StreamSource{Name: fmt.Sprintf("sourced-%d", i), FilterSubject: fmt.Sprintf("foo.%d", i)}
+	}
+
+	// create a stream that sources from them
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:                 "sourcing",
+		Sources:              streamSources,
+		Retention:            nats.LimitsPolicy,
+		Storage:              nats.FileStorage,
+		Discard:              nats.DiscardOld,
+		Replicas:             3,
+		AllowDirect:          true,
+		MirrorDirect:         false,
+		DiscardNewPerSubject: false,
+	})
+	require_NoError(t, err)
+
+	start := time.Now()
+
+	fmt.Printf("[%v] Sourcing stream created\n", start)
+
+	checkFor(t, 10*time.Minute, 1*time.Second, func() error {
+		state, err := js.StreamInfo("sourcing")
+		if err != nil {
+			return err
+		}
+		if state.State.Msgs == numMsgPerSource*uint64(numSourced) {
+			fmt.Printf("[%v] 👍 Test passed: expected %d messages, got %d and took %v\n", time.Now(), numMsgPerSource*uint64(numSourced), state.State.Msgs, time.Since(start))
+			return nil
+		} else if state.State.Msgs < numMsgPerSource*uint64(numSourced) {
+			fmt.Printf("[%v] Expected %d messages, got %d\n", time.Now(), numMsgPerSource*uint64(numSourced), state.State.Msgs)
+			return fmt.Errorf("Expected %d messages, got %d", numMsgPerSource*uint64(numSourced), state.State.Msgs)
+		} else {
+			fmt.Printf("[%v] Too many messages! expected %d (retries=%d), got %d\n", time.Now(), numMsgPerSource*uint64(numSourced), retries, state.State.Msgs)
+			return fmt.Errorf("Too many messages: expected %d (retries=%d), got %d", numMsgPerSource*uint64(numSourced), retries, state.State.Msgs)
+		}
+	})
+}
