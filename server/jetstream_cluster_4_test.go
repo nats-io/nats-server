@@ -1375,3 +1375,297 @@ func TestJetStreamClusterConsumerNRGCleanup(t *testing.T) {
 	require_Equal(t, numConsumers, 0)
 	require_Equal(t, numStreams, 0)
 }
+
+func TestJetStreamClusterBusyLeafStreamSource(t *testing.T) {
+	type streamSetup struct {
+		config    *nats.StreamConfig
+		consumers []*nats.ConsumerConfig
+		subjects  []string
+	}
+	type job func(t *testing.T, nc *nats.Conn, js nats.JetStreamContext)
+	type testParams struct {
+		cluster        string
+		streams        []*streamSetup
+		producers      int
+		consumers      int
+		restartAny     bool
+		restartWait    time.Duration
+		ldmRestart     bool
+		rolloutRestart bool
+		restarts       int
+		checkHealthz   bool
+		jobs           []job
+		expect         job
+	}
+	test := func(t *testing.T, test *testParams) {
+		conf := `
+                listen: 127.0.0.1:-1
+                http: 127.0.0.1:-1
+                server_name: %s
+                jetstream: {
+                        store_dir: '%s',
+                }
+                cluster {
+                        name: %s
+                        listen: 127.0.0.1:%d
+                        routes = [%s]
+                }
+                server_tags: ["test"]
+                system_account: sys
+                no_auth_user: js
+                accounts {
+                        sys { users = [ { user: sys, pass: sys } ] }
+                        js  { jetstream = enabled
+                              users = [ { user: js, pass: js } ]
+                    }
+                }`
+		c := createJetStreamClusterWithTemplate(t, conf, test.cluster, 3)
+		defer c.shutdown()
+		for _, s := range c.servers {
+			s.optsMu.Lock()
+			s.opts.LameDuckDuration = 5 * time.Second
+			s.opts.LameDuckGracePeriod = -5 * time.Second
+			s.optsMu.Unlock()
+		}
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		var wg sync.WaitGroup
+		for _, stream := range test.streams {
+			stream := stream
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, err := js.AddStream(stream.config)
+				require_NoError(t, err)
+
+				for _, consumer := range stream.consumers {
+					_, err := js.AddConsumer(stream.config.Name, consumer)
+					require_NoError(t, err)
+				}
+			}()
+		}
+		wg.Wait()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		for _, stream := range test.streams {
+			payload := []byte(strings.Repeat("A", 128))
+			subjects := stream.subjects
+
+			// Create publishers on different connections that sends messages
+			// to all the consumers subjects.
+			for i := 0; i < test.producers; i++ {
+				wg.Add(1)
+				go func() {
+					nc, js := jsClientConnect(t, c.randomServer())
+					defer nc.Close()
+					defer wg.Done()
+
+					for range time.NewTicker(1 * time.Millisecond).C {
+						select {
+						case <-ctx.Done():
+							return
+						default:
+						}
+
+						for _, subject := range subjects {
+							js.Publish(subject, payload, nats.AckWait(200*time.Millisecond))
+						}
+					}
+				}()
+			}
+
+			// Create multiple parallel pull subscribers per consumer config.
+			for i := 0; i < test.consumers; i++ {
+				for _, consumer := range stream.consumers {
+					wg.Add(1)
+
+					go func() {
+						defer wg.Done()
+						sub, err := js.PullSubscribe(consumer.FilterSubject, "", nats.Bind(stream.config.Name, consumer.Name))
+						require_NoError(t, err)
+
+						for range time.NewTicker(100 * time.Millisecond).C {
+							select {
+							case <-ctx.Done():
+								return
+							default:
+							}
+
+							msgs, err := sub.Fetch(1, nats.MaxWait(200*time.Millisecond))
+							if err != nil {
+								continue
+							}
+							for _, msg := range msgs {
+								msg.Ack()
+							}
+
+							msgs, err = sub.Fetch(100, nats.MaxWait(200*time.Millisecond))
+							if err != nil {
+								continue
+							}
+							for _, msg := range msgs {
+								msg.Ack()
+							}
+						}
+					}()
+				}
+			}
+		}
+
+		for _, job := range test.jobs {
+			go job(t, nc, js)
+		}
+		if test.restarts > 0 {
+			wg.Add(1)
+			time.AfterFunc(test.restartWait, func() {
+				defer wg.Done()
+				for i := 0; i < test.restarts; i++ {
+					switch {
+					case test.restartAny:
+						s := c.servers[rand.Intn(len(c.servers))]
+						if test.ldmRestart {
+							s.lameDuckMode()
+						} else {
+							s.Shutdown()
+						}
+						s.WaitForShutdown()
+						c.restartServer(s)
+					case test.rolloutRestart:
+						for _, s := range c.servers {
+							if test.ldmRestart {
+								s.lameDuckMode()
+							} else {
+								s.Shutdown()
+							}
+							s.WaitForShutdown()
+							c.restartServer(s)
+
+							if test.checkHealthz {
+								hctx, hcancel := context.WithTimeout(ctx, 15*time.Second)
+								defer hcancel()
+
+								for range time.NewTicker(2 * time.Second).C {
+									select {
+									case <-hctx.Done():
+									default:
+									}
+
+									status := s.healthz(nil)
+									if status.StatusCode == 200 {
+										break
+									}
+								}
+							}
+						}
+					}
+					c.waitOnClusterReady()
+				}
+			})
+		}
+		test.expect(t, nc, js)
+		cancel()
+
+		wg.Wait()
+	}
+
+	t.Run("R3F/sources:10/limits", func(t *testing.T) {
+		totalStreams := 10
+		streams := make([]*streamSetup, totalStreams)
+		sources := make([]*nats.StreamSource, totalStreams)
+		for i := 0; i < totalStreams; i++ {
+			name := fmt.Sprintf("test:%d", i)
+			st := &streamSetup{
+				config: &nats.StreamConfig{
+					Name:      name,
+					Subjects:  []string{fmt.Sprintf("test.%d.*", i)},
+					Replicas:  1,
+					Retention: nats.LimitsPolicy,
+				},
+			}
+			st.subjects = append(st.subjects, fmt.Sprintf("test.%d.0", i))
+			sources[i] = &nats.StreamSource{Name: name}
+			streams[i] = st
+		}
+
+		// Create Source consumer.
+		sourceSetup := &streamSetup{
+			config: &nats.StreamConfig{
+				Name:      "source-test",
+				Replicas:  3,
+				Retention: nats.LimitsPolicy,
+				Sources:   sources,
+			},
+			consumers: make([]*nats.ConsumerConfig, 0),
+		}
+		cc := &nats.ConsumerConfig{
+			Name:          "A",
+			Durable:       "A",
+			FilterSubject: "test.>",
+			AckPolicy:     nats.AckExplicitPolicy,
+		}
+		sourceSetup.consumers = append(sourceSetup.consumers, cc)
+		streams = append(streams, sourceSetup)
+
+		update := func(t *testing.T, nc *nats.Conn, js nats.JetStreamContext) {
+			config := sourceSetup.config
+			config.Replicas = 3
+			time.AfterFunc(10*time.Second, func() {
+				js.UpdateStream(config)
+			})
+		}
+
+		expect := func(t *testing.T, nc *nats.Conn, js nats.JetStreamContext) {
+			stepDown := func() {
+				nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "source-test"), nil, time.Second)
+			}
+			// The source stream should not be stuck or be different from the other streams.
+			time.Sleep(1 * time.Minute)
+
+			// Check a few times to see if there are no changes in the number of messages.
+			var changed bool
+			sinfo, err := js.StreamInfo("source-test")
+			require_NoError(t, err)
+			prevMsgs := sinfo.State.Msgs
+			for i := 0; i < 10; i++ {
+				sinfo, err := js.StreamInfo("source-test")
+				require_NoError(t, err)
+
+				changed = prevMsgs != sinfo.State.Msgs
+				prevMsgs = sinfo.State.Msgs
+				time.Sleep(2 * time.Second)
+			}
+			if !changed {
+				// Doing a leader step down should not cause the messages to continue to change.
+				stepDown()
+
+				for i := 0; i < 10; i++ {
+					sinfo, err := js.StreamInfo("source-test")
+					require_NoError(t, err)
+
+					changed = prevMsgs != sinfo.State.Msgs
+					prevMsgs = sinfo.State.Msgs
+					time.Sleep(2 * time.Second)
+				}
+				if changed {
+					t.Error("Stream msgs changed after the step down")
+				}
+			}
+		}
+		test(t, &testParams{
+			cluster:        t.Name(),
+			streams:        streams,
+			producers:      10,
+			consumers:      5,
+			restarts:       1,
+			rolloutRestart: true,
+			ldmRestart:     true,
+			checkHealthz:   true,
+			restartWait:    15 * time.Second,
+			jobs:           []job{job(update)},
+			expect:         job(expect),
+		})
+	})
+}
