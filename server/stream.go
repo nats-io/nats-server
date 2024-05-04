@@ -4710,7 +4710,9 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	// If we are interest based retention and have no consumers then we can skip.
 	if interestRetention {
+		mset.clsMu.RLock()
 		noInterest = numConsumers == 0 || mset.csl == nil || !mset.csl.HasInterest(subject)
+		mset.clsMu.RUnlock()
 	}
 
 	// Grab timestamp if not already set.
