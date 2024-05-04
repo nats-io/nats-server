@@ -5583,6 +5583,12 @@ func (mset *stream) setConsumer(o *consumer) {
 	// Now update consumers list as well
 	mset.clsMu.Lock()
 	mset.cList = append(mset.cList, o)
+	if mset.csl == nil {
+		mset.csl = NewSublistWithCache()
+	}
+	for _, sub := range o.signalSubs() {
+		mset.csl.Insert(sub)
+	}
 	mset.clsMu.Unlock()
 }
 
@@ -5611,30 +5617,6 @@ func (mset *stream) removeConsumer(o *consumer) {
 			}
 		}
 		mset.clsMu.Unlock()
-	}
-}
-
-// Set the consumer as a leader. This will update signaling sublist.
-func (mset *stream) setConsumerAsLeader(o *consumer) {
-	mset.clsMu.Lock()
-	defer mset.clsMu.Unlock()
-
-	if mset.csl == nil {
-		mset.csl = NewSublistWithCache()
-	}
-	for _, sub := range o.signalSubs() {
-		mset.csl.Insert(sub)
-	}
-}
-
-// Remove the consumer as a leader. This will update signaling sublist.
-func (mset *stream) removeConsumerAsLeader(o *consumer) {
-	mset.clsMu.Lock()
-	defer mset.clsMu.Unlock()
-	if mset.csl != nil {
-		for _, sub := range o.signalSubs() {
-			mset.csl.Remove(sub)
-		}
 	}
 }
 

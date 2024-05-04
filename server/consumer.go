@@ -1225,9 +1225,6 @@ func (o *consumer) setLeader(isLeader bool) {
 		s, jsa, stream, lseq := mset.srv, mset.jsa, mset.cfg.Name, mset.lseq
 		mset.mu.RUnlock()
 
-		// Register as a leader with our parent stream.
-		mset.setConsumerAsLeader(o)
-
 		o.mu.Lock()
 		o.rdq = nil
 		o.rdqi.Empty()
@@ -1405,11 +1402,6 @@ func (o *consumer) setLeader(isLeader bool) {
 			o.ackMsgs.drain()
 		}
 		o.mu.Unlock()
-
-		// Unregister as a leader with our parent stream.
-		if mset != nil {
-			mset.removeConsumerAsLeader(o)
-		}
 	}
 }
 
@@ -5200,7 +5192,6 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	if dflag {
 		ca = o.ca
 	}
-	sigSubs := o.sigSubs
 	js := o.js
 	o.mu.Unlock()
 
@@ -5217,9 +5208,6 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 
 	var rp RetentionPolicy
 	if mset != nil {
-		if len(sigSubs) > 0 {
-			mset.removeConsumerAsLeader(o)
-		}
 		mset.mu.Lock()
 		mset.removeConsumer(o)
 		rp = mset.cfg.Retention
