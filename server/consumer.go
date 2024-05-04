@@ -5390,18 +5390,19 @@ func (o *consumer) signalSubs() []*subscription {
 }
 
 // This is what will be called when our parent stream wants to kick us regarding a new message.
-// We know that we are the leader and that this subject matches us by how the parent handles registering
-// us with the signaling sublist.
+// We know that this subject matches us by how the parent handles registering us with the signaling sublist,
+// but we must check if we are leader.
 // We do need the sequence of the message however and we use the msg as the encoded seq.
 func (o *consumer) processStreamSignal(_ *subscription, _ *client, _ *Account, subject, _ string, seqb []byte) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.mset == nil || !o.isLeader() {
+		return
+	}
+
 	var le = binary.LittleEndian
 	seq := le.Uint64(seqb)
 
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if o.mset == nil {
-		return
-	}
 	if seq > o.npf {
 		o.npc++
 	}
