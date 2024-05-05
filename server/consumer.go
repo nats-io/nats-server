@@ -5394,9 +5394,14 @@ func (o *consumer) signalSubs() []*subscription {
 // but we must check if we are leader.
 // We do need the sequence of the message however and we use the msg as the encoded seq.
 func (o *consumer) processStreamSignal(_ *subscription, _ *client, _ *Account, subject, _ string, seqb []byte) {
+	// We can get called here now when not leader, so bail fast
+	// and without acquiring any locks.
+	if !o.leader.Load() {
+		return
+	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.mset == nil || !o.isLeader() {
+	if o.mset == nil {
 		return
 	}
 
