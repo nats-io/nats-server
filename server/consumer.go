@@ -1225,9 +1225,6 @@ func (o *consumer) setLeader(isLeader bool) {
 		s, jsa, stream, lseq := mset.srv, mset.jsa, mset.cfg.Name, mset.lseq
 		mset.mu.RUnlock()
 
-		// Register as a leader with our parent stream.
-		mset.setConsumerAsLeader(o)
-
 		o.mu.Lock()
 		o.rdq = nil
 		o.rdqi.Empty()
@@ -1405,11 +1402,6 @@ func (o *consumer) setLeader(isLeader bool) {
 			o.ackMsgs.drain()
 		}
 		o.mu.Unlock()
-
-		// Unregister as a leader with our parent stream.
-		if mset != nil {
-			mset.removeConsumerAsLeader(o)
-		}
 	}
 }
 
@@ -5200,7 +5192,6 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	if dflag {
 		ca = o.ca
 	}
-	sigSubs := o.sigSubs
 	js := o.js
 	o.mu.Unlock()
 
@@ -5217,9 +5208,6 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 
 	var rp RetentionPolicy
 	if mset != nil {
-		if len(sigSubs) > 0 {
-			mset.removeConsumerAsLeader(o)
-		}
 		mset.mu.Lock()
 		mset.removeConsumer(o)
 		rp = mset.cfg.Retention
@@ -5402,18 +5390,19 @@ func (o *consumer) signalSubs() []*subscription {
 }
 
 // This is what will be called when our parent stream wants to kick us regarding a new message.
-// We know that we are the leader and that this subject matches us by how the parent handles registering
-// us with the signaling sublist.
+// We know that this subject matches us by how the parent handles registering us with the signaling sublist,
+// but we must check if we are leader.
 // We do need the sequence of the message however and we use the msg as the encoded seq.
 func (o *consumer) processStreamSignal(_ *subscription, _ *client, _ *Account, subject, _ string, seqb []byte) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.mset == nil || !o.isLeader() {
+		return
+	}
+
 	var le = binary.LittleEndian
 	seq := le.Uint64(seqb)
 
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if o.mset == nil {
-		return
-	}
 	if seq > o.npf {
 		o.npc++
 	}

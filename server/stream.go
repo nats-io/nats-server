@@ -4710,20 +4710,9 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	// If we are interest based retention and have no consumers then we can skip.
 	if interestRetention {
-		if numConsumers == 0 {
-			noInterest = true
-		} else if mset.numFilter > 0 {
-			// Assume no interest and check to disqualify.
-			noInterest = true
-			mset.clsMu.RLock()
-			for _, o := range mset.cList {
-				if o.cfg.FilterSubject == _EMPTY_ || subjectIsSubsetMatch(subject, o.cfg.FilterSubject) {
-					noInterest = false
-					break
-				}
-			}
-			mset.clsMu.RUnlock()
-		}
+		mset.clsMu.RLock()
+		noInterest = numConsumers == 0 || mset.csl == nil || !mset.csl.HasInterest(subject)
+		mset.clsMu.RUnlock()
 	}
 
 	// Grab timestamp if not already set.
@@ -5596,6 +5585,12 @@ func (mset *stream) setConsumer(o *consumer) {
 	// Now update consumers list as well
 	mset.clsMu.Lock()
 	mset.cList = append(mset.cList, o)
+	if mset.csl == nil {
+		mset.csl = NewSublistWithCache()
+	}
+	for _, sub := range o.signalSubs() {
+		mset.csl.Insert(sub)
+	}
 	mset.clsMu.Unlock()
 }
 
@@ -5624,30 +5619,6 @@ func (mset *stream) removeConsumer(o *consumer) {
 			}
 		}
 		mset.clsMu.Unlock()
-	}
-}
-
-// Set the consumer as a leader. This will update signaling sublist.
-func (mset *stream) setConsumerAsLeader(o *consumer) {
-	mset.clsMu.Lock()
-	defer mset.clsMu.Unlock()
-
-	if mset.csl == nil {
-		mset.csl = NewSublistWithCache()
-	}
-	for _, sub := range o.signalSubs() {
-		mset.csl.Insert(sub)
-	}
-}
-
-// Remove the consumer as a leader. This will update signaling sublist.
-func (mset *stream) removeConsumerAsLeader(o *consumer) {
-	mset.clsMu.Lock()
-	defer mset.clsMu.Unlock()
-	if mset.csl != nil {
-		for _, sub := range o.signalSubs() {
-			mset.csl.Remove(sub)
-		}
 	}
 }
 
