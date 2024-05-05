@@ -3067,7 +3067,12 @@ func TestJetStreamClusterWorkQueueAfterScaleUp(t *testing.T) {
 	c.waitOnStreamLeader(globalAccountName, "TEST")
 
 	sendStreamMsg(t, nc, "WQ", "SOME WORK")
-	<-wch
+
+	select {
+	case <-wch:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive ack signal")
+	}
 
 	checkFor(t, time.Second, 200*time.Millisecond, func() error {
 		si, err := js.StreamInfo("TEST")
