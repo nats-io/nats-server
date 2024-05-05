@@ -22462,3 +22462,38 @@ func TestInterestConsumerFilterEdit(t *testing.T) {
 	}
 }
 
+// https://github.com/nats-io/nats-server/issues/5383
+func TestInterestStreamWithFilterSubjectsConsumer(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "INTEREST",
+		Retention: nats.InterestPolicy,
+		Subjects:  []string{"interest.>"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("INTEREST", &nats.ConsumerConfig{
+		Durable:        "C",
+		FilterSubjects: []string{"interest.a", "interest.b"},
+		AckPolicy:      nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	for _, sub := range []string{"interest.a", "interest.b", "interest.c"} {
+		_, err = js.Publish(sub, nil)
+		require_NoError(t, err)
+	}
+
+	// we check we got 2 messages, interest.c doesn't have interest
+	nfo, err := js.StreamInfo("INTEREST")
+	require_NoError(t, err)
+	if nfo.State.Msgs != 2 {
+		t.Fatalf("expected 2 messages got %d", nfo.State.Msgs)
+	}
+}
