@@ -5859,7 +5859,7 @@ checkCache:
 	// We want to hold the mb lock here to avoid any changes to state.
 	buf, err := mb.loadBlock(nil)
 	if err != nil {
-		mb.fs.warn("loadBlock error: ", err)
+		mb.fs.warn("loadBlock error: %v", err)
 		if err == errNoBlkData {
 			if ld, _, err := mb.rebuildStateLocked(); err != nil && ld != nil {
 				// Rebuild fs state too.
