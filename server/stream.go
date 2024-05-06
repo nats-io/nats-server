@@ -3067,7 +3067,6 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 				}
 			}
 			mset.mu.Unlock()
-			//ready.Wait()
 		case <-time.After(srcConsumerWaitTime):
 			mset.unsubscribe(crSub)
 			// We already waited 30 seconds, let's retry now.
