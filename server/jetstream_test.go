@@ -16808,7 +16808,7 @@ func TestJetStreamWorkQueueSourceRestart(t *testing.T) {
 	sub, err := js.PullSubscribe("foo", "dur", nats.BindStream("TEST"))
 	require_NoError(t, err)
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(1 * time.Second)
 
 	ci, err := js.ConsumerInfo("TEST", "dur")
 	require_NoError(t, err)
