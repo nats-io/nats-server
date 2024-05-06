@@ -1,4 +1,4 @@
-// Copyright 2020-2023 The NATS Authors
+// Copyright 2020-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -2344,31 +2344,38 @@ func (n *raft) runAsLeader() {
 			n.resp.recycle(&ars)
 		case <-n.prop.ch:
 			const maxBatch = 256 * 1024
+			const maxEntries = 512
 			var entries []*Entry
 
-			es := n.prop.pop()
-			sz := 0
-			for i, b := range es {
+			es, sz := n.prop.pop(), 0
+			for _, b := range es {
 				if b.Type == EntryRemovePeer {
 					n.doRemovePeerAsLeader(string(b.Data))
 				}
 				entries = append(entries, b)
-				sz += len(b.Data) + 1
-				if i != len(es)-1 && sz < maxBatch && len(entries) < math.MaxUint16 {
-					continue
-				}
-				n.sendAppendEntry(entries)
-
 				// If this is us sending out a leadership transfer stepdown inline here.
 				if b.Type == EntryLeaderTransfer {
+					// Send out what we have and switch to follower.
+					n.sendAppendEntry(entries)
 					n.prop.recycle(&es)
 					n.debug("Stepping down due to leadership transfer")
 					n.switchToFollower(noLeader)
 					return
 				}
+				// Increment size.
+				sz += len(b.Data) + 1
+				// If below thresholds go ahead and send.
+				if sz < maxBatch && len(entries) < maxEntries {
+					continue
+				}
+				n.sendAppendEntry(entries)
+				// Reset our sz and entries.
 				// We need to re-create `entries` because there is a reference
 				// to it in the node's pae map.
-				entries = nil
+				sz, entries = 0, nil
+			}
+			if len(entries) > 0 {
+				n.sendAppendEntry(entries)
 			}
 			n.prop.recycle(&es)
 
@@ -2413,9 +2420,9 @@ func (n *raft) Quorum() bool {
 	n.RLock()
 	defer n.RUnlock()
 
-	now, nc := time.Now().UnixNano(), 1
-	for _, peer := range n.peers {
-		if now-peer.ts < int64(lostQuorumInterval) {
+	now, nc := time.Now().UnixNano(), 0
+	for id, peer := range n.peers {
+		if id == n.id || time.Duration(now-peer.ts) < lostQuorumInterval {
 			nc++
 			if nc >= n.qn {
 				return true
@@ -2437,9 +2444,9 @@ func (n *raft) lostQuorumLocked() bool {
 		return false
 	}
 
-	now, nc := time.Now().UnixNano(), 1
-	for _, peer := range n.peers {
-		if now-peer.ts < int64(lostQuorumInterval) {
+	now, nc := time.Now().UnixNano(), 0
+	for id, peer := range n.peers {
+		if id == n.id || time.Duration(now-peer.ts) < lostQuorumInterval {
 			nc++
 			if nc >= n.qn {
 				return false
@@ -4000,25 +4007,27 @@ func (n *raft) updateLeadChange(isLeader bool) {
 
 // Lock should be held.
 func (n *raft) switchState(state RaftState) {
-	if n.State() == Closed {
+	pstate := n.State()
+	if pstate == Closed {
 		return
 	}
 
 	// Reset the election timer.
 	n.resetElectionTimeout()
+	// Set our state.
+	n.state.Store(int32(state))
 
-	if n.State() == Leader && state != Leader {
+	if pstate == Leader && state != Leader {
 		n.updateLeadChange(false)
 		// Drain the response queue.
 		n.resp.drain()
-	} else if state == Leader && n.State() != Leader {
+	} else if state == Leader && pstate != Leader {
 		if len(n.pae) > 0 {
 			n.pae = make(map[uint64]*appendEntry)
 		}
 		n.updateLeadChange(true)
 	}
 
-	n.state.Store(int32(state))
 	n.writeTermVote()
 }
 
