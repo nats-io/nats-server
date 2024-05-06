@@ -1099,6 +1099,29 @@ func (s *Server) wsConfigAuth(opts *WebsocketOpts) {
 	ws.authOverride = opts.Username != _EMPTY_ || opts.Token != _EMPTY_ || opts.NoAuthUser != _EMPTY_
 }
 
+// HandleWebSocket allows for an embedded server to expose a NATS websocket Handler
+// preventing the need to reverse proxy the NATS connection back into a separate
+// port on the same process. By using this handler, the embedded server is responsible
+// for handling the tls configurations as well as the requested origins, as the internal
+// code in used by this handler will allow all origins.
+// This endpoint does come with some limitations, such as not supporting MQTT or Leaf Nodes,
+// as well as if the HTTP handler is not on the root path (/), most NATS clients will not be
+// able to connect to the endpoint. The intention of this handler is for in browser
+// websocket connections.
+func (s *Server) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
+	res, err := s.wsUpgrade(w, r)
+	if err != nil {
+		s.Errorf(err.Error())
+		return
+	}
+	switch res.kind {
+	case CLIENT:
+		s.createWSClient(res.conn, res.ws)
+	default:
+		// all other cases are not supported on the direct WebSocket endpoint
+	}
+}
+
 func (s *Server) startWebsocketServer() {
 	if s.isShuttingDown() {
 		return
