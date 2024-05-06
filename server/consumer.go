@@ -423,8 +423,7 @@ const (
 	// JsDeleteWaitTimeDefault is the default amount of time we will wait for non-durable
 	// consumers to be in an inactive state before deleting them.
 	JsDeleteWaitTimeDefault = 5 * time.Second
-	// JsFlowControlMaxPending specifies default pending bytes during flow control that can be
-	// outstanding.
+	// JsFlowControlMaxPending specifies default pending bytes during flow control that can be outstanding.
 	JsFlowControlMaxPending = 32 * 1024 * 1024
 	// JsDefaultMaxAckPending is set for consumers with explicit ack that do not set the max ack pending.
 	JsDefaultMaxAckPending = 1000
@@ -1143,17 +1142,12 @@ func (o *consumer) clearNode() {
 
 // IsLeader will return if we are the current leader.
 func (o *consumer) IsLeader() bool {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
 	return o.isLeader()
 }
 
 // Lock should be held.
 func (o *consumer) isLeader() bool {
-	if o.node != nil {
-		return o.node.Leader()
-	}
-	return true
+	return o.leader.Load()
 }
 
 func (o *consumer) setLeader(isLeader bool) {
@@ -1472,15 +1466,15 @@ func (o *consumer) setCreatedTime(created time.Time) {
 // that, but in the absence of local interest and presence of gateways or service imports we need
 // to check those as well.
 func (o *consumer) hasDeliveryInterest(localInterest bool) bool {
-	o.mu.Lock()
+	o.mu.RLock()
 	mset := o.mset
 	if mset == nil {
-		o.mu.Unlock()
+		o.mu.RUnlock()
 		return false
 	}
 	acc := o.acc
 	deliver := o.cfg.DeliverSubject
-	o.mu.Unlock()
+	o.mu.RUnlock()
 
 	if localInterest {
 		return true
@@ -4002,7 +3996,8 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 
 		// If given request fulfilled batch size, but there are still pending bytes, send information about it.
 		if wrn <= 0 && wrb > 0 {
-			o.outq.send(newJSPubMsg(dsubj, _EMPTY_, _EMPTY_, fmt.Appendf(nil, JsPullRequestRemainingBytesT, JSPullRequestPendingMsgs, wrn, JSPullRequestPendingBytes, wrb), nil, nil, 0))
+			msg := fmt.Appendf(nil, JsPullRequestRemainingBytesT, JSPullRequestPendingMsgs, wrn, JSPullRequestPendingBytes, wrb)
+			o.outq.send(newJSPubMsg(dsubj, _EMPTY_, _EMPTY_, msg, nil, nil, 0))
 		}
 		// Reset our idle heartbeat timer if set.
 		if hb != nil {

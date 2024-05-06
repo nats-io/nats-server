@@ -11994,7 +11994,7 @@ func TestJetStreamStreamSourceFromKV(t *testing.T) {
 	rev1, err := kv.Create("key", []byte("value1"))
 	require_NoError(t, err)
 
-	m, err := ss.Fetch(1, nats.MaxWait(500*time.Millisecond))
+	m, err := ss.Fetch(1, nats.MaxWait(2*time.Second))
 	require_NoError(t, err)
 	require_NoError(t, m[0].Ack())
 	if string(m[0].Data) != "value1" {
@@ -16808,7 +16808,7 @@ func TestJetStreamWorkQueueSourceRestart(t *testing.T) {
 	sub, err := js.PullSubscribe("foo", "dur", nats.BindStream("TEST"))
 	require_NoError(t, err)
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(1 * time.Second)
 
 	ci, err := js.ConsumerInfo("TEST", "dur")
 	require_NoError(t, err)
@@ -21723,6 +21723,7 @@ func TestJetStreamLimitsToInterestPolicy(t *testing.T) {
 	// another consumer info just to be sure.
 	// require_NoError(t, err)
 	c.waitOnAllCurrent()
+	c.waitOnConsumerLeader(globalAccountName, "TEST", cname)
 	cinfo, err = js.ConsumerInfo("TEST", cname)
 	require_NoError(t, err)
 	require_Equal(t, cinfo.Config.Replicas, streamCfg.Replicas)
