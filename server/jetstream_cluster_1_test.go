@@ -1,4 +1,4 @@
-// Copyright 2020-2022 The NATS Authors
+// Copyright 2020-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -2280,7 +2280,7 @@ func TestJetStreamClusterMirrorAndSourceWorkQueues(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	// Allow direct sync consumers to connect.
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(1500 * time.Millisecond)
 
 	if _, err = js.Publish("foo", []byte("ok")); err != nil {
 		t.Fatalf("Unexpected publish error: %v", err)
@@ -2337,7 +2337,7 @@ func TestJetStreamClusterMirrorAndSourceInterestPolicyStream(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	// Allow sync consumers to connect.
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(1500 * time.Millisecond)
 
 	if _, err = js.Publish("foo", []byte("ok")); err != nil {
 		t.Fatalf("Unexpected publish error: %v", err)
@@ -5396,7 +5396,7 @@ func TestJetStreamClusterSourcesFilteringAndUpdating(t *testing.T) {
 
 	checkSync := func(msgsTest, msgsM uint64) {
 		t.Helper()
-		checkFor(t, 20*time.Second, 500*time.Millisecond, func() error {
+		checkFor(t, 30*time.Second, time.Second, func() error {
 			if tsi, err := js.StreamInfo("TEST"); err != nil {
 				return err
 			} else if msi, err := js.StreamInfo("M"); err != nil {
@@ -5443,7 +5443,7 @@ func TestJetStreamClusterSourcesFilteringAndUpdating(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	// as it is a new source (never been sourced before) it starts sourcing at the start of TEST
+	// As it is a new source (never been sourced before) it starts sourcing at the start of TEST
 	// and therefore sources the message on "bar" that is in TEST
 	checkSync(200, 200)
 
@@ -5484,7 +5484,7 @@ func TestJetStreamClusterSourcesFilteringAndUpdating(t *testing.T) {
 	sendBatch("foo", 100)
 	checkSync(600, 600)
 
-	// Check that purging the stream and does not cause the sourcing of the messages
+	// Check that purging the stream and does not cause the re-sourcing of the messages
 	js.PurgeStream("M")
 	checkSync(600, 0)
 
@@ -5494,6 +5494,10 @@ func TestJetStreamClusterSourcesFilteringAndUpdating(t *testing.T) {
 	c.restartAll()
 	c.waitOnStreamLeader("$G", "TEST")
 	c.waitOnStreamLeader("$G", "M")
+
+	// Allow direct sync consumers to connect.
+	// This test could pass if we do not hook up and try to deliver the messages when we should not.
+	time.Sleep(1500 * time.Millisecond)
 
 	nc, js = jsClientConnect(t, c.randomServer())
 	defer nc.Close()

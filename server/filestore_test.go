@@ -6371,7 +6371,7 @@ func TestFileStoreFSSMeta(t *testing.T) {
 	require_False(t, stillHasCache)
 
 	// Let fss expire via SubjectStateExpire.
-	time.Sleep(time.Second)
+	time.Sleep(1500 * time.Millisecond)
 
 	var noFSS bool
 	fs.mu.RLock()

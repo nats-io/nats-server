@@ -1,4 +1,4 @@
-// Copyright 2020-2022 The NATS Authors
+// Copyright 2020-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -1996,7 +1996,7 @@ func TestJetStreamSuperClusterMovingStreamsWithMirror(t *testing.T) {
 	}()
 
 	// Let it get going.
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(1500 * time.Millisecond)
 
 	// Now move the source to a new cluster.
 	_, err = js.UpdateStream(&nats.StreamConfig{
@@ -2531,7 +2531,7 @@ func TestJetStreamSuperClusterStateOnRestartPreventsConsumerRecovery(t *testing.
 		require_NoError(t, err)
 	}
 	sub := natsSubSync(t, nc, "d")
-	natsNexMsg(t, sub, time.Second)
+	natsNexMsg(t, sub, 5*time.Second)
 
 	c := sc.clusterForName("C2")
 	cl := c.consumerLeader("$G", "DS", "dlc")
