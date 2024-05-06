@@ -3008,7 +3008,6 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 
 		select {
 		case ccr := <-respCh:
-			//			ready := sync.WaitGroup{}
 			mset.mu.Lock()
 			// Check that it has not been removed or canceled (si.sub would be nil)
 			if si := mset.sources[iname]; si != nil {
