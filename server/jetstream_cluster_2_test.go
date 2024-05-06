@@ -1481,6 +1481,9 @@ func TestJetStreamClusterMirrorAndSourceExpiration(t *testing.T) {
 		}
 	}
 
+	// Allow direct sync consumers to connect.
+	time.Sleep(1500 * time.Millisecond)
+
 	sendBatch(100)
 	checkTest(100)
 	checkMirror(100)

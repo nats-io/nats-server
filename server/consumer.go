@@ -423,8 +423,7 @@ const (
 	// JsDeleteWaitTimeDefault is the default amount of time we will wait for non-durable
 	// consumers to be in an inactive state before deleting them.
 	JsDeleteWaitTimeDefault = 5 * time.Second
-	// JsFlowControlMaxPending specifies default pending bytes during flow control that can be
-	// outstanding.
+	// JsFlowControlMaxPending specifies default pending bytes during flow control that can be outstanding.
 	JsFlowControlMaxPending = 32 * 1024 * 1024
 	// JsDefaultMaxAckPending is set for consumers with explicit ack that do not set the max ack pending.
 	JsDefaultMaxAckPending = 1000
@@ -1143,17 +1142,12 @@ func (o *consumer) clearNode() {
 
 // IsLeader will return if we are the current leader.
 func (o *consumer) IsLeader() bool {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
 	return o.isLeader()
 }
 
 // Lock should be held.
 func (o *consumer) isLeader() bool {
-	if o.node != nil {
-		return o.node.Leader()
-	}
-	return true
+	return o.leader.Load()
 }
 
 func (o *consumer) setLeader(isLeader bool) {
@@ -1190,9 +1184,6 @@ func (o *consumer) setLeader(isLeader bool) {
 		mset.mu.RLock()
 		s, jsa, stream, lseq := mset.srv, mset.jsa, mset.cfg.Name, mset.lseq
 		mset.mu.RUnlock()
-
-		// Register as a leader with our parent stream.
-		mset.setConsumerAsLeader(o)
 
 		o.mu.Lock()
 		o.rdq = nil
@@ -1367,11 +1358,6 @@ func (o *consumer) setLeader(isLeader bool) {
 			o.ackMsgs.drain()
 		}
 		o.mu.Unlock()
-
-		// Unregister as a leader with our parent stream.
-		if mset != nil {
-			mset.removeConsumerAsLeader(o)
-		}
 	}
 }
 
@@ -1480,15 +1466,15 @@ func (o *consumer) setCreatedTime(created time.Time) {
 // that, but in the absence of local interest and presence of gateways or service imports we need
 // to check those as well.
 func (o *consumer) hasDeliveryInterest(localInterest bool) bool {
-	o.mu.Lock()
+	o.mu.RLock()
 	mset := o.mset
 	if mset == nil {
-		o.mu.Unlock()
+		o.mu.RUnlock()
 		return false
 	}
 	acc := o.acc
 	deliver := o.cfg.DeliverSubject
-	o.mu.Unlock()
+	o.mu.RUnlock()
 
 	if localInterest {
 		return true
@@ -1919,6 +1905,13 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 	// Record new config for others that do not need special handling.
 	// Allowed but considered no-op, [Description, SampleFrequency, MaxWaiting, HeadersOnly]
 	o.cfg = *cfg
+
+	// Cleanup messages that lost interest.
+	if o.retention == InterestPolicy {
+		o.mu.Unlock()
+		o.cleanupNoInterestMessages(o.mset, false)
+		o.mu.Lock()
+	}
 
 	// Re-calculate num pending on update.
 	o.streamNumPending()
@@ -4003,7 +3996,8 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 
 		// If given request fulfilled batch size, but there are still pending bytes, send information about it.
 		if wrn <= 0 && wrb > 0 {
-			o.outq.send(newJSPubMsg(dsubj, _EMPTY_, _EMPTY_, fmt.Appendf(nil, JsPullRequestRemainingBytesT, JSPullRequestPendingMsgs, wrn, JSPullRequestPendingBytes, wrb), nil, nil, 0))
+			msg := fmt.Appendf(nil, JsPullRequestRemainingBytesT, JSPullRequestPendingMsgs, wrn, JSPullRequestPendingBytes, wrb)
+			o.outq.send(newJSPubMsg(dsubj, _EMPTY_, _EMPTY_, msg, nil, nil, 0))
 		}
 		// Reset our idle heartbeat timer if set.
 		if hb != nil {
@@ -5092,7 +5086,6 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	if dflag {
 		ca = o.ca
 	}
-	sigSubs := o.sigSubs
 	js := o.js
 	o.mu.Unlock()
 
@@ -5109,45 +5102,15 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 
 	var rp RetentionPolicy
 	if mset != nil {
-		if len(sigSubs) > 0 {
-			mset.removeConsumerAsLeader(o)
-		}
 		mset.mu.Lock()
 		mset.removeConsumer(o)
 		rp = mset.cfg.Retention
 		mset.mu.Unlock()
 	}
 
-	// We need to optionally remove all messages since we are interest based retention.
-	// We will do this consistently on all replicas. Note that if in clustered mode the
-	// non-leader consumers will need to restore state first.
+	// Cleanup messages that lost interest.
 	if dflag && rp == InterestPolicy {
-		state := mset.state()
-		stop := state.LastSeq
-		o.mu.Lock()
-		if !o.isLeader() {
-			o.readStoredState(stop)
-		}
-		start := o.asflr
-		o.mu.Unlock()
-		// Make sure we start at worst with first sequence in the stream.
-		if start < state.FirstSeq {
-			start = state.FirstSeq
-		}
-
-		var rmseqs []uint64
-		mset.mu.Lock()
-		for seq := start; seq <= stop; seq++ {
-			if mset.noInterest(seq, o) {
-				rmseqs = append(rmseqs, seq)
-			}
-		}
-		mset.mu.Unlock()
-
-		// These can be removed.
-		for _, seq := range rmseqs {
-			mset.store.RemoveMsg(seq)
-		}
+		o.cleanupNoInterestMessages(mset, true)
 	}
 
 	// Cluster cleanup.
@@ -5188,6 +5151,46 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	}
 
 	return err
+}
+
+// We need to optionally remove all messages since we are interest based retention.
+// We will do this consistently on all replicas. Note that if in clustered mode the non-leader
+// consumers will need to restore state first.
+// ignoreInterest marks whether the consumer should be ignored when determining interest.
+// No lock held on entry.
+func (o *consumer) cleanupNoInterestMessages(mset *stream, ignoreInterest bool) {
+	state := mset.state()
+	stop := state.LastSeq
+	o.mu.Lock()
+	if !o.isLeader() {
+		o.readStoredState(stop)
+	}
+	start := o.asflr
+	o.mu.Unlock()
+	// Make sure we start at worst with first sequence in the stream.
+	if start < state.FirstSeq {
+		start = state.FirstSeq
+	}
+
+	// Consumer's interests are ignored by default. If we should not ignore interest, unset.
+	co := o
+	if !ignoreInterest {
+		co = nil
+	}
+
+	var rmseqs []uint64
+	mset.mu.Lock()
+	for seq := start; seq <= stop; seq++ {
+		if mset.noInterest(seq, co) {
+			rmseqs = append(rmseqs, seq)
+		}
+	}
+	mset.mu.Unlock()
+
+	// These can be removed.
+	for _, seq := range rmseqs {
+		mset.store.RemoveMsg(seq)
+	}
 }
 
 // Check that we do not form a cycle by delivering to a delivery subject
@@ -5280,18 +5283,24 @@ func (o *consumer) signalSubs() []*subscription {
 }
 
 // This is what will be called when our parent stream wants to kick us regarding a new message.
-// We know that we are the leader and that this subject matches us by how the parent handles registering
-// us with the signaling sublist.
+// We know that this subject matches us by how the parent handles registering us with the signaling sublist,
+// but we must check if we are leader.
 // We do need the sequence of the message however and we use the msg as the encoded seq.
 func (o *consumer) processStreamSignal(_ *subscription, _ *client, _ *Account, subject, _ string, seqb []byte) {
-	var le = binary.LittleEndian
-	seq := le.Uint64(seqb)
-
+	// We can get called here now when not leader, so bail fast
+	// and without acquiring any locks.
+	if !o.leader.Load() {
+		return
+	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.mset == nil {
 		return
 	}
+
+	var le = binary.LittleEndian
+	seq := le.Uint64(seqb)
+
 	if seq > o.npf {
 		o.npc++
 	}

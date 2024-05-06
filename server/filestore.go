@@ -5746,7 +5746,7 @@ checkCache:
 	// We want to hold the mb lock here to avoid any changes to state.
 	buf, err := mb.loadBlock(nil)
 	if err != nil {
-		mb.fs.warn("loadBlock error: ", err)
+		mb.fs.warn("loadBlock error: %v", err)
 		if err == errNoBlkData {
 			if ld, _, err := mb.rebuildStateLocked(); err != nil && ld != nil {
 				// Rebuild fs state too.
@@ -6173,7 +6173,7 @@ func (fs *fileStore) LoadNextMsgMulti(sl *Sublist, start uint64, smp *StoreMsg) 
 	if fs.closed {
 		return nil, 0, ErrStoreClosed
 	}
-	if fs.state.Msgs == 0 {
+	if fs.state.Msgs == 0 || start > fs.state.LastSeq {
 		return nil, fs.state.LastSeq, ErrStoreEOF
 	}
 	if start < fs.state.FirstSeq {
@@ -6207,7 +6207,7 @@ func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64, sm *Store
 	if fs.closed {
 		return nil, 0, ErrStoreClosed
 	}
-	if fs.state.Msgs == 0 {
+	if fs.state.Msgs == 0 || start > fs.state.LastSeq {
 		return nil, fs.state.LastSeq, ErrStoreEOF
 	}
 	if start < fs.state.FirstSeq {
