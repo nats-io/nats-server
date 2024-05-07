@@ -2481,8 +2481,10 @@ func (s *Server) Shutdown() {
 	if s.websocket.server != nil {
 		doneExpected++
 		s.websocket.server.Close()
+		s.websocket.mu.Lock()
 		s.websocket.server = nil
 		s.websocket.listener = nil
+		s.websocket.mu.Unlock()
 	}
 
 	// Kick MQTT accept loop
@@ -4396,8 +4398,10 @@ func (s *Server) changeRateLimitLogInterval(d time.Duration) {
 
 // DisconnectClientByID disconnects a client by connection ID
 func (s *Server) DisconnectClientByID(id uint64) error {
-	client := s.clients[id]
-	if client != nil {
+	if s == nil {
+		return ErrServerNotRunning
+	}
+	if client := s.getClient(id); client != nil {
 		client.closeConnection(Kicked)
 		return nil
 	}
@@ -4406,23 +4410,27 @@ func (s *Server) DisconnectClientByID(id uint64) error {
 
 // LDMClientByID sends a Lame Duck Mode info message to a client by connection ID
 func (s *Server) LDMClientByID(id uint64) error {
+	if s == nil {
+		return ErrServerNotRunning
+	}
+	s.mu.RLock()
+	c := s.clients[id]
+	if c == nil {
+		s.mu.RUnlock()
+		return errors.New("no such client id")
+	}
 	info := s.copyInfo()
 	info.LameDuckMode = true
-
-	c := s.clients[id]
-	if c != nil {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		if c.opts.Protocol >= ClientProtoInfo &&
-			c.flags.isSet(firstPongSent) {
-			// sendInfo takes care of checking if the connection is still
-			// valid or not, so don't duplicate tests here.
-			c.Debugf("sending Lame Duck Mode info to client")
-			c.enqueueProto(c.generateClientInfoJSON(info))
-			return nil
-		} else {
-			return errors.New("ClientProtoInfo < ClientOps.Protocol or first pong not sent")
-		}
+	s.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.opts.Protocol >= ClientProtoInfo && c.flags.isSet(firstPongSent) {
+		// sendInfo takes care of checking if the connection is still
+		// valid or not, so don't duplicate tests here.
+		c.Debugf("Sending Lame Duck Mode info to client")
+		c.enqueueProto(c.generateClientInfoJSON(info))
+		return nil
+	} else {
+		return errors.New("client does not support Lame Duck Mode or is not ready to receive the notification")
 	}
-	return errors.New("no such client id")
 }

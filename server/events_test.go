@@ -3459,10 +3459,28 @@ func TestServerEventsLDMKick(t *testing.T) {
 	reqkick := KickClientReq{CID: cid}
 	reqkickpayload, _ := json.Marshal(reqkick)
 
-	_, err = ncs.Request(fmt.Sprintf("$SYS.REQ.SERVER.%s.LDM", s.ID()), reqldmpayload, time.Second)
-	if err != nil {
-		t.Fatalf("Error trying to publish the LDM request: %v", err)
+	// Test for data races when getting the client by ID
+	uc := createUserCreds(t, s, akp2)
+	totalClients := 100
+	someClients := make([]*nats.Conn, 0, totalClients)
+	for i := 0; i < totalClients; i++ {
+		nc, err := nats.Connect(s.ClientURL(), uc)
+		require_NoError(t, err)
+		defer nc.Close()
+		someClients = append(someClients, nc)
 	}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < totalClients; i++ {
+			someClients[i].Close()
+		}
+	}()
+	defer wg.Wait()
+
+	_, err = ncs.Request(fmt.Sprintf("$SYS.REQ.SERVER.%s.LDM", s.ID()), reqldmpayload, time.Second)
+	require_NoError(t, err)
 
 	select {
 	case <-ldmed:
@@ -3471,9 +3489,7 @@ func TestServerEventsLDMKick(t *testing.T) {
 	}
 
 	_, err = ncs.Request(fmt.Sprintf("$SYS.REQ.SERVER.%s.KICK", s.ID()), reqkickpayload, time.Second)
-	if err != nil {
-		t.Fatalf("Error trying to publish the KICK request: %v", err)
-	}
+	require_NoError(t, err)
 
 	select {
 	case <-disconnected:
