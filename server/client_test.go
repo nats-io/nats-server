@@ -2962,3 +2962,45 @@ func TestRemoveHeaderIfPrefixPresent(t *testing.T) {
 		t.Fatalf("Expected headers to be stripped, got %q", hdr)
 	}
 }
+
+func TestInProcessAllowedConnectionType(t *testing.T) {
+	tmpl := `
+		listen: "127.0.0.1:-1"
+		accounts {
+			A { users: [{user: "test", password: "pwd", allowed_connection_types: ["%s"]}] }
+		}
+		write_deadline: "500ms"
+	`
+	for _, test := range []struct {
+		name          string
+		ct            string
+		inProcessOnly bool
+	}{
+		{"inprocess", jwt.ConnectionTypeInProcess, true},
+		{"standard", jwt.ConnectionTypeStandard, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, test.ct)))
+			s, _ := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			// Create standard connection
+			nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("test", "pwd"))
+			if test.inProcessOnly && err == nil {
+				nc.Close()
+				t.Fatal("Expected standard connection to fail, it did not")
+			}
+			// Works if nc is nil (which it will if only in-process are allowed)
+			nc.Close()
+
+			// Create inProcess connection
+			nc, err = nats.Connect(_EMPTY_, nats.UserInfo("test", "pwd"), nats.InProcessServer(s))
+			if !test.inProcessOnly && err == nil {
+				nc.Close()
+				t.Fatal("Expected in-process connection to fail, it did not")
+			}
+			// Works if nc is nil (which it will if only standard are allowed)
+			nc.Close()
+		})
+	}
+}
