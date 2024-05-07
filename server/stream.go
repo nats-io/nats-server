@@ -2909,6 +2909,7 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 				req.Config.DeliverPolicy = DeliverByStartTime
 			} else if state.FirstSeq > 1 && !state.LastTime.IsZero() {
 				req.Config.OptStartTime = &state.LastTime
+				req.Config.DeliverPolicy = DeliverByStartTime
 			}
 		}
 
