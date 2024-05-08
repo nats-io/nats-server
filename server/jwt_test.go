@@ -2964,7 +2964,7 @@ func TestJWTAccountLimitsMaxConnsAfterExpired(t *testing.T) {
 	// is now lower, some clients should have been removed.
 	acc, _ := s.LookupAccount(fooPub)
 	acc.mu.Lock()
-	acc.expired = true
+	acc.expired.Store(true)
 	acc.updated = time.Now().UTC().Add(-2 * time.Second) // work around updating to quickly
 	acc.mu.Unlock()
 

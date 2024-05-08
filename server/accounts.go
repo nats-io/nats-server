@@ -83,7 +83,7 @@ type Account struct {
 	js           *jsAccount
 	jsLimits     map[string]JetStreamAccountLimits
 	limits
-	expired      bool
+	expired      atomic.Bool
 	incomplete   bool
 	signingKeys  map[string]jwt.Scope
 	extAuth      *jwt.ExternalAuthorization
@@ -795,7 +795,7 @@ func (a *Account) selectMappedSubject(dest string) (string, bool) {
 		return dest, false
 	}
 
-	a.mu.Lock()
+	a.mu.RLock()
 	// In case we have to tokenize for subset matching.
 	tsa := [32]string{}
 	tts := tsa[:0]
@@ -826,7 +826,7 @@ func (a *Account) selectMappedSubject(dest string) (string, bool) {
 	}
 
 	if m == nil {
-		a.mu.Unlock()
+		a.mu.RUnlock()
 		return dest, false
 	}
 
@@ -865,7 +865,7 @@ func (a *Account) selectMappedSubject(dest string) (string, bool) {
 		}
 	}
 
-	a.mu.Unlock()
+	a.mu.RUnlock()
 	return ndest, true
 }
 
@@ -2233,7 +2233,7 @@ const (
 // This is where all service export responses are handled.
 func (a *Account) processServiceImportResponse(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
 	a.mu.RLock()
-	if a.expired || len(a.exports.responses) == 0 {
+	if a.expired.Load() || len(a.exports.responses) == 0 {
 		a.mu.RUnlock()
 		return
 	}
@@ -2731,7 +2731,7 @@ func (a *Account) getWildcardServiceExport(from string) *serviceExport {
 // These are import stream specific versions for when an activation expires.
 func (a *Account) streamActivationExpired(exportAcc *Account, subject string) {
 	a.mu.RLock()
-	if a.expired || a.imports.streams == nil {
+	if a.expired.Load() || a.imports.streams == nil {
 		a.mu.RUnlock()
 		return
 	}
@@ -2766,7 +2766,7 @@ func (a *Account) streamActivationExpired(exportAcc *Account, subject string) {
 // These are import service specific versions for when an activation expires.
 func (a *Account) serviceActivationExpired(subject string) {
 	a.mu.RLock()
-	if a.expired || a.imports.services == nil {
+	if a.expired.Load() || a.imports.services == nil {
 		a.mu.RUnlock()
 		return
 	}
@@ -3032,18 +3032,13 @@ func (a *Account) checkServiceImportAuthorizedNoLock(account *Account, subject s
 
 // IsExpired returns expiration status.
 func (a *Account) IsExpired() bool {
-	a.mu.RLock()
-	exp := a.expired
-	a.mu.RUnlock()
-	return exp
+	return a.expired.Load()
 }
 
 // Called when an account has expired.
 func (a *Account) expiredTimeout() {
 	// Mark expired first.
-	a.mu.Lock()
-	a.expired = true
-	a.mu.Unlock()
+	a.expired.Store(true)
 
 	// Collect the clients and expire them.
 	cs := a.getClients()
@@ -3088,17 +3083,17 @@ func (a *Account) checkExpiration(claims *jwt.ClaimsData) {
 
 	a.clearExpirationTimer()
 	if claims.Expires == 0 {
-		a.expired = false
+		a.expired.Store(false)
 		return
 	}
 	tn := time.Now().Unix()
 	if claims.Expires <= tn {
-		a.expired = true
+		a.expired.Store(true)
 		return
 	}
 	expiresAt := time.Duration(claims.Expires - tn)
 	a.setExpirationTimer(expiresAt * time.Second)
-	a.expired = false
+	a.expired.Store(false)
 }
 
 // hasIssuer returns true if the issuer matches the account
