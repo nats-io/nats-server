@@ -2478,14 +2478,7 @@ func (s *Server) Shutdown() {
 	}
 
 	// Kick websocket server
-	s.websocket.mu.Lock()
-	if s.websocket.server != nil {
-		doneExpected++
-		s.websocket.server.Close()
-		s.websocket.server = nil
-		s.websocket.listener = nil
-	}
-	s.websocket.mu.Unlock()
+	doneExpected += s.closeWebsocketServer()
 
 	// Kick MQTT accept loop
 	if s.mqtt.listener != nil {
@@ -2571,6 +2564,24 @@ func (s *Server) Shutdown() {
 	}
 	// Notify that the shutdown is complete
 	close(s.shutdownComplete)
+}
+
+// Close the websocket server if running. If so, returns 1, else 0.
+// Server lock held on entry.
+func (s *Server) closeWebsocketServer() int {
+	ws := &s.websocket
+	ws.mu.Lock()
+	hs := ws.server
+	if hs != nil {
+		ws.server = nil
+		ws.listener = nil
+	}
+	ws.mu.Unlock()
+	if hs != nil {
+		hs.Close()
+		return 1
+	}
+	return 0
 }
 
 // WaitForShutdown will block until the server has been fully shutdown.
@@ -4092,14 +4103,7 @@ func (s *Server) lameDuckMode() {
 	expected := 1
 	s.listener.Close()
 	s.listener = nil
-	s.websocket.mu.Lock()
-	if s.websocket.server != nil {
-		expected++
-		s.websocket.server.Close()
-		s.websocket.server = nil
-		s.websocket.listener = nil
-	}
-	s.websocket.mu.Unlock()
+	expected += s.closeWebsocketServer()
 	s.ldmCh = make(chan bool, expected)
 	opts := s.getOpts()
 	gp := opts.LameDuckGracePeriod
