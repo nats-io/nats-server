@@ -2521,14 +2521,14 @@ func (s *Server) Shutdown() {
 	}
 
 	// Kick websocket server
+	s.websocket.mu.Lock()
 	if s.websocket.server != nil {
 		doneExpected++
 		s.websocket.server.Close()
-		s.websocket.mu.Lock()
 		s.websocket.server = nil
 		s.websocket.listener = nil
-		s.websocket.mu.Unlock()
 	}
+	s.websocket.mu.Unlock()
 
 	// Kick MQTT accept loop
 	if s.mqtt.listener != nil {
@@ -4135,14 +4135,14 @@ func (s *Server) lameDuckMode() {
 	expected := 1
 	s.listener.Close()
 	s.listener = nil
+	s.websocket.mu.Lock()
 	if s.websocket.server != nil {
 		expected++
 		s.websocket.server.Close()
-		s.websocket.mu.Lock()
 		s.websocket.server = nil
 		s.websocket.listener = nil
-		s.websocket.mu.Unlock()
 	}
+	s.websocket.mu.Unlock()
 	s.ldmCh = make(chan bool, expected)
 	opts := s.getOpts()
 	gp := opts.LameDuckGracePeriod
