@@ -1398,7 +1398,7 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 		var isNew bool
 		if acc, isNew = srv.LookupOrRegisterAccount(accountName); isNew {
 			acc.mu.Lock()
-			acc.expired = true
+			acc.expired.Store(true)
 			acc.incomplete = true
 			acc.mu.Unlock()
 		}
