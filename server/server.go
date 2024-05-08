@@ -4095,8 +4095,10 @@ func (s *Server) lameDuckMode() {
 	if s.websocket.server != nil {
 		expected++
 		s.websocket.server.Close()
+		s.websocket.mu.Lock()
 		s.websocket.server = nil
 		s.websocket.listener = nil
+		s.websocket.mu.Unlock()
 	}
 	s.ldmCh = make(chan bool, expected)
 	opts := s.getOpts()
