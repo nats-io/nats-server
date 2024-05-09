@@ -4061,59 +4061,135 @@ func TestWSJWTCookieUser(t *testing.T) {
 }
 
 func TestWSReloadTLSConfig(t *testing.T) {
+	tlsBlock := `
+		tls {
+			cert_file: '%s'
+			key_file: '%s'
+			ca_file: '../test/configs/certs/ca.pem'
+			verify: %v
+		}
+	`
 	template := `
 		listen: "127.0.0.1:-1"
 		websocket {
 			listen: "127.0.0.1:-1"
-			tls {
-				cert_file: '%s'
-				key_file: '%s'
-				ca_file: '../test/configs/certs/ca.pem'
-			}
+			%s
+			no_tls: %v
 		}
 	`
 	conf := createConfFile(t, []byte(fmt.Sprintf(template,
-		"../test/configs/certs/server-noip.pem",
-		"../test/configs/certs/server-key-noip.pem")))
+		fmt.Sprintf(tlsBlock,
+			"../test/configs/certs/server-noip.pem",
+			"../test/configs/certs/server-key-noip.pem",
+			false), false)))
 
 	s, o := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
 	addr := fmt.Sprintf("127.0.0.1:%d", o.Websocket.Port)
-	wsc, err := net.Dial("tcp", addr)
-	if err != nil {
-		t.Fatalf("Error creating ws connection: %v", err)
+
+	check := func(tlsConfig *tls.Config, handshakeFail bool, errTxt string) {
+		t.Helper()
+
+		wsc, err := net.Dial("tcp", addr)
+		require_NoError(t, err)
+		defer wsc.Close()
+
+		wsc = tls.Client(wsc, tlsConfig)
+		err = wsc.(*tls.Conn).Handshake()
+		if handshakeFail {
+			require_True(t, err != nil)
+			require_Contains(t, err.Error(), errTxt)
+			return
+		}
+		require_NoError(t, err)
+
+		req := testWSCreateValidReq()
+		req.URL, _ = url.Parse(wsSchemePrefixTLS + "://" + addr)
+		err = req.Write(wsc)
+		require_NoError(t, err)
+
+		br := bufio.NewReader(wsc)
+		resp, err := http.ReadResponse(br, req)
+		if errTxt == _EMPTY_ {
+			require_NoError(t, err)
+		} else {
+			require_True(t, err != nil)
+			require_Contains(t, err.Error(), errTxt)
+			return
+		}
+		defer resp.Body.Close()
+		l := testWSReadFrame(t, br)
+		require_True(t, bytes.HasPrefix(l, []byte("INFO {")))
+		var info Info
+		err = json.Unmarshal(l[5:], &info)
+		require_NoError(t, err)
+		require_True(t, info.TLSAvailable)
+		require_True(t, info.TLSRequired)
+		require_Equal[string](t, info.Host, "127.0.0.1")
+		require_Equal[int](t, info.Port, o.Websocket.Port)
 	}
-	defer wsc.Close()
 
 	tc := &TLSConfigOpts{CaFile: "../test/configs/certs/ca.pem"}
 	tlsConfig, err := GenTLSConfig(tc)
-	if err != nil {
-		t.Fatalf("Error generating TLS config: %v", err)
-	}
+	require_NoError(t, err)
 	tlsConfig.ServerName = "127.0.0.1"
 	tlsConfig.RootCAs = tlsConfig.ClientCAs
 	tlsConfig.ClientCAs = nil
-	wsc = tls.Client(wsc, tlsConfig.Clone())
-	if err := wsc.(*tls.Conn).Handshake(); err == nil || !strings.Contains(err.Error(), "SAN") {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	wsc.Close()
 
+	// Handshake should fail with error regarding SANs
+	check(tlsConfig.Clone(), true, "SAN")
+
+	// Replace certs with ones that allow IP.
 	reloadUpdateConfig(t, s, conf, fmt.Sprintf(template,
-		"../test/configs/certs/server-cert.pem",
-		"../test/configs/certs/server-key.pem"))
+		fmt.Sprintf(tlsBlock,
+			"../test/configs/certs/server-cert.pem",
+			"../test/configs/certs/server-key.pem",
+			false), false))
 
-	wsc, err = net.Dial("tcp", addr)
-	if err != nil {
-		t.Fatalf("Error creating ws connection: %v", err)
-	}
-	defer wsc.Close()
+	// Connection should succeed
+	check(tlsConfig.Clone(), false, _EMPTY_)
 
-	wsc = tls.Client(wsc, tlsConfig.Clone())
-	if err := wsc.(*tls.Conn).Handshake(); err != nil {
-		t.Fatalf("Error on TLS handshake: %v", err)
+	// Udpate config to require client cert.
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(template,
+		fmt.Sprintf(tlsBlock,
+			"../test/configs/certs/server-cert.pem",
+			"../test/configs/certs/server-key.pem",
+			true), false))
+
+	// Connection should fail saying that a tls cert is required
+	check(tlsConfig.Clone(), false, "required")
+
+	// Add a client cert
+	tc = &TLSConfigOpts{
+		CertFile: "../test/configs/certs/client-cert.pem",
+		KeyFile:  "../test/configs/certs/client-key.pem",
 	}
+	tlsConfig, err = GenTLSConfig(tc)
+	require_NoError(t, err)
+	tlsConfig.InsecureSkipVerify = true
+
+	// Connection should succeed
+	check(tlsConfig.Clone(), false, _EMPTY_)
+
+	// Removing the tls{} block but with no_tls still false should fail
+	changeCurrentConfigContentWithNewContent(t, conf, []byte(fmt.Sprintf(template, _EMPTY_, false)))
+	err = s.Reload()
+	require_True(t, err != nil)
+	require_Contains(t, err.Error(), "TLS configuration")
+
+	// We should still be able to connect a TLS client
+	check(tlsConfig.Clone(), false, _EMPTY_)
+
+	// Now remove the tls{} block and set no_tls: true and that should fail
+	// since this is not supported.
+	changeCurrentConfigContentWithNewContent(t, conf, []byte(fmt.Sprintf(template, _EMPTY_, true)))
+	err = s.Reload()
+	require_True(t, err != nil)
+	require_Contains(t, err.Error(), "not supported")
+
+	// We should still be able to connect a TLS client
+	check(tlsConfig.Clone(), false, _EMPTY_)
 }
 
 type captureClientConnectedLogger struct {
