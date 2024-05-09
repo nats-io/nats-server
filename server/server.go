@@ -2478,12 +2478,7 @@ func (s *Server) Shutdown() {
 	}
 
 	// Kick websocket server
-	if s.websocket.server != nil {
-		doneExpected++
-		s.websocket.server.Close()
-		s.websocket.server = nil
-		s.websocket.listener = nil
-	}
+	doneExpected += s.closeWebsocketServer()
 
 	// Kick MQTT accept loop
 	if s.mqtt.listener != nil {
@@ -2569,6 +2564,24 @@ func (s *Server) Shutdown() {
 	}
 	// Notify that the shutdown is complete
 	close(s.shutdownComplete)
+}
+
+// Close the websocket server if running. If so, returns 1, else 0.
+// Server lock held on entry.
+func (s *Server) closeWebsocketServer() int {
+	ws := &s.websocket
+	ws.mu.Lock()
+	hs := ws.server
+	if hs != nil {
+		ws.server = nil
+		ws.listener = nil
+	}
+	ws.mu.Unlock()
+	if hs != nil {
+		hs.Close()
+		return 1
+	}
+	return 0
 }
 
 // WaitForShutdown will block until the server has been fully shutdown.
@@ -4090,12 +4103,7 @@ func (s *Server) lameDuckMode() {
 	expected := 1
 	s.listener.Close()
 	s.listener = nil
-	if s.websocket.server != nil {
-		expected++
-		s.websocket.server.Close()
-		s.websocket.server = nil
-		s.websocket.listener = nil
-	}
+	expected += s.closeWebsocketServer()
 	s.ldmCh = make(chan bool, expected)
 	opts := s.getOpts()
 	gp := opts.LameDuckGracePeriod
@@ -4396,8 +4404,10 @@ func (s *Server) changeRateLimitLogInterval(d time.Duration) {
 
 // DisconnectClientByID disconnects a client by connection ID
 func (s *Server) DisconnectClientByID(id uint64) error {
-	client := s.clients[id]
-	if client != nil {
+	if s == nil {
+		return ErrServerNotRunning
+	}
+	if client := s.getClient(id); client != nil {
 		client.closeConnection(Kicked)
 		return nil
 	}
@@ -4406,23 +4416,27 @@ func (s *Server) DisconnectClientByID(id uint64) error {
 
 // LDMClientByID sends a Lame Duck Mode info message to a client by connection ID
 func (s *Server) LDMClientByID(id uint64) error {
+	if s == nil {
+		return ErrServerNotRunning
+	}
+	s.mu.RLock()
+	c := s.clients[id]
+	if c == nil {
+		s.mu.RUnlock()
+		return errors.New("no such client id")
+	}
 	info := s.copyInfo()
 	info.LameDuckMode = true
-
-	c := s.clients[id]
-	if c != nil {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		if c.opts.Protocol >= ClientProtoInfo &&
-			c.flags.isSet(firstPongSent) {
-			// sendInfo takes care of checking if the connection is still
-			// valid or not, so don't duplicate tests here.
-			c.Debugf("sending Lame Duck Mode info to client")
-			c.enqueueProto(c.generateClientInfoJSON(info))
-			return nil
-		} else {
-			return errors.New("ClientProtoInfo < ClientOps.Protocol or first pong not sent")
-		}
+	s.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.opts.Protocol >= ClientProtoInfo && c.flags.isSet(firstPongSent) {
+		// sendInfo takes care of checking if the connection is still
+		// valid or not, so don't duplicate tests here.
+		c.Debugf("Sending Lame Duck Mode info to client")
+		c.enqueueProto(c.generateClientInfoJSON(info))
+		return nil
+	} else {
+		return errors.New("client does not support Lame Duck Mode or is not ready to receive the notification")
 	}
-	return errors.New("no such client id")
 }
