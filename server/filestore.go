@@ -2298,6 +2298,7 @@ func (mb *msgBlock) firstMatchingMulti(sl *Sublist, start uint64, sm *StoreMsg) 
 }
 
 // Find the first matching message.
+// fs lock should be held.
 func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *StoreMsg) (*StoreMsg, bool, error) {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
@@ -2336,8 +2337,16 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 			return isSubsetMatchTokenized(tts, fts)
 		}
 	}
-	// Only do linear scan if isAll or we are wildcarded and have to traverse more fss than actual messages.
-	doLinearScan := isAll || (wc && len(mb.fss) > int(lseq-fseq))
+
+	subjs := mb.fs.cfg.Subjects
+	// If isAll or our single filter matches the filter arg do linear scan.
+	doLinearScan := isAll || (wc && len(subjs) == 1 && subjs[0] == filter)
+	// If we do not think we should do a linear scan check how many fss we
+	// would need to scan vs the full range of the linear walk. Optimize for
+	// 25th quantile of a match in a linear walk. Filter should be a wildcard.
+	if !doLinearScan && wc {
+		doLinearScan = len(mb.fss)*4 > int(lseq-fseq)
+	}
 
 	if !doLinearScan {
 		// If we have a wildcard match against all tracked subjects we know about.
@@ -2377,7 +2386,7 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 	// If we guess to not do a linear scan, but the above resulted in alot of subs that will
 	// need to be checked for every scanned message, revert.
 	// TODO(dlc) - we could memoize the subs across calls.
-	if len(subs) > int(lseq-fseq) {
+	if !doLinearScan && len(subs) > int(lseq-fseq) {
 		doLinearScan = true
 	}
 
