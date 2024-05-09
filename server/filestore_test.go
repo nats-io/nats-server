@@ -6933,3 +6933,62 @@ func Benchmark_FileStoreSelectMsgBlock(b *testing.B) {
 	}
 	b.StopTimer()
 }
+
+func Benchmark_FileStoreLoadNextMsgSameFilterAsStream(b *testing.B) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: b.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	if err != nil {
+		b.Fatalf("Unexpected error: %v", err)
+	}
+	defer fs.Stop()
+
+	// Small om purpose.
+	msg := []byte("ok")
+
+	// Add in a bunch of msgs
+	for i := 0; i < 100_000; i++ {
+		subj := fmt.Sprintf("foo.%d", rand.Intn(1024))
+		fs.StoreMsg(subj, nil, msg)
+	}
+
+	b.ResetTimer()
+
+	var smv StoreMsg
+	for i := 0; i < b.N; i++ {
+		// Needs to start at ~1 to show slowdown.
+		_, _, err := fs.LoadNextMsg("foo.*", true, 10, &smv)
+		require_NoError(b, err)
+	}
+}
+
+func Benchmark_FileStoreLoadNextMsgLiteralSubject(b *testing.B) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: b.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	if err != nil {
+		b.Fatalf("Unexpected error: %v", err)
+	}
+	defer fs.Stop()
+
+	// Small om purpose.
+	msg := []byte("ok")
+
+	// Add in a bunch of msgs
+	for i := 0; i < 100_000; i++ {
+		subj := fmt.Sprintf("foo.%d", rand.Intn(1024))
+		fs.StoreMsg(subj, nil, msg)
+	}
+	// This is the one we will try to match.
+	fs.StoreMsg("foo.2222", nil, msg)
+	// So not last and we think we are done linear scan.
+	fs.StoreMsg("foo.3333", nil, msg)
+
+	b.ResetTimer()
+
+	var smv StoreMsg
+	for i := 0; i < b.N; i++ {
+		_, _, err := fs.LoadNextMsg("foo.2222", false, 10, &smv)
+		require_NoError(b, err)
+	}
+}
