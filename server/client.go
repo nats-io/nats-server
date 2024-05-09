@@ -280,6 +280,7 @@ type client struct {
 	trace bool
 	echo  bool
 	noIcb bool
+	iproc bool // In-Process connection, set at creation and immutable.
 
 	tags    jwt.TagList
 	nameTag string
@@ -5958,7 +5959,8 @@ func convertAllowedConnectionTypes(cts []string) (map[string]struct{}, error) {
 		switch i {
 		case jwt.ConnectionTypeStandard, jwt.ConnectionTypeWebsocket,
 			jwt.ConnectionTypeLeafnode, jwt.ConnectionTypeLeafnodeWS,
-			jwt.ConnectionTypeMqtt, jwt.ConnectionTypeMqttWS:
+			jwt.ConnectionTypeMqtt, jwt.ConnectionTypeMqttWS,
+			jwt.ConnectionTypeInProcess:
 			m[i] = struct{}{}
 		default:
 			unknown = append(unknown, i)
@@ -5985,7 +5987,11 @@ func (c *client) connectionTypeAllowed(acts map[string]struct{}) bool {
 	case CLIENT:
 		switch c.clientType() {
 		case NATS:
-			want = jwt.ConnectionTypeStandard
+			if c.iproc {
+				want = jwt.ConnectionTypeInProcess
+			} else {
+				want = jwt.ConnectionTypeStandard
+			}
 		case WS:
 			want = jwt.ConnectionTypeWebsocket
 		case MQTT:

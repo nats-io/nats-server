@@ -3091,7 +3091,16 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 	}
 	now := time.Now()
 
-	c := &client{srv: s, nc: conn, opts: defaultOpts, mpay: maxPay, msubs: maxSubs, start: now, last: now}
+	c := &client{
+		srv:   s,
+		nc:    conn,
+		opts:  defaultOpts,
+		mpay:  maxPay,
+		msubs: maxSubs,
+		start: now,
+		last:  now,
+		iproc: inProcess,
+	}
 
 	c.registerWithAccount(s.globalAccount())
 
