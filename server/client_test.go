@@ -2976,8 +2976,8 @@ func TestInProcessAllowedConnectionType(t *testing.T) {
 		ct            string
 		inProcessOnly bool
 	}{
-		{"inprocess", jwt.ConnectionTypeInProcess, true},
-		{"standard", jwt.ConnectionTypeStandard, false},
+		{"conf inprocess", jwt.ConnectionTypeInProcess, true},
+		{"conf standard", jwt.ConnectionTypeStandard, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, test.ct)))
@@ -2995,6 +2995,57 @@ func TestInProcessAllowedConnectionType(t *testing.T) {
 
 			// Create inProcess connection
 			nc, err = nats.Connect(_EMPTY_, nats.UserInfo("test", "pwd"), nats.InProcessServer(s))
+			if !test.inProcessOnly && err == nil {
+				nc.Close()
+				t.Fatal("Expected in-process connection to fail, it did not")
+			}
+			// Works if nc is nil (which it will if only standard are allowed)
+			nc.Close()
+		})
+	}
+	for _, test := range []struct {
+		name          string
+		ct            string
+		inProcessOnly bool
+	}{
+		{"jwt inprocess", jwt.ConnectionTypeInProcess, true},
+		{"jwt standard", jwt.ConnectionTypeStandard, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			skp, _ := nkeys.FromSeed(oSeed)
+			spub, _ := skp.PublicKey()
+
+			o := defaultServerOptions
+			o.TrustedKeys = []string{spub}
+			o.WriteDeadline = 500 * time.Millisecond
+			s := RunServer(&o)
+			defer s.Shutdown()
+
+			buildMemAccResolver(s)
+
+			kp, _ := nkeys.CreateAccount()
+			aPub, _ := kp.PublicKey()
+			claim := jwt.NewAccountClaims(aPub)
+			aJwt, err := claim.Encode(oKp)
+			require_NoError(t, err)
+
+			addAccountToMemResolver(s, aPub, aJwt)
+
+			creds := createUserWithLimit(t, kp, time.Time{},
+				func(j *jwt.UserPermissionLimits) {
+					j.AllowedConnectionTypes.Add(test.ct)
+				})
+			// Create standard connection
+			nc, err := nats.Connect(s.ClientURL(), nats.UserCredentials(creds))
+			if test.inProcessOnly && err == nil {
+				nc.Close()
+				t.Fatal("Expected standard connection to fail, it did not")
+			}
+			// Works if nc is nil (which it will if only in-process are allowed)
+			nc.Close()
+
+			// Create inProcess connection
+			nc, err = nats.Connect(_EMPTY_, nats.UserCredentials(creds), nats.InProcessServer(s))
 			if !test.inProcessOnly && err == nil {
 				nc.Close()
 				t.Fatal("Expected in-process connection to fail, it did not")
