@@ -811,6 +811,8 @@ func TestBlocks(t *testing.T) {
 				}
 			} else if !strings.Contains(err.Error(), test.err) || !strings.Contains(err.Error(), test.linepos) {
 				t.Errorf("expected invalid conf error, got: %v", err)
+			} else if err != nil {
+				t.Error(err)
 			}
 		})
 	}
