@@ -2121,3 +2121,21 @@ func TestServerAuthBlockAndSysAccounts(t *testing.T) {
 	_, err = nats.Connect(s.ClientURL())
 	require_Error(t, err, nats.ErrAuthorization, errors.New("nats: Authorization Violation"))
 }
+
+// https://github.com/nats-io/nats-server/issues/5396
+func TestServerConfigLastLineComments(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+	{
+		"listen":  "0.0.0.0:4222"
+	}
+	# wibble
+	`))
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// This should work of course.
+	nc, err := nats.Connect(s.ClientURL())
+	require_NoError(t, err)
+	defer nc.Close()
+}
