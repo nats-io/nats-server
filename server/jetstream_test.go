@@ -23503,3 +23503,99 @@ func TestInterestStreamWithFilterSubjectsConsumer(t *testing.T) {
 		t.Fatalf("expected 2 messages got %d", nfo.State.Msgs)
 	}
 }
+
+func TestJetStreamHeadersToKeep(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_ = js
+	acc := s.GlobalAccount()
+	if _, err := acc.addStream(&StreamConfig{
+		Name:     "test",
+		Subjects: []string{"test.*"},
+		HeadersToKeep: []string{
+			"bbb",
+			"ddd",
+		},
+		// The that both options are mutually exclusive.
+		HeadersToRemove: []string{
+			"bbb",
+			"ddd",
+		},
+	}); err != nil {
+		t.Fatalf("Failed to add stream: %v", err)
+	}
+
+	// Now add a message with a header.
+	pubAck, err := js.PublishMsg(&nats.Msg{
+		Subject: "test.foo",
+		Header: nats.Header{
+			JSMsgId: []string{"1234"},
+			"aaa":   []string{"111"},
+			"bbb":   []string{"222"},
+			"ccc":   []string{"333"},
+			"ddd":   []string{"444"},
+		},
+	})
+	require_NoError(t, err)
+
+	// Now check that the header was removed.
+	rawMsg, err := js.GetMsg("test", pubAck.Sequence)
+	require_NoError(t, err)
+
+	require_Equal(t, rawMsg.Header.Get(JSMsgId), "1234")
+	require_Equal(t, rawMsg.Header.Get("aaa"), "")
+	require_Equal(t, rawMsg.Header.Get("bbb"), "222")
+	require_Equal(t, rawMsg.Header.Get("ccc"), "")
+	require_Equal(t, rawMsg.Header.Get("ddd"), "444")
+}
+
+func TestJetStreamHeadersToRemove(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_ = js
+	acc := s.GlobalAccount()
+	if _, err := acc.addStream(&StreamConfig{
+		Name:     "test",
+		Subjects: []string{"test.*"},
+		HeadersToRemove: []string{
+			"aaa",
+			"ccc",
+			JSMsgId,
+		},
+	}); err != nil {
+		t.Fatalf("Failed to add stream: %v", err)
+	}
+
+	// Now add a message with a header.
+	pubAck, err := js.PublishMsg(&nats.Msg{
+		Subject: "test.foo",
+		Header: nats.Header{
+			JSMsgId: []string{"1234"},
+			"aaa":   []string{"111"},
+			"bbb":   []string{"222"},
+			"ccc":   []string{"333"},
+			"ddd":   []string{"444"},
+		},
+	})
+	require_NoError(t, err)
+
+	// Now check that the header was removed.
+	rawMsg, err := js.GetMsg("test", pubAck.Sequence)
+	require_NoError(t, err)
+
+	require_Equal(t, rawMsg.Header.Get(JSMsgId), "1234")
+	require_Equal(t, rawMsg.Header.Get("aaa"), "")
+	require_Equal(t, rawMsg.Header.Get("bbb"), "222")
+	require_Equal(t, rawMsg.Header.Get("ccc"), "")
+	require_Equal(t, rawMsg.Header.Get("ddd"), "444")
+}
