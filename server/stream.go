@@ -3467,9 +3467,12 @@ func processHeaders(hdr []byte, headers map[string]struct{}, keep bool) []byte {
 		}
 		endKey += index
 
-		key := string(hdr[index:endKey])
-		if _, ok := headers[key]; ok != keep {
+		if _, ok := headers[string(hdr[index:endKey])]; ok != keep {
 			hdr = append(hdr[:index], hdr[end+len(_CRLF_):]...)
+
+			if len(hdr) <= len(emptyHdrLine) {
+				return nil
+			}
 		} else {
 			index = end + len(_CRLF_)
 		}
