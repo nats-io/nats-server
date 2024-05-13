@@ -122,7 +122,7 @@ type CreateConsumerRequest struct {
 	Stream   string         `json:"stream_name"`
 	Config   ConsumerConfig `json:"config"`
 	Action   ConsumerAction `json:"action"`
-	Pedantic bool           `json:"pedantic"`
+	Pedantic bool           `json:"pedantic,omitempty"`
 }
 
 type ConsumerAction int

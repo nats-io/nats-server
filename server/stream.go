@@ -36,8 +36,8 @@ import (
 	"github.com/nats-io/nuid"
 )
 
-// StreamRequest is used to create or update a stream.
-type StreamRequest struct {
+// StreamConfigRequest is used to create or update a stream.
+type StreamConfigRequest struct {
 	StreamConfig
 	// This is not part of the StreamConfig, because its scoped to request,
 	// and not to the stream itself.
@@ -1648,7 +1648,6 @@ func (mset *stream) fileStoreConfig() (FileStoreConfig, error) {
 	return fs.fileStoreConfig(), nil
 }
 
-// TODO(jrm): check if this is all ok
 // Do not hold jsAccount or jetStream lock
 func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, s *Server, pedantic bool) (*StreamConfig, error) {
 	cfg, apiErr := s.checkStreamCfg(new, jsa.acc(), pedantic)
@@ -1786,7 +1785,6 @@ func (mset *stream) updatePedantic(config *StreamConfig, pedantic bool) error {
 }
 
 // Update will allow certain configuration properties of an existing stream to be updated.
-// TODO(jrm): add pedantic mode here
 func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, pedantic bool) error {
 	_, jsa, err := mset.acc.checkForJetStream()
 	if err != nil {
@@ -1798,7 +1796,6 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 	s := mset.srv
 	mset.mu.RUnlock()
 
-	// TODO(jrm): I have a feeling that we are calling this method many times. Make sure its safe, as we do not have acces to the pedantic flag here.
 	cfg, err := mset.jsa.configUpdateCheck(&ocfg, config, s, pedantic)
 	if err != nil {
 		return NewJSStreamInvalidConfigError(err, Unless(err))
