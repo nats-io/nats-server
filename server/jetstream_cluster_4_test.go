@@ -1429,3 +1429,193 @@ func TestClusteredInterestConsumerFilterEdit(t *testing.T) {
 		t.Fatalf("expected 1 message got %d", nfo.State.Msgs)
 	}
 }
+
+func TestJetStreamClusterDoubleAckRedelivery(t *testing.T) {
+	conf := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {
+			store_dir: '%s',
+		}
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+		server_tags: ["test"]
+		system_account: sys
+		no_auth_user: js
+		accounts {
+			sys { users = [ { user: sys, pass: sys } ] }
+			js {
+				jetstream = enabled
+				users = [ { user: js, pass: js } ]
+		    }
+		}`
+	c := createJetStreamClusterWithTemplate(t, conf, "R3F", 3)
+	defer c.shutdown()
+	for _, s := range c.servers {
+		s.optsMu.Lock()
+		s.opts.LameDuckDuration = 15 * time.Second
+		s.opts.LameDuckGracePeriod = -15 * time.Second
+		s.optsMu.Unlock()
+	}
+	s := c.randomNonLeader()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	sc, err := js.AddStream(&nats.StreamConfig{
+		Name:     "LIMITS",
+		Subjects: []string{"foo.>"},
+		Replicas: 3,
+		Storage:  nats.FileStorage,
+	})
+	require_NoError(t, err)
+
+	stepDown := func() {
+		_, err = nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, sc.Config.Name), nil, time.Second)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var wg sync.WaitGroup
+	producer := func(name string) {
+		wg.Add(1)
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+		defer wg.Done()
+
+		i := 0
+		payload := []byte(strings.Repeat("Z", 1024))
+		for range time.NewTicker(1 * time.Millisecond).C {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			msgID := nats.MsgId(fmt.Sprintf("%s:%d", name, i))
+			js.PublishAsync("foo.bar", payload, msgID, nats.RetryAttempts(10))
+
+			i++
+		}
+	}
+	go producer("A")
+	go producer("B")
+	go producer("C")
+
+	sub, err := js.PullSubscribe("foo.bar", "ABC", nats.AckWait(5*time.Second), nats.MaxAckPending(1000), nats.PullMaxWaiting(1000))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type ackResult struct {
+		ack         *nats.Msg
+		original    *nats.Msg
+		redelivered *nats.Msg
+	}
+	received := make(map[string]int64)
+	acked := make(map[string]*ackResult)
+	errors := make(map[string]error)
+	extraRedeliveries := 0
+
+	wg.Add(1)
+	go func() {
+		nc, js = jsClientConnect(t, s)
+		defer nc.Close()
+		defer wg.Done()
+
+		fetch := func(t *testing.T, batchSize int) {
+			msgs, err := sub.Fetch(batchSize, nats.MaxWait(500*time.Millisecond))
+			if err != nil {
+				return
+			}
+
+			for _, msg := range msgs {
+				meta, err := msg.Metadata()
+				if err != nil {
+					t.Error(err)
+					continue
+				}
+
+				msgID := msg.Header.Get(nats.MsgIdHdr)
+				if meta.NumDelivered > 1 {
+					if err, ok := errors[msgID]; ok {
+						t.Logf("Redelivery after failed Ack Sync: %+v - %+v - error: %v", msg.Reply, msg.Header, err)
+					} else {
+						t.Logf("Redelivery: %+v - %+v", msg.Reply, msg.Header)
+					}
+					if resp, ok := acked[msgID]; ok {
+						t.Errorf("Redelivery after successful Ack Sync: msgID:%v - redelivered:%v - original:%+v - ack:%+v",
+							msgID, msg.Reply, resp.original.Reply, resp.ack)
+						resp.redelivered = msg
+						extraRedeliveries++
+					}
+				}
+				received[msgID]++
+				resp, err := nc.Request(msg.Reply, []byte("+ACK"), 500*time.Millisecond)
+				if err != nil {
+					errors[msgID] = err
+				} else {
+					acked[msgID] = &ackResult{resp, msg, nil}
+				}
+			}
+		}
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			fetch(t, 1)
+			fetch(t, 50)
+		}
+	}()
+
+	// Cause a couple of step downs before the restarts as well.
+	time.AfterFunc(5*time.Second, func() { stepDown() })
+	time.AfterFunc(10*time.Second, func() { stepDown() })
+
+	// Let messages be produced, and then restart the servers.
+	<-time.After(15 * time.Second)
+
+NextServer:
+	for i, s := range c.servers {
+		s.lameDuckMode()
+		s.WaitForShutdown()
+		c.restartServer(s)
+		// Need to get the server after restart as it will be a new Server.
+		s = c.servers[i]
+
+		hctx, hcancel := context.WithTimeout(ctx, 60*time.Second)
+		defer hcancel()
+		for range time.NewTicker(2 * time.Second).C {
+			select {
+			case <-hctx.Done():
+				t.Logf("WRN: Timed out waiting for healthz from %s", s)
+				continue NextServer
+			default:
+			}
+
+			status := s.healthz(nil)
+			if status.StatusCode == 200 {
+				continue NextServer
+			}
+		}
+		// Pause in-between server restarts.
+		time.Sleep(10 * time.Second)
+	}
+
+	// Stop all producer and consumer goroutines to check results.
+	cancel()
+	select {
+	case <-ctx.Done():
+	case <-time.After(10 * time.Second):
+	}
+	wg.Wait()
+	if extraRedeliveries > 0 {
+		t.Fatalf("Received %v redeliveries after a successful ack", extraRedeliveries)
+	}
+}
