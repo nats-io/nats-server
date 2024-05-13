@@ -24,7 +24,7 @@ jobs:
           go-version: stable
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v5
+        uses: golangci/golangci-lint-action@v6
         with:
           skip-cache: true
           skip-pkg-cache: true
