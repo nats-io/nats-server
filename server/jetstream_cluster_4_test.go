@@ -1497,7 +1497,6 @@ func TestJetStreamClusterDoubleAckRedelivery(t *testing.T) {
 			}
 			msgID := nats.MsgId(fmt.Sprintf("%s:%d", name, i))
 			js.PublishAsync("foo.bar", payload, msgID, nats.RetryAttempts(10))
-
 			i++
 		}
 	}
@@ -1582,12 +1581,10 @@ func TestJetStreamClusterDoubleAckRedelivery(t *testing.T) {
 	<-time.After(15 * time.Second)
 
 NextServer:
-	for i, s := range c.servers {
+	for _, s := range c.servers {
 		s.lameDuckMode()
 		s.WaitForShutdown()
-		c.restartServer(s)
-		// Need to get the server after restart as it will be a new Server.
-		s = c.servers[i]
+		s = c.restartServer(s)
 
 		hctx, hcancel := context.WithTimeout(ctx, 60*time.Second)
 		defer hcancel()
