@@ -3578,7 +3578,6 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 		var needsSetLeader bool
 		if !alreadyRunning && numReplicas > 1 {
 			if needsNode {
-				mset.setLeader(false)
 				js.createRaftGroup(acc.GetName(), rg, storage, pprofLabels{
 					"type":    "stream",
 					"account": mset.accName(),
@@ -3598,10 +3597,14 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 		} else if numReplicas == 1 && alreadyRunning {
 			// We downgraded to R1. Make sure we cleanup the raft node and the stream monitor.
 			mset.removeNode()
-			// Make sure we are leader now that we are R1.
-			needsSetLeader = true
 			// In case we need to shutdown the cluster specific subs, etc.
-			mset.setLeader(false)
+			mset.mu.Lock()
+			// Stop responding to sync requests.
+			mset.stopClusterSubs()
+			// Clear catchup state
+			mset.clearAllCatchupPeers()
+			mset.mu.Unlock()
+			// Remove from meta layer.
 			js.mu.Lock()
 			rg.node = nil
 			js.mu.Unlock()
