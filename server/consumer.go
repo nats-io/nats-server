@@ -1189,6 +1189,7 @@ func (o *consumer) setLeader(isLeader bool) {
 	o.mu.RLock()
 	mset, closed := o.mset, o.closed
 	movingToClustered := o.node != nil && o.pch == nil
+	movingToNonClustered := o.node == nil && o.pch != nil
 	wasLeader := o.leader.Swap(isLeader)
 	o.mu.RUnlock()
 
@@ -1210,6 +1211,17 @@ func (o *consumer) setLeader(isLeader bool) {
 					case o.pch <- struct{}{}:
 					default:
 					}
+				}
+				o.mu.Unlock()
+			} else if movingToNonClustered {
+				// We are moving from clustered to non-clustered now.
+				// Set pch to nil so if we scale back up we will recreate the loopAndForward from above.
+				o.mu.Lock()
+				pch := o.pch
+				o.pch = nil
+				select {
+				case pch <- struct{}{}:
+				default:
 				}
 				o.mu.Unlock()
 			}
@@ -2157,6 +2169,13 @@ func (o *consumer) updateSkipped(seq uint64) {
 }
 
 func (o *consumer) loopAndForwardProposals(qch chan struct{}) {
+	// On exit make sure we nil out pch.
+	defer func() {
+		o.mu.Lock()
+		o.pch = nil
+		o.mu.Unlock()
+	}()
+
 	o.mu.RLock()
 	node, pch := o.node, o.pch
 	o.mu.RUnlock()
@@ -2167,7 +2186,7 @@ func (o *consumer) loopAndForwardProposals(qch chan struct{}) {
 
 	forwardProposals := func() error {
 		o.mu.Lock()
-		if o.node != node || node.State() != Leader {
+		if o.node == nil || o.node.State() != Leader {
 			o.mu.Unlock()
 			return errors.New("no longer leader")
 		}
