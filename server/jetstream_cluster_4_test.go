@@ -1699,6 +1699,7 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 		defer cancel()
 		for _, stream := range test.streams {
 			payload := []byte(strings.Repeat("A", test.producerMsgSize))
+			stream := stream
 			subjects := stream.subjects
 
 			// Create publishers on different connections that sends messages
@@ -1737,9 +1738,23 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 				for _, consumer := range stream.consumers {
 					wg.Add(1)
 
+					consumer := consumer
 					go func() {
 						defer wg.Done()
+
+						for attempts := 0; attempts < 60; attempts++ {
+							_, err := js.ConsumerInfo(stream.config.Name, consumer.Name)
+							if err != nil {
+								t.Logf("WRN: Failed creating pull subscriber: %v - %v - %v - %v",
+									consumer.FilterSubject, stream.config.Name, consumer.Name, err)
+							}
+						}
 						sub, err := js.PullSubscribe(consumer.FilterSubject, "", nats.Bind(stream.config.Name, consumer.Name))
+						if err != nil {
+							t.Logf("WRN: Failed creating pull subscriber: %v - %v - %v - %v",
+								consumer.FilterSubject, stream.config.Name, consumer.Name, err)
+							return
+						}
 						require_NoError(t, err)
 
 						for range time.NewTicker(100 * time.Millisecond).C {
@@ -1789,15 +1804,14 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 						s.WaitForShutdown()
 						c.restartServer(s)
 					case test.rolloutRestart:
-						for i, s := range c.servers {
+						for _, s := range c.servers {
 							if test.ldmRestart {
 								s.lameDuckMode()
 							} else {
 								s.Shutdown()
 							}
 							s.WaitForShutdown()
-							c.restartServer(s)
-							s = c.servers[i]
+							s = c.restartServer(s)
 
 							if test.checkHealthz {
 								hctx, hcancel := context.WithTimeout(ctx, 15*time.Second)
@@ -2039,6 +2053,61 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 				scale(1, 30*time.Second),
 				scale(3, 60*time.Second),
 			},
+			expect:          expect,
+			duration:        testDuration,
+			producerMsgSize: 1024,
+			producerMsgs:    100_000,
+		})
+	})
+
+	t.Run("R3F/streams:30/limits", func(t *testing.T) {
+		testDuration := 3 * time.Minute
+		totalStreams := 30
+		consumersPerStream := 5
+		streams := make([]*streamSetup, totalStreams)
+		for i := 0; i < totalStreams; i++ {
+			name := fmt.Sprintf("test:%d", i)
+			st := &streamSetup{
+				config: &nats.StreamConfig{
+					Name:      name,
+					Subjects:  []string{fmt.Sprintf("test.%d.*", i)},
+					Replicas:  3,
+					Retention: nats.LimitsPolicy,
+				},
+				consumers: make([]*nats.ConsumerConfig, 0),
+			}
+			for j := 0; j < consumersPerStream; j++ {
+				subject := fmt.Sprintf("test.%d.%d", i, j)
+				name := fmt.Sprintf("A:%d:%d", i, j)
+				cc := &nats.ConsumerConfig{
+					Name:          name,
+					Durable:       name,
+					FilterSubject: subject,
+					AckPolicy:     nats.AckExplicitPolicy,
+				}
+				st.consumers = append(st.consumers, cc)
+				st.subjects = append(st.subjects, subject)
+			}
+			streams[i] = st
+		}
+		expect := func(t *testing.T, nc *nats.Conn, js nats.JetStreamContext, c *cluster) {
+			time.Sleep(testDuration + 1*time.Minute)
+			accName := "js"
+			for i := 0; i < totalStreams; i++ {
+				streamName := fmt.Sprintf("test:%d", i)
+				checkMsgsEqual(t, c, accName, streamName)
+			}
+		}
+		test(t, &testParams{
+			cluster:         t.Name(),
+			streams:         streams,
+			producers:       10,
+			consumers:       10,
+			restarts:        1,
+			rolloutRestart:  true,
+			ldmRestart:      true,
+			checkHealthz:    true,
+			restartWait:     45 * time.Second,
 			expect:          expect,
 			duration:        testDuration,
 			producerMsgSize: 1024,
