@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1704,7 +1705,7 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 
 			// Create publishers on different connections that sends messages
 			// to all the consumers subjects.
-			n := 0
+			var n atomic.Uint64
 			for i := 0; i < test.producers; i++ {
 				wg.Add(1)
 				go func() {
@@ -1722,11 +1723,9 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 						for _, subject := range subjects {
 							_, err := js.Publish(subject, payload, nats.AckWait(200*time.Millisecond))
 							if err == nil {
-								n++
-							}
-
-							if n >= test.producerMsgs {
-								return
+								if nn := n.Add(1); int(nn) >= test.producerMsgs {
+									return
+								}
 							}
 						}
 					}
@@ -1910,7 +1909,6 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 				}
 			}
 		}
-		return
 	}
 
 	t.Run("R1F/rescale/R3F/sources:10/limits", func(t *testing.T) {
@@ -1967,6 +1965,7 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 				})
 			}
 		}
+
 		expect := func(t *testing.T, nc *nats.Conn, js nats.JetStreamContext, c *cluster) {
 			// The source stream should not be stuck or be different from the other streams.
 			time.Sleep(testDuration + 1*time.Minute)
