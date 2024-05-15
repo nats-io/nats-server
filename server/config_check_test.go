@@ -1818,6 +1818,23 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  9,
 		},
 		{
+			name: "invalid duration for remote leafnode first info timeout",
+			config: `
+				leafnodes {
+					port: -1
+					remotes [
+						{
+							url: "nats://127.0.0.1:123"
+							first_info_timeout: abc
+						}
+					]
+				}
+			`,
+			err:       fmt.Errorf("error parsing first_info_timeout: time: invalid duration %q", "abc"),
+			errorLine: 7,
+			errorPos:  8,
+		},
+		{
 			name:       "show warnings on empty configs without values",
 			config:     ``,
 			warningErr: errors.New(`config has no values or is empty`),

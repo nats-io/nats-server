@@ -205,6 +205,11 @@ type RemoteLeafOpts struct {
 	DenyImports       []string         `json:"-"`
 	DenyExports       []string         `json:"-"`
 
+	// FirstInfoTimeout is the amount of time the server will wait for the
+	// initial INFO protocol from the remote server before closing the
+	// connection.
+	FirstInfoTimeout time.Duration `json:"-"`
+
 	// Compression options for this remote. Each remote could have a different
 	// setting and also be different from the LeafNode options.
 	Compression CompressionOpts `json:"-"`
@@ -2581,6 +2586,8 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 					*errors = append(*errors, err)
 					continue
 				}
+			case "first_info_timeout":
+				remote.FirstInfoTimeout = parseDuration(k, tk, v, errors, warnings)
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{
@@ -5107,6 +5114,10 @@ func setBaselineOptions(opts *Options) {
 				} else {
 					c.Mode = CompressionS2Auto
 				}
+			}
+			// Set default first info timeout value if not set.
+			if r.FirstInfoTimeout <= 0 {
+				r.FirstInfoTimeout = DEFAULT_LEAFNODE_INFO_WAIT
 			}
 		}
 	}
