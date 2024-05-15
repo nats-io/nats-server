@@ -3113,7 +3113,7 @@ func (mset *stream) processAllSourceMsgs() {
 			for _, im := range ims {
 				if !mset.processInboundSourceMsg(im.si, im) {
 					// If we are no longer leader bail.
-					if !mset.isLeader() {
+					if !mset.IsLeader() {
 						cleanUp()
 						return
 					}
@@ -3124,7 +3124,7 @@ func (mset *stream) processAllSourceMsgs() {
 			msgs.recycle(&ims)
 		case <-t.C:
 			// If we are no longer leader bail.
-			if !mset.isLeader() {
+			if !mset.IsLeader() {
 				cleanUp()
 				return
 			}
@@ -3188,15 +3188,14 @@ func (mset *stream) handleFlowControl(m *inMsg) {
 
 // processInboundSourceMsg handles processing other stream messages bound for this stream.
 func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
+	mset.mu.Lock()
 	// If we are no longer the leader cancel this subscriber.
 	if !mset.isLeader() {
-		mset.mu.Lock()
 		mset.cancelSourceConsumer(si.iname)
 		mset.mu.Unlock()
 		return false
 	}
 
-	mset.mu.Lock()
 	isControl := m.isControlMsg()
 
 	// Ignore from old subscriptions.

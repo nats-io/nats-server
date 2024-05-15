@@ -7679,7 +7679,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	s, js, jsa, st, r, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.tier, mset.outq, mset.node
 	maxMsgSize, lseq := int(mset.cfg.MaxMsgSize), mset.lseq
 	interestPolicy, discard, maxMsgs, maxBytes := mset.cfg.Retention != LimitsPolicy, mset.cfg.Discard, mset.cfg.MaxMsgs, mset.cfg.MaxBytes
-	isLeader, isSealed := mset.isLeader(), mset.cfg.Sealed
+	isLeader, isSealed, compressOK := mset.isLeader(), mset.cfg.Sealed, mset.compressOK
 	mset.mu.RUnlock()
 
 	// This should not happen but possible now that we allow scale up, and scale down where this could trigger.
@@ -7882,7 +7882,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		}
 	}
 
-	esm := encodeStreamMsgAllowCompress(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano(), mset.compressOK)
+	esm := encodeStreamMsgAllowCompress(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano(), compressOK)
 	var mtKey uint64
 	if mt != nil {
 		mtKey = mset.clseq
