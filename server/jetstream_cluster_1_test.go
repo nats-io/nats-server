@@ -21,6 +21,7 @@ import (
 	"context"
 	crand "crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -4061,8 +4062,10 @@ func TestJetStreamClusterScaleConsumer(t *testing.T) {
 		checkFor(t, time.Second*30, time.Millisecond*250, func() error {
 			if ci, err = js.ConsumerInfo("TEST", "DUR"); err != nil {
 				return err
+			} else if ci.Cluster == nil {
+				return errors.New("no cluster info")
 			} else if ci.Cluster.Leader == _EMPTY_ {
-				return fmt.Errorf("no leader")
+				return errors.New("no leader")
 			} else if len(ci.Cluster.Replicas) != r-1 {
 				return fmt.Errorf("not enough replica, got %d wanted %d", len(ci.Cluster.Replicas), r-1)
 			} else {

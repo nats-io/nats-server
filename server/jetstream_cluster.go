@@ -4790,9 +4790,9 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 				o.checkStateForInterestStream()
 				// Do a snapshot.
 				doSnapshot(true)
-				// Synchronize followers to our state. Only send out if we have state.
+				// Synchronize followers to our state. Only send out if we have state and nothing pending.
 				if n != nil {
-					if _, _, applied := n.Progress(); applied > 0 {
+					if _, _, applied := n.Progress(); applied > 0 && aq.len() == 0 {
 						if snap, err := o.store.EncodedState(); err == nil {
 							n.SendSnapshot(snap)
 						}
@@ -5015,6 +5015,13 @@ var errConsumerClosed = errors.New("consumer closed")
 
 func (o *consumer) processReplicatedAck(dseq, sseq uint64) error {
 	o.mu.Lock()
+	// Update activity.
+	o.lat = time.Now()
+
+	// Do actual ack update to store.
+	// Always do this to have it recorded.
+	o.store.UpdateAcks(dseq, sseq)
+
 	mset := o.mset
 	if o.closed || mset == nil {
 		o.mu.Unlock()
@@ -5025,11 +5032,11 @@ func (o *consumer) processReplicatedAck(dseq, sseq uint64) error {
 		return errStreamClosed
 	}
 
-	// Update activity.
-	o.lat = time.Now()
-
-	// Do actual ack update to store.
-	o.store.UpdateAcks(dseq, sseq)
+	// Check if we have a reply that was requested.
+	if reply := o.replies[sseq]; reply != _EMPTY_ {
+		o.outq.sendMsg(reply, nil)
+		delete(o.replies, sseq)
+	}
 
 	if o.retention == LimitsPolicy {
 		o.mu.Unlock()
