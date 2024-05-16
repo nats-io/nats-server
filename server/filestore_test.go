@@ -6897,6 +6897,53 @@ func TestFileStoreFSSExpireNumPending(t *testing.T) {
 	fs.mu.RUnlock()
 }
 
+// We want to ensure that recovery of deleted messages survives no index.db and compactions.
+func TestFileStoreRecoverWithRemovesAndNoIndexDB(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 250},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := []byte("abc")
+	for i := 1; i <= 10; i++ {
+		fs.StoreMsg(fmt.Sprintf("foo.%d", i), nil, msg)
+	}
+	fs.RemoveMsg(1)
+	fs.RemoveMsg(2)
+	fs.RemoveMsg(8)
+
+	var ss StreamState
+	fs.FastState(&ss)
+	require_Equal(t, ss.FirstSeq, 3)
+	require_Equal(t, ss.LastSeq, 10)
+	require_Equal(t, ss.Msgs, 7)
+
+	// Compact last block.
+	fs.mu.RLock()
+	lmb := fs.lmb
+	fs.mu.RUnlock()
+	lmb.mu.Lock()
+	lmb.compact()
+	lmb.mu.Unlock()
+	// Stop but remove index.db
+	sfile := filepath.Join(sd, msgDir, streamStreamStateFile)
+	fs.Stop()
+	os.Remove(sfile)
+
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: sd},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	fs.FastState(&ss)
+	require_Equal(t, ss.FirstSeq, 3)
+	require_Equal(t, ss.LastSeq, 10)
+	require_Equal(t, ss.Msgs, 7)
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////
