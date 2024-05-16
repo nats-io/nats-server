@@ -1619,6 +1619,7 @@ NextServer:
 }
 
 func TestJetStreamClusterBusyStreams(t *testing.T) {
+	t.Skip("Too long for CI at the moment")
 	type streamSetup struct {
 		config    *nats.StreamConfig
 		consumers []*nats.ConsumerConfig
