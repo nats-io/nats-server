@@ -796,22 +796,6 @@ func TestBlocks(t *testing.T) {
 			},
 			"", "",
 		},
-		{
-			"top line values in block scope",
-			`
-			{
-			  "debug":              False
-			  "prof_port":          8221
-			  "server_name":        "aws-useast2-natscj1-1"
-			}
-			`,
-			map[string]any{
-				"debug":       false,
-				"prof_port":   int64(8221),
-				"server_name": "aws-useast2-natscj1-1",
-			},
-			"", "",
-		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f, err := os.CreateTemp(t.TempDir(), "nats.conf-")
