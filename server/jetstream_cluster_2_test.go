@@ -1,4 +1,4 @@
-// Copyright 2020-2023 The NATS Authors
+// Copyright 2020-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -2672,8 +2672,10 @@ func TestJetStreamClusterStreamCatchupNoState(t *testing.T) {
 	// For both make sure we have no raft snapshots.
 	snapDir := filepath.Join(lconfig.StoreDir, "$SYS", "_js_", gname, "snapshots")
 	os.RemoveAll(snapDir)
-	snapDir = filepath.Join(config.StoreDir, "$SYS", "_js_", gname, "snapshots")
-	os.RemoveAll(snapDir)
+	// Remove all our raft state, we do not want to hold onto our term and index which
+	// results in a coin toss for who becomes the leader.
+	raftDir := filepath.Join(config.StoreDir, "$SYS", "_js_", gname)
+	os.RemoveAll(raftDir)
 
 	// Now restart.
 	c.restartAll()
