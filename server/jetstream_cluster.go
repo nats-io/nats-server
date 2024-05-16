@@ -3571,7 +3571,6 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 		var needsSetLeader bool
 		if !alreadyRunning && numReplicas > 1 {
 			if needsNode {
-				mset.setLeader(false)
 				js.createRaftGroup(acc.GetName(), rg, storage, pprofLabels{
 					"type":    "stream",
 					"account": mset.accName(),
@@ -3591,10 +3590,14 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 		} else if numReplicas == 1 && alreadyRunning {
 			// We downgraded to R1. Make sure we cleanup the raft node and the stream monitor.
 			mset.removeNode()
-			// Make sure we are leader now that we are R1.
-			needsSetLeader = true
 			// In case we need to shutdown the cluster specific subs, etc.
-			mset.setLeader(false)
+			mset.mu.Lock()
+			// Stop responding to sync requests.
+			mset.stopClusterSubs()
+			// Clear catchup state
+			mset.clearAllCatchupPeers()
+			mset.mu.Unlock()
+			// Remove from meta layer.
 			js.mu.Lock()
 			rg.node = nil
 			js.mu.Unlock()
@@ -4783,9 +4786,9 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 				o.checkStateForInterestStream()
 				// Do a snapshot.
 				doSnapshot(true)
-				// Synchronize followers to our state. Only send out if we have state.
+				// Synchronize followers to our state. Only send out if we have state and nothing pending.
 				if n != nil {
-					if _, _, applied := n.Progress(); applied > 0 {
+					if _, _, applied := n.Progress(); applied > 0 && aq.len() == 0 {
 						if snap, err := o.store.EncodedState(); err == nil {
 							n.SendSnapshot(snap)
 						}
@@ -5008,6 +5011,13 @@ var errConsumerClosed = errors.New("consumer closed")
 
 func (o *consumer) processReplicatedAck(dseq, sseq uint64) error {
 	o.mu.Lock()
+	// Update activity.
+	o.lat = time.Now()
+
+	// Do actual ack update to store.
+	// Always do this to have it recorded.
+	o.store.UpdateAcks(dseq, sseq)
+
 	mset := o.mset
 	if o.closed || mset == nil {
 		o.mu.Unlock()
@@ -5018,11 +5028,11 @@ func (o *consumer) processReplicatedAck(dseq, sseq uint64) error {
 		return errStreamClosed
 	}
 
-	// Update activity.
-	o.lat = time.Now()
-
-	// Do actual ack update to store.
-	o.store.UpdateAcks(dseq, sseq)
+	// Check if we have a reply that was requested.
+	if reply := o.replies[sseq]; reply != _EMPTY_ {
+		o.outq.sendMsg(reply, nil)
+		delete(o.replies, sseq)
+	}
 
 	if o.retention == LimitsPolicy {
 		o.mu.Unlock()
@@ -7654,7 +7664,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	s, js, jsa, st, r, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.tier, mset.outq, mset.node
 	maxMsgSize, lseq := int(mset.cfg.MaxMsgSize), mset.lseq
 	interestPolicy, discard, maxMsgs, maxBytes := mset.cfg.Retention != LimitsPolicy, mset.cfg.Discard, mset.cfg.MaxMsgs, mset.cfg.MaxBytes
-	isLeader, isSealed := mset.isLeader(), mset.cfg.Sealed
+	isLeader, isSealed, compressOK := mset.isLeader(), mset.cfg.Sealed, mset.compressOK
 	mset.mu.RUnlock()
 
 	// This should not happen but possible now that we allow scale up, and scale down where this could trigger.
@@ -7842,7 +7852,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		}
 	}
 
-	esm := encodeStreamMsgAllowCompress(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano(), mset.compressOK)
+	esm := encodeStreamMsgAllowCompress(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano(), compressOK)
 	// Do proposal.
 	err := node.Propose(esm)
 	if err == nil {

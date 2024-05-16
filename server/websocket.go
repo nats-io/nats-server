@@ -125,12 +125,17 @@ type srvWebsocket struct {
 	server         *http.Server
 	listener       net.Listener
 	listenerErr    error
-	tls            bool
 	allowedOrigins map[string]*allowedOrigin // host will be the key
 	sameOrigin     bool
 	connectURLs    []string
 	connectURLsMap refCountedUrlSet
 	authOverride   bool // indicate if there is auth override in websocket config
+
+	// These are immutable and can be accessed without lock.
+	// This is the case when generating the client INFO.
+	tls  bool   // True if TLS is required (TLSConfig is specified).
+	host string // Host/IP the webserver is listening on (shortcut to opts.Websocket.Host).
+	port int    // Port the webserver is listening on. This is after an ephemeral port may have been selected (shortcut to opts.Websocket.Port).
 }
 
 type allowedOrigin struct {
@@ -1102,7 +1107,12 @@ func (s *Server) startWebsocketServer() {
 		s.Warnf("Websocket not configured with TLS. DO NOT USE IN PRODUCTION!")
 	}
 
-	s.websocket.tls = proto == "wss"
+	// These 3 are immutable and will be accessed without lock by the client
+	// when generating/sending the INFO protocols.
+	s.websocket.tls = proto == wsSchemePrefixTLS
+	s.websocket.host, s.websocket.port = o.Host, o.Port
+
+	// This will be updated when/if the cluster changes.
 	s.websocket.connectURLs, err = s.getConnectURLs(o.Advertise, o.Host, o.Port)
 	if err != nil {
 		s.Fatalf("Unable to get websocket connect URLs: %v", err)
@@ -1141,8 +1151,10 @@ func (s *Server) startWebsocketServer() {
 		ReadTimeout: o.HandshakeTimeout,
 		ErrorLog:    log.New(&captureHTTPServerLog{s, "websocket: "}, _EMPTY_, 0),
 	}
+	s.websocket.mu.Lock()
 	s.websocket.server = hs
 	s.websocket.listener = hl
+	s.websocket.mu.Unlock()
 	go func() {
 		if err := hs.Serve(hl); err != http.ErrServerClosed {
 			s.Fatalf("websocket listener error: %v", err)
