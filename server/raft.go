@@ -470,6 +470,11 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 				}
 			}
 		}
+	} else if n.pterm == 0 && n.pindex == 0 {
+		// We have recovered no state, either through our WAL or snapshots,
+		// so inherit from term from our tav.idx file and pindex from our last sequence.
+		n.pterm = n.term
+		n.pindex = state.LastSeq
 	}
 
 	// Make sure to track ourselves.
@@ -3750,11 +3755,11 @@ func (n *raft) readTermVote() (term uint64, voted string, err error) {
 	if err != nil {
 		return 0, noVote, err
 	}
-	if len(buf) < termVoteLen {
-		return 0, noVote, nil
-	}
 	var le = binary.LittleEndian
 	term = le.Uint64(buf[0:])
+	if len(buf) < termVoteLen {
+		return term, noVote, nil
+	}
 	voted = string(buf[8:])
 	return term, voted, nil
 }
@@ -3820,6 +3825,8 @@ func (n *raft) writeTermVote() {
 	// Stamp latest and write the term & vote file.
 	n.wtv = b
 	if err := writeTermVote(n.sd, n.wtv); err != nil && !n.isClosed() {
+		// Clear wtv since we failed.
+		n.wtv = nil
 		n.setWriteErrLocked(err)
 		n.warn("Error writing term and vote file for %q: %v", n.group, err)
 	}
