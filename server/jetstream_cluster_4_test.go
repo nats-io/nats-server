@@ -2046,7 +2046,9 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 			rolloutRestart: true,
 			ldmRestart:     true,
 			checkHealthz:   true,
-			restartWait:    45 * time.Second,
+			// TODO(dlc) - If this overlaps with the scale jobs this test will fail.
+			// Leaders will be elected with partial state.
+			restartWait: 65 * time.Second,
 			jobs: []job{
 				scale(3, 15*time.Second),
 				scale(1, 30*time.Second),
