@@ -3983,8 +3983,9 @@ func (mb *msgBlock) compact() {
 		if !isDeleted(seq) {
 			// Check for tombstones.
 			if seq&tbit != 0 {
-				// If we are last mb we should consider to keep these unless the tombstone reflects a seq in this mb.
-				if mb == mb.fs.lmb && seq < fseq {
+				seq = seq &^ tbit
+				// If this entry is for a lower seq than ours then keep around.
+				if seq < fseq {
 					nbuf = append(nbuf, buf[index:index+rl]...)
 				}
 			} else {
@@ -4039,6 +4040,9 @@ func (mb *msgBlock) compact() {
 		os.Remove(mfn)
 		return
 	}
+
+	// Make sure to sync
+	mb.needSync = true
 
 	// Capture the updated rbytes.
 	mb.rbytes = uint64(len(nbuf))
@@ -6881,6 +6885,9 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 		if smb != fs.lmb {
 			smb.dirtyCloseWithRemove(true)
 			deleted++
+		} else {
+			// Make sure to sync changes.
+			smb.needSync = true
 		}
 		// Update fs first here as well.
 		fs.state.FirstSeq = atomic.LoadUint64(&smb.last.seq) + 1
