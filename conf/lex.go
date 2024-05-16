@@ -156,7 +156,6 @@ func (lx *lexer) pop() stateFn {
 
 func (lx *lexer) emit(typ itemType) {
 	val := strings.Join(lx.stringParts, "") + lx.input[lx.start:lx.pos]
-
 	// Position of item in line where it started.
 	pos := lx.pos - lx.ilstart - len(val)
 	lx.items <- item{typ, val, lx.line, pos}
@@ -329,6 +328,9 @@ func lexBlockStart(lx *lexer) stateFn {
 	case topOptStart:
 		lx.push(lexBlockEnd)
 		return lexSkip(lx, lexBlockStart)
+	case topOptTerm:
+		lx.ignore()
+		return lx.pop()
 	case commentHashStart:
 		lx.push(lexBlockEnd)
 		return lexCommentStart
@@ -351,8 +353,39 @@ func lexBlockStart(lx *lexer) stateFn {
 	// At this point, the only valid item can be a key, so we back up
 	// and let the key lexer do the rest.
 	lx.backup()
-	lx.push(lexBlockEnd)
+	lx.push(lexBlockValueEnd)
 	return lexKeyStart
+}
+
+// lexBlockValueEnd is entered whenever a block-level value has been consumed.
+// It must see only whitespace, and will turn back to lexBlockStart upon a new line.
+// If it sees EOF, it will quit the lexer successfully.
+func lexBlockValueEnd(lx *lexer) stateFn {
+	r := lx.next()
+	switch {
+	case r == commentHashStart:
+		// a comment will read to a new line for us.
+		lx.push(lexBlockValueEnd)
+		return lexCommentStart
+	case r == commentSlashStart:
+		rn := lx.next()
+		if rn == commentSlashStart {
+			lx.push(lexBlockValueEnd)
+			return lexCommentStart
+		}
+		lx.backup()
+		fallthrough
+	case isWhitespace(r):
+		return lexBlockValueEnd
+	case isNL(r) || r == optValTerm || r == topOptValTerm:
+		lx.ignore()
+		return lexBlockStart
+	case r == topOptTerm:
+		lx.backup()
+		return lexBlockEnd
+	}
+	return lx.errorf("Expected a block-level value to end with a new line, "+
+		"comment or EOF, but got '%v' instead.", r)
 }
 
 // lexBlockEnd is entered whenever a block-level value has been consumed.
@@ -362,12 +395,12 @@ func lexBlockEnd(lx *lexer) stateFn {
 	switch {
 	case r == commentHashStart:
 		// a comment will read to a new line for us.
-		lx.push(lexBlockEnd)
+		lx.push(lexBlockStart)
 		return lexCommentStart
 	case r == commentSlashStart:
 		rn := lx.next()
 		if rn == commentSlashStart {
-			lx.push(lexBlockEnd)
+			lx.push(lexBlockStart)
 			return lexCommentStart
 		}
 		lx.backup()
@@ -381,7 +414,7 @@ func lexBlockEnd(lx *lexer) stateFn {
 		lx.ignore()
 		return lx.pop()
 	}
-	return lx.errorf("Expected a block-level value to end with a '}', but got '%v' instead.", r)
+	return lx.errorf("Expected a block-level to end with a '}', but got '%v' instead.", r)
 }
 
 // lexKeyStart consumes a key name up until the first non-whitespace character.
