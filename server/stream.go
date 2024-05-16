@@ -847,9 +847,10 @@ func (mset *stream) setLeader(isLeader bool) error {
 		// Make sure we are listening for sync requests.
 		// TODO(dlc) - Original design was that all in sync members of the group would do DQ.
 		mset.startClusterSubs()
-		// Setup subscriptions
+
+		// Setup subscriptions if we were not already the leader.
 		if err := mset.subscribeToStream(); err != nil {
-			if isLeader && mset.isClustered() {
+			if mset.isClustered() {
 				// Stepdown since we have an error.
 				mset.node.StepDown()
 			}
@@ -2797,6 +2798,11 @@ func (mset *stream) cancelSourceInfo(si *sourceInfo) {
 		si.msgs.drain()
 		si.msgs.unregister()
 	}
+	// If we have a schedule setup go ahead and delete that.
+	if t := mset.sourceSetupSchedules[si.iname]; t != nil {
+		t.Stop()
+		delete(mset.sourceSetupSchedules, si.iname)
+	}
 }
 
 const sourceConsumerRetryThreshold = 2 * time.Second
@@ -3454,9 +3460,11 @@ func (mset *stream) setStartingSequenceForSources(iNames map[string]struct{}) {
 	}
 }
 
-// lock should be held.
 // Resets the SourceInfo for all the sources
+// lock should be held.
 func (mset *stream) resetSourceInfo() {
+	// Reset if needed.
+	mset.stopSourceConsumers()
 	mset.sources = make(map[string]*sourceInfo)
 
 	for _, ssi := range mset.cfg.Sources {
@@ -3622,7 +3630,7 @@ func (mset *stream) subscribeToStream() error {
 		mset.mirror.trs = trs
 		// delay the actual mirror consumer creation for after a delay
 		mset.scheduleSetupMirrorConsumerRetry()
-	} else if len(mset.cfg.Sources) > 0 {
+	} else if len(mset.cfg.Sources) > 0 && mset.sourcesConsumerSetup == nil {
 		// Setup the initial source infos for the sources
 		mset.resetSourceInfo()
 		// Delay the actual source consumer(s) creation(s) for after a delay
