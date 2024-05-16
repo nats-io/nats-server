@@ -8162,7 +8162,7 @@ func (mset *stream) processSnapshot(snap *StreamReplicatedState) (e error) {
 		// If we are interest based make sure to check our ack floor state.
 		// We will delay a bit to allow consumer states to also catchup.
 		if mset.isInterestRetention() {
-			fire := time.Duration(rand.Intn(int(10*time.Second))) + 5*time.Second
+			fire := time.Duration(rand.Intn(10)+5) * time.Second
 			time.AfterFunc(fire, mset.checkInterestState)
 		}
 	}()
