@@ -740,3 +740,96 @@ func TestJSONParseCompat(t *testing.T) {
 		})
 	}
 }
+
+func TestBlocks(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		input    string
+		expected map[string]any
+		err      string
+		linepos  string
+	}{
+		{
+			"inline block",
+			`{ listen: 0.0.0.0:4222 }`,
+			map[string]any{
+				"listen": "0.0.0.0:4222",
+			},
+			"", "",
+		},
+		{
+			"newline block",
+			`{
+				listen: 0.0.0.0:4222
+			 }`,
+			map[string]any{
+				"listen": "0.0.0.0:4222",
+			},
+			"", "",
+		},
+		{
+			"newline block with trailing comment",
+			`
+			{
+				listen: 0.0.0.0:4222
+			}
+			# wibble
+			`,
+			map[string]any{
+				"listen": "0.0.0.0:4222",
+			},
+			"", "",
+		},
+		{
+			"nested newline blocks with trailing comment",
+			`
+			{
+				{
+					listen: 0.0.0.0:4222 // random comment
+				}
+				# wibble1
+			}
+			# wibble2
+			`,
+			map[string]any{
+				"listen": "0.0.0.0:4222",
+			},
+			"", "",
+		},
+		{
+			"top line values in block scope",
+			`
+			{
+			  "debug":              False
+			  "prof_port":          8221
+			  "server_name":        "aws-useast2-natscj1-1"
+			}
+			`,
+			map[string]any{
+				"debug":       false,
+				"prof_port":   int64(8221),
+				"server_name": "aws-useast2-natscj1-1",
+			},
+			"", "",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f, err := os.CreateTemp(t.TempDir(), "nats.conf-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(f.Name(), []byte(test.input), 066); err != nil {
+				t.Error(err)
+			}
+			if m, err := ParseFile(f.Name()); err == nil {
+				if !reflect.DeepEqual(m, test.expected) {
+					t.Fatalf("Not Equal:\nReceived: '%+v'\nExpected: '%+v'\n", m, test.expected)
+				}
+			} else if !strings.Contains(err.Error(), test.err) || !strings.Contains(err.Error(), test.linepos) {
+				t.Errorf("expected invalid conf error, got: %v", err)
+			} else if err != nil {
+				t.Error(err)
+			}
+		})
+	}
+}

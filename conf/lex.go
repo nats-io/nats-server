@@ -1,4 +1,4 @@
-// Copyright 2013-2018 The NATS Authors
+// Copyright 2013-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -156,7 +156,6 @@ func (lx *lexer) pop() stateFn {
 
 func (lx *lexer) emit(typ itemType) {
 	val := strings.Join(lx.stringParts, "") + lx.input[lx.start:lx.pos]
-
 	// Position of item in line where it started.
 	pos := lx.pos - lx.ilstart - len(val)
 	lx.items <- item{typ, val, lx.line, pos}
@@ -263,7 +262,8 @@ func lexTop(lx *lexer) stateFn {
 
 	switch r {
 	case topOptStart:
-		return lexSkip(lx, lexTop)
+		lx.push(lexTop)
+		return lexSkip(lx, lexBlockStart)
 	case commentHashStart:
 		lx.push(lexTop)
 		return lexCommentStart
@@ -316,6 +316,105 @@ func lexTopValueEnd(lx *lexer) stateFn {
 	}
 	return lx.errorf("Expected a top-level value to end with a new line, "+
 		"comment or EOF, but got '%v' instead.", r)
+}
+
+func lexBlockStart(lx *lexer) stateFn {
+	r := lx.next()
+	if unicode.IsSpace(r) {
+		return lexSkip(lx, lexBlockStart)
+	}
+
+	switch r {
+	case topOptStart:
+		lx.push(lexBlockEnd)
+		return lexSkip(lx, lexBlockStart)
+	case topOptTerm:
+		lx.ignore()
+		return lx.pop()
+	case commentHashStart:
+		lx.push(lexBlockEnd)
+		return lexCommentStart
+	case commentSlashStart:
+		rn := lx.next()
+		if rn == commentSlashStart {
+			lx.push(lexBlockEnd)
+			return lexCommentStart
+		}
+		lx.backup()
+		fallthrough
+	case eof:
+		if lx.pos > lx.start {
+			return lx.errorf("Unexpected EOF.")
+		}
+		lx.emit(itemEOF)
+		return nil
+	}
+
+	// At this point, the only valid item can be a key, so we back up
+	// and let the key lexer do the rest.
+	lx.backup()
+	lx.push(lexBlockValueEnd)
+	return lexKeyStart
+}
+
+// lexBlockValueEnd is entered whenever a block-level value has been consumed.
+// It must see only whitespace, and will turn back to lexBlockStart upon a new line.
+// If it sees EOF, it will quit the lexer successfully.
+func lexBlockValueEnd(lx *lexer) stateFn {
+	r := lx.next()
+	switch {
+	case r == commentHashStart:
+		// a comment will read to a new line for us.
+		lx.push(lexBlockValueEnd)
+		return lexCommentStart
+	case r == commentSlashStart:
+		rn := lx.next()
+		if rn == commentSlashStart {
+			lx.push(lexBlockValueEnd)
+			return lexCommentStart
+		}
+		lx.backup()
+		fallthrough
+	case isWhitespace(r):
+		return lexBlockValueEnd
+	case isNL(r) || r == optValTerm || r == topOptValTerm:
+		lx.ignore()
+		return lexBlockStart
+	case r == topOptTerm:
+		lx.backup()
+		return lexBlockEnd
+	}
+	return lx.errorf("Expected a block-level value to end with a new line, "+
+		"comment or EOF, but got '%v' instead.", r)
+}
+
+// lexBlockEnd is entered whenever a block-level value has been consumed.
+// It must see only whitespace, and will turn back to lexTop upon a "}".
+func lexBlockEnd(lx *lexer) stateFn {
+	r := lx.next()
+	switch {
+	case r == commentHashStart:
+		// a comment will read to a new line for us.
+		lx.push(lexBlockStart)
+		return lexCommentStart
+	case r == commentSlashStart:
+		rn := lx.next()
+		if rn == commentSlashStart {
+			lx.push(lexBlockStart)
+			return lexCommentStart
+		}
+		lx.backup()
+		fallthrough
+	case isNL(r) || isWhitespace(r):
+		return lexBlockEnd
+	case r == optValTerm || r == topOptValTerm:
+		lx.ignore()
+		return lexBlockStart
+	case r == topOptTerm:
+		lx.ignore()
+		return lx.pop()
+	}
+	return lx.errorf("Expected a block-level to end with a '}', but got '%v' instead.", r)
 }
 
 // lexKeyStart consumes a key name up until the first non-whitespace character.
