@@ -932,7 +932,13 @@ func (s *Server) setClusterName(name string) {
 
 // Return whether the cluster name is dynamic.
 func (s *Server) isClusterNameDynamic() bool {
-	return s.getOpts().Cluster.Name == _EMPTY_
+	// We need to lock the whole "Cluster.Name" check and not use s.getOpts()
+	// because otherwise this could cause a data race with setting the name in
+	// route.go's processRouteConnect().
+	s.optsMu.RLock()
+	dynamic := s.opts.Cluster.Name == _EMPTY_
+	s.optsMu.RUnlock()
+	return dynamic
 }
 
 // Returns our configured serverName.

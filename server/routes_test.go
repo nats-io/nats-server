@@ -4195,3 +4195,36 @@ func TestRouteNoLeakOnAuthTimeout(t *testing.T) {
 		t.Fatalf("Server should have no route connections, got %v", nc)
 	}
 }
+
+func TestRouteNoRaceOnClusterNameNegotiation(t *testing.T) {
+	// Running the test 5 times was consistently producing the race.
+	for i := 0; i < 5; i++ {
+		o1 := DefaultOptions()
+		// Set this cluster name as dynamic
+		o1.Cluster.Name = _EMPTY_
+		// Increase number of routes and pinned accounts to increase
+		// the number of processRouteConnect() happening in parallel
+		// to produce the race.
+		o1.Cluster.PoolSize = 5
+		o1.Cluster.PinnedAccounts = []string{"A", "B", "C", "D"}
+		o1.Accounts = []*Account{NewAccount("A"), NewAccount("B"), NewAccount("C"), NewAccount("D")}
+		s1 := RunServer(o1)
+		defer s1.Shutdown()
+
+		route := RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port))
+
+		o2 := DefaultOptions()
+		// Set this one as explicit. Use name that is likely to be "higher"
+		// than the dynamic one.
+		o2.Cluster.Name = "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ"
+		o2.Cluster.PoolSize = 5
+		o2.Cluster.PinnedAccounts = []string{"A", "B", "C", "D"}
+		o2.Accounts = []*Account{NewAccount("A"), NewAccount("B"), NewAccount("C"), NewAccount("D")}
+		o2.Routes = route
+		s2 := RunServer(o2)
+		defer s2.Shutdown()
+		checkClusterFormed(t, s1, s2)
+		s2.Shutdown()
+		s1.Shutdown()
+	}
+}
