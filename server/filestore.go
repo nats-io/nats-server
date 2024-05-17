@@ -8729,7 +8729,7 @@ func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
 		sgap := sseq - o.state.AckFloor.Stream
 		o.state.AckFloor.Consumer = dseq
 		o.state.AckFloor.Stream = sseq
-		for seq := sseq; seq > sseq-sgap; seq-- {
+		for seq := sseq; seq > sseq-sgap && len(o.state.Pending) > 0; seq-- {
 			delete(o.state.Pending, seq)
 			if len(o.state.Redelivered) > 0 {
 				delete(o.state.Redelivered, seq)
