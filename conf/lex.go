@@ -171,6 +171,7 @@ func (lx *lexer) emitString() {
 	} else {
 		finalString = lx.input[lx.start:lx.pos]
 	}
+
 	// Position of string in line where it started.
 	pos := lx.pos - lx.ilstart - len(finalString)
 	lx.items <- item{itemString, finalString, lx.line, pos}
@@ -332,12 +333,12 @@ func lexBlockStart(lx *lexer) stateFn {
 		lx.ignore()
 		return lx.pop()
 	case commentHashStart:
-		lx.push(lexBlockEnd)
+		lx.push(lexBlockStart)
 		return lexCommentStart
 	case commentSlashStart:
 		rn := lx.next()
 		if rn == commentSlashStart {
-			lx.push(lexBlockEnd)
+			lx.push(lexBlockStart)
 			return lexCommentStart
 		}
 		lx.backup()
