@@ -2794,7 +2794,7 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 		}
 		sagap = sseq - o.asflr
 		o.adflr, o.asflr = dseq, sseq
-		for seq := sseq; seq > sseq-sagap; seq-- {
+		for seq := sseq; seq > sseq-sagap && len(o.pending) > 0; seq-- {
 			delete(o.pending, seq)
 			delete(o.rdc, seq)
 			o.removeFromRedeliverQueue(seq)
