@@ -3649,7 +3649,13 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 						checkStream(t, mainTest.stream, 5)
 					}
 
-					check := func() bool {
+					var (
+						clientOK  bool
+						gatewayOK bool
+						routeOK   bool
+					)
+
+					check := func() {
 						traceMsg := natsNexMsg(t, traceSub, time.Second)
 						var e MsgTraceEvent
 						json.Unmarshal(traceMsg.Data, &e)
@@ -3702,6 +3708,7 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 								// It could have gone to any server in the C1 cluster.
 								// If it is not the stream leader, it should be
 								// routed to it.
+								clientOK = true
 							case GATEWAY:
 								require_Equal[string](t, ingress.Name, s.Name())
 								// If the server that emitted this event is the
@@ -3710,27 +3717,33 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 								if e.Server.Name == slSrv.Name() {
 									require_Equal[int](t, len(e.Egresses()), 0)
 									checkJS()
+									// Set this so that we know that we don't expect
+									// to have the route receive it.
+									routeOK = true
 								} else {
 									egress := e.Egresses()
 									require_Equal[int](t, len(egress), 1)
 									ci := egress[0]
 									require_True(t, ci.Kind == ROUTER)
 									require_Equal[string](t, ci.Name, slSrv.Name())
-									return true
 								}
+								gatewayOK = true
 							case ROUTER:
 								require_Equal[string](t, e.Server.Name, slSrv.Name())
 								require_Equal[int](t, len(e.Egresses()), 0)
 								checkJS()
+								routeOK = true
 							default:
 								t.Fatalf("Unexpected ingress: %+v", ingress)
 							}
 						}
-						return false
 					}
 					check()
 					if mainIter > 0 {
-						if check() {
+						// There will be at least 2 events
+						check()
+						// For the last test, there may be a 3rd.
+						if mainIter == 2 && !(clientOK && gatewayOK && routeOK) {
 							check()
 						}
 					}
@@ -3801,7 +3814,14 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 					}
 					jst.PublishMsg(msg)
 					checkStream(t, mainTest.stream, msgCount)
-					checkJSTrace := func() bool {
+
+					var (
+						clientOK  bool
+						gatewayOK bool
+						routeOK   bool
+					)
+
+					checkJSTrace := func() {
 						traceMsg := natsNexMsg(t, traceSub, time.Second)
 						var e MsgTraceEvent
 						json.Unmarshal(traceMsg.Data, &e)
@@ -3838,6 +3858,8 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 							}
 						case 2:
 							switch ingress.Kind {
+							case CLIENT:
+								clientOK = true
 							case GATEWAY:
 								require_Equal[string](t, ingress.Name, s.Name())
 								// If the server that emitted this event is the
@@ -3846,20 +3868,24 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 								if e.Server.Name == slSrv.Name() {
 									require_Equal[int](t, len(e.Egresses()), 0)
 									checkJS()
-								} else {
-									return true
+									// We don't expect the route event
+									routeOK = true
 								}
+								gatewayOK = true
 							case ROUTER:
 								require_Equal[string](t, e.Server.Name, slSrv.Name())
 								require_Equal[int](t, len(e.Egresses()), 0)
 								checkJS()
+								routeOK = true
 							}
 						}
-						return false
 					}
 					checkJSTrace()
 					if mainIter > 0 {
-						if checkJSTrace() {
+						// There will be at least 2 events
+						checkJSTrace()
+						// For the last test, there may be a 3rd.
+						if mainIter == 2 && !(clientOK && gatewayOK && routeOK) {
 							checkJSTrace()
 						}
 					}
