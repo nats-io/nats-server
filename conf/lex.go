@@ -171,7 +171,6 @@ func (lx *lexer) emitString() {
 	} else {
 		finalString = lx.input[lx.start:lx.pos]
 	}
-
 	// Position of string in line where it started.
 	pos := lx.pos - lx.ilstart - len(finalString)
 	lx.items <- item{itemString, finalString, lx.line, pos}
