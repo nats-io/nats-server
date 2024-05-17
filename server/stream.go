@@ -75,6 +75,14 @@ type StreamConfig struct {
 	// Allow KV like semantics to also discard new on a per subject basis
 	DiscardNewPer bool `json:"discard_new_per_subject,omitempty"`
 
+	// Specifies a list of headers that should be kept in each message.
+	// If empty, all headers will be kept.
+	// This property is mutually exclusive with HeadersToRemove.
+	HeadersToKeep []string `json:"headers_to_keep,omitempty"`
+
+	// Specifies a list of headers that should be removed from each message.
+	HeadersToRemove []string `json:"headers_to_remove,omitempty"`
+
 	// Optional qualifiers. These can not be modified after set to true.
 
 	// Sealed will seal a stream so no messages can get out or in.
@@ -278,6 +286,12 @@ type stream struct {
 	// Leader will store seq/msgTrace in clustering mode. Used in applyStreamEntries
 	// to know if trace event should be sent after processing.
 	mt map[uint64]*msgTrace
+
+	// headers to keep in each message
+	headersToKeep map[string]struct{}
+
+	// headers to remove from each message
+	headersToRemove map[string]struct{}
 
 	// For non limits policy streams when they process an ack before the actual msg.
 	// Can happen in stretch clusters, multi-cloud, or during catchup for a restarted server.
@@ -558,28 +572,49 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		return nil, fmt.Errorf("no applicable tier found")
 	}
 
+	// Create a hashmap for headers to keep or removed.
+	var headersToKeep, headersToRemove map[string]struct{}
+	if len(cfg.HeadersToKeep) > 0 {
+		headersToKeep = make(map[string]struct{}, len(cfg.HeadersToKeep)+1)
+		headersToKeep[JSMsgId] = struct{}{} // Always keep the message ID.
+		for _, h := range cfg.HeadersToKeep {
+			headersToKeep[h] = struct{}{}
+		}
+	} else if len(cfg.HeadersToRemove) > 0 {
+		headersToRemove = make(map[string]struct{}, len(cfg.HeadersToRemove))
+		for _, h := range cfg.HeadersToRemove {
+			if h == JSMsgId {
+				continue
+			}
+
+			headersToRemove[h] = struct{}{}
+		}
+	}
+
 	// Setup the internal clients.
 	c := s.createInternalJetStreamClient()
 	ic := s.createInternalJetStreamClient()
 
 	qpfx := fmt.Sprintf("[ACC:%s] stream '%s' ", a.Name, config.Name)
 	mset := &stream{
-		acc:       a,
-		jsa:       jsa,
-		cfg:       cfg,
-		js:        js,
-		srv:       s,
-		client:    c,
-		sysc:      ic,
-		tier:      tier,
-		stype:     cfg.Storage,
-		consumers: make(map[string]*consumer),
-		msgs:      newIPQueue[*inMsg](s, qpfx+"messages"),
-		gets:      newIPQueue[*directGetReq](s, qpfx+"direct gets"),
-		qch:       make(chan struct{}),
-		mqch:      make(chan struct{}),
-		uch:       make(chan struct{}, 4),
-		sch:       make(chan struct{}, 1),
+		acc:             a,
+		jsa:             jsa,
+		cfg:             cfg,
+		js:              js,
+		srv:             s,
+		client:          c,
+		sysc:            ic,
+		tier:            tier,
+		stype:           cfg.Storage,
+		consumers:       make(map[string]*consumer),
+		msgs:            newIPQueue[*inMsg](s, qpfx+"messages"),
+		gets:            newIPQueue[*directGetReq](s, qpfx+"direct gets"),
+		qch:             make(chan struct{}),
+		mqch:            make(chan struct{}),
+		uch:             make(chan struct{}, 4),
+		sch:             make(chan struct{}, 1),
+		headersToKeep:   headersToKeep,
+		headersToRemove: headersToRemove,
 	}
 
 	// Start our signaling routine to process consumers.
@@ -3407,6 +3442,48 @@ func streamAndSeq(shdr string) (string, string, uint64) {
 
 }
 
+func keepHeaders(hdr []byte, headers map[string]struct{}) []byte {
+	return processHeaders(hdr, headers, true)
+}
+
+func removeHeaders(hdr []byte, headers map[string]struct{}) []byte {
+	return processHeaders(hdr, headers, false)
+}
+
+func processHeaders(hdr []byte, headers map[string]struct{}, keep bool) []byte {
+	var index int
+	for {
+		if index >= len(hdr) {
+			return hdr
+		}
+
+		// Find the end of the line
+		end := bytes.Index(hdr[index:], []byte(_CRLF_))
+		if end < 0 {
+			return hdr
+		}
+		end += index
+
+		// Find the end of the key
+		endKey := bytes.Index(hdr[index:end], []byte(":"))
+		if endKey < 0 {
+			index = end + len(_CRLF_)
+			continue
+		}
+		endKey += index
+
+		if _, ok := headers[string(hdr[index:endKey])]; ok != keep {
+			hdr = append(hdr[:index], hdr[end+len(_CRLF_):]...)
+
+			if len(hdr) <= len(emptyHdrLine) {
+				return nil
+			}
+		} else {
+			index = end + len(_CRLF_)
+		}
+	}
+}
+
 // Lock should be held.
 func (mset *stream) setStartingSequenceForSources(iNames map[string]struct{}) {
 	var state StreamState
@@ -4667,6 +4744,13 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				return err
 			}
 		}
+	}
+
+	// Remove any headers that are not needed for storage.
+	if mset.headersToKeep != nil {
+		hdr = keepHeaders(hdr, mset.headersToKeep)
+	} else if mset.headersToRemove != nil {
+		hdr = removeHeaders(hdr, mset.headersToRemove)
 	}
 
 	// Response Ack.
