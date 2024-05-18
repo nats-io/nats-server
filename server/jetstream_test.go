@@ -23528,7 +23528,7 @@ func TestJetStreamAckAllWithLargeFirstSequenceAndNoAckFloor(t *testing.T) {
 		js.Publish("foo.bar", []byte("hello"))
 	}
 
-	ss, err := js.PullSubscribe("foo.*", "TEST", nats.AckAll())
+	ss, err := js.PullSubscribe("foo.*", "C1", nats.AckAll())
 	require_NoError(t, err)
 	msgs, err := ss.Fetch(10, nats.MaxWait(100*time.Millisecond))
 	require_NoError(t, err)
@@ -23546,5 +23546,70 @@ func TestJetStreamAckAllWithLargeFirstSequenceAndNoAckFloor(t *testing.T) {
 	require_Equal(t, len(msgs), 10)
 
 	_, err = js.StreamInfo("TEST", nats.MaxWait(250*time.Millisecond))
+	require_NoError(t, err)
+
+	// Now make sure that if we ack in the middle, meaning we still have ack pending,
+	// that we do the right thing as well.
+	ss, err = js.PullSubscribe("foo.*", "C2", nats.AckAll())
+	require_NoError(t, err)
+	msgs, err = ss.Fetch(10, nats.MaxWait(100*time.Millisecond))
+	require_NoError(t, err)
+	require_Equal(t, len(msgs), 10)
+
+	start = time.Now()
+	msgs[5].AckSync()
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Fatalf("AckSync took too long %v", elapsed)
+	}
+
+	// Make sure next fetch works right away with low timeout.
+	msgs, err = ss.Fetch(10, nats.MaxWait(100*time.Millisecond))
+	require_NoError(t, err)
+	require_Equal(t, len(msgs), 10)
+
+	_, err = js.StreamInfo("TEST", nats.MaxWait(250*time.Millisecond))
+	require_NoError(t, err)
+}
+
+func TestJetStreamAckAllWithLargeFirstSequenceAndNoAckFloorWithInterestPolicy(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo.>"},
+		Retention: nats.InterestPolicy,
+	})
+	require_NoError(t, err)
+
+	// Set first sequence to something very big here. This shows the issue with AckAll the
+	// first time it is called and existing ack floor is 0.
+	err = js.PurgeStream("TEST", &nats.StreamPurgeRequest{Sequence: 10_000_000_000})
+	require_NoError(t, err)
+
+	ss, err := js.PullSubscribe("foo.*", "C1", nats.AckAll())
+	require_NoError(t, err)
+
+	// Now add in 100 msgs
+	for i := 0; i < 100; i++ {
+		js.Publish("foo.bar", []byte("hello"))
+	}
+
+	msgs, err := ss.Fetch(10, nats.MaxWait(100*time.Millisecond))
+	require_NoError(t, err)
+	require_Equal(t, len(msgs), 10)
+
+	start := time.Now()
+	msgs[5].AckSync()
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Fatalf("AckSync took too long %v", elapsed)
+	}
+
+	// We are testing for run away loops acking messages in the stream that are not there.
+	_, err = js.StreamInfo("TEST", nats.MaxWait(100*time.Millisecond))
 	require_NoError(t, err)
 }
