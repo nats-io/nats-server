@@ -8616,9 +8616,16 @@ func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
 		sgap := sseq - o.state.AckFloor.Stream
 		o.state.AckFloor.Consumer = dseq
 		o.state.AckFloor.Stream = sseq
-		for seq := sseq; seq > sseq-sgap && len(o.state.Pending) > 0; seq-- {
-			delete(o.state.Pending, seq)
-			if len(o.state.Redelivered) > 0 {
+		if sgap > uint64(len(o.state.Pending)) {
+			for seq := range o.state.Pending {
+				if seq <= sseq {
+					delete(o.state.Pending, seq)
+					delete(o.state.Redelivered, seq)
+				}
+			}
+		} else {
+			for seq := sseq; seq > sseq-sgap && len(o.state.Pending) > 0; seq-- {
+				delete(o.state.Pending, seq)
 				delete(o.state.Redelivered, seq)
 			}
 		}

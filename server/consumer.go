@@ -2748,7 +2748,7 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 		return
 	}
 
-	var sagap uint64
+	var sgap, floor uint64
 	var needSignal bool
 
 	switch o.cfg.AckPolicy {
@@ -2792,12 +2792,29 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 		if o.maxp > 0 && len(o.pending) >= o.maxp {
 			needSignal = true
 		}
-		sagap = sseq - o.asflr
+		sgap = sseq - o.asflr
+		floor = sgap // start at same and set lower as we go.
 		o.adflr, o.asflr = dseq, sseq
-		for seq := sseq; seq > sseq-sagap && len(o.pending) > 0; seq-- {
+
+		remove := func(seq uint64) {
 			delete(o.pending, seq)
 			delete(o.rdc, seq)
 			o.removeFromRedeliverQueue(seq)
+			if seq < floor {
+				floor = seq
+			}
+		}
+		// Determine if smarter to walk all of pending vs the sequence range.
+		if sgap > uint64(len(o.pending)) {
+			for seq := range o.pending {
+				if seq <= sseq {
+					remove(seq)
+				}
+			}
+		} else {
+			for seq := sseq; seq > sseq-sgap && len(o.pending) > 0; seq-- {
+				remove(seq)
+			}
 		}
 	case AckNone:
 		// FIXME(dlc) - This is error but do we care?
@@ -2808,20 +2825,19 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 	// Update underlying store.
 	o.updateAcks(dseq, sseq, reply)
 
-	clustered := o.node != nil
-
 	// In case retention changes for a stream, this ought to have been updated
 	// using the consumer lock to avoid a race.
 	retention := o.retention
+	clustered := o.node != nil
 	o.mu.Unlock()
 
 	// Let the owning stream know if we are interest or workqueue retention based.
 	// If this consumer is clustered this will be handled by processReplicatedAck
 	// after the ack has propagated.
 	if !clustered && mset != nil && retention != LimitsPolicy {
-		if sagap > 1 {
-			// FIXME(dlc) - This is very inefficient, will need to fix.
-			for seq := sseq; seq > sseq-sagap; seq-- {
+		if sgap > 1 {
+			// FIXME(dlc) - This can very inefficient, will need to fix.
+			for seq := sseq; seq >= floor; seq-- {
 				mset.ackMsg(o, seq)
 			}
 		} else {
