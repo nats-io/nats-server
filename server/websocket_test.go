@@ -4356,6 +4356,7 @@ func TestWSWithPartialWrite(t *testing.T) {
 func testWSNoCorruptionWithFrameSizeLimit(t *testing.T, total int) {
 	tmpl := `
                listen: "127.0.0.1:-1"
+               http: "127.0.0.1:-1"
                cluster {
                        name: "local"
                        port: -1
@@ -4381,17 +4382,22 @@ func testWSNoCorruptionWithFrameSizeLimit(t *testing.T, total int) {
 
 	checkClusterFormed(t, s1, s2, s3)
 
-	nc3 := natsConnect(t, fmt.Sprintf("ws://127.0.0.1:%d", o3.Websocket.Port))
+	errCh := make(chan error, 1)
+	disconnectCB := nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
+		if err != nil {
+			errCh <- fmt.Errorf("Client with subscription got an unexpected disconnect error: %w", err)
+		}
+	})
+	nc3 := natsConnect(t, fmt.Sprintf("ws://127.0.0.1:%d", o3.Websocket.Port), disconnectCB)
 	defer nc3.Close()
 
-	nc2 := natsConnect(t, fmt.Sprintf("ws://127.0.0.1:%d", o2.Websocket.Port))
+	nc2 := natsConnect(t, fmt.Sprintf("ws://127.0.0.1:%d", o2.Websocket.Port), disconnectCB)
 	defer nc2.Close()
 
-	payload := make([]byte, 100000)
+	payload := make([]byte, 100_000)
 	for i := 0; i < len(payload); i++ {
 		payload[i] = 'A' + byte(i%26)
 	}
-	errCh := make(chan error, 1)
 	doneCh := make(chan struct{}, 1)
 	count := int32(0)
 
@@ -4453,6 +4459,7 @@ func testWSNoCorruptionWithFrameSizeLimit(t *testing.T, total int) {
 			case err := <-errCh:
 				t.Fatalf("Error: %v", err)
 			default:
+				nc1.FlushTimeout(5 * time.Millisecond)
 			}
 		}
 	}
