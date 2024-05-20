@@ -10414,3 +10414,158 @@ func TestNoRaceFileStoreWriteFullStateUniqueSubjects(t *testing.T) {
 	// ~500MB, could change if we tweak encodings..
 	require_True(t, fi.Size() > 500*1024*1024)
 }
+
+// When a catchup takes a long time and the ingest rate is high enough to cause us
+// to drop append entries and move our first past out catchup window due to max bytes or max msgs, etc.
+func TestNoRaceLargeStreamCatchups(t *testing.T) {
+	// This usually takes too long on Travis.
+	t.Skip()
+
+	var jsMaxOutTempl = `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {max_file_store: 22GB, store_dir: '%s', max_outstanding_catchup: 128KB}
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+	# For access to system account.
+	accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+`
+
+	c := createJetStreamClusterWithTemplate(t, jsMaxOutTempl, "R3S", 3)
+	defer c.shutdown()
+
+	nc, _ := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	js, err := nc.JetStream(nats.PublishAsyncMaxPending(64 * 1024))
+	require_NoError(t, err)
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"Z.>"},
+		MaxBytes: 4 * 1024 * 1024 * 1024,
+		Replicas: 1, // Start at R1
+	}
+
+	_, err = js.AddStream(cfg)
+	require_NoError(t, err)
+
+	// Load up to a decent size first.
+	num, msg := 25_000, bytes.Repeat([]byte("Z"), 256*1024)
+	for i := 0; i < num; i++ {
+		_, err := js.PublishAsync("Z.Z.Z", msg)
+		require_NoError(t, err)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(20 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	var sl *Server
+	time.AfterFunc(time.Second, func() {
+		cfg.Replicas = 3
+		_, err = js.UpdateStream(cfg)
+		require_NoError(t, err)
+		c.waitOnStreamLeader(globalAccountName, "TEST")
+		sl = c.streamLeader(globalAccountName, "TEST")
+	})
+
+	// Run for 60 seconds sending new messages at a high rate.
+	timeout := time.Now().Add(60 * time.Second)
+	for time.Now().Before(timeout) {
+		for i := 0; i < 5_000; i++ {
+			// Not worried about each message, so not checking err here.
+			// Just generating high load of new traffic while trying to catch up.
+			js.PublishAsync("Z.Z.Z", msg)
+		}
+		// This will gate us waiting on a response.
+		js.Publish("Z.Z.Z", msg)
+	}
+
+	// Make sure the leader has not changed.
+	require_Equal(t, sl, c.streamLeader(globalAccountName, "TEST"))
+
+	// Grab the leader and its state.
+	mset, err := sl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	expected := mset.state()
+
+	checkFor(t, 45*time.Second, time.Second, func() error {
+		for _, s := range c.servers {
+			if s == sl {
+				continue
+			}
+			mset, err := s.GlobalAccount().lookupStream("TEST")
+			require_NoError(t, err)
+			state := mset.state()
+			if !reflect.DeepEqual(expected, state) {
+				return fmt.Errorf("Follower %v state does not match: %+v vs %+v", s, state, expected)
+			}
+		}
+		return nil
+	})
+}
+
+func TestNoRaceLargeNumDeletesStreamCatchups(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, _ := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	js, err := nc.JetStream(nats.PublishAsyncMaxPending(16 * 1024))
+	require_NoError(t, err)
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 1, // Start at R1
+	}
+	_, err = js.AddStream(cfg)
+	require_NoError(t, err)
+
+	// We will manipulate the stream at the lower level to achieve large number of interior deletes.
+	// We will store only 2 msgs, but have 100M deletes in between.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	mset, err := sl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	mset.mu.Lock()
+	mset.store.StoreMsg("foo", nil, []byte("ok"))
+	mset.store.SkipMsgs(2, 1_000_000_000)
+	mset.store.StoreMsg("foo", nil, []byte("ok"))
+	mset.store.SkipMsgs(1_000_000_003, 1_000_000_000)
+	var state StreamState
+	mset.store.FastState(&state)
+	mset.lseq = state.LastSeq
+	mset.mu.Unlock()
+
+	cfg.Replicas = 3
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	mset, err = sl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	expected := mset.state()
+
+	// This should happen fast and not spin on all interior deletes.
+	checkFor(t, 250*time.Millisecond, 50*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			if s == sl {
+				continue
+			}
+			mset, err := s.GlobalAccount().lookupStream("TEST")
+			require_NoError(t, err)
+			state := mset.state()
+			// Ignore LastTime for this test since we send delete range at end.
+			state.LastTime = expected.LastTime
+			if !reflect.DeepEqual(expected, state) {
+				return fmt.Errorf("Follower %v state does not match: %+v vs %+v", s, state, expected)
+			}
+		}
+		return nil
+	})
+}
