@@ -3430,7 +3430,6 @@ func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 	lseq := seq + num - 1
 
 	mb.mu.Lock()
-	var needsRecord bool
 	// If we are empty update meta directly.
 	if mb.msgs == 0 {
 		atomic.StoreUint64(&mb.last.seq, lseq)
@@ -3438,7 +3437,6 @@ func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 		atomic.StoreUint64(&mb.first.seq, lseq+1)
 		mb.first.ts = nowts
 	} else {
-		needsRecord = true
 		for ; seq <= lseq; seq++ {
 			mb.dmap.Insert(seq)
 		}
@@ -3446,9 +3444,7 @@ func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 	mb.mu.Unlock()
 
 	// Write out our placeholder.
-	if needsRecord {
-		mb.writeMsgRecord(emptyRecordLen, lseq|ebit, _EMPTY_, nil, nil, nowts, true)
-	}
+	mb.writeMsgRecord(emptyRecordLen, lseq|ebit, _EMPTY_, nil, nil, nowts, true)
 
 	// Now update FS accounting.
 	// Update fs state.
@@ -8169,6 +8165,7 @@ func (fs *fileStore) deleteBlocks() DeleteBlocks {
 }
 
 // SyncDeleted will make sure this stream has same deleted state as dbs.
+// This will only process deleted state within our current state.
 func (fs *fileStore) SyncDeleted(dbs DeleteBlocks) {
 	if len(dbs) == 0 {
 		return
@@ -8177,18 +8174,22 @@ func (fs *fileStore) SyncDeleted(dbs DeleteBlocks) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
+	lseq := fs.state.LastSeq
 	var needsCheck DeleteBlocks
 
 	fs.readLockAllMsgBlocks()
 	mdbs := fs.deleteBlocks()
 	for i, db := range dbs {
+		first, last, num := db.State()
 		// If the block is same as what we have we can skip.
 		if i < len(mdbs) {
-			first, last, num := db.State()
 			eFirst, eLast, eNum := mdbs[i].State()
 			if first == eFirst && last == eLast && num == eNum {
 				continue
 			}
+		} else if first > lseq {
+			// Skip blocks not applicable to our current state.
+			continue
 		}
 		// Need to insert these.
 		needsCheck = append(needsCheck, db)

@@ -2405,9 +2405,6 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					// If we are interest based make sure to check consumers if interest retention policy.
 					// This is to make sure we process any outstanding acks from all consumers.
 					mset.checkInterestState()
-					// Make sure we create a new snapshot in case things have changed such that any existing
-					// snapshot may no longer be valid.
-					doSnapshot()
 					// If we became leader during this time and we need to send a snapshot to our
 					// followers, i.e. as a result of a scale-up from R1, do it now.
 					if sendSnapshot && isLeader && mset != nil && n != nil {
@@ -2941,6 +2938,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 
 				if err != nil {
 					if err == errLastSeqMismatch {
+
 						var state StreamState
 						mset.store.FastState(&state)
 
@@ -2952,6 +2950,8 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 							// Retry
 							err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts)
 						}
+						// FIXME(dlc) - We could just run a catchup with a request defining the span between what we expected
+						// and what we got.
 					}
 
 					// Only return in place if we are going to reset our stream or we are out of space, or we are closed.
@@ -3568,9 +3568,14 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 			js.mu.Unlock()
 		}
 
-		var needsSetLeader bool
 		if !alreadyRunning && numReplicas > 1 {
 			if needsNode {
+				// Since we are scaling up we want to make sure our sync subject
+				// is registered before we start our raft node.
+				mset.mu.Lock()
+				mset.startClusterSubs()
+				mset.mu.Unlock()
+
 				js.createRaftGroup(acc.GetName(), rg, storage, pprofLabels{
 					"type":    "stream",
 					"account": mset.accName(),
@@ -3602,15 +3607,12 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 			rg.node = nil
 			js.mu.Unlock()
 		}
+		// Set the new stream assignment.
+		mset.setStreamAssignment(sa)
+
 		// Call update.
 		if err = mset.updateWithAdvisory(cfg, !recovering); err != nil {
 			s.Warnf("JetStream cluster error updating stream %q for account %q: %v", cfg.Name, acc.Name, err)
-		}
-		// Set the new stream assignment.
-		mset.setStreamAssignment(sa)
-		// Make sure we are the leader now that we are R1.
-		if needsSetLeader {
-			mset.setLeader(true)
 		}
 	}
 
@@ -7582,7 +7584,8 @@ func (mset *stream) supportsBinarySnapshotLocked() bool {
 			// We know we support ourselves.
 			continue
 		}
-		if sir, ok := s.nodeToInfo.Load(p.ID); !ok || sir == nil || !sir.(nodeInfo).binarySnapshots {
+		// Since release 2.10.16 only deny if we know the other node does not support.
+		if sir, ok := s.nodeToInfo.Load(p.ID); ok && sir != nil && !sir.(nodeInfo).binarySnapshots {
 			return false
 		}
 	}
@@ -8681,7 +8684,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 		return 0
 	}
 
-	nextBatchC := make(chan struct{}, 1)
+	nextBatchC := make(chan struct{}, 4)
 	nextBatchC <- struct{}{}
 	remoteQuitCh := make(chan struct{})
 
@@ -8706,19 +8709,18 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 		// Kick ourselves and anyone else who might have stalled on global state.
 		select {
 		case nextBatchC <- struct{}{}:
-			// Reset our activity
-			notActive.Reset(activityInterval)
 		default:
 		}
+		// Reset our activity
+		notActive.Reset(activityInterval)
 	})
 	defer s.sysUnsubscribe(ackSub)
 	ackReplyT := strings.ReplaceAll(ackReply, ".*", ".%d")
 
 	// Grab our state.
 	var state StreamState
-	mset.mu.RLock()
+	// mset.store never changes after being set, don't need lock.
 	mset.store.FastState(&state)
-	mset.mu.RUnlock()
 
 	// Reset notion of first if this request wants sequences before our starting sequence
 	// and we would have nothing to send. If we have partial messages still need to send skips for those.
@@ -8756,7 +8758,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 			// Wait til we can send at least 4k
 			const minBatchWait = int32(4 * 1024)
 			mw := time.NewTimer(minWait)
-			for done := false; !done; {
+			for done := maxOutMsgs-atomic.LoadInt32(&outm) > minBatchWait; !done; {
 				select {
 				case <-nextBatchC:
 					done = maxOutMsgs-atomic.LoadInt32(&outm) > minBatchWait
@@ -8811,9 +8813,33 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 			dr.First, dr.Num = 0, 0
 		}
 
+		// See if we should use LoadNextMsg instead of walking sequence by sequence if we have an order magnitude more interior deletes.
+		// Only makes sense with delete range capabilities.
+		useLoadNext := drOk && (uint64(state.NumDeleted) > 10*state.Msgs)
+
 		var smv StoreMsg
 		for ; seq <= last && atomic.LoadInt64(&outb) <= maxOutBytes && atomic.LoadInt32(&outm) <= maxOutMsgs && s.gcbBelowMax(); seq++ {
-			sm, err := mset.store.LoadMsg(seq, &smv)
+			var sm *StoreMsg
+			var err error
+			// Is we should use load next do so here.
+			if useLoadNext {
+				var nseq uint64
+				sm, nseq, err = mset.store.LoadNextMsg(fwcs, true, seq, &smv)
+				if err == nil && nseq > seq {
+					dr.First, dr.Num = seq, nseq-seq
+					// Jump ahead
+					seq = nseq
+				} else if err == ErrStoreEOF {
+					dr.First, dr.Num = seq, state.LastSeq-seq
+					// Clear EOF here for normal processing.
+					err = nil
+					// Jump ahead
+					seq = state.LastSeq
+				}
+			} else {
+				sm, err = mset.store.LoadMsg(seq, &smv)
+			}
+
 			// if this is not a deleted msg, bail out.
 			if err != nil && err != ErrStoreMsgNotFound && err != errDeletedMsg {
 				if err == ErrStoreEOF {
@@ -8828,6 +8854,10 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 						// Try our best to redo our invalidated snapshot as well.
 						if n := mset.raftNode(); n != nil {
 							n.InstallSnapshot(mset.stateSnapshot())
+						}
+						// If we allow gap markers check if we have one pending.
+						if drOk && dr.First > 0 {
+							sendDR()
 						}
 						// Signal EOF
 						s.sendInternalMsgLocked(sendSubject, _EMPTY_, nil, nil)
@@ -8875,6 +8905,9 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 				}
 				// Recheck our exit condition.
 				if seq == last {
+					if drOk && dr.First > 0 {
+						sendDR()
+					}
 					s.Noticef("Catchup for stream '%s > %s' complete", mset.account(), mset.name())
 					// EOF
 					s.sendInternalMsgLocked(sendSubject, _EMPTY_, nil, nil)
@@ -8890,7 +8923,6 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 		if drOk && dr.First > 0 {
 			sendDR()
 		}
-
 		return true
 	}
 
@@ -8926,6 +8958,11 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 				return
 			}
 		case <-cbKick:
+			if !sendNextBatchAndContinue(qch) {
+				mset.clearCatchupPeer(sreq.Peer)
+				return
+			}
+		case <-time.After(500 * time.Millisecond):
 			if !sendNextBatchAndContinue(qch) {
 				mset.clearCatchupPeer(sreq.Peer)
 				return
