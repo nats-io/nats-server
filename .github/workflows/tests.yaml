@@ -213,23 +213,6 @@ jobs:
       - name: Run unit tests
         run: go test -v -p=1 -run=TestNoRace ./... -count=1 -vet=off -timeout=30m -failfast
 
-  js-chaos:
-    name: JetStream chaos tests
-    if: ${{ false }} # Don't run for now
-    needs: [build-latest, build-supported, lint]
-    runs-on: ${{ vars.GHA_WORKER_LARGE }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: stable
-
-      - name: Run unit tests
-        run: go test -race -v -p=1 -run=TestJetStreamChaos ./server/... -tags=js_chaos_tests -count=1 -vet=off -timeout=30m -failfast
-
   mqtt:
     name: MQTT tests
     needs: [build-latest, build-supported, lint]

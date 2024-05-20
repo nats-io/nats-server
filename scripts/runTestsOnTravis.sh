@@ -81,13 +81,6 @@ elif [ "$1" = "js_super_cluster_tests" ]; then
 
     go test -race -v -run=TestJetStreamSuperCluster ./server -count=1 -vet=off -timeout=30m -failfast
 
-elif [ "$1" = "js_chaos_tests" ]; then
-
-    # Run JetStream chaos tests. By convention, all JS cluster chaos tests
-    # start with `TestJetStreamChaos`.
-
-    go test -race -v -p=1 -run=TestJetStreamChaos ./server -tags=js_chaos_tests -count=1 -vet=off -timeout=30m -failfast
-
 elif [ "$1" = "mqtt_tests" ]; then
 
     # Run MQTT tests. By convention, all MQTT tests start with `TestMQTT`.
