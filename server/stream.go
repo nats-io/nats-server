@@ -846,7 +846,9 @@ func (mset *stream) setLeader(isLeader bool) error {
 	if isLeader {
 		// Make sure we are listening for sync requests.
 		// TODO(dlc) - Original design was that all in sync members of the group would do DQ.
-		mset.startClusterSubs()
+		if mset.isClustered() {
+			mset.startClusterSubs()
+		}
 
 		// Setup subscriptions if we were not already the leader.
 		if err := mset.subscribeToStream(); err != nil {
@@ -881,7 +883,7 @@ func (mset *stream) setLeader(isLeader bool) error {
 
 // Lock should be held.
 func (mset *stream) startClusterSubs() {
-	if mset.isClustered() && mset.syncSub == nil {
+	if mset.syncSub == nil {
 		mset.syncSub, _ = mset.srv.systemSubscribe(mset.sa.Sync, _EMPTY_, false, mset.sysc, mset.handleClusterSyncRequest)
 	}
 }
