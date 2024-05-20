@@ -812,6 +812,24 @@ func TestBlocks(t *testing.T) {
 			},
 			"", "",
 		},
+		{
+			"comment in block scope after value parse",
+			`
+			{
+			  "debug":              False
+			  "server_name":        "gcp-asianortheast3-natscj1-1"
+
+			  # Profile port specification.
+			  "prof_port":          8221
+			}
+			`,
+			map[string]any{
+				"debug":       false,
+				"prof_port":   int64(8221),
+				"server_name": "gcp-asianortheast3-natscj1-1",
+			},
+			"", "",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f, err := os.CreateTemp(t.TempDir(), "nats.conf-")

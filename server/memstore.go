@@ -1402,19 +1402,25 @@ func (ms *memStore) EncodedStreamState(failed uint64) ([]byte, error) {
 
 // SyncDeleted will make sure this stream has same deleted state as dbs.
 func (ms *memStore) SyncDeleted(dbs DeleteBlocks) {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
 	// For now we share one dmap, so if we have one entry here check if states are the same.
 	// Note this will work for any DeleteBlock type, but we expect this to be a dmap too.
 	if len(dbs) == 1 {
-		ms.mu.RLock()
 		min, max, num := ms.dmap.State()
-		ms.mu.RUnlock()
 		if pmin, pmax, pnum := dbs[0].State(); pmin == min && pmax == max && pnum == num {
 			return
 		}
 	}
+	lseq := ms.state.LastSeq
 	for _, db := range dbs {
-		db.Range(func(dseq uint64) bool {
-			ms.RemoveMsg(dseq)
+		// Skip if beyond our current state.
+		if first, _, _ := db.State(); first > lseq {
+			continue
+		}
+		db.Range(func(seq uint64) bool {
+			ms.removeMsg(seq, false)
 			return true
 		})
 	}

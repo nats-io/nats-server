@@ -887,8 +887,10 @@ func (n *raft) ResumeApply() {
 	}
 
 	n.debug("Resuming our apply channel")
-	n.observer, n.pobserver = n.pobserver, false
-	n.paused = false
+
+	// Reset before we start.
+	n.resetElectionTimeout()
+
 	// Run catchup..
 	if n.hcommit > n.commit {
 		n.debug("Resuming %d replays", n.hcommit+1-n.commit)
@@ -904,12 +906,16 @@ func (n *raft) ResumeApply() {
 			runtime.Gosched()
 			// Simply re-acquire
 			n.Lock()
-			// Need to check if we got closed or if we were paused again.
-			if n.State() == Closed || n.paused {
+			// Need to check if we got closed.
+			if n.State() == Closed {
 				return
 			}
 		}
 	}
+
+	// Clear our observer and paused state after we apply.
+	n.observer, n.pobserver = n.pobserver, false
+	n.paused = false
 	n.hcommit = 0
 
 	// If we had been selected to be the next leader campaign here now that we have resumed.
@@ -3352,7 +3358,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				if l > paeWarnThreshold && l%paeWarnModulo == 0 {
 					n.warn("%d append entries pending", len(n.pae))
 				}
-			} else {
+			} else if l%paeWarnModulo == 0 {
 				n.debug("Not saving to append entries pending")
 			}
 		} else {
