@@ -1196,7 +1196,6 @@ NextServer:
 }
 
 func TestJetStreamClusterBusyStreams(t *testing.T) {
-	t.Skip("Too long for CI at the moment")
 	type streamSetup struct {
 		config    *nats.StreamConfig
 		consumers []*nats.ConsumerConfig
@@ -1299,7 +1298,8 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 						}
 
 						for _, subject := range subjects {
-							_, err := js.Publish(subject, payload, nats.AckWait(200*time.Millisecond))
+							msgID := nats.MsgId(fmt.Sprintf("n:%d", n.Load()))
+							_, err := js.Publish(subject, payload, nats.AckWait(200*time.Millisecond), msgID)
 							if err == nil {
 								if nn := n.Add(1); int(nn) >= test.producerMsgs {
 									return
@@ -1440,22 +1440,24 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 	}
 	checkMsgsEqual := func(t *testing.T, c *cluster, accountName, streamName string) {
 		state := getStreamDetails(t, c, accountName, streamName).State
-		var msets []*stream
+		msets := make(map[*Server]*stream)
 		for _, s := range c.servers {
 			acc, err := s.LookupAccount(accountName)
 			require_NoError(t, err)
 			mset, err := acc.lookupStream(streamName)
 			require_NoError(t, err)
-			msets = append(msets, mset)
+			msets[s] = mset
 		}
 		for seq := state.FirstSeq; seq <= state.LastSeq; seq++ {
 			var msgId string
 			var smv StoreMsg
-			for _, mset := range msets {
+			for replica, mset := range msets {
 				mset.mu.RLock()
 				sm, err := mset.store.LoadMsg(seq, &smv)
 				mset.mu.RUnlock()
-				require_NoError(t, err)
+				if err != nil {
+					t.Fatalf("Unexpected error loading message (seq=%d) from stream %q on replica %q: %v", seq, streamName, replica, err)
+				}
 				if msgId == _EMPTY_ {
 					msgId = string(sm.hdr)
 				} else if msgId != string(sm.hdr) {
@@ -1464,7 +1466,7 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 			}
 		}
 	}
-	checkConsumer := func(t *testing.T, c *cluster, accountName, streamName, consumerName string) {
+	checkConsumer := func(t *testing.T, c *cluster, accountName, streamName string) {
 		t.Helper()
 		var leader string
 		for _, s := range c.servers {
@@ -1612,7 +1614,7 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 			if gotMsgs != expectedMsgs {
 				t.Errorf("stream with sources has %v messages, but total sourced messages should be %v", gotMsgs, expectedMsgs)
 			}
-			checkConsumer(t, c, accName, streamName, "A")
+			checkConsumer(t, c, accName, streamName)
 			checkMsgsEqual(t, c, accName, streamName)
 		}
 		test(t, &testParams{
@@ -1639,58 +1641,124 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 		})
 	})
 
-	t.Run("R3F/streams:30/limits", func(t *testing.T) {
-		testDuration := 3 * time.Minute
-		totalStreams := 30
-		consumersPerStream := 5
-		streams := make([]*streamSetup, totalStreams)
-		for i := 0; i < totalStreams; i++ {
-			name := fmt.Sprintf("test:%d", i)
-			st := &streamSetup{
-				config: &nats.StreamConfig{
-					Name:      name,
-					Subjects:  []string{fmt.Sprintf("test.%d.*", i)},
-					Replicas:  3,
-					Retention: nats.LimitsPolicy,
-				},
-				consumers: make([]*nats.ConsumerConfig, 0),
-			}
-			for j := 0; j < consumersPerStream; j++ {
-				subject := fmt.Sprintf("test.%d.%d", i, j)
-				name := fmt.Sprintf("A:%d:%d", i, j)
-				cc := &nats.ConsumerConfig{
-					Name:          name,
-					Durable:       name,
-					FilterSubject: subject,
-					AckPolicy:     nats.AckExplicitPolicy,
+	t.Run("rollouts", func(t *testing.T) {
+		shared := func(t *testing.T, sc *nats.StreamConfig, tp *testParams) func(t *testing.T) {
+			return func(t *testing.T) {
+				testDuration := 3 * time.Minute
+				totalStreams := 30
+				consumersPerStream := 5
+				streams := make([]*streamSetup, totalStreams)
+				for i := 0; i < totalStreams; i++ {
+					name := fmt.Sprintf("test:%d", i)
+					st := &streamSetup{
+						config: &nats.StreamConfig{
+							Name:      name,
+							Subjects:  []string{fmt.Sprintf("test.%d.*", i)},
+							Replicas:  3,
+							Discard:   sc.Discard,
+							Retention: sc.Retention,
+							Storage:   sc.Storage,
+							MaxMsgs:   sc.MaxMsgs,
+							MaxBytes:  sc.MaxBytes,
+							MaxAge:    sc.MaxAge,
+						},
+						consumers: make([]*nats.ConsumerConfig, 0),
+					}
+					for j := 0; j < consumersPerStream; j++ {
+						subject := fmt.Sprintf("test.%d.%d", i, j)
+						name := fmt.Sprintf("A:%d:%d", i, j)
+						cc := &nats.ConsumerConfig{
+							Name:          name,
+							Durable:       name,
+							FilterSubject: subject,
+							AckPolicy:     nats.AckExplicitPolicy,
+						}
+						st.consumers = append(st.consumers, cc)
+						st.subjects = append(st.subjects, subject)
+					}
+					streams[i] = st
 				}
-				st.consumers = append(st.consumers, cc)
-				st.subjects = append(st.subjects, subject)
+				expect := func(t *testing.T, nc *nats.Conn, js nats.JetStreamContext, c *cluster) {
+					time.Sleep(testDuration + 1*time.Minute)
+					accName := "js"
+					for i := 0; i < totalStreams; i++ {
+						streamName := fmt.Sprintf("test:%d", i)
+						checkMsgsEqual(t, c, accName, streamName)
+					}
+				}
+				test(t, &testParams{
+					cluster:         t.Name(),
+					streams:         streams,
+					producers:       10,
+					consumers:       10,
+					restarts:        tp.restarts,
+					rolloutRestart:  tp.rolloutRestart,
+					ldmRestart:      tp.ldmRestart,
+					checkHealthz:    tp.checkHealthz,
+					restartWait:     tp.restartWait,
+					expect:          expect,
+					duration:        testDuration,
+					producerMsgSize: 1024,
+					producerMsgs:    100_000,
+				})
 			}
-			streams[i] = st
 		}
-		expect := func(t *testing.T, nc *nats.Conn, js nats.JetStreamContext, c *cluster) {
-			time.Sleep(testDuration + 1*time.Minute)
-			accName := "js"
-			for i := 0; i < totalStreams; i++ {
-				streamName := fmt.Sprintf("test:%d", i)
-				checkMsgsEqual(t, c, accName, streamName)
-			}
+		for prefix, st := range map[string]nats.StorageType{"R3F": nats.FileStorage, "R3M": nats.MemoryStorage} {
+			t.Run(prefix, func(t *testing.T) {
+				for rolloutType, params := range map[string]*testParams{
+					// Rollouts using graceful restarts and checking healthz.
+					"ldm": {
+						restarts:       1,
+						rolloutRestart: true,
+						ldmRestart:     true,
+						checkHealthz:   true,
+						restartWait:    45 * time.Second,
+					},
+					// Non graceful restarts calling Shutdown, but using healthz on startup.
+					"term": {
+						restarts:       1,
+						rolloutRestart: true,
+						ldmRestart:     false,
+						checkHealthz:   true,
+						restartWait:    45 * time.Second,
+					},
+				} {
+					t.Run(rolloutType, func(t *testing.T) {
+						t.Run("limits", shared(t, &nats.StreamConfig{
+							Retention: nats.LimitsPolicy,
+							Storage:   st,
+						}, params))
+						t.Run("wq", shared(t, &nats.StreamConfig{
+							Retention: nats.WorkQueuePolicy,
+							Storage:   st,
+						}, params))
+						t.Run("interest", shared(t, &nats.StreamConfig{
+							Retention: nats.InterestPolicy,
+							Storage:   st,
+						}, params))
+						t.Run("limits:dn:max-per-subject", shared(t, &nats.StreamConfig{
+							Retention:         nats.LimitsPolicy,
+							Storage:           st,
+							MaxMsgsPerSubject: 1,
+							Discard:           nats.DiscardNew,
+						}, params))
+						t.Run("wq:dn:max-msgs", shared(t, &nats.StreamConfig{
+							Retention: nats.WorkQueuePolicy,
+							Storage:   st,
+							MaxMsgs:   10_000,
+							Discard:   nats.DiscardNew,
+						}, params))
+						t.Run("wq:dn-per-subject:max-msgs", shared(t, &nats.StreamConfig{
+							Retention:            nats.WorkQueuePolicy,
+							Storage:              st,
+							MaxMsgs:              10_000,
+							MaxMsgsPerSubject:    100,
+							Discard:              nats.DiscardNew,
+							DiscardNewPerSubject: true,
+						}, params))
+					})
+				}
+			})
 		}
-		test(t, &testParams{
-			cluster:         t.Name(),
-			streams:         streams,
-			producers:       10,
-			consumers:       10,
-			restarts:        1,
-			rolloutRestart:  true,
-			ldmRestart:      true,
-			checkHealthz:    true,
-			restartWait:     45 * time.Second,
-			expect:          expect,
-			duration:        testDuration,
-			producerMsgSize: 1024,
-			producerMsgs:    100_000,
-		})
 	})
 }
