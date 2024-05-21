@@ -4870,6 +4870,10 @@ func (mset *stream) name() string {
 
 func (mset *stream) internalLoop() {
 	mset.mu.RLock()
+	setGoRoutineLabels(pprofLabels{
+		"account": mset.acc.Name,
+		"stream":  mset.cfg.Name,
+	})
 	s := mset.srv
 	c := s.createInternalJetStreamClient()
 	c.registerWithAccount(mset.acc)
