@@ -632,6 +632,11 @@ func (s *Server) sendInternalAccountMsgWithReply(a *Account, subject, reply stri
 	s.mu.RLock()
 	if s.sys == nil || s.sys.sendq == nil {
 		s.mu.RUnlock()
+		if s.isShuttingDown() {
+			// Skip in case this was called at the end phase during shut down
+			// to avoid too many entries in the logs.
+			return nil
+		}
 		return ErrNoSysAccount
 	}
 	c := s.sys.client
