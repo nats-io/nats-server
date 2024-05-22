@@ -16,6 +16,8 @@ package server
 import (
 	"math"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -404,4 +406,25 @@ func TestNRGUnsuccessfulVoteRequestDoesntResetElectionTimer(t *testing.T) {
 	defer rg.unlockAll()
 	require_True(t, leaderOriginal.Equal(leader.etlr))
 	require_True(t, followerOriginal.Equal(follower.etlr))
+}
+
+func TestNRGInvalidTAVDoesntPanic(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+	c.waitOnLeader()
+
+	rg := c.createRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	// Mangle the TAV file to a short length (less than uint64).
+	leader := rg.leader()
+	tav := filepath.Join(leader.node().(*raft).sd, termVoteFile)
+	require_NoError(t, os.WriteFile(tav, []byte{1, 2, 3, 4}, 0644))
+
+	// Restart the node.
+	leader.stop()
+	leader.restart()
+
+	// Before the fix, a crash would have happened before this point.
+	c.waitOnAllCurrent()
 }
