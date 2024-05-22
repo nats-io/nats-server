@@ -3735,7 +3735,8 @@ func readPeerState(sd string) (ps *peerState, err error) {
 }
 
 const termVoteFile = "tav.idx"
-const termVoteLen = idLen + 8
+const termLen = 8 // uint64
+const termVoteLen = idLen + termLen
 
 // Writes out our term & vote outside of a specific raft context.
 func writeTermVote(sd string, wtv []byte) error {
@@ -3760,6 +3761,10 @@ func (n *raft) readTermVote() (term uint64, voted string, err error) {
 
 	if err != nil {
 		return 0, noVote, err
+	}
+	if len(buf) < termLen {
+		// Not enough bytes for the uint64 below, so avoid a panic.
+		return 0, noVote, nil
 	}
 	var le = binary.LittleEndian
 	term = le.Uint64(buf[0:])
