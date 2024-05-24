@@ -809,6 +809,10 @@ func (s *Server) sendStatsz(subj string) {
 	var m ServerStatsMsg
 	s.updateServerUsage(&m.Stats)
 
+	if s.limitStatsz() {
+		return
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -816,20 +820,6 @@ func (s *Server) sendStatsz(subj string) {
 	if s.sys == nil || s.sys.account == nil {
 		return
 	}
-
-	// Limit updates to the heartbeat interval, max one second.
-	statzInterval := time.Second
-	if s.sys.cstatsz < statzInterval {
-		statzInterval = s.sys.cstatsz
-	}
-	if time.Since(s.sys.lastStatsz) < statzInterval {
-		// Reschedule heartbeat for the next interval.
-		if s.sys.stmr != nil {
-			s.sys.stmr.Reset(time.Until(s.sys.lastStatsz.Add(statzInterval)))
-		}
-		return
-	}
-	s.sys.lastStatsz = time.Now()
 
 	shouldCheckInterest := func() bool {
 		opts := s.getOpts()
@@ -962,6 +952,29 @@ func (s *Server) sendStatsz(subj string) {
 	}
 	// Send message.
 	s.sendInternalMsg(subj, _EMPTY_, &m.Server, &m)
+}
+
+// Limit updates to the heartbeat interval, max one second.
+func (s *Server) limitStatsz() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.sys == nil {
+		return true
+	}
+	interval := time.Second
+	if s.sys.cstatsz < interval {
+		interval = s.sys.cstatsz
+	}
+	if time.Since(s.sys.lastStatsz) < interval {
+		// Reschedule heartbeat for the next interval.
+		if s.sys.stmr != nil {
+			s.sys.stmr.Reset(time.Until(s.sys.lastStatsz.Add(interval)))
+		}
+		return true
+	}
+	s.sys.lastStatsz = time.Now()
+	return false
 }
 
 // Send out our statz update.
