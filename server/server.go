@@ -600,6 +600,8 @@ func New(opts *Options) *Server {
 
 // NewServer will setup a new server struct after parsing the options.
 // Could return an error if options can not be validated.
+// The provided Options type should not be re-used afterwards.
+// Either use Options.Clone() to pass a copy, or make a new one.
 func NewServer(opts *Options) (*Server, error) {
 	setBaselineOptions(opts)
 

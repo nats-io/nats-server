@@ -995,9 +995,11 @@ func (s *Server) Reload() error {
 	return s.ReloadOptions(newOpts)
 }
 
-// ReloadOptions applies any supported options from the provided Option
+// ReloadOptions applies any supported options from the provided Options
 // type. This returns an error if an option which doesn't support
 // hot-swapping was changed.
+// The provided Options type should not be re-used afterwards.
+// Either use Options.Clone() to pass a copy, or make a new one.
 func (s *Server) ReloadOptions(newOpts *Options) error {
 	s.reloadMu.Lock()
 	defer s.reloadMu.Unlock()
