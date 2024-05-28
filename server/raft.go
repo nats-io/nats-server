@@ -1880,18 +1880,18 @@ func (n *raft) run() {
 
 func (n *raft) debug(format string, args ...any) {
 	if n.dflag {
-		nf := fmt.Sprintf("RAFT [%s - %s] %s", n.id, n.group, format)
+		nf := fmt.Sprintf("RAFT [%s - %s - %d/%d/%d/%d] %s", n.id, n.group, n.term, n.pindex, n.commit, n.applied, format)
 		n.s.Debugf(nf, args...)
 	}
 }
 
 func (n *raft) warn(format string, args ...any) {
-	nf := fmt.Sprintf("RAFT [%s - %s] %s", n.id, n.group, format)
+	nf := fmt.Sprintf("RAFT [%s - %s- %d/%d/%d/%d] %s", n.id, n.group, n.term, n.pindex, n.commit, n.applied, format)
 	n.s.RateLimitWarnf(nf, args...)
 }
 
 func (n *raft) error(format string, args ...any) {
-	nf := fmt.Sprintf("RAFT [%s - %s] %s", n.id, n.group, format)
+	nf := fmt.Sprintf("RAFT [%s - %s- %d/%d/%d/%d] %s", n.id, n.group, n.term, n.pindex, n.commit, n.applied, format)
 	n.s.Errorf(nf, args...)
 }
 
