@@ -2631,6 +2631,12 @@ func (n *raft) sendSnapshotToFollower(subject string) (uint64, error) {
 		n.stepdownLocked(noLeader)
 		// We need to reset our state here as well.
 		n.resetWAL()
+		assert.Unreachable(
+			"Failed to load last snapshot when sending snapshot to follower",
+			map[string]any{
+				"error": err.Error(),
+			},
+		)
 		return 0, err
 	}
 	// Go ahead and send the snapshot and peerstate here as first append entry to the catchup follower.
@@ -2763,6 +2769,16 @@ func (n *raft) applyCommit(index uint64) error {
 				}
 				// Reset and cancel any catchup.
 				n.resetWAL()
+				assert.Unreachable(
+					"Failed to load append entry from store",
+					map[string]any{
+						"error":         err.Error(),
+						"index":         index,
+						"is_leader":     n.State(),
+						"wal_first_seq": state.FirstSeq,
+						"wal_last_seq":  state.LastSeq,
+					},
+				)
 				n.cancelCatchup()
 			}
 			return errEntryLoadFailed
@@ -3135,6 +3151,7 @@ func (n *raft) truncateWAL(term, index uint64) {
 		}
 	}
 	// Set after we know we have truncated properly.
+	// TODO: we probably shouldn't mess with the term here.
 	n.term, n.pterm, n.pindex = term, term, index
 }
 
@@ -3306,12 +3323,39 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 					success = true
 				} else {
 					n.resetWAL()
+					assert.Unreachable(
+						"AppendEntry pindex mismatched, resetting WAL",
+						map[string]any{
+							"our_pterm":  n.pterm,
+							"our_pindex": n.pindex,
+							"ae_pterm":   ae.pterm,
+							"ae_pindex":  ae.pindex,
+						},
+					)
 				}
 			} else {
 				// If terms mismatched, or we got an error loading, delete that entry and all others past it.
 				// Make sure to cancel any catchups in progress.
 				// Truncate will reset our pterm and pindex. Only do so if we have an entry.
 				n.truncateWAL(eae.pterm, eae.pindex)
+				assert.Always(
+					eae.pterm >= n.pterm,
+					"Existing AppendEntry pterm is greater than or equal to our own",
+					map[string]any{
+						"our_pterm":  n.pterm,
+						"our_pindex": n.pindex,
+						"eae_pterm":  eae.pterm,
+						"eae_pindex": eae.pindex,
+					},
+				)
+				assert.Always(
+					eae.pindex >= n.commit,
+					"Existing AppendEntry pindex is greater than or equal to our commit",
+					map[string]any{
+						"our_commit": n.commit,
+						"eae_pindex": eae.pindex,
+					},
+				)
 			}
 			// Cancel regardless.
 			n.cancelCatchup()
@@ -3342,6 +3386,15 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				// Make sure pterms match and we take on the leader's.
 				// This prevents constant spinning.
 				n.truncateWAL(ae.pterm, ae.pindex)
+				assert.Unreachable(
+					"Weird unexplainable truncateWAL was called",
+					map[string]any{
+						"our_pterm":  n.pterm,
+						"our_pindex": n.pindex,
+						"ae_pterm":   ae.pterm,
+						"ae_pindex":  ae.pindex,
+					},
+				)
 				n.cancelCatchup()
 				n.Unlock()
 				return
@@ -3530,6 +3583,13 @@ func (n *raft) processAppendEntryResponse(ar *appendEntryResponse) {
 		// The remote node didn't commit the append entry, it looks like
 		// they are on a newer term than we are. Step down.
 		n.Lock()
+		assert.Unreachable(
+			"AppendEntryResponse was rejected by leader and we reset the WAL",
+			map[string]any{
+				"our_term": n.term,
+				"ar_term":  ar.term,
+			},
+		)
 		n.term = ar.term
 		n.vote = noVote
 		n.writeTermVote()
@@ -3585,6 +3645,13 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 		}
 		// Reset and cancel any catchup.
 		n.resetWAL()
+		assert.Unreachable(
+			"WAL stored sequence doesn't match the leader last log index",
+			map[string]any{
+				"store_seq": seq,
+				"ae_pindex": ae.pindex,
+			},
+		)
 		n.cancelCatchup()
 		return errEntryStoreFailed
 	}
