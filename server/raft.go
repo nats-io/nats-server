@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -3098,6 +3099,8 @@ func (n *raft) truncateWAL(term, index uint64) {
 	if term == 0 && index == 0 {
 		n.warn("Resetting WAL state")
 	}
+
+	debug.PrintStack()
 
 	defer func() {
 		// Check to see if we invalidated any snapshots that might have held state
