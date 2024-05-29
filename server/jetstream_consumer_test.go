@@ -1517,6 +1517,639 @@ func TestJetStreamConsumerStuckAckPending(t *testing.T) {
 	})
 }
 
+func TestJetStreamConsumerPinned(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	acc := s.GlobalAccount()
+
+	mset, err := acc.addStream(&StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo.>", "bar", "baz"},
+		Retention: LimitsPolicy,
+	})
+	require_NoError(t, err)
+
+	_, err = mset.addConsumer(&ConsumerConfig{
+		Durable:        "C",
+		FilterSubject:  "foo.>",
+		PriorityGroups: []string{"A"},
+		PriorityPolicy: PriorityPinnedClient,
+		AckPolicy:      AckExplicit,
+		PinnedTTL:      10 * time.Second,
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 100; i++ {
+		msg := nats.NewMsg(fmt.Sprintf("foo.%d", i))
+		msg.Data = []byte(fmt.Sprintf("msg-%d", i))
+		// Add headers to check if we properly serialize Nats-Pin-Id with and without headers.
+		if i%2 == 0 {
+			msg.Header.Add("Some-Header", "Value")
+		}
+		js.PublishMsg(msg)
+	}
+
+	req := JSApiConsumerGetNextRequest{Batch: 3, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{
+		Group: "A",
+	}}
+	reqb, _ := json.Marshal(req)
+	reply := "ONE"
+	replies, err := nc.SubscribeSync(reply)
+	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply, reqb)
+	require_NoError(t, err)
+
+	reply2 := "TWO"
+	replies2, err := nc.SubscribeSync(reply2)
+	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply2, reqb)
+	require_NoError(t, err)
+
+	// This is the firs Pull Request, so it should becom the pinned one.
+	msg, err := replies.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_NotNil(t, msg)
+	// Check if we are really pinned.
+	pinned := msg.Header.Get("Nats-Pin-Id")
+	if pinned == "" {
+		t.Fatalf("Expected pinned message, got none")
+	}
+
+	// Here, we should have pull request that just idles, as it is not pinned.
+	_, err = replies2.NextMsg(time.Second)
+	require_Error(t, err)
+
+	// While the pinned one continues to get messages.
+	msg, err = replies.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_NotNil(t, msg)
+
+	// Just making sure that the other one does not get round-robined message.
+	_, err = replies2.NextMsg(time.Second)
+	require_Error(t, err)
+
+	// Now let's send a request with wrong pinned id.
+	req = JSApiConsumerGetNextRequest{Batch: 3, Expires: 250 * time.Millisecond, PriorityGroup: PriorityGroup{
+		Id:    "WRONG",
+		Group: "A",
+	}}
+	reqBad, err := json.Marshal(req)
+	require_NoError(t, err)
+	replies3, err := nc.SubscribeSync(reply)
+	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply, reqBad)
+	require_NoError(t, err)
+
+	// and make sure we got error telling us it's wrong ID.
+	msg, err = replies3.NextMsg(time.Second)
+	require_NoError(t, err)
+	if msg.Header.Get("Status") != "423" {
+		t.Fatalf("Expected 423, got %v", msg.Header.Get("Status"))
+	}
+	// Send a new request with a good pinned ID.
+	req = JSApiConsumerGetNextRequest{Batch: 3, Expires: 250 * time.Millisecond, PriorityGroup: PriorityGroup{
+		Id:    pinned,
+		Group: "A",
+	}}
+	reqb, _ = json.Marshal(req)
+	reply = "FOUR"
+	replies4, err := nc.SubscribeSync(reply)
+	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply, reqb)
+	require_NoError(t, err)
+
+	// and check that we got a message.
+	msg, err = replies4.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_NotNil(t, msg)
+
+	advisories, err := nc.SubscribeSync("$JS.EVENT.ADVISORY.CONSUMER.*.TEST.C")
+	require_NoError(t, err)
+
+	// Send a new request without pin ID, which should work after the TTL.
+	req = JSApiConsumerGetNextRequest{Batch: 3, Expires: 50 * time.Second, PriorityGroup: PriorityGroup{
+		Group: "A",
+	}}
+	reqb, _ = json.Marshal(req)
+	reply = "FIVE"
+	replies5, err := nc.SubscribeSync(reply)
+	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply, reqb)
+
+	checkFor(t, 20*time.Second, 1*time.Second, func() error {
+		_, err = replies5.NextMsg(500 * time.Millisecond)
+		if err == nil {
+			return nil
+		}
+		return err
+	})
+
+	advisory, err := advisories.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_Equal(t, fmt.Sprintf("%s.TEST.C", JSAdvisoryConsumerUnpinnedPre), advisory.Subject)
+	advisory, err = advisories.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_Equal(t, fmt.Sprintf("%s.TEST.C", JSAdvisoryConsumerPinnedPre), advisory.Subject)
+
+	// Manually unpin the current fetch request.
+	request := JSApiConsumerUnpinRequest{Group: "A"}
+	requestData, err := json.Marshal(request)
+	require_NoError(t, err)
+	msg, err = nc.Request("$JS.API.CONSUMER.UNPIN.TEST.C", requestData, time.Second*1)
+	require_NoError(t, err)
+
+	var response JSApiConsumerUnpinResponse
+	err = json.Unmarshal(msg.Data, &response)
+	require_NoError(t, err)
+	require_True(t, response.Error == nil)
+
+	// check if we got proper advisories.
+	advisory, err = advisories.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_Equal(t, fmt.Sprintf("%s.TEST.C", JSAdvisoryConsumerUnpinnedPre), advisory.Subject)
+
+	replies6, err := nc.SubscribeSync(reply)
+	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply, reqBad)
+	require_NoError(t, err)
+
+	_, err = replies6.NextMsg(time.Second * 5)
+	require_NoError(t, err)
+}
+
+// This tests if Unpin works correctly when there are no pending messages.
+// It checks if the next pinned client will be different than the first one
+// after new messages is published.
+func TestJetStreamConsumerUnpinNoMessages(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	acc := s.GlobalAccount()
+
+	mset, err := acc.addStream(&StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: LimitsPolicy,
+	})
+	require_NoError(t, err)
+
+	_, err = mset.addConsumer(&ConsumerConfig{
+		Durable:        "C",
+		FilterSubject:  "foo",
+		PriorityGroups: []string{"A"},
+		PriorityPolicy: PriorityPinnedClient,
+		AckPolicy:      AckExplicit,
+		PinnedTTL:      10 * time.Second,
+	})
+	require_NoError(t, err)
+
+	req := JSApiConsumerGetNextRequest{Batch: 30, Expires: 60 * time.Second, PriorityGroup: PriorityGroup{
+		Group: "A",
+	}}
+	reqb, _ := json.Marshal(req)
+	reply := "ONE"
+	replies, err := nc.SubscribeSync(reply)
+	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply, reqb)
+	require_NoError(t, err)
+
+	reply2 := "TWO"
+	replies2, err := nc.SubscribeSync(reply2)
+	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply2, reqb)
+	require_NoError(t, err)
+
+	sendStreamMsg(t, nc, "foo", "data")
+	sendStreamMsg(t, nc, "foo", "data")
+
+	msg, err := replies.NextMsg(1 * time.Second)
+	pinId := msg.Header.Get("Nats-Pin-Id")
+	require_NotEqual(t, pinId, "")
+	require_NoError(t, err)
+	_, err = replies.NextMsg(1 * time.Second)
+	require_NoError(t, err)
+
+	_, err = replies2.NextMsg(1 * time.Second)
+	require_Error(t, err)
+
+	unpinRequest := func(t *testing.T, nc *nats.Conn, stream, consumer, group string) *ApiError {
+		var response JSApiConsumerUnpinResponse
+		request := JSApiConsumerUnpinRequest{Group: group}
+		requestData, err := json.Marshal(request)
+		require_NoError(t, err)
+		msg, err := nc.Request(fmt.Sprintf("$JS.API.CONSUMER.UNPIN.%s.%s", stream, consumer), requestData, time.Second*1)
+		require_NoError(t, err)
+		err = json.Unmarshal(msg.Data, &response)
+		require_NoError(t, err)
+		return response.Error
+	}
+
+	unpinError := unpinRequest(t, nc, "TEST", "C", "A")
+	require_True(t, unpinError == nil)
+
+	sendStreamMsg(t, nc, "foo", "data")
+	sendStreamMsg(t, nc, "foo", "data")
+
+	// Old pinned client should get info that it is no longer pinned.
+	msg, err = replies.NextMsg(1 * time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Status"), "423")
+
+	// While the new one should get the message and new pin.
+	msg, err = replies2.NextMsg(1 * time.Second)
+	require_NoError(t, err)
+	require_Equal(t, string(msg.Data), "data")
+	require_NotEqual(t, msg.Header.Get("Nats-Pin-Id"), pinId)
+}
+
+func TestJetStreamConsumerUnpin(t *testing.T) {
+	single := RunBasicJetStreamServer(t)
+	defer single.Shutdown()
+	nc, js := jsClientConnect(t, single)
+	defer nc.Close()
+
+	cluster := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer cluster.shutdown()
+	cnc, cjs := jsClientConnect(t, cluster.randomServer())
+	defer cnc.Close()
+
+	// Create a stream and consumer for both single server and clustered mode.
+	for _, server := range []struct {
+		replicas int
+		js       nats.JetStreamContext
+		nc       *nats.Conn
+	}{
+		{1, js, nc},
+		{3, cjs, cnc},
+	} {
+
+		_, err := server.js.AddStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo.>", "bar", "baz"},
+			Replicas: server.replicas,
+		})
+		require_NoError(t, err)
+
+		consumerConfig := CreateConsumerRequest{
+			Stream: "TEST",
+			Action: ActionCreate,
+			Config: ConsumerConfig{
+				Durable:        "C",
+				FilterSubject:  "foo.>",
+				PriorityGroups: []string{"A"},
+				PriorityPolicy: PriorityPinnedClient,
+				AckPolicy:      AckExplicit,
+				PinnedTTL:      10 * time.Second,
+			},
+		}
+		req, err := json.Marshal(consumerConfig)
+		require_NoError(t, err)
+		rmsg, err := server.nc.Request(fmt.Sprintf(JSApiDurableCreateT, consumerConfig.Stream, consumerConfig.Config.Durable), req, 5*time.Second)
+		require_NoError(t, err)
+
+		var resp JSApiConsumerCreateResponse
+		err = json.Unmarshal(rmsg.Data, &resp)
+		require_NoError(t, err)
+		require_True(t, resp.Error == nil)
+
+	}
+	cluster.waitOnStreamLeader("$G", "TEST")
+	cluster.waitOnConsumerLeader("$G", "TEST", "C")
+
+	unpinRequest := func(t *testing.T, nc *nats.Conn, stream, consumer, group string) *ApiError {
+		var response JSApiConsumerUnpinResponse
+		request := JSApiConsumerUnpinRequest{Group: group}
+		requestData, err := json.Marshal(request)
+		require_NoError(t, err)
+		msg, err := nc.Request(fmt.Sprintf("$JS.API.CONSUMER.UNPIN.%s.%s", stream, consumer), requestData, time.Second*1)
+		require_NoError(t, err)
+		err = json.Unmarshal(msg.Data, &response)
+		require_NoError(t, err)
+		return response.Error
+	}
+
+	for _, test := range []struct {
+		name     string
+		nc       *nats.Conn
+		stream   string
+		consumer string
+		group    string
+		err      *ApiError
+	}{
+		{"unpin non-existing group", nc, "TEST", "C", "B", &ApiError{ErrCode: uint16(JSConsumerInvalidPriorityGroupErr)}},
+		{"unpin on missing stream", nc, "NOT_EXIST", "C", "A", &ApiError{ErrCode: uint16(JSStreamNotFoundErr)}},
+		{"unpin on missing consumer", nc, "TEST", "NOT_EXIST", "A", &ApiError{ErrCode: uint16(JSConsumerNotFoundErr)}},
+		{"unpin missing group", nc, "TEST", "C", "", &ApiError{ErrCode: uint16(JSInvalidJSONErr)}},
+		{"ok unpin", nc, "TEST", "C", "A", nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := unpinRequest(t, nc, test.stream, test.consumer, test.group)
+			if test.err != nil {
+				require_True(t, err.ErrCode == test.err.ErrCode)
+			} else {
+				require_True(t, err == nil)
+			}
+		})
+		t.Run(fmt.Sprintf("%s clustered", test.name), func(t *testing.T) {
+			err := unpinRequest(t, cnc, test.stream, test.consumer, test.group)
+			if test.err != nil {
+				require_True(t, err.ErrCode == test.err.ErrCode)
+			} else {
+				require_True(t, err == nil)
+			}
+		})
+	}
+}
+
+func TestJetStreamConsumerWithPriorityGroups(t *testing.T) {
+	single := RunBasicJetStreamServer(t)
+	defer single.Shutdown()
+	nc, js := jsClientConnect(t, single)
+	defer nc.Close()
+
+	cluster := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer cluster.shutdown()
+	cnc, cjs := jsClientConnect(t, cluster.randomServer())
+	defer cnc.Close()
+
+	// Create a stream and consumer for both single server and clustered mode.
+	for _, server := range []struct {
+		replicas int
+		js       nats.JetStreamContext
+	}{
+		{1, js},
+		{3, cjs},
+	} {
+
+		_, err := server.js.AddStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo.>", "bar", "baz"},
+			Replicas: server.replicas,
+		})
+		require_NoError(t, err)
+	}
+	cluster.waitOnStreamLeader("$G", "TEST")
+
+	for _, test := range []struct {
+		name     string
+		nc       *nats.Conn
+		stream   string
+		consumer string
+		groups   []string
+		mode     PriorityPolicy
+		err      *ApiError
+	}{
+		{"Pinned Consumer with Priority Group", nc, "TEST", "PINNED", []string{"A"}, PriorityPinnedClient, nil},
+		{"Pinned Consumer with Priority Group, clustered", cnc, "TEST", "PINNED", []string{"A"}, PriorityPinnedClient, nil},
+		{"Overflow Consumer with Priority Group", nc, "TEST", "OVERFLOW", []string{"A"}, PriorityOverflow, nil},
+		{"Overflow Consumer with Priority Group, clustered", cnc, "TEST", "OVERFLOW", []string{"A"}, PriorityOverflow, nil},
+		{"Pinned Consumer without Priority Group", nc, "TEST", "PINNED_NO_GROUP", nil, PriorityPinnedClient, &ApiError{ErrCode: uint16(JSConsumerPriorityPolicyWithoutGroup)}},
+		{"Pinned Consumer without Priority Group, clustered", cnc, "TEST", "PINNED_NO_GROUP", nil, PriorityPinnedClient, &ApiError{ErrCode: uint16(JSConsumerPriorityPolicyWithoutGroup)}},
+		{"Overflow Consumer without Priority Group", nc, "TEST", "PINNED_NO_GROUP", nil, PriorityOverflow, &ApiError{ErrCode: uint16(JSConsumerPriorityPolicyWithoutGroup)}},
+		{"Overflow Consumer without Priority Group, clustered", cnc, "TEST", "PINNED_NO_GROUP", nil, PriorityOverflow, &ApiError{ErrCode: uint16(JSConsumerPriorityPolicyWithoutGroup)}},
+		{"Pinned Consumer with empty Priority Group", nc, "TEST", "PINNED_NO_GROUP", []string{""}, PriorityPinnedClient, &ApiError{ErrCode: uint16(JSConsumerEmptyGroupName)}},
+		{"Pinned Consumer with empty Priority Group, clustered", cnc, "TEST", "PINNED_NO_GROUP", []string{""}, PriorityPinnedClient, &ApiError{ErrCode: uint16(JSConsumerEmptyGroupName)}},
+		{"Pinned Consumer with empty Priority Group", nc, "TEST", "PINNED_NO_GROUP", []string{""}, PriorityOverflow, &ApiError{ErrCode: uint16(JSConsumerEmptyGroupName)}},
+		{"Pinned Consumer with empty Priority Group, clustered", cnc, "TEST", "PINNED_NO_GROUP", []string{""}, PriorityOverflow, &ApiError{ErrCode: uint16(JSConsumerEmptyGroupName)}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+
+			consumerConfig := CreateConsumerRequest{
+				Stream: "TEST",
+				Action: ActionCreate,
+				Config: ConsumerConfig{
+					Durable:        test.consumer,
+					FilterSubject:  "foo.>",
+					PriorityGroups: test.groups,
+					PriorityPolicy: test.mode,
+					AckPolicy:      AckExplicit,
+					PinnedTTL:      10 * time.Second,
+				},
+			}
+			req, err := json.Marshal(consumerConfig)
+			require_NoError(t, err)
+			rmsg, err := test.nc.Request(fmt.Sprintf(JSApiDurableCreateT, consumerConfig.Stream, consumerConfig.Config.Durable), req, 5*time.Second)
+			require_NoError(t, err)
+
+			var resp JSApiConsumerCreateResponse
+			err = json.Unmarshal(rmsg.Data, &resp)
+			require_NoError(t, err)
+
+			if test.err != nil {
+				require_True(t, resp.Error.ErrCode == test.err.ErrCode)
+			} else {
+				require_True(t, resp.Error == nil)
+			}
+		})
+	}
+}
+
+func TestJetStreamConsumerPriorityPullRequests(t *testing.T) {
+	single := RunBasicJetStreamServer(t)
+	defer single.Shutdown()
+	nc, js := jsClientConnect(t, single)
+	defer nc.Close()
+
+	cluster := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer cluster.shutdown()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"pinned.>", "overflow.>"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable: "STANDARD",
+	})
+	require_NoError(t, err)
+
+	consumerConfig := CreateConsumerRequest{
+		Stream: "TEST",
+		Action: ActionCreate,
+		Config: ConsumerConfig{
+			Durable:        "PINNED",
+			FilterSubject:  "pinned.>",
+			PriorityGroups: []string{"A"},
+			PriorityPolicy: PriorityPinnedClient,
+			AckPolicy:      AckExplicit,
+			PinnedTTL:      10 * time.Second,
+		},
+	}
+	req, err := json.Marshal(consumerConfig)
+	require_NoError(t, err)
+	rmsg, err := nc.Request(fmt.Sprintf(JSApiDurableCreateT, consumerConfig.Stream, consumerConfig.Config.Durable), req, 5*time.Second)
+	require_NoError(t, err)
+
+	var resp JSApiConsumerCreateResponse
+	err = json.Unmarshal(rmsg.Data, &resp)
+	require_NoError(t, err)
+	require_True(t, resp.Error == nil)
+
+	consumerConfig = CreateConsumerRequest{
+		Stream: "TEST",
+		Action: ActionCreate,
+		Config: ConsumerConfig{
+			Durable:        "OVERFLOW",
+			FilterSubject:  "overflow.>",
+			PriorityGroups: []string{"A"},
+			PriorityPolicy: PriorityOverflow,
+			AckPolicy:      AckExplicit,
+			PinnedTTL:      5 * time.Second,
+		},
+	}
+	req, err = json.Marshal(consumerConfig)
+	require_NoError(t, err)
+	rmsg, err = nc.Request(fmt.Sprintf(JSApiDurableCreateT, consumerConfig.Stream, consumerConfig.Config.Durable), req, 5*time.Second)
+	require_NoError(t, err)
+
+	err = json.Unmarshal(rmsg.Data, &resp)
+	require_NoError(t, err)
+	require_True(t, resp.Error == nil)
+
+	for i := 0; i < 50; i++ {
+		sendStreamMsg(t, nc, "pinned.1", fmt.Sprintf("msg-%d", i))
+		sendStreamMsg(t, nc, "overflow.1", fmt.Sprintf("msg-%d", i))
+	}
+
+	for _, test := range []struct {
+		name        string
+		nc          *nats.Conn
+		consumer    string
+		request     JSApiConsumerGetNextRequest
+		description string
+	}{
+		{"Pinned Pull Request", nc, "PINNED", JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "A"}}, ""},
+		{"Pinned Pull Request, no group", nc, "PINNED", JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{}}, "Bad Request - Priority Group missing"},
+		{"Pinned Pull Request, bad group", nc, "PINNED", JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "Bad"}}, "Bad Request - Invalid Priority Group"},
+		{"Pinned Pull Request, against Overflow", nc, "OVERFLOW", JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "A", Id: "PINNED-ID"}}, "Bad Request - Not a Pinned Client Priority consumer"},
+		{"Pinned Pull Request, against standard consumer", nc, "STANDARD", JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "A", Id: "PINNED-ID"}}, "Bad Request - Not a Pinned Client Priority consumer"},
+		{"Overflow Pull Request, overflow below threshold", nc, "OVERFLOW", JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "A", MinPending: 1000}}, "Request Timeout"},
+		{"Overflow Pull Request, overflow above threshold", nc, "OVERFLOW", JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "A", MinPending: 10}}, ""},
+		{"Overflow Pull Request, against pinned", nc, "PINNED", JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "A", MinPending: 10}}, "Bad Request - Not a Overflow Priority consumer"},
+		{"Overflow Pull Request, against standard consumer", nc, "STANDARD", JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{Group: "A", MinPending: 10}}, "Bad Request - Not a Overflow Priority consumer"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			inbox := nats.NewInbox()
+			replies, err := test.nc.SubscribeSync(inbox)
+			reqb, _ := json.Marshal(test.request)
+			require_NoError(t, err)
+			nc.PublishRequest(fmt.Sprintf("$JS.API.CONSUMER.MSG.NEXT.TEST.%s", test.consumer), inbox, reqb)
+			require_NoError(t, err)
+			msg, err := replies.NextMsg(10 * time.Second)
+			require_NoError(t, err)
+			require_Equal(t, test.description, msg.Header.Get("Description"))
+		})
+	}
+}
+
+func TestJetStreamConsumerOverflow(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	acc := s.GlobalAccount()
+
+	mset, err := acc.addStream(&StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo.>", "bar", "baz"},
+		Retention: LimitsPolicy,
+		Storage:   FileStorage,
+	})
+	require_NoError(t, err)
+
+	_, err = mset.addConsumer(&ConsumerConfig{
+		Durable:        "C",
+		FilterSubject:  "foo.>",
+		PriorityGroups: []string{"A"},
+		PriorityPolicy: PriorityOverflow,
+		AckPolicy:      AckExplicit,
+	})
+	require_NoError(t, err)
+
+	sendStreamMsg(t, nc, "foo.1", "msg-1")
+
+	// nothing unacked, so should return nothing.
+	req := JSApiConsumerGetNextRequest{Batch: 1, Expires: 90 * time.Second, PriorityGroup: PriorityGroup{
+		MinAckPending: 1,
+		Group:         "A",
+	}}
+	ackPending1 := sendRequest(t, nc, "ackPending", req)
+	_, err = ackPending1.NextMsg(time.Second)
+	require_Error(t, err)
+
+	// one pending message, so should return it.
+	req = JSApiConsumerGetNextRequest{Batch: 1, Expires: 90 * time.Second, PriorityGroup: PriorityGroup{
+		MinPending: 1,
+		Group:      "A",
+	}}
+	numPending1 := sendRequest(t, nc, "singleOverflow", req)
+	msg, err := numPending1.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_NotNil(t, msg)
+
+	sendStreamMsg(t, nc, "foo.1", "msg-2")
+	sendStreamMsg(t, nc, "foo.1", "msg-3")
+
+	// overflow set to 10, so we should not get any messages, as there are only few pending.
+	req = JSApiConsumerGetNextRequest{Batch: 1, Expires: 90 * time.Second, PriorityGroup: PriorityGroup{
+		MinPending: 10,
+		Group:      "A",
+	}}
+	numPending10 := sendRequest(t, nc, "overflow", req)
+	_, err = numPending10.NextMsg(time.Second)
+	require_Error(t, err)
+
+	// without overflow, we should get messages.
+	req = JSApiConsumerGetNextRequest{Batch: 1, Expires: 90 * time.Second}
+	fetchNoOverflow := sendRequest(t, nc, "without_overflow", req)
+	noOverflowMsg, err := fetchNoOverflow.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_NotNil(t, noOverflowMsg)
+
+	// Now add more messages.
+	for i := 0; i < 100; i++ {
+		sendStreamMsg(t, nc, "foo.1", "msg-1")
+	}
+
+	// and previous batch should receive messages now.
+	msg, err = numPending10.NextMsg(time.Second * 5)
+	require_NoError(t, err)
+	require_NotNil(t, msg)
+
+	// But one with max ack pending should get nothing.
+	req = JSApiConsumerGetNextRequest{Batch: 1, Expires: 90 * time.Second, PriorityGroup: PriorityGroup{
+		MinAckPending: 50,
+		Group:         "A",
+	}}
+	maxAckPending50 := sendRequest(t, nc, "maxAckPending", req)
+	_, err = maxAckPending50.NextMsg(time.Second)
+	require_Error(t, err)
+
+	// However, when we miss a lot of acks, we should get messages on overflow with max ack pending.
+	req = JSApiConsumerGetNextRequest{Batch: 200, Expires: 90 * time.Second, PriorityGroup: PriorityGroup{
+		Group: "A",
+	}}
+	fetchNoOverflow = sendRequest(t, nc, "without_overflow", req)
+	noOverflowMsg, err = fetchNoOverflow.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_NotNil(t, noOverflowMsg)
+
+	msg, err = maxAckPending50.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_NotNil(t, msg)
+
+}
+
+func sendRequest(t *testing.T, nc *nats.Conn, reply string, req JSApiConsumerGetNextRequest) *nats.Subscription {
+	reqb, _ := json.Marshal(req)
+	replies, err := nc.SubscribeSync(reply)
+	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply, reqb)
+	require_NoError(t, err)
+	return replies
+}
+
 func Benchmark____JetStreamConsumerIsFilteredMatch(b *testing.B) {
 	subject := "foo.bar.do.not.match.any.filter.subject"
 	for n := 1; n <= 1024; n *= 2 {
