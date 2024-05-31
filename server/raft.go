@@ -3123,9 +3123,8 @@ func (n *raft) truncateWAL(term, index uint64) {
 
 	if term == 0 && index == 0 {
 		n.warn("Resetting WAL state")
+		debug.PrintStack()
 	}
-
-	debug.PrintStack()
 
 	defer func() {
 		// Check to see if we invalidated any snapshots that might have held state
@@ -3327,22 +3326,27 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				if ae.pterm == n.pterm && !catchingUp {
 					success = true
 				} else {
-					n.resetWAL()
 					assert.Unreachable(
 						"AppendEntry pindex mismatched, resetting WAL",
 						map[string]any{
-							"our_pterm":  n.pterm,
-							"our_pindex": n.pindex,
-							"ae_pterm":   ae.pterm,
-							"ae_pindex":  ae.pindex,
+							"is_new":      isNew,
+							"catching_up": catchingUp,
+							"our_term":    n.term,
+							"our_pterm":   n.pterm,
+							"our_pindex":  n.pindex,
+							"our_commit":  n.commit,
+							"ae_commit":   ae.commit,
+							"ae_term":     ae.term,
+							"ae_pterm":    ae.pterm,
+							"ae_pindex":   ae.pindex,
 						},
 					)
+					n.resetWAL()
 				}
 			} else {
 				// If terms mismatched, or we got an error loading, delete that entry and all others past it.
 				// Make sure to cancel any catchups in progress.
 				// Truncate will reset our pterm and pindex. Only do so if we have an entry.
-				n.truncateWAL(eae.pterm, eae.pindex)
 				assert.Always(
 					eae.pterm >= n.pterm,
 					"Existing AppendEntry pterm is greater than or equal to our own",
@@ -3361,6 +3365,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 						"eae_pindex": eae.pindex,
 					},
 				)
+				n.truncateWAL(eae.pterm, eae.pindex)
 			}
 			// Cancel regardless.
 			n.cancelCatchup()
@@ -4174,12 +4179,22 @@ func (n *raft) switchState(state RaftState) {
 		n.updateLeadChange(false)
 		// Drain the response queue.
 		n.resp.drain()
+
+		assert.Always(n.entry.len() == 0, "Append entry queue is empty when switching from leader to another state", map[string]any{
+			"n_entry_len": n.entry.len(),
+		})
+		n.entry.drain()
 	} else if state == Leader && pstate != Leader {
 		if len(n.pae) > 0 {
 			n.pae = make(map[uint64]*appendEntry)
 		}
 		n.updateLeadChange(true)
 	}
+
+	assert.Always(n.prop.len() == 0, "Proposal queue is empty when switching from leader to another state", map[string]any{
+		"n_prop_len": n.prop.len(),
+	})
+	n.prop.drain()
 
 	n.writeTermVote()
 }
