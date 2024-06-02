@@ -5500,9 +5500,8 @@ func (mset *stream) checkInterestState() {
 
 	var zeroAcks []*consumer
 	var lowAckFloor uint64 = math.MaxUint64
-	consumers := mset.getConsumers()
 
-	for _, o := range consumers {
+	for _, o := range mset.getConsumers() {
 		o.checkStateForInterestStream()
 
 		o.mu.Lock()
@@ -5541,39 +5540,45 @@ func (mset *stream) checkInterestState() {
 		return
 	}
 
-	// Hold stream write lock in case we need to purge.
-	mset.mu.Lock()
-	defer mset.mu.Unlock()
-
 	// Capture our current state.
+	// ok to do so without lock.
 	var state StreamState
 	mset.store.FastState(&state)
 
-	if lowAckFloor < math.MaxUint64 && lowAckFloor > state.FirstSeq {
-		// Check if we had any zeroAcks, we will need to check them.
-		for _, o := range zeroAcks {
-			var np uint64
-			o.mu.RLock()
-			if o.isLeader() {
-				np = uint64(o.numPending())
-			} else {
-				np, _ = o.calculateNumPending()
-			}
-			o.mu.RUnlock()
-			// This means we have pending and can not remove anything at this time.
-			if np > 0 {
-				return
-			}
-		}
-		if lowAckFloor <= state.LastSeq {
-			// Purge the stream to lowest ack floor + 1
-			mset.store.PurgeEx(_EMPTY_, lowAckFloor+1, 0)
+	if lowAckFloor <= state.FirstSeq {
+		return
+	}
+
+	// Do not want to hold stream lock if calculating numPending.
+	// Check if we had any zeroAcks, we will need to check them.
+	for _, o := range zeroAcks {
+		var np uint64
+		o.mu.RLock()
+		if o.isLeader() {
+			np = uint64(o.numPending())
 		} else {
-			// Here we have a low ack floor higher then our last seq.
-			// So we will just do normal purge.
-			mset.store.Purge()
+			np, _ = o.calculateNumPending()
+		}
+		o.mu.RUnlock()
+		// This means we have pending and can not remove anything at this time.
+		if np > 0 {
+			return
 		}
 	}
+
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+
+	// Check which purge we need to perform.
+	if lowAckFloor <= state.LastSeq {
+		// Purge the stream to lowest ack floor + 1
+		mset.store.PurgeEx(_EMPTY_, lowAckFloor+1, 0)
+	} else {
+		// Here we have a low ack floor higher then our last seq.
+		// So we will just do normal purge.
+		mset.store.Purge()
+	}
+
 	// Make sure to reset our local lseq.
 	mset.store.FastState(&state)
 	mset.lseq = state.LastSeq
