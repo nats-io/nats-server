@@ -2344,7 +2344,8 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 	// If we do not think we should do a linear scan check how many fss we
 	// would need to scan vs the full range of the linear walk. Optimize for
 	// 25th quantile of a match in a linear walk. Filter should be a wildcard.
-	if !doLinearScan && wc {
+	// We should consult fss if our cache is not loaded and we only have fss loaded.
+	if !doLinearScan && wc && mb.cacheAlreadyLoaded() {
 		doLinearScan = len(mb.fss)*4 > int(lseq-fseq)
 	}
 
@@ -6341,6 +6342,11 @@ func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64, sm *Store
 	if start <= fs.state.FirstSeq {
 		var ss SimpleState
 		fs.numFilteredPending(filter, &ss)
+		// Nothing available.
+		if ss.Msgs == 0 {
+			return nil, fs.state.LastSeq, ErrStoreEOF
+		}
+		// We can skip ahead.
 		if ss.First > start {
 			start = ss.First
 		}
@@ -6356,8 +6362,28 @@ func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64, sm *Store
 				return sm, sm.seq, nil
 			} else if err != ErrStoreMsgNotFound {
 				return nil, 0, err
-			} else if expireOk {
-				mb.tryForceExpireCache()
+			} else {
+				// Nothing found in this block. We missed, if first block (bi) check psim.
+				// Similar to above if start <= first seq.
+				// TODO(dlc) - For v2 track these by filter subject since they will represent filtered consumers.
+				if i == bi {
+					var ss SimpleState
+					fs.numFilteredPending(filter, &ss)
+					// Nothing available.
+					if ss.Msgs == 0 {
+						return nil, fs.state.LastSeq, ErrStoreEOF
+					}
+					// See if we can jump ahead here.
+					// Right now we can only spin on first, so if we have interior sparseness need to favor checking per block fss if loaded.
+					// For v2 will track all blocks that have matches for psim.
+					if nbi, _ := fs.selectMsgBlockWithIndex(ss.First); nbi > i {
+						i = nbi - 1 // For the iterator condition i++
+					}
+				}
+				// Check is we can expire.
+				if expireOk {
+					mb.tryForceExpireCache()
+				}
 			}
 		}
 	}
