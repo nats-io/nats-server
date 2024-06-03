@@ -2496,7 +2496,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			}
 
 		case <-cistc:
-			mset.checkInterestState()
+			// We may be adjusting some things with consumers so do this in its own go routine.
+			go mset.checkInterestState()
 
 		case <-datc:
 			if mset == nil || isRecovering {
