@@ -465,14 +465,28 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 	}
 	if toScan < toExclude {
 		ss.Msgs, ss.First = 0, 0
-		for seq := first; seq <= last; seq++ {
-			if sm, ok := ms.msgs[seq]; ok && !seen[sm.subj] && isMatch(sm.subj) {
-				ss.Msgs++
-				if ss.First == 0 {
-					ss.First = seq
+
+		update := func(sm *StoreMsg) {
+			ss.Msgs++
+			if ss.First == 0 {
+				ss.First = sm.seq
+			}
+			if seen != nil {
+				seen[sm.subj] = true
+			}
+		}
+		// Check if easier to just scan msgs vs the sequence range.
+		// This can happen with lots of interior deletes.
+		if last-first > uint64(len(ms.msgs)) {
+			for _, sm := range ms.msgs {
+				if sm.seq >= first && sm.seq <= last && !seen[sm.subj] && isMatch(sm.subj) {
+					update(sm)
 				}
-				if seen != nil {
-					seen[sm.subj] = true
+			}
+		} else {
+			for seq := first; seq <= last; seq++ {
+				if sm, ok := ms.msgs[seq]; ok && !seen[sm.subj] && isMatch(sm.subj) {
+					update(sm)
 				}
 			}
 		}
@@ -482,17 +496,29 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 		var adjust uint64
 		var tss *SimpleState
 
-		for seq := ms.state.FirstSeq; seq < first; seq++ {
-			if sm, ok := ms.msgs[seq]; ok && !seen[sm.subj] && isMatch(sm.subj) {
-				if lastPerSubject {
-					tss, _ = ms.fss.Find(stringToBytes(sm.subj))
+		update := func(sm *StoreMsg) {
+			if lastPerSubject {
+				tss, _ = ms.fss.Find(stringToBytes(sm.subj))
+			}
+			// If we are last per subject, make sure to only adjust if all messages are before our first.
+			if tss == nil || tss.Last < first {
+				adjust++
+			}
+			if seen != nil {
+				seen[sm.subj] = true
+			}
+		}
+		// Check if easier to just scan msgs vs the sequence range.
+		if first-ms.state.FirstSeq > uint64(len(ms.msgs)) {
+			for _, sm := range ms.msgs {
+				if sm.seq < first && !seen[sm.subj] && isMatch(sm.subj) {
+					update(sm)
 				}
-				// If we are last per subject, make sure to only adjust if all messages are before our first.
-				if tss == nil || tss.Last < first {
-					adjust++
-				}
-				if seen != nil {
-					seen[sm.subj] = true
+			}
+		} else {
+			for seq := ms.state.FirstSeq; seq < first; seq++ {
+				if sm, ok := ms.msgs[seq]; ok && !seen[sm.subj] && isMatch(sm.subj) {
+					update(sm)
 				}
 			}
 		}
@@ -507,10 +533,27 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 		}
 		ss.Msgs -= adjust
 		if needScanFirst {
-			for seq := first; seq < last; seq++ {
-				if sm, ok := ms.msgs[seq]; ok && isMatch(sm.subj) {
-					ss.First = seq
-					break
+			// Check if easier to just scan msgs vs the sequence range.
+			// Since we will need to scan all of the msgs vs below where we break on the first match,
+			// we will only do so if a few orders of magnitude lower.
+			if last-first > 100*uint64(len(ms.msgs)) {
+				low := ms.state.LastSeq
+				for _, sm := range ms.msgs {
+					if sm.seq >= first && sm.seq < last && isMatch(sm.subj) {
+						if sm.seq < low {
+							low = sm.seq
+						}
+					}
+				}
+				if low < ms.state.LastSeq {
+					ss.First = low
+				}
+			} else {
+				for seq := first; seq < last; seq++ {
+					if sm, ok := ms.msgs[seq]; ok && isMatch(sm.subj) {
+						ss.First = seq
+						break
+					}
 				}
 			}
 		}
