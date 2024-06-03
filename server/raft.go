@@ -2005,6 +2005,9 @@ func (n *raft) runAsFollower() {
 			// We're receiving append entry responses from the network, probably because
 			// we have only just stepped down and they were already in flight. Ignore them.
 			n.resp.popOne()
+		case <-n.prop.ch:
+			// Ignore
+			n.prop.popOne()
 		case <-n.reqs.ch:
 			// We've just received a vote request from the network.
 			// Because of drain() it is possible that we get nil from popOne().
@@ -2983,6 +2986,9 @@ func (n *raft) runAsCandidate() {
 		case <-n.resp.ch:
 			// Ignore
 			n.resp.popOne()
+		case <-n.prop.ch:
+			// Ignore
+			n.prop.popOne()
 		case <-n.s.quitCh:
 			n.shutdown(false)
 			return
@@ -3034,6 +3040,9 @@ func (n *raft) runAsCandidate() {
 // handleAppendEntry handles an append entry from the wire. This function
 // is an internal callback from the "asubj" append entry subscription.
 func (n *raft) handleAppendEntry(sub *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
+	if n.State() == Leader {
+		return
+	}
 	msg = copyBytes(msg)
 	if ae, err := n.decodeAppendEntry(msg, sub, reply); err == nil {
 		// Push to the new entry channel. From here one of the worker
