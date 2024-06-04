@@ -740,6 +740,7 @@ func TestClientConnectToRoutePort(t *testing.T) {
 type checkDuplicateRouteLogger struct {
 	sync.Mutex
 	gotDuplicate bool
+	count        int
 }
 
 func (l *checkDuplicateRouteLogger) Noticef(format string, v ...any) {}
@@ -753,6 +754,7 @@ func (l *checkDuplicateRouteLogger) Debugf(format string, v ...any) {
 	msg := fmt.Sprintf(format, v...)
 	if strings.Contains(msg, "duplicate remote route") {
 		l.gotDuplicate = true
+		l.count++
 	}
 }
 
@@ -4349,5 +4351,19 @@ func TestRouteNoRaceOnClusterNameNegotiation(t *testing.T) {
 		checkClusterFormed(t, s1, s2)
 		s2.Shutdown()
 		s1.Shutdown()
+	}
+}
+
+func TestImplicitDuplicateRoutes(t *testing.T) {
+	c := createClusterWithName(t, "duplicateRoute", 10)
+	duplicates := 0
+	for _, s := range c.servers {
+		logger := s.Logger().(*checkDuplicateRouteLogger)
+		logger.Mutex.Lock()
+		duplicates += logger.count
+		logger.Mutex.Unlock()
+	}
+	if duplicates > 0 {
+		t.Fatalf("Got %d duplicate routes, expected 0", duplicates)
 	}
 }

@@ -358,6 +358,30 @@ type Server struct {
 
 	// Queue to process JS API requests that come from routes (or gateways)
 	jsAPIRoutedReqs *ipQueue[*jsAPIRoutedReq]
+
+	pendingRouteConns CounterMap
+}
+
+type CounterMap struct {
+	counters sync.Map
+}
+
+func (c *CounterMap) Add(key string, delta int64) {
+	val, _ := c.counters.LoadOrStore(key, new(int64))
+	if atomic.AddInt64(val.(*int64), delta) == 0 {
+		c.counters.CompareAndDelete(key, val)
+	}
+}
+
+func (c *CounterMap) Inc(key string) { c.Add(key, 1) }
+func (c *CounterMap) Dec(key string) { c.Add(key, -1) }
+
+func (c *CounterMap) Value(key string) int64 {
+	val, ok := c.counters.Load(key)
+	if !ok {
+		return 0
+	}
+	return *(val.(*int64))
 }
 
 // For tracking JS nodes.
