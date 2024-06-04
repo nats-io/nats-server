@@ -551,6 +551,34 @@ func (a *Account) NumLeafNodes() int {
 	return nln
 }
 
+// This will check if we have multiple leafnode connections for the same cluster that matches client ln.
+// This only applicable for hub mode connections.
+// client lock should NOT be held. Two LNs could race and deadlock.
+func (a *Account) hasLeafNodesForSameCluster(c *client, rc string) *client {
+	if c == nil || rc == _EMPTY_ {
+		return nil
+	}
+
+	var lns [32]*client
+	lleafs := lns[:0]
+	a.mu.RLock()
+	lleafs = append(lleafs, a.lleafs...)
+	a.mu.RUnlock()
+
+	for _, ln := range lleafs {
+		if c == ln {
+			continue
+		}
+		ln.mu.Lock()
+		matched := ln.isHubLeafNode() && ln.remoteCluster() == rc
+		ln.mu.Unlock()
+		if matched {
+			return ln
+		}
+	}
+	return nil
+}
+
 // NumRemoteLeafNodes returns the active number of remote
 // leaf node connections.
 func (a *Account) NumRemoteLeafNodes() int {

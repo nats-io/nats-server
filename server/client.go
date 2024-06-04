@@ -4706,8 +4706,8 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 	}
 
 	// Set these up to optionally filter based on the queue lists.
-	// This is for messages received from routes which will have directed
-	// guidance on which queue groups we should deliver to.
+	// This is for messages received from routes or leafnodes which
+	// will have directed guidance on which queue groups we should deliver to.
 	qf := c.pa.queues
 
 	// Declared here because of goto.
@@ -4724,10 +4724,10 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 	// Process queue subs
 	for i := 0; i < len(r.qsubs); i++ {
 		qsubs := r.qsubs[i]
-		// If we have a filter check that here. We could make this a map or someting more
+		// If we have a filter check that here. We could make this a map or something more
 		// complex but linear search since we expect queues to be small. Should be faster
 		// and more cache friendly.
-		if qf != nil && len(qsubs) > 0 {
+		if len(qf) > 0 && len(qsubs) > 0 {
 			tqn := qsubs[0].queue
 			for _, qn := range qf {
 				if bytes.Equal(qn, tqn) {
@@ -4847,7 +4847,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 					}
 				}
 
-				// Make sure deliver is set if inbound from a route.
+				// Make sure deliver is set if inbound from anything but a client.
 				if remapped && (c.kind == GATEWAY || c.kind == ROUTER || c.kind == LEAF) {
 					deliver = subj
 				}

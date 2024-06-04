@@ -20,6 +20,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math/rand"
 	"net"
 	"net/http"
@@ -1716,11 +1717,32 @@ func (s *Server) removeLeafNodeConnection(c *client) {
 			c.leaf.gwSub = nil
 		}
 	}
+	rc, acc := c.remoteCluster(), c.acc
 	c.mu.Unlock()
+
+	// Remove from server.
 	s.mu.Lock()
 	delete(s.leafs, cid)
 	s.mu.Unlock()
 	s.removeFromTempClients(cid)
+
+	// Check if we need to migrate some of the smap from this ln to another.
+	if ln := acc.hasLeafNodesForSameCluster(c, rc); ln != nil {
+		// Need to copy our original smap.
+		c.mu.Lock()
+		smap := maps.Clone(c.leaf.smap)
+		c.mu.Unlock()
+		// Now walk our copied smap and check if its not present in our ln target, and if so add it.
+		ln.mu.Lock()
+		if ln.leaf != nil && ln.leaf.smap != nil {
+			for key, n := range smap {
+				if _, ok := ln.leaf.smap[key]; !ok {
+					ln.migrateToSmap(key, n)
+				}
+			}
+		}
+		ln.mu.Unlock()
+	}
 }
 
 // Connect information for solicited leafnodes.
@@ -1935,7 +1957,16 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 	subs := _subs[:0]
 	ims := []string{}
 
-	// Hold the client lock otherwise there can be a race and miss some subs.
+	// Grab remote cluster and check if we have other hub leafnodes
+	// connected to us from same remote cluster.
+	c.mu.Lock()
+	rc := c.remoteCluster()
+	c.mu.Unlock()
+	// This has to be done without a lock.
+	alreadyConnected := acc.hasLeafNodesForSameCluster(c, rc) != nil
+
+	// Hold the client lock from here on out, otherwise there
+	// can be a race and we could miss some subs.
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -1951,7 +1982,7 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 	// If we are solicited we only send interest for local clients.
 	if c.isSpokeLeafNode() {
 		acc.sl.localSubs(&subs, true)
-	} else {
+	} else if !alreadyConnected {
 		acc.sl.All(&subs)
 	}
 
@@ -2017,7 +2048,6 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 	}
 
 	// Now walk the results and add them to our smap
-	rc := c.leaf.remoteCluster
 	c.leaf.smap = make(map[string]int32)
 	for _, sub := range subs {
 		// Check perms regardless of role.
@@ -2138,16 +2168,33 @@ func (acc *Account) updateLeafNodes(sub *subscription, delta int32) {
 	// Do this once.
 	subject := string(sub.subject)
 
+	// In case we need to track remote clusters to avoid sending to the same remote cluster.
+	// Only applicable for hub based leafnodes.
+	var seen map[string]struct{}
+
 	// Walk the connected leafnodes.
+	// This is a list so walking order is deterministic.
 	for _, ln := range acc.lleafs {
 		if ln == sub.client {
 			continue
 		}
-		// Check to make sure this sub does not have an origin cluster that matches the leafnode.
 		ln.mu.Lock()
+		if seen == nil && ln.isHubLeafNode() {
+			seen = make(map[string]struct{})
+		}
+		rc := ln.remoteCluster()
+		// If we are a hub make sure we do not send subs to the same remote cluster twice.
+		if seen != nil && ln.isHubLeafNode() {
+			if _, ok := seen[rc]; ok {
+				ln.mu.Unlock()
+				continue
+			}
+			seen[rc] = struct{}{}
+		}
+		// Check to make sure this sub does not have an origin cluster that matches the leafnode.
+		clusterDifferent := cluster != rc
 		// If skipped, make sure that we still let go the "$LDS." subscription that allows
 		// the detection of loops as long as different cluster.
-		clusterDifferent := cluster != ln.remoteCluster()
 		if (isLDS && clusterDifferent) || ((cluster == _EMPTY_ || clusterDifferent) && (delta <= 0 || ln.canSubscribe(subject))) {
 			ln.updateSmap(sub, delta, isLDS)
 		}
@@ -2200,6 +2247,20 @@ func (c *client) updateSmap(sub *subscription, delta int32, isLDS bool) {
 	if update {
 		c.sendLeafNodeSubUpdate(key, n)
 	}
+}
+
+// Used when migrating from another leafnode connection fromt the same remote cluster.
+// Lock should be held.
+func (c *client) migrateToSmap(key string, nn int32) {
+	if c.leaf.smap == nil {
+		return
+	}
+	if n, ok := c.leaf.smap[key]; ok && n == nn {
+		return
+	}
+	// Place into the map since it was not there.
+	c.leaf.smap[key] = nn
+	c.sendLeafNodeSubUpdate(key, nn)
 }
 
 // Used to force add subjects to the subject map.
