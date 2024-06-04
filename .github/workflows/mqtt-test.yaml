@@ -1,5 +1,5 @@
-name: MQTTEx
-on: [push, pull_request]
+name: MQTT external test
+on: [pull_request]
 
 jobs:
   test:
