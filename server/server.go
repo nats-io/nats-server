@@ -367,8 +367,8 @@ type CounterMap struct {
 }
 
 func (c *CounterMap) Add(key string, delta int64) {
-	val, _ := c.counters.LoadOrStore(key, new(int64))
-	if atomic.AddInt64(val.(*int64), delta) == 0 {
+	val, _ := c.counters.LoadOrStore(key, &atomic.Int64{})
+	if val.(*atomic.Int64).Add(delta) == 0 {
 		c.counters.CompareAndDelete(key, val)
 	}
 }
@@ -381,7 +381,7 @@ func (c *CounterMap) Value(key string) int64 {
 	if !ok {
 		return 0
 	}
-	return *(val.(*int64))
+	return val.(*atomic.Int64).Load()
 }
 
 // For tracking JS nodes.
