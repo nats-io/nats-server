@@ -98,6 +98,8 @@ const (
 // FIXME(dlc) - make configurable.
 var eventsHBInterval = 30 * time.Second
 
+const statszRateLimit = 1 * time.Second
+
 type sysMsgHandler func(sub *subscription, client *client, acc *Account, subject, reply string, hdr, msg []byte)
 
 // Used if we have to queue things internally to avoid the route/gw path.
@@ -968,7 +970,7 @@ func (s *Server) limitStatsz(subj string) bool {
 		return false
 	}
 
-	interval := time.Second
+	interval := statszRateLimit
 	if s.sys.cstatsz < interval {
 		interval = s.sys.cstatsz
 	}
