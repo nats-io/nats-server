@@ -246,6 +246,7 @@ type stream struct {
 	qch       chan struct{}           // The quit channel.
 	mqch      chan struct{}           // The monitor's quit channel.
 	active    bool                    // Indicates that there are active internal subscriptions (for the subject filters)
+	leaderSet bool                    // it is set as leader
 	// and/or mirror/sources consumers are scheduled to be established or already started.
 	ddloaded bool        // set to true when the deduplication structures are been built.
 	closed   atomic.Bool // Set to true when stop() is called on the stream.
@@ -839,39 +840,67 @@ func (mset *stream) isLeader() bool {
 	return true
 }
 
+// Lock should be held
+func (mset *stream) leaderStepDown() {
+	// cancel timer to create the source consumers if not fired yet
+	if mset.sourcesConsumerSetup != nil {
+		mset.sourcesConsumerSetup.Stop()
+		mset.sourcesConsumerSetup = nil
+	} else { // otherwise cancel the source consumers
+		mset.stopSourceConsumers()
+	}
+
+	if mset.mirror != nil {
+		mset.cancelMirrorConsumer()
+	}
+
+	// Stop responding to sync requests.
+	mset.stopClusterSubs()
+	// Unsubscribe from direct stream.
+	mset.unsubscribeToStream(false)
+	// Clear catchup state
+	mset.clearAllCatchupPeers()
+	mset.leaderSet = false
+}
+
+func (mset *stream) leaderStepUp() error {
+	// Make sure we are listening for sync requests.
+	// TODO(dlc) - Original design was that all in sync members of the group would do DQ.
+	if mset.isClustered() {
+		mset.startClusterSubs()
+	}
+	// Setup subscriptions if we were not already the leader.
+	if err := mset.subscribeToStream(); err != nil {
+		if mset.isClustered() {
+			// Stepdown since we have an error.
+			mset.node.StepDown()
+		}
+		return err
+	}
+	mset.leaderSet = true
+	return nil
+}
+
 // TODO(dlc) - Check to see if we can accept being the leader or we should step down.
 func (mset *stream) setLeader(isLeader bool) error {
 	mset.mu.Lock()
-	// If we are here we have a change in leader status.
+	// We can receive two calls in a row with the same isLeader value.
+
 	if isLeader {
-		// Make sure we are listening for sync requests.
-		// TODO(dlc) - Original design was that all in sync members of the group would do DQ.
-		if mset.isClustered() {
-			mset.startClusterSubs()
+		if mset.leaderSet {
+			// This can happen at times (e.g. high load causing delays in receiving and processing heartbeats).
+			mset.leaderStepDown()
 		}
 
-		// Setup subscriptions if we were not already the leader.
-		if err := mset.subscribeToStream(); err != nil {
-			if mset.isClustered() {
-				// Stepdown since we have an error.
-				mset.node.StepDown()
-			}
+		err := mset.leaderStepUp()
+		if err != nil {
 			mset.mu.Unlock()
 			return err
 		}
-	} else {
-		// cancel timer to create the source consumers if not fired yet
-		if mset.sourcesConsumerSetup != nil {
-			mset.sourcesConsumerSetup.Stop()
-			mset.sourcesConsumerSetup = nil
-		}
-		// Stop responding to sync requests.
-		mset.stopClusterSubs()
-		// Unsubscribe from direct stream.
-		mset.unsubscribeToStream(false)
-		// Clear catchup state
-		mset.clearAllCatchupPeers()
+	} else { // We are stepping down (this is idempotent, no need to check mset.jnmActive).
+		mset.leaderStepDown()
 	}
+
 	mset.mu.Unlock()
 
 	// If we are interest based make sure to check consumers.
@@ -2800,7 +2829,7 @@ func (mset *stream) cancelSourceInfo(si *sourceInfo) {
 		si.msgs.drain()
 		si.msgs.unregister()
 	}
-	// If we have a schedule setup go ahead and delete that.
+	// If we have a consumer setup scheduled cancel it.
 	if t := mset.sourceSetupSchedules[si.iname]; t != nil {
 		t.Stop()
 		delete(mset.sourceSetupSchedules, si.iname)

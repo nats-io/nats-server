@@ -16,11 +16,94 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/nats-io/nats.go"
+	"strconv"
 	"testing"
 	"time"
-
-	"github.com/nats-io/nats.go"
 )
+
+var serverConfig1 = `
+server_name: server1
+listen: 127.0.0.1:4222
+http: 8222
+
+prof_port = 18222
+
+jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+
+cluster {
+  name: my_cluster
+  listen: 127.0.0.1:4248
+  routes: [nats://127.0.0.1:4249,nats://127.0.0.1:4250]
+}
+
+accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }}
+	`
+
+var serverConfig2 = `
+server_name: server2
+listen: 127.0.0.1:5222
+http: 8223
+
+prof_port = 18223
+
+jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+
+cluster {
+  name: my_cluster
+  listen: 127.0.0.1:4249
+  routes: [nats://127.0.0.1:4248,nats://127.0.0.1:4250]
+}
+
+accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }}
+`
+
+var serverConfig3 = `
+server_name: server3
+listen: 127.0.0.1:6222
+http: 8224
+
+prof_port = 18224
+
+jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+
+cluster {
+  name: my_cluster
+  listen: 127.0.0.1:4250
+  routes: [nats://127.0.0.1:4248,nats://127.0.0.1:4249]
+}
+
+accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }}
+`
+
+var connectURL = "nats://127.0.0.1:4222,nats://127.0.0.1:4223,nats://127.0.0.1:4224"
+
+func createMyLocalCluster(t *testing.T) *cluster {
+	c := &cluster{servers: make([]*Server, 0, 3), opts: make([]*Options, 0, 3), name: "C3"}
+
+	storeDir1 := t.TempDir()
+	s1, o := RunServerWithConfig(createConfFile(t, []byte(fmt.Sprintf(serverConfig1, storeDir1))))
+	c.servers = append(c.servers, s1)
+	c.opts = append(c.opts, o)
+
+	storeDir2 := t.TempDir()
+	s2, o := RunServerWithConfig(createConfFile(t, []byte(fmt.Sprintf(serverConfig2, storeDir2))))
+	c.servers = append(c.servers, s2)
+	c.opts = append(c.opts, o)
+
+	storeDir3 := t.TempDir()
+	s3, o := RunServerWithConfig(createConfFile(t, []byte(fmt.Sprintf(serverConfig3, storeDir3))))
+	c.servers = append(c.servers, s3)
+	c.opts = append(c.opts, o)
+
+	c.t = t
+
+	// Wait til we are formed and have a leader.
+	c.checkClusterFormed()
+	c.waitOnClusterReady()
+
+	return c
+}
 
 // This test is being skipped by CI as it takes too long to run and is meant to test the scalability of sourcing
 // rather than being a unit test.
@@ -246,27 +329,31 @@ func TestStreamSourcingScalingSourcingMany(t *testing.T) {
 func TestStreamSourcingScalingSourcingManyBenchmark(t *testing.T) {
 	t.Skip()
 
-	var numSourced = 500
-	var numMsgPerSource = uint64(10_000)
-	var batchSize = 1000
+	var numSourced = 1000
+	var numMsgPerSource = 10_000
+	var batchSize = 250
 	var retries int
 
 	var err error
 
-	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	c := createMyLocalCluster(t)
 	defer c.shutdown()
-	s := c.randomServer()
-	urls := s.clientConnectURLs
-	fmt.Printf("Connected to server %+v\n", urls)
 
-	nc, js := jsClientConnect(t, s, nats.Timeout(20*time.Second))
+	nc, err := nats.Connect(connectURL)
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	js, err := nc.JetStream(nats.MaxWait(10 * time.Second))
+	if err != nil {
+		t.Fatalf("Unexpected error getting JetStream context: %v", err)
+	}
 	defer nc.Close()
 
 	// create n streams to source from
 	for i := 0; i < numSourced; i++ {
 		_, err := js.AddStream(&nats.StreamConfig{
 			Name:                 fmt.Sprintf("sourced-%d", i),
-			Subjects:             []string{fmt.Sprintf("foo.%d", i)},
+			Subjects:             []string{strconv.Itoa(i)},
 			Retention:            nats.LimitsPolicy,
 			Storage:              nats.FileStorage,
 			Discard:              nats.DiscardOld,
@@ -281,14 +368,14 @@ func TestStreamSourcingScalingSourcingManyBenchmark(t *testing.T) {
 	fmt.Printf("Streams created\n")
 
 	// publish n messages for each sourced stream
-	for j := uint64(0); j < numMsgPerSource; j++ {
+	for j := 0; j < numMsgPerSource; j++ {
 		start := time.Now()
 		var pafs = make([]nats.PubAckFuture, numSourced)
 		for i := 0; i < numSourced; i++ {
 			var err error
 
 			for {
-				pafs[i], err = js.PublishAsync(fmt.Sprintf("foo.%d", i), []byte("hello"))
+				pafs[i], err = js.PublishAsync(strconv.Itoa(i), []byte(strconv.Itoa(j)))
 				if err != nil {
 					fmt.Printf("Error async publishing: %v, retrying\n", err)
 					retries++
@@ -312,7 +399,7 @@ func TestStreamSourcingScalingSourcingManyBenchmark(t *testing.T) {
 			case psae := <-pafs[i].Err():
 				fmt.Printf("Error on PubAckFuture: %v, retrying sync...\n", psae)
 				retries++
-				_, err = js.Publish(fmt.Sprintf("foo.%d", i), []byte("hello"))
+				_, err = js.Publish(strconv.Itoa(i), []byte(strconv.Itoa(j)))
 				require_NoError(t, err)
 			}
 		}
@@ -329,12 +416,13 @@ func TestStreamSourcingScalingSourcingManyBenchmark(t *testing.T) {
 	streamSources := make([]*nats.StreamSource, numSourced)
 
 	for i := 0; i < numSourced; i++ {
-		streamSources[i] = &nats.StreamSource{Name: fmt.Sprintf("sourced-%d", i), FilterSubject: fmt.Sprintf("foo.%d", i)}
+		streamSources[i] = &nats.StreamSource{Name: fmt.Sprintf("sourced-%d", i), FilterSubject: strconv.Itoa(i)}
 	}
 
 	// create a stream that sources from them
 	_, err = js.AddStream(&nats.StreamConfig{
 		Name:                 "sourcing",
+		Subjects:             []string{"foo"},
 		Sources:              streamSources,
 		Retention:            nats.LimitsPolicy,
 		Storage:              nats.FileStorage,
@@ -345,45 +433,83 @@ func TestStreamSourcingScalingSourcingManyBenchmark(t *testing.T) {
 		DiscardNewPerSubject: false,
 	})
 	require_NoError(t, err)
-
+	c.waitOnStreamLeader(globalAccountName, "sourcing")
 	sl := c.streamLeader(globalAccountName, "sourcing")
-	mset, err := sl.GlobalAccount().lookupStream("sourcing")
-	require_NoError(t, err)
+	fmt.Printf("Sourcing stream created leader is *** %s ***\n", sl.Name())
+
+	expectedSeq := make([]int, numSourced)
+
+	//var steppedDown bool
 
 	start := time.Now()
 
-	fmt.Printf("Sourcing stream created\n")
-
 	var lastMsgs uint64
-	var steppedDown bool
+	mset, err := sl.GlobalAccount().lookupStream("sourcing")
+	require_NoError(t, err)
 
-	checkFor(t, 10*time.Minute, 1*time.Second, func() error {
+	checkFor(t, 5*time.Minute, 1000*time.Millisecond, func() error {
 		mset.mu.RLock()
 		var state StreamState
 		mset.store.FastState(&state)
 		mset.mu.RUnlock()
 
-		if state.Msgs == numMsgPerSource*uint64(numSourced) {
-			fmt.Printf("👍 Test passed: expected %d messages, got %d and took %v\n", numMsgPerSource*uint64(numSourced), state.Msgs, time.Since(start))
+		if state.Msgs == uint64(numMsgPerSource*numSourced) {
+			fmt.Printf("👍 Test passed: expected %d messages, got %d and took %v\n", uint64(numMsgPerSource*numSourced), state.Msgs, time.Since(start))
 			return nil
-		} else if state.Msgs < numMsgPerSource*uint64(numSourced) {
-			fmt.Printf("Current Rate %d/s - Received %d\n", state.Msgs-lastMsgs, state.Msgs)
+		} else if state.Msgs < uint64(numMsgPerSource*numSourced) {
+			fmt.Printf("Current Rate %d per second - Received %d\n", state.Msgs-lastMsgs, state.Msgs)
 			lastMsgs = state.Msgs
 
-			if !steppedDown && state.Msgs >= 200_000 {
-				fmt.Printf("\nStepping Down\n")
-				mset.node.StepDown()
-				steppedDown = true
-				// Need to repull our data.
-				c.waitOnStreamLeader(globalAccountName, "sourcing")
-				sl = c.streamLeader(globalAccountName, "sourcing")
-				mset, err = sl.GlobalAccount().lookupStream("sourcing")
-				require_NoError(t, err)
-			}
-			return fmt.Errorf("Expected %d messages, got %d", numMsgPerSource*uint64(numSourced), state.Msgs)
+			//if !steppedDown && state.Msgs >= 200_000 {
+			//	fmt.Printf("\nStepping Down\n")
+			//	mset.node.StepDown()
+			//	steppedDown = true
+			//	// Need to repull our data.
+			//	c.waitOnStreamLeader(globalAccountName, "sourcing")
+			//	sl = c.streamLeader(globalAccountName, "sourcing")
+			//	mset, err = sl.GlobalAccount().lookupStream("sourcing")
+			//	require_NoError(t, err)
+			//}
+			return fmt.Errorf("Expected %d messages, got %d", uint64(numMsgPerSource*numSourced), state.Msgs)
 		} else {
-			fmt.Printf("Too many messages! expected %d (retries=%d), got %d\n", numMsgPerSource*uint64(numSourced), retries, state.Msgs)
-			return fmt.Errorf("Too many messages: expected %d (retries=%d), got %d", numMsgPerSource*uint64(numSourced), retries, state.Msgs)
+			fmt.Printf("Too many messages! expected %d (retries=%d), got %d\n", uint64(numMsgPerSource*numSourced), retries, state.Msgs)
+			return fmt.Errorf("Too many messages: expected %d (retries=%d), got %d", uint64(numMsgPerSource*numSourced), retries, state.Msgs)
 		}
 	})
+
+	// Check that all the messages sourced in the stream are correct
+	// Note: expects to see exactly increasing matching sequence numbers, so could theoretically fail if some messages
+	// get recorded 'out of order' (according to the payload value) because asynchronous JS publication is used to
+	// publish the messages.
+	// However, that should not happen if the publish 'batch size' is not more than the number of streams being sourced.
+
+	// create a consumer on sourcing
+	_, err = js.AddConsumer("sourcing", &nats.ConsumerConfig{AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	syncSub, err := js.SubscribeSync("", nats.BindStream("sourcing"))
+	require_NoError(t, err)
+
+	start = time.Now()
+
+	print("Checking the messages\n")
+	for i := 0; i < numSourced*numMsgPerSource; i++ {
+		msg, err := syncSub.NextMsg(30 * time.Second)
+		require_NoError(t, err)
+		sId, err := strconv.Atoi(msg.Subject)
+		require_NoError(t, err)
+		seq, err := strconv.Atoi(string(msg.Data))
+		require_NoError(t, err)
+		if expectedSeq[sId] == seq {
+			expectedSeq[sId]++
+		} else {
+			t.Fatalf("Expected seq number %d got %d for source %d\n", expectedSeq[sId], seq, sId)
+		}
+		msg.Ack()
+		if i%100_000 == 0 {
+			now := time.Now()
+			fmt.Printf("[%v] Checked %d messages: %f msgs/sec \n", now, i, 100_000/now.Sub(start).Seconds())
+			start = now
+		}
+	}
+	print("👍 Done. \n")
 }
