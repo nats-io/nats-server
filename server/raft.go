@@ -2927,8 +2927,11 @@ func (n *raft) runAsCandidate() {
 		n.ID(): {},
 	}
 
+	// Only stay in candidate for so long.
+	timeout := time.NewTimer(randElectionTimeout())
+	defer timeout.Stop()
+
 	for {
-		elect := n.electTimer()
 		select {
 		case <-n.entry.ch:
 			n.processAppendEntries()
@@ -2940,7 +2943,7 @@ func (n *raft) runAsCandidate() {
 			return
 		case <-n.quit:
 			return
-		case <-elect.C:
+		case <-timeout.C:
 			n.switchToCandidate()
 			return
 		case <-n.votes.ch:
