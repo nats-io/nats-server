@@ -1,4 +1,4 @@
-// Copyright 2012-2020 The NATS Authors
+// Copyright 2012-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -35,6 +35,7 @@ import (
 	"testing"
 	"time"
 
+	srvlog "github.com/nats-io/nats-server/v2/logger"
 	"github.com/nats-io/nats.go"
 )
 
@@ -86,6 +87,13 @@ func RunServer(opts *Options) *Server {
 		s.ConfigureLogger()
 	}
 
+	if ll := os.Getenv("NATS_LOGGING"); ll != "" {
+		log := srvlog.NewTestLogger(fmt.Sprintf("[%s] | ", s), true)
+		debug := ll == "debug" || ll == "trace"
+		trace := ll == "trace"
+		s.SetLoggerV2(log, debug, trace, false)
+	}
+
 	// Run server in Go routine.
 	s.Start()
 
@@ -111,6 +119,12 @@ func RunServerWithConfig(configFile string) (srv *Server, opts *Options) {
 	opts = LoadConfig(configFile)
 	srv = RunServer(opts)
 	return
+}
+
+func TestSemanticVersion(t *testing.T) {
+	if !semVerRe.MatchString(VERSION) {
+		t.Fatalf("Version (%s) is not a valid SemVer string", VERSION)
+	}
 }
 
 func TestVersionMatchesTag(t *testing.T) {
@@ -2106,4 +2120,22 @@ func TestServerAuthBlockAndSysAccounts(t *testing.T) {
 	// This should not.
 	_, err = nats.Connect(s.ClientURL())
 	require_Error(t, err, nats.ErrAuthorization, errors.New("nats: Authorization Violation"))
+}
+
+// https://github.com/nats-io/nats-server/issues/5396
+func TestServerConfigLastLineComments(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+	{
+		"listen":  "0.0.0.0:4222"
+	}
+	# wibble
+	`))
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// This should work of course.
+	nc, err := nats.Connect(s.ClientURL())
+	require_NoError(t, err)
+	defer nc.Close()
 }

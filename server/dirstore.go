@@ -103,7 +103,7 @@ func newDir(dirPath string, create bool) (string, error) {
 }
 
 // future proofing in case new options will be added
-type dirJWTStoreOption interface{}
+type dirJWTStoreOption any
 
 // Creates a directory based jwt store.
 // Reads files only, does NOT watch directories and files.
@@ -598,7 +598,7 @@ func (q *expirationTracker) Swap(i, j int) {
 	pq[j].index = j
 }
 
-func (q *expirationTracker) Push(x interface{}) {
+func (q *expirationTracker) Push(x any) {
 	n := len(q.heap)
 	item := x.(*jwtItem)
 	item.index = n
@@ -606,7 +606,7 @@ func (q *expirationTracker) Push(x interface{}) {
 	q.idx[item.publicKey] = q.lru.PushBack(item)
 }
 
-func (q *expirationTracker) Pop() interface{} {
+func (q *expirationTracker) Pop() any {
 	old := q.heap
 	n := len(old)
 	item := old[n-1]

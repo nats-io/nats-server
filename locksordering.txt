@@ -16,3 +16,9 @@ possible with the normal account lock.
 accountLeafList -> client
 
 AccountResolver interface has various implementations, but assume: AccountResolver -> Server
+
+A reloadMu lock was added to prevent newly connecting clients racing with the configuration reload.
+This must be taken out as soon as a reload is about to happen before any other locks:
+
+    reloadMu -> Server
+    reloadMu -> optsMu

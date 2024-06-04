@@ -1,4 +1,4 @@
-// Copyright 2020-2023 The NATS Authors
+// Copyright 2020-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -569,7 +569,7 @@ func TestJetStreamClusterSingleLeafNodeWithoutSharedSystemAccount(t *testing.T) 
 	defer ln.Shutdown()
 
 	// The setup here has a single leafnode server with two accounts. One has JS, the other does not.
-	// We want to to test the following.
+	// We want to test the following.
 	// 1. For the account without JS, we simply will pass through to the HUB. Meaning since our local account
 	//    does not have it, we simply inherit the hub's by default.
 	// 2. For the JS enabled account, we are isolated and use our local one only.
@@ -577,7 +577,7 @@ func TestJetStreamClusterSingleLeafNodeWithoutSharedSystemAccount(t *testing.T) 
 	// Check behavior of the account without JS.
 	// Normally this should fail since our local account is not enabled. However, since we are bridging
 	// via the leafnode we expect this to work here.
-	nc, js := jsClientConnectEx(t, ln, "CORE", nats.UserInfo("n", "p"))
+	nc, js := jsClientConnectEx(t, ln, []nats.JSOpt{nats.Domain("CORE")}, nats.UserInfo("n", "p"))
 	defer nc.Close()
 
 	si, err := js.AddStream(&nats.StreamConfig{
@@ -1481,6 +1481,9 @@ func TestJetStreamClusterMirrorAndSourceExpiration(t *testing.T) {
 		}
 	}
 
+	// Allow direct sync consumers to connect.
+	time.Sleep(1500 * time.Millisecond)
+
 	sendBatch(100)
 	checkTest(100)
 	checkMirror(100)
@@ -1501,7 +1504,7 @@ func TestJetStreamClusterMirrorAndSourceExpiration(t *testing.T) {
 	sendBatch(100)
 	// Need to check both in parallel.
 	scheck, mcheck := uint64(0), uint64(0)
-	checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+	checkFor(t, 20*time.Second, 500*time.Millisecond, func() error {
 		if scheck != 100 {
 			if si, _ := js.StreamInfo("S"); si != nil {
 				scheck = si.State.Msgs
@@ -2669,8 +2672,10 @@ func TestJetStreamClusterStreamCatchupNoState(t *testing.T) {
 	// For both make sure we have no raft snapshots.
 	snapDir := filepath.Join(lconfig.StoreDir, "$SYS", "_js_", gname, "snapshots")
 	os.RemoveAll(snapDir)
-	snapDir = filepath.Join(config.StoreDir, "$SYS", "_js_", gname, "snapshots")
-	os.RemoveAll(snapDir)
+	// Remove all our raft state, we do not want to hold onto our term and index which
+	// results in a coin toss for who becomes the leader.
+	raftDir := filepath.Join(config.StoreDir, "$SYS", "_js_", gname)
+	os.RemoveAll(raftDir)
 
 	// Now restart.
 	c.restartAll()
@@ -5317,6 +5322,10 @@ func TestJetStreamClusterMirrorSourceLoop(t *testing.T) {
 }
 
 func TestJetStreamClusterMirrorDeDupWindow(t *testing.T) {
+	owt := srcConsumerWaitTime
+	srcConsumerWaitTime = 2 * time.Second
+	defer func() { srcConsumerWaitTime = owt }()
+
 	c := createJetStreamClusterExplicit(t, "JSC", 3)
 	defer c.shutdown()
 
@@ -6218,7 +6227,7 @@ func TestJetStreamClusterStreamResetOnExpirationDuringPeerDownAndRestartWithLead
 	nsl.Shutdown()
 
 	// Wait for all messages to expire.
-	checkFor(t, 2*time.Second, 20*time.Millisecond, func() error {
+	checkFor(t, 5*time.Second, time.Second, func() error {
 		si, err := js.StreamInfo("TEST")
 		require_NoError(t, err)
 		if si.State.Msgs == 0 {
@@ -6767,7 +6776,7 @@ type captureCatchupWarnLogger struct {
 	ch chan string
 }
 
-func (l *captureCatchupWarnLogger) Warnf(format string, args ...interface{}) {
+func (l *captureCatchupWarnLogger) Warnf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if strings.Contains(msg, "simulate error") {
 		select {

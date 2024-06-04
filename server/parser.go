@@ -495,8 +495,10 @@ func (c *client) parse(buf []byte) error {
 			// Check for mappings.
 			if (c.kind == CLIENT || c.kind == LEAF) && c.in.flags.isSet(hasMappings) {
 				changed := c.selectMappedSubject()
-				if (trace || mt != nil) && changed {
-					c.traceInOp("MAPPING", []byte(fmt.Sprintf("%s -> %s", c.pa.mapped, c.pa.subject)))
+				if changed {
+					if trace {
+						c.traceInOp("MAPPING", []byte(fmt.Sprintf("%s -> %s", c.pa.mapped, c.pa.subject)))
+					}
 					// c.pa.subject is the subject the original is now mapped to.
 					mt.addSubjectMappingEvent(c.pa.subject)
 				}

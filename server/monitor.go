@@ -1,4 +1,4 @@
-// Copyright 2013-2023 The NATS Authors
+// Copyright 2013-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -20,6 +20,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"expvar"
 	"fmt"
 	"net"
 	"net/http"
@@ -993,7 +994,7 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 	if subdetail {
 		var raw [4096]*subscription
 		subs := raw[:0]
-		s.accounts.Range(func(k, v interface{}) bool {
+		s.accounts.Range(func(k, v any) bool {
 			acc := v.(*Account)
 			if filterAcc != _EMPTY_ && acc.GetName() != filterAcc {
 				return true
@@ -1034,7 +1035,7 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 		sz.Subs = details[minoff:maxoff]
 		sz.Total = len(sz.Subs)
 	} else {
-		s.accounts.Range(func(k, v interface{}) bool {
+		s.accounts.Range(func(k, v any) bool {
 			acc := v.(*Account)
 			if filterAcc != _EMPTY_ && acc.GetName() != filterAcc {
 				return true
@@ -1714,7 +1715,7 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 
 	// Make sure to reset in case we are re-using.
 	v.Subscriptions = 0
-	s.accounts.Range(func(k, val interface{}) bool {
+	s.accounts.Range(func(k, val any) bool {
 		acc := val.(*Account)
 		v.Subscriptions += acc.sl.Count()
 		return true
@@ -2006,7 +2007,7 @@ func createOutboundAccountsGatewayz(opts *GatewayzOptions, gw *gateway) []*Accou
 	}
 
 	accs := make([]*AccountGatewayz, 0, 4)
-	gw.outsim.Range(func(k, v interface{}) bool {
+	gw.outsim.Range(func(k, v any) bool {
 		name := k.(string)
 		a := createAccountOutboundGatewayz(name, v)
 		accs = append(accs, a)
@@ -2016,7 +2017,7 @@ func createOutboundAccountsGatewayz(opts *GatewayzOptions, gw *gateway) []*Accou
 }
 
 // Returns an AccountGatewayz for this gateway outbound connection
-func createAccountOutboundGatewayz(name string, ei interface{}) *AccountGatewayz {
+func createAccountOutboundGatewayz(name string, ei any) *AccountGatewayz {
 	a := &AccountGatewayz{
 		Name:                  name,
 		InterestOnlyThreshold: gatewayMaxRUnsubBeforeSwitch,
@@ -2202,9 +2203,9 @@ func (s *Server) Leafz(opts *LeafzOptions) (*Leafz, error) {
 	}
 	s.mu.Unlock()
 
-	var leafnodes []*LeafInfo
+	leafnodes := make([]*LeafInfo, 0, len(lconns))
+
 	if len(lconns) > 0 {
-		leafnodes = make([]*LeafInfo, 0, len(lconns))
 		for _, ln := range lconns {
 			ln.mu.Lock()
 			lni := &LeafInfo{
@@ -2231,6 +2232,7 @@ func (s *Server) Leafz(opts *LeafzOptions) (*Leafz, error) {
 			leafnodes = append(leafnodes, lni)
 		}
 	}
+
 	return &Leafz{
 		ID:       s.ID(),
 		Now:      time.Now().UTC(),
@@ -2285,7 +2287,7 @@ func (s *Server) AccountStatz(opts *AccountStatzOptions) (*AccountStatz, error) 
 		Accounts: []*AccountStat{},
 	}
 	if opts == nil || len(opts.Accounts) == 0 {
-		s.accounts.Range(func(key, a interface{}) bool {
+		s.accounts.Range(func(key, a any) bool {
 			acc := a.(*Account)
 			acc.mu.RLock()
 			if opts.IncludeUnused || acc.numLocalConnections() != 0 {
@@ -2535,7 +2537,7 @@ func (s *Server) Accountz(optz *AccountzOptions) (*Accountz, error) {
 	}
 	if optz == nil || optz.Account == _EMPTY_ {
 		a.Accounts = []string{}
-		s.accounts.Range(func(key, value interface{}) bool {
+		s.accounts.Range(func(key, value any) bool {
 			a.Accounts = append(a.Accounts, key.(string))
 			return true
 		})
@@ -2695,7 +2697,7 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 		accName,
 		a.updated.UTC(),
 		isSys,
-		a.expired,
+		a.expired.Load(),
 		!a.incomplete,
 		a.js != nil,
 		a.numLocalLeafNodes(),
@@ -2827,8 +2829,8 @@ func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optCfg,
 		detail.JetStreamStats.ReservedMemory = uint64(reserved.MaxMemory)
 		detail.JetStreamStats.ReservedStore = uint64(reserved.MaxStore)
 	}
-
 	jsa.usageMu.RUnlock()
+
 	var streams []*stream
 	if optStreams {
 		for _, stream := range jsa.streams {
@@ -2934,7 +2936,7 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 	if opts.Consumer {
 		opts.Streams = true
 	}
-	if opts.Streams {
+	if opts.Streams && opts.Account == _EMPTY_ {
 		opts.Accounts = true
 	}
 
@@ -3289,6 +3291,11 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 		return health
 	}
 
+	// If JSServerOnly is true, then do not check further accounts, streams and consumers.
+	if opts.JSServerOnly {
+		return health
+	}
+
 	sopts := s.getOpts()
 
 	// If JS is not enabled in the config, we stop.
@@ -3483,11 +3490,6 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 		return health
 	}
 
-	// If JSServerOnly is true, then do not check further accounts, streams and consumers.
-	if opts.JSServerOnly {
-		return health
-	}
-
 	// Range across all accounts, the streams assigned to them, and the consumers.
 	// If they are assigned to this server check their status.
 	ourID := meta.ID()
@@ -3669,6 +3671,30 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 	}
 	// Success.
 	return health
+}
+
+type ExpvarzStatus struct {
+	Memstats json.RawMessage `json:"memstats"`
+	Cmdline  json.RawMessage `json:"cmdline"`
+}
+
+func (s *Server) expvarz(_ *ExpvarzEventOptions) *ExpvarzStatus {
+	var stat ExpvarzStatus
+
+	const memStatsKey = "memstats"
+	const cmdLineKey = "cmdline"
+
+	expvar.Do(func(v expvar.KeyValue) {
+		switch v.Key {
+		case memStatsKey:
+			stat.Memstats = json.RawMessage(v.Value.String())
+
+		case cmdLineKey:
+			stat.Cmdline = json.RawMessage(v.Value.String())
+		}
+	})
+
+	return &stat
 }
 
 type ProfilezStatus struct {

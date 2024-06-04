@@ -68,7 +68,7 @@ func createUserCredsEx(t *testing.T, nuc *jwt.UserClaims, akp nkeys.KeyPair) nat
 	return nats.UserJWT(userCB, sigCB)
 }
 
-func createUserCreds(t *testing.T, s *Server, akp nkeys.KeyPair) nats.Option {
+func createUserCreds(t *testing.T, _ *Server, akp nkeys.KeyPair) nats.Option {
 	return createUserCredsEx(t, jwt.NewUserClaims("test"), akp)
 }
 
@@ -1674,8 +1674,8 @@ func TestSystemAccountWithGateways(t *testing.T) {
 	nca.Flush()
 
 	// If this tests fails with wrong number after 10 seconds we may have
-	// added a new inititial subscription for the eventing system.
-	checkExpectedSubs(t, 56, sa)
+	// added a new initial subscription for the eventing system.
+	checkExpectedSubs(t, 58, sa)
 
 	// Create a client on B and see if we receive the event
 	urlb := fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port)
@@ -1888,8 +1888,8 @@ func TestServerEventsStatsZ(t *testing.T) {
 	if m.Stats.Connections != 1 {
 		t.Fatalf("Did not match connections of 1, got %d", m.Stats.Connections)
 	}
-	if m.Stats.ActiveAccounts != 2 {
-		t.Fatalf("Did not match active accounts of 2, got %d", m.Stats.ActiveAccounts)
+	if m.Stats.ActiveAccounts != 1 {
+		t.Fatalf("Did not match active accounts of 1, got %d", m.Stats.ActiveAccounts)
 	}
 	if m.Stats.Sent.Msgs < 1 {
 		t.Fatalf("Did not match sent msgs of >=1, got %d", m.Stats.Sent.Msgs)
@@ -1919,8 +1919,8 @@ func TestServerEventsStatsZ(t *testing.T) {
 	if m2.Stats.Connections != 1 {
 		t.Fatalf("Did not match connections of 1, got %d", m2.Stats.Connections)
 	}
-	if m2.Stats.ActiveAccounts != 2 {
-		t.Fatalf("Did not match active accounts of 2, got %d", m2.Stats.ActiveAccounts)
+	if m2.Stats.ActiveAccounts != 1 {
+		t.Fatalf("Did not match active accounts of 1, got %d", m2.Stats.ActiveAccounts)
 	}
 	if m2.Stats.Sent.Msgs < 3 {
 		t.Fatalf("Did not match sent msgs of >= 3, got %d", m2.Stats.Sent.Msgs)
@@ -1946,8 +1946,8 @@ func TestServerEventsStatsZ(t *testing.T) {
 	if m3.Stats.Connections != 1 {
 		t.Fatalf("Did not match connections of 1, got %d", m3.Stats.Connections)
 	}
-	if m3.Stats.ActiveAccounts != 2 {
-		t.Fatalf("Did not match active accounts of 2, got %d", m3.Stats.ActiveAccounts)
+	if m3.Stats.ActiveAccounts != 1 {
+		t.Fatalf("Did not match active accounts of 1, got %d", m3.Stats.ActiveAccounts)
 	}
 	if m3.Stats.Sent.Msgs < 4 {
 		t.Fatalf("Did not match sent msgs of >= 4, got %d", m3.Stats.Sent.Msgs)
@@ -2903,7 +2903,7 @@ func TestServerEventsPingStatsZFailFilter(t *testing.T) {
 	if msg, err := nc.Request(serverStatsPingReqSubj, []byte(`{MALFORMEDJSON`), time.Second/4); err != nil {
 		t.Fatalf("Error: %v", err)
 	} else {
-		resp := make(map[string]map[string]interface{})
+		resp := make(map[string]map[string]any)
 		if err := json.Unmarshal(msg.Data, &resp); err != nil {
 			t.Fatalf("Error unmarshalling the response json: %v", err)
 		}
@@ -2929,8 +2929,8 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 
 	tests := []struct {
 		endpoint  string
-		opt       interface{}
-		resp      interface{}
+		opt       any
+		resp      any
 		respField []string
 	}{
 		{"VARZ", nil, &Varz{},
@@ -2990,6 +2990,7 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 		{"HEALTHZ", nil, &JSzOptions{}, []string{"status"}},
 		{"HEALTHZ", &HealthzOptions{JSEnabledOnly: true}, &JSzOptions{}, []string{"status"}},
 		{"HEALTHZ", &HealthzOptions{JSServerOnly: true}, &JSzOptions{}, []string{"status"}},
+		{"EXPVARZ", nil, &ExpvarzStatus{}, []string{"memstats", "cmdline"}},
 	}
 
 	for i, test := range tests {
@@ -3017,7 +3018,7 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Error receiving msg: %v", err)
 			}
-			response1 := make(map[string]map[string]interface{})
+			response1 := make(map[string]map[string]any)
 
 			if err := json.Unmarshal(msg.Data, &response1); err != nil {
 				t.Fatalf("Error unmarshalling response1 json: %v", err)
@@ -3046,7 +3047,7 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Error receiving msg: %v", err)
 			}
-			response2 := make(map[string]map[string]interface{})
+			response2 := make(map[string]map[string]any)
 			if err := json.Unmarshal(msg.Data, &response2); err != nil {
 				t.Fatalf("Error unmarshalling the response2 json: %v", err)
 			}
@@ -3058,8 +3059,10 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 					strings.ToLower(test.endpoint), string(msg.Data))
 			} else {
 				for _, respField := range test.respField {
-					if _, ok := resp[respField]; !ok {
+					if val, ok := resp[respField]; !ok {
 						t.Fatalf("Error finding: %s in %s", respField, resp)
+					} else if val == nil {
+						t.Fatalf("Nil value found: %s in %s", respField, resp)
 					}
 				}
 			}
@@ -3456,10 +3459,28 @@ func TestServerEventsLDMKick(t *testing.T) {
 	reqkick := KickClientReq{CID: cid}
 	reqkickpayload, _ := json.Marshal(reqkick)
 
-	_, err = ncs.Request(fmt.Sprintf("$SYS.REQ.SERVER.%s.LDM", s.ID()), reqldmpayload, time.Second)
-	if err != nil {
-		t.Fatalf("Error trying to publish the LDM request: %v", err)
+	// Test for data races when getting the client by ID
+	uc := createUserCreds(t, s, akp2)
+	totalClients := 100
+	someClients := make([]*nats.Conn, 0, totalClients)
+	for i := 0; i < totalClients; i++ {
+		nc, err := nats.Connect(s.ClientURL(), uc)
+		require_NoError(t, err)
+		defer nc.Close()
+		someClients = append(someClients, nc)
 	}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < totalClients; i++ {
+			someClients[i].Close()
+		}
+	}()
+	defer wg.Wait()
+
+	_, err = ncs.Request(fmt.Sprintf("$SYS.REQ.SERVER.%s.LDM", s.ID()), reqldmpayload, time.Second)
+	require_NoError(t, err)
 
 	select {
 	case <-ldmed:
@@ -3468,9 +3489,7 @@ func TestServerEventsLDMKick(t *testing.T) {
 	}
 
 	_, err = ncs.Request(fmt.Sprintf("$SYS.REQ.SERVER.%s.KICK", s.ID()), reqkickpayload, time.Second)
-	if err != nil {
-		t.Fatalf("Error trying to publish the KICK request: %v", err)
-	}
+	require_NoError(t, err)
 
 	select {
 	case <-disconnected:

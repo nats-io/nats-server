@@ -431,7 +431,7 @@ func (c *client) processRoutedMsgArgs(arg []byte) error {
 	return nil
 }
 
-// processInboundRouteMsg is called to process an inbound msg from a route.
+// processInboundRoutedMsg is called to process an inbound msg from a route.
 func (c *client) processInboundRoutedMsg(msg []byte) {
 	// Update statistics
 	c.in.msgs++
@@ -628,7 +628,7 @@ func (c *client) processRouteInfo(info *Info) {
 					info.Gateway, remoteID)
 				return
 			}
-			s.processGatewayInfoFromRoute(info, remoteID, c)
+			s.processGatewayInfoFromRoute(info, remoteID)
 			return
 		}
 
@@ -927,7 +927,7 @@ func (s *Server) updateRemoteRoutePerms(c *client, info *Info) {
 		allSubs    = _allSubs[:0]
 	)
 
-	s.accounts.Range(func(_, v interface{}) bool {
+	s.accounts.Range(func(_, v any) bool {
 		acc := v.(*Account)
 		acc.mu.RLock()
 		accName, sl, accPoolIdx := acc.Name, acc.sl, acc.routePoolIdx
@@ -1162,7 +1162,7 @@ func (c *client) removeRemoteSubs() {
 	c.mu.Lock()
 	srv := c.srv
 	subs := c.subs
-	c.subs = make(map[string]*subscription)
+	c.subs = nil
 	c.mu.Unlock()
 
 	for key, sub := range subs {
@@ -1383,7 +1383,7 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 		var isNew bool
 		if acc, isNew = srv.LookupOrRegisterAccount(accountName); isNew {
 			acc.mu.Lock()
-			acc.expired = true
+			acc.expired.Store(true)
 			acc.incomplete = true
 			acc.mu.Unlock()
 		}
@@ -1576,7 +1576,7 @@ func (s *Server) sendSubsToRoute(route *client, idx int, account string) {
 			a.mu.RUnlock()
 		}
 	} else {
-		s.accounts.Range(func(k, v interface{}) bool {
+		s.accounts.Range(func(k, v any) bool {
 			a := v.(*Account)
 			a.mu.RLock()
 			// We are here for regular or pooled routes (not per-account).
@@ -1773,13 +1773,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL, accName string) *clie
 		if opts.Cluster.MaxPingsOut > 0 {
 			pingMax = opts.MaxPingsOut
 		}
-		c.ping.tmr = time.AfterFunc(pingInterval*time.Duration(pingMax+1), func() {
-			c.mu.Lock()
-			c.Debugf("Stale Client Connection - Closing")
-			c.enqueueProto([]byte(fmt.Sprintf(errProto, "Stale Connection")))
-			c.mu.Unlock()
-			c.closeConnection(StaleConnection)
-		})
+		c.watchForStaleConnection(adjustPingInterval(ROUTER, pingInterval), pingMax)
 	} else {
 		// Set the Ping timer
 		c.setFirstPingTimer()
@@ -2562,7 +2556,7 @@ func (s *Server) setRouteInfoHostPortAndIP() error {
 func (s *Server) StartRouting(clientListenReady chan struct{}) {
 	defer s.grWG.Done()
 
-	// Wait for the client and and leafnode listen ports to be opened,
+	// Wait for the client and leafnode listen ports to be opened,
 	// and the possible ephemeral ports to be selected.
 	<-clientListenReady
 

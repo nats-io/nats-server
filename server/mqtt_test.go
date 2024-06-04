@@ -1642,41 +1642,40 @@ func TestMQTTParseConnect(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		proto []byte
-		pl    int
 		err   string
 	}{
-		{"packet in buffer error", []byte{0}, 10, io.ErrUnexpectedEOF.Error()},
-		{"bad proto name", []byte{0, 4, 'B', 'A', 'D'}, 5, "protocol name"},
-		{"invalid proto name", []byte{0, 3, 'B', 'A', 'D'}, 5, "expected connect packet with protocol name"},
-		{"old proto not supported", []byte{0, 6, 'M', 'Q', 'I', 's', 'd', 'p'}, 8, "older protocol"},
-		{"error on protocol level", []byte{0, 4, 'M', 'Q', 'T', 'T'}, 6, "protocol level"},
-		{"unacceptable protocol version", []byte{0, 4, 'M', 'Q', 'T', 'T', 10}, 7, "unacceptable protocol version"},
-		{"error on flags", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel}, 7, "flags"},
-		{"reserved flag", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 1}, 8, errMQTTConnFlagReserved.Error()},
-		{"will qos without will flag", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 1 << 3}, 8, "if Will flag is set to 0, Will QoS must be 0 too"},
-		{"will retain without will flag", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 1 << 5}, 8, errMQTTWillAndRetainFlag.Error()},
-		{"will qos", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 3<<3 | 1<<2}, 8, "if Will flag is set to 1, Will QoS can be 0, 1 or 2"},
-		{"no user but password", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagPasswordFlag}, 8, errMQTTPasswordFlagAndNoUser.Error()},
-		{"missing keep alive", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 0}, 8, "keep alive"},
-		{"missing client ID", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 0, 0, 1}, 10, "client ID"},
-		{"empty client ID", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 0, 0, 1, 0, 0}, 12, errMQTTCIDEmptyNeedsCleanFlag.Error()},
-		{"invalid utf8 client ID", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 0, 0, 1, 0, 1, 241}, 13, "invalid utf8 for client ID"},
-		{"missing will topic", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0}, 12, "Will topic"},
-		{"empty will topic", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 0}, 14, errMQTTEmptyWillTopic.Error()},
-		{"invalid utf8 will topic", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, 241}, 15, "invalid utf8 for Will topic"},
-		{"invalid wildcard will topic", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, '#'}, 15, "wildcards not allowed"},
-		{"error on will message", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, 'a', 0, 3}, 17, "Will message"},
-		{"error on username", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagUsernameFlag | mqttConnFlagCleanSession, 0, 0, 0, 0}, 12, "user name"},
-		{"empty username", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagUsernameFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 0}, 14, errMQTTEmptyUsername.Error()},
-		{"invalid utf8 username", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagUsernameFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, 241}, 15, "invalid utf8 for user name"},
-		{"error on password", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagUsernameFlag | mqttConnFlagPasswordFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, 'a'}, 15, "password"},
+		{"packet in buffer error", []byte{0}, io.ErrUnexpectedEOF.Error()},
+		{"bad proto name", []byte{0, 4, 'B', 'A', 'D'}, "protocol name"},
+		{"invalid proto name", []byte{0, 3, 'B', 'A', 'D'}, "expected connect packet with protocol name"},
+		{"old proto not supported", []byte{0, 6, 'M', 'Q', 'I', 's', 'd', 'p'}, "older protocol"},
+		{"error on protocol level", []byte{0, 4, 'M', 'Q', 'T', 'T'}, "protocol level"},
+		{"unacceptable protocol version", []byte{0, 4, 'M', 'Q', 'T', 'T', 10}, "unacceptable protocol version"},
+		{"error on flags", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel}, "flags"},
+		{"reserved flag", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 1}, errMQTTConnFlagReserved.Error()},
+		{"will qos without will flag", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 1 << 3}, "if Will flag is set to 0, Will QoS must be 0 too"},
+		{"will retain without will flag", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 1 << 5}, errMQTTWillAndRetainFlag.Error()},
+		{"will qos", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 3<<3 | 1<<2}, "if Will flag is set to 1, Will QoS can be 0, 1 or 2"},
+		{"no user but password", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagPasswordFlag}, errMQTTPasswordFlagAndNoUser.Error()},
+		{"missing keep alive", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 0}, "keep alive"},
+		{"missing client ID", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 0, 0, 1}, "client ID"},
+		{"empty client ID", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 0, 0, 1, 0, 0}, errMQTTCIDEmptyNeedsCleanFlag.Error()},
+		{"invalid utf8 client ID", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, 0, 0, 1, 0, 1, 241}, "invalid utf8 for client ID"},
+		{"missing will topic", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0}, "Will topic"},
+		{"empty will topic", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 0}, errMQTTEmptyWillTopic.Error()},
+		{"invalid utf8 will topic", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, 241}, "invalid utf8 for Will topic"},
+		{"invalid wildcard will topic", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, '#'}, "wildcards not allowed"},
+		{"error on will message", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagWillFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, 'a', 0, 3}, "Will message"},
+		{"error on username", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagUsernameFlag | mqttConnFlagCleanSession, 0, 0, 0, 0}, "user name"},
+		{"empty username", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagUsernameFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 0}, errMQTTEmptyUsername.Error()},
+		{"invalid utf8 username", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagUsernameFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, 241}, "invalid utf8 for user name"},
+		{"error on password", []byte{0, 4, 'M', 'Q', 'T', 'T', mqttProtoLevel, mqttConnFlagUsernameFlag | mqttConnFlagPasswordFlag | mqttConnFlagCleanSession, 0, 0, 0, 0, 0, 1, 'a'}, "password"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			r := &mqttReader{}
 			r.reset(test.proto)
 			mqtt := &mqtt{r: r}
 			c := &client{mqtt: mqtt}
-			if _, _, err := c.mqttParseConnect(r, test.pl, false); err == nil || !strings.Contains(err.Error(), test.err) {
+			if _, _, err := c.mqttParseConnect(r, false); err == nil || !strings.Contains(err.Error(), test.err) {
 				t.Fatalf("Expected error %q, got %v", test.err, err)
 			}
 		})
@@ -1821,7 +1820,7 @@ func TestMQTTTopicAndSubjectConversion(t *testing.T) {
 				t.Fatalf("Expected subject %q got %q", test.natsSubject, toNATS)
 			}
 
-			res = natsSubjectToMQTTTopic(string(res))
+			res = natsSubjectToMQTTTopic(res)
 			backToMQTT := string(res)
 			if backToMQTT != test.mqttTopic {
 				t.Fatalf("Expected topic %q got %q (NATS conversion was %q)", test.mqttTopic, backToMQTT, toNATS)
@@ -2048,11 +2047,11 @@ func testMQTTCheckPubMsgNoAck(t testing.TB, c net.Conn, r *mqttReader, topic str
 
 func testMQTTGetPubMsg(t testing.TB, c net.Conn, r *mqttReader, topic string, payload []byte) (byte, uint16) {
 	t.Helper()
-	flags, pi, _ := testMQTTGetPubMsgEx(t, c, r, topic, payload)
+	flags, pi, _, _ := testMQTTGetPubMsgEx(t, c, r, topic, payload)
 	return flags, pi
 }
 
-func testMQTTGetPubMsgEx(t testing.TB, _ net.Conn, r *mqttReader, topic string, payload []byte) (byte, uint16, string) {
+func testMQTTGetPubMsgEx(t testing.TB, _ net.Conn, r *mqttReader, topic string, payload []byte) (byte, uint16, string, []byte) {
 	t.Helper()
 	b, pl := testMQTTReadPacket(t, r)
 	if pt := b & mqttPacketMask; pt != mqttPacketPub {
@@ -2061,7 +2060,7 @@ func testMQTTGetPubMsgEx(t testing.TB, _ net.Conn, r *mqttReader, topic string, 
 	return testMQTTGetPubMsgExEx(t, nil, r, b, pl, topic, payload)
 }
 
-func testMQTTGetPubMsgExEx(t testing.TB, _ net.Conn, r *mqttReader, b byte, pl int, topic string, payload []byte) (byte, uint16, string) {
+func testMQTTGetPubMsgExEx(t testing.TB, _ net.Conn, r *mqttReader, b byte, pl int, topic string, payload []byte) (byte, uint16, string, []byte) {
 	t.Helper()
 	pflags := b & mqttPacketFlagMask
 	qos := (pflags & mqttPubFlagQoS) >> 1
@@ -2090,7 +2089,7 @@ func testMQTTGetPubMsgExEx(t testing.TB, _ net.Conn, r *mqttReader, b byte, pl i
 		t.Fatalf("Expected payload %q, got %q", payload, ppayload)
 	}
 	r.pos += msgLen
-	return pflags, pi, ptopic
+	return pflags, pi, ptopic, ppayload
 }
 
 func testMQTTReadPubPacket(t testing.TB, r *mqttReader) (flags byte, pi uint16, topic string, payload []byte) {
@@ -2226,17 +2225,16 @@ func TestMQTTParsePIMsg(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		proto []byte
-		pl    int
 		err   string
 	}{
-		{"packet in buffer error", nil, 10, io.ErrUnexpectedEOF.Error()},
-		{"error reading packet identifier", []byte{0}, 1, "packet identifier"},
-		{"invalid packet identifier", []byte{0, 0}, 2, errMQTTPacketIdentifierIsZero.Error()},
+		{"packet in buffer error", nil, io.ErrUnexpectedEOF.Error()},
+		{"error reading packet identifier", []byte{0}, "packet identifier"},
+		{"invalid packet identifier", []byte{0, 0}, errMQTTPacketIdentifierIsZero.Error()},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			r := &mqttReader{}
 			r.reset(test.proto)
-			if _, err := mqttParsePIPacket(r, test.pl); err == nil || !strings.Contains(err.Error(), test.err) {
+			if _, err := mqttParsePIPacket(r); err == nil || !strings.Contains(err.Error(), test.err) {
 				t.Fatalf("Expected error %q, got %v", test.err, err)
 			}
 		})
@@ -3349,7 +3347,7 @@ func TestMQTTRetainedMsgMigration(t *testing.T) {
 	testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "+", qos: 0}}, []byte{0})
 	topics := map[string]struct{}{}
 	for i := 0; i < N; i++ {
-		_, _, topic := testMQTTGetPubMsgEx(t, mc, rc, _EMPTY_, []byte("bar"))
+		_, _, topic, _ := testMQTTGetPubMsgEx(t, mc, rc, _EMPTY_, []byte("bar"))
 		topics[topic] = struct{}{}
 	}
 	if len(topics) != N {
@@ -3763,7 +3761,7 @@ type remoteConnSameClientIDLogger struct {
 	warn chan string
 }
 
-func (l *remoteConnSameClientIDLogger) Warnf(format string, args ...interface{}) {
+func (l *remoteConnSameClientIDLogger) Warnf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if strings.Contains(msg, "remote connection has started with the same client ID") {
 		l.warn <- msg
@@ -4262,6 +4260,14 @@ func TestMQTTPublishRetain(t *testing.T) {
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownServer(s)
 
+	buf := strings.Builder{}
+	for i := 0; i < 128; i++ { // 128Kb
+		for j := 0; j < 64; j++ { // 16 * 64 = 1Kb
+			buf.Write([]byte("0123456789abcdef"))
+		}
+	}
+	large := buf.String()
+
 	for _, test := range []struct {
 		name          string
 		retained      bool
@@ -4269,6 +4275,7 @@ func TestMQTTPublishRetain(t *testing.T) {
 		expectedValue string
 		subGetsIt     bool
 	}{
+		{"publish large retained", true, large, large, true},
 		{"publish retained", true, "retained", "retained", true},
 		{"publish not retained", false, "not retained", "retained", true},
 		{"remove retained", true, "", "", false},
@@ -6399,7 +6406,7 @@ func TestMQTTConnectAndDisconnectEvent(t *testing.T) {
 
 	// Test system events now
 	for _, test := range []struct {
-		opt interface{}
+		opt any
 		cid string
 	}{
 		{&ConnzOptions{MQTTClient: "conn1"}, "conn1"},
@@ -6787,7 +6794,7 @@ type unableToDeleteConsLogger struct {
 	errCh chan string
 }
 
-func (l *unableToDeleteConsLogger) Errorf(format string, args ...interface{}) {
+func (l *unableToDeleteConsLogger) Errorf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if strings.Contains(msg, "unable to delete consumer") {
 		l.errCh <- msg
@@ -7448,7 +7455,6 @@ func TestMQTTJetStreamRepublishAndQoS0Subscribers(t *testing.T) {
 	testMQTTExpectNothing(t, r)
 }
 
-// Test for auto-cleanup of consumers.
 func TestMQTTDecodeRetainedMessage(t *testing.T) {
 	tdir := t.TempDir()
 	tmpl := `
@@ -7513,7 +7519,7 @@ func TestMQTTDecodeRetainedMessage(t *testing.T) {
 		if pt := b & mqttPacketMask; pt != mqttPacketPub {
 			t.Fatalf("Expected PUBLISH packet %x, got %x", mqttPacketPub, pt)
 		}
-		_, _, topic := testMQTTGetPubMsgExEx(t, mc, r, mqttPubFlagRetain, pl, "", nil)
+		_, _, topic, _ := testMQTTGetPubMsgExEx(t, mc, r, mqttPubFlagRetain, pl, "", nil)
 		if string(topic) != "foo/1" && string(topic) != "foo/2" {
 			t.Fatalf("Expected foo/1 or foo/2, got %q", topic)
 		}
@@ -7535,6 +7541,178 @@ func TestMQTTDecodeRetainedMessage(t *testing.T) {
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo/+", qos: 0}}, []byte{0})
 	testMQTTExpectNothing(t, r)
+}
+
+func TestMQTTSparkbDeathHandling(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	// protoMetrics is protobuf-encoded test data, with no timestamp.
+	//
+	//	p := &sproto.Payload{
+	// 		Metrics: []*sproto.Payload_Metric{
+	// 			newSparkbMetric_Uint64(sparkbBDSeqMetric, uint64(sparkbBDSeq)),
+	// 			newSparkbMetric(sparkbDeviceMetric1, "value-at-death-1"),
+	// 			newSparkbMetric(sparkbDeviceMetric2, "value-at-death-2"),
+	// 		},
+	// 		Timestamp: nil,
+	// 	}
+	protoMetrics := []byte{0x12, 0x0b, 0x0a, 0x05, 0x62, 0x64, 0x53, 0x65, 0x71, 0x20, 0x04, 0x58, 0x02, 0x12, 0x24, 0x0a, 0x0e, 0x64, 0x65, 0x76, 0x69, 0x63, 0x65, 0x2d, 0x6d, 0x65, 0x74, 0x72, 0x69, 0x63, 0x31, 0x20, 0x0c, 0x7a, 0x10, 0x76, 0x61, 0x6c, 0x75, 0x65, 0x2d, 0x61, 0x74, 0x2d, 0x64, 0x65, 0x61, 0x74, 0x68, 0x2d, 0x31, 0x12, 0x24, 0x0a, 0x0e, 0x64, 0x65, 0x76, 0x69, 0x63, 0x65, 0x2d, 0x6d, 0x65, 0x74, 0x72, 0x69, 0x63, 0x32, 0x20, 0x0c, 0x7a, 0x10, 0x76, 0x61, 0x6c, 0x75, 0x65, 0x2d, 0x61, 0x74, 0x2d, 0x64, 0x65, 0x61, 0x74, 0x68, 0x2d, 0x32}
+
+	proto0Timestamp := []byte{0x08, 0x00}
+
+	protoDeadbeefTimestamp := []byte{0x08, 0xef, 0xfd, 0xb6, 0xf5, 0xfd, 0xde, 0xef, 0xd6, 0xde, 0x01}
+
+	mcPub, rPub := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mcPub.Close()
+	testMQTTCheckConnAck(t, rPub, mqttConnAckRCConnectionAccepted, false)
+
+	mcSub, rSub := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mcSub.Close()
+	testMQTTCheckConnAck(t, rSub, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 0, mcSub, rSub, []*mqttFilter{{filter: "spBv1.0/ggg/#", qos: 0}}, []byte{0})
+
+	for _, test := range []*struct {
+		name                  string
+		payload               []byte
+		expectTimestampOffset int
+		expectUnchanged       bool
+	}{
+		{"append", protoMetrics, len(protoMetrics), false},
+		{"replace at the end", append(protoMetrics, proto0Timestamp...), len(protoMetrics), false},
+		{"replace at the start", append(protoDeadbeefTimestamp, protoMetrics...), 0, false},
+		{"invalid", []byte{0xde, 0xad, 0xbe, 0xef}, 0, true}, // invalid payload
+	} {
+		var sendPI uint16
+		for _, topic := range []string{"NDEATH/nnn", "DDEATH/nnn/ddd"} {
+			sendPI++
+			t.Run(test.name+" "+topic, func(t *testing.T) {
+				testMQTTPublish(t, mcPub, rPub, 1, false, false, "spBv1.0/ggg/"+topic, sendPI, test.payload)
+
+				flags, pi, _, received := testMQTTGetPubMsgEx(t, mcSub, rSub, "", nil)
+				if mqttGetQoS(flags) == 1 {
+					testMQTTSendPIPacket(mqttPacketPubAck, t, mcSub, pi)
+				}
+
+				if test.expectUnchanged {
+					if !bytes.Equal(test.payload, received) {
+						t.Fatalf("Expected payload to be unchanged, got %q", received)
+					}
+					return
+				}
+
+				if test.expectTimestampOffset > len(received) {
+					t.Fatalf("Expected timestamp offset %v to be less than %v", test.expectTimestampOffset, len(received))
+				}
+				if test.expectTimestampOffset > 0 {
+					if !bytes.Equal(protoMetrics, received[:test.expectTimestampOffset]) {
+						t.Fatalf("Expected payload to be unchanged up to %v, got %q", test.expectTimestampOffset, received)
+					}
+				}
+
+				tsBytes := received[test.expectTimestampOffset:]
+				if tsBytes[0] != 0x08 {
+					t.Fatalf("Expected timestamp to start with 0x08, got %x", tsBytes)
+				}
+				v, _, err := protoScanVarint(tsBytes[1:])
+				if err != nil {
+					t.Fatalf("Error scanning varint: %v", err)
+				}
+
+				ts := time.UnixMilli(int64(v))
+				if time.Now().Before(ts) {
+					t.Fatalf("Expected timestamp to be in the past, got %v", ts)
+				}
+				if time.Since(ts) > time.Second {
+					t.Fatalf("Expected timestamp to be within a second, got %v", time.Since(ts))
+				}
+			})
+		}
+	}
+}
+
+func TestMQTTSparkbBirthHandling(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	// Publish an NBIRTH message. Make sure it is received as both the original
+	// subject, and as a $sparkplug/certificates one.
+
+	const NBORN = "NODE BORN FAKE MESSAGE"
+	const DBORN = "DEVICE BORN FAKE MESSAGE"
+
+	tests := []*struct {
+		topic   string
+		payload string
+		flags   byte
+		mc      net.Conn
+		r       *mqttReader
+	}{
+		{
+			topic:   "spBv1.0/ggg/NBIRTH/nnn",
+			payload: NBORN,
+			flags:   0,
+		},
+		{
+			topic:   "spBv1.0/ggg/DBIRTH/nnn/ddd",
+			payload: DBORN,
+			flags:   0,
+		},
+		{
+			topic:   "$sparkplug/certificates/spBv1.0/ggg/NBIRTH/nnn",
+			payload: NBORN,
+			flags:   mqttPubFlagRetain,
+		},
+		{
+			topic:   "$sparkplug/certificates/spBv1.0/ggg/DBIRTH/nnn/ddd",
+			payload: DBORN,
+			flags:   mqttPubFlagRetain,
+		},
+	}
+
+	t.Run("$sparkplug messages delivered", func(t *testing.T) {
+		// Connect the subscribers, unique for each topic we monitor.
+		for i, test := range tests {
+			test.mc, test.r = testMQTTConnect(t, &mqttConnInfo{cleanSess: true, clientID: fmt.Sprintf("sub-%v", i)}, o.MQTT.Host, o.MQTT.Port)
+			defer test.mc.Close()
+			testMQTTCheckConnAck(t, test.r, mqttConnAckRCConnectionAccepted, false)
+
+			// Subscribne at QoS2 to make sure the messages are posted at QoS0 and
+			// not truncated to sub QoS.
+			testMQTTSub(t, 0, test.mc, test.r, []*mqttFilter{{filter: test.topic, qos: 2}}, []byte{2})
+		}
+
+		// connect the publisher
+		mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true, clientID: "pub"}, o.MQTT.Host, o.MQTT.Port)
+		defer mc.Close()
+		testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+
+		// {Publish} [ND]BIRTH messages. Note that IRL these are protobuf payloads.
+		testMQTTPublish(t, mc, r, 0, false, false, "spBv1.0/ggg/NBIRTH/nnn", 0, []byte("NODE BORN FAKE MESSAGE"))
+		testMQTTPublish(t, mc, r, 0, false, false, "spBv1.0/ggg/DBIRTH/nnn/ddd", 0, []byte("DEVICE BORN FAKE MESSAGE"))
+
+		// Check that the subscribers got the messages.
+		for _, test := range tests {
+			testMQTTCheckPubMsg(t, test.mc, test.r, test.topic, test.flags, []byte(test.payload))
+		}
+	})
+
+	t.Run("$sparkplug messages retained", func(t *testing.T) {
+		// Connect/subscribe again, and make sure that only retained messages are there.
+		for i, test := range tests {
+			mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true, clientID: fmt.Sprintf("sub-%v", i+100)}, o.MQTT.Host, o.MQTT.Port)
+			defer mc.Close()
+			testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+			testMQTTSub(t, 0, mc, r, []*mqttFilter{{filter: test.topic, qos: 2}}, []byte{2})
+			if test.flags&mqttPubFlagRetain != 0 {
+				testMQTTCheckPubMsg(t, mc, r, test.topic, test.flags, []byte(test.payload))
+			} else {
+				testMQTTExpectNothing(t, r)
+			}
+		}
+	})
 }
 
 //////////////////////////////////////////////////////////////////////////

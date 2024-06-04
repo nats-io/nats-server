@@ -72,7 +72,7 @@ type captureTLSError struct {
 	ch chan struct{}
 }
 
-func (c *captureTLSError) Errorf(format string, v ...interface{}) {
+func (c *captureTLSError) Errorf(format string, v ...any) {
 	msg := fmt.Sprintf(format, v...)
 	if strings.Contains(msg, "handshake error") {
 		select {
@@ -87,7 +87,7 @@ type captureClusterTLSInsecureLogger struct {
 	ch chan struct{}
 }
 
-func (c *captureClusterTLSInsecureLogger) Warnf(format string, v ...interface{}) {
+func (c *captureClusterTLSInsecureLogger) Warnf(format string, v ...any) {
 	msg := fmt.Sprintf(format, v...)
 	if strings.Contains(msg, "solicited routes will not be verified") {
 		select {

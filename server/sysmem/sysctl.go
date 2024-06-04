@@ -1,4 +1,4 @@
-// Copyright 2019 The NATS Authors
+// Copyright 2019-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -26,7 +26,9 @@ func sysctlInt64(name string) int64 {
 	if err != nil {
 		return 0
 	}
-	// hack because the string conversion above drops a \0
-	b := []byte(s)
+	// Make sure it's 8 bytes when we do the cast below.
+	// We were getting fatal error: checkptr: converted pointer straddles multiple allocations in go 1.22.1 on darwin.
+	var b [8]byte
+	copy(b[:], s)
 	return *(*int64)(unsafe.Pointer(&b[0]))
 }

@@ -206,6 +206,7 @@ type AccountNumConns struct {
 // AccountStat contains the data common between AccountNumConns and AccountStatz
 type AccountStat struct {
 	Account       string    `json:"acc"`
+	Name          string    `json:"name"`
 	Conns         int       `json:"conns"`
 	LeafNodes     int       `json:"leafnodes"`
 	TotalConns    int       `json:"total_conns"`
@@ -356,7 +357,7 @@ type pubMsg struct {
 	rply string
 	si   *ServerInfo
 	hdr  map[string]string
-	msg  interface{}
+	msg  any
 	oct  compressionType
 	echo bool
 	last bool
@@ -365,7 +366,7 @@ type pubMsg struct {
 var pubMsgPool sync.Pool
 
 func newPubMsg(c *client, sub, rply string, si *ServerInfo, hdr map[string]string,
-	msg interface{}, oct compressionType, echo, last bool) *pubMsg {
+	msg any, oct compressionType, echo, last bool) *pubMsg {
 
 	var m *pubMsg
 	pm := pubMsgPool.Get()
@@ -623,15 +624,20 @@ func (s *Server) sendShutdownEvent() {
 }
 
 // Used to send an internal message to an arbitrary account.
-func (s *Server) sendInternalAccountMsg(a *Account, subject string, msg interface{}) error {
+func (s *Server) sendInternalAccountMsg(a *Account, subject string, msg any) error {
 	return s.sendInternalAccountMsgWithReply(a, subject, _EMPTY_, nil, msg, false)
 }
 
 // Used to send an internal message with an optional reply to an arbitrary account.
-func (s *Server) sendInternalAccountMsgWithReply(a *Account, subject, reply string, hdr map[string]string, msg interface{}, echo bool) error {
+func (s *Server) sendInternalAccountMsgWithReply(a *Account, subject, reply string, hdr map[string]string, msg any, echo bool) error {
 	s.mu.RLock()
 	if s.sys == nil || s.sys.sendq == nil {
 		s.mu.RUnlock()
+		if s.isShuttingDown() {
+			// Skip in case this was called at the end phase during shut down
+			// to avoid too many entries in the logs.
+			return nil
+		}
 		return ErrNoSysAccount
 	}
 	c := s.sys.client
@@ -665,7 +671,7 @@ func (s *Server) sendInternalAccountSysMsg(a *Account, subj string, si *ServerIn
 
 // This will queue up a message to be sent.
 // Lock should not be held.
-func (s *Server) sendInternalMsgLocked(subj, rply string, si *ServerInfo, msg interface{}) {
+func (s *Server) sendInternalMsgLocked(subj, rply string, si *ServerInfo, msg any) {
 	s.mu.RLock()
 	s.sendInternalMsg(subj, rply, si, msg)
 	s.mu.RUnlock()
@@ -673,7 +679,7 @@ func (s *Server) sendInternalMsgLocked(subj, rply string, si *ServerInfo, msg in
 
 // This will queue up a message to be sent.
 // Assumes lock is held on entry.
-func (s *Server) sendInternalMsg(subj, rply string, si *ServerInfo, msg interface{}) {
+func (s *Server) sendInternalMsg(subj, rply string, si *ServerInfo, msg any) {
 	if s.sys == nil || s.sys.sendq == nil {
 		return
 	}
@@ -692,7 +698,7 @@ func (s *Server) sendInternalResponse(subj string, response *ServerAPIResponse) 
 }
 
 // Used to send internal messages from other system clients to avoid no echo issues.
-func (c *client) sendInternalMsg(subj, rply string, si *ServerInfo, msg interface{}) {
+func (c *client) sendInternalMsg(subj, rply string, si *ServerInfo, msg any) {
 	if c == nil {
 		return
 	}
@@ -1082,43 +1088,47 @@ func (s *Server) initEventTracking() {
 		"STATSZ": s.statszReq,
 		"VARZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &VarzEventOptions{}
-			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Varz(&optz.VarzOptions) })
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) { return s.Varz(&optz.VarzOptions) })
 		},
 		"SUBSZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &SubszEventOptions{}
-			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Subsz(&optz.SubszOptions) })
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) { return s.Subsz(&optz.SubszOptions) })
 		},
 		"CONNZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &ConnzEventOptions{}
-			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Connz(&optz.ConnzOptions) })
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) { return s.Connz(&optz.ConnzOptions) })
 		},
 		"ROUTEZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &RoutezEventOptions{}
-			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Routez(&optz.RoutezOptions) })
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) { return s.Routez(&optz.RoutezOptions) })
 		},
 		"GATEWAYZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &GatewayzEventOptions{}
-			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Gatewayz(&optz.GatewayzOptions) })
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) { return s.Gatewayz(&optz.GatewayzOptions) })
 		},
 		"LEAFZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &LeafzEventOptions{}
-			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Leafz(&optz.LeafzOptions) })
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) { return s.Leafz(&optz.LeafzOptions) })
 		},
 		"ACCOUNTZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &AccountzEventOptions{}
-			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Accountz(&optz.AccountzOptions) })
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) { return s.Accountz(&optz.AccountzOptions) })
 		},
 		"JSZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &JszEventOptions{}
-			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.Jsz(&optz.JSzOptions) })
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) { return s.Jsz(&optz.JSzOptions) })
 		},
 		"HEALTHZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &HealthzEventOptions{}
-			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.healthz(&optz.HealthzOptions), nil })
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) { return s.healthz(&optz.HealthzOptions), nil })
 		},
 		"PROFILEZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &ProfilezEventOptions{}
-			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) { return s.profilez(&optz.ProfilezOptions), nil })
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) { return s.profilez(&optz.ProfilezOptions), nil })
+		},
+		"EXPVARZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
+			optz := &ExpvarzEventOptions{}
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) { return s.expvarz(optz), nil })
 		},
 	}
 	for name, req := range monSrvc {
@@ -1131,7 +1141,7 @@ func (s *Server) initEventTracking() {
 			s.Errorf("Error setting up internal tracking: %v", err)
 		}
 	}
-	extractAccount := func(c *client, subject string, msg []byte) (string, error) {
+	extractAccount := func(subject string) (string, error) {
 		if tk := strings.Split(subject, tsep); len(tk) != accReqTokens {
 			return _EMPTY_, fmt.Errorf("subject %q is malformed", subject)
 		} else {
@@ -1141,8 +1151,8 @@ func (s *Server) initEventTracking() {
 	monAccSrvc := map[string]sysMsgHandler{
 		"SUBSZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &SubszEventOptions{}
-			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
-				if acc, err := extractAccount(c, subject, msg); err != nil {
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) {
+				if acc, err := extractAccount(subject); err != nil {
 					return nil, err
 				} else {
 					optz.SubszOptions.Subscriptions = true
@@ -1153,8 +1163,8 @@ func (s *Server) initEventTracking() {
 		},
 		"CONNZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &ConnzEventOptions{}
-			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
-				if acc, err := extractAccount(c, subject, msg); err != nil {
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) {
+				if acc, err := extractAccount(subject); err != nil {
 					return nil, err
 				} else {
 					optz.ConnzOptions.Account = acc
@@ -1164,8 +1174,8 @@ func (s *Server) initEventTracking() {
 		},
 		"LEAFZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &LeafzEventOptions{}
-			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
-				if acc, err := extractAccount(c, subject, msg); err != nil {
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) {
+				if acc, err := extractAccount(subject); err != nil {
 					return nil, err
 				} else {
 					optz.LeafzOptions.Account = acc
@@ -1175,8 +1185,8 @@ func (s *Server) initEventTracking() {
 		},
 		"JSZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &JszEventOptions{}
-			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
-				if acc, err := extractAccount(c, subject, msg); err != nil {
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) {
+				if acc, err := extractAccount(subject); err != nil {
 					return nil, err
 				} else {
 					optz.Account = acc
@@ -1186,8 +1196,8 @@ func (s *Server) initEventTracking() {
 		},
 		"INFO": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &AccInfoEventOptions{}
-			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
-				if acc, err := extractAccount(c, subject, msg); err != nil {
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) {
+				if acc, err := extractAccount(subject); err != nil {
 					return nil, err
 				} else {
 					return s.accountInfo(acc)
@@ -1199,8 +1209,8 @@ func (s *Server) initEventTracking() {
 		// STATZ is also less heavy weight than INFO
 		"STATZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &AccountStatzEventOptions{}
-			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
-				if acc, err := extractAccount(c, subject, msg); err != nil {
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) {
+				if acc, err := extractAccount(subject); err != nil {
 					return nil, err
 				} else if acc == "PING" { // Filter PING subject. Happens for server as well. But wildcards are not used
 					return nil, errSkipZreq
@@ -1235,7 +1245,7 @@ func (s *Server) initEventTracking() {
 	if _, err := s.sysSubscribe(fmt.Sprintf(accPingReqSubj, "STATZ"),
 		s.noInlineCallback(func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &AccountStatzEventOptions{}
-			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (interface{}, error) {
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) {
 				if stz, err := s.AccountStatz(&optz.AccountStatzOptions); err != nil {
 					return nil, err
 				} else if len(stz.Accounts) == 0 && !optz.IncludeUnused {
@@ -1326,7 +1336,7 @@ func (s *Server) registerSystemImportsForExisting() {
 		return
 	}
 	sacc := s.sys.account
-	s.accounts.Range(func(k, v interface{}) bool {
+	s.accounts.Range(func(k, v any) bool {
 		a := v.(*Account)
 		if a != sacc {
 			accounts = append(accounts, a)
@@ -1428,12 +1438,12 @@ func (s *Server) accountClaimUpdate(sub *subscription, c *client, _ *Account, su
 // Will update the remote count for clients.
 // Lock assume held.
 func (s *Server) processRemoteServerShutdown(sid string) {
-	s.accounts.Range(func(k, v interface{}) bool {
+	s.accounts.Range(func(k, v any) bool {
 		v.(*Account).removeRemoteServer(sid)
 		return true
 	})
 	// Update any state in nodeInfo.
-	s.nodeToInfo.Range(func(k, v interface{}) bool {
+	s.nodeToInfo.Range(func(k, v any) bool {
 		ni := v.(nodeInfo)
 		if ni.id == sid {
 			ni.offline = true
@@ -1449,7 +1459,7 @@ func (s *Server) sameDomain(domain string) bool {
 	return domain == _EMPTY_ || s.info.Domain == _EMPTY_ || domain == s.info.Domain
 }
 
-// remoteServerShutdownEvent is called when we get an event from another server shutting down.
+// remoteServerShutdown is called when we get an event from another server shutting down.
 func (s *Server) remoteServerShutdown(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1630,7 +1640,7 @@ func (s *Server) shutdownEventing() {
 	defer s.mu.Unlock()
 
 	// Whip through all accounts.
-	s.accounts.Range(func(k, v interface{}) bool {
+	s.accounts.Range(func(k, v any) bool {
 		v.(*Account).clearEventing()
 		return true
 	})
@@ -1788,6 +1798,11 @@ type ProfilezEventOptions struct {
 	EventFilterOptions
 }
 
+// In the context of system events, ExpvarzEventOptions are options passed to Expvarz
+type ExpvarzEventOptions struct {
+	EventFilterOptions
+}
+
 // returns true if the request does NOT apply to this server and can be ignored.
 // DO NOT hold the server lock when
 func (s *Server) filterRequest(fOpts *EventFilterOptions) bool {
@@ -1829,7 +1844,7 @@ const (
 // ServerAPIResponse is the response type for the server API like varz, connz etc.
 type ServerAPIResponse struct {
 	Server *ServerInfo `json:"server"`
-	Data   interface{} `json:"data,omitempty"`
+	Data   any         `json:"data,omitempty"`
 	Error  *ApiError   `json:"error,omitempty"`
 
 	// Private to indicate compression if any.
@@ -1907,7 +1922,7 @@ func getAcceptEncoding(hdr []byte) compressionType {
 	return unsupportedCompression
 }
 
-func (s *Server) zReq(c *client, reply string, hdr, msg []byte, fOpts *EventFilterOptions, optz interface{}, respf func() (interface{}, error)) {
+func (s *Server) zReq(_ *client, reply string, hdr, msg []byte, fOpts *EventFilterOptions, optz any, respf func() (any, error)) {
 	if !s.EventsEnabled() || reply == _EMPTY_ {
 		return
 	}
@@ -2105,6 +2120,7 @@ func (a *Account) statz() *AccountStat {
 	leafConns := a.numLocalLeafNodes()
 	return &AccountStat{
 		Account:    a.Name,
+		Name:       a.LogicalName,
 		Conns:      localConns,
 		LeafNodes:  leafConns,
 		TotalConns: localConns + leafConns,
@@ -2764,7 +2780,7 @@ func (s *Server) reloadConfig(sub *subscription, c *client, _ *Account, subject,
 	}
 
 	optz := &EventFilterOptions{}
-	s.zReq(c, reply, hdr, msg, optz, optz, func() (interface{}, error) {
+	s.zReq(c, reply, hdr, msg, optz, optz, func() (any, error) {
 		// Reload the server config, as requested.
 		return nil, s.Reload()
 	})
@@ -2790,7 +2806,7 @@ func (s *Server) kickClient(_ *subscription, c *client, _ *Account, subject, rep
 	}
 
 	optz := &EventFilterOptions{}
-	s.zReq(c, reply, hdr, msg, optz, optz, func() (interface{}, error) {
+	s.zReq(c, reply, hdr, msg, optz, optz, func() (any, error) {
 		return nil, s.DisconnectClientByID(req.CID)
 	})
 
@@ -2808,7 +2824,7 @@ func (s *Server) ldmClient(_ *subscription, c *client, _ *Account, subject, repl
 	}
 
 	optz := &EventFilterOptions{}
-	s.zReq(c, reply, hdr, msg, optz, optz, func() (interface{}, error) {
+	s.zReq(c, reply, hdr, msg, optz, optz, func() (any, error) {
 		return nil, s.LDMClientByID(req.CID)
 	})
 }

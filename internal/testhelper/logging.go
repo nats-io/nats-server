@@ -46,37 +46,37 @@ func (l *DummyLogger) aggregate() {
 	}
 }
 
-func (l *DummyLogger) Noticef(format string, v ...interface{}) {
+func (l *DummyLogger) Noticef(format string, v ...any) {
 	l.Lock()
 	defer l.Unlock()
 	l.Msg = fmt.Sprintf(format, v...)
 	l.aggregate()
 }
-func (l *DummyLogger) Errorf(format string, v ...interface{}) {
+func (l *DummyLogger) Errorf(format string, v ...any) {
 	l.Lock()
 	defer l.Unlock()
 	l.Msg = fmt.Sprintf(format, v...)
 	l.aggregate()
 }
-func (l *DummyLogger) Warnf(format string, v ...interface{}) {
+func (l *DummyLogger) Warnf(format string, v ...any) {
 	l.Lock()
 	defer l.Unlock()
 	l.Msg = fmt.Sprintf(format, v...)
 	l.aggregate()
 }
-func (l *DummyLogger) Fatalf(format string, v ...interface{}) {
+func (l *DummyLogger) Fatalf(format string, v ...any) {
 	l.Lock()
 	defer l.Unlock()
 	l.Msg = fmt.Sprintf(format, v...)
 	l.aggregate()
 }
-func (l *DummyLogger) Debugf(format string, v ...interface{}) {
+func (l *DummyLogger) Debugf(format string, v ...any) {
 	l.Lock()
 	defer l.Unlock()
 	l.Msg = fmt.Sprintf(format, v...)
 	l.aggregate()
 }
-func (l *DummyLogger) Tracef(format string, v ...interface{}) {
+func (l *DummyLogger) Tracef(format string, v ...any) {
 	l.Lock()
 	defer l.Unlock()
 	l.Msg = fmt.Sprintf(format, v...)

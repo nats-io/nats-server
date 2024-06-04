@@ -1,4 +1,4 @@
-// Copyright 2019-2023 The NATS Authors
+// Copyright 2019-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -126,23 +126,27 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 		if asl && ms.cfg.DiscardNewPer {
 			return ErrMaxMsgsPerSubject
 		}
-		if ms.cfg.MaxMsgs > 0 && ms.state.Msgs >= uint64(ms.cfg.MaxMsgs) {
-			// If we are tracking max messages per subject and are at the limit we will replace, so this is ok.
-			if !asl {
-				return ErrMaxMsgs
+		// If we are discard new and limits policy and clustered, we do the enforcement
+		// above and should not disqualify the message here since it could cause replicas to drift.
+		if ms.cfg.Retention == LimitsPolicy || ms.cfg.Replicas == 1 {
+			if ms.cfg.MaxMsgs > 0 && ms.state.Msgs >= uint64(ms.cfg.MaxMsgs) {
+				// If we are tracking max messages per subject and are at the limit we will replace, so this is ok.
+				if !asl {
+					return ErrMaxMsgs
+				}
 			}
-		}
-		if ms.cfg.MaxBytes > 0 && ms.state.Bytes+memStoreMsgSize(subj, hdr, msg) >= uint64(ms.cfg.MaxBytes) {
-			if !asl {
-				return ErrMaxBytes
-			}
-			// If we are here we are at a subject maximum, need to determine if dropping last message gives us enough room.
-			if ss.firstNeedsUpdate {
-				ms.recalculateFirstForSubj(subj, ss.First, ss)
-			}
-			sm, ok := ms.msgs[ss.First]
-			if !ok || memStoreMsgSize(sm.subj, sm.hdr, sm.msg) < memStoreMsgSize(subj, hdr, msg) {
-				return ErrMaxBytes
+			if ms.cfg.MaxBytes > 0 && ms.state.Bytes+memStoreMsgSize(subj, hdr, msg) >= uint64(ms.cfg.MaxBytes) {
+				if !asl {
+					return ErrMaxBytes
+				}
+				// If we are here we are at a subject maximum, need to determine if dropping last message gives us enough room.
+				if ss.firstNeedsUpdate {
+					ms.recalculateFirstForSubj(subj, ss.First, ss)
+				}
+				sm, ok := ms.msgs[ss.First]
+				if !ok || memStoreMsgSize(sm.subj, sm.hdr, sm.msg) < memStoreMsgSize(subj, hdr, msg) {
+					return ErrMaxBytes
+				}
 			}
 		}
 	}
@@ -392,7 +396,7 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 
 	// 1. See if we match any subs from fss.
 	// 2. If we match and the sseq is past ss.Last then we can use meta only.
-	// 3. If we match and we need to do a partial, break and clear any totals and do a full scan like num pending.
+	// 3. If we match we need to do a partial, break and clear any totals and do a full scan like num pending.
 
 	isMatch := func(subj string) bool {
 		if isAll {
@@ -429,7 +433,7 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 		if sseq <= fss.First {
 			update(fss)
 		} else if sseq <= fss.Last {
-			// We matched but its a partial.
+			// We matched but it is a partial.
 			havePartial = true
 			// Don't break here, we will update to keep tracking last.
 			update(fss)
@@ -444,7 +448,7 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 	// If we are here we need to scan the msgs.
 	// Capture first and last sequences for scan and then clear what we had.
 	first, last := ss.First, ss.Last
-	// To track if we decide to exclude and we need to calculate first.
+	// To track if we decide to exclude we need to calculate first.
 	var needScanFirst bool
 	if first < sseq {
 		first = sseq
@@ -461,14 +465,28 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 	}
 	if toScan < toExclude {
 		ss.Msgs, ss.First = 0, 0
-		for seq := first; seq <= last; seq++ {
-			if sm, ok := ms.msgs[seq]; ok && !seen[sm.subj] && isMatch(sm.subj) {
-				ss.Msgs++
-				if ss.First == 0 {
-					ss.First = seq
+
+		update := func(sm *StoreMsg) {
+			ss.Msgs++
+			if ss.First == 0 {
+				ss.First = sm.seq
+			}
+			if seen != nil {
+				seen[sm.subj] = true
+			}
+		}
+		// Check if easier to just scan msgs vs the sequence range.
+		// This can happen with lots of interior deletes.
+		if last-first > uint64(len(ms.msgs)) {
+			for _, sm := range ms.msgs {
+				if sm.seq >= first && sm.seq <= last && !seen[sm.subj] && isMatch(sm.subj) {
+					update(sm)
 				}
-				if seen != nil {
-					seen[sm.subj] = true
+			}
+		} else {
+			for seq := first; seq <= last; seq++ {
+				if sm, ok := ms.msgs[seq]; ok && !seen[sm.subj] && isMatch(sm.subj) {
+					update(sm)
 				}
 			}
 		}
@@ -478,17 +496,29 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 		var adjust uint64
 		var tss *SimpleState
 
-		for seq := ms.state.FirstSeq; seq < first; seq++ {
-			if sm, ok := ms.msgs[seq]; ok && !seen[sm.subj] && isMatch(sm.subj) {
-				if lastPerSubject {
-					tss, _ = ms.fss.Find(stringToBytes(sm.subj))
+		update := func(sm *StoreMsg) {
+			if lastPerSubject {
+				tss, _ = ms.fss.Find(stringToBytes(sm.subj))
+			}
+			// If we are last per subject, make sure to only adjust if all messages are before our first.
+			if tss == nil || tss.Last < first {
+				adjust++
+			}
+			if seen != nil {
+				seen[sm.subj] = true
+			}
+		}
+		// Check if easier to just scan msgs vs the sequence range.
+		if first-ms.state.FirstSeq > uint64(len(ms.msgs)) {
+			for _, sm := range ms.msgs {
+				if sm.seq < first && !seen[sm.subj] && isMatch(sm.subj) {
+					update(sm)
 				}
-				// If we are last per subject, make sure to only adjust if all messages are before our first.
-				if tss == nil || tss.Last < first {
-					adjust++
-				}
-				if seen != nil {
-					seen[sm.subj] = true
+			}
+		} else {
+			for seq := ms.state.FirstSeq; seq < first; seq++ {
+				if sm, ok := ms.msgs[seq]; ok && !seen[sm.subj] && isMatch(sm.subj) {
+					update(sm)
 				}
 			}
 		}
@@ -503,10 +533,27 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 		}
 		ss.Msgs -= adjust
 		if needScanFirst {
-			for seq := first; seq < last; seq++ {
-				if sm, ok := ms.msgs[seq]; ok && isMatch(sm.subj) {
-					ss.First = seq
-					break
+			// Check if easier to just scan msgs vs the sequence range.
+			// Since we will need to scan all of the msgs vs below where we break on the first match,
+			// we will only do so if a few orders of magnitude lower.
+			if last-first > 100*uint64(len(ms.msgs)) {
+				low := ms.state.LastSeq
+				for _, sm := range ms.msgs {
+					if sm.seq >= first && sm.seq < last && isMatch(sm.subj) {
+						if sm.seq < low {
+							low = sm.seq
+						}
+					}
+				}
+				if low < ms.state.LastSeq {
+					ss.First = low
+				}
+			} else {
+				for seq := first; seq < last; seq++ {
+					if sm, ok := ms.msgs[seq]; ok && isMatch(sm.subj) {
+						ss.First = seq
+						break
+					}
 				}
 			}
 		}
@@ -544,6 +591,54 @@ func (ms *memStore) SubjectsState(subject string) map[string]SimpleState {
 		}
 	})
 	return fss
+}
+
+func (ms *memStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed int) ([]uint64, error) {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+
+	if len(ms.msgs) == 0 {
+		return nil, nil
+	}
+
+	// Implied last sequence.
+	if maxSeq == 0 {
+		maxSeq = ms.state.LastSeq
+	}
+
+	//subs := make(map[string]*SimpleState)
+	seqs := make([]uint64, 0, 64)
+	seen := make(map[uint64]struct{})
+
+	addIfNotDupe := func(seq uint64) {
+		if _, ok := seen[seq]; !ok {
+			seqs = append(seqs, seq)
+			seen[seq] = struct{}{}
+		}
+	}
+
+	for _, filter := range filters {
+		ms.fss.Match(stringToBytes(filter), func(subj []byte, ss *SimpleState) {
+			if ss.Last <= maxSeq {
+				addIfNotDupe(ss.Last)
+			} else if ss.Msgs > 1 {
+				// The last is greater than maxSeq.
+				s := bytesToString(subj)
+				for seq := maxSeq; seq > 0; seq-- {
+					if sm, ok := ms.msgs[seq]; ok && sm.subj == s {
+						addIfNotDupe(seq)
+						break
+					}
+				}
+			}
+		})
+		// If maxAllowed was sepcified check that we will not exceed that.
+		if maxAllowed > 0 && len(seqs) > maxAllowed {
+			return nil, ErrTooManyResults
+		}
+	}
+	sort.Slice(seqs, func(i, j int) bool { return seqs[i] < seqs[j] })
+	return seqs, nil
 }
 
 // SubjectsTotal return message totals per subject.
@@ -644,7 +739,11 @@ func (ms *memStore) resetAgeChk(delta int64) {
 
 	fireIn := ms.cfg.MaxAge
 	if delta > 0 && time.Duration(delta) < fireIn {
-		fireIn = time.Duration(delta)
+		if fireIn = time.Duration(delta); fireIn < 250*time.Millisecond {
+			// Only fire at most once every 250ms.
+			// Excessive firing can effect ingest performance.
+			fireIn = time.Second
+		}
 	}
 	if ms.ageChk != nil {
 		ms.ageChk.Reset(fireIn)
@@ -655,19 +754,21 @@ func (ms *memStore) resetAgeChk(delta int64) {
 
 // Will expire msgs that are too old.
 func (ms *memStore) expireMsgs() {
-	ms.mu.Lock()
-	defer ms.mu.Unlock()
-
+	ms.mu.RLock()
 	now := time.Now().UnixNano()
 	minAge := now - int64(ms.cfg.MaxAge)
+	ms.mu.RUnlock()
+
 	for {
+		ms.mu.Lock()
 		if sm, ok := ms.msgs[ms.state.FirstSeq]; ok && sm.ts <= minAge {
 			ms.deleteFirstMsgOrPanic()
 			// Recalculate in case we are expiring a bunch.
 			now = time.Now().UnixNano()
 			minAge = now - int64(ms.cfg.MaxAge)
-
+			ms.mu.Unlock()
 		} else {
+			// We will exit here
 			if len(ms.msgs) == 0 {
 				if ms.ageChk != nil {
 					ms.ageChk.Stop()
@@ -686,7 +787,8 @@ func (ms *memStore) expireMsgs() {
 					ms.ageChk = time.AfterFunc(fireIn, ms.expireMsgs)
 				}
 			}
-			return
+			ms.mu.Unlock()
+			break
 		}
 	}
 }
@@ -787,15 +889,16 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 	ms.mu.Lock()
 	cb := ms.scb
 	if seq <= ms.state.LastSeq {
-		sm, ok := ms.msgs[seq]
-		if !ok {
-			ms.mu.Unlock()
-			return 0, ErrStoreMsgNotFound
+		fseq := ms.state.FirstSeq
+		// Determine new first sequence.
+		for ; seq <= ms.state.LastSeq; seq++ {
+			if sm, ok := ms.msgs[seq]; ok {
+				ms.state.FirstSeq = seq
+				ms.state.FirstTime = time.Unix(0, sm.ts).UTC()
+				break
+			}
 		}
-		ms.state.FirstSeq = seq
-		ms.state.FirstTime = time.Unix(0, sm.ts).UTC()
-
-		for seq := seq - 1; seq > 0; seq-- {
+		for seq := seq - 1; seq >= fseq; seq-- {
 			if sm := ms.msgs[seq]; sm != nil {
 				bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.msg)
 				purged++
@@ -977,6 +1080,40 @@ func (ms *memStore) LoadLastMsg(subject string, smp *StoreMsg) (*StoreMsg, error
 	return smp, nil
 }
 
+// LoadNextMsgMulti will find the next message matching any entry in the sublist.
+func (ms *memStore) LoadNextMsgMulti(sl *Sublist, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error) {
+	// TODO(dlc) - for now simple linear walk to get started.
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+
+	if start < ms.state.FirstSeq {
+		start = ms.state.FirstSeq
+	}
+
+	// If past the end no results.
+	if start > ms.state.LastSeq || ms.state.Msgs == 0 {
+		return nil, ms.state.LastSeq, ErrStoreEOF
+	}
+
+	// Initial setup.
+	fseq, lseq := start, ms.state.LastSeq
+
+	for nseq := fseq; nseq <= lseq; nseq++ {
+		sm, ok := ms.msgs[nseq]
+		if !ok {
+			continue
+		}
+		if sl.HasInterest(sm.subj) {
+			if smp == nil {
+				smp = new(StoreMsg)
+			}
+			sm.copy(smp)
+			return smp, nseq, nil
+		}
+	}
+	return nil, ms.state.LastSeq, ErrStoreEOF
+}
+
 // LoadNextMsg will find the next message matching the filter subject starting at the start sequence.
 // The filter subject can be a wildcard.
 func (ms *memStore) LoadNextMsg(filter string, wc bool, start uint64, smp *StoreMsg) (*StoreMsg, uint64, error) {
@@ -988,7 +1125,7 @@ func (ms *memStore) LoadNextMsg(filter string, wc bool, start uint64, smp *Store
 	}
 
 	// If past the end no results.
-	if start > ms.state.LastSeq {
+	if start > ms.state.LastSeq || ms.state.Msgs == 0 {
 		return nil, ms.state.LastSeq, ErrStoreEOF
 	}
 
@@ -997,7 +1134,7 @@ func (ms *memStore) LoadNextMsg(filter string, wc bool, start uint64, smp *Store
 	}
 	isAll := filter == fwcs
 
-	// Skip scan of ms.fss is number of messages in the block are less than
+	// Skip scan of ms.fss if number of messages in the block are less than
 	// 1/2 the number of subjects in ms.fss. Or we have a wc and lots of fss entries.
 	const linearScanMaxFSS = 256
 	doLinearScan := isAll || 2*int(ms.state.LastSeq-start) < ms.fss.Size() || (wc && ms.fss.Size() > linearScanMaxFSS)
@@ -1127,7 +1264,7 @@ func (ms *memStore) removeSeqPerSubject(subj string, seq uint64) {
 	}
 }
 
-// Will recalulate the first sequence for this subject in this block.
+// Will recalculate the first sequence for this subject in this block.
 // Lock should be held.
 func (ms *memStore) recalculateFirstForSubj(subj string, startSeq uint64, ss *SimpleState) {
 	for tseq := startSeq + 1; tseq <= ss.Last; tseq++ {
@@ -1140,7 +1277,7 @@ func (ms *memStore) recalculateFirstForSubj(subj string, startSeq uint64, ss *Si
 }
 
 // Removes the message referenced by seq.
-// Lock should he held.
+// Lock should be held.
 func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 	var ss uint64
 	sm, ok := ms.msgs[seq]
@@ -1356,19 +1493,25 @@ func (ms *memStore) EncodedStreamState(failed uint64) ([]byte, error) {
 
 // SyncDeleted will make sure this stream has same deleted state as dbs.
 func (ms *memStore) SyncDeleted(dbs DeleteBlocks) {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
 	// For now we share one dmap, so if we have one entry here check if states are the same.
 	// Note this will work for any DeleteBlock type, but we expect this to be a dmap too.
 	if len(dbs) == 1 {
-		ms.mu.RLock()
 		min, max, num := ms.dmap.State()
-		ms.mu.RUnlock()
 		if pmin, pmax, pnum := dbs[0].State(); pmin == min && pmax == max && pnum == num {
 			return
 		}
 	}
+	lseq := ms.state.LastSeq
 	for _, db := range dbs {
-		db.Range(func(dseq uint64) bool {
-			ms.RemoveMsg(dseq)
+		// Skip if beyond our current state.
+		if first, _, _ := db.State(); first > lseq {
+			continue
+		}
+		db.Range(func(seq uint64) bool {
+			ms.removeMsg(seq, false)
 			return true
 		})
 	}
@@ -1479,7 +1622,7 @@ func (o *consumerMemStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) erro
 			if o.state.Redelivered == nil {
 				o.state.Redelivered = make(map[uint64]uint64)
 			}
-			// Only update if greater then what we already have.
+			// Only update if greater than what we already have.
 			if o.state.Redelivered[sseq] < dc-1 {
 				o.state.Redelivered[sseq] = dc - 1
 			}
@@ -1630,7 +1773,7 @@ func (o *consumerMemStore) stateWithCopy(doCopy bool) (*ConsumerState, error) {
 	return state, nil
 }
 
-// EncodeState for this consumer store.
+// EncodedState for this consumer store.
 func (o *consumerMemStore) EncodedState() ([]byte, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()

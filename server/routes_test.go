@@ -742,12 +742,12 @@ type checkDuplicateRouteLogger struct {
 	gotDuplicate bool
 }
 
-func (l *checkDuplicateRouteLogger) Noticef(format string, v ...interface{}) {}
-func (l *checkDuplicateRouteLogger) Errorf(format string, v ...interface{})  {}
-func (l *checkDuplicateRouteLogger) Warnf(format string, v ...interface{})   {}
-func (l *checkDuplicateRouteLogger) Fatalf(format string, v ...interface{})  {}
-func (l *checkDuplicateRouteLogger) Tracef(format string, v ...interface{})  {}
-func (l *checkDuplicateRouteLogger) Debugf(format string, v ...interface{}) {
+func (l *checkDuplicateRouteLogger) Noticef(format string, v ...any) {}
+func (l *checkDuplicateRouteLogger) Errorf(format string, v ...any)  {}
+func (l *checkDuplicateRouteLogger) Warnf(format string, v ...any)   {}
+func (l *checkDuplicateRouteLogger) Fatalf(format string, v ...any)  {}
+func (l *checkDuplicateRouteLogger) Tracef(format string, v ...any)  {}
+func (l *checkDuplicateRouteLogger) Debugf(format string, v ...any) {
 	l.Lock()
 	defer l.Unlock()
 	msg := fmt.Sprintf(format, v...)
@@ -1242,7 +1242,7 @@ func TestRouteRTT(t *testing.T) {
 		attempts := 0
 		timeout := time.Now().Add(2 * firstPingInterval)
 		for time.Now().Before(timeout) {
-			if rtt := checkRTT(t, s); rtt != 0 {
+			if rtt := checkRTT(t, s); rtt != prev {
 				return
 			}
 			attempts++
@@ -1399,7 +1399,7 @@ type routeHostLookupLogger struct {
 	count int
 }
 
-func (l *routeHostLookupLogger) Debugf(format string, v ...interface{}) {
+func (l *routeHostLookupLogger) Debugf(format string, v ...any) {
 	l.Lock()
 	defer l.Unlock()
 	msg := fmt.Sprintf(format, v...)
@@ -1680,7 +1680,7 @@ type testRouteReconnectLogger struct {
 	ch chan string
 }
 
-func (l *testRouteReconnectLogger) Debugf(format string, v ...interface{}) {
+func (l *testRouteReconnectLogger) Debugf(format string, v ...any) {
 	msg := fmt.Sprintf(format, v...)
 	if strings.Contains(msg, "Trying to connect to route") {
 		select {
@@ -2027,7 +2027,7 @@ func TestRoutePool(t *testing.T) {
 				} else {
 					if v := r.stats.inMsgs; v < 1000 {
 						r.mu.Unlock()
-						t.Fatalf("Expected at least 1000 in in msgs for route %v, got %v", i+1, v)
+						t.Fatalf("Expected at least 1000 in msgs for route %v, got %v", i+1, v)
 					}
 				}
 				r.mu.Unlock()
@@ -2239,7 +2239,7 @@ type captureRMsgTrace struct {
 	out    []string
 }
 
-func (l *captureRMsgTrace) Tracef(format string, args ...interface{}) {
+func (l *captureRMsgTrace) Tracef(format string, args ...any) {
 	l.Lock()
 	defer l.Unlock()
 	msg := fmt.Sprintf(format, args...)
@@ -3360,7 +3360,7 @@ type testDuplicateRouteLogger struct {
 	ch chan struct{}
 }
 
-func (l *testDuplicateRouteLogger) Noticef(format string, args ...interface{}) {
+func (l *testDuplicateRouteLogger) Noticef(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if !strings.Contains(msg, DuplicateRoute.String()) {
 		return
@@ -4160,6 +4160,129 @@ func TestRouteNoLeakOnSlowConsumer(t *testing.T) {
 	}
 }
 
+func TestRouteSlowConsumerRecover(t *testing.T) {
+	o1 := DefaultOptions()
+	o1.Cluster.PoolSize = -1
+	s1 := RunServer(o1)
+	defer s1.Shutdown()
+
+	rtt := 1500 * time.Nanosecond
+	upRate := 1024 * 1024
+	downRate := 128 * 1024
+	np := createNetProxy(rtt, upRate, downRate, fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port), true)
+	defer np.stop()
+
+	o2 := DefaultOptions()
+	o2.Cluster.PoolSize = -1
+	o2.Routes = RoutesFromStr(np.routeURL())
+	s2 := RunServer(o2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	changeWriteDeadline := func(s *Server, duration time.Duration) {
+		s.mu.Lock()
+		for _, cl := range s.routes {
+			for _, c := range cl {
+				c.mu.Lock()
+				c.out.wdl = duration
+				c.mu.Unlock()
+			}
+		}
+		s.mu.Unlock()
+	}
+	hasSlowConsumerRoutes := func(s *Server) bool {
+		var sc bool
+		s.mu.Lock()
+	Loop:
+		for _, cl := range s.routes {
+			for _, c := range cl {
+				c.mu.Lock()
+				sc = c.flags.isSet(isSlowConsumer)
+				c.mu.Unlock()
+				if sc {
+					break Loop
+				}
+			}
+		}
+		s.mu.Unlock()
+		return sc
+	}
+
+	// Start with a shorter write deadline to cause errors
+	// then bump it again later to let it recover.
+	changeWriteDeadline(s1, 1*time.Second)
+
+	ncA, err := nats.Connect(s1.Addr().String())
+	require_NoError(t, err)
+
+	ncB, err := nats.Connect(s2.Addr().String())
+	require_NoError(t, err)
+
+	var wg sync.WaitGroup
+	ncB.Subscribe("test", func(*nats.Msg) {
+		ncB.Close()
+	})
+	ncB.Flush()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+	defer cancel()
+
+	go func() {
+		var total int
+		payload := fmt.Appendf(nil, strings.Repeat("A", 132*1024))
+		for range time.NewTicker(30 * time.Millisecond).C {
+			select {
+			case <-ctx.Done():
+				wg.Done()
+				return
+			default:
+			}
+			ncA.Publish("test", payload)
+			ncA.Flush()
+			total++
+		}
+	}()
+	wg.Add(1)
+
+	checkFor(t, 20*time.Second, 2*time.Millisecond, func() error {
+		if s1.NumRoutes() < 1 {
+			return fmt.Errorf("No routes connected")
+		}
+		if !hasSlowConsumerRoutes(s1) {
+			if s1.NumSlowConsumersRoutes() > 0 {
+				// In case it has recovered already.
+				return nil
+			}
+			return fmt.Errorf("Expected Slow Consumer routes")
+		}
+		return nil
+	})
+	cancel()
+	changeWriteDeadline(s1, 5*time.Second)
+	np.updateRTT(0)
+	checkFor(t, 20*time.Second, 10*time.Millisecond, func() error {
+		if s1.NumRoutes() < 1 {
+			return fmt.Errorf("No routes connected")
+		}
+		if hasSlowConsumerRoutes(s1) {
+			return fmt.Errorf("Expected Slow Consumer routes to recover")
+		}
+		return nil
+	})
+
+	checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
+		var got, expected int64
+		got = int64(s1.NumSlowConsumersRoutes())
+		expected = 1
+		if got != expected {
+			return fmt.Errorf("got: %d, expected: %d", got, expected)
+		}
+		return nil
+	})
+	wg.Wait()
+}
+
 func TestRouteNoLeakOnAuthTimeout(t *testing.T) {
 	opts := DefaultOptions()
 	opts.Cluster.Username = "foo"
@@ -4193,5 +4316,38 @@ func TestRouteNoLeakOnAuthTimeout(t *testing.T) {
 	// There shouldn't be a route entry as we didn't set up.
 	if nc := s.NumRoutes(); nc != 0 {
 		t.Fatalf("Server should have no route connections, got %v", nc)
+	}
+}
+
+func TestRouteNoRaceOnClusterNameNegotiation(t *testing.T) {
+	// Running the test 5 times was consistently producing the race.
+	for i := 0; i < 5; i++ {
+		o1 := DefaultOptions()
+		// Set this cluster name as dynamic
+		o1.Cluster.Name = _EMPTY_
+		// Increase number of routes and pinned accounts to increase
+		// the number of processRouteConnect() happening in parallel
+		// to produce the race.
+		o1.Cluster.PoolSize = 5
+		o1.Cluster.PinnedAccounts = []string{"A", "B", "C", "D"}
+		o1.Accounts = []*Account{NewAccount("A"), NewAccount("B"), NewAccount("C"), NewAccount("D")}
+		s1 := RunServer(o1)
+		defer s1.Shutdown()
+
+		route := RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port))
+
+		o2 := DefaultOptions()
+		// Set this one as explicit. Use name that is likely to be "higher"
+		// than the dynamic one.
+		o2.Cluster.Name = "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ"
+		o2.Cluster.PoolSize = 5
+		o2.Cluster.PinnedAccounts = []string{"A", "B", "C", "D"}
+		o2.Accounts = []*Account{NewAccount("A"), NewAccount("B"), NewAccount("C"), NewAccount("D")}
+		o2.Routes = route
+		s2 := RunServer(o2)
+		defer s2.Shutdown()
+		checkClusterFormed(t, s1, s2)
+		s2.Shutdown()
+		s1.Shutdown()
 	}
 }

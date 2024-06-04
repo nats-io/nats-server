@@ -28,13 +28,14 @@ import (
 	"testing"
 	"time"
 
+	srvlog "github.com/nats-io/nats-server/v2/logger"
 	"github.com/nats-io/nats-server/v2/server"
 )
 
 // So we can pass tests and benchmarks..
 type tLogger interface {
-	Fatalf(format string, args ...interface{})
-	Errorf(format string, args ...interface{})
+	Fatalf(format string, args ...any)
+	Errorf(format string, args ...any)
 }
 
 // DefaultTestOptions are default options for the unit tests.
@@ -94,6 +95,13 @@ func RunServerCallback(opts *server.Options, callback func(*server.Server)) *ser
 		s.ConfigureLogger()
 	}
 
+	if ll := os.Getenv("NATS_LOGGING"); ll != "" {
+		log := srvlog.NewTestLogger(fmt.Sprintf("[%s] | ", s), true)
+		debug := ll == "debug" || ll == "trace"
+		trace := ll == "trace"
+		s.SetLoggerV2(log, debug, trace, false)
+	}
+
 	if callback != nil {
 		callback(s)
 	}
@@ -135,7 +143,7 @@ func RunServerWithConfigOverrides(configFile string, optsCallback func(*server.O
 	return
 }
 
-func stackFatalf(t tLogger, f string, args ...interface{}) {
+func stackFatalf(t tLogger, f string, args ...any) {
 	lines := make([]string, 0, 32)
 	msg := fmt.Sprintf(f, args...)
 	lines = append(lines, msg)

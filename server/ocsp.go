@@ -14,12 +14,14 @@
 package server
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -161,16 +163,43 @@ func (oc *OCSPMonitor) getRemoteStatus() ([]byte, *ocsp.Response, error) {
 	if config := opts.OCSPConfig; config != nil {
 		overrideURLs = config.OverrideURLs
 	}
-	getRequestBytes := func(u string, hc *http.Client) ([]byte, error) {
+	getRequestBytes := func(u string, reqDER []byte, hc *http.Client) ([]byte, error) {
+		reqEnc := base64.StdEncoding.EncodeToString(reqDER)
+		u = fmt.Sprintf("%s/%s", u, reqEnc)
+		start := time.Now()
 		resp, err := hc.Get(u)
 		if err != nil {
 			return nil, err
 		}
 		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("non-ok http status: %d", resp.StatusCode)
-		}
 
+		oc.srv.Debugf("Received OCSP response (method=GET, status=%v, url=%s, duration=%.3fs)",
+			resp.StatusCode, u, time.Since(start).Seconds())
+		if resp.StatusCode > 299 {
+			return nil, fmt.Errorf("non-ok http status on GET request (reqlen=%d): %d", len(reqEnc), resp.StatusCode)
+		}
+		return io.ReadAll(resp.Body)
+	}
+	postRequestBytes := func(u string, body []byte, hc *http.Client) ([]byte, error) {
+		hreq, err := http.NewRequest("POST", u, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		hreq.Header.Add("Content-Type", "application/ocsp-request")
+		hreq.Header.Add("Accept", "application/ocsp-response")
+
+		start := time.Now()
+		resp, err := hc.Do(hreq)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+
+		oc.srv.Debugf("Received OCSP response (method=POST, status=%v, url=%s, duration=%.3fs)",
+			resp.StatusCode, u, time.Since(start).Seconds())
+		if resp.StatusCode > 299 {
+			return nil, fmt.Errorf("non-ok http status on POST request (reqlen=%d): %d", len(body), resp.StatusCode)
+		}
 		return io.ReadAll(resp.Body)
 	}
 
@@ -181,8 +210,6 @@ func (oc *OCSPMonitor) getRemoteStatus() ([]byte, *ocsp.Response, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-
-	reqEnc := base64.StdEncoding.EncodeToString(reqDER)
 
 	responders := oc.Leaf.OCSPServer
 	if len(overrideURLs) > 0 {
@@ -195,18 +222,30 @@ func (oc *OCSPMonitor) getRemoteStatus() ([]byte, *ocsp.Response, error) {
 	oc.mu.Lock()
 	hc := oc.hc
 	oc.mu.Unlock()
+
 	var raw []byte
 	for _, u := range responders {
+		var postErr, getErr error
 		u = strings.TrimSuffix(u, "/")
-		raw, err = getRequestBytes(fmt.Sprintf("%s/%s", u, reqEnc), hc)
-		if err == nil {
+		// Prefer to make POST requests first.
+		raw, postErr = postRequestBytes(u, reqDER, hc)
+		if postErr == nil {
+			err = nil
 			break
+		} else {
+			// Fallback to use a GET request.
+			raw, getErr = getRequestBytes(u, reqDER, hc)
+			if getErr == nil {
+				err = nil
+				break
+			} else {
+				err = errors.Join(postErr, getErr)
+			}
 		}
 	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("exhausted ocsp servers: %w", err)
 	}
-
 	resp, err := ocsp.ParseResponse(raw, oc.Issuer)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get remote status: %w", err)
@@ -411,7 +450,7 @@ func (srv *Server) NewOCSPMonitor(config *tlsConfigKind) (*tls.Config, *OCSPMoni
 		// Get the certificate status from the memory, then remote OCSP responder.
 		if _, resp, err := mon.getStatus(); err != nil {
 			return nil, nil, fmt.Errorf("bad OCSP status update for certificate at '%s': %s", certFile, err)
-		} else if err == nil && resp != nil && resp.Status != ocsp.Good && shutdownOnRevoke {
+		} else if resp != nil && resp.Status != ocsp.Good && shutdownOnRevoke {
 			return nil, nil, fmt.Errorf("found existing OCSP status for certificate at '%s': %s", certFile, ocspStatusString(resp.Status))
 		}
 
@@ -421,18 +460,18 @@ func (srv *Server) NewOCSPMonitor(config *tlsConfigKind) (*tls.Config, *OCSPMoni
 
 		// GetCertificate returns a certificate that's presented to a client.
 		tc.GetCertificate = func(info *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			ccert := cert
 			raw, _, err := mon.getStatus()
 			if err != nil {
 				return nil, err
 			}
-
 			return &tls.Certificate{
 				OCSPStaple:                   raw,
-				Certificate:                  cert.Certificate,
-				PrivateKey:                   cert.PrivateKey,
-				SupportedSignatureAlgorithms: cert.SupportedSignatureAlgorithms,
-				SignedCertificateTimestamps:  cert.SignedCertificateTimestamps,
-				Leaf:                         cert.Leaf,
+				Certificate:                  ccert.Certificate,
+				PrivateKey:                   ccert.PrivateKey,
+				SupportedSignatureAlgorithms: ccert.SupportedSignatureAlgorithms,
+				SignedCertificateTimestamps:  ccert.SignedCertificateTimestamps,
+				Leaf:                         ccert.Leaf,
 			}, nil
 		}
 
@@ -493,13 +532,20 @@ func (srv *Server) NewOCSPMonitor(config *tlsConfigKind) (*tls.Config, *OCSPMoni
 
 			// When server makes a peer connection, need to also present an OCSP Staple.
 			tc.GetClientCertificate = func(info *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+				ccert := cert
 				raw, _, err := mon.getStatus()
 				if err != nil {
 					return nil, err
 				}
-				cert.OCSPStaple = raw
+				// NOTE: crypto/tls.sendClientCertificate internally also calls getClientCertificate
+				// so if for some reason these callbacks are triggered concurrently during a reconnect
+				// there can be a race. To avoid that, the OCSP monitor lock is used to serialize access
+				// to the staple which could also change inflight during an update.
+				mon.mu.Lock()
+				ccert.OCSPStaple = raw
+				mon.mu.Unlock()
 
-				return &cert, nil
+				return &ccert, nil
 			}
 		default:
 			// GetClientCertificate returns a certificate that's presented to a server.
@@ -507,7 +553,6 @@ func (srv *Server) NewOCSPMonitor(config *tlsConfigKind) (*tls.Config, *OCSPMoni
 				return &cert, nil
 			}
 		}
-
 	}
 	return tc, mon, nil
 }
@@ -722,8 +767,8 @@ func (s *Server) reloadOCSP() error {
 			if mon != nil {
 				ocspm = append(ocspm, mon)
 
-				// Apply latest TLS configuration.
-				config.apply(tc)
+				// Apply latest TLS configuration after OCSP monitors have started.
+				defer config.apply(tc)
 			}
 		}
 
@@ -735,7 +780,7 @@ func (s *Server) reloadOCSP() error {
 			}
 			if plugged && tc != nil {
 				s.ocspPeerVerify = true
-				config.apply(tc)
+				defer config.apply(tc)
 			}
 		}
 	}

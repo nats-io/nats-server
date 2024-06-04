@@ -1632,7 +1632,7 @@ type captureWarnLogger struct {
 	warn chan string
 }
 
-func (l *captureWarnLogger) Warnf(format string, v ...interface{}) {
+func (l *captureWarnLogger) Warnf(format string, v ...any) {
 	select {
 	case l.warn <- fmt.Sprintf(format, v...):
 	default:
@@ -2193,7 +2193,7 @@ type captureNoticeLogger struct {
 	notices []string
 }
 
-func (l *captureNoticeLogger) Noticef(format string, v ...interface{}) {
+func (l *captureNoticeLogger) Noticef(format string, v ...any) {
 	l.Lock()
 	l.notices = append(l.notices, fmt.Sprintf(format, v...))
 	l.Unlock()
@@ -2942,5 +2942,116 @@ func TestTLSClientHandshakeFirstAndInProcessConnection(t *testing.T) {
 	}
 	if _, err = nc.TLSConnectionState(); err != nil {
 		t.Fatal("Should have not got an error retrieving TLS connection state")
+	}
+}
+
+func TestRemoveHeaderIfPrefixPresent(t *testing.T) {
+	hdr := []byte("NATS/1.0\r\n\r\n")
+
+	hdr = genHeader(hdr, "a", "1")
+	hdr = genHeader(hdr, JSExpectedStream, "my-stream")
+	hdr = genHeader(hdr, JSExpectedLastSeq, "22")
+	hdr = genHeader(hdr, "b", "2")
+	hdr = genHeader(hdr, JSExpectedLastSubjSeq, "24")
+	hdr = genHeader(hdr, JSExpectedLastMsgId, "1")
+	hdr = genHeader(hdr, "c", "3")
+
+	hdr = removeHeaderIfPrefixPresent(hdr, "Nats-Expected-")
+
+	if !bytes.Equal(hdr, []byte("NATS/1.0\r\na: 1\r\nb: 2\r\nc: 3\r\n\r\n")) {
+		t.Fatalf("Expected headers to be stripped, got %q", hdr)
+	}
+}
+
+func TestInProcessAllowedConnectionType(t *testing.T) {
+	tmpl := `
+		listen: "127.0.0.1:-1"
+		accounts {
+			A { users: [{user: "test", password: "pwd", allowed_connection_types: ["%s"]}] }
+		}
+		write_deadline: "500ms"
+	`
+	for _, test := range []struct {
+		name          string
+		ct            string
+		inProcessOnly bool
+	}{
+		{"conf inprocess", jwt.ConnectionTypeInProcess, true},
+		{"conf standard", jwt.ConnectionTypeStandard, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, test.ct)))
+			s, _ := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			// Create standard connection
+			nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("test", "pwd"))
+			if test.inProcessOnly && err == nil {
+				nc.Close()
+				t.Fatal("Expected standard connection to fail, it did not")
+			}
+			// Works if nc is nil (which it will if only in-process are allowed)
+			nc.Close()
+
+			// Create inProcess connection
+			nc, err = nats.Connect(_EMPTY_, nats.UserInfo("test", "pwd"), nats.InProcessServer(s))
+			if !test.inProcessOnly && err == nil {
+				nc.Close()
+				t.Fatal("Expected in-process connection to fail, it did not")
+			}
+			// Works if nc is nil (which it will if only standard are allowed)
+			nc.Close()
+		})
+	}
+	for _, test := range []struct {
+		name          string
+		ct            string
+		inProcessOnly bool
+	}{
+		{"jwt inprocess", jwt.ConnectionTypeInProcess, true},
+		{"jwt standard", jwt.ConnectionTypeStandard, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			skp, _ := nkeys.FromSeed(oSeed)
+			spub, _ := skp.PublicKey()
+
+			o := defaultServerOptions
+			o.TrustedKeys = []string{spub}
+			o.WriteDeadline = 500 * time.Millisecond
+			s := RunServer(&o)
+			defer s.Shutdown()
+
+			buildMemAccResolver(s)
+
+			kp, _ := nkeys.CreateAccount()
+			aPub, _ := kp.PublicKey()
+			claim := jwt.NewAccountClaims(aPub)
+			aJwt, err := claim.Encode(oKp)
+			require_NoError(t, err)
+
+			addAccountToMemResolver(s, aPub, aJwt)
+
+			creds := createUserWithLimit(t, kp, time.Time{},
+				func(j *jwt.UserPermissionLimits) {
+					j.AllowedConnectionTypes.Add(test.ct)
+				})
+			// Create standard connection
+			nc, err := nats.Connect(s.ClientURL(), nats.UserCredentials(creds))
+			if test.inProcessOnly && err == nil {
+				nc.Close()
+				t.Fatal("Expected standard connection to fail, it did not")
+			}
+			// Works if nc is nil (which it will if only in-process are allowed)
+			nc.Close()
+
+			// Create inProcess connection
+			nc, err = nats.Connect(_EMPTY_, nats.UserCredentials(creds), nats.InProcessServer(s))
+			if !test.inProcessOnly && err == nil {
+				nc.Close()
+				t.Fatal("Expected in-process connection to fail, it did not")
+			}
+			// Works if nc is nil (which it will if only standard are allowed)
+			nc.Close()
+		})
 	}
 }

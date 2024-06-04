@@ -60,6 +60,9 @@ var (
 	// connections.
 	ErrTooManyAccountConnections = errors.New("maximum account active connections exceeded")
 
+	// ErrLeafNodeLoop signals a leafnode is trying to register for a cluster we already have registered.
+	ErrLeafNodeLoop = errors.New("leafnode loop detected")
+
 	// ErrTooManySubs signals a client that the maximum number of subscriptions per connection
 	// has been reached.
 	ErrTooManySubs = errors.New("maximum subscriptions exceeded")
@@ -315,7 +318,7 @@ type errCtx struct {
 	ctx string
 }
 
-func NewErrorCtx(err error, format string, args ...interface{}) error {
+func NewErrorCtx(err error, format string, args ...any) error {
 	return &errCtx{err, fmt.Sprintf(format, args...)}
 }
 

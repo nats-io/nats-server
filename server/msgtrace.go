@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -435,11 +436,19 @@ func (c *client) initMsgTrace() *msgTrace {
 	// If external, we need to have the account's trace destination set,
 	// otherwise, we are not enabling tracing.
 	if external {
+		var sampling int
 		if acc != nil {
-			dest = acc.getTraceDest()
+			dest, sampling = acc.getTraceDestAndSampling()
 		}
 		if dest == _EMPTY_ {
 			// No account destination, no tracing for external trace headers.
+			return nil
+		}
+		// Check sampling, but only from origin server.
+		if c.kind == CLIENT && !sample(sampling) {
+			// Need to desactivate the traceParentHdr so that if the message
+			// is routed, it does possibly trigger a trace there.
+			disableTraceHeaders(c, hdr)
 			return nil
 		}
 	}
@@ -470,6 +479,15 @@ func (c *client) initMsgTrace() *msgTrace {
 		tonly: traceOnly,
 	}
 	return c.pa.trace
+}
+
+func sample(sampling int) bool {
+	// Option parsing should ensure that sampling is [1..100], but consider
+	// any value outside of this range to be 100%.
+	if sampling <= 0 || sampling >= 100 {
+		return true
+	}
+	return rand.Int31n(100) <= int32(sampling)
 }
 
 // This function will return the header as a map (instead of http.Header because
@@ -637,7 +655,7 @@ func (t *msgTrace) setHopHeader(c *client, msg []byte) []byte {
 // Note that if `msg` can be either the header alone or the full message
 // (header and payload). This function will use c.pa.hdr to limit the
 // search to the header section alone.
-func (t *msgTrace) disableTraceHeaders(c *client, msg []byte) []int {
+func disableTraceHeaders(c *client, msg []byte) []int {
 	// Code largely copied from getHeader(), except that we don't need the value
 	if c.pa.hdr <= 0 {
 		return []int{-1, -1}
@@ -672,7 +690,7 @@ func (t *msgTrace) disableTraceHeaders(c *client, msg []byte) []int {
 
 // Changes back the character at the given position `pos` in the `msg`
 // byte slice to the first character of the MsgTraceSendTo header.
-func (t *msgTrace) enableTraceHeaders(c *client, msg []byte, positions []int) {
+func enableTraceHeaders(msg []byte, positions []int) {
 	firstChar := [2]byte{MsgTraceDest[0], traceParentHdr[0]}
 	for i, pos := range positions {
 		if pos == -1 {

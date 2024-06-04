@@ -11,6 +11,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build !skip_msgtrace_tests
+// +build !skip_msgtrace_tests
+
 package server
 
 import (
@@ -1353,7 +1356,7 @@ func TestMsgTraceWithLeafNodeDaisyChain(t *testing.T) {
 	sub2 := natsQueueSubSync(t, nc2, "foo.bar", "my_queue")
 	natsFlush(t, nc2)
 
-	// Check the the subject interest makes it to leaf1
+	// Check the subject interest makes it to leaf1
 	checkSubInterest(t, leaf1, "B", "foo.bar", time.Second)
 
 	// Now create the sub on leaf1
@@ -3646,7 +3649,13 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 						checkStream(t, mainTest.stream, 5)
 					}
 
-					check := func() bool {
+					var (
+						clientOK  bool
+						gatewayOK bool
+						routeOK   bool
+					)
+
+					check := func() {
 						traceMsg := natsNexMsg(t, traceSub, time.Second)
 						var e MsgTraceEvent
 						json.Unmarshal(traceMsg.Data, &e)
@@ -3699,6 +3708,7 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 								// It could have gone to any server in the C1 cluster.
 								// If it is not the stream leader, it should be
 								// routed to it.
+								clientOK = true
 							case GATEWAY:
 								require_Equal[string](t, ingress.Name, s.Name())
 								// If the server that emitted this event is the
@@ -3707,27 +3717,33 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 								if e.Server.Name == slSrv.Name() {
 									require_Equal[int](t, len(e.Egresses()), 0)
 									checkJS()
+									// Set this so that we know that we don't expect
+									// to have the route receive it.
+									routeOK = true
 								} else {
 									egress := e.Egresses()
 									require_Equal[int](t, len(egress), 1)
 									ci := egress[0]
 									require_True(t, ci.Kind == ROUTER)
 									require_Equal[string](t, ci.Name, slSrv.Name())
-									return true
 								}
+								gatewayOK = true
 							case ROUTER:
 								require_Equal[string](t, e.Server.Name, slSrv.Name())
 								require_Equal[int](t, len(e.Egresses()), 0)
 								checkJS()
+								routeOK = true
 							default:
 								t.Fatalf("Unexpected ingress: %+v", ingress)
 							}
 						}
-						return false
 					}
 					check()
 					if mainIter > 0 {
-						if check() {
+						// There will be at least 2 events
+						check()
+						// For the last test, there may be a 3rd.
+						if mainIter == 2 && !(clientOK && gatewayOK && routeOK) {
 							check()
 						}
 					}
@@ -3798,7 +3814,14 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 					}
 					jst.PublishMsg(msg)
 					checkStream(t, mainTest.stream, msgCount)
-					checkJSTrace := func() bool {
+
+					var (
+						clientOK  bool
+						gatewayOK bool
+						routeOK   bool
+					)
+
+					checkJSTrace := func() {
 						traceMsg := natsNexMsg(t, traceSub, time.Second)
 						var e MsgTraceEvent
 						json.Unmarshal(traceMsg.Data, &e)
@@ -3835,6 +3858,8 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 							}
 						case 2:
 							switch ingress.Kind {
+							case CLIENT:
+								clientOK = true
 							case GATEWAY:
 								require_Equal[string](t, ingress.Name, s.Name())
 								// If the server that emitted this event is the
@@ -3843,20 +3868,24 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 								if e.Server.Name == slSrv.Name() {
 									require_Equal[int](t, len(e.Egresses()), 0)
 									checkJS()
-								} else {
-									return true
+									// We don't expect the route event
+									routeOK = true
 								}
+								gatewayOK = true
 							case ROUTER:
 								require_Equal[string](t, e.Server.Name, slSrv.Name())
 								require_Equal[int](t, len(e.Egresses()), 0)
 								checkJS()
+								routeOK = true
 							}
 						}
-						return false
 					}
 					checkJSTrace()
 					if mainIter > 0 {
-						if checkJSTrace() {
+						// There will be at least 2 events
+						checkJSTrace()
+						// For the last test, there may be a 3rd.
+						if mainIter == 2 && !(clientOK && gatewayOK && routeOK) {
 							checkJSTrace()
 						}
 					}
@@ -4894,6 +4923,219 @@ func TestMsgTraceStreamJWTUpdate(t *testing.T) {
 				bJwt, err = bClaim.Encode(oKp)
 				require_NoError(t, err)
 				updateJwt(t, s.ClientURL(), sysCreds, bJwt, 1)
+			}
+		})
+	}
+}
+
+func TestMsgTraceParseAccountDestWithSampling(t *testing.T) {
+	tmpl := `
+		port: -1
+		accounts {
+			A {
+				users: [{user: a, password: pwd}]
+				%s
+			}
+		}
+	`
+	for _, test := range []struct {
+		name        string
+		samplingStr string
+		want        int
+	}{
+		{"trace sampling no dest", `msg_trace: {sampling: 50}`, 0},
+		{"trace dest only", `msg_trace: {dest: foo}`, 100},
+		{"trace dest with number only", `msg_trace: {dest: foo, sampling: 20}`, 20},
+		{"trace dest with percentage", `msg_trace: {dest: foo, sampling: 50%}`, 50},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, test.samplingStr)))
+			o := LoadConfig(conf)
+			_, sampling := o.Accounts[0].getTraceDestAndSampling()
+			require_Equal[int](t, test.want, sampling)
+		})
+	}
+}
+
+func TestMsgTraceAccountDestWithSampling(t *testing.T) {
+	tmpl := `
+		port: -1
+		server_name: %s
+		accounts {
+			A {
+				users: [{user: a, password:pwd}]
+				msg_trace: {dest: "acc.dest"%s}
+			}
+		}
+		cluster {
+			port: -1
+			%s
+		}
+	`
+	conf1 := createConfFile(t, []byte(fmt.Sprintf(tmpl, "A", _EMPTY_, _EMPTY_)))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	routes := fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", o1.Cluster.Port)
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(tmpl, "B", _EMPTY_, routes)))
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	nc2 := natsConnect(t, s2.ClientURL(), nats.UserInfo("a", "pwd"))
+	defer nc2.Close()
+	natsSub(t, nc2, "foo", func(_ *nats.Msg) {})
+	natsFlush(t, nc2)
+
+	nc1 := natsConnect(t, s1.ClientURL(), nats.UserInfo("a", "pwd"))
+	defer nc1.Close()
+	sub := natsSubSync(t, nc1, "acc.dest")
+	natsFlush(t, nc1)
+
+	checkSubInterest(t, s1, "A", "foo", time.Second)
+	checkSubInterest(t, s2, "A", "acc.dest", time.Second)
+
+	for iter, test := range []struct {
+		name        string
+		samplingStr string
+		sampling    int
+	}{
+		// Sampling is considered 100% if not specified or <=0 or >= 100.
+		// To disable sampling, the account destination should not be specified.
+		{"no sampling specified", _EMPTY_, 100},
+		{"sampling specified", ", sampling: \"25%\"", 25},
+		{"no sampling again", _EMPTY_, 100},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if iter > 0 {
+				reloadUpdateConfig(t, s1, conf1, fmt.Sprintf(tmpl, "A", test.samplingStr, _EMPTY_))
+				reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl, "B", test.samplingStr, routes))
+			}
+			msg := nats.NewMsg("foo")
+			msg.Header.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+			total := 400
+			for i := 0; i < total; i++ {
+				err := nc1.PublishMsg(msg)
+				require_NoError(t, err)
+			}
+			// Wait a bit to make sure that we received all traces that should
+			// have been received.
+			time.Sleep(500 * time.Millisecond)
+			n, _, err := sub.Pending()
+			require_NoError(t, err)
+			fromClient := 0
+			fromRoute := 0
+			for i := 0; i < n; i++ {
+				msg = natsNexMsg(t, sub, time.Second)
+				var e MsgTraceEvent
+				err = json.Unmarshal(msg.Data, &e)
+				require_NoError(t, err)
+				ingress := e.Ingress()
+				require_True(t, ingress != nil)
+				switch ingress.Kind {
+				case CLIENT:
+					fromClient++
+				case ROUTER:
+					fromRoute++
+				default:
+					t.Fatalf("Unexpected ingress: %+v", ingress)
+				}
+			}
+			// There should be as many messages coming from the origin server
+			// and the routed server. This checks that if sampling is not 100%
+			// then when a message is routed, the header is properly deactivated.
+			require_Equal[int](t, fromClient, fromRoute)
+			// Now check that if sampling was 100%, we have the total number
+			// of published messages.
+			if test.sampling == 100 {
+				require_Equal[int](t, fromClient, total)
+			} else {
+				// Otherwise, we should have no more (but let's be conservative)
+				// than the sampling number.
+				require_LessThan[int](t, fromClient, int(float64(test.sampling*total/100)*1.35))
+			}
+		})
+	}
+}
+
+func TestMsgTraceAccDestWithSamplingJWTUpdate(t *testing.T) {
+	// create system account
+	sysKp, _ := nkeys.CreateAccount()
+	sysPub, _ := sysKp.PublicKey()
+	sysCreds := newUser(t, sysKp)
+	// create account A
+	akp, _ := nkeys.CreateAccount()
+	aPub, _ := akp.PublicKey()
+	claim := jwt.NewAccountClaims(aPub)
+	claim.Trace = &jwt.MsgTrace{Destination: "acc.trace.dest"}
+	aJwt, err := claim.Encode(oKp)
+	require_NoError(t, err)
+
+	dir := t.TempDir()
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+			listen: -1
+			operator: %s
+			resolver: {
+				type: full
+				dir: '%s'
+			}
+			system_account: %s
+		`, ojwt, dir, sysPub)))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+	updateJwt(t, s.ClientURL(), sysCreds, aJwt, 1)
+
+	nc := natsConnect(t, s.ClientURL(), createUserCreds(t, nil, akp))
+	defer nc.Close()
+
+	sub := natsSubSync(t, nc, "acc.trace.dest")
+	natsFlush(t, nc)
+
+	for iter, test := range []struct {
+		name     string
+		sampling int
+	}{
+		{"no sampling specified", 100},
+		{"sampling", 25},
+		{"set back sampling to 0", 100},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if iter > 0 {
+				claim.Trace = &jwt.MsgTrace{Destination: "acc.trace.dest", Sampling: test.sampling}
+				aJwt, err = claim.Encode(oKp)
+				require_NoError(t, err)
+				updateJwt(t, s.ClientURL(), sysCreds, aJwt, 1)
+			}
+
+			msg := nats.NewMsg("foo")
+			msg.Header.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+			msg.Data = []byte("hello")
+
+			total := 400
+			for i := 0; i < total; i++ {
+				err := nc.PublishMsg(msg)
+				require_NoError(t, err)
+			}
+			// Wait a bit to make sure that we received all traces that should
+			// have been received.
+			time.Sleep(500 * time.Millisecond)
+			n, _, err := sub.Pending()
+			require_NoError(t, err)
+			for i := 0; i < n; i++ {
+				msg = natsNexMsg(t, sub, time.Second)
+				var e MsgTraceEvent
+				err = json.Unmarshal(msg.Data, &e)
+				require_NoError(t, err)
+			}
+			// Now check that if sampling was 100%, we have the total number
+			// of published messages.
+			if test.sampling == 100 {
+				require_Equal[int](t, n, total)
+			} else {
+				// Otherwise, we should have no more (but let's be conservative)
+				// than the sampling number.
+				require_LessThan[int](t, n, int(float64(test.sampling*total/100)*1.35))
 			}
 		})
 	}

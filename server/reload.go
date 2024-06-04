@@ -995,10 +995,15 @@ func (s *Server) Reload() error {
 	return s.ReloadOptions(newOpts)
 }
 
-// ReloadOptions applies any supported options from the provided Option
+// ReloadOptions applies any supported options from the provided Options
 // type. This returns an error if an option which doesn't support
 // hot-swapping was changed.
+// The provided Options type should not be re-used afterwards.
+// Either use Options.Clone() to pass a copy, or make a new one.
 func (s *Server) ReloadOptions(newOpts *Options) error {
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+
 	s.mu.Lock()
 
 	curOpts := s.getOpts()
@@ -1123,7 +1128,7 @@ func (s *Server) reloadOptions(curOpts, newOpts *Options) error {
 }
 
 // For the purpose of comparing, impose a order on slice data types where order does not matter
-func imposeOrder(value interface{}) error {
+func imposeOrder(value any) error {
 	switch value := value.(type) {
 	case []*Account:
 		sort.Slice(value, func(i, j int) bool {
@@ -1163,6 +1168,7 @@ func imposeOrder(value interface{}) error {
 		*OCSPConfig, map[string]string, JSLimitOpts, StoreCipher, *OCSPResponseCacheConfig:
 		// explicitly skipped types
 	case *AuthCallout:
+	case JSTpmOpts:
 	default:
 		// this will fail during unit tests
 		return fmt.Errorf("OnReload, sort or explicitly skip type: %s",
@@ -1873,7 +1879,7 @@ func (s *Server) reloadAuthorization() {
 		}
 		// Now range over existing accounts and keep track of the ones deleted
 		// so some cleanup can be made after releasing the server lock.
-		s.accounts.Range(func(k, v interface{}) bool {
+		s.accounts.Range(func(k, v any) bool {
 			an, acc := k.(string), v.(*Account)
 			// Exclude default and system account from this test since those
 			// may not actually be in opts.Accounts.
@@ -1900,7 +1906,7 @@ func (s *Server) reloadAuthorization() {
 			// With a memory resolver we want to do something similar to configured accounts.
 			// We will walk the accounts and delete them if they are no longer present via fetch.
 			// If they are present we will force a claim update to process changes.
-			s.accounts.Range(func(k, v interface{}) bool {
+			s.accounts.Range(func(k, v any) bool {
 				acc := v.(*Account)
 				// Skip global account.
 				if acc == s.gacc {
@@ -1952,7 +1958,7 @@ func (s *Server) reloadAuthorization() {
 		s.accounts.Store(s.sys.account.Name, s.sys.account)
 	}
 
-	s.accounts.Range(func(k, v interface{}) bool {
+	s.accounts.Range(func(k, v any) bool {
 		acc := v.(*Account)
 		acc.mu.RLock()
 		// Check for sysclients accounting, ignore the system account.
@@ -2148,7 +2154,7 @@ func (s *Server) reloadClusterPermissions(oldPerms *RoutePermissions) {
 	// Then, go over all accounts and gather local subscriptions that need to be
 	// sent over as SUB or removed as UNSUB, and routed subscriptions that need
 	// to be dropped due to export permissions.
-	s.accounts.Range(func(_, v interface{}) bool {
+	s.accounts.Range(func(_, v any) bool {
 		acc := v.(*Account)
 		acc.mu.RLock()
 		accName, sl, poolIdx := acc.Name, acc.sl, acc.routePoolIdx
@@ -2363,7 +2369,7 @@ func (s *Server) reloadClusterPoolAndAccounts(co *clusterOption, opts *Options) 
 	// pool index. Note that the added/removed accounts will be reset there
 	// too, but that's ok (we could use a map to exclude them, but not worth it).
 	if co.poolSizeChanged {
-		s.accounts.Range(func(_, v interface{}) bool {
+		s.accounts.Range(func(_, v any) bool {
 			acc := v.(*Account)
 			acc.mu.Lock()
 			s.setRouteInfo(acc)

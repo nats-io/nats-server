@@ -11,6 +11,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build !skip_store_tests
+// +build !skip_store_tests
+
 package server
 
 import (
@@ -837,6 +840,7 @@ func TestMemStoreGetSeqFromTimeWithLastDeleted(t *testing.T) {
 	}
 	ms, err := newMemStore(cfg)
 	require_NoError(t, err)
+	defer ms.Stop()
 
 	// Put in 1000 msgs.
 	total := 1000
@@ -868,6 +872,7 @@ func TestMemStoreSkipMsgs(t *testing.T) {
 	}
 	ms, err := newMemStore(cfg)
 	require_NoError(t, err)
+	defer ms.Stop()
 
 	// Test on empty FS first.
 	// Make sure wrong starting sequence fails.
@@ -909,4 +914,198 @@ func TestMemStoreSkipMsgs(t *testing.T) {
 	require_Equal(t, state.LastSeq, 11)
 	require_Equal(t, state.Msgs, 1)
 	require_Equal(t, state.NumDeleted, 10)
+}
+
+func TestMemStoreMultiLastSeqs(t *testing.T) {
+	cfg := &StreamConfig{
+		Name:     "zzz",
+		Subjects: []string{"foo.*"},
+		Storage:  MemoryStorage,
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(t, err)
+	defer ms.Stop()
+
+	msg := []byte("abc")
+	for i := 0; i < 33; i++ {
+		ms.StoreMsg("foo.foo", nil, msg)
+		ms.StoreMsg("foo.bar", nil, msg)
+		ms.StoreMsg("foo.baz", nil, msg)
+	}
+	for i := 0; i < 33; i++ {
+		ms.StoreMsg("bar.foo", nil, msg)
+		ms.StoreMsg("bar.bar", nil, msg)
+		ms.StoreMsg("bar.baz", nil, msg)
+	}
+
+	checkResults := func(seqs, expected []uint64) {
+		t.Helper()
+		if len(seqs) != len(expected) {
+			t.Fatalf("Expected %+v got %+v", expected, seqs)
+		}
+		for i := range seqs {
+			if seqs[i] != expected[i] {
+				t.Fatalf("Expected %+v got %+v", expected, seqs)
+			}
+		}
+	}
+
+	// UpTo sequence 3. Tests block split.
+	seqs, err := ms.MultiLastSeqs([]string{"foo.*"}, 3, -1)
+	require_NoError(t, err)
+	checkResults(seqs, []uint64{1, 2, 3})
+	// Up to last sequence of the stream.
+	seqs, err = ms.MultiLastSeqs([]string{"foo.*"}, 0, -1)
+	require_NoError(t, err)
+	checkResults(seqs, []uint64{97, 98, 99})
+	// Check for bar.* at the end.
+	seqs, err = ms.MultiLastSeqs([]string{"bar.*"}, 0, -1)
+	require_NoError(t, err)
+	checkResults(seqs, []uint64{196, 197, 198})
+	// This should find nothing.
+	seqs, err = ms.MultiLastSeqs([]string{"bar.*"}, 99, -1)
+	require_NoError(t, err)
+	checkResults(seqs, nil)
+
+	// Do multiple subjects explicitly.
+	seqs, err = ms.MultiLastSeqs([]string{"foo.foo", "foo.bar", "foo.baz"}, 3, -1)
+	require_NoError(t, err)
+	checkResults(seqs, []uint64{1, 2, 3})
+	seqs, err = ms.MultiLastSeqs([]string{"foo.foo", "foo.bar", "foo.baz"}, 0, -1)
+	require_NoError(t, err)
+	checkResults(seqs, []uint64{97, 98, 99})
+	seqs, err = ms.MultiLastSeqs([]string{"bar.foo", "bar.bar", "bar.baz"}, 0, -1)
+	require_NoError(t, err)
+	checkResults(seqs, []uint64{196, 197, 198})
+	seqs, err = ms.MultiLastSeqs([]string{"bar.foo", "bar.bar", "bar.baz"}, 99, -1)
+	require_NoError(t, err)
+	checkResults(seqs, nil)
+
+	// Check single works
+	seqs, err = ms.MultiLastSeqs([]string{"foo.foo"}, 3, -1)
+	require_NoError(t, err)
+	checkResults(seqs, []uint64{1})
+
+	// Now test that we properly de-duplicate between filters.
+	seqs, err = ms.MultiLastSeqs([]string{"foo.*", "foo.bar"}, 3, -1)
+	require_NoError(t, err)
+	checkResults(seqs, []uint64{1, 2, 3})
+	seqs, err = ms.MultiLastSeqs([]string{"bar.>", "bar.bar", "bar.baz"}, 0, -1)
+	require_NoError(t, err)
+	checkResults(seqs, []uint64{196, 197, 198})
+
+	// All
+	seqs, err = ms.MultiLastSeqs([]string{">"}, 0, -1)
+	require_NoError(t, err)
+	checkResults(seqs, []uint64{97, 98, 99, 196, 197, 198})
+	seqs, err = ms.MultiLastSeqs([]string{">"}, 99, -1)
+	require_NoError(t, err)
+	checkResults(seqs, []uint64{97, 98, 99})
+}
+
+func TestMemStoreMultiLastSeqsMaxAllowed(t *testing.T) {
+	cfg := &StreamConfig{
+		Name:     "zzz",
+		Subjects: []string{"foo.*"},
+		Storage:  MemoryStorage,
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(t, err)
+	defer ms.Stop()
+
+	msg := []byte("abc")
+	for i := 1; i <= 100; i++ {
+		ms.StoreMsg(fmt.Sprintf("foo.%d", i), nil, msg)
+	}
+	// Test that if we specify maxAllowed that we get the correct error.
+	seqs, err := ms.MultiLastSeqs([]string{"foo.*"}, 0, 10)
+	require_True(t, seqs == nil)
+	require_Error(t, err, ErrTooManyResults)
+}
+
+// Bug would cause PurgeEx to fail if it encountered a deleted msg at sequence to delete up to.
+func TestMemStorePurgeExWithDeletedMsgs(t *testing.T) {
+	cfg := &StreamConfig{
+		Name:     "zzz",
+		Subjects: []string{"foo"},
+		Storage:  MemoryStorage,
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(t, err)
+	defer ms.Stop()
+
+	msg := []byte("abc")
+	for i := 1; i <= 10; i++ {
+		ms.StoreMsg("foo", nil, msg)
+	}
+	ms.RemoveMsg(2)
+	ms.RemoveMsg(9) // This was the bug
+
+	n, err := ms.PurgeEx(_EMPTY_, 9, 0)
+	require_NoError(t, err)
+	require_Equal(t, n, 7)
+
+	var state StreamState
+	ms.FastState(&state)
+	require_Equal(t, state.FirstSeq, 10)
+	require_Equal(t, state.LastSeq, 10)
+	require_Equal(t, state.Msgs, 1)
+}
+
+///////////////////////////////////////////////////////////////////////////
+// Benchmarks
+///////////////////////////////////////////////////////////////////////////
+
+func Benchmark_MemStoreNumPendingWithLargeInteriorDeletesScan(b *testing.B) {
+	cfg := &StreamConfig{
+		Name:     "zzz",
+		Subjects: []string{"foo.*.*"},
+		Storage:  MemoryStorage,
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(b, err)
+	defer ms.Stop()
+
+	msg := []byte("abc")
+	ms.StoreMsg("foo.bar.baz", nil, msg)
+	for i := 1; i <= 1_000_000; i++ {
+		ms.SkipMsg()
+	}
+	ms.StoreMsg("foo.bar.baz", nil, msg)
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		total, _ := ms.NumPending(600_000, "foo.*.baz", false)
+		if total != 1 {
+			b.Fatalf("Expected total of 2 got %d", total)
+		}
+	}
+}
+
+func Benchmark_MemStoreNumPendingWithLargeInteriorDeletesExclude(b *testing.B) {
+	cfg := &StreamConfig{
+		Name:     "zzz",
+		Subjects: []string{"foo.*.*"},
+		Storage:  MemoryStorage,
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(b, err)
+	defer ms.Stop()
+
+	msg := []byte("abc")
+	ms.StoreMsg("foo.bar.baz", nil, msg)
+	for i := 1; i <= 1_000_000; i++ {
+		ms.SkipMsg()
+	}
+	ms.StoreMsg("foo.bar.baz", nil, msg)
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		total, _ := ms.NumPending(400_000, "foo.*.baz", false)
+		if total != 1 {
+			b.Fatalf("Expected total of 2 got %d", total)
+		}
+	}
 }

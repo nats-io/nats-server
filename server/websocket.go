@@ -1,4 +1,4 @@
-// Copyright 2020-2023 The NATS Authors
+// Copyright 2020-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -106,18 +106,21 @@ var wsGUID = []byte("258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
 var wsTestRejectNoMasking = false
 
 type websocket struct {
-	frames     net.Buffers
-	fs         int64
-	closeMsg   []byte
-	compress   bool
-	closeSent  bool
-	browser    bool
-	nocompfrag bool // No fragment for compressed frames
-	maskread   bool
-	maskwrite  bool
-	compressor *flate.Writer
-	cookieJwt  string
-	clientIP   string
+	frames         net.Buffers
+	fs             int64
+	closeMsg       []byte
+	compress       bool
+	closeSent      bool
+	browser        bool
+	nocompfrag     bool // No fragment for compressed frames
+	maskread       bool
+	maskwrite      bool
+	compressor     *flate.Writer
+	cookieJwt      string
+	cookieUsername string
+	cookiePassword string
+	cookieToken    string
+	clientIP       string
 }
 
 type srvWebsocket struct {
@@ -125,12 +128,18 @@ type srvWebsocket struct {
 	server         *http.Server
 	listener       net.Listener
 	listenerErr    error
-	tls            bool
 	allowedOrigins map[string]*allowedOrigin // host will be the key
 	sameOrigin     bool
 	connectURLs    []string
 	connectURLsMap refCountedUrlSet
-	authOverride   bool // indicate if there is auth override in websocket config
+	authOverride   bool   // indicate if there is auth override in websocket config
+	rawHeaders     string // raw headers to be used in the upgrade response.
+
+	// These are immutable and can be accessed without lock.
+	// This is the case when generating the client INFO.
+	tls  bool   // True if TLS is required (TLSConfig is specified).
+	host string // Host/IP the webserver is listening on (shortcut to opts.Websocket.Host).
+	port int    // Port the webserver is listening on. This is after an ephemeral port may have been selected (shortcut to opts.Websocket.Port).
 }
 
 type allowedOrigin struct {
@@ -774,6 +783,9 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 	if kind == MQTT {
 		p = append(p, wsMQTTSecProto...)
 	}
+	if s.websocket.rawHeaders != _EMPTY_ {
+		p = append(p, s.websocket.rawHeaders...)
+	}
 	p = append(p, _CRLF_...)
 
 	if _, err = conn.Write(p); err != nil {
@@ -807,9 +819,19 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 			// So make the combination of the two.
 			ws.nocompfrag = ws.compress && strings.Contains(ua, "Version/") && strings.Contains(ua, "Safari/")
 		}
-		if opts.Websocket.JWTCookie != _EMPTY_ {
-			if c, err := r.Cookie(opts.Websocket.JWTCookie); err == nil && c != nil {
-				ws.cookieJwt = c.Value
+
+		if cookies := r.Cookies(); len(cookies) > 0 {
+			ows := &opts.Websocket
+			for _, c := range cookies {
+				if ows.JWTCookie == c.Name {
+					ws.cookieJwt = c.Value
+				} else if ows.UsernameCookie == c.Name {
+					ws.cookieUsername = c.Value
+				} else if ows.PasswordCookie == c.Name {
+					ws.cookiePassword = c.Value
+				} else if ows.TokenCookie == c.Name {
+					ws.cookieToken = c.Value
+				}
 			}
 		}
 	}
@@ -1006,6 +1028,24 @@ func validateWebsocketOptions(o *Options) error {
 	if err := validatePinnedCerts(wo.TLSPinnedCerts); err != nil {
 		return fmt.Errorf("websocket: %v", err)
 	}
+
+	// Check for invalid headers here.
+	for key := range wo.Headers {
+		k := strings.ToLower(key)
+		switch k {
+		case "host",
+			"content-length",
+			"connection",
+			"upgrade",
+			"nats-no-masking":
+			return fmt.Errorf("websocket: invalid header %q not allowed", key)
+		}
+
+		if strings.HasPrefix(k, "sec-websocket-") {
+			return fmt.Errorf("websocket: invalid header %q, \"Sec-WebSocket-\" prefix not allowed", key)
+		}
+	}
+
 	return nil
 }
 
@@ -1037,6 +1077,21 @@ func (s *Server) wsSetOriginOptions(o *WebsocketOpts) {
 	}
 }
 
+// Calculate the raw headers for websocket upgrade response.
+func (s *Server) wsSetHeadersOptions(o *WebsocketOpts) {
+	var sb strings.Builder
+	for k, v := range o.Headers {
+		sb.WriteString(k)
+		sb.WriteString(": ")
+		sb.WriteString(v)
+		sb.WriteString(_CRLF_)
+	}
+	ws := &s.websocket
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	ws.rawHeaders = sb.String()
+}
+
 // Given the websocket options, we check if any auth configuration
 // has been provided. If so, possibly create users/nkey users and
 // store them in s.websocket.users/nkeys.
@@ -1058,6 +1113,7 @@ func (s *Server) startWebsocketServer() {
 	o := &sopts.Websocket
 
 	s.wsSetOriginOptions(o)
+	s.wsSetHeadersOptions(o)
 
 	var hl net.Listener
 	var proto string
@@ -1102,7 +1158,12 @@ func (s *Server) startWebsocketServer() {
 		s.Warnf("Websocket not configured with TLS. DO NOT USE IN PRODUCTION!")
 	}
 
-	s.websocket.tls = proto == "wss"
+	// These 3 are immutable and will be accessed without lock by the client
+	// when generating/sending the INFO protocols.
+	s.websocket.tls = proto == wsSchemePrefixTLS
+	s.websocket.host, s.websocket.port = o.Host, o.Port
+
+	// This will be updated when/if the cluster changes.
 	s.websocket.connectURLs, err = s.getConnectURLs(o.Advertise, o.Host, o.Port)
 	if err != nil {
 		s.Fatalf("Unable to get websocket connect URLs: %v", err)
@@ -1127,7 +1188,7 @@ func (s *Server) startWebsocketServer() {
 			if !hasLeaf {
 				s.Errorf("Not configured to accept leaf node connections")
 				// Silently close for now. If we want to send an error back, we would
-				// need to create the leafnode client anyway, so that is is handling websocket
+				// need to create the leafnode client anyway, so that is handling websocket
 				// frames, then send the error to the remote.
 				res.conn.Close()
 				return
@@ -1141,8 +1202,10 @@ func (s *Server) startWebsocketServer() {
 		ReadTimeout: o.HandshakeTimeout,
 		ErrorLog:    log.New(&captureHTTPServerLog{s, "websocket: "}, _EMPTY_, 0),
 	}
+	s.websocket.mu.Lock()
 	s.websocket.server = hs
 	s.websocket.listener = hl
+	s.websocket.mu.Unlock()
 	go func() {
 		if err := hs.Serve(hl); err != http.ErrServerClosed {
 			s.Fatalf("websocket listener error: %v", err)

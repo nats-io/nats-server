@@ -159,7 +159,7 @@ func (bc mqttBenchContext) benchmarkPubSub(b *testing.B) {
 
 // makes a copy of bc
 func (bc mqttBenchContext) benchmarkSubRet(b *testing.B) {
-	// This test uses a a built-in publisher, and it makes most sense to measure
+	// This test uses a built-in publisher, and it makes most sense to measure
 	// the retained message delivery "overhead" on a QoS0 subscription; without
 	// the extra time involved in actually subscribing.
 	m := mqttBenchDefaultMatrix.

@@ -544,7 +544,7 @@ func TestConnzWithCID(t *testing.T) {
 }
 
 // Helper to map to connection name
-func createConnMap(t *testing.T, cz *Connz) map[string]*ConnInfo {
+func createConnMap(cz *Connz) map[string]*ConnInfo {
 	cm := make(map[string]*ConnInfo)
 	for _, c := range cz.Conns {
 		cm[c.Name] = c
@@ -552,7 +552,7 @@ func createConnMap(t *testing.T, cz *Connz) map[string]*ConnInfo {
 	return cm
 }
 
-func getFooAndBar(t *testing.T, cm map[string]*ConnInfo) (*ConnInfo, *ConnInfo) {
+func getFooAndBar(cm map[string]*ConnInfo) (*ConnInfo, *ConnInfo) {
 	return cm["foo"], cm["bar"]
 }
 
@@ -640,7 +640,7 @@ func TestConnzLastActivity(t *testing.T) {
 		defer ncBar.Close()
 
 		// Test inside details of each connection
-		ciFoo, ciBar := getFooAndBar(t, createConnMap(t, pollConz(t, s, mode, url, opts)))
+		ciFoo, ciBar := getFooAndBar(createConnMap(pollConz(t, s, mode, url, opts)))
 
 		// Test that LastActivity is non-zero
 		if ciFoo.LastActivity.IsZero() {
@@ -666,7 +666,7 @@ func TestConnzLastActivity(t *testing.T) {
 		sub, _ := ncFoo.Subscribe("hello.world", func(m *nats.Msg) {})
 		ensureServerActivityRecorded(t, ncFoo)
 
-		ciFoo, _ = getFooAndBar(t, createConnMap(t, pollConz(t, s, mode, url, opts)))
+		ciFoo, _ = getFooAndBar(createConnMap(pollConz(t, s, mode, url, opts)))
 		nextLA := ciFoo.LastActivity
 		if fooLA.Equal(nextLA) {
 			t.Fatalf("Subscribe should have triggered update to LastActivity %+v\n", ciFoo)
@@ -682,7 +682,7 @@ func TestConnzLastActivity(t *testing.T) {
 		ensureServerActivityRecorded(t, ncFoo)
 		ensureServerActivityRecorded(t, ncBar)
 
-		ciFoo, ciBar = getFooAndBar(t, createConnMap(t, pollConz(t, s, mode, url, opts)))
+		ciFoo, ciBar = getFooAndBar(createConnMap(pollConz(t, s, mode, url, opts)))
 		nextLA = ciBar.LastActivity
 		if barLA.Equal(nextLA) {
 			t.Fatalf("Publish should have triggered update to LastActivity\n")
@@ -701,7 +701,7 @@ func TestConnzLastActivity(t *testing.T) {
 		sub.Unsubscribe()
 		ensureServerActivityRecorded(t, ncFoo)
 
-		ciFoo, _ = getFooAndBar(t, createConnMap(t, pollConz(t, s, mode, url, opts)))
+		ciFoo, _ = getFooAndBar(createConnMap(pollConz(t, s, mode, url, opts)))
 		nextLA = ciFoo.LastActivity
 		if fooLA.Equal(nextLA) {
 			t.Fatalf("Message delivery should have triggered update to LastActivity\n")
@@ -2391,7 +2391,7 @@ func TestClusterEmptyWhenNotDefined(t *testing.T) {
 	defer s.Shutdown()
 
 	body := readBody(t, fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port))
-	var v map[string]interface{}
+	var v map[string]any
 	if err := json.Unmarshal(body, &v); err != nil {
 		t.Fatalf("Got an error unmarshalling the body: %v\n", err)
 	}
@@ -2400,7 +2400,7 @@ func TestClusterEmptyWhenNotDefined(t *testing.T) {
 	if !ok {
 		return
 	}
-	if len(c.(map[string]interface{})) != 0 {
+	if len(c.(map[string]any)) != 0 {
 		t.Fatalf("Expected an empty cluster definition, instead got %+v\n", c)
 	}
 }
@@ -4044,13 +4044,84 @@ func TestMonitorAccountz(t *testing.T) {
 	body = string(readBody(t, fmt.Sprintf("http://127.0.0.1:%d%s?acc=$SYS", s.MonitorAddr().Port, AccountzPath)))
 	require_Contains(t, body, `"account_detail": {`)
 	require_Contains(t, body, `"account_name": "$SYS",`)
-	require_Contains(t, body, `"subscriptions": 50,`)
+	require_Contains(t, body, `"subscriptions": 52,`)
 	require_Contains(t, body, `"is_system": true,`)
 	require_Contains(t, body, `"system_account": "$SYS"`)
 
 	body = string(readBody(t, fmt.Sprintf("http://127.0.0.1:%d%s?unused=1", s.MonitorAddr().Port, AccountStatzPath)))
 	require_Contains(t, body, `"acc": "$G"`)
+	require_Contains(t, body, `"name": "$G"`)
 	require_Contains(t, body, `"acc": "$SYS"`)
+	require_Contains(t, body, `"name": "$SYS"`)
+	require_Contains(t, body, `"sent": {`)
+	require_Contains(t, body, `"received": {`)
+	require_Contains(t, body, `"total_conns": 0,`)
+	require_Contains(t, body, `"leafnodes": 0,`)
+}
+
+func TestMonitorAccountzOperatorMode(t *testing.T) {
+	_, sysPub := createKey(t)
+	sysClaim := jwt.NewAccountClaims(sysPub)
+	sysClaim.Name = "SYS"
+	sysJwt := encodeClaim(t, sysClaim, sysPub)
+
+	accKp, accPub := createKey(t)
+	accClaim := jwt.NewAccountClaims(accPub)
+	accClaim.Name = "APP"
+	accJwt := encodeClaim(t, accClaim, accPub)
+
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		http: 127.0.0.1:-1
+		operator = %s
+		resolver = MEMORY
+		system_account: %s
+		resolver_preload = {
+			%s : %s
+			%s : %s
+		}
+	`, ojwt, sysPub, accPub, accJwt, sysPub, sysJwt)))
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	createUser := func() (string, string) {
+		ukp, _ := nkeys.CreateUser()
+		seed, _ := ukp.Seed()
+		upub, _ := ukp.PublicKey()
+		uclaim := newJWTTestUserClaims()
+		uclaim.Subject = upub
+		ujwt, err := uclaim.Encode(accKp)
+		require_NoError(t, err)
+		return upub, genCredsFile(t, ujwt, seed)
+	}
+
+	_, aCreds := createUser()
+
+	nc, err := nats.Connect(s.ClientURL(), nats.UserCredentials(aCreds))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	body := string(readBody(t, fmt.Sprintf("http://127.0.0.1:%d%s", s.MonitorAddr().Port, AccountzPath)))
+	require_Contains(t, body, accPub)
+	require_Contains(t, body, sysPub)
+	require_Contains(t, body, `"accounts": [`)
+	require_Contains(t, body, fmt.Sprintf(`"system_account": "%s"`, sysPub))
+
+	body = string(readBody(t, fmt.Sprintf("http://127.0.0.1:%d%s?acc=%s", s.MonitorAddr().Port, AccountzPath, sysPub)))
+	require_Contains(t, body, `"account_detail": {`)
+	require_Contains(t, body, fmt.Sprintf(`"account_name": "%s",`, sysPub))
+	require_Contains(t, body, `"subscriptions": 52,`)
+	require_Contains(t, body, `"is_system": true,`)
+	require_Contains(t, body, fmt.Sprintf(`"system_account": "%s"`, sysPub))
+
+	// TODO: understand why the APP account did not show up in the accountz detail
+	// even though unused is set. It required a connection to be made to show up.
+	body = string(readBody(t, fmt.Sprintf("http://127.0.0.1:%d%s?unused=1", s.MonitorAddr().Port, AccountStatzPath)))
+	require_Contains(t, body, fmt.Sprintf(`"acc": "%s"`, accPub))
+	require_Contains(t, body, fmt.Sprintf(`"name": "%s"`, accClaim.Name))
+	require_Contains(t, body, fmt.Sprintf(`"acc": "%s"`, sysPub))
+	require_Contains(t, body, fmt.Sprintf(`"name": "%s"`, sysClaim.Name))
 	require_Contains(t, body, `"sent": {`)
 	require_Contains(t, body, `"received": {`)
 	require_Contains(t, body, `"total_conns": 0,`)
@@ -4501,7 +4572,15 @@ func TestMonitorJsz(t *testing.T) {
 	})
 	t.Run("account-non-existing", func(t *testing.T) {
 		for _, url := range []string{monUrl1, monUrl2} {
-			info := readJsInfo(url + "?acc=DOES_NOT_EXIT")
+			info := readJsInfo(url + "?acc=DOES_NOT_EXIST")
+			if len(info.AccountDetails) != 0 {
+				t.Fatalf("expected no account to be returned by %s but got %v", url, info)
+			}
+		}
+	})
+	t.Run("account-non-existing-with-stream-details", func(t *testing.T) {
+		for _, url := range []string{monUrl1, monUrl2} {
+			info := readJsInfo(url + "?acc=DOES_NOT_EXIST&streams=true")
 			if len(info.AccountDetails) != 0 {
 				t.Fatalf("expected no account to be returned by %s but got %v", url, info)
 			}
@@ -5223,11 +5302,39 @@ func TestHealthzStatusUnavailable(t *testing.T) {
 		t.Fatalf("got an error disabling JetStream: %v", err)
 	}
 
-	checkHealthzEndpoint(t, s.MonitorAddr().String(), http.StatusServiceUnavailable, "unavailable")
+	for _, test := range []struct {
+		name       string
+		url        string
+		statusCode int
+		wantStatus string
+	}{
+		{
+			"healthz",
+			fmt.Sprintf("http://%s/healthz", s.MonitorAddr().String()),
+			http.StatusServiceUnavailable,
+			"unavailable",
+		},
+		{
+			"js-enabled-only",
+			fmt.Sprintf("http://%s/healthz?js-enabled-only=true", s.MonitorAddr().String()),
+			http.StatusServiceUnavailable,
+			"unavailable",
+		},
+		{
+			"js-server-only",
+			fmt.Sprintf("http://%s/healthz?js-server-only=true", s.MonitorAddr().String()),
+			http.StatusOK,
+			"ok",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			expectHealthStatus(t, test.url, test.statusCode, test.wantStatus)
+		})
+	}
 }
 
 // When we converted ipq to use generics we still were using sync.Map. Currently you can not convert
-// interface{} or any to a generic parameterized type. So this stopped working and panics.
+// any or any to a generic parameterized type. So this stopped working and panics.
 func TestIpqzWithGenerics(t *testing.T) {
 	opts := DefaultMonitorOptions()
 	opts.JetStream = true

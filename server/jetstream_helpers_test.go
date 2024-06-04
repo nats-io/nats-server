@@ -1,4 +1,4 @@
-// Copyright 2020-2023 The NATS Authors
+// Copyright 2020-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -38,9 +38,9 @@ import (
 func init() {
 	// Speed up raft for tests.
 	hbInterval = 50 * time.Millisecond
-	minElectionTimeout = 750 * time.Millisecond
-	maxElectionTimeout = 2500 * time.Millisecond
-	lostQuorumInterval = 500 * time.Millisecond
+	minElectionTimeout = 1500 * time.Millisecond
+	maxElectionTimeout = 3500 * time.Millisecond
+	lostQuorumInterval = 2 * time.Second
 	lostQuorumCheck = 4 * hbInterval
 }
 
@@ -1184,13 +1184,17 @@ func jsClientConnect(t testing.TB, s *Server, opts ...nats.Option) (*nats.Conn, 
 	return nc, js
 }
 
-func jsClientConnectEx(t testing.TB, s *Server, domain string, opts ...nats.Option) (*nats.Conn, nats.JetStreamContext) {
+func jsClientConnectEx(t testing.TB, s *Server, jsOpts []nats.JSOpt, opts ...nats.Option) (*nats.Conn, nats.JetStreamContext) {
 	t.Helper()
 	nc, err := nats.Connect(s.ClientURL(), opts...)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
-	js, err := nc.JetStream(nats.MaxWait(10*time.Second), nats.Domain(domain))
+	jo := []nats.JSOpt{nats.MaxWait(10 * time.Second)}
+	if len(jsOpts) > 0 {
+		jo = append(jo, jsOpts...)
+	}
+	js, err := nc.JetStream(jo...)
 	if err != nil {
 		t.Fatalf("Unexpected error getting JetStream context: %v", err)
 	}

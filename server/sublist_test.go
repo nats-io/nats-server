@@ -29,7 +29,7 @@ import (
 	"github.com/nats-io/nuid"
 )
 
-func stackFatalf(t *testing.T, f string, args ...interface{}) {
+func stackFatalf(t *testing.T, f string, args ...any) {
 	lines := make([]string, 0, 32)
 	msg := fmt.Sprintf(f, args...)
 	lines = append(lines, msg)
@@ -1124,7 +1124,7 @@ func TestSublistRegisterInterestNotification(t *testing.T) {
 	ch := make(chan bool, 1)
 
 	expectErr := func(subject string) {
-		if err := s.RegisterNotification("foo.*", ch); err != ErrInvalidSubject {
+		if err := s.RegisterNotification(subject, ch); err != ErrInvalidSubject {
 			t.Fatalf("Expected err, got %v", err)
 		}
 	}
@@ -1600,6 +1600,172 @@ func TestMain(m *testing.M) {
 		addWildcards()
 	}
 	os.Exit(m.Run())
+}
+
+func TestSublistHasInterest(t *testing.T) {
+	sl := NewSublistWithCache()
+	fooSub := newSub("foo")
+	sl.Insert(fooSub)
+
+	// Expect to find that "foo" matches but "bar" doesn't.
+	// At this point nothing should be in the cache.
+	require_True(t, sl.HasInterest("foo"))
+	require_False(t, sl.HasInterest("bar"))
+	require_Equal(t, sl.cacheHits, 0)
+
+	// Now call Match(), which will populate the cache.
+	sl.Match("foo")
+	require_Equal(t, sl.cacheHits, 0)
+
+	// Future calls to HasInterest() should hit the cache now.
+	for i := uint64(1); i <= 5; i++ {
+		require_True(t, sl.HasInterest("foo"))
+		require_Equal(t, sl.cacheHits, i)
+	}
+
+	// Call Match on a subject we know there is no match.
+	sl.Match("bar")
+	require_False(t, sl.HasInterest("bar"))
+
+	// Remove fooSub and check interest again
+	sl.Remove(fooSub)
+	require_False(t, sl.HasInterest("foo"))
+
+	// Try with some wildcards
+	sub := newSub("foo.*")
+	sl.Insert(sub)
+	require_False(t, sl.HasInterest("foo"))
+	require_True(t, sl.HasInterest("foo.bar"))
+	require_False(t, sl.HasInterest("foo.bar.baz"))
+
+	// Remove sub, there should be no interest
+	sl.Remove(sub)
+	require_False(t, sl.HasInterest("foo"))
+	require_False(t, sl.HasInterest("foo.bar"))
+	require_False(t, sl.HasInterest("foo.bar.baz"))
+
+	sub = newSub("foo.>")
+	sl.Insert(sub)
+	require_False(t, sl.HasInterest("foo"))
+	require_True(t, sl.HasInterest("foo.bar"))
+	require_True(t, sl.HasInterest("foo.bar.baz"))
+
+	sl.Remove(sub)
+	require_False(t, sl.HasInterest("foo"))
+	require_False(t, sl.HasInterest("foo.bar"))
+	require_False(t, sl.HasInterest("foo.bar.baz"))
+
+	sub = newSub("*.>")
+	sl.Insert(sub)
+	require_False(t, sl.HasInterest("foo"))
+	require_True(t, sl.HasInterest("foo.bar"))
+	require_True(t, sl.HasInterest("foo.baz"))
+	sl.Remove(sub)
+
+	sub = newSub("*.bar")
+	sl.Insert(sub)
+	require_False(t, sl.HasInterest("foo"))
+	require_True(t, sl.HasInterest("foo.bar"))
+	require_False(t, sl.HasInterest("foo.baz"))
+	sl.Remove(sub)
+
+	sub = newSub("*")
+	sl.Insert(sub)
+	require_True(t, sl.HasInterest("foo"))
+	require_False(t, sl.HasInterest("foo.bar"))
+	sl.Remove(sub)
+
+	// Try with queues now.
+	qsub := newQSub("foo", "bar")
+	sl.Insert(qsub)
+	require_True(t, sl.HasInterest("foo"))
+	require_False(t, sl.HasInterest("foo.bar"))
+
+	qsub2 := newQSub("foo", "baz")
+	sl.Insert(qsub2)
+	require_True(t, sl.HasInterest("foo"))
+	require_False(t, sl.HasInterest("foo.bar"))
+
+	// Remove first queue
+	sl.Remove(qsub)
+	require_True(t, sl.HasInterest("foo"))
+	require_False(t, sl.HasInterest("foo.bar"))
+
+	// Remove last.
+	sl.Remove(qsub2)
+	require_False(t, sl.HasInterest("foo"))
+	require_False(t, sl.HasInterest("foo.bar"))
+
+	// With wildcards now
+	qsub = newQSub("foo.*", "bar")
+	sl.Insert(qsub)
+	require_False(t, sl.HasInterest("foo"))
+	require_True(t, sl.HasInterest("foo.bar"))
+	require_False(t, sl.HasInterest("foo.bar.baz"))
+
+	// Add another queue to the group
+	qsub2 = newQSub("foo.*", "baz")
+	sl.Insert(qsub2)
+	require_False(t, sl.HasInterest("foo"))
+	require_True(t, sl.HasInterest("foo.bar"))
+	require_False(t, sl.HasInterest("foo.bar.baz"))
+
+	// Remove first queue
+	sl.Remove(qsub)
+	require_False(t, sl.HasInterest("foo"))
+	require_True(t, sl.HasInterest("foo.bar"))
+	require_False(t, sl.HasInterest("foo.bar.baz"))
+
+	// Remove last
+	sl.Remove(qsub2)
+	require_False(t, sl.HasInterest("foo"))
+	require_False(t, sl.HasInterest("foo.bar"))
+	require_False(t, sl.HasInterest("foo.bar.baz"))
+
+	qsub = newQSub("foo.>", "bar")
+	sl.Insert(qsub)
+	require_False(t, sl.HasInterest("foo"))
+	require_True(t, sl.HasInterest("foo.bar"))
+	require_True(t, sl.HasInterest("foo.bar.baz"))
+
+	// Add another queue to the group
+	qsub2 = newQSub("foo.>", "baz")
+	sl.Insert(qsub2)
+	require_False(t, sl.HasInterest("foo"))
+	require_True(t, sl.HasInterest("foo.bar"))
+	require_True(t, sl.HasInterest("foo.bar.baz"))
+
+	// Remove first queue
+	sl.Remove(qsub)
+	require_False(t, sl.HasInterest("foo"))
+	require_True(t, sl.HasInterest("foo.bar"))
+	require_True(t, sl.HasInterest("foo.bar.baz"))
+
+	// Remove last
+	sl.Remove(qsub2)
+	require_False(t, sl.HasInterest("foo"))
+	require_False(t, sl.HasInterest("foo.bar"))
+	require_False(t, sl.HasInterest("foo.bar.baz"))
+
+	qsub = newQSub("*.>", "bar")
+	sl.Insert(qsub)
+	require_False(t, sl.HasInterest("foo"))
+	require_True(t, sl.HasInterest("foo.bar"))
+	require_True(t, sl.HasInterest("foo.baz"))
+	sl.Remove(qsub)
+
+	qsub = newQSub("*.bar", "bar")
+	sl.Insert(qsub)
+	require_False(t, sl.HasInterest("foo"))
+	require_True(t, sl.HasInterest("foo.bar"))
+	require_False(t, sl.HasInterest("foo.baz"))
+	sl.Remove(qsub)
+
+	qsub = newQSub("*", "bar")
+	sl.Insert(qsub)
+	require_True(t, sl.HasInterest("foo"))
+	require_False(t, sl.HasInterest("foo.bar"))
+	sl.Remove(qsub)
 }
 
 func subsInit(pre string, toks []string) {

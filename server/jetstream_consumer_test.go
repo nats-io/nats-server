@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math/rand"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,7 +33,6 @@ import (
 )
 
 func TestJetStreamConsumerMultipleFiltersRemoveFilters(t *testing.T) {
-
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
@@ -78,7 +78,6 @@ func TestJetStreamConsumerMultipleFiltersRemoveFilters(t *testing.T) {
 	msgs, err = consumer.Fetch(1)
 	require_NoError(t, err)
 	require_True(t, len(msgs) == 1)
-
 }
 
 func TestJetStreamConsumerMultipleFiltersRace(t *testing.T) {
@@ -100,12 +99,21 @@ func TestJetStreamConsumerMultipleFiltersRace(t *testing.T) {
 	var seqs []uint64
 	var mu sync.Mutex
 
-	for i := 0; i < 10_000; i++ {
-		sendStreamMsg(t, nc, "one", "data")
-		sendStreamMsg(t, nc, "two", "data")
-		sendStreamMsg(t, nc, "three", "data")
-		sendStreamMsg(t, nc, "four", "data")
+	total := 10_000
+	var wg sync.WaitGroup
+
+	send := func(subj string) {
+		defer wg.Done()
+		for i := 0; i < total; i++ {
+			sendStreamMsg(t, nc, subj, "data")
+		}
 	}
+	wg.Add(4)
+	go send("one")
+	go send("two")
+	go send("three")
+	go send("four")
+	wg.Wait()
 
 	mset.addConsumer(&ConsumerConfig{
 		Durable:        "consumer",
@@ -114,10 +122,12 @@ func TestJetStreamConsumerMultipleFiltersRace(t *testing.T) {
 	})
 
 	done := make(chan struct{})
+	wg.Add(10)
 	for i := 0; i < 10; i++ {
 		go func(t *testing.T) {
+			defer wg.Done()
 
-			c, err := js.PullSubscribe("", "consumer", nats.Bind("TEST", "consumer"))
+			c, err := js.PullSubscribe(_EMPTY_, "consumer", nats.Bind("TEST", "consumer"))
 			require_NoError(t, err)
 
 			for {
@@ -126,7 +136,7 @@ func TestJetStreamConsumerMultipleFiltersRace(t *testing.T) {
 					return
 				default:
 				}
-				msgs, err := c.Fetch(10)
+				msgs, err := c.Fetch(10, nats.MaxWait(2*time.Second))
 				// We don't want to stop before at expected number of messages, as we want
 				// to also test against getting to many messages.
 				// Because of that, we ignore timeout and connection closed errors.
@@ -146,11 +156,11 @@ func TestJetStreamConsumerMultipleFiltersRace(t *testing.T) {
 		}(t)
 	}
 
-	checkFor(t, time.Second*30, time.Second*1, func() error {
+	checkFor(t, 30*time.Second, 100*time.Millisecond, func() error {
 		mu.Lock()
 		defer mu.Unlock()
-		if len(seqs) != 30_000 {
-			return fmt.Errorf("found %d messages instead of %d", len(seqs), 30_000)
+		if len(seqs) != 3*total {
+			return fmt.Errorf("found %d messages instead of %d", len(seqs), 3*total)
 		}
 		sort.Slice(seqs, func(i, j int) bool {
 			return seqs[i] < seqs[j]
@@ -161,12 +171,10 @@ func TestJetStreamConsumerMultipleFiltersRace(t *testing.T) {
 				return fmt.Errorf("sequence mismatch at %v", i)
 			}
 		}
-
 		return nil
 	})
-
 	close(done)
-
+	wg.Wait()
 }
 
 func TestJetStreamConsumerMultipleConsumersSingleFilter(t *testing.T) {
@@ -265,7 +273,8 @@ func TestJetStreamConsumerMultipleConsumersSingleFilter(t *testing.T) {
 			info, err := js.ConsumerInfo("TEST", consumer.name)
 			require_NoError(t, err)
 			if info.Delivered.Consumer != uint64(consumer.expectedMsgs) {
-				return fmt.Errorf("%v:expected consumer delivered seq %v, got %v. actually delivered: %v", consumer.name, consumer.expectedMsgs, info.Delivered.Consumer, consumer.delivered.Load())
+				return fmt.Errorf("%v:expected consumer delivered seq %v, got %v. actually delivered: %v",
+					consumer.name, consumer.expectedMsgs, info.Delivered.Consumer, consumer.delivered.Load())
 			}
 			if info.AckFloor.Consumer != uint64(consumer.expectedMsgs) {
 				return fmt.Errorf("%v: expected consumer ack floor %v, got %v", consumer.name, totalMsgs, info.AckFloor.Consumer)
@@ -390,7 +399,8 @@ func TestJetStreamConsumerMultipleConsumersMultipleFilters(t *testing.T) {
 			info, err := js.ConsumerInfo("TEST", consumer.name)
 			require_NoError(t, err)
 			if info.Delivered.Consumer != uint64(consumer.expectedMsgs) {
-				return fmt.Errorf("%v:expected consumer delivered seq %v, got %v. actually delivered: %v", consumer.name, consumer.expectedMsgs, info.Delivered.Consumer, consumer.delivered.Load())
+				return fmt.Errorf("%v:expected consumer delivered seq %v, got %v. actually delivered: %v",
+					consumer.name, consumer.expectedMsgs, info.Delivered.Consumer, consumer.delivered.Load())
 			}
 			if info.AckFloor.Consumer != uint64(consumer.expectedMsgs) {
 				return fmt.Errorf("%v: expected consumer ack floor %v, got %v", consumer.name, totalMsgs, info.AckFloor.Consumer)
@@ -612,7 +622,6 @@ func TestJetStreamConsumerActionsOnWorkQueuePolicyStream(t *testing.T) {
 }
 
 func TestJetStreamConsumerActionsViaAPI(t *testing.T) {
-
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
@@ -871,6 +880,36 @@ func TestJetStreamConsumerIsFilteredMatch(t *testing.T) {
 	}
 }
 
+func TestJetStreamConsumerWorkQueuePolicyOverlap(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo.*.*"},
+		Retention: nats.WorkQueuePolicy,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:       "ConsumerA",
+		FilterSubject: "foo.bar.*",
+		AckPolicy:     nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:       "ConsumerB",
+		FilterSubject: "foo.*.bar",
+		AckPolicy:     nats.AckExplicitPolicy,
+	})
+	require_Error(t, err)
+	require_True(t, strings.Contains(err.Error(), "unique"))
+}
+
 func TestJetStreamConsumerIsEqualOrSubsetMatch(t *testing.T) {
 	for _, test := range []struct {
 		name           string
@@ -898,6 +937,292 @@ func TestJetStreamConsumerIsEqualOrSubsetMatch(t *testing.T) {
 					test.subject, test.filterSubjects, test.result, res)
 			}
 		})
+	}
+}
+
+func TestJetStreamConsumerBackOff(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	for _, test := range []struct {
+		name      string
+		config    nats.ConsumerConfig
+		shouldErr bool
+	}{
+		{
+			name: "backoff_with_max_deliver",
+			config: nats.ConsumerConfig{
+				MaxDeliver: 3,
+				BackOff:    []time.Duration{time.Second, time.Minute},
+			},
+			shouldErr: false,
+		},
+		{
+			name: "backoff_with_max_deliver_smaller",
+			config: nats.ConsumerConfig{
+				MaxDeliver: 2,
+				BackOff:    []time.Duration{time.Second, time.Minute, time.Hour},
+			},
+			shouldErr: true,
+		},
+		{
+			name: "backoff_with_default_max_deliver",
+			config: nats.ConsumerConfig{
+				BackOff: []time.Duration{time.Second, time.Minute, time.Hour},
+			},
+			shouldErr: false,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     test.name,
+				Subjects: []string{test.name},
+			})
+			require_NoError(t, err)
+
+			_, err = js.AddConsumer(test.name, &test.config)
+			require_True(t, test.shouldErr == (err != nil))
+			if test.shouldErr {
+				require_True(t, strings.Contains(err.Error(), "max deliver"))
+			}
+
+			// test if updating consumers works too.
+			test.config.Durable = "consumer"
+			_, err = js.AddConsumer(test.name, &nats.ConsumerConfig{
+				Durable: test.config.Durable,
+			})
+			require_NoError(t, err)
+
+			test.config.Description = "Updated"
+			_, err = js.UpdateConsumer(test.name, &test.config)
+			require_True(t, test.shouldErr == (err != nil))
+			if test.shouldErr {
+				require_True(t, strings.Contains(err.Error(), "max deliver"))
+			}
+		})
+
+	}
+}
+
+func TestJetStreamConsumerDelete(t *testing.T) {
+	tests := []struct {
+		name     string
+		replicas int
+	}{
+		{"single server", 1},
+		{"clustered", 3},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var s *Server
+			if test.replicas == 1 {
+				s = RunBasicJetStreamServer(t)
+				defer s.Shutdown()
+			} else {
+				c := createJetStreamClusterExplicit(t, "R3S", test.replicas)
+				defer c.shutdown()
+				s = c.randomServer()
+			}
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"events.>"},
+				MaxAge:   time.Second * 90,
+				Replicas: test.replicas,
+			})
+			require_NoError(t, err)
+
+			_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+				Durable:       "consumer",
+				FilterSubject: "events.>",
+				Replicas:      test.replicas,
+			})
+			require_NoError(t, err)
+
+			js.Publish("events.1", []byte("hello"))
+
+			cr := JSApiConsumerGetNextRequest{
+				Batch:   10,
+				Expires: time.Second * 30,
+			}
+			crBytes, err := json.Marshal(cr)
+			require_NoError(t, err)
+
+			inbox := nats.NewInbox()
+			consumerSub, err := nc.SubscribeSync(inbox)
+			require_NoError(t, err)
+
+			err = nc.PublishRequest(fmt.Sprintf(JSApiRequestNextT, "TEST", "consumer"), inbox, crBytes)
+			require_NoError(t, err)
+
+			msg, err := consumerSub.NextMsg(time.Second * 30)
+			require_NoError(t, err)
+			require_Equal(t, "hello", string(msg.Data))
+
+			js.DeleteConsumer("TEST", "consumer")
+
+			msg, err = consumerSub.NextMsg(time.Second * 30)
+			require_NoError(t, err)
+
+			if !strings.Contains(string(msg.Header.Get("Description")), "Consumer Deleted") {
+				t.Fatalf("Expected exclusive consumer error, got %q", msg.Header.Get("Description"))
+			}
+		})
+
+	}
+}
+
+func TestJetStreamConsumerFetchWithDrain(t *testing.T) {
+	test := func(t *testing.T, cc *nats.ConsumerConfig) {
+		s := RunBasicJetStreamServer(t)
+		defer s.Shutdown()
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:      "TEST",
+			Subjects:  []string{"foo"},
+			Retention: nats.LimitsPolicy,
+		})
+		require_NoError(t, err)
+
+		_, err = js.AddConsumer("TEST", cc)
+		require_NoError(t, err)
+
+		const messages = 10_000
+
+		for i := 0; i < messages; i++ {
+			sendStreamMsg(t, nc, "foo", fmt.Sprintf("%d", i+1))
+		}
+
+		cr := JSApiConsumerGetNextRequest{
+			Batch:   100_000,
+			Expires: 10 * time.Second,
+		}
+		crBytes, err := json.Marshal(cr)
+		require_NoError(t, err)
+
+		msgs := make(map[int]int)
+
+		processMsg := func(t *testing.T, sub *nats.Subscription, msgs map[int]int) bool {
+			msg, err := sub.NextMsg(time.Second)
+			if err != nil {
+				return false
+			}
+			metadata, err := msg.Metadata()
+			require_NoError(t, err)
+			require_NoError(t, msg.Ack())
+
+			v, err := strconv.Atoi(string(msg.Data))
+			require_NoError(t, err)
+			require_Equal(t, uint64(v), metadata.Sequence.Stream)
+
+			if _, ok := msgs[int(metadata.Sequence.Stream-1)]; !ok && len(msgs) > 0 {
+				t.Logf("Stream Sequence gap detected: current %d", metadata.Sequence.Stream)
+			}
+			if _, ok := msgs[int(metadata.Sequence.Stream)]; ok {
+				t.Fatalf("Message for seq %d has been seen before", metadata.Sequence.Stream)
+			}
+			// We do not expect official redeliveries here so this should always be 1.
+			if metadata.NumDelivered != 1 {
+				t.Errorf("Expected NumDelivered of 1, got %d for seq %d",
+					metadata.NumDelivered, metadata.Sequence.Stream)
+			}
+			msgs[int(metadata.Sequence.Stream)] = int(metadata.NumDelivered)
+
+			require_NoError(t, err)
+			return true
+		}
+
+		for {
+			inbox := nats.NewInbox()
+			sub, err := nc.SubscribeSync(inbox)
+			require_NoError(t, err)
+
+			err = nc.PublishRequest(fmt.Sprintf(JSApiRequestNextT, "TEST", "C"), inbox, crBytes)
+			require_NoError(t, err)
+
+			// Drain after first message processed.
+			processMsg(t, sub, msgs)
+			sub.Drain()
+
+			for {
+				if !processMsg(t, sub, msgs) {
+					if len(msgs) == messages {
+						return
+					}
+					break
+				}
+			}
+		}
+	}
+
+	t.Run("no-backoff", func(t *testing.T) {
+		test(t, &nats.ConsumerConfig{
+			Durable:   "C",
+			AckPolicy: nats.AckExplicitPolicy,
+			AckWait:   10 * time.Second,
+		})
+	})
+	t.Run("with-backoff", func(t *testing.T) {
+		test(t, &nats.ConsumerConfig{
+			Durable:   "C",
+			AckPolicy: nats.AckExplicitPolicy,
+			AckWait:   10 * time.Second,
+			BackOff:   []time.Duration{25 * time.Millisecond, 100 * time.Millisecond, 250 * time.Millisecond},
+		})
+	})
+}
+
+func TestJetStreamConsumerLongSubjectHang(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	readSubj := "a1."
+	purgeSubj := "a2."
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{readSubj + ">", purgeSubj + ">"},
+		AllowRollup: true,
+	})
+	require_NoError(t, err)
+
+	prefix := strings.Repeat("a", 22)
+	for i := 0; i < 2; i++ {
+		subj := readSubj + prefix + fmt.Sprintf("%d", i)
+		_, err = js.Publish(subj, []byte("hello"))
+		require_NoError(t, err)
+		chunkSubj := purgeSubj + fmt.Sprintf("%d", i)
+		_, err = js.Publish(chunkSubj, []byte("contents"))
+		require_NoError(t, err)
+	}
+	err = js.PurgeStream("TEST", &nats.StreamPurgeRequest{Subject: purgeSubj + ">"})
+	require_NoError(t, err)
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	// we should have 2 msgs left after purge
+	require_Equal(t, si.State.Msgs, 2)
+
+	sub, err := js.SubscribeSync(readSubj+">", nats.OrderedConsumer(), nats.DeliverLastPerSubject())
+	require_NoError(t, err)
+	defer sub.Unsubscribe()
+
+	for i := 0; i < 2; i++ {
+		m, err := sub.NextMsg(500 * time.Millisecond)
+		require_NoError(t, err)
+		require_True(t, string(m.Data) == "hello")
 	}
 }
 

@@ -122,7 +122,7 @@ func require_Equal[T comparable](t *testing.T, a, b T) {
 func require_NotEqual[T comparable](t *testing.T, a, b T) {
 	t.Helper()
 	if a == b {
-		t.Fatalf("require %T not equal, but got: %v != %v", a, a, b)
+		t.Fatalf("require %T not equal, but got: %v == %v", a, a, b)
 	}
 }
 
@@ -149,6 +149,15 @@ func require_ChanRead[T any](t *testing.T, ch chan T, timeout time.Duration) T {
 		t.Fatalf("require read from channel within %v but didn't get anything", timeout)
 	}
 	panic("this shouldn't be possible")
+}
+
+func require_NoChanRead[T any](t *testing.T, ch chan T, timeout time.Duration) {
+	t.Helper()
+	select {
+	case <-ch:
+		t.Fatalf("require no read from channel within %v but got something", timeout)
+	case <-time.After(timeout):
+	}
 }
 
 func checkNatsError(t *testing.T, e *ApiError, id ErrorIdentifier) {
@@ -294,6 +303,7 @@ func (c *cluster) shutdown() {
 	for i, s := range c.servers {
 		sd := s.StoreDir()
 		s.Shutdown()
+		s.WaitForShutdown()
 		if cf := c.opts[i].ConfigFile; cf != _EMPTY_ {
 			os.Remove(cf)
 		}
