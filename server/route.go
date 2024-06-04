@@ -3032,6 +3032,8 @@ func (s *Server) forEachRouteAndTempRoute(f func(r *client)) {
 func (s *Server) numRouteConns(host string, accName string) int {
 	nr := s.pendingRouteConns.Value(fmt.Sprintf("%s/%s", host, accName))
 	s.forEachRouteAndTempRoute(func(c *client) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
 		if c.route.url != nil &&
 			c.route.url.Host == host &&
 			accName == bytesToString(c.route.accName) {
