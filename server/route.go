@@ -3016,24 +3016,11 @@ func (s *Server) forEachRemote(f func(r *client)) {
 	}
 }
 
-func (s *Server) forEachRouteAndTempRoute(f func(r *client)) {
-	s.forEachRoute(f)
-	s.grMu.Lock()
-	defer s.grMu.Unlock()
-	for _, c := range s.grTmpClients {
-		if c != nil && c.kind == ROUTER {
-			f(c)
-		}
-	}
-}
-
 // Returns number of route connections for the host,
-// including not-yet-registered and unestablished connections.
+// including pending (not-yet-registered and unestablished) connections.
 func (s *Server) numRouteConns(host string, accName string) int {
 	nr := s.pendingRouteConns.Value(fmt.Sprintf("%s/%s", host, accName))
-	s.forEachRouteAndTempRoute(func(c *client) {
-		c.mu.Lock()
-		defer c.mu.Unlock()
+	s.forEachRoute(func(c *client) {
 		if c.route.url != nil &&
 			c.route.url.Host == host &&
 			accName == bytesToString(c.route.accName) {

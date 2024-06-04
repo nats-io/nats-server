@@ -3539,6 +3539,10 @@ func (s *Server) removeClient(c *client) {
 
 func (s *Server) removeFromTempClients(cid uint64) {
 	s.grMu.Lock()
+	if c, ok := s.grTmpClients[cid]; ok &&
+		c.kind == ROUTER && c.route.url != nil {
+		s.pendingRouteConns.Dec(fmt.Sprintf("%s/%s", c.route.url.Host, bytesToString(c.route.accName)))
+	}
 	delete(s.grTmpClients, cid)
 	s.grMu.Unlock()
 }
@@ -3547,6 +3551,9 @@ func (s *Server) addToTempClients(cid uint64, c *client) bool {
 	added := false
 	s.grMu.Lock()
 	if s.grRunning {
+		if c.kind == ROUTER && c.route.url != nil {
+			s.pendingRouteConns.Inc(fmt.Sprintf("%s/%s", c.route.url.Host, bytesToString(c.route.accName)))
+		}
 		s.grTmpClients[cid] = c
 		added = true
 	}
