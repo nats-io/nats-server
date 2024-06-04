@@ -1002,6 +1002,12 @@ func (s *Server) heartbeatStatsz() {
 	go s.sendStatszUpdate()
 }
 
+// Reset statsz rate limit for the next broadcast.
+// This should be wrapChk() to setup common locking.
+func (s *Server) resetLastStatsz() {
+	s.sys.lastStatsz = time.Time{}
+}
+
 func (s *Server) sendStatszUpdate() {
 	s.sendStatsz(fmt.Sprintf(serverStatsSubj, s.ID()))
 }
@@ -1905,10 +1911,7 @@ func (s *Server) statszReq(sub *subscription, c *client, _ *Account, subject, re
 	// No reply is a signal that we should use our normal broadcast subject.
 	if reply == _EMPTY_ {
 		reply = fmt.Sprintf(serverStatsSubj, s.info.ID)
-		// Reset rate limit for the next broadcast.
-		s.mu.Lock()
-		s.sys.lastStatsz = time.Time{}
-		s.mu.Unlock()
+		s.wrapChk(s.resetLastStatsz)
 	}
 
 	opts := StatszEventOptions{}
