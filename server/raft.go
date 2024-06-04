@@ -3159,15 +3159,17 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	// to a follower of that node instead.
 	if n.State() == Candidate {
 		// Ignore old terms, otherwise we might end up stepping down incorrectly.
-		if ae.term >= n.term {
+		// Needs to be ahead of our pterm (last log index), as an isolated node
+		// could have bumped its vote term up considerably past this point.
+		if ae.term >= n.pterm {
 			// If the append entry term is newer than the current term, erase our
 			// vote.
 			if ae.term > n.term {
-				n.term = ae.term
 				n.vote = noVote
-				n.writeTermVote()
 			}
 			n.debug("Received append entry in candidate state from %q, converting to follower", ae.leader)
+			n.term = ae.term
+			n.writeTermVote()
 			n.stepdown.push(ae.leader)
 		}
 	}
