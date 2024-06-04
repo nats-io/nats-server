@@ -31,18 +31,18 @@ jobs:
         shell: bash --noprofile --norc -eo pipefail {0}
         run: |
           cd src/github.com/nats-io/nats-server
-          go test -v --count=3 --run='MQTTEx' ./server
+          go test -v --count=3 --run='TestXMQTT' ./server
 
       - name: Run tests with --race
         shell: bash --noprofile --norc -eo pipefail {0}
         run: |
           cd src/github.com/nats-io/nats-server
-          go test -v --race --failfast --run='MQTTEx' ./server
+          go test -v --race --failfast --run='TestXMQTT' ./server
 
       - name: Run benchmarks
         shell: bash --noprofile --norc -eo pipefail {0}
         run: |
           cd src/github.com/nats-io/nats-server
-          go test --run='-' --count=3 --bench 'MQTTEx' --benchtime=100x ./server
+          go test --run='-' --count=3 --bench 'BenchmarkXMQTT' --benchtime=100x ./server
 
       # TODO: compare benchmarks

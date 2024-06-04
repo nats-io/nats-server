@@ -60,7 +60,7 @@ type MQTTBenchmarkResult struct {
 	Bytes int64                    `json:"bytes"`
 }
 
-func BenchmarkMQTTEx(b *testing.B) {
+func BenchmarkXMQTT(b *testing.B) {
 	if mqttexTestCommandPath == "" {
 		b.Skip(`"mqtt-test" command is not found in $PATH.`)
 	}

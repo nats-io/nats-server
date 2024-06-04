@@ -45,7 +45,7 @@ type mqttExTestConfig struct {
 	sub  []mqttExDial
 }
 
-func TestMQTTExCompliance(t *testing.T) {
+func TestXMQTTCompliance(t *testing.T) {
 	if mqttexCLICommandPath == _EMPTY_ {
 		t.Skip(`"mqtt" command is not found in $PATH nor $MQTT_CLI. See https://hivemq.github.io/mqtt-cli/docs/installation/#debian-package for installation instructions`)
 	}
@@ -66,7 +66,7 @@ func TestMQTTExCompliance(t *testing.T) {
 	}
 }
 
-func TestMQTTExRetainedMessages(t *testing.T) {
+func TestXMQTTRetainedMessages(t *testing.T) {
 	if mqttexTestCommandPath == _EMPTY_ {
 		t.Skip(`"mqtt-test" command is not found in $PATH.`)
 	}
