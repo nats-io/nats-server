@@ -42,6 +42,9 @@ func init() {
 	maxElectionTimeout = 3500 * time.Millisecond
 	lostQuorumInterval = 2 * time.Second
 	lostQuorumCheck = 4 * hbInterval
+
+	// For statz and jetstream placement speedups as well.
+	statszRateLimit = time.Millisecond * 100
 }
 
 // Used to setup clusters of clusters for tests.

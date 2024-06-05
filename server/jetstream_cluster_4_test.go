@@ -1117,25 +1117,28 @@ func TestJetStreamClusterDoubleAckRedelivery(t *testing.T) {
 				}
 
 				msgID := msg.Header.Get(nats.MsgIdHdr)
-				if meta.NumDelivered > 1 {
-					if err, ok := errors[msgID]; ok {
-						t.Logf("Redelivery after failed Ack Sync: %+v - %+v - error: %v", msg.Reply, msg.Header, err)
-					} else {
-						t.Logf("Redelivery: %+v - %+v", msg.Reply, msg.Header)
-					}
-					if resp, ok := acked[msgID]; ok {
-						t.Errorf("Redelivery after successful Ack Sync: msgID:%v - redelivered:%v - original:%+v - ack:%+v",
-							msgID, msg.Reply, resp.original.Reply, resp.ack)
-						resp.redelivered = msg
-						extraRedeliveries++
-					}
+				if err, ok := errors[msgID]; ok {
+					t.Logf("Redelivery (num_delivered: %v) after failed Ack Sync: %+v - %+v - error: %v", meta.NumDelivered, msg.Reply, msg.Header, err)
+				}
+				if resp, ok := acked[msgID]; ok {
+					t.Errorf("Redelivery (num_delivered: %v) after successful Ack Sync: msgID:%v - redelivered:%v - original:%+v - ack:%+v",
+						meta.NumDelivered, msgID, msg.Reply, resp.original.Reply, resp.ack)
+					resp.redelivered = msg
+					extraRedeliveries++
 				}
 				received[msgID]++
-				resp, err := nc.Request(msg.Reply, []byte("+ACK"), 500*time.Millisecond)
-				if err != nil {
-					errors[msgID] = err
-				} else {
-					acked[msgID] = &ackResult{resp, msg, nil}
+
+				// Retry quickly a few times after there is a failed ack.
+			Retries:
+				for i := 0; i < 10; i++ {
+					resp, err := nc.Request(msg.Reply, []byte("+ACK"), 500*time.Millisecond)
+					if err != nil {
+						t.Logf("Error: %v %v", msgID, err)
+						errors[msgID] = err
+					} else {
+						acked[msgID] = &ackResult{resp, msg, nil}
+						break Retries
+					}
 				}
 			}
 		}
@@ -1693,4 +1696,33 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 			producerMsgs:    100_000,
 		})
 	})
+}
+
+// https://github.com/nats-io/nats-server/issues/5488
+func TestJetStreamClusterSingleMaxConsumerUpdate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:         "TEST",
+		MaxConsumers: 1,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Name:          "test_consumer",
+		MaxAckPending: 1000,
+	})
+	require_NoError(t, err)
+
+	// This would previously return a "nats: maximum consumers limit
+	// reached" (10026) error.
+	_, err = js.UpdateConsumer("TEST", &nats.ConsumerConfig{
+		Name:          "test_consumer",
+		MaxAckPending: 1001,
+	})
+	require_NoError(t, err)
 }

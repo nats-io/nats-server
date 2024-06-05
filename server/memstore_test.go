@@ -942,3 +942,61 @@ func TestMemStorePurgeExWithDeletedMsgs(t *testing.T) {
 	require_Equal(t, state.LastSeq, 10)
 	require_Equal(t, state.Msgs, 1)
 }
+
+///////////////////////////////////////////////////////////////////////////
+// Benchmarks
+///////////////////////////////////////////////////////////////////////////
+
+func Benchmark_MemStoreNumPendingWithLargeInteriorDeletesScan(b *testing.B) {
+	cfg := &StreamConfig{
+		Name:     "zzz",
+		Subjects: []string{"foo.*.*"},
+		Storage:  MemoryStorage,
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(b, err)
+	defer ms.Stop()
+
+	msg := []byte("abc")
+	ms.StoreMsg("foo.bar.baz", nil, msg)
+	for i := 1; i <= 1_000_000; i++ {
+		ms.SkipMsg()
+	}
+	ms.StoreMsg("foo.bar.baz", nil, msg)
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		total, _ := ms.NumPending(600_000, "foo.*.baz", false)
+		if total != 1 {
+			b.Fatalf("Expected total of 2 got %d", total)
+		}
+	}
+}
+
+func Benchmark_MemStoreNumPendingWithLargeInteriorDeletesExclude(b *testing.B) {
+	cfg := &StreamConfig{
+		Name:     "zzz",
+		Subjects: []string{"foo.*.*"},
+		Storage:  MemoryStorage,
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(b, err)
+	defer ms.Stop()
+
+	msg := []byte("abc")
+	ms.StoreMsg("foo.bar.baz", nil, msg)
+	for i := 1; i <= 1_000_000; i++ {
+		ms.SkipMsg()
+	}
+	ms.StoreMsg("foo.bar.baz", nil, msg)
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		total, _ := ms.NumPending(400_000, "foo.*.baz", false)
+		if total != 1 {
+			b.Fatalf("Expected total of 2 got %d", total)
+		}
+	}
+}

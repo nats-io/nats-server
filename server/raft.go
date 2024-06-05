@@ -3159,15 +3159,17 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	// to a follower of that node instead.
 	if n.State() == Candidate {
 		// Ignore old terms, otherwise we might end up stepping down incorrectly.
-		if ae.term >= n.term {
+		// Needs to be ahead of our pterm (last log index), as an isolated node
+		// could have bumped its vote term up considerably past this point.
+		if ae.term >= n.pterm {
 			// If the append entry term is newer than the current term, erase our
 			// vote.
 			if ae.term > n.term {
-				n.term = ae.term
 				n.vote = noVote
-				n.writeTermVote()
 			}
 			n.debug("Received append entry in candidate state from %q, converting to follower", ae.leader)
+			n.term = ae.term
+			n.writeTermVote()
 			n.stepdown.push(ae.leader)
 		}
 	}
@@ -3735,7 +3737,8 @@ func readPeerState(sd string) (ps *peerState, err error) {
 }
 
 const termVoteFile = "tav.idx"
-const termVoteLen = idLen + 8
+const termLen = 8 // uint64
+const termVoteLen = idLen + termLen
 
 // Writes out our term & vote outside of a specific raft context.
 func writeTermVote(sd string, wtv []byte) error {
@@ -3760,6 +3763,10 @@ func (n *raft) readTermVote() (term uint64, voted string, err error) {
 
 	if err != nil {
 		return 0, noVote, err
+	}
+	if len(buf) < termLen {
+		// Not enough bytes for the uint64 below, so avoid a panic.
+		return 0, noVote, nil
 	}
 	var le = binary.LittleEndian
 	term = le.Uint64(buf[0:])

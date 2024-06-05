@@ -14,8 +14,11 @@
 package server
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -404,4 +407,64 @@ func TestNRGUnsuccessfulVoteRequestDoesntResetElectionTimer(t *testing.T) {
 	defer rg.unlockAll()
 	require_True(t, leaderOriginal.Equal(leader.etlr))
 	require_True(t, followerOriginal.Equal(follower.etlr))
+}
+
+func TestNRGInvalidTAVDoesntPanic(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+	c.waitOnLeader()
+
+	rg := c.createRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	// Mangle the TAV file to a short length (less than uint64).
+	leader := rg.leader()
+	tav := filepath.Join(leader.node().(*raft).sd, termVoteFile)
+	require_NoError(t, os.WriteFile(tav, []byte{1, 2, 3, 4}, 0644))
+
+	// Restart the node.
+	leader.stop()
+	leader.restart()
+
+	// Before the fix, a crash would have happened before this point.
+	c.waitOnAllCurrent()
+}
+
+func TestNRGCandidateStepsDownAfterAE(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+	c.waitOnLeader()
+
+	nc, _ := jsClientConnect(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
+	defer nc.Close()
+
+	rg := c.createRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	// Pick a random follower node. Bump the term up by a considerable
+	// amount and force it into the candidate state. This is what happens
+	// after a period of time in isolation.
+	n := rg.nonLeader().node().(*raft)
+	n.Lock()
+	n.term += 100
+	n.switchState(Candidate)
+	n.Unlock()
+
+	// Have the leader push through something on the current term just
+	// for good measure, although the heartbeats probably work too.
+	rg.leader().(*stateAdder).proposeDelta(1)
+
+	// Wait for the leader to receive the next append entry from the
+	// current leader. What should happen is that the node steps down
+	// and starts following the leader, as nothing in the log of the
+	// follower is newer than the term of the leader.
+	checkFor(t, time.Second, 50*time.Millisecond, func() error {
+		if n.State() == Candidate {
+			return fmt.Errorf("shouldn't still be candidate state")
+		}
+		if nterm, lterm := n.Term(), rg.leader().node().Term(); nterm != lterm {
+			return fmt.Errorf("follower term %d should match leader term %d", nterm, lterm)
+		}
+		return nil
+	})
 }

@@ -2146,22 +2146,18 @@ func (o *consumer) loopAndForwardProposals(qch chan struct{}) {
 
 // Lock should be held.
 func (o *consumer) propose(entry []byte) {
-	var notify bool
 	p := &proposal{data: entry}
 	if o.phead == nil {
 		o.phead = p
-		notify = true
 	} else {
 		o.ptail.next = p
 	}
 	o.ptail = p
 
-	// Kick our looper routine if needed.
-	if notify {
-		select {
-		case o.pch <- struct{}{}:
-		default:
-		}
+	// Kick our looper routine.
+	select {
+	case o.pch <- struct{}{}:
+	default:
 	}
 }
 
@@ -2740,6 +2736,12 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 	if o.closed {
 		o.mu.Unlock()
 		return
+	}
+
+	// Check if this ack is above the current pointer to our next to deliver.
+	// This could happen on a cooperative takeover with high speed deliveries.
+	if sseq >= o.sseq {
+		o.sseq = sseq + 1
 	}
 
 	mset := o.mset

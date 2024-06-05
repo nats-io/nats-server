@@ -1,4 +1,4 @@
-// Copyright 2018-2023 The NATS Authors
+// Copyright 2018-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -3536,5 +3536,25 @@ func Benchmark_GetHash(b *testing.B) {
 	case err := <-errCh:
 		b.Fatal(err.Error())
 	default:
+	}
+}
+
+func TestClusterSetupMsgs(t *testing.T) {
+	// Tests will set this general faster, but here we want default for production.
+	original := statszRateLimit
+	statszRateLimit = defaultStatszRateLimit
+	defer func() { statszRateLimit = original }()
+
+	numServers := 10
+	c := createClusterEx(t, false, 0, false, "cluster", numServers)
+	defer shutdownCluster(c)
+
+	var totalOut int
+	for _, server := range c.servers {
+		totalOut += int(server.outMsgs)
+	}
+	totalExpected := numServers * numServers
+	if totalOut >= totalExpected {
+		t.Fatalf("Total outMsgs is %d, expected < %d\n", totalOut, totalExpected)
 	}
 }
