@@ -4356,6 +4356,7 @@ func TestRouteNoRaceOnClusterNameNegotiation(t *testing.T) {
 
 func TestImplicitDuplicateRoutes(t *testing.T) {
 	c := createClusterWithName(t, "duplicateRoute", 10)
+	defer shutdownCluster(c)
 	duplicates := 0
 	for _, s := range c.servers {
 		logger := s.Logger().(*checkDuplicateRouteLogger)
