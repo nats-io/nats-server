@@ -3538,3 +3538,17 @@ func Benchmark_GetHash(b *testing.B) {
 	default:
 	}
 }
+
+func TestClusterSetupMsgs(t *testing.T) {
+	numServers := 10
+	c := createClusterEx(t, false, 0, false, "cluster", numServers)
+	var totalOut int
+
+	for _, server := range c.servers {
+		totalOut += int(server.outMsgs)
+	}
+	totalExpected := numServers * numServers
+	if totalOut >= totalExpected {
+		t.Fatalf("Total outMsgs is %d, expected < %d\n", totalOut, totalExpected)
+	}
+}
