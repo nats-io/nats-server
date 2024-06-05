@@ -7159,25 +7159,45 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		return
 	}
 
+	// Was a consumer name provided?
+	var oname string
+	if isDurableConsumer(cfg) || cfg.Name != _EMPTY_ {
+		if cfg.Name != _EMPTY_ {
+			oname = cfg.Name
+		} else {
+			oname = cfg.Durable
+		}
+	}
+
 	// Check for max consumers here to short circuit if possible.
 	// Start with limit on a stream, but if one is defined at the level of the account
 	// and is lower, use that limit.
-	maxc := sa.Config.MaxConsumers
-	if maxc <= 0 || (selectedLimits.MaxConsumers > 0 && selectedLimits.MaxConsumers < maxc) {
-		maxc = selectedLimits.MaxConsumers
-	}
-	if maxc > 0 {
-		// Don't count DIRECTS.
-		total := 0
-		for _, ca := range sa.consumers {
-			if ca.Config != nil && !ca.Config.Direct {
-				total++
-			}
+	if action == ActionCreate || action == ActionCreateOrUpdate {
+		maxc := sa.Config.MaxConsumers
+		if maxc <= 0 || (selectedLimits.MaxConsumers > 0 && selectedLimits.MaxConsumers < maxc) {
+			maxc = selectedLimits.MaxConsumers
 		}
-		if total >= maxc {
-			resp.Error = NewJSMaximumConsumersLimitError()
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
-			return
+		if maxc > 0 {
+			// Don't count DIRECTS.
+			total := 0
+			for cn, ca := range sa.consumers {
+				if action == ActionCreateOrUpdate {
+					// If the consumer name is specified and we think it already exists, then
+					// we're likely updating an existing consumer, so don't count it. Otherwise
+					// we will incorrectly return NewJSMaximumConsumersLimitError for an update.
+					if oname != "" && cn == oname && sa.consumers[oname] != nil {
+						continue
+					}
+				}
+				if ca.Config != nil && !ca.Config.Direct {
+					total++
+				}
+			}
+			if total >= maxc {
+				resp.Error = NewJSMaximumConsumersLimitError()
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+				return
+			}
 		}
 	}
 
@@ -7204,16 +7224,10 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	}
 
 	var ca *consumerAssignment
-	var oname string
 
 	// See if we have an existing one already under same durable name or
 	// if name was set by the user.
 	if isDurableConsumer(cfg) || cfg.Name != _EMPTY_ {
-		if cfg.Name != _EMPTY_ {
-			oname = cfg.Name
-		} else {
-			oname = cfg.Durable
-		}
 		if ca = sa.consumers[oname]; ca != nil && !ca.deleted {
 			if action == ActionCreate && !reflect.DeepEqual(cfg, ca.Config) {
 				resp.Error = NewJSConsumerAlreadyExistsError()
