@@ -1355,10 +1355,6 @@ func TestJetStreamSuperClusterPushConsumerInterest(t *testing.T) {
 }
 
 func TestJetStreamSuperClusterOverflowPlacement(t *testing.T) {
-	orgStatszRateLimit := statszRateLimit
-	statszRateLimit = time.Millisecond * 100
-	defer func() { statszRateLimit = orgStatszRateLimit }()
-
 	sc := createJetStreamSuperClusterWithTemplate(t, jsClusterMaxBytesTempl, 3, 3)
 	defer sc.shutdown()
 
