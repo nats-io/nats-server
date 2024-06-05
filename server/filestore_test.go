@@ -6949,59 +6949,108 @@ func TestFileStoreRecoverWithRemovesAndNoIndexDB(t *testing.T) {
 ///////////////////////////////////////////////////////////////////////////
 
 func Benchmark_FileStoreSelectMsgBlock(b *testing.B) {
-	// We use small block size to create lots of blocks for this test.
-	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: b.TempDir(), BlockSize: 128},
-		StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
-	require_NoError(b, err)
-	defer fs.Stop()
-
-	subj, msg := "A", bytes.Repeat([]byte("ABC"), 33) // ~100bytes
-
-	// Add in a bunch of blocks.
-	for i := 0; i < 1000; i++ {
-		fs.StoreMsg(subj, nil, msg)
-	}
-	if fs.numMsgBlocks() < 1000 {
-		b.Fatalf("Expected at least 1000 blocks, got %d", fs.numMsgBlocks())
+	const Seed = 123456
+	cases := []struct {
+		blockSize uint64
+		msgSize   int
+		msgCount  int
+	}{
+		{128, 100, 1000},
+		{128, 1000, 1000}, // 10X msg size from base case
+		{128, 100, 10000}, // 10X msg count from base case
 	}
 
-	fs.mu.RLock()
-	defer fs.mu.RUnlock()
+	for _, params := range cases {
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, mb := fs.selectMsgBlockWithIndex(1)
-		if mb == nil {
-			b.Fatalf("Expected a non-nil mb")
-		}
+		b.Run(
+			fmt.Sprintf("blockSize:%d,msgSize:%d,msgCount:%d", params.blockSize, params.msgSize, params.msgCount),
+			func(b *testing.B) {
+				fs, err := newFileStore(
+					FileStoreConfig{StoreDir: b.TempDir(), BlockSize: params.blockSize},
+					StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
+				require_NoError(b, err)
+				defer fs.Stop()
+
+				rng := rand.New(rand.NewSource(Seed))
+
+				// Add in a bunch of blocks.
+				msg := make([]byte, params.msgSize)
+				for i := 0; i < params.msgCount; i++ {
+					rng.Read(msg)
+					_, _, err := fs.StoreMsg("A", nil, msg)
+					require_NoError(b, err)
+				}
+				if fs.numMsgBlocks() < params.msgCount {
+					b.Fatalf("Expected at least 1000 blocks, got %d", fs.numMsgBlocks())
+				}
+
+				b.SetBytes(int64(params.msgSize))
+
+				fs.mu.RLock()
+				defer fs.mu.RUnlock()
+
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					_, mb := fs.selectMsgBlockWithIndex(1 + uint64(i%params.msgCount))
+					if mb == nil {
+						b.Fatalf("Expected a non-nil mb")
+					}
+				}
+				b.StopTimer()
+			},
+		)
+
 	}
-	b.StopTimer()
 }
 
 func Benchmark_FileStoreLoadNextMsgSameFilterAsStream(b *testing.B) {
-	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: b.TempDir()},
-		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
-	require_NoError(b, err)
-	defer fs.Stop()
 
-	// Small om purpose.
-	msg := []byte("ok")
-
-	// Add in a bunch of msgs
-	for i := 0; i < 100_000; i++ {
-		subj := fmt.Sprintf("foo.%d", rand.Intn(1024))
-		fs.StoreMsg(subj, nil, msg)
+	const Seed = 123456
+	cases := []struct {
+		msgSize          int
+		msgCount         int
+		distinctSubjects int
+	}{
+		{10, 100_000, 1024},
+		{100, 1000, 1024},      // 10X msg size from base case
+		{10, 1_000_000, 10240}, // 10X number of distinct subjects
 	}
 
-	b.ResetTimer()
+	for _, params := range cases {
 
-	var smv StoreMsg
-	for i := 0; i < b.N; i++ {
-		// Needs to start at ~1 to show slowdown.
-		_, _, err := fs.LoadNextMsg("foo.*", true, 10, &smv)
-		require_NoError(b, err)
+		b.Run(
+			fmt.Sprintf("msgSize:%d,msgCount:%d,subjects:%d", params.msgSize, params.msgCount, params.distinctSubjects),
+			func(b *testing.B) {
+
+				fs, err := newFileStore(
+					FileStoreConfig{StoreDir: b.TempDir()},
+					StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+				require_NoError(b, err)
+				defer fs.Stop()
+
+				rng := rand.New(rand.NewSource(Seed))
+
+				// Add in a bunch of msgs
+				msg := make([]byte, params.msgSize)
+				for i := 0; i < 100_000; i++ {
+					rng.Read(msg)
+					subj := fmt.Sprintf("foo.%d", rng.Intn(params.distinctSubjects))
+					_, _, err := fs.StoreMsg(subj, nil, msg)
+					require_NoError(b, err)
+				}
+
+				b.SetBytes(int64(params.msgSize))
+
+				b.ResetTimer()
+
+				var smv StoreMsg
+				for i := 0; i < b.N; i++ {
+					// Needs to start at ~1 to show slowdown.
+					_, _, err := fs.LoadNextMsg("foo.*", true, 10, &smv)
+					require_NoError(b, err)
+				}
+			},
+		)
 	}
 }
 
