@@ -1515,6 +1515,10 @@ func (a *Account) addServiceImportWithClaim(destination *Account, from, to strin
 		return err
 	}
 
+	if err := a.serviceImportFormsCycle(destination, to); err != nil {
+		return err
+	}
+
 	_, err := a.addServiceImport(destination, from, to, imClaim)
 
 	return err
@@ -2527,6 +2531,10 @@ func (a *Account) addMappedStreamImportWithClaim(account *Account, from, to stri
 
 	// Check if this forms a cycle.
 	if err := a.streamImportFormsCycle(account, to); err != nil {
+		return err
+	}
+
+	if err := a.streamImportFormsCycle(account, from); err != nil {
 		return err
 	}
 
