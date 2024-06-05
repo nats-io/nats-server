@@ -7227,7 +7227,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 
 	// See if we have an existing one already under same durable name or
 	// if name was set by the user.
-	if isDurableConsumer(cfg) || cfg.Name != _EMPTY_ {
+	if oname != _EMPTY_ {
 		if ca = sa.consumers[oname]; ca != nil && !ca.deleted {
 			if action == ActionCreate && !reflect.DeepEqual(cfg, ca.Config) {
 				resp.Error = NewJSConsumerAlreadyExistsError()
