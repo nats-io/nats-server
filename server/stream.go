@@ -245,8 +245,7 @@ type stream struct {
 	ddtmr     *time.Timer             // The dedupe timer.
 	qch       chan struct{}           // The quit channel.
 	mqch      chan struct{}           // The monitor's quit channel.
-	active    bool                    // Indicates that there are active internal subscriptions (for the subject filters)
-	leaderSet bool                    // it is set as leader
+	leaderSet bool                    // it is set as leader.
 	// and/or mirror/sources consumers are scheduled to be established or already started.
 	ddloaded bool        // set to true when the deduplication structures are been built.
 	closed   atomic.Bool // Set to true when stop() is called on the stream.
@@ -873,6 +872,7 @@ func (mset *stream) leaderStepUp() error {
 	if err := mset.subscribeToStream(); err != nil {
 		if mset.isClustered() {
 			// Stepdown since we have an error.
+			mset.leaderStepDown()
 			mset.node.StepDown()
 		}
 		return err
@@ -3632,9 +3632,6 @@ func (mset *stream) setupSourceConsumers() error {
 // Will create internal subscriptions for the stream.
 // Lock should be held.
 func (mset *stream) subscribeToStream() error {
-	if mset.active {
-		return nil
-	}
 	for _, subject := range mset.cfg.Subjects {
 		if _, err := mset.subscribeInternal(subject, mset.processInboundJetStreamMsg); err != nil {
 			return err
@@ -3679,7 +3676,6 @@ func (mset *stream) subscribeToStream() error {
 		}
 	}
 
-	mset.active = true
 	return nil
 }
 
@@ -3786,7 +3782,6 @@ func (mset *stream) unsubscribeToStream(stopping bool) error {
 		mset.unsubscribeToDirect()
 	}
 
-	mset.active = false
 	return nil
 }
 
@@ -4527,7 +4522,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	pubAck := append(buf[:0], mset.pubAck...)
 
 	// If this is a non-clustered msg and we are not considered active, meaning no active subscription, do not process.
-	if lseq == 0 && ts == 0 && !mset.active {
+	if lseq == 0 && ts == 0 && !mset.leaderSet {
 		mset.mu.Unlock()
 		return nil
 	}
