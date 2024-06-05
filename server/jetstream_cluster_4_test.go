@@ -2187,3 +2187,32 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 		}
 	})
 }
+
+// https://github.com/nats-io/nats-server/issues/5488
+func TestJetStreamClusterSingleMaxConsumerUpdate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:         "TEST",
+		MaxConsumers: 1,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Name:          "test_consumer",
+		MaxAckPending: 1000,
+	})
+	require_NoError(t, err)
+
+	// This would previously return a "nats: maximum consumers limit
+	// reached" (10026) error.
+	_, err = js.UpdateConsumer("TEST", &nats.ConsumerConfig{
+		Name:          "test_consumer",
+		MaxAckPending: 1001,
+	})
+	require_NoError(t, err)
+}
