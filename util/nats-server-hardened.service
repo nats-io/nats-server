@@ -81,4 +81,6 @@ ReadWritePaths=/var/lib/nats
 
 [Install]
 WantedBy=multi-user.target
-Alias=nats.service
+# If you install this service as nats-server.service and want 'nats'
+# to work as an alias, then uncomment this next line:
+#Alias=nats.service
