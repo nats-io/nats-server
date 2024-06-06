@@ -3455,7 +3455,7 @@ func (mb *msgBlock) skipMsg(seq uint64, now time.Time) {
 		mb.first.ts = nowts
 		needsRecord = mb == mb.fs.lmb
 		if needsRecord && mb.rbytes > 0 {
-			// We wany to make sure since we have no messages
+			// We want to make sure since we have no messages
 			// that we write to the beginning since we only need last one.
 			mb.rbytes, mb.cache = 0, &cache{}
 			// If encrypted we need to reset counter since we just keep one.
