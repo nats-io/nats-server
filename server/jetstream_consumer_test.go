@@ -1226,6 +1226,48 @@ func TestJetStreamConsumerLongSubjectHang(t *testing.T) {
 	}
 }
 
+func TestJetStreamConsumerCreatePanic(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, err := nats.Connect(s.ClientURL())
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	defer nc.Close()
+	js, err := nc.JetStream(nats.ClientTrace{
+		RequestSent: func(subj string, payload []byte) {
+			fmt.Println("Request sent to", subj)
+			fmt.Println("Request data:", string(payload))
+		},
+		ResponseReceived: func(subj string, payload []byte, hdr nats.Header) {
+			fmt.Println("Response received on", subj)
+			fmt.Println("Response data:", string(payload))
+			fmt.Print("\n\n\n")
+		},
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error getting JetStream context: %v", err)
+	}
+
+	_, err = js.AddStream(&nats.StreamConfig{Name: "foo", Subjects: []string{">"}})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	ci, err := js.AddConsumer("foo", &nats.ConsumerConfig{
+		Durable:     "cons",
+		AckPolicy:   nats.AckExplicitPolicy,
+		Description: "test consumer",
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if ci == nil {
+		t.Fatalf("Expected consumer info, got none")
+	}
+}
+
 func Benchmark____JetStreamConsumerIsFilteredMatch(b *testing.B) {
 	subject := "foo.bar.do.not.match.any.filter.subject"
 	for n := 1; n <= 1024; n *= 2 {
