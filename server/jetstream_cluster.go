@@ -7648,7 +7648,10 @@ func (mset *stream) stateSnapshot() []byte {
 func (mset *stream) stateSnapshotLocked() []byte {
 	// Decide if we can support the new style of stream snapshots.
 	if mset.supportsBinarySnapshotLocked() {
-		snap, _ := mset.store.EncodedStreamState(mset.getCLFS())
+		snap, err := mset.store.EncodedStreamState(mset.getCLFS())
+		if err != nil {
+			return nil
+		}
 		return snap
 	}
 
@@ -8926,7 +8929,9 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 							mset.account(), mset.name(), seq, state)
 						// Try our best to redo our invalidated snapshot as well.
 						if n := mset.raftNode(); n != nil {
-							n.InstallSnapshot(mset.stateSnapshot())
+							if snap := mset.stateSnapshot(); snap != nil {
+								n.InstallSnapshot(snap)
+							}
 						}
 						// If we allow gap markers check if we have one pending.
 						if drOk && dr.First > 0 {

@@ -4276,6 +4276,7 @@ func (s *Server) lameDuckMode() {
 		}
 	}
 	s.Shutdown()
+	s.WaitForShutdown()
 }
 
 // Send an INFO update to routes with the indication that this server is in LDM mode.
