@@ -51,6 +51,7 @@ func (s *Server) handleSignals() {
 				switch sig {
 				case syscall.SIGINT:
 					s.Shutdown()
+					s.WaitForShutdown()
 					os.Exit(0)
 				case syscall.SIGTERM:
 					// Shutdown unless graceful shutdown already in progress.
@@ -60,6 +61,7 @@ func (s *Server) handleSignals() {
 
 					if !ldm {
 						s.Shutdown()
+						s.WaitForShutdown()
 						os.Exit(1)
 					}
 				case syscall.SIGUSR1:
