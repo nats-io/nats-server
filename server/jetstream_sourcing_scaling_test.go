@@ -439,8 +439,6 @@ func TestStreamSourcingScalingSourcingManyBenchmark(t *testing.T) {
 
 	expectedSeq := make([]int, numSourced)
 
-	//var steppedDown bool
-
 	start := time.Now()
 
 	var lastMsgs uint64
@@ -459,17 +457,6 @@ func TestStreamSourcingScalingSourcingManyBenchmark(t *testing.T) {
 		} else if state.Msgs < uint64(numMsgPerSource*numSourced) {
 			fmt.Printf("Current Rate %d per second - Received %d\n", state.Msgs-lastMsgs, state.Msgs)
 			lastMsgs = state.Msgs
-
-			//if !steppedDown && state.Msgs >= 200_000 {
-			//	fmt.Printf("\nStepping Down\n")
-			//	mset.node.StepDown()
-			//	steppedDown = true
-			//	// Need to repull our data.
-			//	c.waitOnStreamLeader(globalAccountName, "sourcing")
-			//	sl = c.streamLeader(globalAccountName, "sourcing")
-			//	mset, err = sl.GlobalAccount().lookupStream("sourcing")
-			//	require_NoError(t, err)
-			//}
 			return fmt.Errorf("Expected %d messages, got %d", uint64(numMsgPerSource*numSourced), state.Msgs)
 		} else {
 			fmt.Printf("Too many messages! expected %d (retries=%d), got %d\n", uint64(numMsgPerSource*numSourced), retries, state.Msgs)
