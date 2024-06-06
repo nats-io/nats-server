@@ -6843,6 +6843,59 @@ func TestFileStoreRecoverWithRemovesAndNoIndexDB(t *testing.T) {
 	require_Equal(t, ss.Msgs, 7)
 }
 
+func TestFileStoreReloadAndLoseLastSequence(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	for i := 0; i < 22; i++ {
+		fs.SkipMsg()
+	}
+
+	// Restart 5 times.
+	for i := 0; i < 5; i++ {
+		fs.Stop()
+		fs, err = newFileStore(
+			FileStoreConfig{StoreDir: sd},
+			StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+		require_NoError(t, err)
+		defer fs.Stop()
+		var ss StreamState
+		fs.FastState(&ss)
+		require_Equal(t, ss.FirstSeq, 23)
+		require_Equal(t, ss.LastSeq, 22)
+	}
+}
+
+func TestFileStoreReloadAndLoseLastSequenceWithSkipMsgs(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Make sure same works with SkipMsgs which can kick in from delete blocks to replicas.
+	require_NoError(t, fs.SkipMsgs(0, 22))
+
+	// Restart 5 times.
+	for i := 0; i < 5; i++ {
+		fs.Stop()
+		fs, err = newFileStore(
+			FileStoreConfig{StoreDir: sd},
+			StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+		require_NoError(t, err)
+		defer fs.Stop()
+		var ss StreamState
+		fs.FastState(&ss)
+		require_Equal(t, ss.FirstSeq, 23)
+		require_Equal(t, ss.LastSeq, 22)
+	}
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////

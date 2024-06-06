@@ -1869,7 +1869,7 @@ func (mb *msgBlock) lastChecksum() []byte {
 		mb.rbytes = uint64(fi.Size())
 	}
 	if mb.rbytes < checksumSize {
-		return nil
+		return lchk[:]
 	}
 	// Encrypted?
 	// Check for encryption, we do not load keys on startup anymore so might need to load them here.
@@ -3340,6 +3340,17 @@ func (mb *msgBlock) skipMsg(seq uint64, now time.Time) {
 		mb.last.ts = nowts
 		atomic.StoreUint64(&mb.first.seq, seq+1)
 		mb.first.ts = nowts
+		needsRecord = mb == mb.fs.lmb
+		if needsRecord && mb.rbytes > 0 {
+			// We want to make sure since we have no messages
+			// that we write to the beginning since we only need last one.
+			mb.rbytes, mb.cache = 0, &cache{}
+			// If encrypted we need to reset counter since we just keep one.
+			if mb.bek != nil {
+				// Recreate to reset counter.
+				mb.bek, _ = genBlockEncryptionKey(mb.fs.fcfg.Cipher, mb.seed, mb.nonce)
+			}
+		}
 	} else {
 		needsRecord = true
 		mb.dmap.Insert(seq)
