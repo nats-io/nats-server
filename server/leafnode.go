@@ -584,6 +584,9 @@ func (s *Server) clearObserverState(remote *leafNodeCfg) {
 		return
 	}
 
+	acc.jscmMu.Lock()
+	defer acc.jscmMu.Unlock()
+
 	// Walk all streams looking for any clustered stream, skip otherwise.
 	for _, mset := range acc.streams() {
 		node := mset.raftNode()
@@ -618,6 +621,9 @@ func (s *Server) checkJetStreamMigrate(remote *leafNodeCfg) {
 		s.Warnf("Error looking up account [%s] checking for JetStream migration on a leafnode", accName)
 		return
 	}
+
+	acc.jscmMu.Lock()
+	defer acc.jscmMu.Unlock()
 
 	// Walk all streams looking for any clustered stream, skip otherwise.
 	// If we are the leader force stepdown.
