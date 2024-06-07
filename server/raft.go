@@ -2464,7 +2464,9 @@ func (n *raft) lostQuorumLocked() bool {
 			}
 		}
 	}
-	return true
+	// In order to avoid false positives that can happen in heavily loaded systems when the heartbeat
+	// make sure nothing is queued up that we have not processed yet.
+	return n.resp.len() == 0
 }
 
 // Check for being not active in terms of sending entries.
