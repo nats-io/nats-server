@@ -865,6 +865,9 @@ func (mset *stream) setLeader(isLeader bool) error {
 			mset.sourcesConsumerSetup.Stop()
 			mset.sourcesConsumerSetup = nil
 		}
+		// Stop the source consumers if any
+		mset.stopSourceConsumers()
+
 		// Stop responding to sync requests.
 		mset.stopClusterSubs()
 		// Unsubscribe from direct stream.

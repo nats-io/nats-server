@@ -22,57 +22,57 @@ import (
 )
 
 var serverConfig1 = `
-server_name: server1
-listen: 127.0.0.1:4222
-http: 8222
+	server_name: server1
+	listen: 127.0.0.1:4222
+	http: 8222
 
-prof_port = 18222
+	prof_port = 18222
 
-jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
 
-cluster {
-  name: my_cluster
-  listen: 127.0.0.1:4248
-  routes: [nats://127.0.0.1:4249,nats://127.0.0.1:4250]
-}
+	cluster {
+  		name: my_cluster
+  		listen: 127.0.0.1:4248
+  		routes: [nats://127.0.0.1:4249,nats://127.0.0.1:4250]
+	}
 
-accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }}
-	`
+	accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }}
+`
 
 var serverConfig2 = `
-server_name: server2
-listen: 127.0.0.1:5222
-http: 8223
+	server_name: server2
+	listen: 127.0.0.1:5222
+	http: 8223
 
-prof_port = 18223
+	prof_port = 18223
 
-jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
 
-cluster {
-  name: my_cluster
-  listen: 127.0.0.1:4249
-  routes: [nats://127.0.0.1:4248,nats://127.0.0.1:4250]
-}
+	cluster {
+  		name: my_cluster
+  		listen: 127.0.0.1:4249
+  		routes: [nats://127.0.0.1:4248,nats://127.0.0.1:4250]
+	}
 
-accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }}
+	accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }}
 `
 
 var serverConfig3 = `
-server_name: server3
-listen: 127.0.0.1:6222
-http: 8224
+	server_name: server3
+	listen: 127.0.0.1:6222
+	http: 8224
 
-prof_port = 18224
+	prof_port = 18224
 
-jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+	jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
 
-cluster {
-  name: my_cluster
-  listen: 127.0.0.1:4250
-  routes: [nats://127.0.0.1:4248,nats://127.0.0.1:4249]
-}
+	cluster {
+  		name: my_cluster
+  		listen: 127.0.0.1:4250
+  		routes: [nats://127.0.0.1:4248,nats://127.0.0.1:4249]
+	}
 
-accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }}
+	accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }}
 `
 
 var connectURL = "nats://127.0.0.1:4222,nats://127.0.0.1:4223,nats://127.0.0.1:4224"
