@@ -39,6 +39,8 @@ import (
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
+
+	"github.com/antithesishq/antithesis-sdk-go/assert"
 )
 
 const (
@@ -584,11 +586,18 @@ func (s *Server) clearObserverState(remote *leafNodeCfg) {
 		return
 	}
 
-	acc.jscmMu.Lock()
-	defer acc.jscmMu.Unlock()
+	//acc.jscmMu.Lock()
+	//defer acc.jscmMu.Unlock()
 
 	// Walk all streams looking for any clustered stream, skip otherwise.
+	if !acc.testClearing.CompareAndSwap(false, true) {
+		assert.Unreachable("clearObserverState should never be running twice on the same account", nil)
+	}
+	defer acc.testClearing.Store(false)
 	for _, mset := range acc.streams() {
+		if acc.testSetting.Load() {
+			assert.Unreachable("clearObserverState found that checkJetStreamMigrate was also running", nil)
+		}
 		node := mset.raftNode()
 		if node == nil {
 			// Not R>1
@@ -596,10 +605,16 @@ func (s *Server) clearObserverState(remote *leafNodeCfg) {
 		}
 		// Check consumers
 		for _, o := range mset.getConsumers() {
+			if acc.testSetting.Load() {
+				assert.Unreachable("clearObserverState found that checkJetStreamMigrate was also running", nil)
+			}
 			if n := o.raftNode(); n != nil {
 				// Ensure we can become a leader again.
 				n.SetObserver(false)
 			}
+		}
+		if acc.testSetting.Load() {
+			assert.Unreachable("clearObserverState found that checkJetStreamMigrate was also running", nil)
 		}
 		// Ensure we can not become a leader again.
 		node.SetObserver(false)
@@ -622,12 +637,19 @@ func (s *Server) checkJetStreamMigrate(remote *leafNodeCfg) {
 		return
 	}
 
-	acc.jscmMu.Lock()
-	defer acc.jscmMu.Unlock()
+	//acc.jscmMu.Lock()
+	//defer acc.jscmMu.Unlock()
 
 	// Walk all streams looking for any clustered stream, skip otherwise.
 	// If we are the leader force stepdown.
+	if !acc.testSetting.CompareAndSwap(false, true) {
+		assert.Unreachable("checkJetStreamMigrate should never be running twice on the same account", nil)
+	}
+	defer acc.testSetting.Store(false)
 	for _, mset := range acc.streams() {
+		if acc.testClearing.Load() {
+			assert.Unreachable("checkJetStreamMigrate found that clearObserverState was also running", nil)
+		}
 		node := mset.raftNode()
 		if node == nil {
 			// Not R>1
@@ -635,6 +657,9 @@ func (s *Server) checkJetStreamMigrate(remote *leafNodeCfg) {
 		}
 		// Collect any consumers
 		for _, o := range mset.getConsumers() {
+			if acc.testClearing.Load() {
+				assert.Unreachable("checkJetStreamMigrate found that clearObserverState was also running", nil)
+			}
 			if n := o.raftNode(); n != nil {
 				if n.Leader() {
 					n.StepDown()
@@ -642,6 +667,9 @@ func (s *Server) checkJetStreamMigrate(remote *leafNodeCfg) {
 				// Ensure we can not become a leader while in this state.
 				n.SetObserver(true)
 			}
+		}
+		if acc.testClearing.Load() {
+			assert.Unreachable("checkJetStreamMigrate found that clearObserverState was also running", nil)
 		}
 		// Stepdown if this stream was leader.
 		if node.Leader() {

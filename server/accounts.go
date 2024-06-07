@@ -105,7 +105,9 @@ type Account struct {
 	traceDestSampling int
 	// Guarantee that only one goroutine can be running either checkJetStreamMigrate
 	// or clearObserverState at a given time for this account to prevent interleaving.
-	jscmMu sync.Mutex
+	jscmMu       sync.Mutex
+	testClearing atomic.Bool // remove me
+	testSetting  atomic.Bool // remove me
 }
 
 const (
