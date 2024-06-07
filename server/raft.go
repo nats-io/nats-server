@@ -387,7 +387,7 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 		apply:    newIPQueue[*CommittedEntry](s, qpfx+"committedEntry"),
 		stepdown: newIPQueue[string](s, qpfx+"stepdown"),
 		accName:  accName,
-		leadc:    make(chan bool, 1),
+		leadc:    make(chan bool, 32),
 		observer: cfg.Observer,
 		extSt:    ps.domainExt,
 	}

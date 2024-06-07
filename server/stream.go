@@ -839,6 +839,28 @@ func (mset *stream) isLeader() bool {
 	return true
 }
 
+// Lock should be held
+func (mset *stream) stepDown() {
+	// cancel timer to create the source consumers if not fired yet
+	if mset.sourcesConsumerSetup != nil {
+		mset.sourcesConsumerSetup.Stop()
+		mset.sourcesConsumerSetup = nil
+	} else { // otherwise cancel the source consumers
+		mset.stopSourceConsumers()
+	}
+
+	if mset.mirror != nil {
+		mset.cancelMirrorConsumer()
+	}
+
+	// Stop responding to sync requests.
+	mset.stopClusterSubs()
+	// Unsubscribe from direct stream.
+	mset.unsubscribeToStream(false)
+	// Clear catchup state
+	mset.clearAllCatchupPeers()
+}
+
 // TODO(dlc) - Check to see if we can accept being the leader or we should step down.
 func (mset *stream) setLeader(isLeader bool) error {
 	mset.mu.Lock()
@@ -854,23 +876,14 @@ func (mset *stream) setLeader(isLeader bool) error {
 		if err := mset.subscribeToStream(); err != nil {
 			if mset.isClustered() {
 				// Stepdown since we have an error.
+				mset.stepDown()
 				mset.node.StepDown()
 			}
 			mset.mu.Unlock()
 			return err
 		}
 	} else {
-		// cancel timer to create the source consumers if not fired yet
-		if mset.sourcesConsumerSetup != nil {
-			mset.sourcesConsumerSetup.Stop()
-			mset.sourcesConsumerSetup = nil
-		}
-		// Stop responding to sync requests.
-		mset.stopClusterSubs()
-		// Unsubscribe from direct stream.
-		mset.unsubscribeToStream(false)
-		// Clear catchup state
-		mset.clearAllCatchupPeers()
+		mset.stepDown()
 	}
 	mset.mu.Unlock()
 
