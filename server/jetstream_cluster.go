@@ -4431,11 +4431,15 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 			s.sendInternalMsgLocked(consumerAssignmentSubj, _EMPTY_, nil, b)
 		}
 	} else {
+		js.mu.RLock()
+		node := rg.node
+		js.mu.RUnlock()
+
 		if didCreate {
 			o.setCreatedTime(ca.Created)
 		} else {
 			// Check for scale down to 1..
-			if rg.node != nil && len(rg.Peers) == 1 {
+			if node != nil && len(rg.Peers) == 1 {
 				o.clearNode()
 				o.setLeader(true)
 				// Need to clear from rg too.
@@ -4450,7 +4454,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 			}
 		}
 
-		if rg.node == nil {
+		if node == nil {
 			// Single replica consumer, process manually here.
 			js.mu.Lock()
 			// Force response in case we think this is an update.
