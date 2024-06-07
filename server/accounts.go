@@ -103,6 +103,9 @@ type Account struct {
 	// and if it falls between 0 and that value, message tracing will be triggered.
 	traceDest         string
 	traceDestSampling int
+	// Guarantee that only one goroutine can be running either checkJetStreamMigrate
+	// or clearObserverState at a given time for this account to prevent interleaving.
+	jscmMu sync.Mutex
 }
 
 const (
