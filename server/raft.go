@@ -2450,8 +2450,10 @@ func (n *raft) lostQuorum() bool {
 }
 
 func (n *raft) lostQuorumLocked() bool {
-	// Make sure we let any scale up actions settle before deciding.
-	if !n.lsut.IsZero() && time.Since(n.lsut) < lostQuorumInterval {
+	// In order to avoid false positives that can happen in heavily loaded systems
+	// make sure nothing is queued up that we have not processed yet.
+	// Also make sure we let any scale up actions settle before deciding.
+	if n.resp.len() != 0 || (!n.lsut.IsZero() && time.Since(n.lsut) < lostQuorumInterval) {
 		return false
 	}
 
@@ -2464,9 +2466,7 @@ func (n *raft) lostQuorumLocked() bool {
 			}
 		}
 	}
-	// In order to avoid false positives that can happen in heavily loaded systems when the heartbeat
-	// make sure nothing is queued up that we have not processed yet.
-	return n.resp.len() == 0
+	return true
 }
 
 // Check for being not active in terms of sending entries.
