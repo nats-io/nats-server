@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"math/rand"
 	"os"
@@ -1621,8 +1622,15 @@ NextServer:
 	}
 }
 
+// To enable long running tests:
+//
+// go test -v  --args --long-running
+var runLongRunningTests = flag.Bool("long-running", false, "Disables skipping long running tests")
+
 func TestJetStreamClusterBusyStreams(t *testing.T) {
-	t.Skip("Too long for CI at the moment")
+	if !*runLongRunningTests {
+		t.Skip("Skipping long running test")
+	}
 	type streamSetup struct {
 		config    *nats.StreamConfig
 		consumers []*nats.ConsumerConfig
@@ -1635,6 +1643,7 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 		producers       int
 		consumers       int
 		restartAny      bool
+		restartFirst    bool
 		restartWait     time.Duration
 		ldmRestart      bool
 		rolloutRestart  bool
@@ -1798,6 +1807,15 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 				defer wg.Done()
 				for i := 0; i < test.restarts; i++ {
 					switch {
+					case test.restartFirst:
+						s := c.servers[0]
+						if test.ldmRestart {
+							s.lameDuckMode()
+						} else {
+							s.Shutdown()
+						}
+						s.WaitForShutdown()
+						c.restartServer(s)
 					case test.restartAny:
 						s := c.servers[rand.Intn(len(c.servers))]
 						if test.ldmRestart {
@@ -1882,18 +1900,20 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 				mset.mu.RLock()
 				sm, err := mset.store.LoadMsg(seq, &smv)
 				mset.mu.RUnlock()
-				require_NoError(t, err)
+				if err != nil {
+					t.Errorf("Error loading message from replica: %v", err)
+					continue
+				}
 				if msgId == _EMPTY_ {
 					msgId = string(sm.hdr)
 				} else if msgId != string(sm.hdr) {
-					t.Fatalf("MsgIds do not match for seq %d: %q vs %q", seq, msgId, sm.hdr)
+					t.Errorf("MsgIds do not match for seq %d: %q vs %q", seq, msgId, sm.hdr)
 				}
 			}
 		}
 	}
 	checkConsumer := func(t *testing.T, c *cluster, accountName, streamName, consumerName string) {
 		t.Helper()
-		var leader string
 		for _, s := range c.servers {
 			jsz, err := s.Jsz(&JSzOptions{Accounts: true, Streams: true, Consumer: true})
 			require_NoError(t, err)
@@ -1902,11 +1922,9 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 					for _, stream := range acc.Streams {
 						if stream.Name == streamName {
 							for _, consumer := range stream.Consumer {
-								if leader == "" {
-									leader = consumer.Cluster.Leader
-								} else if leader != consumer.Cluster.Leader {
-									t.Errorf("There are two leaders for %s/%s: %s vs %s",
-										stream.Name, consumer.Name, leader, consumer.Cluster.Leader)
+								if stream.State.LastSeq < consumer.Delivered.Stream {
+									t.Errorf("Stream %q last sequence is behind consumer %q sequence, s:%d vs c:%d",
+										stream.Config.Name, consumer.Config.Name, stream.State.LastSeq, consumer.Delivered.Stream)
 								}
 							}
 						}
@@ -2108,6 +2126,10 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 					accName := "js"
 					for i := 0; i < totalStreams; i++ {
 						streamName := fmt.Sprintf("test:%d", i)
+						for j := 0; j < consumersPerStream; j++ {
+							consumerName := fmt.Sprintf("A:%d:%d", i, j)
+							checkConsumer(t, c, accName, streamName, consumerName)
+						}
 						checkMsgsEqual(t, c, accName, streamName)
 					}
 				}
@@ -2116,6 +2138,8 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 					streams:         streams,
 					producers:       10,
 					consumers:       10,
+					restartFirst:    tp.restartFirst,
+					restartAny:      tp.restartAny,
 					restarts:        tp.restarts,
 					rolloutRestart:  tp.rolloutRestart,
 					ldmRestart:      tp.ldmRestart,
@@ -2146,6 +2170,18 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 						ldmRestart:     false,
 						checkHealthz:   true,
 						restartWait:    45 * time.Second,
+					},
+					// Do a few of non graceful restarts to first node.
+					"term:2": {
+						restarts:     2,
+						restartFirst: true,
+						restartWait:  45 * time.Second,
+					},
+					// Do a few of non graceful restarts to any nodes.
+					"term:3": {
+						restarts:    3,
+						restartAny:  true,
+						restartWait: 45 * time.Second,
 					},
 				} {
 					t.Run(rolloutType, func(t *testing.T) {
