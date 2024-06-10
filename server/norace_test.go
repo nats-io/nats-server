@@ -10569,3 +10569,152 @@ func TestNoRaceLargeNumDeletesStreamCatchups(t *testing.T) {
 		return nil
 	})
 }
+
+func TestNoRaceJetStreamClusterMemoryStreamLastSequenceResetAfterRestart(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	numStreams := 250
+	var wg sync.WaitGroup
+	wg.Add(numStreams)
+
+	for i := 1; i <= numStreams; i++ {
+		go func(n int) {
+			defer wg.Done()
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     fmt.Sprintf("TEST:%d", n),
+				Storage:  nats.MemoryStorage,
+				Subjects: []string{fmt.Sprintf("foo.%d.*", n)},
+				Replicas: 3,
+			}, nats.MaxWait(30*time.Second))
+			require_NoError(t, err)
+			subj := fmt.Sprintf("foo.%d.bar", n)
+			for i := 0; i < 222; i++ {
+				js.Publish(subj, nil)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// Make sure all streams have a snapshot in place to stress the snapshot logic for memory based streams.
+	for _, s := range c.servers {
+		for i := 1; i <= numStreams; i++ {
+			stream := fmt.Sprintf("TEST:%d", i)
+			mset, err := s.GlobalAccount().lookupStream(stream)
+			require_NoError(t, err)
+			node := mset.raftNode()
+			require_NotNil(t, node)
+			node.InstallSnapshot(mset.stateSnapshot())
+		}
+	}
+
+	// Do 5 rolling restarts waiting on healthz in between.
+	for i := 0; i < 5; i++ {
+		// Walk the servers and shut each down, and wipe the storage directory.
+		for _, s := range c.servers {
+			s.Shutdown()
+			s.WaitForShutdown()
+			s = c.restartServer(s)
+			checkFor(t, 30*time.Second, time.Second, func() error {
+				hs := s.healthz(nil)
+				if hs.Error != _EMPTY_ {
+					return errors.New(hs.Error)
+				}
+				return nil
+			})
+			// Make sure all streams are current after healthz returns ok.
+			for i := 1; i <= numStreams; i++ {
+				stream := fmt.Sprintf("TEST:%d", i)
+				mset, err := s.GlobalAccount().lookupStream(stream)
+				require_NoError(t, err)
+				var state StreamState
+				checkFor(t, 30*time.Second, time.Second, func() error {
+					mset.store.FastState(&state)
+					if state.LastSeq != 222 {
+						return fmt.Errorf("%v Wrong last sequence %d for %q - State  %+v", s, state.LastSeq, stream, state)
+					}
+					return nil
+				})
+			}
+		}
+	}
+}
+
+func TestNoRaceJetStreamClusterMemoryWorkQueueLastSequenceResetAfterRestart(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	numStreams := 50
+	var wg sync.WaitGroup
+	wg.Add(numStreams)
+
+	for i := 1; i <= numStreams; i++ {
+		go func(n int) {
+			defer wg.Done()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:      fmt.Sprintf("TEST:%d", n),
+				Storage:   nats.MemoryStorage,
+				Retention: nats.WorkQueuePolicy,
+				Subjects:  []string{fmt.Sprintf("foo.%d.*", n)},
+				Replicas:  3,
+			}, nats.MaxWait(30*time.Second))
+			require_NoError(t, err)
+			subj := fmt.Sprintf("foo.%d.bar", n)
+			for i := 0; i < 22; i++ {
+				js.Publish(subj, nil)
+			}
+			// Now consumer them all as well.
+			sub, err := js.PullSubscribe(subj, "wq")
+			require_NoError(t, err)
+			msgs, err := sub.Fetch(22, nats.MaxWait(20*time.Second))
+			require_NoError(t, err)
+			require_Equal(t, len(msgs), 22)
+			for _, m := range msgs {
+				err := m.AckSync()
+				require_NoError(t, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// Do 2 rolling restarts waiting on healthz in between.
+	for i := 0; i < 2; i++ {
+		// Walk the servers and shut each down, and wipe the storage directory.
+		for _, s := range c.servers {
+			s.Shutdown()
+			s.WaitForShutdown()
+			s = c.restartServer(s)
+			checkFor(t, 30*time.Second, time.Second, func() error {
+				hs := s.healthz(nil)
+				if hs.Error != _EMPTY_ {
+					return errors.New(hs.Error)
+				}
+				return nil
+			})
+			// Make sure all streams are current after healthz returns ok.
+			for i := 1; i <= numStreams; i++ {
+				stream := fmt.Sprintf("TEST:%d", i)
+				mset, err := s.GlobalAccount().lookupStream(stream)
+				require_NoError(t, err)
+				var state StreamState
+				checkFor(t, 20*time.Second, time.Second, func() error {
+					mset.store.FastState(&state)
+					if state.LastSeq != 22 {
+						return fmt.Errorf("%v Wrong last sequence %d for %q - State  %+v", s, state.LastSeq, stream, state)
+					}
+					if state.FirstSeq != 23 {
+						return fmt.Errorf("%v Wrong first sequence %d for %q - State  %+v", s, state.FirstSeq, stream, state)
+					}
+					return nil
+				})
+			}
+		}
+	}
+}

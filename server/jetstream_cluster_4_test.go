@@ -2273,7 +2273,7 @@ func TestJetStreamClusterStreamLastSequenceResetAfterStorageWipe(t *testing.T) {
 				checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
 					mset.store.FastState(&state)
 					if state.LastSeq != 222 {
-						return fmt.Errorf("%v LAST SEQ WRONG %d for %q - STATE %+v", s, state.LastSeq, stream, state)
+						return fmt.Errorf("%v Wrong last sequence %d for %q - State  %+v", s, state.LastSeq, stream, state)
 					}
 					return nil
 				})
