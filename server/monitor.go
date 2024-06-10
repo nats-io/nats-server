@@ -3485,6 +3485,11 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 		return health
 	}
 
+	// If JSServerOnly is true, then do not check further accounts, streams and consumers.
+	if opts.JSServerOnly {
+		return health
+	}
+
 	// Are we still recovering meta layer?
 	if js.isMetaRecovering() {
 		if !details {
