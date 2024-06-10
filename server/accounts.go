@@ -96,6 +96,9 @@ type Account struct {
 	nameTag      string
 	lastLimErr   int64
 	routePoolIdx int
+	// Guarantee that only one goroutine can be running either checkJetStreamMigrate
+	// or clearObserverState at a given time for this account to prevent interleaving.
+	jscmMu sync.Mutex
 }
 
 const (
@@ -1479,6 +1482,10 @@ func (a *Account) addServiceImportWithClaim(destination *Account, from, to strin
 		return err
 	}
 
+	if err := a.serviceImportFormsCycle(destination, to); err != nil {
+		return err
+	}
+
 	_, err := a.addServiceImport(destination, from, to, imClaim)
 
 	return err
@@ -2463,6 +2470,10 @@ func (a *Account) AddMappedStreamImportWithClaim(account *Account, from, to stri
 
 	// Check if this forms a cycle.
 	if err := a.streamImportFormsCycle(account, to); err != nil {
+		return err
+	}
+
+	if err := a.streamImportFormsCycle(account, from); err != nil {
 		return err
 	}
 

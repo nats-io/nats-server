@@ -943,6 +943,31 @@ func TestMemStorePurgeExWithDeletedMsgs(t *testing.T) {
 	require_Equal(t, state.Msgs, 1)
 }
 
+// When all messages are deleted we should have a state of first = last + 1.
+func TestMemStoreDeleteAllFirstSequenceCheck(t *testing.T) {
+	cfg := &StreamConfig{
+		Name:     "zzz",
+		Subjects: []string{"foo"},
+		Storage:  MemoryStorage,
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(t, err)
+	defer ms.Stop()
+
+	msg := []byte("abc")
+	for i := 1; i <= 10; i++ {
+		ms.StoreMsg("foo", nil, msg)
+	}
+	for seq := uint64(1); seq <= 10; seq++ {
+		ms.RemoveMsg(seq)
+	}
+	var state StreamState
+	ms.FastState(&state)
+	require_Equal(t, state.FirstSeq, 11)
+	require_Equal(t, state.LastSeq, 10)
+	require_Equal(t, state.Msgs, 0)
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////

@@ -1726,3 +1726,68 @@ func TestJetStreamClusterSingleMaxConsumerUpdate(t *testing.T) {
 	})
 	require_NoError(t, err)
 }
+
+func TestJetStreamClusterStreamLastSequenceResetAfterStorageWipe(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// After bug was found, number of streams and wiping store directory really did not affect.
+	numStreams := 50
+	var wg sync.WaitGroup
+	wg.Add(numStreams)
+
+	for i := 1; i <= numStreams; i++ {
+		go func(n int) {
+			defer wg.Done()
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:      fmt.Sprintf("TEST:%d", n),
+				Retention: nats.InterestPolicy,
+				Subjects:  []string{fmt.Sprintf("foo.%d.*", n)},
+				Replicas:  3,
+			}, nats.MaxWait(30*time.Second))
+			require_NoError(t, err)
+			subj := fmt.Sprintf("foo.%d.bar", n)
+			for i := 0; i < 222; i++ {
+				js.Publish(subj, nil)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	for i := 0; i < 5; i++ {
+		// Walk the servers and shut each down, and wipe the storage directory.
+		for _, s := range c.servers {
+			sd := s.JetStreamConfig().StoreDir
+			s.Shutdown()
+			s.WaitForShutdown()
+			os.RemoveAll(sd)
+			s = c.restartServer(s)
+			checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+				hs := s.healthz(nil)
+				if hs.Error != _EMPTY_ {
+					return errors.New(hs.Error)
+				}
+				return nil
+			})
+		}
+
+		for _, s := range c.servers {
+			for i := 1; i <= numStreams; i++ {
+				stream := fmt.Sprintf("TEST:%d", i)
+				mset, err := s.GlobalAccount().lookupStream(stream)
+				require_NoError(t, err)
+				var state StreamState
+				checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+					mset.store.FastState(&state)
+					if state.LastSeq != 222 {
+						return fmt.Errorf("%v Wrong last sequence %d for %q - State  %+v", s, state.LastSeq, stream, state)
+					}
+					return nil
+				})
+			}
+		}
+	}
+}

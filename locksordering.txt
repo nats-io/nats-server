@@ -22,3 +22,11 @@ This must be taken out as soon as a reload is about to happen before any other l
 
     reloadMu -> Server
     reloadMu -> optsMu
+
+The "jscmMu" lock in the Account is used to serialise calls to checkJetStreamMigrate and
+clearObserverState so that they cannot interleave which would leave Raft nodes in
+inconsistent observer states.
+
+    jscmMu -> Account -> jsAccount
+    jscmMu -> stream.clsMu 
+    jscmMu -> RaftNode
