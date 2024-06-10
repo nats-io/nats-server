@@ -2384,7 +2384,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		mset.waitOnConsumerAssignments()
 		// Setup a periodic check here.
 		// We will fire in 5s the first time then back off to 30s
-		cist = time.NewTicker(10 * time.Second)
+		cist = time.NewTicker(5 * time.Second)
 		cistc = cist.C
 	}
 
