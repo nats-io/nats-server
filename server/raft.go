@@ -3255,12 +3255,6 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		n.updateLeadChange(false)
 	}
 
-	// Check if this a new heartbeat with a newer term but same index.
-	// If so we take on the new term and proceed.
-	if isNew && ae.pterm > n.pterm && ae.pindex == n.pindex && len(ae.entries) == 0 {
-		n.term, n.pterm = ae.pterm, ae.term
-	}
-
 	if (isNew && ae.pterm != n.pterm) || ae.pindex != n.pindex {
 		// Check if this is a lower or equal index than what we were expecting.
 		if ae.pindex <= n.pindex {
