@@ -534,12 +534,18 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) bool {
 		return false
 	}
 
-	// If we are catching up return false.
-	if mset.isCatchingUp() {
+	// If R1 we are good.
+	if node == nil {
+		return true
+	}
+
+	// Here we are a replicated stream.
+	// First make sure our monitor routine is running.
+	if !mset.isMonitorRunning() {
 		return false
 	}
 
-	if node == nil || node.Healthy() {
+	if node.Healthy() {
 		// Check if we are processing a snapshot and are catching up.
 		if !mset.isCatchingUp() {
 			return true
@@ -553,7 +559,6 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) bool {
 			js.restartStream(acc, sa)
 		}
 	}
-
 	return false
 }
 
@@ -863,6 +868,8 @@ func (js *jetStream) setupMetaGroup() error {
 	atomic.StoreInt32(&js.clustered, 1)
 	c.registerWithAccount(sacc)
 
+	// Set to true before we start.
+	js.metaRecovering = true
 	js.srv.startGoRoutine(
 		js.monitorCluster,
 		pprofLabels{
@@ -2164,7 +2171,7 @@ func genPeerInfo(peers []string, split int) (newPeers, oldPeers []string, newPee
 // Should only be called from monitorStream.
 func (mset *stream) waitOnConsumerAssignments() {
 	mset.mu.RLock()
-	s, js, acc, sa, name := mset.srv, mset.js, mset.acc, mset.sa, mset.cfg.Name
+	s, js, acc, sa, name, replicas := mset.srv, mset.js, mset.acc, mset.sa, mset.cfg.Name, mset.cfg.Replicas
 	mset.mu.RUnlock()
 
 	if s == nil || js == nil || acc == nil || sa == nil {
@@ -2186,6 +2193,9 @@ func (mset *stream) waitOnConsumerAssignments() {
 		for _, o := range mset.getConsumers() {
 			// Make sure we are registered with our consumer assignment.
 			if ca := o.consumerAssignment(); ca != nil {
+				if replicas > 1 && !o.isMonitorRunning() {
+					break
+				}
 				numReady++
 			} else {
 				break
@@ -2373,7 +2383,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		// since we process streams first then consumers as an asset class.
 		mset.waitOnConsumerAssignments()
 		// Setup a periodic check here.
-		cist = time.NewTicker(30 * time.Second)
+		// We will fire in 5s the first time then back off to 30s
+		cist = time.NewTicker(5 * time.Second)
 		cistc = cist.C
 	}
 
@@ -2496,6 +2507,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			}
 
 		case <-cistc:
+			cist.Reset(30 * time.Second)
 			// We may be adjusting some things with consumers so do this in its own go routine.
 			go mset.checkInterestState()
 
@@ -4917,7 +4929,22 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 					}
 				}
 				// Check our interest state if applicable.
-				o.checkStateForInterestStream()
+				if err := o.checkStateForInterestStream(); err == errAckFloorHigherThanLastSeq {
+					o.mu.RLock()
+					mset := o.mset
+					o.mu.RUnlock()
+					// Register pre-acks unless no state at all for the stream and we would create alot of pre-acks.
+					mset.mu.Lock()
+					var ss StreamState
+					mset.store.FastState(&ss)
+					// Only register if we have a valid FirstSeq.
+					if ss.FirstSeq > 0 {
+						for seq := ss.FirstSeq; seq < state.AckFloor.Stream; seq++ {
+							mset.registerPreAck(o, seq)
+						}
+					}
+					mset.mu.Unlock()
+				}
 			}
 
 		} else if e.Type == EntryRemovePeer {
@@ -8107,8 +8134,11 @@ func (mset *stream) processSnapshot(snap *StreamReplicatedState) (e error) {
 	var sub *subscription
 	var err error
 
-	const activityInterval = 30 * time.Second
-	notActive := time.NewTimer(activityInterval)
+	const (
+		startInterval    = 5 * time.Second
+		activityInterval = 30 * time.Second
+	)
+	notActive := time.NewTimer(startInterval)
 	defer notActive.Stop()
 
 	defer func() {
@@ -8191,7 +8221,7 @@ RETRY:
 		default:
 		}
 	}
-	notActive.Reset(activityInterval)
+	notActive.Reset(startInterval)
 
 	// Grab sync request again on failures.
 	if sreq == nil {
@@ -8236,8 +8266,10 @@ RETRY:
 	// Send our sync request.
 	b, _ := json.Marshal(sreq)
 	s.sendInternalMsgLocked(subject, reply, nil, b)
+
 	// Remember when we sent this out to avoid loop spins on errors below.
 	reqSendTime := time.Now()
+
 	// Clear our sync request.
 	sreq = nil
 
@@ -8786,7 +8818,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 					done = maxOutMsgs-atomic.LoadInt32(&outm) > minBatchWait
 					if !done {
 						// Wait for a small bit.
-						time.Sleep(50 * time.Millisecond)
+						time.Sleep(100 * time.Millisecond)
 					} else {
 						// GC friendly.
 						mw.Stop()

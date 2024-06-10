@@ -3485,8 +3485,20 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 		return health
 	}
 
-	// If JSServerOnly is true, then do not check further accounts, streams and consumers.
-	if opts.JSServerOnly {
+	// Are we still recovering meta layer?
+	if js.isMetaRecovering() {
+		if !details {
+			health.Status = na
+			health.Error = "JetStream is still recovering meta layer"
+
+		} else {
+			health.Errors = []HealthzError{
+				{
+					Type:  HealthzErrorJetStream,
+					Error: "JetStream is still recovering meta layer",
+				},
+			}
+		}
 		return health
 	}
 

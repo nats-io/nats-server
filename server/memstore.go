@@ -261,7 +261,7 @@ func (ms *memStore) SkipMsg() uint64 {
 	ms.state.LastSeq = seq
 	ms.state.LastTime = now
 	if ms.state.Msgs == 0 {
-		ms.state.FirstSeq = seq
+		ms.state.FirstSeq = seq + 1
 		ms.state.FirstTime = now
 	} else {
 		ms.dmap.Insert(seq)
