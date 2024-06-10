@@ -3490,6 +3490,23 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 		return health
 	}
 
+	// Are we still recovering meta layer?
+	if js.isMetaRecovering() {
+		if !details {
+			health.Status = na
+			health.Error = "JetStream is still recovering meta layer"
+
+		} else {
+			health.Errors = []HealthzError{
+				{
+					Type:  HealthzErrorJetStream,
+					Error: "JetStream is still recovering meta layer",
+				},
+			}
+		}
+		return health
+	}
+
 	// Range across all accounts, the streams assigned to them, and the consumers.
 	// If they are assigned to this server check their status.
 	ourID := meta.ID()

@@ -5574,7 +5574,7 @@ func (mset *stream) checkInterestState() {
 	defer mset.mu.Unlock()
 
 	// Check which purge we need to perform.
-	if lowAckFloor <= state.LastSeq {
+	if lowAckFloor <= state.LastSeq || state.Msgs == 0 {
 		// Purge the stream to lowest ack floor + 1
 		mset.store.PurgeEx(_EMPTY_, lowAckFloor+1, 0)
 	} else {
@@ -6234,4 +6234,11 @@ func (mset *stream) clearMonitorRunning() {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 	mset.inMonitor = false
+}
+
+// Check if our monitor is running.
+func (mset *stream) isMonitorRunning() bool {
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
+	return mset.inMonitor
 }

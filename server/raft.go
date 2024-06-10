@@ -85,6 +85,7 @@ type WAL interface {
 	RemoveMsg(index uint64) (bool, error)
 	Compact(index uint64) (uint64, error)
 	Purge() (uint64, error)
+	PurgeEx(subject string, seq, keep uint64) (uint64, error)
 	Truncate(seq uint64) error
 	State() StreamState
 	FastState(*StreamState)
@@ -414,7 +415,8 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 		return nil, fmt.Errorf("could not create snapshots directory - %v", err)
 	}
 
-	// Can't recover snapshots if memory based.
+	// Can't recover snapshots if memory based since wal will be reset.
+	// We will inherit from the current leader.
 	if _, ok := n.wal.(*memStore); ok {
 		os.Remove(filepath.Join(n.sd, snapshotsDir, "*"))
 	} else {
@@ -1012,17 +1014,16 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	}
 
 	n.Lock()
+	defer n.Unlock()
 
 	// If a write error has occurred already then stop here.
 	if werr := n.werr; werr != nil {
-		n.Unlock()
 		return werr
 	}
 
 	// Check that a catchup isn't already taking place. If it is then we won't
 	// allow installing snapshots until it is done.
 	if len(n.progress) > 0 {
-		n.Unlock()
 		return errCatchupsRunning
 	}
 
@@ -1030,7 +1031,6 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	n.wal.FastState(&state)
 
 	if n.applied == 0 {
-		n.Unlock()
 		return errNoSnapAvailable
 	}
 
@@ -1055,6 +1055,12 @@ func (n *raft) InstallSnapshot(data []byte) error {
 		data:      data,
 	}
 
+	return n.installSnapshot(snap)
+}
+
+// Install the snapshot.
+// Lock should be held.
+func (n *raft) installSnapshot(snap *snapshot) error {
 	snapDir := filepath.Join(n.sd, snapshotsDir)
 	sn := fmt.Sprintf(snapFileT, snap.lastTerm, snap.lastIndex)
 	sfile := filepath.Join(snapDir, sn)
@@ -1064,7 +1070,6 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	dios <- struct{}{}
 
 	if err != nil {
-		n.Unlock()
 		// We could set write err here, but if this is a temporary situation, too many open files etc.
 		// we want to retry and snapshots are not fatal.
 		return err
@@ -1074,19 +1079,19 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	n.snapfile = sfile
 	if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
 		n.setWriteErrLocked(err)
-		n.Unlock()
 		return err
 	}
-	n.Unlock()
-
-	psnaps, _ := os.ReadDir(snapDir)
 	// Remove any old snapshots.
-	for _, fi := range psnaps {
-		pn := fi.Name()
-		if pn != sn {
-			os.Remove(filepath.Join(snapDir, pn))
+	// Do this in a go routine.
+	go func() {
+		psnaps, _ := os.ReadDir(snapDir)
+		for _, fi := range psnaps {
+			pn := fi.Name()
+			if pn != sn {
+				os.Remove(filepath.Join(snapDir, pn))
+			}
 		}
-	}
+	}()
 
 	return nil
 }
@@ -3082,17 +3087,20 @@ func (n *raft) truncateWAL(term, index uint64) {
 
 	if err := n.wal.Truncate(index); err != nil {
 		// If we get an invalid sequence, reset our wal all together.
+		// We will not have holes, so this means we do not have this message stored anymore.
 		if err == ErrInvalidSequence {
 			n.debug("Resetting WAL")
 			n.wal.Truncate(0)
-			index, n.term, n.pterm, n.pindex = 0, 0, 0, 0
+			// If our index is non-zero use PurgeEx to set us to the correct next index.
+			if index > 0 {
+				n.wal.PurgeEx(fwcs, index+1, 0)
+			}
 		} else {
 			n.warn("Error truncating WAL: %v", err)
 			n.setWriteErrLocked(err)
+			return
 		}
-		return
 	}
-
 	// Set after we know we have truncated properly.
 	n.term, n.pterm, n.pindex = term, term, index
 }
@@ -3266,7 +3274,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				// If terms mismatched, or we got an error loading, delete that entry and all others past it.
 				// Make sure to cancel any catchups in progress.
 				// Truncate will reset our pterm and pindex. Only do so if we have an entry.
-				n.truncateWAL(ae.pterm, ae.pindex)
+				n.truncateWAL(eae.pterm, eae.pindex)
 			}
 			// Cancel regardless.
 			n.cancelCatchup()
@@ -3313,11 +3321,25 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				return
 			}
 
+			// Inherit state from appendEntry with the leader's snapshot.
 			n.pindex = ae.pindex
 			n.pterm = ae.pterm
 			n.commit = ae.pindex
 
 			if _, err := n.wal.Compact(n.pindex + 1); err != nil {
+				n.setWriteErrLocked(err)
+				n.Unlock()
+				return
+			}
+
+			snap := &snapshot{
+				lastTerm:  n.pterm,
+				lastIndex: n.pindex,
+				peerstate: encodePeerState(&peerState{n.peerNames(), n.csz, n.extSt}),
+				data:      ae.entries[0].Data,
+			}
+			// Install the leader's snapshot as our own.
+			if err := n.installSnapshot(snap); err != nil {
 				n.setWriteErrLocked(err)
 				n.Unlock()
 				return
