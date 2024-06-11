@@ -235,16 +235,18 @@ const (
 	hbIntervalDefault              = 1 * time.Second
 	lostQuorumIntervalDefault      = hbIntervalDefault * 10 // 10 seconds
 	lostQuorumCheckIntervalDefault = hbIntervalDefault * 10 // 10 seconds
+	observerModeIntervalDefault    = 48 * time.Hour
 )
 
 var (
-	minElectionTimeout = minElectionTimeoutDefault
-	maxElectionTimeout = maxElectionTimeoutDefault
-	minCampaignTimeout = minCampaignTimeoutDefault
-	maxCampaignTimeout = maxCampaignTimeoutDefault
-	hbInterval         = hbIntervalDefault
-	lostQuorumInterval = lostQuorumIntervalDefault
-	lostQuorumCheck    = lostQuorumCheckIntervalDefault
+	minElectionTimeout   = minElectionTimeoutDefault
+	maxElectionTimeout   = maxElectionTimeoutDefault
+	minCampaignTimeout   = minCampaignTimeoutDefault
+	maxCampaignTimeout   = maxCampaignTimeoutDefault
+	hbInterval           = hbIntervalDefault
+	lostQuorumInterval   = lostQuorumIntervalDefault
+	lostQuorumCheck      = lostQuorumCheckIntervalDefault
+	observerModeInterval = observerModeIntervalDefault
 )
 
 type RaftConfig struct {
@@ -875,7 +877,7 @@ func (n *raft) PauseApply() error {
 	n.hcommit = n.commit
 	// Also prevent us from trying to become a leader while paused and catching up.
 	n.pobserver, n.observer = n.observer, true
-	n.resetElect(48 * time.Hour)
+	n.resetElect(observerModeInterval)
 
 	return nil
 }
@@ -1895,8 +1897,16 @@ func (n *raft) SetObserver(isObserver bool) {
 func (n *raft) setObserver(isObserver bool, extSt extensionState) {
 	n.Lock()
 	defer n.Unlock()
+
+	wasObserver := n.observer
 	n.observer = isObserver
 	n.extSt = extSt
+
+	// If we're leaving observer state then reset the election timer or
+	// we might end up waiting for up to the observerModeInterval.
+	if wasObserver && !isObserver {
+		n.resetElect(randCampaignTimeout())
+	}
 }
 
 // processAppendEntries is called by the Raft state machine when there are
@@ -1946,7 +1956,7 @@ func (n *raft) runAsFollower() {
 				n.resetElectionTimeoutWithLock()
 				n.debug("Not switching to candidate, no resources")
 			} else if n.IsObserver() {
-				n.resetElectWithLock(48 * time.Hour)
+				n.resetElectWithLock(observerModeInterval)
 				n.debug("Not switching to candidate, observer only")
 			} else if n.isCatchingUp() {
 				n.debug("Not switching to candidate, catching up")

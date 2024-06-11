@@ -1242,3 +1242,85 @@ func TestJetStreamLeafNodeSvcImportExportCycle(t *testing.T) {
 	_, err = js.Publish("foo", []byte("msg"))
 	require_NoError(t, err)
 }
+
+func TestJetStreamLeafNodeJSClusterMigrateRecovery(t *testing.T) {
+	tmpl := strings.Replace(jsClusterAccountsTempl, "store_dir:", "domain: hub, store_dir:", 1)
+	c := createJetStreamCluster(t, tmpl, "hub", _EMPTY_, 3, 12232, true)
+	defer c.shutdown()
+
+	tmpl = strings.Replace(jsClusterTemplWithLeafNode, "store_dir:", "domain: leaf, store_dir:", 1)
+	lnc := c.createLeafNodesWithTemplateAndStartPort(tmpl, "leaf", 3, 23913)
+	defer lnc.shutdown()
+
+	lnc.waitOnClusterReady()
+	for _, s := range lnc.servers {
+		s.setJetStreamMigrateOnRemoteLeaf()
+	}
+
+	nc, _ := jsClientConnect(t, lnc.randomServer())
+	defer nc.Close()
+
+	ljs, err := nc.JetStream(nats.Domain("leaf"))
+	require_NoError(t, err)
+
+	// Create an asset in the leafnode cluster.
+	si, err := ljs.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	require_Equal(t, si.Cluster.Name, "leaf")
+	require_NotEqual(t, si.Cluster.Leader, noLeader)
+	require_Equal(t, len(si.Cluster.Replicas), 2)
+
+	// Count how many remotes each server in the leafnode cluster is
+	// supposed to have and then take them down.
+	remotes := map[*Server]int{}
+	for _, s := range lnc.servers {
+		remotes[s] += len(s.leafRemoteCfgs)
+		s.closeAndDisableLeafnodes()
+		checkLeafNodeConnectedCount(t, s, 0)
+	}
+
+	// The Raft nodes in the leafnode cluster now need some time to
+	// notice that they're no longer receiving AEs from a leader, as
+	// they should have been forced into observer mode. Check that
+	// this is the case.
+	time.Sleep(maxElectionTimeout)
+	for _, s := range lnc.servers {
+		s.rnMu.RLock()
+		for name, n := range s.raftNodes {
+			// We don't expect the metagroup to have turned into an
+			// observer but all other assets should have done.
+			if name == defaultMetaGroupName {
+				require_False(t, n.IsObserver())
+			} else {
+				require_True(t, n.IsObserver())
+			}
+		}
+		s.rnMu.RUnlock()
+	}
+
+	// Bring the leafnode connections back up.
+	for _, s := range lnc.servers {
+		s.reEnableLeafnodes()
+		checkLeafNodeConnectedCount(t, s, remotes[s])
+	}
+
+	// Wait for nodes to notice they are no longer in observer mode
+	// and to leave observer mode.
+	time.Sleep(maxElectionTimeout)
+	for _, s := range lnc.servers {
+		s.rnMu.RLock()
+		for _, n := range s.raftNodes {
+			require_False(t, n.IsObserver())
+		}
+		s.rnMu.RUnlock()
+	}
+
+	// Previously nodes would have left observer mode but then would
+	// have failed to elect a stream leader as they were stuck on a
+	// long election timer. Now this should work reliably.
+	lnc.waitOnStreamLeader(globalAccountName, "TEST")
+}
