@@ -1,4 +1,4 @@
-// Copyright 2021-2023 The NATS Authors
+// Copyright 2021-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -168,7 +168,7 @@ func TestNRGRecoverFromFollowingNoLeader(t *testing.T) {
 	for _, n := range rg {
 		rn := n.node().(*raft)
 		rn.ApplyQ().drain()
-		rn.switchToFollower("")
+		rn.switchToFollower(noLeader)
 	}
 
 	// Resume the nodes.
@@ -262,7 +262,7 @@ func TestNRGSimpleElection(t *testing.T) {
 	msg := require_ChanRead(t, voteReqs, time.Second)
 	vr := decodeVoteRequest(msg.Data, msg.Reply)
 	require_True(t, vr != nil)
-	require_NotEqual(t, vr.candidate, "")
+	require_NotEqual(t, vr.candidate, _EMPTY_)
 
 	// The leader should have bumped their term in order to start
 	// an election.
@@ -467,4 +467,25 @@ func TestNRGCandidateStepsDownAfterAE(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+// Test to make sure this does not cause us to truncate our wal or enter catchup state.
+func TestNRGHeartbeatOnLeaderChange(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	for i := 0; i < 10; i++ {
+		// Restart the leader.
+		leader := rg.leader().(*stateAdder)
+		leader.proposeDelta(22)
+		leader.proposeDelta(-11)
+		leader.proposeDelta(-11)
+		rg.waitOnTotal(t, 0)
+		leader.stop()
+		leader.restart()
+		rg.waitOnLeader()
+	}
 }
