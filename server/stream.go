@@ -468,7 +468,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		}
 	}
 	jsa.usageMu.RLock()
-	selected, tier, hasTier := jsa.selectLimits(&cfg)
+	selected, tier, hasTier := jsa.selectLimits(cfg.Replicas)
 	jsa.usageMu.RUnlock()
 	reserved := int64(0)
 	if !isClustered {
@@ -1672,9 +1672,9 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, s *Server) (*Str
 	jsa.mu.RLock()
 	acc := jsa.account
 	jsa.usageMu.RLock()
-	selected, tier, hasTier := jsa.selectLimits(&cfg)
+	selected, tier, hasTier := jsa.selectLimits(cfg.Replicas)
 	if !hasTier && old.Replicas != cfg.Replicas {
-		selected, tier, hasTier = jsa.selectLimits(old)
+		selected, tier, hasTier = jsa.selectLimits(old.Replicas)
 	}
 	jsa.usageMu.RUnlock()
 	reserved := int64(0)
@@ -1909,7 +1909,7 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 
 	js := mset.js
 
-	if targetTier := tierName(cfg); mset.tier != targetTier {
+	if targetTier := tierName(cfg.Replicas); mset.tier != targetTier {
 		// In cases such as R1->R3, only one update is needed
 		jsa.usageMu.RLock()
 		_, ok := jsa.limits[targetTier]
