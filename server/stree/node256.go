@@ -14,9 +14,10 @@
 package stree
 
 // Node with 256 children
+// Order of struct fields for best memory alignment (as per govet/fieldalignment)
 type node256 struct {
-	meta
 	child [256]node
+	meta
 }
 
 func newNode256(prefix []byte) *node256 {

@@ -18,16 +18,17 @@ import (
 )
 
 // Leaf node
+// Order of struct fields for best memory alignment (as per govet/fieldalignment)
 type leaf[T any] struct {
+	value T
 	// This could be the whole subject, but most likely just the suffix portion.
 	// We will only store the suffix here and assume all prior prefix paths have
 	// been checked once we arrive at this leafnode.
 	suffix []byte
-	value  T
 }
 
 func newLeaf[T any](suffix []byte, value T) *leaf[T] {
-	return &leaf[T]{copyBytes(suffix), value}
+	return &leaf[T]{value, copyBytes(suffix)}
 }
 
 func (n *leaf[T]) isLeaf() bool                               { return true }

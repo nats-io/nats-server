@@ -14,10 +14,11 @@
 package stree
 
 // Node with 4 children
+// Order of struct fields for best memory alignment (as per govet/fieldalignment)
 type node4 struct {
-	meta
 	child [4]node
-	key   [4]byte
+	meta
+	key [4]byte
 }
 
 func newNode4(prefix []byte) *node4 {
