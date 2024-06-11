@@ -156,25 +156,27 @@ type raft struct {
 	llqrt  time.Time   // Last quorum lost time
 	lsut   time.Time   // Last scale-up time
 
-	term     uint64 // The current vote term
-	pterm    uint64 // Previous term from the last snapshot
-	pindex   uint64 // Previous index from the last snapshot
-	commit   uint64 // Sequence number of the most recent commit
-	applied  uint64 // Sequence number of the most recently applied commit
-	hcbehind bool   // Were we falling behind at the last health check? (see: isCurrent)
+	term    uint64 // The current vote term
+	pterm   uint64 // Previous term from the last snapshot
+	pindex  uint64 // Previous index from the last snapshot
+	commit  uint64 // Index of the most recent commit
+	applied uint64 // Index of the most recently applied commit
 
 	leader string // The ID of the leader
 	vote   string // Our current vote state
 	lxfer  bool   // Are we doing a leadership transfer?
 
+	hcbehind bool // Were we falling behind at the last health check? (see: isCurrent)
+
 	s  *Server    // Reference to top-level server
 	c  *client    // Internal client for subscriptions
 	js *jetStream // JetStream, if running, to see if we are out of resources
 
-	dflag    bool           // Debug flag
-	pleader  bool           // Has the group ever had a leader?
-	observer bool           // The node is observing, i.e. not participating in voting
-	extSt    extensionState // Extension state
+	dflag    bool // Debug flag
+	pleader  bool // Has the group ever had a leader?
+	observer bool // The node is observing, i.e. not participating in voting
+
+	extSt extensionState // Extension state
 
 	psubj  string // Proposals subject
 	rpsubj string // Remove peers subject
