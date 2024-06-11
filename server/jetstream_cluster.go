@@ -5986,7 +5986,7 @@ func (js *jetStream) createGroupForStream(ci *ClientInfo, cfg *StreamConfig) (*r
 	return nil, errs
 }
 
-func (acc *Account) selectLimits(cfg *StreamConfig) (*JetStreamAccountLimits, string, *jsAccount, *ApiError) {
+func (acc *Account) selectLimits(replicas int) (*JetStreamAccountLimits, string, *jsAccount, *ApiError) {
 	// Grab our jetstream account info.
 	acc.mu.RLock()
 	jsa := acc.js
@@ -5997,7 +5997,7 @@ func (acc *Account) selectLimits(cfg *StreamConfig) (*JetStreamAccountLimits, st
 	}
 
 	jsa.usageMu.RLock()
-	selectedLimits, tierName, ok := jsa.selectLimits(cfg)
+	selectedLimits, tierName, ok := jsa.selectLimits(replicas)
 	jsa.usageMu.RUnlock()
 
 	if !ok {
@@ -6008,7 +6008,11 @@ func (acc *Account) selectLimits(cfg *StreamConfig) (*JetStreamAccountLimits, st
 
 // Read lock needs to be held
 func (js *jetStream) jsClusteredStreamLimitsCheck(acc *Account, cfg *StreamConfig) *ApiError {
-	selectedLimits, tier, _, apiErr := acc.selectLimits(cfg)
+	var replicas int
+	if cfg != nil {
+		replicas = cfg.Replicas
+	}
+	selectedLimits, tier, _, apiErr := acc.selectLimits(replicas)
 	if apiErr != nil {
 		return apiErr
 	}
@@ -7145,7 +7149,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
-	selectedLimits, _, _, apiErr := acc.selectLimits(&streamCfg)
+	selectedLimits, _, _, apiErr := acc.selectLimits(cfg.replicas(&streamCfg))
 	if apiErr != nil {
 		resp.Error = apiErr
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
@@ -7202,7 +7206,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 					// If the consumer name is specified and we think it already exists, then
 					// we're likely updating an existing consumer, so don't count it. Otherwise
 					// we will incorrectly return NewJSMaximumConsumersLimitError for an update.
-					if oname != "" && cn == oname && sa.consumers[oname] != nil {
+					if oname != _EMPTY_ && cn == oname && sa.consumers[oname] != nil {
 						continue
 					}
 				}

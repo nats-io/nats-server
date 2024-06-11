@@ -98,17 +98,26 @@ func (sg smGroup) unlockAll() {
 }
 
 // Create a raft group and place on numMembers servers at random.
+// Filestore based.
 func (c *cluster) createRaftGroup(name string, numMembers int, smf smFactory) smGroup {
+	return c.createRaftGroupEx(name, numMembers, smf, FileStorage)
+}
+
+func (c *cluster) createMemRaftGroup(name string, numMembers int, smf smFactory) smGroup {
+	return c.createRaftGroupEx(name, numMembers, smf, MemoryStorage)
+}
+
+func (c *cluster) createRaftGroupEx(name string, numMembers int, smf smFactory, st StorageType) smGroup {
 	c.t.Helper()
 	if numMembers > len(c.servers) {
 		c.t.Fatalf("Members > Peers: %d vs  %d", numMembers, len(c.servers))
 	}
 	servers := append([]*Server{}, c.servers...)
 	rand.Shuffle(len(servers), func(i, j int) { servers[i], servers[j] = servers[j], servers[i] })
-	return c.createRaftGroupWithPeers(name, servers[:numMembers], smf)
+	return c.createRaftGroupWithPeers(name, servers[:numMembers], smf, st)
 }
 
-func (c *cluster) createRaftGroupWithPeers(name string, servers []*Server, smf smFactory) smGroup {
+func (c *cluster) createRaftGroupWithPeers(name string, servers []*Server, smf smFactory, st StorageType) smGroup {
 	c.t.Helper()
 
 	var sg smGroup
@@ -122,12 +131,19 @@ func (c *cluster) createRaftGroupWithPeers(name string, servers []*Server, smf s
 	}
 
 	for _, s := range servers {
-		fs, err := newFileStore(
-			FileStoreConfig{StoreDir: c.t.TempDir(), BlockSize: defaultMediumBlockSize, AsyncFlush: false, SyncInterval: 5 * time.Minute},
-			StreamConfig{Name: name, Storage: FileStorage},
-		)
-		require_NoError(c.t, err)
-		cfg := &RaftConfig{Name: name, Store: c.t.TempDir(), Log: fs}
+		var cfg *RaftConfig
+		if st == FileStorage {
+			fs, err := newFileStore(
+				FileStoreConfig{StoreDir: c.t.TempDir(), BlockSize: defaultMediumBlockSize, AsyncFlush: false, SyncInterval: 5 * time.Minute},
+				StreamConfig{Name: name, Storage: FileStorage},
+			)
+			require_NoError(c.t, err)
+			cfg = &RaftConfig{Name: name, Store: c.t.TempDir(), Log: fs}
+		} else {
+			ms, err := newMemStore(&StreamConfig{Name: name, Storage: MemoryStorage})
+			require_NoError(c.t, err)
+			cfg = &RaftConfig{Name: name, Store: c.t.TempDir(), Log: ms}
+		}
 		s.bootstrapRaftNode(cfg, peers, true)
 		n, err := s.startRaftNode(globalAccountName, cfg, pprofLabels{})
 		require_NoError(c.t, err)
@@ -243,13 +259,20 @@ func (a *stateAdder) restart() {
 
 	// The filestore is stopped as well, so need to extract the parts to recreate it.
 	rn := a.n.(*raft)
-	fs := rn.wal.(*fileStore)
-
 	var err error
-	a.cfg.Log, err = newFileStore(fs.fcfg, fs.cfg.StreamConfig)
+
+	switch rn.wal.(type) {
+	case *fileStore:
+		fs := rn.wal.(*fileStore)
+		a.cfg.Log, err = newFileStore(fs.fcfg, fs.cfg.StreamConfig)
+	case *memStore:
+		ms := rn.wal.(*memStore)
+		a.cfg.Log, err = newMemStore(&ms.cfg)
+	}
 	if err != nil {
 		panic(err)
 	}
+
 	a.n, err = a.s.startRaftNode(globalAccountName, a.cfg, pprofLabels{})
 	if err != nil {
 		panic(err)

@@ -711,7 +711,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	}
 
 	mset.mu.RLock()
-	s, jsa, tierName, cfg, acc := mset.srv, mset.jsa, mset.tier, mset.cfg, mset.acc
+	s, jsa, cfg, acc := mset.srv, mset.jsa, mset.cfg, mset.acc
 	retention := cfg.Retention
 	mset.mu.RUnlock()
 
@@ -726,10 +726,8 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		return nil, NewJSConsumerConfigRequiredError()
 	}
 
-	jsa.usageMu.RLock()
-	selectedLimits, limitsFound := jsa.limits[tierName]
-	jsa.usageMu.RUnlock()
-	if !limitsFound {
+	selectedLimits, _, _, _ := acc.selectLimits(config.replicas(&cfg))
+	if selectedLimits == nil {
 		return nil, NewJSNoLimitsError()
 	}
 
@@ -737,10 +735,10 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	// Make sure we have sane defaults. Do so with the JS lock, otherwise a
 	// badly timed meta snapshot can result in a race condition.
 	mset.js.mu.Lock()
-	setConsumerConfigDefaults(config, &mset.cfg, srvLim, &selectedLimits)
+	setConsumerConfigDefaults(config, &mset.cfg, srvLim, selectedLimits)
 	mset.js.mu.Unlock()
 
-	if err := checkConsumerCfg(config, srvLim, &cfg, acc, &selectedLimits, isRecovering); err != nil {
+	if err := checkConsumerCfg(config, srvLim, &cfg, acc, selectedLimits, isRecovering); err != nil {
 		return nil, err
 	}
 	sampleFreq := 0

@@ -55,7 +55,7 @@ script: ./scripts/runTestsOnTravis.sh $TEST_SUITE
 deploy:
   provider: script
   cleanup: true
-  script: curl -sL http://git.io/goreleaser | bash
+  script: curl -sfL https://goreleaser.com/static/run | VERSION=v1.26.2 bash
   on:
     tags: true
     condition: ($TRAVIS_GO_VERSION =~ 1.22) && ($TEST_SUITE = "compile")

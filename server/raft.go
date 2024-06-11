@@ -156,25 +156,27 @@ type raft struct {
 	llqrt  time.Time   // Last quorum lost time
 	lsut   time.Time   // Last scale-up time
 
-	term     uint64 // The current vote term
-	pterm    uint64 // Previous term from the last snapshot
-	pindex   uint64 // Previous index from the last snapshot
-	commit   uint64 // Sequence number of the most recent commit
-	applied  uint64 // Sequence number of the most recently applied commit
-	hcbehind bool   // Were we falling behind at the last health check? (see: isCurrent)
+	term    uint64 // The current vote term
+	pterm   uint64 // Previous term from the last snapshot
+	pindex  uint64 // Previous index from the last snapshot
+	commit  uint64 // Index of the most recent commit
+	applied uint64 // Index of the most recently applied commit
 
 	leader string // The ID of the leader
 	vote   string // Our current vote state
 	lxfer  bool   // Are we doing a leadership transfer?
 
+	hcbehind bool // Were we falling behind at the last health check? (see: isCurrent)
+
 	s  *Server    // Reference to top-level server
 	c  *client    // Internal client for subscriptions
 	js *jetStream // JetStream, if running, to see if we are out of resources
 
-	dflag    bool           // Debug flag
-	pleader  bool           // Has the group ever had a leader?
-	observer bool           // The node is observing, i.e. not participating in voting
-	extSt    extensionState // Extension state
+	dflag    bool // Debug flag
+	pleader  bool // Has the group ever had a leader?
+	observer bool // The node is observing, i.e. not participating in voting
+
+	extSt extensionState // Extension state
 
 	psubj  string // Proposals subject
 	rpsubj string // Remove peers subject
@@ -233,16 +235,18 @@ const (
 	hbIntervalDefault              = 1 * time.Second
 	lostQuorumIntervalDefault      = hbIntervalDefault * 10 // 10 seconds
 	lostQuorumCheckIntervalDefault = hbIntervalDefault * 10 // 10 seconds
+	observerModeIntervalDefault    = 48 * time.Hour
 )
 
 var (
-	minElectionTimeout = minElectionTimeoutDefault
-	maxElectionTimeout = maxElectionTimeoutDefault
-	minCampaignTimeout = minCampaignTimeoutDefault
-	maxCampaignTimeout = maxCampaignTimeoutDefault
-	hbInterval         = hbIntervalDefault
-	lostQuorumInterval = lostQuorumIntervalDefault
-	lostQuorumCheck    = lostQuorumCheckIntervalDefault
+	minElectionTimeout   = minElectionTimeoutDefault
+	maxElectionTimeout   = maxElectionTimeoutDefault
+	minCampaignTimeout   = minCampaignTimeoutDefault
+	maxCampaignTimeout   = maxCampaignTimeoutDefault
+	hbInterval           = hbIntervalDefault
+	lostQuorumInterval   = lostQuorumIntervalDefault
+	lostQuorumCheck      = lostQuorumCheckIntervalDefault
+	observerModeInterval = observerModeIntervalDefault
 )
 
 type RaftConfig struct {
@@ -873,7 +877,7 @@ func (n *raft) PauseApply() error {
 	n.hcommit = n.commit
 	// Also prevent us from trying to become a leader while paused and catching up.
 	n.pobserver, n.observer = n.observer, true
-	n.resetElect(48 * time.Hour)
+	n.resetElect(observerModeInterval)
 
 	return nil
 }
@@ -1893,8 +1897,16 @@ func (n *raft) SetObserver(isObserver bool) {
 func (n *raft) setObserver(isObserver bool, extSt extensionState) {
 	n.Lock()
 	defer n.Unlock()
+
+	wasObserver := n.observer
 	n.observer = isObserver
 	n.extSt = extSt
+
+	// If we're leaving observer state then reset the election timer or
+	// we might end up waiting for up to the observerModeInterval.
+	if wasObserver && !isObserver {
+		n.resetElect(randCampaignTimeout())
+	}
 }
 
 // processAppendEntries is called by the Raft state machine when there are
@@ -1944,7 +1956,7 @@ func (n *raft) runAsFollower() {
 				n.resetElectionTimeoutWithLock()
 				n.debug("Not switching to candidate, no resources")
 			} else if n.IsObserver() {
-				n.resetElectWithLock(48 * time.Hour)
+				n.resetElectWithLock(observerModeInterval)
 				n.debug("Not switching to candidate, observer only")
 			} else if n.isCatchingUp() {
 				n.debug("Not switching to candidate, catching up")

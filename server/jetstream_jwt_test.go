@@ -1460,3 +1460,75 @@ func TestJetStreamJWTHAStorageLimitsOnScaleAndUpdate(t *testing.T) {
 	require_Equal(t, r3.ReservedMemory, 22*1024)    // TEST9
 	require_Equal(t, r3.ReservedStore, 5*1024*1024) // TEST1-TEST6
 }
+
+func TestJetStreamJWTClusteredTiersR3StreamWithR1ConsumersAndAccounting(t *testing.T) {
+	sysKp, syspub := createKey(t)
+	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+	newUser(t, sysKp)
+
+	accKp, aExpPub := createKey(t)
+	accClaim := jwt.NewAccountClaims(aExpPub)
+	accClaim.Name = "acc"
+	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
+		DiskStorage: 1100, Consumer: 10, Streams: 1}
+	accClaim.Limits.JetStreamTieredLimits["R3"] = jwt.JetStreamLimits{
+		DiskStorage: 1100, Consumer: 1, Streams: 1}
+	accJwt := encodeClaim(t, accClaim, aExpPub)
+	accCreds := newUser(t, accKp)
+	tmlp := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+		leaf {
+			listen: 127.0.0.1:-1
+		}
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+	` + fmt.Sprintf(`
+		operator: %s
+		system_account: %s
+		resolver = MEMORY
+		resolver_preload = {
+			%s : %s
+			%s : %s
+		}
+	`, ojwt, syspub, syspub, sysJwt, aExpPub, accJwt)
+
+	c := createJetStreamClusterWithTemplate(t, tmlp, "cluster", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer(), nats.UserCredentials(accCreds))
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.*"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Now make sure we can add in 10 R1 consumers.
+	for i := 1; i <= 10; i++ {
+		_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+			Name:      fmt.Sprintf("C-%d", i),
+			AckPolicy: nats.AckExplicitPolicy,
+			Replicas:  1,
+		})
+		require_NoError(t, err)
+	}
+
+	info, err := js.AccountInfo()
+	require_NoError(t, err)
+
+	// Make sure we account for these properly.
+	r1 := info.Tiers["R1"]
+	r3 := info.Tiers["R3"]
+
+	require_Equal(t, r1.Streams, 0)
+	require_Equal(t, r1.Consumers, 10)
+	require_Equal(t, r3.Streams, 1)
+	require_Equal(t, r3.Consumers, 0)
+}
