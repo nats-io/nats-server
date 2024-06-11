@@ -2197,9 +2197,11 @@ func (mset *stream) processMirrorMsgs(mirror *sourceInfo, ready *sync.WaitGroup)
 			msgs.recycle(&ims)
 		case <-t.C:
 			mset.mu.RLock()
+			var stalled bool
+			if mset.mirror != nil {
+				stalled = time.Since(time.Unix(0, mset.mirror.last.Load())) > sourceHealthCheckInterval
+			}
 			isLeader := mset.isLeader()
-			last := time.Unix(0, mset.mirror.last.Load())
-			stalled := mset.mirror != nil && time.Since(last) > sourceHealthCheckInterval
 			mset.mu.RUnlock()
 			// No longer leader.
 			if !isLeader {
