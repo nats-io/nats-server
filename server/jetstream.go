@@ -1440,7 +1440,11 @@ func (a *Account) maxBytesLimits(cfg *StreamConfig) (bool, int64) {
 		return false, 0
 	}
 	jsa.usageMu.RLock()
-	selectedLimits, _, ok := jsa.selectLimits(cfg)
+	var replicas int
+	if cfg != nil {
+		replicas = cfg.Replicas
+	}
+	selectedLimits, _, ok := jsa.selectLimits(replicas)
 	jsa.usageMu.RUnlock()
 	if !ok {
 		return false, 0
@@ -1590,7 +1594,7 @@ func diffCheckedLimits(a, b map[string]JetStreamAccountLimits) map[string]JetStr
 func (jsa *jsAccount) reservedStorage(tier string) (mem, store uint64) {
 	for _, mset := range jsa.streams {
 		cfg := &mset.cfg
-		if tier == _EMPTY_ || tier == tierName(cfg) && cfg.MaxBytes > 0 {
+		if tier == _EMPTY_ || tier == tierName(cfg.Replicas) && cfg.MaxBytes > 0 {
 			switch cfg.Storage {
 			case FileStorage:
 				store += uint64(cfg.MaxBytes)
@@ -1607,7 +1611,7 @@ func (jsa *jsAccount) reservedStorage(tier string) (mem, store uint64) {
 func reservedStorage(sas map[string]*streamAssignment, tier string) (mem, store uint64) {
 	for _, sa := range sas {
 		cfg := sa.Config
-		if tier == _EMPTY_ || tier == tierName(cfg) && cfg.MaxBytes > 0 {
+		if tier == _EMPTY_ || tier == tierName(cfg.Replicas) && cfg.MaxBytes > 0 {
 			switch cfg.Storage {
 			case FileStorage:
 				store += uint64(cfg.MaxBytes)
@@ -1695,17 +1699,29 @@ func (a *Account) JetStreamUsage() JetStreamAccountStats {
 				stats.ReservedMemory, stats.ReservedStore = reservedStorage(sas, _EMPTY_)
 			}
 			for _, sa := range sas {
-				stats.Consumers += len(sa.consumers)
-				if !defaultTier {
-					tier := tierName(sa.Config)
-					u, ok := stats.Tiers[tier]
-					if !ok {
-						u = JetStreamTier{}
-					}
-					u.Streams++
+				if defaultTier {
+					stats.Consumers += len(sa.consumers)
+				} else {
 					stats.Streams++
-					u.Consumers += len(sa.consumers)
-					stats.Tiers[tier] = u
+					streamTier := tierName(sa.Config.Replicas)
+					su, ok := stats.Tiers[streamTier]
+					if !ok {
+						su = JetStreamTier{}
+					}
+					su.Streams++
+					stats.Tiers[streamTier] = su
+
+					// Now consumers, check each since could be different tiers.
+					for _, ca := range sa.consumers {
+						stats.Consumers++
+						consumerTier := tierName(ca.Config.replicas(sa.Config))
+						cu, ok := stats.Tiers[consumerTier]
+						if !ok {
+							cu = JetStreamTier{}
+						}
+						cu.Consumers++
+						stats.Tiers[consumerTier] = cu
+					}
 				}
 			}
 		} else {
@@ -2089,9 +2105,8 @@ func (js *jetStream) limitsExceeded(storeType StorageType) bool {
 	return js.wouldExceedLimits(storeType, 0)
 }
 
-func tierName(cfg *StreamConfig) string {
+func tierName(replicas int) string {
 	// TODO (mh) this is where we could select based off a placement tag as well "qos:tier"
-	replicas := cfg.Replicas
 	if replicas == 0 {
 		replicas = 1
 	}
@@ -2111,11 +2126,11 @@ func (jsa *jsAccount) jetStreamAndClustered() (*jetStream, bool) {
 }
 
 // jsa.usageMu read lock should be held.
-func (jsa *jsAccount) selectLimits(cfg *StreamConfig) (JetStreamAccountLimits, string, bool) {
+func (jsa *jsAccount) selectLimits(replicas int) (JetStreamAccountLimits, string, bool) {
 	if selectedLimits, ok := jsa.limits[_EMPTY_]; ok {
 		return selectedLimits, _EMPTY_, true
 	}
-	tier := tierName(cfg)
+	tier := tierName(replicas)
 	if selectedLimits, ok := jsa.limits[tier]; ok {
 		return selectedLimits, tier, true
 	}
