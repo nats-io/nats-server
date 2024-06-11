@@ -2950,8 +2950,10 @@ func (c *client) addShadowSub(sub *subscription, ime *ime, enact bool) (*subscri
 		return nil, fmt.Errorf(errs)
 	}
 
-	// Update our route map here.
-	c.srv.updateRemoteSubscription(im.acc, &nsub, 1)
+	// Update our route map here. But only if we are not a leaf node or a hub leafnode.
+	if c.kind != LEAF || c.isHubLeafNode() {
+		c.srv.updateRemoteSubscription(im.acc, &nsub, 1)
+	}
 
 	return &nsub, nil
 }
