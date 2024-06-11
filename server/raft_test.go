@@ -489,3 +489,32 @@ func TestNRGHeartbeatOnLeaderChange(t *testing.T) {
 		rg.waitOnLeader()
 	}
 }
+
+func TestNRGElectionTimerAfterObserver(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	for _, n := range rg {
+		n.node().SetObserver(true)
+	}
+
+	time.Sleep(maxElectionTimeout)
+	before := time.Now()
+
+	for _, n := range rg {
+		n.node().SetObserver(false)
+	}
+
+	time.Sleep(maxCampaignTimeout)
+
+	for _, n := range rg {
+		rn := n.node().(*raft)
+		rn.RLock()
+		etlr := rn.etlr
+		rn.RUnlock()
+		require_True(t, etlr.After(before))
+	}
+}
