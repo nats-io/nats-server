@@ -2833,8 +2833,10 @@ func (s *Server) reloadConfig(sub *subscription, c *client, _ *Account, subject,
 	})
 }
 
+
 type KickClientReq struct {
 	CID uint64 `json:"cid"`
+	Kind string `json:"kind"`
 }
 
 type LDMClientReq struct {
@@ -2851,10 +2853,13 @@ func (s *Server) kickClient(_ *subscription, c *client, _ *Account, subject, rep
 		s.sys.client.Errorf("Error unmarshalling kick client request: %v", err)
 		return
 	}
+	if req.Kind == "" {
+		req.Kind = "Client"
+	}
 
 	optz := &EventFilterOptions{}
 	s.zReq(c, reply, hdr, msg, optz, optz, func() (any, error) {
-		return nil, s.DisconnectClientByID(req.CID)
+		return nil, s.DisconnectClientByID(req.CID, req.Kind)
 	})
 
 }
