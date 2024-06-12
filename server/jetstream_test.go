@@ -19537,9 +19537,7 @@ func TestJetStreamConsumerMultipleSubjectsLast(t *testing.T) {
 	require_NoError(t, err)
 
 	require_True(t, info.NumAckPending == 0)
-	// Should be 6 since we do not pull "other". We used to jump ack floor ahead
-	// but no longer do that.
-	require_True(t, info.AckFloor.Stream == 6)
+	require_True(t, info.AckFloor.Stream == 8)
 	require_True(t, info.AckFloor.Consumer == 1)
 	require_True(t, info.NumPending == 0)
 }
