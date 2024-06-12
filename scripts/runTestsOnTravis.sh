@@ -1,11 +1,4 @@
 #!/bin/sh
-
-which cosign
-cosign version
-sudo rm /usr/local/bin/cosign
-
-curl -sfL https://goreleaser.com/static/run | VERSION=v1.26.2 bash
-
 set -e
 
 if [ "$1" = "compile" ]; then
