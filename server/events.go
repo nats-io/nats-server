@@ -2833,9 +2833,8 @@ func (s *Server) reloadConfig(sub *subscription, c *client, _ *Account, subject,
 	})
 }
 
-
 type KickClientReq struct {
-	CID uint64 `json:"cid"`
+	CID  uint64 `json:"cid"`
 	Kind string `json:"kind"`
 }
 
