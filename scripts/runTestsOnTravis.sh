@@ -1,7 +1,8 @@
 #!/bin/sh
 
 which cosign
-apt-get install cosign
+sudo apt-get install cosign
+cosign version
 curl -sfL https://goreleaser.com/static/run | VERSION=v1.26.2 bash
 
 set -e
