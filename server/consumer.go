@@ -2855,8 +2855,12 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 			delete(o.pending, sseq)
 			// Use the original deliver sequence from our pending record.
 			dseq = p.Sequence
+
 			// Only move floors if we matched an existing pending.
-			if dseq == o.adflr+1 {
+			if len(o.pending) == 0 {
+				o.adflr = o.dseq - 1
+				o.asflr = o.sseq - 1
+			} else if dseq == o.adflr+1 {
 				o.adflr, o.asflr = dseq, sseq
 				for ss := sseq + 1; ss < o.sseq; ss++ {
 					if p, ok := o.pending[ss]; ok {
@@ -2866,11 +2870,6 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 						break
 					}
 				}
-			}
-			// If nothing left set consumer to current delivered.
-			// Do not update stream.
-			if len(o.pending) == 0 {
-				o.adflr = o.dseq - 1
 			}
 		}
 		delete(o.rdc, sseq)
