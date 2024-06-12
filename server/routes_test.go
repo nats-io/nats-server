@@ -1046,25 +1046,25 @@ func TestRoutePermsAppliedOnInboundAndOutboundRoute(t *testing.T) {
 		if perms.pub.allow == nil || perms.pub.allow.Count() != 1 {
 			t.Fatal("unexpected pub allow perms")
 		}
-		if r := perms.pub.allow.Match("imp.foo"); len(r.psubs) != 1 {
+		if r, _ := perms.pub.allow.Match("imp.foo"); len(r.psubs) != 1 {
 			t.Fatal("unexpected pub allow match")
 		}
 		if perms.pub.deny == nil || perms.pub.deny.Count() != 1 {
 			t.Fatal("unexpected pub deny perms")
 		}
-		if r := perms.pub.deny.Match("imp.bar"); len(r.psubs) != 1 {
+		if r, _ := perms.pub.deny.Match("imp.bar"); len(r.psubs) != 1 {
 			t.Fatal("unexpected pub deny match")
 		}
 		if perms.sub.allow == nil || perms.sub.allow.Count() != 1 {
 			t.Fatal("unexpected sub allow perms")
 		}
-		if r := perms.sub.allow.Match("exp.foo"); len(r.psubs) != 1 {
+		if r, _ := perms.sub.allow.Match("exp.foo"); len(r.psubs) != 1 {
 			t.Fatal("unexpected sub allow match")
 		}
 		if perms.sub.deny == nil || perms.sub.deny.Count() != 1 {
 			t.Fatal("unexpected sub deny perms")
 		}
-		if r := perms.sub.deny.Match("exp.bar"); len(r.psubs) != 1 {
+		if r, _ := perms.sub.deny.Match("exp.bar"); len(r.psubs) != 1 {
 			t.Fatal("unexpected sub deny match")
 		}
 	}
@@ -1658,7 +1658,7 @@ func TestClusterQueueGroupWeightTrackingLeak(t *testing.T) {
 		checkFor(t, time.Second, 15*time.Millisecond, func() error {
 			acc := s.GlobalAccount()
 			acc.mu.RLock()
-			res := acc.sl.Match("foo")
+			res, _ := acc.sl.Match("foo")
 			acc.mu.RUnlock()
 			if res != nil && len(res.qsubs) > 0 {
 				return fmt.Errorf("Found queue sub on foo for server %v", s)
@@ -2873,7 +2873,7 @@ func TestRoutePoolPerAccountSubUnsubProtoParsing(t *testing.T) {
 					}
 					checkFor(t, time.Second, 15*time.Millisecond, func() error {
 						acc.mu.RLock()
-						res := acc.sl.Match("foo")
+						res, _ := acc.sl.Match("foo")
 						acc.mu.RUnlock()
 						if expected {
 							if queue && (len(res.qsubs) == 0 || len(res.psubs) != 0) {
@@ -2991,7 +2991,7 @@ func TestRoutePoolPerAccountStreamImport(t *testing.T) {
 						return err
 					}
 					a.mu.RLock()
-					r := a.sl.Match("foo")
+					r, _ := a.sl.Match("foo")
 					a.mu.RUnlock()
 					if len(r.psubs) != 0 {
 						return fmt.Errorf("Subscription not unsubscribed")

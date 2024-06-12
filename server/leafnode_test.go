@@ -1635,7 +1635,7 @@ func TestLeafNodeHubWithGateways(t *testing.T) {
 
 	checkFor(t, time.Second, 15*time.Millisecond, func() error {
 		acc := a.globalAccount()
-		if r := acc.sl.Match("service"); r != nil && len(r.psubs) == 1 {
+		if r, _ := acc.sl.Match("service"); r != nil && len(r.psubs) == 1 {
 			return nil
 		}
 		return fmt.Errorf("subscription still not registered")
@@ -2338,7 +2338,7 @@ func TestLeafNodeNoDuplicateWithinCluster(t *testing.T) {
 				return err
 			}
 			acc.mu.RLock()
-			r := acc.sl.Match("foo")
+			r, _ := acc.sl.Match("foo")
 			ok := len(r.qsubs) == 1 && len(r.qsubs[0]) == 2
 			acc.mu.RUnlock()
 			if !ok {
@@ -6825,7 +6825,7 @@ func TestLeafNodeWithWeightedDQResponsesWithStreamImportAccountsWithUnsub(t *tes
 		acc, err := s.LookupAccount(accName)
 		require_NoError(t, err)
 		acc.mu.RLock()
-		r := acc.sl.Match("RESPONSE")
+		r, _ := acc.sl.Match("RESPONSE")
 		acc.mu.RUnlock()
 		return r
 	}

@@ -737,10 +737,8 @@ func TestJetStreamSuperClusterLeafNodesWithSharedSystemAccountAndSameDomain(t *t
 	for _, ln := range ls.leafs {
 		ln.mu.Lock()
 		if ln.leaf.remote.RemoteLeafOpts.LocalAccount == gacc {
-			re := ln.perms.pub.deny.Match(jsAllAPI)
-			hasDE = len(re.psubs)+len(re.qsubs) > 0
-			rs := ln.perms.sub.deny.Match(jsAllAPI)
-			hasDI = len(rs.psubs)+len(rs.qsubs) > 0
+			hasDE = ln.perms.pub.deny.HasInterest(jsAllAPI)
+			hasDI = ln.perms.sub.deny.HasInterest(jsAllAPI)
 		}
 		ln.mu.Unlock()
 	}
@@ -814,10 +812,8 @@ func TestJetStreamSuperClusterLeafNodesWithSharedSystemAccountAndDifferentDomain
 	for _, ln := range ls.leafs {
 		ln.mu.Lock()
 		if ln.leaf.remote.RemoteLeafOpts.LocalAccount == gacc {
-			re := ln.perms.pub.deny.Match(jsAllAPI)
-			hasDE = len(re.psubs)+len(re.qsubs) > 0
-			rs := ln.perms.sub.deny.Match(jsAllAPI)
-			hasDI = len(rs.psubs)+len(rs.qsubs) > 0
+			hasDE = ln.perms.pub.deny.HasInterest(jsAllAPI)
+			hasDI = ln.perms.sub.deny.HasInterest(jsAllAPI)
 		}
 		ln.mu.Unlock()
 	}

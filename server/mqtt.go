@@ -4510,13 +4510,15 @@ func generatePubPerms(perms *Permissions) *perm {
 func pubAllowed(perms *perm, subject string) bool {
 	allowed := true
 	if perms.allow != nil {
-		r := perms.allow.Match(subject)
+		r, rc := perms.allow.Match(subject)
 		allowed = len(r.psubs) != 0
+		rc()
 	}
 	// If we have a deny list and are currently allowed, check that as well.
 	if allowed && perms.deny != nil {
-		r := perms.deny.Match(subject)
+		r, rc := perms.deny.Match(subject)
 		allowed = len(r.psubs) == 0
+		rc()
 	}
 	return allowed
 }

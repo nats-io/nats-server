@@ -2781,8 +2781,8 @@ func TestConfigReloadAccountUsers(t *testing.T) {
 		require_NoError(t, err)
 		gAcc.mu.RLock()
 		n := gAcc.sl.Count()
-		fooMatch := gAcc.sl.Match("foo")
-		bazMatch := gAcc.sl.Match("baz")
+		fooMatch, _ := gAcc.sl.Match("foo")
+		bazMatch, _ := gAcc.sl.Match("baz")
 		gAcc.mu.RUnlock()
 		// The number of subscriptions should be 4 ($SYS.REQ.USER.INFO,
 		// $SYS.REQ.ACCOUNT.PING.CONNZ, $SYS.REQ.ACCOUNT.PING.STATZ,
@@ -2801,7 +2801,7 @@ func TestConfigReloadAccountUsers(t *testing.T) {
 		require_NoError(t, err)
 		sAcc.mu.RLock()
 		n = sAcc.sl.Count()
-		barMatch := sAcc.sl.Match("bar")
+		barMatch, _ := sAcc.sl.Match("bar")
 
 		sAcc.mu.RUnlock()
 		if n != expectedSubs {
@@ -2815,7 +2815,7 @@ func TestConfigReloadAccountUsers(t *testing.T) {
 		require_NoError(t, err)
 		nAcc.mu.RLock()
 		n = nAcc.sl.Count()
-		batMatch := nAcc.sl.Match("bat")
+		batMatch, _ := nAcc.sl.Match("bat")
 		nAcc.mu.RUnlock()
 		if n != expectedSubs {
 			return fmt.Errorf("Nats.io account should have %d sub, got %v", expectedSubs, n)
@@ -3134,7 +3134,7 @@ func TestConfigReloadAccountStreamsImportExport(t *testing.T) {
 		t.Helper()
 		dcli := s.getClient(1)
 		dcli.mu.Lock()
-		r := dcli.acc.sl.Match(subject)
+		r, _ := dcli.acc.sl.Match(subject)
 		dcli.mu.Unlock()
 		if shouldBeThere && len(r.psubs) != 1 {
 			t.Fatalf("%s should have 1 match in derek's sublist, got %v", subject, len(r.psubs))

@@ -883,8 +883,9 @@ func (a *Account) Interest(subject string) int {
 	var nms int
 	a.mu.RLock()
 	if a.sl != nil {
-		res := a.sl.Match(subject)
+		res, rc := a.sl.Match(subject)
 		nms = len(res.psubs) + len(res.qsubs)
+		rc()
 	}
 	a.mu.RUnlock()
 	return nms

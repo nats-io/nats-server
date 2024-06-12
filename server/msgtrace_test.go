@@ -3004,7 +3004,7 @@ func TestMsgTraceStreamExportWithLeafNode_Hub(t *testing.T) {
 		acc.mu.RLock()
 		sl := acc.sl
 		acc.mu.RUnlock()
-		r := sl.Match("info.1.2.3")
+		r, _ := sl.Match("info.1.2.3")
 		ok := len(r.psubs) > 0
 		if ok && (len(r.qsubs) == 0 || len(r.qsubs[0]) == 0) {
 			ok = false
@@ -3191,7 +3191,7 @@ func TestMsgTraceStreamExportWithLeafNode_Leaf(t *testing.T) {
 		acc.mu.RLock()
 		sl := acc.sl
 		acc.mu.RUnlock()
-		r := sl.Match("info.1.2.3")
+		r, _ := sl.Match("info.1.2.3")
 		ok := len(r.psubs) > 0
 		if ok && (len(r.qsubs) == 0 || len(r.qsubs[0]) == 0) {
 			ok = false

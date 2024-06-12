@@ -796,10 +796,10 @@ func TestJetStreamClusterDomains(t *testing.T) {
 		remote.RLock()
 		if remote.RemoteLeafOpts.LocalAccount == "$SYS" {
 			for _, s := range denyAllJs {
-				if r := ln.perms.pub.deny.Match(s); len(r.psubs) != 1 {
+				if r, _ := ln.perms.pub.deny.Match(s); len(r.psubs) != 1 {
 					t.Fatalf("Expected to have deny permission for %s", s)
 				}
-				if r := ln.perms.sub.deny.Match(s); len(r.psubs) != 1 {
+				if r, _ := ln.perms.sub.deny.Match(s); len(r.psubs) != 1 {
 					t.Fatalf("Expected to have deny permission for %s", s)
 				}
 			}

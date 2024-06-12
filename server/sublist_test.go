@@ -146,7 +146,7 @@ func testSublistSimple(t *testing.T, s *Sublist) {
 	subject := "foo"
 	sub := newSub(subject)
 	s.Insert(sub)
-	r := s.Match(subject)
+	r, _ := s.Match(subject)
 	verifyLen(r.psubs, 1, t)
 	verifyMember(r.psubs, sub, t)
 }
@@ -163,7 +163,7 @@ func testSublistSimpleMultiTokens(t *testing.T, s *Sublist) {
 	subject := "foo.bar.baz"
 	sub := newSub(subject)
 	s.Insert(sub)
-	r := s.Match(subject)
+	r, _ := s.Match(subject)
 	verifyLen(r.psubs, 1, t)
 	verifyMember(r.psubs, sub, t)
 }
@@ -181,7 +181,7 @@ func testSublistPartialWildcard(t *testing.T, s *Sublist) {
 	psub := newSub("a.*.c")
 	s.Insert(lsub)
 	s.Insert(psub)
-	r := s.Match("a.b.c")
+	r, _ := s.Match("a.b.c")
 	verifyLen(r.psubs, 2, t)
 	verifyMember(r.psubs, lsub, t)
 	verifyMember(r.psubs, psub, t)
@@ -200,7 +200,7 @@ func testSublistPartialWildcardAtEnd(t *testing.T, s *Sublist) {
 	psub := newSub("a.b.*")
 	s.Insert(lsub)
 	s.Insert(psub)
-	r := s.Match("a.b.c")
+	r, _ := s.Match("a.b.c")
 	verifyLen(r.psubs, 2, t)
 	verifyMember(r.psubs, lsub, t)
 	verifyMember(r.psubs, psub, t)
@@ -219,12 +219,12 @@ func testSublistFullWildcard(t *testing.T, s *Sublist) {
 	fsub := newSub("a.>")
 	s.Insert(lsub)
 	s.Insert(fsub)
-	r := s.Match("a.b.c")
+	r, _ := s.Match("a.b.c")
 	verifyLen(r.psubs, 2, t)
 	verifyMember(r.psubs, lsub, t)
 	verifyMember(r.psubs, fsub, t)
 
-	r = s.Match("a.>")
+	r, _ = s.Match("a.>")
 	verifyLen(r.psubs, 1, t)
 	verifyMember(r.psubs, fsub, t)
 }
@@ -242,13 +242,13 @@ func testSublistRemove(t *testing.T, s *Sublist) {
 	sub := newSub(subject)
 	s.Insert(sub)
 	verifyCount(s, 1, t)
-	r := s.Match(subject)
+	r, _ := s.Match(subject)
 	verifyLen(r.psubs, 1, t)
 	s.Remove(newSub("a.b.c"))
 	verifyCount(s, 1, t)
 	s.Remove(sub)
 	verifyCount(s, 0, t)
-	r = s.Match(subject)
+	r, _ = s.Match(subject)
 	verifyLen(r.psubs, 0, t)
 }
 
@@ -269,7 +269,7 @@ func testSublistRemoveWildcard(t *testing.T, s *Sublist) {
 	s.Insert(psub)
 	s.Insert(fsub)
 	verifyCount(s, 3, t)
-	r := s.Match(subject)
+	r, _ := s.Match(subject)
 	verifyLen(r.psubs, 3, t)
 	s.Remove(sub)
 	verifyCount(s, 2, t)
@@ -277,7 +277,7 @@ func testSublistRemoveWildcard(t *testing.T, s *Sublist) {
 	verifyCount(s, 1, t)
 	s.Remove(psub)
 	verifyCount(s, 0, t)
-	r = s.Match(subject)
+	r, _ = s.Match(subject)
 	verifyLen(r.psubs, 0, t)
 }
 
@@ -333,7 +333,7 @@ func testSublistRemoveWithLargeSubs(t *testing.T, s *Sublist) {
 		sub := newSub(subject)
 		s.Insert(sub)
 	}
-	r := s.Match(subject)
+	r, _ := s.Match(subject)
 	verifyLen(r.psubs, plistMin*2, t)
 	// Remove one that is in the middle
 	s.Remove(r.psubs[plistMin])
@@ -342,7 +342,7 @@ func testSublistRemoveWithLargeSubs(t *testing.T, s *Sublist) {
 	// Remove last one
 	s.Remove(r.psubs[len(r.psubs)-1])
 	// Check len again
-	r = s.Match(subject)
+	r, _ = s.Match(subject)
 	verifyLen(r.psubs, plistMin*2-3, t)
 }
 
@@ -384,12 +384,12 @@ func TestSublistRemoveBatchWithError(t *testing.T) {
 	require_Error(t, err, ErrNotFound)
 	// Make sure that we have only sub2 present
 	verifyCount(s, 1, t)
-	r := s.Match("bar")
+	r, _ := s.Match("bar")
 	verifyLen(r.psubs, 1, t)
 	verifyMember(r.psubs, sub2, t)
-	r = s.Match("foo")
+	r, _ = s.Match("foo")
 	verifyLen(r.psubs, 0, t)
-	r = s.Match("baz")
+	r, _ = s.Match("baz")
 	verifyLen(r.psubs, 0, t)
 }
 
@@ -429,12 +429,12 @@ func TestSublistCache(t *testing.T) {
 	psub := newSub("a.b.*.d")
 	fsub := newSub("a.b.>")
 	s.Insert(sub)
-	r := s.Match(subject)
+	r, _ := s.Match(subject)
 	verifyLen(r.psubs, 1, t)
 	s.Insert(psub)
 	s.Insert(fsub)
 	verifyCount(s, 3, t)
-	r = s.Match(subject)
+	r, _ = s.Match(subject)
 	verifyLen(r.psubs, 3, t)
 	s.Remove(sub)
 	verifyCount(s, 2, t)
@@ -448,7 +448,7 @@ func TestSublistCache(t *testing.T) {
 		t.Fatalf("Cache should be zero, got %d\n", cc)
 	}
 
-	r = s.Match(subject)
+	r, _ = s.Match(subject)
 	verifyLen(r.psubs, 0, t)
 
 	for i := 0; i < 2*slCacheMax; i++ {
@@ -466,12 +466,12 @@ func TestSublistCache(t *testing.T) {
 	s = NewSublistWithCache()
 	s.Insert(newSub("foo.*"))
 	s.Insert(newSub("foo.bar"))
-	r = s.Match("foo.baz")
+	r, _ = s.Match("foo.baz")
 	verifyLen(r.psubs, 1, t)
-	r = s.Match("foo.bar")
+	r, _ = s.Match("foo.bar")
 	verifyLen(r.psubs, 2, t)
 	s.Insert(newSub("foo.>"))
-	r = s.Match("foo.bar")
+	r, _ = s.Match("foo.bar")
 	verifyLen(r.psubs, 3, t)
 }
 
@@ -491,14 +491,14 @@ func testSublistBasicQueueResults(t *testing.T, s *Sublist) {
 	sub2 := newQSub(subject, "baz")
 
 	s.Insert(sub1)
-	r := s.Match(subject)
+	r, _ := s.Match(subject)
 	verifyLen(r.psubs, 0, t)
 	verifyQLen(r.qsubs, 1, t)
 	verifyLen(r.qsubs[0], 1, t)
 	verifyQMember(r.qsubs, sub1, t)
 
 	s.Insert(sub2)
-	r = s.Match(subject)
+	r, _ = s.Match(subject)
 	verifyLen(r.psubs, 0, t)
 	verifyQLen(r.qsubs, 2, t)
 	verifyLen(r.qsubs[0], 1, t)
@@ -507,7 +507,7 @@ func testSublistBasicQueueResults(t *testing.T, s *Sublist) {
 	verifyQMember(r.qsubs, sub2, t)
 
 	s.Insert(sub)
-	r = s.Match(subject)
+	r, _ = s.Match(subject)
 	verifyLen(r.psubs, 1, t)
 	verifyQLen(r.qsubs, 2, t)
 	verifyLen(r.qsubs[0], 1, t)
@@ -522,7 +522,7 @@ func testSublistBasicQueueResults(t *testing.T, s *Sublist) {
 	s.Insert(sub3)
 	s.Insert(sub4)
 
-	r = s.Match(subject)
+	r, _ = s.Match(subject)
 	verifyLen(r.psubs, 1, t)
 	verifyQLen(r.qsubs, 2, t)
 	verifyLen(r.qsubs[0], 2, t)
@@ -536,7 +536,7 @@ func testSublistBasicQueueResults(t *testing.T, s *Sublist) {
 	// Now removal
 	s.Remove(sub)
 
-	r = s.Match(subject)
+	r, _ = s.Match(subject)
 	verifyLen(r.psubs, 0, t)
 	verifyQLen(r.qsubs, 2, t)
 	verifyLen(r.qsubs[0], 2, t)
@@ -545,7 +545,7 @@ func testSublistBasicQueueResults(t *testing.T, s *Sublist) {
 	verifyQMember(r.qsubs, sub2, t)
 
 	s.Remove(sub1)
-	r = s.Match(subject)
+	r, _ = s.Match(subject)
 	verifyLen(r.psubs, 0, t)
 	verifyQLen(r.qsubs, 2, t)
 	verifyLen(r.qsubs[findQSlot(sub1.queue, r.qsubs)], 1, t)
@@ -555,7 +555,7 @@ func testSublistBasicQueueResults(t *testing.T, s *Sublist) {
 	verifyQMember(r.qsubs, sub4, t)
 
 	s.Remove(sub3) // Last one
-	r = s.Match(subject)
+	r, _ = s.Match(subject)
 	verifyLen(r.psubs, 0, t)
 	verifyQLen(r.qsubs, 1, t)
 	verifyLen(r.qsubs[0], 2, t) // this is sub2/baz now
@@ -563,7 +563,7 @@ func testSublistBasicQueueResults(t *testing.T, s *Sublist) {
 
 	s.Remove(sub2)
 	s.Remove(sub4)
-	r = s.Match(subject)
+	r, _ = s.Match(subject)
 	verifyLen(r.psubs, 0, t)
 	verifyQLen(r.qsubs, 0, t)
 }
@@ -753,10 +753,10 @@ func TestSublistTwoTokenPubMatchSingleTokenSubNoCache(t *testing.T) {
 func testSublistTwoTokenPubMatchSingleTokenSub(t *testing.T, s *Sublist) {
 	sub := newSub("foo")
 	s.Insert(sub)
-	r := s.Match("foo")
+	r, _ := s.Match("foo")
 	verifyLen(r.psubs, 1, t)
 	verifyMember(r.psubs, sub, t)
-	r = s.Match("foo.bar")
+	r, _ = s.Match("foo.bar")
 	verifyLen(r.psubs, 0, t)
 }
 
@@ -774,10 +774,10 @@ func testSublistInsertWithWildcardsAsLiterals(t *testing.T, s *Sublist) {
 		sub := newSub(subject)
 		s.Insert(sub)
 		// Should find no match
-		r := s.Match("foo.bar")
+		r, _ := s.Match("foo.bar")
 		verifyLen(r.psubs, 0, t)
 		// Should find a match
-		r = s.Match(subject)
+		r, _ = s.Match(subject)
 		verifyLen(r.psubs, 1, t)
 	}
 }
@@ -835,7 +835,7 @@ func testSublistRaceOnRemove(t *testing.T, s *Sublist) {
 			s.Match("foo")
 		}
 		// This will be from cache when i==1
-		r := s.Match("foo")
+		r, _ := s.Match("foo")
 		wg := sync.WaitGroup{}
 		wg.Add(1)
 		go func() {
@@ -870,7 +870,7 @@ func testSublistRaceOnRemove(t *testing.T, s *Sublist) {
 			s.Match("foo")
 		}
 		// This will be from cache when i==1
-		r := s.Match("foo")
+		r, _ := s.Match("foo")
 		wg := sync.WaitGroup{}
 		wg.Add(1)
 		go func() {
@@ -915,7 +915,7 @@ func testSublistRaceOnInsert(t *testing.T, s *Sublist) {
 		wg.Done()
 	}()
 	for i := 0; i < 1000; i++ {
-		r := s.Match("foo")
+		r, _ := s.Match("foo")
 		for _, qsubs := range r.qsubs {
 			for _, qsub := range qsubs {
 				if string(qsub.queue) != "bar" {
@@ -939,7 +939,7 @@ func testSublistRaceOnInsert(t *testing.T, s *Sublist) {
 		wg.Done()
 	}()
 	for i := 0; i < 1000; i++ {
-		r := s.Match("foo")
+		r, _ := s.Match("foo")
 		for _, sub := range r.psubs {
 			if string(sub.subject) != "foo" {
 				t.Fatalf("Expected subject to be foo, got %v", string(sub.subject))
@@ -962,7 +962,7 @@ func TestSublistRaceOnMatch(t *testing.T) {
 	f := func() {
 		defer wg.Done()
 		for i := 0; i < 10; i++ {
-			r := s.Match("foo.bar")
+			r, _ := s.Match("foo.bar")
 			for _, sub := range r.psubs {
 				if !strings.HasPrefix(string(sub.subject), "foo.") {
 					errCh <- fmt.Errorf("Wrong subject: %s", sub.subject)
@@ -1015,7 +1015,7 @@ func testSublistRemoteQueueSubscriptions(t *testing.T, s *Sublist) {
 	// These are just shadowed in results, so should appear as 4 subs.
 	verifyCount(s, 4, t)
 
-	r := s.Match("foo")
+	r, _ := s.Match("foo")
 	verifyLen(r.psubs, 0, t)
 	verifyQLen(r.qsubs, 1, t)
 	verifyLen(r.qsubs[0], 22, t)
@@ -1026,7 +1026,7 @@ func testSublistRemoteQueueSubscriptions(t *testing.T, s *Sublist) {
 	verifyCount(s, 2, t)
 
 	// Now make sure our shadowed results are correct after a removal.
-	r = s.Match("foo")
+	r, _ = s.Match("foo")
 	verifyLen(r.psubs, 0, t)
 	verifyQLen(r.qsubs, 1, t)
 	verifyLen(r.qsubs[0], 11, t)
@@ -1036,7 +1036,7 @@ func testSublistRemoteQueueSubscriptions(t *testing.T, s *Sublist) {
 	s.UpdateRemoteQSub(rs2)
 
 	// Results should reflect new weight.
-	r = s.Match("foo")
+	r, _ = s.Match("foo")
 	verifyLen(r.psubs, 0, t)
 	verifyQLen(r.qsubs, 1, t)
 	verifyLen(r.qsubs[0], 2, t)
@@ -1044,11 +1044,11 @@ func testSublistRemoteQueueSubscriptions(t *testing.T, s *Sublist) {
 
 func TestSublistSharedEmptyResult(t *testing.T) {
 	s := NewSublistWithCache()
-	r1 := s.Match("foo")
+	r1, _ := s.Match("foo")
 	verifyLen(r1.psubs, 0, t)
 	verifyQLen(r1.qsubs, 0, t)
 
-	r2 := s.Match("bar")
+	r2, _ := s.Match("bar")
 	verifyLen(r2.psubs, 0, t)
 	verifyQLen(r2.qsubs, 0, t)
 
@@ -1532,7 +1532,7 @@ func TestSublistMatchWithEmptyTokens(t *testing.T) {
 
 			for _, subj := range []string{".foo", "..foo", "foo..", "foo.", "foo..bar", "foo...bar"} {
 				t.Run(subj, func(t *testing.T) {
-					r := sl.Match(subj)
+					r, _ := sl.Match(subj)
 					verifyLen(r.psubs, 0, t)
 					verifyQLen(r.qsubs, 0, t)
 				})
@@ -1918,7 +1918,7 @@ func Benchmark_____SublistMatch10kSubsWithNoCache(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		r := s.Match(subject)
+		r, _ := s.Match(subject)
 		if len(r.psubs) != nsubs {
 			b.Fatalf("Results len is %d, should be %d", len(r.psubs), nsubs)
 		}

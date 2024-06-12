@@ -95,7 +95,7 @@ func checkForRegisteredQSubInterest(t *testing.T, s *Server, gwName, acc, subj s
 		ei, _ := c.gw.outsim.Load(acc)
 		if ei != nil {
 			sl := ei.(*outsie).sl
-			r := sl.Match(subj)
+			r, _ := sl.Match(subj)
 			for _, qsubs := range r.qsubs {
 				count += len(qsubs)
 			}
@@ -196,7 +196,7 @@ func checkGWInterestOnlyModeInterestOn(t *testing.T, s *Server, outboundGWName, 
 				s, outboundGWName, accName)
 		}
 		outsie := outsiei.(*outsie)
-		r := outsie.sl.Match(subject)
+		r, _ := outsie.sl.Match(subject)
 		if len(r.psubs) == 0 {
 			return fmt.Errorf("Server %s - outbound gateway connection %q - account %q: no subject interest for %q",
 				s, outboundGWName, accName, subject)
@@ -3261,7 +3261,7 @@ func TestGatewaySendQSubsBufSize(t *testing.T) {
 				t.Fatalf("No interest found")
 			}
 			sl := ei.(*outsie).sl
-			r := sl.Match("foo")
+			r, _ := sl.Match("foo")
 			if len(r.qsubs) != 4 {
 				t.Fatalf("Expected 4 groups, got %v", len(r.qsubs))
 			}
@@ -3517,7 +3517,7 @@ func TestGatewaySendAllSubs(t *testing.T) {
 		ei, _ := c.gw.outsim.Load(globalAccountName)
 		if ei != nil {
 			sl := ei.(*outsie).sl
-			r := sl.Match("newsub")
+			r, _ := sl.Match("newsub")
 			if len(r.psubs) == 1 {
 				return nil
 			}
@@ -3534,7 +3534,7 @@ func TestGatewaySendAllSubs(t *testing.T) {
 		ei, _ := c.gw.outsim.Load(globalAccountName)
 		if ei != nil {
 			sl := ei.(*outsie).sl
-			r := sl.Match("newsub")
+			r, _ := sl.Match("newsub")
 			if len(r.psubs) == 0 {
 				return nil
 			}

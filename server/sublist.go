@@ -60,6 +60,28 @@ type SublistResult struct {
 	qsubs [][]*subscription // don't make this a map, too expensive to iterate
 }
 
+func getSublistResult() *SublistResult {
+	return sublistResultPool.Get().(*SublistResult)
+}
+
+func (r *SublistResult) returnToPool() {
+	if r == emptyResult || r == nil {
+		return
+	}
+	r.psubs = r.psubs[:0]
+	for i := range r.qsubs {
+		r.qsubs[i] = r.qsubs[i][:0]
+	}
+	r.qsubs = r.qsubs[:0]
+	sublistResultPool.Put(r)
+}
+
+var sublistResultPool = sync.Pool{
+	New: func() any {
+		return &SublistResult{}
+	},
+}
+
 // A Sublist stores and efficiently retrieves subscriptions.
 type Sublist struct {
 	sync.RWMutex
@@ -162,7 +184,7 @@ func (s *Sublist) registerNotification(subject, queue string, notify chan<- bool
 	}
 
 	var hasInterest bool
-	r := s.Match(subject)
+	r, rc := s.Match(subject)
 
 	if len(r.psubs)+len(r.qsubs) > 0 {
 		if queue == _EMPTY_ {
@@ -182,6 +204,8 @@ func (s *Sublist) registerNotification(subject, queue string, notify chan<- bool
 			}
 		}
 	}
+
+	rc()
 
 	key := keyFromSubjectAndQueue(subject, queue)
 	var err error
@@ -320,7 +344,8 @@ func (s *Sublist) chkForRemoveNotification(subject, queue string) {
 	if chs := s.notify.remove[key]; len(chs) > 0 {
 		// We need to always check that we have no interest anymore.
 		var hasInterest bool
-		r := s.matchNoLock(subject)
+		r, rc := s.matchNoLock(subject)
+		defer rc()
 
 		if len(r.psubs)+len(r.qsubs) > 0 {
 			if queue == _EMPTY_ {
@@ -456,7 +481,7 @@ func (s *Sublist) Insert(sub *subscription) error {
 
 // Deep copy
 func copyResult(r *SublistResult) *SublistResult {
-	nr := &SublistResult{}
+	nr := getSublistResult()
 	nr.psubs = append([]*subscription(nil), r.psubs...)
 	for _, qr := range r.qsubs {
 		nqr := append([]*subscription(nil), qr...)
@@ -526,13 +551,13 @@ var emptyResult = &SublistResult{}
 
 // Match will match all entries to the literal subject.
 // It will return a set of results for both normal and queue subscribers.
-func (s *Sublist) Match(subject string) *SublistResult {
+func (s *Sublist) Match(subject string) (*SublistResult, func()) {
 	return s.match(subject, true, false)
 }
 
 // MatchBytes will match all entries to the literal subject.
 // It will return a set of results for both normal and queue subscribers.
-func (s *Sublist) MatchBytes(subject []byte) *SublistResult {
+func (s *Sublist) MatchBytes(subject []byte) (*SublistResult, func()) {
 	return s.match(bytesToString(subject), true, true)
 }
 
@@ -542,11 +567,11 @@ func (s *Sublist) HasInterest(subject string) bool {
 	return s.hasInterest(subject, true)
 }
 
-func (s *Sublist) matchNoLock(subject string) *SublistResult {
+func (s *Sublist) matchNoLock(subject string) (*SublistResult, func()) {
 	return s.match(subject, false, false)
 }
 
-func (s *Sublist) match(subject string, doLock bool, doCopyOnCache bool) *SublistResult {
+func (s *Sublist) match(subject string, doLock bool, doCopyOnCache bool) (*SublistResult, func()) {
 	atomic.AddUint64(&s.matches, 1)
 
 	// Check cache first.
@@ -560,7 +585,7 @@ func (s *Sublist) match(subject string, doLock bool, doCopyOnCache bool) *Sublis
 	}
 	if ok {
 		atomic.AddUint64(&s.cacheHits, 1)
-		return r
+		return r, func() {} // Don't allow recycling cache results
 	}
 
 	tsa := [32]string{}
@@ -569,19 +594,19 @@ func (s *Sublist) match(subject string, doLock bool, doCopyOnCache bool) *Sublis
 	for i := 0; i < len(subject); i++ {
 		if subject[i] == btsep {
 			if i-start == 0 {
-				return emptyResult
+				return emptyResult, func() {}
 			}
 			tokens = append(tokens, subject[start:i])
 			start = i + 1
 		}
 	}
 	if start >= len(subject) {
-		return emptyResult
+		return emptyResult, func() {}
 	}
 	tokens = append(tokens, subject[start:])
 
 	// FIXME(dlc) - Make shared pool between sublist and client readLoop?
-	result := &SublistResult{}
+	result := getSublistResult()
 
 	// Get result from the main structure and place into the shared cache.
 	// Hold the read lock to avoid race between match and store.
@@ -620,7 +645,7 @@ func (s *Sublist) match(subject string, doLock bool, doCopyOnCache bool) *Sublis
 		go s.reduceCacheCount()
 	}
 
-	return result
+	return result, result.returnToPool
 }
 
 func (s *Sublist) hasInterest(subject string, doLock bool) bool {
@@ -1632,7 +1657,7 @@ func (s *Sublist) ReverseMatch(subject string) *SublistResult {
 	}
 	tokens = append(tokens, subject[start:])
 
-	result := &SublistResult{}
+	result := getSublistResult()
 
 	s.RLock()
 	reverseMatchLevel(s.root, tokens, nil, result)

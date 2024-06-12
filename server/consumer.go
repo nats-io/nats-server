@@ -1153,7 +1153,9 @@ func (o *consumer) checkQueueInterest() {
 		subj = o.cfg.DeliverSubject
 	}
 
-	if rr := o.acc.sl.Match(subj); len(rr.qsubs) > 0 {
+	rr, rc := o.acc.sl.Match(subj)
+	defer rc()
+	if len(rr.qsubs) > 0 {
 		// Just grab first
 		if qsubs := rr.qsubs[0]; len(qsubs) > 0 {
 			if sub := rr.qsubs[0][0]; len(sub.queue) > 0 {
@@ -1572,8 +1574,9 @@ func (s *Server) hasGatewayInterest(account, subject string) bool {
 	gw.RLock()
 	defer gw.RUnlock()
 	for _, gwc := range gw.outo {
-		psi, qr := gwc.gatewayInterest(account, stringToBytes(subject))
+		psi, qr, qrc := gwc.gatewayInterest(account, stringToBytes(subject))
 		if psi || qr != nil {
+			qrc()
 			return true
 		}
 	}
@@ -3314,7 +3317,8 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 		if wr.expires.IsZero() || time.Now().Before(wr.expires) {
 			if wr.acc.sl.HasInterest(wr.interest) {
 				return o.waiting.pop()
-			} else if time.Since(wr.received) < defaultGatewayRecentSubExpiration && (o.srv.leafNodeEnabled || o.srv.gateway.enabled) {
+			}
+			if time.Since(wr.received) < defaultGatewayRecentSubExpiration && (o.srv.leafNodeEnabled || o.srv.gateway.enabled) {
 				return o.waiting.pop()
 			} else if o.srv.gateway.enabled && o.srv.hasGatewayInterest(wr.acc.Name, wr.interest) {
 				return o.waiting.pop()
