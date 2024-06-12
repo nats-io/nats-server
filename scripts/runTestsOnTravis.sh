@@ -1,5 +1,7 @@
 #!/bin/sh
 
+curl -sfL https://goreleaser.com/static/run | VERSION=v1.26.2 bash
+
 set -e
 
 if [ "$1" = "compile" ]; then
