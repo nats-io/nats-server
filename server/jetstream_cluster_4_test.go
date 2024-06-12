@@ -2281,3 +2281,51 @@ func TestJetStreamClusterStreamLastSequenceResetAfterStorageWipe(t *testing.T) {
 		}
 	}
 }
+
+func TestJetStreamClusterAckFloorBetweenLeaderAndFollowers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Retention: nats.InterestPolicy,
+		Subjects:  []string{"foo.*"},
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe("foo.*", "consumer")
+	require_NoError(t, err)
+
+	// Do 25 rounds.
+	for i := 1; i <= 25; i++ {
+		// Send 50 msgs.
+		for x := 0; x < 50; x++ {
+			_, err := js.Publish("foo.bar", nil)
+			require_NoError(t, err)
+		}
+		msgs, err := sub.Fetch(50, nats.MaxWait(10*time.Second))
+		require_NoError(t, err)
+		require_Equal(t, len(msgs), 50)
+		// Randomize
+		rand.Shuffle(len(msgs), func(i, j int) { msgs[i], msgs[j] = msgs[j], msgs[i] })
+		for _, m := range msgs {
+			m.AckSync()
+		}
+
+		time.Sleep(100 * time.Millisecond)
+		for _, s := range c.servers {
+			mset, err := s.GlobalAccount().lookupStream("TEST")
+			require_NoError(t, err)
+			consumer := mset.lookupConsumer("consumer")
+			require_NotEqual(t, consumer, nil)
+			info := consumer.info()
+			require_Equal(t, info.NumAckPending, 0)
+			require_Equal(t, info.AckFloor.Consumer, uint64(i*50))
+			require_Equal(t, info.AckFloor.Stream, uint64(i*50))
+		}
+	}
+}
