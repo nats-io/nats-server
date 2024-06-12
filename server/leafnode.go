@@ -2806,7 +2806,7 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 
 	// Go back to the sublist data structure.
 	if !ok {
-		r = c.acc.sl.Match(subject)
+		r, _ = c.acc.sl.Match(subject)
 		// Prune the results cache. Keeps us from unbounded growth. Random delete.
 		if len(c.in.results) >= maxResultCacheSize {
 			n := 0

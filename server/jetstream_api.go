@@ -822,7 +822,9 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, sub
 		return
 	}
 	// No lock needed, those are immutable.
-	s, rr := js.srv, js.apiSubs.Match(subject)
+	s := js.srv
+	rr, rc := js.apiSubs.Match(subject)
+	defer rc()
 
 	hdr, msg := c.msgParts(rmsg)
 	if len(getHeader(ClientInfoHdr, hdr)) == 0 {

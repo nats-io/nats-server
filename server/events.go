@@ -868,17 +868,20 @@ func (s *Server) sendStatsz(subj string) {
 	if shouldCheckInterest() {
 		// Check if we even have interest in this subject.
 		sacc := s.sys.account
-		rr := sacc.sl.Match(subj)
+		rr, rc := sacc.sl.Match(subj)
 		totalSubs := len(rr.psubs) + len(rr.qsubs)
 		if totalSubs == 0 {
+			rc()
 			return
 		} else if totalSubs == 1 && len(rr.psubs) == 1 {
 			// For the broadcast subject we listen to that ourselves with no echo for remote updates.
 			// If we are the only ones listening do not send either.
 			if rr.psubs[0] == s.sys.remoteStatsSub {
+				rc()
 				return
 			}
 		}
+		rc()
 	}
 
 	m.Stats.Start = s.start
@@ -2832,8 +2835,9 @@ func (s *Server) debugSubscribers(sub *subscription, c *client, _ *Account, subj
 
 	if subjectIsLiteral(tsubj) {
 		// We will look up subscribers locally first then determine if we need to solicit other servers.
-		rr := acc.sl.Match(tsubj)
+		rr, rc := acc.sl.Match(tsubj)
 		nsubs = totalSubs(rr, qgroup)
+		rc()
 	} else {
 		// We have a wildcard, so this is a bit slower path.
 		var _subs [32]*subscription
@@ -2932,8 +2936,9 @@ func (s *Server) nsubsRequest(sub *subscription, c *client, _ *Account, subject,
 	// We will look up subscribers locally first then determine if we need to solicit other servers.
 	var nsubs int32
 	if subjectIsLiteral(m.Subject) {
-		rr := acc.sl.Match(m.Subject)
+		rr, rc := acc.sl.Match(m.Subject)
 		nsubs = totalSubs(rr, m.Queue)
+		rc()
 	} else {
 		// We have a wildcard, so this is a bit slower path.
 		var _subs [32]*subscription

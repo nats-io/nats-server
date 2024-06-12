@@ -1637,7 +1637,7 @@ func TestLeafNodeHubWithGateways(t *testing.T) {
 
 	checkFor(t, time.Second, 15*time.Millisecond, func() error {
 		acc := a.globalAccount()
-		if r := acc.sl.Match("service"); r != nil && len(r.psubs) == 1 {
+		if r, _ := acc.sl.Match("service"); r != nil && len(r.psubs) == 1 {
 			return nil
 		}
 		return fmt.Errorf("subscription still not registered")
@@ -4834,14 +4834,16 @@ func TestLeafNodeQueueWeightCorrectOnRestart(t *testing.T) {
 			checkFor(t, time.Second, 10*time.Millisecond, func() error {
 				// For remote queue interest, Match() will expand to queue weight.
 				// So we should have 1 group and 2 queue subs present.
-				res := sl.Match("foo")
+				res, rc := sl.Match("foo")
 				for _, qsubs := range res.qsubs {
 					for _, sub := range qsubs {
 						if string(sub.subject) == "foo" && string(sub.queue) == "queue" && atomic.LoadInt32(&sub.qw) == 2 {
+							rc()
 							return nil
 						}
 					}
 				}
+				rc()
 				return fmt.Errorf("Server %q does not have expected queue interest with expected weight", s)
 			})
 		}
@@ -7963,7 +7965,7 @@ func TestLeafNodeWithWeightedDQResponsesWithStreamImportAccountsWithUnsub(t *tes
 		acc, err := s.LookupAccount(accName)
 		require_NoError(t, err)
 		acc.mu.RLock()
-		r := acc.sl.Match("RESPONSE")
+		r, _ := acc.sl.Match("RESPONSE")
 		acc.mu.RUnlock()
 		return r
 	}
@@ -9152,11 +9154,11 @@ func TestLeafCredFormatting(t *testing.T) {
 
 		template := fmt.Sprintf(`
 		listen: 127.0.0.1:-1
-		leaf { remotes: [ 
-			{ 
+		leaf { remotes: [
+			{
 				urls: [ nats-leaf://127.0.0.1:%d ]
 				credentials: "%s"
-			} 
+			}
 		] }`, o.LeafNode.Port, file.Name())
 
 		conf := createConfFile(t, []byte(template))

@@ -539,9 +539,9 @@ func TestNoRaceGatewayNoMissingReplies(t *testing.T) {
 			natsFlush(t, ncb1)
 
 			// Let's make sure we have interest on B2.
-			if r := sb2.globalAccount().sl.Match(reply); len(r.qsubs) == 0 {
+			if r, _ := sb2.globalAccount().sl.Match(reply); len(r.qsubs) == 0 {
 				checkFor(t, time.Second, time.Millisecond, func() error {
-					if r := sb2.globalAccount().sl.Match(reply); len(r.qsubs) == 0 {
+					if r, _ := sb2.globalAccount().sl.Match(reply); len(r.qsubs) == 0 {
 						return fmt.Errorf("B still not registered interest on %s", reply)
 					}
 					return nil

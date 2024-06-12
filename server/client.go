@@ -1134,7 +1134,7 @@ func (c *client) mergeDenyPermissions(what denyType, denyPubs []string) {
 		}
 	FOR_DENY:
 		for _, subj := range denyPubs {
-			r := p.deny.Match(subj)
+			r, rc := p.deny.Match(subj)
 			for _, v := range r.qsubs {
 				for _, s := range v {
 					if string(s.subject) == subj {
@@ -1147,6 +1147,7 @@ func (c *client) mergeDenyPermissions(what denyType, denyPubs []string) {
 					continue FOR_DENY
 				}
 			}
+			rc()
 			sub := &subscription{subject: []byte(subj)}
 			p.deny.Insert(sub)
 		}
@@ -3045,7 +3046,7 @@ func (c *client) canSubscribe(subject string, optQueue ...string) bool {
 
 	// Check allow list. If no allow list that means all are allowed. Deny can overrule.
 	if c.perms.sub.allow != nil {
-		r := c.perms.sub.allow.Match(subject)
+		r, rc := c.perms.sub.allow.Match(subject)
 		allowed = len(r.psubs) > 0
 		if queue != _EMPTY_ && len(r.qsubs) > 0 {
 			// If the queue appears in the allow list, then DO allow.
@@ -3057,16 +3058,18 @@ func (c *client) canSubscribe(subject string, optQueue ...string) bool {
 			r := c.perms.sub.allow.ReverseMatch(subject)
 			allowed = len(r.psubs) != 0
 		}
+		rc()
 	}
 	// If we have a deny list and we think we are allowed, check that as well.
 	if allowed && c.perms.sub.deny != nil {
-		r := c.perms.sub.deny.Match(subject)
+		r, rc := c.perms.sub.deny.Match(subject)
 		allowed = len(r.psubs) == 0
 
 		if queue != _EMPTY_ && len(r.qsubs) > 0 {
 			// If the queue appears in the deny list, then DO NOT allow.
 			allowed = !queueMatches(queue, r.qsubs)
 		}
+		rc()
 
 		// We use the actual subscription to signal us to spin up the deny mperms
 		// and cache. We check if the subject is a wildcard that contains any of
@@ -4025,7 +4028,7 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 	// Go back to the sublist data structure.
 	if !ok {
 		// Match may use the subject here to populate a cache, so can not use bytesToString here.
-		r = acc.sl.Match(string(c.pa.subject))
+		r, _ = acc.sl.MatchBytes(c.pa.subject)
 		if len(r.psubs)+len(r.qsubs) > 0 {
 			// Prune the results cache. Keeps us from unbounded growth. Random delete.
 			if len(c.in.results) >= maxResultCacheSize {
@@ -4091,7 +4094,8 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 
 // Return the subscription for this reply subject. Only look at normal subs for this client.
 func (c *client) subForReply(reply []byte) *subscription {
-	r := c.acc.sl.Match(string(reply))
+	r, rc := c.acc.sl.Match(string(reply))
+	defer rc()
 	for _, sub := range r.psubs {
 		if sub.client == c {
 			return sub
@@ -4106,9 +4110,11 @@ func (c *client) subForReply(reply []byte) *subscription {
 func (c *client) handleGWReplyMap(msg []byte) bool {
 	// Check for leaf nodes
 	if c.srv.gwLeafSubs.Count() > 0 {
-		if r := c.srv.gwLeafSubs.MatchBytes(c.pa.subject); len(r.psubs) > 0 {
+		r, rc := c.srv.gwLeafSubs.MatchBytes(c.pa.subject)
+		if len(r.psubs) > 0 {
 			c.processMsgResults(c.acc, r, msg, c.pa.deliver, c.pa.subject, c.pa.reply, pmrNoFlag)
 		}
+		rc()
 	}
 	if c.srv.gateway.enabled {
 		reply := c.pa.reply
@@ -4446,7 +4452,8 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	}
 
 	// FIXME(dlc) - Do L1 cache trick like normal client?
-	rr := siAcc.sl.Match(to)
+	rr, rc := siAcc.sl.Match(to)
+	defer rc()
 
 	// If we are a route or gateway or leafnode and this message is flipped to a queue subscriber we
 	// need to handle that since the processMsgResults will want a queue filter.
@@ -5772,7 +5779,7 @@ func (c *client) getAccAndResultFromCache() (*Account, *SublistResult) {
 		sl := acc.sl
 
 		// Match against the account sublist.
-		r = sl.MatchBytes(c.pa.subject)
+		r, _ = sl.MatchBytes(c.pa.subject)
 
 		// Check if we need to prune.
 		if len(c.in.pacache) >= maxPerAccountCacheSize {

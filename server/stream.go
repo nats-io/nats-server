@@ -5165,7 +5165,8 @@ func (mset *stream) signalConsumers(subj string, seq uint64) {
 		mset.clsMu.RUnlock()
 		return
 	}
-	r := mset.csl.Match(subj)
+	r, rc := mset.csl.Match(subj)
+	defer rc()
 	mset.clsMu.RUnlock()
 
 	if len(r.psubs) == 0 {

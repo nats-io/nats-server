@@ -1285,7 +1285,9 @@ func (o *consumer) checkQueueInterest() {
 		subj = o.cfg.DeliverSubject
 	}
 
-	if rr := o.acc.sl.Match(subj); len(rr.qsubs) > 0 {
+	rr, rc := o.acc.sl.Match(subj)
+	defer rc()
+	if len(rr.qsubs) > 0 {
 		// Just grab first
 		if qsubs := rr.qsubs[0]; len(qsubs) > 0 {
 			if sub := rr.qsubs[0][0]; len(sub.queue) > 0 {
@@ -1756,8 +1758,9 @@ func (s *Server) hasGatewayInterest(account, subject string) bool {
 	gw.RLock()
 	defer gw.RUnlock()
 	for _, gwc := range gw.outo {
-		psi, qr := gwc.gatewayInterest(account, stringToBytes(subject))
+		psi, qr, qrc := gwc.gatewayInterest(account, stringToBytes(subject))
 		if psi || qr != nil {
+			qrc()
 			return true
 		}
 	}
