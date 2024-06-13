@@ -1638,23 +1638,30 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 	}
 	type job func(t *testing.T, nc *nats.Conn, js nats.JetStreamContext, c *cluster)
 	type testParams struct {
-		cluster         string
-		streams         []*streamSetup
-		producers       int
-		consumers       int
-		restartAny      bool
-		restartFirst    bool
-		restartWait     time.Duration
-		ldmRestart      bool
-		rolloutRestart  bool
-		restarts        int
-		checkHealthz    bool
-		jobs            []job
-		expect          job
-		duration        time.Duration
-		producerMsgs    int
-		producerMsgSize int
-		producerRate    time.Duration
+		cluster            string
+		streams            []*streamSetup
+		producers          int
+		consumers          int
+		restartAny         bool
+		restartFirst       bool
+		restartWait        time.Duration
+		ldmRestart         bool
+		rolloutRestart     bool
+		restarts           int
+		checkHealthz       bool
+		jobs               []job
+		expect             job
+		duration           time.Duration
+		producerMsgs       int
+		producerMsgSize    int
+		producerRate       time.Duration
+		unfiltered         bool
+		maxAckPending      int
+		totalStreams       int
+		consumersPerStream int
+		outOfOrderAcks     bool
+		delayedAcks        bool
+		skipSequence       uint64
 	}
 	test := func(t *testing.T, test *testParams) {
 		if test.producerRate == 0 {
@@ -1756,6 +1763,9 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 					wg.Add(1)
 
 					consumer := consumer
+					outOfOrderAcks := test.outOfOrderAcks
+					delayedAcks := test.delayedAcks
+					skipSequence := test.skipSequence
 					go func() {
 						defer wg.Done()
 
@@ -1785,16 +1795,41 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 							if err != nil {
 								continue
 							}
+
 							for _, msg := range msgs {
-								msg.Ack()
+								meta, _ := msg.Metadata()
+								if skipSequence > 0 && meta.Sequence.Stream == skipSequence {
+									// Always skip this sequence one to keep ack pending
+									// from reaching 0 in a test.
+								} else {
+									msg.Ack()
+								}
 							}
 
+							if outOfOrderAcks {
+								rand.Shuffle(len(msgs), func(i, j int) { msgs[i], msgs[j] = msgs[j], msgs[i] })
+							}
 							msgs, err = sub.Fetch(100, nats.MaxWait(200*time.Millisecond))
 							if err != nil {
 								continue
 							}
-							for _, msg := range msgs {
-								msg.Ack()
+						NextMsg:
+							for i, msg := range msgs {
+								if skipSequence > 0 {
+									meta, _ := msg.Metadata()
+									// Always skip this sequence one to keep ack pending
+									// from reaching 0 in a test.
+									if meta.Sequence.Stream == skipSequence {
+										continue NextMsg
+									}
+								}
+								if delayedAcks && i%5 == 0 {
+									time.AfterFunc(15*time.Second, func() {
+										msg.Ack()
+									})
+								} else {
+									msg.Ack()
+								}
 							}
 						}
 					}()
@@ -2130,6 +2165,13 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 			testDuration := 3 * time.Minute
 			totalStreams := 30
 			consumersPerStream := 5
+
+			if tp.totalStreams > 0 {
+				totalStreams = tp.totalStreams
+			}
+			if tp.consumersPerStream > 0 {
+				consumersPerStream = tp.consumersPerStream
+			}
 			streams := make([]*streamSetup, totalStreams)
 			for i := 0; i < totalStreams; i++ {
 				name := fmt.Sprintf("test:%d", i)
@@ -2151,10 +2193,15 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 					subject := fmt.Sprintf("test.%d.%d", i, j)
 					name := fmt.Sprintf("A:%d:%d", i, j)
 					cc := &nats.ConsumerConfig{
-						Name:          name,
-						Durable:       name,
-						FilterSubject: subject,
-						AckPolicy:     nats.AckExplicitPolicy,
+						Name:      name,
+						Durable:   name,
+						AckPolicy: nats.AckExplicitPolicy,
+					}
+					if !tp.unfiltered {
+						cc.FilterSubject = subject
+					}
+					if tp.maxAckPending > 0 {
+						cc.MaxAckPending = tp.maxAckPending
 					}
 					st.consumers = append(st.consumers, cc)
 					st.subjects = append(st.subjects, subject)
@@ -2191,6 +2238,11 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 				producerMsgSize: tp.producerMsgSize,
 				producerMsgs:    tp.producerMsgs,
 				producerRate:    tp.producerRate,
+				unfiltered:      tp.unfiltered,
+				maxAckPending:   tp.maxAckPending,
+				outOfOrderAcks:  tp.outOfOrderAcks,
+				delayedAcks:     tp.delayedAcks,
+				skipSequence:    tp.skipSequence,
 			})
 		}
 	}
@@ -2357,6 +2409,32 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 						Discard:    nats.DiscardOld,
 						Duplicates: 5 * time.Second,
 					}, params))
+
+					t.Run("unfiltered:wq:dn:max-msgs", shared(t, &nats.StreamConfig{
+						Retention:  nats.WorkQueuePolicy,
+						Storage:    st,
+						MaxMsgs:    2_000,
+						Discard:    nats.DiscardNew,
+						Duplicates: 5 * time.Second,
+					}, &testParams{
+						restarts:           1,
+						rolloutRestart:     true,
+						ldmRestart:         true,
+						checkHealthz:       true,
+						restartWait:        45 * time.Second,
+						producers:          2,
+						consumers:          10,
+						producerMsgSize:    1024,
+						producerMsgs:       2_000,
+						producerRate:       1 * time.Millisecond,
+						maxAckPending:      2_000,
+						unfiltered:         true,
+						totalStreams:       30,
+						consumersPerStream: 1,
+						outOfOrderAcks:     true,
+						delayedAcks:        true,
+						skipSequence:       5,
+					}))
 				})
 			})
 		}
