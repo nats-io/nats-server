@@ -52,14 +52,14 @@ func RunRandClientPortServer(t *testing.T) *Server {
 	return RunServer(&opts)
 }
 
-func require_True(t *testing.T, b bool) {
+func require_True(t testing.TB, b bool) {
 	t.Helper()
 	if !b {
 		t.Fatalf("require true, but got false")
 	}
 }
 
-func require_False(t *testing.T, b bool) {
+func require_False(t testing.TB, b bool) {
 	t.Helper()
 	if b {
 		t.Fatalf("require false, but got true")
@@ -89,7 +89,7 @@ func require_Contains(t *testing.T, s string, subStrs ...string) {
 	}
 }
 
-func require_Error(t *testing.T, err error, expected ...error) {
+func require_Error(t testing.TB, err error, expected ...error) {
 	t.Helper()
 	if err == nil {
 		t.Fatalf("require error, but got none")
@@ -112,21 +112,21 @@ func require_Error(t *testing.T, err error, expected ...error) {
 	t.Fatalf("Expected one of %v, got '%v'", expected, err)
 }
 
-func require_Equal[T comparable](t *testing.T, a, b T) {
+func require_Equal[T comparable](t testing.TB, a, b T) {
 	t.Helper()
 	if a != b {
 		t.Fatalf("require %T equal, but got: %v != %v", a, a, b)
 	}
 }
 
-func require_NotEqual[T comparable](t *testing.T, a, b T) {
+func require_NotEqual[T comparable](t testing.TB, a, b T) {
 	t.Helper()
 	if a == b {
 		t.Fatalf("require %T not equal, but got: %v == %v", a, a, b)
 	}
 }
 
-func require_Len(t *testing.T, a, b int) {
+func require_Len(t testing.TB, a, b int) {
 	t.Helper()
 	if a != b {
 		t.Fatalf("require len, but got: %v != %v", a, b)
