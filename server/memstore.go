@@ -1610,6 +1610,12 @@ func (o *consumerMemStore) UpdateAcks(dseq, sseq uint64) error {
 		return nil
 	}
 
+	// Match leader logic on checking if ack is ahead of delivered.
+	// This could happen on a cooperative takeover with high speed deliveries.
+	if sseq > o.state.Delivered.Stream {
+		o.state.Delivered.Stream = sseq + 1
+	}
+
 	// Check for AckAll here.
 	if o.cfg.AckPolicy == AckAll {
 		sgap := sseq - o.state.AckFloor.Stream

@@ -5966,7 +5966,54 @@ func TestJetStreamClusterFailMirrorsAndSources(t *testing.T) {
 	})
 }
 
+func TestJetStreamClusterConsumerDeliveredSyncReporting(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Retention: nats.WorkQueuePolicy,
+		Subjects:  []string{"foo.*"},
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe("foo.bar", "mc")
+	require_NoError(t, err)
+
+	// Make us match first, but not next 10.
+	_, err = js.Publish("foo.bar", nil)
+	require_NoError(t, err)
+	for i := 0; i < 10; i++ {
+		_, err = js.Publish("foo.baz", nil)
+		require_NoError(t, err)
+	}
+
+	msgs, err := sub.Fetch(1)
+	require_NoError(t, err)
+	require_Equal(t, len(msgs), 1)
+
+	// Now we want to make sure that jsz reporting will show the same
+	// state, including delivered, which will have skipped to the end.
+	// The skip can happen on several factors, but for here we just send
+	// another pull request which we will let fail.
+	_, err = sub.Fetch(1, nats.MaxWait(200*time.Millisecond))
+	require_Error(t, err)
+
+	opts := &JSzOptions{Accounts: true, Streams: true, Consumer: true}
+	for _, s := range c.servers {
+		jsz, err := s.Jsz(opts)
+		require_NoError(t, err)
+		ci := jsz.AccountDetails[0].Streams[0].Consumer[0]
+		require_Equal(t, ci.Delivered.Consumer, 1)
+		require_Equal(t, ci.Delivered.Stream, 1)
+	}
+}
+
 //
-// DO NOT ADD NEW TESTS IN THIS FILE
+// DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
 //
