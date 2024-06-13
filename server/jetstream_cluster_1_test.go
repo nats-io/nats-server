@@ -6013,6 +6013,92 @@ func TestJetStreamClusterConsumerDeliveredSyncReporting(t *testing.T) {
 	}
 }
 
+// This is to test follower ack fill logic when pending not empty.
+// There was a bug that would update p.Sequence in the stores (mem & file)
+// that would cause the logic to fail. Redeliveries were required to trigger.
+func TestJetStreamClusterConsumerAckSyncReporting(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Retention: nats.WorkQueuePolicy,
+		Subjects:  []string{"foo.*"},
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe("foo.bar", "mc", nats.AckWait(250*time.Millisecond))
+	require_NoError(t, err)
+
+	for i := 0; i < 10; i++ {
+		_, err = js.Publish("foo.bar", nil)
+		require_NoError(t, err)
+	}
+
+	msgs, err := sub.Fetch(10)
+	require_NoError(t, err)
+	require_Equal(t, len(msgs), 10)
+	// Let redeliveries kick in.
+	time.Sleep(time.Second)
+	msgs, err = sub.Fetch(10)
+	require_NoError(t, err)
+	require_Equal(t, len(msgs), 10)
+
+	// Randomize
+	rand.Shuffle(len(msgs), func(i, j int) { msgs[i], msgs[j] = msgs[j], msgs[i] })
+
+	dontAck := uint64(7)
+	var skipped, last *nats.Msg
+	for _, m := range msgs {
+		meta, err := m.Metadata()
+		require_NoError(t, err)
+		if meta.Sequence.Stream == dontAck {
+			skipped = m
+			continue
+		}
+		if meta.Sequence.Stream == 10 {
+			last = m
+			continue
+		}
+		m.AckSync()
+	}
+
+	// Now we want to make sure that jsz reporting will show the same
+	// state for ack floor.
+	opts := &JSzOptions{Accounts: true, Streams: true, Consumer: true}
+	for _, s := range c.servers {
+		jsz, err := s.Jsz(opts)
+		require_NoError(t, err)
+		ci := jsz.AccountDetails[0].Streams[0].Consumer[0]
+		require_Equal(t, ci.AckFloor.Consumer, dontAck-1)
+		require_Equal(t, ci.AckFloor.Stream, dontAck-1)
+	}
+
+	// Now ack the skipped message
+	skipped.AckSync()
+	for _, s := range c.servers {
+		jsz, err := s.Jsz(opts)
+		require_NoError(t, err)
+		ci := jsz.AccountDetails[0].Streams[0].Consumer[0]
+		require_Equal(t, ci.AckFloor.Consumer, 9)
+		require_Equal(t, ci.AckFloor.Stream, 9)
+	}
+
+	// Now ack the last message
+	last.AckSync()
+	for _, s := range c.servers {
+		jsz, err := s.Jsz(opts)
+		require_NoError(t, err)
+		ci := jsz.AccountDetails[0].Streams[0].Consumer[0]
+		require_Equal(t, ci.AckFloor.Consumer, 20)
+		require_Equal(t, ci.AckFloor.Stream, 10)
+	}
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
