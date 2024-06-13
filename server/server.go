@@ -4464,18 +4464,15 @@ func (s *Server) changeRateLimitLogInterval(d time.Duration) {
 }
 
 // DisconnectClientByID disconnects a client by connection ID
-func (s *Server) DisconnectClientByID(id uint64, kind string) error {
+func (s *Server) DisconnectClientByID(id uint64) error {
 	if s == nil {
 		return ErrServerNotRunning
 	}
-	var client *client
-	if kind == "Client" {
-		client = s.getClient(id)
+	if client := s.getClient(id); client != nil {
+		client.closeConnection(Kicked)
+		return nil
 	}
-	if kind == "Leafnode" {
-		client = s.GetLeafNode(id)
-	}
-	if client != nil {
+	if client := s.GetLeafNode(id); client != nil {
 		client.closeConnection(Kicked)
 		return nil
 	}
