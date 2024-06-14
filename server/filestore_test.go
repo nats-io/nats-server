@@ -7001,20 +7001,21 @@ func TestFileStoreReloadAndLoseLastSequenceWithSkipMsgs(t *testing.T) {
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////
 
-func Benchmark_FileStoreSelectMsgBlock(b *testing.B) {
+func BenchmarkFileStoreSelectMsgBlock(b *testing.B) {
 	const Seed = 123456
+	rng := rand.New(rand.NewSource(Seed))
+
 	cases := []struct {
 		blockSize uint64
 		msgSize   int
 		msgCount  int
 	}{
-		{128, 100, 1000},
+		{128, 100, 1000},  // Base case
 		{128, 1000, 1000}, // 10X msg size from base case
 		{128, 100, 10000}, // 10X msg count from base case
 	}
 
 	for _, params := range cases {
-
 		b.Run(
 			fmt.Sprintf("blockSize:%d,msgSize:%d,msgCount:%d", params.blockSize, params.msgSize, params.msgCount),
 			func(b *testing.B) {
@@ -7024,13 +7025,11 @@ func Benchmark_FileStoreSelectMsgBlock(b *testing.B) {
 				require_NoError(b, err)
 				defer fs.Stop()
 
-				rng := rand.New(rand.NewSource(Seed))
-
 				// Add in a bunch of blocks.
 				msg := make([]byte, params.msgSize)
 				for i := 0; i < params.msgCount; i++ {
 					rng.Read(msg)
-					_, _, err := fs.StoreMsg("A", nil, msg)
+					_, _, err = fs.StoreMsg("A", nil, msg)
 					require_NoError(b, err)
 				}
 				if fs.numMsgBlocks() < params.msgCount {
@@ -7056,41 +7055,339 @@ func Benchmark_FileStoreSelectMsgBlock(b *testing.B) {
 	}
 }
 
-func Benchmark_FileStoreLoadNextMsgSameFilterAsStream(b *testing.B) {
+func BenchmarkFileStoreLoadNextMsg(b *testing.B) {
 
 	const Seed = 123456
+	rng := rand.New(rand.NewSource(Seed))
+
 	cases := []struct {
 		msgSize          int
 		msgCount         int
 		distinctSubjects int
 	}{
-		{10, 100_000, 1024},
+		{10, 100_000, 1024},    // Base case
 		{100, 1000, 1024},      // 10X msg size from base case
 		{10, 1_000_000, 10240}, // 10X number of distinct subjects
 	}
 
-	for _, params := range cases {
+	b.Run(
+		"SameFilterAsStream",
+		func(b *testing.B) {
+			for _, params := range cases {
+				b.Run(fmt.Sprintf("msgSize:%d,msgCount:%d,subjects:%d", params.msgSize, params.msgCount, params.distinctSubjects),
+					func(b *testing.B) {
+						fs, err := newFileStore(
+							FileStoreConfig{StoreDir: b.TempDir()},
+							StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+						require_NoError(b, err)
+						defer fs.Stop()
 
-		b.Run(
-			fmt.Sprintf("msgSize:%d,msgCount:%d,subjects:%d", params.msgSize, params.msgCount, params.distinctSubjects),
-			func(b *testing.B) {
+						msg := make([]byte, params.msgSize)
 
+						// Add in a bunch of msgs
+						for i := 0; i < params.msgCount; i++ {
+							rng.Read(msg)
+							subj := fmt.Sprintf("foo.%d", rng.Intn(params.distinctSubjects))
+							_, _, err := fs.StoreMsg(subj, nil, msg)
+							require_NoError(b, err)
+						}
+
+						b.SetBytes(int64(params.msgSize))
+
+						b.ResetTimer()
+
+						var smv StoreMsg
+						for i := 0; i < b.N; i++ {
+							// Needs to start at ~1 to show slowdown.
+							_, _, err := fs.LoadNextMsg("foo.*", true, 10, &smv)
+							require_NoError(b, err)
+						}
+					},
+				)
+			}
+		},
+	)
+
+	b.Run(
+		"LiteralSubject",
+		func(b *testing.B) {
+			for _, params := range cases {
+				b.Run(fmt.Sprintf("msgSize:%d,msgCount:%d,subjects:%d", params.msgSize, params.msgCount, params.distinctSubjects),
+					func(b *testing.B) {
+						fs, err := newFileStore(
+							FileStoreConfig{StoreDir: b.TempDir()},
+							StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+						require_NoError(b, err)
+						defer fs.Stop()
+
+						msg := make([]byte, params.msgSize)
+
+						// Add in a bunch of msgs
+						for i := 0; i < params.msgCount; i++ {
+							rng.Read(msg)
+							subj := fmt.Sprintf("foo.%d", rand.Intn(params.distinctSubjects))
+							_, _, err := fs.StoreMsg(subj, nil, msg)
+							require_NoError(b, err)
+						}
+
+						// This is the one we will try to match.
+						rng.Read(msg)
+						_, _, err = fs.StoreMsg("foo.XXXX", nil, msg)
+						require_NoError(b, err)
+
+						// So not last and we think we are done linear scan.
+						rng.Read(msg)
+						_, _, err = fs.StoreMsg("foo.YYYY", nil, msg)
+						require_NoError(b, err)
+
+						b.SetBytes(int64(params.msgSize))
+
+						b.ResetTimer()
+
+						var smv StoreMsg
+						for i := 0; i < b.N; i++ {
+							_, _, err = fs.LoadNextMsg("foo.XXXX", false, rng.Uint64()%uint64(params.msgCount), &smv)
+							require_NoError(b, err)
+						}
+					},
+				)
+			}
+		},
+	)
+
+	b.Run(
+		"NoMsgsFirstSeq",
+		func(b *testing.B) {
+			for _, params := range cases {
+				b.Run(fmt.Sprintf("msgSize:%d,msgCount:%d,subjects:%d", params.msgSize, params.msgCount, params.distinctSubjects),
+					func(b *testing.B) {
+						fs, err := newFileStore(
+							FileStoreConfig{StoreDir: b.TempDir(), BlockSize: 8192},
+							StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+						require_NoError(b, err)
+						defer fs.Stop()
+
+						msg := make([]byte, params.msgSize)
+
+						// Add in a bunch of msgs
+						for i := 0; i < params.msgCount; i++ {
+							rng.Read(msg)
+							subj := fmt.Sprintf("foo.%d", rand.Intn(params.distinctSubjects))
+							_, _, err := fs.StoreMsg(subj, nil, msg)
+							require_NoError(b, err)
+						}
+
+						b.ResetTimer()
+
+						var smv StoreMsg
+						for i := 0; i < b.N; i++ {
+							// This should error with EOF
+							_, _, err = fs.LoadNextMsg("foo.baz", false, 1, &smv)
+							if !errors.Is(err, ErrStoreEOF) {
+								b.Fatalf("Wrong error, expected EOF got %v", err)
+							}
+						}
+					},
+				)
+			}
+		},
+	)
+
+	b.Run(
+		"NoMsgsNotFirstSeq",
+		func(b *testing.B) {
+			for _, params := range cases {
+				b.Run(fmt.Sprintf("msgSize:%d,msgCount:%d,subjects:%d", params.msgSize, params.msgCount, params.distinctSubjects),
+					func(b *testing.B) {
+						fs, err := newFileStore(
+							FileStoreConfig{StoreDir: b.TempDir(), BlockSize: 8192},
+							StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+						require_NoError(b, err)
+						defer fs.Stop()
+
+						msg := make([]byte, params.msgSize)
+
+						// Add in a bunch of msgs
+						for i := 0; i < params.msgCount; i++ {
+							rng.Read(msg)
+							subj := fmt.Sprintf("foo.%d", rand.Intn(params.distinctSubjects))
+							_, _, err := fs.StoreMsg(subj, nil, msg)
+							require_NoError(b, err)
+						}
+
+						b.ResetTimer()
+
+						var smv StoreMsg
+						for i := 0; i < b.N; i++ {
+							// This should error with EOF
+							// Make sure the sequence is not first seq of 1.
+							_, _, err := fs.LoadNextMsg("foo.baz", false, 10, &smv)
+							if !errors.Is(err, ErrStoreEOF) {
+								b.Fatalf("Wrong error, expected EOF got %v", err)
+							}
+						}
+					},
+				)
+			}
+		},
+	)
+
+	b.Run(
+		"VerySparseMsgsFirstSeq",
+		func(b *testing.B) {
+			for _, params := range cases {
+				b.Run(fmt.Sprintf("msgSize:%d,msgCount:%d,subjects:%d", params.msgSize, params.msgCount, params.distinctSubjects),
+					func(b *testing.B) {
+						fs, err := newFileStore(
+							FileStoreConfig{StoreDir: b.TempDir(), BlockSize: 8192},
+							StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+						require_NoError(b, err)
+						defer fs.Stop()
+
+						msg := make([]byte, params.msgSize)
+
+						// Add in a bunch of msgs
+						for i := 0; i < params.msgCount; i++ {
+							rng.Read(msg)
+							subj := fmt.Sprintf("foo.%d", rand.Intn(params.distinctSubjects))
+							_, _, err = fs.StoreMsg(subj, nil, msg)
+							require_NoError(b, err)
+						}
+
+						// Make last msg one that would match.
+						_, _, err = fs.StoreMsg("foo.baz", nil, msg)
+						require_NoError(b, err)
+
+						b.SetBytes(int64(params.msgSize))
+
+						b.ResetTimer()
+
+						var smv StoreMsg
+						for i := 0; i < b.N; i++ {
+							_, _, err = fs.LoadNextMsg("foo.baz", false, 1, &smv)
+							require_NoError(b, err)
+						}
+					},
+				)
+			}
+		},
+	)
+
+	b.Run(
+		"VerySparseMsgsNotFirstSeq",
+		func(b *testing.B) {
+			for _, params := range cases {
+				b.Run(fmt.Sprintf("msgSize:%d,msgCount:%d,subjects:%d", params.msgSize, params.msgCount, params.distinctSubjects),
+					func(b *testing.B) {
+						fs, err := newFileStore(
+							FileStoreConfig{StoreDir: b.TempDir(), BlockSize: 8192},
+							StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+						require_NoError(b, err)
+						defer fs.Stop()
+
+						msg := make([]byte, params.msgSize)
+
+						// Add in a bunch of msgs
+						for i := 0; i < params.msgCount; i++ {
+							rng.Read(msg)
+							subj := fmt.Sprintf("foo.%d", rand.Intn(params.distinctSubjects))
+							_, _, err = fs.StoreMsg(subj, nil, msg)
+							require_NoError(b, err)
+						}
+						// Make last msg one that would match.
+						_, _, err = fs.StoreMsg("foo.baz", nil, msg)
+						require_NoError(b, err)
+
+						b.SetBytes(int64(params.msgSize))
+
+						b.ResetTimer()
+
+						var smv StoreMsg
+						for i := 0; i < b.N; i++ {
+							// Make sure not first seq.
+							_, _, err = fs.LoadNextMsg("foo.baz", false, 10, &smv)
+							require_NoError(b, err)
+						}
+					},
+				)
+			}
+		},
+	)
+
+	b.Run(
+		"VerySparseMsgsInBetween",
+		func(b *testing.B) {
+			for _, params := range cases {
+				b.Run(fmt.Sprintf("msgSize:%d,msgCount:%d,subjects:%d", params.msgSize, params.msgCount, params.distinctSubjects),
+					func(b *testing.B) {
+						fs, err := newFileStore(
+							FileStoreConfig{StoreDir: b.TempDir(), BlockSize: 8192},
+							StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+						require_NoError(b, err)
+						defer fs.Stop()
+
+						msg := make([]byte, params.msgSize)
+
+						// Make first msg one that would match as well.
+						rng.Read(msg)
+						_, _, err = fs.StoreMsg("foo.baz", nil, msg)
+						require_NoError(b, err)
+
+						// Add in a bunch of msgs
+						for i := 0; i < params.msgCount; i++ {
+							rng.Read(msg)
+							subj := fmt.Sprintf("foo.%d", rand.Intn(params.distinctSubjects))
+							_, _, err = fs.StoreMsg(subj, nil, msg)
+							require_NoError(b, err)
+						}
+
+						// Make last msg one that would match as well.
+						_, _, err = fs.StoreMsg("foo.baz", nil, msg)
+						require_NoError(b, err)
+
+						b.SetBytes(int64(params.msgSize))
+
+						b.ResetTimer()
+
+						var smv StoreMsg
+						for i := 0; i < b.N; i++ {
+							// Make sure not first seq.
+							_, _, err = fs.LoadNextMsg("foo.baz", false, 2, &smv)
+							require_NoError(b, err)
+						}
+					},
+				)
+			}
+		},
+	)
+
+	b.Run(
+		"VerySparseMsgsInBetweenWithWildcard",
+		func(b *testing.B) {
+			for _, params := range cases {
 				fs, err := newFileStore(
 					FileStoreConfig{StoreDir: b.TempDir()},
-					StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+					StreamConfig{Name: "zzz", Subjects: []string{"foo.*.*"}, Storage: FileStorage})
 				require_NoError(b, err)
 				defer fs.Stop()
 
-				rng := rand.New(rand.NewSource(Seed))
-
-				// Add in a bunch of msgs
 				msg := make([]byte, params.msgSize)
-				for i := 0; i < 100_000; i++ {
-					rng.Read(msg)
-					subj := fmt.Sprintf("foo.%d", rng.Intn(params.distinctSubjects))
-					_, _, err := fs.StoreMsg(subj, nil, msg)
+
+				// Make first msg one that would match as well.
+				_, _, err = fs.StoreMsg("foo.1.baz", nil, msg)
+				require_NoError(b, err)
+
+				// Add in a bunch of msgs.
+				// We need to make sure we have a range of subjects that could kick in a linear scan.
+				for i := 0; i < params.msgCount; i++ {
+					subj := fmt.Sprintf("foo.%d.bar", rand.Intn(params.distinctSubjects))
+					_, _, err = fs.StoreMsg(subj, nil, msg)
 					require_NoError(b, err)
 				}
+
+				// Make last msg one that would match as well.
+				_, _, err = fs.StoreMsg("foo.1.baz", nil, msg)
+				require_NoError(b, err)
 
 				b.SetBytes(int64(params.msgSize))
 
@@ -7098,210 +7395,13 @@ func Benchmark_FileStoreLoadNextMsgSameFilterAsStream(b *testing.B) {
 
 				var smv StoreMsg
 				for i := 0; i < b.N; i++ {
-					// Needs to start at ~1 to show slowdown.
-					_, _, err := fs.LoadNextMsg("foo.*", true, 10, &smv)
+					// Make sure not first seq.
+					_, _, err := fs.LoadNextMsg("foo.*.baz", true, 2, &smv)
 					require_NoError(b, err)
 				}
-			},
-		)
-	}
-}
-
-func Benchmark_FileStoreLoadNextMsgLiteralSubject(b *testing.B) {
-	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: b.TempDir()},
-		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
-	require_NoError(b, err)
-	defer fs.Stop()
-
-	// Small om purpose.
-	msg := []byte("ok")
-
-	// Add in a bunch of msgs
-	for i := 0; i < 100_000; i++ {
-		subj := fmt.Sprintf("foo.%d", rand.Intn(1024))
-		fs.StoreMsg(subj, nil, msg)
-	}
-	// This is the one we will try to match.
-	fs.StoreMsg("foo.2222", nil, msg)
-	// So not last and we think we are done linear scan.
-	fs.StoreMsg("foo.3333", nil, msg)
-
-	b.ResetTimer()
-
-	var smv StoreMsg
-	for i := 0; i < b.N; i++ {
-		_, _, err := fs.LoadNextMsg("foo.2222", false, 10, &smv)
-		require_NoError(b, err)
-	}
-}
-
-func Benchmark_FileStoreLoadNextMsgNoMsgsFirstSeq(b *testing.B) {
-	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: b.TempDir(), BlockSize: 8192},
-		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
-	require_NoError(b, err)
-	defer fs.Stop()
-
-	// Small om purpose.
-	msg := []byte("ok")
-
-	// Add in a bunch of msgs
-	for i := 0; i < 1_000_000; i++ {
-		fs.StoreMsg("foo.bar", nil, msg)
-	}
-
-	b.ResetTimer()
-
-	var smv StoreMsg
-	for i := 0; i < b.N; i++ {
-		// This should error with EOF
-		_, _, err := fs.LoadNextMsg("foo.baz", false, 1, &smv)
-		if err != ErrStoreEOF {
-			b.Fatalf("Wrong error, expected EOF got %v", err)
-		}
-	}
-}
-
-func Benchmark_FileStoreLoadNextMsgNoMsgsNotFirstSeq(b *testing.B) {
-	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: b.TempDir(), BlockSize: 8192},
-		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
-	require_NoError(b, err)
-	defer fs.Stop()
-
-	// Small om purpose.
-	msg := []byte("ok")
-
-	// Add in a bunch of msgs
-	for i := 0; i < 1_000_000; i++ {
-		fs.StoreMsg("foo.bar", nil, msg)
-	}
-
-	b.ResetTimer()
-
-	var smv StoreMsg
-	for i := 0; i < b.N; i++ {
-		// This should error with EOF
-		// Make sure the sequence is not first seq of 1.
-		_, _, err := fs.LoadNextMsg("foo.baz", false, 10, &smv)
-		if err != ErrStoreEOF {
-			b.Fatalf("Wrong error, expected EOF got %v", err)
-		}
-	}
-}
-
-func Benchmark_FileStoreLoadNextMsgVerySparseMsgsFirstSeq(b *testing.B) {
-	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: b.TempDir(), BlockSize: 8192},
-		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
-	require_NoError(b, err)
-	defer fs.Stop()
-
-	// Small om purpose.
-	msg := []byte("ok")
-
-	// Add in a bunch of msgs
-	for i := 0; i < 1_000_000; i++ {
-		fs.StoreMsg("foo.bar", nil, msg)
-	}
-	// Make last msg one that would match.
-	fs.StoreMsg("foo.baz", nil, msg)
-
-	b.ResetTimer()
-
-	var smv StoreMsg
-	for i := 0; i < b.N; i++ {
-		_, _, err := fs.LoadNextMsg("foo.baz", false, 1, &smv)
-		require_NoError(b, err)
-	}
-}
-
-func Benchmark_FileStoreLoadNextMsgVerySparseMsgsNotFirstSeq(b *testing.B) {
-	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: b.TempDir(), BlockSize: 8192},
-		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
-	require_NoError(b, err)
-	defer fs.Stop()
-
-	// Small om purpose.
-	msg := []byte("ok")
-
-	// Add in a bunch of msgs
-	for i := 0; i < 1_000_000; i++ {
-		fs.StoreMsg("foo.bar", nil, msg)
-	}
-	// Make last msg one that would match.
-	fs.StoreMsg("foo.baz", nil, msg)
-
-	b.ResetTimer()
-
-	var smv StoreMsg
-	for i := 0; i < b.N; i++ {
-		// Make sure not first seq.
-		_, _, err := fs.LoadNextMsg("foo.baz", false, 10, &smv)
-		require_NoError(b, err)
-	}
-}
-
-func Benchmark_FileStoreLoadNextMsgVerySparseMsgsInBetween(b *testing.B) {
-	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: b.TempDir(), BlockSize: 8192},
-		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
-	require_NoError(b, err)
-	defer fs.Stop()
-
-	// Small om purpose.
-	msg := []byte("ok")
-
-	// Make first msg one that would match as well.
-	fs.StoreMsg("foo.baz", nil, msg)
-	// Add in a bunch of msgs
-	for i := 0; i < 1_000_000; i++ {
-		fs.StoreMsg("foo.bar", nil, msg)
-	}
-	// Make last msg one that would match as well.
-	fs.StoreMsg("foo.baz", nil, msg)
-
-	b.ResetTimer()
-
-	var smv StoreMsg
-	for i := 0; i < b.N; i++ {
-		// Make sure not first seq.
-		_, _, err := fs.LoadNextMsg("foo.baz", false, 2, &smv)
-		require_NoError(b, err)
-	}
-}
-
-func Benchmark_FileStoreLoadNextMsgVerySparseMsgsInBetweenWithWildcard(b *testing.B) {
-	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: b.TempDir()},
-		StreamConfig{Name: "zzz", Subjects: []string{"foo.*.*"}, Storage: FileStorage})
-	require_NoError(b, err)
-	defer fs.Stop()
-
-	// Small om purpose.
-	msg := []byte("ok")
-
-	// Make first msg one that would match as well.
-	fs.StoreMsg("foo.1.baz", nil, msg)
-	// Add in a bunch of msgs.
-	// We need to make sure we have a range of subjects that could kick in a linear scan.
-	for i := 0; i < 1_000_000; i++ {
-		subj := fmt.Sprintf("foo.%d.bar", rand.Intn(100_000)+2)
-		fs.StoreMsg(subj, nil, msg)
-	}
-	// Make last msg one that would match as well.
-	fs.StoreMsg("foo.1.baz", nil, msg)
-
-	b.ResetTimer()
-
-	var smv StoreMsg
-	for i := 0; i < b.N; i++ {
-		// Make sure not first seq.
-		_, _, err := fs.LoadNextMsg("foo.*.baz", true, 2, &smv)
-		require_NoError(b, err)
-	}
+			}
+		},
+	)
 }
 
 func Benchmark_FileStoreLoadNextMsgAvoidsLinearBIMScan(b *testing.B) {
