@@ -7254,3 +7254,80 @@ func Benchmark_FileStoreLoadNextMsgVerySparseMsgsInBetweenWithWildcard(b *testin
 		require_NoError(b, err)
 	}
 }
+
+func Benchmark_FileStoreLoadNextMsgAvoidsLinearBIMScan(b *testing.B) {
+	fseq := uint64(88_000_000_000)
+	blocks := uint32(100_000_000)
+	msgs := 10_000
+
+	fsc := FileStoreConfig{StoreDir: b.TempDir()}
+	sc := StreamConfig{
+		Name:     "zzz",
+		Subjects: []string{"foo.>"},
+		Storage:  FileStorage,
+		FirstSeq: fseq,
+	}
+
+	fs, err := newFileStore(fsc, sc)
+	require_NoError(b, err)
+	defer fs.Stop()
+
+	skipBlocks := func(size uint32) {
+		origLmb := fs.lmb
+		origIndex := origLmb.index
+		fs.lmb.index += size
+		fs.newMsgBlockForWrite()
+		origLmb.index = origIndex
+	}
+
+	msg := []byte{1, 2, 3, 4, 5}
+	subjects := []string{
+		"foo.c.one.a",
+		"foo.u.one.a",
+		"foo.u.two.b",
+		"foo.c.two.b",
+		"foo.u.two.a",
+		"foo.c.two.a",
+		"foo.c.three.a",
+		"foo.u.three.a",
+	}
+
+	// Assumption is that the only limit on the stream is max age, so
+	// no messages will exist early in the stream. Skip a ton of blocks
+	// to make that look like the case.
+	skipBlocks(blocks)
+
+	// The stream will then have lots of interspersed messages in it,
+	// across 8 subjects. Need quite a large volume of messages. Keep
+	// the last returned sequence number so we can use it later.
+	var sseq uint64
+	for na := 0; na < msgs; na++ {
+		for _, subj := range subjects {
+			sseq, _, err = fs.StoreMsg(subj, nil, msg)
+			require_NoError(b, err)
+		}
+	}
+
+	// Give the per-subject index amnesia about the fblks, since they
+	// might not all be loaded when this situation occurs normally.
+	for _, subj := range subjects {
+		psi, ok := fs.psim.Find([]byte(subj))
+		require_True(b, ok)
+		psi.fblk = 0
+	}
+
+	b.ResetTimer()
+
+	// Now start trying to load a message that isn't in the stream yet.
+	// It needs to match the subject filter from the StreamConfig, but
+	// not existing will force the linear scan.
+	var smv StoreMsg
+	for i := 0; i < b.N; i++ {
+		// Going from fseq seems to cause a linear scan at filestore.go:6359
+		// Going from sseq seems to be fast, no problem
+		// Going from 0 seems to be cause a linear scan at filestore.go:6359
+		// The problematic scan was actually filestore.go:6397 but struggling to reproduce
+		_, _, _ = fs.LoadNextMsg(subjects[4], false, 0, &smv)
+	}
+	_ = sseq
+}

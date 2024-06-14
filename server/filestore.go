@@ -2624,7 +2624,10 @@ func (fs *fileStore) numFilteredPending(filter string, ss *SimpleState) {
 	}
 	if ss.First == 0 {
 		// This is a miss. This can happen since psi.fblk is lazy, but should be very rare.
+		fmt.Println("Linear walk", start, "to", stop)
+		iters := 0
 		for i := start + 1; i <= stop; i++ {
+			iters++
 			mb := fs.bim[i]
 			if mb == nil {
 				continue
@@ -2634,6 +2637,7 @@ func (fs *fileStore) numFilteredPending(filter string, ss *SimpleState) {
 				break
 			}
 		}
+		fmt.Println("Actually walked", iters, "blocks")
 	}
 	// Now last
 	if mb = fs.bim[stop]; mb != nil {
@@ -6378,17 +6382,29 @@ func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64, sm *Store
 				// Similar to above if start <= first seq.
 				// TODO(dlc) - For v2 track these by filter subject since they will represent filtered consumers.
 				if i == bi {
-					var ss SimpleState
-					fs.numFilteredPending(filter, &ss)
-					// Nothing available.
-					if ss.Msgs == 0 {
-						return nil, fs.state.LastSeq, ErrStoreEOF
+					var fblk uint32
+					if subjectHasWildcard(filter) {
+						fs.psim.Match(stringToBytes(filter), func(_ []byte, psi *psi) {
+							if fblk == 0 || psi.fblk < fblk {
+								fblk = psi.fblk
+							}
+						})
+					} else if psi, ok := fs.psim.Find(stringToBytes(filter)); ok {
+						fblk = psi.fblk
 					}
-					// See if we can jump ahead here.
-					// Right now we can only spin on first, so if we have interior sparseness need to favor checking per block fss if loaded.
-					// For v2 will track all blocks that have matches for psim.
-					if nbi, _ := fs.selectMsgBlockWithIndex(ss.First); nbi > i {
-						i = nbi - 1 // For the iterator condition i++
+					if int(fblk) > bi {
+						var ss SimpleState
+						fs.numFilteredPending(filter, &ss)
+						// Nothing available.
+						if ss.Msgs == 0 {
+							return nil, fs.state.LastSeq, ErrStoreEOF
+						}
+						// See if we can jump ahead here.
+						// Right now we can only spin on first, so if we have interior sparseness need to favor checking per block fss if loaded.
+						// For v2 will track all blocks that have matches for psim.
+						if nbi, _ := fs.selectMsgBlockWithIndex(ss.First); nbi > i {
+							i = nbi - 1 // For the iterator condition i++
+						}
 					}
 				}
 				// Check is we can expire.
@@ -8700,8 +8716,7 @@ func (o *consumerFileStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) err
 		// Check for an update to a message already delivered.
 		if sseq <= o.state.Delivered.Stream {
 			if p = o.state.Pending[sseq]; p != nil {
-				// Do not update p.Sequence, that should be the original delivery sequence.
-				p.Timestamp = ts
+				p.Sequence, p.Timestamp = dseq, ts
 			}
 		} else {
 			// Add to pending.
@@ -8766,7 +8781,6 @@ func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
 	}
 
 	if len(o.state.Pending) == 0 || o.state.Pending[sseq] == nil {
-		delete(o.state.Redelivered, sseq)
 		return ErrStoreMsgNotFound
 	}
 
@@ -8797,9 +8811,7 @@ func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
 	// First delete from our pending state.
 	if p, ok := o.state.Pending[sseq]; ok {
 		delete(o.state.Pending, sseq)
-		if dseq > p.Sequence && p.Sequence > 0 {
-			dseq = p.Sequence // Use the original.
-		}
+		dseq = p.Sequence // Use the original.
 	}
 	if len(o.state.Pending) == 0 {
 		o.state.AckFloor.Consumer = o.state.Delivered.Consumer
