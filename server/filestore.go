@@ -6378,29 +6378,17 @@ func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64, sm *Store
 				// Similar to above if start <= first seq.
 				// TODO(dlc) - For v2 track these by filter subject since they will represent filtered consumers.
 				if i == bi {
-					var fblk uint32
-					if subjectHasWildcard(filter) {
-						fs.psim.Match(stringToBytes(filter), func(_ []byte, psi *psi) {
-							if fblk == 0 || psi.fblk < fblk {
-								fblk = psi.fblk
-							}
-						})
-					} else if psi, ok := fs.psim.Find(stringToBytes(filter)); ok {
-						fblk = psi.fblk
+					var ss SimpleState
+					fs.numFilteredPending(filter, &ss)
+					// Nothing available.
+					if ss.Msgs == 0 {
+						return nil, fs.state.LastSeq, ErrStoreEOF
 					}
-					if int(fblk) > bi {
-						var ss SimpleState
-						fs.numFilteredPending(filter, &ss)
-						// Nothing available.
-						if ss.Msgs == 0 {
-							return nil, fs.state.LastSeq, ErrStoreEOF
-						}
-						// See if we can jump ahead here.
-						// Right now we can only spin on first, so if we have interior sparseness need to favor checking per block fss if loaded.
-						// For v2 will track all blocks that have matches for psim.
-						if nbi, _ := fs.selectMsgBlockWithIndex(ss.First); nbi > i {
-							i = nbi - 1 // For the iterator condition i++
-						}
+					// See if we can jump ahead here.
+					// Right now we can only spin on first, so if we have interior sparseness need to favor checking per block fss if loaded.
+					// For v2 will track all blocks that have matches for psim.
+					if nbi, _ := fs.selectMsgBlockWithIndex(ss.First); nbi > i {
+						i = nbi - 1 // For the iterator condition i++
 					}
 				}
 				// Check is we can expire.
