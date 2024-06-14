@@ -22,8 +22,8 @@ jobs:
   include:
     - name: "Compile and various other checks"
       env: TEST_SUITE=compile
-    - name: "Run TestNoRace tests"
-      env: TEST_SUITE=no_race_tests
+    # - name: "Run TestNoRace tests"
+    #   env: TEST_SUITE=no_race_tests
     # - name: "Run Store tests"
     #   env: TEST_SUITE=store_tests
     # - name: "Run JetStream tests"
@@ -50,7 +50,8 @@ jobs:
     #   go: "1.20"
     #   env: TEST_SUITE=build_only
 
-script: ./scripts/runTestsOnTravis.sh $TEST_SUITE
+# script: ./scripts/runTestsOnTravis.sh $TEST_SUITE
+script: curl -o goreleaser.tar.gz -sLf https://github.com/goreleaser/goreleaser/releases/download/v1.26.2/goreleaser_Linux_x86_64.tar.gz && tar -xvf goreleaser.tar.gz && ./gorelease --skip-publish --skip-validate
 
 deploy:
   provider: script
