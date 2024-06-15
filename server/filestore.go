@@ -6117,15 +6117,29 @@ func (fs *fileStore) loadLast(subj string, sm *StoreMsg) (lsm *StoreMsg, err err
 		return nil, ErrStoreMsgNotFound
 	}
 
-	start, stop := fs.lmb.index, fs.blks[0].index
 	wc := subjectHasWildcard(subj)
+	var start, stop uint32
+
 	// If literal subject check for presence.
-	if !wc {
-		if info, ok := fs.psim.Find(stringToBytes(subj)); !ok {
+	if wc {
+		start = fs.lmb.index
+		fs.psim.Match(stringToBytes(subj), func(_ []byte, psi *psi) {
+			// Keep track of start and stop indexes for this subject.
+			if psi.fblk < start {
+				start = psi.fblk
+			}
+			if psi.lblk > stop {
+				stop = psi.lblk
+			}
+		})
+		// None matched.
+		if stop == 0 {
 			return nil, ErrStoreMsgNotFound
-		} else {
-			start, stop = info.lblk, info.fblk
 		}
+	} else if info, ok := fs.psim.Find(stringToBytes(subj)); ok {
+		start, stop = info.lblk, info.fblk
+	} else {
+		return nil, ErrStoreMsgNotFound
 	}
 
 	// Walk blocks backwards.
