@@ -10718,3 +10718,58 @@ func TestNoRaceJetStreamClusterMemoryWorkQueueLastSequenceResetAfterRestart(t *t
 		}
 	}
 }
+
+func TestNoRaceJetStreamClusterMirrorSkipSequencingBug(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R5S", 5)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:              "ORIGIN",
+		Subjects:          []string{"foo.*"},
+		MaxMsgsPerSubject: 1,
+		Replicas:          1,
+		Storage:           nats.MemoryStorage,
+	})
+	require_NoError(t, err)
+
+	// Create a mirror with R5 such that it will be much slower than the ORIGIN.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "M",
+		Replicas: 5,
+		Mirror:   &nats.StreamSource{Name: "ORIGIN"},
+	})
+	require_NoError(t, err)
+
+	// Connect new directly to ORIGIN
+	s := c.streamLeader(globalAccountName, "ORIGIN")
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	// We are going to send at a high rate and also delete some along the way
+	// via the max msgs per limit.
+	for i := 0; i < 500_000; i++ {
+		subj := fmt.Sprintf("foo.%d", i)
+		js.PublishAsync(subj, nil)
+		// Create sequence holes every 100k.
+		if i%100_000 == 0 {
+			js.PublishAsync(subj, nil)
+		}
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	checkFor(t, 20*time.Second, time.Second, func() error {
+		si, err := js.StreamInfo("M")
+		require_NoError(t, err)
+		if si.State.Msgs != 500_000 {
+			return fmt.Errorf("Expected 1M msgs, got state: %+v", si.State)
+		}
+		return nil
+	})
+}

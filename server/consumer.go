@@ -2195,19 +2195,17 @@ func (o *consumer) loopAndForwardProposals(qch chan struct{}) {
 		const maxBatch = 256 * 1024
 		var entries []*Entry
 		for sz := 0; proposal != nil; proposal = proposal.next {
-			entry := entryPool.Get().(*Entry)
-			entry.Type, entry.Data = EntryNormal, proposal.data
-			entries = append(entries, entry)
+			entries = append(entries, newEntry(EntryNormal, proposal.data))
 			sz += len(proposal.data)
 			if sz > maxBatch {
-				node.ProposeDirect(entries)
+				node.ProposeMulti(entries)
 				// We need to re-create `entries` because there is a reference
 				// to it in the node's pae map.
 				sz, entries = 0, nil
 			}
 		}
 		if len(entries) > 0 {
-			node.ProposeDirect(entries)
+			node.ProposeMulti(entries)
 		}
 		return nil
 	}
