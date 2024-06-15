@@ -6938,6 +6938,133 @@ func TestFileStoreLoadLastWildcard(t *testing.T) {
 	require_Equal(t, cloads, 1)
 }
 
+// We want to make sure that we update psim correctly on a miss.
+func TestFileStoreFilteredPendingPSIMFirstBlockUpdate(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 512},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// When PSIM detects msgs == 1 will catch up, so msgs needs to be > 1.
+	// Then create a huge block gap.
+	msg := []byte("hello")
+	fs.StoreMsg("foo.baz", nil, msg)
+	for i := 0; i < 1000; i++ {
+		fs.StoreMsg("foo.foo", nil, msg)
+	}
+	// Bookend with 2 more foo.baz
+	fs.StoreMsg("foo.baz", nil, msg)
+	fs.StoreMsg("foo.baz", nil, msg)
+	// Now remove first one.
+	removed, err := fs.RemoveMsg(1)
+	require_NoError(t, err)
+	require_True(t, removed)
+	// 84 blocks.
+	require_Equal(t, fs.numMsgBlocks(), 84)
+	fs.mu.RLock()
+	psi, ok := fs.psim.Find([]byte("foo.baz"))
+	fs.mu.RUnlock()
+	require_True(t, ok)
+	require_Equal(t, psi.total, 2)
+	require_Equal(t, psi.fblk, 1)
+	require_Equal(t, psi.lblk, 84)
+
+	// No make sure that a call to numFilterPending which will initially walk all blocks if starting from seq 1 updates psi.
+	var ss SimpleState
+	fs.mu.RLock()
+	fs.numFilteredPending("foo.baz", &ss)
+	fs.mu.RUnlock()
+	require_Equal(t, ss.Msgs, 2)
+	require_Equal(t, ss.First, 1002)
+	require_Equal(t, ss.Last, 1003)
+
+	// Check psi was updated.
+	fs.mu.RLock()
+	psi, ok = fs.psim.Find([]byte("foo.baz"))
+	fs.mu.RUnlock()
+	require_True(t, ok)
+	require_Equal(t, psi.total, 2)
+	require_Equal(t, psi.fblk, 84)
+	require_Equal(t, psi.lblk, 84)
+}
+
+func TestFileStoreWildcardFilteredPendingPSIMFirstBlockUpdate(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 512},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// When PSIM detects msgs == 1 will catch up, so msgs needs to be > 1.
+	// Then create a huge block gap.
+	msg := []byte("hello")
+	fs.StoreMsg("foo.22.baz", nil, msg)
+	fs.StoreMsg("foo.22.bar", nil, msg)
+	for i := 0; i < 1000; i++ {
+		fs.StoreMsg("foo.1.foo", nil, msg)
+	}
+	// Bookend with 3 more,twoe foo.baz and two foo.bar.
+	fs.StoreMsg("foo.22.baz", nil, msg)
+	fs.StoreMsg("foo.22.baz", nil, msg)
+	fs.StoreMsg("foo.22.bar", nil, msg)
+	fs.StoreMsg("foo.22.bar", nil, msg)
+
+	// Now remove first one for foo.bar and foo.baz.
+	removed, err := fs.RemoveMsg(1)
+	require_NoError(t, err)
+	require_True(t, removed)
+	removed, err = fs.RemoveMsg(2)
+	require_NoError(t, err)
+	require_True(t, removed)
+
+	// 92 blocks.
+	require_Equal(t, fs.numMsgBlocks(), 92)
+	fs.mu.RLock()
+	psi, ok := fs.psim.Find([]byte("foo.22.baz"))
+	fs.mu.RUnlock()
+	require_True(t, ok)
+	require_Equal(t, psi.total, 2)
+	require_Equal(t, psi.fblk, 1)
+	require_Equal(t, psi.lblk, 92)
+
+	fs.mu.RLock()
+	psi, ok = fs.psim.Find([]byte("foo.22.bar"))
+	fs.mu.RUnlock()
+	require_True(t, ok)
+	require_Equal(t, psi.total, 2)
+	require_Equal(t, psi.fblk, 1)
+	require_Equal(t, psi.lblk, 92)
+
+	// No make sure that a call to numFilterPending which will initially walk all blocks if starting from seq 1 updates psi.
+	var ss SimpleState
+	fs.mu.RLock()
+	fs.numFilteredPending("foo.22.*", &ss)
+	fs.mu.RUnlock()
+	require_Equal(t, ss.Msgs, 4)
+	require_Equal(t, ss.First, 1003)
+	require_Equal(t, ss.Last, 1006)
+
+	// Check both psi were updated.
+	fs.mu.RLock()
+	psi, ok = fs.psim.Find([]byte("foo.22.baz"))
+	fs.mu.RUnlock()
+	require_True(t, ok)
+	require_Equal(t, psi.total, 2)
+	require_Equal(t, psi.fblk, 92)
+	require_Equal(t, psi.lblk, 92)
+
+	fs.mu.RLock()
+	psi, ok = fs.psim.Find([]byte("foo.22.bar"))
+	fs.mu.RUnlock()
+	require_True(t, ok)
+	require_Equal(t, psi.total, 2)
+	require_Equal(t, psi.fblk, 92)
+	require_Equal(t, psi.lblk, 92)
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////
