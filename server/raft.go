@@ -38,7 +38,7 @@ import (
 
 type RaftNode interface {
 	Propose(entry []byte) error
-	ProposeDirect(entries []*Entry) error
+	ProposeMulti(entries []*Entry) error
 	ForwardProposal(entry []byte) error
 	InstallSnapshot(snap []byte) error
 	SendSnapshot(snap []byte) error
@@ -698,36 +698,34 @@ func (n *raft) Propose(data []byte) error {
 		n.debug("Proposal ignored, not leader (state: %v)", state)
 		return errNotLeader
 	}
-	n.RLock()
+	n.Lock()
+	defer n.Unlock()
+
 	// Error if we had a previous write error.
 	if werr := n.werr; werr != nil {
-		n.RUnlock()
 		return werr
 	}
-	prop := n.prop
-	n.RUnlock()
-
-	prop.push(newEntry(EntryNormal, data))
+	n.prop.push(newEntry(EntryNormal, data))
 	return nil
 }
 
-// ProposeDirect will propose entries directly by skipping the Raft state
-// machine and sending them straight to the wire instead.
+// ProposeDirect will propose multiple entries at once.
 // This should only be called on the leader.
-func (n *raft) ProposeDirect(entries []*Entry) error {
+func (n *raft) ProposeMulti(entries []*Entry) error {
 	if state := n.State(); state != Leader {
 		n.debug("Direct proposal ignored, not leader (state: %v)", state)
 		return errNotLeader
 	}
-	n.RLock()
+	n.Lock()
+	defer n.Unlock()
+
 	// Error if we had a previous write error.
 	if werr := n.werr; werr != nil {
-		n.RUnlock()
 		return werr
 	}
-	n.RUnlock()
-
-	n.sendAppendEntry(entries)
+	for _, e := range entries {
+		n.prop.push(e)
+	}
 	return nil
 }
 
