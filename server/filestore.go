@@ -2603,28 +2603,44 @@ func (fs *fileStore) numFilteredPending(filter string, ss *SimpleState) {
 		return
 	}
 
-	start, stop := uint32(math.MaxUint32), uint32(0)
-	fs.psim.Match(stringToBytes(filter), func(_ []byte, psi *psi) {
-		ss.Msgs += psi.total
-		// Keep track of start and stop indexes for this subject.
-		if psi.fblk < start {
-			start = psi.fblk
-		}
-		if psi.lblk > stop {
-			stop = psi.lblk
-		}
-	})
 	// We do need to figure out the first and last sequences.
 	wc := subjectHasWildcard(filter)
+	start, stop := uint32(math.MaxUint32), uint32(0)
+
+	if wc {
+		fs.psim.Match(stringToBytes(filter), func(_ []byte, psi *psi) {
+			ss.Msgs += psi.total
+			// Keep track of start and stop indexes for this subject.
+			if psi.fblk < start {
+				start = psi.fblk
+			}
+			if psi.lblk > stop {
+				stop = psi.lblk
+			}
+		})
+	} else if psi, ok := fs.psim.Find(stringToBytes(filter)); ok {
+		ss.Msgs += psi.total
+		start, stop = psi.fblk, psi.lblk
+	}
+
+	// Did not find anything.
+	if stop == 0 {
+		ss.First, ss.Last, ss.Msgs = 0, 0, 0
+		return
+	}
+
 	// Do start
 	mb := fs.bim[start]
 	if mb != nil {
 		_, f, _ := mb.filteredPending(filter, wc, 0)
 		ss.First = f
 	}
+
+	// Hold this outside loop for psim fblk updates on misses.
+	i := start + 1
 	if ss.First == 0 {
 		// This is a miss. This can happen since psi.fblk is lazy, but should be very rare.
-		for i := start + 1; i <= stop; i++ {
+		for ; i <= stop; i++ {
 			mb := fs.bim[i]
 			if mb == nil {
 				continue
@@ -2633,6 +2649,20 @@ func (fs *fileStore) numFilteredPending(filter string, ss *SimpleState) {
 				ss.First = f
 				break
 			}
+		}
+	}
+	// Update fblk if we missed matching some blocks, meaning fblk was outdated.
+	if i > start+1 {
+		if !wc {
+			if info, ok := fs.psim.Find(stringToBytes(filter)); ok {
+				info.fblk = i
+			}
+		} else {
+			fs.psim.Match(stringToBytes(filter), func(_ []byte, psi *psi) {
+				if i > psi.fblk {
+					psi.fblk = i
+				}
+			})
 		}
 	}
 	// Now last
