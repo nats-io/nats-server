@@ -6997,6 +6997,48 @@ func TestFileStoreReloadAndLoseLastSequenceWithSkipMsgs(t *testing.T) {
 	}
 }
 
+func TestFileStoreLoadLastWildcard(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 512},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := []byte("hello")
+	fs.StoreMsg("foo.22.baz", nil, msg)
+	fs.StoreMsg("foo.22.bar", nil, msg)
+	for i := 0; i < 1000; i++ {
+		fs.StoreMsg("foo.11.foo", nil, msg)
+	}
+
+	// Make sure we remove fss since that would mask the problem that we walk
+	// all the blocks.
+	fs.mu.RLock()
+	for _, mb := range fs.blks {
+		mb.mu.Lock()
+		mb.fss = nil
+		mb.mu.Unlock()
+	}
+	fs.mu.RUnlock()
+
+	// Attempt to load the last msg using a wildcarded subject.
+	sm, err := fs.LoadLastMsg("foo.22.*", nil)
+	require_NoError(t, err)
+	require_Equal(t, sm.seq, 2)
+
+	// Make sure that we took advantage of psim meta data and only load one block.
+	var cloads uint64
+	fs.mu.RLock()
+	for _, mb := range fs.blks {
+		mb.mu.RLock()
+		cloads += mb.cloads
+		mb.mu.RUnlock()
+	}
+	fs.mu.RUnlock()
+	require_Equal(t, cloads, 1)
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////
