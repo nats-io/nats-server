@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -232,6 +233,7 @@ func (p *parser) processItem(it item, fp string) error {
 		setValue(it, p.popContext())
 	case itemString:
 		// FIXME(dlc) sanitize string?
+		p.checkForEmbeddedVariables(&it)
 		setValue(it, it.val)
 	case itemInteger:
 		lastDigit := 0
@@ -374,6 +376,33 @@ const pkey = "pk"
 
 // We special case raw strings here that are bcrypt'd. This allows us not to force quoting the strings
 const bcryptPrefix = "2a$"
+
+// To match embedded variables.
+var varPat = regexp.MustCompile(`\$[^@\s]+`)
+
+// checkForEmbeddedVariable will check for embedded variables in an itemString.
+// If they are found and we can look them up we will replace them in item, otherwise will error.
+func (p *parser) checkForEmbeddedVariables(it *item) error {
+	if !strings.ContainsAny(it.val, "$") {
+		return nil
+	}
+	// We have some embedded variables.
+	for _, m := range varPat.FindAllString(it.val, -1) {
+		value, found, err := p.lookupVariable(m[1:]) // Strip leading $ for lookup.
+		if err != nil {
+			return fmt.Errorf("variable reference for '%s' on line %d could not be parsed: %s",
+				m, it.line, err)
+		}
+		if !found {
+			return fmt.Errorf("variable reference for '%s' on line %d can not be found",
+				m, it.line)
+		}
+		if v, ok := value.(string); ok {
+			it.val = strings.Replace(it.val, m, v, 1)
+		}
+	}
+	return nil
+}
 
 // lookupVariable will lookup a variable reference. It will use block scoping on keys
 // it has seen before, with the top level scoping being the environment variables. We

@@ -143,6 +143,32 @@ func TestEnvVariableStringStartingWithNumberUsingQuotes(t *testing.T) {
 	test(t, fmt.Sprintf("foo = $%s", evar), ex)
 }
 
+func TestEnvVariableURL(t *testing.T) {
+	cluster := `
+		cluster {
+			# set the variable token
+			TOKEN: abc
+			authorization {
+				user: user
+				password: $TOKEN
+			}
+			routes = [ nats://user:$TOKEN@server.example.com:6222 ]
+		}`
+	ex := map[string]any{
+		"cluster": map[string]any{
+			"TOKEN": "abc",
+			"authorization": map[string]any{
+				"user":     "user",
+				"password": "abc",
+			},
+			"routes": []any{
+				"nats://user:abc@server.example.com:6222",
+			},
+		},
+	}
+	test(t, cluster, ex)
+}
+
 func TestBcryptVariable(t *testing.T) {
 	ex := map[string]any{
 		"password": "$2a$11$ooo",
