@@ -23611,3 +23611,53 @@ func TestJetStreamAckAllWithLargeFirstSequenceAndNoAckFloorWithInterestPolicy(t 
 	_, err = js.StreamInfo("TEST", nats.MaxWait(100*time.Millisecond))
 	require_NoError(t, err)
 }
+
+// Allow streams with $JS or $SYS prefixes for audit purposes but require no pub ack be set.
+func TestJetStreamAuditStreams(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"$JS.>"},
+	})
+	require_Error(t, err, NewJSStreamInvalidConfigError(fmt.Errorf("subjects overlap with jetstream api")))
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"$JSC.>"},
+	})
+	require_Error(t, err, NewJSStreamInvalidConfigError(fmt.Errorf("subjects overlap with jetstream api")))
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"$SYS.>"},
+	})
+	require_Error(t, err, NewJSStreamInvalidConfigError(fmt.Errorf("subjects overlap with system api")))
+
+	// These should be ok if no pub ack.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST1",
+		Subjects: []string{"$JS.>"},
+		NoAck:    true,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST2",
+		Subjects: []string{"$JSC.>"},
+		NoAck:    true,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST3",
+		Subjects: []string{"$SYS.>"},
+		NoAck:    true,
+	})
+	require_NoError(t, err)
+}

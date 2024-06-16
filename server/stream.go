@@ -1495,16 +1495,20 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		// and no overlap with any JS API subject space
 		dset := make(map[string]struct{}, len(cfg.Subjects))
 		for _, subj := range cfg.Subjects {
+			// Make sure the subject is valid. Check this first.
+			if !IsValidSubject(subj) {
+				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("invalid subject"))
+			}
 			if _, ok := dset[subj]; ok {
 				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("duplicate subjects detected"))
 			}
 			// Also check to make sure we do not overlap with our $JS API subjects.
-			if subjectIsSubsetMatch(subj, "$JS.API.>") {
+			if !cfg.NoAck && (subjectIsSubsetMatch(subj, "$JS.>") || subjectIsSubsetMatch(subj, "$JSC.>")) {
 				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subjects overlap with jetstream api"))
 			}
-			// Make sure the subject is valid.
-			if !IsValidSubject(subj) {
-				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("invalid subject"))
+			// And the $SYS subjects.
+			if !cfg.NoAck && subjectIsSubsetMatch(subj, "$SYS.>") {
+				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subjects overlap with system api"))
 			}
 			// Mark for duplicate check.
 			dset[subj] = struct{}{}
