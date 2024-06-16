@@ -5323,18 +5323,19 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 // ignoreInterest marks whether the consumer should be ignored when determining interest.
 // No lock held on entry.
 func (o *consumer) cleanupNoInterestMessages(mset *stream, ignoreInterest bool) {
-	state := mset.state()
-	stop := state.LastSeq
 	o.mu.Lock()
 	if !o.isLeader() {
-		o.readStoredState(stop)
+		o.readStoredState(0)
 	}
 	start := o.asflr
 	o.mu.Unlock()
+
 	// Make sure we start at worst with first sequence in the stream.
+	state := mset.state()
 	if start < state.FirstSeq {
 		start = state.FirstSeq
 	}
+	stop := state.LastSeq
 
 	// Consumer's interests are ignored by default. If we should not ignore interest, unset.
 	co := o
@@ -5343,13 +5344,37 @@ func (o *consumer) cleanupNoInterestMessages(mset *stream, ignoreInterest bool) 
 	}
 
 	var rmseqs []uint64
-	mset.mu.Lock()
+	mset.mu.RLock()
+
+	// If over this amount of messages to check, defer to checkInterestState() which
+	// will do the right thing since we are now removed.
+	// TODO(dlc) - Better way?
+	const bailThresh = 100_000
+
+	// Check if we would be spending too much time here and defer to separate go routine.
+	if len(mset.consumers) == 0 {
+		mset.mu.RUnlock()
+		mset.mu.Lock()
+		defer mset.mu.Unlock()
+		mset.store.Purge()
+		var state StreamState
+		mset.store.FastState(&state)
+		mset.lseq = state.LastSeq
+		// Also make sure we clear any pending acks.
+		mset.clearAllPreAcksBelowFloor(state.FirstSeq)
+		return
+	} else if stop-start > bailThresh {
+		mset.mu.RUnlock()
+		go mset.checkInterestState()
+		return
+	}
+
 	for seq := start; seq <= stop; seq++ {
 		if mset.noInterest(seq, co) {
 			rmseqs = append(rmseqs, seq)
 		}
 	}
-	mset.mu.Unlock()
+	mset.mu.RUnlock()
 
 	// These can be removed.
 	for _, seq := range rmseqs {
