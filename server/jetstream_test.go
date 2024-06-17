@@ -23621,23 +23621,32 @@ func TestJetStreamAuditStreams(t *testing.T) {
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
+	jsOverlap := errors.New("subjects that overlap with jetstream api require no-ack to be true")
+	sysOverlap := errors.New("subjects that overlap with system api require no-ack to be true")
+
 	_, err := js.AddStream(&nats.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"$JS.>"},
 	})
-	require_Error(t, err, NewJSStreamInvalidConfigError(fmt.Errorf("subjects overlap with jetstream api")))
+	require_Error(t, err, NewJSStreamInvalidConfigError(jsOverlap))
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"$JS.API.>"},
+	})
+	require_Error(t, err, NewJSStreamInvalidConfigError(jsOverlap))
 
 	_, err = js.AddStream(&nats.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"$JSC.>"},
 	})
-	require_Error(t, err, NewJSStreamInvalidConfigError(fmt.Errorf("subjects overlap with jetstream api")))
+	require_Error(t, err, NewJSStreamInvalidConfigError(jsOverlap))
 
 	_, err = js.AddStream(&nats.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"$SYS.>"},
 	})
-	require_Error(t, err, NewJSStreamInvalidConfigError(fmt.Errorf("subjects overlap with system api")))
+	require_Error(t, err, NewJSStreamInvalidConfigError(sysOverlap))
 
 	// These should be ok if no pub ack.
 	_, err = js.AddStream(&nats.StreamConfig{
@@ -23657,6 +23666,20 @@ func TestJetStreamAuditStreams(t *testing.T) {
 	_, err = js.AddStream(&nats.StreamConfig{
 		Name:     "TEST3",
 		Subjects: []string{"$SYS.>"},
+		NoAck:    true,
+	})
+	require_NoError(t, err)
+
+	// Since prior behavior did allow $JS.EVENT to be captured without no-ack, these might break
+	// on a server upgrade so make sure they still work ok without --no-ack.
+
+	// Do avoid overlap.
+	err = js.DeleteStream("TEST1")
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST4",
+		Subjects: []string{"$JS.EVENT.>"},
 		NoAck:    true,
 	})
 	require_NoError(t, err)

@@ -1504,11 +1504,14 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 			}
 			// Also check to make sure we do not overlap with our $JS API subjects.
 			if !cfg.NoAck && (subjectIsSubsetMatch(subj, "$JS.>") || subjectIsSubsetMatch(subj, "$JSC.>")) {
-				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subjects overlap with jetstream api"))
+				// We allow an exception for $JS.EVENT.> since these could have been created in the past.
+				if !subjectIsSubsetMatch(subj, "$JS.EVENT.>") {
+					return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subjects that overlap with jetstream api require no-ack to be true"))
+				}
 			}
 			// And the $SYS subjects.
 			if !cfg.NoAck && subjectIsSubsetMatch(subj, "$SYS.>") {
-				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subjects overlap with system api"))
+				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subjects that overlap with system api require no-ack to be true"))
 			}
 			// Mark for duplicate check.
 			dset[subj] = struct{}{}
