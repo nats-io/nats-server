@@ -984,7 +984,7 @@ func TestJetStreamAddStreamOverlapWithJSAPISubjects(t *testing.T) {
 
 	expectErr := func(_ *stream, err error) {
 		t.Helper()
-		if err == nil || !strings.Contains(err.Error(), "subjects overlap") {
+		if err == nil || !strings.Contains(err.Error(), "subjects that overlap with jetstream api") {
 			t.Fatalf("Expected error but got none")
 		}
 	}
