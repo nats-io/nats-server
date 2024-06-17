@@ -1029,9 +1029,6 @@ func (n *raft) InstallSnapshot(data []byte) error {
 		return errCatchupsRunning
 	}
 
-	var state StreamState
-	n.wal.FastState(&state)
-
 	if n.applied == 0 {
 		return errNoSnapAvailable
 	}
