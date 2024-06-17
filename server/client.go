@@ -260,8 +260,6 @@ type client struct {
 	msgb       [msgScratchSize]byte
 	last       time.Time
 	lastIn     time.Time
-	// this is a copy of the issued at (iat) field in the jwt
-	calloutIAT int64
 
 	headers bool
 
