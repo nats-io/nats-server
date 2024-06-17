@@ -59,7 +59,8 @@ type ClientAuthentication interface {
 
 // NkeyUser is for multiple nkey based users
 type NkeyUser struct {
-	Nkey                   string              `json:"user"`
+	Nkey string `json:"user"`
+	// this is a copy of the issued at (iat) field in the jwt
 	Issued                 int64               `json:"issued,omitempty"`
 	Permissions            *Permissions        `json:"permissions,omitempty"`
 	Account                *Account            `json:"account,omitempty"`
