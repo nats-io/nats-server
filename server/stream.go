@@ -1489,16 +1489,20 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		// and no overlap with any JS API subject space
 		dset := make(map[string]struct{}, len(cfg.Subjects))
 		for _, subj := range cfg.Subjects {
+			// Make sure the subject is valid. Check this first.
+			if !IsValidSubject(subj) {
+				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("invalid subject"))
+			}
 			if _, ok := dset[subj]; ok {
 				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("duplicate subjects detected"))
 			}
 			// Also check to make sure we do not overlap with our $JS API subjects.
-			if subjectIsSubsetMatch(subj, "$JS.API.>") {
+			if !cfg.NoAck && (subjectIsSubsetMatch(subj, "$JS.>") || subjectIsSubsetMatch(subj, "$JSC.>")) {
 				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subjects overlap with jetstream api"))
 			}
-			// Make sure the subject is valid.
-			if !IsValidSubject(subj) {
-				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("invalid subject"))
+			// And the $SYS subjects.
+			if !cfg.NoAck && subjectIsSubsetMatch(subj, "$SYS.>") {
+				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subjects overlap with system api"))
 			}
 			// Mark for duplicate check.
 			dset[subj] = struct{}{}
@@ -2412,14 +2416,14 @@ func (mset *stream) skipMsgs(start, end uint64) {
 		return
 	}
 
-	// FIXME (dlc) - We should allow proposals of DeleteEange, but would need to make sure all peers support.
+	// FIXME (dlc) - We should allow proposals of DeleteRange, but would need to make sure all peers support.
 	// With syncRequest was easy to add bool into request.
 	var entries []*Entry
 	for seq := start; seq <= end; seq++ {
-		entries = append(entries, &Entry{EntryNormal, encodeStreamMsg(_EMPTY_, _EMPTY_, nil, nil, seq-1, 0)})
+		entries = append(entries, newEntry(EntryNormal, encodeStreamMsg(_EMPTY_, _EMPTY_, nil, nil, seq-1, 0)))
 		// So a single message does not get too big.
 		if len(entries) > 10_000 {
-			node.ProposeDirect(entries)
+			node.ProposeMulti(entries)
 			// We need to re-create `entries` because there is a reference
 			// to it in the node's pae map.
 			entries = entries[:0]
@@ -2427,7 +2431,7 @@ func (mset *stream) skipMsgs(start, end uint64) {
 	}
 	// Send all at once.
 	if len(entries) > 0 {
-		node.ProposeDirect(entries)
+		node.ProposeMulti(entries)
 	}
 }
 
@@ -5851,6 +5855,8 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 	}
 	mset, err := a.addStream(&cfg)
 	if err != nil {
+		// Make sure to clean up after ourselves here.
+		os.RemoveAll(ndir)
 		return nil, err
 	}
 	if !fcfg.Created.IsZero() {

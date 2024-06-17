@@ -995,7 +995,7 @@ func TestJetStreamAddStreamOverlapWithJSAPISubjects(t *testing.T) {
 	expectErr(acc.addStream(&StreamConfig{Name: "c", Subjects: []string{"$JS.API.*"}}))
 
 	// Events and Advisories etc should be ok.
-	if _, err := acc.addStream(&StreamConfig{Name: "a", Subjects: []string{"$JS.EVENT.>"}}); err != nil {
+	if _, err := acc.addStream(&StreamConfig{Name: "a", Subjects: []string{"$JS.EVENT.>"}, NoAck: true}); err != nil {
 		t.Fatalf("Expected this to work: %v", err)
 	}
 }
@@ -19537,9 +19537,7 @@ func TestJetStreamConsumerMultipleSubjectsLast(t *testing.T) {
 	require_NoError(t, err)
 
 	require_True(t, info.NumAckPending == 0)
-	// Should be 6 since we do not pull "other". We used to jump ack floor ahead
-	// but no longer do that.
-	require_True(t, info.AckFloor.Stream == 6)
+	require_True(t, info.AckFloor.Stream == 8)
 	require_True(t, info.AckFloor.Consumer == 1)
 	require_True(t, info.NumPending == 0)
 }
@@ -22606,5 +22604,55 @@ func TestJetStreamAckAllWithLargeFirstSequenceAndNoAckFloorWithInterestPolicy(t 
 
 	// We are testing for run away loops acking messages in the stream that are not there.
 	_, err = js.StreamInfo("TEST", nats.MaxWait(100*time.Millisecond))
+	require_NoError(t, err)
+}
+
+// Allow streams with $JS or $SYS prefixes for audit purposes but require no pub ack be set.
+func TestJetStreamAuditStreams(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"$JS.>"},
+	})
+	require_Error(t, err, NewJSStreamInvalidConfigError(fmt.Errorf("subjects overlap with jetstream api")))
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"$JSC.>"},
+	})
+	require_Error(t, err, NewJSStreamInvalidConfigError(fmt.Errorf("subjects overlap with jetstream api")))
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"$SYS.>"},
+	})
+	require_Error(t, err, NewJSStreamInvalidConfigError(fmt.Errorf("subjects overlap with system api")))
+
+	// These should be ok if no pub ack.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST1",
+		Subjects: []string{"$JS.>"},
+		NoAck:    true,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST2",
+		Subjects: []string{"$JSC.>"},
+		NoAck:    true,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST3",
+		Subjects: []string{"$SYS.>"},
+		NoAck:    true,
+	})
 	require_NoError(t, err)
 }

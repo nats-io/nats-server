@@ -1552,7 +1552,8 @@ func (o *consumerMemStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) erro
 		// Check for an update to a message already delivered.
 		if sseq <= o.state.Delivered.Stream {
 			if p = o.state.Pending[sseq]; p != nil {
-				p.Sequence, p.Timestamp = dseq, ts
+				// Do not update p.Sequence, that should be the original delivery sequence.
+				p.Timestamp = ts
 			}
 		} else {
 			// Add to pending.
@@ -1601,13 +1602,21 @@ func (o *consumerMemStore) UpdateAcks(dseq, sseq uint64) error {
 	if o.cfg.AckPolicy == AckNone {
 		return ErrNoAckPolicy
 	}
-	if len(o.state.Pending) == 0 || o.state.Pending[sseq] == nil {
-		return ErrStoreMsgNotFound
-	}
 
 	// On restarts the old leader may get a replay from the raft logs that are old.
 	if dseq <= o.state.AckFloor.Consumer {
 		return nil
+	}
+
+	// Match leader logic on checking if ack is ahead of delivered.
+	// This could happen on a cooperative takeover with high speed deliveries.
+	if sseq > o.state.Delivered.Stream {
+		o.state.Delivered.Stream = sseq + 1
+	}
+
+	if len(o.state.Pending) == 0 || o.state.Pending[sseq] == nil {
+		delete(o.state.Redelivered, sseq)
+		return ErrStoreMsgNotFound
 	}
 
 	// Check for AckAll here.
@@ -1615,9 +1624,16 @@ func (o *consumerMemStore) UpdateAcks(dseq, sseq uint64) error {
 		sgap := sseq - o.state.AckFloor.Stream
 		o.state.AckFloor.Consumer = dseq
 		o.state.AckFloor.Stream = sseq
-		for seq := sseq; seq > sseq-sgap; seq-- {
-			delete(o.state.Pending, seq)
-			if len(o.state.Redelivered) > 0 {
+		if sgap > uint64(len(o.state.Pending)) {
+			for seq := range o.state.Pending {
+				if seq <= sseq {
+					delete(o.state.Pending, seq)
+					delete(o.state.Redelivered, seq)
+				}
+			}
+		} else {
+			for seq := sseq; seq > sseq-sgap && len(o.state.Pending) > 0; seq-- {
+				delete(o.state.Pending, seq)
 				delete(o.state.Redelivered, seq)
 			}
 		}
@@ -1629,23 +1645,20 @@ func (o *consumerMemStore) UpdateAcks(dseq, sseq uint64) error {
 	// First delete from our pending state.
 	if p, ok := o.state.Pending[sseq]; ok {
 		delete(o.state.Pending, sseq)
-		dseq = p.Sequence // Use the original.
-	}
-	// Now remove from redelivered.
-	if len(o.state.Redelivered) > 0 {
-		delete(o.state.Redelivered, sseq)
+		if dseq > p.Sequence && p.Sequence > 0 {
+			dseq = p.Sequence // Use the original.
+		}
 	}
 
 	if len(o.state.Pending) == 0 {
 		o.state.AckFloor.Consumer = o.state.Delivered.Consumer
 		o.state.AckFloor.Stream = o.state.Delivered.Stream
 	} else if dseq == o.state.AckFloor.Consumer+1 {
-		first := o.state.AckFloor.Consumer == 0
 		o.state.AckFloor.Consumer = dseq
 		o.state.AckFloor.Stream = sseq
 
-		if !first && o.state.Delivered.Consumer > dseq {
-			for ss := sseq + 1; ss < o.state.Delivered.Stream; ss++ {
+		if o.state.Delivered.Consumer > dseq {
+			for ss := sseq + 1; ss <= o.state.Delivered.Stream; ss++ {
 				if p, ok := o.state.Pending[ss]; ok {
 					if p.Sequence > 0 {
 						o.state.AckFloor.Consumer = p.Sequence - 1
@@ -1656,6 +1669,8 @@ func (o *consumerMemStore) UpdateAcks(dseq, sseq uint64) error {
 			}
 		}
 	}
+	// We do these regardless.
+	delete(o.state.Redelivered, sseq)
 
 	return nil
 }

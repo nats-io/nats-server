@@ -2603,28 +2603,44 @@ func (fs *fileStore) numFilteredPending(filter string, ss *SimpleState) {
 		return
 	}
 
-	start, stop := uint32(math.MaxUint32), uint32(0)
-	fs.psim.Match(stringToBytes(filter), func(_ []byte, psi *psi) {
-		ss.Msgs += psi.total
-		// Keep track of start and stop indexes for this subject.
-		if psi.fblk < start {
-			start = psi.fblk
-		}
-		if psi.lblk > stop {
-			stop = psi.lblk
-		}
-	})
 	// We do need to figure out the first and last sequences.
 	wc := subjectHasWildcard(filter)
+	start, stop := uint32(math.MaxUint32), uint32(0)
+
+	if wc {
+		fs.psim.Match(stringToBytes(filter), func(_ []byte, psi *psi) {
+			ss.Msgs += psi.total
+			// Keep track of start and stop indexes for this subject.
+			if psi.fblk < start {
+				start = psi.fblk
+			}
+			if psi.lblk > stop {
+				stop = psi.lblk
+			}
+		})
+	} else if psi, ok := fs.psim.Find(stringToBytes(filter)); ok {
+		ss.Msgs += psi.total
+		start, stop = psi.fblk, psi.lblk
+	}
+
+	// Did not find anything.
+	if stop == 0 {
+		ss.First, ss.Last, ss.Msgs = 0, 0, 0
+		return
+	}
+
 	// Do start
 	mb := fs.bim[start]
 	if mb != nil {
 		_, f, _ := mb.filteredPending(filter, wc, 0)
 		ss.First = f
 	}
+
+	// Hold this outside loop for psim fblk updates on misses.
+	i := start + 1
 	if ss.First == 0 {
 		// This is a miss. This can happen since psi.fblk is lazy, but should be very rare.
-		for i := start + 1; i <= stop; i++ {
+		for ; i <= stop; i++ {
 			mb := fs.bim[i]
 			if mb == nil {
 				continue
@@ -2633,6 +2649,20 @@ func (fs *fileStore) numFilteredPending(filter string, ss *SimpleState) {
 				ss.First = f
 				break
 			}
+		}
+	}
+	// Update fblk if we missed matching some blocks, meaning fblk was outdated.
+	if i > start+1 {
+		if !wc {
+			if info, ok := fs.psim.Find(stringToBytes(filter)); ok {
+				info.fblk = i
+			}
+		} else {
+			fs.psim.Match(stringToBytes(filter), func(_ []byte, psi *psi) {
+				if i > psi.fblk {
+					psi.fblk = i
+				}
+			})
 		}
 	}
 	// Now last
@@ -6117,15 +6147,29 @@ func (fs *fileStore) loadLast(subj string, sm *StoreMsg) (lsm *StoreMsg, err err
 		return nil, ErrStoreMsgNotFound
 	}
 
-	start, stop := fs.lmb.index, fs.blks[0].index
 	wc := subjectHasWildcard(subj)
+	var start, stop uint32
+
 	// If literal subject check for presence.
-	if !wc {
-		if info, ok := fs.psim.Find(stringToBytes(subj)); !ok {
+	if wc {
+		start = fs.lmb.index
+		fs.psim.Match(stringToBytes(subj), func(_ []byte, psi *psi) {
+			// Keep track of start and stop indexes for this subject.
+			if psi.fblk < start {
+				start = psi.fblk
+			}
+			if psi.lblk > stop {
+				stop = psi.lblk
+			}
+		})
+		// None matched.
+		if stop == 0 {
 			return nil, ErrStoreMsgNotFound
-		} else {
-			start, stop = info.lblk, info.fblk
 		}
+	} else if info, ok := fs.psim.Find(stringToBytes(subj)); ok {
+		start, stop = info.lblk, info.fblk
+	} else {
+		return nil, ErrStoreMsgNotFound
 	}
 
 	// Walk blocks backwards.
@@ -8587,7 +8631,8 @@ func (o *consumerFileStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) err
 		// Check for an update to a message already delivered.
 		if sseq <= o.state.Delivered.Stream {
 			if p = o.state.Pending[sseq]; p != nil {
-				p.Sequence, p.Timestamp = dseq, ts
+				// Do not update p.Sequence, that should be the original delivery sequence.
+				p.Timestamp = ts
 			}
 		} else {
 			// Add to pending.
@@ -8645,7 +8690,14 @@ func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
 		return nil
 	}
 
+	// Match leader logic on checking if ack is ahead of delivered.
+	// This could happen on a cooperative takeover with high speed deliveries.
+	if sseq > o.state.Delivered.Stream {
+		o.state.Delivered.Stream = sseq + 1
+	}
+
 	if len(o.state.Pending) == 0 || o.state.Pending[sseq] == nil {
+		delete(o.state.Redelivered, sseq)
 		return ErrStoreMsgNotFound
 	}
 
@@ -8676,7 +8728,9 @@ func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
 	// First delete from our pending state.
 	if p, ok := o.state.Pending[sseq]; ok {
 		delete(o.state.Pending, sseq)
-		dseq = p.Sequence // Use the original.
+		if dseq > p.Sequence && p.Sequence > 0 {
+			dseq = p.Sequence // Use the original.
+		}
 	}
 	if len(o.state.Pending) == 0 {
 		o.state.AckFloor.Consumer = o.state.Delivered.Consumer

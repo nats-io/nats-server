@@ -2849,6 +2849,7 @@ const (
 	JszPath          = "/jsz"
 	HealthzPath      = "/healthz"
 	IPQueuesPath     = "/ipqueuesz"
+	RaftzPath        = "/raftz"
 )
 
 func (s *Server) basePath(p string) string {
@@ -2963,6 +2964,8 @@ func (s *Server) startMonitoring(secure bool) error {
 	mux.HandleFunc(s.basePath(HealthzPath), s.HandleHealthz)
 	// IPQueuesz
 	mux.HandleFunc(s.basePath(IPQueuesPath), s.HandleIPQueuesz)
+	// Raftz
+	mux.HandleFunc(s.basePath(RaftzPath), s.HandleRaftz)
 
 	// Do not set a WriteTimeout because it could cause cURL/browser
 	// to return empty response or unable to display page if the

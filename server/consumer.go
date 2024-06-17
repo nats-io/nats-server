@@ -2109,19 +2109,17 @@ func (o *consumer) loopAndForwardProposals(qch chan struct{}) {
 		const maxBatch = 256 * 1024
 		var entries []*Entry
 		for sz := 0; proposal != nil; proposal = proposal.next {
-			entry := entryPool.Get().(*Entry)
-			entry.Type, entry.Data = EntryNormal, proposal.data
-			entries = append(entries, entry)
+			entries = append(entries, newEntry(EntryNormal, proposal.data))
 			sz += len(proposal.data)
 			if sz > maxBatch {
-				node.ProposeDirect(entries)
+				node.ProposeMulti(entries)
 				// We need to re-create `entries` because there is a reference
 				// to it in the node's pae map.
 				sz, entries = 0, nil
 			}
 		}
 		if len(entries) > 0 {
-			node.ProposeDirect(entries)
+			node.ProposeMulti(entries)
 		}
 		return nil
 	}
@@ -2627,17 +2625,24 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		TimeStamp:      time.Now().UTC(),
 	}
 
-	// If we are replicated and we are not the leader we need to pull certain data from our store.
-	if rg != nil && rg.node != nil && !o.isLeader() && o.store != nil {
+	// If we are replicated and we are not the leader or we are filtered, we need to pull certain data from our store.
+	isLeader := o.isLeader()
+	if rg != nil && rg.node != nil && o.store != nil && (!isLeader || o.isFiltered()) {
 		state, err := o.store.BorrowState()
 		if err != nil {
 			o.mu.Unlock()
 			return nil
 		}
-		info.Delivered.Consumer, info.Delivered.Stream = state.Delivered.Consumer, state.Delivered.Stream
-		info.AckFloor.Consumer, info.AckFloor.Stream = state.AckFloor.Consumer, state.AckFloor.Stream
-		info.NumAckPending = len(state.Pending)
-		info.NumRedelivered = len(state.Redelivered)
+		if !isLeader {
+			info.Delivered.Consumer, info.Delivered.Stream = state.Delivered.Consumer, state.Delivered.Stream
+			info.AckFloor.Consumer, info.AckFloor.Stream = state.AckFloor.Consumer, state.AckFloor.Stream
+			info.NumAckPending = len(state.Pending)
+			info.NumRedelivered = len(state.Redelivered)
+		} else {
+			// Since we are filtered and we are the leader we could have o.sseq that is skipped ahead.
+			// To maintain consistency in reporting (e.g. jsz) we take the state for our delivered stream sequence.
+			info.Delivered.Stream = state.Delivered.Stream
+		}
 	}
 
 	// Adjust active based on non-zero etc. Also make UTC here.
@@ -2763,8 +2768,12 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 			delete(o.pending, sseq)
 			// Use the original deliver sequence from our pending record.
 			dseq = p.Sequence
+
 			// Only move floors if we matched an existing pending.
-			if dseq == o.adflr+1 {
+			if len(o.pending) == 0 {
+				o.adflr = o.dseq - 1
+				o.asflr = o.sseq - 1
+			} else if dseq == o.adflr+1 {
 				o.adflr, o.asflr = dseq, sseq
 				for ss := sseq + 1; ss < o.sseq; ss++ {
 					if p, ok := o.pending[ss]; ok {
@@ -2774,11 +2783,6 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 						break
 					}
 				}
-			}
-			// If nothing left set consumer to current delivered.
-			// Do not update stream.
-			if len(o.pending) == 0 {
-				o.adflr = o.dseq - 1
 			}
 		}
 		delete(o.rdc, sseq)
@@ -5218,18 +5222,19 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 // ignoreInterest marks whether the consumer should be ignored when determining interest.
 // No lock held on entry.
 func (o *consumer) cleanupNoInterestMessages(mset *stream, ignoreInterest bool) {
-	state := mset.state()
-	stop := state.LastSeq
 	o.mu.Lock()
 	if !o.isLeader() {
-		o.readStoredState(stop)
+		o.readStoredState(0)
 	}
 	start := o.asflr
 	o.mu.Unlock()
+
 	// Make sure we start at worst with first sequence in the stream.
+	state := mset.state()
 	if start < state.FirstSeq {
 		start = state.FirstSeq
 	}
+	stop := state.LastSeq
 
 	// Consumer's interests are ignored by default. If we should not ignore interest, unset.
 	co := o
@@ -5238,13 +5243,37 @@ func (o *consumer) cleanupNoInterestMessages(mset *stream, ignoreInterest bool) 
 	}
 
 	var rmseqs []uint64
-	mset.mu.Lock()
+	mset.mu.RLock()
+
+	// If over this amount of messages to check, defer to checkInterestState() which
+	// will do the right thing since we are now removed.
+	// TODO(dlc) - Better way?
+	const bailThresh = 100_000
+
+	// Check if we would be spending too much time here and defer to separate go routine.
+	if len(mset.consumers) == 0 {
+		mset.mu.RUnlock()
+		mset.mu.Lock()
+		defer mset.mu.Unlock()
+		mset.store.Purge()
+		var state StreamState
+		mset.store.FastState(&state)
+		mset.lseq = state.LastSeq
+		// Also make sure we clear any pending acks.
+		mset.clearAllPreAcksBelowFloor(state.FirstSeq)
+		return
+	} else if stop-start > bailThresh {
+		mset.mu.RUnlock()
+		go mset.checkInterestState()
+		return
+	}
+
 	for seq := start; seq <= stop; seq++ {
 		if mset.noInterest(seq, co) {
 			rmseqs = append(rmseqs, seq)
 		}
 	}
-	mset.mu.Unlock()
+	mset.mu.RUnlock()
 
 	// These can be removed.
 	for _, seq := range rmseqs {

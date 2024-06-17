@@ -4735,7 +4735,7 @@ func TestJetStreamClusterSnapshotAndRestoreWithHealthz(t *testing.T) {
 
 	rresp.Error = nil
 	json.Unmarshal(rmsg.Data, &rresp)
-	require_True(t, resp.Error == nil)
+	require_True(t, rresp.Error == nil)
 
 	checkHealth()
 
@@ -4757,7 +4757,7 @@ func TestJetStreamClusterSnapshotAndRestoreWithHealthz(t *testing.T) {
 	require_NoError(t, err)
 	rresp.Error = nil
 	json.Unmarshal(rmsg.Data, &rresp)
-	require_True(t, resp.Error == nil)
+	require_True(t, rresp.Error == nil)
 
 	si, err := js.StreamInfo("TEST")
 	require_NoError(t, err)
@@ -4770,6 +4770,40 @@ func TestJetStreamClusterSnapshotAndRestoreWithHealthz(t *testing.T) {
 	si, err = js.StreamInfo("TEST")
 	require_NoError(t, err)
 	require_True(t, si.State.Msgs == uint64(toSend))
+
+	// Now make sure if we try to restore to a single server that the artifact is cleaned up and the server returns ok for healthz.
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, _ = jsClientConnect(t, s)
+	defer nc.Close()
+
+	rmsg, err = nc.Request(fmt.Sprintf(JSApiStreamRestoreT, "TEST"), req, 5*time.Second)
+	require_NoError(t, err)
+
+	rresp.Error = nil
+	json.Unmarshal(rmsg.Data, &rresp)
+	require_True(t, rresp.Error == nil)
+
+	for i, r := 0, bytes.NewReader(snapshot); ; {
+		n, err := r.Read(chunk[:])
+		if err != nil {
+			break
+		}
+		_, err = nc.Request(rresp.DeliverSubject, chunk[:n], time.Second)
+		require_NoError(t, err)
+		i++
+	}
+	rmsg, err = nc.Request(rresp.DeliverSubject, nil, time.Second)
+	require_NoError(t, err)
+	rresp.Error = nil
+	json.Unmarshal(rmsg.Data, &rresp)
+
+	require_True(t, rresp.Error != nil)
+	require_Equal(t, rresp.ApiResponse.Error.ErrCode, 10074)
+
+	status := s.healthz(nil)
+	require_Equal(t, status.StatusCode, 200)
 }
 
 func TestJetStreamClusterBinaryStreamSnapshotCapability(t *testing.T) {
