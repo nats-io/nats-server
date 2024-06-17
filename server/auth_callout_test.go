@@ -20,9 +20,11 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1826,4 +1828,167 @@ func testAuthCall_ClientAuthErrorOperatorMode(t *testing.T, respondNil bool) {
 func TestAuthCallout_ClientAuthErrorOperatorMode(t *testing.T) {
 	testAuthCall_ClientAuthErrorOperatorMode(t, true)
 	testAuthCall_ClientAuthErrorOperatorMode(t, false)
+}
+
+func TestOperatorModeUserRevocation(t *testing.T) {
+	skp, spub := createKey(t)
+	sysClaim := jwt.NewAccountClaims(spub)
+	sysClaim.Name = "$SYS"
+	sysJwt, err := sysClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// TEST account.
+	tkp, tpub := createKey(t)
+	accClaim := jwt.NewAccountClaims(tpub)
+	accClaim.Name = "TEST"
+	accJwt, err := accClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// AUTH service account.
+	akp, err := nkeys.FromSeed([]byte(authCalloutIssuerSeed))
+	require_NoError(t, err)
+
+	apub, err := akp.PublicKey()
+	require_NoError(t, err)
+
+	// The authorized user for the service.
+	upub, creds := createAuthServiceUser(t, akp)
+	defer removeFile(t, creds)
+
+	authClaim := jwt.NewAccountClaims(apub)
+	authClaim.Name = "AUTH"
+	authClaim.EnableExternalAuthorization(upub)
+	authClaim.Authorization.AllowedAccounts.Add(tpub)
+	authJwt, err := authClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	jwtDir, err := os.MkdirTemp("", "")
+	require_NoError(t, err)
+	defer func() {
+		_ = os.RemoveAll(jwtDir)
+	}()
+
+	conf := fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		operator: %s
+		system_account: %s
+		resolver: {
+			type: "full"
+			dir: %s
+			allow_delete: false
+			interval: "2m"
+			timeout: "1.9s"
+		}
+		resolver_preload: {
+			%s: %s
+			%s: %s
+			%s: %s
+		}
+    `, ojwt, spub, jwtDir, apub, authJwt, tpub, accJwt, spub, sysJwt)
+
+	const token = "--secret--"
+
+	users := make(map[string]string)
+	handler := func(m *nats.Msg) {
+		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
+		if opts.Token == token {
+			// must have no limits set
+			ujwt := createAuthUser(t, user, "user", tpub, tpub, tkp, 0, &jwt.UserPermissionLimits{})
+			users[opts.Name] = ujwt
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+		} else {
+			m.Respond(nil)
+		}
+	}
+
+	ac := NewAuthTest(t, conf, handler, nats.UserCredentials(creds))
+	defer ac.Cleanup()
+
+	// create a system user
+	_, sysCreds := createAuthServiceUser(t, skp)
+	defer removeFile(t, sysCreds)
+	// connect the system user
+	sysNC, err := ac.NewClient(nats.UserCredentials(sysCreds))
+	require_NoError(t, err)
+
+	// Bearer token etc..
+	// This is used by all users, and the customization will be in other connect args.
+	// This needs to also be bound to the authorization account.
+	creds = createBasicAccountUser(t, akp)
+	defer removeFile(t, creds)
+
+	var fwg sync.WaitGroup
+
+	// connect three clients
+	nc := ac.Connect(nats.UserCredentials(creds), nats.Name("first"), nats.Token(token), nats.NoReconnect(), nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+		if err != nil && strings.Contains(err.Error(), "authentication revoked") {
+			fwg.Done()
+		}
+	}))
+	fwg.Add(1)
+
+	var swg sync.WaitGroup
+	// connect another user
+	ncA := ac.Connect(nats.UserCredentials(creds), nats.Token(token), nats.Name("second"), nats.NoReconnect(), nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+		if err != nil && strings.Contains(err.Error(), "authentication revoked") {
+			swg.Done()
+		}
+	}))
+	swg.Add(1)
+
+	ncB := ac.Connect(nats.UserCredentials(creds), nats.Token(token), nats.NoReconnect(), nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+		if err != nil && strings.Contains(err.Error(), "authentication revoked") {
+			swg.Done()
+		}
+	}))
+	swg.Add(1)
+
+	require_NoError(t, err)
+
+	// revoke the user first - look at the JWT we issued
+	uc, err := jwt.DecodeUserClaims(users["first"])
+	require_NoError(t, err)
+	// revoke the user in account
+	accClaim.Revocations = make(map[string]int64)
+	accClaim.Revocations.Revoke(uc.Subject, time.Now().Add(time.Minute))
+	accJwt, err = accClaim.Encode(oKp)
+	require_NoError(t, err)
+	// send the update request
+	updateAccount(t, sysNC, accJwt)
+
+	// wait for the user to be disconnected with the error we expect
+	fwg.Wait()
+	require_Equal(t, nc.IsConnected(), false)
+
+	// update the account to remove any revocations
+	accClaim.Revocations = make(map[string]int64)
+	accJwt, err = accClaim.Encode(oKp)
+	require_NoError(t, err)
+	updateAccount(t, sysNC, accJwt)
+	// we should still be connected on the other 2 clients
+	require_Equal(t, ncA.IsConnected(), true)
+	require_Equal(t, ncB.IsConnected(), true)
+
+	// update the jwt and revoke all users
+	accClaim.Revocations.Revoke(jwt.All, time.Now().Add(time.Minute))
+	accJwt, err = accClaim.Encode(oKp)
+	require_NoError(t, err)
+	updateAccount(t, sysNC, accJwt)
+
+	swg.Wait()
+	require_Equal(t, ncA.IsConnected(), false)
+	require_Equal(t, ncB.IsConnected(), false)
+}
+
+func updateAccount(t *testing.T, sys *nats.Conn, jwtToken string) {
+	ac, err := jwt.DecodeAccountClaims(jwtToken)
+	require_NoError(t, err)
+	r, err := sys.Request(fmt.Sprintf(`$SYS.REQ.ACCOUNT.%s.CLAIMS.UPDATE`, ac.Subject), []byte(jwtToken), time.Second*2)
+	require_NoError(t, err)
+
+	var updateResult ServerAPIClaimUpdateResponse
+	err = json.Unmarshal(r.Data, &updateResult)
+	require_NoError(t, err)
+	require_NotNil(t, updateResult.Data)
+	require_Equal(t, updateResult.Data.Code, int(200))
 }
