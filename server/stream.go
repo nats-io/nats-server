@@ -5855,6 +5855,8 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 	}
 	mset, err := a.addStream(&cfg)
 	if err != nil {
+		// Make sure to clean up after ourselves here.
+		os.RemoveAll(ndir)
 		return nil, err
 	}
 	if !fcfg.Created.IsZero() {
