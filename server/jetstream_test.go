@@ -22608,3 +22608,48 @@ func TestJetStreamAckAllWithLargeFirstSequenceAndNoAckFloorWithInterestPolicy(t 
 	_, err = js.StreamInfo("TEST", nats.MaxWait(100*time.Millisecond))
 	require_NoError(t, err)
 }
+
+func TestJetStreamAuditImportSysEventstoJS(t *testing.T) {
+	conf := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {
+			store_dir: '%s',
+		}
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+		server_tags: ["test"]
+		system_account: sys
+		no_auth_user: js
+
+		accounts {
+			sys { 
+			  users = [ { user: sys, pass: sys } ] 
+			  exports = [
+			    { stream: '$SYS.ACCOUNT.>' }
+			  ]
+			}
+			js {
+			  jetstream = enabled
+			  users = [ { user: js, pass: js } ]
+			  imports = [
+			    { stream { subject: '$SYS.ACCOUNT.>', account: sys } }
+			  ]
+			}
+		}
+	`
+	c := createJetStreamClusterWithTemplate(t, conf, "audit", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "sysevents",
+		Subjects: []string{"$SYS.ACCOUNT.>"},
+	})
+	require_NoError(t, err)
+}
