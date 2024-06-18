@@ -57,7 +57,7 @@ script: curl -o cosign -sfL https://github.com/sigstore/cosign/releases/download
 deploy:
   provider: script
   cleanup: true
-  script: curl -o goreleaser.tar.gz -sLf https://github.com/goreleaser/goreleaser/releases/download/v1.26.2/goreleaser_Linux_x86_64.tar.gz && tar -xvf goreleaser.tar.gz && ./goreleaser --skip-publish --skip-validate
+  script: curl -o goreleaser.tar.gz -sLf https://github.com/goreleaser/goreleaser/releases/download/v1.26.2/goreleaser_Linux_x86_64.tar.gz && tar -xvf goreleaser.tar.gz -C /tmp/goreleaser && /tmp/goreleaser/goreleaser --skip-publish
   # script: curl -o goreleaser.tar.gz -sLf https://github.com/goreleaser/goreleaser/releases/download/v1.26.2/goreleaser_Linux_x86_64.tar.gz && tar -xvf goreleaser.tar.gz && mv goreleaser /usr/local/bin && gorelease --skip-publish --skip-validate
   # on:
   #   tags: true
