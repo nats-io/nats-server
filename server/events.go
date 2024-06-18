@@ -960,7 +960,7 @@ func (s *Server) sendStatsz(subj string) {
 	s.sendInternalMsg(subj, _EMPTY_, &m.Server, &m)
 }
 
-// Limit updates to the heartbeat interval, max one second.
+// Limit updates to the heartbeat interval, max one second by default.
 func (s *Server) limitStatsz(subj string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
