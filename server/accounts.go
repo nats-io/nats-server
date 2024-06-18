@@ -3595,8 +3595,8 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		c.applyAccountLimits()
 		// if we have an nkey user we are a callout user - save
 		// the issuedAt, and nkey user id to honor revocations
-		nkeyUserID := ""
-		issuedAt := int64(0)
+		var nkeyUserID string
+		var issuedAt int64
 		if c.user != nil {
 			issuedAt = c.user.Issued
 			nkeyUserID = c.user.Nkey
@@ -3620,13 +3620,13 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			}
 		}
 
-		// if we extracted nkeyUserID and issuedAt we are a callout user
-		// calloutIAT should only be set if we are in callout type scenario
+		// if we extracted nkeyUserID and issuedAt we are a callout type
+		// calloutIAT should only be set if we are in callout scenario as
 		// the user JWT is _NOT_ associated with the client for callouts,
 		// so we rely on the calloutIAT to know when the JWT was issued
 		// revocations simply state that JWT issued before or by that date
 		// are not valid
-		if ac.Revocations != nil && nkeyUserID != "" && issuedAt > 0 {
+		if ac.Revocations != nil && nkeyUserID != _EMPTY_ && issuedAt > 0 {
 			seconds, ok := ac.Revocations[jwt.All]
 			if ok && seconds >= issuedAt {
 				c.sendErrAndDebug("User Authentication Revoked")
