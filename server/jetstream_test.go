@@ -969,7 +969,7 @@ func TestJetStreamAddStreamOverlappingSubjects(t *testing.T) {
 	// Test that any overlapping subjects will fail.
 	expectErr(acc.addStream(&StreamConfig{Name: "foo"}))
 	expectErr(acc.addStream(&StreamConfig{Name: "a", Subjects: []string{"baz", "bar"}}))
-	expectErr(acc.addStream(&StreamConfig{Name: "b", Subjects: []string{">"}}))
+	expectErr(acc.addStream(&StreamConfig{Name: "b", Subjects: []string{">"}, NoAck: true}))
 	expectErr(acc.addStream(&StreamConfig{Name: "c", Subjects: []string{"baz.33"}}))
 	expectErr(acc.addStream(&StreamConfig{Name: "d", Subjects: []string{"*.33"}}))
 	expectErr(acc.addStream(&StreamConfig{Name: "e", Subjects: []string{"*.>"}}))
@@ -984,7 +984,7 @@ func TestJetStreamAddStreamOverlapWithJSAPISubjects(t *testing.T) {
 
 	expectErr := func(_ *stream, err error) {
 		t.Helper()
-		if err == nil || !strings.Contains(err.Error(), "subjects overlap") {
+		if err == nil || !strings.Contains(err.Error(), "subjects that overlap with jetstream api") {
 			t.Fatalf("Expected error but got none")
 		}
 	}
@@ -23621,25 +23621,40 @@ func TestJetStreamAuditStreams(t *testing.T) {
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
+	jsOverlap := errors.New("subjects that overlap with jetstream api require no-ack to be true")
+	sysOverlap := errors.New("subjects that overlap with system api require no-ack to be true")
+
 	_, err := js.AddStream(&nats.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"$JS.>"},
 	})
-	require_Error(t, err, NewJSStreamInvalidConfigError(fmt.Errorf("subjects overlap with jetstream api")))
+	require_Error(t, err, NewJSStreamInvalidConfigError(jsOverlap))
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"$JS.API.>"},
+	})
+	require_Error(t, err, NewJSStreamInvalidConfigError(jsOverlap))
 
 	_, err = js.AddStream(&nats.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"$JSC.>"},
 	})
-	require_Error(t, err, NewJSStreamInvalidConfigError(fmt.Errorf("subjects overlap with jetstream api")))
+	require_Error(t, err, NewJSStreamInvalidConfigError(jsOverlap))
 
 	_, err = js.AddStream(&nats.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"$SYS.>"},
 	})
-	require_Error(t, err, NewJSStreamInvalidConfigError(fmt.Errorf("subjects overlap with system api")))
+	require_Error(t, err, NewJSStreamInvalidConfigError(sysOverlap))
 
-	// These should be ok if no pub ack.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{">"},
+	})
+	require_Error(t, err, NewJSStreamInvalidConfigError(errors.New("capturing all subjects requires no-ack to be true")))
+
+	// These should all be ok if no pub ack.
 	_, err = js.AddStream(&nats.StreamConfig{
 		Name:     "TEST1",
 		Subjects: []string{"$JS.>"},
@@ -23657,6 +23672,63 @@ func TestJetStreamAuditStreams(t *testing.T) {
 	_, err = js.AddStream(&nats.StreamConfig{
 		Name:     "TEST3",
 		Subjects: []string{"$SYS.>"},
+		NoAck:    true,
+	})
+	require_NoError(t, err)
+
+	// Since prior behavior did allow $JS.EVENT to be captured without no-ack, these might break
+	// on a server upgrade so make sure they still work ok without --no-ack.
+
+	// To avoid overlap error.
+	err = js.DeleteStream("TEST1")
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST4",
+		Subjects: []string{"$JS.EVENT.>"},
+	})
+	require_NoError(t, err)
+
+	// Also allow $SYS.ACCOUNT to be captured without no-ack, these also might break
+	// on a server upgrade so make sure they still work ok without --no-ack.
+
+	// To avoid overlap error.
+	err = js.DeleteStream("TEST3")
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST5",
+		Subjects: []string{"$SYS.ACCOUNT.>"},
+	})
+	require_NoError(t, err)
+
+	// We will test handling of ">" on a cluster here.
+	// Specific test for capturing everything which will require both no-ack and replicas of 1.
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{">"},
+	})
+	require_Error(t, err, NewJSStreamInvalidConfigError(errors.New("capturing all subjects requires no-ack to be true")))
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{">"},
+		Replicas: 3,
+		NoAck:    true,
+	})
+	require_Error(t, err, NewJSStreamInvalidConfigError(errors.New("capturing all subjects requires replicas of 1")))
+
+	// Ths should work ok.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{">"},
+		Replicas: 1,
 		NoAck:    true,
 	})
 	require_NoError(t, err)
