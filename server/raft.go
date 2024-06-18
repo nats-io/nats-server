@@ -1074,23 +1074,16 @@ func (n *raft) installSnapshot(snap *snapshot) error {
 		return err
 	}
 
+	// Delete our previous snapshot file if it exists.
+	if n.snapfile != _EMPTY_ && n.snapfile != sfile {
+		os.Remove(n.snapfile)
+	}
 	// Remember our latest snapshot file.
 	n.snapfile = sfile
 	if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
 		n.setWriteErrLocked(err)
 		return err
 	}
-	// Remove any old snapshots.
-	// Do this in a go routine.
-	go func() {
-		psnaps, _ := os.ReadDir(snapDir)
-		for _, fi := range psnaps {
-			pn := fi.Name()
-			if pn != sn {
-				os.Remove(filepath.Join(snapDir, pn))
-			}
-		}
-	}()
 
 	return nil
 }
