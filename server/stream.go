@@ -1486,7 +1486,7 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		}
 
 		// Check for literal duplication of subject interest in config
-		// and no overlap with any JS API subject space
+		// and no overlap with any JS or SYS API subject space.
 		dset := make(map[string]struct{}, len(cfg.Subjects))
 		for _, subj := range cfg.Subjects {
 			// Make sure the subject is valid. Check this first.
@@ -1496,13 +1496,28 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 			if _, ok := dset[subj]; ok {
 				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("duplicate subjects detected"))
 			}
+			// Check for trying to capture everything.
+			if subj == fwcs {
+				if !cfg.NoAck {
+					return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("capturing all subjects requires no-ack to be true"))
+				}
+				// Capturing everything also will require R1.
+				if cfg.Replicas != 1 {
+					return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("capturing all subjects requires replicas of 1"))
+				}
+			}
 			// Also check to make sure we do not overlap with our $JS API subjects.
 			if !cfg.NoAck && (subjectIsSubsetMatch(subj, "$JS.>") || subjectIsSubsetMatch(subj, "$JSC.>")) {
-				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subjects overlap with jetstream api"))
+				// We allow an exception for $JS.EVENT.> since these could have been created in the past.
+				if !subjectIsSubsetMatch(subj, "$JS.EVENT.>") {
+					return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subjects that overlap with jetstream api require no-ack to be true"))
+				}
 			}
 			// And the $SYS subjects.
 			if !cfg.NoAck && subjectIsSubsetMatch(subj, "$SYS.>") {
-				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subjects overlap with system api"))
+				if !subjectIsSubsetMatch(subj, "$SYS.ACCOUNT.>") {
+					return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subjects that overlap with system api require no-ack to be true"))
+				}
 			}
 			// Mark for duplicate check.
 			dset[subj] = struct{}{}
