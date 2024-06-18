@@ -44,7 +44,7 @@ func init() {
 	lostQuorumCheck = 4 * hbInterval
 
 	// For statz and jetstream placement speedups as well.
-	statszRateLimit = time.Millisecond * 100
+	statszRateLimit = 0
 }
 
 // Used to setup clusters of clusters for tests.
