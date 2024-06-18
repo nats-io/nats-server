@@ -1521,7 +1521,9 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 			}
 			// And the $SYS subjects.
 			if !cfg.NoAck && subjectIsSubsetMatch(subj, "$SYS.>") {
-				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subjects that overlap with system api require no-ack to be true"))
+				if !subjectIsSubsetMatch(subj, "$SYS.ACCOUNT.>") {
+					return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subjects that overlap with system api require no-ack to be true"))
+				}
 			}
 			// Mark for duplicate check.
 			dset[subj] = struct{}{}

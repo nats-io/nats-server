@@ -23679,17 +23679,30 @@ func TestJetStreamAuditStreams(t *testing.T) {
 	// Since prior behavior did allow $JS.EVENT to be captured without no-ack, these might break
 	// on a server upgrade so make sure they still work ok without --no-ack.
 
-	// Do avoid overlap.
+	// To avoid overlap error.
 	err = js.DeleteStream("TEST1")
 	require_NoError(t, err)
 
 	_, err = js.AddStream(&nats.StreamConfig{
 		Name:     "TEST4",
 		Subjects: []string{"$JS.EVENT.>"},
-		NoAck:    true,
 	})
 	require_NoError(t, err)
 
+	// Also allow $SYS.ACCOUNT to be captured without no-ack, these also might break
+	// on a server upgrade so make sure they still work ok without --no-ack.
+
+	// To avoid overlap error.
+	err = js.DeleteStream("TEST3")
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "TEST5",
+		Subjects: []string{"$SYS.ACCOUNT.>"},
+	})
+	require_NoError(t, err)
+
+	// We will test handling of ">" on a cluster here.
 	// Specific test for capturing everything which will require both no-ack and replicas of 1.
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
