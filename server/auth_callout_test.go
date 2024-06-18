@@ -1986,9 +1986,17 @@ func updateAccount(t *testing.T, sys *nats.Conn, jwtToken string) {
 	r, err := sys.Request(fmt.Sprintf(`$SYS.REQ.ACCOUNT.%s.CLAIMS.UPDATE`, ac.Subject), []byte(jwtToken), time.Second*2)
 	require_NoError(t, err)
 
-	var updateResult ServerAPIClaimUpdateResponse
-	err = json.Unmarshal(r.Data, &updateResult)
+	type data struct {
+		Account string `json:"account"`
+		Code    int    `json:"code"`
+	}
+	type serverResponse struct {
+		Data data `json:"data"`
+	}
+
+	var response serverResponse
+	err = json.Unmarshal(r.Data, &response)
 	require_NoError(t, err)
-	require_NotNil(t, updateResult.Data)
-	require_Equal(t, updateResult.Data.Code, int(200))
+	require_NotNil(t, response.Data)
+	require_Equal(t, response.Data.Code, int(200))
 }
