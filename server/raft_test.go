@@ -518,3 +518,34 @@ func TestNRGElectionTimerAfterObserver(t *testing.T) {
 		require_True(t, etlr.After(before))
 	}
 }
+
+func TestNRGSystemClientCleanupFromAccount(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	s := c.randomServer()
+	sacc := s.SystemAccount()
+
+	numClients := func() int {
+		sacc.mu.RLock()
+		defer sacc.mu.RUnlock()
+		return len(sacc.clients)
+	}
+
+	start := numClients()
+
+	var all []smGroup
+	for i := 0; i < 5; i++ {
+		rgName := fmt.Sprintf("TEST-%d", i)
+		rg := c.createRaftGroup(rgName, 3, newStateAdder)
+		all = append(all, rg)
+		rg.waitOnLeader()
+	}
+	for _, rg := range all {
+		for _, sm := range rg {
+			sm.node().Stop()
+		}
+	}
+	finish := numClients()
+	require_Equal(t, start, finish)
+}
