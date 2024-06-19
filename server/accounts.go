@@ -3593,6 +3593,14 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		}
 		c.mu.Lock()
 		c.applyAccountLimits()
+		// if we have an nkey user we are a callout user - save
+		// the issuedAt, and nkey user id to honor revocations
+		var nkeyUserID string
+		var issuedAt int64
+		if c.user != nil {
+			issuedAt = c.user.Issued
+			nkeyUserID = c.user.Nkey
+		}
 		theJWT := c.opts.JWT
 		c.mu.Unlock()
 		// Check for being revoked here. We use ac one to avoid the account lock.
@@ -3606,6 +3614,27 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 				c.authViolation()
 				continue
 			} else if ok := ac.IsClaimRevoked(juc); ok {
+				c.sendErrAndDebug("User Authentication Revoked")
+				c.closeConnection(Revocation)
+				continue
+			}
+		}
+
+		// if we extracted nkeyUserID and issuedAt we are a callout type
+		// calloutIAT should only be set if we are in callout scenario as
+		// the user JWT is _NOT_ associated with the client for callouts,
+		// so we rely on the calloutIAT to know when the JWT was issued
+		// revocations simply state that JWT issued before or by that date
+		// are not valid
+		if ac.Revocations != nil && nkeyUserID != _EMPTY_ && issuedAt > 0 {
+			seconds, ok := ac.Revocations[jwt.All]
+			if ok && seconds >= issuedAt {
+				c.sendErrAndDebug("User Authentication Revoked")
+				c.closeConnection(Revocation)
+				continue
+			}
+			seconds, ok = ac.Revocations[nkeyUserID]
+			if ok && seconds >= issuedAt {
 				c.sendErrAndDebug("User Authentication Revoked")
 				c.closeConnection(Revocation)
 				continue
@@ -3719,7 +3748,7 @@ func buildPermissionsFromJwt(uc *jwt.Permissions) *Permissions {
 
 // Helper to build internal NKeyUser.
 func buildInternalNkeyUser(uc *jwt.UserClaims, acts map[string]struct{}, acc *Account) *NkeyUser {
-	nu := &NkeyUser{Nkey: uc.Subject, Account: acc, AllowedConnectionTypes: acts}
+	nu := &NkeyUser{Nkey: uc.Subject, Account: acc, AllowedConnectionTypes: acts, Issued: uc.IssuedAt}
 	if uc.IssuerAccount != _EMPTY_ {
 		nu.SigningKey = uc.Issuer
 	}
