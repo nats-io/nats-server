@@ -295,13 +295,13 @@ const (
 	// Maximum size of a write buffer we may consider for re-use.
 	maxBufReuse = 2 * 1024 * 1024
 	// default cache buffer expiration
-	defaultCacheBufferExpiration = 2 * time.Second
+	defaultCacheBufferExpiration = 10 * time.Second
 	// default sync interval
 	defaultSyncInterval = 2 * time.Minute
 	// default idle timeout to close FDs.
 	closeFDsIdle = 30 * time.Second
 	// default expiration time for mb.fss when idle.
-	defaultFssExpiration = 10 * time.Second
+	defaultFssExpiration = 2 * time.Minute
 	// coalesceMinimum
 	coalesceMinimum = 16 * 1024
 	// maxFlushWait is maximum we will wait to gather messages to flush.
