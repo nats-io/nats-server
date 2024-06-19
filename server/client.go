@@ -5457,48 +5457,51 @@ func (c *client) closeConnection(reason ClosedState) {
 		// Unregister
 		srv.removeClient(c)
 
-		// Update remote subscriptions.
-		if acc != nil && (kind == CLIENT || kind == LEAF || kind == JETSTREAM) {
-			qsubs := map[string]*qsub{}
-			for _, sub := range subs {
-				// Call unsubscribe here to cleanup shadow subscriptions and such.
-				c.unsubscribe(acc, sub, true, false)
-				// Update route as normal for a normal subscriber.
-				if sub.queue == nil {
-					if !spoke {
-						srv.updateRouteSubscriptionMap(acc, sub, -1)
-						if srv.gateway.enabled {
-							srv.gatewayUpdateSubInterest(acc.Name, sub, -1)
+		if acc != nil {
+			// Update remote subscriptions.
+			if kind == CLIENT || kind == LEAF || kind == JETSTREAM {
+				qsubs := map[string]*qsub{}
+				for _, sub := range subs {
+					// Call unsubscribe here to cleanup shadow subscriptions and such.
+					c.unsubscribe(acc, sub, true, false)
+					// Update route as normal for a normal subscriber.
+					if sub.queue == nil {
+						if !spoke {
+							srv.updateRouteSubscriptionMap(acc, sub, -1)
+							if srv.gateway.enabled {
+								srv.gatewayUpdateSubInterest(acc.Name, sub, -1)
+							}
+						}
+						acc.updateLeafNodes(sub, -1)
+					} else {
+						// We handle queue subscribers special in case we
+						// have a bunch we can just send one update to the
+						// connected routes.
+						num := int32(1)
+						if kind == LEAF {
+							num = sub.qw
+						}
+						key := keyFromSub(sub)
+						if esub, ok := qsubs[key]; ok {
+							esub.n += num
+						} else {
+							qsubs[key] = &qsub{sub, num}
 						}
 					}
-					acc.updateLeafNodes(sub, -1)
-				} else {
-					// We handle queue subscribers special in case we
-					// have a bunch we can just send one update to the
-					// connected routes.
-					num := int32(1)
-					if kind == LEAF {
-						num = sub.qw
+				}
+				// Process any qsubs here.
+				for _, esub := range qsubs {
+					if !spoke {
+						srv.updateRouteSubscriptionMap(acc, esub.sub, -(esub.n))
+						if srv.gateway.enabled {
+							srv.gatewayUpdateSubInterest(acc.Name, esub.sub, -(esub.n))
+						}
 					}
-					// TODO(dlc) - Better to use string builder?
-					key := bytesToString(sub.subject) + " " + bytesToString(sub.queue)
-					if esub, ok := qsubs[key]; ok {
-						esub.n += num
-					} else {
-						qsubs[key] = &qsub{sub, num}
-					}
+					acc.updateLeafNodes(esub.sub, -(esub.n))
 				}
 			}
-			// Process any qsubs here.
-			for _, esub := range qsubs {
-				if !spoke {
-					srv.updateRouteSubscriptionMap(acc, esub.sub, -(esub.n))
-					if srv.gateway.enabled {
-						srv.gatewayUpdateSubInterest(acc.Name, esub.sub, -(esub.n))
-					}
-				}
-				acc.updateLeafNodes(esub.sub, -(esub.n))
-			}
+			// Always remove from the account, otherwise we can leak clients.
+			// Note that SYSTEM and ACCOUNT types from above cleanup their own subs.
 			if prev := acc.removeClient(c); prev == 1 {
 				srv.decActiveAccounts()
 			}
