@@ -23733,3 +23733,32 @@ func TestJetStreamAuditStreams(t *testing.T) {
 	})
 	require_NoError(t, err)
 }
+
+// https://github.com/nats-io/nats-server/issues/5570
+func TestJetStreamBadSubjectMappingStream(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "test"})
+	require_NoError(t, err)
+
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name: "test",
+		Sources: []*nats.StreamSource{
+			{
+				Name: "mapping",
+				SubjectTransforms: []nats.SubjectTransformConfig{
+					{
+						Source:      "events.*",
+						Destination: "events.{{wildcard(1)}}{{split(3,1)}}",
+					},
+				},
+			},
+		},
+	})
+	require_NoError(t, err)
+}
