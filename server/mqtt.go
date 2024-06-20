@@ -3497,7 +3497,6 @@ func (sess *mqttSession) deleteConsumer(cc *ConsumerConfig) {
 	sess.mu.Lock()
 	sess.tmaxack -= cc.MaxAckPending
 	sess.jsa.deleteConsumer(mqttStreamName, cc.Durable, true)
-	// sess.jsa.sendq.push(&mqttJSPubMsg{subj: sess.jsa.prefixDomain(fmt.Sprintf(JSApiConsumerDeleteT, mqttStreamName, cc.Durable))})
 	sess.mu.Unlock()
 }
 
