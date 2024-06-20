@@ -1563,6 +1563,10 @@ func (jsa *mqttJSA) newRequestEx(kind, subject, cidHash string, hdr int, msg []b
 	if err != nil {
 		return nil, err
 	}
+	if timeout == 0{
+		return nil, err
+	}
+	
 	if len(responses) != 1 {
 		return nil, fmt.Errorf("unreachable: invalid number of responses (%d)", len(responses))
 	}
@@ -1718,6 +1722,9 @@ func (jsa *mqttJSA) deleteConsumer(streamName, consName string, noWait bool) (*J
 	cdri, err := jsa.newRequestEx(mqttJSAConsumerDel, subj, _EMPTY_, -1, nil, timeout)
 	if err != nil {
 		return nil, err
+	}
+	if noWait {
+		return nil, nil
 	}
 	cdr := cdri.(*JSApiConsumerDeleteResponse)
 	return cdr, cdr.ToError()
