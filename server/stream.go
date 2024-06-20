@@ -1840,7 +1840,6 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 							var err error
 							si.trs[i], err = NewSubjectTransform(s.SubjectTransforms[i].Source, s.SubjectTransforms[i].Destination)
 							if err != nil {
-								mset.mu.Unlock()
 								mset.srv.Errorf("Unable to get subject transform for source: %v", err)
 							}
 						}
