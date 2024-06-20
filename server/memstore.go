@@ -389,9 +389,9 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 		}
 	}
 
-	tsa := [32]string{}
-	fsa := [32]string{}
-	fts := tokenizeSubjectIntoSlice(fsa[:0], filter)
+	_tsa, _fsa := [32]string{}, [32]string{}
+	tsa, fsa := _tsa[:0], _fsa[:0]
+	fsa = tokenizeSubjectIntoSlice(fsa[:0], filter)
 	wc := subjectHasWildcard(filter)
 
 	// 1. See if we match any subs from fss.
@@ -405,8 +405,8 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 		if !wc {
 			return subj == filter
 		}
-		tts := tokenizeSubjectIntoSlice(tsa[:0], subj)
-		return isSubsetMatchTokenized(tts, fts)
+		tsa = tokenizeSubjectIntoSlice(tsa[:0], subj)
+		return isSubsetMatchTokenized(tsa, fsa)
 	}
 
 	update := func(fss *SimpleState) {
@@ -650,9 +650,9 @@ func (ms *memStore) SubjectsTotals(filterSubject string) map[string]uint64 {
 		return nil
 	}
 
-	tsa := [32]string{}
-	fsa := [32]string{}
-	fts := tokenizeSubjectIntoSlice(fsa[:0], filterSubject)
+	_tsa, _fsa := [32]string{}, [32]string{}
+	tsa, fsa := _tsa[:0], _fsa[:0]
+	fsa = tokenizeSubjectIntoSlice(fsa[:0], filterSubject)
 	isAll := filterSubject == _EMPTY_ || filterSubject == fwcs
 
 	fst := make(map[string]uint64)
@@ -661,7 +661,7 @@ func (ms *memStore) SubjectsTotals(filterSubject string) map[string]uint64 {
 		if isAll {
 			fst[subjs] = ss.Msgs
 		} else {
-			if tts := tokenizeSubjectIntoSlice(tsa[:0], subjs); isSubsetMatchTokenized(tts, fts) {
+			if tsa = tokenizeSubjectIntoSlice(tsa[:0], subjs); isSubsetMatchTokenized(tsa, fsa) {
 				fst[subjs] = ss.Msgs
 			}
 		}
