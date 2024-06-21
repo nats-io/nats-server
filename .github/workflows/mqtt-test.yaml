@@ -1,0 +1,48 @@
+name: MQTT external test
+on: [pull_request]
+
+jobs:
+  test:
+    env:
+      GOPATH: /home/runner/work/nats-server
+      GO111MODULE: "on"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          path: src/github.com/nats-io/nats-server
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: src/github.com/nats-io/nats-server/go.mod
+          cache-dependency-path: src/github.com/nats-io/nats-server/go.sum
+
+      - name: Set up testing tools and environment
+        shell: bash --noprofile --norc -eo pipefail {0}
+        id: setup
+        run: |
+          wget https://github.com/hivemq/mqtt-cli/releases/download/v4.20.0/mqtt-cli-4.20.0.deb
+          sudo apt install ./mqtt-cli-4.20.0.deb
+          go install github.com/ConnectEverything/mqtt-test@v0.1.0
+
+      - name: Run tests (3 times to detect flappers)
+        shell: bash --noprofile --norc -eo pipefail {0}
+        run: |
+          cd src/github.com/nats-io/nats-server
+          go test -v --count=3 --run='TestXMQTT' ./server
+
+      - name: Run tests with --race
+        shell: bash --noprofile --norc -eo pipefail {0}
+        run: |
+          cd src/github.com/nats-io/nats-server
+          go test -v --race --failfast --run='TestXMQTT' ./server
+
+      - name: Run benchmarks
+        shell: bash --noprofile --norc -eo pipefail {0}
+        run: |
+          cd src/github.com/nats-io/nats-server
+          go test --run='-' --count=3 --bench 'BenchmarkXMQTT' --benchtime=100x ./server
+
+      # TODO: compare benchmarks
