@@ -6066,6 +6066,7 @@ func TestJetStreamClusterConsumerAckSyncReporting(t *testing.T) {
 		}
 		m.AckSync()
 	}
+	time.Sleep(10 * time.Millisecond)
 
 	// Now we want to make sure that jsz reporting will show the same
 	// state for ack floor.
@@ -6080,6 +6081,8 @@ func TestJetStreamClusterConsumerAckSyncReporting(t *testing.T) {
 
 	// Now ack the skipped message
 	skipped.AckSync()
+	time.Sleep(10 * time.Millisecond)
+
 	for _, s := range c.servers {
 		jsz, err := s.Jsz(opts)
 		require_NoError(t, err)
@@ -6090,6 +6093,8 @@ func TestJetStreamClusterConsumerAckSyncReporting(t *testing.T) {
 
 	// Now ack the last message
 	last.AckSync()
+	time.Sleep(10 * time.Millisecond)
+
 	for _, s := range c.servers {
 		jsz, err := s.Jsz(opts)
 		require_NoError(t, err)
