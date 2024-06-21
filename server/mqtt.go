@@ -1713,9 +1713,6 @@ func (jsa *mqttJSA) deleteConsumer(streamName, consName string, noWait bool) (*J
 	if err != nil {
 		return nil, err
 	}
-	if noWait {
-		return nil, nil
-	}
 	cdr := cdri.(*JSApiConsumerDeleteResponse)
 	return cdr, cdr.ToError()
 }
