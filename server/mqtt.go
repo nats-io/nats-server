@@ -1672,6 +1672,13 @@ func (jsa *mqttJSA) createDurableConsumer(cfg *CreateConsumerRequest) (*JSApiCon
 	return ccr, ccr.ToError()
 }
 
+func (jsa *mqttJSA) sendMsg(subj string, msg []byte) {
+	if subj == _EMPTY_ {
+		return
+	}
+	jsa.sendq.push(&mqttJSPubMsg{subj: subj, msg: msg, hdr: -1})
+}
+
 // if noWait is specified, does not wait for the JS response, returns nil
 func (jsa *mqttJSA) deleteConsumer(streamName, consName string, noWait bool) (*JSApiConsumerDeleteResponse, error) {
 	subj := fmt.Sprintf(JSApiConsumerDeleteT, streamName, consName)
