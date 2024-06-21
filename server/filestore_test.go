@@ -6938,6 +6938,25 @@ func TestFileStoreLoadLastWildcard(t *testing.T) {
 	require_Equal(t, cloads, 1)
 }
 
+func TestFileStoreLoadLastWildcardWithPresenceMultipleBlocks(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 64},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Make sure we have "foo.222.bar" in multiple blocks to show bug.
+	fs.StoreMsg("foo.22.bar", nil, []byte("hello"))
+	fs.StoreMsg("foo.22.baz", nil, []byte("ok"))
+	fs.StoreMsg("foo.22.baz", nil, []byte("ok"))
+	fs.StoreMsg("foo.22.bar", nil, []byte("hello22"))
+	require_True(t, fs.numMsgBlocks() > 1)
+	sm, err := fs.LoadLastMsg("foo.*.bar", nil)
+	require_NoError(t, err)
+	require_Equal(t, "hello22", string(sm.msg))
+}
+
 // We want to make sure that we update psim correctly on a miss.
 func TestFileStoreFilteredPendingPSIMFirstBlockUpdate(t *testing.T) {
 	sd := t.TempDir()
