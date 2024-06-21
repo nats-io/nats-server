@@ -2316,6 +2316,10 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 	// Mark fss activity.
 	mb.lsts = time.Now().UnixNano()
 
+	if filter == _EMPTY_ {
+		filter = fwcs
+	}
+
 	// If we only have 1 subject currently and it matches our filter we can also set isAll.
 	if !isAll && mb.fss.Size() == 1 {
 		_, isAll = mb.fss.Find(stringToBytes(filter))
@@ -2355,9 +2359,7 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 		if wc {
 			subs = subs[:0]
 			mb.fss.Match(stringToBytes(filter), func(bsubj []byte, _ *SimpleState) {
-				if subj := bytesToString(bsubj); isMatch(subj) {
-					subs = append(subs, string(bsubj))
-				}
+				subs = append(subs, string(bsubj))
 			})
 			// Check if we matched anything
 			if len(subs) == 0 {
@@ -2492,16 +2494,14 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 
 	var havePartial bool
 	mb.fss.Match(stringToBytes(filter), func(bsubj []byte, ss *SimpleState) {
-		if subj := bytesToString(bsubj); isAll || isMatch(subj) {
-			if ss.firstNeedsUpdate {
-				mb.recalculateFirstForSubj(subj, ss.First, ss)
-			}
-			if sseq <= ss.First {
-				update(ss)
-			} else if sseq <= ss.Last {
-				// We matched but its a partial.
-				havePartial = true
-			}
+		if ss.firstNeedsUpdate {
+			mb.recalculateFirstForSubj(bytesToString(bsubj), ss.First, ss)
+		}
+		if sseq <= ss.First {
+			update(ss)
+		} else if sseq <= ss.Last {
+			// We matched but its a partial.
+			havePartial = true
 		}
 	})
 
@@ -2527,12 +2527,14 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 		if sm == nil {
 			continue
 		}
-		total++
-		if first == 0 || seq < first {
-			first = seq
-		}
-		if seq > last {
-			last = seq
+		if isAll || isMatch(sm.subj) {
+			total++
+			if first == 0 || seq < first {
+				first = seq
+			}
+			if seq > last {
+				last = seq
+			}
 		}
 	}
 	// If we loaded this block for this operation go ahead and expire it here.
@@ -3149,11 +3151,8 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 				// Mark fss activity.
 				mb.lsts = time.Now().UnixNano()
 
-				mb.fss.Iter(func(bsubj []byte, ss *SimpleState) bool {
-					if subj := bytesToString(bsubj); isMatch(subj) {
-						adjust += ss.Msgs
-					}
-					return true
+				mb.fss.Match(stringToBytes(filter), func(bsubj []byte, ss *SimpleState) {
+					adjust += ss.Msgs
 				})
 			}
 		} else {
