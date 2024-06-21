@@ -27,11 +27,11 @@ jobs:
           sudo apt install ./mqtt-cli-4.20.0.deb
           go install github.com/ConnectEverything/mqtt-test@v0.1.0
 
-      - name: Run tests (10 times to detect flappers)
+      - name: Run tests (50 times to detect flappers)
         shell: bash --noprofile --norc -eo pipefail {0}
         run: |
           cd src/github.com/nats-io/nats-server
-          go test -v --count=3 --run='TestXMQTT' ./server
+          go test -v --count=50 --run='TestXMQTTRetained' ./server
 
       - name: Run tests with --race
         shell: bash --noprofile --norc -eo pipefail {0}
