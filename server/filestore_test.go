@@ -4098,10 +4098,10 @@ func TestFileStoreNoFSSBugAfterRemoveFirst(t *testing.T) {
 		mb := fs.blks[0]
 		fs.mu.Unlock()
 		mb.mu.RLock()
-		ss := mb.fss["foo.bar.0"]
+		ss, ok := mb.fss.Find([]byte("foo.bar.0"))
 		mb.mu.RUnlock()
 
-		if ss != nil {
+		if ok && ss != nil {
 			t.Fatalf("Expected no state for %q, but got %+v\n", "foo.bar.0", ss)
 		}
 	})
@@ -6782,7 +6782,7 @@ func TestFileStoreFSSExpireNumPending(t *testing.T) {
 	require_True(t, elapsed > time.Since(start))
 
 	// Sleep enough so that all mb.fss should expire, which is 2s above.
-	time.Sleep(3 * time.Second)
+	time.Sleep(4 * time.Second)
 	fs.mu.RLock()
 	for i, mb := range fs.blks {
 		mb.mu.RLock()
@@ -6790,7 +6790,7 @@ func TestFileStoreFSSExpireNumPending(t *testing.T) {
 		mb.mu.RUnlock()
 		if fss != nil {
 			fs.mu.RUnlock()
-			t.Fatalf("Detected loaded fss for mb %d", i)
+			t.Fatalf("Detected loaded fss for mb %d (size %d)", i, fss.Size())
 		}
 	}
 	fs.mu.RUnlock()
@@ -6938,6 +6938,25 @@ func TestFileStoreLoadLastWildcard(t *testing.T) {
 	require_Equal(t, cloads, 1)
 }
 
+func TestFileStoreLoadLastWildcardWithPresenceMultipleBlocks(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 64},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Make sure we have "foo.222.bar" in multiple blocks to show bug.
+	fs.StoreMsg("foo.22.bar", nil, []byte("hello"))
+	fs.StoreMsg("foo.22.baz", nil, []byte("ok"))
+	fs.StoreMsg("foo.22.baz", nil, []byte("ok"))
+	fs.StoreMsg("foo.22.bar", nil, []byte("hello22"))
+	require_True(t, fs.numMsgBlocks() > 1)
+	sm, err := fs.LoadLastMsg("foo.*.bar", nil)
+	require_NoError(t, err)
+	require_Equal(t, "hello22", string(sm.msg))
+}
+
 // We want to make sure that we update psim correctly on a miss.
 func TestFileStoreFilteredPendingPSIMFirstBlockUpdate(t *testing.T) {
 	sd := t.TempDir()
@@ -7006,7 +7025,7 @@ func TestFileStoreWildcardFilteredPendingPSIMFirstBlockUpdate(t *testing.T) {
 	for i := 0; i < 1000; i++ {
 		fs.StoreMsg("foo.1.foo", nil, msg)
 	}
-	// Bookend with 3 more,twoe foo.baz and two foo.bar.
+	// Bookend with 3 more, two foo.baz and two foo.bar.
 	fs.StoreMsg("foo.22.baz", nil, msg)
 	fs.StoreMsg("foo.22.baz", nil, msg)
 	fs.StoreMsg("foo.22.bar", nil, msg)
@@ -7063,6 +7082,84 @@ func TestFileStoreWildcardFilteredPendingPSIMFirstBlockUpdate(t *testing.T) {
 	require_Equal(t, psi.total, 2)
 	require_Equal(t, psi.fblk, 92)
 	require_Equal(t, psi.lblk, 92)
+}
+
+// Make sure if we only miss by one for fblk that we still update it.
+func TestFileStoreFilteredPendingPSIMFirstBlockUpdateNextBlock(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 128},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := []byte("hello")
+	// Create 4 blocks, each block holds 2 msgs
+	for i := 0; i < 4; i++ {
+		fs.StoreMsg("foo.22.bar", nil, msg)
+		fs.StoreMsg("foo.22.baz", nil, msg)
+	}
+	require_Equal(t, fs.numMsgBlocks(), 4)
+
+	fetch := func(subj string) *psi {
+		t.Helper()
+		fs.mu.RLock()
+		psi, ok := fs.psim.Find([]byte(subj))
+		fs.mu.RUnlock()
+		require_True(t, ok)
+		return psi
+	}
+
+	psi := fetch("foo.22.bar")
+	require_Equal(t, psi.total, 4)
+	require_Equal(t, psi.fblk, 1)
+	require_Equal(t, psi.lblk, 4)
+
+	// Now remove first instance of "foo.22.bar"
+	removed, err := fs.RemoveMsg(1)
+	require_NoError(t, err)
+	require_True(t, removed)
+
+	// Call into numFilterePending(), we want to make sure it updates fblk.
+	var ss SimpleState
+	fs.mu.Lock()
+	fs.numFilteredPending("foo.22.bar", &ss)
+	fs.mu.Unlock()
+	require_Equal(t, ss.Msgs, 3)
+	require_Equal(t, ss.First, 3)
+	require_Equal(t, ss.Last, 7)
+
+	// Now make sure that we properly updated the psim entry.
+	psi = fetch("foo.22.bar")
+	require_Equal(t, psi.total, 3)
+	require_Equal(t, psi.fblk, 2)
+	require_Equal(t, psi.lblk, 4)
+
+	// Now make sure wildcard calls into also update blks.
+	// First remove first "foo.22.baz" which will remove first block.
+	removed, err = fs.RemoveMsg(2)
+	require_NoError(t, err)
+	require_True(t, removed)
+	// Make sure 3 blks left
+	require_Equal(t, fs.numMsgBlocks(), 3)
+
+	psi = fetch("foo.22.baz")
+	require_Equal(t, psi.total, 3)
+	require_Equal(t, psi.fblk, 1)
+	require_Equal(t, psi.lblk, 4)
+
+	// Now call wildcard version of numFilteredPending to make sure it clears.
+	fs.mu.Lock()
+	fs.numFilteredPending("foo.*.baz", &ss)
+	fs.mu.Unlock()
+	require_Equal(t, ss.Msgs, 3)
+	require_Equal(t, ss.First, 4)
+	require_Equal(t, ss.Last, 8)
+
+	psi = fetch("foo.22.baz")
+	require_Equal(t, psi.total, 3)
+	require_Equal(t, psi.fblk, 2)
+	require_Equal(t, psi.lblk, 4)
 }
 
 ///////////////////////////////////////////////////////////////////////////
