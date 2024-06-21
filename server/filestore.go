@@ -6279,6 +6279,8 @@ func (fs *fileStore) loadLast(subj string, sm *StoreMsg) (lsm *StoreMsg, err err
 		if stop == 0 {
 			return nil, ErrStoreMsgNotFound
 		}
+		// These need to be swapped.
+		start, stop = stop, start
 	} else if info, ok := fs.psim.Find(stringToBytes(subj)); ok {
 		start, stop = info.lblk, info.fblk
 	} else {
