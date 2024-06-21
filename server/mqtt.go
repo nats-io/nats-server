@@ -1563,10 +1563,6 @@ func (jsa *mqttJSA) newRequestEx(kind, subject, cidHash string, hdr int, msg []b
 	if err != nil {
 		return nil, err
 	}
-	if timeout == 0{
-		return nil, err
-	}
-	
 	if len(responses) != 1 {
 		return nil, fmt.Errorf("unreachable: invalid number of responses (%d)", len(responses))
 	}
@@ -1624,10 +1620,6 @@ func (jsa *mqttJSA) newRequestExMulti(kind, subject, cidHash string, hdrs []int,
 			msg:   msg,
 		})
 		r2i[reply] = i
-	}
-
-	if timeout == 0 {
-		return nil, nil
 	}
 
 	// Wait for all responses to come back, or for the timeout to expire. We
@@ -1712,14 +1704,12 @@ func (jsa *mqttJSA) createDurableConsumer(cfg *CreateConsumerRequest) (*JSApiCon
 // if noWait is specified, does not wait for the JS response, returns nil
 func (jsa *mqttJSA) deleteConsumer(streamName, consName string, noWait bool) (*JSApiConsumerDeleteResponse, error) {
 	subj := fmt.Sprintf(JSApiConsumerDeleteT, streamName, consName)
-
-	timeout := mqttJSAPITimeout
 	if noWait {
-		timeout = 0
+		jsa.sendMsg(subj, nil)
+		return nil, nil
 	}
 
-	// timeout == 0 signals that we don't want to wait for the response.
-	cdri, err := jsa.newRequestEx(mqttJSAConsumerDel, subj, _EMPTY_, -1, nil, timeout)
+	cdri, err := jsa.newRequestEx(mqttJSAConsumerDel, subj, _EMPTY_, -1, nil, mqttJSAPITimeout)
 	if err != nil {
 		return nil, err
 	}
