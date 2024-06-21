@@ -2593,6 +2593,19 @@ func (fs *fileStore) FilteredState(sseq uint64, subj string) SimpleState {
 // Optimized way for getting all num pending matching a filter subject.
 // Lock should be held.
 func (fs *fileStore) numFilteredPending(filter string, ss *SimpleState) {
+	fs.numFilteredPendingWithLast(filter, true, ss)
+}
+
+// Optimized way for getting all num pending matching a filter subject and first sequence only.
+// Lock should be held.
+func (fs *fileStore) numFilteredPendingNoLast(filter string, ss *SimpleState) {
+	fs.numFilteredPendingWithLast(filter, false, ss)
+}
+
+// Optimized way for getting all num pending matching a filter subject.
+// Optionally look up last sequence. Sometimes do not need last and this avoids cost.
+// Lock should be held.
+func (fs *fileStore) numFilteredPendingWithLast(filter string, last bool, ss *SimpleState) {
 	isAll := filter == _EMPTY_ || filter == fwcs
 
 	// If isAll we do not need to do anything special to calculate the first and last and total.
@@ -2666,10 +2679,12 @@ func (fs *fileStore) numFilteredPending(filter string, ss *SimpleState) {
 			})
 		}
 	}
-	// Now gather last sequence.
-	if mb = fs.bim[stop]; mb != nil {
-		_, _, l := mb.filteredPending(filter, wc, 0)
-		ss.Last = l
+	// Now gather last sequence if asked to do so.
+	if last {
+		if mb = fs.bim[stop]; mb != nil {
+			_, _, l := mb.filteredPending(filter, wc, 0)
+			ss.Last = l
+		}
 	}
 }
 
@@ -6397,7 +6412,7 @@ func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64, sm *Store
 	// let's check the psim to see if we can skip ahead.
 	if start <= fs.state.FirstSeq {
 		var ss SimpleState
-		fs.numFilteredPending(filter, &ss)
+		fs.numFilteredPendingNoLast(filter, &ss)
 		// Nothing available.
 		if ss.Msgs == 0 {
 			return nil, fs.state.LastSeq, ErrStoreEOF
@@ -6424,7 +6439,7 @@ func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64, sm *Store
 				// TODO(dlc) - For v2 track these by filter subject since they will represent filtered consumers.
 				if i == bi {
 					var ss SimpleState
-					fs.numFilteredPending(filter, &ss)
+					fs.numFilteredPendingNoLast(filter, &ss)
 					// Nothing available.
 					if ss.Msgs == 0 {
 						return nil, fs.state.LastSeq, ErrStoreEOF
