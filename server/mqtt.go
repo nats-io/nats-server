@@ -1709,7 +1709,7 @@ func (jsa *mqttJSA) deleteConsumer(streamName, consName string, noWait bool) (*J
 		return nil, nil
 	}
 
-	cdri, err := jsa.newRequestEx(mqttJSAConsumerDel, subj, _EMPTY_, -1, nil, mqttJSAPITimeout)
+	cdri, err := jsa.newRequest(mqttJSAConsumerDel, subj, 0, nil)
 	if err != nil {
 		return nil, err
 	}
