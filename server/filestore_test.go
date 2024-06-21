@@ -4098,10 +4098,10 @@ func TestFileStoreNoFSSBugAfterRemoveFirst(t *testing.T) {
 		mb := fs.blks[0]
 		fs.mu.Unlock()
 		mb.mu.RLock()
-		ss := mb.fss["foo.bar.0"]
+		ss, ok := mb.fss.Find([]byte("foo.bar.0"))
 		mb.mu.RUnlock()
 
-		if ss != nil {
+		if ok && ss != nil {
 			t.Fatalf("Expected no state for %q, but got %+v\n", "foo.bar.0", ss)
 		}
 	})
@@ -6883,7 +6883,7 @@ func TestFileStoreFSSExpireNumPending(t *testing.T) {
 	require_True(t, elapsed > time.Since(start))
 
 	// Sleep enough so that all mb.fss should expire, which is 2s above.
-	time.Sleep(3 * time.Second)
+	time.Sleep(4 * time.Second)
 	fs.mu.RLock()
 	for i, mb := range fs.blks {
 		mb.mu.RLock()
@@ -6891,7 +6891,7 @@ func TestFileStoreFSSExpireNumPending(t *testing.T) {
 		mb.mu.RUnlock()
 		if fss != nil {
 			fs.mu.RUnlock()
-			t.Fatalf("Detected loaded fss for mb %d", i)
+			t.Fatalf("Detected loaded fss for mb %d (size %d)", i, fss.Size())
 		}
 	}
 	fs.mu.RUnlock()
