@@ -1,5 +1,5 @@
 name: MQTT external test
-on: [pull_request]
+on: [push]
 
 jobs:
   test:
