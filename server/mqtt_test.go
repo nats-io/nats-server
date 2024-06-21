@@ -6780,65 +6780,6 @@ func TestMQTTConsumerMemStorageReload(t *testing.T) {
 	}
 }
 
-type unableToDeleteConsLogger struct {
-	DummyLogger
-	errCh chan string
-}
-
-func (l *unableToDeleteConsLogger) Errorf(format string, args ...any) {
-	msg := fmt.Sprintf(format, args...)
-	if strings.Contains(msg, "unable to delete consumer") {
-		l.errCh <- msg
-	}
-}
-
-func TestMQTTSessionNotDeletedOnDeleteConsumerError(t *testing.T) {
-	org := mqttJSAPITimeout
-	mqttJSAPITimeout = 1000 * time.Millisecond
-	defer func() { mqttJSAPITimeout = org }()
-
-	cl := createJetStreamClusterWithTemplate(t, testMQTTGetClusterTemplaceNoLeaf(), "MQTT", 2)
-	defer cl.shutdown()
-
-	o := cl.opts[0]
-	s1 := cl.servers[0]
-	// Plug error logger to s1
-	l := &unableToDeleteConsLogger{errCh: make(chan string, 10)}
-	s1.SetLogger(l, false, false)
-
-	nc, js := jsClientConnect(t, s1)
-	defer nc.Close()
-
-	mc, r := testMQTTConnectRetry(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port, 5)
-	defer mc.Close()
-	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
-
-	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
-	testMQTTFlush(t, mc, nil, r)
-
-	// Now shutdown server 2, we should lose quorum
-	cl.servers[1].Shutdown()
-
-	// Close the MQTT client:
-	testMQTTDisconnect(t, mc, nil)
-
-	// We should have reported that there was an error deleting the consumer
-	select {
-	case <-l.errCh:
-		// OK
-	case <-time.After(time.Second):
-		t.Fatal("Server did not report any error")
-	}
-
-	// Now restart the server 2 so that we can check that the session is still persisted.
-	cl.restartAllSamePorts()
-	cl.waitOnStreamLeader(globalAccountName, mqttSessStreamName)
-
-	si, err := js.StreamInfo(mqttSessStreamName)
-	require_NoError(t, err)
-	require_True(t, si.State.Msgs == 1)
-}
-
 // Test for auto-cleanup of consumers.
 func TestMQTTConsumerInactiveThreshold(t *testing.T) {
 	tdir := t.TempDir()

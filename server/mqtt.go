@@ -974,7 +974,7 @@ func (s *Server) mqttHandleClosedClient(c *client) {
 
 	// This needs to be done outside of any lock.
 	if doClean {
-		if err := sess.clear(); err != nil {
+		if err := sess.clear(true); err != nil {
 			c.Errorf(err.Error())
 		}
 	}
@@ -1449,7 +1449,7 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 	// Opportunistically delete the old (legacy) consumer, from v2.10.10 and
 	// before. Ignore any errors that might arise.
 	rmLegacyDurName := mqttRetainedMsgsStreamName + "_" + jsa.id
-	jsa.deleteConsumer(mqttRetainedMsgsStreamName, rmLegacyDurName)
+	jsa.deleteConsumer(mqttRetainedMsgsStreamName, rmLegacyDurName, true)
 
 	// Create a new, uniquely names consumer for retained messages for this
 	// server. The prior one will expire eventually.
@@ -1672,8 +1672,14 @@ func (jsa *mqttJSA) createDurableConsumer(cfg *CreateConsumerRequest) (*JSApiCon
 	return ccr, ccr.ToError()
 }
 
-func (jsa *mqttJSA) deleteConsumer(streamName, consName string) (*JSApiConsumerDeleteResponse, error) {
+// if noWait is specified, does not wait for the JS response, returns nil
+func (jsa *mqttJSA) deleteConsumer(streamName, consName string, noWait bool) (*JSApiConsumerDeleteResponse, error) {
 	subj := fmt.Sprintf(JSApiConsumerDeleteT, streamName, consName)
+	if noWait {
+		jsa.sendMsg(subj, nil)
+		return nil, nil
+	}
+
 	cdri, err := jsa.newRequest(mqttJSAConsumerDel, subj, 0, nil)
 	if err != nil {
 		return nil, err
@@ -3078,7 +3084,7 @@ func (sess *mqttSession) save() error {
 //
 // Runs from the client's readLoop.
 // Lock not held on entry, but session is in the locked map.
-func (sess *mqttSession) clear() error {
+func (sess *mqttSession) clear(noWait bool) error {
 	var durs []string
 	var pubRelDur string
 
@@ -3106,19 +3112,19 @@ func (sess *mqttSession) clear() error {
 	sess.mu.Unlock()
 
 	for _, dur := range durs {
-		if _, err := sess.jsa.deleteConsumer(mqttStreamName, dur); isErrorOtherThan(err, JSConsumerNotFoundErr) {
+		if _, err := sess.jsa.deleteConsumer(mqttStreamName, dur, noWait); isErrorOtherThan(err, JSConsumerNotFoundErr) {
 			return fmt.Errorf("unable to delete consumer %q for session %q: %v", dur, sess.id, err)
 		}
 	}
-	if pubRelDur != "" {
-		_, err := sess.jsa.deleteConsumer(mqttOutStreamName, pubRelDur)
+	if pubRelDur != _EMPTY_ {
+		_, err := sess.jsa.deleteConsumer(mqttOutStreamName, pubRelDur, noWait)
 		if isErrorOtherThan(err, JSConsumerNotFoundErr) {
 			return fmt.Errorf("unable to delete consumer %q for session %q: %v", pubRelDur, sess.id, err)
 		}
 	}
 
 	if seq > 0 {
-		err := sess.jsa.deleteMsg(mqttSessStreamName, seq, true)
+		err := sess.jsa.deleteMsg(mqttSessStreamName, seq, !noWait)
 		// Ignore the various errors indicating that the message (or sequence)
 		// is already deleted, can happen in a cluster.
 		if isErrorOtherThan(err, JSSequenceNotFoundErrF) {
@@ -3384,7 +3390,7 @@ func (sess *mqttSession) untrackPubRel(pi uint16) (jsAckSubject string) {
 func (sess *mqttSession) deleteConsumer(cc *ConsumerConfig) {
 	sess.mu.Lock()
 	sess.tmaxack -= cc.MaxAckPending
-	sess.jsa.sendq.push(&mqttJSPubMsg{subj: sess.jsa.prefixDomain(fmt.Sprintf(JSApiConsumerDeleteT, mqttStreamName, cc.Durable))})
+	sess.jsa.deleteConsumer(mqttStreamName, cc.Durable, true)
 	sess.mu.Unlock()
 }
 
@@ -3723,7 +3729,7 @@ CHECK:
 			// This Session lasts as long as the Network Connection. State data
 			// associated with this Session MUST NOT be reused in any subsequent
 			// Session.
-			if err := es.clear(); err != nil {
+			if err := es.clear(false); err != nil {
 				asm.removeSession(es, true)
 				return err
 			}
