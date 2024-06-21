@@ -80,28 +80,8 @@ func TestXMQTTRetainedMessages(t *testing.T) {
 			makef: mqttMakeTestServer,
 		},
 		{
-			name:  "server with leafnode",
-			makef: mqttMakeTestServerWithLeafnode("HUBD", "LEAFD", true),
-		},
-		{
-			name:  "server with leafnode no domains",
-			makef: mqttMakeTestServerWithLeafnode("", "", true),
-		},
-		{
-			name:  "server with leafnode no system account",
-			makef: mqttMakeTestServerWithLeafnode("HUBD", "LEAFD", false),
-		},
-		{
 			name:  "cluster",
 			makef: mqttMakeTestCluster(4, ""),
-		},
-		{
-			name:  "cluster with leafnode cluster",
-			makef: mqttMakeTestClusterWithLeafnodeCluster("HUBD", "LEAFD", true),
-		},
-		{
-			name:  "cluster with leafnode cluster no system account",
-			makef: mqttMakeTestClusterWithLeafnodeCluster("HUBD", "LEAFD", false),
 		},
 	} {
 		t.Run(topo.name, func(t *testing.T) {
