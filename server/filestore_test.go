@@ -7263,6 +7263,58 @@ func TestFileStoreFilteredPendingPSIMFirstBlockUpdateNextBlock(t *testing.T) {
 	require_Equal(t, psi.lblk, 4)
 }
 
+func TestFileStoreLargeSparseMsgsDoNotLoadAfterLast(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 128},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := []byte("hello")
+	// Create 2 blocks with each, each block holds 2 msgs
+	for i := 0; i < 2; i++ {
+		fs.StoreMsg("foo.22.bar", nil, msg)
+		fs.StoreMsg("foo.22.baz", nil, msg)
+	}
+	// Now create 8 more blocks with just baz. So no matches for these 8 blocks
+	// for "foo.22.bar".
+	for i := 0; i < 8; i++ {
+		fs.StoreMsg("foo.22.baz", nil, msg)
+		fs.StoreMsg("foo.22.baz", nil, msg)
+	}
+	require_Equal(t, fs.numMsgBlocks(), 10)
+
+	// Remove all blk cache and fss.
+	fs.mu.RLock()
+	for _, mb := range fs.blks {
+		mb.mu.Lock()
+		mb.fss, mb.cache = nil, nil
+		mb.mu.Unlock()
+	}
+	fs.mu.RUnlock()
+
+	// "foo.22.bar" is at sequence 1 and 3.
+	// Make sure if we do a LoadNextMsg() starting at 4 that we do not load
+	// all the tail blocks.
+	_, _, err = fs.LoadNextMsg("foo.*.bar", true, 4, nil)
+	require_Error(t, err, ErrStoreEOF)
+
+	// Now make sure we did not load fss and cache.
+	var loaded int
+	fs.mu.RLock()
+	for _, mb := range fs.blks {
+		mb.mu.RLock()
+		if mb.cache != nil || mb.fss != nil {
+			loaded++
+		}
+		mb.mu.RUnlock()
+	}
+	fs.mu.RUnlock()
+	// We will load first block for starting seq 4, but no others should have loaded.
+	require_Equal(t, loaded, 1)
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////
@@ -7518,5 +7570,34 @@ func Benchmark_FileStoreLoadNextMsgVerySparseMsgsInBetweenWithWildcard(b *testin
 		// Make sure not first seq.
 		_, _, err := fs.LoadNextMsg("foo.*.baz", true, 2, &smv)
 		require_NoError(b, err)
+	}
+}
+
+func Benchmark_FileStoreLoadNextMsgVerySparseMsgsLargeTail(b *testing.B) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: b.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*.*"}, Storage: FileStorage})
+	require_NoError(b, err)
+	defer fs.Stop()
+
+	// Small om purpose.
+	msg := []byte("ok")
+
+	// Make first msg one that would match as well.
+	fs.StoreMsg("foo.1.baz", nil, msg)
+	// Add in a bunch of msgs.
+	// We need to make sure we have a range of subjects that could kick in a linear scan.
+	for i := 0; i < 1_000_000; i++ {
+		subj := fmt.Sprintf("foo.%d.bar", rand.Intn(100_000)+2)
+		fs.StoreMsg(subj, nil, msg)
+	}
+
+	b.ResetTimer()
+
+	var smv StoreMsg
+	for i := 0; i < b.N; i++ {
+		// Make sure not first seq.
+		_, _, err := fs.LoadNextMsg("foo.*.baz", true, 2, &smv)
+		require_Error(b, err, ErrStoreEOF)
 	}
 }
