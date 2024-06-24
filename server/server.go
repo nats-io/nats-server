@@ -4422,8 +4422,11 @@ func (s *Server) DisconnectClientByID(id uint64) error {
 	if client := s.getClient(id); client != nil {
 		client.closeConnection(Kicked)
 		return nil
+	} else if client = s.GetLeafNode(id); client != nil {
+		client.closeConnection(Kicked)
+		return nil
 	}
-	return errors.New("no such client id")
+	return errors.New("no such client or leafnode id")
 }
 
 // LDMClientByID sends a Lame Duck Mode info message to a client by connection ID
