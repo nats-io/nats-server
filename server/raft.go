@@ -1886,6 +1886,14 @@ func (n *raft) setObserver(isObserver bool, extSt extensionState) {
 	n.Lock()
 	defer n.Unlock()
 
+	if n.paused {
+		// Applies are paused so we're already in observer state.
+		// Resuming the applies will set the state back to whatever
+		// is in "pobserver", so update that instead.
+		n.pobserver = isObserver
+		return
+	}
+
 	wasObserver := n.observer
 	n.observer = isObserver
 	n.extSt = extSt
