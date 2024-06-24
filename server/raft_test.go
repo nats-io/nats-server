@@ -549,3 +549,42 @@ func TestNRGSystemClientCleanupFromAccount(t *testing.T) {
 	finish := numClients()
 	require_Equal(t, start, finish)
 }
+
+func TestNRGLeavesObserverAfterPause(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	n := rg.nonLeader().node().(*raft)
+
+	checkState := func(observer, pobserver bool) {
+		t.Helper()
+		n.RLock()
+		defer n.RUnlock()
+		require_Equal(t, n.observer, observer)
+		require_Equal(t, n.pobserver, pobserver)
+	}
+
+	// Assume this has happened because of jetstream_cluster_migrate
+	// or similar.
+	n.SetObserver(true)
+	checkState(true, false)
+
+	// Now something like a catchup has started, but since we were
+	// already in observer mode, pobserver is set to true.
+	n.PauseApply()
+	checkState(true, true)
+
+	// Now jetstream_cluster_migrate is happy that the leafnodes are
+	// back up so it tries to leave observer mode, but the catchup
+	// hasn't finished yet. This will instead set pobserver to false.
+	n.SetObserver(false)
+	checkState(true, false)
+
+	// The catchup finishes, so we should correctly leave the observer
+	// state by setting observer to the pobserver value.
+	n.ResumeApply()
+	checkState(false, false)
+}
