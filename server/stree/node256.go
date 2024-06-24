@@ -51,10 +51,10 @@ func (n *node256) deleteChild(c byte) {
 
 // Shrink if needed and return new node, otherwise return nil.
 func (n *node256) shrink() node {
-	if n.size > 16 {
+	if n.size > 48 {
 		return nil
 	}
-	nn := newNode16(nil)
+	nn := newNode48(nil)
 	for c, child := range n.child {
 		if child != nil {
 			nn.addChild(byte(c), n.child[c])
