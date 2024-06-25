@@ -2914,8 +2914,11 @@ func (c *client) addShadowSubscriptions(acc *Account, sub *subscription, enact b
 
 // Add in the shadow subscription.
 func (c *client) addShadowSub(sub *subscription, ime *ime, enact bool) (*subscription, error) {
-	im := ime.im
+	c.mu.Lock()
 	nsub := *sub // copy
+	c.mu.Unlock()
+
+	im := ime.im
 	nsub.im = im
 
 	if !im.usePub && ime.dyn && im.tr != nil {
