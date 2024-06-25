@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"strconv"
@@ -37,6 +38,7 @@ type mqttTarget struct {
 	clusters      []*cluster
 	configs       []mqttTestConfig
 	all           []mqttDial
+	allNATS       []string
 }
 
 type mqttTestConfig struct {
@@ -194,6 +196,16 @@ func (d mqttDial) Get() (u, p, s, c string) {
 	return u, p, s, c
 }
 
+func (d mqttDial) GetHostPort() (host string, port int) {
+	_, _, s, _ := d.Get()
+	host, portS, err := net.SplitHostPort(s)
+	if err != nil {
+		return s, 0
+	}
+	port, _ = strconv.Atoi(portS)
+	return host, port
+}
+
 func (d mqttDial) Name() string {
 	_, _, _, c := d.Get()
 	return c
@@ -285,13 +297,16 @@ func mqttMakeTestCluster(size int, domain string) func(tb testing.TB) *mqttTarge
 		cl.waitOnLeader()
 
 		all := []mqttDial{}
+		allNATS := []string{}
 		for _, s := range cl.servers {
 			all = append(all, mqttNewDialForServer(s, "one", "p"))
+			allNATS = append(allNATS, string(mqttNewDial("one", "p", s.getOpts().Host, s.getOpts().Port, "")))
 		}
 
 		return &mqttTarget{
 			clusters: []*cluster{cl},
 			all:      all,
+			allNATS:  allNATS,
 			configs: []mqttTestConfig{
 				{
 					name: "publish to one",
