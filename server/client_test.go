@@ -2423,11 +2423,11 @@ func TestClientLimits(t *testing.T) {
 				t.Fatalf("Error encoding jwt: %v", err)
 			}
 			c.applyAccountLimits()
-			if c.mpay != test.expect {
-				t.Fatalf("payload %d not as expected %d", c.mpay, test.expect)
+			if mpay := c.mpay.Load(); mpay != test.expect {
+				t.Fatalf("payload %d not as expected %d", mpay, test.expect)
 			}
-			if c.msubs != test.expect {
-				t.Fatalf("subscriber %d not as expected %d", c.msubs, test.expect)
+			if msubs := c.msubs.Load(); msubs != test.expect {
+				t.Fatalf("subscriber %d not as expected %d", msubs, test.expect)
 			}
 		})
 	}

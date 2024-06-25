@@ -21,7 +21,6 @@ import (
 	"reflect"
 	"sort"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/klauspost/compress/s2"
@@ -610,7 +609,7 @@ func (m *maxControlLineOption) Apply(server *Server) {
 	mcl := int32(m.newValue)
 	server.mu.Lock()
 	for _, client := range server.clients {
-		atomic.StoreInt32(&client.mcl, mcl)
+		client.mcl.Store(mcl)
 	}
 	server.mu.Unlock()
 	server.Noticef("Reloaded: max_control_line = %d", mcl)
@@ -628,7 +627,7 @@ func (m *maxPayloadOption) Apply(server *Server) {
 	server.mu.Lock()
 	server.info.MaxPayload = m.newValue
 	for _, client := range server.clients {
-		atomic.StoreInt32(&client.mpay, int32(m.newValue))
+		client.mpay.Store(int32(m.newValue))
 	}
 	server.mu.Unlock()
 	server.Noticef("Reloaded: max_payload = %d", m.newValue)

@@ -548,7 +548,9 @@ func (s *Server) createMQTTClient(conn net.Conn, ws *websocket) *client {
 		rejectQoS2Pub:    opts.MQTT.rejectQoS2Pub,
 		downgradeQoS2Sub: opts.MQTT.downgradeQoS2Sub,
 	}
-	c := &client{srv: s, nc: conn, mpay: maxPay, msubs: maxSubs, start: now, last: now, mqtt: mqtt, ws: ws}
+	c := &client{srv: s, nc: conn, start: now, last: now, mqtt: mqtt, ws: ws}
+	c.mpay.Store(maxPay)
+	c.msubs.Store(maxSubs)
 	c.headers = true
 	c.mqtt.pp = &mqttPublish{}
 	// MQTT clients don't send NATS CONNECT protocols. So make it an "echo"

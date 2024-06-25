@@ -1113,9 +1113,9 @@ func TestJWTAccountLimitsSubs(t *testing.T) {
 	fooAcc.mu.RUnlock()
 	// Now test that the client has limits too.
 	c.mu.Lock()
-	if c.msubs != 10 {
+	if msubs := c.msubs.Load(); msubs != 10 {
 		c.mu.Unlock()
-		t.Fatalf("Expected client msubs to be 10, got %d", c.msubs)
+		t.Fatalf("Expected client msubs to be 10, got %d", msubs)
 	}
 	c.mu.Unlock()
 
@@ -1229,9 +1229,9 @@ func TestJWTAccountLimitsMaxPayload(t *testing.T) {
 	fooAcc.mu.RUnlock()
 	// Now test that the client has limits too.
 	c.mu.Lock()
-	if c.mpay != 8 {
+	if mpay := c.mpay.Load(); mpay != 8 {
 		c.mu.Unlock()
-		t.Fatalf("Expected client to have mpay of 10, got %d", c.mpay)
+		t.Fatalf("Expected client to have mpay of 10, got %d", mpay)
 	}
 	c.mu.Unlock()
 

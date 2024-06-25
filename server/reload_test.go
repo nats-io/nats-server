@@ -3859,7 +3859,7 @@ func TestConfigReloadMaxControlLineWithClients(t *testing.T) {
 	getMcl := func(c *client) int32 {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		return c.mcl
+		return c.mcl.Load()
 	}
 	if mcl := getMcl(c); mcl != opts.MaxControlLine {
 		t.Fatalf("Expected snapshot in client for mcl to be same as opts.MaxControlLine, got %d vs %d",

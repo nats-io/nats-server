@@ -1804,7 +1804,9 @@ func (s *Server) createInternalClient(kind int) *client {
 		return nil
 	}
 	now := time.Now()
-	c := &client{srv: s, kind: kind, opts: internalOpts, msubs: -1, mpay: -1, start: now, last: now}
+	c := &client{srv: s, kind: kind, opts: internalOpts, start: now, last: now}
+	c.msubs.Store(-1)
+	c.mpay.Store(-1)
 	c.initClient()
 	c.echo = false
 	c.headers = true
@@ -3106,12 +3108,12 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 		srv:   s,
 		nc:    conn,
 		opts:  defaultOpts,
-		mpay:  maxPay,
-		msubs: maxSubs,
 		start: now,
 		last:  now,
 		iproc: inProcess,
 	}
+	c.mpay.Store(maxPay)
+	c.msubs.Store(maxSubs)
 
 	c.registerWithAccount(s.globalAccount())
 

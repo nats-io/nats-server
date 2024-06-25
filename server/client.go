@@ -236,9 +236,9 @@ type client struct {
 	parseState
 	opts       ClientOpts
 	rrTracking *rrTracking
-	mpay       int32
-	msubs      int32
-	mcl        int32
+	mpay       atomic.Int32
+	msubs      atomic.Int32
+	mcl        atomic.Int32
 	mu         sync.Mutex
 	cid        uint64
 	start      time.Time
@@ -661,9 +661,10 @@ func (c *client) initClient() {
 	// Snapshot max control line since currently can not be changed on reload and we
 	// were checking it on each call to parse. If this changes and we allow MaxControlLine
 	// to be reloaded without restart, this code will need to change.
-	c.mcl = int32(opts.MaxControlLine)
-	if c.mcl == 0 {
-		c.mcl = MAX_CONTROL_LINE_SIZE
+	if mcl := int32(opts.MaxControlLine); mcl != 0 {
+		c.mcl.Store(mcl)
+	} else {
+		c.mcl.Store(MAX_CONTROL_LINE_SIZE)
 	}
 
 	c.subs = make(map[string]*subscription)
@@ -819,20 +820,20 @@ func (c *client) registerWithAccount(acc *Account) error {
 
 // Helper to determine if we have met or exceeded max subs.
 func (c *client) subsAtLimit() bool {
-	return c.msubs != jwt.NoLimit && len(c.subs) >= int(c.msubs)
+	return c.msubs.Load() != jwt.NoLimit && len(c.subs) >= int(c.msubs.Load())
 }
 
-func minLimit(value *int32, limit int32) bool {
-	v := atomic.LoadInt32(value)
+func minLimit(value *atomic.Int32, limit int32) bool {
+	v := value.Load()
 	if v != jwt.NoLimit {
 		if limit != jwt.NoLimit {
 			if limit < v {
-				atomic.StoreInt32(value, limit)
+				value.Store(limit)
 				return true
 			}
 		}
 	} else if limit != jwt.NoLimit {
-		atomic.StoreInt32(value, limit)
+		value.Store(limit)
 		return true
 	}
 	return false
@@ -845,18 +846,18 @@ func (c *client) applyAccountLimits() {
 	if c.acc == nil || (c.kind != CLIENT && c.kind != LEAF) {
 		return
 	}
-	atomic.StoreInt32(&c.mpay, jwt.NoLimit)
-	c.msubs = jwt.NoLimit
+	c.mpay.Store(jwt.NoLimit)
+	c.msubs.Store(jwt.NoLimit)
 	if c.opts.JWT != _EMPTY_ { // user jwt implies account
 		if uc, _ := jwt.DecodeUserClaims(c.opts.JWT); uc != nil {
-			c.mpay = int32(uc.Limits.Payload)
-			c.msubs = int32(uc.Limits.Subs)
+			c.mpay.Store(int32(uc.Limits.Payload))
+			c.msubs.Store(int32(uc.Limits.Subs))
 			if uc.IssuerAccount != _EMPTY_ && uc.IssuerAccount != uc.Issuer {
 				if scope, ok := c.acc.signingKeys[uc.Issuer]; ok {
 					if userScope, ok := scope.(*jwt.UserScope); ok {
 						// if signing key disappeared or changed and we don't get here, the client will be disconnected
-						c.mpay = int32(userScope.Template.Limits.Payload)
-						c.msubs = int32(userScope.Template.Limits.Subs)
+						c.mpay.Store(int32(userScope.Template.Limits.Payload))
+						c.msubs.Store(int32(userScope.Template.Limits.Subs))
 					}
 				}
 			}
@@ -879,11 +880,11 @@ func (c *client) applyAccountLimits() {
 	if mSubs == 0 {
 		mSubs = jwt.NoLimit
 	}
-	wasUnlimited := c.mpay == jwt.NoLimit
+	wasUnlimited := c.mpay.Load() == jwt.NoLimit
 	if minLimit(&c.mpay, mPay) && !wasUnlimited {
 		c.Errorf("Max Payload set to %d from server overrides account or user config", opts.MaxPayload)
 	}
-	wasUnlimited = c.msubs == jwt.NoLimit
+	wasUnlimited = c.msubs.Load() == jwt.NoLimit
 	if minLimit(&c.msubs, mSubs) && !wasUnlimited {
 		c.Errorf("Max Subscriptions set to %d from server overrides account or user config", opts.MaxSubs)
 	}
@@ -2381,7 +2382,7 @@ func (c *client) sendPing() {
 func (c *client) generateClientInfoJSON(info Info) []byte {
 	info.CID = c.cid
 	info.ClientIP = c.host
-	info.MaxPayload = c.mpay
+	info.MaxPayload = c.mpay.Load()
 	if c.isWebsocket() {
 		info.ClientConnectURLs = info.WSConnectURLs
 		// Otherwise lame duck info can panic
@@ -2466,7 +2467,7 @@ func (c *client) processPing() {
 		c.flags.set(firstPongSent)
 		// If there was a cluster update since this client was created,
 		// send an updated INFO protocol now.
-		if srv.lastCURLsUpdate >= c.start.UnixNano() || c.mpay != int32(opts.MaxPayload) {
+		if srv.lastCURLsUpdate >= c.start.UnixNano() || c.mpay.Load() != int32(opts.MaxPayload) {
 			c.enqueueProto(c.generateClientInfoJSON(srv.copyInfo()))
 		}
 		c.mu.Unlock()
@@ -2578,7 +2579,7 @@ func (c *client) processHeaderPub(arg, remaining []byte) error {
 	if c.pa.hdr > c.pa.size {
 		return fmt.Errorf("processHeaderPub Header Size larger then TotalSize: %q", arg)
 	}
-	maxPayload := atomic.LoadInt32(&c.mpay)
+	maxPayload := c.mpay.Load()
 	// Use int64() to avoid int32 overrun...
 	if maxPayload != jwt.NoLimit && int64(c.pa.size) > int64(maxPayload) {
 		// If we are given the remaining read buffer (since we do blind reads
@@ -2641,7 +2642,7 @@ func (c *client) processPub(arg []byte) error {
 	if c.pa.size < 0 {
 		return fmt.Errorf("processPub Bad or Missing Size: %q", arg)
 	}
-	maxPayload := atomic.LoadInt32(&c.mpay)
+	maxPayload := c.mpay.Load()
 	// Use int64() to avoid int32 overrun...
 	if maxPayload != jwt.NoLimit && int64(c.pa.size) > int64(maxPayload) {
 		c.maxPayloadViolation(c.pa.size, maxPayload)

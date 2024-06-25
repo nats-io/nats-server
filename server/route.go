@@ -1692,7 +1692,9 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL, accName string) *clie
 		}
 	}
 
-	c := &client{srv: s, nc: conn, opts: ClientOpts{}, kind: ROUTER, msubs: -1, mpay: -1, route: r, start: time.Now()}
+	c := &client{srv: s, nc: conn, opts: ClientOpts{}, kind: ROUTER, route: r, start: time.Now()}
+	c.mpay.Store(-1)
+	c.msubs.Store(-1)
 
 	// Is the server configured for compression?
 	compressionConfigured := needsCompression(opts.Cluster.Compression.Mode)

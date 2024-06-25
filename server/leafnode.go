@@ -945,7 +945,9 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 	}
 	now := time.Now().UTC()
 
-	c := &client{srv: s, nc: conn, kind: LEAF, opts: defaultOpts, mpay: maxPay, msubs: maxSubs, start: now, last: now}
+	c := &client{srv: s, nc: conn, kind: LEAF, opts: defaultOpts, start: now, last: now}
+	c.mpay.Store(maxPay)
+	c.msubs.Store(maxSubs)
 	// Do not update the smap here, we need to do it in initLeafNodeSmapAndSendSubs
 	c.leaf = &leaf{}
 

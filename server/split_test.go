@@ -29,7 +29,10 @@ func TestSplitBufferSubOp(t *testing.T) {
 		t.Fatalf("Error creating gateways: %v", err)
 	}
 	s.registerAccount(s.gacc)
-	c := &client{srv: s, acc: s.gacc, msubs: -1, mpay: -1, mcl: 1024, subs: make(map[string]*subscription), nc: cli}
+	c := &client{srv: s, acc: s.gacc, subs: make(map[string]*subscription), nc: cli}
+	c.msubs.Store(-1)
+	c.mpay.Store(-1)
+	c.mcl.Store(1024)
 
 	subop := []byte("SUB foo 1\r\n")
 	subop1 := subop[:6]
@@ -66,7 +69,10 @@ func TestSplitBufferSubOp(t *testing.T) {
 func TestSplitBufferUnsubOp(t *testing.T) {
 	s := &Server{gacc: NewAccount(globalAccountName), gateway: &srvGateway{}}
 	s.registerAccount(s.gacc)
-	c := &client{srv: s, acc: s.gacc, msubs: -1, mpay: -1, mcl: 1024, subs: make(map[string]*subscription)}
+	c := &client{srv: s, acc: s.gacc, subs: make(map[string]*subscription)}
+	c.msubs.Store(-1)
+	c.mpay.Store(-1)
+	c.mcl.Store(1024)
 
 	subop := []byte("SUB foo 1024\r\n")
 	if err := c.parse(subop); err != nil {
@@ -99,7 +105,10 @@ func TestSplitBufferUnsubOp(t *testing.T) {
 }
 
 func TestSplitBufferPubOp(t *testing.T) {
-	c := &client{msubs: -1, mpay: -1, mcl: 1024, subs: make(map[string]*subscription)}
+	c := &client{subs: make(map[string]*subscription)}
+	c.msubs.Store(-1)
+	c.mpay.Store(-1)
+	c.mcl.Store(1024)
 	pub := []byte("PUB foo.bar INBOX.22 11\r\nhello world\r")
 	pub1 := pub[:2]
 	pub2 := pub[2:9]
@@ -165,7 +174,10 @@ func TestSplitBufferPubOp(t *testing.T) {
 }
 
 func TestSplitBufferPubOp2(t *testing.T) {
-	c := &client{msubs: -1, mpay: -1, mcl: 1024, subs: make(map[string]*subscription)}
+	c := &client{subs: make(map[string]*subscription)}
+	c.msubs.Store(-1)
+	c.mpay.Store(-1)
+	c.mcl.Store(1024)
 	pub := []byte("PUB foo.bar INBOX.22 11\r\nhello world\r\n")
 	pub1 := pub[:30]
 	pub2 := pub[30:]
@@ -185,7 +197,10 @@ func TestSplitBufferPubOp2(t *testing.T) {
 }
 
 func TestSplitBufferPubOp3(t *testing.T) {
-	c := &client{msubs: -1, mpay: -1, mcl: 1024, subs: make(map[string]*subscription)}
+	c := &client{subs: make(map[string]*subscription)}
+	c.msubs.Store(-1)
+	c.mpay.Store(-1)
+	c.mcl.Store(1024)
 	pubAll := []byte("PUB foo bar 11\r\nhello world\r\n")
 	pub := pubAll[:16]
 
@@ -211,7 +226,10 @@ func TestSplitBufferPubOp3(t *testing.T) {
 }
 
 func TestSplitBufferPubOp4(t *testing.T) {
-	c := &client{msubs: -1, mpay: -1, mcl: 1024, subs: make(map[string]*subscription)}
+	c := &client{subs: make(map[string]*subscription)}
+	c.msubs.Store(-1)
+	c.mpay.Store(-1)
+	c.mcl.Store(1024)
 	pubAll := []byte("PUB foo 11\r\nhello world\r\n")
 	pub := pubAll[:12]
 
@@ -237,7 +255,10 @@ func TestSplitBufferPubOp4(t *testing.T) {
 }
 
 func TestSplitBufferPubOp5(t *testing.T) {
-	c := &client{msubs: -1, mpay: -1, mcl: 1024, subs: make(map[string]*subscription)}
+	c := &client{subs: make(map[string]*subscription)}
+	c.msubs.Store(-1)
+	c.mpay.Store(-1)
+	c.mcl.Store(1024)
 	pubAll := []byte("PUB foo 11\r\nhello world\r\n")
 
 	// Splits need to be on MSG_END_R now too, so make sure we check that.
@@ -256,7 +277,10 @@ func TestSplitBufferPubOp5(t *testing.T) {
 }
 
 func TestSplitConnectArg(t *testing.T) {
-	c := &client{msubs: -1, mpay: -1, mcl: 1024, subs: make(map[string]*subscription)}
+	c := &client{subs: make(map[string]*subscription)}
+	c.msubs.Store(-1)
+	c.mpay.Store(-1)
+	c.mcl.Store(1024)
 	connectAll := []byte("CONNECT {\"verbose\":false,\"tls_required\":false," +
 		"\"user\":\"test\",\"pedantic\":true,\"pass\":\"pass\"}\r\n")
 
@@ -305,7 +329,10 @@ func TestSplitConnectArg(t *testing.T) {
 
 func TestSplitDanglingArgBuf(t *testing.T) {
 	s := New(&defaultServerOptions)
-	c := &client{srv: s, acc: s.gacc, msubs: -1, mpay: -1, mcl: 1024, subs: make(map[string]*subscription)}
+	c := &client{srv: s, acc: s.gacc, subs: make(map[string]*subscription)}
+	c.msubs.Store(-1)
+	c.mpay.Store(-1)
+	c.mcl.Store(1024)
 
 	// We test to make sure we do not dangle any argBufs after processing
 	// since that could lead to performance issues.
@@ -364,7 +391,9 @@ func TestSplitDanglingArgBuf(t *testing.T) {
 	}
 
 	// MSG (the client has to be a ROUTE)
-	c = &client{msubs: -1, mpay: -1, subs: make(map[string]*subscription), kind: ROUTER, route: &route{}}
+	c = &client{subs: make(map[string]*subscription), kind: ROUTER, route: &route{}}
+	c.msubs.Store(-1)
+	c.mpay.Store(-1)
 	msgop := []byte("RMSG $foo foo 5\r\nhello\r\n")
 	c.parse(msgop[:5])
 	c.parse(msgop[5:10])
@@ -446,7 +475,10 @@ func TestSplitRoutedMsgArg(t *testing.T) {
 }
 
 func TestSplitBufferMsgOp(t *testing.T) {
-	c := &client{msubs: -1, mpay: -1, mcl: 1024, subs: make(map[string]*subscription), kind: ROUTER, route: &route{}}
+	c := &client{subs: make(map[string]*subscription), kind: ROUTER, route: &route{}}
+	c.msubs.Store(-1)
+	c.mpay.Store(-1)
+	c.mcl.Store(1024)
 	msg := []byte("RMSG $G foo.bar _INBOX.22 11\r\nhello world\r")
 	msg1 := msg[:2]
 	msg2 := msg[2:9]
@@ -519,7 +551,10 @@ func TestSplitBufferMsgOp(t *testing.T) {
 }
 
 func TestSplitBufferLeafMsgArg(t *testing.T) {
-	c := &client{msubs: -1, mpay: -1, mcl: 1024, subs: make(map[string]*subscription), kind: LEAF}
+	c := &client{subs: make(map[string]*subscription), kind: LEAF}
+	c.msubs.Store(-1)
+	c.mpay.Store(-1)
+	c.mcl.Store(1024)
 	msg := []byte("LMSG foo + bar baz 11\r\n")
 	if err := c.parse(msg); err != nil {
 		t.Fatalf("Unexpected parse error: %v\n", err)

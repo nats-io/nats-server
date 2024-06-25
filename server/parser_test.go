@@ -19,7 +19,11 @@ import (
 )
 
 func dummyClient() *client {
-	return &client{srv: New(&defaultServerOptions), msubs: -1, mpay: -1, mcl: MAX_CONTROL_LINE_SIZE}
+	c := &client{srv: New(&defaultServerOptions)}
+	c.mpay.Store(-1)
+	c.msubs.Store(-1)
+	c.mcl.Store(MAX_CONTROL_LINE_SIZE)
+	return c
 }
 
 func dummyRouteClient() *client {
@@ -301,7 +305,7 @@ func TestParsePubArg(t *testing.T) {
 func TestParsePubBadSize(t *testing.T) {
 	c := dummyClient()
 	// Setup localized max payload
-	c.mpay = 32768
+	c.mpay.Store(32768)
 	if err := c.processPub([]byte("foo 2222222222222222")); err == nil {
 		t.Fatalf("Expected parse error for size too large")
 	}
@@ -837,7 +841,7 @@ func TestMaxControlLine(t *testing.T) {
 				case GATEWAY:
 					c.gw = &gateway{outbound: false, connected: true, insim: make(map[string]*insie)}
 				}
-				c.mcl = 8
+				c.mcl.Store(8)
 				return c
 			}
 

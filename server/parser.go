@@ -148,7 +148,7 @@ func (c *client) parse(buf []byte) error {
 	// proper CONNECT if needed.
 	authSet := c.awaitingAuth()
 	// Snapshot max control line as well.
-	s, mcl, trace := c.srv, c.mcl, c.trace
+	s, mcl, trace := c.srv, c.mcl.Load(), c.trace
 	c.mu.Unlock()
 
 	// Move to loop instead of range syntax to allow jumping of i
