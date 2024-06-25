@@ -1992,9 +1992,9 @@ func TestJWTAccountURLResolverPermanentFetchFailure(t *testing.T) {
 				importErrCnt++
 			}
 		case <-tmr.C:
-			// connecting and updating, each cause 3 traces (2 + 1 on iteration)
-			if importErrCnt != 6 {
-				t.Fatalf("Expected 6 debug traces, got %d", importErrCnt)
+			// connecting and updating, each cause 3 traces (2 + 1 on iteration) + 1 xtra fetch
+			if importErrCnt != 7 {
+				t.Fatalf("Expected 7 debug traces, got %d", importErrCnt)
 			}
 			return
 		}
