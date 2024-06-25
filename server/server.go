@@ -1097,11 +1097,11 @@ func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) 
 		if reloading && acc.Name != globalAccountName {
 			if ai, ok := s.accounts.Load(acc.Name); ok {
 				a = ai.(*Account)
-				a.mu.Lock()
 				// Before updating the account, check if stream imports have changed.
 				if !a.checkStreamImportsEqual(acc) {
 					awcsti[acc.Name] = struct{}{}
 				}
+				a.mu.Lock()
 				// Collect the sids for the service imports since we are going to
 				// replace with new ones.
 				var sids [][]byte
@@ -2064,7 +2064,6 @@ func (s *Server) fetchAccount(name string) (*Account, error) {
 		return nil, err
 	}
 	acc := s.buildInternalAccount(accClaims)
-	acc.claimJWT = claimJWT
 	// Due to possible race, if registerAccount() returns a non
 	// nil account, it means the same account was already
 	// registered and we should use this one.
@@ -2080,6 +2079,7 @@ func (s *Server) fetchAccount(name string) (*Account, error) {
 	var needImportSubs bool
 
 	acc.mu.Lock()
+	acc.claimJWT = claimJWT
 	if len(acc.imports.services) > 0 {
 		if acc.ic == nil {
 			acc.ic = s.createInternalAccountClient()
@@ -4422,8 +4422,11 @@ func (s *Server) DisconnectClientByID(id uint64) error {
 	if client := s.getClient(id); client != nil {
 		client.closeConnection(Kicked)
 		return nil
+	} else if client = s.GetLeafNode(id); client != nil {
+		client.closeConnection(Kicked)
+		return nil
 	}
-	return errors.New("no such client id")
+	return errors.New("no such client or leafnode id")
 }
 
 // LDMClientByID sends a Lame Duck Mode info message to a client by connection ID

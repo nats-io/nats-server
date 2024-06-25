@@ -7715,3 +7715,47 @@ func TestLeafNodeDupeDeliveryQueueSubAndPlainSub(t *testing.T) {
 	require_NoError(t, err)
 	require_Equal(t, n, 1)
 }
+
+func TestLeafNodeServerKickClient(t *testing.T) {
+	stmpl := `
+		listen: 127.0.0.1:-1
+		server_name: test-server
+		leaf { listen: 127.0.0.1:-1 }
+	`
+	conf := createConfFile(t, []byte(stmpl))
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	tmpl := `
+		listen: 127.0.0.1:-1
+		server_name: test-leaf
+		leaf { remotes: [ { urls: [ nats-leaf://127.0.0.1:{LEAF_PORT} ] } ] }
+	`
+	tmpl = strings.Replace(tmpl, "{LEAF_PORT}", fmt.Sprintf("%d", o.LeafNode.Port), 1)
+	lConf := createConfFile(t, []byte(tmpl))
+	l, _ := RunServerWithConfig(lConf)
+	defer l.Shutdown()
+
+	checkLeafNodeConnected(t, l)
+
+	// We want to make sure we can kick the leafnode connections as well as client connections.
+	conns, err := s.Connz(&ConnzOptions{Account: globalAccountName})
+	require_NoError(t, err)
+	require_Equal(t, len(conns.Conns), 1)
+	lid := conns.Conns[0].Cid
+
+	disconnectTime := time.Now()
+	err = s.DisconnectClientByID(lid)
+	require_NoError(t, err)
+
+	// Wait until we are reconnected.
+	checkLeafNodeConnected(t, s)
+
+	// Look back up again and make sure start time indicates a restart, meaning kick worked.
+	conns, err = s.Connz(&ConnzOptions{Account: globalAccountName})
+	require_NoError(t, err)
+	require_Equal(t, len(conns.Conns), 1)
+	ln := conns.Conns[0]
+	require_True(t, lid != ln.Cid)
+	require_True(t, ln.Start.After(disconnectTime))
+}

@@ -2596,28 +2596,38 @@ func (fs *fileStore) FilteredState(sseq uint64, subj string) SimpleState {
 
 // This is used to see if we can selectively jump start blocks based on filter subject and a floor block index.
 // Will return -1 if no matches at all.
-func (fs *fileStore) checkSkipFirstBlock(filter string, wc bool) int {
-	start := uint32(math.MaxUint32)
+func (fs *fileStore) checkSkipFirstBlock(filter string, wc bool) (int, int) {
+	start, stop := uint32(math.MaxUint32), uint32(0)
 	if wc {
 		fs.psim.Match(stringToBytes(filter), func(_ []byte, psi *psi) {
 			if psi.fblk < start {
 				start = psi.fblk
 			}
+			if psi.lblk > stop {
+				stop = psi.lblk
+			}
 		})
 	} else if psi, ok := fs.psim.Find(stringToBytes(filter)); ok {
-		start = psi.fblk
+		start, stop = psi.fblk, psi.lblk
 	}
 	// Nothing found.
 	if start == uint32(math.MaxUint32) {
-		return -1
+		return -1, -1
 	}
-	// Here we need to translate this to index into fs.blks.
+	// Here we need to translate this to index into fs.blks properly.
 	mb := fs.bim[start]
 	if mb == nil {
-		return -1
+		return -1, -1
 	}
-	bi, _ := fs.selectMsgBlockWithIndex(atomic.LoadUint64(&mb.last.seq))
-	return bi
+	fi, _ := fs.selectMsgBlockWithIndex(atomic.LoadUint64(&mb.last.seq))
+
+	mb = fs.bim[stop]
+	if mb == nil {
+		return -1, -1
+	}
+	li, _ := fs.selectMsgBlockWithIndex(atomic.LoadUint64(&mb.last.seq))
+
+	return fi, li
 }
 
 // Optimized way for getting all num pending matching a filter subject.
@@ -6362,9 +6372,9 @@ func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64, sm *Store
 				// Similar to above if start <= first seq.
 				// TODO(dlc) - For v2 track these by filter subject since they will represent filtered consumers.
 				if i == bi {
-					nbi := fs.checkSkipFirstBlock(filter, wc)
+					nbi, lbi := fs.checkSkipFirstBlock(filter, wc)
 					// Nothing available.
-					if nbi < 0 {
+					if nbi < 0 || lbi <= bi {
 						return nil, fs.state.LastSeq, ErrStoreEOF
 					}
 					// See if we can jump ahead here.
