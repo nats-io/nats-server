@@ -7793,7 +7793,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		if err == nil {
 			err = NewJSAccountResourcesExceededError()
 		}
-		s.RateLimitWarnf(err.Error())
+		s.RateLimitWarnf("JetStream account limits exceeded for '%s': %s", jsa.acc().GetName(), err.Error())
 		if canRespond {
 			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
 			resp.Error = err
