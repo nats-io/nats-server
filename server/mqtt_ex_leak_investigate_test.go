@@ -17,7 +17,9 @@
 package server
 
 import (
+	"os"
 	"runtime"
+	"runtime/pprof"
 	"sync"
 	"testing"
 	"time"
@@ -54,14 +56,17 @@ func TestJetstreamConsumerLeak(t *testing.T) {
 	}
 `
 	cl := createJetStreamClusterWithTemplate(t, clusterConf, "Leak-test", 3)
+	defer cl.shutdown()
+
 	cl.waitOnLeader()
 
 	s := cl.randomNonLeader()
 	testMQTTInitializeStreams(t, s)
 
 	// Write the memory profile before starting the test
-	// w, _ := os.Create("before.pprof")
-	// pprof.WriteHeapProfile(w)
+	w, _ := os.Create("before.pprof")
+	pprof.WriteHeapProfile(w)
+	w.Close()
 
 	before := &runtime.MemStats{}
 	runtime.GC()
@@ -72,6 +77,11 @@ func TestJetstreamConsumerLeak(t *testing.T) {
 	// Sleep for a few seconds to see if some timers kick in and help cleanup?
 	time.Sleep(10 * time.Second)
 
+	runtime.GC()
+	w, _ = os.Create("after.pprof")
+	pprof.WriteHeapProfile(w)
+	w.Close()
+
 	after := &runtime.MemStats{}
 	runtime.GC()
 	runtime.ReadMemStats(after)
@@ -80,11 +90,6 @@ func TestJetstreamConsumerLeak(t *testing.T) {
 	if after.HeapInuse > limit {
 		t.Fatalf("Memory usage too high: %v", after.HeapInuse)
 	}
-
-	// runtime.GC()
-	// w, _ = os.Create("after.pprof")
-	// pprof.WriteHeapProfile(w)
-
 }
 
 func testMQTTInitializeStreams(t *testing.T, server *Server) {
@@ -188,9 +193,11 @@ func testMQTTConnSubReceiveDiscConcurrent(
 			<-ConcurrentSubscribers
 			iSub++
 			go func(c int) {
+				defer func() {
+					ConcurrentSubscribers <- struct{}{}
+					wg.Done()
+				}()
 				subf(t, server, QOS, c)
-				wg.Done()
-				ConcurrentSubscribers <- struct{}{}
 			}(iSub)
 		}
 	}()
