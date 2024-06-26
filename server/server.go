@@ -648,6 +648,10 @@ func New(opts *Options) *Server {
 func NewServer(opts *Options) (*Server, error) {
 	setBaselineOptions(opts)
 
+	if serverVersion == _EMPTY_ {
+		serverVersion = VERSION
+	}
+
 	// Process TLS options, including whether we require client certificates.
 	tlsReq := opts.TLSConfig != nil
 	verify := (tlsReq && opts.TLSConfig.ClientAuth == tls.RequireAndVerifyClientCert)
@@ -678,7 +682,7 @@ func NewServer(opts *Options) (*Server, error) {
 	info := Info{
 		ID:           pub,
 		XKey:         xpub,
-		Version:      VERSION,
+		Version:      serverVersion,
 		Proto:        PROTO,
 		GitCommit:    gitCommit,
 		GoVersion:    runtime.Version(),
@@ -1546,7 +1550,7 @@ func PrintAndDie(msg string) {
 
 // PrintServerAndExit will print our version and exit.
 func PrintServerAndExit() {
-	fmt.Printf("nats-server: v%s\n", VERSION)
+	fmt.Printf("nats-server: v%s\n", serverVersion)
 	os.Exit(0)
 }
 

@@ -34,6 +34,7 @@ const (
 )
 
 var (
+	serverVersion string
 	// gitCommit injected at build
 	gitCommit string
 	// trustedKeys is a whitespace separated array of trusted operator's public nkeys.
