@@ -4116,7 +4116,7 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 		sa.consumers = make(map[string]*consumerAssignment)
 	} else if oca := sa.consumers[ca.Name]; oca != nil {
 		wasExisting = true
-		// Copy over private existing state from former SA.
+		// Copy over private existing state from former CA.
 		if ca.Group != nil {
 			ca.Group.node = oca.Group.node
 		}
@@ -4238,6 +4238,7 @@ func (js *jetStream) processConsumerRemoval(ca *consumerAssignment) {
 			if ca.Group != nil && oca.Group != nil && ca.Group.Name == oca.Group.Name {
 				needDelete = true
 				oca.deleted = true
+				oca.Group.node = nil
 				delete(sa.consumers, ca.Name)
 			}
 		}
