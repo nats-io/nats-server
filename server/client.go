@@ -5427,7 +5427,7 @@ func (c *client) getAccAndResultFromCache() (*Account, *SublistResult) {
 
 		if genid := atomic.LoadUint64(&sl.genid); genid != pac.genid {
 			ok = false
-			delete(c.in.pacache, bytesToString(c.pa.pacache))
+			c.in.pacache = make(map[string]*perAccountCache)
 		} else {
 			acc = pac.acc
 			r = pac.results
