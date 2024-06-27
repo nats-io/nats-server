@@ -7748,10 +7748,23 @@ func (fs *fileStore) Delete() error {
 		os.RemoveAll(pdir)
 	}
 
-	// Do Purge() since if we have lots of blocks uses a mv/rename.
-	fs.Purge()
+	// Quickly close all blocks and simulate a purge w/o overhead an new write block.
+	fs.mu.Lock()
+	for _, mb := range fs.blks {
+		mb.dirtyClose()
+	}
+	dmsgs := fs.state.Msgs
+	dbytes := int64(fs.state.Bytes)
+	fs.state.Msgs, fs.state.Bytes = 0, 0
+	fs.blks = nil
+	cb := fs.scb
+	fs.mu.Unlock()
 
-	if err := fs.stop(false); err != nil {
+	if cb != nil {
+		cb(-int64(dmsgs), -dbytes, 0, _EMPTY_)
+	}
+
+	if err := fs.stop(true, false); err != nil {
 		return err
 	}
 
@@ -7767,14 +7780,19 @@ func (fs *fileStore) Delete() error {
 	// Do this in separate Go routine in case lots of blocks.
 	// Purge above protects us as does the removal of meta artifacts above.
 	go func() {
+		<-dios
 		err := os.RemoveAll(ndir)
+		dios <- struct{}{}
 		if err == nil {
 			return
 		}
 		ttl := time.Now().Add(time.Second)
 		for time.Now().Before(ttl) {
 			time.Sleep(10 * time.Millisecond)
-			if err = os.RemoveAll(ndir); err == nil {
+			<-dios
+			err = os.RemoveAll(ndir)
+			dios <- struct{}{}
+			if err == nil {
 				return
 			}
 		}
@@ -8040,11 +8058,11 @@ func (fs *fileStore) _writeFullState(force bool) error {
 
 // Stop the current filestore.
 func (fs *fileStore) Stop() error {
-	return fs.stop(true)
+	return fs.stop(false, true)
 }
 
 // Stop the current filestore.
-func (fs *fileStore) stop(writeState bool) error {
+func (fs *fileStore) stop(delete, writeState bool) error {
 	fs.mu.Lock()
 	if fs.closed || fs.closing {
 		fs.mu.Unlock()
@@ -8095,7 +8113,11 @@ func (fs *fileStore) stop(writeState bool) error {
 	fs.cmu.Unlock()
 
 	for _, o := range cfs {
-		o.Stop()
+		if delete {
+			o.StreamDelete()
+		} else {
+			o.Stop()
+		}
 	}
 
 	if bytes > 0 && cb != nil {
