@@ -847,7 +847,7 @@ func (c *client) applyAccountLimits() {
 	c.msubs = jwt.NoLimit
 	if c.opts.JWT != _EMPTY_ { // user jwt implies account
 		if uc, _ := jwt.DecodeUserClaims(c.opts.JWT); uc != nil {
-			c.mpay = int32(uc.Limits.Payload)
+			atomic.StoreInt32(&c.mpay, int32(uc.Limits.Payload))
 			c.msubs = int32(uc.Limits.Subs)
 			if uc.IssuerAccount != _EMPTY_ && uc.IssuerAccount != uc.Issuer {
 				if scope, ok := c.acc.signingKeys[uc.Issuer]; ok {
@@ -5427,7 +5427,7 @@ func (c *client) getAccAndResultFromCache() (*Account, *SublistResult) {
 
 		if genid := atomic.LoadUint64(&sl.genid); genid != pac.genid {
 			ok = false
-			delete(c.in.pacache, bytesToString(c.pa.pacache))
+			c.in.pacache = make(map[string]*perAccountCache)
 		} else {
 			acc = pac.acc
 			r = pac.results

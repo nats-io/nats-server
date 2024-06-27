@@ -275,6 +275,7 @@ var (
 	errLeaderLen         = fmt.Errorf("raft: leader should be exactly %d bytes", idLen)
 	errTooManyEntries    = errors.New("raft: append entry can contain a max of 64k entries")
 	errBadAppendEntry    = errors.New("raft: append entry corrupt")
+	errNoInternalClient  = errors.New("raft: no internal client")
 )
 
 // This will bootstrap a raftNode by writing its config into the store directory.
@@ -1625,6 +1626,13 @@ func (n *raft) shutdown(shouldDelete bool) {
 	// allowing shutdown() to be called again. If that happens then the below
 	// close(n.quit) will panic from trying to close an already-closed channel.
 	if n.state.Swap(int32(Closed)) == int32(Closed) {
+		// If we get called again with shouldDelete, in case we were called first with Stop() cleanup
+		if shouldDelete {
+			if wal := n.wal; wal != nil {
+				wal.Delete()
+			}
+			os.RemoveAll(n.sd)
+		}
 		n.Unlock()
 		return
 	}
@@ -1641,17 +1649,22 @@ func (n *raft) shutdown(shouldDelete bool) {
 			n.unsubscribe(sub)
 		}
 		c.closeConnection(InternalClient)
+		n.c = nil
 	}
+
 	s, g, wal := n.s, n.group, n.wal
 
 	// Unregistering ipQueues do not prevent them from push/pop
 	// just will remove them from the central monitoring map
 	queues := []interface {
 		unregister()
+		drain()
 	}{n.reqs, n.votes, n.prop, n.entry, n.resp, n.apply, n.stepdown}
 	for _, q := range queues {
+		q.drain()
 		q.unregister()
 	}
+	sd := n.sd
 	n.Unlock()
 
 	s.unregisterRaftNode(g)
@@ -1666,7 +1679,7 @@ func (n *raft) shutdown(shouldDelete bool) {
 
 	if shouldDelete {
 		// Delete all our peer state and vote state and any snapshots.
-		os.RemoveAll(n.sd)
+		os.RemoveAll(sd)
 		n.debug("Deleted")
 	} else {
 		n.debug("Shutdown")
@@ -1721,12 +1734,15 @@ func (n *raft) newInbox() string {
 // Our internal subscribe.
 // Lock should be held.
 func (n *raft) subscribe(subject string, cb msgHandler) (*subscription, error) {
+	if n.c == nil {
+		return nil, errNoInternalClient
+	}
 	return n.s.systemSubscribe(subject, _EMPTY_, false, n.c, cb)
 }
 
 // Lock should be held.
 func (n *raft) unsubscribe(sub *subscription) {
-	if sub != nil {
+	if n.c != nil && sub != nil {
 		n.c.processUnsub(sub.sid)
 	}
 }
