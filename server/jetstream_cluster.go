@@ -4231,7 +4231,6 @@ func (js *jetStream) processConsumerRemoval(ca *consumerAssignment) {
 			if ca.Group != nil && oca.Group != nil && ca.Group.Name == oca.Group.Name {
 				needDelete = true
 				oca.deleted = true
-				oca.Group.node = nil
 				delete(sa.consumers, ca.Name)
 			}
 		}

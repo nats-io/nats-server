@@ -2333,15 +2333,15 @@ func (n *raft) runAsLeader() {
 		return
 	}
 
-	n.RLock()
+	n.Lock()
 	psubj, rpsubj := n.psubj, n.rpsubj
-	n.RUnlock()
 
 	// For forwarded proposals, both normal and remove peer proposals.
 	fsub, err := n.subscribe(psubj, n.handleForwardedProposal)
 	if err != nil {
 		n.warn("Error subscribing to forwarded proposals: %v", err)
 		n.stepdown.push(noLeader)
+		n.Unlock()
 		return
 	}
 	rpsub, err := n.subscribe(rpsubj, n.handleForwardedRemovePeerProposal)
@@ -2349,8 +2349,10 @@ func (n *raft) runAsLeader() {
 		n.warn("Error subscribing to forwarded remove peer proposals: %v", err)
 		n.unsubscribe(fsub)
 		n.stepdown.push(noLeader)
+		n.Unlock()
 		return
 	}
+	n.Unlock()
 
 	// Cleanup our subscription when we leave.
 	defer func() {
