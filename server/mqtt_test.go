@@ -329,11 +329,8 @@ func testMQTTRunServer(t testing.TB, o *Options) *Server {
 	if err != nil {
 		t.Fatalf("Error creating server: %v", err)
 	}
-	// l := &DummyLogger{}
-	// s.SetLogger(l, true, true)
-	o.Debug = false
-	o.Trace = false
-	s.ConfigureLogger()
+	l := &DummyLogger{}
+	s.SetLogger(l, true, true)
 	s.Start()
 	if err := s.readyForConnections(3 * time.Second); err != nil {
 		testMQTTShutdownServer(s)
@@ -1910,7 +1907,23 @@ func TestMQTTParseSub(t *testing.T) {
 
 func testMQTTSub(t testing.TB, pi uint16, c net.Conn, r *mqttReader, filters []*mqttFilter, expected []byte) {
 	t.Helper()
-	testMQTTSubNoAck(t, pi, c, r, filters, expected)
+	w := newMQTTWriter(0)
+	pkLen := 2 // for pi
+	for i := 0; i < len(filters); i++ {
+		f := filters[i]
+		pkLen += 2 + len(f.filter) + 1
+	}
+	w.WriteByte(mqttPacketSub | mqttSubscribeFlags)
+	w.WriteVarInt(pkLen)
+	w.WriteUint16(pi)
+	for i := 0; i < len(filters); i++ {
+		f := filters[i]
+		w.WriteBytes([]byte(f.filter))
+		w.WriteByte(f.qos)
+	}
+	if _, err := testMQTTWrite(c, w.Bytes()); err != nil {
+		t.Fatalf("Error writing SUBSCRIBE protocol: %v", err)
+	}
 	b, pl := testMQTTReadPacket(t, r)
 	if pt := b & mqttPacketMask; pt != mqttPacketSubAck {
 		t.Fatalf("Expected SUBACK packet %x, got %x", mqttPacketSubAck, pt)
@@ -1929,27 +1942,6 @@ func testMQTTSub(t testing.TB, pi uint16, c net.Conn, r *mqttReader, filters []*
 				filters[i].filter, expected[i], qos)
 		}
 		i++
-	}
-}
-
-func testMQTTSubNoAck(t testing.TB, pi uint16, c net.Conn, r *mqttReader, filters []*mqttFilter, expected []byte) {
-	t.Helper()
-	w := newMQTTWriter(0)
-	pkLen := 2 // for pi
-	for i := 0; i < len(filters); i++ {
-		f := filters[i]
-		pkLen += 2 + len(f.filter) + 1
-	}
-	w.WriteByte(mqttPacketSub | mqttSubscribeFlags)
-	w.WriteVarInt(pkLen)
-	w.WriteUint16(pi)
-	for i := 0; i < len(filters); i++ {
-		f := filters[i]
-		w.WriteBytes([]byte(f.filter))
-		w.WriteByte(f.qos)
-	}
-	if _, err := testMQTTWrite(c, w.Bytes()); err != nil {
-		t.Fatalf("Error writing SUBSCRIBE protocol: %v", err)
 	}
 }
 
@@ -2106,11 +2098,6 @@ func testMQTTReadPubPacket(t testing.TB, r *mqttReader) (flags byte, pi uint16, 
 	if pt := b & mqttPacketMask; pt != mqttPacketPub {
 		t.Fatalf("Expected PUBLISH packet %x, got %x", mqttPacketPub, pt)
 	}
-	return testMQTTReadPubPacketEx(t, r, b, pl)
-}
-
-func testMQTTReadPubPacketEx(t testing.TB, r *mqttReader, b byte, pl int) (flags byte, pi uint16, topic string, payload []byte) {
-	t.Helper()
 	flags = b & mqttPacketFlagMask
 	start := r.pos
 	topic, err := r.readString("topic name")
