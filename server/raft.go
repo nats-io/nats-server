@@ -76,7 +76,7 @@ type RaftNode interface {
 	Stop()
 	Delete()
 	Wipe()
-	RecreateInternalSubs(acc bool) error
+	RecreateInternalSubs() error
 }
 
 type WAL interface {
@@ -398,7 +398,7 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 	// Setup our internal subscriptions for proposals, votes and append entries.
 	// If we fail to do this for some reason then this is fatal — we cannot
 	// continue setting up or the Raft node may be partially/totally isolated.
-	if err := n.RecreateInternalSubs(n.s.opts.JetStreamAccountNRG); err != nil {
+	if err := n.RecreateInternalSubs(); err != nil {
 		n.shutdown(true)
 		return nil, err
 	}
@@ -530,22 +530,29 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 // Returns whether peers within this group claim to support
 // moving NRG traffic into the asset account.
 // Lock must be held.
-func (n *raft) checkAccountNRGStatus(acc bool) bool {
-	if !acc {
+func (n *raft) checkAccountNRGStatus(enabled bool) bool {
+	if !enabled {
 		return false
 	}
-	supported := true
 	for pn := range n.peers {
 		if si, ok := n.s.nodeToInfo.Load(pn); ok && si != nil {
-			supported = supported && si.(nodeInfo).accountNRG
+			enabled = enabled && si.(nodeInfo).accountNRG
 		}
 	}
-	return supported
+	return enabled
 }
 
-func (n *raft) RecreateInternalSubs(acc bool) error {
+func (n *raft) RecreateInternalSubs() error {
 	n.Lock()
 	defer n.Unlock()
+	return n.recreateInternalSubsLocked()
+}
+
+func (n *raft) recreateInternalSubsLocked() error {
+	// Is account NRG enabled at the server level?
+	n.s.optsMu.RLock()
+	acc := n.s.opts.JetStreamAccountNRG
+	n.s.optsMu.RUnlock()
 
 	// Check whether the peers in this group all claim to support
 	// moving the NRG traffic into the account.
@@ -589,6 +596,10 @@ func (n *raft) RecreateInternalSubs(acc bool) error {
 			return err
 		}
 	}
+	if n.acc != nrgAcc {
+		n.debug("Subscribing in '%s'", nrgAcc.GetName())
+	}
+
 	c := n.s.createInternalSystemClient()
 	c.registerWithAccount(nrgAcc)
 	if nrgAcc.sq == nil {
@@ -2986,6 +2997,9 @@ func (n *raft) adjustClusterSizeAndQuorum() {
 		if n.State() == Leader {
 			go n.sendHeartbeat()
 		}
+	}
+	if ncsz != pcsz {
+		n.recreateInternalSubsLocked()
 	}
 }
 

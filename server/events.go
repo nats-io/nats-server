@@ -1618,7 +1618,8 @@ func (s *Server) remoteServerUpdate(sub *subscription, c *client, _ *Account, su
 	}
 
 	node := getHash(si.Name)
-	s.nodeToInfo.Store(node, nodeInfo{
+	accountNRG := si.AccountNRG()
+	oldInfo, _ := s.nodeToInfo.Swap(node, nodeInfo{
 		si.Name,
 		si.Version,
 		si.Cluster,
@@ -1630,9 +1631,14 @@ func (s *Server) remoteServerUpdate(sub *subscription, c *client, _ *Account, su
 		false,
 		si.JetStreamEnabled(),
 		si.BinaryStreamSnapshot(),
-		si.AccountNRG(),
+		accountNRG,
 	})
-	s.updateNRGAccountStatus()
+	if accountNRG != oldInfo.(nodeInfo).accountNRG {
+		// One of the servers we received statsz from changed its mind about
+		// whether or not it supports in-account NRG, so update the groups
+		// with this information.
+		s.updateNRGAccountStatus()
+	}
 }
 
 // updateRemoteServer is called when we have an update from a remote server.
@@ -1693,39 +1699,16 @@ func (s *Server) processNewServer(si *ServerInfo) {
 // the account and moves it appropriately.
 // Server lock MUST NOT be held on entry.
 func (s *Server) updateNRGAccountStatus() {
-	var raftNodes []RaftNode
-	s.optsMu.RLock()
-	supported := s.opts.JetStreamAccountNRG
-	s.optsMu.RUnlock()
-	if supported {
-		s.rnMu.Lock()
-		raftNodes = make([]RaftNode, 0, len(s.raftNodes))
-		for _, n := range s.raftNodes {
-			raftNodes = append(raftNodes, n)
-		}
-		s.rnMu.Unlock()
-		s.mu.Lock()
-		s.nodeToInfo.Range(func(key, value any) bool {
-			si := value.(nodeInfo)
-			if !s.sameDomain(si.domain) {
-				return true
-			}
-			if supported = supported && si.accountNRG; !supported {
-				return false
-			}
-			return true
-		})
-		s.mu.Unlock()
+	s.rnMu.Lock()
+	raftNodes := make([]RaftNode, 0, len(s.raftNodes))
+	for _, n := range s.raftNodes {
+		raftNodes = append(raftNodes, n)
 	}
-	if s.accountNRG.CompareAndSwap(!supported, supported) {
-		if supported {
-			s.Noticef("Moving NRG traffic into asset accounts")
-		} else {
-			s.Warnf("Moving NRG traffic back into system account due to old nodes coming online")
-		}
-		for _, n := range raftNodes {
-			n.RecreateInternalSubs(supported)
-		}
+	s.rnMu.Unlock()
+	for _, n := range raftNodes {
+		// In the event that the node is happy that all nodes that
+		// it cares about haven't changed, this will be a no-op.
+		n.RecreateInternalSubs()
 	}
 }
 
