@@ -340,6 +340,7 @@ func (t *SubjectTree[T]) match(n node, parts [][]byte, pre []byte, cb func(subje
 					t.match(cn, nparts, pre, cb)
 				}
 			}
+			return
 		}
 		// Here we have normal traversal, so find the next child.
 		nn := n.findChild(p)

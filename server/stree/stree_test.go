@@ -738,3 +738,26 @@ func TestSubjectTreeNode48(t *testing.T) {
 	require_True(t, gotB)
 	require_True(t, gotC)
 }
+
+func TestSubjectTreeMatchNoCallbackDupe(t *testing.T) {
+	st := NewSubjectTree[int]()
+	st.Insert(b("foo.bar.A"), 1)
+	st.Insert(b("foo.bar.B"), 1)
+	st.Insert(b("foo.bar.C"), 1)
+	st.Insert(b("foo.bar.>"), 1)
+
+	for _, f := range [][]byte{
+		[]byte(">"),
+		[]byte("foo.>"),
+		[]byte("foo.bar.>"),
+	} {
+		seen := map[string]struct{}{}
+		st.Match(f, func(bsubj []byte, _ *int) {
+			subj := string(bsubj)
+			if _, ok := seen[subj]; ok {
+				t.Logf("Match callback was called twice for %q", subj)
+			}
+			seen[subj] = struct{}{}
+		})
+	}
+}
