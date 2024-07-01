@@ -86,6 +86,9 @@ func RunServer(opts *Options) *Server {
 	if !opts.NoLog {
 		s.ConfigureLogger()
 	}
+	if opts.Gateway.Name == "duplicateRoute" {
+		s.SetLogger(&checkDuplicateRouteLogger{}, true, opts.Trace)
+	}
 
 	if ll := os.Getenv("NATS_LOGGING"); ll != "" {
 		log := srvlog.NewTestLogger(fmt.Sprintf("[%s] | ", s), true)

@@ -358,6 +358,30 @@ type Server struct {
 
 	// Queue to process JS API requests that come from routes (or gateways)
 	jsAPIRoutedReqs *ipQueue[*jsAPIRoutedReq]
+
+	pendingRouteConns CounterMap
+}
+
+type CounterMap struct {
+	counters sync.Map
+}
+
+func (c *CounterMap) Add(key string, delta int64) {
+	val, _ := c.counters.LoadOrStore(key, &atomic.Int64{})
+	if val.(*atomic.Int64).Add(delta) == 0 {
+		c.counters.CompareAndDelete(key, val)
+	}
+}
+
+func (c *CounterMap) Inc(key string) { c.Add(key, 1) }
+func (c *CounterMap) Dec(key string) { c.Add(key, -1) }
+
+func (c *CounterMap) Value(key string) int64 {
+	val, ok := c.counters.Load(key)
+	if !ok {
+		return 0
+	}
+	return val.(*atomic.Int64).Load()
 }
 
 // For tracking JS nodes.
@@ -3518,6 +3542,10 @@ func (s *Server) removeClient(c *client) {
 
 func (s *Server) removeFromTempClients(cid uint64) {
 	s.grMu.Lock()
+	if c, ok := s.grTmpClients[cid]; ok &&
+		c.kind == ROUTER && c.route.url != nil {
+		s.pendingRouteConns.Dec(fmt.Sprintf("%s/%s", c.route.url.Host, bytesToString(c.route.accName)))
+	}
 	delete(s.grTmpClients, cid)
 	s.grMu.Unlock()
 }
@@ -3526,6 +3554,9 @@ func (s *Server) addToTempClients(cid uint64, c *client) bool {
 	added := false
 	s.grMu.Lock()
 	if s.grRunning {
+		if c.kind == ROUTER && c.route.url != nil {
+			s.pendingRouteConns.Inc(fmt.Sprintf("%s/%s", c.route.url.Host, bytesToString(c.route.accName)))
+		}
 		s.grTmpClients[cid] = c
 		added = true
 	}

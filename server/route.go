@@ -2603,9 +2603,20 @@ func (s *Server) connectToRoute(rURL *url.URL, tryForEver, firstConnect bool, ac
 
 	const connErrFmt = "Error trying to connect to route (attempt %v): %v"
 
+	if rURL == nil {
+		return
+	}
 	s.mu.Lock()
 	resolver := s.routeResolver
 	excludedAddresses := s.routesToSelf
+	numRouteConns := s.numRouteConns(rURL.Host, accName)
+	if (accName != _EMPTY_ && numRouteConns >= 1) || numRouteConns >= s.routesPoolSize {
+		s.mu.Unlock()
+		return
+	}
+	hostAcct := fmt.Sprintf("%s/%s", rURL.Host, accName)
+	s.pendingRouteConns.Inc(hostAcct)
+	defer func() { s.pendingRouteConns.Dec(hostAcct) }()
 	s.mu.Unlock()
 
 	attempts := 0
@@ -3003,4 +3014,18 @@ func (s *Server) forEachRemote(f func(r *client)) {
 			}
 		}
 	}
+}
+
+// Returns number of route connections for the host,
+// including pending (not-yet-registered and unestablished) connections.
+func (s *Server) numRouteConns(host string, accName string) int {
+	nr := s.pendingRouteConns.Value(fmt.Sprintf("%s/%s", host, accName))
+	s.forEachRoute(func(c *client) {
+		if c.route.url != nil &&
+			c.route.url.Host == host &&
+			accName == bytesToString(c.route.accName) {
+			nr++
+		}
+	})
+	return int(nr)
 }
