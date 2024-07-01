@@ -484,7 +484,7 @@ func TestJetStreamConsumerActions(t *testing.T) {
 		AckPolicy:      AckExplicit,
 		DeliverPolicy:  DeliverAll,
 		AckWait:        time.Second * 30,
-	}, ActionCreate)
+	}, ActionCreate, false)
 	require_NoError(t, err)
 	// Create consumer again. Should be ok if action is CREATE but config is exactly the same.
 	_, err = mset.addConsumerWithAction(&ConsumerConfig{
@@ -493,7 +493,7 @@ func TestJetStreamConsumerActions(t *testing.T) {
 		AckPolicy:      AckExplicit,
 		DeliverPolicy:  DeliverAll,
 		AckWait:        time.Second * 30,
-	}, ActionCreate)
+	}, ActionCreate, false)
 	require_NoError(t, err)
 	// Create consumer again. Should error if action is CREATE.
 	_, err = mset.addConsumerWithAction(&ConsumerConfig{
@@ -502,7 +502,7 @@ func TestJetStreamConsumerActions(t *testing.T) {
 		AckPolicy:      AckExplicit,
 		DeliverPolicy:  DeliverAll,
 		AckWait:        time.Second * 30,
-	}, ActionCreate)
+	}, ActionCreate, false)
 	require_Error(t, err)
 
 	// Update existing consumer. Should be fine, as consumer exists.
@@ -512,7 +512,7 @@ func TestJetStreamConsumerActions(t *testing.T) {
 		AckPolicy:      AckExplicit,
 		DeliverPolicy:  DeliverAll,
 		AckWait:        time.Second * 30,
-	}, ActionUpdate)
+	}, ActionUpdate, false)
 	require_NoError(t, err)
 
 	// Update consumer. Should error, as this consumer does not exist.
@@ -522,7 +522,7 @@ func TestJetStreamConsumerActions(t *testing.T) {
 		AckPolicy:      AckExplicit,
 		DeliverPolicy:  DeliverAll,
 		AckWait:        time.Second * 30,
-	}, ActionUpdate)
+	}, ActionUpdate, false)
 	require_Error(t, err)
 
 	// Create new ephemeral. Should be fine as the consumer doesn't exist already
@@ -532,7 +532,7 @@ func TestJetStreamConsumerActions(t *testing.T) {
 		AckPolicy:      AckExplicit,
 		DeliverPolicy:  DeliverAll,
 		AckWait:        time.Second * 30,
-	}, ActionCreate)
+	}, ActionCreate, false)
 	require_NoError(t, err)
 
 	// Trying to create it again right away. Should error as it already exists (and hasn't been cleaned up yet)
@@ -542,7 +542,7 @@ func TestJetStreamConsumerActions(t *testing.T) {
 		AckPolicy:      AckExplicit,
 		DeliverPolicy:  DeliverAll,
 		AckWait:        time.Second * 30,
-	}, ActionCreate)
+	}, ActionCreate, false)
 	require_Error(t, err)
 }
 
@@ -565,21 +565,21 @@ func TestJetStreamConsumerActionsOnWorkQueuePolicyStream(t *testing.T) {
 		Durable:        "C1",
 		FilterSubjects: []string{"one", "two"},
 		AckPolicy:      AckExplicit,
-	}, ActionCreate)
+	}, ActionCreate, false)
 	require_NoError(t, err)
 
 	_, err = mset.addConsumerWithAction(&ConsumerConfig{
 		Durable:        "C2",
 		FilterSubjects: []string{"three", "four"},
 		AckPolicy:      AckExplicit,
-	}, ActionCreate)
+	}, ActionCreate, false)
 	require_NoError(t, err)
 
 	_, err = mset.addConsumerWithAction(&ConsumerConfig{
 		Durable:        "C3",
 		FilterSubjects: []string{"five.*"},
 		AckPolicy:      AckExplicit,
-	}, ActionCreate)
+	}, ActionCreate, false)
 	require_NoError(t, err)
 
 	// Updating a consumer by removing a previous subject filter.
@@ -587,7 +587,7 @@ func TestJetStreamConsumerActionsOnWorkQueuePolicyStream(t *testing.T) {
 		Durable:        "C1",
 		FilterSubjects: []string{"one"}, // Remove a subject.
 		AckPolicy:      AckExplicit,
-	}, ActionUpdate)
+	}, ActionUpdate, false)
 	require_NoError(t, err)
 
 	// Updating a consumer without overlapping subjects.
@@ -595,7 +595,7 @@ func TestJetStreamConsumerActionsOnWorkQueuePolicyStream(t *testing.T) {
 		Durable:        "C2",
 		FilterSubjects: []string{"three", "four", "two"}, // Add previously removed subject.
 		AckPolicy:      AckExplicit,
-	}, ActionUpdate)
+	}, ActionUpdate, false)
 	require_NoError(t, err)
 
 	// Creating a consumer with overlapping subjects should return an error.
@@ -603,7 +603,7 @@ func TestJetStreamConsumerActionsOnWorkQueuePolicyStream(t *testing.T) {
 		Durable:        "C4",
 		FilterSubjects: []string{"one", "two", "three", "four"},
 		AckPolicy:      AckExplicit,
-	}, ActionCreate)
+	}, ActionCreate, false)
 	require_Error(t, err)
 	if !IsNatsErr(err, JSConsumerWQConsumerNotUniqueErr) {
 		t.Errorf("want error %q, got %q", ApiErrors[JSConsumerWQConsumerNotUniqueErr], err)
@@ -614,7 +614,7 @@ func TestJetStreamConsumerActionsOnWorkQueuePolicyStream(t *testing.T) {
 		Durable:        "C3",
 		FilterSubjects: []string{"one", "two", "three", "four"},
 		AckPolicy:      AckExplicit,
-	}, ActionUpdate)
+	}, ActionUpdate, false)
 	require_Error(t, err)
 	if !IsNatsErr(err, JSConsumerWQConsumerNotUniqueErr) {
 		t.Errorf("want error %q, got %q", ApiErrors[JSConsumerWQConsumerNotUniqueErr], err)
@@ -1226,6 +1226,184 @@ func TestJetStreamConsumerLongSubjectHang(t *testing.T) {
 	}
 }
 
+func TestJetStreamConsumerPedanticMode(t *testing.T) {
+
+	singleServerTemplate := `
+			listen: 127.0.0.1:-1
+			jetstream: {
+				max_mem_store: 2MB,
+				max_file_store: 8MB,
+				store_dir: '%s',
+				limits: {max_request_batch: 250}
+			}
+			no_auth_user: u
+			accounts {
+				ONE {
+					users = [ { user: "u", pass: "s3cr3t!" } ]
+					jetstream: enabled
+				}
+				$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+			}`
+
+	clusterTemplate := `
+			listen: 127.0.0.1:-1
+			server_name: %s
+			jetstream: {
+				max_mem_store: 2MB,
+				max_file_store: 8MB,
+				store_dir: '%s',
+				limits: {max_request_batch: 250}
+			}
+			cluster {
+				name: %s
+				listen: 127.0.0.1:%d
+				routes = [%s]
+			}
+			no_auth_user: u
+			accounts {
+				ONE {
+					users = [ { user: "u", pass: "s3cr3t!" } ]
+					jetstream: enabled
+				}
+				$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+			}`
+
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	tests := []struct {
+		name                  string
+		givenConfig           ConsumerConfig
+		givenLimits           nats.StreamConsumerLimits
+		serverTemplateSingle  string
+		serverTemplateCluster string
+		shouldError           bool
+		pedantic              bool
+		replicas              int
+	}{
+		{
+			name: "default_non_pedantic",
+			givenConfig: ConsumerConfig{
+				Durable: "durable",
+			},
+			givenLimits: nats.StreamConsumerLimits{
+				InactiveThreshold: time.Minute,
+				MaxAckPending:     100,
+			},
+			shouldError: false,
+			pedantic:    false,
+		},
+		{
+			name: "default_pedantic_inactive_threshold",
+			givenConfig: ConsumerConfig{
+				Durable: "durable",
+			},
+			givenLimits: nats.StreamConsumerLimits{
+				InactiveThreshold: time.Minute,
+			},
+			shouldError: true,
+			pedantic:    true,
+		},
+		{
+			name: "default_pedantic_max_ack_pending",
+			givenConfig: ConsumerConfig{
+				Durable: "durable",
+			},
+			givenLimits: nats.StreamConsumerLimits{
+				MaxAckPending: 100,
+			},
+			shouldError: true,
+			pedantic:    true,
+		},
+		{
+			name: "pedantic_backoff_no_ack_wait",
+			givenConfig: ConsumerConfig{
+				Durable: "durable",
+				BackOff: []time.Duration{time.Second, time.Minute},
+			},
+			pedantic:    true,
+			shouldError: true,
+		},
+		{
+			name: "backoff_no_ack_wait",
+			givenConfig: ConsumerConfig{
+				Durable: "durable",
+				BackOff: []time.Duration{time.Second, time.Minute},
+			},
+			pedantic:    false,
+			shouldError: false,
+		},
+		{
+			name: "max_batch_requests",
+			givenConfig: ConsumerConfig{
+				Durable: "durable",
+			},
+			serverTemplateSingle:  singleServerTemplate,
+			serverTemplateCluster: clusterTemplate,
+			pedantic:              false,
+			shouldError:           false,
+		},
+		{
+			name: "pedantic_max_batch_requests",
+			givenConfig: ConsumerConfig{
+				Durable: "durable",
+			},
+			serverTemplateSingle:  singleServerTemplate,
+			serverTemplateCluster: clusterTemplate,
+			pedantic:              true,
+			shouldError:           true,
+		},
+	}
+
+	for _, test := range tests {
+		for _, mode := range []string{"clustered", "single"} {
+			t.Run(fmt.Sprintf("%v_%v", mode, test.name), func(t *testing.T) {
+
+				var s *Server
+				if mode == "single" {
+					s = RunBasicJetStreamServer(t)
+					defer s.Shutdown()
+				} else {
+					c := createJetStreamClusterExplicit(t, "R3S", 3)
+					defer c.shutdown()
+					s = c.randomServer()
+				}
+
+				replicas := 1
+				if mode == "clustered" {
+					replicas = 3
+				}
+
+				nc, js := jsClientConnect(t, s)
+				defer nc.Close()
+
+				js.AddStream(&nats.StreamConfig{
+					Name:     test.name,
+					Subjects: []string{"foo"},
+					Replicas: replicas,
+					ConsumerLimits: nats.StreamConsumerLimits{
+						InactiveThreshold: time.Minute,
+						MaxAckPending:     100,
+					},
+				})
+
+				_, err := addConsumerWithError(t, nc, &CreateConsumerRequest{
+					Stream:   test.name,
+					Config:   test.givenConfig,
+					Action:   ActionCreateOrUpdate,
+					Pedantic: test.pedantic,
+				})
+				require_True(t, (err != nil) == test.shouldError)
+				if err != nil {
+					require_True(t, strings.Contains(err.Error(), "pedantic"))
+				}
+			})
+		}
+	}
+}
 func Benchmark____JetStreamConsumerIsFilteredMatch(b *testing.B) {
 	subject := "foo.bar.do.not.match.any.filter.subject"
 	for n := 1; n <= 1024; n *= 2 {
