@@ -2065,7 +2065,7 @@ func (s *Server) addRoute(c *client, didSolicit bool, info *Info, accName string
 			// check to be consistent and future proof. but will be same domain
 			if s.sameDomain(info.Domain) {
 				s.nodeToInfo.Store(rHash,
-					nodeInfo{rn, s.info.Version, s.info.Cluster, info.Domain, id, nil, nil, nil, false, info.JetStream, false})
+					nodeInfo{rn, s.info.Version, s.info.Cluster, info.Domain, id, nil, nil, nil, false, info.JetStream, false, false})
 			}
 		}
 

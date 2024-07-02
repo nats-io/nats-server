@@ -263,6 +263,7 @@ type ServerInfo struct {
 const (
 	JetStreamEnabled     ServerCapability = 1 << iota // Server had JetStream enabled.
 	BinaryStreamSnapshot                              // New stream snapshot capability.
+	AccountNRG                                        // Move NRG traffic out of system account.
 )
 
 // Set JetStream capability.
@@ -286,6 +287,17 @@ func (si *ServerInfo) SetBinaryStreamSnapshot() {
 // JetStreamEnabled indicates whether or not we have binary stream snapshot capbilities.
 func (si *ServerInfo) BinaryStreamSnapshot() bool {
 	return si.Flags&BinaryStreamSnapshot != 0
+}
+
+// Set account NRG capability.
+func (si *ServerInfo) SetAccountNRG() {
+	si.Flags |= AccountNRG
+}
+
+// AccountNRG indicates whether or not we support moving the NRG traffic out of the
+// system account and into the asset account.
+func (si *ServerInfo) AccountNRG() bool {
+	return si.Flags&AccountNRG != 0
 }
 
 // ClientInfo is detailed information about the client forming a connection.
@@ -486,6 +498,7 @@ RESET:
 						// New capability based flags.
 						si.SetJetStreamEnabled()
 						si.SetBinaryStreamSnapshot()
+						si.SetAccountNRG()
 					}
 				}
 				var b []byte
@@ -912,6 +925,7 @@ func (s *Server) sendStatsz(subj string) {
 	// JetStream
 	if js := s.js.Load(); js != nil {
 		jStat := &JetStreamVarz{}
+		jStat.AccountNRGActive = s.accountNRG.Load()
 		s.mu.RUnlock()
 		js.mu.RLock()
 		c := js.config
@@ -1589,7 +1603,9 @@ func (s *Server) remoteServerUpdate(sub *subscription, c *client, _ *Account, su
 		false,
 		si.JetStreamEnabled(),
 		si.BinaryStreamSnapshot(),
+		si.AccountNRG(),
 	})
+	s.updateNRGAccountStatus()
 }
 
 // updateRemoteServer is called when we have an update from a remote server.
@@ -1636,12 +1652,54 @@ func (s *Server) processNewServer(si *ServerInfo) {
 				false,
 				si.JetStreamEnabled(),
 				si.BinaryStreamSnapshot(),
+				si.AccountNRG(),
 			})
 		}
 	}
+	go s.updateNRGAccountStatus()
 	// Announce ourselves..
 	// Do this in a separate Go routine.
 	go s.sendStatszUpdate()
+}
+
+// Works out whether all nodes support moving the NRG traffic into
+// the account and moves it appropriately.
+// Server lock MUST NOT be held on entry.
+func (s *Server) updateNRGAccountStatus() {
+	var raftNodes []RaftNode
+	s.optsMu.RLock()
+	supported := s.opts.JetStreamAccountNRG
+	s.optsMu.RUnlock()
+	if supported {
+		s.rnMu.Lock()
+		raftNodes = make([]RaftNode, 0, len(s.raftNodes))
+		for _, n := range s.raftNodes {
+			raftNodes = append(raftNodes, n)
+		}
+		s.rnMu.Unlock()
+		s.mu.Lock()
+		s.nodeToInfo.Range(func(key, value any) bool {
+			si := value.(nodeInfo)
+			if !s.sameDomain(si.domain) {
+				return true
+			}
+			if supported = supported && si.accountNRG; !supported {
+				return false
+			}
+			return true
+		})
+		s.mu.Unlock()
+	}
+	if s.accountNRG.CompareAndSwap(!supported, supported) {
+		if supported {
+			s.Noticef("Moving NRG traffic into asset accounts")
+		} else {
+			s.Warnf("Moving NRG traffic back into system account due to old nodes coming online")
+		}
+		for _, n := range raftNodes {
+			n.RecreateInternalSubs(supported)
+		}
+	}
 }
 
 // If GW is enabled on this server and there are any leaf node connections,

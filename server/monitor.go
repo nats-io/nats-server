@@ -1226,9 +1226,10 @@ type Varz struct {
 
 // JetStreamVarz contains basic runtime information about jetstream
 type JetStreamVarz struct {
-	Config *JetStreamConfig `json:"config,omitempty"`
-	Stats  *JetStreamStats  `json:"stats,omitempty"`
-	Meta   *MetaClusterInfo `json:"meta,omitempty"`
+	Config           *JetStreamConfig `json:"config,omitempty"`
+	Stats            *JetStreamStats  `json:"stats,omitempty"`
+	Meta             *MetaClusterInfo `json:"meta,omitempty"`
+	AccountNRGActive bool             `json:"account_nrg_active,omitempty"`
 }
 
 // ClusterOptsVarz contains monitoring cluster information
@@ -1443,6 +1444,7 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) updateJszVarz(js *jetStream, v *JetStreamVarz, doConfig bool) {
+	v.AccountNRGActive = s.accountNRG.Load()
 	if doConfig {
 		js.mu.RLock()
 		// We want to snapshot the config since it will then be available outside
@@ -1821,6 +1823,7 @@ func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
 		// Now update server's varz
 		s.mu.RLock()
 		sv := &s.varz.JetStream
+		sv.AccountNRGActive = s.accountNRG.Load()
 		if created {
 			sv.Config = v.Config
 		}
@@ -2794,11 +2797,12 @@ type JSInfo struct {
 	Disabled bool            `json:"disabled,omitempty"`
 	Config   JetStreamConfig `json:"config,omitempty"`
 	JetStreamStats
-	Streams   int              `json:"streams"`
-	Consumers int              `json:"consumers"`
-	Messages  uint64           `json:"messages"`
-	Bytes     uint64           `json:"bytes"`
-	Meta      *MetaClusterInfo `json:"meta_cluster,omitempty"`
+	Streams          int              `json:"streams"`
+	Consumers        int              `json:"consumers"`
+	Messages         uint64           `json:"messages"`
+	Bytes            uint64           `json:"bytes"`
+	Meta             *MetaClusterInfo `json:"meta_cluster,omitempty"`
+	AccountNRGActive bool             `json:"account_nrg_active,omitempty"`
 
 	// aggregate raft info
 	AccountDetails []*AccountDetail `json:"account_details,omitempty"`

@@ -317,6 +317,7 @@ type Options struct {
 	JetStreamLimits       JSLimitOpts
 	JetStreamTpm          JSTpmOpts
 	JetStreamMaxCatchup   int64
+	JetStreamAccountNRG   bool
 	StoreDir              string            `json:"-"`
 	SyncInterval          time.Duration     `json:"-"`
 	SyncAlways            bool              `json:"-"`
@@ -2310,6 +2311,8 @@ func parseJetStream(v any, opts *Options, errors *[]error, warnings *[]error) er
 					return &configErr{tk, fmt.Sprintf("%s %s", strings.ToLower(mk), err)}
 				}
 				opts.JetStreamMaxCatchup = s
+			case "account_nrg":
+				opts.JetStreamAccountNRG = mv.(bool)
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{

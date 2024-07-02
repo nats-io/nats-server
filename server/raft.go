@@ -76,6 +76,7 @@ type RaftNode interface {
 	Stop()
 	Delete()
 	Wipe()
+	RecreateInternalSubs(acc bool) error
 }
 
 type WAL interface {
@@ -129,6 +130,8 @@ type raft struct {
 
 	created time.Time // Time that the group was created
 	accName string    // Account name of the asset this raft group is for
+	acc     *Account  // Account that NRG traffic will be sent/received in
+	inAcc   bool      // Is the NRG traffic in-account right now?
 	group   string    // Raft group
 	sd      string    // Store directory
 	id      string    // Node ID
@@ -352,8 +355,6 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 		s.mu.RUnlock()
 		return nil, ErrNoSysAccount
 	}
-	sq := s.sys.sq
-	sacc := s.sys.account
 	hash := s.sys.shash
 	s.mu.RUnlock()
 
@@ -381,9 +382,7 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 		acks:     make(map[uint64]map[string]struct{}),
 		pae:      make(map[uint64]*appendEntry),
 		s:        s,
-		c:        s.createInternalSystemClient(),
 		js:       s.getJetStream(),
-		sq:       sq,
 		quit:     make(chan struct{}),
 		reqs:     newIPQueue[*voteRequest](s, qpfx+"vreq"),
 		votes:    newIPQueue[*voteResponse](s, qpfx+"vresp"),
@@ -397,7 +396,14 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 		observer: cfg.Observer,
 		extSt:    ps.domainExt,
 	}
-	n.c.registerWithAccount(sacc)
+
+	// Setup our internal subscriptions for proposals, votes and append entries.
+	// If we fail to do this for some reason then this is fatal — we cannot
+	// continue setting up or the Raft node may be partially/totally isolated.
+	if err := n.RecreateInternalSubs(n.s.opts.JetStreamAccountNRG); err != nil {
+		n.shutdown(true)
+		return nil, err
+	}
 
 	if atomic.LoadInt32(&s.logging.debug) > 0 {
 		n.dflag = true
@@ -495,14 +501,6 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 		}
 	}
 
-	// Setup our internal subscriptions for proposals, votes and append entries.
-	// If we fail to do this for some reason then this is fatal — we cannot
-	// continue setting up or the Raft node may be partially/totally isolated.
-	if err := n.createInternalSubs(); err != nil {
-		n.shutdown(true)
-		return nil, err
-	}
-
 	n.debug("Started")
 
 	// Check if we need to start in observer mode due to lame duck status.
@@ -529,6 +527,83 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 	s.startGoRoutine(n.run, labels)
 
 	return n, nil
+}
+
+// Returns whether peers within this group claim to support
+// moving NRG traffic into the asset account.
+// Lock must be held.
+func (n *raft) checkAccountNRGStatus(acc bool) bool {
+	if !acc {
+		return false
+	}
+	supported := true
+	for pn := range n.peers {
+		if si, ok := n.s.nodeToInfo.Load(pn); ok && si != nil {
+			supported = supported && si.(nodeInfo).accountNRG
+		}
+	}
+	return supported
+}
+
+func (n *raft) RecreateInternalSubs(acc bool) error {
+	n.Lock()
+	defer n.Unlock()
+
+	// Check whether the peers in this group all claim to support
+	// moving the NRG traffic into the account.
+	acc = n.checkAccountNRGStatus(acc)
+	if n.aesub != nil && n.inAcc == acc {
+		// Subscriptions already exist and the account NRG state
+		// hasn't changed.
+		return nil
+	}
+
+	// Need to cancel any in-progress catch-ups, otherwise the
+	// inboxes are about to be pulled out from underneath it in
+	// the next step...
+	n.cancelCatchup()
+
+	// If we have an existing client then tear down any existing
+	// subscriptions and close the internal client.
+	if c := n.c; c != nil {
+		c.mu.Lock()
+		subs := make([]*subscription, 0, len(c.subs))
+		for _, sub := range c.subs {
+			subs = append(subs, sub)
+		}
+		c.mu.Unlock()
+		for _, sub := range subs {
+			n.unsubscribe(sub)
+		}
+		c.closeConnection(InternalClient)
+	}
+
+	// Look up which account we think we should be participating
+	// on. This will either be the system account (default) or it
+	// will be the account that the asset is resident in.
+	var nrgAcc *Account
+	if n.s.sys != nil {
+		nrgAcc = n.s.sys.account
+	}
+	if acc { // Should we setup in the asset account?
+		var err error
+		if nrgAcc, err = n.s.lookupAccount(n.accName); err != nil {
+			return err
+		}
+	}
+	c := n.s.createInternalSystemClient()
+	c.registerWithAccount(nrgAcc)
+	if nrgAcc.sq == nil {
+		nrgAcc.sq = n.s.newSendQ(nrgAcc)
+	}
+	n.c = c
+	n.sq = nrgAcc.sq
+	n.acc = nrgAcc
+	n.inAcc = acc
+
+	// Recreate any internal subscriptions for voting, append
+	// entries etc in the new account.
+	return n.createInternalSubs()
 }
 
 // outOfResources checks to see if we are out of resources.
@@ -1747,9 +1822,8 @@ func (n *raft) unsubscribe(sub *subscription) {
 	}
 }
 
+// Lock should be held.
 func (n *raft) createInternalSubs() error {
-	n.Lock()
-	defer n.Unlock()
 	n.vsubj, n.vreply = fmt.Sprintf(raftVoteSubj, n.group), n.newInbox()
 	n.asubj, n.areply = fmt.Sprintf(raftAppendSubj, n.group), n.newInbox()
 	n.psubj = fmt.Sprintf(raftPropSubj, n.group)
