@@ -236,8 +236,11 @@ const (
 	// JSMirrorInvalidStreamName mirrored stream name is invalid
 	JSMirrorInvalidStreamName ErrorIdentifier = 10142
 
-	// JSMirrorInvalidSubjectFilter mirror subject filter is invalid
+	// JSMirrorInvalidSubjectFilter mirror transform source: {err}
 	JSMirrorInvalidSubjectFilter ErrorIdentifier = 10151
+
+	// JSMirrorInvalidTransformDestination mirror transform: {err}
+	JSMirrorInvalidTransformDestination ErrorIdentifier = 10154
 
 	// JSMirrorMaxMessageSizeTooBigErr stream mirror must have max message size >= source
 	JSMirrorMaxMessageSizeTooBigErr ErrorIdentifier = 10030
@@ -308,10 +311,10 @@ const (
 	// JSSourceInvalidStreamName sourced stream name is invalid
 	JSSourceInvalidStreamName ErrorIdentifier = 10141
 
-	// JSSourceInvalidSubjectFilter source subject filter is invalid
+	// JSSourceInvalidSubjectFilter source transform source: {err}
 	JSSourceInvalidSubjectFilter ErrorIdentifier = 10145
 
-	// JSSourceInvalidTransformDestination source transform destination is invalid
+	// JSSourceInvalidTransformDestination source transform: {err}
 	JSSourceInvalidTransformDestination ErrorIdentifier = 10146
 
 	// JSSourceMaxMessageSizeTooBigErr stream source must have max message size >= target
@@ -446,6 +449,12 @@ const (
 	// JSStreamTemplateNotFoundErr template not found
 	JSStreamTemplateNotFoundErr ErrorIdentifier = 10068
 
+	// JSStreamTransformInvalidDestination stream transform: {err}
+	JSStreamTransformInvalidDestination ErrorIdentifier = 10156
+
+	// JSStreamTransformInvalidSource stream transform source: {err}
+	JSStreamTransformInvalidSource ErrorIdentifier = 10155
+
 	// JSStreamUpdateErrF Generic stream update error string ({err})
 	JSStreamUpdateErrF ErrorIdentifier = 10069
 
@@ -541,7 +550,8 @@ var (
 		JSMemoryResourcesExceededErr:               {Code: 500, ErrCode: 10028, Description: "insufficient memory resources available"},
 		JSMirrorConsumerSetupFailedErrF:            {Code: 500, ErrCode: 10029, Description: "{err}"},
 		JSMirrorInvalidStreamName:                  {Code: 400, ErrCode: 10142, Description: "mirrored stream name is invalid"},
-		JSMirrorInvalidSubjectFilter:               {Code: 400, ErrCode: 10151, Description: "mirror subject filter is invalid"},
+		JSMirrorInvalidSubjectFilter:               {Code: 400, ErrCode: 10151, Description: "mirror transform source: {err}"},
+		JSMirrorInvalidTransformDestination:        {Code: 400, ErrCode: 10154, Description: "mirror transform: {err}"},
 		JSMirrorMaxMessageSizeTooBigErr:            {Code: 400, ErrCode: 10030, Description: "stream mirror must have max message size >= source"},
 		JSMirrorMultipleFiltersNotAllowed:          {Code: 400, ErrCode: 10150, Description: "mirror with multiple subject transforms cannot also have a single subject filter"},
 		JSMirrorOverlappingSubjectFilters:          {Code: 400, ErrCode: 10152, Description: "mirror subject filters can not overlap"},
@@ -565,8 +575,8 @@ var (
 		JSSourceConsumerSetupFailedErrF:            {Code: 500, ErrCode: 10045, Description: "{err}"},
 		JSSourceDuplicateDetected:                  {Code: 400, ErrCode: 10140, Description: "duplicate source configuration detected"},
 		JSSourceInvalidStreamName:                  {Code: 400, ErrCode: 10141, Description: "sourced stream name is invalid"},
-		JSSourceInvalidSubjectFilter:               {Code: 400, ErrCode: 10145, Description: "source subject filter is invalid"},
-		JSSourceInvalidTransformDestination:        {Code: 400, ErrCode: 10146, Description: "source transform destination is invalid"},
+		JSSourceInvalidSubjectFilter:               {Code: 400, ErrCode: 10145, Description: "source transform source: {err}"},
+		JSSourceInvalidTransformDestination:        {Code: 400, ErrCode: 10146, Description: "source transform: {err}"},
 		JSSourceMaxMessageSizeTooBigErr:            {Code: 400, ErrCode: 10046, Description: "stream source must have max message size >= target"},
 		JSSourceMultipleFiltersNotAllowed:          {Code: 400, ErrCode: 10144, Description: "source with multiple subject transforms cannot also have a single subject filter"},
 		JSSourceOverlappingSubjectFilters:          {Code: 400, ErrCode: 10147, Description: "source filters can not overlap"},
@@ -611,6 +621,8 @@ var (
 		JSStreamTemplateCreateErrF:                 {Code: 500, ErrCode: 10066, Description: "{err}"},
 		JSStreamTemplateDeleteErrF:                 {Code: 500, ErrCode: 10067, Description: "{err}"},
 		JSStreamTemplateNotFoundErr:                {Code: 404, ErrCode: 10068, Description: "template not found"},
+		JSStreamTransformInvalidDestination:        {Code: 400, ErrCode: 10156, Description: "stream transform: {err}"},
+		JSStreamTransformInvalidSource:             {Code: 400, ErrCode: 10155, Description: "stream transform source: {err}"},
 		JSStreamUpdateErrF:                         {Code: 500, ErrCode: 10069, Description: "{err}"},
 		JSStreamWrongLastMsgIDErrF:                 {Code: 400, ErrCode: 10070, Description: "wrong last msg ID: {id}"},
 		JSStreamWrongLastSequenceErrF:              {Code: 400, ErrCode: 10071, Description: "wrong last sequence: {seq}"},
@@ -1483,14 +1495,36 @@ func NewJSMirrorInvalidStreamNameError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSMirrorInvalidStreamName]
 }
 
-// NewJSMirrorInvalidSubjectFilterError creates a new JSMirrorInvalidSubjectFilter error: "mirror subject filter is invalid"
-func NewJSMirrorInvalidSubjectFilterError(opts ...ErrorOption) *ApiError {
+// NewJSMirrorInvalidSubjectFilterError creates a new JSMirrorInvalidSubjectFilter error: "mirror transform source: {err}"
+func NewJSMirrorInvalidSubjectFilterError(err error, opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
 	if ae, ok := eopts.err.(*ApiError); ok {
 		return ae
 	}
 
-	return ApiErrors[JSMirrorInvalidSubjectFilter]
+	e := ApiErrors[JSMirrorInvalidSubjectFilter]
+	args := e.toReplacerArgs([]interface{}{"{err}", err})
+	return &ApiError{
+		Code:        e.Code,
+		ErrCode:     e.ErrCode,
+		Description: strings.NewReplacer(args...).Replace(e.Description),
+	}
+}
+
+// NewJSMirrorInvalidTransformDestinationError creates a new JSMirrorInvalidTransformDestination error: "mirror transform: {err}"
+func NewJSMirrorInvalidTransformDestinationError(err error, opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	e := ApiErrors[JSMirrorInvalidTransformDestination]
+	args := e.toReplacerArgs([]interface{}{"{err}", err})
+	return &ApiError{
+		Code:        e.Code,
+		ErrCode:     e.ErrCode,
+		Description: strings.NewReplacer(args...).Replace(e.Description),
+	}
 }
 
 // NewJSMirrorMaxMessageSizeTooBigError creates a new JSMirrorMaxMessageSizeTooBigErr error: "stream mirror must have max message size >= source"
@@ -1747,24 +1781,36 @@ func NewJSSourceInvalidStreamNameError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSSourceInvalidStreamName]
 }
 
-// NewJSSourceInvalidSubjectFilterError creates a new JSSourceInvalidSubjectFilter error: "source subject filter is invalid"
-func NewJSSourceInvalidSubjectFilterError(opts ...ErrorOption) *ApiError {
+// NewJSSourceInvalidSubjectFilterError creates a new JSSourceInvalidSubjectFilter error: "source transform source: {err}"
+func NewJSSourceInvalidSubjectFilterError(err error, opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
 	if ae, ok := eopts.err.(*ApiError); ok {
 		return ae
 	}
 
-	return ApiErrors[JSSourceInvalidSubjectFilter]
+	e := ApiErrors[JSSourceInvalidSubjectFilter]
+	args := e.toReplacerArgs([]interface{}{"{err}", err})
+	return &ApiError{
+		Code:        e.Code,
+		ErrCode:     e.ErrCode,
+		Description: strings.NewReplacer(args...).Replace(e.Description),
+	}
 }
 
-// NewJSSourceInvalidTransformDestinationError creates a new JSSourceInvalidTransformDestination error: "source transform destination is invalid"
-func NewJSSourceInvalidTransformDestinationError(opts ...ErrorOption) *ApiError {
+// NewJSSourceInvalidTransformDestinationError creates a new JSSourceInvalidTransformDestination error: "source transform: {err}"
+func NewJSSourceInvalidTransformDestinationError(err error, opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
 	if ae, ok := eopts.err.(*ApiError); ok {
 		return ae
 	}
 
-	return ApiErrors[JSSourceInvalidTransformDestination]
+	e := ApiErrors[JSSourceInvalidTransformDestination]
+	args := e.toReplacerArgs([]interface{}{"{err}", err})
+	return &ApiError{
+		Code:        e.Code,
+		ErrCode:     e.ErrCode,
+		Description: strings.NewReplacer(args...).Replace(e.Description),
+	}
 }
 
 // NewJSSourceMaxMessageSizeTooBigError creates a new JSSourceMaxMessageSizeTooBigErr error: "stream source must have max message size >= target"
@@ -2313,6 +2359,38 @@ func NewJSStreamTemplateNotFoundError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSStreamTemplateNotFoundErr]
+}
+
+// NewJSStreamTransformInvalidDestinationError creates a new JSStreamTransformInvalidDestination error: "stream transform: {err}"
+func NewJSStreamTransformInvalidDestinationError(err error, opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	e := ApiErrors[JSStreamTransformInvalidDestination]
+	args := e.toReplacerArgs([]interface{}{"{err}", err})
+	return &ApiError{
+		Code:        e.Code,
+		ErrCode:     e.ErrCode,
+		Description: strings.NewReplacer(args...).Replace(e.Description),
+	}
+}
+
+// NewJSStreamTransformInvalidSourceError creates a new JSStreamTransformInvalidSource error: "stream transform source: {err}"
+func NewJSStreamTransformInvalidSourceError(err error, opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	e := ApiErrors[JSStreamTransformInvalidSource]
+	args := e.toReplacerArgs([]interface{}{"{err}", err})
+	return &ApiError{
+		Code:        e.Code,
+		ErrCode:     e.ErrCode,
+		Description: strings.NewReplacer(args...).Replace(e.Description),
+	}
 }
 
 // NewJSStreamUpdateError creates a new JSStreamUpdateErrF error: "{err}"

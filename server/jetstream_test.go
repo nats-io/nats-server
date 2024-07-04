@@ -11577,7 +11577,7 @@ func TestJetStreamMirrorBasics(t *testing.T) {
 		Name:    "MBAD",
 		Storage: FileStorage,
 		Mirror:  &StreamSource{Name: "S1", SubjectTransforms: []SubjectTransformConfig{{Source: "*", Destination: "{{wildcard(2)}}"}}},
-	}, ApiErrors[JSStreamCreateErrF].ErrCode)
+	}, ApiErrors[JSMirrorInvalidTransformDestination].ErrCode)
 
 	createStreamServerStreamConfig(&StreamConfig{
 		Name:    "MBAD",
@@ -23760,6 +23760,67 @@ func TestJetStreamBadSubjectMappingStream(t *testing.T) {
 			},
 		},
 	})
+	require_Error(t, err, NewJSStreamUpdateError(errors.New("nats: source transform: invalid mapping destination: too many arguments passed to the function in {{wildcard(1)}}{{split(3,1)}}")))
 
-	require_Error(t, err, NewJSStreamUpdateError(errors.New("unable to get subject transform for source: invalid mapping destination: too many arguments passed to the function in {{wildcard(1)}}{{split(3,1)}}")))
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name: "test",
+		Sources: []*nats.StreamSource{
+			{
+				Name: "mapping",
+				SubjectTransforms: []nats.SubjectTransformConfig{
+					{
+						Source:      "events.>.*",
+						Destination: "events.{{split(1,1)}}",
+					},
+				},
+			},
+		},
+	})
+	require_Error(t, err, NewJSStreamUpdateError(errors.New("nats: source transform source: invalid subject events.>.*")))
+
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name: "test",
+		Mirror: &nats.StreamSource{
+			Name: "mapping",
+			SubjectTransforms: []nats.SubjectTransformConfig{
+				{
+					Source:      "events.*",
+					Destination: "events.{{split(3,1)}}",
+				},
+			},
+		},
+	})
+	require_Error(t, err, NewJSStreamUpdateError(errors.New("nats: mirror transform: invalid mapping destination: wildcard index out of range in {{split(3,1)}}: [3]")))
+
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name: "test",
+		Mirror: &nats.StreamSource{
+			Name: "mapping",
+			SubjectTransforms: []nats.SubjectTransformConfig{
+				{
+					Source:      "events.>.*",
+					Destination: "events.{{split(1,1)}}",
+				},
+			},
+		},
+	})
+	require_Error(t, err, NewJSStreamUpdateError(errors.New("nats: mirror transform source: invalid subject events.>.*")))
+
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name: "test",
+		SubjectTransform: &nats.SubjectTransformConfig{
+			Source:      "events.*",
+			Destination: "events.{{split(3,1)}}",
+		},
+	})
+	require_Error(t, err, NewJSStreamUpdateError(errors.New("nats: stream transform: invalid mapping destination: wildcard index out of range in {{split(3,1)}}: [3]")))
+
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name: "test",
+		SubjectTransform: &nats.SubjectTransformConfig{
+			Source:      "events.>.*",
+			Destination: "events.{{split(1,1)}}",
+		},
+	})
+	require_Error(t, err, NewJSStreamUpdateError(errors.New("nats: stream transform source: invalid subject events.>.*")))
 }

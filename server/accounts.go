@@ -660,7 +660,7 @@ func (a *Account) AddWeightedMappings(src string, dests ...*MapDest) error {
 		if tw[d.Cluster] > 100 {
 			return fmt.Errorf("total weight needs to be <= 100")
 		}
-		err := ValidateMappingDestination(d.Subject)
+		err := ValidateMapping(src, d.Subject)
 		if err != nil {
 			return err
 		}

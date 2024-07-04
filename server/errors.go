@@ -203,7 +203,7 @@ var (
 	ErrInvalidMappingDestination = errors.New("invalid mapping destination")
 
 	// ErrInvalidMappingDestinationSubject is used to error on a bad transform destination mapping
-	ErrInvalidMappingDestinationSubject = fmt.Errorf("%w: invalid subject", ErrInvalidMappingDestination)
+	ErrInvalidMappingDestinationSubject = fmt.Errorf("%w: invalid transform", ErrInvalidMappingDestination)
 
 	// ErrMappingDestinationNotUsingAllWildcards is used to error on a transform destination not using all of the token wildcards
 	ErrMappingDestinationNotUsingAllWildcards = fmt.Errorf("%w: not using all of the token wildcard(s)", ErrInvalidMappingDestination)
