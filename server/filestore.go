@@ -2757,7 +2757,12 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 		if !ok {
 			return nil
 		}
-		start, stop = fs.bim[info.fblk], fs.bim[info.lblk]
+		if f := fs.bim[info.fblk]; f != nil {
+			start = f
+		}
+		if l := fs.bim[info.lblk]; l != nil {
+			stop = l
+		}
 	}
 
 	// Aggregate fss.
