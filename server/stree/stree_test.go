@@ -36,7 +36,10 @@ func TestSubjectTreeBasics(t *testing.T) {
 	require_True(t, old == nil)
 	require_False(t, updated)
 	require_Equal(t, st.Size(), 1)
-	// Find with single leaf.
+	// Find shouldn't work with a wildcard.
+	_, found := st.Find(b("foo.bar.*"))
+	require_False(t, found)
+	// But it should with a literal. Find with single leaf.
 	v, found := st.Find(b("foo.bar.baz"))
 	require_True(t, found)
 	require_Equal(t, *v, 22)
