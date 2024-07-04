@@ -2318,6 +2318,7 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 
 	if filter == _EMPTY_ {
 		filter = fwcs
+		wc = true
 	}
 
 	// If we only have 1 subject currently and it matches our filter we can also set isAll.
@@ -2461,6 +2462,7 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 
 	if filter == _EMPTY_ {
 		filter = fwcs
+		wc = true
 	}
 
 	update := func(ss *SimpleState) {
