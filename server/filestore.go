@@ -3084,6 +3084,10 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 
 			var havePartial bool
 			mb.fss.Match(stringToBytes(filter), func(bsubj []byte, ss *SimpleState) {
+				if havePartial {
+					// If we already found a partial then don't do anything else.
+					return
+				}
 				subj := bytesToString(bsubj)
 				if ss.firstNeedsUpdate {
 					mb.recalculateFirstForSubj(subj, ss.First, ss)
