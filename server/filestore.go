@@ -2499,6 +2499,10 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 
 	var havePartial bool
 	mb.fss.Match(stringToBytes(filter), func(bsubj []byte, ss *SimpleState) {
+		if havePartial {
+			// If we already found a partial then don't do anything else.
+			return
+		}
 		if ss.firstNeedsUpdate {
 			mb.recalculateFirstForSubj(bytesToString(bsubj), ss.First, ss)
 		}
