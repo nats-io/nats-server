@@ -2318,11 +2318,15 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 
 	if filter == _EMPTY_ {
 		filter = fwcs
+		wc = true
 	}
 
 	// If we only have 1 subject currently and it matches our filter we can also set isAll.
 	if !isAll && mb.fss.Size() == 1 {
-		_, isAll = mb.fss.Find(stringToBytes(filter))
+		// Since mb.fss.Find won't work if filter is a wildcard, need to use Match instead.
+		mb.fss.Match(stringToBytes(filter), func(subject []byte, _ *SimpleState) {
+			isAll = true
+		})
 	}
 	// Make sure to start at mb.first.seq if fseq < mb.first.seq
 	if seq := atomic.LoadUint64(&mb.first.seq); seq > fseq {
@@ -2461,6 +2465,7 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 
 	if filter == _EMPTY_ {
 		filter = fwcs
+		wc = true
 	}
 
 	update := func(ss *SimpleState) {
@@ -2494,6 +2499,10 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 
 	var havePartial bool
 	mb.fss.Match(stringToBytes(filter), func(bsubj []byte, ss *SimpleState) {
+		if havePartial {
+			// If we already found a partial then don't do anything else.
+			return
+		}
 		if ss.firstNeedsUpdate {
 			mb.recalculateFirstForSubj(bytesToString(bsubj), ss.First, ss)
 		}
@@ -2752,7 +2761,12 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 		if !ok {
 			return nil
 		}
-		start, stop = fs.bim[info.fblk], fs.bim[info.lblk]
+		if f := fs.bim[info.fblk]; f != nil {
+			start = f
+		}
+		if l := fs.bim[info.lblk]; l != nil {
+			stop = l
+		}
 	}
 
 	// Aggregate fss.
@@ -2945,9 +2959,10 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 
 	// See if filter was provided but its the only subject.
 	if !isAll && !wc && fs.psim.Size() == 1 {
-		if _, ok := fs.psim.Find(stringToBytes(filter)); ok {
+		// Since fs.psim.Find won't work if filter is a wildcard, need to use Match instead.
+		fs.psim.Match(stringToBytes(filter), func(subject []byte, _ *psi) {
 			isAll = true
-		}
+		})
 	}
 	if isAll && filter == _EMPTY_ {
 		filter = fwcs
@@ -3073,6 +3088,10 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 
 			var havePartial bool
 			mb.fss.Match(stringToBytes(filter), func(bsubj []byte, ss *SimpleState) {
+				if havePartial {
+					// If we already found a partial then don't do anything else.
+					return
+				}
 				subj := bytesToString(bsubj)
 				if ss.firstNeedsUpdate {
 					mb.recalculateFirstForSubj(subj, ss.First, ss)
@@ -3824,11 +3843,12 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 
 	// collect all that are not correct.
 	needAttention := make(map[string]*psi)
-	fs.psim.Match([]byte(fwcs), func(subj []byte, psi *psi) {
+	fs.psim.Iter(func(subj []byte, psi *psi) bool {
 		numMsgs += psi.total
 		if psi.total > maxMsgsPer {
 			needAttention[string(subj)] = psi
 		}
+		return true
 	})
 
 	// We had an issue with a use case where psim (and hence fss) were correct but idx was not and was not properly being caught.
@@ -3848,10 +3868,11 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 		fs.rebuildStateLocked(nil)
 		// Need to redo blocks that need attention.
 		needAttention = make(map[string]*psi)
-		fs.psim.Match([]byte(fwcs), func(subj []byte, psi *psi) {
+		fs.psim.Iter(func(subj []byte, psi *psi) bool {
 			if psi.total > maxMsgsPer {
 				needAttention[string(subj)] = psi
 			}
+			return true
 		})
 	}
 
