@@ -4255,7 +4255,8 @@ func (o *consumer) checkNumPending() uint64 {
 	if o.mset != nil {
 		var state StreamState
 		o.mset.store.FastState(&state)
-		if o.sseq > state.LastSeq && o.npc != 0 || o.npc > int64(state.Msgs) {
+		npc := o.numPending()
+		if o.sseq > state.LastSeq && npc > 0 || npc > state.Msgs {
 			// Re-calculate.
 			o.streamNumPending()
 		}
