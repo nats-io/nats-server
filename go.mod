@@ -1,11 +1,12 @@
 module github.com/nats-io/nats-server/v2
 
 go 1.21
+toolchain go1.22.4
 
 require (
 	github.com/google/go-tpm v0.9.1
 	github.com/klauspost/compress v1.17.9
-	github.com/minio/highwayhash v1.0.2
+	github.com/minio/highwayhash v1.0.3
 	github.com/nats-io/jwt/v2 v2.5.8
 	github.com/nats-io/nats.go v1.36.0
 	github.com/nats-io/nkeys v0.4.7
