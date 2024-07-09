@@ -2626,15 +2626,42 @@ func (fs *fileStore) checkSkipFirstBlock(filter string, wc bool) (int, int) {
 	// Here we need to translate this to index into fs.blks properly.
 	mb := fs.bim[start]
 	if mb == nil {
-		return -1, -1
+		// psim fblk can be lazy.
+		i := start + 1
+		for ; i <= stop; i++ {
+			mb = fs.bim[i]
+			if mb == nil {
+				continue
+			}
+			if _, f, _ := mb.filteredPending(filter, wc, 0); f > 0 {
+				break
+			}
+		}
+		// Update fblk since fblk was outdated.
+		if !wc {
+			if psi, ok := fs.psim.Find(stringToBytes(filter)); ok {
+				psi.fblk = i
+			}
+		} else {
+			fs.psim.Match(stringToBytes(filter), func(subj []byte, psi *psi) {
+				if i > psi.fblk {
+					psi.fblk = i
+				}
+			})
+		}
 	}
-	fi, _ := fs.selectMsgBlockWithIndex(atomic.LoadUint64(&mb.last.seq))
-
-	mb = fs.bim[stop]
+	// Still nothing.
 	if mb == nil {
 		return -1, -1
 	}
-	li, _ := fs.selectMsgBlockWithIndex(atomic.LoadUint64(&mb.last.seq))
+	// Grab first index.
+	fi, _ := fs.selectMsgBlockWithIndex(atomic.LoadUint64(&mb.last.seq))
+
+	// Grab last if applicable.
+	var li int
+	if mb = fs.bim[stop]; mb != nil {
+		li, _ = fs.selectMsgBlockWithIndex(atomic.LoadUint64(&mb.last.seq))
+	}
 
 	return fi, li
 }
