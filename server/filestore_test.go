@@ -7315,6 +7315,40 @@ func TestFileStoreLargeSparseMsgsDoNotLoadAfterLast(t *testing.T) {
 	require_Equal(t, loaded, 1)
 }
 
+func TestFileStoreCheckSkipFirstBlockBug(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 128},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := []byte("hello")
+
+	fs.StoreMsg("foo.BB.bar", nil, msg)
+	fs.StoreMsg("foo.BB.bar", nil, msg)
+	fs.StoreMsg("foo.AA.bar", nil, msg)
+	for i := 0; i < 5; i++ {
+		fs.StoreMsg("foo.BB.bar", nil, msg)
+	}
+	fs.StoreMsg("foo.AA.bar", nil, msg)
+	fs.StoreMsg("foo.AA.bar", nil, msg)
+
+	// Should have created 4 blocks.
+	// BB BB | AA BB | BB BB | BB BB | AA AA
+	require_Equal(t, fs.numMsgBlocks(), 5)
+
+	fs.RemoveMsg(3)
+	fs.RemoveMsg(4)
+
+	// Second block should be gone now.
+	// BB BB | -- -- | BB BB | BB BB | AA AA
+	require_Equal(t, fs.numMsgBlocks(), 4)
+
+	_, _, err = fs.LoadNextMsg("foo.AA.bar", false, 4, nil)
+	require_NoError(t, err)
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////
