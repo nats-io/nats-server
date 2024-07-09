@@ -36,7 +36,10 @@ func TestSubjectTreeBasics(t *testing.T) {
 	require_True(t, old == nil)
 	require_False(t, updated)
 	require_Equal(t, st.Size(), 1)
-	// Find with single leaf.
+	// Find shouldn't work with a wildcard.
+	_, found := st.Find(b("foo.bar.*"))
+	require_False(t, found)
+	// But it should with a literal. Find with single leaf.
 	v, found := st.Find(b("foo.bar.baz"))
 	require_True(t, found)
 	require_Equal(t, *v, 22)
@@ -737,4 +740,27 @@ func TestSubjectTreeNode48(t *testing.T) {
 	require_Equal(t, iterations, 2)
 	require_True(t, gotB)
 	require_True(t, gotC)
+}
+
+func TestSubjectTreeMatchNoCallbackDupe(t *testing.T) {
+	st := NewSubjectTree[int]()
+	st.Insert(b("foo.bar.A"), 1)
+	st.Insert(b("foo.bar.B"), 1)
+	st.Insert(b("foo.bar.C"), 1)
+	st.Insert(b("foo.bar.>"), 1)
+
+	for _, f := range [][]byte{
+		[]byte(">"),
+		[]byte("foo.>"),
+		[]byte("foo.bar.>"),
+	} {
+		seen := map[string]struct{}{}
+		st.Match(f, func(bsubj []byte, _ *int) {
+			subj := string(bsubj)
+			if _, ok := seen[subj]; ok {
+				t.Logf("Match callback was called twice for %q", subj)
+			}
+			seen[subj] = struct{}{}
+		})
+	}
 }

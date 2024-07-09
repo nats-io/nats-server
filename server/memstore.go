@@ -426,9 +426,8 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 	var havePartial bool
 	// We will track start and end sequences as we go.
 	ms.fss.Match(stringToBytes(filter), func(subj []byte, fss *SimpleState) {
-		subjs := bytesToString(subj)
 		if fss.firstNeedsUpdate {
-			ms.recalculateFirstForSubj(subjs, fss.First, fss)
+			ms.recalculateFirstForSubj(bytesToString(subj), fss.First, fss)
 		}
 		if sseq <= fss.First {
 			update(fss)
@@ -1219,7 +1218,11 @@ func (ms *memStore) removeSeqPerSubject(subj string, seq uint64) {
 // Will recalculate the first sequence for this subject in this block.
 // Lock should be held.
 func (ms *memStore) recalculateFirstForSubj(subj string, startSeq uint64, ss *SimpleState) {
-	for tseq := startSeq + 1; tseq <= ss.Last; tseq++ {
+	tseq := startSeq + 1
+	if tseq < ms.state.FirstSeq {
+		tseq = ms.state.FirstSeq
+	}
+	for ; tseq <= ss.Last; tseq++ {
 		if sm := ms.msgs[tseq]; sm != nil && sm.subj == subj {
 			ss.First = tseq
 			ss.firstNeedsUpdate = false

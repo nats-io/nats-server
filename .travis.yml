@@ -8,8 +8,8 @@ language: go
 go:
   # This should be quoted or use .x, but should not be unquoted.
   # Remember that a YAML bare float drops trailing zeroes.
-  - "1.22.4"
-  - "1.21.11"
+  - "1.22.5"
+  - "1.21.12"
 
 go_import_path: github.com/nats-io/nats-server
 
