@@ -7322,7 +7322,55 @@ func TestJetStreamClusterCompressedStreamMessages(t *testing.T) {
 	}
 }
 
+// https://github.com/nats-io/nats-server/issues/5612
+func TestJetStreamClusterWorkQueueLosingMessagesOnConsumerDelete(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3F", 3)
+	defer c.shutdown()
+
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"},
+		Retention: nats.WorkQueuePolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	msg := []byte("test alskdjalksdjalskdjaksdjlaksjdlkajsdlakjsdlakjsdlakjdlakjsdlaksjdlj")
+	for _, subj := range []string{"2", "5", "7", "9"} {
+		for i := 0; i < 10; i++ {
+			js.Publish(subj, msg)
+		}
+	}
+
+	cfg := &nats.ConsumerConfig{
+		Name:           "test",
+		FilterSubjects: []string{"6", "7", "8", "9", "10"},
+		DeliverSubject: "bob",
+		AckPolicy:      nats.AckExplicitPolicy,
+		AckWait:        time.Minute,
+		MaxAckPending:  1,
+	}
+
+	_, err = nc.SubscribeSync("bob")
+	require_NoError(t, err)
+
+	for i := 0; i < 5; i++ {
+		_, err = js.AddConsumer("TEST", cfg)
+		require_NoError(t, err)
+		time.Sleep(time.Second)
+		js.DeleteConsumer("TEST", "test")
+	}
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 40)
+}
+
 //
-// DO NOT ADD NEW TESTS IN THIS FILE
+// DO NOT ADD NEW TESTS IN THIS FILE  (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
 //
