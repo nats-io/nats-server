@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/nats-io/jwt/v2"
+	serverVersion "github.com/nats-io/nats-server/v2/version"
 	"github.com/nats-io/nkeys"
 )
 
@@ -107,7 +108,7 @@ func validateTrustedOperators(o *Options) error {
 		}
 	}
 
-	srvMajor, srvMinor, srvUpdate, _ := versionComponents(VERSION)
+	srvMajor, srvMinor, srvUpdate, _ := versionComponents(serverVersion.Version)
 	for _, opc := range o.TrustedOperators {
 		if major, minor, update, err := jwt.ParseServerVersion(opc.AssertServerVersion); err != nil {
 			return fmt.Errorf("operator %s expects version %s got error instead: %s",

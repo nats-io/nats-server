@@ -35,6 +35,7 @@ import (
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats-server/v2/server/certidp"
 	"github.com/nats-io/nats-server/v2/server/pse"
+	serverVersion "github.com/nats-io/nats-server/v2/version"
 )
 
 const (
@@ -479,7 +480,7 @@ RESET:
 					si.Cluster = cluster
 					si.ID = id
 					si.Seq = atomic.AddUint64(seqp, 1)
-					si.Version = VERSION
+					si.Version = serverVersion.Version
 					si.Time = time.Now().UTC()
 					si.Tags = tags
 					if js {

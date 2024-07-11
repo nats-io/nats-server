@@ -48,6 +48,7 @@ import (
 	"github.com/nats-io/nuid"
 
 	"github.com/nats-io/nats-server/v2/logger"
+	serverVersion "github.com/nats-io/nats-server/v2/version"
 )
 
 const (
@@ -648,10 +649,6 @@ func New(opts *Options) *Server {
 func NewServer(opts *Options) (*Server, error) {
 	setBaselineOptions(opts)
 
-	if serverVersion == _EMPTY_ {
-		serverVersion = VERSION
-	}
-
 	// Process TLS options, including whether we require client certificates.
 	tlsReq := opts.TLSConfig != nil
 	verify := (tlsReq && opts.TLSConfig.ClientAuth == tls.RequireAndVerifyClientCert)
@@ -682,9 +679,9 @@ func NewServer(opts *Options) (*Server, error) {
 	info := Info{
 		ID:           pub,
 		XKey:         xpub,
-		Version:      serverVersion,
+		Version:      serverVersion.Version,
 		Proto:        PROTO,
-		GitCommit:    gitCommit,
+		GitCommit:    serverVersion.GitCommit,
 		GoVersion:    runtime.Version(),
 		Name:         serverName,
 		Host:         opts.Host,
@@ -761,7 +758,7 @@ func NewServer(opts *Options) (*Server, error) {
 		ourNode := getHash(serverName)
 		s.nodeToInfo.Store(ourNode, nodeInfo{
 			serverName,
-			VERSION,
+			serverVersion.Version,
 			opts.Cluster.Name,
 			opts.JetStreamDomain,
 			info.ID,
@@ -1550,7 +1547,7 @@ func PrintAndDie(msg string) {
 
 // PrintServerAndExit will print our version and exit.
 func PrintServerAndExit() {
-	fmt.Printf("nats-server: v%s\n", serverVersion)
+	fmt.Printf("nats-server: v%s\n", serverVersion.Version)
 	os.Exit(0)
 }
 
@@ -2151,7 +2148,7 @@ func (s *Server) fetchAccount(name string) (*Account, error) {
 func (s *Server) Start() {
 	s.Noticef("Starting nats-server")
 
-	gc := gitCommit
+	gc := serverVersion.GitCommit
 	if gc == _EMPTY_ {
 		gc = "not set"
 	}
@@ -2160,7 +2157,7 @@ func (s *Server) Start() {
 	opts := s.getOpts()
 	clusterName := s.ClusterName()
 
-	s.Noticef("  Version:  %s", VERSION)
+	s.Noticef("  Version:  %s", serverVersion.Version)
 	s.Noticef("  Git:      [%s]", gc)
 	s.Debugf("  Go build: %s", s.info.GoVersion)
 	if clusterName != _EMPTY_ {

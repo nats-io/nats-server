@@ -34,9 +34,6 @@ const (
 )
 
 var (
-	serverVersion string
-	// gitCommit injected at build
-	gitCommit string
 	// trustedKeys is a whitespace separated array of trusted operator's public nkeys.
 	trustedKeys string
 	// SemVer regexp to validate the VERSION.
@@ -44,9 +41,6 @@ var (
 )
 
 const (
-	// VERSION is the current version for the server.
-	VERSION = "2.11.0-dev"
-
 	// PROTO is the currently supported protocol.
 	// 0 was the original
 	// 1 maintains proto 0, adds echo abilities for CONNECT from the client. Clients

@@ -37,6 +37,7 @@ import (
 
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
+	serverVersion "github.com/nats-io/nats-server/v2/version"
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
 )
@@ -718,7 +719,7 @@ func (s *Server) startLeafNodeAcceptLoop() {
 		ID:            s.info.ID,
 		Name:          s.info.Name,
 		Version:       s.info.Version,
-		GitCommit:     gitCommit,
+		GitCommit:     serverVersion.GitCommit,
 		GoVersion:     runtime.Version(),
 		AuthRequired:  true,
 		TLSRequired:   tlsRequired,
@@ -780,7 +781,7 @@ var credsRe = regexp.MustCompile(`\s*(?:(?:[-]{3,}[^\n]*[-]{3,}\n)(.+)(?:\n\s*[-
 func (c *client) sendLeafConnect(clusterName string, headers bool) error {
 	// We support basic user/pass and operator based user JWT with signatures.
 	cinfo := leafConnectInfo{
-		Version:       VERSION,
+		Version:       serverVersion.Version,
 		ID:            c.srv.info.ID,
 		Domain:        c.srv.info.Domain,
 		Name:          c.srv.info.Name,

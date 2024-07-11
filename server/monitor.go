@@ -37,6 +37,7 @@ import (
 
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats-server/v2/server/pse"
+	serverVersion "github.com/nats-io/nats-server/v2/version"
 )
 
 // Connz represents detailed information on current client connections.
@@ -1385,10 +1386,10 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 
 	// Calculate source url. If git set go directly to that tag, otherwise just main.
 	var srcUrl string
-	if gitCommit == _EMPTY_ {
+	if serverVersion.GitCommit == _EMPTY_ {
 		srcUrl = "https://github.com/nats-io/nats-server"
 	} else {
-		srcUrl = fmt.Sprintf("https://github.com/nats-io/nats-server/tree/%s", gitCommit)
+		srcUrl = fmt.Sprintf("https://github.com/nats-io/nats-server/tree/%s", serverVersion.GitCommit)
 	}
 
 	fmt.Fprintf(w, `<html lang="en">
@@ -1427,7 +1428,7 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
   </body>
 </html>`,
 		srcUrl,
-		VERSION,
+		serverVersion.Version,
 		s.basePath(VarzPath),
 		s.basePath(JszPath),
 		s.basePath(ConnzPath),
