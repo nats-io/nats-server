@@ -3445,15 +3445,15 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 			}
 
 			if o.cfg.PriorityPolicy == PriorityOverflow {
-				// fmt.Printf("Checking for overflow\n %v\n pending: %v\n", wr.priorityGroups.MinPending, o.npc)
-				// fmt.Printf("Checking for overflow\n")
+				// fmt.Printf("Checking for overflow \nPR pending %v consumer pending: %v\n PR ack pending %v, consumer ack pending %v\n", wr.priorityGroups.MinPending, o.npc, wr.priorityGroups.MinAckPending, len(o.pending))
 				if wr.priorityGroups != nil &&
-					(wr.priorityGroups.MinPending > 0 && wr.priorityGroups.MinPending >= o.npc ||
-						wr.priorityGroups.MinAckPending > 0 && wr.priorityGroups.MinAckPending >= int64(len(o.pending))) {
+					// We need to check o.npc+1, because before calling nextWaiting, we do o.npc--
+					(wr.priorityGroups.MinPending > 0 && wr.priorityGroups.MinPending > o.npc+1 ||
+						wr.priorityGroups.MinAckPending > 0 && wr.priorityGroups.MinAckPending > int64(len(o.pending))) {
 					// fmt.Println("Overflow not matched")
 					o.waiting.cycle()
 					if wr == lastRequest {
-						// fmt.Println("LAST ONE")
+						// fmt.Println("last request")
 						return nil
 					}
 					continue
@@ -4288,12 +4288,11 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		} else if wr := o.nextWaiting(sz); wr != nil {
 			wrn, wrb = wr.n, wr.b
 			dsubj = wr.reply
-			// TODO(jrm): we can remove this.
-			// isPinned = wr.currentPinned
 			// fmt.Printf("Pinned: %v\n", isPinned)
 			if o.cfg.PriorityPolicy == PriorityPinnedClient {
 				// fmt.Printf("Adding pin header\n")
 				// fmt.Printf("Headers: %+v\n", string(pmsg.hdr))
+				// FIXME(jrm): Can we make this prettier?
 				if len(pmsg.hdr) == 0 {
 					pmsg.hdr = genHeader(pmsg.hdr, JSPullRequestNatsPinId, o.currentNuid)
 					pmsg.buf = append(pmsg.hdr, pmsg.msg...)

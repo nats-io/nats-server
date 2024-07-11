@@ -1350,23 +1350,33 @@ func TestJetStreamConsumerOverflow(t *testing.T) {
 	require_NoError(t, err)
 
 	sendStreamMsg(t, nc, "foo.1", "msg-1")
-	// check if overflow of 1 works
+
+	// nothing unacked, so should return nothing.
 	req := JSApiConsumerGetNextRequest{Batch: 1, Expires: 90 * time.Second, PriorityGroups: PriorityGroups{
-		MinPending: 1,
+		MinAckPending: 1,
 	}}
-	singleOverflow := sendRequest(t, nc, "singleOverflow", req)
-	_, err = singleOverflow.NextMsg(time.Second)
+	ackPending1 := sendRequest(t, nc, "ackPending", req)
+	_, err = ackPending1.NextMsg(time.Second)
 	require_Error(t, err)
 
-	sendStreamMsg(t, nc, "foo.1", "msg-1")
-	sendStreamMsg(t, nc, "foo.1", "msg-1")
+	// one pending message, so should return it.
+	req = JSApiConsumerGetNextRequest{Batch: 1, Expires: 90 * time.Second, PriorityGroups: PriorityGroups{
+		MinPending: 1,
+	}}
+	numPending1 := sendRequest(t, nc, "singleOverflow", req)
+	msg, err := numPending1.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_NotNil(t, msg)
+
+	sendStreamMsg(t, nc, "foo.1", "msg-2")
+	sendStreamMsg(t, nc, "foo.1", "msg-3")
 
 	// overflow set to 10, so we should not get any messages.
 	req = JSApiConsumerGetNextRequest{Batch: 1, Expires: 90 * time.Second, PriorityGroups: PriorityGroups{
 		MinPending: 10,
 	}}
-	fetchWithOverflow := sendRequest(t, nc, "overflow", req)
-	_, err = fetchWithOverflow.NextMsg(time.Second)
+	numPending10 := sendRequest(t, nc, "overflow", req)
+	_, err = numPending10.NextMsg(time.Second)
 	require_Error(t, err)
 
 	// without overflow, we should get messages.
@@ -1376,20 +1386,13 @@ func TestJetStreamConsumerOverflow(t *testing.T) {
 	require_NoError(t, err)
 	require_NotNil(t, noOverflowMsg)
 
-	req = JSApiConsumerGetNextRequest{Batch: 1, Expires: 90 * time.Second, PriorityGroups: PriorityGroups{
-		MinPending: 1,
-	}}
-	smallOverflow := sendRequest(t, nc, "smallOverflow", req)
-	_, err = smallOverflow.NextMsg(time.Second)
-	require_Error(t, err)
-
 	// Now add more messages.
 	for i := 0; i < 100; i++ {
 		sendStreamMsg(t, nc, "foo.1", "msg-1")
 	}
 
 	// and previous batch should receive messages now.
-	msg, err := fetchWithOverflow.NextMsg(time.Second * 5)
+	msg, err = numPending10.NextMsg(time.Second * 5)
 	require_NoError(t, err)
 	require_NotNil(t, msg)
 
@@ -1397,8 +1400,8 @@ func TestJetStreamConsumerOverflow(t *testing.T) {
 	req = JSApiConsumerGetNextRequest{Batch: 1, Expires: 90 * time.Second, PriorityGroups: PriorityGroups{
 		MinAckPending: 50,
 	}}
-	maxAckPending := sendRequest(t, nc, "maxAckPending", req)
-	_, err = maxAckPending.NextMsg(time.Second)
+	maxAckPending50 := sendRequest(t, nc, "maxAckPending", req)
+	_, err = maxAckPending50.NextMsg(time.Second)
 	require_Error(t, err)
 
 	// However, when we miss a lot of acks, we should get messages on overflow with max ack pending.
@@ -1408,7 +1411,7 @@ func TestJetStreamConsumerOverflow(t *testing.T) {
 	require_NoError(t, err)
 	require_NotNil(t, noOverflowMsg)
 
-	msg, err = maxAckPending.NextMsg(time.Second)
+	msg, err = maxAckPending50.NextMsg(time.Second)
 	require_NoError(t, err)
 	require_NotNil(t, msg)
 
