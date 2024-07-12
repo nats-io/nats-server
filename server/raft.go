@@ -3165,6 +3165,12 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	var scratch [appendEntryResponseLen]byte
 	arbuf := scratch[:]
 
+	// ignore the request if it was sent from a leader with a previous (out-of-date) term
+	if ae.term < n.term {
+		n.Unlock()
+		return
+	}
+
 	// Are we receiving from another leader.
 	if n.State() == Leader {
 		// If we are the same we should step down to break the tie.
