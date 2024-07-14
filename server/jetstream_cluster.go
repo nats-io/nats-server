@@ -5200,9 +5200,7 @@ func (js *jetStream) processConsumerLeaderChange(o *consumer, isLeader bool) err
 	} else {
 		resp.ConsumerInfo = o.initialInfo()
 		s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
-		if node := o.raftNode(); node != nil {
-			o.sendCreateAdvisory()
-		}
+		o.sendCreateAdvisory()
 	}
 
 	// Only send a pause advisory on consumer create if we're
