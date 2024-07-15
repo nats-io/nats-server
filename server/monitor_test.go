@@ -4298,6 +4298,9 @@ func TestMonitorJsz(t *testing.T) {
 			max_file_store: 10Mb
 			store_dir: '%s'
 			unique_tag: az
+			limits: {
+				max_ha_assets: 1000
+			}
 		}
 		cluster {
 			name: cluster_name
@@ -4376,6 +4379,9 @@ func TestMonitorJsz(t *testing.T) {
 			}
 			if info.Messages != 2 {
 				t.Fatalf("expected two message but got %d", info.Messages)
+			}
+			if info.Limits.MaxHAAssets != 1000 {
+				t.Fatalf("expected max_ha_assets limit to be 1000 got %v", info.Limits)
 			}
 		}
 	})
