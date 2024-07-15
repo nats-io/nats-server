@@ -2975,6 +2975,10 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 		return 0, validThrough
 	}
 
+	// If sseq is less then our first set to first.
+	if sseq < fs.state.FirstSeq {
+		sseq = fs.state.FirstSeq
+	}
 	// Track starting for both block for the sseq and staring block that matches any subject.
 	var seqStart int
 	// See if we need to figure out starting block per sseq.
