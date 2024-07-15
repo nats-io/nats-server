@@ -3182,7 +3182,6 @@ type waitingRequest struct {
 	hbt            time.Time
 	noWait         bool
 	priorityGroups *PriorityGroups
-	currentPinned  bool
 }
 
 // sync.Pool for waiting requests.
@@ -3215,8 +3214,6 @@ type waitQueue struct {
 	last   time.Time
 	head   *waitingRequest
 	tail   *waitingRequest
-	// TODO(jrm): do we want a new data structure here for pinned pull requests?
-	// like pinned map[string]*waitingRequest where key is group?
 }
 
 // Create a new ring buffer with at most max items.
@@ -3395,13 +3392,11 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 		if wr.expires.IsZero() || time.Now().Before(wr.expires) {
 			rr := wr.acc.sl.Match(wr.interest)
 			if needNewPin {
-				wr.currentPinned = true
 				o.currentNuid = nuid.Next()
 				wr.priorityGroups.Id = o.currentNuid
 			} else if o.currentNuid != _EMPTY_ {
 				// Check if we have a match on the currentNuid
 				if wr.priorityGroups != nil && wr.priorityGroups.Id == o.currentNuid {
-					wr.currentPinned = true
 				} else if wr.priorityGroups.Id == _EMPTY_ {
 					o.waiting.cycle()
 					if wr == lastRequest {
