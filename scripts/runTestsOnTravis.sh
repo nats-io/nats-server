@@ -10,7 +10,7 @@ if [ "$1" = "compile" ]; then
     go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.56.1;
     golangci-lint run;
     if [ "$TRAVIS_TAG" != "" ]; then
-        go test -race -v -run=TestVersionMatchesTag ./server -count=1 -vet=off
+        go test -race -v -run=TestVersionMatchesTag ./server -ldflags="-X=github.com/nats-io/nats-server/v2/server.serverVersion=$TRAVIS_TAG" -count=1 -vet=off
     fi
 
 elif [ "$1" = "build_only" ]; then

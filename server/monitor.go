@@ -1387,6 +1387,8 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 	var srcUrl string
 	if gitCommit == _EMPTY_ {
 		srcUrl = "https://github.com/nats-io/nats-server"
+	} else if serverVersion != _EMPTY_ {
+		srcUrl = fmt.Sprintf("https://github.com/nats-io/nats-server/tree/%s", serverVersion)
 	} else {
 		srcUrl = fmt.Sprintf("https://github.com/nats-io/nats-server/tree/%s", gitCommit)
 	}

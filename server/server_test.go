@@ -129,6 +129,17 @@ func TestVersionMatchesTag(t *testing.T) {
 	if VERSION != tag[1:] {
 		t.Fatalf("Version (%s) does not match tag (%s)", VERSION, tag[1:])
 	}
+	// Check that the version dynamically set via ldflags matches the version
+	// from the server previous to releasing.
+	if serverVersion == _EMPTY_ {
+		t.Fatal("Version missing in ldflags")
+	}
+	// Unlike VERSION constant, serverVersion is prefixed with a 'v'
+	// since it should be the same as the git tag.
+	expected := "v" + VERSION
+	if serverVersion != _EMPTY_ && expected != serverVersion {
+		t.Fatalf("Version (%s) does not match ldflags version (%s)", expected, serverVersion)
+	}
 }
 
 func TestStartProfiler(t *testing.T) {
