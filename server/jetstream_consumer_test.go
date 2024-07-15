@@ -1371,7 +1371,7 @@ func TestJetStreamConsumerOverflow(t *testing.T) {
 	sendStreamMsg(t, nc, "foo.1", "msg-2")
 	sendStreamMsg(t, nc, "foo.1", "msg-3")
 
-	// overflow set to 10, so we should not get any messages.
+	// overflow set to 10, so we should not get any messages, as there are only few pending.
 	req = JSApiConsumerGetNextRequest{Batch: 1, Expires: 90 * time.Second, PriorityGroups: PriorityGroups{
 		MinPending: 10,
 	}}

@@ -3357,23 +3357,17 @@ func (o *consumer) pendingRequests() map[string]*waitingRequest {
 // That will be handled by processWaiting.
 // Lock should be held.
 func (o *consumer) nextWaiting(sz int) *waitingRequest {
-	//TODO(jrm): check pinned, check overflows.
-	// Do we need to check again for pinned TTL?
 	if o.waiting == nil || o.waiting.isEmpty() {
 		return nil
 	}
 
 	needNewPin := o.currentNuid == _EMPTY_ && o.cfg.PriorityPolicy == PriorityPinnedClient
-	// fmt.Printf("\nNeeds a new pin: %v\n current:%v\n", needNewPin, o.currentNuid)
-	// fmt.Printf("Current NUID: %s\n", o.currentNuid)
 
 	lastRequest := o.waiting.tail
 	for wr := o.waiting.peek(); !o.waiting.isEmpty(); wr = o.waiting.peek() {
 		if wr == nil {
-			// fmt.Printf("WR is nil\n")
 			break
 		}
-		// fmt.Printf("\nCurrent WR NUID: %s REPLY: %v\n", wr.priorityGroups.Id, wr.reply)
 		// Check if we have max bytes set.
 		if wr.b > 0 {
 			if sz <= wr.b {
@@ -3400,39 +3394,22 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 
 		if wr.expires.IsZero() || time.Now().Before(wr.expires) {
 			rr := wr.acc.sl.Match(wr.interest)
-			// TODO(jrm): are we sure we are handling the pinned TTL correctly?
-			// TODO(jrm): we could optimize the `wr` for pinned by having a separate
-			// pointer for the pinned puller, but at the same time, we have to
-			// TODO(jrm): we are ignoring groups for now.
 			if needNewPin {
-				//TODO(jrm) assing pinned here. Send status
 				wr.currentPinned = true
 				o.currentNuid = nuid.Next()
 				wr.priorityGroups.Id = o.currentNuid
-				// hdr := fmt.Appendf(nil, JSPullRequestPinIdT, o.currentNuid)
-				// Send the new pinned status immediately
-				// fmt.Printf("Sending new pinned status immediately\n")
-				// fmt.Printf("UPDATED  NUID: %s\n", o.currentNuid)
-				// this is a separate statu empty message!
-				// o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
-				// return o.waiting.pop()
 			} else if o.currentNuid != _EMPTY_ {
-				// fmt.Printf("Current NUID: %s WR nuid: %v\n", o.currentNuid, wr.priorityGroups.Id)
 				// Check if we have a match on the currentNuid
 				if wr.priorityGroups != nil && wr.priorityGroups.Id == o.currentNuid {
 					wr.currentPinned = true
-					// fmt.Printf("Returning waiting request to pinned\n")
-					// return o.waiting.pop()
 				} else if wr.priorityGroups.Id == _EMPTY_ {
-					// fmt.Printf("WR NUID is empty. Skipping\n")
 					o.waiting.cycle()
 					if wr == lastRequest {
-						// fmt.Printf("Last request. Returning nil\n")
 						return nil
 					}
 					continue
 				} else {
-					// fmt.Println("Sending wrong PIN ID")
+					// There is pin id set, but not a matching one. Send a notification to the client and remove the request.
 					o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, []byte(JSPullRequestWrongPinID), nil, nil, 0))
 					o.waiting.removeCurrent()
 					if o.node != nil {
@@ -3445,15 +3422,13 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 			}
 
 			if o.cfg.PriorityPolicy == PriorityOverflow {
-				// fmt.Printf("Checking for overflow \nPR pending %v consumer pending: %v\n PR ack pending %v, consumer ack pending %v\n", wr.priorityGroups.MinPending, o.npc, wr.priorityGroups.MinAckPending, len(o.pending))
 				if wr.priorityGroups != nil &&
 					// We need to check o.npc+1, because before calling nextWaiting, we do o.npc--
 					(wr.priorityGroups.MinPending > 0 && wr.priorityGroups.MinPending > o.npc+1 ||
 						wr.priorityGroups.MinAckPending > 0 && wr.priorityGroups.MinAckPending > int64(len(o.pending))) {
-					// fmt.Println("Overflow not matched")
 					o.waiting.cycle()
+					// We're done cycling through the requests.
 					if wr == lastRequest {
-						// fmt.Println("last request")
 						return nil
 					}
 					continue
@@ -3588,9 +3563,7 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 
 	if priorityGroups != nil {
 		if priorityGroups.Id != "" && priorityGroups.Id != o.currentNuid && o.currentNuid != _EMPTY_ {
-			// TODO(jrm): pick a nice error code (423 is "locked")
-			// fmt.Printf("Sending pinned id mismatch error for %s\n", reply)
-			sendErr(423, "Pinned id mismatch")
+			sendErr(423, "Nats-Pin-Id mismatch")
 			return
 		} else {
 			if o.pinnedTtl != nil {
@@ -3598,8 +3571,6 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 			} else {
 				o.pinnedTtl = time.AfterFunc(o.cfg.PinnedTTL, func() {
 					o.mu.Lock()
-					// fmt.Printf("Pinned TTL expired\n")
-					// should we trigger a next message delivery?
 					o.currentNuid = _EMPTY_
 					o.mu.Unlock()
 				})
@@ -4288,10 +4259,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		} else if wr := o.nextWaiting(sz); wr != nil {
 			wrn, wrb = wr.n, wr.b
 			dsubj = wr.reply
-			// fmt.Printf("Pinned: %v\n", isPinned)
 			if o.cfg.PriorityPolicy == PriorityPinnedClient {
-				// fmt.Printf("Adding pin header\n")
-				// fmt.Printf("Headers: %+v\n", string(pmsg.hdr))
 				// FIXME(jrm): Can we make this prettier?
 				if len(pmsg.hdr) == 0 {
 					pmsg.hdr = genHeader(pmsg.hdr, JSPullRequestNatsPinId, o.currentNuid)
