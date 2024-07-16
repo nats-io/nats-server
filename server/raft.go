@@ -1648,6 +1648,8 @@ func (n *raft) Delete() {
 func (n *raft) shutdown(shouldDelete bool) {
 	n.Lock()
 
+	debug.PrintStack()
+
 	// Returned swap value is the previous state. It looks counter-intuitive
 	// to do this atomic operation with the lock held, but we have to do so in
 	// order to make sure that switchState() is not already running. If it is
