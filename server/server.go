@@ -4098,6 +4098,16 @@ func (s *Server) isLameDuckMode() bool {
 	return s.ldm
 }
 
+// LameDuckShutdown will perform a lame duck shutdown of NATS, whereby
+// the client listener is closed, existing client connections are
+// kicked, Raft leaderships are transferred, JetStream is shutdown
+// and then finally shutdown the the NATS Server itself.
+// This function blocks and will not return until the NATS Server
+// has completed the entire shutdown operation.
+func (s *Server) LameDuckShutdown() {
+	s.lameDuckMode()
+}
+
 // This function will close the client listener then close the clients
 // at some interval to avoid a reconnect storm.
 // We will also transfer any raft leaders and shutdown JetStream.
