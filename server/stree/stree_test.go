@@ -764,3 +764,14 @@ func TestSubjectTreeMatchNoCallbackDupe(t *testing.T) {
 		})
 	}
 }
+
+func TestSubjectTreeNilNoPanic(t *testing.T) {
+	var st *SubjectTree[int]
+	st.Match([]byte("foo"), func(_ []byte, _ *int) {})
+	_, found := st.Find([]byte("foo"))
+	require_False(t, found)
+	_, found = st.Delete([]byte("foo"))
+	require_False(t, found)
+	_, found = st.Insert([]byte("foo"), 22)
+	require_False(t, found)
+}
