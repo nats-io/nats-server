@@ -625,3 +625,49 @@ func TestNRGSwitchStateClearsQueues(t *testing.T) {
 	require_Equal(t, n.prop.len(), 0)
 	require_Equal(t, n.resp.len(), 0)
 }
+
+func TestNRGAEFromOldLeader(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, _ := jsClientConnect(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
+	defer nc.Close()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	// Listen out for catchup requests.
+	ch := make(chan *nats.Msg, 16)
+	_, err := nc.ChanSubscribe(fmt.Sprintf(raftCatchupReply, ">"), ch)
+	require_NoError(t, err)
+
+	// Start next term so that we can reuse term 1 in the next step.
+	leader := rg.leader().node().(*raft)
+	leader.StepDown()
+	time.Sleep(time.Millisecond * 100)
+	rg.waitOnLeader()
+	require_Equal(t, leader.Term(), 2)
+	leader = rg.leader().node().(*raft)
+
+	// Send an append entry with an outdated term. Beforehand, doing
+	// so would have caused a WAL reset and then would have triggered
+	// a Raft-level catchup.
+	ae := &appendEntry{
+		term:   1,
+		pindex: 0,
+		leader: leader.id,
+		reply:  nc.NewRespInbox(),
+	}
+	payload, err := ae.encode(nil)
+	require_NoError(t, err)
+	resp, err := nc.Request(leader.asubj, payload, time.Second)
+	require_NoError(t, err)
+
+	// Wait for the response, the server should have rejected it.
+	ar := leader.decodeAppendEntryResponse(resp.Data)
+	require_NotNil(t, ar)
+	require_Equal(t, ar.success, false)
+
+	// No catchup should happen at this point because no reset should
+	require_NoChanRead(t, ch, time.Second*2)
+}

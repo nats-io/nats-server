@@ -3298,6 +3298,10 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.debug("Term higher than ours and we are not a follower: %v, stepping down to %q", n.State(), ae.leader)
 			n.stepdownLocked(ae.leader)
 		}
+	} else if ae.term < n.term && !catchingUp && isNew {
+		n.debug("Ignoring AppendEntry from a leader (%s) with term %d which is less than ours", ae.leader, ae.term)
+		n.Unlock()
+		return
 	}
 
 	if isNew && n.leader != ae.leader && n.State() == Follower {
