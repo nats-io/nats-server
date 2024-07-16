@@ -51,6 +51,10 @@ func (t *SubjectTree[T]) Empty() *SubjectTree[T] {
 
 // Insert a value into the tree. Will return if the value was updated and if so the old value.
 func (t *SubjectTree[T]) Insert(subject []byte, value T) (*T, bool) {
+	if t == nil {
+		return nil, false
+	}
+
 	old, updated := t.insert(&t.root, subject, value, 0)
 	if !updated {
 		t.size++
@@ -60,6 +64,10 @@ func (t *SubjectTree[T]) Insert(subject []byte, value T) (*T, bool) {
 
 // Find will find the value and return it or false if it was not found.
 func (t *SubjectTree[T]) Find(subject []byte) (*T, bool) {
+	if t == nil {
+		return nil, false
+	}
+
 	var si int
 	for n := t.root; n != nil; {
 		if n.isLeaf() {
@@ -88,6 +96,10 @@ func (t *SubjectTree[T]) Find(subject []byte) (*T, bool) {
 
 // Delete will delete the item and return its value, or not found if it did not exist.
 func (t *SubjectTree[T]) Delete(subject []byte) (*T, bool) {
+	if t == nil {
+		return nil, false
+	}
+
 	val, deleted := t.delete(&t.root, subject, 0)
 	if deleted {
 		t.size--
@@ -97,7 +109,7 @@ func (t *SubjectTree[T]) Delete(subject []byte) (*T, bool) {
 
 // Match will match against a subject that can have wildcards and invoke the callback func for each matched value.
 func (t *SubjectTree[T]) Match(filter []byte, cb func(subject []byte, val *T)) {
-	if len(filter) == 0 || cb == nil {
+	if t == nil || t.root == nil || len(filter) == 0 || cb == nil {
 		return
 	}
 	// We need to break this up into chunks based on wildcards, either pwc '*' or fwc '>'.
