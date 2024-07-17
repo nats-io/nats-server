@@ -100,7 +100,8 @@ elif [ "$1" = "srv_pkg_non_js_tests" ]; then
     # by using `skip_js_tests`, MQTT tests by using `skip_mqtt_tests` and
     # message tracing tests by using `skip_msgtrace_tests`.
 
-    go test -race -v -p=1 ./server/... -tags=skip_store_tests,skip_js_tests,skip_mqtt_tests,skip_msgtrace_tests -count=1 -vet=off -timeout=30m -failfast
+    # Also including the ldflag with the version since this includes the `TestVersionMatchesTag`.
+    go test -race -v -p=1 ./server/... -ldflags="-X=github.com/nats-io/nats-server/v2/server.serverVersion=$TRAVIS_TAG" -tags=skip_store_tests,skip_js_tests,skip_mqtt_tests,skip_msgtrace_tests -count=1 -vet=off -timeout=30m -failfast
 
 elif [ "$1" = "non_srv_pkg_tests" ]; then
 
