@@ -603,3 +603,25 @@ func TestNRGInlineStepdown(t *testing.T) {
 	require_NoError(t, n.StepDown())
 	require_NotEqual(t, n.State(), Leader)
 }
+
+func TestNRGSwitchStateClearsQueues(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	sa := rg.leader().(*stateAdder)
+	n := sa.node().(*raft)
+
+	for i := 0; i < 10_000; i++ {
+		sa.proposeDelta(1)
+	}
+
+	n.Lock()
+	defer n.Unlock()
+
+	n.switchState(Follower)
+	require_Equal(t, n.prop.len(), 0)
+	require_Equal(t, n.resp.len(), 0)
+}
