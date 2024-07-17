@@ -3661,6 +3661,7 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 
 	// Sanity checking for now.
 	if index := ae.pindex + 1; index != seq {
+		debug.PrintStack()
 		n.warn("Wrong index, ae is %+v, index stored was %d, n.pindex is %d, will reset", ae, seq, n.pindex)
 		if n.State() == Leader {
 			n.stepdownLocked(n.selectNextLeader())
