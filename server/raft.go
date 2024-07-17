@@ -1989,9 +1989,11 @@ func (n *raft) runAsFollower() {
 			n.debug("Ignoring old vote response, we have stepped down")
 			n.votes.popOne()
 		case <-n.resp.ch:
-			// We're receiving append entry responses from the network, probably because
-			// we have only just stepped down and they were already in flight. Ignore them.
-			n.resp.popOne()
+			// Ignore append entry responses received from before the state change.
+			n.resp.drain()
+		case <-n.prop.ch:
+			// Ignore proposals received from before the state change.
+			n.prop.drain()
 		case <-n.reqs.ch:
 			// We've just received a vote request from the network.
 			// Because of drain() it is possible that we get nil from popOne().
@@ -2966,8 +2968,11 @@ func (n *raft) runAsCandidate() {
 		case <-n.entry.ch:
 			n.processAppendEntries()
 		case <-n.resp.ch:
-			// Ignore
-			n.resp.popOne()
+			// Ignore append entry responses received from before the state change.
+			n.resp.drain()
+		case <-n.prop.ch:
+			// Ignore proposals received from before the state change.
+			n.prop.drain()
 		case <-n.s.quitCh:
 			n.shutdown(false)
 			return
@@ -4089,8 +4094,9 @@ func (n *raft) switchState(state RaftState) {
 
 	if pstate == Leader && state != Leader {
 		n.updateLeadChange(false)
-		// Drain the response queue.
+		// Drain the append entry response and proposal queues.
 		n.resp.drain()
+		n.prop.drain()
 	} else if state == Leader && pstate != Leader {
 		if len(n.pae) > 0 {
 			n.pae = make(map[uint64]*appendEntry)
