@@ -3307,6 +3307,9 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		return
 	}
 
+	// log what append entry we got
+	n.debug("AE from %s (term:%d, commit: %d, pterm: %d, pindex: %d) with %d entries, catchup? %v", ae.leader, ae.term, ae.commit, ae.pterm, ae.pindex, len(ae.entries), catchingUp)
+
 	if isNew && n.leader != ae.leader && n.State() == Follower {
 		n.debug("AppendEntry updating leader to %q", ae.leader)
 		n.updateLeader(ae.leader)
