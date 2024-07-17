@@ -61,6 +61,7 @@ type ConsumerInfo struct {
 	PauseRemaining time.Duration   `json:"pause_remaining,omitempty"`
 	// TimeStamp indicates when the info was gathered
 	TimeStamp time.Time `json:"ts"`
+	PinnedId  string    `json:"pinned_id,omitempty"`
 }
 
 type ConsumerConfig struct {
@@ -2786,6 +2787,7 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		NumPending:     o.checkNumPending(),
 		PushBound:      o.isPushMode() && o.active,
 		TimeStamp:      time.Now().UTC(),
+		PinnedId:       o.currentNuid,
 	}
 	if o.cfg.PauseUntil != nil {
 		p := *o.cfg.PauseUntil
