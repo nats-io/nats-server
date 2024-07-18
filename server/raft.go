@@ -3249,11 +3249,11 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			// If the append entry term is newer than the current term, erase our
 			// vote.
 			if ae.term > n.term {
+				n.term = ae.term
 				n.vote = noVote
+				n.writeTermVote()
 			}
 			n.debug("Received append entry in candidate state from %q, converting to follower", ae.leader)
-			n.term = ae.term
-			n.writeTermVote()
 			n.stepdown.push(ae.leader)
 		}
 	}
@@ -4030,8 +4030,8 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 			n.debug("Stepping down from %s, detected higher term: %d vs %d",
 				strings.ToLower(n.State().String()), vr.term, n.term)
 			n.stepdown.push(noLeader)
-			n.term = vr.term
 		}
+		n.term = vr.term
 		n.vote = noVote
 		n.writeTermVote()
 	}
