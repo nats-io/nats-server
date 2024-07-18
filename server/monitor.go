@@ -3787,8 +3787,14 @@ func (s *Server) HandleRaftz(w http.ResponseWriter, r *http.Request) {
 
 	gfilter := r.URL.Query().Get("group")
 	afilter := r.URL.Query().Get("acc")
-	if afilter == "" {
-		afilter = s.SystemAccount().Name
+	if afilter == _EMPTY_ {
+		if sys := s.SystemAccount(); sys != nil {
+			afilter = sys.Name
+		} else {
+			w.WriteHeader(404)
+			w.Write([]byte("System account not found, the server may be shutting down"))
+			return
+		}
 	}
 
 	groups := map[string]RaftNode{}
