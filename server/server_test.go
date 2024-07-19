@@ -2136,3 +2136,53 @@ func TestServerConfigLastLineComments(t *testing.T) {
 	require_NoError(t, err)
 	defer nc.Close()
 }
+
+func TestServerClusterAndGatewayNameNoSpace(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		port: -1
+		server_name: "my server"
+	`))
+	_, err := ProcessConfigFile(conf)
+	require_Error(t, err, ErrServerNameHasSpaces)
+
+	o := DefaultOptions()
+	o.ServerName = "my server"
+	_, err = NewServer(o)
+	require_Error(t, err, ErrServerNameHasSpaces)
+
+	conf = createConfFile(t, []byte(`
+		port: -1
+		server_name: "myserver"
+		cluster {
+			port: -1
+			name: "my cluster"
+		}
+	`))
+	_, err = ProcessConfigFile(conf)
+	require_Error(t, err, ErrClusterNameHasSpaces)
+
+	o = DefaultOptions()
+	o.Cluster.Name = "my cluster"
+	o.Cluster.Port = -1
+	_, err = NewServer(o)
+	require_Error(t, err, ErrClusterNameHasSpaces)
+
+	conf = createConfFile(t, []byte(`
+		port: -1
+		server_name: "myserver"
+		gateway {
+			port: -1
+			name: "my gateway"
+		}
+	`))
+	_, err = ProcessConfigFile(conf)
+	require_Error(t, err, ErrGatewayNameHasSpaces)
+
+	o = DefaultOptions()
+	o.Cluster.Name = _EMPTY_
+	o.Cluster.Port = 0
+	o.Gateway.Name = "my gateway"
+	o.Gateway.Port = -1
+	_, err = NewServer(o)
+	require_Error(t, err, ErrGatewayNameHasSpaces)
+}

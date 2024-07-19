@@ -1285,6 +1285,13 @@ func (c *client) processLeafnodeInfo(info *Info) {
 			c.closeConnection(WrongPort)
 			return
 		}
+		// Reject a cluster that contains spaces.
+		if info.Cluster != _EMPTY_ && strings.Contains(info.Cluster, " ") {
+			c.mu.Unlock()
+			c.sendErrAndErr(ErrClusterNameHasSpaces.Error())
+			c.closeConnection(ProtocolViolation)
+			return
+		}
 		// Capture a nonce here.
 		c.nonce = []byte(info.Nonce)
 		if info.TLSRequired && didSolicit {
@@ -1762,6 +1769,13 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	proto := &leafConnectInfo{}
 	if err := json.Unmarshal(arg, proto); err != nil {
 		return err
+	}
+
+	// Reject a cluster that contains spaces.
+	if proto.Cluster != _EMPTY_ && strings.Contains(proto.Cluster, " ") {
+		c.sendErrAndErr(ErrClusterNameHasSpaces.Error())
+		c.closeConnection(ProtocolViolation)
+		return ErrClusterNameHasSpaces
 	}
 
 	// Check for cluster name collisions.

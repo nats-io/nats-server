@@ -961,6 +961,9 @@ func (s *Server) ClientURL() string {
 }
 
 func validateCluster(o *Options) error {
+	if o.Cluster.Name != _EMPTY_ && strings.Contains(o.Cluster.Name, " ") {
+		return ErrClusterNameHasSpaces
+	}
 	if o.Cluster.Compression.Mode != _EMPTY_ {
 		if err := validateAndNormalizeCompressionOption(&o.Cluster.Compression, CompressionS2Fast); err != nil {
 			return err
@@ -970,8 +973,9 @@ func validateCluster(o *Options) error {
 		return fmt.Errorf("cluster: %v", err)
 	}
 	// Check that cluster name if defined matches any gateway name.
-	if o.Gateway.Name != "" && o.Gateway.Name != o.Cluster.Name {
-		if o.Cluster.Name != "" {
+	// Note that we have already verified that the gateway name does not have spaces.
+	if o.Gateway.Name != _EMPTY_ && o.Gateway.Name != o.Cluster.Name {
+		if o.Cluster.Name != _EMPTY_ {
 			return ErrClusterNameConfigConflict
 		}
 		// Set this here so we do not consider it dynamic.
@@ -1011,6 +1015,9 @@ func validateOptions(o *Options) error {
 	if int64(o.MaxPayload) > o.MaxPending {
 		return fmt.Errorf("max_payload (%v) cannot be higher than max_pending (%v)",
 			o.MaxPayload, o.MaxPending)
+	}
+	if o.ServerName != _EMPTY_ && strings.Contains(o.ServerName, " ") {
+		return errors.New("server name cannot contain spaces")
 	}
 	// Check that the trust configuration is correct.
 	if err := validateTrustedOperators(o); err != nil {

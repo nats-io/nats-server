@@ -4426,3 +4426,27 @@ func TestLeafnodeHeaders(t *testing.T) {
 		t.Fatalf("leaf msg header is empty")
 	}
 }
+
+func TestLeafNodeClusterNameWithSpacesRejected(t *testing.T) {
+	s, opts := runLeafServer()
+	defer s.Shutdown()
+
+	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
+	defer lc.Close()
+
+	checkInfoMsg(t, lc)
+	sendProto(t, lc, "CONNECT {\"cluster\":\"my cluster\"}\r\n")
+	expect := expectCommand(t, lc)
+	expect(errRe)
+	expectDisconnect(t, lc)
+
+	lc = createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
+	defer lc.Close()
+	leafSend, leafExpect := setupLeaf(t, lc, 1)
+	// The accept side does expect an INFO from an handshake,
+	// so it will "ignore" the first one.
+	leafSend("INFO {\"server\":\"server\"}\r\n")
+	leafSend("INFO {\"cluster\":\"my cluster\"}\r\n")
+	leafExpect(errRe)
+	expectDisconnect(t, lc)
+}

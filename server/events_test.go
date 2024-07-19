@@ -103,14 +103,14 @@ func runTrustedCluster(t *testing.T) (*Server, *Options, *Server, *Options, nkey
 	mr.Store(apub, jwt)
 
 	optsA := DefaultOptions()
-	optsA.Cluster.Name = "TEST CLUSTER 22"
+	optsA.Cluster.Name = "TEST_CLUSTER_22"
 	optsA.Cluster.Host = "127.0.0.1"
 	optsA.TrustedKeys = []string{pub}
 	optsA.AccountResolver = mr
 	optsA.SystemAccount = apub
 	optsA.ServerName = "A_SRV"
 	// Add in dummy gateway
-	optsA.Gateway.Name = "TEST CLUSTER 22"
+	optsA.Gateway.Name = "TEST_CLUSTER_22"
 	optsA.Gateway.Host = "127.0.0.1"
 	optsA.Gateway.Port = -1
 	optsA.gatewaysSolicitDelay = 30 * time.Second
@@ -1876,7 +1876,7 @@ func TestServerEventsStatsZ(t *testing.T) {
 	if m.Server.ID != sa.ID() {
 		t.Fatalf("Did not match IDs")
 	}
-	if m.Server.Cluster != "TEST CLUSTER 22" {
+	if m.Server.Cluster != "TEST_CLUSTER_22" {
 		t.Fatalf("Did not match cluster name")
 	}
 	if m.Server.Version != VERSION {
@@ -2978,11 +2978,11 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 			[]string{"now", "routes"}},
 		{"ROUTEZ", json.RawMessage(`{"name":""}`), &Routez{},
 			[]string{"now", "routes"}},
-		{"ROUTEZ", json.RawMessage(`{"cluster":"TEST CLUSTER 22"}`), &Routez{},
+		{"ROUTEZ", json.RawMessage(`{"cluster":"TEST_CLUSTER_22"}`), &Routez{},
 			[]string{"now", "routes"}},
 		{"ROUTEZ", json.RawMessage(`{"cluster":"CLUSTER"}`), &Routez{},
 			[]string{"now", "routes"}},
-		{"ROUTEZ", json.RawMessage(`{"cluster":"TEST CLUSTER 22", "subscriptions":true}`), &Routez{},
+		{"ROUTEZ", json.RawMessage(`{"cluster":"TEST_CLUSTER_22", "subscriptions":true}`), &Routez{},
 			[]string{"now", "routes"}},
 
 		{"JSZ", nil, &JSzOptions{}, []string{"now", "disabled"}},
@@ -3083,8 +3083,8 @@ func TestGatewayNameClientInfo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Could not parse INFO json: %v\n", err)
 	}
-	if info.Cluster != "TEST CLUSTER 22" {
-		t.Fatalf("Expected a cluster name of 'TEST CLUSTER 22', got %q", info.Cluster)
+	if info.Cluster != "TEST_CLUSTER_22" {
+		t.Fatalf("Expected a cluster name of 'TEST_CLUSTER_22', got %q", info.Cluster)
 	}
 }
 
