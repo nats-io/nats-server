@@ -153,6 +153,9 @@ var (
 	// Gateway's name.
 	ErrWrongGateway = errors.New("wrong gateway")
 
+	// ErrGatewayNameHasSpaces signals that the gateway name contains spaces, which is not allowed.
+	ErrGatewayNameHasSpaces = errors.New("gateway name cannot contain spaces")
+
 	// ErrNoSysAccount is returned when an attempt to publish or subscribe is made
 	// when there is no internal system account defined.
 	ErrNoSysAccount = errors.New("system account not setup")
@@ -162,6 +165,9 @@ var (
 
 	// ErrServerNotRunning is used to signal an error that a server is not running.
 	ErrServerNotRunning = errors.New("server is not running")
+
+	// ErrServerNameHasSpaces signals that the server name contains spaces, which is not allowed.
+	ErrServerNameHasSpaces = errors.New("server name cannot contain spaces")
 
 	// ErrBadMsgHeader signals the parser detected a bad message header
 	ErrBadMsgHeader = errors.New("bad message header detected")
@@ -179,6 +185,9 @@ var (
 
 	// ErrClusterNameRemoteConflict signals that a remote server has a different cluster name.
 	ErrClusterNameRemoteConflict = errors.New("cluster name from remote server conflicts")
+
+	// ErrClusterNameHasSpaces signals that the cluster name contains spaces, which is not allowed.
+	ErrClusterNameHasSpaces = errors.New("cluster name cannot contain spaces")
 
 	// ErrMalformedSubject is returned when a subscription is made with a subject that does not conform to subject rules.
 	ErrMalformedSubject = errors.New("malformed subject")

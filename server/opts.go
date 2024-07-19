@@ -917,7 +917,13 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 	case "port":
 		o.Port = int(v.(int64))
 	case "server_name":
-		o.ServerName = v.(string)
+		sn := v.(string)
+		if strings.Contains(sn, " ") {
+			err := &configErr{tk, ErrServerNameHasSpaces.Error()}
+			*errors = append(*errors, err)
+			return
+		}
+		o.ServerName = sn
 	case "host", "net":
 		o.Host = v.(string)
 	case "debug":
@@ -1690,7 +1696,13 @@ func parseCluster(v any, opts *Options, errors *[]error, warnings *[]error) erro
 		tk, mv = unwrapValue(mv, &lt)
 		switch strings.ToLower(mk) {
 		case "name":
-			opts.Cluster.Name = mv.(string)
+			cn := mv.(string)
+			if strings.Contains(cn, " ") {
+				err := &configErr{tk, ErrClusterNameHasSpaces.Error()}
+				*errors = append(*errors, err)
+				continue
+			}
+			opts.Cluster.Name = cn
 		case "listen":
 			hp, err := parseListen(mv)
 			if err != nil {
@@ -1920,7 +1932,13 @@ func parseGateway(v any, o *Options, errors *[]error, warnings *[]error) error {
 		tk, mv = unwrapValue(mv, &lt)
 		switch strings.ToLower(mk) {
 		case "name":
-			o.Gateway.Name = mv.(string)
+			gn := mv.(string)
+			if strings.Contains(gn, " ") {
+				err := &configErr{tk, ErrGatewayNameHasSpaces.Error()}
+				*errors = append(*errors, err)
+				continue
+			}
+			o.Gateway.Name = gn
 		case "listen":
 			hp, err := parseListen(mv)
 			if err != nil {
