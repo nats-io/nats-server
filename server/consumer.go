@@ -404,6 +404,7 @@ type consumer struct {
 	ackReplyT         string
 	ackSubj           string
 	nextMsgSubj       string
+	unpinSubj         string
 	nextMsgReqs       *ipQueue[*nextMsgReq]
 	maxp              int
 	pblimit           int
@@ -1088,6 +1089,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	o.ackReplyT = fmt.Sprintf("%s.%%d.%%d.%%d.%%d.%%d", pre)
 	o.ackSubj = fmt.Sprintf("%s.*.*.*.*.*", pre)
 	o.nextMsgSubj = fmt.Sprintf(JSApiRequestNextT, mn, o.name)
+	o.unpinSubj = fmt.Sprintf(JSApiConsumerUnpinT, mn, o.name)
 
 	// Check/update the inactive threshold
 	o.updateInactiveThreshold(&o.cfg)
@@ -1347,6 +1349,12 @@ func (o *consumer) setLeader(isLeader bool) {
 		// Setup the internal sub for next message requests regardless.
 		// Will error if wrong mode to provide feedback to users.
 		if o.reqSub, err = o.subscribeInternal(o.nextMsgSubj, o.processNextMsgReq); err != nil {
+			o.mu.Unlock()
+			o.deleteWithoutAdvisory()
+			return
+		}
+
+		if o.reqSub, err = o.subscribeInternal(o.nextMsgSubj, o.processUnpinRequest); err != nil {
 			o.mu.Unlock()
 			o.deleteWithoutAdvisory()
 			return
@@ -3495,6 +3503,12 @@ func (nmr *nextMsgReq) returnToPool() {
 	}
 	nmr.reply, nmr.msg = _EMPTY_, nil
 	nextMsgReqPool.Put(nmr)
+}
+
+func (o *consumer) processUnpinRequest(_ *subscription, c *client, _ *Account, _, reply string, msg []byte) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.currentNuid = _EMPTY_
 }
 
 // processNextMsgReq will process a request for the next message available. A nil message payload means deliver
