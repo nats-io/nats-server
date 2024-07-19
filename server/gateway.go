@@ -18,12 +18,14 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net"
 	"net/url"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -299,17 +301,20 @@ func (r *RemoteGatewayOpts) clone() *RemoteGatewayOpts {
 
 // Ensure that gateway is properly configured.
 func validateGatewayOptions(o *Options) error {
-	if o.Gateway.Name == "" && o.Gateway.Port == 0 {
+	if o.Gateway.Name == _EMPTY_ && o.Gateway.Port == 0 {
 		return nil
 	}
-	if o.Gateway.Name == "" {
-		return fmt.Errorf("gateway has no name")
+	if o.Gateway.Name == _EMPTY_ {
+		return errors.New("gateway has no name")
+	}
+	if strings.Contains(o.Gateway.Name, " ") {
+		return ErrGatewayNameHasSpaces
 	}
 	if o.Gateway.Port == 0 {
 		return fmt.Errorf("gateway %q has no port specified (select -1 for random port)", o.Gateway.Name)
 	}
 	for i, g := range o.Gateway.Gateways {
-		if g.Name == "" {
+		if g.Name == _EMPTY_ {
 			return fmt.Errorf("gateway in the list %d has no name", i)
 		}
 		if len(g.URLs) == 0 {
