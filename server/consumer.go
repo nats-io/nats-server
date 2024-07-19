@@ -778,6 +778,11 @@ func checkConsumerCfg(
 		return NewJSConsumerMetadataLengthError(fmt.Sprintf("%dKB", JSMaxMetadataLen/1024))
 	}
 
+	if config.PriorityPolicy != PriorityNone {
+		if len(config.PriorityGroups) == 0 {
+			return NewJSConsumerPriorityPolicyWithoutGroupError()
+		}
+	}
 	return nil
 }
 

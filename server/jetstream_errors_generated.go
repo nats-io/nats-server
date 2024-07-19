@@ -173,6 +173,9 @@ const (
 	// JSConsumerOverlappingSubjectFilters consumer subject filters cannot overlap
 	JSConsumerOverlappingSubjectFilters ErrorIdentifier = 10138
 
+	// JSConsumerPriorityPolicyWithoutGroup Setting PriorityPolicy requires at least one PriorityGroup to be set
+	JSConsumerPriorityPolicyWithoutGroup ErrorIdentifier = 10154
+
 	// JSConsumerPullNotDurableErr consumer in pull mode requires a durable name
 	JSConsumerPullNotDurableErr ErrorIdentifier = 10085
 
@@ -520,6 +523,7 @@ var (
 		JSConsumerOfflineErr:                       {Code: 500, ErrCode: 10119, Description: "consumer is offline"},
 		JSConsumerOnMappedErr:                      {Code: 400, ErrCode: 10092, Description: "consumer direct on a mapped consumer"},
 		JSConsumerOverlappingSubjectFilters:        {Code: 400, ErrCode: 10138, Description: "consumer subject filters cannot overlap"},
+		JSConsumerPriorityPolicyWithoutGroup:       {Code: 400, ErrCode: 10154, Description: "Setting PriorityPolicy requires at least one PriorityGroup to be set"},
 		JSConsumerPullNotDurableErr:                {Code: 400, ErrCode: 10085, Description: "consumer in pull mode requires a durable name"},
 		JSConsumerPullRequiresAckErr:               {Code: 400, ErrCode: 10084, Description: "consumer in pull mode requires ack policy"},
 		JSConsumerPullWithRateLimitErr:             {Code: 400, ErrCode: 10086, Description: "consumer in pull mode can not have rate limit set"},
@@ -1259,6 +1263,16 @@ func NewJSConsumerOverlappingSubjectFiltersError(opts ...ErrorOption) *ApiError 
 	}
 
 	return ApiErrors[JSConsumerOverlappingSubjectFilters]
+}
+
+// NewJSConsumerPriorityPolicyWithoutGroupError creates a new JSConsumerPriorityPolicyWithoutGroup error: "Setting PriorityPolicy requires at least one PriorityGroup to be set"
+func NewJSConsumerPriorityPolicyWithoutGroupError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerPriorityPolicyWithoutGroup]
 }
 
 // NewJSConsumerPullNotDurableError creates a new JSConsumerPullNotDurableErr error: "consumer in pull mode requires a durable name"

@@ -173,6 +173,9 @@ const (
 	// JSApiRequestNextT is the prefix for the request next message(s) for a consumer in worker/pull mode.
 	JSApiRequestNextT = "$JS.API.CONSUMER.MSG.NEXT.%s.%s"
 
+	// JSApiConsumerUnpinT is the prefix for unpinning subscription for a given consumer.
+	JSApiConsumerUnpinT = "$JS.API.CONSUMER.UNPIN.%s.%s.*"
+
 	// jsRequestNextPre
 	jsRequestNextPre = "$JS.API.CONSUMER.MSG.NEXT."
 
