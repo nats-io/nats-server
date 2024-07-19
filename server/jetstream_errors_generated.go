@@ -176,7 +176,7 @@ const (
 	// JSConsumerPullNotDurableErr consumer in pull mode requires a durable name
 	JSConsumerPullNotDurableErr ErrorIdentifier = 10085
 
-	// JSConsumerPullRequiresAckErr consumer in pull mode requires ack policy
+	// JSConsumerPullRequiresAckErr consumer in pull mode requires ack policy on workqueue stream
 	JSConsumerPullRequiresAckErr ErrorIdentifier = 10084
 
 	// JSConsumerPullWithRateLimitErr consumer in pull mode can not have rate limit set
@@ -521,7 +521,7 @@ var (
 		JSConsumerOnMappedErr:                      {Code: 400, ErrCode: 10092, Description: "consumer direct on a mapped consumer"},
 		JSConsumerOverlappingSubjectFilters:        {Code: 400, ErrCode: 10138, Description: "consumer subject filters cannot overlap"},
 		JSConsumerPullNotDurableErr:                {Code: 400, ErrCode: 10085, Description: "consumer in pull mode requires a durable name"},
-		JSConsumerPullRequiresAckErr:               {Code: 400, ErrCode: 10084, Description: "consumer in pull mode requires ack policy"},
+		JSConsumerPullRequiresAckErr:               {Code: 400, ErrCode: 10084, Description: "consumer in pull mode requires ack policy on workqueue stream"},
 		JSConsumerPullWithRateLimitErr:             {Code: 400, ErrCode: 10086, Description: "consumer in pull mode can not have rate limit set"},
 		JSConsumerPushMaxWaitingErr:                {Code: 400, ErrCode: 10080, Description: "consumer in push mode can not set max waiting"},
 		JSConsumerReplacementWithDifferentNameErr:  {Code: 400, ErrCode: 10106, Description: "consumer replacement durable config not the same"},
@@ -1271,7 +1271,7 @@ func NewJSConsumerPullNotDurableError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSConsumerPullNotDurableErr]
 }
 
-// NewJSConsumerPullRequiresAckError creates a new JSConsumerPullRequiresAckErr error: "consumer in pull mode requires ack policy"
+// NewJSConsumerPullRequiresAckError creates a new JSConsumerPullRequiresAckErr error: "consumer in pull mode requires ack policy on workqueue stream"
 func NewJSConsumerPullRequiresAckError(opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
 	if ae, ok := eopts.err.(*ApiError); ok {
