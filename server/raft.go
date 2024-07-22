@@ -3418,8 +3418,6 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 
 		} else {
 			n.debug("AppendEntry did not match %d %d with %d %d", ae.pterm, ae.pindex, n.pterm, n.pindex)
-			// Reset our term.
-			n.term = n.pterm
 			if ae.pindex > n.pindex {
 				// Setup our state for catching up.
 				inbox := n.createCatchup(ae)
