@@ -1306,9 +1306,15 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		}
 		// Check subject filters overlap.
 		for outer, tr := range cfg.Mirror.SubjectTransforms {
-			if !IsValidSubject(tr.Source) {
-				return StreamConfig{}, NewJSMirrorInvalidSubjectFilterError()
+			if tr.Source != _EMPTY_ && !IsValidSubject(tr.Source) {
+				return StreamConfig{}, NewJSMirrorInvalidSubjectFilterError(fmt.Errorf("%w %s", ErrBadSubject, tr.Source))
 			}
+
+			err := ValidateMapping(tr.Source, tr.Destination)
+			if err != nil {
+				return StreamConfig{}, NewJSMirrorInvalidTransformDestinationError(err)
+			}
+
 			for inner, innertr := range cfg.Mirror.SubjectTransforms {
 				if inner != outer && SubjectsCollide(tr.Source, innertr.Source) {
 					return StreamConfig{}, NewJSMirrorOverlappingSubjectFiltersError()
@@ -1350,10 +1356,10 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 			if cfg.Mirror.External.DeliverPrefix != _EMPTY_ {
 				deliveryPrefixes = append(deliveryPrefixes, cfg.Mirror.External.DeliverPrefix)
 			}
+
 			if cfg.Mirror.External.ApiPrefix != _EMPTY_ {
 				apiPrefixes = append(apiPrefixes, cfg.Mirror.External.ApiPrefix)
 			}
-
 		}
 	}
 
@@ -1386,17 +1392,18 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 			}
 
 			for _, tr := range src.SubjectTransforms {
-				err := ValidateMappingDestination(tr.Destination)
+				if tr.Source != _EMPTY_ && !IsValidSubject(tr.Source) {
+					return StreamConfig{}, NewJSSourceInvalidSubjectFilterError(fmt.Errorf("%w %s", ErrBadSubject, tr.Source))
+				}
+
+				err := ValidateMapping(tr.Source, tr.Destination)
 				if err != nil {
-					return StreamConfig{}, NewJSSourceInvalidTransformDestinationError()
+					return StreamConfig{}, NewJSSourceInvalidTransformDestinationError(err)
 				}
 			}
 
 			// Check subject filters overlap.
 			for outer, tr := range src.SubjectTransforms {
-				if !IsValidSubject(tr.Source) {
-					return StreamConfig{}, NewJSSourceInvalidSubjectFilterError()
-				}
 				for inner, innertr := range src.SubjectTransforms {
 					if inner != outer && subjectIsSubsetMatch(tr.Source, innertr.Source) {
 						return StreamConfig{}, NewJSSourceOverlappingSubjectFiltersError()
@@ -1574,6 +1581,18 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account) (StreamConfi
 		}
 		if _, err := NewSubjectTransform(cfg.RePublish.Source, cfg.RePublish.Destination); err != nil {
 			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration for republish with transform from '%s' to '%s' not valid", cfg.RePublish.Source, cfg.RePublish.Destination))
+		}
+	}
+
+	// Check the subject transform if any
+	if cfg.SubjectTransform != nil {
+		if cfg.SubjectTransform.Source != _EMPTY_ && !IsValidSubject(cfg.SubjectTransform.Source) {
+			return StreamConfig{}, NewJSStreamTransformInvalidSourceError(fmt.Errorf("%w %s", ErrBadSubject, cfg.SubjectTransform.Source))
+		}
+
+		err := ValidateMapping(cfg.SubjectTransform.Source, cfg.SubjectTransform.Destination)
+		if err != nil {
+			return StreamConfig{}, NewJSStreamTransformInvalidDestinationError(err)
 		}
 	}
 
