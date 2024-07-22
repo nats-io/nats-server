@@ -1359,7 +1359,7 @@ func (o *consumer) setLeader(isLeader bool) {
 			return
 		}
 
-		if o.reqSub, err = o.subscribeInternal(o.nextMsgSubj, o.processUnpinRequest); err != nil {
+		if o.reqSub, err = o.subscribeInternal(o.unpinSubj, o.processUnpinRequest); err != nil {
 			o.mu.Unlock()
 			o.deleteWithoutAdvisory()
 			return
@@ -3412,6 +3412,7 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 			} else if o.currentNuid != _EMPTY_ {
 				// Check if we have a match on the currentNuid
 				if wr.priorityGroups != nil && wr.priorityGroups.Id == o.currentNuid {
+					// If we have a match, we do nothing here and will deliver the message later down the code path.
 				} else if wr.priorityGroups.Id == _EMPTY_ {
 					o.waiting.cycle()
 					if wr == lastRequest {
@@ -3514,6 +3515,7 @@ func (o *consumer) processUnpinRequest(_ *subscription, c *client, _ *Account, _
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.currentNuid = _EMPTY_
+	fmt.Printf("Unpinned request\n")
 }
 
 // processNextMsgReq will process a request for the next message available. A nil message payload means deliver
