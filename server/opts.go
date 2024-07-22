@@ -233,10 +233,10 @@ type RemoteLeafOpts struct {
 }
 
 type JSLimitOpts struct {
-	MaxRequestBatch int
-	MaxAckPending   int
-	MaxHAAssets     int
-	Duplicates      time.Duration
+	MaxRequestBatch int           `json:"max_request_batch,omitempty"`
+	MaxAckPending   int           `json:"max_ack_pending,omitempty"`
+	MaxHAAssets     int           `json:"max_ha_assets,omitempty"`
+	Duplicates      time.Duration `json:"max_duplicate_window,omitempty"`
 }
 
 type JSTpmOpts struct {
