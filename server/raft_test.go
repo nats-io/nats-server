@@ -852,3 +852,44 @@ func TestNRGTermDoesntRollBackToPtermOnCatchup(t *testing.T) {
 		require_NotEqual(t, n.node().Term(), 1)
 	}
 }
+
+func TestNRGNoResetOnAppendEntryResponse(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, _ := jsClientConnect(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
+	defer nc.Close()
+
+	rg := c.createRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+	c.waitOnAllCurrent()
+
+	leader := rg.leader().node().(*raft)
+	follower := rg.nonLeader().node().(*raft)
+	lsm := rg.leader().(*stateAdder)
+
+	// Subscribe for append entries that aren't heartbeats and respond to
+	// each of them as though it's a non-success and with a higher term.
+	// The higher term in this case is what would cause the leader previously
+	// to reset the entire log which it shouldn't do.
+	_, err := nc.Subscribe(fmt.Sprintf(raftAppendSubj, "TEST"), func(msg *nats.Msg) {
+		if ae, err := follower.decodeAppendEntry(msg.Data, nil, msg.Reply); err == nil && len(ae.entries) > 0 {
+			ar := newAppendEntryResponse(ae.term+1, ae.commit, follower.id, false)
+			require_NoError(t, msg.Respond(ar.encode(nil)))
+		}
+	})
+	require_NoError(t, err)
+
+	// Generate an append entry that the subscriber above can respond to.
+	c.waitOnAllCurrent()
+	lsm.proposeDelta(5)
+	rg.waitOnTotal(t, 5)
+
+	// The was-leader should now have stepped down, make sure that it
+	// didn't blow away its log in the process.
+	rg.lockAll()
+	defer rg.unlockAll()
+	require_Equal(t, leader.State(), Follower)
+	require_NotEqual(t, leader.pterm, 0)
+	require_NotEqual(t, leader.pindex, 0)
+}
