@@ -2795,7 +2795,7 @@ type JSInfo struct {
 	Now      time.Time       `json:"now"`
 	Disabled bool            `json:"disabled,omitempty"`
 	Config   JetStreamConfig `json:"config,omitempty"`
-	Limits   JSLimitOpts     `json:"limits"`
+	Limits   *JSLimitOpts    `json:"limits,omitempty"`
 	JetStreamStats
 	Streams   int              `json:"streams"`
 	Consumers int              `json:"consumers"`
@@ -2960,7 +2960,7 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 		return jsi, nil
 	}
 
-	jsi.Limits = s.getOpts().JetStreamLimits
+	jsi.Limits = &s.getOpts().JetStreamLimits
 
 	js.mu.RLock()
 	isLeader := js.cluster == nil || js.cluster.isLeader()
