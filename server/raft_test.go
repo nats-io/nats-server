@@ -365,15 +365,12 @@ func TestNRGSwitchStateClearsQueues(t *testing.T) {
 	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
 	rg.waitOnLeader()
 
-	sa := rg.leader().(*stateAdder)
-	n := sa.node().(*raft)
+	rg.lockAll()
+	defer rg.unlockAll()
 
-	for i := 0; i < 10_000; i++ {
-		sa.proposeDelta(1)
-	}
-
-	n.Lock()
-	defer n.Unlock()
+	n := rg.leader().node().(*raft)
+	n.prop.push(&Entry{})
+	n.resp.push(&appendEntryResponse{})
 
 	n.switchState(Follower)
 	require_Equal(t, n.prop.len(), 0)
