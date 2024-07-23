@@ -1047,6 +1047,11 @@ func (n *raft) InstallSnapshot(data []byte) error {
 		return errNoSnapAvailable
 	}
 
+	if len(data) == 0 {
+		n.warn("Not installing empty snapshot")
+		debug.PrintStack()
+	}
+
 	n.debug("Installing snapshot of %d bytes", len(data))
 
 	var term uint64
@@ -1074,6 +1079,12 @@ func (n *raft) InstallSnapshot(data []byte) error {
 // Install the snapshot.
 // Lock should be held.
 func (n *raft) installSnapshot(snap *snapshot) error {
+	if snap == nil {
+		n.warn("Not installing nil snapshot")
+		debug.PrintStack()
+		return nil
+	}
+
 	snapDir := filepath.Join(n.sd, snapshotsDir)
 	sn := fmt.Sprintf(snapFileT, snap.lastTerm, snap.lastIndex)
 	sfile := filepath.Join(snapDir, sn)
@@ -1085,6 +1096,7 @@ func (n *raft) installSnapshot(snap *snapshot) error {
 	if err != nil {
 		// We could set write err here, but if this is a temporary situation, too many open files etc.
 		// we want to retry and snapshots are not fatal.
+		n.warn("Writing snapshot to disk failed: %s", err)
 		return err
 	}
 

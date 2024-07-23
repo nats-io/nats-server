@@ -1528,8 +1528,12 @@ func (js *jetStream) metaSnapshot() []byte {
 		return nil
 	}
 
-	b, _ := json.Marshal(streams)
+	b, err := json.Marshal(streams)
 	js.mu.RUnlock()
+	if err != nil {
+		js.srv.Warnf("Marshalling meta snapshot failed: %s", err)
+		return nil
+	}
 
 	return s2.EncodeBetter(nil, b)
 }
