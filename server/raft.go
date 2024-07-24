@@ -1048,12 +1048,11 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	}
 
 	if len(data) == 0 {
-		n.warn("Not installing empty snapshot")
+		n.warn("Received an empty snapshot")
 		debug.PrintStack()
 	}
 
 	n.debug("Installing snapshot of %d bytes", len(data))
-
 	var term uint64
 	if ae, _ := n.loadEntry(n.applied); ae != nil {
 		// Use the term from the most recently applied entry if possible.

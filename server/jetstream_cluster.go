@@ -1393,7 +1393,9 @@ func (js *jetStream) monitorCluster() {
 		case isLeader = <-lch:
 			// For meta layer synchronize everyone to our state on becoming leader.
 			if isLeader && n.ApplyQ().len() == 0 {
-				n.SendSnapshot(js.metaSnapshot())
+				snap := js.metaSnapshot()
+				s.Debugf("Sending meta snapshot of %d bytes to group", len(snap))
+				n.SendSnapshot(snap)
 			}
 			// Process the change.
 			js.processLeaderChange(isLeader)
