@@ -5363,7 +5363,7 @@ func (mset *stream) checkInterestState() {
 func (mset *stream) isInterestRetention() bool {
 	mset.mu.RLock()
 	defer mset.mu.RUnlock()
-	return mset.cfg.Retention != LimitsPolicy
+	return mset.cfg.Retention == InterestPolicy
 }
 
 // NumConsumers reports on number of active consumers for this stream.
