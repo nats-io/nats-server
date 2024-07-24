@@ -2446,3 +2446,50 @@ func TestJetStreamClusterConsumerLeak(t *testing.T) {
 		t.Fatalf("Extra memory usage too high: %v", after.HeapInuse-before.HeapInuse)
 	}
 }
+
+func TestJetStreamClusterWQRoundRobinSubjectRetention(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "wq_stream",
+		Subjects:  []string{"something.>"},
+		Storage:   nats.FileStorage,
+		Retention: nats.WorkQueuePolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 100; i++ {
+		n := (i % 5) + 1
+		_, err := js.Publish(fmt.Sprintf("something.%d", n), nil)
+		require_NoError(t, err)
+	}
+
+	sub, err := js.PullSubscribe(
+		"something.5",
+		"wq_consumer_5",
+		nats.BindStream("wq_stream"),
+		nats.ConsumerReplicas(3),
+	)
+	require_NoError(t, err)
+
+	for {
+		msgs, _ := sub.Fetch(5)
+		if len(msgs) == 0 {
+			break
+		}
+		for _, msg := range msgs {
+			require_NoError(t, msg.AckSync())
+		}
+	}
+
+	si, err := js.StreamInfo("wq_stream")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 80)
+	require_Equal(t, si.State.NumDeleted, 20)
+	require_Equal(t, si.State.NumSubjects, 4)
+}
