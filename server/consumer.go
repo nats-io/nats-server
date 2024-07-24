@@ -4283,10 +4283,10 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 					pmsg.hdr = genHeader(pmsg.hdr, JSPullRequestNatsPinId, o.currentNuid)
 					pmsg.buf = append(pmsg.hdr, pmsg.msg...)
 				} else {
+					pmsg.hdr = genHeader(pmsg.hdr, JSPullRequestNatsPinId, o.currentNuid)
 					bufLen := len(pmsg.hdr) + len(pmsg.msg)
 					pmsg.buf = make([]byte, bufLen)
 					pmsg.buf = append(pmsg.hdr, pmsg.msg...)
-
 				}
 
 				sz = len(pmsg.subj) + len(ackReply) + len(pmsg.hdr) + len(pmsg.msg)

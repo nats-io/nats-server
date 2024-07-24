@@ -1230,7 +1230,7 @@ func TestJetStreamConsumerPinned(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
-	nc, _ := jsClientConnect(t, s)
+	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
 	acc := s.GlobalAccount()
@@ -1252,7 +1252,13 @@ func TestJetStreamConsumerPinned(t *testing.T) {
 	require_NoError(t, err)
 
 	for i := 0; i < 100; i++ {
-		sendStreamMsg(t, nc, fmt.Sprintf("foo.%d", i), fmt.Sprintf("msg-%d", i))
+		msg := nats.NewMsg(fmt.Sprintf("foo.%d", i))
+		msg.Data = []byte(fmt.Sprintf("msg-%d", i))
+		// Add headers to check if we properly serialize Nats-Pin-Id with and without headers.
+		if i%2 == 0 {
+			msg.Header.Add("Some-Header", "Value")
+		}
+		js.PublishMsg(msg)
 	}
 
 	req := JSApiConsumerGetNextRequest{Batch: 3, Expires: 5 * time.Second}
