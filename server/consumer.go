@@ -3515,7 +3515,6 @@ func (o *consumer) processUnpinRequest(_ *subscription, c *client, _ *Account, _
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.currentNuid = _EMPTY_
-	fmt.Printf("Unpinned request\n")
 }
 
 // processNextMsgReq will process a request for the next message available. A nil message payload means deliver
