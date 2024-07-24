@@ -4258,6 +4258,7 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	state = mset.state()
 	mset.delete()
 
+	req, _ = json.Marshal(rreq)
 	rmsg, err = nc2.Request(strings.ReplaceAll(JSApiStreamRestoreT, JSApiPrefix, "$JS.domain.API"), req, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error on snapshot request: %v", err)
