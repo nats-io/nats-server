@@ -1229,6 +1229,7 @@ type JetStreamVarz struct {
 	Config *JetStreamConfig `json:"config,omitempty"`
 	Stats  *JetStreamStats  `json:"stats,omitempty"`
 	Meta   *MetaClusterInfo `json:"meta,omitempty"`
+	Limits *JSLimitOpts     `json:"limits,omitempty"`
 }
 
 // ClusterOptsVarz contains monitoring cluster information
@@ -1454,6 +1455,7 @@ func (s *Server) updateJszVarz(js *jetStream, v *JetStreamVarz, doConfig bool) {
 		js.mu.RUnlock()
 	}
 	v.Stats = js.usageStats()
+	v.Limits = &s.getOpts().JetStreamLimits
 	if mg := js.getMetaGroup(); mg != nil {
 		if ci := s.raftNodeToClusterInfo(mg); ci != nil {
 			v.Meta = &MetaClusterInfo{Name: ci.Name, Leader: ci.Leader, Peer: getHash(ci.Leader), Size: mg.ClusterSize()}
@@ -1828,6 +1830,7 @@ func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
 		}
 		sv.Stats = v.Stats
 		sv.Meta = v.Meta
+		sv.Limits = v.Limits
 		s.mu.RUnlock()
 	}
 

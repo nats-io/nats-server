@@ -953,6 +953,7 @@ func (s *Server) sendStatsz(subj string) {
 				}
 			}
 		}
+		jStat.Limits = &s.getOpts().JetStreamLimits
 		m.Stats.JetStream = jStat
 		s.mu.RLock()
 	}
