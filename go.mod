@@ -15,3 +15,5 @@ require (
 	golang.org/x/sys v0.22.0
 	golang.org/x/time v0.5.0
 )
+
+require github.com/antithesishq/antithesis-sdk-go v0.3.8-default-no-op // indirect

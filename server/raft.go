@@ -33,6 +33,7 @@ import (
 
 	"github.com/nats-io/nats-server/v2/internal/fastrand"
 
+	"github.com/antithesishq/antithesis-sdk-go/assert"
 	"github.com/minio/highwayhash"
 )
 
@@ -3348,6 +3349,12 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.pindex = ae.pindex
 			n.pterm = ae.pterm
 			n.commit = ae.pindex
+			assert.Always(n.applied <= n.commit, "Applied must not be ahead of commit after catchup snapshot", map[string]any{
+				"pindex":  n.pindex,
+				"pterm":   n.pterm,
+				"commit":  n.commit,
+				"applied": n.applied,
+			})
 
 			if _, err := n.wal.Compact(n.pindex + 1); err != nil {
 				n.setWriteErrLocked(err)
