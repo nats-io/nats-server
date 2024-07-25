@@ -107,8 +107,6 @@ type Account struct {
 	// Guarantee that only one goroutine can be running either checkJetStreamMigrate
 	// or clearObserverState at a given time for this account to prevent interleaving.
 	jscmMu sync.Mutex
-	// Should we send NRG traffic inside this account instead of the system account.
-	accountNRG atomic.Bool
 }
 
 const (

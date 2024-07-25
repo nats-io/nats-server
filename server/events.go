@@ -494,11 +494,14 @@ RESET:
 					si.Version = VERSION
 					si.Time = time.Now().UTC()
 					si.Tags = tags
+					si.Flags = 0
 					if js {
 						// New capability based flags.
 						si.SetJetStreamEnabled()
 						si.SetBinaryStreamSnapshot()
-						si.SetAccountNRG()
+						if s.accountNRGAllowed.Load() {
+							si.SetAccountNRG()
+						}
 					}
 				}
 				var b []byte

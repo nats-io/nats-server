@@ -2133,7 +2133,7 @@ func parseJetStreamForAccount(v any, acc *Account, errors *[]error) error {
 				if !ok {
 					return &configErr{tk, fmt.Sprintf("Expected a boolean for %q, got %v", mk, mv)}
 				}
-				acc.accountNRG.Store(vv)
+				acc.js.accountNRG.Store(vv)
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{

@@ -360,6 +360,9 @@ type Server struct {
 
 	// Queue to process JS API requests that come from routes (or gateways)
 	jsAPIRoutedReqs *ipQueue[*jsAPIRoutedReq]
+
+	// Whether moving NRG traffic into accounts is permitted on this server.
+	accountNRGAllowed atomic.Bool
 }
 
 // For tracking JS nodes.
@@ -723,6 +726,10 @@ func NewServer(opts *Options) (*Server, error) {
 		leafNodeEnabled:    opts.LeafNode.Port != 0 || len(opts.LeafNode.Remotes) > 0,
 		syncOutSem:         make(chan struct{}, maxConcurrentSyncRequests),
 	}
+
+	// By default we'll allow account NRG.
+	// TODO: Maybe make it a configuration option?
+	s.accountNRGAllowed.Store(true)
 
 	// Fill up the maximum in flight syncRequests for this server.
 	// Used in JetStream catchup semantics.

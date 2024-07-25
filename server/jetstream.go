@@ -173,6 +173,9 @@ type jsAccount struct {
 	updatesSub *subscription
 	lupdate    time.Time
 	utimer     *time.Timer
+
+	// Should we send NRG traffic inside this account instead of the system account.
+	accountNRG atomic.Bool
 }
 
 // Track general usage for this account.

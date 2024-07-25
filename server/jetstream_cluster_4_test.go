@@ -2471,52 +2471,103 @@ func TestJetStreamClusterAccountNRG(t *testing.T) {
 	require_NoError(t, err)
 	rg := stream.node.(*raft)
 
-	// System account should have interest, but the global account
-	// shouldn't.
-	for _, s := range c.servers {
-		require_True(t, s.sys.account.sl.hasInterest(rg.asubj, true))
-		require_False(t, s.gacc.sl.hasInterest(rg.asubj, true))
-	}
+	t.Run("Disabled", func(t *testing.T) {
+		// Switch off account NRG on all servers in the cluster.
+		for _, s := range c.servers {
+			s.accountNRGAllowed.Store(false)
+			s.sendStatszUpdate()
+		}
+		time.Sleep(time.Millisecond * 100)
+		for _, s := range c.servers {
+			s.GlobalAccount().js.accountNRG.Store(false)
+			s.updateNRGAccountStatus()
+		}
 
-	// First of all check that the Raft traffic is in the system
-	// account, as we haven't moved it elsewhere yet.
-	{
-		sub, err := snc.SubscribeSync(rg.asubj)
-		require_NoError(t, err)
-		require_NoError(t, sub.AutoUnsubscribe(1))
+		// System account should have interest, but the global account
+		// shouldn't.
+		for _, s := range c.servers {
+			require_True(t, s.sys.account.sl.hasInterest(rg.asubj, true))
+			require_False(t, s.gacc.sl.hasInterest(rg.asubj, true))
+		}
 
-		msg, err := sub.NextMsg(time.Second * 3)
-		require_NoError(t, err)
-		require_True(t, msg != nil)
-	}
+		// First of all check that the Raft traffic is in the system
+		// account, as we haven't moved it elsewhere yet.
+		{
+			sub, err := snc.SubscribeSync(rg.asubj)
+			require_NoError(t, err)
+			require_NoError(t, sub.AutoUnsubscribe(1))
 
-	// Switch on account NRG on all servers in the cluster. Then
-	// we wait, as we will need statsz to be sent for all servers
-	// in the cluster.
-	for _, s := range c.servers {
-		s.GlobalAccount().accountNRG.Store(true)
-		s.updateNRGAccountStatus()
-	}
+			msg, err := sub.NextMsg(time.Second * 3)
+			require_NoError(t, err)
+			require_True(t, msg != nil)
+		}
+	})
 
-	// Now check that the traffic has moved into the asset acc.
-	// In this case the system account should no longer have
-	// subscriptions for those subjects.
-	{
-		sub, err := nc.SubscribeSync(rg.asubj)
-		require_NoError(t, err)
-		require_NoError(t, sub.AutoUnsubscribe(1))
+	t.Run("Mixed", func(t *testing.T) {
+		// Switch on account NRG on a single server in the cluster and
+		// leave it off on the rest.
+		for i, s := range c.servers {
+			s.accountNRGAllowed.Store(i == 0)
+			s.sendStatszUpdate()
+		}
+		time.Sleep(time.Millisecond * 100)
+		for i, s := range c.servers {
+			s.GlobalAccount().js.accountNRG.Store(i == 0)
+			s.updateNRGAccountStatus()
+		}
 
-		msg, err := sub.NextMsg(time.Second * 3)
-		require_NoError(t, err)
-		require_True(t, msg != nil)
-	}
+		// System account should have interest, but the global account
+		// shouldn't.
+		for _, s := range c.servers {
+			require_True(t, s.sys.account.sl.hasInterest(rg.asubj, true))
+			require_False(t, s.gacc.sl.hasInterest(rg.asubj, true))
+		}
 
-	// The global account should now have interest and the
-	// system account shouldn't.
-	for _, s := range c.servers {
-		require_False(t, s.sys.account.sl.hasInterest(rg.asubj, true))
-		require_True(t, s.gacc.sl.hasInterest(rg.asubj, true))
-	}
+		// First of all check that the Raft traffic is in the system
+		// account, as we haven't moved it elsewhere yet.
+		{
+			sub, err := snc.SubscribeSync(rg.asubj)
+			require_NoError(t, err)
+			require_NoError(t, sub.AutoUnsubscribe(1))
+
+			msg, err := sub.NextMsg(time.Second * 3)
+			require_NoError(t, err)
+			require_True(t, msg != nil)
+		}
+	})
+
+	t.Run("Enabled", func(t *testing.T) {
+		// Switch on account NRG on all servers in the cluster.
+		for _, s := range c.servers {
+			s.accountNRGAllowed.Store(true)
+			s.sendStatszUpdate()
+		}
+		time.Sleep(time.Millisecond * 100)
+		for _, s := range c.servers {
+			s.GlobalAccount().js.accountNRG.Store(true)
+			s.updateNRGAccountStatus()
+		}
+
+		// Now check that the traffic has moved into the asset acc.
+		// In this case the system account should no longer have
+		// subscriptions for those subjects.
+		{
+			sub, err := nc.SubscribeSync(rg.asubj)
+			require_NoError(t, err)
+			require_NoError(t, sub.AutoUnsubscribe(1))
+
+			msg, err := sub.NextMsg(time.Second * 3)
+			require_NoError(t, err)
+			require_True(t, msg != nil)
+		}
+
+		// The global account should now have interest and the
+		// system account shouldn't.
+		for _, s := range c.servers {
+			require_False(t, s.sys.account.sl.hasInterest(rg.asubj, true))
+			require_True(t, s.gacc.sl.hasInterest(rg.asubj, true))
+		}
+	})
 }
 
 func TestJetStreamClusterWQRoundRobinSubjectRetention(t *testing.T) {

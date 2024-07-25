@@ -550,14 +550,18 @@ func (n *raft) RecreateInternalSubs() error {
 
 func (n *raft) recreateInternalSubsLocked() error {
 	// Is account NRG enabled in this account?
-	var acc bool
-	if a, _ := n.s.lookupAccount(n.accName); a != nil {
-		acc = a.accountNRG.Load()
+	acc := n.s.accountNRGAllowed.Load()
+	if acc {
+		// Check whether the specific account has account NRG enabled.
+		if a, _ := n.s.lookupAccount(n.accName); a != nil && a.js != nil {
+			acc = a.js.accountNRG.Load()
+		}
 	}
-
-	// Check whether the peers in this group all claim to support
-	// moving the NRG traffic into the account.
-	acc = n.checkAccountNRGStatus(acc)
+	if acc {
+		// Check whether the peers in this group all claim to support
+		// moving the NRG traffic into the account.
+		acc = n.checkAccountNRGStatus(acc)
+	}
 	if n.aesub != nil && n.inAcc == acc {
 		// Subscriptions already exist and the account NRG state
 		// hasn't changed.
