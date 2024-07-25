@@ -360,9 +360,6 @@ type Server struct {
 
 	// Queue to process JS API requests that come from routes (or gateways)
 	jsAPIRoutedReqs *ipQueue[*jsAPIRoutedReq]
-
-	// Whether account NRG is supported cluster-wide or not.
-	accountNRG atomic.Bool
 }
 
 // For tracking JS nodes.
@@ -2334,7 +2331,6 @@ func (s *Server) Start() {
 			Domain:       opts.JetStreamDomain,
 			CompressOK:   true,
 			UniqueTag:    opts.JetStreamUniqueTag,
-			AccountNRG:   opts.JetStreamAccountNRG,
 		}
 		if err := s.EnableJetStream(cfg); err != nil {
 			s.Fatalf("Can't start JetStream: %v", err)

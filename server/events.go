@@ -925,7 +925,6 @@ func (s *Server) sendStatsz(subj string) {
 	// JetStream
 	if js := s.js.Load(); js != nil {
 		jStat := &JetStreamVarz{}
-		jStat.AccountNRGActive = s.accountNRG.Load()
 		s.mu.RUnlock()
 		js.mu.RLock()
 		c := js.config

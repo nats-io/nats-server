@@ -320,7 +320,6 @@ type Options struct {
 	JetStreamLimits       JSLimitOpts
 	JetStreamTpm          JSTpmOpts
 	JetStreamMaxCatchup   int64
-	JetStreamAccountNRG   bool
 	StoreDir              string            `json:"-"`
 	SyncInterval          time.Duration     `json:"-"`
 	SyncAlways            bool              `json:"-"`
@@ -2129,6 +2128,12 @@ func parseJetStreamForAccount(v any, acc *Account, errors *[]error) error {
 					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
 				}
 				jsLimits.MaxAckPending = int(vv)
+			case "account_nrg":
+				vv, ok := mv.(bool)
+				if !ok {
+					return &configErr{tk, fmt.Sprintf("Expected a boolean for %q, got %v", mk, mv)}
+				}
+				acc.accountNRG.Store(vv)
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{
@@ -2363,8 +2368,6 @@ func parseJetStream(v any, opts *Options, errors *[]error, warnings *[]error) er
 					return &configErr{tk, fmt.Sprintf("%s %s", strings.ToLower(mk), err)}
 				}
 				opts.JetStreamMaxCatchup = s
-			case "account_nrg":
-				opts.JetStreamAccountNRG = mv.(bool)
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{

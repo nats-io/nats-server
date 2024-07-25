@@ -549,10 +549,11 @@ func (n *raft) RecreateInternalSubs() error {
 }
 
 func (n *raft) recreateInternalSubsLocked() error {
-	// Is account NRG enabled at the server level?
-	n.s.optsMu.RLock()
-	acc := n.s.opts.JetStreamAccountNRG
-	n.s.optsMu.RUnlock()
+	// Is account NRG enabled in this account?
+	var acc bool
+	if a, _ := n.s.lookupAccount(n.accName); a != nil {
+		acc = a.accountNRG.Load()
+	}
 
 	// Check whether the peers in this group all claim to support
 	// moving the NRG traffic into the account.
