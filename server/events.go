@@ -1632,7 +1632,7 @@ func (s *Server) remoteServerUpdate(sub *subscription, c *client, _ *Account, su
 		si.BinaryStreamSnapshot(),
 		accountNRG,
 	})
-	if accountNRG != oldInfo.(nodeInfo).accountNRG {
+	if oldInfo == nil || accountNRG != oldInfo.(nodeInfo).accountNRG {
 		// One of the servers we received statsz from changed its mind about
 		// whether or not it supports in-account NRG, so update the groups
 		// with this information.
