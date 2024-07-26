@@ -2724,15 +2724,16 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 
 // JSzOptions are options passed to Jsz
 type JSzOptions struct {
-	Account    string `json:"account,omitempty"`
-	Accounts   bool   `json:"accounts,omitempty"`
-	Streams    bool   `json:"streams,omitempty"`
-	Consumer   bool   `json:"consumer,omitempty"`
-	Config     bool   `json:"config,omitempty"`
-	LeaderOnly bool   `json:"leader_only,omitempty"`
-	Offset     int    `json:"offset,omitempty"`
-	Limit      int    `json:"limit,omitempty"`
-	RaftGroups bool   `json:"raft,omitempty"`
+	Account          string `json:"account,omitempty"`
+	Accounts         bool   `json:"accounts,omitempty"`
+	Streams          bool   `json:"streams,omitempty"`
+	Consumer         bool   `json:"consumer,omitempty"`
+	Config           bool   `json:"config,omitempty"`
+	LeaderOnly       bool   `json:"leader_only,omitempty"`
+	Offset           int    `json:"offset,omitempty"`
+	Limit            int    `json:"limit,omitempty"`
+	RaftGroups       bool   `json:"raft,omitempty"`
+	StreamLeaderOnly bool   `json:"stream_leader_only,omitempty"`
 }
 
 // HealthzOptions are options passed to Healthz
@@ -2806,7 +2807,7 @@ type JSInfo struct {
 	AccountDetails []*AccountDetail `json:"account_details,omitempty"`
 }
 
-func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optCfg, optRaft bool) *AccountDetail {
+func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optCfg, optRaft, optStreamLeader bool) *AccountDetail {
 	jsa.mu.RLock()
 	acc := jsa.account
 	name := acc.GetName()
@@ -2851,6 +2852,10 @@ func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optCfg,
 			if optCfg {
 				c := stream.config()
 				cfg = &c
+			}
+			// Skip if we are only looking for stream leaders.
+			if optStreamLeader && ci != nil && ci.Leader != s.Name() {
+				continue
 			}
 			sdet := StreamDetail{
 				Name:    stream.name(),
@@ -2907,7 +2912,7 @@ func (s *Server) JszAccount(opts *JSzOptions) (*AccountDetail, error) {
 	if !ok {
 		return nil, fmt.Errorf("account %q not jetstream enabled", acc)
 	}
-	return s.accountDetail(jsa, opts.Streams, opts.Consumer, opts.Config, opts.RaftGroups), nil
+	return s.accountDetail(jsa, opts.Streams, opts.Consumer, opts.Config, opts.RaftGroups, opts.StreamLeaderOnly), nil
 }
 
 // helper to get cluster info from node via dummy group
@@ -3034,7 +3039,7 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 	}
 	// if wanted, obtain accounts/streams/consumer
 	for _, jsa := range accounts {
-		detail := s.accountDetail(jsa, opts.Streams, opts.Consumer, opts.Config, opts.RaftGroups)
+		detail := s.accountDetail(jsa, opts.Streams, opts.Consumer, opts.Config, opts.RaftGroups, opts.StreamLeaderOnly)
 		jsi.AccountDetails = append(jsi.AccountDetails, detail)
 	}
 	return jsi, nil
@@ -3078,16 +3083,22 @@ func (s *Server) HandleJsz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sleader, err := decodeBool(w, r, "stream-leader-only")
+	if err != nil {
+		return
+	}
+
 	l, err := s.Jsz(&JSzOptions{
-		r.URL.Query().Get("acc"),
-		accounts,
-		streams,
-		consumers,
-		config,
-		leader,
-		offset,
-		limit,
-		rgroups,
+		Account:          r.URL.Query().Get("acc"),
+		Accounts:         accounts,
+		Streams:          streams,
+		Consumer:         consumers,
+		Config:           config,
+		LeaderOnly:       leader,
+		Offset:           offset,
+		Limit:            limit,
+		RaftGroups:       rgroups,
+		StreamLeaderOnly: sleader,
 	})
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
