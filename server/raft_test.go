@@ -365,12 +365,26 @@ func TestNRGSwitchStateClearsQueues(t *testing.T) {
 	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
 	rg.waitOnLeader()
 
+	// Ensure there are no other nodes running that could
+	// send something into our IP queues or it may break the
+	// below assertions.
+	for _, n := range rg {
+		if !n.node().Leader() {
+			n.stop()
+		}
+	}
+
 	rg.lockAll()
 	defer rg.unlockAll()
 
 	n := rg.leader().node().(*raft)
+	require_Equal(t, n.prop.len(), 0)
+	require_Equal(t, n.resp.len(), 0)
+
 	n.prop.push(&Entry{})
 	n.resp.push(&appendEntryResponse{})
+	require_Equal(t, n.prop.len(), 1)
+	require_Equal(t, n.resp.len(), 1)
 
 	n.switchState(Follower)
 	require_Equal(t, n.prop.len(), 0)
