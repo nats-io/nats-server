@@ -2961,16 +2961,21 @@ func (o *consumer) isFiltered() bool {
 		return true
 	}
 
+	mset.mu.RLock()
+	var _subjects [128]string
+	subjects := append(_subjects[:0], mset.cfg.Subjects...)
+	mset.mu.RUnlock()
+
 	// `isFiltered` need to be performant, so we do
 	// as any checks as possible to avoid unnecessary work.
 	// Here we avoid iteration over slices if there is only one subject in stream
 	// and one filter for the consumer.
-	if len(mset.cfg.Subjects) == 1 && len(o.subjf) == 1 {
-		return mset.cfg.Subjects[0] != o.subjf[0].subject
+	if len(subjects) == 1 && len(o.subjf) == 1 {
+		return subjects[0] != o.subjf[0].subject
 	}
 
 	// if the list is not equal length, we can return early, as this is filtered.
-	if len(mset.cfg.Subjects) != len(o.subjf) {
+	if len(subjects) != len(o.subjf) {
 		return true
 	}
 
@@ -2982,7 +2987,7 @@ func (o *consumer) isFiltered() bool {
 	for _, val := range o.subjf {
 		cfilters[val.subject] = struct{}{}
 	}
-	for _, val := range mset.cfg.Subjects {
+	for _, val := range subjects {
 		if _, ok := cfilters[val]; !ok {
 			return true
 		}
