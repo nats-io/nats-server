@@ -1248,6 +1248,7 @@ func TestJetStreamConsumerPinned(t *testing.T) {
 		PriorityGroups: []string{"A"},
 		PriorityPolicy: PriorityPinnedClient,
 		AckPolicy:      AckExplicit,
+		PinnedTTL:      10 * time.Second,
 	})
 	require_NoError(t, err)
 
@@ -1326,6 +1327,22 @@ func TestJetStreamConsumerPinned(t *testing.T) {
 	msg, err = replies4.NextMsg(time.Second)
 	require_NoError(t, err)
 	require_NotNil(t, msg)
+
+	// Send a new request without pin ID, which should wit
+	req = JSApiConsumerGetNextRequest{Batch: 3, Expires: 30 * time.Second, PriorityGroups: PriorityGroups{}}
+	reqb, _ = json.Marshal(req)
+	reply = "FIVE"
+	replies5, err := nc.SubscribeSync(reply)
+	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply, reqb)
+
+	checkFor(t, 20*time.Second, 1*time.Second, func() error {
+		_, err = replies5.NextMsg(500 * time.Millisecond)
+		if err == nil {
+			return nil
+		}
+		return err
+	})
+
 }
 
 // Simple happy path test for consumer with overflow.

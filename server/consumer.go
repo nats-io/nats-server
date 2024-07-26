@@ -3590,6 +3590,7 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 					o.mu.Lock()
 					o.currentNuid = _EMPTY_
 					o.mu.Unlock()
+					o.signalNewMessages()
 				})
 			}
 		}
