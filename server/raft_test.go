@@ -463,7 +463,7 @@ func TestNRGUnsuccessfulVoteRequestDoesntResetElectionTimer(t *testing.T) {
 	leaderOriginal := leader.etlr
 	followerOriginal := follower.etlr
 	vr := &voteRequest{
-		term:      follower.term,
+		term:      follower.term - 1,
 		lastTerm:  follower.term - 1,
 		lastIndex: 0,
 		candidate: follower.id,
