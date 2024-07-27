@@ -3374,6 +3374,7 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 	}
 
 	needNewPin := o.currentNuid == _EMPTY_ && o.cfg.PriorityPolicy == PriorityPinnedClient
+	fmt.Printf("JNM: [%v] nextWaiting called, needNewPin: %v\n", time.Now().Format("15:04:05.000"), needNewPin)
 
 	lastRequest := o.waiting.tail
 	for wr := o.waiting.peek(); !o.waiting.isEmpty(); wr = o.waiting.peek() {
@@ -3562,6 +3563,8 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 		return
 	}
 
+	fmt.Printf("JNM: process next msg req:  req id:%v current id:%v\n", priorityGroups.Id, o.currentNuid)
+
 	// Check for request limits
 	if o.cfg.MaxRequestBatch > 0 && batchSize > o.cfg.MaxRequestBatch {
 		sendErr(409, fmt.Sprintf("Exceeded MaxRequestBatch of %d", o.cfg.MaxRequestBatch))
@@ -3583,11 +3586,17 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 			sendErr(423, "Nats-Pin-Id mismatch")
 			return
 		} else {
-			if o.pinnedTtl != nil {
+			fmt.Printf("JNM: [%v] processNextMsgRequest after else priorityGroups.Id: %v, currentNuid: %v\n", time.Now().Format("15:04:05.000"), priorityGroups.Id, o.currentNuid)
+			if o.pinnedTtl != nil && priorityGroups.Id == o.currentNuid && o.currentNuid != _EMPTY_ {
+				fmt.Printf("JNM: [%v] processNextMsgRequest after else pinned TTL != nil, reseting the timer\n", time.Now().Format("15:04:05.000"))
+
 				o.pinnedTtl.Reset(o.cfg.PinnedTTL)
-			} else {
+			} else if o.pinnedTtl == nil {
+				fmt.Printf("JNM: [%v] processNextMsgRequest after else pinned TTL IS NULL, creating a new timer\n", time.Now().Format("15:04:05.000"))
+
 				o.pinnedTtl = time.AfterFunc(o.cfg.PinnedTTL, func() {
 					o.mu.Lock()
+					fmt.Printf("JNM: [%v] pinnedTtl fired, resetting currentNuid to nothing: %v\n", time.Now().Format("15:04:05.000"), priorityGroups.Id)
 					o.currentNuid = _EMPTY_
 					o.mu.Unlock()
 					o.signalNewMessages()
