@@ -4516,6 +4516,25 @@ func TestMonitorJsz(t *testing.T) {
 			}
 		}
 	})
+	t.Run("stream-leader-only", func(t *testing.T) {
+		// First server
+		info := readJsInfo(monUrl1 + "?streams=true&stream-leader-only=1")
+		for _, a := range info.AccountDetails {
+			for _, s := range a.Streams {
+				if s.Cluster.Leader != srvs[0].serverName() {
+					t.Fatalf("expected stream leader to be %s but got %s", srvs[0].serverName(), s.Cluster.Leader)
+				}
+			}
+		}
+		info = readJsInfo(monUrl2 + "?streams=true&stream-leader-only=1")
+		for _, a := range info.AccountDetails {
+			for _, s := range a.Streams {
+				if s.Cluster.Leader != srvs[1].serverName() {
+					t.Fatalf("expected stream leader to be %s but got %s", srvs[0].serverName(), s.Cluster.Leader)
+				}
+			}
+		}
+	})
 	t.Run("consumers", func(t *testing.T) {
 		for _, url := range []string{monUrl1, monUrl2} {
 			info := readJsInfo(url + "?acc=ACC&consumers=true")
