@@ -7248,6 +7248,28 @@ func TestFileStoreCheckSkipFirstBlockBug(t *testing.T) {
 	require_NoError(t, err)
 }
 
+// https://github.com/nats-io/nats-server/issues/5705
+func TestFileStoreCheckSkipFirstBlockEmptyFilter(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 128},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := []byte("hello")
+	// Create 4 blocks, each block holds 2 msgs
+	for i := 0; i < 4; i++ {
+		fs.StoreMsg("foo.22.bar", nil, msg)
+		fs.StoreMsg("foo.22.baz", nil, msg)
+	}
+	require_Equal(t, fs.numMsgBlocks(), 4)
+
+	nbi, lbi := fs.checkSkipFirstBlock(_EMPTY_, false)
+	require_Equal(t, nbi, 0)
+	require_Equal(t, lbi, 3)
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////
