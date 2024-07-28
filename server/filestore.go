@@ -2610,6 +2610,11 @@ func (fs *fileStore) FilteredState(sseq uint64, subj string) SimpleState {
 // This is used to see if we can selectively jump start blocks based on filter subject and a floor block index.
 // Will return -1 if no matches at all.
 func (fs *fileStore) checkSkipFirstBlock(filter string, wc bool) (int, int) {
+	if filter == _EMPTY_ {
+		filter = fwcs
+		wc = true
+	}
+
 	start, stop := uint32(math.MaxUint32), uint32(0)
 	if wc {
 		fs.psim.Match(stringToBytes(filter), func(_ []byte, psi *psi) {
