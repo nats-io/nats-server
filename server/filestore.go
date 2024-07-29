@@ -6542,7 +6542,10 @@ func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64, sm *Store
 				// Nothing found in this block. We missed, if first block (bi) check psim.
 				// Similar to above if start <= first seq.
 				// TODO(dlc) - For v2 track these by filter subject since they will represent filtered consumers.
-				if i == bi {
+				// We should not do this at all if we are already on the last block.
+				// Also if we are a wildcard do not check if large subject space.
+				const wcMaxSizeToCheck = 64 * 1024
+				if i == bi && i < len(fs.blks)-1 && (!wc || fs.psim.Size() < wcMaxSizeToCheck) {
 					nbi, lbi := fs.checkSkipFirstBlock(filter, wc)
 					// Nothing available.
 					if nbi < 0 || lbi <= bi {

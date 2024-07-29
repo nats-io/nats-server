@@ -7629,6 +7629,37 @@ func Benchmark_FileStoreLoadNextMsgVerySparseMsgsInBetweenWithWildcard(b *testin
 	}
 }
 
+func Benchmark_FileStoreLoadNextManySubjectsWithWildcardNearLastBlock(b *testing.B) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: b.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*.*"}, Storage: FileStorage})
+	require_NoError(b, err)
+	defer fs.Stop()
+
+	// Small om purpose.
+	msg := []byte("ok")
+
+	// Make first msg one that would match as well.
+	fs.StoreMsg("foo.1.baz", nil, msg)
+	// Add in a bunch of msgs.
+	// We need to make sure we have a range of subjects that could kick in a linear scan.
+	for i := 0; i < 1_000_000; i++ {
+		subj := fmt.Sprintf("foo.%d.bar", rand.Intn(100_000)+2)
+		fs.StoreMsg(subj, nil, msg)
+	}
+	// Make last msg one that would match as well.
+	fs.StoreMsg("foo.1.baz", nil, msg)
+
+	b.ResetTimer()
+
+	var smv StoreMsg
+	for i := 0; i < b.N; i++ {
+		// Make sure not first seq.
+		_, _, err := fs.LoadNextMsg("foo.*.baz", true, 999_990, &smv)
+		require_NoError(b, err)
+	}
+}
+
 func Benchmark_FileStoreLoadNextMsgVerySparseMsgsLargeTail(b *testing.B) {
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: b.TempDir()},
