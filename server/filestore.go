@@ -4147,7 +4147,7 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		// All other more thorough cleanup will happen in syncBlocks logic.
 		// Note that we do not have to store empty records for the deleted, so don't use to calculate.
 		// TODO(dlc) - This should not be inline, should kick the sync routine.
-		if mb.rbytes > compactMinimum && mb.bytes*2 < mb.rbytes && !isLastBlock {
+		if !isLastBlock && mb.shouldCompactInline() {
 			mb.compact()
 		}
 	}
@@ -4207,6 +4207,21 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	}
 
 	return true, nil
+}
+
+// Tests whether we should try to compact this block while inline removing msgs.
+// We will want rbytes to be over the minimum and have a 2x potential savings.
+// Lock should be held.
+func (mb *msgBlock) shouldCompactInline() bool {
+	return mb.rbytes > compactMinimum && mb.bytes*2 < mb.rbytes
+}
+
+// Tests whether we should try to compact this block while running periodic sync.
+// We will want rbytes to be over the minimum and have a 2x potential savings.
+// Ignores 2MB minimum.
+// Lock should be held.
+func (mb *msgBlock) shouldCompactSync() bool {
+	return mb.bytes*2 < mb.rbytes
 }
 
 // This will compact and rewrite this block. This should only be called when we know we want to rewrite this block.
@@ -5102,6 +5117,9 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 		}
 		// Write index
 		mb.cache.idx = append(mb.cache.idx, uint32(index)|hbit)
+	} else {
+		// Make sure to account for tombstones in rbytes.
+		mb.rbytes += rl
 	}
 
 	fch, werr := mb.fch, mb.werr
@@ -5445,7 +5463,7 @@ func (fs *fileStore) syncBlocks() {
 		// Check if we should compact here as well.
 		// Do not compact last mb.
 		var needsCompact bool
-		if mb != lmb && mb.ensureRawBytesLoaded() == nil && mb.rbytes > mb.bytes {
+		if mb != lmb && mb.ensureRawBytesLoaded() == nil && mb.shouldCompactSync() {
 			needsCompact = true
 			markDirty = true
 		}
