@@ -31,6 +31,9 @@ import (
 	"github.com/nats-io/nats-server/v2/server/avl"
 	"github.com/nats-io/nuid"
 	"golang.org/x/time/rate"
+
+	// EXPERIMENTAL(skaar)
+	"github.com/nats-io/nats-server/v2/server/nhist"
 )
 
 // Headers sent with Request Timeout
@@ -398,6 +401,9 @@ type consumer struct {
 
 	// for stream signaling when multiple filters are set.
 	sigSubs []*subscription
+
+	// EXPERIMENTAL(skaar)
+	ackLatencyHist *nhist.HistogramRecorder
 }
 
 // A single subject filter.
@@ -924,6 +930,10 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	o.ackEventT = JSMetricConsumerAckPre + "." + o.stream + "." + o.name
 	o.nakEventT = JSAdvisoryConsumerMsgNakPre + "." + o.stream + "." + o.name
 	o.deliveryExcEventT = JSAdvisoryConsumerMaxDeliveryExceedPre + "." + o.stream + "." + o.name
+
+	// EXPERIMENTAL(skaar)
+	ackLatencySubject := "TRX.consumer.acklatency." + o.stream + "." + o.name
+	o.ackLatencyHist = nhist.NewHistogramRecorder(time.Second, time.Now().UTC(), "server:"+s.info.ID, ackLatencySubject)
 
 	if !isValidName(o.name) {
 		mset.mu.Unlock()
@@ -2826,6 +2836,28 @@ func (o *consumer) sampleAck(sseq, dseq, dc uint64) {
 	o.sendAdvisory(o.ackEventT, j)
 }
 
+func (o *consumer) ackLatency(sseq uint64) {
+	// fmt.Printf("Accumulated Histogram: %v\n", o.ackLatencyHist.DecStrings())
+	now := time.Now().UTC()
+	unow := now.UnixNano()
+	latency := unow - o.pending[sseq].Timestamp
+	o.ackLatencyHist.RecordDuration(time.Duration(latency))
+}
+
+func (o *consumer) sendAckLatency() {
+	// fmt.Printf("HIST: %+v\n", o.ackLatencyHist)
+	// fmt.Printf("CONSUMER COUNT: %v\n", o.ackLatencyHist.GetCount())
+
+	msg, err := o.ackLatencyHist.Marshal()
+	// fmt.Printf("hist: %+v\n", msg)
+
+	if err != nil {
+		fmt.Printf("json-error: %s\n", err)
+	}
+
+	o.sendAdvisory(o.ackLatencyHist.GetSubject(), msg)
+}
+
 func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample bool) {
 	o.mu.Lock()
 	if o.closed {
@@ -2854,6 +2886,8 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 			if doSample {
 				o.sampleAck(sseq, dseq, dc)
 			}
+			o.ackLatency(sseq)
+
 			if o.maxp > 0 && len(o.pending) >= o.maxp {
 				needSignal = true
 			}
@@ -3920,6 +3954,10 @@ func (o *consumer) processInboundAcks(qch chan struct{}) {
 	ticker := time.NewTicker(time.Minute + delta)
 	defer ticker.Stop()
 
+	// EXPERIMENTAL(skaar): consumer ack histograms
+	histTicker := time.NewTicker(o.ackLatencyHist.GetInterval())
+	defer histTicker.Stop()
+
 	for {
 		select {
 		case <-o.ackMsgs.ch:
@@ -3935,6 +3973,8 @@ func (o *consumer) processInboundAcks(qch chan struct{}) {
 			}
 		case <-ticker.C:
 			o.checkAckFloor()
+		case <-histTicker.C:
+			o.sendAckLatency()
 		case <-qch:
 			return
 		case <-s.quitCh:
