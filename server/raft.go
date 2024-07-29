@@ -3308,8 +3308,11 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.stepdownLocked(ae.leader)
 		}
 	} else if ae.term < n.term && !catchingUp && isNew {
-		n.debug("Ignoring AppendEntry from a leader (%s) with term %d which is less than ours", ae.leader, ae.term)
+		n.debug("Rejected AppendEntry from a leader (%s) with term %d which is less than ours", ae.leader, ae.term)
+		ar := newAppendEntryResponse(n.term, n.pindex, n.id, false)
 		n.Unlock()
+		n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
+		arPool.Put(ar)
 		return
 	}
 
