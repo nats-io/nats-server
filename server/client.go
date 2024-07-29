@@ -5436,7 +5436,9 @@ func (c *client) getAccAndResultFromCache() (*Account, *SublistResult) {
 
 	if !ok {
 		if c.kind == ROUTER && len(c.route.accName) > 0 {
-			acc = c.acc
+			if acc = c.acc; acc == nil {
+				return nil, nil
+			}
 		} else {
 			// Match correct account and sublist.
 			if acc, _ = c.srv.LookupAccount(string(c.pa.account)); acc == nil {
