@@ -43,6 +43,7 @@ import (
 	"time"
 
 	"github.com/nats-io/jwt/v2"
+	"github.com/nats-io/nats-server/v2/server/nhist"
 	"github.com/nats-io/nats-server/v2/server/sysmem"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
@@ -23868,4 +23869,57 @@ func TestJetStreamConsumerInfoNumPending(t *testing.T) {
 	ci, err = js.ConsumerInfo("LIMITS", "PULL")
 	require_NoError(t, err)
 	require_Equal(t, ci.NumPending, 100)
+}
+
+func TestJetStreamConsumerAckLatencyHistogram(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:         "skaar",
+		AckPolicy:       nats.AckExplicitPolicy,
+		FilterSubject:   "foo",
+		SampleFrequency: "0%",
+	})
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe("foo", "skaar")
+	require_NoError(t, err)
+
+	total := 2000
+	for i := 0; i < total; i++ {
+		_, err = js.Publish("foo", []byte("Hello"))
+		require_NoError(t, err)
+	}
+
+	msub, err := nc.SubscribeSync("TRX.consumer.acklatency.>")
+	require_NoError(t, err)
+
+	checkHistogram := func(msgLimit int) {
+		for _, m := range fetchMsgs(t, sub, msgLimit, time.Second) {
+			err = m.AckSync()
+			require_NoError(t, err)
+		}
+
+		mm, err := msub.NextMsg(time.Second)
+		require_NoError(t, err)
+
+		// Unpack HistogramRecorderMsg
+		hrm, err := nhist.Unmarshal(mm.Data)
+
+		count := hrm.Histogram.Count()
+
+		if count != uint64(msgLimit) {
+			t.Fatalf("Histogram only has %d of %d\n", count, msgLimit)
+		}
+	}
+	checkHistogram(1000)
+	checkHistogram(999)
+
 }
