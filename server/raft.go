@@ -3230,10 +3230,9 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	// another node has taken on the leader role already, so we should convert
 	// to a follower of that node instead.
 	if n.State() == Candidate {
-		// Ignore old terms, otherwise we might end up stepping down incorrectly.
-		// Needs to be ahead of our pterm (last log index), as an isolated node
-		// could have bumped its vote term up considerably past this point.
-		if ae.term >= n.pterm {
+		// If we have a leader in the current term or higher, we should stepdown,
+		// write the term and vote if the term of the request is higher.
+		if ae.term >= n.term {
 			// If the append entry term is newer than the current term, erase our
 			// vote.
 			if ae.term > n.term {
