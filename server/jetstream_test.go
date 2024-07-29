@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/nats-io/nats.go/jetstream"
 	"io"
 	"math"
 	"math/rand"
@@ -23868,4 +23869,68 @@ func TestJetStreamConsumerInfoNumPending(t *testing.T) {
 	ci, err = js.ConsumerInfo("LIMITS", "PULL")
 	require_NoError(t, err)
 	require_Equal(t, ci.NumPending, 100)
+}
+
+func TestJetStreamConsumerDeletePendingAcks(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	// Client for API requests.
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	ctx := context.Background()
+	js, err := jetstream.New(nc)
+	require_NoError(t, err)
+
+	stream, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: "test", Subjects: []string{"foo"}, Retention: jetstream.WorkQueuePolicy})
+	require_NoError(t, err)
+
+	// publish 100k messages to a working queue stream
+	for i := 0; i < 1000; i++ {
+		paf := make([]jetstream.PubAckFuture, 100)
+		for j := 0; j < 100; j++ {
+			paf[j], err = js.PublishAsync("foo", []byte("OK"))
+			require_NoError(t, err)
+		}
+		select {
+		case <-js.PublishAsyncComplete():
+			for future := range paf {
+				select {
+				case <-paf[future].Ok():
+					continue
+				case err := <-paf[future].Err():
+					require_NoError(t, err)
+				}
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("Async JS publishing doesn't complete")
+		}
+	}
+
+	var done = make(chan struct{}, 1)
+	var received = 0
+
+	var mh jetstream.MessageHandler = func(m jetstream.Msg) {
+		m.Ack()
+		received++
+		if received == 100000 {
+			done <- struct{}{}
+		}
+	}
+
+	// create a consumer
+	c, err := js.CreateConsumer(ctx, "test", jetstream.ConsumerConfig{Durable: "durable", AckPolicy: jetstream.AckExplicitPolicy})
+	require_NoError(t, err)
+	// consume and ack the 100k messages
+	cc, err := c.Consume(mh)
+	require_NoError(t, err)
+	<-done
+	cc.Drain()
+	err = js.DeleteConsumer(ctx, "test", "durable")
+	require_NoError(t, err)
+	// check the stream size
+	si, err := stream.Info(ctx)
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 0)
 }
