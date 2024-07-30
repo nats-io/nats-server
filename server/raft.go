@@ -553,8 +553,14 @@ func (n *raft) recreateInternalSubsLocked() error {
 	acc := n.s.accountNRGAllowed.Load()
 	if acc {
 		// Check whether the specific account has account NRG enabled.
-		if a, _ := n.s.lookupAccount(n.accName); a != nil && a.js != nil {
-			acc = a.js.accountNRG.Load()
+		if a, _ := n.s.lookupAccount(n.accName); a != nil {
+			a.mu.RLock()
+			ajs := a.js
+			a.mu.RUnlock()
+			// Check whether the specific account has JetStream enabled.
+			if ajs != nil {
+				acc = ajs.accountNRG.Load()
+			}
 		}
 	}
 	if acc {
