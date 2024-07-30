@@ -2128,7 +2128,7 @@ func parseJetStreamForAccount(v any, acc *Account, errors *[]error) error {
 					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
 				}
 				jsLimits.MaxAckPending = int(vv)
-			case "account_nrg":
+			case "nrg_in_account":
 				vv, ok := mv.(bool)
 				if !ok {
 					return &configErr{tk, fmt.Sprintf("Expected a boolean for %q, got %v", mk, mv)}

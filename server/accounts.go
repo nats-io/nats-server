@@ -3683,6 +3683,14 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		a.enableAllJetStreamServiceImportsAndMappings()
 	}
 
+	if a.js != nil {
+		// Check whether the account NRG status changed. If it has then we need to notify the
+		// Raft groups running on the system so that they can move their subs if needed.
+		if wasAccountNRG := a.js.accountNRG.Swap(ac.AccountNRG); wasAccountNRG != ac.AccountNRG {
+			s.updateNRGAccountStatus()
+		}
+	}
+
 	for i, c := range clients {
 		a.mu.RLock()
 		exceeded := a.mconns != jwt.NoLimit && i >= int(a.mconns)

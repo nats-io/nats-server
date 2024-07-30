@@ -399,7 +399,7 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 	// If we fail to do this for some reason then this is fatal — we cannot
 	// continue setting up or the Raft node may be partially/totally isolated.
 	if err := n.RecreateInternalSubs(); err != nil {
-		n.shutdown(true)
+		n.shutdown(false)
 		return nil, err
 	}
 

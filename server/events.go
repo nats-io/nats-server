@@ -1710,7 +1710,9 @@ func (s *Server) updateNRGAccountStatus() {
 	for _, n := range raftNodes {
 		// In the event that the node is happy that all nodes that
 		// it cares about haven't changed, this will be a no-op.
-		n.RecreateInternalSubs()
+		if err := n.RecreateInternalSubs(); err != nil {
+			n.Stop()
+		}
 	}
 }
 
