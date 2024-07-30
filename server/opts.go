@@ -257,6 +257,9 @@ type AuthCallout struct {
 	// XKey is a public xkey for the authorization service.
 	// This will enable encryption for server requests and the authorization service responses.
 	XKey string
+	// AllowedAccounts that will be delegated to the auth service.
+	// If empty then all accounts will be delegated.
+	AllowedAccounts []string
 }
 
 // Options block for nats-server.
@@ -886,6 +889,21 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 
 	for k, v := range m {
 		o.processConfigFileLine(k, v, &errors, &warnings)
+	}
+
+	// Post-process: check auth callout allowed accounts against configured accounts.
+	if o.AuthCallout != nil {
+		accounts := make(map[string]struct{})
+		for _, acc := range o.Accounts {
+			accounts[acc.Name] = struct{}{}
+		}
+
+		for _, acc := range o.AuthCallout.AllowedAccounts {
+			if _, ok := accounts[acc]; !ok {
+				err := &configErr{nil, fmt.Sprintf("auth_callout allowed account %q not found in configured accounts", acc)}
+				errors = append(errors, err)
+			}
+		}
 	}
 
 	if len(errors) > 0 || len(warnings) > 0 {
@@ -4173,6 +4191,15 @@ func parseAuthCallout(mv any, errors *[]error) (*AuthCallout, error) {
 			ac.XKey = mv.(string)
 			if !nkeys.IsValidPublicCurveKey(ac.XKey) {
 				return nil, &configErr{tk, fmt.Sprintf("Expected callout xkey to be a valid public xkey, got %q", ac.XKey)}
+			}
+		case "allowed_accounts":
+			aua, ok := mv.([]any)
+			if !ok {
+				return nil, &configErr{tk, fmt.Sprintf("Expected allowed accounts field to be an array, got %T", v)}
+			}
+			for _, uv := range aua {
+				_, uv = unwrapValue(uv, &lt)
+				ac.AllowedAccounts = append(ac.AllowedAccounts, uv.(string))
 			}
 		default:
 			if !tk.IsUsedVariable() {

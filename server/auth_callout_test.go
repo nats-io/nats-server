@@ -331,6 +331,88 @@ func TestAuthCalloutMultiAccounts(t *testing.T) {
 	require_True(t, userInfo.Account == "BAZ")
 }
 
+func TestAuthCalloutAllowedAccounts(t *testing.T) {
+	conf := `
+		listen: "127.0.0.1:-1"
+		server_name: ZZ
+		accounts {
+			AUTH { users [ {user: "auth", password: "pwd"} ] }
+			FOO { users [ {user: "foo", password: "pwd"} ] }
+			BAR {}
+			SYS { users [ {user: "sys", password: "pwd"} ] }
+		}
+		system_account: SYS
+		no_auth_user: foo
+		authorization {
+			timeout: 1s
+			auth_callout {
+				# Needs to be a public account nkey, will work for both server config and operator mode.
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				account: AUTH
+				auth_users: [ auth ]
+				allowed_accounts: [ BAR ]
+			}
+		}
+	`
+	handler := func(m *nats.Msg) {
+		t.Helper()
+		user, si, ci, opts, _ := decodeAuthRequest(t, m.Data)
+		require_True(t, si.Name == "ZZ")
+		require_True(t, ci.Host == "127.0.0.1")
+		// Allow dlc user and map to the BAZ account.
+		if opts.Username == "dlc" && opts.Password == "zzz" {
+			ujwt := createAuthUser(t, user, _EMPTY_, "BAR", "", nil, 0, nil)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+		} else {
+			// Nil response signals no authentication.
+			m.Respond(nil)
+		}
+	}
+
+	check := func(at *authTest, user, password, account string) {
+		t.Helper()
+
+		var nc *nats.Conn
+		defer nc.Close()
+		// Assume no auth user.
+		if password == "" {
+			nc = at.Connect()
+		} else {
+			nc = at.Connect(nats.UserInfo(user, password))
+		}
+
+		resp, err := nc.Request(userDirectInfoSubj, nil, time.Second)
+		require_NoError(t, err)
+		response := ServerAPIResponse{Data: &UserInfo{}}
+		err = json.Unmarshal(resp.Data, &response)
+		require_NoError(t, err)
+		userInfo := response.Data.(*UserInfo)
+
+		require_True(t, userInfo.UserID == user)
+		require_True(t, userInfo.Account == account)
+	}
+
+	tests := []struct {
+		user     string
+		password string
+		account  string
+	}{
+		{"dlc", "zzz", "BAR"},
+		{"foo", "", "FOO"},
+		{"sys", "pwd", "SYS"},
+	}
+
+	at := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer at.Cleanup()
+
+	for _, test := range tests {
+		t.Run(test.user, func(t *testing.T) {
+			at.t = t
+			check(at, test.user, test.password, test.account)
+		})
+	}
+}
+
 func TestAuthCalloutClientTLSCerts(t *testing.T) {
 	conf := `
 		listen: "localhost:-1"
