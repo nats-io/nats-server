@@ -606,12 +606,38 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 			}
 			return
 		}
-		// We have a juc defined here, check account.
+		// We have a juc, check if externally managed, i.e. should be delegated
+		// to the auth callout service.
 		if juc != nil && !acc.hasExternalAuth() {
 			if !authorized {
 				s.sendAccountAuthErrorEvent(c, c.acc, reason)
 			}
 			return
+		}
+		// Check config-mode. The global account is a condition since users that
+		// are not found in the config are implicitly bound to the global account.
+		// This means those users should be implicitly delegated to auth callout
+		// if configured.
+		if juc == nil && opts.AuthCallout != nil && c.acc.Name != globalAccountName {
+			// If no allowed accounts are defined, then all accounts are in scope.
+			// Otherwise see if the account is in the list.
+			delegated := len(opts.AuthCallout.AllowedAccounts) == 0
+			if !delegated {
+				for _, n := range opts.AuthCallout.AllowedAccounts {
+					if n == c.acc.Name {
+						delegated = true
+						break
+					}
+				}
+			}
+
+			// Not delegated, so return with previous authorized result.
+			if !delegated {
+				if !authorized {
+					s.sendAccountAuthErrorEvent(c, c.acc, reason)
+				}
+				return
+			}
 		}
 
 		// We have auth callout set here.

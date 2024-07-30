@@ -3292,6 +3292,24 @@ func TestAuthorizationAndAccountsMisconfigurations(t *testing.T) {
 			`,
 			"Can not have a token",
 		},
+		{
+			"auth callout allowed accounts",
+			`
+			accounts {
+				AUTH { users = [ {user: "auth", password: "auth"} ] }
+				FOO {}
+			}
+			authorization {
+				auth_callout {
+					issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+					account: AUTH
+					auth_users: [ auth ]
+					allowed_accounts: [ BAR ]
+				}
+			}
+			`,
+			"auth_callout allowed account \"BAR\" not found in configured accounts",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf := createConfFile(t, []byte(test.config))
