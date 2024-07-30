@@ -738,15 +738,10 @@ func TestClientConnectToRoutePort(t *testing.T) {
 }
 
 type checkDuplicateRouteLogger struct {
-	sync.Mutex
+	DummyLogger
 	gotDuplicate bool
 }
 
-func (l *checkDuplicateRouteLogger) Noticef(format string, v ...any) {}
-func (l *checkDuplicateRouteLogger) Errorf(format string, v ...any)  {}
-func (l *checkDuplicateRouteLogger) Warnf(format string, v ...any)   {}
-func (l *checkDuplicateRouteLogger) Fatalf(format string, v ...any)  {}
-func (l *checkDuplicateRouteLogger) Tracef(format string, v ...any)  {}
 func (l *checkDuplicateRouteLogger) Debugf(format string, v ...any) {
 	l.Lock()
 	defer l.Unlock()
@@ -3357,7 +3352,8 @@ func TestRoutePoolAndPerAccountWithOlderServer(t *testing.T) {
 
 type testDuplicateRouteLogger struct {
 	DummyLogger
-	ch chan struct{}
+	ch    chan struct{}
+	count int
 }
 
 func (l *testDuplicateRouteLogger) Noticef(format string, args ...any) {
@@ -3369,6 +3365,9 @@ func (l *testDuplicateRouteLogger) Noticef(format string, args ...any) {
 	case l.ch <- struct{}{}:
 	default:
 	}
+	l.Mutex.Lock()
+	l.count++
+	l.Mutex.Unlock()
 }
 
 // This test will make sure that a server with pooling does not
@@ -4226,5 +4225,178 @@ func TestRouteNoRaceOnClusterNameNegotiation(t *testing.T) {
 		checkClusterFormed(t, s1, s2)
 		s2.Shutdown()
 		s1.Shutdown()
+	}
+}
+
+func TestRouteImplicitNotTooManyDuplicates(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		pooling     bool
+		compression bool
+	}{
+		{"no pooling-no compression", false, false},
+		{"no pooling-compression", false, true},
+		{"pooling-no compression", true, false},
+		{"pooling-compression", true, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			o := DefaultOptions()
+			o.ServerName = "SEED"
+			if !test.pooling {
+				o.Cluster.PoolSize = -1
+			}
+			if !test.compression {
+				o.Cluster.Compression.Mode = CompressionOff
+			}
+			seed := RunServer(o)
+			defer seed.Shutdown()
+
+			dl := &testDuplicateRouteLogger{}
+
+			servers := make([]*Server, 0, 10)
+			for i := 0; i < cap(servers); i++ {
+				io := DefaultOptions()
+				io.ServerName = fmt.Sprintf("IMPLICIT_%d", i+1)
+				io.NoLog = false
+				io.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o.Cluster.Port))
+				if !test.pooling {
+					io.Cluster.PoolSize = -1
+				}
+				if !test.compression {
+					io.Cluster.Compression.Mode = CompressionOff
+				}
+				is, err := NewServer(io)
+				require_NoError(t, err)
+				// Will do defer of shutdown later.
+				is.SetLogger(dl, true, false)
+				is.Start()
+				servers = append(servers, is)
+			}
+
+			allServers := make([]*Server, 0, len(servers)+1)
+			allServers = append(allServers, seed)
+			allServers = append(allServers, servers...)
+
+			// Let's make sure that we wait for each server to be ready.
+			for _, s := range allServers {
+				if !s.ReadyForConnections(2 * time.Second) {
+					t.Fatalf("Server %q is not ready for connections", s)
+				}
+			}
+
+			// Do the defer of shutdown of all servers this way instead of individual
+			// defers when starting them. It takes less time for the servers to shutdown
+			// this way.
+			defer func() {
+				for _, s := range allServers {
+					s.Shutdown()
+				}
+			}()
+			checkClusterFormed(t, allServers...)
+
+			dl.Mutex.Lock()
+			count := dl.count
+			dl.Mutex.Unlock()
+			// Getting duplicates should not be considered fatal, it is an optimization
+			// to reduce the occurrences of those. But to make sure we don't have a
+			// regression, we will fail the test if we get say more than 20 or so (
+			// without the code change, we would get more than 500 of duplicates).
+			if count > 20 {
+				t.Fatalf("Got more duplicates than anticipated: %v", count)
+			}
+		})
+	}
+}
+
+func TestRouteImplicitJoinsSeparateGroups(t *testing.T) {
+	// The test TestRouteImplicitNotTooManyDuplicates makes sure that we do
+	// not have too many duplicate routes cases when processing implicit routes.
+	// This test is to ensure that the code changes to reduce the number
+	// of duplicate routes does not prevent the formation of the cluster
+	// with the given setup (which is admittedly not good since a disconnect
+	// between some routes would not result in a reconnect leading to a full mesh).
+	// Still, original code was able to create the original full mesh, so we want
+	// to make sure that this is still possible.
+	for _, test := range []struct {
+		name        string
+		pooling     bool
+		compression bool
+	}{
+		{"no pooling-no compression", false, false},
+		{"no pooling-compression", false, true},
+		{"pooling-no compression", true, false},
+		{"pooling-compression", true, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			setOpts := func(o *Options) {
+				if !test.pooling {
+					o.Cluster.PoolSize = -1
+				}
+				if !test.compression {
+					o.Cluster.Compression.Mode = CompressionOff
+				}
+			}
+
+			// Create a cluster s1/s2/s3
+			o1 := DefaultOptions()
+			o1.ServerName = "S1"
+			setOpts(o1)
+			s1 := RunServer(o1)
+			defer s1.Shutdown()
+
+			o2 := DefaultOptions()
+			o2.ServerName = "S2"
+			setOpts(o2)
+			o2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port))
+			s2 := RunServer(o2)
+			defer s2.Shutdown()
+
+			tmpl := `
+				server_name: "S3"
+				listen: "127.0.0.1:-1"
+				cluster {
+					name: "abc"
+					listen: "127.0.0.1:-1"
+					%s
+					%s
+					routes: ["nats://127.0.0.1:%d"%s]
+				}
+			`
+			var poolCfg string
+			var compressionCfg string
+			if !test.pooling {
+				poolCfg = "pool_size: -1"
+			}
+			if !test.compression {
+				compressionCfg = "compression: off"
+			}
+			conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, poolCfg, compressionCfg, o1.Cluster.Port, _EMPTY_)))
+			s3, _ := RunServerWithConfig(conf)
+			defer s3.Shutdown()
+
+			checkClusterFormed(t, s1, s2, s3)
+
+			// Now s4 and s5 connected to each other, but not linked to s1/s2/s3
+			o4 := DefaultOptions()
+			o4.ServerName = "S4"
+			setOpts(o4)
+			s4 := RunServer(o4)
+			defer s4.Shutdown()
+
+			o5 := DefaultOptions()
+			o5.ServerName = "S5"
+			setOpts(o5)
+			o5.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o4.Cluster.Port))
+			s5 := RunServer(o5)
+			defer s5.Shutdown()
+
+			checkClusterFormed(t, s4, s5)
+
+			// Now add a route from s3 to s4 and make sure that we have a full mesh.
+			routeToS4 := fmt.Sprintf(`, "nats://127.0.0.1:%d"`, o4.Cluster.Port)
+			reloadUpdateConfig(t, s3, conf, fmt.Sprintf(tmpl, poolCfg, compressionCfg, o1.Cluster.Port, routeToS4))
+
+			checkClusterFormed(t, s1, s2, s3, s4, s5)
+		})
 	}
 }

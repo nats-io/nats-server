@@ -7248,6 +7248,94 @@ func TestFileStoreCheckSkipFirstBlockBug(t *testing.T) {
 	require_NoError(t, err)
 }
 
+// https://github.com/nats-io/nats-server/issues/5705
+func TestFileStoreCheckSkipFirstBlockEmptyFilter(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 128},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := []byte("hello")
+	// Create 4 blocks, each block holds 2 msgs
+	for i := 0; i < 4; i++ {
+		fs.StoreMsg("foo.22.bar", nil, msg)
+		fs.StoreMsg("foo.22.baz", nil, msg)
+	}
+	require_Equal(t, fs.numMsgBlocks(), 4)
+
+	nbi, lbi := fs.checkSkipFirstBlock(_EMPTY_, false)
+	require_Equal(t, nbi, 0)
+	require_Equal(t, lbi, 3)
+}
+
+// https://github.com/nats-io/nats-server/issues/5702
+func TestFileStoreTombstoneRbytes(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 1024},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Block can hold 24 msgs.
+	// So will fill one block and half of the other
+	msg := []byte("hello")
+	for i := 0; i < 34; i++ {
+		fs.StoreMsg("foo.22", nil, msg)
+	}
+	require_True(t, fs.numMsgBlocks() > 1)
+	// Now delete second half of first block which will place tombstones in second blk.
+	for seq := 11; seq <= 24; seq++ {
+		fs.RemoveMsg(uint64(seq))
+	}
+	// Now check that rbytes has been properly accounted for in second block.
+	fs.mu.RLock()
+	blk := fs.blks[1]
+	fs.mu.RUnlock()
+
+	blk.mu.RLock()
+	bytes, rbytes := blk.bytes, blk.rbytes
+	blk.mu.RUnlock()
+	require_True(t, rbytes > bytes)
+}
+
+func TestFileStoreMsgBlockShouldCompact(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// 127 fit into a block.
+	msg := bytes.Repeat([]byte("Z"), 64*1024)
+	for i := 0; i < 190; i++ {
+		fs.StoreMsg("foo.22", nil, msg)
+	}
+	require_True(t, fs.numMsgBlocks() > 1)
+	// Now delete second half of first block which will place tombstones in second blk.
+	for seq := 64; seq <= 127; seq++ {
+		fs.RemoveMsg(uint64(seq))
+	}
+	fs.mu.RLock()
+	fblk := fs.blks[0]
+	sblk := fs.blks[1]
+	fs.mu.RUnlock()
+
+	fblk.mu.RLock()
+	bytes, rbytes := fblk.bytes, fblk.rbytes
+	shouldCompact := fblk.shouldCompactInline()
+	fblk.mu.RUnlock()
+	// Should have tripped compaction already.
+	require_Equal(t, bytes, rbytes)
+	require_False(t, shouldCompact)
+
+	sblk.mu.RLock()
+	shouldCompact = sblk.shouldCompactInline()
+	sblk.mu.RUnlock()
+	require_False(t, shouldCompact)
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////
@@ -7502,6 +7590,37 @@ func Benchmark_FileStoreLoadNextMsgVerySparseMsgsInBetweenWithWildcard(b *testin
 	for i := 0; i < b.N; i++ {
 		// Make sure not first seq.
 		_, _, err := fs.LoadNextMsg("foo.*.baz", true, 2, &smv)
+		require_NoError(b, err)
+	}
+}
+
+func Benchmark_FileStoreLoadNextManySubjectsWithWildcardNearLastBlock(b *testing.B) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: b.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*.*"}, Storage: FileStorage})
+	require_NoError(b, err)
+	defer fs.Stop()
+
+	// Small om purpose.
+	msg := []byte("ok")
+
+	// Make first msg one that would match as well.
+	fs.StoreMsg("foo.1.baz", nil, msg)
+	// Add in a bunch of msgs.
+	// We need to make sure we have a range of subjects that could kick in a linear scan.
+	for i := 0; i < 1_000_000; i++ {
+		subj := fmt.Sprintf("foo.%d.bar", rand.Intn(100_000)+2)
+		fs.StoreMsg(subj, nil, msg)
+	}
+	// Make last msg one that would match as well.
+	fs.StoreMsg("foo.1.baz", nil, msg)
+
+	b.ResetTimer()
+
+	var smv StoreMsg
+	for i := 0; i < b.N; i++ {
+		// Make sure not first seq.
+		_, _, err := fs.LoadNextMsg("foo.*.baz", true, 999_990, &smv)
 		require_NoError(b, err)
 	}
 }
