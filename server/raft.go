@@ -33,6 +33,7 @@ import (
 
 	"github.com/nats-io/nats-server/v2/internal/fastrand"
 
+	"github.com/antithesishq/antithesis-sdk-go/assert"
 	"github.com/minio/highwayhash"
 )
 
@@ -2775,6 +2776,16 @@ func (n *raft) applyCommit(index uint64) error {
 		case EntryPeerState:
 			if n.State() != Leader {
 				if ps, err := decodePeerState(e.Data); err == nil {
+					assert.AlwaysOrUnreachable(
+						len(ps.knownPeers) >= len(n.peers),
+						"PeerState should not have removed peers",
+						map[string]any{
+							"group":        n.group,
+							"id":           n.id,
+							"peers_before": len(n.peers),
+							"peers_after":  len(ps.knownPeers),
+						},
+					)
 					n.processPeerState(ps)
 				}
 			}
@@ -3086,6 +3097,15 @@ func (n *raft) truncateWAL(term, index uint64) {
 
 	if term == 0 && index == 0 {
 		n.warn("Resetting WAL state")
+		assert.Unreachable("Should not have reset WAL", map[string]any{
+			"group":   n.group,
+			"id":      n.id,
+			"term":    n.term,
+			"pterm":   n.pterm,
+			"pindex":  n.pindex,
+			"commit":  n.commit,
+			"applied": n.applied,
+		})
 	}
 
 	defer func() {
