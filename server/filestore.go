@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"io/fs"
 	"math"
 	"net"
 	"os"
@@ -765,9 +766,7 @@ func (fs *fileStore) setupAEK() error {
 		if _, err := os.Stat(keyFile); err != nil && !os.IsNotExist(err) {
 			return err
 		}
-		<-dios
-		err = os.WriteFile(keyFile, encrypted, defaultFilePerms)
-		dios <- struct{}{}
+		err = fs.writeFileWithOptionalSync(keyFile, encrypted, defaultFilePerms)
 		if err != nil {
 			return err
 		}
@@ -803,9 +802,7 @@ func (fs *fileStore) writeStreamMeta() error {
 		b = fs.aek.Seal(nonce, nonce, b, nil)
 	}
 
-	<-dios
-	err = os.WriteFile(meta, b, defaultFilePerms)
-	dios <- struct{}{}
+	err = fs.writeFileWithOptionalSync(meta, b, defaultFilePerms)
 	if err != nil {
 		return err
 	}
@@ -813,9 +810,7 @@ func (fs *fileStore) writeStreamMeta() error {
 	fs.hh.Write(b)
 	checksum := hex.EncodeToString(fs.hh.Sum(nil))
 	sum := filepath.Join(fs.fcfg.StoreDir, JetStreamMetaFileSum)
-	<-dios
-	err = os.WriteFile(sum, []byte(checksum), defaultFilePerms)
-	dios <- struct{}{}
+	err = fs.writeFileWithOptionalSync(sum, []byte(checksum), defaultFilePerms)
 	if err != nil {
 		return err
 	}
@@ -8582,9 +8577,7 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 					if err != nil {
 						return nil, err
 					}
-					<-dios
-					err = os.WriteFile(o.ifn, state, defaultFilePerms)
-					dios <- struct{}{}
+					err = fs.writeFileWithOptionalSync(o.ifn, state, defaultFilePerms)
 					if err != nil {
 						if didCreate {
 							os.RemoveAll(odir)
@@ -9099,9 +9092,7 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 		if _, err := os.Stat(keyFile); err != nil && !os.IsNotExist(err) {
 			return err
 		}
-		<-dios
-		err = os.WriteFile(keyFile, encrypted, defaultFilePerms)
-		dios <- struct{}{}
+		err = cfs.fs.writeFileWithOptionalSync(keyFile, encrypted, defaultFilePerms)
 		if err != nil {
 			return err
 		}
@@ -9122,9 +9113,7 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 		b = cfs.aek.Seal(nonce, nonce, b, nil)
 	}
 
-	<-dios
-	err = os.WriteFile(meta, b, defaultFilePerms)
-	dios <- struct{}{}
+	err = cfs.fs.writeFileWithOptionalSync(meta, b, defaultFilePerms)
 	if err != nil {
 		return err
 	}
@@ -9133,9 +9122,7 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 	checksum := hex.EncodeToString(cfs.hh.Sum(nil))
 	sum := filepath.Join(cfs.odir, JetStreamMetaFileSum)
 
-	<-dios
-	err = os.WriteFile(sum, []byte(checksum), defaultFilePerms)
-	dios <- struct{}{}
+	err = cfs.fs.writeFileWithOptionalSync(sum, []byte(checksum), defaultFilePerms)
 	if err != nil {
 		return err
 	}
@@ -9665,4 +9652,27 @@ func (alg StoreCompression) Decompress(buf []byte) ([]byte, error) {
 	output = append(output, checksum...)
 
 	return output, reader.Close()
+}
+
+// writeFileWithOptionalSync is equivalent to os.WriteFile() but optionally
+// sets O_SYNC on the open file if SyncAlways is set. The dios semaphore is
+// handled automatically by this function, so don't wrap calls to it in dios.
+func (fs *fileStore) writeFileWithOptionalSync(name string, data []byte, perm fs.FileMode) error {
+	<-dios
+	defer func() {
+		dios <- struct{}{}
+	}()
+	flags := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+	if fs.fcfg.SyncAlways {
+		flags |= os.O_SYNC
+	}
+	f, err := os.OpenFile(name, flags, perm)
+	if err != nil {
+		return err
+	}
+	if _, err = f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
