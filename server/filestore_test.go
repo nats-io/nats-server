@@ -7754,3 +7754,29 @@ func Benchmark_FileStoreLoadNextMsgVerySparseMsgsLargeTail(b *testing.B) {
 		require_Error(b, err, ErrStoreEOF)
 	}
 }
+
+func Benchmark_FileStoreCreateConsumerStores(b *testing.B) {
+	for _, syncAlways := range []bool{true, false} {
+		b.Run(fmt.Sprintf("%v", syncAlways), func(b *testing.B) {
+			fs, err := newFileStore(
+				FileStoreConfig{StoreDir: b.TempDir(), SyncAlways: syncAlways},
+				StreamConfig{Name: "zzz", Subjects: []string{"foo.*.*"}, Storage: FileStorage})
+			require_NoError(b, err)
+			defer fs.Stop()
+
+			oconfig := ConsumerConfig{
+				DeliverSubject: "d",
+				FilterSubject:  "foo",
+				AckPolicy:      AckAll,
+			}
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				oname := fmt.Sprintf("obs22_%d", i)
+				ofs, err := fs.ConsumerStore(oname, &oconfig)
+				require_NoError(b, err)
+				require_NoError(b, ofs.Stop())
+			}
+		})
+	}
+}
