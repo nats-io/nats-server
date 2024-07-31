@@ -521,7 +521,8 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	// If we expect to be encrypted check that what we are restoring is not plaintext.
 	// This can happen on snapshot restores or conversions.
 	if fs.prf != nil {
-		if _, err := os.Stat(keyFile); err != nil && os.IsNotExist(err) {
+		fi, err := os.Stat(keyFile)
+		if err != nil && os.IsNotExist(err) || fi != nil && fi.Size() == 0 {
 			if err := fs.writeStreamMeta(); err != nil {
 				return nil, err
 			}
@@ -8668,7 +8669,7 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 
 	// Write our meta data iff does not exist.
 	meta := filepath.Join(odir, JetStreamMetaFile)
-	if _, err := os.Stat(meta); err != nil && os.IsNotExist(err) {
+	if fi, err := os.Stat(meta); err != nil && os.IsNotExist(err) || err == nil && fi.Size() == 0 {
 		didCreate = true
 		csi.Created = time.Now().UTC()
 		if err := o.writeConsumerMeta(); err != nil {
@@ -8681,7 +8682,7 @@ func (fs *fileStore) ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerSt
 	// This can happen on snapshot restores or conversions.
 	if o.prf != nil {
 		keyFile := filepath.Join(odir, JetStreamMetaFileKey)
-		if _, err := os.Stat(keyFile); err != nil && os.IsNotExist(err) {
+		if fi, err := os.Stat(keyFile); err != nil && os.IsNotExist(err) || err == nil && fi.Size() == 0 {
 			if err := o.writeConsumerMeta(); err != nil {
 				if didCreate {
 					os.RemoveAll(odir)

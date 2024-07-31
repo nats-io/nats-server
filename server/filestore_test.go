@@ -1488,6 +1488,76 @@ func TestFileStoreMeta(t *testing.T) {
 	}
 }
 
+func TestFileStoreMetaZeroLengthRepopulated(t *testing.T) {
+	fcfg := FileStoreConfig{StoreDir: t.TempDir()}
+	mconfig := StreamConfig{Name: "ZZ-22-33", Storage: FileStorage, Subjects: []string{"foo.*"}, Replicas: 22}
+	fs, err := newFileStore(fcfg, mconfig)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	metafile := filepath.Join(fcfg.StoreDir, JetStreamMetaFile)
+	metasum := filepath.Join(fcfg.StoreDir, JetStreamMetaFileSum)
+
+	fi, err := os.Stat(metafile)
+	require_NoError(t, err)
+	require_NotEqual(t, fi.Size(), 0)
+
+	fi, err = os.Stat(metasum)
+	require_NoError(t, err)
+	require_NotEqual(t, fi.Size(), 0)
+
+	require_NoError(t, fs.Stop())
+	require_NoError(t, os.Truncate(metafile, 0))
+	require_NoError(t, os.Truncate(metasum, 0))
+
+	fs, err = newFileStore(fcfg, mconfig)
+	require_NoError(t, err)
+
+	fi, err = os.Stat(metafile)
+	require_NoError(t, err)
+	require_NotEqual(t, fi.Size(), 0)
+
+	fi, err = os.Stat(metasum)
+	require_NoError(t, err)
+	require_NotEqual(t, fi.Size(), 0)
+
+	oconfig := ConsumerConfig{
+		DeliverSubject: "d",
+		FilterSubject:  "foo",
+		AckPolicy:      AckAll,
+	}
+	oname := "obs22"
+
+	obs, err := fs.ConsumerStore(oname, &oconfig)
+	require_NoError(t, err)
+
+	ometafile := filepath.Join(fcfg.StoreDir, consumerDir, oname, JetStreamMetaFile)
+	ometasum := filepath.Join(fcfg.StoreDir, consumerDir, oname, JetStreamMetaFileSum)
+
+	fi, err = os.Stat(ometafile)
+	require_NoError(t, err)
+	require_NotEqual(t, fi.Size(), 0)
+
+	fi, err = os.Stat(ometasum)
+	require_NoError(t, err)
+	require_NotEqual(t, fi.Size(), 0)
+
+	require_NoError(t, obs.Stop())
+	require_NoError(t, os.Truncate(ometafile, 0))
+	require_NoError(t, os.Truncate(ometasum, 0))
+
+	obs, err = fs.ConsumerStore(oname, &oconfig)
+	require_NoError(t, err)
+
+	fi, err = os.Stat(ometafile)
+	require_NoError(t, err)
+	require_NotEqual(t, fi.Size(), 0)
+
+	fi, err = os.Stat(ometasum)
+	require_NoError(t, err)
+	require_NotEqual(t, fi.Size(), 0)
+}
+
 func TestFileStoreWriteAndReadSameBlock(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
