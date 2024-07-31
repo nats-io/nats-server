@@ -1429,7 +1429,6 @@ func (s *Server) startWatchConf() error {
 				select {
 				case <-s.quitCh:
 					s.configWatcher.Close()
-					s.Noticef("Ended watching config file")
 					return
 
 				case event, ok := <-s.configWatcher.Events:
