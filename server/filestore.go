@@ -1201,9 +1201,7 @@ func (mb *msgBlock) convertCipher() error {
 		// the old keyfile back.
 		if err := fs.genEncryptionKeysForBlock(mb); err != nil {
 			keyFile := filepath.Join(mdir, fmt.Sprintf(keyScan, mb.index))
-			<-dios
-			os.WriteFile(keyFile, ekey, defaultFilePerms)
-			dios <- struct{}{}
+			fs.writeFileWithOptionalSync(keyFile, ekey, defaultFilePerms)
 			return err
 		}
 		mb.bek.XORKeyStream(buf, buf)
@@ -3396,9 +3394,7 @@ func (fs *fileStore) genEncryptionKeysForBlock(mb *msgBlock) error {
 	if _, err := os.Stat(keyFile); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	<-dios
-	err = os.WriteFile(keyFile, encrypted, defaultFilePerms)
-	dios <- struct{}{}
+	err = fs.writeFileWithOptionalSync(keyFile, encrypted, defaultFilePerms)
 	if err != nil {
 		return err
 	}
@@ -9164,9 +9160,7 @@ func (o *consumerFileStore) writeState(buf []byte) error {
 	o.mu.Unlock()
 
 	// Lock not held here but we do limit number of outstanding calls that could block OS threads.
-	<-dios
-	err := os.WriteFile(ifn, buf, defaultFilePerms)
-	dios <- struct{}{}
+	err := o.fs.writeFileWithOptionalSync(ifn, buf, defaultFilePerms)
 
 	o.mu.Lock()
 	if err != nil {
@@ -9530,9 +9524,7 @@ func (o *consumerFileStore) Stop() error {
 
 	if len(buf) > 0 {
 		o.waitOnFlusher()
-		<-dios
-		err = os.WriteFile(ifn, buf, defaultFilePerms)
-		dios <- struct{}{}
+		err = o.fs.writeFileWithOptionalSync(ifn, buf, defaultFilePerms)
 	}
 	return err
 }
