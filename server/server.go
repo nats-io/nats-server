@@ -42,12 +42,14 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
 
 	"github.com/nats-io/nats-server/v2/logger"
+	"github.com/nats-io/nats-server/v2/server/debounce"
 )
 
 const (
@@ -228,10 +230,10 @@ type Server struct {
 	leafRemoteAccounts sync.Map
 	leafNodeEnabled    bool
 	leafDisableConnect bool // Used in test only
-
-	quitCh           chan struct{}
-	startupComplete  chan struct{}
-	shutdownComplete chan struct{}
+	configWatcher      *fsnotify.Watcher
+	quitCh             chan struct{}
+	startupComplete    chan struct{}
+	shutdownComplete   chan struct{}
 
 	// Tracking Go routines
 	grMu         sync.Mutex
@@ -1403,6 +1405,83 @@ func (s *Server) configureResolver() error {
 	return nil
 }
 
+// starts a file watcher to monitor for config file changes, will reload on changes
+func (s *Server) startWatchConf() error {
+	opts := s.getOpts()
+
+	// watch for file changes and issue a reload on changes
+	if opts.WatchConf {
+		if opts.ConfigFile == _EMPTY_ {
+			return fmt.Errorf("can't watch config file, no config file specified")
+		}
+		watcher, err := fsnotify.NewWatcher()
+		if err != nil {
+			return fmt.Errorf("can't create file watcher: %w", err)
+		}
+		s.mu.Lock()
+		s.configWatcher = watcher
+		s.mu.Unlock()
+
+		debouncer := debounce.NewDebouncer(200 * time.Millisecond)
+
+		go func() {
+			for {
+				select {
+				case <-s.quitCh:
+					s.configWatcher.Close()
+					s.Noticef("Ended watching config file")
+					return
+
+				case event, ok := <-s.configWatcher.Events:
+					if !ok {
+						return
+					}
+
+					// we watch the parent directory then filter
+					var found bool
+					if opts.ConfigFile == filepath.Base(event.Name) {
+						found = true
+					}
+					if !found {
+						continue
+					}
+
+					if event.Has(fsnotify.Write) || event.Has(fsnotify.Rename) {
+						debouncer.Debounce(event, func(e fsnotify.Event) {
+							s.Noticef("Reloading config, on file change")
+							if err := s.Reload(); err != nil {
+								s.Warnf("Error can't reload config: %v", err)
+								return
+							}
+						})
+					}
+
+				case err, ok := <-s.configWatcher.Errors:
+					if !ok {
+						return
+					}
+					s.Warnf("Error watching config file: %v", err)
+				}
+			}
+		}()
+
+		// watch parent directory for atomic updates
+		err = watcher.Add(filepath.Dir(opts.ConfigFile))
+		if err != nil {
+			return fmt.Errorf("Error adding config file to watcher: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// stop watching for config file changes
+func (s *Server) stopWatchConf() {
+	if s.configWatcher != nil {
+		s.configWatcher.Close()
+	}
+}
+
 // This will check preloads for validation issues.
 func (s *Server) checkResolvePreloads() {
 	opts := s.getOpts()
@@ -1589,7 +1668,7 @@ func (s *Server) isRunning() bool {
 
 func (s *Server) logPid() error {
 	pidStr := strconv.Itoa(os.Getpid())
-	return os.WriteFile(s.getOpts().PidFile, []byte(pidStr), 0660)
+	return os.WriteFile(s.getOpts().PidFile, []byte(pidStr), 0o660)
 }
 
 // numReservedAccounts will return the number of reserved accounts configured in the server.
@@ -2210,6 +2289,17 @@ func (s *Server) Start() {
 		s.Noticef("Using configuration file: %s", opts.ConfigFile)
 	}
 
+	// watch for file changes and issue a reload on modify
+	if opts.WatchConf {
+		if opts.ConfigFile == _EMPTY_ {
+			s.Fatalf("Can't watch config file, no config file specified")
+		}
+
+		if err := s.startWatchConf(); err != nil {
+			s.Fatalf("Can't watch config file %v", err)
+		}
+	}
+
 	hasOperators := len(opts.TrustedOperators) > 0
 	if hasOperators {
 		s.Noticef("Trusted Operators")
@@ -2811,7 +2901,6 @@ func (s *Server) StartProfiler() {
 	s.mu.Lock()
 	hp := net.JoinHostPort(opts.Host, strconv.Itoa(port))
 	l, err := net.Listen("tcp", hp)
-
 	if err != nil {
 		s.mu.Unlock()
 		s.Fatalf("error starting profiler: %s", err)
@@ -2914,7 +3003,7 @@ type captureHTTPServerLog struct {
 
 func (cl *captureHTTPServerLog) Write(p []byte) (int, error) {
 	var buf [128]byte
-	var b = buf[:0]
+	b := buf[:0]
 
 	b = append(b, []byte(cl.prefix)...)
 	offset := 0
@@ -4090,11 +4179,10 @@ func (s *Server) logPorts() {
 				s.Errorf("Error marshaling ports file: %v", err)
 				return
 			}
-			if err := os.WriteFile(portsFile, data, 0666); err != nil {
+			if err := os.WriteFile(portsFile, data, 0o666); err != nil {
 				s.Errorf("Error writing ports file (%s): %v", portsFile, err)
 				return
 			}
-
 		}()
 	}
 }

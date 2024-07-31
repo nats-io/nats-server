@@ -329,6 +329,7 @@ type Options struct {
 	ProfPort              int               `json:"-"`
 	ProfBlockRate         int               `json:"-"`
 	PidFile               string            `json:"-"`
+	WatchConf             bool              `json:"-"`
 	PortsFileDir          string            `json:"-"`
 	LogFile               string            `json:"-"`
 	LogSizeLimit          int64             `json:"-"`
@@ -1110,6 +1111,8 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 		o.PidFile = v.(string)
 	case "ports_file_dir":
 		o.PortsFileDir = v.(string)
+	case "watch_conf":
+		o.WatchConf = v.(bool)
 	case "prof_port":
 		o.ProfPort = int(v.(int64))
 	case "prof_block_rate":
@@ -1479,8 +1482,10 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 				if key, ok := mv.(string); ok {
 					o.resolverPinnedAccounts[key] = struct{}{}
 				} else {
-					err := &configErr{tk,
-						fmt.Sprintf("error parsing resolver_pinned_accounts: unsupported type in array %T", mv)}
+					err := &configErr{
+						tk,
+						fmt.Sprintf("error parsing resolver_pinned_accounts: unsupported type in array %T", mv),
+					}
 					*errors = append(*errors, err)
 					continue
 				}
@@ -2034,8 +2039,10 @@ func parseGateway(v any, o *Options, errors *[]error, warnings *[]error) error {
 	return nil
 }
 
-var dynamicJSAccountLimits = JetStreamAccountLimits{-1, -1, -1, -1, -1, -1, -1, false}
-var defaultJSAccountTiers = map[string]JetStreamAccountLimits{_EMPTY_: dynamicJSAccountLimits}
+var (
+	dynamicJSAccountLimits = JetStreamAccountLimits{-1, -1, -1, -1, -1, -1, -1, false}
+	defaultJSAccountTiers  = map[string]JetStreamAccountLimits{_EMPTY_: dynamicJSAccountLimits}
+)
 
 // Parses jetstream account limits for an account. Simple setup with boolen is allowed, and we will
 // use dynamic account limits.
@@ -3474,9 +3481,11 @@ func parseAccountImports(v any, acc *Account, errors *[]error) ([]*importStream,
 		if service != nil {
 			if dup := svcSubjects[service.to]; dup != nil {
 				tk, _ := unwrapValue(v, &lt)
-				err := &configErr{tk,
+				err := &configErr{
+					tk,
 					fmt.Sprintf("Duplicate service import subject %q, previously used in import for account %q, subject %q",
-						service.to, dup.an, dup.sub)}
+						service.to, dup.an, dup.sub),
+				}
 				*errors = append(*errors, err)
 				continue
 			}
@@ -3748,8 +3757,10 @@ func parseServiceLatency(root token, v any) (l *serviceLatency, retErr error) {
 
 	latency, ok := v.(map[string]any)
 	if !ok {
-		return nil, &configErr{token: root,
-			reason: fmt.Sprintf("Expected latency entry to be a map/struct or string, got %T", v)}
+		return nil, &configErr{
+			token:  root,
+			reason: fmt.Sprintf("Expected latency entry to be a map/struct or string, got %T", v),
+		}
 	}
 
 	sl := serviceLatency{
@@ -3775,18 +3786,24 @@ func parseServiceLatency(root token, v any) (l *serviceLatency, retErr error) {
 			s := strings.TrimSuffix(vv, "%")
 			n, err := strconv.Atoi(s)
 			if err != nil {
-				return nil, &configErr{token: tk,
-					reason: fmt.Sprintf("Failed to parse latency sample: %v", err)}
+				return nil, &configErr{
+					token:  tk,
+					reason: fmt.Sprintf("Failed to parse latency sample: %v", err),
+				}
 			}
 			sample = int64(n)
 		default:
-			return nil, &configErr{token: tk,
-				reason: fmt.Sprintf("Expected latency sample to be a string or map/struct, got %T", v)}
+			return nil, &configErr{
+				token:  tk,
+				reason: fmt.Sprintf("Expected latency sample to be a string or map/struct, got %T", v),
+			}
 		}
 		if !header {
 			if sample < 1 || sample > 100 {
-				return nil, &configErr{token: tk,
-					reason: ErrBadSampling.Error()}
+				return nil, &configErr{
+					token:  tk,
+					reason: ErrBadSampling.Error(),
+				}
 			}
 		}
 
@@ -3796,15 +3813,19 @@ func parseServiceLatency(root token, v any) (l *serviceLatency, retErr error) {
 	// Read subject value.
 	v, ok = latency["subject"]
 	if !ok {
-		return nil, &configErr{token: root,
-			reason: "Latency subject required, but missing"}
+		return nil, &configErr{
+			token:  root,
+			reason: "Latency subject required, but missing",
+		}
 	}
 
 	tk, v := unwrapValue(v, &lt)
 	subject, ok := v.(string)
 	if !ok {
-		return nil, &configErr{token: tk,
-			reason: fmt.Sprintf("Expected latency subject to be a string, got %T", subject)}
+		return nil, &configErr{
+			token:  tk,
+			reason: fmt.Sprintf("Expected latency subject to be a string, got %T", subject),
+		}
 	}
 	sl.subject = subject
 
@@ -5189,6 +5210,9 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	if flagOpts.PortsFileDir != _EMPTY_ {
 		opts.PortsFileDir = flagOpts.PortsFileDir
 	}
+	if flagOpts.WatchConf {
+		opts.WatchConf = flagOpts.WatchConf
+	}
 	if flagOpts.ProfPort != 0 {
 		opts.ProfPort = flagOpts.ProfPort
 	}
@@ -5567,6 +5591,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.StringVar(&opts.PidFile, "P", "", "File to store process pid.")
 	fs.StringVar(&opts.PidFile, "pid", "", "File to store process pid.")
 	fs.StringVar(&opts.PortsFileDir, "ports_file_dir", "", "Creates a ports file in the specified directory (<executable_name>_<pid>.ports).")
+	fs.BoolVar(&opts.WatchConf, "watch_conf", false, "Watch for config files changes and reload")
 	fs.StringVar(&opts.LogFile, "l", "", "File to store logging output.")
 	fs.StringVar(&opts.LogFile, "log", "", "File to store logging output.")
 	fs.Int64Var(&opts.LogSizeLimit, "log_size_limit", 0, "Logfile size limit being auto-rotated")

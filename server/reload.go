@@ -70,6 +70,9 @@ type option interface {
 
 	// Indicates a change in the server that requires publishing the server's statz
 	IsStatszChange() bool
+
+	// Indicates a change in the server that requires modifying config file watcher
+	IsWatchConfChange() bool
 }
 
 // noopOption is a base struct that provides default no-op behaviors.
@@ -104,6 +107,10 @@ func (n noopOption) IsJetStreamChange() bool {
 }
 
 func (n noopOption) IsStatszChange() bool {
+	return false
+}
+
+func (n noopOption) IsWatchConfChange() bool {
 	return false
 }
 
@@ -598,6 +605,21 @@ func (p *portsFileDirOption) Apply(server *Server) {
 	server.Noticef("Reloaded: ports_file_dir = %v", p.newValue)
 }
 
+// watchConfOption implements the option interface for the `watchConf` setting.
+type watchConfOption struct {
+	noopOption
+	newValue bool
+}
+
+// Apply the setting by updating the server.
+func (w *watchConfOption) Apply(server *Server) {
+	server.Noticef("Reloaded: watch_conf = %t", w.newValue)
+}
+
+func (w *watchConfOption) IsWatchConfChange() bool {
+	return true
+}
+
 // maxControlLineOption implements the option interface for the
 // `max_control_line` setting.
 type maxControlLineOption struct {
@@ -1074,6 +1096,7 @@ func (s *Server) ReloadOptions(newOpts *Options) error {
 	s.mu.Unlock()
 	return nil
 }
+
 func applyBoolFlags(newOpts, flagOpts *Options) {
 	// Reset fields that may have been set to `true` in
 	// MergeOptions() when some of the flags default to `true`
@@ -1305,6 +1328,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &pidFileOption{newValue: newValue.(string)})
 		case "portsfiledir":
 			diffOpts = append(diffOpts, &portsFileDirOption{newValue: newValue.(string), oldValue: oldValue.(string)})
+		case "watchconf":
+			diffOpts = append(diffOpts, &watchConfOption{newValue: newValue.(bool)})
 		case "maxcontrolline":
 			diffOpts = append(diffOpts, &maxControlLineOption{newValue: newValue.(int32)})
 		case "maxpayload":
@@ -1710,6 +1735,8 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 		reloadJetstream    = false
 		jsEnabled          = false
 		isStatszChange     = false
+		isWatchConfChange  = false
+		watchConfEnabled   = false
 		co                 *clusterOption
 	)
 	for _, opt := range opts {
@@ -1735,6 +1762,10 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 		}
 		if opt.IsStatszChange() {
 			isStatszChange = true
+		}
+		if opt.IsWatchConfChange() {
+			isWatchConfChange = true
+			watchConfEnabled = opt.(*watchConfOption).newValue
 		}
 	}
 
@@ -1768,6 +1799,17 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 	}
 	if isStatszChange {
 		s.sendStatszUpdate()
+	}
+
+	if isWatchConfChange {
+		if watchConfEnabled {
+			if err := s.startWatchConf(); err != nil {
+				s.Warnf("Can't start watch config file: %v", err)
+			}
+		} else {
+			s.Noticef("Not watching for config file change anymore")
+			s.stopWatchConf()
+		}
 	}
 
 	// For remote gateways and leafnodes, make sure that their TLS configuration
