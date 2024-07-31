@@ -27,6 +27,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"runtime/pprof"
 
@@ -953,11 +954,13 @@ func (s *Server) serverName() string {
 func (s *Server) ClientURL() string {
 	// FIXME(dlc) - should we add in user and pass if defined single?
 	opts := s.getOpts()
-	scheme := "nats://"
+	var u url.URL
+	u.Scheme = "nats"
 	if opts.TLSConfig != nil {
-		scheme = "tls://"
+		u.Scheme = "tls"
 	}
-	return fmt.Sprintf("%s%s:%d", scheme, opts.Host, opts.Port)
+	u.Host = net.JoinHostPort(opts.Host, fmt.Sprintf("%d", opts.Port))
+	return u.String()
 }
 
 func validateCluster(o *Options) error {

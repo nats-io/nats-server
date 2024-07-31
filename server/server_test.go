@@ -2136,3 +2136,18 @@ func TestServerConfigLastLineComments(t *testing.T) {
 	require_NoError(t, err)
 	defer nc.Close()
 }
+
+func TestServerClientURL(t *testing.T) {
+	for host, expected := range map[string]string{
+		"host.com": "nats://host.com:12345",
+		"1.2.3.4":  "nats://1.2.3.4:12345",
+		"2000::1":  "nats://[2000::1]:12345",
+	} {
+		o := DefaultOptions()
+		o.Host = host
+		o.Port = 12345
+		s, err := NewServer(o)
+		require_NoError(t, err)
+		require_Equal(t, s.ClientURL(), expected)
+	}
+}
