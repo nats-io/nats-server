@@ -1571,8 +1571,8 @@ func TestJetStreamJWTClusterAccountNRG(t *testing.T) {
 
 	// We'll try flipping the state a few times and then do some sanity
 	// checks to check that it took effect.
-	for _, state := range []bool{true, false, true} {
-		accClaim.AccountNRG = state
+	for _, state := range []string{"account", "system", "account"} {
+		accClaim.NRGAccount = state
 		accJwt = encodeClaim(t, accClaim, aExpPub)
 
 		for _, s := range c.servers {
@@ -1586,7 +1586,7 @@ func TestJetStreamJWTClusterAccountNRG(t *testing.T) {
 			// Check that everything looks like it should.
 			require_True(t, acc != nil)
 			require_True(t, acc.js != nil)
-			require_Equal(t, acc.js.accountNRG.Load(), state)
+			require_Equal(t, acc.js.accountNRG.Load(), state == "account")
 
 			// Now get a list of all of the Raft nodes that should
 			// have been updated by now.
@@ -1608,7 +1608,7 @@ func TestJetStreamJWTClusterAccountNRG(t *testing.T) {
 				inAcc := rg.inAcc
 				rg.Unlock()
 
-				require_Equal(t, inAcc, state)
+				require_Equal(t, inAcc, state == "account")
 			}
 		}
 	}
