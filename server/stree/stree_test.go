@@ -669,6 +669,26 @@ func TestSubjectTreeMatchAllPerf(t *testing.T) {
 	}
 }
 
+func TestSubjectTreeIterPerf(t *testing.T) {
+	if !*runResults {
+		t.Skip()
+	}
+	st := NewSubjectTree[int]()
+
+	for i := 0; i < 1_000_000; i++ {
+		subj := fmt.Sprintf("subj.%d.%d", rand.Intn(100)+1, i)
+		st.Insert(b(subj), 22)
+	}
+
+	start := time.Now()
+	count := 0
+	st.Iter(func(_ []byte, _ *int) bool {
+		count++
+		return true
+	})
+	t.Logf("Iter took %s and matched %d entries", time.Since(start), count)
+}
+
 func TestSubjectTreeNode48(t *testing.T) {
 	var a, b, c leaf[int]
 	var n node48
