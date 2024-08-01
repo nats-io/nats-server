@@ -3964,7 +3964,7 @@ func (c *client) subForReply(reply []byte) *subscription {
 func (c *client) handleGWReplyMap(msg []byte) bool {
 	// Check for leaf nodes
 	if c.srv.gwLeafSubs.Count() > 0 {
-		if r := c.srv.gwLeafSubs.Match(string(c.pa.subject)); len(r.psubs) > 0 {
+		if r := c.srv.gwLeafSubs.MatchBytes(c.pa.subject); len(r.psubs) > 0 {
 			c.processMsgResults(c.acc, r, msg, c.pa.deliver, c.pa.subject, c.pa.reply, pmrNoFlag)
 		}
 	}
@@ -5448,7 +5448,7 @@ func (c *client) getAccAndResultFromCache() (*Account, *SublistResult) {
 		sl := acc.sl
 
 		// Match against the account sublist.
-		r = sl.Match(string(c.pa.subject))
+		r = sl.MatchBytes(c.pa.subject)
 
 		// Check if we need to prune.
 		if len(c.in.pacache) >= maxPerAccountCacheSize {
