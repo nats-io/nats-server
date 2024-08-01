@@ -2494,7 +2494,7 @@ func (g *srvGateway) shouldMapReplyForGatewaySend(acc *Account, reply []byte) bo
 	}
 	sl := sli.(*Sublist)
 	if sl.Count() > 0 {
-		if r := sl.Match(string(reply)); len(r.psubs)+len(r.qsubs) > 0 {
+		if sl.HasInterest(string(reply)) {
 			return true
 		}
 	}

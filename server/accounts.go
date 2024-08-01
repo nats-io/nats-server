@@ -1843,7 +1843,7 @@ func (a *Account) _checkForReverseEntry(reply string, si *serviceImport, checkIn
 	// Note that if we are here reply has to be a literal subject.
 	if checkInterest {
 		// If interest still exists we can not clean these up yet.
-		if rr := a.sl.Match(reply); len(rr.psubs)+len(rr.qsubs) > 0 {
+		if a.sl.HasInterest(reply) {
 			a.mu.RUnlock()
 			return
 		}
