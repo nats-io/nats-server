@@ -874,6 +874,22 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 	if err != nil {
 		return err
 	}
+
+	return o.processConfigFile(configFile, m)
+}
+
+// ProcessConfigString is the same as ProcessConfigFile, but expects the
+// contents of the config file to be passed in rather than the file name.
+func (o *Options) ProcessConfigString(data string) error {
+	m, err := conf.ParseWithChecks(data)
+	if err != nil {
+		return err
+	}
+
+	return o.processConfigFile("", m)
+}
+
+func (o *Options) processConfigFile(configFile string, m map[string]any) error {
 	// Collect all errors and warnings and report them all together.
 	errors := make([]error, 0)
 	warnings := make([]error, 0)

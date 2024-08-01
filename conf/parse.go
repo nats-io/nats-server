@@ -69,6 +69,15 @@ func Parse(data string) (map[string]any, error) {
 	return p.mapping, nil
 }
 
+// ParseWithChecks is equivalent to Parse but runs in pedantic mode.
+func ParseWithChecks(data string) (map[string]any, error) {
+	p, err := parse(data, "", true)
+	if err != nil {
+		return nil, err
+	}
+	return p.mapping, nil
+}
+
 // ParseFile is a helper to open file, etc. and parse the contents.
 func ParseFile(fp string) (map[string]any, error) {
 	data, err := os.ReadFile(fp)
