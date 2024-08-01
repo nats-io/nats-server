@@ -25,6 +25,17 @@ func test(t *testing.T, data string, ex map[string]any) {
 	if !reflect.DeepEqual(m, ex) {
 		t.Fatalf("Not Equal:\nReceived: '%+v'\nExpected: '%+v'\n", m, ex)
 	}
+
+	// Also test ParseWithChecks
+	n, err := ParseWithChecks(data)
+	if err != nil {
+		t.Fatalf("Received err: %v\n", err)
+	}
+	if n == nil {
+		t.Fatal("Received nil map")
+	}
+
+	// DeepEqual will fail due to pedantic mode creating a different map.
 }
 
 func TestSimpleTopLevel(t *testing.T) {
