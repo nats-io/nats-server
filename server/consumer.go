@@ -1572,7 +1572,7 @@ func (s *Server) hasGatewayInterest(account, subject string) bool {
 	gw.RLock()
 	defer gw.RUnlock()
 	for _, gwc := range gw.outo {
-		psi, qr := gwc.gatewayInterest(account, subject)
+		psi, qr := gwc.gatewayInterest(account, stringToBytes(subject))
 		if psi || qr != nil {
 			return true
 		}

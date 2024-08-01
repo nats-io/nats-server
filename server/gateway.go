@@ -2143,7 +2143,7 @@ func (c *client) processGatewayRSub(arg []byte) error {
 // for queue subscriptions.
 // <Outbound connection: invoked when client message is published,
 // so from any client connection's readLoop>
-func (c *client) gatewayInterest(acc, subj string) (bool, *SublistResult) {
+func (c *client) gatewayInterest(acc string, subj []byte) (bool, *SublistResult) {
 	ei, accountInMap := c.gw.outsim.Load(acc)
 	// If there is an entry for this account and ei is nil,
 	// it means that the remote is not interested at all in
@@ -2164,14 +2164,14 @@ func (c *client) gatewayInterest(acc, subj string) (bool, *SublistResult) {
 		// but until e.ni is nil, use it to know if we
 		// should suppress interest or not.
 		if !c.gw.interestOnlyMode && e.ni != nil {
-			if _, inMap := e.ni[subj]; !inMap {
+			if _, inMap := e.ni[string(subj)]; !inMap {
 				psi = true
 			}
 		}
 		// If we are in modeInterestOnly (e.ni will be nil)
 		// or if we have queue subs, we also need to check sl.Match.
 		if e.ni == nil || e.qsubs > 0 {
-			r = e.sl.Match(subj)
+			r = e.sl.MatchBytes(subj)
 			if len(r.psubs) > 0 {
 				psi = true
 			}
@@ -2588,7 +2588,7 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 			}
 		} else {
 			// Plain sub interest and queue sub results for this account/subject
-			psi, qr := gwc.gatewayInterest(accName, string(subject))
+			psi, qr := gwc.gatewayInterest(accName, subject)
 			if !psi && qr == nil {
 				continue
 			}
