@@ -98,9 +98,6 @@ type route struct {
 	// Selected compression mode, which may be different from the
 	// server configured mode.
 	compression string
-	// Transient value used to set the Info.NoGossip when initiating
-	// an implicit route and sending to the remote.
-	noGossip bool
 }
 
 type connectInfo struct {
@@ -703,15 +700,12 @@ func (c *client) processRouteInfo(info *Info) {
 		return
 	}
 
-	var sendDelayedInfo bool
-
 	// First INFO, check if this server is configured for compression because
 	// if that is the case, we need to negotiate it with the remote server.
 	if needsCompression(opts.Cluster.Compression.Mode) {
 		accName := bytesToString(c.route.accName)
 		// If we did not yet negotiate...
-		compNeg := c.flags.isSet(compressionNegotiated)
-		if !compNeg {
+		if !c.flags.isSet(compressionNegotiated) {
 			// Prevent from getting back here.
 			c.flags.set(compressionNegotiated)
 			// Release client lock since following function will need server lock.
@@ -728,21 +722,24 @@ func (c *client) processRouteInfo(info *Info) {
 			}
 			// No compression because one side does not want/can't, so proceed.
 			c.mu.Lock()
-			// Check that the connection did not close if the lock was released.
-			if c.isClosed() {
+		} else if didSolicit {
+			// The other side has switched to compression, so we can now set
+			// the first ping timer and send the delayed INFO for situations
+			// where it was not already sent.
+			c.setFirstPingTimer()
+			if !routeShouldDelayInfo(accName, opts) {
+				cm := compressionModeForInfoProtocol(&opts.Cluster.Compression, c.route.compression)
+				// Need to release and then reacquire...
 				c.mu.Unlock()
-				return
+				s.sendDelayedRouteInfo(c, accName, cm)
+				c.mu.Lock()
 			}
 		}
-		// We can set the ping timer after we just negotiated compression above,
-		// or for solicited routes if we already negotiated.
-		if !compNeg || didSolicit {
-			c.setFirstPingTimer()
+		// Check that the connection did not close if the lock was released.
+		if c.isClosed() {
+			c.mu.Unlock()
+			return
 		}
-		// When compression is configured, we delay the initial INFO for any
-		// solicited route. So we need to send the delayed INFO simply based
-		// on the didSolicit boolean.
-		sendDelayedInfo = didSolicit
 	} else {
 		// Coming from an old server, the Compression field would be the empty
 		// string. For servers that are configured with CompressionNotSupported,
@@ -752,10 +749,6 @@ func (c *client) processRouteInfo(info *Info) {
 		} else {
 			c.route.compression = CompressionOff
 		}
-		// When compression is not configured, we delay the initial INFO only
-		// for solicited pooled routes, so use the same check that we did when
-		// we decided to delay in createRoute().
-		sendDelayedInfo = didSolicit && routeShouldDelayInfo(bytesToString(c.route.accName), opts)
 	}
 
 	// Mark that the INFO protocol has been received, so we can detect updates.
@@ -832,15 +825,11 @@ func (c *client) processRouteInfo(info *Info) {
 	}
 	accName := string(c.route.accName)
 
-	// Capture the noGossip value and reset it here.
-	noGossip := c.route.noGossip
-	c.route.noGossip = false
-
 	// Check to see if we have this remote already registered.
 	// This can happen when both servers have routes to each other.
 	c.mu.Unlock()
 
-	if added := s.addRoute(c, didSolicit, sendDelayedInfo, noGossip, info, accName); added {
+	if added := s.addRoute(c, didSolicit, info, accName); added {
 		if accName != _EMPTY_ {
 			c.Debugf("Registering remote route %q for account %q", info.ID, accName)
 		} else {
@@ -874,7 +863,7 @@ func (s *Server) negotiateRouteCompression(c *client, didSolicit bool, accName, 
 	if needsCompression(cm) {
 		// Generate an INFO with the chosen compression mode.
 		s.mu.Lock()
-		infoProto := s.generateRouteInitialInfoJSON(accName, cm, 0, false)
+		infoProto := s.generateRouteInitialInfoJSON(accName, cm, 0)
 		s.mu.Unlock()
 
 		// If we solicited, then send this INFO protocol BEFORE switching
@@ -903,7 +892,27 @@ func (s *Server) negotiateRouteCompression(c *client, didSolicit bool, accName, 
 		c.mu.Unlock()
 		return true, nil
 	}
+	// We are not using compression, set the ping timer.
+	c.mu.Lock()
+	c.setFirstPingTimer()
+	c.mu.Unlock()
+	// If this is a solicited route, we need to send the INFO if it was not
+	// done during createRoute() and will not be done in addRoute().
+	if didSolicit && !routeShouldDelayInfo(accName, opts) {
+		cm = compressionModeForInfoProtocol(&opts.Cluster.Compression, cm)
+		s.sendDelayedRouteInfo(c, accName, cm)
+	}
 	return false, nil
+}
+
+func (s *Server) sendDelayedRouteInfo(c *client, accName, cm string) {
+	s.mu.Lock()
+	infoProto := s.generateRouteInitialInfoJSON(accName, cm, 0)
+	s.mu.Unlock()
+
+	c.mu.Lock()
+	c.enqueueProto(infoProto)
+	c.mu.Unlock()
 }
 
 // Possibly sends local subscriptions interest to this route
@@ -1041,7 +1050,7 @@ func (s *Server) processImplicitRoute(info *Info, routeNoPool bool) {
 	if info.AuthRequired {
 		r.User = url.UserPassword(opts.Cluster.Username, opts.Cluster.Password)
 	}
-	s.startGoRoutine(func() { s.connectToRoute(r, Implicit, true, info.NoGossip, info.RouteAccount) })
+	s.startGoRoutine(func() { s.connectToRoute(r, false, true, info.RouteAccount) })
 	// If we are processing an implicit route from a route that does not
 	// support pooling/pinned-accounts, we won't receive an INFO for each of
 	// the pinned-accounts that we would normally receive. In that case, just
@@ -1051,7 +1060,7 @@ func (s *Server) processImplicitRoute(info *Info, routeNoPool bool) {
 		rURL := r
 		for _, an := range opts.Cluster.PinnedAccounts {
 			accName := an
-			s.startGoRoutine(func() { s.connectToRoute(rURL, Implicit, true, info.NoGossip, accName) })
+			s.startGoRoutine(func() { s.connectToRoute(rURL, false, true, accName) })
 		}
 	}
 }
@@ -1103,39 +1112,11 @@ func (s *Server) forwardNewRouteInfoToKnownServers(info *Info) {
 	b, _ := json.Marshal(info)
 	infoJSON := []byte(fmt.Sprintf(InfoProto, b))
 
-	// If this is for a pinned account, we will try to send the gossip
-	// through our pinned account routes, but fall back to the other
-	// routes in case we don't have one for a given remote.
-	accRemotes := map[string]struct{}{}
-	if info.RouteAccount != _EMPTY_ {
-		if remotes, ok := s.accRoutes[info.RouteAccount]; ok {
-			for remoteID, r := range remotes {
-				if r == nil {
-					continue
-				}
-				accRemotes[remoteID] = struct{}{}
-				r.mu.Lock()
-				// Do not send to a remote that does not support pooling/pinned-accounts.
-				if remoteID != info.ID && !r.route.noPool {
-					r.enqueueProto(infoJSON)
-				}
-				r.mu.Unlock()
-			}
-		}
-	}
-
 	s.forEachRemote(func(r *client) {
 		r.mu.Lock()
-		remoteID := r.route.remoteID
-		if info.RouteAccount != _EMPTY_ {
-			if _, processed := accRemotes[remoteID]; processed {
-				r.mu.Unlock()
-				return
-			}
-		}
 		// If this is a new route for a given account, do not send to a server
 		// that does not support pooling/pinned-accounts.
-		if remoteID != info.ID &&
+		if r.route.remoteID != info.ID &&
 			(info.RouteAccount == _EMPTY_ || (info.RouteAccount != _EMPTY_ && !r.route.noPool)) {
 			r.enqueueProto(infoJSON)
 		}
@@ -1714,12 +1695,17 @@ func (c *client) sendRouteSubOrUnSubProtos(subs []*subscription, isSubProto, tra
 	c.enqueueProto(buf)
 }
 
-func (s *Server) createRoute(conn net.Conn, rURL *url.URL, rtype RouteType, noGossip bool, accName string) *client {
+func (s *Server) createRoute(conn net.Conn, rURL *url.URL, accName string) *client {
 	// Snapshot server options.
 	opts := s.getOpts()
 
 	didSolicit := rURL != nil
-	r := &route{routeType: rtype, didSolicit: didSolicit, poolIdx: -1, noGossip: noGossip}
+	r := &route{didSolicit: didSolicit, poolIdx: -1}
+	for _, route := range opts.Routes {
+		if rURL != nil && (strings.EqualFold(rURL.Host, route.Host)) {
+			r.routeType = Explicit
+		}
+	}
 
 	c := &client{srv: s, nc: conn, opts: ClientOpts{}, kind: ROUTER, msubs: -1, mpay: -1, route: r, start: time.Now()}
 
@@ -1736,7 +1722,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL, rtype RouteType, noGo
 	// the incoming INFO from the remote. Also delay if configured for compression.
 	delayInfo := didSolicit && (compressionConfigured || routeShouldDelayInfo(accName, opts))
 	if !delayInfo {
-		infoJSON = s.generateRouteInitialInfoJSON(accName, opts.Cluster.Compression.Mode, 0, noGossip)
+		infoJSON = s.generateRouteInitialInfoJSON(accName, opts.Cluster.Compression.Mode, 0)
 	}
 	authRequired := s.routeInfo.AuthRequired
 	tlsRequired := s.routeInfo.TLSRequired
@@ -1869,7 +1855,7 @@ func routeShouldDelayInfo(accName string, opts *Options) bool {
 // To be used only when a route is created (to send the initial INFO protocol).
 //
 // Server lock held on entry.
-func (s *Server) generateRouteInitialInfoJSON(accName, compression string, poolIdx int, noGossip bool) []byte {
+func (s *Server) generateRouteInitialInfoJSON(accName, compression string, poolIdx int) []byte {
 	// New proto wants a nonce (although not used in routes, that is, not signed in CONNECT)
 	var raw [nonceLen]byte
 	nonce := raw[:]
@@ -1879,11 +1865,11 @@ func (s *Server) generateRouteInitialInfoJSON(accName, compression string, poolI
 	if s.getOpts().Cluster.Compression.Mode == CompressionS2Auto {
 		compression = CompressionS2Auto
 	}
-	ri.Nonce, ri.RouteAccount, ri.RoutePoolIdx, ri.Compression, ri.NoGossip = string(nonce), accName, poolIdx, compression, noGossip
+	ri.Nonce, ri.RouteAccount, ri.RoutePoolIdx, ri.Compression = string(nonce), accName, poolIdx, compression
 	infoJSON := generateInfoJSON(&s.routeInfo)
 	// Clear now that it has been serialized. Will prevent nonce to be included in async INFO that we may send.
 	// Same for some other fields.
-	ri.Nonce, ri.RouteAccount, ri.RoutePoolIdx, ri.Compression, ri.NoGossip = _EMPTY_, _EMPTY_, 0, _EMPTY_, false
+	ri.Nonce, ri.RouteAccount, ri.RoutePoolIdx, ri.Compression = _EMPTY_, _EMPTY_, 0, _EMPTY_
 	return infoJSON
 }
 
@@ -1892,7 +1878,7 @@ const (
 	_EMPTY_ = ""
 )
 
-func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo, noGossip bool, info *Info, accName string) bool {
+func (s *Server) addRoute(c *client, didSolicit bool, info *Info, accName string) bool {
 	id := info.ID
 
 	var acc *Account
@@ -1978,19 +1964,12 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo, noGossip bool,
 			c.mu.Lock()
 			idHash := c.route.idHash
 			cid := c.cid
-			if sendDelayedInfo {
-				cm := compressionModeForInfoProtocol(&opts.Cluster.Compression, c.route.compression)
-				c.enqueueProto(s.generateRouteInitialInfoJSON(accName, cm, 0, noGossip))
-			}
 			if c.last.IsZero() {
 				c.last = time.Now()
 			}
 			if acc != nil {
 				c.acc = acc
 			}
-			// This will be true if this is a route that was initiated from the
-			// gossip protocol (basically invoked from processImplicitRoute).
-			fromGossip := didSolicit && c.route.routeType == Implicit
 			c.mu.Unlock()
 
 			// Store this route with key being the route id hash + account name
@@ -1999,20 +1978,8 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo, noGossip bool,
 			// Now that we have registered the route, we can remove from the temp map.
 			s.removeFromTempClients(cid)
 
-			// We will not gossip if we are an implicit route created due to
-			// gossip, or if the remote instructed us not to gossip.
-			if !fromGossip && !info.NoGossip {
-				if !didSolicit {
-					// If the connection was accepted, instruct the neighbors to
-					// set Info.NoGossip to true also when sending their own INFO
-					// protocol. In normal situations, any implicit route would
-					// set their Info.NoGossip to true, but we do this to solve
-					// a very specific situation. For some background, see test
-					// TestRouteImplicitJoinsSeparateGroups.
-					info.NoGossip = true
-				}
-				s.forwardNewRouteInfoToKnownServers(info)
-			}
+			// Notify other routes about this new route
+			s.forwardNewRouteInfoToKnownServers(info)
 
 			// Send subscription interest
 			s.sendSubsToRoute(c, -1, accName)
@@ -2093,9 +2060,9 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo, noGossip bool,
 		rHash := c.route.hash
 		rn := c.route.remoteName
 		url := c.route.url
-		if sendDelayedInfo {
-			cm := compressionModeForInfoProtocol(&opts.Cluster.Compression, c.route.compression)
-			c.enqueueProto(s.generateRouteInitialInfoJSON(_EMPTY_, cm, idx, noGossip))
+		// For solicited routes, we need now to send the INFO protocol.
+		if didSolicit {
+			c.enqueueProto(s.generateRouteInitialInfoJSON(_EMPTY_, c.route.compression, idx))
 		}
 		if c.last.IsZero() {
 			c.last = time.Now()
@@ -2133,13 +2100,8 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo, noGossip bool,
 			}
 
 			// we don't need to send if the only route is the one we just accepted.
-			// For other checks, see other call to forwardNewRouteInfoToKnownServers
-			// in the handling of pinned account above.
-			fromGossip := didSolicit && rtype == Implicit
-			if len(s.routes) > 1 && !fromGossip && !info.NoGossip {
-				if !didSolicit {
-					info.NoGossip = true
-				}
+			if len(s.routes) > 1 {
+				// Now let the known servers know about this new route
 				s.forwardNewRouteInfoToKnownServers(info)
 			}
 
@@ -2175,7 +2137,7 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo, noGossip bool,
 					s.grWG.Done()
 					return
 				}
-				s.connectToRoute(url, rtype, true, noGossip, _EMPTY_)
+				s.connectToRoute(url, rtype == Explicit, true, _EMPTY_)
 			})
 		}
 	}
@@ -2588,7 +2550,7 @@ func (s *Server) startRouteAcceptLoop() {
 	}
 
 	// Start the accept loop in a different go routine.
-	go s.acceptConnections(l, "Route", func(conn net.Conn) { s.createRoute(conn, nil, Implicit, false, _EMPTY_) }, nil)
+	go s.acceptConnections(l, "Route", func(conn net.Conn) { s.createRoute(conn, nil, _EMPTY_) }, nil)
 
 	// Solicit Routes if applicable. This will not block.
 	s.solicitRoutes(opts.Routes, opts.Cluster.PinnedAccounts)
@@ -2630,13 +2592,14 @@ func (s *Server) StartRouting(clientListenReady chan struct{}) {
 }
 
 func (s *Server) reConnectToRoute(rURL *url.URL, rtype RouteType, accName string) {
+	tryForEver := rtype == Explicit
 	// If A connects to B, and B to A (regardless if explicit or
 	// implicit - due to auto-discovery), and if each server first
 	// registers the route on the opposite TCP connection, the
 	// two connections will end-up being closed.
 	// Add some random delay to reduce risk of repeated failures.
 	delay := time.Duration(rand.Intn(100)) * time.Millisecond
-	if rtype == Explicit {
+	if tryForEver {
 		delay += DEFAULT_ROUTE_RECONNECT
 	}
 	select {
@@ -2645,7 +2608,7 @@ func (s *Server) reConnectToRoute(rURL *url.URL, rtype RouteType, accName string
 		s.grWG.Done()
 		return
 	}
-	s.connectToRoute(rURL, rtype, false, false, accName)
+	s.connectToRoute(rURL, tryForEver, false, accName)
 }
 
 // Checks to make sure the route is still valid.
@@ -2658,26 +2621,21 @@ func (s *Server) routeStillValid(rURL *url.URL) bool {
 	return false
 }
 
-func (s *Server) connectToRoute(rURL *url.URL, rtype RouteType, firstConnect, noGossip bool, accName string) {
-	defer s.grWG.Done()
-	if rURL == nil {
-		return
-	}
-	// For explicit routes, we will try to connect until we succeed. For implicit
-	// we will try only based on the number of ConnectRetries optin.
-	tryForEver := rtype == Explicit
-
+func (s *Server) connectToRoute(rURL *url.URL, tryForEver, firstConnect bool, accName string) {
 	// Snapshot server options.
 	opts := s.getOpts()
 
+	defer s.grWG.Done()
+
 	const connErrFmt = "Error trying to connect to route (attempt %v): %v"
 
-	s.mu.RLock()
+	s.mu.Lock()
 	resolver := s.routeResolver
 	excludedAddresses := s.routesToSelf
-	s.mu.RUnlock()
+	s.mu.Unlock()
 
-	for attempts := 0; s.isRunning(); {
+	attempts := 0
+	for s.isRunning() && rURL != nil {
 		if tryForEver {
 			if !s.routeStillValid(rURL) {
 				return
@@ -2731,7 +2689,7 @@ func (s *Server) connectToRoute(rURL *url.URL, rtype RouteType, firstConnect, no
 
 		// We have a route connection here.
 		// Go ahead and create it and exit this func.
-		s.createRoute(conn, rURL, rtype, noGossip, accName)
+		s.createRoute(conn, rURL, accName)
 		return
 	}
 }
@@ -2760,13 +2718,13 @@ func (s *Server) solicitRoutes(routes []*url.URL, accounts []string) {
 	s.saveRouteTLSName(routes)
 	for _, r := range routes {
 		route := r
-		s.startGoRoutine(func() { s.connectToRoute(route, Explicit, true, false, _EMPTY_) })
+		s.startGoRoutine(func() { s.connectToRoute(route, true, true, _EMPTY_) })
 	}
 	// Now go over possible per-account routes and create them.
 	for _, an := range accounts {
 		for _, r := range routes {
 			route, accName := r, an
-			s.startGoRoutine(func() { s.connectToRoute(route, Explicit, true, false, accName) })
+			s.startGoRoutine(func() { s.connectToRoute(route, true, true, accName) })
 		}
 	}
 }
@@ -2888,7 +2846,7 @@ func (s *Server) removeRoute(c *client) {
 		opts          = s.getOpts()
 		rURL          *url.URL
 		noPool        bool
-		rtype         RouteType
+		didSolicit    bool
 	)
 	c.mu.Lock()
 	cid := c.cid
@@ -2907,7 +2865,7 @@ func (s *Server) removeRoute(c *client) {
 		connectURLs = r.connectURLs
 		wsConnectURLs = r.wsConnURLs
 		rURL = r.url
-		rtype = r.routeType
+		didSolicit = r.didSolicit
 	}
 	c.mu.Unlock()
 	if accName != _EMPTY_ {
@@ -2970,12 +2928,12 @@ func (s *Server) removeRoute(c *client) {
 			// this remote was a "no pool" route, attempt to reconnect.
 			if noPool {
 				if s.routesPoolSize > 1 {
-					s.startGoRoutine(func() { s.connectToRoute(rURL, rtype, true, false, _EMPTY_) })
+					s.startGoRoutine(func() { s.connectToRoute(rURL, didSolicit, true, _EMPTY_) })
 				}
 				if len(opts.Cluster.PinnedAccounts) > 0 {
 					for _, an := range opts.Cluster.PinnedAccounts {
 						accName := an
-						s.startGoRoutine(func() { s.connectToRoute(rURL, rtype, true, false, accName) })
+						s.startGoRoutine(func() { s.connectToRoute(rURL, didSolicit, true, accName) })
 					}
 				}
 			}
