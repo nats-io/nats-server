@@ -2753,8 +2753,9 @@ type HealthzOptions struct {
 
 // ProfilezOptions are options passed to Profilez
 type ProfilezOptions struct {
-	Name  string `json:"name"`
-	Debug int    `json:"debug"`
+	Name     string        `json:"name"`
+	Debug    int           `json:"debug"`
+	Duration time.Duration `json:"duration,omitempty"`
 }
 
 // StreamDetail shows information about the stream state and its consumers.
@@ -3741,21 +3742,36 @@ type ProfilezStatus struct {
 }
 
 func (s *Server) profilez(opts *ProfilezOptions) *ProfilezStatus {
-	if opts.Name == _EMPTY_ {
+	var buffer bytes.Buffer
+	switch opts.Name {
+	case _EMPTY_:
 		return &ProfilezStatus{
 			Error: "Profile name not specified",
 		}
-	}
-	profile := pprof.Lookup(opts.Name)
-	if profile == nil {
-		return &ProfilezStatus{
-			Error: fmt.Sprintf("Profile %q not found", opts.Name),
+	case "cpu":
+		if opts.Duration <= 0 || opts.Duration > 15*time.Second {
+			return &ProfilezStatus{
+				Error: fmt.Sprintf("Duration %s should be between 0s and 15s", opts.Duration),
+			}
 		}
-	}
-	var buffer bytes.Buffer
-	if err := profile.WriteTo(&buffer, opts.Debug); err != nil {
-		return &ProfilezStatus{
-			Error: fmt.Sprintf("Profile %q error: %s", opts.Name, err),
+		if err := pprof.StartCPUProfile(&buffer); err != nil {
+			return &ProfilezStatus{
+				Error: fmt.Sprintf("Failed to start CPU profile: %s", err),
+			}
+		}
+		time.Sleep(opts.Duration)
+		pprof.StopCPUProfile()
+	default:
+		profile := pprof.Lookup(opts.Name)
+		if profile == nil {
+			return &ProfilezStatus{
+				Error: fmt.Sprintf("Profile %q not found", opts.Name),
+			}
+		}
+		if err := profile.WriteTo(&buffer, opts.Debug); err != nil {
+			return &ProfilezStatus{
+				Error: fmt.Sprintf("Profile %q error: %s", opts.Name, err),
+			}
 		}
 	}
 	return &ProfilezStatus{
