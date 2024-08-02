@@ -5668,7 +5668,7 @@ func (c *client) getAccAndResultFromCache() (*Account, *SublistResult) {
 			}
 		} else {
 			// Match correct account and sublist.
-			if acc, _ = c.srv.LookupAccount(string(c.pa.account)); acc == nil {
+			if acc, _ = c.srv.LookupAccount(bytesToString(c.pa.account)); acc == nil {
 				return nil, nil
 			}
 		}

@@ -3869,7 +3869,7 @@ func fetchAccount(res AccountResolver, name string) (string, error) {
 	if !nkeys.IsValidPublicAccountKey(name) {
 		return _EMPTY_, fmt.Errorf("will only fetch valid account keys")
 	}
-	return res.Fetch(name)
+	return res.Fetch(copyString(name))
 }
 
 // AccountResolver interface. This is to fetch Account JWTs by public nkeys
