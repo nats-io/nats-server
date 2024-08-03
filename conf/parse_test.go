@@ -1,6 +1,8 @@
 package conf
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -34,8 +36,18 @@ func test(t *testing.T, data string, ex map[string]any) {
 	if n == nil {
 		t.Fatal("Received nil map")
 	}
-
-	// DeepEqual will fail due to pedantic mode creating a different map.
+	// Compare with the original results.
+	a, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(b, a) {
+		t.Fatalf("Not Equal:\nReceived: '%+v'\nExpected: '%+v'\n", string(a), string(b))
+	}
 }
 
 func TestSimpleTopLevel(t *testing.T) {

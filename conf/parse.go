@@ -26,6 +26,7 @@ package conf
 // see parse_test.go for more examples.
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -112,6 +113,10 @@ type token struct {
 	value        any
 	usedVariable bool
 	sourceFile   string
+}
+
+func (t *token) MarshalJSON() ([]byte, error) {
+	return json.Marshal(t.value)
 }
 
 func (t *token) Value() any {
