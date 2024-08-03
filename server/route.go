@@ -866,7 +866,7 @@ func (s *Server) negotiateRouteCompression(c *client, didSolicit bool, accName, 
 	if needsCompression(cm) {
 		// Generate an INFO with the chosen compression mode.
 		s.mu.Lock()
-		infoProto := s.generateRouteInitialInfoJSON(accName, cm, 0, 0)
+		infoProto := s.generateRouteInitialInfoJSON(accName, cm, 0, gossipDefault)
 		s.mu.Unlock()
 
 		// If we solicited, then send this INFO protocol BEFORE switching
@@ -2586,7 +2586,7 @@ func (s *Server) startRouteAcceptLoop() {
 	}
 
 	// Start the accept loop in a different go routine.
-	go s.acceptConnections(l, "Route", func(conn net.Conn) { s.createRoute(conn, nil, Implicit, 0, _EMPTY_) }, nil)
+	go s.acceptConnections(l, "Route", func(conn net.Conn) { s.createRoute(conn, nil, Implicit, gossipDefault, _EMPTY_) }, nil)
 
 	// Solicit Routes if applicable. This will not block.
 	s.solicitRoutes(opts.Routes, opts.Cluster.PinnedAccounts)
@@ -2643,7 +2643,7 @@ func (s *Server) reConnectToRoute(rURL *url.URL, rtype RouteType, accName string
 		s.grWG.Done()
 		return
 	}
-	s.connectToRoute(rURL, rtype, false, 0, accName)
+	s.connectToRoute(rURL, rtype, false, gossipDefault, accName)
 }
 
 // Checks to make sure the route is still valid.
@@ -2758,13 +2758,13 @@ func (s *Server) solicitRoutes(routes []*url.URL, accounts []string) {
 	s.saveRouteTLSName(routes)
 	for _, r := range routes {
 		route := r
-		s.startGoRoutine(func() { s.connectToRoute(route, Explicit, true, 0, _EMPTY_) })
+		s.startGoRoutine(func() { s.connectToRoute(route, Explicit, true, gossipDefault, _EMPTY_) })
 	}
 	// Now go over possible per-account routes and create them.
 	for _, an := range accounts {
 		for _, r := range routes {
 			route, accName := r, an
-			s.startGoRoutine(func() { s.connectToRoute(route, Explicit, true, 0, accName) })
+			s.startGoRoutine(func() { s.connectToRoute(route, Explicit, true, gossipDefault, accName) })
 		}
 	}
 }
@@ -2968,12 +2968,12 @@ func (s *Server) removeRoute(c *client) {
 			// this remote was a "no pool" route, attempt to reconnect.
 			if noPool {
 				if s.routesPoolSize > 1 {
-					s.startGoRoutine(func() { s.connectToRoute(rURL, rtype, true, 0, _EMPTY_) })
+					s.startGoRoutine(func() { s.connectToRoute(rURL, rtype, true, gossipDefault, _EMPTY_) })
 				}
 				if len(opts.Cluster.PinnedAccounts) > 0 {
 					for _, an := range opts.Cluster.PinnedAccounts {
 						accName := an
-						s.startGoRoutine(func() { s.connectToRoute(rURL, rtype, true, 0, accName) })
+						s.startGoRoutine(func() { s.connectToRoute(rURL, rtype, true, gossipDefault, accName) })
 					}
 				}
 			}
