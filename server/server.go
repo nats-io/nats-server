@@ -142,7 +142,7 @@ type Info struct {
 	RoutePoolIdx  int                `json:"route_pool_idx,omitempty"`
 	RouteAccount  string             `json:"route_account,omitempty"`
 	RouteAccReqID string             `json:"route_acc_add_reqid,omitempty"`
-	NoGossip      bool               `json:"no_gossip,omitempty"`
+	GossipMode    byte               `json:"gossip_mode,omitempty"`
 
 	// Gateways Specific
 	Gateway           string   `json:"gateway,omitempty"`             // Name of the origin Gateway (sent by gateway's INFO)
