@@ -2137,7 +2137,7 @@ type testConnWritePartial struct {
 func (c *testConnWritePartial) Write(p []byte) (int, error) {
 	n := len(p)
 	if c.partial {
-		n = 15
+		n = n/2 + 1
 	}
 	return c.buf.Write(p[:n])
 }
