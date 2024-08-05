@@ -1827,20 +1827,11 @@ func (c *client) markConnAsClosed(reason ClosedState) {
 	// Save off the connection if its a client or leafnode.
 	if c.kind == CLIENT || c.kind == LEAF {
 		if nc := c.nc; nc != nil && c.srv != nil {
-			// Capture the subs and pass them to the go routine. We don't
-			// know for sure if the go routine will execute before or
-			// after closeConnection is done, so we can't have the go
-			// routine set c.subs to nil (to release the connection).
-			var subs []*subscription
-			if len(c.subs) > 0 {
-				subs = make([]*subscription, 0, len(c.subs))
-				for _, sub := range c.subs {
-					subs = append(subs, sub)
-				}
-			}
 			// TODO: May want to send events to single go routine instead
 			// of creating a new go routine for each save.
-			go c.srv.saveClosedClient(c, nc, subs, reason)
+			// Pass the c.subs as a reference. It may be set to nil in
+			// closeConnection.
+			go c.srv.saveClosedClient(c, nc, c.subs, reason)
 		}
 	}
 	// If writeLoop exists, let it do the final flush, close and teardown.
