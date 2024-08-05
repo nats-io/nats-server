@@ -1595,12 +1595,6 @@ func (s *Server) logPid() error {
 	return os.WriteFile(s.getOpts().PidFile, []byte(pidStr), 0660)
 }
 
-// numReservedAccounts will return the number of reserved accounts configured in the server.
-// Currently this is 1, one for the global default account.
-func (s *Server) numReservedAccounts() int {
-	return 1
-}
-
 // NumActiveAccounts reports number of active accounts on this server.
 func (s *Server) NumActiveAccounts() int32 {
 	return atomic.LoadInt32(&s.activeAccounts)
