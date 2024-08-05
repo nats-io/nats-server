@@ -10029,6 +10029,7 @@ func TestNoRaceConnectionObjectReleased(t *testing.T) {
 	cid, err := nc.GetClientID()
 	require_NoError(t, err)
 	natsSubSync(t, nc, "foo")
+	natsFlush(t, nc)
 
 	ncWS := natsConnect(t, fmt.Sprintf("ws://a:pwd@127.0.0.1:%d", oa.Websocket.Port))
 	defer ncWS.Close()
