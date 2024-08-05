@@ -10016,6 +10016,7 @@ func TestNoRaceConnectionObjectReleased(t *testing.T) {
 
 	// Start an independent MQTT server to check MQTT client connection.
 	mo := testMQTTDefaultOptions()
+	mo.ServerName = "MQTTServer"
 	sm := testMQTTRunServer(t, mo)
 	defer testMQTTShutdownServer(sm)
 

@@ -4160,6 +4160,110 @@ func TestRouteNoLeakOnSlowConsumer(t *testing.T) {
 	}
 }
 
+func TestRouteNoAppSubLeakOnSlowConsumer(t *testing.T) {
+	o1 := DefaultOptions()
+	o1.MaxPending = 1024
+	o1.MaxPayload = int32(o1.MaxPending)
+	s1 := RunServer(o1)
+	defer s1.Shutdown()
+
+	o2 := DefaultOptions()
+	o2.MaxPending = 1024
+	o2.MaxPayload = int32(o2.MaxPending)
+	o2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port))
+	s2 := RunServer(o2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	checkSub := func(expected bool) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+			subsz, err := s1.Subsz(&SubszOptions{Subscriptions: true, Account: globalAccountName})
+			require_NoError(t, err)
+			for _, sub := range subsz.Subs {
+				if sub.Subject == "foo" {
+					if expected {
+						return nil
+					}
+					return fmt.Errorf("Subscription should not have been found: %+v", sub)
+				}
+			}
+			if expected {
+				return fmt.Errorf("Subscription on `foo` not found")
+			}
+			return nil
+		})
+	}
+
+	checkRoutedSub := func(expected bool) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+			routez, err := s2.Routez(&RoutezOptions{Subscriptions: true})
+			require_NoError(t, err)
+			for _, route := range routez.Routes {
+				if route.Account != _EMPTY_ {
+					continue
+				}
+				if len(route.Subs) == 1 && route.Subs[0] == "foo" {
+					if expected {
+						return nil
+					}
+					return fmt.Errorf("Subscription should not have been found: %+v", route.Subs)
+				}
+			}
+			if expected {
+				return fmt.Errorf("Did not find `foo` subscription")
+			}
+			return nil
+		})
+	}
+
+	checkClosed := func(cid uint64) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+			connz, err := s1.Connz(&ConnzOptions{State: ConnClosed, CID: cid, Subscriptions: true})
+			if err != nil {
+				return err
+			}
+			require_Len(t, len(connz.Conns), 1)
+			conn := connz.Conns[0]
+			require_Equal(t, conn.Reason, SlowConsumerPendingBytes.String())
+			subs := conn.Subs
+			require_Len(t, len(subs), 1)
+			require_Equal[string](t, subs[0], "foo")
+			return nil
+		})
+	}
+
+	for i := 0; i < 5; i++ {
+		nc := natsConnect(t, s1.ClientURL())
+		defer nc.Close()
+
+		natsSubSync(t, nc, "foo")
+		natsFlush(t, nc)
+
+		checkSub(true)
+		checkRoutedSub(true)
+
+		cid, err := nc.GetClientID()
+		require_NoError(t, err)
+		c := s1.getClient(cid)
+		payload := make([]byte, 2048)
+		c.mu.Lock()
+		c.queueOutbound([]byte(fmt.Sprintf("MSG foo 1 2048\r\n%s\r\n", payload)))
+		closed := c.isClosed()
+		c.mu.Unlock()
+
+		require_True(t, closed)
+		checkSub(false)
+		checkRoutedSub(false)
+		checkClosed(cid)
+
+		nc.Close()
+	}
+}
+
 func TestRouteNoLeakOnAuthTimeout(t *testing.T) {
 	opts := DefaultOptions()
 	opts.Cluster.Username = "foo"
