@@ -1514,11 +1514,13 @@ func (a *Account) addServiceImportWithClaim(destination *Account, from, to strin
 	}
 
 	// Check if this introduces a cycle before proceeding.
-	if err := a.serviceImportFormsCycle(destination, from); err != nil {
-		return err
+	// From will be the mapped subject.
+	// If the 'to' has a wildcard make sure we pre-transform the 'from' before we check for cycles, e.g. '$1'
+	fromT := from
+	if subjectHasWildcard(to) {
+		fromT, _ = transformUntokenize(from)
 	}
-
-	if err := a.serviceImportFormsCycle(destination, to); err != nil {
+	if err := a.serviceImportFormsCycle(destination, fromT); err != nil {
 		return err
 	}
 
@@ -1963,6 +1965,7 @@ func (a *Account) addServiceImport(dest *Account, from, to string, claim *jwt.Im
 		tr     *subjectTransform
 		err    error
 	)
+
 	if subjectHasWildcard(to) {
 		// If to and from match, then we use the published subject.
 		if to == from {
