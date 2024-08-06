@@ -34,6 +34,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
@@ -1762,6 +1763,13 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	proto := &leafConnectInfo{}
 	if err := json.Unmarshal(arg, proto); err != nil {
 		return err
+	}
+
+	// Reject a cluster that contains spaces or line breaks.
+	if proto.Cluster != _EMPTY_ && strings.ContainsFunc(proto.Cluster, unicode.IsSpace) {
+		c.sendErrAndErr(ErrClusterNameHasSpaces.Error())
+		c.closeConnection(ProtocolViolation)
+		return ErrClusterNameHasSpaces
 	}
 
 	// Check for cluster name collisions.

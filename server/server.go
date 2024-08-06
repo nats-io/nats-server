@@ -30,6 +30,7 @@ import (
 	"net/url"
 	"regexp"
 	"runtime/pprof"
+	"unicode"
 
 	// Allow dynamic profiling.
 	_ "net/http/pprof"
@@ -2351,6 +2352,9 @@ func (s *Server) Start() {
 	// Solicit remote servers for leaf node connections.
 	if len(opts.LeafNode.Remotes) > 0 {
 		s.solicitLeafNodeRemotes(opts.LeafNode.Remotes)
+		if opts.Cluster.Name == opts.ServerName && strings.ContainsFunc(opts.Cluster.Name, unicode.IsSpace) {
+			s.Warnf("Server name has spaces and used as the cluster name, leaf remotes may not connect properly")
+		}
 	}
 
 	// TODO (ik): I wanted to refactor this by starting the client
