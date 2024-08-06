@@ -2006,7 +2006,18 @@ func TestJetStreamClusterWQRoundRobinSubjectRetention(t *testing.T) {
 
 type captureLeafClusterSpacesLogger struct {
 	DummyLogger
-	ch chan string
+	ch     chan string
+	warnCh chan string
+}
+
+func (l *captureLeafClusterSpacesLogger) Warnf(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	if strings.Contains(msg, `Server name has spaces and used as the cluster name, leaf remotes may not connect properly`) {
+		select {
+		case l.warnCh <- msg:
+		default:
+		}
+	}
 }
 
 func (l *captureLeafClusterSpacesLogger) Errorf(format string, args ...any) {
@@ -2119,10 +2130,12 @@ func TestJetStreamClusterAndNamesWithSpaces(t *testing.T) {
 	`
 	leafConfA = fmt.Sprintf(leafConfA, c.servers[0].opts.LeafNode.Port)
 	sconfA := createConfFile(t, []byte(leafConfA))
-
-	leafA, _ := RunServerWithConfig(sconfA)
-	lA := &captureLeafClusterSpacesLogger{ch: make(chan string, 10)}
+	oA := LoadConfig(sconfA)
+	leafA, err := NewServer(oA)
+	require_NoError(t, err)
+	lA := &captureLeafClusterSpacesLogger{ch: make(chan string, 10), warnCh: make(chan string, 10)}
 	leafA.SetLogger(lA, false, false)
+	leafA.Start()
 	defer leafA.Shutdown()
 
 	// Leaf with spaces in name but with a valid cluster name is able to connect.
@@ -2279,7 +2292,7 @@ func TestJetStreamClusterAndNamesWithSpaces(t *testing.T) {
 	nc1, js1 := jsClientConnect(t, c.servers[1])
 	defer nc1.Close()
 
-	_, err := js1.AddStream(&nats.StreamConfig{
+	_, err = js1.AddStream(&nats.StreamConfig{
 		Name:     "foo",
 		Subjects: []string{"foo"},
 	})
@@ -2315,6 +2328,14 @@ func TestJetStreamClusterAndNamesWithSpaces(t *testing.T) {
 	case <-lD3.ch:
 	case <-time.After(5 * time.Second):
 		t.Errorf("Timed out waiting for error")
+	}
+
+	// Check that we got a warning about the server name being reused
+	// for the cluster name.
+	select {
+	case <-lA.warnCh:
+	case <-time.After(5 * time.Second):
+		t.Errorf("Timed out waiting for warning")
 	}
 
 	// Check that valid configs were ok still.
