@@ -1,6 +1,8 @@
 package conf
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,6 +26,27 @@ func test(t *testing.T, data string, ex map[string]any) {
 
 	if !reflect.DeepEqual(m, ex) {
 		t.Fatalf("Not Equal:\nReceived: '%+v'\nExpected: '%+v'\n", m, ex)
+	}
+
+	// Also test ParseWithChecks
+	n, err := ParseWithChecks(data)
+	if err != nil {
+		t.Fatalf("Received err: %v\n", err)
+	}
+	if n == nil {
+		t.Fatal("Received nil map")
+	}
+	// Compare with the original results.
+	a, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(b, a) {
+		t.Fatalf("Not Equal:\nReceived: '%+v'\nExpected: '%+v'\n", string(a), string(b))
 	}
 }
 

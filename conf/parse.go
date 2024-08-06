@@ -26,6 +26,7 @@ package conf
 // see parse_test.go for more examples.
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -69,6 +70,15 @@ func Parse(data string) (map[string]any, error) {
 	return p.mapping, nil
 }
 
+// ParseWithChecks is equivalent to Parse but runs in pedantic mode.
+func ParseWithChecks(data string) (map[string]any, error) {
+	p, err := parse(data, "", true)
+	if err != nil {
+		return nil, err
+	}
+	return p.mapping, nil
+}
+
 // ParseFile is a helper to open file, etc. and parse the contents.
 func ParseFile(fp string) (map[string]any, error) {
 	data, err := os.ReadFile(fp)
@@ -103,6 +113,10 @@ type token struct {
 	value        any
 	usedVariable bool
 	sourceFile   string
+}
+
+func (t *token) MarshalJSON() ([]byte, error) {
+	return json.Marshal(t.value)
 }
 
 func (t *token) Value() any {

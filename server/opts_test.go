@@ -3319,3 +3319,87 @@ func TestAuthorizationAndAccountsMisconfigurations(t *testing.T) {
 		})
 	}
 }
+
+// TestProcessConfigString duplicates the previous test, but uses the (*Options).ProcessConfigString
+// instead of the ProcessConfigFile function.
+func TestProcessConfigString(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		config string
+		err    string
+	}{
+		{
+			"duplicate users",
+			`
+			authorization = {users = [ {user: "user1", pass: "pwd"} ] }
+			accounts { ACC { users = [ {user: "user1"} ] } }
+			`,
+			fmt.Sprintf("Duplicate user %q detected", "user1"),
+		},
+		{
+			"duplicate nkey",
+			`
+			authorization = {users = [ {nkey: UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX} ] }
+			accounts { ACC { users = [ {nkey: UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX} ] } }
+			`,
+			fmt.Sprintf("Duplicate nkey %q detected", "UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX"),
+		},
+		{
+			"auth single user and password and accounts users",
+			`
+			authorization = {user: "user1", password: "pwd"}
+			accounts = { ACC { users = [ {user: "user2", pass: "pwd"} ] } }
+			`,
+			"Can not have a single user/pass",
+		},
+		{
+			"auth single user and password and accounts nkeys",
+			`
+			authorization = {user: "user1", password: "pwd"}
+			accounts = { ACC { users = [ {nkey: UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX} ] } }
+			`,
+			"Can not have a single user/pass",
+		},
+		{
+			"auth token and accounts users",
+			`
+			authorization = {token: "my_token"}
+			accounts = { ACC { users = [ {user: "user2", pass: "pwd"} ] } }
+			`,
+			"Can not have a token",
+		},
+		{
+			"auth token and accounts nkeys",
+			`
+			authorization = {token: "my_token"}
+			accounts = { ACC { users = [ {nkey: UC6NLCN7AS34YOJVCYD4PJ3QB7QGLYG5B5IMBT25VW5K4TNUJODM7BOX} ] } }
+			`,
+			"Can not have a token",
+		},
+		{
+			"auth callout allowed accounts",
+			`
+			accounts {
+				AUTH { users = [ {user: "auth", password: "auth"} ] }
+				FOO {}
+			}
+			authorization {
+				auth_callout {
+					issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+					account: AUTH
+					auth_users: [ auth ]
+					allowed_accounts: [ BAR ]
+				}
+			}
+			`,
+			"auth_callout allowed account \"BAR\" not found in configured accounts",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			opts := &Options{}
+			if err := opts.ProcessConfigString(test.config); err == nil || !strings.Contains(err.Error(), test.err) {
+				t.Fatalf("Expected error %q, got %q", test.err, err.Error())
+			}
+		})
+	}
+}
