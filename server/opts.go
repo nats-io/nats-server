@@ -886,7 +886,7 @@ func (o *Options) ProcessConfigString(data string) error {
 		return err
 	}
 
-	return o.processConfigFile("", m)
+	return o.processConfigFile(_EMPTY_, m)
 }
 
 func (o *Options) processConfigFile(configFile string, m map[string]any) error {
