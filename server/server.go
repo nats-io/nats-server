@@ -3357,7 +3357,7 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 
 // This will save off a closed client in a ring buffer such that
 // /connz can inspect. Useful for debugging, etc.
-func (s *Server) saveClosedClient(c *client, nc net.Conn, reason ClosedState) {
+func (s *Server) saveClosedClient(c *client, nc net.Conn, subs map[string]*subscription, reason ClosedState) {
 	now := time.Now()
 
 	s.accountDisconnectEvent(c, now, reason.String())
@@ -3366,17 +3366,18 @@ func (s *Server) saveClosedClient(c *client, nc net.Conn, reason ClosedState) {
 
 	cc := &closedClient{}
 	cc.fill(c, nc, now, false)
+	// Note that cc.fill is using len(c.subs), which may have been set to nil by now,
+	// so replace cc.NumSubs with len(subs).
+	cc.NumSubs = uint32(len(subs))
 	cc.Stop = &now
 	cc.Reason = reason.String()
 
 	// Do subs, do not place by default in main ConnInfo
-	if len(c.subs) > 0 {
-		cc.subs = make([]SubDetail, 0, len(c.subs))
-		for _, sub := range c.subs {
+	if len(subs) > 0 {
+		cc.subs = make([]SubDetail, 0, len(subs))
+		for _, sub := range subs {
 			cc.subs = append(cc.subs, newSubDetail(sub))
 		}
-		// Now set this to nil to allow connection to be released.
-		c.subs = nil
 	}
 	// Hold user as well.
 	cc.user = c.getRawAuthUser()

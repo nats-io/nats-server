@@ -1829,7 +1829,9 @@ func (c *client) markConnAsClosed(reason ClosedState) {
 		if nc := c.nc; nc != nil && c.srv != nil {
 			// TODO: May want to send events to single go routine instead
 			// of creating a new go routine for each save.
-			go c.srv.saveClosedClient(c, nc, reason)
+			// Pass the c.subs as a reference. It may be set to nil in
+			// closeConnection.
+			go c.srv.saveClosedClient(c, nc, c.subs, reason)
 		}
 	}
 	// If writeLoop exists, let it do the final flush, close and teardown.
@@ -5509,6 +5511,14 @@ func (c *client) closeConnection(reason ClosedState) {
 				srv.decActiveAccounts()
 			}
 		}
+	}
+
+	// Now that we are done with subscriptions, clear the field so that the
+	// connection can be released and gc'ed.
+	if kind == CLIENT || kind == LEAF {
+		c.mu.Lock()
+		c.subs = nil
+		c.mu.Unlock()
 	}
 
 	// Don't reconnect connections that have been marked with
