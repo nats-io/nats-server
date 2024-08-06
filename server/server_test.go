@@ -28,7 +28,7 @@ import (
 	"os"
 	"reflect"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1060,9 +1060,9 @@ func TestLameDuckModeInfo(t *testing.T) {
 		t.Helper()
 		var si *serverInfo
 		for i, ws := range []bool{false, true} {
-			sort.Strings(expected[i])
+			slices.Sort(expected[i])
 			si = getInfo(ws)
-			sort.Strings(si.ConnectURLs)
+			slices.Sort(si.ConnectURLs)
 			if !reflect.DeepEqual(expected[i], si.ConnectURLs) {
 				t.Fatalf("Expected %q, got %q", expected, si.ConnectURLs)
 			}

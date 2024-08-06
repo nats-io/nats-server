@@ -15,6 +15,7 @@ package server
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -25,7 +26,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"reflect"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -385,10 +386,8 @@ func (a *Account) updateRemoteServer(m *AccountNumConns) []*client {
 	// conservative and bit harsh here. Clients will reconnect if we over compensate.
 	var clients []*client
 	if mtce {
-		clients := a.getClientsLocked()
-		sort.Slice(clients, func(i, j int) bool {
-			return clients[i].start.After(clients[j].start)
-		})
+		clients = a.getClientsLocked()
+		slices.SortFunc(clients, func(i, j *client) int { return -i.start.Compare(j.start) }) // reserve order
 		over := (len(a.clients) - int(a.sysclients) + int(a.nrclients)) - int(a.mconns)
 		if over < len(clients) {
 			clients = clients[:over]
@@ -705,7 +704,7 @@ func (a *Account) AddWeightedMappings(src string, dests ...*MapDest) error {
 			}
 			dests = append(dests, &destination{tr, aw})
 		}
-		sort.Slice(dests, func(i, j int) bool { return dests[i].weight < dests[j].weight })
+		slices.SortFunc(dests, func(i, j *destination) int { return cmp.Compare(i.weight, j.weight) })
 
 		var lw uint8
 		for _, d := range dests {
@@ -3660,9 +3659,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 
 	// Sort if we are over the limit.
 	if a.MaxTotalConnectionsReached() {
-		sort.Slice(clients, func(i, j int) bool {
-			return clients[i].start.After(clients[j].start)
-		})
+		slices.SortFunc(clients, func(i, j *client) int { return -i.start.Compare(j.start) }) // sort in reverse order
 	}
 
 	// If JetStream is enabled for this server we will call into configJetStream for the account

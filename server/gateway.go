@@ -15,6 +15,7 @@ package server
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
@@ -23,7 +24,7 @@ import (
 	"math/rand"
 	"net"
 	"net/url"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1742,9 +1743,7 @@ func (s *Server) getOutboundGatewayConnections(a *[]*client) {
 // Gateway write lock is held on entry
 func (g *srvGateway) orderOutboundConnectionsLocked() {
 	// Order the gateways by lowest RTT
-	sort.Slice(g.outo, func(i, j int) bool {
-		return g.outo[i].getRTTValue() < g.outo[j].getRTTValue()
-	})
+	slices.SortFunc(g.outo, func(i, j *client) int { return cmp.Compare(i.getRTTValue(), j.getRTTValue()) })
 }
 
 // Orders the array of outbound connections.

@@ -15,6 +15,7 @@ package server
 
 import (
 	"bytes"
+	"cmp"
 	crand "crypto/rand"
 	"encoding/binary"
 	"encoding/json"
@@ -25,7 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -5914,15 +5915,15 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 		return nil, &err
 	}
 	// Sort based on available from most to least, breaking ties by number of total streams assigned to the peer.
-	sort.Slice(nodes, func(i, j int) bool {
-		if nodes[i].avail == nodes[j].avail {
-			return nodes[i].ns < nodes[j].ns
+	slices.SortFunc(nodes, func(i, j wn) int {
+		if i.avail == j.avail {
+			return cmp.Compare(i.ns, j.ns)
 		}
-		return nodes[i].avail > nodes[j].avail
+		return cmp.Compare(i.avail, j.avail)
 	})
 	// If we are placing a replicated stream, let's sort based on HAAssets, as that is more important to balance.
 	if cfg.Replicas > 1 {
-		sort.SliceStable(nodes, func(i, j int) bool { return nodes[i].ha < nodes[j].ha })
+		slices.SortStableFunc(nodes, func(i, j wn) int { return cmp.Compare(i.ha, j.ha) })
 	}
 
 	var results []string
@@ -6682,9 +6683,7 @@ func (s *Server) jsClusteredStreamListRequest(acc *Account, ci *ClientInfo, filt
 
 	// Needs to be sorted for offsets etc.
 	if len(streams) > 1 {
-		sort.Slice(streams, func(i, j int) bool {
-			return strings.Compare(streams[i].Config.Name, streams[j].Config.Name) < 0
-		})
+		slices.SortFunc(streams, func(i, j *streamAssignment) int { return cmp.Compare(i.Config.Name, j.Config.Name) })
 	}
 
 	scnt := len(streams)
@@ -6797,9 +6796,7 @@ LOOP:
 
 	// Needs to be sorted as well.
 	if len(resp.Streams) > 1 {
-		sort.Slice(resp.Streams, func(i, j int) bool {
-			return strings.Compare(resp.Streams[i].Config.Name, resp.Streams[j].Config.Name) < 0
-		})
+		slices.SortFunc(resp.Streams, func(i, j *StreamInfo) int { return cmp.Compare(i.Config.Name, j.Config.Name) })
 	}
 
 	resp.Total = scnt
@@ -6832,9 +6829,7 @@ func (s *Server) jsClusteredConsumerListRequest(acc *Account, ci *ClientInfo, of
 	}
 	// Needs to be sorted.
 	if len(consumers) > 1 {
-		sort.Slice(consumers, func(i, j int) bool {
-			return strings.Compare(consumers[i].Name, consumers[j].Name) < 0
-		})
+		slices.SortFunc(consumers, func(i, j *consumerAssignment) int { return cmp.Compare(i.Config.Name, j.Config.Name) })
 	}
 
 	ocnt := len(consumers)
@@ -6944,9 +6939,7 @@ LOOP:
 
 	// Needs to be sorted as well.
 	if len(resp.Consumers) > 1 {
-		sort.Slice(resp.Consumers, func(i, j int) bool {
-			return strings.Compare(resp.Consumers[i].Name, resp.Consumers[j].Name) < 0
-		})
+		slices.SortFunc(resp.Consumers, func(i, j *ConsumerInfo) int { return cmp.Compare(i.Name, j.Name) })
 	}
 
 	resp.Total = ocnt
@@ -8601,9 +8594,7 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 	}
 	// Order the result based on the name so that we get something consistent
 	// when doing repeated stream info in the CLI, etc...
-	sort.Slice(ci.Replicas, func(i, j int) bool {
-		return ci.Replicas[i].Name < ci.Replicas[j].Name
-	})
+	slices.SortFunc(ci.Replicas, func(i, j *PeerInfo) int { return cmp.Compare(i.Name, j.Name) })
 	return ci
 }
 
@@ -8663,9 +8654,8 @@ func (js *jetStream) streamAlternates(ci *ClientInfo, stream string) []StreamAlt
 	}
 
 	// Sort based on our weights that originate from the request itself.
-	sort.Slice(alts, func(i, j int) bool {
-		return weights[alts[i].Cluster] > weights[alts[j].Cluster]
-	})
+	// reverse sort
+	slices.SortFunc(alts, func(i, j StreamAlternate) int { return -cmp.Compare(weights[i.Cluster], weights[j.Cluster]) })
 
 	return alts
 }
