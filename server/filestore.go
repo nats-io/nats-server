@@ -32,6 +32,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -1069,7 +1070,7 @@ func (fs *fileStore) addLostData(ld *LostStreamData) {
 		}
 		if added {
 			msgs := fs.ld.Msgs
-			sort.Slice(msgs, func(i, j int) bool { return msgs[i] < msgs[j] })
+			slices.Sort(msgs)
 			fs.ld.Bytes += ld.Bytes
 		}
 	} else {
@@ -1079,17 +1080,14 @@ func (fs *fileStore) addLostData(ld *LostStreamData) {
 
 // Helper to see if we already have this sequence reported in our lost data.
 func (ld *LostStreamData) exists(seq uint64) (int, bool) {
-	i, found := sort.Find(len(ld.Msgs), func(i int) int {
-		tseq := ld.Msgs[i]
-		if tseq < seq {
-			return -1
-		}
-		if tseq > seq {
-			return +1
-		}
-		return 0
+	i := slices.IndexFunc(ld.Msgs, func(i uint64) bool {
+		return i == seq
 	})
-	return i, found
+	if i == -1 {
+		return -1, false
+	} else {
+		return i, true
+	}
 }
 
 func (fs *fileStore) removeFromLostData(seq uint64) {
@@ -6546,9 +6544,7 @@ func (fs *fileStore) State() StreamState {
 
 	// Can not be guaranteed to be sorted.
 	if len(state.Deleted) > 0 {
-		sort.Slice(state.Deleted, func(i, j int) bool {
-			return state.Deleted[i] < state.Deleted[j]
-		})
+		slices.Sort(state.Deleted)
 		state.NumDeleted = len(state.Deleted)
 	}
 	return state

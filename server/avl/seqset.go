@@ -14,10 +14,11 @@
 package avl
 
 import (
+	"cmp"
 	"encoding/binary"
 	"errors"
 	"math/bits"
-	"sort"
+	"slices"
 )
 
 // SequenceSet is a memory and encoding optimized set for storing unsigned ints.
@@ -209,7 +210,7 @@ func Union(ssa ...*SequenceSet) *SequenceSet {
 		return nil
 	}
 	// Sort so we can clone largest.
-	sort.Slice(ssa, func(i, j int) bool { return ssa[i].Size() > ssa[j].Size() })
+	slices.SortFunc(ssa, func(i, j *SequenceSet) int { return -cmp.Compare(i.Size(), j.Size()) }) // reverse order
 	ss := ssa[0].Clone()
 
 	// Insert the rest through range call.

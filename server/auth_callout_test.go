@@ -22,7 +22,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -709,9 +709,9 @@ func TestAuthCalloutOperatorModeBasics(t *testing.T) {
 		t.Fatalf("Expected to be switched to %q, but got %q", tpub, userInfo.Account)
 	}
 	require_True(t, len(userInfo.Permissions.Publish.Allow) == 2)
-	sort.Strings(userInfo.Permissions.Publish.Allow)
+	slices.Sort(userInfo.Permissions.Publish.Allow)
 	require_Equal(t, "foo.>", userInfo.Permissions.Publish.Allow[1])
-	sort.Strings(userInfo.Permissions.Subscribe.Allow)
+	slices.Sort(userInfo.Permissions.Subscribe.Allow)
 	require_True(t, len(userInfo.Permissions.Subscribe.Allow) == 2)
 	require_Equal(t, "foo.>", userInfo.Permissions.Subscribe.Allow[1])
 }
@@ -834,9 +834,9 @@ func testAuthCalloutScopedUser(t *testing.T, allowAnyAccount bool) {
 		t.Fatalf("Expected to be switched to %q, but got %q", tpub, userInfo.Account)
 	}
 	require_True(t, len(userInfo.Permissions.Publish.Allow) == 2)
-	sort.Strings(userInfo.Permissions.Publish.Allow)
+	slices.Sort(userInfo.Permissions.Publish.Allow)
 	require_Equal(t, "foo.>", userInfo.Permissions.Publish.Allow[1])
-	sort.Strings(userInfo.Permissions.Subscribe.Allow)
+	slices.Sort(userInfo.Permissions.Subscribe.Allow)
 	require_True(t, len(userInfo.Permissions.Subscribe.Allow) == 2)
 	require_Equal(t, "foo.>", userInfo.Permissions.Subscribe.Allow[1])
 

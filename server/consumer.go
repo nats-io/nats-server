@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"math/rand"
 	"reflect"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1697,7 +1697,7 @@ func (o *consumer) forceExpirePending() {
 		}
 	}
 	if len(expired) > 0 {
-		sort.Slice(expired, func(i, j int) bool { return expired[i] < expired[j] })
+		slices.Sort(expired)
 		o.addToRedeliverQueue(expired...)
 		// Now we should update the timestamp here since we are redelivering.
 		// We will use an incrementing time to preserve order for any other redelivery.
@@ -4656,7 +4656,7 @@ func (o *consumer) checkPending() {
 
 	if len(expired) > 0 {
 		// We need to sort.
-		sort.Slice(expired, func(i, j int) bool { return expired[i] < expired[j] })
+		slices.Sort(expired)
 		o.addToRedeliverQueue(expired...)
 		// Now we should update the timestamp here since we are redelivering.
 		// We will use an incrementing time to preserve order for any other redelivery.
@@ -4841,9 +4841,7 @@ func (o *consumer) selectStartingSeqNo() {
 					}
 					// Sort the skip list if needed.
 					if len(lss.seqs) > 1 {
-						sort.Slice(lss.seqs, func(i, j int) bool {
-							return lss.seqs[j] > lss.seqs[i]
-						})
+						slices.Sort(lss.seqs)
 					}
 					if len(lss.seqs) == 0 {
 						o.sseq = state.LastSeq
