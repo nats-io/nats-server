@@ -1,6 +1,6 @@
 module github.com/nats-io/nats-server/v2
 
-go 1.21
+go 1.21.0
 
 require (
 	github.com/klauspost/compress v1.17.9
@@ -11,6 +11,6 @@ require (
 	github.com/nats-io/nuid v1.0.1
 	go.uber.org/automaxprocs v1.5.3
 	golang.org/x/crypto v0.25.0
-	golang.org/x/sys v0.22.0
-	golang.org/x/time v0.5.0
+	golang.org/x/sys v0.23.0
+	golang.org/x/time v0.6.0
 )

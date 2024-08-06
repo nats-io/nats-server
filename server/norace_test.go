@@ -10016,6 +10016,7 @@ func TestNoRaceConnectionObjectReleased(t *testing.T) {
 
 	// Start an independent MQTT server to check MQTT client connection.
 	mo := testMQTTDefaultOptions()
+	mo.ServerName = "MQTTServer"
 	sm := testMQTTRunServer(t, mo)
 	defer testMQTTShutdownServer(sm)
 
@@ -10028,6 +10029,7 @@ func TestNoRaceConnectionObjectReleased(t *testing.T) {
 	cid, err := nc.GetClientID()
 	require_NoError(t, err)
 	natsSubSync(t, nc, "foo")
+	natsFlush(t, nc)
 
 	ncWS := natsConnect(t, fmt.Sprintf("ws://a:pwd@127.0.0.1:%d", oa.Websocket.Port))
 	defer ncWS.Close()

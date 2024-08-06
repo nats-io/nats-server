@@ -2137,7 +2137,7 @@ type testConnWritePartial struct {
 func (c *testConnWritePartial) Write(p []byte) (int, error) {
 	n := len(p)
 	if c.partial {
-		n = 15
+		n = n/2 + 1
 	}
 	return c.buf.Write(p[:n])
 }
@@ -2961,4 +2961,72 @@ func TestRemoveHeaderIfPrefixPresent(t *testing.T) {
 	if !bytes.Equal(hdr, []byte("NATS/1.0\r\na: 1\r\nb: 2\r\nc: 3\r\n\r\n")) {
 		t.Fatalf("Expected headers to be stripped, got %q", hdr)
 	}
+}
+
+func TestClientFlushOutboundNoSlowConsumer(t *testing.T) {
+	opts := DefaultOptions()
+	opts.MaxPending = 1024 * 1024 * 140 // 140MB
+	opts.MaxPayload = 1024 * 1024 * 16  // 16MB
+	opts.WriteDeadline = time.Second * 30
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	nc := natsConnect(t, fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port))
+	defer nc.Close()
+
+	proxy := newNetProxy(0, 1024*1024*8, 1024*1024*8, s.ClientURL()) // 8MB/s
+	defer proxy.stop()
+
+	wait := make(chan error)
+
+	nca, err := nats.Connect(proxy.clientURL())
+	require_NoError(t, err)
+	nca.SetDisconnectErrHandler(func(c *nats.Conn, err error) {
+		wait <- err
+		close(wait)
+	})
+
+	ncb, err := nats.Connect(s.ClientURL())
+	require_NoError(t, err)
+
+	_, err = nca.Subscribe("test", func(msg *nats.Msg) {
+		wait <- nil
+	})
+	require_NoError(t, err)
+
+	// Publish 128MB of data onto the test subject. This will
+	// mean that the outbound queue for nca has more than 64MB,
+	// which is the max we will send into a single writev call.
+	payload := make([]byte, 1024*1024*16) // 16MB
+	for i := 0; i < 8; i++ {
+		require_NoError(t, ncb.Publish("test", payload))
+	}
+
+	// Get the client ID for nca.
+	cid, err := nca.GetClientID()
+	require_NoError(t, err)
+
+	// Check that the client queue has more than 64MB queued
+	// up in it.
+	s.mu.RLock()
+	ca := s.clients[cid]
+	s.mu.RUnlock()
+	ca.mu.Lock()
+	pba := ca.out.pb
+	ca.mu.Unlock()
+	require_True(t, pba > 1024*1024*64)
+
+	// Wait for our messages to be delivered. This will take
+	// a few seconds as the client is limited to 8MB/s, so it
+	// can't deliver messages to us as quickly as the other
+	// client can publish them.
+	var msgs int
+	for err := range wait {
+		require_NoError(t, err)
+		msgs++
+		if msgs == 8 {
+			break
+		}
+	}
+	require_Equal(t, msgs, 8)
 }

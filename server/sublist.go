@@ -527,7 +527,13 @@ var emptyResult = &SublistResult{}
 // Match will match all entries to the literal subject.
 // It will return a set of results for both normal and queue subscribers.
 func (s *Sublist) Match(subject string) *SublistResult {
-	return s.match(subject, true)
+	return s.match(subject, true, false)
+}
+
+// MatchBytes will match all entries to the literal subject.
+// It will return a set of results for both normal and queue subscribers.
+func (s *Sublist) MatchBytes(subject []byte) *SublistResult {
+	return s.match(bytesToString(subject), true, true)
 }
 
 // HasInterest will return whether or not there is any interest in the subject.
@@ -537,10 +543,10 @@ func (s *Sublist) HasInterest(subject string) bool {
 }
 
 func (s *Sublist) matchNoLock(subject string) *SublistResult {
-	return s.match(subject, false)
+	return s.match(subject, false, false)
 }
 
-func (s *Sublist) match(subject string, doLock bool) *SublistResult {
+func (s *Sublist) match(subject string, doLock bool, doCopyOnCache bool) *SublistResult {
 	atomic.AddUint64(&s.matches, 1)
 
 	// Check cache first.
@@ -595,6 +601,9 @@ func (s *Sublist) match(subject string, doLock bool) *SublistResult {
 		result = emptyResult
 	}
 	if cacheEnabled {
+		if doCopyOnCache {
+			subject = copyString(subject)
+		}
 		s.cache[subject] = result
 		n = len(s.cache)
 	}

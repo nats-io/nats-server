@@ -15,7 +15,7 @@ package stree
 
 import (
 	"bytes"
-	"sort"
+	"slices"
 )
 
 // SubjectTree is an adaptive radix trie (ART) for storing subject information on literal subjects.
@@ -382,7 +382,7 @@ func (t *SubjectTree[T]) iter(n node, pre []byte, cb func(subject []byte, val *T
 		}
 	}
 	// Now sort.
-	sort.SliceStable(nodes, func(i, j int) bool { return bytes.Compare(nodes[i].path(), nodes[j].path()) < 0 })
+	slices.SortStableFunc(nodes, func(a, b node) int { return bytes.Compare(a.path(), b.path()) })
 	// Now walk the nodes in order and call into next iter.
 	for i := range nodes {
 		if !t.iter(nodes[i], pre, cb) {
