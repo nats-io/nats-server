@@ -2698,9 +2698,8 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 	// Go back to the sublist data structure.
 	if !ok {
 		r = c.acc.sl.Match(subject)
-		c.in.results[subject] = r
 		// Prune the results cache. Keeps us from unbounded growth. Random delete.
-		if len(c.in.results) > maxResultCacheSize {
+		if len(c.in.results) >= maxResultCacheSize {
 			n := 0
 			for subj := range c.in.results {
 				delete(c.in.results, subj)
@@ -2709,6 +2708,8 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 				}
 			}
 		}
+		// Then add the new cache entry.
+		c.in.results[subject] = r
 	}
 
 	// Collect queue names if needed.
