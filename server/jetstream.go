@@ -174,8 +174,8 @@ type jsAccount struct {
 	lupdate    time.Time
 	utimer     *time.Timer
 
-	// Should we send NRG traffic inside this account instead of the system account.
-	accountNRG atomic.Bool
+	// Which account to send NRG traffic into. Empty string is system account.
+	nrgAccount string
 }
 
 // Track general usage for this account.

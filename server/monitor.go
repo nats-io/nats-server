@@ -2802,12 +2802,11 @@ type JSInfo struct {
 	Config   JetStreamConfig `json:"config,omitempty"`
 	Limits   *JSLimitOpts    `json:"limits,omitempty"`
 	JetStreamStats
-	Streams          int              `json:"streams"`
-	Consumers        int              `json:"consumers"`
-	Messages         uint64           `json:"messages"`
-	Bytes            uint64           `json:"bytes"`
-	Meta             *MetaClusterInfo `json:"meta_cluster,omitempty"`
-	AccountNRGActive bool             `json:"account_nrg_active,omitempty"`
+	Streams   int              `json:"streams"`
+	Consumers int              `json:"consumers"`
+	Messages  uint64           `json:"messages"`
+	Bytes     uint64           `json:"bytes"`
+	Meta      *MetaClusterInfo `json:"meta_cluster,omitempty"`
 
 	// aggregate raft info
 	AccountDetails []*AccountDetail `json:"account_details,omitempty"`

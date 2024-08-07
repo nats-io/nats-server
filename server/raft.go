@@ -131,7 +131,6 @@ type raft struct {
 	created time.Time // Time that the group was created
 	accName string    // Account name of the asset this raft group is for
 	acc     *Account  // Account that NRG traffic will be sent/received in
-	inAcc   bool      // Is the NRG traffic in-account right now?
 	group   string    // Raft group
 	sd      string    // Store directory
 	id      string    // Node ID
@@ -530,10 +529,11 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 // Returns whether peers within this group claim to support
 // moving NRG traffic into the asset account.
 // Lock must be held.
-func (n *raft) checkAccountNRGStatus(enabled bool) bool {
-	if !enabled {
+func (n *raft) checkAccountNRGStatus() bool {
+	if !n.s.accountNRGAllowed.Load() {
 		return false
 	}
+	enabled := true
 	for pn := range n.peers {
 		if si, ok := n.s.nodeToInfo.Load(pn); ok && si != nil {
 			enabled = enabled && si.(nodeInfo).accountNRG
@@ -549,26 +549,31 @@ func (n *raft) RecreateInternalSubs() error {
 }
 
 func (n *raft) recreateInternalSubsLocked() error {
-	// Is account NRG enabled in this account?
-	acc := n.s.accountNRGAllowed.Load()
-	if acc {
-		// Check whether the specific account has account NRG enabled.
+	// Default is the system account.
+	nrgAcc := n.s.sys.account
+
+	// Is account NRG enabled in this account and do all group
+	// peers claim to also support account NRG?
+	if n.checkAccountNRGStatus() {
+		// Check whether the account that the asset belongs to
+		// has volunteered a different NRG account.
+		target := nrgAcc.Name
 		if a, _ := n.s.lookupAccount(n.accName); a != nil {
 			a.mu.RLock()
-			ajs := a.js
+			if a.js != nil {
+				target = a.js.nrgAccount
+			}
 			a.mu.RUnlock()
-			// Check whether the specific account has JetStream enabled.
-			if ajs != nil {
-				acc = ajs.accountNRG.Load()
+		}
+
+		// If the target account exists, then we'll use that.
+		if target != _EMPTY_ {
+			if a, _ := n.s.lookupAccount(target); a != nil {
+				nrgAcc = a
 			}
 		}
 	}
-	if acc {
-		// Check whether the peers in this group all claim to support
-		// moving the NRG traffic into the account.
-		acc = n.checkAccountNRGStatus(acc)
-	}
-	if n.aesub != nil && n.inAcc == acc {
+	if n.aesub != nil && n.acc == nrgAcc {
 		// Subscriptions already exist and the account NRG state
 		// hasn't changed.
 		return nil
@@ -594,19 +599,6 @@ func (n *raft) recreateInternalSubsLocked() error {
 		c.closeConnection(InternalClient)
 	}
 
-	// Look up which account we think we should be participating
-	// on. This will either be the system account (default) or it
-	// will be the account that the asset is resident in.
-	var nrgAcc *Account
-	if n.s.sys != nil {
-		nrgAcc = n.s.sys.account
-	}
-	if acc { // Should we setup in the asset account?
-		var err error
-		if nrgAcc, err = n.s.lookupAccount(n.accName); err != nil {
-			return err
-		}
-	}
 	if n.acc != nrgAcc {
 		n.debug("Subscribing in '%s'", nrgAcc.GetName())
 	}
@@ -619,7 +611,6 @@ func (n *raft) recreateInternalSubsLocked() error {
 	n.c = c
 	n.sq = nrgAcc.sq
 	n.acc = nrgAcc
-	n.inAcc = acc
 
 	// Recreate any internal subscriptions for voting, append
 	// entries etc in the new account.

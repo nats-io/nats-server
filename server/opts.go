@@ -2135,9 +2135,9 @@ func parseJetStreamForAccount(v any, acc *Account, errors *[]error) error {
 				}
 				switch strings.ToLower(vv) {
 				case "system":
-					acc.js.accountNRG.Store(false)
+					acc.js.nrgAccount = ""
 				case "account":
-					acc.js.accountNRG.Store(true)
+					acc.js.nrgAccount = acc.Name
 				default:
 					return &configErr{tk, fmt.Sprintf("Expected either 'system' or 'account' string value for %q, got %v", mk, mv)}
 				}

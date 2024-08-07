@@ -45,7 +45,6 @@ func (sq *sendq) internalLoop() {
 
 	defer s.grWG.Done()
 
-	//c := s.createInternalAccountClient()
 	c := s.createInternalSystemClient()
 	c.registerWithAccount(sq.a)
 	c.noIcb = true

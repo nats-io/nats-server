@@ -3686,16 +3686,19 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 	if a.js != nil {
 		// Check whether the account NRG status changed. If it has then we need to notify the
 		// Raft groups running on the system so that they can move their subs if needed.
-		wantAccountNRG := a.js.accountNRG.Load()
+		a.mu.Lock()
+		previous := a.js.nrgAccount
 		switch strings.ToLower(ac.NRGAccount) {
 		case "account":
-			wantAccountNRG = true
+			a.js.nrgAccount = a.Name
 		case "system":
-			wantAccountNRG = false
+			a.js.nrgAccount = ""
 		default:
 			s.Errorf("Account claim for %q has invalid value %q for account NRG status", a.Name, ac.NRGAccount)
 		}
-		if wasAccountNRG := a.js.accountNRG.Swap(wantAccountNRG); wasAccountNRG != wantAccountNRG {
+		changed := a.js.nrgAccount != previous
+		a.mu.Unlock()
+		if changed {
 			s.updateNRGAccountStatus()
 		}
 	}
