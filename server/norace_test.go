@@ -10775,3 +10775,76 @@ func TestNoRaceJetStreamClusterMirrorSkipSequencingBug(t *testing.T) {
 		return nil
 	})
 }
+
+func TestNoRaceJetStreamStandaloneDontReplyToAckBeforeProcessingIt(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:                 "WQ",
+		Discard:              nats.DiscardNew,
+		MaxMsgsPerSubject:    1,
+		DiscardNewPerSubject: true,
+		Retention:            nats.WorkQueuePolicy,
+		Subjects:             []string{"queue.>"},
+	})
+	require_NoError(t, err)
+
+	// Keep this low since we are going to run as many go routines
+	// to consume, ack and republish the message.
+	total := 10000
+	// Populate the queue, one message per subject.
+	for i := 0; i < total; i++ {
+		js.Publish(fmt.Sprintf("queue.%d", i), []byte("hello"))
+	}
+
+	_, err = js.AddConsumer("WQ", &nats.ConsumerConfig{
+		Durable:       "cons",
+		AckPolicy:     nats.AckExplicitPolicy,
+		MaxWaiting:    20000,
+		MaxAckPending: -1,
+	})
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe("queue.>", "cons", nats.BindStream("WQ"))
+	require_NoError(t, err)
+
+	errCh := make(chan error, total)
+
+	var wg sync.WaitGroup
+	for iter := 0; iter < 3; iter++ {
+		wg.Add(total)
+		for i := 0; i < total; i++ {
+			go func() {
+				defer wg.Done()
+				msgs, err := sub.Fetch(1)
+				if err != nil {
+					errCh <- err
+					return
+				}
+				msg := msgs[0]
+				err = msg.AckSync()
+				if err != nil {
+					errCh <- err
+					return
+				}
+				_, err = js.Publish(msg.Subject, []byte("hello"))
+				if err != nil {
+					errCh <- err
+					return
+				}
+			}()
+		}
+		wg.Wait()
+		select {
+		case err := <-errCh:
+			t.Fatalf("Test failed, first error was: %v", err)
+		default:
+			// OK!
+		}
+	}
+}

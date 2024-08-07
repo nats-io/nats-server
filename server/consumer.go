@@ -2027,9 +2027,10 @@ func (o *consumer) processAck(subject, reply string, hdr int, rmsg []byte) {
 
 	switch {
 	case len(msg) == 0, bytes.Equal(msg, AckAck), bytes.Equal(msg, AckOK):
-		o.processAckMsg(sseq, dseq, dc, reply, true)
-		// We handle replies for acks in updateAcks
-		skipAckReply = true
+		if !o.processAckMsg(sseq, dseq, dc, reply, true) {
+			// We handle replies for acks in updateAcks
+			skipAckReply = true
+		}
 	case bytes.HasPrefix(msg, AckNext):
 		o.processAckMsg(sseq, dseq, dc, _EMPTY_, true)
 		o.processNextMsgRequest(reply, msg[len(AckNext):])
@@ -2043,9 +2044,10 @@ func (o *consumer) processAck(subject, reply string, hdr int, rmsg []byte) {
 		if buf := msg[len(AckTerm):]; len(buf) > 0 {
 			reason = string(bytes.TrimSpace(buf))
 		}
-		o.processTerm(sseq, dseq, dc, reason, reply)
-		// We handle replies for acks in updateAcks
-		skipAckReply = true
+		if !o.processTerm(sseq, dseq, dc, reason, reply) {
+			// We handle replies for acks in updateAcks
+			skipAckReply = true
+		}
 	}
 
 	// Ack the ack if requested.
@@ -2395,9 +2397,12 @@ func (o *consumer) processNak(sseq, dseq, dc uint64, nak []byte) {
 }
 
 // Process a TERM
-func (o *consumer) processTerm(sseq, dseq, dc uint64, reason, reply string) {
+// Returns `true` if the ack was processed in place and the sender can now respond
+// to the client, or `false` if there was an error or the ack is replicated (in which
+// case the reply will be sent later).
+func (o *consumer) processTerm(sseq, dseq, dc uint64, reason, reply string) bool {
 	// Treat like an ack to suppress redelivery.
-	o.processAckMsg(sseq, dseq, dc, reply, false)
+	ackedInPlace := o.processAckMsg(sseq, dseq, dc, reply, false)
 
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -2420,11 +2425,14 @@ func (o *consumer) processTerm(sseq, dseq, dc uint64, reason, reply string) {
 
 	j, err := json.Marshal(e)
 	if err != nil {
-		return
+		// We had an error during the marshal, so we can't send the advisory,
+		// but we still need to tell the caller that the ack was processed.
+		return ackedInPlace
 	}
 
 	subj := JSAdvisoryConsumerMsgTerminatedPre + "." + o.stream + "." + o.name
 	o.sendAdvisory(subj, j)
+	return ackedInPlace
 }
 
 // Introduce a small delay in when timer fires to check pending.
@@ -2733,11 +2741,15 @@ func (o *consumer) sampleAck(sseq, dseq, dc uint64) {
 	o.sendAdvisory(o.ackEventT, j)
 }
 
-func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample bool) {
+// Process an ACK.
+// Returns `true` if the ack was processed in place and the sender can now respond
+// to the client, or `false` if there was an error or the ack is replicated (in which
+// case the reply will be sent later).
+func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample bool) bool {
 	o.mu.Lock()
 	if o.closed {
 		o.mu.Unlock()
-		return
+		return false
 	}
 
 	// Check if this ack is above the current pointer to our next to deliver.
@@ -2749,8 +2761,13 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 	mset := o.mset
 	if mset == nil || mset.closed.Load() {
 		o.mu.Unlock()
-		return
+		return false
 	}
+
+	// Let the owning stream know if we are interest or workqueue retention based.
+	// If this consumer is clustered (o.node != nil) this will be handled by
+	// processReplicatedAck after the ack has propagated.
+	ackInPlace := o.node == nil && o.retention != LimitsPolicy
 
 	var sgap, floor uint64
 	var needSignal bool
@@ -2790,7 +2807,7 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 		// no-op
 		if dseq <= o.adflr || sseq <= o.asflr {
 			o.mu.Unlock()
-			return
+			return ackInPlace
 		}
 		if o.maxp > 0 && len(o.pending) >= o.maxp {
 			needSignal = true
@@ -2822,22 +2839,19 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 	case AckNone:
 		// FIXME(dlc) - This is error but do we care?
 		o.mu.Unlock()
-		return
+		return ackInPlace
 	}
 
+	// No ack replication, so we set reply to "" so that updateAcks does not
+	// send the reply. The caller will.
+	if ackInPlace {
+		reply = _EMPTY_
+	}
 	// Update underlying store.
 	o.updateAcks(dseq, sseq, reply)
-
-	// In case retention changes for a stream, this ought to have been updated
-	// using the consumer lock to avoid a race.
-	retention := o.retention
-	clustered := o.node != nil
 	o.mu.Unlock()
 
-	// Let the owning stream know if we are interest or workqueue retention based.
-	// If this consumer is clustered this will be handled by processReplicatedAck
-	// after the ack has propagated.
-	if !clustered && mset != nil && retention != LimitsPolicy {
+	if ackInPlace {
 		if sgap > 1 {
 			// FIXME(dlc) - This can very inefficient, will need to fix.
 			for seq := sseq; seq >= floor; seq-- {
@@ -2852,6 +2866,7 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 	if needSignal {
 		o.signalNewMessages()
 	}
+	return ackInPlace
 }
 
 // Determine if this is a truly filtered consumer. Modern clients will place filtered subjects
