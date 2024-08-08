@@ -1141,16 +1141,23 @@ type recoveryUpdates struct {
 // Streams and consumers are recovered from disk, and the meta layer's mappings
 // should clean them up, but under crash scenarios there could be orphans.
 func (js *jetStream) checkForOrphans() {
-	consumerName := func(o *consumer) string {
-		o.mu.RLock()
-		defer o.mu.RUnlock()
-		return o.name
-	}
-
 	// Can not hold jetstream lock while trying to delete streams or consumers.
 	js.mu.Lock()
 	s, cc := js.srv, js.cluster
 	s.Debugf("JetStream cluster checking for orphans")
+
+	// We only want to cleanup any orphans if we know we are current with the meta-leader.
+	meta := cc.meta
+	if meta == nil || meta.GroupLeader() == _EMPTY_ {
+		js.mu.Unlock()
+		s.Debugf("JetStream cluster skipping check for orphans, no meta-leader")
+		return
+	}
+	if !meta.Healthy() {
+		js.mu.Unlock()
+		s.Debugf("JetStream cluster skipping check for orphans, not current with the meta-leader")
+		return
+	}
 
 	var streams []*stream
 	var consumers []*consumer
@@ -1164,8 +1171,7 @@ func (js *jetStream) checkForOrphans() {
 			} else {
 				// This one is good, check consumers now.
 				for _, o := range mset.getConsumers() {
-					consumer := consumerName(o)
-					if sa.consumers[consumer] == nil {
+					if sa.consumers[o.String()] == nil {
 						consumers = append(consumers, o)
 					}
 				}
@@ -1369,7 +1375,7 @@ func (js *jetStream) monitorCluster() {
 					// Clear.
 					ru = nil
 					s.Debugf("Recovered JetStream cluster metadata")
-					js.checkForOrphans()
+					time.AfterFunc(30*time.Second, js.checkForOrphans)
 					// Do a health check here as well.
 					go checkHealth()
 					continue
