@@ -2660,22 +2660,15 @@ func TestJetStreamClusterStreamCatchupNoState(t *testing.T) {
 	nc.Close()
 	c.stopAll()
 	// Remove all state by truncating for the non-leader.
-	for _, fn := range []string{"1.blk", "1.idx", "1.fss"} {
-		fname := filepath.Join(config.StoreDir, "$G", "streams", "TEST", "msgs", fn)
-		fd, err := os.OpenFile(fname, os.O_RDWR, defaultFilePerms)
-		if err != nil {
-			continue
-		}
-		fd.Truncate(0)
-		fd.Close()
-	}
 	// For both make sure we have no raft snapshots.
 	snapDir := filepath.Join(lconfig.StoreDir, "$SYS", "_js_", gname, "snapshots")
-	os.RemoveAll(snapDir)
+	require_NoError(t, os.RemoveAll(snapDir))
+	msgsDir := filepath.Join(lconfig.StoreDir, "$SYS", "_js_", gname, "msgs")
+	require_NoError(t, os.RemoveAll(msgsDir))
 	// Remove all our raft state, we do not want to hold onto our term and index which
 	// results in a coin toss for who becomes the leader.
 	raftDir := filepath.Join(config.StoreDir, "$SYS", "_js_", gname)
-	os.RemoveAll(raftDir)
+	require_NoError(t, os.RemoveAll(raftDir))
 
 	// Now restart.
 	c.restartAll()

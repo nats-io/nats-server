@@ -10620,13 +10620,8 @@ func TestNoRaceJetStreamClusterMemoryStreamLastSequenceResetAfterRestart(t *test
 			s.Shutdown()
 			s.WaitForShutdown()
 			s = c.restartServer(s)
-			checkFor(t, 30*time.Second, time.Second, func() error {
-				hs := s.healthz(nil)
-				if hs.Error != _EMPTY_ {
-					return errors.New(hs.Error)
-				}
-				return nil
-			})
+			c.waitOnServerHealthz(s)
+			c.waitOnAllCurrent()
 			// Make sure all streams are current after healthz returns ok.
 			for i := 1; i <= numStreams; i++ {
 				stream := fmt.Sprintf("TEST:%d", i)
@@ -10693,13 +10688,8 @@ func TestNoRaceJetStreamClusterMemoryWorkQueueLastSequenceResetAfterRestart(t *t
 			s.Shutdown()
 			s.WaitForShutdown()
 			s = c.restartServer(s)
-			checkFor(t, 30*time.Second, time.Second, func() error {
-				hs := s.healthz(nil)
-				if hs.Error != _EMPTY_ {
-					return errors.New(hs.Error)
-				}
-				return nil
-			})
+			c.waitOnServerHealthz(s)
+			c.waitOnAllCurrent()
 			// Make sure all streams are current after healthz returns ok.
 			for i := 1; i <= numStreams; i++ {
 				stream := fmt.Sprintf("TEST:%d", i)
