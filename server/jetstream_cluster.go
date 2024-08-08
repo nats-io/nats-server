@@ -3098,6 +3098,17 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					mset.clMu.Unlock()
 				}
 
+				if mset.inflightSubjects != nil {
+					mset.clMu.Lock()
+					n := mset.inflightSubjects[subject]
+					if n > 1 {
+						mset.inflightSubjects[subject]--
+					} else {
+						delete(mset.inflightSubjects, subject)
+					}
+					mset.clMu.Unlock()
+				}
+
 				if err != nil {
 					if err == errLastSeqMismatch {
 
@@ -7966,7 +7977,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	name, stype, store := mset.cfg.Name, mset.cfg.Storage, mset.store
 	s, js, jsa, st, r, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.tier, mset.outq, mset.node
 	maxMsgSize, lseq := int(mset.cfg.MaxMsgSize), mset.lseq
-	interestPolicy, discard, maxMsgs, maxBytes := mset.cfg.Retention != LimitsPolicy, mset.cfg.Discard, mset.cfg.MaxMsgs, mset.cfg.MaxBytes
+	interestPolicy, discard, maxMsgs, maxBytes, discardNewPerSubject, maxMsgsPer := mset.cfg.Retention != LimitsPolicy, mset.cfg.Discard, mset.cfg.MaxMsgs, mset.cfg.MaxBytes, mset.cfg.DiscardNewPer, mset.cfg.MaxMsgsPer
 	isLeader, isSealed, compressOK := mset.isLeader(), mset.cfg.Sealed, mset.compressOK
 	mset.mu.RUnlock()
 
@@ -8143,27 +8154,36 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		mset.clseq = lseq + mset.clfs
 	}
 
-	// Check if we have an interest policy and discard new with max msgs or bytes.
+	// Check if we have an interest or working queue retention and discard new with max msgs or bytes.
 	// We need to deny here otherwise it could succeed on some peers and not others
 	// depending on consumer ack state. So we deny here, if we allow that means we know
 	// it would succeed on every peer.
-	if interestPolicy && discard == DiscardNew && (maxMsgs > 0 || maxBytes > 0) {
+	if interestPolicy && discard == DiscardNew && (maxMsgs > 0 || maxBytes > 0 || (maxMsgsPer > 0 && discardNewPerSubject)) {
 		// Track inflight.
 		if mset.inflight == nil {
 			mset.inflight = make(map[uint64]uint64)
 		}
+
 		if stype == FileStorage {
 			mset.inflight[mset.clseq] = fileStoreMsgSize(subject, hdr, msg)
 		} else {
 			mset.inflight[mset.clseq] = memStoreMsgSize(subject, hdr, msg)
 		}
 
+		if mset.inflightSubjects == nil {
+			mset.inflightSubjects = make(map[string]uint64)
+		}
+
+		mset.inflightSubjects[subject]++
+
 		var state StreamState
 		mset.store.FastState(&state)
 
 		var err error
-		if maxMsgs > 0 && state.Msgs+uint64(len(mset.inflight)) > uint64(maxMsgs) {
-			err = ErrMaxMsgs
+		if maxMsgs > 0 {
+			if state.Msgs+uint64(len(mset.inflight)) > uint64(maxMsgs) {
+				err = ErrMaxMsgs
+			}
 		} else if maxBytes > 0 {
 			// TODO(dlc) - Could track this rollup independently.
 			var bytesPending uint64
@@ -8173,9 +8193,24 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 			if state.Bytes+bytesPending > uint64(maxBytes) {
 				err = ErrMaxBytes
 			}
+		} else if maxMsgsPer > 0 && discardNewPerSubject {
+			totals := mset.store.SubjectsTotals(subject)
+			total := totals[subject]
+			if (total + mset.inflightSubjects[subject]) > uint64(maxMsgsPer) {
+				err = ErrMaxMsgsPerSubject
+			}
 		}
+
 		if err != nil {
 			delete(mset.inflight, mset.clseq)
+			n := mset.inflightSubjects[subject]
+
+			if n > 1 {
+				mset.inflightSubjects[subject] = n - 1
+			} else {
+				delete(mset.inflightSubjects, subject)
+			}
+
 			mset.clMu.Unlock()
 			if canRespond {
 				var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}

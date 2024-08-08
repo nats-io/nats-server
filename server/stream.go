@@ -336,20 +336,21 @@ type stream struct {
 
 	// TODO(dlc) - Hide everything below behind two pointers.
 	// Clustered mode.
-	sa         *streamAssignment // What the meta controller uses to assign streams to peers.
-	node       RaftNode          // Our RAFT node for the stream's group.
-	catchup    atomic.Bool       // Used to signal we are in catchup mode.
-	catchups   map[string]uint64 // The number of messages that need to be caught per peer.
-	syncSub    *subscription     // Internal subscription for sync messages (on "$JSC.SYNC").
-	infoSub    *subscription     // Internal subscription for stream info requests.
-	clMu       sync.Mutex        // The mutex for clseq and clfs.
-	clseq      uint64            // The current last seq being proposed to the NRG layer.
-	clfs       uint64            // The count (offset) of the number of failed NRG sequences used to compute clseq.
-	inflight   map[uint64]uint64 // Inflight message sizes per clseq.
-	lqsent     time.Time         // The time at which the last lost quorum advisory was sent. Used to rate limit.
-	uch        chan struct{}     // The channel to signal updates to the monitor routine.
-	compressOK bool              // True if we can do message compression in RAFT and catchup logic
-	inMonitor  bool              // True if the monitor routine has been started.
+	sa               *streamAssignment // What the meta controller uses to assign streams to peers.
+	node             RaftNode          // Our RAFT node for the stream's group.
+	catchup          atomic.Bool       // Used to signal we are in catchup mode.
+	catchups         map[string]uint64 // The number of messages that need to be caught per peer.
+	syncSub          *subscription     // Internal subscription for sync messages (on "$JSC.SYNC").
+	infoSub          *subscription     // Internal subscription for stream info requests.
+	clMu             sync.Mutex        // The mutex for clseq, clfs, inflight and inflightSubjects.
+	clseq            uint64            // The current last seq being proposed to the NRG layer.
+	clfs             uint64            // The count (offset) of the number of failed NRG sequences used to compute clseq.
+	inflight         map[uint64]uint64 // Inflight message sizes per clseq.
+	inflightSubjects map[string]uint64 // Inflight number of messages per subject.
+	lqsent           time.Time         // The time at which the last lost quorum advisory was sent. Used to rate limit.
+	uch              chan struct{}     // The channel to signal updates to the monitor routine.
+	compressOK       bool              // True if we can do message compression in RAFT and catchup logic
+	inMonitor        bool              // True if the monitor routine has been started.
 
 	// Direct get subscription.
 	directSub *subscription
@@ -3471,7 +3472,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 			// Can happen temporarily all the time during normal operations when the sourcing stream
 			// is working queue/interest with a limit and discard new.
 			// TODO - Improve sourcing to WQ with limit and new to use flow control rather than re-creating the consumer.
-			if errors.Is(err, ErrMaxMsgs) || errors.Is(err, ErrMaxBytes) {
+			if errors.Is(err, ErrMaxMsgs) || errors.Is(err, ErrMaxBytes) || errors.Is(err, ErrMaxMsgsPerSubject) {
 				// Do not need to do a full retry that includes finding the last sequence in the stream
 				// for that source. Just re-create starting with the seq we couldn't store instead.
 				mset.mu.Lock()
