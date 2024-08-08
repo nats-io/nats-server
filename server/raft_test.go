@@ -360,23 +360,14 @@ func TestNRGSimpleElection(t *testing.T) {
 func TestNRGSwitchStateClearsQueues(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
+	s := c.servers[0] // RunBasicJetStreamServer not available
 
-	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
-	rg.waitOnLeader()
-
-	// Ensure there are no other nodes running that could
-	// send something into our IP queues or it may break the
-	// below assertions.
-	for _, n := range rg {
-		if !n.node().Leader() {
-			n.stop()
-		}
+	n := &raft{
+		prop:  newIPQueue[*Entry](s, "prop"),
+		resp:  newIPQueue[*appendEntryResponse](s, "resp"),
+		leadc: make(chan bool, 1), // for switchState
 	}
-
-	rg.lockAll()
-	defer rg.unlockAll()
-
-	n := rg.leader().node().(*raft)
+	n.state.Store(int32(Leader))
 	require_Equal(t, n.prop.len(), 0)
 	require_Equal(t, n.resp.len(), 0)
 
