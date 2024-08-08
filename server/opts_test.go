@@ -2646,7 +2646,7 @@ func TestSublistNoCacheConfigOnAccounts(t *testing.T) {
 	defer s.Shutdown()
 
 	// Check that all account sublists do not have caching enabled.
-	ta := s.numReservedAccounts() + 2
+	ta := 2
 	if la := s.numAccounts(); la != ta {
 		t.Fatalf("Expected to have a server with %d active accounts, got %v", ta, la)
 	}
@@ -3228,7 +3228,27 @@ func TestGetStorageSize(t *testing.T) {
 			t.Errorf("Got: %v, want %v with error: %v", got, v.want, testErr)
 		}
 	}
+}
 
+func TestGlobalAccountInAccounts(t *testing.T) {
+	conf := `
+		accounts {
+			$G: {
+				users: [{ user: default, password: default }]
+			}
+			SYS: {
+				users: [{ user: sys, password: sys }]
+			}
+		}
+		no_auth_user: default
+		system_account: SYS
+	`
+
+	confFile := createConfFile(t, []byte(conf))
+	_, err := ProcessConfigFile(confFile)
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestAuthorizationAndAccountsMisconfigurations(t *testing.T) {
