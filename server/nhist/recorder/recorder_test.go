@@ -1,4 +1,4 @@
-package nhist
+package recorder
 
 import (
 	"encoding/json"

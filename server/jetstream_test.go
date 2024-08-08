@@ -43,7 +43,7 @@ import (
 	"time"
 
 	"github.com/nats-io/jwt/v2"
-	"github.com/nats-io/nats-server/v2/server/nhist"
+	"github.com/nats-io/nats-server/v2/server/nhist/recorder"
 	"github.com/nats-io/nats-server/v2/server/sysmem"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
@@ -23911,11 +23911,11 @@ func TestJetStreamConsumerAckLatencyHistogram(t *testing.T) {
 		require_NoError(t, err)
 
 		// Unpack HistogramRecorderMsg
-		hrm, err := nhist.Unmarshal(mm.Data)
+		hrm, err := recorder.Unmarshal(mm.Data)
 
 		count := hrm.Histogram.Count()
 
-		if count != uint64(msgLimit) {
+		if count != int64(msgLimit) {
 			t.Fatalf("Histogram only has %d of %d\n", count, msgLimit)
 		}
 	}

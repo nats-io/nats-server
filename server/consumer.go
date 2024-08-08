@@ -33,7 +33,7 @@ import (
 	"golang.org/x/time/rate"
 
 	// EXPERIMENTAL(skaar)
-	"github.com/nats-io/nats-server/v2/server/nhist"
+	"github.com/nats-io/nats-server/v2/server/nhist/recorder"
 )
 
 // Headers sent with Request Timeout
@@ -403,7 +403,7 @@ type consumer struct {
 	sigSubs []*subscription
 
 	// EXPERIMENTAL(skaar)
-	ackLatencyHist *nhist.HistogramRecorder
+	ackLatencyHist *recorder.HistogramRecorder
 }
 
 // A single subject filter.
@@ -933,7 +933,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 
 	// EXPERIMENTAL(skaar)
 	ackLatencySubject := "TRX.consumer.acklatency." + o.stream + "." + o.name
-	o.ackLatencyHist = nhist.NewHistogramRecorder(time.Second, time.Now().UTC(), "server:"+s.info.ID, ackLatencySubject)
+	o.ackLatencyHist = recorder.NewHistogramRecorder(time.Second, time.Now().UTC(), "server:"+s.info.ID, ackLatencySubject)
 
 	if !isValidName(o.name) {
 		mset.mu.Unlock()

@@ -1,4 +1,4 @@
-package nhist
+package recorder
 
 import (
 	"encoding/json"
@@ -6,12 +6,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/openhistogram/circonusllhist"
+        "github.com/nats-io/nats-server/v2/server/nhist"
+
 )
 
 type HistogramRecorder struct {
 	sync.Mutex
-	histogram *circonusllhist.Histogram
+	histogram *nhist.Histogram
 	mark      time.Time
 	interval  time.Duration
 	source    string
@@ -19,16 +20,16 @@ type HistogramRecorder struct {
 }
 
 type HistogramRecorderMsg struct {
-	Histogram *circonusllhist.Histogram `json:"histogram"`
-	Mark      time.Time                 `json:"mark"`
-	Interval  time.Duration             `json:"interval"`
-	Source    string                    `json:"source"`
-	Subject   string                    `json:"subject"`
+	Histogram *nhist.Histogram `json:"histogram"`
+	Mark      time.Time        `json:"mark"`
+	Interval  time.Duration    `json:"interval"`
+	Source    string           `json:"source"`
+	Subject   string           `json:"subject"`
 }
 
 func NewHistogramRecorder(interval time.Duration, mark time.Time, source, subject string) *HistogramRecorder {
 	hr := &HistogramRecorder{
-		histogram: circonusllhist.New(),
+		histogram: nhist.New(),
 		mark:      mark,
 		interval:  interval,
 		source:    source,
@@ -55,7 +56,7 @@ func (hr *HistogramRecorder) GetSubject() string {
 	return hr.subject
 }
 
-func (hr *HistogramRecorder) GetCount() uint64 {
+func (hr *HistogramRecorder) GetCount() int64 {
 	hr.Lock()
 	defer hr.Unlock()
 	return hr.histogram.Count()
@@ -64,7 +65,7 @@ func (hr *HistogramRecorder) GetCount() uint64 {
 func (hr *HistogramRecorder) ResetWithMark(mark time.Time) {
 	hr.Lock()
 	defer hr.Unlock()
-	hr.histogram.FullReset()
+	hr.histogram.Reset()
 	hr.mark = mark
 }
 
@@ -86,9 +87,7 @@ func (hr *HistogramRecorder) Marshal() ([]byte, error) {
 		fmt.Printf("json err %v\n", err)
 	}
 
-	// We would want to use Reset() to avoid reallocation of bins,
-	// but the current implementation does not do this properly.
-	hr.histogram.FullReset()
+	hr.histogram.Reset() // leaves bin allocation in place
 	hr.mark = time.Now().UTC()
 	hr.Unlock()
 	return jmsg, err
