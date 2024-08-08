@@ -3,8 +3,7 @@ name: NATS Server Tests
 on:
   # push:
   # pull_request:
-  schedule:
-    - cron: "15 * * * *" # Hourly, 15 mins past the hour
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
