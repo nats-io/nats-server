@@ -6833,6 +6833,10 @@ func TestNoRaceJetStreamClusterF3Setup(t *testing.T) {
 
 	t.Logf("Creating %d x 2 Pull Subscribers", numPullersPerConsumer)
 
+	var durations []time.Duration
+	var timestamps []time.Duration
+	var durationsMutex sync.Mutex
+
 	// Now create the pullers.
 	for _, subName := range []string{"C1", "C2"} {
 		for i := 0; i < numPullersPerConsumer; i++ {
@@ -6853,6 +6857,20 @@ func TestNoRaceJetStreamClusterF3Setup(t *testing.T) {
 					if err != nil && err != nats.ErrTimeout {
 						t.Logf("Exiting pull subscriber %q: %v", subName, err)
 						return
+					}
+					for _, msg := range msgs {
+						metadata, err := msg.Metadata()
+						timestamps = append(timestamps, time.Since(metadata.Timestamp))
+						require_NoError(t, err)
+						ts := msg.Header.Get("TS")
+						if ts != "" {
+							durationsMutex.Lock()
+							tsu, err := strconv.ParseInt(ts, 10, 64)
+							require_NoError(t, err)
+							duration := time.Unix(0, tsu)
+							durations = append(durations, time.Since(duration))
+							durationsMutex.Unlock()
+						}
 					}
 					// Shuffle
 					rand.Shuffle(len(msgs), func(i, j int) { msgs[i], msgs[j] = msgs[j], msgs[i] })
@@ -6926,7 +6944,11 @@ func TestNoRaceJetStreamClusterF3Setup(t *testing.T) {
 				evt := eventTypes[rand.Intn(len(eventTypes))]
 				subj := fmt.Sprintf("%s.%s", stream, evt)
 				start := time.Now()
-				_, err := js.Publish(subj, msg)
+
+				m := nats.NewMsg(subj)
+				m.Header.Set("TS", fmt.Sprintf("%v", time.Now().UnixNano()))
+				m.Data = msg
+				_, err := js.PublishMsg(m)
 				if err != nil {
 					t.Logf("Exiting publisher: %v", err)
 					return
@@ -6984,6 +7006,24 @@ func TestNoRaceJetStreamClusterF3Setup(t *testing.T) {
 				if si.State.FirstSeq < minAckFloor && si.State.FirstSeq == fseq {
 					t.Log("Stream first seq < minimum ack floor")
 				}
+				durationsMutex.Lock()
+				var avgDur time.Duration
+				for _, dur := range durations {
+					avgDur += dur
+				}
+				sort.Slice(durations, func(i, j int) bool {
+					return durations[i] < durations[j]
+				})
+				var avgTs time.Duration
+				for _, ts := range timestamps {
+					avgTs += ts
+				}
+				sort.Slice(timestamps, func(i, j int) bool {
+					return timestamps[i] < timestamps[j]
+				})
+				t.Logf("Data in transit (from pub to seen in consumer):\n average: %v\n highest: %v\n msg meta ts average: %v\n msg meta ts highest: %v\n\n", time.Duration(int64((avgDur.Nanoseconds())/int64(len(durations)))), durations[len(durations)-1], time.Duration(int64((avgTs.Nanoseconds())/int64(len(timestamps)))), timestamps[len(timestamps)-1])
+				durations = nil
+				durationsMutex.Unlock()
 			}
 			fseq, lseq = si.State.FirstSeq, si.State.LastSeq
 			time.Sleep(5 * time.Second)
