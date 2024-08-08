@@ -6080,6 +6080,7 @@ func TestJetStreamClusterConsumerAckSyncReporting(t *testing.T) {
 
 	// Now ack the skipped message
 	skipped.AckSync()
+	c.waitOnAllCurrent()
 	for _, s := range c.servers {
 		jsz, err := s.Jsz(opts)
 		require_NoError(t, err)
@@ -6090,6 +6091,7 @@ func TestJetStreamClusterConsumerAckSyncReporting(t *testing.T) {
 
 	// Now ack the last message
 	last.AckSync()
+	c.waitOnAllCurrent()
 	for _, s := range c.servers {
 		jsz, err := s.Jsz(opts)
 		require_NoError(t, err)
