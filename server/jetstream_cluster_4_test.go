@@ -1373,6 +1373,7 @@ func TestJetStreamClusterConsumerNRGCleanup(t *testing.T) {
 				numStreams++
 			}
 		}
+		f.Close()
 	}
 	require_Equal(t, numConsumers, 0)
 	require_Equal(t, numStreams, 0)
@@ -2492,4 +2493,59 @@ func TestJetStreamClusterWQRoundRobinSubjectRetention(t *testing.T) {
 	require_Equal(t, si.State.Msgs, 80)
 	require_Equal(t, si.State.NumDeleted, 20)
 	require_Equal(t, si.State.NumSubjects, 4)
+}
+
+func TestJetStreamClusterMetaSyncOrphanCleanup(t *testing.T) {
+	c := createJetStreamClusterWithTemplateAndModHook(t, jsClusterTempl, "R3S", 3,
+		func(serverName, clusterName, storeDir, conf string) string {
+			return fmt.Sprintf("%s\nserver_tags: [server:%s]", conf, serverName)
+		})
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Create a bunch of streams on S1
+	for i := 0; i < 100; i++ {
+		stream := fmt.Sprintf("TEST-%d", i)
+		subject := fmt.Sprintf("TEST.%d", i)
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:      stream,
+			Subjects:  []string{subject},
+			Storage:   nats.FileStorage,
+			Placement: &nats.Placement{Tags: []string{"server:S-1"}},
+		})
+		require_NoError(t, err)
+		// Put in 10 msgs to each
+		for j := 0; j < 10; j++ {
+			_, err := js.Publish(subject, nil)
+			require_NoError(t, err)
+		}
+	}
+
+	// Now we will shutdown S1 and remove all of its meta-data to trip the condition.
+	s := c.serverByName("S-1")
+	require_True(t, s != nil)
+
+	sd := s.JetStreamConfig().StoreDir
+	nd := filepath.Join(sd, "$SYS", "_js_", "_meta_")
+	s.Shutdown()
+	s.WaitForShutdown()
+	os.RemoveAll(nd)
+	s = c.restartServer(s)
+	c.waitOnServerCurrent(s)
+	jsz, err := s.Jsz(nil)
+	require_NoError(t, err)
+	require_Equal(t, jsz.Streams, 100)
+
+	// These will be recreated by the meta layer, but if the orphan detection deleted them they will be empty,
+	// so check all streams to make sure they still have data.
+	acc := s.GlobalAccount()
+	var state StreamState
+	for i := 0; i < 100; i++ {
+		mset, err := acc.lookupStream(fmt.Sprintf("TEST-%d", i))
+		require_NoError(t, err)
+		mset.store.FastState(&state)
+		require_Equal(t, state.Msgs, 10)
+	}
 }
