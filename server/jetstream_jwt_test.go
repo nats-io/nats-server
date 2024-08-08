@@ -1532,3 +1532,93 @@ func TestJetStreamJWTClusteredTiersR3StreamWithR1ConsumersAndAccounting(t *testi
 	require_Equal(t, r3.Streams, 1)
 	require_Equal(t, r3.Consumers, 0)
 }
+
+func TestJetStreamJWTClusterAccountNRG(t *testing.T) {
+	_, syspub := createKey(t)
+	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+
+	_, aExpPub := createKey(t)
+	accClaim := jwt.NewAccountClaims(aExpPub)
+	accClaim.Name = "acc"
+	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{DiskStorage: 1100, Consumer: 10, Streams: 1}
+	accClaim.Limits.JetStreamTieredLimits["R3"] = jwt.JetStreamLimits{DiskStorage: 1100, Consumer: 1, Streams: 1}
+	accJwt := encodeClaim(t, accClaim, aExpPub)
+
+	tmlp := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+		leaf {
+			listen: 127.0.0.1:-1
+		}
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+	` + fmt.Sprintf(`
+		operator: %s
+		system_account: %s
+		resolver = MEMORY
+		resolver_preload = {
+			%s : %s
+			%s : %s
+		}
+	`, ojwt, syspub, syspub, sysJwt, aExpPub, accJwt)
+
+	c := createJetStreamClusterWithTemplate(t, tmlp, "cluster", 3)
+	defer c.shutdown()
+
+	// We'll try flipping the state a few times and then do some sanity
+	// checks to check that it took effect.
+	for _, state := range []string{"account", "system", "account"} {
+		accClaim.NRGAccount = state
+		accJwt = encodeClaim(t, accClaim, aExpPub)
+
+		for _, s := range c.servers {
+			// Find the account.
+			acc, err := s.lookupAccount(aExpPub)
+			require_NoError(t, err)
+
+			// Submit a claim update using the new JWT.
+			require_NoError(t, s.updateAccountWithClaimJWT(acc, accJwt))
+
+			// Check that everything looks like it should.
+			require_True(t, acc != nil)
+			require_True(t, acc.js != nil)
+			switch state {
+			case "account":
+				require_Equal(t, acc.js.nrgAccount, aExpPub)
+			case "system":
+				require_Equal(t, acc.js.nrgAccount, _EMPTY_)
+			}
+
+			// Now get a list of all of the Raft nodes that should
+			// have been updated by now.
+			s.rnMu.Lock()
+			raftNodes := make([]*raft, 0, len(s.raftNodes))
+			for _, n := range s.raftNodes {
+				rg := n.(*raft)
+				if rg.accName != acc.Name {
+					continue
+				}
+				raftNodes = append(raftNodes, rg)
+			}
+			s.rnMu.Unlock()
+
+			// Check whether each of the Raft nodes reports being
+			// in-account or not.
+			for _, rg := range raftNodes {
+				rg.Lock()
+				rgAcc := rg.acc
+				rg.Unlock()
+				switch state {
+				case "account":
+					require_Equal(t, rgAcc.Name, aExpPub)
+				case "system":
+					require_Equal(t, rgAcc.Name, syspub)
+				}
+			}
+		}
+	}
+}

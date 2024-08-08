@@ -61,6 +61,7 @@ type Account struct {
 	sqmu         sync.Mutex
 	sl           *Sublist
 	ic           *client
+	sq           *sendq
 	isid         uint64
 	etmr         *time.Timer
 	ctmr         *time.Timer
@@ -3680,6 +3681,26 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		// our imports properly. This allows this server to proxy JS traffic correctly.
 		s.checkJetStreamExports()
 		a.enableAllJetStreamServiceImportsAndMappings()
+	}
+
+	if a.js != nil {
+		// Check whether the account NRG status changed. If it has then we need to notify the
+		// Raft groups running on the system so that they can move their subs if needed.
+		a.mu.Lock()
+		previous := a.js.nrgAccount
+		switch strings.ToLower(ac.NRGAccount) {
+		case "account":
+			a.js.nrgAccount = a.Name
+		case "system":
+			a.js.nrgAccount = ""
+		default:
+			s.Errorf("Account claim for %q has invalid value %q for account NRG status", a.Name, ac.NRGAccount)
+		}
+		changed := a.js.nrgAccount != previous
+		a.mu.Unlock()
+		if changed {
+			s.updateNRGAccountStatus()
+		}
 	}
 
 	for i, c := range clients {

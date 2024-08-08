@@ -2,6 +2,8 @@ module github.com/nats-io/nats-server/v2
 
 go 1.21.0
 
+replace github.com/nats-io/jwt/v2 => github.com/nats-io/jwt/v2 v2.5.9-0.20240801130136-270cc45c44ee
+
 require (
 	github.com/google/go-tpm v0.9.0
 	github.com/klauspost/compress v1.17.9
