@@ -1,0 +1,278 @@
+name: NATS Server Tests
+
+on:
+  # push:
+  # pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ${{ vars.GHA_WORKER_SMALL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          skip-cache: true
+          skip-pkg-cache: true
+          skip-build-cache: true
+          args: --timeout=5m --config=.golangci.yml
+
+  build-latest:
+    name: Build (Latest Go)
+    runs-on: ${{ vars.GHA_WORKER_SMALL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build NATS Server
+        run: go build
+
+  build-supported:
+    name: Build (Minimum Go)
+    runs-on: ${{ vars.GHA_WORKER_SMALL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: "go.mod"
+
+      - name: Build NATS Server
+        run: go build
+
+  # Using GitHub-supplied workers for Windows for now.
+  # Note that the below testing steps depend on the Linux build
+  # only, as the Windows builds take a fair bit longer to set up.
+  build-windows:
+    name: Build (Minimum Go, ${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2019, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: "go.mod"
+
+      - name: Build NATS Server
+        run: go build
+
+  store:
+    name: Store tests
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_MEDIUM }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: |
+          go test -race -v -run=TestMemStore ./server/... -count=1 -vet=off -timeout=30m -failfast
+          go test -race -v -run=TestFileStore ./server/... -count=1 -vet=off -timeout=30m -failfast
+
+  js-no-cluster:
+    name: JetStream tests
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_LARGE }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: go test -race -v -run=TestJetStream ./server/... -tags=skip_js_cluster_tests,skip_js_cluster_tests_2,skip_js_cluster_tests_3,skip_js_super_cluster_tests -count=1 -vet=off -timeout=30m -failfast
+
+  js-cluster-1:
+    name: JetStream Cluster tests (1)
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_LARGE }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: go test -race -v -run=TestJetStreamCluster ./server/... -tags=skip_js_cluster_tests_2,skip_js_cluster_tests_3,skip_js_cluster_tests_4 -count=1 -vet=off -timeout=30m -failfast
+
+  js-cluster-2:
+    name: JetStream Cluster tests (2)
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_LARGE }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: go test -race -v -run=TestJetStreamCluster ./server/... -tags=skip_js_cluster_tests,skip_js_cluster_tests_3,skip_js_cluster_tests_4 -count=1 -vet=off -timeout=30m -failfast
+
+  js-cluster-3:
+    name: JetStream Cluster tests (3)
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_LARGE }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: go test -race -v -run=TestJetStreamCluster ./server/... -tags=skip_js_cluster_tests,skip_js_cluster_tests_2,skip_js_cluster_tests_4 -count=1 -vet=off -timeout=30m -failfast
+
+  js-cluster-4:
+    name: JetStream Cluster tests (4)
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_LARGE }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: go test -race -v -run=TestJetStreamCluster ./server/... -tags=skip_js_cluster_tests,skip_js_cluster_tests_2,skip_js_cluster_tests_3 -count=1 -vet=off -timeout=30m -failfast
+
+  js-supercluster:
+    name: JetStream Supercluster tests
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_LARGE }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: go test -race -v -run=TestJetStreamSuperCluster ./server/... -count=1 -vet=off -timeout=30m -failfast
+
+  no-race:
+    name: No-race tests
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_LARGE }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: go test -v -p=1 -run=TestNoRace ./... -count=1 -vet=off -timeout=30m -failfast
+
+  mqtt:
+    name: MQTT tests
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_MEDIUM }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: go test -race -v -run=TestMQTT ./server/... -count=1 -vet=off -timeout=30m -failfast
+
+  msgtrace:
+    name: MsgTrace tests
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_MEDIUM }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: go test -race -v -run=TestMsgTrace ./server/... -count=1 -vet=off -timeout=30m -failfast
+
+  server-pkg-non-js:
+    name: Non-JetStream/MQTT/MsgTrace tests
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_LARGE }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: go test -race -v -p=1 ./server/... -tags=skip_js_tests,skip_store_tests,skip_mqtt_tests,skip_msgtrace_tests -count=1 -vet=off -timeout=30m -failfast
+        timeout-minutes: 15
+
+  non-server-pkg:
+    name: Tests from all other packages
+    needs: [build-latest, build-supported, lint]
+    runs-on: ${{ vars.GHA_WORKER_MEDIUM }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Run unit tests
+        run: go test -race -v -p=1 ./conf/... ./internal/... ./logger/... ./test/... -count=1 -vet=off -timeout=30m -failfast
