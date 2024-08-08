@@ -1083,11 +1083,7 @@ func (ld *LostStreamData) exists(seq uint64) (int, bool) {
 	i := slices.IndexFunc(ld.Msgs, func(i uint64) bool {
 		return i == seq
 	})
-	if i == -1 {
-		return -1, false
-	} else {
-		return i, true
-	}
+	return i, i > -1
 }
 
 func (fs *fileStore) removeFromLostData(seq uint64) {

@@ -351,7 +351,7 @@ func (a *Account) updateRemoteServer(m *AccountNumConns) []*client {
 	var clients []*client
 	if mtce {
 		clients = a.getClientsLocked()
-		slices.SortFunc(clients, func(i, j *client) int { return -i.start.Compare(j.start) }) // reserve order
+		slices.SortFunc(clients, func(i, j *client) int { return -i.start.Compare(j.start) }) // reserve
 		over := (len(a.clients) - int(a.sysclients) + int(a.nrclients)) - int(a.mconns)
 		if over < len(clients) {
 			clients = clients[:over]

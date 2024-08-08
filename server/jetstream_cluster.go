@@ -5910,7 +5910,7 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 		if i.avail == j.avail {
 			return cmp.Compare(i.ns, j.ns)
 		}
-		return cmp.Compare(i.avail, j.avail)
+		return -cmp.Compare(i.avail, j.avail) // reverse
 	})
 	// If we are placing a replicated stream, let's sort based on HAAssets, as that is more important to balance.
 	if cfg.Replicas > 1 {
