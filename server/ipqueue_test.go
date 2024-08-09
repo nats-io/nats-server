@@ -42,7 +42,7 @@ func TestIPQueueBasic(t *testing.T) {
 	}
 
 	// Try to change the max recycle size
-	q2 := newIPQueue[int](s, "test2", ipQueue_MaxRecycleSize(10))
+	q2 := newIPQueue[int](s, "test2", ipQueue_MaxRecycleSize[int](10))
 	if q2.mrs != 10 {
 		t.Fatalf("Expected max recycle size to be 10, got %v", q2.mrs)
 	}
@@ -317,7 +317,7 @@ func TestIPQueueRecycle(t *testing.T) {
 		}
 	}
 
-	q = newIPQueue[int](s, "test2", ipQueue_MaxRecycleSize(10))
+	q = newIPQueue[int](s, "test2", ipQueue_MaxRecycleSize[int](10))
 	for i := 0; i < 100; i++ {
 		q.push(i)
 	}
@@ -388,4 +388,70 @@ func TestIPQueueDrain(t *testing.T) {
 			break
 		}
 	}
+}
+
+func TestIPQueueSizeCalculation(t *testing.T) {
+	type testType = [16]byte
+	var testValue testType
+
+	calc := ipQueue_SizeCalculation[testType](func(e testType) uint64 {
+		return uint64(len(e))
+	})
+	s := &Server{}
+	q := newIPQueue[testType](s, "test", calc)
+
+	for i := 0; i < 10; i++ {
+		q.push(testValue)
+		require_Equal(t, q.len(), i+1)
+		require_Equal(t, q.size(), uint64(i+1)*uint64(len(testValue)))
+	}
+
+	for i := 10; i > 5; i-- {
+		q.popOne()
+		require_Equal(t, q.len(), i-1)
+		require_Equal(t, q.size(), uint64(i-1)*uint64(len(testValue)))
+	}
+
+	q.pop()
+	require_Equal(t, q.len(), 0)
+	require_Equal(t, q.size(), 0)
+}
+
+func BenchmarkIPQueueSizeCalculation(b *testing.B) {
+	type testType = [16]byte
+	var testValue testType
+
+	s := &Server{}
+
+	run := func(b *testing.B, q *ipQueue[testType]) {
+		b.SetBytes(16)
+		for i := 0; i < b.N; i++ {
+			q.push(testValue)
+		}
+		for i := b.N; i > 0; i-- {
+			q.popOne()
+		}
+	}
+
+	// Measures without calculation function overheads.
+	b.Run("WithoutCalc", func(b *testing.B) {
+		run(b, newIPQueue[testType](s, "test"))
+	})
+
+	// Measures the raw overhead of having a calculation function.
+	b.Run("WithEmptyCalc", func(b *testing.B) {
+		calc := ipQueue_SizeCalculation[testType](func(e testType) uint64 {
+			return 0
+		})
+		run(b, newIPQueue[testType](s, "test", calc))
+	})
+
+	// Measures the overhead of having a calculation function that
+	// actually measures something useful.
+	b.Run("WithLenCalc", func(b *testing.B) {
+		calc := ipQueue_SizeCalculation[testType](func(e testType) uint64 {
+			return uint64(len(e))
+		})
+		run(b, newIPQueue[testType](s, "test", calc))
+	})
 }
