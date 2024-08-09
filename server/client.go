@@ -3908,9 +3908,8 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 		// Match may use the subject here to populate a cache, so can not use bytesToString here.
 		r = acc.sl.Match(string(c.pa.subject))
 		if len(r.psubs)+len(r.qsubs) > 0 {
-			c.in.results[string(c.pa.subject)] = r
 			// Prune the results cache. Keeps us from unbounded growth. Random delete.
-			if len(c.in.results) > maxResultCacheSize {
+			if len(c.in.results) >= maxResultCacheSize {
 				n := 0
 				for subject := range c.in.results {
 					delete(c.in.results, subject)
@@ -3919,6 +3918,8 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 					}
 				}
 			}
+			// Then add the new cache entry.
+			c.in.results[string(c.pa.subject)] = r
 		}
 	}
 

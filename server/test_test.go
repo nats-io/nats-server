@@ -14,6 +14,7 @@
 package server
 
 import (
+	"cmp"
 	"fmt"
 	"math/rand"
 	"net/url"
@@ -133,7 +134,7 @@ func require_Len(t testing.TB, a, b int) {
 	}
 }
 
-func require_LessThan[T ordered](t *testing.T, a, b T) {
+func require_LessThan[T cmp.Ordered](t *testing.T, a, b T) {
 	t.Helper()
 	if a >= b {
 		t.Fatalf("require %v to be less than %v", a, b)
@@ -348,18 +349,4 @@ func runSolicitLeafServerToURL(surl string) (*Server, *Options) {
 	o.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{rurl}}}
 	o.LeafNode.ReconnectInterval = 100 * time.Millisecond
 	return RunServer(&o), &o
-}
-
-// ordered is a constraint that permits any ordered type.
-//
-// To avoid a dependency on go1.21+ or golang.org/x/exp, we copy the ordered
-// interface def from go 1.21.3:src/cmp/cmp.go (https://pkg.go.dev/cmp#Ordered).
-//
-// When this repo is updated to go 1.21+, this should be deleted and references
-// replaced by cmp.Ordered.
-type ordered interface {
-	~int | ~int8 | ~int16 | ~int32 | ~int64 |
-		~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 | ~uintptr |
-		~float32 | ~float64 |
-		~string
 }
