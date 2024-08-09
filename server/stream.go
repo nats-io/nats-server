@@ -4573,6 +4573,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				response, _ = json.Marshal(resp)
 				mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
 			}
+			mset.mu.Unlock()
+			return err
 		}
 	}
 
