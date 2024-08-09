@@ -5444,10 +5444,19 @@ func TestJWTJetStreamTiers(t *testing.T) {
 	_, err = js.Publish("testR1-2", msg[:])
 	require_NoError(t, err)
 
+	ainfo, err := js.AccountInfo()
+	require_NoError(t, err)
+	require_Equal(t, ainfo.Tiers["R1"].Store, 1100)
+
 	// test exceeding tiered storage limit
 	_, err = js.Publish("testR1-1", []byte("1"))
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: resource limits exceeded for account")
+
+	// Check that storage has not increased after the rejected publish.
+	ainfo, err = js.AccountInfo()
+	require_NoError(t, err)
+	require_Equal(t, ainfo.Tiers["R1"].Store, 1100)
 
 	time.Sleep(time.Second - time.Since(start)) // make sure the time stamp changes
 	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{
@@ -5466,9 +5475,22 @@ func TestJWTJetStreamTiers(t *testing.T) {
 	_, err = js.AddConsumer("testR1-3", &nats.ConsumerConfig{Durable: "dur7", AckPolicy: nats.AckExplicitPolicy})
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: maximum consumers limit reached")
+
+	// At this point it will be exactly at the DiskStorage limit so it should not fail.
 	_, err = js.Publish("testR1-3", msg[:])
+	require_NoError(t, err)
+	ainfo, err = js.AccountInfo()
+	require_NoError(t, err)
+	require_Equal(t, ainfo.Tiers["R1"].Store, 1650)
+
+	_, err = js.Publish("testR1-3", []byte("1"))
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: resource limits exceeded for account")
+
+	// Should remain at the same usage.
+	ainfo, err = js.AccountInfo()
+	require_NoError(t, err)
+	require_Equal(t, ainfo.Tiers["R1"].Store, 1650)
 }
 
 func TestJWTJetStreamMaxAckPending(t *testing.T) {
