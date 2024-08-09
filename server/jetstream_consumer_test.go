@@ -20,7 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -162,9 +162,7 @@ func TestJetStreamConsumerMultipleFiltersRace(t *testing.T) {
 		if len(seqs) != 3*total {
 			return fmt.Errorf("found %d messages instead of %d", len(seqs), 3*total)
 		}
-		sort.Slice(seqs, func(i, j int) bool {
-			return seqs[i] < seqs[j]
-		})
+		slices.Sort(seqs)
 		for i := 1; i < len(seqs); i++ {
 			if seqs[i] != seqs[i-1]+1 {
 				fmt.Printf("seqs: %+v\n", seqs)

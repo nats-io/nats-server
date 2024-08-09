@@ -14,12 +14,13 @@
 package server
 
 import (
+	"cmp"
 	"crypto/tls"
 	"errors"
 	"fmt"
 	"net/url"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -1131,38 +1132,24 @@ func (s *Server) reloadOptions(curOpts, newOpts *Options) error {
 func imposeOrder(value any) error {
 	switch value := value.(type) {
 	case []*Account:
-		sort.Slice(value, func(i, j int) bool {
-			return value[i].Name < value[j].Name
-		})
+		slices.SortFunc(value, func(i, j *Account) int { return cmp.Compare(i.Name, j.Name) })
 		for _, a := range value {
-			sort.Slice(a.imports.streams, func(i, j int) bool {
-				return a.imports.streams[i].acc.Name < a.imports.streams[j].acc.Name
-			})
+			slices.SortFunc(a.imports.streams, func(i, j *streamImport) int { return cmp.Compare(i.acc.Name, j.acc.Name) })
 		}
 	case []*User:
-		sort.Slice(value, func(i, j int) bool {
-			return value[i].Username < value[j].Username
-		})
+		slices.SortFunc(value, func(i, j *User) int { return cmp.Compare(i.Username, j.Username) })
 	case []*NkeyUser:
-		sort.Slice(value, func(i, j int) bool {
-			return value[i].Nkey < value[j].Nkey
-		})
+		slices.SortFunc(value, func(i, j *NkeyUser) int { return cmp.Compare(i.Nkey, j.Nkey) })
 	case []*url.URL:
-		sort.Slice(value, func(i, j int) bool {
-			return value[i].String() < value[j].String()
-		})
+		slices.SortFunc(value, func(i, j *url.URL) int { return cmp.Compare(i.String(), j.String()) })
 	case []string:
-		sort.Strings(value)
+		slices.Sort(value)
 	case []*jwt.OperatorClaims:
-		sort.Slice(value, func(i, j int) bool {
-			return value[i].Issuer < value[j].Issuer
-		})
+		slices.SortFunc(value, func(i, j *jwt.OperatorClaims) int { return cmp.Compare(i.Issuer, j.Issuer) })
 	case GatewayOpts:
-		sort.Slice(value.Gateways, func(i, j int) bool {
-			return value.Gateways[i].Name < value.Gateways[j].Name
-		})
+		slices.SortFunc(value.Gateways, func(i, j *RemoteGatewayOpts) int { return cmp.Compare(i.Name, j.Name) })
 	case WebsocketOpts:
-		sort.Strings(value.AllowedOrigins)
+		slices.Sort(value.AllowedOrigins)
 	case string, bool, uint8, int, int32, int64, time.Duration, float64, nil, LeafNodeOpts, ClusterOpts, *tls.Config, PinnedCertSet,
 		*URLAccResolver, *MemAccResolver, *DirAccResolver, *CacheDirAccResolver, Authentication, MQTTOpts, jwt.TagList,
 		*OCSPConfig, map[string]string, JSLimitOpts, StoreCipher, *OCSPResponseCacheConfig:

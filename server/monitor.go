@@ -15,6 +15,7 @@ package server
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -29,6 +30,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/pprof"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -3024,9 +3026,7 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 		accounts = []*jsAccount{accounts[filterIdx]}
 	} else if opts.Accounts {
 		if opts.Offset != 0 {
-			sort.Slice(accounts, func(i, j int) bool {
-				return strings.Compare(accounts[i].acc().Name, accounts[j].acc().Name) < 0
-			})
+			slices.SortFunc(accounts, func(i, j *jsAccount) int { return cmp.Compare(i.acc().Name, j.acc().Name) })
 			if opts.Offset > len(accounts) {
 				accounts = []*jsAccount{}
 			} else {

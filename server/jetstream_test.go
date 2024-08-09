@@ -34,7 +34,7 @@ import (
 	"reflect"
 	"runtime"
 	"runtime/debug"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -7872,7 +7872,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	if len(tListResp.Templates) != 2 {
 		t.Fatalf("Expected 2 templates but got %d", len(tListResp.Templates))
 	}
-	sort.Strings(tListResp.Templates)
+	slices.Sort(tListResp.Templates)
 	if tListResp.Templates[0] != "kv" {
 		t.Fatalf("Expected to get %q, but got %q", "kv", tListResp.Templates[0])
 	}

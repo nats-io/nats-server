@@ -36,7 +36,7 @@ import (
 	"reflect"
 	"runtime"
 	"runtime/debug"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -10124,7 +10124,7 @@ func TestNoRaceConnectionObjectReleased(t *testing.T) {
 			// Don't fail the test since there is no guarantee that
 			// finalizers are invoked.
 			t.Logf("Got %v out of %v finalizers", len(clients), total)
-			sort.Strings(clients)
+			slices.Sort(clients)
 			for _, cs := range clients {
 				t.Logf("  => %s", cs)
 			}
@@ -10273,7 +10273,7 @@ func TestNoRaceWQAndMultiSubjectFilters(t *testing.T) {
 		}
 	}
 
-	sort.Slice(received, func(i, j int) bool { return received[i] < received[j] })
+	slices.Sort(received)
 
 	var pseq, gaps uint64
 	for _, seq := range received {
