@@ -5647,10 +5647,27 @@ func TestJWTJetStreamMaxStreamBytes(t *testing.T) {
 	_, err = js.AddStream(&nats.StreamConfig{Name: "bar", Replicas: 1, MaxBytes: 2048})
 	require_NoError(t, err)
 
-	// test if we can push more messages into the stream
-	_, err = js.Publish("baz", msg[:]) // exceeds max stream bytes
+	ainfo, err := js.AccountInfo()
+	require_NoError(t, err)
+	require_Equal(t, ainfo.Tiers["R1"].Store, 933)
+
+	// This should be exactly at the limit of the account.
+	_, err = js.Publish("baz", []byte(strings.Repeat("A", 1082)))
+	require_NoError(t, err)
+
+	ainfo, err = js.AccountInfo()
+	require_NoError(t, err)
+	require_Equal(t, ainfo.Tiers["R1"].Store, 2048)
+
+	// Exceed max stream bytes limit.
+	_, err = js.Publish("baz", []byte("1"))
 	require_Error(t, err)
 	require_Equal(t, err.Error(), "nats: resource limits exceeded for account")
+
+	// Confirm no changes after rejected publish.
+	ainfo, err = js.AccountInfo()
+	require_NoError(t, err)
+	require_Equal(t, ainfo.Tiers["R1"].Store, 2048)
 
 	// test disabling max bytes required
 	_, err = js.UpdateStream(&nats.StreamConfig{Name: "bar", Replicas: 1})
