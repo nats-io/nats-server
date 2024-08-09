@@ -6433,3 +6433,71 @@ Consume3:
 		t.Errorf("Consumers to same stream are at different sequences: %d vs %d", a, b)
 	}
 }
+
+func TestJetStreamClusterAccountFileStoreLimits(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "limits", 3)
+	defer c.shutdown()
+
+	limits := map[string]JetStreamAccountLimits{
+		"R1": {
+			MaxMemory:    1 << 10,
+			MaxStore:     1 << 10,
+			MaxStreams:   -1,
+			MaxConsumers: -1,
+		},
+		"R3": {
+			MaxMemory:    1 << 10,
+			MaxStore:     1 << 10,
+			MaxStreams:   -1,
+			MaxConsumers: -1,
+		},
+	}
+
+	// Update the limits in all servers.
+	for _, s := range c.servers {
+		acc := s.GlobalAccount()
+		if err := acc.UpdateJetStreamLimits(limits); err != nil {
+			t.Fatalf("Unexpected error updating jetstream account limits: %v", err)
+		}
+	}
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	for _, replicas := range []int64{1, 3} {
+		sname := fmt.Sprintf("test-stream:%d", replicas)
+		t.Run(sname, func(t *testing.T) {
+			sconfig := &nats.StreamConfig{
+				Name:      sname,
+				Replicas:  int(replicas),
+				Storage:   nats.FileStorage,
+				Retention: nats.LimitsPolicy,
+			}
+			_, err := js.AddStream(sconfig)
+			if err != nil {
+				t.Fatalf("Unexpected error creating stream: %v", err)
+			}
+
+			data := []byte(strings.Repeat("A", 1<<8))
+			for i := 0; i < 30; i++ {
+				if _, err = js.Publish(sname, data); err != nil && !strings.Contains(err.Error(), "resource limits exceeded for account") {
+					t.Errorf("Error publishing random data (iteration %d): %v", i, err)
+				}
+
+				if err = nc.Flush(); err != nil {
+					t.Fatalf("Unexpected error flushing connection: %v", err)
+				}
+
+				_, err = js.StreamInfo(sname)
+				require_NoError(t, err)
+			}
+
+			si, err := js.StreamInfo(sname)
+			require_NoError(t, err)
+			st := si.State
+			maxStore := limits[fmt.Sprintf("R%d", replicas)].MaxStore
+			if int64(st.Bytes) > replicas*maxStore {
+				t.Errorf("Unexpected size of stream: got %d, expected less than %d\nstate: %#v", st.Bytes, maxStore, st)
+			}
+		})
+	}
+}
