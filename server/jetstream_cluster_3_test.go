@@ -6434,34 +6434,8 @@ Consume3:
 	}
 }
 
-func TestJetStreamAccountFileStoreLimits(t *testing.T) {
-	conf := `
-	listen: 127.0.0.1:-1
-	server_name: %s
-	jetstream: {
-		store_dir: '%s',
-	}
-	cluster {
-		name: %s
-		listen: 127.0.0.1:%d
-		routes = [%s]
-	}
-        system_account: sys
-        no_auth_user: js
-	accounts {
-	  sys {
-	    users = [
-	      { user: sys, pass: sys }
-	    ]
-	  }
-	  js {
-	    jetstream: enabled
-	    users = [
-	      { user: js, pass: js }
-	    ]
-	  }
-	}`
-	c := createJetStreamClusterWithTemplate(t, conf, "limits-issue", 3)
+func TestJetStreamClusterAccountFileStoreLimits(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "limits", 3)
 	defer c.shutdown()
 
 	limits := map[string]JetStreamAccountLimits{
@@ -6481,13 +6455,12 @@ func TestJetStreamAccountFileStoreLimits(t *testing.T) {
 
 	// Update the limits in all servers.
 	for _, s := range c.servers {
-		acc, err := s.LookupAccount("js")
-		require_NoError(t, err)
+		acc := s.GlobalAccount()
 		if err := acc.UpdateJetStreamLimits(limits); err != nil {
 			t.Fatalf("Unexpected error updating jetstream account limits: %v", err)
 		}
 	}
-	nc, js := jsClientConnect(t, c.randomServer(), nats.UserInfo("js", "js"))
+	nc, js := jsClientConnect(t, c.randomServer())
 	defer nc.Close()
 
 	for _, replicas := range []int64{1, 3} {
