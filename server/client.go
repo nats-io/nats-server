@@ -5910,9 +5910,9 @@ func (c *client) doTLSHandshake(typ string, solicit bool, url *url.URL, tlsConfi
 
 	if err != nil {
 		if kind == CLIENT {
-			c.Errorf("TLS handshake error: %v", err)
+			c.Debugf("TLS handshake error: %v", err)
 		} else {
-			c.Errorf("TLS %s handshake error: %v", typ, err)
+			c.Debugf("TLS %s handshake error: %v", typ, err)
 		}
 		c.closeConnection(TLSHandshakeError)
 
