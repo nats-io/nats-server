@@ -1806,8 +1806,10 @@ func TestRouteSaveTLSName(t *testing.T) {
 
 	// Set a logger to capture errors trying to connect after clearing
 	// the routeTLSName and causing a disconnect
-	l := &captureErrorLogger{errCh: make(chan string, 1)}
-	s2.SetLogger(l, false, false)
+	l := &captureErrorLogger{errCh: make(chan string, 1), filter: func(s string) bool {
+		return strings.Contains(s, "TLS route handshake error")
+	}}
+	s2.SetLogger(l, true, false)
 
 	var gotIt bool
 	for i := 0; !gotIt && i < 5; i++ {

@@ -34,7 +34,7 @@ import (
 	"github.com/nats-io/nkeys"
 
 	"github.com/klauspost/compress/s2"
-	jwt "github.com/nats-io/jwt/v2"
+	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 
 	"github.com/nats-io/nats-server/v2/internal/testhelper"
@@ -337,12 +337,32 @@ func TestLeafNodeTLSRemoteWithNoCerts(t *testing.T) {
 
 type captureErrorLogger struct {
 	DummyLogger
-	errCh chan string
+	filter func(string) bool
+	errCh  chan string
 }
 
 func (l *captureErrorLogger) Errorf(format string, v ...any) {
+	msg := fmt.Sprintf(format, v...)
+
+	if l.filter != nil && !l.filter(msg) {
+		return
+	}
+
 	select {
-	case l.errCh <- fmt.Sprintf(format, v...):
+	case l.errCh <- msg:
+	default:
+	}
+}
+
+func (l *captureErrorLogger) Debugf(format string, v ...any) {
+	msg := fmt.Sprintf(format, v...)
+
+	if l.filter != nil && !l.filter(msg) {
+		return
+	}
+
+	select {
+	case l.errCh <- msg:
 	default:
 	}
 }
@@ -2623,8 +2643,15 @@ func TestLeafNodeTLSConfigReload(t *testing.T) {
 	srvA, optsA := RunServerWithConfig(confA)
 	defer srvA.Shutdown()
 
-	lg := &captureErrorLogger{errCh: make(chan string, 10)}
-	srvA.SetLogger(lg, false, false)
+	lg := &captureErrorLogger{errCh: make(chan string, 10), filter: func(m string) bool {
+		// Since Go 1.18, we had to regenerate certs to not have to use GODEBUG="x509sha1=1"
+		// But on macOS, with our test CA certs, no SCTs included, it will fail
+		// for the reason "x509: “localhost” certificate is not standards compliant"
+		// instead of "unknown authority".
+		return strings.Contains(m, "unknown") || strings.Contains(m, "compliant")
+	}}
+
+	srvA.SetLogger(lg, true, false)
 
 	confB := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: -1
@@ -2654,14 +2681,7 @@ func TestLeafNodeTLSConfigReload(t *testing.T) {
 
 	// Wait for the error
 	select {
-	case err := <-lg.errCh:
-		// Since Go 1.18, we had to regenerate certs to not have to use GODEBUG="x509sha1=1"
-		// But on macOS, with our test CA certs, no SCTs included, it will fail
-		// for the reason "x509: “localhost” certificate is not standards compliant"
-		// instead of "unknown authority".
-		if !strings.Contains(err, "unknown") && !strings.Contains(err, "compliant") {
-			t.Fatalf("Unexpected error: %v", err)
-		}
+	case <-lg.errCh:
 	case <-time.After(2 * time.Second):
 		t.Fatalf("Did not get TLS error")
 	}
@@ -2696,8 +2716,10 @@ func TestLeafNodeTLSConfigReloadForRemote(t *testing.T) {
 	srvA, optsA := RunServerWithConfig(confA)
 	defer srvA.Shutdown()
 
-	lg := &captureErrorLogger{errCh: make(chan string, 10)}
-	srvA.SetLogger(lg, false, false)
+	lg := &captureErrorLogger{errCh: make(chan string, 10), filter: func(m string) bool {
+		return strings.Contains(m, "bad certificate")
+	}}
+	srvA.SetLogger(lg, true, false)
 
 	template := `
 		listen: -1
@@ -2721,10 +2743,7 @@ func TestLeafNodeTLSConfigReloadForRemote(t *testing.T) {
 
 	// Wait for the error
 	select {
-	case err := <-lg.errCh:
-		if !strings.Contains(err, "bad certificate") {
-			t.Fatalf("Unexpected error: %v", err)
-		}
+	case <-lg.errCh:
 	case <-time.After(2 * time.Second):
 		t.Fatalf("Did not get TLS error")
 	}
@@ -3075,14 +3094,13 @@ func TestLeafNodeWSFailedConnection(t *testing.T) {
 	ln := RunServer(lo)
 	defer ln.Shutdown()
 
-	el := &captureErrorLogger{errCh: make(chan string, 100)}
-	ln.SetLogger(el, false, false)
+	el := &captureErrorLogger{errCh: make(chan string, 100), filter: func(m string) bool {
+		return strings.Contains(m, "handshake error")
+	}}
+	ln.SetLogger(el, true, false)
 
 	select {
-	case err := <-el.errCh:
-		if !strings.Contains(err, "handshake error") {
-			t.Fatalf("Unexpected error: %v", err)
-		}
+	case <-el.errCh:
 	case <-time.After(time.Second):
 		t.Fatal("No error reported!")
 	}
@@ -5001,18 +5019,17 @@ func TestLeafNodeTLSHandshakeFirst(t *testing.T) {
 	// Now check that there will be a failure if the remote does not ask for
 	// handshake first since the hub is configured that way.
 	// Set a logger on s1 to capture errors
-	l := &captureErrorLogger{errCh: make(chan string, 10)}
-	s1.SetLogger(l, false, false)
+	l := &captureErrorLogger{errCh: make(chan string, 10), filter: func(m string) bool {
+		return strings.Contains(m, "handshake error")
+	}}
+	s1.SetLogger(l, true, false)
 
 	confSpoke = createConfFile(t, []byte(fmt.Sprintf(tmpl2, o1.LeafNode.Port, "false")))
 	s2, _ = RunServerWithConfig(confSpoke)
 	defer s2.Shutdown()
 
 	select {
-	case err := <-l.errCh:
-		if !strings.Contains(err, "handshake error") {
-			t.Fatalf("Unexpected error: %v", err)
-		}
+	case <-l.errCh:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Did not get TLS handshake failure")
 	}
