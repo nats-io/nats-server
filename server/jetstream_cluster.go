@@ -1339,6 +1339,11 @@ func (js *jetStream) monitorCluster() {
 		updateConsumers: make(map[string]*consumerAssignment),
 	}
 
+	// Make sure to cancel any pending checkForOrphans calls if the
+	// monitor goroutine exits.
+	var oc *time.Timer
+	defer stopAndClearTimer(&oc)
+
 	for {
 		select {
 		case <-s.quitCh:
@@ -1375,7 +1380,7 @@ func (js *jetStream) monitorCluster() {
 					// Clear.
 					ru = nil
 					s.Debugf("Recovered JetStream cluster metadata")
-					time.AfterFunc(30*time.Second, js.checkForOrphans)
+					oc = time.AfterFunc(30*time.Second, js.checkForOrphans)
 					// Do a health check here as well.
 					go checkHealth()
 					continue
