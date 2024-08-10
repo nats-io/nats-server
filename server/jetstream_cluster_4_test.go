@@ -3233,3 +3233,326 @@ func TestJetStreamClusterPubAckSequenceDupeAsync(t *testing.T) {
 		require_True(t, (pubAcks[0].Duplicate || pubAcks[1].Duplicate) && (pubAcks[0].Duplicate != pubAcks[1].Duplicate))
 	}
 }
+
+func TestJetStreamClusterConsumeWithStartSequence(t *testing.T) {
+
+	const (
+		NumMessages         = 10
+		ChosenSeq           = 5
+		StreamName          = "TEST"
+		StreamSubject       = "ORDERS.*"
+		StreamSubjectPrefix = "ORDERS."
+	)
+
+	for _, ClusterSize := range []int{
+		1, // Single server
+		3, // 3-node cluster
+	} {
+		R := ClusterSize
+		t.Run(
+			fmt.Sprintf("Nodes:%d,Replicas:%d", ClusterSize, R),
+			func(t *testing.T) {
+				// This is the success condition for all sub-tests below
+				var ExpectedMsgId = ""
+				checkMessage := func(t *testing.T, msg *nats.Msg) {
+					msgMeta, err := msg.Metadata()
+					require_NoError(t, err)
+
+					// Check sequence number
+					require_Equal(t, msgMeta.Sequence.Stream, ChosenSeq)
+
+					// Check message id
+					require_NotEqual(t, ExpectedMsgId, "")
+					require_Equal(t, msg.Header.Get(nats.MsgIdHdr), ExpectedMsgId)
+				}
+
+				checkRawMessage := func(t *testing.T, msg *nats.RawStreamMsg) {
+					// Check sequence number
+					require_Equal(t, msg.Sequence, ChosenSeq)
+
+					// Check message id
+					require_NotEqual(t, ExpectedMsgId, "")
+					require_Equal(t, msg.Header.Get(nats.MsgIdHdr), ExpectedMsgId)
+				}
+
+				// Setup: start server or cluster, connect client
+				var server *Server
+				if ClusterSize == 1 {
+					server = RunBasicJetStreamServer(t)
+					defer server.Shutdown()
+				} else {
+					c := createJetStreamCluster(t, jsClusterTempl, "HUB", _EMPTY_, ClusterSize, 22020, true)
+					defer c.shutdown()
+					server = c.randomServer()
+				}
+
+				// Setup: connect
+				var nc *nats.Conn
+				var js nats.JetStreamContext
+				nc, js = jsClientConnect(t, server)
+				defer nc.Close()
+
+				// Setup: create stream
+				_, err := js.AddStream(&nats.StreamConfig{
+					Replicas: R,
+					Name:     StreamName,
+					Subjects: []string{StreamSubject},
+				})
+				require_NoError(t, err)
+
+				// Setup: create subscriptions before stream is populated
+				var preCreatedSub, preCreatedSubDurable *nats.Subscription
+				{
+					preCreatedSub, err = js.PullSubscribe(
+						StreamSubject,
+						"",
+						nats.StartSequence(ChosenSeq),
+					)
+					require_NoError(t, err)
+					defer func() {
+						require_NoError(t, preCreatedSub.Unsubscribe())
+					}()
+
+					const Durable = "dlc_pre_created"
+					c, err := js.AddConsumer(StreamName, &nats.ConsumerConfig{
+						Durable:       Durable,
+						DeliverPolicy: nats.DeliverByStartSequencePolicy,
+						OptStartSeq:   ChosenSeq,
+						Replicas:      R,
+					})
+					require_NoError(t, err)
+					defer func() {
+						require_NoError(t, js.DeleteConsumer(c.Stream, c.Name))
+					}()
+
+					preCreatedSubDurable, err = js.PullSubscribe(
+						"",
+						"",
+						nats.Bind(StreamName, Durable),
+					)
+					require_NoError(t, err)
+					defer func() {
+						require_NoError(t, preCreatedSubDurable.Unsubscribe())
+					}()
+				}
+
+				// Setup: populate stream
+				buf := make([]byte, 100)
+				for i := uint64(1); i <= NumMessages; i++ {
+					msgId := nuid.Next()
+					pubAck, err := js.Publish(StreamSubjectPrefix+strconv.Itoa(int(i)), buf, nats.MsgId(msgId))
+					require_NoError(t, err)
+
+					// Verify assumption made in tests below
+					require_Equal(t, pubAck.Sequence, i)
+
+					if i == ChosenSeq {
+						// Save the expected message id for the chosen message
+						ExpectedMsgId = msgId
+					}
+				}
+
+				// Tests various ways to consume the stream starting at the ChosenSeq sequence
+
+				t.Run(
+					"DurableConsumer",
+					func(t *testing.T) {
+						const Durable = "dlc"
+						c, err := js.AddConsumer(StreamName, &nats.ConsumerConfig{
+							Durable:       Durable,
+							DeliverPolicy: nats.DeliverByStartSequencePolicy,
+							OptStartSeq:   ChosenSeq,
+							Replicas:      R,
+						})
+						require_NoError(t, err)
+						defer func() {
+							require_NoError(t, js.DeleteConsumer(c.Stream, c.Name))
+						}()
+
+						sub, err := js.PullSubscribe(
+							StreamSubject,
+							Durable,
+						)
+						require_NoError(t, err)
+						defer func() {
+							require_NoError(t, sub.Unsubscribe())
+						}()
+
+						msgs, err := sub.Fetch(1)
+						require_NoError(t, err)
+						require_Equal(t, len(msgs), 1)
+
+						checkMessage(t, msgs[0])
+					},
+				)
+
+				t.Run(
+					"DurableConsumerWithBind",
+					func(t *testing.T) {
+						const Durable = "dlc_bind"
+						c, err := js.AddConsumer(StreamName, &nats.ConsumerConfig{
+							Durable:       Durable,
+							DeliverPolicy: nats.DeliverByStartSequencePolicy,
+							OptStartSeq:   ChosenSeq,
+							Replicas:      R,
+						})
+						require_NoError(t, err)
+						defer func() {
+							require_NoError(t, js.DeleteConsumer(c.Stream, c.Name))
+						}()
+
+						sub, err := js.PullSubscribe(
+							"",
+							"",
+							nats.Bind(StreamName, Durable),
+						)
+						require_NoError(t, err)
+						defer func() {
+							require_NoError(t, sub.Unsubscribe())
+						}()
+
+						msgs, err := sub.Fetch(1)
+						require_NoError(t, err)
+						require_Equal(t, len(msgs), 1)
+
+						checkMessage(t, msgs[0])
+					},
+				)
+
+				t.Run(
+					"PreCreatedDurableConsumerWithBind",
+					func(t *testing.T) {
+						msgs, err := preCreatedSubDurable.Fetch(1)
+						require_NoError(t, err)
+						require_Equal(t, len(msgs), 1)
+
+						checkMessage(t, msgs[0])
+					},
+				)
+
+				t.Run(
+					"PullConsumer",
+					func(t *testing.T) {
+						sub, err := js.PullSubscribe(
+							StreamSubject,
+							"",
+							nats.StartSequence(ChosenSeq),
+						)
+						require_NoError(t, err)
+						defer func() {
+							require_NoError(t, sub.Unsubscribe())
+						}()
+
+						msgs, err := sub.Fetch(1)
+						require_NoError(t, err)
+						require_Equal(t, len(msgs), 1)
+
+						checkMessage(t, msgs[0])
+					},
+				)
+
+				t.Run(
+					"PreCreatedPullConsumer",
+					func(t *testing.T) {
+						msgs, err := preCreatedSub.Fetch(1)
+						require_NoError(t, err)
+						require_Equal(t, len(msgs), 1)
+
+						checkMessage(t, msgs[0])
+					},
+				)
+
+				t.Run(
+					"SynchronousConsumer",
+					func(t *testing.T) {
+						sub, err := js.SubscribeSync(
+							StreamSubject,
+							nats.StartSequence(ChosenSeq),
+						)
+						if err != nil {
+							return
+						}
+						require_NoError(t, err)
+						defer func() {
+							require_NoError(t, sub.Unsubscribe())
+						}()
+
+						msg, err := sub.NextMsg(1 * time.Second)
+						require_NoError(t, err)
+						checkMessage(t, msg)
+					},
+				)
+
+				t.Run(
+					"CallbackSubscribe",
+					func(t *testing.T) {
+						var waitGroup sync.WaitGroup
+						waitGroup.Add(1)
+						// To be populated by callback
+						var receivedMsg *nats.Msg
+
+						sub, err := js.Subscribe(
+							StreamSubject,
+							func(msg *nats.Msg) {
+								// Save first message received
+								if receivedMsg == nil {
+									receivedMsg = msg
+									waitGroup.Done()
+								}
+							},
+							nats.StartSequence(ChosenSeq),
+						)
+						require_NoError(t, err)
+						defer func() {
+							require_NoError(t, sub.Unsubscribe())
+						}()
+
+						waitGroup.Wait()
+						require_NotNil(t, receivedMsg)
+						checkMessage(t, receivedMsg)
+					},
+				)
+
+				t.Run(
+					"ChannelSubscribe",
+					func(t *testing.T) {
+						msgChannel := make(chan *nats.Msg, 1)
+						sub, err := js.ChanSubscribe(
+							StreamSubject,
+							msgChannel,
+							nats.StartSequence(ChosenSeq),
+						)
+						require_NoError(t, err)
+						defer func() {
+							require_NoError(t, sub.Unsubscribe())
+						}()
+
+						msg := <-msgChannel
+						checkMessage(t, msg)
+					},
+				)
+
+				t.Run(
+					"GetRawStreamMessage",
+					func(t *testing.T) {
+						rawMsg, err := js.GetMsg(StreamName, ChosenSeq)
+						require_NoError(t, err)
+						checkRawMessage(t, rawMsg)
+					},
+				)
+
+				t.Run(
+					"GetLastMessageBySubject",
+					func(t *testing.T) {
+						rawMsg, err := js.GetLastMsg(
+							StreamName,
+							fmt.Sprintf("ORDERS.%d", ChosenSeq),
+						)
+						require_NoError(t, err)
+						checkRawMessage(t, rawMsg)
+					},
+				)
+			},
+		)
+	}
+}
