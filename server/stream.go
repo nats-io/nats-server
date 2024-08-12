@@ -218,6 +218,12 @@ type ExternalStream struct {
 	DeliverPrefix string `json:"deliver"`
 }
 
+// For managing stream ingest.
+const (
+	streamDefaultMaxQueueMsgs  = 10_000
+	streamDefaultMaxQueueBytes = 1024 * 1024 * 128
+)
+
 // Stream is a jetstream stream of messages. When we receive a message internally destined
 // for a Stream we will direct link from the client to this structure.
 type stream struct {
@@ -576,6 +582,16 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	c := s.createInternalJetStreamClient()
 	ic := s.createInternalJetStreamClient()
 
+	// Work out the stream ingest limits.
+	mlen := s.opts.StreamMaxBufferedMsgs
+	msz := uint64(s.opts.StreamMaxBufferedSize)
+	if mlen == 0 {
+		mlen = streamDefaultMaxQueueMsgs
+	}
+	if msz == 0 {
+		msz = streamDefaultMaxQueueBytes
+	}
+
 	qpfx := fmt.Sprintf("[ACC:%s] stream '%s' ", a.Name, config.Name)
 	mset := &stream{
 		acc:       a,
@@ -588,12 +604,18 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		tier:      tier,
 		stype:     cfg.Storage,
 		consumers: make(map[string]*consumer),
-		msgs:      newIPQueue[*inMsg](s, qpfx+"messages"),
-		gets:      newIPQueue[*directGetReq](s, qpfx+"direct gets"),
-		qch:       make(chan struct{}),
-		mqch:      make(chan struct{}),
-		uch:       make(chan struct{}, 4),
-		sch:       make(chan struct{}, 1),
+		msgs: newIPQueue[*inMsg](s, qpfx+"messages",
+			ipqSizeCalculation(func(msg *inMsg) uint64 {
+				return uint64(len(msg.hdr) + len(msg.msg) + len(msg.rply) + len(msg.subj))
+			}),
+			ipqLimitByLen[*inMsg](mlen),
+			ipqLimitBySize[*inMsg](msz),
+		),
+		gets: newIPQueue[*directGetReq](s, qpfx+"direct gets"),
+		qch:  make(chan struct{}),
+		mqch: make(chan struct{}),
+		uch:  make(chan struct{}, 4),
+		sch:  make(chan struct{}, 1),
 	}
 
 	// Start our signaling routine to process consumers.
@@ -4156,7 +4178,13 @@ func (im *inMsg) returnToPool() {
 func (mset *stream) queueInbound(ib *ipQueue[*inMsg], subj, rply string, hdr, msg []byte, si *sourceInfo, mt *msgTrace) {
 	im := inMsgPool.Get().(*inMsg)
 	im.subj, im.rply, im.hdr, im.msg, im.si, im.mt = subj, rply, hdr, msg, si, mt
-	ib.push(im)
+	if _, err := ib.push(im); err != nil {
+		mset.srv.RateLimitWarnf("Dropping messages due to excessive stream ingest rate on '%s' > '%s': %s", mset.acc.Name, mset.name(), err)
+		if rply != _EMPTY_ {
+			hdr := []byte("NATS/1.0 429 Too Many Requests\r\n\r\n")
+			mset.outq.send(newJSPubMsg(rply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		}
+	}
 }
 
 var dgPool = sync.Pool{

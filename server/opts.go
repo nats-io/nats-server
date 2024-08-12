@@ -331,6 +331,8 @@ type Options struct {
 	JetStreamLimits       JSLimitOpts
 	JetStreamTpm          JSTpmOpts
 	JetStreamMaxCatchup   int64
+	StreamMaxBufferedMsgs int               `json:"-"`
+	StreamMaxBufferedSize int64             `json:"-"`
 	StoreDir              string            `json:"-"`
 	SyncInterval          time.Duration     `json:"-"`
 	SyncAlways            bool              `json:"-"`
@@ -2373,6 +2375,18 @@ func parseJetStream(v any, opts *Options, errors *[]error, warnings *[]error) er
 					return &configErr{tk, fmt.Sprintf("%s %s", strings.ToLower(mk), err)}
 				}
 				opts.JetStreamMaxCatchup = s
+			case "max_buffered_size":
+				s, err := getStorageSize(mv)
+				if err != nil {
+					return &configErr{tk, fmt.Sprintf("%s %s", strings.ToLower(mk), err)}
+				}
+				opts.StreamMaxBufferedSize = s
+			case "max_buffered_msgs":
+				mlen, ok := mv.(int64)
+				if !ok {
+					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
+				}
+				opts.StreamMaxBufferedMsgs = int(mlen)
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{
