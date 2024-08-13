@@ -20,6 +20,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/rand"
 	"net"
 	"net/http"
@@ -987,8 +988,11 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 	c.initClient()
 	c.Noticef("Leafnode connection created%s %s", remoteSuffix, c.opts.Name)
 
-	var tlsFirst bool
-	var infoTimeout time.Duration
+	var (
+		tlsFirst         bool
+		tlsFirstFallback time.Duration
+		infoTimeout      time.Duration
+	)
 	if remote != nil {
 		solicited = true
 		remote.Lock()
@@ -1005,6 +1009,10 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 		c.flags.set(expectConnect)
 		if ws != nil {
 			c.Debugf("Leafnode compression=%v", c.ws.compress)
+		}
+		tlsFirst = opts.LeafNode.TLSHandshakeFirst
+		if f := opts.LeafNode.TLSHandshakeFirstFallback; f > 0 {
+			tlsFirstFallback = f
 		}
 	}
 	c.mu.Unlock()
@@ -1069,7 +1077,33 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 		info.Nonce = bytesToString(c.nonce)
 		info.CID = c.cid
 		proto := generateInfoJSON(info)
-		if !opts.LeafNode.TLSHandshakeFirst {
+
+		var pre []byte
+		// We need first to check for "TLS First" fallback delay.
+		if tlsFirstFallback > 0 {
+			// We wait and see if we are getting any data. Since we did not send
+			// the INFO protocol yet, only clients that use TLS first should be
+			// sending data (the TLS handshake). We don't really check the content:
+			// if it is a rogue agent and not an actual client performing the
+			// TLS handshake, the error will be detected when performing the
+			// handshake on our side.
+			pre = make([]byte, 4)
+			c.nc.SetReadDeadline(time.Now().Add(tlsFirstFallback))
+			n, _ := io.ReadFull(c.nc, pre[:])
+			c.nc.SetReadDeadline(time.Time{})
+			// If we get any data (regardless of possible timeout), we will proceed
+			// with the TLS handshake.
+			if n > 0 {
+				pre = pre[:n]
+			} else {
+				// We did not get anything so we will send the INFO protocol.
+				pre = nil
+				// Set the boolean to false for the rest of the function.
+				tlsFirst = false
+			}
+		}
+
+		if !tlsFirst {
 			// We have to send from this go routine because we may
 			// have to block for TLS handshake before we start our
 			// writeLoop go routine. The other side needs to receive
@@ -1086,6 +1120,10 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 
 		// Check to see if we need to spin up TLS.
 		if !c.isWebsocket() && info.TLSRequired {
+			// If we have a prebuffer create a multi-reader.
+			if len(pre) > 0 {
+				c.nc = &tlsMixConn{c.nc, bytes.NewBuffer(pre)}
+			}
 			// Perform server-side TLS handshake.
 			if err := c.doTLSServerHandshake(tlsHandshakeLeaf, opts.LeafNode.TLSConfig, opts.LeafNode.TLSTimeout, opts.LeafNode.TLSPinnedCerts); err != nil {
 				c.mu.Unlock()
@@ -1095,7 +1133,8 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 
 		// If the user wants the TLS handshake to occur first, now that it is
 		// done, send the INFO protocol.
-		if opts.LeafNode.TLSHandshakeFirst {
+		if tlsFirst {
+			c.flags.set(didTLSFirst)
 			c.sendProtoNow(proto)
 			if c.isClosed() {
 				c.mu.Unlock()

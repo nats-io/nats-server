@@ -4954,6 +4954,59 @@ func TestLeafNodeTLSHandshakeFirstVerifyNoInfoSent(t *testing.T) {
 	}
 }
 
+func TestLeafNodeTLSHandshakeFirstFallbackDelayConfigValues(t *testing.T) {
+	tmpl := `
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			listen: "127.0.0.1:-1"
+			tls {
+				cert_file: 	"../test/configs/certs/server-cert.pem"
+				key_file:  	"../test/configs/certs/server-key.pem"
+				timeout: 	1
+				first: 		%s
+			}
+		}
+	`
+	for _, test := range []struct {
+		name  string
+		val   string
+		first bool
+		delay time.Duration
+	}{
+		{"first as boolean true", "true", true, 0},
+		{"first as boolean false", "false", false, 0},
+		{"first as string true", "\"true\"", true, 0},
+		{"first as string false", "\"false\"", false, 0},
+		{"first as string on", "on", true, 0},
+		{"first as string off", "off", false, 0},
+		{"first as string auto", "auto", true, DEFAULT_TLS_HANDSHAKE_FIRST_FALLBACK_DELAY},
+		{"first as string auto_fallback", "auto_fallback", true, DEFAULT_TLS_HANDSHAKE_FIRST_FALLBACK_DELAY},
+		{"first as fallback duration", "300ms", true, 300 * time.Millisecond},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, test.val)))
+			s, o := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			if test.first {
+				if !o.LeafNode.TLSHandshakeFirst {
+					t.Fatal("Expected tls first to be true, was not")
+				}
+				if test.delay != o.LeafNode.TLSHandshakeFirstFallback {
+					t.Fatalf("Expected fallback delay to be %v, got %v", test.delay, o.LeafNode.TLSHandshakeFirstFallback)
+				}
+			} else {
+				if o.LeafNode.TLSHandshakeFirst {
+					t.Fatal("Expected tls first to be false, was not")
+				}
+				if o.LeafNode.TLSHandshakeFirstFallback != 0 {
+					t.Fatalf("Expected fallback delay to be 0, got %v", o.LeafNode.TLSHandshakeFirstFallback)
+				}
+			}
+		})
+	}
+}
+
 func TestLeafNodeTLSHandshakeFirst(t *testing.T) {
 	tmpl1 := `
 		port : -1
@@ -5048,6 +5101,18 @@ func TestLeafNodeTLSHandshakeFirst(t *testing.T) {
 
 	// Reload again with "true"
 	reloadUpdateConfig(t, s1, confHub, fmt.Sprintf(tmpl1, "true"))
+	checkLeafNodeConnected(t, s2)
+
+	// Shutdown the remote
+	s2.Shutdown()
+
+	// Reload the hub with handshake_first with a duration
+	reloadUpdateConfig(t, s1, confHub, fmt.Sprintf(tmpl1, `"250ms"`))
+
+	// Now start s2 with a remote that does not use handshake_first (set to false)
+	confSpoke = createConfFile(t, []byte(fmt.Sprintf(tmpl2, o1.LeafNode.Port, "false")))
+	s2, _ = RunServerWithConfig(confSpoke)
+	defer s2.Shutdown()
 	checkLeafNodeConnected(t, s2)
 }
 

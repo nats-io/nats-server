@@ -145,22 +145,33 @@ type RemoteGatewayOpts struct {
 
 // LeafNodeOpts are options for a given server to accept leaf node connections and/or connect to a remote cluster.
 type LeafNodeOpts struct {
-	Host              string        `json:"addr,omitempty"`
-	Port              int           `json:"port,omitempty"`
-	Username          string        `json:"-"`
-	Password          string        `json:"-"`
-	Nkey              string        `json:"-"`
-	Account           string        `json:"-"`
-	Users             []*User       `json:"-"`
-	AuthTimeout       float64       `json:"auth_timeout,omitempty"`
-	TLSConfig         *tls.Config   `json:"-"`
-	TLSTimeout        float64       `json:"tls_timeout,omitempty"`
-	TLSMap            bool          `json:"-"`
-	TLSPinnedCerts    PinnedCertSet `json:"-"`
-	TLSHandshakeFirst bool          `json:"-"`
-	Advertise         string        `json:"-"`
-	NoAdvertise       bool          `json:"-"`
-	ReconnectInterval time.Duration `json:"-"`
+	Host           string        `json:"addr,omitempty"`
+	Port           int           `json:"port,omitempty"`
+	Username       string        `json:"-"`
+	Password       string        `json:"-"`
+	Nkey           string        `json:"-"`
+	Account        string        `json:"-"`
+	Users          []*User       `json:"-"`
+	AuthTimeout    float64       `json:"auth_timeout,omitempty"`
+	TLSConfig      *tls.Config   `json:"-"`
+	TLSTimeout     float64       `json:"tls_timeout,omitempty"`
+	TLSMap         bool          `json:"-"`
+	TLSPinnedCerts PinnedCertSet `json:"-"`
+	// When set to true, the server will perform the TLS handshake before
+	// sending the INFO protocol. For remote leafnodes that are not configured
+	// with a similar option, their connection will fail with some sort
+	// of timeout or EOF error since they are expecting to receive an
+	// INFO protocol first.
+	TLSHandshakeFirst bool `json:"-"`
+	// If TLSHandshakeFirst is true and this value is strictly positive,
+	// the server will wait for that amount of time for the TLS handshake
+	// to start before falling back to previous behavior of sending the
+	// INFO protocol first. It allows for a mix of newer remote leafnodes
+	// that can require a TLS handshake first, and older that can't.
+	TLSHandshakeFirstFallback time.Duration `json:"-"`
+	Advertise                 string        `json:"-"`
+	NoAdvertise               bool          `json:"-"`
+	ReconnectInterval         time.Duration `json:"-"`
 
 	// Compression options
 	Compression CompressionOpts `json:"-"`
@@ -2453,6 +2464,7 @@ func parseLeafNodes(v any, opts *Options, errors *[]error, warnings *[]error) er
 			opts.LeafNode.TLSMap = tc.Map
 			opts.LeafNode.TLSPinnedCerts = tc.PinnedCerts
 			opts.LeafNode.TLSHandshakeFirst = tc.HandshakeFirst
+			opts.LeafNode.TLSHandshakeFirstFallback = tc.FallbackDelay
 			opts.LeafNode.tlsConfigOpts = tc
 		case "leafnode_advertise", "advertise":
 			opts.LeafNode.Advertise = mv.(string)
