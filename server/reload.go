@@ -847,6 +847,7 @@ func (l *leafNodeOption) Apply(s *Server) {
 	opts := s.getOpts()
 	if l.tlsFirstChanged {
 		s.Noticef("Reloaded: LeafNode TLS HandshakeFirst value is: %v", opts.LeafNode.TLSHandshakeFirst)
+		s.Noticef("Reloaded: LeafNode TLS HandshakeFirstFallback value is: %v", opts.LeafNode.TLSHandshakeFirstFallback)
 		for _, r := range opts.LeafNode.Remotes {
 			s.Noticef("Reloaded: LeafNode Remote to %v TLS HandshakeFirst value is: %v", r.URLs, r.TLSHandshakeFirst)
 		}
@@ -1368,14 +1369,16 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			tmpNew.TLSConfig = nil
 			tmpOld.tlsConfigOpts = nil
 			tmpNew.tlsConfigOpts = nil
-			// We will allow TLSHandshakeFirst to me config reloaded. First,
+			// We will allow TLSHandshakeFirst to be config reloaded. First,
 			// we just want to detect if there was a change in the leafnodes{}
 			// block, and if not, we will check the remotes.
-			handshakeFirstChanged := tmpOld.TLSHandshakeFirst != tmpNew.TLSHandshakeFirst
+			handshakeFirstChanged := tmpOld.TLSHandshakeFirst != tmpNew.TLSHandshakeFirst ||
+				tmpOld.TLSHandshakeFirstFallback != tmpNew.TLSHandshakeFirstFallback
 			// If changed, set them (in the temporary variables) to false so that the
 			// rest of the comparison does not fail.
 			if handshakeFirstChanged {
 				tmpOld.TLSHandshakeFirst, tmpNew.TLSHandshakeFirst = false, false
+				tmpOld.TLSHandshakeFirstFallback, tmpNew.TLSHandshakeFirstFallback = 0, 0
 			} else if len(tmpOld.Remotes) == len(tmpNew.Remotes) {
 				// Since we don't support changes in the remotes, we will do a
 				// simple pass to see if there was a change of this field.
