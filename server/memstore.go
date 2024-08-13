@@ -17,6 +17,7 @@ import (
 	crand "crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -636,7 +637,7 @@ func (ms *memStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed in
 			return nil, ErrTooManyResults
 		}
 	}
-	sort.Slice(seqs, func(i, j int) bool { return seqs[i] < seqs[j] })
+	slices.Sort(seqs)
 	return seqs, nil
 }
 
