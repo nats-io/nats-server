@@ -2826,6 +2826,7 @@ func (s *Server) StartProfiler() {
 		Addr:           hp,
 		Handler:        http.DefaultServeMux,
 		MaxHeaderBytes: 1 << 20,
+		ReadTimeout:    time.Second * 5,
 	}
 	s.profiler = l
 	s.profilingServer = srv
@@ -3025,10 +3026,11 @@ func (s *Server) startMonitoring(secure bool) error {
 	// to return empty response or unable to display page if the
 	// server needs more time to build the response.
 	srv := &http.Server{
-		Addr:           hp,
-		Handler:        mux,
-		MaxHeaderBytes: 1 << 20,
-		ErrorLog:       log.New(&captureHTTPServerLog{s, "monitoring: "}, _EMPTY_, 0),
+		Addr:              hp,
+		Handler:           mux,
+		MaxHeaderBytes:    1 << 20,
+		ErrorLog:          log.New(&captureHTTPServerLog{s, "monitoring: "}, _EMPTY_, 0),
+		ReadHeaderTimeout: time.Second * 5,
 	}
 	s.mu.Lock()
 	s.http = httpListener
