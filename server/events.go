@@ -145,8 +145,18 @@ type internal struct {
 
 // ServerStatsMsg is sent periodically with stats updates.
 type ServerStatsMsg struct {
-	Server ServerInfo  `json:"server"`
-	Stats  ServerStats `json:"statsz"`
+	Server   ServerInfo              `json:"server"`
+	Stats    ServerStats             `json:"statsz"`
+	Duration ServerStatsMsgDurations `json:"duration"`
+}
+
+// ServerStatsMsgDurations is sent to identify which parts of the
+// response are taking the longest to generate.
+type ServerStatsMsgDurations struct {
+	All       time.Duration `json:"all"`
+	Routes    time.Duration `json:"r"`
+	Gateways  time.Duration `json:"g"`
+	JetStream time.Duration `json:"js"`
 }
 
 // ConnectEventMsg is sent when a new connection is made that is part of an account.
@@ -811,6 +821,8 @@ func routeStat(r *client) *RouteStat {
 // Actual send method for statz updates.
 // Lock should be held.
 func (s *Server) sendStatsz(subj string) {
+	start := time.Now()
+
 	var m ServerStatsMsg
 	s.updateServerUsage(&m.Stats)
 
@@ -872,11 +884,16 @@ func (s *Server) sendStatsz(subj string) {
 	m.Stats.SlowConsumers = atomic.LoadInt64(&s.slowConsumers)
 	m.Stats.NumSubs = s.numSubscriptions()
 	// Routes
+	rstart := time.Now()
 	s.forEachRoute(func(r *client) {
 		m.Stats.Routes = append(m.Stats.Routes, routeStat(r))
 	})
+	if len(m.Stats.Routes) > 0 {
+		m.Duration.Routes = time.Since(rstart)
+	}
 	// Gateways
 	if s.gateway.enabled {
+		gstart := time.Now()
 		gw := s.gateway
 		gw.RLock()
 		for name, c := range gw.out {
@@ -904,12 +921,14 @@ func (s *Server) sendStatsz(subj string) {
 			m.Stats.Gateways = append(m.Stats.Gateways, gs)
 		}
 		gw.RUnlock()
+		m.Duration.Gateways = time.Since(gstart)
 	}
 	// Active Servers
 	m.Stats.ActiveServers = len(s.sys.servers) + 1
 
 	// JetStream
 	if js := s.js.Load(); js != nil {
+		jstart := time.Now()
 		jStat := &JetStreamVarz{}
 		s.mu.RUnlock()
 		js.mu.RLock()
@@ -954,8 +973,10 @@ func (s *Server) sendStatsz(subj string) {
 		}
 		m.Stats.JetStream = jStat
 		s.mu.RLock()
+		m.Duration.JetStream = time.Since(jstart)
 	}
 	// Send message.
+	m.Duration.All = time.Since(start)
 	s.sendInternalMsg(subj, _EMPTY_, &m.Server, &m)
 }
 
