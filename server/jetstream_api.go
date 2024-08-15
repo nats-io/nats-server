@@ -825,10 +825,10 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, sub
 	// Copy the state. Note the JSAPI only uses the hdr index to piece apart the
 	// header from the msg body. No other references are needed.
 	// Check pending and warn if getting backed up.
-	const warnThresh = 32
+	const warnThresh = 128
 	pending := s.jsAPIRoutedReqs.push(&jsAPIRoutedReq{jsub, sub, acc, subject, reply, copyBytes(rmsg), c.pa})
-	if pending > warnThresh {
-		s.RateLimitWarnf("JetStream request queue has high pending count: %d", pending)
+	if pending >= warnThresh {
+		s.rateLimitFormatWarnf("JetStream request queue has high pending count: %d", pending)
 	}
 }
 
