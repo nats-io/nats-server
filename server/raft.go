@@ -1045,31 +1045,23 @@ func (n *raft) InstallSnapshot(data []byte) error {
 	}
 
 	if n.applied == 0 {
+		n.debug("Not snapshotting as there are no applied entries")
 		return errNoSnapAvailable
+	}
+
+	term := n.pterm
+	if ae, _ := n.loadEntry(n.applied); ae != nil {
+		term = ae.term
 	}
 
 	n.debug("Installing snapshot of %d bytes", len(data))
 
-	var term uint64
-	if ae, _ := n.loadEntry(n.applied); ae != nil {
-		// Use the term from the most recently applied entry if possible.
-		term = ae.term
-	} else if ae, _ = n.loadFirstEntry(); ae != nil {
-		// Otherwise see if we can find the term from the first entry.
-		term = ae.term
-	} else {
-		// Last resort is to use the last pterm that we knew of.
-		term = n.pterm
-	}
-
-	snap := &snapshot{
+	return n.installSnapshot(&snapshot{
 		lastTerm:  term,
 		lastIndex: n.applied,
 		peerstate: encodePeerState(&peerState{n.peerNames(), n.csz, n.extSt}),
 		data:      data,
-	}
-
-	return n.installSnapshot(snap)
+	})
 }
 
 // Install the snapshot.
