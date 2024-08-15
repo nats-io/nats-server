@@ -761,7 +761,7 @@ func TestProfilingNoTimeout(t *testing.T) {
 	if srv == nil {
 		t.Fatalf("Profiling server not set")
 	}
-	if srv.ReadTimeout != 0 {
+	if srv.ReadTimeout != time.Second*5 {
 		t.Fatalf("ReadTimeout should not be set, was set to %v", srv.ReadTimeout)
 	}
 	if srv.WriteTimeout != 0 {

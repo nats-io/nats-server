@@ -178,8 +178,9 @@ func NewOCSPResponderBase(t *testing.T, issuerCertPEM, respCertPEM, respKeyPEM s
 	})
 
 	srv := &http.Server{
-		Addr:    addr,
-		Handler: mux,
+		Addr:        addr,
+		Handler:     mux,
+		ReadTimeout: time.Second * 5,
 	}
 	go srv.ListenAndServe()
 	time.Sleep(1 * time.Second)
