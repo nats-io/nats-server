@@ -1034,16 +1034,18 @@ func (n *raft) InstallSnapshot(data []byte) error {
 
 	n.debug("Installing snapshot of %d bytes", len(data))
 
-	var term uint64
-	if ae, _ := n.loadEntry(n.applied); ae != nil {
-		// Use the term from the most recently applied entry if possible.
+	// If the node has restarted and is isolated (hasn't detected a new leader or a higher
+	// term yet) then we might need to look at our log to work out what term we last knew
+	// about. Otherwise, use the term we believe we're currently at.
+	term := n.term
+	if ae, _ := n.loadEntry(n.applied); ae != nil && ae.term > term {
+		// Use the term from the last entry that we knew we applied if it's higher.
+		// Won't usually happen, except for potentially after a restart + restore.
 		term = ae.term
-	} else if ae, _ = n.loadFirstEntry(); ae != nil {
-		// Otherwise see if we can find the term from the first entry.
+	} else if ae, _ = n.loadLastEntry(); ae != nil && ae.term > term {
+		// Otherwise see if we can find the term from the last entry that we agreed
+		// to commit. That would be the most recent term that we knew about at the time.
 		term = ae.term
-	} else {
-		// Last resort is to use the last pterm that we knew of.
-		term = n.pterm
 	}
 
 	snap := &snapshot{
@@ -2515,6 +2517,13 @@ func (n *raft) loadFirstEntry() (ae *appendEntry, err error) {
 	var state StreamState
 	n.wal.FastState(&state)
 	return n.loadEntry(state.FirstSeq)
+}
+
+// Lock should be held.
+func (n *raft) loadLastEntry() (ae *appendEntry, err error) {
+	var state StreamState
+	n.wal.FastState(&state)
+	return n.loadEntry(state.LastSeq)
 }
 
 func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue[uint64]) {
