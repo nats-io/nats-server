@@ -2653,6 +2653,9 @@ func TestJetStreamClusterKeyValueSync(t *testing.T) {
 	getStreamDetails := func(t *testing.T, c *cluster, accountName, streamName string) *StreamDetail {
 		t.Helper()
 		srv := c.streamLeader(accountName, streamName)
+		if srv == nil {
+			return nil
+		}
 		jsz, err := srv.Jsz(&JSzOptions{Accounts: true, Streams: true, Consumer: true})
 		require_NoError(t, err)
 		for _, acc := range jsz.AccountDetails {
@@ -2672,10 +2675,12 @@ func TestJetStreamClusterKeyValueSync(t *testing.T) {
 
 		leaderSrv := c.streamLeader(accountName, streamName)
 		if leaderSrv == nil {
-			fmt.Println(time.Now(), "NO LEADER", accountName, streamName)
-			return fmt.Errorf("no leader found for stream %q", streamName)
+			return fmt.Errorf("no leader server found for stream %q", streamName)
 		}
 		streamLeader := getStreamDetails(t, c, accountName, streamName)
+		if streamLeader == nil {
+			return fmt.Errorf("no leader found for stream %q", streamName)
+		}
 		var errs []error
 		for _, srv := range c.servers {
 			if srv == leaderSrv {
@@ -2810,7 +2815,7 @@ func TestJetStreamClusterKeyValueSync(t *testing.T) {
 
 			k, err := kv.Get(key)
 			if err != nil {
-				t.Logf("get-error:[%s] %v", key, err)
+				t.Logf("get-error:[%s/%s] %v", kvname, key, err)
 				atomic.AddInt64(&errorCounter, 1)
 			} else {
 				if revisions[key] != 0 && abs(int64(k.Revision())-int64(revisions[key])) > 2 {
@@ -2858,6 +2863,58 @@ func TestJetStreamClusterKeyValueSync(t *testing.T) {
 			defer wg.Done()
 			keyUpdater(kctx, cancel, streamName, keysCount)
 		}(i)
+	}
+
+	debug := true
+	if debug {
+		go func() {
+			for range time.NewTicker(5 * time.Second).C {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+				for _, str := range streams {
+					leaderSrv := c.streamLeader("js", str)
+					if leaderSrv == nil {
+						continue
+					}
+					t.Logf("|------------------------------------------------------------------------------------------------------------------------|")
+					streamLeader := getStreamDetails(t, c, "js", str)
+					lstate := streamLeader.State
+					t.Logf("| %-10s | %-10s | msgs:%-10d | bytes:%-10d | deleted:%-10d | first:%-10d | last:%-10d |",
+						str, leaderSrv.String()+"*", lstate.Msgs, lstate.Bytes, lstate.NumDeleted, lstate.FirstSeq, lstate.LastSeq,
+					)
+					for _, srv := range c.servers {
+						if srv == leaderSrv {
+							continue
+						}
+						acc, err := srv.LookupAccount("js")
+						if err != nil {
+							continue
+						}
+						stream, err := acc.lookupStream(str)
+						if err != nil {
+							t.Logf("Error looking up stream %s on %s replica", str, srv)
+							continue
+						}
+						state := stream.state()
+
+						unsynced := lstate.Msgs != state.Msgs || lstate.Bytes != state.Bytes ||
+							lstate.NumDeleted != state.NumDeleted || lstate.FirstSeq != state.FirstSeq || lstate.LastSeq != state.LastSeq
+
+						var result string
+						if unsynced {
+							result = "UNSYNCED"
+						}
+						t.Logf("| %-10s | %-10s | msgs:%-10d | bytes:%-10d | deleted:%-10d | first:%-10d | last:%-10d | %s",
+							str, srv, state.Msgs, state.Bytes, state.NumDeleted, state.FirstSeq, state.LastSeq, result,
+						)
+					}
+				}
+				t.Logf("|------------------------------------------------------------------------------------------------------------------------|")
+			}
+		}()
 	}
 
 Loop:
