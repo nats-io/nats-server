@@ -2627,8 +2627,8 @@ func TestJetStreamClusterKeyValueSync(t *testing.T) {
 	rollout := func(t *testing.T) {
 		for _, s := range c.servers {
 			// For graceful mode:
-			// s.lameDuckMode()
-			s.Shutdown()
+			s.lameDuckMode()
+			// s.Shutdown()
 			s.WaitForShutdown()
 			s = c.restartServer(s)
 
@@ -2879,8 +2879,11 @@ func TestJetStreamClusterKeyValueSync(t *testing.T) {
 					if leaderSrv == nil {
 						continue
 					}
-					t.Logf("|------------------------------------------------------------------------------------------------------------------------|")
 					streamLeader := getStreamDetails(t, c, "js", str)
+					if streamLeader == nil {
+						continue
+					}
+					t.Logf("|------------------------------------------------------------------------------------------------------------------------|")
 					lstate := streamLeader.State
 					t.Logf("| %-10s | %-10s | msgs:%-10d | bytes:%-10d | deleted:%-10d | first:%-10d | last:%-10d |",
 						str, leaderSrv.String()+"*", lstate.Msgs, lstate.Bytes, lstate.NumDeleted, lstate.FirstSeq, lstate.LastSeq,
