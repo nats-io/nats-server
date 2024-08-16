@@ -2549,3 +2549,129 @@ func TestJetStreamClusterMetaSyncOrphanCleanup(t *testing.T) {
 		require_Equal(t, state.Msgs, 10)
 	}
 }
+
+func TestJetStreamClusterKeyValueDesyncAfterHardKill(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3F", 3)
+	defer c.shutdown()
+	for _, s := range c.servers {
+		s.optsMu.Lock()
+		s.opts.LameDuckDuration = 15 * time.Second
+		s.opts.LameDuckGracePeriod = -15 * time.Second
+		s.optsMu.Unlock()
+	}
+	s1 := c.serverByName("S-1")
+	s3 := c.serverByName("S-3")
+
+	_, js := jsClientConnect(t, s1)
+	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
+		Bucket:   "inconsistency",
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// First create should succeed.
+	revision, err := kv.Create("key.exists", nil)
+	require_NoError(t, err)
+	require_Equal(t, revision, 1)
+
+	// Second create will be rejected but bump CLFS.
+	_, err = kv.Create("key.exists", nil)
+	require_Error(t, err)
+
+	// Insert a new message, should only be applied once, even if we hard kill and replay afterward.
+	revision, err = kv.Put("key.put", nil)
+	require_NoError(t, err)
+	require_Equal(t, revision, 2)
+
+	// Restart a server
+	// TODO: use hard kill instead
+	//s3.lameDuckMode()
+	s3.Shutdown()
+	s3.WaitForShutdown()
+	s3 = c.restartServer(s3)
+
+	c.waitOnClusterReady()
+	c.waitOnAllCurrent()
+
+	getStreamDetails := func(t *testing.T, c *cluster, accountName, streamName string) *StreamDetail {
+		t.Helper()
+		srv := c.streamLeader(accountName, streamName)
+		if srv == nil {
+			return nil
+		}
+		jsz, err := srv.Jsz(&JSzOptions{Accounts: true, Streams: true, Consumer: true})
+		require_NoError(t, err)
+		for _, acc := range jsz.AccountDetails {
+			if acc.Name == accountName {
+				for _, stream := range acc.Streams {
+					if stream.Name == streamName {
+						return &stream
+					}
+				}
+			}
+		}
+		t.Error("Could not find account details")
+		return nil
+	}
+
+	checkState := func(t *testing.T, c *cluster, accountName, streamName string) error {
+		t.Helper()
+
+		leaderSrv := c.streamLeader(accountName, streamName)
+		if leaderSrv == nil {
+			return fmt.Errorf("no leader server found for stream %q", streamName)
+		}
+		streamLeader := getStreamDetails(t, c, accountName, streamName)
+		if streamLeader == nil {
+			return fmt.Errorf("no leader found for stream %q", streamName)
+		}
+		var errs []error
+		for _, srv := range c.servers {
+			if srv == leaderSrv {
+				// Skip self
+				continue
+			}
+			acc, err := srv.LookupAccount(accountName)
+			require_NoError(t, err)
+			stream, err := acc.lookupStream(streamName)
+			require_NoError(t, err)
+			state := stream.state()
+
+			if state.Msgs != streamLeader.State.Msgs {
+				err := fmt.Errorf("[%s] Leader %v has %d messages, Follower %v has %d messages",
+					streamName, leaderSrv, streamLeader.State.Msgs,
+					srv, state.Msgs,
+				)
+				errs = append(errs, err)
+			}
+			if state.FirstSeq != streamLeader.State.FirstSeq {
+				err := fmt.Errorf("[%s] Leader %v FirstSeq is %d, Follower %v is at %d",
+					streamName, leaderSrv, streamLeader.State.FirstSeq,
+					srv, state.FirstSeq,
+				)
+				errs = append(errs, err)
+			}
+			if state.LastSeq != streamLeader.State.LastSeq {
+				err := fmt.Errorf("[%s] Leader %v LastSeq is %d, Follower %v is at %d",
+					streamName, leaderSrv, streamLeader.State.LastSeq,
+					srv, state.LastSeq,
+				)
+				errs = append(errs, err)
+			}
+			if state.NumDeleted != streamLeader.State.NumDeleted {
+				err := fmt.Errorf("[%s] Leader %v NumDeleted is %d, Follower %v is at %d",
+					streamName, leaderSrv, streamLeader.State.NumDeleted,
+					srv, state.NumDeleted,
+				)
+				errs = append(errs, err)
+			}
+		}
+		if len(errs) > 0 {
+			return errors.Join(errs...)
+		}
+		return nil
+	}
+
+	err = checkState(t, c, "$G", "KV_inconsistency")
+	require_NoError(t, err)
+}
