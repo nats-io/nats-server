@@ -7843,12 +7843,15 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		}
 		// Expected last sequence per subject.
 		// We can check for last sequence per subject but only if the expected seq <= lseq.
-		if seq, exists := getExpectedLastSeqPerSubject(hdr); exists && store != nil && seq > 0 && seq <= lseq {
+		if seq, exists := getExpectedLastSeqPerSubject(hdr); exists && store != nil && seq <= lseq {
 			var smv StoreMsg
 			var fseq uint64
 			sm, err := store.LoadLastMsg(subject, &smv)
 			if sm != nil {
 				fseq = sm.seq
+			}
+			if err == ErrStoreMsgNotFound && seq == 0 {
+				fseq, err = 0, nil
 			}
 			if err != nil || fseq != seq {
 				if canRespond {
