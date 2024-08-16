@@ -32,6 +32,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/antithesishq/antithesis-sdk-go/assert"
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/nuid"
 )
@@ -4851,11 +4852,14 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	}
 
 	// Store actual msg.
+	seqOrigin := ""
 	if lseq == 0 && ts == 0 {
 		seq, ts, err = store.StoreMsg(subject, hdr, msg)
+		seqOrigin = fmt.Sprintf("lseq == 0 && ts == 0 => StoreMsg(...) => seq:%d ts:%d err:%v", seq, ts, err)
 	} else {
 		// Make sure to take into account any message assignments that we had to skip (clfs).
 		seq = lseq + 1 - clfs
+		seqOrigin = fmt.Sprintf("lseq + 1 - clfs => %d + 1 - %d => seq:%d", lseq, clfs, seq)
 		// Check for preAcks and the need to skip vs store.
 		if mset.hasAllPreAcks(seq, subject) {
 			mset.clearAllPreAcks(seq)
@@ -4950,6 +4954,24 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		response = append(pubAck, strconv.FormatUint(seq, 10)...)
 		response = append(response, '}')
 		mset.outq.sendMsg(reply, response)
+
+		mset.mu.Lock()
+		assert.AlwaysOrUnreachable(
+			seq > 0,
+			"Sequence number is always greater than zero",
+			map[string]any{
+				"seq":                   seq,
+				"stream":                mset.cfg.Name,
+				"stream_messages":       mset.state().Msgs,
+				"stream_last_seq":       mset.state().LastSeq,
+				"stream_first_seq":      mset.state().FirstSeq,
+				"is_stream_raft_leader": mset.raftNode().Leader(),
+				"stream_raft_leader":    mset.raftNode().GroupLeader(),
+				"stream_raft_name":      mset.raftNode().Group(),
+				"seq_origin":            seqOrigin,
+			},
+		)
+		mset.mu.Unlock()
 	}
 
 	// Signal consumers for new messages.
