@@ -1708,6 +1708,8 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL, accName string) *clie
 	}
 
 	c := &client{srv: s, nc: conn, opts: ClientOpts{}, kind: ROUTER, msubs: -1, mpay: -1, route: r, start: time.Now()}
+	// Time the route's lock.
+	c.mu.Init("Route", c, time.Second, 2*time.Second)
 
 	// Is the server configured for compression?
 	compressionConfigured := needsCompression(opts.Cluster.Compression.Mode)

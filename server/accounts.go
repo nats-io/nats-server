@@ -32,6 +32,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kozlovic/timingLock"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats-server/v2/internal/fastrand"
 	"github.com/nats-io/nkeys"
@@ -56,7 +57,7 @@ type Account struct {
 	Issuer       string
 	claimJWT     string
 	updated      time.Time
-	mu           sync.RWMutex
+	mu           timingLock.RWMutex
 	sqmu         sync.Mutex
 	sl           *Sublist
 	ic           *client

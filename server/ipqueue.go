@@ -16,6 +16,8 @@ package server
 import (
 	"sync"
 	"sync/atomic"
+
+	"github.com/kozlovic/timingLock"
 )
 
 const ipQueueDefaultMaxRecycleSize = 4 * 1024
@@ -23,7 +25,7 @@ const ipQueueDefaultMaxRecycleSize = 4 * 1024
 // This is a generic intra-process queue.
 type ipQueue[T any] struct {
 	inprogress int64
-	sync.Mutex
+	timingLock.Mutex
 	ch   chan struct{}
 	elts []T
 	pos  int
