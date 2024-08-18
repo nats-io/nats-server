@@ -116,6 +116,7 @@ type inSysMsg struct {
 	hdr  []byte
 	msg  []byte
 	cb   sysMsgHandler
+	sti  *statszTimingInfo
 }
 
 // Used to send and receive messages from inside the server.
@@ -367,6 +368,7 @@ type pubMsg struct {
 	oct  compressionType
 	echo bool
 	last bool
+	sti  *statszTimingInfo
 }
 
 var pubMsgPool sync.Pool
@@ -384,7 +386,7 @@ func newPubMsg(c *client, sub, rply string, si *ServerInfo, hdr map[string]strin
 	// When getting something from a pool it is critical that all fields are
 	// initialized. Doing this way guarantees that if someone adds a field to
 	// the structure, the compiler will fail the build if this line is not updated.
-	(*m) = pubMsg{c, sub, rply, si, hdr, msg, oct, echo, last}
+	(*m) = pubMsg{c, sub, rply, si, hdr, msg, oct, echo, last, nil}
 	return m
 }
 
@@ -426,7 +428,10 @@ func (s *Server) internalReceiveLoop() {
 		case <-recvq.ch:
 			msgs := recvq.pop()
 			for _, m := range msgs {
-				if m.cb != nil {
+				if sti := m.sti; sti != nil {
+					trackTime(&sti.recvQPopped)
+					s.statszReqWithTimeInfo(sti, m.rply, m.msg)
+				} else if m.cb != nil {
 					m.cb(m.sub, m.c, m.acc, m.subj, m.rply, m.hdr, m.msg)
 				}
 			}
@@ -471,6 +476,11 @@ RESET:
 		case <-sendq.ch:
 			msgs := sendq.pop()
 			for _, pm := range msgs {
+				sti := pm.sti
+				if sti != nil {
+					pm.sti = nil
+					trackTime(&sti.sendQPopped)
+				}
 				if si := pm.si; si != nil {
 					si.Name = servername
 					si.Domain = domain
@@ -498,6 +508,9 @@ RESET:
 						b, _ = json.Marshal(pm.msg)
 					}
 				}
+				if sti != nil {
+					trackTime(&sti.sendQAfterMarshal)
+				}
 				// Setup our client. If the user wants to use a non-system account use our internal
 				// account scoped here so that we are not changing out accounts for the system client.
 				var c *client
@@ -507,8 +520,14 @@ RESET:
 					c = sysc
 				}
 
+				if sti != nil {
+					trackTime(&sti.sendQBeforeClientLock)
+				}
 				// Grab client lock.
 				c.mu.Lock()
+				if sti != nil {
+					trackTime(&sti.sendQAfterClientLock)
+				}
 
 				// Prep internal structures needed to send message.
 				c.pa.subject, c.pa.reply = []byte(pm.sub), []byte(pm.rply)
@@ -538,6 +557,9 @@ RESET:
 						contentHeader = "identity"
 					}
 				}
+				if sti != nil {
+					trackTime(&sti.sendQAfterCompression)
+				}
 				// Optional Echo
 				replaceEcho := c.echo != pm.echo
 				if replaceEcho {
@@ -559,6 +581,9 @@ RESET:
 						b = c.setHeader(k, v, b)
 					}
 				}
+				if sti != nil {
+					trackTime(&sti.sendQAfterSettingHeaders)
+				}
 				// Tracing
 				if trace {
 					c.traceInOp(fmt.Sprintf("PUB %s %s %d", c.pa.subject, c.pa.reply, c.pa.size), nil)
@@ -567,22 +592,35 @@ RESET:
 
 				// Process like a normal inbound msg.
 				c.processInboundClientMsg(b)
-
+				if sti != nil {
+					trackTime(&sti.sendQAfterProcessMsg)
+				}
 				// Put echo back if needed.
 				if replaceEcho {
 					c.mu.Lock()
 					c.echo = !c.echo
 					c.mu.Unlock()
 				}
+				if sti != nil {
+					trackTime(&sti.sendQAfterReplaceEcho)
+				}
 
 				// See if we are doing graceful shutdown.
 				if !pm.last {
 					c.flushClients(0) // Never spend time in place.
+					if sti != nil {
+						trackTime(&sti.sendQAfterFlush)
+						s.checkStatszTiming(sti, &sti.sendQAfterFlush, pm.sub)
+					}
 				} else {
 					// For the Shutdown event, we need to send in place otherwise
 					// there is a chance that the process will exit before the
 					// writeLoop has a chance to send it.
 					c.flushClients(time.Second)
+					if sti != nil {
+						trackTime(&sti.sendQAfterFlush)
+						s.checkStatszTiming(sti, &sti.sendQAfterFlush, pm.sub)
+					}
 					sendq.recycle(&msgs)
 					return
 				}
@@ -810,19 +848,34 @@ func routeStat(r *client) *RouteStat {
 
 // Actual send method for statz updates.
 // Lock should be held.
-func (s *Server) sendStatsz(subj string) {
+func (s *Server) sendStatsz(sti *statszTimingInfo, subj string) {
 	var m ServerStatsMsg
+	if sti != nil {
+		trackTime(&sti.sendStatszStart)
+	}
 	s.updateServerUsage(&m.Stats)
-
 	if s.limitStatsz(subj) {
+		if sti != nil {
+			trackTime(&sti.sendStatszAfterUsageAndLimits)
+			s.checkStatszTiming(sti, &sti.sendStatszAfterUsageAndLimits, subj)
+		}
 		return
 	}
-
+	if sti != nil {
+		trackTime(&sti.sendStatszAfterUsageAndLimits)
+		trackTime(&sti.sendStatszBeforeLock)
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if sti != nil {
+		trackTime(&sti.sendStatszAfterLock)
+	}
 
 	// Check that we have a system account, etc.
 	if s.sys == nil || s.sys.account == nil {
+		if sti != nil {
+			s.checkStatszTiming(sti, &sti.sendStatszAfterLock, subj)
+		}
 		return
 	}
 
@@ -844,6 +897,9 @@ func (s *Server) sendStatsz(subj string) {
 		return true
 	}
 
+	if sti != nil {
+		trackTime(&sti.sendStatszBeforeCheckInterest)
+	}
 	// if we are running standalone, check for interest.
 	if shouldCheckInterest() {
 		// Check if we even have interest in this subject.
@@ -851,16 +907,25 @@ func (s *Server) sendStatsz(subj string) {
 		rr := sacc.sl.Match(subj)
 		totalSubs := len(rr.psubs) + len(rr.qsubs)
 		if totalSubs == 0 {
+			if sti != nil {
+				trackTime(&sti.sendStatszAfterCheckInterest)
+			}
 			return
 		} else if totalSubs == 1 && len(rr.psubs) == 1 {
 			// For the broadcast subject we listen to that ourselves with no echo for remote updates.
 			// If we are the only ones listening do not send either.
 			if rr.psubs[0] == s.sys.remoteStatsSub {
+				if sti != nil {
+					trackTime(&sti.sendStatszAfterCheckInterest)
+				}
 				return
 			}
 		}
 	}
 
+	if sti != nil {
+		trackTime(&sti.sendStatszAfterCheckInterest)
+	}
 	m.Stats.Start = s.start
 	m.Stats.Connections = len(s.clients)
 	m.Stats.TotalConnections = s.totalClients
@@ -872,10 +937,19 @@ func (s *Server) sendStatsz(subj string) {
 	m.Stats.SlowConsumers = atomic.LoadInt64(&s.slowConsumers)
 	m.Stats.NumSubs = s.numSubscriptions()
 	// Routes
+	if sti != nil {
+		trackTime(&sti.sendStatszBeforeRoutes)
+	}
 	s.forEachRoute(func(r *client) {
 		m.Stats.Routes = append(m.Stats.Routes, routeStat(r))
 	})
+	if sti != nil {
+		trackTime(&sti.sendStatszAfterRoutes)
+	}
 	// Gateways
+	if sti != nil {
+		trackTime(&sti.sendStatszBeforeGateways)
+	}
 	if s.gateway.enabled {
 		gw := s.gateway
 		gw.RLock()
@@ -905,10 +979,17 @@ func (s *Server) sendStatsz(subj string) {
 		}
 		gw.RUnlock()
 	}
+	if sti != nil {
+		trackTime(&sti.sendStatszAfterGateways)
+	}
+
 	// Active Servers
 	m.Stats.ActiveServers = len(s.sys.servers) + 1
 
 	// JetStream
+	if sti != nil {
+		trackTime(&sti.sendStatszBeforeJetStream)
+	}
 	if js := s.js.Load(); js != nil {
 		jStat := &JetStreamVarz{}
 		s.mu.RUnlock()
@@ -956,7 +1037,120 @@ func (s *Server) sendStatsz(subj string) {
 		s.mu.RLock()
 	}
 	// Send message.
+	if sti != nil {
+		trackTime(&sti.sendStatszAfterJetStream)
+		s.sendInternalMsgWithTimingInfo(sti, &sti.sendStatszAfterJetStream, subj, _EMPTY_, &m.Server, &m)
+		return
+	}
 	s.sendInternalMsg(subj, _EMPTY_, &m.Server, &m)
+}
+
+func (s *Server) sendInternalMsgWithTimingInfo(sti *statszTimingInfo, last *int64, subj, rply string, si *ServerInfo, msg any) {
+	if s.sys == nil || s.sys.sendq == nil {
+		s.checkStatszTiming(sti, last, rply)
+		return
+	}
+	pm := newPubMsg(nil, subj, rply, si, nil, msg, noCompression, false, false)
+	pm.sti = sti
+	if sti != nil {
+		trackTime(&sti.sendQPush)
+	}
+	s.sys.sendq.push(pm)
+}
+
+func (s *Server) checkStatszTiming(sti *statszTimingInfo, last *int64, subj string) {
+	// If we are here with the last update not being the`sti`'s last field, it
+	// means that the request was aborted, and no reply may be received, so report.
+	aborted := last != &sti.sendQAfterFlush
+
+	// For a normal lifecycle, this is the cut-off to decide if we report or not.
+	const threshold = int64(2 * time.Second)
+
+	// How long from our last capture to the start
+	dur := atomic.LoadInt64(last) - atomic.LoadInt64(&sti.recvQStart)
+
+	// If full lifecycle and below the threshold, bail.
+	if !aborted && dur < threshold {
+		return
+	}
+	fields := []*int64{
+		&sti.recvQStart, &sti.recvQPush, &sti.recvQPopped, &sti.statszReqStart, &sti.statszCheckEnabled,
+		&sti.statszReqUnmarshalOpts, &sti.statszReqCheckFilter, &sti.statszReqEnd, &sti.sendStatszStart,
+		&sti.sendStatszAfterUsageAndLimits, &sti.sendStatszBeforeLock, &sti.sendStatszAfterLock,
+		&sti.sendStatszBeforeCheckInterest, &sti.sendStatszAfterCheckInterest, &sti.sendStatszBeforeRoutes,
+		&sti.sendStatszAfterRoutes, &sti.sendStatszBeforeGateways, &sti.sendStatszAfterGateways,
+		&sti.sendStatszBeforeJetStream, &sti.sendStatszAfterJetStream, &sti.sendQPush, &sti.sendQPopped,
+		&sti.sendQAfterMarshal, &sti.sendQBeforeClientLock, &sti.sendQAfterClientLock, &sti.sendQAfterCompression,
+		&sti.sendQAfterSettingHeaders, &sti.sendQAfterProcessMsg, &sti.sendQAfterReplaceEcho, &sti.sendQAfterFlush}
+	names := []string{
+		"recvQStart                    ",
+		"recvQPush                     ",
+		"recvQPopped                   ",
+		"statszReqStart                ",
+		"statszCheckEnabled            ",
+		"statszReqUnmarshalOpts        ",
+		"statszReqCheckFilter          ",
+		"statszReqEnd                  ",
+		"sendStatszStart               ",
+		"sendStatszAfterUsageAndLimits ",
+		"sendStatszBeforeLock          ",
+		"sendStatszAfterLock           ",
+		"sendStatszBeforeCheckInterest ",
+		"sendStatszAfterCheckInterest  ",
+		"sendStatszBeforeRoutes        ",
+		"sendStatszAfterRoutes         ",
+		"sendStatszBeforeGateways      ",
+		"sendStatszAfterGateways       ",
+		"sendStatszBeforeJetStream     ",
+		"sendStatszAfterJetStream      ",
+		"sendQPush                     ",
+		"sendQPopped                   ",
+		"sendQAfterMarshal             ",
+		"sendQBeforeClientLock         ",
+		"sendQAfterClientLock          ",
+		"sendQAfterCompression         ",
+		"sendQAfterSettingHeaders      ",
+		"sendQAfterProcessMsg          ",
+		"sendQAfterReplaceEcho         ",
+		"sendQAfterFlush               ",
+	}
+
+	getTimeDiff := func(v int64) string {
+		d := float64(v) / float64(time.Millisecond)
+		return fmt.Sprintf("%10.3fms", d)
+	}
+
+	var start int64
+	var prev int64
+	b := strings.Builder{}
+	for i := 0; i < len(fields); i++ {
+		v := atomic.LoadInt64(fields[i])
+		dt := time.Unix(0, v)
+		b.WriteString(dt.Format("01/02/2006 15:04:05.000000"))
+		b.WriteString(": ")
+		b.WriteString(names[i])
+		if i > 0 {
+			dur := getTimeDiff(v - prev)
+			b.WriteString(dur)
+			b.WriteString("\t")
+			dur = getTimeDiff(v - start)
+			b.WriteString(dur)
+		}
+		b.WriteString(CR_LF)
+		prev = v
+		if i == 0 {
+			start = v
+		}
+		if aborted && last == fields[i] {
+			break
+		}
+	}
+	var extra string
+	if aborted {
+		extra = "did not complete! It "
+	}
+	s.Warnf("Processing of statsZ (with response sent to %q) %stook %v:\n%s",
+		subj, extra, time.Duration(dur), b.String())
 }
 
 // Limit updates to the heartbeat interval, max one second by default.
@@ -1012,7 +1206,7 @@ func (s *Server) resetLastStatsz() {
 }
 
 func (s *Server) sendStatszUpdate() {
-	s.sendStatsz(fmt.Sprintf(serverStatsSubj, s.ID()))
+	s.sendStatsz(nil, fmt.Sprintf(serverStatsSubj, s.ID()))
 }
 
 // This should be wrapChk() to setup common locking.
@@ -1139,13 +1333,13 @@ func (s *Server) initEventTracking() {
 	}
 	// Listen for ping messages that will be sent to all servers for statsz.
 	// This subscription is kept for backwards compatibility. Got replaced by ...PING.STATZ from below
-	if _, err := s.sysSubscribe(serverStatsPingReqSubj, s.noInlineCallback(s.statszReq)); err != nil {
+	if _, err := s.sysSubscribe(serverStatsPingReqSubj, s.noInlineCallbackStatsZ(s.statszReq)); err != nil {
 		s.Errorf("Error setting up internal tracking: %v", err)
 		return
 	}
 	monSrvc := map[string]sysMsgHandler{
-		"IDZ":    s.idzReq,
-		"STATSZ": s.statszReq,
+		"IDZ": s.idzReq,
+		// "STATSZ": s.statszReq,
 		"VARZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &VarzEventOptions{}
 			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) { return s.Varz(&optz.VarzOptions) })
@@ -1190,6 +1384,17 @@ func (s *Server) initEventTracking() {
 			optz := &ExpvarzEventOptions{}
 			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) { return s.expvarz(optz), nil })
 		},
+	}
+	// Specific for StatsZ
+	subject = fmt.Sprintf(serverDirectReqSubj, s.info.ID, "STATSZ")
+	if _, err := s.sysSubscribe(subject, s.noInlineCallbackStatsZ(s.statszReq)); err != nil {
+		s.Errorf("Error setting up internal tracking: %v", err)
+		return
+	}
+	subject = fmt.Sprintf(serverPingReqSubj, "STATSZ")
+	if _, err := s.sysSubscribe(subject, s.noInlineCallbackStatsZ(s.statszReq)); err != nil {
+		s.Errorf("Error setting up internal tracking: %v", err)
+		return
 	}
 	for name, req := range monSrvc {
 		subject = fmt.Sprintf(serverDirectReqSubj, s.info.ID, name)
@@ -1933,9 +2138,18 @@ type ServerAPIConnzResponse struct {
 
 // statszReq is a request for us to respond with current statsz.
 func (s *Server) statszReq(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
+	// not used, see below
+}
+
+// statszReq is a request for us to respond with current statsz.
+func (s *Server) statszReqWithTimeInfo(sti *statszTimingInfo, reply string, msg []byte) {
+	trackTime(&sti.statszReqStart)
 	if !s.EventsEnabled() {
+		trackTime(&sti.statszCheckEnabled)
+		s.checkStatszTiming(sti, &sti.statszCheckEnabled, reply)
 		return
 	}
+	trackTime(&sti.statszCheckEnabled)
 
 	// No reply is a signal that we should use our normal broadcast subject.
 	if reply == _EMPTY_ {
@@ -1945,18 +2159,28 @@ func (s *Server) statszReq(sub *subscription, c *client, _ *Account, subject, re
 
 	opts := StatszEventOptions{}
 	if len(msg) != 0 {
+		trackTime(&sti.statszReqUnmarshalOpts)
 		if err := json.Unmarshal(msg, &opts); err != nil {
 			response := &ServerAPIResponse{
 				Server: &ServerInfo{},
 				Error:  &ApiError{Code: http.StatusBadRequest, Description: err.Error()},
 			}
 			s.sendInternalMsgLocked(reply, _EMPTY_, response.Server, response)
-			return
-		} else if ignore := s.filterRequest(&opts.EventFilterOptions); ignore {
+			s.checkStatszTiming(sti, &sti.statszReqUnmarshalOpts, reply)
 			return
 		}
+		trackTime(&sti.statszReqCheckFilter)
+		if ignore := s.filterRequest(&opts.EventFilterOptions); ignore {
+			s.checkStatszTiming(sti, &sti.statszReqCheckFilter, reply)
+			return
+		}
+	} else {
+		// Not evaluated, but set a time
+		trackTime(&sti.statszReqUnmarshalOpts)
+		trackTime(&sti.statszReqCheckFilter)
 	}
-	s.sendStatsz(reply)
+	trackTime(&sti.statszReqEnd)
+	s.sendStatsz(sti, reply)
 }
 
 // idzReq is for a request for basic static server info.
@@ -2466,8 +2690,33 @@ func (s *Server) noInlineCallback(cb sysMsgHandler) msgHandler {
 	return func(sub *subscription, c *client, acc *Account, subj, rply string, rmsg []byte) {
 		// Need to copy and split here.
 		hdr, msg := c.msgParts(rmsg)
-		recvq.push(&inSysMsg{sub, c, acc, subj, rply, copyBytes(hdr), copyBytes(msg), cb})
+		recvq.push(&inSysMsg{sub, c, acc, subj, rply, copyBytes(hdr), copyBytes(msg), cb, nil})
 	}
+}
+
+func (s *Server) noInlineCallbackStatsZ(cb sysMsgHandler) msgHandler {
+	s.mu.RLock()
+	if !s.eventsEnabled() {
+		s.mu.RUnlock()
+		return nil
+	}
+	// Capture here for direct reference to avoid any unnecessary blocking inline with routes, gateways etc.
+	recvq := s.sys.recvq
+	s.mu.RUnlock()
+
+	return func(sub *subscription, c *client, acc *Account, subj, rply string, rmsg []byte) {
+		sti := &statszTimingInfo{}
+		trackTime(&sti.recvQStart)
+		// Need to copy and split here.
+		hdr, msg := c.msgParts(rmsg)
+		ism := &inSysMsg{sub, c, acc, subj, rply, copyBytes(hdr), copyBytes(msg), cb, sti}
+		trackTime(&sti.recvQPush)
+		recvq.push(ism)
+	}
+}
+
+func trackTime(v *int64) {
+	atomic.AddInt64(v, time.Now().UnixNano())
 }
 
 // Create an internal subscription. sysSubscribeQ for queue groups.

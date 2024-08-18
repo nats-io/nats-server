@@ -30,6 +30,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kozlovic/timingLock"
 	"github.com/minio/highwayhash"
 	"github.com/nats-io/nats-server/v2/server/sysmem"
 	"github.com/nats-io/nkeys"
@@ -106,7 +107,7 @@ type jetStream struct {
 	memUsed       int64
 	storeUsed     int64
 	clustered     int32
-	mu            sync.RWMutex
+	mu            timingLock.RWMutex
 	srv           *Server
 	config        JetStreamConfig
 	cluster       *jetStreamCluster
@@ -144,7 +145,7 @@ type jsaStorage struct {
 // an internal sub for a stream, so we will direct link to the stream
 // and walk backwards as needed vs multiple hash lookups and locks, etc.
 type jsAccount struct {
-	mu        sync.RWMutex
+	mu        timingLock.RWMutex
 	js        *jetStream
 	account   *Account
 	storeDir  string
@@ -371,6 +372,8 @@ func (s *Server) checkStoreDir(cfg *JetStreamConfig) error {
 // enableJetStream will start up the JetStream subsystem.
 func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 	js := &jetStream{srv: s, config: cfg, accounts: make(map[string]*jsAccount), apiSubs: NewSublistNoCache()}
+	// Time JetStream's lock.
+	js.mu.Init("JetStream", s, time.Second, 2*time.Second)
 	s.gcbMu.Lock()
 	if s.gcbOutMax = s.getOpts().JetStreamMaxCatchup; s.gcbOutMax == 0 {
 		s.gcbOutMax = defaultMaxTotalCatchupOutBytes
@@ -1085,6 +1088,8 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 	sysNode := s.Node()
 
 	jsa := &jsAccount{js: js, account: a, limits: limits, streams: make(map[string]*stream), sendq: sendq, usage: make(map[string]*jsaStorage)}
+	// Time the jsAccount's lock.
+	jsa.mu.Init(fmt.Sprintf("JetStream Account %s", a.Name), s, time.Second, 2*time.Second)
 	jsa.storeDir = filepath.Join(js.config.StoreDir, a.Name)
 
 	// A single server does not need to do the account updates at this point.

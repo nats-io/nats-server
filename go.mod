@@ -4,6 +4,7 @@ go 1.21.0
 
 require (
 	github.com/klauspost/compress v1.17.9
+	github.com/kozlovic/timingLock v0.0.0-20240818192917-aaa79fd592a4
 	github.com/minio/highwayhash v1.0.3
 	github.com/nats-io/jwt/v2 v2.5.8
 	github.com/nats-io/nats.go v1.36.0

@@ -45,6 +45,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/s2"
+	"github.com/kozlovic/timingLock"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
@@ -125,7 +126,7 @@ type Server struct {
 	pinnedAccFail uint64
 	stats
 	scStats
-	mu                  sync.RWMutex
+	mu                  timingLock.RWMutex
 	reloadMu            sync.RWMutex // Write-locked when a config reload is taking place ONLY
 	kp                  nkeys.KeyPair
 	xkp                 nkeys.KeyPair
@@ -317,6 +318,39 @@ type Server struct {
 
 	// Queue to process JS API requests that come from routes (or gateways)
 	jsAPIRoutedReqs *ipQueue[*jsAPIRoutedReq]
+}
+
+type statszTimingInfo struct {
+	recvQStart                    int64
+	recvQPush                     int64
+	recvQPopped                   int64
+	statszReqStart                int64
+	statszCheckEnabled            int64
+	statszReqUnmarshalOpts        int64
+	statszReqCheckFilter          int64
+	statszReqEnd                  int64
+	sendStatszStart               int64
+	sendStatszAfterUsageAndLimits int64
+	sendStatszBeforeLock          int64
+	sendStatszAfterLock           int64
+	sendStatszBeforeCheckInterest int64
+	sendStatszAfterCheckInterest  int64
+	sendStatszBeforeRoutes        int64
+	sendStatszAfterRoutes         int64
+	sendStatszBeforeGateways      int64
+	sendStatszAfterGateways       int64
+	sendStatszBeforeJetStream     int64
+	sendStatszAfterJetStream      int64
+	sendQPush                     int64
+	sendQPopped                   int64
+	sendQAfterMarshal             int64
+	sendQBeforeClientLock         int64
+	sendQAfterClientLock          int64
+	sendQAfterCompression         int64
+	sendQAfterSettingHeaders      int64
+	sendQAfterProcessMsg          int64
+	sendQAfterReplaceEcho         int64
+	sendQAfterFlush               int64
 }
 
 // For tracking JS nodes.
@@ -679,6 +713,8 @@ func NewServer(opts *Options) (*Server, error) {
 		leafNodeEnabled:    opts.LeafNode.Port != 0 || len(opts.LeafNode.Remotes) > 0,
 		syncOutSem:         make(chan struct{}, maxConcurrentSyncRequests),
 	}
+	// Time server's lock.
+	s.mu.Init("Server", s, time.Second, 2*time.Second)
 
 	// Fill up the maximum in flight syncRequests for this server.
 	// Used in JetStream catchup semantics.
@@ -1685,6 +1721,9 @@ func (s *Server) setSystemAccount(acc *Account) error {
 		return ErrAccountExists
 	}
 
+	// Time the system account lock.
+	acc.mu.Init("System Account", s, time.Second, 2*time.Second)
+
 	// This is here in an attempt to quiet the race detector and not have to place
 	// locks on fast path for inbound messages and checking service imports.
 	acc.mu.Lock()
@@ -1708,6 +1747,11 @@ func (s *Server) setSystemAccount(acc *Account) error {
 		orphMax: 5 * eventsHBInterval,
 		chkOrph: 3 * eventsHBInterval,
 	}
+	// Time the system's account client's lock.
+	s.sys.client.mu.Init("System Account Client", s, time.Second, 2*time.Second)
+	// Time the sendq and recvq locks.
+	s.sys.sendq.Init("System Account SendQ", s, time.Second, 2*time.Second)
+	s.sys.recvq.Init("System Account RecvQ", s, time.Second, 2*time.Second)
 	s.sys.wg.Add(1)
 	s.mu.Unlock()
 

@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/s2"
+	"github.com/kozlovic/timingLock"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats-server/v2/internal/fastrand"
 )
@@ -238,7 +239,7 @@ type client struct {
 	mpay       int32
 	msubs      int32
 	mcl        int32
-	mu         sync.Mutex
+	mu         timingLock.Mutex
 	cid        uint64
 	start      time.Time
 	nonce      []byte
