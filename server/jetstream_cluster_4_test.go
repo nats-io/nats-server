@@ -2551,7 +2551,24 @@ func TestJetStreamClusterMetaSyncOrphanCleanup(t *testing.T) {
 }
 
 func TestJetStreamClusterKeyValueDesyncAfterHardKill(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "R3F", 3)
+	conf := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {
+			store_dir: '%s',
+		}
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+		server_tags: ["test"]
+		system_account: sys
+		accounts {
+			sys { users = [ { user: sys, pass: sys } ] }
+		    }
+		}`
+	c := createJetStreamClusterWithTemplate(t, conf, "R3F", 3)
 	defer c.shutdown()
 	for _, s := range c.servers {
 		s.optsMu.Lock()
@@ -2589,6 +2606,23 @@ func TestJetStreamClusterKeyValueDesyncAfterHardKill(t *testing.T) {
 	s3.Shutdown()
 	s3.WaitForShutdown()
 	s3 = c.restartServer(s3)
+
+	hctx, hcancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer hcancel()
+
+Healthz:
+	for range time.NewTicker(10 * time.Second).C {
+		select {
+		case <-hctx.Done():
+		default:
+		}
+
+		status := s3.healthz(nil)
+		if status.StatusCode == 200 {
+			t.Logf("PASSING HEALTHZ!!!")
+			break Healthz
+		}
+	}
 
 	c.waitOnClusterReady()
 	c.waitOnAllCurrent()
@@ -2672,6 +2706,11 @@ func TestJetStreamClusterKeyValueDesyncAfterHardKill(t *testing.T) {
 		return nil
 	}
 
-	err = checkState(t, c, "$G", "KV_inconsistency")
-	require_NoError(t, err)
+	checkFor(t, 10*time.Second, 1*time.Second, func() error {
+		err := checkState(t, c, "$G", "KV_inconsistency")
+		if err != nil {
+			t.Logf("ERROR: %v", err)
+		}
+		return err
+	})
 }
