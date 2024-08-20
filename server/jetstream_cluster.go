@@ -32,6 +32,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/antithesishq/antithesis-sdk-go/assert"
 	"github.com/klauspost/compress/s2"
 	"github.com/minio/highwayhash"
 	"github.com/nats-io/nuid"
@@ -7893,6 +7894,17 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 					response := append(pubAck, strconv.FormatUint(seq, 10)...)
 					response = append(response, ",\"duplicate\": true}"...)
 					outq.sendMsg(reply, response)
+					assert.AlwaysOrUnreachable(
+						seq > 0,
+						"Sequence number of duplicate message is zero",
+						map[string]any{
+							"msgId":    msgId,
+							"entrySeq": dde.seq,
+							"entryTs":  dde.ts,
+							"entryId":  dde.id,
+							"response": string(response),
+						},
+					)
 				}
 				return errMsgIdDuplicate
 			}
