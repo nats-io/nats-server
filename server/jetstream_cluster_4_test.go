@@ -2553,16 +2553,10 @@ func TestJetStreamClusterMetaSyncOrphanCleanup(t *testing.T) {
 func TestJetStreamClusterKeyValueDesyncAfterHardKill(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3F", 3)
 	defer c.shutdown()
-	for _, s := range c.servers {
-		s.optsMu.Lock()
-		s.opts.LameDuckDuration = 15 * time.Second
-		s.opts.LameDuckGracePeriod = -15 * time.Second
-		s.optsMu.Unlock()
-	}
-	s1 := c.serverByName("S-1")
-	s3 := c.serverByName("S-3")
 
-	_, js := jsClientConnect(t, s1)
+	nc, js := jsClientConnect(t, c.serverByName("S-1"))
+	defer nc.Close()
+
 	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
 		Bucket:   "inconsistency",
 		Replicas: 3,
@@ -2570,26 +2564,33 @@ func TestJetStreamClusterKeyValueDesyncAfterHardKill(t *testing.T) {
 	require_NoError(t, err)
 
 	// First create should succeed.
-	revision, err := kv.Create("key.exists", nil)
+	revision, err := kv.Create("key.exists", []byte("1"))
 	require_NoError(t, err)
 	require_Equal(t, revision, 1)
 
 	// Second create will be rejected but bump CLFS.
-	_, err = kv.Create("key.exists", nil)
+	_, err = kv.Create("key.exists", []byte("2"))
 	require_Error(t, err)
 
 	// Insert a new message, should only be applied once, even if we hard kill and replay afterward.
-	revision, err = kv.Put("key.put", nil)
+	revision, err = kv.Put("key.put", []byte("3"))
 	require_NoError(t, err)
 	require_Equal(t, revision, 2)
 
 	// Restart a server
-	// TODO: use hard kill instead
-	//s3.lameDuckMode()
+	s3 := c.serverByName("S-3")
+	// We will remove the index.db file after we shutdown.
+	mset, err := s3.GlobalAccount().lookupStream("KV_inconsistency")
+	require_NoError(t, err)
+	fs := mset.store.(*fileStore)
+	ifile := filepath.Join(fs.fcfg.StoreDir, msgDir, "index.db")
+
 	s3.Shutdown()
 	s3.WaitForShutdown()
-	s3 = c.restartServer(s3)
+	// Remove the index.db file to simulate a hard kill where server can not write out the index.db file.
+	require_NoError(t, os.Remove(ifile))
 
+	c.restartServer(s3)
 	c.waitOnClusterReady()
 	c.waitOnAllCurrent()
 

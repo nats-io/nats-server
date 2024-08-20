@@ -2420,6 +2420,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			return
 		case <-aq.ch:
 			var ne, nb uint64
+			// If we bump clfs we will want to write out snapshot if within our time window.
+			pclfs := mset.getCLFS()
+
 			ces := aq.pop()
 			for _, ce := range ces {
 				// No special processing needed for when we are caught up on restart.
@@ -2436,6 +2439,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					}
 					continue
 				}
+
 				// Apply our entries.
 				if err := js.applyStreamEntries(mset, ce, isRecovering); err == nil {
 					// Update our applied.
@@ -2467,7 +2471,13 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 			// Check about snapshotting
 			// If we have at least min entries to compact, go ahead and try to snapshot/compact.
-			if ne >= compactNumMin || nb > compactSizeMin {
+			if ne >= compactNumMin || nb > compactSizeMin || mset.getCLFS() > pclfs {
+				// We want to make sure we do not short circuit if transistioning from no clfs.
+				if pclfs == 0 {
+					// This is always false by default.
+					lastState.firstNeedsUpdate = true
+					lastSnapTime = time.Time{}
+				}
 				doSnapshot()
 			}
 
