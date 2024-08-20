@@ -3138,13 +3138,10 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				}
 			}
 
-			if !isRecovering && !mset.IsLeader() {
+			if isRecovering || !mset.IsLeader() {
 				if err := mset.processSnapshot(ss); err != nil {
 					return err
 				}
-			} else if isRecovering {
-				// On recovery, reset CLFS/FAILED.
-				mset.setCLFS(ss.Failed)
 			}
 		} else if e.Type == EntryRemovePeer {
 			js.mu.RLock()
