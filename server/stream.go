@@ -5340,6 +5340,10 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 
 	// Kick monitor and collect consumers first.
 	mset.mu.Lock()
+
+	// Mark closed.
+	mset.closed.Store(true)
+
 	// Signal to the monitor loop.
 	// Can't use qch here.
 	if mset.mqch != nil {
@@ -5399,9 +5403,6 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	if deleteFlag && advisory {
 		mset.sendDeleteAdvisoryLocked()
 	}
-
-	// Mark closed.
-	mset.closed.Store(true)
 
 	// Quit channel, do this after sending the delete advisory
 	if mset.qch != nil {
