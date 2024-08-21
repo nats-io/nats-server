@@ -2846,6 +2846,62 @@ func TestServerEventsPingStatsZ(t *testing.T) {
 	}
 }
 
+func TestServerEventsPingStatsZDedicatedRecvQ(t *testing.T) {
+	sa, _, sb, optsB, akp := runTrustedCluster(t)
+	defer sa.Shutdown()
+	defer sb.Shutdown()
+	url := fmt.Sprintf("nats://%s:%d", optsB.Host, optsB.Port)
+	nc, err := nats.Connect(url, createUserCreds(t, sb, akp))
+	require_NoError(t, err)
+	defer nc.Close()
+	// We need to wait a little bit for the $SYS.SERVER.ACCOUNT.%s.CONNS
+	// event to be pushed in the mux'ed queue.
+	time.Sleep(300 * time.Millisecond)
+
+	testReq := func(t *testing.T, subj string, expectTwo bool) {
+		for _, s := range []*Server{sa, sb} {
+			s.mu.RLock()
+			recvq := s.sys.recvq
+			s.mu.RUnlock()
+			recvq.Lock()
+			defer recvq.Unlock()
+		}
+		reply := nc.NewRespInbox()
+		sub := natsSubSync(t, nc, reply)
+		nc.PublishRequest(subj, reply, nil)
+		msg := natsNexMsg(t, sub, time.Second)
+		if len(msg.Data) == 0 {
+			t.Fatal("Unexpected empty response")
+		}
+		// Make sure its a statsz
+		m := ServerStatsMsg{}
+		err := json.Unmarshal(msg.Data, &m)
+		require_NoError(t, err)
+		require_False(t, m.Stats.Start.IsZero())
+		if expectTwo {
+			msg = natsNexMsg(t, sub, time.Second)
+			err = json.Unmarshal(msg.Data, &m)
+			require_NoError(t, err)
+			require_False(t, m.Stats.Start.IsZero())
+		}
+	}
+	const statsz = "STATSZ"
+	for _, test := range []struct {
+		name      string
+		f         func() string
+		expectTwo bool
+	}{
+		{"server stats ping request subject", func() string { return serverStatsPingReqSubj }, true},
+		{"server ping request subject", func() string { return fmt.Sprintf(serverPingReqSubj, statsz) }, true},
+		{"server a direct request subject", func() string { return fmt.Sprintf(serverDirectReqSubj, sa.ID(), statsz) }, false},
+		{"server b direct request subject", func() string { return fmt.Sprintf(serverDirectReqSubj, sb.ID(), statsz) }, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testReq(t, test.f(), test.expectTwo)
+		})
+	}
+}
+
 func TestServerEventsPingStatsZFilter(t *testing.T) {
 	sa, _, sb, optsB, akp := runTrustedCluster(t)
 	defer sa.Shutdown()
@@ -3556,5 +3612,66 @@ func TestClusterSetupMsgs(t *testing.T) {
 	totalExpected := numServers * numServers
 	if totalOut >= totalExpected {
 		t.Fatalf("Total outMsgs is %d, expected < %d\n", totalOut, totalExpected)
+	}
+}
+
+func TestServerEventsProfileZNotBlockingRecvQ(t *testing.T) {
+	sa, _, sb, optsB, akp := runTrustedCluster(t)
+	defer sa.Shutdown()
+	defer sb.Shutdown()
+	// For this test, we will run a single server because the profiling
+	// would fail for the second server since it would detect that
+	// one profiling is already running (2 servers, but same process).
+	sa.Shutdown()
+	url := fmt.Sprintf("nats://%s:%d", optsB.Host, optsB.Port)
+	nc, err := nats.Connect(url, createUserCreds(t, sb, akp))
+	require_NoError(t, err)
+	defer nc.Close()
+	// We need to wait a little bit for the $SYS.SERVER.ACCOUNT.%s.CONNS
+	// event to be pushed in the mux'ed queue.
+	time.Sleep(300 * time.Millisecond)
+
+	po := ProfilezOptions{Name: "cpu", Duration: 1 * time.Second}
+	req, err := json.Marshal(po)
+	require_NoError(t, err)
+
+	testReq := func(t *testing.T, subj string) {
+		// Block the recvQ by locking it for the duration of this test.
+		sb.mu.RLock()
+		recvq := sb.sys.recvq
+		sb.mu.RUnlock()
+		recvq.Lock()
+		defer recvq.Unlock()
+
+		// Send the profilez request on the given subject.
+		reply := nc.NewRespInbox()
+		sub := natsSubSync(t, nc, reply)
+		nc.PublishRequest(subj, reply, req)
+		msg := natsNexMsg(t, sub, 10*time.Second)
+		if len(msg.Data) == 0 {
+			t.Fatal("Unexpected empty response")
+		}
+		// Make sure its a ServerAPIResponse
+		resp := ServerAPIResponse{Data: &ProfilezStatus{}}
+		err := json.Unmarshal(msg.Data, &resp)
+		require_NoError(t, err)
+		// Check profile status to make sure that we got something.
+		ps := resp.Data.(*ProfilezStatus)
+		if ps.Error != _EMPTY_ {
+			t.Fatalf("%s", ps.Error)
+		}
+		require_True(t, len(ps.Profile) > 0)
+	}
+	const profilez = "PROFILEZ"
+	for _, test := range []struct {
+		name string
+		f    func() string
+	}{
+		{"server profilez request subject", func() string { return fmt.Sprintf(serverPingReqSubj, profilez) }},
+		{"server direct request subject", func() string { return fmt.Sprintf(serverDirectReqSubj, sb.ID(), profilez) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testReq(t, test.f())
+		})
 	}
 }
