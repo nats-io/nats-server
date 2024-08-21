@@ -131,6 +131,7 @@ type internal struct {
 	replies        map[string]msgHandler
 	sendq          *ipQueue[*pubMsg]
 	recvq          *ipQueue[*inSysMsg]
+	recvqp         *ipQueue[*inSysMsg] // For STATSZ/Pings
 	resetCh        chan struct{}
 	wg             sync.WaitGroup
 	sq             *sendq
@@ -414,15 +415,7 @@ type TypedEvent struct {
 
 // internalReceiveLoop will be responsible for dispatching all messages that
 // a server receives and needs to internally process, e.g. internal subs.
-func (s *Server) internalReceiveLoop() {
-	s.mu.RLock()
-	if s.sys == nil || s.sys.recvq == nil {
-		s.mu.RUnlock()
-		return
-	}
-	recvq := s.sys.recvq
-	s.mu.RUnlock()
-
+func (s *Server) internalReceiveLoop(recvq *ipQueue[*inSysMsg]) {
 	for s.eventsRunning() {
 		select {
 		case <-recvq.ch:
@@ -432,7 +425,11 @@ func (s *Server) internalReceiveLoop() {
 					trackTime(&sti.recvQPopped)
 					s.statszReqWithTimeInfo(sti, m.rply, m.msg)
 				} else if m.cb != nil {
+					start := time.Now()
 					m.cb(m.sub, m.c, m.acc, m.subj, m.rply, m.hdr, m.msg)
+					if dur := time.Since(start); dur >= 2*time.Second {
+						s.Warnf("Processing of %q (with response sent to %q) took %v", m.subj, m.rply, dur)
+					}
 				}
 			}
 			recvq.recycle(&msgs)
@@ -1377,8 +1374,16 @@ func (s *Server) initEventTracking() {
 			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) { return s.healthz(&optz.HealthzOptions), nil })
 		},
 		"PROFILEZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
-			optz := &ProfilezEventOptions{}
-			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) { return s.profilez(&optz.ProfilezOptions), nil })
+			// We need to copy those since we are going to execute from a go routine.
+			hdr, msg = copyBytes(hdr), copyBytes(msg)
+			// Need to run this from its own go routine because CPU profiling for
+			// instance may block for several seconds depending on the options.
+			go func() {
+				optz := &ProfilezEventOptions{}
+				s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) {
+					return s.profilez(&optz.ProfilezOptions), nil
+				})
+			}()
 		},
 		"EXPVARZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &ExpvarzEventOptions{}
@@ -2701,7 +2706,7 @@ func (s *Server) noInlineCallbackStatsZ(cb sysMsgHandler) msgHandler {
 		return nil
 	}
 	// Capture here for direct reference to avoid any unnecessary blocking inline with routes, gateways etc.
-	recvq := s.sys.recvq
+	recvq := s.sys.recvqp
 	s.mu.RUnlock()
 
 	return func(sub *subscription, c *client, acc *Account, subj, rply string, rmsg []byte) {
