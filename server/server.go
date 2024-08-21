@@ -1741,6 +1741,7 @@ func (s *Server) setSystemAccount(acc *Account) error {
 		replies: make(map[string]msgHandler),
 		sendq:   newIPQueue[*pubMsg](s, "System sendQ"),
 		recvq:   newIPQueue[*inSysMsg](s, "System recvQ"),
+		recvqp:  newIPQueue[*inSysMsg](s, "System recvQ Pings"),
 		resetCh: make(chan struct{}),
 		sq:      s.newSendQ(),
 		statsz:  eventsHBInterval,
@@ -1752,6 +1753,8 @@ func (s *Server) setSystemAccount(acc *Account) error {
 	// Time the sendq and recvq locks.
 	s.sys.sendq.Init("System Account SendQ", s, time.Second, 2*time.Second)
 	s.sys.recvq.Init("System Account RecvQ", s, time.Second, 2*time.Second)
+	s.sys.recvqp.Init("System Account RecvQ Pings", s, time.Second, 2*time.Second)
+	recvQ, recvQP := s.sys.recvq, s.sys.recvqp
 	s.sys.wg.Add(1)
 	s.mu.Unlock()
 
@@ -1765,7 +1768,9 @@ func (s *Server) setSystemAccount(acc *Account) error {
 	go s.internalSendLoop(&s.sys.wg)
 
 	// Start the internal loop for inbound messages.
-	go s.internalReceiveLoop()
+	go s.internalReceiveLoop(recvQ)
+	// Start the internal loop dedicated to STATSZ/Ping messages.
+	go s.internalReceiveLoop(recvQP)
 
 	// Start up our general subscriptions
 	s.initEventTracking()
