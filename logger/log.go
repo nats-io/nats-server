@@ -203,16 +203,17 @@ func (l *fileLogger) logPurge(fname string) {
 	var backups []string
 	lDir := filepath.Dir(fname)
 	lBase := filepath.Base(fname)
+	baseWithoutExt := strings.TrimSuffix(lBase, filepath.Ext(lBase))
 	entries, err := os.ReadDir(lDir)
 	if err != nil {
 		l.logDirect(l.l.errorLabel, "Unable to read directory %q for log purge (%v), will attempt next rotation", lDir, err)
 		return
 	}
 	for _, entry := range entries {
-		if entry.IsDir() || entry.Name() == lBase || !strings.HasPrefix(entry.Name(), lBase) {
+		if entry.IsDir() || entry.Name() == lBase || !strings.HasPrefix(entry.Name(), baseWithoutExt+".") {
 			continue
 		}
-		if stamp, found := strings.CutPrefix(entry.Name(), fmt.Sprintf("%s%s", lBase, ".")); found {
+		if stamp, found := strings.CutPrefix(entry.Name(), fmt.Sprintf("%s.", baseWithoutExt)); found {
 			_, err := time.Parse("2006:01:02:15:04:05.999999999", strings.Replace(stamp, ".", ":", 5))
 			if err == nil {
 				backups = append(backups, entry.Name())
