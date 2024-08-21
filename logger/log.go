@@ -254,10 +254,12 @@ func (l *fileLogger) Write(b []byte) (int, error) {
 				return n, err
 			}
 			fname := l.f.Name()
+			ext := filepath.Ext(fname)
+			base := strings.TrimSuffix(fname, ext)
 			now := time.Now()
-			bak := fmt.Sprintf("%s.%04d.%02d.%02d.%02d.%02d.%02d.%09d", fname,
+			bak := fmt.Sprintf("%s.%04d.%02d.%02d.%02d.%02d.%02d.%09d%s", base,
 				now.Year(), now.Month(), now.Day(), now.Hour(), now.Minute(),
-				now.Second(), now.Nanosecond())
+				now.Second(), now.Nanosecond(), ext)
 			os.Rename(fname, bak)
 			fileflags := os.O_WRONLY | os.O_APPEND | os.O_CREATE
 			f, err := os.OpenFile(fname, fileflags, 0660)
