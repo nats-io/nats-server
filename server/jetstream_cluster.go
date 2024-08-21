@@ -7903,6 +7903,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 							"entryTs":  dde.ts,
 							"entryId":  dde.id,
 							"response": string(response),
+							"leader":   mset.IsLeader(),
 						},
 					)
 				}

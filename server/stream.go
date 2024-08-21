@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -4016,6 +4017,27 @@ func (mset *stream) storeMsgIdLocked(dde *ddentry) {
 	if mset.ddmap == nil {
 		mset.ddmap = make(map[string]*ddentry)
 	}
+	_, file, line, _ := runtime.Caller(1)
+	caller := fmt.Sprintf("%s:%d", file, line)
+	fmt.Printf(
+		"storeMsgIdLocked(seq:%d id:%s ts:%d) [caller: %s] [leader: %v]\n",
+		dde.seq,
+		dde.id,
+		dde.ts,
+		caller,
+		mset.isLeader(),
+	)
+	assert.AlwaysOrUnreachable(
+		dde.seq > 0,
+		"Stored DD entry sequence is zero",
+		map[string]any{
+			"entry.id":  dde.id,
+			"entry.ts":  dde.ts,
+			"entry.seq": dde.seq,
+			"caller":    caller,
+			"leader":    mset.IsLeader(),
+		},
+	)
 	mset.ddmap[dde.id] = dde
 	mset.ddarr = append(mset.ddarr, dde)
 	if mset.ddtmr == nil {
