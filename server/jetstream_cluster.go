@@ -7896,14 +7896,13 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 					outq.sendMsg(reply, response)
 					assert.AlwaysOrUnreachable(
 						seq > 0,
-						"Sequence number of duplicate message is zero",
+						"Response pubAck is dupe and has sequence zero",
 						map[string]any{
 							"msgId":    msgId,
 							"entrySeq": dde.seq,
 							"entryTs":  dde.ts,
 							"entryId":  dde.id,
 							"response": string(response),
-							"leader":   mset.IsLeader(),
 						},
 					)
 				}

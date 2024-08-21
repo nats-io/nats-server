@@ -4019,23 +4019,14 @@ func (mset *stream) storeMsgIdLocked(dde *ddentry) {
 	}
 	_, file, line, _ := runtime.Caller(1)
 	caller := fmt.Sprintf("%s:%d", file, line)
-	fmt.Printf(
-		"storeMsgIdLocked(seq:%d id:%s ts:%d) [caller: %s] [leader: %v]\n",
-		dde.seq,
-		dde.id,
-		dde.ts,
-		caller,
-		mset.isLeader(),
-	)
 	assert.AlwaysOrUnreachable(
 		dde.seq > 0,
-		"Stored DD entry sequence is zero",
+		"Storing duplicate entry with sequence zero",
 		map[string]any{
 			"entry.id":  dde.id,
 			"entry.ts":  dde.ts,
 			"entry.seq": dde.seq,
 			"caller":    caller,
-			"leader":    mset.IsLeader(),
 		},
 	)
 	mset.ddmap[dde.id] = dde
@@ -4977,23 +4968,15 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		response = append(response, '}')
 		mset.outq.sendMsg(reply, response)
 
-		mset.mu.Lock()
 		assert.AlwaysOrUnreachable(
 			seq > 0,
-			"Sequence number is always greater than zero",
+			"Response pubAck with sequence zero",
 			map[string]any{
-				"seq":                   seq,
-				"stream":                mset.cfg.Name,
-				"stream_messages":       mset.state().Msgs,
-				"stream_last_seq":       mset.state().LastSeq,
-				"stream_first_seq":      mset.state().FirstSeq,
-				"is_stream_raft_leader": mset.raftNode().Leader(),
-				"stream_raft_leader":    mset.raftNode().GroupLeader(),
-				"stream_raft_name":      mset.raftNode().Group(),
-				"seq_origin":            seqOrigin,
+				"seq":        seq,
+				"stream":     mset.cfg.Name,
+				"seq_origin": seqOrigin,
 			},
 		)
-		mset.mu.Unlock()
 	}
 
 	// Signal consumers for new messages.
