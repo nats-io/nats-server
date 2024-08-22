@@ -213,10 +213,13 @@ func (l *fileLogger) logPurge(fname string) {
 		if entry.IsDir() || entry.Name() == lBase || !strings.HasPrefix(entry.Name(), baseWithoutExt+".") {
 			continue
 		}
-		if stamp, found := strings.CutPrefix(entry.Name(), fmt.Sprintf("%s.", baseWithoutExt)); found {
-			_, err := time.Parse("2006:01:02:15:04:05.999999999", strings.Replace(stamp, ".", ":", 5))
-			if err == nil {
-				backups = append(backups, entry.Name())
+		if strings.HasSuffix(entry.Name(), ".log") {
+			if stamp, found := strings.CutPrefix(entry.Name(), fmt.Sprintf("%s.", baseWithoutExt)); found {
+				stamp = strings.TrimSuffix(stamp, ".log")
+				_, err := time.Parse("2006:01:02:15:04:05.999999999", strings.Replace(stamp, ".", ":", 5))
+				if err == nil {
+					backups = append(backups, entry.Name())
+				}
 			}
 		}
 	}
