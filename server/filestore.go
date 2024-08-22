@@ -1236,6 +1236,13 @@ func (mb *msgBlock) convertToEncrypted() error {
 	return nil
 }
 
+// Return the mb's index.
+func (mb *msgBlock) getIndex() uint32 {
+	mb.mu.RLock()
+	defer mb.mu.RUnlock()
+	return mb.index
+}
+
 // Rebuild the state of the blk based on what we have on disk in the N.blk file.
 // We will return any lost data, and we will return any delete tombstones we encountered.
 func (mb *msgBlock) rebuildState() (*LostStreamData, []uint64, error) {
@@ -2594,14 +2601,14 @@ func (fs *fileStore) FilteredState(sseq uint64, subj string) SimpleState {
 	return ss
 }
 
-// This is used to see if we can selectively jump start blocks based on filter subject and a floor block index.
-// Will return -1 if no matches at all.
-func (fs *fileStore) checkSkipFirstBlock(filter string, wc bool) (int, int) {
-	if filter == _EMPTY_ {
-		filter = fwcs
-		wc = true
+// This is used to see if we can selectively jump start blocks based on filter subject and a starting block index.
+// Will return -1 and ErrStoreEOF if no matches at all or no more from where we are.
+func (fs *fileStore) checkSkipFirstBlock(filter string, wc bool, bi int) (int, error) {
+	// If we match everything, just move to next blk.
+	if filter == _EMPTY_ || filter == fwcs {
+		return bi + 1, nil
 	}
-
+	// Move through psim to gather start and stop bounds.
 	start, stop := uint32(math.MaxUint32), uint32(0)
 	if wc {
 		fs.psim.Match(stringToBytes(filter), func(_ []byte, psi *psi) {
@@ -2615,51 +2622,26 @@ func (fs *fileStore) checkSkipFirstBlock(filter string, wc bool) (int, int) {
 	} else if psi, ok := fs.psim.Find(stringToBytes(filter)); ok {
 		start, stop = psi.fblk, psi.lblk
 	}
-	// Nothing found.
+	// Nothing was found.
 	if start == uint32(math.MaxUint32) {
-		return -1, -1
+		return -1, ErrStoreEOF
 	}
-	// Here we need to translate this to index into fs.blks properly.
-	mb := fs.bim[start]
-	if mb == nil {
-		// psim fblk can be lazy.
-		i := start + 1
-		for ; i <= stop; i++ {
-			mb = fs.bim[i]
-			if mb == nil {
-				continue
-			}
-			if _, f, _ := mb.filteredPending(filter, wc, 0); f > 0 {
-				break
-			}
-		}
-		// Update fblk since fblk was outdated.
-		if !wc {
-			if psi, ok := fs.psim.Find(stringToBytes(filter)); ok {
-				psi.fblk = i
-			}
-		} else {
-			fs.psim.Match(stringToBytes(filter), func(subj []byte, psi *psi) {
-				if i > psi.fblk {
-					psi.fblk = i
-				}
-			})
+	// Can not be nil so ok to inline dereference.
+	mbi := fs.blks[bi].getIndex()
+	// All matching msgs are behind us.
+	// Less than AND equal is important because we were called because we missed searching bi.
+	if stop <= mbi {
+		return -1, ErrStoreEOF
+	}
+	// If start is > index return dereference of fs.blks index.
+	if start > mbi {
+		if mb := fs.bim[start]; mb != nil {
+			ni, _ := fs.selectMsgBlockWithIndex(atomic.LoadUint64(&mb.last.seq))
+			return ni, nil
 		}
 	}
-	// Still nothing.
-	if mb == nil {
-		return -1, -1
-	}
-	// Grab first index.
-	fi, _ := fs.selectMsgBlockWithIndex(atomic.LoadUint64(&mb.last.seq))
-
-	// Grab last if applicable.
-	var li int
-	if mb = fs.bim[stop]; mb != nil {
-		li, _ = fs.selectMsgBlockWithIndex(atomic.LoadUint64(&mb.last.seq))
-	}
-
-	return fi, li
+	// Otherwise just bump to the next one.
+	return bi + 1, nil
 }
 
 // Optimized way for getting all num pending matching a filter subject.
@@ -6435,10 +6417,13 @@ func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64, sm *Store
 				// We should not do this at all if we are already on the last block.
 				// Also if we are a wildcard do not check if large subject space.
 				const wcMaxSizeToCheck = 64 * 1024
+
+				// if len(blks) - 1 > N
+
 				if i == bi && i < len(fs.blks)-1 && (!wc || fs.psim.Size() < wcMaxSizeToCheck) {
-					nbi, lbi := fs.checkSkipFirstBlock(filter, wc)
+					nbi, err := fs.checkSkipFirstBlock(filter, wc, bi)
 					// Nothing available.
-					if nbi < 0 || lbi <= bi {
+					if err == ErrStoreEOF {
 						return nil, fs.state.LastSeq, ErrStoreEOF
 					}
 					// See if we can jump ahead here.
