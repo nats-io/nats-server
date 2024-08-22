@@ -3070,3 +3070,105 @@ func TestJetStreamClusterKeyValueLastSeqMismatch(t *testing.T) {
 	require_Error(t, err)
 	require_Equal(t, err.Error(), `nats: wrong last sequence: 0`)
 }
+
+func TestJetStreamClusterPubAckSequenceDupe(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "TEST_CLUSTER", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	type client struct {
+		nc *nats.Conn
+		js nats.JetStreamContext
+	}
+
+	clients := make([]client, len(c.servers))
+	for i, server := range c.servers {
+		clients[i].nc, clients[i].js = jsClientConnect(t, server)
+		defer clients[i].nc.Close()
+	}
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:       "TEST_STREAM",
+		Subjects:   []string{"TEST_SUBJECT.*"},
+		Replicas:   3,
+		Duplicates: 1 * time.Minute,
+	})
+	require_NoError(t, err)
+
+	msgData := []byte("...")
+
+	for seq := uint64(1); seq < 10; seq++ {
+
+		if seq%3 == 0 {
+			c.restartAll()
+		}
+
+		msgSubject := "TEST_SUBJECT." + strconv.FormatUint(seq, 10)
+		msgIdOpt := nats.MsgId(nuid.Next())
+
+		firstPublisherClient := &clients[rand.Intn(len(clients))]
+		secondPublisherClient := &clients[rand.Intn(len(clients))]
+
+		pubAck1, err := firstPublisherClient.js.Publish(msgSubject, msgData, msgIdOpt)
+		require_NoError(t, err)
+		require_Equal(t, seq, pubAck1.Sequence)
+		require_False(t, pubAck1.Duplicate)
+
+		pubAck2, err := secondPublisherClient.js.Publish(msgSubject, msgData, msgIdOpt)
+		require_NoError(t, err)
+		require_Equal(t, seq, pubAck2.Sequence)
+		require_True(t, pubAck2.Duplicate)
+
+	}
+
+}
+
+func TestJetStreamClusterPubAckSequenceDupe2(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "TEST_CLUSTER", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:       "TEST_STREAM",
+		Subjects:   []string{"TEST_SUBJECT"},
+		Replicas:   3,
+		Duplicates: 1 * time.Minute,
+	})
+	require_NoError(t, err)
+
+	msgData := []byte("...")
+
+	for seq := uint64(1); seq < 10; seq++ {
+
+		msgSubject := "TEST_SUBJECT"
+		msgIdOpt := nats.MsgId(nuid.Next())
+
+		wg := sync.WaitGroup{}
+		wg.Add(2)
+
+		// Fire off 2 publish requests in parallel
+		// The first one "stages" a duplicate entry before even proposing the message
+		// The second one gets a pubAck with sequence zero by hitting the staged duplicated entry
+
+		pubAcks := [2]*nats.PubAck{}
+		for i := 0; i < 2; i++ {
+			go func(i int) {
+				defer wg.Done()
+				var err error
+				pubAcks[i], err = js.Publish(msgSubject, msgData, msgIdOpt)
+				require_NoError(t, err)
+			}(i)
+		}
+
+		wg.Wait()
+		require_Equal(t, pubAcks[0].Sequence, seq)
+		require_Equal(t, pubAcks[1].Sequence, seq)
+
+		// Exactly one of the pubAck should be marked dupe
+		require_True(t, (pubAcks[0].Duplicate || pubAcks[1].Duplicate) && (pubAcks[0].Duplicate != pubAcks[1].Duplicate))
+	}
+}
