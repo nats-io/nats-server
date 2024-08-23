@@ -236,6 +236,7 @@ type stream struct {
 	consumers map[string]*consumer    // The consumers for this stream.
 	numFilter int                     // The number of filtered consumers.
 	cfg       StreamConfig            // The stream's config.
+	cfgMu     sync.RWMutex            // Config mutex used to solve some races with consumer code
 	created   time.Time               // Time the stream was created.
 	stype     StorageType             // The storage type.
 	tier      string                  // The tier is the number of replicas for the stream (e.g. "R1" or "R3").
@@ -1978,7 +1979,14 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 	}
 
 	// Now update config and store's version of our config.
+	// Although we are under the stream write lock, we will also assign the new
+	// configuration under mset.cfgMu lock. This is so that in places where
+	// mset.mu cannot be acquired (like many cases in consumer.go where code
+	// is under the consumer's lock), and the stream's configuration needs to
+	// be inspected, one can use mset.cfgMu's read lock to do that safely.
+	mset.cfgMu.Lock()
 	mset.cfg = *cfg
+	mset.cfgMu.Unlock()
 
 	// If we're changing retention and haven't errored because of consumer
 	// replicas by now, whip through and update the consumer retention.
@@ -2027,6 +2035,15 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 	mset.store.UpdateConfig(cfg)
 
 	return nil
+}
+
+// Small helper to return the Name field from mset.cfg, protected by
+// the mset.cfgMu mutex. This is simply because we have several places
+// in consumer.go where we need it.
+func (mset *stream) getCfgName() string {
+	mset.cfgMu.RLock()
+	defer mset.cfgMu.RUnlock()
+	return mset.cfg.Name
 }
 
 // Purge will remove all messages from the stream and underlying store based on the request.
