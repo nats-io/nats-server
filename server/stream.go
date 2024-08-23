@@ -4687,8 +4687,17 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			if sm != nil {
 				fseq = sm.seq
 			}
-			if err == ErrStoreMsgNotFound && seq == 0 {
-				fseq, err = 0, nil
+			if err == ErrStoreMsgNotFound {
+				if seq == 0 {
+					fseq, err = 0, nil
+				} else {
+					// Do not bump clfs in case message was not found and could have been deleted.
+					var ss StreamState
+					store.FastState(&ss)
+					if seq <= ss.LastSeq {
+						fseq, err = seq, nil
+					}
+				}
 			}
 			if err != nil || fseq != seq {
 				mset.mu.Unlock()
