@@ -6348,8 +6348,6 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 		// We are adding new peers here.
 		if newCfg.Replicas > len(rg.Peers) {
 			// Check that we have the allocation available.
-			// TODO(jrm): Make sure we do not need pedantic mode info here.
-			// We should be fine, as this either errors or not, and we are not changing the stream.
 			if err := js.jsClusteredStreamLimitsCheck(acc, newCfg); err != nil {
 				resp.Error = err
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
