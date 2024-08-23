@@ -22463,7 +22463,7 @@ func TestInterestConsumerFilterEdit(t *testing.T) {
 }
 
 // https://github.com/nats-io/nats-server/issues/5383
-func TestInterestStreamWithFilterSubjectsConsumer(t *testing.T) {
+func TestJetStreamInterestStreamWithFilterSubjectsConsumer(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
@@ -22858,4 +22858,33 @@ func TestJetStreamConsumerStartSequenceNotInStream(t *testing.T) {
 		require_Equal(t, consumer.sseq, 11)
 		require_Equal(t, consumer.asflr, 10)
 	}()
+}
+
+func TestJetStreamInterestStreamWithDuplicateMessages(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:      "INTEREST",
+		Subjects:  []string{"interest"},
+		Replicas:  1,
+		Retention: nats.InterestPolicy,
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	// Publishing the first time should give a sequence, even when there's no interest.
+	pa, err := js.Publish("interest", nil, nats.MsgId("dedupe"))
+	require_NoError(t, err)
+	require_Equal(t, pa.Sequence, 1)
+	require_Equal(t, pa.Duplicate, false)
+
+	// Publishing a duplicate with no interest should return the same sequence as above.
+	pa, err = js.Publish("interest", nil, nats.MsgId("dedupe"))
+	require_NoError(t, err)
+	require_Equal(t, pa.Sequence, 1)
+	require_Equal(t, pa.Duplicate, true)
 }
