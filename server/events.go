@@ -130,6 +130,7 @@ type internal struct {
 	replies        map[string]msgHandler
 	sendq          *ipQueue[*pubMsg]
 	recvq          *ipQueue[*inSysMsg]
+	recvqp         *ipQueue[*inSysMsg] // For STATSZ/Pings
 	resetCh        chan struct{}
 	wg             sync.WaitGroup
 	sq             *sendq
@@ -412,15 +413,7 @@ type TypedEvent struct {
 
 // internalReceiveLoop will be responsible for dispatching all messages that
 // a server receives and needs to internally process, e.g. internal subs.
-func (s *Server) internalReceiveLoop() {
-	s.mu.RLock()
-	if s.sys == nil || s.sys.recvq == nil {
-		s.mu.RUnlock()
-		return
-	}
-	recvq := s.sys.recvq
-	s.mu.RUnlock()
-
+func (s *Server) internalReceiveLoop(recvq *ipQueue[*inSysMsg]) {
 	for s.eventsRunning() {
 		select {
 		case <-recvq.ch:
@@ -1139,7 +1132,7 @@ func (s *Server) initEventTracking() {
 	}
 	// Listen for ping messages that will be sent to all servers for statsz.
 	// This subscription is kept for backwards compatibility. Got replaced by ...PING.STATZ from below
-	if _, err := s.sysSubscribe(serverStatsPingReqSubj, s.noInlineCallback(s.statszReq)); err != nil {
+	if _, err := s.sysSubscribe(serverStatsPingReqSubj, s.noInlineCallbackStatsz(s.statszReq)); err != nil {
 		s.Errorf("Error setting up internal tracking: %v", err)
 		return
 	}
@@ -1182,23 +1175,42 @@ func (s *Server) initEventTracking() {
 			optz := &HealthzEventOptions{}
 			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) { return s.healthz(&optz.HealthzOptions), nil })
 		},
-		"PROFILEZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
-			optz := &ProfilezEventOptions{}
-			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) { return s.profilez(&optz.ProfilezOptions), nil })
-		},
+		"PROFILEZ": nil, // Special case, see below
 		"EXPVARZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 			optz := &ExpvarzEventOptions{}
 			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) { return s.expvarz(optz), nil })
 		},
 	}
+	profilez := func(_ *subscription, c *client, _ *Account, _, rply string, rmsg []byte) {
+		hdr, msg := c.msgParts(rmsg)
+		// Need to copy since we are passing those to the go routine below.
+		hdr, msg = copyBytes(hdr), copyBytes(msg)
+		// Execute in its own go routine because CPU profiling, for instance,
+		// could take several seconds to complete.
+		go func() {
+			optz := &ProfilezEventOptions{}
+			s.zReq(c, rply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) {
+				return s.profilez(&optz.ProfilezOptions), nil
+			})
+		}()
+	}
 	for name, req := range monSrvc {
+		var h msgHandler
+		switch name {
+		case "PROFILEZ":
+			h = profilez
+		case "STATSZ":
+			h = s.noInlineCallbackStatsz(req)
+		default:
+			h = s.noInlineCallback(req)
+		}
 		subject = fmt.Sprintf(serverDirectReqSubj, s.info.ID, name)
-		if _, err := s.sysSubscribe(subject, s.noInlineCallback(req)); err != nil {
+		if _, err := s.sysSubscribe(subject, h); err != nil {
 			s.Errorf("Error setting up internal tracking: %v", err)
 			return
 		}
 		subject = fmt.Sprintf(serverPingReqSubj, name)
-		if _, err := s.sysSubscribe(subject, s.noInlineCallback(req)); err != nil {
+		if _, err := s.sysSubscribe(subject, h); err != nil {
 			s.Errorf("Error setting up internal tracking: %v", err)
 			return
 		}
@@ -2451,16 +2463,39 @@ func (s *Server) sendAccountAuthErrorEvent(c *client, acc *Account, reason strin
 // rmsg contains header and the message. use client.msgParts(rmsg) to split them apart
 type msgHandler func(sub *subscription, client *client, acc *Account, subject, reply string, rmsg []byte)
 
+const (
+	recvQMuxed  = 1
+	recvQStatsz = 2
+)
+
 // Create a wrapped callback handler for the subscription that will move it to an
 // internal recvQ for processing not inline with routes etc.
 func (s *Server) noInlineCallback(cb sysMsgHandler) msgHandler {
+	return s.noInlineCallbackRecvQSelect(cb, recvQMuxed)
+}
+
+// Create a wrapped callback handler for the subscription that will move it to an
+// internal recvQ for Statsz/Pings for processing not inline with routes etc.
+func (s *Server) noInlineCallbackStatsz(cb sysMsgHandler) msgHandler {
+	return s.noInlineCallbackRecvQSelect(cb, recvQStatsz)
+}
+
+// Create a wrapped callback handler for the subscription that will move it to an
+// internal IPQueue for processing not inline with routes etc.
+func (s *Server) noInlineCallbackRecvQSelect(cb sysMsgHandler, recvQSelect int) msgHandler {
 	s.mu.RLock()
 	if !s.eventsEnabled() {
 		s.mu.RUnlock()
 		return nil
 	}
 	// Capture here for direct reference to avoid any unnecessary blocking inline with routes, gateways etc.
-	recvq := s.sys.recvq
+	var recvq *ipQueue[*inSysMsg]
+	switch recvQSelect {
+	case recvQStatsz:
+		recvq = s.sys.recvqp
+	default:
+		recvq = s.sys.recvq
+	}
 	s.mu.RUnlock()
 
 	return func(sub *subscription, c *client, acc *Account, subj, rply string, rmsg []byte) {

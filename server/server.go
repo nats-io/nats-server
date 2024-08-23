@@ -1702,12 +1702,14 @@ func (s *Server) setSystemAccount(acc *Account) error {
 		replies: make(map[string]msgHandler),
 		sendq:   newIPQueue[*pubMsg](s, "System sendQ"),
 		recvq:   newIPQueue[*inSysMsg](s, "System recvQ"),
+		recvqp:  newIPQueue[*inSysMsg](s, "System recvQ Pings"),
 		resetCh: make(chan struct{}),
 		sq:      s.newSendQ(),
 		statsz:  eventsHBInterval,
 		orphMax: 5 * eventsHBInterval,
 		chkOrph: 3 * eventsHBInterval,
 	}
+	recvq, recvqp := s.sys.recvq, s.sys.recvqp
 	s.sys.wg.Add(1)
 	s.mu.Unlock()
 
@@ -1721,7 +1723,9 @@ func (s *Server) setSystemAccount(acc *Account) error {
 	go s.internalSendLoop(&s.sys.wg)
 
 	// Start the internal loop for inbound messages.
-	go s.internalReceiveLoop()
+	go s.internalReceiveLoop(recvq)
+	// Start the internal loop for inbound STATSZ/Ping messages.
+	go s.internalReceiveLoop(recvqp)
 
 	// Start up our general subscriptions
 	s.initEventTracking()
@@ -2779,6 +2783,7 @@ func (s *Server) StartProfiler() {
 		Addr:           hp,
 		Handler:        http.DefaultServeMux,
 		MaxHeaderBytes: 1 << 20,
+		ReadTimeout:    time.Second * 5,
 	}
 	s.profiler = l
 	s.profilingServer = srv
@@ -2978,10 +2983,11 @@ func (s *Server) startMonitoring(secure bool) error {
 	// to return empty response or unable to display page if the
 	// server needs more time to build the response.
 	srv := &http.Server{
-		Addr:           hp,
-		Handler:        mux,
-		MaxHeaderBytes: 1 << 20,
-		ErrorLog:       log.New(&captureHTTPServerLog{s, "monitoring: "}, _EMPTY_, 0),
+		Addr:              hp,
+		Handler:           mux,
+		MaxHeaderBytes:    1 << 20,
+		ErrorLog:          log.New(&captureHTTPServerLog{s, "monitoring: "}, _EMPTY_, 0),
+		ReadHeaderTimeout: time.Second * 5,
 	}
 	s.mu.Lock()
 	s.http = httpListener

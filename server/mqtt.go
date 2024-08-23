@@ -15,6 +15,7 @@ package server
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
@@ -23,7 +24,7 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -4276,9 +4277,7 @@ func (s *Server) mqttCheckPubRetainedPerms() {
 			})
 		}
 		asm.mu.RUnlock()
-		sort.Slice(rms, func(i, j int) bool {
-			return rms[i].rmsg.sseq < rms[j].rmsg.sseq
-		})
+		slices.SortFunc(rms, func(i, j retainedMsg) int { return cmp.Compare(i.rmsg.sseq, j.rmsg.sseq) })
 
 		perms := map[string]*perm{}
 		deletes := map[string]uint64{}

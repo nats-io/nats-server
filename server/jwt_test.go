@@ -5779,6 +5779,7 @@ func TestJWScopedSigningKeys(t *testing.T) {
 	signer.Key = aSignScopedPub
 	signer.Template.Pub.Deny.Add("denied")
 	signer.Template.Payload = 5
+	signer.Template.AllowedConnectionTypes.Add(jwt.ConnectionTypeStandard)
 	accClaim.SigningKeys.AddScopedSigner(signer)
 	accJwt := encodeClaim(t, accClaim, aExpPub)
 
@@ -5795,11 +5796,16 @@ func TestJWScopedSigningKeys(t *testing.T) {
 			type: full
 			dir: '%s'
 		}
+		websocket {
+			listen: 127.0.0.1:-1
+			no_tls: true
+		}
     `, ojwt, syspub, dirSrv)))
 	s, opts := RunServerWithConfig(cf)
 	defer s.Shutdown()
 
 	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	wsUrl := fmt.Sprintf("ws://%s:%d", opts.Websocket.Host, opts.Websocket.Port)
 	errChan := make(chan error, 1)
 	defer close(errChan)
 	awaitError := func(expected bool) {
@@ -5853,6 +5859,10 @@ func TestJWScopedSigningKeys(t *testing.T) {
 		nc.Flush()
 		awaitError(true)
 	})
+	t.Run("scoped-signing-key-allowed-conn-types", func(t *testing.T) {
+		_, err := nats.Connect(wsUrl, nats.UserCredentials(aScopedCreds))
+		require_Error(t, err)
+	})
 	t.Run("scoped-signing-key-reload", func(t *testing.T) {
 		reconChan := make(chan struct{}, 1)
 		defer close(reconChan)
@@ -5867,6 +5877,7 @@ func TestJWScopedSigningKeys(t *testing.T) {
 			nats.ReconnectHandler(func(conn *nats.Conn) {
 				reconChan <- struct{}{}
 			}),
+			nats.ReconnectWait(100*time.Millisecond),
 		)
 		defer nc.Close()
 		_, err := nc.ChanSubscribe("denied", msgChan)
@@ -5879,6 +5890,7 @@ func TestJWScopedSigningKeys(t *testing.T) {
 		// Alter scoped permissions and update
 		signer.Template.Payload = -1
 		signer.Template.Pub.Deny.Remove("denied")
+		signer.Template.AllowedConnectionTypes.Add(jwt.ConnectionTypeWebsocket)
 		accClaim.SigningKeys.AddScopedSigner(signer)
 		accUpdatedJwt := encodeClaim(t, accClaim, aExpPub)
 		if updateJwt(t, url, sysCreds, accUpdatedJwt, 1) != 1 {
@@ -5894,6 +5906,11 @@ func TestJWScopedSigningKeys(t *testing.T) {
 		msg := <-msgChan
 		require_Equal(t, string(msg.Data), "way.too.long.for.old.payload.limit")
 		require_Len(t, len(msgChan), 0)
+		nc.Close()
+		nc, err = nats.Connect(wsUrl, nats.UserCredentials(aScopedCreds))
+		require_NoError(t, err)
+		nc.Flush()
+		defer nc.Close()
 	})
 	require_Len(t, len(errChan), 0)
 }

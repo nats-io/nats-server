@@ -28,7 +28,7 @@ import (
 	"os"
 	"reflect"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -747,7 +747,7 @@ func TestProfilingNoTimeout(t *testing.T) {
 	if srv == nil {
 		t.Fatalf("Profiling server not set")
 	}
-	if srv.ReadTimeout != 0 {
+	if srv.ReadTimeout != time.Second*5 {
 		t.Fatalf("ReadTimeout should not be set, was set to %v", srv.ReadTimeout)
 	}
 	if srv.WriteTimeout != 0 {
@@ -1046,9 +1046,9 @@ func TestLameDuckModeInfo(t *testing.T) {
 		t.Helper()
 		var si *serverInfo
 		for i, ws := range []bool{false, true} {
-			sort.Strings(expected[i])
+			slices.Sort(expected[i])
 			si = getInfo(ws)
-			sort.Strings(si.ConnectURLs)
+			slices.Sort(si.ConnectURLs)
 			if !reflect.DeepEqual(expected[i], si.ConnectURLs) {
 				t.Fatalf("Expected %q, got %q", expected, si.ConnectURLs)
 			}
@@ -1997,16 +1997,20 @@ func TestServerRateLimitLogging(t *testing.T) {
 
 	s.RateLimitWarnf("Warning number 1")
 	s.RateLimitWarnf("Warning number 2")
+	s.rateLimitFormatWarnf("warning value %d", 1)
 	s.RateLimitWarnf("Warning number 1")
 	s.RateLimitWarnf("Warning number 2")
+	s.rateLimitFormatWarnf("warning value %d", 2)
 
 	checkLog := func(c1, c2 *client) {
 		t.Helper()
 
 		nb1 := "Warning number 1"
 		nb2 := "Warning number 2"
+		nbv := "warning value"
 		gotOne := 0
 		gotTwo := 0
+		gotFormat := 0
 		for done := false; !done; {
 			select {
 			case w := <-l.warn:
@@ -2014,6 +2018,8 @@ func TestServerRateLimitLogging(t *testing.T) {
 					gotOne++
 				} else if strings.Contains(w, nb2) {
 					gotTwo++
+				} else if strings.Contains(w, nbv) {
+					gotFormat++
 				}
 			case <-time.After(150 * time.Millisecond):
 				done = true
@@ -2025,27 +2031,39 @@ func TestServerRateLimitLogging(t *testing.T) {
 		if gotTwo != 1 {
 			t.Fatalf("Should have had only 1 warning for nb2, got %v", gotTwo)
 		}
+		if gotFormat != 1 {
+			t.Fatalf("Should have had only 1 warning for format, got %v", gotFormat)
+		}
 
 		// Wait for more than the expiration interval
 		time.Sleep(200 * time.Millisecond)
 		if c1 == nil {
 			s.RateLimitWarnf(nb1)
+			s.rateLimitFormatWarnf("warning value %d", 1)
 		} else {
 			c1.RateLimitWarnf(nb1)
 			c2.RateLimitWarnf(nb1)
+			c1.rateLimitFormatWarnf("warning value %d", 1)
 		}
 		gotOne = 0
+		gotFormat = 0
 		for {
 			select {
 			case w := <-l.warn:
 				if strings.Contains(w, nb1) {
 					gotOne++
+				} else if strings.Contains(w, nbv) {
+					gotFormat++
 				}
 			case <-time.After(200 * time.Millisecond):
 				if gotOne == 0 {
 					t.Fatalf("Warning was still suppressed")
 				} else if gotOne > 1 {
 					t.Fatalf("Should have had only 1 warning for nb1, got %v", gotOne)
+				} else if gotFormat == 0 {
+					t.Fatalf("Warning was still suppressed")
+				} else if gotFormat > 1 {
+					t.Fatalf("Should have had only 1 warning for format, got %v", gotFormat)
 				} else {
 					// OK! we are done
 					return
@@ -2087,8 +2105,10 @@ func TestServerRateLimitLogging(t *testing.T) {
 
 	c1.RateLimitWarnf("Warning number 1")
 	c1.RateLimitWarnf("Warning number 2")
+	c1.rateLimitFormatWarnf("warning value %d", 1)
 	c2.RateLimitWarnf("Warning number 1")
 	c2.RateLimitWarnf("Warning number 2")
+	c2.rateLimitFormatWarnf("warning value %d", 2)
 
 	checkLog(c1, c2)
 }

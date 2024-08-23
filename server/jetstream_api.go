@@ -15,6 +15,7 @@ package server
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,7 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -824,10 +825,10 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, sub
 	// Copy the state. Note the JSAPI only uses the hdr index to piece apart the
 	// header from the msg body. No other references are needed.
 	// Check pending and warn if getting backed up.
-	const warnThresh = 32
+	const warnThresh = 128
 	pending := s.jsAPIRoutedReqs.push(&jsAPIRoutedReq{jsub, sub, acc, subject, reply, copyBytes(rmsg), c.pa})
-	if pending > warnThresh {
-		s.RateLimitWarnf("JetStream request queue has high pending count: %d", pending)
+	if pending >= warnThresh {
+		s.rateLimitFormatWarnf("JetStream request queue has high pending count: %d", pending)
 	}
 }
 
@@ -1203,8 +1204,8 @@ func (s *Server) jsTemplateNamesRequest(sub *subscription, c *client, _ *Account
 	}
 
 	ts := acc.templates()
-	sort.Slice(ts, func(i, j int) bool {
-		return strings.Compare(ts[i].StreamTemplateConfig.Name, ts[j].StreamTemplateConfig.Name) < 0
+	slices.SortFunc(ts, func(i, j *streamTemplate) int {
+		return cmp.Compare(i.StreamTemplateConfig.Name, j.StreamTemplateConfig.Name)
 	})
 
 	tcnt := len(ts)
@@ -1624,7 +1625,7 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, _ *Account, 
 		}
 		js.mu.RUnlock()
 		if len(resp.Streams) > 1 {
-			sort.Slice(resp.Streams, func(i, j int) bool { return strings.Compare(resp.Streams[i], resp.Streams[j]) < 0 })
+			slices.Sort(resp.Streams)
 		}
 		numStreams = len(resp.Streams)
 		if offset > numStreams {
@@ -1640,9 +1641,7 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, _ *Account, 
 		msets := acc.filteredStreams(filter)
 		// Since we page results order matters.
 		if len(msets) > 1 {
-			sort.Slice(msets, func(i, j int) bool {
-				return strings.Compare(msets[i].cfg.Name, msets[j].cfg.Name) < 0
-			})
+			slices.SortFunc(msets, func(i, j *stream) int { return cmp.Compare(i.cfg.Name, j.cfg.Name) })
 		}
 
 		numStreams = len(msets)
@@ -1739,9 +1738,7 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, _ *Account, s
 		msets = acc.filteredStreams(filter)
 	}
 
-	sort.Slice(msets, func(i, j int) bool {
-		return strings.Compare(msets[i].cfg.Name, msets[j].cfg.Name) < 0
-	})
+	slices.SortFunc(msets, func(i, j *stream) int { return cmp.Compare(i.cfg.Name, j.cfg.Name) })
 
 	scnt := len(msets)
 	if offset > scnt {
@@ -1944,7 +1941,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 					subjs = append(subjs, subj)
 				}
 				// Sort it
-				sort.Strings(subjs)
+				slices.Sort(subjs)
 
 				if offset > len(subjs) {
 					offset = len(subjs)
@@ -4074,7 +4071,7 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, _ *Account
 			resp.Consumers = append(resp.Consumers, consumer)
 		}
 		if len(resp.Consumers) > 1 {
-			sort.Slice(resp.Consumers, func(i, j int) bool { return strings.Compare(resp.Consumers[i], resp.Consumers[j]) < 0 })
+			slices.Sort(resp.Consumers)
 		}
 		numConsumers = len(resp.Consumers)
 		if offset > numConsumers {
@@ -4095,9 +4092,7 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, _ *Account
 		}
 
 		obs := mset.getPublicConsumers()
-		sort.Slice(obs, func(i, j int) bool {
-			return strings.Compare(obs[i].name, obs[j].name) < 0
-		})
+		slices.SortFunc(obs, func(i, j *consumer) int { return cmp.Compare(i.name, j.name) })
 
 		numConsumers = len(obs)
 		if offset > numConsumers {
@@ -4190,9 +4185,7 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, _ *Account,
 	}
 
 	obs := mset.getPublicConsumers()
-	sort.Slice(obs, func(i, j int) bool {
-		return strings.Compare(obs[i].name, obs[j].name) < 0
-	})
+	slices.SortFunc(obs, func(i, j *consumer) int { return cmp.Compare(i.name, j.name) })
 
 	ocnt := len(obs)
 	if offset > ocnt {

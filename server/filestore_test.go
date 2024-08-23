@@ -7248,28 +7248,6 @@ func TestFileStoreCheckSkipFirstBlockBug(t *testing.T) {
 	require_NoError(t, err)
 }
 
-// https://github.com/nats-io/nats-server/issues/5705
-func TestFileStoreCheckSkipFirstBlockEmptyFilter(t *testing.T) {
-	sd := t.TempDir()
-	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: sd, BlockSize: 128},
-		StreamConfig{Name: "zzz", Subjects: []string{"foo.*.*"}, Storage: FileStorage})
-	require_NoError(t, err)
-	defer fs.Stop()
-
-	msg := []byte("hello")
-	// Create 4 blocks, each block holds 2 msgs
-	for i := 0; i < 4; i++ {
-		fs.StoreMsg("foo.22.bar", nil, msg)
-		fs.StoreMsg("foo.22.baz", nil, msg)
-	}
-	require_Equal(t, fs.numMsgBlocks(), 4)
-
-	nbi, lbi := fs.checkSkipFirstBlock(_EMPTY_, false)
-	require_Equal(t, nbi, 0)
-	require_Equal(t, lbi, 3)
-}
-
 // https://github.com/nats-io/nats-server/issues/5702
 func TestFileStoreTombstoneRbytes(t *testing.T) {
 	fs, err := newFileStore(
@@ -7334,6 +7312,71 @@ func TestFileStoreMsgBlockShouldCompact(t *testing.T) {
 	shouldCompact = sblk.shouldCompactInline()
 	sblk.mu.RUnlock()
 	require_False(t, shouldCompact)
+}
+
+func TestFileStoreCheckSkipFirstBlockNotLoadOldBlocks(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 128},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := []byte("hello")
+
+	fs.StoreMsg("foo.BB.bar", nil, msg)
+	fs.StoreMsg("foo.AA.bar", nil, msg)
+	for i := 0; i < 6; i++ {
+		fs.StoreMsg("foo.BB.bar", nil, msg)
+	}
+	fs.StoreMsg("foo.AA.bar", nil, msg) // Sequence 9
+	fs.StoreMsg("foo.AA.bar", nil, msg) // Sequence 10
+
+	for i := 0; i < 4; i++ {
+		fs.StoreMsg("foo.BB.bar", nil, msg)
+	}
+
+	// Should have created 7 blocks.
+	// BB AA | BB BB | BB BB | BB BB | AA AA | BB BB | BB BB
+	require_Equal(t, fs.numMsgBlocks(), 7)
+
+	fs.RemoveMsg(1)
+	fs.RemoveMsg(2)
+
+	// First block should be gone now.
+	// -- -- | BB BB | BB BB | BB BB | AA AA | BB BB | BB BB
+	require_Equal(t, fs.numMsgBlocks(), 6)
+
+	// Remove all blk cache and fss.
+	fs.mu.RLock()
+	for _, mb := range fs.blks {
+		mb.mu.Lock()
+		mb.fss, mb.cache = nil, nil
+		mb.mu.Unlock()
+	}
+	fs.mu.RUnlock()
+
+	// But this means that the psim still points fblk to block 1.
+	// So when we try to load AA from near the end (last AA sequence), it will not find anything and will then
+	// check if we can skip ahead, but in the process reload blocks 2, 3, 4 amd 5..
+	// This can trigger for an up to date consumer near the end of the stream that gets a new pull request that will pop it out of msgWait
+	// and it will call LoadNextMsg() like we do here with starting sequence of 11.
+	_, _, err = fs.LoadNextMsg("foo.AA.bar", false, 11, nil)
+	require_Error(t, err, ErrStoreEOF)
+
+	// Now make sure we did not load fss and cache.
+	var loaded int
+	fs.mu.RLock()
+	for _, mb := range fs.blks {
+		mb.mu.RLock()
+		if mb.cache != nil || mb.fss != nil {
+			loaded++
+		}
+		mb.mu.RUnlock()
+	}
+	fs.mu.RUnlock()
+	// We will load last block for starting seq 9, but no others should have loaded.
+	require_Equal(t, loaded, 1)
 }
 
 ///////////////////////////////////////////////////////////////////////////

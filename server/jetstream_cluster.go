@@ -15,6 +15,7 @@ package server
 
 import (
 	"bytes"
+	"cmp"
 	crand "crypto/rand"
 	"encoding/binary"
 	"encoding/json"
@@ -25,7 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -2260,7 +2261,12 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	// Make sure to stop the raft group on exit to prevent accidental memory bloat.
 	// This should be below the checkInMonitor call though to avoid stopping it out
 	// from underneath the one that is running since it will be the same raft node.
-	defer n.Stop()
+	defer func() {
+		// We might be closing during shutdown, don't pre-emptively stop here since we'll still want to install snapshots.
+		if !mset.closed.Load() {
+			n.Stop()
+		}
+	}()
 
 	qch, mqch, lch, aq, uch, ourPeerId := n.QuitC(), mset.monitorQuitC(), n.LeadChangeC(), n.ApplyQ(), mset.updateC(), meta.ID()
 
@@ -2419,6 +2425,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			return
 		case <-aq.ch:
 			var ne, nb uint64
+			// If we bump clfs we will want to write out snapshot if within our time window.
+			pclfs := mset.getCLFS()
+
 			ces := aq.pop()
 			for _, ce := range ces {
 				// No special processing needed for when we are caught up on restart.
@@ -2435,6 +2444,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					}
 					continue
 				}
+
 				// Apply our entries.
 				if err := js.applyStreamEntries(mset, ce, isRecovering); err == nil {
 					// Update our applied.
@@ -2466,7 +2476,13 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 			// Check about snapshotting
 			// If we have at least min entries to compact, go ahead and try to snapshot/compact.
-			if ne >= compactNumMin || nb > compactSizeMin {
+			if ne >= compactNumMin || nb > compactSizeMin || mset.getCLFS() > pclfs {
+				// We want to make sure we do not short circuit if transistioning from no clfs.
+				if pclfs == 0 {
+					// This is always false by default.
+					lastState.firstNeedsUpdate = true
+					lastSnapTime = time.Time{}
+				}
 				doSnapshot()
 			}
 
@@ -3125,13 +3141,10 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				}
 			}
 
-			if !isRecovering && !mset.IsLeader() {
+			if isRecovering || !mset.IsLeader() {
 				if err := mset.processSnapshot(ss); err != nil {
 					return err
 				}
-			} else if isRecovering {
-				// On recovery, reset CLFS/FAILED.
-				mset.setCLFS(ss.Failed)
 			}
 		} else if e.Type == EntryRemovePeer {
 			js.mu.RLock()
@@ -5905,15 +5918,15 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 		return nil, &err
 	}
 	// Sort based on available from most to least, breaking ties by number of total streams assigned to the peer.
-	sort.Slice(nodes, func(i, j int) bool {
-		if nodes[i].avail == nodes[j].avail {
-			return nodes[i].ns < nodes[j].ns
+	slices.SortFunc(nodes, func(i, j wn) int {
+		if i.avail == j.avail {
+			return cmp.Compare(i.ns, j.ns)
 		}
-		return nodes[i].avail > nodes[j].avail
+		return -cmp.Compare(i.avail, j.avail) // reverse
 	})
 	// If we are placing a replicated stream, let's sort based on HAAssets, as that is more important to balance.
 	if cfg.Replicas > 1 {
-		sort.SliceStable(nodes, func(i, j int) bool { return nodes[i].ha < nodes[j].ha })
+		slices.SortStableFunc(nodes, func(i, j wn) int { return cmp.Compare(i.ha, j.ha) })
 	}
 
 	var results []string
@@ -6673,9 +6686,7 @@ func (s *Server) jsClusteredStreamListRequest(acc *Account, ci *ClientInfo, filt
 
 	// Needs to be sorted for offsets etc.
 	if len(streams) > 1 {
-		sort.Slice(streams, func(i, j int) bool {
-			return strings.Compare(streams[i].Config.Name, streams[j].Config.Name) < 0
-		})
+		slices.SortFunc(streams, func(i, j *streamAssignment) int { return cmp.Compare(i.Config.Name, j.Config.Name) })
 	}
 
 	scnt := len(streams)
@@ -6788,9 +6799,7 @@ LOOP:
 
 	// Needs to be sorted as well.
 	if len(resp.Streams) > 1 {
-		sort.Slice(resp.Streams, func(i, j int) bool {
-			return strings.Compare(resp.Streams[i].Config.Name, resp.Streams[j].Config.Name) < 0
-		})
+		slices.SortFunc(resp.Streams, func(i, j *StreamInfo) int { return cmp.Compare(i.Config.Name, j.Config.Name) })
 	}
 
 	resp.Total = scnt
@@ -6823,9 +6832,7 @@ func (s *Server) jsClusteredConsumerListRequest(acc *Account, ci *ClientInfo, of
 	}
 	// Needs to be sorted.
 	if len(consumers) > 1 {
-		sort.Slice(consumers, func(i, j int) bool {
-			return strings.Compare(consumers[i].Name, consumers[j].Name) < 0
-		})
+		slices.SortFunc(consumers, func(i, j *consumerAssignment) int { return cmp.Compare(i.Config.Name, j.Config.Name) })
 	}
 
 	ocnt := len(consumers)
@@ -6935,9 +6942,7 @@ LOOP:
 
 	// Needs to be sorted as well.
 	if len(resp.Consumers) > 1 {
-		sort.Slice(resp.Consumers, func(i, j int) bool {
-			return strings.Compare(resp.Consumers[i].Name, resp.Consumers[j].Name) < 0
-		})
+		slices.SortFunc(resp.Consumers, func(i, j *ConsumerInfo) int { return cmp.Compare(i.Name, j.Name) })
 	}
 
 	resp.Total = ocnt
@@ -7810,12 +7815,15 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		}
 		// Expected last sequence per subject.
 		// We can check for last sequence per subject but only if the expected seq <= lseq.
-		if seq, exists := getExpectedLastSeqPerSubject(hdr); exists && store != nil && seq > 0 && seq <= lseq {
+		if seq, exists := getExpectedLastSeqPerSubject(hdr); exists && store != nil && seq <= lseq {
 			var smv StoreMsg
 			var fseq uint64
 			sm, err := store.LoadLastMsg(subject, &smv)
 			if sm != nil {
 				fseq = sm.seq
+			}
+			if err == ErrStoreMsgNotFound && seq == 0 {
+				fseq, err = 0, nil
 			}
 			if err != nil || fseq != seq {
 				if canRespond {
@@ -8548,9 +8556,7 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 	}
 	// Order the result based on the name so that we get something consistent
 	// when doing repeated stream info in the CLI, etc...
-	sort.Slice(ci.Replicas, func(i, j int) bool {
-		return ci.Replicas[i].Name < ci.Replicas[j].Name
-	})
+	slices.SortFunc(ci.Replicas, func(i, j *PeerInfo) int { return cmp.Compare(i.Name, j.Name) })
 	return ci
 }
 
@@ -8610,9 +8616,8 @@ func (js *jetStream) streamAlternates(ci *ClientInfo, stream string) []StreamAlt
 	}
 
 	// Sort based on our weights that originate from the request itself.
-	sort.Slice(alts, func(i, j int) bool {
-		return weights[alts[i].Cluster] > weights[alts[j].Cluster]
-	})
+	// reverse sort
+	slices.SortFunc(alts, func(i, j StreamAlternate) int { return -cmp.Compare(weights[i.Cluster], weights[j.Cluster]) })
 
 	return alts
 }
