@@ -1954,7 +1954,14 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 	}
 
 	// Now update config and store's version of our config.
-	mset.setCfg(cfg)
+	// Although we are under the stream write lock, we will also assign the new
+	// configuration under mset.cfgMu lock. This is so that in places where
+	// mset.mu cannot be acquired (like many cases in consumer.go where code
+	// is under the consumer's lock), and the stream's configuration needs to
+	// be inspected, one can use mset.cfgMu's read lock to do that safely.
+	mset.cfgMu.Lock()
+	mset.cfg = *cfg
+	mset.cfgMu.Unlock()
 
 	// If we're changing retention and haven't errored because of consumer
 	// replicas by now, whip through and update the consumer retention.
@@ -2003,30 +2010,6 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 	mset.store.UpdateConfig(cfg)
 
 	return nil
-}
-
-// Sets the configuration for this stream.
-// This is called under mset.mu.Lock(), but this function will also acquire
-// mset.cfgMu lock. This is so that in places where mset.mu cannot be acquired
-// (like many cases in consumer.go where code is under the consumer's lock),
-// but the stream's configuration needs to be inspected, the caller can call
-// mset.getCfg() to get (safely) a copy of the stream's configuration.
-func (mset *stream) setCfg(cfg *StreamConfig) {
-	mset.cfgMu.Lock()
-	mset.cfg = *cfg
-	mset.cfgMu.Unlock()
-}
-
-// The stream configuration is a structure. Normally, code that would do
-// something like cfg := mset.cfg would get a copy of that structure. However,
-// this would race with code that assigns a new congiguration to the stream
-// (think stream update). The update will be done using setCfg(), and therefore,
-// to avoid races, callers that need the stream's congiguration should call
-// this function, or protect using mset.cfgMu read lock.
-func (mset *stream) getCfg() StreamConfig {
-	mset.cfgMu.RLock()
-	defer mset.cfgMu.RUnlock()
-	return mset.cfg
 }
 
 // Small helper to return the Name field from mset.cfg, protected by
