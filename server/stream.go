@@ -236,6 +236,7 @@ type stream struct {
 	consumers map[string]*consumer    // The consumers for this stream.
 	numFilter int                     // The number of filtered consumers.
 	cfg       StreamConfig            // The stream's config.
+	cfgMu     sync.RWMutex            // Config mutex used to solve some races with consumer code
 	created   time.Time               // Time the stream was created.
 	stype     StorageType             // The storage type.
 	tier      string                  // The tier is the number of replicas for the stream (e.g. "R1" or "R3").
@@ -1953,7 +1954,7 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 	}
 
 	// Now update config and store's version of our config.
-	mset.cfg = *cfg
+	mset.setCfg(cfg)
 
 	// If we're changing retention and haven't errored because of consumer
 	// replicas by now, whip through and update the consumer retention.
@@ -2002,6 +2003,39 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 	mset.store.UpdateConfig(cfg)
 
 	return nil
+}
+
+// Sets the configuration for this stream.
+// This is called under mset.mu.Lock(), but this function will also acquire
+// mset.cfgMu lock. This is so that in places where mset.mu cannot be acquired
+// (like many cases in consumer.go where code is under the consumer's lock),
+// but the stream's configuration needs to be inspected, the caller can call
+// mset.getCfg() to get (safely) a copy of the stream's configuration.
+func (mset *stream) setCfg(cfg *StreamConfig) {
+	mset.cfgMu.Lock()
+	mset.cfg = *cfg
+	mset.cfgMu.Unlock()
+}
+
+// The stream configuration is a structure. Normally, code that would do
+// something like cfg := mset.cfg would get a copy of that structure. However,
+// this would race with code that assigns a new congiguration to the stream
+// (think stream update). The update will be done using setCfg(), and therefore,
+// to avoid races, callers that need the stream's congiguration should call
+// this function, or protect using mset.cfgMu read lock.
+func (mset *stream) getCfg() StreamConfig {
+	mset.cfgMu.RLock()
+	defer mset.cfgMu.RUnlock()
+	return mset.cfg
+}
+
+// Small helper to return the Name field from mset.cfg, protected by
+// the mset.cfgMu mutex. This is simply because we have several places
+// in consumer.go where we need it.
+func (mset *stream) getCfgName() string {
+	mset.cfgMu.RLock()
+	defer mset.cfgMu.RUnlock()
+	return mset.cfg.Name
 }
 
 // Purge will remove all messages from the stream and underlying store based on the request.
