@@ -23468,7 +23468,7 @@ func TestInterestConsumerFilterEdit(t *testing.T) {
 }
 
 // https://github.com/nats-io/nats-server/issues/5383
-func TestInterestStreamWithFilterSubjectsConsumer(t *testing.T) {
+func TestJetStreamInterestStreamWithFilterSubjectsConsumer(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
@@ -23926,7 +23926,7 @@ func TestJetStreamConsumerStartSequenceNotInStream(t *testing.T) {
 	}()
 }
 
-func TestInterestStreamWithDuplicateMessages(t *testing.T) {
+func TestJetStreamInterestStreamWithDuplicateMessages(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
