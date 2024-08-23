@@ -3607,7 +3607,7 @@ func TestClusterSetupMsgs(t *testing.T) {
 
 	var totalOut int
 	for _, server := range c.servers {
-		totalOut += int(server.outMsgs)
+		totalOut += int(atomic.LoadInt64(&server.outMsgs))
 	}
 	totalExpected := numServers * numServers
 	if totalOut >= totalExpected {
