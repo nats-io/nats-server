@@ -4810,7 +4810,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		mset.lmsgId = msgId
 		// If we have a msgId make sure to save.
 		if msgId != _EMPTY_ {
-			mset.storeMsgIdLocked(&ddentry{msgId, seq, ts})
+			mset.storeMsgIdLocked(&ddentry{msgId, mset.lseq, ts})
 		}
 		if canRespond {
 			response = append(pubAck, strconv.FormatUint(mset.lseq, 10)...)
