@@ -717,7 +717,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	}
 
 	mset.mu.RLock()
-	s, jsa, cfg, acc := mset.srv, mset.jsa, mset.getCfg(), mset.acc
+	s, jsa, cfg, acc := mset.srv, mset.jsa, mset.cfg, mset.acc
 	mset.mu.RUnlock()
 
 	// If we do not have the consumer currently assigned to us in cluster mode we will proceed but warn.
