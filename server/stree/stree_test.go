@@ -760,6 +760,15 @@ func TestSubjectTreeNode48(t *testing.T) {
 	require_Equal(t, iterations, 2)
 	require_True(t, gotB)
 	require_True(t, gotC)
+
+	// Check for off-by-one on byte 255 as found by staticcheck, see
+	// https://github.com/nats-io/nats-server/pull/5826.
+	n.addChild(255, &c)
+	require_Equal(t, n.key[255], 3)
+	grown := n.grow().(*node256)
+	require_True(t, grown.findChild(255) != nil)
+	shrunk := n.shrink().(*node16)
+	require_True(t, shrunk.findChild(255) != nil)
 }
 
 func TestSubjectTreeMatchNoCallbackDupe(t *testing.T) {

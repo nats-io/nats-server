@@ -1,4 +1,4 @@
-// Copyright 2013-2019 The NATS Authors
+// Copyright 2013-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -321,7 +321,7 @@ func TestRequestsAcrossRoutes(t *testing.T) {
 	nc1.Flush()
 
 	if err := checkExpectedSubs(1, srvA, srvB); err != nil {
-		t.Fatalf(err.Error())
+		t.Fatal(err.Error())
 	}
 
 	var resp string
@@ -372,7 +372,7 @@ func TestRequestsAcrossRoutesToQueues(t *testing.T) {
 	})
 
 	if err := checkExpectedSubs(2, srvA, srvB); err != nil {
-		t.Fatalf(err.Error())
+		t.Fatal(err.Error())
 	}
 
 	var resp string
