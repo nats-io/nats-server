@@ -51,9 +51,9 @@ func (n *node48) isFull() bool { return n.size >= 48 }
 
 func (n *node48) grow() node {
 	nn := newNode256(n.prefix)
-	for c := byte(0); c < 255; c++ {
-		if i := n.key[c]; i > 0 {
-			nn.addChild(c, n.child[i-1])
+	for c := 0; c < len(n.key); c++ {
+		if i := n.key[byte(c)]; i > 0 {
+			nn.addChild(byte(c), n.child[i-1])
 		}
 	}
 	return nn
@@ -69,9 +69,9 @@ func (n *node48) deleteChild(c byte) {
 	last := byte(n.size - 1)
 	if i < last {
 		n.child[i] = n.child[last]
-		for c := byte(0); c <= 255; c++ {
-			if n.key[c] == last+1 {
-				n.key[c] = i + 1
+		for ic := 0; ic < len(n.key); ic++ {
+			if n.key[byte(ic)] == last+1 {
+				n.key[byte(ic)] = i + 1
 				break
 			}
 		}
@@ -87,9 +87,9 @@ func (n *node48) shrink() node {
 		return nil
 	}
 	nn := newNode16(nil)
-	for c := byte(0); c < 255; c++ {
-		if i := n.key[c]; i > 0 {
-			nn.addChild(c, n.child[i-1])
+	for c := 0; c < len(n.key); c++ {
+		if i := n.key[byte(c)]; i > 0 {
+			nn.addChild(byte(c), n.child[i-1])
 		}
 	}
 	return nn
