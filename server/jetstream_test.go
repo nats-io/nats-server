@@ -23954,3 +23954,117 @@ func TestJetStreamInterestStreamWithDuplicateMessages(t *testing.T) {
 	require_Equal(t, pa.Sequence, 1)
 	require_Equal(t, pa.Duplicate, true)
 }
+
+func TestJetStreamStreamCreatePedanticMode(t *testing.T) {
+	cfgFmt := []byte(fmt.Sprintf(`
+        jetstream: {
+            enabled: true
+            max_file_store: 100MB
+            store_dir: %s
+            limits: {duplicate_window: "1m", max_request_batch: 250}
+        }
+        accounts: {
+            myacc: {
+                jetstream: enabled
+                users: [ { user: user, password: pass  } ]
+            }
+        }
+        no_auth_user: user
+	`, t.TempDir()))
+
+	conf := createConfFile(t, cfgFmt)
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	tests := []struct {
+		name      string
+		cfg       StreamConfigRequest
+		shouldErr bool
+		update    bool
+	}{
+		{
+			name: "too_high_duplicate",
+			cfg: StreamConfigRequest{
+				StreamConfig: StreamConfig{
+					Name:       "TEST",
+					MaxAge:     time.Minute,
+					Duplicates: time.Hour,
+					Storage:    FileStorage,
+				},
+				Pedantic: true,
+			},
+			shouldErr: true,
+		},
+		{
+			name: "duplicate_over_limits",
+			cfg: StreamConfigRequest{
+				StreamConfig: StreamConfig{
+					Name:       "TEST",
+					MaxAge:     time.Hour * 60,
+					Duplicates: time.Hour,
+					Storage:    FileStorage,
+				},
+				Pedantic: false,
+			},
+			shouldErr: true,
+		},
+		{
+			name: "duplicate_window_within_limits",
+			cfg: StreamConfigRequest{
+				StreamConfig: StreamConfig{
+					Name:       "TEST",
+					MaxAge:     time.Hour * 60,
+					Duplicates: time.Second * 30,
+					Storage:    FileStorage,
+				},
+				Pedantic: false,
+			},
+			shouldErr: false,
+		},
+		{
+			name: "update_too_high_duplicate",
+			cfg: StreamConfigRequest{
+				StreamConfig: StreamConfig{
+					Name:       "TEST",
+					MaxAge:     time.Minute,
+					Duplicates: time.Hour,
+					Storage:    FileStorage,
+				},
+				Pedantic: true,
+			},
+			update:    true,
+			shouldErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if !test.update {
+				_, err := addStreamPedanticWithError(t, nc, &test.cfg)
+				require_True(t, (err != nil) == test.shouldErr)
+			} else {
+				_, err := updateStreamPedanticWithError(t, nc, &test.cfg)
+				require_True(t, (err != nil) == test.shouldErr)
+			}
+		})
+	}
+}
+
+func addConsumerWithError(t *testing.T, nc *nats.Conn, cfg *CreateConsumerRequest) (*ConsumerInfo, *ApiError) {
+	t.Helper()
+	req, err := json.Marshal(cfg)
+	require_NoError(t, err)
+	rmsg, err := nc.Request(fmt.Sprintf(JSApiDurableCreateT, cfg.Stream, cfg.Config.Durable), req, 5*time.Second)
+
+	require_NoError(t, err)
+	var resp JSApiConsumerCreateResponse
+	err = json.Unmarshal(rmsg.Data, &resp)
+	require_NoError(t, err)
+	if resp.Type != JSApiConsumerCreateResponseType {
+		t.Fatalf("Invalid response type %s expected %s", resp.Type, JSApiConsumerCreateResponseType)
+	}
+	return resp.ConsumerInfo, resp.Error
+}
