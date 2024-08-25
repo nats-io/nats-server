@@ -1,4 +1,4 @@
-// Copyright 2018-2020 The NATS Authors
+// Copyright 2018-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -211,7 +211,7 @@ func waitCh(t *testing.T, ch chan bool, errTxt string) {
 	case <-ch:
 		return
 	case <-time.After(5 * time.Second):
-		t.Fatalf(errTxt)
+		t.Fatal(errTxt)
 	}
 }
 
@@ -5055,7 +5055,7 @@ func TestGatewayMapReplyOnlyForRecentSub(t *testing.T) {
 	select {
 	case e := <-errCh:
 		if e != nil {
-			t.Fatalf(e.Error())
+			t.Fatal(e.Error())
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("Did not get replies")

@@ -1,4 +1,4 @@
-// Copyright 2019-2020 The NATS Authors
+// Copyright 2019-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -4376,13 +4376,13 @@ func TestLeafnodeHeaders(t *testing.T) {
 
 	snc, err := nats.Connect(srv.ClientURL())
 	if err != nil {
-		t.Fatalf(err.Error())
+		t.Fatal(err.Error())
 	}
 	defer snc.Close()
 
 	lnc, err := nats.Connect(leaf.ClientURL())
 	if err != nil {
-		t.Fatalf(err.Error())
+		t.Fatal(err.Error())
 	}
 	defer lnc.Close()
 
@@ -4407,7 +4407,7 @@ func TestLeafnodeHeaders(t *testing.T) {
 	}
 	err = snc.PublishMsg(msg)
 	if err != nil {
-		t.Fatalf(err.Error())
+		t.Fatal(err.Error())
 	}
 
 	smsg, err := ssub.NextMsg(time.Second)
