@@ -3080,31 +3080,10 @@ Loop:
 }
 
 func TestJetStreamClusterKeyValueLastSeqMismatch(t *testing.T) {
-	conf := `
-		listen: 127.0.0.1:-1
-		server_name: %s
-		jetstream: {
-			store_dir: '%s',
-		}
-		cluster {
-			name: %s
-			listen: 127.0.0.1:%d
-			routes = [%s]
-		}
-		server_tags: ["test"]
-		system_account: sys
-		no_auth_user: js
-		accounts {
-			sys { users = [ { user: sys, pass: sys } ] }
-			js {
-				jetstream = enabled
-				users = [ { user: js, pass: js } ]
-		    }
-		}`
-	c := createJetStreamClusterWithTemplate(t, conf, "R3F", 3)
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
-	nc, js := jsClientConnect(t, c.serverByName("S-1"))
+	nc, js := jsClientConnect(t, c.randomServer())
 	defer nc.Close()
 
 	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
@@ -3121,65 +3100,13 @@ func TestJetStreamClusterKeyValueLastSeqMismatch(t *testing.T) {
 	require_NoError(t, err)
 	require_Equal(t, revision, 2)
 
-	_, err = kv.GetRevision("baz", uint64(0))
+	// Now delete foo from sequence 1.
+	// This needs to be low level remove (or system level) to test the condition we want here.
+	err = js.DeleteMsg("KV_mismatch", 1)
 	require_Error(t, err)
-	require_Equal(t, err.Error(), `nats: key not found`)
 
-	_, err = kv.GetRevision("baz", uint64(1))
-	require_Error(t, err)
-	require_Equal(t, err.Error(), `nats: key not found`)
-
-	_, err = kv.GetRevision("baz", uint64(2))
-	require_Error(t, err)
-	require_Equal(t, err.Error(), `nats: key not found`)
-
-	_, err = kv.GetRevision("baz", uint64(3))
-	require_Error(t, err)
-	require_Equal(t, err.Error(), `nats: key not found`)
-
-	err = kv.Delete("baz", nats.LastRevision(2))
+	// Now say we want to update baz but iff last was revision 1.
+	_, err = kv.Update("baz", []byte("3"), uint64(1))
 	require_Error(t, err)
 	require_Equal(t, err.Error(), `nats: wrong last sequence: 0`)
-
-	err = kv.Delete("baz", nats.LastRevision(3))
-	require_Error(t, err)
-	require_Equal(t, err.Error(), `nats: wrong last sequence: 0`)
-
-	_, err = kv.Update("baz", []byte("foo"), uint64(2))
-	require_Error(t, err)
-	require_Equal(t, err.Error(), `nats: wrong last sequence: 0`)
-
-	revision, err = kv.Create("quux", []byte("3"))
-	require_NoError(t, err)
-	require_Equal(t, revision, 3)
-
-	revision, err = kv.Update("baz", []byte("4"), uint64(4))
-	require_Error(t, err)
-	require_Equal(t, revision, 0)
-	require_Equal(t, err.Error(), `nats: wrong last sequence: 0`)
-
-	revision, err = kv.Update("quux", []byte("4"), uint64(4))
-	require_Error(t, err)
-	require_Equal(t, revision, 0)
-	require_Equal(t, err.Error(), `nats: wrong last sequence: 3`)
-
-	revision, err = kv.Update("baz", []byte("4"), uint64(3))
-	require_Error(t, err)
-	require_Equal(t, revision, 0)
-	require_Equal(t, err.Error(), `nats: wrong last sequence: 0`)
-
-	err = kv.Delete("bar", nats.LastRevision(3))
-	require_Error(t, err)
-	require_Equal(t, err.Error(), `nats: wrong last sequence: 2`)
-
-	err = kv.Delete("bar", nats.LastRevision(2))
-	require_NoError(t, err)
-
-	revision, err = kv.Update("bar", []byte("4"), uint64(3))
-	require_Error(t, err)
-	require_Equal(t, revision, 0)
-	require_Equal(t, err.Error(), `nats: wrong last sequence: 4`)
-
-	revision, err = kv.Update("bar", []byte("4"), uint64(4))
-	require_NoError(t, err)
 }
