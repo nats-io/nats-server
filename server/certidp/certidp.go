@@ -1,4 +1,4 @@
-// Copyright 2023 The NATS Authors
+// Copyright 2023-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -222,7 +222,7 @@ func CertOCSPEligible(link *ChainLink) bool {
 	if link == nil || link.Leaf.Raw == nil || len(link.Leaf.Raw) == 0 {
 		return false
 	}
-	if link.Leaf.OCSPServer == nil || len(link.Leaf.OCSPServer) == 0 {
+	if len(link.Leaf.OCSPServer) == 0 {
 		return false
 	}
 	urls := getWebEndpoints(link.Leaf.OCSPServer)

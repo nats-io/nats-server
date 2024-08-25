@@ -1,4 +1,4 @@
-// Copyright 2023 The NATS Authors
+// Copyright 2023-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -15,6 +15,7 @@ package certidp
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,7 +27,7 @@ import (
 
 func FetchOCSPResponse(link *ChainLink, opts *OCSPPeerConfig, log *Log) ([]byte, error) {
 	if link == nil || link.Leaf == nil || link.Issuer == nil || opts == nil || log == nil {
-		return nil, fmt.Errorf(ErrInvalidChainlink)
+		return nil, errors.New(ErrInvalidChainlink)
 	}
 
 	timeout := time.Duration(opts.Timeout * float64(time.Second))
@@ -59,7 +60,7 @@ func FetchOCSPResponse(link *ChainLink, opts *OCSPPeerConfig, log *Log) ([]byte,
 	responders := *link.OCSPWebEndpoints
 
 	if len(responders) == 0 {
-		return nil, fmt.Errorf(ErrNoAvailOCSPServers)
+		return nil, errors.New(ErrNoAvailOCSPServers)
 	}
 
 	var raw []byte

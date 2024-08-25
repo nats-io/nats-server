@@ -892,7 +892,7 @@ func TestNewRouteSinglePublishOnNewAccount(t *testing.T) {
 	expectA(pongRe)
 
 	if err := checkExpectedSubs(1, srvB); err != nil {
-		t.Fatalf(err.Error())
+		t.Fatal(err.Error())
 	}
 
 	clientB := createClientConn(t, optsB.Host, optsB.Port)
@@ -1097,7 +1097,7 @@ func testNewRouteStreamImport(t *testing.T, duplicateSub bool) {
 	// a subscription on "foo" for account $foo due to import.
 	// So total of 2 subs.
 	if err := checkExpectedSubs(2, srvA); err != nil {
-		t.Fatalf(err.Error())
+		t.Fatal(err.Error())
 	}
 
 	// Send on clientA
@@ -1122,7 +1122,7 @@ func testNewRouteStreamImport(t *testing.T, duplicateSub bool) {
 	expectB(pongRe)
 
 	if err := checkExpectedSubs(0, srvA); err != nil {
-		t.Fatalf(err.Error())
+		t.Fatal(err.Error())
 	}
 
 	sendA("PUB foo 2\r\nok\r\nPING\r\n")
