@@ -341,6 +341,9 @@ const (
 	// JSStreamDeleteErrF General stream deletion error string ({err})
 	JSStreamDeleteErrF ErrorIdentifier = 10050
 
+	// JSStreamDuplicateMessageConflict duplicate message id is in process
+	JSStreamDuplicateMessageConflict ErrorIdentifier = 10158
+
 	// JSStreamExternalApiOverlapErrF stream external api prefix {prefix} must not overlap with {subject}
 	JSStreamExternalApiOverlapErrF ErrorIdentifier = 10021
 
@@ -588,6 +591,7 @@ var (
 		JSStreamAssignmentErrF:                     {Code: 500, ErrCode: 10048, Description: "{err}"},
 		JSStreamCreateErrF:                         {Code: 500, ErrCode: 10049, Description: "{err}"},
 		JSStreamDeleteErrF:                         {Code: 500, ErrCode: 10050, Description: "{err}"},
+		JSStreamDuplicateMessageConflict:           {Code: 409, ErrCode: 10158, Description: "duplicate message id is in process"},
 		JSStreamExternalApiOverlapErrF:             {Code: 400, ErrCode: 10021, Description: "stream external api prefix {prefix} must not overlap with {subject}"},
 		JSStreamExternalDelPrefixOverlapsErrF:      {Code: 400, ErrCode: 10022, Description: "stream external delivery prefix {prefix} overlaps with stream subject {subject}"},
 		JSStreamGeneralErrorF:                      {Code: 500, ErrCode: 10051, Description: "{err}"},
@@ -1919,6 +1923,16 @@ func NewJSStreamDeleteError(err error, opts ...ErrorOption) *ApiError {
 		ErrCode:     e.ErrCode,
 		Description: strings.NewReplacer(args...).Replace(e.Description),
 	}
+}
+
+// NewJSStreamDuplicateMessageConflictError creates a new JSStreamDuplicateMessageConflict error: "duplicate message id is in process"
+func NewJSStreamDuplicateMessageConflictError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSStreamDuplicateMessageConflict]
 }
 
 // NewJSStreamExternalApiOverlapError creates a new JSStreamExternalApiOverlapErrF error: "stream external api prefix {prefix} must not overlap with {subject}"

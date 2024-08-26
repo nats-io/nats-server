@@ -1558,5 +1558,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSStreamDuplicateMessageConflict",
+    "code": 409,
+    "error_code": 10158,
+    "description": "duplicate message id is in process",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]
