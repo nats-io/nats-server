@@ -25,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -2675,4 +2676,397 @@ func TestJetStreamClusterKeyValueDesyncAfterHardKill(t *testing.T) {
 
 	err = checkState(t, c, "$G", "KV_inconsistency")
 	require_NoError(t, err)
+}
+
+func TestJetStreamClusterKeyValueSync(t *testing.T) {
+	t.Skip("Too long for CI at the moment")
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	for _, s := range c.servers {
+		s.optsMu.Lock()
+		s.opts.LameDuckDuration = 15 * time.Second
+		s.opts.LameDuckGracePeriod = -15 * time.Second
+		s.optsMu.Unlock()
+	}
+	s := c.randomNonLeader()
+	connect := func(t *testing.T) (*nats.Conn, nats.JetStreamContext) {
+		return jsClientConnect(t, s)
+	}
+
+	const accountName = "$G"
+	const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	createData := func(n int) []byte {
+		b := make([]byte, n)
+		for i := range b {
+			b[i] = letterBytes[rand.Intn(len(letterBytes))]
+		}
+		return b
+	}
+	getOrCreateKvStore := func(kvname string) (nats.KeyValue, error) {
+		_, js := connect(t)
+		kvExists := false
+		existingKvnames := js.KeyValueStoreNames()
+		for existingKvname := range existingKvnames {
+			if existingKvname == kvname {
+				kvExists = true
+				break
+			}
+		}
+		if !kvExists {
+			return js.CreateKeyValue(&nats.KeyValueConfig{
+				Bucket:   kvname,
+				Replicas: 3,
+				Storage:  nats.FileStorage,
+			})
+		} else {
+			return js.KeyValue(kvname)
+		}
+	}
+	abs := func(x int64) int64 {
+		if x < 0 {
+			return -x
+		}
+		return x
+	}
+	var counter int64
+	var errorCounter int64
+
+	getStreamDetails := func(t *testing.T, c *cluster, accountName, streamName string) *StreamDetail {
+		t.Helper()
+		srv := c.streamLeader(accountName, streamName)
+		if srv == nil {
+			return nil
+		}
+		jsz, err := srv.Jsz(&JSzOptions{Accounts: true, Streams: true, Consumer: true})
+		require_NoError(t, err)
+		for _, acc := range jsz.AccountDetails {
+			if acc.Name == accountName {
+				for _, stream := range acc.Streams {
+					if stream.Name == streamName {
+						return &stream
+					}
+				}
+			}
+		}
+		t.Error("Could not find account details")
+		return nil
+	}
+	checkState := func(t *testing.T, c *cluster, accountName, streamName string) error {
+		t.Helper()
+
+		leaderSrv := c.streamLeader(accountName, streamName)
+		if leaderSrv == nil {
+			return fmt.Errorf("no leader server found for stream %q", streamName)
+		}
+		streamLeader := getStreamDetails(t, c, accountName, streamName)
+		if streamLeader == nil {
+			return fmt.Errorf("no leader found for stream %q", streamName)
+		}
+		var errs []error
+		for _, srv := range c.servers {
+			if srv == leaderSrv {
+				// Skip self
+				continue
+			}
+			acc, err := srv.LookupAccount(accountName)
+			require_NoError(t, err)
+			stream, err := acc.lookupStream(streamName)
+			require_NoError(t, err)
+			state := stream.state()
+
+			if state.Msgs != streamLeader.State.Msgs {
+				err := fmt.Errorf("[%s] Leader %v has %d messages, Follower %v has %d messages",
+					streamName, leaderSrv, streamLeader.State.Msgs,
+					srv, state.Msgs,
+				)
+				errs = append(errs, err)
+			}
+			if state.FirstSeq != streamLeader.State.FirstSeq {
+				err := fmt.Errorf("[%s] Leader %v FirstSeq is %d, Follower %v is at %d",
+					streamName, leaderSrv, streamLeader.State.FirstSeq,
+					srv, state.FirstSeq,
+				)
+				errs = append(errs, err)
+			}
+			if state.LastSeq != streamLeader.State.LastSeq {
+				err := fmt.Errorf("[%s] Leader %v LastSeq is %d, Follower %v is at %d",
+					streamName, leaderSrv, streamLeader.State.LastSeq,
+					srv, state.LastSeq,
+				)
+				errs = append(errs, err)
+			}
+			if state.NumDeleted != streamLeader.State.NumDeleted {
+				err := fmt.Errorf("[%s] Leader %v NumDeleted is %d, Follower %v is at %d\nSTATE_A: %+v\nSTATE_B: %+v\n",
+					streamName, leaderSrv, streamLeader.State.NumDeleted,
+					srv, state.NumDeleted, streamLeader.State, state,
+				)
+				errs = append(errs, err)
+			}
+		}
+		if len(errs) > 0 {
+			return errors.Join(errs...)
+		}
+		return nil
+	}
+
+	checkMsgsEqual := func(t *testing.T, accountName, streamName string) error {
+		// Gather all the streams replicas and compare contents.
+		msets := make(map[*Server]*stream)
+		for _, s := range c.servers {
+			acc, err := s.LookupAccount(accountName)
+			if err != nil {
+				return err
+			}
+			mset, err := acc.lookupStream(streamName)
+			if err != nil {
+				return err
+			}
+			msets[s] = mset
+		}
+
+		str := getStreamDetails(t, c, accountName, streamName)
+		if str == nil {
+			return fmt.Errorf("could not get stream leader state")
+		}
+		state := str.State
+		for seq := state.FirstSeq; seq <= state.LastSeq; seq++ {
+			var msgId string
+			var smv StoreMsg
+			for replica, mset := range msets {
+				mset.mu.RLock()
+				sm, err := mset.store.LoadMsg(seq, &smv)
+				mset.mu.RUnlock()
+				if err != nil {
+					if err == ErrStoreMsgNotFound || err == errDeletedMsg {
+						// Skip these.
+					} else {
+						t.Logf("WRN: Error loading message (seq=%d) from stream %q on replica %q: %v", seq, streamName, replica, err)
+					}
+					continue
+				}
+				if msgId == _EMPTY_ {
+					msgId = string(sm.hdr)
+				} else if msgId != string(sm.hdr) {
+					t.Errorf("MsgIds do not match for seq %d on stream %q: %q vs %q", seq, streamName, msgId, sm.hdr)
+				}
+			}
+		}
+		return nil
+	}
+
+	keyUpdater := func(ctx context.Context, cancel context.CancelFunc, kvname string, numKeys int) {
+		kv, err := getOrCreateKvStore(kvname)
+		if err != nil {
+			t.Fatalf("[%s]:%v", kvname, err)
+		}
+		for i := 0; i < numKeys; i++ {
+			key := fmt.Sprintf("key-%d", i)
+			kv.Create(key, createData(160))
+		}
+		lastData := make(map[string][]byte)
+		revisions := make(map[string]uint64)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			r := rand.Intn(numKeys)
+			key := fmt.Sprintf("key-%d", r)
+
+			for i := 0; i < 5; i++ {
+				_, err := kv.Get(key)
+				if err != nil {
+					atomic.AddInt64(&errorCounter, 1)
+					if err == nats.ErrKeyNotFound {
+						t.Logf("WRN: Key not found! [%s/%s] - [%s]", kvname, key, err)
+						cancel()
+					}
+				}
+			}
+
+			k, err := kv.Get(key)
+			if err != nil {
+				atomic.AddInt64(&errorCounter, 1)
+			} else {
+				if revisions[key] != 0 && abs(int64(k.Revision())-int64(revisions[key])) < 2 {
+					lastDataVal, ok := lastData[key]
+					if ok && k.Revision() == revisions[key] && slices.Compare(lastDataVal, k.Value()) != 0 {
+						t.Logf("data loss [%s/%s][rev:%d] expected:[%v] is:[%v]", kvname, key, revisions[key], string(lastDataVal), string(k.Value()))
+					}
+				}
+				newData := createData(160)
+				revisions[key], err = kv.Update(key, newData, k.Revision())
+				if err != nil && err != nats.ErrTimeout {
+					atomic.AddInt64(&errorCounter, 1)
+				} else {
+					lastData[key] = newData
+				}
+				atomic.AddInt64(&counter, 1)
+			}
+		}
+	}
+
+	streamCount := 50
+	keysCount := 100
+	streamPrefix := "IKV"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	// The keyUpdaters will run for less time.
+	kctx, kcancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer kcancel()
+
+	var wg sync.WaitGroup
+	var streams []string
+	for i := 0; i < streamCount; i++ {
+		streamName := fmt.Sprintf("%s-%d", streamPrefix, i)
+		streams = append(streams, "KV_"+streamName)
+
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			keyUpdater(kctx, cancel, streamName, keysCount)
+		}(i)
+	}
+
+	debug := false
+	nc2, _ := jsClientConnect(t, s)
+	if debug {
+		go func() {
+			for range time.NewTicker(5 * time.Second).C {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+				for _, str := range streams {
+					leaderSrv := c.streamLeader(accountName, str)
+					if leaderSrv == nil {
+						continue
+					}
+					streamLeader := getStreamDetails(t, c, accountName, str)
+					if streamLeader == nil {
+						continue
+					}
+					t.Logf("|------------------------------------------------------------------------------------------------------------------------|")
+					lstate := streamLeader.State
+					t.Logf("| %-10s | %-10s | msgs:%-10d | bytes:%-10d | deleted:%-10d | first:%-10d | last:%-10d |",
+						str, leaderSrv.String()+"*", lstate.Msgs, lstate.Bytes, lstate.NumDeleted, lstate.FirstSeq, lstate.LastSeq,
+					)
+					for _, srv := range c.servers {
+						if srv == leaderSrv {
+							continue
+						}
+						acc, err := srv.LookupAccount(accountName)
+						if err != nil {
+							continue
+						}
+						stream, err := acc.lookupStream(str)
+						if err != nil {
+							t.Logf("Error looking up stream %s on %s replica", str, srv)
+							continue
+						}
+						state := stream.state()
+
+						unsynced := lstate.Msgs != state.Msgs || lstate.Bytes != state.Bytes ||
+							lstate.NumDeleted != state.NumDeleted || lstate.FirstSeq != state.FirstSeq || lstate.LastSeq != state.LastSeq
+
+						var result string
+						if unsynced {
+							result = "UNSYNCED"
+						}
+						t.Logf("| %-10s | %-10s | msgs:%-10d | bytes:%-10d | deleted:%-10d | first:%-10d | last:%-10d | %s",
+							str, srv, state.Msgs, state.Bytes, state.NumDeleted, state.FirstSeq, state.LastSeq, result,
+						)
+					}
+				}
+				t.Logf("|------------------------------------------------------------------------------------------------------------------------| %v", nc2.ConnectedUrl())
+			}
+		}()
+	}
+
+	checkStreams := func(t *testing.T) {
+		for _, str := range streams {
+			checkFor(t, time.Minute, 500*time.Millisecond, func() error {
+				return checkState(t, c, accountName, str)
+			})
+			checkFor(t, time.Minute, 500*time.Millisecond, func() error {
+				return checkMsgsEqual(t, accountName, str)
+			})
+		}
+	}
+
+Loop:
+	for range time.NewTicker(30 * time.Second).C {
+		select {
+		case <-ctx.Done():
+			break Loop
+		default:
+		}
+		rollout := func(t *testing.T) {
+			for _, s := range c.servers {
+				// For graceful mode
+				s.lameDuckMode()
+				s.WaitForShutdown()
+				s = c.restartServer(s)
+
+				hctx, hcancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer hcancel()
+
+			Healthz:
+				for range time.NewTicker(2 * time.Second).C {
+					select {
+					case <-hctx.Done():
+					default:
+					}
+
+					status := s.healthz(nil)
+					if status.StatusCode == 200 {
+						break Healthz
+					}
+				}
+				c.waitOnClusterReady()
+				checkStreams(t)
+			}
+		}
+		rollout(t)
+		checkStreams(t)
+	}
+	wg.Wait()
+	checkStreams(t)
+}
+
+func TestJetStreamClusterKeyValueLastSeqMismatch(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
+		Bucket:   "mismatch",
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	revision, err := kv.Create("foo", []byte("1"))
+	require_NoError(t, err)
+	require_Equal(t, revision, 1)
+
+	revision, err = kv.Create("bar", []byte("2"))
+	require_NoError(t, err)
+	require_Equal(t, revision, 2)
+
+	// Now delete foo from sequence 1.
+	// This needs to be low level remove (or system level) to test the condition we want here.
+	err = js.DeleteMsg("KV_mismatch", 1)
+	require_Error(t, err)
+
+	// Now say we want to update baz but iff last was revision 1.
+	_, err = kv.Update("baz", []byte("3"), uint64(1))
+	require_Error(t, err)
+	require_Equal(t, err.Error(), `nats: wrong last sequence: 0`)
 }
