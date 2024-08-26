@@ -3146,6 +3146,7 @@ func TestJetStreamClusterPubAckSequenceDupeAsync(t *testing.T) {
 
 		msgSubject := "TEST_SUBJECT"
 		msgIdOpt := nats.MsgId(nuid.Next())
+		conflictErr := &nats.APIError{ErrorCode: nats.ErrorCode(JSStreamDuplicateMessageConflict)}
 
 		wg := sync.WaitGroup{}
 		wg.Add(2)
@@ -3161,7 +3162,7 @@ func TestJetStreamClusterPubAckSequenceDupeAsync(t *testing.T) {
 				var err error
 				pubAcks[i], err = js.Publish(msgSubject, msgData, msgIdOpt)
 				// Conflict on duplicate message, wait a bit before retrying to get the proper pubAck.
-				if err != nil {
+				if errors.Is(err, conflictErr) {
 					time.Sleep(time.Millisecond * 500)
 					pubAcks[i], err = js.Publish(msgSubject, msgData, msgIdOpt)
 				}
