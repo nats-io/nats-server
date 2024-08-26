@@ -127,11 +127,12 @@ func (state RaftState) String() string {
 type raft struct {
 	sync.RWMutex
 
-	created time.Time // Time that the group was created
-	accName string    // Account name of the asset this raft group is for
-	group   string    // Raft group
-	sd      string    // Store directory
-	id      string    // Node ID
+	created time.Time      // Time that the group was created
+	accName string         // Account name of the asset this raft group is for
+	group   string         // Raft group
+	sd      string         // Store directory
+	id      string         // Node ID
+	wg      sync.WaitGroup // Wait for running goroutines to exit on shutdown
 
 	wal   WAL         // WAL store (filestore or memstore)
 	wtype StorageType // WAL type, e.g. FileStorage or MemoryStorage
@@ -524,6 +525,7 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 	s.registerRaftNode(n.group, n)
 
 	// Start the run goroutine for the Raft state machine.
+	n.wg.Add(1)
 	s.startGoRoutine(n.run, labels)
 
 	return n, nil
@@ -1624,6 +1626,7 @@ func (n *raft) Delete() {
 
 func (n *raft) shutdown(shouldDelete bool) {
 	n.Lock()
+	defer n.Unlock()
 
 	// Returned swap value is the previous state. It looks counter-intuitive
 	// to do this atomic operation with the lock held, but we have to do so in
@@ -1634,12 +1637,12 @@ func (n *raft) shutdown(shouldDelete bool) {
 	if n.state.Swap(int32(Closed)) == int32(Closed) {
 		// If we get called again with shouldDelete, in case we were called first with Stop() cleanup
 		if shouldDelete {
+			n.wg.Wait()
 			if wal := n.wal; wal != nil {
 				wal.Delete()
 			}
 			os.RemoveAll(n.sd)
 		}
-		n.Unlock()
 		return
 	}
 
@@ -1658,6 +1661,12 @@ func (n *raft) shutdown(shouldDelete bool) {
 		n.c = nil
 	}
 
+	// Need to unlock here, otherwise the pending goroutines might get
+	// stuck waiting for the lock and then the shutdown will never finish.
+	n.Unlock()
+	n.wg.Wait()
+	n.Lock()
+
 	s, g, wal := n.s, n.group, n.wal
 
 	// Unregistering ipQueues do not prevent them from push/pop
@@ -1671,7 +1680,6 @@ func (n *raft) shutdown(shouldDelete bool) {
 		q.unregister()
 	}
 	sd := n.sd
-	n.Unlock()
 
 	s.unregisterRaftNode(g)
 
@@ -1823,6 +1831,7 @@ func (n *raft) resetElectWithLock(et time.Duration) {
 // the entire life of the Raft node once started.
 func (n *raft) run() {
 	s := n.s
+	defer n.wg.Done()
 	defer s.grWG.Done()
 
 	// We want to wait for some routing to be enabled, so we will wait for
@@ -2700,7 +2709,11 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 	n.progress[ar.peer] = indexUpdates
 	n.Unlock()
 
-	n.s.startGoRoutine(func() { n.runCatchup(ar, indexUpdates) })
+	n.wg.Add(1)
+	n.s.startGoRoutine(func() {
+		defer n.wg.Done()
+		n.runCatchup(ar, indexUpdates)
+	})
 }
 
 func (n *raft) loadEntry(index uint64) (*appendEntry, error) {
