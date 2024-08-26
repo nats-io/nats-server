@@ -239,6 +239,7 @@ type msgBlock struct {
 	noTrack    bool
 	needSync   bool
 	syncAlways bool
+	noCompact  bool
 	closed     bool
 
 	// Used to mock write failures.
@@ -4072,6 +4073,9 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 		mb.bytes = 0
 	}
 
+	// Allow us to check compaction again.
+	mb.noCompact = false
+
 	// Mark as dirty for stream state.
 	fs.dirty++
 
@@ -4188,7 +4192,7 @@ func (mb *msgBlock) shouldCompactInline() bool {
 // Ignores 2MB minimum.
 // Lock should be held.
 func (mb *msgBlock) shouldCompactSync() bool {
-	return mb.bytes*2 < mb.rbytes
+	return mb.bytes*2 < mb.rbytes && !mb.noCompact
 }
 
 // This will compact and rewrite this block. This should only be called when we know we want to rewrite this block.
@@ -4297,7 +4301,12 @@ func (mb *msgBlock) compact() {
 	mb.needSync = true
 
 	// Capture the updated rbytes.
-	mb.rbytes = uint64(len(nbuf))
+	if rbytes := uint64(len(nbuf)); rbytes == mb.rbytes {
+		// No change, so set our noCompact bool here to avoid attempting to continually compress in syncBlocks.
+		mb.noCompact = true
+	} else {
+		mb.rbytes = rbytes
+	}
 
 	// Remove any seqs from the beginning of the blk.
 	for seq, nfseq := fseq, atomic.LoadUint64(&mb.first.seq); seq < nfseq; seq++ {
