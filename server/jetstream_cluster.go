@@ -7893,7 +7893,8 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 				pubAck := append(buf[:0], mset.pubAck...)
 				seq := dde.seq
 				mset.mu.Unlock()
-				if canRespond {
+				// Should not return an invalid sequence, in that case timeout.
+				if canRespond && seq > 0 {
 					response := append(pubAck, strconv.FormatUint(seq, 10)...)
 					response = append(response, ",\"duplicate\": true}"...)
 					outq.sendMsg(reply, response)

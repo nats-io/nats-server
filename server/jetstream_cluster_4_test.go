@@ -3125,7 +3125,7 @@ func TestJetStreamClusterPubAckSequenceDupe(t *testing.T) {
 
 }
 
-func TestJetStreamClusterPubAckSequenceDupe2(t *testing.T) {
+func TestJetStreamClusterPubAckSequenceDupeAsync(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "TEST_CLUSTER", 3)
 	defer c.shutdown()
 
@@ -3146,6 +3146,7 @@ func TestJetStreamClusterPubAckSequenceDupe2(t *testing.T) {
 
 		msgSubject := "TEST_SUBJECT"
 		msgIdOpt := nats.MsgId(nuid.Next())
+		ackWait := time.Millisecond * 500
 
 		wg := sync.WaitGroup{}
 		wg.Add(2)
@@ -3159,7 +3160,10 @@ func TestJetStreamClusterPubAckSequenceDupe2(t *testing.T) {
 			go func(i int) {
 				defer wg.Done()
 				var err error
-				pubAcks[i], err = js.Publish(msgSubject, msgData, msgIdOpt)
+				pubAcks[i], err = js.Publish(msgSubject, msgData, msgIdOpt, nats.AckWait(ackWait))
+				if err != nil {
+					pubAcks[i], err = js.Publish(msgSubject, msgData, msgIdOpt, nats.AckWait(ackWait))
+				}
 				require_NoError(t, err)
 			}(i)
 		}
