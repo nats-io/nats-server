@@ -7379,6 +7379,83 @@ func TestFileStoreCheckSkipFirstBlockNotLoadOldBlocks(t *testing.T) {
 	require_Equal(t, loaded, 1)
 }
 
+func TestFileStoreSyncCompressOnlyIfDirty(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 256, SyncInterval: 250 * time.Millisecond},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := []byte("hello")
+
+	// 6 msgs per block.
+	// Fill 2 blocks.
+	for i := 0; i < 12; i++ {
+		fs.StoreMsg("foo.BB", nil, msg)
+	}
+	// Create third block with just one message in it.
+	fs.StoreMsg("foo.BB", nil, msg)
+
+	// Should have created 3 blocks.
+	require_Equal(t, fs.numMsgBlocks(), 3)
+
+	// Now delete a bunch that will will fill up 3 block with tombstones.
+	for _, seq := range []uint64{2, 3, 4, 5, 8, 9, 10, 11} {
+		_, err = fs.RemoveMsg(seq)
+		require_NoError(t, err)
+	}
+	// Now make sure we add 4th block so syncBlocks will try to compress.
+	for i := 0; i < 6; i++ {
+		fs.StoreMsg("foo.BB", nil, msg)
+	}
+	require_Equal(t, fs.numMsgBlocks(), 4)
+
+	// All should have compact set.
+	fs.mu.Lock()
+	// Only check first 3 blocks.
+	for i := 0; i < 3; i++ {
+		mb := fs.blks[i]
+		mb.mu.Lock()
+		shouldCompact := mb.shouldCompactSync()
+		mb.mu.Unlock()
+		if !shouldCompact {
+			fs.mu.Unlock()
+			t.Fatalf("Expected should compact to be true for %d, got false", mb.getIndex())
+		}
+	}
+	fs.mu.Unlock()
+
+	// Let sync run.
+	time.Sleep(300 * time.Millisecond)
+
+	// We want to make sure the last block, which is filled with tombstones and is not compactable, returns false now.
+	fs.mu.Lock()
+	for _, mb := range fs.blks {
+		mb.mu.Lock()
+		shouldCompact := mb.shouldCompactSync()
+		mb.mu.Unlock()
+		if shouldCompact {
+			fs.mu.Unlock()
+			t.Fatalf("Expected should compact to be false for %d, got true", mb.getIndex())
+		}
+	}
+	fs.mu.Unlock()
+
+	// Now remove some from block 3 and verify that compact is not suppressed.
+	_, err = fs.RemoveMsg(13)
+	require_NoError(t, err)
+
+	fs.mu.Lock()
+	mb := fs.blks[2] // block 3.
+	mb.mu.Lock()
+	noCompact := mb.noCompact
+	mb.mu.Unlock()
+	fs.mu.Unlock()
+	// Verify that since we deleted a message we should be considered for compaction again in syncBlocks().
+	require_False(t, noCompact)
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////
