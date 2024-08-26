@@ -2099,7 +2099,15 @@ func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, storage Stor
 	}
 
 	// Check if we already have this assigned.
+retry:
 	if node := s.lookupRaftNode(rg.Name); node != nil {
+		if node.State() == Closed {
+			// We're waiting for this node to finish shutting down before we replace it.
+			js.mu.Unlock()
+			node.WaitForStop()
+			js.mu.Lock()
+			goto retry
+		}
 		s.Debugf("JetStream cluster already has raft group %q assigned", rg.Name)
 		rg.node = node
 		js.mu.Unlock()

@@ -5805,6 +5805,8 @@ func TestJetStreamClusterDetectOrphanNRGs(t *testing.T) {
 
 	// Should only be meta NRG left.
 	require_True(t, s.numRaftNodes() == 1)
+	s.rnMu.RLock()
+	defer s.rnMu.RUnlock()
 	require_True(t, s.lookupRaftNode(sgn) == nil)
 	require_True(t, s.lookupRaftNode(ogn) == nil)
 }
