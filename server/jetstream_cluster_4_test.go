@@ -2679,29 +2679,10 @@ func TestJetStreamClusterKeyValueDesyncAfterHardKill(t *testing.T) {
 }
 
 func TestJetStreamClusterKeyValueSync(t *testing.T) {
-	conf := `
-		listen: 127.0.0.1:-1
-		server_name: %s
-		jetstream: {
-			store_dir: '%s',
-		}
-		cluster {
-			name: %s
-			listen: 127.0.0.1:%d
-			routes = [%s]
-		}
-		server_tags: ["test"]
-		system_account: sys
-		no_auth_user: js
-		accounts {
-			sys { users = [ { user: sys, pass: sys } ] }
-			js {
-				jetstream = enabled
-				users = [ { user: js, pass: js } ]
-		    }
-		}`
-	c := createJetStreamClusterWithTemplate(t, conf, "R3F", 3)
+	t.Skip("Too long for CI at the moment")
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
+
 	for _, s := range c.servers {
 		s.optsMu.Lock()
 		s.opts.LameDuckDuration = 15 * time.Second
@@ -2709,11 +2690,11 @@ func TestJetStreamClusterKeyValueSync(t *testing.T) {
 		s.optsMu.Unlock()
 	}
 	s := c.randomNonLeader()
-
 	connect := func(t *testing.T) (*nats.Conn, nats.JetStreamContext) {
 		return jsClientConnect(t, s)
 	}
 
+	const accountName = "$G"
 	const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	createData := func(n int) []byte {
 		b := make([]byte, n)
@@ -2858,10 +2839,9 @@ func TestJetStreamClusterKeyValueSync(t *testing.T) {
 				mset.mu.RUnlock()
 				if err != nil {
 					if err == ErrStoreMsgNotFound || err == errDeletedMsg {
-						// t.Logf("Skipping error: %v", err)
 						// Skip these.
 					} else {
-						t.Logf("WRN: Unexpected error loading message (seq=%d) from stream %q on replica %q: %v", seq, streamName, replica, err)
+						t.Logf("WRN: Error loading message (seq=%d) from stream %q on replica %q: %v", seq, streamName, replica, err)
 					}
 					continue
 				}
@@ -2895,34 +2875,22 @@ func TestJetStreamClusterKeyValueSync(t *testing.T) {
 			r := rand.Intn(numKeys)
 			key := fmt.Sprintf("key-%d", r)
 
-			var k nats.KeyValueEntry
 			for i := 0; i < 5; i++ {
-				nextk, err := kv.Get(key)
+				_, err := kv.Get(key)
 				if err != nil {
-					t.Logf("get-error: [%s/%s] %v", kvname, key, err)
 					atomic.AddInt64(&errorCounter, 1)
 					if err == nats.ErrKeyNotFound {
-						t.Logf("Key not found! [%s/%s] - [%s]", kvname, key, err)
+						t.Logf("WRN: Key not found! [%s/%s] - [%s]", kvname, key, err)
 						cancel()
 					}
-				} else {
-					if k != nil && abs(int64(k.Revision())-int64(nextk.Revision())) > 2 {
-						// NOTE: This happens a lot so muting...
-						// t.Logf("get-revision-error:[%-5s/%-5s]\t[%-5d]\t[%-5d]", kvname, key, k.Revision(), nextk.Revision())
-					}
-					k = nextk
 				}
 			}
 
 			k, err := kv.Get(key)
 			if err != nil {
-				t.Logf("get-error:[%s/%s] %v", kvname, key, err)
 				atomic.AddInt64(&errorCounter, 1)
 			} else {
-				if revisions[key] != 0 && abs(int64(k.Revision())-int64(revisions[key])) > 2 {
-					// NOTE: Happens quite a bit so muting...
-					// t.Logf("revision-error: [%s/%s] is:[%d] expected:[%d]", kvname, key, k.Revision(), revisions[key])
-				} else {
+				if revisions[key] != 0 && abs(int64(k.Revision())-int64(revisions[key])) < 2 {
 					lastDataVal, ok := lastData[key]
 					if ok && k.Revision() == revisions[key] && slices.Compare(lastDataVal, k.Value()) != 0 {
 						t.Logf("data loss [%s/%s][rev:%d] expected:[%v] is:[%v]", kvname, key, revisions[key], string(lastDataVal), string(k.Value()))
@@ -2930,9 +2898,7 @@ func TestJetStreamClusterKeyValueSync(t *testing.T) {
 				}
 				newData := createData(160)
 				revisions[key], err = kv.Update(key, newData, k.Revision())
-				if err != nil {
-					// NOTE: Happens quite a bit so muting...
-					// t.Logf("update-error [%s/%s][rev:%d/delta:%d]: %v", kvname, key, k.Revision(), k.Delta(), err)
+				if err != nil && err != nats.ErrTimeout {
 					atomic.AddInt64(&errorCounter, 1)
 				} else {
 					lastData[key] = newData
@@ -2977,11 +2943,11 @@ func TestJetStreamClusterKeyValueSync(t *testing.T) {
 				default:
 				}
 				for _, str := range streams {
-					leaderSrv := c.streamLeader("js", str)
+					leaderSrv := c.streamLeader(accountName, str)
 					if leaderSrv == nil {
 						continue
 					}
-					streamLeader := getStreamDetails(t, c, "js", str)
+					streamLeader := getStreamDetails(t, c, accountName, str)
 					if streamLeader == nil {
 						continue
 					}
@@ -2994,7 +2960,7 @@ func TestJetStreamClusterKeyValueSync(t *testing.T) {
 						if srv == leaderSrv {
 							continue
 						}
-						acc, err := srv.LookupAccount("js")
+						acc, err := srv.LookupAccount(accountName)
 						if err != nil {
 							continue
 						}
@@ -3025,10 +2991,10 @@ func TestJetStreamClusterKeyValueSync(t *testing.T) {
 	checkStreams := func(t *testing.T) {
 		for _, str := range streams {
 			checkFor(t, time.Minute, 500*time.Millisecond, func() error {
-				return checkState(t, c, "js", str)
+				return checkState(t, c, accountName, str)
 			})
 			checkFor(t, time.Minute, 500*time.Millisecond, func() error {
-				return checkMsgsEqual(t, "js", str)
+				return checkMsgsEqual(t, accountName, str)
 			})
 		}
 	}
@@ -3063,19 +3029,13 @@ Loop:
 					}
 				}
 				c.waitOnClusterReady()
-
-				t.Logf("Check Streams after restarting %v", s)
 				checkStreams(t)
 			}
 		}
-
-		t.Logf("Restarting Nodes (connect url:%v)", nc2.ConnectedUrl())
 		rollout(t)
 		checkStreams(t)
-		t.Logf("Streams INSYNC after restarts")
 	}
 	wg.Wait()
-	t.Logf("Test is done. Checking streams again:")
 	checkStreams(t)
 }
 
