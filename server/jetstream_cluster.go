@@ -7894,10 +7894,17 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 				seq := dde.seq
 				mset.mu.Unlock()
 				// Should not return an invalid sequence, in that case timeout.
-				if canRespond && seq > 0 {
-					response := append(pubAck, strconv.FormatUint(seq, 10)...)
-					response = append(response, ",\"duplicate\": true}"...)
-					outq.sendMsg(reply, response)
+				if canRespond {
+					if seq > 0 {
+						response := append(pubAck, strconv.FormatUint(seq, 10)...)
+						response = append(response, ",\"duplicate\": true}"...)
+						outq.sendMsg(reply, response)
+					} else {
+						var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
+						resp.Error = ApiErrors[JSStreamDuplicateMessageConflict]
+						b, _ := json.Marshal(resp)
+						outq.sendMsg(reply, b)
+					}
 				}
 				return errMsgIdDuplicate
 			}
