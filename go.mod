@@ -14,3 +14,5 @@ require (
 	golang.org/x/sys v0.24.0
 	golang.org/x/time v0.6.0
 )
+
+require github.com/antithesishq/antithesis-sdk-go v0.4.0

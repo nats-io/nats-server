@@ -31,6 +31,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/antithesishq/antithesis-sdk-go/assert"
+
 	"github.com/nats-io/nats-server/v2/internal/fastrand"
 
 	"github.com/minio/highwayhash"
@@ -3892,6 +3894,14 @@ func (n *raft) writeTermVote() {
 		n.wtv = nil
 		n.setWriteErrLocked(err)
 		n.warn("Error writing term and vote file for %q: %v", n.group, err)
+
+		assert.Unreachable(
+			"Error writing term and vote file",
+			map[string]any{
+				"error": err.Error(),
+				"group": n.group,
+			},
+		)
 	}
 }
 
