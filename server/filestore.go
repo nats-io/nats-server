@@ -6539,9 +6539,6 @@ func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64, sm *Store
 				// We should not do this at all if we are already on the last block.
 				// Also if we are a wildcard do not check if large subject space.
 				const wcMaxSizeToCheck = 64 * 1024
-
-				// if len(blks) - 1 > N
-
 				if i == bi && i < len(fs.blks)-1 && (!wc || fs.psim.Size() < wcMaxSizeToCheck) {
 					nbi, err := fs.checkSkipFirstBlock(filter, wc, bi)
 					// Nothing available.
