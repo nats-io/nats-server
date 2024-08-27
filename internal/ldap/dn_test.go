@@ -1,5 +1,7 @@
 // Copyright (c) 2011-2015 Michael Mitton (mmitton@gmail.com)
 // Portions copyright (c) 2015-2016 go-ldap Authors
+// Static-Check Fixes Copyright 2024 The NATS Authors
+
 package ldap
 
 import (
@@ -53,7 +55,7 @@ func TestSuccessfulDNParsing(t *testing.T) {
 	for test, answer := range testcases {
 		dn, err := ParseDN(test)
 		if err != nil {
-			t.Errorf(err.Error())
+			t.Error(err.Error())
 			continue
 		}
 		if !reflect.DeepEqual(dn, &answer) {

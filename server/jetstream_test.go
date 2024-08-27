@@ -22412,7 +22412,7 @@ func TestJetStreamSubjectFilteredPurgeClearsPendingAcks(t *testing.T) {
 }
 
 // https://github.com/nats-io/nats-server/issues/4878
-func TestInterestConsumerFilterEdit(t *testing.T) {
+func TestJetStreamInterestStreamConsumerFilterEdit(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 

@@ -5857,15 +5857,15 @@ func TestJetStreamClusterRestartThenScaleStreamReplicas(t *testing.T) {
 			select {
 			case dl := <-loggers[0].dbgCh:
 				if strings.Contains(dl, condition) {
-					errCh <- fmt.Errorf(condition)
+					errCh <- errors.New(condition)
 				}
 			case dl := <-loggers[1].dbgCh:
 				if strings.Contains(dl, condition) {
-					errCh <- fmt.Errorf(condition)
+					errCh <- errors.New(condition)
 				}
 			case dl := <-loggers[2].dbgCh:
 				if strings.Contains(dl, condition) {
-					errCh <- fmt.Errorf(condition)
+					errCh <- errors.New(condition)
 				}
 			case <-ctx.Done():
 				return

@@ -667,7 +667,7 @@ func (c *client) wsHandleProtocolError(message string) error {
 	buf := wsCreateCloseMessage(wsCloseStatusProtocolError, message)
 	c.wsEnqueueControlMessage(wsCloseMessage, buf)
 	nbPoolPut(buf) // wsEnqueueControlMessage has taken a copy.
-	return fmt.Errorf(message)
+	return errors.New(message)
 }
 
 // Create a close message with the given `status` and `body`.
