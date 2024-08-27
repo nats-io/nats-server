@@ -7760,7 +7760,7 @@ func Benchmark_FileStoreLoadNextMsgVerySparseMsgsLargeTail(b *testing.B) {
 	// Add in a bunch of msgs.
 	// We need to make sure we have a range of subjects that could kick in a linear scan.
 	for i := 0; i < 1_000_000; i++ {
-		subj := fmt.Sprintf("foo.%d.bar", rand.Intn(100_000)+2)
+		subj := fmt.Sprintf("foo.%d.bar", rand.Intn(64_000)+2)
 		fs.StoreMsg(subj, nil, msg)
 	}
 
