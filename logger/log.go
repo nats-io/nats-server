@@ -25,6 +25,9 @@ import (
 	"time"
 )
 
+// Default file permissions for log files.
+const defaultLogPerms = os.FileMode(0640)
+
 // Logger is the server logger
 type Logger struct {
 	sync.Mutex
@@ -142,7 +145,7 @@ type fileLogger struct {
 
 func newFileLogger(filename, pidPrefix string, time bool) (*fileLogger, error) {
 	fileflags := os.O_WRONLY | os.O_APPEND | os.O_CREATE
-	f, err := os.OpenFile(filename, fileflags, 0660)
+	f, err := os.OpenFile(filename, fileflags, defaultLogPerms)
 	if err != nil {
 		return nil, err
 	}
@@ -260,7 +263,7 @@ func (l *fileLogger) Write(b []byte) (int, error) {
 				now.Second(), now.Nanosecond())
 			os.Rename(fname, bak)
 			fileflags := os.O_WRONLY | os.O_APPEND | os.O_CREATE
-			f, err := os.OpenFile(fname, fileflags, 0660)
+			f, err := os.OpenFile(fname, fileflags, defaultLogPerms)
 			if err != nil {
 				l.Unlock()
 				panic(fmt.Sprintf("Unable to re-open the logfile %q after rotation: %v", fname, err))

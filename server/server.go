@@ -1542,7 +1542,7 @@ func (s *Server) isRunning() bool {
 
 func (s *Server) logPid() error {
 	pidStr := strconv.Itoa(os.Getpid())
-	return os.WriteFile(s.getOpts().PidFile, []byte(pidStr), 0660)
+	return os.WriteFile(s.getOpts().PidFile, []byte(pidStr), defaultFilePerms)
 }
 
 // numReservedAccounts will return the number of reserved accounts configured in the server.
