@@ -17,9 +17,22 @@
 package sysmem
 
 import (
-	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
+
+var winKernel32 = windows.NewLazySystemDLL("kernel32.dll")
+var winGlobalMemoryStatusEx = winKernel32.NewProc("GlobalMemoryStatusEx")
+
+func init() {
+	if err := winKernel32.Load(); err != nil {
+		panic(err)
+	}
+	if err := winGlobalMemoryStatusEx.Find(); err != nil {
+		panic(err)
+	}
+}
 
 // https://docs.microsoft.com/en-us/windows/win32/api/sysinfoapi/ns-sysinfoapi-memorystatusex
 type _memoryStatusEx struct {
@@ -30,16 +43,8 @@ type _memoryStatusEx struct {
 }
 
 func Memory() int64 {
-	kernel32, err := syscall.LoadDLL("kernel32.dll")
-	if err != nil {
-		return 0
-	}
-	globalMemoryStatusEx, err := kernel32.FindProc("GlobalMemoryStatusEx")
-	if err != nil {
-		return 0
-	}
 	msx := &_memoryStatusEx{dwLength: 64}
-	res, _, _ := globalMemoryStatusEx.Call(uintptr(unsafe.Pointer(msx)))
+	res, _, _ := winGlobalMemoryStatusEx.Call(uintptr(unsafe.Pointer(msx)))
 	if res == 0 {
 		return 0
 	}
