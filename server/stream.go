@@ -4695,6 +4695,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 					var ss StreamState
 					store.FastState(&ss)
 					if seq <= ss.LastSeq {
+						fmt.Printf("--- CORRECTING THE STATE!!! %v -%v - %v - %+v\n", fseq, seq, err, ss)
 						fseq, err = seq, nil
 					}
 				}

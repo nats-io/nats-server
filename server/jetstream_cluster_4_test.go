@@ -2679,7 +2679,6 @@ func TestJetStreamClusterKeyValueDesyncAfterHardKill(t *testing.T) {
 }
 
 func TestJetStreamClusterKeyValueSync(t *testing.T) {
-	t.Skip("Too long for CI at the moment")
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -2932,7 +2931,7 @@ func TestJetStreamClusterKeyValueSync(t *testing.T) {
 		}(i)
 	}
 
-	debug := false
+	debug := true
 	nc2, _ := jsClientConnect(t, s)
 	if debug {
 		go func() {
