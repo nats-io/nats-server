@@ -3046,29 +3046,28 @@ func TestJetStreamClusterKeyValueLastSeqMismatch(t *testing.T) {
 	nc, js := jsClientConnect(t, c.randomServer())
 	defer nc.Close()
 
-	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
-		Bucket:   "mismatch",
-		Replicas: 3,
-	})
-	require_NoError(t, err)
+	for _, r := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R=%d", r), func(t *testing.T) {
+			kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
+				Bucket:   fmt.Sprintf("mismatch_%v", r),
+				Replicas: r,
+			})
+			require_NoError(t, err)
 
-	revision, err := kv.Create("foo", []byte("1"))
-	require_NoError(t, err)
-	require_Equal(t, revision, 1)
+			revision, err := kv.Create("foo", []byte("1"))
+			require_NoError(t, err)
+			require_Equal(t, revision, 1)
 
-	revision, err = kv.Create("bar", []byte("2"))
-	require_NoError(t, err)
-	require_Equal(t, revision, 2)
+			revision, err = kv.Create("bar", []byte("2"))
+			require_NoError(t, err)
+			require_Equal(t, revision, 2)
 
-	// Now delete foo from sequence 1.
-	// This needs to be low level remove (or system level) to test the condition we want here.
-	err = js.DeleteMsg("KV_mismatch", 1)
-	require_Error(t, err)
-
-	// Now say we want to update baz but iff last was revision 1.
-	_, err = kv.Update("baz", []byte("3"), uint64(1))
-	require_Error(t, err)
-	require_Equal(t, err.Error(), `nats: wrong last sequence: 0`)
+			// Now say we want to update baz but iff last was revision 1.
+			_, err = kv.Update("baz", []byte("3"), uint64(1))
+			require_Error(t, err)
+			require_Equal(t, err.Error(), `nats: wrong last sequence: 0`)
+		})
+	}
 }
 
 func TestJetStreamClusterPubAckSequenceDupe(t *testing.T) {
