@@ -4400,7 +4400,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			if err == ErrStoreMsgNotFound {
 				if seq == 0 {
 					fseq, err = 0, nil
-				} else {
+				} else if mset.isClustered() {
 					// Do not bump clfs in case message was not found and could have been deleted.
 					var ss StreamState
 					store.FastState(&ss)
