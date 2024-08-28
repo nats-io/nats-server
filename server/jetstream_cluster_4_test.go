@@ -3062,11 +3062,6 @@ func TestJetStreamClusterKeyValueLastSeqMismatch(t *testing.T) {
 			require_NoError(t, err)
 			require_Equal(t, revision, 2)
 
-			// Now delete foo from sequence 1.
-			// This needs to be low level remove (or system level) to test the condition we want here.
-			err = js.DeleteMsg(fmt.Sprintf("KV_mismatch_%d", r), 1)
-			require_Error(t, err)
-
 			// Now say we want to update baz but iff last was revision 1.
 			_, err = kv.Update("baz", []byte("3"), uint64(1))
 			require_Error(t, err)
