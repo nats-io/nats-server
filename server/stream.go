@@ -2497,14 +2497,14 @@ func (mset *stream) skipMsgs(start, end uint64) {
 
 const (
 	// Base retry backoff duration.
-	retryBackOff = 5 * time.Second
+	retryBackOff = 1000 * time.Millisecond
 	// Maximum amount we will wait.
 	retryMaximum = 2 * time.Minute
 )
 
 // Calculate our backoff based on number of failures.
 func calculateRetryBackoff(fails int) time.Duration {
-	backoff := time.Duration(retryBackOff) * time.Duration(fails*2)
+	backoff := time.Duration(float64(retryBackOff.Nanoseconds())*math.Exp(float64(fails)/3)) - retryBackOff
 	if backoff > retryMaximum {
 		backoff = retryMaximum
 	}
