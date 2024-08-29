@@ -4586,6 +4586,8 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 		pauseUTC := req.PauseUntil.UTC()
 		if !pauseUTC.IsZero() {
 			nca.Config.PauseUntil = &pauseUTC
+		} else {
+			nca.Config.PauseUntil = nil
 		}
 		eca := encodeAddConsumerAssignment(&nca)
 		cc.meta.Propose(eca)
