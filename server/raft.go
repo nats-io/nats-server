@@ -1071,11 +1071,7 @@ func (n *raft) installSnapshot(snap *snapshot) error {
 	sn := fmt.Sprintf(snapFileT, snap.lastTerm, snap.lastIndex)
 	sfile := filepath.Join(snapDir, sn)
 
-	<-dios
-	err := os.WriteFile(sfile, n.encodeSnapshot(snap), defaultFilePerms)
-	dios <- struct{}{}
-
-	if err != nil {
+	if err := writeFileWithSync(sfile, n.encodeSnapshot(snap), defaultFilePerms); err != nil {
 		// We could set write err here, but if this is a temporary situation, too many open files etc.
 		// we want to retry and snapshots are not fatal.
 		return err
@@ -3805,12 +3801,7 @@ func writePeerState(sd string, ps *peerState) error {
 	if _, err := os.Stat(psf); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-
-	<-dios
-	err := os.WriteFile(psf, encodePeerState(ps), defaultFilePerms)
-	dios <- struct{}{}
-
-	return err
+	return writeFileWithSync(psf, encodePeerState(ps), defaultFilePerms)
 }
 
 func readPeerState(sd string) (ps *peerState, err error) {
@@ -3834,12 +3825,7 @@ func writeTermVote(sd string, wtv []byte) error {
 	if _, err := os.Stat(psf); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-
-	<-dios
-	err := os.WriteFile(psf, wtv, defaultFilePerms)
-	dios <- struct{}{}
-
-	return err
+	return writeFileWithSync(psf, wtv, defaultFilePerms)
 }
 
 // readTermVote will read the largest term and who we voted from to stable storage.
