@@ -6303,6 +6303,10 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 	if err != nil {
 		return nil, err
 	}
+	js := jsa.js
+	if js == nil {
+		return nil, NewJSNotEnabledForAccountError()
+	}
 
 	cfg, apiErr := s.checkStreamCfg(ncfg, a, false)
 	if apiErr != nil {
@@ -6337,6 +6341,22 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 	}
 	sdirCheck := filepath.Clean(sdir) + string(os.PathSeparator)
 
+	_, isClustered := jsa.jetStreamAndClustered()
+	jsa.usageMu.RLock()
+	selected, tier, hasTier := jsa.selectLimits(cfg.Replicas)
+	jsa.usageMu.RUnlock()
+	reserved := int64(0)
+	if hasTier {
+		if isClustered {
+			js.mu.RLock()
+			_, reserved = tieredStreamAndReservationCount(js.cluster.streams[a.Name], tier, &cfg)
+			js.mu.RUnlock()
+		} else {
+			reserved = jsa.tieredReservation(tier, &cfg)
+		}
+	}
+
+	var bc int64
 	tr := tar.NewReader(s2.NewReader(r))
 	for {
 		hdr, err := tr.Next()
@@ -6348,6 +6368,13 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 		}
 		if hdr.Typeflag != tar.TypeReg {
 			return nil, logAndReturnError()
+		}
+		bc += hdr.Size
+		js.mu.RLock()
+		err = js.checkAllLimits(&selected, &cfg, reserved, bc)
+		js.mu.RUnlock()
+		if err != nil {
+			return nil, err
 		}
 		fpath := filepath.Join(sdir, filepath.Clean(hdr.Name))
 		if !strings.HasPrefix(fpath, sdirCheck) {

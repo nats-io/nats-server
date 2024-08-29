@@ -2315,7 +2315,7 @@ func (js *jetStream) checkBytesLimits(selectedLimits *JetStreamAccountLimits, ad
 			return NewJSMemoryResourcesExceededError()
 		}
 		// Check if this server can handle request.
-		if checkServer && js.memReserved+addBytes > js.config.MaxMemory {
+		if checkServer && js.memReserved+totalBytes > js.config.MaxMemory {
 			return NewJSMemoryResourcesExceededError()
 		}
 	case FileStorage:
@@ -2324,7 +2324,7 @@ func (js *jetStream) checkBytesLimits(selectedLimits *JetStreamAccountLimits, ad
 			return NewJSStorageResourcesExceededError()
 		}
 		// Check if this server can handle request.
-		if checkServer && js.storeReserved+addBytes > js.config.MaxStore {
+		if checkServer && js.storeReserved+totalBytes > js.config.MaxStore {
 			return NewJSStorageResourcesExceededError()
 		}
 	}
