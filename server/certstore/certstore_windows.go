@@ -115,18 +115,37 @@ var (
 	winMyStore = winWide("MY")
 
 	// These DLLs must be available on all Windows hosts
-	winCrypt32 = windows.MustLoadDLL("crypt32.dll")
-	winNCrypt  = windows.MustLoadDLL("ncrypt.dll")
+	winCrypt32 = windows.NewLazySystemDLL("crypt32.dll")
+	winNCrypt  = windows.NewLazySystemDLL("ncrypt.dll")
 
-	winCertFindCertificateInStore        = winCrypt32.MustFindProc("CertFindCertificateInStore")
-	winCryptAcquireCertificatePrivateKey = winCrypt32.MustFindProc("CryptAcquireCertificatePrivateKey")
-	winNCryptExportKey                   = winNCrypt.MustFindProc("NCryptExportKey")
-	winNCryptOpenStorageProvider         = winNCrypt.MustFindProc("NCryptOpenStorageProvider")
-	winNCryptGetProperty                 = winNCrypt.MustFindProc("NCryptGetProperty")
-	winNCryptSignHash                    = winNCrypt.MustFindProc("NCryptSignHash")
+	winCertFindCertificateInStore        = winCrypt32.NewProc("CertFindCertificateInStore")
+	winCryptAcquireCertificatePrivateKey = winCrypt32.NewProc("CryptAcquireCertificatePrivateKey")
+	winNCryptExportKey                   = winNCrypt.NewProc("NCryptExportKey")
+	winNCryptOpenStorageProvider         = winNCrypt.NewProc("NCryptOpenStorageProvider")
+	winNCryptGetProperty                 = winNCrypt.NewProc("NCryptGetProperty")
+	winNCryptSignHash                    = winNCrypt.NewProc("NCryptSignHash")
 
 	winFnGetProperty = winGetProperty
 )
+
+func init() {
+	for _, d := range []*windows.LazyDLL{
+		winCrypt32, winNCrypt,
+	} {
+		if err := d.Load(); err != nil {
+			panic(err)
+		}
+	}
+	for _, p := range []*windows.LazyProc{
+		winCertFindCertificateInStore, winCryptAcquireCertificatePrivateKey,
+		winNCryptExportKey, winNCryptOpenStorageProvider,
+		winNCryptGetProperty, winNCryptSignHash,
+	} {
+		if err := p.Find(); err != nil {
+			panic(err)
+		}
+	}
+}
 
 type winPKCS1PaddingInfo struct {
 	pszAlgID *uint16
