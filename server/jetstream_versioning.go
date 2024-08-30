@@ -76,6 +76,43 @@ func setConsumerAssetVersionMetadata(cfg *ConsumerConfig, prevCfg *ConsumerConfi
 	cfg.Metadata[JSRequiredLevelMetadataKey] = requiredApiLevel
 }
 
+// copyConsumerAssetVersionMetadata copies versioning fields from metadata of prevCfg into cfg.
+// Removes versioning fields if no previous metadata, updates if set, and removes fields if it doesn't exist in prevCfg.
+//
+// Note: useful when doing equality checks on cfg and prevCfg, but ignoring any versioning metadata differences.
+// MUST be followed up with a call to setConsumerAssetVersionMetadata to fix potentially lost metadata.
+func copyConsumerAssetVersionMetadata(cfg *ConsumerConfig, prevCfg *ConsumerConfig) {
+	// Remove fields when no previous metadata.
+	if prevCfg == nil || prevCfg.Metadata == nil {
+		if cfg.Metadata != nil {
+			delete(cfg.Metadata, JSCreatedVersionMetadataKey)
+			delete(cfg.Metadata, JSCreatedLevelMetadataKey)
+			delete(cfg.Metadata, JSRequiredLevelMetadataKey)
+			if len(cfg.Metadata) == 0 {
+				cfg.Metadata = nil
+			}
+		}
+		return
+	}
+
+	// Set if exists, delete otherwise.
+	setOrDeleteInMetadata(cfg, prevCfg, JSCreatedVersionMetadataKey)
+	setOrDeleteInMetadata(cfg, prevCfg, JSCreatedLevelMetadataKey)
+	setOrDeleteInMetadata(cfg, prevCfg, JSRequiredLevelMetadataKey)
+}
+
+// setOrDeleteInMetadata sets field with key/value in metadata of cfg if set, deletes otherwise.
+func setOrDeleteInMetadata(cfg *ConsumerConfig, prevCfg *ConsumerConfig, key string) {
+	if value, ok := prevCfg.Metadata[key]; ok {
+		if cfg.Metadata == nil {
+			cfg.Metadata = make(map[string]string)
+		}
+		cfg.Metadata[key] = value
+	} else {
+		delete(cfg.Metadata, key)
+	}
+}
+
 // preserveAssetCreatedVersionMetadata sets metadata to contain which version and API level the asset was created on.
 // Preserves previous metadata, if not set it initializes versions for the metadata.
 func preserveAssetCreatedVersionMetadata(metadata, prevMetadata map[string]string) {

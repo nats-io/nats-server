@@ -7286,8 +7286,8 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	// if name was set by the user.
 	if oname != _EMPTY_ {
 		if ca = sa.consumers[oname]; ca != nil && !ca.deleted {
-			// Provided config might miss metadata, include from existing config.
-			setConsumerAssetVersionMetadata(cfg, ca.Config)
+			// Provided config might miss metadata, copy from existing config.
+			copyConsumerAssetVersionMetadata(cfg, ca.Config)
 
 			if action == ActionCreate && !reflect.DeepEqual(cfg, ca.Config) {
 				resp.Error = NewJSConsumerAlreadyExistsError()

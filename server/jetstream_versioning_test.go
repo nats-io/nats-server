@@ -51,7 +51,7 @@ func metadataUpdatedPrevious(featureLevel string) map[string]string {
 	}
 }
 
-func metadataEmpty() map[string]string {
+func metadataOnlyRequired() map[string]string {
 	return map[string]string{
 		JSRequiredLevelMetadataKey: "0",
 	}
@@ -86,13 +86,13 @@ func TestJetStreamSetStreamAssetVersionMetadata(t *testing.T) {
 			desc:             "update/empty-prev-metadata",
 			cfg:              &StreamConfig{},
 			prev:             &StreamConfig{},
-			expectedMetadata: metadataEmpty(),
+			expectedMetadata: metadataOnlyRequired(),
 		},
 		{
 			desc:             "update/empty-prev-metadata/delete-user-provided",
 			cfg:              &StreamConfig{Metadata: metadataPrevious()},
 			prev:             &StreamConfig{},
-			expectedMetadata: metadataEmpty(),
+			expectedMetadata: metadataOnlyRequired(),
 		},
 	} {
 		t.Run(test.desc, func(t *testing.T) {
@@ -159,13 +159,13 @@ func TestJetStreamSetConsumerAssetVersionMetadata(t *testing.T) {
 			desc:             "update/empty-prev-metadata",
 			cfg:              &ConsumerConfig{},
 			prev:             &ConsumerConfig{},
-			expectedMetadata: metadataEmpty(),
+			expectedMetadata: metadataOnlyRequired(),
 		},
 		{
 			desc:             "update/empty-prev-metadata/delete-user-provided",
 			cfg:              &ConsumerConfig{Metadata: metadataPrevious()},
 			prev:             &ConsumerConfig{},
-			expectedMetadata: metadataEmpty(),
+			expectedMetadata: metadataOnlyRequired(),
 		},
 	} {
 		t.Run(test.desc, func(t *testing.T) {
@@ -173,6 +173,76 @@ func TestJetStreamSetConsumerAssetVersionMetadata(t *testing.T) {
 			require_Equal(t, test.cfg.Metadata[JSCreatedVersionMetadataKey], test.expectedMetadata[JSCreatedVersionMetadataKey])
 			require_Equal(t, test.cfg.Metadata[JSCreatedLevelMetadataKey], test.expectedMetadata[JSCreatedLevelMetadataKey])
 			require_Equal(t, test.cfg.Metadata[JSRequiredLevelMetadataKey], test.expectedMetadata[JSRequiredLevelMetadataKey])
+		})
+	}
+}
+
+func TestJetStreamCopyConsumerAssetVersionMetadata(t *testing.T) {
+	for _, test := range []struct {
+		desc             string
+		cfg              *ConsumerConfig
+		prev             *ConsumerConfig
+	}{
+		{
+			desc:             "no-previous-ignore",
+			cfg:              &ConsumerConfig{Metadata: metadataAllSet("-1")},
+			prev:             nil,
+		},
+		{
+			desc:             "nil-previous-metadata-ignore",
+			cfg:              &ConsumerConfig{Metadata: metadataAllSet("-1")},
+			prev:             &ConsumerConfig{Metadata: nil},
+		},
+		{
+			desc:             "nil-current-metadata-ignore",
+			cfg:              &ConsumerConfig{Metadata: nil},
+			prev:             &ConsumerConfig{Metadata: metadataPrevious()},
+		},
+		{
+			desc:             "copy-previous",
+			cfg:              &ConsumerConfig{Metadata: metadataAllSet("-1")},
+			prev:             &ConsumerConfig{Metadata: metadataPrevious()},
+		},
+		{
+			desc:             "delete-missing-fields",
+			cfg:              &ConsumerConfig{Metadata: metadataAllSet("-1")},
+			prev:             &ConsumerConfig{Metadata: make(map[string]string)},
+		},
+	} {
+		t.Run(test.desc, func(t *testing.T) {
+			copyConsumerAssetVersionMetadata(test.cfg, test.prev)
+
+			var expectedMetadata map[string]string
+			if test.prev != nil {
+				expectedMetadata = test.prev.Metadata
+			}
+
+			value, ok := expectedMetadata[JSCreatedVersionMetadataKey]
+			if ok {
+				require_Equal(t, test.cfg.Metadata[JSCreatedVersionMetadataKey], value)
+			} else {
+				// Key shouldn't exist.
+				_, ok = test.cfg.Metadata[JSCreatedVersionMetadataKey]
+				require_False(t, ok)
+			}
+
+			value, ok = expectedMetadata[JSCreatedLevelMetadataKey]
+			if ok {
+				require_Equal(t, test.cfg.Metadata[JSCreatedLevelMetadataKey], value)
+			} else {
+				// Key shouldn't exist.
+				_, ok = test.cfg.Metadata[JSCreatedLevelMetadataKey]
+				require_False(t, ok)
+			}
+
+			value, ok = expectedMetadata[JSRequiredLevelMetadataKey]
+			if ok {
+				require_Equal(t, test.cfg.Metadata[JSRequiredLevelMetadataKey], value)
+			} else {
+				// Key shouldn't exist.
+				_, ok = test.cfg.Metadata[JSRequiredLevelMetadataKey]
+				require_False(t, ok)
+			}
 		})
 	}
 }
