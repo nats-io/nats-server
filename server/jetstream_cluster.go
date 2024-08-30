@@ -6244,6 +6244,10 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
+
+	// Update asset version metadata.
+	setStreamAssetVersionMetadata(cfg, osa.Config)
+
 	var newCfg *StreamConfig
 	if jsa := js.accounts[acc.Name]; jsa != nil {
 		js.mu.Unlock()
@@ -7295,6 +7299,13 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 			}
 		}
 	}
+
+	// Initialize/update asset version metadata.
+	var oldCfg *ConsumerConfig
+	if ca != nil {
+		oldCfg = ca.Config
+	}
+	setConsumerAssetVersionMetadata(cfg, oldCfg)
 
 	// If this is new consumer.
 	if ca == nil {
