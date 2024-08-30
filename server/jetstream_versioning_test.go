@@ -16,11 +16,12 @@ package server
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/nats-io/nats.go"
 	"io"
 	"os"
 	"testing"
 	"time"
+
+	"github.com/nats-io/nats.go"
 )
 
 func metadataAllSet(featureLevel string) map[string]string {
