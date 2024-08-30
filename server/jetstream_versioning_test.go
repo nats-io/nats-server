@@ -179,34 +179,34 @@ func TestJetStreamSetConsumerAssetVersionMetadata(t *testing.T) {
 
 func TestJetStreamCopyConsumerAssetVersionMetadata(t *testing.T) {
 	for _, test := range []struct {
-		desc             string
-		cfg              *ConsumerConfig
-		prev             *ConsumerConfig
+		desc string
+		cfg  *ConsumerConfig
+		prev *ConsumerConfig
 	}{
 		{
-			desc:             "no-previous-ignore",
-			cfg:              &ConsumerConfig{Metadata: metadataAllSet("-1")},
-			prev:             nil,
+			desc: "no-previous-ignore",
+			cfg:  &ConsumerConfig{Metadata: metadataAllSet("-1")},
+			prev: nil,
 		},
 		{
-			desc:             "nil-previous-metadata-ignore",
-			cfg:              &ConsumerConfig{Metadata: metadataAllSet("-1")},
-			prev:             &ConsumerConfig{Metadata: nil},
+			desc: "nil-previous-metadata-ignore",
+			cfg:  &ConsumerConfig{Metadata: metadataAllSet("-1")},
+			prev: &ConsumerConfig{Metadata: nil},
 		},
 		{
-			desc:             "nil-current-metadata-ignore",
-			cfg:              &ConsumerConfig{Metadata: nil},
-			prev:             &ConsumerConfig{Metadata: metadataPrevious()},
+			desc: "nil-current-metadata-ignore",
+			cfg:  &ConsumerConfig{Metadata: nil},
+			prev: &ConsumerConfig{Metadata: metadataPrevious()},
 		},
 		{
-			desc:             "copy-previous",
-			cfg:              &ConsumerConfig{Metadata: metadataAllSet("-1")},
-			prev:             &ConsumerConfig{Metadata: metadataPrevious()},
+			desc: "copy-previous",
+			cfg:  &ConsumerConfig{Metadata: metadataAllSet("-1")},
+			prev: &ConsumerConfig{Metadata: metadataPrevious()},
 		},
 		{
-			desc:             "delete-missing-fields",
-			cfg:              &ConsumerConfig{Metadata: metadataAllSet("-1")},
-			prev:             &ConsumerConfig{Metadata: make(map[string]string)},
+			desc: "delete-missing-fields",
+			cfg:  &ConsumerConfig{Metadata: metadataAllSet("-1")},
+			prev: &ConsumerConfig{Metadata: make(map[string]string)},
 		},
 	} {
 		t.Run(test.desc, func(t *testing.T) {
