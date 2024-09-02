@@ -3675,3 +3675,25 @@ func TestServerEventsProfileZNotBlockingRecvQ(t *testing.T) {
 		})
 	}
 }
+
+func TestServerEventsStatsZJetStreamApiLevel(t *testing.T) {
+	s, opts := runTrustedServer(t)
+	defer s.Shutdown()
+
+	acc, akp := createAccount(s)
+	s.setSystemAccount(acc)
+	s.EnableJetStream(&JetStreamConfig{StoreDir: t.TempDir()})
+
+	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	ncs, err := nats.Connect(url, createUserCreds(t, s, akp))
+	require_NoError(t, err)
+
+	msg, err := ncs.Request("$SYS.REQ.SERVER.PING.STATSZ", nil, time.Second)
+	require_NoError(t, err)
+
+	var stats ServerStatsMsg
+	err = json.Unmarshal(msg.Data, &stats)
+	require_NoError(t, err)
+
+	require_Equal(t, stats.Stats.JetStream.APILevel, JSApiLevel)
+}

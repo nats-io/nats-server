@@ -1228,10 +1228,11 @@ type Varz struct {
 
 // JetStreamVarz contains basic runtime information about jetstream
 type JetStreamVarz struct {
-	Config *JetStreamConfig `json:"config,omitempty"`
-	Stats  *JetStreamStats  `json:"stats,omitempty"`
-	Meta   *MetaClusterInfo `json:"meta,omitempty"`
-	Limits *JSLimitOpts     `json:"limits,omitempty"`
+	APILevel string           `json:"api_level"`
+	Config   *JetStreamConfig `json:"config,omitempty"`
+	Stats    *JetStreamStats  `json:"stats,omitempty"`
+	Meta     *MetaClusterInfo `json:"meta,omitempty"`
+	Limits   *JSLimitOpts     `json:"limits,omitempty"`
 }
 
 // ClusterOptsVarz contains monitoring cluster information
@@ -1448,6 +1449,7 @@ func (s *Server) HandleRoot(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) updateJszVarz(js *jetStream, v *JetStreamVarz, doConfig bool) {
+	v.APILevel = JSApiLevel
 	if doConfig {
 		js.mu.RLock()
 		// We want to snapshot the config since it will then be available outside
@@ -1827,6 +1829,7 @@ func (s *Server) HandleVarz(w http.ResponseWriter, r *http.Request) {
 		// Now update server's varz
 		s.mu.RLock()
 		sv := &s.varz.JetStream
+		sv.APILevel = v.APILevel
 		if created {
 			sv.Config = v.Config
 		}
@@ -2801,6 +2804,7 @@ type JSInfo struct {
 	ID       string          `json:"server_id"`
 	Now      time.Time       `json:"now"`
 	Disabled bool            `json:"disabled,omitempty"`
+	APILevel string          `json:"api_Level"`
 	Config   JetStreamConfig `json:"config,omitempty"`
 	Limits   *JSLimitOpts    `json:"limits,omitempty"`
 	JetStreamStats
@@ -2971,6 +2975,7 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 		return jsi, nil
 	}
 
+	jsi.APILevel = JSApiLevel
 	jsi.Limits = &s.getOpts().JetStreamLimits
 
 	js.mu.RLock()

@@ -904,7 +904,7 @@ func (s *Server) sendStatsz(subj string) {
 
 	// JetStream
 	if js := s.js.Load(); js != nil {
-		jStat := &JetStreamVarz{}
+		jStat := &JetStreamVarz{APILevel: JSApiLevel}
 		s.mu.RUnlock()
 		js.mu.RLock()
 		c := js.config

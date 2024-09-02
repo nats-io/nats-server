@@ -86,6 +86,7 @@ type JetStreamTier struct {
 type JetStreamAccountStats struct {
 	JetStreamTier                          // in case tiers are used, reflects totals with limits not set
 	Domain        string                   `json:"domain,omitempty"`
+	APILevel      string                   `json:"api_level"`
 	API           JetStreamAPIStats        `json:"api"`
 	Tiers         map[string]JetStreamTier `json:"tiers,omitempty"` // indexed by tier name
 }
@@ -1684,6 +1685,7 @@ func (a *Account) JetStreamUsage() JetStreamAccountStats {
 		jsa.usageMu.RLock()
 		stats.Memory, stats.Store = jsa.storageTotals()
 		stats.Domain = js.config.Domain
+		stats.APILevel = JSApiLevel
 		stats.API = JetStreamAPIStats{
 			Total:  jsa.apiTotal,
 			Errors: jsa.apiErrors,

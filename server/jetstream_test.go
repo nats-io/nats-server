@@ -7488,6 +7488,9 @@ func TestJetStreamRequestAPI(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
+	// JS API level should be set.
+	require_Equal(t, info.APILevel, JSApiLevel)
+
 	// Now create a stream.
 	msetCfg := StreamConfig{
 		Name:     "MSET22",
