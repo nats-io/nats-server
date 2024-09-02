@@ -4333,7 +4333,7 @@ func TestRouteSlowConsumerRecover(t *testing.T) {
 
 	go func() {
 		var total int
-		payload := fmt.Appendf(nil, strings.Repeat("A", 132*1024))
+		payload := bytes.Repeat([]byte("A"), 132*1024)
 		for range time.NewTicker(30 * time.Millisecond).C {
 			select {
 			case <-ctx.Done():
