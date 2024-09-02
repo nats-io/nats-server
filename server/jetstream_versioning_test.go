@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"testing"
 	"time"
 
@@ -104,6 +105,36 @@ func TestJetStreamSetStreamAssetVersionMetadata(t *testing.T) {
 	}
 }
 
+func TestJetStreamSetStreamAssetVersionMetadataRemoveDynamicFields(t *testing.T) {
+	dynamicMetadata := func() map[string]string {
+		return map[string]string{
+			JSServerVersionMetadataKey: "dynamic-version",
+			JSServerLevelMetadataKey:   "dynamic-version",
+		}
+	}
+
+	cfg := StreamConfig{Metadata: dynamicMetadata()}
+	setStreamAssetVersionMetadata(&cfg, nil)
+	require_True(t, reflect.DeepEqual(cfg.Metadata, metadataAllSet("0")))
+
+	cfg = StreamConfig{Metadata: dynamicMetadata()}
+	prevCfg := StreamConfig{Metadata: metadataAllSet("0")}
+	setStreamAssetVersionMetadata(&cfg, &prevCfg)
+	require_True(t, reflect.DeepEqual(cfg.Metadata, metadataAllSet("0")))
+}
+
+func TestJetStreamIncludeDynamicStreamAssetVersionMetadata(t *testing.T) {
+	cfg := StreamConfig{Metadata: metadataAllSet("0")}
+	newCfg := includeDynamicStreamAssetVersionMetadata(cfg)
+
+	// Only new metadata must contain dynamic fields.
+	metadata := metadataAllSet("0")
+	require_True(t, reflect.DeepEqual(cfg.Metadata, metadata))
+	metadata[JSServerVersionMetadataKey] = VERSION
+	metadata[JSServerLevelMetadataKey] = JSApiLevel
+	require_True(t, reflect.DeepEqual(newCfg.Metadata, metadata))
+}
+
 func TestJetStreamSetConsumerAssetVersionMetadata(t *testing.T) {
 	pauseUntil := time.Unix(0, 0)
 	pauseUntilZero := time.Time{}
@@ -177,6 +208,51 @@ func TestJetStreamSetConsumerAssetVersionMetadata(t *testing.T) {
 	}
 }
 
+func TestJetStreamSetConsumerAssetVersionMetadataRemoveDynamicFields(t *testing.T) {
+	dynamicMetadata := func() map[string]string {
+		return map[string]string{
+			JSServerVersionMetadataKey: "dynamic-version",
+			JSServerLevelMetadataKey:   "dynamic-version",
+		}
+	}
+
+	cfg := ConsumerConfig{Metadata: dynamicMetadata()}
+	setConsumerAssetVersionMetadata(&cfg, nil)
+	require_True(t, reflect.DeepEqual(cfg.Metadata, metadataAllSet("0")))
+
+	cfg = ConsumerConfig{Metadata: dynamicMetadata()}
+	prevCfg := ConsumerConfig{Metadata: metadataAllSet("0")}
+	setConsumerAssetVersionMetadata(&cfg, &prevCfg)
+	require_True(t, reflect.DeepEqual(cfg.Metadata, metadataAllSet("0")))
+}
+
+func TestJetStreamIncludeDynamicConsumerAssetVersionMetadata(t *testing.T) {
+	cfg := ConsumerConfig{Metadata: metadataAllSet("0")}
+	newCfg := includeDynamicConsumerAssetVersionMetadata(&cfg)
+
+	// Only new metadata must contain dynamic fields.
+	metadata := metadataAllSet("0")
+	require_True(t, reflect.DeepEqual(cfg.Metadata, metadata))
+	metadata[JSServerVersionMetadataKey] = VERSION
+	metadata[JSServerLevelMetadataKey] = JSApiLevel
+	require_True(t, reflect.DeepEqual(newCfg.Metadata, metadata))
+}
+
+func TestJetStreamIncludeDynamicConsumerInfoVersionMetadata(t *testing.T) {
+	ci := ConsumerInfo{Config: &ConsumerConfig{Metadata: metadataAllSet("0")}}
+	newCi := includeDynamicConsumerInfoVersionMetadata(&ci)
+
+	// Configs should not equal, as that would mean we've overwritten the original ConsumerInfo.
+	require_False(t, reflect.DeepEqual(ci, newCi))
+
+	// Only new metadata must contain dynamic fields.
+	metadata := metadataAllSet("0")
+	require_True(t, reflect.DeepEqual(ci.Config.Metadata, metadata))
+	metadata[JSServerVersionMetadataKey] = VERSION
+	metadata[JSServerLevelMetadataKey] = JSApiLevel
+	require_True(t, reflect.DeepEqual(newCi.Config.Metadata, metadata))
+}
+
 func TestJetStreamCopyConsumerAssetVersionMetadata(t *testing.T) {
 	for _, test := range []struct {
 		desc string
@@ -247,6 +323,24 @@ func TestJetStreamCopyConsumerAssetVersionMetadata(t *testing.T) {
 	}
 }
 
+func TestJetStreamCopyConsumerAssetVersionMetadataRemoveDynamicFields(t *testing.T) {
+	dynamicMetadata := func() map[string]string {
+		return map[string]string{
+			JSServerVersionMetadataKey: "dynamic-version",
+			JSServerLevelMetadataKey:   "dynamic-version",
+		}
+	}
+
+	cfg := ConsumerConfig{Metadata: dynamicMetadata()}
+	copyConsumerAssetVersionMetadata(&cfg, nil)
+	require_Equal(t, len(cfg.Metadata), 0)
+
+	cfg = ConsumerConfig{Metadata: dynamicMetadata()}
+	prevCfg := ConsumerConfig{Metadata: metadataAllSet("0")}
+	copyConsumerAssetVersionMetadata(&cfg, &prevCfg)
+	require_True(t, reflect.DeepEqual(cfg.Metadata, metadataAllSet("0")))
+}
+
 type server struct {
 	replicas int
 	js       nats.JetStreamContext
@@ -284,13 +378,21 @@ func TestJetStreamAssetVersionMetadataMutations(t *testing.T) {
 func validateMetadata(metadata map[string]string, expectedFeatureLevel string) bool {
 	return metadata[JSCreatedVersionMetadataKey] == VERSION ||
 		metadata[JSCreatedLevelMetadataKey] == JSApiLevel ||
-		metadata[JSRequiredLevelMetadataKey] == expectedFeatureLevel
+		metadata[JSRequiredLevelMetadataKey] == expectedFeatureLevel ||
+		metadata[JSServerVersionMetadataKey] == VERSION ||
+		metadata[JSServerLevelMetadataKey] == JSApiLevel
 }
 
 func streamAssetVersionChecks(t *testing.T, s server) {
 	// Add stream.
 	sc := nats.StreamConfig{Name: streamName, Replicas: s.replicas}
 	si, err := s.js.AddStream(&sc)
+	require_NoError(t, err)
+	require_True(t, validateMetadata(si.Config.Metadata, "0"))
+
+	// (Double) add stream, has different code path for clustered streams.
+	sc = nats.StreamConfig{Name: streamName, Replicas: s.replicas}
+	si, err = s.js.AddStream(&sc)
 	require_NoError(t, err)
 	require_True(t, validateMetadata(si.Config.Metadata, "0"))
 
@@ -348,6 +450,29 @@ func consumerAssetVersionChecks(t *testing.T, s server) {
 	ci, err = s.js.ConsumerInfo(streamName, consumerName)
 	require_NoError(t, err)
 	require_True(t, validateMetadata(ci.Config.Metadata, "0"))
+
+	// Test scaling up/down.
+	if s.replicas == 3 {
+		// Scale down.
+		cc.Replicas = 1
+		ci, err = s.js.UpdateConsumer(streamName, &cc)
+		require_NoError(t, err)
+		require_True(t, validateMetadata(ci.Config.Metadata, "0"))
+
+		ci, err = s.js.ConsumerInfo(streamName, consumerName)
+		require_NoError(t, err)
+		require_True(t, validateMetadata(ci.Config.Metadata, "0"))
+
+		// Scale up.
+		cc.Replicas = 3
+		ci, err = s.js.UpdateConsumer(streamName, &cc)
+		require_NoError(t, err)
+		require_True(t, validateMetadata(ci.Config.Metadata, "0"))
+
+		ci, err = s.js.ConsumerInfo(streamName, consumerName)
+		require_NoError(t, err)
+		require_True(t, validateMetadata(ci.Config.Metadata, "0"))
+	}
 }
 
 func TestJetStreamAssetVersionMetadataStreamRestoreAndRestart(t *testing.T) {
@@ -359,10 +484,15 @@ func TestJetStreamAssetVersionMetadataStreamRestoreAndRestart(t *testing.T) {
 	path := "../test/configs/jetstream/restore_empty_R1F_stream"
 	restoreStreamFromPath(t, nc, path)
 
-	// Stream restore should result in empty metadata to be preserved.
+	expectedMetadata := map[string]string{
+		JSServerVersionMetadataKey: VERSION,
+		JSServerLevelMetadataKey:   JSApiLevel,
+	}
+
+	// Stream restore should result in empty metadata to be preserved, only adding dynamic metadata.
 	si, err := js.StreamInfo(streamName)
 	require_NoError(t, err)
-	require_Equal(t, len(si.Config.Metadata), 0)
+	require_True(t, reflect.DeepEqual(si.Config.Metadata, expectedMetadata))
 
 	// Restart server.
 	port := s.opts.Port
@@ -374,10 +504,10 @@ func TestJetStreamAssetVersionMetadataStreamRestoreAndRestart(t *testing.T) {
 	nc, js = jsClientConnect(t, s)
 	defer nc.Close()
 
-	// After restart (or upgrade) metadata data should remain empty.
+	// After restart (or upgrade) metadata data should remain empty, only adding dynamic metadata.
 	si, err = js.StreamInfo(streamName)
 	require_NoError(t, err)
-	require_Equal(t, len(si.Config.Metadata), 0)
+	require_True(t, reflect.DeepEqual(si.Config.Metadata, expectedMetadata))
 }
 
 func TestJetStreamAssetVersionMetadataStreamRestoreAndRestartCluster(t *testing.T) {
@@ -389,10 +519,15 @@ func TestJetStreamAssetVersionMetadataStreamRestoreAndRestartCluster(t *testing.
 	path := "../test/configs/jetstream/restore_empty_R3F_stream"
 	restoreStreamFromPath(t, nc, path)
 
-	// Stream restore should result in empty metadata to be preserved.
+	expectedMetadata := map[string]string{
+		JSServerVersionMetadataKey: VERSION,
+		JSServerLevelMetadataKey:   JSApiLevel,
+	}
+
+	// Stream restore should result in empty metadata to be preserved, only adding dynamic metadata.
 	si, err := js.StreamInfo(streamName)
 	require_NoError(t, err)
-	require_Equal(t, len(si.Config.Metadata), 0)
+	require_True(t, reflect.DeepEqual(si.Config.Metadata, expectedMetadata))
 
 	// Restart cluster.
 	c.stopAll()
@@ -403,10 +538,10 @@ func TestJetStreamAssetVersionMetadataStreamRestoreAndRestartCluster(t *testing.
 	nc, js = jsClientConnect(t, c.randomServer())
 	defer nc.Close()
 
-	// After restart (or upgrade) metadata data should remain empty.
+	// After restart (or upgrade) metadata data should remain empty, only adding dynamic metadata.
 	si, err = js.StreamInfo(streamName)
 	require_NoError(t, err)
-	require_Equal(t, len(si.Config.Metadata), 0)
+	require_True(t, reflect.DeepEqual(si.Config.Metadata, expectedMetadata))
 }
 
 func restoreStreamFromPath(t *testing.T, nc *nats.Conn, path string) {
@@ -443,8 +578,16 @@ func restoreStreamFromPath(t *testing.T, nc *nats.Conn, path string) {
 			t.Fatalf("Error on restore: %+v", rresp.Error)
 		}
 	}
+
+	expectedMetadata := map[string]string{
+		JSServerVersionMetadataKey: VERSION,
+		JSServerLevelMetadataKey:   JSApiLevel,
+	}
+
 	msg, err = nc.Request(rresp.DeliverSubject, nil, 5*time.Second)
 	require_NoError(t, err)
-	err = json.Unmarshal(msg.Data, &rresp)
+	var cresp JSApiStreamCreateResponse
+	err = json.Unmarshal(msg.Data, &cresp)
 	require_NoError(t, err)
+	require_True(t, reflect.DeepEqual(cresp.Config.Metadata, expectedMetadata))
 }

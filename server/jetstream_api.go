@@ -1478,7 +1478,7 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, _ *Account,
 	resp.StreamInfo = &StreamInfo{
 		Created:   mset.createdTime(),
 		State:     mset.state(),
-		Config:    mset.config(),
+		Config:    includeDynamicStreamAssetVersionMetadata(mset.config()),
 		TimeStamp: time.Now().UTC(),
 		Mirror:    mset.mirrorInfo(),
 		Sources:   mset.sourcesInfo(),
@@ -1572,7 +1572,7 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, _ *Account,
 	resp.StreamInfo = &StreamInfo{
 		Created:   mset.createdTime(),
 		State:     mset.state(),
-		Config:    mset.config(),
+		Config:    includeDynamicStreamAssetVersionMetadata(mset.config()),
 		Domain:    s.getOpts().JetStreamDomain,
 		Mirror:    mset.mirrorInfo(),
 		Sources:   mset.sourcesInfo(),
@@ -1955,7 +1955,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 	resp.StreamInfo = &StreamInfo{
 		Created:    mset.createdTime(),
 		State:      mset.stateWithDetail(details),
-		Config:     config,
+		Config:     includeDynamicStreamAssetVersionMetadata(config),
 		Domain:     s.getOpts().JetStreamDomain,
 		Cluster:    js.clusterInfo(mset.raftGroup()),
 		Mirror:     mset.mirrorInfo(),
@@ -3594,7 +3594,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 					resp.StreamInfo = &StreamInfo{
 						Created:   mset.createdTime(),
 						State:     mset.state(),
-						Config:    mset.config(),
+						Config:    includeDynamicStreamAssetVersionMetadata(mset.config()),
 						TimeStamp: time.Now().UTC(),
 					}
 					s.Noticef("Completed restore of %s for stream '%s > %s' in %v",
@@ -4057,7 +4057,7 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	resp.ConsumerInfo = o.initialInfo()
+	resp.ConsumerInfo = includeDynamicConsumerInfoVersionMetadata(o.initialInfo())
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 
 	if o.cfg.PauseUntil != nil && !o.cfg.PauseUntil.IsZero() && time.Now().Before(*o.cfg.PauseUntil) {
@@ -4403,7 +4403,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 						Stream:    ca.Stream,
 						Name:      ca.Name,
 						Created:   ca.Created,
-						Config:    ca.Config,
+						Config:    includeDynamicConsumerAssetVersionMetadata(ca.Config),
 						TimeStamp: time.Now().UTC(),
 					}
 					b := s.jsonResponse(resp)
@@ -4446,7 +4446,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 		return
 	}
 
-	if resp.ConsumerInfo = obs.info(); resp.ConsumerInfo == nil {
+	if resp.ConsumerInfo = includeDynamicConsumerInfoVersionMetadata(obs.info()); resp.ConsumerInfo == nil {
 		// This consumer returned nil which means it's closed. Respond with not found.
 		resp.Error = NewJSConsumerNotFoundError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
