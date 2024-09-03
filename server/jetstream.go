@@ -48,6 +48,7 @@ type JetStreamConfig struct {
 	Domain       string        `json:"domain,omitempty"`
 	CompressOK   bool          `json:"compress_ok,omitempty"`
 	UniqueTag    string        `json:"unique_tag,omitempty"`
+	Strict       bool          `json:"strict,omitempty"`
 }
 
 // Statistics about JetStream for this server.
@@ -461,6 +462,7 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 		s.Noticef("")
 	}
 	s.Noticef("---------------- JETSTREAM ----------------")
+	s.Noticef("  Strict:          %t", cfg.Strict)
 	s.Noticef("  Max Memory:      %s", friendlyBytes(cfg.MaxMemory))
 	s.Noticef("  Max Storage:     %s", friendlyBytes(cfg.MaxStore))
 	s.Noticef("  Store Directory: \"%s\"", cfg.StoreDir)
@@ -553,6 +555,7 @@ func (s *Server) restartJetStream() error {
 		MaxMemory:    opts.JetStreamMaxMemory,
 		MaxStore:     opts.JetStreamMaxStore,
 		Domain:       opts.JetStreamDomain,
+		Strict:       opts.JetStreamStrict,
 	}
 	s.Noticef("Restarting JetStream")
 	err := s.EnableJetStream(&cfg)
@@ -2524,6 +2527,9 @@ func (s *Server) dynJetStreamConfig(storeDir string, maxStore, maxMem int64) *Je
 	}
 
 	opts := s.getOpts()
+
+	// Strict mode.
+	jsc.Strict = opts.JetStreamStrict
 
 	// Sync options.
 	jsc.SyncInterval = opts.SyncInterval

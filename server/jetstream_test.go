@@ -24150,6 +24150,121 @@ func TestJetStreamStreamCreatePedanticMode(t *testing.T) {
 	}
 }
 
+func TestJetStreamStrictMode(t *testing.T) {
+	cfgFmt := []byte(fmt.Sprintf(`
+		jetstream: {
+			strict: true
+			enabled: true
+			max_file_store: 100MB
+			store_dir: %s
+			limits: {duplicate_window: "1m", max_request_batch: 250}
+		}
+	`, t.TempDir()))
+	conf := createConfFile(t, cfgFmt)
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc, err := nats.Connect(s.ClientURL())
+	if err != nil {
+		t.Fatalf("Error connecting to NATS: %v", err)
+	}
+	defer nc.Close()
+
+	tests := []struct {
+		name        string
+		subject     string
+		payload     []byte
+		expectedErr string
+	}{
+		{
+			name:        "Stream Create",
+			subject:     "$JS.API.STREAM.CREATE.TEST_STREAM",
+			payload:     []byte(`{"name":"TEST_STREAM","subjects":["test.>"],"extra_field":"unexpected"}`),
+			expectedErr: "invalid JSON",
+		},
+		{
+			name:        "Stream Update",
+			subject:     "$JS.API.STREAM.UPDATE.TEST_STREAM",
+			payload:     []byte(`{"name":"TEST_STREAM","subjects":["test.>"],"extra_field":"unexpected"}`),
+			expectedErr: "invalid JSON",
+		},
+		{
+			name:        "Stream Delete",
+			subject:     "$JS.API.STREAM.DELETE.TEST_STREAM",
+			payload:     []byte(`{"extra_field":"unexpected"}`),
+			expectedErr: "expected an empty request payload",
+		},
+		{
+			name:        "Stream Info",
+			subject:     "$JS.API.STREAM.INFO.TEST_STREAM",
+			payload:     []byte(`{"extra_field":"unexpected"}`),
+			expectedErr: "invalid JSON",
+		},
+		{
+			name:        "Consumer Create",
+			subject:     "$JS.API.CONSUMER.CREATE.TEST_STREAM.TEST_CONSUMER",
+			payload:     []byte(`{"durable_name":"TEST_CONSUMER","ack_policy":"explicit","extra_field":"unexpected"}`),
+			expectedErr: "invalid JSON",
+		},
+		{
+			name:        "Consumer Delete",
+			subject:     "$JS.API.CONSUMER.DELETE.TEST_STREAM.TEST_CONSUMER",
+			payload:     []byte(`{"extra_field":"unexpected"}`),
+			expectedErr: "expected an empty request payload",
+		},
+		{
+			name:        "Consumer Info",
+			subject:     "$JS.API.CONSUMER.INFO.TEST_STREAM.TEST_CONSUMER",
+			payload:     []byte(`{"extra_field":"unexpected"}`),
+			expectedErr: "expected an empty request payload",
+		},
+		{
+			name:        "Stream List",
+			subject:     "$JS.API.STREAM.LIST",
+			payload:     []byte(`{"extra_field":"unexpected"}`),
+			expectedErr: "invalid JSON",
+		},
+		{
+			name:        "Consumer List",
+			subject:     "$JS.API.CONSUMER.LIST.TEST_STREAM",
+			payload:     []byte(`{"extra_field":"unexpected"}`),
+			expectedErr: "invalid JSON",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := nc.Request(tt.subject, tt.payload, time.Second*10)
+			if err != nil {
+				t.Fatalf("Request failed: %v", err)
+			}
+
+			var apiResp map[string]interface{}
+			if err := json.Unmarshal(resp.Data, &apiResp); err != nil {
+				t.Fatalf("Error unmarshalling response: %v", err)
+			}
+
+			if apiResp["error"] == nil {
+				t.Fatalf("Expected error containing %q, but got no error", tt.expectedErr)
+			}
+
+			errorObj, ok := apiResp["error"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("Expected error to be an object, got %T", apiResp["error"])
+			}
+
+			errorDescription, ok := errorObj["description"].(string)
+			if !ok {
+				t.Fatalf("Expected error description to be a string, got %T", errorObj["description"])
+			}
+
+			if !strings.Contains(errorDescription, tt.expectedErr) {
+				t.Errorf("Expected error containing %q, but got %q", tt.expectedErr, errorDescription)
+			}
+		})
+	}
+}
+
 func addConsumerWithError(t *testing.T, nc *nats.Conn, cfg *CreateConsumerRequest) (*ConsumerInfo, *ApiError) {
 	t.Helper()
 	req, err := json.Marshal(cfg)
