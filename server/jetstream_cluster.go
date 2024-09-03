@@ -7825,7 +7825,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// Check msgSize if we have a limit set there. Again this works if it goes through but better to be pre-emptive.
 	if maxMsgSize >= 0 && (len(hdr)+len(msg)) > maxMsgSize {
 		err := fmt.Errorf("JetStream message size exceeds limits for '%s > %s'", jsa.acc().Name, mset.cfg.Name)
-		s.RateLimitWarnf(err.Error())
+		s.RateLimitWarnf("%s", err.Error())
 		if canRespond {
 			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
 			resp.Error = NewJSStreamMessageExceedsMaximumError()
@@ -7842,7 +7842,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		// Again this works if it goes through but better to be pre-emptive.
 		if len(hdr) > math.MaxUint16 {
 			err := fmt.Errorf("JetStream header size exceeds limits for '%s > %s'", jsa.acc().Name, mset.cfg.Name)
-			s.RateLimitWarnf(err.Error())
+			s.RateLimitWarnf("%s", err.Error())
 			if canRespond {
 				var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
 				resp.Error = NewJSStreamHeaderExceedsMaximumError()
@@ -7991,7 +7991,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// TODO(dlc) - Make this a limit where we drop messages to protect ourselves, but allow to be configured.
 	if mset.clseq-(lseq+mset.clfs) > streamLagWarnThreshold {
 		lerr := fmt.Errorf("JetStream stream '%s > %s' has high message lag", jsa.acc().Name, name)
-		s.RateLimitWarnf(lerr.Error())
+		s.RateLimitWarnf("%s", lerr.Error())
 	}
 	mset.clMu.Unlock()
 
