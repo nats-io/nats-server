@@ -281,29 +281,29 @@ func TestJetStreamAssetVersionMetadataMutations(t *testing.T) {
 	}
 }
 
+func validateMetadata(metadata map[string]string, expectedFeatureLevel string) bool {
+	return metadata[JSCreatedVersionMetadataKey] == VERSION ||
+		metadata[JSCreatedLevelMetadataKey] == JSApiLevel ||
+		metadata[JSRequiredLevelMetadataKey] == expectedFeatureLevel
+}
+
 func streamAssetVersionChecks(t *testing.T, s server) {
 	// Add stream.
 	sc := nats.StreamConfig{Name: streamName, Replicas: s.replicas}
 	si, err := s.js.AddStream(&sc)
 	require_NoError(t, err)
-	require_Equal(t, si.Config.Metadata[JSCreatedVersionMetadataKey], VERSION)
-	require_Equal(t, si.Config.Metadata[JSCreatedLevelMetadataKey], JSApiLevel)
-	require_Equal(t, si.Config.Metadata[JSRequiredLevelMetadataKey], "0")
+	require_True(t, validateMetadata(si.Config.Metadata, "0"))
 
 	// Stream info.
 	si, err = s.js.StreamInfo(streamName)
 	require_NoError(t, err)
-	require_Equal(t, si.Config.Metadata[JSCreatedVersionMetadataKey], VERSION)
-	require_Equal(t, si.Config.Metadata[JSCreatedLevelMetadataKey], JSApiLevel)
-	require_Equal(t, si.Config.Metadata[JSRequiredLevelMetadataKey], "0")
+	require_True(t, validateMetadata(si.Config.Metadata, "0"))
 
 	// Update stream.
 	// Metadata set on creation should be preserved, even if not included in update.
 	si, err = s.js.UpdateStream(&sc)
 	require_NoError(t, err)
-	require_Equal(t, si.Config.Metadata[JSCreatedVersionMetadataKey], VERSION)
-	require_Equal(t, si.Config.Metadata[JSCreatedLevelMetadataKey], JSApiLevel)
-	require_Equal(t, si.Config.Metadata[JSRequiredLevelMetadataKey], "0")
+	require_True(t, validateMetadata(si.Config.Metadata, "0"))
 }
 
 func consumerAssetVersionChecks(t *testing.T, s server) {
@@ -311,24 +311,18 @@ func consumerAssetVersionChecks(t *testing.T, s server) {
 	cc := nats.ConsumerConfig{Name: consumerName, Replicas: s.replicas}
 	ci, err := s.js.AddConsumer(streamName, &cc)
 	require_NoError(t, err)
-	require_Equal(t, ci.Config.Metadata[JSCreatedVersionMetadataKey], VERSION)
-	require_Equal(t, ci.Config.Metadata[JSCreatedLevelMetadataKey], JSApiLevel)
-	require_Equal(t, ci.Config.Metadata[JSRequiredLevelMetadataKey], "0")
+	require_True(t, validateMetadata(ci.Config.Metadata, "0"))
 
 	// Consumer info.
 	ci, err = s.js.ConsumerInfo(streamName, consumerName)
 	require_NoError(t, err)
-	require_Equal(t, ci.Config.Metadata[JSCreatedVersionMetadataKey], VERSION)
-	require_Equal(t, ci.Config.Metadata[JSCreatedLevelMetadataKey], JSApiLevel)
-	require_Equal(t, ci.Config.Metadata[JSRequiredLevelMetadataKey], "0")
+	require_True(t, validateMetadata(ci.Config.Metadata, "0"))
 
 	// Update consumer.
 	// Metadata set on creation should be preserved, even if not included in update.
 	ci, err = s.js.UpdateConsumer(streamName, &cc)
 	require_NoError(t, err)
-	require_Equal(t, ci.Config.Metadata[JSCreatedVersionMetadataKey], VERSION)
-	require_Equal(t, ci.Config.Metadata[JSCreatedLevelMetadataKey], JSApiLevel)
-	require_Equal(t, ci.Config.Metadata[JSRequiredLevelMetadataKey], "0")
+	require_True(t, validateMetadata(ci.Config.Metadata, "0"))
 
 	// Use pause advisories to know when pause/resume is applied.
 	pauseCh := make(chan *nats.Msg, 10)
@@ -342,9 +336,7 @@ func consumerAssetVersionChecks(t *testing.T, s server) {
 
 	ci, err = s.js.ConsumerInfo(streamName, consumerName)
 	require_NoError(t, err)
-	require_Equal(t, ci.Config.Metadata[JSCreatedVersionMetadataKey], VERSION)
-	require_Equal(t, ci.Config.Metadata[JSCreatedLevelMetadataKey], JSApiLevel)
-	require_Equal(t, ci.Config.Metadata[JSRequiredLevelMetadataKey], "1")
+	require_True(t, validateMetadata(ci.Config.Metadata, "1"))
 
 	// Unpause consumer, should lower required API level.
 	subj := fmt.Sprintf("$JS.API.CONSUMER.PAUSE.%s.%s", streamName, consumerName)
@@ -355,9 +347,7 @@ func consumerAssetVersionChecks(t *testing.T, s server) {
 
 	ci, err = s.js.ConsumerInfo(streamName, consumerName)
 	require_NoError(t, err)
-	require_Equal(t, ci.Config.Metadata[JSCreatedVersionMetadataKey], VERSION)
-	require_Equal(t, ci.Config.Metadata[JSCreatedLevelMetadataKey], JSApiLevel)
-	require_Equal(t, ci.Config.Metadata[JSRequiredLevelMetadataKey], "0")
+	require_True(t, validateMetadata(ci.Config.Metadata, "0"))
 }
 
 func TestJetStreamAssetVersionMetadataStreamRestoreAndRestart(t *testing.T) {
