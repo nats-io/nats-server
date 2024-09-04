@@ -779,6 +779,9 @@ func (js *jetStream) setupMetaGroup() error {
 	s := js.srv
 	s.Noticef("Creating JetStream metadata controller")
 
+	s.rnMu.Lock()
+	defer s.rnMu.Unlock()
+
 	// Setup our WAL for the metagroup.
 	sysAcc := s.SystemAccount()
 	storeDir := filepath.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, defaultMetaGroupName)
@@ -2036,18 +2039,23 @@ func (rg *raftGroup) setPreferred() {
 // createRaftGroup is called to spin up this raft group if needed.
 func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, storage StorageType, labels pprofLabels) error {
 	js.mu.Lock()
-	defer js.mu.Unlock()
 
 	s, cc := js.srv, js.cluster
 	if cc == nil || cc.meta == nil {
+		js.mu.Unlock()
 		return NewJSClusterNotActiveError()
 	}
 
 	// If this is a single peer raft group or we are not a member return.
 	if len(rg.Peers) <= 1 || !rg.isMember(cc.meta.ID()) {
 		// Nothing to do here.
+		js.mu.Unlock()
 		return nil
 	}
+
+	js.mu.Unlock()
+	s.rnMu.Lock()
+	defer s.rnMu.Unlock()
 
 	// Check if we already have this assigned.
 	if node := s.lookupRaftNode(rg.Name); node != nil {
