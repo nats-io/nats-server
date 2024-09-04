@@ -324,8 +324,9 @@ type Server struct {
 	cn   string
 
 	// For registering raft nodes with the server.
-	rnMu      sync.RWMutex
-	raftNodes map[string]RaftNode
+	rnMu        sync.RWMutex
+	raftNodes   map[string]RaftNode
+	raftMutexes sync.Map // string -> *refCountedMutex
 
 	// For mapping from a raft node name back to a server name and cluster. Node has to be in the same domain.
 	nodeToInfo sync.Map
@@ -360,6 +361,27 @@ type Server struct {
 
 	// Queue to process JS API requests that come from routes (or gateways)
 	jsAPIRoutedReqs *ipQueue[*jsAPIRoutedReq]
+}
+
+type refCountedMutex struct {
+	refs atomic.Int32
+	mu   sync.Mutex
+}
+
+func (s *Server) lockRaftGroupID(group string) {
+	v, _ := s.raftMutexes.LoadOrStore(group, &refCountedMutex{})
+	mu := v.(*refCountedMutex)
+	mu.refs.Add(1)
+	mu.mu.Lock()
+}
+
+func (s *Server) unlockRaftGroupID(group string) {
+	v, _ := s.raftMutexes.Load(group)
+	mu := v.(*refCountedMutex)
+	if mu.refs.Add(-1) == 0 {
+		s.raftMutexes.Delete(group)
+	}
+	mu.mu.Unlock()
 }
 
 // For tracking JS nodes.

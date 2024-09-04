@@ -779,8 +779,8 @@ func (js *jetStream) setupMetaGroup() error {
 	s := js.srv
 	s.Noticef("Creating JetStream metadata controller")
 
-	s.rnMu.Lock()
-	defer s.rnMu.Unlock()
+	s.lockRaftGroupID(defaultMetaGroupName)
+	defer s.unlockRaftGroupID(defaultMetaGroupName)
 
 	// Setup our WAL for the metagroup.
 	sysAcc := s.SystemAccount()
@@ -2054,8 +2054,9 @@ func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, storage Stor
 	}
 
 	js.mu.Unlock()
-	s.rnMu.Lock()
-	defer s.rnMu.Unlock()
+
+	js.srv.lockRaftGroupID(rg.Name)
+	defer js.srv.unlockRaftGroupID(rg.Name)
 
 	// Check if we already have this assigned.
 	if node := s.lookupRaftNode(rg.Name); node != nil {

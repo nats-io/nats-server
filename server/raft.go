@@ -559,6 +559,8 @@ func (s *Server) clusterNameForNode(node string) string {
 // Registers the Raft node with the server, as it will track all of the Raft
 // nodes. rnMu must must be held.
 func (s *Server) registerRaftNode(group string, n RaftNode) {
+	s.rnMu.Lock()
+	defer s.rnMu.Unlock()
 	if s.raftNodes == nil {
 		s.raftNodes = make(map[string]RaftNode)
 	}
@@ -568,6 +570,8 @@ func (s *Server) registerRaftNode(group string, n RaftNode) {
 // Unregisters the Raft node from the server, i.e. at shutdown.
 // rnMu must be held.
 func (s *Server) unregisterRaftNode(group string) {
+	s.rnMu.Lock()
+	defer s.rnMu.Unlock()
 	if s.raftNodes != nil {
 		delete(s.raftNodes, group)
 	}
@@ -575,14 +579,16 @@ func (s *Server) unregisterRaftNode(group string) {
 
 // Returns how many Raft nodes are running in this server instance.
 func (s *Server) numRaftNodes() int {
-	s.rnMu.Lock()
-	defer s.rnMu.Unlock()
+	s.rnMu.RLock()
+	defer s.rnMu.RUnlock()
 	return len(s.raftNodes)
 }
 
 // Finds the Raft node for a given Raft group, if any. If there is no Raft node
 // running for this group then it can return nil. rnMu must must be held.
 func (s *Server) lookupRaftNode(group string) RaftNode {
+	s.rnMu.RLock()
+	defer s.rnMu.RUnlock()
 	var n RaftNode
 	if s.raftNodes != nil {
 		n = s.raftNodes[group]
@@ -1620,11 +1626,8 @@ func (n *raft) Delete() {
 }
 
 func (n *raft) shutdown(shouldDelete bool) {
-	// Since this shutdown will result in a change of the system Raft nodes map,
-	// we need to hold the lock for the duration. Otherwise someone else coming
-	// along looking to start this group
-	n.s.rnMu.Lock()
-	defer n.s.rnMu.Unlock()
+	n.s.lockRaftGroupID(n.group)
+	defer n.s.unlockRaftGroupID(n.group)
 
 	n.Lock()
 	defer n.Unlock()
