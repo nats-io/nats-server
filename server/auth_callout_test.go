@@ -2082,3 +2082,117 @@ func updateAccount(t *testing.T, sys *nats.Conn, jwtToken string) {
 	require_NotNil(t, response.Data)
 	require_Equal(t, response.Data.Code, int(200))
 }
+
+func TestAuthCalloutClientNoVerifyDoesntHaveCerts(t *testing.T) {
+	conf := `
+		listen: "localhost:-1"
+		server_name: T
+
+		tls {
+			cert_file = "../test/configs/certs/tlsauth/server.pem"
+			key_file = "../test/configs/certs/tlsauth/server-key.pem"
+			ca_file = "../test/configs/certs/tlsauth/ca.pem"
+		}
+
+		accounts {
+            AUTH { users [ {user: "auth", password: "pwd"} ] }
+			FOO {}
+		}
+		authorization {
+			timeout: 1s
+			auth_callout {
+				# Needs to be a public account nkey, will work for both server config and operator mode.
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				account: AUTH
+				auth_users: [ auth ]
+			}
+		}
+	`
+	handler := func(m *nats.Msg) {
+		user, si, ci, _, ctls := decodeAuthRequest(t, m.Data)
+		require_True(t, si.Name == "T")
+		require_True(t, ci.Host == "127.0.0.1")
+		require_True(t, ctls != nil)
+		// Zero since we are verified and will be under verified chains.
+		require_True(t, len(ctls.VerifiedChains) == 0)
+
+		// this will fail -- no certs are reported
+		require_True(t, len(ctls.Certs) > 0)
+		// if the client is able to get authenticated, we return a cert, but the assertion
+		// above should make it fail
+		ujwt := createAuthUser(t, user, "dlc", "FOO", "", nil, 0, nil)
+		m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+	}
+
+	ac := NewAuthTest(t, conf, handler,
+		nats.UserInfo("auth", "pwd"),
+		nats.ClientCert("../test/configs/certs/tlsauth/client2.pem", "../test/configs/certs/tlsauth/client2-key.pem"),
+		nats.RootCAs("../test/configs/certs/tlsauth/ca.pem"))
+	defer ac.Cleanup()
+
+	// Will use client cert to determine user.
+	_, err := ac.NewClient(
+		nats.ClientCert("../test/configs/certs/tlsauth/client2.pem", "../test/configs/certs/tlsauth/client2-key.pem"),
+		nats.RootCAs("../test/configs/certs/tlsauth/ca.pem"),
+	)
+	// we shouldn't connect
+	require_Error(t, err)
+}
+
+func TestAuthCalloutClientNoVerifyDoesntHaveCertsHandshakeFirst(t *testing.T) {
+	conf := `
+		listen: "localhost:-1"
+		server_name: T
+
+		tls {
+			cert_file = "../test/configs/certs/tlsauth/server.pem"
+			key_file = "../test/configs/certs/tlsauth/server-key.pem"
+			ca_file = "../test/configs/certs/tlsauth/ca.pem"
+			handshake_first = true
+		}
+
+		accounts {
+            AUTH { users [ {user: "auth", password: "pwd"} ] }
+			FOO {}
+		}
+		authorization {
+			timeout: 1s
+			auth_callout {
+				# Needs to be a public account nkey, will work for both server config and operator mode.
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				account: AUTH
+				auth_users: [ auth ]
+			}
+		}
+	`
+	handler := func(m *nats.Msg) {
+		user, si, ci, _, ctls := decodeAuthRequest(t, m.Data)
+		require_True(t, si.Name == "T")
+		require_True(t, ci.Host == "127.0.0.1")
+		require_True(t, ctls != nil)
+		// Zero since we are verified and will be under verified chains.
+		require_True(t, len(ctls.VerifiedChains) == 0)
+
+		// this will fail -- no certs are reported
+		require_True(t, len(ctls.Certs) > 0)
+		// if the client is able to get authenticated, we return a cert, but the assertion
+		// above should make it fail
+		ujwt := createAuthUser(t, user, "dlc", "FOO", "", nil, 0, nil)
+		m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+	}
+
+	ac := NewAuthTest(t, conf, handler,
+		nats.UserInfo("auth", "pwd"),
+		nats.ClientCert("../test/configs/certs/tlsauth/client2.pem", "../test/configs/certs/tlsauth/client2-key.pem"),
+		nats.RootCAs("../test/configs/certs/tlsauth/ca.pem"),
+		nats.TLSHandshakeFirst())
+	defer ac.Cleanup()
+
+	// Will use client cert to determine user.
+	_, err := ac.NewClient(
+		nats.ClientCert("../test/configs/certs/tlsauth/client2.pem", "../test/configs/certs/tlsauth/client2-key.pem"),
+		nats.RootCAs("../test/configs/certs/tlsauth/ca.pem"),
+		nats.TLSHandshakeFirst())
+	// we shouldn't connect
+	require_Error(t, err)
+}
