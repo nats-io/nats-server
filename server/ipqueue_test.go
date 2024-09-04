@@ -42,7 +42,7 @@ func TestIPQueueBasic(t *testing.T) {
 	}
 
 	// Try to change the max recycle size
-	q2 := newIPQueue[int](s, "test2", ipQueue_MaxRecycleSize(10))
+	q2 := newIPQueue[int](s, "test2", ipqMaxRecycleSize[int](10))
 	if q2.mrs != 10 {
 		t.Fatalf("Expected max recycle size to be 10, got %v", q2.mrs)
 	}
@@ -290,7 +290,7 @@ func TestIPQueueRecycle(t *testing.T) {
 	for iter := 0; iter < 5; iter++ {
 		var sz int
 		for i := 0; i < total; i++ {
-			sz = q.push(i)
+			sz, _ = q.push(i)
 		}
 		if sz != total {
 			t.Fatalf("Expected size to be %v, got %v", total, sz)
@@ -298,7 +298,7 @@ func TestIPQueueRecycle(t *testing.T) {
 		values := q.pop()
 		preRecycleCap := cap(values)
 		q.recycle(&values)
-		sz = q.push(1001)
+		sz, _ = q.push(1001)
 		if sz != 1 {
 			t.Fatalf("Expected size to be %v, got %v", 1, sz)
 		}
@@ -317,7 +317,7 @@ func TestIPQueueRecycle(t *testing.T) {
 		}
 	}
 
-	q = newIPQueue[int](s, "test2", ipQueue_MaxRecycleSize(10))
+	q = newIPQueue[int](s, "test2", ipqMaxRecycleSize[int](10))
 	for i := 0; i < 100; i++ {
 		q.push(i)
 	}
@@ -388,4 +388,106 @@ func TestIPQueueDrain(t *testing.T) {
 			break
 		}
 	}
+}
+
+func TestIPQueueSizeCalculation(t *testing.T) {
+	type testType = [16]byte
+	var testValue testType
+
+	calc := ipqSizeCalculation[testType](func(e testType) uint64 {
+		return uint64(len(e))
+	})
+	s := &Server{}
+	q := newIPQueue[testType](s, "test", calc)
+
+	for i := 0; i < 10; i++ {
+		q.push(testValue)
+		require_Equal(t, q.len(), i+1)
+		require_Equal(t, q.size(), uint64(i+1)*uint64(len(testValue)))
+	}
+
+	for i := 10; i > 5; i-- {
+		q.popOne()
+		require_Equal(t, q.len(), i-1)
+		require_Equal(t, q.size(), uint64(i-1)*uint64(len(testValue)))
+	}
+
+	q.pop()
+	require_Equal(t, q.len(), 0)
+	require_Equal(t, q.size(), 0)
+}
+
+func TestIPQueueSizeCalculationWithLimits(t *testing.T) {
+	type testType = [16]byte
+	var testValue testType
+
+	calc := ipqSizeCalculation[testType](func(e testType) uint64 {
+		return uint64(len(e))
+	})
+	s := &Server{}
+
+	t.Run("LimitByLen", func(t *testing.T) {
+		q := newIPQueue[testType](s, "test", calc, ipqLimitByLen[testType](5))
+		for i := 0; i < 10; i++ {
+			n, err := q.push(testValue)
+			if i >= 5 {
+				require_Error(t, err, errIPQLenLimitReached)
+			} else {
+				require_NoError(t, err)
+			}
+			require_LessThan(t, n, 6)
+		}
+	})
+
+	t.Run("LimitBySize", func(t *testing.T) {
+		q := newIPQueue[testType](s, "test", calc, ipqLimitBySize[testType](16*5))
+		for i := 0; i < 10; i++ {
+			n, err := q.push(testValue)
+			if i >= 5 {
+				require_Error(t, err, errIPQSizeLimitReached)
+			} else {
+				require_NoError(t, err)
+			}
+			require_LessThan(t, n, 6)
+		}
+	})
+}
+
+func BenchmarkIPQueueSizeCalculation(b *testing.B) {
+	type testType = [16]byte
+	var testValue testType
+
+	s := &Server{}
+
+	run := func(b *testing.B, q *ipQueue[testType]) {
+		b.SetBytes(16)
+		for i := 0; i < b.N; i++ {
+			q.push(testValue)
+		}
+		for i := b.N; i > 0; i-- {
+			q.popOne()
+		}
+	}
+
+	// Measures without calculation function overheads.
+	b.Run("WithoutCalc", func(b *testing.B) {
+		run(b, newIPQueue[testType](s, "test"))
+	})
+
+	// Measures the raw overhead of having a calculation function.
+	b.Run("WithEmptyCalc", func(b *testing.B) {
+		calc := ipqSizeCalculation[testType](func(e testType) uint64 {
+			return 0
+		})
+		run(b, newIPQueue[testType](s, "test", calc))
+	})
+
+	// Measures the overhead of having a calculation function that
+	// actually measures something useful.
+	b.Run("WithLenCalc", func(b *testing.B) {
+		calc := ipqSizeCalculation[testType](func(e testType) uint64 {
+			return uint64(len(e))
+		})
+		run(b, newIPQueue[testType](s, "test", calc))
+	})
 }
