@@ -792,13 +792,14 @@ func checkConsumerCfg(
 	}
 
 	if config.PriorityPolicy != PriorityNone {
+		if len(config.PriorityGroups) == 0 {
+			return NewJSConsumerPriorityPolicyWithoutGroupError()
+		}
+
 		for _, group := range config.PriorityGroups {
 			if group == _EMPTY_ {
 				return NewJSConsumerEmptyGroupNameError()
 			}
-		}
-		if len(config.PriorityGroups) == 0 {
-			return NewJSConsumerPriorityPolicyWithoutGroupError()
 		}
 	}
 	return nil
@@ -3289,19 +3290,19 @@ func nextReqFromMsg(msg []byte) (time.Time, int, int, bool, time.Duration, time.
 
 // Represents a request that is on the internal waiting queue
 type waitingRequest struct {
-	next           *waitingRequest
-	acc            *Account
-	interest       string
-	reply          string
-	n              int // For batching
-	d              int // num delivered
-	b              int // For max bytes tracking
-	expires        time.Time
-	received       time.Time
-	hb             time.Duration
-	hbt            time.Time
-	noWait         bool
-	priorityGroups *PriorityGroup
+	next          *waitingRequest
+	acc           *Account
+	interest      string
+	reply         string
+	n             int // For batching
+	d             int // num delivered
+	b             int // For max bytes tracking
+	expires       time.Time
+	received      time.Time
+	hb            time.Duration
+	hbt           time.Time
+	noWait        bool
+	priorityGroup *PriorityGroup
 }
 
 // sync.Pool for waiting requests.
@@ -3517,12 +3518,12 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 		if wr.expires.IsZero() || time.Now().Before(wr.expires) {
 			if needNewPin {
 				o.currentNuid = nuid.Next()
-				wr.priorityGroups.Id = o.currentNuid
+				wr.priorityGroup.Id = o.currentNuid
 			} else if o.currentNuid != _EMPTY_ {
 				// Check if we have a match on the currentNuid
-				if wr.priorityGroups != nil && wr.priorityGroups.Id == o.currentNuid {
+				if wr.priorityGroup != nil && wr.priorityGroup.Id == o.currentNuid {
 					// If we have a match, we do nothing here and will deliver the message later down the code path.
-				} else if wr.priorityGroups.Id == _EMPTY_ {
+				} else if wr.priorityGroup.Id == _EMPTY_ {
 					o.waiting.cycle()
 					if wr == lastRequest {
 						return nil
@@ -3541,10 +3542,10 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 			}
 
 			if o.cfg.PriorityPolicy == PriorityOverflow {
-				if wr.priorityGroups != nil &&
+				if wr.priorityGroup != nil &&
 					// We need to check o.npc+1, because before calling nextWaiting, we do o.npc--
-					(wr.priorityGroups.MinPending > 0 && wr.priorityGroups.MinPending > o.npc+1 ||
-						wr.priorityGroups.MinAckPending > 0 && wr.priorityGroups.MinAckPending > int64(len(o.pending))) {
+					(wr.priorityGroup.MinPending > 0 && wr.priorityGroup.MinPending > o.npc+1 ||
+						wr.priorityGroup.MinAckPending > 0 && wr.priorityGroup.MinAckPending > int64(len(o.pending))) {
 					o.waiting.cycle()
 					// We're done cycling through the requests.
 					if wr == lastRequest {
@@ -3774,7 +3775,7 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 
 	// Create a waiting request.
 	wr := wrPool.Get().(*waitingRequest)
-	wr.acc, wr.interest, wr.reply, wr.n, wr.d, wr.noWait, wr.expires, wr.hb, wr.hbt, wr.priorityGroups = acc, interest, reply, batchSize, 0, noWait, expires, hb, hbt, priorityGroup
+	wr.acc, wr.interest, wr.reply, wr.n, wr.d, wr.noWait, wr.expires, wr.hb, wr.hbt, wr.priorityGroup = acc, interest, reply, batchSize, 0, noWait, expires, hb, hbt, priorityGroup
 	wr.b = maxBytes
 	wr.received = time.Now()
 
