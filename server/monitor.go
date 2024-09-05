@@ -1228,10 +1228,10 @@ type Varz struct {
 
 // JetStreamVarz contains basic runtime information about jetstream
 type JetStreamVarz struct {
-	Config   *JetStreamConfig `json:"config,omitempty"`
-	Stats    *JetStreamStats  `json:"stats,omitempty"`
-	Meta     *MetaClusterInfo `json:"meta,omitempty"`
-	Limits   *JSLimitOpts     `json:"limits,omitempty"`
+	Config *JetStreamConfig `json:"config,omitempty"`
+	Stats  *JetStreamStats  `json:"stats,omitempty"`
+	Meta   *MetaClusterInfo `json:"meta,omitempty"`
+	Limits *JSLimitOpts     `json:"limits,omitempty"`
 }
 
 // ClusterOptsVarz contains monitoring cluster information
