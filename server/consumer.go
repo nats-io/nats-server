@@ -60,8 +60,8 @@ type ConsumerInfo struct {
 	Paused         bool            `json:"paused,omitempty"`
 	PauseRemaining time.Duration   `json:"pause_remaining,omitempty"`
 	// TimeStamp indicates when the info was gathered
-	TimeStamp time.Time `json:"ts"`
-	PinnedId  string    `json:"pinned_id,omitempty"`
+	TimeStamp time.Time         `json:"ts"`
+	PinnedIds map[string]string `json:"pinned_ids,omitempty"`
 }
 
 type ConsumerConfig struct {
@@ -469,6 +469,8 @@ type consumer struct {
 	sigSubs []*subscription
 
 	// Priority groups
+	// currentNuid is the current nuid for the pinned consumer.
+	// In the future, as
 	currentNuid string
 	pinnedTtl   *time.Timer
 }
@@ -563,7 +565,9 @@ func setConsumerConfigDefaults(config *ConsumerConfig, streamCfg *StreamConfig, 
 		}
 		config.MaxRequestBatch = lim.MaxRequestBatch
 	}
-	if config.PinnedTTL == 0 {
+
+	// set the default value only if pinned policy is used.
+	if config.PriorityPolicy == PriorityPinnedClient && config.PinnedTTL == 0 {
 		config.PinnedTTL = JsDefaultPinnedTTL
 	}
 	return nil
@@ -2853,6 +2857,12 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		rg = o.ca.Group
 	}
 
+	// TODO(jrm): when we introduce supporting many priority groups, we need to update assigning `o.currentNuid` for each group.
+	pinnedIds := make(map[string]string)
+	if len(o.cfg.PriorityGroups) > 0 {
+		pinnedIds[o.cfg.PriorityGroups[0]] = o.currentNuid
+	}
+
 	cfg := o.cfg
 	info := &ConsumerInfo{
 		Stream:  o.stream,
@@ -2872,7 +2882,7 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		NumPending:     o.checkNumPending(),
 		PushBound:      o.isPushMode() && o.active,
 		TimeStamp:      time.Now().UTC(),
-		PinnedId:       o.currentNuid,
+		PinnedIds:      pinnedIds,
 	}
 	if o.cfg.PauseUntil != nil {
 		p := *o.cfg.PauseUntil
@@ -4456,7 +4466,6 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			pmsg.returnToPool()
 			goto waitForMsgs
 		}
-		// If we are a fresh pin, add a header
 
 		// If we are in a replay scenario and have not caught up check if we need to delay here.
 		if o.replay && lts > 0 {
