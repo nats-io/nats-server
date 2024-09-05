@@ -1577,11 +1577,7 @@ func (o *consumer) sendDeleteAdvisoryLocked() {
 	o.sendAdvisory(subj, j)
 }
 
-func (o *consumer) sendPinnedAdvisoryLocked() {
-	group := _EMPTY_
-	if len(o.cfg.PriorityGroups) == 0 {
-		group = o.cfg.PriorityGroups[0]
-	}
+func (o *consumer) sendPinnedAdvisoryLocked(group string) {
 	e := JSStreamGroupPinnedAdvisory{
 		TypedEvent: TypedEvent{
 			Type: JSStreamGroupPinnedAdvisoryType,
@@ -3483,6 +3479,11 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 	}
 
 	needNewPin := o.currentNuid == _EMPTY_ && o.cfg.PriorityPolicy == PriorityPinnedClient
+	// As long as we support only one priority group, we can capture  that group here and reuse it.
+	priorityGroup := _EMPTY_
+	if len(o.cfg.PriorityGroups) > 0 {
+		priorityGroup = o.cfg.PriorityGroups[0]
+	}
 
 	lastRequest := o.waiting.tail
 	for wr := o.waiting.peek(); !o.waiting.isEmpty(); wr = o.waiting.peek() {
@@ -3554,17 +3555,17 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 			}
 			if wr.acc.sl.HasInterest(wr.interest) {
 				if needNewPin {
-					o.sendPinnedAdvisoryLocked()
+					o.sendPinnedAdvisoryLocked(priorityGroup)
 				}
 				return o.waiting.pop()
 			} else if time.Since(wr.received) < defaultGatewayRecentSubExpiration && (o.srv.leafNodeEnabled || o.srv.gateway.enabled) {
 				if needNewPin {
-					o.sendPinnedAdvisoryLocked()
+					o.sendPinnedAdvisoryLocked(priorityGroup)
 				}
 				return o.waiting.pop()
 			} else if o.srv.gateway.enabled && o.srv.hasGatewayInterest(wr.acc.Name, wr.interest) {
 				if needNewPin {
-					o.sendPinnedAdvisoryLocked()
+					o.sendPinnedAdvisoryLocked(priorityGroup)
 				}
 				return o.waiting.pop()
 			}
