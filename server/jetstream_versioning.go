@@ -53,14 +53,14 @@ func setStreamAssetVersionMetadata(cfg *StreamConfig, prevCfg *StreamConfig) {
 
 // includeDynamicStreamAssetVersionMetadata adds dynamic fields into the (copied) metadata.
 func includeDynamicStreamAssetVersionMetadata(cfg StreamConfig) StreamConfig {
-	newCfg := cfg
-	newCfg.Metadata = make(map[string]string)
-	for key, value := range cfg.Metadata {
-		newCfg.Metadata[key] = value
+	prevMetadata := cfg.Metadata
+	cfg.Metadata = make(map[string]string)
+	for key, value := range prevMetadata {
+		cfg.Metadata[key] = value
 	}
-	newCfg.Metadata[JSServerVersionMetadataKey] = VERSION
-	newCfg.Metadata[JSServerLevelMetadataKey] = JSApiLevel
-	return newCfg
+	cfg.Metadata[JSServerVersionMetadataKey] = VERSION
+	cfg.Metadata[JSServerLevelMetadataKey] = JSApiLevel
+	return cfg
 }
 
 // setConsumerAssetVersionMetadata sets JetStream consumer metadata, like the server version and API level.
