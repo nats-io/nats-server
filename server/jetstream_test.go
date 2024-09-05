@@ -7489,7 +7489,7 @@ func TestJetStreamRequestAPI(t *testing.T) {
 	}
 
 	// JS API level should be set.
-	require_Equal(t, info.APILevel, JSApiLevel)
+	require_Equal(t, info.API.Level, JSApiLevel)
 
 	// Now create a stream.
 	msetCfg := StreamConfig{

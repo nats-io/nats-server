@@ -4680,7 +4680,7 @@ func TestMonitorJsz(t *testing.T) {
 	t.Run("js-api-level", func(t *testing.T) {
 		for _, url := range []string{monUrl1, monUrl2} {
 			info := readJsInfo(url)
-			require_Equal(t, info.APILevel, JSApiLevel)
+			require_Equal(t, info.API.Level, JSApiLevel)
 		}
 	})
 }
@@ -5436,6 +5436,6 @@ func TestVarzJSApiLevel(t *testing.T) {
 	url := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
 
 	varz := pollVarz(t, s, 0, url, nil)
-	apiLevel := varz.JetStream.APILevel
+	apiLevel := varz.JetStream.Stats.API.Level
 	require_Equal(t, apiLevel, JSApiLevel)
 }

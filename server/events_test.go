@@ -3695,5 +3695,5 @@ func TestServerEventsStatsZJetStreamApiLevel(t *testing.T) {
 	err = json.Unmarshal(msg.Data, &stats)
 	require_NoError(t, err)
 
-	require_Equal(t, stats.Stats.JetStream.APILevel, JSApiLevel)
+	require_Equal(t, stats.Stats.JetStream.Stats.API.Level, JSApiLevel)
 }

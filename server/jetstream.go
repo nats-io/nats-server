@@ -86,12 +86,12 @@ type JetStreamTier struct {
 type JetStreamAccountStats struct {
 	JetStreamTier                          // in case tiers are used, reflects totals with limits not set
 	Domain        string                   `json:"domain,omitempty"`
-	APILevel      string                   `json:"api_level"`
 	API           JetStreamAPIStats        `json:"api"`
 	Tiers         map[string]JetStreamTier `json:"tiers,omitempty"` // indexed by tier name
 }
 
 type JetStreamAPIStats struct {
+	Level    string `json:"level"`
 	Total    uint64 `json:"total"`
 	Errors   uint64 `json:"errors"`
 	Inflight uint64 `json:"inflight,omitempty"`
@@ -1685,8 +1685,8 @@ func (a *Account) JetStreamUsage() JetStreamAccountStats {
 		jsa.usageMu.RLock()
 		stats.Memory, stats.Store = jsa.storageTotals()
 		stats.Domain = js.config.Domain
-		stats.APILevel = JSApiLevel
 		stats.API = JetStreamAPIStats{
+			Level:  JSApiLevel,
 			Total:  jsa.apiTotal,
 			Errors: jsa.apiErrors,
 		}
@@ -2376,6 +2376,7 @@ func (js *jetStream) usageStats() *JetStreamStats {
 	stats.ReservedStore = uint64(js.storeReserved)
 	s := js.srv
 	js.mu.RUnlock()
+	stats.API.Level = JSApiLevel
 	stats.API.Total = uint64(atomic.LoadInt64(&js.apiTotal))
 	stats.API.Errors = uint64(atomic.LoadInt64(&js.apiErrors))
 	stats.API.Inflight = uint64(atomic.LoadInt64(&js.apiInflight))
