@@ -51,8 +51,8 @@ func setStreamAssetVersionMetadata(cfg *StreamConfig, prevCfg *StreamConfig) {
 	cfg.Metadata[JSRequiredLevelMetadataKey] = requiredApiLevel
 }
 
-// includeDynamicStreamAssetVersionMetadata adds dynamic fields into the (copied) metadata.
-func includeDynamicStreamAssetVersionMetadata(cfg StreamConfig) StreamConfig {
+// setDynamicStreamMetadata adds dynamic fields into the (copied) metadata.
+func setDynamicStreamMetadata(cfg StreamConfig) StreamConfig {
 	prevMetadata := cfg.Metadata
 	cfg.Metadata = make(map[string]string)
 	for key, value := range prevMetadata {
@@ -98,8 +98,8 @@ func setConsumerAssetVersionMetadata(cfg *ConsumerConfig, prevCfg *ConsumerConfi
 	cfg.Metadata[JSRequiredLevelMetadataKey] = requiredApiLevel
 }
 
-// includeDynamicConsumerAssetVersionMetadata adds dynamic fields into the (copied) metadata.
-func includeDynamicConsumerAssetVersionMetadata(cfg *ConsumerConfig) *ConsumerConfig {
+// setDynamicConsumerMetadata adds dynamic fields into the (copied) metadata.
+func setDynamicConsumerMetadata(cfg *ConsumerConfig) *ConsumerConfig {
 	newCfg := *cfg
 	newCfg.Metadata = make(map[string]string)
 	for key, value := range cfg.Metadata {
@@ -110,14 +110,14 @@ func includeDynamicConsumerAssetVersionMetadata(cfg *ConsumerConfig) *ConsumerCo
 	return &newCfg
 }
 
-// includeDynamicConsumerInfoVersionMetadata adds dynamic fields into the (copied) metadata.
-func includeDynamicConsumerInfoVersionMetadata(info *ConsumerInfo) *ConsumerInfo {
+// setDynamicConsumerInfoMetadata adds dynamic fields into the (copied) metadata.
+func setDynamicConsumerInfoMetadata(info *ConsumerInfo) *ConsumerInfo {
 	if info == nil {
 		return nil
 	}
 
 	newInfo := *info
-	cfg := includeDynamicConsumerAssetVersionMetadata(info.Config)
+	cfg := setDynamicConsumerMetadata(info.Config)
 	newInfo.Config = cfg
 	return &newInfo
 }

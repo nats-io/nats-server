@@ -3278,7 +3278,7 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 		resp.StreamInfo = &StreamInfo{
 			Created:   mset.createdTime(),
 			State:     mset.state(),
-			Config:    includeDynamicStreamAssetVersionMetadata(mset.config()),
+			Config:    setDynamicStreamMetadata(mset.config()),
 			Cluster:   js.clusterInfo(mset.raftGroup()),
 			Sources:   mset.sourcesInfo(),
 			Mirror:    mset.mirrorInfo(),
@@ -3708,7 +3708,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 	resp.StreamInfo = &StreamInfo{
 		Created:   mset.createdTime(),
 		State:     mset.state(),
-		Config:    includeDynamicStreamAssetVersionMetadata(mset.config()),
+		Config:    setDynamicStreamMetadata(mset.config()),
 		Cluster:   js.clusterInfo(mset.raftGroup()),
 		Mirror:    mset.mirrorInfo(),
 		Sources:   mset.sourcesInfo(),
@@ -3775,7 +3775,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 							resp.StreamInfo = &StreamInfo{
 								Created:   mset.createdTime(),
 								State:     mset.state(),
-								Config:    includeDynamicStreamAssetVersionMetadata(mset.config()),
+								Config:    setDynamicStreamMetadata(mset.config()),
 								Cluster:   js.clusterInfo(mset.raftGroup()),
 								Sources:   mset.sourcesInfo(),
 								Mirror:    mset.mirrorInfo(),
@@ -4484,7 +4484,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 				client, subject, reply := ca.Client, ca.Subject, ca.Reply
 				js.mu.Unlock()
 				var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
-				resp.ConsumerInfo = includeDynamicConsumerInfoVersionMetadata(o.info())
+				resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info())
 				s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 				return
 			}
@@ -4522,7 +4522,7 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 					js.mu.RUnlock()
 					if !recovering {
 						var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
-						resp.ConsumerInfo = includeDynamicConsumerInfoVersionMetadata(o.info())
+						resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info())
 						s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 					}
 				}
@@ -5222,7 +5222,7 @@ func (js *jetStream) processConsumerLeaderChange(o *consumer, isLeader bool) err
 		resp.Error = NewJSConsumerCreateError(err, Unless(err))
 		s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 	} else {
-		resp.ConsumerInfo = includeDynamicConsumerInfoVersionMetadata(o.initialInfo())
+		resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.initialInfo())
 		s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 		o.sendCreateAdvisory()
 	}

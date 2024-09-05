@@ -123,9 +123,9 @@ func TestJetStreamSetStreamAssetVersionMetadataRemoveDynamicFields(t *testing.T)
 	require_True(t, reflect.DeepEqual(cfg.Metadata, metadataAllSet("0")))
 }
 
-func TestJetStreamIncludeDynamicStreamAssetVersionMetadata(t *testing.T) {
+func TestJetStreamSetDynamicStreamMetadata(t *testing.T) {
 	cfg := StreamConfig{Metadata: metadataAllSet("0")}
-	newCfg := includeDynamicStreamAssetVersionMetadata(cfg)
+	newCfg := setDynamicStreamMetadata(cfg)
 
 	// Only new metadata must contain dynamic fields.
 	metadata := metadataAllSet("0")
@@ -226,9 +226,9 @@ func TestJetStreamSetConsumerAssetVersionMetadataRemoveDynamicFields(t *testing.
 	require_True(t, reflect.DeepEqual(cfg.Metadata, metadataAllSet("0")))
 }
 
-func TestJetStreamIncludeDynamicConsumerAssetVersionMetadata(t *testing.T) {
+func TestJetStreamSetDynamicConsumerMetadata(t *testing.T) {
 	cfg := ConsumerConfig{Metadata: metadataAllSet("0")}
-	newCfg := includeDynamicConsumerAssetVersionMetadata(&cfg)
+	newCfg := setDynamicConsumerMetadata(&cfg)
 
 	// Only new metadata must contain dynamic fields.
 	metadata := metadataAllSet("0")
@@ -238,9 +238,9 @@ func TestJetStreamIncludeDynamicConsumerAssetVersionMetadata(t *testing.T) {
 	require_True(t, reflect.DeepEqual(newCfg.Metadata, metadata))
 }
 
-func TestJetStreamIncludeDynamicConsumerInfoVersionMetadata(t *testing.T) {
+func TestJetStreamSetDynamicConsumerInfoMetadata(t *testing.T) {
 	ci := ConsumerInfo{Config: &ConsumerConfig{Metadata: metadataAllSet("0")}}
-	newCi := includeDynamicConsumerInfoVersionMetadata(&ci)
+	newCi := setDynamicConsumerInfoMetadata(&ci)
 
 	// Configs should not equal, as that would mean we've overwritten the original ConsumerInfo.
 	require_False(t, reflect.DeepEqual(ci, newCi))
