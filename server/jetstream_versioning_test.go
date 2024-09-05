@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -30,7 +31,7 @@ import (
 func metadataAllSet(featureLevel string) map[string]string {
 	return map[string]string{
 		JSCreatedVersionMetadataKey: VERSION,
-		JSCreatedLevelMetadataKey:   JSApiLevel,
+		JSCreatedLevelMetadataKey:   strconv.Itoa(JSApiLevel),
 		JSRequiredLevelMetadataKey:  featureLevel,
 	}
 }
@@ -283,7 +284,7 @@ func TestJetStreamMetadataMutations(t *testing.T) {
 
 func validateMetadata(metadata map[string]string, expectedFeatureLevel string) bool {
 	return metadata[JSCreatedVersionMetadataKey] == VERSION ||
-		metadata[JSCreatedLevelMetadataKey] == JSApiLevel ||
+		metadata[JSCreatedLevelMetadataKey] == strconv.Itoa(JSApiLevel) ||
 		metadata[JSRequiredLevelMetadataKey] == expectedFeatureLevel
 }
 
