@@ -13,9 +13,11 @@
 
 package server
 
+import "strconv"
+
 const (
 	// JSApiLevel is the maximum supported JetStream API level for this server.
-	JSApiLevel = "1"
+	JSApiLevel int = 1
 
 	JSCreatedVersionMetadataKey = "_nats.created.server.version"
 	JSCreatedLevelMetadataKey   = "_nats.created.server.api_level"
@@ -47,8 +49,8 @@ func setStaticStreamMetadata(cfg *StreamConfig, prevCfg *StreamConfig) {
 	}
 	preserveCreatedMetadata(cfg.Metadata, prevMetadata)
 
-	requiredApiLevel := "0"
-	cfg.Metadata[JSRequiredLevelMetadataKey] = requiredApiLevel
+	var requiredApiLevel int
+	cfg.Metadata[JSRequiredLevelMetadataKey] = strconv.Itoa(requiredApiLevel)
 }
 
 // setDynamicStreamMetadata adds dynamic fields into the (copied) metadata.
@@ -59,7 +61,7 @@ func setDynamicStreamMetadata(cfg StreamConfig) StreamConfig {
 		cfg.Metadata[key] = value
 	}
 	cfg.Metadata[JSServerVersionMetadataKey] = VERSION
-	cfg.Metadata[JSServerLevelMetadataKey] = JSApiLevel
+	cfg.Metadata[JSServerLevelMetadataKey] = strconv.Itoa(JSApiLevel)
 	return cfg
 }
 
@@ -86,16 +88,16 @@ func setStaticConsumerMetadata(cfg *ConsumerConfig, prevCfg *ConsumerConfig) {
 	}
 	preserveCreatedMetadata(cfg.Metadata, prevMetadata)
 
-	requiredApiLevel := "0"
+	var requiredApiLevel int
 
 	// Added in 2.11, absent | zero is the feature is not used.
 	// one could be stricter and say even if its set but the time
 	// has already passed it is also not needed to restore the consumer
 	if cfg.PauseUntil != nil && !cfg.PauseUntil.IsZero() {
-		requiredApiLevel = "1"
+		requiredApiLevel = 1
 	}
 
-	cfg.Metadata[JSRequiredLevelMetadataKey] = requiredApiLevel
+	cfg.Metadata[JSRequiredLevelMetadataKey] = strconv.Itoa(requiredApiLevel)
 }
 
 // setDynamicConsumerMetadata adds dynamic fields into the (copied) metadata.
@@ -106,7 +108,7 @@ func setDynamicConsumerMetadata(cfg *ConsumerConfig) *ConsumerConfig {
 		newCfg.Metadata[key] = value
 	}
 	newCfg.Metadata[JSServerVersionMetadataKey] = VERSION
-	newCfg.Metadata[JSServerLevelMetadataKey] = JSApiLevel
+	newCfg.Metadata[JSServerLevelMetadataKey] = strconv.Itoa(JSApiLevel)
 	return &newCfg
 }
 
@@ -169,7 +171,7 @@ func setOrDeleteInMetadata(cfg *ConsumerConfig, prevCfg *ConsumerConfig, key str
 func preserveCreatedMetadata(metadata, prevMetadata map[string]string) {
 	if prevMetadata == nil {
 		metadata[JSCreatedVersionMetadataKey] = VERSION
-		metadata[JSCreatedLevelMetadataKey] = JSApiLevel
+		metadata[JSCreatedLevelMetadataKey] = strconv.Itoa(JSApiLevel)
 		return
 	}
 

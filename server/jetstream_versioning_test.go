@@ -22,6 +22,7 @@ import (
 	"io"
 	"os"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 
@@ -31,7 +32,7 @@ import (
 func metadataAllSet(featureLevel string) map[string]string {
 	return map[string]string{
 		JSCreatedVersionMetadataKey: VERSION,
-		JSCreatedLevelMetadataKey:   JSApiLevel,
+		JSCreatedLevelMetadataKey:   strconv.Itoa(JSApiLevel),
 		JSRequiredLevelMetadataKey:  featureLevel,
 	}
 }
@@ -131,7 +132,7 @@ func TestJetStreamSetDynamicStreamMetadata(t *testing.T) {
 	metadata := metadataAllSet("0")
 	require_True(t, reflect.DeepEqual(cfg.Metadata, metadata))
 	metadata[JSServerVersionMetadataKey] = VERSION
-	metadata[JSServerLevelMetadataKey] = JSApiLevel
+	metadata[JSServerLevelMetadataKey] = strconv.Itoa(JSApiLevel)
 	require_True(t, reflect.DeepEqual(newCfg.Metadata, metadata))
 }
 
@@ -234,7 +235,7 @@ func TestJetStreamSetDynamicConsumerMetadata(t *testing.T) {
 	metadata := metadataAllSet("0")
 	require_True(t, reflect.DeepEqual(cfg.Metadata, metadata))
 	metadata[JSServerVersionMetadataKey] = VERSION
-	metadata[JSServerLevelMetadataKey] = JSApiLevel
+	metadata[JSServerLevelMetadataKey] = strconv.Itoa(JSApiLevel)
 	require_True(t, reflect.DeepEqual(newCfg.Metadata, metadata))
 }
 
@@ -249,7 +250,7 @@ func TestJetStreamSetDynamicConsumerInfoMetadata(t *testing.T) {
 	metadata := metadataAllSet("0")
 	require_True(t, reflect.DeepEqual(ci.Config.Metadata, metadata))
 	metadata[JSServerVersionMetadataKey] = VERSION
-	metadata[JSServerLevelMetadataKey] = JSApiLevel
+	metadata[JSServerLevelMetadataKey] = strconv.Itoa(JSApiLevel)
 	require_True(t, reflect.DeepEqual(newCi.Config.Metadata, metadata))
 }
 
@@ -377,10 +378,10 @@ func TestJetStreamMetadataMutations(t *testing.T) {
 
 func validateMetadata(metadata map[string]string, expectedFeatureLevel string) bool {
 	return metadata[JSCreatedVersionMetadataKey] == VERSION ||
-		metadata[JSCreatedLevelMetadataKey] == JSApiLevel ||
+		metadata[JSCreatedLevelMetadataKey] == strconv.Itoa(JSApiLevel) ||
 		metadata[JSRequiredLevelMetadataKey] == expectedFeatureLevel ||
 		metadata[JSServerVersionMetadataKey] == VERSION ||
-		metadata[JSServerLevelMetadataKey] == JSApiLevel
+		metadata[JSServerLevelMetadataKey] == strconv.Itoa(JSApiLevel)
 }
 
 func streamMetadataChecks(t *testing.T, s server) {
@@ -486,7 +487,7 @@ func TestJetStreamMetadataStreamRestoreAndRestart(t *testing.T) {
 
 	expectedMetadata := map[string]string{
 		JSServerVersionMetadataKey: VERSION,
-		JSServerLevelMetadataKey:   JSApiLevel,
+		JSServerLevelMetadataKey:   strconv.Itoa(JSApiLevel),
 	}
 
 	// Stream restore should result in empty metadata to be preserved, only adding dynamic metadata.
@@ -521,7 +522,7 @@ func TestJetStreamMetadataStreamRestoreAndRestartCluster(t *testing.T) {
 
 	expectedMetadata := map[string]string{
 		JSServerVersionMetadataKey: VERSION,
-		JSServerLevelMetadataKey:   JSApiLevel,
+		JSServerLevelMetadataKey:   strconv.Itoa(JSApiLevel),
 	}
 
 	// Stream restore should result in empty metadata to be preserved, only adding dynamic metadata.
@@ -581,7 +582,7 @@ func restoreStreamFromPath(t *testing.T, nc *nats.Conn, path string) {
 
 	expectedMetadata := map[string]string{
 		JSServerVersionMetadataKey: VERSION,
-		JSServerLevelMetadataKey:   JSApiLevel,
+		JSServerLevelMetadataKey:   strconv.Itoa(JSApiLevel),
 	}
 
 	msg, err = nc.Request(rresp.DeliverSubject, nil, 5*time.Second)
