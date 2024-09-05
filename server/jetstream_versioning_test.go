@@ -105,7 +105,7 @@ func TestJetStreamSetStaticStreamMetadata(t *testing.T) {
 	}
 }
 
-func TestJetStreamSetStreamAssetVersionMetadataRemoveDynamicFields(t *testing.T) {
+func TestJetStreamSetStaticStreamMetadataRemoveDynamicFields(t *testing.T) {
 	dynamicMetadata := func() map[string]string {
 		return map[string]string{
 			JSServerVersionMetadataKey: "dynamic-version",
@@ -208,7 +208,7 @@ func TestJetStreamSetStaticConsumerMetadata(t *testing.T) {
 	}
 }
 
-func TestJetStreamSetConsumerAssetVersionMetadataRemoveDynamicFields(t *testing.T) {
+func TestJetStreamSetStaticConsumerMetadataRemoveDynamicFields(t *testing.T) {
 	dynamicMetadata := func() map[string]string {
 		return map[string]string{
 			JSServerVersionMetadataKey: "dynamic-version",
@@ -323,7 +323,7 @@ func TestJetStreamCopyConsumerMetadata(t *testing.T) {
 	}
 }
 
-func TestJetStreamCopyConsumerAssetVersionMetadataRemoveDynamicFields(t *testing.T) {
+func TestJetStreamCopyConsumerMetadataRemoveDynamicFields(t *testing.T) {
 	dynamicMetadata := func() map[string]string {
 		return map[string]string{
 			JSServerVersionMetadataKey: "dynamic-version",
