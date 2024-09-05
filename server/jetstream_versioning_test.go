@@ -58,7 +58,7 @@ func metadataOnlyRequired() map[string]string {
 	}
 }
 
-func TestJetStreamSetStreamAssetVersionMetadata(t *testing.T) {
+func TestJetStreamSetStaticStreamMetadata(t *testing.T) {
 	for _, test := range []struct {
 		desc             string
 		cfg              *StreamConfig
@@ -97,7 +97,7 @@ func TestJetStreamSetStreamAssetVersionMetadata(t *testing.T) {
 		},
 	} {
 		t.Run(test.desc, func(t *testing.T) {
-			setStreamAssetVersionMetadata(test.cfg, test.prev)
+			setStaticStreamMetadata(test.cfg, test.prev)
 			require_Equal(t, test.cfg.Metadata[JSCreatedVersionMetadataKey], test.expectedMetadata[JSCreatedVersionMetadataKey])
 			require_Equal(t, test.cfg.Metadata[JSCreatedLevelMetadataKey], test.expectedMetadata[JSCreatedLevelMetadataKey])
 			require_Equal(t, test.cfg.Metadata[JSRequiredLevelMetadataKey], test.expectedMetadata[JSRequiredLevelMetadataKey])
@@ -114,12 +114,12 @@ func TestJetStreamSetStreamAssetVersionMetadataRemoveDynamicFields(t *testing.T)
 	}
 
 	cfg := StreamConfig{Metadata: dynamicMetadata()}
-	setStreamAssetVersionMetadata(&cfg, nil)
+	setStaticStreamMetadata(&cfg, nil)
 	require_True(t, reflect.DeepEqual(cfg.Metadata, metadataAllSet("0")))
 
 	cfg = StreamConfig{Metadata: dynamicMetadata()}
 	prevCfg := StreamConfig{Metadata: metadataAllSet("0")}
-	setStreamAssetVersionMetadata(&cfg, &prevCfg)
+	setStaticStreamMetadata(&cfg, &prevCfg)
 	require_True(t, reflect.DeepEqual(cfg.Metadata, metadataAllSet("0")))
 }
 
@@ -135,7 +135,7 @@ func TestJetStreamSetDynamicStreamMetadata(t *testing.T) {
 	require_True(t, reflect.DeepEqual(newCfg.Metadata, metadata))
 }
 
-func TestJetStreamSetConsumerAssetVersionMetadata(t *testing.T) {
+func TestJetStreamSetStaticConsumerMetadata(t *testing.T) {
 	pauseUntil := time.Unix(0, 0)
 	pauseUntilZero := time.Time{}
 	for _, test := range []struct {
@@ -200,7 +200,7 @@ func TestJetStreamSetConsumerAssetVersionMetadata(t *testing.T) {
 		},
 	} {
 		t.Run(test.desc, func(t *testing.T) {
-			setConsumerAssetVersionMetadata(test.cfg, test.prev)
+			setStaticConsumerMetadata(test.cfg, test.prev)
 			require_Equal(t, test.cfg.Metadata[JSCreatedVersionMetadataKey], test.expectedMetadata[JSCreatedVersionMetadataKey])
 			require_Equal(t, test.cfg.Metadata[JSCreatedLevelMetadataKey], test.expectedMetadata[JSCreatedLevelMetadataKey])
 			require_Equal(t, test.cfg.Metadata[JSRequiredLevelMetadataKey], test.expectedMetadata[JSRequiredLevelMetadataKey])
@@ -217,12 +217,12 @@ func TestJetStreamSetConsumerAssetVersionMetadataRemoveDynamicFields(t *testing.
 	}
 
 	cfg := ConsumerConfig{Metadata: dynamicMetadata()}
-	setConsumerAssetVersionMetadata(&cfg, nil)
+	setStaticConsumerMetadata(&cfg, nil)
 	require_True(t, reflect.DeepEqual(cfg.Metadata, metadataAllSet("0")))
 
 	cfg = ConsumerConfig{Metadata: dynamicMetadata()}
 	prevCfg := ConsumerConfig{Metadata: metadataAllSet("0")}
-	setConsumerAssetVersionMetadata(&cfg, &prevCfg)
+	setStaticConsumerMetadata(&cfg, &prevCfg)
 	require_True(t, reflect.DeepEqual(cfg.Metadata, metadataAllSet("0")))
 }
 
@@ -253,7 +253,7 @@ func TestJetStreamSetDynamicConsumerInfoMetadata(t *testing.T) {
 	require_True(t, reflect.DeepEqual(newCi.Config.Metadata, metadata))
 }
 
-func TestJetStreamCopyConsumerAssetVersionMetadata(t *testing.T) {
+func TestJetStreamCopyConsumerMetadata(t *testing.T) {
 	for _, test := range []struct {
 		desc string
 		cfg  *ConsumerConfig
@@ -286,7 +286,7 @@ func TestJetStreamCopyConsumerAssetVersionMetadata(t *testing.T) {
 		},
 	} {
 		t.Run(test.desc, func(t *testing.T) {
-			copyConsumerAssetVersionMetadata(test.cfg, test.prev)
+			copyConsumerMetadata(test.cfg, test.prev)
 
 			var expectedMetadata map[string]string
 			if test.prev != nil {
@@ -332,12 +332,12 @@ func TestJetStreamCopyConsumerAssetVersionMetadataRemoveDynamicFields(t *testing
 	}
 
 	cfg := ConsumerConfig{Metadata: dynamicMetadata()}
-	copyConsumerAssetVersionMetadata(&cfg, nil)
+	copyConsumerMetadata(&cfg, nil)
 	require_Equal(t, len(cfg.Metadata), 0)
 
 	cfg = ConsumerConfig{Metadata: dynamicMetadata()}
 	prevCfg := ConsumerConfig{Metadata: metadataAllSet("0")}
-	copyConsumerAssetVersionMetadata(&cfg, &prevCfg)
+	copyConsumerMetadata(&cfg, &prevCfg)
 	require_True(t, reflect.DeepEqual(cfg.Metadata, metadataAllSet("0")))
 }
 
@@ -352,7 +352,7 @@ const (
 	consumerName = "CONSUMER"
 )
 
-func TestJetStreamAssetVersionMetadataMutations(t *testing.T) {
+func TestJetStreamMetadataMutations(t *testing.T) {
 	single := RunBasicJetStreamServer(t)
 	defer single.Shutdown()
 	nc, js := jsClientConnect(t, single)
@@ -369,8 +369,8 @@ func TestJetStreamAssetVersionMetadataMutations(t *testing.T) {
 		{3, cjs, cnc},
 	} {
 		t.Run(fmt.Sprintf("R%d", s.replicas), func(t *testing.T) {
-			streamAssetVersionChecks(t, s)
-			consumerAssetVersionChecks(t, s)
+			streamMetadataChecks(t, s)
+			consumerMetadataChecks(t, s)
 		})
 	}
 }
@@ -383,7 +383,7 @@ func validateMetadata(metadata map[string]string, expectedFeatureLevel string) b
 		metadata[JSServerLevelMetadataKey] == JSApiLevel
 }
 
-func streamAssetVersionChecks(t *testing.T, s server) {
+func streamMetadataChecks(t *testing.T, s server) {
 	// Add stream.
 	sc := nats.StreamConfig{Name: streamName, Replicas: s.replicas}
 	si, err := s.js.AddStream(&sc)
@@ -408,7 +408,7 @@ func streamAssetVersionChecks(t *testing.T, s server) {
 	require_True(t, validateMetadata(si.Config.Metadata, "0"))
 }
 
-func consumerAssetVersionChecks(t *testing.T, s server) {
+func consumerMetadataChecks(t *testing.T, s server) {
 	// Add consumer.
 	cc := nats.ConsumerConfig{Name: consumerName, Replicas: s.replicas}
 	ci, err := s.js.AddConsumer(streamName, &cc)
@@ -475,7 +475,7 @@ func consumerAssetVersionChecks(t *testing.T, s server) {
 	}
 }
 
-func TestJetStreamAssetVersionMetadataStreamRestoreAndRestart(t *testing.T) {
+func TestJetStreamMetadataStreamRestoreAndRestart(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 	nc, js := jsClientConnect(t, s)
@@ -510,7 +510,7 @@ func TestJetStreamAssetVersionMetadataStreamRestoreAndRestart(t *testing.T) {
 	require_True(t, reflect.DeepEqual(si.Config.Metadata, expectedMetadata))
 }
 
-func TestJetStreamAssetVersionMetadataStreamRestoreAndRestartCluster(t *testing.T) {
+func TestJetStreamMetadataStreamRestoreAndRestartCluster(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 	nc, js := jsClientConnect(t, c.randomServer())

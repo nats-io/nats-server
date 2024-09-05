@@ -1423,7 +1423,7 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, _ *Account,
 	}
 
 	// Initialize asset version metadata.
-	setStreamAssetVersionMetadata(&cfg.StreamConfig, nil)
+	setStaticStreamMetadata(&cfg.StreamConfig, nil)
 
 	streamName := streamNameFromSubject(subject)
 	if streamName != cfg.Name {
@@ -1561,7 +1561,7 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, _ *Account,
 	}
 
 	// Update asset version metadata.
-	setStreamAssetVersionMetadata(&cfg, &mset.cfg)
+	setStaticStreamMetadata(&cfg, &mset.cfg)
 
 	if err := mset.updatePedantic(&cfg, ncfg.Pedantic); err != nil {
 		resp.Error = NewJSStreamUpdateError(err, Unless(err))
@@ -4043,7 +4043,7 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 	}
 
 	// Initialize/update asset version metadata.
-	setConsumerAssetVersionMetadata(&req.Config, oldCfg)
+	setStaticConsumerMetadata(&req.Config, oldCfg)
 
 	o, err := stream.addConsumerWithAction(&req.Config, req.Action, req.Pedantic)
 
@@ -4603,7 +4603,7 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 
 		// Update asset version metadata due to updating pause/resume.
 		// Only PauseUntil is updated above, so reuse config for both.
-		setConsumerAssetVersionMetadata(nca.Config, nca.Config)
+		setStaticConsumerMetadata(nca.Config, nca.Config)
 
 		eca := encodeAddConsumerAssignment(&nca)
 		cc.meta.Propose(eca)
@@ -4640,7 +4640,7 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 
 	// Update asset version metadata due to updating pause/resume.
 	// Only PauseUntil is updated above, so reuse config for both.
-	setConsumerAssetVersionMetadata(&ncfg, &ncfg)
+	setStaticConsumerMetadata(&ncfg, &ncfg)
 
 	if err := obs.updateConfig(&ncfg); err != nil {
 		// The only type of error that should be returned here is from o.store,
