@@ -13,20 +13,22 @@
 
 package server
 
+import "strconv"
+
 const (
 	// JSApiLevel is the maximum supported JetStream API level for this server.
-	JSApiLevel = "1"
+	JSApiLevel int = 1
 
 	JSCreatedVersionMetadataKey = "_nats.created.server.version"
 	JSCreatedLevelMetadataKey   = "_nats.created.server.api_level"
 	JSRequiredLevelMetadataKey  = "_nats.server.require.api_level"
 )
 
-// setStreamAssetVersionMetadata sets JetStream stream metadata, like the server version and API level.
+// setStaticStreamMetadata sets JetStream stream metadata, like the server version and API level.
 // Given:
 //   - cfg!=nil, prevCfg==nil		add stream: adds created and required metadata
 //   - cfg!=nil, prevCfg!=nil		update stream: created metadata is preserved, required metadata is updated
-func setStreamAssetVersionMetadata(cfg *StreamConfig, prevCfg *StreamConfig) {
+func setStaticStreamMetadata(cfg *StreamConfig, prevCfg *StreamConfig) {
 	if cfg.Metadata == nil {
 		cfg.Metadata = make(map[string]string)
 	}
@@ -39,17 +41,17 @@ func setStreamAssetVersionMetadata(cfg *StreamConfig, prevCfg *StreamConfig) {
 			prevMetadata = make(map[string]string)
 		}
 	}
-	preserveAssetCreatedVersionMetadata(cfg.Metadata, prevMetadata)
+	preserveCreatedMetadata(cfg.Metadata, prevMetadata)
 
-	requiredApiLevel := "0"
-	cfg.Metadata[JSRequiredLevelMetadataKey] = requiredApiLevel
+	var requiredApiLevel int
+	cfg.Metadata[JSRequiredLevelMetadataKey] = strconv.Itoa(requiredApiLevel)
 }
 
-// setConsumerAssetVersionMetadata sets JetStream consumer metadata, like the server version and API level.
+// setStaticConsumerMetadata sets JetStream consumer metadata, like the server version and API level.
 // Given:
 //   - cfg!=nil, prevCfg==nil		add consumer: adds created and required metadata
 //   - cfg!=nil, prevCfg!=nil		update consumer: created metadata is preserved, required metadata is updated
-func setConsumerAssetVersionMetadata(cfg *ConsumerConfig, prevCfg *ConsumerConfig) {
+func setStaticConsumerMetadata(cfg *ConsumerConfig, prevCfg *ConsumerConfig) {
 	if cfg.Metadata == nil {
 		cfg.Metadata = make(map[string]string)
 	}
@@ -62,26 +64,26 @@ func setConsumerAssetVersionMetadata(cfg *ConsumerConfig, prevCfg *ConsumerConfi
 			prevMetadata = make(map[string]string)
 		}
 	}
-	preserveAssetCreatedVersionMetadata(cfg.Metadata, prevMetadata)
+	preserveCreatedMetadata(cfg.Metadata, prevMetadata)
 
-	requiredApiLevel := "0"
+	var requiredApiLevel int
 
 	// Added in 2.11, absent | zero is the feature is not used.
 	// one could be stricter and say even if its set but the time
 	// has already passed it is also not needed to restore the consumer
 	if cfg.PauseUntil != nil && !cfg.PauseUntil.IsZero() {
-		requiredApiLevel = "1"
+		requiredApiLevel = 1
 	}
 
-	cfg.Metadata[JSRequiredLevelMetadataKey] = requiredApiLevel
+	cfg.Metadata[JSRequiredLevelMetadataKey] = strconv.Itoa(requiredApiLevel)
 }
 
-// copyConsumerAssetVersionMetadata copies versioning fields from metadata of prevCfg into cfg.
+// copyConsumerMetadata copies versioning fields from metadata of prevCfg into cfg.
 // Removes versioning fields if no previous metadata, updates if set, and removes fields if it doesn't exist in prevCfg.
 //
 // Note: useful when doing equality checks on cfg and prevCfg, but ignoring any versioning metadata differences.
-// MUST be followed up with a call to setConsumerAssetVersionMetadata to fix potentially lost metadata.
-func copyConsumerAssetVersionMetadata(cfg *ConsumerConfig, prevCfg *ConsumerConfig) {
+// MUST be followed up with a call to setStaticConsumerMetadata to fix potentially lost metadata.
+func copyConsumerMetadata(cfg *ConsumerConfig, prevCfg *ConsumerConfig) {
 	// Remove fields when no previous metadata.
 	if prevCfg == nil || prevCfg.Metadata == nil {
 		if cfg.Metadata != nil {
@@ -113,12 +115,12 @@ func setOrDeleteInMetadata(cfg *ConsumerConfig, prevCfg *ConsumerConfig, key str
 	}
 }
 
-// preserveAssetCreatedVersionMetadata sets metadata to contain which version and API level the asset was created on.
+// preserveCreatedMetadata sets metadata to contain which version and API level the asset was created on.
 // Preserves previous metadata, if not set it initializes versions for the metadata.
-func preserveAssetCreatedVersionMetadata(metadata, prevMetadata map[string]string) {
+func preserveCreatedMetadata(metadata, prevMetadata map[string]string) {
 	if prevMetadata == nil {
 		metadata[JSCreatedVersionMetadataKey] = VERSION
-		metadata[JSCreatedLevelMetadataKey] = JSApiLevel
+		metadata[JSCreatedLevelMetadataKey] = strconv.Itoa(JSApiLevel)
 		return
 	}
 

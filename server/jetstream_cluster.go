@@ -6246,7 +6246,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	}
 
 	// Update asset version metadata.
-	setStreamAssetVersionMetadata(cfg, osa.Config)
+	setStaticStreamMetadata(cfg, osa.Config)
 
 	var newCfg *StreamConfig
 	if jsa := js.accounts[acc.Name]; jsa != nil {
@@ -7287,7 +7287,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	if oname != _EMPTY_ {
 		if ca = sa.consumers[oname]; ca != nil && !ca.deleted {
 			// Provided config might miss metadata, copy from existing config.
-			copyConsumerAssetVersionMetadata(cfg, ca.Config)
+			copyConsumerMetadata(cfg, ca.Config)
 
 			if action == ActionCreate && !reflect.DeepEqual(cfg, ca.Config) {
 				resp.Error = NewJSConsumerAlreadyExistsError()
@@ -7308,7 +7308,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	if ca != nil {
 		oldCfg = ca.Config
 	}
-	setConsumerAssetVersionMetadata(cfg, oldCfg)
+	setStaticConsumerMetadata(cfg, oldCfg)
 
 	// If this is new consumer.
 	if ca == nil {

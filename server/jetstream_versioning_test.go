@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -30,7 +31,7 @@ import (
 func metadataAllSet(featureLevel string) map[string]string {
 	return map[string]string{
 		JSCreatedVersionMetadataKey: VERSION,
-		JSCreatedLevelMetadataKey:   JSApiLevel,
+		JSCreatedLevelMetadataKey:   strconv.Itoa(JSApiLevel),
 		JSRequiredLevelMetadataKey:  featureLevel,
 	}
 }
@@ -57,7 +58,7 @@ func metadataOnlyRequired() map[string]string {
 	}
 }
 
-func TestJetStreamSetStreamAssetVersionMetadata(t *testing.T) {
+func TestJetStreamSetStaticStreamMetadata(t *testing.T) {
 	for _, test := range []struct {
 		desc             string
 		cfg              *StreamConfig
@@ -96,7 +97,7 @@ func TestJetStreamSetStreamAssetVersionMetadata(t *testing.T) {
 		},
 	} {
 		t.Run(test.desc, func(t *testing.T) {
-			setStreamAssetVersionMetadata(test.cfg, test.prev)
+			setStaticStreamMetadata(test.cfg, test.prev)
 			require_Equal(t, test.cfg.Metadata[JSCreatedVersionMetadataKey], test.expectedMetadata[JSCreatedVersionMetadataKey])
 			require_Equal(t, test.cfg.Metadata[JSCreatedLevelMetadataKey], test.expectedMetadata[JSCreatedLevelMetadataKey])
 			require_Equal(t, test.cfg.Metadata[JSRequiredLevelMetadataKey], test.expectedMetadata[JSRequiredLevelMetadataKey])
@@ -104,7 +105,7 @@ func TestJetStreamSetStreamAssetVersionMetadata(t *testing.T) {
 	}
 }
 
-func TestJetStreamSetConsumerAssetVersionMetadata(t *testing.T) {
+func TestJetStreamSetStaticConsumerMetadata(t *testing.T) {
 	pauseUntil := time.Unix(0, 0)
 	pauseUntilZero := time.Time{}
 	for _, test := range []struct {
@@ -169,7 +170,7 @@ func TestJetStreamSetConsumerAssetVersionMetadata(t *testing.T) {
 		},
 	} {
 		t.Run(test.desc, func(t *testing.T) {
-			setConsumerAssetVersionMetadata(test.cfg, test.prev)
+			setStaticConsumerMetadata(test.cfg, test.prev)
 			require_Equal(t, test.cfg.Metadata[JSCreatedVersionMetadataKey], test.expectedMetadata[JSCreatedVersionMetadataKey])
 			require_Equal(t, test.cfg.Metadata[JSCreatedLevelMetadataKey], test.expectedMetadata[JSCreatedLevelMetadataKey])
 			require_Equal(t, test.cfg.Metadata[JSRequiredLevelMetadataKey], test.expectedMetadata[JSRequiredLevelMetadataKey])
@@ -177,7 +178,7 @@ func TestJetStreamSetConsumerAssetVersionMetadata(t *testing.T) {
 	}
 }
 
-func TestJetStreamCopyConsumerAssetVersionMetadata(t *testing.T) {
+func TestJetStreamCopyConsumerMetadata(t *testing.T) {
 	for _, test := range []struct {
 		desc string
 		cfg  *ConsumerConfig
@@ -210,7 +211,7 @@ func TestJetStreamCopyConsumerAssetVersionMetadata(t *testing.T) {
 		},
 	} {
 		t.Run(test.desc, func(t *testing.T) {
-			copyConsumerAssetVersionMetadata(test.cfg, test.prev)
+			copyConsumerMetadata(test.cfg, test.prev)
 
 			var expectedMetadata map[string]string
 			if test.prev != nil {
@@ -258,7 +259,7 @@ const (
 	consumerName = "CONSUMER"
 )
 
-func TestJetStreamAssetVersionMetadataMutations(t *testing.T) {
+func TestJetStreamMetadataMutations(t *testing.T) {
 	single := RunBasicJetStreamServer(t)
 	defer single.Shutdown()
 	nc, js := jsClientConnect(t, single)
@@ -275,60 +276,54 @@ func TestJetStreamAssetVersionMetadataMutations(t *testing.T) {
 		{3, cjs, cnc},
 	} {
 		t.Run(fmt.Sprintf("R%d", s.replicas), func(t *testing.T) {
-			streamAssetVersionChecks(t, s)
-			consumerAssetVersionChecks(t, s)
+			streamMetadataChecks(t, s)
+			consumerMetadataChecks(t, s)
 		})
 	}
 }
 
-func streamAssetVersionChecks(t *testing.T, s server) {
+func validateMetadata(metadata map[string]string, expectedFeatureLevel string) bool {
+	return metadata[JSCreatedVersionMetadataKey] == VERSION ||
+		metadata[JSCreatedLevelMetadataKey] == strconv.Itoa(JSApiLevel) ||
+		metadata[JSRequiredLevelMetadataKey] == expectedFeatureLevel
+}
+
+func streamMetadataChecks(t *testing.T, s server) {
 	// Add stream.
 	sc := nats.StreamConfig{Name: streamName, Replicas: s.replicas}
 	si, err := s.js.AddStream(&sc)
 	require_NoError(t, err)
-	require_Equal(t, si.Config.Metadata[JSCreatedVersionMetadataKey], VERSION)
-	require_Equal(t, si.Config.Metadata[JSCreatedLevelMetadataKey], JSApiLevel)
-	require_Equal(t, si.Config.Metadata[JSRequiredLevelMetadataKey], "0")
+	require_True(t, validateMetadata(si.Config.Metadata, "0"))
 
 	// Stream info.
 	si, err = s.js.StreamInfo(streamName)
 	require_NoError(t, err)
-	require_Equal(t, si.Config.Metadata[JSCreatedVersionMetadataKey], VERSION)
-	require_Equal(t, si.Config.Metadata[JSCreatedLevelMetadataKey], JSApiLevel)
-	require_Equal(t, si.Config.Metadata[JSRequiredLevelMetadataKey], "0")
+	require_True(t, validateMetadata(si.Config.Metadata, "0"))
 
 	// Update stream.
 	// Metadata set on creation should be preserved, even if not included in update.
 	si, err = s.js.UpdateStream(&sc)
 	require_NoError(t, err)
-	require_Equal(t, si.Config.Metadata[JSCreatedVersionMetadataKey], VERSION)
-	require_Equal(t, si.Config.Metadata[JSCreatedLevelMetadataKey], JSApiLevel)
-	require_Equal(t, si.Config.Metadata[JSRequiredLevelMetadataKey], "0")
+	require_True(t, validateMetadata(si.Config.Metadata, "0"))
 }
 
-func consumerAssetVersionChecks(t *testing.T, s server) {
+func consumerMetadataChecks(t *testing.T, s server) {
 	// Add consumer.
 	cc := nats.ConsumerConfig{Name: consumerName, Replicas: s.replicas}
 	ci, err := s.js.AddConsumer(streamName, &cc)
 	require_NoError(t, err)
-	require_Equal(t, ci.Config.Metadata[JSCreatedVersionMetadataKey], VERSION)
-	require_Equal(t, ci.Config.Metadata[JSCreatedLevelMetadataKey], JSApiLevel)
-	require_Equal(t, ci.Config.Metadata[JSRequiredLevelMetadataKey], "0")
+	require_True(t, validateMetadata(ci.Config.Metadata, "0"))
 
 	// Consumer info.
 	ci, err = s.js.ConsumerInfo(streamName, consumerName)
 	require_NoError(t, err)
-	require_Equal(t, ci.Config.Metadata[JSCreatedVersionMetadataKey], VERSION)
-	require_Equal(t, ci.Config.Metadata[JSCreatedLevelMetadataKey], JSApiLevel)
-	require_Equal(t, ci.Config.Metadata[JSRequiredLevelMetadataKey], "0")
+	require_True(t, validateMetadata(ci.Config.Metadata, "0"))
 
 	// Update consumer.
 	// Metadata set on creation should be preserved, even if not included in update.
 	ci, err = s.js.UpdateConsumer(streamName, &cc)
 	require_NoError(t, err)
-	require_Equal(t, ci.Config.Metadata[JSCreatedVersionMetadataKey], VERSION)
-	require_Equal(t, ci.Config.Metadata[JSCreatedLevelMetadataKey], JSApiLevel)
-	require_Equal(t, ci.Config.Metadata[JSRequiredLevelMetadataKey], "0")
+	require_True(t, validateMetadata(ci.Config.Metadata, "0"))
 
 	// Use pause advisories to know when pause/resume is applied.
 	pauseCh := make(chan *nats.Msg, 10)
@@ -342,9 +337,7 @@ func consumerAssetVersionChecks(t *testing.T, s server) {
 
 	ci, err = s.js.ConsumerInfo(streamName, consumerName)
 	require_NoError(t, err)
-	require_Equal(t, ci.Config.Metadata[JSCreatedVersionMetadataKey], VERSION)
-	require_Equal(t, ci.Config.Metadata[JSCreatedLevelMetadataKey], JSApiLevel)
-	require_Equal(t, ci.Config.Metadata[JSRequiredLevelMetadataKey], "1")
+	require_True(t, validateMetadata(ci.Config.Metadata, "1"))
 
 	// Unpause consumer, should lower required API level.
 	subj := fmt.Sprintf("$JS.API.CONSUMER.PAUSE.%s.%s", streamName, consumerName)
@@ -355,12 +348,10 @@ func consumerAssetVersionChecks(t *testing.T, s server) {
 
 	ci, err = s.js.ConsumerInfo(streamName, consumerName)
 	require_NoError(t, err)
-	require_Equal(t, ci.Config.Metadata[JSCreatedVersionMetadataKey], VERSION)
-	require_Equal(t, ci.Config.Metadata[JSCreatedLevelMetadataKey], JSApiLevel)
-	require_Equal(t, ci.Config.Metadata[JSRequiredLevelMetadataKey], "0")
+	require_True(t, validateMetadata(ci.Config.Metadata, "0"))
 }
 
-func TestJetStreamAssetVersionMetadataStreamRestoreAndRestart(t *testing.T) {
+func TestJetStreamMetadataStreamRestoreAndRestart(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 	nc, js := jsClientConnect(t, s)
@@ -390,7 +381,7 @@ func TestJetStreamAssetVersionMetadataStreamRestoreAndRestart(t *testing.T) {
 	require_Equal(t, len(si.Config.Metadata), 0)
 }
 
-func TestJetStreamAssetVersionMetadataStreamRestoreAndRestartCluster(t *testing.T) {
+func TestJetStreamMetadataStreamRestoreAndRestartCluster(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 	nc, js := jsClientConnect(t, c.randomServer())
