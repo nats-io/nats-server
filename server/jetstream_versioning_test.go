@@ -21,10 +21,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/klauspost/compress/s2"
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/klauspost/compress/s2"
 
 	"github.com/nats-io/nats.go"
 )
