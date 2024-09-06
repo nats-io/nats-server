@@ -126,7 +126,7 @@ func TestJetStreamSetStaticStreamMetadataRemoveDynamicFields(t *testing.T) {
 
 func TestJetStreamSetDynamicStreamMetadata(t *testing.T) {
 	cfg := StreamConfig{Metadata: metadataAllSet("0")}
-	newCfg := setDynamicStreamMetadata(cfg)
+	newCfg := setDynamicStreamMetadata(&cfg)
 
 	// Only new metadata must contain dynamic fields.
 	metadata := metadataAllSet("0")

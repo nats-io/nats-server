@@ -3275,10 +3275,11 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 		resp.Error = NewJSStreamCreateError(err, Unless(err))
 		s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 	} else {
+		msetCfg := mset.config()
 		resp.StreamInfo = &StreamInfo{
 			Created:   mset.createdTime(),
 			State:     mset.state(),
-			Config:    setDynamicStreamMetadata(mset.config()),
+			Config:    *setDynamicStreamMetadata(&msetCfg),
 			Cluster:   js.clusterInfo(mset.raftGroup()),
 			Sources:   mset.sourcesInfo(),
 			Mirror:    mset.mirrorInfo(),
@@ -3705,10 +3706,11 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 
 	// Send our response.
 	var resp = JSApiStreamUpdateResponse{ApiResponse: ApiResponse{Type: JSApiStreamUpdateResponseType}}
+	msetCfg := mset.config()
 	resp.StreamInfo = &StreamInfo{
 		Created:   mset.createdTime(),
 		State:     mset.state(),
-		Config:    setDynamicStreamMetadata(mset.config()),
+		Config:    *setDynamicStreamMetadata(&msetCfg),
 		Cluster:   js.clusterInfo(mset.raftGroup()),
 		Mirror:    mset.mirrorInfo(),
 		Sources:   mset.sourcesInfo(),
@@ -3772,10 +3774,11 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 
 						if !recovering {
 							var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
+							msetCfg := mset.config()
 							resp.StreamInfo = &StreamInfo{
 								Created:   mset.createdTime(),
 								State:     mset.state(),
-								Config:    setDynamicStreamMetadata(mset.config()),
+								Config:    *setDynamicStreamMetadata(&msetCfg),
 								Cluster:   js.clusterInfo(mset.raftGroup()),
 								Sources:   mset.sourcesInfo(),
 								Mirror:    mset.mirrorInfo(),

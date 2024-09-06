@@ -54,15 +54,15 @@ func setStaticStreamMetadata(cfg *StreamConfig, prevCfg *StreamConfig) {
 }
 
 // setDynamicStreamMetadata adds dynamic fields into the (copied) metadata.
-func setDynamicStreamMetadata(cfg StreamConfig) StreamConfig {
-	prevMetadata := cfg.Metadata
-	cfg.Metadata = make(map[string]string)
-	for key, value := range prevMetadata {
-		cfg.Metadata[key] = value
+func setDynamicStreamMetadata(cfg *StreamConfig) *StreamConfig {
+	newCfg := *cfg
+	newCfg.Metadata = make(map[string]string)
+	for key, value := range cfg.Metadata {
+		newCfg.Metadata[key] = value
 	}
-	cfg.Metadata[JSServerVersionMetadataKey] = VERSION
-	cfg.Metadata[JSServerLevelMetadataKey] = strconv.Itoa(JSApiLevel)
-	return cfg
+	newCfg.Metadata[JSServerVersionMetadataKey] = VERSION
+	newCfg.Metadata[JSServerLevelMetadataKey] = strconv.Itoa(JSApiLevel)
+	return &newCfg
 }
 
 // setStaticConsumerMetadata sets JetStream consumer metadata, like the server version and API level.
