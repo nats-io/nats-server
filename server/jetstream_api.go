@@ -1422,6 +1422,9 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, _ *Account,
 		return
 	}
 
+	// Initialize asset version metadata.
+	setStaticStreamMetadata(&cfg.StreamConfig, nil)
+
 	streamName := streamNameFromSubject(subject)
 	if streamName != cfg.Name {
 		resp.Error = NewJSStreamMismatchError()
@@ -1556,6 +1559,9 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, _ *Account,
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
+
+	// Update asset version metadata.
+	setStaticStreamMetadata(&cfg, &mset.cfg)
 
 	if err := mset.updatePedantic(&cfg, ncfg.Pedantic); err != nil {
 		resp.Error = NewJSStreamUpdateError(err, Unless(err))
@@ -4028,11 +4034,16 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 		return
 	}
 
-	// If the consumer already exists then don't allow updating the PauseUntil, just set
-	// it back to whatever the current configured value is.
+	var oldCfg *ConsumerConfig
 	if o := stream.lookupConsumer(consumerName); o != nil {
+		oldCfg = &o.cfg
+		// If the consumer already exists then don't allow updating the PauseUntil, just set
+		// it back to whatever the current configured value is.
 		req.Config.PauseUntil = o.cfg.PauseUntil
 	}
+
+	// Initialize/update asset version metadata.
+	setStaticConsumerMetadata(&req.Config, oldCfg)
 
 	o, err := stream.addConsumerWithAction(&req.Config, req.Action, req.Pedantic)
 
@@ -4589,6 +4600,11 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 		} else {
 			nca.Config.PauseUntil = nil
 		}
+
+		// Update asset version metadata due to updating pause/resume.
+		// Only PauseUntil is updated above, so reuse config for both.
+		setStaticConsumerMetadata(nca.Config, nca.Config)
+
 		eca := encodeAddConsumerAssignment(&nca)
 		cc.meta.Propose(eca)
 
@@ -4621,6 +4637,10 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 	} else {
 		ncfg.PauseUntil = nil
 	}
+
+	// Update asset version metadata due to updating pause/resume.
+	// Only PauseUntil is updated above, so reuse config for both.
+	setStaticConsumerMetadata(&ncfg, &ncfg)
 
 	if err := obs.updateConfig(&ncfg); err != nil {
 		// The only type of error that should be returned here is from o.store,

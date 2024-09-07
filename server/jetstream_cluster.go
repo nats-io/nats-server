@@ -6245,6 +6245,10 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
+
+	// Update asset version metadata.
+	setStaticStreamMetadata(cfg, osa.Config)
+
 	var newCfg *StreamConfig
 	if jsa := js.accounts[acc.Name]; jsa != nil {
 		js.mu.Unlock()
@@ -7283,6 +7287,9 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	// if name was set by the user.
 	if oname != _EMPTY_ {
 		if ca = sa.consumers[oname]; ca != nil && !ca.deleted {
+			// Provided config might miss metadata, copy from existing config.
+			copyConsumerMetadata(cfg, ca.Config)
+
 			if action == ActionCreate && !reflect.DeepEqual(cfg, ca.Config) {
 				resp.Error = NewJSConsumerAlreadyExistsError()
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
@@ -7296,6 +7303,13 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 			}
 		}
 	}
+
+	// Initialize/update asset version metadata.
+	var oldCfg *ConsumerConfig
+	if ca != nil {
+		oldCfg = ca.Config
+	}
+	setStaticConsumerMetadata(cfg, oldCfg)
 
 	// If this is new consumer.
 	if ca == nil {
