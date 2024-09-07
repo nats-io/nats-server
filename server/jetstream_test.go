@@ -24253,3 +24253,79 @@ func TestJetStreamSourceRemovalAndReAdd(t *testing.T) {
 		require_Equal(t, m.Subject, fmt.Sprintf("foo.%d", i))
 	}
 }
+
+func TestJetStreamRateLimitHighStreamIngest(t *testing.T) {
+	cfgFmt := []byte(fmt.Sprintf(`
+        jetstream: {
+            enabled: true
+            store_dir: %s
+            max_buffered_size: 1kb
+            max_buffered_msgs: 1
+        }
+       `, t.TempDir()))
+
+	conf := createConfFile(t, cfgFmt)
+	s, opts := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	require_Equal(t, opts.StreamMaxBufferedSize, 1024)
+	require_Equal(t, opts.StreamMaxBufferedMsgs, 1)
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"test"},
+	})
+	require_NoError(t, err)
+
+	// Create a reply inbox that we can await API requests on.
+	// This is instead of using nc.Request().
+	inbox := nc.NewRespInbox()
+	resp := make(chan *nats.Msg, 1000)
+	_, err = nc.ChanSubscribe(inbox, resp)
+	require_NoError(t, err)
+
+	// Publish a large number of messages using Core NATS withou
+	// waiting for the responses from the API.
+	msg := &nats.Msg{
+		Subject: "test",
+		Reply:   inbox,
+	}
+	for i := 0; i < 1000; i++ {
+		require_NoError(t, nc.PublishMsg(msg))
+	}
+
+	// Now sort through the API responses. We're looking for one
+	// that tells us that we were rate-limited. If we don't find
+	// one then we fail the test.
+	var rateLimited bool
+	for i, msg := 0, <-resp; i < 1000; i, msg = i+1, <-resp {
+		if msg.Header.Get("Status") == "429" {
+			rateLimited = true
+			break
+		}
+	}
+	require_True(t, rateLimited)
+}
+
+func TestJetStreamRateLimitHighStreamIngestDefaults(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"test"},
+	})
+	require_NoError(t, err)
+
+	stream, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	require_Equal(t, stream.msgs.mlen, streamDefaultMaxQueueMsgs)
+	require_Equal(t, stream.msgs.msz, streamDefaultMaxQueueBytes)
+}
