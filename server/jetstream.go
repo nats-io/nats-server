@@ -91,6 +91,7 @@ type JetStreamAccountStats struct {
 }
 
 type JetStreamAPIStats struct {
+	Level    int    `json:"level"`
 	Total    uint64 `json:"total"`
 	Errors   uint64 `json:"errors"`
 	Inflight uint64 `json:"inflight,omitempty"`
@@ -1685,6 +1686,7 @@ func (a *Account) JetStreamUsage() JetStreamAccountStats {
 		stats.Memory, stats.Store = jsa.storageTotals()
 		stats.Domain = js.config.Domain
 		stats.API = JetStreamAPIStats{
+			Level:  JSApiLevel,
 			Total:  jsa.apiTotal,
 			Errors: jsa.apiErrors,
 		}
@@ -2374,6 +2376,7 @@ func (js *jetStream) usageStats() *JetStreamStats {
 	stats.ReservedStore = uint64(js.storeReserved)
 	s := js.srv
 	js.mu.RUnlock()
+	stats.API.Level = JSApiLevel
 	stats.API.Total = uint64(atomic.LoadInt64(&js.apiTotal))
 	stats.API.Errors = uint64(atomic.LoadInt64(&js.apiErrors))
 	stats.API.Inflight = uint64(atomic.LoadInt64(&js.apiInflight))

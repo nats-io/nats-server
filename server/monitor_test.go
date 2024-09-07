@@ -4677,6 +4677,12 @@ func TestMonitorJsz(t *testing.T) {
 			}
 		}
 	})
+	t.Run("js-api-level", func(t *testing.T) {
+		for _, url := range []string{monUrl1, monUrl2} {
+			info := readJsInfo(url)
+			require_Equal(t, info.API.Level, JSApiLevel)
+		}
+	})
 }
 
 func TestMonitorReloadTLSConfig(t *testing.T) {
@@ -5417,4 +5423,19 @@ func TestVarzSyncInterval(t *testing.T) {
 	jscfg := pollVarz(t, s, 0, url, nil).JetStream.Config
 	require_True(t, jscfg.SyncInterval == opts.SyncInterval)
 	require_True(t, jscfg.SyncAlways)
+}
+
+func TestVarzJSApiLevel(t *testing.T) {
+	resetPreviousHTTPConnections()
+	opts := DefaultMonitorOptions()
+	opts.JetStream = true
+
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
+
+	varz := pollVarz(t, s, 0, url, nil)
+	apiLevel := varz.JetStream.Stats.API.Level
+	require_Equal(t, apiLevel, JSApiLevel)
 }

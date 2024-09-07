@@ -1,0 +1,35 @@
+{
+  "config": {
+    "name": "STREAM",
+    "subjects": [
+      "stream"
+    ],
+    "retention": "limits",
+    "max_consumers": -1,
+    "max_msgs_per_subject": -1,
+    "max_msgs": -1,
+    "max_bytes": -1,
+    "max_age": 0,
+    "max_msg_size": -1,
+    "storage": "file",
+    "discard": "old",
+    "num_replicas": 3,
+    "duplicate_window": 120000000000,
+    "sealed": false,
+    "deny_delete": false,
+    "deny_purge": false,
+    "allow_rollup_hdrs": false,
+    "allow_direct": true,
+    "mirror_direct": false,
+    "consumer_limits": {}
+  },
+  "state": {
+    "messages": 0,
+    "bytes": 0,
+    "first_seq": 0,
+    "first_ts": "0001-01-01T00:00:00Z",
+    "last_seq": 0,
+    "last_ts": "0001-01-01T00:00:00Z",
+    "consumer_count": 0
+  }
+}
