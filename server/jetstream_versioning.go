@@ -22,15 +22,21 @@ const (
 	JSCreatedVersionMetadataKey = "_nats.created.server.version"
 	JSCreatedLevelMetadataKey   = "_nats.created.server.api_level"
 	JSRequiredLevelMetadataKey  = "_nats.server.require.api_level"
+	JSServerVersionMetadataKey  = "_nats.server.version"
+	JSServerLevelMetadataKey    = "_nats.server.api_level"
 )
 
 // setStaticStreamMetadata sets JetStream stream metadata, like the server version and API level.
 // Given:
 //   - cfg!=nil, prevCfg==nil		add stream: adds created and required metadata
 //   - cfg!=nil, prevCfg!=nil		update stream: created metadata is preserved, required metadata is updated
+//
+// Any dynamic metadata is removed, it must not be stored and only be added for responses.
 func setStaticStreamMetadata(cfg *StreamConfig, prevCfg *StreamConfig) {
 	if cfg.Metadata == nil {
 		cfg.Metadata = make(map[string]string)
+	} else {
+		deleteDynamicMetadata(cfg.Metadata)
 	}
 
 	var prevMetadata map[string]string
@@ -47,13 +53,29 @@ func setStaticStreamMetadata(cfg *StreamConfig, prevCfg *StreamConfig) {
 	cfg.Metadata[JSRequiredLevelMetadataKey] = strconv.Itoa(requiredApiLevel)
 }
 
+// setDynamicStreamMetadata adds dynamic fields into the (copied) metadata.
+func setDynamicStreamMetadata(cfg *StreamConfig) *StreamConfig {
+	newCfg := *cfg
+	newCfg.Metadata = make(map[string]string)
+	for key, value := range cfg.Metadata {
+		newCfg.Metadata[key] = value
+	}
+	newCfg.Metadata[JSServerVersionMetadataKey] = VERSION
+	newCfg.Metadata[JSServerLevelMetadataKey] = strconv.Itoa(JSApiLevel)
+	return &newCfg
+}
+
 // setStaticConsumerMetadata sets JetStream consumer metadata, like the server version and API level.
 // Given:
 //   - cfg!=nil, prevCfg==nil		add consumer: adds created and required metadata
 //   - cfg!=nil, prevCfg!=nil		update consumer: created metadata is preserved, required metadata is updated
+//
+// Any dynamic metadata is removed, it must not be stored and only be added for responses.
 func setStaticConsumerMetadata(cfg *ConsumerConfig, prevCfg *ConsumerConfig) {
 	if cfg.Metadata == nil {
 		cfg.Metadata = make(map[string]string)
+	} else {
+		deleteDynamicMetadata(cfg.Metadata)
 	}
 
 	var prevMetadata map[string]string
@@ -78,12 +100,41 @@ func setStaticConsumerMetadata(cfg *ConsumerConfig, prevCfg *ConsumerConfig) {
 	cfg.Metadata[JSRequiredLevelMetadataKey] = strconv.Itoa(requiredApiLevel)
 }
 
+// setDynamicConsumerMetadata adds dynamic fields into the (copied) metadata.
+func setDynamicConsumerMetadata(cfg *ConsumerConfig) *ConsumerConfig {
+	newCfg := *cfg
+	newCfg.Metadata = make(map[string]string)
+	for key, value := range cfg.Metadata {
+		newCfg.Metadata[key] = value
+	}
+	newCfg.Metadata[JSServerVersionMetadataKey] = VERSION
+	newCfg.Metadata[JSServerLevelMetadataKey] = strconv.Itoa(JSApiLevel)
+	return &newCfg
+}
+
+// setDynamicConsumerInfoMetadata adds dynamic fields into the (copied) metadata.
+func setDynamicConsumerInfoMetadata(info *ConsumerInfo) *ConsumerInfo {
+	if info == nil {
+		return nil
+	}
+
+	newInfo := *info
+	cfg := setDynamicConsumerMetadata(info.Config)
+	newInfo.Config = cfg
+	return &newInfo
+}
+
 // copyConsumerMetadata copies versioning fields from metadata of prevCfg into cfg.
 // Removes versioning fields if no previous metadata, updates if set, and removes fields if it doesn't exist in prevCfg.
+// Any dynamic metadata is removed, it must not be stored and only be added for responses.
 //
 // Note: useful when doing equality checks on cfg and prevCfg, but ignoring any versioning metadata differences.
 // MUST be followed up with a call to setStaticConsumerMetadata to fix potentially lost metadata.
 func copyConsumerMetadata(cfg *ConsumerConfig, prevCfg *ConsumerConfig) {
+	if cfg.Metadata != nil {
+		deleteDynamicMetadata(cfg.Metadata)
+	}
+
 	// Remove fields when no previous metadata.
 	if prevCfg == nil || prevCfg.Metadata == nil {
 		if cfg.Metadata != nil {
@@ -135,4 +186,10 @@ func preserveCreatedMetadata(metadata, prevMetadata map[string]string) {
 	} else {
 		delete(metadata, JSCreatedLevelMetadataKey)
 	}
+}
+
+// deleteDynamicMetadata deletes dynamic fields from the metadata.
+func deleteDynamicMetadata(metadata map[string]string) {
+	delete(metadata, JSServerVersionMetadataKey)
+	delete(metadata, JSServerLevelMetadataKey)
 }
