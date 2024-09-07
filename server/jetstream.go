@@ -468,7 +468,7 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 		s.Noticef("  TPM File:        %q, Pcr: %d", opts.JetStreamTpm.KeysFile,
 			opts.JetStreamTpm.Pcr)
 	}
-	s.Noticef("  API Level:       %s", JSApiLevel)
+	s.Noticef("  API Level:       %d", JSApiLevel)
 	s.Noticef("-------------------------------------------")
 
 	// Setup our internal subscriptions.

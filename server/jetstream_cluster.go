@@ -3799,7 +3799,8 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 			}
 			mset.setStreamAssignment(sa)
 			// Check if our config has really been updated.
-			if !reflect.DeepEqual(mset.config(), sa.Config) {
+			cfg := mset.config()
+			if !reflect.DeepEqual(&cfg, sa.Config) {
 				if err = mset.updateWithAdvisory(sa.Config, false, false); err != nil {
 					s.Warnf("JetStream cluster error updating stream %q for account %q: %v", sa.Config.Name, acc.Name, err)
 					if osa != nil {
@@ -7838,7 +7839,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// Check msgSize if we have a limit set there. Again this works if it goes through but better to be pre-emptive.
 	if maxMsgSize >= 0 && (len(hdr)+len(msg)) > maxMsgSize {
 		err := fmt.Errorf("JetStream message size exceeds limits for '%s > %s'", jsa.acc().Name, mset.cfg.Name)
-		s.RateLimitWarnf(err.Error())
+		s.RateLimitWarnf("%s", err.Error())
 		if canRespond {
 			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
 			resp.Error = NewJSStreamMessageExceedsMaximumError()
@@ -7855,7 +7856,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		// Again this works if it goes through but better to be pre-emptive.
 		if len(hdr) > math.MaxUint16 {
 			err := fmt.Errorf("JetStream header size exceeds limits for '%s > %s'", jsa.acc().Name, mset.cfg.Name)
-			s.RateLimitWarnf(err.Error())
+			s.RateLimitWarnf("%s", err.Error())
 			if canRespond {
 				var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
 				resp.Error = NewJSStreamHeaderExceedsMaximumError()
@@ -7867,9 +7868,15 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		// Expected last sequence per subject.
 		// We can check for last sequence per subject but only if the expected seq <= lseq.
 		if seq, exists := getExpectedLastSeqPerSubject(hdr); exists && store != nil && seq <= lseq {
+			// Allow override of the subject used for the check.
+			seqSubj := subject
+			if optSubj := getExpectedLastSeqPerSubjectForSubject(hdr); optSubj != _EMPTY_ {
+				seqSubj = optSubj
+			}
+
 			var smv StoreMsg
 			var fseq uint64
-			sm, err := store.LoadLastMsg(subject, &smv)
+			sm, err := store.LoadLastMsg(seqSubj, &smv)
 			if sm != nil {
 				fseq = sm.seq
 			}
@@ -8004,7 +8011,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// TODO(dlc) - Make this a limit where we drop messages to protect ourselves, but allow to be configured.
 	if mset.clseq-(lseq+mset.clfs) > streamLagWarnThreshold {
 		lerr := fmt.Errorf("JetStream stream '%s > %s' has high message lag", jsa.acc().Name, name)
-		s.RateLimitWarnf(lerr.Error())
+		s.RateLimitWarnf("%s", lerr.Error())
 	}
 	mset.clMu.Unlock()
 
