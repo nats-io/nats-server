@@ -11270,6 +11270,100 @@ func TestJetStreamLastSequenceBySubject(t *testing.T) {
 	}
 }
 
+func TestJetStreamLastSequenceBySubjectWithSubject(t *testing.T) {
+	for _, st := range []StorageType{FileStorage, MemoryStorage} {
+		t.Run(st.String(), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "JSC", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			cfg := StreamConfig{
+				Name:       "KV",
+				Subjects:   []string{"kv.>"},
+				Storage:    st,
+				Replicas:   3,
+				MaxMsgsPer: 1,
+			}
+
+			req, err := json.Marshal(cfg)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			// Do manually for now.
+			m, err := nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), req, time.Second)
+			require_NoError(t, err)
+			si, err := js.StreamInfo("KV")
+			if err != nil {
+				t.Fatalf("Unexpected error: %v, respmsg: %q", err, string(m.Data))
+			}
+			if si == nil || si.Config.Name != "KV" {
+				t.Fatalf("StreamInfo is not correct %+v", si)
+			}
+
+			js.PublishAsync("kv.1.foo", []byte("1:1")) // Last is 1 for kv.1.foo; 1 for kv.1.*;
+			js.PublishAsync("kv.1.bar", []byte("1:2")) // Last is 2 for kv.1.bar; 2 for kv.1.*;
+			js.PublishAsync("kv.2.foo", []byte("2:1")) // Last is 3 for kv.2.foo; 3 for kv.2.*;
+			js.PublishAsync("kv.3.bar", []byte("3:1")) // Last is 4 for kv.3.bar; 4 for kv.3.*;
+			js.PublishAsync("kv.1.baz", []byte("1:3")) // Last is 5 for kv.1.baz; 5 for kv.1.*;
+			js.PublishAsync("kv.1.bar", []byte("1:4")) // Last is 6 for kv.1.baz; 6 for kv.1.*;
+			js.PublishAsync("kv.2.baz", []byte("2:2")) // Last is 7 for kv.2.baz; 7 for kv.2.*;
+
+			select {
+			case <-js.PublishAsyncComplete():
+			case <-time.After(time.Second):
+				t.Fatalf("Did not receive completion signal")
+			}
+
+			// Now make sure we get an error if the last sequence is not correct per subject.
+			pubAndCheck := func(subj, filterSubject, seq string, ok bool) {
+				t.Helper()
+				m := nats.NewMsg(subj)
+				m.Data = []byte("HELLO")
+
+				// Expect last to be seq.
+				m.Header.Set(JSExpectedLastSubjSeq, seq)
+
+				// Constrain the sequence restriction to a specific subject
+				// e.g. "kv.1.*" for kv.1.foo, kv.1.bar, kv.1.baz; kv.2.* for kv.2.foo, kv.2.baz; kv.3.* for kv.3.bar
+				m.Header.Set(JSExpectedLastSubjSeqSubj, filterSubject)
+				_, err := js.PublishMsg(m)
+				if ok && err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				if !ok && err == nil {
+					t.Fatalf("Expected to get an error and got none")
+				}
+			}
+
+			pubAndCheck("kv.1.foo", "kv.1.*", "0", false)
+			pubAndCheck("kv.1.bar", "kv.1.*", "0", false)
+			pubAndCheck("kv.1.xxx", "kv.1.*", "0", false)
+			pubAndCheck("kv.1.foo", "kv.1.*", "1", false)
+			pubAndCheck("kv.1.bar", "kv.1.*", "1", false)
+			pubAndCheck("kv.1.xxx", "kv.1.*", "1", false)
+			pubAndCheck("kv.2.foo", "kv.2.*", "1", false)
+			pubAndCheck("kv.2.bar", "kv.2.*", "1", false)
+			pubAndCheck("kv.2.xxx", "kv.2.*", "1", false)
+			pubAndCheck("kv.1.bar", "kv.1.*", "2", false)
+			pubAndCheck("kv.1.bar", "kv.1.*", "3", false)
+			pubAndCheck("kv.1.bar", "kv.1.*", "4", false)
+			pubAndCheck("kv.1.bar", "kv.1.*", "5", false)
+			pubAndCheck("kv.1.bar", "kv.1.*", "6", true) // Last is 8 for kv.1.bar; 8 for kv.1.*;
+			pubAndCheck("kv.1.baz", "kv.1.*", "2", false)
+			pubAndCheck("kv.1.bar", "kv.1.*", "7", false)
+			pubAndCheck("kv.1.xxx", "kv.1.*", "8", true) // Last is 9 for kv.1.xxx; 9 for kv.1.*;
+			pubAndCheck("kv.2.foo", "kv.2.*", "2", false)
+			pubAndCheck("kv.2.foo", "kv.2.*", "7", true)  // Last is 10 for kv.2.foo; 10 for kv.2.*;
+			pubAndCheck("kv.xxx", "kv.*", "0", true)      // Last is 0 for kv.xxx; 0 for kv.*;
+			pubAndCheck("kv.xxx", "kv.*.*", "0", false)   // Last is 11 for kv.xxx; 11 for kv.*.*;
+			pubAndCheck("kv.3.xxx", "kv.3.*", "4", true)  // Last is 12 for kv.3.xxx; 12 for kv.3.*;
+			pubAndCheck("kv.3.xyz", "kv.3.*", "12", true) // Last is 13 for kv.3.xyz; 13 for kv.3.*;
+		})
+	}
+}
+
 func TestJetStreamFilteredConsumersWithWiderFilter(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
@@ -24067,4 +24161,92 @@ func addConsumerWithError(t *testing.T, nc *nats.Conn, cfg *CreateConsumerReques
 		t.Fatalf("Invalid response type %s expected %s", resp.Type, JSApiConsumerCreateResponseType)
 	}
 	return resp.ConsumerInfo, resp.Error
+}
+
+func TestJetStreamSourceRemovalAndReAdd(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// The source stream.
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "SRC",
+		Subjects: []string{"foo.*"},
+	})
+	require_NoError(t, err)
+
+	// The stream that sources.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name: "TEST",
+		Sources: []*nats.StreamSource{{
+			Name: "SRC",
+		}},
+	})
+	require_NoError(t, err)
+
+	// Now add in 10 msgs.
+	for i := 0; i < 10; i++ {
+		_, err := js.Publish(fmt.Sprintf("foo.%d", i), []byte("test"))
+		require_NoError(t, err)
+	}
+
+	// Make sure we have 10 msgs in TEST.
+	checkFor(t, time.Second, 200*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST")
+		require_NoError(t, err)
+		if si.State.Msgs == 10 {
+			return nil
+		}
+		return fmt.Errorf("Do not have all msgs yet, %d of 10", si.State.Msgs)
+	})
+
+	// Now update the TEST stream to no longer source.
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name: "TEST",
+	})
+	require_NoError(t, err)
+
+	// Now add in 10 more msgs.
+	for i := 0; i < 10; i++ {
+		_, err := js.Publish(fmt.Sprintf("foo.%d", i+10), []byte("test"))
+		require_NoError(t, err)
+	}
+	// Make sure we are still stuck at 10 for TEST.
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 10)
+
+	// Now re-add the source to our stream.
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name: "TEST",
+		Sources: []*nats.StreamSource{{
+			Name: "SRC",
+		}},
+	})
+	require_NoError(t, err)
+
+	// Make sure we have 20 msgs now.
+	// Make sure we have 10 msgs in TEST.
+	checkFor(t, time.Second, 200*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST")
+		require_NoError(t, err)
+		if si.State.Msgs == 20 {
+			return nil
+		}
+		return fmt.Errorf("Do not have all msgs yet, %d of 20", si.State.Msgs)
+	})
+
+	// Check that we get what we want in the stream.
+	sub, err := js.PullSubscribe("foo.*", "d")
+	require_NoError(t, err)
+
+	msgs, err := sub.Fetch(20)
+	require_NoError(t, err)
+	require_Equal(t, len(msgs), 20)
+
+	for i, m := range msgs {
+		require_Equal(t, m.Subject, fmt.Sprintf("foo.%d", i))
+	}
 }

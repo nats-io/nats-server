@@ -2052,11 +2052,11 @@ func TestServerRateLimitLogging(t *testing.T) {
 		// Wait for more than the expiration interval
 		time.Sleep(200 * time.Millisecond)
 		if c1 == nil {
-			s.RateLimitWarnf(nb1)
+			s.RateLimitWarnf("%s", nb1)
 			s.rateLimitFormatWarnf("warning value %d", 1)
 		} else {
-			c1.RateLimitWarnf(nb1)
-			c2.RateLimitWarnf(nb1)
+			c1.RateLimitWarnf("%s", nb1)
+			c2.RateLimitWarnf("%s", nb1)
 			c1.rateLimitFormatWarnf("warning value %d", 1)
 		}
 		gotOne = 0

@@ -17,14 +17,16 @@
 package server
 
 import (
+	"archive/tar"
+	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
 	"reflect"
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/klauspost/compress/s2"
 
 	"github.com/nats-io/nats.go"
 )
@@ -482,8 +484,7 @@ func TestJetStreamMetadataStreamRestoreAndRestart(t *testing.T) {
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
-	path := "../test/configs/jetstream/restore_empty_R1F_stream"
-	restoreStreamFromPath(t, nc, path)
+	restoreEmptyStream(t, nc, 1)
 
 	expectedMetadata := map[string]string{
 		JSServerVersionMetadataKey: VERSION,
@@ -517,8 +518,7 @@ func TestJetStreamMetadataStreamRestoreAndRestartCluster(t *testing.T) {
 	nc, js := jsClientConnect(t, c.randomServer())
 	defer nc.Close()
 
-	path := "../test/configs/jetstream/restore_empty_R3F_stream"
-	restoreStreamFromPath(t, nc, path)
+	restoreEmptyStream(t, nc, 3)
 
 	expectedMetadata := map[string]string{
 		JSServerVersionMetadataKey: VERSION,
@@ -545,16 +545,17 @@ func TestJetStreamMetadataStreamRestoreAndRestartCluster(t *testing.T) {
 	require_True(t, reflect.DeepEqual(si.Config.Metadata, expectedMetadata))
 }
 
-func restoreStreamFromPath(t *testing.T, nc *nats.Conn, path string) {
-	var rreq JSApiStreamRestoreRequest
-	buf, err := os.ReadFile(fmt.Sprintf("%s/backup.json", path))
+func restoreEmptyStream(t *testing.T, nc *nats.Conn, replicas int) {
+	rreq := JSApiStreamRestoreRequest{
+		Config: StreamConfig{
+			Name:      "STREAM",
+			Retention: LimitsPolicy,
+			Storage:   FileStorage,
+			Replicas:  replicas,
+		},
+	}
+	buf, err := json.Marshal(rreq)
 	require_NoError(t, err)
-	err = json.Unmarshal(buf, &rreq)
-	require_NoError(t, err)
-
-	data, err := os.Open(fmt.Sprintf("%s/stream.tar.s2", path))
-	require_NoError(t, err)
-	defer data.Close()
 
 	var rresp JSApiStreamRestoreResponse
 	msg, err := nc.Request(fmt.Sprintf(JSApiStreamRestoreT, rreq.Config.Name), buf, 5*time.Second)
@@ -564,29 +565,47 @@ func restoreStreamFromPath(t *testing.T, nc *nats.Conn, path string) {
 		t.Fatalf("Error on restore: %+v", rresp.Error)
 	}
 
-	var chunk [1024]byte
-	for {
-		n, err := data.Read(chunk[:])
-		if err == io.EOF {
-			break
-		}
-		require_NoError(t, err)
+	// Construct empty stream.tar.s2 (only containing meta.inf).
+	fsi := FileStreamInfo{StreamConfig: rreq.Config}
+	fsij, err := json.Marshal(fsi)
+	require_NoError(t, err)
 
-		msg, err = nc.Request(rresp.DeliverSubject, chunk[:n], 5*time.Second)
-		require_NoError(t, err)
-		json.Unmarshal(msg.Data, &rresp)
-		if rresp.Error != nil {
-			t.Fatalf("Error on restore: %+v", rresp.Error)
-		}
+	hdr := &tar.Header{
+		Name:   JetStreamMetaFile,
+		Mode:   0600,
+		Uname:  "nats",
+		Gname:  "nats",
+		Size:   int64(len(fsij)),
+		Format: tar.FormatPAX,
 	}
+	var buffer bytes.Buffer
+	enc := s2.NewWriter(&buffer)
+	tw := tar.NewWriter(enc)
+	err = tw.WriteHeader(hdr)
+	require_NoError(t, err)
+	_, err = tw.Write(fsij)
+	require_NoError(t, err)
+	err = tw.Close()
+	require_NoError(t, err)
+	err = enc.Close()
+	require_NoError(t, err)
+
+	data := buffer.Bytes()
+	msg, err = nc.Request(rresp.DeliverSubject, data, 5*time.Second)
+	require_NoError(t, err)
+	json.Unmarshal(msg.Data, &rresp)
+	if rresp.Error != nil {
+		t.Fatalf("Error on restore: %+v", rresp.Error)
+	}
+
+	msg, err = nc.Request(rresp.DeliverSubject, nil, 5*time.Second)
+	require_NoError(t, err)
 
 	expectedMetadata := map[string]string{
 		JSServerVersionMetadataKey: VERSION,
 		JSServerLevelMetadataKey:   strconv.Itoa(JSApiLevel),
 	}
 
-	msg, err = nc.Request(rresp.DeliverSubject, nil, 5*time.Second)
-	require_NoError(t, err)
 	var cresp JSApiStreamCreateResponse
 	err = json.Unmarshal(msg.Data, &cresp)
 	require_NoError(t, err)
