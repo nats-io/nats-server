@@ -8224,12 +8224,12 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool) {
 	}
 
 	fs.mu.Lock()
-	blks := fs.blks
+	defer fs.mu.Unlock()
+
 	// Grab our general meta data.
 	// We do this now instead of pulling from files since they could be encrypted.
 	meta, err := json.Marshal(fs.cfg)
 	if err != nil {
-		fs.mu.Unlock()
 		writeErr(fmt.Sprintf("Could not gather stream meta file: %v", err))
 		return
 	}
@@ -8237,7 +8237,6 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool) {
 	hh.Reset()
 	hh.Write(meta)
 	sum := []byte(hex.EncodeToString(fs.hh.Sum(nil)))
-	fs.mu.Unlock()
 
 	// Meta first.
 	if writeFile(JetStreamMetaFile, meta) != nil {
@@ -8259,11 +8258,9 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool) {
 			buf, err = fs.aek.Open(nil, buf[:ns], buf[ns:len(buf)-highwayhash.Size64], nil)
 			if err == nil {
 				// Redo hash checksum at end on plaintext.
-				fs.mu.Lock()
 				hh.Reset()
 				hh.Write(buf)
 				buf = fs.hh.Sum(buf)
-				fs.mu.Unlock()
 			}
 		}
 		if err == nil && writeFile(msgPre+streamStreamStateFile, buf) != nil {
@@ -8272,7 +8269,7 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool) {
 	}
 
 	// Now do messages themselves.
-	for _, mb := range blks {
+	for _, mb := range fs.blks {
 		if mb.pendingWriteSize() > 0 {
 			mb.flushPendingMsgs()
 		}
