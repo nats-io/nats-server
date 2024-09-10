@@ -932,7 +932,10 @@ func (s *Server) setJetStreamExportSubs() error {
 	if mp > maxProcs {
 		mp = maxProcs
 	}
-	s.jsAPIRoutedReqs = newIPQueue[*jsAPIRoutedReq](s, "Routed JS API Requests")
+	s.jsAPIRoutedReqs = newIPQueue[*jsAPIRoutedReq](
+		s, "Routed JS API Requests",
+		ipqLimitByLen[*jsAPIRoutedReq](mp*16),
+	)
 	for i := 0; i < mp; i++ {
 		s.startGoRoutine(s.processJSAPIRoutedRequests)
 	}

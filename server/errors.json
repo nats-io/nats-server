@@ -1568,5 +1568,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSTooManyRequests",
+    "code": 429,
+    "error_code": 10159,
+    "description": "too many pending JS API requests",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]
