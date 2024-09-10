@@ -16,7 +16,33 @@ package stree
 import (
 	"bytes"
 	"slices"
+
+        "zombiezen.com/go/sqlite"
+        lru "github.com/hashicorp/golang-lru/v2"
 )
+
+// Experimental(skaar) - the squeal branch gathers a few optimizations
+// to handle very large subject spaces. These should be considered pre
+// ADR and are purely experimental at this point.
+//
+// 1. Use sqlite (no CGO) as backing store.
+// 1.1 Figure out on disk layout/locations - fcfg.StoreDir structure
+// 2. Use a caching LRU
+// 3. Consider a pluggable adapter for serialization (compare json, protobuf, capnprot, others?)
+// 3.1 Is there a need to index on fields of the values?
+// 4. Retain the stree API
+// 4.1 Keep value a generic type - but obviously handle the serialization complexity
+// 4.1 Retain path compression
+// 4.2 Evaluate need for locking
+// 4.3 Ensure NATS matching/wildcard semantics
+// 4.2 Limit API change to "adapter" setup (e.g. disk location).
+// 5 Performance and resource usage evaluation
+
+type Config struct {
+	DBPath     string
+	CacheSize  int
+	Serializer Serializer
+}
 
 // SubjectTree is an adaptive radix trie (ART) for storing subject information on literal subjects.
 // Will use dynamic nodes, path compression and lazy expansion.
@@ -25,12 +51,26 @@ import (
 type SubjectTree[T any] struct {
 	root node
 	size int
+        conn *sqlite.Conn
+        // FIXME(skaar): the lru impl wants k to be a comparable, so we can't use []byte directly
+        // replace?
+        cache *lru.Cache[string, []byte]
+        serializer Serializer
+        // mu.sync.RWMutex
 }
 
 // NewSubjectTree creates a new SubjectTree with values T.
 func NewSubjectTree[T any]() *SubjectTree[T] {
 	return &SubjectTree[T]{}
 }
+
+// NewSquealSubjectTree creates a new SubjectTree with values T.
+func NewSqualSubjectTree[T any](config Config) *SubjectTree[T] {
+        // FIXME(skaar): setup DB and cache - init Serializer
+	return &SubjectTree[T]{}
+}
+
+
 
 // Size returns the number of elements stored.
 func (t *SubjectTree[T]) Size() int {
