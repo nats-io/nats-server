@@ -24643,3 +24643,48 @@ func TestJetStreamDelayedAPIResponses(t *testing.T) {
 	s.sendDelayedAPIErrResponse(nil, acc, "I", _EMPTY_, "request9", "response9", nil, 100*time.Millisecond)
 	check("request9", "response9")
 }
+
+func TestJetStreamAPIRateLimiting(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	total := jsRatePerSecond + len(jsRateSteps)
+
+	inbox := nc.NewRespInbox()
+	ch := make(chan *nats.Msg, total+1)
+	sub, err := nc.ChanSubscribe(inbox, ch)
+	require_NoError(t, err)
+	require_NoError(t, sub.AutoUnsubscribe(total+1))
+
+	// Make a bunch of API requests in rapid succession. We send total+1
+	// because we want to exceed the threshold of requests that will get a
+	// response, to prove the final one doesn't get a response.
+	for i := 0; i < total+1; i++ {
+		require_NoError(t, nc.PublishRequest(JSApiStreamList, inbox, nil))
+	}
+
+	// Now process the responses that we expect to receive.
+	// First few should be successful as they're under the rate limit.
+	// Next few should be errors telling us we hit the rate limit.
+	for i := 0; i < total; i++ {
+		msg := require_ChanRead(t, ch, time.Second*10)
+		var apierr ApiResponse
+		require_NoError(t, json.Unmarshal(msg.Data, &apierr))
+
+		if i < jsRatePerSecond {
+			require_True(t, apierr.Error == nil)
+			require_Equal(t, apierr.Type, JSApiStreamListResponseType)
+		} else {
+			require_True(t, apierr.Error != nil)
+			require_Equal(t, apierr.Error.ErrCode, uint16(JSTooManyRequests))
+		}
+	}
+
+	// We sent more messages than the expected total responses we expect
+	// to get back, but we should stop receiving responses eventually.
+	// Check that we didn't get anything back for the final request.
+	require_NoChanRead(t, ch, time.Second*10)
+}

@@ -30,6 +30,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/minio/highwayhash"
 	"github.com/nats-io/nats-server/v2/server/sysmem"
 	"github.com/nats-io/nats-server/v2/server/tpm"
@@ -179,6 +181,44 @@ type jsAccount struct {
 
 	// Which account to send NRG traffic into. Empty string is system account.
 	nrgAccount string
+
+	// For rate-limiting API requests from this given account.
+	rate jsRate
+}
+
+type jsRate struct {
+	lim  *rate.Limiter
+	errs atomic.Uint64
+}
+
+const jsRatePerSecond = 4
+
+var jsRateSteps = [8]time.Duration{
+	25 * time.Millisecond,
+	50 * time.Millisecond,
+	100 * time.Millisecond,
+	250 * time.Millisecond,
+	500 * time.Millisecond,
+	time.Second,
+	3 * time.Second,
+	5 * time.Second,
+}
+
+func (r *jsRate) Allow() (bool, time.Duration) {
+	if r.lim.Allow() {
+		// The rate limiter is allowing requests again, so clear
+		// the error count, which resets the backoff delay.
+		r.errs.Store(0)
+		return true, 0
+	} else {
+		i := r.errs.Add(1) - 1
+		if i >= uint64(len(jsRateSteps)) {
+			// Don't return a delayed API response.
+			return false, 0
+		}
+		// Return a delayed API response.
+		return false, jsRateSteps[i]
+	}
 }
 
 // Track general usage for this account.
@@ -1144,7 +1184,17 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 
 	sysNode := s.Node()
 
-	jsa := &jsAccount{js: js, account: a, limits: limits, streams: make(map[string]*stream), sendq: sendq, usage: make(map[string]*jsaStorage)}
+	jsa := &jsAccount{
+		js:      js,
+		account: a,
+		limits:  limits,
+		streams: make(map[string]*stream),
+		sendq:   sendq,
+		usage:   make(map[string]*jsaStorage),
+		rate: jsRate{
+			lim: rate.NewLimiter(rate.Every(time.Second/jsRatePerSecond), jsRatePerSecond),
+		},
+	}
 	jsa.storeDir = filepath.Join(js.config.StoreDir, a.Name)
 
 	// A single server does not need to do the account updates at this point.
