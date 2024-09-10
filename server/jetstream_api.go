@@ -861,11 +861,17 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, sub
 
 	// Copy the state. Note the JSAPI only uses the hdr index to piece apart the
 	// header from the msg body. No other references are needed.
-	// Check pending and warn if getting backed up.
-	const warnThresh = 128
-	pending, _ := s.jsAPIRoutedReqs.push(&jsAPIRoutedReq{jsub, sub, acc, subject, reply, copyBytes(rmsg), c.pa})
-	if pending >= warnThresh {
-		s.rateLimitFormatWarnf("JetStream request queue has high pending count: %d", pending)
+	_, err := s.jsAPIRoutedReqs.push(&jsAPIRoutedReq{jsub, sub, acc, subject, reply, copyBytes(rmsg), c.pa})
+	if err == errIPQLenLimitReached {
+		s.RateLimitWarnf("Dropping JetStream API requests: %s", err)
+		if reply != _EMPTY_ {
+			ci, acc, _, _, _ := s.getRequestInfo(c, rmsg)
+			var resp = ApiResponse{
+				Type:  JSApiSystemResponseType,
+				Error: NewJSTooManyRequestsError(),
+			}
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
 	}
 }
 
@@ -913,7 +919,10 @@ func (s *Server) setJetStreamExportSubs() error {
 	if mp > maxProcs {
 		mp = maxProcs
 	}
-	s.jsAPIRoutedReqs = newIPQueue[*jsAPIRoutedReq](s, "Routed JS API Requests")
+	s.jsAPIRoutedReqs = newIPQueue[*jsAPIRoutedReq](
+		s, "Routed JS API Requests",
+		ipqLimitByLen[*jsAPIRoutedReq](mp*16),
+	)
 	for i := 0; i < mp; i++ {
 		s.startGoRoutine(s.processJSAPIRoutedRequests)
 	}
