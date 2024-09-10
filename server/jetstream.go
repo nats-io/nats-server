@@ -30,6 +30,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/minio/highwayhash"
 	"github.com/nats-io/nats-server/v2/server/sysmem"
 	"github.com/nats-io/nats-server/v2/server/tpm"
@@ -177,6 +179,9 @@ type jsAccount struct {
 
 	// Which account to send NRG traffic into. Empty string is system account.
 	nrgAccount string
+
+	// For rate-limiting API requests from this given account.
+	rate *rate.Limiter
 }
 
 // Track general usage for this account.
@@ -1132,7 +1137,15 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 
 	sysNode := s.Node()
 
-	jsa := &jsAccount{js: js, account: a, limits: limits, streams: make(map[string]*stream), sendq: sendq, usage: make(map[string]*jsaStorage)}
+	jsa := &jsAccount{
+		js:      js,
+		account: a,
+		limits:  limits,
+		streams: make(map[string]*stream),
+		sendq:   sendq,
+		usage:   make(map[string]*jsaStorage),
+		rate:    rate.NewLimiter(rate.Every(time.Second/4), 1),
+	}
 	jsa.storeDir = filepath.Join(js.config.StoreDir, a.Name)
 
 	// A single server does not need to do the account updates at this point.
