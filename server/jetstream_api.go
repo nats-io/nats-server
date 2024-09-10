@@ -1767,6 +1767,11 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, _ *Account, s
 		}
 	}
 
+	if rl := acc.js.rate.Reserve(); !rl.OK() {
+		resp.Error = NewJSTooManyRequestsError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+	}
+
 	// Clustered mode will invoke a scatter and gather.
 	if s.JetStreamIsClustered() {
 		// Need to copy these off before sending.. don't move this inside startGoRoutine!!!
@@ -1933,6 +1938,11 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 		}
 		details, subjects = req.DeletedDetails, req.SubjectsFilter
 		offset = req.Offset
+	}
+
+	if rl := acc.js.rate.Reserve(); !rl.OK() {
+		resp.Error = NewJSTooManyRequestsError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 	}
 
 	mset, err := acc.lookupStream(streamName)
@@ -4241,6 +4251,11 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, _ *Account,
 		offset = req.Offset
 	}
 
+	if rl := acc.js.rate.Reserve(); !rl.OK() {
+		resp.Error = NewJSTooManyRequestsError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+	}
+
 	streamName := streamNameFromSubject(subject)
 
 	// Clustered mode will invoke a scatter and gather.
@@ -4432,6 +4447,11 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 		resp.Error = NewJSNotEnabledForAccountError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
+	}
+
+	if rl := acc.js.rate.Reserve(); !rl.OK() {
+		resp.Error = NewJSTooManyRequestsError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 	}
 
 	mset, err := acc.lookupStream(streamName)

@@ -475,6 +475,9 @@ const (
 
 	// JSTemplateNameNotMatchSubjectErr template name in subject does not match request
 	JSTemplateNameNotMatchSubjectErr ErrorIdentifier = 10073
+
+	// JSTooManyRequests too many pending JS API requests
+	JSTooManyRequests ErrorIdentifier = 10159
 )
 
 var (
@@ -636,6 +639,7 @@ var (
 		JSStreamWrongLastSequenceErrF:              {Code: 400, ErrCode: 10071, Description: "wrong last sequence: {seq}"},
 		JSTempStorageFailedErr:                     {Code: 500, ErrCode: 10072, Description: "JetStream unable to open temp storage for restore"},
 		JSTemplateNameNotMatchSubjectErr:           {Code: 400, ErrCode: 10073, Description: "template name in subject does not match request"},
+		JSTooManyRequests:                          {Code: 429, ErrCode: 10159, Description: "too many pending JS API requests"},
 	}
 	// ErrJetStreamNotClustered Deprecated by JSClusterNotActiveErr ApiError, use IsNatsError() for comparisons
 	ErrJetStreamNotClustered = ApiErrors[JSClusterNotActiveErr]
@@ -2493,4 +2497,14 @@ func NewJSTemplateNameNotMatchSubjectError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSTemplateNameNotMatchSubjectErr]
+}
+
+// NewJSTooManyRequestsError creates a new JSTooManyRequests error: "too many pending JS API requests"
+func NewJSTooManyRequestsError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSTooManyRequests]
 }
