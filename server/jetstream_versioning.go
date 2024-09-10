@@ -97,6 +97,10 @@ func setStaticConsumerMetadata(cfg *ConsumerConfig, prevCfg *ConsumerConfig) {
 		requiredApiLevel = 1
 	}
 
+	if cfg.PriorityPolicy != PriorityNone || cfg.PinnedTTL != 0 || len(cfg.PriorityGroups) > 0 {
+		requiredApiLevel = 1
+	}
+
 	cfg.Metadata[JSRequiredLevelMetadataKey] = strconv.Itoa(requiredApiLevel)
 }
 
