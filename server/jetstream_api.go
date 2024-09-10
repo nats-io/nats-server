@@ -1288,6 +1288,17 @@ func (s *Server) jsTemplateCreateRequest(sub *subscription, c *client, _ *Accoun
 		return
 	}
 
+	// Check for API request rate limiting.
+	{
+		if allowed, delay := acc.js.rate.Allow(); !allowed {
+			if delay > 0 {
+				resp.Error = NewJSTooManyRequestsError()
+				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil, delay)
+			}
+			return
+		}
+	}
+
 	// Not supported for now.
 	if s.JetStreamIsClustered() {
 		resp.Error = NewJSClusterUnSupportFeatureError()
@@ -1447,6 +1458,18 @@ func (s *Server) jsTemplateDeleteRequest(sub *subscription, c *client, _ *Accoun
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
+
+	// Check for API request rate limiting.
+	{
+		if allowed, delay := acc.js.rate.Allow(); !allowed {
+			if delay > 0 {
+				resp.Error = NewJSTooManyRequestsError()
+				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil, delay)
+			}
+			return
+		}
+	}
+
 	if !isEmptyRequest(msg) {
 		resp.Error = NewJSNotEmptyRequestError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -1533,6 +1556,17 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, _ *Account,
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		}
 		return
+	}
+
+	// Check for API request rate limiting.
+	{
+		if allowed, delay := acc.js.rate.Allow(); !allowed {
+			if delay > 0 {
+				resp.Error = NewJSTooManyRequestsError()
+				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil, delay)
+			}
+			return
+		}
 	}
 
 	var cfg StreamConfigRequest
@@ -1887,6 +1921,17 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, _ *Account, s
 		}
 	}
 
+	// Check for API request rate limiting.
+	{
+		if allowed, delay := acc.js.rate.Allow(); !allowed {
+			if delay > 0 {
+				resp.Error = NewJSTooManyRequestsError()
+				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil, delay)
+			}
+			return
+		}
+	}
+
 	// Clustered mode will invoke a scatter and gather.
 	if s.JetStreamIsClustered() {
 		// Need to copy these off before sending.. don't move this inside startGoRoutine!!!
@@ -2053,6 +2098,17 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 		}
 		details, subjects = req.DeletedDetails, req.SubjectsFilter
 		offset = req.Offset
+	}
+
+	// Check for API request rate limiting.
+	{
+		if allowed, delay := acc.js.rate.Allow(); !allowed {
+			if delay > 0 {
+				resp.Error = NewJSTooManyRequestsError()
+				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil, delay)
+			}
+			return
+		}
 	}
 
 	mset, err := acc.lookupStream(streamName)
@@ -3056,6 +3112,17 @@ func (s *Server) jsStreamDeleteRequest(sub *subscription, c *client, _ *Account,
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		}
 		return
+	}
+
+	// Check for API request rate limiting.
+	{
+		if allowed, delay := acc.js.rate.Allow(); !allowed {
+			if delay > 0 {
+				resp.Error = NewJSTooManyRequestsError()
+				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil, delay)
+			}
+			return
+		}
 	}
 
 	if !isEmptyRequest(msg) {
@@ -4090,6 +4157,17 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 		return
 	}
 
+	// Check for API request rate limiting.
+	{
+		if allowed, delay := acc.js.rate.Allow(); !allowed {
+			if delay > 0 {
+				resp.Error = NewJSTooManyRequestsError()
+				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil, delay)
+			}
+			return
+		}
+	}
+
 	if streamName != req.Stream {
 		resp.Error = NewJSStreamMismatchError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -4388,6 +4466,17 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, _ *Account,
 		offset = req.Offset
 	}
 
+	// Check for API request rate limiting.
+	{
+		if allowed, delay := acc.js.rate.Allow(); !allowed {
+			if delay > 0 {
+				resp.Error = NewJSTooManyRequestsError()
+				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil, delay)
+			}
+			return
+		}
+	}
+
 	streamName := streamNameFromSubject(subject)
 
 	// Clustered mode will invoke a scatter and gather.
@@ -4581,6 +4670,17 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 		return
 	}
 
+	// Check for API request rate limiting.
+	{
+		if allowed, delay := acc.js.rate.Allow(); !allowed {
+			if delay > 0 {
+				resp.Error = NewJSTooManyRequestsError()
+				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil, delay)
+			}
+			return
+		}
+	}
+
 	mset, err := acc.lookupStream(streamName)
 	if err != nil {
 		resp.Error = NewJSStreamNotFoundError(Unless(err))
@@ -4641,6 +4741,18 @@ func (s *Server) jsConsumerDeleteRequest(sub *subscription, c *client, _ *Accoun
 		}
 		return
 	}
+
+	// Check for API request rate limiting.
+	{
+		if allowed, delay := acc.js.rate.Allow(); !allowed {
+			if delay > 0 {
+				resp.Error = NewJSTooManyRequestsError()
+				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil, delay)
+			}
+			return
+		}
+	}
+
 	if !isEmptyRequest(msg) {
 		resp.Error = NewJSNotEmptyRequestError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
