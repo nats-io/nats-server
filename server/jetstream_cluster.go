@@ -6250,7 +6250,11 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	}
 
 	// Update asset version metadata.
+	// JS account lock held to prevent a race with addStreamWithAssignment writing the
+	// stream metadata to disk via setupStore.
+	acc.js.mu.Lock()
 	setStaticStreamMetadata(cfg, osa.Config)
+	acc.js.mu.Unlock()
 
 	var newCfg *StreamConfig
 	if jsa := js.accounts[acc.Name]; jsa != nil {
