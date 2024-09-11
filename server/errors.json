@@ -203,7 +203,7 @@
     "constant": "JSInvalidJSONErr",
     "code": 400,
     "error_code": 10025,
-    "description": "invalid JSON",
+    "description": "invalid JSON: {err}",
     "comment": "",
     "help": "",
     "url": "",

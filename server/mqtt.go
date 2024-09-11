@@ -1912,61 +1912,61 @@ func (as *mqttAccountSessionManager) processJSAPIReplies(_ *subscription, pc *cl
 	case mqttJSAStreamCreate:
 		var resp = &JSApiStreamCreateResponse{}
 		if err := json.Unmarshal(msg, resp); err != nil {
-			resp.Error = NewJSInvalidJSONError()
+			resp.Error = NewJSInvalidJSONError(err)
 		}
 		out(resp)
 	case mqttJSAStreamUpdate:
 		var resp = &JSApiStreamUpdateResponse{}
 		if err := json.Unmarshal(msg, resp); err != nil {
-			resp.Error = NewJSInvalidJSONError()
+			resp.Error = NewJSInvalidJSONError(err)
 		}
 		out(resp)
 	case mqttJSAStreamLookup:
 		var resp = &JSApiStreamInfoResponse{}
 		if err := json.Unmarshal(msg, &resp); err != nil {
-			resp.Error = NewJSInvalidJSONError()
+			resp.Error = NewJSInvalidJSONError(err)
 		}
 		out(resp)
 	case mqttJSAStreamDel:
 		var resp = &JSApiStreamDeleteResponse{}
 		if err := json.Unmarshal(msg, &resp); err != nil {
-			resp.Error = NewJSInvalidJSONError()
+			resp.Error = NewJSInvalidJSONError(err)
 		}
 		out(resp)
 	case mqttJSAConsumerCreate:
 		var resp = &JSApiConsumerCreateResponse{}
 		if err := json.Unmarshal(msg, resp); err != nil {
-			resp.Error = NewJSInvalidJSONError()
+			resp.Error = NewJSInvalidJSONError(err)
 		}
 		out(resp)
 	case mqttJSAConsumerDel:
 		var resp = &JSApiConsumerDeleteResponse{}
 		if err := json.Unmarshal(msg, resp); err != nil {
-			resp.Error = NewJSInvalidJSONError()
+			resp.Error = NewJSInvalidJSONError(err)
 		}
 		out(resp)
 	case mqttJSAMsgStore, mqttJSASessPersist:
 		var resp = &JSPubAckResponse{}
 		if err := json.Unmarshal(msg, resp); err != nil {
-			resp.Error = NewJSInvalidJSONError()
+			resp.Error = NewJSInvalidJSONError(err)
 		}
 		out(resp)
 	case mqttJSAMsgLoad:
 		var resp = &JSApiMsgGetResponse{}
 		if err := json.Unmarshal(msg, &resp); err != nil {
-			resp.Error = NewJSInvalidJSONError()
+			resp.Error = NewJSInvalidJSONError(err)
 		}
 		out(resp)
 	case mqttJSAStreamNames:
 		var resp = &JSApiStreamNamesResponse{}
 		if err := json.Unmarshal(msg, resp); err != nil {
-			resp.Error = NewJSInvalidJSONError()
+			resp.Error = NewJSInvalidJSONError(err)
 		}
 		out(resp)
 	case mqttJSAMsgDelete:
 		var resp = &JSApiMsgDeleteResponse{}
 		if err := json.Unmarshal(msg, resp); err != nil {
-			resp.Error = NewJSInvalidJSONError()
+			resp.Error = NewJSInvalidJSONError(err)
 		}
 		out(resp)
 	default:

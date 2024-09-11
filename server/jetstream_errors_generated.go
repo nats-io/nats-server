@@ -218,7 +218,7 @@ const (
 	// JSInsufficientResourcesErr insufficient resources
 	JSInsufficientResourcesErr ErrorIdentifier = 10023
 
-	// JSInvalidJSONErr invalid JSON
+	// JSInvalidJSONErr invalid JSON: {err}
 	JSInvalidJSONErr ErrorIdentifier = 10025
 
 	// JSMaximumConsumersLimitErr maximum consumers limit reached
@@ -550,7 +550,7 @@ var (
 		JSConsumerWQRequiresExplicitAckErr:         {Code: 400, ErrCode: 10098, Description: "workqueue stream requires explicit ack"},
 		JSConsumerWithFlowControlNeedsHeartbeats:   {Code: 400, ErrCode: 10108, Description: "consumer with flow control also needs heartbeats"},
 		JSInsufficientResourcesErr:                 {Code: 503, ErrCode: 10023, Description: "insufficient resources"},
-		JSInvalidJSONErr:                           {Code: 400, ErrCode: 10025, Description: "invalid JSON"},
+		JSInvalidJSONErr:                           {Code: 400, ErrCode: 10025, Description: "invalid JSON: {err}"},
 		JSMaximumConsumersLimitErr:                 {Code: 400, ErrCode: 10026, Description: "maximum consumers limit reached"},
 		JSMaximumStreamsLimitErr:                   {Code: 400, ErrCode: 10027, Description: "maximum number of streams reached"},
 		JSMemoryResourcesExceededErr:               {Code: 500, ErrCode: 10028, Description: "insufficient memory resources available"},
@@ -1437,14 +1437,20 @@ func NewJSInsufficientResourcesError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSInsufficientResourcesErr]
 }
 
-// NewJSInvalidJSONError creates a new JSInvalidJSONErr error: "invalid JSON"
-func NewJSInvalidJSONError(opts ...ErrorOption) *ApiError {
+// NewJSInvalidJSONError creates a new JSInvalidJSONErr error: "invalid JSON: {err}"
+func NewJSInvalidJSONError(err error, opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
 	if ae, ok := eopts.err.(*ApiError); ok {
 		return ae
 	}
 
-	return ApiErrors[JSInvalidJSONErr]
+	e := ApiErrors[JSInvalidJSONErr]
+	args := e.toReplacerArgs([]interface{}{"{err}", err})
+	return &ApiError{
+		Code:        e.Code,
+		ErrCode:     e.ErrCode,
+		Description: strings.NewReplacer(args...).Replace(e.Description),
+	}
 }
 
 // NewJSMaximumConsumersLimitError creates a new JSMaximumConsumersLimitErr error: "maximum consumers limit reached"
