@@ -525,7 +525,7 @@ type JSApiStreamSnapshotRequest struct {
 	// Optional chunk size preference.
 	// Best to just let server select.
 	ChunkSize int `json:"chunk_size,omitempty"`
-	// Check all message's checksums prior to snapshot.
+	// Check all message's checksums prior to snapshot, and force full state to be written.
 	CheckMsgs bool `json:"jsck,omitempty"`
 }
 

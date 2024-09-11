@@ -8382,7 +8382,13 @@ func (fs *fileStore) Snapshot(deadline time.Duration, checkMsgs, includeConsumer
 	}
 
 	// Write out full state as well before proceeding.
-	fs.writeFullState()
+	if checkMsgs {
+		// If we're checking for messages also force writing full meta state.
+		// Otherwise, state could be outdated due to it being skipped before.
+		fs.forceWriteFullState()
+	} else {
+		fs.writeFullState()
+	}
 
 	pr, pw := net.Pipe()
 
