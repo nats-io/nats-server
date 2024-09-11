@@ -8183,7 +8183,7 @@ func (fs *fileStore) stop(delete, writeState bool) error {
 const errFile = "errors.txt"
 
 // Stream our snapshot through S2 compression and tar.
-func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool) {
+func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, errCh chan string) {
 	defer w.Close()
 
 	enc := s2.NewWriter(w)
@@ -8221,6 +8221,7 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool) {
 
 	writeErr := func(err string) {
 		writeFile(errFile, []byte(err))
+		errCh <- err
 	}
 
 	fs.mu.Lock()
@@ -8396,9 +8397,10 @@ func (fs *fileStore) Snapshot(deadline time.Duration, checkMsgs, includeConsumer
 	fs.FastState(&state)
 
 	// Stream in separate Go routine.
-	go fs.streamSnapshot(pw, includeConsumers)
+	errCh := make(chan string, 1)
+	go fs.streamSnapshot(pw, includeConsumers, errCh)
 
-	return &SnapshotResult{pr, state}, nil
+	return &SnapshotResult{pr, state, errCh}, nil
 }
 
 // Helper to return the config.

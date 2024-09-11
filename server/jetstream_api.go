@@ -3838,6 +3838,14 @@ func (s *Server) streamSnapshot(acc *Account, mset *stream, sr *SnapshotResult, 
 		atomic.AddInt32(&out, int32(len(chunk)))
 	}
 done:
+	select {
+	case err, ok := <-sr.errCh:
+		if ok {
+			hdr = []byte(fmt.Sprintf("NATS/1.0 500 %s\r\n\r\n", err))
+		}
+	default:
+	}
+
 	// Send last EOF
 	// TODO(dlc) - place hash in header
 	mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
