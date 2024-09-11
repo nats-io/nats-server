@@ -17,6 +17,12 @@ check_file () {
 export GO111MODULE="on"
 
 go install github.com/wadey/gocovmerge@latest
+# Fail fast by checking if we can run gocovmerge
+gocovmerge
+if [[ $? != 0 ]]; then
+    echo "Unable to run gocovmerge"
+    exit 1
+fi
 
 rm -rf ./cov
 mkdir cov
