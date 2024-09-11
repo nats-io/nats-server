@@ -3838,12 +3838,8 @@ func (s *Server) streamSnapshot(acc *Account, mset *stream, sr *SnapshotResult, 
 		atomic.AddInt32(&out, int32(len(chunk)))
 	}
 done:
-	select {
-	case err, ok := <-sr.errCh:
-		if ok {
-			hdr = []byte(fmt.Sprintf("NATS/1.0 500 %s\r\n\r\n", err))
-		}
-	default:
+	if err := <-sr.errCh; err != _EMPTY_ {
+		hdr = []byte(fmt.Sprintf("NATS/1.0 500 %s\r\n\r\n", err))
 	}
 
 	// Send last EOF

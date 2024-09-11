@@ -8184,6 +8184,7 @@ const errFile = "errors.txt"
 
 // Stream our snapshot through S2 compression and tar.
 func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, errCh chan string) {
+	defer close(errCh)
 	defer w.Close()
 
 	enc := s2.NewWriter(w)
