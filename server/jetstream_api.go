@@ -2493,7 +2493,7 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 	if ok {
 		sa, ok := streams[streamName]
 		if ok {
-			cfg = *sa.Config
+			cfg = *sa.Config.clone()
 			streamFound = true
 			currPeers = sa.Group.Peers
 			currCluster = sa.Group.Cluster
@@ -2635,7 +2635,7 @@ func (s *Server) jsLeaderServerStreamCancelMoveRequest(sub *subscription, c *cli
 	if ok {
 		sa, ok := streams[streamName]
 		if ok {
-			cfg = *sa.Config
+			cfg = *sa.Config.clone()
 			streamFound = true
 			currPeers = sa.Group.Peers
 		}

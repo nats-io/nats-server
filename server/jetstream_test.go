@@ -24329,3 +24329,38 @@ func TestJetStreamRateLimitHighStreamIngestDefaults(t *testing.T) {
 	require_Equal(t, stream.msgs.mlen, streamDefaultMaxQueueMsgs)
 	require_Equal(t, stream.msgs.msz, streamDefaultMaxQueueBytes)
 }
+
+func TestJetStreamStreamConfigClone(t *testing.T) {
+	cfg := &StreamConfig{
+		Name:             "name",
+		Placement:        &Placement{Cluster: "placement", Tags: []string{"tag"}},
+		Mirror:           &StreamSource{Name: "mirror"},
+		Sources:          []*StreamSource{&StreamSource{Name: "source"}},
+		SubjectTransform: &SubjectTransformConfig{Source: "source", Destination: "dest"},
+		RePublish:        &RePublish{Source: "source", Destination: "dest", HeadersOnly: false},
+		Metadata:         make(map[string]string),
+	}
+
+	// Copy should be complete.
+	clone := cfg.clone()
+	require_True(t, reflect.DeepEqual(cfg, clone))
+
+	// Changing fields should not update the original.
+	clone.Placement.Cluster = "diff"
+	require_False(t, reflect.DeepEqual(cfg.Placement, clone.Placement))
+
+	clone.Mirror.Name = "diff"
+	require_False(t, reflect.DeepEqual(cfg.Mirror, clone.Mirror))
+
+	clone.Sources[0].Name = "diff"
+	require_False(t, reflect.DeepEqual(cfg.Sources, clone.Sources))
+
+	clone.SubjectTransform.Source = "diff"
+	require_False(t, reflect.DeepEqual(cfg.SubjectTransform, clone.SubjectTransform))
+
+	clone.RePublish.Source = "diff"
+	require_False(t, reflect.DeepEqual(cfg.RePublish, clone.RePublish))
+
+	clone.Metadata["key"] = "value"
+	require_False(t, reflect.DeepEqual(cfg.Metadata, clone.Metadata))
+}
