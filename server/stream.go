@@ -108,17 +108,14 @@ type StreamConfig struct {
 // all values copied.
 func (cfg *StreamConfig) clone() *StreamConfig {
 	clone := *cfg
-
 	if cfg.Placement != nil {
 		placement := *cfg.Placement
 		clone.Placement = &placement
 	}
-
 	if cfg.Mirror != nil {
 		mirror := *cfg.Mirror
 		clone.Mirror = &mirror
 	}
-
 	if len(cfg.Sources) > 0 {
 		clone.Sources = make([]*StreamSource, len(cfg.Sources))
 		for i, cfgSource := range cfg.Sources {
@@ -126,24 +123,20 @@ func (cfg *StreamConfig) clone() *StreamConfig {
 			clone.Sources[i] = &source
 		}
 	}
-
 	if cfg.SubjectTransform != nil {
 		transform := *cfg.SubjectTransform
 		clone.SubjectTransform = &transform
 	}
-
 	if cfg.RePublish != nil {
 		rePublish := *cfg.RePublish
 		clone.RePublish = &rePublish
 	}
-
 	if cfg.Metadata != nil {
 		clone.Metadata = make(map[string]string, len(cfg.Metadata))
 		for k, v := range cfg.Metadata {
 			clone.Metadata[k] = v
 		}
 	}
-
 	return &clone
 }
 
