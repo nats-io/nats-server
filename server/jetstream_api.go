@@ -3244,7 +3244,7 @@ func (s *Server) jsConsumerUnpinRequest(sub *subscription, c *client, _ *Account
 	if !isEmptyRequest(msg) {
 		// FIXME(we need to respondwith errors)
 		if err := json.Unmarshal(msg, &req); err != nil {
-			resp.Error = NewJSInvalidJSONError()
+			resp.Error = NewJSInvalidJSONError(err)
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
@@ -3257,16 +3257,29 @@ func (s *Server) jsConsumerUnpinRequest(sub *subscription, c *client, _ *Account
 			return
 		}
 
-		mset, err := acc.lookupStream(stream)
-		if err != nil {
-			resp.Error = NewJSStreamNotFoundError()
+		// First check if the stream and consumer is there.
+		sa := js.streamAssignment(acc.Name, stream)
+		if sa == nil {
+			resp.Error = NewJSStreamNotFoundError(Unless(err))
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-		o := mset.lookupConsumer(consumer)
-		if o == nil {
+
+		ca, ok := sa.consumers[consumer]
+		if !ok || ca == nil {
 			resp.Error = NewJSConsumerNotFoundError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+
+		// Then check if we are the leader.
+		mset, err := acc.lookupStream(stream)
+		if err != nil {
+			return
+		}
+
+		o := mset.lookupConsumer(consumer)
+		if o == nil {
 			return
 		}
 		if !o.isLeader() {
