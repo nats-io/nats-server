@@ -470,9 +470,9 @@ type consumer struct {
 
 	// Priority groups
 	// currentNuid is the current nuid for the pinned consumer.
-	// In the future, as
 	currentNuid string
-	pinnedTtl   *time.Timer
+	/// pinnedTtl is the remaining time before the current NUID expires.
+	pinnedTtl *time.Timer
 }
 
 // A single subject filter.
@@ -4017,7 +4017,6 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 
 // Will check for expiration and lack of interest on waiting requests.
 // Will also do any heartbeats and return the next expiration or HB interval.
-// TODO(jrm): should we handle priority groups cleanup/pinned TTL etc here?
 func (o *consumer) processWaiting(eos bool) (int, int, int, time.Time) {
 	var fexp time.Time
 	if o.srv == nil || o.waiting.isEmpty() {
