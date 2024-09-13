@@ -2505,6 +2505,150 @@ func TestJetStreamClusterConsumerLeak(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterAccountNRG(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	snc, _ := jsClientConnect(t, c.randomServer(), nats.UserInfo("admin", "s3cr3t!"))
+	defer snc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Storage:   nats.MemoryStorage,
+		Retention: nats.WorkQueuePolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	leader := c.streamLeader(globalAccountName, "TEST")
+	stream, err := leader.gacc.lookupStream("TEST")
+	require_NoError(t, err)
+	rg := stream.node.(*raft)
+
+	t.Run("Disabled", func(t *testing.T) {
+		// Switch off account NRG on all servers in the cluster.
+		for _, s := range c.servers {
+			s.accountNRGAllowed.Store(false)
+			s.sendStatszUpdate()
+		}
+		time.Sleep(time.Millisecond * 100)
+		for _, s := range c.servers {
+			s.GlobalAccount().js.nrgAccount = ""
+			s.updateNRGAccountStatus()
+		}
+
+		// Check account interest for the AppendEntry subject.
+		checkFor(t, time.Second, time.Millisecond*25, func() error {
+			for _, s := range c.servers {
+				if !s.sys.account.sl.hasInterest(rg.asubj, true) {
+					return fmt.Errorf("system account should have interest")
+				}
+				if s.gacc.sl.hasInterest(rg.asubj, true) {
+					return fmt.Errorf("global account shouldn't have interest")
+				}
+			}
+			return nil
+		})
+
+		// Check that the Raft traffic is in the system account, as we
+		// haven't moved it elsewhere yet.
+		{
+			sub, err := snc.SubscribeSync(rg.asubj)
+			require_NoError(t, err)
+			require_NoError(t, sub.AutoUnsubscribe(1))
+
+			msg, err := sub.NextMsg(time.Second * 3)
+			require_NoError(t, err)
+			require_True(t, msg != nil)
+		}
+	})
+
+	t.Run("Mixed", func(t *testing.T) {
+		// Switch on account NRG on a single server in the cluster and
+		// leave it off on the rest.
+		for i, s := range c.servers {
+			s.accountNRGAllowed.Store(i == 0)
+			s.sendStatszUpdate()
+		}
+		time.Sleep(time.Millisecond * 100)
+		for i, s := range c.servers {
+			if i == 0 {
+				s.GlobalAccount().js.nrgAccount = globalAccountName
+			} else {
+				s.GlobalAccount().js.nrgAccount = ""
+			}
+			s.updateNRGAccountStatus()
+		}
+
+		// Check account interest for the AppendEntry subject.
+		checkFor(t, time.Second, time.Millisecond*25, func() error {
+			for _, s := range c.servers {
+				if !s.sys.account.sl.hasInterest(rg.asubj, true) {
+					return fmt.Errorf("system account should have interest")
+				}
+				if s.gacc.sl.hasInterest(rg.asubj, true) {
+					return fmt.Errorf("global account shouldn't have interest")
+				}
+			}
+			return nil
+		})
+
+		// Check that the Raft traffic is in the system account, as we
+		// don't claim support for account NRG on all nodes in the group.
+		{
+			sub, err := snc.SubscribeSync(rg.asubj)
+			require_NoError(t, err)
+			require_NoError(t, sub.AutoUnsubscribe(1))
+
+			msg, err := sub.NextMsg(time.Second * 3)
+			require_NoError(t, err)
+			require_True(t, msg != nil)
+		}
+	})
+
+	t.Run("Enabled", func(t *testing.T) {
+		// Switch on account NRG on all servers in the cluster.
+		for _, s := range c.servers {
+			s.accountNRGAllowed.Store(true)
+			s.sendStatszUpdate()
+		}
+		time.Sleep(time.Millisecond * 100)
+		for _, s := range c.servers {
+			s.GlobalAccount().js.nrgAccount = globalAccountName
+			s.updateNRGAccountStatus()
+		}
+
+		// Check account interest for the AppendEntry subject.
+		checkFor(t, time.Second, time.Millisecond*25, func() error {
+			for _, s := range c.servers {
+				if s.sys.account.sl.hasInterest(rg.asubj, true) {
+					return fmt.Errorf("system account shouldn't have interest")
+				}
+				if !s.gacc.sl.hasInterest(rg.asubj, true) {
+					return fmt.Errorf("global account should have interest")
+				}
+			}
+			return nil
+		})
+
+		// Check that the traffic moved into the global account as
+		// expected.
+		{
+			sub, err := nc.SubscribeSync(rg.asubj)
+			require_NoError(t, err)
+			require_NoError(t, sub.AutoUnsubscribe(1))
+
+			msg, err := sub.NextMsg(time.Second * 3)
+			require_NoError(t, err)
+			require_True(t, msg != nil)
+		}
+	})
+}
+
 func TestJetStreamClusterWQRoundRobinSubjectRetention(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()

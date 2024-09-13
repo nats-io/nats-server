@@ -360,6 +360,11 @@ type Server struct {
 
 	// Queue to process JS API requests that come from routes (or gateways)
 	jsAPIRoutedReqs *ipQueue[*jsAPIRoutedReq]
+
+	// Whether moving NRG traffic into accounts is permitted on this server.
+	// Controls whether or not the account NRG capability is set in statsz.
+	// Currently used by unit tests to simulate nodes not supporting account NRG.
+	accountNRGAllowed atomic.Bool
 }
 
 // For tracking JS nodes.
@@ -375,6 +380,7 @@ type nodeInfo struct {
 	offline         bool
 	js              bool
 	binarySnapshots bool
+	accountNRG      bool
 }
 
 // Make sure all are 64bits for atomic use
@@ -723,6 +729,9 @@ func NewServer(opts *Options) (*Server, error) {
 		syncOutSem:         make(chan struct{}, maxConcurrentSyncRequests),
 	}
 
+	// By default we'll allow account NRG.
+	s.accountNRGAllowed.Store(true)
+
 	// Fill up the maximum in flight syncRequests for this server.
 	// Used in JetStream catchup semantics.
 	for i := 0; i < maxConcurrentSyncRequests; i++ {
@@ -766,7 +775,7 @@ func NewServer(opts *Options) (*Server, error) {
 			opts.Tags,
 			&JetStreamConfig{MaxMemory: opts.JetStreamMaxMemory, MaxStore: opts.JetStreamMaxStore, CompressOK: true},
 			nil,
-			false, true, true,
+			false, true, true, true,
 		})
 	}
 
@@ -1754,7 +1763,7 @@ func (s *Server) setSystemAccount(acc *Account) error {
 		recvq:   newIPQueue[*inSysMsg](s, "System recvQ"),
 		recvqp:  newIPQueue[*inSysMsg](s, "System recvQ Pings"),
 		resetCh: make(chan struct{}),
-		sq:      s.newSendQ(),
+		sq:      s.newSendQ(acc),
 		statsz:  eventsHBInterval,
 		orphMax: 5 * eventsHBInterval,
 		chkOrph: 3 * eventsHBInterval,
