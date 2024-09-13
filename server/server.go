@@ -2049,9 +2049,9 @@ func (s *Server) updateAccountWithClaimJWT(acc *Account, claimJWT string) error 
 	accClaims, _, err := s.verifyAccountClaims(claimJWT)
 	if err == nil && accClaims != nil {
 		acc.mu.Lock()
-		if acc.Issuer == _EMPTY_ {
-			acc.Issuer = accClaims.Issuer
-		}
+		// if an account is updated with a different operator signing key, we want to
+		// show a consistent issuer.
+		acc.Issuer = accClaims.Issuer
 		if acc.Name != accClaims.Subject {
 			acc.mu.Unlock()
 			return ErrAccountValidation
