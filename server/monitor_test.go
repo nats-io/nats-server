@@ -4201,6 +4201,7 @@ func TestMonitorAccountzAccountIssuerUpdate(t *testing.T) {
 	sysAc := jwt.NewAccountClaims(sysPK)
 	sysAc.Name = "SYS"
 	sysJwt, err := sysAc.Encode(okp)
+	require_NoError(t, err)
 
 	// create the operator with the system
 	oc := jwt.NewOperatorClaims(opk)
