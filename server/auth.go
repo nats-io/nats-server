@@ -872,7 +872,10 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 			c.Debugf("Account JWT lookup error: %v", err)
 			return false
 		}
-		if !s.isTrustedIssuer(acc.Issuer) {
+		acc.mu.RLock()
+		aissuer := acc.Issuer
+		acc.mu.RUnlock()
+		if !s.isTrustedIssuer(aissuer) {
 			c.Debugf("Account JWT not signed by trusted operator")
 			return false
 		}
