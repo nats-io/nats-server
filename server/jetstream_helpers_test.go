@@ -1553,6 +1553,9 @@ func (c *cluster) stopAll() {
 	for _, s := range c.servers {
 		s.Shutdown()
 	}
+	for _, s := range c.servers {
+		s.WaitForShutdown()
+	}
 }
 
 func (c *cluster) restartAll() {
@@ -1570,8 +1573,10 @@ func (c *cluster) restartAll() {
 
 func (c *cluster) lameDuckRestartAll() {
 	c.t.Helper()
-	for i, s := range c.servers {
+	for _, s := range c.servers {
 		s.lameDuckMode()
+	}
+	for i, s := range c.servers {
 		s.WaitForShutdown()
 		if !s.Running() {
 			opts := c.opts[i]
