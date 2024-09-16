@@ -241,6 +241,10 @@ type RemoteLeafOpts struct {
 	// not be able to work. This tells the system to migrate the leaders away from this server.
 	// This only changes leader for R>1 assets.
 	JetStreamClusterMigrate bool `json:"jetstream_cluster_migrate,omitempty"`
+
+	// If JetStreamClusterMigrate is set to true, this is the time after which the leader
+	// will be migrated away from this server if still disconnected.
+	JetStreamClusterMigrateDelay time.Duration `json:"jetstream_cluster_migrate_delay,omitempty"`
 }
 
 type JSLimitOpts struct {
@@ -2746,6 +2750,16 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 				remote.Websocket.NoMasking = v.(bool)
 			case "jetstream_cluster_migrate", "js_cluster_migrate":
 				remote.JetStreamClusterMigrate = true
+				migrateConfig, ok := v.(map[string]any)
+				if !ok {
+					continue
+				}
+				val, ok := migrateConfig["delay"]
+				tk, delay := unwrapValue(val, &tk)
+				if ok {
+					remote.JetStreamClusterMigrateDelay = parseDuration("delay", tk, delay, errors, warnings)
+				}
+
 			case "compression":
 				if err := parseCompression(&remote.Compression, CompressionS2Auto, tk, k, v); err != nil {
 					*errors = append(*errors, err)

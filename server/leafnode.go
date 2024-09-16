@@ -105,13 +105,14 @@ type leaf struct {
 type leafNodeCfg struct {
 	sync.RWMutex
 	*RemoteLeafOpts
-	urls      []*url.URL
-	curURL    *url.URL
-	tlsName   string
-	username  string
-	password  string
-	perms     *Permissions
-	connDelay time.Duration // Delay before a connect, could be used while detecting loop condition, etc..
+	urls           []*url.URL
+	curURL         *url.URL
+	tlsName        string
+	username       string
+	password       string
+	perms          *Permissions
+	connDelay      time.Duration // Delay before a connect, could be used while detecting loop condition, etc..
+	jsMigrateTimer *time.Timer
 }
 
 // Check to see if this is a solicited leafnode. We do special processing for solicited.
@@ -500,6 +501,7 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 	if s.eventsEnabled() {
 		isSysAcc = remote.LocalAccount == s.sys.account.Name
 	}
+	jetstreamMigrateDelay := remote.JetStreamClusterMigrateDelay
 	s.mu.Unlock()
 
 	// If we are sharing a system account and we are not standalone delay to gather some info prior.
@@ -522,6 +524,7 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 	const connErrFmt = "Error trying to connect as leafnode to remote server %q (attempt %v): %v"
 
 	attempts := 0
+
 	for s.isRunning() && s.remoteLeafNodeStillValid(remote) {
 		rURL := remote.pickNextURL()
 		url, err := s.getRandomIP(resolver, rURL.Host, nil)
@@ -548,15 +551,28 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 			} else {
 				s.Debugf(connErrFmt, rURL.Host, attempts, err)
 			}
+			remote.Lock()
+			// if we are using a delay to start migrating assets, kick off a migrate timer.
+			if remote.jsMigrateTimer == nil && jetstreamMigrateDelay > 0 {
+				remote.jsMigrateTimer = time.AfterFunc(jetstreamMigrateDelay, func() {
+					s.checkJetStreamMigrate(remote)
+				})
+			}
+			remote.Unlock()
 			select {
 			case <-s.quitCh:
+				remote.cancelMigrateTimer()
 				return
 			case <-time.After(delay):
-				// Check if we should migrate any JetStream assets while this remote is down.
-				s.checkJetStreamMigrate(remote)
+				// Check if we should migrate any JetStream assets immediately while this remote is down.
+				// This will be used if JetStreamClusterMigrateDelay was not set
+				if jetstreamMigrateDelay == 0 {
+					s.checkJetStreamMigrate(remote)
+				}
 				continue
 			}
 		}
+		remote.cancelMigrateTimer()
 		if !s.remoteLeafNodeStillValid(remote) {
 			conn.Close()
 			return
@@ -571,6 +587,15 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 
 		return
 	}
+}
+
+func (cfg *leafNodeCfg) cancelMigrateTimer() {
+	cfg.Lock()
+	if cfg.jsMigrateTimer != nil {
+		cfg.jsMigrateTimer.Stop()
+		cfg.jsMigrateTimer = nil
+	}
+	cfg.Unlock()
 }
 
 // This will clear any observer state such that stream or consumer assets on this server can become leaders again.
