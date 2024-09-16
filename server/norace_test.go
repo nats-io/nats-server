@@ -10811,21 +10811,24 @@ func TestNoRaceJetStreamStandaloneDontReplyToAckBeforeProcessingIt(t *testing.T)
 		for i := 0; i < total; i++ {
 			go func() {
 				defer wg.Done()
-				msgs, err := sub.Fetch(1)
-				if err != nil {
-					errCh <- err
-					return
-				}
-				msg := msgs[0]
-				err = msg.AckSync()
-				if err != nil {
-					errCh <- err
-					return
-				}
-				_, err = js.Publish(msg.Subject, []byte("hello"))
-				if err != nil {
-					errCh <- err
-					return
+				for {
+					msgs, err := sub.Fetch(1)
+					if err != nil {
+						time.Sleep(5 * time.Millisecond)
+						continue
+					}
+					msg := msgs[0]
+					err = msg.AckSync()
+					if err != nil {
+						time.Sleep(5 * time.Millisecond)
+						continue
+					}
+					_, err = js.Publish(msg.Subject, []byte("hello"))
+					if err != nil {
+						errCh <- err
+						return
+					}
+					break
 				}
 			}()
 		}

@@ -3687,6 +3687,7 @@ func TestServerEventsStatsZJetStreamApiLevel(t *testing.T) {
 	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
 	ncs, err := nats.Connect(url, createUserCreds(t, s, akp))
 	require_NoError(t, err)
+	defer ncs.Close()
 
 	msg, err := ncs.Request("$SYS.REQ.SERVER.PING.STATSZ", nil, time.Second)
 	require_NoError(t, err)
@@ -3696,4 +3697,64 @@ func TestServerEventsStatsZJetStreamApiLevel(t *testing.T) {
 	require_NoError(t, err)
 
 	require_Equal(t, stats.Stats.JetStream.Stats.API.Level, JSApiLevel)
+}
+
+func TestServerEventsPingStatsSlowConsumersStats(t *testing.T) {
+	s, _ := runTrustedServer(t)
+	defer s.Shutdown()
+
+	acc, akp := createAccount(s)
+	s.setSystemAccount(acc)
+	ncs, err := nats.Connect(s.ClientURL(), createUserCreds(t, s, akp))
+	require_NoError(t, err)
+	defer ncs.Close()
+
+	const statsz = "STATSZ"
+	for _, test := range []struct {
+		name      string
+		f         func() string
+		expectTwo bool
+	}{
+		{"server stats ping request subject", func() string { return serverStatsPingReqSubj }, true},
+		{"server ping request subject", func() string { return fmt.Sprintf(serverPingReqSubj, statsz) }, true},
+		{"server direct request subject", func() string { return fmt.Sprintf(serverDirectReqSubj, s.ID(), statsz) }, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// Clear all slow consumers values
+			s.scStats.clients.Store(0)
+			s.scStats.routes.Store(0)
+			s.scStats.gateways.Store(0)
+			s.scStats.leafs.Store(0)
+
+			msg, err := ncs.Request(test.f(), nil, time.Second)
+			require_NoError(t, err)
+
+			var ssm ServerStatsMsg
+			err = json.Unmarshal(msg.Data, &ssm)
+			require_NoError(t, err)
+
+			// No slow consumer stats, so should be nil
+			require_True(t, ssm.Stats.SlowConsumersStats == nil)
+
+			// Now set some values
+			s.scStats.clients.Store(1)
+			s.scStats.routes.Store(2)
+			s.scStats.gateways.Store(3)
+			s.scStats.leafs.Store(4)
+
+			msg, err = ncs.Request(test.f(), nil, time.Second)
+			require_NoError(t, err)
+
+			ssm = ServerStatsMsg{}
+			err = json.Unmarshal(msg.Data, &ssm)
+			require_NoError(t, err)
+
+			require_NotNil(t, ssm.Stats.SlowConsumersStats)
+			scs := ssm.Stats.SlowConsumersStats
+			require_Equal(t, scs.Clients, 1)
+			require_Equal(t, scs.Routes, 2)
+			require_Equal(t, scs.Gateways, 3)
+			require_Equal(t, scs.Leafs, 4)
+		})
+	}
 }
