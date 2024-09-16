@@ -441,6 +441,15 @@ func TestNRGStepDownOnSameTermDoesntClearVote(t *testing.T) {
 }
 
 func TestNRGUnsuccessfulVoteRequestDoesntResetElectionTimer(t *testing.T) {
+	// This test relies on nodes not hitting their election timer too often,
+	// otherwise the step later where we capture the election time before and
+	// after the failed vote request will flake.
+	origMinElectionTimeout, origMaxElectionTimeout := minElectionTimeout, maxElectionTimeout
+	minElectionTimeout, maxElectionTimeout = time.Second*5, time.Second*10
+	defer func() {
+		minElectionTimeout, maxElectionTimeout = origMinElectionTimeout, origMaxElectionTimeout
+	}()
+
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 	c.waitOnLeader()
@@ -449,6 +458,14 @@ func TestNRGUnsuccessfulVoteRequestDoesntResetElectionTimer(t *testing.T) {
 	defer nc.Close()
 
 	rg := c.createRaftGroup("TEST", 3, newStateAdder)
+
+	// Because the election timer is quite high, we want to kick a node into
+	// campaigning before it naturally needs to, otherwise the test takes a
+	// long time just to pick a leader.
+	for _, n := range rg {
+		n.node().Campaign()
+		break
+	}
 	rg.waitOnLeader()
 	leader := rg.leader().node().(*raft)
 	follower := rg.nonLeader().node().(*raft)
