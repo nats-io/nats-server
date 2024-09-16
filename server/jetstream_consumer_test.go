@@ -1560,6 +1560,83 @@ func TestJetStreamConsumerPinned(t *testing.T) {
 	require_NoError(t, err)
 }
 
+// This tests if Unpin works correctly when there are no pending messages.
+// It checks if the next pinned client will be different than the first one
+// after new messages is published.
+func TestJetStreamConsumerUnpinNoMessages(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	acc := s.GlobalAccount()
+
+	mset, err := acc.addStream(&StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: LimitsPolicy,
+	})
+	require_NoError(t, err)
+
+	_, err = mset.addConsumer(&ConsumerConfig{
+		Durable:        "C",
+		FilterSubject:  "foo",
+		PriorityGroups: []string{"A"},
+		PriorityPolicy: PriorityPinnedClient,
+		AckPolicy:      AckExplicit,
+		PinnedTTL:      10 * time.Second,
+	})
+	require_NoError(t, err)
+
+	req := JSApiConsumerGetNextRequest{Batch: 3, Expires: 60 * time.Second, PriorityGroup: PriorityGroup{
+		Group: "A",
+	}}
+	reqb, _ := json.Marshal(req)
+	reply := "ONE"
+	replies, err := nc.SubscribeSync(reply)
+	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply, reqb)
+	require_NoError(t, err)
+
+	reply2 := "TWO"
+	replies2, err := nc.SubscribeSync(reply2)
+	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply2, reqb)
+	require_NoError(t, err)
+
+	sendStreamMsg(t, nc, "foo", "data")
+	sendStreamMsg(t, nc, "foo", "data")
+
+	_, err = replies.NextMsg(1 * time.Second)
+	require_NoError(t, err)
+	_, err = replies.NextMsg(1 * time.Second)
+	require_NoError(t, err)
+
+	_, err = replies2.NextMsg(1 * time.Second)
+	require_Error(t, err)
+
+	unpinRequest := func(t *testing.T, nc *nats.Conn, stream, consumer, group string) *ApiError {
+		var response JSApiConsumerUnpinResponse
+		request := JSApiConsumerUnpinRequest{Group: group}
+		requestData, err := json.Marshal(request)
+		require_NoError(t, err)
+		msg, err := nc.Request(fmt.Sprintf("$JS.API.CONSUMER.UNPIN.%s.%s", stream, consumer), requestData, time.Second*1)
+		require_NoError(t, err)
+		err = json.Unmarshal(msg.Data, &response)
+		require_NoError(t, err)
+		return response.Error
+	}
+
+	unpinError := unpinRequest(t, nc, "TEST", "C", "A")
+	require_True(t, unpinError == nil)
+
+	sendStreamMsg(t, nc, "foo", "data")
+	_, err = replies.NextMsg(1 * time.Second)
+	require_Error(t, err)
+
+	_, err = replies2.NextMsg(1 * time.Second)
+	require_NoError(t, err)
+}
+
 func TestJetStreamConsumerUnpin(t *testing.T) {
 	single := RunBasicJetStreamServer(t)
 	defer single.Shutdown()
@@ -1615,7 +1692,6 @@ func TestJetStreamConsumerUnpin(t *testing.T) {
 	cluster.waitOnConsumerLeader("$G", "TEST", "C")
 
 	unpinRequest := func(t *testing.T, nc *nats.Conn, stream, consumer, group string) *ApiError {
-		// Send a unpin request with non-existing group
 		var response JSApiConsumerUnpinResponse
 		request := JSApiConsumerUnpinRequest{Group: group}
 		requestData, err := json.Marshal(request)
