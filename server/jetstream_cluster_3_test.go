@@ -2954,11 +2954,12 @@ func TestJetStreamClusterStreamMaxAgeScaleUp(t *testing.T) {
 				Storage:  test.storage,
 			})
 			require_NoError(t, err)
+			c.waitOnStreamLeader(globalAccountName, test.stream)
 
 			// All messages should still be there.
 			info, err := js.StreamInfo(test.stream)
 			require_NoError(t, err)
-			require_True(t, info.State.Msgs == 10)
+			require_Equal(t, info.State.Msgs, 10)
 
 			// Wait until MaxAge is reached.
 			time.Sleep(ttl - time.Since(start) + (1 * time.Second))
@@ -2966,17 +2967,17 @@ func TestJetStreamClusterStreamMaxAgeScaleUp(t *testing.T) {
 			// Check if all messages are expired.
 			info, err = js.StreamInfo(test.stream)
 			require_NoError(t, err)
-			require_True(t, info.State.Msgs == 0)
+			require_Equal(t, info.State.Msgs, 0)
 
 			// Now switch leader to one of replicas
 			_, err = nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, test.stream), nil, time.Second)
 			require_NoError(t, err)
-			c.waitOnStreamLeader("$G", test.stream)
+			c.waitOnStreamLeader(globalAccountName, test.stream)
 
 			// and make sure that it also expired all messages
 			info, err = js.StreamInfo(test.stream)
 			require_NoError(t, err)
-			require_True(t, info.State.Msgs == 0)
+			require_Equal(t, info.State.Msgs, 0)
 		})
 	}
 }

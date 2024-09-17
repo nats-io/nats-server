@@ -2932,6 +2932,32 @@ func TestReadOperatorJWT(t *testing.T) {
 	}
 }
 
+const operatorJwtList = `
+	listen: "127.0.0.1:-1"
+    system_account = SYSACC
+	operator: [
+        eyJ0eXAiOiJqd3QiLCJhbGciOiJlZDI1NTE5In0.eyJqdGkiOiJJVEdJNjNCUUszM1VNN1pBSzZWT1RXNUZEU01ESlNQU1pRQ0RMNUlLUzZQTVhBU0ROQ01RIiwiaWF0IjoxNTg5ODM5MjA1LCJpc3MiOiJPQ1k2REUyRVRTTjNVT0RGVFlFWEJaTFFMSTdYNEdTWFI1NE5aQzRCQkxJNlFDVFpVVDY1T0lWTiIsIm5hbWUiOiJPUCIsInN1YiI6Ik9DWTZERTJFVFNOM1VPREZUWUVYQlpMUUxJN1g0R1NYUjU0TlpDNEJCTEk2UUNUWlVUNjVPSVZOIiwidHlwZSI6Im9wZXJhdG9yIiwibmF0cyI6eyJhY2NvdW50X3NlcnZlcl91cmwiOiJodHRwOi8vbG9jYWxob3N0OjgwMDAvand0L3YxIiwib3BlcmF0b3Jfc2VydmljZV91cmxzIjpbIm5hdHM6Ly9sb2NhbGhvc3Q6NDIyMiJdLCJzeXN0ZW1fYWNjb3VudCI6IkFEWjU0N0IyNFdIUExXT0s3VE1MTkJTQTdGUUZYUjZVTTJOWjRISE5JQjdSREZWWlFGT1o0R1FRIn19.3u710KqMLwgXwsMvhxfEp9xzK84XyAZ-4dd6QY0T6hGj8Bw9mS-HcQ7HbvDDNU01S61tNFfpma_JR6LtB3ixBg,
+        eyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkifQ.eyJqdGkiOiIzTVJCS1BRTU1IUjdOQVFQU080NUlWTlkyMzVMRlQyTEs0WkZFVU1KWU9EWUJXU0RXWlRBIiwiaWF0IjoxNzI2NTYwMjAwLCJpc3MiOiJPQkxPR1VCSVVQSkhGVE00RjRaTE9CR1BMSlBJRjRTR0JDWUVERUtFUVNNWVVaTVFTMkRGTUUyWCIsIm5hbWUiOiJvcDIiLCJzdWIiOiJPQkxPR1VCSVVQSkhGVE00RjRaTE9CR1BMSlBJRjRTR0JDWUVERUtFUVNNWVVaTVFTMkRGTUUyWCIsIm5hdHMiOnsic2lnbmluZ19rZXlzIjpbIk9ES0xMSTZWWldWNk03V1RaV0I3MjVITE9MVFFRVERLNE5RR1ZFR0Q0Q083SjJMMlVJWk81U0dXIl0sInN5c3RlbV9hY2NvdW50IjoiQUNRVFdWR1NHSFlWWTNSNkQyV01PM1Y2TFYyTUdLNUI3RzQ3RTQzQkhKQjZGUVZZN0VITlRNTUciLCJ0eXBlIjoib3BlcmF0b3IiLCJ2ZXJzaW9uIjoyfX0.8kUmC6CwGLTJSs1zj_blsMpP5b6n2jZhZFNvMPXvJlRyyR5ZbCsxJ442BimaxaiosS8T-IFcZAIphtiOcqhRCg
+    ]
+`
+
+func TestReadMultipleOperatorJWT(t *testing.T) {
+	confFileName := createConfFile(t, []byte(operatorJwtList))
+	opts, err := ProcessConfigFile(confFileName)
+	if err != nil {
+		t.Fatalf("Received unexpected error %s", err)
+	}
+
+	require_Equal(t, len(opts.TrustedOperators), 2)
+	require_Equal(t, opts.TrustedOperators[0].Name, "OP")
+	require_Equal(t, opts.TrustedOperators[1].Name, "op2")
+	require_Equal(t, opts.TrustedOperators[0].SystemAccount, "ADZ547B24WHPLWOK7TMLNBSA7FQFXR6UM2NZ4HHNIB7RDFVZQFOZ4GQQ")
+	require_Equal(t, opts.TrustedOperators[1].SystemAccount, "ACQTWVGSGHYVY3R6D2WMO3V6LV2MGK5B7G47E43BHJB6FQVY7EHNTMMG")
+	// check if system account precedence is correct
+	require_Equal(t, opts.SystemAccount, "SYSACC")
+
+}
+
 // using memory resolver so this test does not have to start the memory resolver
 const operatorJwtWithSysAccAndMemResolver = `
 	listen: "127.0.0.1:-1"

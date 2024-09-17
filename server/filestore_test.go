@@ -1051,6 +1051,19 @@ func TestFileStoreStreamTruncate(t *testing.T) {
 		mb := fs.getFirstBlock()
 		require_True(t, mb != nil)
 		require_NoError(t, mb.loadMsgs())
+
+		// Also make sure we can recover properly with no index.db present.
+		// We want to make sure we preserve tombstones from any blocks being deleted.
+		fs.Stop()
+		os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
+
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		if state := fs.State(); !reflect.DeepEqual(state, before) {
+			t.Fatalf("Expected state of %+v, got %+v without index.db state", before, state)
+		}
 	})
 }
 
@@ -3635,11 +3648,16 @@ func TestFileStorePurgeExWithSubject(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fcfg.BlockSize = 1000
 		cfg := StreamConfig{Name: "TEST", Subjects: []string{"foo.>"}, Storage: FileStorage}
-		fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
 		require_NoError(t, err)
 		defer fs.Stop()
 
 		payload := make([]byte, 20)
+
+		_, _, err = fs.StoreMsg("foo.0", nil, payload)
+		require_NoError(t, err)
+
 		total := 200
 		for i := 0; i < total; i++ {
 			_, _, err = fs.StoreMsg("foo.1", nil, payload)
@@ -3648,13 +3666,38 @@ func TestFileStorePurgeExWithSubject(t *testing.T) {
 		_, _, err = fs.StoreMsg("foo.2", nil, []byte("xxxxxx"))
 		require_NoError(t, err)
 
-		// This should purge all.
+		// This should purge all "foo.1"
 		p, err := fs.PurgeEx("foo.1", 1, 0)
 		require_NoError(t, err)
-		require_True(t, int(p) == total)
-		require_True(t, int(p) == total)
-		require_True(t, fs.State().Msgs == 1)
-		require_True(t, fs.State().FirstSeq == 201)
+		require_Equal(t, p, uint64(total))
+
+		state := fs.State()
+		require_Equal(t, state.Msgs, 2)
+		require_Equal(t, state.FirstSeq, 1)
+
+		// Make sure we can recover same state.
+		fs.Stop()
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		before := state
+		if state := fs.State(); !reflect.DeepEqual(state, before) {
+			t.Fatalf("Expected state of %+v, got %+v", before, state)
+		}
+
+		// Also make sure we can recover properly with no index.db present.
+		// We want to make sure we preserve any tombstones from the subject based purge.
+		fs.Stop()
+		os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
+
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		if state := fs.State(); !reflect.DeepEqual(state, before) {
+			t.Fatalf("Expected state of %+v, got %+v without index.db state", before, state)
+		}
 	})
 }
 
@@ -7454,6 +7497,47 @@ func TestFileStoreSyncCompressOnlyIfDirty(t *testing.T) {
 	fs.mu.Unlock()
 	// Verify that since we deleted a message we should be considered for compaction again in syncBlocks().
 	require_False(t, noCompact)
+}
+
+// This test is for deleted interior message tracking after compaction from limits based deletes, meaning no tombstones.
+// Bug was that dmap would not be properly be hydrated after the compact from rebuild. But we did so in populateGlobalInfo.
+// So this is just to fix a bug in rebuildState tracking gaps after a compact.
+func TestFileStoreDmapBlockRecoverAfterCompact(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 256},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage, MaxMsgsPer: 1})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := []byte("hello")
+
+	// 6 msgs per block.
+	// Fill the first block.
+	for i := 1; i <= 6; i++ {
+		fs.StoreMsg(fmt.Sprintf("foo.%d", i), nil, msg)
+	}
+	require_Equal(t, fs.numMsgBlocks(), 1)
+
+	// Now create holes in the first block via the max msgs per subject of 1.
+	for i := 2; i < 6; i++ {
+		fs.StoreMsg(fmt.Sprintf("foo.%d", i), nil, msg)
+	}
+	require_Equal(t, fs.numMsgBlocks(), 2)
+	// Compact and rebuild the first blk. Do not have it call indexCacheBuf which will fix it up.
+	mb := fs.getFirstBlock()
+	mb.mu.Lock()
+	mb.compact()
+	// Empty out dmap state.
+	mb.dmap.Empty()
+	ld, tombs, err := mb.rebuildStateLocked()
+	dmap := mb.dmap.Clone()
+	mb.mu.Unlock()
+
+	require_NoError(t, err)
+	require_Equal(t, ld, nil)
+	require_Equal(t, len(tombs), 0)
+	require_Equal(t, dmap.Size(), 4)
 }
 
 ///////////////////////////////////////////////////////////////////////////

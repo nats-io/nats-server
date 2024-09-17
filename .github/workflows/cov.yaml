@@ -43,7 +43,7 @@ jobs:
       - name: Coveralls
         # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
         # Commit 3dfc5567390f6fa9267c0ee9c251e4c8c3f18949 = tag v2
-        uses: coverallsapp/github-action@3dfc5567390f6fa9267c0ee9c251e4c8c3f18949
+        uses: coverallsapp/github-action@643bc377ffa44ace6394b2b5d0d3950076de9f63
         with:
           github-token: ${{ secrets.github_token }}
           file: src/github.com/nats-io/nats-server/coverage.lcov

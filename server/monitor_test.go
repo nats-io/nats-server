@@ -4057,6 +4057,115 @@ func TestMonitorAccountz(t *testing.T) {
 	require_Contains(t, body, `"leafnodes": 0,`)
 }
 
+func TestMonitorAccountzAccountIssuerUpdate(t *testing.T) {
+	// create an operator set of keys
+	okp, err := nkeys.CreateOperator()
+	require_NoError(t, err)
+	opk, err := okp.PublicKey()
+	require_NoError(t, err)
+
+	// create the system account
+	_, sysPK := createKey(t)
+	sysAc := jwt.NewAccountClaims(sysPK)
+	sysAc.Name = "SYS"
+	sysJwt, err := sysAc.Encode(okp)
+	require_NoError(t, err)
+
+	// create the operator with the system
+	oc := jwt.NewOperatorClaims(opk)
+	oc.Name = "O"
+	// add a signing keys
+	osk1, err := nkeys.CreateOperator()
+	require_NoError(t, err)
+	opk1, err := osk1.PublicKey()
+	require_NoError(t, err)
+	// add a second signing key
+	osk2, err := nkeys.CreateOperator()
+	require_NoError(t, err)
+	opk2, err := osk2.PublicKey()
+	require_NoError(t, err)
+	oc.SigningKeys.Add(opk1, opk2)
+	// set the system account
+	oc.SystemAccount = sysPK
+	// generate
+	oJWT, err := oc.Encode(okp)
+	require_NoError(t, err)
+
+	// create an account
+	akp, apk := createKey(t)
+	ac := jwt.NewAccountClaims(apk)
+	ac.Name = "A"
+	// sign with the signing key
+	aJWT, err := ac.Encode(osk1)
+	require_NoError(t, err)
+
+	// build the mem-resolver
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		http: 127.0.0.1:-1
+		operator = %s
+		resolver = MEMORY
+		system_account: %s
+		resolver_preload = {
+			%s : %s
+			%s : %s
+		}
+	`, oJWT, sysPK, sysPK, sysJwt, apk, aJWT)))
+
+	// start the server
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// create an user for account A, or we don't see
+	// the account in accountsz
+	createUser := func() (string, string) {
+		ukp, _ := nkeys.CreateUser()
+		seed, _ := ukp.Seed()
+		upub, _ := ukp.PublicKey()
+		uclaim := newJWTTestUserClaims()
+		uclaim.Subject = upub
+		ujwt, err := uclaim.Encode(akp)
+		require_NoError(t, err)
+		return upub, genCredsFile(t, ujwt, seed)
+	}
+
+	_, aCreds := createUser()
+	// connect the user
+	nc, err := nats.Connect(s.ClientURL(), nats.UserCredentials(aCreds))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	// lookup the account
+	data := readBody(t, fmt.Sprintf("http://127.0.0.1:%d%s?acc=%s", s.MonitorAddr().Port, AccountzPath, apk))
+	var ci Accountz
+	require_NoError(t, json.Unmarshal(data, &ci))
+	require_Equal(t, ci.Account.IssuerKey, opk1)
+
+	// now update the account
+	aJWT, err = ac.Encode(osk2)
+	require_NoError(t, err)
+
+	updatedConf := []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		http: 127.0.0.1:-1
+		operator = %s
+		resolver = MEMORY
+		system_account: %s
+		resolver_preload = {
+			%s : %s
+			%s : %s
+		}
+	`, oJWT, sysPK, sysPK, sysJwt, apk, aJWT))
+	// update the configuration file
+	require_NoError(t, os.WriteFile(conf, updatedConf, 0666))
+	// reload
+	require_NoError(t, s.Reload())
+
+	data = readBody(t, fmt.Sprintf("http://127.0.0.1:%d%s?acc=%s", s.MonitorAddr().Port, AccountzPath, apk))
+	require_NoError(t, json.Unmarshal(data, &ci))
+	require_Equal(t, ci.Account.IssuerKey, opk2)
+}
+
 func TestMonitorAuthorizedUsers(t *testing.T) {
 	kp, _ := nkeys.FromSeed(seed)
 	usrNKey, _ := kp.PublicKey()
