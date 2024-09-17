@@ -10841,3 +10841,68 @@ func TestNoRaceJetStreamStandaloneDontReplyToAckBeforeProcessingIt(t *testing.T)
 		}
 	}
 }
+
+// Under certain scenarios an old index.db with a stream that has max msgs per set will not restore properly
+// due to and old index.db and compaction after the index.db took place which could lose per subject information.
+func TestNoRaceFileStoreMaxMsgsPerSubjectAndOldRecoverState(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage, MaxMsgsPer: 1})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := make([]byte, 1024)
+
+	for i := 0; i < 10_000; i++ {
+		subj := fmt.Sprintf("foo.%d", i)
+		fs.StoreMsg(subj, nil, msg)
+	}
+
+	// This will write the index.db file. We will capture this and use it to replace a new one.
+	sfile := filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile)
+	fs.Stop()
+	_, err = os.Stat(sfile)
+	require_NoError(t, err)
+
+	// Read it in and make sure len > 0.
+	buf, err := os.ReadFile(sfile)
+	require_NoError(t, err)
+	require_True(t, len(buf) > 0)
+
+	// Restart
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: sd},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage, MaxMsgsPer: 1})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Put in more messages with wider range. This will compact a bunch of the previous blocks.
+	for i := 0; i < 1_000_001; i++ {
+		subj := fmt.Sprintf("foo.%d", i)
+		fs.StoreMsg(subj, nil, msg)
+	}
+
+	var ss StreamState
+	fs.FastState(&ss)
+	require_Equal(t, ss.FirstSeq, 10_001)
+	require_Equal(t, ss.LastSeq, 1_010_001)
+	require_Equal(t, ss.Msgs, 1_000_001)
+
+	// Now stop again, but replace index.db with old one.
+	fs.Stop()
+	// Put back old stream state.
+	require_NoError(t, os.WriteFile(sfile, buf, defaultFilePerms))
+
+	// Restart
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: sd},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage, MaxMsgsPer: 1})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	fs.FastState(&ss)
+	require_Equal(t, ss.FirstSeq, 10_001)
+	require_Equal(t, ss.LastSeq, 1_010_001)
+	require_Equal(t, ss.Msgs, 1_000_001)
+}
