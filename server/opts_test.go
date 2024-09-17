@@ -2948,13 +2948,13 @@ func TestReadMultipleOperatorJWT(t *testing.T) {
 		t.Fatalf("Received unexpected error %s", err)
 	}
 
-	require_True(t, len(opts.TrustedOperators) == 2)
-	require_True(t, opts.TrustedOperators[0].Name == "OP")
-	require_True(t, opts.TrustedOperators[1].Name == "op2")
-	require_True(t, opts.TrustedOperators[0].SystemAccount == "ADZ547B24WHPLWOK7TMLNBSA7FQFXR6UM2NZ4HHNIB7RDFVZQFOZ4GQQ")
-	require_True(t, opts.TrustedOperators[1].SystemAccount == "ACQTWVGSGHYVY3R6D2WMO3V6LV2MGK5B7G47E43BHJB6FQVY7EHNTMMG")
+	require_Equal(t, len(opts.TrustedOperators), 2)
+	require_Equal(t, opts.TrustedOperators[0].Name, "OP")
+	require_Equal(t, opts.TrustedOperators[1].Name, "op2")
+	require_Equal(t, opts.TrustedOperators[0].SystemAccount, "ADZ547B24WHPLWOK7TMLNBSA7FQFXR6UM2NZ4HHNIB7RDFVZQFOZ4GQQ")
+	require_Equal(t, opts.TrustedOperators[1].SystemAccount, "ACQTWVGSGHYVY3R6D2WMO3V6LV2MGK5B7G47E43BHJB6FQVY7EHNTMMG")
 	// check if system account precedence is correct
-	require_True(t, opts.SystemAccount == "SYSACC")
+	require_Equal(t, opts.SystemAccount, "SYSACC")
 
 }
 

@@ -1200,16 +1200,16 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 				if token, ok := t.(token); ok {
 					if v, ok := token.Value().(string); ok {
 						opFiles = append(opFiles, v)
-						continue
 					} else {
 						err := &configErr{tk, fmt.Sprintf("error parsing operators: unsupported type %T where string is expected", token)}
 						*errors = append(*errors, err)
+						break
 					}
 				} else {
 					err := &configErr{tk, fmt.Sprintf("error parsing operators: unsupported type %T", t)}
 					*errors = append(*errors, err)
+					break
 				}
-				break
 			}
 		default:
 			err := &configErr{tk, fmt.Sprintf("error parsing operators: unsupported type %T", v)}
