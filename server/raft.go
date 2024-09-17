@@ -3180,6 +3180,7 @@ func (n *raft) truncateWAL(term, index uint64) {
 
 	if term == 0 && index == 0 {
 		n.warn("Resetting WAL state")
+		panic("WAL was reset")
 	}
 
 	defer func() {
