@@ -3687,10 +3687,10 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		a.mu.Lock()
 		previous := ajs.nrgAccount
 		switch tokens := strings.SplitN(ac.ClusterTraffic, ":", 2); tokens[0] {
-		case "system":
-			a.js.nrgAccount = _EMPTY_
+		case "system", _EMPTY_:
+			ajs.nrgAccount = _EMPTY_
 		case "owner":
-			a.js.nrgAccount = a.Name
+			ajs.nrgAccount = a.Name
 		default:
 			s.Errorf("Account claim for %q has invalid value %q for cluster traffic account", a.Name, ac.ClusterTraffic)
 		}
