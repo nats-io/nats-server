@@ -1801,67 +1801,6 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 	}
 }
 
-// adjustAccounting will be called when a stream state was only partially accounted for
-// within a message block, e.g. additional records were added after the stream state.
-// Lock should be held.
-func (fs *fileStore) adjustAccounting(mb, nmb *msgBlock) {
-	nmb.mu.Lock()
-	defer nmb.mu.Unlock()
-
-	// First make sure the new block is loaded.
-	if nmb.cacheNotLoaded() {
-		nmb.loadMsgsWithLock()
-	}
-	nmb.ensurePerSubjectInfoLoaded()
-
-	var smv StoreMsg
-
-	// Need to walk previous messages and undo psim stats.
-	// We already undid msgs and bytes accounting.
-	for seq, lseq := atomic.LoadUint64(&mb.first.seq), atomic.LoadUint64(&mb.last.seq); seq <= lseq; seq++ {
-		// Lookup the message. If an error will be deleted, so can skip.
-		sm, err := nmb.cacheLookup(seq, &smv)
-		if err != nil {
-			continue
-		}
-		if len(sm.subj) > 0 && fs.psim != nil {
-			if info, ok := fs.psim.Find(stringToBytes(sm.subj)); ok {
-				info.total--
-			}
-		}
-	}
-
-	// Walk only new messages and update accounting at fs level. Any messages that should have
-	// triggered limits exceeded will be handled after the recovery and prior to the stream
-	// being available to the system.
-	for seq, lseq := atomic.LoadUint64(&mb.last.seq)+1, atomic.LoadUint64(&nmb.last.seq); seq <= lseq; seq++ {
-		// Lookup the message. If an error will be deleted, so can skip.
-		sm, err := nmb.cacheLookup(seq, &smv)
-		if err != nil {
-			continue
-		}
-		// Since we found it we just need to adjust fs totals and psim.
-		fs.state.Msgs++
-		fs.state.Bytes += fileStoreMsgSize(sm.subj, sm.hdr, sm.msg)
-	}
-
-	// Now check to see if we had a higher first for the recovered state mb vs nmb.
-	if atomic.LoadUint64(&nmb.first.seq) < atomic.LoadUint64(&mb.first.seq) {
-		// Now set first for nmb.
-		atomic.StoreUint64(&nmb.first.seq, atomic.LoadUint64(&mb.first.seq))
-	}
-
-	// Update top level accounting.
-	if fseq := atomic.LoadUint64(&nmb.first.seq); fs.state.FirstSeq == 0 || fseq < fs.state.FirstSeq {
-		fs.state.FirstSeq = fseq
-		fs.state.FirstTime = time.Unix(0, nmb.first.ts).UTC()
-	}
-	if lseq := atomic.LoadUint64(&nmb.last.seq); lseq > fs.state.LastSeq {
-		fs.state.LastSeq = lseq
-		fs.state.LastTime = time.Unix(0, nmb.last.ts).UTC()
-	}
-}
-
 // Grabs last checksum for the named block file.
 // Takes into account encryption etc.
 func (mb *msgBlock) lastChecksum() []byte {
