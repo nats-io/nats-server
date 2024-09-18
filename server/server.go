@@ -3506,6 +3506,20 @@ func tlsVersion(ver uint16) string {
 	return fmt.Sprintf("Unknown [0x%x]", ver)
 }
 
+func tlsVersionFromString(ver string) (uint16, error) {
+	switch ver {
+	case "1.0":
+		return tls.VersionTLS10, nil
+	case "1.1":
+		return tls.VersionTLS11, nil
+	case "1.2":
+		return tls.VersionTLS12, nil
+	case "1.3":
+		return tls.VersionTLS13, nil
+	}
+	return 0, fmt.Errorf("Unknown version: %v", ver)
+}
+
 // We use hex here so we don't need multiple versions
 func tlsCipher(cs uint16) string {
 	name, present := cipherMapByID[cs]
