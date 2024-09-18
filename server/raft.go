@@ -1724,6 +1724,7 @@ func (n *raft) Delete() {
 
 func (n *raft) shutdown(shouldDelete bool) {
 	n.Lock()
+	n.debug("shutdown initiated, delete log? %s", shouldDelete)
 
 	// Returned swap value is the previous state. It looks counter-intuitive
 	// to do this atomic operation with the lock held, but we have to do so in
