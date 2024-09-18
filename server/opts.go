@@ -675,6 +675,7 @@ type TLSConfigOpts struct {
 	CertMatch         string
 	OCSPPeerConfig    *certidp.OCSPPeerConfig
 	Certificates      []*TLSCertPairOpt
+	MinVersion        uint16
 }
 
 // TLSCertPairOpt are the paths to a certificate and private key.
@@ -4230,6 +4231,24 @@ func parseCurvePreferences(curveName string) (tls.CurveID, error) {
 	return curve, nil
 }
 
+func parseTLSVersion(v any) (uint16, error) {
+	var tlsVersionNumber uint16
+	switch v := v.(type) {
+	case string:
+		n, err := tlsVersionFromString(v)
+		if err != nil {
+			return 0, err
+		}
+		tlsVersionNumber = n
+	default:
+		return 0, fmt.Errorf("'min_version' wrong type: %v", v)
+	}
+	if tlsVersionNumber < tls.VersionTLS12 {
+		return 0, fmt.Errorf("unsupported TLS version: %s", tls.VersionName(tlsVersionNumber))
+	}
+	return tlsVersionNumber, nil
+}
+
 // Helper function to parse TLS configs.
 func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 	var (
@@ -4473,6 +4492,12 @@ func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 				}
 				tc.Certificates[i] = certPair
 			}
+		case "min_version":
+			minVersion, err := parseTLSVersion(mv)
+			if err != nil {
+				return nil, &configErr{tk, fmt.Sprintf("error parsing tls config: %v", err)}
+			}
+			tc.MinVersion = minVersion
 		default:
 			return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, unknown field %q", mk)}
 		}
@@ -4823,6 +4848,13 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 			return nil, fmt.Errorf("failed to parse root ca certificate")
 		}
 		config.ClientCAs = pool
+	}
+	// Allow setting TLS minimum version.
+	if tc.MinVersion > 0 {
+		if tc.MinVersion < tls.VersionTLS12 {
+			return nil, fmt.Errorf("unsupported minimum TLS version: %s", tls.VersionName(tc.MinVersion))
+		}
+		config.MinVersion = tc.MinVersion
 	}
 
 	return &config, nil

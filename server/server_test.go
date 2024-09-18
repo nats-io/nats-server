@@ -203,7 +203,102 @@ func TestTLSVersions(t *testing.T) {
 	}
 }
 
-func TestTlsCipher(t *testing.T) {
+func TestTLSMinVersionConfig(t *testing.T) {
+	tmpl := `
+		listen: "127.0.0.1:-1"
+		tls {
+			cert_file: 	"../test/configs/certs/server-cert.pem"
+			key_file:  	"../test/configs/certs/server-key.pem"
+			timeout: 	1
+			min_version: 	%s
+		}
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, `"1.3"`)))
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	connect := func(t *testing.T, tlsConf *tls.Config, expectedErr error) {
+		t.Helper()
+		opts := []nats.Option{}
+		if tlsConf != nil {
+			opts = append(opts, nats.Secure(tlsConf))
+		}
+		opts = append(opts, nats.RootCAs("../test/configs/certs/ca.pem"))
+		nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", o.Port), opts...)
+		if expectedErr == nil {
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+		} else if err == nil || err.Error() != expectedErr.Error() {
+			nc.Close()
+			t.Fatalf("Expected error %v, got: %v", expectedErr, err)
+		}
+	}
+
+	// Cannot connect with client requiring a lower minimum TLS Version.
+	connect(t, &tls.Config{
+		MaxVersion: tls.VersionTLS12,
+	}, errors.New(`remote error: tls: protocol version not supported`))
+
+	// Should connect since matching minimum TLS version.
+	connect(t, &tls.Config{
+		MinVersion: tls.VersionTLS13,
+	}, nil)
+
+	// Reloading with invalid values should fail.
+	if err := os.WriteFile(conf, []byte(fmt.Sprintf(tmpl, `"1.0"`)), 0666); err != nil {
+		t.Fatalf("Error creating config file: %v", err)
+	}
+	if err := s.Reload(); err == nil {
+		t.Fatalf("Expected reload to fail: %v", err)
+	}
+
+	// Reloading with original values and no changes should be ok.
+	if err := os.WriteFile(conf, []byte(fmt.Sprintf(tmpl, `"1.3"`)), 0666); err != nil {
+		t.Fatalf("Error creating config file: %v", err)
+	}
+	if err := s.Reload(); err != nil {
+		t.Fatalf("Unexpected error reloading TLS version: %v", err)
+	}
+
+	// Reloading with a new minimum lower version.
+	if err := os.WriteFile(conf, []byte(fmt.Sprintf(tmpl, `"1.2"`)), 0666); err != nil {
+		t.Fatalf("Error creating config file: %v", err)
+	}
+	if err := s.Reload(); err != nil {
+		t.Fatalf("Unexpected error reloading: %v", err)
+	}
+
+	// Should connect since now matching minimum TLS version.
+	connect(t, &tls.Config{
+		MaxVersion: tls.VersionTLS12,
+	}, nil)
+	connect(t, &tls.Config{
+		MinVersion: tls.VersionTLS13,
+	}, nil)
+
+	// Setting unsupported TLS versions
+	if err := os.WriteFile(conf, []byte(fmt.Sprintf(tmpl, `"1.4"`)), 0666); err != nil {
+		t.Fatalf("Error creating config file: %v", err)
+	}
+	if err := s.Reload(); err == nil || !strings.Contains(err.Error(), `Unknown version: 1.4`) {
+		t.Fatalf("Unexpected error reloading: %v", err)
+	}
+
+	tc := &TLSConfigOpts{
+		CertFile:   "../test/configs/certs/server-cert.pem",
+		KeyFile:    "../test/configs/certs/server-key.pem",
+		CaFile:     "../test/configs/certs/ca.pem",
+		Timeout:    4.0,
+		MinVersion: tls.VersionTLS11,
+	}
+	_, err := GenTLSConfig(tc)
+	if err == nil || err.Error() != `unsupported minimum TLS version: TLS 1.1` {
+		t.Fatalf("Expected error generating TLS config: %v", err)
+	}
+}
+
+func TestTLSCipher(t *testing.T) {
 	if strings.Compare(tlsCipher(0x0005), "TLS_RSA_WITH_RC4_128_SHA") != 0 {
 		t.Fatalf("Invalid tls cipher")
 	}
