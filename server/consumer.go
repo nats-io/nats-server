@@ -469,9 +469,13 @@ type consumer struct {
 	sigSubs []*subscription
 
 	// Priority groups
-	// currentNuid is the current nuid for the pinned consumer.
-	currentNuid string
-	/// pinnedTtl is the remaining time before the current NUID expires.
+	// Details described in ADR-42.
+
+	// currentPinId is the current nuid for the pinned consumer.
+	// If the  Consumer is running in `PriorityPinnedClient` mode, server will
+	// pick up a new nuid and assign it to first pending pull request.
+	currentPinId string
+	/// pinnedTtl is the remaining time before the current PinId expires.
 	pinnedTtl *time.Timer
 }
 
@@ -1593,7 +1597,7 @@ func (o *consumer) sendPinnedAdvisoryLocked(group string) {
 		Stream:         o.stream,
 		Consumer:       o.name,
 		Domain:         o.srv.getOpts().JetStreamDomain,
-		PinnedClientId: o.currentNuid,
+		PinnedClientId: o.currentPinId,
 		Group:          group,
 	}
 
@@ -2860,7 +2864,7 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 	// TODO(jrm): when we introduce supporting many priority groups, we need to update assigning `o.currentNuid` for each group.
 	pinnedIds := make(map[string]string)
 	if len(o.cfg.PriorityGroups) > 0 {
-		pinnedIds[o.cfg.PriorityGroups[0]] = o.currentNuid
+		pinnedIds[o.cfg.PriorityGroups[0]] = o.currentPinId
 	}
 
 	cfg := o.cfg
@@ -3489,7 +3493,8 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 		return nil
 	}
 
-	needNewPin := o.currentNuid == _EMPTY_ && o.cfg.PriorityPolicy == PriorityPinnedClient
+	// Check if server needs to assign a new pin id.
+	needNewPin := o.currentPinId == _EMPTY_ && o.cfg.PriorityPolicy == PriorityPinnedClient
 	// As long as we support only one priority group, we can capture  that group here and reuse it.
 	priorityGroup := _EMPTY_
 	if len(o.cfg.PriorityGroups) > 0 {
@@ -3527,11 +3532,11 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 
 		if wr.expires.IsZero() || time.Now().Before(wr.expires) {
 			if needNewPin {
-				o.currentNuid = nuid.Next()
-				wr.priorityGroup.Id = o.currentNuid
-			} else if o.currentNuid != _EMPTY_ {
+				o.currentPinId = nuid.Next()
+				wr.priorityGroup.Id = o.currentPinId
+			} else if o.currentPinId != _EMPTY_ {
 				// Check if we have a match on the currentNuid
-				if wr.priorityGroup != nil && wr.priorityGroup.Id == o.currentNuid {
+				if wr.priorityGroup != nil && wr.priorityGroup.Id == o.currentPinId {
 					// If we have a match, we do nothing here and will deliver the message later down the code path.
 				} else if wr.priorityGroup.Id == _EMPTY_ {
 					o.waiting.cycle()
@@ -3604,7 +3609,7 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 		}
 		wr.recycle()
 		// We did not find any wr, so let's reset the newly set pin.
-		o.currentNuid = _EMPTY_
+		o.currentPinId = _EMPTY_
 	}
 
 	return nil
@@ -3730,17 +3735,17 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 			return
 		}
 
-		if priorityGroup.Id != "" && priorityGroup.Id != o.currentNuid && o.currentNuid != _EMPTY_ {
+		if priorityGroup.Id != "" && priorityGroup.Id != o.currentPinId && o.currentPinId != _EMPTY_ {
 			sendErr(423, "Nats-Pin-Id mismatch")
 			return
 		} else {
-			if o.pinnedTtl != nil && priorityGroup.Id == o.currentNuid && o.currentNuid != _EMPTY_ {
+			if o.pinnedTtl != nil && priorityGroup.Id == o.currentPinId && o.currentPinId != _EMPTY_ {
 
 				o.pinnedTtl.Reset(o.cfg.PinnedTTL)
 			} else if o.pinnedTtl == nil {
 				o.pinnedTtl = time.AfterFunc(o.cfg.PinnedTTL, func() {
 					o.mu.Lock()
-					o.currentNuid = _EMPTY_
+					o.currentPinId = _EMPTY_
 					o.sendUnpinnedAdvisoryLocked(priorityGroup.Group, "timeout")
 					o.mu.Unlock()
 					o.signalNewMessages()
@@ -4431,10 +4436,10 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			if o.cfg.PriorityPolicy == PriorityPinnedClient {
 				// FIXME(jrm): Can we make this prettier?
 				if len(pmsg.hdr) == 0 {
-					pmsg.hdr = genHeader(pmsg.hdr, JSPullRequestNatsPinId, o.currentNuid)
+					pmsg.hdr = genHeader(pmsg.hdr, JSPullRequestNatsPinId, o.currentPinId)
 					pmsg.buf = append(pmsg.hdr, pmsg.msg...)
 				} else {
-					pmsg.hdr = genHeader(pmsg.hdr, JSPullRequestNatsPinId, o.currentNuid)
+					pmsg.hdr = genHeader(pmsg.hdr, JSPullRequestNatsPinId, o.currentPinId)
 					bufLen := len(pmsg.hdr) + len(pmsg.msg)
 					pmsg.buf = make([]byte, bufLen)
 					pmsg.buf = append(pmsg.hdr, pmsg.msg...)
