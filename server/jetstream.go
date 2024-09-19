@@ -105,6 +105,7 @@ type jetStream struct {
 	storeReserved int64
 	memUsed       int64
 	storeUsed     int64
+	queueLimit    int64
 	clustered     int32
 	mu            sync.RWMutex
 	srv           *Server
@@ -376,6 +377,9 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 		s.gcbOutMax = defaultMaxTotalCatchupOutBytes
 	}
 	s.gcbMu.Unlock()
+
+	// TODO: Not currently reloadable.
+	atomic.StoreInt64(&js.queueLimit, s.getOpts().JetStreamRequestQueueLimit)
 
 	s.js.Store(js)
 

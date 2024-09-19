@@ -283,3 +283,14 @@ type JSServerRemovedAdvisory struct {
 	Cluster  string `json:"cluster"`
 	Domain   string `json:"domain,omitempty"`
 }
+
+// JSAPILimitReachedAdvisoryType is sent when the JS API request queue limit is reached.
+const JSAPILimitReachedAdvisoryType = "io.nats.jetstream.advisory.v1.api_limit_reached"
+
+// JSAPILimitReachedAdvisory is a advisory published when JetStream hits the queue length limit.
+type JSAPILimitReachedAdvisory struct {
+	TypedEvent
+	Server  string `json:"server"`           // Server that created the event, name or ID
+	Domain  string `json:"domain,omitempty"` // Domain the server belongs to
+	Dropped int64  `json:"dropped"`          // How many messages did we drop from the queue
+}
