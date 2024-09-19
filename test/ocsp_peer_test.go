@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -3077,7 +3076,7 @@ func TestOCSPMonitoringPort(t *testing.T) {
 			}
 			tlsConfig.Certificates = []tls.Certificate{cert}
 			caCertFile := "./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
-			caCert, err := ioutil.ReadFile(caCertFile)
+			caCert, err := os.ReadFile(caCertFile)
 			if err != nil {
 				t.Fatal(err)
 			}
