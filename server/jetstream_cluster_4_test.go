@@ -3832,3 +3832,74 @@ func TestJetStreamClusterAckDeleted(t *testing.T) {
 		)
 	}
 }
+
+func TestJetStreamClusterAPILimitDefault(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	for _, s := range c.servers {
+		s.optsMu.RLock()
+		lim := s.opts.JetStreamRequestQueueLimit
+		s.optsMu.RUnlock()
+
+		require_Equal(t, lim, JSDefaultRequestQueueLimit)
+		require_Equal(t, atomic.LoadInt64(&s.getJetStream().queueLimit), JSDefaultRequestQueueLimit)
+	}
+}
+
+func TestJetStreamClusterAPILimitAdvisory(t *testing.T) {
+	// Hit the limit straight away.
+	const queueLimit = 1
+
+	config := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {
+			max_mem_store: 256MB
+			max_file_store: 2GB
+			store_dir: '%s'
+			request_queue_limit: ` + fmt.Sprintf("%d", queueLimit) + `
+		}
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+		accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+    `
+	c := createJetStreamClusterWithTemplate(t, config, "R3S", 3)
+	defer c.shutdown()
+
+	c.waitOnLeader()
+	s := c.randomNonLeader()
+
+	for _, s := range c.servers {
+		lim := atomic.LoadInt64(&s.getJetStream().queueLimit)
+		require_Equal(t, lim, queueLimit)
+	}
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	snc, _ := jsClientConnect(t, c.randomServer(), nats.UserInfo("admin", "s3cr3t!"))
+	defer snc.Close()
+
+	sub, err := snc.SubscribeSync(JSAdvisoryAPILimitReached)
+	require_NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+
+	require_NoError(t, nc.PublishMsg(&nats.Msg{
+		Subject: fmt.Sprintf(JSApiConsumerListT, "TEST"),
+		Reply:   nc.NewInbox(),
+	}))
+
+	// Wait for the advisory to come in.
+	msg, err := sub.NextMsgWithContext(ctx)
+	require_NoError(t, err)
+	var advisory JSAPILimitReachedAdvisory
+	require_NoError(t, json.Unmarshal(msg.Data, &advisory))
+	require_Equal(t, advisory.Domain, _EMPTY_)     // No JetStream domain was set.
+	require_Equal(t, advisory.Dropped, queueLimit) // Configured queue limit.
+}
