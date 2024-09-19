@@ -2982,8 +2982,10 @@ func (s *Server) startMonitoring(secure bool) error {
 		}
 		hp = net.JoinHostPort(opts.HTTPHost, strconv.Itoa(port))
 		config := opts.TLSConfig.Clone()
-		config.GetConfigForClient = s.getMonitoringTLSConfig
-		config.ClientAuth = tls.NoClientCert
+		if !s.ocspPeerVerify {
+			config.GetConfigForClient = s.getMonitoringTLSConfig
+			config.ClientAuth = tls.NoClientCert
+		}
 		httpListener, err = tls.Listen("tcp", hp, config)
 
 	} else {
