@@ -16,6 +16,7 @@ package test
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2945,6 +2946,156 @@ func TestOCSPPeerNextUpdateUnset(t *testing.T) {
 			}
 			if v.OCSPResponseCache.Misses != test.expectedMisses || v.OCSPResponseCache.Responses != 2 {
 				t.Errorf("Expected cache misses to be %d and cache items to be 2, got %d and %d", test.expectedMisses, v.OCSPResponseCache.Misses, v.OCSPResponseCache.Responses)
+			}
+		})
+	}
+}
+
+func TestOCSPMonitoringPort(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rootCAResponder := NewOCSPResponderRootCA(t)
+	rootCAResponderURL := fmt.Sprintf("http://%s", rootCAResponder.Addr)
+	defer rootCAResponder.Shutdown(ctx)
+	SetOCSPStatus(t, rootCAResponderURL, "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem", ocsp.Good)
+
+	respCertPEM := "configs/certs/ocsp_peer/mini-ca/ocsp1/ocsp1_bundle.pem"
+	respKeyPEM := "configs/certs/ocsp_peer/mini-ca/ocsp1/private/ocsp1_keypair.pem"
+	issuerCertPEM := "configs/certs/ocsp_peer/mini-ca/intermediate1/intermediate1_cert.pem"
+	intermediateCA1Responder := NewOCSPResponderBase(t, issuerCertPEM, respCertPEM, respKeyPEM, true, "127.0.0.1:18888", 0, "")
+	intermediateCA1ResponderURL := fmt.Sprintf("http://%s", intermediateCA1Responder.Addr)
+	defer intermediateCA1Responder.Shutdown(ctx)
+	SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/client1/UserA1_cert.pem", ocsp.Good)
+	SetOCSPStatus(t, intermediateCA1ResponderURL, "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem", ocsp.Good)
+
+	for _, test := range []struct {
+		name   string
+		config string
+		opts   []nats.Option
+		err    error
+		rerr   error
+	}{
+		{
+			"https with ocsp_peer",
+			`
+				net: 127.0.0.1
+				port: -1
+				https: -1
+				# Short form configuration
+				ocsp_cache: true
+                                store_dir = %s
+				tls: {
+					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+					timeout: 5
+					verify: true
+					# Long form configuration
+					ocsp_peer: {
+						verify: true
+						ca_timeout: 5
+						allowed_clockskew: 30
+					}
+				}
+			`,
+			[]nats.Option{
+				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
+				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
+				nats.ErrorHandler(noOpErrHandler),
+			},
+			nil,
+			nil,
+		},
+		{
+			"https with just ocsp",
+			`
+				net: 127.0.0.1
+				port: -1
+				https: -1
+				ocsp { 
+                                  mode = always
+                                  url = http://127.0.0.1:18888
+                                }
+                                store_dir = %s
+                                
+				tls: {
+					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
+					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"
+					ca_file: "configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+					timeout: 5
+					verify: true
+				}
+			`,
+			[]nats.Option{
+				nats.ClientCert("./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem", "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"),
+				nats.RootCAs("./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"),
+				nats.ErrorHandler(noOpErrHandler),
+			},
+			nil,
+			nil,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			deleteLocalStore(t, "")
+			content := test.config
+			conf := createConfFile(t, []byte(fmt.Sprintf(content, t.TempDir())))
+			s, opts := RunServerWithConfig(conf)
+			defer s.Shutdown()
+			nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port), test.opts...)
+			if test.err == nil && err != nil {
+				t.Errorf("Expected to connect, got %v", err)
+			} else if test.err != nil && err == nil {
+				t.Errorf("Expected error on connect")
+			} else if test.err != nil && err != nil {
+				// Error on connect was expected
+				if test.err.Error() != err.Error() {
+					t.Errorf("Expected error %s, got: %s", test.err, err)
+				}
+				return
+			}
+			defer nc.Close()
+			nc.Subscribe("ping", func(m *nats.Msg) {
+				m.Respond([]byte("pong"))
+			})
+			nc.Flush()
+			_, err = nc.Request("ping", []byte("ping"), 250*time.Millisecond)
+			if test.rerr != nil && err == nil {
+				t.Errorf("Expected error getting response")
+			} else if test.rerr == nil && err != nil {
+				t.Errorf("Expected response")
+			}
+
+			// Make request to the HTTPS port using the client cert.
+			tlsConfig := &tls.Config{}
+			clientCertFile := "./configs/certs/ocsp_peer/mini-ca/client1/UserA1_bundle.pem"
+			clientKeyFile := "./configs/certs/ocsp_peer/mini-ca/client1/private/UserA1_keypair.pem"
+			cert, err := tls.LoadX509KeyPair(clientCertFile, clientKeyFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tlsConfig.Certificates = []tls.Certificate{cert}
+			caCertFile := "./configs/certs/ocsp_peer/mini-ca/root/root_cert.pem"
+			caCert, err := os.ReadFile(caCertFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			caCertPool := x509.NewCertPool()
+			caCertPool.AppendCertsFromPEM(caCert)
+			tlsConfig.RootCAs = caCertPool
+
+			hc := &http.Client{
+				Transport: &http.Transport{
+					TLSClientConfig: tlsConfig,
+				},
+			}
+			resp, err := hc.Get("https://" + s.MonitorAddr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != 200 {
+				t.Errorf("Unexpected status: %v", resp.Status)
 			}
 		})
 	}
