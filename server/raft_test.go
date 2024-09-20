@@ -444,10 +444,10 @@ func TestNRGUnsuccessfulVoteRequestDoesntResetElectionTimer(t *testing.T) {
 	// This test relies on nodes not hitting their election timer too often,
 	// otherwise the step later where we capture the election time before and
 	// after the failed vote request will flake.
-	origMinElectionTimeout, origMaxElectionTimeout := minElectionTimeout, maxElectionTimeout
-	minElectionTimeout, maxElectionTimeout = time.Second*5, time.Second*10
+	origMinTimeout, origMaxTimeout, origHBInterval := minElectionTimeout, maxElectionTimeout, hbInterval
+	minElectionTimeout, maxElectionTimeout, hbInterval = time.Second*5, time.Second*10, time.Second*10
 	defer func() {
-		minElectionTimeout, maxElectionTimeout = origMinElectionTimeout, origMaxElectionTimeout
+		minElectionTimeout, maxElectionTimeout, hbInterval = origMinTimeout, origMaxTimeout, origHBInterval
 	}()
 
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
@@ -482,6 +482,8 @@ func TestNRGUnsuccessfulVoteRequestDoesntResetElectionTimer(t *testing.T) {
 	// time so that it guarantees that both the leader and the follower aren't
 	// operating at the time we take the etlr snapshots.
 	rg.lockAll()
+	leader.resetElect(maxElectionTimeout)
+	follower.resetElect(maxElectionTimeout)
 	leaderOriginal := leader.etlr
 	followerOriginal := follower.etlr
 	vr := &voteRequest{
@@ -507,9 +509,11 @@ func TestNRGUnsuccessfulVoteRequestDoesntResetElectionTimer(t *testing.T) {
 	// Neither the leader nor our chosen follower should have updated their
 	// election timer as a result of this.
 	rg.lockAll()
-	defer rg.unlockAll()
-	require_True(t, leaderOriginal.Equal(leader.etlr))
-	require_True(t, followerOriginal.Equal(follower.etlr))
+	leaderEqual := leaderOriginal.Equal(leader.etlr)
+	followerEqual := followerOriginal.Equal(follower.etlr)
+	rg.unlockAll()
+	require_True(t, leaderEqual)
+	require_True(t, followerEqual)
 }
 
 func TestNRGInvalidTAVDoesntPanic(t *testing.T) {
