@@ -67,12 +67,13 @@ func TestDefaultOptions(t *testing.T) {
 		LeafNode: LeafNodeOpts{
 			ReconnectInterval: DEFAULT_LEAF_NODE_RECONNECT,
 		},
-		ConnectErrorReports:   DEFAULT_CONNECT_ERROR_REPORTS,
-		ReconnectErrorReports: DEFAULT_RECONNECT_ERROR_REPORTS,
-		MaxTracedMsgLen:       0,
-		JetStreamMaxMemory:    -1,
-		JetStreamMaxStore:     -1,
-		SyncInterval:          2 * time.Minute,
+		ConnectErrorReports:        DEFAULT_CONNECT_ERROR_REPORTS,
+		ReconnectErrorReports:      DEFAULT_RECONNECT_ERROR_REPORTS,
+		MaxTracedMsgLen:            0,
+		JetStreamMaxMemory:         -1,
+		JetStreamMaxStore:          -1,
+		SyncInterval:               2 * time.Minute,
+		JetStreamRequestQueueLimit: JSDefaultRequestQueueLimit,
 	}
 
 	opts := &Options{}

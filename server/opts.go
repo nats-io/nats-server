@@ -251,86 +251,87 @@ type AuthCallout struct {
 // NOTE: This structure is no longer used for monitoring endpoints
 // and json tags are deprecated and may be removed in the future.
 type Options struct {
-	ConfigFile            string        `json:"-"`
-	ServerName            string        `json:"server_name"`
-	Host                  string        `json:"addr"`
-	Port                  int           `json:"port"`
-	DontListen            bool          `json:"dont_listen"`
-	ClientAdvertise       string        `json:"-"`
-	Trace                 bool          `json:"-"`
-	Debug                 bool          `json:"-"`
-	TraceVerbose          bool          `json:"-"`
-	NoLog                 bool          `json:"-"`
-	NoSigs                bool          `json:"-"`
-	NoSublistCache        bool          `json:"-"`
-	NoHeaderSupport       bool          `json:"-"`
-	DisableShortFirstPing bool          `json:"-"`
-	Logtime               bool          `json:"-"`
-	LogtimeUTC            bool          `json:"-"`
-	MaxConn               int           `json:"max_connections"`
-	MaxSubs               int           `json:"max_subscriptions,omitempty"`
-	MaxSubTokens          uint8         `json:"-"`
-	Nkeys                 []*NkeyUser   `json:"-"`
-	Users                 []*User       `json:"-"`
-	Accounts              []*Account    `json:"-"`
-	NoAuthUser            string        `json:"-"`
-	SystemAccount         string        `json:"-"`
-	NoSystemAccount       bool          `json:"-"`
-	Username              string        `json:"-"`
-	Password              string        `json:"-"`
-	Authorization         string        `json:"-"`
-	AuthCallout           *AuthCallout  `json:"-"`
-	PingInterval          time.Duration `json:"ping_interval"`
-	MaxPingsOut           int           `json:"ping_max"`
-	HTTPHost              string        `json:"http_host"`
-	HTTPPort              int           `json:"http_port"`
-	HTTPBasePath          string        `json:"http_base_path"`
-	HTTPSPort             int           `json:"https_port"`
-	AuthTimeout           float64       `json:"auth_timeout"`
-	MaxControlLine        int32         `json:"max_control_line"`
-	MaxPayload            int32         `json:"max_payload"`
-	MaxPending            int64         `json:"max_pending"`
-	Cluster               ClusterOpts   `json:"cluster,omitempty"`
-	Gateway               GatewayOpts   `json:"gateway,omitempty"`
-	LeafNode              LeafNodeOpts  `json:"leaf,omitempty"`
-	JetStream             bool          `json:"jetstream"`
-	JetStreamMaxMemory    int64         `json:"-"`
-	JetStreamMaxStore     int64         `json:"-"`
-	JetStreamDomain       string        `json:"-"`
-	JetStreamExtHint      string        `json:"-"`
-	JetStreamKey          string        `json:"-"`
-	JetStreamOldKey       string        `json:"-"`
-	JetStreamCipher       StoreCipher   `json:"-"`
-	JetStreamUniqueTag    string
-	JetStreamLimits       JSLimitOpts
-	JetStreamMaxCatchup   int64
-	StoreDir              string            `json:"-"`
-	SyncInterval          time.Duration     `json:"-"`
-	SyncAlways            bool              `json:"-"`
-	JsAccDefaultDomain    map[string]string `json:"-"` // account to domain name mapping
-	Websocket             WebsocketOpts     `json:"-"`
-	MQTT                  MQTTOpts          `json:"-"`
-	ProfPort              int               `json:"-"`
-	ProfBlockRate         int               `json:"-"`
-	PidFile               string            `json:"-"`
-	PortsFileDir          string            `json:"-"`
-	LogFile               string            `json:"-"`
-	LogSizeLimit          int64             `json:"-"`
-	LogMaxFiles           int64             `json:"-"`
-	Syslog                bool              `json:"-"`
-	RemoteSyslog          string            `json:"-"`
-	Routes                []*url.URL        `json:"-"`
-	RoutesStr             string            `json:"-"`
-	TLSTimeout            float64           `json:"tls_timeout"`
-	TLS                   bool              `json:"-"`
-	TLSVerify             bool              `json:"-"`
-	TLSMap                bool              `json:"-"`
-	TLSCert               string            `json:"-"`
-	TLSKey                string            `json:"-"`
-	TLSCaCert             string            `json:"-"`
-	TLSConfig             *tls.Config       `json:"-"`
-	TLSPinnedCerts        PinnedCertSet     `json:"-"`
-	TLSRateLimit          int64             `json:"-"`
+	ConfigFile                 string        `json:"-"`
+	ServerName                 string        `json:"server_name"`
+	Host                       string        `json:"addr"`
+	Port                       int           `json:"port"`
+	DontListen                 bool          `json:"dont_listen"`
+	ClientAdvertise            string        `json:"-"`
+	Trace                      bool          `json:"-"`
+	Debug                      bool          `json:"-"`
+	TraceVerbose               bool          `json:"-"`
+	NoLog                      bool          `json:"-"`
+	NoSigs                     bool          `json:"-"`
+	NoSublistCache             bool          `json:"-"`
+	NoHeaderSupport            bool          `json:"-"`
+	DisableShortFirstPing      bool          `json:"-"`
+	Logtime                    bool          `json:"-"`
+	LogtimeUTC                 bool          `json:"-"`
+	MaxConn                    int           `json:"max_connections"`
+	MaxSubs                    int           `json:"max_subscriptions,omitempty"`
+	MaxSubTokens               uint8         `json:"-"`
+	Nkeys                      []*NkeyUser   `json:"-"`
+	Users                      []*User       `json:"-"`
+	Accounts                   []*Account    `json:"-"`
+	NoAuthUser                 string        `json:"-"`
+	SystemAccount              string        `json:"-"`
+	NoSystemAccount            bool          `json:"-"`
+	Username                   string        `json:"-"`
+	Password                   string        `json:"-"`
+	Authorization              string        `json:"-"`
+	AuthCallout                *AuthCallout  `json:"-"`
+	PingInterval               time.Duration `json:"ping_interval"`
+	MaxPingsOut                int           `json:"ping_max"`
+	HTTPHost                   string        `json:"http_host"`
+	HTTPPort                   int           `json:"http_port"`
+	HTTPBasePath               string        `json:"http_base_path"`
+	HTTPSPort                  int           `json:"https_port"`
+	AuthTimeout                float64       `json:"auth_timeout"`
+	MaxControlLine             int32         `json:"max_control_line"`
+	MaxPayload                 int32         `json:"max_payload"`
+	MaxPending                 int64         `json:"max_pending"`
+	Cluster                    ClusterOpts   `json:"cluster,omitempty"`
+	Gateway                    GatewayOpts   `json:"gateway,omitempty"`
+	LeafNode                   LeafNodeOpts  `json:"leaf,omitempty"`
+	JetStream                  bool          `json:"jetstream"`
+	JetStreamMaxMemory         int64         `json:"-"`
+	JetStreamMaxStore          int64         `json:"-"`
+	JetStreamDomain            string        `json:"-"`
+	JetStreamExtHint           string        `json:"-"`
+	JetStreamKey               string        `json:"-"`
+	JetStreamOldKey            string        `json:"-"`
+	JetStreamCipher            StoreCipher   `json:"-"`
+	JetStreamUniqueTag         string
+	JetStreamLimits            JSLimitOpts
+	JetStreamMaxCatchup        int64
+	JetStreamRequestQueueLimit int64
+	StoreDir                   string            `json:"-"`
+	SyncInterval               time.Duration     `json:"-"`
+	SyncAlways                 bool              `json:"-"`
+	JsAccDefaultDomain         map[string]string `json:"-"` // account to domain name mapping
+	Websocket                  WebsocketOpts     `json:"-"`
+	MQTT                       MQTTOpts          `json:"-"`
+	ProfPort                   int               `json:"-"`
+	ProfBlockRate              int               `json:"-"`
+	PidFile                    string            `json:"-"`
+	PortsFileDir               string            `json:"-"`
+	LogFile                    string            `json:"-"`
+	LogSizeLimit               int64             `json:"-"`
+	LogMaxFiles                int64             `json:"-"`
+	Syslog                     bool              `json:"-"`
+	RemoteSyslog               string            `json:"-"`
+	Routes                     []*url.URL        `json:"-"`
+	RoutesStr                  string            `json:"-"`
+	TLSTimeout                 float64           `json:"tls_timeout"`
+	TLS                        bool              `json:"-"`
+	TLSVerify                  bool              `json:"-"`
+	TLSMap                     bool              `json:"-"`
+	TLSCert                    string            `json:"-"`
+	TLSKey                     string            `json:"-"`
+	TLSCaCert                  string            `json:"-"`
+	TLSConfig                  *tls.Config       `json:"-"`
+	TLSPinnedCerts             PinnedCertSet     `json:"-"`
+	TLSRateLimit               int64             `json:"-"`
 	// When set to true, the server will perform the TLS handshake before
 	// sending the INFO protocol. For clients that are not configured
 	// with a similar option, their connection will fail with some sort
@@ -675,6 +676,7 @@ type TLSConfigOpts struct {
 	CertMatch         string
 	OCSPPeerConfig    *certidp.OCSPPeerConfig
 	Certificates      []*TLSCertPairOpt
+	MinVersion        uint16
 }
 
 // TLSCertPairOpt are the paths to a certificate and private key.
@@ -2234,6 +2236,12 @@ func parseJetStream(v any, opts *Options, errors *[]error, warnings *[]error) er
 					return &configErr{tk, fmt.Sprintf("%s %s", strings.ToLower(mk), err)}
 				}
 				opts.JetStreamMaxCatchup = s
+			case "request_queue_limit":
+				lim, ok := mv.(int64)
+				if !ok {
+					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
+				}
+				opts.JetStreamRequestQueueLimit = lim
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{
@@ -4230,6 +4238,24 @@ func parseCurvePreferences(curveName string) (tls.CurveID, error) {
 	return curve, nil
 }
 
+func parseTLSVersion(v any) (uint16, error) {
+	var tlsVersionNumber uint16
+	switch v := v.(type) {
+	case string:
+		n, err := tlsVersionFromString(v)
+		if err != nil {
+			return 0, err
+		}
+		tlsVersionNumber = n
+	default:
+		return 0, fmt.Errorf("'min_version' wrong type: %v", v)
+	}
+	if tlsVersionNumber < tls.VersionTLS12 {
+		return 0, fmt.Errorf("unsupported TLS version: %s", tls.VersionName(tlsVersionNumber))
+	}
+	return tlsVersionNumber, nil
+}
+
 // Helper function to parse TLS configs.
 func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 	var (
@@ -4473,6 +4499,12 @@ func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 				}
 				tc.Certificates[i] = certPair
 			}
+		case "min_version":
+			minVersion, err := parseTLSVersion(mv)
+			if err != nil {
+				return nil, &configErr{tk, fmt.Sprintf("error parsing tls config: %v", err)}
+			}
+			tc.MinVersion = minVersion
 		default:
 			return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, unknown field %q", mk)}
 		}
@@ -4823,6 +4855,13 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 			return nil, fmt.Errorf("failed to parse root ca certificate")
 		}
 		config.ClientCAs = pool
+	}
+	// Allow setting TLS minimum version.
+	if tc.MinVersion > 0 {
+		if tc.MinVersion < tls.VersionTLS12 {
+			return nil, fmt.Errorf("unsupported minimum TLS version: %s", tls.VersionName(tc.MinVersion))
+		}
+		config.MinVersion = tc.MinVersion
 	}
 
 	return &config, nil
@@ -5192,6 +5231,9 @@ func setBaselineOptions(opts *Options) {
 	}
 	if opts.SyncInterval == 0 && !opts.syncSet {
 		opts.SyncInterval = defaultSyncInterval
+	}
+	if opts.JetStreamRequestQueueLimit <= 0 {
+		opts.JetStreamRequestQueueLimit = JSDefaultRequestQueueLimit
 	}
 }
 

@@ -1748,134 +1748,33 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 		return errPriorState
 	}
 	if matched = bytes.Equal(mb.lastChecksum(), lchk[:]); !matched {
-		// If we are tracking max msgs per subject and we are not up to date we should rebuild.
-		if fs.cfg.MaxMsgsPer > 0 {
-			fs.warn("Stream state block state outdated, will rebuild")
-			return errPriorState
-		}
-
-		// Remove the last message block since recover will add in the new one.
-		fs.removeMsgBlockFromList(mb)
-		// Reverse update of tracking state for this mb, will add new state in below.
-		mstate.Msgs -= mb.msgs
-		mstate.Bytes -= mb.bytes
-		if nmb, err := fs.recoverMsgBlock(mb.index); err != nil && !os.IsNotExist(err) {
-			fs.warn("Stream state could not recover last msg block")
-			os.Remove(fn)
-			return errCorruptState
-		} else if nmb != nil {
-			fs.adjustAccounting(mb, nmb)
-			updateTrackingState(&mstate, nmb)
-		}
+		// Detected a stale index.db, we didn't write it upon shutdown so can't rely on it being correct.
+		fs.warn("Stream state outdated, last block has additional entries, will rebuild")
+		return errPriorState
 	}
 
-	// On success double check our state.
-	checkState := func() error {
-		// We check first and last seq and number of msgs and bytes. If there is a difference,
-		// return and error so we rebuild from the message block state on disk.
-		if !trackingStatesEqual(&fs.state, &mstate) {
-			fs.warn("Stream state encountered internal inconsistency on recover")
-			os.Remove(fn)
-			return errCorruptState
-		}
-		return nil
+	// We need to see if any blocks exist after our last one even though we matched the last record exactly.
+	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
+	var dirs []os.DirEntry
+
+	<-dios
+	if f, err := os.Open(mdir); err == nil {
+		dirs, _ = f.ReadDir(-1)
+		f.Close()
 	}
+	dios <- struct{}{}
 
-	// We may need to check other blocks. Even if we matched last checksum we will see if there is another block.
-	for bi := blkIndex + 1; ; bi++ {
-		nmb, err := fs.recoverMsgBlock(bi)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return checkState()
-			}
-			os.Remove(fn)
-			fs.warn("Stream state could not recover msg block %d", bi)
-			return err
-		}
-		if nmb != nil {
-			// Update top level accounting
-			if fseq := atomic.LoadUint64(&nmb.first.seq); fs.state.FirstSeq == 0 || fseq < fs.state.FirstSeq {
-				fs.state.FirstSeq = fseq
-				if nmb.first.ts == 0 {
-					fs.state.FirstTime = time.Time{}
-				} else {
-					fs.state.FirstTime = time.Unix(0, nmb.first.ts).UTC()
-				}
-			}
-			if lseq := atomic.LoadUint64(&nmb.last.seq); lseq > fs.state.LastSeq {
-				fs.state.LastSeq = lseq
-				if mb.last.ts == 0 {
-					fs.state.LastTime = time.Time{}
-				} else {
-					fs.state.LastTime = time.Unix(0, nmb.last.ts).UTC()
-				}
-			}
-			fs.state.Msgs += nmb.msgs
-			fs.state.Bytes += nmb.bytes
-			updateTrackingState(&mstate, nmb)
-		}
-	}
-}
-
-// adjustAccounting will be called when a stream state was only partially accounted for
-// within a message block, e.g. additional records were added after the stream state.
-// Lock should be held.
-func (fs *fileStore) adjustAccounting(mb, nmb *msgBlock) {
-	nmb.mu.Lock()
-	defer nmb.mu.Unlock()
-
-	// First make sure the new block is loaded.
-	if nmb.cacheNotLoaded() {
-		nmb.loadMsgsWithLock()
-	}
-	nmb.ensurePerSubjectInfoLoaded()
-
-	var smv StoreMsg
-
-	// Need to walk previous messages and undo psim stats.
-	// We already undid msgs and bytes accounting.
-	for seq, lseq := atomic.LoadUint64(&mb.first.seq), atomic.LoadUint64(&mb.last.seq); seq <= lseq; seq++ {
-		// Lookup the message. If an error will be deleted, so can skip.
-		sm, err := nmb.cacheLookup(seq, &smv)
-		if err != nil {
-			continue
-		}
-		if len(sm.subj) > 0 && fs.psim != nil {
-			if info, ok := fs.psim.Find(stringToBytes(sm.subj)); ok {
-				info.total--
+	var index uint32
+	for _, fi := range dirs {
+		if n, err := fmt.Sscanf(fi.Name(), blkScan, &index); err == nil && n == 1 {
+			if index > blkIndex {
+				fs.warn("Stream state outdated, found extra blocks, will rebuild")
+				return errPriorState
 			}
 		}
 	}
 
-	// Walk only new messages and update accounting at fs level. Any messages that should have
-	// triggered limits exceeded will be handled after the recovery and prior to the stream
-	// being available to the system.
-	for seq, lseq := atomic.LoadUint64(&mb.last.seq)+1, atomic.LoadUint64(&nmb.last.seq); seq <= lseq; seq++ {
-		// Lookup the message. If an error will be deleted, so can skip.
-		sm, err := nmb.cacheLookup(seq, &smv)
-		if err != nil {
-			continue
-		}
-		// Since we found it we just need to adjust fs totals and psim.
-		fs.state.Msgs++
-		fs.state.Bytes += fileStoreMsgSize(sm.subj, sm.hdr, sm.msg)
-	}
-
-	// Now check to see if we had a higher first for the recovered state mb vs nmb.
-	if atomic.LoadUint64(&nmb.first.seq) < atomic.LoadUint64(&mb.first.seq) {
-		// Now set first for nmb.
-		atomic.StoreUint64(&nmb.first.seq, atomic.LoadUint64(&mb.first.seq))
-	}
-
-	// Update top level accounting.
-	if fseq := atomic.LoadUint64(&nmb.first.seq); fs.state.FirstSeq == 0 || fseq < fs.state.FirstSeq {
-		fs.state.FirstSeq = fseq
-		fs.state.FirstTime = time.Unix(0, nmb.first.ts).UTC()
-	}
-	if lseq := atomic.LoadUint64(&nmb.last.seq); lseq > fs.state.LastSeq {
-		fs.state.LastSeq = lseq
-		fs.state.LastTime = time.Unix(0, nmb.last.ts).UTC()
-	}
+	return nil
 }
 
 // Grabs last checksum for the named block file.
