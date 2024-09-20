@@ -1589,7 +1589,7 @@ func TestJetStreamConsumerUnpinNoMessages(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	req := JSApiConsumerGetNextRequest{Batch: 3, Expires: 60 * time.Second, PriorityGroup: PriorityGroup{
+	req := JSApiConsumerGetNextRequest{Batch: 30, Expires: 60 * time.Second, PriorityGroup: PriorityGroup{
 		Group: "A",
 	}}
 	reqb, _ := json.Marshal(req)
@@ -1606,7 +1606,9 @@ func TestJetStreamConsumerUnpinNoMessages(t *testing.T) {
 	sendStreamMsg(t, nc, "foo", "data")
 	sendStreamMsg(t, nc, "foo", "data")
 
-	_, err = replies.NextMsg(1 * time.Second)
+	msg, err := replies.NextMsg(1 * time.Second)
+	pinId := msg.Header.Get("Nats-Pin-Id")
+	require_NotEqual(t, pinId, "")
 	require_NoError(t, err)
 	_, err = replies.NextMsg(1 * time.Second)
 	require_NoError(t, err)
@@ -1630,11 +1632,18 @@ func TestJetStreamConsumerUnpinNoMessages(t *testing.T) {
 	require_True(t, unpinError == nil)
 
 	sendStreamMsg(t, nc, "foo", "data")
-	_, err = replies.NextMsg(1 * time.Second)
-	require_Error(t, err)
+	sendStreamMsg(t, nc, "foo", "data")
 
-	_, err = replies2.NextMsg(1 * time.Second)
+	// Old pinned client should get info that it is no longer pinned.
+	msg, err = replies.NextMsg(1 * time.Second)
 	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Status"), "423")
+
+	// While the new one should get the message and new pin.
+	msg, err = replies2.NextMsg(1 * time.Second)
+	require_NoError(t, err)
+	require_Equal(t, string(msg.Data), "data")
+	require_NotEqual(t, msg.Header.Get("Nats-Pin-Id"), pinId)
 }
 
 func TestJetStreamConsumerUnpin(t *testing.T) {
