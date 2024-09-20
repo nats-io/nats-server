@@ -7658,7 +7658,7 @@ func TestFileStoreRestoreIndexWithMatchButLeftOverBlocks(t *testing.T) {
 	}
 	require_Equal(t, fs.numMsgBlocks(), 2)
 
-	// We will not stop which will create the index.db file which will
+	// We will now stop which will create the index.db file which will
 	// match the last record exactly.
 	sfile := filepath.Join(sd, msgDir, streamStreamStateFile)
 	fs.Stop()
