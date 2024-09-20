@@ -7641,6 +7641,72 @@ func TestFileStoreDmapBlockRecoverAfterCompact(t *testing.T) {
 	require_Equal(t, dmap.Size(), 4)
 }
 
+func TestFileStoreRestoreIndexWithMatchButLeftOverBlocks(t *testing.T) {
+	sd := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 256},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage, MaxMsgsPer: 1})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := []byte("hello")
+
+	// 6 msgs per block.
+	// Fill the first 2 blocks.
+	for i := 1; i <= 12; i++ {
+		fs.StoreMsg(fmt.Sprintf("foo.%d", i), nil, msg)
+	}
+	require_Equal(t, fs.numMsgBlocks(), 2)
+
+	// We will now stop which will create the index.db file which will
+	// match the last record exactly.
+	sfile := filepath.Join(sd, msgDir, streamStreamStateFile)
+	fs.Stop()
+
+	// Grab it since we will put it back.
+	buf, err := os.ReadFile(sfile)
+	require_NoError(t, err)
+	require_True(t, len(buf) > 0)
+
+	// Now do an additional block, but with the MaxMsgsPer this will remove the first block,
+	// but leave the second so on recovery will match the checksum for the last msg in second block.
+
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 256},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage, MaxMsgsPer: 1})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	for i := 1; i <= 6; i++ {
+		fs.StoreMsg(fmt.Sprintf("foo.%d", i), nil, msg)
+	}
+
+	// Grab correct state, we will use it to make sure we do the right thing.
+	var state StreamState
+	fs.FastState(&state)
+
+	require_Equal(t, state.Msgs, 12)
+	require_Equal(t, state.FirstSeq, 7)
+	require_Equal(t, state.LastSeq, 18)
+	// This will be block 2 and 3.
+	require_Equal(t, fs.numMsgBlocks(), 2)
+
+	fs.Stop()
+	// Put old stream state back.
+	require_NoError(t, os.WriteFile(sfile, buf, defaultFilePerms))
+
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: sd, BlockSize: 256},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage, MaxMsgsPer: 1})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	fs.FastState(&state)
+	require_Equal(t, state.Msgs, 12)
+	require_Equal(t, state.FirstSeq, 7)
+	require_Equal(t, state.LastSeq, 18)
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Benchmarks
 ///////////////////////////////////////////////////////////////////////////
