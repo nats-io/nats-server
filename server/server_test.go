@@ -295,7 +295,7 @@ func TestTLSMinVersionConfig(t *testing.T) {
 	if err := os.WriteFile(conf, []byte(fmt.Sprintf(tmpl, `"1.4"`)), 0666); err != nil {
 		t.Fatalf("Error creating config file: %v", err)
 	}
-	if err := s.Reload(); err == nil || !strings.Contains(err.Error(), `Unknown version: 1.4`) {
+	if err := s.Reload(); err == nil || !strings.Contains(err.Error(), `unknown version: 1.4`) {
 		t.Fatalf("Unexpected error reloading: %v", err)
 	}
 
