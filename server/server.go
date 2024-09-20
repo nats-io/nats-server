@@ -3454,7 +3454,7 @@ func tlsVersionFromString(ver string) (uint16, error) {
 	case "1.3":
 		return tls.VersionTLS13, nil
 	}
-	return 0, fmt.Errorf("Unknown version: %v", ver)
+	return 0, fmt.Errorf("unknown version: %v", ver)
 }
 
 // We use hex here so we don't need multiple versions
