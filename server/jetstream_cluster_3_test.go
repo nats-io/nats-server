@@ -4900,8 +4900,9 @@ func TestJetStreamClusterAccountUsageDrifts(t *testing.T) {
 			}
 		`
 
-	_, syspub := createKey(t)
+	sysKp, syspub := createKey(t)
 	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+	sysCreds := newUser(t, sysKp)
 
 	accKp, aExpPub := createKey(t)
 	accClaim := jwt.NewAccountClaims(aExpPub)
@@ -4994,6 +4995,7 @@ func TestJetStreamClusterAccountUsageDrifts(t *testing.T) {
 	// Move our R3 stream leader and make sure acounting is correct.
 	_, err = nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "TEST1"), nil, time.Second)
 	require_NoError(t, err)
+	c.waitOnStreamLeader(aExpPub, "TEST1")
 
 	checkAccount(sir1.State.Bytes, sir3.State.Bytes)
 
@@ -5025,6 +5027,7 @@ func TestJetStreamClusterAccountUsageDrifts(t *testing.T) {
 		Replicas: 3,
 	})
 	require_NoError(t, err)
+	c.waitOnStreamLeader(aExpPub, "TEST1")
 
 	checkAccount(sir1.State.Bytes, sir3.State.Bytes)
 
@@ -5042,11 +5045,15 @@ func TestJetStreamClusterAccountUsageDrifts(t *testing.T) {
 
 	checkAccount(sir1.State.Bytes, sir3.State.Bytes)
 
+	// Need system user here to move the leader.
+	snc, _ := jsClientConnect(t, c.randomServer(), nats.UserCredentials(sysCreds))
+	defer snc.Close()
+
 	requestLeaderStepDown := func() {
 		ml := c.leader()
 		checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
 			if cml := c.leader(); cml == ml {
-				nc.Request(JSApiLeaderStepDown, nil, time.Second)
+				snc.Request(JSApiLeaderStepDown, nil, time.Second)
 				return fmt.Errorf("Metaleader has not moved yet")
 			}
 			return nil
