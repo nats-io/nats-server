@@ -14,6 +14,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"math/rand"
@@ -916,4 +917,27 @@ func TestNRGCandidateDontStepdownDueToLeaderOfPreviousTerm(t *testing.T) {
 	require_Equal(t, candidate.State(), Candidate)
 	// Check that the candidate's term is still ahead of the leader's term
 	require_True(t, candidate.term > ae.term)
+}
+
+func TestNRGRemoveLeaderPeerDeadlockBug(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	n := rg.leader().node().(*raft)
+	leader := n.ID()
+
+	// Propose to remove the leader as a peer. Will lead to a deadlock with bug.
+	require_NoError(t, n.ProposeRemovePeer(leader))
+	rg.waitOnLeader()
+
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		nl := n.GroupLeader()
+		if nl != leader {
+			return nil
+		}
+		return errors.New("Leader has not moved")
+	})
 }

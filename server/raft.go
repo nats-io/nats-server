@@ -2915,7 +2915,7 @@ func (n *raft) applyCommit(index uint64) error {
 
 			// If this is us and we are the leader we should attempt to stepdown.
 			if peer == n.id && n.State() == Leader {
-				n.stepdown(n.selectNextLeader())
+				n.stepdownLocked(n.selectNextLeader())
 			}
 
 			// Remove from string intern map.
