@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"math/rand"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1075,109 +1074,6 @@ func TestJetStreamConsumerDelete(t *testing.T) {
 		})
 
 	}
-}
-
-func TestJetStreamConsumerFetchWithDrain(t *testing.T) {
-	t.Skip()
-
-	test := func(t *testing.T, cc *nats.ConsumerConfig) {
-		s := RunBasicJetStreamServer(t)
-		defer s.Shutdown()
-
-		nc, js := jsClientConnect(t, s)
-		defer nc.Close()
-
-		_, err := js.AddStream(&nats.StreamConfig{
-			Name:      "TEST",
-			Subjects:  []string{"foo"},
-			Retention: nats.LimitsPolicy,
-		})
-		require_NoError(t, err)
-
-		_, err = js.AddConsumer("TEST", cc)
-		require_NoError(t, err)
-
-		const messages = 10_000
-
-		for i := 0; i < messages; i++ {
-			sendStreamMsg(t, nc, "foo", fmt.Sprintf("%d", i+1))
-		}
-
-		cr := JSApiConsumerGetNextRequest{
-			Batch:   100_000,
-			Expires: 10 * time.Second,
-		}
-		crBytes, err := json.Marshal(cr)
-		require_NoError(t, err)
-
-		msgs := make(map[int]int)
-
-		processMsg := func(t *testing.T, sub *nats.Subscription, msgs map[int]int) bool {
-			msg, err := sub.NextMsg(time.Second)
-			if err != nil {
-				return false
-			}
-			metadata, err := msg.Metadata()
-			require_NoError(t, err)
-			require_NoError(t, msg.Ack())
-
-			v, err := strconv.Atoi(string(msg.Data))
-			require_NoError(t, err)
-			require_Equal(t, uint64(v), metadata.Sequence.Stream)
-
-			if _, ok := msgs[int(metadata.Sequence.Stream-1)]; !ok && len(msgs) > 0 {
-				t.Logf("Stream Sequence gap detected: current %d", metadata.Sequence.Stream)
-			}
-			if _, ok := msgs[int(metadata.Sequence.Stream)]; ok {
-				t.Fatalf("Message for seq %d has been seen before", metadata.Sequence.Stream)
-			}
-			// We do not expect official redeliveries here so this should always be 1.
-			if metadata.NumDelivered != 1 {
-				t.Errorf("Expected NumDelivered of 1, got %d for seq %d",
-					metadata.NumDelivered, metadata.Sequence.Stream)
-			}
-			msgs[int(metadata.Sequence.Stream)] = int(metadata.NumDelivered)
-			return true
-		}
-
-		for {
-			inbox := nats.NewInbox()
-			sub, err := nc.SubscribeSync(inbox)
-			require_NoError(t, err)
-
-			err = nc.PublishRequest(fmt.Sprintf(JSApiRequestNextT, "TEST", "C"), inbox, crBytes)
-			require_NoError(t, err)
-
-			// Drain after first message processed.
-			processMsg(t, sub, msgs)
-			sub.Drain()
-
-			for {
-				if !processMsg(t, sub, msgs) {
-					if len(msgs) == messages {
-						return
-					}
-					break
-				}
-			}
-		}
-	}
-
-	t.Run("no-backoff", func(t *testing.T) {
-		test(t, &nats.ConsumerConfig{
-			Durable:   "C",
-			AckPolicy: nats.AckExplicitPolicy,
-			AckWait:   20 * time.Second,
-		})
-	})
-	t.Run("with-backoff", func(t *testing.T) {
-		test(t, &nats.ConsumerConfig{
-			Durable:   "C",
-			AckPolicy: nats.AckExplicitPolicy,
-			AckWait:   20 * time.Second,
-			BackOff:   []time.Duration{25 * time.Millisecond, 100 * time.Millisecond, 250 * time.Millisecond},
-		})
-	})
 }
 
 func TestJetStreamConsumerLongSubjectHang(t *testing.T) {
