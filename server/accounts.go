@@ -3686,7 +3686,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		// Raft groups running on the system so that they can move their subs if needed.
 		a.mu.Lock()
 		previous := ajs.nrgAccount
-		switch tokens := strings.SplitN(ac.ClusterTraffic, ":", 2); tokens[0] {
+		switch ac.ClusterTraffic {
 		case "system", _EMPTY_:
 			ajs.nrgAccount = _EMPTY_
 		case "owner":
