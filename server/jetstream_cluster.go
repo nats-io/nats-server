@@ -1200,7 +1200,12 @@ func (js *jetStream) checkForOrphans() {
 			stream = mset.cfg.Name
 			mset.mu.RUnlock()
 		}
-		s.Warnf("Detected orphaned consumer '%s > %s > %s', will cleanup", accName, stream, consumer)
+		if o.isDurable() {
+			s.Warnf("Detected orphaned durable consumer '%s > %s > %s', will cleanup", accName, stream, consumer)
+		} else {
+			s.Debugf("Detected orphaned consumer '%s > %s > %s', will cleanup", accName, stream, consumer)
+		}
+
 		if err := o.delete(); err != nil {
 			s.Warnf("Deleting consumer encountered an error: %v", err)
 		}
