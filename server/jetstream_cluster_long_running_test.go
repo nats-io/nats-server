@@ -20,9 +20,11 @@ package server
 
 import (
 	"context"
+	crand "crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
 	"slices"
 	"strconv"
