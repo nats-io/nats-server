@@ -1,0 +1,18 @@
+name: NATS Server Long-Running Tests
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  # At most one of these workflow per ref running
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # New one cancels in-progress one
+  cancel-in-progress: true
+
+jobs:
+  placeholder:
+    name: Placeholder job
+    runs-on: ${{ vars.GHA_WORKER_SMALL }}
+    steps:
+      - name: Dummy step
+        run: echo "Hello World"
