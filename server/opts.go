@@ -2164,7 +2164,7 @@ func parseJetStreamForAccount(v any, acc *Account, errors *[]error) error {
 				if !ok {
 					return &configErr{tk, fmt.Sprintf("Expected either 'system' or 'account' string value for %q, got %v", mk, mv)}
 				}
-				switch tokens := strings.SplitN(vv, ":", 2); strings.ToLower(tokens[0]) {
+				switch vv {
 				case "system", _EMPTY_:
 					acc.js.nrgAccount = _EMPTY_
 				case "owner":

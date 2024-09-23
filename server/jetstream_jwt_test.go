@@ -1582,7 +1582,7 @@ func TestJetStreamJWTClusterAccountNRG(t *testing.T) {
 	// functionality yet. If/when we do enable, this test is ready just by
 	// uncommenting the third state below.
 	for _, state := range []string{"system", "owner" /*, thirdAcc */} {
-		accClaim.ClusterTraffic = state
+		accClaim.ClusterTraffic = jwt.ClusterTraffic(state)
 		accJwt = encodeClaim(t, accClaim, aExpPub)
 
 		for _, s := range c.servers {
