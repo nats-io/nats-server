@@ -3189,7 +3189,7 @@ func (c *client) processUnsub(arg []byte) error {
 func (c *client) checkDenySub(subject string) bool {
 	if denied, ok := c.mperms.dcache[subject]; ok {
 		return denied
-	} else if r := c.mperms.deny.Match(subject); len(r.psubs) != 0 {
+	} else if np, _ := c.mperms.deny.NumInterest(subject); np != 0 {
 		c.mperms.dcache[subject] = true
 		return true
 	} else {
@@ -3711,13 +3711,13 @@ func (c *client) pubAllowedFullCheck(subject string, fullCheck, hasLock bool) bo
 	allowed := true
 	// Cache miss, check allow then deny as needed.
 	if c.perms.pub.allow != nil {
-		r := c.perms.pub.allow.Match(subject)
-		allowed = len(r.psubs) != 0
+		np, _ := c.perms.pub.allow.NumInterest(subject)
+		allowed = np != 0
 	}
 	// If we have a deny list and are currently allowed, check that as well.
 	if allowed && c.perms.pub.deny != nil {
-		r := c.perms.pub.deny.Match(subject)
-		allowed = len(r.psubs) == 0
+		np, _ := c.perms.pub.deny.NumInterest(subject)
+		allowed = np == 0
 	}
 
 	// If we are currently not allowed but we are tracking reply subjects
