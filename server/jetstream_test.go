@@ -6542,6 +6542,7 @@ func TestJetStreamSystemLimitsPlacement(t *testing.T) {
 			listen: 127.0.0.1:%d
 			routes = [%s]
 		}
+		accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
 	`
 	storeCnf := func(serverName, clusterName, storeDir, conf string) string {
 		switch serverName {
@@ -6566,7 +6567,7 @@ func TestJetStreamSystemLimitsPlacement(t *testing.T) {
 	defer cluster.shutdown()
 
 	requestLeaderStepDown := func(clientURL string) error {
-		nc, err := nats.Connect(clientURL)
+		nc, err := nats.Connect(clientURL, nats.UserInfo("admin", "s3cr3t!"))
 		if err != nil {
 			return err
 		}

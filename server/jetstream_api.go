@@ -2764,6 +2764,12 @@ func (s *Server) jsLeaderStepDownRequest(sub *subscription, c *client, _ *Accoun
 		return
 	}
 
+	// This should only be coming from the System Account.
+	if acc != s.SystemAccount() {
+		s.RateLimitWarnf("JetStream API stepdown request from non-system account: %q user: %q", ci.serviceAccount(), ci.User)
+		return
+	}
+
 	js, cc := s.getJetStreamCluster()
 	if js == nil || cc == nil || cc.meta == nil {
 		return

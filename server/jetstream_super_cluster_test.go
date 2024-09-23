@@ -3361,13 +3361,13 @@ func TestJetStreamSuperClusterSystemLimitsPlacement(t *testing.T) {
 	defer sCluster.shutdown()
 
 	requestLeaderStepDown := func(clientURL string) error {
-		nc, err := nats.Connect(clientURL)
+		nc, err := nats.Connect(clientURL, nats.UserInfo("admin", "s3cr3t!"))
 		if err != nil {
 			return err
 		}
 		defer nc.Close()
 
-		ncResp, err := nc.Request(JSApiLeaderStepDown, nil, 3*time.Second)
+		ncResp, err := nc.Request(JSApiLeaderStepDown, nil, time.Second)
 		if err != nil {
 			return err
 		}
