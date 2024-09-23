@@ -2544,10 +2544,10 @@ func TestJetStreamClusterAccountNRG(t *testing.T) {
 		// Check account interest for the AppendEntry subject.
 		checkFor(t, time.Second, time.Millisecond*25, func() error {
 			for _, s := range c.servers {
-				if !s.sys.account.sl.hasInterest(rg.asubj, true) {
+				if !s.sys.account.sl.HasInterest(rg.asubj) {
 					return fmt.Errorf("system account should have interest")
 				}
-				if s.gacc.sl.hasInterest(rg.asubj, true) {
+				if s.gacc.sl.HasInterest(rg.asubj) {
 					return fmt.Errorf("global account shouldn't have interest")
 				}
 			}
@@ -2587,10 +2587,10 @@ func TestJetStreamClusterAccountNRG(t *testing.T) {
 		// Check account interest for the AppendEntry subject.
 		checkFor(t, time.Second, time.Millisecond*25, func() error {
 			for _, s := range c.servers {
-				if !s.sys.account.sl.hasInterest(rg.asubj, true) {
+				if !s.sys.account.sl.HasInterest(rg.asubj) {
 					return fmt.Errorf("system account should have interest")
 				}
-				if s.gacc.sl.hasInterest(rg.asubj, true) {
+				if s.gacc.sl.HasInterest(rg.asubj) {
 					return fmt.Errorf("global account shouldn't have interest")
 				}
 			}
@@ -2625,10 +2625,10 @@ func TestJetStreamClusterAccountNRG(t *testing.T) {
 		// Check account interest for the AppendEntry subject.
 		checkFor(t, time.Second, time.Millisecond*25, func() error {
 			for _, s := range c.servers {
-				if s.sys.account.sl.hasInterest(rg.asubj, true) {
+				if s.sys.account.sl.HasInterest(rg.asubj) {
 					return fmt.Errorf("system account shouldn't have interest")
 				}
-				if !s.gacc.sl.hasInterest(rg.asubj, true) {
+				if !s.gacc.sl.HasInterest(rg.asubj) {
 					return fmt.Errorf("global account should have interest")
 				}
 			}
