@@ -1,0 +1,14 @@
+env:
+    DEFAULT_SERVER_VERSION: main
+    DEFAULT_DURATION: 5m
+
+name: "NATS Server - Long Running Tests"
+
+agents:
+  queue: "general-purpose"
+
+steps:
+
+- command: |
+    echo "Hello World"
+  label: "Run dummy step"
