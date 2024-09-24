@@ -1462,6 +1462,9 @@ func (s *Server) updateJszVarz(js *jetStream, v *JetStreamVarz, doConfig bool) {
 			if ci.Leader == s.info.Name {
 				v.Meta.Replicas = ci.Replicas
 			}
+			if ipq := s.jsAPIRoutedReqs; ipq != nil {
+				v.Meta.Pending = ipq.len()
+			}
 		}
 	}
 }
@@ -2791,6 +2794,7 @@ type MetaClusterInfo struct {
 	Peer     string      `json:"peer,omitempty"`
 	Replicas []*PeerInfo `json:"replicas,omitempty"`
 	Size     int         `json:"cluster_size"`
+	Pending  int         `json:"pending"`
 }
 
 // JSInfo has detailed information on JetStream.
@@ -2989,6 +2993,9 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 			jsi.Meta = &MetaClusterInfo{Name: ci.Name, Leader: ci.Leader, Peer: getHash(ci.Leader), Size: mg.ClusterSize()}
 			if isLeader {
 				jsi.Meta.Replicas = ci.Replicas
+			}
+			if ipq := s.jsAPIRoutedReqs; ipq != nil {
+				jsi.Meta.Pending = ipq.len()
 			}
 		}
 	}
