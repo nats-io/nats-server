@@ -1,6 +1,7 @@
 env:
     DEFAULT_SERVER_VERSION: main
     DEFAULT_DURATION: 5m
+    JUNIT_REPORT_PATH: junit-long-running.xml
 
 name: "NATS Server - Long Running Tests"
 
@@ -16,3 +17,11 @@ steps:
 - command: |
     nix-shell --run ./.buildkite/scripts/run-long-tests.sh ./.buildkite/shell.nix
   label: "Run dummy step with Nix from a script"
+
+- wait: ~
+  continue_on_failure: true
+
+- command: |
+    nix-shell --run ./.buildkite/scripts/publish-tests-report.sh ./.buildkite/shell.nix
+  label: Publish suite results
+  if: build.env("PUBLISH_SUITE_RESULTS") != "false"
