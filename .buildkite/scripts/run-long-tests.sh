@@ -11,7 +11,7 @@ gotestsum --version
 rm -f "${JUNIT_REPORT_PATH}"
 
 echo "🚀 Launching tests..."
-gotestsum \
+if gotestsum \
   --format standard-verbose \
   --junitfile "${JUNIT_REPORT_PATH}" \
   -- \
@@ -22,4 +22,13 @@ gotestsum \
   -v \
   -count=1 -vet=off -shuffle=on -p=1 \
   -timeout=60m \
-;
+; then
+  echo "All tests passed";
+else
+  echo "Some tests failed";
+fi
+
+if [[ ! -f "${JUNIT_REPORT_PATH}" ]]; then
+  echo "Test report file not found: ${JUNIT_REPORT_PATH}"
+  exit 1
+fi
