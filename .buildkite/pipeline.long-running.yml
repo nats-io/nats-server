@@ -13,11 +13,3 @@ steps:
 - command: |
     nix-shell --run ./.buildkite/scripts/run-long-tests.sh ./.buildkite/shell.nix
   label: "Run tests"
-
-- wait: ~
-  continue_on_failure: true
-
-- command: |
-    nix-shell --run ./.buildkite/scripts/publish-tests-report.sh ./.buildkite/shell.nix
-  label: Publish suite results
-  if: build.env("PUBLISH_SUITE_RESULTS") != "false"
