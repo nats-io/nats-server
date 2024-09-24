@@ -10,8 +10,7 @@ gotestsum --version
 which curl
 curl --version
 
-# TODO rename token env var in cloud init
-BUILDKITE_ANALYTICS_TOKEN="${BK_ANALYTICS_TOKEN_matrix}"
+BUILDKITE_ANALYTICS_TOKEN="${BK_ANALYTICS_TOKEN_long_running_tests}"
 
 rm -f junit.xml
 
