@@ -39,7 +39,14 @@ import (
 
 func TestLongDummy(t *testing.T) {
 	// Dummy test to verify tests set of tests are running as expected
-	t.Logf("Pass!")
+
+	t.Run("Passing sub-test", func(t *testing.T) {
+		t.Logf("Pass!")
+	})
+
+	t.Run("Failing sub-test", func(t *testing.T) {
+		t.Fatalf("Fail!")
+	})
 }
 
 func TestLongJetStreamClusterRestartThenScaleStreamReplicas(t *testing.T) {
