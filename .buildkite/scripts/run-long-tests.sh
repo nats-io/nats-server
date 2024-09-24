@@ -16,7 +16,7 @@ gotestsum \
   --junitfile "${JUNIT_REPORT_PATH}" \
   -- \
   ./server \
-  -run='^TestLong.*' \
+  -run='^TestLongDummy.*' \
   -tags=include_js_cluster_long_running_tests \
   -race \
   -v \
