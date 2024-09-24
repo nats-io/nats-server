@@ -1882,7 +1882,10 @@ func TestNoRaceJetStreamSuperClusterSources(t *testing.T) {
 	doneCh := make(chan bool)
 
 	if sl == sc.leader() {
-		nc.Request(JSApiLeaderStepDown, nil, time.Second)
+		snc, _ := jsClientConnect(t, sc.randomServer(), nats.UserInfo("admin", "s3cr3t!"))
+		defer snc.Close()
+		_, err := snc.Request(JSApiLeaderStepDown, nil, time.Second)
+		require_NoError(t, err)
 		sc.waitOnLeader()
 	}
 
@@ -10315,7 +10318,11 @@ func TestNoRaceWQAndMultiSubjectFiltersRace(t *testing.T) {
 			return nil
 		}
 		// Move meta-leader since stream can be R1.
-		nc.Request(JSApiLeaderStepDown, nil, time.Second)
+		snc, _ := jsClientConnect(t, c.randomServer(), nats.UserInfo("admin", "s3cr3t!"))
+		defer snc.Close()
+		if _, err := snc.Request(JSApiLeaderStepDown, nil, time.Second); err != nil {
+			return err
+		}
 		return fmt.Errorf("stream leader on meta-leader")
 	})
 

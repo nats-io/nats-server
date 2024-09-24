@@ -650,9 +650,9 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	mset.store.FastState(&state)
 
 	// Possible race with consumer.setLeader during recovery.
-	mset.mu.RLock()
+	mset.mu.Lock()
 	mset.lseq = state.LastSeq
-	mset.mu.RUnlock()
+	mset.mu.Unlock()
 
 	// If no msgs (new stream), set dedupe state loaded to true.
 	if state.Msgs == 0 {

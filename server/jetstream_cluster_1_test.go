@@ -6403,6 +6403,43 @@ func TestJetStreamClusterConsumerDeleteInterestPolicyPerf(t *testing.T) {
 	require_Equal(t, si.State.Msgs, 0)
 }
 
+// Make sure to not allow non-system accounts to move meta leader.
+func TestJetStreamClusterMetaStepdownFromNonSysAccount(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	s := c.randomServer()
+
+	// Client based API
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	ml := c.leader()
+
+	_, err := nc.Request(JSApiLeaderStepDown, nil, time.Second)
+	require_Error(t, err, nats.ErrTimeout)
+
+	// Make sure we did not move.
+	c.waitOnLeader()
+	require_Equal(t, ml, c.leader())
+
+	// System user can move it.
+	snc, _ := jsClientConnect(t, c.randomServer(), nats.UserInfo("admin", "s3cr3t!"))
+	defer snc.Close()
+
+	resp, err := snc.Request(JSApiLeaderStepDown, nil, time.Second)
+	require_NoError(t, err)
+
+	var sdr JSApiLeaderStepDownResponse
+	require_NoError(t, json.Unmarshal(resp.Data, &sdr))
+	require_True(t, sdr.Success)
+	require_Equal(t, sdr.Error, nil)
+
+	// Make sure we did move this time.
+	c.waitOnLeader()
+	require_NotEqual(t, ml, c.leader())
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.

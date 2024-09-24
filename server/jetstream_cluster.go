@@ -583,10 +583,9 @@ func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consum
 		return false
 	}
 	s := js.srv
-	js.mu.RUnlock()
-
 	// Capture RAFT node from assignment.
 	node := ca.Group.node
+	js.mu.RUnlock()
 
 	// When we try to restart we nil out the node if applicable
 	// and reprocess the consumer assignment.
@@ -1039,7 +1038,7 @@ func (cc *jetStreamCluster) isStreamLeader(account, stream string) bool {
 	ourID := cc.meta.ID()
 	for _, peer := range rg.Peers {
 		if peer == ourID {
-			if len(rg.Peers) == 1 || rg.node != nil && rg.node.Leader() {
+			if len(rg.Peers) == 1 || (rg.node != nil && rg.node.Leader()) {
 				return true
 			}
 		}
@@ -1201,7 +1200,12 @@ func (js *jetStream) checkForOrphans() {
 			stream = mset.cfg.Name
 			mset.mu.RUnlock()
 		}
-		s.Warnf("Detected orphaned consumer '%s > %s > %s', will cleanup", accName, stream, consumer)
+		if o.isDurable() {
+			s.Warnf("Detected orphaned durable consumer '%s > %s > %s', will cleanup", accName, stream, consumer)
+		} else {
+			s.Debugf("Detected orphaned consumer '%s > %s > %s', will cleanup", accName, stream, consumer)
+		}
+
 		if err := o.delete(); err != nil {
 			s.Warnf("Deleting consumer encountered an error: %v", err)
 		}
