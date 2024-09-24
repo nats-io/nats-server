@@ -3913,7 +3913,6 @@ func TestJetStreamPendingRequestsInJsz(t *testing.T) {
 
 	sjs := metaleader.getJetStream()
 	sjs.mu.Lock()
-
 	sub := &subscription{
 		subject: []byte("$JS.API.VERY_SLOW"),
 		icb: func(sub *subscription, client *client, acc *Account, subject, reply string, rmsg []byte) {
