@@ -3903,3 +3903,48 @@ func TestJetStreamClusterAPILimitAdvisory(t *testing.T) {
 	require_Equal(t, advisory.Domain, _EMPTY_)     // No JetStream domain was set.
 	require_Equal(t, advisory.Dropped, queueLimit) // Configured queue limit.
 }
+
+func TestJetStreamPendingRequestsInJsz(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	c.waitOnLeader()
+	metaleader := c.leader()
+
+	sjs := metaleader.getJetStream()
+	sjs.mu.Lock()
+
+	sub := &subscription{
+		subject: []byte("$JS.API.VERY_SLOW"),
+		icb: func(sub *subscription, client *client, acc *Account, subject, reply string, rmsg []byte) {
+			select {
+			case <-client.srv.quitCh:
+			case <-time.After(time.Second * 3):
+			}
+		},
+	}
+	err := metaleader.getJetStream().apiSubs.Insert(sub)
+	sjs.mu.Unlock()
+
+	require_NoError(t, err)
+
+	nc, _ := jsClientConnect(t, c.randomNonLeader())
+	defer nc.Close()
+
+	inbox := nc.NewRespInbox()
+	msg := &nats.Msg{
+		Subject: "$JS.API.VERY_SLOW",
+		Reply:   inbox,
+	}
+
+	// Fall short of hitting the API limit by a little bit,
+	// otherwise the requests get drained away.
+	for i := 0; i < JSDefaultRequestQueueLimit-10; i++ {
+		require_NoError(t, nc.PublishMsg(msg))
+	}
+
+	jsz, err := metaleader.Jsz(nil)
+	require_NoError(t, err)
+	require_True(t, jsz.Meta != nil)
+	require_NotEqual(t, jsz.Meta.Pending, 0)
+}
