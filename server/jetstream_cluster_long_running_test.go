@@ -306,8 +306,8 @@ func TestLongJetStreamClusterBusyStreams(t *testing.T) {
 						}
 						sub, err := js.PullSubscribe(consumer.FilterSubject, "", nats.Bind(stream.config.Name, consumer.Name))
 						if err != nil {
-							t.Logf("WRN: Failed creating pull subscriber: %v - %v - %v - %v",
-								consumer.FilterSubject, stream.config.Name, consumer.Name, err)
+							//t.Logf("WRN: Failed creating pull subscriber: %v - %v - %v - %v",
+							//	consumer.FilterSubject, stream.config.Name, consumer.Name, err)
 							return
 						}
 						require_NoError(t, err)
