@@ -23,7 +23,7 @@ if gotestsum \
   --junitfile junit.xml \
   -- \
   ./server \
-  -run='^TestLongDummy.*' \
+  -run='^TestLong.*' \
   -tags=include_js_cluster_long_running_tests \
   -race \
   -v \
