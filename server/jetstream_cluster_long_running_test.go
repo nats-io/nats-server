@@ -37,6 +37,11 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+func TestLongDummy(t *testing.T) {
+	// Dummy test to verify tests set of tests are running as expected
+	t.Logf("Pass!")
+}
+
 func TestLongJetStreamClusterRestartThenScaleStreamReplicas(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
