@@ -12,3 +12,7 @@ steps:
 - command: |
     echo "Hello World"
   label: "Run dummy step"
+
+- command: |
+    nix-shell --run "./.buildkite/scripts/run-long-tests.sh ./.buildkite/shell.nix
+  label: "Run dummy step with Nix from a script"
