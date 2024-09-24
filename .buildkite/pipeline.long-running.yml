@@ -12,4 +12,4 @@ steps:
 
 - command: |
     nix-shell --run ./.buildkite/scripts/run-long-tests.sh ./.buildkite/shell.nix
-  label: "Run tests"
+  label: "Run tests (and publish results)"
