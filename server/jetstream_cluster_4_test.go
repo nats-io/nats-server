@@ -3560,4 +3560,18 @@ func TestJetStreamPendingRequestsInJsz(t *testing.T) {
 	require_NoError(t, err)
 	require_True(t, jsz.Meta != nil)
 	require_NotEqual(t, jsz.Meta.Pending, 0)
+
+	snc, _ := jsClientConnect(t, c.randomServer(), nats.UserInfo("admin", "s3cr3t!"))
+	defer snc.Close()
+
+	ch := make(chan *nats.Msg, 1)
+	ssub, err := snc.ChanSubscribe(fmt.Sprintf(serverStatsSubj, metaleader.ID()), ch)
+	require_NoError(t, err)
+	require_NoError(t, ssub.AutoUnsubscribe(1))
+
+	msg = require_ChanRead(t, ch, time.Second*5)
+	var m ServerStatsMsg
+	require_NoError(t, json.Unmarshal(msg.Data, &m))
+	require_True(t, m.Stats.JetStream != nil)
+	require_NotEqual(t, m.Stats.JetStream.Meta.Pending, 0)
 }

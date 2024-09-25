@@ -944,9 +944,9 @@ func (s *Server) sendStatsz(subj string) {
 					Peer:   getHash(leader),
 					Size:   mg.ClusterSize(),
 				}
-				if ipq := s.jsAPIRoutedReqs; ipq != nil {
-					jStat.Meta.Pending = ipq.len()
-				}
+			}
+			if ipq := s.jsAPIRoutedReqs; ipq != nil && jStat.Meta != nil {
+				jStat.Meta.Pending = ipq.len()
 			}
 		}
 		m.Stats.JetStream = jStat
