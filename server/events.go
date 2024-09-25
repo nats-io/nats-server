@@ -97,6 +97,7 @@ const (
 
 // FIXME(dlc) - make configurable.
 var eventsHBInterval = 30 * time.Second
+var statsHBInterval = 10 * time.Second
 
 // Default minimum wait time for sending statsz
 const defaultStatszRateLimit = 1 * time.Second
