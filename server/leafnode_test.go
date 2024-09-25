@@ -7968,3 +7968,38 @@ func TestLeafNodeServerKickClient(t *testing.T) {
 	require_True(t, lid != ln.Cid)
 	require_True(t, ln.Start.After(disconnectTime))
 }
+
+func TestLeafNodeBannerNoClusterNameIfNoCluster(t *testing.T) {
+	u, err := url.Parse("nats://127.0.0.1:1234")
+	require_NoError(t, err)
+
+	opts := DefaultOptions()
+	opts.ServerName = "LEAF_SERVER"
+	opts.Cluster.Name = _EMPTY_
+	opts.Cluster.Port = 0
+	opts.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{u}}}
+	opts.NoLog = false
+
+	s, err := NewServer(opts)
+	require_NoError(t, err)
+	defer func() {
+		s.Shutdown()
+		s.WaitForShutdown()
+	}()
+	l := &captureNoticeLogger{}
+	s.SetLogger(l, false, false)
+	s.Start()
+
+	if !s.ReadyForConnections(time.Second) {
+		t.Fatal("Server not ready!")
+	}
+
+	l.Lock()
+	for _, n := range l.notices {
+		if strings.Contains(n, "Cluster: ") {
+			l.Unlock()
+			t.Fatalf("Cluster name should not be displayed, got %q", n)
+		}
+	}
+	l.Unlock()
+}
