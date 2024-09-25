@@ -1764,7 +1764,7 @@ func (s *Server) setSystemAccount(acc *Account) error {
 		recvqp:  newIPQueue[*inSysMsg](s, "System recvQ Pings"),
 		resetCh: make(chan struct{}),
 		sq:      s.newSendQ(acc),
-		statsz:  eventsHBInterval,
+		statsz:  statsHBInterval,
 		orphMax: 5 * eventsHBInterval,
 		chkOrph: 3 * eventsHBInterval,
 	}
