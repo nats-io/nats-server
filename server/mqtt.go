@@ -2212,7 +2212,7 @@ func (as *mqttAccountSessionManager) sendJSAPIrequests(s *Server, c *client, acc
 	for {
 		select {
 		case <-sendq.ch:
-			pmis := sendq.pop()
+			pmis, ql, qsz := sendq.pop()
 			for _, r := range pmis {
 				var nsize int
 
@@ -2251,7 +2251,7 @@ func (as *mqttAccountSessionManager) sendJSAPIrequests(s *Server, c *client, acc
 				c.processInboundClientMsg(msg)
 				c.flushClients(0)
 			}
-			sendq.recycle(&pmis)
+			sendq.recycle(pmis, ql, qsz)
 
 		case <-closeCh:
 			return

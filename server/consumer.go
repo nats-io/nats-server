@@ -3958,12 +3958,12 @@ func (o *consumer) processInboundAcks(qch chan struct{}) {
 	for {
 		select {
 		case <-o.ackMsgs.ch:
-			acks := o.ackMsgs.pop()
+			acks, ql, qsz := o.ackMsgs.pop()
 			for _, ack := range acks {
 				o.processAck(ack.subject, ack.reply, ack.hdr, ack.msg)
 				ack.returnToPool()
 			}
-			o.ackMsgs.recycle(&acks)
+			o.ackMsgs.recycle(acks, ql, qsz)
 			// If we have an inactiveThreshold set, mark our activity.
 			if hasInactiveThresh {
 				o.suppressDeletion()
@@ -3988,12 +3988,12 @@ func (o *consumer) processInboundNextMsgReqs(qch chan struct{}) {
 	for {
 		select {
 		case <-o.nextMsgReqs.ch:
-			reqs := o.nextMsgReqs.pop()
+			reqs, ql, qsz := o.nextMsgReqs.pop()
 			for _, req := range reqs {
 				o.processNextMsgRequest(req.reply, req.msg)
 				req.returnToPool()
 			}
-			o.nextMsgReqs.recycle(&reqs)
+			o.nextMsgReqs.recycle(reqs, ql, qsz)
 		case <-qch:
 			return
 		case <-s.quitCh:

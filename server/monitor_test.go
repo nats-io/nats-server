@@ -5548,3 +5548,106 @@ func TestVarzJSApiLevel(t *testing.T) {
 	apiLevel := varz.JetStream.Stats.API.Level
 	require_Equal(t, apiLevel, JSApiLevel)
 }
+
+func TestIPQueuesz(t *testing.T) {
+	resetPreviousHTTPConnections()
+	opts := DefaultMonitorOptions()
+
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	// Create a queue of int and use a queue size calculation that would return
+	// the value of the element as its size.
+	q := newIPQueue[int](s, "test", ipqSizeCalculation(func(e int) uint64 { return uint64(e) }))
+	q.push(1)
+	q.push(2)
+	q.push(3)
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/ipqueuesz?all=1&queues=test", s.MonitorAddr().Port)
+
+	getQueue := func() *monitorIPQueue {
+		t.Helper()
+		queues := map[string]monitorIPQueue{}
+		body := readBody(t, url)
+		if err := json.Unmarshal(body, &queues); err != nil {
+			t.Fatalf("Got an error unmarshalling the body: %v\n", err)
+		}
+		v, ok := queues["test"]
+		if !ok {
+			t.Fatal("Test queue not found")
+		}
+		return &v
+	}
+	qi := getQueue()
+	require_Equal(t, qi.Pending, 3)
+	require_Equal(t, qi.Size, 1+2+3)
+	require_Equal(t, qi.InProgress, 0)
+	require_Equal(t, qi.InProgressSize, 0)
+
+	// Use popOne()
+	q.popOne()
+	qi = getQueue()
+	require_Equal(t, qi.Pending, 2)
+	require_Equal(t, qi.Size, 2+3)
+	require_Equal(t, qi.InProgress, 0)
+	require_Equal(t, qi.InProgressSize, 0)
+
+	// Now use pop(), check that length/size is 0, but in progress is updated
+	elts, ql, qsz := q.pop()
+	qi = getQueue()
+	require_Equal(t, qi.Pending, 0)
+	require_Equal(t, qi.Size, 0)
+	require_Equal(t, qi.InProgress, 2)
+	require_Equal(t, qi.InProgressSize, 2+3)
+
+	// After a recycle, in progress count/size is down to 0
+	q.recycle(elts, ql, qsz)
+	qi = getQueue()
+	require_Equal(t, qi.Pending, 0)
+	require_Equal(t, qi.Size, 0)
+	require_Equal(t, qi.InProgress, 0)
+	require_Equal(t, qi.InProgressSize, 0)
+
+	// Add 4 new elements
+	q.push(4)
+	q.push(5)
+	q.push(6)
+	q.push(7)
+	qi = getQueue()
+	require_Equal(t, qi.Pending, 4)
+	require_Equal(t, qi.Size, 4+5+6+7)
+	require_Equal(t, qi.InProgress, 0)
+	require_Equal(t, qi.InProgressSize, 0)
+
+	// Pop()
+	elts, ql, qsz = q.pop()
+	qi = getQueue()
+	require_Equal(t, qi.Pending, 0)
+	require_Equal(t, qi.Size, 0)
+	require_Equal(t, qi.InProgress, 4)
+	require_Equal(t, qi.InProgressSize, 4+5+6+7)
+
+	// Now indicate progress
+	q.processed(elts[0], &ql, &qsz)
+	qi = getQueue()
+	require_Equal(t, qi.Pending, 0)
+	require_Equal(t, qi.Size, 0)
+	require_Equal(t, qi.InProgress, 3)
+	require_Equal(t, qi.InProgressSize, 5+6+7)
+
+	// More progress
+	q.processed(elts[1], &ql, &qsz)
+	qi = getQueue()
+	require_Equal(t, qi.Pending, 0)
+	require_Equal(t, qi.Size, 0)
+	require_Equal(t, qi.InProgress, 2)
+	require_Equal(t, qi.InProgressSize, 6+7)
+
+	// Finish with the recycle.
+	q.recycle(elts, ql, qsz)
+	qi = getQueue()
+	require_Equal(t, qi.Pending, 0)
+	require_Equal(t, qi.Size, 0)
+	require_Equal(t, qi.InProgress, 0)
+	require_Equal(t, qi.InProgressSize, 0)
+}

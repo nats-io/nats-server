@@ -19,27 +19,34 @@ import (
 	"sync/atomic"
 )
 
-const ipQueueDefaultMaxRecycleSize = 4 * 1024
+const (
+	ipQueueDefaultMaxRecycleSize = 4 * 1024
+	ipQueueMaxPoolSize           = 5
+)
 
 // This is a generic intra-process queue.
+// Fields are in specific order based on benchmark results.
 type ipQueue[T any] struct {
-	inprogress int64
+	inprogress   int64
+	inprogressSz uint64
 	sync.Mutex
+	ipQueueOpts[T]
 	ch   chan struct{}
 	elts []T
 	pos  int
-	pool *sync.Pool
 	sz   uint64 // Calculated size (only if calc != nil)
+	psMu sync.Mutex
+	pool [][]T
+	tcps int
 	name string
 	m    *sync.Map
-	ipQueueOpts[T]
 }
 
 type ipQueueOpts[T any] struct {
 	mrs  int              // Max recycle size
 	calc func(e T) uint64 // Calc function for tracking size
 	msz  uint64           // Limit by total calculated size
-	mlen int              // Limit by number of entries
+	mlen int              // Limit by number of elements
 }
 
 type ipQueueOpt[T any] func(*ipQueueOpts[T])
@@ -53,8 +60,11 @@ func ipqMaxRecycleSize[T any](max int) ipQueueOpt[T] {
 }
 
 // This option enables total queue size counting by passing in a function
-// that evaluates the size of each entry as it is pushed/popped. This option
+// that evaluates the size of each element as it is pushed/popped. This option
 // enables the size() function.
+// NOTE: The callback MUST NOT acquire any lock since it is invoked
+// in some cases under the queue's lock, which could lead to lock inversion
+// or queue lock's contention by slowing it down.
 func ipqSizeCalculation[T any](calc func(e T) uint64) ipQueueOpt[T] {
 	return func(o *ipQueueOpts[T]) {
 		o.calc = calc
@@ -62,9 +72,9 @@ func ipqSizeCalculation[T any](calc func(e T) uint64) ipQueueOpt[T] {
 }
 
 // This option allows setting the maximum queue size. Once the limit is
-// reached, then push() will stop returning true and no more entries will
-// be stored until some more are popped. The ipQueue_SizeCalculation must
-// be provided for this to work.
+// reached, then push() will return `errIPQSizeLimitReached` and no more
+// elements will be stored until some are popped. The `ipQueue_SizeCalculation`
+// must be provided for this to work.
 func ipqLimitBySize[T any](max uint64) ipQueueOpt[T] {
 	return func(o *ipQueueOpts[T]) {
 		o.msz = max
@@ -72,8 +82,8 @@ func ipqLimitBySize[T any](max uint64) ipQueueOpt[T] {
 }
 
 // This option allows setting the maximum queue length. Once the limit is
-// reached, then push() will stop returning true and no more entries will
-// be stored until some more are popped.
+// reached, then push() will return `errIPQLenLimitReached` and no more
+// elements will be stored until some more are popped.
 func ipqLimitByLen[T any](max int) ipQueueOpt[T] {
 	return func(o *ipQueueOpts[T]) {
 		o.mlen = max
@@ -86,7 +96,6 @@ var errIPQSizeLimitReached = errors.New("IPQ size limit reached")
 func newIPQueue[T any](s *Server, name string, opts ...ipQueueOpt[T]) *ipQueue[T] {
 	q := &ipQueue[T]{
 		ch:   make(chan struct{}, 1),
-		pool: &sync.Pool{},
 		name: name,
 		m:    &s.ipQueues,
 		ipQueueOpts: ipQueueOpts[T]{
@@ -101,81 +110,102 @@ func newIPQueue[T any](s *Server, name string, opts ...ipQueueOpt[T]) *ipQueue[T
 }
 
 // Add the element `e` to the queue, notifying the queue channel's `ch` if the
-// entry is the first to be added, and returns the length of the queue after
-// this element is added.
-func (q *ipQueue[T]) push(e T) (int, error) {
-	var signal bool
+// element is the first to be added, and returns the length and size of the queue
+// after this element is added.
+// If the queue has limits, this function checks against what is currently in
+// the queue in addition to the "in progress" elements (the ones that were
+// returned by `pop()`). It will return `errIPQLenLimitReached` or
+// `errIPQSizeLimitReached` if adding the element would have go over the length
+// or size limit respectively.
+func (q *ipQueue[T]) push(e T) (int, uint64, error) {
+	var sz uint64
+	if q.calc != nil {
+		sz = q.calc(e)
+	}
 	q.Lock()
 	l := len(q.elts) - q.pos
-	if q.mlen > 0 && l == q.mlen {
+	qsz := q.sz
+	// If max length is specified, check the current length + "in progress"
+	// count to see if we are going to go over the limit.
+	if q.mlen > 0 && l+int(atomic.LoadInt64(&q.inprogress))+1 > q.mlen {
 		q.Unlock()
-		return l, errIPQLenLimitReached
+		return l, qsz, errIPQLenLimitReached
 	}
-	if l == 0 {
-		signal = true
-		eltsi := q.pool.Get()
-		if eltsi != nil {
-			// Reason we use pointer to slice instead of slice is explained
-			// here: https://staticcheck.io/docs/checks#SA6002
-			q.elts = (*(eltsi.(*[]T)))[:0]
-		}
-		if cap(q.elts) == 0 {
-			q.elts = make([]T, 0, 32)
-		}
-	}
-	if q.calc != nil {
-		sz := q.calc(e)
-		if q.msz > 0 && q.sz+sz > q.msz {
+	if sz > 0 {
+		// Take into account the "in progress" size.
+		if q.msz > 0 && q.sz+atomic.LoadUint64(&q.inprogressSz)+sz > q.msz {
 			q.Unlock()
-			return l, errIPQSizeLimitReached
+			return l, qsz, errIPQSizeLimitReached
 		}
 		q.sz += sz
 	}
+	if q.elts == nil {
+		q.psMu.Lock()
+		if pl := len(q.pool); pl > 0 {
+			q.elts = q.pool[pl-1]
+			q.tcps -= cap(q.elts)
+			q.pool = q.pool[:pl-1]
+		}
+		q.psMu.Unlock()
+		if q.elts == nil {
+			q.elts = make([]T, 0, 32)
+		}
+	}
 	q.elts = append(q.elts, e)
 	q.Unlock()
-	if signal {
+	// Signal if the queue was empty before adding this element.
+	if l == 0 {
 		select {
 		case q.ch <- struct{}{}:
 		default:
 		}
 	}
-	return l + 1, nil
+	return l + 1, qsz + sz, nil
 }
 
 // Returns the whole list of elements currently present in the queue,
-// emptying the queue. This should be called after receiving a notification
-// from the queue's `ch` notification channel that indicates that there
-// is something in the queue.
-// However, in cases where `drain()` may be called from another go
-// routine, it is possible that a routine is notified that there is
-// something, but by the time it calls `pop()`, the drain() would have
-// emptied the queue. So the caller should never assume that pop() will
-// return a slice of 1 or more, it could return `nil`.
-func (q *ipQueue[T]) pop() []T {
+// emptying the queue. It also returns the length and size (if applicable)
+// of the returned list. These two should be passed to `processed()` when
+// dealing with individual elements of a queue with limites, and ultimately
+// to `recycle()` when done with the `pop()` so that the "in progress" count
+// and size numbers can be updated.
+//
+// This should be called after receiving a notification from the queue's `ch`
+// notification channel that indicates that there is something in the queue.
+// However, in cases where `drain()` may be called from another go routine, it
+// is possible that a routine is notified that there is something, but by the
+// time it calls `pop()`, the drain() would have emptied the queue. So the
+// caller should never assume that pop() will return a slice of 1 or more.
+func (q *ipQueue[T]) pop() ([]T, int64, uint64) {
 	if q == nil {
-		return nil
+		return nil, 0, 0
 	}
 	var elts []T
 	q.Lock()
+	if len(q.elts) == 0 {
+		q.Unlock()
+		return nil, 0, 0
+	}
 	if q.pos == 0 {
 		elts = q.elts
 	} else {
+		// This should not happen since normally callers won't mix use
+		// of q.popOne() and q.pop() from the same queue.
 		elts = q.elts[q.pos:]
 	}
-	q.elts, q.pos = nil, 0
-	atomic.AddInt64(&q.inprogress, int64(len(elts)))
-	if q.calc != nil {
-		for _, e := range elts {
-			q.sz -= q.calc(e)
-		}
+	qsz := q.sz
+	q.elts, q.pos, q.sz = nil, 0, 0
+	// Although we are using atomics, this needs to be done inside the lock
+	// because otherwise it would defeat the purpose of the check in push()
+	// that takes into account the number/size of "in progress" elements
+	// to check for limits. The use of atomics is because the count/size
+	// are decremented in processed() and/or recycle() without the queue's lock.
+	if qsz > 0 {
+		atomic.AddUint64(&q.inprogressSz, qsz)
 	}
+	atomic.AddInt64(&q.inprogress, int64(len(elts)))
 	q.Unlock()
-	return elts
-}
-
-func (q *ipQueue[T]) resetAndReturnToPool(elts *[]T) {
-	(*elts) = (*elts)[:0]
-	q.pool.Put(elts)
+	return elts, int64(len(elts)), qsz
 }
 
 // Returns the first element from the queue, if any. See comment above
@@ -185,19 +215,24 @@ func (q *ipQueue[T]) resetAndReturnToPool(elts *[]T) {
 // default empty value.
 func (q *ipQueue[T]) popOne() (T, bool) {
 	q.Lock()
+	if q.elts == nil {
+		q.Unlock()
+		var empty T
+		return empty, false
+	}
 	l := len(q.elts) - q.pos
-	if l < 1 {
+	if l == 0 {
 		q.Unlock()
 		var empty T
 		return empty, false
 	}
 	e := q.elts[q.pos]
-	q.pos++
-	if q.calc != nil {
-		q.sz -= q.calc(e)
-	}
 	l--
 	if l > 0 {
+		q.pos++
+		if q.calc != nil {
+			q.sz -= q.calc(e)
+		}
 		// We need to re-signal
 		select {
 		case q.ch <- struct{}{}:
@@ -205,42 +240,69 @@ func (q *ipQueue[T]) popOne() (T, bool) {
 		}
 	} else {
 		// We have just emptied the queue, so we can recycle now.
-		q.resetAndReturnToPool(&q.elts)
-		q.elts, q.pos = nil, 0
+		if cap(q.elts) > q.mrs {
+			q.elts = nil
+		} else {
+			q.elts = q.elts[:0]
+		}
+		q.pos, q.sz = 0, 0
 	}
 	q.Unlock()
 	return e, true
 }
 
-// After a pop(), the slice can be recycled for the next push() when
+// After a `pop()`, the slice can be recycled for the next `push()` when
 // a first element is added to the queue.
-// This will also decrement the "in progress" count with the length
-// of the slice.
-// Reason we use pointer to slice instead of slice is explained
-// here: https://staticcheck.io/docs/checks#SA6002
-func (q *ipQueue[T]) recycle(elts *[]T) {
-	// If invoked with a nil list, nothing to do.
-	if elts == nil || *elts == nil {
+// This will also decrement the "in progress" count/size with the given
+// `ql` and `qsz` which were returned by `pop()` (and possibly updated
+// if calling `processed()`).
+func (q *ipQueue[T]) recycle(elts []T, ql int64, qsz uint64) {
+	if q == nil || elts == nil {
 		return
 	}
-	// Update the in progress count.
-	if len(*elts) > 0 {
-		if atomic.AddInt64(&q.inprogress, int64(-(len(*elts)))) < 0 {
-			atomic.StoreInt64(&q.inprogress, 0)
-		}
+	if qsz > 0 {
+		atomic.AddUint64(&q.inprogressSz, ^(qsz - 1))
+	}
+	if ql > 0 {
+		atomic.AddInt64(&q.inprogress, -ql)
 	}
 	// We also don't want to recycle huge slices, so check against the max.
 	// q.mrs is normally immutable but can be changed, in a safe way, in some tests.
-	if cap(*elts) > q.mrs {
+	c := cap(elts)
+	if c > q.mrs {
 		return
 	}
-	q.resetAndReturnToPool(elts)
+	q.psMu.Lock()
+	if len(q.pool) < ipQueueMaxPoolSize && q.tcps+c <= q.mrs {
+		elts = elts[:0]
+		q.pool = append(q.pool, elts)
+		q.tcps += c
+	}
+	q.psMu.Unlock()
+}
+
+// When a queue has limits specified, `push()` will take into account the number
+// and size of "in progress" elements, that is, the ones removed from a `pop()` call.
+// When processing those elements, the caller should call `q.processed()` on
+// individual elements to decrement the number and size of "in progress" elements.
+func (q *ipQueue[T]) processed(e T, ql *int64, qsz *uint64) {
+	if calc := q.calc; calc != nil {
+		if sz := calc(e); sz > 0 {
+			atomic.AddUint64(&q.inprogressSz, ^(sz - 1))
+			*qsz -= sz
+		}
+	}
+	atomic.AddInt64(&q.inprogress, -1)
+	*ql--
 }
 
 // Returns the current length of the queue.
 func (q *ipQueue[T]) len() int {
 	q.Lock()
 	defer q.Unlock()
+	if q.elts == nil {
+		return 0
+	}
 	return len(q.elts) - q.pos
 }
 
@@ -262,10 +324,8 @@ func (q *ipQueue[T]) drain() {
 	}
 	q.Lock()
 	if q.elts != nil {
-		q.resetAndReturnToPool(&q.elts)
-		q.elts, q.pos = nil, 0
+		q.elts, q.pos, q.sz = nil, 0, 0
 	}
-	q.sz = 0
 	// Consume the signal if it was present to reduce the chance of a reader
 	// routine to be think that there is something in the queue...
 	select {
@@ -275,13 +335,22 @@ func (q *ipQueue[T]) drain() {
 	q.Unlock()
 }
 
-// Since the length of the queue goes to 0 after a pop(), it is good to
-// have an insight on how many elements are yet to be processed after a pop().
+// Since the length of the queue goes to 0 after a `pop()`, it is good to
+// have an insight on how many elements are yet to be processed.
 // For that reason, the queue maintains a count of elements returned through
-// the pop() API. When the caller will call q.recycle(), this count will
-// be reduced by the size of the slice returned by pop().
+// the `pop()` API. This number will be reduced by the use of `processed()`
+// and or `recycle()`.
 func (q *ipQueue[T]) inProgress() int64 {
 	return atomic.LoadInt64(&q.inprogress)
+}
+
+// Since the size of the queue goes to 0 after a `pop()`, it is good to
+// have an insight on the size of the elements that are yet to be processed.
+// For that reason, the queue maintains the size of elements returned through
+// the `pop()` API. This size will be reduced by the use of `processed()`
+// and or `recycle()`.
+func (q *ipQueue[T]) inProgressSize() uint64 {
+	return atomic.LoadUint64(&q.inprogressSz)
 }
 
 // Remove this queue from the server's map of ipQueues.

@@ -2337,14 +2337,14 @@ func (mset *stream) processMirrorMsgs(mirror *sourceInfo, ready *sync.WaitGroup)
 		case <-siqch:
 			return
 		case <-msgs.ch:
-			ims := msgs.pop()
+			ims, ql, qsz := msgs.pop()
 			for _, im := range ims {
 				if !mset.processInboundMirrorMsg(im) {
 					break
 				}
 				im.returnToPool()
 			}
-			msgs.recycle(&ims)
+			msgs.recycle(ims, ql, qsz)
 		case <-t.C:
 			mset.mu.RLock()
 			var stalled bool
@@ -3273,11 +3273,12 @@ func (mset *stream) processAllSourceMsgs() {
 		case <-qch:
 			return
 		case <-msgs.ch:
-			ims := msgs.pop()
+			ims, ql, qsz := msgs.pop()
 			for _, im := range ims {
 				if !mset.processInboundSourceMsg(im.si, im) {
 					// If we are no longer leader bail.
 					if !mset.IsLeader() {
+						msgs.recycle(ims, ql, qsz)
 						cleanUp()
 						return
 					}
@@ -3285,7 +3286,7 @@ func (mset *stream) processAllSourceMsgs() {
 				}
 				im.returnToPool()
 			}
-			msgs.recycle(&ims)
+			msgs.recycle(ims, ql, qsz)
 		case <-t.C:
 			// If we are no longer leader bail.
 			if !mset.IsLeader() {
@@ -4214,7 +4215,7 @@ func (im *inMsg) returnToPool() {
 func (mset *stream) queueInbound(ib *ipQueue[*inMsg], subj, rply string, hdr, msg []byte, si *sourceInfo, mt *msgTrace) {
 	im := inMsgPool.Get().(*inMsg)
 	im.subj, im.rply, im.hdr, im.msg, im.si, im.mt = subj, rply, hdr, msg, si, mt
-	if _, err := ib.push(im); err != nil {
+	if _, _, err := ib.push(im); err != nil {
 		mset.srv.RateLimitWarnf("Dropping messages due to excessive stream ingest rate on '%s' > '%s': %s", mset.acc.Name, mset.name(), err)
 		if rply != _EMPTY_ {
 			hdr := []byte("NATS/1.0 429 Too Many Requests\r\n\r\n")
@@ -5144,14 +5145,14 @@ func (mset *stream) signalConsumersLoop() {
 		case <-qch:
 			return
 		case <-sch:
-			cms := msgs.pop()
+			cms, ql, qsz := msgs.pop()
 			for _, m := range cms {
 				seq, subj := m.seq, m.subj
 				m.returnToPool()
 				// Signal all appropriate consumers.
 				mset.signalConsumers(subj, seq)
 			}
-			msgs.recycle(&cms)
+			msgs.recycle(cms, ql, qsz)
 		}
 	}
 }
@@ -5340,7 +5341,7 @@ func (mset *stream) internalLoop() {
 	for {
 		select {
 		case <-outq.ch:
-			pms := outq.pop()
+			pms, ql, qsz := outq.pop()
 			for _, pm := range pms {
 				c.pa.subject = append(dsubj[:0], pm.dsubj...)
 				c.pa.deliver = append(subj[:0], pm.subj...)
@@ -5393,12 +5394,13 @@ func (mset *stream) internalLoop() {
 			}
 			// TODO: Move in the for-loop?
 			c.flushClients(0)
-			outq.recycle(&pms)
+			outq.recycle(pms, ql, qsz)
 		case <-msgs.ch:
 			// This can possibly change now so needs to be checked here.
 			isClustered := mset.IsClustered()
-			ims := msgs.pop()
+			ims, ql, qsz := msgs.pop()
 			for _, im := range ims {
+				msgs.processed(im, &ql, &qsz)
 				// If we are clustered we need to propose this message to the underlying raft group.
 				if isClustered {
 					mset.processClusteredInboundMsg(im.subj, im.rply, im.hdr, im.msg, im.mt)
@@ -5407,21 +5409,21 @@ func (mset *stream) internalLoop() {
 				}
 				im.returnToPool()
 			}
-			msgs.recycle(&ims)
+			msgs.recycle(ims, ql, qsz)
 		case <-gets.ch:
-			dgs := gets.pop()
+			dgs, ql, qsz := gets.pop()
 			for _, dg := range dgs {
 				mset.getDirectRequest(&dg.req, dg.reply)
 				dgPool.Put(dg)
 			}
-			gets.recycle(&dgs)
+			gets.recycle(dgs, ql, qsz)
 
 		case <-amch:
-			seqs := ackq.pop()
+			seqs, ql, qsz := ackq.pop()
 			for _, seq := range seqs {
 				mset.ackMsg(nil, seq)
 			}
-			ackq.recycle(&seqs)
+			ackq.recycle(seqs, ql, qsz)
 		case <-qch:
 			return
 		case <-s.quitCh:
