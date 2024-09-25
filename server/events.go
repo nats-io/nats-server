@@ -97,6 +97,7 @@ const (
 
 // FIXME(dlc) - make configurable.
 var eventsHBInterval = 30 * time.Second
+var statsHBInterval = 10 * time.Second
 
 // Default minimum wait time for sending statsz
 const defaultStatszRateLimit = 1 * time.Second
@@ -943,9 +944,9 @@ func (s *Server) sendStatsz(subj string) {
 					Peer:   getHash(leader),
 					Size:   mg.ClusterSize(),
 				}
-				if ipq := s.jsAPIRoutedReqs; ipq != nil {
-					jStat.Meta.Pending = ipq.len()
-				}
+			}
+			if ipq := s.jsAPIRoutedReqs; ipq != nil && jStat.Meta != nil {
+				jStat.Meta.Pending = ipq.len()
 			}
 		}
 		m.Stats.JetStream = jStat

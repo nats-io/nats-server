@@ -3560,4 +3560,143 @@ func TestJetStreamPendingRequestsInJsz(t *testing.T) {
 	require_NoError(t, err)
 	require_True(t, jsz.Meta != nil)
 	require_NotEqual(t, jsz.Meta.Pending, 0)
+
+	snc, _ := jsClientConnect(t, c.randomServer(), nats.UserInfo("admin", "s3cr3t!"))
+	defer snc.Close()
+
+	ch := make(chan *nats.Msg, 1)
+	ssub, err := snc.ChanSubscribe(fmt.Sprintf(serverStatsSubj, metaleader.ID()), ch)
+	require_NoError(t, err)
+	require_NoError(t, ssub.AutoUnsubscribe(1))
+
+	msg = require_ChanRead(t, ch, time.Second*5)
+	var m ServerStatsMsg
+	require_NoError(t, json.Unmarshal(msg.Data, &m))
+	require_True(t, m.Stats.JetStream != nil)
+	require_NotEqual(t, m.Stats.JetStream.Meta.Pending, 0)
+}
+
+func TestJetStreamConsumerReplicasAfterScale(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R5S", 5)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomNonLeader())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 5,
+	})
+	require_NoError(t, err)
+
+	// Put some messages in to test consumer state transfer.
+	for i := 0; i < 100; i++ {
+		js.PublishAsync("foo", []byte("ok"))
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	// Create four different consumers.
+	// Normal where we inherit replicas from parent.
+	ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "dur",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+	require_Equal(t, ci.Config.Replicas, 0)
+	require_Equal(t, len(ci.Cluster.Replicas), 4)
+
+	// Ephemeral
+	ci, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+	require_Equal(t, ci.Config.Replicas, 0) // Legacy ephemeral is 0 here too.
+	require_Equal(t, len(ci.Cluster.Replicas), 0)
+	eName := ci.Name
+
+	// R1
+	ci, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "r1",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  1,
+	})
+	require_NoError(t, err)
+	require_Equal(t, ci.Config.Replicas, 1)
+	require_Equal(t, len(ci.Cluster.Replicas), 0)
+
+	// R3
+	ci, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Name:      "r3",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+	require_Equal(t, ci.Config.Replicas, 3)
+	require_Equal(t, len(ci.Cluster.Replicas), 2)
+
+	// Now create some state on r1 consumer.
+	sub, err := js.PullSubscribe("foo", "r1")
+	require_NoError(t, err)
+
+	fetch := rand.Intn(99) + 1 // Needs to be at least 1.
+	msgs, err := sub.Fetch(fetch, nats.MaxWait(10*time.Second))
+	require_NoError(t, err)
+	require_Equal(t, len(msgs), fetch)
+	ack := rand.Intn(fetch)
+	for i := 0; i <= ack; i++ {
+		msgs[i].AckSync()
+	}
+	r1ci, err := js.ConsumerInfo("TEST", "r1")
+	require_NoError(t, err)
+	r1ci.Delivered.Last, r1ci.AckFloor.Last = nil, nil
+
+	// Now scale stream to R3.
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	// Now check each.
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "dur")
+	ci, err = js.ConsumerInfo("TEST", "dur")
+	require_NoError(t, err)
+	require_Equal(t, ci.Config.Replicas, 0)
+	require_Equal(t, len(ci.Cluster.Replicas), 2)
+
+	c.waitOnConsumerLeader(globalAccountName, "TEST", eName)
+	ci, err = js.ConsumerInfo("TEST", eName)
+	require_NoError(t, err)
+	require_Equal(t, ci.Config.Replicas, 0)
+	require_Equal(t, len(ci.Cluster.Replicas), 0)
+
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "r1")
+	ci, err = js.ConsumerInfo("TEST", "r1")
+	require_NoError(t, err)
+	require_Equal(t, ci.Config.Replicas, 1)
+	require_Equal(t, len(ci.Cluster.Replicas), 0)
+	// Now check that state transferred correctly.
+	ci.Delivered.Last, ci.AckFloor.Last = nil, nil
+	if ci.Delivered != r1ci.Delivered {
+		t.Fatalf("Delivered state for R1 incorrect, wanted %+v got %+v",
+			r1ci.Delivered, ci.Delivered)
+	}
+	if ci.AckFloor != r1ci.AckFloor {
+		t.Fatalf("AckFloor state for R1 incorrect, wanted %+v got %+v",
+			r1ci.AckFloor, ci.AckFloor)
+	}
+
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "r3")
+	ci, err = js.ConsumerInfo("TEST", "r3")
+	require_NoError(t, err)
+	require_Equal(t, ci.Config.Replicas, 3)
+	require_Equal(t, len(ci.Cluster.Replicas), 2)
 }
