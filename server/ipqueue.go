@@ -115,7 +115,7 @@ func newIPQueue[T any](s *Server, name string, opts ...ipQueueOpt[T]) *ipQueue[T
 // If the queue has limits, this function checks against what is currently in
 // the queue in addition to the "in progress" elements (the ones that were
 // returned by `pop()`). It will return `errIPQLenLimitReached` or
-// `errIPQSizeLimitReached` if adding the element would have go over the length
+// `errIPQSizeLimitReached` if adding the element would have gone over the length
 // or size limit respectively.
 func (q *ipQueue[T]) push(e T) (int, uint64, error) {
 	var sz uint64
@@ -182,7 +182,7 @@ func (q *ipQueue[T]) pop() ([]T, int64, uint64) {
 	}
 	var elts []T
 	q.Lock()
-	if len(q.elts) == 0 {
+	if len(q.elts)-q.pos == 0 {
 		q.Unlock()
 		return nil, 0, 0
 	}
@@ -215,11 +215,6 @@ func (q *ipQueue[T]) pop() ([]T, int64, uint64) {
 // default empty value.
 func (q *ipQueue[T]) popOne() (T, bool) {
 	q.Lock()
-	if q.elts == nil {
-		q.Unlock()
-		var empty T
-		return empty, false
-	}
 	l := len(q.elts) - q.pos
 	if l == 0 {
 		q.Unlock()
@@ -300,9 +295,6 @@ func (q *ipQueue[T]) processed(e T, ql *int64, qsz *uint64) {
 func (q *ipQueue[T]) len() int {
 	q.Lock()
 	defer q.Unlock()
-	if q.elts == nil {
-		return 0
-	}
 	return len(q.elts) - q.pos
 }
 
