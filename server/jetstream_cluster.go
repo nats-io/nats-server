@@ -854,7 +854,6 @@ func (js *jetStream) setupMetaGroup() error {
 	}
 
 	c := s.createInternalJetStreamClient()
-	sacc := s.SystemAccount()
 
 	js.mu.Lock()
 	defer js.mu.Unlock()
@@ -866,7 +865,7 @@ func (js *jetStream) setupMetaGroup() error {
 		qch:     make(chan struct{}),
 	}
 	atomic.StoreInt32(&js.clustered, 1)
-	c.registerWithAccount(sacc)
+	c.registerWithAccount(sysAcc)
 
 	// Set to true before we start.
 	js.metaRecovering = true
@@ -874,7 +873,7 @@ func (js *jetStream) setupMetaGroup() error {
 		js.monitorCluster,
 		pprofLabels{
 			"type":    "metaleader",
-			"account": sacc.Name,
+			"account": sysAcc.Name,
 		},
 	)
 	return nil
