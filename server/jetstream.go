@@ -214,6 +214,7 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 	cfg := *config
 	if cfg.StoreDir == _EMPTY_ {
 		cfg.StoreDir = filepath.Join(os.TempDir(), JetStreamStoreDir)
+		s.Warnf("Temporary storage directory used, data could be lost on system reboot")
 	}
 
 	// We will consistently place the 'jetstream' directory under the storedir that was handed to us. Prior to 2.2.3 though
@@ -2471,6 +2472,7 @@ func (s *Server) dynJetStreamConfig(storeDir string, maxStore, maxMem int64) *Je
 	} else {
 		// Create one in tmp directory, but make it consistent for restarts.
 		jsc.StoreDir = filepath.Join(os.TempDir(), "nats", JetStreamStoreDir)
+		s.Warnf("Temporary storage directory used, data could be lost on system reboot")
 	}
 
 	opts := s.getOpts()
