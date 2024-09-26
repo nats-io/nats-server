@@ -1592,6 +1592,11 @@ func (s *Server) createVarz(pcpu float64, rss int64) *Varz {
 		TrustedOperatorsJwt:   opts.operatorJWT,
 		TrustedOperatorsClaim: opts.TrustedOperators,
 	}
+	// If this is a leaf without cluster, reset the cluster name (that is otherwise
+	// set to the server name).
+	if s.leafNoCluster {
+		varz.Cluster.Name = _EMPTY_
+	}
 	if len(opts.Routes) > 0 {
 		varz.Cluster.URLs = urlsToStrings(opts.Routes)
 	}

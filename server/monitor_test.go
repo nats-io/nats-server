@@ -3138,6 +3138,14 @@ func TestMonitorLeafNode(t *testing.T) {
 	for mode := 0; mode < 2; mode++ {
 		check := func(t *testing.T, v *Varz) {
 			t.Helper()
+			// Issue 5913. When we have solicited leafnodes but no clustering
+			// and no clustername, we may need a stable clustername so we use
+			// the server name as cluster name. However, we should not expose
+			// it in /varz.
+			if v.Cluster.Name != _EMPTY_ {
+				t.Fatalf("mode=%v - unexpected cluster name: %s", mode, v.Cluster.Name)
+			}
+			// Check rest is as expected.
 			if !reflect.DeepEqual(v.LeafNode, expected) {
 				t.Fatalf("mode=%v - expected %+v, got %+v", mode, expected, v.LeafNode)
 			}
