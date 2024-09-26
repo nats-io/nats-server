@@ -869,7 +869,7 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, sub
 	// Copy the state. Note the JSAPI only uses the hdr index to piece apart the
 	// header from the msg body. No other references are needed.
 	// Check pending and warn if getting backed up.
-	pending, _ := s.jsAPIRoutedReqs.push(&jsAPIRoutedReq{jsub, sub, acc, subject, reply, copyBytes(rmsg), c.pa})
+	pending, _, _ := s.jsAPIRoutedReqs.push(&jsAPIRoutedReq{jsub, sub, acc, subject, reply, copyBytes(rmsg), c.pa})
 	limit := atomic.LoadInt64(&js.queueLimit)
 	if pending >= int(limit) {
 		s.rateLimitFormatWarnf("JetStream API queue limit reached, dropping %d requests", pending)
@@ -901,7 +901,7 @@ func (s *Server) processJSAPIRoutedRequests() {
 	for {
 		select {
 		case <-queue.ch:
-			reqs := queue.pop()
+			reqs, ql, qsz := queue.pop()
 			for _, r := range reqs {
 				client.pa = r.pa
 				start := time.Now()
@@ -911,7 +911,7 @@ func (s *Server) processJSAPIRoutedRequests() {
 				}
 				atomic.AddInt64(&js.apiInflight, -1)
 			}
-			queue.recycle(&reqs)
+			queue.recycle(reqs, ql, qsz)
 		case <-s.quitCh:
 			return
 		}

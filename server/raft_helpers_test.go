@@ -167,11 +167,11 @@ func smLoop(sm stateMachine) {
 		case <-qch:
 			return
 		case <-aq.ch:
-			ces := aq.pop()
+			ces, ql, qsz := aq.pop()
 			for _, ce := range ces {
 				sm.applyEntry(ce)
 			}
-			aq.recycle(&ces)
+			aq.recycle(ces, ql, qsz)
 
 		case isLeader := <-lch:
 			sm.leaderChange(isLeader)

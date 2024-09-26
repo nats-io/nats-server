@@ -64,7 +64,7 @@ func (sq *sendq) internalLoop() {
 		case <-s.quitCh:
 			return
 		case <-q.ch:
-			pms := q.pop()
+			pms, ql, qsz := q.pop()
 			for _, pm := range pms {
 				c.pa.subject = append(subj[:0], pm.subj...)
 				c.pa.size = len(pm.msg) + len(pm.hdr)
@@ -91,7 +91,7 @@ func (sq *sendq) internalLoop() {
 			}
 			// TODO: should this be in the for-loop instead?
 			c.flushClients(0)
-			q.recycle(&pms)
+			q.recycle(pms, ql, qsz)
 		}
 	}
 }

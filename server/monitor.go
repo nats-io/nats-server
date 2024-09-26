@@ -1123,8 +1123,10 @@ func (s *Server) HandleStacksz(w http.ResponseWriter, r *http.Request) {
 }
 
 type monitorIPQueue struct {
-	Pending    int `json:"pending"`
-	InProgress int `json:"in_progress,omitempty"`
+	Pending        int    `json:"pending"`
+	InProgress     int    `json:"in_progress,omitempty"`
+	Size           uint64 `json:"size,omitempty"`
+	InProgressSize uint64 `json:"in_progress_size,omitempty"`
 }
 
 func (s *Server) HandleIPQueuesz(w http.ResponseWriter, r *http.Request) {
@@ -1136,23 +1138,32 @@ func (s *Server) HandleIPQueuesz(w http.ResponseWriter, r *http.Request) {
 
 	queues := map[string]monitorIPQueue{}
 
+	type ipQueueInterface interface {
+		len() int
+		inProgress() int64
+		size() uint64
+		inProgressSize() uint64
+	}
+
 	s.ipQueues.Range(func(k, v any) bool {
-		var pending, inProgress int
 		name := k.(string)
-		queue, ok := v.(interface {
-			len() int
-			inProgress() int64
-		})
-		if ok {
-			pending = queue.len()
-			inProgress = int(queue.inProgress())
+		queue, ok := v.(ipQueueInterface)
+		if !ok {
+			return true
 		}
+		pending, inProgress := queue.len(), int(queue.inProgress())
+		size, inProgressSize := queue.size(), queue.inProgressSize()
 		if !all && (pending == 0 && inProgress == 0) {
 			return true
 		} else if qfilter != _EMPTY_ && !strings.Contains(name, qfilter) {
 			return true
 		}
-		queues[name] = monitorIPQueue{Pending: pending, InProgress: inProgress}
+		queues[name] = monitorIPQueue{
+			Pending:        pending,
+			InProgress:     inProgress,
+			Size:           size,
+			InProgressSize: inProgressSize,
+		}
 		return true
 	})
 

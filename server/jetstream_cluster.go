@@ -1361,7 +1361,7 @@ func (js *jetStream) monitorCluster() {
 			close(qch)
 			return
 		case <-aq.ch:
-			ces := aq.pop()
+			ces, ql, qsz := aq.pop()
 			for _, ce := range ces {
 				if ce == nil {
 					// Signals we have replayed all of our metadata.
@@ -1403,7 +1403,7 @@ func (js *jetStream) monitorCluster() {
 					s.Warnf("Error applying JetStream cluster entries: %v", err)
 				}
 			}
-			aq.recycle(&ces)
+			aq.recycle(ces, ql, qsz)
 
 		case isLeader = <-lch:
 			// For meta layer synchronize everyone to our state on becoming leader.
@@ -2431,7 +2431,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			// If we bump clfs we will want to write out snapshot if within our time window.
 			pclfs := mset.getCLFS()
 
-			ces := aq.pop()
+			ces, ql, qsz := aq.pop()
 			for _, ce := range ces {
 				// No special processing needed for when we are caught up on restart.
 				if ce == nil {
@@ -2456,6 +2456,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				} else {
 					// Our stream was closed out from underneath of us, simply return here.
 					if err == errStreamClosed {
+						aq.recycle(ces, ql, qsz)
 						return
 					}
 					s.Warnf("Error applying entries to '%s > %s': %v", accName, sa.Config.Name, err)
@@ -2466,7 +2467,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 						}
 						// We will attempt to reset our cluster state.
 						if mset.resetClusteredState(err) {
-							aq.recycle(&ces)
+							aq.recycle(ces, ql, qsz)
 							return
 						}
 					} else if isOutOfSpaceErr(err) {
@@ -2475,7 +2476,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					}
 				}
 			}
-			aq.recycle(&ces)
+			aq.recycle(ces, ql, qsz)
 
 			// Check about snapshotting
 			// If we have at least min entries to compact, go ahead and try to snapshot/compact.
@@ -4812,7 +4813,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 		case <-qch:
 			return
 		case <-aq.ch:
-			ces := aq.pop()
+			ces, ql, qsz := aq.pop()
 			for _, ce := range ces {
 				// No special processing needed for when we are caught up on restart.
 				if ce == nil {
@@ -4831,7 +4832,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 					s.Warnf("Error applying consumer entries to '%s > %s'", ca.Client.serviceAccount(), ca.Name)
 				}
 			}
-			aq.recycle(&ces)
+			aq.recycle(ces, ql, qsz)
 		case isLeader = <-lch:
 			if recovering && !isLeader {
 				js.setConsumerAssignmentRecovering(ca)
@@ -8458,12 +8459,12 @@ RETRY:
 		case <-msgsQ.ch:
 			notActive.Reset(activityInterval)
 
-			mrecs := msgsQ.pop()
+			mrecs, ql, qsz := msgsQ.pop()
 			for _, mrec := range mrecs {
 				msg := mrec.msg
 				// Check for eof signaling.
 				if len(msg) == 0 {
-					msgsQ.recycle(&mrecs)
+					msgsQ.recycle(mrecs, ql, qsz)
 					return nil
 				}
 				if _, err := mset.processCatchupMsg(msg); err == nil {
@@ -8472,6 +8473,7 @@ RETRY:
 					}
 				} else if isOutOfSpaceErr(err) {
 					notifyLeaderStopCatchup(mrec, err)
+					msgsQ.recycle(mrecs, ql, qsz)
 					return err
 				} else if err == NewJSInsufficientResourcesError() {
 					notifyLeaderStopCatchup(mrec, err)
@@ -8480,12 +8482,12 @@ RETRY:
 					} else {
 						s.Warnf("Catchup for stream '%s > %s' errored, account resources exceeded: %v", mset.account(), mset.name(), err)
 					}
-					msgsQ.recycle(&mrecs)
+					msgsQ.recycle(mrecs, ql, qsz)
 					return err
 				} else {
 					notifyLeaderStopCatchup(mrec, err)
 					s.Warnf("Catchup for stream '%s > %s' errored, will retry: %v", mset.account(), mset.name(), err)
-					msgsQ.recycle(&mrecs)
+					msgsQ.recycle(mrecs, ql, qsz)
 
 					// Make sure we do not spin and make things worse.
 					const minRetryWait = 2 * time.Second
@@ -8503,12 +8505,12 @@ RETRY:
 				}
 			}
 			notActive.Reset(activityInterval)
-			msgsQ.recycle(&mrecs)
+			msgsQ.recycle(mrecs, ql, qsz)
 		case <-notActive.C:
-			if mrecs := msgsQ.pop(); len(mrecs) > 0 {
+			if mrecs, ql, qsz := msgsQ.pop(); ql > 0 {
 				mrec := mrecs[0]
 				notifyLeaderStopCatchup(mrec, errCatchupStalled)
-				msgsQ.recycle(&mrecs)
+				msgsQ.recycle(mrecs, ql, qsz)
 			}
 			s.Warnf("Catchup for stream '%s > %s' stalled", mset.account(), mset.name())
 			goto RETRY

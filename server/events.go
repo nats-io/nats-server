@@ -432,13 +432,13 @@ func (s *Server) internalReceiveLoop(recvq *ipQueue[*inSysMsg]) {
 	for s.eventsRunning() {
 		select {
 		case <-recvq.ch:
-			msgs := recvq.pop()
+			msgs, ql, qsz := recvq.pop()
 			for _, m := range msgs {
 				if m.cb != nil {
 					m.cb(m.sub, m.c, m.acc, m.subj, m.rply, m.hdr, m.msg)
 				}
 			}
-			recvq.recycle(&msgs)
+			recvq.recycle(msgs, ql, qsz)
 		case <-s.quitCh:
 			return
 		}
@@ -477,7 +477,7 @@ RESET:
 	for s.eventsRunning() {
 		select {
 		case <-sendq.ch:
-			msgs := sendq.pop()
+			msgs, ql, qsz := sendq.pop()
 			for _, pm := range msgs {
 				if si := pm.si; si != nil {
 					si.Name = servername
@@ -595,12 +595,12 @@ RESET:
 					// there is a chance that the process will exit before the
 					// writeLoop has a chance to send it.
 					c.flushClients(time.Second)
-					sendq.recycle(&msgs)
+					sendq.recycle(msgs, ql, qsz)
 					return
 				}
 				pm.returnToPool()
 			}
-			sendq.recycle(&msgs)
+			sendq.recycle(msgs, ql, qsz)
 		case <-resetCh:
 			goto RESET
 		case <-s.quitCh:

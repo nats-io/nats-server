@@ -2040,13 +2040,13 @@ func (n *raft) processAppendEntries() {
 	}
 	// Always pop the entries, but check if we can process them. If we can't
 	// then the entries are effectively dropped.
-	aes := n.entry.pop()
+	aes, ql, qsz := n.entry.pop()
 	if canProcess {
 		for _, ae := range aes {
 			n.processAppendEntry(ae, ae.sub)
 		}
 	}
-	n.entry.recycle(&aes)
+	n.entry.recycle(aes, ql, qsz)
 }
 
 // runAsFollower is called by run and will block for as long as the node is
@@ -2479,17 +2479,18 @@ func (n *raft) runAsLeader() {
 		case <-n.quit:
 			return
 		case <-n.resp.ch:
-			ars := n.resp.pop()
+			ars, ql, qsz := n.resp.pop()
 			for _, ar := range ars {
 				n.processAppendEntryResponse(ar)
 			}
-			n.resp.recycle(&ars)
+			n.resp.recycle(ars, ql, qsz)
 		case <-n.prop.ch:
 			const maxBatch = 256 * 1024
 			const maxEntries = 512
 			var entries []*Entry
 
-			es, sz := n.prop.pop(), 0
+			sz := 0
+			es, ql, qsz := n.prop.pop()
 			for _, b := range es {
 				if b.Type == EntryRemovePeer {
 					n.doRemovePeerAsLeader(string(b.Data))
@@ -2510,7 +2511,7 @@ func (n *raft) runAsLeader() {
 			if len(entries) > 0 {
 				n.sendAppendEntry(entries)
 			}
-			n.prop.recycle(&es)
+			n.prop.recycle(es, ql, qsz)
 
 		case <-hb.C:
 			if n.notActive() {
