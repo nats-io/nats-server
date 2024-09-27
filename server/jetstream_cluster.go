@@ -2456,6 +2456,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				} else {
 					// Our stream was closed out from underneath of us, simply return here.
 					if err == errStreamClosed {
+						aq.recycle(&ces)
 						return
 					}
 					s.Warnf("Error applying entries to '%s > %s': %v", accName, sa.Config.Name, err)
@@ -8472,6 +8473,7 @@ RETRY:
 					}
 				} else if isOutOfSpaceErr(err) {
 					notifyLeaderStopCatchup(mrec, err)
+					msgsQ.recycle(&mrecs)
 					return err
 				} else if err == NewJSInsufficientResourcesError() {
 					notifyLeaderStopCatchup(mrec, err)

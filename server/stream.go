@@ -3278,6 +3278,7 @@ func (mset *stream) processAllSourceMsgs() {
 				if !mset.processInboundSourceMsg(im.si, im) {
 					// If we are no longer leader bail.
 					if !mset.IsLeader() {
+						msgs.recycle(&ims)
 						cleanUp()
 						return
 					}
