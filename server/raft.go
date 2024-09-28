@@ -19,6 +19,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/antithesishq/antithesis-sdk-go/assert"
 	"hash"
 	"math"
 	"math/rand"
@@ -26,11 +27,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/antithesishq/antithesis-sdk-go/lifecycle"
 	"github.com/nats-io/nats-server/v2/internal/fastrand"
 
 	"github.com/minio/highwayhash"
@@ -1771,6 +1774,17 @@ func (n *raft) shutdown(shouldDelete bool) {
 		q.unregister()
 	}
 	sd := n.sd
+
+	assert.Sometimes(shouldDelete, "RAFT shutdown/delete", make(map[string]any))
+	if shouldDelete {
+		stack := debug.Stack()
+		lifecycle.SendEvent("RAFT deleted", map[string]any{
+			"account": n.accName,
+			"group": n.group,
+			"stack": string(stack),
+		})
+	}
+
 	n.Unlock()
 
 	s.unregisterRaftNode(g)
