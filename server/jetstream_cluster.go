@@ -2846,7 +2846,7 @@ func (mset *stream) resetClusteredState(err error) bool {
 	}
 
 	if node != nil {
-		if err == errCatchupTooManyRetries || err == errLastSeqMismatch {
+		if err == errCatchupTooManyRetries {
 			// Don't delete all state, could've just been temporarily unable to reach the leader.
 			node.Stop()
 		} else {

@@ -1107,6 +1107,7 @@ func (mset *stream) getCLFS() uint64 {
 func (mset *stream) setCLFS(clfs uint64) {
 	mset.clMu.Lock()
 	mset.clfs = clfs
+	mset.srv.Debugf("Set CLFS, mset.clfs=%d", mset.clfs)
 	mset.clMu.Unlock()
 }
 
@@ -4619,6 +4620,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		}
 		mset.clMu.Lock()
 		mset.clfs++
+		s.Debugf("Bump CLFS, lseq=%d, mset.lseq=%d + mset.clfs=%d = %d", lseq, mset.lseq, mset.clfs, mset.lseq+mset.clfs)
 		mset.clMu.Unlock()
 	}
 
@@ -4672,6 +4674,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	// For clustering the lower layers will pass our expected lseq. If it is present check for that here.
 	if lseq > 0 && lseq != (mset.lseq+mset.clfs) {
+		s.Debugf("Last seq mismatch, lseq=%d, mset.lseq=%d + mset.clfs=%d = %d", lseq, mset.lseq, mset.clfs, mset.lseq+mset.clfs)
 		isMisMatch := true
 		// We may be able to recover here if we have no state whatsoever, or we are a mirror.
 		// See if we have to adjust our starting sequence.
