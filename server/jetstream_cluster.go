@@ -2846,13 +2846,13 @@ func (mset *stream) resetClusteredState(err error) bool {
 	}
 
 	if node != nil {
-		//if err != ErrStoreEOF {
+		if err == errCatchupTooManyRetries || err == errLastSeqMismatch {
 			// Don't delete all state, could've just been temporarily unable to reach the leader.
 			node.Stop()
-		//} else {
-		//	// We delete our raft state. Will recreate.
-		//	node.Delete()
-		//}
+		} else {
+			// We delete our raft state. Will recreate.
+			node.Delete()
+		}
 	}
 
 	// Preserve our current state and messages unless we have a first sequence mismatch.
