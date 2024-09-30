@@ -2980,6 +2980,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					mt = mset.getAndDeleteMsgTrace(lseq)
 				}
 				// Process the actual message here.
+				s.Debugf("processJetStreamMsg: subject=%s, lseq=%d", subject, lseq)
 				err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt)
 
 				// If we have inflight make sure to clear after processing.

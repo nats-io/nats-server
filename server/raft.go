@@ -3518,7 +3518,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.debug("processAppendEntry replay on startup, n.pterm=%d, n.pindex=%d, ae.term=%d, ae.pindex+1=%d", n.pterm, n.pindex, ae.term, ae.pindex+1)
 			// This is a replay on startup so just take the appendEntry version.
 			n.pterm = ae.term
-			n.pindex = ae.pindex
+			n.pindex = ae.pindex + 1
 		}
 	}
 
