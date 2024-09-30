@@ -2845,9 +2845,14 @@ func (mset *stream) resetClusteredState(err error) bool {
 		return false
 	}
 
-	// We delete our raft state. Will recreate.
 	if node != nil {
-		node.Delete()
+		if err == errCatchupTooManyRetries {
+			// Don't delete all state, could've just been temporarily unable to reach the leader.
+			node.Stop()
+		} else {
+			// We delete our raft state. Will recreate.
+			node.Delete()
+		}
 	}
 
 	// Preserve our current state and messages unless we have a first sequence mismatch.
@@ -8383,7 +8388,7 @@ RETRY:
 	}
 
 	numRetries++
-	if numRetries >= maxRetries {
+	if numRetries > maxRetries {
 		// Force a hard reset here.
 		return errCatchupTooManyRetries
 	}
