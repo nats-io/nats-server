@@ -3278,7 +3278,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		} else {
 			// Let them know we are the leader.
 			ar := newAppendEntryResponse(n.term, n.pindex, n.id, false)
-			n.debug("AppendEntry ignoring old term from another leader")
+			n.debug("AppendEntry ignoring old term from another leader (n.term=%d, n.pindex=%d, ae.term=%d, ae.pterm=%d, ae.pindex=%d)", n.term, n.pindex, ae.term, ae.pterm, ae.pindex)
 			n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
 			arPool.Put(ar)
 		}
@@ -3515,9 +3515,10 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				n.debug("Not saving to append entries pending")
 			}
 		} else {
+			n.debug("processAppendEntry replay on startup, n.pterm=%d, n.pindex=%d, ae.term=%d, ae.pindex+1=%d", n.pterm, n.pindex, ae.term, ae.pindex+1)
 			// This is a replay on startup so just take the appendEntry version.
 			n.pterm = ae.term
-			n.pindex = ae.pindex + 1
+			n.pindex = ae.pindex
 		}
 	}
 
@@ -3683,6 +3684,7 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 
 	n.pterm = ae.term
 	n.pindex = seq
+	n.debug("storeToWAL (n.pterm=%d, n.pindex=%d, ae.term=%d, ae.pterm=%d, ae.pindex=%d)", n.pterm, n.pindex, ae.term, ae.pterm, ae.pindex)
 	return nil
 }
 
@@ -4082,6 +4084,7 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 
 	// Only way we get to yes is through here.
 	voteOk := n.vote == noVote || n.vote == vr.candidate
+	n.debug("processVoteRequest, granted? %t && (%d > %d || %d == %d && %d >= %d)", voteOk, vr.lastTerm, n.pterm, vr.lastTerm, n.pterm, vr.lastIndex, n.pindex)
 	if voteOk && (vr.lastTerm > n.pterm || vr.lastTerm == n.pterm && vr.lastIndex >= n.pindex) {
 		vresp.granted = true
 		n.term = vr.term
