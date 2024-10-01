@@ -19,7 +19,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/antithesishq/antithesis-sdk-go/assert"
 	"hash"
 	"math"
 	"math/rand"
@@ -32,6 +31,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/antithesishq/antithesis-sdk-go/assert"
 
 	"github.com/nats-io/nats-server/v2/internal/fastrand"
 
@@ -447,12 +448,12 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 	n.wal.FastState(&state)
 	if state.Msgs > 0 {
 		n.debug("Replaying state of %d entries", state.Msgs)
-		if first, err := n.loadFirstEntry(); err == nil {
-			n.pterm, n.pindex = first.pterm, first.pindex
-			if first.commit > 0 && first.commit > n.commit {
-				n.commit = first.commit
-			}
-		}
+		//if first, err := n.loadFirstEntry(); err == nil {
+		//	n.pterm, n.pindex = first.pterm, first.pindex
+		//	if first.commit > 0 && first.commit > n.commit {
+		//		n.commit = first.commit
+		//	}
+		//}
 
 		// This process will queue up entries on our applied queue but prior to the upper
 		// state machine running. So we will monitor how much we have queued and if we
@@ -3559,13 +3560,17 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		}
 	}
 
+	// Capture these, otherwise would race when ae is returned to the pool from applyCommit.
+	aeReply := ae.reply
+	aeCommit := ae.commit
+
 	// Apply anything we need here.
-	if ae.commit > n.commit {
+	if aeCommit > n.commit {
 		if n.paused {
-			n.hcommit = ae.commit
-			n.debug("Paused, not applying %d", ae.commit)
+			n.hcommit = aeCommit
+			n.debug("Paused, not applying %d", aeCommit)
 		} else {
-			for index := n.commit + 1; index <= ae.commit; index++ {
+			for index := n.commit + 1; index <= aeCommit; index++ {
 				if err := n.applyCommit(index); err != nil {
 					break
 				}
@@ -3581,7 +3586,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 
 	// Success. Send our response.
 	if ar != nil {
-		n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
+		n.sendRPC(aeReply, _EMPTY_, ar.encode(arbuf))
 		arPool.Put(ar)
 	}
 }
@@ -3645,7 +3650,10 @@ func (n *raft) handleAppendEntryResponse(sub *subscription, c *client, _ *Accoun
 }
 
 func (n *raft) buildAppendEntry(entries []*Entry) *appendEntry {
-	return newAppendEntry(n.id, n.term, n.commit, n.pterm, n.pindex, entries)
+	if len(entries) == 0 {
+		return newAppendEntry(n.id, n.term, n.commit, n.pterm, n.pindex, entries)
+	}
+	return newAppendEntry(n.id, n.term, n.commit+1, n.pterm, n.pindex, entries)
 }
 
 // Determine if we should store an entry. This stops us from storing
