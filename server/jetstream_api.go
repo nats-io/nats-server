@@ -1012,30 +1012,76 @@ func (s *Server) sendAPIErrResponse(ci *ClientInfo, acc *Account, subject, reply
 
 const errRespDelay = 500 * time.Millisecond
 
-func (s *Server) sendDelayedAPIErrResponse(ci *ClientInfo, acc *Account, subject, reply, request, response string, rg *raftGroup) {
-	js := s.getJetStream()
-	if js == nil {
-		return
-	}
-	var quitCh <-chan struct{}
-	js.mu.RLock()
-	if rg != nil && rg.node != nil {
-		quitCh = rg.node.QuitC()
-	}
-	js.mu.RUnlock()
+type delayedAPIResponse struct {
+	ci       *ClientInfo
+	acc      *Account
+	subject  string
+	reply    string
+	request  string
+	response string
+	rg       *raftGroup
+	after    time.Time
+}
 
-	s.startGoRoutine(func() {
-		defer s.grWG.Done()
-		select {
-		case <-quitCh:
-		case <-s.quitCh:
-		case <-time.After(errRespDelay):
-			acc.trackAPIErr()
-			if reply != _EMPTY_ {
-				s.sendInternalAccountMsg(nil, reply, response)
-			}
-			s.sendJetStreamAPIAuditAdvisory(ci, acc, subject, request, response)
+func (s *Server) delayedAPIResponder() {
+	defer s.grWG.Done()
+	var tasks []*delayedAPIResponse
+	var timer *time.Timer
+	var next <-chan time.Time
+	for {
+		// Start with a nil channel so it blocks forever.
+		next = nil
+		// If we have a queued up timer, use that instead.
+		if len(tasks) > 0 {
+			stopAndClearTimer(&timer)
+			timer = time.NewTimer(time.Until(tasks[0].after))
+			next = timer.C
 		}
+		select {
+		case <-s.quitCh:
+			return
+		case <-s.delayedAPIResponses.ch:
+			// A new timer is waiting, pull it off the queue and we'll
+			// re-sort the pending timers so the one that should fire
+			// first will be up front.
+			tasks = append(tasks, s.delayedAPIResponses.pop()...)
+			slices.SortFunc(tasks, func(a, b *delayedAPIResponse) int {
+				return a.after.Compare(b.after)
+			})
+			continue
+		case <-next:
+			// This will block forever if there are no timers (waiting
+			// instead on the above IPQ), or it will block until the first
+			// timer is ready to fire.
+			resp := tasks[0]
+			js := s.getJetStream()
+			if js == nil {
+				// JetStream is gone, so stop processing any more.
+				return
+			}
+			var quitCh <-chan struct{}
+			js.mu.RLock()
+			if resp.rg != nil && resp.rg.node != nil {
+				quitCh = resp.rg.node.QuitC()
+			}
+			js.mu.RUnlock()
+			select {
+			case <-s.quitCh:
+				return
+			case <-quitCh:
+				// Raft group that we were tracking quit.
+			case <-time.After(time.Until(resp.after)):
+				s.sendAPIErrResponse(resp.ci, resp.acc, resp.subject, resp.reply, resp.request, resp.response)
+			}
+			// Slide forward.
+			tasks = tasks[:copy(tasks[0:], tasks[1:])]
+		}
+	}
+}
+
+func (s *Server) sendDelayedAPIErrResponse(ci *ClientInfo, acc *Account, subject, reply, request, response string, rg *raftGroup, duration time.Duration) {
+	s.delayedAPIResponses.push(&delayedAPIResponse{
+		ci, acc, subject, reply, request, response, rg, time.Now().Add(duration),
 	})
 }
 
@@ -1887,12 +1933,12 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 			if js.isLeaderless() {
 				resp.Error = NewJSClusterNotAvailError()
 				// Delaying an error response gives the leader a chance to respond before us
-				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil)
+				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil, errRespDelay)
 			}
 			return
 		} else if isLeader && offline {
 			resp.Error = NewJSStreamOfflineError()
-			s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil)
+			s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil, errRespDelay)
 			return
 		}
 
@@ -1904,7 +1950,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 			if js.isLeaderless() {
 				resp.Error = NewJSClusterNotAvailError()
 				// Delaying an error response gives the leader a chance to respond before us
-				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), sa.Group)
+				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), sa.Group, errRespDelay)
 				return
 			}
 
@@ -4379,12 +4425,12 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 			if isLeaderLess {
 				resp.Error = NewJSClusterNotAvailError()
 				// Delaying an error response gives the leader a chance to respond before us
-				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil)
+				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil, errRespDelay)
 			}
 			return
 		} else if isLeader && offline {
 			resp.Error = NewJSConsumerOfflineError()
-			s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil)
+			s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil, errRespDelay)
 			return
 		}
 
@@ -4400,7 +4446,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 			if isLeaderLess {
 				resp.Error = NewJSClusterNotAvailError()
 				// Delaying an error response gives the leader a chance to respond before us
-				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), ca.Group)
+				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), ca.Group, errRespDelay)
 				return
 			}
 
@@ -4443,7 +4489,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 			if node.GroupLeader() != _EMPTY_ || node.HadPreviousLeader() {
 				if leaderNotPartOfGroup {
 					resp.Error = NewJSConsumerOfflineError()
-					s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil)
+					s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil, errRespDelay)
 				}
 				return
 			}

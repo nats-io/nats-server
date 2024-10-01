@@ -362,6 +362,9 @@ type Server struct {
 	// Queue to process JS API requests that come from routes (or gateways)
 	jsAPIRoutedReqs *ipQueue[*jsAPIRoutedReq]
 
+	// Delayed API responses.
+	delayedAPIResponses *ipQueue[*delayedAPIResponse]
+
 	// Whether moving NRG traffic into accounts is permitted on this server.
 	// Controls whether or not the account NRG capability is set in statsz.
 	// Currently used by unit tests to simulate nodes not supporting account NRG.
@@ -2222,6 +2225,10 @@ func (s *Server) Start() {
 	s.grMu.Lock()
 	s.grRunning = true
 	s.grMu.Unlock()
+
+	// Delayed API response handling.
+	s.delayedAPIResponses = newIPQueue[*delayedAPIResponse](s, "delayed API responses")
+	s.startGoRoutine(s.delayedAPIResponder)
 
 	s.startRateLimitLogExpiration()
 
