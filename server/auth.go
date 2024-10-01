@@ -506,13 +506,8 @@ func processUserPermissionsTemplate(lim jwt.UserPermissionLimits, ujwt *jwt.User
 								strings.TrimSuffix(strings.TrimPrefix(op, "tag("), ")")))
 						}
 
-						valueList := []string{}
-						for _, tag := range tags {
-							if strings.HasPrefix(tag, tagPrefix) {
-								tagValue := strings.TrimPrefix(tag, tagPrefix)
-								valueList = append(valueList, tagValue)
-							}
-						}
+						values := tags.GetValuesForTag(tagPrefix)
+						valueList := *values
 						if len(valueList) != 0 {
 							tagValues = append(tagValues, valueList)
 						}

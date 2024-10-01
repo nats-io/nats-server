@@ -4363,6 +4363,40 @@ func TestJwtTemplates(t *testing.T) {
 	require_Contains(t, err.Error(), "generated invalid subject")
 }
 
+func TestJwtTagSubjects(t *testing.T) {
+	kp, _ := nkeys.CreateAccount()
+	aPub, _ := kp.PublicKey()
+	ukp, _ := nkeys.CreateUser()
+	upub, _ := ukp.PublicKey()
+	uclaim := newJWTTestUserClaims()
+	uclaim.Name = "myname"
+	uclaim.Subject = upub
+	uclaim.SetScoped(true)
+	uclaim.IssuerAccount = aPub
+	// name of the tag should have case-insensitive match, but case-sensitive value
+	uclaim.Tags.Add("Foo:Fumachoo")
+	uclaim.Tags.Add("bar:baritone")
+
+	lim := jwt.UserPermissionLimits{}
+	lim.Pub.Allow.Add("{{tag(foo)}}.{{account-tag(acc)}}.{{tag(BAR)}}")
+
+	// same for account-tags
+	acc := &Account{nameTag: "accname", tags: []string{"Acc:acc1", "acc:aCc2"}}
+
+	resLim, err := processUserPermissionsTemplate(lim, uclaim, acc)
+	require_NoError(t, err)
+
+	test := func(expectedSubjects []string, res jwt.StringList) {
+		t.Helper()
+		require_True(t, len(res) == len(expectedSubjects))
+		for _, expetedSubj := range expectedSubjects {
+			require_True(t, res.Contains(expetedSubj))
+		}
+	}
+
+	test(resLim.Pub.Allow, []string{"Fumachoo.acc1.baritone", "Fumachoo.aCc2.baritone"})
+}
+
 func TestJwtTemplateGoodTagAfterBadTag(t *testing.T) {
 	kp, _ := nkeys.CreateAccount()
 	aPub, _ := kp.PublicKey()
