@@ -3466,6 +3466,7 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) bool {
 	} else if mset, _ := acc.lookupStream(sa.Config.Name); mset != nil {
 		// We have one here even though we are not a member. This can happen on re-assignment.
 		s.removeStream(ourID, mset, sa)
+		didRemove = true
 	}
 
 	// If this stream assignment does not have a sync subject (bug) set that the meta-leader should check when elected.

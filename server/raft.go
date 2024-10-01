@@ -471,6 +471,8 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 				truncateAndErr(index)
 				break
 			}
+			// ae.commit must be equal to index, otherwise applyCommit will not be run.
+			ae.commit = index
 			n.processAppendEntry(ae, nil)
 			// Check how much we have queued up so far to determine if we should pause.
 			for _, e := range ae.entries {
