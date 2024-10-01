@@ -317,7 +317,7 @@ func TestHandleVarz(t *testing.T) {
 		if v.Name != "server_-1" {
 			t.Fatalf("Expected ServerName to be 'monitor_server' got %q", v.Name)
 		}
-		if !v.Tags.Contains("tag") {
+		if !v.Tags.ContainsEqualsFold("tag") {
 			t.Fatalf("Expected tags to be 'tag' got %v", v.Tags)
 		}
 		if v.JetStream.Config == nil {

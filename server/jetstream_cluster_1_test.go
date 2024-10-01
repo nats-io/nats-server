@@ -3743,7 +3743,7 @@ func TestJetStreamClusterPeerExclusionTag(t *testing.T) {
 
 	v, err := srv.Varz(nil)
 	require_NoError(t, err)
-	require_True(t, v.Tags.Contains(jsExcludePlacement))
+	require_True(t, v.Tags.ContainsEqualsFold(jsExcludePlacement))
 	content, err := os.ReadFile(srv.configFile)
 	require_NoError(t, err)
 	newContent := strings.ReplaceAll(string(content), fmt.Sprintf(", %s]", jsExcludePlacement), "]")
@@ -3757,14 +3757,24 @@ func TestJetStreamClusterPeerExclusionTag(t *testing.T) {
 	require_NoError(t, srv.Reload())
 	v, err = srv.Varz(nil)
 	require_NoError(t, err)
-	require_True(t, !v.Tags.Contains(jsExcludePlacement))
+	require_True(t, !v.Tags.ContainsEqualsFold(jsExcludePlacement))
 
 	// it is possible that sub already received a stasz message prior to reload, retry once
+	type SI struct {
+		Server ServerInfo `json:"server"`
+	}
+
 	cmp := false
 	for i := 0; i < 2 && !cmp; i++ {
 		m, err := sub.NextMsg(time.Second)
 		require_NoError(t, err)
-		cmp = strings.Contains(string(m.Data), `"tags":["server:s-1","intersect"]`)
+
+		var si SI
+		err = json.Unmarshal(m.Data, &si)
+		require_NoError(t, err)
+
+		tl := jwt.TagList(si.Server.Tags)
+		cmp = tl.ContainsEqualsFold("server:s-1") && tl.ContainsEqualsFold("intersect")
 	}
 	require_True(t, cmp)
 

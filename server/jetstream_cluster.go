@@ -5858,7 +5858,7 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 			continue
 		}
 
-		if ni.tags.Contains(jsExcludePlacement) {
+		if ni.tags.ContainsEqualsFold(jsExcludePlacement) {
 			s.Debugf("Peer selection: discard %s@%s tags: %v reason: %s present",
 				ni.name, ni.cluster, ni.tags, jsExcludePlacement)
 			err.excludeTag = true
@@ -5868,7 +5868,7 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 		if len(tags) > 0 {
 			matched := true
 			for _, t := range tags {
-				if !ni.tags.Contains(t) {
+				if !ni.tags.ContainsEqualsFold(t) {
 					matched = false
 					s.Debugf("Peer selection: discard %s@%s tags: %v reason: mandatory tag %s not present",
 						ni.name, ni.cluster, ni.tags, t)

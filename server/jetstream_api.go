@@ -2697,7 +2697,7 @@ func (s *Server) jsLeaderServerStreamCancelMoveRequest(sub *subscription, c *cli
 			}
 			nodeTags := si.(nodeInfo).tags
 			for _, tag := range cfg.Placement.Tags {
-				if !nodeTags.Contains(tag) {
+				if !nodeTags.ContainsEqualsFold(tag) {
 					// clear placement as tags don't match
 					cfg.Placement = nil
 					break FOR_TAGCHECK
