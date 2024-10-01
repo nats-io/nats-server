@@ -4082,15 +4082,9 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 	voteOk := n.vote == noVote || n.vote == vr.candidate
 	if voteOk && (vr.lastTerm > n.pterm || vr.lastTerm == n.pterm && vr.lastIndex >= n.pindex) {
 		vresp.granted = true
-		n.term = vr.term
 		n.vote = vr.candidate
 		n.writeTermVote()
 		n.resetElectionTimeout()
-	} else {
-		if vr.term >= n.term && n.vote == noVote {
-			n.term = vr.term
-			n.resetElect(randCampaignTimeout())
-		}
 	}
 
 	// Term might have changed, make sure response has the most current
