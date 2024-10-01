@@ -1965,7 +1965,7 @@ func (s *Server) filterRequest(fOpts *EventFilterOptions) bool {
 	if len(fOpts.Tags) > 0 {
 		opts := s.getOpts()
 		for _, t := range fOpts.Tags {
-			if !opts.Tags.Contains(t) {
+			if !opts.Tags.ContainsEqualsFold(t) {
 				return true
 			}
 		}
