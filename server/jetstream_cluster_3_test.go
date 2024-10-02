@@ -1644,9 +1644,8 @@ func TestJetStreamClusterGhostEphemeralsAfterRestart(t *testing.T) {
 	defer nc.Close()
 
 	subj := fmt.Sprintf(JSApiConsumerListT, "TEST")
-	checkFor(t, 20*time.Second, 200*time.Millisecond, func() error {
-		// Request will take at most 4 seconds if some consumers can't be found.
-		m, err := nc.Request(subj, nil, 5*time.Second)
+	checkFor(t, 30*time.Second, time.Second, func() error {
+		m, err := nc.Request(subj, nil, time.Second)
 		if err != nil {
 			return err
 		}
