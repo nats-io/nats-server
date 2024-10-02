@@ -362,6 +362,9 @@ type Server struct {
 	// Queue to process JS API requests that come from routes (or gateways)
 	jsAPIRoutedReqs *ipQueue[*jsAPIRoutedReq]
 
+	// Delayed API responses.
+	delayedAPIResponses *ipQueue[*delayedAPIResponse]
+
 	// Whether moving NRG traffic into accounts is permitted on this server.
 	// Controls whether or not the account NRG capability is set in statsz.
 	// Currently used by unit tests to simulate nodes not supporting account NRG.
@@ -729,6 +732,11 @@ func NewServer(opts *Options) (*Server, error) {
 		leafNodeEnabled:    opts.LeafNode.Port != 0 || len(opts.LeafNode.Remotes) > 0,
 		syncOutSem:         make(chan struct{}, maxConcurrentSyncRequests),
 	}
+
+	// Delayed API response queue. Create regardless if JetStream is configured
+	// or not (since it can be enabled/disabled with config reload, we want this
+	// queue to exist at all times).
+	s.delayedAPIResponses = newIPQueue[*delayedAPIResponse](s, "delayed API responses")
 
 	// By default we'll allow account NRG.
 	s.accountNRGAllowed.Store(true)
@@ -2395,6 +2403,11 @@ func (s *Server) Start() {
 			ga.enableAllJetStreamServiceImportsAndMappings()
 		}
 	}
+
+	// Delayed API response handling. Start regardless of JetStream being
+	// currently configured or not (since it can be enabled/disabled with
+	// configuration reload).
+	s.startGoRoutine(s.delayedAPIResponder)
 
 	// Start OCSP Stapling monitoring for TLS certificates if enabled. Hook TLS handshake for
 	// OCSP check on peers (LEAF and CLIENT kind) if enabled.
