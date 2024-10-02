@@ -15,6 +15,7 @@ package server
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -142,7 +143,7 @@ func TestIPQueuePop(t *testing.T) {
 	if n := q.inProgress(); n != 0 {
 		t.Fatalf("Expected count to be 0, got %v", n)
 	}
-	// If we call pop() now, we should get an empty list.
+	// If we call pop() now, we should get nil.
 	if elts = q.pop(); elts != nil {
 		t.Fatalf("Expected nil, got %v", elts)
 	}
@@ -150,6 +151,10 @@ func TestIPQueuePop(t *testing.T) {
 	if n := q.inProgress(); n != 0 {
 		t.Fatalf("Expected count to be 0, got %v", n)
 	}
+	// Calling pop() on an unitialized queue will return nil
+	var q2 *ipQueue[int]
+	elts = q2.pop()
+	require_True(t, elts == nil)
 }
 
 func TestIPQueuePopOne(t *testing.T) {
@@ -329,26 +334,13 @@ func TestIPQueueRecycle(t *testing.T) {
 	if l := len(values); l != 1 {
 		t.Fatalf("Len should be 1, got %v", l)
 	}
-	// This time, we should not have recycled it, so the new cap should
-	// be 1 for the new element added. In case Go creates a slice of
-	// cap more than 1 in some future release, just check that the
-	// cap is lower than the pre recycle cap.
+	// This time, we should not have recycled it, so the new cap should be whatever
+	// the default is, but less than the preRecycleCap.
 	if c := cap(values); c >= preRecycleCap {
 		t.Fatalf("The slice should not have been put back in the pool, got cap of %v", c)
 	}
-
-	// Also check that if we mistakenly pop a queue that was not
-	// notified (pop() will return nil), and we try to recycle,
-	// recycle() will ignore the call.
-	values = q.pop()
 	q.recycle(&values)
-	q.push(1002)
-	q.Lock()
-	recycled := &q.elts == &values
-	q.Unlock()
-	if recycled {
-		t.Fatalf("Unexpected recycled slice")
-	}
+
 	// Check that we don't crash when recycling a nil or empty slice
 	values = q.pop()
 	q.recycle(&values)
@@ -453,13 +445,13 @@ func TestIPQueueSizeCalculationWithLimits(t *testing.T) {
 	})
 }
 
-func BenchmarkIPQueueSizeCalculation(b *testing.B) {
+func Benchmark_IPQueueSizeCalculation(b *testing.B) {
 	type testType = [16]byte
 	var testValue testType
 
 	s := &Server{}
 
-	run := func(b *testing.B, q *ipQueue[testType]) {
+	runPopOne := func(b *testing.B, q *ipQueue[testType]) {
 		b.SetBytes(16)
 		for i := 0; i < b.N; i++ {
 			q.push(testValue)
@@ -468,26 +460,224 @@ func BenchmarkIPQueueSizeCalculation(b *testing.B) {
 			q.popOne()
 		}
 	}
+	runPopAll := func(b *testing.B, q *ipQueue[testType]) {
+		b.SetBytes(16)
+		for i := 0; i < b.N; i++ {
+			q.push(testValue)
+		}
+		elts := q.pop()
+		for _, v := range elts {
+			_ = v
+		}
+		q.recycle(&elts)
+	}
+	for _, test := range []struct {
+		name string
+		run  func(b *testing.B, q *ipQueue[testType])
+	}{
+		{"pop one", runPopOne},
+		{"pop all", runPopAll},
+	} {
+		b.Run(test.name, func(b *testing.B) {
+			// Measures without calculation function overheads.
+			b.Run("WithoutCalc", func(b *testing.B) {
+				test.run(b, newIPQueue[testType](s, "test"))
+			})
 
-	// Measures without calculation function overheads.
-	b.Run("WithoutCalc", func(b *testing.B) {
-		run(b, newIPQueue[testType](s, "test"))
-	})
+			// Measures the raw overhead of having a calculation function.
+			b.Run("WithEmptyCalc", func(b *testing.B) {
+				calc := ipqSizeCalculation[testType](func(e testType) uint64 {
+					return 0
+				})
+				test.run(b, newIPQueue[testType](s, "test", calc))
+			})
 
-	// Measures the raw overhead of having a calculation function.
-	b.Run("WithEmptyCalc", func(b *testing.B) {
-		calc := ipqSizeCalculation[testType](func(e testType) uint64 {
-			return 0
+			// Measures the overhead of having a calculation function that
+			// actually measures something useful.
+			b.Run("WithLenCalc", func(b *testing.B) {
+				calc := ipqSizeCalculation[testType](func(e testType) uint64 {
+					return uint64(len(e))
+				})
+				test.run(b, newIPQueue[testType](s, "test", calc))
+			})
 		})
-		run(b, newIPQueue[testType](s, "test", calc))
-	})
+	}
+}
 
-	// Measures the overhead of having a calculation function that
-	// actually measures something useful.
-	b.Run("WithLenCalc", func(b *testing.B) {
-		calc := ipqSizeCalculation[testType](func(e testType) uint64 {
-			return uint64(len(e))
-		})
-		run(b, newIPQueue[testType](s, "test", calc))
-	})
+func Benchmark_IPQueue1Prod1ConsPopOne(b *testing.B) {
+	benchIPQueue(b, 1, 1, true, false)
+}
+
+func Benchmark_IPQueue5Prod1ConsPopOne(b *testing.B) {
+	benchIPQueue(b, 5, 1, true, false)
+}
+
+func Benchmark_IPQueue1Prod5ConsPopOne(b *testing.B) {
+	benchIPQueue(b, 1, 5, true, false)
+}
+
+func Benchmark_IPQueue5Prod5ConsPopOne(b *testing.B) {
+	benchIPQueue(b, 5, 5, true, false)
+}
+
+func Benchmark_IPQueue1Prod1ConsPopAll(b *testing.B) {
+	benchIPQueue(b, 1, 1, false, false)
+}
+
+func Benchmark_IPQueue5Prod1ConsPopAll(b *testing.B) {
+	benchIPQueue(b, 5, 1, false, false)
+}
+
+func Benchmark_IPQueue1Prod5ConsPopAll(b *testing.B) {
+	benchIPQueue(b, 1, 5, false, false)
+}
+
+func Benchmark_IPQueue5Prod5ConsPopAll(b *testing.B) {
+	benchIPQueue(b, 5, 5, false, false)
+}
+
+func Benchmark_IPQueueWithLim1Prod1ConsPopOne(b *testing.B) {
+	benchIPQueue(b, 1, 1, true, true)
+}
+
+func Benchmark_IPQueueWithLim5Prod1ConsPopOne(b *testing.B) {
+	benchIPQueue(b, 5, 1, true, true)
+}
+
+func Benchmark_IPQueueWithLim1Prod5ConsPopOne(b *testing.B) {
+	benchIPQueue(b, 1, 5, true, true)
+}
+
+func Benchmark_IPQueueWithLim5Prod5ConsPopOne(b *testing.B) {
+	benchIPQueue(b, 5, 5, true, true)
+}
+
+func Benchmark_IPQueueWithLim1Prod1ConsPopAll(b *testing.B) {
+	benchIPQueue(b, 1, 1, false, true)
+}
+
+func Benchmark_IPQueueWithLim5Prod1ConsPopAll(b *testing.B) {
+	benchIPQueue(b, 5, 1, false, true)
+}
+
+func Benchmark_IPQueueWithLim1Prod5ConsPopAll(b *testing.B) {
+	benchIPQueue(b, 1, 5, false, true)
+}
+
+func Benchmark_IPQueueWithLim5Prod5ConsPopAll(b *testing.B) {
+	benchIPQueue(b, 5, 5, false, true)
+}
+
+func benchIPQueue(b *testing.B, numProd, numCons int, popOne, withLimits bool) {
+	var count atomic.Int64
+	var sum atomic.Int64
+
+	perProd := (b.N / numProd) + 1
+	total := int64(perProd * numProd)
+
+	var opts []ipQueueOpt[int]
+	if withLimits {
+		// Add len/size options but make sure they are big enough that we don't fail push() calls.
+		// What we want is to activate code that is checking for limits.
+		opts = append(opts, ipqLimitByLen[int](int(total+100)))
+		opts = append(opts, ipqLimitBySize[int](uint64((total+100)*5)))
+		opts = append(opts, ipqSizeCalculation[int](func(e int) uint64 { return uint64(5) }))
+	}
+	queue := newIPQueue[int](&Server{}, "bench", opts...)
+
+	cdone := make(chan struct{}, numCons)
+	for i := 0; i < numCons; i++ {
+		go func() {
+			for range queue.ch {
+				if popOne {
+					v, ok := queue.popOne()
+					if !ok {
+						continue
+					}
+					sum.Add(int64(v))
+					if count.Add(1) >= total {
+						cdone <- struct{}{}
+						return
+					}
+				} else {
+					elts := queue.pop()
+					for _, v := range elts {
+						sum.Add(int64(v))
+						if count.Add(1) >= total {
+							queue.recycle(&elts)
+							cdone <- struct{}{}
+							return
+						}
+					}
+					queue.recycle(&elts)
+				}
+			}
+		}()
+	}
+
+	pwg := sync.WaitGroup{}
+	pwg.Add(numProd)
+	var expected atomic.Int64
+	for i := 0; i < numProd; i++ {
+		go func() {
+			defer pwg.Done()
+			for i := 0; i < perProd; i++ {
+				expected.Add(int64(i + 1))
+				queue.push(i + 1)
+			}
+		}()
+	}
+
+	pwg.Wait()
+	<-cdone
+	b.StopTimer()
+
+	for i := 1; i < numCons; i++ {
+		queue.push(0)
+		<-cdone
+	}
+	if sum.Load() != expected.Load() {
+		b.Fatalf("Invalid sum, expected %v, got %v", expected.Load(), sum.Load())
+	}
+}
+
+func Benchmark_IPQueuePushAndPopOne(b *testing.B) {
+	s := &Server{}
+	q := newIPQueue[int](s, "test")
+	for i := 0; i < b.N; i++ {
+		q.push(i + 1)
+	}
+	require_Equal[int](b, q.len(), b.N)
+	for i := 0; i < b.N; i++ {
+		v, ok := q.popOne()
+		require_True(b, ok)
+		require_Equal[int](b, v, i+1)
+	}
+	require_Equal[int](b, q.len(), 0)
+	require_Equal(b, q.inProgress(), 0)
+}
+
+func Benchmark_IPQueuePushAndPopAll(b *testing.B) {
+	s := &Server{}
+	q := newIPQueue[int](s, "test")
+	expected := 0
+	for i := 0; i < b.N; i++ {
+		q.push(i + 1)
+		expected += i + 1
+	}
+	require_Equal(b, q.len(), b.N)
+	<-q.ch
+
+	elts := q.pop()
+	require_Equal(b, len(elts), b.N)
+	require_Equal(b, q.len(), 0)
+	require_Equal(b, q.inProgress(), int64(b.N))
+	sum := 0
+	for _, v := range elts {
+		sum += v
+	}
+	q.recycle(&elts)
+	require_Equal(b, expected, sum)
+	require_Equal(b, q.len(), 0)
+	require_Equal(b, q.inProgress(), 0)
 }

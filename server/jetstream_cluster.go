@@ -1406,10 +1406,6 @@ func (js *jetStream) monitorCluster() {
 			aq.recycle(&ces)
 
 		case isLeader = <-lch:
-			// For meta layer synchronize everyone to our state on becoming leader.
-			if isLeader && n.ApplyQ().len() == 0 {
-				n.SendSnapshot(js.metaSnapshot())
-			}
 			// Process the change.
 			js.processLeaderChange(isLeader)
 			if isLeader {
@@ -2456,6 +2452,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				} else {
 					// Our stream was closed out from underneath of us, simply return here.
 					if err == errStreamClosed {
+						aq.recycle(&ces)
 						return
 					}
 					s.Warnf("Error applying entries to '%s > %s': %v", accName, sa.Config.Name, err)
@@ -8478,6 +8475,7 @@ RETRY:
 					}
 				} else if isOutOfSpaceErr(err) {
 					notifyLeaderStopCatchup(mrec, err)
+					msgsQ.recycle(&mrecs)
 					return err
 				} else if err == NewJSInsufficientResourcesError() {
 					notifyLeaderStopCatchup(mrec, err)
