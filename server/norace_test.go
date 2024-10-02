@@ -6577,6 +6577,11 @@ func TestNoRaceJetStreamConsumerCreateTimeNumPending(t *testing.T) {
 }
 
 func TestNoRaceJetStreamClusterGhostConsumers(t *testing.T) {
+	consumerNotActiveStartInterval = time.Second * 5
+	defer func() {
+		consumerNotActiveStartInterval = defaultConsumerNotActiveStartInterval
+	}()
+
 	c := createJetStreamClusterExplicit(t, "GHOST", 3)
 	defer c.shutdown()
 
@@ -6670,22 +6675,17 @@ func TestNoRaceJetStreamClusterGhostConsumers(t *testing.T) {
 	time.Sleep(5 * time.Second)
 	cancel()
 
-	getMissing := func() []string {
-		m, err := nc.Request("$JS.API.CONSUMER.LIST.TEST", nil, time.Second*10)
-		require_NoError(t, err)
-
+	checkFor(t, 30*time.Second, time.Second, func() error {
+		m, err := nc.Request("$JS.API.CONSUMER.LIST.TEST", nil, time.Second)
+		if err != nil {
+			return err
+		}
 		var resp JSApiConsumerListResponse
-		err = json.Unmarshal(m.Data, &resp)
-		require_NoError(t, err)
-		return resp.Missing
-	}
-
-	checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
-		missing := getMissing()
-		if len(missing) == 0 {
+		require_NoError(t, json.Unmarshal(m.Data, &resp))
+		if len(resp.Missing) == 0 {
 			return nil
 		}
-		return fmt.Errorf("Still have missing: %+v", missing)
+		return fmt.Errorf("Still have missing: %+v", resp.Missing)
 	})
 }
 
