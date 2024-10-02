@@ -3499,6 +3499,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		// Only store if an original which will have sub != nil
 		if sub != nil {
 			if err := n.storeToWAL(ae); err != nil {
+				n.debug("processAppendEntry, storeToWAL error, %v", err)
 				if err != ErrStoreClosed {
 					n.warn("Error storing entry to WAL: %v", err)
 				}
@@ -3661,6 +3662,7 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 	if ae == nil {
 		return fmt.Errorf("raft: Missing append entry for storage")
 	}
+	n.debug("storeToWAL (n.pterm=%d, n.pindex=%d, ae.commit=%d, ae.term=%d, ae.pterm=%d, ae.pindex=%d)", n.pterm, n.pindex, ae.commit, ae.term, ae.pterm, ae.pindex)
 	if n.werr != nil {
 		return n.werr
 	}
@@ -3685,7 +3687,6 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 
 	n.pterm = ae.term
 	n.pindex = seq
-	n.debug("storeToWAL (n.pterm=%d, n.pindex=%d, ae.term=%d, ae.pterm=%d, ae.pindex=%d)", n.pterm, n.pindex, ae.term, ae.pterm, ae.pindex)
 	return nil
 }
 
@@ -3711,6 +3712,7 @@ func (n *raft) sendAppendEntry(entries []*Entry) {
 	shouldStore := ae.shouldStore()
 	if shouldStore {
 		if err := n.storeToWAL(ae); err != nil {
+			n.debug("sendAppendEntry, storeToWAL error, %v", err)
 			return
 		}
 		// We count ourselves.
