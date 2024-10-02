@@ -3604,6 +3604,18 @@ func (n *raft) processPeerState(ps *peerState) {
 func (n *raft) processAppendEntryResponse(ar *appendEntryResponse) {
 	n.trackPeer(ar.peer)
 
+	if ar.term > n.term {
+		n.Lock()
+		n.term = ar.term
+		n.vote = noVote
+		n.writeTermVote()
+		n.warn("Received append entry response with higher term, will stepdown")
+		n.stepdownLocked(noLeader)
+		n.Unlock()
+		arPool.Put(ar)
+		return
+	}
+
 	if ar.reply != _EMPTY_ && !ar.success {
 		// The remote node didn't commit the append entry and they are
 		// still on the same term, so let's try to catch them up.
@@ -3613,14 +3625,6 @@ func (n *raft) processAppendEntryResponse(ar *appendEntryResponse) {
 
 	if ar.term < n.term {
 		n.debug("Ignoring old append entry response from term %d", ar.term)
-	} else if ar.term > n.term {
-		n.Lock()
-		n.term = ar.term
-		n.vote = noVote
-		n.writeTermVote()
-		n.warn("Detected another leader with higher term, will stepdown")
-		n.stepdownLocked(noLeader)
-		n.Unlock()
 	} else if ar.success {
 		// The remote node successfully committed the append entry.
 		n.trackResponse(ar)
