@@ -6,8 +6,8 @@ github.com/klauspost/compress v1.17.9 h1:6KIumPrER1LHsvBVuDa0r5xaG0Es51mhhB9BQB2
 github.com/klauspost/compress v1.17.9/go.mod h1:Di0epgTjJY877eYKx5yC51cX2A2Vl2ibi7bDH9ttBbw=
 github.com/minio/highwayhash v1.0.3 h1:kbnuUMoHYyVl7szWjSxJnxw11k2U709jqFPPmIUyD6Q=
 github.com/minio/highwayhash v1.0.3/go.mod h1:GGYsuwP/fPD6Y9hMiXuapVvlIUEhFhMTh0rxU3ik1LQ=
-github.com/nats-io/jwt/v2 v2.7.1-0.20240926175242-c69471de2a31 h1:fI4FVSR2MfhmGry8NZWoyNhST2lj0I9ElQweuYpXnkc=
-github.com/nats-io/jwt/v2 v2.7.1-0.20240926175242-c69471de2a31/go.mod h1:+xaNgJy9AVrl6gpK9nrkKkaH0PMdxzmL54YpVWthlS4=
+github.com/nats-io/jwt/v2 v2.7.1-0.20241002211827-132f02c57839 h1:e1ZIC9grE62DT73EDEn7uDP/bifSVshtG6Tmf5GdkB4=
+github.com/nats-io/jwt/v2 v2.7.1-0.20241002211827-132f02c57839/go.mod h1:GheRnw11vm14XtePRBw2f+s90p1US2V/bv/zhwLi86o=
 github.com/nats-io/nats.go v1.36.0 h1:suEUPuWzTSse/XhESwqLxXGuj8vGRuPRoG7MoRN/qyU=
 github.com/nats-io/nats.go v1.36.0/go.mod h1:Ubdu4Nh9exXdSz0RVWRFBbRfrbSxOYd26oF0wkWclB8=
 github.com/nats-io/nkeys v0.4.7 h1:RwNJbbIdYCoClSDNY7QVKZlyb/wfT6ugvFCiKy6vDvI=
