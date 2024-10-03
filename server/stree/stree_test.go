@@ -1192,9 +1192,12 @@ func TestSqlSubjectTreeGob(t *testing.T) {
 	print("read: len(desc) = %d\n", len(st.conn.vElemGob.Desc()))
 	print("read: desc = % 02x\n", st.conn.vElemGob.Desc())
 
-	pV, found = st.Find(subj)
-	require_True(t, pV != nil && datum.Equal(pV))
-	require_True(t, found)
+	got_it := false
+	st.Match(subj, func(subj []byte, pV *GobSmack) {
+		got_it = true
+		require_True(t, pV != nil && datum.Equal(pV))
+	})
+	require_True(t, got_it)
 
 	err = st.Close()
 	require_True(t, err == nil)

@@ -4976,7 +4976,7 @@ func TestFileStoreRecaluclateFirstForSubjBug(t *testing.T) {
 	fs.mu.RUnlock()
 
 	// Since we lazy update the first, simulate that we have not updated it as of yet.
-	ss := &SimpleState{Msgs: 1, First: 1, Last: 3, firstNeedsUpdate: true}
+	ss := &SimpleState{Msgs: 1, First: 1, Last: 3, FirstNeedsUpdate: true}
 
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
@@ -4987,7 +4987,7 @@ func TestFileStoreRecaluclateFirstForSubjBug(t *testing.T) {
 	// This will panic without the fix.
 	mb.recalculateFirstForSubj("foo", 1, ss)
 	// Make sure it was update properly.
-	require_True(t, *ss == SimpleState{Msgs: 1, First: 3, Last: 3, firstNeedsUpdate: false})
+	require_True(t, *ss == SimpleState{Msgs: 1, First: 3, Last: 3, FirstNeedsUpdate: false})
 }
 
 func TestFileStoreKeepWithDeletedMsgsBug(t *testing.T) {
@@ -5330,9 +5330,9 @@ func TestFileStoreFullStateBasics(t *testing.T) {
 		psi := *info
 		fs.mu.RUnlock()
 
-		require_Equal(t, psi.total, 4)
-		require_Equal(t, psi.fblk, 1)
-		require_Equal(t, psi.lblk, 2)
+		require_Equal(t, psi.Total, 4)
+		require_Equal(t, psi.Fblk, 1)
+		require_Equal(t, psi.Lblk, 2)
 
 		// Store 1 more
 		fs.StoreMsg(subj, nil, msgA)
@@ -5355,9 +5355,9 @@ func TestFileStoreFullStateBasics(t *testing.T) {
 		info, _ = fs.psim.Find(stringToBytes(subj))
 		psi = *info
 		fs.mu.RUnlock()
-		require_Equal(t, psi.total, 5)
-		require_Equal(t, psi.fblk, 1)
-		require_Equal(t, psi.lblk, 3)
+		require_Equal(t, psi.Total, 5)
+		require_Equal(t, psi.Fblk, 1)
+		require_Equal(t, psi.Lblk, 3)
 	})
 }
 
@@ -5990,8 +5990,8 @@ func TestFileStoreCompactAndPSIMWhenDeletingBlocks(t *testing.T) {
 	psi := *info
 	fs.mu.RUnlock()
 
-	require_Equal(t, psi.total, 1)
-	require_Equal(t, psi.fblk, psi.lblk)
+	require_Equal(t, psi.Total, 1)
+	require_Equal(t, psi.Fblk, psi.Lblk)
 }
 
 func TestFileStoreTrackSubjLenForPSIM(t *testing.T) {
@@ -7087,9 +7087,9 @@ func TestFileStoreFilteredPendingPSIMFirstBlockUpdate(t *testing.T) {
 	psi, ok := fs.psim.Find([]byte("foo.baz"))
 	fs.mu.RUnlock()
 	require_True(t, ok)
-	require_Equal(t, psi.total, 2)
-	require_Equal(t, psi.fblk, 1)
-	require_Equal(t, psi.lblk, 84)
+	require_Equal(t, psi.Total, 2)
+	require_Equal(t, psi.Fblk, 1)
+	require_Equal(t, psi.Lblk, 84)
 
 	// No make sure that a call to numFilterPending which will initially walk all blocks if starting from seq 1 updates psi.
 	var ss SimpleState
@@ -7105,9 +7105,9 @@ func TestFileStoreFilteredPendingPSIMFirstBlockUpdate(t *testing.T) {
 	psi, ok = fs.psim.Find([]byte("foo.baz"))
 	fs.mu.RUnlock()
 	require_True(t, ok)
-	require_Equal(t, psi.total, 2)
-	require_Equal(t, psi.fblk, 84)
-	require_Equal(t, psi.lblk, 84)
+	require_Equal(t, psi.Total, 2)
+	require_Equal(t, psi.Fblk, 84)
+	require_Equal(t, psi.Lblk, 84)
 }
 
 func TestFileStoreWildcardFilteredPendingPSIMFirstBlockUpdate(t *testing.T) {
@@ -7146,17 +7146,17 @@ func TestFileStoreWildcardFilteredPendingPSIMFirstBlockUpdate(t *testing.T) {
 	psi, ok := fs.psim.Find([]byte("foo.22.baz"))
 	fs.mu.RUnlock()
 	require_True(t, ok)
-	require_Equal(t, psi.total, 2)
-	require_Equal(t, psi.fblk, 1)
-	require_Equal(t, psi.lblk, 92)
+	require_Equal(t, psi.Total, 2)
+	require_Equal(t, psi.Fblk, 1)
+	require_Equal(t, psi.Lblk, 92)
 
 	fs.mu.RLock()
 	psi, ok = fs.psim.Find([]byte("foo.22.bar"))
 	fs.mu.RUnlock()
 	require_True(t, ok)
-	require_Equal(t, psi.total, 2)
-	require_Equal(t, psi.fblk, 1)
-	require_Equal(t, psi.lblk, 92)
+	require_Equal(t, psi.Total, 2)
+	require_Equal(t, psi.Fblk, 1)
+	require_Equal(t, psi.Lblk, 92)
 
 	// No make sure that a call to numFilterPending which will initially walk all blocks if starting from seq 1 updates psi.
 	var ss SimpleState
@@ -7172,17 +7172,17 @@ func TestFileStoreWildcardFilteredPendingPSIMFirstBlockUpdate(t *testing.T) {
 	psi, ok = fs.psim.Find([]byte("foo.22.baz"))
 	fs.mu.RUnlock()
 	require_True(t, ok)
-	require_Equal(t, psi.total, 2)
-	require_Equal(t, psi.fblk, 92)
-	require_Equal(t, psi.lblk, 92)
+	require_Equal(t, psi.Total, 2)
+	require_Equal(t, psi.Fblk, 92)
+	require_Equal(t, psi.Lblk, 92)
 
 	fs.mu.RLock()
 	psi, ok = fs.psim.Find([]byte("foo.22.bar"))
 	fs.mu.RUnlock()
 	require_True(t, ok)
-	require_Equal(t, psi.total, 2)
-	require_Equal(t, psi.fblk, 92)
-	require_Equal(t, psi.lblk, 92)
+	require_Equal(t, psi.Total, 2)
+	require_Equal(t, psi.Fblk, 92)
+	require_Equal(t, psi.Lblk, 92)
 }
 
 // Make sure if we only miss by one for fblk that we still update it.
@@ -7212,9 +7212,9 @@ func TestFileStoreFilteredPendingPSIMFirstBlockUpdateNextBlock(t *testing.T) {
 	}
 
 	psi := fetch("foo.22.bar")
-	require_Equal(t, psi.total, 4)
-	require_Equal(t, psi.fblk, 1)
-	require_Equal(t, psi.lblk, 4)
+	require_Equal(t, psi.Total, 4)
+	require_Equal(t, psi.Fblk, 1)
+	require_Equal(t, psi.Lblk, 4)
 
 	// Now remove first instance of "foo.22.bar"
 	removed, err := fs.RemoveMsg(1)
@@ -7232,9 +7232,9 @@ func TestFileStoreFilteredPendingPSIMFirstBlockUpdateNextBlock(t *testing.T) {
 
 	// Now make sure that we properly updated the psim entry.
 	psi = fetch("foo.22.bar")
-	require_Equal(t, psi.total, 3)
-	require_Equal(t, psi.fblk, 2)
-	require_Equal(t, psi.lblk, 4)
+	require_Equal(t, psi.Total, 3)
+	require_Equal(t, psi.Fblk, 2)
+	require_Equal(t, psi.Lblk, 4)
 
 	// Now make sure wildcard calls into also update blks.
 	// First remove first "foo.22.baz" which will remove first block.
@@ -7245,9 +7245,9 @@ func TestFileStoreFilteredPendingPSIMFirstBlockUpdateNextBlock(t *testing.T) {
 	require_Equal(t, fs.numMsgBlocks(), 3)
 
 	psi = fetch("foo.22.baz")
-	require_Equal(t, psi.total, 3)
-	require_Equal(t, psi.fblk, 1)
-	require_Equal(t, psi.lblk, 4)
+	require_Equal(t, psi.Total, 3)
+	require_Equal(t, psi.Fblk, 1)
+	require_Equal(t, psi.Lblk, 4)
 
 	// Now call wildcard version of numFilteredPending to make sure it clears.
 	fs.mu.Lock()
@@ -7258,9 +7258,9 @@ func TestFileStoreFilteredPendingPSIMFirstBlockUpdateNextBlock(t *testing.T) {
 	require_Equal(t, ss.Last, 8)
 
 	psi = fetch("foo.22.baz")
-	require_Equal(t, psi.total, 3)
-	require_Equal(t, psi.fblk, 2)
-	require_Equal(t, psi.lblk, 4)
+	require_Equal(t, psi.Total, 3)
+	require_Equal(t, psi.Fblk, 2)
+	require_Equal(t, psi.Lblk, 4)
 }
 
 func TestFileStoreLargeSparseMsgsDoNotLoadAfterLast(t *testing.T) {

@@ -199,21 +199,20 @@ func (t *SubjectTree[T]) sqlInit(cfg *Config) {
         if t == nil {
 		return
 	}
-	var err error
-	var dbConn *sqlite.Conn
 	var dbFile string
+	dbFlags := sqlite.OpenReadWrite|sqlite.OpenCreate
 	if cfg == nil || cfg.DBPath == "" {
 		dbFile = "MEMORY"
-		dbConn, err = sqlite.OpenConn(dbFile,
-			sqlite.OpenReadWrite|sqlite.OpenCreate|sqlite.OpenMemory)
+		dbFlags |= sqlite.OpenMemory
 	} else {
 		dbFile = cfg.DBPath
 		if strings.Contains(cfg.DBPath, "*") {
 			instId := fmt.Sprintf("%016x", rand.Uint64())
 			dbFile = strings.Replace(cfg.DBPath, "*", instId, 1)
 		}
-		dbConn, err = sqlite.OpenConn(dbFile)
+		dbFlags |= sqlite.OpenWAL
 	}
+	dbConn, err := sqlite.OpenConn(dbFile, dbFlags)
 	if err == nil {
 		err = sqlitex.ExecuteTransient(dbConn, createStrings, nil)
 	}
@@ -307,13 +306,17 @@ func (t *SubjectTree[T]) storeGobDesc() {
 	if t == nil || t.conn == nil || t.conn.vElemGob == nil {
 		return
 	}
+	desc := t.conn.vElemGob.Desc()
+	if desc == nil {
+		panic(fmt.Errorf("nil GobDesc: %w", t.conn.vElemGob.Error()))
+	}
 	err := sqlitex.ExecuteScript(t.conn.Conn, `
 		drop table if exists GobDesc;
-		create table GobDesc (desc BLOB);`, nil)
+		create table GobDesc(desc BLOB);`, nil)
 	if err == nil {
 		err = sqlitex.ExecuteTransient(t.conn.Conn,
 			"insert into GobDesc values (?);",
-			&sqlitex.ExecOptions{Args: []any{t.conn.vElemGob.Desc()}})
+			&sqlitex.ExecOptions{Args: []any{desc}})
 	}
 	if err != nil {
 		panic(fmt.Errorf("storeGobDesc: %w", err))
