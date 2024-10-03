@@ -21,6 +21,7 @@ import (
 	"os"
 
 	"github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats-server/v2/server/stree"
 	"go.uber.org/automaxprocs/maxprocs"
 )
 
@@ -125,6 +126,9 @@ func main() {
 
 	// Start things up. Block here until done.
 	if err := server.Run(s); err != nil {
+		if err:= stree.CloseAll(); err != nil {
+			s.Warnf("stree.CloseAll: %v", err)
+		}
 		server.PrintAndDie(err.Error())
 	}
 
@@ -136,5 +140,8 @@ func main() {
 		defer undo()
 	}
 
+	if err:= stree.CloseAll(); err != nil {
+		s.Warnf("stree.CloseAll: %v", err)
+	}
 	s.WaitForShutdown()
 }

@@ -15,8 +15,10 @@ package stree
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"slices"
+	"sync"
 
         //"zombiezen.com/go/sqlite"
         lru "github.com/hashicorp/golang-lru/v2"
@@ -60,6 +62,10 @@ type SubjectTree[T any] struct {
         // mu.sync.RWMutex
 }
 
+type closer = interface{ Close() error }
+
+var allStrees sync.Map
+
 // NewSubjectTree creates a new SubjectTree with values T.
 func NewSubjectTree[T any]() *SubjectTree[T] {
 	if dbPath, ok := os.LookupEnv("STREESQLDBPATH"); ok {
@@ -67,7 +73,9 @@ func NewSubjectTree[T any]() *SubjectTree[T] {
 			DBPath: dbPath,
 		})
 	}
-	return &SubjectTree[T]{}
+	t := &SubjectTree[T]{}
+	allStrees.Store(closer(t), void{})
+	return t
 }
 
 // NewSqlSubjectTree creates a new SubjectTree with values T.
@@ -75,16 +83,31 @@ func NewSqlSubjectTree[T any](cfg *Config) *SubjectTree[T] {
         // FIXME(skaar): setup cache, init Serializer
 	t := &SubjectTree[T]{}
 	t.sqlInit(cfg)
+	allStrees.Store(closer(t), void{})
 	return t
 }
 
-func (t *SubjectTree[T]) Close() error {
-	if t == nil || t.conn == nil {
-		return nil
+func (t *SubjectTree[T]) Close() (err error) {
+	if t == nil {
+		return
 	}
-	return t.sqlClose()
+	allStrees.Delete(closer(t))
+	if t.conn != nil {
+		err = t.sqlClose()
+	}
+	return
 }
 
+func CloseAll() error {
+	var errs []error
+	allStrees.Range(func(k, v any) bool {
+		if err := k.(closer).Close(); err != nil {
+			errs = append(errs, err)
+		}
+		return true
+	})
+	return errors.Join(errs...)
+}
 
 // Size returns the number of elements stored.
 func (t *SubjectTree[T]) Size() int {

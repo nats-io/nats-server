@@ -282,9 +282,10 @@ func (t *SubjectTree[T]) sqlInit(cfg *Config) {
 	t.size = size
 	t.conn = &sqlConn[T]{
 		Conn:       dbConn,
+		dbFile:     dbFile,
 		tabSubj:    tabSubj,
 		maxTabSubj: maxTabSubj,
-		vElemGob:    vElemGob,
+		vElemGob:   vElemGob,
 	}
 	t.setColParams()
 }
@@ -293,6 +294,13 @@ func (t *SubjectTree[T]) sqlClose() error {
 	err := t.conn.Close()
 	t.conn = nil
 	return err
+}
+
+func (t *SubjectTree[T]) DbFile() string {
+	if t == nil || t.conn == nil {
+		return ""
+	}
+	return t.conn.dbFile
 }
 
 func (t *SubjectTree[T]) storeGobDesc() {
