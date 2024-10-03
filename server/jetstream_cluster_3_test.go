@@ -1600,6 +1600,11 @@ func TestJetStreamClusterParallelConsumerCreation(t *testing.T) {
 }
 
 func TestJetStreamClusterGhostEphemeralsAfterRestart(t *testing.T) {
+	consumerNotActiveStartInterval = time.Second * 5
+	defer func() {
+		consumerNotActiveStartInterval = defaultConsumerNotActiveStartInterval
+	}()
+
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -1632,6 +1637,7 @@ func TestJetStreamClusterGhostEphemeralsAfterRestart(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// Restart first and wait so that we know it will try cleanup without a metaleader.
+	// It will fail as there's no metaleader at that time, it should keep retrying on an interval.
 	c.restartServer(rs)
 	time.Sleep(time.Second)
 
@@ -1643,8 +1649,9 @@ func TestJetStreamClusterGhostEphemeralsAfterRestart(t *testing.T) {
 	defer nc.Close()
 
 	subj := fmt.Sprintf(JSApiConsumerListT, "TEST")
-	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
-		m, err := nc.Request(subj, nil, time.Second)
+	checkFor(t, 20*time.Second, 200*time.Millisecond, func() error {
+		// Request will take at most 4 seconds if some consumers can't be found.
+		m, err := nc.Request(subj, nil, 5*time.Second)
 		if err != nil {
 			return err
 		}

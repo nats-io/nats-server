@@ -22,6 +22,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"math/rand"
 	"os"
 	"path"
@@ -4304,4 +4306,79 @@ func TestJetStreamClusterDontInstallSnapshotWhenStoppingConsumer(t *testing.T) {
 	snap, err = o.node.(*raft).loadLastSnapshot()
 	require_NoError(t, err)
 	validateStreamState(snap)
+}
+
+func TestJetStreamClusterHardKillAfterStreamAdd(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	copyDir := func(dst, src string) error {
+		srcFS := os.DirFS(src)
+		return fs.WalkDir(srcFS, ".", func(p string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			newPath := path.Join(dst, p)
+			if d.IsDir() {
+				return os.MkdirAll(newPath, defaultDirPerms)
+			}
+			r, err := srcFS.Open(p)
+			if err != nil {
+				return err
+			}
+			defer r.Close()
+
+			w, err := os.OpenFile(newPath, os.O_CREATE|os.O_WRONLY, defaultFilePerms)
+			if err != nil {
+				return err
+			}
+			defer w.Close()
+			_, err = io.Copy(w, r)
+			return err
+		})
+	}
+
+	// Simulate being hard killed by:
+	// 1. copy directories before shutdown
+	copyToSrcMap := make(map[string]string)
+	for _, s := range c.servers {
+		sd := s.StoreDir()
+		copySd := path.Join(t.TempDir(), JetStreamStoreDir)
+		err = copyDir(copySd, sd)
+		require_NoError(t, err)
+		copyToSrcMap[copySd] = sd
+	}
+
+	// 2. stop all
+	nc.Close()
+	c.stopAll()
+
+	// 3. revert directories to before shutdown
+	for cp, dest := range copyToSrcMap {
+		err = os.RemoveAll(dest)
+		require_NoError(t, err)
+		err = copyDir(dest, cp)
+		require_NoError(t, err)
+	}
+
+	// 4. restart
+	c.restartAll()
+	c.waitOnAllCurrent()
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Stream should exist still and not be removed after hard killing all servers, so expect no error.
+	_, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
 }

@@ -366,7 +366,7 @@ func TestNRGSwitchStateClearsQueues(t *testing.T) {
 	s := c.servers[0] // RunBasicJetStreamServer not available
 
 	n := &raft{
-		prop:  newIPQueue[*Entry](s, "prop"),
+		prop:  newIPQueue[*proposedEntry](s, "prop"),
 		resp:  newIPQueue[*appendEntryResponse](s, "resp"),
 		leadc: make(chan bool, 1), // for switchState
 	}
@@ -374,7 +374,7 @@ func TestNRGSwitchStateClearsQueues(t *testing.T) {
 	require_Equal(t, n.prop.len(), 0)
 	require_Equal(t, n.resp.len(), 0)
 
-	n.prop.push(&Entry{})
+	n.prop.push(&proposedEntry{})
 	n.resp.push(&appendEntryResponse{})
 	require_Equal(t, n.prop.len(), 1)
 	require_Equal(t, n.resp.len(), 1)
