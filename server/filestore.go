@@ -159,9 +159,9 @@ const (
 )
 
 type psi struct {
-	total uint64
-	fblk  uint32
-	lblk  uint32
+	Total uint64
+	Fblk  uint32
+	Lblk  uint32
 }
 
 type fileStore struct {
@@ -1644,11 +1644,11 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 					return errCorruptState
 				}
 				bi += lsubj
-				psi := psi{total: readU64(), fblk: uint32(readU64())}
-				if psi.total > 1 {
-					psi.lblk = uint32(readU64())
+				psi := psi{Total: readU64(), Fblk: uint32(readU64())}
+				if psi.Total > 1 {
+					psi.Lblk = uint32(readU64())
 				} else {
-					psi.lblk = psi.fblk
+					psi.Lblk = psi.Fblk
 				}
 				fs.psim.Insert(subj, psi)
 				fs.tsl += lsubj
@@ -1813,8 +1813,10 @@ func (fs *fileStore) adjustAccounting(mb, nmb *msgBlock) {
 			continue
 		}
 		if len(sm.subj) > 0 && fs.psim != nil {
-			if info, ok := fs.psim.Find(stringToBytes(sm.subj)); ok {
-				info.total--
+			bsubj := stringToBytes(sm.subj)
+			if info, ok := fs.psim.Find(bsubj); ok {
+				info.Total--
+				fs.psim.Update(bsubj, info)
 			}
 		}
 	}
@@ -2371,9 +2373,11 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 		}
 		fseq = lseq + 1
 		for _, subj := range subs {
-			ss, _ := mb.fss.Find(stringToBytes(subj))
-			if ss != nil && ss.firstNeedsUpdate {
+			bsubj := stringToBytes(subj)
+			ss, _ := mb.fss.Find(bsubj)
+			if ss != nil && ss.FirstNeedsUpdate {
 				mb.recalculateFirstForSubj(subj, ss.First, ss)
+				mb.fss.Update(bsubj, ss)
 			}
 			if ss == nil || start > ss.Last || ss.First >= fseq {
 				continue
@@ -2502,8 +2506,9 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 			// If we already found a partial then don't do anything else.
 			return
 		}
-		if ss.firstNeedsUpdate {
+		if ss.FirstNeedsUpdate {
 			mb.recalculateFirstForSubj(bytesToString(bsubj), ss.First, ss)
+			mb.fss.QueueUpdate(bsubj, ss)
 		}
 		if sseq <= ss.First {
 			update(ss)
@@ -2512,6 +2517,7 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 			havePartial = true
 		}
 	})
+	mb.fss.FlushUpdates()
 
 	// If we did not encounter any partials we can return here.
 	if !havePartial {
@@ -2613,15 +2619,15 @@ func (fs *fileStore) checkSkipFirstBlock(filter string, wc bool, bi int) (int, e
 	start, stop := uint32(math.MaxUint32), uint32(0)
 	if wc {
 		fs.psim.Match(stringToBytes(filter), func(_ []byte, psi *psi) {
-			if psi.fblk < start {
-				start = psi.fblk
+			if psi.Fblk < start {
+				start = psi.Fblk
 			}
-			if psi.lblk > stop {
-				stop = psi.lblk
+			if psi.Lblk > stop {
+				stop = psi.Lblk
 			}
 		})
 	} else if psi, ok := fs.psim.Find(stringToBytes(filter)); ok {
-		start, stop = psi.fblk, psi.lblk
+		start, stop = psi.Fblk, psi.Lblk
 	}
 	// Nothing was found.
 	if start == uint32(math.MaxUint32) {
@@ -2683,18 +2689,18 @@ func (fs *fileStore) numFilteredPendingWithLast(filter string, last bool, ss *Si
 
 	if wc {
 		fs.psim.Match(stringToBytes(filter), func(_ []byte, psi *psi) {
-			ss.Msgs += psi.total
+			ss.Msgs += psi.Total
 			// Keep track of start and stop indexes for this subject.
-			if psi.fblk < start {
-				start = psi.fblk
+			if psi.Fblk < start {
+				start = psi.Fblk
 			}
-			if psi.lblk > stop {
-				stop = psi.lblk
+			if psi.Lblk > stop {
+				stop = psi.Lblk
 			}
 		})
 	} else if psi, ok := fs.psim.Find(stringToBytes(filter)); ok {
-		ss.Msgs += psi.total
-		start, stop = psi.fblk, psi.lblk
+		ss.Msgs += psi.Total
+		start, stop = psi.Fblk, psi.Lblk
 	}
 
 	// Did not find anything.
@@ -2710,7 +2716,7 @@ func (fs *fileStore) numFilteredPendingWithLast(filter string, last bool, ss *Si
 	}
 
 	if ss.First == 0 {
-		// This is a miss. This can happen since psi.fblk is lazy.
+		// This is a miss. This can happen since psi.Fblk is lazy.
 		// We will make sure to update fblk.
 
 		// Hold this outside loop for psim fblk updates when done.
@@ -2728,14 +2734,17 @@ func (fs *fileStore) numFilteredPendingWithLast(filter string, last bool, ss *Si
 		// Update fblk since fblk was outdated.
 		if !wc {
 			if info, ok := fs.psim.Find(stringToBytes(filter)); ok {
-				info.fblk = i
+				info.Fblk = i
+				fs.psim.Update(stringToBytes(filter), info)
 			}
 		} else {
 			fs.psim.Match(stringToBytes(filter), func(subj []byte, psi *psi) {
-				if i > psi.fblk {
-					psi.fblk = i
+				if i > psi.Fblk {
+					psi.Fblk = i
+					fs.psim.QueueUpdate(subj, psi)
 				}
 			})
+			fs.psim.FlushUpdates()
 		}
 	}
 	// Now gather last sequence if asked to do so.
@@ -2767,10 +2776,10 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 		if !ok {
 			return nil
 		}
-		if f := fs.bim[info.fblk]; f != nil {
+		if f := fs.bim[info.Fblk]; f != nil {
 			start = f
 		}
-		if l := fs.bim[info.lblk]; l != nil {
+		if l := fs.bim[info.Lblk]; l != nil {
 			stop = l
 		}
 	}
@@ -2797,9 +2806,10 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 		// Mark fss activity.
 		mb.lsts = time.Now().UnixNano()
 		mb.fss.Match(stringToBytes(subject), func(bsubj []byte, ss *SimpleState) {
-			subj := string(bsubj)
-			if ss.firstNeedsUpdate {
+			subj := bytesToString(bsubj)
+			if ss.FirstNeedsUpdate {
 				mb.recalculateFirstForSubj(subj, ss.First, ss)
+				mb.fss.QueueUpdate(bsubj, ss)
 			}
 			oss := fss[subj]
 			if oss.First == 0 { // New
@@ -2810,6 +2820,7 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 				fss[subj] = oss
 			}
 		})
+		mb.fss.FlushUpdates()
 		if shouldExpire {
 			// Expire this cache before moving on.
 			mb.tryForceExpireCacheLocked()
@@ -2860,8 +2871,8 @@ func (fs *fileStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed i
 		fs.psim.Match(stringToBytes(filter), func(subj []byte, psi *psi) {
 			s := string(subj)
 			subs[s] = psi
-			if psi.lblk < lastMBIndex {
-				ltSeen[s] = psi.lblk
+			if psi.Lblk < lastMBIndex {
+				ltSeen[s] = psi.Lblk
 			}
 		})
 	}
@@ -2915,7 +2926,7 @@ func (fs *fileStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed i
 						break
 					}
 				}
-			} else if mb.index <= psi.fblk {
+			} else if mb.index <= psi.Fblk {
 				// Track which subs are no longer applicable, meaning we will not find a valid msg at this point.
 				delete(subs, subj)
 			}
@@ -3015,13 +3026,13 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 
 		fs.psim.Match(stringToBytes(filter), func(subj []byte, psi *psi) {
 			// If the select blk start is greater than entry's last blk skip.
-			if bi > psi.lblk {
+			if bi > psi.Lblk {
 				return
 			}
 			total++
 			// We will track the subjects that are an exact match to the last block.
 			// This is needed for last block processing.
-			if psi.lblk == bi {
+			if psi.Lblk == bi {
 				lbm[string(subj)] = true
 			}
 		})
@@ -3099,9 +3110,9 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 					// If we already found a partial then don't do anything else.
 					return
 				}
-				subj := bytesToString(bsubj)
-				if ss.firstNeedsUpdate {
-					mb.recalculateFirstForSubj(subj, ss.First, ss)
+				if ss.FirstNeedsUpdate {
+					mb.recalculateFirstForSubj(bytesToString(bsubj), ss.First, ss)
+					mb.fss.QueueUpdate(bsubj, ss)
 				}
 				if sseq <= ss.First {
 					t += ss.Msgs
@@ -3110,6 +3121,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 					havePartial = true
 				}
 			})
+			mb.fss.FlushUpdates()
 
 			// See if we need to scan msgs here.
 			if havePartial {
@@ -3141,10 +3153,10 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 	// TODO(dlc) - Eventually when sublist uses generics, make this sublist driven instead.
 	start := uint32(math.MaxUint32)
 	fs.psim.Match(stringToBytes(filter), func(_ []byte, psi *psi) {
-		total += psi.total
+		total += psi.Total
 		// Keep track of start index for this subject.
-		if psi.fblk < start {
-			start = psi.fblk
+		if psi.Fblk < start {
+			start = psi.Fblk
 		}
 	})
 	// See if we were asked for all, if so we are done.
@@ -3240,7 +3252,7 @@ func (fs *fileStore) SubjectsTotals(filter string) map[string]uint64 {
 	}
 	fst := make(map[string]uint64)
 	fs.psim.Match(stringToBytes(filter), func(subj []byte, psi *psi) {
-		fst[string(subj)] = psi.total
+		fst[string(subj)] = psi.Total
 	})
 	return fst
 }
@@ -3392,7 +3404,7 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 	psmax := mmp > 0 && len(subj) > 0
 	if psmax {
 		if info, ok := fs.psim.Find(stringToBytes(subj)); ok {
-			psmc = info.total
+			psmc = info.Total
 		}
 	}
 
@@ -3442,12 +3454,13 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 	if len(subj) > 0 && fs.psim != nil {
 		index := fs.lmb.index
 		if info, ok := fs.psim.Find(stringToBytes(subj)); ok {
-			info.total++
-			if index > info.lblk {
-				info.lblk = index
+			info.Total++
+			if index > info.Lblk {
+				info.Lblk = index
 			}
+			fs.psim.Update(stringToBytes(subj), info)
 		} else {
-			fs.psim.Insert(stringToBytes(subj), psi{total: 1, fblk: index, lblk: index})
+			fs.psim.Insert(stringToBytes(subj), psi{Total: 1, Fblk: index, Lblk: index})
 			fs.tsl += len(subj)
 		}
 	}
@@ -3475,7 +3488,7 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 			// Make sure we are below the limit.
 			if psmc--; psmc >= mmp {
 				bsubj := stringToBytes(subj)
-				for info, ok := fs.psim.Find(bsubj); ok && info.total > mmp; info, ok = fs.psim.Find(bsubj) {
+				for info, ok := fs.psim.Find(bsubj); ok && info.Total > mmp; info, ok = fs.psim.Find(bsubj) {
 					if seq, _ := fs.firstSeqForSubj(subj); seq > 0 {
 						if ok, _ := fs.removeMsgViaLimits(seq); !ok {
 							break
@@ -3733,7 +3746,7 @@ func (fs *fileStore) firstSeqForSubj(subj string) (uint64, error) {
 	// See if we can optimize where we start.
 	start, stop := fs.blks[0].index, fs.lmb.index
 	if info, ok := fs.psim.Find(stringToBytes(subj)); ok {
-		start, stop = info.fblk, info.lblk
+		start, stop = info.Fblk, info.Lblk
 	}
 
 	for i := start; i <= stop; i++ {
@@ -3765,11 +3778,13 @@ func (fs *fileStore) firstSeqForSubj(subj string) (uint64, error) {
 			// Adjust first if it was not where we thought it should be.
 			if i != start {
 				if info, ok := fs.psim.Find(bsubj); ok {
-					info.fblk = i
+					info.Fblk = i
+					fs.psim.Update(bsubj, info)
 				}
 			}
-			if ss.firstNeedsUpdate {
+			if ss.FirstNeedsUpdate {
 				mb.recalculateFirstForSubj(subj, ss.First, ss)
+				mb.fss.Update(bsubj, ss)
 			}
 			mb.mu.Unlock()
 			// Re-acquire fs lock
@@ -3849,8 +3864,8 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 	// collect all that are not correct.
 	needAttention := make(map[string]*psi)
 	fs.psim.Iter(func(subj []byte, psi *psi) bool {
-		numMsgs += psi.total
-		if psi.total > maxMsgsPer {
+		numMsgs += psi.Total
+		if psi.Total > maxMsgsPer {
 			needAttention[string(subj)] = psi
 		}
 		return true
@@ -3874,7 +3889,7 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 		// Need to redo blocks that need attention.
 		needAttention = make(map[string]*psi)
 		fs.psim.Iter(func(subj []byte, psi *psi) bool {
-			if psi.total > maxMsgsPer {
+			if psi.Total > maxMsgsPer {
 				needAttention[string(subj)] = psi
 			}
 			return true
@@ -3889,7 +3904,7 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 
 	// Walk all subjects that need attention here.
 	for subj, info := range needAttention {
-		total, start, stop := info.total, info.fblk, info.lblk
+		total, start, stop := info.Total, info.Fblk, info.Lblk
 
 		for i := start; i <= stop; i++ {
 			mb := fs.bim[i]
@@ -3899,9 +3914,11 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 			// Grab the ss entry for this subject in case sparse.
 			mb.mu.Lock()
 			mb.ensurePerSubjectInfoLoaded()
-			ss, ok := mb.fss.Find(stringToBytes(subj))
-			if ok && ss != nil && ss.firstNeedsUpdate {
+			bsubj := stringToBytes(subj)
+			ss, ok := mb.fss.Find(bsubj)
+			if ok && ss != nil && ss.FirstNeedsUpdate {
 				mb.recalculateFirstForSubj(subj, ss.First, ss)
+				mb.fss.Update(bsubj, ss)
 			}
 			mb.mu.Unlock()
 			if ss == nil {
@@ -3964,13 +3981,16 @@ func (fs *fileStore) removePerSubject(subj string) {
 	// We do not update sense of fblk here but will do so when we resolve during lookup.
 	bsubj := stringToBytes(subj)
 	if info, ok := fs.psim.Find(bsubj); ok {
-		info.total--
-		if info.total == 1 {
-			info.fblk = info.lblk
-		} else if info.total == 0 {
+		info.Total--
+		if info.Total == 1 {
+			info.Fblk = info.Lblk
+			fs.psim.Update(bsubj, info)
+		} else if info.Total == 0 {
 			if _, ok = fs.psim.Delete(bsubj); ok {
 				fs.tsl -= len(subj)
 			}
+		} else {
+			fs.psim.Update(bsubj, info)
 		}
 	}
 }
@@ -5021,6 +5041,7 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 		if ss, ok := mb.fss.Find(stringToBytes(subj)); ok && ss != nil {
 			ss.Msgs++
 			ss.Last = seq
+			mb.fss.Update(stringToBytes(subj), ss)
 		} else {
 			mb.fss.Insert(stringToBytes(subj), SimpleState{Msgs: 1, First: seq, Last: seq})
 		}
@@ -5696,6 +5717,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 				if ss, ok := mb.fss.Find(bsubj); ok && ss != nil {
 					ss.Msgs++
 					ss.Last = seq
+					mb.fss.Update(bsubj, ss)
 				} else {
 					mb.fss.Insert(bsubj, SimpleState{
 						Msgs:  1,
@@ -6381,11 +6403,11 @@ func (fs *fileStore) loadLast(subj string, sm *StoreMsg) (lsm *StoreMsg, err err
 		start = fs.lmb.index
 		fs.psim.Match(stringToBytes(subj), func(_ []byte, psi *psi) {
 			// Keep track of start and stop indexes for this subject.
-			if psi.fblk < start {
-				start = psi.fblk
+			if psi.Fblk < start {
+				start = psi.Fblk
 			}
-			if psi.lblk > stop {
-				stop = psi.lblk
+			if psi.Lblk > stop {
+				stop = psi.Lblk
 			}
 		})
 		// None matched.
@@ -6395,7 +6417,7 @@ func (fs *fileStore) loadLast(subj string, sm *StoreMsg) (lsm *StoreMsg, err err
 		// These need to be swapped.
 		start, stop = stop, start
 	} else if info, ok := fs.psim.Find(stringToBytes(subj)); ok {
-		start, stop = info.lblk, info.fblk
+		start, stop = info.Lblk, info.Fblk
 	} else {
 		return nil, ErrStoreMsgNotFound
 	}
@@ -7563,12 +7585,14 @@ func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64) {
 		} else {
 			ss.First = ss.Last
 		}
-		ss.firstNeedsUpdate = false
+		ss.FirstNeedsUpdate = false
+		mb.fss.Update(bsubj, ss)
 		return
 	}
 
 	// We can lazily calculate the first sequence when needed.
-	ss.firstNeedsUpdate = seq == ss.First || ss.firstNeedsUpdate
+	ss.FirstNeedsUpdate = seq == ss.First || ss.FirstNeedsUpdate
+	mb.fss.Update(bsubj, ss)
 }
 
 // Will recalulate the first sequence for this subject in this block.
@@ -7582,7 +7606,7 @@ func (mb *msgBlock) recalculateFirstForSubj(subj string, startSeq uint64, ss *Si
 	}
 
 	// Mark first as updated.
-	ss.firstNeedsUpdate = false
+	ss.FirstNeedsUpdate = false
 
 	startSlot := int(startSeq - mb.cache.fseq)
 	if startSlot >= len(mb.cache.idx) {
@@ -7672,6 +7696,7 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 			if ss, ok := mb.fss.Find(stringToBytes(sm.subj)); ok && ss != nil {
 				ss.Msgs++
 				ss.Last = seq
+				mb.fss.Update(stringToBytes(sm.subj), ss)
 			} else {
 				mb.fss.Insert(stringToBytes(sm.subj), SimpleState{Msgs: 1, First: seq, Last: seq})
 			}
@@ -7719,12 +7744,13 @@ func (fs *fileStore) populateGlobalPerSubjectInfo(mb *msgBlock) {
 	mb.fss.Iter(func(bsubj []byte, ss *SimpleState) bool {
 		if len(bsubj) > 0 {
 			if info, ok := fs.psim.Find(bsubj); ok {
-				info.total += ss.Msgs
-				if mb.index > info.lblk {
-					info.lblk = mb.index
+				info.Total += ss.Msgs
+				if mb.index > info.Lblk {
+					info.Lblk = mb.index
 				}
+				fs.psim.Update(bsubj, info)
 			} else {
-				fs.psim.Insert(bsubj, psi{total: ss.Msgs, fblk: mb.index, lblk: mb.index})
+				fs.psim.Insert(bsubj, psi{Total: ss.Msgs, Fblk: mb.index, Lblk: mb.index})
 				fs.tsl += len(bsubj)
 			}
 		}
@@ -7991,10 +8017,10 @@ func (fs *fileStore) _writeFullState(force bool) error {
 		fs.psim.Match([]byte(fwcs), func(subj []byte, psi *psi) {
 			buf = binary.AppendUvarint(buf, uint64(len(subj)))
 			buf = append(buf, subj...)
-			buf = binary.AppendUvarint(buf, psi.total)
-			buf = binary.AppendUvarint(buf, uint64(psi.fblk))
-			if psi.total > 1 {
-				buf = binary.AppendUvarint(buf, uint64(psi.lblk))
+			buf = binary.AppendUvarint(buf, psi.Total)
+			buf = binary.AppendUvarint(buf, uint64(psi.Fblk))
+			if psi.Total > 1 {
+				buf = binary.AppendUvarint(buf, uint64(psi.Lblk))
 			}
 		})
 	}

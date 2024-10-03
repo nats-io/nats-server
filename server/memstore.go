@@ -120,6 +120,9 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 		if ss, ok = ms.fss.Find(stringToBytes(subj)); ok {
 			asl = ms.maxp > 0 && ss.Msgs >= uint64(ms.maxp)
 		}
+		if ms.fss.Trace() {
+			fmt.Printf("storeRawMsg %p: %s %+v\n", ms.fss, subj, ss)
+		}
 	}
 
 	// Check if we are discarding new messages when we reach the limit.
@@ -141,8 +144,9 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 					return ErrMaxBytes
 				}
 				// If we are here we are at a subject maximum, need to determine if dropping last message gives us enough room.
-				if ss.firstNeedsUpdate {
+				if ss.FirstNeedsUpdate {
 					ms.recalculateFirstForSubj(subj, ss.First, ss)
+					ms.fss.Update(stringToBytes(subj), ss)
 				}
 				sm, ok := ms.msgs[ss.First]
 				if !ok || memStoreMsgSize(sm.subj, sm.hdr, sm.msg) < memStoreMsgSize(subj, hdr, msg) {
@@ -194,6 +198,7 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 		if ss != nil {
 			ss.Msgs++
 			ss.Last = seq
+			ms.fss.Update([]byte(subj), ss)
 			// Check per subject limits.
 			if ms.maxp > 0 && ss.Msgs > uint64(ms.maxp) {
 				ms.enforcePerSubjectLimit(subj, ss)
@@ -427,8 +432,9 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 	var havePartial bool
 	// We will track start and end sequences as we go.
 	ms.fss.Match(stringToBytes(filter), func(subj []byte, fss *SimpleState) {
-		if fss.firstNeedsUpdate {
+		if fss.FirstNeedsUpdate {
 			ms.recalculateFirstForSubj(bytesToString(subj), fss.First, fss)
+			ms.fss.QueueUpdate(subj, fss)
 		}
 		if sseq <= fss.First {
 			update(fss)
@@ -439,6 +445,7 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 			update(fss)
 		}
 	})
+	ms.fss.FlushUpdates()
 
 	// If we did not encounter any partials we can return here.
 	if !havePartial {
@@ -578,8 +585,9 @@ func (ms *memStore) SubjectsState(subject string) map[string]SimpleState {
 	fss := make(map[string]SimpleState)
 	ms.fss.Match(stringToBytes(subject), func(subj []byte, ss *SimpleState) {
 		subjs := string(subj)
-		if ss.firstNeedsUpdate {
+		if ss.FirstNeedsUpdate {
 			ms.recalculateFirstForSubj(subjs, ss.First, ss)
+			ms.fss.QueueUpdate(subj, ss)
 		}
 		oss := fss[subjs]
 		if oss.First == 0 { // New
@@ -590,6 +598,7 @@ func (ms *memStore) SubjectsState(subject string) map[string]SimpleState {
 			fss[subjs] = oss
 		}
 	})
+	ms.fss.FlushUpdates()
 	return fss
 }
 
@@ -685,13 +694,28 @@ func (ms *memStore) enforcePerSubjectLimit(subj string, ss *SimpleState) {
 	if ms.maxp <= 0 {
 		return
 	}
+	if ms.fss.Trace() {
+		fmt.Printf("enforcePerSubjectLimit %p  (in): %s %+v\n", ms.fss, subj, ss)
+	}
 	for nmsgs := ss.Msgs; nmsgs > uint64(ms.maxp); nmsgs = ss.Msgs {
-		if ss.firstNeedsUpdate {
+		if ss.FirstNeedsUpdate {
 			ms.recalculateFirstForSubj(subj, ss.First, ss)
+			ms.fss.Update(stringToBytes(subj), ss)
 		}
-		if !ms.removeMsg(ss.First, false) {
+		//if !ms.removeMsg(ss.First, false) {
+		ok := ms.removeMsg(ss.First, false)
+		if ms.fss.Trace() {
+			fmt.Printf("enforcePerSubjectLimit %p (rem): %+v %t\n", ms.fss, ss, ok)
+		}
+		if !ok {
 			break
 		}
+		if ss, ok = ms.fss.Find([]byte(subj)); !ok {
+			break
+		}
+	}
+	if ms.fss.Trace() {
+		fmt.Printf("enforcePerSubjectLimit %p (out): %s %+v\n", ms.fss, subj, ss)
 	}
 }
 
@@ -1152,12 +1176,14 @@ func (ms *memStore) LoadNextMsg(filter string, wc bool, start uint64, smp *Store
 		}
 		fseq, lseq = ms.state.LastSeq, uint64(0)
 		for _, subj := range subs {
-			ss, ok := ms.fss.Find(stringToBytes(subj))
+			bsubj := stringToBytes(subj)
+			ss, ok := ms.fss.Find(bsubj)
 			if !ok {
 				continue
 			}
-			if ss.firstNeedsUpdate {
+			if ss.FirstNeedsUpdate {
 				ms.recalculateFirstForSubj(subj, ss.First, ss)
+				ms.fss.Update(bsubj, ss)
 			}
 			if ss.First < fseq {
 				fseq = ss.First
@@ -1241,12 +1267,16 @@ func (ms *memStore) updateFirstSeq(seq uint64) {
 // Remove a seq from the fss and select new first.
 // Lock should be held.
 func (ms *memStore) removeSeqPerSubject(subj string, seq uint64) {
-	ss, ok := ms.fss.Find(stringToBytes(subj))
+	bsubj := stringToBytes(subj)
+	ss, ok := ms.fss.Find(bsubj)
+	if ms.fss.Trace() {
+		fmt.Printf("removeSeqPerSubject %p: %s %d %+v\n", ms.fss, subj, seq, ss)
+	}
 	if !ok {
 		return
 	}
 	if ss.Msgs == 1 {
-		ms.fss.Delete(stringToBytes(subj))
+		ms.fss.Delete(bsubj)
 		return
 	}
 	ss.Msgs--
@@ -1258,10 +1288,11 @@ func (ms *memStore) removeSeqPerSubject(subj string, seq uint64) {
 		} else {
 			ss.First = ss.Last
 		}
-		ss.firstNeedsUpdate = false
+		ss.FirstNeedsUpdate = false
 	} else {
-		ss.firstNeedsUpdate = seq == ss.First || ss.firstNeedsUpdate
+		ss.FirstNeedsUpdate = seq == ss.First || ss.FirstNeedsUpdate
 	}
+	ms.fss.Update(bsubj, ss)
 }
 
 // Will recalculate the first sequence for this subject in this block.
@@ -1274,7 +1305,7 @@ func (ms *memStore) recalculateFirstForSubj(subj string, startSeq uint64, ss *Si
 	for ; tseq <= ss.Last; tseq++ {
 		if sm := ms.msgs[tseq]; sm != nil && sm.subj == subj {
 			ss.First = tseq
-			ss.firstNeedsUpdate = false
+			ss.FirstNeedsUpdate = false
 			return
 		}
 	}
@@ -1285,6 +1316,9 @@ func (ms *memStore) recalculateFirstForSubj(subj string, startSeq uint64, ss *Si
 func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 	var ss uint64
 	sm, ok := ms.msgs[seq]
+	if ms.fss.Trace() {
+		fmt.Printf("removeMsg %p: %d %t\n", ms, seq, ok)
+	}
 	if !ok {
 		return false
 	}

@@ -53,6 +53,17 @@ func RunRandClientPortServer(t *testing.T) *Server {
 	return RunServer(&opts)
 }
 
+var skipSqlSegfault bool
+
+func streeSqlDownSelect[T any](args ...T) (r T) {
+	if _, ok := os.LookupEnv("STREESQLDBPATH"); ok {
+		r = args[len(args)-1]
+	} else if len(args) > 1 {
+		r = args[0]
+	}
+	return
+}
+
 func require_True(t testing.TB, b bool) {
 	t.Helper()
 	if !b {
@@ -72,6 +83,20 @@ func require_NoError(t testing.TB, err error) {
 	if err != nil {
 		t.Fatalf("require no error, but got: %v", err)
 	}
+}
+
+func wrapErrorf(format string, args ...any) error {
+	for _, a := range args {
+		if e, isErr := a.(error); isErr && e != nil {
+			return fmt.Errorf(format, args...)
+		}
+	}
+	return nil
+}
+
+func require_NoErrorf(t testing.TB, format string, args ...any) {
+	t.Helper()
+	require_NoError(t, wrapErrorf(format, args...))
 }
 
 func require_NotNil(t testing.TB, v any) {
@@ -113,9 +138,14 @@ func require_Error(t testing.TB, err error, expected ...error) {
 	t.Fatalf("Expected one of %v, got '%v'", expected, err)
 }
 
-func require_Equal[T comparable](t testing.TB, a, b T) {
+func require_Equal[T comparable](t testing.TB, a, b T, tag ...string) {
 	t.Helper()
-	if a != b {
+	if a == b {
+		return
+	}
+	if len(tag) > 0 {
+		t.Fatalf("%s: require %T equal, but got: %v != %v", tag[0], a, a, b)
+	} else {
 		t.Fatalf("require %T equal, but got: %v != %v", a, a, b)
 	}
 }

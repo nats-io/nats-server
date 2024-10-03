@@ -2,11 +2,12 @@ package stree
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"math/rand/v2"
+	//"runtime/debug"
 	"strconv"
 	"strings"
+	//"sync"
 
         "zombiezen.com/go/sqlite"
         "zombiezen.com/go/sqlite/sqlitex"
@@ -18,173 +19,20 @@ const (
 	opMatch
 )
 
-var (
-	errStop = errors.New("Stop")
-)
-
 type void = struct{}
 
 type sqlConn[T any] struct {
 	*sqlite.Conn
-	dbFile     string
-	strCollate map[int]int
-	tabSubj    map[int]void
-	maxTabSubj int
-	iterStmt   *sqlite.Stmt
-	vColType   string // INT, FLOAT, TEXT, BLOB
-	vElemSize  int    // if value is a slice
-	vElemGob   *Gobber[T]
-}
-
-var (
-	queriesStr = make(map[int]string)
-	queriesIdx = make(map[int]string)
-	insertions = make(map[int]string)
-
-	queriesSubjFull = make(map[int]string)
-	queriesSubjWild = make(map[int]string)
-	insertionsSubj  = make(map[int]string)
-	deletesSubj     = make(map[int]string)
-)
-
-func sqlStmtStr(n int, action string) string {
-	if n < 1 {
-		panic(fmt.Errorf("sqlStmtStr: n=%d", n))
-	}
-	var b strings.Builder
-	b.WriteString("with q(k, v) as (values")
-	sep := " "
-	for range n {
-		b.WriteString(sep)
-		b.WriteString("(?, ?)")
-		sep = ", "
-	}
-	b.WriteString(") ")
-	b.WriteString(action)
-	b.WriteString(";")
-	return b.String()
-}
-
-func queryStr(n int) string {
-	if s, ok := queriesStr[n]; ok {
-		return s
-	}
-	s := sqlStmtStr(n, "select k, i from q, Strings where t = v")
-	queriesStr[n] = s
-	return s
-}
-
-func queryIdx(n int) string {
-	if s, ok := queriesIdx[n]; ok {
-		return s
-	}
-	s := sqlStmtStr(n, "select k, t from q, Strings where i = v")
-	queriesIdx[n] = s
-	return s
-}
-
-func insertStr(n int) string {
-	if s, ok := insertions[n]; ok {
-		return s
-	}
-	s := sqlStmtStr(n, "insert into Strings(t) select v from q returning (select k from q where t = v), i")
-	insertions[n] = s
-	return s
-}
-
-func insertSubject(n int) string {
-	if s, ok := insertionsSubj[n]; ok {
-		return s
-	}
-	if n < 1 {
-		panic(fmt.Errorf("insertSubject: n=%d", n))
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "insert or replace into Subject%d values (", n)
-	for k := range n+1 {
-		if k > 0 {
-			b.WriteString(", ")
-		}
-		b.WriteString("?")
-	}
-	b.WriteString(");")
-	s := b.String()
-	insertionsSubj[n] = s
-	return s
-}
-
-func querySubjectFull(n int) string {
-	if s, ok := queriesSubjFull[n]; ok {
-		return s
-	}
-	s := selOrDelSubject(n, "select v")
-	queriesSubjFull[n] = s
-	return s
-}
-
-func deleteSubject(n int) string {
-	if s, ok := deletesSubj[n]; ok {
-		return s
-	}
-	s := selOrDelSubject(n, "delete")
-	deletesSubj[n] = s
-	return s
-}
-
-func selOrDelSubject(n int, action string) string {
-	if n < 1 {
-		panic(fmt.Errorf("insOrDelSubject: n=%d", n))
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "%s from Subject%d where (", action, n)
-	for k := range n {
-		if k > 0 {
-			b.WriteString(" and ")
-		}
-		fmt.Fprintf(&b, "t%d = ?", k+1)
-	}
-	b.WriteString(");")
-	return b.String()
-}
-
-func querySubjectWild(n int) string {
-	if s, ok := queriesSubjWild[n]; ok {
-		return s
-	}
-	if n < 1 {
-		panic(fmt.Errorf("querySubjectWild: n=%d", n))
-	}
-	var b strings.Builder
-	b.WriteString("with q(")
-	for k := range n {
-		if k > 0 {
-			b.WriteString(", ")
-		}
-		fmt.Fprintf(&b, "x%d", k+1)
-	}
-	b.WriteString(") as (values (")
-	for k := range n {
-		if k > 0 {
-			b.WriteString(", ")
-		}
-		b.WriteString("?")
-	}
-	fmt.Fprintf(&b, "))\n    select Subject%d.* from q, Subject%d where\n    ", n, n)
-	for k := range n {
-		if k > 0 {
-			b.WriteString(" and")
-			if k%4 == 0 {
-				b.WriteString("\n    ")
-			} else {
-				b.WriteString(" ")
-			}
-		}
-		fmt.Fprintf(&b, "(x%d = 0 or x%d = t%d)", k+1, k+1, k+1)
-	}
-	b.WriteString(";")
-	s := b.String()
-	queriesSubjWild[n] = s
-	return s
+	dbFile      string
+	stmts       cacheByClass[*prepPool]
+	strCollate  map[int]int
+	tabSubj     map[int]void
+	maxTabSubj  int
+	iterStmt    *sqlite.Stmt // depends on tabSubj
+	vColType    string       // INT, FLOAT, TEXT, BLOB
+	vElemSize   int          // if value is a slice
+	vElemGob    *Gobber[T]
+	updateQueue map[string]*T
 }
 
 var createStrings = `
@@ -192,28 +40,24 @@ create table if not exists Strings(
     i integer primary key,
     t text unique on conflict ignore);`
 
-var scanTables = `
-select name from sqlite_schema where type = 'table';`
-
 func (t *SubjectTree[T]) sqlInit(cfg *Config) {
         if t == nil {
 		return
 	}
-	var err error
-	var dbConn *sqlite.Conn
 	var dbFile string
+	dbFlags := sqlite.OpenReadWrite|sqlite.OpenCreate
 	if cfg == nil || cfg.DBPath == "" {
 		dbFile = "MEMORY"
-		dbConn, err = sqlite.OpenConn(dbFile,
-			sqlite.OpenReadWrite|sqlite.OpenCreate|sqlite.OpenMemory)
+		dbFlags |= sqlite.OpenMemory
 	} else {
 		dbFile = cfg.DBPath
 		if strings.Contains(cfg.DBPath, "*") {
 			instId := fmt.Sprintf("%016x", rand.Uint64())
 			dbFile = strings.Replace(cfg.DBPath, "*", instId, 1)
 		}
-		dbConn, err = sqlite.OpenConn(dbFile)
+		dbFlags |= sqlite.OpenWAL
 	}
+	dbConn, err := sqlite.OpenConn(dbFile, dbFlags)
 	if err == nil {
 		err = sqlitex.ExecuteTransient(dbConn, createStrings, nil)
 	}
@@ -222,6 +66,7 @@ func (t *SubjectTree[T]) sqlInit(cfg *Config) {
 	}
 	tabSubj := make(map[int]void, 16)
 	var maxTabSubj int
+	scanTables := "select name from sqlite_schema where type = 'table';"
 	err = sqlitex.ExecuteTransient(dbConn, scanTables, &sqlitex.ExecOptions{
 		ResultFunc: func(stmt *sqlite.Stmt) error {
 			name := stmt.ColumnText(0)
@@ -246,7 +91,7 @@ func (t *SubjectTree[T]) sqlInit(cfg *Config) {
 			if vElemGob != nil {
 				return fmt.Errorf("sqlInit: multiple GobDesc's")
 			}
-			vElemGob = NewGobber[T](colBytes(stmt, 0))
+			vElemGob = NewGobber[T](colBytes(&prepStmt{Stmt: stmt}, 0))
 			return vElemGob.Error()
 		},
 	})
@@ -281,16 +126,18 @@ func (t *SubjectTree[T]) sqlInit(cfg *Config) {
 	}
 	t.size = size
 	t.conn = &sqlConn[T]{
-		Conn:       dbConn,
-		dbFile:     dbFile,
-		tabSubj:    tabSubj,
-		maxTabSubj: maxTabSubj,
-		vElemGob:   vElemGob,
+		Conn:        dbConn,
+		dbFile:      dbFile,
+		tabSubj:     tabSubj,
+		maxTabSubj:  maxTabSubj,
+		vElemGob:    vElemGob,
+		updateQueue: make(map[string]*T),
 	}
 	t.setColParams()
 }
 
 func (t *SubjectTree[T]) sqlClose() error {
+	t.conn.finalize()
 	err := t.conn.Close()
 	t.conn = nil
 	return err
@@ -307,13 +154,17 @@ func (t *SubjectTree[T]) storeGobDesc() {
 	if t == nil || t.conn == nil || t.conn.vElemGob == nil {
 		return
 	}
+	desc := t.conn.vElemGob.Desc()
+	if desc == nil {
+		panic(fmt.Errorf("nil GobDesc: %w", t.conn.vElemGob.Error()))
+	}
 	err := sqlitex.ExecuteScript(t.conn.Conn, `
 		drop table if exists GobDesc;
-		create table GobDesc (desc BLOB);`, nil)
+		create table GobDesc(desc BLOB);`, nil)
 	if err == nil {
 		err = sqlitex.ExecuteTransient(t.conn.Conn,
 			"insert into GobDesc values (?);",
-			&sqlitex.ExecOptions{Args: []any{t.conn.vElemGob.Desc()}})
+			&sqlitex.ExecOptions{Args: []any{desc}})
 	}
 	if err != nil {
 		panic(fmt.Errorf("storeGobDesc: %w", err))
@@ -324,7 +175,7 @@ func (t *SubjectTree[T]) sqlIdxToStr(idx []int, strs []string) []string {
         if t == nil || t.conn == nil {
 		return nil
 	}
-	stmt := t.conn.Prep(queryIdx(len(idx)))
+	stmt := t.conn.prepStmt(queryIdx, len(idx))
 	k := 1
 	for kp, i := range idx {
 		strs = append(strs, "")
@@ -332,17 +183,10 @@ func (t *SubjectTree[T]) sqlIdxToStr(idx []int, strs []string) []string {
 		stmt.BindInt64(k+1, int64(i))
 		k += 2
 	}
-	for {
-		if hasRow, err := stmt.Step(); err != nil {
-			panic(err)
-		} else if !hasRow {
-			break
-		}
+	for stmt.mustStep() {
 		k, v := stmt.ColumnInt(0), stmt.ColumnText(1)
 		strs[k] = v
 	}
-	stmt.Reset()
-	stmt.ClearBindings()
 	return strs
 }
 
@@ -382,7 +226,7 @@ func (t *SubjectTree[T]) subjectToIdx(op int, subject []byte, idx []int) []int {
 		return idx
 	}
 
-	stmt := t.conn.Prep(queryStr(ntok))
+	stmt := t.conn.prepStmt(queryStr, ntok)
 	k := 1
 	for kt, token := range tokens {
 		if len(token) != 1 || (token[0] != pwc && token[0] != fwc) {
@@ -394,25 +238,18 @@ func (t *SubjectTree[T]) subjectToIdx(op int, subject []byte, idx []int) []int {
 			idx = append(idx, 0)
 		}
 	}
-	for {
-		if hasRow, err := stmt.Step(); err != nil {
-			panic(err)
-		} else if !hasRow {
-			break
-		}
+	for stmt.mustStep() {
 		k, v := stmt.ColumnInt(0), stmt.ColumnInt(1)
 		idx[k] = v
 		ntok--
 	}
-	stmt.Reset()
-	stmt.ClearBindings()
 	if ntok == 0 {
 		return idx
 	} else if op != opStore {
 		return nil
 	}
 	t.conn.strCollate = nil
-	stmt = t.conn.Prep(insertStr(ntok))
+	stmt = t.conn.prepStmt(insertStr, ntok)
 	k = 1
 	for kt, i := range idx {
 		if i < 0 { // one that we missed
@@ -421,23 +258,16 @@ func (t *SubjectTree[T]) subjectToIdx(op int, subject []byte, idx []int) []int {
 			k += 2
 		}
 	}
-	for {
-		if hasRow, err := stmt.Step(); err != nil {
-			panic(err)
-		} else if !hasRow {
-			break
-		}
+	for stmt.mustStep() {
 		k, i := stmt.ColumnInt(0), stmt.ColumnInt(1)
 		idx[k] = i
 		ntok--
 	}
-	stmt.Reset()
-	stmt.ClearBindings()
 	if ntok == 0 {
 		return idx
 	}
 	// one more pass, there may have been duplicates in the updates
-	stmt = t.conn.Prep(queryStr(ntok))
+	stmt = t.conn.prepStmt(queryStr, ntok)
 	k = 1
 	for kt, i := range idx {
 		if i < 0 {
@@ -446,18 +276,11 @@ func (t *SubjectTree[T]) subjectToIdx(op int, subject []byte, idx []int) []int {
 			k += 2
 		}
 	}
-	for {
-		if hasRow, err := stmt.Step(); err != nil {
-			panic(err)
-		} else if !hasRow {
-			break
-		}
+	for stmt.mustStep() {
 		k, i := stmt.ColumnInt(0), stmt.ColumnInt(1)
 		idx[k] = i
 		ntok--
 	}
-	stmt.Reset()
-	stmt.ClearBindings()
 	if ntok != 0 {
 		fmt.Printf("idx = %v\n", idx)
 		fmt.Printf("tokens = %v\n", tokens)
@@ -516,6 +339,7 @@ func (t *SubjectTree[T]) sqlEmpty() {
         if t == nil || t.conn == nil {
 		return
 	}
+	t.conn.finalize()
 	must := func(action string) {
 		err := sqlitex.ExecuteTransient(t.conn.Conn, action, nil)
 		if err != nil {
@@ -529,10 +353,6 @@ func (t *SubjectTree[T]) sqlEmpty() {
 	clear(t.conn.tabSubj)
 	t.conn.maxTabSubj = 0
 	t.conn.strCollate = nil
-	if t.conn.iterStmt != nil {
-		t.conn.iterStmt.Finalize()
-		t.conn.iterStmt = nil
-	}
 	must(createStrings)
 }
 
@@ -544,16 +364,12 @@ func (t *SubjectTree[T]) sqlInsert(subject []byte, value T) (*T, bool) {
 	}
 	old := t.sqlFindByIdx(idx)
 
-	stmt := t.conn.Prep(insertSubject(len(idx)))
+	stmt := t.conn.prepStmt(insertSubject, len(idx))
 	for k, i := range idx {
 		stmt.BindInt64(k+1, int64(i))
 	}
 	t.bindValue(stmt, len(idx)+1, value)
-	if _, err := stmt.Step(); err != nil {
-		panic(err)
-	}
-	stmt.Reset()
-	stmt.ClearBindings()
+	stmt.mustExec()
 
 	if old == nil {
 		t.size++
@@ -562,59 +378,86 @@ func (t *SubjectTree[T]) sqlInsert(subject []byte, value T) (*T, bool) {
 	return old, true
 }
 
+func (t *SubjectTree[T]) sqlUpdate(subject []byte, value *T) {
+	var _idx [16]int
+	idx := t.subjectToIdx(opStore, subject, _idx[:0])
+	if idx == nil { // malformed subject
+		return
+	}
+	stmt := t.conn.prepStmt(insertSubject, len(idx))
+	for k, i := range idx {
+		stmt.BindInt64(k+1, int64(i))
+	}
+	t.bindValue(stmt, len(idx)+1, *value)
+	stmt.mustExec()
+}
+
+// Use Queue/Flush to avoid duplicate hits during Match or Iter
+func (t *SubjectTree[T]) sqlQueueUpdate(subject []byte, value *T) {
+	t.conn.updateQueue[BytesToString(subject)] = value
+}
+
+func (t *SubjectTree[T]) sqlFlushUpdates() {
+	for k, v := range t.conn.updateQueue {
+		delete(t.conn.updateQueue, k)
+		t.sqlUpdate(StringToBytes(k), v)
+	}
+}
+
 func (t *SubjectTree[T]) sqlFindByIdx(idx []int) (pValue *T) {
 	ntok := len(idx)
 	if ntok == 0 {
 		return
 	}
 	t.ensureSubject(ntok)
-	stmt := t.conn.Prep(querySubjectFull(ntok))
+	stmt := t.conn.prepStmt(querySubjectFull, ntok)
 	for k, i := range idx {
 		stmt.BindInt64(k+1, int64(i))
 	}
-	for {
-		if hasRow, err := stmt.Step(); err != nil {
-			panic(err)
-		} else if !hasRow {
-			break
-		} else if pValue != nil {
+	for stmt.mustStep() {
+		if pValue != nil {
 			panic("multiple subject values")
 		}
 		pValue = t.colToValue(stmt, 0)
 	}
-	stmt.Reset()
-	stmt.ClearBindings()
 	return
 }
 
 func (t *SubjectTree[T]) sqlFind(subject []byte) (*T, bool) {
+	if t.conn.maxTabSubj == 0 {
+		return nil, false
+	}
 	var _idx [16]int
 	idx := t.subjectToIdx(opFind, subject, _idx[:0])
 	pValue := t.sqlFindByIdx(idx)
 	return pValue, (pValue != nil)
 }
 
+var delCount int
+
 func (t *SubjectTree[T]) sqlDelete(subject []byte) (*T, bool) {
+	if t.conn.maxTabSubj == 0 {
+		return nil, false
+	}
 	var _idx [16]int
 	idx := t.subjectToIdx(opFind, subject, _idx[:0])
 	old := t.sqlFindByIdx(idx)
 	if old == nil {
 		return nil, false
 	}
-	stmt := t.conn.Prep(deleteSubject(len(idx)))
+	stmt := t.conn.prepStmt(deleteSubject, len(idx))
 	for k, i := range idx {
 		stmt.BindInt64(k+1, int64(i))
 	}
-	if _, err := stmt.Step(); err != nil {
-		panic(err)
-	}
-	stmt.Reset()
-	stmt.ClearBindings()
+	stmt.mustExec()
 	t.size--
 	return old, true
 }
 
 func (t *SubjectTree[T]) sqlMatch(filter []byte, cb func(subject []byte, val *T)) {
+	if t.conn.maxTabSubj == 0 {
+		return
+	}
 	var _idx [16]int
 	idx := t.subjectToIdx(opMatch, filter, _idx[:0])
 	if idx == nil {
@@ -636,19 +479,14 @@ func (t *SubjectTree[T]) sqlMatch(filter []byte, cb func(subject []byte, val *T)
 }
 
 func (t *SubjectTree[T]) sqlMatchIdx(idx []int, cb func(subject []byte, val *T)) {
-	stmt := t.conn.Prep(querySubjectWild(len(idx)))
+	stmt := t.conn.prepStmt(querySubjectWild, len(idx))
 	for k, i := range idx {
 		stmt.BindInt64(k+1, int64(i))
 	}
 	var _midx [16]int
 	var _tokens [16]string
 	midx, tokens := _midx[:0], _tokens[:0]
-	for {
-		if hasRow, err := stmt.Step(); err != nil {
-			panic(err)
-		} else if !hasRow {
-			break
-		}
+	for stmt.mustStep() {
 		midx = midx[:0]
 		for k := range idx {
 			midx = append(midx, stmt.ColumnInt(k))
@@ -657,25 +495,17 @@ func (t *SubjectTree[T]) sqlMatchIdx(idx []int, cb func(subject []byte, val *T))
 		pVal := t.colToValue(stmt, len(idx))
 		cb([]byte(strings.Join(tokens, ".")), pVal)
 	}
-	stmt.Reset()
-	stmt.ClearBindings()
 }
 
 func (t *SubjectTree[T]) sqlSortStrings() {
 	t.conn.strCollate = make(map[int]int)
 	t.conn.strCollate[0] = 0 // empty string
-	stmt := t.conn.Prep("select i from Strings order by t;")
+	stmt := t.conn.prepStmt(sortStrings, 0)
 	k := 1
-	for {
-		if hasRow, err := stmt.Step(); err != nil {
-			panic(err)
-		} else if !hasRow {
-			break
-		}
+	for stmt.mustStep() {
 		t.conn.strCollate[stmt.ColumnInt(0)] = k
 		k++
 	}
-	stmt.Reset()
 }
 
 func (t *SubjectTree[T]) sqlIterQuery() string {
@@ -716,23 +546,21 @@ func (t *SubjectTree[T]) sqlIterQuery() string {
 }
 
 func (t *SubjectTree[T]) sqlIter(cb func(subject []byte, val *T) bool) {
+	if t.conn.maxTabSubj == 0 {
+		return
+	}
 	if t.conn.strCollate == nil {
 		t.sqlSortStrings()
 	}
 	if t.conn.iterStmt == nil {
 		t.conn.iterStmt = t.conn.Prep(t.sqlIterQuery())
 	}
-	stmt := t.conn.iterStmt
+	stmt := &prepStmt{Stmt: t.conn.iterStmt}
 
 	var _idx [16]int
 	var _tokens [16]string
 	idx, tokens := _idx[:0], _tokens[:0]
-	for {
-		if hasRow, err := stmt.Step(); err != nil {
-			panic(err)
-		} else if !hasRow {
-			break
-		}
+	for stmt.mustStep() {
 		idx = idx[:0]
 		for k := range t.conn.maxTabSubj {
 			i := stmt.ColumnInt(k)
@@ -744,8 +572,8 @@ func (t *SubjectTree[T]) sqlIter(cb func(subject []byte, val *T) bool) {
 		tokens = t.sqlIdxToStr(idx, tokens[:0])
 		pVal := t.colToValue(stmt, t.conn.maxTabSubj)
 		if !cb([]byte(strings.Join(tokens, ".")), pVal) {
-			break
+			stmt.Reset()
+			return
 		}
 	}
-	stmt.Reset()
 }

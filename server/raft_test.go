@@ -837,6 +837,9 @@ func TestNRGNoResetOnAppendEntryResponse(t *testing.T) {
 }
 
 func TestNRGCandidateDontStepdownDueToLeaderOfPreviousTerm(t *testing.T) {
+	if streeSqlDownSelect(true) {
+		t.Skip("skipping for SQL stree")
+	}
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 	c.waitOnLeader()

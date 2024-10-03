@@ -2480,7 +2480,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				// We want to make sure we do not short circuit if transistioning from no clfs.
 				if pclfs == 0 {
 					// This is always false by default.
-					lastState.firstNeedsUpdate = true
+					lastState.FirstNeedsUpdate = true
 					lastSnapTime = time.Time{}
 				}
 				doSnapshot()
@@ -5814,7 +5814,7 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 	maxHaAssets := s.getOpts().JetStreamLimits.MaxHAAssets
 
 	// An error is a result of multiple individual placement decisions.
-	// Which is why we keep taps on how often which one happened.
+	// Which is why we keep tabs on how often which one happened.
 	err := selectPeerError{}
 
 	// Shuffle them up.

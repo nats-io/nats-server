@@ -22,6 +22,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -122,10 +124,10 @@ func TestProcessSignalNoProcesses(t *testing.T) {
 }
 
 func TestProcessSignalMultipleProcesses(t *testing.T) {
-	pid := os.Getpid()
+	sk := NewSignalsKit(2)
 	pgrepBefore := pgrep
 	pgrep = func() ([]byte, error) {
-		return []byte(fmt.Sprintf("123\n456\n%d\n", pid)), nil
+		return []byte(fmt.Sprintf("%d\n%d\n%d\n", sk.NonPids[0], sk.NonPids[1], sk.SelfPid)), nil
 	}
 	defer func() {
 		pgrep = pgrepBefore
@@ -135,17 +137,17 @@ func TestProcessSignalMultipleProcesses(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected error")
 	}
-	expectedStr := "multiple nats-server processes running:\n123\n456"
+	expectedStr := fmt.Sprintf("multiple nats-server processes running:\n%d\n%d", sk.NonPids[0], sk.NonPids[1])
 	if err.Error() != expectedStr {
 		t.Fatalf("Error is incorrect.\nexpected: %s\ngot: %s", expectedStr, err.Error())
 	}
 }
 
 func TestProcessSignalMultipleProcessesGlob(t *testing.T) {
-	pid := os.Getpid()
+	sk := NewSignalsKit(2)
 	pgrepBefore := pgrep
 	pgrep = func() ([]byte, error) {
-		return []byte(fmt.Sprintf("123\n456\n%d\n", pid)), nil
+		return []byte(fmt.Sprintf("%d\n%d\n%d\n", sk.NonPids[0], sk.NonPids[1], sk.SelfPid)), nil
 	}
 	defer func() {
 		pgrep = pgrepBefore
@@ -155,29 +157,29 @@ func TestProcessSignalMultipleProcessesGlob(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected error")
 	}
-	expectedStr := "\nsignal \"stop\" 123: no such process"
-	expectedStr += "\nsignal \"stop\" 456: no such process"
+	expectedStr := fmt.Sprintf("\nsignal \"stop\" %d: no such process", sk.NonPids[0])
+	expectedStr += fmt.Sprintf("\nsignal \"stop\" %d: no such process", sk.NonPids[1])
 	if err.Error() != expectedStr {
 		t.Fatalf("Error is incorrect.\nexpected: %s\ngot: %s", expectedStr, err.Error())
 	}
 }
 
 func TestProcessSignalMultipleProcessesGlobPartial(t *testing.T) {
-	pid := os.Getpid()
+	sk := NewSignalsKit(2)
 	pgrepBefore := pgrep
 	pgrep = func() ([]byte, error) {
-		return []byte(fmt.Sprintf("123\n124\n456\n%d\n", pid)), nil
+		return []byte(fmt.Sprintf("%d\n%d\n%d\n%d\n", sk.NonPids[0], sk.NonPids[1], sk.NonPats[0], sk.SelfPid)), nil
 	}
 	defer func() {
 		pgrep = pgrepBefore
 	}()
 
-	err := ProcessSignal(CommandStop, "12*")
+	err := ProcessSignal(CommandStop, sk.Pattern)
 	if err == nil {
 		t.Fatal("Expected error")
 	}
-	expectedStr := "\nsignal \"stop\" 123: no such process"
-	expectedStr += "\nsignal \"stop\" 124: no such process"
+	expectedStr := fmt.Sprintf("\nsignal \"stop\" %d: no such process", sk.NonPids[0])
+	expectedStr += fmt.Sprintf("\nsignal \"stop\" %d: no such process", sk.NonPids[1])
 	if err.Error() != expectedStr {
 		t.Fatalf("Error is incorrect.\nexpected: %s\ngot: %s", expectedStr, err.Error())
 	}
@@ -462,6 +464,82 @@ func TestProcessSignalTermDuringLameDuckMode(t *testing.T) {
 		if !s.isRunning() {
 			timer.Stop()
 			break
+		}
+	}
+}
+
+type SignalsKit struct {
+	SelfPid int    // us
+	Pattern string // pattern that doesn't match us
+	NonPids []int  // non-pid's that match pattern
+	NonPats []int  // non-pid's that don't match pattern
+}
+
+func NewSignalsKit(n int) *SignalsKit {
+	sk := SignalsKit{
+		SelfPid: os.Getpid(),
+	}
+	if sk.SelfPid < 10 { // get a real computer
+		return nil
+	}
+	selfKlass := strconv.Itoa(sk.SelfPid)[:2]
+	tallies := make(map[string][]int)
+	var klass string
+	for k := range NonProcsIter {
+		if k < 10 {
+			continue
+		}
+		klass = strconv.Itoa(k)[:2]
+		if klass == selfKlass {
+			continue
+		}
+		if len(tallies[klass]) < n {
+			tallies[klass] = append(tallies[klass], k)
+		}
+	}
+	for k, v := range tallies {
+		if sk.Pattern == "" {
+			sk.Pattern = k + "*"
+			sk.NonPids = v
+		} else if sk.NonPats == nil {
+			sk.NonPats = v
+		} else {
+			break
+		}
+	}
+	return &sk
+}
+
+func RunningProcs() ([]int, error) {
+	list, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil, err
+	}
+	pids := make([]int, 0, len(list))
+	for _, d := range list {
+		if s := d.Name(); s[0] < '0' || s[0] > '9' {
+			continue
+		} else if pid, err := strconv.Atoi(s); err != nil {
+			return nil, err
+		} else {
+			pids = append(pids, pid)
+		}
+	}
+	slices.Sort(pids)
+	return pids, nil
+}
+
+func NonProcsIter(yield func(int) bool) {
+	pids, err := RunningProcs()
+	if err != nil {
+		return
+	}
+	for k := range len(pids)-1 {
+		l, u := pids[k], pids[k+1]
+		for k := l+1; k < u; k++ {
+			if !yield(k) {
+				return
+			}
 		}
 	}
 }

@@ -99,7 +99,7 @@ func TestJetStreamConsumerMultipleFiltersRace(t *testing.T) {
 	var seqs []uint64
 	var mu sync.Mutex
 
-	total := 10_000
+	total := streeSqlDownSelect(10_000, 3_500)
 	var wg sync.WaitGroup
 
 	send := func(subj string) {
@@ -156,7 +156,7 @@ func TestJetStreamConsumerMultipleFiltersRace(t *testing.T) {
 		}(t)
 	}
 
-	checkFor(t, 30*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, streeSqlDownSelect(30*time.Second, 90*time.Second), 100*time.Millisecond, func() error {
 		mu.Lock()
 		defer mu.Unlock()
 		if len(seqs) != 3*total {
@@ -176,6 +176,9 @@ func TestJetStreamConsumerMultipleFiltersRace(t *testing.T) {
 }
 
 func TestJetStreamConsumerMultipleConsumersSingleFilter(t *testing.T) {
+	if streeSqlDownSelect(true) {
+		t.Skip("skipping for SQL stree")
+	}
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 

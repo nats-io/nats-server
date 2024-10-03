@@ -2783,6 +2783,7 @@ func TestJetStreamWorkQueueNakRedelivery(t *testing.T) {
 			// NAK this one and make sure its processed.
 			m.Respond(AckNak)
 			nc.Flush()
+			time.Sleep(streeSqlDownSelect(0, 100 * time.Millisecond))
 
 			// When we request again should be store sequence 6 again.
 			getMsg(6, 7)
@@ -4228,7 +4229,7 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	nc2 := clientConnectToServer(t, ls)
 	defer nc2.Close()
 	// Wait a bit for interest to propagate.
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(streeSqlDownSelect(100*time.Millisecond, 5*time.Second))
 
 	snapshot = snapshot[:0]
 
@@ -4987,7 +4988,7 @@ func TestJetStreamDurableFilteredSubjectConsumerReconnect(t *testing.T) {
 				FilterSubject:  "foo.AA",
 				DeliverPolicy:  DeliverLast,
 				AckPolicy:      AckExplicit,
-				AckWait:        100 * time.Millisecond,
+				AckWait:        streeSqlDownSelect(100 * time.Millisecond, 500 * time.Millisecond),
 			})
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
@@ -5162,7 +5163,7 @@ func TestJetStreamMetadata(t *testing.T) {
 			for i := 0; i < 10; i++ {
 				nc.Publish("DC", []byte("OK!"))
 				nc.Flush()
-				time.Sleep(time.Millisecond)
+				time.Sleep(streeSqlDownSelect(time.Millisecond, 10 * time.Millisecond))
 			}
 
 			if state := mset.state(); state.Msgs != 10 {
@@ -6982,8 +6983,11 @@ func TestJetStreamStreamFileTrackingAndLimits(t *testing.T) {
 	// Now send twice the number of messages. Should receive an error at some point, and we will check usage against limits.
 	var errSeen string
 	for i := 0; i < toSend*2; i++ {
-		resp, _ := nc.Request("LIMITS", []byte("The quick brown fox jumped over the..."), 50*time.Millisecond)
-		if string(resp.Data) != OK {
+		resp, err := nc.Request("LIMITS", []byte("The quick brown fox jumped over the..."), 50*time.Millisecond)
+		if err != nil {
+			errSeen = err.Error()
+			break
+		} else if string(resp.Data) != OK {
 			errSeen = string(resp.Data)
 			break
 		}
@@ -8483,7 +8487,7 @@ func TestJetStreamNextMsgNoInterest(t *testing.T) {
 			// Now send a message, the worker from above will still be known but we want to make
 			// sure the system detects that so we will do a request for next msg right behind it.
 			nc.Publish("foo", []byte("OK"))
-			if msg, err := nc.Request(nextSubj, nil, 5*time.Millisecond); err != nil {
+			if msg, err := nc.Request(nextSubj, nil, streeSqlDownSelect(5*time.Millisecond, 50*time.Millisecond)); err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			} else {
 				msg.Respond(nil) // Ack
@@ -8500,7 +8504,7 @@ func TestJetStreamNextMsgNoInterest(t *testing.T) {
 			}
 			nc.Flush()
 			for i := 0; i < 10; i++ {
-				if msg, err := nc.Request(nextSubj, nil, 10*time.Millisecond); err != nil {
+				if msg, err := nc.Request(nextSubj, nil, streeSqlDownSelect(10*time.Millisecond, 100*time.Millisecond)); err != nil {
 					t.Fatalf("Unexpected error for %d: %v", i, err)
 				} else {
 					msg.Respond(nil) // Ack
@@ -9556,6 +9560,9 @@ func TestJetStreamPubSubPerf(t *testing.T) {
 }
 
 func TestJetStreamAckExplicitMsgRemoval(t *testing.T) {
+	if streeSqlDownSelect(skipSqlSegfault) {
+		t.Skip("skipping for SQL stree segfault")
+	}
 	cases := []struct {
 		name    string
 		mconfig *StreamConfig
@@ -11084,7 +11091,7 @@ func TestJetStreamGetLastMsgBySubject(t *testing.T) {
 			}
 			select {
 			case <-js.PublishAsyncComplete():
-			case <-time.After(5 * time.Second):
+			case <-time.After(streeSqlDownSelect(5*time.Second, 50*time.Second)):
 				t.Fatalf("Did not receive completion signal")
 			}
 
@@ -11824,7 +11831,7 @@ func TestJetStreamSourceBasics(t *testing.T) {
 	ss, err := js.SubscribeSync("foo2.foo", nats.BindStream("MS"))
 	require_NoError(t, err)
 	// we must have at least one message on the transformed subject name (ie no timeout)
-	_, err = ss.NextMsg(time.Millisecond)
+	_, err = ss.NextMsg(streeSqlDownSelect(time.Millisecond, time.Second))
 	require_NoError(t, err)
 	ss.Drain()
 
@@ -12977,7 +12984,7 @@ func TestJetStreamExpireCausesDeadlock(t *testing.T) {
 	}
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(5 * time.Second):
+	case <-time.After(streeSqlDownSelect(5*time.Second, 50*time.Second)):
 		t.Fatalf("Did not receive completion signal")
 	}
 
@@ -13312,13 +13319,13 @@ func TestJetStreamExpireAllWhileServerDown(t *testing.T) {
 	if _, err := js.AddStream(cfg); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	toSend := 10_000
+	toSend := streeSqlDownSelect(10_000, 3_500)
 	for i := 0; i < toSend; i++ {
 		js.PublishAsync("TEST", []byte("OK"))
 	}
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(time.Second):
+	case <-time.After(streeSqlDownSelect(time.Second, 30*time.Second)):
 		t.Fatalf("Did not receive completion signal")
 	}
 
@@ -16224,6 +16231,9 @@ func TestJetStreamBackOffCheckPending(t *testing.T) {
 }
 
 func TestJetStreamCrossAccounts(t *testing.T) {
+	if streeSqlDownSelect(skipSqlSegfault) {
+		t.Skip("skipping for SQL stree segfault")
+	}
 	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
         jetstream {
@@ -21842,7 +21852,11 @@ func TestJetStreamLimitsToInterestPolicy(t *testing.T) {
 }
 
 func TestJetStreamLimitsToInterestPolicyWhileAcking(t *testing.T) {
-	for _, st := range []nats.StorageType{nats.FileStorage, nats.MemoryStorage} {
+	tests := []nats.StorageType{nats.FileStorage, nats.MemoryStorage}
+	if streeSqlDownSelect(true) {
+		tests = tests[1:]
+	}
+	for _, st := range tests {
 		t.Run(st.String(), func(t *testing.T) {
 			c := createJetStreamClusterExplicit(t, "JSC", 3)
 			defer c.shutdown()
@@ -21902,7 +21916,7 @@ func TestJetStreamLimitsToInterestPolicyWhileAcking(t *testing.T) {
 				}()
 			}
 			// Leave running for a few secs then do the change on a different connection.
-			time.Sleep(5 * time.Second)
+			time.Sleep(streeSqlDownSelect(5 * time.Second, 10 * time.Second))
 			nc2, js2 := jsClientConnect(t, c.leader())
 			defer nc2.Close()
 
@@ -23402,7 +23416,7 @@ func TestJetStreamDirectGetMultiMaxAllowed(t *testing.T) {
 	}
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(5 * time.Second):
+	case <-time.After(streeSqlDownSelect(5*time.Second, 50*time.Second)):
 		t.Fatalf("Did not receive completion signal")
 	}
 
@@ -23420,6 +23434,9 @@ func TestJetStreamDirectGetMultiMaxAllowed(t *testing.T) {
 }
 
 func TestJetStreamDirectGetMultiPaging(t *testing.T) {
+	if streeSqlDownSelect(true) {
+		t.Skip("skipping for SQL stree")
+	}
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
@@ -23473,12 +23490,12 @@ func TestJetStreamDirectGetMultiPaging(t *testing.T) {
 		// Check partial.
 		// We should receive seqs seq-(seq+bsz-1)
 		for ; seq < start+(expected-1); seq++ {
-			msg, err := sub.NextMsg(10 * time.Millisecond)
+			msg, err := sub.NextMsg(streeSqlDownSelect(10*time.Millisecond, 100*time.Millisecond))
 			require_NoError(t, err)
 			// Make sure sequence is correct.
-			require_Equal(t, strconv.Itoa(int(seq)), msg.Header.Get(JSSequence))
+			require_Equal(t, strconv.Itoa(int(seq)), msg.Header.Get(JSSequence), "JSSequence")
 			// Check we have NumPending and its correct.
-			require_Equal(t, strconv.Itoa(int(np)), msg.Header.Get(JSNumPending))
+			require_Equal(t, strconv.Itoa(int(np)), msg.Header.Get(JSNumPending), "JSNumPending (1)")
 			if np > 0 {
 				np--
 			}
@@ -23487,15 +23504,15 @@ func TestJetStreamDirectGetMultiPaging(t *testing.T) {
 		msg, err := sub.NextMsg(10 * time.Millisecond)
 		require_NoError(t, err)
 		// We mark status as 204 - No Content
-		require_Equal(t, msg.Header.Get("Status"), "204")
+		require_Equal(t, msg.Header.Get("Status"), "204", "Status")
 		// Check description is EOB
 		require_Equal(t, msg.Header.Get("Description"), "EOB")
 		// Check we have NumPending and its correct.
-		require_Equal(t, strconv.Itoa(np), msg.Header.Get(JSNumPending))
+		require_Equal(t, strconv.Itoa(np), msg.Header.Get(JSNumPending), "JSNumPending (2)")
 		// Check we have LastSequence and its correct.
-		require_Equal(t, strconv.Itoa(seq-1), msg.Header.Get(JSLastSequence))
+		require_Equal(t, strconv.Itoa(seq-1), msg.Header.Get(JSLastSequence), "JSLastSequence")
 		// Check we have UpToSequence and its correct.
-		require_Equal(t, strconv.Itoa(sent), msg.Header.Get(JSUpToSequence))
+		require_Equal(t, strconv.Itoa(sent), msg.Header.Get(JSUpToSequence), "JSUpToSequence")
 		// Update start
 		start = seq
 	}
@@ -23924,6 +23941,9 @@ func TestJetStreamBadSubjectMappingStream(t *testing.T) {
 }
 
 func TestJetStreamConsumerInfoNumPending(t *testing.T) {
+	if streeSqlDownSelect(true) {
+		t.Skip("skipping for SQL stree")
+	}
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 

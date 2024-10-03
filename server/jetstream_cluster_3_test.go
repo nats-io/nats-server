@@ -1450,6 +1450,8 @@ func TestJetStreamClusterParallelStreamCreation(t *testing.T) {
 	mset, err = nl.GlobalAccount().lookupStream("TEST")
 	require_NoError(t, err)
 
+	time.Sleep(streeSqlDownSelect(0, time.Second))
+
 	// Check state directly.
 	mset.mu.Lock()
 	var state StreamState
@@ -2247,7 +2249,7 @@ func TestJetStreamClusterAfterPeerRemoveZeroState(t *testing.T) {
 		t.Fatalf("expected to get a handle to original peer server by name")
 	}
 
-	checkFor(t, time.Second, 200*time.Millisecond, func() error {
+	checkFor(t, streeSqlDownSelect(time.Second, 200 * time.Second), 200*time.Millisecond, func() error {
 		jszResult, err := origServer.Jsz(nil)
 		require_NoError(t, err)
 		if jszResult.Store != assetStoreBytesExpected {
@@ -2781,7 +2783,7 @@ func TestJetStreamClusterInterestPolicyEphemeral(t *testing.T) {
 				name = test.name
 			}
 
-			const msgs = 5_000
+			msgs := streeSqlDownSelect(5_000, 3_500)
 			done, count := make(chan bool, 1), 0
 
 			sub, err := js.Subscribe(_EMPTY_, func(msg *nats.Msg) {
@@ -2807,11 +2809,11 @@ func TestJetStreamClusterInterestPolicyEphemeral(t *testing.T) {
 
 			// Wait for inactive threshold to expire and all messages to be published and received
 			// Bug is we clean up active consumers when we should not.
-			time.Sleep(3 * inactiveThreshold / 2)
+			time.Sleep(streeSqlDownSelect[time.Duration](3, 12) * inactiveThreshold / 2)
 
 			select {
 			case <-pubDone:
-			case <-time.After(10 * time.Second):
+			case <-time.After(streeSqlDownSelect(10 * time.Second, 50 * time.Second)):
 				t.Fatalf("Did not receive completion signal")
 			}
 
@@ -2819,7 +2821,7 @@ func TestJetStreamClusterInterestPolicyEphemeral(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Expected to be able to retrieve consumer: %v", err)
 			}
-			require_True(t, info.Delivered.Stream == msgs)
+			require_Equal(t, info.Delivered.Stream, uint64(msgs))
 
 			// Stop the subscription and remove the interest.
 			err = sub.Unsubscribe()
@@ -3170,9 +3172,10 @@ func TestJetStreamClusterInterestBasedStreamAndConsumerSnapshots(t *testing.T) {
 		return nil
 	})
 
+	time.Sleep(streeSqlDownSelect(0, 5*time.Second))
 	si, err := js.StreamInfo("TEST")
 	require_NoError(t, err)
-	require_True(t, si.State.Msgs == 0)
+	require_Equal(t, si.State.Msgs, 0)
 }
 
 func TestJetStreamClusterConsumerFollowerStoreStateAckFloorBug(t *testing.T) {
@@ -3850,9 +3853,9 @@ func TestJetStreamClusterHealthzCheckForStoppedAssets(t *testing.T) {
 
 	o.stop()
 	// Wait for exit.
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(streeSqlDownSelect(100 * time.Millisecond, time.Second))
 
-	checkFor(t, 5*time.Second, 500*time.Millisecond, func() error {
+	checkFor(t, streeSqlDownSelect(5*time.Second, 50*time.Second), 500*time.Millisecond, func() error {
 		hs := s.healthz(nil)
 		if hs.Error != _EMPTY_ {
 			return errors.New(hs.Error)
@@ -4672,7 +4675,7 @@ func TestJetStreamClusterSnapshotAndRestoreWithHealthz(t *testing.T) {
 	}
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(5 * time.Second):
+	case <-time.After(streeSqlDownSelect(5 * time.Second, 50 * time.Second)):
 		t.Fatalf("Did not receive completion signal")
 	}
 
@@ -6238,7 +6241,7 @@ Setup:
 				cancel()
 				break Setup
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(streeSqlDownSelect(5*time.Second, 50*time.Second)):
 			t.Fatalf("Timed out waiting for limits error")
 		}
 	}

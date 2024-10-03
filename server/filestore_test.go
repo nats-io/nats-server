@@ -603,7 +603,7 @@ func TestFileStoreBytesLimitWithDiscardNew(t *testing.T) {
 }
 
 func TestFileStoreAgeLimit(t *testing.T) {
-	maxAge := 1 * time.Second
+	maxAge := streeSqlDownSelect(1 * time.Second, 5 * time.Second)
 
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		if fcfg.Compression != NoCompression {
@@ -633,7 +633,7 @@ func TestFileStoreAgeLimit(t *testing.T) {
 		}
 		checkExpired := func(t *testing.T) {
 			t.Helper()
-			checkFor(t, 5*time.Second, maxAge, func() error {
+			checkFor(t, 5*maxAge, maxAge, func() error {
 				state = fs.State()
 				if state.Msgs != 0 {
 					return fmt.Errorf("Expected no msgs, got %d", state.Msgs)
@@ -662,7 +662,7 @@ func TestFileStoreAgeLimit(t *testing.T) {
 		// We will measure the time to make sure expires works with interior deletes.
 		start := time.Now()
 		checkExpired(t)
-		if elapsed := time.Since(start); elapsed > 5*time.Second {
+		if elapsed := time.Since(start); elapsed > 5*maxAge {
 			t.Fatalf("Took too long to expire: %v", elapsed)
 		}
 	})
@@ -2924,6 +2924,12 @@ func TestFileStoreExpireMsgsOnStart(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fcfg.BlockSize = 8 * 1024
 		ttl := 250 * time.Millisecond
+		tshort := 100 * time.Millisecond
+		if streeSqlDownSelect(true) {
+			ttl = 800 * time.Millisecond
+			tshort = 200 * time.Millisecond
+			t.Skip("skipping for SQL stree")
+		}
 		cfg := StreamConfig{Name: "ORDERS", Subjects: []string{"orders.*"}, Storage: FileStorage, MaxAge: ttl}
 		var fs *fileStore
 
@@ -3030,7 +3036,7 @@ func TestFileStoreExpireMsgsOnStart(t *testing.T) {
 		// Actual testing here.
 
 		loadMsgs(500)
-		restartFS(ttl + 100*time.Millisecond)
+		restartFS(ttl + tshort)
 		checkState(0, 501, 500)
 		// We actually hold onto the last one now to remember our starting sequence.
 		checkNumBlks(1)
@@ -3039,11 +3045,11 @@ func TestFileStoreExpireMsgsOnStart(t *testing.T) {
 		// Small numbers is to keep them in one block.
 		fs = newFS()
 		loadMsgs(10)
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(tshort)
 		loadMsgs(10)
 		checkFiltered("orders.*", SimpleState{Msgs: 20, First: 1, Last: 20})
 
-		restartFS(ttl - 100*time.Millisecond + 25*time.Millisecond) // Just want half
+		restartFS(ttl - tshort + tshort/4) // Just want half
 		checkState(10, 11, 20)
 		checkNumBlks(1)
 		checkFiltered("orders.*", SimpleState{Msgs: 10, First: 11, Last: 20})
@@ -3052,9 +3058,9 @@ func TestFileStoreExpireMsgsOnStart(t *testing.T) {
 
 		fs = newFS()
 		loadMsgs(5)
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(tshort)
 		loadMsgs(15)
-		restartFS(ttl - 100*time.Millisecond + 25*time.Millisecond) // Just want half
+		restartFS(ttl - tshort + tshort/4) // Just want half
 		checkState(15, 6, 20)
 		checkFiltered("orders.*", SimpleState{Msgs: 15, First: 6, Last: 20})
 		checkFiltered("orders.5", SimpleState{Msgs: 2, First: 10, Last: 20})
@@ -3062,7 +3068,7 @@ func TestFileStoreExpireMsgsOnStart(t *testing.T) {
 		// Now we want to test that if the end of a msg block is all deletes msgs that we do the right thing.
 		fs = newFS()
 		loadMsgs(150)
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(tshort)
 		loadMsgs(100)
 
 		checkNumBlks(5)
@@ -3076,7 +3082,7 @@ func TestFileStoreExpireMsgsOnStart(t *testing.T) {
 				t.Fatalf("Error removing message: %v", err)
 			}
 		}
-		restartFS(ttl - 100*time.Millisecond + 25*time.Millisecond) // Just want half
+		restartFS(ttl - tshort + tshort/4) // Just want half
 		checkState(100, 151, 250)
 		checkNumBlks(3) // We should only have 3 blks left.
 		checkBlkState(0)
@@ -3088,9 +3094,9 @@ func TestFileStoreExpireMsgsOnStart(t *testing.T) {
 		fs.RemoveMsg(2)
 		fs.RemoveMsg(4)
 		fs.RemoveMsg(6)
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(tshort)
 		loadMsgs(10)
-		restartFS(ttl - 100*time.Millisecond + 25*time.Millisecond) // Just want half
+		restartFS(ttl - tshort + tshort/4) // Just want half
 		checkState(10, 11, 20)
 		checkNumBlks(1)
 		checkBlkState(0)
@@ -3098,12 +3104,12 @@ func TestFileStoreExpireMsgsOnStart(t *testing.T) {
 		// Make sure expiring a block with tail deleted messages removes the message block etc.
 		fs = newFS()
 		loadMsgs(7)
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(tshort)
 		loadMsgs(3)
 		fs.RemoveMsg(8)
 		fs.RemoveMsg(9)
 		fs.RemoveMsg(10)
-		restartFS(ttl - 100*time.Millisecond + 25*time.Millisecond)
+		restartFS(ttl - tshort + tshort/4)
 		checkState(0, 11, 10)
 
 		fs.Stop()
@@ -4174,7 +4180,7 @@ func TestFileStoreExpireOnRecoverSubjectAccounting(t *testing.T) {
 
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fcfg.BlockSize = 100
-		ttl := 200 * time.Millisecond
+		ttl := streeSqlDownSelect(200 * time.Millisecond, 800 * time.Millisecond)
 		cfg := StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage, MaxAge: ttl}
 		created := time.Now()
 		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
@@ -4976,7 +4982,7 @@ func TestFileStoreRecaluclateFirstForSubjBug(t *testing.T) {
 	fs.mu.RUnlock()
 
 	// Since we lazy update the first, simulate that we have not updated it as of yet.
-	ss := &SimpleState{Msgs: 1, First: 1, Last: 3, firstNeedsUpdate: true}
+	ss := &SimpleState{Msgs: 1, First: 1, Last: 3, FirstNeedsUpdate: true}
 
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
@@ -4987,7 +4993,7 @@ func TestFileStoreRecaluclateFirstForSubjBug(t *testing.T) {
 	// This will panic without the fix.
 	mb.recalculateFirstForSubj("foo", 1, ss)
 	// Make sure it was update properly.
-	require_True(t, *ss == SimpleState{Msgs: 1, First: 3, Last: 3, firstNeedsUpdate: false})
+	require_True(t, *ss == SimpleState{Msgs: 1, First: 3, Last: 3, FirstNeedsUpdate: false})
 }
 
 func TestFileStoreKeepWithDeletedMsgsBug(t *testing.T) {
@@ -5330,9 +5336,9 @@ func TestFileStoreFullStateBasics(t *testing.T) {
 		psi := *info
 		fs.mu.RUnlock()
 
-		require_Equal(t, psi.total, 4)
-		require_Equal(t, psi.fblk, 1)
-		require_Equal(t, psi.lblk, 2)
+		require_Equal(t, psi.Total, 4)
+		require_Equal(t, psi.Fblk, 1)
+		require_Equal(t, psi.Lblk, 2)
 
 		// Store 1 more
 		fs.StoreMsg(subj, nil, msgA)
@@ -5355,9 +5361,9 @@ func TestFileStoreFullStateBasics(t *testing.T) {
 		info, _ = fs.psim.Find(stringToBytes(subj))
 		psi = *info
 		fs.mu.RUnlock()
-		require_Equal(t, psi.total, 5)
-		require_Equal(t, psi.fblk, 1)
-		require_Equal(t, psi.lblk, 3)
+		require_Equal(t, psi.Total, 5)
+		require_Equal(t, psi.Fblk, 1)
+		require_Equal(t, psi.Lblk, 3)
 	})
 }
 
@@ -5573,6 +5579,7 @@ func TestFileStoreFullStateTestSysRemovals(t *testing.T) {
 		require_Equal(t, state.Msgs, 2)
 		require_Equal(t, state.FirstSeq, 3)
 		require_Equal(t, state.LastSeq, 4)
+		require_Equal(t, state.NumSubjects, 2)
 		fs.Stop()
 
 		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
@@ -5907,6 +5914,9 @@ func TestFileStoreFullStateMidBlockPastWAL(t *testing.T) {
 }
 
 func TestFileStoreCompactingBlocksOnSync(t *testing.T) {
+	if streeSqlDownSelect(true) {
+		t.Skip("skipping for SQL stree")
+	}
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fcfg.BlockSize = 1000 // 20 msgs per block.
 		fcfg.SyncInterval = 100 * time.Millisecond
@@ -5930,9 +5940,11 @@ func TestFileStoreCompactingBlocksOnSync(t *testing.T) {
 		// Now start removing, since we are small this should not kick in any inline logic.
 		// Remove all interior messages, leave 1 and 20. So write B-S
 		for i := 1; i < 19; i++ {
-			fs.StoreMsg(string(subjects[i]), nil, msg)
+			fs.StoreMsg(subjects[i:i+1], nil, msg)
 		}
 		require_Equal(t, fs.numMsgBlocks(), 2)
+
+		time.Sleep(streeSqlDownSelect(0, 2*time.Second))
 
 		blkUtil := func() (uint64, uint64) {
 			fs.mu.RLock()
@@ -5949,11 +5961,23 @@ func TestFileStoreCompactingBlocksOnSync(t *testing.T) {
 		if fcfg.Compression != NoCompression {
 			require_True(t, total > reported)
 		} else {
+			tmin, tmax := total, total
+			for range 3000 {
+				tmin = min(tmin, total)
+				tmax = max(tmax, total)
+				if total == 1000 {
+					break
+				}
+				time.Sleep(2 * time.Millisecond)
+				total, _ = blkUtil()
+			}
+			fmt.Printf("tmin, tmax, total = %d, %d, %d\n", tmin, tmax, total)
 			require_Equal(t, total, 1000)
 		}
 
 		// Make sure the sync interval when kicked in compacts down to rbytes == 100.
-		checkFor(t, time.Second, 100*time.Millisecond, func() error {
+		tWait := streeSqlDownSelect(time.Second, 4*time.Second)
+		checkFor(t, tWait, 100*time.Millisecond, func() error {
 			if total, reported := blkUtil(); total <= reported {
 				return nil
 			}
@@ -5990,8 +6014,8 @@ func TestFileStoreCompactAndPSIMWhenDeletingBlocks(t *testing.T) {
 	psi := *info
 	fs.mu.RUnlock()
 
-	require_Equal(t, psi.total, 1)
-	require_Equal(t, psi.fblk, psi.lblk)
+	require_Equal(t, psi.Total, 1)
+	require_Equal(t, psi.Fblk, psi.Lblk)
 }
 
 func TestFileStoreTrackSubjLenForPSIM(t *testing.T) {
@@ -6826,6 +6850,9 @@ func TestFileStoreFSSExpire(t *testing.T) {
 }
 
 func TestFileStoreFSSExpireNumPending(t *testing.T) {
+	if streeSqlDownSelect(true) {
+		t.Skip("skipping for SQL stree")
+	}
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 8192, CacheExpire: 1 * time.Second, SubjectStateExpire: 2 * time.Second},
 		StreamConfig{Name: "zzz", Subjects: []string{"foo.*.*"}, MaxMsgsPer: 1, Storage: FileStorage})
@@ -7087,9 +7114,9 @@ func TestFileStoreFilteredPendingPSIMFirstBlockUpdate(t *testing.T) {
 	psi, ok := fs.psim.Find([]byte("foo.baz"))
 	fs.mu.RUnlock()
 	require_True(t, ok)
-	require_Equal(t, psi.total, 2)
-	require_Equal(t, psi.fblk, 1)
-	require_Equal(t, psi.lblk, 84)
+	require_Equal(t, psi.Total, 2)
+	require_Equal(t, psi.Fblk, 1)
+	require_Equal(t, psi.Lblk, 84)
 
 	// No make sure that a call to numFilterPending which will initially walk all blocks if starting from seq 1 updates psi.
 	var ss SimpleState
@@ -7105,9 +7132,9 @@ func TestFileStoreFilteredPendingPSIMFirstBlockUpdate(t *testing.T) {
 	psi, ok = fs.psim.Find([]byte("foo.baz"))
 	fs.mu.RUnlock()
 	require_True(t, ok)
-	require_Equal(t, psi.total, 2)
-	require_Equal(t, psi.fblk, 84)
-	require_Equal(t, psi.lblk, 84)
+	require_Equal(t, psi.Total, 2)
+	require_Equal(t, psi.Fblk, 84)
+	require_Equal(t, psi.Lblk, 84)
 }
 
 func TestFileStoreWildcardFilteredPendingPSIMFirstBlockUpdate(t *testing.T) {
@@ -7146,17 +7173,17 @@ func TestFileStoreWildcardFilteredPendingPSIMFirstBlockUpdate(t *testing.T) {
 	psi, ok := fs.psim.Find([]byte("foo.22.baz"))
 	fs.mu.RUnlock()
 	require_True(t, ok)
-	require_Equal(t, psi.total, 2)
-	require_Equal(t, psi.fblk, 1)
-	require_Equal(t, psi.lblk, 92)
+	require_Equal(t, psi.Total, 2)
+	require_Equal(t, psi.Fblk, 1)
+	require_Equal(t, psi.Lblk, 92)
 
 	fs.mu.RLock()
 	psi, ok = fs.psim.Find([]byte("foo.22.bar"))
 	fs.mu.RUnlock()
 	require_True(t, ok)
-	require_Equal(t, psi.total, 2)
-	require_Equal(t, psi.fblk, 1)
-	require_Equal(t, psi.lblk, 92)
+	require_Equal(t, psi.Total, 2)
+	require_Equal(t, psi.Fblk, 1)
+	require_Equal(t, psi.Lblk, 92)
 
 	// No make sure that a call to numFilterPending which will initially walk all blocks if starting from seq 1 updates psi.
 	var ss SimpleState
@@ -7172,17 +7199,17 @@ func TestFileStoreWildcardFilteredPendingPSIMFirstBlockUpdate(t *testing.T) {
 	psi, ok = fs.psim.Find([]byte("foo.22.baz"))
 	fs.mu.RUnlock()
 	require_True(t, ok)
-	require_Equal(t, psi.total, 2)
-	require_Equal(t, psi.fblk, 92)
-	require_Equal(t, psi.lblk, 92)
+	require_Equal(t, psi.Total, 2)
+	require_Equal(t, psi.Fblk, 92)
+	require_Equal(t, psi.Lblk, 92)
 
 	fs.mu.RLock()
 	psi, ok = fs.psim.Find([]byte("foo.22.bar"))
 	fs.mu.RUnlock()
 	require_True(t, ok)
-	require_Equal(t, psi.total, 2)
-	require_Equal(t, psi.fblk, 92)
-	require_Equal(t, psi.lblk, 92)
+	require_Equal(t, psi.Total, 2)
+	require_Equal(t, psi.Fblk, 92)
+	require_Equal(t, psi.Lblk, 92)
 }
 
 // Make sure if we only miss by one for fblk that we still update it.
@@ -7212,9 +7239,9 @@ func TestFileStoreFilteredPendingPSIMFirstBlockUpdateNextBlock(t *testing.T) {
 	}
 
 	psi := fetch("foo.22.bar")
-	require_Equal(t, psi.total, 4)
-	require_Equal(t, psi.fblk, 1)
-	require_Equal(t, psi.lblk, 4)
+	require_Equal(t, psi.Total, 4)
+	require_Equal(t, psi.Fblk, 1)
+	require_Equal(t, psi.Lblk, 4)
 
 	// Now remove first instance of "foo.22.bar"
 	removed, err := fs.RemoveMsg(1)
@@ -7232,9 +7259,9 @@ func TestFileStoreFilteredPendingPSIMFirstBlockUpdateNextBlock(t *testing.T) {
 
 	// Now make sure that we properly updated the psim entry.
 	psi = fetch("foo.22.bar")
-	require_Equal(t, psi.total, 3)
-	require_Equal(t, psi.fblk, 2)
-	require_Equal(t, psi.lblk, 4)
+	require_Equal(t, psi.Total, 3)
+	require_Equal(t, psi.Fblk, 2)
+	require_Equal(t, psi.Lblk, 4)
 
 	// Now make sure wildcard calls into also update blks.
 	// First remove first "foo.22.baz" which will remove first block.
@@ -7245,9 +7272,9 @@ func TestFileStoreFilteredPendingPSIMFirstBlockUpdateNextBlock(t *testing.T) {
 	require_Equal(t, fs.numMsgBlocks(), 3)
 
 	psi = fetch("foo.22.baz")
-	require_Equal(t, psi.total, 3)
-	require_Equal(t, psi.fblk, 1)
-	require_Equal(t, psi.lblk, 4)
+	require_Equal(t, psi.Total, 3)
+	require_Equal(t, psi.Fblk, 1)
+	require_Equal(t, psi.Lblk, 4)
 
 	// Now call wildcard version of numFilteredPending to make sure it clears.
 	fs.mu.Lock()
@@ -7258,9 +7285,9 @@ func TestFileStoreFilteredPendingPSIMFirstBlockUpdateNextBlock(t *testing.T) {
 	require_Equal(t, ss.Last, 8)
 
 	psi = fetch("foo.22.baz")
-	require_Equal(t, psi.total, 3)
-	require_Equal(t, psi.fblk, 2)
-	require_Equal(t, psi.lblk, 4)
+	require_Equal(t, psi.Total, 3)
+	require_Equal(t, psi.Fblk, 2)
+	require_Equal(t, psi.Lblk, 4)
 }
 
 func TestFileStoreLargeSparseMsgsDoNotLoadAfterLast(t *testing.T) {

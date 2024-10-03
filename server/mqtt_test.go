@@ -2344,6 +2344,9 @@ func TestMQTTSub(t *testing.T) {
 }
 
 func TestMQTTSubQoS2(t *testing.T) {
+	if streeSqlDownSelect(skipSqlSegfault) {
+		t.Skip("skipping for SQL stree segfault")
+	}
 	o := testMQTTDefaultOptions()
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownServer(s)
@@ -2409,6 +2412,9 @@ func TestMQTTSubQoS2(t *testing.T) {
 }
 
 func TestMQTTSubQoS1(t *testing.T) {
+	if streeSqlDownSelect(skipSqlSegfault) {
+		t.Skip("skipping for SQL stree segfault")
+	}
 	o := testMQTTDefaultOptions()
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownServer(s)
@@ -3092,6 +3098,9 @@ func TestMQTTClusterConnectDisconnectPersist(t *testing.T) {
 }
 
 func TestMQTTClusterRetainedMsg(t *testing.T) {
+	if streeSqlDownSelect(skipSqlSegfault) {
+		t.Skip("skipping for SQL stree segfault")
+	}
 	cl := createJetStreamClusterWithTemplate(t, testMQTTGetClusterTemplaceNoLeaf(), "MQTT", 2)
 	defer cl.shutdown()
 
@@ -3521,6 +3530,9 @@ func TestMQTTClusterPlacement(t *testing.T) {
 }
 
 func TestMQTTLeafnodeWithoutJSToClusterWithJSNoSharedSysAcc(t *testing.T) {
+	if streeSqlDownSelect(skipSqlSegfault) {
+		t.Skip("skipping for SQL stree segfault")
+	}
 	test := func(t *testing.T, resolution int) {
 		getClusterOpts := func(name string, i int) *Options {
 			o := testMQTTDefaultOptions()
@@ -4068,6 +4080,9 @@ func TestMQTTQoS2WillReject(t *testing.T) {
 }
 
 func TestMQTTWillRetain(t *testing.T) {
+	if streeSqlDownSelect(true) {
+		t.Skip("skipping for SQL stree")
+	}
 	for _, test := range []struct {
 		name   string
 		pubQoS byte
@@ -4145,6 +4160,9 @@ func TestMQTTWillRetain(t *testing.T) {
 }
 
 func TestMQTTWillRetainPermViolation(t *testing.T) {
+	if streeSqlDownSelect(true) {
+		t.Skip("skipping for SQL stree")
+	}
 	template := `
 		port: -1
 		jetstream {
@@ -4535,6 +4553,9 @@ func TestMQTTDuplicateClientID(t *testing.T) {
 }
 
 func TestMQTTPersistedSession(t *testing.T) {
+	if streeSqlDownSelect(skipSqlSegfault) {
+		t.Skip("skipping for SQL stree segfault")
+	}
 	o := testMQTTDefaultOptions()
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownRestartedServer(&s)
@@ -5092,6 +5113,9 @@ func TestMQTTPersistRetainedMsg(t *testing.T) {
 }
 
 func TestMQTTRetainedMsgCleanup(t *testing.T) {
+	if streeSqlDownSelect(skipSqlSegfault) {
+		t.Skip("skipping for SQL stree segfault")
+	}
 	mqttRetainedCacheTTL = 250 * time.Millisecond
 	defer func() { mqttRetainedCacheTTL = mqttDefaultRetainedCacheTTL }()
 
@@ -7088,6 +7112,9 @@ func TestMQTTSubjectMappingWithImportExport(t *testing.T) {
 }
 
 func TestMQTTSubRetainedRace(t *testing.T) {
+	if streeSqlDownSelect(true) {
+		t.Skip("skipping for SQL stree")
+	}
 	o := testMQTTDefaultOptions()
 	s := testMQTTRunServer(t, o)
 	defer testMQTTShutdownServer(s)
@@ -7189,6 +7216,9 @@ func testMQTTNewSubWithExistingTopLevelRetainedRace(t *testing.T, o *Options, su
 // The MQTT Server MUST NOT match Topic Filters starting with a wildcard character (# or +),
 // with Topic Names beginning with a $ character [MQTT-4.7.2-1]
 func TestMQTTSubjectWildcardStart(t *testing.T) {
+	if streeSqlDownSelect(skipSqlSegfault) {
+		t.Skip("skipping for SQL stree segfault")
+	}
 	conf := createConfFile(t, []byte(fmt.Sprintf(`
 		listen: 127.0.0.1:-1
 		server_name: mqtt

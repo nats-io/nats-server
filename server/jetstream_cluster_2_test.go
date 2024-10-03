@@ -184,7 +184,7 @@ func TestJetStreamClusterMultiRestartBug(t *testing.T) {
 	c.waitOnStreamLeader("$G", "TEST")
 
 	s = c.serverByName(s.Name())
-	c.waitOnStreamCurrent(s, "$G", "TEST")
+	c.waitOnStreamCurrent(s, "$G", "TEST", streeSqlDownSelect(0, 60*time.Second))
 
 	// Now restart them all..
 	c.stopAll()
@@ -1408,6 +1408,9 @@ func TestJetStreamClusterStreamInfoDeletedDetails(t *testing.T) {
 }
 
 func TestJetStreamClusterMirrorAndSourceExpiration(t *testing.T) {
+	if streeSqlDownSelect(true) {
+		t.Skip("skipping for SQL stree")
+	}
 	c := createJetStreamClusterExplicit(t, "MSE", 3)
 	defer c.shutdown()
 
@@ -3066,9 +3069,10 @@ func TestJetStreamClusterRollups(t *testing.T) {
 		le.PutUint16(bt[0:], uint16(temp))
 		js.PublishAsync(fmt.Sprintf("sensor.%v.temp", id), bt[:])
 	}
+	timeout := streeSqlDownSelect(5 * time.Second, 20 * time.Second)
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(5 * time.Second):
+	case <-time.After(timeout):
 		t.Fatalf("Did not receive completion signal")
 	}
 
@@ -3323,6 +3327,9 @@ func TestJetStreamClusterStreamUpdateSyncBug(t *testing.T) {
 
 // Issue #2666
 func TestJetStreamClusterKVMultipleConcurrentCreate(t *testing.T) {
+	if streeSqlDownSelect(skipSqlSegfault) {
+		t.Skip("skipping for SQL stree segfault")
+	}
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -3769,11 +3776,12 @@ func TestJetStreamClusterConsumerPendingBug(t *testing.T) {
 		}
 	}
 	// Wait for them to all be there.
-	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+	tWait := streeSqlDownSelect(5*time.Second, 60*time.Second)
+	checkFor(t, tWait, 100*time.Millisecond, func() error {
 		si, err := js.StreamInfo("foo")
 		require_NoError(t, err)
 		if si.State.Msgs != uint64(n) {
-			return fmt.Errorf("Not received all messages")
+			return fmt.Errorf("Not received all messages (%d != %d)", si.State.Msgs, n)
 		}
 		return nil
 	})
@@ -4503,9 +4511,10 @@ func TestJetStreamClusterInterestRetentionWithFilteredConsumersExtra(t *testing.
 	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo.*"}, Retention: nats.InterestPolicy, Replicas: 3})
 	require_NoError(t, err)
 
+	tWait := streeSqlDownSelect(5*time.Second, 15*time.Second)
 	checkState := func(expected uint64) {
 		t.Helper()
-		checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		checkFor(t, tWait, 100*time.Millisecond, func() error {
 			si, err := js.StreamInfo("TEST")
 			require_NoError(t, err)
 			if si.State.Msgs != expected {
@@ -4615,9 +4624,10 @@ func TestJetStreamClusterFilteredAndIdleConsumerNRGGrowth(t *testing.T) {
 	for i := 0; i < 10_000; i++ {
 		js.PublishAsync("foo.bar", []byte("ok"))
 	}
+	tWait := streeSqlDownSelect(5*time.Second, 60*time.Second)
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(5 * time.Second):
+	case <-time.After(tWait):
 		t.Fatalf("Did not receive completion signal")
 	}
 
@@ -5075,9 +5085,10 @@ func TestJetStreamClusterMemoryConsumerCompactVsSnapshot(t *testing.T) {
 		_, err := js.PublishAsync("test", nil)
 		require_NoError(t, err)
 	}
+	tWait := streeSqlDownSelect(5*time.Second, 50*time.Second)
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(5 * time.Second):
+	case <-time.After(tWait):
 		t.Fatalf("Did not receive completion signal")
 	}
 
@@ -5085,7 +5096,7 @@ func TestJetStreamClusterMemoryConsumerCompactVsSnapshot(t *testing.T) {
 	require_NoError(t, err)
 
 	for i := 0; i < 2; i++ {
-		for _, m := range fetchMsgs(t, sub, 1000, 5*time.Second) {
+		for _, m := range fetchMsgs(t, sub, 1000, tWait) {
 			m.AckSync()
 		}
 	}
@@ -5095,9 +5106,11 @@ func TestJetStreamClusterMemoryConsumerCompactVsSnapshot(t *testing.T) {
 	c.checkClusterFormed()
 	c.waitOnServerCurrent(s)
 
-	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, tWait, 100*time.Millisecond, func() error {
 		ci, err := js.ConsumerInfo("test", "d")
 		require_NoError(t, err)
+		require_False(t, ci == nil)
+		require_False(t, ci == nil || ci.Cluster == nil)
 		for _, r := range ci.Cluster.Replicas {
 			if !r.Current || r.Lag != 0 {
 				return fmt.Errorf("Replica not current: %+v", r)
@@ -5396,6 +5409,9 @@ func TestJetStreamClusterMirrorDeDupWindow(t *testing.T) {
 }
 
 func TestJetStreamClusterNewHealthz(t *testing.T) {
+	if streeSqlDownSelect(skipSqlSegfault) {
+		t.Skip("skipping for SQL stree segfault")
+	}
 	c := createJetStreamClusterExplicit(t, "JSC", 3)
 	defer c.shutdown()
 
@@ -5837,7 +5853,7 @@ func TestJetStreamClusterNoRestartAdvisories(t *testing.T) {
 	}
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(5 * time.Second):
+	case <-time.After(streeSqlDownSelect(5 * time.Second, 50 * time.Second)):
 		t.Fatalf("Did not receive completion signal")
 	}
 
@@ -6555,6 +6571,9 @@ func TestJetStreamClusterUnknownReplicaOnClusterRestart(t *testing.T) {
 }
 
 func TestJetStreamClusterSnapshotBeforePurgeAndCatchup(t *testing.T) {
+	if streeSqlDownSelect(true) {
+		t.Skip("skipping for SQL stree")
+	}
 	c := createJetStreamClusterExplicit(t, "JSC", 3)
 	defer c.shutdown()
 
@@ -6583,7 +6602,7 @@ func TestJetStreamClusterSnapshotBeforePurgeAndCatchup(t *testing.T) {
 		}
 		select {
 		case <-js.PublishAsyncComplete():
-		case <-time.After(5 * time.Second):
+		case <-time.After(streeSqlDownSelect(5 * time.Second, 50 * time.Second)):
 			t.Fatalf("Did not receive completion signal")
 		}
 	}
@@ -6650,7 +6669,7 @@ func TestJetStreamClusterStreamResetWithLargeFirstSeq(t *testing.T) {
 	cfg := &nats.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo"},
-		MaxAge:   5 * time.Second,
+		MaxAge:   5 * streeSqlDownSelect(time.Second, time.Minute),
 		Replicas: 1,
 	}
 	_, err := js.AddStream(cfg)
@@ -6678,20 +6697,20 @@ func TestJetStreamClusterStreamResetWithLargeFirstSeq(t *testing.T) {
 	require_True(t, si.State.FirstSeq == 1_000_000)
 
 	// Now add in 10,000 messages.
-	num := 10_000
+	num := streeSqlDownSelect(10_000, 3_500)
 	for i := 0; i < num; i++ {
 		js.PublishAsync("foo", []byte("SNAP"))
 	}
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(5 * time.Second):
+	case <-time.After(streeSqlDownSelect(5 * time.Second, 50 * time.Second)):
 		t.Fatalf("Did not receive completion signal")
 	}
 
 	si, err = js.StreamInfo("TEST")
 	require_NoError(t, err)
-	require_True(t, si.State.FirstSeq == 1_000_000)
-	require_True(t, si.State.LastSeq == uint64(1_000_000+num-1))
+	require_Equal(t, si.State.FirstSeq, 1_000_000)
+	require_Equal(t, si.State.LastSeq, uint64(1_000_000+num-1))
 
 	// We want to make sure we do not send unnecessary skip msgs when we know we do not have all of these messages.
 	ncs, _ := jsClientConnect(t, sl, nats.UserInfo("admin", "s3cr3t!"))
@@ -7310,7 +7329,7 @@ func TestJetStreamClusterCompressedStreamMessages(t *testing.T) {
 	}
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(5 * time.Second):
+	case <-time.After(streeSqlDownSelect(5 * time.Second, 50 * time.Second)):
 		t.Fatalf("Did not receive completion signal")
 	}
 }

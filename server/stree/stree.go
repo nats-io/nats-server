@@ -54,6 +54,7 @@ type Config struct {
 type SubjectTree[T any] struct {
 	root node
 	size int
+	trace bool
         conn *sqlConn[T]
         // FIXME(skaar): the lru impl wants k to be a comparable, so we can't use []byte directly
         // replace?
@@ -67,24 +68,28 @@ type closer = interface{ Close() error }
 var allStrees sync.Map
 
 // NewSubjectTree creates a new SubjectTree with values T.
-func NewSubjectTree[T any]() *SubjectTree[T] {
+func NewSubjectTree[T any](trace ...bool) *SubjectTree[T] {
 	if dbPath, ok := os.LookupEnv("STREESQLDBPATH"); ok {
 		return NewSqlSubjectTree[T](&Config{
 			DBPath: dbPath,
-		})
+		}, trace...)
 	}
-	t := &SubjectTree[T]{}
+	t := &SubjectTree[T]{trace: len(trace) > 0 && trace[0]}
 	allStrees.Store(closer(t), void{})
 	return t
 }
 
 // NewSqlSubjectTree creates a new SubjectTree with values T.
-func NewSqlSubjectTree[T any](cfg *Config) *SubjectTree[T] {
+func NewSqlSubjectTree[T any](cfg *Config, trace ...bool) *SubjectTree[T] {
         // FIXME(skaar): setup cache, init Serializer
-	t := &SubjectTree[T]{}
+	t := &SubjectTree[T]{trace: len(trace) > 0 && trace[0]}
 	t.sqlInit(cfg)
 	allStrees.Store(closer(t), void{})
 	return t
+}
+
+func (t *SubjectTree[T]) Trace() bool {
+	return t.trace
 }
 
 func (t *SubjectTree[T]) Close() (err error) {
@@ -141,6 +146,26 @@ func (t *SubjectTree[T]) Insert(subject []byte, value T) (*T, bool) {
 		t.size++
 	}
 	return old, updated
+}
+
+// Update a known existing value (only needed for SQL implementation).
+func (t *SubjectTree[T]) Update(subject []byte, value *T) {
+	if t != nil && t.conn != nil {
+		t.sqlUpdate(subject, value)
+	}
+}
+
+// Use Queue/Flush to avoid duplicate hits during Match or Iter
+func (t *SubjectTree[T]) QueueUpdate(subject []byte, value *T) {
+	if t != nil && t.conn != nil {
+		t.sqlQueueUpdate(subject, value)
+	}
+}
+
+func (t *SubjectTree[T]) FlushUpdates() {
+	if t != nil && t.conn != nil {
+		t.sqlFlushUpdates()
+	}
 }
 
 // Find will find the value and return it or false if it was not found.

@@ -1046,19 +1046,19 @@ func TestSqlSubjectTree(t *testing.T) {
 	print("%s -> idx=%v\n", string(subj), idx)
 
 	for k := range 6 {
-		s := querySubjectFull(k+1)
+		s := getQuerySubjectFull(k+1)
 		print("%s\n", s)
 	}
 	for k := range 6 {
-		s := deleteSubject(k+1)
+		s := getDeleteSubject(k+1)
 		print("%s\n", s)
 	}
 	for k := range 6 {
-		s := querySubjectWild(k+1)
+		s := getQuerySubjectWild(k+1)
 		print("%s\n", s)
 	}
 	for k := range 6 {
-		s := insertSubject(k+1)
+		s := getInsertSubject(k+1)
 		print("%s\n", s)
 	}
 	for k := range 6 {
@@ -1093,6 +1093,17 @@ func TestSqlSubjectTree(t *testing.T) {
 		require_True(t, pV != nil && *pV == vals[k])
 		require_True(t, found)
 	}
+
+	require_Equal(t, st.Size(), 3)
+	old, updated = st.Insert(subj, "rhubarb1")
+	require_True(t, old != nil && *old == "rhubarb")
+	require_True(t, updated)
+
+	require_Equal(t, st.Size(), 3)
+	old, updated = st.Insert(subj, "rhubarb")
+	require_True(t, old != nil && *old == "rhubarb1")
+	require_True(t, updated)
+	require_Equal(t, st.Size(), 3)
 
 	count := 0
 	st.Match(b("plugh.*.x123"), func(subject []byte, val *string) {
@@ -1184,6 +1195,9 @@ func TestSqlSubjectTreeGob(t *testing.T) {
 	require_True(t, found)
 
 	err := st.Close()
+	if err != nil {
+		print("Close: err=%v\n", err)
+	}
 	require_True(t, err == nil)
 
 	st = NewSqlSubjectTree[GobSmack](&Config{
@@ -1192,9 +1206,12 @@ func TestSqlSubjectTreeGob(t *testing.T) {
 	print("read: len(desc) = %d\n", len(st.conn.vElemGob.Desc()))
 	print("read: desc = % 02x\n", st.conn.vElemGob.Desc())
 
-	pV, found = st.Find(subj)
-	require_True(t, pV != nil && datum.Equal(pV))
-	require_True(t, found)
+	got_it := false
+	st.Match(subj, func(subj []byte, pV *GobSmack) {
+		got_it = true
+		require_True(t, pV != nil && datum.Equal(pV))
+	})
+	require_True(t, got_it)
 
 	err = st.Close()
 	require_True(t, err == nil)

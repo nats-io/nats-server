@@ -144,4 +144,7 @@ func main() {
 		s.Warnf("stree.CloseAll: %v", err)
 	}
 	s.WaitForShutdown()
+	if err:= stree.CloseAll(); err != nil {
+		s.Warnf("stree.CloseAll: %v", err)
+	}
 }

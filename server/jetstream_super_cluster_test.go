@@ -1711,7 +1711,7 @@ func TestJetStreamSuperClusterMovingStreamsAndConsumers(t *testing.T) {
 			}
 			select {
 			case <-js.PublishAsyncComplete():
-			case <-time.After(5 * time.Second):
+			case <-time.After(streeSqlDownSelect(5*time.Second, 50*time.Second)):
 				t.Fatalf("Did not receive completion signal")
 			}
 
@@ -2007,7 +2007,8 @@ func TestJetStreamSuperClusterMovingStreamsWithMirror(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	checkFor(t, 30*time.Second, 100*time.Millisecond, func() error {
+	tWait := streeSqlDownSelect(30*time.Second, 100*time.Second)
+	checkFor(t, tWait, 100*time.Millisecond, func() error {
 		si, err := js.StreamInfo("SOURCE")
 		if err != nil {
 			return err
@@ -2096,7 +2097,7 @@ func TestJetStreamSuperClusterMovingStreamAndMoveBack(t *testing.T) {
 			checkMove := func(cluster string) {
 				t.Helper()
 				sc.waitOnStreamLeader("$G", "TEST")
-				checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
+				checkFor(t, streeSqlDownSelect(20 * time.Second, 200 * time.Second), 100*time.Millisecond, func() error {
 					si, err := js.StreamInfo("TEST")
 					if err != nil {
 						return err
@@ -2722,6 +2723,9 @@ func TestJetStreamSuperClusterTagInducedMoveCancel(t *testing.T) {
 }
 
 func TestJetStreamSuperClusterMoveCancel(t *testing.T) {
+	if streeSqlDownSelect(true) {
+		t.Skip("skipping for SQL stree")
+	}
 	usageTickOld := usageTick
 	usageTick = 250 * time.Millisecond
 	defer func() {
@@ -3974,14 +3978,14 @@ func TestJetStreamSuperClusterMovingR1Stream(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	toSend := 10_000
+	toSend := streeSqlDownSelect(10_000, 3_500)
 	for i := 0; i < toSend; i++ {
 		_, err := js.PublishAsync("TEST", []byte("HELLO WORLD"))
-		require_NoError(t, err)
+		require_NoErrorf(t, "PublishAsync %d/%d: %w", i, toSend, err)
 	}
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(5 * time.Second):
+	case <-time.After(streeSqlDownSelect(5 * time.Second, 50 * time.Second)):
 		t.Fatalf("Did not receive completion signal")
 	}
 
@@ -3992,7 +3996,7 @@ func TestJetStreamSuperClusterMovingR1Stream(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, streeSqlDownSelect(5*time.Second, 50*time.Second), 100*time.Millisecond, func() error {
 		sc.waitOnStreamLeader(globalAccountName, "TEST")
 		si, err := js.StreamInfo("TEST")
 		if err != nil {

@@ -782,6 +782,9 @@ func TestJetStreamClusterConsumerPauseSurvivesRestart(t *testing.T) {
 }
 
 func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
+	if streeSqlDownSelect(skipSqlSegfault) {
+		t.Skip("skipping for SQL stree segfault")
+	}
 	type testParams struct {
 		restartAny       bool
 		restartLeader    bool
@@ -2323,13 +2326,14 @@ func TestJetStreamClusterStreamLastSequenceResetAfterStorageWipe(t *testing.T) {
 			})
 		}
 
+		tWait := streeSqlDownSelect(10*time.Second, 50*time.Second)
 		for _, s := range c.servers {
 			for i := 1; i <= numStreams; i++ {
 				stream := fmt.Sprintf("TEST:%d", i)
 				mset, err := s.GlobalAccount().lookupStream(stream)
 				require_NoError(t, err)
 				var state StreamState
-				checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+				checkFor(t, tWait, 200*time.Millisecond, func() error {
 					mset.store.FastState(&state)
 					if state.LastSeq != 222 {
 						return fmt.Errorf("%v Wrong last sequence %d for %q - State  %+v", s, state.LastSeq, stream, state)

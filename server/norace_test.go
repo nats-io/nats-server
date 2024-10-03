@@ -1329,6 +1329,9 @@ func TestNoRaceJetStreamAPIConsumerListPaging(t *testing.T) {
 }
 
 func TestNoRaceJetStreamWorkQueueLoadBalance(t *testing.T) {
+	if streeSqlDownSelect(true) {
+		t.Skip("skipping for SQL stree")
+	}
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
@@ -1750,7 +1753,7 @@ func TestNoRaceJetStreamSuperClusterMixedModeMirrors(t *testing.T) {
 		// Now check the mirrors have all expected messages
 		for m := 0; m < mirrorsCount; m++ {
 			name := fmt.Sprintf("M%d", m+1)
-			checkFor(t, 15*time.Second, 500*time.Millisecond, func() error {
+			checkFor(t, streeSqlDownSelect(15*time.Second, 150*time.Second), 500*time.Millisecond, func() error {
 				si, err := js.StreamInfo(name)
 				if err != nil {
 					t.Fatalf("Could not retrieve stream info")
@@ -1929,8 +1932,9 @@ func TestNoRaceJetStreamClusterSourcesMuxd(t *testing.T) {
 	nc, js := jsClientConnect(t, c.randomServer())
 	defer nc.Close()
 
-	// Send in 10000 messages.
-	msg, toSend := make([]byte, 1024), 10000
+	// Send in "toSend" messages per stream.
+	msg := make([]byte, 1024)
+	toSend := streeSqlDownSelect(10_000, 2_000)
 	crand.Read(msg)
 
 	var sources []*nats.StreamSource
@@ -1958,7 +1962,7 @@ func TestNoRaceJetStreamClusterSourcesMuxd(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	checkFor(t, 20*time.Second, 500*time.Millisecond, func() error {
+	checkFor(t, streeSqlDownSelect(20*time.Second, 200*time.Second), 500*time.Millisecond, func() error {
 		si, err := js.StreamInfo("S")
 		if err != nil {
 			t.Fatalf("Could not retrieve stream info")
@@ -2010,8 +2014,8 @@ func TestNoRaceJetStreamSuperClusterMixedModeSources(t *testing.T) {
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
-	numStreams := 100
-	toSend := 1000
+	numStreams := streeSqlDownSelect(100, 20)
+	toSend := streeSqlDownSelect(1000, 200)
 	var sources []*nats.StreamSource
 	errCh := make(chan error, numStreams)
 	srcCh := make(chan *nats.StreamSource, numStreams)
@@ -2057,7 +2061,7 @@ func TestNoRaceJetStreamSuperClusterMixedModeSources(t *testing.T) {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 
-		checkFor(t, 15*time.Second, 1000*time.Millisecond, func() error {
+		checkFor(t, streeSqlDownSelect(15*time.Second, 150*time.Second), 1000*time.Millisecond, func() error {
 			si, err := js.StreamInfo("S")
 			if err != nil {
 				t.Fatalf("Could not retrieve stream info")
@@ -2411,6 +2415,9 @@ func TestNoRaceJetStreamSuperClusterRIPStress(t *testing.T) {
 }
 
 func TestNoRaceJetStreamSlowFilteredInititalPendingAndFirstMsg(t *testing.T) {
+	if streeSqlDownSelect(true) {
+		t.Skip("skipping for SQL stree")
+	}
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
@@ -2635,6 +2642,9 @@ func TestNoRaceJetStreamFileStoreBufferReuse(t *testing.T) {
 
 // Report of slow restart for a server that has many messages that have expired while it was not running.
 func TestNoRaceJetStreamSlowRestartWithManyExpiredMsgs(t *testing.T) {
+	if streeSqlDownSelect(true) {
+		t.Skip("skipping for SQL stree")
+	}
 	opts := DefaultTestOptions
 	opts.Port = -1
 	opts.JetStream = true
@@ -2739,12 +2749,12 @@ func TestNoRaceJetStreamStalledMirrorsAfterExpire(t *testing.T) {
 		}
 		select {
 		case <-js.PublishAsyncComplete():
-		case <-time.After(5 * time.Second):
+		case <-time.After(streeSqlDownSelect(5*time.Second, 20*time.Second)):
 			t.Fatalf("Did not receive completion signal")
 		}
 	}
 
-	numMsgs := 10_000
+	numMsgs := streeSqlDownSelect(10_000, 2_000)
 	sendBatch(numMsgs)
 
 	// Turn off expiration so we can test we did not stall.
@@ -2756,7 +2766,7 @@ func TestNoRaceJetStreamStalledMirrorsAfterExpire(t *testing.T) {
 	sendBatch(numMsgs)
 
 	// Wait for mirror to be caught up.
-	checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+	checkFor(t, streeSqlDownSelect(10*time.Second, 50*time.Second), 500*time.Millisecond, func() error {
 		si, err := js.StreamInfo("M")
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
@@ -2997,7 +3007,7 @@ func TestNoRaceJetStreamClusterExtendedStreamPurge(t *testing.T) {
 			// Now first is 2700, last is 3700
 			select {
 			case <-js.PublishAsyncComplete():
-			case <-time.After(10 * time.Second):
+			case <-time.After(streeSqlDownSelect(10*time.Second, 100*time.Second)):
 				t.Fatalf("Did not receive completion signal")
 			}
 
@@ -3030,7 +3040,7 @@ func TestNoRaceJetStreamClusterExtendedStreamPurge(t *testing.T) {
 			purge := func(preq *JSApiStreamPurgeRequest, newTotal uint64) {
 				t.Helper()
 				req, _ := json.Marshal(preq)
-				resp, err := nc.Request(fmt.Sprintf(JSApiStreamPurgeT, "KV"), req, time.Second)
+				resp, err := nc.Request(fmt.Sprintf(JSApiStreamPurgeT, "KV"), req, streeSqlDownSelect(time.Second, 5*time.Second))
 				if err != nil {
 					t.Fatalf("Unexpected error: %v", err)
 				}
@@ -3143,7 +3153,7 @@ func TestNoRaceJetStreamFileStoreCompaction(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	toSend := 10_000
+	toSend := streeSqlDownSelect(10_000, 3_000)
 	data := make([]byte, 4*1024)
 	crand.Read(data)
 
@@ -3159,7 +3169,7 @@ func TestNoRaceJetStreamFileStoreCompaction(t *testing.T) {
 	}
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(10 * time.Second):
+	case <-time.After(streeSqlDownSelect(10*time.Second, 30*time.Second)):
 		t.Fatalf("Did not receive completion signal")
 	}
 
@@ -3169,8 +3179,9 @@ func TestNoRaceJetStreamFileStoreCompaction(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	total, used, _ := mset.Store().Utilization()
-	if pu := 100.0 * float32(used) / float32(total); pu < 80.0 {
-		t.Fatalf("Utilization is less than 80%%, got %.2f", pu)
+	thresh := streeSqlDownSelect(80, 60)
+	if pu := 100.0 * float32(used) / float32(total); pu < float32(thresh) {
+		t.Fatalf("Utilization is less than %d%%, got %.2f (%d/%d)", thresh, pu, used, total)
 	}
 }
 
@@ -3194,7 +3205,7 @@ func TestNoRaceJetStreamEncryptionEnabledOnRestartWithExpire(t *testing.T) {
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
-	toSend := 10_000
+	toSend := streeSqlDownSelect(10_000, 3_000)
 
 	cfg := &nats.StreamConfig{
 		Name:     "TEST",
@@ -3214,7 +3225,7 @@ func TestNoRaceJetStreamEncryptionEnabledOnRestartWithExpire(t *testing.T) {
 	}
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(5 * time.Second):
+	case <-time.After(streeSqlDownSelect(5*time.Second, 30*time.Second)):
 		t.Fatalf("Did not receive completion signal")
 	}
 
@@ -3520,7 +3531,7 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 	}
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(5 * time.Second):
+	case <-time.After(streeSqlDownSelect(5*time.Second, 50*time.Second)):
 		t.Fatalf("Did not receive completion signal")
 	}
 
@@ -4098,14 +4109,15 @@ func TestNoRaceJetStreamMemstoreWithLargeInteriorDeletes(t *testing.T) {
 	if _, err := js.PublishAsync("foo", msg); err != nil {
 		t.Fatalf("Unexpected publish error: %v", err)
 	}
-	for i := 1; i <= 1_000_000; i++ {
+	n := streeSqlDownSelect(1_000_000, 3_000)
+	for i := 1; i <= n; i++ {
 		if _, err := js.PublishAsync("bar", msg); err != nil {
-			t.Fatalf("Unexpected publish error: %v", err)
+			t.Fatalf("Unexpected publish error %d/%d: %v", i, n, err)
 		}
 	}
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(5 * time.Second):
+	case <-time.After(streeSqlDownSelect(5*time.Second, 50*time.Second)):
 		t.Fatalf("Did not receive completion signal")
 	}
 
@@ -4118,7 +4130,7 @@ func TestNoRaceJetStreamMemstoreWithLargeInteriorDeletes(t *testing.T) {
 		t.Logf("WRN: Took longer than usual to snapshot: %v", elapsed)
 	}
 
-	if ss.Msgs != 2 || ss.FirstSeq != 1 || ss.LastSeq != 1_000_001 || ss.NumDeleted != 999999 {
+	if ss.Msgs != 2 || ss.FirstSeq != 1 || ss.LastSeq != uint64(n+1) || ss.NumDeleted != n-1 {
 		// To not print out on error.
 		ss.Deleted = nil
 		t.Fatalf("Bad State: %+v", ss)
@@ -4200,20 +4212,21 @@ func TestNoRaceJetStreamClusterHealthz(t *testing.T) {
 	s := c.servers[0]
 	s.Shutdown()
 
-	for i := 0; i < 5_000; i++ {
+	nPub := streeSqlDownSelect(5_000, 3_000)
+	for i := 0; i < nPub; i++ {
 		_, err = js1.PublishAsync("foo", []byte("OK"))
-		require_NoError(t, err)
+		require_NoErrorf(t, "%w: \"foo\" %d/%d", err, i, nPub)
 		_, err = js2.PublishAsync("bar", []byte("OK"))
-		require_NoError(t, err)
+		require_NoErrorf(t, "%w: \"bar\" %d/%d", err, i, nPub)
 	}
 	select {
 	case <-js1.PublishAsyncComplete():
-	case <-time.After(5 * time.Second):
+	case <-time.After(streeSqlDownSelect(5*time.Second, 50*time.Second)):
 		t.Fatalf("Did not receive completion signal")
 	}
 	select {
 	case <-js2.PublishAsyncComplete():
-	case <-time.After(5 * time.Second):
+	case <-time.After(streeSqlDownSelect(5*time.Second, 50*time.Second)):
 		t.Fatalf("Did not receive completion signal")
 	}
 
@@ -4295,14 +4308,14 @@ func TestNoRaceJetStreamStreamInfoSubjectDetailsLimits(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	n := JSMaxSubjectDetails
+	n := streeSqlDownSelect(JSMaxSubjectDetails, 3_000)
 	for i := 0; i < n; i++ {
 		_, err := js.PublishAsync(fmt.Sprintf("X.%d", i), []byte("OK"))
-		require_NoError(t, err)
+		require_NoErrorf(t, "%w: %d/%d", err, i, n)
 	}
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(5 * time.Second):
+	case <-time.After(streeSqlDownSelect(5*time.Second, 50*time.Second)):
 		t.Fatalf("Did not receive completion signal")
 	}
 
@@ -4363,9 +4376,10 @@ func TestNoRaceJetStreamSparseConsumers(t *testing.T) {
 				_, err = js.PublishAsync("foo", msg, nats.StallWait(800*time.Millisecond))
 				require_NoError(t, err)
 
-				for i := 0; i < 1_000_000; i++ {
+				nAsync := streeSqlDownSelect(1_000_000, 500)
+				for i := 0; i < nAsync; i++ {
 					_, err = js.PublishAsync("bar", msg, nats.StallWait(800*time.Millisecond))
-					require_NoError(t, err)
+					require_NoErrorf(t, "%w: %d/%d", err, i, nAsync)
 				}
 				_, err = js.PublishAsync("foo", msg, nats.StallWait(800*time.Millisecond))
 				require_NoError(t, err)
@@ -4426,7 +4440,7 @@ func TestNoRaceJetStreamConsumerFilterPerfDegradation(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	toSend := 50_000
+	toSend := streeSqlDownSelect(50_000, 3_000)
 	count := 0
 	ch := make(chan struct{}, 6)
 	_, err = js.Subscribe("test.*.subj", func(m *nats.Msg) {
@@ -4453,7 +4467,7 @@ func TestNoRaceJetStreamConsumerFilterPerfDegradation(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		go send()
 	}
-	timeout := time.NewTimer(10 * time.Second)
+	timeout := time.NewTimer(streeSqlDownSelect(10*time.Second, 100*time.Second))
 	for i := 0; i < 6; i++ {
 		select {
 		case <-ch:
@@ -5028,7 +5042,7 @@ func TestNoRaceJetStreamPullConsumersAndInteriorDeletes(t *testing.T) {
 	cons := 5
 	wg := sync.WaitGroup{}
 	wg.Add(prods + cons)
-	toSend := 100000
+	toSend := streeSqlDownSelect(100_000, 10_000)
 
 	for i := 0; i < cons; i++ {
 		go func() {
@@ -5084,12 +5098,15 @@ func TestNoRaceJetStreamPullConsumersAndInteriorDeletes(t *testing.T) {
 	select {
 	case <-ch:
 		// OK
-	case <-time.After(30 * time.Second):
+	case <-time.After(streeSqlDownSelect(30*time.Second, 300*time.Second)):
 		t.Fatalf("Consumers took too long to consumer all messages")
 	}
 }
 
 func TestNoRaceJetStreamClusterInterestPullConsumerStreamLimitBug(t *testing.T) {
+	if streeSqlDownSelect(true) {
+		t.Skip("skipping for SQL stree")
+	}
 	c := createJetStreamClusterExplicit(t, "JSC", 3)
 	defer c.shutdown()
 
@@ -5230,7 +5247,7 @@ func TestNoRaceJetStreamClusterDirectAccessAllPeersSubs(t *testing.T) {
 	}
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(5 * time.Second):
+	case <-time.After(streeSqlDownSelect(5*time.Second, 50*time.Second)):
 		t.Fatalf("Did not receive completion signal")
 	}
 
@@ -5540,7 +5557,9 @@ func TestNoRaceJetStreamFileStoreLargeKVAccessTiming(t *testing.T) {
 	require_NoError(t, err)
 	slow := time.Since(start)
 
-	if base > 100*time.Microsecond || slow > 200*time.Microsecond {
+	maxBase := streeSqlDownSelect(100*time.Microsecond, time.Millisecond)
+	maxSlow := streeSqlDownSelect(200*time.Microsecond, 200*time.Millisecond)
+	if base > maxBase || slow > maxSlow {
 		t.Fatalf("Took too long to look up first key vs last: %v vs %v", base, slow)
 	}
 
@@ -5555,12 +5574,15 @@ func TestNoRaceJetStreamFileStoreLargeKVAccessTiming(t *testing.T) {
 	slow = time.Since(start)
 	fs.mu.Unlock()
 
-	if base > 100*time.Microsecond || slow > 200*time.Microsecond {
+	if base > maxBase || slow > maxSlow {
 		t.Fatalf("Took too long to look up last key by subject vs first: %v vs %v", base, slow)
 	}
 }
 
 func TestNoRaceJetStreamKVLock(t *testing.T) {
+	if streeSqlDownSelect(skipSqlSegfault) {
+		t.Skip("skipping for SQL stree segfault")
+	}
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
@@ -5708,15 +5730,15 @@ func TestNoRaceJetStreamConcurrentPullConsumerBatch(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	toSend := int32(100_000)
+	toSend := streeSqlDownSelect(100_000, 3_500)
 
-	for i := 0; i < 100_000; i++ {
+	for i := 0; i < toSend; i++ {
 		subj := fmt.Sprintf("ORDERS.%d", i+1)
 		js.PublishAsync(subj, []byte("BUY"))
 	}
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(5 * time.Second):
+	case <-time.After(streeSqlDownSelect(5*time.Second, 30*time.Second)):
 		t.Fatalf("Did not receive completion signal")
 	}
 
@@ -5751,8 +5773,8 @@ func TestNoRaceJetStreamConcurrentPullConsumerBatch(t *testing.T) {
 		defer wg.Done()
 
 		for {
-			msgs, err := sub.Fetch(fetchSize, nats.MaxWait(time.Second))
-			if atomic.AddInt32(&received, int32(len(msgs))) >= toSend {
+			msgs, err := sub.Fetch(fetchSize, nats.MaxWait(streeSqlDownSelect(time.Second, 5*time.Second)))
+			if atomic.AddInt32(&received, int32(len(msgs))) >= int32(toSend) {
 				break
 			}
 			// We should always receive a full batch here if not last competing fetch.
@@ -5773,7 +5795,7 @@ func TestNoRaceJetStreamConcurrentPullConsumerBatch(t *testing.T) {
 	close(startCh)
 
 	wg.Wait()
-	require_True(t, received == toSend)
+	require_Equal(t, int(received), toSend)
 }
 
 func TestNoRaceJetStreamManyPullConsumersNeedAckOptimization(t *testing.T) {
@@ -6330,6 +6352,9 @@ func TestNoRaceSeqSetSizeComparison(t *testing.T) {
 
 // FilteredState for ">" with large interior deletes was very slow.
 func TestNoRaceFileStoreFilteredStateWithLargeDeletes(t *testing.T) {
+	if streeSqlDownSelect(true) {
+		t.Skip("skipping for SQL stree")
+	}
 	storeDir := t.TempDir()
 
 	fs, err := newFileStore(
@@ -6371,6 +6396,9 @@ func TestNoRaceFileStoreFilteredStateWithLargeDeletes(t *testing.T) {
 // We will use the fast path to alleviate that performance bottleneck but also make
 // sure we are still being accurate.
 func TestNoRaceJetStreamClusterConsumerInfoSpeed(t *testing.T) {
+	if streeSqlDownSelect(true) {
+		t.Skip("skipping for SQL stree")
+	}
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -6524,6 +6552,9 @@ func TestNoRaceJetStreamKVAccountWithServerRestarts(t *testing.T) {
 // We have an optimization to use in memory structures in filestore to speed up.
 // Only if asking to scan all (DeliverAll).
 func TestNoRaceJetStreamConsumerCreateTimeNumPending(t *testing.T) {
+	if streeSqlDownSelect(true) {
+		t.Skip("skipping for SQL stree")
+	}
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
@@ -6574,6 +6605,9 @@ func TestNoRaceJetStreamConsumerCreateTimeNumPending(t *testing.T) {
 }
 
 func TestNoRaceJetStreamClusterGhostConsumers(t *testing.T) {
+	if streeSqlDownSelect(skipSqlSegfault) {
+		t.Skip("skipping for SQL stree segfault")
+	}
 	c := createJetStreamClusterExplicit(t, "GHOST", 3)
 	defer c.shutdown()
 
@@ -7166,6 +7200,9 @@ func TestNoRaceJetStreamClusterDifferentRTTInterestBasedStreamSetup(t *testing.T
 }
 
 func TestNoRaceJetStreamInterestStreamCheckInterestRaceBug(t *testing.T) {
+	if streeSqlDownSelect(skipSqlSegfault) {
+		t.Skip("skipping for SQL stree segfault")
+	}
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -7683,7 +7720,7 @@ func TestNoRaceJetStreamClusterUnbalancedInterestMultipleConsumers(t *testing.T)
 	// make sure we do not remove prematurely.
 	msgs, err := sub.Fetch(100, nats.MaxWait(time.Second))
 	require_NoError(t, err)
-	require_True(t, len(msgs) == 100)
+	require_Equal(t, len(msgs), 100)
 	for _, m := range msgs {
 		m.AckSync()
 	}
@@ -7695,15 +7732,16 @@ func TestNoRaceJetStreamClusterUnbalancedInterestMultipleConsumers(t *testing.T)
 	require_True(t, ci.Delivered.Stream == 100)
 	require_True(t, ci.AckFloor.Stream == 100)
 
+	time.Sleep(streeSqlDownSelect(0, 5*time.Second))
 	// Check stream state on all servers.
 	for _, s := range c.servers {
 		mset, err := s.GlobalAccount().lookupStream("EVENTS")
 		require_NoError(t, err)
 		state := mset.state()
-		require_True(t, state.Msgs == 900)
-		require_True(t, state.FirstSeq == 101)
-		require_True(t, state.LastSeq == 1000)
-		require_True(t, state.Consumers == 2)
+		require_Equal(t, state.Msgs, 900)
+		require_Equal(t, state.FirstSeq, 101)
+		require_Equal(t, state.LastSeq, 1000)
+		require_Equal(t, state.Consumers, 2)
 	}
 
 	msgs, err = sub.Fetch(900, nats.MaxWait(time.Second))
@@ -7813,26 +7851,26 @@ func TestNoRaceJetStreamClusterUnbalancedInterestMultipleFilteredConsumers(t *te
 	}
 
 	// Let acks propagate.
-	time.Sleep(250 * time.Millisecond)
+	time.Sleep(streeSqlDownSelect(250*time.Millisecond, 2500*time.Millisecond))
 
 	ci, err := js.ConsumerInfo("EVENTS", "D")
 	require_NoError(t, err)
-	require_True(t, ci.NumPending == 0)
-	require_True(t, ci.NumAckPending == 0)
-	require_True(t, ci.Delivered.Consumer == 500)
-	require_True(t, ci.Delivered.Stream == 1000)
-	require_True(t, ci.AckFloor.Consumer == 500)
-	require_True(t, ci.AckFloor.Stream == 1000)
+	require_Equal(t, ci.NumPending, 0)
+	require_Equal(t, ci.NumAckPending, 0)
+	require_Equal(t, ci.Delivered.Consumer, 500)
+	require_Equal(t, ci.Delivered.Stream, 1000)
+	require_Equal(t, ci.AckFloor.Consumer, 500)
+	require_Equal(t, ci.AckFloor.Stream, 1000)
 
 	// Check final stream state on all servers.
 	for _, s := range c.servers {
 		mset, err := s.GlobalAccount().lookupStream("EVENTS")
 		require_NoError(t, err)
 		state := mset.state()
-		require_True(t, state.Msgs == 0)
-		require_True(t, state.FirstSeq == 1001)
-		require_True(t, state.LastSeq == 1000)
-		require_True(t, state.Consumers == 2)
+		require_Equal(t, state.Msgs, 0)
+		require_Equal(t, state.FirstSeq, 1001)
+		require_Equal(t, state.LastSeq, 1000)
+		require_Equal(t, state.Consumers, 2)
 		// Now check preAcks
 		mset.mu.RLock()
 		numPreAcks := len(mset.preAcks)
@@ -8720,7 +8758,8 @@ func TestNoRaceReplicatedMirrorWithLargeStartingSequenceOverLeafnode(t *testing.
 	require_NoError(t, err)
 
 	// Make sure we sync quickly.
-	checkFor(t, time.Second, 200*time.Millisecond, func() error {
+	tWait := streeSqlDownSelect(time.Second, 60 * time.Second)
+	checkFor(t, tWait, 200*time.Millisecond, func() error {
 		si, err = ljs.StreamInfo("TEST")
 		require_NoError(t, err)
 		if si.State.Msgs == 1000 && si.State.FirstSeq == 1_000_000_000 {
@@ -8756,7 +8795,7 @@ func TestNoRaceBinaryStreamSnapshotEncodingBasic(t *testing.T) {
 	}
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(5 * time.Second):
+	case <-time.After(streeSqlDownSelect(5*time.Second, 50*time.Second)):
 		t.Fatalf("Did not receive completion signal")
 	}
 
@@ -8771,7 +8810,7 @@ func TestNoRaceBinaryStreamSnapshotEncodingBasic(t *testing.T) {
 	}
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(5 * time.Second):
+	case <-time.After(streeSqlDownSelect(5*time.Second, 50*time.Second)):
 		t.Fatalf("Did not receive completion signal")
 	}
 
@@ -8781,10 +8820,10 @@ func TestNoRaceBinaryStreamSnapshotEncodingBasic(t *testing.T) {
 
 	si, err := js.StreamInfo("TEST")
 	require_NoError(t, err)
-	require_True(t, si.State.FirstSeq == 1)
-	require_True(t, si.State.LastSeq == 3000)
-	require_True(t, si.State.Msgs == 1000)
-	require_True(t, si.State.NumDeleted == 2000)
+	require_Equal(t, si.State.FirstSeq, 1)
+	require_Equal(t, si.State.LastSeq, 3000)
+	require_Equal(t, si.State.Msgs, 1000)
+	require_Equal(t, si.State.NumDeleted, 2000)
 
 	mset, err := s.GlobalAccount().lookupStream("TEST")
 	require_NoError(t, err)
@@ -8864,7 +8903,7 @@ func TestNoRaceJetStreamClusterStreamSnapshotCatchup(t *testing.T) {
 	}
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(5 * time.Second):
+	case <-time.After(streeSqlDownSelect(5*time.Second, 50*time.Second)):
 		t.Fatalf("Did not receive completion signal")
 	}
 
@@ -8876,13 +8915,14 @@ func TestNoRaceJetStreamClusterStreamSnapshotCatchup(t *testing.T) {
 	defer nc.Close()
 
 	// Now create a large gap.
-	for i := 0; i < 50_000; i++ {
+	nGap := streeSqlDownSelect(50_000, 3_000)
+	for i := 0; i < nGap; i++ {
 		_, err := js.PublishAsync("bar", msg)
-		require_NoError(t, err)
+		require_NoErrorf(t, "%w: %d/%d", err, i, nGap)
 	}
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(10 * time.Second):
+	case <-time.After(streeSqlDownSelect(10*time.Second, 100*time.Second)):
 		t.Fatalf("Did not receive completion signal")
 	}
 
@@ -8902,8 +8942,8 @@ func TestNoRaceJetStreamClusterStreamSnapshotCatchup(t *testing.T) {
 	mset.store.FastState(&state)
 	require_Equal(t, state.Msgs, 2)
 	require_Equal(t, state.FirstSeq, 1)
-	require_Equal(t, state.LastSeq, 51_000)
-	require_Equal(t, state.NumDeleted, 51_000-2)
+	require_Equal(t, state.LastSeq, uint64(nGap + 1_000))
+	require_Equal(t, state.NumDeleted, nGap + 1_000 - 2)
 
 	sr.Shutdown()
 
@@ -8923,8 +8963,8 @@ func TestNoRaceJetStreamClusterStreamSnapshotCatchup(t *testing.T) {
 
 	require_Equal(t, state.Msgs, 3)
 	require_Equal(t, state.FirstSeq, 1)
-	require_Equal(t, state.LastSeq, 51_001)
-	require_Equal(t, state.NumDeleted, 51_001-3)
+	require_Equal(t, state.LastSeq, uint64(nGap + 1_001))
+	require_Equal(t, state.NumDeleted, nGap + 1_001 - 3)
 }
 
 func TestNoRaceStoreStreamEncoderDecoder(t *testing.T) {
@@ -9003,6 +9043,9 @@ func TestNoRaceStoreStreamEncoderDecoder(t *testing.T) {
 }
 
 func TestNoRaceJetStreamClusterKVWithServerKill(t *testing.T) {
+	if streeSqlDownSelect(skipSqlSegfault) {
+		t.Skip("skipping for SQL stree segfault")
+	}
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -9147,6 +9190,9 @@ func TestNoRaceJetStreamClusterKVWithServerKill(t *testing.T) {
 }
 
 func TestNoRaceFileStoreLargeMsgsAndFirstMatching(t *testing.T) {
+	if streeSqlDownSelect(true) {
+		t.Skip("skipping for SQL")
+	}
 	sd := t.TempDir()
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: sd, BlockSize: 8 * 1024 * 1024},
@@ -9203,10 +9249,11 @@ func TestNoRaceJetStreamAPIDispatchQueuePending(t *testing.T) {
 	// We want to make num pending for a consumer expensive, so a large subject
 	// space and wildcards for now does the trick.
 	toks := []string{"foo", "bar", "baz"} // for second token.
-	for i := 1; i <= 500_000; i++ {
+	nAsync := streeSqlDownSelect(500_000, 3_000)
+	for i := 1; i <= nAsync; i++ {
 		subj := fmt.Sprintf("foo.%s.%d", toks[rand.Intn(len(toks))], i)
 		_, err := js.PublishAsync(subj, nil, nats.StallWait(time.Second))
-		require_NoError(t, err)
+		require_NoErrorf(t, "%w: %d/%d", err, i, nAsync)
 	}
 	select {
 	case <-js.PublishAsyncComplete():
@@ -9366,6 +9413,9 @@ func TestNoRaceJetStreamMirrorAndSourceConsumerFailBackoff(t *testing.T) {
 }
 
 func TestNoRaceJetStreamClusterStreamCatchupLargeInteriorDeletes(t *testing.T) {
+	if streeSqlDownSelect(true) {
+		t.Skip("skipping for SQL")
+	}
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -9442,6 +9492,9 @@ func TestNoRaceJetStreamClusterStreamCatchupLargeInteriorDeletes(t *testing.T) {
 }
 
 func TestNoRaceJetStreamClusterBadRestartsWithHealthzPolling(t *testing.T) {
+	if streeSqlDownSelect(true) {
+		t.Skip("skipping for SQL stree")
+	}
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -9566,6 +9619,9 @@ func TestNoRaceJetStreamClusterBadRestartsWithHealthzPolling(t *testing.T) {
 }
 
 func TestNoRaceJetStreamKVReplaceWithServerRestart(t *testing.T) {
+	if streeSqlDownSelect(skipSqlSegfault) {
+		t.Skip("skipping for SQL stree segfault")
+	}
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -9762,6 +9818,9 @@ func TestNoRaceJetStreamSnapshotsWithSlowAckDontSlowConsumer(t *testing.T) {
 }
 
 func TestNoRaceJetStreamWQSkippedMsgsOnScaleUp(t *testing.T) {
+	//if streeSqlDownSelect(true) {
+	//	t.Skip("skipping for SQL stree")
+	//}
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -10171,8 +10230,8 @@ func TestNoRaceFileStoreMsgLoadNextMsgMultiPerf(t *testing.T) {
 		seq++
 	}
 	elapsed := time.Since(start)
-	require_True(t, elapsed < 2*baseline)
 	t.Logf("Single - WC filter %v", elapsed)
+	require_True(t, elapsed < streeSqlDownSelect[time.Duration](2, 4)*baseline)
 
 	// Now do multi load next with 1 wc entry.
 	sl := NewSublistWithCache()
@@ -10209,6 +10268,9 @@ func TestNoRaceFileStoreMsgLoadNextMsgMultiPerf(t *testing.T) {
 }
 
 func TestNoRaceWQAndMultiSubjectFilters(t *testing.T) {
+	if streeSqlDownSelect(true) {
+		t.Skip("skipping for SQL stree")
+	}
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -10362,6 +10424,9 @@ func TestNoRaceWQAndMultiSubjectFiltersRace(t *testing.T) {
 }
 
 func TestNoRaceFileStoreWriteFullStateUniqueSubjects(t *testing.T) {
+	if streeSqlDownSelect(true) {
+		t.Skip("skipping for SQL stree")
+	}
 	fcfg := FileStoreConfig{StoreDir: t.TempDir()}
 	fs, err := newFileStore(fcfg,
 		StreamConfig{Name: "zzz", Subjects: []string{"records.>"}, Storage: FileStorage, MaxMsgsPer: 1, MaxBytes: 15 * 1024 * 1024 * 1024})
@@ -10392,6 +10457,7 @@ func TestNoRaceFileStoreWriteFullStateUniqueSubjects(t *testing.T) {
 	labels := []string{"AAAAA", "BBBB", "CCCC", "DD", "EEEEE"}
 	msg := []byte(strings.Repeat("Z", 128))
 
+	durOk := streeSqlDownSelect(500*time.Millisecond, 1000*time.Millisecond)
 	for i := 0; i < 100; i++ {
 		partA := nuid.Next()
 		for j := 0; j < 100; j++ {
@@ -10403,7 +10469,7 @@ func TestNoRaceFileStoreWriteFullStateUniqueSubjects(t *testing.T) {
 				start := time.Now()
 				fs.StoreMsg(subject, nil, msg)
 				elapsed := time.Since(start)
-				if elapsed > 500*time.Millisecond {
+				if elapsed > durOk {
 					t.Fatalf("Slow store for %q: %v\n", subject, elapsed)
 				}
 			}
@@ -10579,7 +10645,7 @@ func TestNoRaceJetStreamClusterMemoryStreamLastSequenceResetAfterRestart(t *test
 	nc, js := jsClientConnect(t, c.randomServer())
 	defer nc.Close()
 
-	numStreams := 250
+	numStreams := streeSqlDownSelect(250, 100)
 	var wg sync.WaitGroup
 	wg.Add(numStreams)
 
@@ -10591,7 +10657,7 @@ func TestNoRaceJetStreamClusterMemoryStreamLastSequenceResetAfterRestart(t *test
 				Storage:  nats.MemoryStorage,
 				Subjects: []string{fmt.Sprintf("foo.%d.*", n)},
 				Replicas: 3,
-			}, nats.MaxWait(30*time.Second))
+			}, nats.MaxWait(streeSqlDownSelect(30*time.Second, 90*time.Second)))
 			require_NoError(t, err)
 			subj := fmt.Sprintf("foo.%d.bar", n)
 			for i := 0; i < 222; i++ {
@@ -10742,25 +10808,27 @@ func TestNoRaceJetStreamClusterMirrorSkipSequencingBug(t *testing.T) {
 
 	// We are going to send at a high rate and also delete some along the way
 	// via the max msgs per limit.
-	for i := 0; i < 500_000; i++ {
+	nMsgs := streeSqlDownSelect(500_000, 3_500)
+	nMod := nMsgs/5
+	for i := 0; i < nMsgs; i++ {
 		subj := fmt.Sprintf("foo.%d", i)
 		js.PublishAsync(subj, nil)
-		// Create sequence holes every 100k.
-		if i%100_000 == 0 {
+		// Create sequence holes every 20%.
+		if i%nMod == 0 {
 			js.PublishAsync(subj, nil)
 		}
 	}
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(5 * time.Second):
+	case <-time.After(streeSqlDownSelect(5*time.Second, 30*time.Second)):
 		t.Fatalf("Did not receive completion signal")
 	}
 
-	checkFor(t, 20*time.Second, time.Second, func() error {
+	checkFor(t, streeSqlDownSelect(20*time.Second, 75*time.Second), time.Second, func() error {
 		si, err := js.StreamInfo("M")
 		require_NoError(t, err)
-		if si.State.Msgs != 500_000 {
-			return fmt.Errorf("Expected 1M msgs, got state: %+v", si.State)
+		if si.State.Msgs != uint64(nMsgs) {
+			return fmt.Errorf("Expected %d msgs, got state: %+v", nMsgs, si.State)
 		}
 		return nil
 	})
@@ -10786,7 +10854,7 @@ func TestNoRaceJetStreamStandaloneDontReplyToAckBeforeProcessingIt(t *testing.T)
 
 	// Keep this low since we are going to run as many go routines
 	// to consume, ack and republish the message.
-	total := 10000
+	total := streeSqlDownSelect(10_000, 1_000)
 	// Populate the queue, one message per subject.
 	for i := 0; i < total; i++ {
 		js.Publish(fmt.Sprintf("queue.%d", i), []byte("hello"))

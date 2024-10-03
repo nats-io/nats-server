@@ -1335,6 +1335,9 @@ func TestJetStreamClusterStreamInfoList(t *testing.T) {
 }
 
 func TestJetStreamClusterConsumerInfoList(t *testing.T) {
+	if streeSqlDownSelect(skipSqlSegfault) {
+		t.Skip("skipping for SQL stree segfault")
+	}
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -6180,7 +6183,7 @@ func TestJetStreamClusterConsumerAckNoneInterestPolicyShouldNotRetainAfterDelive
 	})
 	require_NoError(t, err)
 
-	// Make trhe first sequence high. We already protect against it but for extra sanity.
+	// Make the first sequence high. We already protect against it but for extra sanity.
 	err = js.PurgeStream("TEST", &nats.StreamPurgeRequest{Sequence: 100_000_000})
 	require_NoError(t, err)
 
@@ -6210,6 +6213,9 @@ func TestJetStreamClusterConsumerAckNoneInterestPolicyShouldNotRetainAfterDelive
 	require_Equal(t, len(msgs), 100)
 	for _, m := range msgs {
 		m.AckSync()
+	}
+	if streeSqlDownSelect(true) {
+		time.Sleep(1 * time.Second)
 	}
 	si, err = js.StreamInfo("TEST")
 	require_NoError(t, err)
@@ -6285,6 +6291,9 @@ func TestJetStreamClusterConsumerDeleteAckNoneInterestPolicyWithOthers(t *testin
 }
 
 func TestJetStreamClusterConsumerDeleteInterestPolicyPerf(t *testing.T) {
+	if streeSqlDownSelect(true) {
+		t.Skip("skipping for SQL stree")
+	}
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 

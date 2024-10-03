@@ -1180,7 +1180,7 @@ func jsClientConnect(t testing.TB, s *Server, opts ...nats.Option) (*nats.Conn, 
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
-	js, err := nc.JetStream(nats.MaxWait(10 * time.Second))
+	js, err := nc.JetStream(nats.MaxWait(streeSqlDownSelect(10 * time.Second, 30 * time.Second)))
 	if err != nil {
 		t.Fatalf("Unexpected error getting JetStream context: %v", err)
 	}
@@ -1362,9 +1362,13 @@ func (c *cluster) streamLeader(account, stream string) *Server {
 	return nil
 }
 
-func (c *cluster) waitOnStreamCurrent(s *Server, account, stream string) {
+func (c *cluster) waitOnStreamCurrent(s *Server, account, stream string, howLong ...time.Duration) {
 	c.t.Helper()
-	expires := time.Now().Add(30 * time.Second)
+	dt := 30 * time.Second
+	if len(howLong) > 0 && howLong[0] != 0 {
+		dt = howLong[0]
+	}
+	expires := time.Now().Add(dt)
 	for time.Now().Before(expires) {
 		if s.JetStreamIsStreamCurrent(account, stream) {
 			time.Sleep(100 * time.Millisecond)

@@ -4,8 +4,22 @@ import (
 	"reflect"
 	"unsafe"
 
-        "zombiezen.com/go/sqlite"
+        //"zombiezen.com/go/sqlite"
 )
+
+func StringToBytes(s string) (b []byte) {
+	if n := len(s); n > 0 {
+		b = unsafe.Slice(unsafe.StringData(s), n)
+	}
+	return
+}
+
+func BytesToString(b []byte) (s string) {
+	if n := len(b); n > 0 {
+		s = unsafe.String(unsafe.SliceData(b), n)
+	}
+	return
+}
 
 func scalarSqlType(k reflect.Kind) string {
 	switch k {
@@ -48,13 +62,13 @@ func (t *SubjectTree[T]) setColParams() {
 	t.conn.vElemSize = -1
 }
 
-func colBytes(stmt *sqlite.Stmt, k int) []byte {
+func colBytes(stmt *prepStmt, k int) []byte {
 	buf := make([]byte, stmt.ColumnLen(k))
 	stmt.ColumnBytes(k, buf)
 	return buf
 }
 
-func (t *SubjectTree[T]) colToSlice(stmt *sqlite.Stmt, k int) *T {
+func (t *SubjectTree[T]) colToSlice(stmt *prepStmt, k int) *T {
 	buf := colBytes(stmt, k)
 	ptr := unsafe.Pointer(&buf[0])
 	nelem := len(buf)/t.conn.vElemSize
@@ -92,7 +106,7 @@ func (t *SubjectTree[T]) colToSlice(stmt *sqlite.Stmt, k int) *T {
 	return &v
 }
 
-func (t *SubjectTree[T]) colToValue(stmt *sqlite.Stmt, k int) *T {
+func (t *SubjectTree[T]) colToValue(stmt *prepStmt, k int) *T {
 	if t.conn.vElemGob != nil {
 		return t.conn.vElemGob.Decode(colBytes(stmt, k))
 	} else if t.conn.vElemSize > 0 {
@@ -136,13 +150,13 @@ func (t *SubjectTree[T]) colToValue(stmt *sqlite.Stmt, k int) *T {
 	return &r
 }
 
-func (t *SubjectTree[T]) bindSlice(stmt *sqlite.Stmt, k int, value T) {
+func (t *SubjectTree[T]) bindSlice(stmt *prepStmt, k int, value T) {
 	v := reflect.ValueOf(value)
 	ptr := (*byte)(v.UnsafePointer())
 	stmt.BindBytes(k, unsafe.Slice(ptr, v.Len()*t.conn.vElemSize))
 }
 
-func (t *SubjectTree[T]) bindValue(stmt *sqlite.Stmt, k int, value T) {
+func (t *SubjectTree[T]) bindValue(stmt *prepStmt, k int, value T) {
 	if t.conn.vElemGob != nil {
 		stmt.BindBytes(k, t.conn.vElemGob.Encode(&value))
 		return

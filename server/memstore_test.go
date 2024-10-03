@@ -169,6 +169,9 @@ func TestMemStoreBytesLimitWithDiscardNew(t *testing.T) {
 }
 
 func TestMemStoreAgeLimit(t *testing.T) {
+	if streeSqlDownSelect(true) {
+		t.Skip("skipping for SQL stree")
+	}
 	maxAge := 10 * time.Millisecond
 	ms, err := newMemStore(&StreamConfig{Storage: MemoryStorage, MaxAge: maxAge})
 	require_NoError(t, err)

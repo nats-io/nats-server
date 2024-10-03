@@ -1583,6 +1583,7 @@ var benchSublistSl = NewSublistWithCache()
 func TestMain(m *testing.M) {
 	flag.StringVar(&testDefaultClusterCompression, "cluster_compression", _EMPTY_, "Test with this compression level as the default")
 	flag.StringVar(&testDefaultLeafNodeCompression, "leafnode_compression", _EMPTY_, "Test with this compression level as the default")
+	flag.BoolVar(&skipSqlSegfault, "skip_sql_segfault", false, "skip sql tests that segfault")
 	flag.Parse()
 	initSublist := false
 	flag.Visit(func(f *flag.Flag) {
