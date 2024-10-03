@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"strconv"
 	"strings"
 
@@ -25,6 +26,7 @@ type void = struct{}
 
 type sqlConn[T any] struct {
 	*sqlite.Conn
+	dbFile     string
 	strCollate map[int]int
 	tabSubj    map[int]void
 	maxTabSubj int
@@ -199,11 +201,18 @@ func (t *SubjectTree[T]) sqlInit(cfg *Config) {
 	}
 	var err error
 	var dbConn *sqlite.Conn
+	var dbFile string
 	if cfg == nil || cfg.DBPath == "" {
-		dbConn, err = sqlite.OpenConn("MEMORY",
+		dbFile = "MEMORY"
+		dbConn, err = sqlite.OpenConn(dbFile,
 			sqlite.OpenReadWrite|sqlite.OpenCreate|sqlite.OpenMemory)
 	} else {
-		dbConn, err = sqlite.OpenConn(cfg.DBPath)
+		dbFile = cfg.DBPath
+		if strings.Contains(cfg.DBPath, "*") {
+			instId := fmt.Sprintf("%016x", rand.Uint64())
+			dbFile = strings.Replace(cfg.DBPath, "*", instId, 1)
+		}
+		dbConn, err = sqlite.OpenConn(dbFile)
 	}
 	if err == nil {
 		err = sqlitex.ExecuteTransient(dbConn, createStrings, nil)
