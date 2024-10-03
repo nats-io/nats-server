@@ -3764,7 +3764,7 @@ func TestJetStreamClusterPeerExclusionTag(t *testing.T) {
 	for i := 0; i < 2 && !cmp; i++ {
 		m, err := sub.NextMsg(time.Second)
 		require_NoError(t, err)
-		cmp = strings.Contains(string(m.Data), `"tags":["server:s-1","intersect"]`)
+		cmp = strings.Contains(string(m.Data), `"tags":["server:S-1","intersect"]`)
 	}
 	require_True(t, cmp)
 
