@@ -24365,3 +24365,25 @@ func TestJetStreamStreamConfigClone(t *testing.T) {
 	clone.Metadata["key"] = "value"
 	require_False(t, reflect.DeepEqual(cfg.Metadata, clone.Metadata))
 }
+
+func TestIsJSON(t *testing.T) {
+	tests := []struct {
+		name  string
+		data  []byte
+		valid bool
+	}{
+		{"empty", []byte{}, false},
+		{"empty_object", []byte("{}"), true},
+		{"empty object, not trimmed", []byte("\t\n\r{ }"), true},
+		{"empty_array", []byte("[]"), true},
+		{"empty array, not trimmed", []byte("\t\n\r[ ]"), true},
+		{"empty_string", []byte("\"\""), false},
+		{"invalid JSON", []byte("invalid"), false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			require_Equal(t, isJSON(test.data), test.valid)
+		})
+	}
+}
