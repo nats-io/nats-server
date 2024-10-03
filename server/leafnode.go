@@ -591,10 +591,7 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 
 func (cfg *leafNodeCfg) cancelMigrateTimer() {
 	cfg.Lock()
-	if cfg.jsMigrateTimer != nil {
-		cfg.jsMigrateTimer.Stop()
-		cfg.jsMigrateTimer = nil
-	}
+	stopAndClearTimer(&cfg.jsMigrateTimer)
 	cfg.Unlock()
 }
 
