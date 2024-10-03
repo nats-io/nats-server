@@ -3907,7 +3907,7 @@ func TestJetStreamClusterAPILimitAdvisory(t *testing.T) {
 	require_Equal(t, advisory.Dropped, queueLimit) // Configured queue limit.
 }
 
-func TestJetStreamPendingRequestsInJsz(t *testing.T) {
+func TestJetStreamClusterPendingRequestsInJsz(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -3965,7 +3965,7 @@ func TestJetStreamPendingRequestsInJsz(t *testing.T) {
 	require_NotEqual(t, m.Stats.JetStream.Meta.Pending, 0)
 }
 
-func TestJetStreamConsumerReplicasAfterScale(t *testing.T) {
+func TestJetStreamClusterConsumerReplicasAfterScale(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R5S", 5)
 	defer c.shutdown()
 

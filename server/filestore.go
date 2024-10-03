@@ -154,8 +154,8 @@ type FileConsumerInfo struct {
 
 // Default file and directory permissions.
 const (
-	defaultDirPerms  = os.FileMode(0750)
-	defaultFilePerms = os.FileMode(0640)
+	defaultDirPerms  = os.FileMode(0700)
+	defaultFilePerms = os.FileMode(0600)
 )
 
 type psi struct {

@@ -330,7 +330,7 @@ func (s *Server) bootstrapRaftNode(cfg *RaftConfig, knownPeers []string, allPeer
 
 	// Check the store directory. If we have a memory based WAL we need to make sure the directory is setup.
 	if stat, err := os.Stat(cfg.Store); os.IsNotExist(err) {
-		if err := os.MkdirAll(cfg.Store, 0750); err != nil {
+		if err := os.MkdirAll(cfg.Store, defaultDirPerms); err != nil {
 			return fmt.Errorf("raft: could not create storage directory - %v", err)
 		}
 	} else if stat == nil || !stat.IsDir() {
@@ -422,7 +422,7 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 	}
 
 	// Make sure that the snapshots directory exists.
-	if err := os.MkdirAll(filepath.Join(n.sd, snapshotsDir), 0750); err != nil {
+	if err := os.MkdirAll(filepath.Join(n.sd, snapshotsDir), defaultDirPerms); err != nil {
 		return nil, fmt.Errorf("could not create snapshots directory - %v", err)
 	}
 
@@ -3358,7 +3358,6 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 
 	// If this term is greater than ours.
 	if ae.term > n.term {
-		n.pterm = ae.pterm
 		n.term = ae.term
 		n.vote = noVote
 		if isNew {
