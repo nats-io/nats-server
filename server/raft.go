@@ -3347,7 +3347,6 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 
 	// If this term is greater than ours.
 	if ae.term > n.term {
-		n.pterm = ae.pterm
 		n.term = ae.term
 		n.vote = noVote
 		if isNew {
