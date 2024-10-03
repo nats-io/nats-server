@@ -15,9 +15,10 @@ package stree
 
 import (
 	"bytes"
+	"os"
 	"slices"
 
-        "zombiezen.com/go/sqlite"
+        //"zombiezen.com/go/sqlite"
         lru "github.com/hashicorp/golang-lru/v2"
 )
 
@@ -51,7 +52,7 @@ type Config struct {
 type SubjectTree[T any] struct {
 	root node
 	size int
-        conn *sqlite.Conn
+        conn *sqlConn[T]
         // FIXME(skaar): the lru impl wants k to be a comparable, so we can't use []byte directly
         // replace?
         cache *lru.Cache[string, []byte]
@@ -61,15 +62,28 @@ type SubjectTree[T any] struct {
 
 // NewSubjectTree creates a new SubjectTree with values T.
 func NewSubjectTree[T any]() *SubjectTree[T] {
+	if dbPath, ok := os.LookupEnv("STREESQLDBPATH"); ok {
+		return NewSqlSubjectTree[T](&Config{
+			DBPath: dbPath,
+		})
+	}
 	return &SubjectTree[T]{}
 }
 
-// NewSquealSubjectTree creates a new SubjectTree with values T.
-func NewSqualSubjectTree[T any](config Config) *SubjectTree[T] {
-        // FIXME(skaar): setup DB and cache - init Serializer
-	return &SubjectTree[T]{}
+// NewSqlSubjectTree creates a new SubjectTree with values T.
+func NewSqlSubjectTree[T any](cfg *Config) *SubjectTree[T] {
+        // FIXME(skaar): setup cache, init Serializer
+	t := &SubjectTree[T]{}
+	t.sqlInit(cfg)
+	return t
 }
 
+func (t *SubjectTree[T]) Close() error {
+	if t == nil || t.conn == nil {
+		return nil
+	}
+	return t.sqlClose()
+}
 
 
 // Size returns the number of elements stored.
@@ -84,6 +98,8 @@ func (t *SubjectTree[T]) Size() int {
 func (t *SubjectTree[T]) Empty() *SubjectTree[T] {
 	if t == nil {
 		return NewSubjectTree[T]()
+	} else if t.conn != nil {
+		t.sqlEmpty()
 	}
 	t.root, t.size = nil, 0
 	return t
@@ -93,6 +109,8 @@ func (t *SubjectTree[T]) Empty() *SubjectTree[T] {
 func (t *SubjectTree[T]) Insert(subject []byte, value T) (*T, bool) {
 	if t == nil {
 		return nil, false
+	} else if t.conn != nil {
+		return t.sqlInsert(subject, value)
 	}
 
 	old, updated := t.insert(&t.root, subject, value, 0)
@@ -106,6 +124,8 @@ func (t *SubjectTree[T]) Insert(subject []byte, value T) (*T, bool) {
 func (t *SubjectTree[T]) Find(subject []byte) (*T, bool) {
 	if t == nil {
 		return nil, false
+	} else if t.conn != nil {
+		return t.sqlFind(subject)
 	}
 
 	var si int
@@ -138,6 +158,8 @@ func (t *SubjectTree[T]) Find(subject []byte) (*T, bool) {
 func (t *SubjectTree[T]) Delete(subject []byte) (*T, bool) {
 	if t == nil {
 		return nil, false
+	} else if t.conn != nil {
+		return t.sqlDelete(subject)
 	}
 
 	val, deleted := t.delete(&t.root, subject, 0)
@@ -149,7 +171,12 @@ func (t *SubjectTree[T]) Delete(subject []byte) (*T, bool) {
 
 // Match will match against a subject that can have wildcards and invoke the callback func for each matched value.
 func (t *SubjectTree[T]) Match(filter []byte, cb func(subject []byte, val *T)) {
-	if t == nil || t.root == nil || len(filter) == 0 || cb == nil {
+	if t == nil || len(filter) == 0 || cb == nil {
+		return
+	} else if t.conn != nil {
+		t.sqlMatch(filter, cb)
+		return
+	} else if t.root == nil {
 		return
 	}
 	// We need to break this up into chunks based on wildcards, either pwc '*' or fwc '>'.
@@ -161,7 +188,12 @@ func (t *SubjectTree[T]) Match(filter []byte, cb func(subject []byte, val *T)) {
 
 // Iter will walk all entries in the SubjectTree lexographically. The callback can return false to terminate the walk.
 func (t *SubjectTree[T]) Iter(cb func(subject []byte, val *T) bool) {
-	if t == nil || t.root == nil {
+	if t == nil {
+		return
+	} else if t.conn != nil {
+		t.sqlIter(cb)
+		return
+	} else if t.root == nil {
 		return
 	}
 	var _pre [256]byte

@@ -14,11 +14,15 @@
 package stree
 
 import (
+	"bytes"
 	crand "crypto/rand"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"math/rand"
+	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -30,6 +34,10 @@ var runResults = flag.Bool("results", false, "Enable Results Tests")
 
 func TestSubjectTreeBasics(t *testing.T) {
 	st := NewSubjectTree[int]()
+	testSubjectTreeBasics(t, st)
+}
+
+func testSubjectTreeBasics(t *testing.T, st *SubjectTree[int]) {
 	require_Equal(t, st.Size(), 0)
 	// Single leaf
 	old, updated := st.Insert(b("foo.bar.baz"), 22)
@@ -212,6 +220,10 @@ func TestSubjectTreeNodeDelete(t *testing.T) {
 
 func TestSubjectTreeNodesAndPaths(t *testing.T) {
 	st := NewSubjectTree[int]()
+	testSubjectTreeNodesAndPaths(t, st)
+}
+
+func testSubjectTreeNodesAndPaths(t *testing.T, st *SubjectTree[int]) {
 	check := func(subj string) {
 		t.Helper()
 		v, found := st.Find(b(subj))
@@ -300,6 +312,10 @@ func match(t *testing.T, st *SubjectTree[int], filter string, expected int) {
 
 func TestSubjectTreeMatchLeafOnly(t *testing.T) {
 	st := NewSubjectTree[int]()
+	testSubjectTreeMatchLeafOnly(t , st)
+}
+
+func testSubjectTreeMatchLeafOnly(t *testing.T, st *SubjectTree[int]) {
 	st.Insert(b("foo.bar.baz.A"), 1)
 
 	// Check all placements of pwc in token space.
@@ -321,6 +337,10 @@ func TestSubjectTreeMatchLeafOnly(t *testing.T) {
 
 func TestSubjectTreeMatchNodes(t *testing.T) {
 	st := NewSubjectTree[int]()
+	testSubjectTreeMatchNodes(t, st)
+}
+
+func testSubjectTreeMatchNodes(t *testing.T, st *SubjectTree[int]) {
 	st.Insert(b("foo.bar.A"), 1)
 	st.Insert(b("foo.bar.B"), 2)
 	st.Insert(b("foo.bar.C"), 3)
@@ -388,6 +408,10 @@ func TestSubjectTreeNoPrefix(t *testing.T) {
 
 func TestSubjectTreePartialTerminalWildcardBugMatch(t *testing.T) {
 	st := NewSubjectTree[int]()
+	testSubjectTreePartialTerminalWildcardBugMatch(t, st)
+}
+
+func testSubjectTreePartialTerminalWildcardBugMatch(t *testing.T, st *SubjectTree[int]) {
 	st.Insert(b("STATE.GLOBAL.CELL1.7PDSGAALXNN000010.PROPERTY-A"), 5)
 	st.Insert(b("STATE.GLOBAL.CELL1.7PDSGAALXNN000010.PROPERTY-B"), 1)
 	st.Insert(b("STATE.GLOBAL.CELL1.7PDSGAALXNN000010.PROPERTY-C"), 2)
@@ -396,6 +420,10 @@ func TestSubjectTreePartialTerminalWildcardBugMatch(t *testing.T) {
 
 func TestSubjectTreeMatchSubjectParam(t *testing.T) {
 	st := NewSubjectTree[int]()
+	testSubjectTreeMatchSubjectParam(t, st)
+}
+
+func testSubjectTreeMatchSubjectParam(t *testing.T, st *SubjectTree[int]) {
 	st.Insert(b("foo.bar.A"), 1)
 	st.Insert(b("foo.bar.B"), 2)
 	st.Insert(b("foo.bar.C"), 3)
@@ -425,6 +453,10 @@ func TestSubjectTreeMatchSubjectParam(t *testing.T) {
 
 func TestSubjectTreeMatchRandomDoublePWC(t *testing.T) {
 	st := NewSubjectTree[int]()
+	testSubjectTreeMatchRandomDoublePWC(t, st)
+}
+
+func testSubjectTreeMatchRandomDoublePWC(t *testing.T, st *SubjectTree[int]) {
 	for i := 1; i <= 10_000; i++ {
 		subj := fmt.Sprintf("foo.%d.%d", rand.Intn(20)+1, i)
 		st.Insert(b(subj), 42)
@@ -464,6 +496,10 @@ func TestSubjectTreeMatchRandomDoublePWC(t *testing.T) {
 
 func TestSubjectTreeIter(t *testing.T) {
 	st := NewSubjectTree[int]()
+	testSubjectTreeIter(t , st)
+}
+
+func testSubjectTreeIter(t *testing.T, st *SubjectTree[int]) {
 	st.Insert(b("foo.bar.A"), 1)
 	st.Insert(b("foo.bar.B"), 2)
 	st.Insert(b("foo.bar.C"), 3)
@@ -516,6 +552,11 @@ func TestSubjectTreeIter(t *testing.T) {
 }
 
 func TestSubjectTreeInsertSamePivotBug(t *testing.T) {
+	st := NewSubjectTree[int]()
+	testSubjectTreeInsertSamePivotBug(t, st)
+}
+
+func testSubjectTreeInsertSamePivotBug(t *testing.T, st *SubjectTree[int]) {
 	testSubjects := [][]byte{
 		[]byte("0d00.2abbb82c1d.6e16.fa7f85470e.3e46"),
 		[]byte("534b12.3486c17249.4dde0666"),
@@ -524,7 +565,6 @@ func TestSubjectTreeInsertSamePivotBug(t *testing.T) {
 		[]byte("5a75047dcb.5548e845b6.76024a34.14d5b3.80c426.51db871c3a"),
 		[]byte("825fa8acfc.5331.00caf8bbbd.107c4b.c291.126d1d010e"),
 	}
-	st := NewSubjectTree[int]()
 	for _, subj := range testSubjects {
 		old, updated := st.Insert(subj, 22)
 		require_True(t, old == nil)
@@ -537,6 +577,10 @@ func TestSubjectTreeInsertSamePivotBug(t *testing.T) {
 
 func TestSubjectTreeMatchTsepSecondThenPartialPartBug(t *testing.T) {
 	st := NewSubjectTree[int]()
+	testSubjectTreeMatchTsepSecondThenPartialPartBug(t, st)
+}
+
+func testSubjectTreeMatchTsepSecondThenPartialPartBug(t *testing.T, st *SubjectTree[int]) {
 	st.Insert(b("foo.xxxxx.foo1234.zz"), 22)
 	st.Insert(b("foo.yyy.foo123.zz"), 22)
 	st.Insert(b("foo.yyybar789.zz"), 22)
@@ -549,6 +593,10 @@ func TestSubjectTreeMatchTsepSecondThenPartialPartBug(t *testing.T) {
 
 func TestSubjectTreeMatchMultipleWildcardBasic(t *testing.T) {
 	st := NewSubjectTree[int]()
+	testSubjectTreeMatchMultipleWildcardBasic(t, st)
+}
+
+func testSubjectTreeMatchMultipleWildcardBasic(t *testing.T, st *SubjectTree[int]) {
 	st.Insert(b("A.B.C.D.0.G.H.I.0"), 22)
 	st.Insert(b("A.B.C.D.1.G.H.I.0"), 22)
 	match(t, st, "A.B.*.D.1.*.*.I.0", 1)
@@ -556,6 +604,10 @@ func TestSubjectTreeMatchMultipleWildcardBasic(t *testing.T) {
 
 func TestSubjectTreeMatchInvalidWildcard(t *testing.T) {
 	st := NewSubjectTree[int]()
+	testSubjectTreeMatchInvalidWildcard(t, st)
+}
+
+func testSubjectTreeMatchInvalidWildcard(t *testing.T, st *SubjectTree[int]) {
 	st.Insert(b("foo.123"), 22)
 	st.Insert(b("one.two.three.four.five"), 22)
 	st.Insert(b("'*.123"), 22)
@@ -575,6 +627,10 @@ func TestSubjectTreeMatchInvalidWildcard(t *testing.T) {
 
 func TestSubjectTreeRandomTrackEntries(t *testing.T) {
 	st := NewSubjectTree[int]()
+	testSubjectTreeRandomTrackEntries(t, st)
+}
+
+func testSubjectTreeRandomTrackEntries(t *testing.T, st *SubjectTree[int]) {
 	smap := make(map[string]struct{}, 1000)
 
 	// Make sure all added items can be found.
@@ -618,6 +674,10 @@ func TestSubjectTreeRandomTrackEntries(t *testing.T) {
 // Needs to be longer then internal node prefix, which currently is 24.
 func TestSubjectTreeLongTokens(t *testing.T) {
 	st := NewSubjectTree[int]()
+	testSubjectTreeLongTokens(t , st)
+}
+
+func testSubjectTreeLongTokens(t *testing.T, st *SubjectTree[int]) {
 	st.Insert(b("a1.aaaaaaaaaaaaaaaaaaaaaa0"), 1)
 	st.Insert(b("a2.0"), 2)
 	st.Insert(b("a1.aaaaaaaaaaaaaaaaaaaaaa1"), 3)
@@ -644,7 +704,10 @@ func TestSubjectTreeMatchAllPerf(t *testing.T) {
 		t.Skip()
 	}
 	st := NewSubjectTree[int]()
+	testSubjectTreeMatchAllPerf(t, st)
+}
 
+func testSubjectTreeMatchAllPerf(t *testing.T, st *SubjectTree[int]) {
 	for i := 0; i < 1_000_000; i++ {
 		subj := fmt.Sprintf("subj.%d.%d", rand.Intn(100)+1, i)
 		st.Insert(b(subj), 22)
@@ -674,7 +737,10 @@ func TestSubjectTreeIterPerf(t *testing.T) {
 		t.Skip()
 	}
 	st := NewSubjectTree[int]()
+	testSubjectTreeIterPerf(t, st)
+}
 
+func testSubjectTreeIterPerf(t *testing.T, st *SubjectTree[int]) {
 	for i := 0; i < 1_000_000; i++ {
 		subj := fmt.Sprintf("subj.%d.%d", rand.Intn(100)+1, i)
 		st.Insert(b(subj), 22)
@@ -773,6 +839,10 @@ func TestSubjectTreeNode48(t *testing.T) {
 
 func TestSubjectTreeMatchNoCallbackDupe(t *testing.T) {
 	st := NewSubjectTree[int]()
+	testSubjectTreeMatchNoCallbackDupe(t, st)
+}
+
+func testSubjectTreeMatchNoCallbackDupe(t *testing.T, st *SubjectTree[int]) {
 	st.Insert(b("foo.bar.A"), 1)
 	st.Insert(b("foo.bar.B"), 1)
 	st.Insert(b("foo.bar.C"), 1)
@@ -803,4 +873,329 @@ func TestSubjectTreeNilNoPanic(t *testing.T) {
 	require_False(t, found)
 	_, found = st.Insert([]byte("foo"), 22)
 	require_False(t, found)
+}
+
+func TestSqlSubjectTreeBasics(t *testing.T) {
+	st := NewSqlSubjectTree[int](nil)
+	testSubjectTreeBasics(t, st)
+}
+
+func TestSqlSubjectTreeNodesAndPaths(t *testing.T) {
+	st := NewSqlSubjectTree[int](nil)
+	testSubjectTreeNodesAndPaths(t, st)
+}
+
+func TestSqlSubjectTreeMatchLeafOnly(t *testing.T) {
+	st := NewSqlSubjectTree[int](nil)
+	testSubjectTreeMatchLeafOnly(t , st)
+}
+
+func TestSqlSubjectTreeMatchNodes(t *testing.T) {
+	st := NewSqlSubjectTree[int](nil)
+	testSubjectTreeMatchNodes(t, st)
+}
+
+func TestSqlSubjectTreePartialTerminalWildcardBugMatch(t *testing.T) {
+	st := NewSqlSubjectTree[int](nil)
+	testSubjectTreePartialTerminalWildcardBugMatch(t, st)
+}
+
+func TestSqlSubjectTreeMatchSubjectParam(t *testing.T) {
+	st := NewSqlSubjectTree[int](nil)
+	testSubjectTreeMatchSubjectParam(t, st)
+}
+
+func TestSqlSubjectTreeMatchRandomDoublePWC(t *testing.T) {
+	st := NewSqlSubjectTree[int](nil)
+	testSubjectTreeMatchRandomDoublePWC(t, st)
+}
+
+func TestSqlSubjectTreeIter(t *testing.T) {
+	st := NewSqlSubjectTree[int](nil)
+	testSubjectTreeIter(t , st)
+}
+
+func TestSqlSubjectTreeInsertSamePivotBug(t *testing.T) {
+	st := NewSqlSubjectTree[int](nil)
+	testSubjectTreeInsertSamePivotBug(t, st)
+}
+
+func TestSqlSubjectTreeMatchTsepSecondThenPartialPartBug(t *testing.T) {
+	st := NewSqlSubjectTree[int](nil)
+	testSubjectTreeMatchTsepSecondThenPartialPartBug(t, st)
+}
+
+func TestSqlSubjectTreeMatchMultipleWildcardBasic(t *testing.T) {
+	st := NewSqlSubjectTree[int](nil)
+	testSubjectTreeMatchMultipleWildcardBasic(t, st)
+}
+
+func TestSqlSubjectTreeMatchInvalidWildcard(t *testing.T) {
+	st := NewSqlSubjectTree[int](nil)
+	testSubjectTreeMatchInvalidWildcard(t, st)
+}
+
+func TestSqlSubjectTreeRandomTrackEntries(t *testing.T) {
+	st := NewSqlSubjectTree[int](nil)
+	testSubjectTreeRandomTrackEntries(t, st)
+}
+
+func TestSqlSubjectTreeLongTokens(t *testing.T) {
+	st := NewSqlSubjectTree[int](nil)
+	testSubjectTreeLongTokens(t , st)
+}
+
+func TestSqlSubjectTreeMatchAllPerf(t *testing.T) {
+	if !*runResults {
+		t.Skip()
+	}
+	st := NewSqlSubjectTree[int](nil)
+	testSubjectTreeMatchAllPerf(t, st)
+}
+
+func TestSqlSubjectTreeIterPerf(t *testing.T) {
+	if !*runResults {
+		t.Skip()
+	}
+	st := NewSqlSubjectTree[int](nil)
+	testSubjectTreeIterPerf(t, st)
+}
+
+func TestSqlSubjectTreeMatchNoCallbackDupe(t *testing.T) {
+	st := NewSqlSubjectTree[int](nil)
+	testSubjectTreeMatchNoCallbackDupe(t, st)
+}
+
+var strChoice []byte
+
+func init() {
+	seq := func(m, n byte) {
+		for m <= n {
+			strChoice = append(strChoice, m)
+			m++
+		}
+	}
+	// no riff-raff
+	seq('a', 'z')
+	seq('A', 'Z')
+	seq('-', '-')
+	seq('0', '9')
+}
+
+func randStr(m, n int) string {
+	if n > m {
+		m += rand.Intn(n-m)
+	}
+	b := make([]byte, 1, m)
+	b[0] = strChoice[rand.Intn(len(strChoice) - 11)]
+	for range m-1 {
+		b = append(b, strChoice[rand.Intn(len(strChoice))])
+	}
+	return string(b)
+}
+
+func print(format string, args ...any) {
+	if testing.Verbose() {
+		fmt.Printf(format, args...)
+	}
+}
+
+func Sl[T any](e ...T) []T {
+	return e
+}
+
+func TestSqlSubjectTree(t *testing.T) {
+	dbPath := "stree-test.db"
+	for _, sfx := range Sl("", "-wal", "-shm") {
+		if err := os.Remove(dbPath+sfx); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+	}
+	st := NewSqlSubjectTree[string](&Config{
+		DBPath: dbPath,
+	})
+	var _idx [16]int
+	var idx []int
+	for op := range []int{opStore, opFind} {
+		idx = st.subjectToIdx(op, b("foo"), _idx[:0])
+		require_True(t, slices.Equal(idx, Sl(1)))
+		idx = st.subjectToIdx(op, b("foobar.foobat"), _idx[:0])
+		require_True(t, slices.Equal(idx, Sl(2, 3)))
+		idx = st.subjectToIdx(op, b("foo.plugh.foobat.xyzzy"), _idx[:0])
+		require_True(t, slices.Equal(idx, Sl(1, 4, 3, 5)))
+	}
+	idx = st.subjectToIdx(opFind, b("foobar.missing.foo"), _idx[:0])
+	require_True(t, idx == nil)
+	require_True(t, slices.Equal(_idx[:3], Sl(2, -1, 1)))
+
+	var _tokens [16]string
+	var tokens []string
+	tokens = st.sqlIdxToStr(Sl(4, 99, 1), _tokens[:0])
+	require_True(t, slices.Equal(tokens, Sl("plugh", "", "foo")))
+
+	idx = st.subjectToIdx(opMatch, b("xyzzy.*.foo.plugh.>"), _idx[:0])
+	print("idx=%v\n", idx)
+	require_True(t, slices.Equal(idx, Sl(5, 0, 1, 4, 0)))
+	idx = st.subjectToIdx(opMatch, b("xyzzy.*.foo.qwerty.>"), _idx[:0])
+	print("idx=%v\n", idx)
+	require_True(t, idx == nil)
+
+	subj := b("xyzzy.tora.tora.tora")
+	idx = st.subjectToIdx(opStore, subj, _idx[:0])
+	require_True(t, slices.Equal(idx, Sl(5, 6, 6, 6)))
+	print("%s -> idx=%v\n", string(subj), idx)
+
+	for k := range 6 {
+		s := querySubjectFull(k+1)
+		print("%s\n", s)
+	}
+	for k := range 6 {
+		s := deleteSubject(k+1)
+		print("%s\n", s)
+	}
+	for k := range 6 {
+		s := querySubjectWild(k+1)
+		print("%s\n", s)
+	}
+	for k := range 6 {
+		s := insertSubject(k+1)
+		print("%s\n", s)
+	}
+	for k := range 6 {
+		s := st._ensureSubject(k+1)
+		print("%s\n", s)
+	}
+
+	subj = b("plugh.foobar.x123")
+	old, deleted := st.Delete(subj)
+	require_True(t, old == nil)
+	require_False(t, deleted)
+
+	old, updated := st.Insert(subj, "rhubarb")
+	require_True(t, old == nil)
+	require_False(t, updated)
+
+	old, deleted = st.Delete(subj)
+	require_True(t, old != nil && *old == "rhubarb")
+	require_True(t, deleted)
+
+	subjs := [][]byte{subj, b("plugh.foo.x123"), b("plugh.foobat.x123")}
+	vals := []string{"rhubarb", "mumbo-jumbo", "hoopla"}
+	svmap := make(map[string]string)
+	for k, subj := range subjs {
+		svmap[string(subj)] = vals[k]
+		old, updated := st.Insert(subj, vals[k])
+		require_True(t, old == nil)
+		require_False(t, updated)
+	}
+	for k, subj := range subjs {
+		pV, found := st.Find(subj)
+		require_True(t, pV != nil && *pV == vals[k])
+		require_True(t, found)
+	}
+
+	count := 0
+	st.Match(b("plugh.*.x123"), func(subject []byte, val *string) {
+		count++
+		print("%s -> %s\n", string(subject), *val)
+		require_True(t, svmap[string(subject)] == *val)
+	})
+	require_Equal(t, count, len(svmap))
+
+	count = 0
+	st.Match(b("plugh.>"), func(subject []byte, val *string) {
+		count++
+		require_True(t, svmap[string(subject)] == *val)
+	})
+	require_Equal(t, count, len(svmap))
+
+	count = 0
+	st.Match(b("*.*.x123"), func(subject []byte, val *string) {
+		count++
+		require_True(t, svmap[string(subject)] == *val)
+	})
+	require_Equal(t, count, len(svmap))
+
+	print("%s\n", st.sqlIterQuery())
+	st.Iter(func(subject []byte, val *string) bool {
+		print("%s -> %s\n", string(subject), *val)
+		return true
+	})
+
+	st.Empty()
+	for range 20 {
+		var sb strings.Builder
+		pfx := ""
+		for range rand.Intn(6)+1 {
+			sb.WriteString(pfx)
+			pfx = "."
+			sb.WriteString(randStr(1, 8))
+		}
+		subj := sb.String()
+		val := randStr(17, 23)
+		//print("%s : %s\n", subj, val)
+		old, updated := st.Insert(b(subj), val)
+		require_True(t, old == nil)
+		require_False(t, updated)
+	}
+	st.Iter(func(subject []byte, val *string) bool {
+		print("%s -> %s\n", string(subject), *val)
+		return true
+	})
+}
+
+type GobSmack struct {
+	Index   int
+	Notes   string
+	Payload []byte
+}
+
+func (gb *GobSmack) Equal(other *GobSmack) bool {
+	return gb.Index == other.Index &&
+		gb.Notes == other.Notes &&
+		bytes.Equal(gb.Payload, other.Payload)
+}
+
+func TestSqlSubjectTreeGob(t *testing.T) {
+	dbPath := "stree-gob-test.db"
+	for _, sfx := range Sl("", "-wal", "-shm") {
+		if err := os.Remove(dbPath+sfx); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+	}
+	st := NewSqlSubjectTree[GobSmack](&Config{
+		DBPath: dbPath,
+	})
+	print("len(desc) = %d\n", len(st.conn.vElemGob.Desc()))
+	print("desc = % 02x\n", st.conn.vElemGob.Desc())
+
+	datum := GobSmack{
+		Index:   137,
+		Notes:   "almost 1/\u03b1",
+		Payload: b("https://physics.nist.gov/cuu/Constants/alpha.html"),
+	}
+	subj := b("consts.alpha")
+	old, updated := st.Insert(subj, datum)
+	require_True(t, old == nil)
+	require_False(t, updated)
+
+	pV, found := st.Find(subj)
+	require_True(t, pV != nil && datum.Equal(pV))
+	require_True(t, found)
+
+	err := st.Close()
+	require_True(t, err == nil)
+
+	st = NewSqlSubjectTree[GobSmack](&Config{
+		DBPath: dbPath,
+	})
+	print("read: len(desc) = %d\n", len(st.conn.vElemGob.Desc()))
+	print("read: desc = % 02x\n", st.conn.vElemGob.Desc())
+
+	pV, found = st.Find(subj)
+	require_True(t, pV != nil && datum.Equal(pV))
+	require_True(t, found)
+
+	err = st.Close()
+	require_True(t, err == nil)
 }

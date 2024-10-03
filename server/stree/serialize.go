@@ -10,25 +10,25 @@ import (
 )
 
 type Serializer interface {
-	Marshal(v interface{}) ([]byte, error)
-	Unmarshal(data []byte, v interface{}) error
+	Marshal(v any) ([]byte, error)
+	Unmarshal(data []byte, v any) error
 }
 
 // JSONSerializer implements Serializer using JSON.
 type JSONSerializer struct{}
 
-func (s JSONSerializer) Marshal(v interface{}) ([]byte, error) {
+func (s JSONSerializer) Marshal(v any) ([]byte, error) {
 	return json.Marshal(v)
 }
 
-func (s JSONSerializer) Unmarshal(data []byte, v interface{}) error {
+func (s JSONSerializer) Unmarshal(data []byte, v any) error {
 	return json.Unmarshal(data, v)
 }
 
 // ProtobufSerializer implements Serializer using Protocol Buffers.
 type ProtobufSerializer struct{}
 
-func (s ProtobufSerializer) Marshal(v interface{}) ([]byte, error) {
+func (s ProtobufSerializer) Marshal(v any) ([]byte, error) {
 	msg, ok := v.(proto.Message)
 	if !ok {
 		return nil, fmt.Errorf("value is not a proto.Message")
@@ -40,7 +40,7 @@ func (s ProtobufSerializer) Marshal(v interface{}) ([]byte, error) {
 	return proto.Marshal(anyValue)
 }
 
-func (s ProtobufSerializer) Unmarshal(data []byte, v interface{}) error {
+func (s ProtobufSerializer) Unmarshal(data []byte, v any) error {
 	msg, ok := v.(proto.Message)
 	if !ok {
 		return fmt.Errorf("value is not a proto.Message")
@@ -55,7 +55,7 @@ func (s ProtobufSerializer) Unmarshal(data []byte, v interface{}) error {
 // CapnpSerializer implements Serializer using Cap'n Proto.
 //type CapnpSerializer struct{}
 //
-//func (s CapnpSerializer) Marshal(v interface{}) ([]byte, error) {
+//func (s CapnpSerializer) Marshal(v any) ([]byte, error) {
 //	msg, ok := v.(capnp.Struct)
 //	if !ok {
 //		return nil, fmt.Errorf("value is not a capnp.Struct")
@@ -63,7 +63,7 @@ func (s ProtobufSerializer) Unmarshal(data []byte, v interface{}) error {
 //	return msg.Marshal()
 //}
 //
-//func (s CapnpSerializer) Unmarshal(data []byte, v interface{}) error {
+//func (s CapnpSerializer) Unmarshal(data []byte, v any) error {
 //	msg, ok := v.(*capnp.Message)
 //	if !ok {
 //		return fmt.Errorf("value is not a *capnp.Message")
