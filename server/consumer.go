@@ -3660,8 +3660,14 @@ func (o *consumer) processWaiting(eos bool) (int, int, int, time.Time) {
 
 	var pre *waitingRequest
 	for wr := wq.head; wr != nil; {
+		if (eos && wr.noWait && wr.d > 0) {
+			hdr := fmt.Appendf(nil, "NATS/1.0 404 No Messages\r\n%s: %d\r\n%s: %d\r\n\r\n", JSPullRequestPendingMsgs, wr.n, JSPullRequestPendingBytes, wr.b)
+			o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+			wr = remove(pre, wr)
+			continue
+		}
 		// Check expiration.
-		if (eos && wr.noWait && wr.d > 0) || (!wr.expires.IsZero() && now.After(wr.expires)) {
+		if (!wr.expires.IsZero() && now.After(wr.expires)) {
 			hdr := fmt.Appendf(nil, "NATS/1.0 408 Request Timeout\r\n%s: %d\r\n%s: %d\r\n\r\n", JSPullRequestPendingMsgs, wr.n, JSPullRequestPendingBytes, wr.b)
 			o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 			wr = remove(pre, wr)
