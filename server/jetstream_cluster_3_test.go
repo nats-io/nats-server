@@ -1600,7 +1600,7 @@ func TestJetStreamClusterParallelConsumerCreation(t *testing.T) {
 }
 
 func TestJetStreamClusterGhostEphemeralsAfterRestart(t *testing.T) {
-	consumerNotActiveStartInterval = time.Second * 5
+	consumerNotActiveStartInterval = time.Second
 	defer func() {
 		consumerNotActiveStartInterval = defaultConsumerNotActiveStartInterval
 	}()
