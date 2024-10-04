@@ -6577,7 +6577,7 @@ func TestNoRaceJetStreamConsumerCreateTimeNumPending(t *testing.T) {
 }
 
 func TestNoRaceJetStreamClusterGhostConsumers(t *testing.T) {
-	consumerNotActiveStartInterval = time.Second * 5
+	consumerNotActiveStartInterval = time.Second
 	defer func() {
 		consumerNotActiveStartInterval = defaultConsumerNotActiveStartInterval
 	}()
