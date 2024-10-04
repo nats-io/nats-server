@@ -1202,10 +1202,7 @@ func (mb *msgBlock) convertCipher() error {
 			return err
 		}
 		mb.bek.XORKeyStream(buf, buf)
-		<-dios
-		err = os.WriteFile(mb.mfn, buf, defaultFilePerms)
-		dios <- struct{}{}
-		if err != nil {
+		if err = fs.writeFileWithOptionalSync(mb.mfn, buf, defaultFilePerms); err != nil {
 			return err
 		}
 		return nil
@@ -1230,10 +1227,7 @@ func (mb *msgBlock) convertToEncrypted() error {
 	// Undo cache from above for later.
 	mb.cache = nil
 	mb.bek.XORKeyStream(buf, buf)
-	<-dios
-	err = os.WriteFile(mb.mfn, buf, defaultFilePerms)
-	dios <- struct{}{}
-	if err != nil {
+	if err = mb.fs.writeFileWithOptionalSync(mb.mfn, buf, defaultFilePerms); err != nil {
 		return err
 	}
 	return nil
@@ -4212,10 +4206,7 @@ func (mb *msgBlock) compact() {
 
 	// We will write to a new file and mv/rename it in case of failure.
 	mfn := filepath.Join(mb.fs.fcfg.StoreDir, msgDir, fmt.Sprintf(newScan, mb.index))
-	<-dios
-	err := os.WriteFile(mfn, nbuf, defaultFilePerms)
-	dios <- struct{}{}
-	if err != nil {
+	if err := mb.fs.writeFileWithOptionalSync(mfn, nbuf, defaultFilePerms); err != nil {
 		os.Remove(mfn)
 		return
 	}
@@ -7184,10 +7175,7 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 			if nbuf, err = smb.cmp.Compress(nbuf); err != nil {
 				goto SKIP
 			}
-			<-dios
-			err = os.WriteFile(smb.mfn, nbuf, defaultFilePerms)
-			dios <- struct{}{}
-			if err != nil {
+			if err = smb.fs.writeFileWithOptionalSync(smb.mfn, nbuf, defaultFilePerms); err != nil {
 				goto SKIP
 			}
 			// Make sure to remove fss state.
@@ -8105,10 +8093,7 @@ func (fs *fileStore) _writeFullState(force bool) error {
 	}
 
 	// Write our update index.db
-	// Protect with dios.
-	<-dios
-	err := os.WriteFile(fn, buf, defaultFilePerms)
-	dios <- struct{}{}
+	err := fs.writeFileWithOptionalSync(fn, buf, defaultFilePerms)
 
 	// Update dirty if successful.
 	if err == nil {
