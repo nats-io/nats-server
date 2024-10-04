@@ -24365,3 +24365,33 @@ func TestJetStreamStreamConfigClone(t *testing.T) {
 	clone.Metadata["key"] = "value"
 	require_False(t, reflect.DeepEqual(cfg.Metadata, clone.Metadata))
 }
+
+func TestIsJSONObjectOrArray(t *testing.T) {
+	tests := []struct {
+		name  string
+		data  []byte
+		valid bool
+	}{
+		{"empty", []byte{}, false},
+		{"empty_object", []byte("{}"), true},
+		{"empty object, not trimmed", []byte("\t\n\r{ }"), true},
+		{"empty_array", []byte("[]"), true},
+		{"empty array, not trimmed", []byte("\t\n\r[ ]"), true},
+		// This is a valid JSON, but it's not a JSON object or array.
+		{"empty_string", []byte("\"\""), false},
+		{"whitespace_only", []byte("   "), false},
+		{"object_with_whitespace", []byte("{   }"), true},
+		{"array_with_whitespace", []byte("[   ]"), true},
+		{"string_with_whitespace", []byte("   \"text\""), false},
+		{"number", []byte("123"), false},
+		{"boolean_true", []byte("true"), false},
+		{"boolean_false", []byte("false"), false},
+		{"null_value", []byte("null"), false}, {"invalid JSON", []byte("invalid"), false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			require_Equal(t, isJSONObjectOrArray(test.data), test.valid)
+		})
+	}
+}
