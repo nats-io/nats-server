@@ -3905,6 +3905,10 @@ func (c *client) selectMappedSubject() bool {
 	return changed
 }
 
+// clientNRGPrefix is used in processInboundClientMsg to detect if publishes
+// are being made from normal clients to NRG subjects.
+var clientNRGPrefix = []byte("$NRG.")
+
 // processInboundClientMsg is called to process an inbound msg from a client.
 // Return if the message was delivered, and if the message was not delivered
 // due to a permission issue.
@@ -3936,6 +3940,13 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 		return false, true
 	}
 	c.mu.Unlock()
+
+	// Check if the client is trying to publish to reserved NRG subjects.
+	// Doesn't apply to NRGs themselves as they use SYSTEM-kind clients instead.
+	if c.kind == CLIENT && bytes.HasPrefix(c.pa.subject, clientNRGPrefix) && acc != c.srv.SystemAccount() {
+		c.pubPermissionViolation(c.pa.subject)
+		return false, true
+	}
 
 	// Now check for reserved replies. These are used for service imports.
 	if c.kind == CLIENT && len(c.pa.reply) > 0 && isReservedReply(c.pa.reply) {
