@@ -494,7 +494,7 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 
 	opts := s.getOpts()
 	reconnectDelay := opts.LeafNode.ReconnectInterval
-	s.mu.Lock()
+	s.mu.RLock()
 	dialTimeout := s.leafNodeOpts.dialTimeout
 	resolver := s.leafNodeOpts.resolver
 	var isSysAcc bool
@@ -502,7 +502,7 @@ func (s *Server) connectToRemoteLeafNode(remote *leafNodeCfg, firstConnect bool)
 		isSysAcc = remote.LocalAccount == s.sys.account.Name
 	}
 	jetstreamMigrateDelay := remote.JetStreamClusterMigrateDelay
-	s.mu.Unlock()
+	s.mu.RUnlock()
 
 	// If we are sharing a system account and we are not standalone delay to gather some info prior.
 	if firstConnect && isSysAcc && !s.standAloneMode() {

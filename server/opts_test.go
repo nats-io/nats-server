@@ -2556,8 +2556,14 @@ func TestParsingLeafNodeRemotes(t *testing.T) {
 					account: bar // Local Account to bind to..
 					credentials: "./my.creds"
 					js_cluster_migrate: {
-						delay: 30s
+						leader_migrate_delay: 30s
 					}
+				},
+				{
+					url: nats-leaf://127.0.0.1:2222
+					account: baz // Local Account to bind to..
+					credentials: "./my.creds"
+					js_cluster_migrate: false
 				}
 			]
 		}
@@ -2567,7 +2573,7 @@ func TestParsingLeafNodeRemotes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Error processing file: %v", err)
 		}
-		if len(opts.LeafNode.Remotes) != 2 {
+		if len(opts.LeafNode.Remotes) != 3 {
 			t.Fatalf("Expected 2 remote, got %d", len(opts.LeafNode.Remotes))
 		}
 		u, _ := url.Parse("nats-leaf://127.0.0.1:2222")
@@ -2584,6 +2590,12 @@ func TestParsingLeafNodeRemotes(t *testing.T) {
 				Credentials:                  "./my.creds",
 				JetStreamClusterMigrate:      true,
 				JetStreamClusterMigrateDelay: 30 * time.Second,
+			},
+			{
+				URLs:                    []*url.URL{u},
+				LocalAccount:            "baz",
+				Credentials:             "./my.creds",
+				JetStreamClusterMigrate: false,
 			},
 		}
 		if !reflect.DeepEqual(opts.LeafNode.Remotes, expected) {

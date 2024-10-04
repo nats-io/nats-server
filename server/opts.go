@@ -2749,17 +2749,26 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 			case "ws_no_masking", "websocket_no_masking":
 				remote.Websocket.NoMasking = v.(bool)
 			case "jetstream_cluster_migrate", "js_cluster_migrate":
-				remote.JetStreamClusterMigrate = true
-				migrateConfig, ok := v.(map[string]any)
-				if !ok {
-					continue
-				}
-				val, ok := migrateConfig["delay"]
-				tk, delay := unwrapValue(val, &tk)
-				if ok {
-					remote.JetStreamClusterMigrateDelay = parseDuration("delay", tk, delay, errors, warnings)
-				}
+				var lt token
 
+				tk, v := unwrapValue(v, &lt)
+				switch vv := v.(type) {
+				case bool:
+					remote.JetStreamClusterMigrate = vv
+				case map[string]any:
+					remote.JetStreamClusterMigrate = true
+					migrateConfig, ok := v.(map[string]any)
+					if !ok {
+						continue
+					}
+					val, ok := migrateConfig["leader_migrate_delay"]
+					tk, delay := unwrapValue(val, &tk)
+					if ok {
+						remote.JetStreamClusterMigrateDelay = parseDuration("leader_migrate_delay", tk, delay, errors, warnings)
+					}
+				default:
+					*errors = append(*errors, &configErr{tk, fmt.Sprintf("Expected boolean or map for jetstream_cluster_migrate, got %T", v)})
+				}
 			case "compression":
 				if err := parseCompression(&remote.Compression, CompressionS2Auto, tk, k, v); err != nil {
 					*errors = append(*errors, err)
