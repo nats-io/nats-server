@@ -443,6 +443,13 @@ func TestNRGStepDownOnSameTermDoesntClearVote(t *testing.T) {
 }
 
 func TestNRGUnsuccessfulVoteRequestDoesntResetElectionTimer(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+	c.waitOnLeader()
+
+	nc, _ := jsClientConnect(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
+	defer nc.Close()
+
 	// This test relies on nodes not hitting their election timer too often,
 	// otherwise the step later where we capture the election time before and
 	// after the failed vote request will flake.
@@ -451,13 +458,6 @@ func TestNRGUnsuccessfulVoteRequestDoesntResetElectionTimer(t *testing.T) {
 	defer func() {
 		minElectionTimeout, maxElectionTimeout, hbInterval = origMinTimeout, origMaxTimeout, origHBInterval
 	}()
-
-	c := createJetStreamClusterExplicit(t, "R3S", 3)
-	defer c.shutdown()
-	c.waitOnLeader()
-
-	nc, _ := jsClientConnect(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
-	defer nc.Close()
 
 	rg := c.createRaftGroup("TEST", 3, newStateAdder)
 
