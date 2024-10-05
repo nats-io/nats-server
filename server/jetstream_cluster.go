@@ -4842,7 +4842,11 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			// Process the change.
 			if err := js.processConsumerLeaderChange(o, isLeader); err == nil && isLeader {
 				// Check our state if we are under an interest based stream.
-				o.checkStateForInterestStream()
+				if mset := o.getStream(); mset != nil {
+					var ss StreamState
+					mset.store.FastState(&ss)
+					o.checkStateForInterestStream(&ss)
+				}
 				// Do a snapshot.
 				doSnapshot(true)
 				// Synchronize followers to our state. Only send out if we have state and nothing pending.
@@ -4969,21 +4973,20 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 					}
 				}
 				// Check our interest state if applicable.
-				if err := o.checkStateForInterestStream(); err == errAckFloorHigherThanLastSeq {
-					o.mu.RLock()
-					mset := o.mset
-					o.mu.RUnlock()
-					// Register pre-acks unless no state at all for the stream and we would create alot of pre-acks.
-					mset.mu.Lock()
+				if mset := o.getStream(); mset != nil {
 					var ss StreamState
 					mset.store.FastState(&ss)
-					// Only register if we have a valid FirstSeq.
-					if ss.FirstSeq > 0 {
-						for seq := ss.FirstSeq; seq < state.AckFloor.Stream; seq++ {
-							mset.registerPreAck(o, seq)
+					if err := o.checkStateForInterestStream(&ss); err == errAckFloorHigherThanLastSeq {
+						// Register pre-acks unless no state at all for the stream and we would create alot of pre-acks.
+						mset.mu.Lock()
+						// Only register if we have a valid FirstSeq.
+						if ss.FirstSeq > 0 {
+							for seq := ss.FirstSeq; seq < state.AckFloor.Stream; seq++ {
+								mset.registerPreAck(o, seq)
+							}
 						}
+						mset.mu.Unlock()
 					}
-					mset.mu.Unlock()
 				}
 			}
 
