@@ -2393,14 +2393,16 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	var cist *time.Ticker
 	var cistc <-chan time.Time
 
+	// 2 minutes plus up to 30s jitter.
+	checkInterestInterval := 2*time.Minute + time.Duration(rand.Intn(30))*time.Second
+
 	if mset != nil && mset.isInterestRetention() {
 		// Wait on our consumers to be assigned and running before proceeding.
 		// This can become important when a server has lots of assets
 		// since we process streams first then consumers as an asset class.
 		mset.waitOnConsumerAssignments()
-		// Setup a periodic check here.
-		// We will fire in 5s the first time then back off to 30s
-		cist = time.NewTicker(5 * time.Second)
+		// Setup our periodic check here. We will check once we have restored right away.
+		cist = time.NewTicker(checkInterestInterval)
 		cistc = cist.C
 	}
 
@@ -2534,7 +2536,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			}
 
 		case <-cistc:
-			cist.Reset(30 * time.Second)
+			cist.Reset(checkInterestInterval)
 			// We may be adjusting some things with consumers so do this in its own go routine.
 			go mset.checkInterestState()
 
@@ -2701,7 +2703,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					mqch = mset.monitorQuitC()
 					// Setup a periodic check here if we are interest based as well.
 					if mset.isInterestRetention() {
-						cist = time.NewTicker(30 * time.Second)
+						cist = time.NewTicker(checkInterestInterval)
 						cistc = cist.C
 					}
 				}
