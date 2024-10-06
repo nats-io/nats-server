@@ -2436,7 +2436,10 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					isRecovering = false
 					// If we are interest based make sure to check consumers if interest retention policy.
 					// This is to make sure we process any outstanding acks from all consumers.
-					mset.checkInterestState()
+					if mset != nil && mset.isInterestRetention() {
+						fire := time.Duration(rand.Intn(5)+5) * time.Second
+						time.AfterFunc(fire, mset.checkInterestState)
+					}
 					// If we became leader during this time and we need to send a snapshot to our
 					// followers, i.e. as a result of a scale-up from R1, do it now.
 					if sendSnapshot && isLeader && mset != nil && n != nil {
