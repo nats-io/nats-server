@@ -473,8 +473,8 @@ func (rcf *readCacheFlag) clear(c readCacheFlag) {
 }
 
 // isSet returns true if the flag is set, false otherwise
-func (rcf readCacheFlag) isSet(c readCacheFlag) bool {
-	return rcf&c != 0
+func (rcf *readCacheFlag) isSet(c readCacheFlag) bool {
+	return *rcf&c != 0
 }
 
 const (
