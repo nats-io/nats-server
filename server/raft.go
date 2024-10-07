@@ -3471,6 +3471,11 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		} else {
 			n.debug("AppendEntry did not match %d %d with %d %d", ae.pterm, ae.pindex, n.pterm, n.pindex)
 			if ae.pindex > n.pindex {
+				// Entries that we haven't committed yet might have been invalidated in the meantime.
+				if n.pindex > n.commit {
+					n.truncateWAL(n.term, n.commit)
+				}
+
 				// Setup our state for catching up.
 				inbox := n.createCatchup(ae)
 				ar := newAppendEntryResponse(n.pterm, n.pindex, n.id, false)
