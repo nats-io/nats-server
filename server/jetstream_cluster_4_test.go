@@ -4284,7 +4284,7 @@ func TestJetStreamClusterDesyncAfterPublishToLeaderWithoutQuorum(t *testing.T) {
 
 	// Only restart the (previous) followers.
 	followerServer1 = c.restartServer(followerServer1)
-	followerServer2 = c.restartServer(followerServer2)
+	c.restartServer(followerServer2)
 	c.waitOnStreamLeader(globalAccountName, "TEST")
 
 	nc, js = jsClientConnect(t, followerServer1)
@@ -4296,7 +4296,7 @@ func TestJetStreamClusterDesyncAfterPublishToLeaderWithoutQuorum(t *testing.T) {
 	require_Equal(t, pubAck.Sequence, 1)
 
 	// Bring up the previous stream leader.
-	streamLeaderServer = c.restartServer(streamLeaderServer)
+	c.restartServer(streamLeaderServer)
 	c.waitOnAllCurrent()
 	c.waitOnStreamLeader(globalAccountName, "TEST")
 
