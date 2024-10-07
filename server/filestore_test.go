@@ -5581,7 +5581,15 @@ func TestFileStoreFullStateTestUserRemoveWAL(t *testing.T) {
 		require_NoError(t, err)
 		defer fs.Stop()
 
-		if newState := fs.State(); !reflect.DeepEqual(state, newState) {
+		newState := fs.State()
+		// We will properly detect lost data for sequence #2 here.
+		require_True(t, newState.Lost != nil)
+		require_Equal(t, len(newState.Lost.Msgs), 1)
+		require_Equal(t, newState.Lost.Msgs[0], 2)
+		// Clear for deep equal compare below.
+		newState.Lost = nil
+
+		if !reflect.DeepEqual(state, newState) {
 			t.Fatalf("Restore state does not match:\n%+v\n%+v",
 				state, newState)
 		}
@@ -7213,7 +7221,7 @@ func TestFileStoreFilteredPendingPSIMFirstBlockUpdateNextBlock(t *testing.T) {
 	removed, err = fs.RemoveMsg(2)
 	require_NoError(t, err)
 	require_True(t, removed)
-	// Make sure 3 blks left
+	// Make sure 3 blks left.
 	require_Equal(t, fs.numMsgBlocks(), 3)
 
 	psi = fetch("foo.22.baz")
@@ -7483,11 +7491,11 @@ func TestFileStoreSyncCompressOnlyIfDirty(t *testing.T) {
 		_, err = fs.RemoveMsg(seq)
 		require_NoError(t, err)
 	}
-	// Now make sure we add 4th block so syncBlocks will try to compress.
+	// Now make sure we add 4/5th block so syncBlocks will try to compact.
 	for i := 0; i < 6; i++ {
 		fs.StoreMsg("foo.BB", nil, msg)
 	}
-	require_Equal(t, fs.numMsgBlocks(), 4)
+	require_Equal(t, fs.numMsgBlocks(), 5)
 
 	// All should have compact set.
 	fs.mu.Lock()
@@ -7639,6 +7647,90 @@ func TestFileStoreRestoreIndexWithMatchButLeftOverBlocks(t *testing.T) {
 	require_Equal(t, state.Msgs, 12)
 	require_Equal(t, state.FirstSeq, 7)
 	require_Equal(t, state.LastSeq, 18)
+}
+
+func TestFileStoreRestoreDeleteTombstonesExceedingMaxBlkSize(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize = 256
+		fs, err := newFileStoreWithCreated(
+			fcfg,
+			StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage},
+			time.Now(),
+			prf(&fcfg),
+			nil,
+		)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		n, err := fs.PurgeEx(_EMPTY_, 1_000_000_000, 0)
+		require_NoError(t, err)
+		require_Equal(t, n, 0)
+
+		msg := []byte("hello")
+		// 6 msgs per block with blk size 256.
+		for i := 1; i <= 10_000; i++ {
+			fs.StoreMsg(fmt.Sprintf("foo.%d", i), nil, msg)
+		}
+		// Now delete msgs which will write tombstones.
+		for seq := uint64(1_000_000_001); seq < 1_000_000_101; seq++ {
+			removed, err := fs.RemoveMsg(seq)
+			require_NoError(t, err)
+			require_True(t, removed)
+		}
+
+		// Check last block and make sure the tombstones did not exceed blk size maximum.
+		// Check to make sure no blocks exceed blk size.
+		fs.mu.RLock()
+		blks := append([]*msgBlock(nil), fs.blks...)
+		lmb := fs.lmb
+		fs.mu.RUnlock()
+
+		var emptyBlks []*msgBlock
+		for _, mb := range blks {
+			mb.mu.RLock()
+			bytes, rbytes := mb.bytes, mb.rbytes
+			mb.mu.RUnlock()
+			require_True(t, bytes < 256)
+			require_True(t, rbytes < 256)
+			if bytes == 0 && mb != lmb {
+				emptyBlks = append(emptyBlks, mb)
+			}
+		}
+		// Check each block such that it signals it can be compacted but if we attempt compact here nothing should change.
+		for _, mb := range emptyBlks {
+			mb.mu.Lock()
+			mb.ensureRawBytesLoaded()
+			bytes, rbytes, shouldCompact := mb.bytes, mb.rbytes, mb.shouldCompactSync()
+			// Do the compact and make sure nothing changed.
+			mb.compact()
+			nbytes, nrbytes := mb.bytes, mb.rbytes
+			mb.mu.Unlock()
+			require_True(t, shouldCompact)
+			require_Equal(t, bytes, nbytes)
+			require_Equal(t, rbytes, nrbytes)
+		}
+
+		// Now remove first msg which will invalidate the tombstones since they will be < first sequence.
+		removed, err := fs.RemoveMsg(1_000_000_000)
+		require_NoError(t, err)
+		require_True(t, removed)
+
+		// Now simulate a syncBlocks call and make sure it cleans up the tombstones that are no longer relevant.
+		fs.syncBlocks()
+		for _, mb := range emptyBlks {
+			mb.mu.Lock()
+			mb.ensureRawBytesLoaded()
+			index, bytes, rbytes := mb.index, mb.bytes, mb.rbytes
+			mb.mu.Unlock()
+			require_Equal(t, bytes, 0)
+			require_Equal(t, rbytes, 0)
+			// Also make sure we removed these blks all together.
+			fs.mu.RLock()
+			imb := fs.bim[index]
+			fs.mu.RUnlock()
+			require_True(t, imb == nil)
+		}
+	})
 }
 
 ///////////////////////////////////////////////////////////////////////////
