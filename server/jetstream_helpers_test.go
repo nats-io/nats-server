@@ -1135,6 +1135,16 @@ func (s *Server) setJetStreamMigrateOnRemoteLeaf() {
 	s.mu.Unlock()
 }
 
+// Helper to set the remote migrate feature.
+func (s *Server) setJetStreamMigrateOnRemoteLeafWithDelay(delay time.Duration) {
+	s.mu.Lock()
+	for _, cfg := range s.leafRemoteCfgs {
+		cfg.JetStreamClusterMigrate = true
+		cfg.JetStreamClusterMigrateDelay = delay
+	}
+	s.mu.Unlock()
+}
+
 // Will add in the mapping for the account to each server.
 func (c *cluster) addSubjectMapping(account, src, dest string) {
 	c.t.Helper()

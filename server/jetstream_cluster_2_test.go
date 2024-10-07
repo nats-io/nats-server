@@ -6089,6 +6089,94 @@ func TestJetStreamClusterLeafNodeSPOFMigrateLeaders(t *testing.T) {
 	})
 }
 
+// https://github.com/nats-io/nats-server/issues/3178
+func TestJetStreamClusterLeafNodeSPOFMigrateLeadersWithMigrateDelay(t *testing.T) {
+	tmpl := strings.Replace(jsClusterTempl, "store_dir:", "domain: REMOTE, store_dir:", 1)
+	c := createJetStreamClusterWithTemplate(t, tmpl, "HUB", 2)
+	defer c.shutdown()
+
+	tmpl = strings.Replace(jsClusterTemplWithLeafNode, "store_dir:", "domain: CORE, store_dir:", 1)
+	lnc := c.createLeafNodesWithTemplateAndStartPort(tmpl, "LNC", 2, 22110)
+	defer lnc.shutdown()
+
+	lnc.waitOnClusterReady()
+
+	// Place JS assets in LN, and we will do a pull consumer from the HUB.
+	nc, js := jsClientConnect(t, lnc.randomServer())
+	defer nc.Close()
+
+	si, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 2,
+	})
+	require_NoError(t, err)
+	require_True(t, si.Cluster.Name == "LNC")
+
+	for i := 0; i < 100; i++ {
+		js.PublishAsync("foo", []byte("HELLO"))
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	// Create the consumer.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "d", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	nc, _ = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	dsubj := "$JS.CORE.API.CONSUMER.MSG.NEXT.TEST.d"
+	// Grab directly using domain based subject but from the HUB cluster.
+	_, err = nc.Request(dsubj, nil, time.Second)
+	require_NoError(t, err)
+
+	// Now we will force the consumer leader's server to drop and stall leafnode connections.
+	cl := lnc.consumerLeader("$G", "TEST", "d")
+	cl.setJetStreamMigrateOnRemoteLeafWithDelay(5 * time.Second)
+	cl.closeAndDisableLeafnodes()
+
+	// Now make sure we can eventually get a message again.
+	checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+		_, err = nc.Request(dsubj, nil, 500*time.Millisecond)
+		return err
+	})
+
+	nc, _ = jsClientConnect(t, lnc.randomServer())
+	defer nc.Close()
+
+	// Now make sure the consumer, or any other asset, can not become a leader on this node while the leafnode
+	// is disconnected.
+	csd := fmt.Sprintf(JSApiConsumerLeaderStepDownT, "TEST", "d")
+	for i := 0; i < 10; i++ {
+		nc.Request(csd, nil, time.Second)
+		lnc.waitOnConsumerLeader(globalAccountName, "TEST", "d")
+		if lnc.consumerLeader(globalAccountName, "TEST", "d") == cl {
+			t.Fatalf("Consumer leader should not migrate to server without a leafnode connection")
+		}
+	}
+
+	// Now make sure once leafnode is back we can have leaders on this server.
+	cl.reEnableLeafnodes()
+	checkLeafNodeConnectedCount(t, cl, 2)
+	for _, ln := range cl.leafRemoteCfgs {
+		require_True(t, ln.jsMigrateTimer == nil)
+	}
+
+	// Make sure we can migrate back to this server now that we are connected.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		nc.Request(csd, nil, time.Second)
+		lnc.waitOnConsumerLeader(globalAccountName, "TEST", "d")
+		if lnc.consumerLeader(globalAccountName, "TEST", "d") == cl {
+			return nil
+		}
+		return fmt.Errorf("Not this server yet")
+	})
+}
+
 func TestJetStreamClusterStreamCatchupWithTruncateAndPriorSnapshot(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3F", 3)
 	defer c.shutdown()

@@ -957,10 +957,12 @@ func TestNRGWALEntryWithoutQuorumMustTruncate(t *testing.T) {
 	n := rg.leader().node().(*raft)
 	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
 	entries := []*Entry{newEntry(EntryNormal, esm)}
+	n.Lock()
 	ae := n.buildAppendEntry(entries)
 	ae.buf, err = ae.encode(scratch[:])
 	require_NoError(t, err)
 	err = n.storeToWAL(ae)
+	n.Unlock()
 	require_NoError(t, err)
 
 	// Stop the leader so it moves to another one.

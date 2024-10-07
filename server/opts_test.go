@@ -2541,6 +2541,69 @@ func TestParsingLeafNodeRemotes(t *testing.T) {
 			t.Fatal("Expected urls to be random")
 		}
 	})
+
+	t.Run("parse config file js_cluster_migrate", func(t *testing.T) {
+		content := `
+		leafnodes {
+			remotes = [
+				{
+					url: nats-leaf://127.0.0.1:2222
+					account: foo // Local Account to bind to..
+					credentials: "./my.creds"
+					js_cluster_migrate: true
+				},
+				{
+					url: nats-leaf://127.0.0.1:2222
+					account: bar // Local Account to bind to..
+					credentials: "./my.creds"
+					js_cluster_migrate: {
+						leader_migrate_delay: 30s
+					}
+				},
+				{
+					url: nats-leaf://127.0.0.1:2222
+					account: baz // Local Account to bind to..
+					credentials: "./my.creds"
+					js_cluster_migrate: false
+				}
+			]
+		}
+		`
+		conf := createConfFile(t, []byte(content))
+		opts, err := ProcessConfigFile(conf)
+		if err != nil {
+			t.Fatalf("Error processing file: %v", err)
+		}
+		if len(opts.LeafNode.Remotes) != 3 {
+			t.Fatalf("Expected 2 remote, got %d", len(opts.LeafNode.Remotes))
+		}
+		u, _ := url.Parse("nats-leaf://127.0.0.1:2222")
+		expected := []*RemoteLeafOpts{
+			{
+				URLs:                    []*url.URL{u},
+				LocalAccount:            "foo",
+				Credentials:             "./my.creds",
+				JetStreamClusterMigrate: true,
+			},
+			{
+				URLs:                         []*url.URL{u},
+				LocalAccount:                 "bar",
+				Credentials:                  "./my.creds",
+				JetStreamClusterMigrate:      true,
+				JetStreamClusterMigrateDelay: 30 * time.Second,
+			},
+			{
+				URLs:                    []*url.URL{u},
+				LocalAccount:            "baz",
+				Credentials:             "./my.creds",
+				JetStreamClusterMigrate: false,
+			},
+		}
+		if !reflect.DeepEqual(opts.LeafNode.Remotes, expected) {
+			t.Fatalf("Expected %v, got %v", expected, opts.LeafNode.Remotes)
+		}
+	})
+
 }
 
 func TestLargeMaxControlLine(t *testing.T) {
