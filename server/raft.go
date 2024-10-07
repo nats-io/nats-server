@@ -3617,8 +3617,8 @@ func (n *raft) processAppendEntryResponse(ar *appendEntryResponse) {
 	}
 
 	if ar.reply != _EMPTY_ && !ar.success {
-		// The remote node didn't commit the append entry and they are
-		// still on the same term, so let's try to catch them up.
+		// The remote node refused the append entry and is
+		// asking us to catch them up.
 		n.catchupFollower(ar)
 		return
 	}
