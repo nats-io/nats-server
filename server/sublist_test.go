@@ -634,6 +634,11 @@ func TestSublistValidSubjects(t *testing.T) {
 	checkBool(IsValidSubject("foo.>bar"), true, t)
 	checkBool(IsValidSubject("foo>.bar"), true, t)
 	checkBool(IsValidSubject(">bar"), true, t)
+
+	// Check for embedded nulls.
+	subj := []byte("foo.bar.baz.")
+	subj = append(subj, 0)
+	checkBool(isValidSubject(string(subj), true), false, t)
 }
 
 func TestSublistMatchLiterals(t *testing.T) {
@@ -697,7 +702,6 @@ func TestValidateDestinationSubject(t *testing.T) {
 	checkError(ValidateMappingDestination("foo.{{unknown(1)}}"), ErrInvalidMappingDestination, t)
 	checkError(ValidateMappingDestination("foo..}"), ErrInvalidMappingDestination, t)
 	checkError(ValidateMappingDestination("foo. bar}"), ErrInvalidMappingDestinationSubject, t)
-
 }
 
 func TestSubjectToken(t *testing.T) {

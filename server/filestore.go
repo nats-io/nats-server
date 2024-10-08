@@ -1654,7 +1654,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 				subj := buf[bi : bi+lsubj]
 				// We had a bug that could cause memory corruption in the PSIM that could have gotten stored to disk.
 				// Only would affect subjects, so do quick check.
-				if !isValidSubject(string(subj), true) {
+				if !isValidSubject(bytesToString(subj), true) {
 					os.Remove(fn)
 					fs.warn("Stream state corrupt subject detected")
 					return errCorruptState

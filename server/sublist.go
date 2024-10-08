@@ -1181,6 +1181,10 @@ func isValidSubject(subject string, checkRunes bool) bool {
 		return false
 	}
 	if checkRunes {
+		// Check if we have embedded nulls.
+		if bytes.IndexByte(stringToBytes(subject), 0) >= 0 {
+			return false
+		}
 		// Since casting to a string will always produce valid UTF-8, we need to look for replacement runes.
 		// This signals something is off or corrupt.
 		for _, r := range subject {
