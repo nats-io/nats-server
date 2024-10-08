@@ -7489,6 +7489,189 @@ func TestJetStreamClusterR1ConsumerAdvisory(t *testing.T) {
 	checkSubsPending(t, sub, 2)
 }
 
+func TestJetStreamClusterCheckInterestStatePerformanceWQ(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3F", 3)
+	defer c.shutdown()
+
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo.*"},
+		Retention: nats.WorkQueuePolicy,
+	})
+	require_NoError(t, err)
+
+	// Load up a bunch of messages for three different subjects.
+	msg := bytes.Repeat([]byte("Z"), 4096)
+	for i := 0; i < 100_000; i++ {
+		js.PublishAsync("foo.foo", msg)
+	}
+	for i := 0; i < 5_000; i++ {
+		js.PublishAsync("foo.bar", msg)
+		js.PublishAsync("foo.baz", msg)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	// We will not process this one and leave it as "offline".
+	_, err = js.PullSubscribe("foo.foo", "A")
+	require_NoError(t, err)
+	subB, err := js.PullSubscribe("foo.bar", "B")
+	require_NoError(t, err)
+	subC, err := js.PullSubscribe("foo.baz", "C")
+	require_NoError(t, err)
+
+	// Now catch up both B and C but let A simulate being offline of very behind.
+	for i := 0; i < 5; i++ {
+		for _, sub := range []*nats.Subscription{subB, subC} {
+			msgs, err := sub.Fetch(1000)
+			require_NoError(t, err)
+			require_Equal(t, len(msgs), 1000)
+			for _, m := range msgs {
+				m.Ack()
+			}
+		}
+	}
+	// Let acks process.
+	nc.Flush()
+	time.Sleep(200 * time.Millisecond)
+
+	// Now test the check checkInterestState() on the stream.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	mset, err := sl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	expireAllBlks := func() {
+		mset.mu.RLock()
+		fs := mset.store.(*fileStore)
+		mset.mu.RUnlock()
+		fs.mu.RLock()
+		for _, mb := range fs.blks {
+			mb.tryForceExpireCache()
+		}
+		fs.mu.RUnlock()
+	}
+
+	// First expire all the blocks.
+	expireAllBlks()
+
+	start := time.Now()
+	mset.checkInterestState()
+	elapsed := time.Since(start)
+	// This is actually ~300 microseconds but due to travis and race flags etc.
+	// Was > 30 ms before fix for comparison, M2 macbook air.
+	require_True(t, elapsed < 5*time.Millisecond)
+
+	// Make sure we set the chkflr correctly.
+	checkFloor := func(o *consumer) uint64 {
+		require_True(t, o != nil)
+		o.mu.RLock()
+		defer o.mu.RUnlock()
+		return o.chkflr
+	}
+
+	require_Equal(t, checkFloor(mset.lookupConsumer("A")), 1)
+	require_Equal(t, checkFloor(mset.lookupConsumer("B")), 110_001)
+	require_Equal(t, checkFloor(mset.lookupConsumer("C")), 110_001)
+
+	// Expire all the blocks again.
+	expireAllBlks()
+
+	// This checks the chkflr state.
+	start = time.Now()
+	mset.checkInterestState()
+	require_True(t, time.Since(start) < elapsed)
+}
+
+func TestJetStreamClusterCheckInterestStatePerformanceInterest(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3F", 3)
+	defer c.shutdown()
+
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo.*"},
+		Retention: nats.InterestPolicy,
+	})
+	require_NoError(t, err)
+
+	// We will not process this one and leave it as "offline".
+	_, err = js.PullSubscribe("foo.foo", "A")
+	require_NoError(t, err)
+	_, err = js.PullSubscribe("foo.*", "B")
+	require_NoError(t, err)
+	// Make subC multi-subject.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:        "C",
+		FilterSubjects: []string{"foo.foo", "foo.bar", "foo.baz"},
+		AckPolicy:      nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	// Load up a bunch of messages for three different subjects.
+	msg := bytes.Repeat([]byte("Z"), 4096)
+	for i := 0; i < 90_000; i++ {
+		js.PublishAsync("foo.foo", msg)
+	}
+	for i := 0; i < 5_000; i++ {
+		js.PublishAsync("foo.bar", msg)
+		js.PublishAsync("foo.baz", msg)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	// Now catch up both B and C but let A simulate being offline of very behind.
+	// Will do this manually here to speed up tests.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	mset, err := sl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	for _, cname := range []string{"B", "C"} {
+		o := mset.lookupConsumer(cname)
+		o.mu.Lock()
+		o.setStoreState(&ConsumerState{
+			Delivered: SequencePair{100_000, 100_000},
+			AckFloor:  SequencePair{100_000, 100_000},
+		})
+		o.mu.Unlock()
+	}
+
+	// Now test the check checkInterestState() on the stream.
+	start := time.Now()
+	mset.checkInterestState()
+	elapsed := time.Since(start)
+
+	// Make sure we set the chkflr correctly.
+	checkFloor := func(o *consumer) uint64 {
+		require_True(t, o != nil)
+		o.mu.RLock()
+		defer o.mu.RUnlock()
+		return o.chkflr
+	}
+
+	require_Equal(t, checkFloor(mset.lookupConsumer("A")), 1)
+	require_Equal(t, checkFloor(mset.lookupConsumer("B")), 100_001)
+	require_Equal(t, checkFloor(mset.lookupConsumer("C")), 100_001)
+
+	// This checks the chkflr state. For this test this should be much faster,
+	// two orders of magnitude then the first time.
+	start = time.Now()
+	mset.checkInterestState()
+	require_True(t, time.Since(start) < elapsed/100)
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE  (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
