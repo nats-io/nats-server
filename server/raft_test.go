@@ -1007,3 +1007,44 @@ func TestNRGWALEntryWithoutQuorumMustTruncate(t *testing.T) {
 		return nil
 	})
 }
+
+func TestNRGTermNoDecreaseAfterWALReset(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	l := rg.leader().node().(*raft)
+	l.Lock()
+	l.term = 20
+	l.Unlock()
+
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+	l.Lock()
+	ae := l.buildAppendEntry(entries)
+	l.Unlock()
+
+	for _, f := range rg {
+		if f.node().ID() != l.ID() {
+			fn := f.node().(*raft)
+			fn.processAppendEntry(ae, fn.aesub)
+			require_Equal(t, fn.term, 20) // Follower's term gets upped as expected.
+		}
+	}
+
+	// Lower the term, simulating the followers receiving a message from an old term/leader.
+	ae.term = 3
+	for _, f := range rg {
+		if f.node().ID() != l.ID() {
+			fn := f.node().(*raft)
+			fn.processAppendEntry(ae, fn.aesub)
+			require_Equal(t, fn.term, 20) // Follower should reject and the term stays the same.
+
+			fn.resetWAL()
+			fn.processAppendEntry(ae, fn.aesub)
+			require_Equal(t, fn.term, 20) // Follower should reject again, even after reset, term stays the same.
+		}
+	}
+}

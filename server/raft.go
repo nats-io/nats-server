@@ -3215,7 +3215,7 @@ func (n *raft) truncateWAL(term, index uint64) {
 		}
 	}
 	// Set after we know we have truncated properly.
-	n.term, n.pterm, n.pindex = term, term, index
+	n.pterm, n.pindex = term, index
 }
 
 // Reset our WAL. This is equivalent to truncating all data from the log.
