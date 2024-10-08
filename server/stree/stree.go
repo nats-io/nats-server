@@ -55,6 +55,11 @@ func (t *SubjectTree[T]) Insert(subject []byte, value T) (*T, bool) {
 		return nil, false
 	}
 
+	// Make sure we never insert anything with a noPivot byte.
+	if bytes.IndexByte(subject, noPivot) >= 0 {
+		return nil, false
+	}
+
 	old, updated := t.insert(&t.root, subject, value, 0)
 	if !updated {
 		t.size++
@@ -151,7 +156,7 @@ func (t *SubjectTree[T]) insert(np *node, subject []byte, value T, si int) (*T, 
 		ln.setSuffix(ln.suffix[cpi:])
 		si += cpi
 		// Make sure we have different pivot, normally this will be the case unless we have overflowing prefixes.
-		if p := pivot(ln.suffix, 0); si < len(subject) && p == subject[si] {
+		if p := pivot(ln.suffix, 0); cpi > 0 && si < len(subject) && p == subject[si] {
 			// We need to split the original leaf. Recursively call into insert.
 			t.insert(np, subject, value, si)
 			// Now add the update version of *np as a child to the new node4.

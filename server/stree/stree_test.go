@@ -246,7 +246,7 @@ func TestSubjectTreeConstruction(t *testing.T) {
 	st.Insert(b("foo.bar"), 42)
 
 	checkNode := func(an *node, kind string, pors string, numChildren uint16) {
-		//		t.Helper()
+		t.Helper()
 		require_True(t, an != nil)
 		n := *an
 		require_True(t, n != nil)
@@ -258,7 +258,7 @@ func TestSubjectTreeConstruction(t *testing.T) {
 	checkNode(&st.root, "NODE4", "foo.ba", 2)
 	nn := st.root.findChild('r')
 	checkNode(nn, "NODE4", "r", 2)
-	checkNode((*nn).findChild(0), "LEAF", "", 0)
+	checkNode((*nn).findChild(noPivot), "LEAF", "", 0)
 	rnn := (*nn).findChild('.')
 	checkNode(rnn, "NODE4", ".", 3)
 	checkNode((*rnn).findChild('A'), "LEAF", "A", 0)
@@ -803,4 +803,42 @@ func TestSubjectTreeNilNoPanic(t *testing.T) {
 	require_False(t, found)
 	_, found = st.Insert([]byte("foo"), 22)
 	require_False(t, found)
+}
+
+// This bug requires the trailing suffix contain repeating nulls \x00
+// and the second subject be longer with more nulls.
+func TestSubjectTreeInsertLongerLeafSuffixWithTrailingNulls(t *testing.T) {
+	st := NewSubjectTree[int]()
+	subj := []byte("foo.bar.baz_")
+	// add in 10 nulls.
+	for i := 0; i < 10; i++ {
+		subj = append(subj, 0)
+	}
+
+	st.Insert(subj, 1)
+	// add in 10 more nulls.
+	subj2 := subj
+	for i := 0; i < 10; i++ {
+		subj2 = append(subj, 0)
+	}
+	st.Insert(subj2, 2)
+
+	// Make sure we can look them up.
+	v, found := st.Find(subj)
+	require_True(t, found)
+	require_Equal(t, *v, 1)
+	v, found = st.Find(subj2)
+	require_True(t, found)
+	require_Equal(t, *v, 2)
+}
+
+// Make sure the system does not insert any subject with the noPivot (DEL) in it.
+func TestSubjectTreeInsertWithNoPivot(t *testing.T) {
+	st := NewSubjectTree[int]()
+	subj := []byte("foo.bar.baz.")
+	subj = append(subj, noPivot)
+	old, updated := st.Insert(subj, 22)
+	require_True(t, old == nil)
+	require_False(t, updated)
+	require_Equal(t, st.Size(), 0)
 }
