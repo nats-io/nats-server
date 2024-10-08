@@ -2586,7 +2586,7 @@ func (fs *fileStore) numFilteredPendingNoLast(filter string, ss *SimpleState) {
 
 // Optimized way for getting all num pending matching a filter subject.
 // Optionally look up last sequence. Sometimes do not need last and this avoids cost.
-// Lock should be held.
+// Read lock should be held.
 func (fs *fileStore) numFilteredPendingWithLast(filter string, last bool, ss *SimpleState) {
 	isAll := filter == _EMPTY_ || filter == fwcs
 
@@ -2653,17 +2653,25 @@ func (fs *fileStore) numFilteredPendingWithLast(filter string, last bool, ss *Si
 			}
 		}
 		// Update fblk since fblk was outdated.
-		if !wc {
-			if info, ok := fs.psim.Find(stringToBytes(filter)); ok {
-				info.fblk = i
-			}
-		} else {
-			fs.psim.Match(stringToBytes(filter), func(subj []byte, psi *psi) {
-				if i > psi.fblk {
-					psi.fblk = i
+		// We only require read lock here as that is desirable,
+		// so we need to do this in a go routine to acquire write lock.
+		go func() {
+			fs.mu.Lock()
+			defer fs.mu.Unlock()
+			if !wc {
+				if info, ok := fs.psim.Find(stringToBytes(filter)); ok {
+					if i > info.fblk {
+						info.fblk = i
+					}
 				}
-			})
-		}
+			} else {
+				fs.psim.Match(stringToBytes(filter), func(subj []byte, psi *psi) {
+					if i > psi.fblk {
+						psi.fblk = i
+					}
+				})
+			}
+		}()
 	}
 	// Now gather last sequence if asked to do so.
 	if last {
