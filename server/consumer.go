@@ -320,6 +320,7 @@ type consumer struct {
 	dseq              uint64         // delivered consumer sequence
 	adflr             uint64         // ack delivery floor
 	asflr             uint64         // ack store floor
+	chkflr            uint64         // our check floor, interest streams only.
 	npc               int64          // Num Pending Count
 	npf               uint64         // Num Pending Floor Sequence
 	dsubj             string
@@ -2918,28 +2919,6 @@ func (o *consumer) isFiltered() bool {
 	return false
 }
 
-// Check if we would have matched and needed an ack for this store seq.
-// This is called for interest based retention streams to remove messages.
-func (o *consumer) matchAck(sseq uint64) bool {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
-
-	// Check if we are filtered, and if so check if this is even applicable to us.
-	if o.isFiltered() {
-		if o.mset == nil {
-			return false
-		}
-		var svp StoreMsg
-		if _, err := o.mset.store.LoadMsg(sseq, &svp); err != nil {
-			return false
-		}
-		if !o.isFilteredMatch(svp.subj) {
-			return false
-		}
-	}
-	return true
-}
-
 // Check if we need an ack for this store seq.
 // This is called for interest based retention streams to remove messages.
 func (o *consumer) needAck(sseq uint64, subj string) bool {
@@ -5512,16 +5491,24 @@ func (o *consumer) isMonitorRunning() bool {
 var errAckFloorHigherThanLastSeq = errors.New("consumer ack floor is higher than streams last sequence")
 
 // If we are a consumer of an interest or workqueue policy stream, process that state and make sure consistent.
-func (o *consumer) checkStateForInterestStream() error {
+func (o *consumer) checkStateForInterestStream(ss *StreamState) error {
 	o.mu.RLock()
 	// See if we need to process this update if our parent stream is not a limits policy stream.
 	mset := o.mset
 	shouldProcessState := mset != nil && o.retention != LimitsPolicy
-	if o.closed || !shouldProcessState || o.store == nil {
+	if o.closed || !shouldProcessState || o.store == nil || ss == nil {
 		o.mu.RUnlock()
 		return nil
 	}
+	store := mset.store
 	state, err := o.store.State()
+
+	filters, subjf, filter := o.filters, o.subjf, _EMPTY_
+	var wc bool
+	if filters == nil && subjf != nil {
+		filter, wc = subjf[0].subject, subjf[0].hasWildcard
+	}
+	chkfloor := o.chkflr
 	o.mu.RUnlock()
 
 	if err != nil {
@@ -5534,26 +5521,46 @@ func (o *consumer) checkStateForInterestStream() error {
 		return nil
 	}
 
-	// We should make sure to update the acks.
-	var ss StreamState
-	mset.store.FastState(&ss)
-
 	// Check if the underlying stream's last sequence is less than our floor.
 	// This can happen if the stream has been reset and has not caught up yet.
 	if asflr > ss.LastSeq {
 		return errAckFloorHigherThanLastSeq
 	}
 
-	for seq := ss.FirstSeq; asflr > 0 && seq <= asflr; seq++ {
-		if o.matchAck(seq) {
+	var smv StoreMsg
+	var seq, nseq uint64
+	// Start at first stream seq or a previous check floor, whichever is higher.
+	// Note this will really help for interest retention, with WQ the loadNextMsg
+	// gets us a long way already since it will skip deleted msgs not for our filter.
+	fseq := ss.FirstSeq
+	if chkfloor > fseq {
+		fseq = chkfloor
+	}
+
+	for seq = fseq; asflr > 0 && seq <= asflr; seq++ {
+		if filters != nil {
+			_, nseq, err = store.LoadNextMsgMulti(filters, seq, &smv)
+		} else {
+			_, nseq, err = store.LoadNextMsg(filter, wc, seq, &smv)
+		}
+		// if we advanced sequence update our seq. This can be on no error and EOF.
+		if nseq > seq {
+			seq = nseq
+		}
+		// Only ack though if no error and seq <= ack floor.
+		if err == nil && seq <= asflr {
 			mset.ackMsg(o, seq)
 		}
 	}
 
-	o.mu.RLock()
+	o.mu.Lock()
+	// Update our check floor.
+	if seq > o.chkflr {
+		o.chkflr = seq
+	}
 	// See if we need to process this update if our parent stream is not a limits policy stream.
 	state, _ = o.store.State()
-	o.mu.RUnlock()
+	o.mu.Unlock()
 
 	// If we have pending, we will need to walk through to delivered in case we missed any of those acks as well.
 	if state != nil && len(state.Pending) > 0 && state.AckFloor.Stream > 0 {

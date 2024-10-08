@@ -7042,14 +7042,21 @@ func TestFileStoreFilteredPendingPSIMFirstBlockUpdate(t *testing.T) {
 	require_Equal(t, ss.First, 1002)
 	require_Equal(t, ss.Last, 1003)
 
-	// Check psi was updated.
-	fs.mu.RLock()
-	psi, ok = fs.psim.Find([]byte("foo.baz"))
-	fs.mu.RUnlock()
-	require_True(t, ok)
-	require_Equal(t, psi.total, 2)
-	require_Equal(t, psi.fblk, 84)
-	require_Equal(t, psi.lblk, 84)
+	// Check psi was updated. This is done in separate go routine to acquire
+	// the write lock now.
+	checkFor(t, time.Second, 100*time.Millisecond, func() error {
+		fs.mu.RLock()
+		psi, ok = fs.psim.Find([]byte("foo.baz"))
+		total, fblk, lblk := psi.total, psi.fblk, psi.lblk
+		fs.mu.RUnlock()
+		require_True(t, ok)
+		require_Equal(t, total, 2)
+		require_Equal(t, lblk, 84)
+		if fblk != 84 {
+			return fmt.Errorf("fblk should be 84, still %d", fblk)
+		}
+		return nil
+	})
 }
 
 func TestFileStoreWildcardFilteredPendingPSIMFirstBlockUpdate(t *testing.T) {
@@ -7086,19 +7093,21 @@ func TestFileStoreWildcardFilteredPendingPSIMFirstBlockUpdate(t *testing.T) {
 	require_Equal(t, fs.numMsgBlocks(), 92)
 	fs.mu.RLock()
 	psi, ok := fs.psim.Find([]byte("foo.22.baz"))
+	total, fblk, lblk := psi.total, psi.fblk, psi.lblk
 	fs.mu.RUnlock()
 	require_True(t, ok)
-	require_Equal(t, psi.total, 2)
-	require_Equal(t, psi.fblk, 1)
-	require_Equal(t, psi.lblk, 92)
+	require_Equal(t, total, 2)
+	require_Equal(t, fblk, 1)
+	require_Equal(t, lblk, 92)
 
 	fs.mu.RLock()
 	psi, ok = fs.psim.Find([]byte("foo.22.bar"))
+	total, fblk, lblk = psi.total, psi.fblk, psi.lblk
 	fs.mu.RUnlock()
 	require_True(t, ok)
-	require_Equal(t, psi.total, 2)
-	require_Equal(t, psi.fblk, 1)
-	require_Equal(t, psi.lblk, 92)
+	require_Equal(t, total, 2)
+	require_Equal(t, fblk, 1)
+	require_Equal(t, lblk, 92)
 
 	// No make sure that a call to numFilterPending which will initially walk all blocks if starting from seq 1 updates psi.
 	var ss SimpleState
@@ -7110,21 +7119,33 @@ func TestFileStoreWildcardFilteredPendingPSIMFirstBlockUpdate(t *testing.T) {
 	require_Equal(t, ss.Last, 1006)
 
 	// Check both psi were updated.
-	fs.mu.RLock()
-	psi, ok = fs.psim.Find([]byte("foo.22.baz"))
-	fs.mu.RUnlock()
-	require_True(t, ok)
-	require_Equal(t, psi.total, 2)
-	require_Equal(t, psi.fblk, 92)
-	require_Equal(t, psi.lblk, 92)
+	checkFor(t, time.Second, 100*time.Millisecond, func() error {
+		fs.mu.RLock()
+		psi, ok = fs.psim.Find([]byte("foo.22.baz"))
+		total, fblk, lblk = psi.total, psi.fblk, psi.lblk
+		fs.mu.RUnlock()
+		require_True(t, ok)
+		require_Equal(t, total, 2)
+		require_Equal(t, lblk, 92)
+		if fblk != 92 {
+			return fmt.Errorf("fblk should be 92, still %d", fblk)
+		}
+		return nil
+	})
 
-	fs.mu.RLock()
-	psi, ok = fs.psim.Find([]byte("foo.22.bar"))
-	fs.mu.RUnlock()
-	require_True(t, ok)
-	require_Equal(t, psi.total, 2)
-	require_Equal(t, psi.fblk, 92)
-	require_Equal(t, psi.lblk, 92)
+	checkFor(t, time.Second, 100*time.Millisecond, func() error {
+		fs.mu.RLock()
+		psi, ok = fs.psim.Find([]byte("foo.22.bar"))
+		total, fblk, lblk = psi.total, psi.fblk, psi.lblk
+		fs.mu.RUnlock()
+		require_True(t, ok)
+		require_Equal(t, total, 2)
+		require_Equal(t, fblk, 92)
+		if fblk != 92 {
+			return fmt.Errorf("fblk should be 92, still %d", fblk)
+		}
+		return nil
+	})
 }
 
 // Make sure if we only miss by one for fblk that we still update it.
@@ -7147,10 +7168,14 @@ func TestFileStoreFilteredPendingPSIMFirstBlockUpdateNextBlock(t *testing.T) {
 	fetch := func(subj string) *psi {
 		t.Helper()
 		fs.mu.RLock()
+		var info psi
 		psi, ok := fs.psim.Find([]byte(subj))
+		if ok && psi != nil {
+			info = *psi
+		}
 		fs.mu.RUnlock()
 		require_True(t, ok)
-		return psi
+		return &info
 	}
 
 	psi := fetch("foo.22.bar")
@@ -7173,10 +7198,15 @@ func TestFileStoreFilteredPendingPSIMFirstBlockUpdateNextBlock(t *testing.T) {
 	require_Equal(t, ss.Last, 7)
 
 	// Now make sure that we properly updated the psim entry.
-	psi = fetch("foo.22.bar")
-	require_Equal(t, psi.total, 3)
-	require_Equal(t, psi.fblk, 2)
-	require_Equal(t, psi.lblk, 4)
+	checkFor(t, time.Second, 100*time.Millisecond, func() error {
+		psi = fetch("foo.22.bar")
+		require_Equal(t, psi.total, 3)
+		require_Equal(t, psi.lblk, 4)
+		if psi.fblk != 2 {
+			return fmt.Errorf("fblk should be 2, still %d", psi.fblk)
+		}
+		return nil
+	})
 
 	// Now make sure wildcard calls into also update blks.
 	// First remove first "foo.22.baz" which will remove first block.
@@ -7199,10 +7229,15 @@ func TestFileStoreFilteredPendingPSIMFirstBlockUpdateNextBlock(t *testing.T) {
 	require_Equal(t, ss.First, 4)
 	require_Equal(t, ss.Last, 8)
 
-	psi = fetch("foo.22.baz")
-	require_Equal(t, psi.total, 3)
-	require_Equal(t, psi.fblk, 2)
-	require_Equal(t, psi.lblk, 4)
+	checkFor(t, time.Second, 100*time.Millisecond, func() error {
+		psi = fetch("foo.22.baz")
+		require_Equal(t, psi.total, 3)
+		require_Equal(t, psi.lblk, 4)
+		if psi.fblk != 2 {
+			return fmt.Errorf("fblk should be 2, still %d", psi.fblk)
+		}
+		return nil
+	})
 }
 
 func TestFileStoreLargeSparseMsgsDoNotLoadAfterLast(t *testing.T) {
