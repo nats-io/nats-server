@@ -1577,11 +1577,11 @@ func TestJetStreamJWTClusterAccountNRG(t *testing.T) {
 
 	// We'll try flipping the state a few times and then do some sanity
 	// checks to check that it took effect.
-	thirdAcc := fmt.Sprintf("account:%s", aExpPub2)
+	thirdAcc := jwt.ClusterTraffic(fmt.Sprintf("account:%s", aExpPub2))
 	// TODO: Not currently testing thirdAcc because we haven't enabled this
 	// functionality yet. If/when we do enable, this test is ready just by
 	// uncommenting the third state below.
-	for _, state := range []string{"system", "owner" /*, thirdAcc */} {
+	for _, state := range []jwt.ClusterTraffic{"system", "owner" /*, thirdAcc */} {
 		accClaim.ClusterTraffic = state
 		accJwt = encodeClaim(t, accClaim, aExpPub)
 
