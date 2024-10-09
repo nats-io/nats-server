@@ -1863,13 +1863,24 @@ func TestSublistNumInterest(t *testing.T) {
 	require_NumInterest(t, "foo", 0, 2)
 	require_NumInterest(t, "foo.bar", 0, 0)
 
+	// Add a second qsub to the second queue group
+	qsub3 := newQSub("foo", "baz")
+	sl.Insert(qsub3)
+	require_NumInterest(t, "foo", 0, 3)
+	require_NumInterest(t, "foo.bar", 0, 0)
+
 	// Remove first queue
 	sl.Remove(qsub)
+	require_NumInterest(t, "foo", 0, 2)
+	require_NumInterest(t, "foo.bar", 0, 0)
+
+	// Remove second
+	sl.Remove(qsub2)
 	require_NumInterest(t, "foo", 0, 1)
 	require_NumInterest(t, "foo.bar", 0, 0)
 
 	// Remove last.
-	sl.Remove(qsub2)
+	sl.Remove(qsub3)
 	require_NumInterest(t, "foo", 0, 0)
 	require_NumInterest(t, "foo.bar", 0, 0)
 
@@ -1886,18 +1897,32 @@ func TestSublistNumInterest(t *testing.T) {
 	require_NumInterest(t, "foo", 0, 0)
 	require_NumInterest(t, "foo.bar", 0, 2)
 	require_NumInterest(t, "foo.bar.baz", 0, 0)
+
+	qsub3 = newQSub("foo.*", "baz")
+	sl.Insert(qsub3)
+	require_NumInterest(t, "foo", 0, 0)
+	require_NumInterest(t, "foo.bar", 0, 3)
+	require_NumInterest(t, "foo.bar.baz", 0, 0)
+
 	// Remove first queue
 	sl.Remove(qsub)
+	require_NumInterest(t, "foo", 0, 0)
+	require_NumInterest(t, "foo.bar", 0, 2)
+	require_NumInterest(t, "foo.bar.baz", 0, 0)
+
+	// Remove second
+	sl.Remove(qsub2)
 	require_NumInterest(t, "foo", 0, 0)
 	require_NumInterest(t, "foo.bar", 0, 1)
 	require_NumInterest(t, "foo.bar.baz", 0, 0)
 
 	// Remove last
-	sl.Remove(qsub2)
+	sl.Remove(qsub3)
 	require_NumInterest(t, "foo", 0, 0)
 	require_NumInterest(t, "foo.bar", 0, 0)
 	require_NumInterest(t, "foo.bar.baz", 0, 0)
 
+	// With > wildcard
 	qsub = newQSub("foo.>", "bar")
 	sl.Insert(qsub)
 	require_NumInterest(t, "foo", 0, 0)
@@ -1911,14 +1936,27 @@ func TestSublistNumInterest(t *testing.T) {
 	require_NumInterest(t, "foo.bar", 0, 2)
 	require_NumInterest(t, "foo.bar.baz", 0, 2)
 
+	// Add another queue to second group.
+	qsub3 = newQSub("foo.>", "baz")
+	sl.Insert(qsub3)
+	require_NumInterest(t, "foo", 0, 0)
+	require_NumInterest(t, "foo.bar", 0, 3)
+	require_NumInterest(t, "foo.bar.baz", 0, 3)
+
 	// Remove first queue
 	sl.Remove(qsub)
+	require_NumInterest(t, "foo", 0, 0)
+	require_NumInterest(t, "foo.bar", 0, 2)
+	require_NumInterest(t, "foo.bar.baz", 0, 2)
+
+	// Remove second
+	sl.Remove(qsub2)
 	require_NumInterest(t, "foo", 0, 0)
 	require_NumInterest(t, "foo.bar", 0, 1)
 	require_NumInterest(t, "foo.bar.baz", 0, 1)
 
 	// Remove last
-	sl.Remove(qsub2)
+	sl.Remove(qsub3)
 	require_NumInterest(t, "foo", 0, 0)
 	require_NumInterest(t, "foo.bar", 0, 0)
 	require_NumInterest(t, "foo.bar.baz", 0, 0)

@@ -4649,17 +4649,18 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			// Here we just care about a client or leaf and skipping a leaf and preferring locals.
 			if dst := sub.client.kind; dst == ROUTER || dst == LEAF {
 				if (src == LEAF || src == CLIENT) && dst == LEAF {
+					// Remember that leaf in case we don't find any other candidate.
 					if rsub == nil {
 						rsub = sub
 					}
 					continue
 				} else {
-					c.addSubToRouteTargets(sub)
-					// Clear rsub since we added a sub.
-					rsub = nil
-					if flags&pmrCollectQueueNames != 0 {
-						queues = append(queues, sub.queue)
+					// We would be picking a route, but if we had remembered a "hub" leaf,
+					// then pick that one instead of the route.
+					if rsub != nil && rsub.client.kind == LEAF && rsub.client.isHubLeafNode() {
+						break
 					}
+					rsub = sub
 				}
 				break
 			}
@@ -4708,8 +4709,8 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		}
 
 		if rsub != nil {
-			// If we are here we tried to deliver to a local qsub
-			// but failed. So we will send it to a remote or leaf node.
+			// We are here if we have selected a leaf or route as the destination,
+			// or if we tried to deliver to a local qsub but failed.
 			c.addSubToRouteTargets(rsub)
 			if flags&pmrCollectQueueNames != 0 {
 				queues = append(queues, rsub.queue)

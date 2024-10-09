@@ -640,7 +640,9 @@ func (s *Sublist) hasInterest(subject string, doLock bool, np, nq *int) bool {
 		if r, ok := s.cache[subject]; ok {
 			if np != nil && nq != nil {
 				*np += len(r.psubs)
-				*nq += len(r.qsubs)
+				for _, qsub := range r.qsubs {
+					*nq += len(qsub)
+				}
 			}
 			matched = len(r.psubs)+len(r.qsubs) > 0
 		}
@@ -798,7 +800,9 @@ func matchLevelForAny(l *level, toks []string, np, nq *int) bool {
 		if l.fwc != nil {
 			if np != nil && nq != nil {
 				*np += len(l.fwc.psubs)
-				*nq += len(l.fwc.qsubs)
+				for _, qsub := range l.fwc.qsubs {
+					*nq += len(qsub)
+				}
 			}
 			return true
 		}
@@ -817,14 +821,18 @@ func matchLevelForAny(l *level, toks []string, np, nq *int) bool {
 	if n != nil {
 		if np != nil && nq != nil {
 			*np += len(n.psubs)
-			*nq += len(n.qsubs)
+			for _, qsub := range n.qsubs {
+				*nq += len(qsub)
+			}
 		}
 		return len(n.plist) > 0 || len(n.psubs) > 0 || len(n.qsubs) > 0
 	}
 	if pwc != nil {
 		if np != nil && nq != nil {
 			*np += len(pwc.psubs)
-			*nq += len(pwc.qsubs)
+			for _, qsub := range pwc.qsubs {
+				*nq += len(qsub)
+			}
 		}
 		return len(pwc.plist) > 0 || len(pwc.psubs) > 0 || len(pwc.qsubs) > 0
 	}
