@@ -18,6 +18,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"slices"
@@ -1402,6 +1403,114 @@ func TestJetStreamConsumerPedanticMode(t *testing.T) {
 		}
 	}
 }
+
+func TestJetStreamConsumerStuckAckPending(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	type ActiveWorkItem struct {
+		ID     string
+		Expiry time.Time
+	}
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:              "TEST_ACTIVE_WORK_ITEMS",
+		Discard:           nats.DiscardOld,
+		MaxMsgsPerSubject: 1,
+		Subjects:          []string{"TEST_ACTIVE_WORK_ITEMS.>"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST_ACTIVE_WORK_ITEMS", &nats.ConsumerConfig{
+		Durable:       "testactiveworkitemsconsumer",
+		AckPolicy:     nats.AckExplicitPolicy,
+		MaxAckPending: -1,
+		MaxWaiting:    20000,
+		AckWait:       15 * time.Second,
+	})
+	require_NoError(t, err)
+
+	go func() {
+		sub, err := js.PullSubscribe("TEST_ACTIVE_WORK_ITEMS.>", "testactiveworkitemsconsumer", nats.BindStream("TEST_ACTIVE_WORK_ITEMS"))
+		if err != nil {
+			panic(err)
+		}
+		for {
+			msgs, err := sub.Fetch(200)
+			// If there is any error, go back and retry the fetch.
+			if err != nil {
+				if errors.Is(err, nats.ErrSubscriptionClosed) {
+					fmt.Println("sub closed")
+					return
+				}
+				if !errors.Is(err, nats.ErrTimeout) {
+					fmt.Println("active work items consumer: unexpected error fetching msgs", err)
+				}
+				continue
+			}
+			for _, msg := range msgs {
+				msg := msg
+				var workItem ActiveWorkItem
+				err = json.Unmarshal(msg.Data, &workItem)
+				if err != nil {
+					panic(err)
+				}
+
+				now := time.Now()
+				// If the work item has not expired, nak it with the respective delay.
+				if workItem.Expiry.After(now) {
+					_ = msg.NakWithDelay(workItem.Expiry.Sub(now))
+				} else {
+					msg.Ack()
+				}
+			}
+		}
+	}()
+
+	fmt.Println("Processing workqueue items")
+	for i := 0; i < 100_000; i++ {
+		itemID := strconv.Itoa(i)
+		// Publish item to TEST_ACTIVE_WORK_ITEMS stream with an expiry time.
+		workItem := ActiveWorkItem{ID: string(itemID), Expiry: time.Now().Add(30 * time.Second)}
+		data, err := json.Marshal(workItem)
+		if err != nil {
+			panic(err)
+		}
+		_, err = js.Publish(fmt.Sprintf("TEST_ACTIVE_WORK_ITEMS.%v", itemID), data)
+		if err != nil {
+			fmt.Println("error publishing to TEST_ACTIVE_WORK_ITEMS", workItem, err)
+			return
+		}
+		// Update expiry time and republish item to TEST_ACTIVE_WORK_ITEMS stream.
+		workItem.Expiry = time.Now().Add(30 * time.Second)
+		data, err = json.Marshal(workItem)
+		if err != nil {
+			panic(err)
+		}
+		_, err = js.Publish(fmt.Sprintf("TEST_ACTIVE_WORK_ITEMS.%v", itemID), data)
+		if err != nil {
+			fmt.Println("error publishing to TEST_ACTIVE_WORK_ITEMS", workItem, err)
+			return
+		}
+	}
+	fmt.Println("done publishing")
+
+	checkFor(t, 90*time.Second, 5*time.Second, func() error {
+		ci, err := js.ConsumerInfo("TEST_ACTIVE_WORK_ITEMS", "testactiveworkitemsconsumer")
+		require_NoError(t, err)
+
+		fmt.Printf("num ack pending: %v\tnum pending: %v\n", ci.NumAckPending, ci.NumPending)
+		if ci.NumAckPending > 0 && ci.NumPending == 0 {
+			return fmt.Errorf("done consuming, have ack pendings. ack pendings: %v", ci.NumAckPending)
+		} else {
+			return nil
+		}
+	})
+}
+
 func Benchmark____JetStreamConsumerIsFilteredMatch(b *testing.B) {
 	subject := "foo.bar.do.not.match.any.filter.subject"
 	for n := 1; n <= 1024; n *= 2 {
