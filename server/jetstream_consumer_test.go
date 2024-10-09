@@ -1433,21 +1433,21 @@ func TestJetStreamConsumerStuckAckPending(t *testing.T) {
 	})
 	require_NoError(t, err)
 
+	sub, err := js.PullSubscribe("TEST_ACTIVE_WORK_ITEMS.>", "testactiveworkitemsconsumer", nats.BindStream("TEST_ACTIVE_WORK_ITEMS"))
+	if err != nil {
+		panic(err)
+	}
 	go func() {
-		sub, err := js.PullSubscribe("TEST_ACTIVE_WORK_ITEMS.>", "testactiveworkitemsconsumer", nats.BindStream("TEST_ACTIVE_WORK_ITEMS"))
-		if err != nil {
-			panic(err)
-		}
 		for {
 			msgs, err := sub.Fetch(200)
 			// If there is any error, go back and retry the fetch.
 			if err != nil {
 				if errors.Is(err, nats.ErrSubscriptionClosed) {
-					fmt.Println("sub closed")
 					return
 				}
 				if !errors.Is(err, nats.ErrTimeout) {
 					fmt.Println("active work items consumer: unexpected error fetching msgs", err)
+					return
 				}
 				continue
 			}
@@ -1485,7 +1485,7 @@ func TestJetStreamConsumerStuckAckPending(t *testing.T) {
 			return
 		}
 		// Update expiry time and republish item to TEST_ACTIVE_WORK_ITEMS stream.
-		workItem.Expiry = time.Now().Add(30 * time.Second)
+		workItem.Expiry = time.Now().Add(5 * time.Second)
 		data, err = json.Marshal(workItem)
 		if err != nil {
 			panic(err)
@@ -1498,16 +1498,30 @@ func TestJetStreamConsumerStuckAckPending(t *testing.T) {
 	}
 	fmt.Println("done publishing")
 
-	checkFor(t, 90*time.Second, 5*time.Second, func() error {
+	noChange := false
+	lastNumAckPending := 0
+	checkFor(t, 20*time.Second, 5*time.Second, func() error {
 		ci, err := js.ConsumerInfo("TEST_ACTIVE_WORK_ITEMS", "testactiveworkitemsconsumer")
 		require_NoError(t, err)
 
+		if lastNumAckPending != 0 && lastNumAckPending == ci.NumAckPending {
+			fmt.Println("no change set to true")
+			noChange = true
+		}
+		lastNumAckPending = ci.NumAckPending
+
 		fmt.Printf("num ack pending: %v\tnum pending: %v\n", ci.NumAckPending, ci.NumPending)
 		if ci.NumAckPending > 0 && ci.NumPending == 0 {
-			return fmt.Errorf("done consuming, have ack pendings. ack pendings: %v", ci.NumAckPending)
-		} else {
-			return nil
+			// just to double check that the consumer is really stuck and does not get messages
+			if noChange {
+				_, err := sub.Fetch(1)
+				if err != nil && errors.Is(err, nats.ErrTimeout) {
+					return fmt.Errorf("num ack pending: %d\t num pending: %v\n", ci.NumAckPending, ci.NumPending)
+				}
+			}
+			return fmt.Errorf("num ack pending: %d\t num pending: %v\n", ci.NumAckPending, ci.NumPending)
 		}
+		return nil
 	})
 }
 
