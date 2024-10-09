@@ -3333,7 +3333,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			if n.catchupStalled() {
 				n.debug("Catchup may be stalled, will request again")
 				inbox = n.createCatchup(ae)
-				ar = newAppendEntryResponse(n.pterm, n.pindex, n.id, false)
+				ar = newAppendEntryResponse(n.pterm, n.commit, n.id, false)
 			}
 			n.Unlock()
 			if ar != nil {
@@ -3379,8 +3379,10 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.debug("AppendEntry detected pindex less than ours: %d:%d vs %d:%d", ae.pterm, ae.pindex, n.pterm, n.pindex)
 			var ar *appendEntryResponse
 
+			// An AppendEntry is stored at seq=ae.pindex+1. This can be checked when eae != nil, eae.pindex==ae.pindex.
+			seq := ae.pindex + 1
 			var success bool
-			if eae, _ := n.loadEntry(ae.pindex); eae == nil {
+			if eae, _ := n.loadEntry(seq); eae == nil {
 				// If terms are equal, and we are not catching up, we have simply already processed this message.
 				// So we will ACK back to the leader. This can happen on server restarts based on timings of snapshots.
 				if ae.pterm == n.pterm && !catchingUp {
@@ -3389,7 +3391,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 					n.resetWAL()
 				}
 			} else {
-				// If terms mismatched, or we got an error loading, delete that entry and all others past it.
+				// If terms mismatched, delete that entry and all others past it.
 				// Make sure to cancel any catchups in progress.
 				// Truncate will reset our pterm and pindex. Only do so if we have an entry.
 				n.truncateWAL(eae.pterm, eae.pindex)
@@ -3473,7 +3475,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			if ae.pindex > n.pindex {
 				// Setup our state for catching up.
 				inbox := n.createCatchup(ae)
-				ar := newAppendEntryResponse(n.pterm, n.pindex, n.id, false)
+				ar := newAppendEntryResponse(n.pterm, n.commit, n.id, false)
 				n.Unlock()
 				n.sendRPC(ae.reply, inbox, ar.encode(arbuf))
 				arPool.Put(ar)
