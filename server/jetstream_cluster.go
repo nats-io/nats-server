@@ -2397,14 +2397,16 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	var cist *time.Ticker
 	var cistc <-chan time.Time
 
+	// 2 minutes plus up to 30s jitter.
+	checkInterestInterval := 2*time.Minute + time.Duration(rand.Intn(30))*time.Second
+
 	if mset != nil && mset.isInterestRetention() {
 		// Wait on our consumers to be assigned and running before proceeding.
 		// This can become important when a server has lots of assets
 		// since we process streams first then consumers as an asset class.
 		mset.waitOnConsumerAssignments()
-		// Setup a periodic check here.
-		// We will fire in 5s the first time then back off to 30s
-		cist = time.NewTicker(5 * time.Second)
+		// Setup our periodic check here. We will check once we have restored right away.
+		cist = time.NewTicker(checkInterestInterval)
 		cistc = cist.C
 	}
 
@@ -2438,7 +2440,10 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					isRecovering = false
 					// If we are interest based make sure to check consumers if interest retention policy.
 					// This is to make sure we process any outstanding acks from all consumers.
-					mset.checkInterestState()
+					if mset != nil && mset.isInterestRetention() {
+						fire := time.Duration(rand.Intn(5)+5) * time.Second
+						time.AfterFunc(fire, mset.checkInterestState)
+					}
 					// If we became leader during this time and we need to send a snapshot to our
 					// followers, i.e. as a result of a scale-up from R1, do it now.
 					if sendSnapshot && isLeader && mset != nil && n != nil {
@@ -2537,7 +2542,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			}
 
 		case <-cistc:
-			cist.Reset(30 * time.Second)
+			cist.Reset(checkInterestInterval)
 			// We may be adjusting some things with consumers so do this in its own go routine.
 			go mset.checkInterestState()
 
@@ -2704,7 +2709,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					mqch = mset.monitorQuitC()
 					// Setup a periodic check here if we are interest based as well.
 					if mset.isInterestRetention() {
-						cist = time.NewTicker(30 * time.Second)
+						cist = time.NewTicker(checkInterestInterval)
 						cistc = cist.C
 					}
 				}
@@ -2845,9 +2850,14 @@ func (mset *stream) resetClusteredState(err error) bool {
 		return false
 	}
 
-	// We delete our raft state. Will recreate.
 	if node != nil {
-		node.Delete()
+		if err == errCatchupTooManyRetries {
+			// Don't delete all state, could've just been temporarily unable to reach the leader.
+			node.Stop()
+		} else {
+			// We delete our raft state. Will recreate.
+			node.Delete()
+		}
 	}
 
 	// Preserve our current state and messages unless we have a first sequence mismatch.
@@ -4830,7 +4840,11 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			// Process the change.
 			if err := js.processConsumerLeaderChange(o, isLeader); err == nil && isLeader {
 				// Check our state if we are under an interest based stream.
-				o.checkStateForInterestStream()
+				if mset := o.getStream(); mset != nil {
+					var ss StreamState
+					mset.store.FastState(&ss)
+					o.checkStateForInterestStream(&ss)
+				}
 				// Do a snapshot.
 				doSnapshot(true)
 				// Synchronize followers to our state. Only send out if we have state and nothing pending.
@@ -4957,21 +4971,20 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 					}
 				}
 				// Check our interest state if applicable.
-				if err := o.checkStateForInterestStream(); err == errAckFloorHigherThanLastSeq {
-					o.mu.RLock()
-					mset := o.mset
-					o.mu.RUnlock()
-					// Register pre-acks unless no state at all for the stream and we would create alot of pre-acks.
-					mset.mu.Lock()
+				if mset := o.getStream(); mset != nil {
 					var ss StreamState
 					mset.store.FastState(&ss)
-					// Only register if we have a valid FirstSeq.
-					if ss.FirstSeq > 0 {
-						for seq := ss.FirstSeq; seq < state.AckFloor.Stream; seq++ {
-							mset.registerPreAck(o, seq)
+					if err := o.checkStateForInterestStream(&ss); err == errAckFloorHigherThanLastSeq {
+						// Register pre-acks unless no state at all for the stream and we would create alot of pre-acks.
+						mset.mu.Lock()
+						// Only register if we have a valid FirstSeq.
+						if ss.FirstSeq > 0 {
+							for seq := ss.FirstSeq; seq < state.AckFloor.Stream; seq++ {
+								mset.registerPreAck(o, seq)
+							}
 						}
+						mset.mu.Unlock()
 					}
-					mset.mu.Unlock()
 				}
 			}
 
@@ -8290,7 +8303,7 @@ RETRY:
 	}
 
 	numRetries++
-	if numRetries >= maxRetries {
+	if numRetries > maxRetries {
 		// Force a hard reset here.
 		return errCatchupTooManyRetries
 	}

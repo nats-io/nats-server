@@ -1970,6 +1970,8 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 		for _, c := range mset.consumers {
 			toUpdate = append(toUpdate, c)
 		}
+		var ss StreamState
+		mset.store.FastState(&ss)
 		mset.mu.Unlock()
 		for _, c := range toUpdate {
 			c.mu.Lock()
@@ -1978,7 +1980,7 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool) 
 			if c.retention == InterestPolicy {
 				// If we're switching to interest, force a check of the
 				// interest of existing stream messages.
-				c.checkStateForInterestStream()
+				c.checkStateForInterestStream(&ss)
 			}
 		}
 		mset.mu.Lock()
@@ -5303,8 +5305,11 @@ func (mset *stream) checkInterestState() {
 		return
 	}
 
+	var ss StreamState
+	mset.store.FastState(&ss)
+
 	for _, o := range mset.getConsumers() {
-		o.checkStateForInterestStream()
+		o.checkStateForInterestStream(&ss)
 	}
 }
 
@@ -5901,7 +5906,7 @@ func (mset *stream) checkForOrphanMsgs() {
 	mset.mu.RUnlock()
 
 	for _, o := range consumers {
-		if err := o.checkStateForInterestStream(); err == errAckFloorHigherThanLastSeq {
+		if err := o.checkStateForInterestStream(&ss); err == errAckFloorHigherThanLastSeq {
 			o.mu.RLock()
 			s, consumer := o.srv, o.name
 			state, _ := o.store.State()

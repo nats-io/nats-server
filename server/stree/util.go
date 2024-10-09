@@ -44,10 +44,14 @@ func copyBytes(src []byte) []byte {
 
 type position interface{ int | uint16 }
 
-// Can return 0 if we have all the subject as prefixes.
+// No pivot available.
+const noPivot = byte(127)
+
+// Can return 127 (DEL) if we have all the subject as prefixes.
+// We used to use 0, but when that was in the subject would cause infinite recursion in some situations.
 func pivot[N position](subject []byte, pos N) byte {
 	if int(pos) >= len(subject) {
-		return 0
+		return noPivot
 	}
 	return subject[pos]
 }

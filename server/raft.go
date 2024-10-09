@@ -3457,13 +3457,17 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		}
 	}
 
+	// Make a copy of these values, as the AppendEntry might be cached and returned to the pool in applyCommit.
+	aeCommit := ae.commit
+	aeReply := ae.reply
+
 	// Apply anything we need here.
-	if ae.commit > n.commit {
+	if aeCommit > n.commit {
 		if n.paused {
-			n.hcommit = ae.commit
-			n.debug("Paused, not applying %d", ae.commit)
+			n.hcommit = aeCommit
+			n.debug("Paused, not applying %d", aeCommit)
 		} else {
-			for index := n.commit + 1; index <= ae.commit; index++ {
+			for index := n.commit + 1; index <= aeCommit; index++ {
 				if err := n.applyCommit(index); err != nil {
 					break
 				}
@@ -3479,7 +3483,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 
 	// Success. Send our response.
 	if ar != nil {
-		n.sendRPC(ae.reply, _EMPTY_, ar.encode(arbuf))
+		n.sendRPC(aeReply, _EMPTY_, ar.encode(arbuf))
 		arPool.Put(ar)
 	}
 }
