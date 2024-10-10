@@ -527,7 +527,7 @@ func processUserPermissionsTemplate(lim jwt.UserPermissionLimits, ujwt *jwt.User
 						values[tokenNum] = []string{" "}
 					}
 				} else if failOnBadSubject {
-					return nil, fmt.Errorf("template operation in %q: %q is not defined", list[i])
+					return nil, fmt.Errorf("template operation in %q: %q is not defined", list[i], op)
 				}
 			}
 			if !hasTags {
