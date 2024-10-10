@@ -3333,7 +3333,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			if n.catchupStalled() {
 				n.debug("Catchup may be stalled, will request again")
 				inbox = n.createCatchup(ae)
-				ar = newAppendEntryResponse(n.pterm, n.pindex, n.id, false)
+				ar = newAppendEntryResponse(n.pterm, n.commit, n.id, false)
 			}
 			n.Unlock()
 			if ar != nil {
@@ -3380,7 +3380,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			var ar *appendEntryResponse
 
 			var success bool
-			if eae, _ := n.loadEntry(ae.pindex); eae == nil {
+			if eae, _ := n.loadEntry(ae.pindex + 1); eae == nil {
 				// If terms are equal, and we are not catching up, we have simply already processed this message.
 				// So we will ACK back to the leader. This can happen on server restarts based on timings of snapshots.
 				if ae.pterm == n.pterm && !catchingUp {
@@ -3473,7 +3473,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			if ae.pindex > n.pindex {
 				// Setup our state for catching up.
 				inbox := n.createCatchup(ae)
-				ar := newAppendEntryResponse(n.pterm, n.pindex, n.id, false)
+				ar := newAppendEntryResponse(n.pterm, n.commit, n.id, false)
 				n.Unlock()
 				n.sendRPC(ae.reply, inbox, ar.encode(arbuf))
 				arPool.Put(ar)
