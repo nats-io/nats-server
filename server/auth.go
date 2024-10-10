@@ -521,7 +521,7 @@ func processUserPermissionsTemplate(lim jwt.UserPermissionLimits, ujwt *jwt.User
 					if len(valueList) != 0 {
 						values[tokenNum] = valueList
 					} else if failOnBadSubject {
-						return nil, fmt.Errorf("generated invalid subject %q: %q is not defined", list[i], fmt.Sprintf("%s)", match[1]))
+						return nil, fmt.Errorf("generated invalid subject %q: %q is not defined", list[i], match[1])
 					} else {
 						// generate an invalid subject?
 						values[tokenNum] = []string{" "}
