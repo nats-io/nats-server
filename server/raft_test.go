@@ -1042,7 +1042,9 @@ func TestNRGTermNoDecreaseAfterWALReset(t *testing.T) {
 			fn.processAppendEntry(ae, fn.aesub)
 			require_Equal(t, fn.term, 20) // Follower should reject and the term stays the same.
 
+			fn.Lock()
 			fn.resetWAL()
+			fn.Unlock()
 			fn.processAppendEntry(ae, fn.aesub)
 			require_Equal(t, fn.term, 20) // Follower should reject again, even after reset, term stays the same.
 		}

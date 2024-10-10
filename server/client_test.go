@@ -2624,6 +2624,7 @@ func TestTLSClientHandshakeFirst(t *testing.T) {
 		}
 		nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", o.Port), opts...)
 		if expectedOk {
+			defer nc.Close()
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
@@ -3072,8 +3073,9 @@ func TestClientFlushOutboundNoSlowConsumer(t *testing.T) {
 
 	wait := make(chan error)
 
-	nca, err := nats.Connect(proxy.clientURL())
+	nca, err := nats.Connect(proxy.clientURL(), nats.NoCallbacksAfterClientClose())
 	require_NoError(t, err)
+	defer nca.Close()
 	nca.SetDisconnectErrHandler(func(c *nats.Conn, err error) {
 		wait <- err
 		close(wait)
@@ -3081,6 +3083,7 @@ func TestClientFlushOutboundNoSlowConsumer(t *testing.T) {
 
 	ncb, err := nats.Connect(s.ClientURL())
 	require_NoError(t, err)
+	defer ncb.Close()
 
 	_, err = nca.Subscribe("test", func(msg *nats.Msg) {
 		wait <- nil

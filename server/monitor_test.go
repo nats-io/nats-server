@@ -4980,6 +4980,7 @@ func TestServerIDZRequest(t *testing.T) {
 
 	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
 	require_NoError(t, err)
+	defer nc.Close()
 
 	subject := fmt.Sprintf(serverPingReqSubj, "IDZ")
 	resp, err := nc.Request(subject, nil, time.Second)
@@ -5453,9 +5454,17 @@ func TestHealthzStatusError(t *testing.T) {
 
 	// Intentionally causing an error in readyForConnections().
 	// Note: Private field access, taking advantage of having the tests in the same package.
+	s.mu.Lock()
+	sl := s.listener
 	s.listener = nil
+	s.mu.Unlock()
 
 	checkHealthzEndpoint(t, s.MonitorAddr().String(), http.StatusInternalServerError, "error")
+
+	// Restore for proper shutdown.
+	s.mu.Lock()
+	s.listener = sl
+	s.mu.Unlock()
 }
 
 func TestHealthzStatusUnavailable(t *testing.T) {

@@ -3042,6 +3042,7 @@ func TestLeafNodeWSSubPath(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts <- r.URL.String()
 	}))
+	defer ts.Close()
 	u, _ := url.Parse(fmt.Sprintf("%v/some/path", ts.URL))
 	u.Scheme = "ws"
 	lo2.LeafNode.Remotes = []*RemoteLeafOpts{
@@ -4773,6 +4774,7 @@ func TestLeafNodePermsSuppressSubs(t *testing.T) {
 	// Connect client to the hub.
 	nc, err := nats.Connect(s.ClientURL())
 	require_NoError(t, err)
+	defer nc.Close()
 
 	// This should not be seen on leafnode side since we only allow pub to "foo"
 	_, err = nc.SubscribeSync("baz")
@@ -6851,6 +6853,7 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithStreamImportAccounts(t 
 
 	// Now connect and send responses from EFG in cloud.
 	nc, _ = jsClientConnect(t, sc.randomServer(), nats.UserInfo("efg", "p"))
+	defer nc.Close()
 
 	for i := 0; i < 100; i++ {
 		require_NoError(t, nc.Publish("RESPONSE", []byte("OK")))
@@ -6983,6 +6986,7 @@ func TestLeafNodeWithWeightedDQResponsesWithStreamImportAccountsWithUnsub(t *tes
 
 	// Now connect and send responses from EFG in cloud.
 	nc, _ := jsClientConnect(t, c.randomServer(), nats.UserInfo("efg", "p"))
+	defer nc.Close()
 	for i := 0; i < 100; i++ {
 		require_NoError(t, nc.Publish("RESPONSE", []byte("OK")))
 	}
@@ -7220,15 +7224,15 @@ func TestLeafNodeTwoRemotesToSameHubAccountWithClusters(t *testing.T) {
 				nc := natsConnect(t, s.ClientURL(), nats.UserInfo(user, "pwd"))
 				conns = append(conns, nc)
 			}
-			for _, nc := range conns {
-				defer nc.Close()
-			}
 			createConn(sh1, "HA")
 			createConn(sh2, "HA")
 			createConn(sp1, "A")
 			createConn(sp2, "A")
 			createConn(sp1, "B")
 			createConn(sp2, "B")
+			for _, nc := range conns {
+				defer nc.Close()
+			}
 
 			check := func(subConn *nats.Conn, subj string, checkA, checkB bool) {
 				t.Helper()
