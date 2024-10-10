@@ -2314,39 +2314,30 @@ func TestLeafNodeNoDuplicateWithinCluster(t *testing.T) {
 	ncSrv1 := natsConnect(t, srv1.ClientURL())
 	defer ncSrv1.Close()
 	natsQueueSub(t, ncSrv1, "foo", "queue", func(m *nats.Msg) {
-		m.Respond([]byte("from srv1"))
+		m.Data = []byte("from srv1")
+		m.RespondMsg(m)
 	})
 
 	ncLeaf1 := natsConnect(t, leaf1.ClientURL())
 	defer ncLeaf1.Close()
 	natsQueueSub(t, ncLeaf1, "foo", "queue", func(m *nats.Msg) {
-		m.Respond([]byte("from leaf1"))
+		m.Data = []byte("from leaf1")
+		m.RespondMsg(m)
 	})
 
 	ncLeaf2 := natsConnect(t, leaf2.ClientURL())
 	defer ncLeaf2.Close()
 
 	// Check that "foo" interest is available everywhere.
-	// For this test, we want to make sure that the 2 queue subs are
-	// registered on all servers, so we don't use checkSubInterest
-	// which would simply return "true" if there is any interest on "foo".
-	servers := []*Server{srv1, leaf1, leaf2}
-	checkFor(t, time.Second, 15*time.Millisecond, func() error {
-		for _, s := range servers {
-			acc, err := s.LookupAccount(globalAccountName)
-			if err != nil {
-				return err
+	for _, s := range []*Server{srv1, leaf1, leaf2} {
+		gacc := s.GlobalAccount()
+		checkFor(t, time.Second, 15*time.Millisecond, func() error {
+			if n := gacc.Interest("foo"); n != 2 {
+				return fmt.Errorf("Expected interest for %q to be 2, got %v", "foo", n)
 			}
-			acc.mu.RLock()
-			r := acc.sl.Match("foo")
-			ok := len(r.qsubs) == 1 && len(r.qsubs[0]) == 2
-			acc.mu.RUnlock()
-			if !ok {
-				return fmt.Errorf("interest not propagated on %q", s.Name())
-			}
-		}
-		return nil
-	})
+			return nil
+		})
+	}
 
 	// Send requests (from leaf2). For this test to make sure that
 	// there is no duplicate, we want to make sure that we check for
@@ -2360,15 +2351,22 @@ func TestLeafNodeNoDuplicateWithinCluster(t *testing.T) {
 	checkSubInterest(t, leaf1, globalAccountName, "reply_subj", time.Second)
 	checkSubInterest(t, leaf2, globalAccountName, "reply_subj", time.Second)
 
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 100; i++ {
 		// Now send the request
-		natsPubReq(t, ncLeaf2, "foo", sub.Subject, []byte("req"))
+		reqID := fmt.Sprintf("req.%d", i)
+		msg := nats.NewMsg("foo")
+		msg.Data = []byte("req")
+		msg.Header.Set("ReqId", reqID)
+		msg.Reply = sub.Subject
+		if err := ncLeaf2.PublishMsg(msg); err != nil {
+			t.Fatalf("Error on publish: %v", err)
+		}
 		// Check that we get the reply
 		replyMsg := natsNexMsg(t, sub, time.Second)
-		// But make sure we received only 1!
-		if otherReply, _ := sub.NextMsg(100 * time.Millisecond); otherReply != nil {
-			t.Fatalf("Received duplicate reply, first was %q, followed by %q",
-				replyMsg.Data, otherReply.Data)
+		// But make sure no duplicate. We do so by checking that the reply's
+		// header ReqId matches our current reqID.
+		if respReqID := replyMsg.Header.Get("ReqId"); respReqID != reqID {
+			t.Fatalf("Current request is %q, got duplicate with %q", reqID, respReqID)
 		}
 		// We also should have preferred the queue sub that is in the leaf cluster.
 		if string(replyMsg.Data) != "from leaf1" {
@@ -3044,6 +3042,7 @@ func TestLeafNodeWSSubPath(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts <- r.URL.String()
 	}))
+	defer ts.Close()
 	u, _ := url.Parse(fmt.Sprintf("%v/some/path", ts.URL))
 	u.Scheme = "ws"
 	lo2.LeafNode.Remotes = []*RemoteLeafOpts{
@@ -4010,6 +4009,114 @@ func TestLeafNodeInterestPropagationDaisychain(t *testing.T) {
 	checkSubInterest(t, sAA, "$G", "foo", time.Second) // failure issue 2448
 }
 
+func TestLeafNodeQueueGroupDistribution(t *testing.T) {
+	hc := createClusterWithName(t, "HUB", 3)
+	defer hc.shutdown()
+
+	// Now have a cluster of leafnodes with each one connecting to corresponding HUB(n) node.
+	c1 := `
+	server_name: LEAF1
+	listen: 127.0.0.1:-1
+	cluster { name: ln22, listen: 127.0.0.1:-1 }
+	leafnodes { remotes = [{ url: nats-leaf://127.0.0.1:%d }] }
+	`
+	lconf1 := createConfFile(t, []byte(fmt.Sprintf(c1, hc.opts[0].LeafNode.Port)))
+	ln1, lopts1 := RunServerWithConfig(lconf1)
+	defer ln1.Shutdown()
+
+	c2 := `
+	server_name: LEAF2
+	listen: 127.0.0.1:-1
+	cluster { name: ln22, listen: 127.0.0.1:-1, routes = [ nats-route://127.0.0.1:%d] }
+	leafnodes { remotes = [{ url: nats-leaf://127.0.0.1:%d }] }
+	`
+	lconf2 := createConfFile(t, []byte(fmt.Sprintf(c2, lopts1.Cluster.Port, hc.opts[1].LeafNode.Port)))
+	ln2, _ := RunServerWithConfig(lconf2)
+	defer ln2.Shutdown()
+
+	c3 := `
+	server_name: LEAF3
+	listen: 127.0.0.1:-1
+	cluster { name: ln22, listen: 127.0.0.1:-1, routes = [ nats-route://127.0.0.1:%d] }
+	leafnodes { remotes = [{ url: nats-leaf://127.0.0.1:%d }] }
+	`
+	lconf3 := createConfFile(t, []byte(fmt.Sprintf(c3, lopts1.Cluster.Port, hc.opts[2].LeafNode.Port)))
+	ln3, _ := RunServerWithConfig(lconf3)
+	defer ln3.Shutdown()
+
+	// Check leaf cluster is formed and all connected to the HUB.
+	lnServers := []*Server{ln1, ln2, ln3}
+	checkClusterFormed(t, lnServers...)
+	for _, s := range lnServers {
+		checkLeafNodeConnected(t, s)
+	}
+	// Check each node in the hub has 1 connection from the leaf cluster.
+	for i := 0; i < 3; i++ {
+		checkLeafNodeConnectedCount(t, hc.servers[i], 1)
+	}
+
+	// Create a client and qsub on LEAF1 and LEAF2.
+	nc1 := natsConnect(t, ln1.ClientURL())
+	defer nc1.Close()
+	var qsub1Count atomic.Int32
+	natsQueueSub(t, nc1, "foo", "queue1", func(_ *nats.Msg) {
+		qsub1Count.Add(1)
+	})
+	natsFlush(t, nc1)
+
+	nc2 := natsConnect(t, ln2.ClientURL())
+	defer nc2.Close()
+	var qsub2Count atomic.Int32
+	natsQueueSub(t, nc2, "foo", "queue1", func(_ *nats.Msg) {
+		qsub2Count.Add(1)
+	})
+	natsFlush(t, nc2)
+
+	// Make sure that the propagation interest is done before sending.
+	for _, s := range hc.servers {
+		gacc := s.GlobalAccount()
+		checkFor(t, time.Second, 15*time.Millisecond, func() error {
+			if n := gacc.Interest("foo"); n != 2 {
+				return fmt.Errorf("Expected interest for %q to be 2, got %v", "foo", n)
+			}
+			return nil
+		})
+	}
+
+	sendAndCheck := func(idx int) {
+		t.Helper()
+		nchub := natsConnect(t, hc.servers[idx].ClientURL())
+		defer nchub.Close()
+		total := 1000
+		for i := 0; i < total; i++ {
+			natsPub(t, nchub, "foo", []byte("from hub"))
+		}
+		checkFor(t, time.Second, 15*time.Millisecond, func() error {
+			if trecv := int(qsub1Count.Load() + qsub2Count.Load()); trecv != total {
+				return fmt.Errorf("Expected %v messages, got %v", total, trecv)
+			}
+			return nil
+		})
+		// Now that we have made sure that all messages were received,
+		// check that qsub1 and qsub2 are getting at least some.
+		if n := int(qsub1Count.Load()); n <= total/10 {
+			t.Fatalf("Expected qsub1 to get some messages, but got %v", n)
+		}
+		if n := int(qsub2Count.Load()); n <= total/10 {
+			t.Fatalf("Expected qsub2 to get some messages, but got %v", n)
+		}
+		// Reset the counters.
+		qsub1Count.Store(0)
+		qsub2Count.Store(0)
+	}
+	// Send from HUB1
+	sendAndCheck(0)
+	// Send from HUB2
+	sendAndCheck(1)
+	// Send from HUB3
+	sendAndCheck(2)
+}
+
 func TestLeafNodeQueueGroupWithLateLNJoin(t *testing.T) {
 	/*
 
@@ -4667,6 +4774,7 @@ func TestLeafNodePermsSuppressSubs(t *testing.T) {
 	// Connect client to the hub.
 	nc, err := nats.Connect(s.ClientURL())
 	require_NoError(t, err)
+	defer nc.Close()
 
 	// This should not be seen on leafnode side since we only allow pub to "foo"
 	_, err = nc.SubscribeSync("baz")
@@ -6680,6 +6788,7 @@ func TestLeafNodeWithWeightedDQRequestsToSuperClusterWithStreamImportAccounts(t 
 
 	// Now connect and send responses from EFG in cloud.
 	nc, _ = jsClientConnect(t, sc.randomServer(), nats.UserInfo("efg", "p"))
+	defer nc.Close()
 
 	for i := 0; i < 100; i++ {
 		require_NoError(t, nc.Publish("RESPONSE", []byte("OK")))
@@ -6812,6 +6921,7 @@ func TestLeafNodeWithWeightedDQResponsesWithStreamImportAccountsWithUnsub(t *tes
 
 	// Now connect and send responses from EFG in cloud.
 	nc, _ := jsClientConnect(t, c.randomServer(), nats.UserInfo("efg", "p"))
+	defer nc.Close()
 	for i := 0; i < 100; i++ {
 		require_NoError(t, nc.Publish("RESPONSE", []byte("OK")))
 	}
@@ -7049,15 +7159,15 @@ func TestLeafNodeTwoRemotesToSameHubAccountWithClusters(t *testing.T) {
 				nc := natsConnect(t, s.ClientURL(), nats.UserInfo(user, "pwd"))
 				conns = append(conns, nc)
 			}
-			for _, nc := range conns {
-				defer nc.Close()
-			}
 			createConn(sh1, "HA")
 			createConn(sh2, "HA")
 			createConn(sp1, "A")
 			createConn(sp2, "A")
 			createConn(sp1, "B")
 			createConn(sp2, "B")
+			for _, nc := range conns {
+				defer nc.Close()
+			}
 
 			check := func(subConn *nats.Conn, subj string, checkA, checkB bool) {
 				t.Helper()

@@ -7026,6 +7026,7 @@ func TestJWTImportsOnServerRestartAndClientsReconnect(t *testing.T) {
 		for range time.NewTicker(200 * time.Millisecond).C {
 			select {
 			case <-ctx.Done():
+				return
 			default:
 			}
 			send(t)

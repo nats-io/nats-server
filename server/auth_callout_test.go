@@ -250,6 +250,7 @@ func TestAuthCalloutBasics(t *testing.T) {
 
 	// This one will use callout since not defined in server config.
 	nc := at.Connect(nats.UserInfo("dlc", "zzz"))
+	defer nc.Close()
 
 	resp, err := nc.Request(userDirectInfoSubj, nil, time.Second)
 	require_NoError(t, err)
@@ -319,6 +320,7 @@ func TestAuthCalloutMultiAccounts(t *testing.T) {
 
 	// This one will use callout since not defined in server config.
 	nc := at.Connect(nats.UserInfo("dlc", "zzz"))
+	defer nc.Close()
 
 	resp, err := nc.Request(userDirectInfoSubj, nil, time.Second)
 	require_NoError(t, err)
@@ -388,6 +390,7 @@ func TestAuthCalloutClientTLSCerts(t *testing.T) {
 		nats.ClientCert("../test/configs/certs/tlsauth/client2.pem", "../test/configs/certs/tlsauth/client2-key.pem"),
 		nats.RootCAs("../test/configs/certs/tlsauth/ca.pem"),
 	)
+	defer nc.Close()
 
 	resp, err := nc.Request(userDirectInfoSubj, nil, time.Second)
 	require_NoError(t, err)
@@ -439,6 +442,7 @@ func TestAuthCalloutVerifiedUserCalloutsWithSig(t *testing.T) {
 	require_NoError(t, err)
 
 	nc := ac.Connect(nkeyOpt)
+	defer nc.Close()
 
 	// Make sure that the callout was called.
 	if atomic.LoadUint32(&callouts) != 1 {
@@ -658,6 +662,7 @@ func TestAuthCalloutOperatorModeBasics(t *testing.T) {
 	// Send correct token. This should switch us to the test account.
 	nc := ac.Connect(nats.UserCredentials(creds), nats.Token(secretToken))
 	require_NoError(t, err)
+	defer nc.Close()
 
 	resp, err = nc.Request(userDirectInfoSubj, nil, time.Second)
 	require_NoError(t, err)
@@ -678,6 +683,7 @@ func TestAuthCalloutOperatorModeBasics(t *testing.T) {
 	// Send the signing key token. This should switch us to the test account, but the user
 	// is signed with the account signing key
 	nc = ac.Connect(nats.UserCredentials(creds), nats.Token(skKeyToken))
+	defer nc.Close()
 
 	resp, err = nc.Request(userDirectInfoSubj, nil, time.Second)
 	require_NoError(t, err)
@@ -697,6 +703,7 @@ func TestAuthCalloutOperatorModeBasics(t *testing.T) {
 	// is signed with the account signing key
 	nc = ac.Connect(nats.UserCredentials(creds), nats.Token(scopedToken))
 	require_NoError(t, err)
+	defer nc.Close()
 
 	resp, err = nc.Request(userDirectInfoSubj, nil, time.Second)
 	require_NoError(t, err)
@@ -922,10 +929,12 @@ func TestAuthCalloutServerConfigEncryption(t *testing.T) {
 	ac := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
 	defer ac.Cleanup()
 
-	ac.Connect(nats.UserInfo("dlc", "zzz"))
+	nc := ac.Connect(nats.UserInfo("dlc", "zzz"))
+	defer nc.Close()
 
 	// Authorization services can optionally encrypt the responses using the server's public xkey.
-	ac.Connect(nats.UserInfo("dlc", "xxx"))
+	nc = ac.Connect(nats.UserInfo("dlc", "xxx"))
+	defer nc.Close()
 }
 
 func TestAuthCalloutOperatorModeEncryption(t *testing.T) {
@@ -1017,10 +1026,12 @@ func TestAuthCalloutOperatorModeEncryption(t *testing.T) {
 	defer removeFile(t, creds)
 
 	// This will receive an encrypted request to the auth service but send plaintext response.
-	ac.Connect(nats.UserCredentials(creds), nats.Token(tokenA))
+	nc := ac.Connect(nats.UserCredentials(creds), nats.Token(tokenA))
+	defer nc.Close()
 
 	// This will receive an encrypted request to the auth service and send an encrypted response.
-	ac.Connect(nats.UserCredentials(creds), nats.Token(tokenB))
+	nc = ac.Connect(nats.UserCredentials(creds), nats.Token(tokenB))
+	defer nc.Close()
 }
 
 func TestAuthCalloutServerTags(t *testing.T) {
@@ -1048,7 +1059,8 @@ func TestAuthCalloutServerTags(t *testing.T) {
 	ac := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
 	defer ac.Cleanup()
 
-	ac.Connect()
+	nc := ac.Connect()
+	defer nc.Close()
 
 	tags := <-tch
 	require_True(t, len(tags) == 2)
@@ -1081,7 +1093,8 @@ func TestAuthCalloutServerClusterAndVersion(t *testing.T) {
 	ac := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
 	defer ac.Cleanup()
 
-	ac.Connect()
+	nc := ac.Connect()
+	defer nc.Close()
 
 	cluster := <-ch
 	require_True(t, cluster == "HUB")
@@ -1184,7 +1197,8 @@ func TestAuthCalloutAuthErrEvents(t *testing.T) {
 	require_NoError(t, err)
 
 	// This one will use callout since not defined in server config.
-	ac.Connect(nats.UserInfo("dlc", "zzz"))
+	nc := ac.Connect(nats.UserInfo("dlc", "zzz"))
+	defer nc.Close()
 	checkSubsPending(t, sub, 0)
 
 	checkAuthErrEvent := func(user, pass, reason string) {
@@ -1244,6 +1258,7 @@ func TestAuthCalloutConnectEvents(t *testing.T) {
 
 	// Setup system user.
 	snc := ac.Connect(nats.UserInfo("admin", "s3cr3t!"))
+	defer snc.Close()
 
 	// Allow this connect event to pass us by..
 	time.Sleep(250 * time.Millisecond)
@@ -1615,6 +1630,7 @@ func TestAuthCalloutOperator_AnyAccount(t *testing.T) {
 	// Send correct token. This should switch us to the A account.
 	nc := ac.Connect(nats.UserCredentials(creds), nats.Token("PutMeInA"))
 	require_NoError(t, err)
+	defer nc.Close()
 
 	resp, err = nc.Request(userDirectInfoSubj, nil, time.Second)
 	require_NoError(t, err)
@@ -1626,6 +1642,7 @@ func TestAuthCalloutOperator_AnyAccount(t *testing.T) {
 
 	nc = ac.Connect(nats.UserCredentials(creds), nats.Token("PutMeInB"))
 	require_NoError(t, err)
+	defer nc.Close()
 
 	resp, err = nc.Request(userDirectInfoSubj, nil, time.Second)
 	require_NoError(t, err)
@@ -1703,6 +1720,7 @@ func TestAuthCalloutWSClientTLSCerts(t *testing.T) {
 		nats.ClientCert("../test/configs/certs/tlsauth/client2.pem", "../test/configs/certs/tlsauth/client2-key.pem"),
 		nats.RootCAs("../test/configs/certs/tlsauth/ca.pem"),
 	)
+	defer nc.Close()
 
 	resp, err := nc.Request(userDirectInfoSubj, nil, time.Second)
 	require_NoError(t, err)
@@ -1910,6 +1928,7 @@ func TestOperatorModeUserRevocation(t *testing.T) {
 	// connect the system user
 	sysNC, err := ac.NewClient(nats.UserCredentials(sysCreds))
 	require_NoError(t, err)
+	defer sysNC.Close()
 
 	// Bearer token etc..
 	// This is used by all users, and the customization will be in other connect args.
