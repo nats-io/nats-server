@@ -3141,10 +3141,10 @@ func (n *raft) catchupStalled() bool {
 	if n.catchup == nil {
 		return false
 	}
-	if n.catchup.pindex == n.pindex {
+	if n.catchup.pindex == n.commit {
 		return time.Since(n.catchup.active) > 2*time.Second
 	}
-	n.catchup.pindex = n.pindex
+	n.catchup.pindex = n.commit
 	n.catchup.active = time.Now()
 	return false
 }
@@ -3163,7 +3163,7 @@ func (n *raft) createCatchup(ae *appendEntry) string {
 		cterm:  ae.pterm,
 		cindex: ae.pindex,
 		pterm:  n.pterm,
-		pindex: n.pindex,
+		pindex: n.commit,
 		active: time.Now(),
 	}
 	inbox := n.newCatchupInbox()
@@ -3475,8 +3475,8 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			return
 
 		} else {
-			n.debug("AppendEntry did not match %d %d with %d %d", ae.pterm, ae.pindex, n.pterm, n.pindex)
-			if ae.pindex > n.pindex {
+			n.debug("AppendEntry did not match %d %d with %d %d (commit %d)", ae.pterm, ae.pindex, n.pterm, n.pindex, n.commit)
+			if ae.pindex > n.commit {
 				// Setup our state for catching up.
 				inbox := n.createCatchup(ae)
 				ar := newAppendEntryResponse(n.pterm, n.commit, n.id, false)
