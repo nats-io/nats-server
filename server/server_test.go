@@ -225,6 +225,9 @@ func TestTLSMinVersionConfig(t *testing.T) {
 		}
 		opts = append(opts, nats.RootCAs("../test/configs/certs/ca.pem"))
 		nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", o.Port), opts...)
+		if err == nil {
+			defer nc.Close()
+		}
 		if expectedErr == nil {
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
