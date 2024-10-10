@@ -7631,6 +7631,9 @@ func TestJetStreamClusterCheckInterestStatePerformanceInterest(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatalf("Did not receive completion signal")
 	}
+	// This is so we do not asynchronously update our consumer state after we set the state due to notifications
+	// from new messages for the stream.
+	time.Sleep(250 * time.Millisecond)
 
 	// Now catch up both B and C but let A simulate being offline of very behind.
 	// Will do this manually here to speed up tests.
