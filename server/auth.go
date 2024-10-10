@@ -417,6 +417,10 @@ func (c *client) matchesPinnedCert(tlsPinnedCerts PinnedCertSet) bool {
 	return true
 }
 
+var (
+	mustacheRE = regexp.MustCompile(`{{2}([^}]+)}{2}`)
+)
+
 func processUserPermissionsTemplate(lim jwt.UserPermissionLimits, ujwt *jwt.UserClaims, acc *Account) (jwt.UserPermissionLimits, error) {
 	nArrayCartesianProduct := func(a ...[]string) [][]string {
 		c := 1
@@ -448,16 +452,26 @@ func processUserPermissionsTemplate(lim jwt.UserPermissionLimits, ujwt *jwt.User
 		}
 		return p
 	}
+	isTag := func(op string) []string {
+		if strings.EqualFold("tag(", op[:4]) && strings.HasSuffix(op, ")") {
+			v := strings.TrimPrefix(op, "tag(")
+			v = strings.TrimSuffix(v, ")")
+			return []string{"tag", v}
+		} else if strings.EqualFold("account-tag(", op[:12]) && strings.HasSuffix(op, ")") {
+			v := strings.TrimPrefix(op, "account-tag(")
+			v = strings.TrimSuffix(v, ")")
+			return []string{"account-tag", v}
+		}
+		return nil
+	}
 	applyTemplate := func(list jwt.StringList, failOnBadSubject bool) (jwt.StringList, error) {
 		found := false
 	FOR_FIND:
 		for i := 0; i < len(list); i++ {
 			// check if templates are present
-			for _, tk := range strings.Split(list[i], tsep) {
-				if strings.HasPrefix(tk, "{{") && strings.HasSuffix(tk, "}}") {
-					found = true
-					break FOR_FIND
-				}
+			if mustacheRE.MatchString(list[i]) {
+				found = true
+				break FOR_FIND
 			}
 		}
 		if !found {
@@ -466,94 +480,78 @@ func processUserPermissionsTemplate(lim jwt.UserPermissionLimits, ujwt *jwt.User
 		// process the templates
 		emittedList := make([]string, 0, len(list))
 		for i := 0; i < len(list); i++ {
-			tokens := strings.Split(list[i], tsep)
-
-			newTokens := make([]string, len(tokens))
-			tagValues := [][]string{}
-
+			// find all the templates {{}} in this acl
+			tokens := mustacheRE.FindAllString(list[i], -1)
+			srcs := make([]string, len(tokens))
+			values := make([][]string, len(tokens))
+			hasTags := false
 			for tokenNum, tk := range tokens {
-				if strings.HasPrefix(tk, "{{") && strings.HasSuffix(tk, "}}") {
-					op := strings.ToLower(strings.TrimSuffix(strings.TrimPrefix(tk, "{{"), "}}"))
-					switch {
-					case op == "name()":
-						tk = ujwt.Name
-					case op == "subject()":
-						tk = ujwt.Subject
-					case op == "account-name()":
+				srcs[tokenNum] = tk
+				op := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(tk, "{{"), "}}"))
+				if strings.EqualFold("name()", op) {
+					values[tokenNum] = []string{ujwt.Name}
+				} else if strings.EqualFold("subject()", op) {
+					values[tokenNum] = []string{ujwt.Subject}
+				} else if strings.EqualFold("account-name()", op) {
+					acc.mu.RLock()
+					values[tokenNum] = []string{acc.nameTag}
+					acc.mu.RUnlock()
+				} else if strings.EqualFold("account-subject()", op) {
+					// this always has an issuer account since this is a scoped signer
+					values[tokenNum] = []string{ujwt.IssuerAccount}
+				} else if isTag(op) != nil {
+					hasTags = true
+					match := isTag(op)
+					var tags jwt.TagList
+					if match[0] == "account-tag" {
 						acc.mu.RLock()
-						name := acc.nameTag
+						tags = acc.tags
 						acc.mu.RUnlock()
-						tk = name
-					case op == "account-subject()":
-						tk = ujwt.IssuerAccount
-					case (strings.HasPrefix(op, "tag(") || strings.HasPrefix(op, "account-tag(")) &&
-						strings.HasSuffix(op, ")"):
-						// insert dummy tav value that will throw of subject validation (in case nothing is found)
-						tk = _EMPTY_
-						// collect list of matching tag values
-
-						var tags jwt.TagList
-						var tagPrefix string
-						if strings.HasPrefix(op, "account-tag(") {
-							acc.mu.RLock()
-							tags = acc.tags
-							acc.mu.RUnlock()
-							tagPrefix = fmt.Sprintf("%s:", strings.ToLower(
-								strings.TrimSuffix(strings.TrimPrefix(op, "account-tag("), ")")))
-						} else {
-							tags = ujwt.Tags
-							tagPrefix = fmt.Sprintf("%s:", strings.ToLower(
-								strings.TrimSuffix(strings.TrimPrefix(op, "tag("), ")")))
-						}
-
-						valueList := []string{}
-						for _, tag := range tags {
-							if strings.HasPrefix(tag, tagPrefix) {
-								tagValue := strings.TrimPrefix(tag, tagPrefix)
-								valueList = append(valueList, tagValue)
-							}
-						}
-						if len(valueList) != 0 {
-							tagValues = append(tagValues, valueList)
-						}
-					default:
-						// if macro is not recognized, throw off subject check on purpose
-						tk = " "
+					} else {
+						tags = ujwt.Tags
 					}
+					tagPrefix := fmt.Sprintf("%s:", strings.ToLower(match[1]))
+					var valueList []string
+					for _, tag := range tags {
+						if strings.HasPrefix(tag, tagPrefix) {
+							tagValue := strings.TrimPrefix(tag, tagPrefix)
+							valueList = append(valueList, tagValue)
+						}
+					}
+					if len(valueList) != 0 {
+						values[tokenNum] = valueList
+					} else if failOnBadSubject {
+						return nil, fmt.Errorf("generated invalid subject %q: %q is not defined", list[i], match[1])
+					} else {
+						// generate an invalid subject?
+						values[tokenNum] = []string{" "}
+					}
+				} else if failOnBadSubject {
+					return nil, fmt.Errorf("template operation in %q: %q is not defined", list[i], op)
 				}
-				newTokens[tokenNum] = tk
 			}
-			// fill in tag value placeholders
-			if len(tagValues) == 0 {
-				emitSubj := strings.Join(newTokens, tsep)
-				if IsValidSubject(emitSubj) {
-					emittedList = append(emittedList, emitSubj)
+			if !hasTags {
+				subj := list[i]
+				for idx, m := range srcs {
+					subj = strings.Replace(subj, m, values[idx][0], -1)
+				}
+				if IsValidSubject(subj) {
+					emittedList = append(emittedList, subj)
 				} else if failOnBadSubject {
 					return nil, fmt.Errorf("generated invalid subject")
 				}
-				// else skip emitting
 			} else {
-				// compute the cartesian product and compute subject to emit for each combination
-				for _, valueList := range nArrayCartesianProduct(tagValues...) {
-					b := strings.Builder{}
-					for i, token := range newTokens {
-						if token == _EMPTY_ && len(valueList) > 0 {
-							b.WriteString(valueList[0])
-							valueList = valueList[1:]
-						} else {
-							b.WriteString(token)
-						}
-						if i != len(newTokens)-1 {
-							b.WriteString(tsep)
-						}
+				a := nArrayCartesianProduct(values...)
+				for _, aa := range a {
+					subj := list[i]
+					for j := 0; j < len(srcs); j++ {
+						subj = strings.Replace(subj, srcs[j], aa[j], -1)
 					}
-					emitSubj := b.String()
-					if IsValidSubject(emitSubj) {
-						emittedList = append(emittedList, emitSubj)
+					if IsValidSubject(subj) {
+						emittedList = append(emittedList, subj)
 					} else if failOnBadSubject {
 						return nil, fmt.Errorf("generated invalid subject")
 					}
-					// else skip emitting
 				}
 			}
 		}
