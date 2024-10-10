@@ -4313,3 +4313,86 @@ func TestJetStreamClusterDesyncAfterPublishToLeaderWithoutQuorum(t *testing.T) {
 		require_Equal(t, state.Bytes, 55)
 	}
 }
+
+func TestJetStreamClusterPreserveWALDuringCatchupWithMatchingTerm(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.>"},
+		Replicas: 3,
+	})
+	nc.Close()
+	require_NoError(t, err)
+
+	// Pick one server that will only store a part of the messages in its WAL.
+	rs := c.randomNonStreamLeader(globalAccountName, "TEST")
+	ts := time.Now().UnixNano()
+
+	var scratch [1024]byte
+	for _, s := range c.servers {
+		for _, n := range s.raftNodes {
+			rn := n.(*raft)
+			if rn.accName == globalAccountName {
+				for i := uint64(0); i < 3; i++ {
+					esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, i, ts, true)
+					entries := []*Entry{newEntry(EntryNormal, esm)}
+					rn.Lock()
+					ae := rn.buildAppendEntry(entries)
+					ae.buf, err = ae.encode(scratch[:])
+					require_NoError(t, err)
+					err = rn.storeToWAL(ae)
+					rn.Unlock()
+					require_NoError(t, err)
+
+					// One server will be behind and need to catchup.
+					if s.Name() == rs.Name() && i >= 1 {
+						break
+					}
+				}
+			}
+		}
+	}
+
+	// Restart all.
+	c.stopAll()
+	c.restartAll()
+	c.waitOnAllCurrent()
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	// Check all servers ended up with all published messages, which had quorum.
+	for _, s := range c.servers {
+		c.waitOnStreamCurrent(s, globalAccountName, "TEST")
+
+		acc, err := s.lookupAccount(globalAccountName)
+		require_NoError(t, err)
+		mset, err := acc.lookupStream("TEST")
+		require_NoError(t, err)
+		state := mset.state()
+		require_Equal(t, state.Msgs, 3)
+		require_Equal(t, state.Bytes, 99)
+	}
+
+	// Check that the first two published messages came from our WAL, and
+	// the last came from a catchup by another leader.
+	for _, n := range rs.raftNodes {
+		rn := n.(*raft)
+		if rn.accName == globalAccountName {
+			ae, err := rn.loadEntry(2)
+			require_NoError(t, err)
+			require_Equal(t, ae.leader, rn.ID())
+
+			ae, err = rn.loadEntry(3)
+			require_NoError(t, err)
+			require_Equal(t, ae.leader, rn.ID())
+
+			ae, err = rn.loadEntry(4)
+			require_NoError(t, err)
+			require_NotEqual(t, ae.leader, rn.ID())
+		}
+	}
+}

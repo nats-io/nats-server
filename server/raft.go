@@ -3390,14 +3390,18 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				} else {
 					n.resetWAL()
 				}
-			} else {
+			} else if eae.term != ae.term {
 				// If terms mismatched, delete that entry and all others past it.
 				// Make sure to cancel any catchups in progress.
 				// Truncate will reset our pterm and pindex. Only do so if we have an entry.
 				n.truncateWAL(eae.pterm, eae.pindex)
+			} else {
+				success = true
 			}
-			// Cancel regardless.
-			n.cancelCatchup()
+			// Cancel regardless if truncated/unsuccessful.
+			if !success {
+				n.cancelCatchup()
+			}
 
 			// Create response.
 			ar = newAppendEntryResponse(ae.pterm, ae.pindex, n.id, success)
