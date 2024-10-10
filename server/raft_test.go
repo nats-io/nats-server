@@ -784,8 +784,8 @@ func TestNRGTermDoesntRollBackToPtermOnCatchup(t *testing.T) {
 		require_Equal(t, rn.term, 2)
 
 		if !rn.Leader() {
-			rn.truncateWAL(1, 6) // This will overwrite rn.term, so...
-			rn.term = 2          // ... we'll set it back manually.
+			rn.truncateWAL(1, 6)
+			require_Equal(t, rn.term, 2) // rn.term must stay the same
 			require_Equal(t, rn.pterm, 1)
 			require_Equal(t, rn.pindex, 6)
 		}
