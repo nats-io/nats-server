@@ -4318,9 +4318,11 @@ func TestRouteSlowConsumerRecover(t *testing.T) {
 
 	ncA, err := nats.Connect(s1.Addr().String())
 	require_NoError(t, err)
+	defer ncA.Close()
 
 	ncB, err := nats.Connect(s2.Addr().String())
 	require_NoError(t, err)
+	defer ncB.Close()
 
 	var wg sync.WaitGroup
 	ncB.Subscribe("test", func(*nats.Msg) {
