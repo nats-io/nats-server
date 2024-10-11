@@ -790,6 +790,8 @@ func TestNRGTermDoesntRollBackToPtermOnCatchup(t *testing.T) {
 			require_Equal(t, rn.pindex, 6)
 		}
 	}
+	// This will make followers run a catchup.
+	ae := newAppendEntry(leader.id, leader.term, leader.commit, leader.pterm, leader.pindex, nil)
 	rg.unlockAll()
 
 	arInbox := nc.NewRespInbox()
@@ -800,7 +802,6 @@ func TestNRGTermDoesntRollBackToPtermOnCatchup(t *testing.T) {
 	// In order to trip this condition, we need to send an append entry that
 	// will trick the followers into running a catchup. In the process they
 	// were setting the term back to pterm which is incorrect.
-	ae := newAppendEntry(leader.id, leader.term, leader.commit, leader.pterm, leader.pindex, nil)
 	b, err := ae.encode(nil)
 	require_NoError(t, err)
 	require_NoError(t, nc.PublishMsg(&nats.Msg{
