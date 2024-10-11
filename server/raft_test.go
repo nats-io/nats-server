@@ -876,22 +876,37 @@ func TestNRGCandidateDontStepdownDueToLeaderOfPreviousTerm(t *testing.T) {
 		candidateTerm   uint64 = 100
 	)
 
-	// Create a candidate that has received entries while they were a follower in a previous term
+	rg.lockAll()
+	leader := rg.leader().node().(*raft)
 	candidate := rg.nonLeader().node().(*raft)
-	candidate.Lock()
+
+	// We don't want any of the non-leaders to process vote responses, otherwise the node we turned
+	// into a candidate might win the election and take over leader role, so blackhole the IPQ.
+	for _, n := range rg {
+		if n.node() == leader {
+			continue
+		}
+		rn := n.node().(*raft)
+		rn.votes.unregister()
+		rn.votes = newIPQueue[*voteResponse](rn.s, "vote request blackhole",
+			ipqSizeCalculation(func(e *voteResponse) uint64 {
+				return 2 // Bigger than the size limit below, so always fails to push anything.
+			}),
+			ipqLimitBySize[*voteResponse](1),
+		)
+	}
+
+	// Create a candidate that has received entries while they were a follower in a previous term
 	candidate.switchState(Candidate)
 	candidate.pterm = candidatePterm
 	candidate.pindex = candidatePindex
 	candidate.term = candidateTerm
-	candidate.Unlock()
 
 	// Leader term is behind candidate
-	leader := rg.leader().node().(*raft)
-	leader.Lock()
 	leader.term = candidatePterm
 	leader.pterm = candidatePterm
 	leader.pindex = candidatePindex
-	leader.Unlock()
+	rg.unlockAll()
 
 	// Subscribe to the append entry subject.
 	sub, err := nc.SubscribeSync(leader.asubj)
