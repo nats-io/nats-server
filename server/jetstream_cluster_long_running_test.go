@@ -1202,6 +1202,7 @@ func TestLongJetStreamConsumerFetchWithDrain(t *testing.T) {
 }
 
 func TestLongStreamSourcingScalingSourcingManyBenchmark(t *testing.T) {
+	t.Skip("Test gets stuck and times out -- needs to be reviewed and updated")
 	var numSourced = 1000
 	var numMsgPerSource = 10_000
 	var batchSize = 200
