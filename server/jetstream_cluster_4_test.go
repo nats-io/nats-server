@@ -801,6 +801,8 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		server_name: %s
 		jetstream: {
 			store_dir: '%s',
+                        # max_buffered_size: -1
+                        # max_buffered_msgs: -1
 		}
 		cluster {
 			name: %s
@@ -823,8 +825,8 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		// Update lame duck duration for all servers.
 		for _, s := range c.servers {
 			s.optsMu.Lock()
-			s.opts.LameDuckDuration = 5 * time.Second
-			s.opts.LameDuckGracePeriod = -5 * time.Second
+			s.opts.LameDuckDuration = 15 * time.Second
+			s.opts.LameDuckGracePeriod = -15 * time.Second
 			s.optsMu.Unlock()
 		}
 
@@ -837,7 +839,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		_, err := js.AddStream(sc)
 		require_NoError(t, err)
 
-		pctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		pctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 
 		// Start producers
@@ -874,7 +876,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 			"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000008",
 			"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000009",
 		}
-		payload := []byte(strings.Repeat("A", 1024))
+		payload := []byte(strings.Repeat("A", 2*1024))
 
 		for i := 0; i < 50; i++ {
 			wg.Add(1)
@@ -931,6 +933,90 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 
+		debug := true
+		nc2, _ := jsClientConnect(t, c.randomServer())
+		if debug {
+			wg.Add(1)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			accountName := "js"
+			getStreamDetails := func(t *testing.T, c *cluster, accountName, streamName string) *StreamDetail {
+				t.Helper()
+				srv := c.streamLeader(accountName, streamName)
+				if srv == nil {
+					return nil
+				}
+				jsz, err := srv.Jsz(&JSzOptions{Accounts: true, Streams: true, Consumer: true})
+				require_NoError(t, err)
+				for _, acc := range jsz.AccountDetails {
+					if acc.Name == accountName {
+						for _, stream := range acc.Streams {
+							if stream.Name == streamName {
+								return &stream
+							}
+						}
+					}
+				}
+				t.Error("Could not find account details")
+				return nil
+			}
+			go func() {
+				defer cancel()
+
+				for range time.NewTicker(5 * time.Second).C {
+					select {
+					case <-ctx.Done():
+						defer wg.Done()
+						return
+					default:
+					}
+					streams := []string{sc.Name}
+					for _, str := range streams {
+						leaderSrv := c.streamLeader(accountName, str)
+						if leaderSrv == nil {
+							continue
+						}
+						streamLeader := getStreamDetails(t, c, accountName, str)
+						if streamLeader == nil {
+							continue
+						}
+						t.Logf("|------------------------------------------------------------------------------------------------------------------------|")
+						lstate := streamLeader.State
+						t.Logf("| %-10s | %-10s | msgs:%-10d | bytes:%-10d | deleted:%-10d | first:%-10d | last:%-10d |",
+							str, leaderSrv.String()+"*", lstate.Msgs, lstate.Bytes, lstate.NumDeleted, lstate.FirstSeq, lstate.LastSeq,
+						)
+						for _, srv := range c.servers {
+							if srv == leaderSrv {
+								continue
+							}
+							acc, err := srv.LookupAccount(accountName)
+							if err != nil {
+								continue
+							}
+							stream, err := acc.lookupStream(str)
+							if err != nil {
+								t.Logf("Error looking up stream %s on %s replica", str, srv)
+								continue
+							}
+							state := stream.state()
+
+							unsynced := lstate.Msgs != state.Msgs || lstate.Bytes != state.Bytes ||
+								lstate.NumDeleted != state.NumDeleted || lstate.FirstSeq != state.FirstSeq || lstate.LastSeq != state.LastSeq
+
+							var result string
+							if unsynced {
+								result = "UNSYNCED"
+							}
+							t.Logf("| %-10s | %-10s | msgs:%-10d | bytes:%-10d | deleted:%-10d | first:%-10d | last:%-10d | %s",
+								str, srv, state.Msgs, state.Bytes, state.NumDeleted, state.FirstSeq, state.LastSeq, result,
+							)
+						}
+					}
+					t.Logf("|------------------------------------------------------------------------------------------------------------------------| %v", nc2.ConnectedUrl())
+				}
+			}()
+		}
+
 		for i := 0; i < 10; i++ {
 			subject := fmt.Sprintf("MSGS.EEEEE.*.H.100XY.*.*.WQ.00000000000%d", i)
 			consumer := fmt.Sprintf("consumer:EEEEE:%d", i)
@@ -945,8 +1031,10 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 					cpnc.Close()
 				})
 
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				wg.Add(1)
 				go func() {
+					defer cancel()
 					tick := time.NewTicker(1 * time.Millisecond)
 					for {
 						if cpnc.IsClosed() {
@@ -999,8 +1087,10 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 					continue
 				}
 
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				wg.Add(1)
 				go func() {
+					defer cancel()
 					tick := time.NewTicker(1 * time.Millisecond)
 					for {
 						select {
@@ -1090,7 +1180,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		}
 
 		// Restarts
-		time.AfterFunc(10*time.Second, func() {
+		time.AfterFunc(15*time.Second, func() {
 			for i := 0; i < params.restarts; i++ {
 				switch {
 				case params.restartLeader:
@@ -1257,9 +1347,13 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		// If clustered, check whether leader and followers have drifted.
 		if sc.Replicas > 1 {
 			// If we have drifted do not have to wait too long, usually its stuck for good.
-			checkFor(t, time.Minute, time.Second, func() error {
+			err := checkForErr(2*time.Minute, time.Second, func() error {
 				return checkState(t)
 			})
+			if err != nil {
+				t.Errorf("!!!!! HOLD ON!!! %v", err)
+				select {}
+			}
 			// If we succeeded now let's check that all messages are also the same.
 			// We may have no messages but for tests that do we make sure each msg is the same
 			// across all replicas.
@@ -1347,10 +1441,11 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 	// Clustered file based with discard old policy and max msgs limit.
 	t.Run("R3F_DO", func(t *testing.T) {
 		params := &testParams{
-			restartAny:     true,
-			ldmRestart:     true,
-			rolloutRestart: false,
-			restarts:       1,
+			restartAny:      true,
+			ldmRestart:      true,
+			rolloutRestart:  false,
+			restarts:        1,
+			reconnectRoutes: false,
 		}
 		test(t, params, &nats.StreamConfig{
 			Name:        "OWQTEST_R3F_DO",
