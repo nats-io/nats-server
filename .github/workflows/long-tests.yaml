@@ -10,9 +10,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  placeholder:
-    name: Placeholder job
-    runs-on: ${{ vars.GHA_WORKER_SMALL }}
+  long-js-cluster:
+    name: Long-running JetStream Cluster tests
+    runs-on: ${{ vars.GHA_WORKER_LARGE }}
     steps:
-      - name: Dummy step
-        run: echo "Hello World"
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          # Use go version from go.mod
+          # go-version-file: "go.mod"
+          # Use latest stable go version
+          go-version: stable
+
+      - name: Run tests
+        run: go test -race -v -run='^TestLong.*' ./server -tags=include_js_cluster_long_running_tests -count=1 -vet=off -timeout=60m -shuffle on -p 1  -failfast
