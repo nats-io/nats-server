@@ -4090,77 +4090,114 @@ func TestJetStreamClusterConsumerReplicasAfterScale(t *testing.T) {
 	require_Equal(t, len(ci.Cluster.Replicas), 2)
 }
 
-func TestJetStreamClusterDesyncAfterCatchupTooManyRetries(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "R3S", 3)
-	defer c.shutdown()
+func TestJetStreamClusterDesyncAfterErrorDuringCatchup(t *testing.T) {
+	tests := []struct {
+		title            string
+		onErrorCondition func(server *Server, mset *stream)
+	}{
+		{
+			title: "TooManyRetries",
+			onErrorCondition: func(server *Server, mset *stream) {
+				// Too many retries while processing snapshot is considered a cluster reset.
+				// If a leader is temporarily unavailable we shouldn't blow away our state.
+				require_True(t, isClusterResetErr(errCatchupTooManyRetries))
+				mset.resetClusteredState(errCatchupTooManyRetries)
+			},
+		},
+		{
+			title: "AbortedNoLeader",
+			onErrorCondition: func(server *Server, mset *stream) {
+				for _, n := range server.raftNodes {
+					rn := n.(*raft)
+					if rn.accName == "$G" {
+						rn.updateLeader(noLeader)
+					}
+				}
 
-	nc, js := jsClientConnect(t, c.randomServer())
-	defer nc.Close()
-
-	si, err := js.AddStream(&nats.StreamConfig{
-		Name:     "TEST",
-		Subjects: []string{"foo"},
-		Replicas: 3,
-	})
-	require_NoError(t, err)
-
-	streamLeader := si.Cluster.Leader
-	streamLeaderServer := c.serverByName(streamLeader)
-	nc.Close()
-	nc, js = jsClientConnect(t, streamLeaderServer)
-	defer nc.Close()
-
-	servers := slices.DeleteFunc([]string{"S-1", "S-2", "S-3"}, func(s string) bool {
-		return s == streamLeader
-	})
-
-	// Publish 10 messages.
-	for i := 0; i < 10; i++ {
-		pubAck, err := js.Publish("foo", []byte("ok"))
-		require_NoError(t, err)
-		require_Equal(t, pubAck.Sequence, uint64(i+1))
+				// Processing a snapshot while there's no leader elected is considered a cluster reset.
+				// If a leader is temporarily unavailable we shouldn't blow away our state.
+				var snap StreamReplicatedState
+				snap.LastSeq = 1_000 // ensure we can catchup based on the snapshot
+				err := mset.processSnapshot(&snap)
+				require_True(t, errors.Is(err, errCatchupAbortedNoLeader))
+				require_True(t, isClusterResetErr(err))
+				mset.resetClusteredState(err)
+			},
+		},
 	}
 
-	outdatedServerName := servers[0]
-	clusterResetServerName := servers[1]
+	for _, test := range tests {
+		t.Run(test.title, func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
 
-	outdatedServer := c.serverByName(outdatedServerName)
-	outdatedServer.Shutdown()
-	outdatedServer.WaitForShutdown()
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
 
-	// Publish 10 more messages, one server will be behind.
-	for i := 0; i < 10; i++ {
-		pubAck, err := js.Publish("foo", []byte("ok"))
-		require_NoError(t, err)
-		require_Equal(t, pubAck.Sequence, uint64(i+11))
+			si, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				Replicas: 3,
+			})
+			require_NoError(t, err)
+
+			streamLeader := si.Cluster.Leader
+			streamLeaderServer := c.serverByName(streamLeader)
+			nc.Close()
+			nc, js = jsClientConnect(t, streamLeaderServer)
+			defer nc.Close()
+
+			servers := slices.DeleteFunc([]string{"S-1", "S-2", "S-3"}, func(s string) bool {
+				return s == streamLeader
+			})
+
+			// Publish 10 messages.
+			for i := 0; i < 10; i++ {
+				pubAck, err := js.Publish("foo", []byte("ok"))
+				require_NoError(t, err)
+				require_Equal(t, pubAck.Sequence, uint64(i+1))
+			}
+
+			outdatedServerName := servers[0]
+			clusterResetServerName := servers[1]
+
+			outdatedServer := c.serverByName(outdatedServerName)
+			outdatedServer.Shutdown()
+			outdatedServer.WaitForShutdown()
+
+			// Publish 10 more messages, one server will be behind.
+			for i := 0; i < 10; i++ {
+				pubAck, err := js.Publish("foo", []byte("ok"))
+				require_NoError(t, err)
+				require_Equal(t, pubAck.Sequence, uint64(i+11))
+			}
+
+			// We will not need the client anymore.
+			nc.Close()
+
+			// Shutdown stream leader so one server remains.
+			streamLeaderServer.Shutdown()
+			streamLeaderServer.WaitForShutdown()
+
+			clusterResetServer := c.serverByName(clusterResetServerName)
+			acc, err := clusterResetServer.lookupAccount(globalAccountName)
+			require_NoError(t, err)
+			mset, err := acc.lookupStream("TEST")
+			require_NoError(t, err)
+
+			// Run error condition.
+			test.onErrorCondition(clusterResetServer, mset)
+
+			// Stream leader stays offline, we only start the server with missing stream data.
+			// We expect that the reset server must not allow the outdated server to become leader, as that would result in desync.
+			c.restartServer(outdatedServer)
+			c.waitOnStreamLeader(globalAccountName, "TEST")
+
+			// Outdated server must NOT become the leader.
+			newStreamLeaderServer := c.streamLeader(globalAccountName, "TEST")
+			require_Equal(t, newStreamLeaderServer.Name(), clusterResetServerName)
+		})
 	}
-
-	// We will not need the client anymore.
-	nc.Close()
-
-	// Shutdown stream leader so one server remains.
-	streamLeaderServer.Shutdown()
-	streamLeaderServer.WaitForShutdown()
-
-	clusterResetServer := c.serverByName(clusterResetServerName)
-	acc, err := clusterResetServer.lookupAccount(globalAccountName)
-	require_NoError(t, err)
-	mset, err := acc.lookupStream("TEST")
-	require_NoError(t, err)
-
-	// Too many retries while processing snapshot is considered a cluster reset.
-	// If a leader is temporarily unavailable we shouldn't blow away our state.
-	require_True(t, isClusterResetErr(errCatchupTooManyRetries))
-	mset.resetClusteredState(errCatchupTooManyRetries)
-
-	// Stream leader stays offline, we only start the server with missing stream data.
-	// We expect that the reset server must not allow the outdated server to become leader, as that would result in desync.
-	c.restartServer(outdatedServer)
-	c.waitOnStreamLeader(globalAccountName, "TEST")
-
-	// Outdated server must NOT become the leader.
-	newStreamLeaderServer := c.streamLeader(globalAccountName, "TEST")
-	require_Equal(t, newStreamLeaderServer.Name(), clusterResetServerName)
 }
 
 func TestJetStreamClusterHardKillAfterStreamAdd(t *testing.T) {

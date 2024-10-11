@@ -2848,7 +2848,7 @@ func (mset *stream) resetClusteredState(err error) bool {
 	}
 
 	if node != nil {
-		if err == errCatchupTooManyRetries {
+		if errors.Is(err, errCatchupAbortedNoLeader) || err == errCatchupTooManyRetries {
 			// Don't delete all state, could've just been temporarily unable to reach the leader.
 			node.Stop()
 		} else {
@@ -8276,6 +8276,7 @@ var (
 	errCatchupStreamStopped   = errors.New("stream has been stopped") // when a catchup is terminated due to the stream going away.
 	errCatchupBadMsg          = errors.New("bad catchup msg")
 	errCatchupWrongSeqForSkip = errors.New("wrong sequence for skipped msg")
+	errCatchupAbortedNoLeader = errors.New("catchup aborted, no leader")
 	errCatchupTooManyRetries  = errors.New("catchup failed, too many retries")
 )
 
@@ -8379,7 +8380,7 @@ RETRY:
 	releaseSyncOutSem()
 
 	if n.GroupLeader() == _EMPTY_ {
-		return fmt.Errorf("catchup for stream '%s > %s' aborted, no leader", mset.account(), mset.name())
+		return fmt.Errorf("%w for stream '%s > %s'", errCatchupAbortedNoLeader, mset.account(), mset.name())
 	}
 
 	// If we have a sub clear that here.
