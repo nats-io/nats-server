@@ -72,7 +72,7 @@ type captureTLSError struct {
 	ch chan struct{}
 }
 
-func (c *captureTLSError) Errorf(format string, v ...any) {
+func (c *captureTLSError) Debugf(format string, v ...any) {
 	msg := fmt.Sprintf(format, v...)
 	if strings.Contains(msg, "handshake error") {
 		select {
@@ -117,7 +117,7 @@ func TestClusterTLSInsecure(t *testing.T) {
 	defer srvA.Shutdown()
 
 	l := &captureTLSError{ch: make(chan struct{}, 1)}
-	srvA.SetLogger(l, false, false)
+	srvA.SetLogger(l, true, false)
 
 	bConfigTemplate := `
 		port: -1
