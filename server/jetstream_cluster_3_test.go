@@ -5422,9 +5422,7 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 	}
 
 	// File based.
-	_, err = js.Subscribe("foo",
-		func(msg *nats.Msg) {},
-		nats.Durable("file"),
+	sub, err := js.PullSubscribe("foo", "file",
 		nats.ManualAck(),
 		nats.MaxDeliver(1),
 		nats.AckWait(time.Second),
@@ -5432,7 +5430,11 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 	)
 	require_NoError(t, err)
 
-	// Let first batch retry and expire.
+	msgs, err := sub.Fetch(10)
+	require_NoError(t, err)
+	require_Equal(t, len(msgs), 10)
+
+	// Let first batch expire.
 	time.Sleep(1200 * time.Millisecond)
 
 	cia, err := js.ConsumerInfo("TEST", "file")
@@ -5450,6 +5452,12 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 	// Also last activity for delivered can be slightly off so nil out as well.
 	checkConsumerInfo := func(a, b *nats.ConsumerInfo) {
 		t.Helper()
+		require_Equal(t, a.Delivered.Consumer, 10)
+		require_Equal(t, a.Delivered.Stream, 10)
+		require_Equal(t, a.AckFloor.Consumer, 10)
+		require_Equal(t, a.AckFloor.Stream, 10)
+		require_Equal(t, a.NumPending, 40)
+		require_Equal(t, a.NumRedelivered, 0)
 		a.Cluster, b.Cluster = nil, nil
 		a.Delivered.Last, b.Delivered.Last = nil, nil
 		if !reflect.DeepEqual(a, b) {
@@ -5460,9 +5468,7 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 	checkConsumerInfo(cia, cib)
 
 	// Memory based.
-	_, err = js.Subscribe("foo",
-		func(msg *nats.Msg) {},
-		nats.Durable("mem"),
+	sub, err = js.PullSubscribe("foo", "mem",
 		nats.ManualAck(),
 		nats.MaxDeliver(1),
 		nats.AckWait(time.Second),
@@ -5470,6 +5476,10 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 		nats.ConsumerMemoryStorage(),
 	)
 	require_NoError(t, err)
+
+	msgs, err = sub.Fetch(10)
+	require_NoError(t, err)
+	require_Equal(t, len(msgs), 10)
 
 	// Let first batch retry and expire.
 	time.Sleep(1200 * time.Millisecond)
@@ -5488,9 +5498,7 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 	checkConsumerInfo(cia, cib)
 
 	// Now file based but R1 and server restart.
-	_, err = js.Subscribe("foo",
-		func(msg *nats.Msg) {},
-		nats.Durable("r1"),
+	sub, err = js.PullSubscribe("foo", "r1",
 		nats.ManualAck(),
 		nats.MaxDeliver(1),
 		nats.AckWait(time.Second),
@@ -5498,6 +5506,10 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 		nats.ConsumerReplicas(1),
 	)
 	require_NoError(t, err)
+
+	msgs, err = sub.Fetch(10)
+	require_NoError(t, err)
+	require_Equal(t, len(msgs), 10)
 
 	// Let first batch retry and expire.
 	time.Sleep(1200 * time.Millisecond)
@@ -5517,8 +5529,6 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 	// Created can skew a small bit due to server restart, this is expected.
 	now := time.Now()
 	cia.Created, cib.Created = now, now
-	// Clear any disagreement on push bound.
-	cia.PushBound, cib.PushBound = false, false
 	checkConsumerInfo(cia, cib)
 }
 
