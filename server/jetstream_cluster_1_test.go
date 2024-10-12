@@ -6442,6 +6442,64 @@ func TestJetStreamClusterMetaStepdownFromNonSysAccount(t *testing.T) {
 	require_NotEqual(t, ml, c.leader())
 }
 
+func TestJetStreamClusterMaxDeliveriesOnInterestStreams(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Client based API
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo.*"},
+		Retention: nats.InterestPolicy,
+	})
+	require_NoError(t, err)
+
+	sub1, err := js.PullSubscribe("foo.*", "c1", nats.AckWait(10*time.Millisecond), nats.MaxDeliver(1))
+	require_NoError(t, err)
+
+	sub2, err := js.PullSubscribe("foo.*", "c2", nats.AckWait(10*time.Millisecond), nats.MaxDeliver(1))
+	require_NoError(t, err)
+
+	js.Publish("foo.bar", []byte("HELLO"))
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 1)
+
+	msgs, err := sub1.Fetch(1)
+	require_NoError(t, err)
+	require_Equal(t, len(msgs), 1)
+
+	msgs, err = sub2.Fetch(1)
+	require_NoError(t, err)
+	require_Equal(t, len(msgs), 1)
+
+	// Wait for redelivery to both consumers which will do nothing.
+	time.Sleep(250 * time.Millisecond)
+
+	// Now check that stream and consumer infos are correct.
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	// Messages that are skipped due to max deliveries should NOT remove messages.
+	require_Equal(t, si.State.Msgs, 1)
+	require_Equal(t, si.State.Consumers, 2)
+
+	for _, cname := range []string{"c1", "c2"} {
+		ci, err := js.ConsumerInfo("TEST", cname)
+		require_NoError(t, err)
+		require_Equal(t, ci.Delivered.Consumer, 1)
+		require_Equal(t, ci.Delivered.Stream, 1)
+		require_Equal(t, ci.AckFloor.Consumer, 1)
+		require_Equal(t, ci.AckFloor.Stream, 1)
+		require_Equal(t, ci.NumAckPending, 0)
+		require_Equal(t, ci.NumRedelivered, 0)
+		require_Equal(t, ci.NumPending, 0)
+	}
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
