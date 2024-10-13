@@ -2833,40 +2833,42 @@ func (s *Server) jsLeaderStepDownRequest(sub *subscription, c *client, _ *Accoun
 	var preferredLeader string
 	var resp = JSApiLeaderStepDownResponse{ApiResponse: ApiResponse{Type: JSApiLeaderStepDownResponseType}}
 
-	if !isEmptyRequest(msg) {
+	if isJSONObjectOrArray(msg) {
 		var req JSApiLeaderStepdownRequest
 		if err := json.Unmarshal(msg, &req); err != nil {
 			resp.Error = NewJSInvalidJSONError(err)
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-		if len(req.Placement.Tags) > 0 {
-			// Tags currently not supported.
-			resp.Error = NewJSClusterTagsError()
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-		cn := req.Placement.Cluster
-		var peers []string
-		ourID := cc.meta.ID()
-		for _, p := range cc.meta.Peers() {
-			if si, ok := s.nodeToInfo.Load(p.ID); ok && si != nil {
-				if ni := si.(nodeInfo); ni.offline || ni.cluster != cn || p.ID == ourID {
-					continue
-				}
-				peers = append(peers, p.ID)
+		if req.Placement != nil {
+			if len(req.Placement.Tags) > 0 {
+				// Tags currently not supported.
+				resp.Error = NewJSClusterTagsError()
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				return
 			}
+			cn := req.Placement.Cluster
+			var peers []string
+			ourID := cc.meta.ID()
+			for _, p := range cc.meta.Peers() {
+				if si, ok := s.nodeToInfo.Load(p.ID); ok && si != nil {
+					if ni := si.(nodeInfo); ni.offline || ni.cluster != cn || p.ID == ourID {
+						continue
+					}
+					peers = append(peers, p.ID)
+				}
+			}
+			if len(peers) == 0 {
+				resp.Error = NewJSClusterNoPeersError(fmt.Errorf("no replacement peer connected"))
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				return
+			}
+			// Randomize and select.
+			if len(peers) > 1 {
+				rand.Shuffle(len(peers), func(i, j int) { peers[i], peers[j] = peers[j], peers[i] })
+			}
+			preferredLeader = peers[0]
 		}
-		if len(peers) == 0 {
-			resp.Error = NewJSClusterNoPeersError(fmt.Errorf("no replacement peer connected"))
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-		// Randomize and select.
-		if len(peers) > 1 {
-			rand.Shuffle(len(peers), func(i, j int) { peers[i], peers[j] = peers[j], peers[i] })
-		}
-		preferredLeader = peers[0]
 	}
 
 	// Call actual stepdown.
