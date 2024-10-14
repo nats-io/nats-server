@@ -1015,6 +1015,7 @@ func TestNRGWALEntryWithoutQuorumMustTruncate(t *testing.T) {
 					if len(expected) > 0 && int(state.LastSeq-state.FirstSeq+1) != len(expected) {
 						return fmt.Errorf("WAL is different: too many entries")
 					}
+					// Loop over all entries in the WAL, checking if the contents for all RAFT nodes are equal.
 					for index := state.FirstSeq; index <= state.LastSeq; index++ {
 						ae, err := an.loadEntry(index)
 						if err != nil {
@@ -1091,6 +1092,8 @@ func TestNRGCatchupDoesNotTruncateUncommittedEntriesWithQuorum(t *testing.T) {
 	n, err := s.initRaftNode(globalAccountName, cfg, pprofLabels{})
 	require_NoError(t, err)
 
+	// An AppendEntry is encoded into a buffer and that's stored into the WAL.
+	// This is a helper function to generate that buffer.
 	encode := func(ae *appendEntry) *appendEntry {
 		buf, err := ae.encode(nil)
 		require_NoError(t, err)

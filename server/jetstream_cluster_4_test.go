@@ -4273,7 +4273,7 @@ func TestJetStreamClusterDesyncAfterPublishToLeaderWithoutQuorum(t *testing.T) {
 	followerServer2.WaitForShutdown()
 
 	// Although this request will time out, it will be added to the stream leader's WAL.
-	_, err = js.Publish("foo", []byte("first"))
+	_, err = js.Publish("foo", []byte("first"), nats.AckWait(time.Second))
 	require_NotNil(t, err)
 	require_Equal(t, err, nats.ErrTimeout)
 
@@ -4333,12 +4333,18 @@ func TestJetStreamClusterPreserveWALDuringCatchupWithMatchingTerm(t *testing.T) 
 	rs := c.randomNonStreamLeader(globalAccountName, "TEST")
 	ts := time.Now().UnixNano()
 
+	// Manually add 3 append entries to each node's WAL, except for one node who is one behind.
 	var scratch [1024]byte
 	for _, s := range c.servers {
 		for _, n := range s.raftNodes {
 			rn := n.(*raft)
 			if rn.accName == globalAccountName {
 				for i := uint64(0); i < 3; i++ {
+					// One server will be one behind and need to catchup.
+					if s.Name() == rs.Name() && i >= 2 {
+						break
+					}
+
 					esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, i, ts, true)
 					entries := []*Entry{newEntry(EntryNormal, esm)}
 					rn.Lock()
@@ -4348,11 +4354,6 @@ func TestJetStreamClusterPreserveWALDuringCatchupWithMatchingTerm(t *testing.T) 
 					err = rn.storeToWAL(ae)
 					rn.Unlock()
 					require_NoError(t, err)
-
-					// One server will be behind and need to catchup.
-					if s.Name() == rs.Name() && i >= 1 {
-						break
-					}
 				}
 			}
 		}
@@ -4363,6 +4364,8 @@ func TestJetStreamClusterPreserveWALDuringCatchupWithMatchingTerm(t *testing.T) 
 	c.restartAll()
 	c.waitOnAllCurrent()
 	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	rs = c.serverByName(rs.Name())
 
 	// Check all servers ended up with all published messages, which had quorum.
 	for _, s := range c.servers {
@@ -4384,15 +4387,15 @@ func TestJetStreamClusterPreserveWALDuringCatchupWithMatchingTerm(t *testing.T) 
 		if rn.accName == globalAccountName {
 			ae, err := rn.loadEntry(2)
 			require_NoError(t, err)
-			require_Equal(t, ae.leader, rn.ID())
+			require_True(t, ae.leader == rn.ID())
 
 			ae, err = rn.loadEntry(3)
 			require_NoError(t, err)
-			require_Equal(t, ae.leader, rn.ID())
+			require_True(t, ae.leader == rn.ID())
 
 			ae, err = rn.loadEntry(4)
 			require_NoError(t, err)
-			require_NotEqual(t, ae.leader, rn.ID())
+			require_True(t, ae.leader != rn.ID())
 		}
 	}
 }
