@@ -6736,6 +6736,7 @@ func TestJetStreamSystemLimitsPlacement(t *testing.T) {
 		cluster.waitOnClusterReadyWithNumPeers(3)
 		var resp JSApiLeaderStepDownResponse
 		req, err := json.Marshal(JSApiLeaderStepdownRequest{Placement: nil})
+		require_NoError(t, err)
 		ncResp, err := nc.Request(JSApiLeaderStepDown, req, 10*time.Second)
 		require_NoError(t, err)
 		err = json.Unmarshal(ncResp.Data, &resp)
