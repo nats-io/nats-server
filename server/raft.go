@@ -343,8 +343,8 @@ func (s *Server) bootstrapRaftNode(cfg *RaftConfig, knownPeers []string, allPeer
 	return writePeerState(cfg.Store, &peerState{knownPeers, expected, extUndetermined})
 }
 
-// startRaftNode will start the raft node.
-func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabels) (RaftNode, error) {
+// initRaftNode will initialize the raft node, to be used by startRaftNode or when testing to not run the Go routine.
+func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabels) (*raft, error) {
 	if cfg == nil {
 		return nil, errNilCfg
 	}
@@ -519,6 +519,16 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 	// Register the Raft group.
 	labels["group"] = n.group
 	s.registerRaftNode(n.group, n)
+
+	return n, nil
+}
+
+// startRaftNode will start the raft node.
+func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabels) (RaftNode, error) {
+	n, err := s.initRaftNode(accName, cfg, labels)
+	if err != nil {
+		return nil, err
+	}
 
 	// Start the run goroutine for the Raft state machine.
 	s.startGoRoutine(n.run, labels)
@@ -3374,8 +3384,8 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	}
 
 	if (isNew && ae.pterm != n.pterm) || ae.pindex != n.pindex {
-		// Check if this is a lower or equal index than what we were expecting.
-		if ae.pindex <= n.pindex {
+		// Check if this is a lower index than what we were expecting.
+		if ae.pindex < n.pindex {
 			n.debug("AppendEntry detected pindex less than ours: %d:%d vs %d:%d", ae.pterm, ae.pindex, n.pterm, n.pindex)
 			var ar *appendEntryResponse
 
