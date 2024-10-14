@@ -271,6 +271,33 @@ type JSConsumerQuorumLostAdvisory struct {
 	Domain   string      `json:"domain,omitempty"`
 }
 
+const JSStreamGroupPinnedAdvisoryType = "io.nats.jetstream.advisory.v1.consumer_group_pinned"
+
+// JSStreamGroupPinnedAdvisory that a group switched to a new pinned client
+type JSStreamGroupPinnedAdvisory struct {
+	TypedEvent
+	Account        string `json:"account,omitempty"`
+	Stream         string `json:"stream"`
+	Consumer       string `json:"consumer"`
+	Domain         string `json:"domain,omitempty"`
+	Group          string `json:"group"`
+	PinnedClientId string `json:"pinned_id"`
+}
+
+const JSStreamGroupUnPinnedAdvisoryType = "io.nats.jetstream.advisory.v1.consumer_group_unpinned"
+
+// JSStreamGroupUnPinnedAdvisory indicates that a pin was lost
+type JSStreamGroupUnPinnedAdvisory struct {
+	TypedEvent
+	Account  string `json:"account,omitempty"`
+	Stream   string `json:"stream"`
+	Consumer string `json:"consumer"`
+	Domain   string `json:"domain,omitempty"`
+	Group    string `json:"group"`
+	// one of "admin" or "timeout", could be an enum up to the implementor to decide
+	Reason string `json:"reason"`
+}
+
 // JSServerOutOfStorageAdvisoryType is sent when the server is out of storage space.
 const JSServerOutOfStorageAdvisoryType = "io.nats.jetstream.advisory.v1.server_out_of_space"
 

@@ -1568,5 +1568,35 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerPriorityPolicyWithoutGroup",
+    "code": 400,
+    "error_code": 10159,
+    "description": "Setting PriorityPolicy requires at least one PriorityGroup to be set",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerInvalidPriorityGroupErr",
+    "code": 400,
+    "error_code": 10160,
+    "description": "Provided priority group does not exist for this consumer",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerEmptyGroupName",
+    "code": 400,
+    "error_code": 10161,
+    "description": "Group name cannot be an empty string",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

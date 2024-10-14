@@ -95,6 +95,9 @@ const (
 	// JSConsumerEmptyFilter consumer filter in FilterSubjects cannot be empty
 	JSConsumerEmptyFilter ErrorIdentifier = 10139
 
+	// JSConsumerEmptyGroupName Group name cannot be an empty string
+	JSConsumerEmptyGroupName ErrorIdentifier = 10161
+
 	// JSConsumerEphemeralWithDurableInSubjectErr consumer expected to be ephemeral but detected a durable name set in subject
 	JSConsumerEphemeralWithDurableInSubjectErr ErrorIdentifier = 10019
 
@@ -121,6 +124,9 @@ const (
 
 	// JSConsumerInvalidPolicyErrF Generic delivery policy error ({err})
 	JSConsumerInvalidPolicyErrF ErrorIdentifier = 10094
+
+	// JSConsumerInvalidPriorityGroupErr Provided priority group does not exist for this consumer
+	JSConsumerInvalidPriorityGroupErr ErrorIdentifier = 10160
 
 	// JSConsumerInvalidSamplingErrF failed to parse consumer sampling configuration: {err}
 	JSConsumerInvalidSamplingErrF ErrorIdentifier = 10095
@@ -172,6 +178,9 @@ const (
 
 	// JSConsumerOverlappingSubjectFilters consumer subject filters cannot overlap
 	JSConsumerOverlappingSubjectFilters ErrorIdentifier = 10138
+
+	// JSConsumerPriorityPolicyWithoutGroup Setting PriorityPolicy requires at least one PriorityGroup to be set
+	JSConsumerPriorityPolicyWithoutGroup ErrorIdentifier = 10159
 
 	// JSConsumerPullNotDurableErr consumer in pull mode requires a durable name
 	JSConsumerPullNotDurableErr ErrorIdentifier = 10085
@@ -509,6 +518,7 @@ var (
 		JSConsumerDurableNameNotMatchSubjectErr:    {Code: 400, ErrCode: 10017, Description: "consumer name in subject does not match durable name in request"},
 		JSConsumerDurableNameNotSetErr:             {Code: 400, ErrCode: 10018, Description: "consumer expected to be durable but a durable name was not set"},
 		JSConsumerEmptyFilter:                      {Code: 400, ErrCode: 10139, Description: "consumer filter in FilterSubjects cannot be empty"},
+		JSConsumerEmptyGroupName:                   {Code: 400, ErrCode: 10161, Description: "Group name cannot be an empty string"},
 		JSConsumerEphemeralWithDurableInSubjectErr: {Code: 400, ErrCode: 10019, Description: "consumer expected to be ephemeral but detected a durable name set in subject"},
 		JSConsumerEphemeralWithDurableNameErr:      {Code: 400, ErrCode: 10020, Description: "consumer expected to be ephemeral but a durable name was set in request"},
 		JSConsumerExistingActiveErr:                {Code: 400, ErrCode: 10105, Description: "consumer already exists and is still active"},
@@ -518,6 +528,7 @@ var (
 		JSConsumerInactiveThresholdExcess:          {Code: 400, ErrCode: 10153, Description: "consumer inactive threshold exceeds system limit of {limit}"},
 		JSConsumerInvalidDeliverSubject:            {Code: 400, ErrCode: 10112, Description: "invalid push consumer deliver subject"},
 		JSConsumerInvalidPolicyErrF:                {Code: 400, ErrCode: 10094, Description: "{err}"},
+		JSConsumerInvalidPriorityGroupErr:          {Code: 400, ErrCode: 10160, Description: "Provided priority group does not exist for this consumer"},
 		JSConsumerInvalidSamplingErrF:              {Code: 400, ErrCode: 10095, Description: "failed to parse consumer sampling configuration: {err}"},
 		JSConsumerMaxDeliverBackoffErr:             {Code: 400, ErrCode: 10116, Description: "max deliver is required to be > length of backoff values"},
 		JSConsumerMaxPendingAckExcessErrF:          {Code: 400, ErrCode: 10121, Description: "consumer max ack pending exceeds system limit of {limit}"},
@@ -535,6 +546,7 @@ var (
 		JSConsumerOfflineErr:                       {Code: 500, ErrCode: 10119, Description: "consumer is offline"},
 		JSConsumerOnMappedErr:                      {Code: 400, ErrCode: 10092, Description: "consumer direct on a mapped consumer"},
 		JSConsumerOverlappingSubjectFilters:        {Code: 400, ErrCode: 10138, Description: "consumer subject filters cannot overlap"},
+		JSConsumerPriorityPolicyWithoutGroup:       {Code: 400, ErrCode: 10159, Description: "Setting PriorityPolicy requires at least one PriorityGroup to be set"},
 		JSConsumerPullNotDurableErr:                {Code: 400, ErrCode: 10085, Description: "consumer in pull mode requires a durable name"},
 		JSConsumerPullRequiresAckErr:               {Code: 400, ErrCode: 10084, Description: "consumer in pull mode requires ack policy on workqueue stream"},
 		JSConsumerPullWithRateLimitErr:             {Code: 400, ErrCode: 10086, Description: "consumer in pull mode can not have rate limit set"},
@@ -979,6 +991,16 @@ func NewJSConsumerEmptyFilterError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSConsumerEmptyFilter]
 }
 
+// NewJSConsumerEmptyGroupNameError creates a new JSConsumerEmptyGroupName error: "Group name cannot be an empty string"
+func NewJSConsumerEmptyGroupNameError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerEmptyGroupName]
+}
+
 // NewJSConsumerEphemeralWithDurableInSubjectError creates a new JSConsumerEphemeralWithDurableInSubjectErr error: "consumer expected to be ephemeral but detected a durable name set in subject"
 func NewJSConsumerEphemeralWithDurableInSubjectError(opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
@@ -1079,6 +1101,16 @@ func NewJSConsumerInvalidPolicyError(err error, opts ...ErrorOption) *ApiError {
 		ErrCode:     e.ErrCode,
 		Description: strings.NewReplacer(args...).Replace(e.Description),
 	}
+}
+
+// NewJSConsumerInvalidPriorityGroupError creates a new JSConsumerInvalidPriorityGroupErr error: "Provided priority group does not exist for this consumer"
+func NewJSConsumerInvalidPriorityGroupError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerInvalidPriorityGroupErr]
 }
 
 // NewJSConsumerInvalidSamplingError creates a new JSConsumerInvalidSamplingErrF error: "failed to parse consumer sampling configuration: {err}"
@@ -1279,6 +1311,16 @@ func NewJSConsumerOverlappingSubjectFiltersError(opts ...ErrorOption) *ApiError 
 	}
 
 	return ApiErrors[JSConsumerOverlappingSubjectFilters]
+}
+
+// NewJSConsumerPriorityPolicyWithoutGroupError creates a new JSConsumerPriorityPolicyWithoutGroup error: "Setting PriorityPolicy requires at least one PriorityGroup to be set"
+func NewJSConsumerPriorityPolicyWithoutGroupError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerPriorityPolicyWithoutGroup]
 }
 
 // NewJSConsumerPullNotDurableError creates a new JSConsumerPullNotDurableErr error: "consumer in pull mode requires a durable name"
