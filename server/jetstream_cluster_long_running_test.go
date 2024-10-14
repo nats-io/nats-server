@@ -49,6 +49,122 @@ func TestLongDummy(t *testing.T) {
 	})
 }
 
+// TestLongJetStreamKVUpdates a client overwrites entries in a KV bucket for a fixed amount of time
+func TestLongJetStreamKVUpdates(t *testing.T) {
+
+	// RNG Seed
+	const Seed = 123456
+	// Number of keys in bucket
+	const NumKeys = 1000
+	// Size of (random) values
+	const ValueSize = 1024
+	// Test duration
+	const Duration = 1 * time.Minute
+	// If no updates successfull for this interval, fail the test
+	const MaxRetry = 20 * time.Second
+	// Minimum time before updates
+	const UpdatesInterval = 1 * time.Millisecond
+	// Time between progress reports to console
+	const ProgressInterval = 10 * time.Second
+
+	rng := rand.New(rand.NewSource(Seed))
+
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Connect to a random server but client will discover others too.
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
+		Bucket:   "TEST",
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Initialize list of keys
+	keys := make([]string, NumKeys)
+	for i := 0; i < NumKeys; i++ {
+		keys[i] = fmt.Sprintf("key-%d", i)
+	}
+
+	// Initialize keys in bucket with an empty value
+	// (code below can assume all keys exist)
+	for _, key := range keys {
+		_, err := kv.Put(key, []byte{})
+		require_NoError(t, err)
+	}
+
+	// Track some statistics
+	var stats = struct {
+		start                time.Time
+		lastSuccessfulUpdate time.Time
+		updateOk             uint64
+		updateErr            uint64
+	}{
+		start:                time.Now(),
+		lastSuccessfulUpdate: time.Now(),
+	}
+
+	// Pick a random key and update it with a random value
+	valueBuffer := make([]byte, ValueSize)
+	updateRandomKey := func() error {
+		key := keys[rand.Intn(NumKeys)]
+		_, err := rng.Read(valueBuffer)
+		require_NoError(t, err)
+		_, err = kv.Put(key, valueBuffer)
+		return err
+	}
+
+	printProgress := func() {
+		t.Logf(
+			"[%s] %d updates %d errors",
+			time.Since(stats.start).Round(time.Second),
+			stats.updateOk,
+			stats.updateErr,
+		)
+	}
+
+	// Print update on completion
+	defer printProgress()
+
+	// Set up timers and tickers for the run loop
+	endTestTimer := time.After(Duration)
+	nextUpdateTicker := time.NewTicker(UpdatesInterval)
+	progressTicker := time.NewTicker(ProgressInterval)
+	restartServerTicker := time.NewTicker(3 * time.Second)
+
+runLoop:
+	for {
+		select {
+
+		case <-endTestTimer:
+			break runLoop
+
+		case <-nextUpdateTicker.C:
+			err := updateRandomKey()
+			if err == nil {
+				stats.updateOk++
+				stats.lastSuccessfulUpdate = time.Now()
+			} else {
+				stats.updateErr++
+				if time.Since(stats.lastSuccessfulUpdate) > MaxRetry {
+					t.Fatalf("Could not successfully update for over %s", MaxRetry)
+				}
+			}
+
+		case <-restartServerTicker.C:
+			randomServer := c.servers[rng.Intn(len(c.servers))]
+			restartedServer := c.restartServer(randomServer)
+			c.waitOnServerHealthz(restartedServer)
+			c.waitOnAllCurrent()
+
+		case <-progressTicker.C:
+			printProgress()
+		}
+	}
+}
+
 func TestLongJetStreamClusterRestartThenScaleStreamReplicas(t *testing.T) {
 	t.Skip("This test fails with NPE")
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
