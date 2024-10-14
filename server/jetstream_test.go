@@ -6713,7 +6713,7 @@ func TestJetStreamSystemLimitsPlacement(t *testing.T) {
 			si.Config.MaxBytes, si.Config.Replicas)
 	}
 
-	t.Run("meta info placement in request", func(t *testing.T) {
+	t.Run("meta info placement in request - empty request", func(t *testing.T) {
 		nc, err = nats.Connect(largeSrv.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
 		require_NoError(t, err)
 		defer nc.Close()
@@ -6727,6 +6727,22 @@ func TestJetStreamSystemLimitsPlacement(t *testing.T) {
 		require_True(t, resp.Success)
 
 	})
+
+	t.Run("meta info placement in request - uninitialized fields", func(t *testing.T) {
+		nc, err = nats.Connect(largeSrv.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+		require_NoError(t, err)
+		defer nc.Close()
+
+		cluster.waitOnClusterReadyWithNumPeers(3)
+		var resp JSApiLeaderStepDownResponse
+		req, err := json.Marshal(JSApiLeaderStepdownRequest{Placement: nil})
+		ncResp, err := nc.Request(JSApiLeaderStepDown, req, 10*time.Second)
+		require_NoError(t, err)
+		err = json.Unmarshal(ncResp.Data, &resp)
+		require_NoError(t, err)
+		require_True(t, resp.Error == nil)
+	})
+
 }
 
 func TestJetStreamStreamLimitUpdate(t *testing.T) {
