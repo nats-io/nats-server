@@ -35,8 +35,8 @@ jobs:
 
       - name: Convert coverage.out to coverage.lcov
         # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
-        # Commit c680c0f7c7442485f1749eb2a13e54a686e76eb5 = tag v1.0.9
-        uses: jandelgado/gcov2lcov-action@c680c0f7c7442485f1749eb2a13e54a686e76eb5
+        # Commit 69ef3d59a24cc6e062516a73d8be123e85b15cc0 = tag v1.1.0
+        uses: jandelgado/gcov2lcov-action@69ef3d59a24cc6e062516a73d8be123e85b15cc0
         with:
           infile: acc.out
           working-directory: src/github.com/nats-io/nats-server
