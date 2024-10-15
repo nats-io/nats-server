@@ -1412,7 +1412,7 @@ func TestJetStreamConsumerStuckAckPending(t *testing.T) {
 	defer nc.Close()
 
 	type ActiveWorkItem struct {
-		ID     string
+		ID     int
 		Expiry time.Time
 	}
 
@@ -1456,6 +1456,7 @@ func TestJetStreamConsumerStuckAckPending(t *testing.T) {
 				var workItem ActiveWorkItem
 				if err := json.Unmarshal(msg.Data, &workItem); err != nil {
 					errs <- err
+					return
 				}
 
 				now := time.Now()
@@ -1470,20 +1471,19 @@ func TestJetStreamConsumerStuckAckPending(t *testing.T) {
 	}()
 
 	for i := 0; i < 25_000; i++ {
-		itemID := strconv.Itoa(i)
 		// Publish item to TEST_ACTIVE_WORK_ITEMS stream with an expiry time.
-		workItem := ActiveWorkItem{ID: string(itemID), Expiry: time.Now().Add(30 * time.Second)}
+		workItem := ActiveWorkItem{ID: i, Expiry: time.Now().Add(30 * time.Second)}
 		data, err := json.Marshal(workItem)
 		require_NoError(t, err)
 
-		_, err = js.Publish(fmt.Sprintf("TEST_ACTIVE_WORK_ITEMS.%v", itemID), data)
+		_, err = js.Publish(fmt.Sprintf("TEST_ACTIVE_WORK_ITEMS.%d", i), data)
 		require_NoError(t, err)
 
 		// Update expiry time and republish item to TEST_ACTIVE_WORK_ITEMS stream.
 		workItem.Expiry = time.Now().Add(3 * time.Second)
 		data, err = json.Marshal(workItem)
 		require_NoError(t, err)
-		_, err = js.Publish(fmt.Sprintf("TEST_ACTIVE_WORK_ITEMS.%v", itemID), data)
+		_, err = js.Publish(fmt.Sprintf("TEST_ACTIVE_WORK_ITEMS.%d", i), data)
 		require_NoError(t, err)
 	}
 	noChange := false
