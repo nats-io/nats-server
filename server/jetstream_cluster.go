@@ -2262,7 +2262,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	// from underneath the one that is running since it will be the same raft node.
 	defer func() {
 		// We might be closing during shutdown, don't pre-emptively stop here since we'll still want to install snapshots.
-		if !mset.closed.Load() {
+		if mset != nil && !mset.closed.Load() {
 			n.Stop()
 		}
 	}()
