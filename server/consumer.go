@@ -3736,9 +3736,7 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 	var pmsg = getJSPubMsgFromPool()
 
 	// Grab next message applicable to us.
-	// We will unlock here in case lots of contention, e.g. WQ.
 	filters, subjf, fseq := o.filters, o.subjf, o.sseq
-	o.mu.Unlock()
 	// Check if we are multi-filtered or not.
 	if filters != nil {
 		sm, sseq, err = store.LoadNextMsgMulti(filters, fseq, &pmsg.StoreMsg)
@@ -3753,8 +3751,6 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 		pmsg.returnToPool()
 		pmsg = nil
 	}
-	// Re-acquire lock.
-	o.mu.Lock()
 	// Check if we should move our o.sseq.
 	if sseq >= o.sseq {
 		// If we are moving step by step then sseq == o.sseq.
