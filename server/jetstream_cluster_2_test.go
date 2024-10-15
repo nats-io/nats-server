@@ -7566,7 +7566,7 @@ func TestJetStreamClusterCheckInterestStatePerformanceWQ(t *testing.T) {
 	elapsed := time.Since(start)
 	// This is actually ~300 microseconds but due to travis and race flags etc.
 	// Was > 30 ms before fix for comparison, M2 macbook air.
-	require_True(t, elapsed < 5*time.Millisecond)
+	require_LessThan(t, elapsed, 5*time.Millisecond)
 
 	// Make sure we set the chkflr correctly.
 	checkFloor := func(o *consumer) uint64 {
