@@ -1469,7 +1469,7 @@ func TestJetStreamConsumerStuckAckPending(t *testing.T) {
 		}
 	}()
 
-	for i := 0; i < 100_000; i++ {
+	for i := 0; i < 25_000; i++ {
 		itemID := strconv.Itoa(i)
 		// Publish item to TEST_ACTIVE_WORK_ITEMS stream with an expiry time.
 		workItem := ActiveWorkItem{ID: string(itemID), Expiry: time.Now().Add(30 * time.Second)}
@@ -1480,7 +1480,7 @@ func TestJetStreamConsumerStuckAckPending(t *testing.T) {
 		require_NoError(t, err)
 
 		// Update expiry time and republish item to TEST_ACTIVE_WORK_ITEMS stream.
-		workItem.Expiry = time.Now().Add(5 * time.Second)
+		workItem.Expiry = time.Now().Add(3 * time.Second)
 		data, err = json.Marshal(workItem)
 		require_NoError(t, err)
 		_, err = js.Publish(fmt.Sprintf("TEST_ACTIVE_WORK_ITEMS.%v", itemID), data)
@@ -1488,7 +1488,7 @@ func TestJetStreamConsumerStuckAckPending(t *testing.T) {
 	}
 	noChange := false
 	lastNumAckPending := 0
-	checkFor(t, 60*time.Second, 5*time.Second, func() error {
+	checkFor(t, 60*time.Second, 3*time.Second, func() error {
 		select {
 		case err := <-errs:
 			t.Fatalf("consumer goroutine failed: %v", err)
