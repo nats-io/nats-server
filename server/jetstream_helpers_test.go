@@ -794,7 +794,9 @@ func createJetStreamClusterEx(t testing.TB, tmpl, cName, snPre string, numServer
 		if modify != nil {
 			conf = modify(sn, cName, storeDir, conf)
 		}
-		s, o := RunServerWithConfig(createConfFile(t, []byte(conf)))
+		confFileName := createConfFile(t, []byte(conf))
+		s, o := RunServerWithConfig(confFileName)
+		t.Logf("%s => %s", cName, confFileName)
 		c.servers = append(c.servers, s)
 		c.opts = append(c.opts, o)
 	}

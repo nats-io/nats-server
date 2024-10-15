@@ -36,6 +36,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/antithesishq/antithesis-sdk-go/assert"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nuid"
 )
@@ -835,6 +836,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		defer cnc.Close()
 
 		_, err := js.AddStream(sc)
+		assert.AlwaysOrUnreachable(err == nil, "Stream add", map[string]any{"error": err})
 		require_NoError(t, err)
 
 		pctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -851,6 +853,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 				subject := fmt.Sprintf("MSGS.%s.*.H.100XY.*.*.WQ.00000000000%d", partition, i)
 				consumer := fmt.Sprintf("consumer:%s:%d", partition, i)
 				_, err := cjs.PullSubscribe(subject, consumer, mp, mw, aw)
+				assert.AlwaysOrUnreachable(err == nil, "Partition subscribe", map[string]any{"error": err})
 				require_NoError(t, err)
 			}
 		}
@@ -858,6 +861,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		// Create a single consumer that does no activity.
 		// Make sure we still calculate low ack properly and cleanup etc.
 		_, err = cjs.PullSubscribe("MSGS.ZZ.>", "consumer:ZZ:0", mp, mw, aw)
+		assert.AlwaysOrUnreachable(err == nil, "Idle subscribe", map[string]any{"error": err})
 		require_NoError(t, err)
 
 		subjects := []string{
@@ -880,10 +884,11 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		// Start producers
 		for i := 0; i < 50; i++ {
 			wg.Add(1)
-			go func() {
+			go func(pIndex int) {
 				pnc, pjs := jsClientConnect(t, c.randomServer())
 				defer pnc.Close()
 				defer wg.Done()
+				//defer func() { t.Logf("Producer %d/%d shutdown", pIndex, 50) }()
 
 				for i := 1; i < 200_000; i++ {
 					select {
@@ -899,7 +904,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 						pjs.Publish(subject, payload, msgID, nats.AckWait(250*time.Millisecond))
 					}
 				}
-			}()
+			}(i)
 		}
 
 		// Rogue publisher that sends the same msg ID everytime.
@@ -909,6 +914,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 				pnc, pjs := jsClientConnect(t, c.randomServer())
 				defer pnc.Close()
 				defer wg.Done()
+				//defer func() { t.Logf("Rogue producer shutdown") }()
 
 				msgID := nats.MsgId("1234567890")
 				for i := 1; ; i++ {
@@ -929,6 +935,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 
 		// Let enough messages into the stream then start consumers.
 		time.Sleep(15 * time.Second)
+		t.Logf("Start consuming")
 
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
@@ -941,6 +948,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 				defer cpnc.Close()
 
 				psub, err := cpjs.PullSubscribe(subject, consumer, mp, mw, aw)
+				assert.AlwaysOrUnreachable(err == nil, "Subscribe", map[string]any{"error": err})
 				require_NoError(t, err)
 
 				time.AfterFunc(15*time.Second, func() {
@@ -948,8 +956,9 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 				})
 
 				wg.Add(1)
-				go func() {
+				go func(pIndex, cIndex int) {
 					defer wg.Done()
+					//defer func() { t.Logf("Consumer, %d-%d shutdown", pIndex, cIndex) }()
 					tick := time.NewTicker(1 * time.Millisecond)
 					for {
 						if cpnc.IsClosed() {
@@ -983,7 +992,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 							}
 						}
 					}
-				}()
+				}(n, i)
 			}
 		}
 
@@ -1001,8 +1010,9 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 				}
 
 				wg.Add(1)
-				go func() {
+				go func(pIndex int) {
 					defer wg.Done()
+					//defer func() { t.Logf("Consumer %d shutdown", pIndex) }()
 					tick := time.NewTicker(1 * time.Millisecond)
 					for {
 						select {
@@ -1034,7 +1044,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 							}
 						}
 					}
-				}()
+				}(n)
 			}
 		}
 
@@ -1043,6 +1053,8 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
+				defer func() { t.Logf("Routes reconnect task shutdown") }()
+
 				for range time.NewTicker(10 * time.Second).C {
 					select {
 					case <-ctx.Done():
@@ -1077,6 +1089,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
+				defer func() { t.Logf("Client reconnect task shutdown") }()
 				for range time.NewTicker(10 * time.Second).C {
 					select {
 					case <-ctx.Done():
@@ -1094,6 +1107,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		wg.Add(1)
 		restartTimer := time.AfterFunc(10*time.Second, func() {
 			defer wg.Done()
+			defer func() { t.Logf("Restart task shutdown") }()
 			for i := 0; i < params.restarts; i++ {
 				switch {
 				case params.restartLeader:
@@ -1160,6 +1174,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		var consumerPending int
 		for i := 0; i < 10; i++ {
 			ci, err := js.ConsumerInfo(sc.Name, fmt.Sprintf("consumer:EEEEE:%d", i))
+			assert.AlwaysOrUnreachable(err == nil, "Consumer info", map[string]any{"error": err})
 			require_NoError(t, err)
 			consumerPending += int(ci.NumPending)
 		}
@@ -1167,11 +1182,13 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		getStreamDetails := func(t *testing.T, srv *Server) *StreamDetail {
 			t.Helper()
 			jsz, err := srv.Jsz(&JSzOptions{Accounts: true, Streams: true, Consumer: true})
+			assert.AlwaysOrUnreachable(err == nil, "JSZ", map[string]any{"error": err})
 			require_NoError(t, err)
 			if len(jsz.AccountDetails) > 0 && len(jsz.AccountDetails[0].Streams) > 0 {
 				stream := jsz.AccountDetails[0].Streams[0]
 				return &stream
 			}
+			assert.Unreachable("Account not found in response", map[string]any{"error": err})
 			t.Error("Could not find account details")
 			return nil
 		}
@@ -1230,6 +1247,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 			var msets []*stream
 			for _, s := range c.servers {
 				acc, err := s.LookupAccount("js")
+				assert.AlwaysOrUnreachable(err == nil, "Account lookup", map[string]any{"error": err})
 				require_NoError(t, err)
 				mset, err := acc.lookupStream(sc.Name)
 				require_NoError(t, err)
@@ -1254,12 +1272,14 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 
 		// Check state of streams and consumers.
 		si, err := js.StreamInfo(sc.Name)
+		assert.AlwaysOrUnreachable(err == nil, "Stream info", map[string]any{"error": err})
 		require_NoError(t, err)
 
 		// Only check if there are any pending messages.
 		if consumerPending > 0 {
 			streamPending := int(si.State.Msgs)
 			if streamPending != consumerPending {
+				assert.AlwaysOrUnreachable(streamPending == consumerPending, "Pending mismatch", map[string]any{"streamPending": streamPending, "consumerPending": consumerPending})
 				t.Errorf("Unexpected number of pending messages, stream=%d, consumers=%d", streamPending, consumerPending)
 			}
 		}
@@ -1267,9 +1287,19 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		// If clustered, check whether leader and followers have drifted.
 		if sc.Replicas > 1 {
 			// If we have drifted do not have to wait too long, usually its stuck for good.
-			checkFor(t, time.Minute, time.Second, func() error {
-				return checkState(t)
-			})
+			timeout := time.Now().Add(time.Minute)
+			var err error
+			for time.Now().Before(timeout) {
+				err = checkState(t)
+				if err == nil {
+					break
+				}
+				time.Sleep(time.Second)
+			}
+			if err != nil {
+				assert.Unreachable("Leader/follower drift", map[string]any{"error": err})
+				t.Fatal(err)
+			}
 
 			// If we succeeded now let's check that all messages are also the same.
 			// We may have no messages but for tests that do we make sure each msg is the same
@@ -1301,6 +1331,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 				Tags: []string{"test"},
 			},
 		})
+		assert.Sometimes(true, "R1F runs to completion", nil)
 	})
 
 	// Clustered memory based with discard new policy and max msgs limit.
@@ -1327,6 +1358,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 				Tags: []string{"test"},
 			},
 		})
+		assert.Sometimes(true, "R3M runs to completion", nil)
 	})
 
 	// Clustered file based with discard new policy and max msgs limit.
@@ -1351,6 +1383,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 				Tags: []string{"test"},
 			},
 		})
+		assert.Sometimes(true, "R3F_DN runs to completion", nil)
 	})
 
 	// Clustered file based with discard old policy and max msgs limit.
@@ -1375,6 +1408,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 				Tags: []string{"test"},
 			},
 		})
+		assert.Sometimes(true, "R3F_DO runs to completion", nil)
 	})
 
 	// Clustered file based with discard old policy and no limits.
@@ -1398,6 +1432,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 				Tags: []string{"test"},
 			},
 		})
+		assert.Sometimes(true, "R3F_DO_NOLIMIT runs to completion", nil)
 	})
 }
 
