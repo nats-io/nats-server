@@ -840,14 +840,12 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		pctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		// Start producers
-		var wg sync.WaitGroup
-
 		// First call is just to create the pull subscribers.
 		mp := nats.MaxAckPending(10000)
 		mw := nats.PullMaxWaiting(1000)
 		aw := nats.AckWait(5 * time.Second)
 
+		// Create a multiple consumers for each partition
 		for i := 0; i < 10; i++ {
 			for _, partition := range []string{"EEEEE"} {
 				subject := fmt.Sprintf("MSGS.%s.*.H.100XY.*.*.WQ.00000000000%d", partition, i)
@@ -876,16 +874,20 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		}
 		payload := []byte(strings.Repeat("A", 1024))
 
+		// Wait group for all subroutines
+		var wg sync.WaitGroup
+
+		// Start producers
 		for i := 0; i < 50; i++ {
 			wg.Add(1)
 			go func() {
 				pnc, pjs := jsClientConnect(t, c.randomServer())
 				defer pnc.Close()
+				defer wg.Done()
 
 				for i := 1; i < 200_000; i++ {
 					select {
 					case <-pctx.Done():
-						wg.Done()
 						return
 					default:
 					}
@@ -906,12 +908,12 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 			go func() {
 				pnc, pjs := jsClientConnect(t, c.randomServer())
 				defer pnc.Close()
+				defer wg.Done()
 
 				msgID := nats.MsgId("1234567890")
 				for i := 1; ; i++ {
 					select {
 					case <-pctx.Done():
-						wg.Done()
 						return
 					default:
 					}
@@ -947,15 +949,14 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 
 				wg.Add(1)
 				go func() {
+					defer wg.Done()
 					tick := time.NewTicker(1 * time.Millisecond)
 					for {
 						if cpnc.IsClosed() {
-							wg.Done()
 							return
 						}
 						select {
 						case <-ctx.Done():
-							wg.Done()
 							return
 						case <-tick.C:
 							// Fetch 1 first, then if no errors Fetch 100.
@@ -1001,11 +1002,11 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 
 				wg.Add(1)
 				go func() {
+					defer wg.Done()
 					tick := time.NewTicker(1 * time.Millisecond)
 					for {
 						select {
 						case <-ctx.Done():
-							wg.Done()
 							return
 						case <-tick.C:
 							// Fetch 1 first, then if no errors Fetch 100.
@@ -1041,10 +1042,10 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		if params.reconnectRoutes {
 			wg.Add(1)
 			go func() {
+				defer wg.Done()
 				for range time.NewTicker(10 * time.Second).C {
 					select {
 					case <-ctx.Done():
-						wg.Done()
 						return
 					default:
 					}
@@ -1075,10 +1076,10 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 
 			wg.Add(1)
 			go func() {
+				defer wg.Done()
 				for range time.NewTicker(10 * time.Second).C {
 					select {
 					case <-ctx.Done():
-						wg.Done()
 						return
 					default:
 					}
@@ -1090,7 +1091,9 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		}
 
 		// Restarts
-		time.AfterFunc(10*time.Second, func() {
+		wg.Add(1)
+		restartTimer := time.AfterFunc(10*time.Second, func() {
+			defer wg.Done()
 			for i := 0; i < params.restarts; i++ {
 				switch {
 				case params.restartLeader:
@@ -1129,6 +1132,8 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 							for range time.NewTicker(2 * time.Second).C {
 								select {
 								case <-hctx.Done():
+									t.Fatalf("Timeout checking for health of %s", s.Name())
+									return
 								default:
 								}
 
@@ -1143,10 +1148,15 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 				c.waitOnClusterReady()
 			}
 		})
+		defer restartTimer.Stop()
 
-		// Wait until context is done then check state.
+		t.Logf("Waiting for context timeout and routines shutdown")
+		// Wait until context is done
 		<-ctx.Done()
+		// Wait until all tasks are done
+		wg.Wait()
 
+		// Proceed to check state
 		var consumerPending int
 		for i := 0; i < 10; i++ {
 			ci, err := js.ConsumerInfo(sc.Name, fmt.Sprintf("consumer:EEEEE:%d", i))
@@ -1260,13 +1270,12 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 			checkFor(t, time.Minute, time.Second, func() error {
 				return checkState(t)
 			})
+
 			// If we succeeded now let's check that all messages are also the same.
 			// We may have no messages but for tests that do we make sure each msg is the same
 			// across all replicas.
 			checkMsgsEqual(t)
 		}
-
-		wg.Wait()
 	}
 
 	// Setting up test variations below:
