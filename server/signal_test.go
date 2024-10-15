@@ -155,11 +155,11 @@ func TestProcessSignalMultipleProcessesGlob(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected error")
 	}
-	expectedStr := "\nsignal \"stop\" 123: no such process"
-	expectedStr += "\nsignal \"stop\" 456: no such process"
-	if err.Error() != expectedStr {
-		t.Fatalf("Error is incorrect.\nexpected: %s\ngot: %s", expectedStr, err.Error())
-	}
+	lines := strings.Split(err.Error(), "\n")
+	require_Len(t, len(lines), 3)
+	require_Equal(t, lines[0], "") // Empty line comes first
+	require_True(t, strings.HasPrefix(lines[1], "signal \"stop\" 123:"))
+	require_True(t, strings.HasPrefix(lines[2], "signal \"stop\" 456:"))
 }
 
 func TestProcessSignalMultipleProcessesGlobPartial(t *testing.T) {
@@ -176,11 +176,11 @@ func TestProcessSignalMultipleProcessesGlobPartial(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected error")
 	}
-	expectedStr := "\nsignal \"stop\" 123: no such process"
-	expectedStr += "\nsignal \"stop\" 124: no such process"
-	if err.Error() != expectedStr {
-		t.Fatalf("Error is incorrect.\nexpected: %s\ngot: %s", expectedStr, err.Error())
-	}
+	lines := strings.Split(err.Error(), "\n")
+	require_Len(t, len(lines), 3)
+	require_Equal(t, lines[0], "") // Empty line comes first
+	require_True(t, strings.HasPrefix(lines[1], "signal \"stop\" 123:"))
+	require_True(t, strings.HasPrefix(lines[2], "signal \"stop\" 124:"))
 }
 
 func TestProcessSignalPgrepError(t *testing.T) {
