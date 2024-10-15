@@ -24239,28 +24239,14 @@ func TestJetStreamStrictMode(t *testing.T) {
 				t.Fatalf("Request failed: %v", err)
 			}
 
-			var apiResp map[string]interface{}
+			var apiResp ApiResponse = ApiResponse{}
+
 			if err := json.Unmarshal(resp.Data, &apiResp); err != nil {
 				t.Fatalf("Error unmarshalling response: %v", err)
 			}
 
-			if apiResp["error"] == nil {
-				t.Fatalf("Expected error containing %q, but got no error", tt.expectedErr)
-			}
-
-			errorObj, ok := apiResp["error"].(map[string]interface{})
-			if !ok {
-				t.Fatalf("Expected error to be an object, got %T", apiResp["error"])
-			}
-
-			errorDescription, ok := errorObj["description"].(string)
-			if !ok {
-				t.Fatalf("Expected error description to be a string, got %T", errorObj["description"])
-			}
-
-			if !strings.Contains(errorDescription, tt.expectedErr) {
-				t.Errorf("Expected error containing %q, but got %q", tt.expectedErr, errorDescription)
-			}
+			require_NotNil(t, apiResp.Error.Description)
+			require_Contains(t, apiResp.Error.Description, tt.expectedErr)
 		})
 	}
 }
