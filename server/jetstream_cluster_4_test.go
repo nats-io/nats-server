@@ -18,7 +18,6 @@ package server
 
 import (
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -3729,9 +3728,7 @@ func TestJetStreamClusterDesyncAfterErrorDuringCatchup(t *testing.T) {
 				for _, n := range server.raftNodes {
 					rn := n.(*raft)
 					if rn.accName == "$G" {
-						rn.Lock()
 						rn.updateLeader(noLeader)
-						rn.Unlock()
 					}
 				}
 
@@ -3996,129 +3993,138 @@ func TestJetStreamClusterMetaSnapshotMustNotIncludePendingConsumers(t *testing.T
 	}
 }
 
-func TestJetStreamClusterConsumerDontSendSnapshotOnLeaderChange(t *testing.T) {
+func TestJetStreamClusterDesyncAfterPublishToLeaderWithoutQuorum(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
-
 	nc, js := jsClientConnect(t, c.randomServer())
 	defer nc.Close()
-
-	_, err := js.AddStream(&nats.StreamConfig{
+	si, err := js.AddStream(&nats.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo"},
 		Replicas: 3,
 	})
 	require_NoError(t, err)
-
-	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
-		Durable:   "CONSUMER",
-		Replicas:  3,
-		AckPolicy: nats.AckExplicitPolicy,
-	})
-	require_NoError(t, err)
-
-	// Add a message and let the consumer ack it, this moves the consumer's RAFT applied up to 1.
-	_, err = js.Publish("foo", nil)
-	require_NoError(t, err)
-	sub, err := js.PullSubscribe("foo", "CONSUMER")
-	require_NoError(t, err)
-	msgs, err := sub.Fetch(1)
-	require_NoError(t, err)
-	require_Len(t, len(msgs), 1)
-	err = msgs[0].AckSync()
-	require_NoError(t, err)
-
-	// We don't need the client anymore.
+	streamLeader := si.Cluster.Leader
+	streamLeaderServer := c.serverByName(streamLeader)
 	nc.Close()
-
-	lookupConsumer := func(s *Server) *consumer {
-		t.Helper()
-		mset, err := s.lookupAccount(globalAccountName)
-		require_NoError(t, err)
-		acc, err := mset.lookupStream("TEST")
-		require_NoError(t, err)
-		o := acc.lookupConsumer("CONSUMER")
-		require_NotNil(t, o)
-		return o
-	}
-
-	// Grab current consumer leader before moving all into observer mode.
-	cl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
-	for _, s := range c.servers {
-		// Put all consumer's RAFT into observer mode, this will prevent all servers from trying to become leader.
-		o := lookupConsumer(s)
-		o.node.SetObserver(true)
-		if s != cl {
-			// For all followers, pause apply so they only store messages in WAL but not apply and possibly snapshot.
-			err = o.node.PauseApply()
-			require_NoError(t, err)
-		}
-	}
-
-	updateDeliveredBuffer := func() []byte {
-		var b [4*binary.MaxVarintLen64 + 1]byte
-		b[0] = byte(updateDeliveredOp)
-		n := 1
-		n += binary.PutUvarint(b[n:], 100)
-		n += binary.PutUvarint(b[n:], 100)
-		n += binary.PutUvarint(b[n:], 1)
-		n += binary.PutVarint(b[n:], time.Now().UnixNano())
-		return b[:n]
-	}
-
-	updateAcksBuffer := func() []byte {
-		var b [2*binary.MaxVarintLen64 + 1]byte
-		b[0] = byte(updateAcksOp)
-		n := 1
-		n += binary.PutUvarint(b[n:], 100)
-		n += binary.PutUvarint(b[n:], 100)
-		return b[:n]
-	}
-
-	// Store an uncommitted entry into our WAL, which will be committed and applied later.
-	co := lookupConsumer(cl)
-	rn := co.node.(*raft)
-	rn.Lock()
-	entries := []*Entry{{EntryNormal, updateDeliveredBuffer()}, {EntryNormal, updateAcksBuffer()}}
-	ae := encode(t, rn.buildAppendEntry(entries))
-	err = rn.storeToWAL(ae)
-	minPindex := rn.pindex
-	rn.Unlock()
-	require_NoError(t, err)
-
-	// Simulate leader change, we do this so we can check what happens in the upper layer logic.
-	rn.leadc <- true
-	rn.SetObserver(false)
-
-	// Since upper layer is async, we don't know whether it will or will not act on the leader change.
-	// Wait for some time to check if it does.
-	time.Sleep(2 * time.Second)
-	rn.RLock()
-	maxPindex := rn.pindex
-	rn.RUnlock()
-
-	r := c.randomNonConsumerLeader(globalAccountName, "TEST", "CONSUMER")
-	ro := lookupConsumer(r)
-	rn = ro.node.(*raft)
-
-	checkFor(t, 5*time.Second, time.Second, func() error {
-		rn.RLock()
-		defer rn.RUnlock()
-		if rn.pindex < maxPindex {
-			return fmt.Errorf("rn.pindex too low, expected %d, got %d", maxPindex, rn.pindex)
-		}
-		return nil
+	nc, js = jsClientConnect(t, streamLeaderServer)
+	defer nc.Close()
+	servers := slices.DeleteFunc([]string{"S-1", "S-2", "S-3"}, func(s string) bool {
+		return s == streamLeader
 	})
-
-	// We should only have 'Normal' entries.
-	// If we'd get a 'Snapshot' entry, that would mean it had incomplete state and would be reverting committed state.
-	var state StreamState
-	rn.wal.FastState(&state)
-	for seq := minPindex; seq <= maxPindex; seq++ {
-		ae, err = rn.loadEntry(seq)
+	// Stop followers so further publishes will not have quorum.
+	followerName1 := servers[0]
+	followerName2 := servers[1]
+	followerServer1 := c.serverByName(followerName1)
+	followerServer2 := c.serverByName(followerName2)
+	followerServer1.Shutdown()
+	followerServer2.Shutdown()
+	followerServer1.WaitForShutdown()
+	followerServer2.WaitForShutdown()
+	// Although this request will time out, it will be added to the stream leader's WAL.
+	_, err = js.Publish("foo", []byte("first"), nats.AckWait(time.Second))
+	require_NotNil(t, err)
+	require_Equal(t, err, nats.ErrTimeout)
+	// Now shut down the leader as well.
+	nc.Close()
+	streamLeaderServer.Shutdown()
+	streamLeaderServer.WaitForShutdown()
+	// Only restart the (previous) followers.
+	followerServer1 = c.restartServer(followerServer1)
+	c.restartServer(followerServer2)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	nc, js = jsClientConnect(t, followerServer1)
+	defer nc.Close()
+	// Publishing a message will now have quorum.
+	pubAck, err := js.Publish("foo", []byte("first, this is a retry"))
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 1)
+	// Bring up the previous stream leader.
+	c.restartServer(streamLeaderServer)
+	c.waitOnAllCurrent()
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	// Check all servers ended up with the last published message, which had quorum.
+	for _, s := range c.servers {
+		c.waitOnStreamCurrent(s, globalAccountName, "TEST")
+		acc, err := s.lookupAccount(globalAccountName)
 		require_NoError(t, err)
-		for _, entry := range ae.entries {
-			require_Equal(t, entry.Type, EntryNormal)
+		mset, err := acc.lookupStream("TEST")
+		require_NoError(t, err)
+		state := mset.state()
+		require_Equal(t, state.Msgs, 1)
+		require_Equal(t, state.Bytes, 55)
+	}
+}
+func TestJetStreamClusterPreserveWALDuringCatchupWithMatchingTerm(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.>"},
+		Replicas: 3,
+	})
+	nc.Close()
+	require_NoError(t, err)
+	// Pick one server that will only store a part of the messages in its WAL.
+	rs := c.randomNonStreamLeader(globalAccountName, "TEST")
+	ts := time.Now().UnixNano()
+	// Manually add 3 append entries to each node's WAL, except for one node who is one behind.
+	var scratch [1024]byte
+	for _, s := range c.servers {
+		for _, n := range s.raftNodes {
+			rn := n.(*raft)
+			if rn.accName == globalAccountName {
+				for i := uint64(0); i < 3; i++ {
+					// One server will be one behind and need to catchup.
+					if s.Name() == rs.Name() && i >= 2 {
+						break
+					}
+					esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, i, ts, true)
+					entries := []*Entry{newEntry(EntryNormal, esm)}
+					rn.Lock()
+					ae := rn.buildAppendEntry(entries)
+					ae.buf, err = ae.encode(scratch[:])
+					require_NoError(t, err)
+					err = rn.storeToWAL(ae)
+					rn.Unlock()
+					require_NoError(t, err)
+				}
+			}
+		}
+	}
+	// Restart all.
+	c.stopAll()
+	c.restartAll()
+	c.waitOnAllCurrent()
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	rs = c.serverByName(rs.Name())
+	// Check all servers ended up with all published messages, which had quorum.
+	for _, s := range c.servers {
+		c.waitOnStreamCurrent(s, globalAccountName, "TEST")
+		acc, err := s.lookupAccount(globalAccountName)
+		require_NoError(t, err)
+		mset, err := acc.lookupStream("TEST")
+		require_NoError(t, err)
+		state := mset.state()
+		require_Equal(t, state.Msgs, 3)
+		require_Equal(t, state.Bytes, 99)
+	}
+	// Check that the first two published messages came from our WAL, and
+	// the last came from a catchup by another leader.
+	for _, n := range rs.raftNodes {
+		rn := n.(*raft)
+		if rn.accName == globalAccountName {
+			ae, err := rn.loadEntry(2)
+			require_NoError(t, err)
+			require_True(t, ae.leader == rn.ID())
+			ae, err = rn.loadEntry(3)
+			require_NoError(t, err)
+			require_True(t, ae.leader == rn.ID())
+			ae, err = rn.loadEntry(4)
+			require_NoError(t, err)
+			require_True(t, ae.leader != rn.ID())
 		}
 	}
 }

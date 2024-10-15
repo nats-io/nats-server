@@ -823,8 +823,8 @@ func TestNRGTermDoesntRollBackToPtermOnCatchup(t *testing.T) {
 		require_Equal(t, rn.term, 2)
 
 		if !rn.Leader() {
-			rn.truncateWAL(1, 6) // This will overwrite rn.term, so...
-			rn.term = 2          // ... we'll set it back manually.
+			rn.truncateWAL(1, 6)
+			require_Equal(t, rn.term, 2) // rn.term must stay the same
 			require_Equal(t, rn.pterm, 1)
 			require_Equal(t, rn.pindex, 6)
 		}
@@ -984,68 +984,94 @@ func TestNRGRemoveLeaderPeerDeadlockBug(t *testing.T) {
 }
 
 func TestNRGWALEntryWithoutQuorumMustTruncate(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "R3S", 3)
-	defer c.shutdown()
-
-	rg := c.createRaftGroup("TEST", 3, newStateAdder)
-	rg.waitOnLeader()
-
-	var err error
-	var scratch [1024]byte
-
-	// Simulate leader storing an AppendEntry in WAL but being hard killed before it can propose to its peers.
-	n := rg.leader().node().(*raft)
-	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
-	entries := []*Entry{newEntry(EntryNormal, esm)}
-	n.Lock()
-	ae := n.buildAppendEntry(entries)
-	ae.buf, err = ae.encode(scratch[:])
-	require_NoError(t, err)
-	err = n.storeToWAL(ae)
-	n.Unlock()
-	require_NoError(t, err)
-
-	// Stop the leader so it moves to another one.
-	n.shutdown(false)
-
-	// Wait for another leader to be picked
-	rg.waitOnLeader()
-
-	// Restart the previous leader that contains the stored AppendEntry without quorum.
-	for _, a := range rg {
-		if a.node().ID() == n.ID() {
-			sa := a.(*stateAdder)
-			sa.restart()
-			break
-		}
+	tests := []struct {
+		title  string
+		modify func(rg smGroup)
+	}{
+		{
+			// state equals, only need to remove the entry
+			title:  "equal",
+			modify: func(rg smGroup) {},
+		},
+		{
+			// state diverged, need to replace the entry
+			title: "diverged",
+			modify: func(rg smGroup) {
+				rg.leader().(*stateAdder).proposeDelta(11)
+			},
+		},
 	}
 
-	// The previous leader's WAL should truncate to remove the AppendEntry only it has.
-	// Eventually all WALs for all peers must match.
-	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
-		var expected [][]byte
-		for _, a := range rg {
-			an := a.node().(*raft)
-			var state StreamState
-			an.wal.FastState(&state)
-			if len(expected) > 0 && int(state.LastSeq-state.FirstSeq+1) != len(expected) {
-				return fmt.Errorf("WAL is different: too many entries")
-			}
-			for index := state.FirstSeq; index <= state.LastSeq; index++ {
-				ae, err := an.loadEntry(index)
-				if err != nil {
-					return err
+	for _, test := range tests {
+		t.Run(test.title, func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			rg := c.createRaftGroup("TEST", 3, newStateAdder)
+			rg.waitOnLeader()
+
+			var err error
+			var scratch [1024]byte
+
+			// Simulate leader storing an AppendEntry in WAL but being hard killed before it can propose to its peers.
+			n := rg.leader().node().(*raft)
+			esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+			entries := []*Entry{newEntry(EntryNormal, esm)}
+			n.Lock()
+			ae := n.buildAppendEntry(entries)
+			ae.buf, err = ae.encode(scratch[:])
+			require_NoError(t, err)
+			err = n.storeToWAL(ae)
+			n.Unlock()
+			require_NoError(t, err)
+
+			// Stop the leader so it moves to another one.
+			n.shutdown(false)
+
+			// Wait for another leader to be picked
+			rg.waitOnLeader()
+
+			// Make a modification, specific to this test.
+			test.modify(rg)
+
+			// Restart the previous leader that contains the stored AppendEntry without quorum.
+			for _, a := range rg {
+				if a.node().ID() == n.ID() {
+					sa := a.(*stateAdder)
+					sa.restart()
+					break
 				}
-				seq := int(index)
-				if len(expected) < seq {
-					expected = append(expected, ae.buf)
-				} else if !bytes.Equal(expected[seq-1], ae.buf) {
-					return fmt.Errorf("WAL is different: stored bytes differ")
-				}
 			}
-		}
-		return nil
-	})
+
+			// The previous leader's WAL should truncate to remove the AppendEntry only it has.
+			// Eventually all WALs for all peers must match.
+			checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+				var expected [][]byte
+				for _, a := range rg {
+					an := a.node().(*raft)
+					var state StreamState
+					an.wal.FastState(&state)
+					if len(expected) > 0 && int(state.LastSeq-state.FirstSeq+1) != len(expected) {
+						return fmt.Errorf("WAL is different: too many entries")
+					}
+					// Loop over all entries in the WAL, checking if the contents for all RAFT nodes are equal.
+					for index := state.FirstSeq; index <= state.LastSeq; index++ {
+						ae, err := an.loadEntry(index)
+						if err != nil {
+							return err
+						}
+						seq := int(index)
+						if len(expected) < seq {
+							expected = append(expected, ae.buf)
+						} else if !bytes.Equal(expected[seq-1], ae.buf) {
+							return fmt.Errorf("WAL is different: stored bytes differ")
+						}
+					}
+				}
+				return nil
+			})
+		})
+	}
 }
 
 func TestNRGTermNoDecreaseAfterWALReset(t *testing.T) {
@@ -1087,4 +1113,133 @@ func TestNRGTermNoDecreaseAfterWALReset(t *testing.T) {
 			require_Equal(t, fn.term, 20) // Follower should reject again, even after reset, term stays the same.
 		}
 	}
+}
+
+func TestNRGCatchupDoesNotTruncateUncommittedEntriesWithQuorum(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+	s := c.servers[0] // RunBasicJetStreamServer not available
+
+	ms, err := newMemStore(&StreamConfig{Name: "TEST", Storage: MemoryStorage})
+	require_NoError(t, err)
+	cfg := &RaftConfig{Name: "TEST", Store: t.TempDir(), Log: ms}
+
+	err = s.bootstrapRaftNode(cfg, nil, false)
+	require_NoError(t, err)
+	n, err := s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+	require_NoError(t, err)
+
+	// An AppendEntry is encoded into a buffer and that's stored into the WAL.
+	// This is a helper function to generate that buffer.
+	encode := func(ae *appendEntry) *appendEntry {
+		buf, err := ae.encode(nil)
+		require_NoError(t, err)
+		ae.buf = buf
+		return ae
+	}
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	nats1 := "yrzKKRBu" // "nats-1"
+
+	// Timeline, for first leader
+	aeInitial := encode(&appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeHeartbeat := encode(&appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: nil})
+	aeUncommitted := encode(&appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: entries})
+	aeNoQuorum := encode(&appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 2, entries: entries})
+
+	// Timeline, after leader change
+	aeMissed := encode(&appendEntry{leader: nats1, term: 2, commit: 1, pterm: 1, pindex: 2, entries: entries})
+	aeCatchupTrigger := encode(&appendEntry{leader: nats1, term: 2, commit: 1, pterm: 2, pindex: 3, entries: entries})
+	aeHeartbeat2 := encode(&appendEntry{leader: nats1, term: 2, commit: 2, pterm: 2, pindex: 4, entries: nil})
+	aeHeartbeat3 := encode(&appendEntry{leader: nats1, term: 2, commit: 4, pterm: 2, pindex: 4, entries: nil})
+
+	// Initial case is simple, just store the entry.
+	n.processAppendEntry(aeInitial, n.aesub)
+	require_Equal(t, n.wal.State().Msgs, 1)
+	entry, err := n.loadEntry(1)
+	require_NoError(t, err)
+	require_Equal(t, entry.leader, nats0)
+
+	// Heartbeat, makes sure commit moves up.
+	n.processAppendEntry(aeHeartbeat, n.aesub)
+	require_Equal(t, n.commit, 1)
+
+	// We get one entry that has quorum (but we don't know that yet), so it stays uncommitted for a bit.
+	n.processAppendEntry(aeUncommitted, n.aesub)
+	require_Equal(t, n.wal.State().Msgs, 2)
+	entry, err = n.loadEntry(2)
+	require_NoError(t, err)
+	require_Equal(t, entry.leader, nats0)
+
+	// We get one entry that has NO quorum (but we don't know that yet).
+	n.processAppendEntry(aeNoQuorum, n.aesub)
+	require_Equal(t, n.wal.State().Msgs, 3)
+	entry, err = n.loadEntry(3)
+	require_NoError(t, err)
+	require_Equal(t, entry.leader, nats0)
+
+	// We've just had a leader election, and we missed one message from the previous leader, we should catchup.
+	n.processAppendEntry(aeCatchupTrigger, n.aesub)
+	require_Equal(t, n.wal.State().Msgs, 3)
+	require_True(t, n.catchup != nil)
+	require_Equal(t, n.catchup.pterm, 1)  // n.pterm
+	require_Equal(t, n.catchup.pindex, 1) // n.commit
+
+	// Make sure our WAL was not truncated, and we're still catching up.
+	aeUncommitted.leader = nats1
+	aeUncommitted = encode(aeUncommitted)
+	n.processAppendEntry(aeUncommitted, n.catchup.sub)
+	require_Equal(t, n.wal.State().Msgs, 3)
+	require_True(t, n.catchup != nil)
+	// Our entry should not be touched, so the 'leader' should've stayed the same.
+	entry, err = n.loadEntry(2)
+	require_NoError(t, err)
+	require_Equal(t, entry.leader, nats0)
+
+	// We now notice the leader indicated a different entry at the (no quorum) index, should truncate.
+	n.processAppendEntry(aeMissed, n.catchup.sub)
+	require_Equal(t, n.wal.State().Msgs, 2)
+	require_True(t, n.catchup == nil)
+
+	// We get a heartbeat that prompts us to catchup again.
+	n.processAppendEntry(aeHeartbeat2, n.aesub)
+	require_Equal(t, n.wal.State().Msgs, 2)
+	require_Equal(t, n.commit, 1) // Commit should not change, as we missed an item.
+	require_True(t, n.catchup != nil)
+	require_Equal(t, n.catchup.pterm, 1)  // n.pterm
+	require_Equal(t, n.catchup.pindex, 1) // n.commit
+
+	// We get the uncommitted entry again, it should stay the same.
+	n.processAppendEntry(aeUncommitted, n.catchup.sub)
+	require_Equal(t, n.wal.State().Msgs, 2)
+	require_True(t, n.catchup != nil)
+	// Our entry should still stay the same.
+	entry, err = n.loadEntry(2)
+	require_NoError(t, err)
+	require_Equal(t, entry.leader, nats0)
+
+	// We now get the missed append entry, store it.
+	n.processAppendEntry(aeMissed, n.catchup.sub)
+	require_Equal(t, n.wal.State().Msgs, 3)
+	require_True(t, n.catchup != nil)
+	entry, err = n.loadEntry(3)
+	require_NoError(t, err)
+	require_Equal(t, entry.leader, nats1)
+
+	// We now get the entry that initially triggered us to catchup again, it should be added.
+	n.processAppendEntry(aeCatchupTrigger, n.catchup.sub)
+	require_Equal(t, n.wal.State().Msgs, 4)
+	require_True(t, n.catchup != nil)
+	entry, err = n.loadEntry(4)
+	require_NoError(t, err)
+	require_Equal(t, entry.leader, nats1)
+
+	// Heartbeat, makes sure we commit (and reset catchup, as we're now up-to-date).
+	n.processAppendEntry(aeHeartbeat3, n.aesub)
+	require_Equal(t, n.commit, 4)
+	require_True(t, n.catchup == nil)
 }
