@@ -2,7 +2,7 @@ os: linux
 dist: focal
 
 vm:
-  size: 2x-large
+  size: x-large
 
 language: go
 go:
