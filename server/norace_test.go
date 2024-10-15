@@ -6578,8 +6578,10 @@ func TestNoRaceJetStreamConsumerCreateTimeNumPending(t *testing.T) {
 
 func TestNoRaceJetStreamClusterGhostConsumers(t *testing.T) {
 	consumerNotActiveStartInterval = time.Second
+	consumerNotActiveMaxInterval = time.Second
 	defer func() {
 		consumerNotActiveStartInterval = defaultConsumerNotActiveStartInterval
+		consumerNotActiveMaxInterval = defaultConsumerNotActiveMaxInterval
 	}()
 
 	c := createJetStreamClusterExplicit(t, "GHOST", 3)
@@ -6675,8 +6677,10 @@ func TestNoRaceJetStreamClusterGhostConsumers(t *testing.T) {
 	time.Sleep(5 * time.Second)
 	cancel()
 
-	checkFor(t, 30*time.Second, time.Second, func() error {
-		m, err := nc.Request("$JS.API.CONSUMER.LIST.TEST", nil, time.Second)
+	subj := fmt.Sprintf(JSApiConsumerListT, "TEST")
+	checkFor(t, 20*time.Second, 200*time.Millisecond, func() error {
+		// Request will take at most 4 seconds if some consumers can't be found.
+		m, err := nc.Request(subj, nil, 5*time.Second)
 		if err != nil {
 			return err
 		}
