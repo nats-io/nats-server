@@ -2624,6 +2624,7 @@ func TestTLSClientHandshakeFirst(t *testing.T) {
 		}
 		nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", o.Port), opts...)
 		if expectedOk {
+			defer nc.Close()
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
@@ -3072,8 +3073,9 @@ func TestClientFlushOutboundNoSlowConsumer(t *testing.T) {
 
 	wait := make(chan error)
 
-	nca, err := nats.Connect(proxy.clientURL())
+	nca, err := nats.Connect(proxy.clientURL(), nats.NoCallbacksAfterClientClose())
 	require_NoError(t, err)
+	defer nca.Close()
 	nca.SetDisconnectErrHandler(func(c *nats.Conn, err error) {
 		wait <- err
 		close(wait)
@@ -3081,6 +3083,7 @@ func TestClientFlushOutboundNoSlowConsumer(t *testing.T) {
 
 	ncb, err := nats.Connect(s.ClientURL())
 	require_NoError(t, err)
+	defer ncb.Close()
 
 	_, err = nca.Subscribe("test", func(msg *nats.Msg) {
 		wait <- nil
@@ -3122,4 +3125,51 @@ func TestClientFlushOutboundNoSlowConsumer(t *testing.T) {
 		}
 	}
 	require_Equal(t, msgs, 8)
+}
+
+func TestClientRejectsNRGSubjects(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		accounts: {
+			A: { users: [ { user: nat, password: pass } ] }
+			$SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] }
+		}
+		no_auth_user: nat
+	`))
+	defer removeFile(t, conf)
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	t.Run("System", func(t *testing.T) {
+		ech := make(chan error, 1)
+		nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"),
+			nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, e error) {
+				ech <- e
+			}),
+		)
+		require_NoError(t, err)
+		defer nc.Close()
+
+		// System account clients are allowed to publish to these subjects.
+		require_NoError(t, nc.Publish("$NRG.foo", nil))
+		require_NoChanRead(t, ech, time.Second)
+	})
+
+	t.Run("Normal", func(t *testing.T) {
+		ech := make(chan error, 1)
+		nc, err := nats.Connect(s.ClientURL(),
+			nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, e error) {
+				ech <- e
+			}),
+		)
+		require_NoError(t, err)
+		defer nc.Close()
+
+		// Non-system clients should receive a pub permission error.
+		require_NoError(t, nc.Publish("$NRG.foo", nil))
+		err = require_ChanRead(t, ech, time.Second)
+		require_Error(t, err)
+		require_True(t, strings.HasPrefix(err.Error(), "nats: Permissions Violation"))
+	})
 }

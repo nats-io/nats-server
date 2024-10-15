@@ -229,6 +229,7 @@ type Server struct {
 	leafRemoteAccounts sync.Map
 	leafNodeEnabled    bool
 	leafDisableConnect bool // Used in test only
+	leafNoCluster      bool // Indicate that this server has only remotes and no cluster defined
 
 	quitCh           chan struct{}
 	startupComplete  chan struct{}
@@ -750,6 +751,7 @@ func NewServer(opts *Options) (*Server, error) {
 	// If we have solicited leafnodes but no clustering and no clustername.
 	// However we may need a stable clustername so use the server name.
 	if len(opts.LeafNode.Remotes) > 0 && opts.Cluster.Port == 0 && opts.Cluster.Name == _EMPTY_ {
+		s.leafNoCluster = true
 		opts.Cluster.Name = opts.ServerName
 	}
 
@@ -1601,7 +1603,7 @@ func (s *Server) isRunning() bool {
 
 func (s *Server) logPid() error {
 	pidStr := strconv.Itoa(os.Getpid())
-	return os.WriteFile(s.getOpts().PidFile, []byte(pidStr), 0660)
+	return os.WriteFile(s.getOpts().PidFile, []byte(pidStr), defaultFilePerms)
 }
 
 // numReservedAccounts will return the number of reserved accounts configured in the server.
@@ -1764,7 +1766,7 @@ func (s *Server) setSystemAccount(acc *Account) error {
 		recvqp:  newIPQueue[*inSysMsg](s, "System recvQ Pings"),
 		resetCh: make(chan struct{}),
 		sq:      s.newSendQ(acc),
-		statsz:  eventsHBInterval,
+		statsz:  statsHBInterval,
 		orphMax: 5 * eventsHBInterval,
 		chkOrph: 3 * eventsHBInterval,
 	}
@@ -2178,7 +2180,17 @@ func (s *Server) Start() {
 
 	// Snapshot server options.
 	opts := s.getOpts()
-	clusterName := s.ClusterName()
+
+	// Capture if this server is a leaf that has no cluster, so we don't
+	// display the cluster name if that is the case.
+	s.mu.RLock()
+	leafNoCluster := s.leafNoCluster
+	s.mu.RUnlock()
+
+	var clusterName string
+	if !leafNoCluster {
+		clusterName = s.ClusterName()
+	}
 
 	s.Noticef("  Version:  %s", VERSION)
 	s.Noticef("  Git:      [%s]", gc)

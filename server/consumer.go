@@ -285,7 +285,9 @@ var (
 	AckNext = []byte("+NXT")
 	// Terminate delivery of the message.
 	AckTerm = []byte("+TERM")
+)
 
+const (
 	// reasons to supply when terminating messages using limits
 	ackTermLimitsReason        = "Message deleted by stream limits"
 	ackTermUnackedLimitsReason = "Unacknowledged message was deleted"
@@ -326,6 +328,7 @@ type consumer struct {
 	dseq              uint64         // delivered consumer sequence
 	adflr             uint64         // ack delivery floor
 	asflr             uint64         // ack store floor
+	chkflr            uint64         // our check floor, interest streams only.
 	npc               int64          // Num Pending Count
 	npf               uint64         // Num Pending Floor Sequence
 	dsubj             string
@@ -1343,6 +1346,9 @@ func (o *consumer) setLeader(isLeader bool) {
 		pullMode := o.isPullMode()
 		o.mu.Unlock()
 
+		// Check if there are any pending we might need to clean up etc.
+		o.checkPending()
+
 		// Snapshot initial info.
 		o.infoWithSnap(true)
 
@@ -1637,6 +1643,16 @@ func (o *consumer) updateDeliveryInterest(localInterest bool) bool {
 	return false
 }
 
+const (
+	defaultConsumerNotActiveStartInterval = 30 * time.Second
+	defaultConsumerNotActiveMaxInterval   = 5 * time.Minute
+)
+
+var (
+	consumerNotActiveStartInterval = defaultConsumerNotActiveStartInterval
+	consumerNotActiveMaxInterval   = defaultConsumerNotActiveMaxInterval
+)
+
 func (o *consumer) deleteNotActive() {
 	o.mu.Lock()
 	if o.mset == nil {
@@ -1702,12 +1718,8 @@ func (o *consumer) deleteNotActive() {
 			// Check to make sure we went away.
 			// Don't think this needs to be a monitored go routine.
 			go func() {
-				const (
-					startInterval = 30 * time.Second
-					maxInterval   = 5 * time.Minute
-				)
-				jitter := time.Duration(rand.Int63n(int64(startInterval)))
-				interval := startInterval + jitter
+				jitter := time.Duration(rand.Int63n(int64(consumerNotActiveStartInterval)))
+				interval := consumerNotActiveStartInterval + jitter
 				ticker := time.NewTicker(interval)
 				defer ticker.Stop()
 				for range ticker.C {
@@ -1722,7 +1734,7 @@ func (o *consumer) deleteNotActive() {
 					if nca != nil && nca == ca {
 						s.Warnf("Consumer assignment for '%s > %s > %s' not cleaned up, retrying", acc, stream, name)
 						meta.ForwardProposal(removeEntry)
-						if interval < maxInterval {
+						if interval < consumerNotActiveMaxInterval {
 							interval *= 2
 							ticker.Reset(interval)
 						}
@@ -1767,12 +1779,39 @@ func (o *consumer) config() ConsumerConfig {
 	return o.cfg
 }
 
+// Check if we have hit max deliveries. If so do notification and cleanup.
+// Return whether or not the max was hit.
+// Lock should be held.
+func (o *consumer) hasMaxDeliveries(seq uint64) bool {
+	if o.maxdc == 0 {
+		return false
+	}
+	if dc := o.deliveryCount(seq); dc >= o.maxdc {
+		// We have hit our max deliveries for this sequence.
+		// Only send the advisory once.
+		if dc == o.maxdc {
+			o.notifyDeliveryExceeded(seq, dc)
+		}
+		// Determine if we signal to start flow of messages again.
+		if o.maxp > 0 && len(o.pending) >= o.maxp {
+			o.signalNewMessages()
+		}
+		// Cleanup our tracking.
+		delete(o.pending, seq)
+		if o.rdc != nil {
+			delete(o.rdc, seq)
+		}
+		return true
+	}
+	return false
+}
+
 // Force expiration of all pending.
 // Lock should be held.
 func (o *consumer) forceExpirePending() {
 	var expired []uint64
 	for seq := range o.pending {
-		if !o.onRedeliverQueue(seq) {
+		if !o.onRedeliverQueue(seq) && !o.hasMaxDeliveries(seq) {
 			expired = append(expired, seq)
 		}
 	}
@@ -3027,28 +3066,6 @@ func (o *consumer) isFiltered() bool {
 	return false
 }
 
-// Check if we would have matched and needed an ack for this store seq.
-// This is called for interest based retention streams to remove messages.
-func (o *consumer) matchAck(sseq uint64) bool {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
-
-	// Check if we are filtered, and if so check if this is even applicable to us.
-	if o.isFiltered() {
-		if o.mset == nil {
-			return false
-		}
-		var svp StoreMsg
-		if _, err := o.mset.store.LoadMsg(sseq, &svp); err != nil {
-			return false
-		}
-		if !o.isFilteredMatch(svp.subj) {
-			return false
-		}
-	}
-	return true
-}
-
 // Check if we need an ack for this store seq.
 // This is called for interest based retention streams to remove messages.
 func (o *consumer) needAck(sseq uint64, subj string) bool {
@@ -3546,6 +3563,14 @@ func trackDownAccountAndInterest(acc *Account, interest string) (*Account, strin
 	return acc, interest
 }
 
+// Return current delivery count for a given sequence.
+func (o *consumer) deliveryCount(seq uint64) uint64 {
+	if o.rdc == nil {
+		return 1
+	}
+	return o.rdc[seq]
+}
+
 // Increase the delivery count for this message.
 // ONLY used on redelivery semantics.
 // Lock should be held.
@@ -3711,9 +3736,7 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 	var pmsg = getJSPubMsgFromPool()
 
 	// Grab next message applicable to us.
-	// We will unlock here in case lots of contention, e.g. WQ.
 	filters, subjf, fseq := o.filters, o.subjf, o.sseq
-	o.mu.Unlock()
 	// Check if we are multi-filtered or not.
 	if filters != nil {
 		sm, sseq, err = store.LoadNextMsgMulti(filters, fseq, &pmsg.StoreMsg)
@@ -3728,8 +3751,6 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 		pmsg.returnToPool()
 		pmsg = nil
 	}
-	// Re-acquire lock.
-	o.mu.Lock()
 	// Check if we should move our o.sseq.
 	if sseq >= o.sseq {
 		// If we are moving step by step then sseq == o.sseq.
@@ -4769,7 +4790,10 @@ func (o *consumer) checkPending() {
 			}
 		}
 		if elapsed >= deadline {
-			if !o.onRedeliverQueue(seq) {
+			// We will check if we have hit our max deliveries. Previously we would do this on getNextMsg() which
+			// worked well for push consumers, but with pull based consumers would require a new pull request to be
+			// present to process and redelivered could be reported incorrectly.
+			if !o.onRedeliverQueue(seq) && !o.hasMaxDeliveries(seq) {
 				expired = append(expired, seq)
 			}
 		} else if deadline-elapsed < next {
@@ -5631,16 +5655,24 @@ func (o *consumer) isMonitorRunning() bool {
 var errAckFloorHigherThanLastSeq = errors.New("consumer ack floor is higher than streams last sequence")
 
 // If we are a consumer of an interest or workqueue policy stream, process that state and make sure consistent.
-func (o *consumer) checkStateForInterestStream() error {
+func (o *consumer) checkStateForInterestStream(ss *StreamState) error {
 	o.mu.RLock()
 	// See if we need to process this update if our parent stream is not a limits policy stream.
 	mset := o.mset
 	shouldProcessState := mset != nil && o.retention != LimitsPolicy
-	if o.closed || !shouldProcessState || o.store == nil {
+	if o.closed || !shouldProcessState || o.store == nil || ss == nil {
 		o.mu.RUnlock()
 		return nil
 	}
+	store := mset.store
 	state, err := o.store.State()
+
+	filters, subjf, filter := o.filters, o.subjf, _EMPTY_
+	var wc bool
+	if filters == nil && subjf != nil {
+		filter, wc = subjf[0].subject, subjf[0].hasWildcard
+	}
+	chkfloor := o.chkflr
 	o.mu.RUnlock()
 
 	if err != nil {
@@ -5653,26 +5685,46 @@ func (o *consumer) checkStateForInterestStream() error {
 		return nil
 	}
 
-	// We should make sure to update the acks.
-	var ss StreamState
-	mset.store.FastState(&ss)
-
 	// Check if the underlying stream's last sequence is less than our floor.
 	// This can happen if the stream has been reset and has not caught up yet.
 	if asflr > ss.LastSeq {
 		return errAckFloorHigherThanLastSeq
 	}
 
-	for seq := ss.FirstSeq; asflr > 0 && seq <= asflr; seq++ {
-		if o.matchAck(seq) {
+	var smv StoreMsg
+	var seq, nseq uint64
+	// Start at first stream seq or a previous check floor, whichever is higher.
+	// Note this will really help for interest retention, with WQ the loadNextMsg
+	// gets us a long way already since it will skip deleted msgs not for our filter.
+	fseq := ss.FirstSeq
+	if chkfloor > fseq {
+		fseq = chkfloor
+	}
+
+	for seq = fseq; asflr > 0 && seq <= asflr; seq++ {
+		if filters != nil {
+			_, nseq, err = store.LoadNextMsgMulti(filters, seq, &smv)
+		} else {
+			_, nseq, err = store.LoadNextMsg(filter, wc, seq, &smv)
+		}
+		// if we advanced sequence update our seq. This can be on no error and EOF.
+		if nseq > seq {
+			seq = nseq
+		}
+		// Only ack though if no error and seq <= ack floor.
+		if err == nil && seq <= asflr {
 			mset.ackMsg(o, seq)
 		}
 	}
 
-	o.mu.RLock()
+	o.mu.Lock()
+	// Update our check floor.
+	if seq > o.chkflr {
+		o.chkflr = seq
+	}
 	// See if we need to process this update if our parent stream is not a limits policy stream.
 	state, _ = o.store.State()
-	o.mu.RUnlock()
+	o.mu.Unlock()
 
 	// If we have pending, we will need to walk through to delivered in case we missed any of those acks as well.
 	if state != nil && len(state.Pending) > 0 && state.AckFloor.Stream > 0 {

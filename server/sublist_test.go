@@ -634,6 +634,11 @@ func TestSublistValidSubjects(t *testing.T) {
 	checkBool(IsValidSubject("foo.>bar"), true, t)
 	checkBool(IsValidSubject("foo>.bar"), true, t)
 	checkBool(IsValidSubject(">bar"), true, t)
+
+	// Check for embedded nulls.
+	subj := []byte("foo.bar.baz.")
+	subj = append(subj, 0)
+	checkBool(isValidSubject(string(subj), true), false, t)
 }
 
 func TestSublistMatchLiterals(t *testing.T) {
@@ -697,7 +702,6 @@ func TestValidateDestinationSubject(t *testing.T) {
 	checkError(ValidateMapping("*", "foo.{{unknown(1)}}"), ErrInvalidMappingDestination, t)
 	checkError(ValidateMapping("foo", "foo..}"), ErrInvalidMappingDestination, t)
 	checkError(ValidateMapping("foo", "foo. bar}"), ErrInvalidMappingDestinationSubject, t)
-
 }
 
 func TestSubjectToken(t *testing.T) {
@@ -1765,6 +1769,216 @@ func TestSublistHasInterest(t *testing.T) {
 	sl.Insert(qsub)
 	require_True(t, sl.HasInterest("foo"))
 	require_False(t, sl.HasInterest("foo.bar"))
+	sl.Remove(qsub)
+}
+
+func TestSublistNumInterest(t *testing.T) {
+	sl := NewSublistWithCache()
+	fooSub := newSub("foo")
+	sl.Insert(fooSub)
+
+	require_NumInterest := func(t *testing.T, subj string, wnp, wnq int) {
+		t.Helper()
+		np, nq := sl.NumInterest(subj)
+		require_Equal(t, np, wnp)
+		require_Equal(t, nq, wnq)
+	}
+
+	// Expect to find that "foo" matches but "bar" doesn't.
+	// At this point nothing should be in the cache.
+	require_NumInterest(t, "foo", 1, 0)
+	require_NumInterest(t, "bar", 0, 0)
+	require_Equal(t, sl.cacheHits, 0)
+
+	// Now call Match(), which will populate the cache.
+	sl.Match("foo")
+	require_Equal(t, sl.cacheHits, 0)
+
+	// Future calls to HasInterest() should hit the cache now.
+	for i := uint64(1); i <= 5; i++ {
+		require_NumInterest(t, "foo", 1, 0)
+		require_Equal(t, sl.cacheHits, i)
+	}
+
+	// Call Match on a subject we know there is no match.
+	sl.Match("bar")
+	require_NumInterest(t, "bar", 0, 0)
+
+	// Remove fooSub and check interest again
+	sl.Remove(fooSub)
+	require_NumInterest(t, "foo", 0, 0)
+
+	// Try with some wildcards
+	sub := newSub("foo.*")
+	sl.Insert(sub)
+	require_NumInterest(t, "foo", 0, 0)
+	require_NumInterest(t, "foo.bar", 1, 0)
+	require_NumInterest(t, "foo.bar.baz", 0, 0)
+
+	// Remove sub, there should be no interest
+	sl.Remove(sub)
+	require_NumInterest(t, "foo", 0, 0)
+	require_NumInterest(t, "foo.bar", 0, 0)
+	require_NumInterest(t, "foo.bar.baz", 0, 0)
+
+	sub = newSub("foo.>")
+	sl.Insert(sub)
+	require_NumInterest(t, "foo", 0, 0)
+	require_NumInterest(t, "foo.bar", 1, 0)
+	require_NumInterest(t, "foo.bar.baz", 1, 0)
+
+	sl.Remove(sub)
+	require_NumInterest(t, "foo", 0, 0)
+	require_NumInterest(t, "foo.bar", 0, 0)
+	require_NumInterest(t, "foo.bar.baz", 0, 0)
+
+	sub = newSub("*.>")
+	sl.Insert(sub)
+	require_NumInterest(t, "foo", 0, 0)
+	require_NumInterest(t, "foo.bar", 1, 0)
+	require_NumInterest(t, "foo.bar.baz", 1, 0)
+	sl.Remove(sub)
+
+	sub = newSub("*.bar")
+	sl.Insert(sub)
+	require_NumInterest(t, "foo", 0, 0)
+	require_NumInterest(t, "foo.bar", 1, 0)
+	require_NumInterest(t, "foo.bar.baz", 0, 0)
+	sl.Remove(sub)
+
+	sub = newSub("*")
+	sl.Insert(sub)
+	require_NumInterest(t, "foo", 1, 0)
+	require_NumInterest(t, "foo.bar", 0, 0)
+	sl.Remove(sub)
+
+	// Try with queues now.
+	qsub := newQSub("foo", "bar")
+	sl.Insert(qsub)
+	require_NumInterest(t, "foo", 0, 1)
+	require_NumInterest(t, "foo.bar", 0, 0)
+
+	qsub2 := newQSub("foo", "baz")
+	sl.Insert(qsub2)
+	require_NumInterest(t, "foo", 0, 2)
+	require_NumInterest(t, "foo.bar", 0, 0)
+
+	// Add a second qsub to the second queue group
+	qsub3 := newQSub("foo", "baz")
+	sl.Insert(qsub3)
+	require_NumInterest(t, "foo", 0, 3)
+	require_NumInterest(t, "foo.bar", 0, 0)
+
+	// Remove first queue
+	sl.Remove(qsub)
+	require_NumInterest(t, "foo", 0, 2)
+	require_NumInterest(t, "foo.bar", 0, 0)
+
+	// Remove second
+	sl.Remove(qsub2)
+	require_NumInterest(t, "foo", 0, 1)
+	require_NumInterest(t, "foo.bar", 0, 0)
+
+	// Remove last.
+	sl.Remove(qsub3)
+	require_NumInterest(t, "foo", 0, 0)
+	require_NumInterest(t, "foo.bar", 0, 0)
+
+	// With wildcards now
+	qsub = newQSub("foo.*", "bar")
+	sl.Insert(qsub)
+	require_NumInterest(t, "foo", 0, 0)
+	require_NumInterest(t, "foo.bar", 0, 1)
+	require_NumInterest(t, "foo.bar.baz", 0, 0)
+
+	// Add another queue to the group
+	qsub2 = newQSub("foo.*", "baz")
+	sl.Insert(qsub2)
+	require_NumInterest(t, "foo", 0, 0)
+	require_NumInterest(t, "foo.bar", 0, 2)
+	require_NumInterest(t, "foo.bar.baz", 0, 0)
+
+	qsub3 = newQSub("foo.*", "baz")
+	sl.Insert(qsub3)
+	require_NumInterest(t, "foo", 0, 0)
+	require_NumInterest(t, "foo.bar", 0, 3)
+	require_NumInterest(t, "foo.bar.baz", 0, 0)
+
+	// Remove first queue
+	sl.Remove(qsub)
+	require_NumInterest(t, "foo", 0, 0)
+	require_NumInterest(t, "foo.bar", 0, 2)
+	require_NumInterest(t, "foo.bar.baz", 0, 0)
+
+	// Remove second
+	sl.Remove(qsub2)
+	require_NumInterest(t, "foo", 0, 0)
+	require_NumInterest(t, "foo.bar", 0, 1)
+	require_NumInterest(t, "foo.bar.baz", 0, 0)
+
+	// Remove last
+	sl.Remove(qsub3)
+	require_NumInterest(t, "foo", 0, 0)
+	require_NumInterest(t, "foo.bar", 0, 0)
+	require_NumInterest(t, "foo.bar.baz", 0, 0)
+
+	// With > wildcard
+	qsub = newQSub("foo.>", "bar")
+	sl.Insert(qsub)
+	require_NumInterest(t, "foo", 0, 0)
+	require_NumInterest(t, "foo.bar", 0, 1)
+	require_NumInterest(t, "foo.bar.baz", 0, 1)
+
+	// Add another queue to the group
+	qsub2 = newQSub("foo.>", "baz")
+	sl.Insert(qsub2)
+	require_NumInterest(t, "foo", 0, 0)
+	require_NumInterest(t, "foo.bar", 0, 2)
+	require_NumInterest(t, "foo.bar.baz", 0, 2)
+
+	// Add another queue to second group.
+	qsub3 = newQSub("foo.>", "baz")
+	sl.Insert(qsub3)
+	require_NumInterest(t, "foo", 0, 0)
+	require_NumInterest(t, "foo.bar", 0, 3)
+	require_NumInterest(t, "foo.bar.baz", 0, 3)
+
+	// Remove first queue
+	sl.Remove(qsub)
+	require_NumInterest(t, "foo", 0, 0)
+	require_NumInterest(t, "foo.bar", 0, 2)
+	require_NumInterest(t, "foo.bar.baz", 0, 2)
+
+	// Remove second
+	sl.Remove(qsub2)
+	require_NumInterest(t, "foo", 0, 0)
+	require_NumInterest(t, "foo.bar", 0, 1)
+	require_NumInterest(t, "foo.bar.baz", 0, 1)
+
+	// Remove last
+	sl.Remove(qsub3)
+	require_NumInterest(t, "foo", 0, 0)
+	require_NumInterest(t, "foo.bar", 0, 0)
+	require_NumInterest(t, "foo.bar.baz", 0, 0)
+
+	qsub = newQSub("*.>", "bar")
+	sl.Insert(qsub)
+	require_NumInterest(t, "foo", 0, 0)
+	require_NumInterest(t, "foo.bar", 0, 1)
+	require_NumInterest(t, "foo.bar.baz", 0, 1)
+	sl.Remove(qsub)
+
+	qsub = newQSub("*.bar", "bar")
+	sl.Insert(qsub)
+	require_NumInterest(t, "foo", 0, 0)
+	require_NumInterest(t, "foo.bar", 0, 1)
+	require_NumInterest(t, "foo.bar.baz", 0, 0)
+	sl.Remove(qsub)
+
+	qsub = newQSub("*", "bar")
+	sl.Insert(qsub)
+	require_NumInterest(t, "foo", 0, 1)
+	require_NumInterest(t, "foo.bar", 0, 0)
 	sl.Remove(qsub)
 }
 

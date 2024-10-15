@@ -3138,6 +3138,14 @@ func TestMonitorLeafNode(t *testing.T) {
 	for mode := 0; mode < 2; mode++ {
 		check := func(t *testing.T, v *Varz) {
 			t.Helper()
+			// Issue 5913. When we have solicited leafnodes but no clustering
+			// and no clustername, we may need a stable clustername so we use
+			// the server name as cluster name. However, we should not expose
+			// it in /varz.
+			if v.Cluster.Name != _EMPTY_ {
+				t.Fatalf("mode=%v - unexpected cluster name: %s", mode, v.Cluster.Name)
+			}
+			// Check rest is as expected.
 			if !reflect.DeepEqual(v.LeafNode, expected) {
 				t.Fatalf("mode=%v - expected %+v, got %+v", mode, expected, v.LeafNode)
 			}
@@ -4972,6 +4980,7 @@ func TestServerIDZRequest(t *testing.T) {
 
 	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
 	require_NoError(t, err)
+	defer nc.Close()
 
 	subject := fmt.Sprintf(serverPingReqSubj, "IDZ")
 	resp, err := nc.Request(subject, nil, time.Second)
@@ -5445,9 +5454,17 @@ func TestHealthzStatusError(t *testing.T) {
 
 	// Intentionally causing an error in readyForConnections().
 	// Note: Private field access, taking advantage of having the tests in the same package.
+	s.mu.Lock()
+	sl := s.listener
 	s.listener = nil
+	s.mu.Unlock()
 
 	checkHealthzEndpoint(t, s.MonitorAddr().String(), http.StatusInternalServerError, "error")
+
+	// Restore for proper shutdown.
+	s.mu.Lock()
+	s.listener = sl
+	s.mu.Unlock()
 }
 
 func TestHealthzStatusUnavailable(t *testing.T) {

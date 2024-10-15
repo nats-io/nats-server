@@ -1600,6 +1600,11 @@ func TestJetStreamClusterParallelConsumerCreation(t *testing.T) {
 }
 
 func TestJetStreamClusterGhostEphemeralsAfterRestart(t *testing.T) {
+	consumerNotActiveStartInterval = time.Second
+	defer func() {
+		consumerNotActiveStartInterval = defaultConsumerNotActiveStartInterval
+	}()
+
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -1632,6 +1637,7 @@ func TestJetStreamClusterGhostEphemeralsAfterRestart(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// Restart first and wait so that we know it will try cleanup without a metaleader.
+	// It will fail as there's no metaleader at that time, it should keep retrying on an interval.
 	c.restartServer(rs)
 	time.Sleep(time.Second)
 
@@ -1643,8 +1649,9 @@ func TestJetStreamClusterGhostEphemeralsAfterRestart(t *testing.T) {
 	defer nc.Close()
 
 	subj := fmt.Sprintf(JSApiConsumerListT, "TEST")
-	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
-		m, err := nc.Request(subj, nil, time.Second)
+	checkFor(t, 20*time.Second, 200*time.Millisecond, func() error {
+		// Request will take at most 4 seconds if some consumers can't be found.
+		m, err := nc.Request(subj, nil, 5*time.Second)
 		if err != nil {
 			return err
 		}
@@ -4900,8 +4907,9 @@ func TestJetStreamClusterAccountUsageDrifts(t *testing.T) {
 			}
 		`
 
-	_, syspub := createKey(t)
+	sysKp, syspub := createKey(t)
 	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+	sysCreds := newUser(t, sysKp)
 
 	accKp, aExpPub := createKey(t)
 	accClaim := jwt.NewAccountClaims(aExpPub)
@@ -4994,6 +5002,7 @@ func TestJetStreamClusterAccountUsageDrifts(t *testing.T) {
 	// Move our R3 stream leader and make sure acounting is correct.
 	_, err = nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "TEST1"), nil, time.Second)
 	require_NoError(t, err)
+	c.waitOnStreamLeader(aExpPub, "TEST1")
 
 	checkAccount(sir1.State.Bytes, sir3.State.Bytes)
 
@@ -5025,6 +5034,7 @@ func TestJetStreamClusterAccountUsageDrifts(t *testing.T) {
 		Replicas: 3,
 	})
 	require_NoError(t, err)
+	c.waitOnStreamLeader(aExpPub, "TEST1")
 
 	checkAccount(sir1.State.Bytes, sir3.State.Bytes)
 
@@ -5042,11 +5052,15 @@ func TestJetStreamClusterAccountUsageDrifts(t *testing.T) {
 
 	checkAccount(sir1.State.Bytes, sir3.State.Bytes)
 
+	// Need system user here to move the leader.
+	snc, _ := jsClientConnect(t, c.randomServer(), nats.UserCredentials(sysCreds))
+	defer snc.Close()
+
 	requestLeaderStepDown := func() {
 		ml := c.leader()
 		checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
 			if cml := c.leader(); cml == ml {
-				nc.Request(JSApiLeaderStepDown, nil, time.Second)
+				snc.Request(JSApiLeaderStepDown, nil, time.Second)
 				return fmt.Errorf("Metaleader has not moved yet")
 			}
 			return nil
@@ -5408,9 +5422,7 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 	}
 
 	// File based.
-	_, err = js.Subscribe("foo",
-		func(msg *nats.Msg) {},
-		nats.Durable("file"),
+	sub, err := js.PullSubscribe("foo", "file",
 		nats.ManualAck(),
 		nats.MaxDeliver(1),
 		nats.AckWait(time.Second),
@@ -5418,7 +5430,11 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 	)
 	require_NoError(t, err)
 
-	// Let first batch retry and expire.
+	msgs, err := sub.Fetch(10)
+	require_NoError(t, err)
+	require_Equal(t, len(msgs), 10)
+
+	// Let first batch expire.
 	time.Sleep(1200 * time.Millisecond)
 
 	cia, err := js.ConsumerInfo("TEST", "file")
@@ -5436,6 +5452,12 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 	// Also last activity for delivered can be slightly off so nil out as well.
 	checkConsumerInfo := func(a, b *nats.ConsumerInfo) {
 		t.Helper()
+		require_Equal(t, a.Delivered.Consumer, 10)
+		require_Equal(t, a.Delivered.Stream, 10)
+		require_Equal(t, a.AckFloor.Consumer, 10)
+		require_Equal(t, a.AckFloor.Stream, 10)
+		require_Equal(t, a.NumPending, 40)
+		require_Equal(t, a.NumRedelivered, 0)
 		a.Cluster, b.Cluster = nil, nil
 		a.Delivered.Last, b.Delivered.Last = nil, nil
 		if !reflect.DeepEqual(a, b) {
@@ -5446,9 +5468,7 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 	checkConsumerInfo(cia, cib)
 
 	// Memory based.
-	_, err = js.Subscribe("foo",
-		func(msg *nats.Msg) {},
-		nats.Durable("mem"),
+	sub, err = js.PullSubscribe("foo", "mem",
 		nats.ManualAck(),
 		nats.MaxDeliver(1),
 		nats.AckWait(time.Second),
@@ -5456,6 +5476,10 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 		nats.ConsumerMemoryStorage(),
 	)
 	require_NoError(t, err)
+
+	msgs, err = sub.Fetch(10)
+	require_NoError(t, err)
+	require_Equal(t, len(msgs), 10)
 
 	// Let first batch retry and expire.
 	time.Sleep(1200 * time.Millisecond)
@@ -5474,9 +5498,7 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 	checkConsumerInfo(cia, cib)
 
 	// Now file based but R1 and server restart.
-	_, err = js.Subscribe("foo",
-		func(msg *nats.Msg) {},
-		nats.Durable("r1"),
+	sub, err = js.PullSubscribe("foo", "r1",
 		nats.ManualAck(),
 		nats.MaxDeliver(1),
 		nats.AckWait(time.Second),
@@ -5484,6 +5506,10 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 		nats.ConsumerReplicas(1),
 	)
 	require_NoError(t, err)
+
+	msgs, err = sub.Fetch(10)
+	require_NoError(t, err)
+	require_Equal(t, len(msgs), 10)
 
 	// Let first batch retry and expire.
 	time.Sleep(1200 * time.Millisecond)
@@ -5503,8 +5529,6 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 	// Created can skew a small bit due to server restart, this is expected.
 	now := time.Now()
 	cia.Created, cib.Created = now, now
-	// Clear any disagreement on push bound.
-	cia.PushBound, cib.PushBound = false, false
 	checkConsumerInfo(cia, cib)
 }
 

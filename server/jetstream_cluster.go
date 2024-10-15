@@ -583,10 +583,9 @@ func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consum
 		return false
 	}
 	s := js.srv
-	js.mu.RUnlock()
-
 	// Capture RAFT node from assignment.
 	node := ca.Group.node
+	js.mu.RUnlock()
 
 	// When we try to restart we nil out the node if applicable
 	// and reprocess the consumer assignment.
@@ -855,7 +854,6 @@ func (js *jetStream) setupMetaGroup() error {
 	}
 
 	c := s.createInternalJetStreamClient()
-	sacc := s.SystemAccount()
 
 	js.mu.Lock()
 	defer js.mu.Unlock()
@@ -867,7 +865,7 @@ func (js *jetStream) setupMetaGroup() error {
 		qch:     make(chan struct{}),
 	}
 	atomic.StoreInt32(&js.clustered, 1)
-	c.registerWithAccount(sacc)
+	c.registerWithAccount(sysAcc)
 
 	// Set to true before we start.
 	js.metaRecovering = true
@@ -875,7 +873,7 @@ func (js *jetStream) setupMetaGroup() error {
 		js.monitorCluster,
 		pprofLabels{
 			"type":    "metaleader",
-			"account": sacc.Name,
+			"account": sysAcc.Name,
 		},
 	)
 	return nil
@@ -1039,7 +1037,7 @@ func (cc *jetStreamCluster) isStreamLeader(account, stream string) bool {
 	ourID := cc.meta.ID()
 	for _, peer := range rg.Peers {
 		if peer == ourID {
-			if len(rg.Peers) == 1 || rg.node != nil && rg.node.Leader() {
+			if len(rg.Peers) == 1 || (rg.node != nil && rg.node.Leader()) {
 				return true
 			}
 		}
@@ -1201,7 +1199,12 @@ func (js *jetStream) checkForOrphans() {
 			stream = mset.cfg.Name
 			mset.mu.RUnlock()
 		}
-		s.Warnf("Detected orphaned consumer '%s > %s > %s', will cleanup", accName, stream, consumer)
+		if o.isDurable() {
+			s.Warnf("Detected orphaned durable consumer '%s > %s > %s', will cleanup", accName, stream, consumer)
+		} else {
+			s.Debugf("Detected orphaned consumer '%s > %s > %s', will cleanup", accName, stream, consumer)
+		}
+
 		if err := o.delete(); err != nil {
 			s.Warnf("Deleting consumer encountered an error: %v", err)
 		}
@@ -1403,10 +1406,6 @@ func (js *jetStream) monitorCluster() {
 			aq.recycle(&ces)
 
 		case isLeader = <-lch:
-			// For meta layer synchronize everyone to our state on becoming leader.
-			if isLeader && n.ApplyQ().len() == 0 {
-				n.SendSnapshot(js.metaSnapshot())
-			}
 			// Process the change.
 			js.processLeaderChange(isLeader)
 			if isLeader {
@@ -2263,7 +2262,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	// from underneath the one that is running since it will be the same raft node.
 	defer func() {
 		// We might be closing during shutdown, don't pre-emptively stop here since we'll still want to install snapshots.
-		if !mset.closed.Load() {
+		if mset != nil && !mset.closed.Load() {
 			n.Stop()
 		}
 	}()
@@ -2394,14 +2393,16 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	var cist *time.Ticker
 	var cistc <-chan time.Time
 
+	// 2 minutes plus up to 30s jitter.
+	checkInterestInterval := 2*time.Minute + time.Duration(rand.Intn(30))*time.Second
+
 	if mset != nil && mset.isInterestRetention() {
 		// Wait on our consumers to be assigned and running before proceeding.
 		// This can become important when a server has lots of assets
 		// since we process streams first then consumers as an asset class.
 		mset.waitOnConsumerAssignments()
-		// Setup a periodic check here.
-		// We will fire in 5s the first time then back off to 30s
-		cist = time.NewTicker(5 * time.Second)
+		// Setup our periodic check here. We will check once we have restored right away.
+		cist = time.NewTicker(checkInterestInterval)
 		cistc = cist.C
 	}
 
@@ -2435,7 +2436,10 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					isRecovering = false
 					// If we are interest based make sure to check consumers if interest retention policy.
 					// This is to make sure we process any outstanding acks from all consumers.
-					mset.checkInterestState()
+					if mset != nil && mset.isInterestRetention() {
+						fire := time.Duration(rand.Intn(5)+5) * time.Second
+						time.AfterFunc(fire, mset.checkInterestState)
+					}
 					// If we became leader during this time and we need to send a snapshot to our
 					// followers, i.e. as a result of a scale-up from R1, do it now.
 					if sendSnapshot && isLeader && mset != nil && n != nil {
@@ -2453,6 +2457,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				} else {
 					// Our stream was closed out from underneath of us, simply return here.
 					if err == errStreamClosed {
+						aq.recycle(&ces)
 						return
 					}
 					s.Warnf("Error applying entries to '%s > %s': %v", accName, sa.Config.Name, err)
@@ -2534,7 +2539,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			}
 
 		case <-cistc:
-			cist.Reset(30 * time.Second)
+			cist.Reset(checkInterestInterval)
 			// We may be adjusting some things with consumers so do this in its own go routine.
 			go mset.checkInterestState()
 
@@ -2701,7 +2706,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					mqch = mset.monitorQuitC()
 					// Setup a periodic check here if we are interest based as well.
 					if mset.isInterestRetention() {
-						cist = time.NewTicker(30 * time.Second)
+						cist = time.NewTicker(checkInterestInterval)
 						cistc = cist.C
 					}
 				}
@@ -2842,9 +2847,14 @@ func (mset *stream) resetClusteredState(err error) bool {
 		return false
 	}
 
-	// We delete our raft state. Will recreate.
 	if node != nil {
-		node.Delete()
+		if errors.Is(err, errCatchupAbortedNoLeader) || err == errCatchupTooManyRetries {
+			// Don't delete all state, could've just been temporarily unable to reach the leader.
+			node.Stop()
+		} else {
+			// We delete our raft state. Will recreate.
+			node.Delete()
+		}
 	}
 
 	// Preserve our current state and messages unless we have a first sequence mismatch.
@@ -4837,7 +4847,11 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			// Process the change.
 			if err := js.processConsumerLeaderChange(o, isLeader); err == nil && isLeader {
 				// Check our state if we are under an interest based stream.
-				o.checkStateForInterestStream()
+				if mset := o.getStream(); mset != nil {
+					var ss StreamState
+					mset.store.FastState(&ss)
+					o.checkStateForInterestStream(&ss)
+				}
 				// Do a snapshot.
 				doSnapshot(true)
 				// Synchronize followers to our state. Only send out if we have state and nothing pending.
@@ -4964,21 +4978,20 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 					}
 				}
 				// Check our interest state if applicable.
-				if err := o.checkStateForInterestStream(); err == errAckFloorHigherThanLastSeq {
-					o.mu.RLock()
-					mset := o.mset
-					o.mu.RUnlock()
-					// Register pre-acks unless no state at all for the stream and we would create alot of pre-acks.
-					mset.mu.Lock()
+				if mset := o.getStream(); mset != nil {
 					var ss StreamState
 					mset.store.FastState(&ss)
-					// Only register if we have a valid FirstSeq.
-					if ss.FirstSeq > 0 {
-						for seq := ss.FirstSeq; seq < state.AckFloor.Stream; seq++ {
-							mset.registerPreAck(o, seq)
+					if err := o.checkStateForInterestStream(&ss); err == errAckFloorHigherThanLastSeq {
+						// Register pre-acks unless no state at all for the stream and we would create alot of pre-acks.
+						mset.mu.Lock()
+						// Only register if we have a valid FirstSeq.
+						if ss.FirstSeq > 0 {
+							for seq := ss.FirstSeq; seq < state.AckFloor.Stream; seq++ {
+								mset.registerPreAck(o, seq)
+							}
 						}
+						mset.mu.Unlock()
 					}
-					mset.mu.Unlock()
 				}
 			}
 
@@ -6353,8 +6366,9 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	}
 
 	if isReplicaChange {
+		isScaleUp := newCfg.Replicas > len(rg.Peers)
 		// We are adding new peers here.
-		if newCfg.Replicas > len(rg.Peers) {
+		if isScaleUp {
 			// Check that we have the allocation available.
 			if err := js.jsClusteredStreamLimitsCheck(acc, newCfg); err != nil {
 				resp.Error = err
@@ -6430,22 +6444,82 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 
 		// Need to remap any consumers.
 		for _, ca := range osa.consumers {
-			// Ephemerals are R=1, so only auto-remap durables, or R>1, unless stream is interest or workqueue policy.
+			// Legacy ephemerals are R=1 but present as R=0, so only auto-remap named consumers, or if we are downsizing the consumer peers.
+			// If stream is interest or workqueue policy always remaps since they require peer parity with stream.
 			numPeers := len(ca.Group.Peers)
-			if ca.Config.Durable != _EMPTY_ || numPeers > 1 || cfg.Retention != LimitsPolicy {
+			isAutoScale := ca.Config.Replicas == 0 && (ca.Config.Durable != _EMPTY_ || ca.Config.Name != _EMPTY_)
+			if isAutoScale || numPeers > len(rg.Peers) || cfg.Retention != LimitsPolicy {
 				cca := ca.copyGroup()
 				// Adjust preferred as needed.
-				if numPeers == 1 && len(rg.Peers) > 1 {
+				if numPeers == 1 && isScaleUp {
 					cca.Group.Preferred = ca.Group.Peers[0]
 				} else {
 					cca.Group.Preferred = _EMPTY_
 				}
 				// Assign new peers.
 				cca.Group.Peers = rg.Peers
+				// If the replicas was not 0 make sure it matches here.
+				if cca.Config.Replicas != 0 {
+					cca.Config.Replicas = len(rg.Peers)
+				}
 				// We can not propose here before the stream itself so we collect them.
 				consumers = append(consumers, cca)
+
+			} else if !isScaleUp {
+				// We decided to leave this consumer's peer group alone but we are also scaling down.
+				// We need to make sure we do not have any peers that are no longer part of the stream.
+				// Note we handle down scaling of a consumer above if its number of peers were > new stream peers.
+				var needReplace []string
+				for _, rp := range ca.Group.Peers {
+					// Check if we have an orphaned peer now for this consumer.
+					if !rg.isMember(rp) {
+						needReplace = append(needReplace, rp)
+					}
+				}
+				if len(needReplace) > 0 {
+					newPeers := copyStrings(rg.Peers)
+					rand.Shuffle(len(newPeers), func(i, j int) { newPeers[i], newPeers[j] = newPeers[j], newPeers[i] })
+					// If we had a small size then the peer set, restrict to the same number.
+					if lp := len(ca.Group.Peers); lp < len(newPeers) {
+						newPeers = newPeers[:lp]
+					}
+					cca := ca.copyGroup()
+					// Assign new peers.
+					cca.Group.Peers = newPeers
+					// If the replicas was not 0 make sure it matches here.
+					if cca.Config.Replicas != 0 {
+						cca.Config.Replicas = len(newPeers)
+					}
+					// Check if all peers are invalid. This can happen with R1 under replicated streams that are being scaled down.
+					if len(needReplace) == len(ca.Group.Peers) {
+						// We have to transfer state to new peers.
+						// we will grab our state and attach to the new assignment.
+						// TODO(dlc) - In practice we would want to make sure the consumer is paused.
+						// Need to release js lock.
+						js.mu.Unlock()
+						if ci, err := sysRequest[ConsumerInfo](s, clusterConsumerInfoT, acc, osa.Config.Name, ca.Name); err != nil {
+							s.Warnf("Did not receive consumer info results for '%s > %s > %s' due to: %s", acc, osa.Config.Name, ca.Name, err)
+						} else if ci != nil {
+							cca.State = &ConsumerState{
+								Delivered: SequencePair{
+									Consumer: ci.Delivered.Consumer,
+									Stream:   ci.Delivered.Stream,
+								},
+								AckFloor: SequencePair{
+									Consumer: ci.AckFloor.Consumer,
+									Stream:   ci.AckFloor.Stream,
+								},
+							}
+						}
+						// Re-acquire here.
+						js.mu.Lock()
+					}
+					// We can not propose here before the stream itself so we collect them.
+					consumers = append(consumers, cca)
+				}
 			}
 		}
+
 	} else if isMoveRequest {
 		if len(peerSet) == 0 {
 			nrg, err := js.createGroupForStream(ci, newCfg)
@@ -8202,6 +8276,7 @@ var (
 	errCatchupStreamStopped   = errors.New("stream has been stopped") // when a catchup is terminated due to the stream going away.
 	errCatchupBadMsg          = errors.New("bad catchup msg")
 	errCatchupWrongSeqForSkip = errors.New("wrong sequence for skipped msg")
+	errCatchupAbortedNoLeader = errors.New("catchup aborted, no leader")
 	errCatchupTooManyRetries  = errors.New("catchup failed, too many retries")
 )
 
@@ -8305,7 +8380,7 @@ RETRY:
 	releaseSyncOutSem()
 
 	if n.GroupLeader() == _EMPTY_ {
-		return fmt.Errorf("catchup for stream '%s > %s' aborted, no leader", mset.account(), mset.name())
+		return fmt.Errorf("%w for stream '%s > %s'", errCatchupAbortedNoLeader, mset.account(), mset.name())
 	}
 
 	// If we have a sub clear that here.
@@ -8319,7 +8394,7 @@ RETRY:
 	}
 
 	numRetries++
-	if numRetries >= maxRetries {
+	if numRetries > maxRetries {
 		// Force a hard reset here.
 		return errCatchupTooManyRetries
 	}
@@ -8408,6 +8483,7 @@ RETRY:
 					}
 				} else if isOutOfSpaceErr(err) {
 					notifyLeaderStopCatchup(mrec, err)
+					msgsQ.recycle(&mrecs)
 					return err
 				} else if err == NewJSInsufficientResourcesError() {
 					notifyLeaderStopCatchup(mrec, err)

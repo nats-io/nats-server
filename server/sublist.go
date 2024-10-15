@@ -539,7 +539,14 @@ func (s *Sublist) MatchBytes(subject []byte) *SublistResult {
 // HasInterest will return whether or not there is any interest in the subject.
 // In cases where more detail is not required, this may be faster than Match.
 func (s *Sublist) HasInterest(subject string) bool {
-	return s.hasInterest(subject, true)
+	return s.hasInterest(subject, true, nil, nil)
+}
+
+// NumInterest will return the number of subs/qsubs interested in the subject.
+// In cases where more detail is not required, this may be faster than Match.
+func (s *Sublist) NumInterest(subject string) (np, nq int) {
+	s.hasInterest(subject, true, &np, &nq)
+	return
 }
 
 func (s *Sublist) matchNoLock(subject string) *SublistResult {
@@ -623,7 +630,7 @@ func (s *Sublist) match(subject string, doLock bool, doCopyOnCache bool) *Sublis
 	return result
 }
 
-func (s *Sublist) hasInterest(subject string, doLock bool) bool {
+func (s *Sublist) hasInterest(subject string, doLock bool, np, nq *int) bool {
 	// Check cache first.
 	if doLock {
 		s.RLock()
@@ -631,6 +638,12 @@ func (s *Sublist) hasInterest(subject string, doLock bool) bool {
 	var matched bool
 	if s.cache != nil {
 		if r, ok := s.cache[subject]; ok {
+			if np != nil && nq != nil {
+				*np += len(r.psubs)
+				for _, qsub := range r.qsubs {
+					*nq += len(qsub)
+				}
+			}
 			matched = len(r.psubs)+len(r.qsubs) > 0
 		}
 	}
@@ -663,7 +676,7 @@ func (s *Sublist) hasInterest(subject string, doLock bool) bool {
 		s.RLock()
 		defer s.RUnlock()
 	}
-	return matchLevelForAny(s.root, tokens)
+	return matchLevelForAny(s.root, tokens, np, nq)
 }
 
 // Remove entries in the cache until we are under the maximum.
@@ -778,17 +791,23 @@ func matchLevel(l *level, toks []string, results *SublistResult) {
 	}
 }
 
-func matchLevelForAny(l *level, toks []string) bool {
+func matchLevelForAny(l *level, toks []string, np, nq *int) bool {
 	var pwc, n *node
 	for i, t := range toks {
 		if l == nil {
 			return false
 		}
 		if l.fwc != nil {
+			if np != nil && nq != nil {
+				*np += len(l.fwc.psubs)
+				for _, qsub := range l.fwc.qsubs {
+					*nq += len(qsub)
+				}
+			}
 			return true
 		}
 		if pwc = l.pwc; pwc != nil {
-			if match := matchLevelForAny(pwc.next, toks[i+1:]); match {
+			if match := matchLevelForAny(pwc.next, toks[i+1:], np, nq); match {
 				return true
 			}
 		}
@@ -800,9 +819,21 @@ func matchLevelForAny(l *level, toks []string) bool {
 		}
 	}
 	if n != nil {
+		if np != nil && nq != nil {
+			*np += len(n.psubs)
+			for _, qsub := range n.qsubs {
+				*nq += len(qsub)
+			}
+		}
 		return len(n.plist) > 0 || len(n.psubs) > 0 || len(n.qsubs) > 0
 	}
 	if pwc != nil {
+		if np != nil && nq != nil {
+			*np += len(pwc.psubs)
+			for _, qsub := range pwc.qsubs {
+				*nq += len(qsub)
+			}
+		}
 		return len(pwc.plist) > 0 || len(pwc.psubs) > 0 || len(pwc.qsubs) > 0
 	}
 	return false
@@ -1181,6 +1212,10 @@ func isValidSubject(subject string, checkRunes bool) bool {
 		return false
 	}
 	if checkRunes {
+		// Check if we have embedded nulls.
+		if bytes.IndexByte(stringToBytes(subject), 0) >= 0 {
+			return false
+		}
 		// Since casting to a string will always produce valid UTF-8, we need to look for replacement runes.
 		// This signals something is off or corrupt.
 		for _, r := range subject {

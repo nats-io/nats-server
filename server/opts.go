@@ -241,6 +241,10 @@ type RemoteLeafOpts struct {
 	// not be able to work. This tells the system to migrate the leaders away from this server.
 	// This only changes leader for R>1 assets.
 	JetStreamClusterMigrate bool `json:"jetstream_cluster_migrate,omitempty"`
+
+	// If JetStreamClusterMigrate is set to true, this is the time after which the leader
+	// will be migrated away from this server if still disconnected.
+	JetStreamClusterMigrateDelay time.Duration `json:"jetstream_cluster_migrate_delay,omitempty"`
 }
 
 type JSLimitOpts struct {
@@ -2165,7 +2169,7 @@ func parseJetStreamForAccount(v any, acc *Account, errors *[]error) error {
 				if !ok {
 					return &configErr{tk, fmt.Sprintf("Expected either 'system' or 'account' string value for %q, got %v", mk, mv)}
 				}
-				switch tokens := strings.SplitN(vv, ":", 2); strings.ToLower(tokens[0]) {
+				switch vv {
 				case "system", _EMPTY_:
 					acc.js.nrgAccount = _EMPTY_
 				case "owner":
@@ -2789,7 +2793,26 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 			case "ws_no_masking", "websocket_no_masking":
 				remote.Websocket.NoMasking = v.(bool)
 			case "jetstream_cluster_migrate", "js_cluster_migrate":
-				remote.JetStreamClusterMigrate = true
+				var lt token
+
+				tk, v := unwrapValue(v, &lt)
+				switch vv := v.(type) {
+				case bool:
+					remote.JetStreamClusterMigrate = vv
+				case map[string]any:
+					remote.JetStreamClusterMigrate = true
+					migrateConfig, ok := v.(map[string]any)
+					if !ok {
+						continue
+					}
+					val, ok := migrateConfig["leader_migrate_delay"]
+					tk, delay := unwrapValue(val, &tk)
+					if ok {
+						remote.JetStreamClusterMigrateDelay = parseDuration("leader_migrate_delay", tk, delay, errors, warnings)
+					}
+				default:
+					*errors = append(*errors, &configErr{tk, fmt.Sprintf("Expected boolean or map for jetstream_cluster_migrate, got %T", v)})
+				}
 			case "compression":
 				if err := parseCompression(&remote.Compression, CompressionS2Auto, tk, k, v); err != nil {
 					*errors = append(*errors, err)

@@ -292,6 +292,7 @@ func TestNoAuthUserNkey(t *testing.T) {
 
 	// Make sure we connect ok and to the correct account.
 	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
 	resp, err := nc.Request(userDirectInfoSubj, nil, time.Second)
 	require_NoError(t, err)
 	response := ServerAPIResponse{Data: &UserInfo{}}

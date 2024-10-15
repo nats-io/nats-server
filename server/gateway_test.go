@@ -804,12 +804,8 @@ func testFatalErrorOnStart(t *testing.T, o *Options, errTxt string) {
 	defer s.Shutdown()
 	l := &captureFatalLogger{fatalCh: make(chan string, 1)}
 	s.SetLogger(l, false, false)
-	wg := sync.WaitGroup{}
-	wg.Add(1)
-	go func() {
-		s.Start()
-		wg.Done()
-	}()
+	// This does not block
+	s.Start()
 	select {
 	case e := <-l.fatalCh:
 		if !strings.Contains(e, errTxt) {
@@ -819,7 +815,7 @@ func testFatalErrorOnStart(t *testing.T, o *Options, errTxt string) {
 		t.Fatal("Should have got a fatal error")
 	}
 	s.Shutdown()
-	wg.Wait()
+	s.WaitForShutdown()
 }
 
 func TestGatewayListenError(t *testing.T) {
