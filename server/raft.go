@@ -343,8 +343,8 @@ func (s *Server) bootstrapRaftNode(cfg *RaftConfig, knownPeers []string, allPeer
 	return writePeerState(cfg.Store, &peerState{knownPeers, expected, extUndetermined})
 }
 
-// startRaftNode will start the raft node.
-func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabels) (RaftNode, error) {
+// initRaftNode will initialize the raft node, to be used by startRaftNode or when testing to not run the Go routine.
+func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabels) (*raft, error) {
 	if cfg == nil {
 		return nil, errNilCfg
 	}
@@ -519,6 +519,16 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 	// Register the Raft group.
 	labels["group"] = n.group
 	s.registerRaftNode(n.group, n)
+
+	return n, nil
+}
+
+// startRaftNode will start the raft node.
+func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabels) (RaftNode, error) {
+	n, err := s.initRaftNode(accName, cfg, labels)
+	if err != nil {
+		return nil, err
+	}
 
 	// Start the run goroutine for the Raft state machine.
 	s.startGoRoutine(n.run, labels)
@@ -3141,10 +3151,10 @@ func (n *raft) catchupStalled() bool {
 	if n.catchup == nil {
 		return false
 	}
-	if n.catchup.pindex == n.pindex {
+	if n.catchup.pindex == n.commit {
 		return time.Since(n.catchup.active) > 2*time.Second
 	}
-	n.catchup.pindex = n.pindex
+	n.catchup.pindex = n.commit
 	n.catchup.active = time.Now()
 	return false
 }
@@ -3163,7 +3173,7 @@ func (n *raft) createCatchup(ae *appendEntry) string {
 		cterm:  ae.pterm,
 		cindex: ae.pindex,
 		pterm:  n.pterm,
-		pindex: n.pindex,
+		pindex: n.commit,
 		active: time.Now(),
 	}
 	inbox := n.newCatchupInbox()
@@ -3333,7 +3343,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			if n.catchupStalled() {
 				n.debug("Catchup may be stalled, will request again")
 				inbox = n.createCatchup(ae)
-				ar = newAppendEntryResponse(n.pterm, n.pindex, n.id, false)
+				ar = newAppendEntryResponse(n.pterm, n.commit, n.id, false)
 			}
 			n.Unlock()
 			if ar != nil {
@@ -3374,13 +3384,15 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	}
 
 	if (isNew && ae.pterm != n.pterm) || ae.pindex != n.pindex {
-		// Check if this is a lower or equal index than what we were expecting.
-		if ae.pindex <= n.pindex {
+		// Check if this is a lower index than what we were expecting.
+		if ae.pindex < n.pindex {
 			n.debug("AppendEntry detected pindex less than ours: %d:%d vs %d:%d", ae.pterm, ae.pindex, n.pterm, n.pindex)
 			var ar *appendEntryResponse
 
+			// An AppendEntry is stored at seq=ae.pindex+1. This can be checked when eae != nil, eae.pindex==ae.pindex.
+			seq := ae.pindex + 1
 			var success bool
-			if eae, _ := n.loadEntry(ae.pindex); eae == nil {
+			if eae, _ := n.loadEntry(seq); eae == nil {
 				// If terms are equal, and we are not catching up, we have simply already processed this message.
 				// So we will ACK back to the leader. This can happen on server restarts based on timings of snapshots.
 				if ae.pterm == n.pterm && !catchingUp {
@@ -3388,14 +3400,18 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				} else {
 					n.resetWAL()
 				}
-			} else {
-				// If terms mismatched, or we got an error loading, delete that entry and all others past it.
+			} else if eae.term != ae.term {
+				// If terms mismatched, delete that entry and all others past it.
 				// Make sure to cancel any catchups in progress.
 				// Truncate will reset our pterm and pindex. Only do so if we have an entry.
 				n.truncateWAL(eae.pterm, eae.pindex)
+			} else {
+				success = true
 			}
-			// Cancel regardless.
-			n.cancelCatchup()
+			// Cancel regardless if truncated/unsuccessful.
+			if !success {
+				n.cancelCatchup()
+			}
 
 			// Create response.
 			ar = newAppendEntryResponse(ae.pterm, ae.pindex, n.id, success)
@@ -3469,11 +3485,11 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			return
 
 		} else {
-			n.debug("AppendEntry did not match %d %d with %d %d", ae.pterm, ae.pindex, n.pterm, n.pindex)
-			if ae.pindex > n.pindex {
+			n.debug("AppendEntry did not match %d %d with %d %d (commit %d)", ae.pterm, ae.pindex, n.pterm, n.pindex, n.commit)
+			if ae.pindex > n.commit {
 				// Setup our state for catching up.
 				inbox := n.createCatchup(ae)
-				ar := newAppendEntryResponse(n.pterm, n.pindex, n.id, false)
+				ar := newAppendEntryResponse(n.pterm, n.commit, n.id, false)
 				n.Unlock()
 				n.sendRPC(ae.reply, inbox, ar.encode(arbuf))
 				arPool.Put(ar)

@@ -4274,3 +4274,165 @@ func TestJetStreamClusterHardKillAfterStreamAdd(t *testing.T) {
 	_, err = js.StreamInfo("TEST")
 	require_NoError(t, err)
 }
+
+func TestJetStreamClusterDesyncAfterPublishToLeaderWithoutQuorum(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	si, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	streamLeader := si.Cluster.Leader
+	streamLeaderServer := c.serverByName(streamLeader)
+	nc.Close()
+	nc, js = jsClientConnect(t, streamLeaderServer)
+	defer nc.Close()
+
+	servers := slices.DeleteFunc([]string{"S-1", "S-2", "S-3"}, func(s string) bool {
+		return s == streamLeader
+	})
+
+	// Stop followers so further publishes will not have quorum.
+	followerName1 := servers[0]
+	followerName2 := servers[1]
+	followerServer1 := c.serverByName(followerName1)
+	followerServer2 := c.serverByName(followerName2)
+	followerServer1.Shutdown()
+	followerServer2.Shutdown()
+	followerServer1.WaitForShutdown()
+	followerServer2.WaitForShutdown()
+
+	// Although this request will time out, it will be added to the stream leader's WAL.
+	_, err = js.Publish("foo", []byte("first"), nats.AckWait(time.Second))
+	require_NotNil(t, err)
+	require_Equal(t, err, nats.ErrTimeout)
+
+	// Now shut down the leader as well.
+	nc.Close()
+	streamLeaderServer.Shutdown()
+	streamLeaderServer.WaitForShutdown()
+
+	// Only restart the (previous) followers.
+	followerServer1 = c.restartServer(followerServer1)
+	c.restartServer(followerServer2)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	nc, js = jsClientConnect(t, followerServer1)
+	defer nc.Close()
+
+	// Publishing a message will now have quorum.
+	pubAck, err := js.Publish("foo", []byte("first, this is a retry"))
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 1)
+
+	// Bring up the previous stream leader.
+	c.restartServer(streamLeaderServer)
+	c.waitOnAllCurrent()
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	// Check all servers ended up with the last published message, which had quorum.
+	for _, s := range c.servers {
+		c.waitOnStreamCurrent(s, globalAccountName, "TEST")
+
+		acc, err := s.lookupAccount(globalAccountName)
+		require_NoError(t, err)
+		mset, err := acc.lookupStream("TEST")
+		require_NoError(t, err)
+		state := mset.state()
+		require_Equal(t, state.Msgs, 1)
+		require_Equal(t, state.Bytes, 55)
+	}
+}
+
+func TestJetStreamClusterPreserveWALDuringCatchupWithMatchingTerm(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.>"},
+		Replicas: 3,
+	})
+	nc.Close()
+	require_NoError(t, err)
+
+	// Pick one server that will only store a part of the messages in its WAL.
+	rs := c.randomNonStreamLeader(globalAccountName, "TEST")
+	ts := time.Now().UnixNano()
+
+	// Manually add 3 append entries to each node's WAL, except for one node who is one behind.
+	var scratch [1024]byte
+	for _, s := range c.servers {
+		for _, n := range s.raftNodes {
+			rn := n.(*raft)
+			if rn.accName == globalAccountName {
+				for i := uint64(0); i < 3; i++ {
+					// One server will be one behind and need to catchup.
+					if s.Name() == rs.Name() && i >= 2 {
+						break
+					}
+
+					esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, i, ts, true)
+					entries := []*Entry{newEntry(EntryNormal, esm)}
+					rn.Lock()
+					ae := rn.buildAppendEntry(entries)
+					ae.buf, err = ae.encode(scratch[:])
+					require_NoError(t, err)
+					err = rn.storeToWAL(ae)
+					rn.Unlock()
+					require_NoError(t, err)
+				}
+			}
+		}
+	}
+
+	// Restart all.
+	c.stopAll()
+	c.restartAll()
+	c.waitOnAllCurrent()
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	rs = c.serverByName(rs.Name())
+
+	// Check all servers ended up with all published messages, which had quorum.
+	for _, s := range c.servers {
+		c.waitOnStreamCurrent(s, globalAccountName, "TEST")
+
+		acc, err := s.lookupAccount(globalAccountName)
+		require_NoError(t, err)
+		mset, err := acc.lookupStream("TEST")
+		require_NoError(t, err)
+		state := mset.state()
+		require_Equal(t, state.Msgs, 3)
+		require_Equal(t, state.Bytes, 99)
+	}
+
+	// Check that the first two published messages came from our WAL, and
+	// the last came from a catchup by another leader.
+	for _, n := range rs.raftNodes {
+		rn := n.(*raft)
+		if rn.accName == globalAccountName {
+			ae, err := rn.loadEntry(2)
+			require_NoError(t, err)
+			require_True(t, ae.leader == rn.ID())
+
+			ae, err = rn.loadEntry(3)
+			require_NoError(t, err)
+			require_True(t, ae.leader == rn.ID())
+
+			ae, err = rn.loadEntry(4)
+			require_NoError(t, err)
+			require_True(t, ae.leader != rn.ID())
+		}
+	}
+}
