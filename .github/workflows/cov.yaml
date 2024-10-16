@@ -35,16 +35,16 @@ jobs:
 
       - name: Convert coverage.out to coverage.lcov
         # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
-        # Commit 69ef3d59a24cc6e062516a73d8be123e85b15cc0 = tag v1.1.0
-        uses: jandelgado/gcov2lcov-action@69ef3d59a24cc6e062516a73d8be123e85b15cc0
+        # Commit 4e1989767862652e6ca8d3e2e61aabe6d43be28b = tag v1.1.1
+        uses: jandelgado/gcov2lcov-action@4e1989767862652e6ca8d3e2e61aabe6d43be28b
         with:
           infile: acc.out
           working-directory: src/github.com/nats-io/nats-server
 
       - name: Coveralls
         # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
-        # Commit 3dfc5567390f6fa9267c0ee9c251e4c8c3f18949 = tag v2
-        uses: coverallsapp/github-action@643bc377ffa44ace6394b2b5d0d3950076de9f63
+        # Commit 43f11c4e058174f808ee9cd63701b6c42fe3f5e3 = tag v2.3.2
+        uses: coverallsapp/github-action@43f11c4e058174f808ee9cd63701b6c42fe3f5e3
         with:
           github-token: ${{ secrets.github_token }}
           file: src/github.com/nats-io/nats-server/coverage.lcov
