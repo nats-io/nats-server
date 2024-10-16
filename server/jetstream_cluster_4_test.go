@@ -1123,7 +1123,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 							s.Shutdown()
 						}
 						s.WaitForShutdown()
-						c.restartServer(s)
+						newServer := c.restartServer(s)
 
 						if params.checkHealthz {
 							hctx, hcancel := context.WithTimeout(ctx, 15*time.Second)
@@ -1132,12 +1132,12 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 							for range time.NewTicker(2 * time.Second).C {
 								select {
 								case <-hctx.Done():
-									t.Fatalf("Timeout checking for health of %s", s.Name())
+									t.Fatalf("Timeout checking for health of %s", newServer.Name())
 									return
 								default:
 								}
 
-								status := s.healthz(nil)
+								status := newServer.healthz(nil)
 								if status.StatusCode == 200 {
 									break
 								}
