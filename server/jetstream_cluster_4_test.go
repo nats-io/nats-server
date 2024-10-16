@@ -1126,7 +1126,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 						newServer := c.restartServer(s)
 
 						if params.checkHealthz {
-							hctx, hcancel := context.WithTimeout(ctx, 15*time.Second)
+							hctx, hcancel := context.WithTimeout(context.Background(), 15*time.Second)
 							defer hcancel()
 
 							for range time.NewTicker(2 * time.Second).C {
