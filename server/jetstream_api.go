@@ -4620,7 +4620,7 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 	var resp = JSApiConsumerPauseResponse{ApiResponse: ApiResponse{Type: JSApiConsumerPauseResponseType}}
 
 	if isJSONObjectOrArray(msg) {
-    if err := s.unmarshalRequest(c, acc, subject, msg, &req); err != nil {
+		if err := s.unmarshalRequest(c, acc, subject, msg, &req); err != nil {
 			resp.Error = NewJSInvalidJSONError(err)
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
