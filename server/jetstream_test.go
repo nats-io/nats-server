@@ -6712,6 +6712,37 @@ func TestJetStreamSystemLimitsPlacement(t *testing.T) {
 		t.Fatalf("unexpected memory stream create success, maxBytes=%d, replicas=%d",
 			si.Config.MaxBytes, si.Config.Replicas)
 	}
+
+	t.Run("meta info placement in request - empty request", func(t *testing.T) {
+		nc, err = nats.Connect(largeSrv.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+		require_NoError(t, err)
+		defer nc.Close()
+
+		var resp JSApiLeaderStepDownResponse
+		ncResp, err := nc.Request(JSApiLeaderStepDown, []byte("{}"), 3*time.Second)
+		require_NoError(t, err)
+		err = json.Unmarshal(ncResp.Data, &resp)
+		require_NoError(t, err)
+		require_True(t, resp.Error == nil)
+		require_True(t, resp.Success)
+
+	})
+
+	t.Run("meta info placement in request - uninitialized fields", func(t *testing.T) {
+		nc, err = nats.Connect(largeSrv.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+		require_NoError(t, err)
+		defer nc.Close()
+
+		cluster.waitOnClusterReadyWithNumPeers(3)
+		var resp JSApiLeaderStepDownResponse
+		req, err := json.Marshal(JSApiLeaderStepdownRequest{Placement: nil})
+		require_NoError(t, err)
+		ncResp, err := nc.Request(JSApiLeaderStepDown, req, 10*time.Second)
+		require_NoError(t, err)
+		err = json.Unmarshal(ncResp.Data, &resp)
+		require_NoError(t, err)
+		require_True(t, resp.Error == nil)
+	})
 }
 
 func TestJetStreamStreamLimitUpdate(t *testing.T) {
