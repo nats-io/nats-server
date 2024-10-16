@@ -823,8 +823,8 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		// Update lame duck duration for all servers.
 		for _, s := range c.servers {
 			s.optsMu.Lock()
-			s.opts.LameDuckDuration = 5 * time.Second
-			s.opts.LameDuckGracePeriod = -5 * time.Second
+			s.opts.LameDuckDuration = 3 * time.Second
+			s.opts.LameDuckGracePeriod = -3 * time.Second
 			s.optsMu.Unlock()
 		}
 
@@ -1092,7 +1092,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 
 		// Restarts
 		wg.Add(1)
-		restartTimer := time.AfterFunc(10*time.Second, func() {
+		restartTimer := time.AfterFunc(3*time.Second, func() {
 			defer wg.Done()
 			for i := 0; i < params.restarts; i++ {
 				switch {
@@ -1129,7 +1129,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 							hctx, hcancel := context.WithTimeout(context.Background(), 15*time.Second)
 							defer hcancel()
 
-							for range time.NewTicker(2 * time.Second).C {
+							for range time.NewTicker(time.Second).C {
 								select {
 								case <-hctx.Done():
 									t.Fatalf("Timeout checking for health of %s", newServer.Name())
