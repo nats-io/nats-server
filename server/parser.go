@@ -151,6 +151,20 @@ func (c *client) parse(buf []byte) error {
 	s, mcl, trace := c.srv, c.mcl, c.trace
 	c.mu.Unlock()
 
+	// Check if the next character is `\n` for a valid CRLF sequence.
+	// This should called upon handling `\r`.
+	carriageReturn := func() {
+		// Check for following `\n`.
+		if i+1 < len(buf) && buf[i+1] == '\n' {
+			c.drop = 1
+			return
+		}
+		// If the next character isn't `\n`, treat it as part of the arg.
+		if c.argBuf != nil {
+			c.argBuf = append(c.argBuf, b)
+		}
+	}
+
 	// Move to loop instead of range syntax to allow jumping of i
 	for i = 0; i < len(buf); i++ {
 		b = buf[i]
@@ -271,7 +285,7 @@ func (c *client) parse(buf []byte) error {
 		case HPUB_ARG:
 			switch b {
 			case '\r':
-				c.drop = 1
+				carriageReturn()
 			case '\n':
 				var arg []byte
 				if c.argBuf != nil {
@@ -339,7 +353,7 @@ func (c *client) parse(buf []byte) error {
 		case HMSG_ARG:
 			switch b {
 			case '\r':
-				c.drop = 1
+				carriageReturn()
 			case '\n':
 				var arg []byte
 				if c.argBuf != nil {
@@ -414,7 +428,7 @@ func (c *client) parse(buf []byte) error {
 		case PUB_ARG:
 			switch b {
 			case '\r':
-				c.drop = 1
+				carriageReturn()
 			case '\n':
 				var arg []byte
 				if c.argBuf != nil {
@@ -544,7 +558,7 @@ func (c *client) parse(buf []byte) error {
 		case ASUB_ARG:
 			switch b {
 			case '\r':
-				c.drop = 1
+				carriageReturn()
 			case '\n':
 				var arg []byte
 				if c.argBuf != nil {
@@ -586,7 +600,7 @@ func (c *client) parse(buf []byte) error {
 		case AUSUB_ARG:
 			switch b {
 			case '\r':
-				c.drop = 1
+				carriageReturn()
 			case '\n':
 				var arg []byte
 				if c.argBuf != nil {
@@ -640,7 +654,7 @@ func (c *client) parse(buf []byte) error {
 		case SUB_ARG:
 			switch b {
 			case '\r':
-				c.drop = 1
+				carriageReturn()
 			case '\n':
 				var arg []byte
 				if c.argBuf != nil {
@@ -775,7 +789,7 @@ func (c *client) parse(buf []byte) error {
 		case UNSUB_ARG:
 			switch b {
 			case '\r':
-				c.drop = 1
+				carriageReturn()
 			case '\n':
 				var arg []byte
 				if c.argBuf != nil {
@@ -924,7 +938,7 @@ func (c *client) parse(buf []byte) error {
 		case CONNECT_ARG:
 			switch b {
 			case '\r':
-				c.drop = 1
+				carriageReturn()
 			case '\n':
 				var arg []byte
 				if c.argBuf != nil {
@@ -985,7 +999,7 @@ func (c *client) parse(buf []byte) error {
 		case MSG_ARG:
 			switch b {
 			case '\r':
-				c.drop = 1
+				carriageReturn()
 			case '\n':
 				var arg []byte
 				if c.argBuf != nil {
@@ -1064,7 +1078,7 @@ func (c *client) parse(buf []byte) error {
 		case INFO_ARG:
 			switch b {
 			case '\r':
-				c.drop = 1
+				carriageReturn()
 			case '\n':
 				var arg []byte
 				if c.argBuf != nil {
@@ -1143,7 +1157,7 @@ func (c *client) parse(buf []byte) error {
 		case MINUS_ERR_ARG:
 			switch b {
 			case '\r':
-				c.drop = 1
+				carriageReturn()
 			case '\n':
 				var arg []byte
 				if c.argBuf != nil {

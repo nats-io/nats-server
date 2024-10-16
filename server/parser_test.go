@@ -167,8 +167,8 @@ func TestParseSub(t *testing.T) {
 	if c.as != 4 {
 		t.Fatalf("ArgStart state incorrect: 4 vs %d\n", c.as)
 	}
-	if c.drop != 1 {
-		t.Fatalf("Drop state incorrect: 1 vs %d\n", c.as)
+	if c.drop != 0 {
+		t.Fatalf("Drop state incorrect: 0 vs %d\n", c.drop)
 	}
 	if !bytes.Equal(sub[c.as:], []byte("foo 1\r")) {
 		t.Fatalf("Arg state incorrect: %s\n", sub[c.as:])
@@ -277,6 +277,8 @@ func TestParsePubArg(t *testing.T) {
 		{arg: "\t \tfoo\t \t \tbar\t \t22\t \t", subject: "foo", reply: "bar", size: 22, szb: "22"},
 		{arg: "\t\tfoo\t\t\tbar\t\t2222\t\t", subject: "foo", reply: "bar", size: 2222, szb: "2222"},
 		{arg: "\t \tfoo\t \t \t\t\t2222\t \t", subject: "foo", reply: "", size: 2222, szb: "2222"},
+		{arg: "a\r 2", subject: "a\r", reply: "", size: 2, szb: "2"},
+		{arg: "a\rb 222", subject: "a\rb", reply: "", size: 222, szb: "222"},
 	} {
 		t.Run(test.arg, func(t *testing.T) {
 			if err := c.processPub([]byte(test.arg)); err != nil {
@@ -870,6 +872,26 @@ func TestMaxControlLine(t *testing.T) {
 					t.Fatalf("Should not have failed, got %v", err)
 				}
 			}
+		})
+	}
+}
+
+func TestParseCRLF(t *testing.T) {
+	type testcase struct {
+		input string
+		subj  string
+		size  int
+	}
+	for name, input := range map[string]testcase{
+		"CRLF": {"PUB foo.bar 5\r\n", "foo.bar", 5},   // Normal CRLF
+		"LF":   {"PUB foo.bar 5\n", "foo.bar", 5},     // LF only
+		"CR":   {"PUB foo.bar 5\r \n", "foo.bar", -1}, // LF didn't immediately follow CR
+	} {
+		t.Run(name, func(t *testing.T) {
+			client := dummyClient()
+			client.parse([]byte(input.input))
+			require_Equal(t, string(client.pa.subject), input.subj)
+			require_Equal(t, client.pa.size, input.size)
 		})
 	}
 }
