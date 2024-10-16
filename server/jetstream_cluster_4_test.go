@@ -1043,7 +1043,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				for range time.NewTicker(10 * time.Second).C {
+				for range time.NewTicker(12 * time.Second).C {
 					select {
 					case <-ctx.Done():
 						return
@@ -1053,12 +1053,12 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 					// Force disconnecting routes from one of the servers.
 					s := c.servers[rand.Intn(3)]
 					var routes []*client
-					t.Logf("Disconnecting routes from %v", s.Name())
-					s.mu.Lock()
+					t.Logf("Disconnecting routes from %v", s)
+					s.mu.RLock()
 					for _, conns := range s.routes {
 						routes = append(routes, conns...)
 					}
-					s.mu.Unlock()
+					s.mu.RUnlock()
 					for _, r := range routes {
 						r.closeConnection(ClientClosed)
 					}
@@ -1095,6 +1095,11 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		restartTimer := time.AfterFunc(3*time.Second, func() {
 			defer wg.Done()
 			for i := 0; i < params.restarts; i++ {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
 				switch {
 				case params.restartLeader:
 					// Find server leader of the stream and restart it.
@@ -1123,22 +1128,23 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 							s.Shutdown()
 						}
 						s.WaitForShutdown()
-						newServer := c.restartServer(s)
+						s = c.restartServer(s)
+						c.waitOnServerCurrent(s)
 
 						if params.checkHealthz {
 							hctx, hcancel := context.WithTimeout(context.Background(), 15*time.Second)
 							defer hcancel()
 
-							for range time.NewTicker(time.Second).C {
+							for range time.NewTicker(2 * time.Second).C {
 								select {
+								case <-ctx.Done():
+									return
 								case <-hctx.Done():
-									t.Fatalf("Timeout checking for health of %s", newServer.Name())
+									t.Fatalf("Timeout checking for health of %v", s)
 									return
 								default:
 								}
-
-								status := newServer.healthz(nil)
-								if status.StatusCode == 200 {
+								if status := s.healthz(nil); status.StatusCode == 200 {
 									break
 								}
 							}
