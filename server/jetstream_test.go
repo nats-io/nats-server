@@ -22832,3 +22832,87 @@ func TestJetStreamInterestStreamWithDuplicateMessages(t *testing.T) {
 	require_Equal(t, pa.Sequence, 1)
 	require_Equal(t, pa.Duplicate, true)
 }
+
+func TestJetStreamSourcingClipStartSeq(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "ORIGIN",
+		Subjects: []string{"test"},
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 10; i++ {
+		_, err := js.Publish("test", nil)
+		require_NoError(t, err)
+	}
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name: "SOURCING",
+		Sources: []*nats.StreamSource{
+			{
+				Name:        "ORIGIN",
+				OptStartSeq: 20,
+			},
+		},
+	})
+	require_NoError(t, err)
+
+	// Wait for sourcing consumer to be created.
+	time.Sleep(time.Second)
+
+	mset, err := s.GlobalAccount().lookupStream("ORIGIN")
+	require_NoError(t, err)
+	require_True(t, mset != nil)
+	require_Len(t, len(mset.consumers), 1)
+	for _, o := range mset.consumers {
+		// Should have been clipped back to below 20 as only
+		// 10 messages in the origin stream.
+		require_Equal(t, o.sseq, 11)
+	}
+}
+
+func TestJetStreamMirroringClipStartSeq(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "ORIGIN",
+		Subjects: []string{"test"},
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 10; i++ {
+		_, err := js.Publish("test", nil)
+		require_NoError(t, err)
+	}
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name: "MIRRORING",
+		Mirror: &nats.StreamSource{
+			Name:        "ORIGIN",
+			OptStartSeq: 20,
+		},
+	})
+	require_NoError(t, err)
+
+	// Wait for mirroring consumer to be created.
+	time.Sleep(time.Second)
+
+	mset, err := s.GlobalAccount().lookupStream("ORIGIN")
+	require_NoError(t, err)
+	require_True(t, mset != nil)
+	require_Len(t, len(mset.consumers), 1)
+	for _, o := range mset.consumers {
+		// Should have been clipped back to below 20 as only
+		// 10 messages in the origin stream.
+		require_Equal(t, o.sseq, 11)
+	}
+}
