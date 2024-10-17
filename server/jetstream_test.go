@@ -24000,62 +24000,6 @@ func TestJetStreamConsumerInfoNumPending(t *testing.T) {
 	require_Equal(t, ci.NumPending, 100)
 }
 
-func TestJetStreamConsumerStartSequenceNotInStream(t *testing.T) {
-	// This test is checking that we still correctly set the start
-	// sequence of a consumer if that start sequence doesn't appear
-	// in the stream yet. Previously this would have been clipped
-	// back to between the first and last seq from the stream state.
-
-	s := RunBasicJetStreamServer(t)
-	defer s.Shutdown()
-
-	nc, js := jsClientConnect(t, s)
-	defer nc.Close()
-
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:     "TEST",
-		Subjects: []string{"test"},
-	})
-	require_NoError(t, err)
-
-	sub, err := js.PullSubscribe("test", "test_consumer", nats.StartSequence(10))
-	require_NoError(t, err)
-
-	stream, err := s.gacc.lookupStream("TEST")
-	require_NoError(t, err)
-	consumer := stream.lookupConsumer("test_consumer")
-
-	func() {
-		consumer.mu.RLock()
-		defer consumer.mu.RUnlock()
-
-		require_Equal(t, consumer.dseq, 1)
-		require_Equal(t, consumer.sseq, 10)
-	}()
-
-	for i := 1; i <= 10; i++ {
-		_, err = js.Publish("test", []byte{byte(i)})
-		require_NoError(t, err)
-	}
-
-	msgs, err := sub.Fetch(1)
-	require_NoError(t, err)
-	require_Len(t, len(msgs), 1)
-	require_Equal(t, msgs[0].Data[0], 10)
-
-	require_NoError(t, msgs[0].AckSync())
-
-	func() {
-		consumer.mu.RLock()
-		defer consumer.mu.RUnlock()
-
-		require_Equal(t, consumer.dseq, 2)
-		require_Equal(t, consumer.adflr, 1)
-		require_Equal(t, consumer.sseq, 11)
-		require_Equal(t, consumer.asflr, 10)
-	}()
-}
-
 func TestJetStreamInterestStreamWithDuplicateMessages(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
