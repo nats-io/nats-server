@@ -787,11 +787,12 @@ func TestJetStreamClusterConsumerPauseSurvivesRestart(t *testing.T) {
 func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 
 	const PublishDuration = 30 * time.Second
-	const MaxPublishCount = 200_000 // This is per-producer, may stop short if out of time
+	const MaxPublishedPerProducer = 200_000
 	const MessagesSize = 1024
 	const NumPublishers = 50
 	const NumConsumersPerSubject = 5
 	const ConsumersStartDelay = 15 * time.Second
+	const ChecksDelay = 5 * time.Second
 	const ConsumeDuration = 45 * time.Second
 	const ConsumersFirstLifecycleDuration = 5 * time.Second
 	const FetchSize = 10
@@ -799,6 +800,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 	const DisconnectClientsInterval = 6 * time.Second
 	const ServerRestartInterval = 6 * time.Second
 	const HealthcheckTimeout = 15 * time.Second
+	const ChecksTimeout = time.Minute
 	const Verbose = false
 
 	subOpts := []nats.SubOpt{
@@ -828,6 +830,13 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		"MSGS.EEEEE.P.H.100XY.1.100Z.WQ.000000000009",
 	}
 
+	// Durable consumer name -> subject
+	consumersMap := make(map[string]string, len(subjects))
+	for i, subject := range subjects {
+		consumer := fmt.Sprintf("consumer_%d", i)
+		consumersMap[consumer] = subject
+	}
+
 	type testParams struct {
 		restartAny       bool
 		restartLeader    bool
@@ -838,7 +847,15 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		reconnectRoutes  bool
 		reconnectClients bool
 	}
+
 	test := func(t *testing.T, params *testParams, sc *nats.StreamConfig) {
+
+		var testLogf = func(format string, args ...any) {
+			if Verbose {
+				t.Logf(format, args...)
+			}
+		}
+
 		conf := `
 		listen: 127.0.0.1:-1
 		server_name: %s
@@ -883,15 +900,14 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		publishCtx, publishCancel := context.WithTimeout(context.Background(), PublishDuration)
 		defer publishCancel()
 
-		// Create one consumer per subject
-		for i, subject := range subjects {
-			consumer := fmt.Sprintf("consumer:by-subject:%d", i)
+		// Create idle subscriptions, one per subject
+		for consumer, subject := range consumersMap {
 			_, err := cjs.PullSubscribe(subject, consumer, subOpts...)
 			require_NoError(t, err)
 		}
 
-		// Create idle consumer (to check handling of low ack, and cleanup)
-		_, err = cjs.PullSubscribe("MSGS.ZZ.>", "consumer:ZZ:0", subOpts...)
+		// Create idle subscription spanning all subjects
+		_, err = cjs.PullSubscribe("MSGS.ZZ.>", "idle_consumer", subOpts...)
 		require_NoError(t, err)
 
 		// Wait group for all subroutines (producers, consumers and fault-injection tasks)
@@ -905,15 +921,13 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 
 				publishOk, publishErr := 0, 0
 				defer func() {
-					if Verbose {
-						t.Logf(
-							"Publisher %d/%d: %d published, %d errors",
-							publisherId+1,
-							NumPublishers,
-							publishOk,
-							publishErr,
-						)
-					}
+					testLogf(
+						"Publisher %d/%d: %d published, %d errors",
+						publisherId+1,
+						NumPublishers,
+						publishOk,
+						publishErr,
+					)
 				}()
 
 				msgBuf := make([]byte, MessagesSize)
@@ -923,7 +937,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 				producerNc, producerJs := jsClientConnect(t, c.randomServer())
 				defer producerNc.Close()
 
-				for publishOk < MaxPublishCount {
+				for publishOk < MaxPublishedPerProducer {
 					select {
 					case <-publishCtx.Done():
 						return
@@ -978,10 +992,9 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		testCtx, cancel := context.WithTimeout(context.Background(), ConsumeDuration)
 		defer cancel()
 
-		// Start a number of consumers for each durable/subject
+		// Start N consumers for each durable/subject pair
 		// Consume for a while then abruptly disconnect.
-		for i, subject := range subjects {
-			consumer := fmt.Sprintf("consumer:by-subject:%d", i)
+		for consumer, subject := range consumersMap {
 			for n := 0; n < NumConsumersPerSubject; n++ {
 				consumerNc, consumerJs := jsClientConnect(t, c.randomServer())
 				defer consumerNc.Close()
@@ -995,17 +1008,15 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 
 					fetchOk, fetchErr, deliveredMessages := 0, 0, 0
 					defer func() {
-						if Verbose {
-							t.Logf(
-								"Consumer %s (%d/%d) [1st cycle]: %d fetch, %d errors, %d messages",
-								consumer,
-								i+1,
-								NumConsumersPerSubject,
-								fetchOk,
-								fetchErr,
-								deliveredMessages,
-							)
-						}
+						testLogf(
+							"Consumer %s (%d/%d) (early disconnect): %d fetch, %d errors, %d messages",
+							consumer,
+							n+1,
+							NumConsumersPerSubject,
+							fetchOk,
+							fetchErr,
+							deliveredMessages,
+						)
 					}()
 
 					tick := time.NewTicker(1 * time.Millisecond)
@@ -1036,10 +1047,9 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 			}
 		}
 
-		// Start a number of consumers for each durable/subject
+		// Start N consumers for each durable/subject pair
 		// Consume until time runs out
-		for i, subject := range subjects {
-			consumer := fmt.Sprintf("consumer:by-subject:%d", i)
+		for consumer, subject := range consumersMap {
 			for n := 0; n < NumConsumersPerSubject; n++ {
 				consumerNc, consumerJs := jsClientConnect(t, c.randomServer())
 				defer consumerNc.Close()
@@ -1053,17 +1063,15 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 
 					fetchOk, fetchErr, deliveredMessages := 0, 0, 0
 					defer func() {
-						if Verbose {
-							t.Logf(
-								"Consumer %s (%d/%d) [2nd cycle]: %d fetch, %d errors, %d messages",
-								consumer,
-								i+1,
-								NumConsumersPerSubject,
-								fetchOk,
-								fetchErr,
-								deliveredMessages,
-							)
-						}
+						testLogf(
+							"Consumer %s (%d/%d) [2nd cycle]: %d fetch, %d errors, %d messages",
+							consumer,
+							n+1,
+							NumConsumersPerSubject,
+							fetchOk,
+							fetchErr,
+							deliveredMessages,
+						)
 					}()
 
 					tick := time.NewTicker(1 * time.Millisecond)
@@ -1103,7 +1111,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 					case <-disconnectTicker.C:
 						// Choose a random server
 						s := c.servers[rand.Intn(3)]
-						t.Logf("Disconnecting routes from %v", s)
+						testLogf("Disconnecting routes from %v", s)
 						var routeClients []*client
 						// Copy all route clients for this server
 						s.mu.RLock()
@@ -1133,7 +1141,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 					case <-disconnectTicker.C:
 						// Choose a random server
 						s := c.servers[rand.Intn(len(c.servers))]
-						t.Logf("Disconnecting clients from %v", s)
+						testLogf("Disconnecting clients from %v", s)
 						// Kick all clients
 						for _, client := range s.clients {
 							client.closeConnection(Kicked)
@@ -1161,7 +1169,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 				case params.restartLeader:
 					// Find server leader of the stream and restart it.
 					s := c.streamLeader("js", sc.Name)
-					t.Logf("Restarting stream leader %v", s)
+					testLogf("Restarting stream leader %v", s)
 					if params.ldmRestart {
 						s.lameDuckMode()
 					} else {
@@ -1171,7 +1179,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 					c.restartServer(s)
 				case params.restartAny:
 					s := c.servers[rand.Intn(len(c.servers))]
-					t.Logf("Restarting random server %v", s)
+					testLogf("Restarting random server %v", s)
 					if params.ldmRestart {
 						s.lameDuckMode()
 					} else {
@@ -1182,7 +1190,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 				case params.rolloutRestart:
 				rollout:
 					for i, s := range c.servers {
-						t.Logf("Restarting server %d/%d: %v", i+1, len(c.servers), s)
+						testLogf("Restarting server %d/%d: %v", i+1, len(c.servers), s)
 						if params.ldmRestart {
 							s.lameDuckMode()
 						} else {
@@ -1218,32 +1226,46 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		}()
 
 		// Wait until context is done
-		t.Logf("Running for %s", ConsumeDuration)
+		testLogf("Running for %s", ConsumeDuration)
 		<-testCtx.Done()
 		// Wait until all tasks are done
-		t.Logf("Waiting for routines termination")
+		testLogf("Waiting for routines termination")
 		wg.Wait()
 
+		testLogf("Pausing %s before consistency checks", ChecksDelay)
+		time.Sleep(ChecksDelay)
+
 		// Compare stream pending with total pending across consumers
-		var totalConsumersPending uint64
-		for i, _ := range subjects {
-			consumer := fmt.Sprintf("consumer:by-subject:%d", i)
-			ci, err := js.ConsumerInfo(sc.Name, consumer)
-			require_NoError(t, err)
-			totalConsumersPending += ci.NumPending
-		}
+		checkFor(t, ChecksTimeout, time.Second, func() error {
+			var totalConsumersPending uint64
+			for consumer, _ := range consumersMap {
+				ci, err := js.ConsumerInfo(sc.Name, consumer)
+				if err != nil {
+					return fmt.Errorf("failed to get consumer info: %w", err)
+				}
+				totalConsumersPending += ci.NumPending
+			}
 
-		si, err := js.StreamInfo(sc.Name)
-		require_NoError(t, err)
-		streamPending := si.State.Msgs
+			si, err := js.StreamInfo(sc.Name)
+			if err != nil {
+				return fmt.Errorf("failed to get stream info: %w", err)
+			}
+			streamPending := si.State.Msgs
 
-		if streamPending != totalConsumersPending {
-			t.Fatalf(
-				"Pending count mismatch stream: %d, consumers: %d",
-				streamPending,
-				totalConsumersPending,
-			)
-		}
+			if streamPending != totalConsumersPending {
+				testLogf(
+					"Pending counts mismatch - stream: %d, consumers: %d",
+					streamPending,
+					totalConsumersPending,
+				)
+				return fmt.Errorf(
+					"pending count mismatch - stream: %d, consumers: %d",
+					streamPending,
+					totalConsumersPending,
+				)
+			}
+			return nil
+		})
 
 		// If R>1, verify that leader and replicas have the same state
 		if sc.Replicas > 1 {
@@ -1264,7 +1286,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 
 			// Compare replicas against stream leader: number of messages, first and last sequence
 			// (wrapped into a checkFor since replicas may not immediately match, but eventually they must)
-			checkFor(t, time.Minute, time.Second, func() error {
+			checkFor(t, ChecksTimeout, time.Second, func() error {
 				return func(t *testing.T) error {
 					streamLeaderServer := c.streamLeader("js", sc.Name)
 					if streamLeaderServer == nil {
@@ -1285,8 +1307,13 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 						}
 
 						if streamDetails.State.Msgs != streamDetailsFromLeader.State.Msgs {
+							testLogf(
+								"Number of messages mismatch: %d vs %d",
+								streamDetailsFromLeader.State.Msgs,
+								streamDetails.State.Msgs,
+							)
 							err := fmt.Errorf(
-								"Leader %v has %d messages, server %v has %d messages",
+								"messages count mismatch: leader %v: %d, server %v: %d",
 								streamDetails.Cluster.Leader,
 								streamDetailsFromLeader.State.Msgs,
 								s,
@@ -1296,8 +1323,13 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 						}
 
 						if streamDetails.State.FirstSeq != streamDetailsFromLeader.State.FirstSeq {
+							testLogf(
+								"First sequence mismatch: %d vs %d",
+								streamDetailsFromLeader.State.FirstSeq,
+								streamDetails.State.FirstSeq,
+							)
 							err := fmt.Errorf(
-								"Leader %v FirstSeq is %d, server %v is at %d",
+								"first sequence mismatch: leader %v: %d, server %v: %d",
 								streamDetails.Cluster.Leader,
 								streamDetailsFromLeader.State.FirstSeq,
 								s,
@@ -1306,8 +1338,13 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 							errs = append(errs, err)
 						}
 						if streamDetails.State.LastSeq != streamDetailsFromLeader.State.LastSeq {
+							testLogf(
+								"Last sequence mismatch: %d vs %d",
+								streamDetailsFromLeader.State.LastSeq,
+								streamDetails.State.LastSeq,
+							)
 							err := fmt.Errorf(
-								"Leader %v LastSeq is %d, server %v is at %d",
+								"first sequence mismatch: leader %v: %d, server %v: %d",
 								streamDetails.Cluster.Leader,
 								streamDetailsFromLeader.State.LastSeq,
 								s,
@@ -1317,7 +1354,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 						}
 					}
 
-					// Save first and last for later (used for later checks if this one passes)
+					// Save first and last for later checks
 					firstSeq, lastSeq = streamDetailsFromLeader.State.FirstSeq, streamDetailsFromLeader.State.LastSeq
 
 					return errors.Join(errs...)
@@ -1381,8 +1418,8 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		}
 	}
 
-	// Setting up test variations below:
-	//
+	// Test variants as sub-tests
+
 	// File based with single replica and discard old policy.
 	t.Run("R1F", func(t *testing.T) {
 		params := &testParams{
