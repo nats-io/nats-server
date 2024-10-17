@@ -891,23 +891,23 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		nc, js := jsClientConnect(t, c.randomServer())
 		defer nc.Close()
 
-		cnc, cjs := jsClientConnect(t, c.randomServer())
-		defer cnc.Close()
-
 		_, err := js.AddStream(sc)
 		require_NoError(t, err)
 
 		publishCtx, publishCancel := context.WithTimeout(context.Background(), PublishDuration)
 		defer publishCancel()
 
-		// Create idle subscriptions, one per subject
+		idleConsumersNc, idleConsumersJs := jsClientConnect(t, c.randomServer())
+		defer idleConsumersNc.Close()
+
+		// Create idle durable consumer subscriptions, one per subject
 		for consumer, subject := range consumersMap {
-			_, err := cjs.PullSubscribe(subject, consumer, subOpts...)
+			_, err := idleConsumersJs.PullSubscribe(subject, consumer, subOpts...)
 			require_NoError(t, err)
 		}
 
-		// Create idle subscription spanning all subjects
-		_, err = cjs.PullSubscribe("MSGS.ZZ.>", "idle_consumer", subOpts...)
+		// Create idle durable consumer subscriptions, capturing all subjects
+		_, err = idleConsumersJs.PullSubscribe("MSGS.ZZ.>", "idle_consumer", subOpts...)
 		require_NoError(t, err)
 
 		// Wait group for all subroutines (producers, consumers and fault-injection tasks)
