@@ -1064,7 +1064,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 					fetchOk, fetchErr, deliveredMessages := 0, 0, 0
 					defer func() {
 						testLogf(
-							"Consumer %s (%d/%d) [2nd cycle]: %d fetch, %d errors, %d messages",
+							"Consumer %s (%d/%d): %d fetch, %d errors, %d messages",
 							consumer,
 							n+1,
 							NumConsumersPerSubject,
