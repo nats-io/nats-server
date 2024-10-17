@@ -837,15 +837,21 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		consumersMap[consumer] = subject
 	}
 
+	type restartsType string
+	const (
+		None           restartsType = ""
+		ClusterRollout restartsType = "cluster rollout"
+		StreamLeader   restartsType = "stream leader"
+		RandomServer   restartsType = "random server"
+	)
+
 	type testParams struct {
-		restartAny       bool
-		restartLeader    bool
-		rolloutRestart   bool
-		ldmRestart       bool
-		restarts         int
-		checkHealthz     bool
-		reconnectRoutes  bool
-		reconnectClients bool
+		restartsMode      restartsType
+		ldmRestart        bool
+		restarts          int
+		checkHealthz      bool
+		disconnectRoutes  bool
+		disconnectClients bool
 	}
 
 	test := func(t *testing.T, params *testParams, sc *nats.StreamConfig) {
@@ -1099,7 +1105,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		}
 
 		// Task that disconnect server routes.
-		if params.reconnectRoutes {
+		if params.disconnectRoutes {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -1129,7 +1135,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		}
 
 		// Task that disconnect server clients.
-		if params.reconnectClients {
+		if params.disconnectClients {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -1162,6 +1168,12 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+
+			if params.restartsMode == None {
+				return
+			}
+			testLogf("Will do %d %s restarts", params.restarts, params.restartsMode)
+
 			restartTicker := time.NewTicker(ServerRestartInterval)
 
 			for i := 0; i < params.restarts; i++ {
@@ -1172,8 +1184,8 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 					// Unblock and continue below
 				}
 
-				switch {
-				case params.restartLeader:
+				switch params.restartsMode {
+				case StreamLeader:
 					// Find server leader of the stream and restart it.
 					s := c.streamLeader("js", sc.Name)
 					testLogf("Restarting stream leader %v", s)
@@ -1184,7 +1196,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 					}
 					s.WaitForShutdown()
 					c.restartServer(s)
-				case params.restartAny:
+				case RandomServer:
 					s := c.servers[rand.Intn(len(c.servers))]
 					testLogf("Restarting random server %v", s)
 					if params.ldmRestart {
@@ -1194,7 +1206,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 					}
 					s.WaitForShutdown()
 					c.restartServer(s)
-				case params.rolloutRestart:
+				case ClusterRollout:
 				rollout:
 					for i, s := range c.servers {
 						testLogf("Restarting server %d/%d: %v", i+1, len(c.servers), s)
@@ -1227,6 +1239,9 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 							}
 						}
 					}
+				default:
+					t.Errorf("Unknown restart mode: %v", params.restartsMode)
+					return
 				}
 				c.waitOnClusterReady()
 			}
@@ -1430,10 +1445,9 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 	// File based with single replica and discard old policy.
 	t.Run("R1F", func(t *testing.T) {
 		params := &testParams{
-			restartAny:     true,
-			ldmRestart:     false,
-			rolloutRestart: false,
-			restarts:       1,
+			restartsMode: RandomServer,
+			restarts:     1,
+			ldmRestart:   false,
 		}
 		test(t, params, &nats.StreamConfig{
 			Name:        "OWQTEST_R1F",
@@ -1453,11 +1467,9 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 	// Clustered memory based with discard new policy and max msgs limit.
 	t.Run("R3M", func(t *testing.T) {
 		params := &testParams{
-			restartAny:     true,
-			ldmRestart:     true,
-			rolloutRestart: false,
-			restarts:       1,
-			checkHealthz:   false,
+			restartsMode: RandomServer,
+			restarts:     1,
+			ldmRestart:   true,
 		}
 		test(t, params, &nats.StreamConfig{
 			Name:        "OWQTEST_R3M",
@@ -1479,10 +1491,9 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 	// Clustered file based with discard new policy and max msgs limit.
 	t.Run("R3F_DN", func(t *testing.T) {
 		params := &testParams{
-			restartAny:     true,
-			ldmRestart:     true,
-			rolloutRestart: false,
-			restarts:       1,
+			restartsMode: RandomServer,
+			restarts:     1,
+			ldmRestart:   true,
 		}
 		test(t, params, &nats.StreamConfig{
 			Name:        "OWQTEST_R3F_DN",
@@ -1503,10 +1514,9 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 	// Clustered file based with discard old policy and max msgs limit.
 	t.Run("R3F_DO", func(t *testing.T) {
 		params := &testParams{
-			restartAny:     true,
-			ldmRestart:     true,
-			rolloutRestart: false,
-			restarts:       1,
+			restartsMode: RandomServer,
+			restarts:     1,
+			ldmRestart:   true,
 		}
 		test(t, params, &nats.StreamConfig{
 			Name:        "OWQTEST_R3F_DO",
@@ -1527,13 +1537,12 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 	// Clustered file based with discard old policy and no limits.
 	t.Run("R3F_DO_NOLIMIT", func(t *testing.T) {
 		params := &testParams{
-			restartAny:       false,
-			ldmRestart:       true,
-			rolloutRestart:   true,
-			restarts:         3,
-			checkHealthz:     true,
-			reconnectRoutes:  true,
-			reconnectClients: true,
+			restartsMode:      ClusterRollout,
+			restarts:          3,
+			ldmRestart:        true,
+			checkHealthz:      true,
+			disconnectRoutes:  true,
+			disconnectClients: true,
 		}
 		test(t, params, &nats.StreamConfig{
 			Name:       "OWQTEST_R3F_DO_NOLIMIT",
