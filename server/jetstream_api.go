@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -1066,6 +1067,35 @@ func (s *Server) getRequestInfo(c *client, raw []byte) (pci *ClientInfo, acc *Ac
 	return &ci, acc, hdr, msg, nil
 }
 
+func (s *Server) unmarshalRequest(c *client, acc *Account, subject string, msg []byte, v interface{}) error {
+	decoder := json.NewDecoder(bytes.NewReader(msg))
+	decoder.DisallowUnknownFields()
+
+	for {
+		err := decoder.Decode(v)
+
+		if err == io.EOF {
+			return nil
+		}
+
+		if err != nil {
+			var syntaxErr *json.SyntaxError
+			if errors.As(err, &syntaxErr) {
+				err = fmt.Errorf("%w at offset %d", err, syntaxErr.Offset)
+			}
+
+			c.RateLimitWarnf("Invalid JetStream request '%s > %s': %s", acc, subject, err)
+
+			var config = s.JetStreamConfig()
+			if config.Strict {
+				return err
+			}
+
+			return json.Unmarshal(msg, v)
+		}
+	}
+}
+
 func (a *Account) trackAPI() {
 	a.mu.RLock()
 	jsa := a.js
@@ -1195,7 +1225,7 @@ func (s *Server) jsTemplateCreateRequest(sub *subscription, c *client, _ *Accoun
 	}
 
 	var cfg StreamTemplateConfig
-	if err := json.Unmarshal(msg, &cfg); err != nil {
+	if err := s.unmarshalRequest(c, acc, subject, msg, &cfg); err != nil {
 		resp.Error = NewJSInvalidJSONError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -1252,7 +1282,7 @@ func (s *Server) jsTemplateNamesRequest(sub *subscription, c *client, _ *Account
 	var offset int
 	if isJSONObjectOrArray(msg) {
 		var req JSApiStreamTemplatesRequest
-		if err := json.Unmarshal(msg, &req); err != nil {
+		if err := s.unmarshalRequest(c, acc, subject, msg, &req); err != nil {
 			resp.Error = NewJSInvalidJSONError(err)
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
@@ -1435,7 +1465,7 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, _ *Account,
 	}
 
 	var cfg StreamConfigRequest
-	if err := json.Unmarshal(msg, &cfg); err != nil {
+	if err := s.unmarshalRequest(c, acc, subject, msg, &cfg); err != nil {
 		resp.Error = NewJSInvalidJSONError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -1546,7 +1576,7 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, _ *Account,
 		return
 	}
 	var ncfg StreamConfigRequest
-	if err := json.Unmarshal(msg, &ncfg); err != nil {
+	if err := s.unmarshalRequest(c, acc, subject, msg, &ncfg); err != nil {
 		resp.Error = NewJSInvalidJSONError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -1645,7 +1675,7 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, _ *Account, 
 
 	if isJSONObjectOrArray(msg) {
 		var req JSApiStreamNamesRequest
-		if err := json.Unmarshal(msg, &req); err != nil {
+		if err := s.unmarshalRequest(c, acc, subject, msg, &req); err != nil {
 			resp.Error = NewJSInvalidJSONError(err)
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
@@ -1775,7 +1805,7 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, _ *Account, s
 
 	if isJSONObjectOrArray(msg) {
 		var req JSApiStreamListRequest
-		if err := json.Unmarshal(msg, &req); err != nil {
+		if err := s.unmarshalRequest(c, acc, subject, msg, &req); err != nil {
 			resp.Error = NewJSInvalidJSONError(err)
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
@@ -1945,7 +1975,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 	var offset int
 	if isJSONObjectOrArray(msg) {
 		var req JSApiStreamInfoRequest
-		if err := json.Unmarshal(msg, &req); err != nil {
+		if err := s.unmarshalRequest(c, acc, subject, msg, &req); err != nil {
 			resp.Error = NewJSInvalidJSONError(err)
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
@@ -2302,7 +2332,7 @@ func (s *Server) jsStreamRemovePeerRequest(sub *subscription, c *client, _ *Acco
 	}
 
 	var req JSApiStreamRemovePeerRequest
-	if err := json.Unmarshal(msg, &req); err != nil {
+	if err := s.unmarshalRequest(c, acc, subject, msg, &req); err != nil {
 		resp.Error = NewJSInvalidJSONError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -2382,7 +2412,7 @@ func (s *Server) jsLeaderServerRemoveRequest(sub *subscription, c *client, _ *Ac
 	}
 
 	var req JSApiMetaServerRemoveRequest
-	if err := json.Unmarshal(msg, &req); err != nil {
+	if err := s.unmarshalRequest(c, acc, subject, msg, &req); err != nil {
 		resp.Error = NewJSInvalidJSONError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -2485,7 +2515,7 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 	var resp = JSApiStreamUpdateResponse{ApiResponse: ApiResponse{Type: JSApiStreamUpdateResponseType}}
 
 	var req JSApiMetaServerStreamMoveRequest
-	if err := json.Unmarshal(msg, &req); err != nil {
+	if err := s.unmarshalRequest(c, acc, subject, msg, &req); err != nil {
 		resp.Error = NewJSInvalidJSONError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -2512,7 +2542,7 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 	if ok {
 		sa, ok := streams[streamName]
 		if ok {
-			cfg = *sa.Config.clone()
+			cfg = *sa.Config
 			streamFound = true
 			currPeers = sa.Group.Peers
 			currCluster = sa.Group.Cluster
@@ -2654,7 +2684,7 @@ func (s *Server) jsLeaderServerStreamCancelMoveRequest(sub *subscription, c *cli
 	if ok {
 		sa, ok := streams[streamName]
 		if ok {
-			cfg = *sa.Config.clone()
+			cfg = *sa.Config
 			streamFound = true
 			currPeers = sa.Group.Peers
 		}
@@ -2835,7 +2865,7 @@ func (s *Server) jsLeaderStepDownRequest(sub *subscription, c *client, _ *Accoun
 
 	if isJSONObjectOrArray(msg) {
 		var req JSApiLeaderStepdownRequest
-		if err := json.Unmarshal(msg, &req); err != nil {
+		if err := s.unmarshalRequest(c, acc, subject, msg, &req); err != nil {
 			resp.Error = NewJSInvalidJSONError(err)
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
@@ -3062,7 +3092,7 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, _ *Account, su
 		return
 	}
 	var req JSApiMsgDeleteRequest
-	if err := json.Unmarshal(msg, &req); err != nil {
+	if err := s.unmarshalRequest(c, acc, subject, msg, &req); err != nil {
 		resp.Error = NewJSInvalidJSONError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -3181,7 +3211,7 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, _ *Account, subje
 		return
 	}
 	var req JSApiMsgGetRequest
-	if err := json.Unmarshal(msg, &req); err != nil {
+	if err := s.unmarshalRequest(c, acc, subject, msg, &req); err != nil {
 		resp.Error = NewJSInvalidJSONError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -3324,7 +3354,7 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, _ *Account, 
 	var purgeRequest *JSApiStreamPurgeRequest
 	if isJSONObjectOrArray(msg) {
 		var req JSApiStreamPurgeRequest
-		if err := json.Unmarshal(msg, &req); err != nil {
+		if err := s.unmarshalRequest(c, acc, subject, msg, &req); err != nil {
 			resp.Error = NewJSInvalidJSONError(err)
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
@@ -3414,7 +3444,7 @@ func (s *Server) jsStreamRestoreRequest(sub *subscription, c *client, _ *Account
 	}
 
 	var req JSApiStreamRestoreRequest
-	if err := json.Unmarshal(msg, &req); err != nil {
+	if err := s.unmarshalRequest(c, acc, subject, msg, &req); err != nil {
 		resp.Error = NewJSInvalidJSONError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -3717,7 +3747,7 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, _ *Accoun
 	}
 
 	var req JSApiStreamSnapshotRequest
-	if err := json.Unmarshal(msg, &req); err != nil {
+	if err := s.unmarshalRequest(c, acc, subject, msg, &req); err != nil {
 		resp.Error = NewJSInvalidJSONError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, smsg, s.jsonResponse(&resp))
 		return
@@ -3915,7 +3945,7 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 	var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
 
 	var req CreateConsumerRequest
-	if err := json.Unmarshal(msg, &req); err != nil {
+	if err := s.unmarshalRequest(c, acc, subject, msg, &req); err != nil {
 		resp.Error = NewJSInvalidJSONError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -4157,7 +4187,7 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, _ *Account
 	var offset int
 	if isJSONObjectOrArray(msg) {
 		var req JSApiConsumersRequest
-		if err := json.Unmarshal(msg, &req); err != nil {
+		if err := s.unmarshalRequest(c, acc, subject, msg, &req); err != nil {
 			resp.Error = NewJSInvalidJSONError(err)
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
@@ -4279,7 +4309,7 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, _ *Account,
 	var offset int
 	if isJSONObjectOrArray(msg) {
 		var req JSApiConsumersRequest
-		if err := json.Unmarshal(msg, &req); err != nil {
+		if err := s.unmarshalRequest(c, acc, subject, msg, &req); err != nil {
 			resp.Error = NewJSInvalidJSONError(err)
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
@@ -4590,7 +4620,7 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 	var resp = JSApiConsumerPauseResponse{ApiResponse: ApiResponse{Type: JSApiConsumerPauseResponseType}}
 
 	if isJSONObjectOrArray(msg) {
-		if err := json.Unmarshal(msg, &req); err != nil {
+		if err := s.unmarshalRequest(c, acc, subject, msg, &req); err != nil {
 			resp.Error = NewJSInvalidJSONError(err)
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
