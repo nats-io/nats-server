@@ -2700,6 +2700,7 @@ func (mset *stream) setupMirrorConsumer() error {
 			DeliverSubject:    deliverSubject,
 			DeliverPolicy:     DeliverByStartSequence,
 			OptStartSeq:       state.LastSeq + 1,
+			ClipStartSeq:      true,
 			AckPolicy:         AckNone,
 			AckWait:           22 * time.Hour,
 			MaxDeliver:        1,
@@ -3050,6 +3051,7 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 		Stream: si.name,
 		Config: ConsumerConfig{
 			DeliverSubject:    deliverSubject,
+			ClipStartSeq:      true,
 			AckPolicy:         AckNone,
 			AckWait:           22 * time.Hour,
 			MaxDeliver:        1,

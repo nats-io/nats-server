@@ -68,6 +68,7 @@ type ConsumerConfig struct {
 	Description     string          `json:"description,omitempty"`
 	DeliverPolicy   DeliverPolicy   `json:"deliver_policy"`
 	OptStartSeq     uint64          `json:"opt_start_seq,omitempty"`
+	ClipStartSeq    bool            `json:"clip_start_seq,omitempty"`
 	OptStartTime    *time.Time      `json:"opt_start_time,omitempty"`
 	AckPolicy       AckPolicy       `json:"ack_policy"`
 	AckWait         time.Duration   `json:"ack_wait,omitempty"`
@@ -5031,9 +5032,10 @@ func (o *consumer) selectStartingSeqNo() {
 			o.sseq = o.cfg.OptStartSeq
 		}
 
-		// Only clip the sseq if the OptStartSeq is not provided, otherwise
+		// Only clip the sseq if the OptStartSeq is not provided or if we are
+		// specifically asked to clip, i.e. for sourcing/mirroring, otherwise
 		// it's possible that the stream just doesn't contain OptStartSeq yet.
-		if o.cfg.OptStartSeq == 0 {
+		if o.cfg.OptStartSeq == 0 || o.cfg.ClipStartSeq {
 			if state.FirstSeq == 0 {
 				o.sseq = 1
 			} else if o.sseq < state.FirstSeq {
