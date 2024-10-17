@@ -1145,8 +1145,8 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 						var clients []*client
 						// Copy all clients for this server
 						s.mu.RLock()
-						for _, clients := range s.routes {
-							clients = append(clients, clients...)
+						for _, client := range s.clients {
+							clients = append(clients, client)
 						}
 						s.mu.RUnlock()
 						// Disconnect all clients collected
