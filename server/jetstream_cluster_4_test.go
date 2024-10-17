@@ -1110,7 +1110,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 						return
 					case <-disconnectTicker.C:
 						// Choose a random server
-						s := c.servers[rand.Intn(3)]
+						s := c.servers[rand.Intn(len(c.servers))]
 						testLogf("Disconnecting routes from %v", s)
 						var routeClients []*client
 						// Copy all route clients for this server
@@ -1142,8 +1142,15 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 						// Choose a random server
 						s := c.servers[rand.Intn(len(c.servers))]
 						testLogf("Disconnecting clients from %v", s)
-						// Kick all clients
-						for _, client := range s.clients {
+						var clients []*client
+						// Copy all clients for this server
+						s.mu.RLock()
+						for _, clients := range s.routes {
+							clients = append(clients, clients...)
+						}
+						s.mu.RUnlock()
+						// Disconnect all clients collected
+						for _, client := range clients {
 							client.closeConnection(Kicked)
 						}
 					}
@@ -1414,7 +1421,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 					}
 				}
 			}
-			t.Logf("Verified messages %d-%d for all replicas", firstSeq, lastSeq)
+			testLogf("Verified messages from %d to %d", firstSeq, lastSeq)
 		}
 	}
 
