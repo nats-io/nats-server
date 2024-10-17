@@ -3402,6 +3402,8 @@ func TestJetStreamClusterConsumeWithStartSequence(t *testing.T) {
 				// This is the success condition for all sub-tests below
 				var ExpectedMsgId = ""
 				checkMessage := func(t *testing.T, msg *nats.Msg) {
+					t.Helper()
+
 					msgMeta, err := msg.Metadata()
 					require_NoError(t, err)
 
@@ -3414,6 +3416,8 @@ func TestJetStreamClusterConsumeWithStartSequence(t *testing.T) {
 				}
 
 				checkRawMessage := func(t *testing.T, msg *nats.RawStreamMsg) {
+					t.Helper()
+
 					// Check sequence number
 					require_Equal(t, msg.Sequence, ChosenSeq)
 
@@ -3447,7 +3451,23 @@ func TestJetStreamClusterConsumeWithStartSequence(t *testing.T) {
 				})
 				require_NoError(t, err)
 
-				// Setup: create subscriptions before stream is populated
+				// Setup: populate stream
+				buf := make([]byte, 100)
+				for i := uint64(1); i <= NumMessages; i++ {
+					msgId := nuid.Next()
+					pubAck, err := js.Publish(StreamSubjectPrefix+strconv.Itoa(int(i)), buf, nats.MsgId(msgId))
+					require_NoError(t, err)
+
+					// Verify assumption made in tests below
+					require_Equal(t, pubAck.Sequence, i)
+
+					if i == ChosenSeq {
+						// Save the expected message id for the chosen message
+						ExpectedMsgId = msgId
+					}
+				}
+
+				// Setup: create subscriptions, needs to be after stream creation or OptStartSeq could be clipped
 				var preCreatedSub, preCreatedSubDurable *nats.Subscription
 				{
 					preCreatedSub, err = js.PullSubscribe(
@@ -3481,22 +3501,6 @@ func TestJetStreamClusterConsumeWithStartSequence(t *testing.T) {
 					defer func() {
 						require_NoError(t, preCreatedSubDurable.Unsubscribe())
 					}()
-				}
-
-				// Setup: populate stream
-				buf := make([]byte, 100)
-				for i := uint64(1); i <= NumMessages; i++ {
-					msgId := nuid.Next()
-					pubAck, err := js.Publish(StreamSubjectPrefix+strconv.Itoa(int(i)), buf, nats.MsgId(msgId))
-					require_NoError(t, err)
-
-					// Verify assumption made in tests below
-					require_Equal(t, pubAck.Sequence, i)
-
-					if i == ChosenSeq {
-						// Save the expected message id for the chosen message
-						ExpectedMsgId = msgId
-					}
 				}
 
 				// Tests various ways to consume the stream starting at the ChosenSeq sequence
