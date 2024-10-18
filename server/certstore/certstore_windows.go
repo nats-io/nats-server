@@ -41,20 +41,21 @@ import (
 
 const (
 	// wincrypt.h constants
-	winAcquireCached           = 0x1                                                   // CRYPT_ACQUIRE_CACHE_FLAG
-	winAcquireSilent           = 0x40                                                  // CRYPT_ACQUIRE_SILENT_FLAG
-	winAcquireOnlyNCryptKey    = 0x40000                                               // CRYPT_ACQUIRE_ONLY_NCRYPT_KEY_FLAG
-	winEncodingX509ASN         = 1                                                     // X509_ASN_ENCODING
-	winEncodingPKCS7           = 65536                                                 // PKCS_7_ASN_ENCODING
-	winCertStoreProvSystem     = 10                                                    // CERT_STORE_PROV_SYSTEM
-	winCertStoreCurrentUser    = uint32(winCertStoreCurrentUserID << winCompareShift)  // CERT_SYSTEM_STORE_CURRENT_USER
-	winCertStoreLocalMachine   = uint32(winCertStoreLocalMachineID << winCompareShift) // CERT_SYSTEM_STORE_LOCAL_MACHINE
-	winCertStoreCurrentUserID  = 1                                                     // CERT_SYSTEM_STORE_CURRENT_USER_ID
-	winCertStoreLocalMachineID = 2                                                     // CERT_SYSTEM_STORE_LOCAL_MACHINE_ID
-	winInfoIssuerFlag          = 4                                                     // CERT_INFO_ISSUER_FLAG
-	winInfoSubjectFlag         = 7                                                     // CERT_INFO_SUBJECT_FLAG
-	winCompareNameStrW         = 8                                                     // CERT_COMPARE_NAME_STR_A
-	winCompareShift            = 16                                                    // CERT_COMPARE_SHIFT
+	winAcquireCached           = 0x1                                     // CRYPT_ACQUIRE_CACHE_FLAG
+	winAcquireSilent           = 0x40                                    // CRYPT_ACQUIRE_SILENT_FLAG
+	winAcquireOnlyNCryptKey    = 0x40000                                 // CRYPT_ACQUIRE_ONLY_NCRYPT_KEY_FLAG
+	winEncodingX509ASN         = 1                                       // X509_ASN_ENCODING
+	winEncodingPKCS7           = 65536                                   // PKCS_7_ASN_ENCODING
+	winCertStoreProvSystem     = 10                                      // CERT_STORE_PROV_SYSTEM
+	winCertStoreCurrentUser    = windows.CERT_SYSTEM_STORE_CURRENT_USER  // CERT_SYSTEM_STORE_CURRENT_USER
+	winCertStoreLocalMachine   = windows.CERT_SYSTEM_STORE_LOCAL_MACHINE // CERT_SYSTEM_STORE_LOCAL_MACHINE
+	winCertStoreReadOnly       = windows.CERT_STORE_READONLY_FLAG        // CERT_STORE_MAXIMUM_ALLOWED_FLAG
+	winCertStoreCurrentUserID  = 1                                       // CERT_SYSTEM_STORE_CURRENT_USER_ID
+	winCertStoreLocalMachineID = 2                                       // CERT_SYSTEM_STORE_LOCAL_MACHINE_ID
+	winInfoIssuerFlag          = 4                                       // CERT_INFO_ISSUER_FLAG
+	winInfoSubjectFlag         = 7                                       // CERT_INFO_SUBJECT_FLAG
+	winCompareNameStrW         = 8                                       // CERT_COMPARE_NAME_STR_A
+	winCompareShift            = 16                                      // CERT_COMPARE_SHIFT
 
 	// Reference https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-certfindcertificateinstore
 	winFindIssuerStr  = winCompareNameStrW<<winCompareShift | winInfoIssuerFlag  // CERT_FIND_ISSUER_STR_W
@@ -485,7 +486,7 @@ func winNewStoreHandle(provider uint32, store *uint16) (*winStoreHandle, error) 
 		winCertStoreProvSystem,
 		0,
 		0,
-		provider,
+		provider|winCertStoreReadOnly,
 		uintptr(unsafe.Pointer(store)))
 	if err != nil {
 		return nil, ErrBadCryptoStoreProvider
