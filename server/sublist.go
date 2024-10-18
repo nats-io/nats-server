@@ -162,25 +162,11 @@ func (s *Sublist) registerNotification(subject, queue string, notify chan<- bool
 	}
 
 	var hasInterest bool
-	r := s.Match(subject)
-
-	if len(r.psubs)+len(r.qsubs) > 0 {
-		if queue == _EMPTY_ {
-			for _, sub := range r.psubs {
-				if string(sub.subject) == subject {
-					hasInterest = true
-					break
-				}
-			}
-		} else {
-			for _, qsub := range r.qsubs {
-				qs := qsub[0]
-				if string(qs.subject) == subject && string(qs.queue) == queue {
-					hasInterest = true
-					break
-				}
-			}
-		}
+	np, nq := s.NumInterest(subject)
+	if queue == _EMPTY_ {
+		hasInterest = np > 0
+	} else {
+		hasInterest = nq > 0
 	}
 
 	key := keyFromSubjectAndQueue(subject, queue)

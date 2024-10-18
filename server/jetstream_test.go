@@ -24455,3 +24455,57 @@ func TestJetStreamMirroringClipStartSeq(t *testing.T) {
 		require_Equal(t, o.sseq, 11)
 	}
 }
+
+func TestJetStreamConsumerDeliverSubjectWildcardSubscriber(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"test"},
+	})
+	require_NoError(t, err)
+
+	ch := make(chan *nats.Msg, 1)
+	qch := make(chan *nats.Msg, 2)
+
+	// First set up a consumer for a regular wildcard subscriber.
+	{
+		_, err = nc.ChanSubscribe("foo.*", ch)
+		require_NoError(t, err)
+
+		_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+			DeliverSubject: "foo.baz",
+			AckPolicy:      nats.AckNonePolicy,
+		})
+		require_NoError(t, err)
+	}
+
+	// Then also add a consumer for wildcard queue subscribers.
+	{
+		_, err = nc.ChanQueueSubscribe("bar.*", "group", qch)
+		require_NoError(t, err)
+		_, err = nc.ChanQueueSubscribe("bar.*", "group", qch)
+		require_NoError(t, err)
+
+		_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+			DeliverSubject: "bar.baz",
+			DeliverGroup:   "group",
+			AckPolicy:      nats.AckNonePolicy,
+		})
+		require_NoError(t, err)
+	}
+
+	_, err = js.Publish("test", nil)
+	require_NoError(t, err)
+
+	// The normal subscriber should have received the consumer message.
+	require_ChanRead(t, ch, time.Second)
+
+	// Only one queue subscriber should have received the consumer message.
+	require_ChanRead(t, qch, time.Second)
+	require_NoChanRead(t, qch, time.Second)
+}
