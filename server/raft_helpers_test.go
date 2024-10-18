@@ -317,3 +317,34 @@ func (rg smGroup) waitOnTotal(t *testing.T, expected int64) {
 func newStateAdder(s *Server, cfg *RaftConfig, n RaftNode) stateMachine {
 	return &stateAdder{s: s, n: n, cfg: cfg, lch: make(chan bool, 1)}
 }
+
+func initSingleMemRaftNode(t *testing.T) (*raft, func()) {
+	t.Helper()
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	s := c.servers[0] // RunBasicJetStreamServer not available
+
+	ms, err := newMemStore(&StreamConfig{Name: "TEST", Storage: MemoryStorage})
+	require_NoError(t, err)
+	cfg := &RaftConfig{Name: "TEST", Store: t.TempDir(), Log: ms}
+
+	err = s.bootstrapRaftNode(cfg, nil, false)
+	require_NoError(t, err)
+	n, err := s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+	require_NoError(t, err)
+
+	cleanup := func() {
+		c.shutdown()
+	}
+	return n, cleanup
+}
+
+// Encode an AppendEntry.
+// An AppendEntry is encoded into a buffer and that's stored into the WAL.
+// This is a helper function to generate that buffer.
+func encode(t *testing.T, ae *appendEntry) *appendEntry {
+	t.Helper()
+	buf, err := ae.encode(nil)
+	require_NoError(t, err)
+	ae.buf = buf
+	return ae
+}
