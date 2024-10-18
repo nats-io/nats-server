@@ -1056,13 +1056,13 @@ func addDelayedResponse(head, tail **delayedAPIResponse, r *delayedAPIResponse) 
 func (s *Server) delayedAPIResponder() {
 	defer s.grWG.Done()
 	var (
-		rgQuitCh   <-chan struct{}
-		head, tail *delayedAPIResponse
-		r          *delayedAPIResponse
+		head, tail *delayedAPIResponse // Linked list.
+		r          *delayedAPIResponse // Updated by calling next().
+		rqch       <-chan struct{}     // Quit channel of the Raft group (if present).
 		tm         = time.NewTimer(time.Hour)
 	)
-	setup := func() {
-		r, rgQuitCh = nil, nil
+	next := func() {
+		r, rqch = nil, nil
 		// Check that JetStream is still on. Do not exit the go routine
 		// since JS can be enabled/disabled. The go routine will exit
 		// only if server is shutdown.
@@ -1073,14 +1073,21 @@ func (s *Server) delayedAPIResponder() {
 			s.delayedAPIResponses.drain()
 			// Fall back into next "if" that resets timer.
 		}
+		// If there are no delayed messages then delay the timer for
+		// a while.
 		if head == nil {
 			tm.Reset(time.Hour)
 			return
 		}
+		// Get the first expected message and then reset the timer.
 		r = head
 		js.mu.RLock()
 		if r.rg != nil && r.rg.node != nil {
-			rgQuitCh = r.rg.node.QuitC()
+			// If there's an attached Raft group to the delayed response
+			// then pull out the quit channel, so that we don't bother
+			// sending responses for entities which are now no longer
+			// running.
+			rqch = r.rg.node.QuitC()
 		}
 		js.mu.RUnlock()
 		tm.Reset(time.Until(r.deadline))
@@ -1104,22 +1111,22 @@ func (s *Server) delayedAPIResponder() {
 			// Add it to the list, and if ends up being the head, set things up.
 			addDelayedResponse(&head, &tail, v)
 			if v == head {
-				setup()
+				next()
 			}
 		case <-s.quitCh:
 			return
-		case <-rgQuitCh:
+		case <-rqch:
 			// If we were the head, drop and setup things for next.
 			if r != nil && r == head {
 				pop()
 			}
-			setup()
+			next()
 		case <-tm.C:
 			if r != nil {
 				s.sendAPIErrResponse(r.ci, r.acc, r.subject, r.reply, r.request, r.response)
 				pop()
 			}
-			setup()
+			next()
 		}
 	}
 }
