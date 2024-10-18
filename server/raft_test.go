@@ -1145,55 +1145,26 @@ func TestNRGCatchupDoesNotTruncateUncommittedEntriesWithQuorum(t *testing.T) {
 	require_NoError(t, err)
 	require_Equal(t, entry.leader, nats0)
 
-	// We've just had a leader election, and we missed one message from the previous leader, we should catchup.
+	// We've just had a leader election, and we missed one message from the previous leader.
+	// We should truncate the last message.
 	n.processAppendEntry(aeCatchupTrigger, n.aesub)
-	require_Equal(t, n.wal.State().Msgs, 3)
-	require_True(t, n.catchup != nil)
-	require_Equal(t, n.catchup.pterm, 1)  // n.pterm
-	require_Equal(t, n.catchup.pindex, 1) // n.commit
-
-	// Make sure our WAL was not truncated, and we're still catching up.
-	aeUncommitted.leader = nats1
-	aeUncommitted = encode(aeUncommitted)
-	n.processAppendEntry(aeUncommitted, n.catchup.sub)
-	require_Equal(t, n.wal.State().Msgs, 3)
-	require_True(t, n.catchup != nil)
-	// Our entry should not be touched, so the 'leader' should've stayed the same.
-	entry, err = n.loadEntry(2)
-	require_NoError(t, err)
-	require_Equal(t, entry.leader, nats0)
-
-	// We now notice the leader indicated a different entry at the (no quorum) index, should truncate.
-	n.processAppendEntry(aeMissed, n.catchup.sub)
 	require_Equal(t, n.wal.State().Msgs, 2)
 	require_True(t, n.catchup == nil)
 
-	// We get a heartbeat that prompts us to catchup again.
+	// We get a heartbeat that prompts us to catchup.
 	n.processAppendEntry(aeHeartbeat2, n.aesub)
 	require_Equal(t, n.wal.State().Msgs, 2)
 	require_Equal(t, n.commit, 1) // Commit should not change, as we missed an item.
 	require_True(t, n.catchup != nil)
 	require_Equal(t, n.catchup.pterm, 1)  // n.pterm
-	require_Equal(t, n.catchup.pindex, 1) // n.commit
+	require_Equal(t, n.catchup.pindex, 2) // n.pindex
 
-	// We get the uncommitted entry again, it should stay the same.
-	n.processAppendEntry(aeUncommitted, n.catchup.sub)
-	require_Equal(t, n.wal.State().Msgs, 2)
-	require_True(t, n.catchup != nil)
-	// Our entry should still stay the same.
-	entry, err = n.loadEntry(2)
-	require_NoError(t, err)
-	require_Equal(t, entry.leader, nats0)
-
-	// We now get the missed append entry, store it.
+	// We now notice the leader indicated a different entry at the (no quorum) index, should save that.
 	n.processAppendEntry(aeMissed, n.catchup.sub)
 	require_Equal(t, n.wal.State().Msgs, 3)
 	require_True(t, n.catchup != nil)
-	entry, err = n.loadEntry(3)
-	require_NoError(t, err)
-	require_Equal(t, entry.leader, nats1)
 
-	// We now get the entry that initially triggered us to catchup again, it should be added.
+	// We now get the entry that initially triggered us to catchup, it should be added.
 	n.processAppendEntry(aeCatchupTrigger, n.catchup.sub)
 	require_Equal(t, n.wal.State().Msgs, 4)
 	require_True(t, n.catchup != nil)
