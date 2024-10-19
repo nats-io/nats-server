@@ -265,10 +265,10 @@ const (
 	// JSAdvisoryStreamUpdatedPre notification that a stream was updated.
 	JSAdvisoryStreamUpdatedPre = "$JS.EVENT.ADVISORY.STREAM.UPDATED"
 
-	// JSAdvisoryConsumerCreatedPre notification that a template created.
+	// JSAdvisoryConsumerCreatedPre notification that a consumer was created.
 	JSAdvisoryConsumerCreatedPre = "$JS.EVENT.ADVISORY.CONSUMER.CREATED"
 
-	// JSAdvisoryConsumerDeletedPre notification that a template deleted.
+	// JSAdvisoryConsumerDeletedPre notification that a consumer was deleted.
 	JSAdvisoryConsumerDeletedPre = "$JS.EVENT.ADVISORY.CONSUMER.DELETED"
 
 	// JSAdvisoryConsumerPausePre notification that a consumer paused/unpaused.
