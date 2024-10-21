@@ -3475,19 +3475,16 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.apply.push(newCommittedEntry(n.commit, ae.entries[:1]))
 			n.Unlock()
 			return
-
-		} else {
-			n.debug("AppendEntry did not match %d %d with %d %d", ae.pterm, ae.pindex, n.pterm, n.pindex)
-			if ae.pindex > n.pindex {
-				// Setup our state for catching up.
-				inbox := n.createCatchup(ae)
-				ar := newAppendEntryResponse(n.pterm, n.pindex, n.id, false)
-				n.Unlock()
-				n.sendRPC(ae.reply, inbox, ar.encode(arbuf))
-				arPool.Put(ar)
-				return
-			}
 		}
+
+		// Setup our state for catching up.
+		n.debug("AppendEntry did not match %d %d with %d %d", ae.pterm, ae.pindex, n.pterm, n.pindex)
+		inbox := n.createCatchup(ae)
+		ar := newAppendEntryResponse(n.pterm, n.pindex, n.id, false)
+		n.Unlock()
+		n.sendRPC(ae.reply, inbox, ar.encode(arbuf))
+		arPool.Put(ar)
+		return
 	}
 
 	// Save to our WAL if we have entries.
