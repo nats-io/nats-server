@@ -3314,18 +3314,26 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		n.updateLeadChange(false)
 	}
 
-	if (isNew && ae.pterm != n.pterm) || ae.pindex != n.pindex {
+	if ae.pterm != n.pterm || ae.pindex != n.pindex {
 		// Check if this is a lower or equal index than what we were expecting.
 		if ae.pindex <= n.pindex {
-			n.debug("AppendEntry detected pindex less than ours: %d:%d vs %d:%d", ae.pterm, ae.pindex, n.pterm, n.pindex)
+			n.debug("AppendEntry detected pindex less than/equal to ours: %d:%d vs %d:%d", ae.pterm, ae.pindex, n.pterm, n.pindex)
 			var ar *appendEntryResponse
-
 			var success bool
-			if eae, _ := n.loadEntry(ae.pindex); eae == nil {
+
+			if n.commit > 0 && ae.pindex <= n.commit {
+				// If we have already committed this entry, just mark success.
+				success = true
+			} else if eae, _ := n.loadEntry(ae.pindex); eae == nil {
 				// If terms are equal, and we are not catching up, we have simply already processed this message.
 				// So we will ACK back to the leader. This can happen on server restarts based on timings of snapshots.
 				if ae.pterm == n.pterm && !catchingUp {
 					success = true
+				} else if ae.pindex == n.pindex {
+					// Check if only our terms do not match here.
+					// Make sure pterms match and we take on the leader's.
+					// This prevents constant spinning.
+					n.truncateWAL(ae.pterm, ae.pindex)
 				} else {
 					n.resetWAL()
 				}
@@ -3354,16 +3362,6 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			// Snapshots and peerstate will always be together when a leader is catching us up in this fashion.
 			if len(ae.entries) != 2 || ae.entries[0].Type != EntrySnapshot || ae.entries[1].Type != EntryPeerState {
 				n.warn("Expected first catchup entry to be a snapshot and peerstate, will retry")
-				n.cancelCatchup()
-				n.Unlock()
-				return
-			}
-
-			// Check if only our terms do not match here.
-			if ae.pindex == n.pindex {
-				// Make sure pterms match and we take on the leader's.
-				// This prevents constant spinning.
-				n.truncateWAL(ae.pterm, ae.pindex)
 				n.cancelCatchup()
 				n.Unlock()
 				return
@@ -3408,19 +3406,16 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.apply.push(newCommittedEntry(n.commit, ae.entries[:1]))
 			n.Unlock()
 			return
-
-		} else {
-			n.debug("AppendEntry did not match %d %d with %d %d", ae.pterm, ae.pindex, n.pterm, n.pindex)
-			if ae.pindex > n.pindex {
-				// Setup our state for catching up.
-				inbox := n.createCatchup(ae)
-				ar := newAppendEntryResponse(n.pterm, n.pindex, n.id, false)
-				n.Unlock()
-				n.sendRPC(ae.reply, inbox, ar.encode(arbuf))
-				arPool.Put(ar)
-				return
-			}
 		}
+
+		// Setup our state for catching up.
+		n.debug("AppendEntry did not match %d %d with %d %d", ae.pterm, ae.pindex, n.pterm, n.pindex)
+		inbox := n.createCatchup(ae)
+		ar := newAppendEntryResponse(n.pterm, n.pindex, n.id, false)
+		n.Unlock()
+		n.sendRPC(ae.reply, inbox, ar.encode(arbuf))
+		arPool.Put(ar)
+		return
 	}
 
 	// Save to our WAL if we have entries.
