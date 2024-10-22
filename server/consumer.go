@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"math/rand"
 	"reflect"
 	"slices"
@@ -63,26 +64,27 @@ type ConsumerInfo struct {
 
 type ConsumerConfig struct {
 	// Durable is deprecated. All consumers should have names, picked by clients.
-	Durable         string          `json:"durable_name,omitempty"`
-	Name            string          `json:"name,omitempty"`
-	Description     string          `json:"description,omitempty"`
-	DeliverPolicy   DeliverPolicy   `json:"deliver_policy"`
-	OptStartSeq     uint64          `json:"opt_start_seq,omitempty"`
-	OptStartTime    *time.Time      `json:"opt_start_time,omitempty"`
-	AckPolicy       AckPolicy       `json:"ack_policy"`
-	AckWait         time.Duration   `json:"ack_wait,omitempty"`
-	MaxDeliver      int             `json:"max_deliver,omitempty"`
-	BackOff         []time.Duration `json:"backoff,omitempty"`
-	FilterSubject   string          `json:"filter_subject,omitempty"`
-	FilterSubjects  []string        `json:"filter_subjects,omitempty"`
-	ReplayPolicy    ReplayPolicy    `json:"replay_policy"`
-	RateLimit       uint64          `json:"rate_limit_bps,omitempty"` // Bits per sec
-	SampleFrequency string          `json:"sample_freq,omitempty"`
-	MaxWaiting      int             `json:"max_waiting,omitempty"`
-	MaxAckPending   int             `json:"max_ack_pending,omitempty"`
-	Heartbeat       time.Duration   `json:"idle_heartbeat,omitempty"`
-	FlowControl     bool            `json:"flow_control,omitempty"`
-	HeadersOnly     bool            `json:"headers_only,omitempty"`
+	Durable         string                      `json:"durable_name,omitempty"`
+	Name            string                      `json:"name,omitempty"`
+	Description     string                      `json:"description,omitempty"`
+	DeliverPolicy   DeliverPolicy               `json:"deliver_policy"`
+	OptStartSeq     uint64                      `json:"opt_start_seq,omitempty"`
+	OptStartTime    *time.Time                  `json:"opt_start_time,omitempty"`
+	AckPolicy       AckPolicy                   `json:"ack_policy"`
+	AckWait         time.Duration               `json:"ack_wait,omitempty"`
+	MaxDeliver      int                         `json:"max_deliver,omitempty"`
+	BackOff         []time.Duration             `json:"backoff,omitempty"`
+	FilterSubject   string                      `json:"filter_subject,omitempty"`
+	FilterSubjects  []string                    `json:"filter_subjects,omitempty"`
+	ReplayPolicy    ReplayPolicy                `json:"replay_policy"`
+	RateLimit       uint64                      `json:"rate_limit_bps,omitempty"` // Bits per sec
+	SampleFrequency string                      `json:"sample_freq,omitempty"`
+	MaxWaiting      int                         `json:"max_waiting,omitempty"`
+	MaxAckPending   int                         `json:"max_ack_pending,omitempty"`
+	Heartbeat       time.Duration               `json:"idle_heartbeat,omitempty"`
+	FlowControl     bool                        `json:"flow_control,omitempty"`
+	HeadersOnly     bool                        `json:"headers_only,omitempty"`
+	Partitioning    *ConsumerPartitioningConfig `json:"partitioning,omitempty"`
 
 	// Pull based options.
 	MaxRequestBatch    int           `json:"max_batch,omitempty"`
@@ -109,6 +111,25 @@ type ConsumerConfig struct {
 
 	// PauseUntil is for suspending the consumer until the deadline.
 	PauseUntil *time.Time `json:"pause_until,omitempty"`
+}
+
+type ConsumerPartitioningConfig struct {
+	NumPartitions int   `json:"num_partitions"`
+	Partitions    []int `json:"partitions"`
+	Tokens        []int `json:"tokens"`
+}
+
+func (c *ConsumerPartitioningConfig) matches(subject []byte) bool {
+	h := fnv.New32a()
+	_, _ = h.Write(subject)
+
+	partitionNumber := int(h.Sum32() % uint32(c.NumPartitions))
+	for _, p := range c.Partitions {
+		if p == partitionNumber {
+			return true
+		}
+	}
+	return false
 }
 
 // SequenceInfo has both the consumer and the stream sequence and last activity.
@@ -5576,7 +5597,11 @@ func (o *consumer) processStreamSignal(_ *subscription, _ *client, _ *Account, s
 	seq := le.Uint64(seqb)
 
 	if seq > o.npf {
-		o.npc++
+		partitioning := &ConsumerPartitioningConfig{NumPartitions: 2, Partitions: []int{0, 1}}
+		if partitioning.matches(stringToBytes(subject)) {
+			//if o.cfg.Partitioning == nil || o.cfg.Partitioning.matches(stringToBytes(subject)) {
+			o.npc++
+		}
 	}
 	if seq < o.sseq {
 		return

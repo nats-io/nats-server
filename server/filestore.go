@@ -2182,6 +2182,10 @@ func (fs *fileStore) GetSeqFromTime(t time.Time) uint64 {
 
 // Find the first matching message against a sublist.
 func (mb *msgBlock) firstMatchingMulti(sl *Sublist, start uint64, sm *StoreMsg) (*StoreMsg, bool, error) {
+	return mb.firstMatchingMultiP(sl, start, sm, &ConsumerPartitioningConfig{NumPartitions: 2, Partitions: []int{0, 1}})
+}
+
+func (mb *msgBlock) firstMatchingMultiP(sl *Sublist, start uint64, sm *StoreMsg, partitioned *ConsumerPartitioningConfig) (*StoreMsg, bool, error) {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
 
@@ -2216,7 +2220,9 @@ func (mb *msgBlock) firstMatchingMulti(sl *Sublist, start uint64, sm *StoreMsg) 
 		expireOk := seq == lseq && mb.llseq == seq
 
 		if sl.HasInterest(fsm.subj) {
-			return fsm, expireOk, nil
+			if partitioned == nil || partitioned.matches(stringToBytes(fsm.subj)) {
+				return fsm, expireOk, nil
+			}
 		}
 		// If we are here we did not match, so put the llseq back.
 		mb.llseq = llseq
@@ -2227,10 +2233,14 @@ func (mb *msgBlock) firstMatchingMulti(sl *Sublist, start uint64, sm *StoreMsg) 
 // Find the first matching message.
 // fs lock should be held.
 func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *StoreMsg) (*StoreMsg, bool, error) {
+	return mb.firstMatchingP(filter, wc, start, sm, &ConsumerPartitioningConfig{NumPartitions: 2, Partitions: []int{0, 1}})
+}
+
+func (mb *msgBlock) firstMatchingP(filter string, wc bool, start uint64, sm *StoreMsg, partitioned *ConsumerPartitioningConfig) (*StoreMsg, bool, error) {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
 
-	fseq, isAll, subs := start, filter == _EMPTY_ || filter == fwcs, []string{filter}
+	fseq, isAll, subs := start, partitioned == nil && (filter == _EMPTY_ || filter == fwcs), []string{filter}
 
 	var didLoad bool
 	if mb.fssNotLoaded() {
@@ -2253,7 +2263,9 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 		} else {
 			// Since mb.fss.Find won't work if filter is a wildcard, need to use Match instead.
 			mb.fss.Match(stringToBytes(filter), func(subject []byte, _ *SimpleState) {
-				isAll = true
+				if partitioned == nil || partitioned.matches(subject) {
+					isAll = true
+				}
 			})
 		}
 	}
@@ -2292,7 +2304,9 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 		if wc {
 			subs = subs[:0]
 			mb.fss.Match(stringToBytes(filter), func(bsubj []byte, _ *SimpleState) {
-				subs = append(subs, string(bsubj))
+				if partitioned == nil || partitioned.matches(bsubj) {
+					subs = append(subs, string(bsubj))
+				}
 			})
 			// Check if we matched anything
 			if len(subs) == 0 {
@@ -2354,7 +2368,9 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 		}
 		if doLinearScan {
 			if wc && isMatch(sm.subj) {
-				return fsm, expireOk, nil
+				if partitioned == nil || partitioned.matches(stringToBytes(sm.subj)) {
+					return fsm, expireOk, nil
+				}
 			} else if !wc && fsm.subj == filter {
 				return fsm, expireOk, nil
 			}
@@ -2878,6 +2894,10 @@ func (fs *fileStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed i
 // NumPending will return the number of pending messages matching the filter subject starting at sequence.
 // Optimized for stream num pending calculations for consumers.
 func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool) (total, validThrough uint64) {
+	return fs.NumPendingP(sseq, filter, lastPerSubject, &ConsumerPartitioningConfig{NumPartitions: 2, Partitions: []int{0, 1}})
+}
+
+func (fs *fileStore) NumPendingP(sseq uint64, filter string, lastPerSubject bool, partitioned *ConsumerPartitioningConfig) (total, validThrough uint64) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 
@@ -2907,6 +2927,10 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 		filter = fwcs
 	}
 	wc := subjectHasWildcard(filter)
+
+	if partitioned != nil && isAll {
+		isAll = false
+	}
 
 	// See if filter was provided but its the only subject.
 	if !isAll && !wc && fs.psim.Size() == 1 {
@@ -3037,15 +3061,17 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 					// If we already found a partial then don't do anything else.
 					return
 				}
-				subj := bytesToString(bsubj)
-				if ss.firstNeedsUpdate {
-					mb.recalculateFirstForSubj(subj, ss.First, ss)
-				}
-				if sseq <= ss.First {
-					t += ss.Msgs
-				} else if sseq <= ss.Last {
-					// We matched but its a partial.
-					havePartial = true
+				if partitioned == nil || partitioned.matches(bsubj) {
+					subj := bytesToString(bsubj)
+					if ss.firstNeedsUpdate {
+						mb.recalculateFirstForSubj(subj, ss.First, ss)
+					}
+					if sseq <= ss.First {
+						t += ss.Msgs
+					} else if sseq <= ss.Last {
+						// We matched but its a partial.
+						havePartial = true
+					}
 				}
 			})
 
@@ -6353,7 +6379,7 @@ func (fs *fileStore) LoadMsg(seq uint64, sm *StoreMsg) (*StoreMsg, error) {
 }
 
 // loadLast will load the last message for a subject. Subject should be non empty and not ">".
-func (fs *fileStore) loadLast(subj string, sm *StoreMsg) (lsm *StoreMsg, err error) {
+func (fs *fileStore) loadLast(subj string, sm *StoreMsg, partitioned *ConsumerPartitioningConfig) (lsm *StoreMsg, err error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 
@@ -6371,13 +6397,15 @@ func (fs *fileStore) loadLast(subj string, sm *StoreMsg) (lsm *StoreMsg, err err
 	// If literal subject check for presence.
 	if wc {
 		start = fs.lmb.index
-		fs.psim.Match(stringToBytes(subj), func(_ []byte, psi *psi) {
-			// Keep track of start and stop indexes for this subject.
-			if psi.fblk < start {
-				start = psi.fblk
-			}
-			if psi.lblk > stop {
-				stop = psi.lblk
+		fs.psim.Match(stringToBytes(subj), func(subject []byte, psi *psi) {
+			if partitioned == nil || partitioned.matches(subject) {
+				// Keep track of start and stop indexes for this subject.
+				if psi.fblk < start {
+					start = psi.fblk
+				}
+				if psi.lblk > stop {
+					stop = psi.lblk
+				}
 			}
 		})
 		// None matched.
@@ -6436,10 +6464,14 @@ func (fs *fileStore) loadLast(subj string, sm *StoreMsg) (lsm *StoreMsg, err err
 // LoadLastMsg will return the last message we have that matches a given subject.
 // The subject can be a wildcard.
 func (fs *fileStore) LoadLastMsg(subject string, smv *StoreMsg) (sm *StoreMsg, err error) {
-	if subject == _EMPTY_ || subject == fwcs {
+	return fs.LoadLastMsgP(subject, smv, &ConsumerPartitioningConfig{NumPartitions: 2, Partitions: []int{0, 1}})
+}
+
+func (fs *fileStore) LoadLastMsgP(subject string, smv *StoreMsg, partitioned *ConsumerPartitioningConfig) (sm *StoreMsg, err error) {
+	if (subject == _EMPTY_ || subject == fwcs) && partitioned == nil {
 		sm, err = fs.msgForSeq(fs.lastSeq(), smv)
 	} else {
-		sm, err = fs.loadLast(subject, smv)
+		sm, err = fs.loadLast(subject, smv, partitioned)
 	}
 	if sm == nil || (err != nil && err != ErrStoreClosed) {
 		err = ErrStoreMsgNotFound

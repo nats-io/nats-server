@@ -356,10 +356,10 @@ func (ms *memStore) FilteredState(sseq uint64, subj string) SimpleState {
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
 
-	return ms.filteredStateLocked(sseq, subj, false)
+	return ms.filteredStateLocked(sseq, subj, false, nil)
 }
 
-func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubject bool) SimpleState {
+func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubject bool, partitioned *ConsumerPartitioningConfig) SimpleState {
 	var ss SimpleState
 
 	if sseq < ms.state.FirstSeq {
@@ -374,7 +374,7 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 	if filter == _EMPTY_ {
 		filter = fwcs
 	}
-	isAll := filter == fwcs
+	isAll := filter == fwcs && partitioned == nil
 
 	// First check if we can optimize this part.
 	// This means we want all and the starting sequence was before this block.
@@ -427,16 +427,18 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 	var havePartial bool
 	// We will track start and end sequences as we go.
 	ms.fss.Match(stringToBytes(filter), func(subj []byte, fss *SimpleState) {
-		if fss.firstNeedsUpdate {
-			ms.recalculateFirstForSubj(bytesToString(subj), fss.First, fss)
-		}
-		if sseq <= fss.First {
-			update(fss)
-		} else if sseq <= fss.Last {
-			// We matched but it is a partial.
-			havePartial = true
-			// Don't break here, we will update to keep tracking last.
-			update(fss)
+		if partitioned == nil || partitioned.matches(subj) {
+			if fss.firstNeedsUpdate {
+				ms.recalculateFirstForSubj(bytesToString(subj), fss.First, fss)
+			}
+			if sseq <= fss.First {
+				update(fss)
+			} else if sseq <= fss.Last {
+				// We matched but it is a partial.
+				havePartial = true
+				// Don't break here, we will update to keep tracking last.
+				update(fss)
+			}
 		}
 	})
 
@@ -671,11 +673,15 @@ func (ms *memStore) SubjectsTotals(filterSubject string) map[string]uint64 {
 
 // NumPending will return the number of pending messages matching the filter subject starting at sequence.
 func (ms *memStore) NumPending(sseq uint64, filter string, lastPerSubject bool) (total, validThrough uint64) {
+	return ms.NumPendingP(sseq, filter, lastPerSubject, &ConsumerPartitioningConfig{NumPartitions: 2, Partitions: []int{0, 1}})
+}
+
+func (ms *memStore) NumPendingP(sseq uint64, filter string, lastPerSubject bool, partitioned *ConsumerPartitioningConfig) (total, validThrough uint64) {
 	// This needs to be a write lock, as filteredStateLocked can mutate the per-subject state.
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
 
-	ss := ms.filteredStateLocked(sseq, filter, lastPerSubject)
+	ss := ms.filteredStateLocked(sseq, filter, lastPerSubject, partitioned)
 	return ss.Msgs, ms.state.LastSeq
 }
 
@@ -1051,6 +1057,10 @@ func (ms *memStore) LoadMsg(seq uint64, smp *StoreMsg) (*StoreMsg, error) {
 // LoadLastMsg will return the last message we have that matches a given subject.
 // The subject can be a wildcard.
 func (ms *memStore) LoadLastMsg(subject string, smp *StoreMsg) (*StoreMsg, error) {
+	return ms.LoadLastMsgP(subject, smp, &ConsumerPartitioningConfig{NumPartitions: 2, Partitions: []int{0, 1}})
+}
+
+func (ms *memStore) LoadLastMsgP(subject string, smp *StoreMsg, partitioned *ConsumerPartitioningConfig) (*StoreMsg, error) {
 	var sm *StoreMsg
 	var ok bool
 
@@ -1066,7 +1076,7 @@ func (ms *memStore) LoadLastMsg(subject string, smp *StoreMsg) (*StoreMsg, error
 		if ss, ok = ms.fss.Find(stringToBytes(subject)); ok && ss.Msgs > 0 {
 			sm, ok = ms.msgs[ss.Last]
 		}
-	} else if ss := ms.filteredStateLocked(1, subject, true); ss.Msgs > 0 {
+	} else if ss := ms.filteredStateLocked(1, subject, true, partitioned); ss.Msgs > 0 {
 		sm, ok = ms.msgs[ss.Last]
 	}
 	if !ok || sm == nil {
@@ -1082,6 +1092,10 @@ func (ms *memStore) LoadLastMsg(subject string, smp *StoreMsg) (*StoreMsg, error
 
 // LoadNextMsgMulti will find the next message matching any entry in the sublist.
 func (ms *memStore) LoadNextMsgMulti(sl *Sublist, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error) {
+	return ms.LoadNextMsgMultiP(sl, start, smp, &ConsumerPartitioningConfig{NumPartitions: 2, Partitions: []int{0, 1}})
+}
+
+func (ms *memStore) LoadNextMsgMultiP(sl *Sublist, start uint64, smp *StoreMsg, partitioned *ConsumerPartitioningConfig) (sm *StoreMsg, skip uint64, err error) {
 	// TODO(dlc) - for now simple linear walk to get started.
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
@@ -1103,7 +1117,7 @@ func (ms *memStore) LoadNextMsgMulti(sl *Sublist, start uint64, smp *StoreMsg) (
 		if !ok {
 			continue
 		}
-		if sl.HasInterest(sm.subj) {
+		if sl.HasInterest(sm.subj) && (partitioned == nil || partitioned.matches(stringToBytes(sm.subj))) {
 			if smp == nil {
 				smp = new(StoreMsg)
 			}
@@ -1117,6 +1131,10 @@ func (ms *memStore) LoadNextMsgMulti(sl *Sublist, start uint64, smp *StoreMsg) (
 // LoadNextMsg will find the next message matching the filter subject starting at the start sequence.
 // The filter subject can be a wildcard.
 func (ms *memStore) LoadNextMsg(filter string, wc bool, start uint64, smp *StoreMsg) (*StoreMsg, uint64, error) {
+	return ms.LoadNextMsgP(filter, wc, start, smp, &ConsumerPartitioningConfig{NumPartitions: 2, Partitions: []int{0, 1}})
+}
+
+func (ms *memStore) LoadNextMsgP(filter string, wc bool, start uint64, smp *StoreMsg, partitioned *ConsumerPartitioningConfig) (*StoreMsg, uint64, error) {
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
 
@@ -1147,7 +1165,9 @@ func (ms *memStore) LoadNextMsg(filter string, wc bool, start uint64, smp *Store
 		if wc || isAll {
 			subs = subs[:0]
 			ms.fss.Match(stringToBytes(filter), func(subj []byte, val *SimpleState) {
-				subs = append(subs, string(subj))
+				if partitioned == nil || partitioned.matches(subj) {
+					subs = append(subs, string(subj))
+				}
 			})
 		}
 		fseq, lseq = ms.state.LastSeq, uint64(0)
@@ -1178,11 +1198,13 @@ func (ms *memStore) LoadNextMsg(filter string, wc bool, start uint64, smp *Store
 
 	for nseq := fseq; nseq <= lseq; nseq++ {
 		if sm, ok := ms.msgs[nseq]; ok && (isAll || eq(sm.subj, filter)) {
-			if smp == nil {
-				smp = new(StoreMsg)
+			if partitioned != nil && partitioned.matches(stringToBytes(sm.subj)) {
+				if smp == nil {
+					smp = new(StoreMsg)
+				}
+				sm.copy(smp)
+				return smp, nseq, nil
 			}
-			sm.copy(smp)
-			return smp, nseq, nil
 		}
 	}
 	return nil, ms.state.LastSeq, ErrStoreEOF
