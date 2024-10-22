@@ -4342,17 +4342,23 @@ func TestJetStreamClusterDesyncAfterPublishToLeaderWithoutQuorum(t *testing.T) {
 	c.waitOnStreamLeader(globalAccountName, "TEST")
 
 	// Check all servers ended up with the last published message, which had quorum.
-	for _, s := range c.servers {
-		c.waitOnStreamCurrent(s, globalAccountName, "TEST")
-
-		acc, err := s.lookupAccount(globalAccountName)
-		require_NoError(t, err)
-		mset, err := acc.lookupStream("TEST")
-		require_NoError(t, err)
-		state := mset.state()
-		require_Equal(t, state.Msgs, 1)
-		require_Equal(t, state.Bytes, 55)
-	}
+	checkFor(t, 3*time.Second, 250*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			acc, err := s.lookupAccount(globalAccountName)
+			if err != nil {
+				return err
+			}
+			mset, err := acc.lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			state := mset.state()
+			if state.Msgs != 1 || state.Bytes != 55 {
+				return fmt.Errorf("stream state didn't match, got %d messages with %d bytes", state.Msgs, state.Bytes)
+			}
+		}
+		return nil
+	})
 }
 
 func TestJetStreamClusterPreserveWALDuringCatchupWithMatchingTerm(t *testing.T) {
@@ -4409,17 +4415,23 @@ func TestJetStreamClusterPreserveWALDuringCatchupWithMatchingTerm(t *testing.T) 
 	rs = c.serverByName(rs.Name())
 
 	// Check all servers ended up with all published messages, which had quorum.
-	for _, s := range c.servers {
-		c.waitOnStreamCurrent(s, globalAccountName, "TEST")
-
-		acc, err := s.lookupAccount(globalAccountName)
-		require_NoError(t, err)
-		mset, err := acc.lookupStream("TEST")
-		require_NoError(t, err)
-		state := mset.state()
-		require_Equal(t, state.Msgs, 3)
-		require_Equal(t, state.Bytes, 99)
-	}
+	checkFor(t, 3*time.Second, 250*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			acc, err := s.lookupAccount(globalAccountName)
+			if err != nil {
+				return err
+			}
+			mset, err := acc.lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			state := mset.state()
+			if state.Msgs != 3 || state.Bytes != 99 {
+				return fmt.Errorf("stream state didn't match, got %d messages with %d bytes", state.Msgs, state.Bytes)
+			}
+		}
+		return nil
+	})
 
 	// Check that the first two published messages came from our WAL, and
 	// the last came from a catchup by another leader.
