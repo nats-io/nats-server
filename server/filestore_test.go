@@ -8076,3 +8076,38 @@ func Benchmark_FileStoreCreateConsumerStores(b *testing.B) {
 		})
 	}
 }
+
+func TestFileStoreWriteFullStateDetectCorruptState(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := []byte("abc")
+	for i := 1; i <= 10; i++ {
+		_, _, err = fs.StoreMsg(fmt.Sprintf("foo.%d", i), nil, msg)
+		require_NoError(t, err)
+	}
+
+	// Simulate a change in a message block not being reflected in the fs.
+	mb := fs.selectMsgBlock(2)
+	mb.mu.Lock()
+	mb.msgs--
+	mb.mu.Unlock()
+
+	var ss StreamState
+	fs.FastState(&ss)
+	require_Equal(t, ss.FirstSeq, 1)
+	require_Equal(t, ss.LastSeq, 10)
+	require_Equal(t, ss.Msgs, 10)
+
+	// Make sure we detect the corrupt state and rebuild.
+	err = fs.writeFullState()
+	require_Error(t, err, errCorruptState)
+
+	fs.FastState(&ss)
+	require_Equal(t, ss.FirstSeq, 1)
+	require_Equal(t, ss.LastSeq, 10)
+	require_Equal(t, ss.Msgs, 9)
+}
