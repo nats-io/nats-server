@@ -8150,7 +8150,7 @@ func (fs *fileStore) _writeFullState(force bool) error {
 	// Snapshot prior dirty count.
 	priorDirty := fs.dirty
 
-	statesEqual := trackingStatesEqual(&fs.state, &mstate) || len(fs.blks) > 0
+	statesEqual := trackingStatesEqual(&fs.state, &mstate)
 	// Release lock.
 	fs.mu.Unlock()
 
