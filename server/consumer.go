@@ -3432,6 +3432,7 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 
 	if err := o.waiting.add(wr); err != nil {
 		sendErr(409, "Exceeded MaxWaiting")
+		wr.recycle()
 		return
 	}
 	o.signalNewMessages()
