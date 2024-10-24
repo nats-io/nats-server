@@ -3126,6 +3126,14 @@ func (o *consumer) needAck(sseq uint64, subj string) bool {
 	return needAck
 }
 
+// Used in nextReqFromMsg, since the json.Unmarshal causes the request
+// struct to escape to the heap always. This should reduce GC pressure.
+var jsGetNextPool = sync.Pool{
+	New: func() any {
+		return &JSApiConsumerGetNextRequest{}
+	},
+}
+
 // Helper for the next message requests.
 func nextReqFromMsg(msg []byte) (time.Time, int, int, bool, time.Duration, time.Time, error) {
 	req := bytes.TrimSpace(msg)
@@ -3135,7 +3143,11 @@ func nextReqFromMsg(msg []byte) (time.Time, int, int, bool, time.Duration, time.
 		return time.Time{}, 1, 0, false, 0, time.Time{}, nil
 
 	case req[0] == '{':
-		var cr JSApiConsumerGetNextRequest
+		cr := jsGetNextPool.Get().(*JSApiConsumerGetNextRequest)
+		defer func() {
+			*cr = JSApiConsumerGetNextRequest{}
+			jsGetNextPool.Put(cr)
+		}()
 		if err := json.Unmarshal(req, &cr); err != nil {
 			return time.Time{}, -1, 0, false, 0, time.Time{}, err
 		}
