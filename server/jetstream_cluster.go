@@ -8955,17 +8955,6 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 	// mset.store never changes after being set, don't need lock.
 	mset.store.FastState(&state)
 
-	// Reset notion of first if this request wants sequences before our starting sequence
-	// and we would have nothing to send. If we have partial messages still need to send skips for those.
-	// We will keep sreq's first sequence to not create sequence mismatches on the follower, but we extend the last to our current state.
-	if sreq.FirstSeq < state.FirstSeq && state.FirstSeq > sreq.LastSeq {
-		s.Debugf("Catchup for stream '%s > %s' resetting request first sequence from %d to %d",
-			mset.account(), mset.name(), sreq.FirstSeq, state.FirstSeq)
-		if state.LastSeq > sreq.LastSeq {
-			sreq.LastSeq = state.LastSeq
-		}
-	}
-
 	// Setup sequences to walk through.
 	seq, last := sreq.FirstSeq, sreq.LastSeq
 	mset.setCatchupPeer(sreq.Peer, last-seq)
@@ -9129,25 +9118,10 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 				if drOk && dr.First > 0 {
 					sendDR()
 				}
-				// Check for a condition where our state's first is now past the last that we could have sent.
-				// If so reset last and continue sending.
-				var state StreamState
-				mset.mu.RLock()
-				mset.store.FastState(&state)
-				mset.mu.RUnlock()
-				if last < state.FirstSeq {
-					last = state.LastSeq
-				}
-				// Recheck our exit condition.
-				if seq == last {
-					if drOk && dr.First > 0 {
-						sendDR()
-					}
-					s.Noticef("Catchup for stream '%s > %s' complete", mset.account(), mset.name())
-					// EOF
-					s.sendInternalMsgLocked(sendSubject, _EMPTY_, nil, nil)
-					return false
-				}
+				s.Noticef("Catchup for stream '%s > %s' complete", mset.account(), mset.name())
+				// EOF
+				s.sendInternalMsgLocked(sendSubject, _EMPTY_, nil, nil)
+				return false
 			}
 			select {
 			case <-remoteQuitCh:
