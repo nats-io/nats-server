@@ -22,6 +22,7 @@ import (
 	"crypto/hmac"
 	crand "crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -8176,4 +8177,71 @@ func Benchmark_FileStoreCreateConsumerStores(b *testing.B) {
 			}
 		})
 	}
+}
+
+func TestFileStoreWriteFullStateDetectCorruptState(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := []byte("abc")
+	for i := 1; i <= 10; i++ {
+		_, _, err = fs.StoreMsg(fmt.Sprintf("foo.%d", i), nil, msg)
+		require_NoError(t, err)
+	}
+
+	// Simulate a change in a message block not being reflected in the fs.
+	mb := fs.selectMsgBlock(2)
+	mb.mu.Lock()
+	mb.msgs--
+	mb.mu.Unlock()
+
+	var ss StreamState
+	fs.FastState(&ss)
+	require_Equal(t, ss.FirstSeq, 1)
+	require_Equal(t, ss.LastSeq, 10)
+	require_Equal(t, ss.Msgs, 10)
+
+	// Make sure we detect the corrupt state and rebuild.
+	err = fs.writeFullState()
+	require_Error(t, err, errCorruptState)
+
+	fs.FastState(&ss)
+	require_Equal(t, ss.FirstSeq, 1)
+	require_Equal(t, ss.LastSeq, 10)
+	require_Equal(t, ss.Msgs, 9)
+}
+
+func TestFileStoreRecoverFullStateDetectCorruptState(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := []byte("abc")
+	for i := 1; i <= 10; i++ {
+		_, _, err = fs.StoreMsg(fmt.Sprintf("foo.%d", i), nil, msg)
+		require_NoError(t, err)
+	}
+
+	err = fs.writeFullState()
+	require_NoError(t, err)
+
+	sfile := filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile)
+	buf, err := os.ReadFile(sfile)
+	require_NoError(t, err)
+	// Update to an incorrect message count.
+	binary.PutUvarint(buf[2:], 0)
+	// Just append a corrected checksum to the end to make it pass the checks.
+	fs.hh.Reset()
+	fs.hh.Write(buf)
+	buf = fs.hh.Sum(buf)
+	err = os.WriteFile(sfile, buf, defaultFilePerms)
+	require_NoError(t, err)
+
+	err = fs.recoverFullState()
+	require_Error(t, err, errCorruptState)
 }
