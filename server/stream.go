@@ -4819,6 +4819,9 @@ func newJSPubMsg(dsubj, subj, reply string, hdr, msg []byte, o *consumer, seq ui
 	if pm != nil {
 		m = pm.(*jsPubMsg)
 		buf = m.buf[:0]
+		if hdr != nil {
+			hdr = append(m.hdr[:0], hdr...)
+		}
 	} else {
 		m = new(jsPubMsg)
 	}
@@ -4846,6 +4849,9 @@ func (pm *jsPubMsg) returnToPool() {
 	pm.subj, pm.dsubj, pm.reply, pm.hdr, pm.msg, pm.o = _EMPTY_, _EMPTY_, _EMPTY_, nil, nil, nil
 	if len(pm.buf) > 0 {
 		pm.buf = pm.buf[:0]
+	}
+	if len(pm.hdr) > 0 {
+		pm.hdr = pm.hdr[:0]
 	}
 	jsPubMsgPool.Put(pm)
 }
