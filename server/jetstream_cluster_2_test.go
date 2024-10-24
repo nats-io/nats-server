@@ -6720,12 +6720,24 @@ func TestJetStreamClusterSnapshotBeforePurgeAndCatchup(t *testing.T) {
 		return nil
 	})
 
-	// Make sure we only sent 1002 sync catchup msgs.
-	// This is for the new messages, the delete range, and the EOF.
+	// Make sure we only sent 2 sync catchup msgs.
+	// This is for the delete range, and the EOF.
 	nmsgs, _, _ := sub.Pending()
-	if nmsgs != 1002 {
-		t.Fatalf("Expected only 1002 sync catchup msgs to be sent signaling eof, but got %d", nmsgs)
+	if nmsgs != 2 {
+		t.Fatalf("Expected only 2 sync catchup msgs to be sent signaling eof, but got %d", nmsgs)
 	}
+
+	msg, err := sub.NextMsg(0)
+	require_NoError(t, err)
+	mbuf := msg.Data[1:]
+	dr, err := decodeDeleteRange(mbuf)
+	require_NoError(t, err)
+	require_Equal(t, dr.First, 1001)
+	require_Equal(t, dr.Num, 1000)
+
+	msg, err = sub.NextMsg(0)
+	require_NoError(t, err)
+	require_Equal(t, len(msg.Data), 0)
 }
 
 func TestJetStreamClusterStreamResetWithLargeFirstSeq(t *testing.T) {
