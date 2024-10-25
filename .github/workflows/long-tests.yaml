@@ -1,7 +1,11 @@
-name: NATS Server Long-Running Tests
+name: NATS Server Long Tests
 
 on:
+  # Allow manual trigger (any branch)
   workflow_dispatch:
+  # Run daily at 12:30 on default branch
+  schedule:
+    - cron: "30 12 * * *"
 
 concurrency:
   # At most one of these workflow per ref running
@@ -10,9 +14,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  placeholder:
-    name: Placeholder job
+  js-long:
+    name: Long JetStream tests
     runs-on: ${{ vars.GHA_WORKER_SMALL }}
     steps:
-      - name: Dummy step
-        run: echo "Hello World"
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          # Use go version from go.mod
+          go-version-file: "go.mod"
+          # Use latest stable go version
+          # go-version: stable
+
+      - name: Run tests
+        run: go test -race -v -run='^TestLong.*' ./server -tags=include_js_long_tests -count=1 -vet=off -timeout=60m -shuffle on -p 1 -failfast
