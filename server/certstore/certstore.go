@@ -46,11 +46,13 @@ type MatchByType int
 const (
 	matchByIssuer MatchByType = iota + 1
 	matchBySubject
+	matchByThumbprint
 )
 
 var MatchByMap = map[string]MatchByType{
-	"issuer":  matchByIssuer,
-	"subject": matchBySubject,
+	"issuer":     matchByIssuer,
+	"subject":    matchBySubject,
+	"thumbprint": matchByThumbprint,
 }
 
 var Usage = `

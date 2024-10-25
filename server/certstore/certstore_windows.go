@@ -22,9 +22,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rsa"
+	"crypto/sha1"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"math/big"
@@ -228,6 +230,8 @@ func TLSConfig(certStore StoreType, certMatchBy MatchByType, certMatch string, c
 			leaf, leafCtx, err = cs.certBySubject(certMatch, scope)
 		} else if certMatchBy == matchByIssuer {
 			leaf, leafCtx, err = cs.certByIssuer(certMatch, scope)
+		} else if certMatchBy == matchByThumbprint {
+			leaf, leafCtx, err = cs.certByThumbprint(certMatch, scope)
 		} else {
 			return ErrBadMatchByType
 		}
@@ -326,7 +330,7 @@ func winFindCert(store windows.Handle, enc, findFlags, findType uint32, para *ui
 	)
 	if h == 0 {
 		// Actual error, or simply not found?
-		if errno, ok := err.(syscall.Errno); ok && errno == winCryptENotFound {
+		if errno, ok := err.(syscall.Errno); ok && errno == syscall.Errno(winCryptENotFound) {
 			return nil, ErrFailedCertSearch
 		}
 		return nil, ErrFailedCertSearch
@@ -386,7 +390,22 @@ func (w *winCertStore) certBySubject(subject string, storeType uint32) (*x509.Ce
 	return w.certSearch(winFindSubjectStr, subject, winMyStore, storeType)
 }
 
-// caCertBySubject matches and returns all matching certificates of the subject field.
+// certByThumbprint matches and returns the first certificate found by passed SHA1 thumbprint.
+// CertContext pointer returned allows subsequent key operations like Sign. Caller specifies
+// current user's personal certs or local machine's personal certs using storeType.
+// See CERT_FIND_SUBJECT_STR description at https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-certfindcertificateinstore
+func (w *winCertStore) certByThumbprint(hash string, storeType uint32) (*x509.Certificate, *windows.CertContext, error) {
+	hb, err := hex.DecodeString(hash)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(hb) != sha1.Size {
+		return nil, nil, fmt.Errorf("incorrect thumbprint length %d", len(hb))
+	}
+	return w.certSearch(winFindHashStr, string(hb), winMyStore, storeType)
+}
+
+// caCertsBySubjectMatch matches and returns all matching certificates of the subject field.
 //
 // The following locations are searched:
 // 1) Root (Trusted Root Certification Authorities)
