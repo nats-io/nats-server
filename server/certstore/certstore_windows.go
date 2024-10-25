@@ -41,27 +41,26 @@ import (
 
 const (
 	// wincrypt.h constants
-	winAcquireCached           = 0x1                                     // CRYPT_ACQUIRE_CACHE_FLAG
-	winAcquireSilent           = 0x40                                    // CRYPT_ACQUIRE_SILENT_FLAG
-	winAcquireOnlyNCryptKey    = 0x40000                                 // CRYPT_ACQUIRE_ONLY_NCRYPT_KEY_FLAG
-	winEncodingX509ASN         = 1                                       // X509_ASN_ENCODING
-	winEncodingPKCS7           = 65536                                   // PKCS_7_ASN_ENCODING
-	winCertStoreProvSystem     = 10                                      // CERT_STORE_PROV_SYSTEM
-	winCertStoreCurrentUser    = windows.CERT_SYSTEM_STORE_CURRENT_USER  // CERT_SYSTEM_STORE_CURRENT_USER
-	winCertStoreLocalMachine   = windows.CERT_SYSTEM_STORE_LOCAL_MACHINE // CERT_SYSTEM_STORE_LOCAL_MACHINE
-	winCertStoreReadOnly       = windows.CERT_STORE_READONLY_FLAG        // CERT_STORE_MAXIMUM_ALLOWED_FLAG
-	winCertStoreCurrentUserID  = 1                                       // CERT_SYSTEM_STORE_CURRENT_USER_ID
-	winCertStoreLocalMachineID = 2                                       // CERT_SYSTEM_STORE_LOCAL_MACHINE_ID
-	winInfoIssuerFlag          = 4                                       // CERT_INFO_ISSUER_FLAG
-	winInfoSubjectFlag         = 7                                       // CERT_INFO_SUBJECT_FLAG
-	winCompareNameStrW         = 8                                       // CERT_COMPARE_NAME_STR_A
-	winCompareShift            = 16                                      // CERT_COMPARE_SHIFT
+	winAcquireCached         = windows.CRYPT_ACQUIRE_CACHE_FLAG
+	winAcquireSilent         = windows.CRYPT_ACQUIRE_SILENT_FLAG
+	winAcquireOnlyNCryptKey  = windows.CRYPT_ACQUIRE_ONLY_NCRYPT_KEY_FLAG
+	winEncodingX509ASN       = windows.X509_ASN_ENCODING
+	winEncodingPKCS7         = windows.PKCS_7_ASN_ENCODING
+	winCertStoreProvSystem   = windows.CERT_STORE_PROV_SYSTEM
+	winCertStoreCurrentUser  = windows.CERT_SYSTEM_STORE_CURRENT_USER
+	winCertStoreLocalMachine = windows.CERT_SYSTEM_STORE_LOCAL_MACHINE
+	winCertStoreReadOnly     = windows.CERT_STORE_READONLY_FLAG
+	winInfoIssuerFlag        = windows.CERT_INFO_ISSUER_FLAG
+	winInfoSubjectFlag       = windows.CERT_INFO_SUBJECT_FLAG
+	winCompareNameStrW       = windows.CERT_COMPARE_NAME_STR_W
+	winCompareShift          = windows.CERT_COMPARE_SHIFT
 
 	// Reference https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-certfindcertificateinstore
-	winFindIssuerStr  = winCompareNameStrW<<winCompareShift | winInfoIssuerFlag  // CERT_FIND_ISSUER_STR_W
-	winFindSubjectStr = winCompareNameStrW<<winCompareShift | winInfoSubjectFlag // CERT_FIND_SUBJECT_STR_W
+	winFindIssuerStr  = windows.CERT_FIND_ISSUER_STR_W
+	winFindSubjectStr = windows.CERT_FIND_SUBJECT_STR_W
+	winFindHashStr    = windows.CERT_FIND_HASH_STR
 
-	winNcryptKeySpec = 0xFFFFFFFF // CERT_NCRYPT_KEY_SPEC
+	winNcryptKeySpec = windows.CERT_NCRYPT_KEY_SPEC
 
 	winBCryptPadPKCS1   uintptr = 0x2
 	winBCryptPadPSS     uintptr = 0x8 // Modern TLS 1.2+
@@ -77,7 +76,7 @@ const (
 	winECK3Magic = 0x334B4345 // "ECK3" BCRYPT_ECDH_PUBLIC_P384_MAGIC
 	winECK5Magic = 0x354B4345 // "ECK5" BCRYPT_ECDH_PUBLIC_P521_MAGIC
 
-	winCryptENotFound = 0x80092004 // CRYPT_E_NOT_FOUND
+	winCryptENotFound = windows.CRYPT_E_NOT_FOUND
 
 	providerMSSoftware = "Microsoft Software Key Storage Provider"
 )
