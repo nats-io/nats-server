@@ -782,8 +782,12 @@ func (js *jetStream) setupMetaGroup() error {
 	sysAcc := s.SystemAccount()
 	storeDir := filepath.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, defaultMetaGroupName)
 
+	js.srv.optsMu.RLock()
+	syncAlways := js.srv.opts.SyncAlways
+	syncInterval := js.srv.opts.SyncInterval
+	js.srv.optsMu.RUnlock()
 	fs, err := newFileStoreWithCreated(
-		FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMetaFSBlkSize, AsyncFlush: false, srv: s},
+		FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMetaFSBlkSize, AsyncFlush: false, SyncAlways: syncAlways, SyncInterval: syncInterval, srv: s},
 		StreamConfig{Name: defaultMetaGroupName, Storage: FileStorage},
 		time.Now().UTC(),
 		s.jsKeyGen(s.getOpts().JetStreamKey, defaultMetaGroupName),
@@ -2078,8 +2082,13 @@ func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, storage Stor
 	storeDir := filepath.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, rg.Name)
 	var store StreamStore
 	if storage == FileStorage {
+		// If the server is set to sync always, do the same for the Raft log.
+		js.srv.optsMu.RLock()
+		syncAlways := js.srv.opts.SyncAlways
+		syncInterval := js.srv.opts.SyncInterval
+		js.srv.optsMu.RUnlock()
 		fs, err := newFileStoreWithCreated(
-			FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMediumBlockSize, AsyncFlush: false, SyncInterval: 5 * time.Minute, srv: s},
+			FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMediumBlockSize, AsyncFlush: false, SyncAlways: syncAlways, SyncInterval: syncInterval, srv: s},
 			StreamConfig{Name: rg.Name, Storage: FileStorage, Metadata: labels},
 			time.Now().UTC(),
 			s.jsKeyGen(s.getOpts().JetStreamKey, rg.Name),
