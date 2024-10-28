@@ -155,6 +155,7 @@ func TestLeafTLSWindowsCertStore(t *testing.T) {
 		{"WindowsCurrentUser", "Subject", "example.com", "\"NATS CA\"", 1},
 		{"WindowsCurrentUser", "Issuer", "NATS CA", "\"NATS CA\"", 1},
 		{"WindowsCurrentUser", "Issuer", "Frodo Baggins, Inc.", "\"NATS CA\"", 0},
+		{"WindowsCurrentUser", "Thumbprint", "7e44f478114a2e29b98b00beb1b3687d8dc0e481", "\"NATS CA\"", 0},
 		// Test CAs, NATS CA is valid, others are missing
 		{"WindowsCurrentUser", "Subject", "example.com", "[\"NATS CA\"]", 1},
 		{"WindowsCurrentUser", "Subject", "example.com", "[\"GlobalSign\"]", 0},

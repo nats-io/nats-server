@@ -22,11 +22,9 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rsa"
-	"crypto/sha1"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"math/big"
@@ -406,14 +404,7 @@ func (w *winCertStore) certBySubject(subject string, storeType uint32, skipInval
 // current user's personal certs or local machine's personal certs using storeType.
 // See CERT_FIND_SUBJECT_STR description at https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-certfindcertificateinstore
 func (w *winCertStore) certByThumbprint(hash string, storeType uint32, skipInvalid bool) (*x509.Certificate, *windows.CertContext, error) {
-	hb, err := hex.DecodeString(hash)
-	if err != nil {
-		return nil, nil, err
-	}
-	if len(hb) != sha1.Size {
-		return nil, nil, fmt.Errorf("incorrect thumbprint length %d", len(hb))
-	}
-	return w.certSearch(winFindHashStr, string(hb), winMyStore, storeType, skipInvalid)
+	return w.certSearch(winFindHashStr, hash, winMyStore, storeType, skipInvalid)
 }
 
 // caCertsBySubjectMatch matches and returns all matching certificates of the subject field.
