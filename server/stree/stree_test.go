@@ -842,3 +842,15 @@ func TestSubjectTreeInsertWithNoPivot(t *testing.T) {
 	require_False(t, updated)
 	require_Equal(t, st.Size(), 0)
 }
+
+// Make sure we don't panic when checking for fwc.
+func TestSubjectTreeMatchHasFWCNoPanic(t *testing.T) {
+	defer func() {
+		p := recover()
+		require_True(t, p == nil)
+	}()
+	st := NewSubjectTree[int]()
+	subj := []byte("foo")
+	st.Insert(subj, 1)
+	st.Match([]byte("."), func(subject []byte, val *int) {})
+}
