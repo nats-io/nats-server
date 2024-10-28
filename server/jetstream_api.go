@@ -1067,18 +1067,16 @@ func (s *Server) getRequestInfo(c *client, raw []byte) (pci *ClientInfo, acc *Ac
 	return &ci, acc, hdr, msg, nil
 }
 
-func (s *Server) unmarshalRequest(c *client, acc *Account, subject string, msg []byte, v interface{}) error {
+func (s *Server) unmarshalRequest(c *client, acc *Account, subject string, msg []byte, v any) error {
 	decoder := json.NewDecoder(bytes.NewReader(msg))
 	decoder.DisallowUnknownFields()
 
 	for {
-		err := decoder.Decode(v)
+		if err := decoder.Decode(v); err != nil {
+			if err == io.EOF {
+				return nil
+			}
 
-		if err == io.EOF {
-			return nil
-		}
-
-		if err != nil {
 			var syntaxErr *json.SyntaxError
 			if errors.As(err, &syntaxErr) {
 				err = fmt.Errorf("%w at offset %d", err, syntaxErr.Offset)
@@ -1086,8 +1084,7 @@ func (s *Server) unmarshalRequest(c *client, acc *Account, subject string, msg [
 
 			c.RateLimitWarnf("Invalid JetStream request '%s > %s': %s", acc, subject, err)
 
-			var config = s.JetStreamConfig()
-			if config.Strict {
+			if s.JetStreamConfig().Strict {
 				return err
 			}
 
