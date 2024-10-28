@@ -283,7 +283,7 @@ func (t *SubjectTree[T]) delete(np *node, subject []byte, si int) (*T, bool) {
 func (t *SubjectTree[T]) match(n node, parts [][]byte, pre []byte, cb func(subject []byte, val *T)) {
 	// Capture if we are sitting on a terminal fwc.
 	var hasFWC bool
-	if lp := len(parts); lp > 0 && parts[lp-1][0] == fwc {
+	if lp := len(parts); lp > 0 && len(parts[lp-1]) > 0 && parts[lp-1][0] == fwc {
 		hasFWC = true
 	}
 
