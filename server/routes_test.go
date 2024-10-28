@@ -106,7 +106,7 @@ func TestRouteConfig(t *testing.T) {
 			ConnectRetries: 2,
 		},
 		PidFile:          "/tmp/nats-server/nats_cluster_test.pid",
-		ConfigDigest:     "sha256:1a95b87d99ff3950ff3eb220ef6ffb5387c95fa606ed6976023ade266329c7b5",
+		configDigest:     "sha256:1a95b87d99ff3950ff3eb220ef6ffb5387c95fa606ed6976023ade266329c7b5",
 		authBlockDefined: true,
 	}
 

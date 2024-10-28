@@ -1779,7 +1779,7 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 		s.Warnf("Can't restart OCSP features: %v", err)
 	}
 
-	s.Noticef("Reloaded server configuration (%s)", newOpts.ConfigDigest)
+	s.Noticef("Reloaded server configuration (%s)", newOpts.configDigest)
 }
 
 // This will send a reset to the internal send loop.

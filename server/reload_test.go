@@ -152,7 +152,7 @@ func TestConfigReloadUnsupported(t *testing.T) {
 			Port: -1,
 		},
 		NoSigs:       true,
-		ConfigDigest: "sha256:3c5c4141f56274bcfa801f2d7326ec64d5eabddd9e6d4f9a06ed167315a57f55",
+		configDigest: "sha256:3c5c4141f56274bcfa801f2d7326ec64d5eabddd9e6d4f9a06ed167315a57f55",
 	}
 	setBaselineOptions(golden)
 
@@ -225,7 +225,7 @@ func TestConfigReloadInvalidConfig(t *testing.T) {
 			Port: -1,
 		},
 		NoSigs:       true,
-		ConfigDigest: "sha256:3c5c4141f56274bcfa801f2d7326ec64d5eabddd9e6d4f9a06ed167315a57f55",
+		configDigest: "sha256:3c5c4141f56274bcfa801f2d7326ec64d5eabddd9e6d4f9a06ed167315a57f55",
 	}
 	setBaselineOptions(golden)
 
@@ -289,7 +289,7 @@ func TestConfigReload(t *testing.T) {
 			Port: server.ClusterAddr().Port,
 		},
 		NoSigs:       true,
-		ConfigDigest: "sha256:3c5c4141f56274bcfa801f2d7326ec64d5eabddd9e6d4f9a06ed167315a57f55",
+		configDigest: "sha256:3c5c4141f56274bcfa801f2d7326ec64d5eabddd9e6d4f9a06ed167315a57f55",
 	}
 	setBaselineOptions(golden)
 
