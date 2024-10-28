@@ -450,8 +450,8 @@ type Options struct {
 	// Used to mark that we had a top level authorization block.
 	authBlockDefined bool
 
-	// ConfigDigest represents the state of configuration.
-	ConfigDigest string
+	// configDigest represents the state of configuration.
+	configDigest string
 }
 
 // WebsocketOpts are options for websocket
@@ -898,7 +898,7 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 	if err != nil {
 		return err
 	}
-	o.ConfigDigest = digest
+	o.configDigest = digest
 
 	return o.processConfigFile(configFile, m)
 }
@@ -912,6 +912,10 @@ func (o *Options) ProcessConfigString(data string) error {
 	}
 
 	return o.processConfigFile(_EMPTY_, m)
+}
+
+func (o *Options) Digest() string {
+	return o.configDigest
 }
 
 func (o *Options) processConfigFile(configFile string, m map[string]any) error {

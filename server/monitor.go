@@ -1672,7 +1672,7 @@ func (s *Server) updateVarzConfigReloadableFields(v *Varz) {
 	v.TLSTimeout = opts.TLSTimeout
 	v.WriteDeadline = opts.WriteDeadline
 	v.ConfigLoadTime = s.configTime.UTC()
-	v.ConfigDigest = opts.ConfigDigest
+	v.ConfigDigest = opts.configDigest
 	// Update route URLs if applicable
 	if s.varzUpdateRouteURLs {
 		v.Cluster.URLs = urlsToStrings(opts.Routes)
