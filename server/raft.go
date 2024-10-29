@@ -1026,7 +1026,7 @@ func (n *raft) InstallSnapshot(data []byte) error {
 
 	// Check that a catchup isn't already taking place. If it is then we won't
 	// allow installing snapshots until it is done.
-	if len(n.progress) > 0 {
+	if len(n.progress) > 0 || n.paused {
 		return errCatchupsRunning
 	}
 

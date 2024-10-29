@@ -1739,6 +1739,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 	var matched bool
 	mb := fs.lmb
 	if mb == nil || mb.index != blkIndex {
+		os.Remove(fn)
 		fs.warn("Stream state block does not exist or index mismatch")
 		return errCorruptState
 	}
@@ -1775,6 +1776,14 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 				return errPriorState
 			}
 		}
+	}
+
+	// We check first and last seq and number of msgs and bytes. If there is a difference,
+	// return and error so we rebuild from the message block state on disk.
+	if !trackingStatesEqual(&fs.state, &mstate) {
+		os.Remove(fn)
+		fs.warn("Stream state encountered internal inconsistency on recover")
+		return errCorruptState
 	}
 
 	return nil
@@ -8037,7 +8046,7 @@ func (fs *fileStore) _writeFullState(force bool) error {
 	// Snapshot prior dirty count.
 	priorDirty := fs.dirty
 
-	statesEqual := trackingStatesEqual(&fs.state, &mstate) || len(fs.blks) > 0
+	statesEqual := trackingStatesEqual(&fs.state, &mstate)
 	// Release lock.
 	fs.mu.Unlock()
 

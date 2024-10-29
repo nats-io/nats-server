@@ -1,4 +1,4 @@
-// Copyright 2022-2023 The NATS Authors
+// Copyright 2022-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -28,9 +28,12 @@ import (
 )
 
 func runPowershellScript(scriptFile string, args []string) error {
-	_ = args
 	psExec, _ := exec.LookPath("powershell.exe")
+
 	execArgs := []string{psExec, "-command", fmt.Sprintf("& '%s'", scriptFile)}
+	if len(args) > 0 {
+		execArgs = append(execArgs, args...)
+	}
 
 	cmdImport := &exec.Cmd{
 		Path:   psExec,
@@ -41,7 +44,7 @@ func runPowershellScript(scriptFile string, args []string) error {
 	return cmdImport.Run()
 }
 
-func runConfiguredLeaf(t *testing.T, hubPort int, certStore string, matchBy string, match string, expectedLeafCount int) {
+func runConfiguredLeaf(t *testing.T, hubPort int, certStore string, matchBy string, match string, caMatch string, expectedLeafCount int) {
 
 	// Fire up the leaf
 	u, err := url.Parse(fmt.Sprintf("nats://localhost:%d", hubPort))
@@ -59,18 +62,18 @@ func runConfiguredLeaf(t *testing.T, hubPort int, certStore string, matchBy stri
 						cert_store: "%s"
 						cert_match_by: "%s"
 						cert_match: "%s"
+						ca_certs_match: %s
 
-						# Above should be equivalent to:
+						# Test settings that succeed should be equivalent to:
 						# cert_file: "../test/configs/certs/tlsauth/client.pem"
 						# key_file: "../test/configs/certs/tlsauth/client-key.pem"
-
-						ca_file: "../test/configs/certs/tlsauth/ca.pem"
+						# ca_file: "../test/configs/certs/tlsauth/ca.pem"
 						timeout: 5
 					}
 				}
 			]
 		}
-	`, u.String(), certStore, matchBy, match)
+	`, u.String(), certStore, matchBy, match, caMatch)
 
 	leafConfig := createConfFile(t, []byte(configStr))
 	defer removeFile(t, leafConfig)
@@ -90,7 +93,7 @@ func runConfiguredLeaf(t *testing.T, hubPort int, certStore string, matchBy stri
 func TestLeafTLSWindowsCertStore(t *testing.T) {
 
 	// Client Identity (client.pem)
-	// Issuer: O = Synadia Communications Inc., OU = NATS.io, CN = localhost
+	// Issuer: O = NATS CA, OU = NATS.io, CN = localhost
 	// Subject: OU = NATS.io, CN = example.com
 
 	// Make sure windows cert store is reset to avoid conflict with other tests
@@ -103,6 +106,11 @@ func TestLeafTLSWindowsCertStore(t *testing.T) {
 	err = runPowershellScript("../test/configs/certs/tlsauth/certstore/import-p12-client.ps1", nil)
 	if err != nil {
 		t.Fatalf("expected powershell provision to succeed: %s", err.Error())
+	}
+
+	err = runPowershellScript("../test/configs/certs/tlsauth/certstore/import-p12-ca.ps1", nil)
+	if err != nil {
+		t.Fatalf("expected powershell provision CA to succeed: %s", err.Error())
 	}
 
 	// Fire up the hub
@@ -140,26 +148,39 @@ func TestLeafTLSWindowsCertStore(t *testing.T) {
 		certStore         string
 		certMatchBy       string
 		certMatch         string
+		caCertsMatch      string
 		expectedLeafCount int
 	}{
-		{"WindowsCurrentUser", "Subject", "example.com", 1},
-		{"WindowsCurrentUser", "Issuer", "Synadia Communications Inc.", 1},
-		{"WindowsCurrentUser", "Issuer", "Frodo Baggins, Inc.", 0},
+		// Test subject and issuer
+		{"WindowsCurrentUser", "Subject", "example.com", "\"NATS CA\"", 1},
+		{"WindowsCurrentUser", "Issuer", "NATS CA", "\"NATS CA\"", 1},
+		{"WindowsCurrentUser", "Issuer", "Frodo Baggins, Inc.", "\"NATS CA\"", 0},
+		{"WindowsCurrentUser", "Thumbprint", "7e44f478114a2e29b98b00beb1b3687d8dc0e481", "\"NATS CA\"", 0},
+		// Test CAs, NATS CA is valid, others are missing
+		{"WindowsCurrentUser", "Subject", "example.com", "[\"NATS CA\"]", 1},
+		{"WindowsCurrentUser", "Subject", "example.com", "[\"GlobalSign\"]", 0},
+		{"WindowsCurrentUser", "Subject", "example.com", "[\"Missing NATS Cert\"]", 0},
+		{"WindowsCurrentUser", "Subject", "example.com", "[\"NATS CA\", \"Missing NATS Cert1\"]", 1},
+		{"WindowsCurrentUser", "Subject", "example.com", "[\"Missing Cert2\",\"NATS CA\"]", 1},
+		{"WindowsCurrentUser", "Subject", "example.com", "[\"Missing, Cert3\",\"Missing NATS Cert4\"]", 0},
 	}
 	for _, tc := range testCases {
-		t.Run(fmt.Sprintf("%s by %s match %s", tc.certStore, tc.certMatchBy, tc.certMatch), func(t *testing.T) {
+		testName := fmt.Sprintf("%s by %s match %s", tc.certStore, tc.certMatchBy, tc.certMatch)
+		t.Run(fmt.Sprintf(testName, tc.certStore, tc.certMatchBy, tc.certMatch, tc.caCertsMatch), func(t *testing.T) {
 			defer func() {
 				if r := recover(); r != nil {
 					if tc.expectedLeafCount != 0 {
-						t.Fatalf("did not expect panic")
+						t.Fatalf("did not expect panic: %s", testName)
 					} else {
 						if !strings.Contains(fmt.Sprintf("%v", r), "Error processing configuration file") {
-							t.Fatalf("did not expect unknown panic cause")
+							t.Fatalf("did not expect unknown panic: %s", testName)
 						}
 					}
 				}
 			}()
-			runConfiguredLeaf(t, hubOptions.LeafNode.Port, tc.certStore, tc.certMatchBy, tc.certMatch, tc.expectedLeafCount)
+			runConfiguredLeaf(t, hubOptions.LeafNode.Port,
+				tc.certStore, tc.certMatchBy, tc.certMatch,
+				tc.caCertsMatch, tc.expectedLeafCount)
 		})
 	}
 }
@@ -169,7 +190,7 @@ func TestLeafTLSWindowsCertStore(t *testing.T) {
 func TestServerTLSWindowsCertStore(t *testing.T) {
 
 	// Server Identity (server.pem)
-	// Issuer: O = Synadia Communications Inc., OU = NATS.io, CN = localhost
+	// Issuer: O = NATS CA, OU = NATS.io, CN = localhost
 	// Subject: OU = NATS.io Operators, CN = localhost
 
 	// Make sure windows cert store is reset to avoid conflict with other tests
@@ -184,6 +205,11 @@ func TestServerTLSWindowsCertStore(t *testing.T) {
 		t.Fatalf("expected powershell provision to succeed: %s", err.Error())
 	}
 
+	err = runPowershellScript("../test/configs/certs/tlsauth/certstore/import-p12-ca.ps1", nil)
+	if err != nil {
+		t.Fatalf("expected powershell provision CA to succeed: %s", err.Error())
+	}
+
 	// Fire up the server
 	srvConfig := createConfFile(t, []byte(`
 	listen: "localhost:-1"
@@ -191,6 +217,7 @@ func TestServerTLSWindowsCertStore(t *testing.T) {
 		cert_store: "WindowsCurrentUser"
 		cert_match_by: "Subject"
 		cert_match: "NATS.io Operators"
+		ca_certs_match: ["NATS CA"]
 		timeout: 5
 	}
 	`))
@@ -224,6 +251,58 @@ func TestServerTLSWindowsCertStore(t *testing.T) {
 					t.Fatalf("expected repeated connection result %v to TLS authenticated server", tc.expect)
 				}
 				nc.Close()
+			}
+		})
+	}
+}
+
+// TestServerIgnoreExpiredCerts tests if the server skips expired certificates in configuration, and finds non-expired ones
+func TestServerIgnoreExpiredCerts(t *testing.T) {
+
+	// Server Identities: expired.pem; not-expired.pem
+	// Issuer: OU = NATS.io, CN = localhost
+	// Subject: OU = NATS.io Operators, CN = localhost
+
+	testCases := []struct {
+		certFile string
+		expect   bool
+	}{
+		{"expired.p12", false},
+		{"not-expired.p12", true},
+	}
+	for _, tc := range testCases {
+		t.Run(fmt.Sprintf("Server certificate: %s", tc.certFile), func(t *testing.T) {
+			// Make sure windows cert store is reset to avoid conflict with other tests
+			err := runPowershellScript("../test/configs/certs/tlsauth/certstore/delete-cert-from-store.ps1", nil)
+			if err != nil {
+				t.Fatalf("expected powershell cert delete to succeed: %s", err.Error())
+			}
+
+			// Provision Windows cert store with server cert and secret
+			err = runPowershellScript("../test/configs/certs/tlsauth/certstore/import-p12-server.ps1", []string{tc.certFile})
+			if err != nil {
+				t.Fatalf("expected powershell provision to succeed: %s", err.Error())
+			}
+			// Fire up the server
+			srvConfig := createConfFile(t, []byte(`
+			listen: "localhost:-1"
+			tls {
+				cert_store: "WindowsCurrentUser"
+				cert_match_by: "Subject"
+				cert_match: "NATS.io Operators"
+				cert_match_skip_invalid: true
+				timeout: 5
+			}
+			`))
+			defer removeFile(t, srvConfig)
+			cfg, _ := ProcessConfigFile(srvConfig)
+			if (cfg != nil) == tc.expect {
+				return
+			}
+			if tc.expect == false {
+				t.Fatalf("expected server start to fail with expired certificate")
+			} else {
+				t.Fatalf("expected server to start with non expired certificate")
 			}
 		})
 	}

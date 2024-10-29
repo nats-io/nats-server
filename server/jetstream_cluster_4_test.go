@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -3813,4 +3814,80 @@ func TestJetStreamClusterDesyncAfterErrorDuringCatchup(t *testing.T) {
 			require_Equal(t, newStreamLeaderServer.Name(), clusterResetServerName)
 		})
 	}
+}
+
+func TestJetStreamClusterDesyncAfterRestartReplacesLeaderSnapshot(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Reconnect to the leader.
+	leader := c.streamLeader(globalAccountName, "TEST")
+	nc.Close()
+
+	nc, js = jsClientConnect(t, leader)
+	defer nc.Close()
+
+	lookupStream := func(s *Server) *stream {
+		t.Helper()
+		acc, err := s.lookupAccount(globalAccountName)
+		require_NoError(t, err)
+		mset, err := acc.lookupStream("TEST")
+		require_NoError(t, err)
+		return mset
+	}
+
+	// Stop one follower so it lags behind.
+	rs := c.randomNonStreamLeader(globalAccountName, "TEST")
+	mset := lookupStream(rs)
+	n := mset.node.(*raft)
+	followerSnapshots := path.Join(n.sd, snapshotsDir)
+	rs.Shutdown()
+	rs.WaitForShutdown()
+
+	// Move the stream forward so the follower requires a snapshot.
+	err = js.PurgeStream("TEST", &nats.StreamPurgeRequest{Sequence: 10})
+	require_NoError(t, err)
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	// Install a snapshot on the leader, ensuring RAFT entries are compacted and a snapshot remains.
+	mset = lookupStream(leader)
+	n = mset.node.(*raft)
+	err = n.InstallSnapshot(mset.stateSnapshot())
+	require_NoError(t, err)
+
+	c.stopAll()
+
+	// Replace follower snapshot with the leader's.
+	// This simulates the follower coming online, getting a snapshot from the leader after which it goes offline.
+	leaderSnapshots := path.Join(n.sd, snapshotsDir)
+	err = os.RemoveAll(followerSnapshots)
+	require_NoError(t, err)
+	err = copyDir(t, followerSnapshots, leaderSnapshots)
+	require_NoError(t, err)
+
+	// Start the follower, it will load the snapshot from the leader.
+	rs = c.restartServer(rs)
+
+	// Shutting down must check that the leader's snapshot is not overwritten.
+	rs.Shutdown()
+	rs.WaitForShutdown()
+
+	// Now start all servers back up.
+	c.restartAll()
+	c.waitOnAllCurrent()
+
+	checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
 }

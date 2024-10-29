@@ -1,4 +1,4 @@
-// Copyright 2022-2023 The NATS Authors
+// Copyright 2022-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -41,26 +41,26 @@ import (
 
 const (
 	// wincrypt.h constants
-	winAcquireCached           = 0x1                                                   // CRYPT_ACQUIRE_CACHE_FLAG
-	winAcquireSilent           = 0x40                                                  // CRYPT_ACQUIRE_SILENT_FLAG
-	winAcquireOnlyNCryptKey    = 0x40000                                               // CRYPT_ACQUIRE_ONLY_NCRYPT_KEY_FLAG
-	winEncodingX509ASN         = 1                                                     // X509_ASN_ENCODING
-	winEncodingPKCS7           = 65536                                                 // PKCS_7_ASN_ENCODING
-	winCertStoreProvSystem     = 10                                                    // CERT_STORE_PROV_SYSTEM
-	winCertStoreCurrentUser    = uint32(winCertStoreCurrentUserID << winCompareShift)  // CERT_SYSTEM_STORE_CURRENT_USER
-	winCertStoreLocalMachine   = uint32(winCertStoreLocalMachineID << winCompareShift) // CERT_SYSTEM_STORE_LOCAL_MACHINE
-	winCertStoreCurrentUserID  = 1                                                     // CERT_SYSTEM_STORE_CURRENT_USER_ID
-	winCertStoreLocalMachineID = 2                                                     // CERT_SYSTEM_STORE_LOCAL_MACHINE_ID
-	winInfoIssuerFlag          = 4                                                     // CERT_INFO_ISSUER_FLAG
-	winInfoSubjectFlag         = 7                                                     // CERT_INFO_SUBJECT_FLAG
-	winCompareNameStrW         = 8                                                     // CERT_COMPARE_NAME_STR_A
-	winCompareShift            = 16                                                    // CERT_COMPARE_SHIFT
+	winAcquireCached         = windows.CRYPT_ACQUIRE_CACHE_FLAG
+	winAcquireSilent         = windows.CRYPT_ACQUIRE_SILENT_FLAG
+	winAcquireOnlyNCryptKey  = windows.CRYPT_ACQUIRE_ONLY_NCRYPT_KEY_FLAG
+	winEncodingX509ASN       = windows.X509_ASN_ENCODING
+	winEncodingPKCS7         = windows.PKCS_7_ASN_ENCODING
+	winCertStoreProvSystem   = windows.CERT_STORE_PROV_SYSTEM
+	winCertStoreCurrentUser  = windows.CERT_SYSTEM_STORE_CURRENT_USER
+	winCertStoreLocalMachine = windows.CERT_SYSTEM_STORE_LOCAL_MACHINE
+	winCertStoreReadOnly     = windows.CERT_STORE_READONLY_FLAG
+	winInfoIssuerFlag        = windows.CERT_INFO_ISSUER_FLAG
+	winInfoSubjectFlag       = windows.CERT_INFO_SUBJECT_FLAG
+	winCompareNameStrW       = windows.CERT_COMPARE_NAME_STR_W
+	winCompareShift          = windows.CERT_COMPARE_SHIFT
 
 	// Reference https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-certfindcertificateinstore
-	winFindIssuerStr  = winCompareNameStrW<<winCompareShift | winInfoIssuerFlag  // CERT_FIND_ISSUER_STR_W
-	winFindSubjectStr = winCompareNameStrW<<winCompareShift | winInfoSubjectFlag // CERT_FIND_SUBJECT_STR_W
+	winFindIssuerStr  = windows.CERT_FIND_ISSUER_STR_W
+	winFindSubjectStr = windows.CERT_FIND_SUBJECT_STR_W
+	winFindHashStr    = windows.CERT_FIND_HASH_STR
 
-	winNcryptKeySpec = 0xFFFFFFFF // CERT_NCRYPT_KEY_SPEC
+	winNcryptKeySpec = windows.CERT_NCRYPT_KEY_SPEC
 
 	winBCryptPadPKCS1   uintptr = 0x2
 	winBCryptPadPSS     uintptr = 0x8 // Modern TLS 1.2+
@@ -76,7 +76,7 @@ const (
 	winECK3Magic = 0x334B4345 // "ECK3" BCRYPT_ECDH_PUBLIC_P384_MAGIC
 	winECK5Magic = 0x354B4345 // "ECK5" BCRYPT_ECDH_PUBLIC_P521_MAGIC
 
-	winCryptENotFound = 0x80092004 // CRYPT_E_NOT_FOUND
+	winCryptENotFound = windows.CRYPT_E_NOT_FOUND
 
 	providerMSSoftware = "Microsoft Software Key Storage Provider"
 )
@@ -111,14 +111,24 @@ var (
 		crypto.SHA512: winWide("SHA512"), // BCRYPT_SHA512_ALGORITHM
 	}
 
-	// MY is well-known system store on Windows that holds personal certificates
-	winMyStore = winWide("MY")
+	// MY is well-known system store on Windows that holds personal certificates. Read
+	// More about the CA locations here:
+	// https://learn.microsoft.com/en-us/dotnet/framework/configure-apps/file-schema/wcf/certificate-of-clientcertificate-element?redirectedfrom=MSDN
+	// https://superuser.com/questions/217719/what-are-the-windows-system-certificate-stores
+	// https://docs.microsoft.com/en-us/windows/win32/seccrypto/certificate-stores
+	// https://learn.microsoft.com/en-us/windows/win32/seccrypto/system-store-locations
+	// https://stackoverflow.com/questions/63286085/which-x509-storename-refers-to-the-certificates-stored-beneath-trusted-root-cert#:~:text=4-,StoreName.,is%20%22Intermediate%20Certification%20Authorities%22.
+	winMyStore             = winWide("MY")
+	winIntermediateCAStore = winWide("CA")
+	winRootStore           = winWide("Root")
+	winAuthRootStore       = winWide("AuthRoot")
 
 	// These DLLs must be available on all Windows hosts
 	winCrypt32 = windows.NewLazySystemDLL("crypt32.dll")
 	winNCrypt  = windows.NewLazySystemDLL("ncrypt.dll")
 
 	winCertFindCertificateInStore        = winCrypt32.NewProc("CertFindCertificateInStore")
+	winCertVerifyTimeValidity            = winCrypt32.NewProc("CertVerifyTimeValidity")
 	winCryptAcquireCertificatePrivateKey = winCrypt32.NewProc("CryptAcquireCertificatePrivateKey")
 	winNCryptExportKey                   = winNCrypt.NewProc("NCryptExportKey")
 	winNCryptOpenStorageProvider         = winNCrypt.NewProc("NCryptOpenStorageProvider")
@@ -156,9 +166,40 @@ type winPSSPaddingInfo struct {
 	cbSalt   uint32
 }
 
-// TLSConfig fulfills the same function as reading cert and key pair from pem files but
-// sources the Windows certificate store instead
-func TLSConfig(certStore StoreType, certMatchBy MatchByType, certMatch string, config *tls.Config) error {
+// createCACertsPool generates a CertPool from the Windows certificate store,
+// adding all matching certificates from the caCertsMatch array to the pool.
+// All matching certificates (vs first) are added to the pool based on a user
+// request. If no certificates are found an error is returned.
+func createCACertsPool(cs *winCertStore, storeType uint32, caCertsMatch []string, skipInvalid bool) (*x509.CertPool, error) {
+	var errs []error
+	caPool := x509.NewCertPool()
+	for _, s := range caCertsMatch {
+		lfs, err := cs.caCertsBySubjectMatch(s, storeType, skipInvalid)
+		if err != nil {
+			errs = append(errs, err)
+		} else {
+			for _, lf := range lfs {
+				caPool.AddCert(lf)
+			}
+		}
+	}
+	// If every lookup failed return the errors.
+	if len(errs) == len(caCertsMatch) {
+		return nil, fmt.Errorf("unable to match any CA certificate: %v", errs)
+	}
+	return caPool, nil
+}
+
+// TLSConfig fulfills the same function as reading cert and key pair from
+// pem files but sources the Windows certificate store instead. The
+// certMatchBy and certMatch fields search the "MY" certificate location
+// for the first certificate that matches the certMatch field. The
+// caCertsMatch field is used to search the Trusted Root, Third Party Root,
+// and Intermediate Certificate Authority locations for certificates with
+// Subjects matching the provided strings. If a match is found, the
+// certificate is added to the pool that is used to verify the certificate
+// chain.
+func TLSConfig(certStore StoreType, certMatchBy MatchByType, certMatch string, caCertsMatch []string, skipInvalid bool, config *tls.Config) error {
 	var (
 		leaf     *x509.Certificate
 		leafCtx  *windows.CertContext
@@ -185,9 +226,11 @@ func TLSConfig(certStore StoreType, certMatchBy MatchByType, certMatch string, c
 
 		// certByIssuer or certBySubject
 		if certMatchBy == matchBySubject || certMatchBy == MATCHBYEMPTY {
-			leaf, leafCtx, err = cs.certBySubject(certMatch, scope)
+			leaf, leafCtx, err = cs.certBySubject(certMatch, scope, skipInvalid)
 		} else if certMatchBy == matchByIssuer {
-			leaf, leafCtx, err = cs.certByIssuer(certMatch, scope)
+			leaf, leafCtx, err = cs.certByIssuer(certMatch, scope, skipInvalid)
+		} else if certMatchBy == matchByThumbprint {
+			leaf, leafCtx, err = cs.certByThumbprint(certMatch, scope, skipInvalid)
 		} else {
 			return ErrBadMatchByType
 		}
@@ -204,6 +247,14 @@ func TLSConfig(certStore StoreType, certMatchBy MatchByType, certMatch string, c
 		}
 		if pk == nil {
 			return ErrNoPrivateKeyStoreRef
+		}
+		// Look for CA Certificates
+		if len(caCertsMatch) != 0 {
+			caPool, err := createCACertsPool(cs, scope, caCertsMatch, skipInvalid)
+			if err != nil {
+				return err
+			}
+			config.ClientCAs = caPool
 		}
 	} else {
 		return ErrBadCertStore
@@ -278,13 +329,23 @@ func winFindCert(store windows.Handle, enc, findFlags, findType uint32, para *ui
 	)
 	if h == 0 {
 		// Actual error, or simply not found?
-		if errno, ok := err.(syscall.Errno); ok && errno == winCryptENotFound {
+		if errno, ok := err.(syscall.Errno); ok && errno == syscall.Errno(winCryptENotFound) {
 			return nil, ErrFailedCertSearch
 		}
 		return nil, ErrFailedCertSearch
 	}
 	// nolint:govet
 	return (*windows.CertContext)(unsafe.Pointer(h)), nil
+}
+
+// winVerifyCertValid wraps the CertVerifyTimeValidity and simply returns true if the certificate is valid
+func winVerifyCertValid(timeToVerify *windows.Filetime, certInfo *windows.CertInfo) bool {
+	// this function does not document returning errors / setting lasterror
+	r, _, _ := winCertVerifyTimeValidity.Call(
+		uintptr(unsafe.Pointer(timeToVerify)),
+		uintptr(unsafe.Pointer(certInfo)),
+	)
+	return r == 0
 }
 
 // winCertStore is a store implementation for the Windows Certificate Store
@@ -326,21 +387,70 @@ func winCertContextToX509(ctx *windows.CertContext) (*x509.Certificate, error) {
 // CertContext pointer returned allows subsequent key operations like Sign. Caller specifies
 // current user's personal certs or local machine's personal certs using storeType.
 // See CERT_FIND_ISSUER_STR description at https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-certfindcertificateinstore
-func (w *winCertStore) certByIssuer(issuer string, storeType uint32) (*x509.Certificate, *windows.CertContext, error) {
-	return w.certSearch(winFindIssuerStr, issuer, winMyStore, storeType)
+func (w *winCertStore) certByIssuer(issuer string, storeType uint32, skipInvalid bool) (*x509.Certificate, *windows.CertContext, error) {
+	return w.certSearch(winFindIssuerStr, issuer, winMyStore, storeType, skipInvalid)
 }
 
 // certBySubject matches and returns the first certificate found by passed subject field.
 // CertContext pointer returned allows subsequent key operations like Sign. Caller specifies
 // current user's personal certs or local machine's personal certs using storeType.
 // See CERT_FIND_SUBJECT_STR description at https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-certfindcertificateinstore
-func (w *winCertStore) certBySubject(subject string, storeType uint32) (*x509.Certificate, *windows.CertContext, error) {
-	return w.certSearch(winFindSubjectStr, subject, winMyStore, storeType)
+func (w *winCertStore) certBySubject(subject string, storeType uint32, skipInvalid bool) (*x509.Certificate, *windows.CertContext, error) {
+	return w.certSearch(winFindSubjectStr, subject, winMyStore, storeType, skipInvalid)
+}
+
+// certByThumbprint matches and returns the first certificate found by passed SHA1 thumbprint.
+// CertContext pointer returned allows subsequent key operations like Sign. Caller specifies
+// current user's personal certs or local machine's personal certs using storeType.
+// See CERT_FIND_SUBJECT_STR description at https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-certfindcertificateinstore
+func (w *winCertStore) certByThumbprint(hash string, storeType uint32, skipInvalid bool) (*x509.Certificate, *windows.CertContext, error) {
+	return w.certSearch(winFindHashStr, hash, winMyStore, storeType, skipInvalid)
+}
+
+// caCertsBySubjectMatch matches and returns all matching certificates of the subject field.
+//
+// The following locations are searched:
+// 1) Root (Trusted Root Certification Authorities)
+// 2) AuthRoot (Third-Party Root Certification Authorities)
+// 3) CA (Intermediate Certification Authorities)
+//
+// Caller specifies current user's personal certs or local machine's personal certs using storeType.
+// See CERT_FIND_SUBJECT_STR description at https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-certfindcertificateinstore
+func (w *winCertStore) caCertsBySubjectMatch(subject string, storeType uint32, skipInvalid bool) ([]*x509.Certificate, error) {
+	var (
+		leaf            *x509.Certificate
+		searchLocations = [3]*uint16{winRootStore, winAuthRootStore, winIntermediateCAStore}
+		rv              []*x509.Certificate
+	)
+	// surprisingly, an empty string returns a result. We'll treat this as an error.
+	if subject == "" {
+		return nil, ErrBadCaCertMatchField
+	}
+	for _, sr := range searchLocations {
+		var err error
+		if leaf, _, err = w.certSearch(winFindSubjectStr, subject, sr, storeType, skipInvalid); err == nil {
+			rv = append(rv, leaf)
+		} else {
+			// Ignore the failed search from a single location. Errors we catch include
+			// ErrFailedX509Extract (resulting from a malformed certificate) and errors
+			// around invalid attributes, unsupported algorithms, etc. These are corner
+			// cases as certificates with these errors shouldn't have been allowed
+			// to be added to the store in the first place.
+			if err != ErrFailedCertSearch {
+				return nil, err
+			}
+		}
+	}
+	// Not found anywhere
+	if len(rv) == 0 {
+		return nil, ErrFailedCertSearch
+	}
+	return rv, nil
 }
 
 // certSearch is a helper function to lookup certificates based on search type and match value.
 // store is used to specify which store to perform the lookup in (system or user).
-func (w *winCertStore) certSearch(searchType uint32, matchValue string, searchRoot *uint16, store uint32) (*x509.Certificate, *windows.CertContext, error) {
+func (w *winCertStore) certSearch(searchType uint32, matchValue string, searchRoot *uint16, store uint32, skipInvalid bool) (*x509.Certificate, *windows.CertContext, error) {
 	// store handle to "MY" store
 	h, err := w.storeHandle(store, searchRoot)
 	if err != nil {
@@ -357,23 +467,32 @@ func (w *winCertStore) certSearch(searchType uint32, matchValue string, searchRo
 
 	// pass 0 as the third parameter because it is not used
 	// https://msdn.microsoft.com/en-us/library/windows/desktop/aa376064(v=vs.85).aspx
-	nc, err := winFindCert(h, winEncodingX509ASN|winEncodingPKCS7, 0, searchType, i, prev)
-	if err != nil {
-		return nil, nil, err
-	}
-	if nc != nil {
-		// certificate found
-		prev = nc
 
-		// Extract the DER-encoded certificate from the cert context
-		xc, err := winCertContextToX509(nc)
-		if err == nil {
-			cert = xc
-		} else {
-			return nil, nil, ErrFailedX509Extract
+	for {
+		nc, err := winFindCert(h, winEncodingX509ASN|winEncodingPKCS7, 0, searchType, i, prev)
+		if err != nil {
+			return nil, nil, err
 		}
-	} else {
-		return nil, nil, ErrFailedCertSearch
+		if nc != nil {
+			// certificate found
+			prev = nc
+
+			var now *windows.Filetime
+			if skipInvalid && !winVerifyCertValid(now, nc.CertInfo) {
+				continue
+			}
+
+			// Extract the DER-encoded certificate from the cert context
+			xc, err := winCertContextToX509(nc)
+			if err == nil {
+				cert = xc
+				break
+			} else {
+				return nil, nil, ErrFailedX509Extract
+			}
+		} else {
+			return nil, nil, ErrFailedCertSearch
+		}
 	}
 
 	if cert == nil {
@@ -396,7 +515,7 @@ func winNewStoreHandle(provider uint32, store *uint16) (*winStoreHandle, error) 
 		winCertStoreProvSystem,
 		0,
 		0,
-		provider,
+		provider|winCertStoreReadOnly,
 		uintptr(unsafe.Pointer(store)))
 	if err != nil {
 		return nil, ErrBadCryptoStoreProvider
