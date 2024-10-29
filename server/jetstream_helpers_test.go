@@ -19,11 +19,15 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"math/rand"
 	"net"
 	"net/url"
 	"os"
+	"path"
 	"strings"
 	"sync"
 	"testing"
@@ -1866,4 +1870,110 @@ func (b *bitset) String() string {
 	}
 	sb.WriteString("\n")
 	return sb.String()
+}
+
+func copyDir(t *testing.T, dst, src string) error {
+	t.Helper()
+	srcFS := os.DirFS(src)
+	return fs.WalkDir(srcFS, ".", func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		newPath := path.Join(dst, p)
+		if d.IsDir() {
+			return os.MkdirAll(newPath, defaultDirPerms)
+		}
+		r, err := srcFS.Open(p)
+		if err != nil {
+			return err
+		}
+		defer r.Close()
+
+		w, err := os.OpenFile(newPath, os.O_CREATE|os.O_WRONLY, defaultFilePerms)
+		if err != nil {
+			return err
+		}
+		defer w.Close()
+		_, err = io.Copy(w, r)
+		return err
+	})
+}
+
+func getStreamDetails(t *testing.T, c *cluster, accountName, streamName string) *StreamDetail {
+	t.Helper()
+	srv := c.streamLeader(accountName, streamName)
+	if srv == nil {
+		return nil
+	}
+	jsz, err := srv.Jsz(&JSzOptions{Accounts: true, Streams: true, Consumer: true})
+	require_NoError(t, err)
+	for _, acc := range jsz.AccountDetails {
+		if acc.Name == accountName {
+			for _, stream := range acc.Streams {
+				if stream.Name == streamName {
+					return &stream
+				}
+			}
+		}
+	}
+	t.Error("Could not find account details")
+	return nil
+}
+
+func checkState(t *testing.T, c *cluster, accountName, streamName string) error {
+	t.Helper()
+
+	leaderSrv := c.streamLeader(accountName, streamName)
+	if leaderSrv == nil {
+		return fmt.Errorf("no leader server found for stream %q", streamName)
+	}
+	streamLeader := getStreamDetails(t, c, accountName, streamName)
+	if streamLeader == nil {
+		return fmt.Errorf("no leader found for stream %q", streamName)
+	}
+	var errs []error
+	for _, srv := range c.servers {
+		if srv == leaderSrv {
+			// Skip self
+			continue
+		}
+		acc, err := srv.LookupAccount(accountName)
+		require_NoError(t, err)
+		stream, err := acc.lookupStream(streamName)
+		require_NoError(t, err)
+		state := stream.state()
+
+		if state.Msgs != streamLeader.State.Msgs {
+			err := fmt.Errorf("[%s] Leader %v has %d messages, Follower %v has %d messages",
+				streamName, leaderSrv, streamLeader.State.Msgs,
+				srv, state.Msgs,
+			)
+			errs = append(errs, err)
+		}
+		if state.FirstSeq != streamLeader.State.FirstSeq {
+			err := fmt.Errorf("[%s] Leader %v FirstSeq is %d, Follower %v is at %d",
+				streamName, leaderSrv, streamLeader.State.FirstSeq,
+				srv, state.FirstSeq,
+			)
+			errs = append(errs, err)
+		}
+		if state.LastSeq != streamLeader.State.LastSeq {
+			err := fmt.Errorf("[%s] Leader %v LastSeq is %d, Follower %v is at %d",
+				streamName, leaderSrv, streamLeader.State.LastSeq,
+				srv, state.LastSeq,
+			)
+			errs = append(errs, err)
+		}
+		if state.NumDeleted != streamLeader.State.NumDeleted {
+			err := fmt.Errorf("[%s] Leader %v NumDeleted is %d, Follower %v is at %d\nSTATE_A: %+v\nSTATE_B: %+v\n",
+				streamName, leaderSrv, streamLeader.State.NumDeleted,
+				srv, state.NumDeleted, streamLeader.State, state,
+			)
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
 }
