@@ -9834,14 +9834,22 @@ func (alg StoreCompression) Decompress(buf []byte) ([]byte, error) {
 // sets O_SYNC on the open file if SyncAlways is set. The dios semaphore is
 // handled automatically by this function, so don't wrap calls to it in dios.
 func (fs *fileStore) writeFileWithOptionalSync(name string, data []byte, perm fs.FileMode) error {
+	if fs.fcfg.SyncAlways {
+		return writeFileWithSync(name, data, perm)
+	}
 	<-dios
 	defer func() {
 		dios <- struct{}{}
 	}()
-	flags := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
-	if fs.fcfg.SyncAlways {
-		flags |= os.O_SYNC
-	}
+	return os.WriteFile(name, data, perm)
+}
+
+func writeFileWithSync(name string, data []byte, perm fs.FileMode) error {
+	<-dios
+	defer func() {
+		dios <- struct{}{}
+	}()
+	flags := os.O_WRONLY | os.O_CREATE | os.O_TRUNC | os.O_SYNC
 	f, err := os.OpenFile(name, flags, perm)
 	if err != nil {
 		return err
