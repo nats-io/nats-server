@@ -8290,7 +8290,16 @@ RETRY:
 	releaseSyncOutSem()
 
 	if n.GroupLeader() == _EMPTY_ {
-		return fmt.Errorf("%w for stream '%s > %s'", errCatchupAbortedNoLeader, mset.account(), mset.name())
+		// Prevent us from spinning if we've installed a snapshot from a leader but there's no leader online.
+		// We wait a bit to check if a leader has come online in the meantime, if so we can continue.
+		var canContinue bool
+		if numRetries == 0 {
+			time.Sleep(startInterval)
+			canContinue = n.GroupLeader() != _EMPTY_
+		}
+		if !canContinue {
+			return fmt.Errorf("%w for stream '%s > %s'", errCatchupAbortedNoLeader, mset.account(), mset.name())
+		}
 	}
 
 	// If we have a sub clear that here.
