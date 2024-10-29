@@ -3108,7 +3108,7 @@ func (n *raft) truncateWAL(term, index uint64) {
 	defer func() {
 		// Check to see if we invalidated any snapshots that might have held state
 		// from the entries we are truncating.
-		if snap, _ := n.loadLastSnapshot(); snap != nil && snap.lastIndex >= index {
+		if snap, _ := n.loadLastSnapshot(); snap != nil && snap.lastIndex > index {
 			os.Remove(n.snapfile)
 			n.snapfile = _EMPTY_
 		}
