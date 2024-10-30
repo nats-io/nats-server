@@ -4228,7 +4228,9 @@ func (n *raft) switchToCandidate() {
 	defer n.Unlock()
 
 	// If we are catching up or are in observer mode we can not switch.
-	if n.observer || n.paused {
+	// Avoid petitioning to become leader if we're behind on applies.
+	if n.observer || n.paused || n.applied < n.commit {
+		n.resetElect(minElectionTimeout / 4)
 		return
 	}
 
