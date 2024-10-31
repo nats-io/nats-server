@@ -3455,7 +3455,7 @@ func (s *Server) jsConsumerUnpinRequest(sub *subscription, c *client, _ *Account
 		return
 	}
 
-	foundPriority := false
+	var foundPriority bool
 	for _, group := range o.config().PriorityGroups {
 		if group == req.Group {
 			foundPriority = true

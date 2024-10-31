@@ -518,7 +518,7 @@ const (
 	JsDefaultMaxAckPending = 1000
 	// JsDefaultPinnedTTL is the default grace period for the pinned consumer to send a new request before a new pin
 	// is picked by a server.
-	JsDefaultPinnedTTL = 120 * time.Second
+	JsDefaultPinnedTTL = 2 * time.Minute
 )
 
 // Helper function to set consumer config defaults from above.
@@ -3526,7 +3526,7 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 	// Check if server needs to assign a new pin id.
 	needNewPin := o.currentPinId == _EMPTY_ && o.cfg.PriorityPolicy == PriorityPinnedClient
 	// As long as we support only one priority group, we can capture  that group here and reuse it.
-	priorityGroup := _EMPTY_
+	var priorityGroup string
 	if len(o.cfg.PriorityGroups) > 0 {
 		priorityGroup = o.cfg.PriorityGroups[0]
 	}
