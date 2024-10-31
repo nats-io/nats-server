@@ -29,6 +29,7 @@ import (
 	"io"
 	"io/fs"
 	"math"
+	mrand "math/rand"
 	"net"
 	"os"
 	"path/filepath"
@@ -7833,7 +7834,11 @@ func (fs *fileStore) setSyncTimer() {
 	if fs.syncTmr != nil {
 		fs.syncTmr.Reset(fs.fcfg.SyncInterval)
 	} else {
-		fs.syncTmr = time.AfterFunc(fs.fcfg.SyncInterval, fs.syncBlocks)
+		// First time this fires will be any time up to the fs.fcfg.SyncInterval,
+		// so that different stores are spread out, rather than having many of
+		// them trying to all sync at once, causing blips and contending dios.
+		start := time.Duration(mrand.Int63n(int64(fs.fcfg.SyncInterval)))
+		fs.syncTmr = time.AfterFunc(min(start, time.Second), fs.syncBlocks)
 	}
 }
 
