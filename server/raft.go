@@ -480,11 +480,6 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 				}
 			}
 		}
-	} else if n.pterm == 0 && n.pindex == 0 {
-		// We have recovered no state, either through our WAL or snapshots,
-		// so inherit from term from our tav.idx file and pindex from our last sequence.
-		n.pterm = n.term
-		n.pindex = state.LastSeq
 	}
 
 	// Make sure to track ourselves.
