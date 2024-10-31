@@ -2834,7 +2834,7 @@ func (mset *stream) resetClusteredState(err error) bool {
 
 	// If we detect we are shutting down just return.
 	if js != nil && js.isShuttingDown() {
-		s.Debugf("Will not reset stream, jetstream shutting down")
+		s.Debugf("Will not reset stream, JetStream shutting down")
 		return false
 	}
 
@@ -3835,6 +3835,14 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 
 	// This is an error condition.
 	if err != nil {
+		// If we're shutting down we could get a variety of errors, for example:
+		// 'JetStream not enabled for account' when looking up the stream.
+		// Normally we can continue and delete state, but need to be careful when shutting down.
+		if js.isShuttingDown() {
+			s.Debugf("Could not create stream, JetStream shutting down")
+			return
+		}
+
 		if IsNatsErr(err, JSStreamStoreFailedF) {
 			s.Warnf("Stream create failed for '%s > %s': %v", sa.Client.serviceAccount(), sa.Config.Name, err)
 			err = errStreamStoreFailed
@@ -4426,6 +4434,13 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 	}
 
 	if err != nil {
+		// If we're shutting down we could get a variety of errors.
+		// Normally we can continue and delete state, but need to be careful when shutting down.
+		if js.isShuttingDown() {
+			s.Debugf("Could not create consumer, JetStream shutting down")
+			return
+		}
+
 		if IsNatsErr(err, JSConsumerStoreFailedErrF) {
 			s.Warnf("Consumer create failed for '%s > %s > %s': %v", ca.Client.serviceAccount(), ca.Stream, ca.Name, err)
 			err = errConsumerStoreFailed

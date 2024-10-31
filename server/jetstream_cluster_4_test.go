@@ -3891,3 +3891,51 @@ func TestJetStreamClusterDesyncAfterRestartReplacesLeaderSnapshot(t *testing.T) 
 		return checkState(t, c, globalAccountName, "TEST")
 	})
 }
+
+func TestJetStreamClusterKeepRaftStateIfStreamCreationFailedDuringShutdown(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	nc.Close()
+
+	// Capture RAFT storage directory and JetStream handle before shutdown.
+	s := c.randomNonStreamLeader(globalAccountName, "TEST")
+	acc, err := s.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+	sd := mset.node.(*raft).sd
+	jss := s.getJetStream()
+
+	// Shutdown the server.
+	// Normally there are no actions taken anymore after shutdown completes,
+	// but still do so to simulate actions taken while shutdown is in progress.
+	s.Shutdown()
+	s.WaitForShutdown()
+
+	// Check RAFT state is kept.
+	files, err := os.ReadDir(sd)
+	require_NoError(t, err)
+	require_True(t, len(files) > 0)
+
+	// Simulate server shutting down, JetStream being disabled and a stream being created.
+	sa := &streamAssignment{
+		Config: &StreamConfig{Name: "TEST"},
+		Group:  &raftGroup{node: &raft{}},
+	}
+	jss.processClusterCreateStream(acc, sa)
+
+	// Check RAFT state is not deleted due to failing stream creation.
+	files, err = os.ReadDir(sd)
+	require_NoError(t, err)
+	require_True(t, len(files) > 0)
+}
