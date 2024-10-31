@@ -21,6 +21,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"math/rand"
 	"os"
 	"path"
@@ -3659,105 +3661,6 @@ func TestJetStreamClusterDesyncAfterErrorDuringCatchup(t *testing.T) {
 	}
 }
 
-func TestJetStreamClusterKeepRaftStateIfStreamCreationFailedDuringShutdown(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "R3S", 3)
-	defer c.shutdown()
-
-	nc, js := jsClientConnect(t, c.randomServer())
-	defer nc.Close()
-
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:     "TEST",
-		Subjects: []string{"foo"},
-		Replicas: 3,
-	})
-	require_NoError(t, err)
-	nc.Close()
-
-	// Capture RAFT storage directory and JetStream handle before shutdown.
-	s := c.randomNonStreamLeader(globalAccountName, "TEST")
-	acc, err := s.lookupAccount(globalAccountName)
-	require_NoError(t, err)
-	mset, err := acc.lookupStream("TEST")
-	require_NoError(t, err)
-	sd := mset.node.(*raft).sd
-	jss := s.getJetStream()
-
-	// Shutdown the server.
-	// Normally there are no actions taken anymore after shutdown completes,
-	// but still do so to simulate actions taken while shutdown is in progress.
-	s.Shutdown()
-	s.WaitForShutdown()
-
-	// Check RAFT state is kept.
-	files, err := os.ReadDir(sd)
-	require_NoError(t, err)
-	require_True(t, len(files) > 0)
-
-	// Simulate server shutting down, JetStream being disabled and a stream being created.
-	sa := &streamAssignment{
-		Config: &StreamConfig{Name: "TEST"},
-		Group:  &raftGroup{node: &raft{}},
-	}
-	jss.processClusterCreateStream(acc, sa)
-
-	// Check RAFT state is not deleted due to failing stream creation.
-	files, err = os.ReadDir(sd)
-	require_NoError(t, err)
-	require_True(t, len(files) > 0)
-}
-
-func TestJetStreamClusterMetaSnapshotMustNotIncludePendingConsumers(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "R3S", 3)
-	defer c.shutdown()
-
-	nc, js := jsClientConnect(t, c.randomServer())
-	defer nc.Close()
-
-	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3})
-	require_NoError(t, err)
-
-	// We're creating an R3 consumer, just so we can copy its state and turn it into pending below.
-	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Name: "consumer", Replicas: 3})
-	require_NoError(t, err)
-	nc.Close()
-
-	// Bypass normal API so we can simulate having a consumer pending to be created.
-	// A snapshot should never create pending consumers, as that would result
-	// in ghost consumers if the meta proposal failed.
-	ml := c.leader()
-	mjs := ml.getJetStream()
-	cc := mjs.cluster
-	consumers := cc.streams[globalAccountName]["TEST"].consumers
-	sampleCa := *consumers["consumer"]
-	sampleCa.Name, sampleCa.pending = "pending-consumer", true
-	consumers[sampleCa.Name] = &sampleCa
-
-	// Create snapshot, this should not contain pending consumers.
-	snap := mjs.metaSnapshot()
-
-	ru := &recoveryUpdates{
-		removeStreams:   make(map[string]*streamAssignment),
-		removeConsumers: make(map[string]map[string]*consumerAssignment),
-		addStreams:      make(map[string]*streamAssignment),
-		updateStreams:   make(map[string]*streamAssignment),
-		updateConsumers: make(map[string]map[string]*consumerAssignment),
-	}
-	err = mjs.applyMetaSnapshot(snap, ru, true)
-	require_NoError(t, err)
-	require_Len(t, len(ru.updateStreams), 1)
-	for _, sa := range ru.updateStreams {
-		for _, ca := range sa.consumers {
-			require_NotEqual(t, ca.Name, "pending-consumer")
-		}
-	}
-	for _, cas := range ru.updateConsumers {
-		for _, ca := range cas {
-			require_NotEqual(t, ca.Name, "pending-consumer")
-		}
-	}
-}
-
 func TestJetStreamClusterDontInstallSnapshotWhenStoppingStream(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
@@ -3943,229 +3846,6 @@ func TestJetStreamClusterDontInstallSnapshotWhenStoppingConsumer(t *testing.T) {
 	validateStreamState(snap)
 }
 
-func TestJetStreamClusterHardKillAfterStreamAdd(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "R3S", 3)
-	defer c.shutdown()
-
-	nc, js := jsClientConnect(t, c.randomServer())
-	defer nc.Close()
-
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:     "TEST",
-		Subjects: []string{"foo"},
-		Replicas: 3,
-	})
-	require_NoError(t, err)
-
-	// Simulate being hard killed by:
-	// 1. copy directories before shutdown
-	copyToSrcMap := make(map[string]string)
-	for _, s := range c.servers {
-		sd := s.StoreDir()
-		copySd := path.Join(t.TempDir(), JetStreamStoreDir)
-		err = copyDir(t, copySd, sd)
-		require_NoError(t, err)
-		copyToSrcMap[copySd] = sd
-	}
-
-	// 2. stop all
-	nc.Close()
-	c.stopAll()
-
-	// 3. revert directories to before shutdown
-	for cp, dest := range copyToSrcMap {
-		err = os.RemoveAll(dest)
-		require_NoError(t, err)
-		err = copyDir(t, dest, cp)
-		require_NoError(t, err)
-	}
-
-	// 4. restart
-	c.restartAll()
-	c.waitOnAllCurrent()
-
-	nc, js = jsClientConnect(t, c.randomServer())
-	defer nc.Close()
-
-	// Stream should exist still and not be removed after hard killing all servers, so expect no error.
-	_, err = js.StreamInfo("TEST")
-	require_NoError(t, err)
-}
-
-func TestJetStreamClusterDesyncAfterPublishToLeaderWithoutQuorum(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "R3S", 3)
-	defer c.shutdown()
-
-	nc, js := jsClientConnect(t, c.randomServer())
-	defer nc.Close()
-
-	si, err := js.AddStream(&nats.StreamConfig{
-		Name:     "TEST",
-		Subjects: []string{"foo"},
-		Replicas: 3,
-	})
-	require_NoError(t, err)
-
-	streamLeader := si.Cluster.Leader
-	streamLeaderServer := c.serverByName(streamLeader)
-	nc.Close()
-	nc, js = jsClientConnect(t, streamLeaderServer)
-	defer nc.Close()
-
-	servers := slices.DeleteFunc([]string{"S-1", "S-2", "S-3"}, func(s string) bool {
-		return s == streamLeader
-	})
-
-	// Stop followers so further publishes will not have quorum.
-	followerName1 := servers[0]
-	followerName2 := servers[1]
-	followerServer1 := c.serverByName(followerName1)
-	followerServer2 := c.serverByName(followerName2)
-	followerServer1.Shutdown()
-	followerServer2.Shutdown()
-	followerServer1.WaitForShutdown()
-	followerServer2.WaitForShutdown()
-
-	// Although this request will time out, it will be added to the stream leader's WAL.
-	_, err = js.Publish("foo", []byte("first"), nats.AckWait(time.Second))
-	require_NotNil(t, err)
-	require_Equal(t, err, nats.ErrTimeout)
-
-	// Now shut down the leader as well.
-	nc.Close()
-	streamLeaderServer.Shutdown()
-	streamLeaderServer.WaitForShutdown()
-
-	// Only restart the (previous) followers.
-	followerServer1 = c.restartServer(followerServer1)
-	c.restartServer(followerServer2)
-	c.waitOnStreamLeader(globalAccountName, "TEST")
-
-	nc, js = jsClientConnect(t, followerServer1)
-	defer nc.Close()
-
-	// Publishing a message will now have quorum.
-	pubAck, err := js.Publish("foo", []byte("first, this is a retry"))
-	require_NoError(t, err)
-	require_Equal(t, pubAck.Sequence, 1)
-
-	// Bring up the previous stream leader.
-	c.restartServer(streamLeaderServer)
-	c.waitOnAllCurrent()
-	c.waitOnStreamLeader(globalAccountName, "TEST")
-
-	// Check all servers ended up with the last published message, which had quorum.
-	checkFor(t, 3*time.Second, 250*time.Millisecond, func() error {
-		for _, s := range c.servers {
-			acc, err := s.lookupAccount(globalAccountName)
-			if err != nil {
-				return err
-			}
-			mset, err := acc.lookupStream("TEST")
-			if err != nil {
-				return err
-			}
-			state := mset.state()
-			if state.Msgs != 1 || state.Bytes != 55 {
-				return fmt.Errorf("stream state didn't match, got %d messages with %d bytes", state.Msgs, state.Bytes)
-			}
-		}
-		return nil
-	})
-}
-
-func TestJetStreamClusterPreserveWALDuringCatchupWithMatchingTerm(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "R3S", 3)
-	defer c.shutdown()
-
-	nc, js := jsClientConnect(t, c.randomServer())
-	defer nc.Close()
-
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:     "TEST",
-		Subjects: []string{"foo.>"},
-		Replicas: 3,
-	})
-	nc.Close()
-	require_NoError(t, err)
-
-	// Pick one server that will only store a part of the messages in its WAL.
-	rs := c.randomNonStreamLeader(globalAccountName, "TEST")
-	ts := time.Now().UnixNano()
-
-	// Manually add 3 append entries to each node's WAL, except for one node who is one behind.
-	var scratch [1024]byte
-	for _, s := range c.servers {
-		for _, n := range s.raftNodes {
-			rn := n.(*raft)
-			if rn.accName == globalAccountName {
-				for i := uint64(0); i < 3; i++ {
-					// One server will be one behind and need to catchup.
-					if s.Name() == rs.Name() && i >= 2 {
-						break
-					}
-
-					esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, i, ts, true)
-					entries := []*Entry{newEntry(EntryNormal, esm)}
-					rn.Lock()
-					ae := rn.buildAppendEntry(entries)
-					ae.buf, err = ae.encode(scratch[:])
-					require_NoError(t, err)
-					err = rn.storeToWAL(ae)
-					rn.Unlock()
-					require_NoError(t, err)
-				}
-			}
-		}
-	}
-
-	// Restart all.
-	c.stopAll()
-	c.restartAll()
-	c.waitOnAllCurrent()
-	c.waitOnStreamLeader(globalAccountName, "TEST")
-
-	rs = c.serverByName(rs.Name())
-
-	// Check all servers ended up with all published messages, which had quorum.
-	checkFor(t, 3*time.Second, 250*time.Millisecond, func() error {
-		for _, s := range c.servers {
-			acc, err := s.lookupAccount(globalAccountName)
-			if err != nil {
-				return err
-			}
-			mset, err := acc.lookupStream("TEST")
-			if err != nil {
-				return err
-			}
-			state := mset.state()
-			if state.Msgs != 3 || state.Bytes != 99 {
-				return fmt.Errorf("stream state didn't match, got %d messages with %d bytes", state.Msgs, state.Bytes)
-			}
-		}
-		return nil
-	})
-
-	// Check that the first two published messages came from our WAL, and
-	// the last came from a catchup by another leader.
-	for _, n := range rs.raftNodes {
-		rn := n.(*raft)
-		if rn.accName == globalAccountName {
-			ae, err := rn.loadEntry(2)
-			require_NoError(t, err)
-			require_True(t, ae.leader == rn.ID())
-
-			ae, err = rn.loadEntry(3)
-			require_NoError(t, err)
-			require_True(t, ae.leader == rn.ID())
-
-			ae, err = rn.loadEntry(4)
-			require_NoError(t, err)
-			require_True(t, ae.leader != rn.ID())
-		}
-	}
-}
-
 func TestJetStreamClusterDesyncAfterRestartReplacesLeaderSnapshot(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
@@ -4287,4 +3967,267 @@ func TestJetStreamClusterKeepRaftStateIfStreamCreationFailedDuringShutdown(t *te
 	files, err = os.ReadDir(sd)
 	require_NoError(t, err)
 	require_True(t, len(files) > 0)
+}
+
+func TestJetStreamClusterMetaSnapshotMustNotIncludePendingConsumers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3})
+	require_NoError(t, err)
+
+	// We're creating an R3 consumer, just so we can copy its state and turn it into pending below.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Name: "consumer", Replicas: 3})
+	require_NoError(t, err)
+	nc.Close()
+
+	// Bypass normal API so we can simulate having a consumer pending to be created.
+	// A snapshot should never create pending consumers, as that would result
+	// in ghost consumers if the meta proposal failed.
+	ml := c.leader()
+	mjs := ml.getJetStream()
+	cc := mjs.cluster
+	consumers := cc.streams[globalAccountName]["TEST"].consumers
+	sampleCa := *consumers["consumer"]
+	sampleCa.Name, sampleCa.pending = "pending-consumer", true
+	consumers[sampleCa.Name] = &sampleCa
+
+	// Create snapshot, this should not contain pending consumers.
+	snap := mjs.metaSnapshot()
+
+	ru := &recoveryUpdates{
+		removeStreams:   make(map[string]*streamAssignment),
+		removeConsumers: make(map[string]map[string]*consumerAssignment),
+		addStreams:      make(map[string]*streamAssignment),
+		updateStreams:   make(map[string]*streamAssignment),
+		updateConsumers: make(map[string]map[string]*consumerAssignment),
+	}
+	err = mjs.applyMetaSnapshot(snap, ru, true)
+	require_NoError(t, err)
+	require_Len(t, len(ru.updateStreams), 1)
+	for _, sa := range ru.updateStreams {
+		for _, ca := range sa.consumers {
+			require_NotEqual(t, ca.Name, "pending-consumer")
+		}
+	}
+	for _, cas := range ru.updateConsumers {
+		for _, ca := range cas {
+			require_NotEqual(t, ca.Name, "pending-consumer")
+		}
+	}
+}
+
+func TestJetStreamClusterDesyncAfterPublishToLeaderWithoutQuorum(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+	si, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	streamLeader := si.Cluster.Leader
+	streamLeaderServer := c.serverByName(streamLeader)
+	nc.Close()
+	nc, js = jsClientConnect(t, streamLeaderServer)
+	defer nc.Close()
+	servers := slices.DeleteFunc([]string{"S-1", "S-2", "S-3"}, func(s string) bool {
+		return s == streamLeader
+	})
+	// Stop followers so further publishes will not have quorum.
+	followerName1 := servers[0]
+	followerName2 := servers[1]
+	followerServer1 := c.serverByName(followerName1)
+	followerServer2 := c.serverByName(followerName2)
+	followerServer1.Shutdown()
+	followerServer2.Shutdown()
+	followerServer1.WaitForShutdown()
+	followerServer2.WaitForShutdown()
+	// Although this request will time out, it will be added to the stream leader's WAL.
+	_, err = js.Publish("foo", []byte("first"), nats.AckWait(time.Second))
+	require_NotNil(t, err)
+	require_Equal(t, err, nats.ErrTimeout)
+	// Now shut down the leader as well.
+	nc.Close()
+	streamLeaderServer.Shutdown()
+	streamLeaderServer.WaitForShutdown()
+	// Only restart the (previous) followers.
+	followerServer1 = c.restartServer(followerServer1)
+	c.restartServer(followerServer2)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	nc, js = jsClientConnect(t, followerServer1)
+	defer nc.Close()
+	// Publishing a message will now have quorum.
+	pubAck, err := js.Publish("foo", []byte("first, this is a retry"))
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 1)
+	// Bring up the previous stream leader.
+	c.restartServer(streamLeaderServer)
+	c.waitOnAllCurrent()
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	// Check all servers ended up with the last published message, which had quorum.
+	for _, s := range c.servers {
+		c.waitOnStreamCurrent(s, globalAccountName, "TEST")
+		acc, err := s.lookupAccount(globalAccountName)
+		require_NoError(t, err)
+		mset, err := acc.lookupStream("TEST")
+		require_NoError(t, err)
+		state := mset.state()
+		require_Equal(t, state.Msgs, 1)
+		require_Equal(t, state.Bytes, 55)
+	}
+}
+
+func TestJetStreamClusterPreserveWALDuringCatchupWithMatchingTerm(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.>"},
+		Replicas: 3,
+	})
+	nc.Close()
+	require_NoError(t, err)
+	// Pick one server that will only store a part of the messages in its WAL.
+	rs := c.randomNonStreamLeader(globalAccountName, "TEST")
+	ts := time.Now().UnixNano()
+	// Manually add 3 append entries to each node's WAL, except for one node who is one behind.
+	var scratch [1024]byte
+	for _, s := range c.servers {
+		for _, n := range s.raftNodes {
+			rn := n.(*raft)
+			if rn.accName == globalAccountName {
+				for i := uint64(0); i < 3; i++ {
+					// One server will be one behind and need to catchup.
+					if s.Name() == rs.Name() && i >= 2 {
+						break
+					}
+					esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, i, ts, true)
+					entries := []*Entry{newEntry(EntryNormal, esm)}
+					rn.Lock()
+					ae := rn.buildAppendEntry(entries)
+					ae.buf, err = ae.encode(scratch[:])
+					require_NoError(t, err)
+					err = rn.storeToWAL(ae)
+					rn.Unlock()
+					require_NoError(t, err)
+				}
+			}
+		}
+	}
+	// Restart all.
+	c.stopAll()
+	c.restartAll()
+	c.waitOnAllCurrent()
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	rs = c.serverByName(rs.Name())
+	// Check all servers ended up with all published messages, which had quorum.
+	for _, s := range c.servers {
+		c.waitOnStreamCurrent(s, globalAccountName, "TEST")
+		acc, err := s.lookupAccount(globalAccountName)
+		require_NoError(t, err)
+		mset, err := acc.lookupStream("TEST")
+		require_NoError(t, err)
+		state := mset.state()
+		require_Equal(t, state.Msgs, 3)
+		require_Equal(t, state.Bytes, 99)
+	}
+	// Check that the first two published messages came from our WAL, and
+	// the last came from a catchup by another leader.
+	for _, n := range rs.raftNodes {
+		rn := n.(*raft)
+		if rn.accName == globalAccountName {
+			ae, err := rn.loadEntry(2)
+			require_NoError(t, err)
+			require_True(t, ae.leader == rn.ID())
+			ae, err = rn.loadEntry(3)
+			require_NoError(t, err)
+			require_True(t, ae.leader == rn.ID())
+			ae, err = rn.loadEntry(4)
+			require_NoError(t, err)
+			require_True(t, ae.leader != rn.ID())
+		}
+	}
+}
+
+func TestJetStreamClusterHardKillAfterStreamAdd(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	copyDir := func(dst, src string) error {
+		srcFS := os.DirFS(src)
+		return fs.WalkDir(srcFS, ".", func(p string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			newPath := path.Join(dst, p)
+			if d.IsDir() {
+				return os.MkdirAll(newPath, defaultDirPerms)
+			}
+			r, err := srcFS.Open(p)
+			if err != nil {
+				return err
+			}
+			defer r.Close()
+
+			w, err := os.OpenFile(newPath, os.O_CREATE|os.O_WRONLY, defaultFilePerms)
+			if err != nil {
+				return err
+			}
+			defer w.Close()
+			_, err = io.Copy(w, r)
+			return err
+		})
+	}
+
+	// Simulate being hard killed by:
+	// 1. copy directories before shutdown
+	copyToSrcMap := make(map[string]string)
+	for _, s := range c.servers {
+		sd := s.StoreDir()
+		copySd := path.Join(t.TempDir(), JetStreamStoreDir)
+		err = copyDir(copySd, sd)
+		require_NoError(t, err)
+		copyToSrcMap[copySd] = sd
+	}
+
+	// 2. stop all
+	nc.Close()
+	c.stopAll()
+
+	// 3. revert directories to before shutdown
+	for cp, dest := range copyToSrcMap {
+		err = os.RemoveAll(dest)
+		require_NoError(t, err)
+		err = copyDir(dest, cp)
+		require_NoError(t, err)
+	}
+
+	// 4. restart
+	c.restartAll()
+	c.waitOnAllCurrent()
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Stream should exist still and not be removed after hard killing all servers, so expect no error.
+	_, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
 }
