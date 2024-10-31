@@ -2286,8 +2286,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 	const (
 		compactInterval = 2 * time.Minute
-		compactSizeMin  = 8 * 2 * 1024 * 1024
-		compactNumMin   = 65536
+		compactSizeMin  = 100 * 2 * 1024 * 1024
+		compactNumMin   = 65536 * 2
 		minSnapDelta    = 10 * time.Second
 	)
 
