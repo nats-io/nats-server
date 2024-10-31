@@ -37,6 +37,8 @@ import (
 const (
 	JSPullRequestPendingMsgs  = "Nats-Pending-Messages"
 	JSPullRequestPendingBytes = "Nats-Pending-Bytes"
+	JSPullRequestWrongPinID   = "NATS/1.0 423 Nats-Wrong-Pin-Id\r\n\r\n"
+	JSPullRequestNatsPinId    = "Nats-Pin-Id"
 )
 
 // Headers sent when batch size was completed, but there were remaining bytes.
@@ -58,7 +60,8 @@ type ConsumerInfo struct {
 	Paused         bool            `json:"paused,omitempty"`
 	PauseRemaining time.Duration   `json:"pause_remaining,omitempty"`
 	// TimeStamp indicates when the info was gathered
-	TimeStamp time.Time `json:"ts"`
+	TimeStamp time.Time         `json:"ts"`
+	PinnedIds map[string]string `json:"pinned_ids,omitempty"`
 }
 
 type ConsumerConfig struct {
@@ -109,6 +112,11 @@ type ConsumerConfig struct {
 
 	// PauseUntil is for suspending the consumer until the deadline.
 	PauseUntil *time.Time `json:"pause_until,omitempty"`
+
+	// Priority groups
+	PriorityGroups []string       `json:"priority_groups,omitempty"`
+	PriorityPolicy PriorityPolicy `json:"priority_policy,omitempty"`
+	PinnedTTL      time.Duration  `json:"priority_timeout,omitempty"`
 }
 
 // SequenceInfo has both the consumer and the stream sequence and last activity.
@@ -187,6 +195,66 @@ func (a *ConsumerAction) UnmarshalJSON(data []byte) error {
 // ConsumerNakOptions is for optional NAK values, e.g. delay.
 type ConsumerNakOptions struct {
 	Delay time.Duration `json:"delay"`
+}
+
+// PriorityPolicy determines policy for selecting messages based on priority.
+type PriorityPolicy int
+
+const (
+	// No priority policy.
+	PriorityNone PriorityPolicy = iota
+	// Clients will get the messages only if certain criteria are specified.
+	PriorityOverflow
+	// Single client takes over handling of the messages, while others are on standby.
+	PriorityPinnedClient
+)
+
+const (
+	PriorityNoneJSONString         = `"none"`
+	PriorityOverflowJSONString     = `"overflow"`
+	PriorityPinnedClientJSONString = `"pinned_client"`
+)
+
+var (
+	PriorityNoneJSONBytes         = []byte(PriorityNoneJSONString)
+	PriorityOverflowJSONBytes     = []byte(PriorityOverflowJSONString)
+	PriorityPinnedClientJSONBytes = []byte(PriorityPinnedClientJSONString)
+)
+
+func (pp PriorityPolicy) String() string {
+	switch pp {
+	case PriorityOverflow:
+		return PriorityOverflowJSONString
+	case PriorityPinnedClient:
+		return PriorityPinnedClientJSONString
+	default:
+		return PriorityNoneJSONString
+	}
+}
+
+func (pp PriorityPolicy) MarshalJSON() ([]byte, error) {
+	switch pp {
+	case PriorityOverflow:
+		return PriorityOverflowJSONBytes, nil
+	case PriorityPinnedClient:
+		return PriorityPinnedClientJSONBytes, nil
+	default:
+		return nil, fmt.Errorf("unknown priority policy: %v", pp)
+	}
+}
+
+func (pp *PriorityPolicy) UnmarshalJSON(data []byte) error {
+	switch string(data) {
+	case PriorityOverflowJSONString:
+		*pp = PriorityOverflow
+	case PriorityPinnedClientJSONString:
+		*pp = PriorityPinnedClient
+	case PriorityNoneJSONString:
+		*pp = PriorityNone
+	default:
+		return fmt.Errorf("unknown priority policy: %v", string(data))
+	}
+	return nil
 }
 
 // DeliverPolicy determines how the consumer should select the first message to deliver.
@@ -402,6 +470,16 @@ type consumer struct {
 
 	// for stream signaling when multiple filters are set.
 	sigSubs []*subscription
+
+	// Priority groups
+	// Details described in ADR-42.
+
+	// currentPinId is the current nuid for the pinned consumer.
+	// If the  Consumer is running in `PriorityPinnedClient` mode, server will
+	// pick up a new nuid and assign it to first pending pull request.
+	currentPinId string
+	/// pinnedTtl is the remaining time before the current PinId expires.
+	pinnedTtl *time.Timer
 }
 
 // A single subject filter.
@@ -438,6 +516,9 @@ const (
 	JsFlowControlMaxPending = 32 * 1024 * 1024
 	// JsDefaultMaxAckPending is set for consumers with explicit ack that do not set the max ack pending.
 	JsDefaultMaxAckPending = 1000
+	// JsDefaultPinnedTTL is the default grace period for the pinned consumer to send a new request before a new pin
+	// is picked by a server.
+	JsDefaultPinnedTTL = 2 * time.Minute
 )
 
 // Helper function to set consumer config defaults from above.
@@ -490,6 +571,11 @@ func setConsumerConfigDefaults(config *ConsumerConfig, streamCfg *StreamConfig, 
 			return NewJSPedanticError(errors.New("max_request_batch must be set if it's JetStream limits are set"))
 		}
 		config.MaxRequestBatch = lim.MaxRequestBatch
+	}
+
+	// set the default value only if pinned policy is used.
+	if config.PriorityPolicy == PriorityPinnedClient && config.PinnedTTL == 0 {
+		config.PinnedTTL = JsDefaultPinnedTTL
 	}
 	return nil
 }
@@ -716,6 +802,17 @@ func checkConsumerCfg(
 		return NewJSConsumerMetadataLengthError(fmt.Sprintf("%dKB", JSMaxMetadataLen/1024))
 	}
 
+	if config.PriorityPolicy != PriorityNone {
+		if len(config.PriorityGroups) == 0 {
+			return NewJSConsumerPriorityPolicyWithoutGroupError()
+		}
+
+		for _, group := range config.PriorityGroups {
+			if group == _EMPTY_ {
+				return NewJSConsumerEmptyGroupNameError()
+			}
+		}
+	}
 	return nil
 }
 
@@ -1493,6 +1590,55 @@ func (o *consumer) sendDeleteAdvisoryLocked() {
 
 	subj := JSAdvisoryConsumerDeletedPre + "." + o.stream + "." + o.name
 	o.sendAdvisory(subj, j)
+}
+
+func (o *consumer) sendPinnedAdvisoryLocked(group string) {
+	e := JSStreamGroupPinnedAdvisory{
+		TypedEvent: TypedEvent{
+			Type: JSStreamGroupPinnedAdvisoryType,
+			ID:   nuid.Next(),
+			Time: time.Now().UTC(),
+		},
+		Account:        o.acc.Name,
+		Stream:         o.stream,
+		Consumer:       o.name,
+		Domain:         o.srv.getOpts().JetStreamDomain,
+		PinnedClientId: o.currentPinId,
+		Group:          group,
+	}
+
+	j, err := json.Marshal(e)
+	if err != nil {
+		return
+	}
+
+	subj := JSAdvisoryConsumerPinnedPre + "." + o.stream + "." + o.name
+	o.sendAdvisory(subj, j)
+
+}
+func (o *consumer) sendUnpinnedAdvisoryLocked(group string, reason string) {
+	e := JSStreamGroupUnPinnedAdvisory{
+		TypedEvent: TypedEvent{
+			Type: JSStreamGroupPinnedAdvisoryType,
+			ID:   nuid.Next(),
+			Time: time.Now().UTC(),
+		},
+		Account:  o.acc.Name,
+		Stream:   o.stream,
+		Consumer: o.name,
+		Domain:   o.srv.getOpts().JetStreamDomain,
+		Group:    group,
+		Reason:   reason,
+	}
+
+	j, err := json.Marshal(e)
+	if err != nil {
+		return
+	}
+
+	subj := JSAdvisoryConsumerUnpinnedPre + "." + o.stream + "." + o.name
+	o.sendAdvisory(subj, j)
+
 }
 
 func (o *consumer) sendCreateAdvisory() {
@@ -2754,6 +2900,12 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		rg = o.ca.Group
 	}
 
+	// TODO(jrm): when we introduce supporting many priority groups, we need to update assigning `o.currentNuid` for each group.
+	pinnedIds := make(map[string]string)
+	if len(o.cfg.PriorityGroups) > 0 {
+		pinnedIds[o.cfg.PriorityGroups[0]] = o.currentPinId
+	}
+
 	cfg := o.cfg
 	info := &ConsumerInfo{
 		Stream:  o.stream,
@@ -2773,6 +2925,7 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		NumPending:     o.checkNumPending(),
 		PushBound:      o.isPushMode() && o.active,
 		TimeStamp:      time.Now().UTC(),
+		PinnedIds:      pinnedIds,
 	}
 	if o.cfg.PauseUntil != nil {
 		p := *o.cfg.PauseUntil
@@ -3126,6 +3279,13 @@ func (o *consumer) needAck(sseq uint64, subj string) bool {
 	return needAck
 }
 
+type PriorityGroup struct {
+	Group         string `json:"group,omitempty"`
+	MinPending    int64  `json:"min_pending,omitempty"`
+	MinAckPending int64  `json:"min_ack_pending,omitempty"`
+	Id            string `json:"id,omitempty"`
+}
+
 // Used in nextReqFromMsg, since the json.Unmarshal causes the request
 // struct to escape to the heap always. This should reduce GC pressure.
 var jsGetNextPool = sync.Pool{
@@ -3135,12 +3295,12 @@ var jsGetNextPool = sync.Pool{
 }
 
 // Helper for the next message requests.
-func nextReqFromMsg(msg []byte) (time.Time, int, int, bool, time.Duration, time.Time, error) {
+func nextReqFromMsg(msg []byte) (time.Time, int, int, bool, time.Duration, time.Time, *PriorityGroup, error) {
 	req := bytes.TrimSpace(msg)
 
 	switch {
 	case len(req) == 0:
-		return time.Time{}, 1, 0, false, 0, time.Time{}, nil
+		return time.Time{}, 1, 0, false, 0, time.Time{}, nil, nil
 
 	case req[0] == '{':
 		cr := jsGetNextPool.Get().(*JSApiConsumerGetNextRequest)
@@ -3149,42 +3309,44 @@ func nextReqFromMsg(msg []byte) (time.Time, int, int, bool, time.Duration, time.
 			jsGetNextPool.Put(cr)
 		}()
 		if err := json.Unmarshal(req, &cr); err != nil {
-			return time.Time{}, -1, 0, false, 0, time.Time{}, err
+			return time.Time{}, -1, 0, false, 0, time.Time{}, nil, err
 		}
 		var hbt time.Time
 		if cr.Heartbeat > 0 {
 			if cr.Heartbeat*2 > cr.Expires {
-				return time.Time{}, 1, 0, false, 0, time.Time{}, errors.New("heartbeat value too large")
+				return time.Time{}, 1, 0, false, 0, time.Time{}, nil, errors.New("heartbeat value too large")
 			}
 			hbt = time.Now().Add(cr.Heartbeat)
 		}
+		priorityGroup := cr.PriorityGroup
 		if cr.Expires == time.Duration(0) {
-			return time.Time{}, cr.Batch, cr.MaxBytes, cr.NoWait, cr.Heartbeat, hbt, nil
+			return time.Time{}, cr.Batch, cr.MaxBytes, cr.NoWait, cr.Heartbeat, hbt, &priorityGroup, nil
 		}
-		return time.Now().Add(cr.Expires), cr.Batch, cr.MaxBytes, cr.NoWait, cr.Heartbeat, hbt, nil
+		return time.Now().Add(cr.Expires), cr.Batch, cr.MaxBytes, cr.NoWait, cr.Heartbeat, hbt, &priorityGroup, nil
 	default:
 		if n, err := strconv.Atoi(string(req)); err == nil {
-			return time.Time{}, n, 0, false, 0, time.Time{}, nil
+			return time.Time{}, n, 0, false, 0, time.Time{}, nil, nil
 		}
 	}
 
-	return time.Time{}, 1, 0, false, 0, time.Time{}, nil
+	return time.Time{}, 1, 0, false, 0, time.Time{}, nil, nil
 }
 
 // Represents a request that is on the internal waiting queue
 type waitingRequest struct {
-	next     *waitingRequest
-	acc      *Account
-	interest string
-	reply    string
-	n        int // For batching
-	d        int // num delivered
-	b        int // For max bytes tracking
-	expires  time.Time
-	received time.Time
-	hb       time.Duration
-	hbt      time.Time
-	noWait   bool
+	next          *waitingRequest
+	acc           *Account
+	interest      string
+	reply         string
+	n             int // For batching
+	d             int // num delivered
+	b             int // For max bytes tracking
+	expires       time.Time
+	received      time.Time
+	hb            time.Duration
+	hbt           time.Time
+	noWait        bool
+	priorityGroup *PriorityGroup
 }
 
 // sync.Pool for waiting requests.
@@ -3282,6 +3444,16 @@ func (wq *waitQueue) peek() *waitingRequest {
 	return wq.head
 }
 
+func (wq *waitQueue) cycle() {
+	wr := wq.peek()
+	if wr != nil {
+		// Always remove current now on a pop, and move to end if still valid.
+		// If we were the only one don't need to remove since this can be a no-op.
+		wq.removeCurrent()
+		wq.add(wr)
+	}
+}
+
 // pop will return the next request and move the read cursor.
 // This will now place a request that still has pending items at the ends of the list.
 func (wq *waitQueue) pop() *waitingRequest {
@@ -3350,6 +3522,16 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 	if o.waiting == nil || o.waiting.isEmpty() {
 		return nil
 	}
+
+	// Check if server needs to assign a new pin id.
+	needNewPin := o.currentPinId == _EMPTY_ && o.cfg.PriorityPolicy == PriorityPinnedClient
+	// As long as we support only one priority group, we can capture  that group here and reuse it.
+	var priorityGroup string
+	if len(o.cfg.PriorityGroups) > 0 {
+		priorityGroup = o.cfg.PriorityGroups[0]
+	}
+
+	lastRequest := o.waiting.tail
 	for wr := o.waiting.peek(); !o.waiting.isEmpty(); wr = o.waiting.peek() {
 		if wr == nil {
 			break
@@ -3379,11 +3561,58 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 		}
 
 		if wr.expires.IsZero() || time.Now().Before(wr.expires) {
+			if needNewPin {
+				o.currentPinId = nuid.Next()
+				wr.priorityGroup.Id = o.currentPinId
+			} else if o.currentPinId != _EMPTY_ {
+				// Check if we have a match on the currentNuid
+				if wr.priorityGroup != nil && wr.priorityGroup.Id == o.currentPinId {
+					// If we have a match, we do nothing here and will deliver the message later down the code path.
+				} else if wr.priorityGroup.Id == _EMPTY_ {
+					o.waiting.cycle()
+					if wr == lastRequest {
+						return nil
+					}
+					continue
+				} else {
+					// There is pin id set, but not a matching one. Send a notification to the client and remove the request.
+					o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, []byte(JSPullRequestWrongPinID), nil, nil, 0))
+					o.waiting.removeCurrent()
+					if o.node != nil {
+						o.removeClusterPendingRequest(wr.reply)
+					}
+					wr.recycle()
+					continue
+				}
+			}
+
+			if o.cfg.PriorityPolicy == PriorityOverflow {
+				if wr.priorityGroup != nil &&
+					// We need to check o.npc+1, because before calling nextWaiting, we do o.npc--
+					(wr.priorityGroup.MinPending > 0 && wr.priorityGroup.MinPending > o.npc+1 ||
+						wr.priorityGroup.MinAckPending > 0 && wr.priorityGroup.MinAckPending > int64(len(o.pending))) {
+					o.waiting.cycle()
+					// We're done cycling through the requests.
+					if wr == lastRequest {
+						return nil
+					}
+					continue
+				}
+			}
 			if wr.acc.sl.HasInterest(wr.interest) {
+				if needNewPin {
+					o.sendPinnedAdvisoryLocked(priorityGroup)
+				}
 				return o.waiting.pop()
 			} else if time.Since(wr.received) < defaultGatewayRecentSubExpiration && (o.srv.leafNodeEnabled || o.srv.gateway.enabled) {
+				if needNewPin {
+					o.sendPinnedAdvisoryLocked(priorityGroup)
+				}
 				return o.waiting.pop()
 			} else if o.srv.gateway.enabled && o.srv.hasGatewayInterest(wr.acc.Name, wr.interest) {
+				if needNewPin {
+					o.sendPinnedAdvisoryLocked(priorityGroup)
+				}
 				return o.waiting.pop()
 			}
 		} else {
@@ -3409,7 +3638,10 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 			o.removeClusterPendingRequest(wr.reply)
 		}
 		wr.recycle()
+		// We did not find any wr, so let's reset the newly set pin.
+		o.currentPinId = _EMPTY_
 	}
+
 	return nil
 }
 
@@ -3483,7 +3715,7 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 	}
 
 	// Check payload here to see if they sent in batch size or a formal request.
-	expires, batchSize, maxBytes, noWait, hb, hbt, err := nextReqFromMsg(msg)
+	expires, batchSize, maxBytes, noWait, hb, hbt, priorityGroup, err := nextReqFromMsg(msg)
 	if err != nil {
 		sendErr(400, fmt.Sprintf("Bad Request - %v", err))
 		return
@@ -3503,6 +3735,53 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 	if maxBytes > 0 && o.cfg.MaxRequestMaxBytes > 0 && maxBytes > o.cfg.MaxRequestMaxBytes {
 		sendErr(409, fmt.Sprintf("Exceeded MaxRequestMaxBytes of %v", o.cfg.MaxRequestMaxBytes))
 		return
+	}
+
+	if priorityGroup != nil {
+		if (priorityGroup.MinPending != 0 || priorityGroup.MinAckPending != 0) && o.cfg.PriorityPolicy != PriorityOverflow {
+			sendErr(400, "Bad Request - Not a Overflow Priority consumer")
+		}
+
+		if priorityGroup.Id != _EMPTY_ && o.cfg.PriorityPolicy != PriorityPinnedClient {
+			sendErr(400, "Bad Request - Not a Pinned Client Priority consumer")
+		}
+	}
+
+	if priorityGroup != nil && o.cfg.PriorityPolicy != PriorityNone {
+		if priorityGroup.Group == _EMPTY_ {
+			sendErr(400, "Bad Request - Priority Group missing")
+			return
+		}
+
+		found := false
+		for _, group := range o.cfg.PriorityGroups {
+			if group == priorityGroup.Group {
+				found = true
+				break
+			}
+		}
+		if !found {
+			sendErr(400, "Bad Request - Invalid Priority Group")
+			return
+		}
+
+		if priorityGroup.Id != _EMPTY_ && priorityGroup.Id != o.currentPinId && o.currentPinId != _EMPTY_ {
+			sendErr(423, "Nats-Pin-Id mismatch")
+			return
+		} else {
+			if o.pinnedTtl != nil && priorityGroup.Id == o.currentPinId && o.currentPinId != _EMPTY_ {
+
+				o.pinnedTtl.Reset(o.cfg.PinnedTTL)
+			} else if o.pinnedTtl == nil {
+				o.pinnedTtl = time.AfterFunc(o.cfg.PinnedTTL, func() {
+					o.mu.Lock()
+					o.currentPinId = _EMPTY_
+					o.sendUnpinnedAdvisoryLocked(priorityGroup.Group, "timeout")
+					o.mu.Unlock()
+					o.signalNewMessages()
+				})
+			}
+		}
 	}
 
 	// If we have the max number of requests already pending try to expire.
@@ -3541,7 +3820,7 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 
 	// Create a waiting request.
 	wr := wrPool.Get().(*waitingRequest)
-	wr.acc, wr.interest, wr.reply, wr.n, wr.d, wr.noWait, wr.expires, wr.hb, wr.hbt = acc, interest, reply, batchSize, 0, noWait, expires, hb, hbt
+	wr.acc, wr.interest, wr.reply, wr.n, wr.d, wr.noWait, wr.expires, wr.hb, wr.hbt, wr.priorityGroup = acc, interest, reply, batchSize, 0, noWait, expires, hb, hbt, priorityGroup
 	wr.b = maxBytes
 	wr.received = time.Now()
 
@@ -4189,6 +4468,21 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		} else if wr := o.nextWaiting(sz); wr != nil {
 			wrn, wrb = wr.n, wr.b
 			dsubj = wr.reply
+			if o.cfg.PriorityPolicy == PriorityPinnedClient {
+				// FIXME(jrm): Can we make this prettier?
+				if len(pmsg.hdr) == 0 {
+					pmsg.hdr = genHeader(pmsg.hdr, JSPullRequestNatsPinId, o.currentPinId)
+					pmsg.buf = append(pmsg.hdr, pmsg.msg...)
+				} else {
+					pmsg.hdr = genHeader(pmsg.hdr, JSPullRequestNatsPinId, o.currentPinId)
+					bufLen := len(pmsg.hdr) + len(pmsg.msg)
+					pmsg.buf = make([]byte, bufLen)
+					pmsg.buf = append(pmsg.hdr, pmsg.msg...)
+				}
+
+				sz = len(pmsg.subj) + len(ackReply) + len(pmsg.hdr) + len(pmsg.msg)
+
+			}
 			if done := wr.recycleIfDone(); done && o.node != nil {
 				o.removeClusterPendingRequest(dsubj)
 			} else if !done && wr.hb > 0 {

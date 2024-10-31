@@ -190,6 +190,12 @@ func TestJetStreamSetStaticConsumerMetadata(t *testing.T) {
 			expectedMetadata: metadataUpdatedPrevious("1"),
 		},
 		{
+			desc:             "create/Pinned",
+			cfg:              &ConsumerConfig{PriorityPolicy: PriorityPinnedClient, PriorityGroups: []string{"a"}},
+			prev:             &ConsumerConfig{Metadata: metadataPrevious()},
+			expectedMetadata: metadataUpdatedPrevious("1"),
+		},
+		{
 			desc:             "update/empty-prev-metadata",
 			cfg:              &ConsumerConfig{},
 			prev:             &ConsumerConfig{},

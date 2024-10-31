@@ -7373,6 +7373,10 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		cfg.MaxAckPending = JsDefaultMaxAckPending
 	}
 
+	if cfg.PinnedTTL == 0 {
+		cfg.PinnedTTL = JsDefaultPinnedTTL
+	}
+
 	var ca *consumerAssignment
 
 	// See if we have an existing one already under same durable name or
