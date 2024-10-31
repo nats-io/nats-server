@@ -1585,3 +1585,35 @@ func TestNRGDontSwitchToCandidateWithMultipleInflightSnapshots(t *testing.T) {
 	n.switchToCandidate()
 	require_Equal(t, n.State(), Candidate)
 }
+
+func TestNRGRecoverPindexPtermOnlyIfLogNotEmpty(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, _ := jsClientConnect(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
+	defer nc.Close()
+
+	rg := c.createRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	gn := rg[0].(*stateAdder)
+	rn := rg[0].node().(*raft)
+
+	// Delete the msgs and snapshots, leaving the only remaining trace
+	// of the term in the TAV file.
+	store := filepath.Join(gn.cfg.Store)
+	require_NoError(t, rn.wal.Truncate(0))
+	require_NoError(t, os.RemoveAll(filepath.Join(store, "msgs")))
+	require_NoError(t, os.RemoveAll(filepath.Join(store, "snapshots")))
+
+	for _, gn := range rg {
+		gn.stop()
+	}
+	rg[0].restart()
+	rn = rg[0].node().(*raft)
+
+	// Both should be zero as, without any snapshots or log entries,
+	// the log is considered empty and therefore we account as such.
+	require_Equal(t, rn.pterm, 0)
+	require_Equal(t, rn.pindex, 0)
+}
