@@ -6498,6 +6498,50 @@ func TestJetStreamClusterMaxDeliveriesOnInterestStreams(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterMetaRecoveryUpdatesDeletesConsumers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	js := c.leader().getJetStream()
+
+	create := []*Entry{
+		{EntryNormal, encodeAddStreamAssignment(&streamAssignment{
+			Config: &StreamConfig{Name: "TEST", Storage: FileStorage},
+		})},
+		{EntryNormal, encodeAddConsumerAssignment(&consumerAssignment{
+			Stream: "TEST",
+			Config: &ConsumerConfig{Name: "consumer"},
+		})},
+	}
+
+	delete := []*Entry{
+		{EntryNormal, encodeDeleteStreamAssignment(&streamAssignment{
+			Config: &StreamConfig{Name: "TEST", Storage: FileStorage},
+		})},
+	}
+
+	// Need to be recovering so that we accumulate recoveryUpdates.
+	js.setMetaRecovering()
+	ru := &recoveryUpdates{
+		removeStreams:   make(map[string]*streamAssignment),
+		removeConsumers: make(map[string]map[string]*consumerAssignment),
+		updateStreams:   make(map[string]*streamAssignment),
+		updateConsumers: make(map[string]map[string]*consumerAssignment),
+	}
+
+	// Push recovery entries that create the stream & consumer.
+	_, _, _, err := js.applyMetaEntries(create, ru)
+	require_NoError(t, err)
+	require_Len(t, len(ru.updateConsumers), 1)
+
+	// Now push another recovery entry that deletes the stream. The
+	// entry that creates the consumer should now be gone.
+	_, _, _, err = js.applyMetaEntries(delete, ru)
+	require_NoError(t, err)
+	require_Len(t, len(ru.removeStreams), 1)
+	require_Len(t, len(ru.updateConsumers), 0)
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
