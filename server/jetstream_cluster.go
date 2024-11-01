@@ -1355,6 +1355,8 @@ func (js *jetStream) monitorCluster() {
 	for {
 		select {
 		case <-s.quitCh:
+			// Server shutting down, but we might receive this before qch, so try to snapshot.
+			doSnapshot()
 			return
 		case <-rqch:
 			return
