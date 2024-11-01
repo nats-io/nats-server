@@ -1136,6 +1136,7 @@ func (js *jetStream) isMetaRecovering() bool {
 type recoveryUpdates struct {
 	removeStreams   map[string]*streamAssignment
 	removeConsumers map[string]map[string]*consumerAssignment
+	addStreams      map[string]*streamAssignment
 	updateStreams   map[string]*streamAssignment
 	updateConsumers map[string]map[string]*consumerAssignment
 }
@@ -1343,6 +1344,7 @@ func (js *jetStream) monitorCluster() {
 	ru := &recoveryUpdates{
 		removeStreams:   make(map[string]*streamAssignment),
 		removeConsumers: make(map[string]map[string]*consumerAssignment),
+		addStreams:      make(map[string]*streamAssignment),
 		updateStreams:   make(map[string]*streamAssignment),
 		updateConsumers: make(map[string]map[string]*consumerAssignment),
 	}
@@ -1380,6 +1382,10 @@ func (js *jetStream) monitorCluster() {
 					}
 					for _, sa := range ru.removeStreams {
 						js.processStreamRemoval(sa)
+					}
+					// Process stream additions.
+					for _, sa := range ru.addStreams {
+						js.processStreamAssignment(sa)
 					}
 					// Process pending updates.
 					for _, sa := range ru.updateStreams {
@@ -1637,6 +1643,7 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 			key := sa.recoveryKey()
 			ru.removeStreams[key] = sa
 			delete(ru.updateConsumers, key)
+			delete(ru.addStreams, key)
 			delete(ru.updateStreams, key)
 		} else {
 			js.processStreamRemoval(sa)
@@ -1661,6 +1668,7 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 		if isRecovering {
 			key := sa.recoveryKey()
 			ru.updateStreams[key] = sa
+			delete(ru.addStreams, key)
 			delete(ru.removeStreams, key)
 		} else {
 			js.processUpdateStreamAssignment(sa)
@@ -1945,9 +1953,10 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 				}
 				if isRecovering {
 					js.setStreamAssignmentRecovering(sa)
-					delete(ru.removeStreams, sa.recoveryKey())
-				}
-				if js.processStreamAssignment(sa) {
+					key := sa.recoveryKey()
+					ru.addStreams[key] = sa
+					delete(ru.removeStreams, key)
+				} else if js.processStreamAssignment(sa) {
 					didRemoveStream = true
 				}
 			case removeStreamOp:
@@ -1960,6 +1969,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					js.setStreamAssignmentRecovering(sa)
 					key := sa.recoveryKey()
 					ru.removeStreams[key] = sa
+					delete(ru.addStreams, key)
 					delete(ru.updateStreams, key)
 					delete(ru.updateConsumers, key)
 				} else {
@@ -2031,6 +2041,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					js.setStreamAssignmentRecovering(sa)
 					key := sa.recoveryKey()
 					ru.updateStreams[key] = sa
+					delete(ru.addStreams, key)
 					delete(ru.removeStreams, key)
 				} else {
 					js.processUpdateStreamAssignment(sa)
