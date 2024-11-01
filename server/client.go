@@ -3659,7 +3659,7 @@ func (c *client) pruneReplyPerms() {
 	}
 
 	c.repliesSincePrune = 0
-	c.lastReplyPrune = time.Now()
+	c.lastReplyPrune = now
 }
 
 // pruneDenyCache will prune the deny cache via randomly
