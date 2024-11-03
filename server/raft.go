@@ -4063,6 +4063,7 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 				strings.ToLower(n.State().String()), vr.term, n.term)
 			n.stepdownLocked(noLeader)
 		}
+		n.cancelCatchup()
 		n.term = vr.term
 		n.vote = noVote
 		n.writeTermVote()
