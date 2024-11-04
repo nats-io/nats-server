@@ -780,6 +780,9 @@ func (js *jetStream) setupMetaGroup() error {
 
 	// Setup our WAL for the metagroup.
 	sysAcc := s.SystemAccount()
+	if sysAcc == nil {
+		return ErrNoSysAccount
+	}
 	storeDir := filepath.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, defaultMetaGroupName)
 
 	js.srv.optsMu.RLock()
