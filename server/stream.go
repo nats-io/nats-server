@@ -1350,7 +1350,7 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 			if js, _ := s.getJetStreamCluster(); js != nil {
 				js.mu.RLock()
 				if sa := js.streamAssignment(acc.Name, streamName); sa != nil {
-					cfg = *sa.Config
+					cfg = *sa.Config.clone()
 					exists = true
 				}
 				js.mu.RUnlock()
