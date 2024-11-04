@@ -3287,6 +3287,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		n.updateLeadChange(false)
 	}
 
+RETRY:
 	if ae.pterm != n.pterm || ae.pindex != n.pindex {
 		// Check if this is a lower or equal index than what we were expecting.
 		if ae.pindex <= n.pindex {
@@ -3294,16 +3295,9 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			var ar *appendEntryResponse
 			var success bool
 
-			if n.commit > 0 && ae.pindex <= n.commit {
-				// Check if only our terms do not match here.
-				if ae.pindex == n.pindex {
-					// Make sure pterms match and we take on the leader's.
-					// This prevents constant spinning.
-					n.truncateWAL(ae.pterm, ae.pindex)
-				} else {
-					// If we have already committed this entry, just mark success.
-					success = true
-				}
+			if ae.pindex < n.commit {
+				// If we have already committed this entry, just mark success.
+				success = true
 			} else if eae, _ := n.loadEntry(ae.pindex); eae == nil {
 				// If terms are equal, and we are not catching up, we have simply already processed this message.
 				// So we will ACK back to the leader. This can happen on server restarts based on timings of snapshots.
@@ -3317,6 +3311,10 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 				} else {
 					n.resetWAL()
 				}
+			} else if eae.term == ae.pterm {
+				// If terms match we can delete all entries past this one, and then continue storing the current entry.
+				n.truncateWAL(eae.term, eae.pindex+1)
+				goto RETRY
 			} else {
 				// If terms mismatched, delete that entry and all others past it.
 				// Make sure to cancel any catchups in progress.
