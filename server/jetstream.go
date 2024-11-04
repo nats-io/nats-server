@@ -205,12 +205,8 @@ var jsRateSteps = [8]time.Duration{
 }
 
 func (r *jsRate) Allow() (bool, time.Duration) {
-	if r.lim.Allow() {
-		// The rate limiter is allowing requests again, so clear
-		// the error count, which resets the backoff delay.
-		r.errs.Store(0)
-		return true, 0
-	} else {
+	token := r.lim.Reserve()
+	if !token.OK() || token.Delay() >= time.Second {
 		i := r.errs.Add(1) - 1
 		if i >= uint64(len(jsRateSteps)) {
 			// Don't return a delayed API response.
@@ -219,6 +215,9 @@ func (r *jsRate) Allow() (bool, time.Duration) {
 		// Return a delayed API response.
 		return false, jsRateSteps[i]
 	}
+	r.errs.Store(0)
+	time.Sleep(token.Delay())
+	return true, 0
 }
 
 // Track general usage for this account.
