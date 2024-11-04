@@ -113,7 +113,7 @@ func ParseFileWithChecks(fp string) (map[string]any, error) {
 
 // cleanupUsedEnvVars will recursively remove all already used
 // environment variables which might be in the parsed tree.
-func cleanupUsedEnvVars(m map[string]interface{}) {
+func cleanupUsedEnvVars(m map[string]any) {
 	for k, v := range m {
 		t := v.(*token)
 		if t.usedVariable {
@@ -121,7 +121,7 @@ func cleanupUsedEnvVars(m map[string]interface{}) {
 			continue
 		}
 		// Cleanup any other env var that is still in the map.
-		if tm, ok := t.value.(map[string]interface{}); ok {
+		if tm, ok := t.value.(map[string]any); ok {
 			cleanupUsedEnvVars(tm)
 		}
 	}
@@ -129,7 +129,7 @@ func cleanupUsedEnvVars(m map[string]interface{}) {
 
 // ParseFileWithChecksDigest returns the processed config and a digest
 // that represents the configuration.
-func ParseFileWithChecksDigest(fp string) (map[string]interface{}, string, error) {
+func ParseFileWithChecksDigest(fp string) (map[string]any, string, error) {
 	data, err := os.ReadFile(fp)
 	if err != nil {
 		return nil, _EMPTY_, err
@@ -157,15 +157,10 @@ type token struct {
 }
 
 func (t *token) MarshalJSON() ([]byte, error) {
-	// Do not duplicate variable contents since
-	// they already have been expanded at this point.
-	if t.usedVariable {
-		return []byte("null"), nil
-	}
 	return json.Marshal(t.value)
 }
 
-func (t *token) Value() interface{} {
+func (t *token) Value() any {
 	return t.value
 }
 
