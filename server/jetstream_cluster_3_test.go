@@ -3917,6 +3917,7 @@ func TestJetStreamClusterStreamNodeShutdownBugOnStop(t *testing.T) {
 	node.InstallSnapshot(mset.stateSnapshot())
 	// Stop the stream
 	mset.stop(false, false)
+	node.WaitForStop()
 
 	if numNodes := s.numRaftNodes(); numNodes != numNodesStart-1 {
 		t.Fatalf("RAFT nodes after stream stop incorrect: %d vs %d", numNodesStart, numNodes)

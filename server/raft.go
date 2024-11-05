@@ -76,7 +76,6 @@ type RaftNode interface {
 	Stop()
 	WaitForStop()
 	Delete()
-	Wipe()
 }
 
 type WAL interface {
@@ -499,7 +498,7 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 	// If we fail to do this for some reason then this is fatal — we cannot
 	// continue setting up or the Raft node may be partially/totally isolated.
 	if err := n.createInternalSubs(); err != nil {
-		n.shutdown(false)
+		n.shutdown()
 		return nil, err
 	}
 
@@ -1625,106 +1624,35 @@ func (n *raft) Created() time.Time {
 }
 
 func (n *raft) Stop() {
-	n.shutdown(false)
+	n.shutdown()
 }
 
 func (n *raft) WaitForStop() {
-	n.wg.Wait()
+	if n.state.Load() == int32(Closed) {
+		n.wg.Wait()
+	}
 }
 
 func (n *raft) Delete() {
-	n.shutdown(true)
-}
+	n.shutdown()
+	n.wg.Wait()
 
-func (n *raft) shutdown(shouldDelete bool) {
 	n.Lock()
 	defer n.Unlock()
 
-	// Returned swap value is the previous state. It looks counter-intuitive
-	// to do this atomic operation with the lock held, but we have to do so in
-	// order to make sure that switchState() is not already running. If it is
-	// then it can potentially update the n.state back to a non-closed state,
-	// allowing shutdown() to be called again. If that happens then the below
-	// close(n.quit) will panic from trying to close an already-closed channel.
-	if n.state.Swap(int32(Closed)) == int32(Closed) {
-		// If we get called again with shouldDelete, in case we were called first with Stop() cleanup
-		if shouldDelete {
-			n.wg.Wait()
-			if wal := n.wal; wal != nil {
-				wal.Delete()
-			}
-			os.RemoveAll(n.sd)
-		}
-		return
-	}
-
-	close(n.quit)
-	if c := n.c; c != nil {
-		var subs []*subscription
-		c.mu.Lock()
-		for _, sub := range c.subs {
-			subs = append(subs, sub)
-		}
-		c.mu.Unlock()
-		for _, sub := range subs {
-			n.unsubscribe(sub)
-		}
-		c.closeConnection(InternalClient)
-		n.c = nil
-	}
-
-	// Wait for goroutines to shut down before trying to clean up
-	// the log below, otherwise we might end up deleting the store
-	// from underneath running goroutines.
-	n.Unlock()
-	n.wg.Wait()
-	n.Lock()
-
-	s, g, wal := n.s, n.group, n.wal
-
-	// Unregistering ipQueues do not prevent them from push/pop
-	// just will remove them from the central monitoring map
-	queues := []interface {
-		unregister()
-		drain()
-	}{n.reqs, n.votes, n.prop, n.entry, n.resp, n.apply}
-	for _, q := range queues {
-		q.drain()
-		q.unregister()
-	}
-	sd := n.sd
-
-	s.unregisterRaftNode(g)
-
-	if wal != nil {
-		if shouldDelete {
-			wal.Delete()
-		} else {
-			wal.Stop()
-		}
-	}
-
-	if shouldDelete {
-		// Delete all our peer state and vote state and any snapshots.
-		os.RemoveAll(sd)
-		n.debug("Deleted")
-	} else {
-		n.debug("Shutdown")
-	}
-}
-
-// Wipe will force an on disk state reset and then call Delete().
-// Useful in case we have been stopped before this point.
-func (n *raft) Wipe() {
-	n.RLock()
-	wal := n.wal
-	n.RUnlock()
-	// Delete our underlying storage.
-	if wal != nil {
+	if wal := n.wal; wal != nil {
 		wal.Delete()
 	}
-	// Now call delete.
-	n.Delete()
+	os.RemoveAll(n.sd)
+	n.debug("Deleted")
+}
+
+func (n *raft) shutdown() {
+	// First call to Stop or Delete should close the quit chan
+	// to notify the runAs goroutines to stop what they're doing.
+	if n.state.Swap(int32(Closed)) != int32(Closed) {
+		close(n.quit)
+	}
 }
 
 const (
@@ -1844,8 +1772,8 @@ func (n *raft) resetElectWithLock(et time.Duration) {
 // the entire life of the Raft node once started.
 func (n *raft) run() {
 	s := n.s
-	defer n.wg.Done()
 	defer s.grWG.Done()
+	defer n.wg.Done()
 
 	// We want to wait for some routing to be enabled, so we will wait for
 	// at least a route, leaf or gateway connection to be established before
@@ -1878,6 +1806,7 @@ func (n *raft) run() {
 	// Send nil entry to signal the upper layers we are done doing replay/restore.
 	n.apply.push(nil)
 
+runner:
 	for s.isRunning() {
 		switch n.State() {
 		case Follower:
@@ -1887,9 +1816,47 @@ func (n *raft) run() {
 		case Leader:
 			n.runAsLeader()
 		case Closed:
-			return
+			break runner
 		}
 	}
+
+	// If we've reached this point then we're shutting down, either because
+	// the server is stopping or because the Raft group is closing/closed.
+	n.Lock()
+	defer n.Unlock()
+
+	if c := n.c; c != nil {
+		var subs []*subscription
+		c.mu.Lock()
+		for _, sub := range c.subs {
+			subs = append(subs, sub)
+		}
+		c.mu.Unlock()
+		for _, sub := range subs {
+			n.unsubscribe(sub)
+		}
+		c.closeConnection(InternalClient)
+		n.c = nil
+	}
+
+	// Unregistering ipQueues do not prevent them from push/pop
+	// just will remove them from the central monitoring map
+	queues := []interface {
+		unregister()
+		drain()
+	}{n.reqs, n.votes, n.prop, n.entry, n.resp, n.apply}
+	for _, q := range queues {
+		q.drain()
+		q.unregister()
+	}
+
+	n.s.unregisterRaftNode(n.group)
+
+	if wal := n.wal; wal != nil {
+		wal.Stop()
+	}
+
+	n.debug("Shutdown")
 }
 
 func (n *raft) debug(format string, args ...any) {
@@ -1984,7 +1951,6 @@ func (n *raft) runAsFollower() {
 			n.processAppendEntries()
 		case <-n.s.quitCh:
 			// The server is shutting down.
-			n.shutdown(false)
 			return
 		case <-n.quit:
 			// The Raft node is shutting down.
@@ -2417,7 +2383,6 @@ func (n *raft) runAsLeader() {
 	for n.State() == Leader {
 		select {
 		case <-n.s.quitCh:
-			n.shutdown(false)
 			return
 		case <-n.quit:
 			return
@@ -2620,7 +2585,6 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue[uint64
 	for n.Leader() {
 		select {
 		case <-n.s.quitCh:
-			n.shutdown(false)
 			return
 		case <-n.quit:
 			return
@@ -3012,7 +2976,6 @@ func (n *raft) runAsCandidate() {
 			// Ignore proposals received from before the state change.
 			n.prop.drain()
 		case <-n.s.quitCh:
-			n.shutdown(false)
 			return
 		case <-n.quit:
 			return
@@ -4116,15 +4079,20 @@ func (n *raft) updateLeadChange(isLeader bool) {
 
 // Lock should be held.
 func (n *raft) switchState(state RaftState) {
+retry:
 	pstate := n.State()
 	if pstate == Closed {
 		return
 	}
 
+	// Set our state. If something else has changed our state
+	// then retry, this will either be a Stop or Delete call.
+	if !n.state.CompareAndSwap(int32(pstate), int32(state)) {
+		goto retry
+	}
+
 	// Reset the election timer.
 	n.resetElectionTimeout()
-	// Set our state.
-	n.state.Store(int32(state))
 
 	if pstate == Leader && state != Leader {
 		n.updateLeadChange(false)
