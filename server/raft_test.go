@@ -661,6 +661,9 @@ func TestNRGSystemClientCleanupFromAccount(t *testing.T) {
 		for _, sm := range rg {
 			sm.node().Stop()
 		}
+		for _, sm := range rg {
+			sm.node().WaitForStop()
+		}
 	}
 	finish := numClients()
 	require_Equal(t, start, finish)
@@ -988,7 +991,7 @@ func TestNRGWALEntryWithoutQuorumMustTruncate(t *testing.T) {
 			require_NoError(t, err)
 
 			// Stop the leader so it moves to another one.
-			n.shutdown(false)
+			n.shutdown()
 
 			// Wait for another leader to be picked
 			rg.waitOnLeader()
@@ -1649,4 +1652,18 @@ func TestNRGCancelCatchupWhenDetectingHigherTermDuringVoteRequest(t *testing.T) 
 	err := n.processVoteRequest(&voteRequest{2, 1, 1, nats0, "reply"})
 	require_NoError(t, err)
 	require_True(t, n.catchup == nil)
+}
+
+func TestNRGMultipleStopsDontPanic(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	defer func() {
+		p := recover()
+		require_True(t, p == nil)
+	}()
+
+	for i := 0; i < 10; i++ {
+		n.Stop()
+	}
 }

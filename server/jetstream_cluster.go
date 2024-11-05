@@ -2102,8 +2102,32 @@ func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, storage Stor
 	}
 
 	// Check if we already have this assigned.
+retry:
 	if node := s.lookupRaftNode(rg.Name); node != nil {
+		if node.State() == Closed {
+			// We're waiting for this node to finish shutting down before we replace it.
+			js.mu.Unlock()
+			node.WaitForStop()
+			js.mu.Lock()
+			goto retry
+		}
 		s.Debugf("JetStream cluster already has raft group %q assigned", rg.Name)
+		// Check and see if the group has the same peers. If not then we
+		// will update the known peers, which will send a peerstate if leader.
+		groupPeerIDs := append([]string{}, rg.Peers...)
+		var samePeers bool
+		if nodePeers := node.Peers(); len(rg.Peers) == len(nodePeers) {
+			nodePeerIDs := make([]string, 0, len(nodePeers))
+			for _, n := range nodePeers {
+				nodePeerIDs = append(nodePeerIDs, n.ID)
+			}
+			slices.Sort(groupPeerIDs)
+			slices.Sort(nodePeerIDs)
+			samePeers = slices.Equal(groupPeerIDs, nodePeerIDs)
+		}
+		if !samePeers {
+			node.UpdateKnownPeers(groupPeerIDs)
+		}
 		rg.node = node
 		js.mu.Unlock()
 		return nil

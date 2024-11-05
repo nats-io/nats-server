@@ -3914,6 +3914,7 @@ func TestJetStreamClusterStreamNodeShutdownBugOnStop(t *testing.T) {
 	node.InstallSnapshot(mset.stateSnapshot())
 	// Stop the stream
 	mset.stop(false, false)
+	node.WaitForStop()
 
 	if numNodes := s.numRaftNodes(); numNodes != numNodesStart-1 {
 		t.Fatalf("RAFT nodes after stream stop incorrect: %d vs %d", numNodesStart, numNodes)
@@ -5805,6 +5806,8 @@ func TestJetStreamClusterDetectOrphanNRGs(t *testing.T) {
 
 	// Should only be meta NRG left.
 	require_True(t, s.numRaftNodes() == 1)
+	s.rnMu.RLock()
+	defer s.rnMu.RUnlock()
 	require_True(t, s.lookupRaftNode(sgn) == nil)
 	require_True(t, s.lookupRaftNode(ogn) == nil)
 }
