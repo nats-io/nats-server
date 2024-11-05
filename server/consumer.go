@@ -1593,9 +1593,9 @@ func (o *consumer) sendDeleteAdvisoryLocked() {
 }
 
 func (o *consumer) sendPinnedAdvisoryLocked(group string) {
-	e := JSStreamGroupPinnedAdvisory{
+	e := JSConsumerGroupPinnedAdvisory{
 		TypedEvent: TypedEvent{
-			Type: JSStreamGroupPinnedAdvisoryType,
+			Type: JSConsumerGroupPinnedAdvisoryType,
 			ID:   nuid.Next(),
 			Time: time.Now().UTC(),
 		},
@@ -1617,9 +1617,9 @@ func (o *consumer) sendPinnedAdvisoryLocked(group string) {
 
 }
 func (o *consumer) sendUnpinnedAdvisoryLocked(group string, reason string) {
-	e := JSStreamGroupUnPinnedAdvisory{
+	e := JSConsumerGroupUnPinnedAdvisory{
 		TypedEvent: TypedEvent{
-			Type: JSStreamGroupPinnedAdvisoryType,
+			Type: JSConsumerGroupPinnedAdvisoryType,
 			ID:   nuid.Next(),
 			Time: time.Now().UTC(),
 		},
@@ -3562,8 +3562,20 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 
 		if wr.expires.IsZero() || time.Now().Before(wr.expires) {
 			if needNewPin {
-				o.currentPinId = nuid.Next()
-				wr.priorityGroup.Id = o.currentPinId
+				if wr.priorityGroup.Id == _EMPTY_ {
+					o.currentPinId = nuid.Next()
+					wr.priorityGroup.Id = o.currentPinId
+				} else {
+					// There is pin id set, but not a matching one. Send a notification to the client and remove the request.
+					// Probably this is the old pin id.
+					o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, []byte(JSPullRequestWrongPinID), nil, nil, 0))
+					o.waiting.removeCurrent()
+					if o.node != nil {
+						o.removeClusterPendingRequest(wr.reply)
+					}
+					wr.recycle()
+					continue
+				}
 			} else if o.currentPinId != _EMPTY_ {
 				// Check if we have a match on the currentNuid
 				if wr.priorityGroup != nil && wr.priorityGroup.Id == o.currentPinId {
@@ -3638,8 +3650,6 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 			o.removeClusterPendingRequest(wr.reply)
 		}
 		wr.recycle()
-		// We did not find any wr, so let's reset the newly set pin.
-		o.currentPinId = _EMPTY_
 	}
 
 	return nil

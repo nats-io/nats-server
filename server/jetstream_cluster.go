@@ -7455,7 +7455,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		cfg.MaxAckPending = JsDefaultMaxAckPending
 	}
 
-	if cfg.PinnedTTL == 0 {
+	if cfg.PriorityPolicy == PriorityPinnedClient && cfg.PinnedTTL == 0 {
 		cfg.PinnedTTL = JsDefaultPinnedTTL
 	}
 

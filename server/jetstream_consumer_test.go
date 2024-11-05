@@ -1567,7 +1567,7 @@ func TestJetStreamConsumerPinned(t *testing.T) {
 	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply2, reqb)
 	require_NoError(t, err)
 
-	// This is the firs Pull Request, so it should becom the pinned one.
+	// This is the first Pull Request, so it should become the pinned one.
 	msg, err := replies.NextMsg(time.Second)
 	require_NoError(t, err)
 	require_NotNil(t, msg)
@@ -1700,7 +1700,7 @@ func TestJetStreamConsumerUnpinNoMessages(t *testing.T) {
 		PriorityGroups: []string{"A"},
 		PriorityPolicy: PriorityPinnedClient,
 		AckPolicy:      AckExplicit,
-		PinnedTTL:      10 * time.Second,
+		PinnedTTL:      30 * time.Second,
 	})
 	require_NoError(t, err)
 
@@ -1759,6 +1759,103 @@ func TestJetStreamConsumerUnpinNoMessages(t *testing.T) {
 	require_NoError(t, err)
 	require_Equal(t, string(msg.Data), "data")
 	require_NotEqual(t, msg.Header.Get("Nats-Pin-Id"), pinId)
+}
+
+// In some scenarios, if the next waiting request is the same as the old pinned, it could be picked as a new pin.
+// This test replicates that behavior and checks if the new pin is different than the old one.
+func TestJetStreamConsumerUnpinPickDifferentRequest(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	acc := s.GlobalAccount()
+
+	mset, err := acc.addStream(&StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: LimitsPolicy,
+	})
+	require_NoError(t, err)
+
+	_, err = mset.addConsumer(&ConsumerConfig{
+		Durable:        "C",
+		FilterSubject:  "foo",
+		PriorityGroups: []string{"A"},
+		PriorityPolicy: PriorityPinnedClient,
+		AckPolicy:      AckExplicit,
+		PinnedTTL:      30 * time.Second,
+	})
+	require_NoError(t, err)
+
+	sendStreamMsg(t, nc, "foo", "data")
+
+	req := JSApiConsumerGetNextRequest{Batch: 5, Expires: 15 * time.Second, PriorityGroup: PriorityGroup{
+		Group: "A",
+	}}
+
+	reqBytes, err := json.Marshal(req)
+	require_NoError(t, err)
+
+	firstInbox := "FIRST"
+	firstReplies, err := nc.SubscribeSync(firstInbox)
+	require_NoError(t, err)
+	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", firstInbox, reqBytes)
+
+	msg, err := firstReplies.NextMsg(1 * time.Second)
+	require_NoError(t, err)
+	pinId := msg.Header.Get("Nats-Pin-Id")
+	require_NotEqual(t, pinId, "")
+	fmt.Printf("INITIAL PIN: %v\n", msg.Header.Get("Nats-Pin-Id"))
+
+	reqPinned := JSApiConsumerGetNextRequest{Batch: 5, Expires: 15 * time.Second, PriorityGroup: PriorityGroup{
+		Group: "A",
+		Id:    pinId,
+	}}
+	_, err = json.Marshal(reqPinned)
+	require_NoError(t, err)
+
+	secondInbox := "SECOND"
+	secondReplies, err := nc.SubscribeSync(secondInbox)
+	require_NoError(t, err)
+	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", secondInbox, reqBytes)
+
+	_, err = secondReplies.NextMsg(1 * time.Second)
+	require_Error(t, err)
+
+	unpinRequest := func(t *testing.T, nc *nats.Conn, stream, consumer, group string) *ApiError {
+		var response JSApiConsumerUnpinResponse
+		request := JSApiConsumerUnpinRequest{Group: group}
+		requestData, err := json.Marshal(request)
+		require_NoError(t, err)
+		msg, err := nc.Request(fmt.Sprintf("$JS.API.CONSUMER.UNPIN.%s.%s", stream, consumer), requestData, time.Second*1)
+		require_NoError(t, err)
+		err = json.Unmarshal(msg.Data, &response)
+		require_NoError(t, err)
+		return response.Error
+	}
+
+	unpinRequest(t, nc, "TEST", "C", "A")
+	_, err = firstReplies.NextMsg(1 * time.Second)
+	// If there are no messages in the stream, do not expect unpin message to arrive.
+	// Advisory will be sent immediately, but messages with headers - only when there is anything to be sent.
+	require_Error(t, err)
+	// Send a new message to the stream.
+	sendStreamMsg(t, nc, "foo", "data")
+	// Check if the old pinned will get the information about bad pin.
+	msg, err = firstReplies.NextMsg(1 * time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Status"), "423")
+	// Make sure that the old pin is cleared.
+	require_Equal(t, msg.Header.Get("Nats-Pin-Id"), "")
+
+	// Try different wr.
+	msg, err = secondReplies.NextMsg(1 * time.Second)
+	require_NoError(t, err)
+	// Make sure that its pin is different than the old one and not empty.
+	require_NotEqual(t, msg.Header.Get("Nats-Pin-Id"), pinId)
+	require_NotEqual(t, msg.Header.Get("Nats-Pin-Id"), "")
 }
 
 func TestJetStreamConsumerUnpin(t *testing.T) {
