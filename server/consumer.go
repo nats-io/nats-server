@@ -1593,9 +1593,9 @@ func (o *consumer) sendDeleteAdvisoryLocked() {
 }
 
 func (o *consumer) sendPinnedAdvisoryLocked(group string) {
-	e := JSStreamGroupPinnedAdvisory{
+	e := JSConsumerGroupPinnedAdvisory{
 		TypedEvent: TypedEvent{
-			Type: JSStreamGroupPinnedAdvisoryType,
+			Type: JSConsumerGroupPinnedAdvisoryType,
 			ID:   nuid.Next(),
 			Time: time.Now().UTC(),
 		},
@@ -1617,9 +1617,9 @@ func (o *consumer) sendPinnedAdvisoryLocked(group string) {
 
 }
 func (o *consumer) sendUnpinnedAdvisoryLocked(group string, reason string) {
-	e := JSStreamGroupUnPinnedAdvisory{
+	e := JSConsumerGroupUnPinnedAdvisory{
 		TypedEvent: TypedEvent{
-			Type: JSStreamGroupPinnedAdvisoryType,
+			Type: JSConsumerGroupPinnedAdvisoryType,
 			ID:   nuid.Next(),
 			Time: time.Now().UTC(),
 		},

@@ -271,10 +271,10 @@ type JSConsumerQuorumLostAdvisory struct {
 	Domain   string      `json:"domain,omitempty"`
 }
 
-const JSStreamGroupPinnedAdvisoryType = "io.nats.jetstream.advisory.v1.consumer_group_pinned"
+const JSConsumerGroupPinnedAdvisoryType = "io.nats.jetstream.advisory.v1.consumer_group_pinned"
 
-// JSStreamGroupPinnedAdvisory that a group switched to a new pinned client
-type JSStreamGroupPinnedAdvisory struct {
+// JSConsumerGroupPinnedAdvisory that a group switched to a new pinned client
+type JSConsumerGroupPinnedAdvisory struct {
 	TypedEvent
 	Account        string `json:"account,omitempty"`
 	Stream         string `json:"stream"`
@@ -286,8 +286,8 @@ type JSStreamGroupPinnedAdvisory struct {
 
 const JSStreamGroupUnPinnedAdvisoryType = "io.nats.jetstream.advisory.v1.consumer_group_unpinned"
 
-// JSStreamGroupUnPinnedAdvisory indicates that a pin was lost
-type JSStreamGroupUnPinnedAdvisory struct {
+// JSConsumerGroupUnPinnedAdvisory indicates that a pin was lost
+type JSConsumerGroupUnPinnedAdvisory struct {
 	TypedEvent
 	Account  string `json:"account,omitempty"`
 	Stream   string `json:"stream"`

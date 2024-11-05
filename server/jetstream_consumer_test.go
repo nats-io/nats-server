@@ -1567,7 +1567,7 @@ func TestJetStreamConsumerPinned(t *testing.T) {
 	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", reply2, reqb)
 	require_NoError(t, err)
 
-	// This is the firs Pull Request, so it should becom the pinned one.
+	// This is the first Pull Request, so it should become the pinned one.
 	msg, err := replies.NextMsg(time.Second)
 	require_NoError(t, err)
 	require_NotNil(t, msg)
