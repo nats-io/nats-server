@@ -3589,7 +3589,7 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 				if wr.priorityGroup.Id == _EMPTY_ {
 					o.currentPinId = nuid.Next()
 					wr.priorityGroup.Id = o.currentPinId
-					o.setPinnedTimer(&PriorityGroup{Group: priorityGroup, Id: o.currentPinId})
+					o.setPinnedTimer(priorityGroup)
 
 				} else {
 					// There is pin id set, but not a matching one. Send a notification to the client and remove the request.
@@ -3803,7 +3803,7 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 
 		if o.currentPinId != _EMPTY_ {
 			if priorityGroup.Id == o.currentPinId {
-				o.setPinnedTimer(priorityGroup)
+				o.setPinnedTimer(priorityGroup.Group)
 			} else if priorityGroup.Id != _EMPTY_ {
 				sendErr(423, "Nats-Pin-Id mismatch")
 				return

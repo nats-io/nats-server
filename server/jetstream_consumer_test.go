@@ -1880,7 +1880,7 @@ func TestJetStreamPinnedTTL(t *testing.T) {
 		PriorityGroups: []string{"A"},
 		PriorityPolicy: PriorityPinnedClient,
 		AckPolicy:      AckExplicit,
-		PinnedTTL:      5 * time.Second,
+		PinnedTTL:      3 * time.Second,
 	})
 	require_NoError(t, err)
 
@@ -1888,7 +1888,7 @@ func TestJetStreamPinnedTTL(t *testing.T) {
 		sendStreamMsg(t, nc, "foo", "data")
 	}
 
-	req := JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{
+	req := JSApiConsumerGetNextRequest{Batch: 1, Expires: 10 * time.Second, PriorityGroup: PriorityGroup{
 		Group: "A",
 	}}
 
@@ -1910,22 +1910,30 @@ func TestJetStreamPinnedTTL(t *testing.T) {
 	require_NoError(t, err)
 	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", secondInbox, reqBytes)
 
-	_, err = secondReplies.NextMsg(2 * time.Second)
+	// Expect error, as first request should be still pinned.
+	_, err = secondReplies.NextMsg(1 * time.Second)
 	require_Error(t, err)
 
+	// During the 5 second window, the first Pin should time out and this request
+	// should become the pinned one and get the message.
 	msg, err = secondReplies.NextMsg(5 * time.Second)
 	require_NoError(t, err)
 	newPinId := msg.Header.Get("Nats-Pin-Id")
 	require_NotEqual(t, newPinId, pinId)
+	require_NotEqual(t, newPinId, "")
 
 	thirdInbox := "THIRD"
 	thirdReplies, err := nc.SubscribeSync(thirdInbox)
 	require_NoError(t, err)
 	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", thirdInbox, reqBytes)
 
+	// The same process as above, but tests different codepath - one where Pin
+	// is set on existing waiting request.
 	msg, err = thirdReplies.NextMsg(5 * time.Second)
 	require_NoError(t, err)
 	require_NotEqual(t, msg.Header.Get("Nats-Pin-Id"), pinId)
+	require_NotEqual(t, msg.Header.Get("Nats-Pin-Id"), newPinId)
+	require_NotEqual(t, newPinId, "")
 
 }
 
