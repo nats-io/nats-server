@@ -1858,6 +1858,77 @@ func TestJetStreamConsumerUnpinPickDifferentRequest(t *testing.T) {
 	require_NotEqual(t, msg.Header.Get("Nats-Pin-Id"), "")
 }
 
+func TestJetStreamPinnedTTL(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	acc := s.GlobalAccount()
+
+	mset, err := acc.addStream(&StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: LimitsPolicy,
+	})
+	require_NoError(t, err)
+
+	_, err = mset.addConsumer(&ConsumerConfig{
+		Durable:        "C",
+		FilterSubject:  "foo",
+		PriorityGroups: []string{"A"},
+		PriorityPolicy: PriorityPinnedClient,
+		AckPolicy:      AckExplicit,
+		PinnedTTL:      5 * time.Second,
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 10; i++ {
+		sendStreamMsg(t, nc, "foo", "data")
+	}
+
+	req := JSApiConsumerGetNextRequest{Batch: 1, Expires: 5 * time.Second, PriorityGroup: PriorityGroup{
+		Group: "A",
+	}}
+
+	reqBytes, err := json.Marshal(req)
+	require_NoError(t, err)
+
+	firstInbox := "FIRST"
+	firstReplies, err := nc.SubscribeSync(firstInbox)
+	require_NoError(t, err)
+	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", firstInbox, reqBytes)
+
+	msg, err := firstReplies.NextMsg(1 * time.Second)
+	require_NoError(t, err)
+	pinId := msg.Header.Get("Nats-Pin-Id")
+	require_NotEqual(t, pinId, "")
+
+	secondInbox := "SECOND"
+	secondReplies, err := nc.SubscribeSync(secondInbox)
+	require_NoError(t, err)
+	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", secondInbox, reqBytes)
+
+	_, err = secondReplies.NextMsg(2 * time.Second)
+	require_Error(t, err)
+
+	msg, err = secondReplies.NextMsg(5 * time.Second)
+	require_NoError(t, err)
+	newPinId := msg.Header.Get("Nats-Pin-Id")
+	require_NotEqual(t, newPinId, pinId)
+
+	thirdInbox := "THIRD"
+	thirdReplies, err := nc.SubscribeSync(thirdInbox)
+	require_NoError(t, err)
+	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", thirdInbox, reqBytes)
+
+	msg, err = thirdReplies.NextMsg(5 * time.Second)
+	require_NoError(t, err)
+	require_NotEqual(t, msg.Header.Get("Nats-Pin-Id"), pinId)
+
+}
+
 func TestJetStreamConsumerUnpin(t *testing.T) {
 	single := RunBasicJetStreamServer(t)
 	defer single.Shutdown()

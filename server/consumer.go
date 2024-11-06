@@ -3525,9 +3525,9 @@ func (o *consumer) pendingRequests() map[string]*waitingRequest {
 }
 
 func (o *consumer) setPinnedTimer(priorityGroup string) {
-	if o.pinnedTtl != nil && priorityGroup.Id == o.currentPinId && o.currentPinId != _EMPTY_ {
+	if o.pinnedTtl != nil {
 		o.pinnedTtl.Reset(o.cfg.PinnedTTL)
-	} else if o.pinnedTtl == nil {
+	} else {
 		o.pinnedTtl = time.AfterFunc(o.cfg.PinnedTTL, func() {
 			o.mu.Lock()
 			o.pinnedTS = time.Now().Add(o.cfg.PinnedTTL)
@@ -3589,7 +3589,7 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 				if wr.priorityGroup.Id == _EMPTY_ {
 					o.currentPinId = nuid.Next()
 					wr.priorityGroup.Id = o.currentPinId
-					o.setPinnedTimer(priorityGroup)
+					o.setPinnedTimer(&PriorityGroup{Group: priorityGroup, Id: o.currentPinId})
 
 				} else {
 					// There is pin id set, but not a matching one. Send a notification to the client and remove the request.
@@ -3801,11 +3801,13 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 			return
 		}
 
-		if priorityGroup.Id != _EMPTY_ && priorityGroup.Id != o.currentPinId && o.currentPinId != _EMPTY_ {
-			sendErr(423, "Nats-Pin-Id mismatch")
-			return
-		} else {
-			o.setPinnedTimer(priorityGroup.Group)
+		if o.currentPinId != _EMPTY_ {
+			if priorityGroup.Id == o.currentPinId {
+				o.setPinnedTimer(priorityGroup)
+			} else if priorityGroup.Id != _EMPTY_ {
+				sendErr(423, "Nats-Pin-Id mismatch")
+				return
+			}
 		}
 	}
 
