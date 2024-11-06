@@ -60,11 +60,12 @@ type ConsumerInfo struct {
 	Paused         bool            `json:"paused,omitempty"`
 	PauseRemaining time.Duration   `json:"pause_remaining,omitempty"`
 	// TimeStamp indicates when the info was gathered
-	TimeStamp      time.Time                     `json:"ts"`
-	PriorityGroups map[string]PriorityGroupState `json:"priority_groups,omitempty"`
+	TimeStamp      time.Time            `json:"ts"`
+	PriorityGroups []PriorityGroupState `json:"priority_groups,omitempty"`
 }
 
 type PriorityGroupState struct {
+	Group          string    `json:"group"`
 	PinnedClientID string    `json:"pinned_client_id,omitempty"`
 	PinnedTS       time.Time `json:"pinned_ts,omitempty"`
 }
@@ -2906,13 +2907,14 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		rg = o.ca.Group
 	}
 
-	priorityGroups := make(map[string]PriorityGroupState)
+	priorityGroups := []PriorityGroupState{}
 	// TODO(jrm): when we introduce supporting many priority groups, we need to update assigning `o.currentNuid` for each group.
 	if len(o.cfg.PriorityGroups) > 0 {
-		priorityGroups[o.cfg.PriorityGroups[0]] = PriorityGroupState{
+		priorityGroups = append(priorityGroups, PriorityGroupState{
+			Group:          o.cfg.PriorityGroups[0],
 			PinnedClientID: o.currentPinId,
 			PinnedTS:       o.pinnedTS,
-		}
+		})
 	}
 
 	cfg := o.cfg
