@@ -2236,6 +2236,56 @@ func TestJetStreamConsumerOverflow(t *testing.T) {
 	msg, err = maxAckPending50.NextMsg(time.Second)
 	require_NoError(t, err)
 	require_NotNil(t, msg)
+}
+
+func TestJetStreamConsumerMultipleFitersWithStartDate(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	past := time.Now().Add(-90 * time.Second)
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"events.>"},
+	})
+	require_NoError(t, err)
+
+	sendStreamMsg(t, nc, "events.foo", "msg-1")
+	sendStreamMsg(t, nc, "events.bar", "msg-2")
+	sendStreamMsg(t, nc, "events.baz", "msg-3")
+	sendStreamMsg(t, nc, "events.biz", "msg-4")
+	sendStreamMsg(t, nc, "events.faz", "msg-5")
+	sendStreamMsg(t, nc, "events.foo", "msg-6")
+	sendStreamMsg(t, nc, "events.biz", "msg-7")
+
+	for _, test := range []struct {
+		name                   string
+		filterSubjects         []string
+		startTime              time.Time
+		expectedMessages       uint64
+		expectedStreamSequence uint64
+	}{
+		{"Single-Filter-first-sequence", []string{"events.foo"}, past, 2, 0},
+		{"Multiple-Filter-first-sequence", []string{"events.foo", "events.bar", "events.baz"}, past, 4, 0},
+		{"Multiple-Filters-second-subject", []string{"events.bar", "events.baz"}, past, 2, 1},
+		{"Multiple-Filters-first-last-subject", []string{"events.foo", "events.biz"}, past, 4, 0},
+		{"Multiple-Filters-in-future", []string{"events.foo", "events.biz"}, time.Now().Add(1 * time.Minute), 0, 7},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			info, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+				Durable:        test.name,
+				FilterSubjects: test.filterSubjects,
+				DeliverPolicy:  nats.DeliverByStartTimePolicy,
+				OptStartTime:   &test.startTime,
+			})
+			require_NoError(t, err)
+			require_Equal(t, test.expectedStreamSequence, info.Delivered.Stream)
+			require_Equal(t, test.expectedMessages, info.NumPending)
+		})
+	}
 
 }
 

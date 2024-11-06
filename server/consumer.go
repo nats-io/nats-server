@@ -5331,7 +5331,7 @@ func (o *consumer) selectStartingSeqNo() {
 					for _, filter := range o.subjf {
 						// Use first sequence since this is more optimized atm.
 						ss := o.mset.store.FilteredState(state.FirstSeq, filter.subject)
-						if ss.First > o.sseq && ss.First < nseq {
+						if ss.First >= o.sseq && ss.First < nseq {
 							nseq = ss.First
 						}
 					}
