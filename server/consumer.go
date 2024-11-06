@@ -3524,6 +3524,21 @@ func (o *consumer) pendingRequests() map[string]*waitingRequest {
 	return m
 }
 
+func (o *consumer) setPinnedTimer(priorityGroup string) {
+	if o.pinnedTtl != nil && priorityGroup.Id == o.currentPinId && o.currentPinId != _EMPTY_ {
+		o.pinnedTtl.Reset(o.cfg.PinnedTTL)
+	} else if o.pinnedTtl == nil {
+		o.pinnedTtl = time.AfterFunc(o.cfg.PinnedTTL, func() {
+			o.mu.Lock()
+			o.pinnedTS = time.Now().Add(o.cfg.PinnedTTL)
+			o.currentPinId = _EMPTY_
+			o.sendUnpinnedAdvisoryLocked(priorityGroup, "timeout")
+			o.mu.Unlock()
+			o.signalNewMessages()
+		})
+	}
+}
+
 // Return next waiting request. This will check for expirations but not noWait or interest.
 // That will be handled by processWaiting.
 // Lock should be held.
@@ -3574,6 +3589,8 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 				if wr.priorityGroup.Id == _EMPTY_ {
 					o.currentPinId = nuid.Next()
 					wr.priorityGroup.Id = o.currentPinId
+					o.setPinnedTimer(priorityGroup)
+
 				} else {
 					// There is pin id set, but not a matching one. Send a notification to the client and remove the request.
 					// Probably this is the old pin id.
@@ -3788,18 +3805,7 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 			sendErr(423, "Nats-Pin-Id mismatch")
 			return
 		} else {
-			if o.pinnedTtl != nil && priorityGroup.Id == o.currentPinId && o.currentPinId != _EMPTY_ {
-
-				o.pinnedTtl.Reset(o.cfg.PinnedTTL)
-			} else if o.pinnedTtl == nil {
-				o.pinnedTtl = time.AfterFunc(o.cfg.PinnedTTL, func() {
-					o.mu.Lock()
-					o.currentPinId = _EMPTY_
-					o.sendUnpinnedAdvisoryLocked(priorityGroup.Group, "timeout")
-					o.mu.Unlock()
-					o.signalNewMessages()
-				})
-			}
+			o.setPinnedTimer(priorityGroup.Group)
 		}
 	}
 
