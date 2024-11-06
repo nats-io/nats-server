@@ -60,8 +60,14 @@ type ConsumerInfo struct {
 	Paused         bool            `json:"paused,omitempty"`
 	PauseRemaining time.Duration   `json:"pause_remaining,omitempty"`
 	// TimeStamp indicates when the info was gathered
-	TimeStamp time.Time         `json:"ts"`
-	PinnedIds map[string]string `json:"pinned_ids,omitempty"`
+	TimeStamp      time.Time            `json:"ts"`
+	PriorityGroups []PriorityGroupState `json:"priority_groups,omitempty"`
+}
+
+type PriorityGroupState struct {
+	Group          string    `json:"group"`
+	PinnedClientID string    `json:"pinned_client_id,omitempty"`
+	PinnedTS       time.Time `json:"pinned_ts,omitempty"`
 }
 
 type ConsumerConfig struct {
@@ -480,6 +486,7 @@ type consumer struct {
 	currentPinId string
 	/// pinnedTtl is the remaining time before the current PinId expires.
 	pinnedTtl *time.Timer
+	pinnedTS  time.Time
 }
 
 // A single subject filter.
@@ -2900,10 +2907,14 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		rg = o.ca.Group
 	}
 
+	priorityGroups := []PriorityGroupState{}
 	// TODO(jrm): when we introduce supporting many priority groups, we need to update assigning `o.currentNuid` for each group.
-	pinnedIds := make(map[string]string)
 	if len(o.cfg.PriorityGroups) > 0 {
-		pinnedIds[o.cfg.PriorityGroups[0]] = o.currentPinId
+		priorityGroups = append(priorityGroups, PriorityGroupState{
+			Group:          o.cfg.PriorityGroups[0],
+			PinnedClientID: o.currentPinId,
+			PinnedTS:       o.pinnedTS,
+		})
 	}
 
 	cfg := o.cfg
@@ -2925,7 +2936,7 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		NumPending:     o.checkNumPending(),
 		PushBound:      o.isPushMode() && o.active,
 		TimeStamp:      time.Now().UTC(),
-		PinnedIds:      pinnedIds,
+		PriorityGroups: priorityGroups,
 	}
 	if o.cfg.PauseUntil != nil {
 		p := *o.cfg.PauseUntil
@@ -3515,6 +3526,21 @@ func (o *consumer) pendingRequests() map[string]*waitingRequest {
 	return m
 }
 
+func (o *consumer) setPinnedTimer(priorityGroup string) {
+	if o.pinnedTtl != nil {
+		o.pinnedTtl.Reset(o.cfg.PinnedTTL)
+	} else {
+		o.pinnedTtl = time.AfterFunc(o.cfg.PinnedTTL, func() {
+			o.mu.Lock()
+			o.pinnedTS = time.Now().Add(o.cfg.PinnedTTL)
+			o.currentPinId = _EMPTY_
+			o.sendUnpinnedAdvisoryLocked(priorityGroup, "timeout")
+			o.mu.Unlock()
+			o.signalNewMessages()
+		})
+	}
+}
+
 // Return next waiting request. This will check for expirations but not noWait or interest.
 // That will be handled by processWaiting.
 // Lock should be held.
@@ -3565,6 +3591,8 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 				if wr.priorityGroup.Id == _EMPTY_ {
 					o.currentPinId = nuid.Next()
 					wr.priorityGroup.Id = o.currentPinId
+					o.setPinnedTimer(priorityGroup)
+
 				} else {
 					// There is pin id set, but not a matching one. Send a notification to the client and remove the request.
 					// Probably this is the old pin id.
@@ -3775,21 +3803,12 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 			return
 		}
 
-		if priorityGroup.Id != _EMPTY_ && priorityGroup.Id != o.currentPinId && o.currentPinId != _EMPTY_ {
-			sendErr(423, "Nats-Pin-Id mismatch")
-			return
-		} else {
-			if o.pinnedTtl != nil && priorityGroup.Id == o.currentPinId && o.currentPinId != _EMPTY_ {
-
-				o.pinnedTtl.Reset(o.cfg.PinnedTTL)
-			} else if o.pinnedTtl == nil {
-				o.pinnedTtl = time.AfterFunc(o.cfg.PinnedTTL, func() {
-					o.mu.Lock()
-					o.currentPinId = _EMPTY_
-					o.sendUnpinnedAdvisoryLocked(priorityGroup.Group, "timeout")
-					o.mu.Unlock()
-					o.signalNewMessages()
-				})
+		if o.currentPinId != _EMPTY_ {
+			if priorityGroup.Id == o.currentPinId {
+				o.setPinnedTimer(priorityGroup.Group)
+			} else if priorityGroup.Id != _EMPTY_ {
+				sendErr(423, "Nats-Pin-Id mismatch")
+				return
 			}
 		}
 	}

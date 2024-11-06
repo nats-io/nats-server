@@ -1858,6 +1858,85 @@ func TestJetStreamConsumerUnpinPickDifferentRequest(t *testing.T) {
 	require_NotEqual(t, msg.Header.Get("Nats-Pin-Id"), "")
 }
 
+func TestJetStreamPinnedTTL(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	acc := s.GlobalAccount()
+
+	mset, err := acc.addStream(&StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: LimitsPolicy,
+	})
+	require_NoError(t, err)
+
+	_, err = mset.addConsumer(&ConsumerConfig{
+		Durable:        "C",
+		FilterSubject:  "foo",
+		PriorityGroups: []string{"A"},
+		PriorityPolicy: PriorityPinnedClient,
+		AckPolicy:      AckExplicit,
+		PinnedTTL:      3 * time.Second,
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 10; i++ {
+		sendStreamMsg(t, nc, "foo", "data")
+	}
+
+	req := JSApiConsumerGetNextRequest{Batch: 1, Expires: 10 * time.Second, PriorityGroup: PriorityGroup{
+		Group: "A",
+	}}
+
+	reqBytes, err := json.Marshal(req)
+	require_NoError(t, err)
+
+	firstInbox := "FIRST"
+	firstReplies, err := nc.SubscribeSync(firstInbox)
+	require_NoError(t, err)
+	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", firstInbox, reqBytes)
+
+	msg, err := firstReplies.NextMsg(1 * time.Second)
+	require_NoError(t, err)
+	pinId := msg.Header.Get("Nats-Pin-Id")
+	require_NotEqual(t, pinId, "")
+
+	secondInbox := "SECOND"
+	secondReplies, err := nc.SubscribeSync(secondInbox)
+	require_NoError(t, err)
+	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", secondInbox, reqBytes)
+
+	// Expect error, as first request should be still pinned.
+	_, err = secondReplies.NextMsg(1 * time.Second)
+	require_Error(t, err)
+
+	// During the 5 second window, the first Pin should time out and this request
+	// should become the pinned one and get the message.
+	msg, err = secondReplies.NextMsg(5 * time.Second)
+	require_NoError(t, err)
+	newPinId := msg.Header.Get("Nats-Pin-Id")
+	require_NotEqual(t, newPinId, pinId)
+	require_NotEqual(t, newPinId, "")
+
+	thirdInbox := "THIRD"
+	thirdReplies, err := nc.SubscribeSync(thirdInbox)
+	require_NoError(t, err)
+	nc.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.TEST.C", thirdInbox, reqBytes)
+
+	// The same process as above, but tests different codepath - one where Pin
+	// is set on existing waiting request.
+	msg, err = thirdReplies.NextMsg(5 * time.Second)
+	require_NoError(t, err)
+	require_NotEqual(t, msg.Header.Get("Nats-Pin-Id"), pinId)
+	require_NotEqual(t, msg.Header.Get("Nats-Pin-Id"), newPinId)
+	require_NotEqual(t, newPinId, "")
+
+}
+
 func TestJetStreamConsumerUnpin(t *testing.T) {
 	single := RunBasicJetStreamServer(t)
 	defer single.Shutdown()
