@@ -60,8 +60,13 @@ type ConsumerInfo struct {
 	Paused         bool            `json:"paused,omitempty"`
 	PauseRemaining time.Duration   `json:"pause_remaining,omitempty"`
 	// TimeStamp indicates when the info was gathered
-	TimeStamp time.Time         `json:"ts"`
-	PinnedIds map[string]string `json:"pinned_ids,omitempty"`
+	TimeStamp      time.Time                     `json:"ts"`
+	PriorityGroups map[string]PriorityGroupState `json:"priority_groups,omitempty"`
+}
+
+type PriorityGroupState struct {
+	PinnedClientID string    `json:"pinned_client_id,omitempty"`
+	PinnedTS       time.Time `json:"pinned_ts,omitempty"`
 }
 
 type ConsumerConfig struct {
@@ -480,6 +485,7 @@ type consumer struct {
 	currentPinId string
 	/// pinnedTtl is the remaining time before the current PinId expires.
 	pinnedTtl *time.Timer
+	pinnedTS  time.Time
 }
 
 // A single subject filter.
@@ -2900,10 +2906,13 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		rg = o.ca.Group
 	}
 
+	priorityGroups := make(map[string]PriorityGroupState)
 	// TODO(jrm): when we introduce supporting many priority groups, we need to update assigning `o.currentNuid` for each group.
-	pinnedIds := make(map[string]string)
 	if len(o.cfg.PriorityGroups) > 0 {
-		pinnedIds[o.cfg.PriorityGroups[0]] = o.currentPinId
+		priorityGroups[o.cfg.PriorityGroups[0]] = PriorityGroupState{
+			PinnedClientID: o.currentPinId,
+			PinnedTS:       o.pinnedTS,
+		}
 	}
 
 	cfg := o.cfg
@@ -2925,7 +2934,7 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		NumPending:     o.checkNumPending(),
 		PushBound:      o.isPushMode() && o.active,
 		TimeStamp:      time.Now().UTC(),
-		PinnedIds:      pinnedIds,
+		PriorityGroups: priorityGroups,
 	}
 	if o.cfg.PauseUntil != nil {
 		p := *o.cfg.PauseUntil
