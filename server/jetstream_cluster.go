@@ -1150,21 +1150,28 @@ type recoveryUpdates struct {
 func (js *jetStream) checkForOrphans() {
 	// Can not hold jetstream lock while trying to delete streams or consumers.
 	js.mu.Lock()
+	if js.shuttingDown {
+		js.mu.Unlock()
+		return
+	}
 	s, cc := js.srv, js.cluster
-	s.Debugf("JetStream cluster checking for orphans")
 
 	// We only want to cleanup any orphans if we know we are current with the meta-leader.
 	meta := cc.meta
 	if meta == nil || meta.GroupLeader() == _EMPTY_ {
 		js.mu.Unlock()
-		s.Debugf("JetStream cluster skipping check for orphans, no meta-leader")
+		s.Debugf("JetStream cluster skipping check for orphans, no meta-leader, will retry")
+		time.AfterFunc(time.Second, js.checkForOrphans)
 		return
 	}
 	if !meta.Healthy() {
 		js.mu.Unlock()
-		s.Debugf("JetStream cluster skipping check for orphans, not current with the meta-leader")
+		s.Debugf("JetStream cluster skipping check for orphans, not current with the meta-leader, will retry")
+		time.AfterFunc(time.Second, js.checkForOrphans)
 		return
 	}
+
+	s.Debugf("JetStream cluster checking for orphans")
 
 	var streams []*stream
 	var consumers []*consumer
