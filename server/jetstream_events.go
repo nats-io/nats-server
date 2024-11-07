@@ -284,10 +284,10 @@ type JSConsumerGroupPinnedAdvisory struct {
 	PinnedClientId string `json:"pinned_id"`
 }
 
-const JSStreamGroupUnPinnedAdvisoryType = "io.nats.jetstream.advisory.v1.consumer_group_unpinned"
+const JSConsumerGroupUnpinnedAdvisoryType = "io.nats.jetstream.advisory.v1.consumer_group_unpinned"
 
-// JSConsumerGroupUnPinnedAdvisory indicates that a pin was lost
-type JSConsumerGroupUnPinnedAdvisory struct {
+// JSConsumerGroupUnpinnedAdvisory indicates that a pin was lost
+type JSConsumerGroupUnpinnedAdvisory struct {
 	TypedEvent
 	Account  string `json:"account,omitempty"`
 	Stream   string `json:"stream"`

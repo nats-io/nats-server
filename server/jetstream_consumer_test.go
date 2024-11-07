@@ -1807,7 +1807,6 @@ func TestJetStreamConsumerUnpinPickDifferentRequest(t *testing.T) {
 	require_NoError(t, err)
 	pinId := msg.Header.Get("Nats-Pin-Id")
 	require_NotEqual(t, pinId, "")
-	fmt.Printf("INITIAL PIN: %v\n", msg.Header.Get("Nats-Pin-Id"))
 
 	reqPinned := JSApiConsumerGetNextRequest{Batch: 5, Expires: 15 * time.Second, PriorityGroup: PriorityGroup{
 		Group: "A",
@@ -2015,6 +2014,7 @@ func TestJetStreamConsumerUnpin(t *testing.T) {
 		{"unpin on missing stream", nc, "NOT_EXIST", "C", "A", &ApiError{ErrCode: uint16(JSStreamNotFoundErr)}},
 		{"unpin on missing consumer", nc, "TEST", "NOT_EXIST", "A", &ApiError{ErrCode: uint16(JSConsumerNotFoundErr)}},
 		{"unpin missing group", nc, "TEST", "C", "", &ApiError{ErrCode: uint16(JSInvalidJSONErr)}},
+		{"unpin bad group name", nc, "TEST", "C", "group    name\r\n", &ApiError{ErrCode: uint16(JSConsumerInvalidGroupNameErr)}},
 		{"ok unpin", nc, "TEST", "C", "A", nil},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -2366,6 +2366,26 @@ func TestJetStreamConsumerMultipleFitersWithStartDate(t *testing.T) {
 		})
 	}
 
+}
+
+func TestPriorityGroupNameRegex(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		group string
+		valid bool
+	}{
+		{"valid-short", "A", true},
+		{"valid-with-accepted-special-chars", "group/consumer=A", true},
+		{"empty", "", false},
+		{"with-space", "A B", false},
+		{"with-tab", "A   B", false},
+		{"too-long-name", "group-name-that-is-too-long", false},
+		{"line-termination", "\r\n", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			require_Equal(t, test.valid, validGroupName.MatchString(test.group))
+		})
+	}
 }
 
 func sendRequest(t *testing.T, nc *nats.Conn, reply string, req JSApiConsumerGetNextRequest) *nats.Subscription {

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math/rand"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -39,6 +40,10 @@ const (
 	JSPullRequestPendingBytes = "Nats-Pending-Bytes"
 	JSPullRequestWrongPinID   = "NATS/1.0 423 Nats-Wrong-Pin-Id\r\n\r\n"
 	JSPullRequestNatsPinId    = "Nats-Pin-Id"
+)
+
+var (
+	validGroupName = regexp.MustCompile(`^[a-zA-Z0-9/_=-]{1,16}$`)
 )
 
 // Headers sent when batch size was completed, but there were remaining bytes.
@@ -817,6 +822,9 @@ func checkConsumerCfg(
 		for _, group := range config.PriorityGroups {
 			if group == _EMPTY_ {
 				return NewJSConsumerEmptyGroupNameError()
+			}
+			if !validGroupName.MatchString(group) {
+				return NewJSConsumerInvalidGroupNameError()
 			}
 		}
 	}
@@ -1624,9 +1632,9 @@ func (o *consumer) sendPinnedAdvisoryLocked(group string) {
 
 }
 func (o *consumer) sendUnpinnedAdvisoryLocked(group string, reason string) {
-	e := JSConsumerGroupUnPinnedAdvisory{
+	e := JSConsumerGroupUnpinnedAdvisory{
 		TypedEvent: TypedEvent{
-			Type: JSStreamGroupUnPinnedAdvisoryType,
+			Type: JSConsumerGroupUnpinnedAdvisoryType,
 			ID:   nuid.Next(),
 			Time: time.Now().UTC(),
 		},
