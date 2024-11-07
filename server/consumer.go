@@ -1626,7 +1626,7 @@ func (o *consumer) sendPinnedAdvisoryLocked(group string) {
 func (o *consumer) sendUnpinnedAdvisoryLocked(group string, reason string) {
 	e := JSConsumerGroupUnPinnedAdvisory{
 		TypedEvent: TypedEvent{
-			Type: JSConsumerGroupPinnedAdvisoryType,
+			Type: JSStreamGroupUnPinnedAdvisoryType,
 			ID:   nuid.Next(),
 			Time: time.Now().UTC(),
 		},
