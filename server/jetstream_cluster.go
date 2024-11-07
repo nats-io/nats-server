@@ -1409,7 +1409,11 @@ func (js *jetStream) monitorCluster() {
 					continue
 				}
 				if didSnap, didStreamRemoval, didConsumerRemoval, err := js.applyMetaEntries(ce.Entries, ru); err == nil {
-					_, nb := n.Applied(ce.Index)
+					var nb uint64
+					// Some entries can fail without an error when shutting down, don't move applied forward.
+					if !js.isShuttingDown() {
+						_, nb = n.Applied(ce.Index)
+					}
 					if js.hasPeerEntries(ce.Entries) || didStreamRemoval || (didSnap && !isLeader) {
 						doSnapshot()
 					} else if didConsumerRemoval && time.Since(lastSnapTime) > minSnapDelta/2 {
