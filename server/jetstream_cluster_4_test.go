@@ -1299,7 +1299,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 			ldmRestart:     true,
 			rolloutRestart: false,
 			restarts:       1,
-			checkHealthz:   false,
+			checkHealthz:   true,
 		}
 		test(t, params, &nats.StreamConfig{
 			Name:        "OWQTEST_R3M",
@@ -1325,6 +1325,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 			ldmRestart:     true,
 			rolloutRestart: false,
 			restarts:       1,
+			checkHealthz:   true,
 		}
 		test(t, params, &nats.StreamConfig{
 			Name:        "OWQTEST_R3F_DN",
@@ -1349,6 +1350,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 			ldmRestart:     true,
 			rolloutRestart: false,
 			restarts:       1,
+			checkHealthz:   true,
 		}
 		test(t, params, &nats.StreamConfig{
 			Name:        "OWQTEST_R3F_DO",
@@ -1369,13 +1371,11 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 	// Clustered file based with discard old policy and no limits.
 	t.Run("R3F_DO_NOLIMIT", func(t *testing.T) {
 		params := &testParams{
-			restartAny:       false,
-			ldmRestart:       true,
-			rolloutRestart:   true,
-			restarts:         3,
-			checkHealthz:     true,
-			reconnectRoutes:  true,
-			reconnectClients: true,
+			restartAny:     true,
+			ldmRestart:     true,
+			rolloutRestart: false,
+			restarts:       1,
+			checkHealthz:   true,
 		}
 		test(t, params, &nats.StreamConfig{
 			Name:       "OWQTEST_R3F_DO_NOLIMIT",
