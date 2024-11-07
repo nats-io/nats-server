@@ -2072,6 +2072,12 @@ func TestJetStreamClusterMaxConsumersMultipleConcurrentRequests(t *testing.T) {
 	if nc := len(names); nc > 1 {
 		t.Fatalf("Expected only 1 consumer, got %d", nc)
 	}
+
+	metaLeader := c.leader()
+	mjs := metaLeader.getJetStream()
+	sa := mjs.streamAssignment(globalAccountName, "MAXCC")
+	require_NotNil(t, sa)
+	require_True(t, sa.pendingConsumers == nil)
 }
 
 func TestJetStreamClusterAccountMaxStreamsAndConsumersMultipleConcurrentRequests(t *testing.T) {
