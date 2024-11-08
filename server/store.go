@@ -104,6 +104,7 @@ type StreamStore interface {
 	SubjectsTotals(filterSubject string) map[string]uint64
 	MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed int) ([]uint64, error)
 	NumPending(sseq uint64, filter string, lastPerSubject bool) (total, validThrough uint64)
+	NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bool) (total, validThrough uint64)
 	State() StreamState
 	FastState(*StreamState)
 	EncodedStreamState(failed uint64) (enc []byte, err error)
