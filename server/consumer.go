@@ -1077,7 +1077,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	// If we have multiple filter subjects, create a sublist which we will use
 	// in calling store.LoadNextMsgMulti.
 	if len(o.cfg.FilterSubjects) > 0 {
-		o.filters = NewSublistWithCache()
+		o.filters = NewSublistNoCache()
 		for _, filter := range o.cfg.FilterSubjects {
 			o.filters.Insert(&subscription{subject: []byte(filter)})
 		}
@@ -2202,7 +2202,7 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 			if len(o.subjf) == 1 {
 				o.filters = nil
 			} else {
-				o.filters = NewSublistWithCache()
+				o.filters = NewSublistNoCache()
 				for _, filter := range o.subjf {
 					o.filters.Insert(&subscription{subject: []byte(filter.subject)})
 				}
