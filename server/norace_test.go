@@ -6677,6 +6677,7 @@ func TestNoRaceJetStreamClusterGhostConsumers(t *testing.T) {
 	time.Sleep(5 * time.Second)
 	cancel()
 
+	// Check we don't report missing consumers.
 	subj := fmt.Sprintf(JSApiConsumerListT, "TEST")
 	checkFor(t, 20*time.Second, 200*time.Millisecond, func() error {
 		// Request will take at most 4 seconds if some consumers can't be found.
@@ -6690,6 +6691,29 @@ func TestNoRaceJetStreamClusterGhostConsumers(t *testing.T) {
 			return nil
 		}
 		return fmt.Errorf("Still have missing: %+v", resp.Missing)
+	})
+
+	// Also check all servers agree on the available consumer assignments.
+	// It could be the above check passes, i.e. our meta leader thinks all is okay, but other servers actually drifted.
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		var previousConsumers []string
+		for _, s := range c.servers {
+			sjs := s.getJetStream()
+			sjs.mu.Lock()
+			cc := sjs.cluster
+			sa := cc.streams[globalAccountName]["TEST"]
+			var consumers []string
+			for cName, _ := range sa.consumers {
+				consumers = append(consumers, cName)
+			}
+			sjs.mu.Unlock()
+			slices.Sort(consumers)
+			if previousConsumers != nil && !slices.Equal(previousConsumers, consumers) {
+				return fmt.Errorf("Consumer mismatch:\n- previous: %v\n- actual  : %v\n", previousConsumers, consumers)
+			}
+			previousConsumers = consumers
+		}
+		return nil
 	})
 }
 

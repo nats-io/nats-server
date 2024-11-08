@@ -1376,8 +1376,6 @@ func (js *jetStream) monitorCluster() {
 			ces := aq.pop()
 			for _, ce := range ces {
 				if ce == nil {
-					// Signals we have replayed all of our metadata.
-					js.clearMetaRecovering()
 					// Process any removes that are still valid after recovery.
 					for _, cas := range ru.removeConsumers {
 						for _, ca := range cas {
@@ -1401,6 +1399,8 @@ func (js *jetStream) monitorCluster() {
 							js.processConsumerAssignment(ca)
 						}
 					}
+					// Signals we have replayed all of our metadata.
+					js.clearMetaRecovering()
 					// Clear.
 					ru = nil
 					s.Debugf("Recovered JetStream cluster metadata")
@@ -1650,9 +1650,10 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 		if isRecovering {
 			key := sa.recoveryKey()
 			ru.removeStreams[key] = sa
-			delete(ru.updateConsumers, key)
 			delete(ru.addStreams, key)
 			delete(ru.updateStreams, key)
+			delete(ru.updateConsumers, key)
+			delete(ru.removeConsumers, key)
 		} else {
 			js.processStreamRemoval(sa)
 		}
@@ -1693,7 +1694,9 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 				ru.removeConsumers[skey] = map[string]*consumerAssignment{}
 			}
 			ru.removeConsumers[skey][key] = ca
-			delete(ru.updateConsumers, key)
+			if consumers, ok := ru.updateConsumers[skey]; ok {
+				delete(consumers, key)
+			}
 		} else {
 			js.processConsumerRemoval(ca)
 		}
@@ -1703,7 +1706,9 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 		if isRecovering {
 			key := ca.recoveryKey()
 			skey := ca.streamRecoveryKey()
-			delete(ru.removeConsumers, key)
+			if consumers, ok := ru.removeConsumers[skey]; ok {
+				delete(consumers, key)
+			}
 			if _, ok := ru.updateConsumers[skey]; !ok {
 				ru.updateConsumers[skey] = map[string]*consumerAssignment{}
 			}
@@ -1980,6 +1985,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					delete(ru.addStreams, key)
 					delete(ru.updateStreams, key)
 					delete(ru.updateConsumers, key)
+					delete(ru.removeConsumers, key)
 				} else {
 					js.processStreamRemoval(sa)
 					didRemoveStream = true
@@ -1994,7 +2000,9 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					js.setConsumerAssignmentRecovering(ca)
 					key := ca.recoveryKey()
 					skey := ca.streamRecoveryKey()
-					delete(ru.removeConsumers, key)
+					if consumers, ok := ru.removeConsumers[skey]; ok {
+						delete(consumers, key)
+					}
 					if _, ok := ru.updateConsumers[skey]; !ok {
 						ru.updateConsumers[skey] = map[string]*consumerAssignment{}
 					}
@@ -2012,7 +2020,9 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					js.setConsumerAssignmentRecovering(ca)
 					key := ca.recoveryKey()
 					skey := ca.streamRecoveryKey()
-					delete(ru.removeConsumers, key)
+					if consumers, ok := ru.removeConsumers[skey]; ok {
+						delete(consumers, key)
+					}
 					if _, ok := ru.updateConsumers[skey]; !ok {
 						ru.updateConsumers[skey] = map[string]*consumerAssignment{}
 					}
@@ -2034,7 +2044,9 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 						ru.removeConsumers[skey] = map[string]*consumerAssignment{}
 					}
 					ru.removeConsumers[skey][key] = ca
-					delete(ru.updateConsumers, key)
+					if consumers, ok := ru.updateConsumers[skey]; ok {
+						delete(consumers, key)
+					}
 				} else {
 					js.processConsumerRemoval(ca)
 					didRemoveConsumer = true

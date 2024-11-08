@@ -6614,6 +6614,56 @@ func TestJetStreamClusterMetaRecoveryRecreateFileStreamAsMemory(t *testing.T) {
 	require_Len(t, len(ru.updateConsumers), 1)
 }
 
+func TestJetStreamClusterMetaRecoveryConsumerCreateAndRemove(t *testing.T) {
+	tests := []struct {
+		title                       string
+		encodeAddConsumerAssignment func(ca *consumerAssignment) []byte
+	}{
+		{title: "simple", encodeAddConsumerAssignment: encodeAddConsumerAssignment},
+		{title: "compressed", encodeAddConsumerAssignment: encodeAddConsumerAssignmentCompressed},
+	}
+	for _, test := range tests {
+		t.Run(test.title, func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			js := c.leader().getJetStream()
+
+			ca := &consumerAssignment{Stream: "TEST", Name: "consumer"}
+			createConsumer := []*Entry{{EntryNormal, test.encodeAddConsumerAssignment(ca)}}
+			deleteConsumer := []*Entry{{EntryNormal, encodeDeleteConsumerAssignment(ca)}}
+
+			// Need to be recovering so that we accumulate recoveryUpdates.
+			js.setMetaRecovering()
+			ru := &recoveryUpdates{
+				removeStreams:   make(map[string]*streamAssignment),
+				removeConsumers: make(map[string]map[string]*consumerAssignment),
+				addStreams:      make(map[string]*streamAssignment),
+				updateStreams:   make(map[string]*streamAssignment),
+				updateConsumers: make(map[string]map[string]*consumerAssignment),
+			}
+
+			// Creating the consumer should append to update consumers list.
+			_, _, _, err := js.applyMetaEntries(createConsumer, ru)
+			require_NoError(t, err)
+			require_Len(t, len(ru.updateConsumers[":TEST"]), 1)
+			require_Len(t, len(ru.removeConsumers), 0)
+
+			// Deleting the consumer should append to remove consumers list and remove from update list.
+			_, _, _, err = js.applyMetaEntries(deleteConsumer, ru)
+			require_NoError(t, err)
+			require_Len(t, len(ru.removeConsumers[":TEST"]), 1)
+			require_Len(t, len(ru.updateConsumers[":TEST"]), 0)
+
+			// When re-creating the consumer, add to update list and remove from remove list.
+			_, _, _, err = js.applyMetaEntries(createConsumer, ru)
+			require_NoError(t, err)
+			require_Len(t, len(ru.updateConsumers[":TEST"]), 1)
+			require_Len(t, len(ru.removeConsumers[":TEST"]), 0)
+		})
+	}
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
