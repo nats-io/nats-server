@@ -4061,7 +4061,7 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 	// Check if we are multi-filtered or not.
 	if filters != nil {
 		sm, sseq, err = store.LoadNextMsgMulti(filters, fseq, &pmsg.StoreMsg)
-	} else if subjf != nil { // Means single filtered subject since o.filters means > 1.
+	} else if len(subjf) > 0 { // Means single filtered subject since o.filters means > 1.
 		filter, wc := subjf[0].subject, subjf[0].hasWildcard
 		sm, sseq, err = store.LoadNextMsg(filter, wc, fseq, &pmsg.StoreMsg)
 	} else {
@@ -4734,7 +4734,7 @@ func (o *consumer) calculateNumPending() (npc, npf uint64) {
 
 	if filters != nil {
 		return o.mset.store.NumPendingMulti(o.sseq, filters, isLastPerSubject)
-	} else if subjf != nil {
+	} else if len(subjf) > 0 {
 		filter := subjf[0].subject
 		return o.mset.store.NumPending(o.sseq, filter, isLastPerSubject)
 	}
