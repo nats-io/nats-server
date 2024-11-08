@@ -24,6 +24,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/nats-io/nuid"
 )
 
 func TestMemStoreBasics(t *testing.T) {
@@ -966,6 +968,88 @@ func TestMemStoreDeleteAllFirstSequenceCheck(t *testing.T) {
 	require_Equal(t, state.FirstSeq, 11)
 	require_Equal(t, state.LastSeq, 10)
 	require_Equal(t, state.Msgs, 0)
+}
+
+func TestMemStoreNumPendingMulti(t *testing.T) {
+	cfg := &StreamConfig{
+		Name:     "zzz",
+		Subjects: []string{"ev.*"},
+		Storage:  MemoryStorage,
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(t, err)
+	defer ms.Stop()
+
+	totalMsgs := 100_000
+	totalSubjects := 10_000
+	numFiltered := 5000
+	startSeq := uint64(5_000 + rand.Intn(90_000))
+
+	subjects := make([]string, 0, totalSubjects)
+	for i := 0; i < totalSubjects; i++ {
+		subjects = append(subjects, fmt.Sprintf("ev.%s", nuid.Next()))
+	}
+
+	// Put in 100k msgs with random subjects.
+	msg := bytes.Repeat([]byte("ZZZ"), 333)
+	for i := 0; i < totalMsgs; i++ {
+		_, _, err = ms.StoreMsg(subjects[rand.Intn(totalSubjects)], nil, msg)
+		require_NoError(t, err)
+	}
+
+	// Now we want to do a calculate NumPendingMulti.
+	filters := NewSublistNoCache()
+	for filters.Count() < uint32(numFiltered) {
+		filter := subjects[rand.Intn(totalSubjects)]
+		if !filters.HasInterest(filter) {
+			filters.Insert(&subscription{subject: []byte(filter)})
+		}
+	}
+
+	// Use new function.
+	total, _ := ms.NumPendingMulti(startSeq, filters, false)
+
+	// Check our results.
+	var checkTotal uint64
+	var smv StoreMsg
+	for seq := startSeq; seq <= uint64(totalMsgs); seq++ {
+		sm, err := ms.LoadMsg(seq, &smv)
+		require_NoError(t, err)
+		if filters.HasInterest(sm.subj) {
+			checkTotal++
+		}
+	}
+	require_Equal(t, total, checkTotal)
+}
+
+func TestMemStoreNumPendingBug(t *testing.T) {
+	cfg := &StreamConfig{
+		Name:     "zzz",
+		Subjects: []string{"foo.*"},
+		Storage:  MemoryStorage,
+	}
+	ms, err := newMemStore(cfg)
+	require_NoError(t, err)
+	defer ms.Stop()
+
+	// 12 msgs total
+	for _, subj := range []string{"foo.foo", "foo.bar", "foo.baz", "foo.zzz"} {
+		ms.StoreMsg("foo.aaa", nil, nil)
+		ms.StoreMsg(subj, nil, nil)
+		ms.StoreMsg(subj, nil, nil)
+	}
+	total, _ := ms.NumPending(4, "foo.*", false)
+
+	var checkTotal uint64
+	var smv StoreMsg
+	for seq := 4; seq <= 12; seq++ {
+		sm, err := ms.LoadMsg(uint64(seq), &smv)
+		require_NoError(t, err)
+		if subjectIsSubsetMatch(sm.subj, "foo.*") {
+			checkTotal++
+		}
+	}
+	require_Equal(t, total, checkTotal)
 }
 
 ///////////////////////////////////////////////////////////////////////////

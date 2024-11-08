@@ -950,7 +950,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	// If we have multiple filter subjects, create a sublist which we will use
 	// in calling store.LoadNextMsgMulti.
 	if len(o.cfg.FilterSubjects) > 0 {
-		o.filters = NewSublistWithCache()
+		o.filters = NewSublistNoCache()
 		for _, filter := range o.cfg.FilterSubjects {
 			o.filters.Insert(&subscription{subject: []byte(filter)})
 		}
@@ -1940,7 +1940,7 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 			if len(o.subjf) == 1 {
 				o.filters = nil
 			} else {
-				o.filters = NewSublistWithCache()
+				o.filters = NewSublistNoCache()
 				for _, filter := range o.subjf {
 					o.filters.Insert(&subscription{subject: []byte(filter.subject)})
 				}
@@ -3638,7 +3638,7 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 	// Check if we are multi-filtered or not.
 	if filters != nil {
 		sm, sseq, err = store.LoadNextMsgMulti(filters, fseq, &pmsg.StoreMsg)
-	} else if subjf != nil { // Means single filtered subject since o.filters means > 1.
+	} else if len(subjf) > 0 { // Means single filtered subject since o.filters means > 1.
 		filter, wc := subjf[0].subject, subjf[0].hasWildcard
 		sm, sseq, err = store.LoadNextMsg(filter, wc, fseq, &pmsg.StoreMsg)
 	} else {
@@ -4283,37 +4283,15 @@ func (o *consumer) calculateNumPending() (npc, npf uint64) {
 	}
 
 	isLastPerSubject := o.cfg.DeliverPolicy == DeliverLastPerSubject
+	filters, subjf := o.filters, o.subjf
 
-	// Deliver Last Per Subject calculates num pending differently.
-	if isLastPerSubject {
-		// Consumer without filters.
-		if o.subjf == nil {
-			return o.mset.store.NumPending(o.sseq, _EMPTY_, isLastPerSubject)
-		}
-		// Consumer with filters.
-		for _, filter := range o.subjf {
-			lnpc, lnpf := o.mset.store.NumPending(o.sseq, filter.subject, isLastPerSubject)
-			npc += lnpc
-			if lnpf > npf {
-				npf = lnpf // Always last
-			}
-		}
-		return npc, npf
+	if filters != nil {
+		return o.mset.store.NumPendingMulti(o.sseq, filters, isLastPerSubject)
+	} else if len(subjf) > 0 {
+		filter := subjf[0].subject
+		return o.mset.store.NumPending(o.sseq, filter, isLastPerSubject)
 	}
-	// Every other Delivery Policy is handled here.
-	// Consumer without filters.
-	if o.subjf == nil {
-		return o.mset.store.NumPending(o.sseq, _EMPTY_, false)
-	}
-	// Consumer with filters.
-	for _, filter := range o.subjf {
-		lnpc, lnpf := o.mset.store.NumPending(o.sseq, filter.subject, false)
-		npc += lnpc
-		if lnpf > npf {
-			npf = lnpf // Always last
-		}
-	}
-	return npc, npf
+	return o.mset.store.NumPending(o.sseq, _EMPTY_, isLastPerSubject)
 }
 
 func convertToHeadersOnly(pmsg *jsPubMsg) {

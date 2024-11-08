@@ -359,15 +359,13 @@ func (ms *memStore) FilteredState(sseq uint64, subj string) SimpleState {
 }
 
 func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubject bool) SimpleState {
-	var ss SimpleState
-
 	if sseq < ms.state.FirstSeq {
 		sseq = ms.state.FirstSeq
 	}
 
 	// If past the end no results.
 	if sseq > ms.state.LastSeq {
-		return ss
+		return SimpleState{}
 	}
 
 	if filter == _EMPTY_ {
@@ -391,9 +389,10 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 
 	_tsa, _fsa := [32]string{}, [32]string{}
 	tsa, fsa := _tsa[:0], _fsa[:0]
-	fsa = tokenizeSubjectIntoSlice(fsa[:0], filter)
 	wc := subjectHasWildcard(filter)
-
+	if wc {
+		fsa = tokenizeSubjectIntoSlice(fsa[:0], filter)
+	}
 	// 1. See if we match any subs from fss.
 	// 2. If we match and the sseq is past ss.Last then we can use meta only.
 	// 3. If we match we need to do a partial, break and clear any totals and do a full scan like num pending.
@@ -409,6 +408,7 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 		return isSubsetMatchTokenized(tsa, fsa)
 	}
 
+	var ss SimpleState
 	update := func(fss *SimpleState) {
 		msgs, first, last := fss.Msgs, fss.First, fss.Last
 		if lastPerSubject {
@@ -424,6 +424,7 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 	}
 
 	var havePartial bool
+	var totalSkipped uint64
 	// We will track start and end sequences as we go.
 	ms.fss.Match(stringToBytes(filter), func(subj []byte, fss *SimpleState) {
 		if fss.firstNeedsUpdate {
@@ -436,6 +437,8 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 			havePartial = true
 			// Don't break here, we will update to keep tracking last.
 			update(fss)
+		} else {
+			totalSkipped += fss.Msgs
 		}
 	})
 
@@ -492,6 +495,7 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 	} else {
 		// We will adjust from the totals above by scanning what we need to exclude.
 		ss.First = first
+		ss.Msgs += totalSkipped
 		var adjust uint64
 		var tss *SimpleState
 
@@ -627,6 +631,158 @@ func (ms *memStore) NumPending(sseq uint64, filter string, lastPerSubject bool) 
 	defer ms.mu.Unlock()
 
 	ss := ms.filteredStateLocked(sseq, filter, lastPerSubject)
+	return ss.Msgs, ms.state.LastSeq
+}
+
+// NumPending will return the number of pending messages matching any subject in the sublist starting at sequence.
+func (ms *memStore) NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bool) (total, validThrough uint64) {
+	if sl == nil {
+		return ms.NumPending(sseq, fwcs, lastPerSubject)
+	}
+
+	// This needs to be a write lock, as we can mutate the per-subject state.
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	var ss SimpleState
+	if sseq < ms.state.FirstSeq {
+		sseq = ms.state.FirstSeq
+	}
+	// If past the end no results.
+	if sseq > ms.state.LastSeq {
+		return 0, ms.state.LastSeq
+	}
+
+	update := func(fss *SimpleState) {
+		msgs, first, last := fss.Msgs, fss.First, fss.Last
+		if lastPerSubject {
+			msgs, first = 1, last
+		}
+		ss.Msgs += msgs
+		if ss.First == 0 || first < ss.First {
+			ss.First = first
+		}
+		if last > ss.Last {
+			ss.Last = last
+		}
+	}
+
+	var havePartial bool
+	var totalSkipped uint64
+	// We will track start and end sequences as we go.
+	ms.fss.Iter(func(subj []byte, fss *SimpleState) bool {
+		if !sl.HasInterest(bytesToString(subj)) {
+			return true
+		}
+		if fss.firstNeedsUpdate {
+			ms.recalculateFirstForSubj(bytesToString(subj), fss.First, fss)
+		}
+		if sseq <= fss.First {
+			update(fss)
+		} else if sseq <= fss.Last {
+			// We matched but it is a partial.
+			havePartial = true
+			// Don't break here, we will update to keep tracking last.
+			update(fss)
+		} else {
+			totalSkipped += fss.Msgs
+		}
+		return true
+	})
+
+	// If we did not encounter any partials we can return here.
+	if !havePartial {
+		return ss.Msgs, ms.state.LastSeq
+	}
+
+	// If we are here we need to scan the msgs.
+	// Capture first and last sequences for scan and then clear what we had.
+	first, last := ss.First, ss.Last
+	// To track if we decide to exclude we need to calculate first.
+	if first < sseq {
+		first = sseq
+	}
+
+	// Now we want to check if it is better to scan inclusive and recalculate that way
+	// or leave and scan exclusive and adjust our totals.
+	// ss.Last is always correct here.
+	toScan, toExclude := last-first, first-ms.state.FirstSeq+ms.state.LastSeq-ss.Last
+	var seen map[string]bool
+	if lastPerSubject {
+		seen = make(map[string]bool)
+	}
+	if toScan < toExclude {
+		ss.Msgs, ss.First = 0, 0
+
+		update := func(sm *StoreMsg) {
+			ss.Msgs++
+			if ss.First == 0 {
+				ss.First = sm.seq
+			}
+			if seen != nil {
+				seen[sm.subj] = true
+			}
+		}
+		// Check if easier to just scan msgs vs the sequence range.
+		// This can happen with lots of interior deletes.
+		if last-first > uint64(len(ms.msgs)) {
+			for _, sm := range ms.msgs {
+				if sm.seq >= first && sm.seq <= last && !seen[sm.subj] && sl.HasInterest(sm.subj) {
+					update(sm)
+				}
+			}
+		} else {
+			for seq := first; seq <= last; seq++ {
+				if sm, ok := ms.msgs[seq]; ok && !seen[sm.subj] && sl.HasInterest(sm.subj) {
+					update(sm)
+				}
+			}
+		}
+	} else {
+		// We will adjust from the totals above by scanning what we need to exclude.
+		ss.First = first
+		ss.Msgs += totalSkipped
+		var adjust uint64
+		var tss *SimpleState
+
+		update := func(sm *StoreMsg) {
+			if lastPerSubject {
+				tss, _ = ms.fss.Find(stringToBytes(sm.subj))
+			}
+			// If we are last per subject, make sure to only adjust if all messages are before our first.
+			if tss == nil || tss.Last < first {
+				adjust++
+			}
+			if seen != nil {
+				seen[sm.subj] = true
+			}
+		}
+		// Check if easier to just scan msgs vs the sequence range.
+		if first-ms.state.FirstSeq > uint64(len(ms.msgs)) {
+			for _, sm := range ms.msgs {
+				if sm.seq < first && !seen[sm.subj] && sl.HasInterest(sm.subj) {
+					update(sm)
+				}
+			}
+		} else {
+			for seq := ms.state.FirstSeq; seq < first; seq++ {
+				if sm, ok := ms.msgs[seq]; ok && !seen[sm.subj] && sl.HasInterest(sm.subj) {
+					update(sm)
+				}
+			}
+		}
+		// Now do range at end.
+		for seq := last + 1; seq < ms.state.LastSeq; seq++ {
+			if sm, ok := ms.msgs[seq]; ok && !seen[sm.subj] && sl.HasInterest(sm.subj) {
+				adjust++
+				if seen != nil {
+					seen[sm.subj] = true
+				}
+			}
+		}
+		ss.Msgs -= adjust
+	}
+
 	return ss.Msgs, ms.state.LastSeq
 }
 
