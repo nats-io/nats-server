@@ -4730,37 +4730,15 @@ func (o *consumer) calculateNumPending() (npc, npf uint64) {
 	}
 
 	isLastPerSubject := o.cfg.DeliverPolicy == DeliverLastPerSubject
+	filters, subjf := o.filters, o.subjf
 
-	// Deliver Last Per Subject calculates num pending differently.
-	if isLastPerSubject {
-		// Consumer without filters.
-		if o.subjf == nil {
-			return o.mset.store.NumPending(o.sseq, _EMPTY_, isLastPerSubject)
-		}
-		// Consumer with filters.
-		for _, filter := range o.subjf {
-			lnpc, lnpf := o.mset.store.NumPending(o.sseq, filter.subject, isLastPerSubject)
-			npc += lnpc
-			if lnpf > npf {
-				npf = lnpf // Always last
-			}
-		}
-		return npc, npf
+	if filters != nil {
+		return o.mset.store.NumPendingMulti(o.sseq, filters, isLastPerSubject)
+	} else if subjf != nil {
+		filter := subjf[0].subject
+		return o.mset.store.NumPending(o.sseq, filter, isLastPerSubject)
 	}
-	// Every other Delivery Policy is handled here.
-	// Consumer without filters.
-	if o.subjf == nil {
-		return o.mset.store.NumPending(o.sseq, _EMPTY_, false)
-	}
-	// Consumer with filters.
-	for _, filter := range o.subjf {
-		lnpc, lnpf := o.mset.store.NumPending(o.sseq, filter.subject, false)
-		npc += lnpc
-		if lnpf > npf {
-			npf = lnpf // Always last
-		}
-	}
-	return npc, npf
+	return o.mset.store.NumPending(o.sseq, _EMPTY_, isLastPerSubject)
 }
 
 func convertToHeadersOnly(pmsg *jsPubMsg) {
