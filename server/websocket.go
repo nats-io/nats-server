@@ -1316,7 +1316,19 @@ func (c *client) wsCollapsePtoNB() (net.Buffers, int64) {
 		}
 		var csz int
 		for _, b := range nb {
-			cp.Write(b)
+			for len(b) > 0 {
+				n, err := cp.Write(b)
+				if err != nil {
+					if err == io.EOF {
+						break
+					}
+					c.Errorf("Error during compression: %v", err)
+					c.markConnAsClosed(WriteError)
+					nbPoolPut(b)
+					return nil, 0
+				}
+				b = b[n:]
+			}
 			nbPoolPut(b) // No longer needed as contents written to compressor.
 		}
 		if err := cp.Flush(); err != nil {
