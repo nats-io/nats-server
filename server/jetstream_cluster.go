@@ -138,11 +138,10 @@ type streamAssignment struct {
 	Reply   string        `json:"reply"`
 	Restore *StreamState  `json:"restore_state,omitempty"`
 	// Internal
-	consumers        map[string]*consumerAssignment
-	pendingConsumers map[string]struct{}
-	responded        bool
-	recovering       bool
-	err              error
+	consumers  map[string]*consumerAssignment
+	responded  bool
+	recovering bool
+	err        error
 }
 
 // consumerAssignment is what the meta controller uses to assign consumers to streams.
@@ -159,6 +158,7 @@ type consumerAssignment struct {
 	// Internal
 	responded  bool
 	recovering bool
+	pending    bool
 	deleted    bool
 	err        error
 }
@@ -1552,6 +1552,11 @@ func (js *jetStream) metaSnapshot() []byte {
 				Consumers: make([]*consumerAssignment, 0, len(sa.consumers)),
 			}
 			for _, ca := range sa.consumers {
+				// Skip if the consumer is pending, we can't include it in our snapshot.
+				// If the proposal fails after we marked it pending, it would result in a ghost consumer.
+				if ca.pending {
+					continue
+				}
 				wsa.Consumers = append(wsa.Consumers, ca)
 			}
 			streams = append(streams, wsa)
@@ -4277,10 +4282,7 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 	// Place into our internal map under the stream assignment.
 	// Ok to replace an existing one, we check on process call below.
 	sa.consumers[ca.Name] = ca
-	delete(sa.pendingConsumers, ca.Name)
-	if len(sa.pendingConsumers) == 0 {
-		sa.pendingConsumers = nil
-	}
+	ca.pending = false
 	js.mu.Unlock()
 
 	acc, err := s.LookupAccount(accName)
@@ -7432,7 +7434,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		}
 		if maxc > 0 {
 			// Don't count DIRECTS.
-			total := len(sa.pendingConsumers)
+			total := 0
 			for cn, ca := range sa.consumers {
 				if action == ActionCreateOrUpdate {
 					// If the consumer name is specified and we think it already exists, then
@@ -7693,10 +7695,11 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	// Do formal proposal.
 	if err := cc.meta.Propose(encodeAddConsumerAssignment(ca)); err == nil {
 		// Mark this as pending.
-		if sa.pendingConsumers == nil {
-			sa.pendingConsumers = make(map[string]struct{})
+		if sa.consumers == nil {
+			sa.consumers = make(map[string]*consumerAssignment)
 		}
-		sa.pendingConsumers[ca.Name] = struct{}{}
+		ca.pending = true
+		sa.consumers[ca.Name] = ca
 	}
 }
 
