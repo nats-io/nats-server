@@ -6670,22 +6670,43 @@ func TestNoRaceJetStreamClusterGhostConsumers(t *testing.T) {
 	time.Sleep(5 * time.Second)
 	cancel()
 
-	getMissing := func() []string {
-		m, err := nc.Request("$JS.API.CONSUMER.LIST.TEST", nil, time.Second*10)
-		require_NoError(t, err)
-
+	// Check we don't report missing consumers.
+	subj := fmt.Sprintf(JSApiConsumerListT, "TEST")
+	checkFor(t, 20*time.Second, 200*time.Millisecond, func() error {
+		// Request will take at most 4 seconds if some consumers can't be found.
+		m, err := nc.Request(subj, nil, 5*time.Second)
+		if err != nil {
+			return err
+		}
 		var resp JSApiConsumerListResponse
-		err = json.Unmarshal(m.Data, &resp)
-		require_NoError(t, err)
-		return resp.Missing
-	}
-
-	checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
-		missing := getMissing()
-		if len(missing) == 0 {
+		require_NoError(t, json.Unmarshal(m.Data, &resp))
+		if len(resp.Missing) == 0 {
 			return nil
 		}
-		return fmt.Errorf("Still have missing: %+v", missing)
+		return fmt.Errorf("Still have missing: %+v", resp.Missing)
+	})
+
+	// Also check all servers agree on the available consumer assignments.
+	// It could be the above check passes, i.e. our meta leader thinks all is okay, but other servers actually drifted.
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		var previousConsumers []string
+		for _, s := range c.servers {
+			sjs := s.getJetStream()
+			sjs.mu.Lock()
+			cc := sjs.cluster
+			sa := cc.streams[globalAccountName]["TEST"]
+			var consumers []string
+			for cName := range sa.consumers {
+				consumers = append(consumers, cName)
+			}
+			sjs.mu.Unlock()
+			slices.Sort(consumers)
+			if previousConsumers != nil && !slices.Equal(previousConsumers, consumers) {
+				return fmt.Errorf("Consumer mismatch:\n- previous: %v\n- actual  : %v\n", previousConsumers, consumers)
+			}
+			previousConsumers = consumers
+		}
+		return nil
 	})
 }
 

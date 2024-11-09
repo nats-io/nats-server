@@ -138,11 +138,10 @@ type streamAssignment struct {
 	Reply   string        `json:"reply"`
 	Restore *StreamState  `json:"restore_state,omitempty"`
 	// Internal
-	consumers        map[string]*consumerAssignment
-	pendingConsumers map[string]struct{}
-	responded        bool
-	recovering       bool
-	err              error
+	consumers  map[string]*consumerAssignment
+	responded  bool
+	recovering bool
+	err        error
 }
 
 // consumerAssignment is what the meta controller uses to assign consumers to streams.
@@ -159,6 +158,7 @@ type consumerAssignment struct {
 	// Internal
 	responded  bool
 	recovering bool
+	pending    bool
 	deleted    bool
 	err        error
 }
@@ -1376,8 +1376,6 @@ func (js *jetStream) monitorCluster() {
 			ces := aq.pop()
 			for _, ce := range ces {
 				if ce == nil {
-					// Signals we have replayed all of our metadata.
-					js.clearMetaRecovering()
 					// Process any removes that are still valid after recovery.
 					for _, cas := range ru.removeConsumers {
 						for _, ca := range cas {
@@ -1401,6 +1399,8 @@ func (js *jetStream) monitorCluster() {
 							js.processConsumerAssignment(ca)
 						}
 					}
+					// Signals we have replayed all of our metadata.
+					js.clearMetaRecovering()
 					// Clear.
 					ru = nil
 					s.Debugf("Recovered JetStream cluster metadata")
@@ -1556,6 +1556,11 @@ func (js *jetStream) metaSnapshot() []byte {
 				Consumers: make([]*consumerAssignment, 0, len(sa.consumers)),
 			}
 			for _, ca := range sa.consumers {
+				// Skip if the consumer is pending, we can't include it in our snapshot.
+				// If the proposal fails after we marked it pending, it would result in a ghost consumer.
+				if ca.pending {
+					continue
+				}
 				wsa.Consumers = append(wsa.Consumers, ca)
 			}
 			streams = append(streams, wsa)
@@ -1654,9 +1659,10 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 		if isRecovering {
 			key := sa.recoveryKey()
 			ru.removeStreams[key] = sa
-			delete(ru.updateConsumers, key)
 			delete(ru.addStreams, key)
 			delete(ru.updateStreams, key)
+			delete(ru.updateConsumers, key)
+			delete(ru.removeConsumers, key)
 		} else {
 			js.processStreamRemoval(sa)
 		}
@@ -1697,7 +1703,9 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 				ru.removeConsumers[skey] = map[string]*consumerAssignment{}
 			}
 			ru.removeConsumers[skey][key] = ca
-			delete(ru.updateConsumers, key)
+			if consumers, ok := ru.updateConsumers[skey]; ok {
+				delete(consumers, key)
+			}
 		} else {
 			js.processConsumerRemoval(ca)
 		}
@@ -1707,7 +1715,9 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 		if isRecovering {
 			key := ca.recoveryKey()
 			skey := ca.streamRecoveryKey()
-			delete(ru.removeConsumers, key)
+			if consumers, ok := ru.removeConsumers[skey]; ok {
+				delete(consumers, key)
+			}
 			if _, ok := ru.updateConsumers[skey]; !ok {
 				ru.updateConsumers[skey] = map[string]*consumerAssignment{}
 			}
@@ -1984,6 +1994,7 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					delete(ru.addStreams, key)
 					delete(ru.updateStreams, key)
 					delete(ru.updateConsumers, key)
+					delete(ru.removeConsumers, key)
 				} else {
 					js.processStreamRemoval(sa)
 					didRemoveStream = true
@@ -1998,7 +2009,9 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					js.setConsumerAssignmentRecovering(ca)
 					key := ca.recoveryKey()
 					skey := ca.streamRecoveryKey()
-					delete(ru.removeConsumers, key)
+					if consumers, ok := ru.removeConsumers[skey]; ok {
+						delete(consumers, key)
+					}
 					if _, ok := ru.updateConsumers[skey]; !ok {
 						ru.updateConsumers[skey] = map[string]*consumerAssignment{}
 					}
@@ -2016,7 +2029,9 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					js.setConsumerAssignmentRecovering(ca)
 					key := ca.recoveryKey()
 					skey := ca.streamRecoveryKey()
-					delete(ru.removeConsumers, key)
+					if consumers, ok := ru.removeConsumers[skey]; ok {
+						delete(consumers, key)
+					}
 					if _, ok := ru.updateConsumers[skey]; !ok {
 						ru.updateConsumers[skey] = map[string]*consumerAssignment{}
 					}
@@ -2038,7 +2053,9 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 						ru.removeConsumers[skey] = map[string]*consumerAssignment{}
 					}
 					ru.removeConsumers[skey][key] = ca
-					delete(ru.updateConsumers, key)
+					if consumers, ok := ru.updateConsumers[skey]; ok {
+						delete(consumers, key)
+					}
 				} else {
 					js.processConsumerRemoval(ca)
 					didRemoveConsumer = true
@@ -4234,10 +4251,7 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 	// Place into our internal map under the stream assignment.
 	// Ok to replace an existing one, we check on process call below.
 	sa.consumers[ca.Name] = ca
-	delete(sa.pendingConsumers, ca.Name)
-	if len(sa.pendingConsumers) == 0 {
-		sa.pendingConsumers = nil
-	}
+	ca.pending = false
 	js.mu.Unlock()
 
 	acc, err := s.LookupAccount(accName)
@@ -7374,7 +7388,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		}
 		if maxc > 0 {
 			// Don't count DIRECTS.
-			total := len(sa.pendingConsumers)
+			total := 0
 			for cn, ca := range sa.consumers {
 				if action == ActionCreateOrUpdate {
 					// If the consumer name is specified and we think it already exists, then
@@ -7617,10 +7631,11 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	// Do formal proposal.
 	if err := cc.meta.Propose(encodeAddConsumerAssignment(ca)); err == nil {
 		// Mark this as pending.
-		if sa.pendingConsumers == nil {
-			sa.pendingConsumers = make(map[string]struct{})
+		if sa.consumers == nil {
+			sa.consumers = make(map[string]*consumerAssignment)
 		}
-		sa.pendingConsumers[ca.Name] = struct{}{}
+		ca.pending = true
+		sa.consumers[ca.Name] = ca
 	}
 }
 
