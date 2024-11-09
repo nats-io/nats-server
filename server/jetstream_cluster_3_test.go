@@ -2385,6 +2385,7 @@ func TestJetStreamClusterLostConsumers(t *testing.T) {
 		Stream: "TEST",
 		Config: ConsumerConfig{
 			AckPolicy: AckExplicit,
+			Replicas:  1,
 		},
 	}
 	req, err := json.Marshal(cc)
@@ -2392,11 +2393,11 @@ func TestJetStreamClusterLostConsumers(t *testing.T) {
 
 	reqSubj := fmt.Sprintf(JSApiConsumerCreateT, "TEST")
 
-	// Now create 50 consumers. We do not wait for the answer.
+	// Now create 50 consumers. Ensure they are successfully created, so they're included in our snapshot.
 	for i := 0; i < 50; i++ {
-		nc.Publish(reqSubj, req)
+		_, err = nc.Request(reqSubj, req, time.Second)
+		require_NoError(t, err)
 	}
-	nc.Flush()
 
 	// Grab the meta leader.
 	ml := c.leader()

@@ -4390,3 +4390,54 @@ func TestJetStreamClusterKeepRaftStateIfStreamCreationFailedDuringShutdown(t *te
 	require_NoError(t, err)
 	require_True(t, len(files) > 0)
 }
+
+func TestJetStreamClusterMetaSnapshotMustNotIncludePendingConsumers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3})
+	require_NoError(t, err)
+
+	// We're creating an R3 consumer, just so we can copy its state and turn it into pending below.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Name: "consumer", Replicas: 3})
+	require_NoError(t, err)
+	nc.Close()
+
+	// Bypass normal API so we can simulate having a consumer pending to be created.
+	// A snapshot should never create pending consumers, as that would result
+	// in ghost consumers if the meta proposal failed.
+	ml := c.leader()
+	mjs := ml.getJetStream()
+	cc := mjs.cluster
+	consumers := cc.streams[globalAccountName]["TEST"].consumers
+	sampleCa := *consumers["consumer"]
+	sampleCa.Name, sampleCa.pending = "pending-consumer", true
+	consumers[sampleCa.Name] = &sampleCa
+
+	// Create snapshot, this should not contain pending consumers.
+	snap := mjs.metaSnapshot()
+
+	ru := &recoveryUpdates{
+		removeStreams:   make(map[string]*streamAssignment),
+		removeConsumers: make(map[string]map[string]*consumerAssignment),
+		addStreams:      make(map[string]*streamAssignment),
+		updateStreams:   make(map[string]*streamAssignment),
+		updateConsumers: make(map[string]map[string]*consumerAssignment),
+	}
+	err = mjs.applyMetaSnapshot(snap, ru, true)
+	require_NoError(t, err)
+	require_Len(t, len(ru.updateStreams), 1)
+	for _, sa := range ru.updateStreams {
+		for _, ca := range sa.consumers {
+			require_NotEqual(t, ca.Name, "pending-consumer")
+		}
+	}
+	for _, cas := range ru.updateConsumers {
+		for _, ca := range cas {
+			require_NotEqual(t, ca.Name, "pending-consumer")
+		}
+	}
+}
