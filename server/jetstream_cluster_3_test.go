@@ -3338,20 +3338,23 @@ func TestJetStreamClusterInterestLeakOnDisableJetStream(t *testing.T) {
 
 	server.DisableJetStream()
 
-	var sublist []*subscription
-	account.sl.localSubs(&sublist, false)
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		var sublist []*subscription
+		account.sl.localSubs(&sublist, false)
 
-	var danglingJSC, danglingRaft int
-	for _, sub := range sublist {
-		if strings.HasPrefix(string(sub.subject), "$JSC.") {
-			danglingJSC++
-		} else if strings.HasPrefix(string(sub.subject), "$NRG.") {
-			danglingRaft++
+		var danglingJSC, danglingRaft int
+		for _, sub := range sublist {
+			if strings.HasPrefix(string(sub.subject), "$JSC.") {
+				danglingJSC++
+			} else if strings.HasPrefix(string(sub.subject), "$NRG.") {
+				danglingRaft++
+			}
 		}
-	}
-	if danglingJSC > 0 || danglingRaft > 0 {
-		t.Fatalf("unexpected dangling interests for JetStream assets after shutdown (%d $JSC, %d $NRG)", danglingJSC, danglingRaft)
-	}
+		if danglingJSC > 0 || danglingRaft > 0 {
+			return fmt.Errorf("unexpected dangling interests for JetStream assets after shutdown (%d $JSC, %d $NRG)", danglingJSC, danglingRaft)
+		}
+		return nil
+	})
 }
 
 func TestJetStreamClusterNoLeadersDuringLameDuck(t *testing.T) {
