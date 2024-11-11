@@ -5089,6 +5089,7 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 					}
 					panic(err.Error())
 				}
+
 				if err = o.store.Update(state); err != nil {
 					o.mu.RLock()
 					s, acc, mset, name := o.srv, o.acc, o.mset, o.name
@@ -5101,17 +5102,10 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 				if mset := o.getStream(); mset != nil {
 					var ss StreamState
 					mset.store.FastState(&ss)
-					if err := o.checkStateForInterestStream(&ss); err == errAckFloorHigherThanLastSeq {
-						// Register pre-acks unless no state at all for the stream and we would create alot of pre-acks.
-						mset.mu.Lock()
-						// Only register if we have a valid FirstSeq.
-						if ss.FirstSeq > 0 {
-							for seq := ss.FirstSeq; seq < state.AckFloor.Stream; seq++ {
-								mset.registerPreAck(o, seq)
-							}
-						}
-						mset.mu.Unlock()
-					}
+					// We used to register preacks here if our ack floor was higher than the last sequence.
+					// Now when streams catch up they properly call checkInterestState() and periodically run this as well.
+					// If our states drift this could have allocated lots of pre-acks.
+					o.checkStateForInterestStream(&ss)
 				}
 			}
 
