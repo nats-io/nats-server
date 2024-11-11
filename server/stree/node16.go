@@ -79,10 +79,10 @@ func (n *node16) deleteChild(c byte) {
 
 // Shrink if needed and return new node, otherwise return nil.
 func (n *node16) shrink() node {
-	if n.size > 4 {
+	if n.size > 10 {
 		return nil
 	}
-	nn := newNode4(nil)
+	nn := newNode10(nil)
 	for i := uint16(0); i < n.size; i++ {
 		nn.addChild(n.key[i], n.child[i])
 	}
