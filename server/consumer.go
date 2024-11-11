@@ -345,6 +345,7 @@ type consumer struct {
 	outq              *jsOutQ
 	pending           map[uint64]*Pending
 	ptmr              *time.Timer
+	ptmrEnd           time.Time
 	rdq               []uint64
 	rdqi              avl.SequenceSet
 	rdc               map[uint64]uint64
@@ -1349,7 +1350,7 @@ func (o *consumer) setLeader(isLeader bool) {
 		stopAndClearTimer(&o.dtmr)
 
 		// Make sure to clear out any re-deliver queues
-		stopAndClearTimer(&o.ptmr)
+		o.stopAndClearPtmr()
 		o.rdq = nil
 		o.rdqi.Empty()
 		o.pending = nil
@@ -1739,7 +1740,7 @@ func (o *consumer) forceExpirePending() {
 				p.Timestamp += off
 			}
 		}
-		o.ptmr.Reset(o.ackWait(0))
+		o.resetPtmr(o.ackWait(0))
 	}
 	o.signalNewMessages()
 }
@@ -1882,7 +1883,7 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 	// AckWait
 	if cfg.AckWait != o.cfg.AckWait {
 		if o.ptmr != nil {
-			o.ptmr.Reset(100 * time.Millisecond)
+			o.resetPtmr(100 * time.Millisecond)
 		}
 	}
 	// Rate Limit
@@ -2413,7 +2414,7 @@ func (o *consumer) processNak(sseq, dseq, dc uint64, nak []byte) {
 					if o.ptmr != nil {
 						// Want checkPending to run and figure out the next timer ttl.
 						// TODO(dlc) - We could optimize this maybe a bit more and track when we expect the timer to fire.
-						o.ptmr.Reset(10 * time.Millisecond)
+						o.resetPtmr(10 * time.Millisecond)
 					}
 				}
 				// Nothing else for use to do now so return.
@@ -2547,11 +2548,7 @@ func (o *consumer) applyState(state *ConsumerState) {
 		if o.cfg.AckWait < delay {
 			delay = o.ackWait(0)
 		}
-		if o.ptmr == nil {
-			o.ptmr = time.AfterFunc(delay, o.checkPending)
-		} else {
-			o.ptmr.Reset(delay)
-		}
+		o.resetPtmr(delay)
 	}
 }
 
@@ -4456,9 +4453,24 @@ func (o *consumer) trackPending(sseq, dseq uint64) {
 	if o.pending == nil {
 		o.pending = make(map[uint64]*Pending)
 	}
-	if o.ptmr == nil {
-		o.ptmr = time.AfterFunc(o.ackWait(0), o.checkPending)
+
+	// We could have a backoff that set a timer higher than what we need for this message.
+	// In that case, reset to lowest backoff required for a message redelivery.
+	minDelay := o.ackWait(0)
+	if l := len(o.cfg.BackOff); l > 0 {
+		bi := int(o.rdc[sseq])
+		if bi < 0 {
+			bi = 0
+		} else if bi >= l {
+			bi = l - 1
+		}
+		minDelay = o.ackWait(o.cfg.BackOff[bi])
 	}
+	minDeadline := time.Now().Add(minDelay)
+	if o.ptmr == nil || o.ptmrEnd.After(minDeadline) {
+		o.resetPtmr(minDelay)
+	}
+
 	if p, ok := o.pending[sseq]; ok {
 		// Update timestamp but keep original consumer delivery sequence.
 		// So do not update p.Sequence.
@@ -4581,23 +4593,20 @@ func (o *consumer) removeFromRedeliverQueue(seq uint64) bool {
 
 // Checks the pending messages.
 func (o *consumer) checkPending() {
-	o.mu.RLock()
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
 	mset := o.mset
 	// On stop, mset and timer will be nil.
 	if o.closed || mset == nil || o.ptmr == nil {
-		stopAndClearTimer(&o.ptmr)
-		o.mu.RUnlock()
+		o.stopAndClearPtmr()
 		return
 	}
-	o.mu.RUnlock()
 
 	var shouldUpdateState bool
 	var state StreamState
 	mset.store.FastState(&state)
 	fseq := state.FirstSeq
-
-	o.mu.Lock()
-	defer o.mu.Unlock()
 
 	now := time.Now().UnixNano()
 	ttl := int64(o.cfg.AckWait)
@@ -4614,11 +4623,7 @@ func (o *consumer) checkPending() {
 	check := len(o.pending) > 1024
 	for seq, p := range o.pending {
 		if check && atomic.LoadInt64(&o.awl) > 0 {
-			if o.ptmr == nil {
-				o.ptmr = time.AfterFunc(100*time.Millisecond, o.checkPending)
-			} else {
-				o.ptmr.Reset(100 * time.Millisecond)
-			}
+			o.resetPtmr(100 * time.Millisecond)
 			return
 		}
 		// Check if these are no longer valid.
@@ -4685,15 +4690,10 @@ func (o *consumer) checkPending() {
 	}
 
 	if len(o.pending) > 0 {
-		delay := time.Duration(next)
-		if o.ptmr == nil {
-			o.ptmr = time.AfterFunc(delay, o.checkPending)
-		} else {
-			o.ptmr.Reset(o.ackWait(delay))
-		}
+		o.resetPtmr(time.Duration(next))
 	} else {
 		// Make sure to stop timer and clear out any re delivery queues
-		stopAndClearTimer(&o.ptmr)
+		o.stopAndClearPtmr()
 		o.rdq = nil
 		o.rdqi.Empty()
 		o.pending = nil
@@ -5179,7 +5179,7 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	o.client = nil
 	sysc := o.sysc
 	o.sysc = nil
-	stopAndClearTimer(&o.ptmr)
+	o.stopAndClearPtmr()
 	stopAndClearTimer(&o.dtmr)
 	stopAndClearTimer(&o.gwdtmr)
 	delivery := o.cfg.DeliverSubject
@@ -5600,4 +5600,18 @@ func (o *consumer) checkStateForInterestStream(ss *StreamState) error {
 		}
 	}
 	return nil
+}
+
+func (o *consumer) resetPtmr(delay time.Duration) {
+	if o.ptmr == nil {
+		o.ptmr = time.AfterFunc(delay, o.checkPending)
+	} else {
+		o.ptmr.Reset(delay)
+	}
+	o.ptmrEnd = time.Now().Add(delay)
+}
+
+func (o *consumer) stopAndClearPtmr() {
+	stopAndClearTimer(&o.ptmr)
+	o.ptmrEnd = time.Time{}
 }
