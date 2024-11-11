@@ -2783,16 +2783,28 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 		return false
 	}
 
-	// Check if this ack is above the current pointer to our next to deliver.
-	// This could happen on a cooperative takeover with high speed deliveries.
-	if sseq >= o.sseq {
-		o.sseq = sseq + 1
-	}
-
 	mset := o.mset
 	if mset == nil || mset.closed.Load() {
 		o.mu.Unlock()
 		return false
+	}
+
+	// Check if this ack is above the current pointer to our next to deliver.
+	// This could happen on a cooperative takeover with high speed deliveries.
+	if sseq >= o.sseq {
+		// Let's make sure this is valid.
+		// This is only received on the consumer leader, so should never be higher
+		// than the last stream sequence.
+		var ss StreamState
+		mset.store.FastState(&ss)
+		if sseq > ss.LastSeq {
+			o.srv.Warnf("JetStream consumer '%s > %s > %s' ACK sequence %d past last stream sequence of %d",
+				o.acc.Name, o.stream, o.name, sseq, ss.LastSeq)
+			// FIXME(dlc) - For 2.11 onwards should we return an error here to the caller?
+			o.mu.Unlock()
+			return false
+		}
+		o.sseq = sseq + 1
 	}
 
 	// Let the owning stream know if we are interest or workqueue retention based.
