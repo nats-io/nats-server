@@ -50,6 +50,7 @@ func (t *SubjectTree[T]) dump(w io.Writer, n node, depth int) {
 // For individual node/leaf dumps.
 func (n *leaf[T]) kind() string { return "LEAF" }
 func (n *node4) kind() string   { return "NODE4" }
+func (n *node10) kind() string  { return "NODE10" }
 func (n *node16) kind() string  { return "NODE16" }
 func (n *node48) kind() string  { return "NODE48" }
 func (n *node256) kind() string { return "NODE256" }
