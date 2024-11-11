@@ -865,6 +865,13 @@ func TestNRGNoResetOnAppendEntryResponse(t *testing.T) {
 }
 
 func TestNRGCandidateDontStepdownDueToLeaderOfPreviousTerm(t *testing.T) {
+	// This test relies on nodes not hitting their election timer too often.
+	origMinTimeout, origMaxTimeout, origHBInterval := minElectionTimeout, maxElectionTimeout, hbInterval
+	minElectionTimeout, maxElectionTimeout, hbInterval = time.Second*5, time.Second*10, time.Second
+	defer func() {
+		minElectionTimeout, maxElectionTimeout, hbInterval = origMinTimeout, origMaxTimeout, origHBInterval
+	}()
+
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 	c.waitOnLeader()
