@@ -1692,8 +1692,8 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 
 // Config returns the stream's configuration.
 func (mset *stream) config() StreamConfig {
-	mset.mu.RLock()
-	defer mset.mu.RUnlock()
+	mset.cfgMu.RLock()
+	defer mset.cfgMu.RUnlock()
 	return mset.cfg
 }
 
@@ -3654,7 +3654,6 @@ func (mset *stream) resetSourceInfo() {
 	}
 }
 
-// Lock should be held.
 // This will do a reverse scan on startup or leader election
 // searching for the starting sequence number.
 // This can be slow in degenerative cases.
