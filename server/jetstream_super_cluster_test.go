@@ -2122,12 +2122,16 @@ func TestJetStreamSuperClusterMovingStreamAndMoveBack(t *testing.T) {
 
 			checkMove("C2")
 
-			_, err = js.UpdateStream(&nats.StreamConfig{
-				Name:      "TEST",
-				Replicas:  test.replicas,
-				Placement: &nats.Placement{Tags: []string{"cloud:aws"}},
+			// The move could be completed when looking at the stream info, but the meta leader could still
+			// deny move updates for a short time while state is cleaned up.
+			checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+				_, err = js.UpdateStream(&nats.StreamConfig{
+					Name:      "TEST",
+					Replicas:  test.replicas,
+					Placement: &nats.Placement{Tags: []string{"cloud:aws"}},
+				})
+				return err
 			})
-			require_NoError(t, err)
 
 			checkMove("C1")
 		})
