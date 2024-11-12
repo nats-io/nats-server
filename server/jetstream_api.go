@@ -3424,6 +3424,11 @@ func (s *Server) jsConsumerUnpinRequest(sub *subscription, c *client, _ *Account
 		return
 	}
 
+	if !validGroupName.MatchString(req.Group) {
+		resp.Error = NewJSConsumerInvalidGroupNameError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
 	if s.JetStreamIsClustered() {
 		// Check to make sure the stream is assigned.
 		js, cc := s.getJetStreamCluster()
