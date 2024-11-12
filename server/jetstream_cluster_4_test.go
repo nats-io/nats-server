@@ -3790,10 +3790,21 @@ func TestJetStreamClusterPendingRequestsInJsz(t *testing.T) {
 		require_NoError(t, nc.PublishMsg(msg))
 	}
 
-	jsz, err := metaleader.Jsz(nil)
-	require_NoError(t, err)
-	require_True(t, jsz.Meta != nil)
-	require_NotEqual(t, jsz.Meta.Pending, 0)
+	// We could check before above published messages are received,
+	// so allow some retries for pending messages to build up.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		jsz, err := metaleader.Jsz(nil)
+		if err != nil {
+			return err
+		}
+		if jsz.Meta == nil {
+			return errors.New("jsz.Meta == nil")
+		}
+		if jsz.Meta.Pending == 0 {
+			return errors.New("jsz.Meta.Pending == 0, expected pending requests")
+		}
+		return nil
+	})
 
 	snc, _ := jsClientConnect(t, c.randomServer(), nats.UserInfo("admin", "s3cr3t!"))
 	defer snc.Close()
