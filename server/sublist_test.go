@@ -26,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats-server/v2/server/stree"
 	"github.com/nats-io/nuid"
 )
 
@@ -1980,6 +1981,128 @@ func TestSublistNumInterest(t *testing.T) {
 	require_NumInterest(t, "foo", 0, 1)
 	require_NumInterest(t, "foo.bar", 0, 0)
 	sl.Remove(qsub)
+}
+
+func TestSublistInterestBasedIntersection(t *testing.T) {
+	st := stree.NewSubjectTree[struct{}]()
+	st.Insert([]byte("one.two.three.four"), struct{}{})
+	st.Insert([]byte("one.two.three.five"), struct{}{})
+	st.Insert([]byte("one.two.six"), struct{}{})
+	st.Insert([]byte("one.two.seven"), struct{}{})
+	st.Insert([]byte("eight.nine"), struct{}{})
+
+	require_NoDuplicates := func(t *testing.T, got map[string]int) {
+		for _, c := range got {
+			require_Equal(t, c, 1)
+		}
+	}
+
+	t.Run("Literals", func(t *testing.T) {
+		got := map[string]int{}
+		sl := NewSublistNoCache()
+		sl.Insert(newSub("one.two.six"))
+		sl.Insert(newSub("eight.nine"))
+		IntersectStree(st, sl, func(subj []byte, entry *struct{}) {
+			got[string(subj)]++
+		})
+		require_Len(t, len(got), 2)
+		require_NoDuplicates(t, got)
+	})
+
+	t.Run("PWC", func(t *testing.T) {
+		got := map[string]int{}
+		sl := NewSublistNoCache()
+		sl.Insert(newSub("one.two.*.*"))
+		IntersectStree(st, sl, func(subj []byte, entry *struct{}) {
+			got[string(subj)]++
+		})
+		require_Len(t, len(got), 2)
+		require_NoDuplicates(t, got)
+	})
+
+	t.Run("PWCOverlapping", func(t *testing.T) {
+		got := map[string]int{}
+		sl := NewSublistNoCache()
+		sl.Insert(newSub("one.two.*.four"))
+		sl.Insert(newSub("one.two.*.*"))
+		IntersectStree(st, sl, func(subj []byte, entry *struct{}) {
+			got[string(subj)]++
+		})
+		require_Len(t, len(got), 2)
+		require_NoDuplicates(t, got)
+	})
+
+	t.Run("PWCAll", func(t *testing.T) {
+		got := map[string]int{}
+		sl := NewSublistNoCache()
+		sl.Insert(newSub("*.*"))
+		sl.Insert(newSub("*.*.*"))
+		sl.Insert(newSub("*.*.*.*"))
+		require_True(t, sl.HasInterest("foo.bar"))
+		require_True(t, sl.HasInterest("foo.bar.baz"))
+		require_True(t, sl.HasInterest("foo.bar.baz.qux"))
+		IntersectStree(st, sl, func(subj []byte, entry *struct{}) {
+			got[string(subj)]++
+		})
+		require_Len(t, len(got), 5)
+		require_NoDuplicates(t, got)
+	})
+
+	t.Run("FWC", func(t *testing.T) {
+		got := map[string]int{}
+		sl := NewSublistNoCache()
+		sl.Insert(newSub("one.>"))
+		IntersectStree(st, sl, func(subj []byte, entry *struct{}) {
+			got[string(subj)]++
+		})
+		require_Len(t, len(got), 4)
+		require_NoDuplicates(t, got)
+	})
+
+	t.Run("FWCOverlapping", func(t *testing.T) {
+		got := map[string]int{}
+		sl := NewSublistNoCache()
+		sl.Insert(newSub("one.two.three.four"))
+		sl.Insert(newSub("one.>"))
+		IntersectStree(st, sl, func(subj []byte, entry *struct{}) {
+			got[string(subj)]++
+		})
+		require_Len(t, len(got), 4)
+		require_NoDuplicates(t, got)
+	})
+
+	t.Run("FWCAll", func(t *testing.T) {
+		got := map[string]int{}
+		sl := NewSublistNoCache()
+		sl.Insert(newSub(">"))
+		IntersectStree(st, sl, func(subj []byte, entry *struct{}) {
+			got[string(subj)]++
+		})
+		require_Len(t, len(got), 5)
+		require_NoDuplicates(t, got)
+	})
+
+	t.Run("NoMatch", func(t *testing.T) {
+		got := map[string]int{}
+		sl := NewSublistNoCache()
+		sl.Insert(newSub("one"))
+		IntersectStree(st, sl, func(subj []byte, entry *struct{}) {
+			got[string(subj)]++
+		})
+		require_Len(t, len(got), 0)
+	})
+
+	t.Run("NoMatches", func(t *testing.T) {
+		got := map[string]int{}
+		sl := NewSublistNoCache()
+		sl.Insert(newSub("one"))
+		sl.Insert(newSub("eight"))
+		sl.Insert(newSub("ten"))
+		IntersectStree(st, sl, func(subj []byte, entry *struct{}) {
+			got[string(subj)]++
+		})
+		require_Len(t, len(got), 0)
+	})
 }
 
 func subsInit(pre string, toks []string) {

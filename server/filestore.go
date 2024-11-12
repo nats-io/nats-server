@@ -3219,11 +3219,11 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bo
 
 			var t uint64
 			var havePartial bool
-			mb.fss.Iter(func(bsubj []byte, ss *SimpleState) bool {
+			IntersectStree[SimpleState](mb.fss, sl, func(bsubj []byte, ss *SimpleState) {
 				subj := bytesToString(bsubj)
-				if havePartial || !sl.HasInterest(subj) {
+				if havePartial {
 					// If we already found a partial then don't do anything else.
-					return !havePartial
+					return
 				}
 				if ss.firstNeedsUpdate {
 					mb.recalculateFirstForSubj(subj, ss.First, ss)
@@ -3234,7 +3234,6 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bo
 					// We matched but its a partial.
 					havePartial = true
 				}
-				return !havePartial
 			})
 
 			// See if we need to scan msgs here.
@@ -3319,11 +3318,8 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bo
 				}
 				// Mark fss activity.
 				mb.lsts = time.Now().UnixNano()
-				mb.fss.Iter(func(bsubj []byte, ss *SimpleState) bool {
-					if sl.HasInterest(bytesToString(bsubj)) {
-						adjust += ss.Msgs
-					}
-					return true
+				IntersectStree(mb.fss, sl, func(bsubj []byte, ss *SimpleState) {
+					adjust += ss.Msgs
 				})
 			}
 		} else {
