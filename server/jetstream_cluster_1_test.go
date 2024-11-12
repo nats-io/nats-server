@@ -6664,6 +6664,63 @@ func TestJetStreamClusterMetaRecoveryConsumerCreateAndRemove(t *testing.T) {
 	}
 }
 
+// Make sure if we received acks that are out of bounds, meaning past our
+// last sequence or before our first that they are ignored and errored if applicable.
+func TestJetStreamConsumerAckOutOfBounds(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo.*"},
+		Retention: nats.WorkQueuePolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 10; i++ {
+		_, err = js.Publish("foo.bar", []byte("OK"))
+		require_NoError(t, err)
+	}
+
+	sub, err := js.PullSubscribe("foo.*", "C")
+	require_NoError(t, err)
+
+	msgs, err := sub.Fetch(1)
+	require_NoError(t, err)
+	require_Equal(t, len(msgs), 1)
+	msgs[0].AckSync()
+
+	// Now ack way past the last sequence.
+	_, err = nc.Request("$JS.ACK.TEST.C.1.10000000000.0.0.0", nil, 250*time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
+
+	// Make sure that now changes happened to our state.
+	ci, err := js.ConsumerInfo("TEST", "C")
+	require_NoError(t, err)
+	require_Equal(t, ci.Delivered.Consumer, 1)
+	require_Equal(t, ci.Delivered.Stream, 1)
+	require_Equal(t, ci.AckFloor.Consumer, 1)
+	require_Equal(t, ci.AckFloor.Stream, 1)
+
+	s := c.consumerLeader("$G", "TEST", "C")
+	s.Shutdown()
+	s.WaitForShutdown()
+	c.restartServer(s)
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "C")
+
+	// Confirm new leader has same state for delivered and ack floor.
+	ci, err = js.ConsumerInfo("TEST", "C")
+	require_NoError(t, err)
+	require_Equal(t, ci.Delivered.Consumer, 1)
+	require_Equal(t, ci.Delivered.Stream, 1)
+	require_Equal(t, ci.AckFloor.Consumer, 1)
+	require_Equal(t, ci.AckFloor.Stream, 1)
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.

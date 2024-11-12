@@ -6703,7 +6703,7 @@ func TestNoRaceJetStreamClusterGhostConsumers(t *testing.T) {
 			cc := sjs.cluster
 			sa := cc.streams[globalAccountName]["TEST"]
 			var consumers []string
-			for cName, _ := range sa.consumers {
+			for cName := range sa.consumers {
 				consumers = append(consumers, cName)
 			}
 			sjs.mu.Unlock()
