@@ -101,6 +101,7 @@ type StreamStore interface {
 	SubjectsState(filterSubject string) map[string]SimpleState
 	SubjectsTotals(filterSubject string) map[string]uint64
 	NumPending(sseq uint64, filter string, lastPerSubject bool) (total, validThrough uint64)
+	NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bool) (total, validThrough uint64)
 	State() StreamState
 	FastState(*StreamState)
 	EncodedStreamState(failed uint64) (enc []byte, err error)
@@ -291,12 +292,16 @@ type DeleteRange struct {
 }
 
 func (dr *DeleteRange) State() (first, last, num uint64) {
-	return dr.First, dr.First + dr.Num, dr.Num
+	deletesAfterFirst := dr.Num
+	if deletesAfterFirst > 0 {
+		deletesAfterFirst--
+	}
+	return dr.First, dr.First + deletesAfterFirst, dr.Num
 }
 
 // Range will range over all the deleted sequences represented by this block.
 func (dr *DeleteRange) Range(f func(uint64) bool) {
-	for seq := dr.First; seq <= dr.First+dr.Num; seq++ {
+	for seq := dr.First; seq < dr.First+dr.Num; seq++ {
 		if !f(seq) {
 			return
 		}

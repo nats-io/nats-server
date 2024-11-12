@@ -20,6 +20,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"unicode/utf8"
+
+	"github.com/nats-io/nats-server/v2/server/stree"
 )
 
 // Sublist is a routing mechanism to handle subject distribution and
@@ -1729,5 +1731,46 @@ func getAllNodes(l *level, results *SublistResult) {
 	for _, n := range l.nodes {
 		addNodeToResults(n, results)
 		getAllNodes(n.next, results)
+	}
+}
+
+// IntersectStree will match all items in the given subject tree that
+// have interest expressed in the given sublist. The callback will only be called
+// once for each subject, regardless of overlapping subscriptions in the sublist.
+func IntersectStree[T any](st *stree.SubjectTree[T], sl *Sublist, cb func(subj []byte, entry *T)) {
+	var _subj [255]byte
+	intersectStree(st, sl.root, _subj[:0], cb)
+}
+
+func intersectStree[T any](st *stree.SubjectTree[T], r *level, subj []byte, cb func(subj []byte, entry *T)) {
+	if r.numNodes() == 0 {
+		st.Match(subj, cb)
+		return
+	}
+	nsubj := subj
+	if len(nsubj) > 0 {
+		nsubj = append(subj, '.')
+	}
+	switch {
+	case r.fwc != nil:
+		// We've reached a full wildcard, do a FWC match on the stree at this point
+		// and don't keep iterating downward.
+		nsubj := append(nsubj, '>')
+		st.Match(nsubj, cb)
+	case r.pwc != nil:
+		// We've found a partial wildcard. We'll keep iterating downwards, but first
+		// check whether there's interest at this level (without triggering dupes) and
+		// match if so.
+		nsubj := append(nsubj, '*')
+		if len(r.pwc.psubs)+len(r.pwc.qsubs) > 0 && r.pwc.next != nil && r.pwc.next.numNodes() > 0 {
+			st.Match(nsubj, cb)
+		}
+		intersectStree(st, r.pwc.next, nsubj, cb)
+	case r.numNodes() > 0:
+		// Normal node with subject literals, keep iterating.
+		for t, n := range r.nodes {
+			nsubj := append(nsubj, t...)
+			intersectStree(st, n.next, nsubj, cb)
+		}
 	}
 }

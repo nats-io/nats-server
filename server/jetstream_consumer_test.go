@@ -1338,6 +1338,57 @@ func TestJetStreamConsumerStuckAckPending(t *testing.T) {
 	})
 }
 
+func TestJetStreamConsumerMultipleFitersWithStartDate(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	past := time.Now().Add(-90 * time.Second)
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"events.>"},
+	})
+	require_NoError(t, err)
+
+	sendStreamMsg(t, nc, "events.foo", "msg-1")
+	sendStreamMsg(t, nc, "events.bar", "msg-2")
+	sendStreamMsg(t, nc, "events.baz", "msg-3")
+	sendStreamMsg(t, nc, "events.biz", "msg-4")
+	sendStreamMsg(t, nc, "events.faz", "msg-5")
+	sendStreamMsg(t, nc, "events.foo", "msg-6")
+	sendStreamMsg(t, nc, "events.biz", "msg-7")
+
+	for _, test := range []struct {
+		name                   string
+		filterSubjects         []string
+		startTime              time.Time
+		expectedMessages       uint64
+		expectedStreamSequence uint64
+	}{
+		{"Single-Filter-first-sequence", []string{"events.foo"}, past, 2, 0},
+		{"Multiple-Filter-first-sequence", []string{"events.foo", "events.bar", "events.baz"}, past, 4, 0},
+		{"Multiple-Filters-second-subject", []string{"events.bar", "events.baz"}, past, 2, 1},
+		{"Multiple-Filters-first-last-subject", []string{"events.foo", "events.biz"}, past, 4, 0},
+		{"Multiple-Filters-in-future", []string{"events.foo", "events.biz"}, time.Now().Add(1 * time.Minute), 0, 7},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			info, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+				Durable:        test.name,
+				FilterSubjects: test.filterSubjects,
+				DeliverPolicy:  nats.DeliverByStartTimePolicy,
+				OptStartTime:   &test.startTime,
+			})
+			require_NoError(t, err)
+			require_Equal(t, test.expectedStreamSequence, info.Delivered.Stream)
+			require_Equal(t, test.expectedMessages, info.NumPending)
+		})
+	}
+
+}
+
 func Benchmark____JetStreamConsumerIsFilteredMatch(b *testing.B) {
 	subject := "foo.bar.do.not.match.any.filter.subject"
 	for n := 1; n <= 1024; n *= 2 {
@@ -1346,5 +1397,75 @@ func Benchmark____JetStreamConsumerIsFilteredMatch(b *testing.B) {
 		b.Run(name, func(b *testing.B) {
 			c.isFilteredMatch(subject)
 		})
+	}
+}
+
+// https://github.com/nats-io/nats-server/issues/6085
+func TestJetStreamConsumerBackoffNotRespectedWithMultipleInflightRedeliveries(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"events.>"},
+	})
+	require_NoError(t, err)
+
+	maxDeliver := 3
+	backoff := []time.Duration{2 * time.Second, 4 * time.Second}
+	sub, err := js.SubscribeSync(
+		"events.>",
+		nats.MaxDeliver(maxDeliver),
+		nats.BackOff(backoff),
+		nats.AckExplicit(),
+	)
+	require_NoError(t, err)
+
+	calculateExpectedBackoff := func(numDelivered int) time.Duration {
+		expectedBackoff := 500 * time.Millisecond
+		for i := 0; i < numDelivered-1 && i < len(backoff); i++ {
+			expectedBackoff += backoff[i]
+		}
+		return expectedBackoff
+	}
+
+	// We get one message to be redelivered using the final backoff duration.
+	firstMsgSent := time.Now()
+	sendStreamMsg(t, nc, "events.first", "msg-1")
+	_, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_LessThan(t, time.Since(firstMsgSent), calculateExpectedBackoff(1))
+	_, err = sub.NextMsg(5 * time.Second)
+	require_NoError(t, err)
+	require_LessThan(t, time.Since(firstMsgSent), calculateExpectedBackoff(2))
+	// This message will be redelivered with the final/highest backoff below.
+
+	// If we now send a new message, the pending timer should be reset to the first backoff.
+	// Otherwise, if it remains at the final backoff duration we'll get this message redelivered too late.
+	sendStreamMsg(t, nc, "events.second", "msg-2")
+
+	for {
+		msg, err := sub.NextMsg(5 * time.Second)
+		require_NoError(t, err)
+		if msg.Subject == "events.first" {
+			require_LessThan(t, time.Since(firstMsgSent), calculateExpectedBackoff(3))
+			continue
+		}
+
+		// We expect the second message to be redelivered using the specified backoff strategy.
+		// Before, the first redelivery of the second message would be sent after the highest backoff duration.
+		metadata, err := msg.Metadata()
+		require_NoError(t, err)
+		numDelivered := int(metadata.NumDelivered)
+		expectedBackoff := calculateExpectedBackoff(numDelivered)
+		require_LessThan(t, time.Since(metadata.Timestamp), expectedBackoff)
+
+		// We've received all message, test passed.
+		if numDelivered >= maxDeliver {
+			break
+		}
 	}
 }

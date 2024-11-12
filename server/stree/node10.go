@@ -13,31 +13,34 @@
 
 package stree
 
-// Node with 4 children
+// Node with 10 children
+// This node size is for the particular case that a part of the subject is numeric
+// in nature, i.e. it only needs to satisfy the range 0-9 without wasting bytes
 // Order of struct fields for best memory alignment (as per govet/fieldalignment)
-type node4 struct {
-	child [4]node
+type node10 struct {
+	child [10]node
 	meta
-	key [4]byte
+	key [10]byte
 }
 
-func newNode4(prefix []byte) *node4 {
-	nn := &node4{}
+func newNode10(prefix []byte) *node10 {
+	nn := &node10{}
 	nn.setPrefix(prefix)
 	return nn
 }
 
-// Currently we do not need to keep sorted for traversal so just add to the end.
-func (n *node4) addChild(c byte, nn node) {
-	if n.size >= 4 {
-		panic("node4 full!")
+// Currently we do not keep node10 sorted or use bitfields for traversal so just add to the end.
+// TODO(dlc) - We should revisit here with more detailed benchmarks.
+func (n *node10) addChild(c byte, nn node) {
+	if n.size >= 10 {
+		panic("node10 full!")
 	}
 	n.key[n.size] = c
 	n.child[n.size] = nn
 	n.size++
 }
 
-func (n *node4) findChild(c byte) *node {
+func (n *node10) findChild(c byte) *node {
 	for i := uint16(0); i < n.size; i++ {
 		if n.key[i] == c {
 			return &n.child[i]
@@ -46,18 +49,18 @@ func (n *node4) findChild(c byte) *node {
 	return nil
 }
 
-func (n *node4) isFull() bool { return n.size >= 4 }
+func (n *node10) isFull() bool { return n.size >= 10 }
 
-func (n *node4) grow() node {
-	nn := newNode10(n.prefix)
-	for i := 0; i < 4; i++ {
+func (n *node10) grow() node {
+	nn := newNode16(n.prefix)
+	for i := 0; i < 10; i++ {
 		nn.addChild(n.key[i], n.child[i])
 	}
 	return nn
 }
 
 // Deletes a child from the node.
-func (n *node4) deleteChild(c byte) {
+func (n *node10) deleteChild(c byte) {
 	for i, last := uint16(0), n.size-1; i < n.size; i++ {
 		if n.key[i] == c {
 			// Unsorted so just swap in last one here, else nil if last.
@@ -77,15 +80,19 @@ func (n *node4) deleteChild(c byte) {
 }
 
 // Shrink if needed and return new node, otherwise return nil.
-func (n *node4) shrink() node {
-	if n.size == 1 {
-		return n.child[0]
+func (n *node10) shrink() node {
+	if n.size > 4 {
+		return nil
 	}
-	return nil
+	nn := newNode4(nil)
+	for i := uint16(0); i < n.size; i++ {
+		nn.addChild(n.key[i], n.child[i])
+	}
+	return nn
 }
 
 // Iterate over all children calling func f.
-func (n *node4) iter(f func(node) bool) {
+func (n *node10) iter(f func(node) bool) {
 	for i := uint16(0); i < n.size; i++ {
 		if !f(n.child[i]) {
 			return
@@ -94,6 +101,6 @@ func (n *node4) iter(f func(node) bool) {
 }
 
 // Return our children as a slice.
-func (n *node4) children() []node {
+func (n *node10) children() []node {
 	return n.child[:n.size]
 }

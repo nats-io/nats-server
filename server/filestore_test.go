@@ -40,6 +40,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/s2"
+	"github.com/nats-io/nuid"
 )
 
 func testFileStoreAllPermutations(t *testing.T, fn func(t *testing.T, fcfg FileStoreConfig)) {
@@ -8143,4 +8144,53 @@ func TestFileStoreRecoverFullStateDetectCorruptState(t *testing.T) {
 
 	err = fs.recoverFullState()
 	require_Error(t, err, errCorruptState)
+}
+
+func TestFileStoreNumPendingMulti(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"ev.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	totalMsgs := 100_000
+	totalSubjects := 10_000
+	numFiltered := 5000
+	startSeq := uint64(5_000 + rand.Intn(90_000))
+
+	subjects := make([]string, 0, totalSubjects)
+	for i := 0; i < totalSubjects; i++ {
+		subjects = append(subjects, fmt.Sprintf("ev.%s", nuid.Next()))
+	}
+
+	// Put in 100k msgs with random subjects.
+	msg := bytes.Repeat([]byte("ZZZ"), 333)
+	for i := 0; i < totalMsgs; i++ {
+		_, _, err = fs.StoreMsg(subjects[rand.Intn(totalSubjects)], nil, msg)
+		require_NoError(t, err)
+	}
+
+	// Now we want to do a calculate NumPendingMulti.
+	filters := NewSublistNoCache()
+	for filters.Count() < uint32(numFiltered) {
+		filter := subjects[rand.Intn(totalSubjects)]
+		if !filters.HasInterest(filter) {
+			filters.Insert(&subscription{subject: []byte(filter)})
+		}
+	}
+
+	// Use new function.
+	total, _ := fs.NumPendingMulti(startSeq, filters, false)
+
+	// Check our results.
+	var checkTotal uint64
+	var smv StoreMsg
+	for seq := startSeq; seq <= uint64(totalMsgs); seq++ {
+		sm, err := fs.LoadMsg(seq, &smv)
+		require_NoError(t, err)
+		if filters.HasInterest(sm.subj) {
+			checkTotal++
+		}
+	}
+	require_Equal(t, total, checkTotal)
 }

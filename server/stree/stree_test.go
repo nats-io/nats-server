@@ -79,9 +79,22 @@ func TestSubjectTreeNodeGrow(t *testing.T) {
 	old, updated := st.Insert(b("foo.bar.E"), 22)
 	require_True(t, old == nil)
 	require_False(t, updated)
+	_, ok = st.root.(*node10)
+	require_True(t, ok)
+	for i := 5; i < 10; i++ {
+		subj := b(fmt.Sprintf("foo.bar.%c", 'A'+i))
+		old, updated := st.Insert(subj, 22)
+		require_True(t, old == nil)
+		require_False(t, updated)
+	}
+	// This one will trigger us to grow.
+	old, updated = st.Insert(b("foo.bar.K"), 22)
+	require_True(t, old == nil)
+	require_False(t, updated)
+	// We have filled a node10.
 	_, ok = st.root.(*node16)
 	require_True(t, ok)
-	for i := 5; i < 16; i++ {
+	for i := 11; i < 16; i++ {
 		subj := b(fmt.Sprintf("foo.bar.%c", 'A'+i))
 		old, updated := st.Insert(subj, 22)
 		require_True(t, old == nil)
@@ -164,18 +177,33 @@ func TestSubjectTreeNodeDelete(t *testing.T) {
 	require_True(t, found)
 	require_Equal(t, *v, 11)
 	require_Equal(t, st.root, nil)
-	// Now pop up to a node16 and make sure we can shrink back down.
+	// Now pop up to a node10 and make sure we can shrink back down.
 	for i := 0; i < 5; i++ {
 		subj := fmt.Sprintf("foo.bar.%c", 'A'+i)
 		st.Insert(b(subj), 22)
 	}
-	_, ok := st.root.(*node16)
+	_, ok := st.root.(*node10)
 	require_True(t, ok)
 	v, found = st.Delete(b("foo.bar.A"))
 	require_True(t, found)
 	require_Equal(t, *v, 22)
 	_, ok = st.root.(*node4)
 	require_True(t, ok)
+	// Now pop up to node16
+	for i := 0; i < 11; i++ {
+		subj := fmt.Sprintf("foo.bar.%c", 'A'+i)
+		st.Insert(b(subj), 22)
+	}
+	_, ok = st.root.(*node16)
+	require_True(t, ok)
+	v, found = st.Delete(b("foo.bar.A"))
+	require_True(t, found)
+	require_Equal(t, *v, 22)
+	_, ok = st.root.(*node10)
+	require_True(t, ok)
+	v, found = st.Find(b("foo.bar.B"))
+	require_True(t, found)
+	require_Equal(t, *v, 22)
 	// Now pop up to node48
 	st = NewSubjectTree[int]()
 	for i := 0; i < 17; i++ {

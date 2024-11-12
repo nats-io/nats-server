@@ -2376,6 +2376,7 @@ func TestJetStreamClusterLostConsumers(t *testing.T) {
 		Stream: "TEST",
 		Config: ConsumerConfig{
 			AckPolicy: AckExplicit,
+			Replicas:  1,
 		},
 	}
 	req, err := json.Marshal(cc)
@@ -2383,11 +2384,11 @@ func TestJetStreamClusterLostConsumers(t *testing.T) {
 
 	reqSubj := fmt.Sprintf(JSApiConsumerCreateT, "TEST")
 
-	// Now create 50 consumers. We do not wait for the answer.
+	// Now create 50 consumers. Ensure they are successfully created, so they're included in our snapshot.
 	for i := 0; i < 50; i++ {
-		nc.Publish(reqSubj, req)
+		_, err = nc.Request(reqSubj, req, time.Second)
+		require_NoError(t, err)
 	}
-	nc.Flush()
 
 	// Grab the meta leader.
 	ml := c.leader()
@@ -3337,20 +3338,23 @@ func TestJetStreamClusterInterestLeakOnDisableJetStream(t *testing.T) {
 
 	server.DisableJetStream()
 
-	var sublist []*subscription
-	account.sl.localSubs(&sublist, false)
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		var sublist []*subscription
+		account.sl.localSubs(&sublist, false)
 
-	var danglingJSC, danglingRaft int
-	for _, sub := range sublist {
-		if strings.HasPrefix(string(sub.subject), "$JSC.") {
-			danglingJSC++
-		} else if strings.HasPrefix(string(sub.subject), "$NRG.") {
-			danglingRaft++
+		var danglingJSC, danglingRaft int
+		for _, sub := range sublist {
+			if strings.HasPrefix(string(sub.subject), "$JSC.") {
+				danglingJSC++
+			} else if strings.HasPrefix(string(sub.subject), "$NRG.") {
+				danglingRaft++
+			}
 		}
-	}
-	if danglingJSC > 0 || danglingRaft > 0 {
-		t.Fatalf("unexpected dangling interests for JetStream assets after shutdown (%d $JSC, %d $NRG)", danglingJSC, danglingRaft)
-	}
+		if danglingJSC > 0 || danglingRaft > 0 {
+			return fmt.Errorf("unexpected dangling interests for JetStream assets after shutdown (%d $JSC, %d $NRG)", danglingJSC, danglingRaft)
+		}
+		return nil
+	})
 }
 
 func TestJetStreamClusterNoLeadersDuringLameDuck(t *testing.T) {

@@ -821,7 +821,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 			ldmRestart:     true,
 			rolloutRestart: false,
 			restarts:       1,
-			checkHealthz:   false,
+			checkHealthz:   true,
 		}
 		test(t, params, &nats.StreamConfig{
 			Name:        "OWQTEST_R3M",
@@ -847,6 +847,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 			ldmRestart:     true,
 			rolloutRestart: false,
 			restarts:       1,
+			checkHealthz:   true,
 		}
 		test(t, params, &nats.StreamConfig{
 			Name:        "OWQTEST_R3F_DN",
@@ -871,6 +872,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 			ldmRestart:     true,
 			rolloutRestart: false,
 			restarts:       1,
+			checkHealthz:   true,
 		}
 		test(t, params, &nats.StreamConfig{
 			Name:        "OWQTEST_R3F_DO",
@@ -891,13 +893,11 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 	// Clustered file based with discard old policy and no limits.
 	t.Run("R3F_DO_NOLIMIT", func(t *testing.T) {
 		params := &testParams{
-			restartAny:       false,
-			ldmRestart:       true,
-			rolloutRestart:   true,
-			restarts:         3,
-			checkHealthz:     true,
-			reconnectRoutes:  true,
-			reconnectClients: true,
+			restartAny:     true,
+			ldmRestart:     true,
+			rolloutRestart: false,
+			restarts:       1,
+			checkHealthz:   true,
 		}
 		test(t, params, &nats.StreamConfig{
 			Name:       "OWQTEST_R3F_DO_NOLIMIT",
@@ -3890,4 +3890,103 @@ func TestJetStreamClusterDesyncAfterRestartReplacesLeaderSnapshot(t *testing.T) 
 	checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
 		return checkState(t, c, globalAccountName, "TEST")
 	})
+}
+
+func TestJetStreamClusterKeepRaftStateIfStreamCreationFailedDuringShutdown(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	nc.Close()
+
+	// Capture RAFT storage directory and JetStream handle before shutdown.
+	s := c.randomNonStreamLeader(globalAccountName, "TEST")
+	acc, err := s.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+	sd := mset.node.(*raft).sd
+	jss := s.getJetStream()
+
+	// Shutdown the server.
+	// Normally there are no actions taken anymore after shutdown completes,
+	// but still do so to simulate actions taken while shutdown is in progress.
+	s.Shutdown()
+	s.WaitForShutdown()
+
+	// Check RAFT state is kept.
+	files, err := os.ReadDir(sd)
+	require_NoError(t, err)
+	require_True(t, len(files) > 0)
+
+	// Simulate server shutting down, JetStream being disabled and a stream being created.
+	sa := &streamAssignment{
+		Config: &StreamConfig{Name: "TEST"},
+		Group:  &raftGroup{node: &raft{}},
+	}
+	jss.processClusterCreateStream(acc, sa)
+
+	// Check RAFT state is not deleted due to failing stream creation.
+	files, err = os.ReadDir(sd)
+	require_NoError(t, err)
+	require_True(t, len(files) > 0)
+}
+
+func TestJetStreamClusterMetaSnapshotMustNotIncludePendingConsumers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3})
+	require_NoError(t, err)
+
+	// We're creating an R3 consumer, just so we can copy its state and turn it into pending below.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Name: "consumer", Replicas: 3})
+	require_NoError(t, err)
+	nc.Close()
+
+	// Bypass normal API so we can simulate having a consumer pending to be created.
+	// A snapshot should never create pending consumers, as that would result
+	// in ghost consumers if the meta proposal failed.
+	ml := c.leader()
+	mjs := ml.getJetStream()
+	cc := mjs.cluster
+	consumers := cc.streams[globalAccountName]["TEST"].consumers
+	sampleCa := *consumers["consumer"]
+	sampleCa.Name, sampleCa.pending = "pending-consumer", true
+	consumers[sampleCa.Name] = &sampleCa
+
+	// Create snapshot, this should not contain pending consumers.
+	snap := mjs.metaSnapshot()
+
+	ru := &recoveryUpdates{
+		removeStreams:   make(map[string]*streamAssignment),
+		removeConsumers: make(map[string]map[string]*consumerAssignment),
+		addStreams:      make(map[string]*streamAssignment),
+		updateStreams:   make(map[string]*streamAssignment),
+		updateConsumers: make(map[string]map[string]*consumerAssignment),
+	}
+	err = mjs.applyMetaSnapshot(snap, ru, true)
+	require_NoError(t, err)
+	require_Len(t, len(ru.updateStreams), 1)
+	for _, sa := range ru.updateStreams {
+		for _, ca := range sa.consumers {
+			require_NotEqual(t, ca.Name, "pending-consumer")
+		}
+	}
+	for _, cas := range ru.updateConsumers {
+		for _, ca := range cas {
+			require_NotEqual(t, ca.Name, "pending-consumer")
+		}
+	}
 }
