@@ -109,3 +109,35 @@ func TestStoreMsgLoadNextMsgMulti(t *testing.T) {
 		},
 	)
 }
+
+func TestStoreDeleteSlice(t *testing.T) {
+	ds := DeleteSlice{2}
+	var deletes []uint64
+	ds.Range(func(seq uint64) bool {
+		deletes = append(deletes, seq)
+		return true
+	})
+	require_Len(t, len(deletes), 1)
+	require_Equal(t, deletes[0], 2)
+
+	first, last, num := ds.State()
+	require_Equal(t, first, 2)
+	require_Equal(t, last, 2)
+	require_Equal(t, num, 1)
+}
+
+func TestStoreDeleteRange(t *testing.T) {
+	dr := DeleteRange{First: 2, Num: 1}
+	var deletes []uint64
+	dr.Range(func(seq uint64) bool {
+		deletes = append(deletes, seq)
+		return true
+	})
+	require_Len(t, len(deletes), 1)
+	require_Equal(t, deletes[0], 2)
+
+	first, last, num := dr.State()
+	require_Equal(t, first, 2)
+	require_Equal(t, last, 2)
+	require_Equal(t, num, 1)
+}
