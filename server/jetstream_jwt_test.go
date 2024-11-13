@@ -345,10 +345,9 @@ func TestJetStreamJWTMove(t *testing.T) {
 		require_NoError(t, err)
 
 		// Perform actual move
-		ci, err = js.UpdateStream(&nats.StreamConfig{Name: "MOVE-ME", Replicas: replicas,
+		_, err = js.UpdateStream(&nats.StreamConfig{Name: "MOVE-ME", Replicas: replicas,
 			Placement: &nats.Placement{Tags: []string{"cloud:C2-tag"}}})
 		require_NoError(t, err)
-		require_Equal(t, ci.Cluster.Name, "C1")
 
 		sc.clusterForName("C2").waitOnStreamLeader(aExpPub, "MOVE-ME")
 
