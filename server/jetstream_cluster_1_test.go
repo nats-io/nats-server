@@ -6069,6 +6069,7 @@ func TestJetStreamClusterConsumerAckSyncReporting(t *testing.T) {
 
 	// Now we want to make sure that jsz reporting will show the same
 	// state for ack floor.
+	c.waitOnAllCurrent()
 	opts := &JSzOptions{Accounts: true, Streams: true, Consumer: true}
 	for _, s := range c.servers {
 		jsz, err := s.Jsz(opts)
