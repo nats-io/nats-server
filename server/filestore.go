@@ -2298,31 +2298,30 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 	}
 
 	if !doLinearScan {
-		// If we have a wildcard match against all tracked subjects we know about.
+		// If we have a wildcard match against all tracked subjects we know about
+		// that fall within the >=start range.
 		if wc {
 			subs = subs[:0]
-			mb.fss.Match(stringToBytes(filter), func(bsubj []byte, _ *SimpleState) {
-				subs = append(subs, string(bsubj))
-			})
-			// Check if we matched anything
-			if len(subs) == 0 {
-				return nil, didLoad, ErrStoreMsgNotFound
-			}
 		}
 		fseq = lseq + 1
-		for _, subj := range subs {
-			ss, _ := mb.fss.Find(stringToBytes(subj))
-			if ss != nil && ss.firstNeedsUpdate {
-				mb.recalculateFirstForSubj(subj, ss.First, ss)
+		mb.fss.Match(stringToBytes(filter), func(bsubj []byte, ss *SimpleState) {
+			if ss.firstNeedsUpdate {
+				mb.recalculateFirstForSubj(bytesToString(bsubj), ss.First, ss)
 			}
-			if ss == nil || start > ss.Last || ss.First >= fseq {
-				continue
+			if start > ss.Last || ss.First >= fseq {
+				return
 			}
 			if ss.First < start {
 				fseq = start
 			} else {
 				fseq = ss.First
 			}
+			if wc {
+				subs = append(subs, string(bsubj))
+			}
+		})
+		if len(subs) == 0 {
+			return nil, didLoad, ErrStoreMsgNotFound
 		}
 	}
 
