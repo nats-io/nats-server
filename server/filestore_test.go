@@ -38,6 +38,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/nuid"
@@ -6330,9 +6331,9 @@ func TestFileStoreCorruptPSIMOnDisk(t *testing.T) {
 	// Force bad subject.
 	fs.mu.Lock()
 	psi, _ := fs.psim.Find(stringToBytes("foo.bar"))
-	bad := make([]byte, 7)
-	crand.Read(bad)
-	fs.psim.Insert(bad, *psi)
+	bad := []rune("foo.bar")
+	bad[3] = utf8.RuneError
+	fs.psim.Insert(stringToBytes(string(bad)), *psi)
 	fs.psim.Delete(stringToBytes("foo.bar"))
 	fs.dirty++
 	fs.mu.Unlock()
