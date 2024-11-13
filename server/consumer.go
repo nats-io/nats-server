@@ -5332,12 +5332,14 @@ func (o *consumer) cleanupNoInterestMessages(mset *stream, ignoreInterest bool) 
 		return
 	}
 
+	mset.mu.RUnlock()
+	mset.mu.Lock()
 	for seq := start; seq <= stop; seq++ {
 		if mset.noInterest(seq, co) {
 			rmseqs = append(rmseqs, seq)
 		}
 	}
-	mset.mu.RUnlock()
+	mset.mu.Unlock()
 
 	// These can be removed.
 	for _, seq := range rmseqs {
