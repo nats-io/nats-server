@@ -1091,15 +1091,19 @@ func (cc *jetStreamCluster) isConsumerLeader(account, stream, consumer string) b
 // proposals map. This is done on success (processStreamAssignment) or on
 // failure (processStreamAssignmentResults).
 // (Write) Lock held on entry.
-func (cc *jetStreamCluster) removeInflightProposal(accName, streamName string) {
+func (cc *jetStreamCluster) removeInflightProposal(accName, streamName string) bool {
 	streams, ok := cc.inflight[accName]
 	if !ok {
-		return
+		return false
+	}
+	if _, ok := streams[streamName]; !ok {
+		return false
 	}
 	delete(streams, streamName)
 	if len(streams) == 0 {
 		delete(cc.inflight, accName)
 	}
+	return true
 }
 
 // Return the cluster quit chan.
@@ -5485,9 +5489,10 @@ func (js *jetStream) processStreamAssignmentResults(sub *subscription, c *client
 	// This should have been done already in processStreamAssignment, but in
 	// case we have a code path that gets here with no processStreamAssignment,
 	// then we will do the proper thing. Otherwise will be a no-op.
-	cc.removeInflightProposal(result.Account, result.Stream)
+	if !cc.removeInflightProposal(result.Account, result.Stream) {
+		return
+	}
 
-	// FIXME(dlc) - suppress duplicates?
 	if sa := js.streamAssignment(result.Account, result.Stream); sa != nil {
 		canDelete := !result.Update && time.Since(sa.Created) < 5*time.Second
 
