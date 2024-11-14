@@ -57,6 +57,8 @@ func (sq *sendq) internalLoop() {
 		rply [256]byte
 		szb  [10]byte
 		hdb  [10]byte
+		_msg [4096]byte
+		msg  = _msg[:0]
 	)
 
 	for s.isRunning() {
@@ -74,7 +76,7 @@ func (sq *sendq) internalLoop() {
 				} else {
 					c.pa.reply = nil
 				}
-				var msg []byte
+				msg = msg[:0]
 				if len(pm.hdr) > 0 {
 					c.pa.hdr = len(pm.hdr)
 					c.pa.hdb = append(hdb[:0], strconv.Itoa(c.pa.hdr)...)
