@@ -4918,7 +4918,11 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 						doSnapshot(true)
 					}
 				} else if err := js.applyConsumerEntries(o, ce, isLeader); err == nil {
-					ne, nb := n.Applied(ce.Index)
+					var ne, nb uint64
+					// We can't guarantee writes are flushed while we're shutting down. Just rely on replay during recovery.
+					if !js.isShuttingDown() {
+						ne, nb = n.Applied(ce.Index)
+					}
 					ce.ReturnToPool()
 					// If we have at least min entries to compact, go ahead and snapshot/compact.
 					if nb > 0 && ne >= compactNumMin || nb > compactSizeMin {
