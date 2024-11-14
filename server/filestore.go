@@ -8130,11 +8130,11 @@ func (fs *fileStore) setSyncTimer() {
 	if fs.syncTmr != nil {
 		fs.syncTmr.Reset(fs.fcfg.SyncInterval)
 	} else {
-		// First time this fires will be any time up to the fs.fcfg.SyncInterval,
+		// First time this fires will be between SyncInterval/2 and SyncInterval,
 		// so that different stores are spread out, rather than having many of
 		// them trying to all sync at once, causing blips and contending dios.
-		start := time.Duration(mrand.Int63n(int64(fs.fcfg.SyncInterval)))
-		fs.syncTmr = time.AfterFunc(min(start, time.Second), fs.syncBlocks)
+		start := (fs.fcfg.SyncInterval / 2) + (time.Duration(mrand.Int63n(int64(fs.fcfg.SyncInterval / 2))))
+		fs.syncTmr = time.AfterFunc(start, fs.syncBlocks)
 	}
 }
 

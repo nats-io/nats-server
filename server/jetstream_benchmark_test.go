@@ -1760,6 +1760,9 @@ func startJSClusterAndConnect(b *testing.B, clusterSize int) (c *cluster, s *Ser
 		shutdown = func() {
 			s.Shutdown()
 		}
+		s.optsMu.Lock()
+		s.opts.SyncInterval = 5 * time.Minute
+		s.optsMu.Unlock()
 	} else {
 		c = createJetStreamClusterExplicit(b, "BENCH_PUB", clusterSize)
 		c.waitOnClusterReadyWithNumPeers(clusterSize)
@@ -1767,6 +1770,11 @@ func startJSClusterAndConnect(b *testing.B, clusterSize int) (c *cluster, s *Ser
 		s = c.leader()
 		shutdown = func() {
 			c.shutdown()
+		}
+		for _, s := range c.servers {
+			s.optsMu.Lock()
+			s.opts.SyncInterval = 5 * time.Minute
+			s.optsMu.Unlock()
 		}
 	}
 
