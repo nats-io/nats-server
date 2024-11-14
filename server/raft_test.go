@@ -341,6 +341,12 @@ func TestNRGSimpleElection(t *testing.T) {
 		re := decodeVoteResponse(msg.Data)
 		require_True(t, re != nil)
 
+		// Ignore old vote responses that could be in-flight.
+		if re.term < vr.term {
+			i--
+			continue
+		}
+
 		// The vote should have been granted.
 		require_Equal(t, re.granted, true)
 
