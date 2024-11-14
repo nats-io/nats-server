@@ -5055,11 +5055,14 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	// Check for republish.
 	if republish {
+		const ht = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\nNats-Last-Sequence: %d\r\n\r\n"
+		const htho = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\nNats-Last-Sequence: %d\r\nNats-Msg-Size: %d\r\n\r\n"
+		// When adding to existing headers, will use the fmt.Append version so this skips the headers from above.
+		const hoff = 10
+
 		tsStr := time.Unix(0, ts).UTC().Format(time.RFC3339Nano)
 		var rpMsg []byte
 		if len(hdr) == 0 {
-			const ht = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\nNats-Last-Sequence: %d\r\n\r\n"
-			const htho = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\nNats-Last-Sequence: %d\r\nNats-Msg-Size: %d\r\n\r\n"
 			if !thdrsOnly {
 				hdr = fmt.Appendf(nil, ht, name, subject, seq, tsStr, tlseq)
 				rpMsg = copyBytes(msg)
@@ -5067,19 +5070,16 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				hdr = fmt.Appendf(nil, htho, name, subject, seq, tsStr, tlseq, len(msg))
 			}
 		} else {
-			// Slow path.
-			hdr = genHeader(hdr, JSStream, name)
-			hdr = genHeader(hdr, JSSubject, subject)
-			hdr = genHeader(hdr, JSSequence, strconv.FormatUint(seq, 10))
-			hdr = genHeader(hdr, JSTimeStamp, tsStr)
-			hdr = genHeader(hdr, JSLastSequence, strconv.FormatUint(tlseq, 10))
+			// use hdr[:end:end] to make sure as we add we copy the original hdr.
+			end := len(hdr) - LEN_CR_LF
 			if !thdrsOnly {
+				hdr = fmt.Appendf(hdr[:end:end], ht[hoff:], name, subject, seq, tsStr, tlseq)
 				rpMsg = copyBytes(msg)
 			} else {
-				hdr = genHeader(hdr, JSMsgSize, strconv.Itoa(len(msg)))
+				hdr = fmt.Appendf(hdr[:end:end], htho[hoff:], name, subject, seq, tsStr, tlseq, len(msg))
 			}
 		}
-		mset.outq.send(newJSPubMsg(tsubj, _EMPTY_, _EMPTY_, copyBytes(hdr), rpMsg, nil, seq))
+		mset.outq.send(newJSPubMsg(tsubj, _EMPTY_, _EMPTY_, hdr, rpMsg, nil, seq))
 	}
 
 	// Send response here.
