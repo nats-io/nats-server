@@ -2479,6 +2479,7 @@ func TestJetStreamClusterConsumerLeak(t *testing.T) {
 				errors <- fmt.Errorf("Error on JetStream consumer creation: %v", err)
 				return
 			}
+			cl.waitOnAllCurrent()
 
 			err = js.DeleteConsumer(streamName, consumerName)
 			if err != nil {

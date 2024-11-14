@@ -213,6 +213,7 @@ func TestJetStreamSuperClusterUniquePlacementTag(t *testing.T) {
 			si, err := js.AddStream(cfg)
 			require_NoError(t, err)
 			require_Equal(t, si.Cluster.Name, "C2")
+			s.waitOnStreamLeader(globalAccountName, cfg.Name)
 			cfg.Replicas = 2
 			si, err = js.UpdateStream(cfg)
 			require_NoError(t, err)
