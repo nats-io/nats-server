@@ -4422,11 +4422,13 @@ func TestJetStreamClusterMetaSnapshotMustNotIncludePendingConsumers(t *testing.T
 	// in ghost consumers if the meta proposal failed.
 	ml := c.leader()
 	mjs := ml.getJetStream()
+	mjs.mu.Lock()
 	cc := mjs.cluster
 	consumers := cc.streams[globalAccountName]["TEST"].consumers
 	sampleCa := *consumers["consumer"]
 	sampleCa.Name, sampleCa.pending = "pending-consumer", true
 	consumers[sampleCa.Name] = &sampleCa
+	mjs.mu.Unlock()
 
 	// Create snapshot, this should not contain pending consumers.
 	snap := mjs.metaSnapshot()
