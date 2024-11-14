@@ -78,12 +78,14 @@ func (sq *sendq) internalLoop() {
 				if len(pm.hdr) > 0 {
 					c.pa.hdr = len(pm.hdr)
 					c.pa.hdb = append(hdb[:0], strconv.Itoa(c.pa.hdr)...)
-					msg = append(pm.hdr, pm.msg...)
+					msg = append(msg, pm.hdr...)
+					msg = append(msg, pm.msg...)
 					msg = append(msg, _CRLF_...)
 				} else {
 					c.pa.hdr = -1
 					c.pa.hdb = nil
-					msg = append(pm.msg, _CRLF_...)
+					msg = append(msg, pm.msg...)
+					msg = append(msg, _CRLF_...)
 				}
 				c.processInboundClientMsg(msg)
 				c.pa.szb = nil
@@ -108,16 +110,7 @@ func (sq *sendq) send(subj, rply string, hdr, msg []byte) {
 	}
 	out := outMsgPool.Get().(*outMsg)
 	out.subj, out.rply = subj, rply
-	out.hdr, out.msg = nil, nil
-
-	// We will copy these for now.
-	if len(hdr) > 0 {
-		hdr = copyBytes(hdr)
-		out.hdr = hdr
-	}
-	if len(msg) > 0 {
-		msg = copyBytes(msg)
-		out.msg = msg
-	}
+	out.hdr = append(out.hdr[:0], hdr...)
+	out.msg = append(out.msg[:0], msg...)
 	sq.q.push(out)
 }
