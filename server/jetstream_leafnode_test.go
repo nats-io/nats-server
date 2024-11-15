@@ -524,7 +524,7 @@ leafnodes:{
 			p.start()
 
 			// Even though there are two remotes defined in tmplL, only one will be able to connect.
-			checkFor(t, 10*time.Second, time.Second/4, func() error { return clusterLnCnt(4) })
+			checkFor(t, 5*time.Second, time.Second/4, func() error { return clusterLnCnt(4) })
 			checkLeafNodeConnectedCount(t, sLA, 2)
 			checkLeafNodeConnectedCount(t, sLB, 2)
 
