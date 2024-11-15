@@ -5099,25 +5099,22 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 			buf := e.Data
 			switch entryOp(buf[0]) {
 			case updateDeliveredOp:
-				// These are handled in place in leaders.
-				if !isLeader {
-					dseq, sseq, dc, ts, err := decodeDeliveredUpdate(buf[1:])
-					if err != nil {
-						if mset, node := o.streamAndNode(); mset != nil && node != nil {
-							s := js.srv
-							s.Errorf("JetStream cluster could not decode consumer delivered update for '%s > %s > %s' [%s]",
-								mset.account(), mset.name(), o, node.Group())
-						}
-						panic(err.Error())
+				dseq, sseq, dc, ts, err := decodeDeliveredUpdate(buf[1:])
+				if err != nil {
+					if mset, node := o.streamAndNode(); mset != nil && node != nil {
+						s := js.srv
+						s.Errorf("JetStream cluster could not decode consumer delivered update for '%s > %s > %s' [%s]",
+							mset.account(), mset.name(), o, node.Group())
 					}
-					// Make sure to update delivered under the lock.
-					o.mu.Lock()
-					err = o.store.UpdateDelivered(dseq, sseq, dc, ts)
-					o.ldt = time.Now()
-					o.mu.Unlock()
-					if err != nil {
-						panic(err.Error())
-					}
+					panic(err.Error())
+				}
+				// Make sure to update delivered under the lock.
+				o.mu.Lock()
+				err = o.store.UpdateDelivered(dseq, sseq, dc, ts)
+				o.ldt = time.Now()
+				o.mu.Unlock()
+				if err != nil {
+					panic(err.Error())
 				}
 			case updateAcksOp:
 				dseq, sseq, err := decodeAckUpdate(buf[1:])
