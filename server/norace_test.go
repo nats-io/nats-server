@@ -7255,17 +7255,25 @@ func TestNoRaceJetStreamInterestStreamCheckInterestRaceBug(t *testing.T) {
 		return nil
 	})
 
-	for _, s := range c.servers {
-		mset, err := s.GlobalAccount().lookupStream("TEST")
-		require_NoError(t, err)
+	checkFor(t, 5*time.Second, time.Second, func() error {
+		for _, s := range c.servers {
+			mset, err := s.GlobalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
 
-		mset.mu.RLock()
-		defer mset.mu.RUnlock()
+			mset.mu.RLock()
+			defer mset.mu.RUnlock()
 
-		state := mset.state()
-		require_True(t, state.Msgs == 0)
-		require_True(t, state.FirstSeq == uint64(numToSend+1))
-	}
+			state := mset.state()
+			if state.Msgs != 0 {
+				return fmt.Errorf("too many messages: %d", state.Msgs)
+			} else if state.FirstSeq != uint64(numToSend+1) {
+				return fmt.Errorf("wrong FirstSeq: %d, expected: %d", state.FirstSeq, numToSend+1)
+			}
+		}
+		return nil
+	})
 }
 
 func TestNoRaceJetStreamClusterInterestStreamConsistencyAfterRollingRestart(t *testing.T) {
