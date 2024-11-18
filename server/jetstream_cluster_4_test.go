@@ -1224,13 +1224,21 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 				msets = append(msets, mset)
 			}
 			for seq := state.FirstSeq; seq <= state.LastSeq; seq++ {
+				var expectedErr error
 				var msgId string
 				var smv StoreMsg
 				for _, mset := range msets {
 					mset.mu.RLock()
 					sm, err := mset.store.LoadMsg(seq, &smv)
 					mset.mu.RUnlock()
-					require_NoError(t, err)
+					if err != nil || expectedErr != nil {
+						if expectedErr == nil {
+							expectedErr = err
+						} else {
+							require_Error(t, err, expectedErr)
+						}
+						continue
+					}
 					if msgId == _EMPTY_ {
 						msgId = string(sm.hdr)
 					} else if msgId != string(sm.hdr) {
