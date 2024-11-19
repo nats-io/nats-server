@@ -9320,14 +9320,6 @@ func (o *consumerFileStore) UpdateConfig(cfg *ConsumerConfig) error {
 }
 
 func (o *consumerFileStore) Update(state *ConsumerState) error {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-
-	// Check to see if this is an outdated update.
-	if state.Delivered.Consumer < o.state.Delivered.Consumer || state.AckFloor.Stream < o.state.AckFloor.Stream {
-		return nil
-	}
-
 	// Sanity checks.
 	if state.AckFloor.Consumer > state.Delivered.Consumer {
 		return fmt.Errorf("bad ack floor for consumer")
@@ -9353,6 +9345,15 @@ func (o *consumerFileStore) Update(state *ConsumerState) error {
 		for seq, dc := range state.Redelivered {
 			redelivered[seq] = dc
 		}
+	}
+
+	// Replace our state.
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	// Check to see if this is an outdated update.
+	if state.Delivered.Consumer < o.state.Delivered.Consumer || state.AckFloor.Stream < o.state.AckFloor.Stream {
+		return fmt.Errorf("old update ignored")
 	}
 
 	o.state.Delivered = state.Delivered
