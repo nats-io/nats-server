@@ -5679,6 +5679,17 @@ func (mset *stream) getPublicConsumers() []*consumer {
 	return obs
 }
 
+// 2 minutes plus up to 30s jitter.
+const (
+	defaultStreamCheckInterestStateInterval        = 2 * time.Minute
+	defaultStreamCheckInterestStateJitterInSeconds = 30
+)
+
+var (
+	streamCheckInterestStateInterval        = defaultStreamCheckInterestStateInterval
+	streamCheckInterestStateJitterInSeconds = defaultStreamCheckInterestStateJitterInSeconds
+)
+
 // Will check for interest retention and make sure messages
 // that have been acked are processed and removed.
 // This will check the ack floors of all consumers, and adjust our first sequence accordingly.

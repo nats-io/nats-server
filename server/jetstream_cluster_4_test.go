@@ -783,6 +783,13 @@ func TestJetStreamClusterConsumerPauseSurvivesRestart(t *testing.T) {
 }
 
 func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
+	streamCheckInterestStateInterval = 4 * time.Second
+	streamCheckInterestStateJitterInSeconds = 1
+	defer func() {
+		streamCheckInterestStateInterval = defaultStreamCheckInterestStateInterval
+		streamCheckInterestStateJitterInSeconds = defaultStreamCheckInterestStateJitterInSeconds
+	}()
+
 	type testParams struct {
 		restartAny       bool
 		restartLeader    bool
