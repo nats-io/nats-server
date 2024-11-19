@@ -3566,7 +3566,9 @@ func TestJetStreamClusterConsumerAckFloorDrift(t *testing.T) {
 	sub, err := js.PullSubscribe("foo", "C")
 	require_NoError(t, err)
 
-	for i := 0; i < 10; i++ {
+	// Publish as many messages as the ack floor check threshold +5.
+	totalMessages := 55
+	for i := 0; i < totalMessages; i++ {
 		sendStreamMsg(t, nc, "foo", "HELLO")
 	}
 
@@ -3630,10 +3632,10 @@ func TestJetStreamClusterConsumerAckFloorDrift(t *testing.T) {
 		ci, err := js.ConsumerInfo("TEST", "C")
 		require_NoError(t, err)
 		// Make sure we catch this and adjust.
-		if ci.AckFloor.Stream == 10 && ci.AckFloor.Consumer == 10 {
+		if ci.AckFloor.Stream == uint64(totalMessages) && ci.AckFloor.Consumer == 10 {
 			return nil
 		}
-		return fmt.Errorf("AckFloor not correct, expected 10, got %+v", ci.AckFloor)
+		return fmt.Errorf("AckFloor not correct, expected %d, got %+v", totalMessages, ci.AckFloor)
 	})
 }
 
