@@ -6026,16 +6026,16 @@ func (mset *stream) clearPreAck(o *consumer, seq uint64) {
 }
 
 // ackMsg is called into from a consumer when we have a WorkQueue or Interest Retention Policy.
-func (mset *stream) ackMsg(o *consumer, seq uint64) {
+func (mset *stream) ackMsg(o *consumer, seq uint64) (shouldRemove bool) {
 	if seq == 0 {
-		return
+		return false
 	}
 
 	// Don't make this RLock(). We need to have only 1 running at a time to gauge interest across all consumers.
 	mset.mu.Lock()
 	if mset.closed.Load() || mset.cfg.Retention == LimitsPolicy {
 		mset.mu.Unlock()
-		return
+		return false
 	}
 
 	store := mset.store
@@ -6046,7 +6046,7 @@ func (mset *stream) ackMsg(o *consumer, seq uint64) {
 	if seq > state.LastSeq {
 		mset.registerPreAck(o, seq)
 		mset.mu.Unlock()
-		return
+		return false
 	}
 
 	// Always clear pre-ack if here.
@@ -6055,10 +6055,9 @@ func (mset *stream) ackMsg(o *consumer, seq uint64) {
 	// Make sure this sequence is not below our first sequence.
 	if seq < state.FirstSeq {
 		mset.mu.Unlock()
-		return
+		return false
 	}
 
-	var shouldRemove bool
 	switch mset.cfg.Retention {
 	case WorkQueuePolicy:
 		// Normally we just remove a message when its ack'd here but if we have direct consumers
@@ -6071,7 +6070,7 @@ func (mset *stream) ackMsg(o *consumer, seq uint64) {
 	// If nothing else to do.
 	if !shouldRemove {
 		mset.mu.Unlock()
-		return
+		return false
 	}
 
 	if !mset.isClustered() {
@@ -6081,19 +6080,20 @@ func (mset *stream) ackMsg(o *consumer, seq uint64) {
 			// This should not happen, but being pedantic.
 			mset.registerPreAckLock(o, seq)
 		}
-		return
+		return shouldRemove
 	}
 
 	// Only propose message deletion to the stream if we're consumer leader, otherwise all followers would also propose.
 	// We must be the consumer leader, since we know for sure we've stored the message and don't register as pre-ack.
 	if o != nil && !o.IsLeader() {
 		mset.mu.Unlock()
-		return
+		return shouldRemove
 	}
 
 	md := streamMsgDelete{Seq: seq, NoErase: true, Stream: mset.cfg.Name}
 	mset.node.ForwardProposal(encodeMsgDelete(&md))
 	mset.mu.Unlock()
+	return shouldRemove
 }
 
 // Snapshot creates a snapshot for the stream and possibly consumers.

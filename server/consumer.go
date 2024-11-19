@@ -6034,6 +6034,7 @@ func (o *consumer) checkStateForInterestStream(ss *StreamState) error {
 		fseq = chkfloor
 	}
 
+	retryAsflr := asflr
 	for seq = fseq; asflr > 0 && seq <= asflr; seq++ {
 		if filters != nil {
 			_, nseq, err = store.LoadNextMsgMulti(filters, seq, &smv)
@@ -6046,14 +6047,20 @@ func (o *consumer) checkStateForInterestStream(ss *StreamState) error {
 		}
 		// Only ack though if no error and seq <= ack floor.
 		if err == nil && seq <= asflr {
-			mset.ackMsg(o, seq)
+			shouldRemove := mset.ackMsg(o, seq)
+			// Removing the message could fail if clustered since we need to propose it.
+			// Lowering the floor here allows us to retry later if the removal failed.
+			if shouldRemove && retryAsflr == asflr {
+				retryAsflr = seq
+			}
 		}
 	}
 
 	o.mu.Lock()
 	// Update our check floor.
-	if seq > o.chkflr {
-		o.chkflr = seq
+	// Check floor must never be greater than ack floor, otherwise subsequent calls to this function would skip work.
+	if retryAsflr > o.chkflr {
+		o.chkflr = retryAsflr
 	}
 	// See if we need to process this update if our parent stream is not a limits policy stream.
 	state, _ = o.store.State()
