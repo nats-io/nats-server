@@ -1900,7 +1900,7 @@ func (c *client) processGatewayAccountSub(accName string) error {
 // the sublist if present.
 // <Invoked from outbound connection's readLoop>
 func (c *client) processGatewayRUnsub(arg []byte) error {
-	accName, subject, queue, err := c.parseUnsubProto(arg)
+	_, accName, subject, queue, err := c.parseUnsubProto(arg, true, false)
 	if err != nil {
 		return fmt.Errorf("processGatewaySubjectUnsub %s", err.Error())
 	}

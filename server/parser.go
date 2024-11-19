@@ -788,7 +788,8 @@ func (c *client) parse(buf []byte) error {
 							c.traceInOp("LS-", arg)
 						}
 					}
-					err = c.processRemoteUnsub(arg)
+					leafUnsub := c.op == 'L' || c.op == 'l'
+					err = c.processRemoteUnsub(arg, leafUnsub)
 				case GATEWAY:
 					if trace {
 						c.traceInOp("RS-", arg)
