@@ -5985,6 +5985,7 @@ func (o *consumer) isMonitorRunning() bool {
 
 // If we detect that our ackfloor is higher than the stream's last sequence, return this error.
 var errAckFloorHigherThanLastSeq = errors.New("consumer ack floor is higher than streams last sequence")
+var errAckFloorInvalid = errors.New("consumer ack floor is invalid")
 
 // If we are a consumer of an interest or workqueue policy stream, process that state and make sure consistent.
 func (o *consumer) checkStateForInterestStream(ss *StreamState) error {
@@ -6014,7 +6015,7 @@ func (o *consumer) checkStateForInterestStream(ss *StreamState) error {
 	asflr := state.AckFloor.Stream
 	// Protect ourselves against rolling backwards.
 	if asflr&(1<<63) != 0 {
-		return nil
+		return errAckFloorInvalid
 	}
 
 	// Check if the underlying stream's last sequence is less than our floor.
