@@ -3552,7 +3552,7 @@ func TestJetStreamClusterNoR1AssetsDuringLameDuck(t *testing.T) {
 	s.WaitForShutdown()
 }
 
-// If a consumer has not been registered (possible in heavily loaded systems with lots  of assets)
+// If a consumer has not been registered (possible in heavily loaded systems with lots of assets)
 // it could miss the signal of a message going away. If that message was pending and expires the
 // ack floor could fall below the stream first sequence. This test will force that condition and
 // make sure the system resolves itself.
@@ -3619,10 +3619,9 @@ func TestJetStreamClusterConsumerAckFloorDrift(t *testing.T) {
 		o := mset.lookupConsumer("C")
 		require_NotNil(t, o)
 		o.mu.Lock()
-		err = o.setStoreState(state)
+		o.applyState(state)
 		cfs := o.store.(*consumerFileStore)
 		o.mu.Unlock()
-		require_NoError(t, err)
 		// The lower layer will ignore, so set more directly.
 		cfs.mu.Lock()
 		cfs.state = *state
