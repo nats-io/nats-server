@@ -138,10 +138,11 @@ type streamAssignment struct {
 	Reply   string        `json:"reply"`
 	Restore *StreamState  `json:"restore_state,omitempty"`
 	// Internal
-	consumers  map[string]*consumerAssignment
-	responded  bool
-	recovering bool
-	err        error
+	consumers   map[string]*consumerAssignment
+	responded   bool
+	recovering  bool
+	reassigning bool // i.e. due to placement issues, lack of resources, etc.
+	err         error
 }
 
 // consumerAssignment is what the meta controller uses to assign consumers to streams.
@@ -4917,7 +4918,11 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 						doSnapshot(true)
 					}
 				} else if err := js.applyConsumerEntries(o, ce, isLeader); err == nil {
-					ne, nb := n.Applied(ce.Index)
+					var ne, nb uint64
+					// We can't guarantee writes are flushed while we're shutting down. Just rely on replay during recovery.
+					if !js.isShuttingDown() {
+						ne, nb = n.Applied(ce.Index)
+					}
 					ce.ReturnToPool()
 					// If we have at least min entries to compact, go ahead and snapshot/compact.
 					if nb > 0 && ne >= compactNumMin || nb > compactSizeMin {
@@ -5449,8 +5454,7 @@ func (js *jetStream) processStreamAssignmentResults(sub *subscription, c *client
 	// then we will do the proper thing. Otherwise will be a no-op.
 	cc.removeInflightProposal(result.Account, result.Stream)
 
-	// FIXME(dlc) - suppress duplicates?
-	if sa := js.streamAssignment(result.Account, result.Stream); sa != nil {
+	if sa := js.streamAssignment(result.Account, result.Stream); sa != nil && !sa.reassigning {
 		canDelete := !result.Update && time.Since(sa.Created) < 5*time.Second
 
 		// See if we should retry in case this cluster is full but there are others.
@@ -5476,6 +5480,10 @@ func (js *jetStream) processStreamAssignmentResults(sub *subscription, c *client
 						// Propose new.
 						sa.Group, sa.err = rg, nil
 						cc.meta.Propose(encodeAddStreamAssignment(sa))
+						// When the new stream assignment is processed, sa.reassigning will be
+						// automatically set back to false. Until then, don't process any more
+						// assignment results.
+						sa.reassigning = true
 						return
 					}
 				}
@@ -7948,7 +7956,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// Check msgSize if we have a limit set there. Again this works if it goes through but better to be pre-emptive.
 	if maxMsgSize >= 0 && (len(hdr)+len(msg)) > maxMsgSize {
 		err := fmt.Errorf("JetStream message size exceeds limits for '%s > %s'", jsa.acc().Name, mset.cfg.Name)
-		s.RateLimitWarnf(err.Error())
+		s.RateLimitWarnf("%s", err.Error())
 		if canRespond {
 			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
 			resp.Error = NewJSStreamMessageExceedsMaximumError()
@@ -7965,7 +7973,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		// Again this works if it goes through but better to be pre-emptive.
 		if len(hdr) > math.MaxUint16 {
 			err := fmt.Errorf("JetStream header size exceeds limits for '%s > %s'", jsa.acc().Name, mset.cfg.Name)
-			s.RateLimitWarnf(err.Error())
+			s.RateLimitWarnf("%s", err.Error())
 			if canRespond {
 				var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
 				resp.Error = NewJSStreamHeaderExceedsMaximumError()
@@ -8097,7 +8105,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// TODO(dlc) - Make this a limit where we drop messages to protect ourselves, but allow to be configured.
 	if mset.clseq-(lseq+mset.clfs) > streamLagWarnThreshold {
 		lerr := fmt.Errorf("JetStream stream '%s > %s' has high message lag", jsa.acc().Name, name)
-		s.RateLimitWarnf(lerr.Error())
+		s.RateLimitWarnf("%s", lerr.Error())
 	}
 	mset.clMu.Unlock()
 
