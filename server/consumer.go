@@ -3839,7 +3839,7 @@ func (o *consumer) checkAckFloor() {
 	// We will set it explicitly to 1 behind our current lowest in pending, or if
 	// pending is empty, to our current delivered -1.
 	const minOffThreshold = 50
-	if o.asflr < ss.FirstSeq-minOffThreshold {
+	if ss.FirstSeq >= minOffThreshold && o.asflr < ss.FirstSeq-minOffThreshold {
 		var psseq, pdseq uint64
 		for seq, p := range o.pending {
 			if psseq == 0 || seq < psseq {
