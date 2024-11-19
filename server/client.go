@@ -4866,19 +4866,32 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 						continue
 					}
 					// Remember that leaf in case we don't find any other candidate.
+					// We already start randomly in lqs slice, so we don't need
+					// to do a random swap if we already have an rsub like we do
+					// when src == ROUTER above.
 					if rsub == nil {
 						rsub = sub
 					}
 					continue
 				} else {
-					// We would be picking a route, but if we had remembered a "hub" leaf,
-					// then pick that one instead of the route.
-					if rsub != nil && rsub.client.kind == LEAF && rsub.client.isHubLeafNode() {
-						break
+					// We want to favor qsubs in our own cluster. If the routed
+					// qsub has an origin, it means that is on behalf of a leaf.
+					// We need to treat it differently.
+					if len(sub.origin) > 0 {
+						// If we already have an rsub, nothing to do. Also, do
+						// not pick a routed qsub for a LEAF origin cluster
+						// that is the same than where the message comes from.
+						if rsub == nil && (leafOrigin == _EMPTY_ || leafOrigin != bytesToString(sub.origin)) {
+							rsub = sub
+						}
+						continue
 					}
+					// This is a qsub that is local on the remote server (or
+					// we are connected to an older server and we don't know).
+					// Pick this one and be done.
 					rsub = sub
+					break
 				}
-				break
 			}
 
 			// Assume delivery subject is normal subject to this point.

@@ -136,6 +136,7 @@ type Info struct {
 	Import        *SubjectPermission `json:"import,omitempty"`
 	Export        *SubjectPermission `json:"export,omitempty"`
 	LNOC          bool               `json:"lnoc,omitempty"`
+	LNOCU         bool               `json:"lnocu,omitempty"`
 	InfoOnConnect bool               `json:"info_on_connect,omitempty"` // When true the server will respond to CONNECT with an INFO
 	ConnectInfo   bool               `json:"connect_info,omitempty"`    // When true this is the server INFO response to CONNECT
 	RoutePoolSize int                `json:"route_pool_size,omitempty"`
