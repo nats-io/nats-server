@@ -1445,7 +1445,7 @@ func TestJetStreamClusterParallelStreamCreation(t *testing.T) {
 	node.InstallSnapshot(mset.stateSnapshot())
 
 	nl = c.restartServer(nl)
-	c.waitOnServerCurrent(nl)
+	c.waitOnStreamCurrent(nl, globalAccountName, "TEST")
 
 	mset, err = nl.GlobalAccount().lookupStream("TEST")
 	require_NoError(t, err)
