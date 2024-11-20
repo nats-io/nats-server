@@ -1415,7 +1415,7 @@ func TestJetStreamClusterParallelStreamCreation(t *testing.T) {
 	wg.Wait()
 
 	if len(errCh) > 0 {
-		t.Fatalf("Expected no errors, got %d", len(errCh))
+		t.Fatalf("Expected no errors, got %d: %v", len(errCh), <-errCh)
 	}
 
 	// We had a bug during parallel stream creation as well that would overwrite the sync subject used for catchups, etc.
@@ -1579,7 +1579,7 @@ func TestJetStreamClusterParallelConsumerCreation(t *testing.T) {
 	wg.Wait()
 
 	if len(errCh) > 0 {
-		t.Fatalf("Expected no errors, got %d", len(errCh))
+		t.Fatalf("Expected no errors, got %d: %v", len(errCh), <-errCh)
 	}
 
 	// Make sure we only have 3 unique raft groups for all servers.
@@ -5220,7 +5220,7 @@ func TestJetStreamClusterStreamFailTracking(t *testing.T) {
 
 	wg.Wait()
 	if len(errCh) > 0 {
-		t.Fatalf("Expected no errors, got %d", len(errCh))
+		t.Fatalf("Expected no errors, got %d: %v", len(errCh), <-errCh)
 	}
 }
 
@@ -5318,7 +5318,7 @@ func TestJetStreamClusterStreamFailTrackingSnapshots(t *testing.T) {
 
 	wg.Wait()
 	if len(errCh) > 0 {
-		t.Fatalf("Expected no errors, got %d", len(errCh))
+		t.Fatalf("Expected no errors, got %d: %v", len(errCh), <-errCh)
 	}
 }
 
