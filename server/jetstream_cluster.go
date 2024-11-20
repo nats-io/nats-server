@@ -4939,22 +4939,12 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			}
 
 			// Process the change.
-			if err := js.processConsumerLeaderChange(o, isLeader); err == nil && isLeader {
+			if err := js.processConsumerLeaderChange(o, isLeader); err == nil {
 				// Check our state if we are under an interest based stream.
 				if mset := o.getStream(); mset != nil {
 					var ss StreamState
 					mset.store.FastState(&ss)
 					o.checkStateForInterestStream(&ss)
-				}
-				// Do a snapshot.
-				doSnapshot(true)
-				// Synchronize followers to our state. Only send out if we have state and nothing pending.
-				if n != nil {
-					if _, _, applied := n.Progress(); applied > 0 && aq.len() == 0 {
-						if snap, err := o.store.EncodedState(); err == nil {
-							n.SendSnapshot(snap)
-						}
-					}
 				}
 			}
 
