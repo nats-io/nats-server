@@ -4993,13 +4993,11 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	} else {
 		// Make sure to take into account any message assignments that we had to skip (clfs).
 		seq = lseq + 1 - clfs
-		// Check for preAcks and the need to skip vs store.
+		// Check for preAcks and the need to clear it.
 		if mset.hasAllPreAcks(seq, subject) {
 			mset.clearAllPreAcks(seq)
-			store.SkipMsg()
-		} else {
-			err = store.StoreRawMsg(subject, hdr, msg, seq, ts)
 		}
+		err = store.StoreRawMsg(subject, hdr, msg, seq, ts)
 	}
 
 	if err != nil {
@@ -5681,6 +5679,17 @@ func (mset *stream) getPublicConsumers() []*consumer {
 	return obs
 }
 
+// 2 minutes plus up to 30s jitter.
+const (
+	defaultStreamCheckInterestStateInterval        = 2 * time.Minute
+	defaultStreamCheckInterestStateJitterInSeconds = 30
+)
+
+var (
+	streamCheckInterestStateInterval        = defaultStreamCheckInterestStateInterval
+	streamCheckInterestStateJitterInSeconds = defaultStreamCheckInterestStateJitterInSeconds
+)
+
 // Will check for interest retention and make sure messages
 // that have been acked are processed and removed.
 // This will check the ack floors of all consumers, and adjust our first sequence accordingly.
@@ -6028,7 +6037,8 @@ func (mset *stream) clearPreAck(o *consumer, seq uint64) {
 }
 
 // ackMsg is called into from a consumer when we have a WorkQueue or Interest Retention Policy.
-// Returns whether the message at seq was removed as a result of the ACK.
+// Returns whether the message at seq was removed as a result of the ACK
+// (or should be removed for clustered streams and relies on a message delete proposal).
 func (mset *stream) ackMsg(o *consumer, seq uint64) bool {
 	if seq == 0 {
 		return false
@@ -6070,18 +6080,33 @@ func (mset *stream) ackMsg(o *consumer, seq uint64) bool {
 	case InterestPolicy:
 		shouldRemove = mset.noInterest(seq, o)
 	}
-	mset.mu.Unlock()
 
 	// If nothing else to do.
 	if !shouldRemove {
+		mset.mu.Unlock()
 		return false
 	}
 
-	// If we are here we should attempt to remove.
-	if _, err := store.RemoveMsg(seq); err == ErrStoreEOF {
-		// This should not happen, but being pedantic.
-		mset.registerPreAckLock(o, seq)
+	if !mset.isClustered() {
+		mset.mu.Unlock()
+		// If we are here we should attempt to remove.
+		if _, err := store.RemoveMsg(seq); err == ErrStoreEOF {
+			// This should not happen, but being pedantic.
+			mset.registerPreAckLock(o, seq)
+		}
+		return true
 	}
+
+	// Only propose message deletion to the stream if we're consumer leader, otherwise all followers would also propose.
+	// We must be the consumer leader, since we know for sure we've stored the message and don't register as pre-ack.
+	if o != nil && !o.IsLeader() {
+		mset.mu.Unlock()
+		return true
+	}
+
+	md := streamMsgDelete{Seq: seq, NoErase: true, Stream: mset.cfg.Name}
+	mset.node.ForwardProposal(encodeMsgDelete(&md))
+	mset.mu.Unlock()
 	return true
 }
 

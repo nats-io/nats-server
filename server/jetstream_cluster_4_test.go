@@ -783,6 +783,13 @@ func TestJetStreamClusterConsumerPauseSurvivesRestart(t *testing.T) {
 }
 
 func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
+	streamCheckInterestStateInterval = 4 * time.Second
+	streamCheckInterestStateJitterInSeconds = 1
+	defer func() {
+		streamCheckInterestStateInterval = defaultStreamCheckInterestStateInterval
+		streamCheckInterestStateJitterInSeconds = defaultStreamCheckInterestStateJitterInSeconds
+	}()
+
 	type testParams struct {
 		restartAny       bool
 		restartLeader    bool
@@ -1224,13 +1231,21 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 				msets = append(msets, mset)
 			}
 			for seq := state.FirstSeq; seq <= state.LastSeq; seq++ {
+				var expectedErr error
 				var msgId string
 				var smv StoreMsg
 				for _, mset := range msets {
 					mset.mu.RLock()
 					sm, err := mset.store.LoadMsg(seq, &smv)
 					mset.mu.RUnlock()
-					require_NoError(t, err)
+					if err != nil || expectedErr != nil {
+						if expectedErr == nil {
+							expectedErr = err
+						} else {
+							require_Error(t, err, expectedErr)
+						}
+						continue
+					}
 					if msgId == _EMPTY_ {
 						msgId = string(sm.hdr)
 					} else if msgId != string(sm.hdr) {
