@@ -2405,7 +2405,6 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	// fully recovered from disk.
 	isRecovering := true
 
-	// Should only to be called from leader.
 	doSnapshot := func() {
 		if mset == nil || isRecovering || isRestore || time.Since(lastSnapTime) < minSnapDelta {
 			return
