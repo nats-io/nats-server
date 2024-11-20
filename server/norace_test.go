@@ -11065,17 +11065,19 @@ func TestNoRaceJetStreamClusterCheckInterestStatePerformanceWQ(t *testing.T) {
 	// Was > 30 ms before fix for comparison, M2 macbook air.
 	require_LessThan(t, elapsed, 5*time.Millisecond)
 
-	// Make sure we set the chkflr correctly.
-	checkFloor := func(o *consumer) uint64 {
+	// Make sure we set the chkflr correctly. The chkflr should be equal to asflr+1.
+	// Otherwise, if chkflr would be set higher a subsequent call to checkInterestState will be ineffective.
+	requireFloorsEqual := func(o *consumer) {
+		t.Helper()
 		require_True(t, o != nil)
 		o.mu.RLock()
 		defer o.mu.RUnlock()
-		return o.chkflr
+		require_Equal(t, o.chkflr, o.asflr+1)
 	}
 
-	require_Equal(t, checkFloor(mset.lookupConsumer("A")), 1)
-	require_Equal(t, checkFloor(mset.lookupConsumer("B")), 110_001)
-	require_Equal(t, checkFloor(mset.lookupConsumer("C")), 110_001)
+	requireFloorsEqual(mset.lookupConsumer("A"))
+	requireFloorsEqual(mset.lookupConsumer("B"))
+	requireFloorsEqual(mset.lookupConsumer("C"))
 
 	// Expire all the blocks again.
 	expireAllBlks()
