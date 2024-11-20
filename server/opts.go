@@ -914,7 +914,8 @@ func (o *Options) ProcessConfigString(data string) error {
 	return o.processConfigFile(_EMPTY_, m)
 }
 
-func (o *Options) Digest() string {
+// ConfigDigest returns the digest representing the configuration.
+func (o *Options) ConfigDigest() string {
 	return o.configDigest
 }
 
