@@ -3967,7 +3967,9 @@ func TestJetStreamClusterDesyncAfterErrorDuringCatchup(t *testing.T) {
 				for _, n := range server.raftNodes {
 					rn := n.(*raft)
 					if rn.accName == "$G" {
+						rn.Lock()
 						rn.updateLeader(noLeader)
+						rn.Unlock()
 					}
 				}
 
