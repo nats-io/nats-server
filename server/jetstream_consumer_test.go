@@ -960,6 +960,22 @@ func TestJetStreamConsumerBackOff(t *testing.T) {
 			shouldErr: false,
 		},
 		{
+			name: "backoff_with_max_deliver_equal",
+			config: nats.ConsumerConfig{
+				MaxDeliver: 3,
+				BackOff:    []time.Duration{time.Second, time.Minute, time.Hour},
+			},
+			shouldErr: false,
+		},
+		{
+			name: "backoff_with_max_deliver_equal_to_zero",
+			config: nats.ConsumerConfig{
+				MaxDeliver: 0,
+				BackOff:    []time.Duration{},
+			},
+			shouldErr: false,
+		},
+		{
 			name: "backoff_with_max_deliver_smaller",
 			config: nats.ConsumerConfig{
 				MaxDeliver: 2,
@@ -2475,4 +2491,45 @@ func TestJetStreamConsumerBackoffNotRespectedWithMultipleInflightRedeliveries(t 
 			break
 		}
 	}
+}
+
+func TestJetStreamConsumerBackoffWhenBackoffLengthIsEqualToMaxDeliverConfig(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"events.>"},
+	})
+	require_NoError(t, err)
+
+	maxDeliver := 3
+	backoff := []time.Duration{time.Second, 2 * time.Second, 3 * time.Second}
+	sub, err := js.SubscribeSync(
+		"events.>",
+		nats.MaxDeliver(maxDeliver),
+		nats.BackOff(backoff),
+		nats.AckExplicit(),
+	)
+	require_NoError(t, err)
+
+	calculateExpectedBackoff := func(numDelivered int) time.Duration {
+		return backoff[numDelivered-1] + 50*time.Millisecond // 50ms of margin to system overhead
+	}
+
+	// message to be redelivered using backoff duration.
+	firstMsgSent := time.Now()
+	sendStreamMsg(t, nc, "events.first", "msg-1")
+	_, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_LessThan(t, time.Since(firstMsgSent), calculateExpectedBackoff(1))
+	_, err = sub.NextMsg(2 * time.Second)
+	require_NoError(t, err)
+	require_LessThan(t, time.Since(firstMsgSent), calculateExpectedBackoff(2))
+	_, err = sub.NextMsg(3 * time.Second)
+	require_NoError(t, err)
+	require_LessThan(t, time.Since(firstMsgSent), calculateExpectedBackoff(3))
 }
