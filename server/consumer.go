@@ -6045,8 +6045,9 @@ func (o *consumer) checkStateForInterestStream(ss *StreamState) error {
 
 	o.mu.Lock()
 	// Update our check floor.
-	if seq > o.chkflr {
-		o.chkflr = seq
+	// Check floor must never be greater than ack floor+1, otherwise subsequent calls to this function would skip work.
+	if asflr+1 > o.chkflr {
+		o.chkflr = asflr + 1
 	}
 	// See if we need to process this update if our parent stream is not a limits policy stream.
 	state, _ = o.store.State()
