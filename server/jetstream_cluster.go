@@ -2510,8 +2510,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	var cist *time.Ticker
 	var cistc <-chan time.Time
 
-	// 2 minutes plus up to 30s jitter.
-	checkInterestInterval := 2*time.Minute + time.Duration(rand.Intn(30))*time.Second
+	checkInterestInterval := streamCheckInterestStateInterval + time.Duration(rand.Intn(streamCheckInterestStateJitterInSeconds))*time.Second
 
 	if mset != nil && mset.isInterestRetention() {
 		// Wait on our consumers to be assigned and running before proceeding.
