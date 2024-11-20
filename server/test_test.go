@@ -19,6 +19,7 @@ import (
 	"math/rand"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -75,10 +76,15 @@ func require_NoError(t testing.TB, err error) {
 	}
 }
 
-func require_NotNil(t testing.TB, v any) {
+func require_NotNil[T any](t testing.TB, v T) {
 	t.Helper()
-	if v == nil {
-		t.Fatalf("require not nil, but got: %v", v)
+	r := reflect.ValueOf(v)
+	switch k := r.Kind(); k {
+	case reflect.Ptr, reflect.Interface, reflect.Slice,
+		reflect.Map, reflect.Chan, reflect.Func:
+		if r.IsNil() {
+			t.Fatalf("require not nil, but got: %v", v)
+		}
 	}
 }
 
