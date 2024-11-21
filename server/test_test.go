@@ -83,7 +83,7 @@ func require_NotNil[T any](t testing.TB, v T) {
 	case reflect.Ptr, reflect.Interface, reflect.Slice,
 		reflect.Map, reflect.Chan, reflect.Func:
 		if r.IsNil() {
-			t.Fatalf("require not nil, but got: %v", v)
+			t.Fatalf("require not nil, but got nil")
 		}
 	}
 }
