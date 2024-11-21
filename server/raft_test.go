@@ -15,6 +15,7 @@ package server
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
@@ -372,7 +373,7 @@ func TestNRGSwitchStateClearsQueues(t *testing.T) {
 	s := c.servers[0] // RunBasicJetStreamServer not available
 
 	n := &raft{
-		prop:  newIPQueue[*Entry](s, "prop"),
+		prop:  newIPQueue[*proposedEntry](s, "prop"),
 		resp:  newIPQueue[*appendEntryResponse](s, "resp"),
 		leadc: make(chan bool, 1), // for switchState
 	}
@@ -380,7 +381,7 @@ func TestNRGSwitchStateClearsQueues(t *testing.T) {
 	require_Equal(t, n.prop.len(), 0)
 	require_Equal(t, n.resp.len(), 0)
 
-	n.prop.push(&Entry{})
+	n.prop.push(&proposedEntry{&Entry{}, _EMPTY_})
 	n.resp.push(&appendEntryResponse{})
 	require_Equal(t, n.prop.len(), 1)
 	require_Equal(t, n.resp.len(), 1)
@@ -1630,4 +1631,26 @@ func TestNRGTruncateDownToCommitted(t *testing.T) {
 	// Heartbeat moves commit up.
 	n.processAppendEntry(aeHeartbeat, n.aesub)
 	require_Equal(t, n.commit, 2)
+}
+
+func TestNRGForwardProposalResponse(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, _ := jsClientConnect(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
+	defer nc.Close()
+
+	rg := c.createRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	n := rg.nonLeader().node().(*raft)
+	psubj := n.psubj
+
+	data := make([]byte, binary.MaxVarintLen64)
+	dn := binary.PutVarint(data, int64(123))
+
+	_, err := nc.Request(psubj, data[:dn], time.Second*5)
+	require_NoError(t, err)
+
+	rg.waitOnTotal(t, 123)
 }
