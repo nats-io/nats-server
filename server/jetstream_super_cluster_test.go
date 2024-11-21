@@ -2706,10 +2706,17 @@ func TestJetStreamSuperClusterTagInducedMoveCancel(t *testing.T) {
 	_, err = js.UpdateStream(cfg)
 	require_NoError(t, err)
 
-	rmsg, err := ncsys.Request(fmt.Sprintf(JSApiServerStreamCancelMoveT, "$G", "TEST"), nil, 5*time.Second)
-	require_NoError(t, err)
+	// Retry in case stream is still being created and without a leader we won't receive a response
 	var cancelResp JSApiStreamUpdateResponse
-	require_NoError(t, json.Unmarshal(rmsg.Data, &cancelResp))
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		rmsg, err := ncsys.Request(fmt.Sprintf(JSApiServerStreamCancelMoveT, "$G", "TEST"), nil, 1*time.Second)
+		if errors.Is(err, nats.ErrTimeout) {
+			return err
+		}
+		require_NoError(t, err)
+		require_NoError(t, json.Unmarshal(rmsg.Data, &cancelResp))
+		return nil
+	})
 	if cancelResp.Error != nil && ErrorIdentifier(cancelResp.Error.ErrCode) == JSStreamMoveNotInProgress {
 		t.Skip("This can happen with delays, when Move completed before Cancel", cancelResp.Error)
 		return
