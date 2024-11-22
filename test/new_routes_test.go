@@ -58,6 +58,9 @@ func TestNewRouteInfoOnConnect(t *testing.T) {
 	if !info.LNOC {
 		t.Fatalf("Expected to have leafnode origin cluster support")
 	}
+	if !info.LNOCU {
+		t.Fatalf("Expected to have leafnode origin cluster in unsub protocol support")
+	}
 }
 
 func TestNewRouteHeaderSupport(t *testing.T) {
@@ -1713,28 +1716,92 @@ func TestNewRouteLeafNodeOriginSupport(t *testing.T) {
 	info.ID = routeID
 	info.Name = ""
 	info.LNOC = true
+	// Overwrite to false to check that we are getting LS- without origin
+	// if we are an old server.
+	info.LNOCU = false
 	b, err := json.Marshal(info)
 	if err != nil {
 		t.Fatalf("Could not marshal test route info: %v", err)
 	}
 
 	routeSend(fmt.Sprintf("INFO %s\r\n", b))
-	routeExpect(rsubRe)
+	routeExpect(rlsubRe)
 	pingPong()
 
-	// Make sure it can process and LS+
-	routeSend("LS+ ln1 $G foo\r\n")
-	pingPong()
+	sendLSProtosFromRoute := func(lnocu bool) {
+		t.Helper()
 
-	if !gacc.SubscriptionInterest("foo") {
-		t.Fatalf("Expected interest on \"foo\"")
+		// Make sure it can process and LS+
+		routeSend("LS+ ln1 $G foo\r\n")
+		pingPong()
+
+		// Check interest is registered on remote server.
+		if !gacc.SubscriptionInterest("foo") {
+			t.Fatalf("Expected interest on \"foo\"")
+		}
+
+		// This should not have been sent to the leafnode since same origin cluster.
+		time.Sleep(10 * time.Millisecond)
+		if lgacc.SubscriptionInterest("foo") {
+			t.Fatalf("Did not expect interest on \"foo\"")
+		}
+
+		// Now unsub. Either act as an old server that does not support origin
+		// in the LS- or as a new server.
+		if lnocu {
+			routeSend("LS- ln1 $G foo\r\n")
+		} else {
+			routeSend("LS- $G foo\r\n")
+		}
+		pingPong()
+
+		// Interest should be gone.
+		if gacc.SubscriptionInterest("foo") {
+			t.Fatalf("Expected no interest on \"foo\"")
+		}
+
+		// Make sure we did not incorrectly send an interest to the leaf.
+		time.Sleep(10 * time.Millisecond)
+		if lgacc.SubscriptionInterest("foo") {
+			t.Fatalf("Did not expect interest on \"foo\"")
+		}
+
+		// Repeat with a queue.
+		routeSend("LS+ ln1 $G foo bar 1\r\n")
+		pingPong()
+
+		if !gacc.SubscriptionInterest("foo") {
+			t.Fatalf("Expected interest on \"foo\"")
+		}
+
+		// This should not have been sent to the leafnode since same origin cluster.
+		time.Sleep(10 * time.Millisecond)
+		if lgacc.SubscriptionInterest("foo") {
+			t.Fatalf("Did not expect interest on \"foo\"")
+		}
+
+		// Now unsub.
+		if lnocu {
+			routeSend("LS- ln1 $G foo bar\r\n")
+		} else {
+			routeSend("LS- $G foo bar\r\n")
+		}
+		pingPong()
+
+		// Subscription should be gone.
+		if gacc.SubscriptionInterest("foo") {
+			t.Fatalf("Expected no interest on \"foo\"")
+		}
+
+		// Make sure we did not incorrectly send an interest to the leaf.
+		time.Sleep(10 * time.Millisecond)
+		if lgacc.SubscriptionInterest("foo") {
+			t.Fatalf("Did not expect interest on \"foo\"")
+		}
 	}
 
-	// This should not have been sent to the leafnode since same origin cluster.
-	time.Sleep(10 * time.Millisecond)
-	if lgacc.SubscriptionInterest("foo") {
-		t.Fatalf("Did not expect interest on \"foo\"")
-	}
+	// Check the LS+/- when not supporting origin in LS-
+	sendLSProtosFromRoute(false)
 
 	// Create a connection on the leafnode server.
 	nc, err := nats.Connect(ln.ClientURL())
@@ -1778,6 +1845,61 @@ func TestNewRouteLeafNodeOriginSupport(t *testing.T) {
 	if n, _, _ := sub.Pending(); n != 0 {
 		t.Fatalf("Should not have received the message on bar")
 	}
+
+	// Now unsubscribe, we should receive an LS- without origin.
+	sub.Unsubscribe()
+	routeExpect(lunsubRe)
+
+	// Quick check for queues
+	sub, _ = nc.QueueSubscribeSync("baz", "bat")
+	// Let it propagate to the main server
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if !gacc.SubscriptionInterest("baz") {
+			return fmt.Errorf("No interest")
+		}
+		return nil
+	})
+	// For "baz"
+	routeExpect(rlsubRe)
+	sub.Unsubscribe()
+	routeExpect(lunsubRe)
+
+	// Restart our routed server, but this time indicate support
+	// for LS- with origin cluster.
+	rc.Close()
+	rc = createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
+	defer rc.Close()
+
+	routeSend, routeExpect = setupRouteEx(t, rc, opts, routeID)
+
+	info = checkInfoMsg(t, rc)
+	info.ID = routeID
+	info.Name = ""
+	// These should be already set to true since the server that sends the
+	// INFO has them enabled, but just be explicit.
+	info.LNOC = true
+	info.LNOCU = true
+	b, err = json.Marshal(info)
+	if err != nil {
+		t.Fatalf("Could not marshal test route info: %v", err)
+	}
+
+	routeSend(fmt.Sprintf("INFO %s\r\n", b))
+	routeExpect(rlsubRe)
+	pingPong()
+
+	// Check the LS+/LS-
+	sendLSProtosFromRoute(true)
+
+	sub, _ = nc.SubscribeSync("bar")
+	routeExpect(rlsubRe)
+	sub.Unsubscribe()
+	routeExpect(rlunsubRe)
+
+	sub, _ = nc.QueueSubscribeSync("baz", "bat")
+	routeExpect(rlsubRe)
+	sub.Unsubscribe()
+	routeExpect(rlunsubRe)
 }
 
 // Check that real duplicate subscription (that is, sent by client with same sid)

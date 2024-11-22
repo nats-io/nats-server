@@ -1629,9 +1629,11 @@ func TestClusterQueueGroupWeightTrackingLeak(t *testing.T) {
 
 	check := func(present bool, expected int32) {
 		t.Helper()
+		sub := subscription{subject: []byte("foo"), queue: []byte("bar")}
+		key := keyFromSubWithOrigin(&sub)
 		checkFor(t, time.Second, 15*time.Millisecond, func() error {
 			acc.mu.RLock()
-			v, ok := acc.lqws["foo bar"]
+			v, ok := acc.lqws[key]
 			acc.mu.RUnlock()
 			if present {
 				if !ok {

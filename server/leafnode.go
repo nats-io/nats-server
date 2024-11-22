@@ -2353,6 +2353,42 @@ func keyFromSub(sub *subscription) string {
 	return sb.String()
 }
 
+const (
+	keyRoutedSub         = "R"
+	keyRoutedSubByte     = 'R'
+	keyRoutedLeafSub     = "L"
+	keyRoutedLeafSubByte = 'L'
+)
+
+// Helper function to build the key that prevents collisions between normal
+// routed subscriptions and routed subscriptions on behalf of a leafnode.
+// Keys will look like this:
+// "R foo"          -> plain routed sub on "foo"
+// "R foo bar"      -> queue routed sub on "foo", queue "bar"
+// "L foo bar"      -> plain routed leaf sub on "foo", leaf "bar"
+// "L foo bar baz"  -> queue routed sub on "foo", queue "bar", leaf "baz"
+func keyFromSubWithOrigin(sub *subscription) string {
+	var sb strings.Builder
+	sb.Grow(2 + len(sub.origin) + 1 + len(sub.subject) + 1 + len(sub.queue))
+	leaf := len(sub.origin) > 0
+	if leaf {
+		sb.WriteByte(keyRoutedLeafSubByte)
+	} else {
+		sb.WriteByte(keyRoutedSubByte)
+	}
+	sb.WriteByte(' ')
+	sb.Write(sub.subject)
+	if sub.queue != nil {
+		sb.WriteByte(' ')
+		sb.Write(sub.queue)
+	}
+	if leaf {
+		sb.WriteByte(' ')
+		sb.Write(sub.origin)
+	}
+	return sb.String()
+}
+
 // Lock should be held.
 func (c *client) writeLeafSub(w *bytes.Buffer, key string, n int32) {
 	if key == _EMPTY_ {
@@ -2403,12 +2439,21 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 	args := splitArg(arg)
 	sub := &subscription{client: c}
 
+	delta := int32(1)
 	switch len(args) {
 	case 1:
 		sub.queue = nil
 	case 3:
 		sub.queue = args[1]
 		sub.qw = int32(parseSize(args[2]))
+		// TODO: (ik) We should have a non empty queue name and a queue
+		// weight >= 1. For 2.11, we may want to return an error if that
+		// is not the case, but for now just overwrite `delta` if queue
+		// weight is greater than 1 (it is possible after a reconnect/
+		// server restart to receive a queue weight > 1 for a new sub).
+		if sub.qw > 1 {
+			delta = sub.qw
+		}
 	default:
 		return fmt.Errorf("processLeafSub Parse Error: '%s'", arg)
 	}
@@ -2473,7 +2518,6 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 	key := bytesToString(sub.sid)
 	osub := c.subs[key]
 	updateGWs := false
-	delta := int32(1)
 	if osub == nil {
 		c.subs[key] = sub
 		// Now place into the account sl.
@@ -2554,6 +2598,10 @@ func (c *client) processLeafUnsub(arg []byte) error {
 	// We store local subs by account and subject and optionally queue name.
 	// LS- will have the arg exactly as the key.
 	sub, ok := c.subs[string(arg)]
+	delta := int32(1)
+	if ok && len(sub.queue) > 0 {
+		delta = sub.qw
+	}
 	c.mu.Unlock()
 
 	if ok {
@@ -2563,14 +2611,14 @@ func (c *client) processLeafUnsub(arg []byte) error {
 
 	if !spoke {
 		// If we are routing subtract from the route map for the associated account.
-		srv.updateRouteSubscriptionMap(acc, sub, -1)
+		srv.updateRouteSubscriptionMap(acc, sub, -delta)
 		// Gateways
 		if updateGWs {
-			srv.gatewayUpdateSubInterest(acc.Name, sub, -1)
+			srv.gatewayUpdateSubInterest(acc.Name, sub, -delta)
 		}
 	}
 	// Now check on leafnode updates for other leaf nodes.
-	acc.updateLeafNodes(sub, -1)
+	acc.updateLeafNodes(sub, -delta)
 	return nil
 }
 
