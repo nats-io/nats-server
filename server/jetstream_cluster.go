@@ -808,6 +808,14 @@ func (js *jetStream) setupMetaGroup() error {
 	// If we are soliciting leafnode connections and we are sharing a system account and do not disable it with a hint,
 	// we want to move to observer mode so that we extend the solicited cluster or supercluster but do not form our own.
 	cfg.Observer = s.canExtendOtherDomain() && s.getOpts().JetStreamExtHint != jsNoExtend
+	// fmt.Printf(
+	// 	"%s\n - canExtend? %v\n - extHint: %s\n - %s != %s? %v\n - observer: %v\n",
+	// 	s.Name(),
+	// 	s.canExtendOtherDomain(),
+	// 	s.getOpts().JetStreamExtHint,
+	// 	s.getOpts().JetStreamExtHint, jsNoExtend, s.getOpts().JetStreamExtHint != jsNoExtend,
+	// 	cfg.Observer,
+	// )
 
 	var bootstrap bool
 	if ps, err := readPeerState(storeDir); err != nil {
