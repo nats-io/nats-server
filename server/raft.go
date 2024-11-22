@@ -201,7 +201,7 @@ type raft struct {
 	hcommit   uint64 // The commit at the time that applies were paused
 	pobserver bool   // Whether we were an observer at the time that applies were paused
 
-	prop  *ipQueue[*Entry]               // Proposals
+	prop  *ipQueue[*proposedEntry]       // Proposals
 	entry *ipQueue[*appendEntry]         // Append entries
 	resp  *ipQueue[*appendEntryResponse] // Append entries responses
 	apply *ipQueue[*CommittedEntry]      // Apply queue (committed entries to be passed to upper layer)
@@ -209,6 +209,11 @@ type raft struct {
 	votes *ipQueue[*voteResponse]        // Vote responses
 	leadc chan bool                      // Leader changes
 	quit  chan struct{}                  // Raft group shutdown
+}
+
+type proposedEntry struct {
+	*Entry
+	reply string // Optional, to respond once proposal handled
 }
 
 // cacthupState structure that holds our subscription, and catchup term and index
@@ -385,7 +390,7 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 		quit:     make(chan struct{}),
 		reqs:     newIPQueue[*voteRequest](s, qpfx+"vreq"),
 		votes:    newIPQueue[*voteResponse](s, qpfx+"vresp"),
-		prop:     newIPQueue[*Entry](s, qpfx+"entry"),
+		prop:     newIPQueue[*proposedEntry](s, qpfx+"entry"),
 		entry:    newIPQueue[*appendEntry](s, qpfx+"appendEntry"),
 		resp:     newIPQueue[*appendEntryResponse](s, qpfx+"appendEntryResponse"),
 		apply:    newIPQueue[*CommittedEntry](s, qpfx+"committedEntry"),
@@ -811,7 +816,7 @@ func (n *raft) Propose(data []byte) error {
 	if werr := n.werr; werr != nil {
 		return werr
 	}
-	n.prop.push(newEntry(EntryNormal, data))
+	n.prop.push(newProposedEntry(newEntry(EntryNormal, data), _EMPTY_))
 	return nil
 }
 
@@ -830,20 +835,21 @@ func (n *raft) ProposeMulti(entries []*Entry) error {
 		return werr
 	}
 	for _, e := range entries {
-		n.prop.push(e)
+		n.prop.push(newProposedEntry(e, _EMPTY_))
 	}
 	return nil
 }
 
 // ForwardProposal will forward the proposal to the leader if known.
 // If we are the leader this is the same as calling propose.
-// FIXME(dlc) - We could have a reply subject and wait for a response
-// for retries, but would need to not block and be in separate Go routine.
 func (n *raft) ForwardProposal(entry []byte) error {
 	if n.Leader() {
 		return n.Propose(entry)
 	}
 
+	// TODO: Currently we do not set a reply subject, even though we are
+	// now capable of responding. Do this once enough time has passed,
+	// i.e. maybe in 2.12.
 	n.sendRPC(n.psubj, _EMPTY_, entry)
 	return nil
 }
@@ -862,7 +868,7 @@ func (n *raft) ProposeAddPeer(peer string) error {
 	prop := n.prop
 	n.RUnlock()
 
-	prop.push(newEntry(EntryAddPeer, []byte(peer)))
+	prop.push(newProposedEntry(newEntry(EntryAddPeer, []byte(peer)), _EMPTY_))
 	return nil
 }
 
@@ -898,7 +904,7 @@ func (n *raft) ProposeRemovePeer(peer string) error {
 	// peer remove and then notifying the rest of the group that the
 	// peer was removed.
 	if isLeader {
-		prop.push(newEntry(EntryRemovePeer, []byte(peer)))
+		prop.push(newProposedEntry(newEntry(EntryRemovePeer, []byte(peer)), _EMPTY_))
 		n.doRemovePeerAsLeader(peer)
 		return nil
 	}
@@ -2177,6 +2183,26 @@ func (ae *appendEntry) returnToPool() {
 	aePool.Put(ae)
 }
 
+// Pool for proposedEntry re-use.
+var pePool = sync.Pool{
+	New: func() any {
+		return &proposedEntry{}
+	},
+}
+
+// Create a new proposedEntry.
+func newProposedEntry(entry *Entry, reply string) *proposedEntry {
+	pe := pePool.Get().(*proposedEntry)
+	pe.Entry, pe.reply = entry, reply
+	return pe
+}
+
+// Will return this proosed entry.
+func (pe *proposedEntry) returnToPool() {
+	pe.Entry, pe.reply = nil, _EMPTY_
+	pePool.Put(pe)
+}
+
 type EntryType uint8
 
 const (
@@ -2386,7 +2412,7 @@ func (n *raft) handleForwardedRemovePeerProposal(sub *subscription, c *client, _
 
 	// Need to copy since this is underlying client/route buffer.
 	peer := copyBytes(msg)
-	prop.push(newEntry(EntryRemovePeer, peer))
+	prop.push(newProposedEntry(newEntry(EntryRemovePeer, peer), reply))
 }
 
 // Called when a peer has forwarded a proposal.
@@ -2407,7 +2433,7 @@ func (n *raft) handleForwardedProposal(sub *subscription, c *client, _ *Account,
 		return
 	}
 
-	prop.push(newEntry(EntryNormal, msg))
+	prop.push(newProposedEntry(newEntry(EntryNormal, msg), reply))
 }
 
 func (n *raft) runAsLeader() {
@@ -2475,7 +2501,7 @@ func (n *raft) runAsLeader() {
 				if b.Type == EntryRemovePeer {
 					n.doRemovePeerAsLeader(string(b.Data))
 				}
-				entries = append(entries, b)
+				entries = append(entries, b.Entry)
 				// Increment size.
 				sz += len(b.Data) + 1
 				// If below thresholds go ahead and send.
@@ -2490,6 +2516,13 @@ func (n *raft) runAsLeader() {
 			}
 			if len(entries) > 0 {
 				n.sendAppendEntry(entries)
+			}
+			// Respond to any proposals waiting for a confirmation.
+			for _, pe := range es {
+				if pe.reply != _EMPTY_ {
+					n.sendReply(pe.reply, nil)
+				}
+				pe.returnToPool()
 			}
 			n.prop.recycle(&es)
 
