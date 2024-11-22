@@ -2432,9 +2432,8 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 		return
 	}
 
-	// Create the fast key which will use the subject or '[origin]<spc>subject<spc>queue'
-	// for queue subscribers, where "origin" will be non-empty if it is a sub
-	// from a leafnode which has a cluster name provided.
+	// Create the subscription key which will prevent collisions between regular
+	// and leaf routed subscriptions. See keyFromSubWithOrigin() for details.
 	key := keyFromSubWithOrigin(sub)
 
 	// Decide whether we need to send an update out to all the routes.
