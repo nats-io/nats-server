@@ -74,6 +74,7 @@ type route struct {
 	didSolicit   bool
 	retry        bool
 	lnoc         bool
+	lnocu        bool
 	routeType    RouteType
 	url          *url.URL
 	authRequired bool
@@ -112,6 +113,7 @@ type connectInfo struct {
 	Cluster  string `json:"cluster"`
 	Dynamic  bool   `json:"cluster_dynamic,omitempty"`
 	LNOC     bool   `json:"lnoc,omitempty"`
+	LNOCU    bool   `json:"lnocu,omitempty"` // Support for LS- with origin cluster name
 	Gateway  string `json:"gateway,omitempty"`
 }
 
@@ -767,6 +769,7 @@ func (c *client) processRouteInfo(info *Info) {
 	c.route.gatewayURL = info.GatewayURL
 	c.route.remoteName = info.Name
 	c.route.lnoc = info.LNOC
+	c.route.lnocu = info.LNOCU
 	c.route.jetstream = info.JetStream
 
 	// When sent through route INFO, if the field is set, it should be of size 1.
@@ -1169,6 +1172,36 @@ type asubs struct {
 	subs []*subscription
 }
 
+// Returns the account name from the subscription's key.
+// This is invoked knowing that the key contains an account name, so for a sub
+// that is not from a pinned-account route.
+// The `keyHasSubType` boolean indicates that the key starts with the indicator
+// for leaf or regular routed subscriptions.
+func getAccNameFromRoutedSubKey(sub *subscription, key string, keyHasSubType bool) string {
+	var accIdx int
+	if keyHasSubType {
+		// Start after the sub type indicator.
+		accIdx = 1
+		// But if there is an origin, bump its index.
+		if len(sub.origin) > 0 {
+			accIdx = 2
+		}
+	}
+	return strings.Fields(key)[accIdx]
+}
+
+// Returns if the route is dedicated to an account, its name, and a boolean
+// that indicates if this route uses the routed subscription indicator at
+// the beginning of the subscription key.
+// Lock held on entry.
+func (c *client) getRoutedSubKeyInfo() (bool, string, bool) {
+	var accName string
+	if an := c.route.accName; len(an) > 0 {
+		accName = string(an)
+	}
+	return accName != _EMPTY_, accName, c.route.lnocu
+}
+
 // removeRemoteSubs will walk the subs and remove them from the appropriate account.
 func (c *client) removeRemoteSubs() {
 	// We need to gather these on a per account basis.
@@ -1178,14 +1211,18 @@ func (c *client) removeRemoteSubs() {
 	srv := c.srv
 	subs := c.subs
 	c.subs = nil
+	pa, accountName, hasSubType := c.getRoutedSubKeyInfo()
 	c.mu.Unlock()
 
 	for key, sub := range subs {
 		c.mu.Lock()
 		sub.max = 0
 		c.mu.Unlock()
-		// Grab the account
-		accountName := strings.Fields(key)[0]
+		// If not a pinned-account route, we need to find the account
+		// name from the sub's key.
+		if !pa {
+			accountName = getAccNameFromRoutedSubKey(sub, key, hasSubType)
+		}
 		ase := as[accountName]
 		if ase == nil {
 			if v, ok := srv.accounts.Load(accountName); ok {
@@ -1197,10 +1234,14 @@ func (c *client) removeRemoteSubs() {
 		} else {
 			ase.subs = append(ase.subs, sub)
 		}
-		if srv.gateway.enabled {
-			srv.gatewayUpdateSubInterest(accountName, sub, -1)
+		delta := int32(1)
+		if len(sub.queue) > 0 {
+			delta = sub.qw
 		}
-		ase.acc.updateLeafNodes(sub, -1)
+		if srv.gateway.enabled {
+			srv.gatewayUpdateSubInterest(accountName, sub, -delta)
+		}
+		ase.acc.updateLeafNodes(sub, -delta)
 	}
 
 	// Now remove the subs by batch for each account sublist.
@@ -1217,8 +1258,9 @@ func (c *client) removeRemoteSubs() {
 // Lock is held on entry
 func (c *client) removeRemoteSubsForAcc(name string) []*subscription {
 	var subs []*subscription
+	_, _, hasSubType := c.getRoutedSubKeyInfo()
 	for key, sub := range c.subs {
-		an := strings.Fields(key)[0]
+		an := getAccNameFromRoutedSubKey(sub, key, hasSubType)
 		if an == name {
 			sub.max = 0
 			subs = append(subs, sub)
@@ -1228,45 +1270,68 @@ func (c *client) removeRemoteSubsForAcc(name string) []*subscription {
 	return subs
 }
 
-func (c *client) parseUnsubProto(arg []byte) (string, []byte, []byte, error) {
+func (c *client) parseUnsubProto(arg []byte, accInProto, hasOrigin bool) ([]byte, string, []byte, []byte, error) {
 	// Indicate any activity, so pub and sub or unsubs.
 	c.in.subs++
 
 	args := splitArg(arg)
-	var queue []byte
 
-	var accountName string
-	subjIdx := 1
-	c.mu.Lock()
-	if c.kind == ROUTER && c.route != nil {
-		if accountName = string(c.route.accName); accountName != _EMPTY_ {
-			subjIdx = 0
-		}
+	var (
+		origin      []byte
+		accountName string
+		queue       []byte
+		subjIdx     int
+	)
+	// If `hasOrigin` is true, then it means this is a LS- with origin in proto.
+	if hasOrigin {
+		// We would not be here if there was not at least 1 field.
+		origin = args[0]
+		subjIdx = 1
 	}
-	c.mu.Unlock()
+	// If there is an account in the protocol, bump the subject index.
+	if accInProto {
+		subjIdx++
+	}
 
 	switch len(args) {
 	case subjIdx + 1:
 	case subjIdx + 2:
 		queue = args[subjIdx+1]
 	default:
-		return _EMPTY_, nil, nil, fmt.Errorf("parse error: '%s'", arg)
+		return nil, _EMPTY_, nil, nil, fmt.Errorf("parse error: '%s'", arg)
 	}
-	if accountName == _EMPTY_ {
-		accountName = string(args[0])
+	if accInProto {
+		// If there is an account in the protocol, it is before the subject.
+		accountName = string(args[subjIdx-1])
 	}
-	return accountName, args[subjIdx], queue, nil
+	return origin, accountName, args[subjIdx], queue, nil
 }
 
 // Indicates no more interest in the given account/subject for the remote side.
-func (c *client) processRemoteUnsub(arg []byte) (err error) {
+func (c *client) processRemoteUnsub(arg []byte, leafUnsub bool) (err error) {
 	srv := c.srv
 	if srv == nil {
 		return nil
 	}
-	accountName, subject, _, err := c.parseUnsubProto(arg)
+
+	var accountName string
+	// Assume the account will be in the protocol.
+	accInProto := true
+
+	c.mu.Lock()
+	originSupport := c.route.lnocu
+	if c.route != nil && len(c.route.accName) > 0 {
+		accountName, accInProto = string(c.route.accName), false
+	}
+	c.mu.Unlock()
+
+	hasOrigin := leafUnsub && originSupport
+	_, accNameFromProto, subject, _, err := c.parseUnsubProto(arg, accInProto, hasOrigin)
 	if err != nil {
 		return fmt.Errorf("processRemoteUnsub %s", err.Error())
+	}
+	if accInProto {
+		accountName = accNameFromProto
 	}
 	// Lookup the account
 	var acc *Account
@@ -1284,28 +1349,43 @@ func (c *client) processRemoteUnsub(arg []byte) (err error) {
 	}
 
 	updateGWs := false
-	// We store local subs by account and subject and optionally queue name.
-	// RS- will have the arg exactly as the key.
+
+	_keya := [128]byte{}
+	_key := _keya[:0]
+
 	var key string
-	if c.kind == ROUTER && c.route != nil && len(c.route.accName) > 0 {
-		key = accountName + " " + bytesToString(arg)
-	} else {
+	if !originSupport {
+		// If it is an LS- or RS-, we use the protocol as-is as the key.
 		key = bytesToString(arg)
+	} else {
+		// We need to prefix with the sub type.
+		if leafUnsub {
+			_key = append(_key, keyRoutedLeafSubByte)
+		} else {
+			_key = append(_key, keyRoutedSubByte)
+		}
+		_key = append(_key, ' ')
+		_key = append(_key, arg...)
+		key = bytesToString(_key)
 	}
+	delta := int32(1)
 	sub, ok := c.subs[key]
 	if ok {
 		delete(c.subs, key)
 		acc.sl.Remove(sub)
 		updateGWs = srv.gateway.enabled
+		if len(sub.queue) > 0 {
+			delta = sub.qw
+		}
 	}
 	c.mu.Unlock()
 
 	if updateGWs {
-		srv.gatewayUpdateSubInterest(accountName, sub, -1)
+		srv.gatewayUpdateSubInterest(accountName, sub, -delta)
 	}
 
 	// Now check on leafnode updates.
-	acc.updateLeafNodes(sub, -1)
+	acc.updateLeafNodes(sub, -delta)
 
 	if c.opts.Verbose {
 		c.sendOK()
@@ -1322,35 +1402,78 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 		return nil
 	}
 
-	// Copy so we do not reference a potentially large buffer
-	arg := make([]byte, len(argo))
-	copy(arg, argo)
-
-	args := splitArg(arg)
-	sub := &subscription{client: c}
-
-	// This value indicate what is the mandatory subject offset in the args
-	// slice. It varies based on the optional presence of origin or account name
-	// fields (tha latter would not be present for "per-account" routes).
-	var subjIdx int
-	// If account is present, this is its "char" position in arg slice.
-	var accPos int
-	if hasOrigin {
-		// Set to 1, will be adjusted if the account is also expected.
-		subjIdx = 1
-		sub.origin = args[0]
-		// The account would start after the origin and trailing space.
-		accPos = len(sub.origin) + 1
-	}
+	// We copy `argo` to not reference the read buffer. However, we will
+	// prefix with a code that says if the remote sub is for a leaf
+	// (hasOrigin == true) or not to prevent key collisions. Imagine:
+	// "RS+ foo bar baz 1\r\n" => "foo bar baz" (a routed queue sub)
+	// "LS+ foo bar baz\r\n"   => "foo bar baz" (a route leaf sub on "baz",
+	// for account "bar" with origin "foo").
+	//
+	// The sub.sid/key will be set respectively to "R foo bar baz" and
+	// "L foo bar baz".
+	//
+	// We also no longer add the account if it was not present (due to
+	// pinned-account route) since there is no need really.
+	//
+	// For routes to older server, we will still create the "arg" with
+	// the above layout, but we will create the sub.sid/key as before,
+	// that is, not including the origin for LS+ because older server
+	// only send LS- without origin, so we would not be able to find
+	// the sub in the map.
 	c.mu.Lock()
 	accountName := string(c.route.accName)
+	oldStyle := !c.route.lnocu
 	c.mu.Unlock()
-	// If the route is dedicated to an account, accountName will not
-	// be empty. If it is, then the account must be in the protocol.
-	var accInProto bool
-	if accountName == _EMPTY_ {
+
+	// Indicate if the account name should be in the protocol. It would be the
+	// case if accountName is empty.
+	accInProto := accountName == _EMPTY_
+
+	// Copy so we do not reference a potentially large buffer.
+	// Add 2 more bytes for the routed sub type.
+	arg := make([]byte, 0, 2+len(argo))
+	if hasOrigin {
+		arg = append(arg, keyRoutedLeafSubByte)
+	} else {
+		arg = append(arg, keyRoutedSubByte)
+	}
+	arg = append(arg, ' ')
+	arg = append(arg, argo...)
+
+	// Now split to get all fields. Unroll splitArgs to avoid runtime/heap issues.
+	a := [MAX_RSUB_ARGS][]byte{}
+	args := a[:0]
+	start := -1
+	for i, b := range arg {
+		switch b {
+		case ' ', '\t', '\r', '\n':
+			if start >= 0 {
+				args = append(args, arg[start:i])
+				start = -1
+			}
+		default:
+			if start < 0 {
+				start = i
+			}
+		}
+	}
+	if start >= 0 {
+		args = append(args, arg[start:])
+	}
+
+	delta := int32(1)
+	sub := &subscription{client: c}
+
+	// There will always be at least a subject, but its location will depend
+	// on if there is an origin, an account name, etc.. Since we know that
+	// we have added the sub type indicator as the first field, the subject
+	// position will be at minimum at index 1.
+	subjIdx := 1
+	if hasOrigin {
 		subjIdx++
-		accInProto = true
+	}
+	if accInProto {
+		subjIdx++
 	}
 	switch len(args) {
 	case subjIdx + 1:
@@ -1358,15 +1481,50 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 	case subjIdx + 3:
 		sub.queue = args[subjIdx+1]
 		sub.qw = int32(parseSize(args[subjIdx+2]))
+		// TODO: (ik) We should have a non empty queue name and a queue
+		// weight >= 1. For 2.11, we may want to return an error if that
+		// is not the case, but for now just overwrite `delta` if queue
+		// weight is greater than 1 (it is possible after a reconnect/
+		// server restart to receive a queue weight > 1 for a new sub).
+		if sub.qw > 1 {
+			delta = sub.qw
+		}
 	default:
 		return fmt.Errorf("processRemoteSub Parse Error: '%s'", arg)
 	}
+	// We know that the number of fields is correct. So we can access args[] based
+	// on where we expect the fields to be.
+
+	// If there is an origin, it will be at index 1.
+	if hasOrigin {
+		sub.origin = args[1]
+	}
+	// For subject, use subjIdx.
 	sub.subject = args[subjIdx]
-	// If the account name is empty (not a "per-account" route), the account
-	// is at the index prior to the subject.
-	if accountName == _EMPTY_ {
+	// If the account name is in the protocol, it will be before the subject.
+	if accInProto {
 		accountName = bytesToString(args[subjIdx-1])
 	}
+	// Now set the sub.sid from the arg slice. However, we will have a different
+	// one if we use the origin or not.
+	start = 0
+	end := len(arg)
+	if sub.queue != nil {
+		// Remove the ' <weight>' from the arg length.
+		end -= 1 + len(args[subjIdx+2])
+	}
+	if oldStyle {
+		// We will start at the account (if present) or at the subject.
+		// We first skip the "R " or "L "
+		start = 2
+		// And if there is an origin skip that.
+		if hasOrigin {
+			start += len(sub.origin) + 1
+		}
+		// Here we are pointing at the account (if present), or at the subject.
+	}
+	sub.sid = arg[start:end]
+
 	// Lookup account while avoiding fetch.
 	// A slow fetch delays subsequent remote messages. It also avoids the expired check (see below).
 	// With all but memory resolver lookup can be delayed or fail.
@@ -1424,33 +1582,6 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 		return nil
 	}
 
-	// We store local subs by account and subject and optionally queue name.
-	// If we have a queue it will have a trailing weight which we do not want.
-	if sub.queue != nil {
-		// if the account is in the protocol, we can reference directly "arg",
-		// otherwise, we need to allocate/construct the sid.
-		if accInProto {
-			sub.sid = arg[accPos : accPos+len(accountName)+1+len(sub.subject)+1+len(sub.queue)]
-		} else {
-			// It is unfortunate that we have to do this, but the gain of not
-			// having the account name in message protocols outweight the
-			// penalty of having to do this here for the processing of a
-			// subscription.
-			sub.sid = append(sub.sid, accountName...)
-			sub.sid = append(sub.sid, ' ')
-			sub.sid = append(sub.sid, sub.subject...)
-			sub.sid = append(sub.sid, ' ')
-			sub.sid = append(sub.sid, sub.queue...)
-		}
-	} else if accInProto {
-		sub.sid = arg[accPos:]
-	} else {
-		sub.sid = append(sub.sid, accountName...)
-		sub.sid = append(sub.sid, ' ')
-		sub.sid = append(sub.sid, sub.subject...)
-	}
-	key := bytesToString(sub.sid)
-
 	acc.mu.RLock()
 	// For routes (this can be called by leafnodes), check if the account is
 	// transitioning (from pool to dedicated route) and this route is not a
@@ -1465,9 +1596,11 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 	}
 	sl := acc.sl
 	acc.mu.RUnlock()
+
+	// We use the sub.sid for the key of the c.subs map.
+	key := bytesToString(sub.sid)
 	osub := c.subs[key]
 	updateGWs := false
-	delta := int32(1)
 	if osub == nil {
 		c.subs[key] = sub
 		// Now place into the account sl.
@@ -1509,10 +1642,14 @@ func (c *client) addRouteSubOrUnsubProtoToBuf(buf []byte, accName string, sub *s
 		if isSubProto {
 			buf = append(buf, lSubBytes...)
 			buf = append(buf, sub.origin...)
+			buf = append(buf, ' ')
 		} else {
 			buf = append(buf, lUnsubBytes...)
+			if c.route.lnocu {
+				buf = append(buf, sub.origin...)
+				buf = append(buf, ' ')
+			}
 		}
-		buf = append(buf, ' ')
 	} else {
 		if isSubProto {
 			buf = append(buf, rSubBytes...)
@@ -1613,18 +1750,27 @@ func (s *Server) sendSubsToRoute(route *client, idx int, account string) {
 	for _, a := range accs {
 		a.mu.RLock()
 		for key, n := range a.rm {
-			var subj, qn []byte
-			s := strings.Split(key, " ")
-			subj = []byte(s[0])
-			if len(s) > 1 {
-				qn = []byte(s[1])
+			var origin, qn []byte
+			s := strings.Fields(key)
+			// Subject will always be the second field (index 1).
+			subj := stringToBytes(s[1])
+			// Check if the key is for a leaf (will be field 0).
+			forLeaf := s[0] == keyRoutedLeafSub
+			// For queue, if not for a leaf, we need 3 fields "R foo bar",
+			// but if for a leaf, we need 4 fields "L foo bar leaf_origin".
+			if l := len(s); (!forLeaf && l == 3) || (forLeaf && l == 4) {
+				qn = stringToBytes(s[2])
 			}
-			// s[0] is the subject and already as a string, so use that
+			if forLeaf {
+				// The leaf origin will be the last field.
+				origin = stringToBytes(s[len(s)-1])
+			}
+			// s[1] is the subject and already as a string, so use that
 			// instead of converting back `subj` to a string.
-			if !route.canImport(s[0]) {
+			if !route.canImport(s[1]) {
 				continue
 			}
-			sub := subscription{subject: subj, queue: qn, qw: n}
+			sub := subscription{origin: origin, subject: subj, queue: qn, qw: n}
 			buf = route.addRouteSubOrUnsubProtoToBuf(buf, a.Name, &sub, true)
 		}
 		a.mu.RUnlock()
@@ -2286,8 +2432,9 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 		return
 	}
 
-	// Create the fast key which will use the subject or 'subject<spc>queue' for queue subscribers.
-	key := keyFromSub(sub)
+	// Create the subscription key which will prevent collisions between regular
+	// and leaf routed subscriptions. See keyFromSubWithOrigin() for details.
+	key := keyFromSubWithOrigin(sub)
 
 	// Decide whether we need to send an update out to all the routes.
 	update := isq
@@ -2481,6 +2628,7 @@ func (s *Server) startRouteAcceptLoop() {
 		Domain:       s.info.Domain,
 		Dynamic:      s.isClusterNameDynamic(),
 		LNOC:         true,
+		LNOCU:        true,
 	}
 	// For tests that want to simulate old servers, do not set the compression
 	// on the INFO protocol if configured with CompressionNotSupported.
@@ -2795,6 +2943,7 @@ func (c *client) processRouteConnect(srv *Server, arg []byte, lang string) error
 	c.mu.Lock()
 	c.route.remoteID = c.opts.Name
 	c.route.lnoc = proto.LNOC
+	c.route.lnocu = proto.LNOCU
 	c.setRoutePermissions(perms)
 	c.headers = supportsHeaders && proto.Headers
 	c.mu.Unlock()

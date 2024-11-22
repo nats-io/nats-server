@@ -505,7 +505,7 @@ func checkConsumerCfg(
 	}
 
 	// Check if we have a BackOff defined that MaxDeliver is within range etc.
-	if lbo := len(config.BackOff); lbo > 0 && config.MaxDeliver != -1 && config.MaxDeliver <= lbo {
+	if lbo := len(config.BackOff); lbo > 0 && config.MaxDeliver != -1 && lbo > config.MaxDeliver {
 		return NewJSConsumerMaxDeliverBackoffError()
 	}
 
@@ -1843,7 +1843,7 @@ func (acc *Account) checkNewConsumerConfig(cfg, ncfg *ConsumerConfig) error {
 	}
 
 	// Check if BackOff is defined, MaxDeliver is within range.
-	if lbo := len(ncfg.BackOff); lbo > 0 && ncfg.MaxDeliver != -1 && ncfg.MaxDeliver <= lbo {
+	if lbo := len(ncfg.BackOff); lbo > 0 && ncfg.MaxDeliver != -1 && lbo > ncfg.MaxDeliver {
 		return NewJSConsumerMaxDeliverBackoffError()
 	}
 
@@ -2206,9 +2206,7 @@ func (o *consumer) updateDelivered(dseq, sseq, dc uint64, ts int64) {
 		n += binary.PutUvarint(b[n:], dc)
 		n += binary.PutVarint(b[n:], ts)
 		o.propose(b[:n])
-	}
-	if o.store != nil {
-		// Update local state always.
+	} else if o.store != nil {
 		o.store.UpdateDelivered(dseq, sseq, dc, ts)
 	}
 	// Update activity.
@@ -3839,7 +3837,7 @@ func (o *consumer) checkAckFloor() {
 	// We will set it explicitly to 1 behind our current lowest in pending, or if
 	// pending is empty, to our current delivered -1.
 	const minOffThreshold = 50
-	if o.asflr < ss.FirstSeq-minOffThreshold {
+	if ss.FirstSeq >= minOffThreshold && o.asflr < ss.FirstSeq-minOffThreshold {
 		var psseq, pdseq uint64
 		for seq, p := range o.pending {
 			if psseq == 0 || seq < psseq {
@@ -5245,12 +5243,6 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 		if dflag {
 			n.Delete()
 		} else {
-			// Try to install snapshot on clean exit
-			if o.store != nil && (o.retention != LimitsPolicy || n.NeedSnapshot()) {
-				if snap, err := o.store.EncodedState(); err == nil {
-					n.InstallSnapshot(snap)
-				}
-			}
 			n.Stop()
 		}
 	}
@@ -5595,8 +5587,9 @@ func (o *consumer) checkStateForInterestStream(ss *StreamState) error {
 
 	o.mu.Lock()
 	// Update our check floor.
-	if seq > o.chkflr {
-		o.chkflr = seq
+	// Check floor must never be greater than ack floor+1, otherwise subsequent calls to this function would skip work.
+	if asflr+1 > o.chkflr {
+		o.chkflr = asflr + 1
 	}
 	// See if we need to process this update if our parent stream is not a limits policy stream.
 	state, _ = o.store.State()

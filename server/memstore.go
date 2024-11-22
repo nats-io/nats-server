@@ -1640,8 +1640,6 @@ func (o *consumerMemStore) Update(state *ConsumerState) error {
 		pending = make(map[uint64]*Pending, len(state.Pending))
 		for seq, p := range state.Pending {
 			pending[seq] = &Pending{p.Sequence, p.Timestamp}
-		}
-		for seq := range pending {
 			if seq <= state.AckFloor.Stream || seq > state.Delivered.Stream {
 				return fmt.Errorf("bad pending entry, sequence [%d] out of range", seq)
 			}
@@ -1656,10 +1654,10 @@ func (o *consumerMemStore) Update(state *ConsumerState) error {
 
 	// Replace our state.
 	o.mu.Lock()
+	defer o.mu.Unlock()
 
 	// Check to see if this is an outdated update.
-	if state.Delivered.Consumer < o.state.Delivered.Consumer {
-		o.mu.Unlock()
+	if state.Delivered.Consumer < o.state.Delivered.Consumer || state.AckFloor.Stream < o.state.AckFloor.Stream {
 		return fmt.Errorf("old update ignored")
 	}
 
@@ -1667,7 +1665,6 @@ func (o *consumerMemStore) Update(state *ConsumerState) error {
 	o.state.AckFloor = state.AckFloor
 	o.state.Pending = pending
 	o.state.Redelivered = redelivered
-	o.mu.Unlock()
 
 	return nil
 }

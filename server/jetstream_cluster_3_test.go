@@ -3543,7 +3543,7 @@ func TestJetStreamClusterNoR1AssetsDuringLameDuck(t *testing.T) {
 	s.WaitForShutdown()
 }
 
-// If a consumer has not been registered (possible in heavily loaded systems with lots  of assets)
+// If a consumer has not been registered (possible in heavily loaded systems with lots of assets)
 // it could miss the signal of a message going away. If that message was pending and expires the
 // ack floor could fall below the stream first sequence. This test will force that condition and
 // make sure the system resolves itself.
@@ -3566,7 +3566,9 @@ func TestJetStreamClusterConsumerAckFloorDrift(t *testing.T) {
 	sub, err := js.PullSubscribe("foo", "C")
 	require_NoError(t, err)
 
-	for i := 0; i < 10; i++ {
+	// Publish as many messages as the ack floor check threshold +5.
+	totalMessages := 55
+	for i := 0; i < totalMessages; i++ {
 		sendStreamMsg(t, nc, "foo", "HELLO")
 	}
 
@@ -3610,10 +3612,9 @@ func TestJetStreamClusterConsumerAckFloorDrift(t *testing.T) {
 		o := mset.lookupConsumer("C")
 		require_NotNil(t, o)
 		o.mu.Lock()
-		err = o.setStoreState(state)
+		o.applyState(state)
 		cfs := o.store.(*consumerFileStore)
 		o.mu.Unlock()
-		require_NoError(t, err)
 		// The lower layer will ignore, so set more directly.
 		cfs.mu.Lock()
 		cfs.state = *state
@@ -3631,10 +3632,10 @@ func TestJetStreamClusterConsumerAckFloorDrift(t *testing.T) {
 		ci, err := js.ConsumerInfo("TEST", "C")
 		require_NoError(t, err)
 		// Make sure we catch this and adjust.
-		if ci.AckFloor.Stream == 10 && ci.AckFloor.Consumer == 10 {
+		if ci.AckFloor.Stream == uint64(totalMessages) && ci.AckFloor.Consumer == 10 {
 			return nil
 		}
-		return fmt.Errorf("AckFloor not correct, expected 10, got %+v", ci.AckFloor)
+		return fmt.Errorf("AckFloor not correct, expected %d, got %+v", totalMessages, ci.AckFloor)
 	})
 }
 

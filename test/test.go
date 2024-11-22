@@ -364,9 +364,10 @@ var (
 	asubRe      = regexp.MustCompile(`A\+\s+([^\r\n]+)\r\n`)
 	aunsubRe    = regexp.MustCompile(`A\-\s+([^\r\n]+)\r\n`)
 	lsubRe      = regexp.MustCompile(`LS\+\s+([^\s]+)\s*([^\s]+)?\s*(\d+)?\r\n`)
-	lunsubRe    = regexp.MustCompile(`LS\-\s+([^\s]+)\s*([^\s]+)?\r\n`)
+	lunsubRe    = regexp.MustCompile(`LS\-\s+([^\s]+)\s*([^\s]+)\s*([^\s]+)?\r\n`)
 	lmsgRe      = regexp.MustCompile(`(?:(?:LMSG\s+([^\s]+)\s+(?:([|+]\s+([\w\s]+)|[^\s]+)[^\S\r\n]+)?(\d+)\s*\r\n([^\\r\\n]*?)\r\n)+?)`)
 	rlsubRe     = regexp.MustCompile(`LS\+\s+([^\s]+)\s+([^\s]+)\s+([^\s]+)\s*([^\s]+)?\s*(\d+)?\r\n`)
+	rlunsubRe   = regexp.MustCompile(`LS\-\s+([^\s]+)\s+([^\s]+)\s+([^\s]+)\s*([^\s]+)?\r\n`)
 )
 
 const (

@@ -2405,7 +2405,6 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	// fully recovered from disk.
 	isRecovering := true
 
-	// Should only to be called from leader.
 	doSnapshot := func() {
 		if mset == nil || isRecovering || isRestore || time.Since(lastSnapTime) < minSnapDelta {
 			return
@@ -4939,22 +4938,12 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			}
 
 			// Process the change.
-			if err := js.processConsumerLeaderChange(o, isLeader); err == nil && isLeader {
+			if err := js.processConsumerLeaderChange(o, isLeader); err == nil {
 				// Check our state if we are under an interest based stream.
 				if mset := o.getStream(); mset != nil {
 					var ss StreamState
 					mset.store.FastState(&ss)
 					o.checkStateForInterestStream(&ss)
-				}
-				// Do a snapshot.
-				doSnapshot(true)
-				// Synchronize followers to our state. Only send out if we have state and nothing pending.
-				if n != nil {
-					if _, _, applied := n.Progress(); applied > 0 && aq.len() == 0 {
-						if snap, err := o.store.EncodedState(); err == nil {
-							n.SendSnapshot(snap)
-						}
-					}
 				}
 			}
 
@@ -5110,25 +5099,22 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 			buf := e.Data
 			switch entryOp(buf[0]) {
 			case updateDeliveredOp:
-				// These are handled in place in leaders.
-				if !isLeader {
-					dseq, sseq, dc, ts, err := decodeDeliveredUpdate(buf[1:])
-					if err != nil {
-						if mset, node := o.streamAndNode(); mset != nil && node != nil {
-							s := js.srv
-							s.Errorf("JetStream cluster could not decode consumer delivered update for '%s > %s > %s' [%s]",
-								mset.account(), mset.name(), o, node.Group())
-						}
-						panic(err.Error())
+				dseq, sseq, dc, ts, err := decodeDeliveredUpdate(buf[1:])
+				if err != nil {
+					if mset, node := o.streamAndNode(); mset != nil && node != nil {
+						s := js.srv
+						s.Errorf("JetStream cluster could not decode consumer delivered update for '%s > %s > %s' [%s]",
+							mset.account(), mset.name(), o, node.Group())
 					}
-					// Make sure to update delivered under the lock.
-					o.mu.Lock()
-					err = o.store.UpdateDelivered(dseq, sseq, dc, ts)
-					o.ldt = time.Now()
-					o.mu.Unlock()
-					if err != nil {
-						panic(err.Error())
-					}
+					panic(err.Error())
+				}
+				// Make sure to update delivered under the lock.
+				o.mu.Lock()
+				err = o.store.UpdateDelivered(dseq, sseq, dc, ts)
+				o.ldt = time.Now()
+				o.mu.Unlock()
+				if err != nil {
+					panic(err.Error())
 				}
 			case updateAcksOp:
 				dseq, sseq, err := decodeAckUpdate(buf[1:])

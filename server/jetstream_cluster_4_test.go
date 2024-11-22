@@ -18,6 +18,7 @@ package server
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -3726,7 +3727,9 @@ func TestJetStreamClusterDesyncAfterErrorDuringCatchup(t *testing.T) {
 				for _, n := range server.raftNodes {
 					rn := n.(*raft)
 					if rn.accName == "$G" {
+						rn.Lock()
 						rn.updateLeader(noLeader)
+						rn.Unlock()
 					}
 				}
 
@@ -3989,4 +3992,316 @@ func TestJetStreamClusterMetaSnapshotMustNotIncludePendingConsumers(t *testing.T
 			require_NotEqual(t, ca.Name, "pending-consumer")
 		}
 	}
+}
+
+func TestJetStreamClusterConsumerDontSendSnapshotOnLeaderChange(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "CONSUMER",
+		Replicas:  3,
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	// Add a message and let the consumer ack it, this moves the consumer's RAFT applied up to 1.
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	sub, err := js.PullSubscribe("foo", "CONSUMER")
+	require_NoError(t, err)
+	msgs, err := sub.Fetch(1)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 1)
+	err = msgs[0].AckSync()
+	require_NoError(t, err)
+
+	// We don't need the client anymore.
+	nc.Close()
+
+	lookupConsumer := func(s *Server) *consumer {
+		t.Helper()
+		mset, err := s.lookupAccount(globalAccountName)
+		require_NoError(t, err)
+		acc, err := mset.lookupStream("TEST")
+		require_NoError(t, err)
+		o := acc.lookupConsumer("CONSUMER")
+		require_NotNil(t, o)
+		return o
+	}
+
+	// Grab current consumer leader before moving all into observer mode.
+	cl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+	for _, s := range c.servers {
+		// Put all consumer's RAFT into observer mode, this will prevent all servers from trying to become leader.
+		o := lookupConsumer(s)
+		o.node.SetObserver(true)
+		if s != cl {
+			// For all followers, pause apply so they only store messages in WAL but not apply and possibly snapshot.
+			err = o.node.PauseApply()
+			require_NoError(t, err)
+		}
+	}
+
+	updateDeliveredBuffer := func() []byte {
+		var b [4*binary.MaxVarintLen64 + 1]byte
+		b[0] = byte(updateDeliveredOp)
+		n := 1
+		n += binary.PutUvarint(b[n:], 100)
+		n += binary.PutUvarint(b[n:], 100)
+		n += binary.PutUvarint(b[n:], 1)
+		n += binary.PutVarint(b[n:], time.Now().UnixNano())
+		return b[:n]
+	}
+
+	updateAcksBuffer := func() []byte {
+		var b [2*binary.MaxVarintLen64 + 1]byte
+		b[0] = byte(updateAcksOp)
+		n := 1
+		n += binary.PutUvarint(b[n:], 100)
+		n += binary.PutUvarint(b[n:], 100)
+		return b[:n]
+	}
+
+	// Store an uncommitted entry into our WAL, which will be committed and applied later.
+	co := lookupConsumer(cl)
+	rn := co.node.(*raft)
+	rn.Lock()
+	entries := []*Entry{{EntryNormal, updateDeliveredBuffer()}, {EntryNormal, updateAcksBuffer()}}
+	ae := encode(t, rn.buildAppendEntry(entries))
+	err = rn.storeToWAL(ae)
+	minPindex := rn.pindex
+	rn.Unlock()
+	require_NoError(t, err)
+
+	// Simulate leader change, we do this so we can check what happens in the upper layer logic.
+	rn.leadc <- true
+	rn.SetObserver(false)
+
+	// Since upper layer is async, we don't know whether it will or will not act on the leader change.
+	// Wait for some time to check if it does.
+	time.Sleep(2 * time.Second)
+	rn.RLock()
+	maxPindex := rn.pindex
+	rn.RUnlock()
+
+	r := c.randomNonConsumerLeader(globalAccountName, "TEST", "CONSUMER")
+	ro := lookupConsumer(r)
+	rn = ro.node.(*raft)
+
+	checkFor(t, 5*time.Second, time.Second, func() error {
+		rn.RLock()
+		defer rn.RUnlock()
+		if rn.pindex < maxPindex {
+			return fmt.Errorf("rn.pindex too low, expected %d, got %d", maxPindex, rn.pindex)
+		}
+		return nil
+	})
+
+	// We should only have 'Normal' entries.
+	// If we'd get a 'Snapshot' entry, that would mean it had incomplete state and would be reverting committed state.
+	var state StreamState
+	rn.wal.FastState(&state)
+	for seq := minPindex; seq <= maxPindex; seq++ {
+		ae, err = rn.loadEntry(seq)
+		require_NoError(t, err)
+		for _, entry := range ae.entries {
+			require_Equal(t, entry.Type, EntryNormal)
+		}
+	}
+}
+
+func TestJetStreamClusterDontInstallSnapshotWhenStoppingStream(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.WorkQueuePolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	// Wait for all servers to have applied everything.
+	var maxApplied uint64
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		maxApplied = 0
+		for _, s := range c.servers {
+			acc, err := s.lookupAccount(globalAccountName)
+			if err != nil {
+				return err
+			}
+			mset, err := acc.lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			_, _, applied := mset.node.Progress()
+			if maxApplied == 0 {
+				maxApplied = applied
+			} else if applied < maxApplied {
+				return fmt.Errorf("applied not high enough, expected %d, got %d", applied, maxApplied)
+			} else if applied > maxApplied {
+				return fmt.Errorf("applied higher on one server, expected %d, got %d", applied, maxApplied)
+			}
+		}
+		return nil
+	})
+
+	// Install a snapshot on a follower.
+	s := c.randomNonStreamLeader(globalAccountName, "TEST")
+	acc, err := s.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+	err = mset.node.InstallSnapshot(mset.stateSnapshotLocked())
+	require_NoError(t, err)
+
+	// Validate the snapshot reflects applied.
+	validateStreamState := func(snap *snapshot) {
+		t.Helper()
+		require_Equal(t, snap.lastIndex, maxApplied)
+		ss, err := DecodeStreamState(snap.data)
+		require_NoError(t, err)
+		require_Equal(t, ss.FirstSeq, 1)
+		require_Equal(t, ss.LastSeq, 1)
+	}
+	snap, err := mset.node.(*raft).loadLastSnapshot()
+	require_NoError(t, err)
+	validateStreamState(snap)
+
+	// Simulate a message being stored, but not calling Applied yet.
+	err = mset.processJetStreamMsg("foo", _EMPTY_, nil, nil, 1, time.Now().UnixNano())
+	require_NoError(t, err)
+
+	// Simulate the stream being stopped before we're able to call Applied.
+	// If we'd install a snapshot during this, which would be a race condition,
+	// we'd store a snapshot with state that's ahead of applied.
+	err = mset.stop(false, false)
+	require_NoError(t, err)
+
+	// Validate the snapshot is the same as before.
+	snap, err = mset.node.(*raft).loadLastSnapshot()
+	require_NoError(t, err)
+	validateStreamState(snap)
+}
+
+func TestJetStreamClusterDontInstallSnapshotWhenStoppingConsumer(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.WorkQueuePolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "CONSUMER",
+		Replicas:  3,
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	// Add a message and let the consumer ack it, this moves the consumer's RAFT applied up.
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	sub, err := js.PullSubscribe("foo", "CONSUMER")
+	require_NoError(t, err)
+	msgs, err := sub.Fetch(1)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 1)
+	err = msgs[0].AckSync()
+	require_NoError(t, err)
+
+	// Wait for all servers to have applied everything.
+	var maxApplied uint64
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		maxApplied = 0
+		for _, s := range c.servers {
+			acc, err := s.lookupAccount(globalAccountName)
+			if err != nil {
+				return err
+			}
+			mset, err := acc.lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			o := mset.lookupConsumer("CONSUMER")
+			if o == nil {
+				return errors.New("consumer not found")
+			}
+			_, _, applied := o.node.Progress()
+			if maxApplied == 0 {
+				maxApplied = applied
+			} else if applied < maxApplied {
+				return fmt.Errorf("applied not high enough, expected %d, got %d", applied, maxApplied)
+			} else if applied > maxApplied {
+				return fmt.Errorf("applied higher on one server, expected %d, got %d", applied, maxApplied)
+			}
+		}
+		return nil
+	})
+
+	// Install a snapshot on a follower.
+	s := c.randomNonStreamLeader(globalAccountName, "TEST")
+	acc, err := s.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+	snapBytes, err := o.store.EncodedState()
+	require_NoError(t, err)
+	err = o.node.InstallSnapshot(snapBytes)
+	require_NoError(t, err)
+
+	// Validate the snapshot reflects applied.
+	validateStreamState := func(snap *snapshot) {
+		t.Helper()
+		require_Equal(t, snap.lastIndex, maxApplied)
+		state, err := decodeConsumerState(snap.data)
+		require_NoError(t, err)
+		require_Equal(t, state.Delivered.Consumer, 1)
+		require_Equal(t, state.Delivered.Stream, 1)
+	}
+	snap, err := o.node.(*raft).loadLastSnapshot()
+	require_NoError(t, err)
+	validateStreamState(snap)
+
+	// Simulate a message being delivered, but not calling Applied yet.
+	err = o.store.UpdateDelivered(2, 2, 1, time.Now().UnixNano())
+	require_NoError(t, err)
+
+	// Simulate the consumer being stopped before we're able to call Applied.
+	// If we'd install a snapshot during this, which would be a race condition,
+	// we'd store a snapshot with state that's ahead of applied.
+	err = o.stop()
+	require_NoError(t, err)
+
+	// Validate the snapshot is the same as before.
+	snap, err = o.node.(*raft).loadLastSnapshot()
+	require_NoError(t, err)
+	validateStreamState(snap)
 }

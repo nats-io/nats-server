@@ -2172,15 +2172,22 @@ func (s *Server) reloadClusterPermissions(oldPerms *RoutePermissions) {
 		}
 		deleteRoutedSubs = deleteRoutedSubs[:0]
 		route.mu.Lock()
+		pa, _, hasSubType := route.getRoutedSubKeyInfo()
 		for key, sub := range route.subs {
-			if an := strings.Fields(key)[0]; an != accName {
-				continue
+			// If this is not a pinned-account route, we need to get the
+			// account name from the key to see if we collect this sub.
+			if !pa {
+				if an := getAccNameFromRoutedSubKey(sub, key, hasSubType); an != accName {
+					continue
+				}
 			}
 			// If we can't export, we need to drop the subscriptions that
 			// we have on behalf of this route.
+			// Need to make a string cast here since canExport call sl.Match()
 			subj := string(sub.subject)
 			if !route.canExport(subj) {
-				delete(route.subs, string(sub.sid))
+				// We can use bytesToString() here.
+				delete(route.subs, bytesToString(sub.sid))
 				deleteRoutedSubs = append(deleteRoutedSubs, sub)
 			}
 		}
