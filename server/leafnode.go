@@ -2363,10 +2363,10 @@ const (
 // Helper function to build the key that prevents collisions between normal
 // routed subscriptions and routed subscriptions on behalf of a leafnode.
 // Keys will look like this:
-// "R foo" 			-> plain routed sub on "foo"
-// "R foo bar"		-> queue routed sub on "foo", queue "bar"
-// "L foo bar"		-> plain routed leaf sub on "foo", leaf "bar"
-// "L foo bar baz"	-> queue routed sub on "foo", queue "bar", leaf "baz"
+// "R foo"          -> plain routed sub on "foo"
+// "R foo bar"      -> queue routed sub on "foo", queue "bar"
+// "L foo bar"      -> plain routed leaf sub on "foo", leaf "bar"
+// "L foo bar baz"  -> queue routed sub on "foo", queue "bar", leaf "baz"
 func keyFromSubWithOrigin(sub *subscription) string {
 	var sb strings.Builder
 	sb.Grow(2 + len(sub.origin) + 1 + len(sub.subject) + 1 + len(sub.queue))

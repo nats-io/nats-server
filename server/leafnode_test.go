@@ -4875,9 +4875,12 @@ func TestLeafNodeRoutedSubKeyDifferentBetweenLeafSubAndRoutedSub(t *testing.T) {
 	for _, test := range []struct {
 		name          string
 		pinnedAccount string
+		lnocu         bool
 	}{
-		{"without pinned account", _EMPTY_},
-		{"with pinned account", "accounts: [\"XYZ\"]"},
+		{"without pinned account", _EMPTY_, true},
+		{"with pinned account", "accounts: [\"XYZ\"]", true},
+		{"old server without pinned account", _EMPTY_, false},
+		{"old server with pinned account", "accounts: [\"XYZ\"]", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			leafBConf := `
@@ -4905,6 +4908,20 @@ func TestLeafNodeRoutedSubKeyDifferentBetweenLeafSubAndRoutedSub(t *testing.T) {
 			defer b2.Shutdown()
 
 			checkClusterFormed(t, b1, b2)
+
+			// To make route connections behave like if the server was connected
+			// to an older server, change the routes' lnocu field.
+			if !test.lnocu {
+				for _, s := range []*Server{b1, b2} {
+					s.mu.RLock()
+					s.forEachRoute(func(r *client) {
+						r.mu.Lock()
+						r.route.lnocu = false
+						r.mu.Unlock()
+					})
+					s.mu.RUnlock()
+				}
+			}
 
 			// This leaf will have a cluster name that matches an account name.
 			// The idea is to make sure that hub servers are not using incorrect
@@ -4954,19 +4971,21 @@ func TestLeafNodeRoutedSubKeyDifferentBetweenLeafSubAndRoutedSub(t *testing.T) {
 			natsFlush(t, ncA)
 
 			// Check the acc.rm on B2
-			acc, err := b2.LookupAccount("XYZ")
+			b2Acc, err := b2.LookupAccount("XYZ")
 			require_NoError(t, err)
 
 			rsubKey := keyFromSubWithOrigin(&subscription{subject: []byte("foo")})
 			rqsubKey := keyFromSubWithOrigin(&subscription{subject: []byte("XYZ"), queue: []byte("foo")})
 			rlsubKey := keyFromSubWithOrigin(&subscription{origin: []byte("XYZ"), subject: []byte("foo")})
 			rlqsubKey := keyFromSubWithOrigin(&subscription{origin: []byte("XYZ"), subject: []byte("XYZ"), queue: []byte("foo")})
+			// Ensure all keys are different
+			require_True(t, rsubKey != rqsubKey && rqsubKey != rlsubKey && rlsubKey != rlqsubKey)
 
 			checkFor(t, time.Second, 10*time.Millisecond, func() error {
-				acc.mu.RLock()
-				defer acc.mu.RUnlock()
+				b2Acc.mu.RLock()
+				defer b2Acc.mu.RUnlock()
 				for _, key := range []string{rsubKey, rqsubKey, rlsubKey, rlqsubKey} {
-					v, ok := acc.rm[key]
+					v, ok := b2Acc.rm[key]
 					if !ok {
 						return fmt.Errorf("Did not find key %q for sub: %+v", key, sub)
 					}
@@ -4978,15 +4997,15 @@ func TestLeafNodeRoutedSubKeyDifferentBetweenLeafSubAndRoutedSub(t *testing.T) {
 			})
 
 			// Now check that on B1, we have 2 distinct subs for the route.
-			acc, err = b1.LookupAccount("XYZ")
+			b1Acc, err := b1.LookupAccount("XYZ")
 			require_NoError(t, err)
 
 			var route *client
 
 			if test.pinnedAccount == _EMPTY_ {
-				acc.mu.RLock()
-				rIdx := acc.routePoolIdx
-				acc.mu.RUnlock()
+				b1Acc.mu.RLock()
+				rIdx := b1Acc.routePoolIdx
+				b1Acc.mu.RUnlock()
 				b1.mu.RLock()
 				b1.forEachRouteIdx(rIdx, func(r *client) bool {
 					route = r
@@ -5014,8 +5033,45 @@ func TestLeafNodeRoutedSubKeyDifferentBetweenLeafSubAndRoutedSub(t *testing.T) {
 					}
 				}
 				route.mu.Unlock()
-				if len(entries) != 4 {
-					return fmt.Errorf("Expected 4 entries with %q, got this: %q", "foo", entries)
+				// With new servers, we expect 4 entries, but with older servers,
+				// we have collisions and have only 2.
+				var expected int
+				if test.lnocu {
+					expected = 4
+				} else {
+					expected = 2
+				}
+				if len(entries) != expected {
+					return fmt.Errorf("Expected %d entries with %q, got this: %q", expected, "foo", entries)
+				}
+				return nil
+			})
+
+			// Close the connections and expect all gone.
+			ncB2.Close()
+			ncA.Close()
+
+			checkFor(t, time.Second, 10*time.Millisecond, func() error {
+				b2Acc.mu.RLock()
+				defer b2Acc.mu.RUnlock()
+				for _, key := range []string{rsubKey, rqsubKey, rlsubKey, rlqsubKey} {
+					if _, ok := b2Acc.rm[key]; ok {
+						return fmt.Errorf("Key %q still present", key)
+					}
+				}
+				return nil
+			})
+			checkFor(t, time.Second, 10*time.Millisecond, func() error {
+				var entries []string
+				route.mu.Lock()
+				for key := range route.subs {
+					if strings.Contains(key, "foo") {
+						entries = append(entries, key)
+					}
+				}
+				route.mu.Unlock()
+				if len(entries) != 0 {
+					return fmt.Errorf("Still routed subscriptions on %q: %q", "foo", entries)
 				}
 				return nil
 			})
