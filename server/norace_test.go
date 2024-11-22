@@ -21,6 +21,9 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/hmac"
+	crand "crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -44,16 +47,14 @@ import (
 	"testing"
 	"time"
 
-	"crypto/hmac"
-	crand "crypto/rand"
-	"crypto/sha256"
-
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
-	"github.com/nats-io/nats-server/v2/server/avl"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
+
+	"github.com/nats-io/nats-server/v2/internal/antithesis"
+	"github.com/nats-io/nats-server/v2/server/avl"
 )
 
 // IMPORTANT: Tests in this file are not executed when running with the -race flag.
@@ -5125,6 +5126,7 @@ func TestNoRaceJetStreamClusterInterestPullConsumerStreamLimitBug(t *testing.T) 
 			select {
 			case <-pt.C:
 				_, err := js.Publish("foo", []byte("BUG!"))
+				antithesis.Assert(t, err == nil, "Publish error", nil)
 				require_NoError(t, err)
 			case <-qch:
 				pt.Stop()
@@ -5544,6 +5546,10 @@ func TestNoRaceJetStreamFileStoreLargeKVAccessTiming(t *testing.T) {
 	slow := time.Since(start)
 
 	if base > 100*time.Microsecond || slow > 200*time.Microsecond {
+		antithesis.AssertUnreachable(t, "Lookup too slow", map[string]any{
+			"base": base.String(),
+			"slow": slow.String(),
+		})
 		t.Fatalf("Took too long to look up first key vs last: %v vs %v", base, slow)
 	}
 
@@ -8490,6 +8496,13 @@ func TestNoRaceJetStreamClusterLeafnodeConnectPerf(t *testing.T) {
 }
 
 func TestNoRaceJetStreamClusterDifferentRTTInterestBasedStreamPreAck(t *testing.T) {
+
+	defer func() {
+		if t.Failed() {
+			antithesis.AssertUnreachable(t, "Test failed", nil)
+		}
+	}()
+
 	tmpl := `
 	listen: 127.0.0.1:-1
 	server_name: %s
@@ -10705,6 +10718,7 @@ func TestNoRaceJetStreamClusterMemoryWorkQueueLastSequenceResetAfterRestart(t *t
 				Subjects:  []string{fmt.Sprintf("foo.%d.*", n)},
 				Replicas:  3,
 			}, nats.MaxWait(30*time.Second))
+			antithesis.Assert(t, err == nil, "AddStream error", nil)
 			require_NoError(t, err)
 			subj := fmt.Sprintf("foo.%d.bar", n)
 			for i := 0; i < 22; i++ {
@@ -10712,12 +10726,16 @@ func TestNoRaceJetStreamClusterMemoryWorkQueueLastSequenceResetAfterRestart(t *t
 			}
 			// Now consumer them all as well.
 			sub, err := js.PullSubscribe(subj, "wq")
+			antithesis.Assert(t, err == nil, "PullSubscribe error", nil)
 			require_NoError(t, err)
 			msgs, err := sub.Fetch(22, nats.MaxWait(20*time.Second))
+			antithesis.Assert(t, err == nil, "Fetch error", nil)
 			require_NoError(t, err)
+			antithesis.Assert(t, len(msgs) == 22, "Unexpected message length", nil)
 			require_Equal(t, len(msgs), 22)
 			for _, m := range msgs {
 				err := m.AckSync()
+				antithesis.Assert(t, err == nil, "Ack error", nil)
 				require_NoError(t, err)
 			}
 		}(i)
@@ -10739,6 +10757,7 @@ func TestNoRaceJetStreamClusterMemoryWorkQueueLastSequenceResetAfterRestart(t *t
 				mset, err := s.GlobalAccount().lookupStream(stream)
 				require_NoError(t, err)
 				var state StreamState
+				// CheckFor failure is already asserted
 				checkFor(t, 20*time.Second, time.Second, func() error {
 					mset.store.FastState(&state)
 					if state.LastSeq != 22 {

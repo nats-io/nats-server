@@ -23,6 +23,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nats-io/nats-server/v2/internal/antithesis"
 )
 
 // DefaultTestOptions are default options for the unit tests.
@@ -154,6 +156,9 @@ func require_ChanRead[T any](t *testing.T, ch chan T, timeout time.Duration) T {
 	case v := <-ch:
 		return v
 	case <-time.After(timeout):
+		antithesis.AssertUnreachable(t, "Channel read timeout", map[string]any{
+			"timeout": timeout.String(),
+		})
 		t.Fatalf("require read from channel within %v but didn't get anything", timeout)
 	}
 	panic("this shouldn't be possible")

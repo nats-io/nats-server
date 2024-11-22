@@ -43,10 +43,12 @@ import (
 	"time"
 
 	"github.com/nats-io/jwt/v2"
-	"github.com/nats-io/nats-server/v2/server/sysmem"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
+
+	"github.com/nats-io/nats-server/v2/internal/antithesis"
+	"github.com/nats-io/nats-server/v2/server/sysmem"
 )
 
 func TestJetStreamBasicNilConfig(t *testing.T) {
@@ -6183,6 +6185,11 @@ func TestJetStreamConsumerReplayRate(t *testing.T) {
 					limit = 10 * time.Millisecond
 				}
 				if now.Sub(last) > limit {
+					antithesis.AssertUnreachable(t, "Delivery too slow", map[string]any{
+						"delay":          time.Since(last).String(),
+						"i":              i,
+						"total_messages": totalMsgs,
+					})
 					t.Fatalf("Expected firehose/instant delivery, got message gap of %v", now.Sub(last))
 				}
 				last = now
@@ -9728,6 +9735,11 @@ func TestJetStreamAckExplicitMsgRemoval(t *testing.T) {
 			for i := 1; i <= toSend; i++ {
 				m, err := sub2.NextMsg(time.Second)
 				if err != nil {
+					antithesis.AssertUnreachable(t, "NextMsg timeout", map[string]any{
+						"error":   err,
+						"i":       i,
+						"to_send": toSend,
+					})
 					t.Fatalf("Error receiving message %d: %v", i, err)
 				}
 				m.Respond(nil)
@@ -9934,6 +9946,11 @@ func TestJetStreamConsumerUpdateRedelivery(t *testing.T) {
 			for i := 0; i < toSend; i++ {
 				m, err := sub.NextMsg(time.Second)
 				if err != nil {
+					antithesis.AssertUnreachable(t, "NextMsg error", map[string]any{
+						"error":  err,
+						"i":      i,
+						"toSend": toSend,
+					})
 					t.Fatalf("Error getting message: %v", err)
 				}
 				seq, _, _, _, _ := replyInfo(m.Reply)
