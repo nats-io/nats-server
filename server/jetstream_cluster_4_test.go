@@ -37,6 +37,8 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nuid"
+
+	"github.com/nats-io/nats-server/v2/internal/antithesis"
 )
 
 func TestJetStreamClusterWorkQueueStreamDiscardNewDesync(t *testing.T) {
@@ -1226,11 +1228,12 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 			}
 			for seq := state.FirstSeq; seq <= state.LastSeq; seq++ {
 				var expectedErr error
-				var msgId string
+				var msgId, msgIdServer string
 				var smv StoreMsg
 				for _, mset := range msets {
 					mset.mu.RLock()
 					sm, err := mset.store.LoadMsg(seq, &smv)
+					serverName := mset.srv.Name()
 					mset.mu.RUnlock()
 					if err != nil || expectedErr != nil {
 						// If one of the msets reports an error for LoadMsg for this
@@ -1247,7 +1250,15 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 					}
 					if msgId == _EMPTY_ {
 						msgId = string(sm.hdr)
+						msgIdServer = serverName
 					} else if msgId != string(sm.hdr) {
+						antithesis.AssertUnreachable(t, "Message ID mismatch", map[string]any{
+							"sequence":        seq,
+							"expected":        msgId,
+							"actual":          string(sm.hdr),
+							"expected_origin": msgIdServer,
+							"actual_origin":   serverName,
+						})
 						t.Fatalf("MsgIds do not match for seq %d: %q vs %q", seq, msgId, sm.hdr)
 					}
 				}
