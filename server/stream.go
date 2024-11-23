@@ -17,7 +17,6 @@ import (
 	"archive/tar"
 	"bytes"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -32,6 +31,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/goccy/go-json"
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/nuid"
 )

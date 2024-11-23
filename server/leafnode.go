@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"math/rand"
 	"net"
@@ -36,6 +35,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/goccy/go-json"
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nkeys"

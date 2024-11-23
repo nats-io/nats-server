@@ -20,7 +20,6 @@ import (
 	"bytes"
 	"context"
 	crand "crypto/rand"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -33,6 +32,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goccy/go-json"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 )

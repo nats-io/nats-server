@@ -18,7 +18,6 @@ import (
 	"cmp"
 	crand "crypto/rand"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -32,6 +31,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/goccy/go-json"
 	"github.com/klauspost/compress/s2"
 	"github.com/minio/highwayhash"
 	"github.com/nats-io/nuid"
@@ -1572,7 +1572,7 @@ func (js *jetStream) metaSnapshot() []byte {
 	b, _ := json.Marshal(streams)
 	js.mu.RUnlock()
 
-	return s2.EncodeBetter(nil, b)
+	return s2.Encode(nil, b)
 }
 
 func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecovering bool) error {

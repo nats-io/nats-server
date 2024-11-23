@@ -22,7 +22,6 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -48,6 +47,7 @@ import (
 	crand "crypto/rand"
 	"crypto/sha256"
 
+	"github.com/goccy/go-json"
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats-server/v2/server/avl"
@@ -11186,4 +11186,58 @@ func TestNoRaceJetStreamClusterCheckInterestStatePerformanceInterest(t *testing.
 	start = time.Now()
 	mset.checkInterestState()
 	require_True(t, time.Since(start) < elapsed/100)
+}
+
+func TestNoRaceJetStreamClusterLargeMetaSnapshotTiming(t *testing.T) {
+	// This test was to show improvements in speed for marshaling the meta layer with lots of assets.
+	// Move to S2.Encode vs EncodeBetter which is 2x faster and actually better compression.
+	// Also moved to goccy json which is faster then the default and in my tests now always matches
+	// the default encoder byte for byte which last time I checked it did not.
+	t.Skip()
+
+	c := createJetStreamClusterExplicit(t, "R3F", 3)
+	defer c.shutdown()
+
+	// Create 200 streams, each with 500 consumers.
+	numStreams := 200
+	numConsumers := 500
+	wg := sync.WaitGroup{}
+	wg.Add(numStreams)
+	for i := 0; i < numStreams; i++ {
+		go func() {
+			defer wg.Done()
+			s := c.randomServer()
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+			sname := fmt.Sprintf("TEST-SNAPSHOT-%d", i)
+			subj := fmt.Sprintf("foo.%d", i)
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     sname,
+				Subjects: []string{subj},
+				Replicas: 3,
+			})
+			require_NoError(t, err)
+
+			// Now consumers.
+			for c := 0; c < numConsumers; c++ {
+				_, err = js.AddConsumer(sname, &nats.ConsumerConfig{
+					Durable:       fmt.Sprintf("C-%d", c),
+					FilterSubject: subj,
+					AckPolicy:     nats.AckExplicitPolicy,
+					Replicas:      1,
+				})
+				require_NoError(t, err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	s := c.leader()
+	js := s.getJetStream()
+	n := js.getMetaGroup()
+	// Now let's see how long it takes to create a meta snapshot and how big it is.
+	start := time.Now()
+	snap := js.metaSnapshot()
+	require_NoError(t, n.InstallSnapshot(snap))
+	t.Logf("Took %v to snap meta with size of %v\n", time.Since(start), friendlyBytes(len(snap)))
 }
