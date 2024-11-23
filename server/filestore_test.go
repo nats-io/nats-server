@@ -24,7 +24,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -40,6 +39,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/goccy/go-json"
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/nuid"
 )
@@ -1484,8 +1484,6 @@ func TestFileStoreMeta(t *testing.T) {
 	if err := json.Unmarshal(buf, &oconfig2); err != nil {
 		t.Fatalf("Error unmarshalling: %v", err)
 	}
-	// Since we set name we will get that back now.
-	oconfig.Name = oname
 	if !reflect.DeepEqual(oconfig2, oconfig) {
 		t.Fatalf("Consumer configs not equal, got %+v vs %+v", oconfig2, oconfig)
 	}

@@ -15,13 +15,14 @@ package server
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"math/rand"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/goccy/go-json"
 )
 
 const (
