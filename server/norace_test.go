@@ -5371,7 +5371,7 @@ func TestNoRaceJetStreamClusterStreamNamesAndInfosMoreThanAPILimit(t *testing.T)
 		createStream(name)
 	}
 
-	// Not using the JS API here beacause we want to make sure that the
+	// Not using the JS API here because we want to make sure that the
 	// server returns the proper Total count, but also that it does not
 	// send more than when the API limit is in one go.
 	check := func(subj string, limit int) {
@@ -5379,19 +5379,35 @@ func TestNoRaceJetStreamClusterStreamNamesAndInfosMoreThanAPILimit(t *testing.T)
 
 		nreq := JSApiStreamNamesRequest{}
 		b, _ := json.Marshal(nreq)
+
 		msg, err := nc.Request(subj, b, 2*time.Second)
 		require_NoError(t, err)
 
-		nresp := JSApiStreamNamesResponse{}
-		json.Unmarshal(msg.Data, &nresp)
-		if n := nresp.ApiPaged.Total; n != max {
-			t.Fatalf("Expected total to be %v, got %v", max, n)
-		}
-		if n := nresp.ApiPaged.Limit; n != limit {
-			t.Fatalf("Expected limit to be %v, got %v", limit, n)
-		}
-		if n := len(nresp.Streams); n != limit {
-			t.Fatalf("Expected number of streams to be %v, got %v", limit, n)
+		switch subj {
+		case JSApiStreams:
+			nresp := JSApiStreamNamesResponse{}
+			json.Unmarshal(msg.Data, &nresp)
+			if n := nresp.ApiPaged.Total; n != max {
+				t.Fatalf("Expected total to be %v, got %v", max, n)
+			}
+			if n := nresp.ApiPaged.Limit; n != limit {
+				t.Fatalf("Expected limit to be %v, got %v", limit, n)
+			}
+			if n := len(nresp.Streams); n != limit {
+				t.Fatalf("Expected number of streams to be %v, got %v", limit, n)
+			}
+		case JSApiStreamList:
+			nresp := JSApiStreamListResponse{}
+			json.Unmarshal(msg.Data, &nresp)
+			if n := nresp.ApiPaged.Total; n != max {
+				t.Fatalf("Expected total to be %v, got %v", max, n)
+			}
+			if n := nresp.ApiPaged.Limit; n != limit {
+				t.Fatalf("Expected limit to be %v, got %v", limit, n)
+			}
+			if n := len(nresp.Streams); n != limit {
+				t.Fatalf("Expected number of streams to be %v, got %v", limit, n)
+			}
 		}
 	}
 
