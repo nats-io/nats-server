@@ -22981,3 +22981,166 @@ func TestJetStreamMemoryPurgeClearsSubjectsState(t *testing.T) {
 	require_NoError(t, err)
 	require_Len(t, len(si.State.Subjects), 0)
 }
+
+func TestJetStreamMsgIdDeduplication(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:       "TEST",
+		Subjects:   []string{"test"},
+		Duplicates: time.Second / 2,
+	})
+	require_NoError(t, err)
+
+	require_Publish := func(id string) {
+		t.Helper()
+		msg := &nats.Msg{
+			Subject: "test",
+			Header:  nats.Header{},
+		}
+		msg.Header.Set("Nats-Msg-Id", id)
+		_, err := js.PublishMsg(msg)
+		require_NoError(t, err)
+	}
+
+	require_Messages := func(msgs uint64) {
+		t.Helper()
+		si, err := js.StreamInfo("TEST")
+		require_NoError(t, err)
+		require_Equal(t, si.State.Msgs, msgs)
+	}
+
+	mset, err := s.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	require_Stitched := func() {
+		t.Helper()
+		require_NotNil(t, mset.ddnext)
+		require_NotNil(t, mset.ddlast)
+		require_Equal(t, mset.ddnext.prev, nil)
+		require_Equal(t, mset.ddlast.next, nil)
+		for dde := mset.ddnext; dde != nil && dde != mset.ddlast; dde = dde.next {
+			if dde.next != nil {
+				require_Equal(t, dde.next.prev, dde)
+			}
+			if dde.prev != nil {
+				require_Equal(t, dde.prev.next, dde)
+			}
+		}
+	}
+
+	// At this point nothing has sent a message with a Nats-Msg-Id
+	// so there should be no state and no timer.
+	mset.mu.RLock()
+	require_Equal(t, mset.ddtmr, nil)
+	require_Equal(t, mset.ddnext, nil)
+	require_Equal(t, mset.ddlast, nil)
+	require_Equal(t, mset.ddtmr, nil)
+	mset.mu.RUnlock()
+
+	// Publish the first message with a Nats-Msg-Id. There should
+	// be exactly one message, which means it is both the next and
+	// the last.
+	require_Publish("one")
+	require_Messages(1)
+	mset.mu.RLock()
+	require_Equal(t, mset.ddmap.Size(), 1)
+	one, ok := mset.ddmap.Find(stringToBytes("one"))
+	require_True(t, ok)
+	require_Equal(t, mset.ddnext, *one)
+	require_Equal(t, mset.ddlast, *one)
+	require_Stitched()
+	require_NotNil(t, mset.ddtmr)
+	mset.mu.RUnlock()
+
+	// Now publish a duplicate. Nothing should change.
+	require_Publish("one")
+	require_Messages(1)
+	mset.mu.RLock()
+	require_Equal(t, mset.ddmap.Size(), 1)
+	require_Equal(t, mset.ddnext, *one)
+	require_Equal(t, mset.ddlast, *one)
+	require_Stitched()
+	require_NotNil(t, mset.ddtmr)
+	mset.mu.RUnlock()
+
+	// Publish a second message with a different Nats-Msg-Id.
+	// There will now be two messages and the ddentries for one
+	// and two should now be stitched together, with one being
+	// up front and two being last.
+	require_Publish("two")
+	require_Messages(2)
+	mset.mu.RLock()
+	require_Equal(t, mset.ddmap.Size(), 2)
+	two, ok := mset.ddmap.Find(stringToBytes("two"))
+	require_True(t, ok)
+	require_Equal(t, mset.ddnext, *one)
+	require_Equal(t, mset.ddlast, *two)
+	require_Stitched()
+	require_NotNil(t, mset.ddtmr)
+	mset.mu.RUnlock()
+
+	// Publish a third message with a different Nats-Msg-Id.
+	// There will now be three messages and the ddentries for
+	// all three should have been stitched together, with one
+	// still being up front and three now being last.
+	require_Publish("three")
+	require_Messages(3)
+	mset.mu.RLock()
+	require_Equal(t, mset.ddmap.Size(), 3)
+	three, ok := mset.ddmap.Find(stringToBytes("three"))
+	require_True(t, ok)
+	require_Equal(t, mset.ddnext, *one)
+	require_Equal(t, mset.ddlast, *three)
+	require_Stitched()
+	require_NotNil(t, mset.ddtmr)
+	mset.mu.RUnlock()
+
+	// Publish another duplicate for one, which is filtered
+	// out and ignored. Therefore all of the state should be
+	// unchanged from the previous publish.
+	require_Publish("one")
+	require_Messages(3)
+	mset.mu.RLock()
+	require_Equal(t, mset.ddmap.Size(), 3)
+	newone, ok := mset.ddmap.Find(stringToBytes("one"))
+	require_True(t, ok)
+	require_Equal(t, *one, *newone) // Entry not overwritten.
+	require_Equal(t, mset.ddnext, *one)
+	require_Equal(t, mset.ddlast, *three)
+	require_Stitched()
+	require_NotNil(t, mset.ddtmr)
+	mset.mu.RUnlock()
+
+	// Wait for the duplicate window to pass.
+	time.Sleep(time.Second)
+
+	// By this point the timer has fired and therefore the
+	// state for duplicates has been cleaned up by now.
+	mset.mu.RLock()
+	require_Equal(t, mset.ddmap.Size(), 0)
+	require_Equal(t, mset.ddtmr, nil)
+	require_Equal(t, mset.ddnext, nil)
+	require_Equal(t, mset.ddlast, nil)
+	mset.mu.RUnlock()
+
+	// This should now let us publish another message with
+	// a Nats-Msg-Id of one, which would have been a duplicate
+	// before but now isn't. Therefore there should now be 4
+	// messages in the stream.
+	require_Publish("one")
+	require_Messages(4)
+	mset.mu.RLock()
+	require_Equal(t, mset.ddmap.Size(), 1)
+	one, ok = mset.ddmap.Find(stringToBytes("one"))
+	require_True(t, ok)
+	require_Equal(t, mset.ddnext, *one)
+	require_Equal(t, mset.ddlast, *one)
+	require_Stitched()
+	require_NotNil(t, mset.ddtmr)
+	mset.mu.RUnlock()
+}
