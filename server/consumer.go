@@ -1563,6 +1563,16 @@ func (o *consumer) updateDeliveryInterest(localInterest bool) bool {
 	return false
 }
 
+const (
+	defaultConsumerNotActiveStartInterval = 30 * time.Second
+	defaultConsumerNotActiveMaxInterval   = 5 * time.Minute
+)
+
+var (
+	consumerNotActiveStartInterval = defaultConsumerNotActiveStartInterval
+	consumerNotActiveMaxInterval   = defaultConsumerNotActiveMaxInterval
+)
+
 func (o *consumer) deleteNotActive() {
 	o.mu.Lock()
 	if o.mset == nil {
@@ -1628,12 +1638,8 @@ func (o *consumer) deleteNotActive() {
 			// Check to make sure we went away.
 			// Don't think this needs to be a monitored go routine.
 			go func() {
-				const (
-					startInterval = 30 * time.Second
-					maxInterval   = 5 * time.Minute
-				)
-				jitter := time.Duration(rand.Int63n(int64(startInterval)))
-				interval := startInterval + jitter
+				jitter := time.Duration(rand.Int63n(int64(consumerNotActiveStartInterval)))
+				interval := consumerNotActiveStartInterval + jitter
 				ticker := time.NewTicker(interval)
 				defer ticker.Stop()
 				for range ticker.C {
@@ -1648,7 +1654,7 @@ func (o *consumer) deleteNotActive() {
 					if nca != nil && nca == ca {
 						s.Warnf("Consumer assignment for '%s > %s > %s' not cleaned up, retrying", acc, stream, name)
 						meta.ForwardProposal(removeEntry)
-						if interval < maxInterval {
+						if interval < consumerNotActiveMaxInterval {
 							interval *= 2
 							ticker.Reset(interval)
 						}
