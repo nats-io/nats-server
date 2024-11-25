@@ -4246,8 +4246,10 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 		return
 	}
 
+	js.mu.Lock()
 	sa := js.streamAssignment(accName, stream)
 	if sa == nil {
+		js.mu.Unlock()
 		s.Debugf("Consumer create failed, could not locate stream '%s > %s'", accName, stream)
 		return
 	}
@@ -4259,7 +4261,6 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 	var wasExisting bool
 
 	// Check if we have an existing consumer assignment.
-	js.mu.Lock()
 	if sa.consumers == nil {
 		sa.consumers = make(map[string]*consumerAssignment)
 	} else if oca := sa.consumers[ca.Name]; oca != nil {

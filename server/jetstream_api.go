@@ -3437,8 +3437,10 @@ func (s *Server) jsConsumerUnpinRequest(sub *subscription, c *client, _ *Account
 		}
 
 		// First check if the stream and consumer is there.
+		js.mu.RLock()
 		sa := js.streamAssignment(acc.Name, stream)
 		if sa == nil {
+			js.mu.RUnlock()
 			resp.Error = NewJSStreamNotFoundError(Unless(err))
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
@@ -3446,10 +3448,12 @@ func (s *Server) jsConsumerUnpinRequest(sub *subscription, c *client, _ *Account
 
 		ca, ok := sa.consumers[consumer]
 		if !ok || ca == nil {
+			js.mu.RUnlock()
 			resp.Error = NewJSConsumerNotFoundError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
+		js.mu.RUnlock()
 
 		// Then check if we are the leader.
 		mset, err := acc.lookupStream(stream)
@@ -4886,8 +4890,10 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 	consumer := consumerNameFromSubject(subject)
 
 	if isClustered {
+		js.mu.RLock()
 		sa := js.streamAssignment(acc.Name, stream)
 		if sa == nil {
+			js.mu.RUnlock()
 			resp.Error = NewJSStreamNotFoundError(Unless(err))
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
@@ -4895,12 +4901,14 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 
 		ca, ok := sa.consumers[consumer]
 		if !ok || ca == nil {
+			js.mu.RUnlock()
 			resp.Error = NewJSConsumerNotFoundError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
 
 		nca := *ca
+		js.mu.RUnlock()
 		pauseUTC := req.PauseUntil.UTC()
 		if !pauseUTC.IsZero() {
 			nca.Config.PauseUntil = &pauseUTC
