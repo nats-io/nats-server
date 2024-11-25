@@ -6057,7 +6057,9 @@ func (mset *stream) ackMsg(o *consumer, seq uint64) bool {
 	if seq > state.LastSeq {
 		mset.registerPreAck(o, seq)
 		mset.mu.Unlock()
-		return false
+		// We have not removed the message, but should still signal so we could retry later
+		// since we potentially need to remove it then.
+		return true
 	}
 
 	// Always clear pre-ack if here.

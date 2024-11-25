@@ -4950,3 +4950,135 @@ func TestJetStreamClusterStreamConsumerStateResetAfterRecreate(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestJetStreamClusterStreamAckMsgR1SignalsRemovedMsg(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.WorkQueuePolicy,
+		Replicas:  1,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "CONSUMER",
+		Replicas:  1,
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	s := c.streamLeader(globalAccountName, "TEST")
+	acc, err := s.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+
+	// Too high sequence, should register pre-ack and return true allowing for retries.
+	require_True(t, mset.ackMsg(o, 100))
+
+	var smv StoreMsg
+	sm, err := mset.store.LoadMsg(1, &smv)
+	require_NoError(t, err)
+	require_Equal(t, sm.subj, "foo")
+
+	// Now do a proper ack, should immediately remove the message since it's R1.
+	require_True(t, mset.ackMsg(o, 1))
+	_, err = mset.store.LoadMsg(1, &smv)
+	require_Error(t, err, ErrStoreMsgNotFound)
+}
+
+func TestJetStreamClusterStreamAckMsgR3SignalsRemovedMsg(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.WorkQueuePolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "CONSUMER",
+		Replicas:  3,
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	getStreamAndConsumer := func(s *Server) (*stream, *consumer, error) {
+		t.Helper()
+		acc, err := s.lookupAccount(globalAccountName)
+		if err != nil {
+			return nil, nil, err
+		}
+		mset, err := acc.lookupStream("TEST")
+		if err != nil {
+			return nil, nil, err
+		}
+		o := mset.lookupConsumer("CONSUMER")
+		if err != nil {
+			return nil, nil, err
+		}
+		return mset, o, nil
+	}
+
+	sl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+	sf := c.randomNonConsumerLeader(globalAccountName, "TEST", "CONSUMER")
+
+	msetL, ol, err := getStreamAndConsumer(sl)
+	require_NoError(t, err)
+	msetF, of, err := getStreamAndConsumer(sf)
+	require_NoError(t, err)
+
+	// Too high sequence, should register pre-ack and return true allowing for retries.
+	require_True(t, msetL.ackMsg(ol, 100))
+	require_True(t, msetF.ackMsg(of, 100))
+
+	// Ack message on follower, should not remove message as that's proposed by the leader.
+	// But should still signal message removal.
+	require_True(t, msetF.ackMsg(of, 1))
+
+	// Confirm all servers have the message.
+	var smv StoreMsg
+	for _, s := range c.servers {
+		mset, _, err := getStreamAndConsumer(s)
+		require_NoError(t, err)
+		sm, err := mset.store.LoadMsg(1, &smv)
+		require_NoError(t, err)
+		require_Equal(t, sm.subj, "foo")
+	}
+
+	// Now do a proper ack, should propose the message removal since it's R3.
+	require_True(t, msetL.ackMsg(ol, 1))
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			mset, _, err := getStreamAndConsumer(s)
+			if err != nil {
+				return err
+			}
+			_, err = mset.store.LoadMsg(1, &smv)
+			if err != ErrStoreMsgNotFound {
+				return fmt.Errorf("expected error, but got: %v", err)
+			}
+		}
+		return nil
+	})
+}
