@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -9074,4 +9075,99 @@ func TestLeafNodeBannerNoClusterNameIfNoCluster(t *testing.T) {
 		}
 	}
 	l.Unlock()
+}
+
+func TestLeafCredFormatting(t *testing.T) {
+	//create the operator/sys/account tree
+	oKP, err := nkeys.CreateOperator()
+	require_NoError(t, err)
+	oPK, err := oKP.PublicKey()
+	require_NoError(t, err)
+
+	oc := jwt.NewOperatorClaims(oPK)
+	oc.Name = "O"
+	oJWT, err := oc.Encode(oKP)
+	require_NoError(t, err)
+
+	sysKP, err := nkeys.CreateAccount()
+	require_NoError(t, err)
+	sysPK, err := sysKP.PublicKey()
+	require_NoError(t, err)
+
+	sys := jwt.NewAccountClaims(sysPK)
+	sys.Name = "SYS"
+	sysJWT, err := sys.Encode(oKP)
+	require_NoError(t, err)
+
+	aKP, err := nkeys.CreateAccount()
+	require_NoError(t, err)
+	aPK, err := aKP.PublicKey()
+
+	ac := jwt.NewAccountClaims(aPK)
+	ac.Name = "A"
+	aJWT, err := ac.Encode(oKP)
+	require_NoError(t, err)
+
+	uKP, err := nkeys.CreateUser()
+	require_NoError(t, err)
+	uSeed, err := uKP.Seed()
+	require_NoError(t, err)
+	uPK, err := uKP.PublicKey()
+	require_NoError(t, err)
+
+	// build the config
+	stmpl := fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		operator: %s
+		system_account: %s
+		resolver: MEM
+		resolver_preload: {
+			%s: %s
+			%s: %s
+		}
+		leaf { listen: 127.0.0.1:-1 }
+	`, oJWT, sysPK, sysPK, sysJWT, aPK, aJWT)
+	conf := createConfFile(t, []byte(stmpl))
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// create the leaf node
+	// generate the user credentials
+	uc := jwt.NewUserClaims(uPK)
+	uc.Name = "U"
+	uc.Limits.Data = -1
+	uc.Limits.Payload = -1
+	uc.Permissions.Pub.Allow.Add(">")
+	uc.Permissions.Sub.Allow.Add(">")
+	uJWT, err := uc.Encode(aKP)
+	require_NoError(t, err)
+
+	runLeaf := func(t *testing.T, creds []byte) {
+		file, err := os.CreateTemp("", "tmp-*.creds")
+		require_NoError(t, err)
+		_, err = file.Write(creds)
+		require_NoError(t, err)
+		require_NoError(t, file.Close())
+
+		template := fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		leaf { remotes: [ 
+			{ 
+				urls: [ nats-leaf://127.0.0.1:%d ]
+				credentials: "%s"
+			} 
+		] }`, o.LeafNode.Port, file.Name())
+
+		conf := createConfFile(t, []byte(template))
+		leaf, _ := RunServerWithConfig(conf)
+		defer leaf.Shutdown()
+		defer os.Remove(file.Name())
+		checkLeafNodeConnected(t, leaf)
+	}
+
+	creds, err := jwt.FormatUserConfig(uJWT, uSeed)
+	require_NoError(t, err)
+
+	runLeaf(t, creds)
+	runLeaf(t, bytes.ReplaceAll(creds, []byte{'\n'}, []byte{'\r', '\n'}))
 }

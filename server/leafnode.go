@@ -796,7 +796,7 @@ func (s *Server) startLeafNodeAcceptLoop() {
 }
 
 // RegEx to match a creds file with user JWT and Seed.
-var credsRe = regexp.MustCompile(`\s*(?:(?:[-]{3,}[^\n]*[-]{3,}\n)(.+)(?:\n\s*[-]{3,}[^\n]*[-]{3,}\n))`)
+var credsRe = regexp.MustCompile(`\s*(?:(?:[-]{3,}.*[-]{3,}\r?\n)([\w\-.=]+)(?:\r?\n[-]{3,}.*[-]{3,}(\r?\n|\z)))`)
 
 // clusterName is provided as argument to avoid lock ordering issues with the locked client c
 // Lock should be held entering here.
