@@ -4324,7 +4324,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 
 	var nrr []byte
 	var rsi *serviceImport
-	var isJetstreamMsg bool
+	var isJetstreamMsg = false
 
 	// Check if there is a reply present and set up a response.
 	tracking, headers := shouldSample(si.latency, c)
@@ -4334,7 +4334,6 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 		// For now we can't do $JS.ACK since that breaks pull consumers across accounts.
 		if !bytes.HasPrefix(c.pa.reply, []byte(jsAckPre)) {
 			// We need to know if this is a Jetstream message stream when deciding if we should remove the import
-			isJetstreamMsg = false
 			if rsi = c.setupResponseServiceImport(acc, si, tracking, headers); rsi != nil {
 				nrr = []byte(rsi.from)
 			}
