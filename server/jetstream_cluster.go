@@ -18,7 +18,6 @@ import (
 	"cmp"
 	crand "crypto/rand"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -32,6 +31,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/goccy/go-json"
 	"github.com/klauspost/compress/s2"
 	"github.com/minio/highwayhash"
 	"github.com/nats-io/nuid"
@@ -1320,7 +1320,7 @@ func (js *jetStream) monitorCluster() {
 		isLeader       bool
 		lastSnapTime   time.Time
 		compactSizeMin = uint64(8 * 1024 * 1024) // 8MB
-		minSnapDelta   = 10 * time.Second
+		minSnapDelta   = 30 * time.Second
 	)
 
 	// Highwayhash key for generating hashes.
@@ -1410,15 +1410,13 @@ func (js *jetStream) monitorCluster() {
 					go checkHealth()
 					continue
 				}
-				if didSnap, didStreamRemoval, didConsumerRemoval, err := js.applyMetaEntries(ce.Entries, ru); err == nil {
+				if didSnap, didStreamRemoval, _, err := js.applyMetaEntries(ce.Entries, ru); err == nil {
 					var nb uint64
 					// Some entries can fail without an error when shutting down, don't move applied forward.
 					if !js.isShuttingDown() {
 						_, nb = n.Applied(ce.Index)
 					}
 					if js.hasPeerEntries(ce.Entries) || didStreamRemoval || (didSnap && !isLeader) {
-						doSnapshot()
-					} else if didConsumerRemoval && time.Since(lastSnapTime) > minSnapDelta/2 {
 						doSnapshot()
 					} else if nb > compactSizeMin && time.Since(lastSnapTime) > minSnapDelta {
 						doSnapshot()
@@ -1572,7 +1570,7 @@ func (js *jetStream) metaSnapshot() []byte {
 	b, _ := json.Marshal(streams)
 	js.mu.RUnlock()
 
-	return s2.EncodeBetter(nil, b)
+	return s2.Encode(nil, b)
 }
 
 func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecovering bool) error {

@@ -17,7 +17,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -28,27 +27,27 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"regexp"
-	"runtime/pprof"
-
-	// Allow dynamic profiling.
-	_ "net/http/pprof"
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"runtime/pprof"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	// Allow dynamic profiling.
+	_ "net/http/pprof"
+
+	"github.com/goccy/go-json"
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
+	"github.com/nats-io/nats-server/v2/logger"
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
-
-	"github.com/nats-io/nats-server/v2/logger"
 )
 
 const (

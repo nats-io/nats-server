@@ -1,4 +1,4 @@
-// Copyright 2012-2022 The NATS Authors
+// Copyright 2012-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -16,7 +16,7 @@ package server
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"math"
@@ -31,8 +31,7 @@ import (
 	"testing"
 	"time"
 
-	"crypto/tls"
-
+	"github.com/goccy/go-json"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"

@@ -18,7 +18,6 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"crypto/x509"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -30,8 +29,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/goccy/go-json"
 	"github.com/klauspost/compress/s2"
-
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats-server/v2/server/certidp"
 	"github.com/nats-io/nats-server/v2/server/pse"

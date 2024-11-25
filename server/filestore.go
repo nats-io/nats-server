@@ -22,7 +22,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"hash"
@@ -40,6 +39,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/goccy/go-json"
 	"github.com/klauspost/compress/s2"
 	"github.com/minio/highwayhash"
 	"github.com/nats-io/nats-server/v2/server/avl"
