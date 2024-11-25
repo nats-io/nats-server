@@ -2075,11 +2075,13 @@ func TestJetStreamClusterMaxConsumersMultipleConcurrentRequests(t *testing.T) {
 
 	metaLeader := c.leader()
 	mjs := metaLeader.getJetStream()
+	mjs.mu.RLock()
 	sa := mjs.streamAssignment(globalAccountName, "MAXCC")
 	require_NotNil(t, sa)
 	for _, ca := range sa.consumers {
 		require_False(t, ca.pending)
 	}
+	mjs.mu.RUnlock()
 }
 
 func TestJetStreamClusterAccountMaxStreamsAndConsumersMultipleConcurrentRequests(t *testing.T) {
