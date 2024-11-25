@@ -4324,6 +4324,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 
 	var nrr []byte
 	var rsi *serviceImport
+	var isJetstreamMsg bool
 
 	// Check if there is a reply present and set up a response.
 	tracking, headers := shouldSample(si.latency, c)
@@ -4332,6 +4333,8 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 		// TODO(dlc) - Formalize as a service import option for reply rewrite.
 		// For now we can't do $JS.ACK since that breaks pull consumers across accounts.
 		if !bytes.HasPrefix(c.pa.reply, []byte(jsAckPre)) {
+			// We need to know if this is a Jetstream message stream when deciding if we should remove the import
+			isJetstreamMsg = true
 			if rsi = c.setupResponseServiceImport(acc, si, tracking, headers); rsi != nil {
 				nrr = []byte(rsi.from)
 			}
@@ -4501,7 +4504,8 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	// Determine if we should remove this service import. This is for response service imports.
 	// We will remove if we did not deliver, or if we are a response service import and we are
 	// a singleton, or we have an EOF message.
-	shouldRemove := !didDeliver || (isResponse && (si.rt == Singleton || len(msg) == LEN_CR_LF))
+	// Jetstream pull streams should not break the import under any circumstances
+	shouldRemove := !didDeliver || (isResponse && !isJetstreamMsg && (si.rt == Singleton || len(msg) == LEN_CR_LF))
 	// If we are tracking and we did not actually send the latency info we need to suppress the removal.
 	if si.tracking && !didSendTL {
 		shouldRemove = false
