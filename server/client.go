@@ -4333,7 +4333,6 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 		// TODO(dlc) - Formalize as a service import option for reply rewrite.
 		// For now we can't do $JS.ACK since that breaks pull consumers across accounts.
 		if !bytes.HasPrefix(c.pa.reply, []byte(jsAckPre)) {
-			// We need to know if this is a Jetstream message stream when deciding if we should remove the import
 			if rsi = c.setupResponseServiceImport(acc, si, tracking, headers); rsi != nil {
 				nrr = []byte(rsi.from)
 			}
@@ -4341,6 +4340,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 			// This only happens when we do a pull subscriber that trampolines through another account.
 			// Normally this code is not called.
 			nrr = c.pa.reply
+			// We need to know if this is a Jetstream message stream when deciding if we should remove the import
 			isJetstreamMsg = true
 		}
 	} else if !isResponse && si.latency != nil && tracking {
