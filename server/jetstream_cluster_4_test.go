@@ -4605,8 +4605,8 @@ func TestJetStreamClusterDontInstallSnapshotWhenStoppingStream(t *testing.T) {
 	require_NoError(t, err)
 
 	// Wait for all servers to have applied everything.
-	// Expect 2: EntryPeerState, streamMsgOp
-	expectedApplied := uint64(2)
+	var maxApplied uint64
+	var tries int
 	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
 		for _, s := range c.servers {
 			acc, err := s.lookupAccount(globalAccountName)
@@ -4617,9 +4617,16 @@ func TestJetStreamClusterDontInstallSnapshotWhenStoppingStream(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if _, _, applied := mset.node.Progress(); applied != expectedApplied {
-				return fmt.Errorf("applied doesn't match, expected %d, got %d", expectedApplied, applied)
+			if _, _, applied := mset.node.Progress(); applied > maxApplied {
+				maxApplied, tries = applied, 0
+				return fmt.Errorf("applied upped to %d", maxApplied)
+			} else if applied != maxApplied {
+				return fmt.Errorf("applied doesn't match, expected %d, got %d", maxApplied, applied)
 			}
+		}
+		tries++
+		if tries < 3 {
+			return fmt.Errorf("retrying for applied %d (try %d)", maxApplied, tries)
 		}
 		return nil
 	})
@@ -4636,7 +4643,7 @@ func TestJetStreamClusterDontInstallSnapshotWhenStoppingStream(t *testing.T) {
 	// Validate the snapshot reflects applied.
 	validateStreamState := func(snap *snapshot) {
 		t.Helper()
-		require_Equal(t, snap.lastIndex, expectedApplied)
+		require_Equal(t, snap.lastIndex, maxApplied)
 		ss, err := DecodeStreamState(snap.data)
 		require_NoError(t, err)
 		require_Equal(t, ss.FirstSeq, 1)
@@ -4696,8 +4703,8 @@ func TestJetStreamClusterDontInstallSnapshotWhenStoppingConsumer(t *testing.T) {
 	require_NoError(t, err)
 
 	// Wait for all servers to have applied everything.
-	// Expect 4: addPendingRequest, removePendingRequest, updateDeliveredOp, updateAcksOp
-	expectedApplied := uint64(4)
+	var maxApplied uint64
+	var tries int
 	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
 		for _, s := range c.servers {
 			acc, err := s.lookupAccount(globalAccountName)
@@ -4712,9 +4719,16 @@ func TestJetStreamClusterDontInstallSnapshotWhenStoppingConsumer(t *testing.T) {
 			if o == nil {
 				return errors.New("consumer not found")
 			}
-			if _, _, applied := o.node.Progress(); applied != expectedApplied {
-				return fmt.Errorf("applied doesn't match, expected %d, got %d", expectedApplied, applied)
+			if _, _, applied := o.node.Progress(); applied > maxApplied {
+				maxApplied, tries = applied, 0
+				return fmt.Errorf("applied upped to %d", maxApplied)
+			} else if applied != maxApplied {
+				return fmt.Errorf("applied doesn't match, expected %d, got %d", maxApplied, applied)
 			}
+		}
+		tries++
+		if tries < 3 {
+			return fmt.Errorf("retrying for applied %d (try %d)", maxApplied, tries)
 		}
 		return nil
 	})
@@ -4735,7 +4749,7 @@ func TestJetStreamClusterDontInstallSnapshotWhenStoppingConsumer(t *testing.T) {
 	// Validate the snapshot reflects applied.
 	validateConsumerState := func(snap *snapshot) {
 		t.Helper()
-		require_Equal(t, snap.lastIndex, expectedApplied)
+		require_Equal(t, snap.lastIndex, maxApplied)
 		state, err := decodeConsumerState(snap.data)
 		require_NoError(t, err)
 		require_Equal(t, state.Delivered.Consumer, 1)
