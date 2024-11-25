@@ -1654,3 +1654,48 @@ func TestNRGForwardProposalResponse(t *testing.T) {
 
 	rg.waitOnTotal(t, 123)
 }
+
+func TestNRGMemoryWALEmptiesSnapshotsDir(t *testing.T) {
+	n, c := initSingleMemRaftNodeWithCluster(t)
+	defer c.shutdown()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Timeline
+	aeMsg := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeHeartbeat := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: nil})
+
+	// Simply receive first message.
+	n.processAppendEntry(aeMsg, n.aesub)
+	require_Equal(t, n.pindex, 1)
+	require_Equal(t, n.commit, 0)
+
+	// Heartbeat moves commit up.
+	n.processAppendEntry(aeHeartbeat, n.aesub)
+	require_Equal(t, n.commit, 1)
+
+	// Manually call back down to applied, and then snapshot.
+	n.Applied(1)
+	err := n.InstallSnapshot(nil)
+	require_NoError(t, err)
+
+	// Stop current node and restart it.
+	n.Stop()
+	n.WaitForStop()
+
+	s := c.servers[0]
+	ms, err := newMemStore(&StreamConfig{Name: "TEST", Storage: MemoryStorage})
+	require_NoError(t, err)
+	cfg := &RaftConfig{Name: "TEST", Store: n.sd, Log: ms}
+	n, err = s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+	require_NoError(t, err)
+
+	// Since the WAL is in-memory, the snapshots dir should've been emptied upon restart.
+	files, err := os.ReadDir(filepath.Join(n.sd, snapshotsDir))
+	require_NoError(t, err)
+	require_Len(t, len(files), 0)
+}

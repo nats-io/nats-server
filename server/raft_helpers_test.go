@@ -320,6 +320,15 @@ func newStateAdder(s *Server, cfg *RaftConfig, n RaftNode) stateMachine {
 
 func initSingleMemRaftNode(t *testing.T) (*raft, func()) {
 	t.Helper()
+	n, c := initSingleMemRaftNodeWithCluster(t)
+	cleanup := func() {
+		c.shutdown()
+	}
+	return n, cleanup
+}
+
+func initSingleMemRaftNodeWithCluster(t *testing.T) (*raft, *cluster) {
+	t.Helper()
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	s := c.servers[0] // RunBasicJetStreamServer not available
 
@@ -332,10 +341,7 @@ func initSingleMemRaftNode(t *testing.T) (*raft, func()) {
 	n, err := s.initRaftNode(globalAccountName, cfg, pprofLabels{})
 	require_NoError(t, err)
 
-	cleanup := func() {
-		c.shutdown()
-	}
-	return n, cleanup
+	return n, c
 }
 
 // Encode an AppendEntry.
