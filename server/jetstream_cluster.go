@@ -4728,6 +4728,7 @@ func (js *jetStream) consumerAssignment(account, stream, consumer string) *consu
 }
 
 // Return both the stream and consumer assignments.
+// Lock should be held.
 func (js *jetStream) assignments(account, stream, consumer string) (*streamAssignment, *consumerAssignment) {
 	if sa := js.streamAssignment(account, stream); sa != nil {
 		return sa, sa.consumers[consumer]

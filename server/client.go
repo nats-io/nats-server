@@ -4279,8 +4279,9 @@ func getHeader(key string, hdr []byte) []byte {
 
 // For bytes.HasPrefix below.
 var (
-	jsRequestNextPreB = []byte(jsRequestNextPre)
-	jsDirectGetPreB   = []byte(jsDirectGetPre)
+	jsRequestNextPreB  = []byte(jsRequestNextPre)
+	jsDirectGetPreB    = []byte(jsDirectGetPre)
+	jsConsumerInfoPreB = []byte(JSApiConsumerInfoPre)
 )
 
 // processServiceImport is an internal callback when a subscription matches an imported service
@@ -4300,12 +4301,16 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 		}
 	}
 
+	var checkJS, checkConsumerInfo bool
+
 	acc.mu.RLock()
-	var checkJS bool
 	shouldReturn := si.invalid || acc.sl == nil
 	if !shouldReturn && !isResponse && si.to == jsAllAPI {
 		if bytes.HasPrefix(c.pa.subject, jsDirectGetPreB) || bytes.HasPrefix(c.pa.subject, jsRequestNextPreB) {
 			checkJS = true
+		} else if len(c.pa.psi) == 0 && bytes.HasPrefix(c.pa.subject, jsConsumerInfoPreB) {
+			// Only check if we are clustered and expecting a reply.
+			checkConsumerInfo = len(c.pa.reply) > 0 && c.srv.JetStreamIsClustered()
 		}
 	}
 	siAcc := si.acc
@@ -4318,6 +4323,15 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	// TODO(dlc) - Come up with something better.
 	if shouldReturn || (checkJS && si.se != nil && si.se.acc == c.srv.SystemAccount()) {
 		return
+	}
+
+	// Here we will do a fast check for consumer info only to check if it does not exists. This will spread the
+	// load to all servers with connected clients since service imports are processed at point of entry.
+	// Only call for clustered setups.
+	if checkConsumerInfo && si.se != nil && si.se.acc == c.srv.SystemAccount() {
+		if c.srv.jsConsumerProcessMissing(c, acc) {
+			return
+		}
 	}
 
 	mt, traceOnly := c.isMsgTraceEnabled()
