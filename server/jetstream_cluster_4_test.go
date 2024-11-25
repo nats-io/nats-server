@@ -1146,13 +1146,6 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		// Wait until context is done then check state.
 		<-ctx.Done()
 
-		var consumerPending int
-		for i := 0; i < 10; i++ {
-			ci, err := js.ConsumerInfo(sc.Name, fmt.Sprintf("consumer:EEEEE:%d", i))
-			require_NoError(t, err)
-			consumerPending += int(ci.NumPending)
-		}
-
 		getStreamDetails := func(t *testing.T, srv *Server) *StreamDetail {
 			t.Helper()
 			jsz, err := srv.Jsz(&JSzOptions{Accounts: true, Streams: true, Consumer: true})
@@ -1241,18 +1234,6 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 			}
 		}
 
-		// Check state of streams and consumers.
-		si, err := js.StreamInfo(sc.Name)
-		require_NoError(t, err)
-
-		// Only check if there are any pending messages.
-		if consumerPending > 0 {
-			streamPending := int(si.State.Msgs)
-			if streamPending != consumerPending {
-				t.Errorf("Unexpected number of pending messages, stream=%d, consumers=%d", streamPending, consumerPending)
-			}
-		}
-
 		// If clustered, check whether leader and followers have drifted.
 		if sc.Replicas > 1 {
 			// If we have drifted do not have to wait too long, usually its stuck for good.
@@ -1263,6 +1244,25 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 			// We may have no messages but for tests that do we make sure each msg is the same
 			// across all replicas.
 			checkMsgsEqual(t)
+		}
+
+		var consumerPending int
+		for i := 0; i < 10; i++ {
+			ci, err := js.ConsumerInfo(sc.Name, fmt.Sprintf("consumer:EEEEE:%d", i))
+			require_NoError(t, err)
+			consumerPending += int(ci.NumPending)
+		}
+
+		// Check state of streams and consumers.
+		si, err := js.StreamInfo(sc.Name)
+		require_NoError(t, err)
+
+		// Only check if there are any pending messages.
+		if consumerPending > 0 {
+			streamPending := int(si.State.Msgs)
+			if streamPending != consumerPending {
+				t.Errorf("Unexpected number of pending messages, stream=%d, consumers=%d", streamPending, consumerPending)
+			}
 		}
 
 		wg.Wait()
