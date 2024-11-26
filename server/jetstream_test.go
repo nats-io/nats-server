@@ -98,6 +98,11 @@ func RunBasicJetStreamServer(t testing.TB) *Server {
 	return RunServer(&opts)
 }
 
+func RunServerWithExportImport(t *testing.T) *Server {
+	server, _ := RunServerWithConfig(".\\configs\\multi_accounts_export_import.conf")
+	return server
+}
+
 func RunJetStreamServerOnPort(port int, sd string) *Server {
 	opts := DefaultTestOptions
 	opts.Port = port
@@ -1021,6 +1026,20 @@ func TestJetStreamAddStreamSameConfigOK(t *testing.T) {
 	if _, err = acc.addStream(mconfig); err != nil {
 		t.Fatalf("Unexpected error adding stream: %v", err)
 	}
+}
+
+func sendEmptyMsg(t *testing.T, nc *nats.Conn, subject string) *PubAck {
+	t.Helper()
+	var emptyByteSlice []byte
+	resp, _ := nc.Request(subject, emptyByteSlice, 500*time.Millisecond)
+	if resp == nil {
+		t.Fatalf("No response for %q, possible timeout?", subject)
+	}
+	pa := getPubAckResponse(resp.Data)
+	if pa == nil || pa.Error != nil {
+		t.Fatalf("Expected a valid JetStreamPubAck, got %q", resp.Data)
+	}
+	return pa.PubAck
 }
 
 func sendStreamMsg(t *testing.T, nc *nats.Conn, subject, msg string) *PubAck {
