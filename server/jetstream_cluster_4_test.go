@@ -1215,7 +1215,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		checkMsgsEqual := func(t *testing.T) {
 			// These have already been checked to be the same for all streams.
 			state := getStreamDetails(t, c.streamLeader("js", sc.Name)).State
-			// Gather all the streams.
+			// Gather the stream mset from each replica.
 			var msets []*stream
 			for _, s := range c.servers {
 				acc, err := s.LookupAccount("js")
@@ -1233,6 +1233,11 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 					sm, err := mset.store.LoadMsg(seq, &smv)
 					mset.mu.RUnlock()
 					if err != nil || expectedErr != nil {
+						// If one of the msets reports an error for LoadMsg for this
+						// particular sequence, then the same error should be reported
+						// by all msets for that seq to prove consistency across replicas.
+						// If one of the msets either returns no error or doesn't return
+						// the same error, then that replica has drifted.
 						if expectedErr == nil {
 							expectedErr = err
 						} else {
