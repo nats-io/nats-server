@@ -183,8 +183,10 @@ type Server struct {
 	listenerErr         error
 	gacc                *Account
 	sys                 *internal
+	sysAcc              atomic.Pointer[Account]
 	js                  atomic.Pointer[jetStream]
 	isMetaLeader        atomic.Bool
+	jsClustered         atomic.Bool
 	accounts            sync.Map
 	tmpAccounts         sync.Map // Temporarily stores accounts that are being built
 	activeAccounts      int32
@@ -1349,6 +1351,7 @@ func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) 
 		if err == nil && s.sys != nil && acc != s.sys.account {
 			// sys.account.clients (including internal client)/respmap/etc... are transferred separately
 			s.sys.account = acc
+			s.sysAcc.Store(acc)
 		}
 		if err != nil {
 			return awcsti, fmt.Errorf("error resolving system account: %v", err)
@@ -1704,13 +1707,7 @@ func (s *Server) SetSystemAccount(accName string) error {
 
 // SystemAccount returns the system account if set.
 func (s *Server) SystemAccount() *Account {
-	var sacc *Account
-	s.mu.RLock()
-	if s.sys != nil {
-		sacc = s.sys.account
-	}
-	s.mu.RUnlock()
-	return sacc
+	return s.sysAcc.Load()
 }
 
 // GlobalAccount returns the global account.
@@ -1781,6 +1778,9 @@ func (s *Server) setSystemAccount(acc *Account) error {
 	recvq, recvqp := s.sys.recvq, s.sys.recvqp
 	s.sys.wg.Add(1)
 	s.mu.Unlock()
+
+	// Store in atomic for fast lookup.
+	s.sysAcc.Store(acc)
 
 	// Register with the account.
 	s.sys.client.registerWithAccount(acc)

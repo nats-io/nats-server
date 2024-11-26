@@ -224,11 +224,7 @@ func (s *Server) getJetStreamCluster() (*jetStream, *jetStreamCluster) {
 }
 
 func (s *Server) JetStreamIsClustered() bool {
-	js := s.getJetStream()
-	if js == nil {
-		return false
-	}
-	return js.isClustered()
+	return s.jsClustered.Load()
 }
 
 func (s *Server) JetStreamIsLeader() bool {
@@ -4729,6 +4725,15 @@ func (js *jetStream) consumerAssignment(account, stream, consumer string) *consu
 		return sa.consumers[consumer]
 	}
 	return nil
+}
+
+// Return both the stream and consumer assignments.
+// Lock should be held.
+func (js *jetStream) assignments(account, stream, consumer string) (*streamAssignment, *consumerAssignment) {
+	if sa := js.streamAssignment(account, stream); sa != nil {
+		return sa, sa.consumers[consumer]
+	}
+	return nil, nil
 }
 
 // consumerAssigned informs us if this server has this consumer assigned.

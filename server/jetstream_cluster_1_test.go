@@ -3412,7 +3412,6 @@ func TestJetStreamClusterExtendedAccountInfo(t *testing.T) {
 	// Go client will lag so use direct for now.
 	getAccountInfo := func() *nats.AccountInfo {
 		t.Helper()
-
 		info, err := js.AccountInfo()
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
@@ -3437,10 +3436,13 @@ func TestJetStreamClusterExtendedAccountInfo(t *testing.T) {
 	js.ConsumerInfo("TEST-2", "NO-CONSUMER")
 	js.ConsumerInfo("TEST-3", "NO-CONSUMER")
 
-	ai = getAccountInfo()
-	if ai.API.Errors != 4 {
-		t.Fatalf("Expected 4 API calls to be errors, got %d", ai.API.Errors)
-	}
+	checkFor(t, 2*time.Second, 250*time.Millisecond, func() error {
+		ai = getAccountInfo()
+		if ai.API.Errors != 4 {
+			return fmt.Errorf("Expected 4 API calls to be errors, got %d", ai.API.Errors)
+		}
+		return nil
+	})
 }
 
 func TestJetStreamClusterPeerRemovalAPI(t *testing.T) {
@@ -4319,7 +4321,8 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 	if err := js.DeleteConsumer("NO-Q", "dlc"); !notAvailableErr(err) {
 		t.Fatalf("Expected an 'unavailable' error, got %v", err)
 	}
-	if _, err := js.ConsumerInfo("NO-Q", "dlc"); !notAvailableErr(err) {
+	// Since we did not create the consumer our bypass will respond from the local server.
+	if _, err := js.ConsumerInfo("NO-Q", "dlc"); err != nats.ErrConsumerNotFound {
 		t.Fatalf("Expected an 'unavailable' error, got %v", err)
 	}
 	// Listers
