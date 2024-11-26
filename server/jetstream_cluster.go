@@ -1529,9 +1529,12 @@ func (js *jetStream) clusterStreamConfig(accName, streamName string) (StreamConf
 }
 
 func (js *jetStream) metaSnapshot() []byte {
+	start := time.Now()
 	js.mu.RLock()
+	s := js.srv
 	cc := js.cluster
 	nsa := 0
+	nca := 0
 	for _, asa := range cc.streams {
 		nsa += len(asa)
 	}
@@ -1553,6 +1556,7 @@ func (js *jetStream) metaSnapshot() []byte {
 					continue
 				}
 				wsa.Consumers = append(wsa.Consumers, ca)
+				nca++
 			}
 			streams = append(streams, wsa)
 		}
@@ -1563,10 +1567,23 @@ func (js *jetStream) metaSnapshot() []byte {
 		return nil
 	}
 
+	// Track how long it took to marshal the JSON
+	mstart := time.Now()
 	b, _ := json.Marshal(streams)
+	mend := time.Since(mstart)
+
 	js.mu.RUnlock()
 
-	return s2.Encode(nil, b)
+	// Track how long it took to compress the JSON
+	cstart := time.Now()
+	snap := s2.Encode(nil, b)
+	cend := time.Since(cstart)
+
+	if took := time.Since(start); took > time.Second {
+		s.rateLimitFormatWarnf("Metalayer snapshot took %.3fs (streams: %d, consumers: %d, marshal: %.3fs, s2: %.3fs, uncompressed: %d, compressed: %d)",
+			took.Seconds(), nsa, nca, mend.Seconds(), cend.Seconds(), len(b), len(snap))
+	}
+	return snap
 }
 
 func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecovering bool) error {
