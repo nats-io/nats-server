@@ -22,7 +22,6 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -48,6 +47,7 @@ import (
 	crand "crypto/rand"
 	"crypto/sha256"
 
+	"github.com/goccy/go-json"
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats-server/v2/server/avl"
@@ -5371,7 +5371,7 @@ func TestNoRaceJetStreamClusterStreamNamesAndInfosMoreThanAPILimit(t *testing.T)
 		createStream(name)
 	}
 
-	// Not using the JS API here beacause we want to make sure that the
+	// Not using the JS API here because we want to make sure that the
 	// server returns the proper Total count, but also that it does not
 	// send more than when the API limit is in one go.
 	check := func(subj string, limit int) {
@@ -5379,19 +5379,35 @@ func TestNoRaceJetStreamClusterStreamNamesAndInfosMoreThanAPILimit(t *testing.T)
 
 		nreq := JSApiStreamNamesRequest{}
 		b, _ := json.Marshal(nreq)
+
 		msg, err := nc.Request(subj, b, 2*time.Second)
 		require_NoError(t, err)
 
-		nresp := JSApiStreamNamesResponse{}
-		json.Unmarshal(msg.Data, &nresp)
-		if n := nresp.ApiPaged.Total; n != max {
-			t.Fatalf("Expected total to be %v, got %v", max, n)
-		}
-		if n := nresp.ApiPaged.Limit; n != limit {
-			t.Fatalf("Expected limit to be %v, got %v", limit, n)
-		}
-		if n := len(nresp.Streams); n != limit {
-			t.Fatalf("Expected number of streams to be %v, got %v", limit, n)
+		switch subj {
+		case JSApiStreams:
+			nresp := JSApiStreamNamesResponse{}
+			json.Unmarshal(msg.Data, &nresp)
+			if n := nresp.ApiPaged.Total; n != max {
+				t.Fatalf("Expected total to be %v, got %v", max, n)
+			}
+			if n := nresp.ApiPaged.Limit; n != limit {
+				t.Fatalf("Expected limit to be %v, got %v", limit, n)
+			}
+			if n := len(nresp.Streams); n != limit {
+				t.Fatalf("Expected number of streams to be %v, got %v", limit, n)
+			}
+		case JSApiStreamList:
+			nresp := JSApiStreamListResponse{}
+			json.Unmarshal(msg.Data, &nresp)
+			if n := nresp.ApiPaged.Total; n != max {
+				t.Fatalf("Expected total to be %v, got %v", max, n)
+			}
+			if n := nresp.ApiPaged.Limit; n != limit {
+				t.Fatalf("Expected limit to be %v, got %v", limit, n)
+			}
+			if n := len(nresp.Streams); n != limit {
+				t.Fatalf("Expected number of streams to be %v, got %v", limit, n)
+			}
 		}
 	}
 
@@ -11186,4 +11202,115 @@ func TestNoRaceJetStreamClusterCheckInterestStatePerformanceInterest(t *testing.
 	start = time.Now()
 	mset.checkInterestState()
 	require_True(t, time.Since(start) < elapsed/100)
+}
+
+func TestNoRaceJetStreamClusterLargeMetaSnapshotTiming(t *testing.T) {
+	// This test was to show improvements in speed for marshaling the meta layer with lots of assets.
+	// Move to S2.Encode vs EncodeBetter which is 2x faster and actually better compression.
+	// Also moved to goccy json which is faster then the default and in my tests now always matches
+	// the default encoder byte for byte which last time I checked it did not.
+	t.Skip()
+
+	c := createJetStreamClusterExplicit(t, "R3F", 3)
+	defer c.shutdown()
+
+	// Create 200 streams, each with 500 consumers.
+	numStreams := 200
+	numConsumers := 500
+	wg := sync.WaitGroup{}
+	wg.Add(numStreams)
+	for i := 0; i < numStreams; i++ {
+		go func() {
+			defer wg.Done()
+			s := c.randomServer()
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+			sname := fmt.Sprintf("TEST-SNAPSHOT-%d", i)
+			subj := fmt.Sprintf("foo.%d", i)
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     sname,
+				Subjects: []string{subj},
+				Replicas: 3,
+			})
+			require_NoError(t, err)
+
+			// Now consumers.
+			for c := 0; c < numConsumers; c++ {
+				_, err = js.AddConsumer(sname, &nats.ConsumerConfig{
+					Durable:       fmt.Sprintf("C-%d", c),
+					FilterSubject: subj,
+					AckPolicy:     nats.AckExplicitPolicy,
+					Replicas:      1,
+				})
+				require_NoError(t, err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	s := c.leader()
+	js := s.getJetStream()
+	n := js.getMetaGroup()
+	// Now let's see how long it takes to create a meta snapshot and how big it is.
+	start := time.Now()
+	snap := js.metaSnapshot()
+	require_NoError(t, n.InstallSnapshot(snap))
+	t.Logf("Took %v to snap meta with size of %v\n", time.Since(start), friendlyBytes(len(snap)))
+}
+
+func TestNoRaceJetStreamClusterInfoOnMissingConsumers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3F", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Create a stream just so the consumer info processing misses on the consumer only.
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	done := make(chan bool)
+	pending := make(chan int, 1)
+
+	// Check to make sure we never have any pending on the API queue.
+	go func() {
+		ml := c.leader()
+		for {
+			select {
+			case <-done:
+				return
+			case <-time.After(100 * time.Millisecond):
+				qlen := ml.jsAPIRoutedReqs.len() + int(ml.jsAPIRoutedReqs.inProgress())
+				if qlen > 0 {
+					pending <- qlen
+					return
+				}
+			}
+		}
+	}()
+
+	wg := sync.WaitGroup{}
+	wg.Add(500)
+	for i := 0; i < 500; i++ {
+		go func() {
+			defer wg.Done()
+			s := c.randomServer()
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+			// Check for non-existent consumers.
+			for c := 0; c < 1000; c++ {
+				_, err := js.ConsumerInfo("TEST", fmt.Sprintf("C-%d", c))
+				require_Error(t, err)
+			}
+		}()
+	}
+	wg.Wait()
+	close(done)
+	if len(pending) > 0 {
+		t.Fatalf("Saw API pending of %d, expected always 0", <-pending)
+	}
 }

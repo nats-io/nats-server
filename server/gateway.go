@@ -18,7 +18,6 @@ import (
 	"cmp"
 	"crypto/sha256"
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
 	"math/rand"
 	"net"
@@ -28,6 +27,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/goccy/go-json"
 )
 
 const (

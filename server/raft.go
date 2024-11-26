@@ -419,18 +419,18 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 		n.vote = vote
 	}
 
-	// Make sure that the snapshots directory exists.
-	if err := os.MkdirAll(filepath.Join(n.sd, snapshotsDir), defaultDirPerms); err != nil {
-		return nil, fmt.Errorf("could not create snapshots directory - %v", err)
-	}
-
 	// Can't recover snapshots if memory based since wal will be reset.
 	// We will inherit from the current leader.
 	if _, ok := n.wal.(*memStore); ok {
-		os.Remove(filepath.Join(n.sd, snapshotsDir, "*"))
+		_ = os.RemoveAll(filepath.Join(n.sd, snapshotsDir))
 	} else {
 		// See if we have any snapshots and if so load and process on startup.
 		n.setupLastSnapshot()
+	}
+
+	// Make sure that the snapshots directory exists.
+	if err := os.MkdirAll(filepath.Join(n.sd, snapshotsDir), defaultDirPerms); err != nil {
+		return nil, fmt.Errorf("could not create snapshots directory - %v", err)
 	}
 
 	truncateAndErr := func(index uint64) {

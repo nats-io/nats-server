@@ -18,7 +18,6 @@ import (
 	"cmp"
 	crand "crypto/rand"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -32,6 +31,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/goccy/go-json"
 	"github.com/klauspost/compress/s2"
 	"github.com/minio/highwayhash"
 	"github.com/nats-io/nuid"
@@ -224,11 +224,7 @@ func (s *Server) getJetStreamCluster() (*jetStream, *jetStreamCluster) {
 }
 
 func (s *Server) JetStreamIsClustered() bool {
-	js := s.getJetStream()
-	if js == nil {
-		return false
-	}
-	return js.isClustered()
+	return s.jsClustered.Load()
 }
 
 func (s *Server) JetStreamIsLeader() bool {
@@ -1320,7 +1316,7 @@ func (js *jetStream) monitorCluster() {
 		isLeader       bool
 		lastSnapTime   time.Time
 		compactSizeMin = uint64(8 * 1024 * 1024) // 8MB
-		minSnapDelta   = 10 * time.Second
+		minSnapDelta   = 30 * time.Second
 	)
 
 	// Highwayhash key for generating hashes.
@@ -1410,15 +1406,13 @@ func (js *jetStream) monitorCluster() {
 					go checkHealth()
 					continue
 				}
-				if didSnap, didStreamRemoval, didConsumerRemoval, err := js.applyMetaEntries(ce.Entries, ru); err == nil {
+				if didSnap, didStreamRemoval, _, err := js.applyMetaEntries(ce.Entries, ru); err == nil {
 					var nb uint64
 					// Some entries can fail without an error when shutting down, don't move applied forward.
 					if !js.isShuttingDown() {
 						_, nb = n.Applied(ce.Index)
 					}
 					if js.hasPeerEntries(ce.Entries) || didStreamRemoval || (didSnap && !isLeader) {
-						doSnapshot()
-					} else if didConsumerRemoval && time.Since(lastSnapTime) > minSnapDelta/2 {
 						doSnapshot()
 					} else if nb > compactSizeMin && time.Since(lastSnapTime) > minSnapDelta {
 						doSnapshot()
@@ -1535,9 +1529,12 @@ func (js *jetStream) clusterStreamConfig(accName, streamName string) (StreamConf
 }
 
 func (js *jetStream) metaSnapshot() []byte {
+	start := time.Now()
 	js.mu.RLock()
+	s := js.srv
 	cc := js.cluster
 	nsa := 0
+	nca := 0
 	for _, asa := range cc.streams {
 		nsa += len(asa)
 	}
@@ -1559,6 +1556,7 @@ func (js *jetStream) metaSnapshot() []byte {
 					continue
 				}
 				wsa.Consumers = append(wsa.Consumers, ca)
+				nca++
 			}
 			streams = append(streams, wsa)
 		}
@@ -1569,10 +1567,23 @@ func (js *jetStream) metaSnapshot() []byte {
 		return nil
 	}
 
+	// Track how long it took to marshal the JSON
+	mstart := time.Now()
 	b, _ := json.Marshal(streams)
+	mend := time.Since(mstart)
+
 	js.mu.RUnlock()
 
-	return s2.EncodeBetter(nil, b)
+	// Track how long it took to compress the JSON
+	cstart := time.Now()
+	snap := s2.Encode(nil, b)
+	cend := time.Since(cstart)
+
+	if took := time.Since(start); took > time.Second {
+		s.rateLimitFormatWarnf("Metalayer snapshot took %.3fs (streams: %d, consumers: %d, marshal: %.3fs, s2: %.3fs, uncompressed: %d, compressed: %d)",
+			took.Seconds(), nsa, nca, mend.Seconds(), cend.Seconds(), len(b), len(snap))
+	}
+	return snap
 }
 
 func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecovering bool) error {
@@ -4237,8 +4248,10 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 		return
 	}
 
+	js.mu.Lock()
 	sa := js.streamAssignment(accName, stream)
 	if sa == nil {
+		js.mu.Unlock()
 		s.Debugf("Consumer create failed, could not locate stream '%s > %s'", accName, stream)
 		return
 	}
@@ -4250,7 +4263,6 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 	var wasExisting bool
 
 	// Check if we have an existing consumer assignment.
-	js.mu.Lock()
 	if sa.consumers == nil {
 		sa.consumers = make(map[string]*consumerAssignment)
 	} else if oca := sa.consumers[ca.Name]; oca != nil {
@@ -4719,6 +4731,15 @@ func (js *jetStream) consumerAssignment(account, stream, consumer string) *consu
 		return sa.consumers[consumer]
 	}
 	return nil
+}
+
+// Return both the stream and consumer assignments.
+// Lock should be held.
+func (js *jetStream) assignments(account, stream, consumer string) (*streamAssignment, *consumerAssignment) {
+	if sa := js.streamAssignment(account, stream); sa != nil {
+		return sa, sa.consumers[consumer]
+	}
+	return nil, nil
 }
 
 // consumerAssigned informs us if this server has this consumer assigned.
