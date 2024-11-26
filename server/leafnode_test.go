@@ -9102,6 +9102,7 @@ func TestLeafCredFormatting(t *testing.T) {
 	aKP, err := nkeys.CreateAccount()
 	require_NoError(t, err)
 	aPK, err := aKP.PublicKey()
+	require_NoError(t, err)
 
 	ac := jwt.NewAccountClaims(aPK)
 	ac.Name = "A"
