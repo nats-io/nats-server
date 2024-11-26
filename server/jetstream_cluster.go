@@ -1567,13 +1567,21 @@ func (js *jetStream) metaSnapshot() []byte {
 		return nil
 	}
 
+	// Track how long it took to marshal the JSON
 	mstart := time.Now()
 	b, _ := json.Marshal(streams)
+	mend := time.Since(mstart)
+
 	js.mu.RUnlock()
+
+	// Track how long it took to compress the JSON
+	cstart := time.Now()
 	snap := s2.Encode(nil, b)
+	cend := time.Since(cstart)
+
 	if took := time.Since(start); took > time.Second {
-		s.rateLimitFormatWarnf("Metalayer snapshot took %.3fs (streams: %d, consumers: %d, marshal: %.3fs, uncompressed: %d, compressed: %d)",
-			took.Seconds(), nsa, nca, time.Since(mstart).Seconds(), len(b), len(snap))
+		s.rateLimitFormatWarnf("Metalayer snapshot took %.3fs (streams: %d, consumers: %d, marshal: %.3fs, s2: %.3fs, uncompressed: %d, compressed: %d)",
+			took.Seconds(), nsa, nca, mend.Seconds(), cend.Seconds(), len(b), len(snap))
 	}
 	return snap
 }
