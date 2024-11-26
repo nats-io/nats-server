@@ -99,7 +99,7 @@ func RunBasicJetStreamServer(t testing.TB) *Server {
 }
 
 func RunServerWithExportImport(t *testing.T) *Server {
-	server, _ := RunServerWithConfig(".\\configs\\multi_accounts_export_import.conf")
+	server, _ := RunServerWithConfig("./configs/multi_accounts_export_import.conf")
 	return server
 }
 
