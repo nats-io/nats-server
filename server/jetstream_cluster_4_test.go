@@ -38,7 +38,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nuid"
 
-	"github.com/nats-io/nats-server/v2/internal/antithesis"
+	"github.com/antithesishq/antithesis-sdk-go/assert"
 )
 
 func TestJetStreamClusterWorkQueueStreamDiscardNewDesync(t *testing.T) {
@@ -1239,7 +1239,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 						msgId = string(sm.hdr)
 						msgIdServer = serverName
 					} else if msgId != string(sm.hdr) {
-						antithesis.AssertUnreachable(t, "Message ID mismatch", map[string]any{
+						assert.Unreachable("Message ID mismatch", map[string]any{
 							"sequence":        seq,
 							"expected":        msgId,
 							"actual":          string(sm.hdr),
@@ -1260,7 +1260,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		if consumerPending > 0 {
 			streamPending := int(si.State.Msgs)
 			if streamPending != consumerPending {
-				antithesis.AssertUnreachable(t, "Unexpected pending count", map[string]any{
+				assert.Unreachable("Unexpected pending count", map[string]any{
 					"stream_pending":   streamPending,
 					"consumer_pending": consumerPending,
 				})

@@ -30,11 +30,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/antithesishq/antithesis-sdk-go/assert"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
-
-	"github.com/nats-io/nats-server/v2/internal/antithesis"
 )
 
 func TestJetStreamSuperClusterMetaPlacement(t *testing.T) {
@@ -3722,7 +3721,7 @@ func TestJetStreamSuperClusterMixedModeSwitchToInterestOnlyOperatorConfig(t *tes
 		}
 	}
 	if s == nil {
-		antithesis.AssertUnreachable(t, "Did not find a non-JS server", map[string]any{
+		assert.Unreachable("Did not find a non-JS server", map[string]any{
 			"cluster":     c.name,
 			"num_servers": len(c.servers),
 		})

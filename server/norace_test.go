@@ -47,13 +47,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/antithesishq/antithesis-sdk-go/assert"
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
 
-	"github.com/nats-io/nats-server/v2/internal/antithesis"
 	"github.com/nats-io/nats-server/v2/server/avl"
 )
 
@@ -5126,7 +5126,7 @@ func TestNoRaceJetStreamClusterInterestPullConsumerStreamLimitBug(t *testing.T) 
 			select {
 			case <-pt.C:
 				_, err := js.Publish("foo", []byte("BUG!"))
-				antithesis.Assert(t, err == nil, "Publish error", nil)
+				assert.Always(err == nil, "Publish error", nil)
 				require_NoError(t, err)
 			case <-qch:
 				pt.Stop()
@@ -5546,7 +5546,7 @@ func TestNoRaceJetStreamFileStoreLargeKVAccessTiming(t *testing.T) {
 	slow := time.Since(start)
 
 	if base > 100*time.Microsecond || slow > 200*time.Microsecond {
-		antithesis.AssertUnreachable(t, "Lookup too slow", map[string]any{
+		assert.Unreachable("Lookup too slow", map[string]any{
 			"base": base.String(),
 			"slow": slow.String(),
 		})
@@ -8499,7 +8499,7 @@ func TestNoRaceJetStreamClusterDifferentRTTInterestBasedStreamPreAck(t *testing.
 
 	defer func() {
 		if t.Failed() {
-			antithesis.AssertUnreachable(t, "Test failed", nil)
+			assert.Unreachable("Test failed", nil)
 		}
 	}()
 
@@ -10718,7 +10718,7 @@ func TestNoRaceJetStreamClusterMemoryWorkQueueLastSequenceResetAfterRestart(t *t
 				Subjects:  []string{fmt.Sprintf("foo.%d.*", n)},
 				Replicas:  3,
 			}, nats.MaxWait(30*time.Second))
-			antithesis.Assert(t, err == nil, "AddStream error", nil)
+			assert.Always(err == nil, "AddStream error", nil)
 			require_NoError(t, err)
 			subj := fmt.Sprintf("foo.%d.bar", n)
 			for i := 0; i < 22; i++ {
@@ -10726,16 +10726,16 @@ func TestNoRaceJetStreamClusterMemoryWorkQueueLastSequenceResetAfterRestart(t *t
 			}
 			// Now consumer them all as well.
 			sub, err := js.PullSubscribe(subj, "wq")
-			antithesis.Assert(t, err == nil, "PullSubscribe error", nil)
+			assert.Always(err == nil, "PullSubscribe error", nil)
 			require_NoError(t, err)
 			msgs, err := sub.Fetch(22, nats.MaxWait(20*time.Second))
-			antithesis.Assert(t, err == nil, "Fetch error", nil)
+			assert.Always(err == nil, "Fetch error", nil)
 			require_NoError(t, err)
-			antithesis.Assert(t, len(msgs) == 22, "Unexpected message length", nil)
+			assert.Always(len(msgs) == 22, "Unexpected message length", nil)
 			require_Equal(t, len(msgs), 22)
 			for _, m := range msgs {
 				err := m.AckSync()
-				antithesis.Assert(t, err == nil, "Ack error", nil)
+				assert.Always(err == nil, "Ack error", nil)
 				require_NoError(t, err)
 			}
 		}(i)
