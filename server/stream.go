@@ -5679,13 +5679,13 @@ func (mset *stream) getPublicConsumers() []*consumer {
 
 // 2 minutes plus up to 30s jitter.
 const (
-	defaultStreamCheckInterestStateInterval        = 2 * time.Minute
-	defaultStreamCheckInterestStateJitterInSeconds = 30
+	defaultCheckInterestStateT = 2 * time.Minute
+	defaultCheckInterestStateJ = 30
 )
 
 var (
-	streamCheckInterestStateInterval        = defaultStreamCheckInterestStateInterval
-	streamCheckInterestStateJitterInSeconds = defaultStreamCheckInterestStateJitterInSeconds
+	checkInterestStateT = defaultCheckInterestStateT // Interval
+	checkInterestStateJ = defaultCheckInterestStateJ // Jitter (secs)
 )
 
 // Will check for interest retention and make sure messages

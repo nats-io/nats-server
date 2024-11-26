@@ -9825,11 +9825,11 @@ func TestNoRaceJetStreamSnapshotsWithSlowAckDontSlowConsumer(t *testing.T) {
 }
 
 func TestNoRaceJetStreamWQSkippedMsgsOnScaleUp(t *testing.T) {
-	streamCheckInterestStateInterval = 4 * time.Second
-	streamCheckInterestStateJitterInSeconds = 1
+	checkInterestStateT = 4 * time.Second
+	checkInterestStateJ = 1
 	defer func() {
-		streamCheckInterestStateInterval = defaultStreamCheckInterestStateInterval
-		streamCheckInterestStateJitterInSeconds = defaultStreamCheckInterestStateJitterInSeconds
+		checkInterestStateT = defaultCheckInterestStateT
+		checkInterestStateJ = defaultCheckInterestStateJ
 	}()
 
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
