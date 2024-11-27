@@ -30,33 +30,15 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-func metadataAllSet(featureLevel string) map[string]string {
+func metadataAtLevel(featureLevel string) map[string]string {
 	return map[string]string{
-		JSCreatedVersionMetadataKey: VERSION,
-		JSCreatedLevelMetadataKey:   strconv.Itoa(JSApiLevel),
-		JSRequiredLevelMetadataKey:  featureLevel,
+		JSRequiredLevelMetadataKey: featureLevel,
 	}
 }
 
 func metadataPrevious() map[string]string {
 	return map[string]string{
-		JSCreatedVersionMetadataKey: "previous-version",
-		JSCreatedLevelMetadataKey:   "previous-level",
-		JSRequiredLevelMetadataKey:  "previous-level",
-	}
-}
-
-func metadataUpdatedPrevious(featureLevel string) map[string]string {
-	return map[string]string{
-		JSCreatedVersionMetadataKey: "previous-version",
-		JSCreatedLevelMetadataKey:   "previous-level",
-		JSRequiredLevelMetadataKey:  featureLevel,
-	}
-}
-
-func metadataOnlyRequired() map[string]string {
-	return map[string]string{
-		JSRequiredLevelMetadataKey: "0",
+		JSRequiredLevelMetadataKey: "previous-level",
 	}
 }
 
@@ -71,37 +53,35 @@ func TestJetStreamSetStaticStreamMetadata(t *testing.T) {
 			desc:             "create",
 			cfg:              &StreamConfig{},
 			prev:             nil,
-			expectedMetadata: metadataAllSet("0"),
+			expectedMetadata: metadataAtLevel("0"),
 		},
 		{
 			desc:             "create/overwrite-user-provided",
 			cfg:              &StreamConfig{Metadata: metadataPrevious()},
 			prev:             nil,
-			expectedMetadata: metadataAllSet("0"),
+			expectedMetadata: metadataAtLevel("0"),
 		},
 		{
 			desc:             "update",
 			cfg:              &StreamConfig{},
 			prev:             &StreamConfig{Metadata: metadataPrevious()},
-			expectedMetadata: metadataUpdatedPrevious("0"),
+			expectedMetadata: metadataAtLevel("0"),
 		},
 		{
 			desc:             "update/empty-prev-metadata",
 			cfg:              &StreamConfig{},
 			prev:             &StreamConfig{},
-			expectedMetadata: metadataOnlyRequired(),
+			expectedMetadata: metadataAtLevel("0"),
 		},
 		{
 			desc:             "update/empty-prev-metadata/delete-user-provided",
 			cfg:              &StreamConfig{Metadata: metadataPrevious()},
 			prev:             &StreamConfig{},
-			expectedMetadata: metadataOnlyRequired(),
+			expectedMetadata: metadataAtLevel("0"),
 		},
 	} {
 		t.Run(test.desc, func(t *testing.T) {
 			setStaticStreamMetadata(test.cfg, test.prev)
-			require_Equal(t, test.cfg.Metadata[JSCreatedVersionMetadataKey], test.expectedMetadata[JSCreatedVersionMetadataKey])
-			require_Equal(t, test.cfg.Metadata[JSCreatedLevelMetadataKey], test.expectedMetadata[JSCreatedLevelMetadataKey])
 			require_Equal(t, test.cfg.Metadata[JSRequiredLevelMetadataKey], test.expectedMetadata[JSRequiredLevelMetadataKey])
 		})
 	}
@@ -117,20 +97,20 @@ func TestJetStreamSetStaticStreamMetadataRemoveDynamicFields(t *testing.T) {
 
 	cfg := StreamConfig{Metadata: dynamicMetadata()}
 	setStaticStreamMetadata(&cfg, nil)
-	require_True(t, reflect.DeepEqual(cfg.Metadata, metadataAllSet("0")))
+	require_True(t, reflect.DeepEqual(cfg.Metadata, metadataAtLevel("0")))
 
 	cfg = StreamConfig{Metadata: dynamicMetadata()}
-	prevCfg := StreamConfig{Metadata: metadataAllSet("0")}
+	prevCfg := StreamConfig{Metadata: metadataAtLevel("0")}
 	setStaticStreamMetadata(&cfg, &prevCfg)
-	require_True(t, reflect.DeepEqual(cfg.Metadata, metadataAllSet("0")))
+	require_True(t, reflect.DeepEqual(cfg.Metadata, metadataAtLevel("0")))
 }
 
 func TestJetStreamSetDynamicStreamMetadata(t *testing.T) {
-	cfg := StreamConfig{Metadata: metadataAllSet("0")}
+	cfg := StreamConfig{Metadata: metadataAtLevel("0")}
 	newCfg := setDynamicStreamMetadata(&cfg)
 
 	// Only new metadata must contain dynamic fields.
-	metadata := metadataAllSet("0")
+	metadata := metadataAtLevel("0")
 	require_True(t, reflect.DeepEqual(cfg.Metadata, metadata))
 	metadata[JSServerVersionMetadataKey] = VERSION
 	metadata[JSServerLevelMetadataKey] = strconv.Itoa(JSApiLevel)
@@ -150,67 +130,65 @@ func TestJetStreamSetStaticConsumerMetadata(t *testing.T) {
 			desc:             "create",
 			cfg:              &ConsumerConfig{},
 			prev:             nil,
-			expectedMetadata: metadataAllSet("0"),
+			expectedMetadata: metadataAtLevel("0"),
 		},
 		{
 			desc:             "create/PauseUntil/zero",
 			cfg:              &ConsumerConfig{PauseUntil: &pauseUntilZero},
 			prev:             nil,
-			expectedMetadata: metadataAllSet("0"),
+			expectedMetadata: metadataAtLevel("0"),
 		},
 		{
 			desc:             "create/PauseUntil",
 			cfg:              &ConsumerConfig{PauseUntil: &pauseUntil},
 			prev:             nil,
-			expectedMetadata: metadataAllSet("1"),
+			expectedMetadata: metadataAtLevel("1"),
 		},
 		{
 			desc:             "create/overwrite-user-provided",
 			cfg:              &ConsumerConfig{Metadata: metadataPrevious()},
 			prev:             nil,
-			expectedMetadata: metadataAllSet("0"),
+			expectedMetadata: metadataAtLevel("0"),
 		},
 		{
 			desc:             "update",
 			cfg:              &ConsumerConfig{},
 			prev:             &ConsumerConfig{Metadata: metadataPrevious()},
-			expectedMetadata: metadataUpdatedPrevious("0"),
+			expectedMetadata: metadataAtLevel("0"),
 		},
 		{
 			desc:             "create/PauseUntil/zero",
 			cfg:              &ConsumerConfig{PauseUntil: &pauseUntilZero},
 			prev:             &ConsumerConfig{Metadata: metadataPrevious()},
-			expectedMetadata: metadataUpdatedPrevious("0"),
+			expectedMetadata: metadataAtLevel("0"),
 		},
 		{
 			desc:             "update/PauseUntil",
 			cfg:              &ConsumerConfig{PauseUntil: &pauseUntil},
 			prev:             &ConsumerConfig{Metadata: metadataPrevious()},
-			expectedMetadata: metadataUpdatedPrevious("1"),
+			expectedMetadata: metadataAtLevel("1"),
 		},
 		{
 			desc:             "create/Pinned",
 			cfg:              &ConsumerConfig{PriorityPolicy: PriorityPinnedClient, PriorityGroups: []string{"a"}},
 			prev:             &ConsumerConfig{Metadata: metadataPrevious()},
-			expectedMetadata: metadataUpdatedPrevious("1"),
+			expectedMetadata: metadataAtLevel("1"),
 		},
 		{
 			desc:             "update/empty-prev-metadata",
 			cfg:              &ConsumerConfig{},
 			prev:             &ConsumerConfig{},
-			expectedMetadata: metadataOnlyRequired(),
+			expectedMetadata: metadataAtLevel("0"),
 		},
 		{
 			desc:             "update/empty-prev-metadata/delete-user-provided",
 			cfg:              &ConsumerConfig{Metadata: metadataPrevious()},
 			prev:             &ConsumerConfig{},
-			expectedMetadata: metadataOnlyRequired(),
+			expectedMetadata: metadataAtLevel("0"),
 		},
 	} {
 		t.Run(test.desc, func(t *testing.T) {
 			setStaticConsumerMetadata(test.cfg, test.prev)
-			require_Equal(t, test.cfg.Metadata[JSCreatedVersionMetadataKey], test.expectedMetadata[JSCreatedVersionMetadataKey])
-			require_Equal(t, test.cfg.Metadata[JSCreatedLevelMetadataKey], test.expectedMetadata[JSCreatedLevelMetadataKey])
 			require_Equal(t, test.cfg.Metadata[JSRequiredLevelMetadataKey], test.expectedMetadata[JSRequiredLevelMetadataKey])
 		})
 	}
@@ -226,20 +204,20 @@ func TestJetStreamSetStaticConsumerMetadataRemoveDynamicFields(t *testing.T) {
 
 	cfg := ConsumerConfig{Metadata: dynamicMetadata()}
 	setStaticConsumerMetadata(&cfg, nil)
-	require_True(t, reflect.DeepEqual(cfg.Metadata, metadataAllSet("0")))
+	require_True(t, reflect.DeepEqual(cfg.Metadata, metadataAtLevel("0")))
 
 	cfg = ConsumerConfig{Metadata: dynamicMetadata()}
-	prevCfg := ConsumerConfig{Metadata: metadataAllSet("0")}
+	prevCfg := ConsumerConfig{Metadata: metadataAtLevel("0")}
 	setStaticConsumerMetadata(&cfg, &prevCfg)
-	require_True(t, reflect.DeepEqual(cfg.Metadata, metadataAllSet("0")))
+	require_True(t, reflect.DeepEqual(cfg.Metadata, metadataAtLevel("0")))
 }
 
 func TestJetStreamSetDynamicConsumerMetadata(t *testing.T) {
-	cfg := ConsumerConfig{Metadata: metadataAllSet("0")}
+	cfg := ConsumerConfig{Metadata: metadataAtLevel("0")}
 	newCfg := setDynamicConsumerMetadata(&cfg)
 
 	// Only new metadata must contain dynamic fields.
-	metadata := metadataAllSet("0")
+	metadata := metadataAtLevel("0")
 	require_True(t, reflect.DeepEqual(cfg.Metadata, metadata))
 	metadata[JSServerVersionMetadataKey] = VERSION
 	metadata[JSServerLevelMetadataKey] = strconv.Itoa(JSApiLevel)
@@ -247,14 +225,14 @@ func TestJetStreamSetDynamicConsumerMetadata(t *testing.T) {
 }
 
 func TestJetStreamSetDynamicConsumerInfoMetadata(t *testing.T) {
-	ci := ConsumerInfo{Config: &ConsumerConfig{Metadata: metadataAllSet("0")}}
+	ci := ConsumerInfo{Config: &ConsumerConfig{Metadata: metadataAtLevel("0")}}
 	newCi := setDynamicConsumerInfoMetadata(&ci)
 
 	// Configs should not equal, as that would mean we've overwritten the original ConsumerInfo.
 	require_False(t, reflect.DeepEqual(ci, newCi))
 
 	// Only new metadata must contain dynamic fields.
-	metadata := metadataAllSet("0")
+	metadata := metadataAtLevel("0")
 	require_True(t, reflect.DeepEqual(ci.Config.Metadata, metadata))
 	metadata[JSServerVersionMetadataKey] = VERSION
 	metadata[JSServerLevelMetadataKey] = strconv.Itoa(JSApiLevel)
@@ -269,12 +247,12 @@ func TestJetStreamCopyConsumerMetadata(t *testing.T) {
 	}{
 		{
 			desc: "no-previous-ignore",
-			cfg:  &ConsumerConfig{Metadata: metadataAllSet("-1")},
+			cfg:  &ConsumerConfig{Metadata: metadataAtLevel("-1")},
 			prev: nil,
 		},
 		{
 			desc: "nil-previous-metadata-ignore",
-			cfg:  &ConsumerConfig{Metadata: metadataAllSet("-1")},
+			cfg:  &ConsumerConfig{Metadata: metadataAtLevel("-1")},
 			prev: &ConsumerConfig{Metadata: nil},
 		},
 		{
@@ -284,12 +262,12 @@ func TestJetStreamCopyConsumerMetadata(t *testing.T) {
 		},
 		{
 			desc: "copy-previous",
-			cfg:  &ConsumerConfig{Metadata: metadataAllSet("-1")},
+			cfg:  &ConsumerConfig{Metadata: metadataAtLevel("-1")},
 			prev: &ConsumerConfig{Metadata: metadataPrevious()},
 		},
 		{
 			desc: "delete-missing-fields",
-			cfg:  &ConsumerConfig{Metadata: metadataAllSet("-1")},
+			cfg:  &ConsumerConfig{Metadata: metadataAtLevel("-1")},
 			prev: &ConsumerConfig{Metadata: make(map[string]string)},
 		},
 	} {
@@ -301,25 +279,7 @@ func TestJetStreamCopyConsumerMetadata(t *testing.T) {
 				expectedMetadata = test.prev.Metadata
 			}
 
-			value, ok := expectedMetadata[JSCreatedVersionMetadataKey]
-			if ok {
-				require_Equal(t, test.cfg.Metadata[JSCreatedVersionMetadataKey], value)
-			} else {
-				// Key shouldn't exist.
-				_, ok = test.cfg.Metadata[JSCreatedVersionMetadataKey]
-				require_False(t, ok)
-			}
-
-			value, ok = expectedMetadata[JSCreatedLevelMetadataKey]
-			if ok {
-				require_Equal(t, test.cfg.Metadata[JSCreatedLevelMetadataKey], value)
-			} else {
-				// Key shouldn't exist.
-				_, ok = test.cfg.Metadata[JSCreatedLevelMetadataKey]
-				require_False(t, ok)
-			}
-
-			value, ok = expectedMetadata[JSRequiredLevelMetadataKey]
+			value, ok := expectedMetadata[JSRequiredLevelMetadataKey]
 			if ok {
 				require_Equal(t, test.cfg.Metadata[JSRequiredLevelMetadataKey], value)
 			} else {
@@ -344,9 +304,9 @@ func TestJetStreamCopyConsumerMetadataRemoveDynamicFields(t *testing.T) {
 	require_Equal(t, len(cfg.Metadata), 0)
 
 	cfg = ConsumerConfig{Metadata: dynamicMetadata()}
-	prevCfg := ConsumerConfig{Metadata: metadataAllSet("0")}
+	prevCfg := ConsumerConfig{Metadata: metadataAtLevel("0")}
 	copyConsumerMetadata(&cfg, &prevCfg)
-	require_True(t, reflect.DeepEqual(cfg.Metadata, metadataAllSet("0")))
+	require_True(t, reflect.DeepEqual(cfg.Metadata, metadataAtLevel("0")))
 }
 
 type server struct {
@@ -384,9 +344,7 @@ func TestJetStreamMetadataMutations(t *testing.T) {
 }
 
 func validateMetadata(metadata map[string]string, expectedFeatureLevel string) bool {
-	return metadata[JSCreatedVersionMetadataKey] == VERSION ||
-		metadata[JSCreatedLevelMetadataKey] == strconv.Itoa(JSApiLevel) ||
-		metadata[JSRequiredLevelMetadataKey] == expectedFeatureLevel ||
+	return metadata[JSRequiredLevelMetadataKey] == expectedFeatureLevel ||
 		metadata[JSServerVersionMetadataKey] == VERSION ||
 		metadata[JSServerLevelMetadataKey] == strconv.Itoa(JSApiLevel)
 }
