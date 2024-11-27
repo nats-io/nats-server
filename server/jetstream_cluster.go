@@ -1542,7 +1542,7 @@ func (js *jetStream) metaSnapshot() []byte {
 	for _, asa := range cc.streams {
 		for _, sa := range asa {
 			wsa := writeableStreamAssignment{
-				Client:    sa.Client,
+				Client:    sa.Client.forAssignmentSnap(),
 				Created:   sa.Created,
 				Config:    sa.Config,
 				Group:     sa.Group,
@@ -1555,7 +1555,9 @@ func (js *jetStream) metaSnapshot() []byte {
 				if ca.pending {
 					continue
 				}
-				wsa.Consumers = append(wsa.Consumers, ca)
+				cca := *ca
+				cca.Client = cca.Client.forAssignmentSnap()
+				wsa.Consumers = append(wsa.Consumers, &cca)
 				nca++
 			}
 			streams = append(streams, wsa)
