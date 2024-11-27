@@ -314,6 +314,15 @@ type ClientInfo struct {
 	Nonce      string        `json:"nonce,omitempty"`
 }
 
+// forAssignmentSnap returns the minimum amount of ClientInfo we need for assignment snapshots.
+func (ci *ClientInfo) forAssignmentSnap() *ClientInfo {
+	return &ClientInfo{
+		Account: ci.Account,
+		Service: ci.Service,
+		Cluster: ci.Cluster,
+	}
+}
+
 // ServerStats hold various statistics that we will periodically send out.
 type ServerStats struct {
 	Start            time.Time      `json:"start"`
