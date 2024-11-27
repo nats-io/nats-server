@@ -5275,7 +5275,7 @@ func (o *consumer) processReplicatedAck(dseq, sseq uint64) error {
 
 	// Check if we have a reply that was requested.
 	if reply := o.replies[sseq]; reply != _EMPTY_ {
-		o.outq.sendMsg(reply, nil)
+		o.sendAckReplyLockHeld(reply, nil)
 		delete(o.replies, sseq)
 	}
 

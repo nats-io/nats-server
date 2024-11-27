@@ -158,6 +158,9 @@ const (
 	// JSConsumerMetadataLengthErrF consumer metadata exceeds maximum size of {limit}
 	JSConsumerMetadataLengthErrF ErrorIdentifier = 10135
 
+	// JSConsumerMsgNotPendingAckErr This message is currently not pending an ack (already acked or not yet delivered)
+	JSConsumerMsgNotPendingAckErr ErrorIdentifier = 10163
+
 	// JSConsumerMultipleFiltersNotAllowed consumer with multiple subject filters cannot use subject based API
 	JSConsumerMultipleFiltersNotAllowed ErrorIdentifier = 10137
 
@@ -548,6 +551,7 @@ var (
 		JSConsumerMaxRequestExpiresToSmall:         {Code: 400, ErrCode: 10115, Description: "consumer max request expires needs to be >= 1ms"},
 		JSConsumerMaxWaitingNegativeErr:            {Code: 400, ErrCode: 10087, Description: "consumer max waiting needs to be positive"},
 		JSConsumerMetadataLengthErrF:               {Code: 400, ErrCode: 10135, Description: "consumer metadata exceeds maximum size of {limit}"},
+		JSConsumerMsgNotPendingAckErr:              {Code: 400, ErrCode: 10163, Description: "This message is currently not pending an ack (already acked or not yet delivered)"},
 		JSConsumerMultipleFiltersNotAllowed:        {Code: 400, ErrCode: 10137, Description: "consumer with multiple subject filters cannot use subject based API"},
 		JSConsumerNameContainsPathSeparatorsErr:    {Code: 400, ErrCode: 10127, Description: "Consumer name can not contain path separators"},
 		JSConsumerNameExistErr:                     {Code: 400, ErrCode: 10013, Description: "consumer name already in use"},
@@ -1247,6 +1251,16 @@ func NewJSConsumerMetadataLengthError(limit interface{}, opts ...ErrorOption) *A
 		ErrCode:     e.ErrCode,
 		Description: strings.NewReplacer(args...).Replace(e.Description),
 	}
+}
+
+// NewJSConsumerMsgNotPendingAckError creates a new JSConsumerMsgNotPendingAckErr error: "This message is currently not pending an ack (already acked or not yet delivered)"
+func NewJSConsumerMsgNotPendingAckError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSConsumerMsgNotPendingAckErr]
 }
 
 // NewJSConsumerMultipleFiltersNotAllowedError creates a new JSConsumerMultipleFiltersNotAllowed error: "consumer with multiple subject filters cannot use subject based API"

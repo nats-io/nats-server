@@ -2995,8 +2995,8 @@ func TestJetStreamConsumerAckAck(t *testing.T) {
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
 
-	// 4 for number of ack protocols to test them all.
-	for i := 0; i < 4; i++ {
+	// 5 for number of ack protocols plus already acked to test them all.
+	for i := 0; i < 5; i++ {
 		sendStreamMsg(t, nc, mname, "Hello World!")
 	}
 
@@ -3015,6 +3015,32 @@ func TestJetStreamConsumerAckAck(t *testing.T) {
 	testAck(AckNak)
 	testAck(AckProgress)
 	testAck(AckTerm)
+
+	// checking replies and errors on two explicit acks for the same message or out of range ack
+	// first get the message
+	m, err := nc.Request(rqn, nil, 10*time.Millisecond)
+	require_NoError(t, err)
+
+	var resp JSApiConsumerAckResponse
+	// Send a request for the first ack and make sure it worked.
+	ackReply1, err := nc.Request(m.Reply, AckAck, 10*time.Millisecond)
+	require_NoError(t, err)
+	require_NoError(t, json.Unmarshal(ackReply1.Data, &resp))
+	require_True(t, resp.Success)
+
+	// Send a second ack and make sure it fails.
+	ackReply2, err := nc.Request(m.Reply, AckAck, 10*time.Millisecond)
+	require_NoError(t, err)
+	resp = JSApiConsumerAckResponse{}
+	require_NoError(t, json.Unmarshal(ackReply2.Data, &resp))
+	require_True(t, !resp.Success && resp.Error.ErrCode == uint16(JSConsumerMsgNotPendingAckErr))
+
+	// Error trying to ack an out of range sequence number
+	ackReply3, err := nc.Request("$JS.ACK.ACK-ACK.worker.1.6.0.0.0", AckAck, 10*time.Millisecond)
+	require_NoError(t, err)
+	resp = JSApiConsumerAckResponse{}
+	require_NoError(t, json.Unmarshal(ackReply3.Data, &resp))
+	require_True(t, !resp.Success && resp.Error.ErrCode == uint16(JSConsumerMsgNotPendingAckErr))
 }
 
 func TestJetStreamAckNext(t *testing.T) {
