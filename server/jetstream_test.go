@@ -24688,3 +24688,36 @@ func TestJetStreamDelayedAPIResponses(t *testing.T) {
 	s.sendDelayedAPIErrResponse(nil, acc, "I", _EMPTY_, "request9", "response9", nil, 100*time.Millisecond)
 	check("request9", "response9")
 }
+
+func TestJetStreamMemoryPurgeClearsSubjectsState(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  nats.MemoryStorage,
+	})
+	require_NoError(t, err)
+
+	pa, err := js.Publish("foo", nil)
+	require_NoError(t, err)
+	require_Equal(t, pa.Sequence, 1)
+
+	// When requesting stream info, we expect one subject foo with one entry.
+	si, err := js.StreamInfo("TEST", &nats.StreamInfoRequest{SubjectsFilter: ">"})
+	require_NoError(t, err)
+	require_Len(t, len(si.State.Subjects), 1)
+	require_Equal(t, si.State.Subjects["foo"], 1)
+
+	// After purging, moving the sequence up, the subjects state should be cleared.
+	err = js.PurgeStream("TEST", &nats.StreamPurgeRequest{Sequence: 100})
+	require_NoError(t, err)
+
+	si, err = js.StreamInfo("TEST", &nats.StreamInfoRequest{SubjectsFilter: ">"})
+	require_NoError(t, err)
+	require_Len(t, len(si.State.Subjects), 0)
+}
