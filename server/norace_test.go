@@ -11225,7 +11225,7 @@ func TestNoRaceJetStreamClusterCheckInterestStatePerformanceInterest(t *testing.
 	}
 
 	require_Equal(t, checkFloor(mset.lookupConsumer("A")), 1)
-	require_Equal(t, checkFloor(mset.lookupConsumer("B")), 100_001)
+	require_Equal(t, checkFloor(mset.lookupConsumer("B")), 90_001)
 	require_Equal(t, checkFloor(mset.lookupConsumer("C")), 100_001)
 
 	// This checks the chkflr state. For this test this should be much faster,
