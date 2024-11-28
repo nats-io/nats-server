@@ -76,7 +76,14 @@ func TestSignalToReOpenLogFile(t *testing.T) {
 }
 
 func TestSignalToReloadConfig(t *testing.T) {
-	opts, err := ProcessConfigFile("./configs/reload/basic.conf")
+	tmpl := `
+		listen: 127.0.0.1:-1
+		accounts: {
+			A: { users: [ { user: %s, password: foo } ] }
+		}
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, "foo")))
+	opts, err := ProcessConfigFile(conf)
 	if err != nil {
 		t.Fatalf("Error processing config file: %v", err)
 	}
@@ -84,10 +91,21 @@ func TestSignalToReloadConfig(t *testing.T) {
 	s := RunServer(opts)
 	defer s.Shutdown()
 
+	// Check that the reload time does not change when there are no changes.
+	loaded := s.ConfigTime()
+	time.Sleep(500 * time.Millisecond)
+	syscall.Kill(syscall.Getpid(), syscall.SIGHUP)
+	if reloaded := s.ConfigTime(); reloaded.After(loaded) {
+		t.Fatalf("ConfigTime is incorrect.\nexpected no change: %s\ngot: %s", loaded, reloaded)
+	}
+
 	// Repeat test to make sure that server services signals more than once...
 	for i := 0; i < 2; i++ {
 		loaded := s.ConfigTime()
-
+		user := fmt.Sprintf("foo:%d", i)
+		if err := os.WriteFile(conf, []byte(fmt.Sprintf(tmpl, user)), 0666); err != nil {
+			t.Fatalf("Error creating config file: %v", err)
+		}
 		// Wait a bit to ensure ConfigTime changes.
 		time.Sleep(5 * time.Millisecond)
 

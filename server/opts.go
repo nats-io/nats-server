@@ -449,6 +449,9 @@ type Options struct {
 
 	// Used to mark that we had a top level authorization block.
 	authBlockDefined bool
+
+	// configDigest represents the state of configuration.
+	configDigest string
 }
 
 // WebsocketOpts are options for websocket
@@ -891,10 +894,11 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 	if configFile == _EMPTY_ {
 		return nil
 	}
-	m, err := conf.ParseFileWithChecks(configFile)
+	m, digest, err := conf.ParseFileWithChecksDigest(configFile)
 	if err != nil {
 		return err
 	}
+	o.configDigest = digest
 
 	return o.processConfigFile(configFile, m)
 }
@@ -908,6 +912,11 @@ func (o *Options) ProcessConfigString(data string) error {
 	}
 
 	return o.processConfigFile(_EMPTY_, m)
+}
+
+// ConfigDigest returns the digest representing the configuration.
+func (o *Options) ConfigDigest() string {
+	return o.configDigest
 }
 
 func (o *Options) processConfigFile(configFile string, m map[string]any) error {

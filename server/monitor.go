@@ -1217,6 +1217,7 @@ type Varz struct {
 	Subscriptions         uint32                 `json:"subscriptions"`
 	HTTPReqStats          map[string]uint64      `json:"http_req_stats"`
 	ConfigLoadTime        time.Time              `json:"config_load_time"`
+	ConfigDigest          string                 `json:"config_digest"`
 	Tags                  jwt.TagList            `json:"tags,omitempty"`
 	TrustedOperatorsJwt   []string               `json:"trusted_operators_jwt,omitempty"`
 	TrustedOperatorsClaim []*jwt.OperatorClaims  `json:"trusted_operators_claim,omitempty"`
@@ -1671,6 +1672,7 @@ func (s *Server) updateVarzConfigReloadableFields(v *Varz) {
 	v.TLSTimeout = opts.TLSTimeout
 	v.WriteDeadline = opts.WriteDeadline
 	v.ConfigLoadTime = s.configTime.UTC()
+	v.ConfigDigest = opts.configDigest
 	// Update route URLs if applicable
 	if s.varzUpdateRouteURLs {
 		v.Cluster.URLs = urlsToStrings(opts.Routes)

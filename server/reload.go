@@ -994,6 +994,13 @@ func (s *Server) Reload() error {
 		// TODO: Dump previous good config to a .bak file?
 		return err
 	}
+
+	// Use the digest from the configuration to detect whether unnecessary to apply reload.
+	if s.getOpts().ConfigDigest() != "" && newOpts.ConfigDigest() == s.getOpts().ConfigDigest() {
+		s.Noticef("Config reload skipped. No changes detected.")
+		return nil
+	}
+
 	return s.ReloadOptions(newOpts)
 }
 
@@ -1627,6 +1634,10 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			if new != old {
 				diffOpts = append(diffOpts, &profBlockRateReload{newValue: new})
 			}
+		case "configdigest":
+			// skip changes in config digest, this is handled already while
+			// processing the config.
+			continue
 		default:
 			// TODO(ik): Implement String() on those options to have a nice print.
 			// %v is difficult to figure what's what, %+v print private fields and
@@ -1774,8 +1785,11 @@ func (s *Server) applyOptions(ctx *reloadContext, opts []option) {
 	if err := s.reloadOCSP(); err != nil {
 		s.Warnf("Can't restart OCSP features: %v", err)
 	}
-
-	s.Noticef("Reloaded server configuration")
+	var cd string
+	if newOpts.configDigest != "" {
+		cd = fmt.Sprintf("(%s)", newOpts.configDigest)
+	}
+	s.Noticef("Reloaded server configuration %s", cd)
 }
 
 // This will send a reset to the internal send loop.
