@@ -1028,7 +1028,9 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 		ms.state.FirstSeq = seq
 		ms.state.FirstTime = time.Time{}
 		ms.state.LastSeq = seq - 1
+		// Reset msgs and fss.
 		ms.msgs = make(map[uint64]*StoreMsg)
+		ms.fss = stree.NewSubjectTree[SimpleState]()
 	}
 	ms.mu.Unlock()
 
