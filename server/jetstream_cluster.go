@@ -134,8 +134,8 @@ type streamAssignment struct {
 	Config  *StreamConfig `json:"stream"`
 	Group   *raftGroup    `json:"group"`
 	Sync    string        `json:"sync"`
-	Subject string        `json:"subject"`
-	Reply   string        `json:"reply"`
+	Subject string        `json:"subject,omitempty"`
+	Reply   string        `json:"reply,omitempty"`
 	Restore *StreamState  `json:"restore_state,omitempty"`
 	// Internal
 	consumers   map[string]*consumerAssignment
@@ -153,8 +153,8 @@ type consumerAssignment struct {
 	Stream  string          `json:"stream"`
 	Config  *ConsumerConfig `json:"consumer"`
 	Group   *raftGroup      `json:"group"`
-	Subject string          `json:"subject"`
-	Reply   string          `json:"reply"`
+	Subject string          `json:"subject,omitempty"`
+	Reply   string          `json:"reply,omitempty"`
 	State   *ConsumerState  `json:"state,omitempty"`
 	// Internal
 	responded  bool
@@ -1557,6 +1557,7 @@ func (js *jetStream) metaSnapshot() []byte {
 				}
 				cca := *ca
 				cca.Client = cca.Client.forAssignmentSnap()
+				cca.Subject, cca.Reply = _EMPTY_, _EMPTY_
 				wsa.Consumers = append(wsa.Consumers, &cca)
 				nca++
 			}
