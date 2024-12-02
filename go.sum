@@ -1,5 +1,3 @@
-github.com/antithesishq/antithesis-sdk-go v0.4.2-default-no-op h1:fpjv35LjUu5j4MC1aaMlmCMNECdl4hj0yK2CWdPhNjA=
-github.com/antithesishq/antithesis-sdk-go v0.4.2-default-no-op/go.mod h1:IUpT2DPAKh6i/YhSbt6Gl3v2yvUZjmKncl7U91fup7E=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/google/go-tpm v0.9.0 h1:sQF6YqWMi+SCXpsmS3fd21oPy/vSddwZry4JnmltHVk=
