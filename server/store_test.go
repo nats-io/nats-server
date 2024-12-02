@@ -57,7 +57,7 @@ func TestStoreMsgLoadNextMsgMulti(t *testing.T) {
 			// Put 1k msgs in
 			for i := 0; i < 1000; i++ {
 				subj := fmt.Sprintf("foo.%d", i)
-				fs.StoreMsg(subj, nil, []byte("ZZZ"))
+				fs.StoreMsg(subj, nil, []byte("ZZZ"), 0)
 			}
 
 			var smv StoreMsg
