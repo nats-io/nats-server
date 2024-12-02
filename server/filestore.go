@@ -44,6 +44,7 @@ import (
 	"github.com/minio/highwayhash"
 	"github.com/nats-io/nats-server/v2/server/avl"
 	"github.com/nats-io/nats-server/v2/server/stree"
+	"github.com/nats-io/nats-server/v2/server/thw"
 	"golang.org/x/crypto/chacha20"
 	"golang.org/x/crypto/chacha20poly1305"
 )
@@ -67,6 +68,8 @@ type FileStoreConfig struct {
 	Cipher StoreCipher
 	// Compression is the algorithm to use when compressing.
 	Compression StoreCompression
+	// EnforceTTLs will clean up messages based on their TTL. Set to true for per-message TTLs.
+	EnforceTTLs bool
 
 	// Internal reference to our server.
 	srv *Server
@@ -197,6 +200,7 @@ type fileStore struct {
 	fip         bool
 	receivedAny bool
 	firstMoved  bool
+	ttls        *thw.HashWheel[uint64]
 }
 
 // Represents a message store block and its data.
@@ -405,6 +409,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		qch:    make(chan struct{}),
 		fsld:   make(chan struct{}),
 		srv:    fcfg.srv,
+		ttls:   thw.NewHashWheel[uint64](),
 	}
 
 	// Set flush in place to AsyncFlush which by default is false.
@@ -3744,9 +3749,19 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 	fs.enforceMsgLimit()
 	fs.enforceBytesLimit()
 
+	// Per-message TTL.
+	if fs.ttls != nil && ttl > 0 {
+		fs.ttls.Add(seq, ttl)
+	}
+
 	// Check if we have and need the age expiration timer running.
-	if fs.ageChk == nil && fs.cfg.MaxAge != 0 {
+	switch {
+	case fs.ageChk == nil && (fs.cfg.MaxAge != 0 || fs.ttls != nil):
 		fs.startAgeChk()
+	case fs.ageChk != nil && fs.ttls != nil:
+		// Need to reset anyway, as the new TTL might be sooner than
+		// the previous next one.
+		fs.resetAgeChk(0)
 	}
 
 	return nil
@@ -5107,25 +5122,43 @@ func (mb *msgBlock) expireCacheLocked() {
 }
 
 func (fs *fileStore) startAgeChk() {
-	if fs.ageChk == nil && fs.cfg.MaxAge != 0 {
+	if fs.ageChk != nil {
+		return
+	}
+	if fs.cfg.MaxAge != 0 || fs.ttls != nil {
 		fs.ageChk = time.AfterFunc(fs.cfg.MaxAge, fs.expireMsgs)
 	}
 }
 
 // Lock should be held.
 func (fs *fileStore) resetAgeChk(delta int64) {
-	if fs.cfg.MaxAge == 0 {
+	if fs.cfg.MaxAge == 0 && fs.ttls == nil {
 		return
 	}
-
 	fireIn := fs.cfg.MaxAge
-	if delta > 0 && time.Duration(delta) < fireIn {
-		if fireIn = time.Duration(delta); fireIn < 250*time.Millisecond {
-			// Only fire at most once every 250ms.
-			// Excessive firing can effect ingest performance.
-			fireIn = time.Second
+
+	// First check to see if we should be firing sooner for an expiring TTL.
+	if fs.ttls != nil {
+		if next := fs.ttls.GetNextExpiration(math.MaxInt64); next < math.MaxInt64 {
+			// Looks like there's a next expiration, use it either if there's no
+			// MaxAge set or if it looks to be sooner than MaxAge is.
+			if until := time.Until(time.Unix(0, next)); fireIn == 0 || until < fireIn {
+				fireIn = until
+			}
 		}
 	}
+
+	// If not then look at the delta provided (usually gap to next age expiry).
+	if delta > 0 && time.Duration(delta) < fireIn {
+		fireIn = time.Duration(delta)
+	}
+
+	// Make sure we aren't firing too often either way, otherwise we can
+	// negatively impact stream ingest performance.
+	if fireIn < 250*time.Millisecond {
+		fireIn = time.Second
+	}
+
 	if fs.ageChk != nil {
 		fs.ageChk.Reset(fireIn)
 	} else {
@@ -5163,8 +5196,17 @@ func (fs *fileStore) expireMsgs() {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
+	// TODO: Not great that we're holding the lock here, but the timed hash wheel isn't thread-safe.
+	var nextTTL int64
+	if fs.ttls != nil {
+		fs.ttls.ExpireTasks(func(seq uint64, ts int64) {
+			fs.removeMsgViaLimits(seq)
+		})
+		nextTTL = fs.ttls.GetNextExpiration(math.MaxInt64)
+	}
+
 	// Onky cancel if no message left, not on potential lookup error that would result in sm == nil.
-	if fs.state.Msgs == 0 {
+	if fs.state.Msgs == 0 && nextTTL == math.MaxInt64 {
 		fs.cancelAgeChk()
 	} else {
 		if sm == nil {
