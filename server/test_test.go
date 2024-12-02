@@ -60,6 +60,7 @@ func RunRandClientPortServer(t *testing.T) *Server {
 func require_True(t testing.TB, b bool) {
 	t.Helper()
 	if !b {
+		antithesis.AssertUnreachable(t, "Failed require_True check", nil)
 		t.Fatalf("require true, but got false")
 	}
 }
@@ -67,6 +68,7 @@ func require_True(t testing.TB, b bool) {
 func require_False(t testing.TB, b bool) {
 	t.Helper()
 	if b {
+		antithesis.AssertUnreachable(t, "Failed require_False check", nil)
 		t.Fatalf("require false, but got true")
 	}
 }
@@ -74,6 +76,9 @@ func require_False(t testing.TB, b bool) {
 func require_NoError(t testing.TB, err error) {
 	t.Helper()
 	if err != nil {
+		antithesis.AssertUnreachable(t, "Failed require_NoError check", map[string]any{
+			"error": err.Error(),
+		})
 		t.Fatalf("require no error, but got: %v", err)
 	}
 }
@@ -85,6 +90,7 @@ func require_NotNil[T any](t testing.TB, v T) {
 	case reflect.Ptr, reflect.Interface, reflect.Slice,
 		reflect.Map, reflect.Chan, reflect.Func:
 		if r.IsNil() {
+			antithesis.AssertUnreachable(t, "Failed require_NotNil check", nil)
 			t.Fatalf("require not nil, but got nil")
 		}
 	}
@@ -94,6 +100,10 @@ func require_Contains(t *testing.T, s string, subStrs ...string) {
 	t.Helper()
 	for _, subStr := range subStrs {
 		if !strings.Contains(s, subStr) {
+			antithesis.AssertUnreachable(t, "Failed require_Contains check", map[string]any{
+				"string":      s,
+				"sub_strings": subStr,
+			})
 			t.Fatalf("require %q to be contained in %q", subStr, s)
 		}
 	}
@@ -102,6 +112,7 @@ func require_Contains(t *testing.T, s string, subStrs ...string) {
 func require_Error(t testing.TB, err error, expected ...error) {
 	t.Helper()
 	if err == nil {
+		antithesis.AssertUnreachable(t, "Failed require_Error check (nil error)", nil)
 		t.Fatalf("require error, but got none")
 	}
 	if len(expected) == 0 {
@@ -119,12 +130,17 @@ func require_Error(t testing.TB, err error, expected ...error) {
 			return
 		}
 	}
+
+	antithesis.AssertUnreachable(t, "Failed require_Error check (unexpected error)", map[string]any{
+		"error": err.Error(),
+	})
 	t.Fatalf("Expected one of %v, got '%v'", expected, err)
 }
 
 func require_Equal[T comparable](t testing.TB, a, b T) {
 	t.Helper()
 	if a != b {
+		antithesis.AssertUnreachable(t, "Failed require_Equal check", nil)
 		t.Fatalf("require %T equal, but got: %v != %v", a, a, b)
 	}
 }
@@ -132,6 +148,7 @@ func require_Equal[T comparable](t testing.TB, a, b T) {
 func require_NotEqual[T comparable](t testing.TB, a, b T) {
 	t.Helper()
 	if a == b {
+		antithesis.AssertUnreachable(t, "Failed require_NotEqual check", nil)
 		t.Fatalf("require %T not equal, but got: %v == %v", a, a, b)
 	}
 }
@@ -139,6 +156,7 @@ func require_NotEqual[T comparable](t testing.TB, a, b T) {
 func require_Len(t testing.TB, a, b int) {
 	t.Helper()
 	if a != b {
+		antithesis.AssertUnreachable(t, "Failed require_Len check", nil)
 		t.Fatalf("require len, but got: %v != %v", a, b)
 	}
 }
@@ -146,6 +164,7 @@ func require_Len(t testing.TB, a, b int) {
 func require_LessThan[T cmp.Ordered](t *testing.T, a, b T) {
 	t.Helper()
 	if a >= b {
+		antithesis.AssertUnreachable(t, "Failed require_LessThan check", nil)
 		t.Fatalf("require %v to be less than %v", a, b)
 	}
 }
@@ -156,9 +175,7 @@ func require_ChanRead[T any](t *testing.T, ch chan T, timeout time.Duration) T {
 	case v := <-ch:
 		return v
 	case <-time.After(timeout):
-		antithesis.AssertUnreachable(t, "Channel read timeout", map[string]any{
-			"timeout": timeout.String(),
-		})
+		antithesis.AssertUnreachable(t, "Failed require_ChanRead check", nil)
 		t.Fatalf("require read from channel within %v but didn't get anything", timeout)
 	}
 	panic("this shouldn't be possible")
@@ -168,6 +185,7 @@ func require_NoChanRead[T any](t *testing.T, ch chan T, timeout time.Duration) {
 	t.Helper()
 	select {
 	case <-ch:
+		antithesis.AssertUnreachable(t, "Failed require_NoChanRead check", nil)
 		t.Fatalf("require no read from channel within %v but got something", timeout)
 	case <-time.After(timeout):
 	}

@@ -15,14 +15,11 @@ package stree
 
 import (
 	"testing"
-
-	"github.com/nats-io/nats-server/v2/internal/antithesis"
 )
 
 func require_True(t *testing.T, b bool) {
 	t.Helper()
 	if !b {
-		antithesis.Assert(t, false, "Required true is false", nil)
 		t.Fatalf("require true, but got false")
 	}
 }
@@ -30,7 +27,6 @@ func require_True(t *testing.T, b bool) {
 func require_False(t *testing.T, b bool) {
 	t.Helper()
 	if b {
-		antithesis.Assert(t, false, "Required false is true", nil)
 		t.Fatalf("require false, but got true")
 	}
 }
@@ -38,7 +34,6 @@ func require_False(t *testing.T, b bool) {
 func require_Equal[T comparable](t *testing.T, a, b T) {
 	t.Helper()
 	if a != b {
-		antithesis.Assert(t, false, "Required equal is not equal", nil)
 		t.Fatalf("require %T equal, but got: %v != %v", a, a, b)
 	}
 }

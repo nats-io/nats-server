@@ -106,7 +106,10 @@ func (sc *supercluster) waitOnStreamLeader(account, stream string) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	antithesis.AssertUnreachable(sc.t, "waitOnStreamLeader timeout", nil)
+	antithesis.AssertUnreachable(sc.t, "Timeout in supercluster::waitOnStreamLeader", map[string]any{
+		"account": account,
+		"stream":  stream,
+	})
 	sc.t.Fatalf("Expected a stream leader for %q %q, got none", account, stream)
 }
 
@@ -556,7 +559,7 @@ func (sc *supercluster) waitOnLeader() {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	antithesis.AssertUnreachable(sc.t, "supercluster::waitOnStreamLeader timeout", nil)
+	antithesis.AssertUnreachable(sc.t, "Timeout in supercluster::waitOnStreamLeader", nil)
 	sc.t.Fatalf("Expected a cluster leader, got none")
 }
 
@@ -594,7 +597,7 @@ func (sc *supercluster) waitOnPeerCount(n int) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	antithesis.AssertUnreachable(sc.t, "supercluster::waitOnPeerCount timeout", nil)
+	antithesis.AssertUnreachable(sc.t, "Timeout in supercluster::waitOnPeerCount", nil)
 	sc.t.Fatalf("Expected a super cluster peer count of %d, got %d", n, len(leader.JetStreamClusterPeers()))
 }
 
@@ -1253,6 +1256,9 @@ func fetchMsgs(t *testing.T, sub *nats.Subscription, numExpected int, totalWait 
 	for start, count, wait := time.Now(), numExpected, totalWait; len(result) != numExpected; {
 		msgs, err := sub.Fetch(count, nats.MaxWait(wait))
 		if err != nil {
+			antithesis.AssertUnreachable(t, "Fetch error", map[string]any{
+				"error": err.Error(),
+			})
 			t.Fatal(err)
 		}
 		result = append(result, msgs...)
@@ -1262,7 +1268,10 @@ func fetchMsgs(t *testing.T, sub *nats.Subscription, numExpected int, totalWait 
 		}
 	}
 	if len(result) != numExpected {
-		antithesis.AssertUnreachable(t, "fetchMsgs unexpected message count", nil)
+		antithesis.AssertUnreachable(t, "Unexpected fetch messages count", map[string]any{
+			"expected": numExpected,
+			"actual":   len(result),
+		})
 		t.Fatalf("Unexpected msg count, got %d, want %d", len(result), numExpected)
 	}
 	return result
@@ -1313,7 +1322,9 @@ func (c *cluster) waitOnPeerCount(n int) {
 			leader = c.leader()
 		}
 	}
-	antithesis.AssertUnreachable(c.t, "cluster::waitOnPeerCount timeout", nil)
+	antithesis.AssertUnreachable(c.t, "Timeout in cluster::waitOnPeerCount", map[string]any{
+		"cluster": c.name,
+	})
 	c.t.Fatalf("Expected a cluster peer count of %d, got %d", n, len(leader.JetStreamClusterPeers()))
 }
 
@@ -1327,7 +1338,12 @@ func (c *cluster) waitOnConsumerLeader(account, stream, consumer string) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	antithesis.AssertUnreachable(c.t, "cluster::waitOnConsumerLeader timeout", nil)
+	antithesis.AssertUnreachable(c.t, "Timeout in cluster::waitOnConsumerLeader", map[string]any{
+		"cluster":  c.name,
+		"account":  account,
+		"stream":   stream,
+		"consumer": consumer,
+	})
 	c.t.Fatalf("Expected a consumer leader for %q %q %q, got none", account, stream, consumer)
 }
 
@@ -1361,7 +1377,11 @@ func (c *cluster) waitOnStreamLeader(account, stream string) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	antithesis.AssertUnreachable(c.t, "cluster::waitOnStreamLeader timeout", nil)
+	antithesis.AssertUnreachable(c.t, "Timeout in cluster::waitOnStreamLeader", map[string]any{
+		"cluster": c.name,
+		"account": account,
+		"stream":  stream,
+	})
 	c.t.Fatalf("Expected a stream leader for %q %q, got none", account, stream)
 }
 
@@ -1395,7 +1415,11 @@ func (c *cluster) waitOnStreamCurrent(s *Server, account, stream string) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	antithesis.AssertUnreachable(c.t, "cluster::waitOnStreamCurrent timeout", nil)
+	antithesis.AssertUnreachable(c.t, "Timeout in cluster::waitOnStreamCurrent", map[string]any{
+		"cluster": c.name,
+		"account": account,
+		"stream":  stream,
+	})
 	c.t.Fatalf("Expected server %q to eventually be current for stream %q", s, stream)
 }
 
@@ -1409,7 +1433,10 @@ func (c *cluster) waitOnServerHealthz(s *Server) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	antithesis.AssertUnreachable(c.t, "cluster::waitOnServerHealthz timeout", nil)
+	antithesis.AssertUnreachable(c.t, "Timeout in cluster::waitOnServerHealthz", map[string]any{
+		"cluster": c.name,
+		"server":  s.Name(),
+	})
 	c.t.Fatalf("Expected server %q to eventually return healthz 'ok', but got %q", s, s.healthz(nil).Error)
 }
 
@@ -1422,7 +1449,10 @@ func (c *cluster) waitOnServerCurrent(s *Server) {
 			return
 		}
 	}
-	antithesis.AssertUnreachable(c.t, "cluster::waitOnServerCurrent timeout", nil)
+	antithesis.AssertUnreachable(c.t, "Timeout in cluster::waitOnServerCurrent", map[string]any{
+		"cluster": c.name,
+		"server":  s.Name(),
+	})
 	c.t.Fatalf("Expected server %q to eventually be current", s)
 }
 
@@ -1470,7 +1500,9 @@ func (c *cluster) expectNoLeader() {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	antithesis.AssertUnreachable(c.t, "cluster::expectNoLeader timeout", nil)
+	antithesis.AssertUnreachable(c.t, "Timeout in cluster::expectNoLeader", map[string]any{
+		"cluster": c.name,
+	})
 	c.t.Fatalf("Expected no leader but have one")
 }
 
@@ -1485,7 +1517,9 @@ func (c *cluster) waitOnLeader() {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	antithesis.AssertUnreachable(c.t, "cluster::waitOnLeader timeout", nil)
+	antithesis.AssertUnreachable(c.t, "Timeout in cluster::waitOnLeader", map[string]any{
+		"cluster": c.name,
+	})
 	c.t.Fatalf("Expected a cluster leader, got none")
 }
 
@@ -1505,7 +1539,9 @@ func (c *cluster) waitOnAccount(account string) {
 		continue
 	}
 
-	antithesis.AssertUnreachable(c.t, "cluster::waitOnAccount timeout", nil)
+	antithesis.AssertUnreachable(c.t, "Timeout in cluster::waitOnAccount", map[string]any{
+		"account": account,
+	})
 	c.t.Fatalf("Expected account %q to exist but didn't", account)
 }
 
@@ -1537,7 +1573,9 @@ func (c *cluster) waitOnClusterReadyWithNumPeers(numPeersExpected int) {
 
 	if leader == nil {
 		c.shutdown()
-		antithesis.AssertUnreachable(c.t, "cluster::waitOnClusterReadyWithNumPeers timeout (1)", nil)
+		antithesis.AssertUnreachable(c.t, "Timeout in cluster::waitOnClusterReadyWithNumPeers (1)", map[string]any{
+			"cluster": c.name,
+		})
 		c.t.Fatalf("Failed to elect a meta-leader")
 	}
 
@@ -1545,10 +1583,14 @@ func (c *cluster) waitOnClusterReadyWithNumPeers(numPeersExpected int) {
 	c.shutdown()
 
 	if leader == nil {
-		antithesis.AssertUnreachable(c.t, "cluster::waitOnClusterReadyWithNumPeers timeout (2)", nil)
+		antithesis.AssertUnreachable(c.t, "Timeout in cluster::waitOnClusterReadyWithNumPeers (2)", map[string]any{
+			"cluster": c.name,
+		})
 		c.t.Fatalf("Expected a cluster leader and fully formed cluster, no leader")
 	} else {
-		antithesis.AssertUnreachable(c.t, "cluster::waitOnClusterReadyWithNumPeers timeout (3)", nil)
+		antithesis.AssertUnreachable(c.t, "Timeout in cluster::waitOnClusterReadyWithNumPeers (3)", map[string]any{
+			"cluster": c.name,
+		})
 		c.t.Fatalf("Expected a fully formed cluster, only %d of %d peers seen", peersSeen, numPeersExpected)
 	}
 }
