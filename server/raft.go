@@ -82,7 +82,7 @@ type RaftNode interface {
 
 type WAL interface {
 	Type() StorageType
-	StoreMsg(subj string, hdr, msg []byte) (uint64, int64, error)
+	StoreMsg(subj string, hdr, msg []byte, ttl int64) (uint64, int64, error)
 	LoadMsg(index uint64, sm *StoreMsg) (*StoreMsg, error)
 	RemoveMsg(index uint64) (bool, error)
 	Compact(index uint64) (uint64, error)
@@ -3689,7 +3689,7 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 		return n.werr
 	}
 
-	seq, _, err := n.wal.StoreMsg(_EMPTY_, nil, ae.buf)
+	seq, _, err := n.wal.StoreMsg(_EMPTY_, nil, ae.buf, 0)
 	if err != nil {
 		n.setWriteErrLocked(err)
 		return err

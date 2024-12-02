@@ -100,6 +100,13 @@ type StreamConfig struct {
 	// TODO(nat): Can/should we name these better?
 	ConsumerLimits StreamConsumerLimits `json:"consumer_limits"`
 
+	// AllowMsgTTL allows header initiated per-message TTLs. If disabled,
+	// then the `NATS-TTL` header will be ignored.
+	AllowMsgTTL bool `json:"allow_msg_ttl"`
+
+	// LimitsTTL activates writing of messages when limits are applied with a specific TTL.
+	LimitsTTL time.Duration `json:"limits_ttl"`
+
 	// Metadata is additional metadata for the Stream.
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
@@ -4998,7 +5005,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	// Store actual msg.
 	if lseq == 0 && ts == 0 {
-		seq, ts, err = store.StoreMsg(subject, hdr, msg)
+		seq, ts, err = store.StoreMsg(subject, hdr, msg, 0)
 	} else {
 		// Make sure to take into account any message assignments that we had to skip (clfs).
 		seq = lseq + 1 - clfs
@@ -5006,7 +5013,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		if mset.hasAllPreAcks(seq, subject) {
 			mset.clearAllPreAcks(seq)
 		}
-		err = store.StoreRawMsg(subject, hdr, msg, seq, ts)
+		err = store.StoreRawMsg(subject, hdr, msg, seq, ts, 0)
 	}
 
 	if err != nil {
