@@ -33,7 +33,6 @@ import (
 
 	"github.com/goccy/go-json"
 	"github.com/klauspost/compress/s2"
-	"github.com/nats-io/nats-server/v2/server/stree"
 	"github.com/nats-io/nuid"
 )
 
@@ -226,28 +225,28 @@ type stream struct {
 	// Those subscriptions are for the subjects filters being listened to and captured by the stream.
 	sid atomic.Uint64
 
-	pubAck    []byte                       // The template (prefix) to generate the pubAck responses for this stream quickly.
-	outq      *jsOutQ                      // Queue of *jsPubMsg for sending messages.
-	msgs      *ipQueue[*inMsg]             // Intra-process queue for the ingress of messages.
-	gets      *ipQueue[*directGetReq]      // Intra-process queue for the direct get requests.
-	store     StreamStore                  // The storage for this stream.
-	ackq      *ipQueue[uint64]             // Intra-process queue for acks.
-	lseq      uint64                       // The sequence number of the last message stored in the stream.
-	lmsgId    string                       // The de-duplication message ID of the last message stored in the stream.
-	consumers map[string]*consumer         // The consumers for this stream.
-	numFilter int                          // The number of filtered consumers.
-	cfg       StreamConfig                 // The stream's config.
-	cfgMu     sync.RWMutex                 // Config mutex used to solve some races with consumer code
-	created   time.Time                    // Time the stream was created.
-	stype     StorageType                  // The storage type.
-	tier      string                       // The tier is the number of replicas for the stream (e.g. "R1" or "R3").
-	ddmap     *stree.SubjectTree[*ddentry] // The dedupe map.
-	ddnext    *ddentry                     // The next ddentry due to expire.
-	ddlast    *ddentry                     // The last ddentry due to expire.
-	ddtmr     *time.Timer                  // The dedupe timer.
-	qch       chan struct{}                // The quit channel.
-	mqch      chan struct{}                // The monitor's quit channel.
-	active    bool                         // Indicates that there are active internal subscriptions (for the subject filters)
+	pubAck    []byte                  // The template (prefix) to generate the pubAck responses for this stream quickly.
+	outq      *jsOutQ                 // Queue of *jsPubMsg for sending messages.
+	msgs      *ipQueue[*inMsg]        // Intra-process queue for the ingress of messages.
+	gets      *ipQueue[*directGetReq] // Intra-process queue for the direct get requests.
+	store     StreamStore             // The storage for this stream.
+	ackq      *ipQueue[uint64]        // Intra-process queue for acks.
+	lseq      uint64                  // The sequence number of the last message stored in the stream.
+	lmsgId    string                  // The de-duplication message ID of the last message stored in the stream.
+	consumers map[string]*consumer    // The consumers for this stream.
+	numFilter int                     // The number of filtered consumers.
+	cfg       StreamConfig            // The stream's config.
+	cfgMu     sync.RWMutex            // Config mutex used to solve some races with consumer code
+	created   time.Time               // Time the stream was created.
+	stype     StorageType             // The storage type.
+	tier      string                  // The tier is the number of replicas for the stream (e.g. "R1" or "R3").
+	ddmap     map[string]*ddentry     // The dedupe map.
+	ddarr     []*ddentry              // The dedupe array.
+	ddindex   int                     // The dedupe index.
+	ddtmr     *time.Timer             // The dedupe timer.
+	qch       chan struct{}           // The quit channel.
+	mqch      chan struct{}           // The monitor's quit channel.
+	active    bool                    // Indicates that there are active internal subscriptions (for the subject filters)
 	// and/or mirror/sources consumers are scheduled to be established or already started.
 	ddloaded bool        // set to true when the deduplication structures are been built.
 	closed   atomic.Bool // Set to true when stop() is called on the stream.
@@ -378,11 +377,9 @@ const (
 
 // Dedupe entry
 type ddentry struct {
-	id   string   // The unique message ID provided by the client.
-	seq  uint64   // The sequence number of the message.
-	ts   int64    // The timestamp of the message.
-	prev *ddentry // Will be populated by storeMsgIdLocked; the previous entry due to expire before this one.
-	next *ddentry // Will be populated by storeMsgIdLocked; the next entry due to expire after this one.
+	id  string // The unique message ID provided by the client.
+	seq uint64 // The sequence number of the message.
+	ts  int64  // The timestamp of the message.
 }
 
 // Replicas Range
@@ -989,9 +986,6 @@ func (mset *stream) rebuildDedupe() {
 	}
 
 	mset.ddloaded = true
-	mset.ddmap.Empty()
-	mset.ddnext = nil
-	mset.ddlast = nil
 
 	// We have some messages. Lookup starting sequence by duplicate time window.
 	sseq := mset.store.GetSeqFromTime(time.Now().Add(-mset.cfg.Duplicates))
@@ -1011,15 +1005,7 @@ func (mset *stream) rebuildDedupe() {
 		var msgId string
 		if len(sm.hdr) > 0 {
 			if msgId = getMsgId(sm.hdr); msgId != _EMPTY_ {
-				new := &ddentry{msgId, sm.seq, sm.ts, mset.ddlast, nil}
-				if mset.ddlast != nil {
-					mset.ddlast.next = new
-				}
-				mset.storeMsgIdLocked(new)
-				if mset.ddnext == nil {
-					mset.ddnext = new
-				}
-				mset.ddlast = new
+				mset.storeMsgIdLocked(&ddentry{msgId, sm.seq, sm.ts})
 			}
 		}
 		if seq == state.LastSeq {
@@ -3948,7 +3934,7 @@ func (mset *stream) numMsgIds() int {
 	if !mset.ddloaded {
 		mset.rebuildDedupe()
 	}
-	return mset.ddmap.Size()
+	return len(mset.ddmap)
 }
 
 // checkMsgId will process and check for duplicates.
@@ -3957,14 +3943,10 @@ func (mset *stream) checkMsgId(id string) *ddentry {
 	if !mset.ddloaded {
 		mset.rebuildDedupe()
 	}
-	if id == _EMPTY_ || mset.ddmap.Size() == 0 {
+	if id == _EMPTY_ || len(mset.ddmap) == 0 {
 		return nil
 	}
-	dde, found := mset.ddmap.Find(stringToBytes(id))
-	if !found || dde == nil {
-		return nil
-	}
-	return *dde
+	return mset.ddmap[id]
 }
 
 // Will purge the entries that are past the window.
@@ -3977,26 +3959,39 @@ func (mset *stream) purgeMsgIds() {
 	tmrNext := mset.cfg.Duplicates
 	window := int64(tmrNext)
 
-	for ; mset.ddnext != nil && now-mset.ddnext.ts >= window; mset.ddnext = mset.ddnext.next {
-		mset.ddmap.Delete(stringToBytes(mset.ddnext.id))
+	for i, dde := range mset.ddarr[mset.ddindex:] {
+		if now-dde.ts >= window {
+			delete(mset.ddmap, dde.id)
+		} else {
+			mset.ddindex += i
+			// Check if we should garbage collect here if we are 1/3 total size.
+			if cap(mset.ddarr) > 3*(len(mset.ddarr)-mset.ddindex) {
+				mset.ddarr = append([]*ddentry(nil), mset.ddarr[mset.ddindex:]...)
+				mset.ddindex = 0
+			}
+			tmrNext = time.Duration(window - (now - dde.ts))
+			break
+		}
 	}
-
-	if next := mset.ddnext; next != nil {
+	if len(mset.ddmap) > 0 {
 		// Make sure to not fire too quick
 		const minFire = 50 * time.Millisecond
-		if mset.ddnext != nil {
-			expiresAt := time.Unix(0, mset.ddnext.ts).Add(mset.cfg.Duplicates)
-			until := time.Until(expiresAt)
-			if until < minFire {
-				until = minFire
-			}
-			mset.ddtmr = time.AfterFunc(until, mset.purgeMsgIds)
+		if tmrNext < minFire {
+			tmrNext = minFire
+		}
+		if mset.ddtmr != nil {
+			mset.ddtmr.Reset(tmrNext)
+		} else {
+			mset.ddtmr = time.AfterFunc(tmrNext, mset.purgeMsgIds)
 		}
 	} else {
-		stopAndClearTimer(&mset.ddtmr)
+		if mset.ddtmr != nil {
+			mset.ddtmr.Stop()
+			mset.ddtmr = nil
+		}
 		mset.ddmap = nil
-		mset.ddnext = nil
-		mset.ddlast = nil
+		mset.ddarr = nil
+		mset.ddindex = 0
 	}
 }
 
@@ -4008,52 +4003,15 @@ func (mset *stream) storeMsgId(dde *ddentry) {
 }
 
 // storeMsgIdLocked will store the message id for duplicate detection.
-// Lock should be held.
+// Lock should he held.
 func (mset *stream) storeMsgIdLocked(dde *ddentry) {
 	if mset.ddmap == nil {
-		mset.ddmap = stree.NewSubjectTree[*ddentry]()
+		mset.ddmap = make(map[string]*ddentry)
 	}
-
-	// Ordinarily a Nats-Msg-Id would have been checked by now for a new
-	// publish into a stream, but when the ddmap needs to be rebuilt, the
-	// rebuildDedupe() function will call this function for every stream
-	// message in the deduplication window. In that case, we will need to
-	// clean up the previous entry we just replaced and stitch the gap.
-	if o, updated := mset.ddmap.Insert(stringToBytes(dde.id), dde); updated && o != nil {
-		overwritten := *o
-		if overwritten.prev != nil {
-			overwritten.prev.next = overwritten.next
-		}
-		if overwritten.next != nil {
-			overwritten.next.prev = overwritten.prev
-		}
-		if mset.ddnext == overwritten {
-			mset.ddnext = overwritten.next
-			stopAndClearTimer(&mset.ddtmr)
-		}
-		if mset.ddlast == overwritten {
-			mset.ddlast.next = dde
-			mset.ddlast = dde
-		}
-	}
-
-	// Update the last and next references, as well as the entries
-	// that attach to them.
-	dde.prev = mset.ddlast
-	if last := mset.ddlast; last != nil {
-		last.next = dde
-	}
-	mset.ddlast = dde
-	if next := mset.ddnext; next == nil {
-		mset.ddnext = dde
-	}
-
-	// Work out how long the timer needs to be set for, if needed.
-	if mset.ddtmr == nil && mset.ddnext != nil {
-		expiresAt := time.Unix(0, mset.ddnext.ts).Add(mset.cfg.Duplicates)
-		if time.Now().Before(expiresAt) {
-			mset.ddtmr = time.AfterFunc(time.Until(expiresAt), mset.purgeMsgIds)
-		}
+	mset.ddmap[dde.id] = dde
+	mset.ddarr = append(mset.ddarr, dde)
+	if mset.ddtmr == nil {
+		mset.ddtmr = time.AfterFunc(mset.cfg.Duplicates, mset.purgeMsgIds)
 	}
 }
 
@@ -4592,7 +4550,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		mset.lmsgId = msgId
 		// If we have a msgId make sure to save.
 		if msgId != _EMPTY_ {
-			mset.storeMsgIdLocked(&ddentry{msgId, mset.lseq, ts, nil, nil})
+			mset.storeMsgIdLocked(&ddentry{msgId, mset.lseq, ts})
 		}
 		if canRespond {
 			response = append(pubAck, strconv.FormatUint(mset.lseq, 10)...)
@@ -4693,7 +4651,16 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	// If we have a msgId make sure to save.
 	// This will replace our estimate from the cluster layer if we are clustered.
 	if msgId != _EMPTY_ {
-		mset.storeMsgIdLocked(&ddentry{msgId, seq, ts, nil, nil})
+		if isClustered && isLeader && mset.ddmap != nil {
+			if dde := mset.ddmap[msgId]; dde != nil {
+				dde.seq, dde.ts = seq, ts
+			} else {
+				mset.storeMsgIdLocked(&ddentry{msgId, seq, ts})
+			}
+		} else {
+			// R1 or not leader..
+			mset.storeMsgIdLocked(&ddentry{msgId, seq, ts})
+		}
 	}
 
 	// If here we succeeded in storing the message.
@@ -5225,8 +5192,8 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 		mset.ddtmr.Stop()
 		mset.ddtmr = nil
 		mset.ddmap = nil
-		mset.ddnext = nil
-		mset.ddlast = nil
+		mset.ddarr = nil
+		mset.ddindex = 0
 	}
 
 	sysc := mset.sysc
