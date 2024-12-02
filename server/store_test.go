@@ -57,7 +57,7 @@ func TestStoreMsgLoadNextMsgMulti(t *testing.T) {
 			// Put 1k msgs in
 			for i := 0; i < 1000; i++ {
 				subj := fmt.Sprintf("foo.%d", i)
-				fs.StoreMsg(subj, nil, []byte("ZZZ"))
+				fs.StoreMsg(subj, nil, []byte("ZZZ"), 0)
 			}
 
 			var smv StoreMsg
@@ -168,7 +168,7 @@ func TestStoreSubjectStateConsistency(t *testing.T) {
 
 			// Publish an initial batch of messages.
 			for i := 0; i < 4; i++ {
-				_, _, err := fs.StoreMsg("foo", nil, nil)
+				_, _, err := fs.StoreMsg("foo", nil, nil, 0)
 				require_NoError(t, err)
 			}
 
@@ -221,7 +221,7 @@ func TestStoreSubjectStateConsistency(t *testing.T) {
 
 			// Publish some more messages so we can test another scenario.
 			for i := 0; i < 3; i++ {
-				_, _, err := fs.StoreMsg("foo", nil, nil)
+				_, _, err := fs.StoreMsg("foo", nil, nil, 0)
 				require_NoError(t, err)
 			}
 
@@ -267,7 +267,7 @@ func TestStoreMaxMsgsPerUpdateBug(t *testing.T) {
 		t, false, config(),
 		func(t *testing.T, fs StreamStore) {
 			for i := 0; i < 5; i++ {
-				_, _, err := fs.StoreMsg("foo", nil, nil)
+				_, _, err := fs.StoreMsg("foo", nil, nil, 0)
 				require_NoError(t, err)
 			}
 

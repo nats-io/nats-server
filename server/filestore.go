@@ -45,6 +45,7 @@ import (
 	"github.com/minio/highwayhash"
 	"github.com/nats-io/nats-server/v2/server/avl"
 	"github.com/nats-io/nats-server/v2/server/stree"
+	"github.com/nats-io/nats-server/v2/server/thw"
 	"golang.org/x/crypto/chacha20"
 	"golang.org/x/crypto/chacha20poly1305"
 )
@@ -68,6 +69,8 @@ type FileStoreConfig struct {
 	Cipher StoreCipher
 	// Compression is the algorithm to use when compressing.
 	Compression StoreCompression
+	// EnforceTTLs decides whether or not to enforce per-message TTLs.
+	EnforceTTLs bool
 
 	// Internal reference to our server.
 	srv *Server
@@ -198,6 +201,8 @@ type fileStore struct {
 	fip         bool
 	receivedAny bool
 	firstMoved  bool
+	ttls        *thw.HashWheel
+	ttlseq      uint64 // How up-to-date is the `ttls` THW?
 }
 
 // Represents a message store block and its data.
@@ -244,6 +249,7 @@ type msgBlock struct {
 	syncAlways bool
 	noCompact  bool
 	closed     bool
+	ttls       uint64 // How many msgs have TTLs?
 
 	// Used to mock write failures.
 	mockWriteErr bool
@@ -320,6 +326,9 @@ const (
 
 	// This is the full snapshotted state for the stream.
 	streamStreamStateFile = "index.db"
+
+	// This is the encoded time hash wheel for TTLs.
+	ttlStreamStateFile = "thw.db"
 
 	// AEK key sizes
 	minMetaKeySize = 64
@@ -408,6 +417,11 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		srv:    fcfg.srv,
 	}
 
+	// Only create a THW if we're going to allow TTLs.
+	if fs.fcfg.EnforceTTLs {
+		fs.ttls = thw.NewHashWheel()
+	}
+
 	// Set flush in place to AsyncFlush which by default is false.
 	fs.fip = !fcfg.AsyncFlush
 
@@ -469,6 +483,13 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		}
 		// Since we recovered here, make sure to kick ourselves to write out our stream state.
 		fs.dirty++
+	}
+
+	// See if we can bring back our TTL timed hash wheel state from disk.
+	if fcfg.EnforceTTLs {
+		if err = fs.recoverTTLState(); err != nil && !os.IsNotExist(err) {
+			fs.warn("Recovering TTL state from index errored: %v", err)
+		}
 	}
 
 	// Also make sure we get rid of old idx and fss files on return.
@@ -1380,6 +1401,10 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 		rl, slen := le.Uint32(hdr[0:]), int(le.Uint16(hdr[20:]))
 
 		hasHeaders := rl&hbit != 0
+		var ttl int64
+		if mb.fs.ttls != nil && len(hdr) > 0 {
+			ttl, _ = getMessageTTL(hdr)
+		}
 		// Clear any headers bit that could be set.
 		rl &^= hbit
 		dlen := int(rl) - msgHdrSize
@@ -1455,6 +1480,11 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 		if !mb.dmap.Exists(seq) {
 			mb.msgs++
 			mb.bytes += uint64(rl)
+			if mb.fs.ttls != nil && ttl > 0 {
+				expires := time.Duration(ts) + (time.Second * time.Duration(ttl))
+				mb.fs.ttls.Add(seq, int64(expires))
+				mb.ttls++
+			}
 		}
 
 		// Check for any gaps from compaction, meaning no ebit entry.
@@ -1593,7 +1623,8 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 		}
 	}
 
-	if buf[0] != fullStateMagic || buf[1] != fullStateVersion {
+	version := buf[1]
+	if buf[0] != fullStateMagic || version < fullStateMinVersion || version > fullStateVersion {
 		os.Remove(fn)
 		fs.warn("Stream state magic and version mismatch")
 		return errCorruptState
@@ -1685,6 +1716,10 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 		fs.blks = make([]*msgBlock, 0, numBlocks)
 		for i := 0; i < int(numBlocks); i++ {
 			index, nbytes, fseq, fts, lseq, lts, numDeleted := uint32(readU64()), readU64(), readU64(), readI64(), readU64(), readI64(), readU64()
+			var ttls uint64
+			if version >= 2 {
+				ttls = readU64()
+			}
 			if bi < 0 {
 				os.Remove(fn)
 				return errCorruptState
@@ -1694,6 +1729,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 			atomic.StoreUint64(&mb.last.seq, lseq)
 			mb.msgs, mb.bytes = lseq-fseq+1, nbytes
 			mb.first.ts, mb.last.ts = fts+baseTime, lts+baseTime
+			mb.ttls = ttls
 			if numDeleted > 0 {
 				dmap, n, err := avl.Decode(buf[bi:])
 				if err != nil {
@@ -1791,6 +1827,81 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 		return errCorruptState
 	}
 
+	return nil
+}
+
+func (fs *fileStore) recoverTTLState() error {
+	// See if we have a timed hash wheel for TTLs.
+	<-dios
+	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, ttlStreamStateFile)
+	buf, err := os.ReadFile(fn)
+	dios <- struct{}{}
+
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	fs.ttls = thw.NewHashWheel()
+
+	if err == nil {
+		fs.ttlseq, err = fs.ttls.Decode(buf)
+		if err != nil {
+			fs.warn("Error decoding TTL state: %s", err)
+			os.Remove(fn)
+		}
+	}
+
+	if fs.ttlseq < fs.state.FirstSeq {
+		fs.ttlseq = fs.state.FirstSeq
+	}
+
+	defer fs.resetAgeChk(0)
+	if fs.ttlseq <= fs.state.LastSeq {
+		fs.warn("TTL state is outdated; attempting to recover using linear scan (seq %d to %d)", fs.ttlseq, fs.state.LastSeq)
+		var sm StoreMsg
+		mb := fs.selectMsgBlock(fs.ttlseq)
+		if mb == nil {
+			return nil
+		}
+		mblseq := atomic.LoadUint64(&mb.last.seq)
+		for seq := fs.ttlseq; seq <= fs.state.LastSeq; seq++ {
+		retry:
+			if mb.ttls == 0 {
+				// None of the messages in the block have message TTLs so don't
+				// bother doing anything further with this block, skip to the end.
+				seq = atomic.LoadUint64(&mb.last.seq) + 1
+			}
+			if seq > mblseq {
+				// We've reached the end of the loaded block, see if we can continue
+				// by loading the next one.
+				mb.tryForceExpireCache()
+				if mb = fs.selectMsgBlock(seq); mb == nil {
+					// TODO(nat): Deal with gaps properly. Right now this will be
+					// probably expensive on CPU.
+					continue
+				}
+				mblseq = atomic.LoadUint64(&mb.last.seq)
+				// At this point we've loaded another block, so let's go back to the
+				// beginning and see if we need to skip this one too.
+				goto retry
+			}
+			msg, _, err := mb.fetchMsg(seq, &sm)
+			if err != nil {
+				fs.warn("Error loading msg seq %d for recovering TTL: %s", seq, err)
+				continue
+			}
+			if len(msg.hdr) == 0 {
+				continue
+			}
+			if ttl, _ := getMessageTTL(msg.hdr); ttl > 0 {
+				expires := time.Duration(msg.ts) + (time.Second * time.Duration(ttl))
+				fs.ttls.Add(seq, int64(expires))
+				if seq > fs.ttlseq {
+					fs.ttlseq = seq
+				}
+			}
+		}
+	}
 	return nil
 }
 
@@ -3625,7 +3736,7 @@ func (fs *fileStore) genEncryptionKeysForBlock(mb *msgBlock) error {
 
 // Stores a raw message with expected sequence number and timestamp.
 // Lock should be held.
-func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int64) (err error) {
+func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64) (err error) {
 	if fs.closed {
 		return ErrStoreClosed
 	}
@@ -3677,6 +3788,8 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 	}
 
 	// Write msg record.
+	// Add expiry bit to sequence if needed. This is so that if we need to
+	// rebuild, we know which messages to look at more quickly.
 	n, err := fs.writeMsgRecord(seq, ts, subj, hdr, msg)
 	if err != nil {
 		return err
@@ -3744,18 +3857,31 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 	fs.enforceMsgLimit()
 	fs.enforceBytesLimit()
 
+	// Per-message TTL.
+	if fs.ttls != nil && ttl > 0 {
+		expires := time.Duration(ts) + (time.Second * time.Duration(ttl))
+		fs.ttls.Add(seq, int64(expires))
+		fs.lmb.ttls++
+		if seq > fs.ttlseq {
+			fs.ttlseq = seq
+		}
+	}
+
 	// Check if we have and need the age expiration timer running.
-	if fs.ageChk == nil && fs.cfg.MaxAge != 0 {
+	switch {
+	case fs.ageChk == nil && (fs.cfg.MaxAge > 0 || fs.ttls != nil):
 		fs.startAgeChk()
+	case fs.ageChk != nil && fs.ttls != nil && ttl > 0:
+		fs.resetAgeChk(0)
 	}
 
 	return nil
 }
 
 // StoreRawMsg stores a raw message with expected sequence number and timestamp.
-func (fs *fileStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts int64) error {
+func (fs *fileStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64) error {
 	fs.mu.Lock()
-	err := fs.storeRawMsg(subj, hdr, msg, seq, ts)
+	err := fs.storeRawMsg(subj, hdr, msg, seq, ts, ttl)
 	cb := fs.scb
 	// Check if first message timestamp requires expiry
 	// sooner than initial replica expiry timer set to MaxAge when initializing.
@@ -3775,10 +3901,10 @@ func (fs *fileStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts in
 }
 
 // Store stores a message. We hold the main filestore lock for any write operation.
-func (fs *fileStore) StoreMsg(subj string, hdr, msg []byte) (uint64, int64, error) {
+func (fs *fileStore) StoreMsg(subj string, hdr, msg []byte, ttl int64) (uint64, int64, error) {
 	fs.mu.Lock()
 	seq, ts := fs.state.LastSeq+1, time.Now().UnixNano()
-	err := fs.storeRawMsg(subj, hdr, msg, seq, ts)
+	err := fs.storeRawMsg(subj, hdr, msg, seq, ts, ttl)
 	cb := fs.scb
 	fs.mu.Unlock()
 
@@ -5107,25 +5233,52 @@ func (mb *msgBlock) expireCacheLocked() {
 }
 
 func (fs *fileStore) startAgeChk() {
-	if fs.ageChk == nil && fs.cfg.MaxAge != 0 {
+	if fs.ageChk != nil {
+		return
+	}
+	if fs.cfg.MaxAge != 0 || fs.ttls != nil {
 		fs.ageChk = time.AfterFunc(fs.cfg.MaxAge, fs.expireMsgs)
 	}
 }
 
 // Lock should be held.
 func (fs *fileStore) resetAgeChk(delta int64) {
-	if fs.cfg.MaxAge == 0 {
+	var next int64 = math.MaxInt64
+	if fs.ttls != nil {
+		next = fs.ttls.GetNextExpiration(next)
+	}
+
+	// If there's no MaxAge and there's nothing waiting to be expired then
+	// don't bother continuing. The next storeRawMsg() will wake us up if
+	// needs be.
+	if fs.cfg.MaxAge <= 0 && next == math.MaxInt64 {
+		clearTimer(&fs.ageChk)
 		return
 	}
 
+	// Check to see if we should be firing sooner than MaxAge for an expiring TTL.
 	fireIn := fs.cfg.MaxAge
-	if delta > 0 && time.Duration(delta) < fireIn {
-		if fireIn = time.Duration(delta); fireIn < 250*time.Millisecond {
-			// Only fire at most once every 250ms.
-			// Excessive firing can effect ingest performance.
-			fireIn = time.Second
+	if next < math.MaxInt64 {
+		// Looks like there's a next expiration, use it either if there's no
+		// MaxAge set or if it looks to be sooner than MaxAge is.
+		if until := time.Until(time.Unix(0, next)); fireIn == 0 || until < fireIn {
+			fireIn = until
 		}
 	}
+
+	// If not then look at the delta provided (usually gap to next age expiry).
+	if delta > 0 {
+		if fireIn == 0 || time.Duration(delta) < fireIn {
+			fireIn = time.Duration(delta)
+		}
+	}
+
+	// Make sure we aren't firing too often either way, otherwise we can
+	// negatively impact stream ingest performance.
+	if fireIn < 250*time.Millisecond {
+		fireIn = 250 * time.Millisecond
+	}
+
 	if fs.ageChk != nil {
 		fs.ageChk.Reset(fireIn)
 	} else {
@@ -5152,19 +5305,30 @@ func (fs *fileStore) expireMsgs() {
 	minAge := time.Now().UnixNano() - maxAge
 	fs.mu.RUnlock()
 
-	for sm, _ = fs.msgForSeq(0, &smv); sm != nil && sm.ts <= minAge; sm, _ = fs.msgForSeq(0, &smv) {
-		fs.mu.Lock()
-		fs.removeMsgViaLimits(sm.seq)
-		fs.mu.Unlock()
-		// Recalculate in case we are expiring a bunch.
-		minAge = time.Now().UnixNano() - maxAge
+	if maxAge > 0 {
+		for sm, _ = fs.msgForSeq(0, &smv); sm != nil && sm.ts <= minAge; sm, _ = fs.msgForSeq(0, &smv) {
+			fs.mu.Lock()
+			fs.removeMsgViaLimits(sm.seq)
+			fs.mu.Unlock()
+			// Recalculate in case we are expiring a bunch.
+			minAge = time.Now().UnixNano() - maxAge
+		}
 	}
 
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
+	// TODO: Not great that we're holding the lock here, but the timed hash wheel isn't thread-safe.
+	var nextTTL int64
+	if fs.ttls != nil {
+		fs.ttls.ExpireTasks(func(seq uint64, ts int64) {
+			fs.removeMsgViaLimits(seq)
+		})
+		nextTTL = fs.ttls.GetNextExpiration(math.MaxInt64)
+	}
+
 	// Onky cancel if no message left, not on potential lookup error that would result in sm == nil.
-	if fs.state.Msgs == 0 {
+	if fs.state.Msgs == 0 && nextTTL == math.MaxInt64 {
 		fs.cancelAgeChk()
 	} else {
 		if sm == nil {
@@ -5929,9 +6093,11 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 	}
 	// Mark fss activity.
 	mb.lsts = time.Now().UnixNano()
+	mb.ttls = 0
 
 	lbuf := uint32(len(buf))
-	var seq uint64
+	var seq, ttls uint64
+	var sm StoreMsg // Used for finding TTL headers
 	for index < lbuf {
 		if index+msgHdrSize > lbuf {
 			return errCorruptState
@@ -5941,6 +6107,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 		seq = le.Uint64(hdr[4:])
 
 		// Clear any headers bit that could be set.
+		hasHeaders := rl&hbit != 0
 		rl &^= hbit
 		dlen := int(rl) - msgHdrSize
 
@@ -6002,6 +6169,16 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 					})
 				}
 			}
+
+			// Count how many TTLs we think are in this message block.
+			// TODO(nat): Not terribly optimal...
+			if hasHeaders {
+				if fsm, err := mb.msgFromBuf(buf, &sm, nil); err == nil && fsm != nil {
+					if _, err = getMessageTTL(fsm.hdr); err == nil && len(fsm.hdr) > 0 {
+						ttls++
+					}
+				}
+			}
 		}
 		index += rl
 	}
@@ -6023,6 +6200,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 	mb.cache.idx = idx
 	mb.cache.fseq = fseq
 	mb.cache.wp += int(lbuf)
+	mb.ttls = ttls
 
 	return nil
 }
@@ -8317,9 +8495,13 @@ func (fs *fileStore) cancelSyncTimer() {
 	}
 }
 
+// The full state file is versioned.
+// - 0x1: original binary index.db format
+// - 0x2: adds support for TTL count field after num deleted
 const (
-	fullStateMagic   = uint8(11)
-	fullStateVersion = uint8(1)
+	fullStateMagic      = uint8(11)
+	fullStateMinVersion = uint8(1) // What is the minimum version we know how to parse?
+	fullStateVersion    = uint8(2) // What is the current version written out to index.db?
 )
 
 // This go routine periodically writes out our full stream state index.
@@ -8411,7 +8593,7 @@ func (fs *fileStore) _writeFullState(force bool) error {
 		binary.MaxVarintLen64 + fs.tsl + // NumSubjects + total subject length
 		numSubjects*(binary.MaxVarintLen64*4) + // psi record
 		binary.MaxVarintLen64 + // Num blocks.
-		len(fs.blks)*((binary.MaxVarintLen64*7)+avgDmapLen) + // msg blocks, avgDmapLen is est for dmaps
+		len(fs.blks)*((binary.MaxVarintLen64*8)+avgDmapLen) + // msg blocks, avgDmapLen is est for dmaps
 		binary.MaxVarintLen64 + 8 + 8 // last index + record checksum + full state checksum
 
 	// Do 4k on stack if possible.
@@ -8473,6 +8655,7 @@ func (fs *fileStore) _writeFullState(force bool) error {
 
 		numDeleted := mb.dmap.Size()
 		buf = binary.AppendUvarint(buf, uint64(numDeleted))
+		buf = binary.AppendUvarint(buf, mb.ttls) // Field is new in version 2
 		if numDeleted > 0 {
 			dmap, _ := mb.dmap.Encode(scratch[:0])
 			dmapTotalLen += len(dmap)
@@ -8554,7 +8737,24 @@ func (fs *fileStore) _writeFullState(force bool) error {
 		fs.mu.Unlock()
 	}
 
-	return nil
+	return fs.writeTTLState()
+}
+
+func (fs *fileStore) writeTTLState() error {
+	if fs.ttls == nil {
+		return nil
+	}
+
+	fs.mu.RLock()
+	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, ttlStreamStateFile)
+	buf := fs.ttls.Encode(fs.state.LastSeq)
+	fs.mu.RUnlock()
+
+	<-dios
+	err := os.WriteFile(fn, buf, defaultFilePerms)
+	dios <- struct{}{}
+
+	return err
 }
 
 // Stop the current filestore.

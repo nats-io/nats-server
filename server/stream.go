@@ -100,6 +100,10 @@ type StreamConfig struct {
 	// TODO(nat): Can/should we name these better?
 	ConsumerLimits StreamConsumerLimits `json:"consumer_limits"`
 
+	// AllowMsgTTL allows header initiated per-message TTLs. If disabled,
+	// then the `NATS-TTL` header will be ignored.
+	AllowMsgTTL bool `json:"allow_msg_ttl"`
+
 	// Metadata is additional metadata for the Stream.
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
@@ -413,6 +417,8 @@ const (
 	JSMsgRollup               = "Nats-Rollup"
 	JSMsgSize                 = "Nats-Msg-Size"
 	JSResponseType            = "Nats-Response-Type"
+	JSMessageTTL              = "Nats-TTL"
+	JSMessageNoExpire         = "Nats-No-Expire"
 )
 
 // Headers for republished messages and direct gets.
@@ -711,6 +717,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	fsCfg.SyncInterval = s.getOpts().SyncInterval
 	fsCfg.SyncAlways = s.getOpts().SyncAlways
 	fsCfg.Compression = config.Compression
+	fsCfg.EnforceTTLs = config.AllowMsgTTL
 
 	if err := mset.setupStore(fsCfg); err != nil {
 		mset.stop(true, false)
@@ -1773,6 +1780,11 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, s *Server, pedan
 		if cfg.MaxMsgsPer <= 0 {
 			return nil, NewJSStreamInvalidConfigError(fmt.Errorf("discard new per subject requires max msgs per subject > 0"))
 		}
+	}
+
+	// Check on the allowed message TTL status.
+	if cfg.AllowMsgTTL != old.AllowMsgTTL {
+		return nil, NewJSStreamInvalidConfigError(fmt.Errorf("message TTL status can not be changed after stream creation"))
 	}
 
 	// Do some adjustments for being sealed.
@@ -4194,6 +4206,30 @@ func getExpectedLastSeqPerSubjectForSubject(hdr []byte) string {
 	return string(getHeader(JSExpectedLastSubjSeqSubj, hdr))
 }
 
+// Fast lookup of the message TTL:
+// - Positive return value: duration in seconds.
+// - Zero return value: no TTL or parse error.
+// - Negative return value: don't expire.
+func getMessageTTL(hdr []byte) (int64, error) {
+	ttl := getHeader(JSMessageTTL, hdr)
+	if len(ttl) == 0 {
+		return 0, nil
+	}
+	sttl := bytesToString(ttl)
+	dur, err := time.ParseDuration(sttl)
+	if err == nil {
+		if dur < time.Second {
+			return 0, NewJSMessageTTLInvalidError()
+		}
+		return int64(dur.Seconds()), nil
+	}
+	t := parseInt64(ttl)
+	if t < 0 {
+		return 0, NewJSMessageTTLInvalidError()
+	}
+	return t, nil
+}
+
 // Signal if we are clustered. Will acquire rlock.
 func (mset *stream) IsClustered() bool {
 	mset.mu.RLock()
@@ -5001,9 +5037,22 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		}
 	}
 
+	// Find the message TTL if any.
+	ttl, err := getMessageTTL(hdr)
+	if err != nil {
+		if canRespond {
+			resp.PubAck = &PubAck{Stream: name}
+			resp.Error = NewJSMessageTTLInvalidError()
+			response, _ = json.Marshal(resp)
+			mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
+		}
+		mset.mu.Unlock()
+		return err
+	}
+
 	// Store actual msg.
 	if lseq == 0 && ts == 0 {
-		seq, ts, err = store.StoreMsg(subject, hdr, msg)
+		seq, ts, err = store.StoreMsg(subject, hdr, msg, ttl)
 	} else {
 		// Make sure to take into account any message assignments that we had to skip (clfs).
 		seq = lseq + 1 - clfs
@@ -5011,7 +5060,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		if mset.hasAllPreAcks(seq, subject) {
 			mset.clearAllPreAcks(seq)
 		}
-		err = store.StoreRawMsg(subject, hdr, msg, seq, ts)
+		err = store.StoreRawMsg(subject, hdr, msg, seq, ts, ttl)
 	}
 
 	if err != nil {
