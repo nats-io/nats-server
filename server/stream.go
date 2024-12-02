@@ -420,6 +420,8 @@ const (
 	JSMsgRollup               = "Nats-Rollup"
 	JSMsgSize                 = "Nats-Msg-Size"
 	JSResponseType            = "Nats-Response-Type"
+	JSMessageTTL              = "Nats-TTL"
+	JSMessageNoExpire         = "Nats-No-Expire"
 )
 
 // Headers for republished messages and direct gets.
@@ -4196,6 +4198,12 @@ func getExpectedLastSeqPerSubjectForSubject(hdr []byte) string {
 	return string(getHeader(JSExpectedLastSubjSeqSubj, hdr))
 }
 
+// Fast lookup of the message TTL.
+func getMessageTTL(hdr []byte) int64 {
+	ttl := getHeader(JSMessageTTL, hdr)
+	return parseInt64(ttl)
+}
+
 // Signal if we are clustered. Will acquire rlock.
 func (mset *stream) IsClustered() bool {
 	mset.mu.RLock()
@@ -5056,6 +5064,17 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			mset.storeMsgIdLocked(&ddentry{msgId, seq, ts})
 		}
 	}
+
+	// If the message has a per-message TTL then we will want to add it to the hashed
+	// time wheel, so that expiries happen automatically.
+	/*
+		if mset.ttls != nil {
+			// TODO: what to do if the message expiry already passed?
+			if ttl := getMessageTTL(hdr); ttl > 0 {
+				mset.ttls.Add(seq, time.Unix(0, ttl).UnixNano())
+			}
+		}
+	*/
 
 	// If here we succeeded in storing the message.
 	mset.mu.Unlock()

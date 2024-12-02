@@ -8296,3 +8296,31 @@ func TestFileStoreNumPendingMulti(t *testing.T) {
 	}
 	require_Equal(t, total, checkTotal)
 }
+
+func TestFileStoreTTL(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), EnforceTTLs: true},
+		StreamConfig{Name: "zzz", Subjects: []string{"ev.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	now := time.Now()
+	for i := 0; i < 5; i++ {
+		_, _, err = fs.StoreMsg("test", nil, nil, int64(now.Add(time.Duration(i)*time.Second).UnixNano()))
+		require_NoError(t, err)
+	}
+	time.Sleep(time.Second * 7)
+
+	now = time.Now()
+	for i := 0; i < 5; i++ {
+		_, _, err = fs.StoreMsg("test", nil, nil, int64(now.Add(time.Duration(i)*time.Second).UnixNano()))
+		require_NoError(t, err)
+	}
+	time.Sleep(time.Second * 5)
+
+	var ss StreamState
+	fs.FastState(&ss)
+	require_Equal(t, ss.FirstSeq, 11)
+	require_Equal(t, ss.LastSeq, 10)
+	require_Equal(t, ss.Msgs, 0)
+}
