@@ -1608,5 +1608,25 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSStreamExpectedLastSeqPerSubjectNotReady",
+    "code": 503,
+    "error_code": 10163,
+    "description": "expected last sequence per subject temporarily unavailable",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSStreamWrongLastSequenceConstantErr",
+    "code": 400,
+    "error_code": 10164,
+    "description": "wrong last sequence",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]
