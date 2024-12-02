@@ -567,8 +567,9 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 
 // SubjectsState returns a map of SimpleState for all matching subjects.
 func (ms *memStore) SubjectsState(subject string) map[string]SimpleState {
-	ms.mu.RLock()
-	defer ms.mu.RUnlock()
+	// This needs to be a write lock, as we can mutate the per-subject state.
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
 
 	if ms.fss.Size() == 0 {
 		return nil
@@ -1027,7 +1028,9 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 		ms.state.FirstSeq = seq
 		ms.state.FirstTime = time.Time{}
 		ms.state.LastSeq = seq - 1
+		// Reset msgs and fss.
 		ms.msgs = make(map[uint64]*StoreMsg)
+		ms.fss = stree.NewSubjectTree[SimpleState]()
 	}
 	ms.mu.Unlock()
 
