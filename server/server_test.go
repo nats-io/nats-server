@@ -35,10 +35,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/nats.go"
-
-	"github.com/nats-io/nats-server/v2/internal/antithesis"
 	srvlog "github.com/nats-io/nats-server/v2/logger"
+	"github.com/nats-io/nats.go"
 )
 
 func checkForErr(totalWait, sleepDur time.Duration, f func() error) error {
@@ -58,7 +56,6 @@ func checkFor(t testing.TB, totalWait, sleepDur time.Duration, f func() error) {
 	t.Helper()
 	err := checkForErr(totalWait, sleepDur, f)
 	if err != nil {
-		antithesis.AssertUnreachable(t, "checkFor timeout", nil)
 		t.Fatal(err.Error())
 	}
 }

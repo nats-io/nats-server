@@ -35,8 +35,6 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"golang.org/x/time/rate"
-
-	"github.com/nats-io/nats-server/v2/internal/antithesis"
 )
 
 // Support functions
@@ -106,7 +104,6 @@ func (sc *supercluster) waitOnStreamLeader(account, stream string) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	antithesis.AssertUnreachable(sc.t, "waitOnStreamLeader timeout", nil)
 	sc.t.Fatalf("Expected a stream leader for %q %q, got none", account, stream)
 }
 
@@ -556,7 +553,6 @@ func (sc *supercluster) waitOnLeader() {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	antithesis.AssertUnreachable(sc.t, "supercluster::waitOnStreamLeader timeout", nil)
 	sc.t.Fatalf("Expected a cluster leader, got none")
 }
 
@@ -594,7 +590,6 @@ func (sc *supercluster) waitOnPeerCount(n int) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	antithesis.AssertUnreachable(sc.t, "supercluster::waitOnPeerCount timeout", nil)
 	sc.t.Fatalf("Expected a super cluster peer count of %d, got %d", n, len(leader.JetStreamClusterPeers()))
 }
 
@@ -1262,7 +1257,6 @@ func fetchMsgs(t *testing.T, sub *nats.Subscription, numExpected int, totalWait 
 		}
 	}
 	if len(result) != numExpected {
-		antithesis.AssertUnreachable(t, "fetchMsgs unexpected message count", nil)
 		t.Fatalf("Unexpected msg count, got %d, want %d", len(result), numExpected)
 	}
 	return result
@@ -1313,7 +1307,6 @@ func (c *cluster) waitOnPeerCount(n int) {
 			leader = c.leader()
 		}
 	}
-	antithesis.AssertUnreachable(c.t, "cluster::waitOnPeerCount timeout", nil)
 	c.t.Fatalf("Expected a cluster peer count of %d, got %d", n, len(leader.JetStreamClusterPeers()))
 }
 
@@ -1327,7 +1320,6 @@ func (c *cluster) waitOnConsumerLeader(account, stream, consumer string) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	antithesis.AssertUnreachable(c.t, "cluster::waitOnConsumerLeader timeout", nil)
 	c.t.Fatalf("Expected a consumer leader for %q %q %q, got none", account, stream, consumer)
 }
 
@@ -1361,7 +1353,6 @@ func (c *cluster) waitOnStreamLeader(account, stream string) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	antithesis.AssertUnreachable(c.t, "cluster::waitOnStreamLeader timeout", nil)
 	c.t.Fatalf("Expected a stream leader for %q %q, got none", account, stream)
 }
 
@@ -1395,7 +1386,6 @@ func (c *cluster) waitOnStreamCurrent(s *Server, account, stream string) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	antithesis.AssertUnreachable(c.t, "cluster::waitOnStreamCurrent timeout", nil)
 	c.t.Fatalf("Expected server %q to eventually be current for stream %q", s, stream)
 }
 
@@ -1409,7 +1399,6 @@ func (c *cluster) waitOnServerHealthz(s *Server) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	antithesis.AssertUnreachable(c.t, "cluster::waitOnServerHealthz timeout", nil)
 	c.t.Fatalf("Expected server %q to eventually return healthz 'ok', but got %q", s, s.healthz(nil).Error)
 }
 
@@ -1422,7 +1411,6 @@ func (c *cluster) waitOnServerCurrent(s *Server) {
 			return
 		}
 	}
-	antithesis.AssertUnreachable(c.t, "cluster::waitOnServerCurrent timeout", nil)
 	c.t.Fatalf("Expected server %q to eventually be current", s)
 }
 
@@ -1470,7 +1458,6 @@ func (c *cluster) expectNoLeader() {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	antithesis.AssertUnreachable(c.t, "cluster::expectNoLeader timeout", nil)
 	c.t.Fatalf("Expected no leader but have one")
 }
 
@@ -1485,7 +1472,6 @@ func (c *cluster) waitOnLeader() {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	antithesis.AssertUnreachable(c.t, "cluster::waitOnLeader timeout", nil)
 	c.t.Fatalf("Expected a cluster leader, got none")
 }
 
@@ -1505,7 +1491,6 @@ func (c *cluster) waitOnAccount(account string) {
 		continue
 	}
 
-	antithesis.AssertUnreachable(c.t, "cluster::waitOnAccount timeout", nil)
 	c.t.Fatalf("Expected account %q to exist but didn't", account)
 }
 
@@ -1537,7 +1522,6 @@ func (c *cluster) waitOnClusterReadyWithNumPeers(numPeersExpected int) {
 
 	if leader == nil {
 		c.shutdown()
-		antithesis.AssertUnreachable(c.t, "cluster::waitOnClusterReadyWithNumPeers timeout (1)", nil)
 		c.t.Fatalf("Failed to elect a meta-leader")
 	}
 
@@ -1545,10 +1529,8 @@ func (c *cluster) waitOnClusterReadyWithNumPeers(numPeersExpected int) {
 	c.shutdown()
 
 	if leader == nil {
-		antithesis.AssertUnreachable(c.t, "cluster::waitOnClusterReadyWithNumPeers timeout (2)", nil)
 		c.t.Fatalf("Expected a cluster leader and fully formed cluster, no leader")
 	} else {
-		antithesis.AssertUnreachable(c.t, "cluster::waitOnClusterReadyWithNumPeers timeout (3)", nil)
 		c.t.Fatalf("Expected a fully formed cluster, only %d of %d peers seen", peersSeen, numPeersExpected)
 	}
 }
