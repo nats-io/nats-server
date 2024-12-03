@@ -8144,7 +8144,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 			}
 			// FIXME(dlc) - locking conflict with accessing mset.clseq
 			// For now we stage with zero, and will update in processStreamMsg.
-			mset.storeMsgIdLocked(&ddentry{msgId, 0, time.Now().UnixNano(), nil, nil})
+			mset.storeMsgIdLocked(&ddentry{msgId, 0, time.Now().UnixNano()})
 			mset.mu.Unlock()
 		}
 	}
@@ -8772,7 +8772,7 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 				mset.rebuildDedupe()
 				mset.mu.Unlock()
 			}
-			mset.storeMsgId(&ddentry{msgId, seq, ts, nil, nil})
+			mset.storeMsgId(&ddentry{msgId, seq, ts})
 		}
 	}
 
