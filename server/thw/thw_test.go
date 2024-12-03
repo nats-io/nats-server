@@ -26,15 +26,19 @@ func TestHashWheelBasics(t *testing.T) {
 	// Add a sequence.
 	seq, expires := uint64(1), now.Add(5*time.Second).UnixNano()
 	require_NoError(t, hw.Add(seq, expires))
+	require_Equal(t, hw.count, 1)
 
 	// Try to remove non-existent sequence.
 	require_Error(t, hw.Remove(999, expires), ErrTaskNotFound)
+	require_Equal(t, hw.count, 1)
 
 	// Remove the sequence properly.
 	require_NoError(t, hw.Remove(seq, expires))
+	require_Equal(t, hw.count, 0)
 
 	// Verify it's gone.
 	require_Error(t, hw.Remove(seq, expires), ErrTaskNotFound)
+	require_Equal(t, hw.count, 0)
 }
 
 func TestHashWheelUpdate(t *testing.T) {
@@ -45,15 +49,19 @@ func TestHashWheelUpdate(t *testing.T) {
 
 	// Add initial sequence.
 	require_NoError(t, hw.Add(1, oldExpires))
+	require_Equal(t, hw.count, 1)
 
 	// Update expiration.
 	require_NoError(t, hw.Update(1, oldExpires, newExpires))
+	require_Equal(t, hw.count, 1)
 
 	// Verify old expiration is gone.
 	require_Error(t, hw.Remove(1, oldExpires), ErrTaskNotFound)
+	require_Equal(t, hw.count, 1)
 
 	// Verify new expiration exists
 	require_NoError(t, hw.Remove(1, newExpires))
+	require_Equal(t, hw.count, 0)
 }
 
 func TestHashWheelExpiration(t *testing.T) {
@@ -71,6 +79,7 @@ func TestHashWheelExpiration(t *testing.T) {
 	for seq, expires := range seqs {
 		require_NoError(t, hw.Add(seq, expires))
 	}
+	require_Equal(t, hw.count, uint64(len(seqs)))
 
 	// Process expired tasks.
 	expired := make(map[uint64]bool)
@@ -81,6 +90,7 @@ func TestHashWheelExpiration(t *testing.T) {
 	// Verify only sequence 1 expired.
 	require_Equal(t, len(expired), 1)
 	require_True(t, expired[1])
+	require_Equal(t, hw.count, 3)
 }
 
 func TestHashWheelNextExpiration(t *testing.T) {
@@ -97,6 +107,7 @@ func TestHashWheelNextExpiration(t *testing.T) {
 	for seq, expires := range seqs {
 		require_NoError(t, hw.Add(seq, expires))
 	}
+	require_Equal(t, hw.count, uint64(len(seqs)))
 
 	// Test GetNextExpiration.
 	nextExternalTick := now.Add(6 * time.Second).UnixNano()
@@ -130,6 +141,38 @@ func TestHashWheelStress(t *testing.T) {
 	for seq := 1; seq < numSequences; seq += 2 { // Remove odd-numbered sequences
 		expires := now.Add(time.Duration(seq) * time.Second).UnixNano()
 		require_NoError(t, hw.Remove(uint64(seq), expires))
+	}
+}
+
+func TestHashWheelEncodeDecode(t *testing.T) {
+	hw := NewHashWheel()
+	now := time.Now()
+
+	// Add many sequences.
+	numSequences := 100_000
+	for seq := 0; seq < numSequences; seq++ {
+		expires := now.Add(time.Duration(seq) * time.Second).UnixNano()
+		require_NoError(t, hw.Add(uint64(seq), expires))
+	}
+
+	b := hw.Encode(12345)
+	require_True(t, len(b) > 17) // Bigger than just the header
+
+	nhw := NewHashWheel()
+	stamp, err := nhw.Decode(b)
+	require_NoError(t, err)
+	require_Equal(t, stamp, 12345)
+	require_Equal(t, hw.GetNextExpiration(math.MaxInt64), nhw.GetNextExpiration(math.MaxInt64))
+
+	for s, slot := range hw.wheel {
+		nslot := nhw.wheel[s]
+		require_Equal(t, slot.lowest, nslot.lowest)
+		require_Equal(t, len(slot.entries), len(nslot.entries))
+		for v, ts := range slot.entries {
+			nts, ok := nslot.entries[v]
+			require_True(t, ok)
+			require_Equal(t, ts, nts)
+		}
 	}
 }
 
