@@ -3033,14 +3033,16 @@ func TestJetStreamConsumerAckAck(t *testing.T) {
 	require_NoError(t, err)
 	resp = JSApiConsumerAckResponse{}
 	require_NoError(t, json.Unmarshal(ackReply2.Data, &resp))
-	require_True(t, !resp.Success && resp.Error.ErrCode == uint16(JSConsumerMsgNotPendingAckErr))
+	require_False(t, resp.Success)
+	require_Equal(t, resp.Error.ErrCode, uint16(JSConsumerMsgNotPendingAckErr))
 
 	// Error trying to ack an out of range sequence number
 	ackReply3, err := nc.Request("$JS.ACK.ACK-ACK.worker.1.6.0.0.0", AckAck, 10*time.Millisecond)
 	require_NoError(t, err)
 	resp = JSApiConsumerAckResponse{}
 	require_NoError(t, json.Unmarshal(ackReply3.Data, &resp))
-	require_True(t, !resp.Success && resp.Error.ErrCode == uint16(JSConsumerMsgNotPendingAckErr))
+	require_False(t, resp.Success)
+	require_Equal(t, resp.Error.ErrCode, uint16(JSConsumerMsgNotPendingAckErr))
 }
 
 func TestJetStreamAckNext(t *testing.T) {

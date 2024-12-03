@@ -2274,14 +2274,14 @@ func configsEqualSansDelivery(a, b ConsumerConfig) bool {
 func (o *consumer) sendAckReply(subj string, err *ApiError) {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
-	o.sendAckReplyLockHeld(subj, err)
+	o.sendAckReplyLocked(subj, err)
 }
 
 // Helper to send a reply to an ack.
 // Lock must be held
-func (o *consumer) sendAckReplyLockHeld(subj string, err *ApiError) {
+func (o *consumer) sendAckReplyLocked(subj string, err *ApiError) {
 
-	var resp = JSApiConsumerDeleteResponse{ApiResponse: ApiResponse{Type: JSApiConsumerAckResponseType, Error: err}}
+	var resp = JSApiConsumerAckResponse{ApiResponse: ApiResponse{Type: JSApiConsumerAckResponseType, Error: err}}
 
 	if err == nil {
 		resp.Success = true
@@ -2350,11 +2350,9 @@ func (o *consumer) processAck(subject, reply string, hdr int, rmsg []byte) {
 
 	switch {
 	case len(msg) == 0, bytes.Equal(msg, AckAck), bytes.Equal(msg, AckOK):
-		if b, e := o.processAckMsg(sseq, dseq, dc, reply, true); e == nil {
-			if !b {
-				// We handle replies for acks in updateAcks
-				skipAckReply = true
-			}
+		if b, e := o.processAckMsg(sseq, dseq, dc, reply, true); e == nil && !b {
+			// We handle replies for acks in updateAcks
+			skipAckReply = true
 		} else {
 			err = e
 		}
@@ -2531,7 +2529,7 @@ func (o *consumer) updateAcks(dseq, sseq uint64, reply string, err *ApiError) {
 		o.store.UpdateAcks(dseq, sseq)
 		if reply != _EMPTY_ {
 			// Already locked so send direct.
-			o.sendAckReplyLockHeld(reply, err)
+			o.sendAckReplyLocked(reply, err)
 		}
 	}
 	// Update activity.

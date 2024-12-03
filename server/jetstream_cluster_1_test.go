@@ -6714,14 +6714,15 @@ func TestJetStreamConsumerClusterAckAck(t *testing.T) {
 	require_NoError(t, err)
 	require_NoError(t, json.Unmarshal(replyMsg.Data, &resp))
 	require_False(t, resp.Success)
-	require_True(t, resp.Error.ErrCode == uint16(JSConsumerMsgNotPendingAckErr))
+	require_Equal(t, resp.Error.ErrCode, uint16(JSConsumerMsgNotPendingAckErr))
 
 	// Now ack way past the last sequence.
 	resp = JSApiConsumerAckResponse{}
 	replyMsg, err = nc.Request("$JS.ACK.TEST.C.1.10000000000.0.0.0", nil, 250*time.Millisecond)
 	require_NoError(t, err)
 	require_NoError(t, json.Unmarshal(replyMsg.Data, &resp))
-	require_True(t, resp.Error != nil && resp.Error.ErrCode == uint16(JSConsumerMsgNotPendingAckErr))
+	require_False(t, resp.Success)
+	require_Equal(t, resp.Error.ErrCode, uint16(JSConsumerMsgNotPendingAckErr))
 
 	// Make sure that no changes happened to our state.
 	ci, err := js.ConsumerInfo("TEST", "C")
