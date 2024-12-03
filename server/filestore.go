@@ -69,8 +69,6 @@ type FileStoreConfig struct {
 	Cipher StoreCipher
 	// Compression is the algorithm to use when compressing.
 	Compression StoreCompression
-	// EnforceTTLs will clean up messages based on their TTL. Set to true for per-message TTLs.
-	EnforceTTLs bool
 
 	// Internal reference to our server.
 	srv *Server
@@ -201,7 +199,7 @@ type fileStore struct {
 	fip         bool
 	receivedAny bool
 	firstMoved  bool
-	ttls        *thw.HashWheel[uint64]
+	ttls        *thw.HashWheel
 }
 
 // Represents a message store block and its data.
@@ -410,7 +408,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		qch:    make(chan struct{}),
 		fsld:   make(chan struct{}),
 		srv:    fcfg.srv,
-		ttls:   thw.NewHashWheel[uint64](),
+		ttls:   thw.NewHashWheel(),
 	}
 
 	// Set flush in place to AsyncFlush which by default is false.
@@ -3750,7 +3748,7 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 	fs.enforceBytesLimit()
 
 	// Per-message TTL.
-	if fs.ttls != nil && ttl > 0 {
+	if fs.ttls != nil && ttl > -1 {
 		fs.ttls.Add(seq, ttl)
 	}
 
@@ -5185,12 +5183,14 @@ func (fs *fileStore) expireMsgs() {
 	minAge := time.Now().UnixNano() - maxAge
 	fs.mu.RUnlock()
 
-	for sm, _ = fs.msgForSeq(0, &smv); sm != nil && sm.ts <= minAge; sm, _ = fs.msgForSeq(0, &smv) {
-		fs.mu.Lock()
-		fs.removeMsgViaLimits(sm.seq)
-		fs.mu.Unlock()
-		// Recalculate in case we are expiring a bunch.
-		minAge = time.Now().UnixNano() - maxAge
+	if maxAge > 0 {
+		for sm, _ = fs.msgForSeq(0, &smv); sm != nil && sm.ts <= minAge; sm, _ = fs.msgForSeq(0, &smv) {
+			fs.mu.Lock()
+			fs.removeMsgViaLimits(sm.seq)
+			fs.mu.Unlock()
+			// Recalculate in case we are expiring a bunch.
+			minAge = time.Now().UnixNano() - maxAge
+		}
 	}
 
 	fs.mu.Lock()

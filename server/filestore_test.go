@@ -8299,8 +8299,8 @@ func TestFileStoreNumPendingMulti(t *testing.T) {
 
 func TestFileStoreTTL(t *testing.T) {
 	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: t.TempDir(), EnforceTTLs: true},
-		StreamConfig{Name: "zzz", Subjects: []string{"ev.*"}, Storage: FileStorage})
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage})
 	require_NoError(t, err)
 	defer fs.Stop()
 
