@@ -6332,6 +6332,10 @@ func sysRequest[T any](s *Server, subjFormat string, args ...any) (*T, error) {
 	isubj := fmt.Sprintf(subjFormat, args...)
 
 	s.mu.Lock()
+	if s.sys == nil {
+		s.mu.Unlock()
+		return nil, ErrNoSysAccount
+	}
 	inbox := s.newRespInbox()
 	results := make(chan *T, 1)
 	s.sys.replies[inbox] = func(_ *subscription, _ *client, _ *Account, _, _ string, msg []byte) {
