@@ -5011,9 +5011,12 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		}
 	}
 
+	// Find the message TTL if any.
+	ttl := getMessageTTL(hdr)
+
 	// Store actual msg.
 	if lseq == 0 && ts == 0 {
-		seq, ts, err = store.StoreMsg(subject, hdr, msg, 0)
+		seq, ts, err = store.StoreMsg(subject, hdr, msg, ttl)
 	} else {
 		// Make sure to take into account any message assignments that we had to skip (clfs).
 		seq = lseq + 1 - clfs
@@ -5021,7 +5024,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		if mset.hasAllPreAcks(seq, subject) {
 			mset.clearAllPreAcks(seq)
 		}
-		err = store.StoreRawMsg(subject, hdr, msg, seq, ts, 0)
+		err = store.StoreRawMsg(subject, hdr, msg, seq, ts, ttl)
 	}
 
 	if err != nil {

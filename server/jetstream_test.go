@@ -24721,3 +24721,37 @@ func TestJetStreamMemoryPurgeClearsSubjectsState(t *testing.T) {
 	require_NoError(t, err)
 	require_Len(t, len(si.State.Subjects), 0)
 }
+
+func TestJetStreamMessageTTL(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"test"},
+	})
+	require_NoError(t, err)
+
+	msg := &nats.Msg{
+		Subject: "test",
+		Header:  nats.Header{},
+	}
+
+	now := time.Now()
+	for i := 1; i <= 10; i++ {
+		ttl := now.Add(time.Second * time.Duration(i)).UnixNano()
+		msg.Header.Set("Nats-TTL", fmt.Sprintf("%d", ttl))
+		_, err := js.PublishMsg(msg)
+		require_NoError(t, err)
+	}
+
+	for i := 0; i < 11; i++ {
+		time.Sleep(time.Second)
+		si, err := js.StreamInfo("TEST")
+		require_NoError(t, err)
+		fmt.Println(si.State.Msgs, "msgs,", si.State.FirstSeq, "->", si.State.LastSeq)
+	}
+}
