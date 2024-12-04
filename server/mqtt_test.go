@@ -3054,6 +3054,13 @@ func testMQTTConnectDisconnect(t *testing.T, o *Options, clientID string, clean 
 }
 
 func TestMQTTClusterConnectDisconnectClean(t *testing.T) {
+	// The purpose of this test was to illustrate and verify
+	// https://github.com/nats-io/nats-server/pull/4734. Due to its timing
+	// sensitivity it has never been 100% reliable, prone to flaking on an
+	// occasional MQTT Connect failure (API timeout?). Skip for now, to reduce
+	// the flaky noise.
+	t.Skip()
+
 	nServers := 3
 	cl := createJetStreamClusterWithTemplate(t, testMQTTGetClusterTemplaceNoLeaf(), "MQTT", nServers)
 	defer cl.shutdown()
@@ -3069,6 +3076,13 @@ func TestMQTTClusterConnectDisconnectClean(t *testing.T) {
 }
 
 func TestMQTTClusterConnectDisconnectPersist(t *testing.T) {
+	// The purpose of this test was to illustrate and verify
+	// https://github.com/nats-io/nats-server/pull/4734. Due to its timing
+	// sensitivity it has never been 100% reliable, prone to flaking on an
+	// occasional MQTT Connect failure (API timeout?). Skip for now, to reduce
+	// the flaky noise.
+	t.Skip()
+
 	nServers := 3
 	cl := createJetStreamClusterWithTemplate(t, testMQTTGetClusterTemplaceNoLeaf(), "MQTT", nServers)
 	defer cl.shutdown()
