@@ -17,12 +17,12 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
 	"time"
 
-	"github.com/goccy/go-json"
 	"golang.org/x/crypto/ocsp"
 )
 
