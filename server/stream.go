@@ -307,7 +307,6 @@ type stream struct {
 	// Sources
 	sources              map[string]*sourceInfo
 	sourceSetupSchedules map[string]*time.Timer
-	sourcesConsumerSetup *time.Timer
 	smsgs                *ipQueue[*inMsg] // Intra-process queue for all incoming sourced messages.
 
 	// Indicates we have direct consumers.
@@ -932,15 +931,8 @@ func (mset *stream) setLeader(isLeader bool) error {
 			return err
 		}
 	} else {
-		// cancel timer to create the source consumers if not fired yet
-		if mset.sourcesConsumerSetup != nil {
-			mset.sourcesConsumerSetup.Stop()
-			mset.sourcesConsumerSetup = nil
-		} else {
-			// Stop any source consumers
-			mset.stopSourceConsumers()
-		}
-
+		// Stop any source consumers
+		mset.stopSourceConsumers()
 		// Stop responding to sync requests.
 		mset.stopClusterSubs()
 		// Unsubscribe from direct stream.
@@ -3692,6 +3684,15 @@ func (mset *stream) startingSequenceForSources() {
 		}
 	}()
 
+	update := func(iName string, seq uint64) {
+		// Only update active in case we have older ones in here that got configured out.
+		if si := mset.sources[iName]; si != nil {
+			if _, ok := seqs[iName]; !ok {
+				seqs[iName] = seq
+			}
+		}
+	}
+
 	var smv StoreMsg
 	for seq := state.LastSeq; seq >= state.FirstSeq; seq-- {
 		sm, err := mset.store.LoadMsg(seq, &smv)
@@ -3701,15 +3702,6 @@ func (mset *stream) startingSequenceForSources() {
 		ss := getHeader(JSStreamSource, sm.hdr)
 		if len(ss) == 0 {
 			continue
-		}
-
-		var update = func(iName string, seq uint64) {
-			// Only update active in case we have older ones in here that got configured out.
-			if si := mset.sources[iName]; si != nil {
-				if _, ok := seqs[iName]; !ok {
-					seqs[iName] = seq
-				}
-			}
 		}
 
 		streamName, iName, sseq := streamAndSeq(string(ss))
@@ -3790,15 +3782,11 @@ func (mset *stream) subscribeToStream() error {
 		mset.mirror.trs = trs
 		// delay the actual mirror consumer creation for after a delay
 		mset.scheduleSetupMirrorConsumerRetry()
-	} else if len(mset.cfg.Sources) > 0 && mset.sourcesConsumerSetup == nil {
+	} else if len(mset.cfg.Sources) > 0 {
 		// Setup the initial source infos for the sources
 		mset.resetSourceInfo()
-		// Delay the actual source consumer(s) creation(s) for after a delay
-		mset.sourcesConsumerSetup = time.AfterFunc(time.Duration(rand.Intn(int(500*time.Millisecond)))+100*time.Millisecond, func() {
-			mset.mu.Lock()
-			mset.setupSourceConsumers()
-			mset.mu.Unlock()
-		})
+		// Do these inline here.
+		mset.setupSourceConsumers()
 	}
 	// Check for direct get access.
 	// We spin up followers for clustered streams in monitorStream().
