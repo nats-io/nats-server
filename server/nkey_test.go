@@ -16,6 +16,7 @@ package server
 import (
 	"bufio"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -24,7 +25,6 @@ import (
 	crand "crypto/rand"
 	mrand "math/rand"
 
-	"github.com/goccy/go-json"
 	"github.com/nats-io/nkeys"
 )
 

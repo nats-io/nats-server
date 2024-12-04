@@ -16,6 +16,7 @@ package server
 import (
 	"bytes"
 	"cmp"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -30,7 +31,6 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/goccy/go-json"
 	"github.com/nats-io/nuid"
 )
 

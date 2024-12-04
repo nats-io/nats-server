@@ -14,6 +14,7 @@
 package test
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -24,7 +25,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
 	"github.com/nats-io/nats-server/v2/internal/testhelper"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"

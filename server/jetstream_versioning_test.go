@@ -19,13 +19,13 @@ package server
 import (
 	"archive/tar"
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strconv"
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/nats.go"
 )
