@@ -4,7 +4,7 @@
 
 [NATS](https://nats.io) is a simple, secure and performant communications system for digital systems, services and devices. NATS is part of the Cloud Native Computing Foundation ([CNCF](https://cncf.io)). NATS has over [40 client language implementations](https://nats.io/download/), and its server can run on-premise, in the cloud, at the edge, and even on a Raspberry Pi. NATS can secure and simplify design and operation of modern distributed systems.
 
-[![License][License-Image]][License-Url] [![Build][Build-Status-Image]][Build-Status-Url] [![Release][Release-Image]][Release-Url] [![Slack][Slack-Image]][Slack-Url] [![Coverage][Coverage-Image]][Coverage-Url] [![Docker Downloads][Docker-Image]][Docker-Url] [![CII Best Practices][CIIBestPractices-Image]][CIIBestPractices-Url] [![Artifact Hub][ArtifactHub-Image]][ArtifactHub-Url]
+[![License][License-Image]][License-Url] [![Build][Build-Status-Image]][Build-Status-Url] [![Release][Release-Image]][Release-Url] [![Slack][Slack-Image]][Slack-Url] [![Coverage][Coverage-Image]][Coverage-Url] [![Docker Downloads][Docker-Image]][Docker-Url] [![CII Best Practices][CIIBestPractices-Image]][CIIBestPractices-Url] [![Artifact Hub][ArtifactHub-Image]][ArtifactHub-Url] [![GoDoc][GoDoc-Image]][GoDoc-Url]
 
 ## Documentation
 
@@ -48,6 +48,8 @@ If you are interested in contributing to NATS, read about our...
 [ArtifactHub-Url]: https://artifacthub.io/packages/helm/nats/nats
 [ArtifactHub-Image]: https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/nats
 [github-release]: https://github.com/nats-io/nats-server/releases/
+[GoDoc-Url]: https://pkg.go.dev/github.com/nats-io/nats-server/v2
+[GoDoc-Image]: https://img.shields.io/badge/GoDoc-reference-007d9c
 
 ## Roadmap
 
