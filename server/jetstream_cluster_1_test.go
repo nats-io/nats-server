@@ -6815,6 +6815,94 @@ func TestJetStreamClusterCatchupLoadNextMsgTooManyDeletes(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterCatchupMustStallWhenBehindOnApplies(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	// Reconnect to stream leader.
+	l := c.streamLeader(globalAccountName, "TEST")
+	nc.Close()
+	nc, _ = jsClientConnect(t, l, nats.UserInfo("admin", "s3cr3t!"))
+	defer nc.Close()
+
+	// Setup wiretap and grab stream.
+	sendSubject := "test-wiretap"
+	sub, err := nc.SubscribeSync(sendSubject)
+	require_NoError(t, err)
+	err = nc.Flush() // Must flush, otherwise our subscription could be too late.
+	require_NoError(t, err)
+	acc, err := l.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+
+	// We have a message at sequence 1, so expect a successful catchup.
+	sreq1 := &streamSyncRequest{Peer: "peer", FirstSeq: 1, LastSeq: 1, DeleteRangesOk: true}
+	require_True(t, mset.srv.startGoRoutine(func() { mset.runCatchup(sendSubject, sreq1) }))
+	// Expect the message at sequence 1.
+	msg, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_Equal(t, entryOp(msg.Data[0]), streamMsgOp)
+	subj, _, _, _, seq, _, err := decodeStreamMsg(msg.Data[1:])
+	require_NoError(t, err)
+	require_Equal(t, seq, 1)
+	require_Equal(t, subj, "foo")
+	// And end with EOF.
+	msg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_Len(t, len(msg.Data), 0)
+
+	// Add one additional entry into the log that's not applied yet.
+	n := mset.node.(*raft)
+	n.Lock()
+	ae := n.buildAppendEntry(nil)
+	err = n.storeToWAL(ae)
+	n.Unlock()
+	index, commit, applied := n.Progress()
+	require_NoError(t, err)
+	require_LessThan(t, applied, index)
+	require_Equal(t, commit, applied)
+	// We have a message at sequence 1, but we haven't applied as many append entries.
+	// We can't fulfill the request right now as we don't know yet if
+	// that message will be deleted as part of upcoming append entries.
+	sreq2 := &streamSyncRequest{Peer: "peer", FirstSeq: 1, LastSeq: 1, DeleteRangesOk: true, MinApplied: index}
+	require_True(t, mset.srv.startGoRoutine(func() { mset.runCatchup(sendSubject, sreq2) }))
+	_, err = sub.NextMsg(time.Second)
+	require_Error(t, err, nats.ErrTimeout)
+
+	// We have a message at sequence 1, but we haven't applied as many append entries.
+	// Also, we seem to have a log that doesn't contain enough entries, even though we became leader.
+	// Something has already gone wrong and got the logs to desync.
+	// Value availability here and just fulfill the request.
+	sreq3 := &streamSyncRequest{Peer: "peer", FirstSeq: 1, LastSeq: 1, DeleteRangesOk: true, MinApplied: 100}
+	require_True(t, mset.srv.startGoRoutine(func() { mset.runCatchup(sendSubject, sreq3) }))
+	// Expect the message at sequence 1.
+	msg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_Equal(t, entryOp(msg.Data[0]), streamMsgOp)
+	subj, _, _, _, seq, _, err = decodeStreamMsg(msg.Data[1:])
+	require_NoError(t, err)
+	require_Equal(t, seq, 1)
+	require_Equal(t, subj, "foo")
+	// And end with EOF.
+	msg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_Len(t, len(msg.Data), 0)
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
