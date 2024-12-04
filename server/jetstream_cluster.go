@@ -9099,20 +9099,26 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 		for ; seq <= last && atomic.LoadInt64(&outb) <= maxOutBytes && atomic.LoadInt32(&outm) <= maxOutMsgs && s.gcbBelowMax(); seq++ {
 			var sm *StoreMsg
 			var err error
-			// Is we should use load next do so here.
+			// If we should use load next do so here.
 			if useLoadNext {
 				var nseq uint64
 				sm, nseq, err = mset.store.LoadNextMsg(fwcs, true, seq, &smv)
 				if err == nil && nseq > seq {
+					// If we jumped over the requested last sequence, clamp it down.
+					// Otherwise, we would send too much to the follower.
+					if nseq > last {
+						nseq = last
+						sm = nil
+					}
 					dr.First, dr.Num = seq, nseq-seq
 					// Jump ahead
 					seq = nseq
 				} else if err == ErrStoreEOF {
-					dr.First, dr.Num = seq, state.LastSeq-seq
+					dr.First, dr.Num = seq, last-seq
 					// Clear EOF here for normal processing.
 					err = nil
 					// Jump ahead
-					seq = state.LastSeq
+					seq = last
 				}
 			} else {
 				sm, err = mset.store.LoadMsg(seq, &smv)
