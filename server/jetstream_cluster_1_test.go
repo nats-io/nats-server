@@ -6667,7 +6667,7 @@ func TestJetStreamClusterMetaRecoveryConsumerCreateAndRemove(t *testing.T) {
 
 // Make sure if we received acks that are out of bounds, meaning past our
 // last sequence or before our first that they are ignored and errored if applicable.
-func TestJetStreamConsumerAckOutOfBounds(t *testing.T) {
+func TestJetStreamClusterConsumerAckOutOfBounds(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
