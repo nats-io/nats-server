@@ -7089,8 +7089,6 @@ func TestMQTTSubjectMappingWithImportExport(t *testing.T) {
 
 func TestMQTTSubRetainedRace(t *testing.T) {
 	o := testMQTTDefaultOptions()
-	s := testMQTTRunServer(t, o)
-	defer testMQTTShutdownServer(s)
 
 	useCases := []struct {
 		name string
@@ -7108,6 +7106,9 @@ func TestMQTTSubRetainedRace(t *testing.T) {
 				t.Run(subTopic, func(t *testing.T) {
 					for _, qos := range QOS {
 						t.Run(fmt.Sprintf("QOS%d", qos), func(t *testing.T) {
+							s := testMQTTRunServer(t, o)
+							defer testMQTTShutdownServer(s)
+
 							tc.f(t, o, subTopic, pubTopic, qos)
 						})
 					}
