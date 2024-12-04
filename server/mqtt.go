@@ -18,6 +18,7 @@ import (
 	"cmp"
 	"crypto/tls"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -30,7 +31,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/goccy/go-json"
 	"github.com/nats-io/nuid"
 )
 

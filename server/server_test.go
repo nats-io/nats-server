@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -34,7 +35,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
 	"github.com/nats-io/nats.go"
 
 	srvlog "github.com/nats-io/nats-server/v2/logger"
@@ -2333,4 +2333,27 @@ func TestServerClientURL(t *testing.T) {
 		require_NoError(t, err)
 		require_Equal(t, s.ClientURL(), expected)
 	}
+}
+
+// This is a test that guards against using goccy/go-json.
+// At least until it's fully compatible with std encoding/json, and we've thoroughly tested it.
+// This is just one bug (at the time of writing) that results in a panic.
+// https://github.com/goccy/go-json/issues/519
+func TestServerJsonMarshalNestedStructsPanic(t *testing.T) {
+	type Item struct {
+		A string `json:"a"`
+		B string `json:"b,omitempty"`
+	}
+
+	type Detail struct {
+		I Item `json:"i"`
+	}
+
+	type Body struct {
+		Payload *Detail `json:"p,omitempty"`
+	}
+
+	b, err := json.Marshal(Body{Payload: &Detail{I: Item{A: "a", B: "b"}}})
+	require_NoError(t, err)
+	require_Equal(t, string(b), "{\"p\":{\"i\":{\"a\":\"a\",\"b\":\"b\"}}}")
 }

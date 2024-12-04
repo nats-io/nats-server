@@ -16,6 +16,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -25,8 +26,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/goccy/go-json"
 )
 
 // This map is used to store URLs string as the key with a reference count as

@@ -14,9 +14,8 @@
 package server
 
 import (
+	"encoding/json"
 	"time"
-
-	"github.com/goccy/go-json"
 )
 
 func (s *Server) publishAdvisory(acc *Account, subject string, adv any) {

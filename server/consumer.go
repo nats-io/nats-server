@@ -16,6 +16,7 @@ package server
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -28,7 +29,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/goccy/go-json"
 	"github.com/nats-io/nats-server/v2/server/avl"
 	"github.com/nats-io/nuid"
 	"golang.org/x/time/rate"

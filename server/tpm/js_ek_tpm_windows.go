@@ -17,12 +17,12 @@ package tpm
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 
-	"github.com/goccy/go-json"
 	"github.com/google/go-tpm/legacy/tpm2"
 	"github.com/google/go-tpm/tpmutil"
 	"github.com/nats-io/nkeys"
