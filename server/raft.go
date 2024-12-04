@@ -1651,7 +1651,7 @@ func (n *raft) State() RaftState {
 func (n *raft) Progress() (index, commit, applied uint64) {
 	n.RLock()
 	defer n.RUnlock()
-	return n.pindex + 1, n.commit, n.applied
+	return n.pindex, n.commit, n.applied
 }
 
 // Size returns number of entries and total bytes for our WAL.
