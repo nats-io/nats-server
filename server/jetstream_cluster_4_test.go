@@ -5087,3 +5087,57 @@ func TestJetStreamClusterStreamAckMsgR3SignalsRemovedMsg(t *testing.T) {
 		return nil
 	})
 }
+
+func TestJetStreamClusterExpectedPerSubjectConsistency(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.LimitsPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	s := c.streamLeader(globalAccountName, "TEST")
+	acc, err := s.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+
+	// Block updates when not ready.
+	mset.clMu.Lock()
+	mset.expectedPerSubjectReady = false
+	mset.clMu.Unlock()
+	_, err = js.Publish("foo", nil, nats.ExpectLastSequencePerSubject(0))
+	require_Error(t, err, NewJSStreamExpectedLastSeqPerSubjectNotReadyError())
+
+	// Block updates when subject already in process.
+	mset.clMu.Lock()
+	mset.expectedPerSubjectReady = true
+	mset.expectedPerSubjectSequence = map[uint64]string{0: "foo"}
+	mset.expectedPerSubjectInProcess = map[string]struct{}{"foo": {}}
+	mset.clMu.Unlock()
+	_, err = js.Publish("foo", nil, nats.ExpectLastSequencePerSubject(0))
+	require_Error(t, err, NewJSStreamWrongLastSequenceConstantError())
+
+	// Allow updates when ready and subject not already in process.
+	mset.clMu.Lock()
+	mset.expectedPerSubjectReady = true
+	mset.expectedPerSubjectSequence = nil
+	mset.expectedPerSubjectInProcess = nil
+	mset.clMu.Unlock()
+	pa, err := js.Publish("foo", nil, nats.ExpectLastSequencePerSubject(0))
+	require_NoError(t, err)
+	require_Equal(t, pa.Sequence, 1)
+
+	// Should be cleaned up after publish.
+	mset.clMu.Lock()
+	defer mset.clMu.Unlock()
+	require_Len(t, len(mset.expectedPerSubjectSequence), 0)
+	require_Len(t, len(mset.expectedPerSubjectInProcess), 0)
+}

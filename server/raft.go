@@ -72,6 +72,7 @@ type RaftNode interface {
 	ResumeApply()
 	LeadChangeC() <-chan bool
 	QuitC() <-chan struct{}
+	AppliedFloorC() <-chan struct{}
 	Created() time.Time
 	Stop()
 	WaitForStop()
@@ -164,6 +165,9 @@ type raft struct {
 	pindex  uint64 // Previous index from the last snapshot
 	commit  uint64 // Index of the most recent commit
 	applied uint64 // Index of the most recently applied commit
+
+	aflr  uint64        // Index when to signal initial messages have been applied after becoming leader. 0 means signaling is disabled.
+	aflrc chan struct{} // Channel used to signal leader has applied initial set of stored messages.
 
 	leader string // The ID of the leader
 	vote   string // Our current vote state
@@ -385,6 +389,7 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 		peers:    make(map[string]*lps),
 		acks:     make(map[uint64]map[string]struct{}),
 		pae:      make(map[uint64]*appendEntry),
+		aflrc:    make(chan struct{}, 32),
 		s:        s,
 		js:       s.getJetStream(),
 		quit:     make(chan struct{}),
@@ -1060,6 +1065,12 @@ func (n *raft) Applied(index uint64) (entries uint64, bytes uint64) {
 		n.applied = index
 	}
 
+	// If it was set, and we reached the minimum applied index, reset and send signal to upper layer.
+	if n.aflr > 0 && index >= n.aflr {
+		n.aflr = 0
+		n.signalAppliedFloor()
+	}
+
 	// Calculate the number of entries and estimate the byte size that
 	// we can now remove with a compaction/snapshot.
 	var state StreamState
@@ -1716,6 +1727,10 @@ func (n *raft) LeadChangeC() <-chan bool { return n.leadc }
 
 // QuitC returns the quit channel, notifying when the Raft group has shut down.
 func (n *raft) QuitC() <-chan struct{} { return n.quit }
+
+// AppliedFloorC returns a channel to notify that all messages that were not yet
+// applied when becoming leader, have been applied since.
+func (n *raft) AppliedFloorC() <-chan struct{} { return n.aflrc }
 
 func (n *raft) Created() time.Time {
 	n.RLock()
@@ -4282,9 +4297,24 @@ func (n *raft) switchToLeader() {
 	n.lxfer = false
 	n.updateLeader(n.id)
 	n.switchState(Leader)
+
+	// Wait for messages to be applied if we've stored more, otherwise signal immediately.
+	if n.pindex > n.applied {
+		n.aflr = n.pindex
+	} else {
+		n.signalAppliedFloor()
+	}
 	n.Unlock()
 
 	if sendHB {
 		n.sendHeartbeat()
+	}
+}
+
+// Will signal that all messages that were not yet applied when becoming leader, have been applied since.
+func (n *raft) signalAppliedFloor() {
+	select {
+	case n.aflrc <- struct{}{}:
+	default:
 	}
 }

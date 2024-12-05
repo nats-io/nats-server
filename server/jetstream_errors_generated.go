@@ -356,6 +356,9 @@ const (
 	// JSStreamDuplicateMessageConflict duplicate message id is in process
 	JSStreamDuplicateMessageConflict ErrorIdentifier = 10158
 
+	// JSStreamExpectedLastSeqPerSubjectNotReady expected last sequence per subject temporarily unavailable
+	JSStreamExpectedLastSeqPerSubjectNotReady ErrorIdentifier = 10163
+
 	// JSStreamExternalApiOverlapErrF stream external api prefix {prefix} must not overlap with {subject}
 	JSStreamExternalApiOverlapErrF ErrorIdentifier = 10021
 
@@ -478,6 +481,9 @@ const (
 
 	// JSStreamWrongLastMsgIDErrF wrong last msg ID: {id}
 	JSStreamWrongLastMsgIDErrF ErrorIdentifier = 10070
+
+	// JSStreamWrongLastSequenceConstantErr wrong last sequence
+	JSStreamWrongLastSequenceConstantErr ErrorIdentifier = 10164
 
 	// JSStreamWrongLastSequenceErrF wrong last sequence: {seq}
 	JSStreamWrongLastSequenceErrF ErrorIdentifier = 10071
@@ -608,6 +614,7 @@ var (
 		JSStreamCreateErrF:                         {Code: 500, ErrCode: 10049, Description: "{err}"},
 		JSStreamDeleteErrF:                         {Code: 500, ErrCode: 10050, Description: "{err}"},
 		JSStreamDuplicateMessageConflict:           {Code: 409, ErrCode: 10158, Description: "duplicate message id is in process"},
+		JSStreamExpectedLastSeqPerSubjectNotReady:  {Code: 503, ErrCode: 10163, Description: "expected last sequence per subject temporarily unavailable"},
 		JSStreamExternalApiOverlapErrF:             {Code: 400, ErrCode: 10021, Description: "stream external api prefix {prefix} must not overlap with {subject}"},
 		JSStreamExternalDelPrefixOverlapsErrF:      {Code: 400, ErrCode: 10022, Description: "stream external delivery prefix {prefix} overlaps with stream subject {subject}"},
 		JSStreamGeneralErrorF:                      {Code: 500, ErrCode: 10051, Description: "{err}"},
@@ -649,6 +656,7 @@ var (
 		JSStreamTransformInvalidSource:             {Code: 400, ErrCode: 10155, Description: "stream transform source: {err}"},
 		JSStreamUpdateErrF:                         {Code: 500, ErrCode: 10069, Description: "{err}"},
 		JSStreamWrongLastMsgIDErrF:                 {Code: 400, ErrCode: 10070, Description: "wrong last msg ID: {id}"},
+		JSStreamWrongLastSequenceConstantErr:       {Code: 400, ErrCode: 10164, Description: "wrong last sequence"},
 		JSStreamWrongLastSequenceErrF:              {Code: 400, ErrCode: 10071, Description: "wrong last sequence: {seq}"},
 		JSTempStorageFailedErr:                     {Code: 500, ErrCode: 10072, Description: "JetStream unable to open temp storage for restore"},
 		JSTemplateNameNotMatchSubjectErr:           {Code: 400, ErrCode: 10073, Description: "template name in subject does not match request"},
@@ -1997,6 +2005,16 @@ func NewJSStreamDuplicateMessageConflictError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSStreamDuplicateMessageConflict]
 }
 
+// NewJSStreamExpectedLastSeqPerSubjectNotReadyError creates a new JSStreamExpectedLastSeqPerSubjectNotReady error: "expected last sequence per subject temporarily unavailable"
+func NewJSStreamExpectedLastSeqPerSubjectNotReadyError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSStreamExpectedLastSeqPerSubjectNotReady]
+}
+
 // NewJSStreamExternalApiOverlapError creates a new JSStreamExternalApiOverlapErrF error: "stream external api prefix {prefix} must not overlap with {subject}"
 func NewJSStreamExternalApiOverlapError(prefix interface{}, subject interface{}, opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
@@ -2519,6 +2537,16 @@ func NewJSStreamWrongLastMsgIDError(id interface{}, opts ...ErrorOption) *ApiErr
 		ErrCode:     e.ErrCode,
 		Description: strings.NewReplacer(args...).Replace(e.Description),
 	}
+}
+
+// NewJSStreamWrongLastSequenceConstantError creates a new JSStreamWrongLastSequenceConstantErr error: "wrong last sequence"
+func NewJSStreamWrongLastSequenceConstantError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSStreamWrongLastSequenceConstantErr]
 }
 
 // NewJSStreamWrongLastSequenceError creates a new JSStreamWrongLastSequenceErrF error: "wrong last sequence: {seq}"
