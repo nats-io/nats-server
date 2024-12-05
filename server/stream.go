@@ -3692,6 +3692,15 @@ func (mset *stream) startingSequenceForSources() {
 		}
 	}()
 
+	update := func(iName string, seq uint64) {
+		// Only update active in case we have older ones in here that got configured out.
+		if si := mset.sources[iName]; si != nil {
+			if _, ok := seqs[iName]; !ok {
+				seqs[iName] = seq
+			}
+		}
+	}
+
 	var smv StoreMsg
 	for seq := state.LastSeq; seq >= state.FirstSeq; seq-- {
 		sm, err := mset.store.LoadMsg(seq, &smv)
@@ -3701,15 +3710,6 @@ func (mset *stream) startingSequenceForSources() {
 		ss := getHeader(JSStreamSource, sm.hdr)
 		if len(ss) == 0 {
 			continue
-		}
-
-		var update = func(iName string, seq uint64) {
-			// Only update active in case we have older ones in here that got configured out.
-			if si := mset.sources[iName]; si != nil {
-				if _, ok := seqs[iName]; !ok {
-					seqs[iName] = seq
-				}
-			}
 		}
 
 		streamName, iName, sseq := streamAndSeq(string(ss))
@@ -3793,12 +3793,17 @@ func (mset *stream) subscribeToStream() error {
 	} else if len(mset.cfg.Sources) > 0 && mset.sourcesConsumerSetup == nil {
 		// Setup the initial source infos for the sources
 		mset.resetSourceInfo()
-		// Delay the actual source consumer(s) creation(s) for after a delay
-		mset.sourcesConsumerSetup = time.AfterFunc(time.Duration(rand.Intn(int(500*time.Millisecond)))+100*time.Millisecond, func() {
-			mset.mu.Lock()
+		// Delay the actual source consumer(s) creation(s) for after a delay if a replicated stream.
+		// If it's an R1, this is done at startup and we will do inline.
+		if mset.cfg.Replicas == 1 {
 			mset.setupSourceConsumers()
-			mset.mu.Unlock()
-		})
+		} else {
+			mset.sourcesConsumerSetup = time.AfterFunc(time.Duration(rand.Intn(int(500*time.Millisecond)))+100*time.Millisecond, func() {
+				mset.mu.Lock()
+				mset.setupSourceConsumers()
+				mset.mu.Unlock()
+			})
+		}
 	}
 	// Check for direct get access.
 	// We spin up followers for clustered streams in monitorStream().
