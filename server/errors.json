@@ -1603,7 +1603,7 @@
     "constant": "JSConsumerInvalidGroupNameErr",
     "code": 400,
     "error_code": 10162,
-    "description": "Valid name must match A-Z, a-z, 0-9, -_/=)+ and may not exceed 16 characters",
+    "description": "Valid priority group name must match A-Z, a-z, 0-9, -_/=)+ and may not exceed 16 characters",
     "comment": "",
     "help": "",
     "url": "",
