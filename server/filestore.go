@@ -8157,8 +8157,10 @@ func (fs *fileStore) flushStreamStateLoop(qch, done chan struct{}) {
 	defer close(done)
 
 	// Make sure we do not try to write these out too fast.
+	// Spread these out for large numbers on a server restart.
 	const writeThreshold = 2 * time.Minute
-	t := time.NewTicker(writeThreshold)
+	writeJitter := time.Duration(mrand.Int63n(int64(30 * time.Second)))
+	t := time.NewTicker(writeThreshold + writeJitter)
 	defer t.Stop()
 
 	for {
