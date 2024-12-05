@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
@@ -30,12 +31,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
+	. "github.com/nats-io/nats-server/v2/internal/ocsp"
 	"github.com/nats-io/nats-server/v2/logger"
 	"github.com/nats-io/nats.go"
 	"golang.org/x/crypto/ocsp"
-
-	. "github.com/nats-io/nats-server/v2/internal/ocsp"
 )
 
 func init() {

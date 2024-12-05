@@ -22,6 +22,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash"
@@ -39,7 +40,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/goccy/go-json"
 	"github.com/klauspost/compress/s2"
 	"github.com/minio/highwayhash"
 	"github.com/nats-io/nats-server/v2/server/avl"
@@ -8157,8 +8157,10 @@ func (fs *fileStore) flushStreamStateLoop(qch, done chan struct{}) {
 	defer close(done)
 
 	// Make sure we do not try to write these out too fast.
+	// Spread these out for large numbers on a server restart.
 	const writeThreshold = 2 * time.Minute
-	t := time.NewTicker(writeThreshold)
+	writeJitter := time.Duration(mrand.Int63n(int64(30 * time.Second)))
+	t := time.NewTicker(writeThreshold + writeJitter)
 	defer t.Stop()
 
 	for {

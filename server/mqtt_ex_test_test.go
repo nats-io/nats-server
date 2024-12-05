@@ -18,6 +18,7 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -26,7 +27,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/goccy/go-json"
 	"github.com/nats-io/nuid"
 )
 

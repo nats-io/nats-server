@@ -1,4 +1,4 @@
-// Copyright 2020-2024 The NATS Authors
+// Copyright 2020-2023 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -20,6 +20,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -32,7 +33,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
@@ -7080,8 +7080,6 @@ func TestMQTTSubjectMappingWithImportExport(t *testing.T) {
 
 func TestMQTTSubRetainedRace(t *testing.T) {
 	o := testMQTTDefaultOptions()
-	s := testMQTTRunServer(t, o)
-	defer testMQTTShutdownServer(s)
 
 	useCases := []struct {
 		name string
@@ -7099,6 +7097,9 @@ func TestMQTTSubRetainedRace(t *testing.T) {
 				t.Run(subTopic, func(t *testing.T) {
 					for _, qos := range QOS {
 						t.Run(fmt.Sprintf("QOS%d", qos), func(t *testing.T) {
+							s := testMQTTRunServer(t, o)
+							defer testMQTTShutdownServer(s)
+
 							tc.f(t, o, subTopic, pubTopic, qos)
 						})
 					}

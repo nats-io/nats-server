@@ -17,6 +17,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,7 +27,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
 	. "github.com/nats-io/nats-server/v2/internal/ocsp"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
@@ -3013,12 +3013,12 @@ func TestOCSPMonitoringPort(t *testing.T) {
 				net: 127.0.0.1
 				port: -1
 				https: -1
-				ocsp {
+				ocsp { 
                                   mode = always
                                   url = http://127.0.0.1:18888
                                 }
                                 store_dir = %s
-
+                                
 				tls: {
 					cert_file: "configs/certs/ocsp_peer/mini-ca/server1/TestServer1_bundle.pem"
 					key_file: "configs/certs/ocsp_peer/mini-ca/server1/private/TestServer1_keypair.pem"

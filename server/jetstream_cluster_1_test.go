@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	crand "crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -32,7 +33,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 )
@@ -6667,7 +6667,7 @@ func TestJetStreamClusterMetaRecoveryConsumerCreateAndRemove(t *testing.T) {
 
 // Make sure if we received acks that are out of bounds, meaning past our
 // last sequence or before our first that they are ignored and errored if applicable.
-func TestJetStreamConsumerAckOutOfBounds(t *testing.T) {
+func TestJetStreamClusterConsumerAckOutOfBounds(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -6720,6 +6720,96 @@ func TestJetStreamConsumerAckOutOfBounds(t *testing.T) {
 	require_Equal(t, ci.Delivered.Stream, 1)
 	require_Equal(t, ci.AckFloor.Consumer, 1)
 	require_Equal(t, ci.AckFloor.Stream, 1)
+}
+
+func TestJetStreamClusterCatchupLoadNextMsgTooManyDeletes(t *testing.T) {
+	tests := []struct {
+		title          string
+		catchupRequest *streamSyncRequest
+		setup          func(js nats.JetStreamContext)
+		assert         func(sub *nats.Subscription)
+	}{
+		{
+			title: "within-delete-gap",
+			setup: func(js nats.JetStreamContext) {},
+		},
+		{
+			title: "EOF",
+			setup: func(js nats.JetStreamContext) {
+				err := js.DeleteMsg("TEST", 100)
+				require_NoError(t, err)
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.title, func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo", "bar"},
+				Replicas: 3,
+			})
+			require_NoError(t, err)
+
+			// Starts and ends with subject "foo", we'll purge so there's a large gap of deletes in the middle.
+			// This should force runCatchup to use LoadNextMsg instead of LoadMsg.
+			for i := 0; i < 100; i++ {
+				subject := "bar"
+				if i == 0 || i == 99 {
+					subject = "foo"
+				}
+				_, err = js.Publish(subject, nil)
+				require_NoError(t, err)
+			}
+			err = js.PurgeStream("TEST", &nats.StreamPurgeRequest{Subject: "bar"})
+			require_NoError(t, err)
+
+			// Optionally run some extra setup.
+			test.setup(js)
+
+			// Reconnect to stream leader.
+			l := c.streamLeader(globalAccountName, "TEST")
+			nc.Close()
+			nc, _ = jsClientConnect(t, l, nats.UserInfo("admin", "s3cr3t!"))
+			defer nc.Close()
+
+			// Setup wiretap and grab stream.
+			sendSubject := "test-wiretap"
+			sub, err := nc.SubscribeSync(sendSubject)
+			require_NoError(t, err)
+			err = nc.Flush() // Must flush, otherwise our subscription could be too late.
+			require_NoError(t, err)
+			acc, err := l.lookupAccount(globalAccountName)
+			require_NoError(t, err)
+			mset, err := acc.lookupStream("TEST")
+			require_NoError(t, err)
+
+			// Run custom catchup request and the test's asserts.
+			sreq := &streamSyncRequest{Peer: "peer", FirstSeq: 5, LastSeq: 5, DeleteRangesOk: true}
+			require_True(t, mset.srv.startGoRoutine(func() { mset.runCatchup(sendSubject, sreq) }))
+
+			// Our first message should be a skip msg.
+			msg, err := sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			require_Equal(t, entryOp(msg.Data[0]), streamMsgOp)
+			subj, _, _, _, seq, ts, err := decodeStreamMsg(msg.Data[1:])
+			require_NoError(t, err)
+			require_Equal(t, seq, 5)
+			require_Equal(t, subj, _EMPTY_)
+			require_Equal(t, ts, 0)
+
+			// And end with EOF.
+			msg, err = sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			require_Len(t, len(msg.Data), 0)
+		})
+	}
 }
 
 //

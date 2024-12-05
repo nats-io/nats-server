@@ -19,6 +19,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -33,11 +34,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-json"
-	"github.com/klauspost/compress/flate"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
+
+	"github.com/klauspost/compress/flate"
 )
 
 type testReader struct {
