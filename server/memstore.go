@@ -646,7 +646,7 @@ func (ms *memStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed in
 	return seqs, nil
 }
 
-// SubjectsTotal return message totals per subject.
+// SubjectsTotals return message totals per subject.
 func (ms *memStore) SubjectsTotals(filterSubject string) map[string]uint64 {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()

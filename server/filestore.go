@@ -3470,7 +3470,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bo
 	return total, validThrough
 }
 
-// SubjectsTotal return message totals per subject.
+// SubjectsTotals return message totals per subject.
 func (fs *fileStore) SubjectsTotals(filter string) map[string]uint64 {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
