@@ -141,3 +141,97 @@ func TestStoreDeleteRange(t *testing.T) {
 	require_Equal(t, last, 2)
 	require_Equal(t, num, 1)
 }
+
+func TestStoreSubjectStateConsistency(t *testing.T) {
+	testAllStoreAllPermutations(
+		t, false,
+		StreamConfig{Name: "TEST", Subjects: []string{"foo"}},
+		func(t *testing.T, fs StreamStore) {
+			getSubjectState := func() SimpleState {
+				t.Helper()
+				ss := fs.SubjectsState("foo")
+				return ss["foo"]
+			}
+
+			// Publish an initial batch of messages.
+			for i := 0; i < 4; i++ {
+				_, _, err := fs.StoreMsg("foo", nil, nil)
+				require_NoError(t, err)
+			}
+
+			// Expect 4 msgs, with first=1, last=4.
+			ss := getSubjectState()
+			require_Equal(t, ss.Msgs, 4)
+			require_Equal(t, ss.First, 1)
+			require_Equal(t, ss.Last, 4)
+
+			// Remove first message, ss.First is lazy so will only mark ss.firstNeedsUpdate.
+			removed, err := fs.RemoveMsg(1)
+			require_NoError(t, err)
+			require_True(t, removed)
+
+			// Will update first, so corrects to seq 2.
+			ss = getSubjectState()
+			require_Equal(t, ss.Msgs, 3)
+			require_Equal(t, ss.First, 2)
+			require_Equal(t, ss.Last, 4)
+
+			// Remove last message.
+			removed, err = fs.RemoveMsg(4)
+			require_NoError(t, err)
+			require_True(t, removed)
+
+			// ss.Last is lazy, just like ss.First, but it's not recalculated. Only total msg count decreases.
+			ss = getSubjectState()
+			require_Equal(t, ss.Msgs, 2)
+			require_Equal(t, ss.First, 2)
+			require_Equal(t, ss.Last, 4)
+
+			// Remove first message again.
+			removed, err = fs.RemoveMsg(2)
+			require_NoError(t, err)
+			require_True(t, removed)
+
+			// Since we only have one message left, must update ss.First and set ss.Last to equal.
+			ss = getSubjectState()
+			require_Equal(t, ss.Msgs, 1)
+			require_Equal(t, ss.First, 3)
+			require_Equal(t, ss.Last, 3)
+
+			// Publish some more messages so we can test another scenario.
+			for i := 0; i < 3; i++ {
+				_, _, err := fs.StoreMsg("foo", nil, nil)
+				require_NoError(t, err)
+			}
+
+			// Just check the state is complete again.
+			ss = getSubjectState()
+			require_Equal(t, ss.Msgs, 4)
+			require_Equal(t, ss.First, 3)
+			require_Equal(t, ss.Last, 7)
+
+			// Remove last sequence, ss.Last is lazy so doesn't get updated.
+			removed, err = fs.RemoveMsg(7)
+			require_NoError(t, err)
+			require_True(t, removed)
+
+			// Remove first sequence, ss.First is lazy so doesn't get updated.
+			removed, err = fs.RemoveMsg(3)
+			require_NoError(t, err)
+			require_True(t, removed)
+
+			// Remove (now) first sequence, but because ss.First is lazy we first need to recalculate
+			// to know seq 5 became ss.First. And since we're removing seq 5 we need to recalculate ss.First
+			// yet again, since ss.Last is lazy and is not correct.
+			removed, err = fs.RemoveMsg(5)
+			require_NoError(t, err)
+			require_True(t, removed)
+
+			// ss.First should equal ss.Last, last should have been updated now.
+			ss = getSubjectState()
+			require_Equal(t, ss.Msgs, 1)
+			require_Equal(t, ss.First, 6)
+			require_Equal(t, ss.Last, 6)
+		},
+	)
+}

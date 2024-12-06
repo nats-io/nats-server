@@ -1055,8 +1055,9 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 			if sm := ms.msgs[seq]; sm != nil {
 				bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.msg)
 				purged++
-				delete(ms.msgs, seq)
 				ms.removeSeqPerSubject(sm.subj, seq)
+				// Must delete message after updating per-subject info, to be consistent with file store.
+				delete(ms.msgs, seq)
 			}
 		}
 		if purged > ms.state.Msgs {
@@ -1144,8 +1145,9 @@ func (ms *memStore) Truncate(seq uint64) error {
 		if sm := ms.msgs[i]; sm != nil {
 			purged++
 			bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.msg)
-			delete(ms.msgs, i)
 			ms.removeSeqPerSubject(sm.subj, i)
+			// Must delete message after updating per-subject info, to be consistent with file store.
+			delete(ms.msgs, i)
 		}
 	}
 	// Reset last.
@@ -1406,17 +1408,24 @@ func (ms *memStore) removeSeqPerSubject(subj string, seq uint64) {
 	}
 	ss.Msgs--
 
-	// If we know we only have 1 msg left don't need to search for next first.
+	// Only one left.
 	if ss.Msgs == 1 {
-		if seq == ss.Last {
-			ss.Last = ss.First
-		} else {
-			ss.First = ss.Last
+		// Update first if we need to, we must check if this removal is about what's going to be ss.First
+		if ss.firstNeedsUpdate {
+			ms.recalculateFirstForSubj(subj, ss.First, ss)
 		}
+		// If we're removing the first message, we must recalculate again.
+		// ss.Last is lazy as well, so need to calculate new ss.First and set ss.Last to it.
+		if ss.First == seq {
+			ms.recalculateFirstForSubj(subj, ss.First, ss)
+		}
+		ss.Last = ss.First
 		ss.firstNeedsUpdate = false
-	} else {
-		ss.firstNeedsUpdate = seq == ss.First || ss.firstNeedsUpdate
+		return
 	}
+
+	// We can lazily calculate the first sequence when needed.
+	ss.firstNeedsUpdate = seq == ss.First || ss.firstNeedsUpdate
 }
 
 // Will recalculate the first sequence for this subject in this block.
@@ -1446,7 +1455,6 @@ func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 
 	ss = memStoreMsgSize(sm.subj, sm.hdr, sm.msg)
 
-	delete(ms.msgs, seq)
 	if ms.state.Msgs > 0 {
 		ms.state.Msgs--
 		if ss > ms.state.Bytes {
@@ -1471,6 +1479,8 @@ func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 
 	// Remove any per subject tracking.
 	ms.removeSeqPerSubject(sm.subj, seq)
+	// Must delete message after updating per-subject info, to be consistent with file store.
+	delete(ms.msgs, seq)
 
 	if ms.scb != nil {
 		// We do not want to hold any locks here.
