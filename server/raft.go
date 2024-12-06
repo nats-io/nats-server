@@ -44,6 +44,7 @@ type RaftNode interface {
 	SendSnapshot(snap []byte) error
 	NeedSnapshot() bool
 	Applied(index uint64) (entries uint64, bytes uint64)
+	HasApplied(index uint64) bool
 	State() RaftState
 	Size() (entries, bytes uint64)
 	Progress() (index, commit, applied uint64)
@@ -1082,6 +1083,13 @@ func (n *raft) Applied(index uint64) (entries uint64, bytes uint64) {
 		bytes = entries * state.Bytes / state.Msgs
 	}
 	return entries, bytes
+}
+
+// HasApplied returns whether a minimum index has been applied.
+func (n *raft) HasApplied(index uint64) bool {
+	n.RLock()
+	defer n.RUnlock()
+	return n.applied >= index
 }
 
 // For capturing data needed by snapshot.
