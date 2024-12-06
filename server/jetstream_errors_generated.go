@@ -159,7 +159,7 @@ const (
 	JSConsumerMetadataLengthErrF ErrorIdentifier = 10135
 
 	// JSConsumerMsgNotPendingAckErr This message is currently not pending an ack (already acked or not yet delivered)
-	JSConsumerMsgNotPendingAckErr ErrorIdentifier = 10163
+	JSConsumerMsgNotPendingAckErr ErrorIdentifier = 10165
 
 	// JSConsumerMultipleFiltersNotAllowed consumer with multiple subject filters cannot use subject based API
 	JSConsumerMultipleFiltersNotAllowed ErrorIdentifier = 10137
@@ -551,7 +551,7 @@ var (
 		JSConsumerMaxRequestExpiresToSmall:         {Code: 400, ErrCode: 10115, Description: "consumer max request expires needs to be >= 1ms"},
 		JSConsumerMaxWaitingNegativeErr:            {Code: 400, ErrCode: 10087, Description: "consumer max waiting needs to be positive"},
 		JSConsumerMetadataLengthErrF:               {Code: 400, ErrCode: 10135, Description: "consumer metadata exceeds maximum size of {limit}"},
-		JSConsumerMsgNotPendingAckErr:              {Code: 400, ErrCode: 10163, Description: "This message is currently not pending an ack (already acked or not yet delivered)"},
+		JSConsumerMsgNotPendingAckErr:              {Code: 400, ErrCode: 10165, Description: "This message is currently not pending an ack (already acked or not yet delivered)"},
 		JSConsumerMultipleFiltersNotAllowed:        {Code: 400, ErrCode: 10137, Description: "consumer with multiple subject filters cannot use subject based API"},
 		JSConsumerNameContainsPathSeparatorsErr:    {Code: 400, ErrCode: 10127, Description: "Consumer name can not contain path separators"},
 		JSConsumerNameExistErr:                     {Code: 400, ErrCode: 10013, Description: "consumer name already in use"},

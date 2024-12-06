@@ -1632,7 +1632,7 @@
   {
     "constant": "JSConsumerMsgNotPendingAckErr",
     "code": 400,
-    "error_code": 10163,
+    "error_code": 10165,
     "description": "This message is currently not pending an ack (already acked or not yet delivered)",
     "comment": "",
     "help": "",
