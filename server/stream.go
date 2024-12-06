@@ -711,6 +711,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	fsCfg.SyncInterval = s.getOpts().SyncInterval
 	fsCfg.SyncAlways = s.getOpts().SyncAlways
 	fsCfg.Compression = config.Compression
+	fsCfg.HandleStreamCorruption = s.getOpts().StreamStopOnCorruption
 
 	if err := mset.setupStore(fsCfg); err != nil {
 		mset.stop(true, false)
@@ -4020,6 +4021,27 @@ func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
 	}
 	// This will fire the callback but we do not require the lock since md will be 0 here.
 	mset.store.RegisterStorageUpdates(mset.storeUpdates)
+	// Register the callback to be called when stream state inconsistency is detected during flush
+	mset.store.RegisterStreamStateCorruptionCB(func() {
+		ch := make(chan struct{})
+
+		// Start server go routine to stop stream
+		s := mset.srv
+		started := s.startGoRoutine(func() {
+			defer s.grWG.Done()
+			select {
+			case <-ch:
+				mset.stop(false, false)
+			case <-s.quitCh:
+				return
+			}
+		})
+		// Call server go routine
+		if started {
+			ch <- struct{}{}
+		}
+
+	})
 	mset.mu.Unlock()
 
 	return nil

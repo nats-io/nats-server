@@ -67,6 +67,8 @@ type FileStoreConfig struct {
 	Cipher StoreCipher
 	// Compression is the algorithm to use when compressing.
 	Compression StoreCompression
+	// HandleStreamCorruption calls the stream corruption handler when internal stream state becomes inconsistent
+	HandleStreamCorruption bool
 
 	// Internal reference to our server.
 	srv *Server
@@ -172,6 +174,7 @@ type fileStore struct {
 	tombs       []uint64
 	ld          *LostStreamData
 	scb         StorageUpdateHandler
+	sscb        StreamStateCorruptionHandler
 	ageChk      *time.Timer
 	syncTmr     *time.Timer
 	cfg         FileStreamInfo
@@ -197,6 +200,7 @@ type fileStore struct {
 	fip         bool
 	receivedAny bool
 	firstMoved  bool
+	corrupt     bool
 }
 
 // Represents a message store block and its data.
@@ -3500,6 +3504,13 @@ func (fs *fileStore) RegisterStorageUpdates(cb StorageUpdateHandler) {
 	if cb != nil && bsz > 0 {
 		cb(0, int64(bsz), 0, _EMPTY_)
 	}
+}
+
+// RegisterStreamStateCorruptionCB registers a callback for stream state corruption
+func (fs *fileStore) RegisterStreamStateCorruptionCB(cb StreamStateCorruptionHandler) {
+	fs.mu.Lock()
+	fs.sscb = cb
+	fs.mu.Unlock()
 }
 
 // Helper to get hash key for specific message block.
@@ -8276,10 +8287,25 @@ func (fs *fileStore) flushStreamStateLoop(qch, done chan struct{}) {
 	t := time.NewTicker(writeThreshold + writeJitter)
 	defer t.Stop()
 
+	stopStream := func() {
+		fs.warn("Stopping stream due to internal stream state inconsistency")
+		// mark fs as corrupt
+		fs.mu.Lock()
+		fs.corrupt = true
+		fs.mu.Unlock()
+		// Call StreamStateCorruptionHandler
+		fs.sscb()
+	}
+
 	for {
 		select {
 		case <-t.C:
-			fs.writeFullState()
+			err := fs.writeFullState()
+			if err == errCorruptState {
+				if fs.fcfg.HandleStreamCorruption {
+					stopStream()
+				}
+			}
 		case <-qch:
 			return
 		}
@@ -8318,6 +8344,11 @@ func (fs *fileStore) _writeFullState(force bool) error {
 	if fs.closed || fs.dirty == 0 {
 		fs.mu.Unlock()
 		return nil
+	}
+
+	if fs.corrupt {
+		fs.mu.Unlock()
+		return errCorruptState
 	}
 
 	// For calculating size and checking time costs for non forced calls.
