@@ -5031,7 +5031,7 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
-// sendJetStreamAPIAuditAdvisor will send the audit event for a given event.
+// sendJetStreamAPIAuditAdvisory will send the audit event for a given event.
 func (s *Server) sendJetStreamAPIAuditAdvisory(ci *ClientInfo, acc *Account, subject, request, response string) {
 	s.publishAdvisory(acc, JSAuditAdvisory, JSAPIAudit{
 		TypedEvent: TypedEvent{
