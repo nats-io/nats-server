@@ -2613,10 +2613,6 @@ func (fs *fileStore) numFilteredPendingWithLast(filter string, last bool, ss *Si
 	// Always reset.
 	ss.First, ss.Last, ss.Msgs = 0, 0, 0
 
-	if filter == _EMPTY_ {
-		filter = fwcs
-	}
-
 	// We do need to figure out the first and last sequences.
 	wc := subjectHasWildcard(filter)
 	start, stop := uint32(math.MaxUint32), uint32(0)
@@ -7388,6 +7384,9 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 			// Update fss
 			smb.removeSeqPerSubject(sm.subj, mseq)
 			fs.removePerSubject(sm.subj)
+			// Need to mark the sequence as deleted. Otherwise, recalculating ss.First
+			// for per-subject info would be able to find it still.
+			smb.dmap.Insert(mseq)
 		}
 	}
 
@@ -7835,11 +7834,16 @@ func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64) {
 
 	// Only one left.
 	if ss.Msgs == 1 {
-		if seq == ss.Last {
-			ss.Last = ss.First
-		} else {
-			ss.First = ss.Last
+		// Update first if we need to, we must check if this removal is about what's going to be ss.First
+		if ss.firstNeedsUpdate {
+			mb.recalculateFirstForSubj(subj, ss.First, ss)
 		}
+		// If we're removing the first message, we must recalculate again.
+		// ss.Last is lazy as well, so need to calculate new ss.First and set ss.Last to it.
+		if ss.First == seq {
+			mb.recalculateFirstForSubj(subj, ss.First, ss)
+		}
+		ss.Last = ss.First
 		ss.firstNeedsUpdate = false
 		return
 	}
@@ -7869,8 +7873,12 @@ func (mb *msgBlock) recalculateFirstForSubj(subj string, startSeq uint64, ss *Si
 		startSlot = 0
 	}
 
+	fseq := startSeq + 1
+	if mbFseq := atomic.LoadUint64(&mb.first.seq); fseq < mbFseq {
+		fseq = mbFseq
+	}
 	var le = binary.LittleEndian
-	for slot, fseq := startSlot, atomic.LoadUint64(&mb.first.seq); slot < len(mb.cache.idx); slot++ {
+	for slot := startSlot; slot < len(mb.cache.idx); slot++ {
 		bi := mb.cache.idx[slot] &^ hbit
 		if bi == dbit {
 			// delete marker so skip.
