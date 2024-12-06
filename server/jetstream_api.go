@@ -718,6 +718,13 @@ type JSApiConsumerPauseRequest struct {
 	PauseUntil time.Time `json:"pause_until,omitempty"`
 }
 
+const JSApiConsumerAckResponseType = "io.nats.jetstream.api.v1.consumer_ack_response"
+
+type JSApiConsumerAckResponse struct {
+	ApiResponse
+	Success bool `json:"success,omitempty"`
+}
+
 const JSApiConsumerPauseResponseType = "io.nats.jetstream.api.v1.consumer_pause_response"
 
 type JSApiConsumerPauseResponse struct {
