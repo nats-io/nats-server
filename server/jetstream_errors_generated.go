@@ -122,7 +122,7 @@ const (
 	// JSConsumerInvalidDeliverSubject invalid push consumer deliver subject
 	JSConsumerInvalidDeliverSubject ErrorIdentifier = 10112
 
-	// JSConsumerInvalidGroupNameErr Valid name must match A-Z, a-z, 0-9, -_/=)+ and may not exceed 16 characters
+	// JSConsumerInvalidGroupNameErr Valid priority group name must match A-Z, a-z, 0-9, -_/=)+ and may not exceed 16 characters
 	JSConsumerInvalidGroupNameErr ErrorIdentifier = 10162
 
 	// JSConsumerInvalidPolicyErrF Generic delivery policy error ({err})
@@ -536,7 +536,7 @@ var (
 		JSConsumerHBRequiresPushErr:                {Code: 400, ErrCode: 10088, Description: "consumer idle heartbeat requires a push based consumer"},
 		JSConsumerInactiveThresholdExcess:          {Code: 400, ErrCode: 10153, Description: "consumer inactive threshold exceeds system limit of {limit}"},
 		JSConsumerInvalidDeliverSubject:            {Code: 400, ErrCode: 10112, Description: "invalid push consumer deliver subject"},
-		JSConsumerInvalidGroupNameErr:              {Code: 400, ErrCode: 10162, Description: "Valid name must match A-Z, a-z, 0-9, -_/=)+ and may not exceed 16 characters"},
+		JSConsumerInvalidGroupNameErr:              {Code: 400, ErrCode: 10162, Description: "Valid priority group name must match A-Z, a-z, 0-9, -_/=)+ and may not exceed 16 characters"},
 		JSConsumerInvalidPolicyErrF:                {Code: 400, ErrCode: 10094, Description: "{err}"},
 		JSConsumerInvalidPriorityGroupErr:          {Code: 400, ErrCode: 10160, Description: "Provided priority group does not exist for this consumer"},
 		JSConsumerInvalidSamplingErrF:              {Code: 400, ErrCode: 10095, Description: "failed to parse consumer sampling configuration: {err}"},
@@ -1099,7 +1099,7 @@ func NewJSConsumerInvalidDeliverSubjectError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSConsumerInvalidDeliverSubject]
 }
 
-// NewJSConsumerInvalidGroupNameError creates a new JSConsumerInvalidGroupNameErr error: "Valid name must match A-Z, a-z, 0-9, -_/=)+ and may not exceed 16 characters"
+// NewJSConsumerInvalidGroupNameError creates a new JSConsumerInvalidGroupNameErr error: "Valid priority group name must match A-Z, a-z, 0-9, -_/=)+ and may not exceed 16 characters"
 func NewJSConsumerInvalidGroupNameError(opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
 	if ae, ok := eopts.err.(*ApiError); ok {
