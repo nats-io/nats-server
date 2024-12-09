@@ -3573,7 +3573,7 @@ func TestJetStreamClusterConsumerAckFloorDrift(t *testing.T) {
 	sub, err := js.PullSubscribe("foo", "C")
 	require_NoError(t, err)
 
-	// Publish as many messages as the ack floor check threshold +5.
+	// Publish as many messages as the ack floor check threshold +5 (what we set ackfloor to later).
 	totalMessages := 55
 	for i := 0; i < totalMessages; i++ {
 		sendStreamMsg(t, nc, "foo", "HELLO")
@@ -3583,19 +3583,9 @@ func TestJetStreamClusterConsumerAckFloorDrift(t *testing.T) {
 	_, err = sub.Fetch(10)
 	require_NoError(t, err)
 
-	// We will grab the state with delivered being 10 and ackfloor being 0 directly.
-	cl := c.consumerLeader(globalAccountName, "TEST", "C")
-	require_NotNil(t, cl)
-
-	mset, err := cl.GlobalAccount().lookupStream("TEST")
-	require_NoError(t, err)
-	o := mset.lookupConsumer("C")
-	require_NotNil(t, o)
-	o.mu.RLock()
-	state, err := o.store.State()
-	o.mu.RUnlock()
-	require_NoError(t, err)
-	require_NotNil(t, state)
+	// We will initialize the state with delivered being 10 and ackfloor being 0 directly.
+	// Fetch will asynchronously propagate this state, so can't reliably request this from the leader immediately.
+	state := &ConsumerState{Delivered: SequencePair{Consumer: 10, Stream: 10}}
 
 	// Now let messages expire.
 	checkFor(t, 5*time.Second, time.Second, func() error {
@@ -3632,17 +3622,35 @@ func TestJetStreamClusterConsumerAckFloorDrift(t *testing.T) {
 		require_NoError(t, o.raftNode().InstallSnapshot(snap))
 	}
 
-	cl.JetStreamStepdownConsumer(globalAccountName, "TEST", "C")
+	cl := c.consumerLeader(globalAccountName, "TEST", "C")
+	require_NotNil(t, cl)
+	err = cl.JetStreamStepdownConsumer(globalAccountName, "TEST", "C")
+	require_NoError(t, err)
 	c.waitOnConsumerLeader(globalAccountName, "TEST", "C")
 
 	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
 		ci, err := js.ConsumerInfo("TEST", "C")
-		require_NoError(t, err)
-		// Make sure we catch this and adjust.
-		if ci.AckFloor.Stream == uint64(totalMessages) && ci.AckFloor.Consumer == 10 {
-			return nil
+		if err != nil {
+			return err
 		}
-		return fmt.Errorf("AckFloor not correct, expected %d, got %+v", totalMessages, ci.AckFloor)
+		// Replicated state should stay the same.
+		if ci.AckFloor.Stream != 5 && ci.AckFloor.Consumer != 5 {
+			return fmt.Errorf("replicated AckFloor not correct, expected %d, got %+v", 5, ci.AckFloor)
+		}
+
+		cl = c.consumerLeader(globalAccountName, "TEST", "C")
+		mset, err := cl.GlobalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		o := mset.lookupConsumer("C")
+		require_NotNil(t, o)
+		o.mu.RLock()
+		defer o.mu.RUnlock()
+
+		// Make sure we catch this and adjust.
+		if o.asflr != uint64(totalMessages) && o.adflr != 10 {
+			return fmt.Errorf("leader AckFloor not correct, expected %d, got %+v", 10, ci.AckFloor)
+		}
+		return nil
 	})
 }
 
@@ -5456,12 +5464,18 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 
 	// Want to compare sans cluster details which we know will change due to leader change.
 	// Also last activity for delivered can be slightly off so nil out as well.
-	checkConsumerInfo := func(a, b *nats.ConsumerInfo) {
+	checkConsumerInfo := func(a, b *nats.ConsumerInfo, replicated bool) {
 		t.Helper()
 		require_Equal(t, a.Delivered.Consumer, 10)
 		require_Equal(t, a.Delivered.Stream, 10)
-		require_Equal(t, a.AckFloor.Consumer, 10)
-		require_Equal(t, a.AckFloor.Stream, 10)
+		// If replicated, agreed upon state is used. Otherwise, o.asflr and o.adflr would be skipped ahead for R1.
+		if replicated {
+			require_Equal(t, a.AckFloor.Consumer, 0)
+			require_Equal(t, a.AckFloor.Stream, 0)
+		} else {
+			require_Equal(t, a.AckFloor.Consumer, 10)
+			require_Equal(t, a.AckFloor.Stream, 10)
+		}
 		require_Equal(t, a.NumPending, 40)
 		require_Equal(t, a.NumRedelivered, 0)
 		a.Cluster, b.Cluster = nil, nil
@@ -5471,7 +5485,7 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 		}
 	}
 
-	checkConsumerInfo(cia, cib)
+	checkConsumerInfo(cia, cib, true)
 
 	// Memory based.
 	sub, err = js.PullSubscribe("foo", "mem",
@@ -5501,7 +5515,7 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 	cib, err = js.ConsumerInfo("TEST", "mem")
 	require_NoError(t, err)
 
-	checkConsumerInfo(cia, cib)
+	checkConsumerInfo(cia, cib, true)
 
 	// Now file based but R1 and server restart.
 	sub, err = js.PullSubscribe("foo", "r1",
@@ -5535,7 +5549,7 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 	// Created can skew a small bit due to server restart, this is expected.
 	now := time.Now()
 	cia.Created, cib.Created = now, now
-	checkConsumerInfo(cia, cib)
+	checkConsumerInfo(cia, cib, false)
 }
 
 func TestJetStreamClusterConsumerDefaultsFromStream(t *testing.T) {

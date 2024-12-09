@@ -1664,14 +1664,20 @@ func TestJetStreamSuperClusterConsumerDeliverNewBug(t *testing.T) {
 	}
 
 	c.waitOnConsumerLeader("$G", "T", "d")
-	ci, err = js.ConsumerInfo("T", "d")
-	require_NoError(t, err)
 
-	if ci.Delivered.Consumer != 0 || ci.Delivered.Stream != 100 {
-		t.Fatalf("Incorrect consumer delivered info: %+v", ci.Delivered)
+	cl := c.consumerLeader(globalAccountName, "T", "d")
+	mset, err := cl.GlobalAccount().lookupStream("T")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("d")
+	require_NotNil(t, o)
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+
+	if o.dseq-1 != 0 || o.sseq-1 != 100 {
+		t.Fatalf("Incorrect consumer delivered info: dseq=%d, sseq=%d", o.dseq-1, o.sseq-1)
 	}
-	if ci.NumPending != 0 {
-		t.Fatalf("Did not expect NumPending, got %d", ci.NumPending)
+	if np := o.checkNumPending(); np != 0 {
+		t.Fatalf("Did not expect NumPending, got %d", np)
 	}
 }
 
