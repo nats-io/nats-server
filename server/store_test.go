@@ -192,11 +192,11 @@ func TestStoreSubjectStateConsistency(t *testing.T) {
 			require_NoError(t, err)
 			require_True(t, removed)
 
-			// Since we only have one message left, must update ss.First and set ss.Last to equal.
+			// Since we only have one message left, must update ss.First.
 			ss = getSubjectState()
 			require_Equal(t, ss.Msgs, 1)
 			require_Equal(t, ss.First, 3)
-			require_Equal(t, ss.Last, 3)
+			require_Equal(t, ss.Last, 4)
 
 			// Publish some more messages so we can test another scenario.
 			for i := 0; i < 3; i++ {
@@ -231,7 +231,7 @@ func TestStoreSubjectStateConsistency(t *testing.T) {
 			ss = getSubjectState()
 			require_Equal(t, ss.Msgs, 1)
 			require_Equal(t, ss.First, 6)
-			require_Equal(t, ss.Last, 6)
+			require_Equal(t, ss.Last, 7)
 		},
 	)
 }
