@@ -1589,7 +1589,9 @@ func (c *cluster) waitOnClusterReadyWithNumPeers(numPeersExpected int) {
 		c.t.Fatalf("Expected a cluster leader and fully formed cluster, no leader")
 	} else {
 		antithesis.AssertUnreachable(c.t, "Timeout in cluster::waitOnClusterReadyWithNumPeers (3)", map[string]any{
-			"cluster": c.name,
+			"cluster":        c.name,
+			"peers_expected": numPeersExpected,
+			"peers_seen":     peersSeen,
 		})
 		c.t.Fatalf("Expected a fully formed cluster, only %d of %d peers seen", peersSeen, numPeersExpected)
 	}

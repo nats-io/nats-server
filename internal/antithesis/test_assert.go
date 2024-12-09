@@ -17,6 +17,7 @@
 package antithesis
 
 import (
+	"encoding/json"
 	"fmt"
 	"runtime/debug"
 	"testing"
@@ -49,7 +50,12 @@ func AssertUnreachable(t testing.TB, message string, details map[string]any) {
 	// Always print a message
 	fmt.Printf("{*} [%s] Assert Unreachable violation: %s\n", t.Name(), message)
 	if details != nil && len(details) > 0 {
-		fmt.Printf("{*} Details: %+v\n", details)
+		fmt.Printf("{*} Details:\n")
+		jsonDetails, err := json.MarshalIndent(details, "", "  ")
+		if err != nil {
+			panic(err)
+		}
+		fmt.Println(string(jsonDetails))
 	}
 
 	// Always print the stack trace
@@ -83,7 +89,12 @@ func Assert(t testing.TB, condition bool, message string, details map[string]any
 	// Always print a message
 	fmt.Printf("{*} [%s] Assert violation: %s\n", t.Name(), message)
 	if details != nil && len(details) > 0 {
-		fmt.Printf("{*} Details: %+v\n", details)
+		fmt.Printf("{*} Details:\n")
+		jsonDetails, err := json.MarshalIndent(details, "", "  ")
+		if err != nil {
+			panic(err)
+		}
+		fmt.Println(string(jsonDetails))
 	}
 
 	// Always print the stack trace
