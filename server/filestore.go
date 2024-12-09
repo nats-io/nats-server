@@ -7678,16 +7678,22 @@ func (fs *fileStore) reset() error {
 }
 
 // Return all active tombstones in this msgBlock.
-// Write lock should be held.
 func (mb *msgBlock) tombs() []msgId {
-	var tombs []msgId
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+	return mb.tombsLocked()
+}
 
-	if !mb.cacheAlreadyLoaded() {
+// Return all active tombstones in this msgBlock.
+// Write lock should be held.
+func (mb *msgBlock) tombsLocked() []msgId {
+	if mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
 			return nil
 		}
 	}
 
+	var tombs []msgId
 	var le = binary.LittleEndian
 	buf := mb.cache.buf
 
@@ -7768,7 +7774,7 @@ func (fs *fileStore) Truncate(seq uint64) error {
 	for mb := getLastMsgBlock(); mb != nlmb; mb = getLastMsgBlock() {
 		mb.mu.Lock()
 		// We do this to load tombs.
-		tombs = append(tombs, mb.tombs()...)
+		tombs = append(tombs, mb.tombsLocked()...)
 		purged += mb.msgs
 		bytes += mb.bytes
 		fs.removeMsgBlock(mb)
