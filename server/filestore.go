@@ -7946,22 +7946,6 @@ func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64) {
 
 	ss.Msgs--
 
-	// Only one left.
-	if ss.Msgs == 1 {
-		// Update first if we need to, we must check if this removal is about what's going to be ss.First
-		if ss.firstNeedsUpdate {
-			mb.recalculateFirstForSubj(subj, ss.First, ss)
-		}
-		// If we're removing the first message, we must recalculate again.
-		// ss.Last is lazy as well, so need to calculate new ss.First and set ss.Last to it.
-		if ss.First == seq {
-			mb.recalculateFirstForSubj(subj, ss.First, ss)
-		}
-		ss.Last = ss.First
-		ss.firstNeedsUpdate = false
-		return
-	}
-
 	// We can lazily calculate the first sequence when needed.
 	ss.firstNeedsUpdate = seq == ss.First || ss.firstNeedsUpdate
 }
@@ -8012,6 +7996,9 @@ func (mb *msgBlock) recalculateFirstForSubj(subj string, startSeq uint64, ss *Si
 				continue
 			}
 			ss.First = seq
+			if ss.Msgs == 1 {
+				ss.Last = seq
+			}
 			return
 		}
 	}
