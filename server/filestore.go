@@ -7384,9 +7384,6 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 			// Update fss
 			smb.removeSeqPerSubject(sm.subj, mseq)
 			fs.removePerSubject(sm.subj)
-			// Need to mark the sequence as deleted. Otherwise, recalculating ss.First
-			// for per-subject info would be able to find it still.
-			smb.dmap.Insert(mseq)
 		}
 	}
 
