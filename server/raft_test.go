@@ -605,8 +605,9 @@ func TestNRGHeartbeatOnLeaderChange(t *testing.T) {
 		leader := rg.leader().(*stateAdder)
 		leader.proposeDelta(22)
 		leader.proposeDelta(-11)
-		leader.proposeDelta(-11)
-		rg.waitOnTotal(t, 0)
+		leader.proposeDelta(-10)
+		// Must observe forward progress, so each iteration will check +1 total.
+		rg.waitOnTotal(t, int64(i+1))
 		leader.stop()
 		leader.restart()
 		rg.waitOnLeader()
