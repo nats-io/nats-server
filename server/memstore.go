@@ -143,8 +143,8 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 					return ErrMaxBytes
 				}
 				// If we are here we are at a subject maximum, need to determine if dropping last message gives us enough room.
-				if ss.firstNeedsUpdate {
-					ms.recalculateFirstForSubj(subj, ss.First, ss)
+				if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
+					ms.recalculateForSubj(subj, ss)
 				}
 				sm, ok := ms.msgs[ss.First]
 				if !ok || memStoreMsgSize(sm.subj, sm.hdr, sm.msg) < memStoreMsgSize(subj, hdr, msg) {
@@ -430,8 +430,8 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 	var totalSkipped uint64
 	// We will track start and end sequences as we go.
 	ms.fss.Match(stringToBytes(filter), func(subj []byte, fss *SimpleState) {
-		if fss.firstNeedsUpdate {
-			ms.recalculateFirstForSubj(bytesToString(subj), fss.First, fss)
+		if fss.firstNeedsUpdate || fss.lastNeedsUpdate {
+			ms.recalculateForSubj(bytesToString(subj), fss)
 		}
 		if sseq <= fss.First {
 			update(fss)
@@ -585,8 +585,8 @@ func (ms *memStore) SubjectsState(subject string) map[string]SimpleState {
 	fss := make(map[string]SimpleState)
 	ms.fss.Match(stringToBytes(subject), func(subj []byte, ss *SimpleState) {
 		subjs := string(subj)
-		if ss.firstNeedsUpdate {
-			ms.recalculateFirstForSubj(subjs, ss.First, ss)
+		if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
+			ms.recalculateForSubj(subjs, ss)
 		}
 		oss := fss[subjs]
 		if oss.First == 0 { // New
@@ -675,8 +675,8 @@ func (ms *memStore) NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject boo
 	var totalSkipped uint64
 	// We will track start and end sequences as we go.
 	IntersectStree[SimpleState](ms.fss, sl, func(subj []byte, fss *SimpleState) {
-		if fss.firstNeedsUpdate {
-			ms.recalculateFirstForSubj(bytesToString(subj), fss.First, fss)
+		if fss.firstNeedsUpdate || fss.lastNeedsUpdate {
+			ms.recalculateForSubj(bytesToString(subj), fss)
 		}
 		if sseq <= fss.First {
 			update(fss)
@@ -793,8 +793,8 @@ func (ms *memStore) enforcePerSubjectLimit(subj string, ss *SimpleState) {
 		return
 	}
 	for nmsgs := ss.Msgs; nmsgs > uint64(ms.maxp); nmsgs = ss.Msgs {
-		if ss.firstNeedsUpdate {
-			ms.recalculateFirstForSubj(subj, ss.First, ss)
+		if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
+			ms.recalculateForSubj(subj, ss)
 		}
 		if !ms.removeMsg(ss.First, false) {
 			break
@@ -1267,8 +1267,8 @@ func (ms *memStore) LoadNextMsg(filter string, wc bool, start uint64, smp *Store
 			if !ok {
 				continue
 			}
-			if ss.firstNeedsUpdate {
-				ms.recalculateFirstForSubj(subj, ss.First, ss)
+			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
+				ms.recalculateForSubj(subj, ss)
 			}
 			if ss.First < fseq {
 				fseq = ss.First
@@ -1362,25 +1362,47 @@ func (ms *memStore) removeSeqPerSubject(subj string, seq uint64) {
 	}
 	ss.Msgs--
 
-	// We can lazily calculate the first sequence when needed.
+	// We can lazily calculate the first/last sequence when needed.
 	ss.firstNeedsUpdate = seq == ss.First || ss.firstNeedsUpdate
+	ss.lastNeedsUpdate = seq == ss.Last || ss.lastNeedsUpdate
 }
 
-// Will recalculate the first sequence for this subject in this block.
+// Will recalculate the first and/or last sequence for this subject.
 // Lock should be held.
-func (ms *memStore) recalculateFirstForSubj(subj string, startSeq uint64, ss *SimpleState) {
-	tseq := startSeq + 1
-	if tseq < ms.state.FirstSeq {
-		tseq = ms.state.FirstSeq
-	}
-	for ; tseq <= ss.Last; tseq++ {
-		if sm := ms.msgs[tseq]; sm != nil && sm.subj == subj {
-			ss.First = tseq
-			if ss.Msgs == 1 {
-				ss.Last = tseq
+func (ms *memStore) recalculateForSubj(subj string, ss *SimpleState) {
+	if ss.firstNeedsUpdate {
+		tseq := ss.First + 1
+		if tseq < ms.state.FirstSeq {
+			tseq = ms.state.FirstSeq
+		}
+		for ; tseq <= ss.Last; tseq++ {
+			if sm := ms.msgs[tseq]; sm != nil && sm.subj == subj {
+				ss.First = tseq
+				ss.firstNeedsUpdate = false
+				if ss.Msgs == 1 {
+					ss.Last = tseq
+					ss.lastNeedsUpdate = false
+					return
+				}
+				break
 			}
-			ss.firstNeedsUpdate = false
-			return
+		}
+	}
+	if ss.lastNeedsUpdate {
+		tseq := ss.Last - 1
+		if tseq > ms.state.LastSeq {
+			tseq = ms.state.LastSeq
+		}
+		for ; tseq >= ss.First; tseq-- {
+			if sm := ms.msgs[tseq]; sm != nil && sm.subj == subj {
+				ss.Last = tseq
+				ss.lastNeedsUpdate = false
+				if ss.Msgs == 1 {
+					ss.First = tseq
+					ss.firstNeedsUpdate = false
+				}
+				return
+			}
 		}
 	}
 }
