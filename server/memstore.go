@@ -36,6 +36,7 @@ type memStore struct {
 	dmap        avl.SequenceSet
 	maxp        int64
 	scb         StorageUpdateHandler
+	sscb        StreamStateCorruptionHandler
 	ageChk      *time.Timer
 	consumers   int
 	receivedAny bool
@@ -306,6 +307,13 @@ func (ms *memStore) SkipMsgs(seq uint64, num uint64) error {
 func (ms *memStore) RegisterStorageUpdates(cb StorageUpdateHandler) {
 	ms.mu.Lock()
 	ms.scb = cb
+	ms.mu.Unlock()
+}
+
+// RegisterStreamStateCorruptionCB registers a callback for stream state corruption
+func (ms *memStore) RegisterStreamStateCorruptionCB(cb StreamStateCorruptionHandler) {
+	ms.mu.Lock()
+	ms.sscb = cb
 	ms.mu.Unlock()
 }
 

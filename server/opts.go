@@ -339,6 +339,7 @@ type Options struct {
 	JetStreamRequestQueueLimit int64
 	StreamMaxBufferedMsgs      int               `json:"-"`
 	StreamMaxBufferedSize      int64             `json:"-"`
+	StreamStopOnCorruption     bool              `json:"-"`
 	StoreDir                   string            `json:"-"`
 	SyncInterval               time.Duration     `json:"-"`
 	SyncAlways                 bool              `json:"-"`
@@ -2433,6 +2434,10 @@ func parseJetStream(v any, opts *Options, errors *[]error, warnings *[]error) er
 					return &configErr{tk, fmt.Sprintf("%s %s", strings.ToLower(mk), err)}
 				}
 				opts.StreamMaxBufferedSize = s
+			case "stream_stop_on_corruption":
+				if v, ok := mv.(bool); ok {
+					opts.StreamStopOnCorruption = v
+				}
 			case "max_buffered_msgs":
 				mlen, ok := mv.(int64)
 				if !ok {
