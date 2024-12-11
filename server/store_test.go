@@ -196,6 +196,19 @@ func TestStoreSubjectStateConsistency(t *testing.T) {
 				ss := fs.SubjectsState("foo")
 				return ss["foo"]
 			}
+			var smp StoreMsg
+			expectFirstSeq := func(eseq uint64) {
+				t.Helper()
+				sm, _, err := fs.LoadNextMsg("foo", false, 0, &smp)
+				require_NoError(t, err)
+				require_Equal(t, sm.seq, eseq)
+			}
+			expectLastSeq := func(eseq uint64) {
+				t.Helper()
+				sm, err := fs.LoadLastMsg("foo", &smp)
+				require_NoError(t, err)
+				require_Equal(t, sm.seq, eseq)
+			}
 
 			// Publish an initial batch of messages.
 			for i := 0; i < 4; i++ {
@@ -206,7 +219,9 @@ func TestStoreSubjectStateConsistency(t *testing.T) {
 			ss := getSubjectState()
 			require_Equal(t, ss.Msgs, 4)
 			require_Equal(t, ss.First, 1)
+			expectFirstSeq(1)
 			require_Equal(t, ss.Last, 4)
+			expectLastSeq(4)
 
 			// Remove first message, ss.First is lazy so will only mark ss.firstNeedsUpdate.
 			removed, err := fs.RemoveMsg(1)
@@ -217,29 +232,35 @@ func TestStoreSubjectStateConsistency(t *testing.T) {
 			ss = getSubjectState()
 			require_Equal(t, ss.Msgs, 3)
 			require_Equal(t, ss.First, 2)
+			expectFirstSeq(2)
 			require_Equal(t, ss.Last, 4)
+			expectLastSeq(4)
 
-			// Remove last message.
+			// Remove last message, ss.Last is lazy so will only mark ss.lastNeedsUpdate.
 			removed, err = fs.RemoveMsg(4)
 			require_NoError(t, err)
 			require_True(t, removed)
 
-			// ss.Last is lazy, just like ss.First, but it's not recalculated. Only total msg count decreases.
+			// Will update last, so corrects to 3.
 			ss = getSubjectState()
 			require_Equal(t, ss.Msgs, 2)
 			require_Equal(t, ss.First, 2)
-			require_Equal(t, ss.Last, 4)
+			expectFirstSeq(2)
+			require_Equal(t, ss.Last, 3)
+			expectLastSeq(3)
 
 			// Remove first message again.
 			removed, err = fs.RemoveMsg(2)
 			require_NoError(t, err)
 			require_True(t, removed)
 
-			// Since we only have one message left, must update ss.First and set ss.Last to equal.
+			// Since we only have one message left, must update ss.First and ensure ss.Last equals.
 			ss = getSubjectState()
 			require_Equal(t, ss.Msgs, 1)
 			require_Equal(t, ss.First, 3)
+			expectFirstSeq(3)
 			require_Equal(t, ss.Last, 3)
+			expectLastSeq(3)
 
 			// Publish some more messages so we can test another scenario.
 			for i := 0; i < 3; i++ {
@@ -251,7 +272,9 @@ func TestStoreSubjectStateConsistency(t *testing.T) {
 			ss = getSubjectState()
 			require_Equal(t, ss.Msgs, 4)
 			require_Equal(t, ss.First, 3)
+			expectFirstSeq(3)
 			require_Equal(t, ss.Last, 7)
+			expectLastSeq(7)
 
 			// Remove last sequence, ss.Last is lazy so doesn't get updated.
 			removed, err = fs.RemoveMsg(7)
@@ -263,18 +286,18 @@ func TestStoreSubjectStateConsistency(t *testing.T) {
 			require_NoError(t, err)
 			require_True(t, removed)
 
-			// Remove (now) first sequence, but because ss.First is lazy we first need to recalculate
-			// to know seq 5 became ss.First. And since we're removing seq 5 we need to recalculate ss.First
-			// yet again, since ss.Last is lazy and is not correct.
+			// Remove (now) first sequence. Both ss.First and ss.Last are lazy and both need to be recalculated later.
 			removed, err = fs.RemoveMsg(5)
 			require_NoError(t, err)
 			require_True(t, removed)
 
-			// ss.First should equal ss.Last, last should have been updated now.
+			// ss.First and ss.Last should both be recalculated and equal each other.
 			ss = getSubjectState()
 			require_Equal(t, ss.Msgs, 1)
 			require_Equal(t, ss.First, 6)
+			expectFirstSeq(6)
 			require_Equal(t, ss.Last, 6)
+			expectLastSeq(6)
 		},
 	)
 }
