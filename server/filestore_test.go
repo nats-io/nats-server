@@ -5736,7 +5736,7 @@ func TestFileStoreMsgBlockHolesAndIndexing(t *testing.T) {
 	mb := fs.getFirstBlock()
 	writeMsg := func(subj string, seq uint64) {
 		rl := fileStoreMsgSize(subj, nil, []byte(subj))
-		require_NoError(t, mb.writeMsgRecord(rl, seq, subj, nil, []byte(subj), time.Now().UnixNano(), true))
+		require_NoError(t, mb.writeMsgRecord(rl, seq, subj, nil, []byte(subj), time.Now().UnixNano(), true, 0))
 		fs.rebuildState(nil)
 	}
 	readMsg := func(seq uint64, expectedSubj string) {
@@ -8316,7 +8316,7 @@ func TestFileStoreTTL(t *testing.T) {
 		_, _, err = fs.StoreMsg("test", nil, nil, int64(now.Add(time.Duration(i)*time.Second).UnixNano()))
 		require_NoError(t, err)
 	}
-	time.Sleep(time.Second * 5)
+	time.Sleep(time.Second * 7)
 
 	var ss StreamState
 	fs.FastState(&ss)

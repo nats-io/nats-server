@@ -324,6 +324,9 @@ const (
 	// This is the full snapshotted state for the stream.
 	streamStreamStateFile = "index.db"
 
+	// This is the encoded time hash wheel for TTLs.
+	ttlStreamStateFile = "thw.db"
+
 	// AEK key sizes
 	minMetaKeySize = 64
 	minBlkKeySize  = 64
@@ -1384,8 +1387,10 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 		rl, slen := le.Uint32(hdr[0:]), le.Uint16(hdr[20:])
 
 		hasHeaders := rl&hbit != 0
+		_ = rl&xbit != 0
 		// Clear any headers bit that could be set.
 		rl &^= hbit
+		rl &^= xbit
 		dlen := int(rl) - msgHdrSize
 		// Do some quick sanity checks here.
 		if dlen < 0 || int(slen) > (dlen-recordHashSize) || dlen > int(rl) || index+rl > lbuf || rl > rlBadThresh {
@@ -3687,7 +3692,9 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 	}
 
 	// Write msg record.
-	n, err := fs.writeMsgRecord(seq, ts, subj, hdr, msg)
+	// Add expiry bit to sequence if needed. This is so that if we need to
+	// rebuild, we know which messages to look at more quickly.
+	n, err := fs.writeMsgRecord(seq, ts, subj, hdr, msg, ttl)
 	if err != nil {
 		return err
 	}
@@ -3755,8 +3762,9 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 	fs.enforceBytesLimit()
 
 	// Per-message TTL.
-	if fs.ttls != nil && ttl > -1 {
+	if fs.ttls != nil && ttl > 0 {
 		fs.ttls.Add(seq, ttl)
+		fs.lmb.ttls++
 	}
 
 	// Check if we have and need the age expiration timer running.
@@ -3849,7 +3857,7 @@ func (mb *msgBlock) skipMsg(seq uint64, now time.Time) {
 	mb.mu.Unlock()
 
 	if needsRecord {
-		mb.writeMsgRecord(emptyRecordLen, seq|ebit, _EMPTY_, nil, nil, nowts, true)
+		mb.writeMsgRecord(emptyRecordLen, seq|ebit, _EMPTY_, nil, nil, nowts, true, 0)
 	} else {
 		mb.kickFlusher()
 	}
@@ -3947,7 +3955,7 @@ func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 	mb.mu.Unlock()
 
 	// Write out our placeholder.
-	mb.writeMsgRecord(emptyRecordLen, lseq|ebit, _EMPTY_, nil, nil, nowts, true)
+	mb.writeMsgRecord(emptyRecordLen, lseq|ebit, _EMPTY_, nil, nil, nowts, true, 0)
 
 	// Now update FS accounting.
 	// Update fs state.
@@ -4497,6 +4505,7 @@ func (mb *msgBlock) compactWithFloor(floor uint64) {
 		rl, slen := le.Uint32(hdr[0:]), le.Uint16(hdr[20:])
 		// Clear any headers bit that could be set.
 		rl &^= hbit
+		rl &^= xbit
 		dlen := int(rl) - msgHdrSize
 		// Do some quick sanity checks here.
 		if dlen < 0 || int(slen) > dlen || dlen > int(rl) || rl > rlBadThresh || index+rl > lbuf {
@@ -5289,12 +5298,12 @@ func (mb *msgBlock) enableForWriting(fip bool) error {
 
 // Helper function to place a delete tombstone.
 func (mb *msgBlock) writeTombstone(seq uint64, ts int64) error {
-	return mb.writeMsgRecord(emptyRecordLen, seq|tbit, _EMPTY_, nil, nil, ts, true)
+	return mb.writeMsgRecord(emptyRecordLen, seq|tbit, _EMPTY_, nil, nil, ts, true, 0)
 }
 
 // Will write the message record to the underlying message block.
 // filestore lock will be held.
-func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte, ts int64, flush bool) error {
+func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte, ts int64, flush bool, ttl int64) error {
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
 
@@ -5345,6 +5354,12 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 	hasHeaders := len(mhdr) > 0
 	if hasHeaders {
 		l |= hbit
+	}
+
+	// TODO(nat): Only do if hbit set too?
+	// TODO(nat): ... or parse the header here?
+	if ttl > 0 {
+		l |= xbit
 	}
 
 	le.PutUint32(hdr[0:], l)
@@ -5516,12 +5531,12 @@ func (mb *msgBlock) updateAccounting(seq uint64, ts int64, rl uint64) {
 }
 
 // Lock should be held.
-func (fs *fileStore) writeMsgRecord(seq uint64, ts int64, subj string, hdr, msg []byte) (uint64, error) {
+func (fs *fileStore) writeMsgRecord(seq uint64, ts int64, subj string, hdr, msg []byte, ttl int64) (uint64, error) {
 	var err error
 
 	// Get size for this message.
 	rl := fileStoreMsgSize(subj, hdr, msg)
-	if rl&hbit != 0 {
+	if rl&hbit != 0 || rl&xbit != 0 {
 		return 0, ErrMsgTooLarge
 	}
 	// Grab our current last message block.
@@ -5542,7 +5557,7 @@ func (fs *fileStore) writeMsgRecord(seq uint64, ts int64, subj string, hdr, msg 
 	}
 
 	// Ask msg block to store in write through cache.
-	err = mb.writeMsgRecord(rl, seq, subj, hdr, msg, ts, fs.fip)
+	err = mb.writeMsgRecord(rl, seq, subj, hdr, msg, ts, fs.fip, ttl)
 
 	return rl, err
 }
@@ -5978,6 +5993,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 	}
 	// Mark fss activity.
 	mb.lsts = time.Now().UnixNano()
+	mb.ttls = 0
 
 	lbuf := uint32(len(buf))
 	var seq uint64
@@ -5988,9 +6004,11 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 		hdr := buf[index : index+msgHdrSize]
 		rl, slen := le.Uint32(hdr[0:]), int(le.Uint16(hdr[20:]))
 		seq = le.Uint64(hdr[4:])
+		ttl := rl&xbit != 0
 
 		// Clear any headers bit that could be set.
 		rl &^= hbit
+		rl &^= xbit
 		dlen := int(rl) - msgHdrSize
 
 		// Do some quick sanity checks here.
@@ -6010,6 +6028,12 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 		// Clear any erase bits.
 		erased := seq&ebit != 0
 		seq = seq &^ ebit
+
+		// TODO(nat): If we have lost the THW here, should we parse the header to find the
+		// original TTL from the message?
+		if ttl {
+			mb.ttls++
+		}
 
 		// We defer checksum checks to individual msg cache lookups to amortorize costs and
 		// not introduce latency for first message from a newly loaded block.
@@ -6489,6 +6513,8 @@ const (
 	tbit = 1 << 62
 	// Used to mark an index as deleted and non-existent.
 	dbit = 1 << 30
+	// Used for marking messages with expiries/TTLs.
+	xbit = 1 << 29
 )
 
 // Will do a lookup from cache.
@@ -6644,6 +6670,7 @@ func (mb *msgBlock) msgFromBuf(buf []byte, sm *StoreMsg, hh hash.Hash64) (*Store
 	rl := le.Uint32(hdr[0:])
 	hasHeaders := rl&hbit != 0
 	rl &^= hbit // clear header bit
+	rl &^= xbit // clear ttl bit
 	dlen := int(rl) - msgHdrSize
 	slen := int(le.Uint16(hdr[20:]))
 	// Simple sanity check.
@@ -7754,6 +7781,7 @@ func (mb *msgBlock) tombsLocked() []msgId {
 		rl, seq := le.Uint32(hdr[0:]), le.Uint64(hdr[4:])
 		// Clear any headers bit that could be set.
 		rl &^= hbit
+		rl &^= xbit
 		// Check for tombstones.
 		if seq&tbit != 0 {
 			ts := int64(le.Uint64(hdr[12:]))
@@ -8607,7 +8635,24 @@ func (fs *fileStore) _writeFullState(force bool) error {
 		fs.mu.Unlock()
 	}
 
-	return nil
+	return fs.writeTTLState()
+}
+
+func (fs *fileStore) writeTTLState() error {
+	if fs.ttls == nil {
+		return nil
+	}
+
+	fs.mu.RLock()
+	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, ttlStreamStateFile)
+	buf := fs.ttls.Encode(fs.state.LastSeq)
+	fs.mu.RUnlock()
+
+	<-dios
+	err := os.WriteFile(fn, buf, defaultFilePerms)
+	dios <- struct{}{}
+
+	return err
 }
 
 // Stop the current filestore.
