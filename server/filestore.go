@@ -246,6 +246,7 @@ type msgBlock struct {
 	syncAlways bool
 	noCompact  bool
 	closed     bool
+	ttls       uint64 // How many msgs have TTLs?
 
 	// Used to mock write failures.
 	mockWriteErr bool
@@ -1596,7 +1597,8 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 		}
 	}
 
-	if buf[0] != fullStateMagic || buf[1] != fullStateVersion {
+	version := buf[1]
+	if buf[0] != fullStateMagic || version < fullStateMinVersion || version > fullStateVersion {
 		os.Remove(fn)
 		fs.warn("Stream state magic and version mismatch")
 		return errCorruptState
@@ -1688,6 +1690,10 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 		fs.blks = make([]*msgBlock, 0, numBlocks)
 		for i := 0; i < int(numBlocks); i++ {
 			index, nbytes, fseq, fts, lseq, lts, numDeleted := uint32(readU64()), readU64(), readU64(), readI64(), readU64(), readI64(), readU64()
+			var ttls uint64
+			if version >= 2 {
+				ttls = readU64()
+			}
 			if bi < 0 {
 				os.Remove(fn)
 				return errCorruptState
@@ -1697,6 +1703,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 			atomic.StoreUint64(&mb.last.seq, lseq)
 			mb.msgs, mb.bytes = lseq-fseq+1, nbytes
 			mb.first.ts, mb.last.ts = fts+baseTime, lts+baseTime
+			mb.ttls = ttls
 			if numDeleted > 0 {
 				dmap, n, err := avl.Decode(buf[bi:])
 				if err != nil {
@@ -8358,9 +8365,13 @@ func (fs *fileStore) cancelSyncTimer() {
 	}
 }
 
+// The full state file is versioned.
+// - 0x1: original binary index.db format
+// - 0x2: adds support for TTL count field after num deleted
 const (
-	fullStateMagic   = uint8(11)
-	fullStateVersion = uint8(1)
+	fullStateMagic      = uint8(11)
+	fullStateMinVersion = uint8(1) // What is the minimum version we know how to parse?
+	fullStateVersion    = uint8(2) // What is the current version written out to index.db?
 )
 
 // This go routine periodically writes out our full stream state index.
@@ -8452,7 +8463,7 @@ func (fs *fileStore) _writeFullState(force bool) error {
 		binary.MaxVarintLen64 + fs.tsl + // NumSubjects + total subject length
 		numSubjects*(binary.MaxVarintLen64*4) + // psi record
 		binary.MaxVarintLen64 + // Num blocks.
-		len(fs.blks)*((binary.MaxVarintLen64*7)+avgDmapLen) + // msg blocks, avgDmapLen is est for dmaps
+		len(fs.blks)*((binary.MaxVarintLen64*8)+avgDmapLen) + // msg blocks, avgDmapLen is est for dmaps
 		binary.MaxVarintLen64 + 8 + 8 // last index + record checksum + full state checksum
 
 	// Do 4k on stack if possible.
@@ -8514,6 +8525,7 @@ func (fs *fileStore) _writeFullState(force bool) error {
 
 		numDeleted := mb.dmap.Size()
 		buf = binary.AppendUvarint(buf, uint64(numDeleted))
+		buf = binary.AppendUvarint(buf, mb.ttls) // Field is new in version 2
 		if numDeleted > 0 {
 			dmap, _ := mb.dmap.Encode(scratch[:0])
 			dmapTotalLen += len(dmap)
