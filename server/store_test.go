@@ -258,3 +258,47 @@ func TestStoreSubjectStateConsistency(t *testing.T) {
 		},
 	)
 }
+
+func TestStoreMaxMsgsPerUpdateBug(t *testing.T) {
+	config := func() StreamConfig {
+		return StreamConfig{Name: "TEST", Subjects: []string{"foo"}, MaxMsgsPer: 0}
+	}
+	testAllStoreAllPermutations(
+		t, false, config(),
+		func(t *testing.T, fs StreamStore) {
+			for i := 0; i < 5; i++ {
+				_, _, err := fs.StoreMsg("foo", nil, nil)
+				require_NoError(t, err)
+			}
+
+			ss := fs.State()
+			require_Equal(t, ss.Msgs, 5)
+			require_Equal(t, ss.FirstSeq, 1)
+			require_Equal(t, ss.LastSeq, 5)
+
+			// Update max messages per-subject from 0 (infinite) to 1.
+			// Since the per-subject limit was not specified before, messages should be removed upon config update.
+			cfg := config()
+			if _, ok := fs.(*fileStore); ok {
+				cfg.Storage = FileStorage
+			} else {
+				cfg.Storage = MemoryStorage
+			}
+			cfg.MaxMsgsPer = 1
+			err := fs.UpdateConfig(&cfg)
+			require_NoError(t, err)
+
+			// Only one message should remain.
+			ss = fs.State()
+			require_Equal(t, ss.Msgs, 1)
+			require_Equal(t, ss.FirstSeq, 5)
+			require_Equal(t, ss.LastSeq, 5)
+
+			// Update max messages per-subject from 0 (infinite) to an invalid value (< -1).
+			cfg.MaxMsgsPer = -2
+			err = fs.UpdateConfig(&cfg)
+			require_NoError(t, err)
+			require_Equal(t, cfg.MaxMsgsPer, -1)
+		},
+	)
+}
