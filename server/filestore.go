@@ -581,6 +581,9 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 	if cfg.Storage != FileStorage {
 		return fmt.Errorf("fileStore requires file storage type in config")
 	}
+	if cfg.MaxMsgsPer < -1 {
+		cfg.MaxMsgsPer = -1
+	}
 
 	fs.mu.Lock()
 	new_cfg := FileStreamInfo{Created: fs.cfg.Created, StreamConfig: *cfg}
@@ -611,7 +614,7 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 		fs.ageChk = nil
 	}
 
-	if fs.cfg.MaxMsgsPer > 0 && fs.cfg.MaxMsgsPer < old_cfg.MaxMsgsPer {
+	if fs.cfg.MaxMsgsPer > 0 && (old_cfg.MaxMsgsPer == 0 || fs.cfg.MaxMsgsPer < old_cfg.MaxMsgsPer) {
 		fs.enforceMsgPerSubjectLimit(true)
 	}
 	fs.mu.Unlock()
