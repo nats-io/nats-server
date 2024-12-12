@@ -3303,7 +3303,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 			}
 
 			if isRecovering || !mset.IsLeader() {
-				if err := mset.processSnapshot(ss); err != nil {
+				if err := mset.processSnapshot(ss, ce.Index); err != nil {
 					return err
 				}
 			}
@@ -8343,11 +8343,12 @@ type streamSyncRequest struct {
 	FirstSeq       uint64 `json:"first_seq"`
 	LastSeq        uint64 `json:"last_seq"`
 	DeleteRangesOk bool   `json:"delete_ranges"`
+	MinApplied     uint64 `json:"min_applied"`
 }
 
 // Given a stream state that represents a snapshot, calculate the sync request based on our current state.
 // Stream lock must be held.
-func (mset *stream) calculateSyncRequest(state *StreamState, snap *StreamReplicatedState) *streamSyncRequest {
+func (mset *stream) calculateSyncRequest(state *StreamState, snap *StreamReplicatedState, index uint64) *streamSyncRequest {
 	// Shouldn't happen, but consequences are pretty bad if we have the lock held and
 	// our caller tries to take the lock again on panic defer, as in processSnapshot.
 	if state == nil || snap == nil || mset.node == nil {
@@ -8357,7 +8358,7 @@ func (mset *stream) calculateSyncRequest(state *StreamState, snap *StreamReplica
 	if state.LastSeq >= snap.LastSeq {
 		return nil
 	}
-	return &streamSyncRequest{FirstSeq: state.LastSeq + 1, LastSeq: snap.LastSeq, Peer: mset.node.ID(), DeleteRangesOk: true}
+	return &streamSyncRequest{FirstSeq: state.LastSeq + 1, LastSeq: snap.LastSeq, Peer: mset.node.ID(), DeleteRangesOk: true, MinApplied: index}
 }
 
 // processSnapshotDeletes will update our current store based on the snapshot
@@ -8493,7 +8494,7 @@ var (
 )
 
 // Process a stream snapshot.
-func (mset *stream) processSnapshot(snap *StreamReplicatedState) (e error) {
+func (mset *stream) processSnapshot(snap *StreamReplicatedState, index uint64) (e error) {
 	// Update any deletes, etc.
 	mset.processSnapshotDeletes(snap)
 	mset.setCLFS(snap.Failed)
@@ -8501,7 +8502,7 @@ func (mset *stream) processSnapshot(snap *StreamReplicatedState) (e error) {
 	mset.mu.Lock()
 	var state StreamState
 	mset.store.FastState(&state)
-	sreq := mset.calculateSyncRequest(&state, snap)
+	sreq := mset.calculateSyncRequest(&state, snap, index)
 
 	s, js, subject, n, st := mset.srv, mset.js, mset.sa.Sync, mset.node, mset.cfg.Storage
 	qname := fmt.Sprintf("[ACC:%s] stream '%s' snapshot", mset.acc.Name, mset.cfg.Name)
@@ -8639,7 +8640,7 @@ RETRY:
 		mset.mu.RLock()
 		var state StreamState
 		mset.store.FastState(&state)
-		sreq = mset.calculateSyncRequest(&state, snap)
+		sreq = mset.calculateSyncRequest(&state, snap, index)
 		mset.mu.RUnlock()
 		if sreq == nil {
 			return nil
@@ -9187,6 +9188,22 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 
 	// Setup sequences to walk through.
 	seq, last := sreq.FirstSeq, sreq.LastSeq
+
+	// The follower received a snapshot from another leader, and we've become leader since.
+	// We have an up-to-date log but could be behind on applies. We must wait until we've reached the minimum required.
+	// The follower will automatically retry after a timeout, so we can safely return here.
+	if node := mset.raftNode(); node != nil {
+		index, _, applied := node.Progress()
+		// Only skip if our log has enough entries, and they could be applied in the future.
+		if index >= sreq.MinApplied && applied < sreq.MinApplied {
+			return
+		}
+		// We know here we've either applied enough entries, or our log doesn't have enough entries.
+		// In the latter case the request expects us to have more. Just continue and value availability here.
+		// This should only be possible if the logs have already desynced, and we shouldn't have become leader
+		// in the first place. Not much we can do here in this (hypothetical) scenario.
+	}
+
 	mset.setCatchupPeer(sreq.Peer, last-seq)
 
 	// Check if we can compress during this.
