@@ -5492,7 +5492,7 @@ func TestHealthzStatusUnavailable(t *testing.T) {
 	}{
 		{
 			"healthz",
-			fmt.Sprintf("http://%s/healthz", s.MonitorAddr().String()),
+			fmt.Sprintf("http://%s/healthz?", s.MonitorAddr().String()),
 			http.StatusServiceUnavailable,
 			"unavailable",
 		},
@@ -5510,7 +5510,16 @@ func TestHealthzStatusUnavailable(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			expectHealthStatus(t, test.url, test.statusCode, test.wantStatus)
+			t.Run("no-details", func(t *testing.T) {
+				expectHealthStatus(t, test.url, test.statusCode, test.wantStatus)
+			})
+			t.Run("with-details", func(t *testing.T) {
+				detailsUrl := fmt.Sprintf("%s&details=true", test.url)
+				if test.wantStatus != "ok" {
+					test.wantStatus = "error"
+				}
+				expectHealthStatus(t, detailsUrl, test.statusCode, test.wantStatus)
+			})
 		})
 	}
 }
