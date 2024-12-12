@@ -267,7 +267,7 @@ func TestStoreMaxMsgsPerUpdateBug(t *testing.T) {
 		t, false, config(),
 		func(t *testing.T, fs StreamStore) {
 			for i := 0; i < 5; i++ {
-				_, _, err := fs.StoreMsg("foo", nil, nil)
+				_, _, err := fs.StoreMsg("foo", nil, nil, 0)
 				require_NoError(t, err)
 			}
 

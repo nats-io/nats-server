@@ -1387,7 +1387,7 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 		rl, slen := le.Uint32(hdr[0:]), le.Uint16(hdr[20:])
 
 		hasHeaders := rl&hbit != 0
-		_ = rl&xbit != 0
+		hasTTL := rl&xbit != 0
 		// Clear any headers bit that could be set.
 		rl &^= hbit
 		rl &^= xbit
@@ -1464,6 +1464,10 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 		if !mb.dmap.Exists(seq) {
 			mb.msgs++
 			mb.bytes += uint64(rl)
+			if hasTTL {
+				mb.ttls++
+				// TODO(nat): Add expiry to THW here.
+			}
 		}
 
 		// Check for any gaps from compaction, meaning no ebit entry.
@@ -1806,6 +1810,37 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 		return errCorruptState
 	}
 
+	return fs.recoverTTLState()
+}
+
+func (fs *fileStore) recoverTTLState() error {
+	// See if we have a timed hash wheel for TTLs.
+	<-dios
+	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, ttlStreamStateFile)
+	buf, err := os.ReadFile(fn)
+	dios <- struct{}{}
+
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		os.Remove(fn)
+		return err
+	}
+
+	fs.ttls = thw.NewHashWheel()
+	lseq, err := fs.ttls.Decode(buf)
+	if err != nil {
+		fs.warn("Error decoding TTL state: %s", err)
+		// TODO(nat): return errCorruptState
+		return nil
+	}
+	if lseq != fs.state.LastSeq {
+		fs.warn("TTL state is outdated; stream last seq %d vs TTL last seq %d", fs.state.LastSeq, lseq)
+		// TODO(nat): work out what the TTLs are of the messages after this
+		// point.
+	}
+	fs.resetAgeChk(0)
 	return nil
 }
 

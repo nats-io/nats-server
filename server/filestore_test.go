@@ -8324,3 +8324,49 @@ func TestFileStoreTTL(t *testing.T) {
 	require_Equal(t, ss.LastSeq, 10)
 	require_Equal(t, ss.Msgs, 0)
 }
+
+func TestFileStoreRestartTTL(t *testing.T) {
+	dir := t.TempDir()
+
+	t.Run("BeforeRestart", func(t *testing.T) {
+		fs, err := newFileStore(
+			FileStoreConfig{StoreDir: dir},
+			StreamConfig{Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage})
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		ttl := time.Now().Add(time.Second * 5).UnixNano()
+
+		for i := 0; i < 10; i++ {
+			_, _, err = fs.StoreMsg("test", nil, nil, ttl)
+			require_NoError(t, err)
+		}
+
+		var ss StreamState
+		fs.FastState(&ss)
+		require_Equal(t, ss.FirstSeq, 1)
+		require_Equal(t, ss.LastSeq, 10)
+		require_Equal(t, ss.Msgs, 10)
+	})
+
+	t.Run("AfterRestart", func(t *testing.T) {
+		fs, err := newFileStore(
+			FileStoreConfig{StoreDir: dir},
+			StreamConfig{Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage})
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		var ss StreamState
+		fs.FastState(&ss)
+		require_Equal(t, ss.FirstSeq, 1)
+		require_Equal(t, ss.LastSeq, 10)
+		require_Equal(t, ss.Msgs, 10)
+
+		time.Sleep(time.Second * 6)
+
+		fs.FastState(&ss)
+		require_Equal(t, ss.FirstSeq, 11)
+		require_Equal(t, ss.LastSeq, 10)
+		require_Equal(t, ss.Msgs, 0)
+	})
+}
