@@ -3228,10 +3228,11 @@ func (s *Server) HandleHealthz(w http.ResponseWriter, r *http.Request) {
 		Details:       includeDetails,
 	})
 
-	code := http.StatusOK
+	code := hs.StatusCode
 	if hs.Error != _EMPTY_ {
 		s.Warnf("Healthcheck failed: %q", hs.Error)
-		code = hs.StatusCode
+	} else if len(hs.Errors) != 0 {
+		s.Warnf("Healthcheck failed: %d errors", len(hs.Errors))
 	}
 	// Remove StatusCode from JSON representation when responding via HTTP
 	// since this is already in the response.
