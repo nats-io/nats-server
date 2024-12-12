@@ -85,10 +85,13 @@ func (ms *memStore) UpdateConfig(cfg *StreamConfig) error {
 		ms.ageChk = nil
 	}
 	// Make sure to update MaxMsgsPer
+	if cfg.MaxMsgsPer < -1 {
+		cfg.MaxMsgsPer = -1
+	}
 	maxp := ms.maxp
 	ms.maxp = cfg.MaxMsgsPer
-	// If the value is smaller we need to enforce that.
-	if ms.maxp != 0 && ms.maxp < maxp {
+	// If the value is smaller, or was unset before, we need to enforce that.
+	if ms.maxp > 0 && (maxp == 0 || ms.maxp < maxp) {
 		lm := uint64(ms.maxp)
 		ms.fss.Iter(func(subj []byte, ss *SimpleState) bool {
 			if ss.Msgs > lm {
