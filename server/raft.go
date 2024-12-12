@@ -1311,11 +1311,6 @@ func (n *raft) isCurrent(includeForwardProgress bool) bool {
 		return true
 	}
 
-	// Check here on catchup status.
-	if cs := n.catchup; cs != nil && n.pterm >= cs.cterm && n.pindex >= cs.cindex {
-		n.cancelCatchup()
-	}
-
 	// Check to see that we have heard from the current leader lately.
 	if n.leader != noLeader && n.leader != n.id && n.catchup == nil {
 		okInterval := int64(hbInterval) * 2
@@ -1326,7 +1321,9 @@ func (n *raft) isCurrent(includeForwardProgress bool) bool {
 		}
 	}
 	if cs := n.catchup; cs != nil {
+		// We're actively catching up, can't mark current even if commit==applied.
 		n.debug("Not current, still catching up pindex=%d, cindex=%d", n.pindex, cs.cindex)
+		return false
 	}
 
 	if n.commit == n.applied {
