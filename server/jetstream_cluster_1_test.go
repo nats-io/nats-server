@@ -6812,6 +6812,48 @@ func TestJetStreamClusterCatchupLoadNextMsgTooManyDeletes(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterConsumerInfoAfterCreate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nl := c.randomNonLeader()
+	nc, js := jsClientConnect(t, nl)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// We pause applies for the server we're connected to.
+	// This is fine for the RAFT log and allowing the consumer to be created,
+	// but we will not be able to apply the consumer assignment for some time.
+	mjs := nl.getJetStream()
+	require_NotNil(t, js)
+	mg := mjs.getMetaGroup()
+	require_NotNil(t, mg)
+	err = mg.(*raft).PauseApply()
+	require_NoError(t, err)
+
+	// Add consumer.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "CONSUMER"})
+	require_NoError(t, err)
+
+	// Consumer info should not fail, this server should not short-circuit because
+	// it was not able to apply the consumer assignment.
+	_, err = js.ConsumerInfo("TEST", "CONSUMER")
+	require_NoError(t, err)
+
+	// Resume applies.
+	mg.(*raft).ResumeApply()
+
+	// Check consumer info still works.
+	_, err = js.ConsumerInfo("TEST", "CONSUMER")
+	require_NoError(t, err)
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
