@@ -3412,6 +3412,7 @@ func TestJetStreamClusterExtendedAccountInfo(t *testing.T) {
 	// Go client will lag so use direct for now.
 	getAccountInfo := func() *nats.AccountInfo {
 		t.Helper()
+
 		info, err := js.AccountInfo()
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
@@ -3436,13 +3437,10 @@ func TestJetStreamClusterExtendedAccountInfo(t *testing.T) {
 	js.ConsumerInfo("TEST-2", "NO-CONSUMER")
 	js.ConsumerInfo("TEST-3", "NO-CONSUMER")
 
-	checkFor(t, 2*time.Second, 250*time.Millisecond, func() error {
-		ai = getAccountInfo()
-		if ai.API.Errors != 4 {
-			return fmt.Errorf("Expected 4 API calls to be errors, got %d", ai.API.Errors)
-		}
-		return nil
-	})
+	ai = getAccountInfo()
+	if ai.API.Errors != 4 {
+		t.Fatalf("Expected 4 API calls to be errors, got %d", ai.API.Errors)
+	}
 }
 
 func TestJetStreamClusterPeerRemovalAPI(t *testing.T) {
@@ -4321,8 +4319,7 @@ func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
 	if err := js.DeleteConsumer("NO-Q", "dlc"); !notAvailableErr(err) {
 		t.Fatalf("Expected an 'unavailable' error, got %v", err)
 	}
-	// Since we did not create the consumer our bypass will respond from the local server.
-	if _, err := js.ConsumerInfo("NO-Q", "dlc"); err != nats.ErrConsumerNotFound {
+	if _, err := js.ConsumerInfo("NO-Q", "dlc"); !notAvailableErr(err) {
 		t.Fatalf("Expected an 'unavailable' error, got %v", err)
 	}
 	// Listers
@@ -6901,6 +6898,48 @@ func TestJetStreamClusterCatchupMustStallWhenBehindOnApplies(t *testing.T) {
 	msg, err = sub.NextMsg(time.Second)
 	require_NoError(t, err)
 	require_Len(t, len(msg.Data), 0)
+}
+
+func TestJetStreamClusterConsumerInfoAfterCreate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nl := c.randomNonLeader()
+	nc, js := jsClientConnect(t, nl)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// We pause applies for the server we're connected to.
+	// This is fine for the RAFT log and allowing the consumer to be created,
+	// but we will not be able to apply the consumer assignment for some time.
+	mjs := nl.getJetStream()
+	require_NotNil(t, js)
+	mg := mjs.getMetaGroup()
+	require_NotNil(t, mg)
+	err = mg.(*raft).PauseApply()
+	require_NoError(t, err)
+
+	// Add consumer.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "CONSUMER"})
+	require_NoError(t, err)
+
+	// Consumer info should not fail, this server should not short-circuit because
+	// it was not able to apply the consumer assignment.
+	_, err = js.ConsumerInfo("TEST", "CONSUMER")
+	require_NoError(t, err)
+
+	// Resume applies.
+	mg.(*raft).ResumeApply()
+
+	// Check consumer info still works.
+	_, err = js.ConsumerInfo("TEST", "CONSUMER")
+	require_NoError(t, err)
 }
 
 //
