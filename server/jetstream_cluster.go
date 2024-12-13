@@ -224,11 +224,7 @@ func (s *Server) getJetStreamCluster() (*jetStream, *jetStreamCluster) {
 }
 
 func (s *Server) JetStreamIsClustered() bool {
-	js := s.getJetStream()
-	if js == nil {
-		return false
-	}
-	return js.isClustered()
+	return s.jsClustered.Load()
 }
 
 func (s *Server) JetStreamIsLeader() bool {
