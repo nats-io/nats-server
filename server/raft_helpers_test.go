@@ -28,6 +28,7 @@ import (
 type stateMachine interface {
 	server() *Server
 	node() RaftNode
+	waitGroup() *sync.WaitGroup
 	// This will call forward as needed so can be called on any node.
 	propose(data []byte)
 	// When entries have been committed and can be applied.
@@ -157,8 +158,12 @@ func (c *cluster) createRaftGroupWithPeers(name string, servers []*Server, smf s
 // Driver program for the state machine.
 // Should be run in its own go routine.
 func smLoop(sm stateMachine) {
-	s, n := sm.server(), sm.node()
+	s, n, wg := sm.server(), sm.node(), sm.waitGroup()
 	qch, lch, aq := n.QuitC(), n.LeadChangeC(), n.ApplyQ()
+
+	// Wait group used to allow waiting until we exit from here.
+	wg.Add(1)
+	defer wg.Done()
 
 	for {
 		select {
@@ -185,6 +190,7 @@ type stateAdder struct {
 	sync.Mutex
 	s   *Server
 	n   RaftNode
+	wg  sync.WaitGroup
 	cfg *RaftConfig
 	sum int64
 	lch chan bool
@@ -196,10 +202,17 @@ func (a *stateAdder) server() *Server {
 	defer a.Unlock()
 	return a.s
 }
+
 func (a *stateAdder) node() RaftNode {
 	a.Lock()
 	defer a.Unlock()
 	return a.n
+}
+
+func (a *stateAdder) waitGroup() *sync.WaitGroup {
+	a.Lock()
+	defer a.Unlock()
+	return &a.wg
 }
 
 func (a *stateAdder) propose(data []byte) {
@@ -243,10 +256,10 @@ func (a *stateAdder) proposeDelta(delta int64) {
 
 // Stop the group.
 func (a *stateAdder) stop() {
-	a.Lock()
-	defer a.Unlock()
-	a.n.Stop()
-	a.n.WaitForStop()
+	n, wg := a.node(), a.waitGroup()
+	n.Stop()
+	n.WaitForStop()
+	wg.Wait()
 }
 
 // Restart the group
