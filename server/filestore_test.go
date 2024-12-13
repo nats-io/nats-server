@@ -5030,7 +5030,7 @@ func TestFileStoreRecaluclateFirstForSubjBug(t *testing.T) {
 	mb.clearCacheAndOffset()
 	// Now call with start sequence of 1, the old one
 	// This will panic without the fix.
-	mb.recalculateForSubj("foo", ss)
+	mb.recalculateFirstForSubj("foo", 1, ss)
 	// Make sure it was update properly.
 	require_True(t, *ss == SimpleState{Msgs: 1, First: 3, Last: 3, firstNeedsUpdate: false})
 }

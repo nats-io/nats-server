@@ -246,6 +246,7 @@ func (a *stateAdder) stop() {
 	a.Lock()
 	defer a.Unlock()
 	a.n.Stop()
+	a.n.WaitForStop()
 }
 
 // Restart the group
@@ -272,6 +273,11 @@ func (a *stateAdder) restart() {
 	if err != nil {
 		panic(err)
 	}
+
+	// Must reset in-memory state.
+	// A real restart would not preserve it, but more importantly we have no way to detect if we
+	// already applied an entry. So, the sum must only be updated based on append entries or snapshots.
+	a.sum = 0
 
 	a.n, err = a.s.startRaftNode(globalAccountName, a.cfg, pprofLabels{})
 	if err != nil {

@@ -166,8 +166,6 @@ type SimpleState struct {
 
 	// Internal usage for when the first needs to be updated before use.
 	firstNeedsUpdate bool
-	// Internal usage for when the last needs to be updated before use.
-	lastNeedsUpdate bool
 }
 
 // LostStreamData indicates msgs that have been lost.
