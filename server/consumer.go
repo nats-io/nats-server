@@ -5364,12 +5364,18 @@ func (o *consumer) selectStartingSeqNo() {
 			o.sseq = o.cfg.OptStartSeq
 		}
 
-		if state.FirstSeq == 0 {
+		if state.FirstSeq == 0 && (o.cfg.Direct || o.cfg.OptStartSeq == 0) {
+			// If the stream is empty, deliver only new.
+			// But only if mirroring/sourcing, or start seq is unset, otherwise need to respect provided value.
 			o.sseq = 1
-		} else if o.sseq < state.FirstSeq {
-			o.sseq = state.FirstSeq
-		} else if o.sseq > state.LastSeq {
+		} else if o.sseq > state.LastSeq && (o.cfg.Direct || o.cfg.OptStartSeq == 0) {
+			// If selected sequence is in the future, clamp back down.
+			// But only if mirroring/sourcing, or start seq is unset, otherwise need to respect provided value.
 			o.sseq = state.LastSeq + 1
+		} else if o.sseq < state.FirstSeq {
+			// If the first sequence is further ahead than the starting sequence,
+			// there are no messages there anymore, so move the sequence up.
+			o.sseq = state.FirstSeq
 		}
 	}
 

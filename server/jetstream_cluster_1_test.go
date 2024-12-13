@@ -7323,6 +7323,51 @@ func TestJetStreamClusterConsumerHealthCheckMustNotRecreate(t *testing.T) {
 	checkNodeIsClosed(ca)
 }
 
+func TestJetStreamClusterRespectConsumerStartSeq(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Create replicated stream.
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// We could have published messages into the stream that have not yet been applied on the follower.
+	// If we create a consumer with a starting sequence in the future, we must respect it.
+	ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+		DeliverPolicy: nats.DeliverByStartSequencePolicy,
+		OptStartSeq:   20,
+	})
+	require_NoError(t, err)
+	require_Equal(t, ci.Delivered.Stream, 19)
+
+	// Same thing if the first sequence is not 0.
+	err = js.PurgeStream("TEST", &nats.StreamPurgeRequest{Sequence: 10})
+	require_NoError(t, err)
+
+	ci, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		DeliverPolicy: nats.DeliverByStartSequencePolicy,
+		OptStartSeq:   20,
+	})
+	require_NoError(t, err)
+	require_Equal(t, ci.Delivered.Stream, 19)
+
+	// Only if we're requested to start at a sequence that's not available anymore
+	// can we safely move it up. That data is gone already, so can't do anything else.
+	ci, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		DeliverPolicy: nats.DeliverByStartSequencePolicy,
+		OptStartSeq:   5,
+	})
+	require_NoError(t, err)
+	require_Equal(t, ci.Delivered.Stream, 9)
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
