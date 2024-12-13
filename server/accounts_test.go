@@ -388,7 +388,7 @@ func TestAccountFromOptions(t *testing.T) {
 	s := New(&opts)
 	defer s.Shutdown()
 
-	ta := s.numReservedAccounts() + 2
+	ta := 2
 	if la := s.numAccounts(); la != ta {
 		t.Fatalf("Expected to have a server with %d active accounts, got %v", ta, la)
 	}
