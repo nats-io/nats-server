@@ -2616,6 +2616,10 @@ func (fs *fileStore) numFilteredPendingWithLast(filter string, last bool, ss *Si
 	// Always reset.
 	ss.First, ss.Last, ss.Msgs = 0, 0, 0
 
+	if filter == _EMPTY_ {
+		filter = fwcs
+	}
+
 	// We do need to figure out the first and last sequences.
 	wc := subjectHasWildcard(filter)
 	start, stop := uint32(math.MaxUint32), uint32(0)
@@ -7832,6 +7836,17 @@ func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64) {
 
 	ss.Msgs--
 
+	// Only one left.
+	if ss.Msgs == 1 {
+		if seq == ss.Last {
+			ss.Last = ss.First
+		} else {
+			ss.First = ss.Last
+		}
+		ss.firstNeedsUpdate = false
+		return
+	}
+
 	// We can lazily calculate the first sequence when needed.
 	ss.firstNeedsUpdate = seq == ss.First || ss.firstNeedsUpdate
 }
@@ -7857,12 +7872,8 @@ func (mb *msgBlock) recalculateFirstForSubj(subj string, startSeq uint64, ss *Si
 		startSlot = 0
 	}
 
-	fseq := startSeq + 1
-	if mbFseq := atomic.LoadUint64(&mb.first.seq); fseq < mbFseq {
-		fseq = mbFseq
-	}
 	var le = binary.LittleEndian
-	for slot := startSlot; slot < len(mb.cache.idx); slot++ {
+	for slot, fseq := startSlot, atomic.LoadUint64(&mb.first.seq); slot < len(mb.cache.idx); slot++ {
 		bi := mb.cache.idx[slot] &^ hbit
 		if bi == dbit {
 			// delete marker so skip.
