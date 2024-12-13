@@ -647,19 +647,24 @@ func TestWSReadPongFrame(t *testing.T) {
 
 func TestWSReadCloseFrame(t *testing.T) {
 	for _, test := range []struct {
-		name    string
-		payload []byte
+		name     string
+		noStatus bool
+		payload  []byte
 	}{
-		{"without payload", nil},
-		{"with payload", []byte("optional payload")},
+		{"status without payload", false, nil},
+		{"status with payload", false, []byte("optional payload")},
+		{"no status no payload", true, nil},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			c, ri, tr := testWSSetupForRead()
-			// a close message has a status in 2 bytes + optional payload
-			payload := make([]byte, 2+len(test.payload))
-			binary.BigEndian.PutUint16(payload[:2], wsCloseStatusNormalClosure)
-			if len(test.payload) > 0 {
-				copy(payload[2:], test.payload)
+			var payload []byte
+			if !test.noStatus {
+				// a close message has a status in 2 bytes + optional payload
+				payload = make([]byte, 2+len(test.payload))
+				binary.BigEndian.PutUint16(payload[:2], wsCloseStatusNormalClosure)
+				if len(test.payload) > 0 {
+					copy(payload[2:], test.payload)
+				}
 			}
 			close := testWSCreateClientMsg(wsCloseMessage, 1, true, false, payload)
 			// Have a normal frame prior to close to make sure that wsRead returns
@@ -685,7 +690,11 @@ func TestWSReadCloseFrame(t *testing.T) {
 			if n := len(nb); n == 0 {
 				t.Fatalf("Expected buffers, got %v", n)
 			}
-			if expected := 2 + 2 + len(test.payload); expected != len(nb[0]) {
+			if test.noStatus {
+				if expected := 2; expected != len(nb[0]) {
+					t.Fatalf("Expected buffer to be %v bytes long, got %v", expected, len(nb[0]))
+				}
+			} else if expected := 2 + 2 + len(test.payload); expected != len(nb[0]) {
 				t.Fatalf("Expected buffer to be %v bytes long, got %v", expected, len(nb[0]))
 			}
 			b := nb[0][0]
@@ -695,12 +704,14 @@ func TestWSReadCloseFrame(t *testing.T) {
 			if b&byte(wsCloseMessage) == 0 {
 				t.Fatalf("Should have been a CLOSE, it wasn't: %v", b)
 			}
-			if status := binary.BigEndian.Uint16(nb[0][2:4]); status != wsCloseStatusNormalClosure {
-				t.Fatalf("Expected status to be %v, got %v", wsCloseStatusNormalClosure, status)
-			}
-			if len(test.payload) > 0 {
-				if !bytes.Equal(nb[0][4:], test.payload) {
-					t.Fatalf("Unexpected content: %s", nb[0][4:])
+			if !test.noStatus {
+				if status := binary.BigEndian.Uint16(nb[0][2:4]); status != wsCloseStatusNormalClosure {
+					t.Fatalf("Expected status to be %v, got %v", wsCloseStatusNormalClosure, status)
+				}
+				if len(test.payload) > 0 {
+					if !bytes.Equal(nb[0][4:], test.payload) {
+						t.Fatalf("Unexpected content: %s", nb[0][4:])
+					}
 				}
 			}
 		})
@@ -778,7 +789,6 @@ func TestWSCloseFrameWithPartialOrInvalid(t *testing.T) {
 
 	// Now test close with invalid status size (1 instead of 2 bytes)
 	c, ri, tr = testWSSetupForRead()
-	payload[0] = 100
 	binary.BigEndian.PutUint16(payload, wsCloseStatusNormalClosure)
 	closeMsg = testWSCreateClientMsg(wsCloseMessage, 1, true, false, payload[:1])
 
@@ -795,14 +805,15 @@ func TestWSCloseFrameWithPartialOrInvalid(t *testing.T) {
 	if n := len(bufs); n != 0 {
 		t.Fatalf("Unexpected buffer returned: %v", n)
 	}
-	// A CLOSE should have been queued with the payload of the original close message.
+	// Since no status was received, the server will send a close frame without
+	// status code nor payload.
 	c.mu.Lock()
 	nb, _ = c.collapsePtoNB()
 	c.mu.Unlock()
 	if n := len(nb); n == 0 {
 		t.Fatalf("Expected buffers, got %v", n)
 	}
-	if expected := 2 + 2; expected != len(nb[0]) {
+	if expected := 2; expected != len(nb[0]) {
 		t.Fatalf("Expected buffer to be %v bytes long, got %v", expected, len(nb[0]))
 	}
 	b = nb[0][0]
@@ -811,13 +822,6 @@ func TestWSCloseFrameWithPartialOrInvalid(t *testing.T) {
 	}
 	if b&byte(wsCloseMessage) == 0 {
 		t.Fatalf("Should have been a CLOSE, it wasn't: %v", b)
-	}
-	// Since satus was not valid, we should get wsCloseStatusNoStatusReceived
-	if status := binary.BigEndian.Uint16(nb[0][2:4]); status != wsCloseStatusNoStatusReceived {
-		t.Fatalf("Expected status to be %v, got %v", wsCloseStatusNoStatusReceived, status)
-	}
-	if len(nb[0][:]) != 4 {
-		t.Fatalf("Unexpected content: %s", nb[0][2:])
 	}
 }
 
@@ -1015,9 +1019,9 @@ func TestWSEnqueueCloseMsg(t *testing.T) {
 		{BadClientProtocolVersion, wsCloseStatusProtocolError},
 		{MaxPayloadExceeded, wsCloseStatusMessageTooBig},
 		{ServerShutdown, wsCloseStatusGoingAway},
-		{WriteError, wsCloseStatusAbnormalClosure},
-		{ReadError, wsCloseStatusAbnormalClosure},
-		{StaleConnection, wsCloseStatusAbnormalClosure},
+		{WriteError, wsCloseStatusGoingAway},
+		{ReadError, wsCloseStatusGoingAway},
+		{StaleConnection, wsCloseStatusGoingAway},
 		{ClosedState(254), wsCloseStatusInternalSrvError},
 	} {
 		t.Run(test.reason.String(), func(t *testing.T) {

@@ -67,7 +67,6 @@ const (
 	wsCloseStatusProtocolError      = 1002
 	wsCloseStatusUnsupportedData    = 1003
 	wsCloseStatusNoStatusReceived   = 1005
-	wsCloseStatusAbnormalClosure    = 1006
 	wsCloseStatusInvalidPayloadData = 1007
 	wsCloseStatusPolicyViolation    = 1008
 	wsCloseStatusMessageTooBig      = 1009
@@ -458,9 +457,21 @@ func (c *client) wsHandleControlFrame(r *wsReadInfo, frameType wsOpCode, nc io.R
 				}
 			}
 		}
-		clm := wsCreateCloseMessage(status, body)
+		// If the status indicates that nothing was received, then we don't
+		// send anything back.
+		// From https://datatracker.ietf.org/doc/html/rfc6455#section-7.4
+		// it says that code 1005 is a reserved value and MUST NOT be set as a
+		// status code in a Close control frame by an endpoint.  It is
+		// designated for use in applications expecting a status code to indicate
+		// that no status code was actually present.
+		var clm []byte
+		if status != wsCloseStatusNoStatusReceived {
+			clm = wsCreateCloseMessage(status, body)
+		}
 		c.wsEnqueueControlMessage(wsCloseMessage, clm)
-		nbPoolPut(clm) // wsEnqueueControlMessage has taken a copy.
+		if len(clm) > 0 {
+			nbPoolPut(clm) // wsEnqueueControlMessage has taken a copy.
+		}
 		// Return io.EOF so that readLoop will close the connection as ClientClosed
 		// after processing pending buffers.
 		return pos, io.EOF
@@ -647,10 +658,11 @@ func (c *client) wsEnqueueCloseMessage(reason ClosedState) {
 		status = wsCloseStatusProtocolError
 	case MaxPayloadExceeded:
 		status = wsCloseStatusMessageTooBig
-	case ServerShutdown:
+	case WriteError, ReadError, StaleConnection, ServerShutdown:
+		// We used to have WriteError, ReadError and StaleConnection result in
+		// code 1006, which the spec says that it must not be used to set the
+		// status in the close message. So using this one instead.
 		status = wsCloseStatusGoingAway
-	case WriteError, ReadError, StaleConnection:
-		status = wsCloseStatusAbnormalClosure
 	default:
 		status = wsCloseStatusInternalSrvError
 	}
