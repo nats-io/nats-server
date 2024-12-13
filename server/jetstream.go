@@ -461,8 +461,6 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 		if err := s.enableJetStreamClustering(); err != nil {
 			return err
 		}
-		// Set our atomic bool to clustered.
-		s.jsClustered.Store(true)
 	}
 
 	// Mark when we are up and running.
@@ -967,8 +965,6 @@ func (s *Server) shutdownJetStream() {
 			cc.c = nil
 		}
 		cc.meta = nil
-		// Set our atomic bool to false.
-		s.jsClustered.Store(false)
 	}
 	js.mu.Unlock()
 
