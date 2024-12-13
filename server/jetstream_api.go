@@ -158,9 +158,8 @@ const (
 
 	// JSApiConsumerInfo is for obtaining general information about a consumer.
 	// Will return JSON response.
-	JSApiConsumerInfoPre = "$JS.API.CONSUMER.INFO."
-	JSApiConsumerInfo    = "$JS.API.CONSUMER.INFO.*.*"
-	JSApiConsumerInfoT   = "$JS.API.CONSUMER.INFO.%s.%s"
+	JSApiConsumerInfo  = "$JS.API.CONSUMER.INFO.*.*"
+	JSApiConsumerInfoT = "$JS.API.CONSUMER.INFO.%s.%s"
 
 	// JSApiConsumerDelete is the endpoint to delete consumers.
 	// Will return JSON response.
@@ -969,15 +968,6 @@ func (s *Server) sendAPIErrResponse(ci *ClientInfo, acc *Account, subject, reply
 	acc.trackAPIErr()
 	if reply != _EMPTY_ {
 		s.sendInternalAccountMsg(nil, reply, response)
-	}
-	s.sendJetStreamAPIAuditAdvisory(ci, acc, subject, request, response)
-}
-
-// Use the account acc to send actual result from non-system account.
-func (s *Server) sendAPIErrResponseFromAccount(ci *ClientInfo, acc *Account, subject, reply, request, response string) {
-	acc.trackAPIErr()
-	if reply != _EMPTY_ {
-		s.sendInternalAccountMsg(acc, reply, response)
 	}
 	s.sendJetStreamAPIAuditAdvisory(ci, acc, subject, request, response)
 }
@@ -4241,55 +4231,6 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, _ *Account,
 	resp.Limit = JSApiListLimit
 	resp.Offset = offset
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
-}
-
-// This will be a quick check on point of entry for a consumer that does
-// not exist. If that is the case we will return the response and return
-// true which will shortcut the service import to alleviate pressure on
-// the JS API queues.
-func (s *Server) jsConsumerProcessMissing(c *client, acc *Account) bool {
-	subject := bytesToString(c.pa.subject)
-	streamName, consumerName := streamNameFromSubject(subject), consumerNameFromSubject(subject)
-
-	// Check to make sure the consumer is assigned.
-	// All JS servers will have the meta information.
-	js, cc := s.getJetStreamCluster()
-	if js == nil || cc == nil {
-		return false
-	}
-	js.mu.RLock()
-	sa, ca := js.assignments(acc.Name, streamName, consumerName)
-	js.mu.RUnlock()
-
-	// If we have a consumer assignment return false here and let normally processing takeover.
-	if ca != nil {
-		return false
-	}
-
-	// We can't find the consumer, so mimic what would be the errors below.
-	var resp = JSApiConsumerInfoResponse{ApiResponse: ApiResponse{Type: JSApiConsumerInfoResponseType}}
-
-	// Need to make subject and reply real here for queued response processing.
-	subject = string(c.pa.subject)
-	reply := string(c.pa.reply)
-
-	ci := c.getClientInfo(true)
-
-	if hasJS, doErr := acc.checkJetStream(); !hasJS {
-		if doErr {
-			resp.Error = NewJSNotEnabledForAccountError()
-			s.sendAPIErrResponseFromAccount(ci, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
-		}
-	} else if sa == nil {
-		resp.Error = NewJSStreamNotFoundError()
-		s.sendAPIErrResponseFromAccount(ci, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
-	} else {
-		// If we are here the consumer is not present.
-		resp.Error = NewJSConsumerNotFoundError()
-		s.sendAPIErrResponseFromAccount(ci, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
-	}
-
-	return true
 }
 
 // Request for information about an consumer.

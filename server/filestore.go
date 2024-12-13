@@ -580,6 +580,9 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 	if cfg.Storage != FileStorage {
 		return fmt.Errorf("fileStore requires file storage type in config")
 	}
+	if cfg.MaxMsgsPer < -1 {
+		cfg.MaxMsgsPer = -1
+	}
 
 	fs.mu.Lock()
 	new_cfg := FileStreamInfo{Created: fs.cfg.Created, StreamConfig: *cfg}
@@ -610,7 +613,7 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 		fs.ageChk = nil
 	}
 
-	if fs.cfg.MaxMsgsPer > 0 && fs.cfg.MaxMsgsPer < old_cfg.MaxMsgsPer {
+	if fs.cfg.MaxMsgsPer > 0 && (old_cfg.MaxMsgsPer == 0 || fs.cfg.MaxMsgsPer < old_cfg.MaxMsgsPer) {
 		fs.enforceMsgPerSubjectLimit(true)
 	}
 	fs.mu.Unlock()
@@ -2312,8 +2315,8 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 		fseq = lseq + 1
 		for _, subj := range subs {
 			ss, _ := mb.fss.Find(stringToBytes(subj))
-			if ss != nil && ss.firstNeedsUpdate {
-				mb.recalculateFirstForSubj(subj, ss.First, ss)
+			if ss != nil && (ss.firstNeedsUpdate || ss.lastNeedsUpdate) {
+				mb.recalculateForSubj(subj, ss)
 			}
 			if ss == nil || start > ss.Last || ss.First >= fseq {
 				continue
@@ -2442,8 +2445,8 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 			// If we already found a partial then don't do anything else.
 			return
 		}
-		if ss.firstNeedsUpdate {
-			mb.recalculateFirstForSubj(bytesToString(bsubj), ss.First, ss)
+		if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
+			mb.recalculateForSubj(bytesToString(bsubj), ss)
 		}
 		if sseq <= ss.First {
 			update(ss)
@@ -2613,10 +2616,6 @@ func (fs *fileStore) numFilteredPendingWithLast(filter string, last bool, ss *Si
 	// Always reset.
 	ss.First, ss.Last, ss.Msgs = 0, 0, 0
 
-	if filter == _EMPTY_ {
-		filter = fwcs
-	}
-
 	// We do need to figure out the first and last sequences.
 	wc := subjectHasWildcard(filter)
 	start, stop := uint32(math.MaxUint32), uint32(0)
@@ -2746,8 +2745,8 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 		mb.lsts = time.Now().UnixNano()
 		mb.fss.Match(stringToBytes(subject), func(bsubj []byte, ss *SimpleState) {
 			subj := string(bsubj)
-			if ss.firstNeedsUpdate {
-				mb.recalculateFirstForSubj(subj, ss.First, ss)
+			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
+				mb.recalculateForSubj(subj, ss)
 			}
 			oss := fss[subj]
 			if oss.First == 0 { // New
@@ -2937,8 +2936,8 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 					return
 				}
 				subj := bytesToString(bsubj)
-				if ss.firstNeedsUpdate {
-					mb.recalculateFirstForSubj(subj, ss.First, ss)
+				if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
+					mb.recalculateForSubj(subj, ss)
 				}
 				if sseq <= ss.First {
 					t += ss.Msgs
@@ -3225,8 +3224,8 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bo
 					// If we already found a partial then don't do anything else.
 					return
 				}
-				if ss.firstNeedsUpdate {
-					mb.recalculateFirstForSubj(subj, ss.First, ss)
+				if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
+					mb.recalculateForSubj(subj, ss)
 				}
 				if sseq <= ss.First {
 					t += ss.Msgs
@@ -3899,8 +3898,8 @@ func (fs *fileStore) firstSeqForSubj(subj string) (uint64, error) {
 					info.fblk = i
 				}
 			}
-			if ss.firstNeedsUpdate {
-				mb.recalculateFirstForSubj(subj, ss.First, ss)
+			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
+				mb.recalculateForSubj(subj, ss)
 			}
 			mb.mu.Unlock()
 			// Re-acquire fs lock
@@ -4031,8 +4030,8 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 			mb.mu.Lock()
 			mb.ensurePerSubjectInfoLoaded()
 			ss, ok := mb.fss.Find(stringToBytes(subj))
-			if ok && ss != nil && ss.firstNeedsUpdate {
-				mb.recalculateFirstForSubj(subj, ss.First, ss)
+			if ok && ss != nil && (ss.firstNeedsUpdate || ss.lastNeedsUpdate) {
+				mb.recalculateForSubj(subj, ss)
 			}
 			mb.mu.Unlock()
 			if ss == nil {
@@ -7833,24 +7832,14 @@ func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64) {
 
 	ss.Msgs--
 
-	// Only one left.
-	if ss.Msgs == 1 {
-		if seq == ss.Last {
-			ss.Last = ss.First
-		} else {
-			ss.First = ss.Last
-		}
-		ss.firstNeedsUpdate = false
-		return
-	}
-
-	// We can lazily calculate the first sequence when needed.
+	// We can lazily calculate the first/last sequence when needed.
 	ss.firstNeedsUpdate = seq == ss.First || ss.firstNeedsUpdate
+	ss.lastNeedsUpdate = seq == ss.Last || ss.lastNeedsUpdate
 }
 
-// Will recalulate the first sequence for this subject in this block.
+// Will recalculate the first and/or last sequence for this subject in this block.
 // Will avoid slower path message lookups and scan the cache directly instead.
-func (mb *msgBlock) recalculateFirstForSubj(subj string, startSeq uint64, ss *SimpleState) {
+func (mb *msgBlock) recalculateForSubj(subj string, ss *SimpleState) {
 	// Need to make sure messages are loaded.
 	if mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
@@ -7858,39 +7847,100 @@ func (mb *msgBlock) recalculateFirstForSubj(subj string, startSeq uint64, ss *Si
 		}
 	}
 
-	// Mark first as updated.
-	ss.firstNeedsUpdate = false
-
-	startSlot := int(startSeq - mb.cache.fseq)
+	startSlot := int(ss.First - mb.cache.fseq)
+	if startSlot < 0 {
+		startSlot = 0
+	}
 	if startSlot >= len(mb.cache.idx) {
 		ss.First = ss.Last
 		return
-	} else if startSlot < 0 {
-		startSlot = 0
+	}
+	endSlot := int(ss.Last - mb.cache.fseq)
+	if endSlot < 0 {
+		endSlot = 0
+	}
+	if endSlot >= len(mb.cache.idx) || startSlot > endSlot {
+		return
 	}
 
 	var le = binary.LittleEndian
-	for slot, fseq := startSlot, atomic.LoadUint64(&mb.first.seq); slot < len(mb.cache.idx); slot++ {
-		bi := mb.cache.idx[slot] &^ hbit
-		if bi == dbit {
-			// delete marker so skip.
-			continue
+	if ss.firstNeedsUpdate {
+		// Mark first as updated.
+		ss.firstNeedsUpdate = false
+
+		fseq := ss.First + 1
+		if mbFseq := atomic.LoadUint64(&mb.first.seq); fseq < mbFseq {
+			fseq = mbFseq
 		}
-		li := int(bi) - mb.cache.off
-		if li >= len(mb.cache.buf) {
-			ss.First = ss.Last
-			return
-		}
-		buf := mb.cache.buf[li:]
-		hdr := buf[:msgHdrSize]
-		slen := int(le.Uint16(hdr[20:]))
-		if subj == bytesToString(buf[msgHdrSize:msgHdrSize+slen]) {
-			seq := le.Uint64(hdr[4:])
-			if seq < fseq || seq&ebit != 0 || mb.dmap.Exists(seq) {
+		for slot := startSlot; slot < len(mb.cache.idx); slot++ {
+			bi := mb.cache.idx[slot] &^ hbit
+			if bi == dbit {
+				// delete marker so skip.
 				continue
 			}
-			ss.First = seq
-			return
+			li := int(bi) - mb.cache.off
+			if li >= len(mb.cache.buf) {
+				ss.First = ss.Last
+				return
+			}
+			buf := mb.cache.buf[li:]
+			hdr := buf[:msgHdrSize]
+			slen := int(le.Uint16(hdr[20:]))
+			if subj == bytesToString(buf[msgHdrSize:msgHdrSize+slen]) {
+				seq := le.Uint64(hdr[4:])
+				if seq < fseq || seq&ebit != 0 || mb.dmap.Exists(seq) {
+					continue
+				}
+				ss.First = seq
+				if ss.Msgs == 1 {
+					ss.Last = seq
+					ss.lastNeedsUpdate = false
+					return
+				}
+				// Skip the start slot ahead, if we need to recalculate last we can stop early.
+				startSlot = slot
+				break
+			}
+		}
+	}
+	if ss.lastNeedsUpdate {
+		// Mark last as updated.
+		ss.lastNeedsUpdate = false
+
+		lseq := ss.Last - 1
+		if mbLseq := atomic.LoadUint64(&mb.last.seq); lseq > mbLseq {
+			lseq = mbLseq
+		}
+		for slot := endSlot; slot >= startSlot; slot-- {
+			bi := mb.cache.idx[slot] &^ hbit
+			if bi == dbit {
+				// delete marker so skip.
+				continue
+			}
+			li := int(bi) - mb.cache.off
+			if li >= len(mb.cache.buf) {
+				// Can't overwrite ss.Last, just skip.
+				return
+			}
+			buf := mb.cache.buf[li:]
+			hdr := buf[:msgHdrSize]
+			slen := int(le.Uint16(hdr[20:]))
+			if subj == bytesToString(buf[msgHdrSize:msgHdrSize+slen]) {
+				seq := le.Uint64(hdr[4:])
+				if seq > lseq || seq&ebit != 0 || mb.dmap.Exists(seq) {
+					continue
+				}
+				// Sequence should never be lower, but guard against it nonetheless.
+				if seq < ss.First {
+					seq = ss.First
+				}
+				ss.Last = seq
+				if ss.Msgs == 1 {
+					ss.First = seq
+					ss.firstNeedsUpdate = false
+				}
+				return
+			}
 		}
 	}
 }
