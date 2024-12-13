@@ -8297,35 +8297,34 @@ func TestFileStoreNumPendingMulti(t *testing.T) {
 	require_Equal(t, total, checkTotal)
 }
 
-func TestFileStoreTTL(t *testing.T) {
+func TestFileStoreMessageTTL(t *testing.T) {
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: t.TempDir()},
 		StreamConfig{Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage})
 	require_NoError(t, err)
 	defer fs.Stop()
 
-	now := time.Now()
-	for i := 0; i < 5; i++ {
-		_, _, err = fs.StoreMsg("test", nil, nil, int64(now.Add(time.Duration(i)*time.Second).UnixNano()))
+	ttl := time.Now().Add(time.Second / 2).UnixNano()
+	for i := 1; i <= 10; i++ {
+		_, _, err = fs.StoreMsg("test", nil, nil, ttl)
 		require_NoError(t, err)
 	}
-	time.Sleep(time.Second * 7)
-
-	now = time.Now()
-	for i := 0; i < 5; i++ {
-		_, _, err = fs.StoreMsg("test", nil, nil, int64(now.Add(time.Duration(i)*time.Second).UnixNano()))
-		require_NoError(t, err)
-	}
-	time.Sleep(time.Second * 7)
 
 	var ss StreamState
+	fs.FastState(&ss)
+	require_Equal(t, ss.FirstSeq, 1)
+	require_Equal(t, ss.LastSeq, 10)
+	require_Equal(t, ss.Msgs, 10)
+
+	time.Sleep(time.Second)
+
 	fs.FastState(&ss)
 	require_Equal(t, ss.FirstSeq, 11)
 	require_Equal(t, ss.LastSeq, 10)
 	require_Equal(t, ss.Msgs, 0)
 }
 
-func TestFileStoreRestartTTL(t *testing.T) {
+func TestFileStoreMessageTTLRestart(t *testing.T) {
 	dir := t.TempDir()
 
 	t.Run("BeforeRestart", func(t *testing.T) {
@@ -8335,9 +8334,9 @@ func TestFileStoreRestartTTL(t *testing.T) {
 		require_NoError(t, err)
 		defer fs.Stop()
 
-		ttl := time.Now().Add(time.Second * 5).UnixNano()
+		ttl := time.Now().Add(time.Second / 2).UnixNano()
 
-		for i := 0; i < 10; i++ {
+		for i := 1; i <= 10; i++ {
 			_, _, err = fs.StoreMsg("test", nil, nil, ttl)
 			require_NoError(t, err)
 		}
@@ -8362,7 +8361,65 @@ func TestFileStoreRestartTTL(t *testing.T) {
 		require_Equal(t, ss.LastSeq, 10)
 		require_Equal(t, ss.Msgs, 10)
 
-		time.Sleep(time.Second * 6)
+		time.Sleep(time.Second)
+
+		fs.FastState(&ss)
+		require_Equal(t, ss.FirstSeq, 11)
+		require_Equal(t, ss.LastSeq, 10)
+		require_Equal(t, ss.Msgs, 0)
+	})
+}
+
+func TestFileStoreMessageTTLRecovered(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	dir := t.TempDir()
+
+	t.Run("BeforeRestart", func(t *testing.T) {
+		fs, err := newFileStore(
+			FileStoreConfig{StoreDir: dir, srv: s},
+			StreamConfig{Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage})
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		ttl := time.Now().Add(time.Second / 2).UnixNano()
+
+		for i := 1; i <= 10; i++ {
+			// When the timed hash wheel state is deleted, the only way we can recover
+			// the TTL is to look at the original message header, therefore the TTL
+			// must be in the headers for this test to work.
+			hdr := fmt.Appendf(nil, "NATS/1.0\r\n%s: %d\r\n", JSMessageTTL, ttl)
+			_, _, err = fs.StoreMsg("test", hdr, nil, ttl)
+			require_NoError(t, err)
+		}
+
+		var ss StreamState
+		fs.FastState(&ss)
+		require_Equal(t, ss.FirstSeq, 1)
+		require_Equal(t, ss.LastSeq, 10)
+		require_Equal(t, ss.Msgs, 10)
+	})
+
+	t.Run("AfterRestart", func(t *testing.T) {
+		// Delete the timed hash wheel state so that we are forced to do a linear scan
+		// of message blocks containing TTL'd messages.
+		fn := filepath.Join(dir, msgDir, ttlStreamStateFile)
+		require_NoError(t, os.RemoveAll(fn))
+
+		fs, err := newFileStore(
+			FileStoreConfig{StoreDir: dir, srv: s},
+			StreamConfig{Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage})
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		var ss StreamState
+		fs.FastState(&ss)
+		require_Equal(t, ss.FirstSeq, 1)
+		require_Equal(t, ss.LastSeq, 10)
+		require_Equal(t, ss.Msgs, 10)
+
+		time.Sleep(time.Second)
 
 		fs.FastState(&ss)
 		require_Equal(t, ss.FirstSeq, 11)

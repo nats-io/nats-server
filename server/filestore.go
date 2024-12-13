@@ -200,6 +200,7 @@ type fileStore struct {
 	receivedAny bool
 	firstMoved  bool
 	ttls        *thw.HashWheel
+	ttlseq      uint64 // How up-to-date is the `ttls` THW?
 }
 
 // Represents a message store block and its data.
@@ -1820,27 +1821,67 @@ func (fs *fileStore) recoverTTLState() error {
 	buf, err := os.ReadFile(fn)
 	dios <- struct{}{}
 
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		os.Remove(fn)
+	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
 
 	fs.ttls = thw.NewHashWheel()
-	lseq, err := fs.ttls.Decode(buf)
-	if err != nil {
-		fs.warn("Error decoding TTL state: %s", err)
-		// TODO(nat): return errCorruptState
-		return nil
+
+	if err == nil {
+		fs.ttlseq, err = fs.ttls.Decode(buf)
+		if err != nil {
+			fs.warn("Error decoding TTL state: %s", err)
+			os.Remove(fn)
+		}
 	}
-	if lseq != fs.state.LastSeq {
-		fs.warn("TTL state is outdated; stream last seq %d vs TTL last seq %d", fs.state.LastSeq, lseq)
-		// TODO(nat): work out what the TTLs are of the messages after this
-		// point.
+
+	if fs.ttlseq < fs.state.FirstSeq {
+		fs.ttlseq = fs.state.FirstSeq
 	}
-	fs.resetAgeChk(0)
+
+	defer fs.resetAgeChk(0)
+	if fs.ttlseq < fs.state.LastSeq {
+		fs.warn("TTL state is outdated; attempting to recover using linear scan (seq %d to %d)", fs.ttlseq, fs.state.LastSeq)
+		var sm StoreMsg
+		mb := fs.selectMsgBlock(fs.ttlseq)
+		if mb == nil {
+			return nil
+		}
+		mblseq := atomic.LoadUint64(&mb.last.seq)
+		for seq := fs.ttlseq; seq <= fs.state.LastSeq; seq++ {
+			if mb.ttls == 0 {
+				// None of the messages in the block are marked with an xbit so don't
+				// bother doing anything further with this block, skip to the end.
+				seq = atomic.LoadUint64(&mb.last.seq)
+				continue
+			}
+			if seq > mblseq {
+				// We've reached the end of the loaded block, see if we can continue
+				// by loading the next one.
+				mb.tryForceExpireCache()
+				if mb = fs.selectMsgBlock(seq); mb == nil {
+					// TODO(nat): Deal with gaps properly. Right now this will be
+					// probably expensive on CPU.
+					continue
+				}
+				mblseq = atomic.LoadUint64(&mb.last.seq)
+			}
+			msg, _, err := mb.fetchMsg(seq, &sm)
+			if err != nil {
+				fs.warn("Error loading msg seq %d for recovering TTL: %s", seq, err)
+				continue
+			}
+			if len(msg.hdr) == 0 {
+				continue
+			}
+			if ttl := getMessageTTL(msg.hdr); ttl > 0 {
+				fs.ttls.Add(seq, ttl)
+				if seq > fs.ttlseq {
+					fs.ttlseq = seq
+				}
+			}
+		}
+	}
 	return nil
 }
 
@@ -3800,16 +3841,19 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 	if fs.ttls != nil && ttl > 0 {
 		fs.ttls.Add(seq, ttl)
 		fs.lmb.ttls++
+		if seq > fs.ttlseq {
+			fs.ttlseq = seq
+		}
 	}
 
 	// Check if we have and need the age expiration timer running.
 	switch {
-	case fs.ageChk == nil && (fs.cfg.MaxAge != 0 || fs.ttls != nil):
+	case fs.ageChk == nil && (fs.cfg.MaxAge > 0 || fs.ttls != nil):
 		fs.startAgeChk()
-	case fs.ageChk != nil && fs.ttls != nil:
-		// Need to reset anyway, as the new TTL might be sooner than
-		// the previous next one.
+	case fs.cfg.MaxAge > 0 || fs.ttls != nil:
 		fs.resetAgeChk(0)
+	default:
+		fs.cancelAgeChk()
 	}
 
 	return nil
@@ -5181,7 +5225,7 @@ func (fs *fileStore) startAgeChk() {
 
 // Lock should be held.
 func (fs *fileStore) resetAgeChk(delta int64) {
-	if fs.cfg.MaxAge == 0 && fs.ttls == nil {
+	if fs.cfg.MaxAge <= 0 && fs.ttls == nil {
 		return
 	}
 	fireIn := fs.cfg.MaxAge

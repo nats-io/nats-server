@@ -24756,18 +24756,137 @@ func TestJetStreamMessageTTL(t *testing.T) {
 		Header:  nats.Header{},
 	}
 
-	now := time.Now()
+	ttl := time.Now().Add(time.Second / 2).UnixNano()
 	for i := 1; i <= 10; i++ {
-		ttl := now.Add(time.Second * time.Duration(i)).UnixNano()
 		msg.Header.Set("Nats-TTL", fmt.Sprintf("%d", ttl))
 		_, err := js.PublishMsg(msg)
 		require_NoError(t, err)
 	}
 
-	for i := 0; i < 11; i++ {
-		time.Sleep(time.Second)
-		si, err := js.StreamInfo("TEST")
-		require_NoError(t, err)
-		fmt.Println(si.State.Msgs, "msgs,", si.State.FirstSeq, "->", si.State.LastSeq)
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 10)
+	require_Equal(t, si.State.FirstSeq, 1)
+	require_Equal(t, si.State.LastSeq, 10)
+
+	time.Sleep(time.Second)
+
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 0)
+	require_Equal(t, si.State.FirstSeq, 11)
+	require_Equal(t, si.State.LastSeq, 10)
+}
+
+func TestJetStreamMessageTTLRestart(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"test"},
+	})
+	require_NoError(t, err)
+
+	msg := &nats.Msg{
+		Subject: "test",
+		Header:  nats.Header{},
 	}
+
+	ttl := time.Now().Add(time.Second / 2).UnixNano()
+	for i := 1; i <= 10; i++ {
+		msg.Header.Set("Nats-TTL", fmt.Sprintf("%d", ttl))
+		_, err := js.PublishMsg(msg)
+		require_NoError(t, err)
+	}
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 10)
+	require_Equal(t, si.State.FirstSeq, 1)
+	require_Equal(t, si.State.LastSeq, 10)
+
+	sd := s.JetStreamConfig().StoreDir
+	s.Shutdown()
+
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 10)
+	require_Equal(t, si.State.FirstSeq, 1)
+	require_Equal(t, si.State.LastSeq, 10)
+
+	time.Sleep(time.Second)
+
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 0)
+	require_Equal(t, si.State.FirstSeq, 11)
+	require_Equal(t, si.State.LastSeq, 10)
+}
+
+func TestJetStreamMessageTTLRecovered(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"test"},
+	})
+	require_NoError(t, err)
+
+	msg := &nats.Msg{
+		Subject: "test",
+		Header:  nats.Header{},
+	}
+
+	ttl := time.Now().Add(time.Second / 2).UnixNano()
+	for i := 1; i <= 10; i++ {
+		msg.Header.Set("Nats-TTL", fmt.Sprintf("%d", ttl))
+		_, err := js.PublishMsg(msg)
+		require_NoError(t, err)
+	}
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 10)
+	require_Equal(t, si.State.FirstSeq, 1)
+	require_Equal(t, si.State.LastSeq, 10)
+
+	sd := s.JetStreamConfig().StoreDir
+	s.Shutdown()
+
+	fn := filepath.Join(sd, globalAccountName, streamsDir, "TEST", msgDir, ttlStreamStateFile)
+	require_NoError(t, os.RemoveAll(fn))
+
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 10)
+	require_Equal(t, si.State.FirstSeq, 1)
+	require_Equal(t, si.State.LastSeq, 10)
+
+	time.Sleep(time.Second)
+
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 0)
+	require_Equal(t, si.State.FirstSeq, 11)
+	require_Equal(t, si.State.LastSeq, 10)
 }
