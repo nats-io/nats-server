@@ -33,6 +33,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"runtime/debug"
 	"runtime/pprof"
 	"strconv"
 	"strings"
@@ -1583,23 +1584,35 @@ func PrintServerAndExit() {
 	os.Exit(0)
 }
 
+// PrintBuildinfoAndExit will print out https://pkg.go.dev/runtime/debug#BuildInfo and exit.
+func PrintBuildinfoAndExit() {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok || bi == nil {
+		fmt.Println("failed to read Buildinfo")
+	}
+	fmt.Println(bi)
+	os.Exit(0)
+}
+
 // ProcessCommandLineArgs takes the command line arguments
 // validating and setting flags for handling in case any
 // sub command was present.
-func ProcessCommandLineArgs(cmd *flag.FlagSet) (showVersion bool, showHelp bool, err error) {
+func ProcessCommandLineArgs(cmd *flag.FlagSet) (showVersion bool, showHelp bool, showBuildinfo bool, err error) {
 	if len(cmd.Args()) > 0 {
 		arg := cmd.Args()[0]
 		switch strings.ToLower(arg) {
 		case "version":
-			return true, false, nil
+			return true, false, false, nil
 		case "help":
-			return false, true, nil
+			return false, true, false, nil
+		case "buildinfo":
+			return false, false, true, nil
 		default:
-			return false, false, fmt.Errorf("unrecognized command: %q", arg)
+			return false, false, false, fmt.Errorf("unrecognized command: %q", arg)
 		}
 	}
 
-	return false, false, nil
+	return false, false, false, nil
 }
 
 // Public version.

@@ -86,6 +86,7 @@ Profiling Options:
 Common Options:
     -h, --help                       Show this message
     -v, --version                    Show version
+        --buildinfo                  Show buildinfo
         --help_tls                   TLS help
 `
 
@@ -106,6 +107,7 @@ func main() {
 	opts, err := server.ConfigureOptions(fs, os.Args[1:],
 		server.PrintServerAndExit,
 		fs.Usage,
+		server.PrintBuildinfoAndExit,
 		server.PrintTLSHelpAndDie)
 	if err != nil {
 		server.PrintAndDie(fmt.Sprintf("%s: %s", exe, err))
