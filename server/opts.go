@@ -5676,10 +5676,11 @@ func getDefaultAuthTimeout(tls *tls.Config, tlsTimeout float64) float64 {
 // specific flags. On success, an options structure is returned configured
 // based on the selected flags and/or configuration file.
 // The command line options take precedence to the ones in the configuration file.
-func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, printTLSHelp func()) (*Options, error) {
+func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, printBuildinfo, printTLSHelp func()) (*Options, error) {
 	opts := &Options{}
 	var (
 		showVersion            bool
+		showBuildInfo          bool
 		showHelp               bool
 		showTLSHelp            bool
 		signal                 string
@@ -5735,6 +5736,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.StringVar(&opts.RemoteSyslog, "remote_syslog", _EMPTY_, "Syslog server addr (udp://127.0.0.1:514).")
 	fs.BoolVar(&showVersion, "version", false, "Print version information.")
 	fs.BoolVar(&showVersion, "v", false, "Print version information.")
+	fs.BoolVar(&showBuildInfo, "buildinfo", false, "Print buildinfo.")
 	fs.IntVar(&opts.ProfPort, "profile", 0, "Profiling HTTP port.")
 	fs.StringVar(&opts.RoutesStr, "routes", _EMPTY_, "Routes to actively solicit a connection.")
 	fs.StringVar(&opts.Cluster.ListenStr, "cluster", _EMPTY_, "Cluster url from which members can solicit routes.")
@@ -5772,6 +5774,11 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 		return nil, nil
 	}
 
+	if showBuildInfo {
+		printBuildinfo()
+		return nil, nil
+	}
+
 	if showHelp {
 		printHelp()
 		return nil, nil
@@ -5783,8 +5790,8 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	}
 
 	// Process args looking for non-flag options,
-	// 'version' and 'help' only for now
-	showVersion, showHelp, err = ProcessCommandLineArgs(fs)
+	// 'version', 'help' and 'buildinfo' only for now
+	showVersion, showHelp, showBuildInfo, err = ProcessCommandLineArgs(fs)
 	if err != nil {
 		return nil, err
 	} else if showVersion {
@@ -5792,6 +5799,9 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 		return nil, nil
 	} else if showHelp {
 		printHelp()
+		return nil, nil
+	} else if showBuildInfo {
+		printBuildinfo()
 		return nil, nil
 	}
 
