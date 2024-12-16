@@ -183,6 +183,7 @@ type LostStreamData struct {
 type SnapshotResult struct {
 	Reader io.ReadCloser
 	State  StreamState
+	errCh  chan string
 }
 
 const (
