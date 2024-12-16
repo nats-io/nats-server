@@ -2107,7 +2107,7 @@ func (js *jetStream) wouldExceedLimits(storeType StorageType, sz int) bool {
 	} else {
 		total, max = &js.storeUsed, js.config.MaxStore
 	}
-	return atomic.LoadInt64(total) > (max + int64(sz))
+	return (atomic.LoadInt64(total) + int64(sz)) > max
 }
 
 func (js *jetStream) limitsExceeded(storeType StorageType) bool {
