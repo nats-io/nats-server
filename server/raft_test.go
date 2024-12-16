@@ -36,11 +36,11 @@ func TestNRGSimple(t *testing.T) {
 	rg := c.createRaftGroup("TEST", 3, newStateAdder)
 	rg.waitOnLeader()
 	// Do several state transitions.
-	rg.randomMember().(*stateAdder).proposeDelta(11)
-	rg.randomMember().(*stateAdder).proposeDelta(11)
-	rg.randomMember().(*stateAdder).proposeDelta(-22)
+	rg.randomMember().(*stateAdder).proposeDelta(22)
+	rg.randomMember().(*stateAdder).proposeDelta(-11)
+	rg.randomMember().(*stateAdder).proposeDelta(-10)
 	// Wait for all members to have the correct state.
-	rg.waitOnTotal(t, 0)
+	rg.waitOnTotal(t, 1)
 }
 
 func TestNRGSnapshotAndRestart(t *testing.T) {

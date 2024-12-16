@@ -1947,13 +1947,78 @@ type ServerAPIResponse struct {
 	compress compressionType
 }
 
-// Specialized response types for unmarshalling.
+// Specialized response types for unmarshalling. These structures are not
+// used in the server code and only there for users of the Z endpoints to
+// unmarshal the data without having to create these structs in their code
 
 // ServerAPIConnzResponse is the response type connz
 type ServerAPIConnzResponse struct {
 	Server *ServerInfo `json:"server"`
 	Data   *Connz      `json:"data,omitempty"`
 	Error  *ApiError   `json:"error,omitempty"`
+}
+
+// ServerAPIRoutezResponse is the response type for routez
+type ServerAPIRoutezResponse struct {
+	Server *ServerInfo `json:"server"`
+	Data   *Routez     `json:"data,omitempty"`
+	Error  *ApiError   `json:"error,omitempty"`
+}
+
+// ServerAPIGatewayzResponse is the response type for gatewayz
+type ServerAPIGatewayzResponse struct {
+	Server *ServerInfo `json:"server"`
+	Data   *Gatewayz   `json:"data,omitempty"`
+	Error  *ApiError   `json:"error,omitempty"`
+}
+
+// ServerAPIJszResponse is the response type for jsz
+type ServerAPIJszResponse struct {
+	Server *ServerInfo `json:"server"`
+	Data   *JSInfo     `json:"data,omitempty"`
+	Error  *ApiError   `json:"error,omitempty"`
+}
+
+// ServerAPIHealthzResponse is the response type for healthz
+type ServerAPIHealthzResponse struct {
+	Server *ServerInfo   `json:"server"`
+	Data   *HealthStatus `json:"data,omitempty"`
+	Error  *ApiError     `json:"error,omitempty"`
+}
+
+// ServerAPIVarzResponse is the response type for varz
+type ServerAPIVarzResponse struct {
+	Server *ServerInfo `json:"server"`
+	Data   *Varz       `json:"data,omitempty"`
+	Error  *ApiError   `json:"error,omitempty"`
+}
+
+// ServerAPISubszResponse is the response type for subsz
+type ServerAPISubszResponse struct {
+	Server *ServerInfo `json:"server"`
+	Data   *Subsz      `json:"data,omitempty"`
+	Error  *ApiError   `json:"error,omitempty"`
+}
+
+// ServerAPILeafzResponse is the response type for leafz
+type ServerAPILeafzResponse struct {
+	Server *ServerInfo `json:"server"`
+	Data   *Leafz      `json:"data,omitempty"`
+	Error  *ApiError   `json:"error,omitempty"`
+}
+
+// ServerAPIAccountzResponse is the response type for accountz
+type ServerAPIAccountzResponse struct {
+	Server *ServerInfo `json:"server"`
+	Data   *Accountz   `json:"data,omitempty"`
+	Error  *ApiError   `json:"error,omitempty"`
+}
+
+// ServerAPIExpvarzResponse is the response type for expvarz
+type ServerAPIExpvarzResponse struct {
+	Server *ServerInfo    `json:"server"`
+	Data   *ExpvarzStatus `json:"data,omitempty"`
+	Error  *ApiError      `json:"error,omitempty"`
 }
 
 // statszReq is a request for us to respond with current statsz.
