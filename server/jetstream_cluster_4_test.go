@@ -669,13 +669,6 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		// Wait until context is done then check state.
 		<-ctx.Done()
 
-		var consumerPending int
-		for i := 0; i < 10; i++ {
-			ci, err := js.ConsumerInfo(sc.Name, fmt.Sprintf("consumer:EEEEE:%d", i))
-			require_NoError(t, err)
-			consumerPending += int(ci.NumPending)
-		}
-
 		getStreamDetails := func(t *testing.T, srv *Server) *StreamDetail {
 			t.Helper()
 			jsz, err := srv.Jsz(&JSzOptions{Accounts: true, Streams: true, Consumer: true})
@@ -748,14 +741,30 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 				msets = append(msets, mset)
 			}
 			for seq := state.FirstSeq; seq <= state.LastSeq; seq++ {
+				var expectedErr error
 				var msgId string
 				var smv StoreMsg
-				for _, mset := range msets {
+				for i, mset := range msets {
 					mset.mu.RLock()
 					sm, err := mset.store.LoadMsg(seq, &smv)
 					mset.mu.RUnlock()
-					require_NoError(t, err)
-					if msgId == _EMPTY_ {
+					if err != nil || expectedErr != nil {
+						// If one of the msets reports an error for LoadMsg for this
+						// particular sequence, then the same error should be reported
+						// by all msets for that seq to prove consistency across replicas.
+						// If one of the msets either returns no error or doesn't return
+						// the same error, then that replica has drifted.
+						if msgId != _EMPTY_ {
+							t.Fatalf("Expected MsgId %q for seq %d, but got error: %v", msgId, seq, err)
+						} else if expectedErr == nil {
+							expectedErr = err
+						} else {
+							require_Error(t, err, expectedErr)
+						}
+						continue
+					}
+					// Only set expected msg ID if it's for the very first time.
+					if msgId == _EMPTY_ && i == 0 {
 						msgId = string(sm.hdr)
 					} else if msgId != string(sm.hdr) {
 						t.Fatalf("MsgIds do not match for seq %d: %q vs %q", seq, msgId, sm.hdr)
@@ -764,21 +773,12 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 			}
 		}
 
-		// Check state of streams and consumers.
-		si, err := js.StreamInfo(sc.Name)
-		require_NoError(t, err)
-
-		// Only check if there are any pending messages.
-		if consumerPending > 0 {
-			streamPending := int(si.State.Msgs)
-			if streamPending != consumerPending {
-				t.Errorf("Unexpected number of pending messages, stream=%d, consumers=%d", streamPending, consumerPending)
-			}
-		}
+		// Wait for test to finish before checking state.
+		wg.Wait()
 
 		// If clustered, check whether leader and followers have drifted.
 		if sc.Replicas > 1 {
-			// If we have drifted do not have to wait too long, usually its stuck for good.
+			// If we have drifted do not have to wait too long, usually it's stuck for good.
 			checkFor(t, time.Minute, time.Second, func() error {
 				return checkState(t)
 			})
@@ -788,7 +788,31 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 			checkMsgsEqual(t)
 		}
 
-		wg.Wait()
+		checkFor(t, time.Minute, time.Second, func() error {
+			var consumerPending int
+			for i := 0; i < 10; i++ {
+				ci, err := js.ConsumerInfo(sc.Name, fmt.Sprintf("consumer:EEEEE:%d", i))
+				if err != nil {
+					return err
+				}
+				consumerPending += int(ci.NumPending)
+			}
+
+			// Only check if there are any pending messages.
+			if consumerPending > 0 {
+				// Check state of streams and consumers.
+				si, err := js.StreamInfo(sc.Name)
+				if err != nil {
+					return err
+				}
+
+				streamPending := int(si.State.Msgs)
+				if streamPending != consumerPending {
+					return fmt.Errorf("Unexpected number of pending messages, stream=%d, consumers=%d", streamPending, consumerPending)
+				}
+			}
+			return nil
+		})
 	}
 
 	// Setting up test variations below:
