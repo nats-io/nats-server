@@ -24721,3 +24721,19 @@ func TestJetStreamMemoryPurgeClearsSubjectsState(t *testing.T) {
 	require_NoError(t, err)
 	require_Len(t, len(si.State.Subjects), 0)
 }
+
+func TestJetStreamWouldExceedLimits(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	js := s.getJetStream()
+	require_NotNil(t, js)
+
+	// Storing exactly up to the limit should work.
+	require_False(t, js.wouldExceedLimits(MemoryStorage, int(js.config.MaxMemory)))
+	require_False(t, js.wouldExceedLimits(FileStorage, int(js.config.MaxStore)))
+
+	// Storing one more than the max should exceed limits.
+	require_True(t, js.wouldExceedLimits(MemoryStorage, int(js.config.MaxMemory)+1))
+	require_True(t, js.wouldExceedLimits(FileStorage, int(js.config.MaxStore)+1))
+}
