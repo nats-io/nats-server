@@ -1388,7 +1388,10 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 		rl, slen := le.Uint32(hdr[0:]), le.Uint16(hdr[20:])
 
 		hasHeaders := rl&hbit != 0
-		hasTTL := rl&xbit != 0
+		var ttl int64
+		if rl&xbit != 0 {
+			ttl = getMessageTTL(hdr)
+		}
 		// Clear any headers bit that could be set.
 		rl &^= hbit
 		rl &^= xbit
@@ -1465,9 +1468,9 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 		if !mb.dmap.Exists(seq) {
 			mb.msgs++
 			mb.bytes += uint64(rl)
-			if hasTTL {
+			if ttl > 0 {
 				mb.ttls++
-				// TODO(nat): Add expiry to THW here.
+				mb.fs.ttls.Add(seq, ttl)
 			}
 		}
 
@@ -1849,11 +1852,11 @@ func (fs *fileStore) recoverTTLState() error {
 		}
 		mblseq := atomic.LoadUint64(&mb.last.seq)
 		for seq := fs.ttlseq; seq <= fs.state.LastSeq; seq++ {
+		retry:
 			if mb.ttls == 0 {
 				// None of the messages in the block are marked with an xbit so don't
 				// bother doing anything further with this block, skip to the end.
-				seq = atomic.LoadUint64(&mb.last.seq)
-				continue
+				seq = atomic.LoadUint64(&mb.last.seq) + 1
 			}
 			if seq > mblseq {
 				// We've reached the end of the loaded block, see if we can continue
@@ -1865,6 +1868,9 @@ func (fs *fileStore) recoverTTLState() error {
 					continue
 				}
 				mblseq = atomic.LoadUint64(&mb.last.seq)
+				// At this point we've loaded another block, so let's go back to the
+				// beginning and see if we need to skip this one too.
+				goto retry
 			}
 			msg, _, err := mb.fetchMsg(seq, &sm)
 			if err != nil {

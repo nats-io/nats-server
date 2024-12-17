@@ -5068,17 +5068,6 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		}
 	}
 
-	// If the message has a per-message TTL then we will want to add it to the hashed
-	// time wheel, so that expiries happen automatically.
-	/*
-		if mset.ttls != nil {
-			// TODO: what to do if the message expiry already passed?
-			if ttl := getMessageTTL(hdr); ttl > 0 {
-				mset.ttls.Add(seq, time.Unix(0, ttl).UnixNano())
-			}
-		}
-	*/
-
 	// If here we succeeded in storing the message.
 	mset.mu.Unlock()
 
