@@ -3401,7 +3401,6 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		n.updateLeadChange(false)
 	}
 
-RETRY:
 	if ae.pterm != n.pterm || ae.pindex != n.pindex {
 		// Check if this is a lower or equal index than what we were expecting.
 		if ae.pindex <= n.pindex {
@@ -3427,8 +3426,11 @@ RETRY:
 				}
 			} else if eae.term == ae.pterm {
 				// If terms match we can delete all entries past this one, and then continue storing the current entry.
-				n.truncateWAL(eae.term, eae.pindex+1)
-				goto RETRY
+				n.truncateWAL(ae.pterm, ae.pindex)
+				// Only continue if truncation was successful, and we ended up such that we can safely continue.
+				if ae.pterm == n.pterm && ae.pindex == n.pindex {
+					goto CONTINUE
+				}
 			} else {
 				// If terms mismatched, delete that entry and all others past it.
 				// Make sure to cancel any catchups in progress.
@@ -3512,6 +3514,7 @@ RETRY:
 		return
 	}
 
+CONTINUE:
 	// Save to our WAL if we have entries.
 	if ae.shouldStore() {
 		// Only store if an original which will have sub != nil
