@@ -6064,39 +6064,45 @@ func TestJetStreamClusterConsumerAckSyncReporting(t *testing.T) {
 			last = m
 			continue
 		}
-		m.AckSync()
+		err = m.AckSync()
+		require_NoError(t, err)
+	}
+	require_NotNil(t, skipped)
+	require_NotNil(t, last)
+
+	checkAckFloor := func(consumer, stream uint64) {
+		opts := &JSzOptions{Accounts: true, Streams: true, Consumer: true}
+		checkFor(t, 3*time.Second, 200*time.Millisecond, func() error {
+			for _, s := range c.servers {
+				jsz, err := s.Jsz(opts)
+				if err != nil {
+					return err
+				}
+				ci := jsz.AccountDetails[0].Streams[0].Consumer[0]
+				if ci.AckFloor.Consumer != consumer {
+					return fmt.Errorf("AckFloor.Consumer is not %d: %v", consumer, ci.AckFloor.Consumer)
+				}
+				if ci.AckFloor.Stream != stream {
+					return fmt.Errorf("AckFloor.Stream is not %d: %v", stream, ci.AckFloor.Stream)
+				}
+			}
+			return nil
+		})
 	}
 
 	// Now we want to make sure that jsz reporting will show the same
 	// state for ack floor.
-	opts := &JSzOptions{Accounts: true, Streams: true, Consumer: true}
-	for _, s := range c.servers {
-		jsz, err := s.Jsz(opts)
-		require_NoError(t, err)
-		ci := jsz.AccountDetails[0].Streams[0].Consumer[0]
-		require_Equal(t, ci.AckFloor.Consumer, dontAck-1)
-		require_Equal(t, ci.AckFloor.Stream, dontAck-1)
-	}
+	checkAckFloor(dontAck-1, dontAck-1)
 
 	// Now ack the skipped message
-	skipped.AckSync()
-	for _, s := range c.servers {
-		jsz, err := s.Jsz(opts)
-		require_NoError(t, err)
-		ci := jsz.AccountDetails[0].Streams[0].Consumer[0]
-		require_Equal(t, ci.AckFloor.Consumer, 9)
-		require_Equal(t, ci.AckFloor.Stream, 9)
-	}
+	err = skipped.AckSync()
+	require_NoError(t, err)
+	checkAckFloor(9, 9)
 
 	// Now ack the last message
-	last.AckSync()
-	for _, s := range c.servers {
-		jsz, err := s.Jsz(opts)
-		require_NoError(t, err)
-		ci := jsz.AccountDetails[0].Streams[0].Consumer[0]
-		require_Equal(t, ci.AckFloor.Consumer, 20)
-		require_Equal(t, ci.AckFloor.Stream, 10)
-	}
+	err = last.AckSync()
+	require_NoError(t, err)
+	checkAckFloor(20, 10)
 }
 
 func TestJetStreamClusterConsumerDeleteInterestPolicyMultipleConsumers(t *testing.T) {
