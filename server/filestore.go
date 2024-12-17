@@ -3850,10 +3850,8 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 	switch {
 	case fs.ageChk == nil && (fs.cfg.MaxAge > 0 || fs.ttls != nil):
 		fs.startAgeChk()
-	case fs.cfg.MaxAge > 0 || fs.ttls != nil:
+	case fs.ageChk != nil && fs.ttls != nil && ttl > 0:
 		fs.resetAgeChk(0)
-	default:
-		fs.cancelAgeChk()
 	}
 
 	return nil
@@ -5225,31 +5223,40 @@ func (fs *fileStore) startAgeChk() {
 
 // Lock should be held.
 func (fs *fileStore) resetAgeChk(delta int64) {
-	if fs.cfg.MaxAge <= 0 && fs.ttls == nil {
+	var next int64 = math.MaxInt64
+	if fs.ttls != nil {
+		next = fs.ttls.GetNextExpiration(next)
+	}
+
+	// If there's no MaxAge and there's nothing waiting to be expired then
+	// don't bother continuing. The next storeRawMsg() will wake us up if
+	// needs be.
+	if fs.cfg.MaxAge <= 0 && next == math.MaxInt64 {
+		clearTimer(&fs.ageChk)
 		return
 	}
-	fireIn := fs.cfg.MaxAge
 
-	// First check to see if we should be firing sooner for an expiring TTL.
-	if fs.ttls != nil {
-		if next := fs.ttls.GetNextExpiration(math.MaxInt64); next < math.MaxInt64 {
-			// Looks like there's a next expiration, use it either if there's no
-			// MaxAge set or if it looks to be sooner than MaxAge is.
-			if until := time.Until(time.Unix(0, next)); fireIn == 0 || until < fireIn {
-				fireIn = until
-			}
+	// Check to see if we should be firing sooner than MaxAge for an expiring TTL.
+	fireIn := fs.cfg.MaxAge
+	if next < math.MaxInt64 {
+		// Looks like there's a next expiration, use it either if there's no
+		// MaxAge set or if it looks to be sooner than MaxAge is.
+		if until := time.Until(time.Unix(0, next)); fireIn == 0 || until < fireIn {
+			fireIn = until
 		}
 	}
 
 	// If not then look at the delta provided (usually gap to next age expiry).
-	if delta > 0 && time.Duration(delta) < fireIn {
-		fireIn = time.Duration(delta)
+	if delta > 0 {
+		if fireIn == 0 || time.Duration(delta) < fireIn {
+			fireIn = time.Duration(delta)
+		}
 	}
 
 	// Make sure we aren't firing too often either way, otherwise we can
 	// negatively impact stream ingest performance.
 	if fireIn < 250*time.Millisecond {
-		fireIn = time.Second
+		fireIn = 250 * time.Millisecond
 	}
 
 	if fs.ageChk != nil {
