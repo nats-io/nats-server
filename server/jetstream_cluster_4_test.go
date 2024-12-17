@@ -776,6 +776,18 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 		// Wait for test to finish before checking state.
 		wg.Wait()
 
+		// Specific to 2.10.
+		// For 2.11 checkInterestState() can run on a configurable (short) interval, 2.10 doesn't have that yet.
+		// So, just run it once at the end here to ensure dangling messages can be removed.
+		for _, s := range c.servers {
+			acc, err := s.LookupAccount("js")
+			require_NoError(t, err)
+			mset, err := acc.lookupStream(sc.Name)
+			if mset != nil && err == nil {
+				mset.checkInterestState()
+			}
+		}
+
 		// If clustered, check whether leader and followers have drifted.
 		if sc.Replicas > 1 {
 			// If we have drifted do not have to wait too long, usually it's stuck for good.
