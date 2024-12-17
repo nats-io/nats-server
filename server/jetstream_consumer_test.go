@@ -2423,6 +2423,101 @@ func Benchmark____JetStreamConsumerIsFilteredMatch(b *testing.B) {
 	}
 }
 
+// https://synadia-support.zendesk.com/agent/tickets/986
+func TestJetStreamFetchAcrossAccountExportImportWithEmptyMessages(t *testing.T) {
+	s := RunServerWithExportImport(t)
+	defer s.Shutdown()
+
+	//Write to one account
+	jsOpts1 := []nats.JSOpt{
+		nats.MaxWait(10 * time.Second),
+	}
+	nc1, js1 := jsClientConnectEx(t, s, jsOpts1, nats.UserInfo("john", "s3cr3t!"))
+	//Consume from another with domain
+	jsOpts2 := []nats.JSOpt{
+		nats.MaxWait(10 * time.Second),
+		nats.Domain("legal"),
+	}
+	nc2, js2 := jsClientConnectEx(t, s, jsOpts2, nats.UserInfo("peter", "s3cr3t!"))
+	defer nc1.Close()
+	defer nc2.Close()
+	//Delete stream
+	js1.DeleteStream("TESTEXPORT")
+	_, err := js1.AddStream(&nats.StreamConfig{
+		Name:     "TESTEXPORT",
+		Subjects: []string{"events.>"},
+	})
+	require_NoError(t, err)
+
+	sendStreamMsg(t, nc1, "events.first", "msg-1")
+	sendEmptyMsg(t, nc1, "events.second")
+	sendStreamMsg(t, nc1, "events.third", "msg-3")
+
+	consumer, err := js2.PullSubscribe("events.>", "consumer")
+
+	require_NoError(t, err)
+
+	//We expect all 3 messages to arrive - The empty message would commonly terminate the stream - but we recognize it as Jetstream
+	msgs, err := consumer.Fetch(3)
+	fmt.Println("Message count", len(msgs))
+	for _, msg := range msgs {
+		fmt.Printf("  Subject: %s\n", msg.Subject)
+		fmt.Printf("Data Length : %d bytes\n", len(msg.Data))
+	}
+	require_NoError(t, err)
+	require_True(t, len(msgs) == 3)
+}
+
+// https://synadia-support.zendesk.com/agent/tickets/986
+func TestMultiRequestReplyExportImportWithEmptyMessages(t *testing.T) {
+	s := RunServerWithExportImport(t)
+	defer s.Shutdown()
+
+	//Listen on one account
+	nc1, err1 := nats.Connect(s.ClientURL(), nats.UserInfo("john", "s3cr3t!"))
+	nc2, err2 := nats.Connect(s.ClientURL(), nats.UserInfo("peter", "s3cr3t!"))
+	defer nc1.Close()
+	defer nc2.Close()
+	require_NoError(t, err1)
+	require_NoError(t, err2)
+
+	sub1, _ := nc1.Subscribe("foo.request1", func(m *nats.Msg) {
+		var emptyByteSlice []byte
+		nc1.Publish(m.Reply, []byte("Hello 1"))
+		nc1.Publish(m.Reply, emptyByteSlice)
+		nc1.Publish(m.Reply, []byte("Hello 3"))
+	})
+
+	sub2, _ := nc1.Subscribe("foo.request2", func(m *nats.Msg) {
+		nc1.Publish(m.Reply, []byte("Hello 1"))
+		nc1.Publish(m.Reply, []byte("Hello 2"))
+		nc1.Publish(m.Reply, []byte("Hello 3"))
+	})
+
+	var messageCount int64
+	sub3, _ := nc2.Subscribe("foo.reply", func(m *nats.Msg) {
+		messageCount++
+	})
+	time.Sleep(100 * time.Millisecond)
+
+	//The nil message will terminate the reply stream mapping, so we should see only two messages
+	nc2.PublishRequest("foo.request1", "foo.reply", []byte("Hi"))
+	time.Sleep(500 * time.Millisecond)
+	fmt.Println("Message count", messageCount)
+	require_True(t, messageCount == 2)
+
+	//Now we have no termination messages and we should see three
+	messageCount = 0
+	nc2.PublishRequest("foo.request2", "foo.reply", []byte("Hi"))
+	time.Sleep(500 * time.Millisecond)
+	fmt.Println("Message count", messageCount)
+	require_True(t, messageCount == 3)
+
+	sub1.Unsubscribe()
+	sub2.Unsubscribe()
+	sub3.Unsubscribe()
+}
+
 // https://github.com/nats-io/nats-server/issues/6085
 func TestJetStreamConsumerBackoffNotRespectedWithMultipleInflightRedeliveries(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
