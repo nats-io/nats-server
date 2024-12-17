@@ -1634,6 +1634,61 @@ func TestNRGTruncateDownToCommitted(t *testing.T) {
 	require_Equal(t, n.commit, 2)
 }
 
+type mockWALTruncateAlwaysFails struct {
+	WAL
+}
+
+func (m mockWALTruncateAlwaysFails) Truncate(seq uint64) error {
+	return errors.New("test: truncate always fails")
+}
+
+func TestNRGTruncateDownToCommittedWhenTruncateFails(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	n.Lock()
+	n.wal = mockWALTruncateAlwaysFails{n.wal}
+	n.Unlock()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	nats1 := "yrzKKRBu" // "nats-1"
+
+	// Timeline, we are leader
+	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: entries})
+
+	// Timeline, after leader change
+	aeMsg3 := encode(t, &appendEntry{leader: nats1, term: 2, commit: 0, pterm: 1, pindex: 1, entries: entries})
+
+	// Simply receive first message.
+	n.processAppendEntry(aeMsg1, n.aesub)
+	require_Equal(t, n.commit, 0)
+	require_Equal(t, n.wal.State().Msgs, 1)
+	entry, err := n.loadEntry(1)
+	require_NoError(t, err)
+	require_Equal(t, entry.leader, nats0)
+
+	// Receive second message, which commits the first message.
+	n.processAppendEntry(aeMsg2, n.aesub)
+	require_Equal(t, n.commit, 1)
+	require_Equal(t, n.wal.State().Msgs, 2)
+	entry, err = n.loadEntry(2)
+	require_NoError(t, err)
+	require_Equal(t, entry.leader, nats0)
+
+	// We receive an entry from another leader, should truncate down to commit / remove the second message.
+	// But, truncation fails so should register that and not change pindex/pterm.
+	bindex, bterm := n.pindex, n.pterm
+	n.processAppendEntry(aeMsg3, n.aesub)
+	require_Error(t, n.werr, errors.New("test: truncate always fails"))
+	require_Equal(t, bindex, n.pindex)
+	require_Equal(t, bterm, n.pterm)
+}
+
 func TestNRGForwardProposalResponse(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
