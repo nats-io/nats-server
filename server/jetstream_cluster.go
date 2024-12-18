@@ -2541,10 +2541,14 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	for {
 		select {
 		case <-s.quitCh:
+			// Server shutting down, but we might receive this before qch, so try to snapshot.
+			doSnapshot()
 			return
 		case <-mqch:
 			return
 		case <-qch:
+			// Clean signal from shutdown routine so do best effort attempt to snapshot.
+			doSnapshot()
 			return
 		case <-aq.ch:
 			var ne, nb uint64
@@ -4937,8 +4941,12 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	for {
 		select {
 		case <-s.quitCh:
+			// Server shutting down, but we might receive this before qch, so try to snapshot.
+			doSnapshot(false)
 			return
 		case <-qch:
+			// Clean signal from shutdown routine so do best effort attempt to snapshot.
+			doSnapshot(false)
 			return
 		case <-aq.ch:
 			ces := aq.pop()
