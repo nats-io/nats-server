@@ -24756,9 +24756,8 @@ func TestJetStreamMessageTTL(t *testing.T) {
 		Header:  nats.Header{},
 	}
 
-	ttl := time.Now().Add(time.Second / 2).UnixNano()
 	for i := 1; i <= 10; i++ {
-		msg.Header.Set("Nats-TTL", fmt.Sprintf("%d", ttl))
+		msg.Header.Set("Nats-TTL", "1")
 		_, err := js.PublishMsg(msg)
 		require_NoError(t, err)
 	}
@@ -24769,7 +24768,7 @@ func TestJetStreamMessageTTL(t *testing.T) {
 	require_Equal(t, si.State.FirstSeq, 1)
 	require_Equal(t, si.State.LastSeq, 10)
 
-	time.Sleep(time.Second)
+	time.Sleep(time.Second * 2)
 
 	si, err = js.StreamInfo("TEST")
 	require_NoError(t, err)
@@ -24796,9 +24795,8 @@ func TestJetStreamMessageTTLRestart(t *testing.T) {
 		Header:  nats.Header{},
 	}
 
-	ttl := time.Now().Add(time.Second / 2).UnixNano()
 	for i := 1; i <= 10; i++ {
-		msg.Header.Set("Nats-TTL", fmt.Sprintf("%d", ttl))
+		msg.Header.Set("Nats-TTL", "1")
 		_, err := js.PublishMsg(msg)
 		require_NoError(t, err)
 	}
@@ -24824,7 +24822,7 @@ func TestJetStreamMessageTTLRestart(t *testing.T) {
 	require_Equal(t, si.State.FirstSeq, 1)
 	require_Equal(t, si.State.LastSeq, 10)
 
-	time.Sleep(time.Second)
+	time.Sleep(time.Second * 2)
 
 	si, err = js.StreamInfo("TEST")
 	require_NoError(t, err)
@@ -24851,9 +24849,8 @@ func TestJetStreamMessageTTLRecovered(t *testing.T) {
 		Header:  nats.Header{},
 	}
 
-	ttl := time.Now().Add(time.Second / 2).UnixNano()
 	for i := 1; i <= 10; i++ {
-		msg.Header.Set("Nats-TTL", fmt.Sprintf("%d", ttl))
+		msg.Header.Set("Nats-TTL", "1")
 		_, err := js.PublishMsg(msg)
 		require_NoError(t, err)
 	}
@@ -24882,7 +24879,7 @@ func TestJetStreamMessageTTLRecovered(t *testing.T) {
 	require_Equal(t, si.State.FirstSeq, 1)
 	require_Equal(t, si.State.LastSeq, 10)
 
-	time.Sleep(time.Second)
+	time.Sleep(time.Second * 2)
 
 	si, err = js.StreamInfo("TEST")
 	require_NoError(t, err)

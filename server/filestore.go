@@ -1469,8 +1469,9 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 			mb.msgs++
 			mb.bytes += uint64(rl)
 			if ttl > 0 {
+				expires := time.Duration(ts) + (time.Second * time.Duration(ttl))
+				mb.fs.ttls.Add(seq, int64(expires))
 				mb.ttls++
-				mb.fs.ttls.Add(seq, ttl)
 			}
 		}
 
@@ -1881,7 +1882,8 @@ func (fs *fileStore) recoverTTLState() error {
 				continue
 			}
 			if ttl := getMessageTTL(msg.hdr); ttl > 0 {
-				fs.ttls.Add(seq, ttl)
+				expires := time.Duration(msg.ts) + (time.Second * time.Duration(ttl))
+				fs.ttls.Add(seq, int64(expires))
 				if seq > fs.ttlseq {
 					fs.ttlseq = seq
 				}
@@ -3845,7 +3847,8 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 
 	// Per-message TTL.
 	if fs.ttls != nil && ttl > 0 {
-		fs.ttls.Add(seq, ttl)
+		expires := time.Duration(ts) + (time.Second * time.Duration(ttl))
+		fs.ttls.Add(seq, int64(expires))
 		fs.lmb.ttls++
 		if seq > fs.ttlseq {
 			fs.ttlseq = seq

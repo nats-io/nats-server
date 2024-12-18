@@ -8304,7 +8304,8 @@ func TestFileStoreMessageTTL(t *testing.T) {
 	require_NoError(t, err)
 	defer fs.Stop()
 
-	ttl := time.Now().Add(time.Second / 2).UnixNano()
+	ttl := int64(1) // 1 second
+
 	for i := 1; i <= 10; i++ {
 		_, _, err = fs.StoreMsg("test", nil, nil, ttl)
 		require_NoError(t, err)
@@ -8316,7 +8317,7 @@ func TestFileStoreMessageTTL(t *testing.T) {
 	require_Equal(t, ss.LastSeq, 10)
 	require_Equal(t, ss.Msgs, 10)
 
-	time.Sleep(time.Second)
+	time.Sleep(time.Second * 2)
 
 	fs.FastState(&ss)
 	require_Equal(t, ss.FirstSeq, 11)
@@ -8334,7 +8335,7 @@ func TestFileStoreMessageTTLRestart(t *testing.T) {
 		require_NoError(t, err)
 		defer fs.Stop()
 
-		ttl := time.Now().Add(time.Second / 2).UnixNano()
+		ttl := int64(1) // 1 second
 
 		for i := 1; i <= 10; i++ {
 			_, _, err = fs.StoreMsg("test", nil, nil, ttl)
@@ -8361,7 +8362,7 @@ func TestFileStoreMessageTTLRestart(t *testing.T) {
 		require_Equal(t, ss.LastSeq, 10)
 		require_Equal(t, ss.Msgs, 10)
 
-		time.Sleep(time.Second)
+		time.Sleep(time.Second * 2)
 
 		fs.FastState(&ss)
 		require_Equal(t, ss.FirstSeq, 11)
@@ -8383,7 +8384,7 @@ func TestFileStoreMessageTTLRecovered(t *testing.T) {
 		require_NoError(t, err)
 		defer fs.Stop()
 
-		ttl := time.Now().Add(time.Second / 2).UnixNano()
+		ttl := int64(1) // 1 second
 
 		for i := 1; i <= 10; i++ {
 			// When the timed hash wheel state is deleted, the only way we can recover
@@ -8419,7 +8420,7 @@ func TestFileStoreMessageTTLRecovered(t *testing.T) {
 		require_Equal(t, ss.LastSeq, 10)
 		require_Equal(t, ss.Msgs, 10)
 
-		time.Sleep(time.Second)
+		time.Sleep(time.Second * 2)
 
 		fs.FastState(&ss)
 		require_Equal(t, ss.FirstSeq, 11)
