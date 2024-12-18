@@ -83,6 +83,9 @@ type StoreMsg struct {
 // For the cases where its a single message we will also supply sequence number and subject.
 type StorageUpdateHandler func(msgs, bytes int64, seq uint64, subj string)
 
+// Callback to stop stream when stream state is corrupted
+type StreamStateCorruptionHandler func()
+
 type StreamStore interface {
 	StoreMsg(subject string, hdr, msg []byte) (uint64, int64, error)
 	StoreRawMsg(subject string, hdr, msg []byte, seq uint64, ts int64) error
@@ -111,6 +114,7 @@ type StreamStore interface {
 	SyncDeleted(dbs DeleteBlocks)
 	Type() StorageType
 	RegisterStorageUpdates(StorageUpdateHandler)
+	RegisterStreamStateCorruptionCB(StreamStateCorruptionHandler)
 	UpdateConfig(cfg *StreamConfig) error
 	Delete() error
 	Stop() error
