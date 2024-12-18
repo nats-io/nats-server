@@ -706,7 +706,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		}
 	}
 	fsCfg.StoreDir = storeDir
-	fsCfg.AsyncFlush = false
+	fsCfg.AsyncFlush = true
 	// Grab configured sync interval.
 	fsCfg.SyncInterval = s.getOpts().SyncInterval
 	fsCfg.SyncAlways = s.getOpts().SyncAlways
