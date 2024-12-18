@@ -2606,12 +2606,6 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			// Check about snapshotting
 			// If we have at least min entries to compact, go ahead and try to snapshot/compact.
 			if ne >= compactNumMin || nb > compactSizeMin || mset.getCLFS() > pclfs {
-				// We want to make sure we do not short circuit if transistioning from no clfs.
-				if pclfs == 0 {
-					// This is always false by default.
-					lastState.firstNeedsUpdate = true
-					lastSnapTime = time.Time{}
-				}
 				doSnapshot()
 			}
 
