@@ -1945,3 +1945,250 @@ func TestNRGHealthCheckWaitForPendingCommitsWhenPaused(t *testing.T) {
 	n.Applied(2)
 	require_True(t, n.Healthy())
 }
+
+// This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
+// proposing the next one.
+// The test may fail if:
+//   - Replicas hash diverge
+//   - One replica never applies the N-th block applied by the rest
+//   - The given number of blocks cannot be applied within some amount of time
+func TestNRGChainOfBlocksRunInLockstep(t *testing.T) {
+	const iterations = 50
+	const applyTimeout = 3 * time.Second
+	const testTimeout = iterations * time.Second
+
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createRaftGroup("TEST", 3, newRaftChainStateMachine)
+	rg.waitOnLeader()
+
+	testTimer := time.NewTimer(testTimeout)
+
+	for iteration := uint64(1); iteration <= iterations; iteration++ {
+		select {
+		case <-testTimer.C:
+			t.Fatalf("Timeout, completed %d/%d iterations", iteration-1, iterations)
+		default:
+			// Continue
+		}
+
+		// Propose the next block (this test assumes the proposal always goes through)
+		rg.randomMember().(*RCOBStateMachine).proposeBlock()
+
+		var currentHash string
+
+		// Wait on participants to converge
+		checkFor(t, applyTimeout, 500*time.Millisecond, func() error {
+			var previousNodeName string
+			var previousNodeHash string
+			for _, sm := range rg {
+				stateMachine := sm.(*RCOBStateMachine)
+				nodeName := fmt.Sprintf(
+					"%s/%s",
+					stateMachine.server().Name(),
+					stateMachine.node().ID(),
+				)
+
+				running, blocksCount, hash := stateMachine.getCurrentHash()
+				// All nodes always running
+				if !running {
+					return fmt.Errorf(
+						"node %s is not running",
+						nodeName,
+					)
+				}
+				// Node is behind
+				if blocksCount != iteration {
+					return fmt.Errorf(
+						"node %s applied %d blocks out of %d expected",
+						nodeName,
+						blocksCount,
+						iteration,
+					)
+				}
+				// Make sure hash is not empty
+				if hash == "" {
+					return fmt.Errorf(
+						"node %s has empty hash after applying %d blocks",
+						nodeName,
+						blocksCount,
+					)
+				}
+				// Check against previous node hash, unless this is the first node and we don't have anyone to compare
+				if previousNodeHash != "" && previousNodeHash != hash {
+					return fmt.Errorf(
+						"hash mismatch after %d blocks: %s hash: %s != %s hash: %s",
+						iteration,
+						nodeName,
+						hash,
+						previousNodeName,
+						previousNodeHash,
+					)
+				}
+				// Set node name and hash for next node to compare against
+				previousNodeName, previousNodeHash = nodeName, hash
+
+			}
+			// All replicas applied the last block and their hashes match
+			currentHash = previousNodeHash
+			return nil
+		})
+		if RCOBOptions.verbose {
+			t.Logf(
+				"Verified chain hash %s for %d/%d nodes after %d/%d iterations",
+				currentHash,
+				len(rg),
+				len(rg),
+				iteration,
+				iterations,
+			)
+		}
+	}
+}
+
+// This is a RaftChainOfBlocks test where one of the replicas is stopped before proposing a short burst of blocks.
+// Upon resuming the replica, we check it is able to catch up to the rest.
+// The test may fail if:
+//   - Replicas hash diverge
+//   - One replica never applies the N-th block applied by the rest
+//   - The given number of blocks cannot be applied within some amount of time
+func TestNRGChainOfBlocksStopAndCatchUp(t *testing.T) {
+	const iterations = 50
+	const blocksPerIteration = 3
+	const applyTimeout = 3 * time.Second
+	const testTimeout = 2 * iterations * time.Second
+
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createRaftGroup("TEST", 3, newRaftChainStateMachine)
+	rg.waitOnLeader()
+
+	testTimer := time.NewTimer(testTimeout)
+	highestBlockSeen := uint64(0)
+
+	for iteration := uint64(1); iteration <= iterations; iteration++ {
+
+		select {
+		case <-testTimer.C:
+			t.Fatalf("Timeout, completed %d/%d iterations", iteration-1, iterations)
+		default:
+			// Continue
+		}
+
+		// Stop a random node
+		stoppedNode := rg.randomMember()
+		leader := stoppedNode.node().Leader()
+		stoppedNode.stop()
+
+		// Snapshot a random (non-stopped) node
+		snapshotNode := rg.randomMember()
+		for snapshotNode == stoppedNode {
+			snapshotNode = rg.randomMember()
+		}
+		snapshotNode.(*RCOBStateMachine).createSnapshot()
+
+		if RCOBOptions.verbose {
+			t.Logf(
+				"Iteration %d/%d: stopping node: %s/%s (leader: %v)",
+				iteration,
+				iterations,
+				stoppedNode.server().Name(),
+				stoppedNode.node().ID(),
+				leader,
+			)
+		}
+
+		// Propose some new blocks
+		rg.waitOnLeader()
+		for i := 0; i < blocksPerIteration; i++ {
+			proposer := rg.randomMember()
+			// Pick again if we randomly chose the stopped node
+			for proposer == stoppedNode {
+				proposer = rg.randomMember()
+			}
+
+			proposer.(*RCOBStateMachine).proposeBlock()
+		}
+
+		// Restart the stopped node
+		stoppedNode.restart()
+
+		// Wait on participants to converge
+		expectedBlocks := iteration * blocksPerIteration
+		var currentHash string
+		checkFor(t, applyTimeout, 250*time.Millisecond, func() error {
+			var previousNodeName string
+			var previousNodeHash string
+			for _, sm := range rg {
+				stateMachine := sm.(*RCOBStateMachine)
+				nodeName := fmt.Sprintf(
+					"%s/%s",
+					stateMachine.server().Name(),
+					stateMachine.node().ID(),
+				)
+				running, blocksCount, currentHash := stateMachine.getCurrentHash()
+				// Track the highest block seen by any replica
+				if blocksCount > highestBlockSeen {
+					highestBlockSeen = blocksCount
+					// Must check all replicas again
+					return fmt.Errorf("updated highest block to %d (%s)", highestBlockSeen, nodeName)
+				}
+				// All nodes should be running
+				if !running {
+					return fmt.Errorf(
+						"node %s not running",
+						nodeName,
+					)
+				}
+				// Node is behind
+				if blocksCount != expectedBlocks {
+					return fmt.Errorf(
+						"node %s applied %d blocks out of %d expected",
+						nodeName,
+						blocksCount,
+						expectedBlocks,
+					)
+				}
+				// Make sure hash is not empty
+				if currentHash == "" {
+					return fmt.Errorf(
+						"node %s has empty hash after applying %d blocks",
+						nodeName,
+						blocksCount,
+					)
+				}
+				// Check against previous node hash, unless this is the first node to be checked
+				if previousNodeHash != "" && previousNodeHash != currentHash {
+					return fmt.Errorf(
+						"hash mismatch after %d blocks: %s hash: %s != %s hash: %s",
+						expectedBlocks,
+						nodeName,
+						currentHash,
+						previousNodeName,
+						previousNodeHash,
+					)
+				}
+				// Set node name and hash for next node to compare against
+				previousNodeName, previousNodeHash = nodeName, currentHash
+			}
+			// All is well
+			currentHash = previousNodeHash
+			return nil
+		})
+
+		if RCOBOptions.verbose {
+			t.Logf(
+				"Verified chain hash %s for %d/%d nodes after %d blocks, %d/%d iterations (%d lost proposals)",
+				currentHash,
+				len(rg),
+				len(rg),
+				highestBlockSeen,
+				iteration,
+				iterations,
+				expectedBlocks-highestBlockSeen,
+			)
+		}
+	}
+}
