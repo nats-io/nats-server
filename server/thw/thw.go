@@ -216,6 +216,9 @@ func (hw *HashWheel) Encode(highSeq uint64) []byte {
 	b = binary.LittleEndian.AppendUint64(b, hw.count) // Entry count
 	b = binary.LittleEndian.AppendUint64(b, highSeq)  // Stamp
 	for _, slot := range hw.wheel {
+		if slot == nil || slot.entries == nil {
+			continue
+		}
 		for v, ts := range slot.entries {
 			b = binary.AppendVarint(b, ts)
 			b = binary.AppendUvarint(b, v)
