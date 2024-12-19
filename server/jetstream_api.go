@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -2987,34 +2986,9 @@ func (s *Server) jsLeaderStepDownRequest(sub *subscription, c *client, _ *Accoun
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-		if req.Placement != nil {
-			if len(req.Placement.Tags) > 0 {
-				// Tags currently not supported.
-				resp.Error = NewJSClusterTagsError()
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-				return
-			}
-			cn := req.Placement.Cluster
-			var peers []string
-			ourID := cc.meta.ID()
-			for _, p := range cc.meta.Peers() {
-				if si, ok := s.nodeToInfo.Load(p.ID); ok && si != nil {
-					if ni := si.(nodeInfo); ni.offline || ni.cluster != cn || p.ID == ourID {
-						continue
-					}
-					peers = append(peers, p.ID)
-				}
-			}
-			if len(peers) == 0 {
-				resp.Error = NewJSClusterNoPeersError(fmt.Errorf("no replacement peer connected"))
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-				return
-			}
-			// Randomize and select.
-			if len(peers) > 1 {
-				rand.Shuffle(len(peers), func(i, j int) { peers[i], peers[j] = peers[j], peers[i] })
-			}
-			preferredLeader = peers[0]
+		if preferredLeader, resp.Error = s.getStepDownPreferredPlacement(cc.meta, req.Placement); resp.Error != nil {
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
 		}
 	}
 
@@ -3064,6 +3038,84 @@ func isEmptyRequest(req []byte) bool {
 		return false
 	}
 	return len(vm) == 0
+}
+
+// getStepDownPreferredPlacement attempts to work out what the best placement is
+// for a stepdown request. The preferred server name always takes precedence, but
+// if not specified, the placement will be used to filter by cluster. The caller
+// should check for return API errors and return those to the requestor if needed.
+func (s *Server) getStepDownPreferredPlacement(group RaftNode, placement *Placement) (string, *ApiError) {
+	if placement == nil {
+		return _EMPTY_, nil
+	}
+	var preferredLeader string
+	if placement.Preferred != _EMPTY_ {
+		for _, p := range group.Peers() {
+			si, ok := s.nodeToInfo.Load(p.ID)
+			if !ok || si == nil {
+				continue
+			}
+			if si.(nodeInfo).name == placement.Preferred {
+				preferredLeader = p.ID
+				break
+			}
+		}
+		if preferredLeader == group.ID() {
+			return _EMPTY_, NewJSClusterNoPeersError(fmt.Errorf("preferred server %q is already leader", placement.Preferred))
+		}
+		if preferredLeader == _EMPTY_ {
+			return _EMPTY_, NewJSClusterNoPeersError(fmt.Errorf("preferred server %q not known", placement.Preferred))
+		}
+	} else {
+		possiblePeers := make(map[*Peer]nodeInfo, len(group.Peers()))
+		ourID := group.ID()
+		for _, p := range group.Peers() {
+			if p == nil {
+				continue // ... shouldn't happen.
+			}
+			si, ok := s.nodeToInfo.Load(p.ID)
+			if !ok || si == nil {
+				continue
+			}
+			ni := si.(nodeInfo)
+			if ni.offline || p.ID == ourID {
+				continue
+			}
+			possiblePeers[p] = ni
+		}
+		// If cluster is specified, filter out anything not matching the cluster name.
+		if placement.Cluster != _EMPTY_ {
+			for p, si := range possiblePeers {
+				if si.cluster != placement.Cluster {
+					delete(possiblePeers, p)
+				}
+			}
+		}
+		// If tags are specified, filter out anything not matching all supplied tags.
+		if len(placement.Tags) > 0 {
+			for p, si := range possiblePeers {
+				matchesAll := true
+				for _, tag := range placement.Tags {
+					if matchesAll = matchesAll && si.tags.Contains(tag); !matchesAll {
+						break
+					}
+				}
+				if !matchesAll {
+					delete(possiblePeers, p)
+				}
+			}
+		}
+		// If there are no possible peers, return an error.
+		if len(possiblePeers) == 0 {
+			return _EMPTY_, NewJSClusterNoPeersError(fmt.Errorf("no replacement peer connected"))
+		}
+		// Take advantage of random map iteration order to select the preferred.
+		for p := range possiblePeers {
+			preferredLeader = p.ID
+			break
+		}
+	}
+	return preferredLeader, nil
 }
 
 // Request to delete a stream.

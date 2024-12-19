@@ -829,6 +829,12 @@ func checkConsumerCfg(
 			}
 		}
 	}
+
+	// For now don't allow preferred server in placement.
+	if cfg.Placement != nil && cfg.Placement.Preferred != _EMPTY_ {
+		return NewJSStreamInvalidConfigError(fmt.Errorf("preferred server not permitted in placement"))
+	}
+
 	return nil
 }
 
