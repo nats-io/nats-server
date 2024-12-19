@@ -617,7 +617,8 @@ const JSApiConsumerLeaderStepDownResponseType = "io.nats.jetstream.api.v1.consum
 
 // JSApiLeaderStepdownRequest allows placement control over the meta leader placement.
 type JSApiLeaderStepdownRequest struct {
-	Placement *Placement `json:"placement,omitempty"`
+	PreferredServer string     `json:"preferred_server,omitempty"`
+	Placement       *Placement `json:"placement,omitempty"`
 }
 
 // JSApiLeaderStepDownResponse is the response to a meta leader stepdown request.
@@ -2987,34 +2988,9 @@ func (s *Server) jsLeaderStepDownRequest(sub *subscription, c *client, _ *Accoun
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-		if req.Placement != nil {
-			if len(req.Placement.Tags) > 0 {
-				// Tags currently not supported.
-				resp.Error = NewJSClusterTagsError()
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-				return
-			}
-			cn := req.Placement.Cluster
-			var peers []string
-			ourID := cc.meta.ID()
-			for _, p := range cc.meta.Peers() {
-				if si, ok := s.nodeToInfo.Load(p.ID); ok && si != nil {
-					if ni := si.(nodeInfo); ni.offline || ni.cluster != cn || p.ID == ourID {
-						continue
-					}
-					peers = append(peers, p.ID)
-				}
-			}
-			if len(peers) == 0 {
-				resp.Error = NewJSClusterNoPeersError(fmt.Errorf("no replacement peer connected"))
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-				return
-			}
-			// Randomize and select.
-			if len(peers) > 1 {
-				rand.Shuffle(len(peers), func(i, j int) { peers[i], peers[j] = peers[j], peers[i] })
-			}
-			preferredLeader = peers[0]
+		if preferredLeader, resp.Error = s.getStepDownPreferredPlacement(cc.meta, req.PreferredServer, req.Placement); resp.Error != nil {
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
 		}
 	}
 
@@ -3064,6 +3040,57 @@ func isEmptyRequest(req []byte) bool {
 		return false
 	}
 	return len(vm) == 0
+}
+
+// getStepDownPreferredPlacement attempts to work out what the best placement is
+// for a stepdown request. The preferred server name always takes precedence, but
+// if not specified, the placement will be used to filter by cluster. The caller
+// should check for return API errors and return those to the requestor if needed.
+func (s *Server) getStepDownPreferredPlacement(group RaftNode, preferredServer string, placement *Placement) (string, *ApiError) {
+	var preferredLeader string
+	if preferredServer != _EMPTY_ {
+		for _, p := range group.Peers() {
+			si, ok := s.nodeToInfo.Load(p.ID)
+			if !ok || si == nil {
+				continue
+			}
+			if si.(nodeInfo).name == preferredServer {
+				preferredLeader = p.ID
+				break
+			}
+		}
+		if preferredLeader == group.ID() {
+			return _EMPTY_, NewJSClusterNoPeersError(fmt.Errorf("preferred server %q is already leader", preferredServer))
+		}
+		if preferredLeader == _EMPTY_ {
+			return _EMPTY_, NewJSClusterNoPeersError(fmt.Errorf("preferred server %q not known", preferredServer))
+		}
+	} else if placement != nil {
+		if len(placement.Tags) > 0 {
+			// Tags currently not supported.
+			return _EMPTY_, NewJSClusterTagsError()
+		}
+		cn := placement.Cluster
+		var peers []string
+		ourID := group.ID()
+		for _, p := range group.Peers() {
+			if si, ok := s.nodeToInfo.Load(p.ID); ok && si != nil {
+				if ni := si.(nodeInfo); ni.offline || ni.cluster != cn || p.ID == ourID {
+					continue
+				}
+				peers = append(peers, p.ID)
+			}
+		}
+		if len(peers) == 0 {
+			return _EMPTY_, NewJSClusterNoPeersError(fmt.Errorf("no replacement peer connected"))
+		}
+		// Randomize and select.
+		if len(peers) > 1 {
+			rand.Shuffle(len(peers), func(i, j int) { peers[i], peers[j] = peers[j], peers[i] })
+		}
+		preferredLeader = peers[0]
+	}
+	return preferredLeader, nil
 }
 
 // Request to delete a stream.
