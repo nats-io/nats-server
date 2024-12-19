@@ -326,26 +326,29 @@ func createJetStreamTaggedSuperClusterWithGWProxy(t *testing.T, gwm gwProxyMap) 
 	}
 
 	// Make first cluster AWS, US country code.
-	for _, s := range sc.clusterForName("C1").servers {
+	for i, s := range sc.clusterForName("C1").servers {
 		s.optsMu.Lock()
 		s.opts.Tags.Add("cloud:aws")
 		s.opts.Tags.Add("country:us")
+		s.opts.Tags.Add(fmt.Sprintf("node:%d", i+1))
 		s.optsMu.Unlock()
 		reset(s)
 	}
 	// Make second cluster GCP, UK country code.
-	for _, s := range sc.clusterForName("C2").servers {
+	for i, s := range sc.clusterForName("C2").servers {
 		s.optsMu.Lock()
 		s.opts.Tags.Add("cloud:gcp")
 		s.opts.Tags.Add("country:uk")
+		s.opts.Tags.Add(fmt.Sprintf("node:%d", i+1))
 		s.optsMu.Unlock()
 		reset(s)
 	}
 	// Make third cluster AZ, JP country code.
-	for _, s := range sc.clusterForName("C3").servers {
+	for i, s := range sc.clusterForName("C3").servers {
 		s.optsMu.Lock()
 		s.opts.Tags.Add("cloud:az")
 		s.opts.Tags.Add("country:jp")
+		s.opts.Tags.Add(fmt.Sprintf("node:%d", i+1))
 		s.optsMu.Unlock()
 		reset(s)
 	}
