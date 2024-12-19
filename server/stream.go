@@ -1691,6 +1691,11 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 		}
 	}
 
+	// For now don't allow preferred server in placement.
+	if cfg.Placement != nil && cfg.Placement.Preferred != _EMPTY_ {
+		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("preferred server not permitted in placement"))
+	}
+
 	return cfg, nil
 }
 

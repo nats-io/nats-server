@@ -5153,3 +5153,79 @@ func TestJetStreamClusterExpectedPerSubjectConsistency(t *testing.T) {
 	require_Len(t, len(mset.expectedPerSubjectSequence), 0)
 	require_Len(t, len(mset.expectedPerSubjectInProcess), 0)
 }
+
+func TestJetStreamClusterMetaStepdownPreferred(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, _ := jsClientConnect(t, c.randomServer(), nats.UserInfo("admin", "s3cr3t!"))
+	defer nc.Close()
+
+	// We know of the preferred server and will successfully hand over to it.
+	t.Run("KnownPreferred", func(t *testing.T) {
+		leader := c.leader()
+		var preferred *Server
+		for _, s := range c.servers {
+			if s == leader {
+				continue
+			}
+			preferred = s
+			break
+		}
+
+		body, err := json.Marshal(JSApiLeaderStepdownRequest{
+			Placement: &Placement{
+				Preferred: preferred.Name(),
+			},
+		})
+		require_NoError(t, err)
+
+		resp, err := nc.Request(JSApiLeaderStepDown, body, time.Second)
+		require_NoError(t, err)
+
+		var apiresp JSApiLeaderStepDownResponse
+		require_NoError(t, json.Unmarshal(resp.Data, &apiresp))
+		require_True(t, apiresp.Success)
+		require_Equal(t, apiresp.Error, nil)
+
+		c.waitOnLeader()
+		require_Equal(t, preferred, c.leader())
+	})
+
+	// We don't know of a server that matches that name so the stepdown fails.
+	t.Run("UnknownPreferred", func(t *testing.T) {
+		body, err := json.Marshal(JSApiLeaderStepdownRequest{
+			Placement: &Placement{
+				Preferred: "i_dont_exist",
+			},
+		})
+		require_NoError(t, err)
+
+		resp, err := nc.Request(JSApiLeaderStepDown, body, time.Second)
+		require_NoError(t, err)
+
+		var apiresp JSApiLeaderStepDownResponse
+		require_NoError(t, json.Unmarshal(resp.Data, &apiresp))
+		require_False(t, apiresp.Success)
+		require_NotNil(t, apiresp.Error)
+		require_Equal(t, ErrorIdentifier(apiresp.Error.ErrCode), JSClusterNoPeersErrF)
+	})
+
+	// The preferred server happens to already be the leader so the stepdown fails.
+	t.Run("SamePreferred", func(t *testing.T) {
+		body, err := json.Marshal(JSApiLeaderStepdownRequest{
+			Placement: &Placement{
+				Preferred: c.leader().Name(),
+			},
+		})
+		require_NoError(t, err)
+
+		resp, err := nc.Request(JSApiLeaderStepDown, body, time.Second)
+		require_NoError(t, err)
+
+		var apiresp ApiResponse
+		require_NoError(t, json.Unmarshal(resp.Data, &apiresp))
+		require_NotNil(t, apiresp.Error)
+		require_Equal(t, ErrorIdentifier(apiresp.Error.ErrCode), JSClusterNoPeersErrF)
+	})
+}

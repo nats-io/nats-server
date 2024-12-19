@@ -35,21 +35,10 @@ import (
 	"github.com/nats-io/nkeys"
 )
 
-func TestJetStreamSuperClusterMetaPlacement(t *testing.T) {
-	sc := createJetStreamSuperCluster(t, 3, 3)
+func TestJetStreamSuperClusterMetaStepDown(t *testing.T) {
+	sc := createJetStreamTaggedSuperCluster(t)
 	defer sc.shutdown()
-
-	// We want to influence where the meta leader will place itself when we ask the
-	// current leader to stepdown.
-	ml := sc.leader()
-	cn := ml.ClusterName()
-	var pcn string
-	for _, c := range sc.clusters {
-		if c.name != cn {
-			pcn = c.name
-			break
-		}
-	}
+	sc.waitOnLeader()
 
 	// Client based API
 	s := sc.randomServer()
@@ -59,42 +48,195 @@ func TestJetStreamSuperClusterMetaPlacement(t *testing.T) {
 	}
 	defer nc.Close()
 
-	stepdown := func(cn string) *JSApiLeaderStepDownResponse {
-		req := &JSApiLeaderStepdownRequest{Placement: &Placement{Cluster: cn}}
-		jreq, err := json.Marshal(req)
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
+	stepdown := func(preferred, cn string, tags []string) *JSApiLeaderStepDownResponse {
+		jreq, err := json.Marshal(&JSApiLeaderStepdownRequest{
+			Placement: &Placement{
+				Cluster:   cn,
+				Tags:      tags,
+				Preferred: preferred,
+			},
+		})
+		require_NoError(t, err)
 
 		resp, err := nc.Request(JSApiLeaderStepDown, jreq, time.Second)
-		if err != nil {
-			t.Fatalf("Error on stepdown request: %v", err)
-		}
+		require_NoError(t, err)
+
 		var sdr JSApiLeaderStepDownResponse
-		if err := json.Unmarshal(resp.Data, &sdr); err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
+		require_NoError(t, json.Unmarshal(resp.Data, &sdr))
 		return &sdr
 	}
 
+	// Make sure we get correct errors for clusters we don't know about.
+	t.Run("UnknownCluster", func(t *testing.T) {
+		sdr := stepdown(_EMPTY_, "ThisClusterDoesntExist", nil)
+		require_NotNil(t, sdr.Error)
+		require_Equal(t, sdr.Error.Code, 400)
+		require_Equal(t, ErrorIdentifier(sdr.Error.ErrCode), JSClusterNoPeersErrF)
+	})
+
+	// Make sure we get correct errors for servers we don't know about.
+	t.Run("UnknownPreferredServer", func(t *testing.T) {
+		sdr := stepdown("ThisServerDoesntExist", _EMPTY_, nil)
+		require_NotNil(t, sdr.Error)
+		require_Equal(t, sdr.Error.Code, 400)
+		require_Equal(t, ErrorIdentifier(sdr.Error.ErrCode), JSClusterNoPeersErrF)
+	})
+
+	// Make sure we get correct errors for tags that don't match any servers.
+	t.Run("UnknownTag", func(t *testing.T) {
+		sdr := stepdown(_EMPTY_, _EMPTY_, []string{"thistag:doesntexist"})
+		require_NotNil(t, sdr.Error)
+		require_Equal(t, sdr.Error.Code, 400)
+		require_Equal(t, ErrorIdentifier(sdr.Error.ErrCode), JSClusterNoPeersErrF)
+	})
+
+	// Make sure we get correct errors for servers that are already leader.
+	t.Run("PreferredServerAlreadyLeader", func(t *testing.T) {
+		ml := sc.leader()
+		require_NotNil(t, ml)
+
+		sdr := stepdown(ml.Name(), _EMPTY_, nil)
+		require_NotNil(t, sdr.Error)
+		require_Equal(t, sdr.Error.Code, 400)
+		require_Equal(t, ErrorIdentifier(sdr.Error.ErrCode), JSClusterNoPeersErrF)
+	})
+
 	// Make sure we get correct errors for tags and bad or unavailable cluster placement.
-	sdr := stepdown("C22")
-	if sdr.Error == nil || !strings.Contains(sdr.Error.Description, "no replacement peer connected") {
-		t.Fatalf("Got incorrect error result: %+v", sdr.Error)
-	}
-	// Should work.
-	sdr = stepdown(pcn)
-	if sdr.Error != nil {
-		t.Fatalf("Got an error on stepdown: %+v", sdr.Error)
-	}
+	t.Run("PlacementByPreferredServer", func(t *testing.T) {
+		ml := sc.leader()
+		require_NotNil(t, ml)
 
-	sc.waitOnLeader()
-	ml = sc.leader()
-	cn = ml.ClusterName()
+		var preferredServer string
+	clusters:
+		for _, c := range sc.clusters {
+			for _, s := range c.servers {
+				if s == ml {
+					continue
+				}
+				preferredServer = s.Name()
+				break clusters
+			}
+		}
 
-	if cn != pcn {
-		t.Fatalf("Expected new metaleader to be in cluster %q, got %q", pcn, cn)
-	}
+		sdr := stepdown(preferredServer, _EMPTY_, nil)
+		require_Equal(t, sdr.Error, nil)
+
+		sc.waitOnLeader()
+		ml = sc.leader()
+		require_Equal(t, ml.Name(), preferredServer)
+	})
+
+	// Influence the placement by using the cluster name.
+	t.Run("PlacementByCluster", func(t *testing.T) {
+		ml := sc.leader()
+		require_NotNil(t, ml)
+
+		cn := ml.ClusterName()
+		var pcn string
+		for _, c := range sc.clusters {
+			if c.name != cn {
+				pcn = c.name
+				break
+			}
+		}
+
+		sdr := stepdown(_EMPTY_, pcn, nil)
+		require_Equal(t, sdr.Error, nil)
+
+		sc.waitOnLeader()
+		ml = sc.leader()
+		require_NotNil(t, ml)
+		require_Equal(t, ml.ClusterName(), pcn)
+	})
+
+	// Influence the placement by using tag names.
+	t.Run("PlacementByTag", func(t *testing.T) {
+		ml := sc.leader()
+		require_NotNil(t, ml)
+
+		// Work out what the tags are of the current leader, so we can pick
+		// different ones.
+		possibleTags := map[string]struct{}{
+			"cloud:aws": {},
+			"cloud:gcp": {},
+			"cloud:az":  {},
+		}
+		// Remove the current leader's tags from the list.
+		for _, tag := range ml.getOpts().Tags {
+			delete(possibleTags, tag)
+		}
+		// Now pick the first tag as our new chosen tag.
+		var chosenTag string
+		for tag := range possibleTags {
+			chosenTag = tag
+			break
+		}
+
+		sdr := stepdown(_EMPTY_, _EMPTY_, []string{chosenTag})
+		require_Equal(t, sdr.Error, nil)
+
+		sc.waitOnLeader()
+		ml = sc.leader()
+		require_NotNil(t, ml)
+		require_True(t, ml.getOpts().Tags.Contains(chosenTag))
+	})
+
+	// Influence the placement by using tag names, we need to match all of them.
+	t.Run("PlacementByMultipleTags", func(t *testing.T) {
+		ml := sc.leader()
+		require_NotNil(t, ml)
+
+		// Work out what the tags are of the current leader, so we can pick
+		// different ones.
+		possibleTags := map[string]struct{}{
+			"cloud:aws": {},
+			"cloud:gcp": {},
+			"cloud:az":  {},
+		}
+		// Remove the current leader's tags from the list.
+		for _, tag := range ml.getOpts().Tags {
+			delete(possibleTags, tag)
+		}
+		// Now pick the first tag as our new chosen tag.
+		var chosenTag string
+		for tag := range possibleTags {
+			chosenTag = tag
+			break
+		}
+
+		sdr := stepdown(_EMPTY_, _EMPTY_, []string{chosenTag, "node:1"})
+		require_Equal(t, sdr.Error, nil)
+
+		sc.waitOnLeader()
+		ml = sc.leader()
+		require_NotNil(t, ml)
+		require_True(t, ml.getOpts().Tags.Contains(chosenTag))
+		require_True(t, ml.getOpts().Tags.Contains("node:1"))
+	})
+
+	// Influence the placement by using the cluster name and a tag.
+	t.Run("PlacementByClusterAndTag", func(t *testing.T) {
+		ml := sc.leader()
+		require_NotNil(t, ml)
+
+		cn := ml.ClusterName()
+		var pcn string
+		for _, c := range sc.clusters {
+			if c.name != cn {
+				pcn = c.name
+				break
+			}
+		}
+
+		sdr := stepdown(_EMPTY_, pcn, []string{"node:1"})
+		require_Equal(t, sdr.Error, nil)
+
+		sc.waitOnLeader()
+		ml = sc.leader()
+		require_NotNil(t, ml)
+		require_Equal(t, ml.ClusterName(), pcn)
+		require_True(t, ml.getOpts().Tags.Contains("node:1"))
+	})
 }
 
 func TestJetStreamSuperClusterUniquePlacementTag(t *testing.T) {
