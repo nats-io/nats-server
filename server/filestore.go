@@ -1376,14 +1376,14 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 		}
 
 		hdr := buf[index : index+msgHdrSize]
-		rl, slen := le.Uint32(hdr[0:]), le.Uint16(hdr[20:])
+		rl, slen := le.Uint32(hdr[0:]), int(le.Uint16(hdr[20:]))
 
 		hasHeaders := rl&hbit != 0
 		// Clear any headers bit that could be set.
 		rl &^= hbit
 		dlen := int(rl) - msgHdrSize
 		// Do some quick sanity checks here.
-		if dlen < 0 || int(slen) > (dlen-recordHashSize) || dlen > int(rl) || index+rl > lbuf || rl > rlBadThresh {
+		if dlen < 0 || slen > (dlen-recordHashSize) || dlen > int(rl) || index+rl > lbuf || rl > rlBadThresh {
 			truncate(index)
 			return gatherLost(lbuf - index), tombstones, errBadMsg
 		}
@@ -4360,12 +4360,12 @@ func (mb *msgBlock) compactWithFloor(floor uint64) {
 			return
 		}
 		hdr := buf[index : index+msgHdrSize]
-		rl, slen := le.Uint32(hdr[0:]), le.Uint16(hdr[20:])
+		rl, slen := le.Uint32(hdr[0:]), int(le.Uint16(hdr[20:]))
 		// Clear any headers bit that could be set.
 		rl &^= hbit
 		dlen := int(rl) - msgHdrSize
 		// Do some quick sanity checks here.
-		if dlen < 0 || int(slen) > dlen || dlen > int(rl) || rl > rlBadThresh || index+rl > lbuf {
+		if dlen < 0 || slen > (dlen-recordHashSize) || dlen > int(rl) || index+rl > lbuf || rl > rlBadThresh {
 			return
 		}
 		// Only need to process non-deleted messages.
@@ -6484,7 +6484,7 @@ func (mb *msgBlock) msgFromBuf(buf []byte, sm *StoreMsg, hh hash.Hash64) (*Store
 	dlen := int(rl) - msgHdrSize
 	slen := int(le.Uint16(hdr[20:]))
 	// Simple sanity check.
-	if dlen < 0 || slen > (dlen-recordHashSize) || dlen > int(rl) || int(rl) > len(buf) {
+	if dlen < 0 || slen > (dlen-recordHashSize) || dlen > int(rl) || int(rl) > len(buf) || rl > rlBadThresh {
 		return nil, errBadMsg
 	}
 	data := buf[msgHdrSize : msgHdrSize+dlen]
