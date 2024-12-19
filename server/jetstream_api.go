@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -3066,29 +3065,53 @@ func (s *Server) getStepDownPreferredPlacement(group RaftNode, preferredServer s
 			return _EMPTY_, NewJSClusterNoPeersError(fmt.Errorf("preferred server %q not known", preferredServer))
 		}
 	} else if placement != nil {
-		if len(placement.Tags) > 0 {
-			// Tags currently not supported.
-			return _EMPTY_, NewJSClusterTagsError()
-		}
-		cn := placement.Cluster
-		var peers []string
+		possiblePeers := make(map[*Peer]nodeInfo, len(group.Peers()))
 		ourID := group.ID()
 		for _, p := range group.Peers() {
-			if si, ok := s.nodeToInfo.Load(p.ID); ok && si != nil {
-				if ni := si.(nodeInfo); ni.offline || ni.cluster != cn || p.ID == ourID {
-					continue
+			if p == nil {
+				continue // ... shouldn't happen.
+			}
+			si, ok := s.nodeToInfo.Load(p.ID)
+			if !ok || si == nil {
+				continue
+			}
+			ni := si.(nodeInfo)
+			if ni.offline || p.ID == ourID {
+				continue
+			}
+			possiblePeers[p] = ni
+		}
+		// If cluster is specified, filter out anything not matching the cluster name.
+		if placement.Cluster != _EMPTY_ {
+			for p, si := range possiblePeers {
+				if si.cluster != placement.Cluster {
+					delete(possiblePeers, p)
 				}
-				peers = append(peers, p.ID)
 			}
 		}
-		if len(peers) == 0 {
+		// If tags are specified, filter out anything not matching all supplied tags.
+		if len(placement.Tags) > 0 {
+			for p, si := range possiblePeers {
+				matchesAll := true
+				for _, tag := range placement.Tags {
+					if matchesAll = matchesAll && si.tags.Contains(tag); !matchesAll {
+						break
+					}
+				}
+				if !matchesAll {
+					delete(possiblePeers, p)
+				}
+			}
+		}
+		// If there are no possible peers, return an error.
+		if len(possiblePeers) == 0 {
 			return _EMPTY_, NewJSClusterNoPeersError(fmt.Errorf("no replacement peer connected"))
 		}
-		// Randomize and select.
-		if len(peers) > 1 {
-			rand.Shuffle(len(peers), func(i, j int) { peers[i], peers[j] = peers[j], peers[i] })
+		// Take advantage of random map iteration order to select the preferred.
+		for p := range possiblePeers {
+			preferredLeader = p.ID
+			break
 		}
-		preferredLeader = peers[0]
 	}
 	return preferredLeader, nil
 }
