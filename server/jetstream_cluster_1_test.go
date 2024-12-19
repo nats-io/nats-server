@@ -6668,9 +6668,11 @@ func TestJetStreamClusterMetaRecoveryConsumerCreateAndRemove(t *testing.T) {
 	}
 }
 
-// Make sure if we received acks that are out of bounds, meaning past our
+// Test that acking returns the expected reply message.
+// Make sure that an error is returned when trying to ack the same message more than once.
+// Make sure if we receive acks that are out of bounds, meaning past our
 // last sequence or before our first that they are ignored and errored if applicable.
-func TestJetStreamClusterConsumerAckOutOfBounds(t *testing.T) {
+func TestJetStreamConsumerClusterAckAck(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -6696,13 +6698,33 @@ func TestJetStreamClusterConsumerAckOutOfBounds(t *testing.T) {
 	msgs, err := sub.Fetch(1)
 	require_NoError(t, err)
 	require_Equal(t, len(msgs), 1)
-	msgs[0].AckSync()
+	ackSubject := msgs[0].Reply
+
+	var resp JSApiConsumerAckResponse
+
+	// first ack
+	replyMsg, err := nc.Request(ackSubject, nil, 5000*time.Millisecond)
+	require_NoError(t, err)
+	require_NoError(t, json.Unmarshal(replyMsg.Data, &resp))
+	require_True(t, resp.Success)
+
+	// check for error if trying to ack again
+	resp = JSApiConsumerAckResponse{}
+	replyMsg, err = nc.Request(ackSubject, nil, 250*time.Millisecond)
+	require_NoError(t, err)
+	require_NoError(t, json.Unmarshal(replyMsg.Data, &resp))
+	require_False(t, resp.Success)
+	require_Equal(t, resp.Error.ErrCode, uint16(JSConsumerMsgNotPendingAckErr))
 
 	// Now ack way past the last sequence.
-	_, err = nc.Request("$JS.ACK.TEST.C.1.10000000000.0.0.0", nil, 250*time.Millisecond)
-	require_Error(t, err, nats.ErrTimeout)
+	resp = JSApiConsumerAckResponse{}
+	replyMsg, err = nc.Request("$JS.ACK.TEST.C.1.10000000000.0.0.0", nil, 250*time.Millisecond)
+	require_NoError(t, err)
+	require_NoError(t, json.Unmarshal(replyMsg.Data, &resp))
+	require_False(t, resp.Success)
+	require_Equal(t, resp.Error.ErrCode, uint16(JSConsumerMsgNotPendingAckErr))
 
-	// Make sure that now changes happened to our state.
+	// Make sure that no changes happened to our state.
 	ci, err := js.ConsumerInfo("TEST", "C")
 	require_NoError(t, err)
 	require_Equal(t, ci.Delivered.Consumer, 1)
