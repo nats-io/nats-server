@@ -8428,3 +8428,58 @@ func TestFileStoreMessageTTLRecovered(t *testing.T) {
 		require_Equal(t, ss.Msgs, 0)
 	})
 }
+
+func TestFileStoreMessageTTLRecoveredSingleMessageWithoutStreamState(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	dir := t.TempDir()
+
+	t.Run("BeforeRestart", func(t *testing.T) {
+		fs, err := newFileStore(
+			FileStoreConfig{StoreDir: dir, srv: s},
+			StreamConfig{Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage})
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		ttl := int64(1) // 1 second
+		hdr := fmt.Appendf(nil, "NATS/1.0\r\n%s: %d\r\n", JSMessageTTL, ttl)
+		_, _, err = fs.StoreMsg("test", hdr, nil, ttl)
+		require_NoError(t, err)
+
+		var ss StreamState
+		fs.FastState(&ss)
+		require_Equal(t, ss.FirstSeq, 1)
+		require_Equal(t, ss.LastSeq, 1)
+		require_Equal(t, ss.Msgs, 1)
+	})
+
+	t.Run("AfterRestart", func(t *testing.T) {
+		// Delete the stream state file so that we need to rebuild.
+		fn := filepath.Join(dir, msgDir, streamStreamStateFile)
+		require_NoError(t, os.RemoveAll(fn))
+		// Delete the timed hash wheel state so that we are forced to do a linear scan
+		// of message blocks containing TTL'd messages.
+		fn = filepath.Join(dir, msgDir, ttlStreamStateFile)
+		require_NoError(t, os.RemoveAll(fn))
+
+		fs, err := newFileStore(
+			FileStoreConfig{StoreDir: dir, srv: s},
+			StreamConfig{Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage})
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		var ss StreamState
+		fs.FastState(&ss)
+		require_Equal(t, ss.FirstSeq, 1)
+		require_Equal(t, ss.LastSeq, 1)
+		require_Equal(t, ss.Msgs, 1)
+
+		time.Sleep(time.Second * 2)
+
+		fs.FastState(&ss)
+		require_Equal(t, ss.FirstSeq, 2)
+		require_Equal(t, ss.LastSeq, 1)
+		require_Equal(t, ss.Msgs, 0)
+	})
+}

@@ -479,6 +479,11 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		fs.dirty++
 	}
 
+	err = fs.recoverTTLState()
+	if err != nil && !os.IsNotExist(err) {
+		fs.warn("Recovering TTL state from index errored: %v", err)
+	}
+
 	// Also make sure we get rid of old idx and fss files on return.
 	// Do this in separate go routine vs inline and at end of processing.
 	defer func() {
@@ -1815,7 +1820,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 		return errCorruptState
 	}
 
-	return fs.recoverTTLState()
+	return nil
 }
 
 func (fs *fileStore) recoverTTLState() error {
@@ -1844,7 +1849,7 @@ func (fs *fileStore) recoverTTLState() error {
 	}
 
 	defer fs.resetAgeChk(0)
-	if fs.ttlseq < fs.state.LastSeq {
+	if fs.ttlseq <= fs.state.LastSeq {
 		fs.warn("TTL state is outdated; attempting to recover using linear scan (seq %d to %d)", fs.ttlseq, fs.state.LastSeq)
 		var sm StoreMsg
 		mb := fs.selectMsgBlock(fs.ttlseq)
