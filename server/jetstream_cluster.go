@@ -2415,7 +2415,6 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		compactInterval = 2 * time.Minute
 		compactSizeMin  = 8 * 1024 * 1024
 		compactNumMin   = 65536
-		minSnapDelta    = 10 * time.Second
 	)
 
 	// Spread these out for large numbers on server restart.
@@ -2439,16 +2438,15 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	// a complete and detailed state which could be costly in terms of memory, cpu and GC.
 	// This only entails how many messages, and the first and last sequence of the stream.
 	// This is all that is needed to detect a change, and we can get this from FilteredState()
-	// with and empty filter.
+	// with an empty filter.
 	var lastState SimpleState
-	var lastSnapTime time.Time
 
 	// Don't allow the upper layer to install snapshots until we have
 	// fully recovered from disk.
 	isRecovering := true
 
 	doSnapshot := func() {
-		if mset == nil || isRecovering || isRestore || time.Since(lastSnapTime) < minSnapDelta {
+		if mset == nil || isRecovering || isRestore {
 			return
 		}
 
@@ -2466,7 +2464,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		}
 
 		if err := n.InstallSnapshot(mset.stateSnapshot()); err == nil {
-			lastState, lastSnapTime = curState, time.Now()
+			lastState = curState
 		} else if err != errNoSnapAvailable && err != errNodeClosed && err != errCatchupsRunning {
 			s.RateLimitWarnf("Failed to install snapshot for '%s > %s' [%s]: %v", mset.acc.Name, mset.name(), n.Group(), err)
 		}
