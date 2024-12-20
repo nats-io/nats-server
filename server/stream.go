@@ -717,7 +717,6 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	fsCfg.SyncInterval = s.getOpts().SyncInterval
 	fsCfg.SyncAlways = s.getOpts().SyncAlways
 	fsCfg.Compression = config.Compression
-	fsCfg.EnforceTTLs = config.AllowMsgTTL
 
 	if err := mset.setupStore(fsCfg); err != nil {
 		mset.stop(true, false)
@@ -4209,7 +4208,6 @@ func getExpectedLastSeqPerSubjectForSubject(hdr []byte) string {
 // Fast lookup of the message TTL:
 // - Positive return value: duration in seconds.
 // - Zero return value: no TTL or parse error.
-// - Negative return value: don't expire.
 func getMessageTTL(hdr []byte) (int64, error) {
 	ttl := getHeader(JSMessageTTL, hdr)
 	if len(ttl) == 0 {
