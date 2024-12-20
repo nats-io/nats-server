@@ -1588,8 +1588,10 @@ func PrintServerAndExit() {
 func PrintBuildinfoAndExit() {
 	bi, ok := debug.ReadBuildInfo()
 	if !ok || bi == nil {
+		//nolint:forbidigo
 		fmt.Println("failed to read Buildinfo")
 	}
+	//nolint:forbidigo
 	fmt.Println(bi)
 	os.Exit(0)
 }
