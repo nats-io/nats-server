@@ -1235,6 +1235,39 @@ func jsClientConnectURL(t testing.TB, url string, opts ...nats.Option) (*nats.Co
 	return nc, js
 }
 
+// jsStreamCreate is for sending a stream create for fields that nats.go does not know about yet.
+func jsStreamCreate(t testing.TB, nc *nats.Conn, cfg *StreamConfig) *StreamConfig {
+	j, err := json.Marshal(cfg)
+	require_NoError(t, err)
+
+	msg, err := nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), j, time.Second*3)
+	require_NoError(t, err)
+
+	var resp JSApiStreamUpdateResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_NotNil(t, resp.StreamInfo)
+	return &resp.Config
+}
+
+// jsStreamUpdate is for sending a stream create for fields that nats.go does not know about yet.
+func jsStreamUpdate(t testing.TB, nc *nats.Conn, cfg *StreamConfig) (*StreamConfig, error) {
+	j, err := json.Marshal(cfg)
+	require_NoError(t, err)
+
+	msg, err := nc.Request(fmt.Sprintf(JSApiStreamUpdateT, cfg.Name), j, time.Second*3)
+	require_NoError(t, err)
+
+	var resp JSApiStreamUpdateResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+
+	if resp.Error != nil {
+		return nil, resp.Error
+	}
+
+	require_NotNil(t, resp.StreamInfo)
+	return &resp.Config, nil
+}
+
 func checkSubsPending(t *testing.T, sub *nats.Subscription, numExpected int) {
 	t.Helper()
 	checkFor(t, 10*time.Second, 20*time.Millisecond, func() error {

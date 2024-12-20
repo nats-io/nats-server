@@ -1628,5 +1628,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSMessageTTLInvalidErr",
+    "code": 400,
+    "error_code": 10165,
+    "description": "invalid per-message TTL",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]
