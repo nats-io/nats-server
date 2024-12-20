@@ -9077,7 +9077,7 @@ func TestLeafNodeBannerNoClusterNameIfNoCluster(t *testing.T) {
 	l.Unlock()
 }
 
-func TestLeafCredFormatting(t *testing.T) {
+func TestLeafNodeCredFormatting(t *testing.T) {
 	//create the operator/sys/account tree
 	oKP, err := nkeys.CreateOperator()
 	require_NoError(t, err)
@@ -9151,14 +9151,15 @@ func TestLeafCredFormatting(t *testing.T) {
 		require_NoError(t, file.Close())
 
 		template := fmt.Sprintf(`
-		listen: 127.0.0.1:-1
-		leaf { remotes: [ 
-			{ 
-				urls: [ nats-leaf://127.0.0.1:%d ]
-				credentials: "%s"
-			} 
-		] }`, o.LeafNode.Port, file.Name())
-
+			listen: 127.0.0.1:-1
+			leafnodes {
+				remotes: [
+					{
+						urls: [ nats-leaf://127.0.0.1:%d ]
+						credentials: "%s"
+					}
+				]
+			}`, o.LeafNode.Port, file.Name())
 		conf := createConfFile(t, []byte(template))
 		leaf, _ := RunServerWithConfig(conf)
 		defer leaf.Shutdown()
@@ -9171,4 +9172,60 @@ func TestLeafCredFormatting(t *testing.T) {
 
 	runLeaf(t, creds)
 	runLeaf(t, bytes.ReplaceAll(creds, []byte{'\n'}, []byte{'\r', '\n'}))
+}
+
+func TestLeafNodePermissionWithLiteralSubjectAndQueueInterest(t *testing.T) {
+	hconf := createConfFile(t, []byte(`
+		server_name: "HUB"
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			listen: "127.0.0.1:-1"
+		}
+		accounts {
+			A {
+				users: [
+					{ user: "user", password: "pwd",
+						permissions: {
+							subscribe: { allow: ["_INBOX.>", "my.subject"] }
+							publish: {allow: [">"]}
+						}
+					}
+				]
+			}
+		}
+	`))
+	hub, ohub := RunServerWithConfig(hconf)
+	defer hub.Shutdown()
+
+	lconf := createConfFile(t, []byte(fmt.Sprintf(`
+		server_name: "LEAF"
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			remotes: [
+				{url: "nats://user:pwd@127.0.0.1:%d", account: A}
+			]
+		}
+		accounts {
+			A { users: [{user: user, password: pwd}] }
+		}
+	`, ohub.LeafNode.Port)))
+	leaf, _ := RunServerWithConfig(lconf)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, leaf)
+
+	ncLeaf := natsConnect(t, leaf.ClientURL(), nats.UserInfo("user", "pwd"))
+	defer ncLeaf.Close()
+	natsQueueSub(t, ncLeaf, "my.subject", "queue", func(m *nats.Msg) {
+		m.Respond([]byte("OK"))
+	})
+	natsFlush(t, ncLeaf)
+
+	ncHub := natsConnect(t, hub.ClientURL(), nats.UserInfo("user", "pwd"))
+	defer ncHub.Close()
+
+	resp, err := ncHub.Request("my.subject", []byte("hello"), time.Second)
+	require_NoError(t, err)
+	require_Equal(t, "OK", string(resp.Data))
 }
