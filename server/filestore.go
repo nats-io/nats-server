@@ -4579,7 +4579,7 @@ func (mb *msgBlock) slotInfo(slot int) (uint32, uint32, bool, error) {
 	}
 
 	bi := mb.cache.idx[slot]
-	ri, hashChecked := (bi &^ hbit), (bi&hbit) != 0
+	ri, hashChecked := (bi &^ cbit), (bi&cbit) != 0
 
 	// If this is a deleted slot return here.
 	if bi == dbit {
@@ -4594,7 +4594,7 @@ func (mb *msgBlock) slotInfo(slot int) (uint32, uint32, bool, error) {
 		// Need to account for dbit markers in idx.
 		// So we will walk until we find valid idx slot to calculate rl.
 		for i := 1; slot+i < len(mb.cache.idx); i++ {
-			ni := mb.cache.idx[slot+i] &^ hbit
+			ni := mb.cache.idx[slot+i] &^ cbit
 			if ni == dbit {
 				continue
 			}
@@ -5345,7 +5345,7 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 			mb.cache.fseq = seq
 		}
 		// Write index
-		mb.cache.idx = append(mb.cache.idx, uint32(index)|hbit)
+		mb.cache.idx = append(mb.cache.idx, uint32(index)|cbit)
 	} else {
 		// Make sure to account for tombstones in rbytes.
 		mb.rbytes += rl
@@ -6431,15 +6431,16 @@ var (
 )
 
 const (
-	// Used for marking messages that have had their checksums checked.
-	// Used to signal a message record with headers.
-	hbit = 1 << 31
-	// Used for marking erased messages sequences.
-	ebit = 1 << 63
-	// Used for marking tombstone sequences.
-	tbit = 1 << 62
-	// Used to mark an index as deleted and non-existent.
+	// "Checksum bit" is used in "mb.cache.idx" for marking messages that have had their checksums checked.
+	cbit = 1 << 31
+	// "Delete bit" is used in "mb.cache.idx" to mark an index as deleted and non-existent.
 	dbit = 1 << 30
+	// "Header bit" is used in "rl" to signal a message record with headers.
+	hbit = 1 << 31
+	// "Erase bit" is used in "seq" for marking erased messages sequences.
+	ebit = 1 << 63
+	// "Tombstone bit" is used in "seq" for marking tombstone sequences.
+	tbit = 1 << 62
 )
 
 // Will do a lookup from cache.
@@ -6522,7 +6523,7 @@ func (mb *msgBlock) cacheLookup(seq uint64, sm *StoreMsg) (*StoreMsg, error) {
 
 	// Clear the check bit here after we know all is good.
 	if !hashChecked {
-		mb.cache.idx[seq-mb.cache.fseq] = (bi | hbit)
+		mb.cache.idx[seq-mb.cache.fseq] = (bi | cbit)
 	}
 
 	return fsm, nil
@@ -7987,7 +7988,7 @@ func (mb *msgBlock) recalculateForSubj(subj string, ss *SimpleState) {
 			fseq = mbFseq
 		}
 		for slot := startSlot; slot < len(mb.cache.idx); slot++ {
-			bi := mb.cache.idx[slot] &^ hbit
+			bi := mb.cache.idx[slot] &^ cbit
 			if bi == dbit {
 				// delete marker so skip.
 				continue
@@ -8026,7 +8027,7 @@ func (mb *msgBlock) recalculateForSubj(subj string, ss *SimpleState) {
 			lseq = mbLseq
 		}
 		for slot := endSlot; slot >= startSlot; slot-- {
-			bi := mb.cache.idx[slot] &^ hbit
+			bi := mb.cache.idx[slot] &^ cbit
 			if bi == dbit {
 				// delete marker so skip.
 				continue
