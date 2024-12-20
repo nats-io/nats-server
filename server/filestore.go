@@ -69,8 +69,6 @@ type FileStoreConfig struct {
 	Cipher StoreCipher
 	// Compression is the algorithm to use when compressing.
 	Compression StoreCompression
-	// EnforceTTLs decides whether or not to enforce per-message TTLs.
-	EnforceTTLs bool
 
 	// Internal reference to our server.
 	srv *Server
@@ -418,7 +416,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	}
 
 	// Only create a THW if we're going to allow TTLs.
-	if fs.fcfg.EnforceTTLs {
+	if cfg.AllowMsgTTL {
 		fs.ttls = thw.NewHashWheel()
 	}
 
@@ -486,7 +484,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	}
 
 	// See if we can bring back our TTL timed hash wheel state from disk.
-	if fcfg.EnforceTTLs {
+	if cfg.AllowMsgTTL {
 		if err = fs.recoverTTLState(); err != nil && !os.IsNotExist(err) {
 			fs.warn("Recovering TTL state from index errored: %v", err)
 		}
@@ -5324,7 +5322,13 @@ func (fs *fileStore) expireMsgs() {
 		fs.ttls.ExpireTasks(func(seq uint64, ts int64) {
 			fs.removeMsgViaLimits(seq)
 		})
-		nextTTL = fs.ttls.GetNextExpiration(math.MaxInt64)
+		if maxAge > 0 {
+			// Only check if we're expiring something in the next MaxAge interval, saves us a bit
+			// of work if MaxAge will beat us to the next expiry anyway.
+			nextTTL = fs.ttls.GetNextExpiration(time.Now().Add(time.Duration(maxAge)).UnixNano())
+		} else {
+			nextTTL = fs.ttls.GetNextExpiration(math.MaxInt64)
+		}
 	}
 
 	// Onky cancel if no message left, not on potential lookup error that would result in sm == nil.

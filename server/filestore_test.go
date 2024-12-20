@@ -8299,8 +8299,8 @@ func TestFileStoreNumPendingMulti(t *testing.T) {
 
 func TestFileStoreMessageTTL(t *testing.T) {
 	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: t.TempDir(), EnforceTTLs: true},
-		StreamConfig{Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage})
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage, AllowMsgTTL: true})
 	require_NoError(t, err)
 	defer fs.Stop()
 
@@ -8330,8 +8330,8 @@ func TestFileStoreMessageTTLRestart(t *testing.T) {
 
 	t.Run("BeforeRestart", func(t *testing.T) {
 		fs, err := newFileStore(
-			FileStoreConfig{StoreDir: dir, EnforceTTLs: true},
-			StreamConfig{Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage})
+			FileStoreConfig{StoreDir: dir},
+			StreamConfig{Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage, AllowMsgTTL: true})
 		require_NoError(t, err)
 		defer fs.Stop()
 
@@ -8351,8 +8351,8 @@ func TestFileStoreMessageTTLRestart(t *testing.T) {
 
 	t.Run("AfterRestart", func(t *testing.T) {
 		fs, err := newFileStore(
-			FileStoreConfig{StoreDir: dir, EnforceTTLs: true},
-			StreamConfig{Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage})
+			FileStoreConfig{StoreDir: dir},
+			StreamConfig{Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage, AllowMsgTTL: true})
 		require_NoError(t, err)
 		defer fs.Stop()
 
@@ -8379,8 +8379,8 @@ func TestFileStoreMessageTTLRecovered(t *testing.T) {
 
 	t.Run("BeforeRestart", func(t *testing.T) {
 		fs, err := newFileStore(
-			FileStoreConfig{StoreDir: dir, EnforceTTLs: true, srv: s},
-			StreamConfig{Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage})
+			FileStoreConfig{StoreDir: dir, srv: s},
+			StreamConfig{Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage, AllowMsgTTL: true})
 		require_NoError(t, err)
 		defer fs.Stop()
 
@@ -8409,8 +8409,8 @@ func TestFileStoreMessageTTLRecovered(t *testing.T) {
 		require_NoError(t, os.RemoveAll(fn))
 
 		fs, err := newFileStore(
-			FileStoreConfig{StoreDir: dir, EnforceTTLs: true, srv: s},
-			StreamConfig{Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage})
+			FileStoreConfig{StoreDir: dir, srv: s},
+			StreamConfig{Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage, AllowMsgTTL: true})
 		require_NoError(t, err)
 		defer fs.Stop()
 
@@ -8437,8 +8437,8 @@ func TestFileStoreMessageTTLRecoveredSingleMessageWithoutStreamState(t *testing.
 
 	t.Run("BeforeRestart", func(t *testing.T) {
 		fs, err := newFileStore(
-			FileStoreConfig{StoreDir: dir, EnforceTTLs: true, srv: s},
-			StreamConfig{Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage})
+			FileStoreConfig{StoreDir: dir, srv: s},
+			StreamConfig{Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage, AllowMsgTTL: true})
 		require_NoError(t, err)
 		defer fs.Stop()
 
@@ -8464,8 +8464,8 @@ func TestFileStoreMessageTTLRecoveredSingleMessageWithoutStreamState(t *testing.
 		require_NoError(t, os.RemoveAll(fn))
 
 		fs, err := newFileStore(
-			FileStoreConfig{StoreDir: dir, EnforceTTLs: true, srv: s},
-			StreamConfig{Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage})
+			FileStoreConfig{StoreDir: dir, srv: s},
+			StreamConfig{Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage, AllowMsgTTL: true})
 		require_NoError(t, err)
 		defer fs.Stop()
 
