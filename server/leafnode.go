@@ -2329,8 +2329,16 @@ func (c *client) sendLeafNodeSubUpdate(key string, n int32) {
 				checkPerms = false
 			}
 		}
-		if checkPerms && !c.canSubscribe(key) {
-			return
+		if checkPerms {
+			var subject string
+			if sep := strings.IndexByte(key, ' '); sep != -1 {
+				subject = key[:sep]
+			} else {
+				subject = key
+			}
+			if !c.canSubscribe(subject) {
+				return
+			}
 		}
 	}
 	// If we are here we can send over to the other side.
