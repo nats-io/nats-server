@@ -2277,10 +2277,27 @@ func configsEqualSansDelivery(a, b ConsumerConfig) bool {
 }
 
 // Helper to send a reply to an ack.
-func (o *consumer) sendAckReply(subj string) {
+func (o *consumer) sendAckReply(subj string, err *ApiError) {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
-	o.outq.sendMsg(subj, nil)
+	o.sendAckReplyLocked(subj, err)
+}
+
+// Helper to send a reply to an ack.
+// Lock must be held
+func (o *consumer) sendAckReplyLocked(subj string, err *ApiError) {
+
+	var resp = JSApiConsumerAckResponse{ApiResponse: ApiResponse{Type: JSApiConsumerAckResponseType, Error: err}}
+
+	if err == nil {
+		resp.Success = true
+	}
+
+	j, e := json.Marshal(resp)
+	if e != nil {
+		return
+	}
+	o.outq.sendMsg(subj, j)
 }
 
 type jsAckMsg struct {
@@ -2333,17 +2350,20 @@ func (o *consumer) processAck(subject, reply string, hdr int, rmsg []byte) {
 	}
 
 	sseq, dseq, dc := ackReplyInfo(subject)
+	var err *ApiError
 
 	skipAckReply := sseq == 0
 
 	switch {
 	case len(msg) == 0, bytes.Equal(msg, AckAck), bytes.Equal(msg, AckOK):
-		if !o.processAckMsg(sseq, dseq, dc, reply, true) {
+		if b, e := o.processAckMsg(sseq, dseq, dc, reply, true); e == nil && !b {
 			// We handle replies for acks in updateAcks
 			skipAckReply = true
+		} else {
+			err = e
 		}
 	case bytes.HasPrefix(msg, AckNext):
-		o.processAckMsg(sseq, dseq, dc, _EMPTY_, true)
+		_, _ = o.processAckMsg(sseq, dseq, dc, _EMPTY_, true)
 		o.processNextMsgRequest(reply, msg[len(AckNext):])
 		skipAckReply = true
 	case bytes.HasPrefix(msg, AckNak):
@@ -2363,7 +2383,7 @@ func (o *consumer) processAck(subject, reply string, hdr int, rmsg []byte) {
 
 	// Ack the ack if requested.
 	if len(reply) > 0 && !skipAckReply {
-		o.sendAckReply(reply)
+		o.sendAckReply(reply, err)
 	}
 }
 
@@ -2499,7 +2519,7 @@ func (o *consumer) addAckReply(sseq uint64, reply string) {
 }
 
 // Lock should be held.
-func (o *consumer) updateAcks(dseq, sseq uint64, reply string) {
+func (o *consumer) updateAcks(dseq, sseq uint64, reply string, err *ApiError) {
 	if o.node != nil {
 		// Inline for now, use variable compression.
 		var b [2*binary.MaxVarintLen64 + 1]byte
@@ -2515,7 +2535,7 @@ func (o *consumer) updateAcks(dseq, sseq uint64, reply string) {
 		o.store.UpdateAcks(dseq, sseq)
 		if reply != _EMPTY_ {
 			// Already locked so send direct.
-			o.outq.sendMsg(reply, nil)
+			o.sendAckReplyLocked(reply, err)
 		}
 	}
 	// Update activity.
@@ -2711,7 +2731,7 @@ func (o *consumer) processNak(sseq, dseq, dc uint64, nak []byte) {
 // case the reply will be sent later).
 func (o *consumer) processTerm(sseq, dseq, dc uint64, reason, reply string) bool {
 	// Treat like an ack to suppress redelivery.
-	ackedInPlace := o.processAckMsg(sseq, dseq, dc, reply, false)
+	ackedInPlace, _ := o.processAckMsg(sseq, dseq, dc, reply, false)
 
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -3064,17 +3084,17 @@ func (o *consumer) sampleAck(sseq, dseq, dc uint64) {
 // Returns `true` if the ack was processed in place and the sender can now respond
 // to the client, or `false` if there was an error or the ack is replicated (in which
 // case the reply will be sent later).
-func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample bool) bool {
+func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample bool) (bool, *ApiError) {
 	o.mu.Lock()
 	if o.closed {
 		o.mu.Unlock()
-		return false
+		return false, nil
 	}
 
 	mset := o.mset
 	if mset == nil || mset.closed.Load() {
 		o.mu.Unlock()
-		return false
+		return false, nil
 	}
 
 	// Check if this ack is above the current pointer to our next to deliver.
@@ -3086,11 +3106,8 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 		var ss StreamState
 		mset.store.FastState(&ss)
 		if sseq > ss.LastSeq {
-			o.srv.Warnf("JetStream consumer '%s > %s > %s' ACK sequence %d past last stream sequence of %d",
-				o.acc.Name, o.stream, o.name, sseq, ss.LastSeq)
-			// FIXME(dlc) - For 2.11 onwards should we return an error here to the caller?
 			o.mu.Unlock()
-			return false
+			return false, NewJSConsumerMsgNotPendingAckError()
 		}
 		o.sseq = sseq + 1
 	}
@@ -3102,6 +3119,7 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 
 	var sgap, floor uint64
 	var needSignal bool
+	var err *ApiError
 
 	switch o.cfg.AckPolicy {
 	case AckExplicit:
@@ -3131,14 +3149,17 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 					}
 				}
 			}
+		} else {
+			err = NewJSConsumerMsgNotPendingAckError()
 		}
+
 		delete(o.rdc, sseq)
 		o.removeFromRedeliverQueue(sseq)
 	case AckAll:
 		// no-op
 		if dseq <= o.adflr || sseq <= o.asflr {
 			o.mu.Unlock()
-			return ackInPlace
+			return ackInPlace, nil
 		}
 		if o.maxp > 0 && len(o.pending) >= o.maxp {
 			needSignal = true
@@ -3170,7 +3191,7 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 	case AckNone:
 		// FIXME(dlc) - This is error but do we care?
 		o.mu.Unlock()
-		return ackInPlace
+		return ackInPlace, nil
 	}
 
 	// No ack replication, so we set reply to "" so that updateAcks does not
@@ -3179,7 +3200,7 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 		reply = _EMPTY_
 	}
 	// Update underlying store.
-	o.updateAcks(dseq, sseq, reply)
+	o.updateAcks(dseq, sseq, reply, err)
 	o.mu.Unlock()
 
 	if ackInPlace {
@@ -3197,7 +3218,7 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 	if needSignal {
 		o.signalNewMessages()
 	}
-	return ackInPlace
+	return ackInPlace, err
 }
 
 // Determine if this is a truly filtered consumer. Modern clients will place filtered subjects
@@ -4837,7 +4858,7 @@ func (o *consumer) deliverMsg(dsubj, ackReply string, pmsg *jsPubMsg, dc uint64,
 		if mset != nil && mset.ackq != nil && (o.node == nil || o.cfg.Direct) {
 			mset.ackq.push(seq)
 		} else {
-			o.updateAcks(dseq, seq, _EMPTY_)
+			o.updateAcks(dseq, seq, _EMPTY_, nil)
 		}
 	}
 }
