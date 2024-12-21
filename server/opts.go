@@ -338,6 +338,7 @@ type Options struct {
 	JetStreamMaxCatchup        int64
 	JetStreamRequestQueueLimit int64
 	StreamMaxBufferedMsgs      int               `json:"-"`
+	JetStreamDisableOnDiskError bool             `json:"-"`
 	StreamMaxBufferedSize      int64             `json:"-"`
 	StoreDir                   string            `json:"-"`
 	SyncInterval               time.Duration     `json:"-"`
@@ -2445,6 +2446,10 @@ func parseJetStream(v any, opts *Options, errors *[]error, warnings *[]error) er
 					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
 				}
 				opts.JetStreamRequestQueueLimit = lim
+			case "disable_js_on_disk_error":
+				if v, ok := mv.(bool); ok {
+					opts.JetStreamDisableOnDiskError = v
+				}
 			default:
 				if !tk.IsUsedVariable() {
 					err := &unknownConfigFieldErr{

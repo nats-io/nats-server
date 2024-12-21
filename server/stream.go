@@ -730,6 +730,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	fsCfg.SyncInterval = s.getOpts().SyncInterval
 	fsCfg.SyncAlways = s.getOpts().SyncAlways
 	fsCfg.Compression = config.Compression
+	fsCfg.JetStreamDisableOnDiskError = s.getOpts().JetStreamDisableOnDiskError
 
 	if err := mset.setupStore(fsCfg); err != nil {
 		mset.stop(true, false)
@@ -5140,6 +5141,14 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			mset.clearAllPreAcks(seq)
 		}
 		err = store.StoreRawMsg(subject, hdr, msg, seq, ts, ttl)
+	}
+	if err != nil && os.IsPermission(err) && mset.srv.getOpts().JetStreamDisableOnDiskError {
+		mset.mu.Unlock()
+		// messages in block cache could be lost in the worst case.
+		// In the clustered mode it is very highly unlikely as a result of replication.
+		mset.srv.DisableJetStream()
+		mset.srv.Warnf("file system permission denied while writing msg, disabling jetstream: %v", err)
+		return err
 	}
 
 	if err != nil {
