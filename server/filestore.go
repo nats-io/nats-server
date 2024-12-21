@@ -2039,6 +2039,7 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 			bytes += mb.bytes
 			err := deleteEmptyBlock(mb)
 			if err != nil && err == errFileSystemPermissionDenied && fs.fcfg.JetStreamDisableOnDiskError{
+				mb.mu.Unlock()
 				return err
 			}
 			mb.mu.Unlock()
@@ -8365,7 +8366,15 @@ func (fs *fileStore) flushStreamStateLoop(qch, done chan struct{}) {
 	for {
 		select {
 		case <-t.C:
-			fs.writeFullState()
+			err := fs.writeFullState()
+			if err != nil && os.IsPermission(err) && fs.fcfg.JetStreamDisableOnDiskError {
+				fs.warn("file system permission denied when flushing stream state, disabling jetstream %v", err)
+				// messages in block cache could be lost in the worst case.
+				// In the clustered mode it is very highly unlikely as a result of replication.
+				fs.srv.DisableJetStream()
+				return
+			}
+
 		case <-qch:
 			return
 		}
@@ -8575,10 +8584,6 @@ func (fs *fileStore) _writeFullState(force bool) error {
 	err := os.WriteFile(fn, buf, defaultFilePerms)
 	// if file system is not writable os.IsPermission is set to true
 	if err != nil && os.IsPermission(err) && fs.fcfg.JetStreamDisableOnDiskError {
-		fs.warn("file system permission denied when flushing stream state, disabling jetstream %v", err)
-		// messages in block cache could be lost in the worst case.
-		// In the clustered mode it is very highly unlikely as a result of replication.
-		fs.srv.DisableJetStream()
 		return err
 	}
 	dios <- struct{}{}
