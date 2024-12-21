@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math/bits"
 	"math/rand"
 	"os"
@@ -143,9 +144,9 @@ func TestFileStoreBasics(t *testing.T) {
 func TestFileStoreMsgHeaders(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+
 		require_NoError(t, err)
 		defer fs.Stop()
-
 		subj, hdr, msg := "foo", []byte("name:derek"), []byte("Hello World")
 		elen := 22 + len(subj) + 4 + len(hdr) + len(msg) + 8
 		if sz := int(fileStoreMsgSize(subj, hdr, msg)); sz != elen {
@@ -8193,4 +8194,82 @@ func TestFileStoreNumPendingMulti(t *testing.T) {
 		}
 	}
 	require_Equal(t, total, checkTotal)
+}
+
+func TestFileStoreStoreRawMessageThrowsPermissionErrorIfFSModeReadOnly(t *testing.T) {
+	cfg := StreamConfig{Name: "zzz", Subjects: []string{"ev.1"}, Storage: FileStorage, MaxAge: 500 * time.Millisecond}
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		cfg)
+
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := bytes.Repeat([]byte("Z"), 1024)
+	directory := fs.fcfg.StoreDir
+	ORIGINAL_FILE_MODE, _ := os.Stat(directory)
+	READONLY_MODE := os.FileMode(0o555)
+	changeDirectoryPermission(directory, READONLY_MODE)
+	require_NoError(t, err)
+	totalMsgs := 10000
+	i := 0
+	for i = 0; i < totalMsgs; i++ {
+		_, _, err = fs.StoreMsg("ev.1", nil, msg)
+		if err != nil {
+			break
+		}
+	}
+	changeDirectoryPermission(directory, ORIGINAL_FILE_MODE.Mode())
+	require_Error(t, err, os.ErrPermission)
+}
+
+func TestFileStoreWriteFullStateThrowsPermissionErrorIfFSModeReadOnly(t *testing.T) {
+	cfg := StreamConfig{Name: "zzz", Subjects: []string{"ev.1"}, Storage: FileStorage, MaxAge: 500 * time.Millisecond}
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		cfg)
+
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := bytes.Repeat([]byte("Z"), 1024)
+	directory := fs.fcfg.StoreDir
+	ORIGINAL_FILE_MODE, _ := os.Stat(directory)
+	READONLY_MODE := os.FileMode(0o555)
+	require_NoError(t, err)
+	totalMsgs := 10000
+	i := 0
+	for i = 0; i < totalMsgs; i++ {
+		_, _, err = fs.StoreMsg("ev.1", nil, msg)
+		if err != nil {
+			break
+		}
+	}
+	changeDirectoryPermission(directory, READONLY_MODE)
+	err = fs.writeFullState()
+	changeDirectoryPermission(directory, ORIGINAL_FILE_MODE.Mode())
+	require_Error(t, err, os.ErrPermission)
+}
+
+func changeDirectoryPermission(directory string, mode fs.FileMode) error {
+	err := filepath.Walk(directory, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return fmt.Errorf("error accessing path %q: %w", path, err)
+		}
+
+		// Check if the path is a directory or file and set permissions accordingly
+		if info.IsDir() {
+			err = os.Chmod(path, mode)
+			if err != nil {
+				return fmt.Errorf("error changing directory permissions for %q: %w", path, err)
+			}
+		} else {
+			err = os.Chmod(path, mode)
+			if err != nil {
+				return fmt.Errorf("error changing file permissions for %q: %w", path, err)
+			}
+		}
+		return nil
+	})
+	return err
 }

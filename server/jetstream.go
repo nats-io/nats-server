@@ -2974,3 +2974,14 @@ func fixCfgMirrorWithDedupWindow(cfg *StreamConfig) {
 		cfg.Duplicates = 0
 	}
 }
+
+func (s *Server) handleWritePermissionError() {
+	//TODO Check if we should add s.jetStreamOOSPending in condition
+	if s.JetStreamEnabled() {
+		s.Errorf("File system permission denied while writing, disabling JetStream")
+
+		go s.DisableJetStream()
+
+		//TODO Send respective advisory if needed, same as in handleOutOfSpace
+	}
+}
