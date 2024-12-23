@@ -24737,3 +24737,68 @@ func TestJetStreamWouldExceedLimits(t *testing.T) {
 	require_True(t, js.wouldExceedLimits(MemoryStorage, int(js.config.MaxMemory)+1))
 	require_True(t, js.wouldExceedLimits(FileStorage, int(js.config.MaxStore)+1))
 }
+
+func TestJetStreamConsumerDecrementPendingCountOnSkippedMsg(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "CONSUMER"})
+	require_NoError(t, err)
+
+	acc, err := s.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+
+	requireExpected := func(expected int64) {
+		t.Helper()
+		o.mu.RLock()
+		defer o.mu.RUnlock()
+		require_Equal(t, o.npc, expected)
+	}
+
+	// Should initially report no messages available.
+	requireExpected(0)
+
+	// A new message is available, should report in pending.
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	requireExpected(1)
+
+	// Pending count should decrease when the message is deleted.
+	err = js.DeleteMsg("TEST", 1)
+	require_NoError(t, err)
+	requireExpected(0)
+
+	// Make more messages available, should report in pending.
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	requireExpected(2)
+
+	// Simulate getNextMsg being called and the starting sequence to skip over a deleted message.
+	// Also simulate one pending message.
+	o.mu.Lock()
+	o.sseq = 100
+	o.npc--
+	o.pending = make(map[uint64]*Pending)
+	o.pending[2] = &Pending{}
+	o.mu.Unlock()
+
+	// Since this message is pending we should not decrement pending count as we've done so already.
+	o.decStreamPending(2, "foo")
+	requireExpected(1)
+
+	// This is the deleted message that was skipped, and we can decrement the pending count
+	// because it's not pending and only as long as the ack floor hasn't moved up yet.
+	o.decStreamPending(3, "foo")
+	requireExpected(0)
+}
