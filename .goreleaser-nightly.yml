@@ -1,4 +1,5 @@
 project_name: nats-server
+version: 2
 
 builds:
   - main: .
@@ -32,4 +33,4 @@ checksum:
   algorithm: sha256
 
 snapshot:
-  name_template: '{{ if index .Env "IMAGE_NAME"  }}{{ .Env.IMAGE_NAME }}{{ else if not (eq .Branch "main" "dev" "") }}{{ replace .Branch "/" "-" }}{{ else }}nightly{{ end }}-{{ time "20060102" }}'
+  version_template: '{{ if index .Env "IMAGE_NAME"  }}{{ .Env.IMAGE_NAME }}{{ else if not (eq .Branch "main" "dev" "") }}{{ replace .Branch "/" "-" }}{{ else }}nightly{{ end }}-{{ time "20060102" }}'
