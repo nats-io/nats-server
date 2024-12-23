@@ -2531,10 +2531,10 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 			s.resourcesExceededError()
 			err = ApiErrors[JSInsufficientResourcesErr]
 		} else {
-			err = node.Propose(encodeStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts))
+			err = node.Propose(encodeStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts, true))
 		}
 	} else {
-		err = mset.processJetStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts, nil)
+		err = mset.processJetStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts, nil, true)
 	}
 	if err != nil {
 		if strings.Contains(err.Error(), "no space left") {
@@ -2613,7 +2613,7 @@ func (mset *stream) skipMsgs(start, end uint64) {
 	// With syncRequest was easy to add bool into request.
 	var entries []*Entry
 	for seq := start; seq <= end; seq++ {
-		entries = append(entries, newEntry(EntryNormal, encodeStreamMsg(_EMPTY_, _EMPTY_, nil, nil, seq-1, 0)))
+		entries = append(entries, newEntry(EntryNormal, encodeStreamMsg(_EMPTY_, _EMPTY_, nil, nil, seq-1, 0, false)))
 		// So a single message does not get too big.
 		if len(entries) > 10_000 {
 			node.ProposeMulti(entries)
@@ -3386,7 +3386,7 @@ func (mset *stream) sendFlowControlReply(reply string) {
 func (mset *stream) handleFlowControl(m *inMsg) {
 	// If we are clustered we will send the flow control message through the replication stack.
 	if mset.isClustered() {
-		mset.node.Propose(encodeStreamMsg(_EMPTY_, m.rply, m.hdr, nil, 0, 0))
+		mset.node.Propose(encodeStreamMsg(_EMPTY_, m.rply, m.hdr, nil, 0, 0, false))
 	} else {
 		mset.outq.sendMsg(m.rply, nil)
 	}
@@ -3466,6 +3466,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 	hdr, msg := m.hdr, m.msg
 
 	// If we are daisy chained here make sure to remove the original one.
+	// If the TTL header is set, remove it.
 	if len(hdr) > 0 {
 		hdr = removeHeaderIfPresent(hdr, JSStreamSource)
 		// Remove any Nats-Expected- headers as we don't want to validate them.
@@ -3492,9 +3493,9 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 	var err error
 	// If we are clustered we need to propose this message to the underlying raft group.
 	if node != nil {
-		err = mset.processClusteredInboundMsg(m.subj, _EMPTY_, hdr, msg, nil)
+		err = mset.processClusteredInboundMsg(m.subj, _EMPTY_, hdr, msg, nil, true)
 	} else {
-		err = mset.processJetStreamMsg(m.subj, _EMPTY_, hdr, msg, 0, 0, nil)
+		err = mset.processJetStreamMsg(m.subj, _EMPTY_, hdr, msg, 0, 0, nil, true)
 	}
 
 	if err != nil {
@@ -4666,7 +4667,7 @@ var (
 )
 
 // processJetStreamMsg is where we try to actually process the stream msg.
-func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, mt *msgTrace) (retErr error) {
+func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, mt *msgTrace, sourced bool) (retErr error) {
 	if mt != nil {
 		// Only the leader/standalone will have mt!=nil. On exit, send the
 		// message trace event.
@@ -4804,7 +4805,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 		// TTL'd messages are rejected entirely if TTLs are not enabled on the stream.
 		// Shouldn't happen in clustered mode since we should have already caught this
 		// in processClusteredInboundMsg, but needed here for non-clustered etc.
-		if ttl, _ := getMessageTTL(hdr); ttl != 0 && !mset.cfg.AllowMsgTTL {
+		if ttl, _ := getMessageTTL(hdr); !sourced && ttl != 0 && !mset.cfg.AllowMsgTTL {
 			mset.mu.Unlock()
 			bumpCLFS()
 			if canRespond {
@@ -5504,9 +5505,9 @@ func (mset *stream) internalLoop() {
 			for _, im := range ims {
 				// If we are clustered we need to propose this message to the underlying raft group.
 				if isClustered {
-					mset.processClusteredInboundMsg(im.subj, im.rply, im.hdr, im.msg, im.mt)
+					mset.processClusteredInboundMsg(im.subj, im.rply, im.hdr, im.msg, im.mt, false)
 				} else {
-					mset.processJetStreamMsg(im.subj, im.rply, im.hdr, im.msg, 0, 0, im.mt)
+					mset.processJetStreamMsg(im.subj, im.rply, im.hdr, im.msg, 0, 0, im.mt, false)
 				}
 				im.returnToPool()
 			}

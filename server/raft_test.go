@@ -995,7 +995,7 @@ func TestNRGWALEntryWithoutQuorumMustTruncate(t *testing.T) {
 
 			// Simulate leader storing an AppendEntry in WAL but being hard killed before it can propose to its peers.
 			n := rg.leader().node().(*raft)
-			esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+			esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true, false)
 			entries := []*Entry{newEntry(EntryNormal, esm)}
 			n.Lock()
 			ae := n.buildAppendEntry(entries)
@@ -1066,7 +1066,7 @@ func TestNRGTermNoDecreaseAfterWALReset(t *testing.T) {
 	l.term = 20
 	l.Unlock()
 
-	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true, false)
 	entries := []*Entry{newEntry(EntryNormal, esm)}
 	l.Lock()
 	ae := l.buildAppendEntry(entries)
@@ -1102,7 +1102,7 @@ func TestNRGCatchupDoesNotTruncateUncommittedEntriesWithQuorum(t *testing.T) {
 	defer cleanup()
 
 	// Create a sample entry, the content doesn't matter, just that it's stored.
-	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true, false)
 	entries := []*Entry{newEntry(EntryNormal, esm)}
 
 	nats0 := "S1Nunr6R" // "nats-0"
@@ -1183,7 +1183,7 @@ func TestNRGCatchupCanTruncateMultipleEntriesWithoutQuorum(t *testing.T) {
 	defer cleanup()
 
 	// Create a sample entry, the content doesn't matter, just that it's stored.
-	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true, false)
 	entries := []*Entry{newEntry(EntryNormal, esm)}
 
 	nats0 := "S1Nunr6R" // "nats-0"
@@ -1282,7 +1282,7 @@ func TestNRGCatchupDoesNotTruncateCommittedEntriesDuringRedelivery(t *testing.T)
 	defer cleanup()
 
 	// Create a sample entry, the content doesn't matter, just that it's stored.
-	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true, false)
 	entries := []*Entry{newEntry(EntryNormal, esm)}
 
 	nats0 := "S1Nunr6R" // "nats-0"
@@ -1333,7 +1333,7 @@ func TestNRGCatchupFromNewLeaderWithIncorrectPterm(t *testing.T) {
 	defer cleanup()
 
 	// Create a sample entry, the content doesn't matter, just that it's stored.
-	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true, false)
 	entries := []*Entry{newEntry(EntryNormal, esm)}
 
 	nats0 := "S1Nunr6R" // "nats-0"
@@ -1379,7 +1379,7 @@ func TestNRGDontRemoveSnapshotIfTruncateToApplied(t *testing.T) {
 	defer cleanup()
 
 	// Create a sample entry, the content doesn't matter, just that it's stored.
-	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true, false)
 	entries := []*Entry{newEntry(EntryNormal, esm)}
 
 	nats0 := "S1Nunr6R" // "nats-0"
@@ -1543,7 +1543,7 @@ func TestNRGCancelCatchupWhenDetectingHigherTermDuringVoteRequest(t *testing.T) 
 	defer cleanup()
 
 	// Create a sample entry, the content doesn't matter, just that it's stored.
-	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true, false)
 	entries := []*Entry{newEntry(EntryNormal, esm)}
 
 	nats0 := "S1Nunr6R" // "nats-0"
@@ -1590,7 +1590,7 @@ func TestNRGTruncateDownToCommitted(t *testing.T) {
 	defer cleanup()
 
 	// Create a sample entry, the content doesn't matter, just that it's stored.
-	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true, false)
 	entries := []*Entry{newEntry(EntryNormal, esm)}
 
 	nats0 := "S1Nunr6R" // "nats-0"
@@ -1651,7 +1651,7 @@ func TestNRGTruncateDownToCommittedWhenTruncateFails(t *testing.T) {
 	n.Unlock()
 
 	// Create a sample entry, the content doesn't matter, just that it's stored.
-	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true, false)
 	entries := []*Entry{newEntry(EntryNormal, esm)}
 
 	nats0 := "S1Nunr6R" // "nats-0"
@@ -1716,7 +1716,7 @@ func TestNRGMemoryWALEmptiesSnapshotsDir(t *testing.T) {
 	defer c.shutdown()
 
 	// Create a sample entry, the content doesn't matter, just that it's stored.
-	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true, false)
 	entries := []*Entry{newEntry(EntryNormal, esm)}
 
 	nats0 := "S1Nunr6R" // "nats-0"
@@ -1761,7 +1761,7 @@ func TestNRGHealthCheckWaitForCatchup(t *testing.T) {
 	defer cleanup()
 
 	// Create a sample entry, the content doesn't matter, just that it's stored.
-	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true, false)
 	entries := []*Entry{newEntry(EntryNormal, esm)}
 
 	nats0 := "S1Nunr6R" // "nats-0"
@@ -1820,7 +1820,7 @@ func TestNRGHealthCheckWaitForDoubleCatchup(t *testing.T) {
 	defer cleanup()
 
 	// Create a sample entry, the content doesn't matter, just that it's stored.
-	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true, false)
 	entries := []*Entry{newEntry(EntryNormal, esm)}
 
 	nats0 := "S1Nunr6R" // "nats-0"
@@ -1902,7 +1902,7 @@ func TestNRGHealthCheckWaitForPendingCommitsWhenPaused(t *testing.T) {
 	defer cleanup()
 
 	// Create a sample entry, the content doesn't matter, just that it's stored.
-	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true, false)
 	entries := []*Entry{newEntry(EntryNormal, esm)}
 
 	nats0 := "S1Nunr6R" // "nats-0"
