@@ -4259,7 +4259,7 @@ func TestJetStreamClusterPreserveWALDuringCatchupWithMatchingTerm(t *testing.T) 
 						break
 					}
 
-					esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, i, ts, true)
+					esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, i, ts, true, false)
 					entries := []*Entry{newEntry(EntryNormal, esm)}
 					rn.Lock()
 					ae := rn.buildAppendEntry(entries)
@@ -4692,7 +4692,7 @@ func TestJetStreamClusterDontInstallSnapshotWhenStoppingStream(t *testing.T) {
 	validateStreamState(snap)
 
 	// Simulate a message being stored, but not calling Applied yet.
-	err = mset.processJetStreamMsg("foo", _EMPTY_, nil, nil, 1, time.Now().UnixNano(), nil)
+	err = mset.processJetStreamMsg("foo", _EMPTY_, nil, nil, 1, time.Now().UnixNano(), nil, false)
 	require_NoError(t, err)
 
 	// Simulate the stream being stopped before we're able to call Applied.
@@ -5333,6 +5333,140 @@ func TestJetStreamClusterRoutedAPIRecoverPerformance(t *testing.T) {
 	t.Logf("Took %s to clear %d items", time.Since(start), count)
 }
 
+func TestJetStreamClusterMessageTTLWhenSourcing(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	jsStreamCreate(t, nc, &StreamConfig{
+		Name:        "Origin",
+		Storage:     FileStorage,
+		Subjects:    []string{"test"},
+		AllowMsgTTL: true,
+		Replicas:    3,
+	})
+
+	jsStreamCreate(t, nc, &StreamConfig{
+		Name:    "TTLEnabled",
+		Storage: FileStorage,
+		Sources: []*StreamSource{
+			{Name: "Origin"},
+		},
+		AllowMsgTTL: true,
+		Replicas:    3,
+	})
+
+	jsStreamCreate(t, nc, &StreamConfig{
+		Name:    "TTLDisabled",
+		Storage: FileStorage,
+		Sources: []*StreamSource{
+			{Name: "Origin"},
+		},
+		AllowMsgTTL: false,
+		Replicas:    3,
+	})
+
+	hdr := nats.Header{}
+	hdr.Add("Nats-TTL", "1s")
+
+	_, err := js.PublishMsg(&nats.Msg{
+		Subject: "test",
+		Header:  hdr,
+	})
+	require_NoError(t, err)
+
+	for _, stream := range []string{"TTLEnabled", "TTLDisabled"} {
+		t.Run(stream, func(t *testing.T) {
+			sc, err := js.PullSubscribe("test", "consumer", nats.BindStream(stream))
+			require_NoError(t, err)
+
+			msgs, err := sc.Fetch(1)
+			require_NoError(t, err)
+			require_Len(t, len(msgs), 1)
+			require_Equal(t, msgs[0].Header.Get(JSMessageTTL), "1s")
+
+			time.Sleep(time.Second)
+
+			si, err := js.StreamInfo(stream)
+			require_NoError(t, err)
+			if stream == "TTLDisabled" {
+				require_Equal(t, si.State.Msgs, 1)
+			} else {
+				require_Equal(t, si.State.Msgs, 0)
+			}
+		})
+	}
+}
+
+func TestJetStreamClusterMessageTTLWhenMirroring(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	jsStreamCreate(t, nc, &StreamConfig{
+		Name:        "Origin",
+		Storage:     FileStorage,
+		Subjects:    []string{"test"},
+		AllowMsgTTL: true,
+		Replicas:    3,
+	})
+
+	jsStreamCreate(t, nc, &StreamConfig{
+		Name:    "TTLEnabled",
+		Storage: FileStorage,
+		Mirror: &StreamSource{
+			Name: "Origin",
+		},
+		AllowMsgTTL: true,
+		Replicas:    3,
+	})
+
+	jsStreamCreate(t, nc, &StreamConfig{
+		Name:    "TTLDisabled",
+		Storage: FileStorage,
+		Mirror: &StreamSource{
+			Name: "Origin",
+		},
+		AllowMsgTTL: false,
+		Replicas:    3,
+	})
+
+	hdr := nats.Header{}
+	hdr.Add("Nats-TTL", "1s")
+
+	_, err := js.PublishMsg(&nats.Msg{
+		Subject: "test",
+		Header:  hdr,
+	})
+	require_NoError(t, err)
+
+	for _, stream := range []string{"TTLEnabled", "TTLDisabled"} {
+		t.Run(stream, func(t *testing.T) {
+			sc, err := js.PullSubscribe("test", "consumer", nats.BindStream(stream))
+			require_NoError(t, err)
+
+			msgs, err := sc.Fetch(1)
+			require_NoError(t, err)
+			require_Len(t, len(msgs), 1)
+			require_Equal(t, msgs[0].Header.Get(JSMessageTTL), "1s")
+
+			time.Sleep(time.Second)
+
+			si, err := js.StreamInfo(stream)
+			require_NoError(t, err)
+			if stream == "TTLDisabled" {
+				require_Equal(t, si.State.Msgs, 1)
+			} else {
+				require_Equal(t, si.State.Msgs, 0)
+			}
+		})
+	}
+}
+
 func TestJetStreamClusterMessageTTLDisabled(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
@@ -5358,7 +5492,6 @@ func TestJetStreamClusterMessageTTLDisabled(t *testing.T) {
 
 	// In clustered mode we should have caught this before generating the
 	// proposal, therefore the CLFS should not have been bumped by this.
-
 	for _, s := range c.servers {
 		stream, err := s.GlobalAccount().lookupStream("TEST")
 		require_NoError(t, err)
