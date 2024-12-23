@@ -46,6 +46,7 @@ builds:
       goarch: arm64
     - goos: freebsd
       goarch: 386
+  mod_timestamp: "{{ .CommitTimestamp }}"
 
 nfpms:
   - file_name_template: '{{.ProjectName}}-{{.Tag}}-{{.Arch}}{{if .Arm}}{{.Arm}}{{end}}'
