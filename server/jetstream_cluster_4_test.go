@@ -5229,3 +5229,113 @@ func TestJetStreamClusterMetaStepdownPreferred(t *testing.T) {
 		require_Equal(t, ErrorIdentifier(apiresp.Error.ErrCode), JSClusterNoPeersErrF)
 	})
 }
+
+func TestJetStreamClusterMessageTTLStrippedSourcing(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	jsStreamCreate(t, nc, &StreamConfig{
+		Name:        "SOURCE",
+		Storage:     FileStorage,
+		Subjects:    []string{"test"},
+		AllowMsgTTL: true,
+		Replicas:    3,
+	})
+
+	jsStreamCreate(t, nc, &StreamConfig{
+		Name:    "TEST",
+		Storage: FileStorage,
+		Sources: []*StreamSource{
+			{Name: "SOURCE"},
+		},
+		Replicas: 3,
+	})
+
+	hdr := nats.Header{}
+	hdr.Add("Nats-TTL", "5s")
+
+	_, err := js.PublishMsg(&nats.Msg{
+		Subject: "test",
+		Header:  hdr,
+	})
+	require_NoError(t, err)
+
+	// Make sure that the header is present in the source stream.
+	{
+		sc, err := js.PullSubscribe("test", "consumer", nats.BindStream("SOURCE"))
+		require_NoError(t, err)
+
+		msgs, err := sc.Fetch(1)
+		require_NoError(t, err)
+		require_Len(t, len(msgs), 1)
+		require_NotEqual(t, msgs[0].Header.Get(JSMessageTTL), _EMPTY_)
+	}
+
+	// Make sure that the header has been stripped in the sourcing stream.
+	{
+		sc, err := js.PullSubscribe("test", "consumer", nats.BindStream("TEST"))
+		require_NoError(t, err)
+
+		msgs, err := sc.Fetch(1)
+		require_NoError(t, err)
+		require_Len(t, len(msgs), 1)
+		require_Equal(t, msgs[0].Header.Get(JSMessageTTL), _EMPTY_)
+	}
+}
+
+func TestJetStreamClusterMessageTTLStrippedMirroring(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	jsStreamCreate(t, nc, &StreamConfig{
+		Name:        "SOURCE",
+		Storage:     FileStorage,
+		Subjects:    []string{"test"},
+		AllowMsgTTL: true,
+		Replicas:    3,
+	})
+
+	jsStreamCreate(t, nc, &StreamConfig{
+		Name:     "TEST",
+		Storage:  FileStorage,
+		Mirror:   &StreamSource{Name: "SOURCE"},
+		Replicas: 3,
+	})
+
+	hdr := nats.Header{}
+	hdr.Add("Nats-TTL", "5s")
+
+	_, err := js.PublishMsg(&nats.Msg{
+		Subject: "test",
+		Header:  hdr,
+	})
+	require_NoError(t, err)
+
+	// Make sure that the header is present in the source stream.
+	{
+		sc, err := js.PullSubscribe("test", "consumer", nats.BindStream("SOURCE"))
+		require_NoError(t, err)
+
+		msgs, err := sc.Fetch(1)
+		require_NoError(t, err)
+		require_Len(t, len(msgs), 1)
+		require_NotEqual(t, msgs[0].Header.Get(JSMessageTTL), _EMPTY_)
+	}
+
+	// Make sure that the header has been stripped in the mirroring stream.
+	{
+		sc, err := js.PullSubscribe("test", "consumer", nats.BindStream("TEST"))
+		require_NoError(t, err)
+
+		msgs, err := sc.Fetch(1)
+		require_NoError(t, err)
+		require_Len(t, len(msgs), 1)
+		require_Equal(t, msgs[0].Header.Get(JSMessageTTL), _EMPTY_)
+	}
+}

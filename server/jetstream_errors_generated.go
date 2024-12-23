@@ -242,6 +242,9 @@ const (
 	// JSMemoryResourcesExceededErr insufficient memory resources available
 	JSMemoryResourcesExceededErr ErrorIdentifier = 10028
 
+	// JSMessageTTLDisabledErr per-message TTL is disabled
+	JSMessageTTLDisabledErr ErrorIdentifier = 10166
+
 	// JSMessageTTLInvalidErr invalid per-message TTL
 	JSMessageTTLInvalidErr ErrorIdentifier = 10165
 
@@ -579,6 +582,7 @@ var (
 		JSMaximumConsumersLimitErr:                 {Code: 400, ErrCode: 10026, Description: "maximum consumers limit reached"},
 		JSMaximumStreamsLimitErr:                   {Code: 400, ErrCode: 10027, Description: "maximum number of streams reached"},
 		JSMemoryResourcesExceededErr:               {Code: 500, ErrCode: 10028, Description: "insufficient memory resources available"},
+		JSMessageTTLDisabledErr:                    {Code: 400, ErrCode: 10166, Description: "per-message TTL is disabled"},
 		JSMessageTTLInvalidErr:                     {Code: 400, ErrCode: 10165, Description: "invalid per-message TTL"},
 		JSMirrorConsumerSetupFailedErrF:            {Code: 500, ErrCode: 10029, Description: "{err}"},
 		JSMirrorInvalidStreamName:                  {Code: 400, ErrCode: 10142, Description: "mirrored stream name is invalid"},
@@ -1549,6 +1553,16 @@ func NewJSMemoryResourcesExceededError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSMemoryResourcesExceededErr]
+}
+
+// NewJSMessageTTLDisabledError creates a new JSMessageTTLDisabledErr error: "per-message TTL is disabled"
+func NewJSMessageTTLDisabledError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSMessageTTLDisabledErr]
 }
 
 // NewJSMessageTTLInvalidError creates a new JSMessageTTLInvalidErr error: "invalid per-message TTL"

@@ -2418,6 +2418,12 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 		return false
 	}
 
+	// If the TTL header is set, remove it.
+	hdr := m.hdr
+	if len(hdr) > 0 {
+		hdr = removeHeaderIfPresent(hdr, JSMessageTTL)
+	}
+
 	// Check for heartbeats and flow control messages.
 	if isControl {
 		var needsRetry bool
@@ -2426,9 +2432,9 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 			mset.handleFlowControl(m)
 		} else {
 			// For idle heartbeats make sure we did not miss anything and check if we are considered stalled.
-			if ldseq := parseInt64(getHeader(JSLastConsumerSeq, m.hdr)); ldseq > 0 && uint64(ldseq) != mset.mirror.dseq {
+			if ldseq := parseInt64(getHeader(JSLastConsumerSeq, hdr)); ldseq > 0 && uint64(ldseq) != mset.mirror.dseq {
 				needsRetry = true
-			} else if fcReply := getHeader(JSConsumerStalled, m.hdr); len(fcReply) > 0 {
+			} else if fcReply := getHeader(JSConsumerStalled, hdr); len(fcReply) > 0 {
 				// Other side thinks we are stalled, so send flow control reply.
 				mset.outq.sendMsg(string(fcReply), nil)
 			}
@@ -2512,10 +2518,10 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 			s.resourcesExceededError()
 			err = ApiErrors[JSInsufficientResourcesErr]
 		} else {
-			err = node.Propose(encodeStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts))
+			err = node.Propose(encodeStreamMsg(m.subj, _EMPTY_, hdr, m.msg, sseq-1, ts))
 		}
 	} else {
-		err = mset.processJetStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts, nil)
+		err = mset.processJetStreamMsg(m.subj, _EMPTY_, hdr, m.msg, sseq-1, ts, nil)
 	}
 	if err != nil {
 		if strings.Contains(err.Error(), "no space left") {
@@ -3447,8 +3453,10 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 	hdr, msg := m.hdr, m.msg
 
 	// If we are daisy chained here make sure to remove the original one.
+	// If the TTL header is set, remove it.
 	if len(hdr) > 0 {
 		hdr = removeHeaderIfPresent(hdr, JSStreamSource)
+		hdr = removeHeaderIfPresent(hdr, JSMessageTTL)
 		// Remove any Nats-Expected- headers as we don't want to validate them.
 		hdr = removeHeaderIfPrefixPresent(hdr, "Nats-Expected-")
 	}
@@ -4642,6 +4650,7 @@ var (
 	errStreamClosed      = errors.New("stream closed")
 	errInvalidMsgHandler = errors.New("undefined message handler")
 	errStreamMismatch    = errors.New("expected stream does not match")
+	errMsgTTLDisabled    = errors.New("message TTL disabled")
 )
 
 // processJetStreamMsg is where we try to actually process the stream msg.
@@ -4778,6 +4787,19 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				}
 				return errStreamMismatch
 			}
+		}
+
+		// TTL'd messages are rejected entirely if TTLs are not enabled on the stream.
+		if ttl, _ := getMessageTTL(hdr); ttl != 0 && !mset.cfg.AllowMsgTTL {
+			mset.mu.Unlock()
+			bumpCLFS()
+			if canRespond {
+				resp.PubAck = &PubAck{Stream: name}
+				resp.Error = NewJSMessageTTLDisabledError()
+				b, _ := json.Marshal(resp)
+				outq.sendMsg(reply, b)
+			}
+			return errMsgTTLDisabled
 		}
 
 		// Dedupe detection. This is done at the cluster level for dedupe detectiom above the
