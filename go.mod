@@ -5,7 +5,7 @@ go 1.22
 toolchain go1.22.8
 
 require (
-	github.com/google/go-tpm v0.9.0
+	github.com/google/go-tpm v0.9.3
 	github.com/klauspost/compress v1.17.11
 	github.com/minio/highwayhash v1.0.3
 	github.com/nats-io/jwt/v2 v2.7.3

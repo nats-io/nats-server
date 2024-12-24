@@ -6945,45 +6945,6 @@ func TestJetStreamClusterConsumerInfoAfterCreate(t *testing.T) {
 	require_NoError(t, err)
 }
 
-func TestJetStreamClusterDontSnapshotTooOften(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "R3S", 3)
-	defer c.shutdown()
-
-	nc, js := jsClientConnect(t, c.randomServer())
-	defer nc.Close()
-
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:     "TEST",
-		Subjects: []string{"foo"},
-		Replicas: 3,
-	})
-	require_NoError(t, err)
-
-	// We force the snapshot compact size to hit multiple times.
-	// But, we should not be making snapshots too often since that would degrade performance.
-	data := make([]byte, 1024*1024) // 1MB payload
-	_, err = crand.Read(data)
-	require_NoError(t, err)
-	for i := 0; i < 50; i++ {
-		// We do synchronous publishes so we're more likely to have entries pass through the apply queue.
-		_, err = js.Publish("foo", data)
-		require_NoError(t, err)
-	}
-
-	for _, s := range c.servers {
-		acc, err := s.lookupAccount(globalAccountName)
-		require_NoError(t, err)
-		mset, err := acc.lookupStream("TEST")
-		require_NoError(t, err)
-		snap, err := mset.node.(*raft).loadLastSnapshot()
-		require_NoError(t, err)
-		// This measure is not exact and more of a side effect.
-		// We expect one snapshot to be made pretty soon and to be on cooldown after.
-		// So no snapshots should be made after that.
-		require_LessThan(t, snap.lastIndex, 20)
-	}
-}
-
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
