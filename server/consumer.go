@@ -5847,7 +5847,7 @@ func (o *consumer) decStreamPending(sseq uint64, subj string) {
 	// Either we have not reached the message yet, or we've hit the race condition
 	// when there is contention at the beginning of the stream. In which case we can
 	// only decrement if the ack floor is still low enough to be able to detect it.
-	if o.isFilteredMatch(subj) && sseq > o.asflr && (sseq >= o.sseq || !wasPending) {
+	if sseq > o.asflr && (sseq >= o.sseq || !wasPending) && o.isFilteredMatch(subj) {
 		o.npc--
 	}
 
