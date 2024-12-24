@@ -3625,7 +3625,7 @@ func TestNoRaceJetStreamClusterCorruptWAL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if _, _, err := fs.StoreMsg(_EMPTY_, nil, encoded); err != nil {
+	if _, _, err := fs.StoreMsg(_EMPTY_, nil, encoded, 0); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	fs.Stop()
@@ -4487,7 +4487,7 @@ func TestNoRaceJetStreamFileStoreKeyFileCleanup(t *testing.T) {
 
 	n, msg := 10_000, []byte(strings.Repeat("Z", 1024))
 	for i := 0; i < n; i++ {
-		_, _, err := fs.StoreMsg(fmt.Sprintf("X.%d", i), nil, msg)
+		_, _, err := fs.StoreMsg(fmt.Sprintf("X.%d", i), nil, msg, 0)
 		require_NoError(t, err)
 	}
 
@@ -5538,7 +5538,7 @@ func TestNoRaceJetStreamFileStoreLargeKVAccessTiming(t *testing.T) {
 
 	for i := 1; i <= nkeys; i++ {
 		subj := fmt.Sprintf(tmpl, i)
-		_, _, err := fs.StoreMsg(subj, nil, val)
+		_, _, err := fs.StoreMsg(subj, nil, val, 0)
 		require_NoError(t, err)
 	}
 
@@ -6270,7 +6270,7 @@ func TestNoRaceFileStoreStreamMaxAgePerformance(t *testing.T) {
 	for time.Now().Before(timeout) {
 		// We will store in blocks of 100.
 		for i := 0; i < 100; i++ {
-			_, _, err := fs.StoreMsg(subj, nil, []byte("Hello World"))
+			_, _, err := fs.StoreMsg(subj, nil, []byte("Hello World"), 0)
 			require_NoError(t, err)
 			num++
 		}
@@ -6288,7 +6288,7 @@ func TestNoRaceFileStoreStreamMaxAgePerformance(t *testing.T) {
 	for time.Now().Before(timeout) {
 		// We will store in blocks of 100.
 		for i := 0; i < 100; i++ {
-			_, _, err := fs.StoreMsg(subj, nil, []byte("Hello World"))
+			_, _, err := fs.StoreMsg(subj, nil, []byte("Hello World"), 0)
 			require_NoError(t, err)
 			num++
 		}
@@ -6362,7 +6362,7 @@ func TestNoRaceFileStoreFilteredStateWithLargeDeletes(t *testing.T) {
 
 	toStore := 500_000
 	for i := 0; i < toStore; i++ {
-		_, _, err := fs.StoreMsg(subj, nil, msg)
+		_, _, err := fs.StoreMsg(subj, nil, msg, 0)
 		require_NoError(t, err)
 	}
 
@@ -7558,7 +7558,7 @@ func TestNoRaceFileStoreNumPending(t *testing.T) {
 
 	for i := 0; i < 50_000; i++ {
 		subj := genSubj()
-		_, _, err := fs.StoreMsg(subj, nil, []byte("Hello World"))
+		_, _, err := fs.StoreMsg(subj, nil, []byte("Hello World"), 0)
 		require_NoError(t, err)
 	}
 
@@ -8878,13 +8878,13 @@ func TestNoRaceFilestoreBinaryStreamSnapshotEncodingLargeGaps(t *testing.T) {
 	subj, msg := "zzz", bytes.Repeat([]byte("X"), 128)
 	numMsgs := 20_000
 
-	fs.StoreMsg(subj, nil, msg)
+	fs.StoreMsg(subj, nil, msg, 0)
 	for i := 2; i < numMsgs; i++ {
-		seq, _, err := fs.StoreMsg(subj, nil, nil)
+		seq, _, err := fs.StoreMsg(subj, nil, nil, 0)
 		require_NoError(t, err)
 		fs.RemoveMsg(seq)
 	}
-	fs.StoreMsg(subj, nil, msg)
+	fs.StoreMsg(subj, nil, msg, 0)
 
 	snap, err := fs.EncodedStreamState(0)
 	require_NoError(t, err)
@@ -9046,7 +9046,7 @@ func TestNoRaceStoreStreamEncoderDecoder(t *testing.T) {
 				running = false
 			default:
 				key := strconv.Itoa(prand.Intn(256_000))
-				gs.StoreMsg(key, nil, msg)
+				gs.StoreMsg(key, nil, msg, 0)
 			}
 		}
 	}
@@ -9218,10 +9218,10 @@ func TestNoRaceFileStoreLargeMsgsAndFirstMatching(t *testing.T) {
 	defer fs.Stop()
 
 	for i := 0; i < 150_000; i++ {
-		fs.StoreMsg(fmt.Sprintf("foo.bar.%d", i), nil, nil)
+		fs.StoreMsg(fmt.Sprintf("foo.bar.%d", i), nil, nil, 0)
 	}
 	for i := 0; i < 150_000; i++ {
-		fs.StoreMsg(fmt.Sprintf("foo.baz.%d", i), nil, nil)
+		fs.StoreMsg(fmt.Sprintf("foo.baz.%d", i), nil, nil, 0)
 	}
 	require_Equal(t, fs.numMsgBlocks(), 2)
 	fs.mu.RLock()
@@ -9730,7 +9730,7 @@ func TestNoRaceMemStoreCompactPerformance(t *testing.T) {
 	defer ms.Stop()
 
 	for i := uint64(0); i < toStore; i++ {
-		ms.StoreMsg(subj, nil, msg)
+		ms.StoreMsg(subj, nil, msg, 0)
 	}
 	state := ms.State()
 	require_Equal(t, toStore, state.Msgs)
@@ -9738,7 +9738,7 @@ func TestNoRaceMemStoreCompactPerformance(t *testing.T) {
 
 	//1st run: Load additional messages then compact
 	for i := uint64(0); i < toStoreOnTop; i++ {
-		ms.StoreMsg(subj, nil, msg)
+		ms.StoreMsg(subj, nil, msg, 0)
 	}
 	startFirstRun := time.Now()
 	purgedFirstRun, _ := ms.Compact(toStore + toStoreOnTop)
@@ -9751,7 +9751,7 @@ func TestNoRaceMemStoreCompactPerformance(t *testing.T) {
 
 	//2nd run: Compact again
 	for i := uint64(0); i < toStore; i++ {
-		ms.StoreMsg(subj, nil, msg)
+		ms.StoreMsg(subj, nil, msg, 0)
 	}
 	startSecondRun := time.Now()
 	purgedSecondRun, _ := ms.Compact(setSeqNo + toStore - 1)
@@ -10213,7 +10213,7 @@ func TestNoRaceFileStoreMsgLoadNextMsgMultiPerf(t *testing.T) {
 	// Put 1k msgs in
 	for i := 0; i < 1000; i++ {
 		subj := fmt.Sprintf("foo.%d", i)
-		fs.StoreMsg(subj, nil, []byte("ZZZ"))
+		fs.StoreMsg(subj, nil, []byte("ZZZ"), 0)
 	}
 
 	var smv StoreMsg
@@ -10475,7 +10475,7 @@ func TestNoRaceFileStoreWriteFullStateUniqueSubjects(t *testing.T) {
 				partD := labels[rand.Intn(len(labels)-1)]
 				subject := fmt.Sprintf("records.%s.%s.%s.%s.%s", partA, partB, partC, partD, nuid.Next())
 				start := time.Now()
-				fs.StoreMsg(subject, nil, msg)
+				fs.StoreMsg(subject, nil, msg, 0)
 				elapsed := time.Since(start)
 				if elapsed > 500*time.Millisecond {
 					t.Fatalf("Slow store for %q: %v\n", subject, elapsed)
@@ -10610,9 +10610,9 @@ func TestNoRaceLargeNumDeletesStreamCatchups(t *testing.T) {
 	mset, err := sl.GlobalAccount().lookupStream("TEST")
 	require_NoError(t, err)
 	mset.mu.Lock()
-	mset.store.StoreMsg("foo", nil, []byte("ok"))
+	mset.store.StoreMsg("foo", nil, []byte("ok"), 0)
 	mset.store.SkipMsgs(2, 1_000_000_000)
-	mset.store.StoreMsg("foo", nil, []byte("ok"))
+	mset.store.StoreMsg("foo", nil, []byte("ok"), 0)
 	mset.store.SkipMsgs(1_000_000_003, 1_000_000_000)
 	var state StreamState
 	mset.store.FastState(&state)
@@ -10985,7 +10985,7 @@ func TestNoRaceFileStoreMsgLimitsAndOldRecoverState(t *testing.T) {
 
 			for i := 0; i < 10_000; i++ {
 				subj := fmt.Sprintf("foo.%d", i)
-				fs.StoreMsg(subj, nil, msg)
+				fs.StoreMsg(subj, nil, msg, 0)
 			}
 
 			// This will write the index.db file. We will capture this and use it to replace a new one.
@@ -11010,7 +11010,7 @@ func TestNoRaceFileStoreMsgLimitsAndOldRecoverState(t *testing.T) {
 			// Put in more messages with wider range. This will compact a bunch of the previous blocks.
 			for i := 0; i < 1_000_001; i++ {
 				subj := fmt.Sprintf("foo.%d", i)
-				fs.StoreMsg(subj, nil, msg)
+				fs.StoreMsg(subj, nil, msg, 0)
 			}
 
 			var ss StreamState

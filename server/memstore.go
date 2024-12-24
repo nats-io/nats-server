@@ -110,7 +110,7 @@ func (ms *memStore) UpdateConfig(cfg *StreamConfig) error {
 
 // Stores a raw message with expected sequence number and timestamp.
 // Lock should be held.
-func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int64) error {
+func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64) error {
 	if ms.msgs == nil {
 		return ErrStoreClosed
 	}
@@ -218,9 +218,9 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 }
 
 // StoreRawMsg stores a raw message with expected sequence number and timestamp.
-func (ms *memStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts int64) error {
+func (ms *memStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64) error {
 	ms.mu.Lock()
-	err := ms.storeRawMsg(subj, hdr, msg, seq, ts)
+	err := ms.storeRawMsg(subj, hdr, msg, seq, ts, ttl)
 	cb := ms.scb
 	// Check if first message timestamp requires expiry
 	// sooner than initial replica expiry timer set to MaxAge when initializing.
@@ -239,10 +239,10 @@ func (ms *memStore) StoreRawMsg(subj string, hdr, msg []byte, seq uint64, ts int
 }
 
 // Store stores a message.
-func (ms *memStore) StoreMsg(subj string, hdr, msg []byte) (uint64, int64, error) {
+func (ms *memStore) StoreMsg(subj string, hdr, msg []byte, ttl int64) (uint64, int64, error) {
 	ms.mu.Lock()
 	seq, ts := ms.state.LastSeq+1, time.Now().UnixNano()
-	err := ms.storeRawMsg(subj, hdr, msg, seq, ts)
+	err := ms.storeRawMsg(subj, hdr, msg, seq, ts, ttl)
 	cb := ms.scb
 	ms.mu.Unlock()
 

@@ -35,7 +35,7 @@ func TestMemStoreBasics(t *testing.T) {
 
 	subj, msg := "foo", []byte("Hello World")
 	now := time.Now().UnixNano()
-	if seq, ts, err := ms.StoreMsg(subj, nil, msg); err != nil {
+	if seq, ts, err := ms.StoreMsg(subj, nil, msg, 0); err != nil {
 		t.Fatalf("Error storing msg: %v", err)
 	} else if seq != 1 {
 		t.Fatalf("Expected sequence to be 1, got %d", seq)
@@ -70,13 +70,13 @@ func TestMemStoreMsgLimit(t *testing.T) {
 
 	subj, msg := "foo", []byte("Hello World")
 	for i := 0; i < 10; i++ {
-		ms.StoreMsg(subj, nil, msg)
+		ms.StoreMsg(subj, nil, msg, 0)
 	}
 	state := ms.State()
 	if state.Msgs != 10 {
 		t.Fatalf("Expected %d msgs, got %d", 10, state.Msgs)
 	}
-	if _, _, err := ms.StoreMsg(subj, nil, msg); err != nil {
+	if _, _, err := ms.StoreMsg(subj, nil, msg, 0); err != nil {
 		t.Fatalf("Error storing msg: %v", err)
 	}
 	state = ms.State()
@@ -107,7 +107,7 @@ func TestMemStoreBytesLimit(t *testing.T) {
 	defer ms.Stop()
 
 	for i := uint64(0); i < toStore; i++ {
-		ms.StoreMsg(subj, nil, msg)
+		ms.StoreMsg(subj, nil, msg, 0)
 	}
 	state := ms.State()
 	if state.Msgs != toStore {
@@ -119,7 +119,7 @@ func TestMemStoreBytesLimit(t *testing.T) {
 
 	// Now send 10 more and check that bytes limit enforced.
 	for i := 0; i < 10; i++ {
-		if _, _, err := ms.StoreMsg(subj, nil, msg); err != nil {
+		if _, _, err := ms.StoreMsg(subj, nil, msg, 0); err != nil {
 			t.Fatalf("Error storing msg: %v", err)
 		}
 	}
@@ -152,7 +152,7 @@ func TestMemStoreBytesLimitWithDiscardNew(t *testing.T) {
 
 	// Now send 10 messages and check that bytes limit enforced.
 	for i := 0; i < 10; i++ {
-		_, _, err := ms.StoreMsg(subj, nil, msg)
+		_, _, err := ms.StoreMsg(subj, nil, msg, 0)
 		if i < int(toStore) {
 			if err != nil {
 				t.Fatalf("Error storing msg: %v", err)
@@ -180,7 +180,7 @@ func TestMemStoreAgeLimit(t *testing.T) {
 	subj, msg := "foo", []byte("Hello World")
 	toStore := 100
 	for i := 0; i < toStore; i++ {
-		ms.StoreMsg(subj, nil, msg)
+		ms.StoreMsg(subj, nil, msg, 0)
 	}
 	state := ms.State()
 	if state.Msgs != uint64(toStore) {
@@ -203,7 +203,7 @@ func TestMemStoreAgeLimit(t *testing.T) {
 	checkExpired(t)
 	// Now add some more and make sure that timer will fire again.
 	for i := 0; i < toStore; i++ {
-		ms.StoreMsg(subj, nil, msg)
+		ms.StoreMsg(subj, nil, msg, 0)
 	}
 	state = ms.State()
 	if state.Msgs != uint64(toStore) {
@@ -221,7 +221,7 @@ func TestMemStoreTimeStamps(t *testing.T) {
 	subj, msg := "foo", []byte("Hello World")
 	for i := 0; i < 10; i++ {
 		time.Sleep(5 * time.Microsecond)
-		ms.StoreMsg(subj, nil, msg)
+		ms.StoreMsg(subj, nil, msg, 0)
 	}
 	var smv StoreMsg
 	for seq := uint64(1); seq <= 10; seq++ {
@@ -244,7 +244,7 @@ func TestMemStorePurge(t *testing.T) {
 
 	subj, msg := "foo", []byte("Hello World")
 	for i := 0; i < 10; i++ {
-		ms.StoreMsg(subj, nil, msg)
+		ms.StoreMsg(subj, nil, msg, 0)
 	}
 	if state := ms.State(); state.Msgs != 10 {
 		t.Fatalf("Expected 10 msgs, got %d", state.Msgs)
@@ -262,7 +262,7 @@ func TestMemStoreCompact(t *testing.T) {
 
 	subj, msg := "foo", []byte("Hello World")
 	for i := 0; i < 10; i++ {
-		ms.StoreMsg(subj, nil, msg)
+		ms.StoreMsg(subj, nil, msg, 0)
 	}
 	if state := ms.State(); state.Msgs != 10 {
 		t.Fatalf("Expected 10 msgs, got %d", state.Msgs)
@@ -300,7 +300,7 @@ func TestMemStoreEraseMsg(t *testing.T) {
 	defer ms.Stop()
 
 	subj, msg := "foo", []byte("Hello World")
-	ms.StoreMsg(subj, nil, msg)
+	ms.StoreMsg(subj, nil, msg, 0)
 	sm, err := ms.LoadMsg(1, nil)
 	if err != nil {
 		t.Fatalf("Unexpected error looking up msg: %v", err)
@@ -322,7 +322,7 @@ func TestMemStoreMsgHeaders(t *testing.T) {
 	if sz := int(memStoreMsgSize(subj, hdr, msg)); sz != (len(subj) + len(hdr) + len(msg) + 16) {
 		t.Fatalf("Wrong size for stored msg with header")
 	}
-	ms.StoreMsg(subj, hdr, msg)
+	ms.StoreMsg(subj, hdr, msg, 0)
 	sm, err := ms.LoadMsg(1, nil)
 	if err != nil {
 		t.Fatalf("Unexpected error looking up msg: %v", err)
@@ -346,7 +346,7 @@ func TestMemStoreStreamStateDeleted(t *testing.T) {
 	subj, toStore := "foo", uint64(10)
 	for i := uint64(1); i <= toStore; i++ {
 		msg := []byte(fmt.Sprintf("[%08d] Hello World!", i))
-		if _, _, err := ms.StoreMsg(subj, nil, msg); err != nil {
+		if _, _, err := ms.StoreMsg(subj, nil, msg, 0); err != nil {
 			t.Fatalf("Error storing msg: %v", err)
 		}
 	}
@@ -390,12 +390,12 @@ func TestMemStoreStreamTruncate(t *testing.T) {
 
 	subj, toStore := "foo", uint64(100)
 	for i := uint64(1); i < tseq; i++ {
-		_, _, err := ms.StoreMsg(subj, nil, []byte("ok"))
+		_, _, err := ms.StoreMsg(subj, nil, []byte("ok"), 0)
 		require_NoError(t, err)
 	}
 	subj = "bar"
 	for i := tseq; i <= toStore; i++ {
-		_, _, err := ms.StoreMsg(subj, nil, []byte("ok"))
+		_, _, err := ms.StoreMsg(subj, nil, []byte("ok"), 0)
 		require_NoError(t, err)
 	}
 
@@ -444,7 +444,7 @@ func TestMemStorePurgeExWithSubject(t *testing.T) {
 	defer ms.Stop()
 
 	for i := 0; i < 100; i++ {
-		_, _, err = ms.StoreMsg("foo", nil, nil)
+		_, _, err = ms.StoreMsg("foo", nil, nil, 0)
 		require_NoError(t, err)
 	}
 
@@ -471,7 +471,7 @@ func TestMemStoreUpdateMaxMsgsPerSubject(t *testing.T) {
 
 	numStored := 22
 	for i := 0; i < numStored; i++ {
-		_, _, err = ms.StoreMsg("foo", nil, nil)
+		_, _, err = ms.StoreMsg("foo", nil, nil, 0)
 		require_NoError(t, err)
 	}
 
@@ -503,7 +503,7 @@ func TestMemStoreStreamTruncateReset(t *testing.T) {
 
 	subj, msg := "foo", []byte("Hello World")
 	for i := 0; i < 1000; i++ {
-		_, _, err := ms.StoreMsg(subj, nil, msg)
+		_, _, err := ms.StoreMsg(subj, nil, msg, 0)
 		require_NoError(t, err)
 	}
 
@@ -519,7 +519,7 @@ func TestMemStoreStreamTruncateReset(t *testing.T) {
 	require_True(t, state.NumDeleted == 0)
 
 	for i := 0; i < 1000; i++ {
-		_, _, err := ms.StoreMsg(subj, nil, msg)
+		_, _, err := ms.StoreMsg(subj, nil, msg, 0)
 		require_NoError(t, err)
 	}
 
@@ -544,7 +544,7 @@ func TestMemStoreStreamCompactMultiBlockSubjectInfo(t *testing.T) {
 
 	for i := 0; i < 1000; i++ {
 		subj := fmt.Sprintf("foo.%d", i)
-		_, _, err := ms.StoreMsg(subj, nil, []byte("Hello World"))
+		_, _, err := ms.StoreMsg(subj, nil, []byte("Hello World"), 0)
 		require_NoError(t, err)
 	}
 
@@ -585,7 +585,7 @@ func TestMemStoreSubjectsTotals(t *testing.T) {
 		subj := fmt.Sprintf("%s.%d", ft, dt)
 		m[dt]++
 
-		_, _, err := ms.StoreMsg(subj, nil, []byte("Hello World"))
+		_, _, err := ms.StoreMsg(subj, nil, []byte("Hello World"), 0)
 		require_NoError(t, err)
 	}
 
@@ -660,7 +660,7 @@ func TestMemStoreNumPending(t *testing.T) {
 
 	for i := 0; i < 50_000; i++ {
 		subj := genSubj()
-		_, _, err := ms.StoreMsg(subj, nil, []byte("Hello World"))
+		_, _, err := ms.StoreMsg(subj, nil, []byte("Hello World"), 0)
 		require_NoError(t, err)
 	}
 
@@ -770,13 +770,13 @@ func TestMemStoreInitialFirstSeq(t *testing.T) {
 	require_NoError(t, err)
 	defer ms.Stop()
 
-	seq, _, err := ms.StoreMsg("A", nil, []byte("OK"))
+	seq, _, err := ms.StoreMsg("A", nil, []byte("OK"), 0)
 	require_NoError(t, err)
 	if seq != 1000 {
 		t.Fatalf("Message should have been sequence 1000 but was %d", seq)
 	}
 
-	seq, _, err = ms.StoreMsg("B", nil, []byte("OK"))
+	seq, _, err = ms.StoreMsg("B", nil, []byte("OK"), 0)
 	require_NoError(t, err)
 	if seq != 1001 {
 		t.Fatalf("Message should have been sequence 1001 but was %d", seq)
@@ -807,7 +807,7 @@ func TestMemStoreDeleteBlocks(t *testing.T) {
 	// Put in 10_000 msgs.
 	total := 10_000
 	for i := 0; i < total; i++ {
-		_, _, err := ms.StoreMsg("A", nil, []byte("OK"))
+		_, _, err := ms.StoreMsg("A", nil, []byte("OK"), 0)
 		require_NoError(t, err)
 	}
 
@@ -848,7 +848,7 @@ func TestMemStoreGetSeqFromTimeWithLastDeleted(t *testing.T) {
 	total := 1000
 	var st time.Time
 	for i := 1; i <= total; i++ {
-		_, _, err := ms.StoreMsg("A", nil, []byte("OK"))
+		_, _, err := ms.StoreMsg("A", nil, []byte("OK"), 0)
 		require_NoError(t, err)
 		if i == total/2 {
 			time.Sleep(100 * time.Millisecond)
@@ -898,7 +898,7 @@ func TestMemStoreSkipMsgs(t *testing.T) {
 	// Now add in a message, and then skip to check dmap.
 	ms, err = newMemStore(cfg)
 	require_NoError(t, err)
-	ms.StoreMsg("foo", nil, nil)
+	ms.StoreMsg("foo", nil, nil, 0)
 
 	err = ms.SkipMsgs(2, 10)
 	require_NoError(t, err)
@@ -930,14 +930,14 @@ func TestMemStoreMultiLastSeqs(t *testing.T) {
 
 	msg := []byte("abc")
 	for i := 0; i < 33; i++ {
-		ms.StoreMsg("foo.foo", nil, msg)
-		ms.StoreMsg("foo.bar", nil, msg)
-		ms.StoreMsg("foo.baz", nil, msg)
+		ms.StoreMsg("foo.foo", nil, msg, 0)
+		ms.StoreMsg("foo.bar", nil, msg, 0)
+		ms.StoreMsg("foo.baz", nil, msg, 0)
 	}
 	for i := 0; i < 33; i++ {
-		ms.StoreMsg("bar.foo", nil, msg)
-		ms.StoreMsg("bar.bar", nil, msg)
-		ms.StoreMsg("bar.baz", nil, msg)
+		ms.StoreMsg("bar.foo", nil, msg, 0)
+		ms.StoreMsg("bar.bar", nil, msg, 0)
+		ms.StoreMsg("bar.baz", nil, msg, 0)
 	}
 
 	checkResults := func(seqs, expected []uint64) {
@@ -1017,7 +1017,7 @@ func TestMemStoreMultiLastSeqsMaxAllowed(t *testing.T) {
 
 	msg := []byte("abc")
 	for i := 1; i <= 100; i++ {
-		ms.StoreMsg(fmt.Sprintf("foo.%d", i), nil, msg)
+		ms.StoreMsg(fmt.Sprintf("foo.%d", i), nil, msg, 0)
 	}
 	// Test that if we specify maxAllowed that we get the correct error.
 	seqs, err := ms.MultiLastSeqs([]string{"foo.*"}, 0, 10)
@@ -1038,7 +1038,7 @@ func TestMemStorePurgeExWithDeletedMsgs(t *testing.T) {
 
 	msg := []byte("abc")
 	for i := 1; i <= 10; i++ {
-		ms.StoreMsg("foo", nil, msg)
+		ms.StoreMsg("foo", nil, msg, 0)
 	}
 	ms.RemoveMsg(2)
 	ms.RemoveMsg(9) // This was the bug
@@ -1067,7 +1067,7 @@ func TestMemStoreDeleteAllFirstSequenceCheck(t *testing.T) {
 
 	msg := []byte("abc")
 	for i := 1; i <= 10; i++ {
-		ms.StoreMsg("foo", nil, msg)
+		ms.StoreMsg("foo", nil, msg, 0)
 	}
 	for seq := uint64(1); seq <= 10; seq++ {
 		ms.RemoveMsg(seq)
@@ -1102,7 +1102,7 @@ func TestMemStoreNumPendingMulti(t *testing.T) {
 	// Put in 100k msgs with random subjects.
 	msg := bytes.Repeat([]byte("ZZZ"), 333)
 	for i := 0; i < totalMsgs; i++ {
-		_, _, err = ms.StoreMsg(subjects[rand.Intn(totalSubjects)], nil, msg)
+		_, _, err = ms.StoreMsg(subjects[rand.Intn(totalSubjects)], nil, msg, 0)
 		require_NoError(t, err)
 	}
 
@@ -1143,9 +1143,9 @@ func TestMemStoreNumPendingBug(t *testing.T) {
 
 	// 12 msgs total
 	for _, subj := range []string{"foo.foo", "foo.bar", "foo.baz", "foo.zzz"} {
-		ms.StoreMsg("foo.aaa", nil, nil)
-		ms.StoreMsg(subj, nil, nil)
-		ms.StoreMsg(subj, nil, nil)
+		ms.StoreMsg("foo.aaa", nil, nil, 0)
+		ms.StoreMsg(subj, nil, nil, 0)
+		ms.StoreMsg(subj, nil, nil, 0)
 	}
 	total, _ := ms.NumPending(4, "foo.*", false)
 
@@ -1176,11 +1176,11 @@ func Benchmark_MemStoreNumPendingWithLargeInteriorDeletesScan(b *testing.B) {
 	defer ms.Stop()
 
 	msg := []byte("abc")
-	ms.StoreMsg("foo.bar.baz", nil, msg)
+	ms.StoreMsg("foo.bar.baz", nil, msg, 0)
 	for i := 1; i <= 1_000_000; i++ {
 		ms.SkipMsg()
 	}
-	ms.StoreMsg("foo.bar.baz", nil, msg)
+	ms.StoreMsg("foo.bar.baz", nil, msg, 0)
 
 	b.ResetTimer()
 
@@ -1203,11 +1203,11 @@ func Benchmark_MemStoreNumPendingWithLargeInteriorDeletesExclude(b *testing.B) {
 	defer ms.Stop()
 
 	msg := []byte("abc")
-	ms.StoreMsg("foo.bar.baz", nil, msg)
+	ms.StoreMsg("foo.bar.baz", nil, msg, 0)
 	for i := 1; i <= 1_000_000; i++ {
 		ms.SkipMsg()
 	}
-	ms.StoreMsg("foo.bar.baz", nil, msg)
+	ms.StoreMsg("foo.bar.baz", nil, msg, 0)
 
 	b.ResetTimer()
 
