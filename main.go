@@ -13,6 +13,43 @@
 
 package main
 
+import (
+	"flag"
+	"fmt"
+	"os"
+
+	"github.com/nats-io/nats-server/v2/taa"
+)
+
+// Run without arguments to print the list of maps available
+// Pass one argument to find a random solution to that map
 func main() {
 
+	flag.Parse()
+
+	if len(flag.Args()) == 1 {
+		// Exactly one argument: load map, create and print (random) route
+
+		mapName := flag.Arg(0)
+		citiesMap := taa.LoadMap(mapName)
+
+		distance, route := taa.FindRandomSolution(citiesMap)
+
+		fmt.Printf(
+			"Random solution for map: %s\nDistance:%d (optimal: %d)\nRoute: %v\n",
+			mapName,
+			distance,
+			citiesMap.OptimalSolution(),
+			route,
+		)
+
+	} else {
+		// Zero or multiple arguments: print usage
+		fmt.Printf("Run with <map name> argument to create a random route through the selected map\n")
+		fmt.Printf("List of maps:\n")
+		for _, mapName := range taa.MapNames() {
+			fmt.Printf(" - %s\n", mapName)
+		}
+		os.Exit(1)
+	}
 }
