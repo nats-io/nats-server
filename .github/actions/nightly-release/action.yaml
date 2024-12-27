@@ -36,7 +36,7 @@ runs:
       uses: goreleaser/goreleaser-action@9ed2f89a662bf1735a48bc8557fd212fa902bebf
       with:
         workdir: "${{ inputs.workdir }}"
-        version: '~> v2'
+        version: "~> v2"
         args: release --snapshot --config .goreleaser-nightly.yml
 
     - name: images
