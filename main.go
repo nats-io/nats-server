@@ -86,7 +86,6 @@ Profiling Options:
 Common Options:
     -h, --help                       Show this message
     -v, --version                    Show version
-        --buildinfo                  Show buildinfo
         --help_tls                   TLS help
 `
 
