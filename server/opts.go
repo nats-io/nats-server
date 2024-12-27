@@ -5775,7 +5775,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	}
 
 	if showBuildInfo {
-		printBuildinfoAndExit()
+		printBuildInfoAndExit()
 		return nil, nil
 	}
 

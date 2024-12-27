@@ -1584,13 +1584,15 @@ func PrintServerAndExit() {
 	os.Exit(0)
 }
 
-// printBuildinfoAndExit will print out https://pkg.go.dev/runtime/debug#BuildInfo and exit.
-func printBuildinfoAndExit() {
+// printBuildInfoAndExit will print out https://pkg.go.dev/runtime/debug#BuildInfo and exit.
+func printBuildInfoAndExit() {
 	bi, ok := debug.ReadBuildInfo()
 	if !ok || bi == nil {
 		//nolint:forbidigo
-		fmt.Println("failed to read Buildinfo")
+		fmt.Fprintln(os.Stderr, "failed to read BuildInfo")
+		os.Exit(1)
 	}
+
 	//nolint:forbidigo
 	fmt.Println(bi)
 	os.Exit(0)
