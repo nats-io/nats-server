@@ -5676,7 +5676,7 @@ func getDefaultAuthTimeout(tls *tls.Config, tlsTimeout float64) float64 {
 // specific flags. On success, an options structure is returned configured
 // based on the selected flags and/or configuration file.
 // The command line options take precedence to the ones in the configuration file.
-func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, printBuildinfo, printTLSHelp func()) (*Options, error) {
+func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, printTLSHelp func()) (*Options, error) {
 	opts := &Options{}
 	var (
 		showVersion            bool
@@ -5775,7 +5775,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	}
 
 	if showBuildInfo {
-		printBuildinfo()
+		PrintBuildinfoAndExit()
 		return nil, nil
 	}
 
@@ -5790,8 +5790,8 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	}
 
 	// Process args looking for non-flag options,
-	// 'version', 'help' and 'buildinfo' only for now
-	showVersion, showHelp, showBuildInfo, err = ProcessCommandLineArgs(fs)
+	// 'version' and 'help' only for now
+	showVersion, showHelp, err = ProcessCommandLineArgs(fs)
 	if err != nil {
 		return nil, err
 	} else if showVersion {
@@ -5799,9 +5799,6 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 		return nil, nil
 	} else if showHelp {
 		printHelp()
-		return nil, nil
-	} else if showBuildInfo {
-		printBuildinfo()
 		return nil, nil
 	}
 

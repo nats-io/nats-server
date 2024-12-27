@@ -3818,7 +3818,7 @@ func TestConfigReloadBoolFlags(t *testing.T) {
 			if test.cmdLine != nil {
 				args = append(args, test.cmdLine...)
 			}
-			opts, err = ConfigureOptions(fs, args, nil, nil, nil, nil)
+			opts, err = ConfigureOptions(fs, args, nil, nil, nil)
 			if err != nil {
 				t.Fatalf("Error processing config: %v", err)
 			}

@@ -659,16 +659,16 @@ func TestProcessCommandLineArgs(t *testing.T) {
 	cmd.IntVar(&port, "p", 4222, "Port.")
 
 	cmd.Parse([]string{"-a", "127.0.0.1", "-p", "9090"})
-	showVersion, showHelp, showBuildinfo, err := ProcessCommandLineArgs(cmd)
+	showVersion, showHelp, err := ProcessCommandLineArgs(cmd)
 	if err != nil {
 		t.Errorf("Expected no errors, got: %s", err)
 	}
-	if showVersion || showHelp || showBuildinfo {
+	if showVersion || showHelp {
 		t.Errorf("Expected not having to handle subcommands")
 	}
 
 	cmd.Parse([]string{"version"})
-	showVersion, showHelp, showBuildinfo, err = ProcessCommandLineArgs(cmd)
+	showVersion, showHelp, err = ProcessCommandLineArgs(cmd)
 	if err != nil {
 		t.Errorf("Expected no errors, got: %s", err)
 	}
@@ -678,12 +678,9 @@ func TestProcessCommandLineArgs(t *testing.T) {
 	if showHelp {
 		t.Errorf("Expected not having to handle help command")
 	}
-	if showBuildinfo {
-		t.Errorf("Expected not having to handle buildinfo command")
-	}
 
 	cmd.Parse([]string{"help"})
-	showVersion, showHelp, showBuildinfo, err = ProcessCommandLineArgs(cmd)
+	showVersion, showHelp, err = ProcessCommandLineArgs(cmd)
 	if err != nil {
 		t.Errorf("Expected no errors, got: %s", err)
 	}
@@ -693,27 +690,9 @@ func TestProcessCommandLineArgs(t *testing.T) {
 	if !showHelp {
 		t.Errorf("Expected having to handle help command")
 	}
-	if showBuildinfo {
-		t.Errorf("Expected not having to handle buildinfo command")
-	}
-
-	cmd.Parse([]string{"buildinfo"})
-	showVersion, showHelp, showBuildinfo, err = ProcessCommandLineArgs(cmd)
-	if err != nil {
-		t.Errorf("Expected no errors, got: %s", err)
-	}
-	if showVersion {
-		t.Errorf("Expected not having to handle version command")
-	}
-	if showHelp {
-		t.Errorf("Expected not having to handle help command")
-	}
-	if !showBuildinfo {
-		t.Errorf("Expected having to handle buildinfo command")
-	}
 
 	cmd.Parse([]string{"foo", "-p", "9090"})
-	_, _, _, err = ProcessCommandLineArgs(cmd)
+	_, _, err = ProcessCommandLineArgs(cmd)
 	if err == nil {
 		t.Errorf("Expected an error handling the command arguments")
 	}

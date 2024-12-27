@@ -1599,22 +1599,20 @@ func PrintBuildinfoAndExit() {
 // ProcessCommandLineArgs takes the command line arguments
 // validating and setting flags for handling in case any
 // sub command was present.
-func ProcessCommandLineArgs(cmd *flag.FlagSet) (showVersion bool, showHelp bool, showBuildinfo bool, err error) {
+func ProcessCommandLineArgs(cmd *flag.FlagSet) (showVersion bool, showHelp bool, err error) {
 	if len(cmd.Args()) > 0 {
 		arg := cmd.Args()[0]
 		switch strings.ToLower(arg) {
 		case "version":
-			return true, false, false, nil
+			return true, false, nil
 		case "help":
-			return false, true, false, nil
-		case "buildinfo":
-			return false, false, true, nil
+			return false, true, nil
 		default:
-			return false, false, false, fmt.Errorf("unrecognized command: %q", arg)
+			return false, false, fmt.Errorf("unrecognized command: %q", arg)
 		}
 	}
 
-	return false, false, false, nil
+	return false, false, nil
 }
 
 // Public version.
