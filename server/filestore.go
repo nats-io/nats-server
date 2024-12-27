@@ -5317,7 +5317,7 @@ func (fs *fileStore) expireMsgs() {
 	defer fs.mu.Unlock()
 
 	// TODO: Not great that we're holding the lock here, but the timed hash wheel isn't thread-safe.
-	var nextTTL int64
+	nextTTL := int64(math.MaxInt64)
 	if fs.ttls != nil {
 		fs.ttls.ExpireTasks(func(seq uint64, ts int64) {
 			fs.removeMsgViaLimits(seq)
@@ -5331,7 +5331,7 @@ func (fs *fileStore) expireMsgs() {
 		}
 	}
 
-	// Onky cancel if no message left, not on potential lookup error that would result in sm == nil.
+	// Only cancel if no message left, not on potential lookup error that would result in sm == nil.
 	if fs.state.Msgs == 0 && nextTTL == math.MaxInt64 {
 		fs.cancelAgeChk()
 	} else {
