@@ -52,6 +52,9 @@ jobs:
 
 script: ./scripts/runTestsOnTravis.sh $TEST_SUITE
 
+before_deploy:
+  - curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
 deploy:
   provider: script
   cleanup: true
