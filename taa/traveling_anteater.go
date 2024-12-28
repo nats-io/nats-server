@@ -1,8 +1,6 @@
 package taa
 
 import (
-	"bufio"
-	"bytes"
 	"fmt"
 	"slices"
 
@@ -71,21 +69,4 @@ func FindRandomSolution(c CitiesMap) (uint, []string) {
 	}
 
 	return distanceTraveled, route
-}
-
-func NewCitiesMap(rawData []byte, optimalSolution uint) CitiesMap {
-	fmt.Printf("Loading map data (%dB)...\n", len(rawData))
-
-	scanner := bufio.NewScanner(bytes.NewReader(rawData))
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		
-	}
-
-	return CitiesMap{
-		distances:       make(map[string]map[string]uint),
-		optimalSolution: optimalSolution,
-		cityNames:       []string{},
-	}
 }
