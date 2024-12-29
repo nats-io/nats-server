@@ -2337,9 +2337,14 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 func (a *Account) statz() *AccountStat {
 	localConns := a.numLocalConnections()
 	leafConns := a.numLocalLeafNodes()
+	// Do not use getNameTag() to avoid a deadlock with `registerWithAccount`.
+	nameTag := a.nameTag
+	if nameTag == _EMPTY_ {
+		nameTag = a.Name
+	}
 	return &AccountStat{
 		Account:    a.Name,
-		Name:       a.LogicalName,
+		Name:       nameTag,
 		Conns:      localConns,
 		LeafNodes:  leafConns,
 		TotalConns: localConns + leafConns,
@@ -2410,7 +2415,7 @@ func (s *Server) accountConnectEvent(c *client) {
 			Jwt:        c.opts.JWT,
 			IssuerKey:  issuerForClient(c),
 			Tags:       c.tags,
-			NameTag:    c.nameTag,
+			NameTag:    c.acc.getNameTag(),
 			Kind:       c.kindString(),
 			ClientType: c.clientTypeString(),
 			MQTTClient: c.getMQTTClientID(),
@@ -2462,7 +2467,7 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 			Jwt:        c.opts.JWT,
 			IssuerKey:  issuerForClient(c),
 			Tags:       c.tags,
-			NameTag:    c.nameTag,
+			NameTag:    c.acc.getNameTag(),
 			Kind:       c.kindString(),
 			ClientType: c.clientTypeString(),
 			MQTTClient: c.getMQTTClientID(),
@@ -2516,7 +2521,7 @@ func (s *Server) sendAuthErrorEvent(c *client) {
 			Jwt:        c.opts.JWT,
 			IssuerKey:  issuerForClient(c),
 			Tags:       c.tags,
-			NameTag:    c.nameTag,
+			NameTag:    c.acc.getNameTag(),
 			Kind:       c.kindString(),
 			ClientType: c.clientTypeString(),
 			MQTTClient: c.getMQTTClientID(),
@@ -2574,7 +2579,7 @@ func (s *Server) sendAccountAuthErrorEvent(c *client, acc *Account, reason strin
 			Jwt:        c.opts.JWT,
 			IssuerKey:  issuerForClient(c),
 			Tags:       c.tags,
-			NameTag:    c.nameTag,
+			NameTag:    c.acc.getNameTag(),
 			Kind:       c.kindString(),
 			ClientType: c.clientTypeString(),
 			MQTTClient: c.getMQTTClientID(),
