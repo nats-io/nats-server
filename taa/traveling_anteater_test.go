@@ -100,14 +100,35 @@ func TestSomeDistances(t *testing.T) {
 	}
 }
 
-func TestAntithesisFindShortRoute(t *testing.T) {
+// This explores all maps
+func TestAntithesisRandomMap(t *testing.T) {
 
 	lifecycle.SetupComplete("Test begins here")
+
 	mapName := random.RandomChoice(MapNames())
+	testAntithesisFindRoute(t, mapName)
+
+}
+
+// This is a convenience to only run a single map using the appropriate test filter, i.e. 'TestAntithesisAllMaps/brazil58'
+func TestAntithesisAllMaps(t *testing.T) {
+
+	lifecycle.SetupComplete("Test begins here")
+
+	for _, mapName := range MapNames() {
+		t.Run(mapName, func(t *testing.T) {
+			testAntithesisFindRoute(t, mapName)
+		})
+	}
+}
+
+func testAntithesisFindRoute(t *testing.T, mapName string) {
+	t.Helper()
+
 	citiesMap := LoadMap(mapName)
 
-	distance, route := FindRandomSolution(citiesMap)
 	optimalSolution := citiesMap.OptimalSolution()
+	distance, route := FindRandomSolution(citiesMap)
 
 	// This is an actual bug
 	if distance < optimalSolution {
@@ -122,6 +143,34 @@ func TestAntithesisFindShortRoute(t *testing.T) {
 	if distance == citiesMap.OptimalSolution() {
 		assert.Unreachable(mapName+" - Found optimal solution", map[string]any{
 			"route": fmt.Sprintf("%v", route),
+		})
+	} else if distance <= optimalSolution+uint(float64(optimalSolution)*0.01) {
+		assert.Unreachable(mapName+" - Found solution within 1% of the optimal", map[string]any{
+			"map":     mapName,
+			"optimal": optimalSolution,
+			"found":   distance,
+			"route":   fmt.Sprintf("%v", route),
+		})
+	} else if distance <= optimalSolution+uint(float64(optimalSolution)*0.05) {
+		assert.Unreachable(mapName+" - Found solution within 5% of the optimal", map[string]any{
+			"map":     mapName,
+			"optimal": optimalSolution,
+			"found":   distance,
+			"route":   fmt.Sprintf("%v", route),
+		})
+	} else if distance <= optimalSolution+uint(float64(optimalSolution)*0.10) {
+		assert.Unreachable(mapName+" - Found solution within 10% of the optimal", map[string]any{
+			"map":     mapName,
+			"optimal": optimalSolution,
+			"found":   distance,
+			"route":   fmt.Sprintf("%v", route),
+		})
+	} else if distance <= optimalSolution+uint(float64(optimalSolution)*0.25) {
+		assert.Unreachable(mapName+" - Found solution within 25% of the optimal", map[string]any{
+			"map":     mapName,
+			"optimal": optimalSolution,
+			"found":   distance,
+			"route":   fmt.Sprintf("%v", route),
 		})
 	} else if distance < 2*optimalSolution {
 		assert.Unreachable(mapName+" - Found solution less than 2x the optimal", map[string]any{
