@@ -15,19 +15,30 @@ import (
 //go:embed data/*.tsp
 var mapsFilesFs embed.FS
 
-var optimalSolutions = map[string]uint{
-	"bayg29":   1610,
-	"bays29":   2020,
-	"brazil58": 25395,
-	"swiss42":  1273,
+var mapNames []string
+
+func init() {
+	err := fs.WalkDir(mapsFilesFs, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(path, ".tsp") && strings.HasPrefix(path, "data/") {
+			mapName := path
+			mapName = strings.TrimPrefix(mapName, "data/")
+			mapName = strings.TrimSuffix(mapName, ".tsp")
+			mapNames = append(mapNames, mapName)
+		}
+		return nil
+	})
+	if err != nil {
+		panic(fmt.Sprintf("Failed to load map names: %s", err))
+	}
 }
 
 func LoadMap(name string) CitiesMap {
-	optimalSolution, found := optimalSolutions[name]
-	if !found {
-		panic(fmt.Sprintf("Map '%s' not found", name))
-	}
-
 	fileName := fmt.Sprintf("data/%s.tsp", name)
 	file, err := mapsFilesFs.Open(fileName)
 	if err != nil {
@@ -39,29 +50,26 @@ func LoadMap(name string) CitiesMap {
 			panic(err)
 		}
 	}(file)
-	citiesMap := NewCitiesMap(name, file, optimalSolution)
+	citiesMap := NewCitiesMap(name, file)
 	return citiesMap
 }
 
 func MapNames() []string {
-	names := make([]string, 0, len(optimalSolutions))
-	for name, _ := range optimalSolutions {
-		names = append(names, name)
-	}
-	return names
+	return mapNames[:]
 }
 
-func NewCitiesMap(mapName string, reader io.Reader, optimalSolution uint) CitiesMap {
+func NewCitiesMap(mapName string, reader io.Reader) CitiesMap {
 	fmt.Printf("Loading map %s...\n", mapName)
 
 	scanner := bufio.NewScanner(reader)
 
 	var numCities int
 	var matrixType string
+	var optimalSolution uint
 
 	for scanner.Scan() {
 		header := scanner.Text()
-		_, err := fmt.Sscanf(header, "%d %s", &numCities, &matrixType)
+		_, err := fmt.Sscanf(header, "%d %d %s", &numCities, &optimalSolution, &matrixType)
 		if err != nil {
 			panic(fmt.Errorf("failed to parse header of file %s: %s", mapName, err))
 		}
