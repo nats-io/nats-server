@@ -56,6 +56,7 @@ func DefaultMonitorOptions() *Options {
 		Tags:         []string{"tag"},
 	}
 }
+
 func runMonitorJSServer(t *testing.T, clientPort int, monitorPort int, clusterPort int, routePort int) (*Server, *Options) {
 	resetPreviousHTTPConnections()
 	tmpDir := t.TempDir()
@@ -96,12 +97,14 @@ func runMonitorJSServer(t *testing.T, clientPort int, monitorPort int, clusterPo
 
 	return RunServerWithConfig(cf)
 }
+
 func runMonitorServer() *Server {
 	resetPreviousHTTPConnections()
 	opts := DefaultMonitorOptions()
 	opts.NoSystemAccount = true
 	return RunServer(opts)
 }
+
 func runMonitorServerWithAccounts() *Server {
 	resetPreviousHTTPConnections()
 	opts := DefaultMonitorOptions()
@@ -114,6 +117,7 @@ func runMonitorServerWithAccounts() *Server {
 		&User{Username: "b", Password: "b", Account: aB})
 	return RunServer(opts)
 }
+
 func runMonitorServerNoHTTPPort() *Server {
 	resetPreviousHTTPConnections()
 	opts := DefaultMonitorOptions()
@@ -121,9 +125,11 @@ func runMonitorServerNoHTTPPort() *Server {
 	opts.HTTPPort = 0
 	return RunServer(opts)
 }
+
 func resetPreviousHTTPConnections() {
 	http.DefaultTransport.(*http.Transport).CloseIdleConnections()
 }
+
 func TestMyUptime(t *testing.T) {
 	// Make sure we print this stuff right.
 	var d time.Duration
@@ -208,6 +214,7 @@ func readBodyEx(t *testing.T, url string, status int, content string) []byte {
 	}
 	return body
 }
+
 func TestMonitorHTTPBasePath(t *testing.T) {
 	resetPreviousHTTPConnections()
 	opts := DefaultMonitorOptions()
@@ -220,10 +227,12 @@ func TestMonitorHTTPBasePath(t *testing.T) {
 	url := fmt.Sprintf("http://127.0.0.1:%d/nats", s.MonitorAddr().Port)
 	readBodyEx(t, url, http.StatusOK, textHTML)
 }
+
 func readBody(t *testing.T, url string) []byte {
 	t.Helper()
 	return readBodyEx(t, url, http.StatusOK, appJSONContent)
 }
+
 func pollVarz(t *testing.T, s *Server, mode int, url string, opts *VarzOptions) *Varz {
 	t.Helper()
 	if mode == 0 {
@@ -260,6 +269,7 @@ func TestMonitorVarzSubscriptionsResetProperly(t *testing.T) {
 		t.Fatalf("Expected subs to stay the same, %d vs %d", osubs, v.Subscriptions)
 	}
 }
+
 func TestMonitorHandleVarz(t *testing.T) {
 	s, _ := runMonitorJSServer(t, -1, -1, 0, 0)
 	defer s.Shutdown()
@@ -334,6 +344,7 @@ func TestMonitorHandleVarz(t *testing.T) {
 	// Test JSONP
 	readBodyEx(t, url+"varz?callback=callback", http.StatusOK, appJSContent)
 }
+
 func pollConnz(t *testing.T, s *Server, mode int, url string, opts *ConnzOptions) *Connz {
 	t.Helper()
 	if mode == 0 {
@@ -350,6 +361,7 @@ func pollConnz(t *testing.T, s *Server, mode int, url string, opts *ConnzOptions
 	}
 	return c
 }
+
 func TestMonitorConnz(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -461,6 +473,7 @@ func TestMonitorConnz(t *testing.T) {
 	// Test JSONP
 	readBodyEx(t, url+"connz?callback=callback", http.StatusOK, appJSContent)
 }
+
 func TestMonitorConnzBadParams(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -472,6 +485,7 @@ func TestMonitorConnzBadParams(t *testing.T) {
 	readBodyEx(t, url+"limit=xxx", http.StatusBadRequest, textPlain)
 	readBodyEx(t, url+"state=xxx", http.StatusBadRequest, textPlain)
 }
+
 func TestMonitorConnzWithSubs(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -492,6 +506,7 @@ func TestMonitorConnzWithSubs(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorConnzWithSubsDetail(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -512,6 +527,7 @@ func TestMonitorConnzWithSubsDetail(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorClosedConnzWithSubsDetail(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -541,6 +557,7 @@ func TestMonitorClosedConnzWithSubsDetail(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorConnzWithCID(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -597,9 +614,11 @@ func createConnMap(cz *Connz) map[string]*ConnInfo {
 	}
 	return cm
 }
+
 func getFooAndBar(cm map[string]*ConnInfo) (*ConnInfo, *ConnInfo) {
 	return cm["foo"], cm["bar"]
 }
+
 func ensureServerActivityRecorded(t *testing.T, nc *nats.Conn) {
 	nc.Flush()
 	err := nc.Flush()
@@ -607,6 +626,7 @@ func ensureServerActivityRecorded(t *testing.T, nc *nats.Conn) {
 		t.Fatalf("Error flushing: %v\n", err)
 	}
 }
+
 func TestMonitorConnzRTT(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -661,6 +681,7 @@ func TestMonitorConnzRTT(t *testing.T) {
 		checkClientsCount(t, s, 0)
 	}
 }
+
 func TestMonitorConnzLastActivity(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -754,6 +775,7 @@ func TestMonitorConnzLastActivity(t *testing.T) {
 		testActivity(mode)
 	}
 }
+
 func TestMonitorConnzWithOffsetAndLimit(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -827,6 +849,7 @@ func TestMonitorConnzWithOffsetAndLimit(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorConnzDefaultSorted(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -847,6 +870,7 @@ func TestMonitorConnzDefaultSorted(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorConnzSortedByCid(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -868,6 +892,7 @@ func TestMonitorConnzSortedByCid(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorConnzSortedByStart(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -889,6 +914,7 @@ func TestMonitorConnzSortedByStart(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorConnzSortedByBytesAndMsgs(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -942,6 +968,7 @@ func TestMonitorConnzSortedByBytesAndMsgs(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorConnzSortedByPending(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -966,6 +993,7 @@ func TestMonitorConnzSortedByPending(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorConnzSortedBySubs(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -991,6 +1019,7 @@ func TestMonitorConnzSortedBySubs(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorConnzSortedByLast(t *testing.T) {
 	resetPreviousHTTPConnections()
 	opts := DefaultMonitorOptions()
@@ -1021,6 +1050,7 @@ func TestMonitorConnzSortedByLast(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorConnzSortedByUptime(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -1049,6 +1079,7 @@ func TestMonitorConnzSortedByUptime(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorConnzSortedByUptimeClosedConn(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -1086,6 +1117,7 @@ func TestMonitorConnzSortedByUptimeClosedConn(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorConnzSortedByStopOnOpen(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -1107,6 +1139,7 @@ func TestMonitorConnzSortedByStopOnOpen(t *testing.T) {
 		t.Fatalf("Expected err to be non-nil, got %+v\n", c)
 	}
 }
+
 func TestMonitorConnzSortedByStopTimeClosedConn(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -1151,6 +1184,7 @@ func TestMonitorConnzSortedByStopTimeClosedConn(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorConnzSortedByReason(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -1189,6 +1223,7 @@ func TestMonitorConnzSortedByReason(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorConnzSortedByReasonOnOpen(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -1210,6 +1245,7 @@ func TestMonitorConnzSortedByReasonOnOpen(t *testing.T) {
 		t.Fatalf("Expected err to be non-nil, got %+v\n", c)
 	}
 }
+
 func TestMonitorConnzSortedByIdle(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -1295,6 +1331,7 @@ func sortedDurationsDesc(durations []time.Duration) bool {
 		return durations[i] > durations[j]
 	})
 }
+
 func TestMonitorConnzSortByIdleTime(t *testing.T) {
 	now := time.Now().UTC()
 
@@ -1373,6 +1410,7 @@ func sortedDurationsAsc(durations []time.Duration) bool {
 		return durations[i] < durations[j]
 	})
 }
+
 func TestMonitorConnzSortBadRequest(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -1393,6 +1431,7 @@ func TestMonitorConnzSortBadRequest(t *testing.T) {
 		t.Fatal("Expected error, got none")
 	}
 }
+
 func pollRoutez(t *testing.T, s *Server, mode int, url string, opts *RoutezOptions) *Routez {
 	t.Helper()
 	if mode == 0 {
@@ -1409,6 +1448,7 @@ func pollRoutez(t *testing.T, s *Server, mode int, url string, opts *RoutezOptio
 	}
 	return rz
 }
+
 func TestMonitorConnzWithRoutes(t *testing.T) {
 	resetPreviousHTTPConnections()
 	opts := DefaultMonitorOptions()
@@ -1516,6 +1556,7 @@ func TestMonitorConnzWithRoutes(t *testing.T) {
 	// Test JSONP
 	readBodyEx(t, url+"routez?callback=callback", http.StatusOK, appJSContent)
 }
+
 func TestMonitorRoutezWithBadParams(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -1523,6 +1564,7 @@ func TestMonitorRoutezWithBadParams(t *testing.T) {
 	url := fmt.Sprintf("http://127.0.0.1:%d/routez?", s.MonitorAddr().Port)
 	readBodyEx(t, url+"subs=xxx", http.StatusBadRequest, textPlain)
 }
+
 func pollSubsz(t *testing.T, s *Server, mode int, url string, opts *SubszOptions) *Subsz {
 	t.Helper()
 	if mode == 0 {
@@ -1539,6 +1581,7 @@ func pollSubsz(t *testing.T, s *Server, mode int, url string, opts *SubszOptions
 	}
 	return sz
 }
+
 func TestSubsz(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -1642,6 +1685,7 @@ func TestMonitorSubszDetails(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorSubszWithOffsetAndLimit(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -1674,6 +1718,7 @@ func TestMonitorSubszWithOffsetAndLimit(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorSubszTestPubSubject(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -1707,6 +1752,7 @@ func TestMonitorSubszTestPubSubject(t *testing.T) {
 	readBodyEx(t, testUrl+"test=foo.>", http.StatusBadRequest, textPlain)
 	readBodyEx(t, testUrl+"test=foo..bar", http.StatusBadRequest, textPlain)
 }
+
 func TestMonitorSubszMultiAccount(t *testing.T) {
 	s := runMonitorServerWithAccounts()
 	defer s.Shutdown()
@@ -1774,6 +1820,7 @@ func TestMonitorSubszMultiAccount(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorSubszMultiAccountWithOffsetAndLimit(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -1847,6 +1894,7 @@ func TestMonitorHandleRoot(t *testing.T) {
 		t.Fatalf("Expected text/html response, got %s\n", ct)
 	}
 }
+
 func TestMonitorConnzWithNamedClient(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -1871,6 +1919,7 @@ func TestMonitorConnzWithNamedClient(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorConnzWithStateForClosedConns(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -2106,9 +2155,11 @@ func createClientConnWithUserSubscribeAndPublish(t *testing.T, s *Server, user, 
 	nc.Flush()
 	return nc
 }
+
 func createClientConnSubscribeAndPublish(t *testing.T, s *Server) *nats.Conn {
 	return createClientConnWithUserSubscribeAndPublish(t, s, "", "")
 }
+
 func createClientConnWithName(t *testing.T, name string, s *Server) *nats.Conn {
 	natsURI := fmt.Sprintf("nats://127.0.0.1:%d", s.Addr().(*net.TCPAddr).Port)
 
@@ -2121,6 +2172,7 @@ func createClientConnWithName(t *testing.T, name string, s *Server) *nats.Conn {
 	}
 	return nc
 }
+
 func TestMonitorStacksz(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -2133,6 +2185,7 @@ func TestMonitorStacksz(t *testing.T) {
 		t.Fatalf("Result does not seem to contain server's stacks:\n%v", str)
 	}
 }
+
 func TestMonitorConcurrentMonitoring(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -2180,6 +2233,7 @@ func TestMonitorConcurrentMonitoring(t *testing.T) {
 	default:
 	}
 }
+
 func TestMonitorHandler(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -2193,6 +2247,7 @@ func TestMonitorHandler(t *testing.T) {
 		t.Fatal("HTTP Handler should be nil")
 	}
 }
+
 func TestMonitorRoutezRace(t *testing.T) {
 	resetPreviousHTTPConnections()
 	srvAOpts := DefaultMonitorOptions()
@@ -2232,6 +2287,7 @@ func TestMonitorRoutezRace(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorConnzTLSInHandshake(t *testing.T) {
 	resetPreviousHTTPConnections()
 
@@ -2279,6 +2335,7 @@ func TestMonitorConnzTLSInHandshake(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorConnzTLSCfg(t *testing.T) {
 	resetPreviousHTTPConnections()
 
@@ -2334,6 +2391,7 @@ func TestMonitorConnzTLSCfg(t *testing.T) {
 		check(varz.LeafNode.TLSVerify, varz.LeafNode.TLSRequired, varz.LeafNode.TLSTimeout)
 	}
 }
+
 func TestMonitorConnzTLSPeerCerts(t *testing.T) {
 	resetPreviousHTTPConnections()
 
@@ -2389,6 +2447,7 @@ func TestMonitorConnzTLSPeerCerts(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorServerIDs(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -2413,6 +2472,7 @@ func TestMonitorServerIDs(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorHttpStatsNoUpdatedWhenUsingServerFuncs(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -2433,6 +2493,7 @@ func TestMonitorHttpStatsNoUpdatedWhenUsingServerFuncs(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorClusterEmptyWhenNotDefined(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -2451,6 +2512,7 @@ func TestMonitorClusterEmptyWhenNotDefined(t *testing.T) {
 		t.Fatalf("Expected an empty cluster definition, instead got %+v\n", c)
 	}
 }
+
 func TestMonitorRoutezPermissions(t *testing.T) {
 	resetPreviousHTTPConnections()
 	opts := DefaultMonitorOptions()
@@ -2570,6 +2632,7 @@ func Benchmark_Connz(b *testing.B) {
 		}
 	}
 }
+
 func Benchmark_Varz(b *testing.B) {
 	runtime.MemProfileRate = 0
 
@@ -2586,6 +2649,7 @@ func Benchmark_Varz(b *testing.B) {
 		}
 	}
 }
+
 func Benchmark_VarzHttp(b *testing.B) {
 	runtime.MemProfileRate = 0
 
@@ -2614,6 +2678,7 @@ func Benchmark_VarzHttp(b *testing.B) {
 		resp.Body.Close()
 	}
 }
+
 func TestMonitorVarzRaces(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -2680,6 +2745,7 @@ func TestMonitorVarzRaces(t *testing.T) {
 	close(done)
 	wg.Wait()
 }
+
 func testMonitorStructPresent(t *testing.T, tag string) {
 	t.Helper()
 
@@ -2695,6 +2761,7 @@ func testMonitorStructPresent(t *testing.T, tag string) {
 		t.Fatalf("%s should be present and empty, got %s", tag, body)
 	}
 }
+
 func TestMonitorCluster(t *testing.T) {
 	testMonitorStructPresent(t, "cluster")
 
@@ -2747,6 +2814,7 @@ func TestMonitorCluster(t *testing.T) {
 		check(t, v)
 	}
 }
+
 func TestMonitorClusterURLs(t *testing.T) {
 	resetPreviousHTTPConnections()
 
@@ -2846,6 +2914,7 @@ func TestMonitorClusterURLs(t *testing.T) {
 		return nil
 	})
 }
+
 func TestMonitorGateway(t *testing.T) {
 	testMonitorStructPresent(t, "gateway")
 
@@ -2943,6 +3012,7 @@ func TestMonitorGateway(t *testing.T) {
 		check(t, v)
 	}
 }
+
 func TestMonitorGatewayURLsUpdated(t *testing.T) {
 	resetPreviousHTTPConnections()
 
@@ -3043,6 +3113,7 @@ func TestMonitorGatewayURLsUpdated(t *testing.T) {
 		return nil
 	})
 }
+
 func TestMonitorGatewayReportItsOwnURLs(t *testing.T) {
 	resetPreviousHTTPConnections()
 
@@ -3072,6 +3143,7 @@ func TestMonitorGatewayReportItsOwnURLs(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorLeafNode(t *testing.T) {
 	testMonitorStructPresent(t, "leaf")
 
@@ -3146,6 +3218,7 @@ func TestMonitorLeafNode(t *testing.T) {
 		check(t, v)
 	}
 }
+
 func pollGatewayz(t *testing.T, s *Server, mode int, url string, opts *GatewayzOptions) *Gatewayz {
 	t.Helper()
 	if mode == 0 {
@@ -3162,6 +3235,7 @@ func pollGatewayz(t *testing.T, s *Server, mode int, url string, opts *GatewayzO
 	}
 	return g
 }
+
 func TestMonitorGatewayz(t *testing.T) {
 	resetPreviousHTTPConnections()
 
@@ -3364,6 +3438,7 @@ func TestMonitorGatewayz(t *testing.T) {
 	checkGatewayB(t, gatewayzURL+"?gw_name=B", opts)
 	checkGatewayB(t, gatewayzURL, nil)
 }
+
 func TestMonitorGatewayzAccounts(t *testing.T) {
 	GatewayDoNotForceInterestOnlyMode(true)
 	defer GatewayDoNotForceInterestOnlyMode(false)
@@ -3729,6 +3804,7 @@ func TestMonitorGatewayzAccounts(t *testing.T) {
 		return nil
 	})
 }
+
 func TestMonitorRoutezRTT(t *testing.T) {
 	// Do not change default PingInterval and expect RTT to still be reported
 
@@ -3765,6 +3841,7 @@ func TestMonitorRoutezRTT(t *testing.T) {
 	checkRouteInfo(t, sa)
 	checkRouteInfo(t, sb)
 }
+
 func pollLeafz(t *testing.T, s *Server, mode int, url string, opts *LeafzOptions) *Leafz {
 	t.Helper()
 	if mode == 0 {
@@ -3781,6 +3858,7 @@ func pollLeafz(t *testing.T, s *Server, mode int, url string, opts *LeafzOptions
 	}
 	return l
 }
+
 func TestMonitorOpJWT(t *testing.T) {
 	content := `
 	listen: "127.0.0.1:-1"
@@ -3816,6 +3894,7 @@ func TestMonitorOpJWT(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorLeafz(t *testing.T) {
 	content := `
 	server_name: "hub"
@@ -4068,6 +4147,7 @@ func TestMonitorLeafz(t *testing.T) {
 		}
 	}
 }
+
 func pollAccountz(t *testing.T, s *Server, mode int, url string, opts *AccountzOptions) *Accountz {
 	t.Helper()
 	if mode == 0 {
@@ -4084,6 +4164,7 @@ func pollAccountz(t *testing.T, s *Server, mode int, url string, opts *AccountzO
 	}
 	return a
 }
+
 func pollAccountStatz(t *testing.T, s *Server, mode int, url string, opts *AccountStatzOptions) *AccountStatz {
 	t.Helper()
 	if mode == 0 {
@@ -4100,6 +4181,7 @@ func pollAccountStatz(t *testing.T, s *Server, mode int, url string, opts *Accou
 	}
 	return as
 }
+
 func TestMonitorAccountz(t *testing.T) {
 	s := RunServer(DefaultMonitorOptions())
 	defer s.Shutdown()
@@ -4129,6 +4211,7 @@ func TestMonitorAccountz(t *testing.T) {
 		require_Equal(t, a.SystemAccount, DEFAULT_SYSTEM_ACCOUNT)
 	}
 }
+
 func TestMonitorAccountStatz(t *testing.T) {
 	s := RunServer(DefaultMonitorOptions())
 	defer s.Shutdown()
@@ -4154,6 +4237,7 @@ func TestMonitorAccountStatz(t *testing.T) {
 		}
 	}
 }
+
 func runMonitorServerWithOperator(t *testing.T, sysName, accName string) ([]*Server, nkeys.KeyPair, nkeys.KeyPair) {
 	t.Helper()
 
@@ -4308,6 +4392,7 @@ func runMonitorServerWithOperator(t *testing.T, sysName, accName string) ([]*Ser
 
 	return servers, sysKp, accKp
 }
+
 func createUser(t *testing.T, accKp nkeys.KeyPair) (string, string) {
 	t.Helper()
 
@@ -4320,6 +4405,7 @@ func createUser(t *testing.T, accKp nkeys.KeyPair) (string, string) {
 	require_NoError(t, err)
 	return upub, genCredsFile(t, ujwt, seed)
 }
+
 func TestMonitorAccountzOperatorMode(t *testing.T) {
 	sysName := "SYS"
 	accName := "APP"
@@ -4365,6 +4451,7 @@ func TestMonitorAccountzOperatorMode(t *testing.T) {
 	}
 
 }
+
 func TestMonitorAccountStatzOperatorMode(t *testing.T) {
 	sysName := "SYS"
 	accName := "APP"
@@ -4408,6 +4495,7 @@ func TestMonitorAccountStatzOperatorMode(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorAccountzAccountIssuerUpdate(t *testing.T) {
 	// create an operator set of keys
 	okp, err := nkeys.CreateOperator()
@@ -4516,6 +4604,7 @@ func TestMonitorAccountzAccountIssuerUpdate(t *testing.T) {
 	require_NoError(t, json.Unmarshal(data, &ci))
 	require_Equal(t, ci.Account.IssuerKey, opk2)
 }
+
 func TestMonitorAuthorizedUsers(t *testing.T) {
 	kp, _ := nkeys.FromSeed(seed)
 	usrNKey, _ := kp.PublicKey()
@@ -4658,6 +4747,7 @@ func TestMonitorJszNonJszServer(t *testing.T) {
 		t.Fatalf("expected no jsi: %v", jsi)
 	}
 }
+
 func TestMonitorJsz(t *testing.T) {
 	readJsInfo := func(url string) *JSInfo {
 		t.Helper()
@@ -5143,6 +5233,7 @@ func TestMonitorReloadTLSConfig(t *testing.T) {
 		t.Fatalf("Error: %v", err)
 	}
 }
+
 func TestMonitorMQTT(t *testing.T) {
 	o := DefaultOptions()
 	o.HTTPHost = "127.0.0.1"
@@ -5187,6 +5278,7 @@ func TestMonitorMQTT(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorWebsocket(t *testing.T) {
 	o := DefaultOptions()
 	o.HTTPHost = "127.0.0.1"
@@ -5239,6 +5331,7 @@ func TestMonitorWebsocket(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorServerIDZRequest(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 		listen: 127.0.0.1:-1
@@ -5266,6 +5359,7 @@ func TestMonitorServerIDZRequest(t *testing.T) {
 	require_True(t, sid.Name == "TEST22")
 	require_True(t, strings.HasPrefix(sid.ID, "N"))
 }
+
 func TestMonitorProfilez(t *testing.T) {
 	s := RunServer(DefaultOptions())
 	defer s.Shutdown()
@@ -5292,6 +5386,7 @@ func TestMonitorProfilez(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorRoutezPoolSize(t *testing.T) {
 	conf1 := createConfFile(t, []byte(`
 		port: -1
@@ -5384,6 +5479,7 @@ func TestMonitorRoutezPoolSize(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorRoutezPerAccount(t *testing.T) {
 	conf1 := createConfFile(t, []byte(`
 		port: -1
@@ -5465,6 +5561,7 @@ func TestMonitorRoutezPerAccount(t *testing.T) {
 		}
 	}
 }
+
 func TestMonitorConnzOperatorAccountNames(t *testing.T) {
 	sysName := "SYS"
 	accName := "APP"
@@ -5560,6 +5657,7 @@ func TestMonitorConnzOperatorModeFilterByUser(t *testing.T) {
 		require_True(t, ci.AuthorizedUser == aUser)
 	}
 }
+
 func TestMonitorConnzSortByRTT(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -5718,12 +5816,14 @@ func checkHealthzEndpoint(t *testing.T, address string, statusCode int, wantStat
 		})
 	}
 }
+
 func TestMonitorHealthzStatusOK(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
 
 	checkHealthzEndpoint(t, s.MonitorAddr().String(), http.StatusOK, "ok")
 }
+
 func TestMonitorHealthzStatusError(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -5742,6 +5842,7 @@ func TestMonitorHealthzStatusError(t *testing.T) {
 	s.listener = sl
 	s.mu.Unlock()
 }
+
 func TestMonitorHealthzStatusUnavailable(t *testing.T) {
 	opts := DefaultMonitorOptions()
 	opts.JetStream = true
