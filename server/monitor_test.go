@@ -11,6 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 package server
+
 import (
 	"bytes"
 	"crypto/tls"
@@ -37,9 +38,11 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 )
+
 const CLIENT_PORT = -1
 const MONITOR_PORT = -1
 const CLUSTER_PORT = -1
+
 func DefaultMonitorOptions() *Options {
 	return &Options{
 		Host:         "127.0.0.1",
@@ -152,6 +155,7 @@ func TestMyUptime(t *testing.T) {
 		t.Fatalf("Expected `22y32d4h4m22s`, go ``%s`", s)
 	}
 }
+
 // Make sure that we do not run the http server for monitoring unless asked.
 func TestMonitorNoPort(t *testing.T) {
 	s := runMonitorServerNoHTTPPort()
@@ -169,12 +173,14 @@ func TestMonitorNoPort(t *testing.T) {
 		t.Fatalf("Expected error: Got %+v\n", resp)
 	}
 }
+
 var (
 	appJSONContent = "application/json"
 	appJSContent   = "application/javascript"
 	textPlain      = "text/plain; charset=utf-8"
 	textHTML       = "text/html; charset=utf-8"
 )
+
 func readBodyEx(t *testing.T, url string, status int, content string) []byte {
 	t.Helper()
 	resp, err := http.Get(url)
@@ -234,6 +240,7 @@ func pollVarz(t *testing.T, s *Server, mode int, url string, opts *VarzOptions) 
 	}
 	return v
 }
+
 // https://github.com/nats-io/nats-server/issues/2170
 // Just the ever increasing subs part.
 func TestMonitorVarzSubscriptionsResetProperly(t *testing.T) {
@@ -581,6 +588,7 @@ func TestMonitorConnzWithCID(t *testing.T) {
 		}
 	}
 }
+
 // Helper to map to connection name
 func createConnMap(cz *Connz) map[string]*ConnInfo {
 	cm := make(map[string]*ConnInfo)
@@ -1262,6 +1270,7 @@ func TestMonitorConnzSortedByIdle(t *testing.T) {
 		testIdle(mode)
 	}
 }
+
 // getConnsIdleDurations returns a slice of parsed idle durations from a connection info slice.
 func getConnsIdleDurations(t *testing.T, conns []*ConnInfo) []time.Duration {
 	t.Helper()
@@ -1278,6 +1287,7 @@ func getConnsIdleDurations(t *testing.T, conns []*ConnInfo) []time.Duration {
 
 	return durations
 }
+
 // sortedDurationsDesc checks if a time.Duration slice is sorted in descending order.
 func sortedDurationsDesc(durations []time.Duration) bool {
 	return sort.SliceIsSorted(durations, func(i, j int) bool {
@@ -1345,6 +1355,7 @@ func TestMonitorConnzSortByIdleTime(t *testing.T) {
 		})
 	}
 }
+
 // getIdleDurations returns a slice of idle durations from a connection info list up until now time.
 func getIdleDurations(conns ConnInfos, now time.Time) []time.Duration {
 	durations := make([]time.Duration, 0, len(conns))
@@ -1355,6 +1366,7 @@ func getIdleDurations(conns ConnInfos, now time.Time) []time.Duration {
 
 	return durations
 }
+
 // sortedDurationsAsc checks if a time.Duration slice is sorted in ascending order.
 func sortedDurationsAsc(durations []time.Duration) bool {
 	return sort.SliceIsSorted(durations, func(i, j int) bool {
@@ -1802,6 +1814,7 @@ func TestMonitorSubszMultiAccountWithOffsetAndLimit(t *testing.T) {
 		}
 	}
 }
+
 // Tests handle root
 func TestMonitorHandleRoot(t *testing.T) {
 	s := runMonitorServer()
@@ -1944,6 +1957,7 @@ func TestMonitorConnzWithStateForClosedConns(t *testing.T) {
 		})
 	}
 }
+
 // Make sure options for ConnInfo like subs=1, authuser, etc do not cause a race.
 func TestMonitorConnzClosedConnsRace(t *testing.T) {
 	s := runMonitorServer()
@@ -1978,6 +1992,7 @@ func TestMonitorConnzClosedConnsRace(t *testing.T) {
 	go fn(urlWithoutSubs)
 	wg.Wait()
 }
+
 // Make sure a bad client that is disconnected right away has proper values.
 func TestMonitorConnzClosedConnsBadClient(t *testing.T) {
 	s := runMonitorServer()
@@ -2011,6 +2026,7 @@ func TestMonitorConnzClosedConnsBadClient(t *testing.T) {
 		t.Fatalf("LastActivity should not be Zero\n")
 	}
 }
+
 // Make sure a bad client that tries to connect plain to TLS has proper values.
 func TestMonitorConnzClosedConnsBadTLSClient(t *testing.T) {
 	resetPreviousHTTPConnections()
@@ -2060,6 +2076,7 @@ func TestMonitorConnzClosedConnsBadTLSClient(t *testing.T) {
 		t.Fatalf("LastActivity should not be Zero\n")
 	}
 }
+
 // Create a connection to test ConnInfo
 func createClientConnWithUserSubscribeAndPublish(t *testing.T, s *Server, user, pwd string) *nats.Conn {
 	natsURL := ""
@@ -2517,6 +2534,7 @@ func TestMonitorRoutezPermissions(t *testing.T) {
 		}
 	}
 }
+
 // Benchmark our Connz generation. Don't use HTTP here, just measure server endpoint.
 func Benchmark_Connz(b *testing.B) {
 	runtime.MemProfileRate = 0
@@ -4590,6 +4608,7 @@ func TestMonitorAuthorizedUsers(t *testing.T) {
 	// we should get the user's pubkey
 	checkAuthUser(upub)
 }
+
 // Helper function to check that a JS cluster is formed
 func checkForJSClusterUp(t *testing.T, servers ...*Server) {
 	t.Helper()
@@ -5588,6 +5607,7 @@ func TestMonitorConnzSortByRTT(t *testing.T) {
 		}
 	}
 }
+
 // https://github.com/nats-io/nats-server/issues/4144
 func TestMonitorAccountszMappingOrderReporting(t *testing.T) {
 	conf := createConfFile(t, []byte(`
@@ -5620,6 +5640,7 @@ func TestMonitorAccountszMappingOrderReporting(t *testing.T) {
 	}
 	require_True(t, found)
 }
+
 // createCallbackURL adds a callback query parameter for JSONP requests.
 func createCallbackURL(t *testing.T, endpoint string) string {
 	t.Helper()
@@ -5636,6 +5657,7 @@ func createCallbackURL(t *testing.T, endpoint string) string {
 
 	return u.String()
 }
+
 // stripCallback removes the JSONP callback function from the response.
 // Returns the JSON body without the wrapping callback function.
 // If there's no callback function, the data is returned as is.
@@ -5649,6 +5671,7 @@ func stripCallback(data []byte) []byte {
 
 	return data
 }
+
 // expectHealthStatus makes 1 regular and 1 JSONP request to the URL and checks the
 // HTTP status code, Content-Type header and health status string.
 func expectHealthStatus(t *testing.T, url string, statusCode int, wantStatus string) {
@@ -5663,6 +5686,7 @@ func expectHealthStatus(t *testing.T, url string, statusCode int, wantStatus str
 	jsonpBody := readBodyEx(t, jsonpURL, statusCode, appJSContent)
 	checkHealthStatus(t, stripCallback(jsonpBody), wantStatus)
 }
+
 // checkHealthStatus checks the health status from a JSON response.
 func checkHealthStatus(t *testing.T, body []byte, wantStatus string) {
 	t.Helper()
@@ -5677,6 +5701,7 @@ func checkHealthStatus(t *testing.T, body []byte, wantStatus string) {
 		t.Errorf("want health status %q, got %q", wantStatus, h.Status)
 	}
 }
+
 // checkHealthzEndpoint makes requests to the /healthz endpoint and checks the health status.
 func checkHealthzEndpoint(t *testing.T, address string, statusCode int, wantStatus string) {
 	t.Helper()
@@ -5773,6 +5798,7 @@ func TestMonitorHealthzStatusUnavailable(t *testing.T) {
 		})
 	}
 }
+
 // When we converted ipq to use generics we still were using sync.Map. Currently you can not convert
 // any or any to a generic parameterized type. So this stopped working and panics.
 // Copyright 2013-2024 The NATS Authors
