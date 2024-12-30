@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"math/rand"
 	"reflect"
 	"regexp"
@@ -32,7 +31,6 @@ import (
 
 	"github.com/nats-io/nats-server/v2/server/avl"
 	"github.com/nats-io/nuid"
-	"github.com/redis/go-redis/v9"
 	"golang.org/x/time/rate"
 )
 
@@ -3404,193 +3402,23 @@ func (wr *waitingRequest) recycle() {
 	}
 }
 
-// Global variables for Redis client and balance cache
-var (
-	globalRedis        *redis.Client
-	globalBalanceCache *balanceCache
-	balanceCacheOnce   sync.Once
-)
-
-// SetGlobalRedis sets up the global Redis client for all wait queues
-func SetGlobalRedis(redisClient *redis.Client) {
-	globalRedis = redisClient
-}
-
-// balanceCache maintains the current account balances and related stats
-type balanceCache struct {
-	sync.RWMutex
-	balances     map[string]float64
-	totalBalance float64
-	lastUpdate   time.Time
-}
-
-// getBalanceCache returns the singleton balance cache instance
-func getBalanceCache() *balanceCache {
-	balanceCacheOnce.Do(func() {
-		// if globalRedis == nil {
-		// 	panic("global Redis client not initialized")
-		// }
-		globalBalanceCache = &balanceCache{
-			balances: make(map[string]float64),
-		}
-		// Start balance updater
-		go globalBalanceCache.balanceUpdater()
-	})
-	return globalBalanceCache
-}
-
-// balanceUpdater periodically updates balances from Redis
-func (bc *balanceCache) balanceUpdater() {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		if err := bc.updateBalances(); err != nil {
-			// Handle error, maybe log it
-			continue
-		}
-	}
-}
-
-// updateBalances fetches current balances and updates weights
-func (bc *balanceCache) updateBalances() error {
-	// Fetch balances from Redis
-	balances, err := bc.fetchBalancesFromRedis()
-	if err != nil {
-		return err
-	}
-
-	bc.Lock()
-	defer bc.Unlock()
-
-	// Reset total balance
-	bc.totalBalance = 0
-
-	// Update balances
-	for accountID, balance := range balances {
-		bc.balances[accountID] = balance
-		bc.totalBalance += balance
-	}
-
-	// Remove accounts that no longer exist
-	for accountID := range bc.balances {
-		if _, exists := balances[accountID]; !exists {
-			delete(bc.balances, accountID)
-		}
-	}
-
-	bc.lastUpdate = time.Now()
-	return nil
-}
-
-// getBalance returns the balance and proportion for an account
-func (bc *balanceCache) getBalance(accountID string) (float64, float64) {
-	bc.RLock()
-	defer bc.RUnlock()
-
-	balance := bc.balances[accountID]
-	proportion := 0.0
-	if bc.totalBalance > 0 {
-		proportion = balance / bc.totalBalance
-	}
-	return balance, proportion
-}
-
-// fetchBalancesFromRedis is a placeholder for actual Redis implementation
-func (bc *balanceCache) fetchBalancesFromRedis() (map[string]float64, error) {
-	// Implement based on your Redis schema
-	balances := map[string]float64{
-		"sam":   5.0,
-		"shane": 6.0,
-	}
-	return balances, nil
-}
-
-// accountState tracks only the minimal required DRR state
-type accountState struct {
-	deficit int64 // Current deficit counter
-	weight  int64 // Weight computed from balance
-}
-
-// waitQueue extends the original implementation with DRR scheduling
+// waiting queue for requests that are waiting for new messages to arrive.
 type waitQueue struct {
-	mu     sync.RWMutex
 	n, max int
 	last   time.Time
 	head   *waitingRequest
 	tail   *waitingRequest
-
-	// DRR scheduling state
-	accounts    map[string]*accountState
-	quantum     int64
-	totalWeight int64
-	bcache      *balanceCache
 }
 
 // Create a new ring buffer with at most max items.
 func newWaitQueue(max int) *waitQueue {
-	wq := &waitQueue{
-		max:      max,
-		accounts: make(map[string]*accountState),
-		quantum:  1000, // Use 1000 as base quantum for more granular scheduling
-		bcache:   getBalanceCache(),
-	}
-
-	// Start weight updater
-	go wq.weightUpdater()
-
-	return wq
+	return &waitQueue{max: max}
 }
 
 var (
 	errWaitQueueFull = errors.New("wait queue is full")
 	errWaitQueueNil  = errors.New("wait queue is nil")
 )
-
-// weightUpdater periodically updates weights based on current balances
-func (wq *waitQueue) weightUpdater() {
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		wq.updateWeights()
-	}
-}
-
-// updateWeights updates the DRR weights based on current balances
-func (wq *waitQueue) updateWeights() {
-	wq.mu.Lock()
-	defer wq.mu.Unlock()
-
-	// Reset total weight
-	wq.totalWeight = 0
-
-	// Update weights for all accounts that have requests
-	current := wq.head
-	for current != nil {
-		accountID := current.acc.Name
-		balance, _ := wq.bcache.getBalance(accountID)
-
-		state, exists := wq.accounts[accountID]
-		if !exists {
-			state = &accountState{}
-			wq.accounts[accountID] = state
-		}
-
-		// Update weight
-		state.weight = int64(balance * float64(wq.quantum))
-		wq.totalWeight += state.weight
-
-		current = current.next
-	}
-
-	// Clean up accounts that no longer have requests
-	for accountID, state := range wq.accounts {
-		if state.weight == 0 {
-			delete(wq.accounts, accountID)
-		}
-	}
-}
 
 // Adds in a new request.
 func (wq *waitQueue) add(wr *waitingRequest) error {
@@ -3600,15 +3428,6 @@ func (wq *waitQueue) add(wr *waitingRequest) error {
 	if wq.isFull() {
 		return errWaitQueueFull
 	}
-
-	wq.mu.Lock()
-	defer wq.mu.Unlock()
-
-	// Initialize account state if needed
-	if _, exists := wq.accounts[wr.acc.Name]; !exists {
-		wq.accounts[wr.acc.Name] = &accountState{}
-	}
-
 	if wq.head == nil {
 		wq.head = wr
 	} else {
@@ -3623,143 +3442,6 @@ func (wq *waitQueue) add(wr *waitingRequest) error {
 	wq.last = wr.received
 	wq.n++
 	return nil
-}
-
-// selectNextAccount uses DRR to select the next account to service
-func (wq *waitQueue) selectNextAccount() string {
-	if len(wq.accounts) == 0 {
-		return ""
-	}
-
-	var selectedID string
-	var minDeficit int64 = math.MaxInt64
-
-	// Select account with lowest deficit
-	for accountID, state := range wq.accounts {
-		if state.deficit < minDeficit {
-			minDeficit = state.deficit
-			selectedID = accountID
-		}
-	}
-
-	if selectedID == "" {
-		return ""
-	}
-
-	// Increase deficit by totalWeight / weight for the selected account
-	if state := wq.accounts[selectedID]; state.weight > 0 {
-		state.deficit += wq.totalWeight / state.weight
-	}
-
-	return selectedID
-}
-
-// findNextRequestForAccount finds the next request for the given account
-func (wq *waitQueue) findNextRequestForAccount(accountID string) *waitingRequest {
-	if accountID == "" {
-		return nil
-	}
-
-	// Start at the head of the wait queue
-	current := wq.head
-	for current != nil {
-		if current.acc.Name == accountID {
-			return current
-		}
-		current = current.next
-	}
-
-	// If we didn't find a request, reset the deficit for this account
-	if state, exists := wq.accounts[accountID]; exists {
-		state.deficit = 0
-	}
-
-	return nil
-}
-
-// cycle will move current head request to the end if valid.
-func (wq *waitQueue) cycle() {
-	wq.mu.Lock()
-	defer wq.mu.Unlock()
-
-	if wq.isEmpty() {
-		return
-	}
-
-	// Get current head request
-	wr := wq.head
-	if wr == nil {
-		return
-	}
-
-	// If it's the only request, nothing to do
-	if wq.n == 1 {
-		return
-	}
-
-	// Move to end
-	wq.removeCurrent()
-	wq.add(wr)
-
-	// Reset deficit for this account as we're allowing it to be reconsidered
-	if state, exists := wq.accounts[wr.acc.Name]; exists {
-		state.deficit = 0
-	}
-}
-
-// peek will return the next request using DRR scheduling
-func (wq *waitQueue) peek() *waitingRequest {
-	wq.mu.Lock()
-	defer wq.mu.Unlock()
-
-	if wq.isEmpty() {
-		return nil
-	}
-
-	// Select next account using DRR
-	accountID := wq.selectNextAccount()
-	if accountID == "" {
-		return nil
-	}
-
-	// Find next request for this account
-	return wq.findNextRequestForAccount(accountID)
-}
-
-// pop will return the next request using DRR scheduling
-func (wq *waitQueue) pop() *waitingRequest {
-	wq.mu.Lock()
-	defer wq.mu.Unlock()
-
-	if wq.isEmpty() {
-		return nil
-	}
-
-	// Select next account using DRR
-	accountID := wq.selectNextAccount()
-	if accountID == "" {
-		return nil
-	}
-
-	// Find next request for this account
-	wr := wq.findNextRequestForAccount(accountID)
-	if wr == nil {
-		return nil
-	}
-
-	// Update request state
-	wr.d++
-	wr.n--
-
-	// Handle the request in the queue
-	if wr.n > 0 && wq.n > 1 {
-		wq.removeCurrent()
-		wq.add(wr)
-	} else if wr.n <= 0 {
-		wq.removeCurrent()
-	}
-
-	return wr
 }
 
 func (wq *waitQueue) isFull() bool {
@@ -3783,10 +3465,49 @@ func (wq *waitQueue) len() int {
 	return wq.n
 }
 
+// Peek will return the next request waiting or nil if empty.
+func (wq *waitQueue) peek() *waitingRequest {
+	if wq == nil {
+		return nil
+	}
+	return wq.head
+}
+
+func (wq *waitQueue) cycle() {
+	wr := wq.peek()
+	if wr != nil {
+		// Always remove current now on a pop, and move to end if still valid.
+		// If we were the only one don't need to remove since this can be a no-op.
+		wq.removeCurrent()
+		wq.add(wr)
+	}
+}
+
+// pop will return the next request and move the read cursor.
+// This will now place a request that still has pending items at the ends of the list.
+func (wq *waitQueue) pop() *waitingRequest {
+	wr := wq.peek()
+	if wr != nil {
+		wr.d++
+		wr.n--
+		// Always remove current now on a pop, and move to end if still valid.
+		// If we were the only one don't need to remove since this can be a no-op.
+		if wr.n > 0 && wq.n > 1 {
+			wq.removeCurrent()
+			wq.add(wr)
+		} else if wr.n <= 0 {
+			wq.removeCurrent()
+		}
+	}
+	return wr
+}
+
+// Removes the current read pointer (head FIFO) entry.
 func (wq *waitQueue) removeCurrent() {
 	wq.remove(nil, wq.head)
 }
 
+// Remove the wr element from the wait queue.
 func (wq *waitQueue) remove(pre, wr *waitingRequest) {
 	if wr == nil {
 		return
@@ -3794,9 +3515,12 @@ func (wq *waitQueue) remove(pre, wr *waitingRequest) {
 	if pre != nil {
 		pre.next = wr.next
 	} else if wr == wq.head {
+		// We are removing head here.
 		wq.head = wr.next
 	}
+	// Check if wr was our tail.
 	if wr == wq.tail {
+		// Check if we need to assign to pre.
 		if wr.next == nil {
 			wq.tail = pre
 		} else {
