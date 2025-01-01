@@ -56,7 +56,7 @@ script: ./scripts/runTestsOnTravis.sh $TEST_SUITE
 # Cosign is an optional dependency to verify the Syft binary.
 before_deploy:
   - curl -o /usr/local/bin/cosign -L https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 && chmod +x /usr/local/bin/cosign
-  - curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | COSIGN_BINARY=/usr/local/bin/cosign sh -s -- -v -b /usr/local/bin
+  - curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | COSIGN_BINARY=/usr/local/bin/cosign sh -s -- -v -b /usr/local/bin v1.18.1
 
 deploy:
   provider: script
