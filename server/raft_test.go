@@ -1896,3 +1896,52 @@ func TestNRGHealthCheckWaitForDoubleCatchup(t *testing.T) {
 	n.Applied(3)
 	require_True(t, n.Healthy())
 }
+
+func TestNRGHealthCheckWaitForPendingCommitsWhenPaused(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Timeline
+	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: entries})
+	aeHeartbeat := encode(t, &appendEntry{leader: nats0, term: 1, commit: 2, pterm: 1, pindex: 2, entries: nil})
+
+	// Process first message.
+	n.processAppendEntry(aeMsg1, n.aesub)
+	require_Equal(t, n.pindex, 1)
+	require_False(t, n.Healthy())
+
+	// Process second message, moves commit up.
+	n.processAppendEntry(aeMsg2, n.aesub)
+	require_Equal(t, n.pindex, 2)
+	require_False(t, n.Healthy())
+
+	// We're healthy once we've applied the first message.
+	n.Applied(1)
+	require_True(t, n.Healthy())
+
+	// If we're paused we still are healthy if there are no pending commits.
+	err := n.PauseApply()
+	require_NoError(t, err)
+	require_True(t, n.Healthy())
+
+	// Heartbeat marks second message to be committed.
+	n.processAppendEntry(aeHeartbeat, n.aesub)
+	require_Equal(t, n.pindex, 2)
+	require_False(t, n.Healthy())
+
+	// Resuming apply commits the message.
+	n.ResumeApply()
+	require_NoError(t, err)
+	require_False(t, n.Healthy())
+
+	// But still waiting for it to be applied before marking healthy.
+	n.Applied(2)
+	require_True(t, n.Healthy())
+}
