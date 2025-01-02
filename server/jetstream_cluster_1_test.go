@@ -6857,6 +6857,60 @@ func TestJetStreamClusterConsumerInfoAfterCreate(t *testing.T) {
 	require_NoError(t, err)
 }
 
+func TestJetStreamClusterStreamUpscalePeersAfterDownscale(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R5S", 5)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	checkPeerSet := func() {
+		t.Helper()
+		checkFor(t, 5*time.Second, 500*time.Millisecond, func() error {
+			for _, s := range c.servers {
+				acc, err := s.lookupAccount(globalAccountName)
+				if err != nil {
+					return err
+				}
+				mset, err := acc.lookupStream("TEST")
+				if err != nil {
+					return err
+				}
+				peers := mset.raftNode().Peers()
+				if len(peers) != 5 {
+					return fmt.Errorf("expected 5 peers, got %d", len(peers))
+				}
+			}
+			return nil
+		})
+	}
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 5,
+	})
+	require_NoError(t, err)
+
+	checkPeerSet()
+
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 5,
+	})
+	require_NoError(t, err)
+
+	checkPeerSet()
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.

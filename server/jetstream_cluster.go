@@ -2707,8 +2707,6 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			// keep stream assignment current
 			sa = mset.streamAssignment()
 
-			// keep peer list up to date with config
-			js.checkPeers(mset.raftGroup())
 			// We get this when we have a new stream assignment caused by an update.
 			// We want to know if we are migrating.
 			if migrating := mset.isMigrating(); migrating {
@@ -2796,7 +2794,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				// Check if we have a quorom.
 				if current >= neededCurrent {
 					s.Noticef("Transfer of stream leader for '%s > %s' to '%s'", accName, sa.Config.Name, newLeader)
-					n.UpdateKnownPeers(newPeers)
+					n.ProposeKnownPeers(newPeers)
 					n.StepDown(newLeaderPeer)
 				}
 			}
@@ -3314,22 +3312,6 @@ func (s *Server) replicas(node RaftNode) []*PeerInfo {
 	return replicas
 }
 
-// Will check our node peers and see if we should remove a peer.
-func (js *jetStream) checkPeers(rg *raftGroup) {
-	js.mu.Lock()
-	defer js.mu.Unlock()
-
-	// FIXME(dlc) - Single replicas?
-	if rg == nil || rg.node == nil {
-		return
-	}
-	for _, peer := range rg.node.Peers() {
-		if !rg.isMember(peer.ID) {
-			rg.node.ProposeRemovePeer(peer.ID)
-		}
-	}
-}
-
 // Process a leader change for the clustered stream.
 func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 	if mset == nil {
@@ -3358,8 +3340,6 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 	if isLeader {
 		s.Noticef("JetStream cluster new stream leader for '%s > %s'", account, streamName)
 		s.sendStreamLeaderElectAdvisory(mset)
-		// Check for peer removal and process here if needed.
-		js.checkPeers(sa.Group)
 		mset.checkAllowMsgCompress(peers)
 	} else {
 		// We are stepping down.
@@ -3575,7 +3555,7 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) bool {
 		js.processClusterCreateStream(acc, sa)
 	} else if mset, _ := acc.lookupStream(sa.Config.Name); mset != nil {
 		// We have one here even though we are not a member. This can happen on re-assignment.
-		s.removeStream(ourID, mset, sa)
+		s.removeStream(mset, sa)
 	}
 
 	// If this stream assignment does not have a sync subject (bug) set that the meta-leader should check when elected.
@@ -3663,13 +3643,13 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 		js.processClusterUpdateStream(acc, osa, sa)
 	} else if mset, _ := acc.lookupStream(sa.Config.Name); mset != nil {
 		// We have one here even though we are not a member. This can happen on re-assignment.
-		s.removeStream(ourID, mset, sa)
+		s.removeStream(mset, sa)
 	}
 }
 
-// Common function to remove ourself from this server.
+// Common function to remove ourselves from this server.
 // This can happen on re-assignment, move, etc
-func (s *Server) removeStream(ourID string, mset *stream, nsa *streamAssignment) {
+func (s *Server) removeStream(mset *stream, nsa *streamAssignment) {
 	if mset == nil {
 		return
 	}
@@ -3679,7 +3659,6 @@ func (s *Server) removeStream(ourID string, mset *stream, nsa *streamAssignment)
 		if node.Leader() {
 			node.StepDown(nsa.Group.Preferred)
 		}
-		node.ProposeRemovePeer(ourID)
 		// shutdown monitor by shutting down raft.
 		node.Delete()
 	}
@@ -5009,8 +4988,6 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			// We get this when we have a new consumer assignment caused by an update.
 			// We want to know if we are migrating.
 			rg := o.raftGroup()
-			// keep peer list up to date with config
-			js.checkPeers(rg)
 			// If we are migrating, monitor for the new peers to be caught up.
 			replicas, err := o.replica()
 			if err != nil {
@@ -5327,8 +5304,6 @@ func (js *jetStream) processConsumerLeaderChange(o *consumer, isLeader bool) err
 	if isLeader {
 		s.Noticef("JetStream cluster new consumer leader for '%s > %s > %s'", ca.Client.serviceAccount(), streamName, consumerName)
 		s.sendConsumerLeaderElectAdvisory(o)
-		// Check for peer removal and process here if needed.
-		js.checkPeers(ca.Group)
 	} else {
 		// We are stepping down.
 		// Make sure if we are doing so because we have lost quorum that we send the appropriate advisories.
