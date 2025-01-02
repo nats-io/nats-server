@@ -1438,6 +1438,12 @@ func (n *raft) isCurrent(includeForwardProgress bool) bool {
 		return false
 	}
 
+	if n.paused && n.hcommit > n.commit {
+		// We're currently paused, waiting to be resumed to apply pending commits.
+		n.debug("Not current, waiting to resume applies commit=%d, hcommit=%d", n.commit, n.hcommit)
+		return false
+	}
+
 	if n.commit == n.applied {
 		// At this point if we are current, we can return saying so.
 		clearBehindState()
