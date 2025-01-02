@@ -18,7 +18,7 @@ func (m CitiesMap) NumCities() int {
 }
 
 func (m CitiesMap) CityNames() []string {
-	return m.cityNames
+	return m.cityNames[:]
 }
 
 func (m CitiesMap) Distance(a, b string) uint {
@@ -35,6 +35,25 @@ func (m CitiesMap) Distance(a, b string) uint {
 
 func (m CitiesMap) OptimalSolution() uint {
 	return m.optimalSolution
+}
+
+func (m CitiesMap) RouteDistance(route []string) uint {
+	citiesLeft := make(map[string]interface{}, m.NumCities())
+	for _, cityName := range m.CityNames() {
+		citiesLeft[cityName] = nil
+	}
+
+	distance := uint(0)
+	for i, cityName := range route {
+		if i > 0 {
+			distance += m.Distance(route[i], route[i-1])
+		}
+		delete(citiesLeft, cityName)
+	}
+	if len(citiesLeft) > 0 {
+		panic("Some cities were not included in the route")
+	}
+	return distance
 }
 
 func FindRandomSolution(c CitiesMap) (uint, []string) {

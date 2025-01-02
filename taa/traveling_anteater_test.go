@@ -2,6 +2,7 @@ package taa
 
 import (
 	"fmt"
+	"math"
 	"slices"
 	"sort"
 	"testing"
@@ -185,6 +186,79 @@ func testAntithesisFindRoute(t *testing.T, mapName string) {
 			"optimal": optimalSolution,
 			"found":   distance,
 			"route":   fmt.Sprintf("%v", route),
+		})
+	}
+}
+
+// This is a convenience to only run a single map using the appropriate test filter, i.e. 'TestAntithesisAllMaps/brazil58'
+func TestAntithesisHarrisonTrick(t *testing.T) {
+
+	lifecycle.SetupComplete("Test begins here")
+
+	citiesMap := LoadMap("bayg29")
+
+	optimalSolution := citiesMap.OptimalSolution()
+
+	optimalPlus5Percent := optimalSolution + uint(float64(optimalSolution)*0.05)
+	optimalPlus10Percent := optimalSolution + uint(float64(optimalSolution)*0.10)
+	optimalPlus25Percent := optimalSolution + uint(float64(optimalSolution)*0.25)
+	optimalTimesTwo := 2 * optimalSolution
+	optimalTimesTimesTen := 10 * optimalSolution
+
+	// Initial route is list of cities in order
+	route := citiesMap.CityNames()
+	numCities := uint64(citiesMap.NumCities())
+
+	bestSolution := uint(math.MaxUint)
+
+	// Forever search for better routes
+	for {
+		// Random swap two cities in route
+		i := random.GetRandom() % numCities
+		j := random.GetRandom() % numCities
+		route[i], route[j] = route[j], route[i]
+
+		// Calculate distance
+		distance := citiesMap.RouteDistance(route)
+
+		if distance < bestSolution {
+			t.Logf("Found new best solution: %d, %v", distance, route)
+			bestSolution = distance
+		}
+
+		// Gamble against the fuzzer
+		assert.AlwaysGreaterThan(distance, optimalPlus5Percent, "Found solution within 5% of the optimal", map[string]any{
+			"route":   fmt.Sprintf("%v", route),
+			"optimal": optimalSolution,
+			"found":   distance,
+		})
+
+		// Gamble against the fuzzer
+		assert.AlwaysGreaterThan(distance, optimalPlus10Percent, "Found solution within 10% of the optimal", map[string]any{
+			"route":   fmt.Sprintf("%v", route),
+			"optimal": optimalSolution,
+			"found":   distance,
+		})
+
+		// Gamble against the fuzzer
+		assert.AlwaysGreaterThan(distance, optimalPlus25Percent, "Found solution within 25% of the optimal", map[string]any{
+			"route":   fmt.Sprintf("%v", route),
+			"optimal": optimalSolution,
+			"found":   distance,
+		})
+
+		// Gamble against the fuzzer
+		assert.AlwaysGreaterThan(distance, optimalTimesTwo, "Found solution within 2x of the optimal", map[string]any{
+			"route":   fmt.Sprintf("%v", route),
+			"optimal": optimalSolution,
+			"found":   distance,
+		})
+
+		// Gamble against the fuzzer
+		assert.AlwaysGreaterThan(distance, optimalTimesTimesTen, "Found solution within 10x of the optimal", map[string]any{
+			"route":   fmt.Sprintf("%v", route),
+			"optimal": optimalSolution,
+			"found":   distance,
 		})
 	}
 }
