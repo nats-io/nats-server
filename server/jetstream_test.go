@@ -25016,3 +25016,51 @@ func TestJetStreamMessageTTLNotUpdatable(t *testing.T) {
 	})
 	require_Error(t, err)
 }
+
+func TestJetStreamMessageTTLNeverExpire(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	jsStreamCreate(t, nc, &StreamConfig{
+		Name:        "TEST",
+		Storage:     FileStorage,
+		Subjects:    []string{"test"},
+		AllowMsgTTL: true,
+		MaxAge:      time.Second,
+	})
+
+	msg := &nats.Msg{
+		Subject: "test",
+		Header:  nats.Header{},
+	}
+
+	// The first message we publish is set to "never expire", therefore it
+	// won't age out with the MaxAge policy.
+	msg.Header.Set("Nats-TTL", "-1")
+	_, err := js.PublishMsg(msg)
+	require_NoError(t, err)
+
+	// Following messages will be published as normal and will age out.
+	msg.Header.Del("Nats-TTL")
+	for i := 1; i <= 10; i++ {
+		_, err := js.PublishMsg(msg)
+		require_NoError(t, err)
+	}
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 11)
+	require_Equal(t, si.State.FirstSeq, 1)
+	require_Equal(t, si.State.LastSeq, 11)
+
+	time.Sleep(time.Second * 2)
+
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 1)
+	require_Equal(t, si.State.FirstSeq, 1)
+	require_Equal(t, si.State.LastSeq, 11)
+}

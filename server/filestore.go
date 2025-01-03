@@ -5304,7 +5304,14 @@ func (fs *fileStore) expireMsgs() {
 	fs.mu.RUnlock()
 
 	if maxAge > 0 {
-		for sm, _ = fs.msgForSeq(0, &smv); sm != nil && sm.ts <= minAge; sm, _ = fs.msgForSeq(0, &smv) {
+		for sm, _ = fs.msgForSeq(0, &smv); sm != nil && sm.ts <= minAge; sm, _ = fs.msgForSeq(smv.seq+1, &smv) {
+			if len(sm.hdr) > 0 {
+				if ttl, err := getMessageTTL(sm.hdr); err == nil && ttl < 0 {
+					// The message has a negative TTL, therefore it must "never expire".
+					minAge = time.Now().UnixNano() - maxAge
+					continue
+				}
+			}
 			fs.mu.Lock()
 			fs.removeMsgViaLimits(sm.seq)
 			fs.mu.Unlock()

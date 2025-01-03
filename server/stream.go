@@ -4220,6 +4220,7 @@ func getExpectedLastSeqPerSubjectForSubject(hdr []byte) string {
 // Fast lookup of the message TTL:
 // - Positive return value: duration in seconds.
 // - Zero return value: no TTL or parse error.
+// - Negative return value: never expires.
 func getMessageTTL(hdr []byte) (int64, error) {
 	ttl := getHeader(JSMessageTTL, hdr)
 	if len(ttl) == 0 {
@@ -4233,11 +4234,7 @@ func getMessageTTL(hdr []byte) (int64, error) {
 		}
 		return int64(dur.Seconds()), nil
 	}
-	t := parseInt64(ttl)
-	if t < 0 {
-		return 0, NewJSMessageTTLInvalidError()
-	}
-	return t, nil
+	return parseInt64(ttl), nil
 }
 
 // Signal if we are clustered. Will acquire rlock.
