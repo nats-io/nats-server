@@ -3651,26 +3651,34 @@ func (n *raft) processPeerState(ps *peerState) {
 func (n *raft) processAppendEntryResponse(ar *appendEntryResponse) {
 	n.trackPeer(ar.peer)
 
-	if ar.success {
-		// The remote node successfully committed the append entry.
-		n.trackResponse(ar)
-		arPool.Put(ar)
-	} else if ar.term > n.term {
-		// The remote node didn't commit the append entry, it looks like
-		// they are on a newer term than we are. Step down.
+	if ar.term > n.term {
 		n.Lock()
 		n.term = ar.term
 		n.vote = noVote
 		n.writeTermVote()
-		n.warn("Detected another leader with higher term, will stepdown")
+		n.warn("Received append entry response with higher term, will stepdown")
 		n.stepdownLocked(noLeader)
 		n.Unlock()
 		arPool.Put(ar)
-	} else if ar.reply != _EMPTY_ {
-		// The remote node didn't commit the append entry and they are
-		// still on the same term, so let's try to catch them up.
-		n.catchupFollower(ar)
+		return
 	}
+
+	if ar.reply != _EMPTY_ && !ar.success {
+		// The remote node refused the append entry and is
+		// asking us to catch them up.
+		n.catchupFollower(ar)
+		return
+	}
+
+	if ar.term < n.term {
+		n.debug("Ignoring old append entry response from term %d", ar.term)
+	} else if ar.success {
+		// The remote node successfully committed the append entry.
+		n.trackResponse(ar)
+	}
+
+	// put in pool for re-use
+	arPool.Put(ar)
 }
 
 // handleAppendEntryResponse processes responses to append entries.
@@ -4116,11 +4124,6 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 		n.vote = vr.candidate
 		n.writeTermVote()
 		n.resetElectionTimeout()
-	} else {
-		if vr.term >= n.term && n.vote == noVote {
-			n.term = vr.term
-			n.resetElect(randCampaignTimeout())
-		}
 	}
 
 	// Term might have changed, make sure response has the most current
