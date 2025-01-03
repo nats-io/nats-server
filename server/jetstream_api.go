@@ -5061,7 +5061,7 @@ func (s *Server) sendJetStreamAPIAuditAdvisory(ci *ClientInfo, acc *Account, sub
 			Time: time.Now().UTC(),
 		},
 		Server:   s.Name(),
-		Client:   ci,
+		Client:   ci.forJSAudit(),
 		Subject:  subject,
 		Request:  request,
 		Response: response,

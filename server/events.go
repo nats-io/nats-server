@@ -336,6 +336,14 @@ func (ci *ClientInfo) forAssignmentSnap() *ClientInfo {
 	}
 }
 
+// forJSAudit returns the minimum amount of ClientInfo we need for audit advisories.
+func (ci *ClientInfo) forJSAudit() *ClientInfo {
+	cci := *ci
+	cci.Jwt = _EMPTY_
+	cci.Nonce = _EMPTY_
+	return &cci
+}
+
 // ServerStats hold various statistics that we will periodically send out.
 type ServerStats struct {
 	Start              time.Time           `json:"start"`
