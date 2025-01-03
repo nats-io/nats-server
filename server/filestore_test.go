@@ -1319,7 +1319,7 @@ func TestFileStoreEraseMsg(t *testing.T) {
 	if removed, _ := fs.EraseMsg(1); !removed {
 		t.Fatalf("Expected erase msg to return success")
 	}
-	if sm2, _ := fs.msgForSeq(1, nil); sm2 != nil {
+	if sm2, _ := fs.msgForSeq(1, nil, false); sm2 != nil {
 		t.Fatalf("Expected msg to be erased")
 	}
 	fs.checkAndFlushAllBlocks()

@@ -201,6 +201,7 @@ type fileStore struct {
 	firstMoved  bool
 	ttls        *thw.HashWheel
 	ttlseq      uint64 // How up-to-date is the `ttls` THW?
+	eflr        uint64
 }
 
 // Represents a message store block and its data.
@@ -5299,22 +5300,37 @@ func (fs *fileStore) expireMsgs() {
 	var smv StoreMsg
 	var sm *StoreMsg
 	fs.mu.RLock()
+	eflr := fs.eflr
 	maxAge := int64(fs.cfg.MaxAge)
 	minAge := time.Now().UnixNano() - maxAge
 	fs.mu.RUnlock()
 
 	if maxAge > 0 {
-		for sm, _ = fs.msgForSeq(0, &smv); sm != nil && sm.ts <= minAge; sm, _ = fs.msgForSeq(0, &smv) {
+		for sm, _ = fs.msgForSeq(eflr, &smv, true); sm != nil && sm.ts <= minAge; sm, _ = fs.msgForSeq(eflr, &smv, true) {
+			if len(sm.hdr) > 0 {
+				if ttl, err := getMessageTTL(sm.hdr); err == nil && ttl < 0 {
+					// The message has a negative TTL, therefore it must "never expire".
+					minAge = time.Now().UnixNano() - maxAge
+					eflr = sm.seq + 1
+					continue
+				}
+			}
 			fs.mu.Lock()
 			fs.removeMsgViaLimits(sm.seq)
 			fs.mu.Unlock()
 			// Recalculate in case we are expiring a bunch.
 			minAge = time.Now().UnixNano() - maxAge
+			eflr = sm.seq + 1
 		}
 	}
 
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
+
+	// Update the expiry floor, don't repeat work unnecessarily.
+	if eflr > fs.eflr {
+		fs.eflr = eflr
+	}
 
 	// TODO: Not great that we're holding the lock here, but the timed hash wheel isn't thread-safe.
 	nextTTL := int64(math.MaxInt64)
@@ -6727,8 +6743,9 @@ func (fs *fileStore) sizeForSeq(seq uint64) int {
 	return 0
 }
 
-// Will return message for the given sequence number.
-func (fs *fileStore) msgForSeq(seq uint64, sm *StoreMsg) (*StoreMsg, error) {
+// Will return message for the given sequence number. If next is true,
+// then if the seq doesn't exist, try to return the next sequence that does.
+func (fs *fileStore) msgForSeq(seq uint64, sm *StoreMsg, next bool) (*StoreMsg, error) {
 	// TODO(dlc) - Since Store, Remove, Skip all hold the write lock on fs this will
 	// be stalled. Need another lock if want to happen in parallel.
 	fs.mu.RLock()
@@ -6740,11 +6757,23 @@ func (fs *fileStore) msgForSeq(seq uint64, sm *StoreMsg) (*StoreMsg, error) {
 	if seq == 0 {
 		seq = fs.state.FirstSeq
 	}
+	if next && seq < fs.state.FirstSeq {
+		seq = fs.state.FirstSeq
+	}
 	// Make sure to snapshot here.
 	mb, lseq := fs.selectMsgBlock(seq), fs.state.LastSeq
 	fs.mu.RUnlock()
 
 	if mb == nil {
+		// If we didn't find the sequence we're looking for and are expecting
+		// to return the next sequence instead, then resort to another lookup
+		// here.
+		if next {
+			// TODO(nat): Probably not optimal...
+			sm, _, err := fs.LoadNextMsg(fwcs, true, seq, sm)
+			return sm, err
+		}
+		// Otherwise just return an error.
 		var err = ErrStoreEOF
 		if seq <= lseq {
 			err = ErrStoreMsgNotFound
@@ -6838,7 +6867,7 @@ func (mb *msgBlock) msgFromBuf(buf []byte, sm *StoreMsg, hh hash.Hash64) (*Store
 
 // LoadMsg will lookup the message by sequence number and return it if found.
 func (fs *fileStore) LoadMsg(seq uint64, sm *StoreMsg) (*StoreMsg, error) {
-	return fs.msgForSeq(seq, sm)
+	return fs.msgForSeq(seq, sm, false)
 }
 
 // loadLast will load the last message for a subject. Subject should be non empty and not ">".
@@ -6926,7 +6955,7 @@ func (fs *fileStore) loadLast(subj string, sm *StoreMsg) (lsm *StoreMsg, err err
 // The subject can be a wildcard.
 func (fs *fileStore) LoadLastMsg(subject string, smv *StoreMsg) (sm *StoreMsg, err error) {
 	if subject == _EMPTY_ || subject == fwcs {
-		sm, err = fs.msgForSeq(fs.lastSeq(), smv)
+		sm, err = fs.msgForSeq(fs.lastSeq(), smv, false)
 	} else {
 		sm, err = fs.loadLast(subject, smv)
 	}
