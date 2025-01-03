@@ -25039,7 +25039,7 @@ func TestJetStreamMessageTTLNeverExpire(t *testing.T) {
 
 	// The first message we publish is set to "never expire", therefore it
 	// won't age out with the MaxAge policy.
-	msg.Header.Set("Nats-TTL", "-1")
+	msg.Header.Set("Nats-TTL", "never")
 	_, err := js.PublishMsg(msg)
 	require_NoError(t, err)
 

@@ -4227,6 +4227,9 @@ func getMessageTTL(hdr []byte) (int64, error) {
 		return 0, nil
 	}
 	sttl := bytesToString(ttl)
+	if strings.ToLower(sttl) == "never" {
+		return -1, nil
+	}
 	dur, err := time.ParseDuration(sttl)
 	if err == nil {
 		if dur < time.Second {
@@ -4234,7 +4237,15 @@ func getMessageTTL(hdr []byte) (int64, error) {
 		}
 		return int64(dur.Seconds()), nil
 	}
-	return parseInt64(ttl), nil
+	t := parseInt64(ttl)
+	if t < 0 {
+		// This probably means a parse failure, hence why
+		// we have a special case "never" for returning -1.
+		// Otherwise we can't know if it's a genuine TTL
+		// that says never expire or if it's a parse error.
+		return 0, NewJSMessageTTLInvalidError()
+	}
+	return t, nil
 }
 
 // Signal if we are clustered. Will acquire rlock.
