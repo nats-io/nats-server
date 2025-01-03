@@ -515,7 +515,14 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 
 	// Do age checks too, make sure to call in place.
 	if fs.cfg.MaxAge != 0 {
-		fs.expireMsgsOnRecover()
+		err := fs.expireMsgsOnRecover()
+		if err != nil && err == errFileSystemPermissionDenied {
+			fs.srv.Warnf("file system permission denied while expiring msgs, disabling jetstream: %v", err)
+			// messages in block cache could be lost in the worst case.
+			// In the clustered mode it is very highly unlikely as a result of replication.
+			fs.srv.DisableJetStream()
+			return nil, err
+		}
 		fs.startAgeChk()
 	}
 
@@ -2088,9 +2095,9 @@ func (fs *fileStore) recoverMsgs() error {
 // We will treat this differently in case we have a recovery
 // that will expire alot of messages on startup.
 // Should only be called on startup.
-func (fs *fileStore) expireMsgsOnRecover() {
+func (fs *fileStore) expireMsgsOnRecover() error {
 	if fs.state.Msgs == 0 {
-		return
+		return nil
 	}
 
 	var minAge = time.Now().UnixNano() - int64(fs.cfg.MaxAge)
@@ -2102,7 +2109,7 @@ func (fs *fileStore) expireMsgsOnRecover() {
 	// usually taken care of by fs.removeMsgBlock() but we do not call that here.
 	var last msgId
 
-	deleteEmptyBlock := func(mb *msgBlock) {
+	deleteEmptyBlock := func(mb *msgBlock) error {
 		// If we are the last keep state to remember first/last sequence.
 		// Do this part by hand since not deleting one by one.
 		if mb == fs.lmb {
@@ -2118,8 +2125,12 @@ func (fs *fileStore) expireMsgsOnRecover() {
 			}
 			return true
 		})
-		mb.dirtyCloseWithRemove(true)
+		err := mb.dirtyCloseWithRemove(true)
+		if err != nil && err == errFileSystemPermissionDenied {
+			return err
+		}
 		deleted++
+		return nil
 	}
 
 	for _, mb := range fs.blks {
@@ -2133,7 +2144,11 @@ func (fs *fileStore) expireMsgsOnRecover() {
 		if mb.last.ts <= minAge {
 			purged += mb.msgs
 			bytes += mb.bytes
-			deleteEmptyBlock(mb)
+			err := deleteEmptyBlock(mb)
+			if err != nil && err == errFileSystemPermissionDenied {
+				mb.mu.Unlock()
+				return err
+			}
 			mb.mu.Unlock()
 			continue
 		}
@@ -2258,6 +2273,7 @@ func (fs *fileStore) expireMsgsOnRecover() {
 	if purged > 0 {
 		fs.dirty++
 	}
+	return nil
 }
 
 func copyMsgBlocks(src []*msgBlock) []*msgBlock {
@@ -3686,6 +3702,9 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	dios <- struct{}{}
 
 	if err != nil {
+		if os.IsPermission(err) {
+			return nil, err
+		}
 		mb.dirtyCloseWithRemove(true)
 		return nil, fmt.Errorf("Error creating msg block file: %v", err)
 	}
@@ -6610,6 +6629,7 @@ var (
 	errNoMainKey     = errors.New("encrypted store encountered with no main key")
 	errNoBlkData     = errors.New("message block data missing")
 	errStateTooBig   = errors.New("store state too big for optional write")
+	errFileSystemPermissionDenied = errors.New("storage directory not writeable")
 )
 
 const (
@@ -8076,9 +8096,9 @@ func (mb *msgBlock) dirtyClose() {
 }
 
 // Should be called with lock held.
-func (mb *msgBlock) dirtyCloseWithRemove(remove bool) {
+func (mb *msgBlock) dirtyCloseWithRemove(remove bool) error {
 	if mb == nil {
-		return
+		return nil
 	}
 	// Stop cache expiration timer.
 	if mb.ctmr != nil {
@@ -8100,13 +8120,20 @@ func (mb *msgBlock) dirtyCloseWithRemove(remove bool) {
 		// Clear any tracking by subject if we are removing.
 		mb.fss = nil
 		if mb.mfn != _EMPTY_ {
-			os.Remove(mb.mfn)
+			err := os.Remove(mb.mfn)
+			if err != nil && os.IsPermission(err){
+				return errFileSystemPermissionDenied
+			}
 			mb.mfn = _EMPTY_
 		}
 		if mb.kfn != _EMPTY_ {
-			os.Remove(mb.kfn)
+			err := os.Remove(mb.kfn)
+			if err != nil && os.IsPermission(err){
+				return errFileSystemPermissionDenied
+			}
 		}
 	}
+	return nil
 }
 
 // Remove a seq from the fss and select new first.
@@ -8523,7 +8550,15 @@ func (fs *fileStore) flushStreamStateLoop(qch, done chan struct{}) {
 	for {
 		select {
 		case <-t.C:
-			fs.writeFullState()
+			err := fs.writeFullState()
+			if err != nil && os.IsPermission(err) {
+				fs.warn("file system permission denied when flushing stream state, disabling jetstream %v", err)
+				// messages in block cache could be lost in the worst case.
+				// In the clustered mode it is very highly unlikely as a result of replication.
+				fs.srv.DisableJetStream()
+				return
+			}
+
 		case <-qch:
 			return
 		}
@@ -8732,6 +8767,10 @@ func (fs *fileStore) _writeFullState(force bool) error {
 	// Protect with dios.
 	<-dios
 	err := os.WriteFile(fn, buf, defaultFilePerms)
+	// if file system is not writable os.IsPermission is set to true
+	if err != nil && os.IsPermission(err) {
+		return err
+	}
 	dios <- struct{}{}
 
 	// Update dirty if successful.

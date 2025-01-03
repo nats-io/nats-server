@@ -5062,6 +5062,14 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	}
 
 	if err != nil {
+		if os.IsPermission(err){
+			mset.mu.Unlock()
+			// messages in block cache could be lost in the worst case.
+			// In the clustered mode it is very highly unlikely as a result of replication.
+			mset.srv.DisableJetStream()
+			mset.srv.Warnf("file system permission denied while writing msg, disabling jetstream: %v", err)
+			return err
+		}
 		// If we did not succeed put those values back and increment clfs in case we are clustered.
 		var state StreamState
 		mset.store.FastState(&state)
