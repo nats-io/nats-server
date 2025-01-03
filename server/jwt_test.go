@@ -4598,7 +4598,7 @@ func TestJWTUserRevocation(t *testing.T) {
 			t.Fatalf("Expected connection to have failed")
 		}
 		m := <-ncChan
-		require_Len(t, strings.Count(string(m.Data), apub), 2)
+		require_Len(t, strings.Count(string(m.Data), apub), 3)
 		require_True(t, strings.Contains(string(m.Data), `"jwt":"eyJ0`))
 		// try again with old credentials. Expected to fail
 		if nc1, err := nats.Connect(srv.ClientURL(), nats.UserCredentials(aCreds1)); err == nil {

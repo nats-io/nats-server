@@ -6368,7 +6368,7 @@ func TestMQTTConnectAndDisconnectEvent(t *testing.T) {
 
 	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
 	for mode := 0; mode < 2; mode++ {
-		c := pollConz(t, s, mode, url+"connz", nil)
+		c := pollConnz(t, s, mode, url+"connz", nil)
 		if c.Conns == nil || len(c.Conns) != 3 {
 			t.Fatalf("Expected 3 connections in array, got %v", len(c.Conns))
 		}
@@ -6381,7 +6381,7 @@ func TestMQTTConnectAndDisconnectEvent(t *testing.T) {
 		}
 
 		// Check that we can select based on client ID:
-		c = pollConz(t, s, mode, url+"connz?mqtt_client=conn2", &ConnzOptions{MQTTClient: "conn2"})
+		c = pollConnz(t, s, mode, url+"connz?mqtt_client=conn2", &ConnzOptions{MQTTClient: "conn2"})
 		if c.Conns == nil || len(c.Conns) != 1 {
 			t.Fatalf("Expected 1 connection in array, got %v", len(c.Conns))
 		}
@@ -6390,7 +6390,7 @@ func TestMQTTConnectAndDisconnectEvent(t *testing.T) {
 		}
 
 		// Check that we have the closed ones
-		c = pollConz(t, s, mode, url+"connz?state=closed", &ConnzOptions{State: ConnClosed})
+		c = pollConnz(t, s, mode, url+"connz?state=closed", &ConnzOptions{State: ConnClosed})
 		if c.Conns == nil || len(c.Conns) != 2 {
 			t.Fatalf("Expected 2 connections in array, got %v", len(c.Conns))
 		}
@@ -6401,7 +6401,7 @@ func TestMQTTConnectAndDisconnectEvent(t *testing.T) {
 		}
 
 		// Check that we can select with client ID for closed state
-		c = pollConz(t, s, mode, url+"connz?state=closed&mqtt_client=conn3", &ConnzOptions{State: ConnClosed, MQTTClient: "conn3"})
+		c = pollConnz(t, s, mode, url+"connz?state=closed&mqtt_client=conn3", &ConnzOptions{State: ConnClosed, MQTTClient: "conn3"})
 		if c.Conns == nil || len(c.Conns) != 1 {
 			t.Fatalf("Expected 1 connection in array, got %v", len(c.Conns))
 		}
@@ -6409,7 +6409,7 @@ func TestMQTTConnectAndDisconnectEvent(t *testing.T) {
 			t.Fatalf("Unexpected client ID: %+v", c.Conns[0])
 		}
 		// Check that we can select with client ID for closed state (but in this case not found)
-		c = pollConz(t, s, mode, url+"connz?state=closed&mqtt_client=conn5", &ConnzOptions{State: ConnClosed, MQTTClient: "conn5"})
+		c = pollConnz(t, s, mode, url+"connz?state=closed&mqtt_client=conn5", &ConnzOptions{State: ConnClosed, MQTTClient: "conn5"})
 		if len(c.Conns) != 0 {
 			t.Fatalf("Expected 0 connection in array, got %v", len(c.Conns))
 		}
