@@ -363,7 +363,7 @@ func pollConnz(t *testing.T, s *Server, mode int, url string, opts *ConnzOptions
 }
 
 func TestMonitorConnz(t *testing.T) {
-	s := runMonitorServer()
+	s := runMonitorServerWithAccounts()
 	defer s.Shutdown()
 
 	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
@@ -372,97 +372,48 @@ func TestMonitorConnz(t *testing.T) {
 		c := pollConnz(t, s, mode, url+"connz", nil)
 
 		// Test contents..
-		if c.NumConns != 0 {
-			t.Fatalf("Expected 0 connections, got %d\n", c.NumConns)
-		}
-		if c.Total != 0 {
-			t.Fatalf("Expected 0 live connections, got %d\n", c.Total)
-		}
-		if c.Conns == nil || len(c.Conns) != 0 {
-			t.Fatalf("Expected 0 connections in array, got %p\n", c.Conns)
-		}
+		require_Equal(t, c.NumConns, 0)
+		require_Equal(t, c.Total, 0)
+		require_Equal(t, len(c.Conns), 0)
 
 		// Test with connections.
-		nc := createClientConnSubscribeAndPublish(t, s)
+		nc := createClientConnWithUserSubscribeAndPublish(t, s, "a", "a")
 		defer nc.Close()
 
 		time.Sleep(50 * time.Millisecond)
 
 		c = pollConnz(t, s, mode, url+"connz?auth=1", &ConnzOptions{Username: true})
 
-		if c.NumConns != 1 {
-			t.Fatalf("Expected 1 connection, got %d\n", c.NumConns)
-		}
-		if c.Total != 1 {
-			t.Fatalf("Expected 1 live connection, got %d\n", c.Total)
-		}
-		if c.Conns == nil || len(c.Conns) != 1 {
-			t.Fatalf("Expected 1 connection in array, got %d\n", len(c.Conns))
-		}
-
-		if c.Limit != DefaultConnListSize {
-			t.Fatalf("Expected limit of %d, got %v\n", DefaultConnListSize, c.Limit)
-		}
-
-		if c.Offset != 0 {
-			t.Fatalf("Expected offset of 0, got %v\n", c.Offset)
-		}
+		require_Equal(t, c.NumConns, 1)
+		require_Equal(t, c.Total, 1)
+		require_Equal(t, len(c.Conns), 1)
+		require_Equal(t, c.Limit, DefaultConnListSize)
+		require_Equal(t, c.Offset, 0)
 
 		// Test inside details of each connection
 		ci := c.Conns[0]
 
-		if ci.Cid == 0 {
-			t.Fatalf("Expected non-zero cid, got %v\n", ci.Cid)
-		}
-		if ci.IP != "127.0.0.1" {
-			t.Fatalf("Expected \"127.0.0.1\" for IP, got %v\n", ci.IP)
-		}
-		if ci.Port == 0 {
-			t.Fatalf("Expected non-zero port, got %v\n", ci.Port)
-		}
-		if ci.NumSubs != 0 {
-			t.Fatalf("Expected num_subs of 0, got %v\n", ci.NumSubs)
-		}
-		if len(ci.Subs) != 0 {
-			t.Fatalf("Expected subs of 0, got %v\n", ci.Subs)
-		}
-		if len(ci.SubsDetail) != 0 {
-			t.Fatalf("Expected subsdetail of 0, got %v\n", ci.SubsDetail)
-		}
-		if ci.InMsgs != 1 {
-			t.Fatalf("Expected InMsgs of 1, got %v\n", ci.InMsgs)
-		}
-		if ci.OutMsgs != 1 {
-			t.Fatalf("Expected OutMsgs of 1, got %v\n", ci.OutMsgs)
-		}
-		if ci.InBytes != 5 {
-			t.Fatalf("Expected InBytes of 1, got %v\n", ci.InBytes)
-		}
-		if ci.OutBytes != 5 {
-			t.Fatalf("Expected OutBytes of 1, got %v\n", ci.OutBytes)
-		}
-		if ci.Start.IsZero() {
-			t.Fatal("Expected Start to be valid\n")
-		}
-		if ci.Uptime == "" {
-			t.Fatal("Expected Uptime to be valid\n")
-		}
-		if ci.LastActivity.IsZero() {
-			t.Fatal("Expected LastActivity to be valid\n")
-		}
-		if ci.LastActivity.UnixNano() < ci.Start.UnixNano() {
-			t.Fatalf("Expected LastActivity [%v] to be > Start [%v]\n", ci.LastActivity, ci.Start)
-		}
-		if ci.Idle == "" {
-			t.Fatal("Expected Idle to be valid\n")
-		}
+		require_NotEqual(t, ci.Cid, 0)
+		require_Equal(t, ci.IP, "127.0.0.1")
+		require_NotEqual(t, ci.Port, 0)
+		require_Equal(t, ci.NumSubs, 0)
+		require_Equal(t, len(ci.Subs), 0)
+		require_Equal(t, len(ci.SubsDetail), 0)
+		require_Equal(t, ci.InMsgs, 1)
+		require_Equal(t, ci.OutMsgs, 1)
+		require_Equal(t, ci.InBytes, 5)
+		require_Equal(t, ci.OutBytes, 5)
+		require_False(t, ci.Start.IsZero())
+		require_NotEqual(t, ci.Uptime, "")
+		require_False(t, ci.LastActivity.IsZero())
+		require_False(t, ci.LastActivity.UnixNano() < ci.Start.UnixNano())
+		require_NotEqual(t, ci.Idle, "")
 		// This is a change, we now expect them to be set for connections when the
 		// client sends a connect.
-		if ci.RTT == "" {
-			t.Fatal("Expected RTT to be set for new connection\n")
-		}
-		require_Equal(t, ci.Account, DEFAULT_GLOBAL_ACCOUNT)
-		require_Equal(t, ci.NameTag, DEFAULT_GLOBAL_ACCOUNT)
+		require_NotEqual(t, ci.RTT, "")
+
+		require_Equal(t, ci.Account, "A")
+		require_Equal(t, ci.NameTag, "A")
 	}
 
 	for mode := 0; mode < 2; mode++ {

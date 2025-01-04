@@ -415,7 +415,9 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		// Fill in user if auth requested.
 		if auth {
 			ci.AuthorizedUser = client.getRawAuthUser()
-			ci.Account = client.acc.GetName()
+			if name := client.acc.GetName(); name != globalAccountName {
+				ci.Account = name
+			}
 			ci.JWT = client.opts.JWT
 			ci.IssuerKey = issuerForClient(client)
 			ci.Tags = client.tags
@@ -462,7 +464,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		// Fill in user if auth requested.
 		if auth {
 			cc.AuthorizedUser = cc.user
-			if cc.acc != _EMPTY_ {
+			if cc.acc != _EMPTY_ && (cc.acc != globalAccountName) {
 				cc.Account = cc.acc
 				if acc, err := s.LookupAccount(cc.acc); err == nil {
 					cc.NameTag = acc.getNameTag()

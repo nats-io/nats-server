@@ -452,7 +452,7 @@ func (a *Account) clearEventing() {
 // GetName will return the accounts name.
 func (a *Account) GetName() string {
 	if a == nil {
-		return ""
+		return "n/a"
 	}
 	a.mu.RLock()
 	name := a.Name
@@ -463,16 +463,15 @@ func (a *Account) GetName() string {
 // getNameTag will return the name tag or the account name if not set.
 func (a *Account) getNameTag() string {
 	if a == nil {
-		return ""
+		return _EMPTY_
 	}
 	a.mu.RLock()
 	nameTag := a.nameTag
-	name := a.Name
-	a.mu.RUnlock()
-	if nameTag != "" {
-		return nameTag
+	if nameTag == _EMPTY_ {
+		nameTag = a.Name
 	}
-	return name
+	a.mu.RUnlock()
+	return nameTag
 }
 
 // NumConnections returns active number of clients for this account for
