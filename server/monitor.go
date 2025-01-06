@@ -415,14 +415,13 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		// Fill in user if auth requested.
 		if auth {
 			ci.AuthorizedUser = client.getRawAuthUser()
-			// Add in account iff not the global account.
-			if client.acc != nil && (client.acc.Name != globalAccountName) {
-				ci.Account = client.acc.Name
+			if name := client.acc.GetName(); name != globalAccountName {
+				ci.Account = name
 			}
 			ci.JWT = client.opts.JWT
 			ci.IssuerKey = issuerForClient(client)
 			ci.Tags = client.tags
-			ci.NameTag = client.nameTag
+			ci.NameTag = client.acc.getNameTag()
 		}
 		client.mu.Unlock()
 		pconns[i] = ci
@@ -465,9 +464,11 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		// Fill in user if auth requested.
 		if auth {
 			cc.AuthorizedUser = cc.user
-			// Add in account iff not the global account.
 			if cc.acc != _EMPTY_ && (cc.acc != globalAccountName) {
 				cc.Account = cc.acc
+				if acc, err := s.LookupAccount(cc.acc); err == nil {
+					cc.NameTag = acc.getNameTag()
+				}
 			}
 		}
 		pconns[i] = &cc.ConnInfo
@@ -925,21 +926,21 @@ type SubszOptions struct {
 
 // SubDetail is for verbose information for subscriptions.
 type SubDetail struct {
-	Account string `json:"account,omitempty"`
-	Subject string `json:"subject"`
-	Queue   string `json:"qgroup,omitempty"`
-	Sid     string `json:"sid"`
-	Msgs    int64  `json:"msgs"`
-	Max     int64  `json:"max,omitempty"`
-	Cid     uint64 `json:"cid"`
+	Account    string `json:"account,omitempty"`
+	AccountTag string `json:"account_tag,omitempty"`
+	Subject    string `json:"subject"`
+	Queue      string `json:"qgroup,omitempty"`
+	Sid        string `json:"sid"`
+	Msgs       int64  `json:"msgs"`
+	Max        int64  `json:"max,omitempty"`
+	Cid        uint64 `json:"cid"`
 }
 
 // Subscription client should be locked and guaranteed to be present.
 func newSubDetail(sub *subscription) SubDetail {
 	sd := newClientSubDetail(sub)
-	if sub.client.acc != nil {
-		sd.Account = sub.client.acc.Name
-	}
+	sd.Account = sub.client.acc.GetName()
+	sd.AccountTag = sub.client.acc.getNameTag()
 	return sd
 }
 
@@ -2713,27 +2714,27 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 		mappings[src] = dests
 	}
 	return &AccountInfo{
-		accName,
-		a.updated.UTC(),
-		isSys,
-		a.expired.Load(),
-		!a.incomplete,
-		a.js != nil,
-		a.numLocalLeafNodes(),
-		a.numLocalConnections(),
-		a.sl.Count(),
-		mappings,
-		exports,
-		imports,
-		a.claimJWT,
-		a.Issuer,
-		a.nameTag,
-		a.tags,
-		claim,
-		vrIssues,
-		collectRevocations(a.usersRevoked),
-		a.sl.Stats(),
-		responses,
+		AccountName: accName,
+		LastUpdate:  a.updated.UTC(),
+		IsSystem:    isSys,
+		Expired:     a.expired.Load(),
+		Complete:    !a.incomplete,
+		JetStream:   a.js != nil,
+		LeafCnt:     a.numLocalLeafNodes(),
+		ClientCnt:   a.numLocalConnections(),
+		SubCnt:      a.sl.Count(),
+		Mappings:    mappings,
+		Exports:     exports,
+		Imports:     imports,
+		Jwt:         a.claimJWT,
+		IssuerKey:   a.Issuer,
+		NameTag:     a.getNameTag(),
+		Tags:        a.tags,
+		Claim:       claim,
+		Vr:          vrIssues,
+		RevokedUser: collectRevocations(a.usersRevoked),
+		Sublist:     a.sl.Stats(),
+		Responses:   responses,
 	}, nil
 }
 
