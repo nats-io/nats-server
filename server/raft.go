@@ -40,6 +40,7 @@ type RaftNode interface {
 	Propose(entry []byte) error
 	ProposeMulti(entries []*Entry) error
 	ForwardProposal(entry []byte) error
+	RequestProposal(entry []byte, timeout time.Duration) error
 	InstallSnapshot(snap []byte) error
 	SendSnapshot(snap []byte) error
 	NeedSnapshot() bool
@@ -858,6 +859,43 @@ func (n *raft) ForwardProposal(entry []byte) error {
 	// i.e. maybe in 2.12.
 	n.sendRPC(n.psubj, _EMPTY_, entry)
 	return nil
+}
+
+// RequestProposal will forward the proposal to the leader if known,
+// and will wait for a confirmation response to say that it was accepted.
+func (n *raft) RequestProposal(entry []byte, timeout time.Duration) error {
+	inbox := n.newInbox()
+	ch := make(chan struct{})
+
+	sub, err := n.s.systemSubscribe(
+		inbox, _EMPTY_, false, n.c,
+		func(_ *subscription, _ *client, _ *Account, _, _ string, _ []byte) {
+			ch <- struct{}{}
+		},
+	)
+	if err != nil {
+		return err
+	}
+	defer n.unsubscribe(sub)
+
+	if n.Leader() {
+		n.Lock()
+		if werr := n.werr; werr != nil {
+			n.Unlock()
+			return werr
+		}
+		n.prop.push(newProposedEntry(newEntry(EntryNormal, entry), inbox))
+		n.Unlock()
+	} else {
+		n.sendRPC(n.psubj, inbox, entry)
+	}
+
+	select {
+	case <-ch:
+		return nil
+	case <-time.After(timeout):
+		return errReqTimeout
+	}
 }
 
 // ProposeAddPeer is called to add a peer to the group.

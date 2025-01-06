@@ -1711,6 +1711,26 @@ func TestNRGForwardProposalResponse(t *testing.T) {
 	rg.waitOnTotal(t, 123)
 }
 
+func TestNRGRequestProposal(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, _ := jsClientConnect(t, c.leader(), nats.UserInfo("admin", "s3cr3t!"))
+	defer nc.Close()
+
+	rg := c.createRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	n := rg.nonLeader().node().(*raft)
+
+	data := make([]byte, binary.MaxVarintLen64)
+	dn := binary.PutVarint(data, int64(123))
+
+	require_NoError(t, n.RequestProposal(data[:dn], time.Second*3))
+
+	rg.waitOnTotal(t, 123)
+}
+
 func TestNRGMemoryWALEmptiesSnapshotsDir(t *testing.T) {
 	n, c := initSingleMemRaftNodeWithCluster(t)
 	defer c.shutdown()
