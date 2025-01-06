@@ -23018,6 +23018,7 @@ func TestJetStreamConsumerDontDecrementPendingCountOnSkippedMsg(t *testing.T) {
 	o := mset.lookupConsumer("CONSUMER")
 
 	requireExpected := func(expected int64) {
+		t.Helper()
 		checkFor(t, time.Second, 10*time.Millisecond, func() error {
 			o.mu.RLock()
 			npc := o.npc
