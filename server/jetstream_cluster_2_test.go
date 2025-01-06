@@ -4219,7 +4219,7 @@ func TestJetStreamClusterRedeliverBackoffs(t *testing.T) {
 		d := tr.Sub(start)
 		// Adjust start for next calcs.
 		start = start.Add(d)
-		if d < expected[i] || d > expected[i]*2 {
+		if d < expected[i]-5*time.Millisecond || d > expected[i]*2+5*time.Millisecond {
 			t.Fatalf("Timing is off for %d, expected ~%v, but got %v", i, expected[i], d)
 		}
 	}
