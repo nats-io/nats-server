@@ -1821,6 +1821,8 @@ var (
 	consumerNotActiveMaxInterval   = defaultConsumerNotActiveMaxInterval
 )
 
+// deleteNotActive should only be called via time.AfterFunc or in a goroutine
+// as it can & will block in some cases.
 func (o *consumer) deleteNotActive() {
 	o.mu.Lock()
 	if o.mset == nil {
@@ -1863,6 +1865,9 @@ func (o *consumer) deleteNotActive() {
 	acc, stream, name, isDirect := o.acc.Name, o.stream, o.name, o.cfg.Direct
 	o.mu.Unlock()
 
+	// Delete the consumer on this node.
+	o.delete()
+
 	// If we are clustered, check if we still have this consumer assigned.
 	// If we do forward a proposal to delete ourselves to the metacontroller leader.
 	if !isDirect && s.JetStreamIsClustered() {
@@ -1878,45 +1883,39 @@ func (o *consumer) deleteNotActive() {
 			cca = *ca
 			cca.Reply = _EMPTY_
 			removeEntry = encodeDeleteConsumerAssignment(&cca)
-			meta.ForwardProposal(removeEntry)
 		}
 		js.mu.RUnlock()
 
-		if ca != nil && cc != nil {
-			// Check to make sure we went away.
-			// Don't think this needs to be a monitored go routine.
-			go func() {
-				jitter := time.Duration(rand.Int63n(int64(consumerNotActiveStartInterval)))
-				interval := consumerNotActiveStartInterval + jitter
-				ticker := time.NewTicker(interval)
-				defer ticker.Stop()
-				for range ticker.C {
-					js.mu.RLock()
-					if js.shuttingDown {
-						js.mu.RUnlock()
-						return
-					}
-					nca := js.consumerAssignment(acc, stream, name)
+		if removeEntry != nil {
+			for {
+				js.mu.RLock()
+				if js.shuttingDown {
 					js.mu.RUnlock()
-					// Make sure this is not a new consumer with the same name.
-					if nca != nil && nca == ca {
-						s.Warnf("Consumer assignment for '%s > %s > %s' not cleaned up, retrying", acc, stream, name)
-						meta.ForwardProposal(removeEntry)
-						if interval < consumerNotActiveMaxInterval {
-							interval *= 2
-							ticker.Reset(interval)
-						}
-						continue
-					}
-					// We saw that consumer has been removed, all done.
 					return
 				}
-			}()
+				nca := js.consumerAssignment(acc, stream, name)
+				js.mu.RUnlock()
+				if nca == nil && nca != ca {
+					// The consumer assignment is either gone or has been replaced with
+					// a different assignment (a different consumer).
+					return
+				}
+				if err := meta.RequestProposal(removeEntry, time.Second*5); err == nil {
+					// The leader has accepted the delete proposal, we no longer need to
+					// keep waiting as it will be applied eventually.
+					return
+				}
+				// The cleanup failed, work out how long to wait for and we'll give it
+				// another try.
+				jitter := time.Duration(rand.Int63n(int64(consumerNotActiveStartInterval)))
+				interval := consumerNotActiveStartInterval + jitter
+				if interval < consumerNotActiveMaxInterval {
+					interval *= 2
+				}
+				time.Sleep(interval)
+			}
 		}
 	}
-
-	// We will delete here regardless.
-	o.delete()
 }
 
 func (o *consumer) watchGWinterest() {
