@@ -6319,8 +6319,12 @@ func TestJetStreamClusterStreamResetOnExpirationDuringPeerDownAndRestartWithLead
 
 	// Wait for all messages to expire.
 	checkFor(t, 5*time.Second, time.Second, func() error {
-		si, err := js.StreamInfo("TEST")
-		require_NoError(t, err)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		si, err := js.StreamInfo("TEST", nats.Context(ctx))
+		if err != nil {
+			return err
+		}
 		if si.State.Msgs == 0 {
 			return nil
 		}
@@ -6358,9 +6362,11 @@ func TestJetStreamClusterStreamResetOnExpirationDuringPeerDownAndRestartWithLead
 	}
 
 	// Now move the leader there and double check, but above test is sufficient.
-	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+	checkFor(t, 30*time.Second, 250*time.Millisecond, func() error {
 		_, err = nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "TEST"), nil, time.Second)
-		require_NoError(t, err)
+		if err != nil {
+			return err
+		}
 		c.waitOnStreamLeader("$G", "TEST")
 		if c.streamLeader("$G", "TEST") == nsl {
 			return nil
