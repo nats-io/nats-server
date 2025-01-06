@@ -6911,6 +6911,99 @@ func TestJetStreamClusterStreamUpscalePeersAfterDownscale(t *testing.T) {
 	checkPeerSet()
 }
 
+func TestJetStreamClusterClearAllPreAcksOnRemoveMsg(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Replicas:  3,
+		Retention: nats.WorkQueuePolicy,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "CONSUMER",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 3; i++ {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	// Wait for all servers to converge on the same state.
+	checkFor(t, 5*time.Second, 500*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	// Register pre-acks on all servers.
+	// Normally this can't happen as the stream leader will have the message that's acked available, just for testing.
+	for _, s := range c.servers {
+		acc, err := s.lookupAccount(globalAccountName)
+		require_NoError(t, err)
+		mset, err := acc.lookupStream("TEST")
+		require_NoError(t, err)
+		o := mset.lookupConsumer("CONSUMER")
+		require_NotNil(t, o)
+
+		// Register pre-acks for the 3 messages.
+		mset.registerPreAckLock(o, 1)
+		mset.registerPreAckLock(o, 2)
+		mset.registerPreAckLock(o, 3)
+	}
+
+	// Check there's an expected amount of pre-acks, and there are no pre-acks for the given sequence.
+	checkPreAcks := func(seq uint64, expected int) {
+		t.Helper()
+		checkFor(t, 5*time.Second, time.Second, func() error {
+			for _, s := range c.servers {
+				acc, err := s.lookupAccount(globalAccountName)
+				if err != nil {
+					return err
+				}
+				mset, err := acc.lookupStream("TEST")
+				if err != nil {
+					return err
+				}
+				mset.mu.RLock()
+				numPreAcks := len(mset.preAcks)
+				numSeqPreAcks := len(mset.preAcks[seq])
+				mset.mu.RUnlock()
+				if numPreAcks != expected {
+					return fmt.Errorf("expected %d pre-acks, got %d", expected, numPreAcks)
+				}
+				if seq > 0 && numSeqPreAcks != 0 {
+					return fmt.Errorf("expected 0 pre-acks for seq %d, got %d", seq, numSeqPreAcks)
+				}
+			}
+			return nil
+		})
+	}
+	// Check all pre-acks were registered.
+	checkPreAcks(0, 3)
+
+	// Deleting the message should clear the pre-ack.
+	err = js.DeleteMsg("TEST", 1)
+	require_NoError(t, err)
+	checkPreAcks(1, 2)
+
+	// Erasing the message should clear the pre-ack.
+	err = js.SecureDeleteMsg("TEST", 2)
+	require_NoError(t, err)
+	checkPreAcks(2, 1)
+
+	// Purging should clear all pre-acks below the purged floor.
+	err = js.PurgeStream("TEST", &nats.StreamPurgeRequest{Sequence: 4})
+	require_NoError(t, err)
+	checkPreAcks(3, 0)
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
