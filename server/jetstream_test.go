@@ -24759,9 +24759,15 @@ func TestJetStreamConsumerDecrementPendingCountOnSkippedMsg(t *testing.T) {
 
 	requireExpected := func(expected int64) {
 		t.Helper()
-		o.mu.RLock()
-		defer o.mu.RUnlock()
-		require_Equal(t, o.npc, expected)
+		checkFor(t, time.Second, 10*time.Millisecond, func() error {
+			o.mu.RLock()
+			npc := o.npc
+			o.mu.RUnlock()
+			if npc != expected {
+				return fmt.Errorf("expected npc=%d, got %d", npc, expected)
+			}
+			return nil
+		})
 	}
 
 	// Should initially report no messages available.
