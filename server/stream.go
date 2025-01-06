@@ -1126,10 +1126,10 @@ func (mset *stream) lastSeq() uint64 {
 	return mset.lseq
 }
 
+// Set last seq.
+// Write lock should be held.
 func (mset *stream) setLastSeq(lseq uint64) {
-	mset.mu.Lock()
 	mset.lseq = lseq
-	mset.mu.Unlock()
 }
 
 func (mset *stream) sendCreateAdvisory() {
@@ -2188,10 +2188,15 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 	store.FastState(&state)
 	fseq, lseq := state.FirstSeq, state.LastSeq
 
+	mset.mu.Lock()
 	// Check if our last has moved past what our original last sequence was, if so reset.
 	if lseq > mlseq {
 		mset.setLastSeq(lseq)
 	}
+
+	// Clear any pending acks below first seq.
+	mset.clearAllPreAcksBelowFloor(fseq)
+	mset.mu.Unlock()
 
 	// Purge consumers.
 	// Check for filtered purge.
@@ -2239,7 +2244,14 @@ func (mset *stream) deleteMsg(seq uint64) (bool, error) {
 	if mset.closed.Load() {
 		return false, errStreamClosed
 	}
-	return mset.store.RemoveMsg(seq)
+	removed, err := mset.store.RemoveMsg(seq)
+	if err != nil {
+		return removed, err
+	}
+	mset.mu.Lock()
+	mset.clearAllPreAcks(seq)
+	mset.mu.Unlock()
+	return removed, err
 }
 
 // EraseMsg will securely remove a message and rewrite the data with random data.
@@ -2247,7 +2259,14 @@ func (mset *stream) eraseMsg(seq uint64) (bool, error) {
 	if mset.closed.Load() {
 		return false, errStreamClosed
 	}
-	return mset.store.EraseMsg(seq)
+	removed, err := mset.store.EraseMsg(seq)
+	if err != nil {
+		return removed, err
+	}
+	mset.mu.Lock()
+	mset.clearAllPreAcks(seq)
+	mset.mu.Unlock()
+	return removed, err
 }
 
 // Are we a mirror?
@@ -4138,15 +4157,8 @@ func (mset *stream) purgeMsgIds() {
 	}
 }
 
-// storeMsgId will store the message id for duplicate detection.
-func (mset *stream) storeMsgId(dde *ddentry) {
-	mset.mu.Lock()
-	defer mset.mu.Unlock()
-	mset.storeMsgIdLocked(dde)
-}
-
 // storeMsgIdLocked will store the message id for duplicate detection.
-// Lock should he held.
+// Lock should be held.
 func (mset *stream) storeMsgIdLocked(dde *ddentry) {
 	if mset.ddmap == nil {
 		mset.ddmap = make(map[string]*ddentry)

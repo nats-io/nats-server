@@ -3098,8 +3098,10 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				if subject == _EMPTY_ && ts == 0 && len(msg) == 0 && len(hdr) == 0 {
 					// Skip and update our lseq.
 					last := mset.store.SkipMsg()
+					mset.mu.Lock()
 					mset.setLastSeq(last)
 					mset.clearAllPreAcks(last)
+					mset.mu.Unlock()
 					continue
 				}
 
@@ -8805,6 +8807,8 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 		return 0, err
 	}
 
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
 	// Update our lseq.
 	mset.setLastSeq(seq)
 
@@ -8812,11 +8816,9 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 	if len(hdr) > 0 {
 		if msgId := getMsgId(hdr); msgId != _EMPTY_ {
 			if !ddloaded {
-				mset.mu.Lock()
 				mset.rebuildDedupe()
-				mset.mu.Unlock()
 			}
-			mset.storeMsgId(&ddentry{msgId, seq, ts})
+			mset.storeMsgIdLocked(&ddentry{msgId, seq, ts})
 		}
 	}
 
