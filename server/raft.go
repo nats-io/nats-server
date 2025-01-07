@@ -1674,14 +1674,12 @@ func (n *raft) ID() string {
 	if n == nil {
 		return _EMPTY_
 	}
-	n.RLock()
-	defer n.RUnlock()
+	// Lock not needed as n.id is never changed after creation.
 	return n.id
 }
 
 func (n *raft) Group() string {
-	n.RLock()
-	defer n.RUnlock()
+	// Lock not needed as n.group is never changed after creation.
 	return n.group
 }
 
@@ -1741,8 +1739,7 @@ func (n *raft) QuitC() <-chan struct{} { return n.quit }
 func (n *raft) AppliedFloorC() <-chan struct{} { return n.aflrc }
 
 func (n *raft) Created() time.Time {
-	n.RLock()
-	defer n.RUnlock()
+	// Lock not needed as n.created is never changed after creation.
 	return n.created
 }
 
