@@ -4392,3 +4392,34 @@ func TestJetStreamClusterStreamConsumerStateResetAfterRecreate(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestJetStreamClusterOnlyPublishAdvisoriesWhenInterest(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	subj := "$JS.ADVISORY.TEST"
+	s1 := c.servers[0]
+	s2 := c.servers[1]
+
+	// On the first server, see if we think the advisory will be published.
+	require_False(t, s1.publishAdvisory(s1.GlobalAccount(), subj, "test"))
+
+	// On the second server, subscribe to the advisory subject.
+	nc, _ := jsClientConnect(t, s2)
+	defer nc.Close()
+
+	_, err := nc.Subscribe(subj, func(_ *nats.Msg) {})
+	require_NoError(t, err)
+
+	// Wait for the interest to propagate to the first server.
+	checkFor(t, time.Second, 25*time.Millisecond, func() error {
+		if !s1.GlobalAccount().sl.HasInterest(subj) {
+			return fmt.Errorf("expected interest in %q, not yet found", subj)
+		}
+		return nil
+	})
+
+	// On the first server, try and publish the advisory again. THis time
+	// it should succeed.
+	require_True(t, s1.publishAdvisory(s1.GlobalAccount(), subj, "test"))
+}
