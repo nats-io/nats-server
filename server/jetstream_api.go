@@ -3833,7 +3833,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 			Time: start,
 		},
 		Stream: streamName,
-		Client: ci,
+		Client: ci.forAdvisory(),
 		Domain: domain,
 	})
 
@@ -3965,7 +3965,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 					Start:  start,
 					End:    end,
 					Bytes:  int64(total),
-					Client: ci,
+					Client: ci.forAdvisory(),
 					Domain: domain,
 				})
 
@@ -4099,7 +4099,7 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, _ *Accoun
 			},
 			Stream: mset.name(),
 			State:  sr.State,
-			Client: ci,
+			Client: ci.forAdvisory(),
 			Domain: s.getOpts().JetStreamDomain,
 		})
 
@@ -4117,7 +4117,7 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, _ *Accoun
 			Stream: mset.name(),
 			Start:  start,
 			End:    end,
-			Client: ci,
+			Client: ci.forAdvisory(),
 			Domain: s.getOpts().JetStreamDomain,
 		})
 
@@ -5065,7 +5065,7 @@ func (s *Server) sendJetStreamAPIAuditAdvisory(ci *ClientInfo, acc *Account, sub
 			Time: time.Now().UTC(),
 		},
 		Server:   s.Name(),
-		Client:   ci,
+		Client:   ci.forAdvisory(),
 		Subject:  subject,
 		Request:  request,
 		Response: response,
