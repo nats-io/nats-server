@@ -902,15 +902,17 @@ func (js *jetStream) server() *Server {
 // Will respond if we do not think we have a metacontroller leader.
 func (js *jetStream) isLeaderless() bool {
 	js.mu.RLock()
-	defer js.mu.RUnlock()
-
 	cc := js.cluster
 	if cc == nil || cc.meta == nil {
+		js.mu.RUnlock()
 		return false
 	}
+	meta := cc.meta
+	js.mu.RUnlock()
+
 	// If we don't have a leader.
 	// Make sure we have been running for enough time.
-	if cc.meta.GroupLeader() == _EMPTY_ && time.Since(cc.meta.Created()) > lostQuorumIntervalDefault {
+	if meta.GroupLeader() == _EMPTY_ && time.Since(meta.Created()) > lostQuorumIntervalDefault {
 		return true
 	}
 	return false
@@ -922,21 +924,24 @@ func (js *jetStream) isGroupLeaderless(rg *raftGroup) bool {
 		return false
 	}
 	js.mu.RLock()
-	defer js.mu.RUnlock()
-
 	cc := js.cluster
+	started := js.started
 
 	// If we are not a member we can not say..
 	if cc.meta == nil {
+		js.mu.RUnlock()
 		return false
 	}
 	if !rg.isMember(cc.meta.ID()) {
+		js.mu.RUnlock()
 		return false
 	}
 	// Single peer groups always have a leader if we are here.
 	if rg.node == nil {
+		js.mu.RUnlock()
 		return false
 	}
+	js.mu.RUnlock()
 	// If we don't have a leader.
 	if rg.node.GroupLeader() == _EMPTY_ {
 		// Threshold for jetstream startup.
@@ -944,7 +949,7 @@ func (js *jetStream) isGroupLeaderless(rg *raftGroup) bool {
 
 		if rg.node.HadPreviousLeader() {
 			// Make sure we have been running long enough to intelligently determine this.
-			if time.Since(js.started) > startupThreshold {
+			if time.Since(started) > startupThreshold {
 				return true
 			}
 		}
@@ -4487,10 +4492,11 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 	} else {
 		// If we are clustered update the known peers.
 		js.mu.RLock()
-		if node := rg.node; node != nil {
+		node := rg.node
+		js.mu.RUnlock()
+		if node != nil {
 			node.UpdateKnownPeers(ca.Group.Peers)
 		}
-		js.mu.RUnlock()
 	}
 
 	// Check if we already have this consumer running.

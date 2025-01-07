@@ -4701,9 +4701,13 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 			return
 		}
 
+		// Since these could wait on the Raft group lock, don't do so under the JS lock.
+		ourID := cc.meta.ID()
+		groupLeader := cc.meta.GroupLeader()
+		groupCreated := cc.meta.Created()
+
 		js.mu.RLock()
 		isLeader, sa, ca := cc.isLeader(), js.streamAssignment(acc.Name, streamName), js.consumerAssignment(acc.Name, streamName, consumerName)
-		ourID := cc.meta.ID()
 		var rg *raftGroup
 		var offline, isMember bool
 		if ca != nil {
@@ -4717,7 +4721,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 		// Also capture if we think there is no meta leader.
 		var isLeaderLess bool
 		if !isLeader {
-			isLeaderLess = cc.meta.GroupLeader() == _EMPTY_ && time.Since(cc.meta.Created()) > lostQuorumIntervalDefault
+			isLeaderLess = groupLeader == _EMPTY_ && time.Since(groupCreated) > lostQuorumIntervalDefault
 		}
 		js.mu.RUnlock()
 
