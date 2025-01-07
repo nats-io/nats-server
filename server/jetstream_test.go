@@ -8536,10 +8536,14 @@ func TestJetStreamNextMsgNoInterest(t *testing.T) {
 				}
 			}
 			nc.Flush()
-			ostate := o.info()
-			if ostate.AckFloor.Stream != 11 || ostate.NumAckPending > 0 {
-				t.Fatalf("Inconsistent ack state: %+v", ostate)
-			}
+
+			checkFor(t, time.Second, 10*time.Millisecond, func() error {
+				ostate := o.info()
+				if ostate.AckFloor.Stream != 11 || ostate.NumAckPending > 0 {
+					return fmt.Errorf("Inconsistent ack state: %+v", ostate)
+				}
+				return nil
+			})
 		})
 	}
 }
