@@ -901,12 +901,13 @@ func (js *jetStream) server() *Server {
 // Will respond if we do not think we have a metacontroller leader.
 func (js *jetStream) isLeaderless() bool {
 	js.mu.RLock()
-	defer js.mu.RUnlock()
-
 	cc := js.cluster
 	if cc == nil || cc.meta == nil {
+		js.mu.RUnlock()
 		return false
 	}
+	js.mu.RUnlock()
+
 	// If we don't have a leader.
 	// Make sure we have been running for enough time.
 	if cc.meta.GroupLeader() == _EMPTY_ && time.Since(cc.meta.Created()) > lostQuorumIntervalDefault {
