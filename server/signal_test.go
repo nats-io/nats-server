@@ -483,3 +483,33 @@ func TestProcessSignalTermDuringLameDuckMode(t *testing.T) {
 		}
 	}
 }
+
+func TestSignalInterruptHasSuccessfulExit(t *testing.T) {
+	if os.Getenv("IN_TEST") == "1" {
+		s := RunServer(&Options{})
+		defer s.Shutdown()
+		require_NoError(t, syscall.Kill(syscall.Getpid(), syscall.SIGINT))
+		s.WaitForShutdown()
+		return
+	}
+	// To check for successful/0 exit code, need execute as separate process.
+	cmd := exec.Command(os.Args[0], "-test.run=TestSignalInterruptHasSuccessfulExit")
+	cmd.Env = append(os.Environ(), "IN_TEST=1")
+	err := cmd.Run()
+	require_NoError(t, err)
+}
+
+func TestSignalTermHasSuccessfulExit(t *testing.T) {
+	if os.Getenv("IN_TEST") == "1" {
+		s := RunServer(&Options{})
+		defer s.Shutdown()
+		require_NoError(t, syscall.Kill(syscall.Getpid(), syscall.SIGTERM))
+		s.WaitForShutdown()
+		return
+	}
+	// To check for successful/0 exit code, need execute as separate process.
+	cmd := exec.Command(os.Args[0], "-test.run=TestSignalTermHasSuccessfulExit")
+	cmd.Env = append(os.Environ(), "IN_TEST=1")
+	err := cmd.Run()
+	require_NoError(t, err)
+}
