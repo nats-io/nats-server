@@ -8687,7 +8687,7 @@ func TestFileStoreSubjectDeleteMarkersOnRestart(t *testing.T) {
 	require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), "1s")
 }
 
-func TestStoreRawMessageThrowsPermissionErrorIfFSModeReadOnly(t *testing.T) {
+func TestFileStoreStoreRawMessageThrowsPermissionErrorIfFSModeReadOnly(t *testing.T) {
 	cfg := StreamConfig{Name: "zzz", Subjects: []string{"ev.1"}, Storage: FileStorage, MaxAge: 500 * time.Millisecond}
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: t.TempDir()},
@@ -8714,7 +8714,7 @@ func TestStoreRawMessageThrowsPermissionErrorIfFSModeReadOnly(t *testing.T) {
 	require_Error(t, err, os.ErrPermission)
 }
 
-func TestWriteFullStateThrowsPermissionErrorIfFSModeReadOnly(t *testing.T) {
+func TestFileStoreWriteFullStateThrowsPermissionErrorIfFSModeReadOnly(t *testing.T) {
 	cfg := StreamConfig{Name: "zzz", Subjects: []string{"ev.1"}, Storage: FileStorage, MaxAge: 500 * time.Millisecond}
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: t.TempDir()},
