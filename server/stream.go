@@ -4220,12 +4220,16 @@ func getExpectedLastSeqPerSubjectForSubject(hdr []byte) string {
 // Fast lookup of the message TTL:
 // - Positive return value: duration in seconds.
 // - Zero return value: no TTL or parse error.
+// - Negative return value: never expires.
 func getMessageTTL(hdr []byte) (int64, error) {
 	ttl := getHeader(JSMessageTTL, hdr)
 	if len(ttl) == 0 {
 		return 0, nil
 	}
 	sttl := bytesToString(ttl)
+	if strings.ToLower(sttl) == "never" {
+		return -1, nil
+	}
 	dur, err := time.ParseDuration(sttl)
 	if err == nil {
 		if dur < time.Second {
@@ -4235,6 +4239,10 @@ func getMessageTTL(hdr []byte) (int64, error) {
 	}
 	t := parseInt64(ttl)
 	if t < 0 {
+		// This probably means a parse failure, hence why
+		// we have a special case "never" for returning -1.
+		// Otherwise we can't know if it's a genuine TTL
+		// that says never expire or if it's a parse error.
 		return 0, NewJSMessageTTLInvalidError()
 	}
 	return t, nil
