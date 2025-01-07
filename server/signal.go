@@ -62,7 +62,7 @@ func (s *Server) handleSignals() {
 					if !ldm {
 						s.Shutdown()
 						s.WaitForShutdown()
-						os.Exit(1)
+						os.Exit(0)
 					}
 				case syscall.SIGUSR1:
 					// File log re-open for rotating file logs.
