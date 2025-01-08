@@ -168,7 +168,7 @@ func TestStoreSubjectStateConsistency(t *testing.T) {
 
 			// Publish an initial batch of messages.
 			for i := 0; i < 4; i++ {
-				_, _, err := fs.StoreMsg("foo", nil, nil, 0)
+				_, _, err := fs.StoreMsg("foo", nil, nil)
 				require_NoError(t, err)
 			}
 
@@ -221,7 +221,7 @@ func TestStoreSubjectStateConsistency(t *testing.T) {
 
 			// Publish some more messages so we can test another scenario.
 			for i := 0; i < 3; i++ {
-				_, _, err := fs.StoreMsg("foo", nil, nil, 0)
+				_, _, err := fs.StoreMsg("foo", nil, nil)
 				require_NoError(t, err)
 			}
 
