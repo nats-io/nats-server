@@ -22998,7 +22998,7 @@ func TestJetStreamWouldExceedLimits(t *testing.T) {
 	require_True(t, js.wouldExceedLimits(FileStorage, int(js.config.MaxStore)+1))
 }
 
-func TestJetStreamConsumerDecrementPendingCountOnSkippedMsg(t *testing.T) {
+func TestJetStreamConsumerDontDecrementPendingCountOnSkippedMsg(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
@@ -23018,10 +23018,15 @@ func TestJetStreamConsumerDecrementPendingCountOnSkippedMsg(t *testing.T) {
 	o := mset.lookupConsumer("CONSUMER")
 
 	requireExpected := func(expected int64) {
-		t.Helper()
-		o.mu.RLock()
-		defer o.mu.RUnlock()
-		require_Equal(t, o.npc, expected)
+		checkFor(t, time.Second, 10*time.Millisecond, func() error {
+			o.mu.RLock()
+			npc := o.npc
+			o.mu.RUnlock()
+			if npc != expected {
+				return fmt.Errorf("expected npc=%d, got %d", expected, npc)
+			}
+			return nil
+		})
 	}
 
 	// Should initially report no messages available.
@@ -23057,8 +23062,65 @@ func TestJetStreamConsumerDecrementPendingCountOnSkippedMsg(t *testing.T) {
 	o.decStreamPending(2, "foo")
 	requireExpected(1)
 
-	// This is the deleted message that was skipped, and we can decrement the pending count
-	// because it's not pending and only as long as the ack floor hasn't moved up yet.
+	// This is the deleted message that was skipped, we've hit the race condition and are not able to
+	// fix it at this point. If we decrement then we could have decremented it twice if the message
+	// was removed as a result of an Ack with Interest or WorkQueue retention, instead of due to contention.
 	o.decStreamPending(3, "foo")
+	requireExpected(1)
+}
+
+func TestJetStreamConsumerPendingCountAfterMsgAckAboveFloor(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.WorkQueuePolicy,
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 2; i++ {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	sub, err := js.PullSubscribe("foo", "CONSUMER")
+	require_NoError(t, err)
+
+	acc, err := s.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+
+	requireExpected := func(expected int64) {
+		t.Helper()
+		checkFor(t, time.Second, 10*time.Millisecond, func() error {
+			o.mu.RLock()
+			npc := o.npc
+			o.mu.RUnlock()
+			if npc != expected {
+				return fmt.Errorf("expected npc=%d, got %d", expected, npc)
+			}
+			return nil
+		})
+	}
+
+	// Expect 2 messages pending.
+	requireExpected(2)
+
+	// Fetch 2 messages and ack the last.
+	msgs, err := sub.Fetch(2)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 2)
+	msg := msgs[1]
+	err = msg.AckSync()
+	require_NoError(t, err)
+
+	// We've fetched 2 message so should report 0 pending.
 	requireExpected(0)
 }

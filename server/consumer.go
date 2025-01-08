@@ -5380,19 +5380,16 @@ func (o *consumer) requestNextMsgSubject() string {
 func (o *consumer) decStreamPending(sseq uint64, subj string) {
 	o.mu.Lock()
 
+	// Update our cached num pending only if we think deliverMsg has not done so.
+	if sseq >= o.sseq && o.isFilteredMatch(subj) {
+		o.npc--
+	}
+
 	// Check if this message was pending.
 	p, wasPending := o.pending[sseq]
 	var rdc uint64 = 1
 	if o.rdc != nil {
 		rdc = o.rdc[sseq]
-	}
-
-	// Update our cached num pending only if we think deliverMsg has not done so.
-	// Either we have not reached the message yet, or we've hit the race condition
-	// when there is contention at the beginning of the stream. In which case we can
-	// only decrement if the ack floor is still low enough to be able to detect it.
-	if sseq > o.asflr && (sseq >= o.sseq || !wasPending) && o.isFilteredMatch(subj) {
-		o.npc--
 	}
 
 	o.mu.Unlock()
