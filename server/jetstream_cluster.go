@@ -941,20 +941,21 @@ func (js *jetStream) isGroupLeaderless(rg *raftGroup) bool {
 		js.mu.RUnlock()
 		return false
 	}
+	node := rg.node
 	js.mu.RUnlock()
 	// If we don't have a leader.
-	if rg.node.GroupLeader() == _EMPTY_ {
+	if node.GroupLeader() == _EMPTY_ {
 		// Threshold for jetstream startup.
 		const startupThreshold = 10 * time.Second
 
-		if rg.node.HadPreviousLeader() {
+		if node.HadPreviousLeader() {
 			// Make sure we have been running long enough to intelligently determine this.
 			if time.Since(started) > startupThreshold {
 				return true
 			}
 		}
 		// Make sure we have been running for enough time.
-		if time.Since(rg.node.Created()) > lostQuorumIntervalDefault {
+		if time.Since(node.Created()) > lostQuorumIntervalDefault {
 			return true
 		}
 	}
