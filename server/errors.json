@@ -833,7 +833,7 @@
     "constant": "JSConsumerPullRequiresAckErr",
     "code": 400,
     "error_code": 10084,
-    "description": "consumer in pull mode requires ack policy on workqueue stream",
+    "description": "consumer in pull mode requires explicit ack policy on workqueue stream",
     "comment": "",
     "help": "",
     "url": "",
