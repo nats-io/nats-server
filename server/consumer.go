@@ -3544,7 +3544,6 @@ func (o *consumer) setPinnedTimer(priorityGroup string) {
 	} else {
 		o.pinnedTtl = time.AfterFunc(o.cfg.PinnedTTL, func() {
 			o.mu.Lock()
-			o.pinnedTS = time.Now()
 			o.currentPinId = _EMPTY_
 			o.sendUnpinnedAdvisoryLocked(priorityGroup, "timeout")
 			o.mu.Unlock()
@@ -3602,6 +3601,7 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 			if needNewPin {
 				if wr.priorityGroup.Id == _EMPTY_ {
 					o.currentPinId = nuid.Next()
+					o.pinnedTS = time.Now().UTC()
 					wr.priorityGroup.Id = o.currentPinId
 					o.setPinnedTimer(priorityGroup)
 
