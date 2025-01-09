@@ -221,6 +221,7 @@ type msgBlock struct {
 	index      uint32
 	bytes      uint64 // User visible bytes count.
 	rbytes     uint64 // Total bytes (raw) including deleted. Used for rolling to new blk.
+	cbytes     uint64 // Bytes count after last compaction. 0 if no compaction happened yet.
 	msgs       uint64 // User visible message count.
 	fss        *stree.SubjectTree[SimpleState]
 	kfn        string
@@ -4548,9 +4549,10 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 
 // Tests whether we should try to compact this block while inline removing msgs.
 // We will want rbytes to be over the minimum and have a 2x potential savings.
+// If we compacted before but rbytes didn't improve much, guard against constantly compacting.
 // Lock should be held.
 func (mb *msgBlock) shouldCompactInline() bool {
-	return mb.rbytes > compactMinimum && mb.bytes*2 < mb.rbytes
+	return mb.rbytes > compactMinimum && mb.bytes*2 < mb.rbytes && (mb.cbytes == 0 || mb.bytes*2 < mb.cbytes)
 }
 
 // Tests whether we should try to compact this block while running periodic sync.
@@ -4682,6 +4684,7 @@ func (mb *msgBlock) compactWithFloor(floor uint64) {
 	} else {
 		mb.rbytes = rbytes
 	}
+	mb.cbytes = mb.bytes
 
 	// Remove any seqs from the beginning of the blk.
 	for seq, nfseq := fseq, atomic.LoadUint64(&mb.first.seq); seq < nfseq; seq++ {

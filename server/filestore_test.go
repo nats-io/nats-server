@@ -8483,3 +8483,82 @@ func TestFileStoreMessageTTLRecoveredSingleMessageWithoutStreamState(t *testing.
 		require_Equal(t, ss.Msgs, 0)
 	})
 }
+
+func TestFileStoreDontSpamCompactWhenMostlyTombstones(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: defaultMediumBlockSize},
+		StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Store a bunch of messages, ensuring we get enough blocks.
+	msg := bytes.Repeat([]byte("X"), 100)
+	totalBlksAfterStore := 6
+	expectedLseq := uint64(31_536*(totalBlksAfterStore-1) + 2)
+	for seq := uint64(1); seq <= expectedLseq; seq++ {
+		_, _, err = fs.StoreMsg("foo", nil, msg, 0)
+		require_NoError(t, err)
+	}
+
+	// Confirms we have the required amount of blocks.
+	fs.mu.RLock()
+	lenBlks := len(fs.blks)
+	lmb := fs.lmb
+	fs.mu.RUnlock()
+	require_Len(t, lenBlks, totalBlksAfterStore)
+
+	// Ensure the last block contains the last two messages.
+	lmb.mu.RLock()
+	fseq, lseq := lmb.first.seq, lmb.last.seq
+	lmb.mu.RUnlock()
+	require_Equal(t, fseq, expectedLseq-1)
+	require_Equal(t, lseq, expectedLseq)
+
+	// Remove all messages before the last block, will fill up last block with tombstones.
+	for seq := uint64(1); seq < fseq; seq++ {
+		removed, err := fs.RemoveMsg(seq)
+		require_NoError(t, err)
+		require_True(t, removed)
+	}
+
+	// The last block will be filled with so many tombstones that
+	// a new message block will be created to store the rest.
+	fs.mu.RLock()
+	lenBlks = len(fs.blks)
+	fs.mu.RUnlock()
+	require_Len(t, lenBlks, 2)
+
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	fmb := fs.blks[0]
+	fmb.mu.Lock()
+	defer fmb.mu.Unlock()
+
+	// We don't call fs.RemoveMsg as that would call into compact.
+	// Instead, we mark as deleted and check compaction ourselves.
+	fmb.dmap.Insert(expectedLseq)
+	fmb.bytes /= 2
+
+	// This message block takes up ~4MB but contains only one ~100 bytes message, and the rest is all tombstones.
+	// We should allow trying to compact.
+	require_Equal(t, fmb.bytes, 133)
+	require_Equal(t, fmb.cbytes, 0)
+	require_True(t, fmb.shouldCompactInline())
+
+	// Compact will be successful, but since it doesn't clean up tombstones it will be ineffective.
+	fmb.compact()
+
+	// We should not allow compacting again as we're not removing tombstones inline.
+	// Otherwise, we would spam compaction.
+	require_False(t, fmb.shouldCompactInline())
+
+	// Just checking fmb.cbytes is tracking the previous value of fmb.bytes,
+	// so it can block compaction until enough data has been removed.
+	require_Equal(t, fmb.bytes, 133)
+	require_Equal(t, fmb.cbytes, fmb.bytes)
+
+	// Simulate having removed sufficient bytes and being allowed to compact again.
+	fmb.bytes /= 2
+	require_True(t, fmb.shouldCompactInline())
+}
