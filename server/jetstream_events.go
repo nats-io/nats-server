@@ -18,13 +18,22 @@ import (
 	"time"
 )
 
-func (s *Server) publishAdvisory(acc *Account, subject string, adv any) {
+// publishAdvisory sends the given advisory into the account. Returns true if
+// it was sent, false if not (i.e. due to lack of interest or a marshal error).
+func (s *Server) publishAdvisory(acc *Account, subject string, adv any) bool {
 	if acc == nil {
 		acc = s.SystemAccount()
 		if acc == nil {
-			return
+			return false
 		}
 	}
+
+	// If there is no one listening for this advisory then save ourselves the effort
+	// and don't bother encoding the JSON or sending it.
+	if sl := acc.sl; (sl != nil && !sl.HasInterest(subject)) && !s.hasGatewayInterest(acc.Name, subject) {
+		return false
+	}
+
 	ej, err := json.Marshal(adv)
 	if err == nil {
 		err = s.sendInternalAccountMsg(acc, subject, ej)
@@ -34,6 +43,7 @@ func (s *Server) publishAdvisory(acc *Account, subject string, adv any) {
 	} else {
 		s.Warnf("Advisory could not be serialized for account %q: %v", acc.Name, err)
 	}
+	return err == nil
 }
 
 // JSAPIAudit is an advisory about administrative actions taken on JetStream

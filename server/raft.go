@@ -61,6 +61,7 @@ type RaftNode interface {
 	ID() string
 	Group() string
 	Peers() []*Peer
+	ProposeKnownPeers(knownPeers []string)
 	UpdateKnownPeers(knownPeers []string)
 	ProposeAddPeer(peer string) error
 	ProposeRemovePeer(peer string) error
@@ -1326,6 +1327,12 @@ func (n *raft) isCurrent(includeForwardProgress bool) bool {
 		return false
 	}
 
+	if n.paused && n.hcommit > n.commit {
+		// We're currently paused, waiting to be resumed to apply pending commits.
+		n.debug("Not current, waiting to resume applies commit=%d, hcommit=%d", n.commit, n.hcommit)
+		return false
+	}
+
 	if n.commit == n.applied {
 		// At this point if we are current, we can return saying so.
 		clearBehindState()
@@ -1556,14 +1563,12 @@ func (n *raft) ID() string {
 	if n == nil {
 		return _EMPTY_
 	}
-	n.RLock()
-	defer n.RUnlock()
+	// Lock not needed as n.id is never changed after creation.
 	return n.id
 }
 
 func (n *raft) Group() string {
-	n.RLock()
-	defer n.RUnlock()
+	// Lock not needed as n.group is never changed after creation.
 	return n.group
 }
 
@@ -1588,19 +1593,23 @@ func (n *raft) Peers() []*Peer {
 	return peers
 }
 
+// Update and propose our known set of peers.
+func (n *raft) ProposeKnownPeers(knownPeers []string) {
+	// If we are the leader update and send this update out.
+	if n.State() != Leader {
+		return
+	}
+	n.UpdateKnownPeers(knownPeers)
+	n.sendPeerState()
+}
+
 // Update our known set of peers.
 func (n *raft) UpdateKnownPeers(knownPeers []string) {
 	n.Lock()
 	// Process like peer state update.
 	ps := &peerState{knownPeers, len(knownPeers), n.extSt}
 	n.processPeerState(ps)
-	isLeader := n.State() == Leader
 	n.Unlock()
-
-	// If we are the leader send this update out as well.
-	if isLeader {
-		n.sendPeerState()
-	}
 }
 
 // ApplyQ returns the apply queue that new commits will be sent to for the
@@ -1615,8 +1624,7 @@ func (n *raft) LeadChangeC() <-chan bool { return n.leadc }
 func (n *raft) QuitC() <-chan struct{} { return n.quit }
 
 func (n *raft) Created() time.Time {
-	n.RLock()
-	defer n.RUnlock()
+	// Lock not needed as n.created is never changed after creation.
 	return n.created
 }
 

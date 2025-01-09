@@ -7728,32 +7728,47 @@ func TestNoRaceJetStreamClusterUnbalancedInterestMultipleConsumers(t *testing.T)
 	// make sure we do not remove prematurely.
 	msgs, err := sub.Fetch(100, nats.MaxWait(time.Second))
 	require_NoError(t, err)
-	require_True(t, len(msgs) == 100)
+	require_Len(t, len(msgs), 100)
 	for _, m := range msgs {
 		m.AckSync()
 	}
 
 	ci, err := js.ConsumerInfo("EVENTS", "D")
 	require_NoError(t, err)
-	require_True(t, ci.NumPending == uint64(numToSend-100))
-	require_True(t, ci.NumAckPending == 0)
-	require_True(t, ci.Delivered.Stream == 100)
-	require_True(t, ci.AckFloor.Stream == 100)
+	require_Equal(t, ci.NumPending, uint64(numToSend-100))
+	require_Equal(t, ci.NumAckPending, 0)
+	require_Equal(t, ci.Delivered.Stream, 100)
+	require_Equal(t, ci.AckFloor.Stream, 100)
 
 	// Check stream state on all servers.
-	for _, s := range c.servers {
-		mset, err := s.GlobalAccount().lookupStream("EVENTS")
-		require_NoError(t, err)
-		state := mset.state()
-		require_True(t, state.Msgs == 900)
-		require_True(t, state.FirstSeq == 101)
-		require_True(t, state.LastSeq == 1000)
-		require_True(t, state.Consumers == 2)
-	}
+	// Since acks result in messages to be removed through proposals,
+	// it could take some time to be reflected in the stream state.
+	checkFor(t, 5*time.Second, 500*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			mset, err := s.GlobalAccount().lookupStream("EVENTS")
+			if err != nil {
+				return err
+			}
+			state := mset.state()
+			if state.Msgs != 900 {
+				return fmt.Errorf("expected state.Msgs=900, got %d", state.Msgs)
+			}
+			if state.FirstSeq != 101 {
+				return fmt.Errorf("expected state.FirstSeq=101, got %d", state.FirstSeq)
+			}
+			if state.LastSeq != 1000 {
+				return fmt.Errorf("expected state.LastSeq=1000, got %d", state.LastSeq)
+			}
+			if state.Consumers != 2 {
+				return fmt.Errorf("expected state.Consumers=2, got %d", state.Consumers)
+			}
+		}
+		return nil
+	})
 
 	msgs, err = sub.Fetch(900, nats.MaxWait(time.Second))
 	require_NoError(t, err)
-	require_True(t, len(msgs) == 900)
+	require_Len(t, len(msgs), 900)
 	for _, m := range msgs {
 		m.AckSync()
 	}
@@ -7766,15 +7781,15 @@ func TestNoRaceJetStreamClusterUnbalancedInterestMultipleConsumers(t *testing.T)
 		mset, err := s.GlobalAccount().lookupStream("EVENTS")
 		require_NoError(t, err)
 		state := mset.state()
-		require_True(t, state.Msgs == 0)
-		require_True(t, state.FirstSeq == 1001)
-		require_True(t, state.LastSeq == 1000)
-		require_True(t, state.Consumers == 2)
+		require_Equal(t, state.Msgs, 0)
+		require_Equal(t, state.FirstSeq, 1001)
+		require_Equal(t, state.LastSeq, 1000)
+		require_Equal(t, state.Consumers, 2)
 		// Now check preAcks
 		mset.mu.RLock()
 		numPreAcks := len(mset.preAcks)
 		mset.mu.RUnlock()
-		require_True(t, numPreAcks == 0)
+		require_Len(t, numPreAcks, 0)
 	}
 }
 
@@ -7862,27 +7877,27 @@ func TestNoRaceJetStreamClusterUnbalancedInterestMultipleFilteredConsumers(t *te
 
 	ci, err := js.ConsumerInfo("EVENTS", "D")
 	require_NoError(t, err)
-	require_True(t, ci.NumPending == 0)
-	require_True(t, ci.NumAckPending == 0)
-	require_True(t, ci.Delivered.Consumer == 500)
-	require_True(t, ci.Delivered.Stream == 1000)
-	require_True(t, ci.AckFloor.Consumer == 500)
-	require_True(t, ci.AckFloor.Stream == 1000)
+	require_Equal(t, ci.NumPending, 0)
+	require_Equal(t, ci.NumAckPending, 0)
+	require_Equal(t, ci.Delivered.Consumer, 500)
+	require_Equal(t, ci.Delivered.Stream, 1000)
+	require_Equal(t, ci.AckFloor.Consumer, 500)
+	require_Equal(t, ci.AckFloor.Stream, 1000)
 
 	// Check final stream state on all servers.
 	for _, s := range c.servers {
 		mset, err := s.GlobalAccount().lookupStream("EVENTS")
 		require_NoError(t, err)
 		state := mset.state()
-		require_True(t, state.Msgs == 0)
-		require_True(t, state.FirstSeq == 1001)
-		require_True(t, state.LastSeq == 1000)
-		require_True(t, state.Consumers == 2)
+		require_Equal(t, state.Msgs, 0)
+		require_Equal(t, state.FirstSeq, 1001)
+		require_Equal(t, state.LastSeq, 1000)
+		require_Equal(t, state.Consumers, 2)
 		// Now check preAcks
 		mset.mu.RLock()
 		numPreAcks := len(mset.preAcks)
 		mset.mu.RUnlock()
-		require_True(t, numPreAcks == 0)
+		require_Len(t, numPreAcks, 0)
 	}
 }
 
@@ -10717,27 +10732,42 @@ func TestNoRaceJetStreamClusterMemoryWorkQueueLastSequenceResetAfterRestart(t *t
 			nc, js := jsClientConnect(t, c.randomServer())
 			defer nc.Close()
 
-			_, err := js.AddStream(&nats.StreamConfig{
-				Name:      fmt.Sprintf("TEST:%d", n),
-				Storage:   nats.MemoryStorage,
-				Retention: nats.WorkQueuePolicy,
-				Subjects:  []string{fmt.Sprintf("foo.%d.*", n)},
-				Replicas:  3,
-			}, nats.MaxWait(30*time.Second))
-			require_NoError(t, err)
+			checkFor(t, 5*time.Second, time.Second, func() error {
+				_, err := js.AddStream(&nats.StreamConfig{
+					Name:      fmt.Sprintf("TEST:%d", n),
+					Storage:   nats.MemoryStorage,
+					Retention: nats.WorkQueuePolicy,
+					Subjects:  []string{fmt.Sprintf("foo.%d.*", n)},
+					Replicas:  3,
+				}, nats.MaxWait(time.Second))
+				return err
+			})
+
 			subj := fmt.Sprintf("foo.%d.bar", n)
 			for i := 0; i < 22; i++ {
-				js.Publish(subj, nil)
+				checkFor(t, 5*time.Second, time.Second, func() error {
+					_, err := js.Publish(subj, nil)
+					return err
+				})
 			}
-			// Now consumer them all as well.
-			sub, err := js.PullSubscribe(subj, "wq")
-			require_NoError(t, err)
-			msgs, err := sub.Fetch(22, nats.MaxWait(20*time.Second))
-			require_NoError(t, err)
+			// Now consume them all as well.
+			var err error
+			var sub *nats.Subscription
+			checkFor(t, 5*time.Second, time.Second, func() error {
+				sub, err = js.PullSubscribe(subj, "wq")
+				return err
+			})
+
+			var msgs []*nats.Msg
+			checkFor(t, 5*time.Second, time.Second, func() error {
+				msgs, err = sub.Fetch(22, nats.MaxWait(time.Second))
+				return err
+			})
 			require_Equal(t, len(msgs), 22)
 			for _, m := range msgs {
-				err := m.AckSync()
-				require_NoError(t, err)
+				checkFor(t, 5*time.Second, time.Second, func() error {
+					return m.AckSync()
+				})
 			}
 		}(i)
 	}

@@ -864,8 +864,10 @@ func (s *Server) processJSAPIRoutedRequests() {
 	for {
 		select {
 		case <-queue.ch:
-			reqs := queue.pop()
-			for _, r := range reqs {
+			// Only pop one item at a time here, otherwise if the system is recovering
+			// from queue buildup, then one worker will pull off all the tasks and the
+			// others will be starved of work.
+			for r, ok := queue.popOne(); ok && r != nil; r, ok = queue.popOne() {
 				client.pa = r.pa
 				start := time.Now()
 				r.jsub.icb(r.sub, client, r.acc, r.subject, r.reply, r.msg)
@@ -874,7 +876,6 @@ func (s *Server) processJSAPIRoutedRequests() {
 				}
 				atomic.AddInt64(&js.apiInflight, -1)
 			}
-			queue.recycle(&reqs)
 		case <-s.quitCh:
 			return
 		}
@@ -3416,7 +3417,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 			Time: start,
 		},
 		Stream: streamName,
-		Client: ci,
+		Client: ci.forAdvisory(),
 		Domain: domain,
 	})
 
@@ -3548,7 +3549,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 					Start:  start,
 					End:    end,
 					Bytes:  int64(total),
-					Client: ci,
+					Client: ci.forAdvisory(),
 					Domain: domain,
 				})
 
@@ -3681,7 +3682,7 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, _ *Accoun
 			},
 			Stream: mset.name(),
 			State:  sr.State,
-			Client: ci,
+			Client: ci.forAdvisory(),
 			Domain: s.getOpts().JetStreamDomain,
 		})
 
@@ -3699,7 +3700,7 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, _ *Accoun
 			Stream: mset.name(),
 			Start:  start,
 			End:    end,
-			Client: ci,
+			Client: ci.forAdvisory(),
 			Domain: s.getOpts().JetStreamDomain,
 		})
 
@@ -4264,8 +4265,16 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 		}
 
 		js.mu.RLock()
+		meta := cc.meta
+		js.mu.RUnlock()
+
+		// Since these could wait on the Raft group lock, don't do so under the JS lock.
+		ourID := meta.ID()
+		groupLeader := meta.GroupLeader()
+		groupCreated := meta.Created()
+
+		js.mu.RLock()
 		isLeader, sa, ca := cc.isLeader(), js.streamAssignment(acc.Name, streamName), js.consumerAssignment(acc.Name, streamName, consumerName)
-		ourID := cc.meta.ID()
 		var rg *raftGroup
 		var offline, isMember bool
 		if ca != nil {
@@ -4279,7 +4288,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 		// Also capture if we think there is no meta leader.
 		var isLeaderLess bool
 		if !isLeader {
-			isLeaderLess = cc.meta.GroupLeader() == _EMPTY_ && time.Since(cc.meta.Created()) > lostQuorumIntervalDefault
+			isLeaderLess = groupLeader == _EMPTY_ && time.Since(groupCreated) > lostQuorumIntervalDefault
 		}
 		js.mu.RUnlock()
 
@@ -4489,7 +4498,7 @@ func (s *Server) sendJetStreamAPIAuditAdvisory(ci *ClientInfo, acc *Account, sub
 			Time: time.Now().UTC(),
 		},
 		Server:   s.Name(),
-		Client:   ci,
+		Client:   ci.forAdvisory(),
 		Subject:  subject,
 		Request:  request,
 		Response: response,

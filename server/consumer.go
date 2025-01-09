@@ -1415,8 +1415,23 @@ func (o *consumer) unsubscribe(sub *subscription) {
 
 // We need to make sure we protect access to the outq.
 // Do all advisory sends here.
-func (o *consumer) sendAdvisory(subj string, msg []byte) {
-	o.outq.sendMsg(subj, msg)
+func (o *consumer) sendAdvisory(subject string, e any) {
+	if o.acc == nil {
+		return
+	}
+
+	// If there is no one listening for this advisory then save ourselves the effort
+	// and don't bother encoding the JSON or sending it.
+	if sl := o.acc.sl; (sl != nil && !sl.HasInterest(subject)) && !o.srv.hasGatewayInterest(o.acc.Name, subject) {
+		return
+	}
+
+	j, err := json.Marshal(e)
+	if err != nil {
+		return
+	}
+
+	o.outq.sendMsg(subject, j)
 }
 
 func (o *consumer) sendDeleteAdvisoryLocked() {
@@ -1432,13 +1447,8 @@ func (o *consumer) sendDeleteAdvisoryLocked() {
 		Domain:   o.srv.getOpts().JetStreamDomain,
 	}
 
-	j, err := json.Marshal(e)
-	if err != nil {
-		return
-	}
-
 	subj := JSAdvisoryConsumerDeletedPre + "." + o.stream + "." + o.name
-	o.sendAdvisory(subj, j)
+	o.sendAdvisory(subj, e)
 }
 
 func (o *consumer) sendCreateAdvisory() {
@@ -1457,13 +1467,8 @@ func (o *consumer) sendCreateAdvisory() {
 		Domain:   o.srv.getOpts().JetStreamDomain,
 	}
 
-	j, err := json.Marshal(e)
-	if err != nil {
-		return
-	}
-
 	subj := JSAdvisoryConsumerCreatedPre + "." + o.stream + "." + o.name
-	o.sendAdvisory(subj, j)
+	o.sendAdvisory(subj, e)
 }
 
 // Created returns created time.
@@ -1573,6 +1578,8 @@ var (
 	consumerNotActiveMaxInterval   = defaultConsumerNotActiveMaxInterval
 )
 
+// deleteNotActive must only be called from time.AfterFunc or in its own
+// goroutine, as it can block on clean-up.
 func (o *consumer) deleteNotActive() {
 	o.mu.Lock()
 	if o.mset == nil {
@@ -1613,7 +1620,24 @@ func (o *consumer) deleteNotActive() {
 
 	s, js := o.mset.srv, o.srv.js.Load()
 	acc, stream, name, isDirect := o.acc.Name, o.stream, o.name, o.cfg.Direct
+	var qch, cqch chan struct{}
+	if o.srv != nil {
+		qch = o.srv.quitCh
+	}
+	if o.js != nil {
+		cqch = o.js.clusterQuitC()
+	}
 	o.mu.Unlock()
+
+	// Useful for pprof.
+	setGoRoutineLabels(pprofLabels{
+		"account":  acc,
+		"stream":   stream,
+		"consumer": name,
+	})
+
+	// We will delete locally regardless.
+	defer o.delete()
 
 	// If we are clustered, check if we still have this consumer assigned.
 	// If we do forward a proposal to delete ourselves to the metacontroller leader.
@@ -1637,38 +1661,40 @@ func (o *consumer) deleteNotActive() {
 		if ca != nil && cc != nil {
 			// Check to make sure we went away.
 			// Don't think this needs to be a monitored go routine.
-			go func() {
-				jitter := time.Duration(rand.Int63n(int64(consumerNotActiveStartInterval)))
-				interval := consumerNotActiveStartInterval + jitter
-				ticker := time.NewTicker(interval)
-				defer ticker.Stop()
-				for range ticker.C {
-					js.mu.RLock()
-					if js.shuttingDown {
-						js.mu.RUnlock()
-						return
-					}
-					nca := js.consumerAssignment(acc, stream, name)
-					js.mu.RUnlock()
-					// Make sure this is not a new consumer with the same name.
-					if nca != nil && nca == ca {
-						s.Warnf("Consumer assignment for '%s > %s > %s' not cleaned up, retrying", acc, stream, name)
-						meta.ForwardProposal(removeEntry)
-						if interval < consumerNotActiveMaxInterval {
-							interval *= 2
-							ticker.Reset(interval)
-						}
-						continue
-					}
-					// We saw that consumer has been removed, all done.
+			jitter := time.Duration(rand.Int63n(int64(consumerNotActiveStartInterval)))
+			interval := consumerNotActiveStartInterval + jitter
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+				case <-qch:
+					return
+				case <-cqch:
 					return
 				}
-			}()
+				js.mu.RLock()
+				if js.shuttingDown {
+					js.mu.RUnlock()
+					return
+				}
+				nca := js.consumerAssignment(acc, stream, name)
+				js.mu.RUnlock()
+				// Make sure this is not a new consumer with the same name.
+				if nca != nil && nca == ca {
+					s.Warnf("Consumer assignment for '%s > %s > %s' not cleaned up, retrying", acc, stream, name)
+					meta.ForwardProposal(removeEntry)
+					if interval < consumerNotActiveMaxInterval {
+						interval *= 2
+						ticker.Reset(interval)
+					}
+					continue
+				}
+				// We saw that consumer has been removed, all done.
+				return
+			}
 		}
 	}
-
-	// We will delete here regardless.
-	o.delete()
 }
 
 func (o *consumer) watchGWinterest() {
@@ -2382,12 +2408,7 @@ func (o *consumer) processNak(sseq, dseq, dc uint64, nak []byte) {
 		Domain:      o.srv.getOpts().JetStreamDomain,
 	}
 
-	j, err := json.Marshal(e)
-	if err != nil {
-		return
-	}
-
-	o.sendAdvisory(o.nakEventT, j)
+	o.sendAdvisory(o.nakEventT, e)
 
 	// Check to see if we have delays attached.
 	if len(nak) > len(AckNak) {
@@ -2462,15 +2483,8 @@ func (o *consumer) processTerm(sseq, dseq, dc uint64, reason, reply string) bool
 		Domain:      o.srv.getOpts().JetStreamDomain,
 	}
 
-	j, err := json.Marshal(e)
-	if err != nil {
-		// We had an error during the marshal, so we can't send the advisory,
-		// but we still need to tell the caller that the ack was processed.
-		return ackedInPlace
-	}
-
 	subj := JSAdvisoryConsumerMsgTerminatedPre + "." + o.stream + "." + o.name
-	o.sendAdvisory(subj, j)
+	o.sendAdvisory(subj, e)
 	return ackedInPlace
 }
 
@@ -2765,12 +2779,7 @@ func (o *consumer) sampleAck(sseq, dseq, dc uint64) {
 		Domain:      o.srv.getOpts().JetStreamDomain,
 	}
 
-	j, err := json.Marshal(e)
-	if err != nil {
-		return
-	}
-
-	o.sendAdvisory(o.ackEventT, j)
+	o.sendAdvisory(o.ackEventT, e)
 }
 
 // Process an ACK.
@@ -3515,12 +3524,7 @@ func (o *consumer) notifyDeliveryExceeded(sseq, dc uint64) {
 		Domain:     o.srv.getOpts().JetStreamDomain,
 	}
 
-	j, err := json.Marshal(e)
-	if err != nil {
-		return
-	}
-
-	o.sendAdvisory(o.deliveryExcEventT, j)
+	o.sendAdvisory(o.deliveryExcEventT, e)
 }
 
 // Check if the candidate subject matches a filter if its present.
@@ -5379,6 +5383,7 @@ func (o *consumer) requestNextMsgSubject() string {
 
 func (o *consumer) decStreamPending(sseq uint64, subj string) {
 	o.mu.Lock()
+
 	// Update our cached num pending only if we think deliverMsg has not done so.
 	if sseq >= o.sseq && o.isFilteredMatch(subj) {
 		o.npc--
@@ -5390,6 +5395,7 @@ func (o *consumer) decStreamPending(sseq uint64, subj string) {
 	if o.rdc != nil {
 		rdc = o.rdc[sseq]
 	}
+
 	o.mu.Unlock()
 
 	// If it was pending process it like an ack.

@@ -324,6 +324,28 @@ func (ci *ClientInfo) forAssignmentSnap() *ClientInfo {
 	}
 }
 
+// forProposal returns the minimum amount of ClientInfo we need for assignment proposals.
+func (ci *ClientInfo) forProposal() *ClientInfo {
+	if ci == nil {
+		return nil
+	}
+	cci := *ci
+	cci.Jwt = _EMPTY_
+	cci.IssuerKey = _EMPTY_
+	return &cci
+}
+
+// forAdvisory returns the minimum amount of ClientInfo we need for JS advisory events.
+func (ci *ClientInfo) forAdvisory() *ClientInfo {
+	if ci == nil {
+		return nil
+	}
+	cci := *ci
+	cci.Jwt = _EMPTY_
+	cci.Alternates = nil
+	return &cci
+}
+
 // ServerStats hold various statistics that we will periodically send out.
 type ServerStats struct {
 	Start            time.Time      `json:"start"`
