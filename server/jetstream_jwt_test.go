@@ -325,6 +325,8 @@ func TestJetStreamJWTMove(t *testing.T) {
 		require_False(t, s.JetStreamEnabled())
 		updateJwt(t, s.ClientURL(), sysCreds, accJwt, 10)
 
+		sc.waitOnAccount(aExpPub)
+
 		s = sc.serverByName("C2-S1")
 		require_False(t, s.JetStreamEnabled())
 
@@ -609,6 +611,8 @@ func TestJetStreamJWTClusteredTiersChange(t *testing.T) {
 	updateJwt(t, c.randomServer().ClientURL(), sysCreds, sysJwt, 3)
 	updateJwt(t, c.randomServer().ClientURL(), sysCreds, accJwt1, 3)
 
+	c.waitOnAccount(aExpPub)
+
 	nc := natsConnect(t, c.randomServer().ClientURL(), nats.UserCredentials(accCreds))
 	defer nc.Close()
 
@@ -692,6 +696,8 @@ func TestJetStreamJWTClusteredDeleteTierWithStreamAndMove(t *testing.T) {
 
 	updateJwt(t, c.randomServer().ClientURL(), sysCreds, sysJwt, 3)
 	updateJwt(t, c.randomServer().ClientURL(), sysCreds, accJwt1, 3)
+
+	c.waitOnAccount(aExpPub)
 
 	nc := natsConnect(t, c.randomServer().ClientURL(), nats.UserCredentials(accCreds))
 	defer nc.Close()
