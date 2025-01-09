@@ -864,8 +864,10 @@ func (s *Server) processJSAPIRoutedRequests() {
 	for {
 		select {
 		case <-queue.ch:
-			reqs := queue.pop()
-			for _, r := range reqs {
+			// Only pop one item at a time here, otherwise if the system is recovering
+			// from queue buildup, then one worker will pull off all the tasks and the
+			// others will be starved of work.
+			for r, ok := queue.popOne(); ok && r != nil; r, ok = queue.popOne() {
 				client.pa = r.pa
 				start := time.Now()
 				r.jsub.icb(r.sub, client, r.acc, r.subject, r.reply, r.msg)
@@ -874,7 +876,6 @@ func (s *Server) processJSAPIRoutedRequests() {
 				}
 				atomic.AddInt64(&js.apiInflight, -1)
 			}
-			queue.recycle(&reqs)
 		case <-s.quitCh:
 			return
 		}
