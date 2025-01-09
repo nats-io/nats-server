@@ -18,7 +18,7 @@
 
 - [Twitter](https://twitter.com/nats_io): Follow us on Twitter!
 - [Google Groups](https://groups.google.com/forum/#!forum/natsio): Where you can ask questions
-- [Slack](https://natsio.slack.com): Click [here](https://slack.nats.io) to join. You can ask question to our maintainers and to the rich and active community.
+- [Slack](https://natsio.slack.com): Click [here](https://slack.nats.io) to join. You can ask questions to our maintainers and to the rich and active community.
 
 ## Contributing
 
@@ -38,7 +38,7 @@ If you are interested in contributing to NATS, read about our...
 [Build-Status-Url]: https://travis-ci.com/github/nats-io/nats-server
 [Build-Status-Image]: https://travis-ci.org/nats-io/nats-server.svg?branch=main
 [Release-Url]: https://github.com/nats-io/nats-server/releases/latest
-[Release-image]: https://img.shields.io/github/v/release/nats-io/nats-server
+[Release-Image]: https://img.shields.io/github/v/release/nats-io/nats-server
 [Coverage-Url]: https://coveralls.io/r/nats-io/nats-server?branch=main
 [Coverage-image]: https://coveralls.io/repos/github/nats-io/nats-server/badge.svg?branch=main
 [ReportCard-Url]: https://goreportcard.com/report/nats-io/nats-server
