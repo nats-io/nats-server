@@ -1854,7 +1854,7 @@ func (fs *fileStore) recoverTTLState() error {
 	}
 
 	defer fs.resetAgeChk(0)
-	if fs.ttlseq <= fs.state.LastSeq {
+	if fs.state.Msgs > 0 && fs.ttlseq <= fs.state.LastSeq {
 		fs.warn("TTL state is outdated; attempting to recover using linear scan (seq %d to %d)", fs.ttlseq, fs.state.LastSeq)
 		var sm StoreMsg
 		mb := fs.selectMsgBlock(fs.ttlseq)
