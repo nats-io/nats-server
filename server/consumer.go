@@ -1853,6 +1853,13 @@ func (o *consumer) deleteNotActive() {
 
 	s, js := o.mset.srv, o.srv.js.Load()
 	acc, stream, name, isDirect := o.acc.Name, o.stream, o.name, o.cfg.Direct
+	var qch, cqch chan struct{}
+	if o.srv != nil {
+		qch = o.srv.quitCh
+	}
+	if o.js != nil {
+		cqch = o.js.clusterQuitC()
+	}
 	o.mu.Unlock()
 
 	// Useful for pprof.
@@ -1891,7 +1898,14 @@ func (o *consumer) deleteNotActive() {
 			interval := consumerNotActiveStartInterval + jitter
 			ticker := time.NewTicker(interval)
 			defer ticker.Stop()
-			for range ticker.C {
+			for {
+				select {
+				case <-ticker.C:
+				case <-qch:
+					return
+				case <-cqch:
+					return
+				}
 				js.mu.RLock()
 				if js.shuttingDown {
 					js.mu.RUnlock()
