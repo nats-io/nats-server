@@ -4,7 +4,7 @@ Thanks for your interest in contributing! This document contains `nats-io/nats-s
 
 ## Getting started
 
-There are there general ways you can contribute to this repo:
+There are three general ways you can contribute to this repo:
 
 - Proposing an enhancement or new feature
 - Reporting a bug or regression
