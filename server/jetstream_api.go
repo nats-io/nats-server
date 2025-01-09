@@ -4701,10 +4701,14 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 			return
 		}
 
+		js.mu.RLock()
+		meta := cc.meta
+		js.mu.RUnlock()
+
 		// Since these could wait on the Raft group lock, don't do so under the JS lock.
-		ourID := cc.meta.ID()
-		groupLeader := cc.meta.GroupLeader()
-		groupCreated := cc.meta.Created()
+		ourID := meta.ID()
+		groupLeader := meta.GroupLeader()
+		groupCreated := meta.Created()
 
 		js.mu.RLock()
 		isLeader, sa, ca := cc.isLeader(), js.streamAssignment(acc.Name, streamName), js.consumerAssignment(acc.Name, streamName, consumerName)
