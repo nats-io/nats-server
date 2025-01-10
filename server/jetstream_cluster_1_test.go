@@ -7092,6 +7092,237 @@ func TestJetStreamClusterClearAllPreAcksOnRemoveMsg(t *testing.T) {
 	checkPreAcks(3, 0)
 }
 
+func TestJetStreamClusterStreamHealthCheckMustNotRecreate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	waitForStreamAssignments := func() {
+		t.Helper()
+		checkFor(t, 5*time.Second, time.Second, func() error {
+			for _, s := range c.servers {
+				if s.getJetStream().streamAssignment(globalAccountName, "TEST") == nil {
+					return fmt.Errorf("stream assignment not found on %s", s.Name())
+				}
+			}
+			return nil
+		})
+	}
+	waitForNoStreamAssignments := func() {
+		t.Helper()
+		checkFor(t, 5*time.Second, time.Second, func() error {
+			for _, s := range c.servers {
+				if s.getJetStream().streamAssignment(globalAccountName, "TEST") != nil {
+					return fmt.Errorf("stream assignment still available on %s", s.Name())
+				}
+			}
+			return nil
+		})
+	}
+	getStreamAssignment := func(rs *Server) (*jetStream, *Account, *streamAssignment, *stream) {
+		acc, err := rs.lookupAccount(globalAccountName)
+		require_NoError(t, err)
+		mset, err := acc.lookupStream("TEST")
+		require_NotNil(t, err)
+
+		sjs := rs.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+
+		sas := sjs.cluster.streams[globalAccountName]
+		require_True(t, sas != nil)
+		sa := sas["TEST"]
+		require_True(t, sa != nil)
+		sa.Created = time.Time{}
+		return sjs, acc, sa, mset
+	}
+	checkNodeIsClosed := func(sa *streamAssignment) {
+		t.Helper()
+		require_True(t, sa.Group != nil)
+		rg := sa.Group
+		require_True(t, rg.node != nil)
+		n := rg.node
+		require_Equal(t, n.State(), Closed)
+	}
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	waitForStreamAssignments()
+
+	// We manually stop the RAFT node and ensure it doesn't get restarted.
+	rs := c.randomNonStreamLeader(globalAccountName, "TEST")
+	sjs, acc, sa, mset := getStreamAssignment(rs)
+	require_True(t, sa.Group != nil)
+	rg := sa.Group
+	require_True(t, rg.node != nil)
+	n := rg.node
+	n.Stop()
+	n.WaitForStop()
+
+	// We wait for the monitor to exit, so we can set the flag back manually.
+	checkFor(t, 5*time.Second, time.Second, func() error {
+		mset.mu.RLock()
+		defer mset.mu.RUnlock()
+		if mset.inMonitor {
+			return errors.New("waiting for monitor to stop")
+		}
+		return nil
+	})
+	mset.mu.Lock()
+	mset.inMonitor = true
+	mset.mu.Unlock()
+
+	// The RAFT node should be closed. Checking health must not change that.
+	// Simulates a race condition where we're shutting down, but we're still in the stream monitor.
+	checkNodeIsClosed(sa)
+	sjs.isStreamHealthy(acc, sa)
+	checkNodeIsClosed(sa)
+
+	err = js.DeleteStream("TEST")
+	require_NoError(t, err)
+	waitForNoStreamAssignments()
+
+	// Underlying layer would be aware the health check made a copy.
+	// So we sneakily set these values back, which simulates a race condition where
+	// the health check is called while the deletion is in progress. This could happen
+	// depending on how the locks are used.
+	sjs.mu.Lock()
+	sjs.cluster.streams = make(map[string]map[string]*streamAssignment)
+	sjs.cluster.streams[globalAccountName] = make(map[string]*streamAssignment)
+	sjs.cluster.streams[globalAccountName]["TEST"] = sa
+	sa.Group.node = n
+	sjs.mu.Unlock()
+
+	// The underlying stream has been deleted. Checking health must not recreate the stream.
+	checkNodeIsClosed(sa)
+	sjs.isStreamHealthy(acc, sa)
+	checkNodeIsClosed(sa)
+}
+
+func TestJetStreamClusterConsumerHealthCheckMustNotRecreate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	waitForConsumerAssignments := func() {
+		t.Helper()
+		checkFor(t, 5*time.Second, time.Second, func() error {
+			for _, s := range c.servers {
+				if s.getJetStream().consumerAssignment(globalAccountName, "TEST", "CONSUMER") == nil {
+					return fmt.Errorf("stream assignment not found on %s", s.Name())
+				}
+			}
+			return nil
+		})
+	}
+	waitForNoConsumerAssignments := func() {
+		t.Helper()
+		checkFor(t, 5*time.Second, time.Second, func() error {
+			for _, s := range c.servers {
+				if s.getJetStream().consumerAssignment(globalAccountName, "TEST", "CONSUMER") != nil {
+					return fmt.Errorf("stream assignment still available on %s", s.Name())
+				}
+			}
+			return nil
+		})
+	}
+	getConsumerAssignment := func(rs *Server) (*jetStream, *streamAssignment, *consumerAssignment, *stream) {
+		acc, err := rs.lookupAccount(globalAccountName)
+		require_NoError(t, err)
+		mset, err := acc.lookupStream("TEST")
+		require_NotNil(t, err)
+
+		sjs := rs.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+
+		sas := sjs.cluster.streams[globalAccountName]
+		require_True(t, sas != nil)
+		sa := sas["TEST"]
+		require_True(t, sa != nil)
+		ca := sa.consumers["CONSUMER"]
+		require_True(t, ca != nil)
+		ca.Created = time.Time{}
+		return sjs, sa, ca, mset
+	}
+	checkNodeIsClosed := func(ca *consumerAssignment) {
+		t.Helper()
+		require_True(t, ca.Group != nil)
+		rg := ca.Group
+		require_True(t, rg.node != nil)
+		n := rg.node
+		require_Equal(t, n.State(), Closed)
+	}
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "CONSUMER"})
+	require_NoError(t, err)
+	waitForConsumerAssignments()
+
+	// We manually stop the RAFT node and ensure it doesn't get restarted.
+	rs := c.randomNonConsumerLeader(globalAccountName, "TEST", "CONSUMER")
+	sjs, sa, ca, mset := getConsumerAssignment(rs)
+	require_True(t, ca.Group != nil)
+	rg := ca.Group
+	require_True(t, rg.node != nil)
+	n := rg.node
+	n.Stop()
+	n.WaitForStop()
+
+	// The RAFT node should be closed. Checking health must not change that.
+	// Simulates a race condition where we're shutting down.
+	checkNodeIsClosed(ca)
+	sjs.isConsumerHealthy(mset, "CONSUMER", ca)
+	checkNodeIsClosed(ca)
+
+	// We create a new RAFT group, the health check should detect this skew and restart.
+	err = sjs.createRaftGroup(globalAccountName, ca.Group, MemoryStorage, pprofLabels{})
+	require_NoError(t, err)
+	sjs.mu.Lock()
+	// We set creating to now, since previously it would delete all data but NOT restart if created within <10s.
+	ca.Created = time.Now()
+	// Setting ca.pending, since a side effect of js.processConsumerAssignment is that it resets it.
+	ca.pending = true
+	sjs.mu.Unlock()
+	sjs.isConsumerHealthy(mset, "CONSUMER", ca)
+	require_False(t, ca.pending)
+
+	err = js.DeleteConsumer("TEST", "CONSUMER")
+	require_NoError(t, err)
+	waitForNoConsumerAssignments()
+
+	// Underlying layer would be aware the health check made a copy.
+	// So we sneakily set these values back, which simulates a race condition where
+	// the health check is called while the deletion is in progress. This could happen
+	// depending on how the locks are used.
+	sjs.mu.Lock()
+	sjs.cluster.streams = make(map[string]map[string]*streamAssignment)
+	sjs.cluster.streams[globalAccountName] = make(map[string]*streamAssignment)
+	sjs.cluster.streams[globalAccountName]["TEST"] = sa
+	ca.Created = time.Time{}
+	ca.Group.node = n
+	ca.deleted = false
+	sjs.mu.Unlock()
+
+	// The underlying consumer has been deleted. Checking health must not recreate the consumer.
+	checkNodeIsClosed(ca)
+	sjs.isConsumerHealthy(mset, "CONSUMER", ca)
+	checkNodeIsClosed(ca)
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
