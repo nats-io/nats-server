@@ -79,6 +79,12 @@ func TestJetStreamSetStaticStreamMetadata(t *testing.T) {
 			prev:             &StreamConfig{},
 			expectedMetadata: metadataAtLevel("0"),
 		},
+		{
+			desc:             "create/AllowMsgTTL",
+			cfg:              &StreamConfig{AllowMsgTTL: true},
+			prev:             nil,
+			expectedMetadata: metadataAtLevel("1"),
+		},
 	} {
 		t.Run(test.desc, func(t *testing.T) {
 			setStaticStreamMetadata(test.cfg, test.prev)
