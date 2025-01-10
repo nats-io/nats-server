@@ -32,6 +32,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	jsonv2 "github.com/go-json-experiment/json"
+	jsonv1 "github.com/go-json-experiment/json/v1"
 	"github.com/klauspost/compress/s2"
 	"github.com/minio/highwayhash"
 	"github.com/nats-io/nuid"
@@ -1583,7 +1585,10 @@ func (js *jetStream) metaSnapshot() []byte {
 
 	// Track how long it took to marshal the JSON
 	mstart := time.Now()
-	b, _ := json.Marshal(streams)
+	b, err := jsonv2.Marshal(streams, jsonv1.DefaultOptionsV1())
+	if err != nil {
+		panic(err)
+	}
 	mend := time.Since(mstart)
 
 	js.mu.RUnlock()
@@ -1607,7 +1612,7 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 		if err != nil {
 			return err
 		}
-		if err = json.Unmarshal(jse, &wsas); err != nil {
+		if err = jsonv2.Unmarshal(jse, &wsas, jsonv1.DefaultOptionsV1()); err != nil {
 			return err
 		}
 	}
