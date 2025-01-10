@@ -2102,6 +2102,7 @@ func TestJetStreamConsumerWithPriorityGroups(t *testing.T) {
 		{"Pinned Consumer with empty Priority Group, clustered", cnc, "TEST", "PINNED_NO_GROUP", []string{""}, PriorityPinnedClient, &ApiError{ErrCode: uint16(JSConsumerEmptyGroupName)}},
 		{"Pinned Consumer with empty Priority Group", nc, "TEST", "PINNED_NO_GROUP", []string{""}, PriorityOverflow, &ApiError{ErrCode: uint16(JSConsumerEmptyGroupName)}},
 		{"Pinned Consumer with empty Priority Group, clustered", cnc, "TEST", "PINNED_NO_GROUP", []string{""}, PriorityOverflow, &ApiError{ErrCode: uint16(JSConsumerEmptyGroupName)}},
+		{"Consumer with `none` policy priority", nc, "TEST", "NONE", []string{"A"}, PriorityNone, nil},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 

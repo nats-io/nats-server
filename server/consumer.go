@@ -249,6 +249,8 @@ func (pp PriorityPolicy) MarshalJSON() ([]byte, error) {
 		return PriorityOverflowJSONBytes, nil
 	case PriorityPinnedClient:
 		return PriorityPinnedClientJSONBytes, nil
+	case PriorityNone:
+		return PriorityNoneJSONBytes, nil
 	default:
 		return nil, fmt.Errorf("unknown priority policy: %v", pp)
 	}
