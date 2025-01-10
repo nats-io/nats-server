@@ -1515,14 +1515,12 @@ func (c *cluster) waitOnClusterReadyWithNumPeers(numPeersExpected int) {
 	c.t.Helper()
 	var leader *Server
 	expires := time.Now().Add(40 * time.Second)
+	// Make sure we have all peers, and take into account the meta leader could still change.
 	for time.Now().Before(expires) {
-		if leader = c.leader(); leader != nil {
-			break
+		if leader = c.leader(); leader == nil {
+			time.Sleep(50 * time.Millisecond)
+			continue
 		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	// Now make sure we have all peers.
-	for leader != nil && time.Now().Before(expires) {
 		if len(leader.JetStreamClusterPeers()) == numPeersExpected {
 			time.Sleep(100 * time.Millisecond)
 			return
