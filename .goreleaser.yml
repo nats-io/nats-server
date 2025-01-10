@@ -58,6 +58,7 @@ nfpms:
     formats:
       - deb
       - rpm
+    mtime: "{{ .CommitDate }}"
     contents:
       - src: /usr/bin/nats-server
         dst: /usr/local/bin/nats-server
