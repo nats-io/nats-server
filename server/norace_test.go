@@ -11293,7 +11293,8 @@ func TestNoRaceJetStreamClusterLargeMetaSnapshotTiming(t *testing.T) {
 	n := js.getMetaGroup()
 	// Now let's see how long it takes to create a meta snapshot and how big it is.
 	start := time.Now()
-	snap := js.metaSnapshot()
+	snap, err := js.metaSnapshot()
+	require_NoError(t, err)
 	require_NoError(t, n.InstallSnapshot(snap))
 	t.Logf("Took %v to snap meta with size of %v\n", time.Since(start), friendlyBytes(len(snap)))
 }

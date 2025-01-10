@@ -268,7 +268,12 @@ func (s *Server) JetStreamSnapshotMeta() error {
 		return errNotLeader
 	}
 
-	return meta.InstallSnapshot(js.metaSnapshot())
+	snap, err := js.metaSnapshot()
+	if err != nil {
+		return err
+	}
+
+	return meta.InstallSnapshot(snap)
 }
 
 func (s *Server) JetStreamStepdownStream(account, stream string) error {
@@ -1341,7 +1346,10 @@ func (js *jetStream) monitorCluster() {
 		}
 		// For the meta layer we want to snapshot when asked if we need one or have any entries that we can compact.
 		if ne, _ := n.Size(); ne > 0 || n.NeedSnapshot() {
-			if err := n.InstallSnapshot(js.metaSnapshot()); err == nil {
+			snap, err := js.metaSnapshot()
+			if err != nil {
+				s.Warnf("Error generating JetStream cluster snapshot: %v", err)
+			} else if err = n.InstallSnapshot(snap); err == nil {
 				lastSnapTime = time.Now()
 			} else if err != errNoSnapAvailable && err != errNodeClosed {
 				s.Warnf("Error snapshotting JetStream cluster state: %v", err)
@@ -1538,7 +1546,7 @@ func (js *jetStream) clusterStreamConfig(accName, streamName string) (StreamConf
 	return StreamConfig{}, false
 }
 
-func (js *jetStream) metaSnapshot() []byte {
+func (js *jetStream) metaSnapshot() ([]byte, error) {
 	start := time.Now()
 	js.mu.RLock()
 	s := js.srv
@@ -1578,15 +1586,21 @@ func (js *jetStream) metaSnapshot() []byte {
 
 	if len(streams) == 0 {
 		js.mu.RUnlock()
-		return nil
+		return nil, nil
 	}
 
 	// Track how long it took to marshal the JSON
 	mstart := time.Now()
-	b, _ := json.Marshal(streams)
+	b, err := json.Marshal(streams)
 	mend := time.Since(mstart)
 
 	js.mu.RUnlock()
+
+	// Must not be possible for a JSON marshaling error to result
+	// in an empty snapshot.
+	if err != nil {
+		return nil, err
+	}
 
 	// Track how long it took to compress the JSON
 	cstart := time.Now()
@@ -1597,7 +1611,7 @@ func (js *jetStream) metaSnapshot() []byte {
 		s.rateLimitFormatWarnf("Metalayer snapshot took %.3fs (streams: %d, consumers: %d, marshal: %.3fs, s2: %.3fs, uncompressed: %d, compressed: %d)",
 			took.Seconds(), nsa, nca, mend.Seconds(), cend.Seconds(), len(b), len(snap))
 	}
-	return snap
+	return snap, nil
 }
 
 func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecovering bool) error {
