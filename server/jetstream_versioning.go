@@ -30,7 +30,7 @@ const (
 //   - cfg!=nil, prevCfg!=nil		update stream: required metadata is updated
 //
 // Any dynamic metadata is removed, it must not be stored and only be added for responses.
-func setStaticStreamMetadata(cfg *StreamConfig, prevCfg *StreamConfig) {
+func setStaticStreamMetadata(cfg *StreamConfig, _ *StreamConfig) {
 	if cfg.Metadata == nil {
 		cfg.Metadata = make(map[string]string)
 	} else {
@@ -38,6 +38,17 @@ func setStaticStreamMetadata(cfg *StreamConfig, prevCfg *StreamConfig) {
 	}
 
 	var requiredApiLevel int
+	requires := func(level int) {
+		if level > requiredApiLevel {
+			requiredApiLevel = level
+		}
+	}
+
+	// TTLs were added in v2.11 and require API level 1.
+	if cfg.AllowMsgTTL {
+		requires(1)
+	}
+
 	cfg.Metadata[JSRequiredLevelMetadataKey] = strconv.Itoa(requiredApiLevel)
 }
 
@@ -59,7 +70,7 @@ func setDynamicStreamMetadata(cfg *StreamConfig) *StreamConfig {
 //   - cfg!=nil, prevCfg!=nil		update consumer: required metadata is updated
 //
 // Any dynamic metadata is removed, it must not be stored and only be added for responses.
-func setStaticConsumerMetadata(cfg *ConsumerConfig, prevCfg *ConsumerConfig) {
+func setStaticConsumerMetadata(cfg *ConsumerConfig, _ *ConsumerConfig) {
 	if cfg.Metadata == nil {
 		cfg.Metadata = make(map[string]string)
 	} else {
@@ -67,16 +78,21 @@ func setStaticConsumerMetadata(cfg *ConsumerConfig, prevCfg *ConsumerConfig) {
 	}
 
 	var requiredApiLevel int
+	requires := func(level int) {
+		if level > requiredApiLevel {
+			requiredApiLevel = level
+		}
+	}
 
 	// Added in 2.11, absent | zero is the feature is not used.
 	// one could be stricter and say even if its set but the time
 	// has already passed it is also not needed to restore the consumer
 	if cfg.PauseUntil != nil && !cfg.PauseUntil.IsZero() {
-		requiredApiLevel = 1
+		requires(1)
 	}
 
 	if cfg.PriorityPolicy != PriorityNone || cfg.PinnedTTL != 0 || len(cfg.PriorityGroups) > 0 {
-		requiredApiLevel = 1
+		requires(1)
 	}
 
 	cfg.Metadata[JSRequiredLevelMetadataKey] = strconv.Itoa(requiredApiLevel)
