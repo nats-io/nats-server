@@ -442,73 +442,6 @@ func (cc *jetStreamCluster) isStreamCurrent(account, stream string) bool {
 	return false
 }
 
-// Restart the stream in question.
-// Should only be called when the stream is known to be in a bad state.
-func (js *jetStream) restartStream(acc *Account, csa *streamAssignment) {
-	js.mu.Lock()
-	s, cc := js.srv, js.cluster
-	if cc == nil {
-		js.mu.Unlock()
-		return
-	}
-	// Need to lookup the one directly from the meta layer, what we get handed is a copy if coming from isStreamHealthy.
-	asa := cc.streams[acc.Name]
-	if asa == nil {
-		js.mu.Unlock()
-		return
-	}
-	sa := asa[csa.Config.Name]
-	if sa == nil {
-		js.mu.Unlock()
-		return
-	}
-	// Make sure to clear out the raft node if still present in the meta layer.
-	if rg := sa.Group; rg != nil && rg.node != nil {
-		if rg.node.State() != Closed {
-			rg.node.Stop()
-		}
-		rg.node = nil
-	}
-	sinceCreation := time.Since(sa.Created)
-	js.mu.Unlock()
-
-	// Process stream assignment to recreate.
-	// Check that we have given system enough time to start us up.
-	// This will be longer than obvious, and matches consumer logic in case system very busy.
-	if sinceCreation < 10*time.Second {
-		s.Debugf("Not restarting missing stream '%s > %s', too soon since creation %v",
-			acc, csa.Config.Name, sinceCreation)
-		return
-	}
-
-	js.processStreamAssignment(sa)
-
-	// If we had consumers assigned to this server they will be present in the copy, csa.
-	// They also need to be processed. The csa consumers is a copy of only our consumers,
-	// those assigned to us, but the consumer assignment's there are direct from the meta
-	// layer to make this part much easier and avoid excessive lookups.
-	for _, cca := range csa.consumers {
-		if cca.deleted {
-			continue
-		}
-		// Need to look up original as well here to make sure node is nil.
-		js.mu.Lock()
-		ca := sa.consumers[cca.Name]
-		if ca != nil && ca.Group != nil {
-			// Make sure the node is stopped if still running.
-			if node := ca.Group.node; node != nil && node.State() != Closed {
-				node.Stop()
-			}
-			// Make sure node is wiped.
-			ca.Group.node = nil
-		}
-		js.mu.Unlock()
-		if ca != nil {
-			js.processConsumerAssignment(ca)
-		}
-	}
-}
-
 // isStreamHealthy will determine if the stream is up to date or very close.
 // For R1 it will make sure the stream is present on this server.
 func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) bool {
@@ -534,7 +467,6 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) bool {
 	// First lookup stream and make sure its there.
 	mset, err := acc.lookupStream(streamName)
 	if err != nil {
-		js.restartStream(acc, sa)
 		return false
 	}
 
@@ -559,8 +491,6 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) bool {
 			s.Warnf("Detected stream cluster node skew '%s > %s'", acc.GetName(), streamName)
 			node.Delete()
 			mset.resetClusteredState(nil)
-		} else if node.State() == Closed {
-			js.restartStream(acc, sa)
 		}
 	}
 	return false
@@ -590,37 +520,9 @@ func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consum
 	node := ca.Group.node
 	js.mu.RUnlock()
 
-	// When we try to restart we nil out the node if applicable
-	// and reprocess the consumer assignment.
-	restartConsumer := func() {
-		mset.mu.RLock()
-		accName, streamName := mset.acc.GetName(), mset.cfg.Name
-		mset.mu.RUnlock()
-
-		js.mu.Lock()
-		deleted := ca.deleted
-		// Check that we have not just been created.
-		if !deleted && time.Since(ca.Created) < 10*time.Second {
-			s.Debugf("Not restarting missing consumer '%s > %s > %s', too soon since creation %v",
-				accName, streamName, consumer, time.Since(ca.Created))
-			js.mu.Unlock()
-			return
-		}
-		// Make sure the node is stopped if still running.
-		if node != nil && node.State() != Closed {
-			node.Stop()
-		}
-		ca.Group.node = nil
-		js.mu.Unlock()
-		if !deleted {
-			js.processConsumerAssignment(ca)
-		}
-	}
-
 	// Check if not running at all.
 	o := mset.lookupConsumer(consumer)
 	if o == nil {
-		restartConsumer()
 		return false
 	}
 
@@ -635,11 +537,12 @@ func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consum
 			s.Warnf("Detected consumer cluster node skew '%s > %s > %s'", accName, streamName, consumer)
 			node.Delete()
 			o.deleteWithoutAdvisory()
-			restartConsumer()
-		} else if node.State() == Closed {
-			// We have a consumer, and it should have a running node but it is closed.
-			o.stop()
-			restartConsumer()
+
+			// When we try to restart we nil out the node and reprocess the consumer assignment.
+			js.mu.Lock()
+			ca.Group.node = nil
+			js.mu.Unlock()
+			js.processConsumerAssignment(ca)
 		}
 	}
 	return false
