@@ -378,6 +378,25 @@ type ConsumerState struct {
 	Redelivered map[uint64]uint64 `json:"redelivered,omitempty"`
 }
 
+func (cs *ConsumerState) Clone() *ConsumerState {
+	delivered := SequencePair{cs.Delivered.Consumer, cs.Delivered.Stream}
+	ackFloor := SequencePair{cs.AckFloor.Consumer, cs.AckFloor.Stream}
+	pending := make(map[uint64]*Pending)
+	redelivered := make(map[uint64]uint64)
+	for k, v := range cs.Pending {
+		pending[k] = v
+	}
+	for k, v := range cs.Redelivered {
+		redelivered[k] = v
+	}
+	return &ConsumerState{
+		Delivered:   delivered,
+		AckFloor:    ackFloor,
+		Pending:     pending,
+		Redelivered: redelivered,
+	}
+}
+
 // Encode consumer state.
 func encodeConsumerState(state *ConsumerState) []byte {
 	var hdr [seqsHdrSize]byte

@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"math/rand"
 	"os"
@@ -32,6 +33,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	jsonv2 "github.com/go-json-experiment/json"
+	jsonv1 "github.com/go-json-experiment/json/v1"
 	"github.com/klauspost/compress/s2"
 	"github.com/minio/highwayhash"
 	"github.com/nats-io/nuid"
@@ -126,6 +129,27 @@ type raftGroup struct {
 	Preferred string      `json:"preferred,omitempty"`
 	// Internal
 	node RaftNode
+}
+
+// Clone copies some of the fields for JSON marshalling purposes only.
+func (rg *raftGroup) Clone() *raftGroup {
+	name := rg.Name
+	storage := rg.Storage
+	cluster := rg.Cluster
+	preferred := rg.Preferred
+	peers := make([]string, len(rg.Peers))
+	// copy(peers, rg.Peers)
+	for i, peer := range rg.Peers {
+		peer := peer
+		peers[i] = peer
+	}
+	return &raftGroup{
+		Name:      name,
+		Peers:     peers,
+		Storage:   storage,
+		Cluster:   cluster,
+		Preferred: preferred,
+	}
 }
 
 // streamAssignment is what the meta controller uses to assign streams to peers.
@@ -1437,7 +1461,19 @@ type writeableStreamAssignment struct {
 	Config    *StreamConfig `json:"stream"`
 	Group     *raftGroup    `json:"group"`
 	Sync      string        `json:"sync"`
-	Consumers []*consumerAssignment
+	Consumers []*writeableConsumerAssignment
+}
+
+type writeableConsumerAssignment struct {
+	Client  *ClientInfo     `json:"client,omitempty"`
+	Created time.Time       `json:"created"`
+	Name    string          `json:"name"`
+	Stream  string          `json:"stream"`
+	Config  *ConsumerConfig `json:"consumer"`
+	Group   *raftGroup      `json:"group"`
+	Subject string          `json:"subject,omitempty"`
+	Reply   string          `json:"reply,omitempty"`
+	State   *ConsumerState  `json:"state,omitempty"`
 }
 
 func (js *jetStream) clusterStreamConfig(accName, streamName string) (StreamConfig, bool) {
@@ -1466,9 +1502,9 @@ func (js *jetStream) metaSnapshot() ([]byte, error) {
 				Client:    sa.Client.forAssignmentSnap(),
 				Created:   sa.Created,
 				Config:    sa.Config,
-				Group:     sa.Group,
+				Group:     sa.Group.Clone(),
 				Sync:      sa.Sync,
-				Consumers: make([]*consumerAssignment, 0, len(sa.consumers)),
+				Consumers: make([]*writeableConsumerAssignment, 0, len(sa.consumers)),
 			}
 			for _, ca := range sa.consumers {
 				// Skip if the consumer is pending, we can't include it in our snapshot.
@@ -1476,11 +1512,21 @@ func (js *jetStream) metaSnapshot() ([]byte, error) {
 				if ca.pending {
 					continue
 				}
-				cca := *ca
-				cca.Stream = wsa.Config.Name // Needed for safe roll-backs.
-				cca.Client = cca.Client.forAssignmentSnap()
-				cca.Subject, cca.Reply = _EMPTY_, _EMPTY_
-				wsa.Consumers = append(wsa.Consumers, &cca)
+				ca := ca
+				wca := &writeableConsumerAssignment{}
+				wca.Client = ca.Client.forAssignmentSnap()
+				wca.Created = ca.Created
+				wca.Config = ca.Config
+				wca.Name = ca.Name
+				wca.Stream = wsa.Config.Name // Needed for safe roll-backs.
+				wca.Subject, wca.Reply = _EMPTY_, _EMPTY_
+				if ca.Group != nil {
+					wca.Group = ca.Group.Clone()
+				}
+				if ca.State != nil {
+					wca.State = ca.State.Clone()
+				}
+				wsa.Consumers = append(wsa.Consumers, wca)
 				nca++
 			}
 			streams = append(streams, wsa)
@@ -1491,40 +1537,39 @@ func (js *jetStream) metaSnapshot() ([]byte, error) {
 		js.mu.RUnlock()
 		return nil, nil
 	}
-
-	// Track how long it took to marshal the JSON
-	mstart := time.Now()
-	b, err := json.Marshal(streams)
-	mend := time.Since(mstart)
-
 	js.mu.RUnlock()
+	stime := time.Since(start)
+
+	// Track how long it took to marshal the JSON.
+	buf := &bytes.Buffer{}
+	snap := s2.NewWriter(buf)
+	mstart := time.Now()
+	err := jsonv2.MarshalWrite(snap, streams, jsonv1.DefaultOptionsV1())
+	snap.Close()
 
 	// Must not be possible for a JSON marshaling error to result
 	// in an empty snapshot.
 	if err != nil {
 		return nil, err
 	}
-
-	// Track how long it took to compress the JSON
-	cstart := time.Now()
-	snap := s2.Encode(nil, b)
-	cend := time.Since(cstart)
-
-	if took := time.Since(start); took > time.Second {
-		s.rateLimitFormatWarnf("Metalayer snapshot took %.3fs (streams: %d, consumers: %d, marshal: %.3fs, s2: %.3fs, uncompressed: %d, compressed: %d)",
-			took.Seconds(), nsa, nca, mend.Seconds(), cend.Seconds(), len(b), len(snap))
+	mend := time.Since(mstart)
+	if took := time.Since(start); took > time.Millisecond {
+		s.rateLimitFormatWarnf("Metalayer snapshot took %.3fs (streams: %d, consumers: %d, setup: %.6fs, write: %.3fs, size: %d)",
+			took.Seconds(), nsa, nca, stime.Seconds(), mend.Seconds(), buf.Len())
 	}
-	return snap, nil
+	return buf.Bytes(), nil
 }
 
 func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecovering bool) error {
 	var wsas []writeableStreamAssignment
 	if len(buf) > 0 {
-		jse, err := s2.Decode(nil, buf)
+		b := bytes.NewReader(buf)
+		jsebuf := s2.NewReader(b)
+		jse, err := io.ReadAll(jsebuf)
 		if err != nil {
 			return err
 		}
-		if err = json.Unmarshal(jse, &wsas); err != nil {
+		if err = jsonv2.Unmarshal(jse, &wsas, jsonv1.DefaultOptionsV1()); err != nil {
 			return err
 		}
 	}
@@ -1542,10 +1587,21 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 		if len(wsa.Consumers) > 0 {
 			sa.consumers = make(map[string]*consumerAssignment)
 			for _, ca := range wsa.Consumers {
-				if ca.Stream == _EMPTY_ {
-					ca.Stream = sa.Config.Name // Rehydrate from the stream name.
+				wca := &consumerAssignment{
+					Client:  ca.Client,
+					Created: ca.Created,
+					Name:    ca.Name,
+					Stream:  ca.Stream,
+					Config:  ca.Config,
+					Group:   ca.Group,
+					Subject: ca.Subject,
+					Reply:   ca.Reply,
+					State:   ca.State,
 				}
-				sa.consumers[ca.Name] = ca
+				if wca.Stream == _EMPTY_ {
+					wca.Stream = sa.Config.Name
+				}
+				sa.consumers[ca.Name] = wca
 			}
 		}
 		as[wsa.Config.Name] = sa

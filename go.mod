@@ -1,8 +1,8 @@
 module github.com/nats-io/nats-server/v2
 
-go 1.22
+go 1.23
 
-toolchain go1.22.8
+toolchain go1.23.0
 
 require (
 	github.com/antithesishq/antithesis-sdk-go v0.4.3-default-no-op
@@ -18,3 +18,5 @@ require (
 	golang.org/x/sys v0.29.0
 	golang.org/x/time v0.9.0
 )
+
+require github.com/go-json-experiment/json v0.0.0-20250108213703-50a1ba2c17a5
