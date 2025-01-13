@@ -1638,5 +1638,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSMessageTTLDisabledErr",
+    "code": 400,
+    "error_code": 10166,
+    "description": "per-message TTL is disabled",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

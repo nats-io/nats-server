@@ -25121,3 +25121,27 @@ func TestJetStreamMessageTTLNeverExpire(t *testing.T) {
 	require_Equal(t, si.State.FirstSeq, 1)
 	require_Equal(t, si.State.LastSeq, 11)
 }
+
+func TestJetStreamMessageTTLDisabled(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	jsStreamCreate(t, nc, &StreamConfig{
+		Name:     "TEST",
+		Storage:  FileStorage,
+		Subjects: []string{"test"},
+	})
+
+	msg := &nats.Msg{
+		Subject: "test",
+		Header:  nats.Header{},
+	}
+
+	msg.Header.Set("Nats-TTL", "1s")
+	_, err := js.PublishMsg(msg)
+
+	require_Error(t, err)
+}

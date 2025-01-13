@@ -5332,3 +5332,36 @@ func TestJetStreamClusterRoutedAPIRecoverPerformance(t *testing.T) {
 	ljs.mu.Lock()
 	t.Logf("Took %s to clear %d items", time.Since(start), count)
 }
+
+func TestJetStreamClusterMessageTTLDisabled(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	jsStreamCreate(t, nc, &StreamConfig{
+		Name:     "TEST",
+		Storage:  FileStorage,
+		Subjects: []string{"test"},
+		Replicas: 3,
+	})
+
+	msg := &nats.Msg{
+		Subject: "test",
+		Header:  nats.Header{},
+	}
+
+	msg.Header.Set("Nats-TTL", "1s")
+	_, err := js.PublishMsg(msg)
+	require_Error(t, err)
+
+	// In clustered mode we should have caught this before generating the
+	// proposal, therefore the CLFS should not have been bumped by this.
+
+	for _, s := range c.servers {
+		stream, err := s.GlobalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		require_Equal(t, stream.getCLFS(), 0)
+	}
+}

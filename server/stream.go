@@ -4662,6 +4662,7 @@ var (
 	errStreamClosed      = errors.New("stream closed")
 	errInvalidMsgHandler = errors.New("undefined message handler")
 	errStreamMismatch    = errors.New("expected stream does not match")
+	errMsgTTLDisabled    = errors.New("message TTL disabled")
 )
 
 // processJetStreamMsg is where we try to actually process the stream msg.
@@ -4798,6 +4799,21 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 				}
 				return errStreamMismatch
 			}
+		}
+
+		// TTL'd messages are rejected entirely if TTLs are not enabled on the stream.
+		// Shouldn't happen in clustered mode since we should have already caught this
+		// in processClusteredInboundMsg, but needed here for non-clustered etc.
+		if ttl, _ := getMessageTTL(hdr); ttl != 0 && !mset.cfg.AllowMsgTTL {
+			mset.mu.Unlock()
+			bumpCLFS()
+			if canRespond {
+				resp.PubAck = &PubAck{Stream: name}
+				resp.Error = NewJSMessageTTLDisabledError()
+				b, _ := json.Marshal(resp)
+				outq.sendMsg(reply, b)
+			}
+			return errMsgTTLDisabled
 		}
 
 		// Dedupe detection. This is done at the cluster level for dedupe detectiom above the
