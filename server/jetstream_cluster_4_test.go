@@ -4030,7 +4030,8 @@ func TestJetStreamClusterMetaSnapshotMustNotIncludePendingConsumers(t *testing.T
 	consumers[sampleCa.Name] = &sampleCa
 
 	// Create snapshot, this should not contain pending consumers.
-	snap := mjs.metaSnapshot()
+	snap, err := mjs.metaSnapshot()
+	require_NoError(t, err)
 
 	ru := &recoveryUpdates{
 		removeStreams:   make(map[string]*streamAssignment),
