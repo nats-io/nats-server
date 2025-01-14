@@ -7914,7 +7914,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	s, js, jsa, st, r, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.tier, mset.outq, mset.node
 	maxMsgSize, lseq := int(mset.cfg.MaxMsgSize), mset.lseq
 	interestPolicy, discard, maxMsgs, maxBytes := mset.cfg.Retention != LimitsPolicy, mset.cfg.Discard, mset.cfg.MaxMsgs, mset.cfg.MaxBytes
-	isLeader, isSealed, compressOK := mset.isLeader(), mset.cfg.Sealed, mset.compressOK
+	isLeader, isSealed, compressOK, allowTTL := mset.isLeader(), mset.cfg.Sealed, mset.compressOK, mset.cfg.AllowMsgTTL
 	mset.mu.RUnlock()
 
 	// This should not happen but possible now that we allow scale up, and scale down where this could trigger.
@@ -8047,6 +8047,17 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 			// For now we stage with zero, and will update in processStreamMsg.
 			mset.storeMsgIdLocked(&ddentry{msgId, 0, time.Now().UnixNano()})
 			mset.mu.Unlock()
+		}
+
+		// TTL'd messages are rejected entirely if TTLs are not enabled on the stream.
+		if ttl, _ := getMessageTTL(hdr); ttl != 0 && !allowTTL {
+			if canRespond {
+				var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
+				resp.Error = NewJSMessageTTLDisabledError()
+				b, _ := json.Marshal(resp)
+				outq.sendMsg(reply, b)
+			}
+			return errMsgTTLDisabled
 		}
 	}
 
