@@ -1962,7 +1962,7 @@ runner:
 	// just will remove them from the central monitoring map
 	queues := []interface {
 		unregister()
-		drain()
+		drain() int
 	}{n.reqs, n.votes, n.prop, n.entry, n.resp, n.apply}
 	for _, q := range queues {
 		q.drain()
