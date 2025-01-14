@@ -36,6 +36,7 @@ type memStore struct {
 	dmap        avl.SequenceSet
 	maxp        int64
 	scb         StorageUpdateHandler
+	tcb         SubjectDeleteMarkerUpdateHandler
 	ageChk      *time.Timer
 	consumers   int
 	receivedAny bool
@@ -309,6 +310,13 @@ func (ms *memStore) SkipMsgs(seq uint64, num uint64) error {
 func (ms *memStore) RegisterStorageUpdates(cb StorageUpdateHandler) {
 	ms.mu.Lock()
 	ms.scb = cb
+	ms.mu.Unlock()
+}
+
+// RegisterSubjectDeleteMarkerUpdates registers a callback for updates to new subject delete markers.
+func (ms *memStore) RegisterSubjectDeleteMarkerUpdates(cb SubjectDeleteMarkerUpdateHandler) {
+	ms.mu.Lock()
+	ms.tcb = cb
 	ms.mu.Unlock()
 }
 

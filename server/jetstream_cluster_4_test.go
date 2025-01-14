@@ -5369,7 +5369,7 @@ func TestJetStreamClusterMessageTTLWhenSourcing(t *testing.T) {
 	})
 
 	hdr := nats.Header{}
-	hdr.Add("Nats-TTL", "1s")
+	hdr.Add(JSMessageTTL, "1s")
 
 	_, err := js.PublishMsg(&nats.Msg{
 		Subject: "test",
@@ -5436,7 +5436,7 @@ func TestJetStreamClusterMessageTTLWhenMirroring(t *testing.T) {
 	})
 
 	hdr := nats.Header{}
-	hdr.Add("Nats-TTL", "1s")
+	hdr.Add(JSMessageTTL, "1s")
 
 	_, err := js.PublishMsg(&nats.Msg{
 		Subject: "test",
@@ -5486,7 +5486,7 @@ func TestJetStreamClusterMessageTTLDisabled(t *testing.T) {
 		Header:  nats.Header{},
 	}
 
-	msg.Header.Set("Nats-TTL", "1s")
+	msg.Header.Set(JSMessageTTL, "1s")
 	_, err := js.PublishMsg(msg)
 	require_Error(t, err)
 

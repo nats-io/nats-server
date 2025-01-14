@@ -8562,3 +8562,126 @@ func TestFileStoreDontSpamCompactWhenMostlyTombstones(t *testing.T) {
 	fmb.bytes /= 2
 	require_True(t, fmb.shouldCompactInline())
 }
+
+func TestFileStoreSubjectDeleteMarkers(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{
+			Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage,
+			MaxAge: time.Second, AllowMsgTTL: true,
+			SubjectDeleteMarkers: true, SubjectDeleteMarkerTTL: "1s",
+		},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Store three messages that will expire because of MaxAge.
+	var seq uint64
+	for i := 0; i < 3; i++ {
+		seq, _, err = fs.StoreMsg("test", nil, nil, 0)
+		require_NoError(t, err)
+	}
+
+	// The last message should be gone after MaxAge has passed.
+	time.Sleep(time.Second * 2)
+	sm, err := fs.LoadMsg(seq, nil)
+	require_Error(t, err)
+	require_Equal(t, sm, nil)
+
+	// We should have replaced it with a tombstone.
+	sm, err = fs.LoadMsg(seq+1, nil)
+	require_NoError(t, err)
+	require_Equal(t, bytesToString(getHeader(JSAppliedLimit, sm.hdr)), JSAppliedLimitMaxAge)
+	require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), "1s")
+
+	time.Sleep(time.Second * 2)
+
+	// The tombstone itself only has a TTL of 1 second so that should
+	// also be gone by now too. No more tombstones should have been
+	// published.
+	var ss StreamState
+	fs.FastState(&ss)
+	require_Equal(t, ss.FirstSeq, sm.seq+1)
+	require_Equal(t, ss.LastSeq, sm.seq)
+	require_Equal(t, ss.Msgs, 0)
+}
+
+func TestFileStoreSubjectDeleteMarkersDefaultTTL(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{
+			Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage,
+			MaxAge: time.Second, AllowMsgTTL: true,
+			SubjectDeleteMarkers: true,
+		},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Store three messages that will expire because of MaxAge.
+	var seq uint64
+	for i := 0; i < 3; i++ {
+		seq, _, err = fs.StoreMsg("test", nil, nil, 0)
+		require_NoError(t, err)
+	}
+
+	// The last message should be gone after MaxAge has passed.
+	time.Sleep(time.Second * 2)
+	sm, err := fs.LoadMsg(seq, nil)
+	require_Error(t, err)
+	require_Equal(t, sm, nil)
+
+	// We should have replaced it with a tombstone.
+	sm, err = fs.LoadMsg(seq+1, nil)
+	require_NoError(t, err)
+	require_Equal(t, bytesToString(getHeader(JSAppliedLimit, sm.hdr)), JSAppliedLimitMaxAge)
+	require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), "15m0s")
+}
+
+func TestFileStoreSubjectDeleteMarkersOnRestart(t *testing.T) {
+	storeDir := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{
+			Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage,
+			MaxAge: time.Second, AllowMsgTTL: true,
+			SubjectDeleteMarkers: true, SubjectDeleteMarkerTTL: "1s",
+		},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Store three messages that will expire because of MaxAge.
+	var seq uint64
+	for i := 0; i < 3; i++ {
+		seq, _, err = fs.StoreMsg("test", nil, nil, 0)
+		require_NoError(t, err)
+	}
+
+	// Stop the store so that the expiry happens while it's technically
+	// offline. Then wait for at least MaxAge and then restart, which should
+	// hit the expireMsgsOnRecover path instead.
+	require_NoError(t, fs.Stop())
+	time.Sleep(time.Second * 2)
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{
+			Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage,
+			MaxAge: time.Second, AllowMsgTTL: true,
+			SubjectDeleteMarkers: true, SubjectDeleteMarkerTTL: "1s",
+		},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// The last message should be gone after MaxAge has passed.
+	sm, err := fs.LoadMsg(seq, nil)
+	require_Error(t, err)
+	require_Equal(t, sm, nil)
+
+	// We should have replaced it with a tombstone.
+	sm, err = fs.LoadMsg(seq+1, nil)
+	require_NoError(t, err)
+	require_Equal(t, bytesToString(getHeader(JSAppliedLimit, sm.hdr)), JSAppliedLimitMaxAge)
+	require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), "1s")
+}

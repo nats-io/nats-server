@@ -104,6 +104,14 @@ type StreamConfig struct {
 	// then the `NATS-TTL` header will be ignored.
 	AllowMsgTTL bool `json:"allow_msg_ttl"`
 
+	// SubjectDeleteMarkers enables leaving a delete marker when the last message
+	// for a subject was deleted.
+	SubjectDeleteMarkers bool `json:"subject_delete_markers,omitempty"`
+
+	// SubjectDeleteMarkerTTL sets the TTL of delete marker messages left behind by
+	// SubjectDeleteMarkers.
+	SubjectDeleteMarkerTTL string `json:"subject_delete_marker_ttl,omitempty"`
+
 	// Metadata is additional metadata for the Stream.
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
@@ -418,7 +426,7 @@ const (
 	JSMsgSize                 = "Nats-Msg-Size"
 	JSResponseType            = "Nats-Response-Type"
 	JSMessageTTL              = "Nats-TTL"
-	JSMessageNoExpire         = "Nats-No-Expire"
+	JSAppliedLimit            = "Nats-Applied-Limit"
 )
 
 // Headers for republished messages and direct gets.
@@ -436,6 +444,11 @@ const (
 const (
 	JSMsgRollupSubject = "sub"
 	JSMsgRollupAll     = "all"
+)
+
+// Applied limits in the Nats-Applied-Limit header.
+const (
+	JSAppliedLimitMaxAge = "MaxAge"
 )
 
 const (
@@ -1353,6 +1366,23 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 		}
 	}
 
+	if cfg.SubjectDeleteMarkers {
+		if cfg.SubjectDeleteMarkerTTL != _EMPTY_ && !cfg.AllowMsgTTL {
+			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject marker delete cannot be set if message TTLs are disabled"))
+		}
+		ttl, err := parseMessageTTL(cfg.SubjectDeleteMarkerTTL)
+		if err != nil {
+			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("invalid subject marker delete TTL: %s", err))
+		}
+		if ttl < 1 {
+			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject marker delete TTL must be at least 1 second"))
+		}
+	} else {
+		if cfg.SubjectDeleteMarkerTTL != _EMPTY_ {
+			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("limits tombstones TTL requires limits tombstones to be enabled"))
+		}
+	}
+
 	getStream := func(streamName string) (bool, StreamConfig) {
 		var exists bool
 		var cfg StreamConfig
@@ -1394,6 +1424,12 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 		}
 		if cfg.Mirror.FilterSubject != _EMPTY_ && len(cfg.Mirror.SubjectTransforms) != 0 {
 			return StreamConfig{}, NewJSMirrorMultipleFiltersNotAllowedError()
+		}
+		if cfg.SubjectDeleteMarkers {
+			// LimitsTTL cannot be configured on a mirror as it would result in new
+			// tombstones which would use up sequence numbers, diverging from the origin
+			// stream.
+			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("limits tombstones forbidden on mirrors"))
 		}
 		// Check subject filters overlap.
 		for outer, tr := range cfg.Mirror.SubjectTransforms {
@@ -4055,6 +4091,9 @@ func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
 	}
 	// This will fire the callback but we do not require the lock since md will be 0 here.
 	mset.store.RegisterStorageUpdates(mset.storeUpdates)
+	mset.store.RegisterSubjectDeleteMarkerUpdates(func(seq uint64, subj string) {
+		mset.signalConsumers(subj, seq)
+	})
 	mset.mu.Unlock()
 
 	return nil
@@ -4217,7 +4256,7 @@ func getExpectedLastSeqPerSubjectForSubject(hdr []byte) string {
 	return string(getHeader(JSExpectedLastSubjSeqSubj, hdr))
 }
 
-// Fast lookup of the message TTL:
+// Fast lookup of the message TTL from headers:
 // - Positive return value: duration in seconds.
 // - Zero return value: no TTL or parse error.
 // - Negative return value: never expires.
@@ -4226,18 +4265,24 @@ func getMessageTTL(hdr []byte) (int64, error) {
 	if len(ttl) == 0 {
 		return 0, nil
 	}
-	sttl := bytesToString(ttl)
-	if strings.ToLower(sttl) == "never" {
+	return parseMessageTTL(bytesToString(ttl))
+}
+
+// - Positive return value: duration in seconds.
+// - Zero return value: no TTL or parse error.
+// - Negative return value: never expires.
+func parseMessageTTL(ttl string) (int64, error) {
+	if strings.ToLower(ttl) == "never" {
 		return -1, nil
 	}
-	dur, err := time.ParseDuration(sttl)
+	dur, err := time.ParseDuration(ttl)
 	if err == nil {
 		if dur < time.Second {
 			return 0, NewJSMessageTTLInvalidError()
 		}
 		return int64(dur.Seconds()), nil
 	}
-	t := parseInt64(ttl)
+	t := parseInt64(stringToBytes(ttl))
 	if t < 0 {
 		// This probably means a parse failure, hence why
 		// we have a special case "never" for returning -1.
