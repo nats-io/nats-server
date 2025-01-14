@@ -5877,13 +5877,13 @@ func (c *client) getClientInfo(detailed bool) *ClientInfo {
 	return &ci
 }
 
-func (c *client) doTLSServerHandshake(typ string, tlsConfig *tls.Config, timeout float64, pCerts PinnedCertSet) error {
-	_, err := c.doTLSHandshake(typ, false, nil, tlsConfig, _EMPTY_, timeout, pCerts)
+func (c *client) doTLSServerHandshake(typ string, tlsConfig *tls.Config, timeout float64, pCerts PinnedCertSet, rCerts RevokedCertSet) error {
+	_, err := c.doTLSHandshake(typ, false, nil, tlsConfig, _EMPTY_, timeout, pCerts, rCerts)
 	return err
 }
 
-func (c *client) doTLSClientHandshake(typ string, url *url.URL, tlsConfig *tls.Config, tlsName string, timeout float64, pCerts PinnedCertSet) (bool, error) {
-	return c.doTLSHandshake(typ, true, url, tlsConfig, tlsName, timeout, pCerts)
+func (c *client) doTLSClientHandshake(typ string, url *url.URL, tlsConfig *tls.Config, tlsName string, timeout float64, pCerts PinnedCertSet, rCerts RevokedCertSet) (bool, error) {
+	return c.doTLSHandshake(typ, true, url, tlsConfig, tlsName, timeout, pCerts, rCerts)
 }
 
 // Performs either server or client side (if solicit is true) TLS Handshake.
@@ -5891,7 +5891,7 @@ func (c *client) doTLSClientHandshake(typ string, url *url.URL, tlsConfig *tls.C
 // has been closed.
 //
 // Lock is held on entry.
-func (c *client) doTLSHandshake(typ string, solicit bool, url *url.URL, tlsConfig *tls.Config, tlsName string, timeout float64, pCerts PinnedCertSet) (bool, error) {
+func (c *client) doTLSHandshake(typ string, solicit bool, url *url.URL, tlsConfig *tls.Config, tlsName string, timeout float64, pCerts PinnedCertSet, rCerts RevokedCertSet) (bool, error) {
 	var host string
 	var resetTLSName bool
 	var err error
@@ -5945,6 +5945,8 @@ func (c *client) doTLSHandshake(typ string, solicit bool, url *url.URL, tlsConfi
 		}
 	} else if !c.matchesPinnedCert(pCerts) {
 		err = ErrCertNotPinned
+	} else if c.matchesRevokedCert(rCerts) {
+		err = ErrCertRevoked
 	}
 
 	if err != nil {

@@ -1330,6 +1330,181 @@ func TestLeafNodeTLSMixIP(t *testing.T) {
 	}
 }
 
+func TestLeafNodeTLSNonRevokedCertIsAccepted(t *testing.T) {
+	serverConfigContent := `
+	listen: "127.0.0.1:-1"
+	leafnodes {
+		listen: "127.0.0.1:-1"
+		tls {
+			cert_file: "./configs/certs/server-cert.pem"
+			key_file:  "./configs/certs/server-key.pem"
+			ca_file:   "./configs/certs/ca.pem"
+			verify: true
+			revoked_certs: ["acceb7edaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+		}
+	}
+	`
+	serverConfig := createConfFile(t, []byte(serverConfigContent))
+
+	leafServer, leafServerOpts := RunServerWithConfig(serverConfig)
+	defer leafServer.Shutdown()
+
+	leafNodeConfigContent := `
+	listen: "127.0.0.1:-1"
+	leafnodes {
+		reconnect: 1
+		remotes: [
+			{
+				url: nats://127.0.0.1:%d
+				tls {
+					cert_file: "./configs/certs/client-cert.pem"
+					key_file:  "./configs/certs/client-key.pem"
+					ca_file:   "./configs/certs/ca.pem"
+					verify: true
+				}
+			}
+		]
+	}
+	`
+	leafNodeConfig := createConfFile(t, []byte(fmt.Sprintf(leafNodeConfigContent, leafServerOpts.LeafNode.Port)))
+
+	leafNode, _ := RunServerWithConfig(leafNodeConfig)
+	defer leafNode.Shutdown()
+
+	checkLeafNodeConnections(t, leafServer, 1)
+}
+
+type captureDebugLogger struct {
+	dummyLogger
+	receive chan string
+}
+
+func newCaptureDebugLogger() *captureDebugLogger {
+	return &captureDebugLogger{
+		receive: make(chan string, 100),
+	}
+}
+
+func (l *captureDebugLogger) Debugf(format string, v ...any) {
+	l.receive <- fmt.Sprintf(format, v...)
+}
+
+func (l *captureDebugLogger) waitFor(expect string, timeout time.Duration) bool {
+	for {
+		select {
+		case msg := <-l.receive:
+			if strings.Contains(msg, expect) {
+				return true
+			}
+		case <-time.After(timeout):
+			return false
+		}
+	}
+}
+
+func TestLeafNodeTLSRevokedCertIsRejected(t *testing.T) {
+	serverConfigContent := `
+	listen: "127.0.0.1:-1"
+	leafnodes {
+		listen: "127.0.0.1:-1"
+		tls {
+			cert_file: "./configs/certs/server-cert.pem"
+			key_file:  "./configs/certs/server-key.pem"
+			ca_file:   "./configs/certs/ca.pem"
+			verify: true
+			revoked_certs: ["bf6f821f09fde09451411ba3b42c0f74727d61a974c69fd3cf5257f39c75f0e9"]
+		}
+	}
+	`
+	serverConfig := createConfFile(t, []byte(serverConfigContent))
+
+	leafServer, leafServerOpts := RunServerWithConfig(serverConfig)
+	defer leafServer.Shutdown()
+
+	leafNodeConfigContent := `
+	listen: "127.0.0.1:-1"
+	leafnodes {
+		reconnect: 1
+		remotes: [
+			{
+				url: nats://127.0.0.1:%d
+				tls {
+					cert_file: "./configs/certs/client-cert.pem"
+					key_file:  "./configs/certs/client-key.pem"
+					ca_file:   "./configs/certs/ca.pem"
+					verify: true
+				}
+			}
+		]
+	}
+	`
+	leafNodeConfig := createConfFile(t, []byte(fmt.Sprintf(leafNodeConfigContent, leafServerOpts.LeafNode.Port)))
+
+	leafServerLogger := newCaptureDebugLogger()
+	leafServer.SetLogger(leafServerLogger, true, false)
+
+	leafNode, _ := RunServerWithConfig(leafNodeConfig)
+	defer leafNode.Shutdown()
+
+	if !leafServerLogger.waitFor("Failed revoked cert test", time.Second) {
+		t.Fatalf("did not log 'Failed revoked cert test' debug message")
+	}
+}
+
+func TestLeafNodeTLSRevokedCertConfigReloadIsRejected(t *testing.T) {
+	rejectedCertHash := "bf6f821f09fde09451411ba3b42c0f74727d61a974c69fd3cf5257f39c75f0e9"
+	acceptedCertHash := "acceb7edaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	serverConfigContent := `
+	listen: "127.0.0.1:-1"
+	leafnodes {
+		listen: "127.0.0.1:-1"
+		tls {
+			cert_file: "./configs/certs/server-cert.pem"
+			key_file:  "./configs/certs/server-key.pem"
+			ca_file:   "./configs/certs/ca.pem"
+			verify: true
+			revoked_certs: ["%s"]
+		}
+	}
+	`
+	serverConfig := createConfFile(t, []byte(fmt.Sprintf(serverConfigContent, rejectedCertHash)))
+
+	leafServer, leafServerOpts := RunServerWithConfig(serverConfig)
+	defer leafServer.Shutdown()
+
+	leafNodeConfigContent := `
+	listen: "127.0.0.1:-1"
+	leafnodes {
+		reconnect: 1
+		remotes: [
+			{
+				url: nats://127.0.0.1:%d
+				tls {
+					cert_file: "./configs/certs/client-cert.pem"
+					key_file:  "./configs/certs/client-key.pem"
+					ca_file:   "./configs/certs/ca.pem"
+					verify: true
+				}
+			}
+		]
+	}
+	`
+	leafNodeConfig := createConfFile(t, []byte(fmt.Sprintf(leafNodeConfigContent, leafServerOpts.LeafNode.Port)))
+
+	leafNode, _ := RunServerWithConfig(leafNodeConfig)
+	defer leafNode.Shutdown()
+
+	checkLeafNodeConnections(t, leafServer, 0)
+
+	os.WriteFile(serverConfig, []byte(fmt.Sprintf(serverConfigContent, acceptedCertHash)), 0660)
+	serverReloadErr := leafServer.Reload()
+	if serverReloadErr == nil || !strings.Contains(serverReloadErr.Error(), "config reload not supported for LeafNode") {
+		t.Fatalf("expected 'config reload not supported for LeafNode' error, got %v", serverReloadErr)
+	}
+
+	checkLeafNodeConnections(t, leafServer, 0)
+}
+
 func runLeafNodeOperatorServer(t *testing.T) (*server.Server, *server.Options, string) {
 	t.Helper()
 	content := `

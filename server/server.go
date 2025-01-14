@@ -3347,7 +3347,7 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 			pre = nil
 		}
 		// Performs server-side TLS handshake.
-		if err := c.doTLSServerHandshake(_EMPTY_, opts.TLSConfig, opts.TLSTimeout, opts.TLSPinnedCerts); err != nil {
+		if err := c.doTLSServerHandshake(_EMPTY_, opts.TLSConfig, opts.TLSTimeout, opts.TLSPinnedCerts, opts.TLSRevokedCerts); err != nil {
 			c.mu.Unlock()
 			return nil
 		}

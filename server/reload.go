@@ -267,6 +267,17 @@ func (t *tlsPinnedCertOption) Apply(server *Server) {
 	server.Noticef("Reloaded: %d pinned_certs", len(t.newValue))
 }
 
+// tlsRevokedCertOption implements the option interface for the tls `revoked_certs` setting.
+type tlsRevokedCertOption struct {
+	noopOption
+	newValue RevokedCertSet
+}
+
+// Apply is a no-op because the pinned certs will be reloaded after options are  applied.
+func (t *tlsRevokedCertOption) Apply(server *Server) {
+	server.Noticef("Reloaded: %d revoked_certs", len(t.newValue))
+}
+
 // tlsHandshakeFirst implements the option interface for the tls `handshake first` setting.
 type tlsHandshakeFirst struct {
 	noopOption
@@ -1151,9 +1162,10 @@ func imposeOrder(value any) error {
 		slices.SortFunc(value.Gateways, func(i, j *RemoteGatewayOpts) int { return cmp.Compare(i.Name, j.Name) })
 	case WebsocketOpts:
 		slices.Sort(value.AllowedOrigins)
-	case string, bool, uint8, uint16, int, int32, int64, time.Duration, float64, nil, LeafNodeOpts, ClusterOpts, *tls.Config, PinnedCertSet,
-		*URLAccResolver, *MemAccResolver, *DirAccResolver, *CacheDirAccResolver, Authentication, MQTTOpts, jwt.TagList,
-		*OCSPConfig, map[string]string, JSLimitOpts, StoreCipher, *OCSPResponseCacheConfig:
+	case string, bool, uint8, uint16, int, int32, int64, time.Duration, float64, nil, LeafNodeOpts, ClusterOpts,
+		*tls.Config, PinnedCertSet, RevokedCertSet, *URLAccResolver, *MemAccResolver, *DirAccResolver,
+		*CacheDirAccResolver, Authentication, MQTTOpts, jwt.TagList, *OCSPConfig, map[string]string, JSLimitOpts,
+		StoreCipher, *OCSPResponseCacheConfig:
 		// explicitly skipped types
 	case *AuthCallout:
 	case JSTpmOpts:
@@ -1238,6 +1250,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &tlsTimeoutOption{newValue: newValue.(float64)})
 		case "tlspinnedcerts":
 			diffOpts = append(diffOpts, &tlsPinnedCertOption{newValue: newValue.(PinnedCertSet)})
+		case "tlsrevokedcerts":
+			diffOpts = append(diffOpts, &tlsRevokedCertOption{newValue: newValue.(RevokedCertSet)})
 		case "tlshandshakefirst":
 			diffOpts = append(diffOpts, &tlsHandshakeFirst{newValue: newValue.(bool)})
 		case "tlshandshakefirstfallback":

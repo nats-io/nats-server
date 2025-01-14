@@ -57,6 +57,9 @@ func NoErrOnUnknownFields(noError bool) {
 // PinnedCertSet is a set of lower case hex-encoded sha256 of DER encoded SubjectPublicKeyInfo
 type PinnedCertSet map[string]struct{}
 
+// RevokedCertSet is a set of lower case hex-encoded sha256 of DER encoded SubjectPublicKeyInfo
+type RevokedCertSet map[string]struct{}
+
 // ClusterOpts are options for clusters.
 // NOTE: This structure is no longer used for monitoring endpoints
 // and json tags are deprecated and may be removed in the future.
@@ -73,6 +76,7 @@ type ClusterOpts struct {
 	TLSMap            bool              `json:"-"`
 	TLSCheckKnownURLs bool              `json:"-"`
 	TLSPinnedCerts    PinnedCertSet     `json:"-"`
+	TLSRevokedCerts   RevokedCertSet    `json:"-"`
 	ListenStr         string            `json:"-"`
 	Advertise         string            `json:"-"`
 	NoAdvertise       bool              `json:"-"`
@@ -145,18 +149,19 @@ type RemoteGatewayOpts struct {
 
 // LeafNodeOpts are options for a given server to accept leaf node connections and/or connect to a remote cluster.
 type LeafNodeOpts struct {
-	Host           string        `json:"addr,omitempty"`
-	Port           int           `json:"port,omitempty"`
-	Username       string        `json:"-"`
-	Password       string        `json:"-"`
-	Nkey           string        `json:"-"`
-	Account        string        `json:"-"`
-	Users          []*User       `json:"-"`
-	AuthTimeout    float64       `json:"auth_timeout,omitempty"`
-	TLSConfig      *tls.Config   `json:"-"`
-	TLSTimeout     float64       `json:"tls_timeout,omitempty"`
-	TLSMap         bool          `json:"-"`
-	TLSPinnedCerts PinnedCertSet `json:"-"`
+	Host            string         `json:"addr,omitempty"`
+	Port            int            `json:"port,omitempty"`
+	Username        string         `json:"-"`
+	Password        string         `json:"-"`
+	Nkey            string         `json:"-"`
+	Account         string         `json:"-"`
+	Users           []*User        `json:"-"`
+	AuthTimeout     float64        `json:"auth_timeout,omitempty"`
+	TLSConfig       *tls.Config    `json:"-"`
+	TLSTimeout      float64        `json:"tls_timeout,omitempty"`
+	TLSMap          bool           `json:"-"`
+	TLSPinnedCerts  PinnedCertSet  `json:"-"`
+	TLSRevokedCerts RevokedCertSet `json:"-"`
 	// When set to true, the server will perform the TLS handshake before
 	// sending the INFO protocol. For remote leafnodes that are not configured
 	// with a similar option, their connection will fail with some sort
@@ -365,6 +370,7 @@ type Options struct {
 	TLSCaCert                  string            `json:"-"`
 	TLSConfig                  *tls.Config       `json:"-"`
 	TLSPinnedCerts             PinnedCertSet     `json:"-"`
+	TLSRevokedCerts            RevokedCertSet    `json:"-"`
 	TLSRateLimit               int64             `json:"-"`
 	// When set to true, the server will perform the TLS handshake before
 	// sending the INFO protocol. For clients that are not configured
@@ -599,6 +605,8 @@ type MQTTOpts struct {
 	TLSTimeout float64
 	// Set of allowable certificates
 	TLSPinnedCerts PinnedCertSet
+	// Set of revoked certificates
+	TLSRevokedCerts RevokedCertSet
 
 	// AckWait is the amount of time after which a QoS 1 or 2 message sent to a
 	// client is redelivered as a DUPLICATE if the server has not received the
@@ -729,6 +737,7 @@ type TLSConfigOpts struct {
 	Ciphers              []uint16
 	CurvePreferences     []tls.CurveID
 	PinnedCerts          PinnedCertSet
+	RevokedCerts         RevokedCertSet
 	CertStore            certstore.StoreType
 	CertMatchBy          certstore.MatchByType
 	CertMatch            string
@@ -1203,6 +1212,7 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 		o.TLSTimeout = tc.Timeout
 		o.TLSMap = tc.Map
 		o.TLSPinnedCerts = tc.PinnedCerts
+		o.TLSRevokedCerts = tc.RevokedCerts
 		o.TLSRateLimit = tc.RateLimit
 		o.TLSHandshakeFirst = tc.HandshakeFirst
 		o.TLSHandshakeFirstFallback = tc.FallbackDelay
@@ -1846,6 +1856,7 @@ func parseCluster(v any, opts *Options, errors *[]error, warnings *[]error) erro
 			opts.Cluster.TLSTimeout = tlsopts.Timeout
 			opts.Cluster.TLSMap = tlsopts.Map
 			opts.Cluster.TLSPinnedCerts = tlsopts.PinnedCerts
+			opts.Cluster.TLSRevokedCerts = tlsopts.RevokedCerts
 			opts.Cluster.TLSCheckKnownURLs = tlsopts.TLSCheckKnownURLs
 			opts.Cluster.tlsConfigOpts = tlsopts
 		case "cluster_advertise", "advertise":
@@ -2526,6 +2537,7 @@ func parseLeafNodes(v any, opts *Options, errors *[]error, warnings *[]error) er
 			opts.LeafNode.TLSTimeout = tc.Timeout
 			opts.LeafNode.TLSMap = tc.Map
 			opts.LeafNode.TLSPinnedCerts = tc.PinnedCerts
+			opts.LeafNode.TLSRevokedCerts = tc.RevokedCerts
 			opts.LeafNode.TLSHandshakeFirst = tc.HandshakeFirst
 			opts.LeafNode.TLSHandshakeFirstFallback = tc.FallbackDelay
 			opts.LeafNode.tlsConfigOpts = tc
@@ -4754,6 +4766,24 @@ func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 				}
 				tc.PinnedCerts = wl
 			}
+		case "revoked_certs":
+			ra, ok := mv.([]any)
+			if !ok {
+				return nil, &configErr{tk, "error parsing tls config, expected 'revoked_certs' to be a list of hex-encoded sha256 of DER encoded SubjectPublicKeyInfo"}
+			}
+			if len(ra) != 0 {
+				wl := RevokedCertSet{}
+				re := regexp.MustCompile("^[A-Fa-f0-9]{64}$")
+				for _, r := range ra {
+					tk, r := unwrapValue(r, &lt)
+					entry := strings.ToLower(r.(string))
+					if !re.MatchString(entry) {
+						return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, 'revoked_certs' key %s does not look like hex-encoded sha256 of DER encoded SubjectPublicKeyInfo", entry)}
+					}
+					wl[entry] = struct{}{}
+				}
+				tc.RevokedCerts = wl
+			}
 		case "cert_store":
 			certStore, ok := mv.(string)
 			if !ok || certStore == _EMPTY_ {
@@ -5141,6 +5171,7 @@ func parseMQTT(v any, o *Options, errors *[]error, warnings *[]error) error {
 			o.MQTT.TLSTimeout = tc.Timeout
 			o.MQTT.TLSMap = tc.Map
 			o.MQTT.TLSPinnedCerts = tc.PinnedCerts
+			o.MQTT.TLSRevokedCerts = tc.RevokedCerts
 			o.MQTT.tlsConfigOpts = tc
 		case "authorization", "authentication":
 			auth := parseSimpleAuth(tk, errors)

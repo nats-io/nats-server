@@ -201,6 +201,9 @@ var (
 	// ErrCertNotPinned is returned when pinned certs are set and the certificate is not in it
 	ErrCertNotPinned = errors.New("certificate not pinned")
 
+	// ErrCertRevoked is returned when revoked certs are set and the certificate is in it
+	ErrCertRevoked = errors.New("certificate is revoked")
+
 	// ErrDuplicateServerName is returned when processing a server remote connection and
 	// the server reports that this server name is already used in the cluster.
 	ErrDuplicateServerName = errors.New("duplicate server name")
