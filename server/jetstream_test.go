@@ -25142,6 +25142,133 @@ func TestJetStreamMessageTTLDisabled(t *testing.T) {
 
 	msg.Header.Set("Nats-TTL", "1s")
 	_, err := js.PublishMsg(msg)
-
 	require_Error(t, err)
+}
+
+func TestJetStreamMessageTTLWhenSourcing(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	jsStreamCreate(t, nc, &StreamConfig{
+		Name:        "Origin",
+		Storage:     FileStorage,
+		Subjects:    []string{"test"},
+		AllowMsgTTL: true,
+	})
+
+	jsStreamCreate(t, nc, &StreamConfig{
+		Name:    "TTLEnabled",
+		Storage: FileStorage,
+		Sources: []*StreamSource{
+			{Name: "Origin"},
+		},
+		AllowMsgTTL: true,
+	})
+
+	jsStreamCreate(t, nc, &StreamConfig{
+		Name:    "TTLDisabled",
+		Storage: FileStorage,
+		Sources: []*StreamSource{
+			{Name: "Origin"},
+		},
+		AllowMsgTTL: false,
+	})
+
+	hdr := nats.Header{}
+	hdr.Add("Nats-TTL", "1s")
+
+	_, err := js.PublishMsg(&nats.Msg{
+		Subject: "test",
+		Header:  hdr,
+	})
+	require_NoError(t, err)
+
+	for _, stream := range []string{"TTLEnabled", "TTLDisabled"} {
+		t.Run(stream, func(t *testing.T) {
+			sc, err := js.PullSubscribe("test", "consumer", nats.BindStream(stream))
+			require_NoError(t, err)
+
+			msgs, err := sc.Fetch(1)
+			require_NoError(t, err)
+			require_Len(t, len(msgs), 1)
+			require_Equal(t, msgs[0].Header.Get(JSMessageTTL), "1s")
+
+			time.Sleep(time.Second)
+
+			si, err := js.StreamInfo(stream)
+			require_NoError(t, err)
+			if stream == "TTLDisabled" {
+				require_Equal(t, si.State.Msgs, 1)
+			} else {
+				require_Equal(t, si.State.Msgs, 0)
+			}
+		})
+	}
+}
+
+func TestJetStreamMessageTTLSWhenMirroring(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	jsStreamCreate(t, nc, &StreamConfig{
+		Name:        "Origin",
+		Storage:     FileStorage,
+		Subjects:    []string{"test"},
+		AllowMsgTTL: true,
+	})
+
+	jsStreamCreate(t, nc, &StreamConfig{
+		Name:    "TTLEnabled",
+		Storage: FileStorage,
+		Mirror: &StreamSource{
+			Name: "Origin",
+		},
+		AllowMsgTTL: true,
+	})
+
+	jsStreamCreate(t, nc, &StreamConfig{
+		Name:    "TTLDisabled",
+		Storage: FileStorage,
+		Mirror: &StreamSource{
+			Name: "Origin",
+		},
+		AllowMsgTTL: false,
+	})
+
+	hdr := nats.Header{}
+	hdr.Add("Nats-TTL", "1s")
+
+	_, err := js.PublishMsg(&nats.Msg{
+		Subject: "test",
+		Header:  hdr,
+	})
+	require_NoError(t, err)
+
+	for _, stream := range []string{"TTLEnabled", "TTLDisabled"} {
+		t.Run(stream, func(t *testing.T) {
+			sc, err := js.PullSubscribe("test", "consumer", nats.BindStream(stream))
+			require_NoError(t, err)
+
+			msgs, err := sc.Fetch(1)
+			require_NoError(t, err)
+			require_Len(t, len(msgs), 1)
+			require_Equal(t, msgs[0].Header.Get(JSMessageTTL), "1s")
+
+			time.Sleep(time.Second)
+
+			si, err := js.StreamInfo(stream)
+			require_NoError(t, err)
+			if stream == "TTLDisabled" {
+				require_Equal(t, si.State.Msgs, 1)
+			} else {
+				require_Equal(t, si.State.Msgs, 0)
+			}
+		})
+	}
 }

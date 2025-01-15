@@ -1266,6 +1266,8 @@ func jsClientConnectURL(t testing.TB, url string, opts ...nats.Option) (*nats.Co
 
 // jsStreamCreate is for sending a stream create for fields that nats.go does not know about yet.
 func jsStreamCreate(t testing.TB, nc *nats.Conn, cfg *StreamConfig) *StreamConfig {
+	t.Helper()
+
 	j, err := json.Marshal(cfg)
 	require_NoError(t, err)
 
@@ -1280,6 +1282,8 @@ func jsStreamCreate(t testing.TB, nc *nats.Conn, cfg *StreamConfig) *StreamConfi
 
 // jsStreamUpdate is for sending a stream create for fields that nats.go does not know about yet.
 func jsStreamUpdate(t testing.TB, nc *nats.Conn, cfg *StreamConfig) (*StreamConfig, error) {
+	t.Helper()
+
 	j, err := json.Marshal(cfg)
 	require_NoError(t, err)
 

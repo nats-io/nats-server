@@ -7063,7 +7063,7 @@ func TestJetStreamClusterLeaderAbortsCatchupOnFollowerError(t *testing.T) {
 	}
 
 	// Now send a message with a wrong sequence and expect to receive an error.
-	em := encodeStreamMsg("foo", _EMPTY_, nil, []byte("fail"), 102, time.Now().UnixNano())
+	em := encodeStreamMsg("foo", _EMPTY_, nil, []byte("fail"), 102, time.Now().UnixNano(), false)
 	leader.sendInternalMsgLocked(sreqSubj, syncRepl.Subject, nil, em)
 	msg = natsNexMsg(t, syncRepl, time.Second)
 	if len(msg.Data) == 0 {
