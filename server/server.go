@@ -1035,7 +1035,10 @@ func validateCluster(o *Options) error {
 			return err
 		}
 	}
-	if err := validatePinnedCerts(o.Cluster.TLSPinnedCerts); err != nil {
+	if err := validateCertSet("pinned_certs", CertSet(o.Cluster.TLSPinnedCerts)); err != nil {
+		return fmt.Errorf("cluster: %v", err)
+	}
+	if err := validateCertSet("revoked_certs", CertSet(o.Cluster.TLSRevokedCerts)); err != nil {
 		return fmt.Errorf("cluster: %v", err)
 	}
 	// Check that cluster name if defined matches any gateway name.
@@ -1062,12 +1065,12 @@ func validateCluster(o *Options) error {
 	return nil
 }
 
-func validatePinnedCerts(pinned PinnedCertSet) error {
+func validateCertSet(context string, certSet CertSet) error {
 	re := regexp.MustCompile("^[a-f0-9]{64}$")
-	for certId := range pinned {
+	for certId := range certSet {
 		entry := strings.ToLower(certId)
 		if !re.MatchString(entry) {
-			return fmt.Errorf("error parsing 'pinned_certs' key %s does not look like lower case hex-encoded sha256 of DER encoded SubjectPublicKeyInfo", entry)
+			return fmt.Errorf("error parsing '%s' key %s does not look like lower case hex-encoded sha256 of DER encoded SubjectPublicKeyInfo", context, entry)
 		}
 	}
 	return nil
