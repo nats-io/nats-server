@@ -7785,7 +7785,7 @@ func encodeStreamMsgAllowCompress(subject, reply string, hdr, msg []byte, lseq u
 
 	shouldCompress := compressOK && total > compressThreshold
 	elen := int(1 + 8 + 8 + total)
-	elen += (2 + 2 + 2 + 4 + 8) // Encoded lengths, 4bytes
+	elen += (2 + 2 + 2 + 4 + 8) // Encoded lengths, 4bytes, flags are up to 8 bytes
 
 	var flags uint64
 	if sourced {
