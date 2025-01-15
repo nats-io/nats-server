@@ -1080,6 +1080,7 @@ func (s *Server) ReloadOptions(newOpts *Options) error {
 	}
 
 	s.recheckPinnedCerts(curOpts, newOpts)
+	// TODO Add recheckPinnedCerts equivalent recheckRevokedCerts for RevokedCerts
 
 	s.mu.Lock()
 	s.configTime = time.Now().UTC()
