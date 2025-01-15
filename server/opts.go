@@ -54,11 +54,14 @@ func NoErrOnUnknownFields(noError bool) {
 	atomic.StoreInt32(&allowUnknownTopLevelField, val)
 }
 
+// CertSet is a set of lower case hex-encoded sha256 of DER encoded SubjectPublicKeyInfo
+type CertSet map[string]struct{}
+
 // PinnedCertSet is a set of lower case hex-encoded sha256 of DER encoded SubjectPublicKeyInfo
-type PinnedCertSet map[string]struct{}
+type PinnedCertSet CertSet
 
 // RevokedCertSet is a set of lower case hex-encoded sha256 of DER encoded SubjectPublicKeyInfo
-type RevokedCertSet map[string]struct{}
+type RevokedCertSet CertSet
 
 // ClusterOpts are options for clusters.
 // NOTE: This structure is no longer used for monitoring endpoints

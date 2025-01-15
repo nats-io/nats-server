@@ -1305,6 +1305,7 @@ type MQTTOptsVarz struct {
 	TLSMap            bool          `json:"tls_map,omitempty"`
 	TLSTimeout        float64       `json:"tls_timeout,omitempty"`
 	TLSPinnedCerts    []string      `json:"tls_pinned_certs,omitempty"`
+	TLSRevokedCerts   []string      `json:"tls_revoked_certs,omitempty"`
 	JsDomain          string        `json:"js_domain,omitempty"`
 	AckWait           time.Duration `json:"ack_wait,omitempty"`
 	MaxAckPending     uint16        `json:"max_ack_pending,omitempty"`
@@ -1679,13 +1680,14 @@ func (s *Server) updateVarzConfigReloadableFields(v *Varz) {
 	if s.sys != nil && s.sys.account != nil {
 		v.SystemAccount = s.sys.account.GetName()
 	}
-	v.MQTT.TLSPinnedCerts = getPinnedCertsAsSlice(opts.MQTT.TLSPinnedCerts)
-	v.Websocket.TLSPinnedCerts = getPinnedCertsAsSlice(opts.Websocket.TLSPinnedCerts)
+	v.MQTT.TLSPinnedCerts = getCertSetAsSlice(CertSet(opts.MQTT.TLSPinnedCerts))
+	v.MQTT.TLSRevokedCerts = getCertSetAsSlice(CertSet(opts.MQTT.TLSRevokedCerts))
+	v.Websocket.TLSPinnedCerts = getCertSetAsSlice(CertSet(opts.Websocket.TLSPinnedCerts))
 
 	v.TLSOCSPPeerVerify = s.ocspPeerVerify && v.TLSRequired && s.opts.tlsConfigOpts != nil && s.opts.tlsConfigOpts.OCSPPeerConfig != nil && s.opts.tlsConfigOpts.OCSPPeerConfig.Verify
 }
 
-func getPinnedCertsAsSlice(certs PinnedCertSet) []string {
+func getCertSetAsSlice(certs CertSet) []string {
 	if len(certs) == 0 {
 		return nil
 	}
