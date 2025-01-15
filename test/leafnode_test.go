@@ -1331,6 +1331,9 @@ func TestLeafNodeTLSMixIP(t *testing.T) {
 }
 
 func TestLeafNodeTLSNonRevokedCertIsAccepted(t *testing.T) {
+	/* NOTE! Cert hash obtained with:
+	   openssl x509 -noout -pubkey -in client-cert.pem | openssl pkey -pubin -outform DER | openssl dgst -sha256
+	*/
 	serverConfigContent := `
 	listen: "127.0.0.1:-1"
 	leafnodes {
