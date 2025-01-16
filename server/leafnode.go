@@ -2525,7 +2525,6 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 	}
 	key := bytesToString(sub.sid)
 	osub := c.subs[key]
-	updateGWs := false
 	if osub == nil {
 		c.subs[key] = sub
 		// Now place into the account sl.
@@ -2536,7 +2535,6 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 			c.sendErr("Invalid Subscription")
 			return nil
 		}
-		updateGWs = srv.gateway.enabled
 	} else if sub.queue != nil {
 		// For a queue we need to update the weight.
 		delta = sub.qw - atomic.LoadInt32(&osub.qw)
@@ -2559,7 +2557,7 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 	if !spoke {
 		// If we are routing add to the route map for the associated account.
 		srv.updateRouteSubscriptionMap(acc, sub, delta)
-		if updateGWs {
+		if srv.gateway.enabled {
 			srv.gatewayUpdateSubInterest(acc.Name, sub, delta)
 		}
 	}
@@ -2601,27 +2599,27 @@ func (c *client) processLeafUnsub(arg []byte) error {
 		return nil
 	}
 
-	updateGWs := false
 	spoke := c.isSpokeLeafNode()
 	// We store local subs by account and subject and optionally queue name.
 	// LS- will have the arg exactly as the key.
 	sub, ok := c.subs[string(arg)]
+	if !ok {
+		// If not found, don't try to update routes/gws/leaf nodes.
+		c.mu.Unlock()
+		return nil
+	}
 	delta := int32(1)
-	if ok && len(sub.queue) > 0 {
+	if len(sub.queue) > 0 {
 		delta = sub.qw
 	}
 	c.mu.Unlock()
 
-	if ok {
-		c.unsubscribe(acc, sub, true, true)
-		updateGWs = srv.gateway.enabled
-	}
-
+	c.unsubscribe(acc, sub, true, true)
 	if !spoke {
 		// If we are routing subtract from the route map for the associated account.
 		srv.updateRouteSubscriptionMap(acc, sub, -delta)
 		// Gateways
-		if updateGWs {
+		if srv.gateway.enabled {
 			srv.gatewayUpdateSubInterest(acc.Name, sub, -delta)
 		}
 	}
