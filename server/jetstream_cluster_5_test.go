@@ -84,13 +84,14 @@ func TestDurableConsumerExhaustMaxDeliver(t *testing.T) {
 	}
 
 	consumerConfig := nats.ConsumerConfig{
-		Name:           ConsumerName,
-		Replicas:       ConsumerReplicas,
-		FilterSubjects: consumerSubjects,
-		AckWait:        AckWait,
-		MaxDeliver:     DeliveryAttempts,
-		MaxAckPending:  MaxOutstandingAcks,
-		AckPolicy:      nats.AckExplicitPolicy,
+		Name:              ConsumerName,
+		Replicas:          ConsumerReplicas,
+		FilterSubjects:    consumerSubjects,
+		AckWait:           AckWait,
+		MaxDeliver:        DeliveryAttempts,
+		MaxAckPending:     MaxOutstandingAcks,
+		AckPolicy:         nats.AckExplicitPolicy,
+		InactiveThreshold: 48 * time.Hour,
 	}
 
 	// Map MsgId => Delivery count
