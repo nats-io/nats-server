@@ -2304,6 +2304,16 @@ func (c *client) queueOutbound(data []byte) {
 		toBuffer = toBuffer[n:]
 	}
 
+	a := float64(c.out.pb)
+	b := float64(c.out.mp)
+	room := b - a
+	sct := a / b
+	if c.kind == CLIENT {
+		c.Warnf("Slow Consumer Check: MaxPending Status: %.3f%% (pb: %-12f, mp: %-12f, room: %-12f)", sct*100, a, b, room)
+	} else if c.kind == ROUTER && sct > 0.1 {
+		c.Warnf("Slow Consumer Check: MaxPending Status: %.6f%% (pb: %-12.6f, mp: %-12.6f, room: %-12.6f)", sct, a, b, room)
+	}
+
 	// Check for slow consumer via pending bytes limit.
 	// ok to return here, client is going away.
 	if c.kind == CLIENT && c.out.pb > c.out.mp {

@@ -3366,8 +3366,12 @@ type waitingRequest struct {
 	n             int // For batching
 	d             int // num delivered
 	b             int // For max bytes tracking
+	mb            int // Max bytes inflight for the request before backing off
+	sb            int // Sent bytes so far for this request since last back off
 	expires       time.Time
 	received      time.Time
+	backoff       time.Time
+	ts            time.Time
 	hb            time.Duration
 	hbt           time.Time
 	noWait        bool
@@ -3577,6 +3581,27 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 		}
 		// Check if we have max bytes set.
 		if wr.b > 0 {
+			// Backoff if we have accumulated too much data servicing a single request
+			// within a short time that may cause the other end to become a slow consumer.
+			// const maxPending = MAX_PENDING_SIZE / 4
+			maxPending := wr.mb
+			sentBytes := wr.sb + sz
+			backoff := wr.backoff
+			if !backoff.IsZero() || sentBytes > maxPending && time.Since(wr.ts) < time.Second  {
+				if !backoff.IsZero() && time.Since(backoff) > time.Second {
+					o.srv.Warnf("RESUME %v - %v", wr.reply, time.Since(backoff))
+					wr.sb = 0
+					wr.backoff = time.Time{}
+					wr.ts = time.Now()
+				} else if backoff.IsZero() {
+					o.srv.Warnf("BACKING OFF FOR A FEW %v - %v", sentBytes, wr.reply)
+					wr.backoff = time.Now()
+				}
+				o.waiting.cycle()
+				continue
+			}
+			wr.sb = sentBytes
+
 			if sz <= wr.b {
 				wr.b -= sz
 				// If we are right now at zero, set batch to 1 to deliver this one but stop after.
@@ -3865,7 +3890,9 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 	wr := wrPool.Get().(*waitingRequest)
 	wr.acc, wr.interest, wr.reply, wr.n, wr.d, wr.noWait, wr.expires, wr.hb, wr.hbt, wr.priorityGroup = acc, interest, reply, batchSize, 0, noWait, expires, hb, hbt, priorityGroup
 	wr.b = maxBytes
+	wr.mb = maxBytes
 	wr.received = time.Now()
+	wr.ts = time.Now()
 
 	if err := o.waiting.add(wr); err != nil {
 		sendErr(409, "Exceeded MaxWaiting")
