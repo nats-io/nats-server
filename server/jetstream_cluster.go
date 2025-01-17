@@ -8753,6 +8753,11 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 		return 0, NewJSInsufficientResourcesError()
 	}
 
+	// Find the message TTL if any.
+	// TODO(nat): If the TTL isn't valid by this stage then there isn't really a
+	// lot we can do about it, as we'd break the catchup if we reject the message.
+	ttl, _ := getMessageTTL(hdr)
+
 	// Put into our store
 	// Messages to be skipped have no subject or timestamp.
 	// TODO(dlc) - formalize with skipMsgOp
@@ -8760,7 +8765,7 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 		if lseq := mset.store.SkipMsg(); lseq != seq {
 			return 0, errCatchupWrongSeqForSkip
 		}
-	} else if err := mset.store.StoreRawMsg(subj, hdr, msg, seq, ts, 0); err != nil {
+	} else if err := mset.store.StoreRawMsg(subj, hdr, msg, seq, ts, ttl); err != nil {
 		return 0, err
 	}
 

@@ -83,15 +83,17 @@ func require_NoError(t testing.TB, err error) {
 	}
 }
 
-func require_NotNil[T any](t testing.TB, v T) {
+func require_NotNil[T any](t testing.TB, vs ...T) {
 	t.Helper()
-	r := reflect.ValueOf(v)
-	switch k := r.Kind(); k {
-	case reflect.Ptr, reflect.Interface, reflect.Slice,
-		reflect.Map, reflect.Chan, reflect.Func:
-		if r.IsNil() {
-			antithesis.AssertUnreachable(t, "Failed require_NotNil check", nil)
-			t.Fatalf("require not nil, but got nil")
+	for _, v := range vs {
+		r := reflect.ValueOf(v)
+		switch k := r.Kind(); k {
+		case reflect.Ptr, reflect.Interface, reflect.Slice,
+			reflect.Map, reflect.Chan, reflect.Func:
+			if r.IsNil() {
+				antithesis.AssertUnreachable(t, "Failed require_NotNil check", nil)
+				t.Fatalf("require not nil, but got nil")
+			}
 		}
 	}
 }

@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -7515,6 +7516,81 @@ func TestJetStreamClusterR1ConsumerAdvisory(t *testing.T) {
 	require_NoError(t, err)
 
 	checkSubsPending(t, sub, 2)
+}
+
+func TestJetStreamClusterMessageTTLCatchup(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R2S", 2)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	addStream(t, nc, &StreamConfig{
+		Name:        "TEST",
+		Storage:     FileStorage,
+		Subjects:    []string{"foo.*"},
+		Replicas:    2,
+		AllowMsgTTL: true,
+	})
+
+	msg := &nats.Msg{
+		Subject: "foo.bar",
+		Header:  nats.Header{},
+	}
+	for i := 0; i < 10; i++ {
+		msg.Header.Set("Nats-TTL", "60s")
+		_, err := js.PublishMsg(msg)
+		require_NoError(t, err)
+	}
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	nsl := c.randomNonStreamLeader(globalAccountName, "TEST")
+	require_NotNil(t, sl, nsl)
+
+	// Force the stream leader to take a snapshot, eliminating the Raft log,
+	// so we can force an upper-layer catchup.
+	mset, err := sl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	node := mset.raftNode()
+	gname := node.Group()
+	require_NotNil(t, node)
+	require_NoError(t, node.InstallSnapshot(mset.stateSnapshot()))
+	var state StreamState
+	node.(*raft).wal.FastState(&state)
+	require_Equal(t, state.Msgs, 0)
+
+	config := nsl.JetStreamConfig()
+	lconfig := sl.JetStreamConfig()
+	require_NotNil(t, config, lconfig)
+
+	nc.Close()
+	c.stopAll()
+
+	// Throw away all of the non-leader's state. This will result in the
+	// stream being recreated by the metaleader and then an upper layer
+	// catchup will happen.
+	raftDir := filepath.Join(config.StoreDir, "$SYS", "_js_", gname)
+	require_NoError(t, os.RemoveAll(raftDir))
+	msgsDir := filepath.Join(config.StoreDir, globalAccountName, "streams", "TEST")
+	require_NoError(t, os.RemoveAll(msgsDir))
+
+	// Start the servers again and wait for it to happen.
+	c.restartAll()
+	c.waitOnStreamLeader("$G", "TEST")
+	for _, cs := range c.servers {
+		c.waitOnStreamCurrent(cs, "$G", "TEST")
+	}
+
+	sl = c.streamLeader(globalAccountName, "TEST")
+	nsl = c.randomNonStreamLeader(globalAccountName, "TEST")
+	require_NotNil(t, sl, nsl)
+
+	// The timed hash wheel on the follower should now be populated.
+	mset, err = nsl.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	fs := mset.Store()
+	require_NotNil(t, fs)
+	require_NotEqual(t, fs.(*fileStore).ttls.GetNextExpiration(math.MaxInt64), math.MaxInt64)
 }
 
 //
