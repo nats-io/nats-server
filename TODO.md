@@ -10,7 +10,7 @@
 - [ ] _SYS. server events?
 - [ ] No downtime restart
 - [ ] Signal based reload of configuration
-- [ ] brew, apt-get, rpm, chocateley (windows)
+- [ ] brew, apt-get, rpm, chocolatey (windows)
 - [ ] IOVec pools and writev for high fanout?
 - [ ] Modify cluster support for single message across routes between pub/sub and d-queue
 - [ ] Memory limits/warnings?
