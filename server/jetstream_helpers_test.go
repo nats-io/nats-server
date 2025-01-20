@@ -1265,7 +1265,7 @@ func jsClientConnectURL(t testing.TB, url string, opts ...nats.Option) (*nats.Co
 }
 
 // jsStreamCreate is for sending a stream create for fields that nats.go does not know about yet.
-func jsStreamCreate(t testing.TB, nc *nats.Conn, cfg *StreamConfig) *StreamConfig {
+func jsStreamCreate(t testing.TB, nc *nats.Conn, cfg *StreamConfig) (*StreamConfig, error) {
 	t.Helper()
 
 	j, err := json.Marshal(cfg)
@@ -1276,8 +1276,13 @@ func jsStreamCreate(t testing.TB, nc *nats.Conn, cfg *StreamConfig) *StreamConfi
 
 	var resp JSApiStreamUpdateResponse
 	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+
+	if resp.Error != nil {
+		return nil, resp.Error
+	}
+
 	require_NotNil(t, resp.StreamInfo)
-	return &resp.Config
+	return &resp.Config, nil
 }
 
 // jsStreamUpdate is for sending a stream create for fields that nats.go does not know about yet.
