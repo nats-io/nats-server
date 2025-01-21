@@ -1367,19 +1367,21 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 	}
 
 	if cfg.SubjectDeleteMarkers {
-		if cfg.SubjectDeleteMarkerTTL != _EMPTY_ && !cfg.AllowMsgTTL {
+		if !cfg.AllowMsgTTL {
 			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject marker delete cannot be set if message TTLs are disabled"))
 		}
-		ttl, err := parseMessageTTL(cfg.SubjectDeleteMarkerTTL)
-		if err != nil {
-			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("invalid subject marker delete TTL: %s", err))
-		}
-		if ttl < 1 {
-			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject marker delete TTL must be at least 1 second"))
+		if cfg.SubjectDeleteMarkerTTL != _EMPTY_ {
+			ttl, err := parseMessageTTL(cfg.SubjectDeleteMarkerTTL)
+			if err != nil {
+				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("invalid subject marker delete TTL: %s", err.Error()))
+			}
+			if ttl < 1 {
+				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject marker delete TTL must be at least 1 second"))
+			}
 		}
 	} else {
 		if cfg.SubjectDeleteMarkerTTL != _EMPTY_ {
-			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("limits tombstones TTL requires limits tombstones to be enabled"))
+			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject marker delete TTL requires limits tombstones to be enabled"))
 		}
 	}
 
