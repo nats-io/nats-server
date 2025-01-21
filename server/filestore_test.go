@@ -8606,38 +8606,6 @@ func TestFileStoreSubjectDeleteMarkers(t *testing.T) {
 	require_Equal(t, ss.Msgs, 0)
 }
 
-func TestFileStoreSubjectDeleteMarkersDefaultTTL(t *testing.T) {
-	fs, err := newFileStore(
-		FileStoreConfig{StoreDir: t.TempDir()},
-		StreamConfig{
-			Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage,
-			MaxAge: time.Second, AllowMsgTTL: true,
-			SubjectDeleteMarkers: true,
-		},
-	)
-	require_NoError(t, err)
-	defer fs.Stop()
-
-	// Store three messages that will expire because of MaxAge.
-	var seq uint64
-	for i := 0; i < 3; i++ {
-		seq, _, err = fs.StoreMsg("test", nil, nil, 0)
-		require_NoError(t, err)
-	}
-
-	// The last message should be gone after MaxAge has passed.
-	time.Sleep(time.Second * 2)
-	sm, err := fs.LoadMsg(seq, nil)
-	require_Error(t, err)
-	require_Equal(t, sm, nil)
-
-	// We should have replaced it with a tombstone.
-	sm, err = fs.LoadMsg(seq+1, nil)
-	require_NoError(t, err)
-	require_Equal(t, bytesToString(getHeader(JSAppliedLimit, sm.hdr)), JSAppliedLimitMaxAge)
-	require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), "15m0s")
-}
-
 func TestFileStoreSubjectDeleteMarkersOnRestart(t *testing.T) {
 	storeDir := t.TempDir()
 	fs, err := newFileStore(

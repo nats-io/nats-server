@@ -24161,6 +24161,70 @@ func TestJetStreamStreamCreatePedanticMode(t *testing.T) {
 			update:    true,
 			shouldErr: true,
 		},
+		{
+			name: "subject_delete_marker_specified",
+			cfg: StreamConfigRequest{
+				StreamConfig: StreamConfig{
+					Name:                   "SDM_TEST",
+					MaxAge:                 time.Minute,
+					Duplicates:             time.Minute,
+					Storage:                FileStorage,
+					AllowMsgTTL:            true,
+					SubjectDeleteMarkers:   true,
+					SubjectDeleteMarkerTTL: "10m",
+				},
+				Pedantic: true,
+			},
+			shouldErr: false,
+		},
+		{
+			name: "subject_delete_marker_not_specified",
+			cfg: StreamConfigRequest{
+				StreamConfig: StreamConfig{
+					Name:                 "SDM_TEST_2",
+					MaxAge:               time.Minute,
+					Duplicates:           time.Minute,
+					Storage:              FileStorage,
+					AllowMsgTTL:          true,
+					SubjectDeleteMarkers: true,
+				},
+				Pedantic: true,
+			},
+			shouldErr: true,
+		},
+		{
+			name: "update_subject_delete_marker_not_specified",
+			cfg: StreamConfigRequest{
+				StreamConfig: StreamConfig{
+					Name:                 "SDM_TEST",
+					MaxAge:               time.Minute,
+					Duplicates:           time.Minute,
+					Storage:              FileStorage,
+					AllowMsgTTL:          true,
+					SubjectDeleteMarkers: true,
+				},
+				Pedantic: true,
+			},
+			shouldErr: true,
+			update:    true,
+		},
+		{
+			name: "update_subject_delete_marker_specified",
+			cfg: StreamConfigRequest{
+				StreamConfig: StreamConfig{
+					Name:                   "SDM_TEST",
+					MaxAge:                 time.Minute,
+					Duplicates:             time.Minute,
+					Storage:                FileStorage,
+					AllowMsgTTL:            true,
+					SubjectDeleteMarkers:   true,
+					SubjectDeleteMarkerTTL: "11m",
+				},
+				Pedantic: true,
+			},
+			shouldErr: false,
+			update:    true,
+		},
 	}
 
 	for _, test := range tests {
@@ -25335,4 +25399,23 @@ func TestJetStreamSubjectDeleteMarkersWithMirror(t *testing.T) {
 		},
 	})
 	require_Error(t, err)
+}
+
+func TestJetStreamSubjectDeleteMarkersDefaultTTL(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	sc, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:                 "Origin",
+		Storage:              FileStorage,
+		Subjects:             []string{"test"},
+		AllowMsgTTL:          true,
+		SubjectDeleteMarkers: true,
+	})
+	require_NoError(t, err)
+
+	require_Equal(t, sc.SubjectDeleteMarkerTTL, subjectDeleteMarkerDefaultTTL)
 }
