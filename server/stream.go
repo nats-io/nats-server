@@ -1370,6 +1370,9 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 		if !cfg.AllowMsgTTL {
 			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject marker delete cannot be set if message TTLs are disabled"))
 		}
+		if pedantic && cfg.SubjectDeleteMarkerTTL == _EMPTY_ {
+			return StreamConfig{}, NewJSPedanticError(fmt.Errorf("pedantic mode: subject marker delete TTL can not be empty"))
+		}
 		if cfg.SubjectDeleteMarkerTTL != _EMPTY_ {
 			ttl, err := parseMessageTTL(cfg.SubjectDeleteMarkerTTL)
 			if err != nil {
@@ -1378,6 +1381,8 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 			if ttl < 1 {
 				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject marker delete TTL must be at least 1 second"))
 			}
+		} else {
+			cfg.SubjectDeleteMarkerTTL = subjectDeleteMarkerDefaultTTL
 		}
 	} else {
 		if cfg.SubjectDeleteMarkerTTL != _EMPTY_ {

@@ -5342,9 +5342,9 @@ func (fs *fileStore) subjectDeleteMarkerIfNeeded(sm *StoreMsg, reason string) fu
 	// we'll default to 15 minutes — by that time every possible condition
 	// should have cleared (i.e. ordered consumer timeout, client timeouts,
 	// route/gateway interruptions, even device/client restarts etc).
-	var ttl int64 = 60 * 15
-	if fs.cfg.SubjectDeleteMarkerTTL != _EMPTY_ {
-		ttl, _ = parseMessageTTL(fs.cfg.SubjectDeleteMarkerTTL)
+	ttl, _ := parseMessageTTL(fs.cfg.SubjectDeleteMarkerTTL)
+	if ttl <= 0 {
+		return nil
 	}
 	var _hdr [128]byte
 	hdr := fmt.Appendf(_hdr[:0], "NATS/1.0\r\n%s: %s\r\n%s: %s\r\n\r\n", JSAppliedLimit, reason, JSMessageTTL, time.Duration(ttl)*time.Second)

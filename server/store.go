@@ -69,6 +69,9 @@ var (
 	ErrTooManyResults = errors.New("too many matching results for request")
 )
 
+// Default value for SubjectDeleteMarkerTTL if not specified.
+const subjectDeleteMarkerDefaultTTL = "15m"
+
 // StoreMsg is the stored message format for messages that are retained by the Store layer.
 type StoreMsg struct {
 	subj string
