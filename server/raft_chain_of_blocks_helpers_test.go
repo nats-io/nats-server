@@ -151,9 +151,10 @@ func (sm *RCOBStateMachine) leaderChange(isLeader bool) {
 }
 
 func (sm *RCOBStateMachine) stop() {
-	sm.node().Stop()
-	sm.node().WaitForStop()
-	sm.waitGroup().Wait()
+	n, wg := sm.node(), sm.waitGroup()
+	n.Stop()
+	n.WaitForStop()
+	wg.Wait()
 
 	// Clear state, on restart it will be recovered from snapshot or peers
 	sm.Lock()

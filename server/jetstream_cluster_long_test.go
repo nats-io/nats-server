@@ -249,7 +249,9 @@ func TestLongNRGChainOfBlocks(t *testing.T) {
 		Check,
 	}
 
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	rngSeed := time.Now().UnixNano()
+	rng := rand.New(rand.NewSource(rngSeed))
+	t.Logf("Seed: %d", rngSeed)
 
 	// Chose a node from the list (and remove it)
 	pickRandomNode := func(nodes []stateMachine) ([]stateMachine, stateMachine) {
@@ -314,6 +316,7 @@ func TestLongNRGChainOfBlocks(t *testing.T) {
 	testTimer := time.NewTimer(Duration)
 	start := time.Now()
 	iteration := 0
+	stopCooldown := 0
 
 	for {
 
@@ -334,6 +337,20 @@ func TestLongNRGChainOfBlocks(t *testing.T) {
 
 		// Choose a random operation to perform in this iteration
 		nextOperation := opsWeighted[rng.Intn(len(opsWeighted))]
+
+		// If we're about to stop one or all nodes, do some sanity checks to ensure we don't
+		// spam stops which would constantly interrupt the chance of making progress.
+		if nextOperation == StopOne || nextOperation == StopAll {
+			if stopCooldown > 0 {
+				nextOperation = Propose
+			} else {
+				stopCooldown = 50
+			}
+		}
+		if stopCooldown > 0 {
+			stopCooldown--
+		}
+
 		if RCOBOptions.verbose {
 			t.Logf("Iteration %d: %s", iteration, nextOperation)
 		}
