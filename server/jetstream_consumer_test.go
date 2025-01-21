@@ -2534,3 +2534,47 @@ func TestJetStreamConsumerBackoffWhenBackoffLengthIsEqualToMaxDeliverConfig(t *t
 	require_NoError(t, err)
 	require_LessThan(t, time.Since(firstMsgSent), calculateExpectedBackoff(3))
 }
+
+func TestJetStreamConsumerRetryAckAfterTimeout(t *testing.T) {
+	for _, ack := range []struct {
+		title  string
+		policy nats.SubOpt
+	}{
+		{title: "AckExplicit", policy: nats.AckExplicit()},
+		{title: "AckAll", policy: nats.AckAll()},
+	} {
+		t.Run(ack.title, func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+			})
+			require_NoError(t, err)
+
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+
+			sub, err := js.PullSubscribe("foo", "CONSUMER", ack.policy)
+			require_NoError(t, err)
+
+			msgs, err := sub.Fetch(1)
+			require_NoError(t, err)
+			require_Len(t, len(msgs), 1)
+
+			msg := msgs[0]
+			// Send core request so the client is unaware of the ack being sent.
+			_, err = nc.Request(msg.Reply, nil, time.Second)
+			require_NoError(t, err)
+
+			// It could be we have already acked this specific message, but we haven't received the success response.
+			// Retrying the ack should not time out and still signal success.
+			err = msg.AckSync()
+			require_NoError(t, err)
+		})
+	}
+}
