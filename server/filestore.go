@@ -5469,8 +5469,15 @@ func (mb *msgBlock) recompressOnDiskIfNeeded() error {
 	<-dios
 	tmpFD, err := os.OpenFile(tmpFN, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, defaultFilePerms)
 	dios <- struct{}{}
+
 	if err != nil {
 		return fmt.Errorf("failed to create temporary file: %w", err)
+	}
+
+	errorCleanup := func(err error) error {
+		tmpFD.Close()
+		os.Remove(tmpFN)
+		return err
 	}
 
 	// The original buffer at this point is uncompressed, so we will now compress
@@ -5478,7 +5485,7 @@ func (mb *msgBlock) recompressOnDiskIfNeeded() error {
 	// Compress function will just return the input buffer unmodified.
 	cmpBuf, err := alg.Compress(origBuf)
 	if err != nil {
-		return fmt.Errorf("failed to compress block: %w", err)
+		return errorCleanup(fmt.Errorf("failed to compress block: %w", err))
 	}
 
 	// We only need to write out the metadata header if compression is enabled.
@@ -5496,7 +5503,7 @@ func (mb *msgBlock) recompressOnDiskIfNeeded() error {
 	if mb.bek != nil && len(cmpBuf) > 0 {
 		bek, err := genBlockEncryptionKey(mb.fs.fcfg.Cipher, mb.seed, mb.nonce)
 		if err != nil {
-			return err
+			return errorCleanup(err)
 		}
 		mb.bek = bek
 		mb.bek.XORKeyStream(cmpBuf, cmpBuf)
@@ -5504,11 +5511,6 @@ func (mb *msgBlock) recompressOnDiskIfNeeded() error {
 
 	// Write the new block data (which might be compressed or encrypted) to the
 	// temporary file.
-	errorCleanup := func(err error) error {
-		tmpFD.Close()
-		os.Remove(tmpFN)
-		return err
-	}
 	if n, err := tmpFD.Write(cmpBuf); err != nil {
 		return errorCleanup(fmt.Errorf("failed to write to temporary file: %w", err))
 	} else if n != len(cmpBuf) {
