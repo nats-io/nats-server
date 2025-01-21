@@ -2578,3 +2578,52 @@ func TestJetStreamConsumerRetryAckAfterTimeout(t *testing.T) {
 		})
 	}
 }
+
+func TestJetStreamConsumerSwitchLeaderDuringInflightAck(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 2_000; i++ {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	sub, err := js.PullSubscribe(
+		"foo",
+		"CONSUMER",
+		nats.MaxAckPending(2_000),
+		nats.ManualAck(),
+		nats.AckExplicit(),
+		nats.AckWait(2*time.Second),
+	)
+	require_NoError(t, err)
+
+	acc, err := s.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+
+	msgs, err := sub.Fetch(2_000)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 2_000)
+
+	// Simulate an ack being pushed, and o.setLeader(false) being called before the ack is processed and resets o.awl
+	atomic.AddInt64(&o.awl, 1)
+	o.setLeader(false)
+	o.setLeader(true)
+
+	msgs, err = sub.Fetch(1, nats.MaxWait(5*time.Second))
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 1)
+}

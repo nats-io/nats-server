@@ -1548,6 +1548,8 @@ func (o *consumer) setLeader(isLeader bool) {
 		// If we were the leader make sure to drain queued up acks.
 		if wasLeader {
 			o.ackMsgs.drain()
+			// Reset amount of acks that need to be processed.
+			atomic.StoreInt64(&o.awl, 0)
 			// Also remove any pending replies since we should not be the one to respond at this point.
 			o.replies = nil
 		}
