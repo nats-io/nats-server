@@ -3978,6 +3978,10 @@ func (n *raft) setWriteErrLocked(err error) {
 	n.error("Critical write error: %v", err)
 	n.werr = err
 
+	if isPermissionError(err) {
+		go n.s.handleWritePermissionError()
+	}
+
 	if isOutOfSpaceErr(err) {
 		// For now since this can be happening all under the covers, we will call up and disable JetStream.
 		go n.s.handleOutOfSpace(nil)
