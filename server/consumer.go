@@ -1548,6 +1548,8 @@ func (o *consumer) setLeader(isLeader bool) {
 		// If we were the leader make sure to drain queued up acks.
 		if wasLeader {
 			o.ackMsgs.drain()
+			// Reset amount of acks that need to be processed.
+			atomic.StoreInt64(&o.awl, 0)
 			// Also remove any pending replies since we should not be the one to respond at this point.
 			o.replies = nil
 		}
@@ -4019,17 +4021,21 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 				}
 				continue
 			}
-			if seq > 0 {
-				pmsg := getJSPubMsgFromPool()
-				sm, err := o.mset.store.LoadMsg(seq, &pmsg.StoreMsg)
-				if sm == nil || err != nil {
-					pmsg.returnToPool()
-					pmsg, dc = nil, 0
-					// Adjust back deliver count.
-					o.decDeliveryCount(seq)
-				}
-				return pmsg, dc, err
+			pmsg := getJSPubMsgFromPool()
+			sm, err := o.mset.store.LoadMsg(seq, &pmsg.StoreMsg)
+			if sm == nil || err != nil {
+				pmsg.returnToPool()
+				pmsg, dc = nil, 0
+				// Adjust back deliver count.
+				o.decDeliveryCount(seq)
 			}
+			// Message was scheduled for redelivery but was removed in the meantime.
+			if err == ErrStoreMsgNotFound || err == errDeletedMsg {
+				delete(o.pending, seq)
+				delete(o.rdc, seq)
+				continue
+			}
+			return pmsg, dc, err
 		}
 	}
 
