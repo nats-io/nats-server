@@ -190,14 +190,16 @@ func (q *ipQueue[T]) len() int {
 }
 
 // Empty the queue and consumes the notification signal if present.
+// Returns the number of items that were drained from the queue.
 // Note that this could cause a reader go routine that has been
 // notified that there is something in the queue (reading from queue's `ch`)
 // may then get nothing if `drain()` is invoked before the `pop()` or `popOne()`.
-func (q *ipQueue[T]) drain() {
+func (q *ipQueue[T]) drain() int {
 	if q == nil {
-		return
+		return 0
 	}
 	q.Lock()
+	olen := len(q.elts)
 	if q.elts != nil {
 		q.resetAndReturnToPool(&q.elts)
 		q.elts, q.pos = nil, 0
@@ -209,6 +211,7 @@ func (q *ipQueue[T]) drain() {
 	default:
 	}
 	q.Unlock()
+	return olen
 }
 
 // Since the length of the queue goes to 0 after a pop(), it is good to

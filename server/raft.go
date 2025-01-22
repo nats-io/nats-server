@@ -1848,7 +1848,7 @@ runner:
 	// just will remove them from the central monitoring map
 	queues := []interface {
 		unregister()
-		drain()
+		drain() int
 	}{n.reqs, n.votes, n.prop, n.entry, n.resp, n.apply}
 	for _, q := range queues {
 		q.drain()
@@ -3860,6 +3860,10 @@ func (n *raft) setWriteErrLocked(err error) {
 	}
 	n.error("Critical write error: %v", err)
 	n.werr = err
+
+	if isPermissionError(err) {
+		go n.s.handleWritePermissionError()
+	}
 
 	if isOutOfSpaceErr(err) {
 		// For now since this can be happening all under the covers, we will call up and disable JetStream.

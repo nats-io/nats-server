@@ -1526,3 +1526,159 @@ func TestJetStreamConsumerBackoffWhenBackoffLengthIsEqualToMaxDeliverConfig(t *t
 	require_NoError(t, err)
 	require_LessThan(t, time.Since(firstMsgSent), calculateExpectedBackoff(3))
 }
+
+func TestJetStreamConsumerRetryAckAfterTimeout(t *testing.T) {
+	for _, ack := range []struct {
+		title  string
+		policy nats.SubOpt
+	}{
+		{title: "AckExplicit", policy: nats.AckExplicit()},
+		{title: "AckAll", policy: nats.AckAll()},
+	} {
+		t.Run(ack.title, func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+			})
+			require_NoError(t, err)
+
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+
+			sub, err := js.PullSubscribe("foo", "CONSUMER", ack.policy)
+			require_NoError(t, err)
+
+			msgs, err := sub.Fetch(1)
+			require_NoError(t, err)
+			require_Len(t, len(msgs), 1)
+
+			msg := msgs[0]
+			// Send core request so the client is unaware of the ack being sent.
+			_, err = nc.Request(msg.Reply, nil, time.Second)
+			require_NoError(t, err)
+
+			// It could be we have already acked this specific message, but we haven't received the success response.
+			// Retrying the ack should not time out and still signal success.
+			err = msg.AckSync()
+			require_NoError(t, err)
+		})
+	}
+}
+
+func TestJetStreamConsumerSwitchLeaderDuringInflightAck(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 2_000; i++ {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	sub, err := js.PullSubscribe(
+		"foo",
+		"CONSUMER",
+		nats.MaxAckPending(2_000),
+		nats.ManualAck(),
+		nats.AckExplicit(),
+		nats.AckWait(2*time.Second),
+	)
+	require_NoError(t, err)
+
+	acc, err := s.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+
+	msgs, err := sub.Fetch(2_000)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 2_000)
+
+	// Simulate an ack being pushed, and o.setLeader(false) being called before the ack is processed and resets o.awl
+	atomic.AddInt64(&o.awl, 1)
+	o.setLeader(false)
+	o.setLeader(true)
+
+	msgs, err = sub.Fetch(1, nats.MaxWait(5*time.Second))
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 1)
+}
+
+func TestJetStreamConsumerMessageDeletedDuringRedelivery(t *testing.T) {
+	storageTypes := []nats.StorageType{nats.MemoryStorage, nats.FileStorage}
+	for _, storageType := range storageTypes {
+		t.Run(storageType.String(), func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				Storage:  storageType,
+			})
+			require_NoError(t, err)
+
+			for i := 0; i < 3; i++ {
+				_, err = js.Publish("foo", nil)
+				require_NoError(t, err)
+			}
+
+			sub, err := js.PullSubscribe(
+				"foo",
+				"CONSUMER",
+				nats.ManualAck(),
+				nats.AckExplicit(),
+				nats.AckWait(time.Second),
+			)
+			require_NoError(t, err)
+
+			acc, err := s.lookupAccount(globalAccountName)
+			require_NoError(t, err)
+			mset, err := acc.lookupStream("TEST")
+			require_NoError(t, err)
+			o := mset.lookupConsumer("CONSUMER")
+			require_NotNil(t, o)
+
+			msgs, err := sub.Fetch(3)
+			require_NoError(t, err)
+			require_Len(t, len(msgs), 3)
+
+			err = js.DeleteMsg("TEST", 2)
+			require_NoError(t, err)
+
+			o.mu.Lock()
+			defer o.mu.Unlock()
+			for seq := range o.rdc {
+				o.removeFromRedeliverQueue(seq)
+			}
+
+			o.pending = make(map[uint64]*Pending)
+			o.pending[2] = &Pending{}
+			o.addToRedeliverQueue(2)
+
+			_, _, err = o.getNextMsg()
+			require_Error(t, err, ErrStoreEOF)
+			require_Len(t, len(o.pending), 0)
+			require_Len(t, len(o.rdc), 0)
+		})
+	}
+}

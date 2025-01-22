@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 	"unsafe"
@@ -779,4 +780,8 @@ func copyString(s string) string {
 	b := make([]byte, len(s))
 	copy(b, s)
 	return bytesToString(b)
+}
+
+func isPermissionError(err error) bool {
+	return err != nil && os.IsPermission(err)
 }
