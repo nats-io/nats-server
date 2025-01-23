@@ -65,15 +65,12 @@ nfpms:
 
 archives:
   - name_template: "{{.ProjectName}}-{{.Tag}}-{{.Os}}-{{.Arch}}{{if .Arm}}{{.Arm}}{{end}}"
-    wrap_in_directory: true
-    format: zip
-    files:
-      - README.md
-      - LICENSE
-  - name_template: "{{.ProjectName}}-{{.Tag}}-{{.Os}}-{{.Arch}}{{if .Arm}}{{.Arm}}{{end}}"
     id: targz-archives
     wrap_in_directory: true
     format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
     files:
       - README.md
       - LICENSE
