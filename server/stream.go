@@ -1386,7 +1386,7 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 		}
 	} else {
 		if cfg.SubjectDeleteMarkerTTL != _EMPTY_ {
-			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject marker delete TTL requires limits tombstones to be enabled"))
+			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject marker delete TTL requires subject delete markers to be enabled"))
 		}
 	}
 
@@ -1433,10 +1433,10 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 			return StreamConfig{}, NewJSMirrorMultipleFiltersNotAllowedError()
 		}
 		if cfg.SubjectDeleteMarkers {
-			// LimitsTTL cannot be configured on a mirror as it would result in new
+			// SubjectDeleteMarkers cannot be configured on a mirror as it would result in new
 			// tombstones which would use up sequence numbers, diverging from the origin
 			// stream.
-			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("limits tombstones forbidden on mirrors"))
+			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject delete markers forbidden on mirrors"))
 		}
 		// Check subject filters overlap.
 		for outer, tr := range cfg.Mirror.SubjectTransforms {
