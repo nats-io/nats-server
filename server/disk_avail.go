@@ -12,7 +12,6 @@
 // limitations under the License.
 
 //go:build !windows && !openbsd && !netbsd && !wasm
-// +build !windows,!openbsd,!netbsd,!wasm
 
 package server
 

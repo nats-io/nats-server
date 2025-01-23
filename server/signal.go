@@ -12,7 +12,6 @@
 // limitations under the License.
 
 //go:build !windows && !wasm
-// +build !windows,!wasm
 
 package server
 

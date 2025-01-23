@@ -12,7 +12,6 @@
 // limitations under the License.
 
 //go:build !race && !skipnoracetests
-// +build !race,!skipnoracetests
 
 package test
 

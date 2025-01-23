@@ -12,7 +12,6 @@
 // limitations under the License.
 
 //go:build !race && !skip_no_race_tests
-// +build !race,!skip_no_race_tests
 
 package avl
 

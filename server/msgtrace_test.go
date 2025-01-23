@@ -12,7 +12,6 @@
 // limitations under the License.
 
 //go:build !skip_msgtrace_tests
-// +build !skip_msgtrace_tests
 
 package server
 

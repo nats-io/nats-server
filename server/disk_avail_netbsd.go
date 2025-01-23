@@ -12,7 +12,6 @@
 // limitations under the License.
 
 //go:build netbsd
-// +build netbsd
 
 package server
 
