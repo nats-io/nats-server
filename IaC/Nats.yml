@@ -1,0 +1,682 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Deploy a NATS.io server on Amazon ECS
+
+Parameters:
+    SNSTopicARN:
+      Type: String
+      Description: "ARN of the SNS topic for notifications"
+    InstanceType:
+     Type: String
+     Default: t3a.medium
+     Description: Class of EC2 instance used to host containers. Choose t2 for testing, m5 for general purpose, c5 for CPU intensive services, and r5 for memory intensive services
+     AllowedValues: [ t2.micro, t2.small, t2.medium, t2.large, t2.xlarge, t2.2xlarge, t3.medium,  t3a.medium, t3.large, t3.xlarge, t3.2xlarge, t3a.large, t3a.xlarge, t3a.2xlarge
+       m5.large, m5.xlarge, m5.2large, m5.4xlarge, m5.12xlarge, m5.24large,
+       c5.large, c5.xlarge, c5.2xlarge, c5.4xlarge, c5.9xlarge, c5.18xlarge,
+       r5.large, r5.xlarge, r5.2xlarge, r5.4xlarge, r5.12xlarge, r5.24xlarge  ]
+     ConstraintDescription: Please choose a valid instance type.
+    MaxSize:
+     Type: Number
+     Default: '1'
+     Description: Maximum number of EC2 instances that can be launched in your ECS cluster.
+    ECSAMI:
+     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+     Default: /aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id
+     Description: The Amazon Machine Image ID used for the cluster, leave it as the default value to get the latest AMI
+    DesiredCapacity:
+     Type: Number
+     Default: '1'
+     Description: Number of EC2 instances to launch in your ECS cluster.
+    ImageTag:
+     Type: String
+     Description: ECR image tag for the AI service.
+     AllowedPattern: .+
+    CertificateArn:
+     Type: String
+     Description: "The ARN of the SSL certificate from AWS Certificate Manager (ACM) for HTTPS"
+    ECSTaskDesiredCount:
+     Default: 0
+     Type: Number
+     ConstraintDescription: Set the number of instantiations of the specified task definition to place and keep running on your cluster for the NATS service.
+    VPCID:
+     Type: AWS::EC2::VPC::Id
+     Description: Id of the VPC.
+     AllowedPattern: .+
+    EnvironmentName:
+     Type: String
+     Default: dev
+     Description: Name of environment.
+     AllowedValues: [ dev, demo, qa, sdlc, prod, preprod ]
+    Subnets:
+     Type: List<AWS::EC2::Subnet::Id>
+     Description: "The subnets in which the ALB will be deployed (must be in multiple Availability Zones for high availability)"
+
+Resources:
+    ECSCluster:
+      Type: AWS::ECS::Cluster
+      Properties:
+        ClusterName: NATS
+        Tags:
+        - Key: Name
+          Value: !Sub NATS-${EnvironmentName}
+    SecurityGroup:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+        GroupDescription: Access to the ECS hosts that run containers
+        SecurityGroupIngress:
+        - IpProtocol: -1
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 10.0.0.0/8
+        SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: -1
+          ToPort: -1
+          CidrIp:  0.0.0.0/0
+        VpcId: !Ref 'VPCID'
+        Tags:
+        - Key: Name
+          Value: !Sub LINC-${EnvironmentName}
+    PrivateLoadBalancer:
+      Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+      Properties:
+        Name: !Sub ${EnvironmentName}-LoadBalancer-nats
+        Scheme: internal
+        Type: network
+        Subnets: !Ref Subnets
+        SecurityGroups: [!Ref 'PrivateLoadBalancerSG']
+        Tags:
+          - Key: Owner
+            Value: !Sub ${EnvironmentName}
+    UnhealthyHostCountAlarmNat4222:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: "UnhealthyHostCount-Alarm-nats-4222"
+        AlarmDescription: "Alarm when unhealthy hosts count exceeds threshold for Target Group nats-4222"
+        Namespace: "AWS/NetworkELB"
+        MetricName: "UnHealthyHostCount"
+        Dimensions:
+          - Name: LoadBalancer
+            Value: !GetAtt PrivateLoadBalancer.LoadBalancerFullName
+          - Name: TargetGroup
+            Value: !GetAtt TargetGroupNATS4222.TargetGroupFullName
+        Statistic: Sum
+        Period: 60
+        EvaluationPeriods: 2
+        Threshold: 1
+        ComparisonOperator: GreaterThanThreshold
+        AlarmActions:
+          - !Ref SNSTopicARN
+        OKActions:
+          - !Ref SNSTopicARN
+    UnhealthyHostCountAlarmNat6222:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: "UnhealthyHostCount-Alarm-nats-6222"
+        AlarmDescription: "Alarm when unhealthy hosts count exceeds threshold for Target Group nats-6222"
+        Namespace: "AWS/NetworkELB"
+        MetricName: "UnHealthyHostCount"
+        Dimensions:
+          - Name: LoadBalancer
+            Value: !GetAtt PrivateLoadBalancer.LoadBalancerFullName
+          - Name: TargetGroup
+            Value: !GetAtt TargetGroupNATS6222.TargetGroupFullName
+        Statistic: Sum
+        Period: 60
+        EvaluationPeriods: 2
+        Threshold: 1
+        ComparisonOperator: GreaterThanThreshold
+        AlarmActions:
+          - !Ref SNSTopicARN
+        OKActions:
+          - !Ref SNSTopicARN
+    UnhealthyHostCountAlarmNat8222:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: "UnhealthyHostCount-Alarm-nats-8222"
+        AlarmDescription: "Alarm when unhealthy hosts count exceeds threshold for Target Group nats-8222"
+        Namespace: "AWS/NetworkELB"
+        MetricName: "UnHealthyHostCount"
+        Dimensions:
+          - Name: LoadBalancer
+            Value: !GetAtt PrivateLoadBalancer.LoadBalancerFullName # Replace with ALB name and ID
+          - Name: TargetGroup
+            Value: !GetAtt TargetGroupNATS8222.TargetGroupFullName # Replace with TG1 name and ID
+        Statistic: Sum
+        Period: 60
+        EvaluationPeriods: 2
+        Threshold: 1
+        ComparisonOperator: GreaterThanThreshold
+        AlarmActions:
+          - !Ref SNSTopicARN
+        OKActions:
+          - !Ref SNSTopicARN
+    LogGroup:
+        Type: AWS::Logs::LogGroup
+        Properties:
+         RetentionInDays: 180
+         LogGroupName:
+            Fn::Join:
+            - /
+            - - /ecs
+              - Ref: EnvironmentName
+              - ECS-task-
+              - nats
+    PrivateLoadBalancerSG:
+        Type: AWS::EC2::SecurityGroup
+        Properties:
+          GroupName: !Sub ${EnvironmentName}-LoadBalancerSG-nats
+          GroupDescription: Access to the public facing load balancer
+          VpcId: !Ref VPCID
+          SecurityGroupIngress:
+            - IpProtocol: tcp
+              FromPort: 8222
+              ToPort: 8222
+              CidrIp: 10.0.0.0/8  # Allowing HTTP traffic from SourceCIDR
+            - IpProtocol: tcp
+              FromPort: 4222
+              ToPort: 4222
+              CidrIp: 10.0.0.0/8 # Allowing HTTPS traffic from SourceCIDR
+            - IpProtocol: tcp
+              FromPort: 6222
+              ToPort: 6222
+              CidrIp: 10.0.0.0/8 # Allowing HTTPS traffic from SourceCIDR
+          SecurityGroupEgress:
+            - IpProtocol: -1  # Allow all outbound traffic (can be restricted further if needed)
+              FromPort: -1
+              ToPort: -1
+              CidrIp: "0.0.0.0/0"  # Allow all outbound traffic by default
+          Tags:
+            - Key: Owner
+              Value: !Sub ${EnvironmentName}
+    TaskExecutionRole:
+     Type: "AWS::IAM::Role"
+     Properties:
+       AssumeRolePolicyDocument:
+         Version: "2012-10-17"
+         Statement:
+           -
+             Effect: "Allow"
+             Principal:
+               Service:
+                 - "ec2.amazonaws.com"
+                 - 'ecs-tasks.amazonaws.com'
+             Action:
+               - "sts:AssumeRole"
+       Policies:
+         - PolicyName: "KMSReadOnlyPolicy"
+           PolicyDocument:
+             Version: "2012-10-17"
+             Statement:
+               - Effect: "Allow"
+                 Action:
+                   - "kms:DescribeKey"
+                   - "kms:ListKeys"
+                   - "kms:ListAliases"
+                   - "kms:ListKeyPolicies"
+                   - "kms:GetKeyPolicy"
+                   - "kms:ListGrants"
+                   - "kms:ListResourceTags"
+                   - "kms:ListRetirableGrants"
+                 Resource: "*"
+         - PolicyName: "SSMReadOnlyPolicy"
+           PolicyDocument:
+             Version: "2012-10-17"
+             Statement:
+               - Effect: "Allow"
+                 Action:
+                   - "ssm:GetParameter"
+                   - "ssm:GetParameters"
+                   - "ssm:GetParametersByPath"
+                   - "ssm:DescribeParameters"
+                   - "ssm:GetParameterHistory"
+                   - "ssm:ListTagsForResource"
+                 Resource: "*"
+         - PolicyName: "SecretsManagerReadOnlyPolicy"
+           PolicyDocument:
+             Version: "2012-10-17"
+             Statement:
+               - Effect: "Allow"
+                 Action:
+                   - "secretsmanager:GetSecretValue"
+                   - "secretsmanager:DescribeSecret"
+                   - "secretsmanager:ListSecrets"
+                   - "secretsmanager:ListSecretVersionIds"
+                   - "secretsmanager:GetResourcePolicy"
+                 Resource: "*"
+         - PolicyName: "CloudWatchLogsReadWritePolicy"
+           PolicyDocument:
+             Version: "2012-10-17"
+             Statement:
+               - Effect: "Allow"
+                 Action:
+                   - "logs:DescribeLogGroups"
+                   - "logs:DescribeLogStreams"
+                   - "logs:GetLogEvents"
+                   - "logs:FilterLogEvents"
+                   - "logs:CreateLogGroup"
+                   - "logs:CreateLogStream"
+                   - "logs:PutLogEvents"
+                 Resource: "*"
+         - PolicyName: "ECRReadOnlyPolicy"
+           PolicyDocument:
+             Version: "2012-10-17"
+             Statement:
+               - Effect: "Allow"
+                 Action:
+                   - "ecr:BatchCheckLayerAvailability"
+                   - "ecr:DescribeImages"
+                   - "ecr:DescribeRepositories"
+                   - "ecr:GetDownloadUrlForLayer"
+                   - "ecr:ListImages"
+                   - "ecr:GetLifecyclePolicy"
+                   - "ecr:GetRepositoryPolicy"
+                   - "ecr:GetLifecyclePolicyPreview"
+                   - "ecr:GetAuthorization"
+                   - "ecr:GetAuthorizationToken"
+                   - "ecr:BatchGetImage"
+                 Resource: "*"
+       RoleName: !Sub 'EcsTasksExecutionRole-${EnvironmentName}-nats'
+    MicroserviceTaskDefinition:
+      Type: AWS::ECS::TaskDefinition
+      DependsOn:
+      - LogGroup
+      Properties:
+        Family:
+          Fn::Join:
+          - '-'
+          - - Ref: EnvironmentName
+            - ECS-task
+            - nats
+        RequiresCompatibilities:
+        - EC2
+        ExecutionRoleArn:
+          Ref: TaskExecutionRole
+        ContainerDefinitions:
+        - Name:
+            Fn::Join:
+            - '-'
+            - - Ref: EnvironmentName
+              - nats
+          MemoryReservation: 1024
+          Image:
+            Fn::Join:
+            - ':'
+            - - Fn::GetAtt: ECRRepository.RepositoryUri
+              - Ref: ImageTag
+          Essential: true
+          PortMappings:
+          - ContainerPort: 4222
+            HostPort: 0
+          - ContainerPort: 8222
+            HostPort: 0
+          - ContainerPort: 6222
+            HostPort: 0
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group:
+                Fn::Join:
+                - /
+                - - /ecs
+                  - Ref: EnvironmentName
+                  - ECS-task-
+                  - nats
+              awslogs-region:
+                Fn::Sub: ${AWS::Region}
+              awslogs-stream-prefix: ecs
+        Tags:
+                - Key: Owner
+                  Value: !Sub ${EnvironmentName}
+    TargetGroupNATS6222:
+      Type: AWS::ElasticLoadBalancingV2::TargetGroup
+      Properties:
+        Name: !Sub ${EnvironmentName}-nats-6222
+        HealthCheckIntervalSeconds: 20
+        HealthCheckProtocol: TCP
+        HealthCheckTimeoutSeconds: 5
+        HealthyThresholdCount: 3
+        Port: 6222
+        Protocol: TCP
+        UnhealthyThresholdCount: 2
+        VpcId:  !Ref VPCID
+        Tags:
+          - Key: Owner
+            Value: !Sub ${EnvironmentName}
+        TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: "30"
+    TargetGroupNATS4222:
+      Type: AWS::ElasticLoadBalancingV2::TargetGroup
+      Properties:
+        Name: !Sub ${EnvironmentName}-nats-4222
+        HealthCheckIntervalSeconds: 20
+        HealthCheckProtocol: TCP
+        HealthCheckTimeoutSeconds: 5
+        HealthyThresholdCount: 3
+        Port: 4222
+        Protocol: TCP
+        UnhealthyThresholdCount: 2
+        VpcId:  !Ref VPCID
+        Tags:
+          - Key: Owner
+            Value: !Sub ${EnvironmentName}
+        TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: "30"
+    TargetGroupNATS8222:
+      Type: AWS::ElasticLoadBalancingV2::TargetGroup
+      Properties:
+        Name: !Sub ${EnvironmentName}-nats-8222
+        HealthCheckIntervalSeconds: 20
+        HealthCheckProtocol: TCP
+        HealthCheckTimeoutSeconds: 5
+        HealthyThresholdCount: 3
+        Port: 8222
+        Protocol: TCP
+        UnhealthyThresholdCount: 2
+        VpcId:  !Ref VPCID
+        Tags:
+          - Key: Owner
+            Value: !Sub ${EnvironmentName}
+        TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: "30"
+    ALBListener6222:
+      Type: "AWS::ElasticLoadBalancingV2::Listener"
+      Properties:
+        DefaultActions:
+          - Type: forward
+            TargetGroupArn: !Ref TargetGroupNATS6222
+        LoadBalancerArn: !Ref PrivateLoadBalancer
+        Port: 6222
+        Protocol: TCP
+    ALBListener:
+      Type: "AWS::ElasticLoadBalancingV2::Listener"
+      Properties:
+        DefaultActions:
+          - Type: forward
+            TargetGroupArn: !Ref TargetGroupNATS4222
+        LoadBalancerArn: !Ref PrivateLoadBalancer
+        Port: 4222
+        Protocol: TCP
+    ALBListener8222:
+      Type: "AWS::ElasticLoadBalancingV2::Listener"
+      Properties:
+        DefaultActions:
+          - Type: forward
+            TargetGroupArn: !Ref TargetGroupNATS8222
+        LoadBalancerArn: !Ref PrivateLoadBalancer
+        Port: 8222
+        Protocol: TCP
+    IAMRoleECS:
+        Type: "AWS::IAM::Role"
+        Properties:
+            Path: "/"
+            RoleName: !Sub ${EnvironmentName}-ecsServiceRole-nats
+            AssumeRolePolicyDocument: "{\"Version\":\"2008-10-17\",\"Statement\":[{\"Sid\":\"\",\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"ecs.amazonaws.com\"},\"Action\":\"sts:AssumeRole\"}]}"
+            MaxSessionDuration: 3600
+            ManagedPolicyArns:
+              - "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceRole"
+            Tags:
+              - Key: Owner
+                Value: !Sub ${EnvironmentName}
+    ECRRepository:
+      Type: AWS::ECR::Repository
+      Properties:
+        RepositoryName: !Join [ "-", [{Ref: EnvironmentName}, 'nats' ] ]
+        LifecyclePolicy:
+          LifecyclePolicyText: "{\n  \"rules\": [\n    {\n      \"rulePriority\": 1,\n\
+            \      \"description\": \"Only keep 5 images\",\n      \"selection\": {\n\
+            \        \"tagStatus\": \"any\",\n        \"countType\": \"imageCountMoreThan\"\
+            ,\n        \"countNumber\": 5\n    },\n    \"action\": { \"type\": \"expire\"\
+            \ }\n  }]\n}\n"
+        Tags:
+        - Key: Owner
+          Value:
+            Fn::Sub: ${EnvironmentName}
+    ECSAutoScalingGroup:
+      Type: AWS::AutoScaling::AutoScalingGroup
+      Properties:
+        VPCZoneIdentifier: !Ref Subnets
+        LaunchConfigurationName: !Ref 'ContainerInstances'
+        MinSize: '1'
+        MaxSize: !Ref 'MaxSize'
+        DesiredCapacity: !Ref 'DesiredCapacity'
+        Tags:
+        - Key: Name
+          Value: !Sub NATS-${EnvironmentName}
+          PropagateAtLaunch: true
+      UpdatePolicy:
+        AutoScalingReplacingUpdate:
+          WillReplace: 'true'
+    ContainerInstances:
+        Type: AWS::AutoScaling::LaunchConfiguration
+        Properties:
+          ImageId: !Ref 'ECSAMI'
+          SecurityGroups: [!Ref 'SecurityGroup']
+          InstanceType: !Ref 'InstanceType'
+          IamInstanceProfile: !Ref 'EC2InstanceProfile'
+          MetadataOptions:
+            HttpTokens: required  # Enforces the use of IMDSv2
+            HttpPutResponseHopLimit: 2
+            HttpEndpoint: enabled
+          BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              DeleteOnTermination: true
+              VolumeSize: 30
+              VolumeType: 'gp3'
+              Encrypted: true
+          UserData:
+            Fn::Base64: !Sub |
+              #!/bin/bash -xe
+              echo ECS_CLUSTER=${ECSCluster} >> /etc/ecs/ecs.config
+              echo ECS_ENABLE_CONTAINER_INSTANCE_DRAINING=true >> /etc/ecs/ecs.config
+              yum install -y aws-cfn-bootstrap
+              /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource ECSAutoScalingGroup --region ${AWS::Region}
+    EC2InstanceProfile:
+        Type: AWS::IAM::InstanceProfile
+        Properties:
+          Path: /
+          Roles: [!Ref 'EC2Role']
+
+  # A role used to allow AWS Autoscaling to inspect stats and adjust scaleable targets
+  # on your AWS account
+    AutoscalingRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Statement:
+          - Effect: Allow
+            Principal:
+              Service: [application-autoscaling.amazonaws.com]
+            Action: ['sts:AssumeRole']
+        Path: /
+        Policies:
+        - PolicyName: service-autoscaling
+          PolicyDocument:
+            Statement:
+            - Effect: Allow
+              Action:
+                - 'application-autoscaling:*'
+                - 'cloudwatch:DescribeAlarms'
+                - 'cloudwatch:PutMetricAlarm'
+                - 'ecs:DescribeServices'
+                - 'ecs:UpdateService'
+              Resource: '*'
+        Tags:
+          - Key: Name
+            Value: !Sub NATS-${EnvironmentName}
+
+  # Role for the EC2 hosts. This allows the ECS agent on the EC2 hosts
+  # to communciate with the ECS control plane, as well as download the docker
+  # images from ECR to run on your host.
+    EC2Role:
+       Type: AWS::IAM::Role
+       Properties:
+         AssumeRolePolicyDocument:
+           Statement:
+           - Effect: Allow
+             Principal:
+               Service: [ec2.amazonaws.com]
+             Action: ['sts:AssumeRole']
+         Path: /
+         Policies:
+         - PolicyName: ecs-service
+           PolicyDocument:
+             Statement:
+             - Effect: Allow
+               Action:
+                 - 'ecs:CreateCluster'
+                 - 'ecs:DeregisterContainerInstance'
+                 - 'ecs:DiscoverPollEndpoint'
+                 - 'ecs:Poll'
+                 - 'ecs:RegisterContainerInstance'
+                 - 'ecs:StartTelemetrySession'
+                 - 'ecs:Submit*'
+                 - 'logs:CreateLogStream'
+                 - 'logs:PutLogEvents'
+                 - 'ecr:GetAuthorizationToken'
+                 - 'ecr:BatchGetImage'
+                 - 'ecr:GetDownloadUrlForLayer'
+                 - "ssm:*"
+                 - "ssmmessages:*"
+                 - "ec2messages:*"
+               Resource: '*'
+         Tags:
+           - Key: Name
+             Value: !Sub LINC-${EnvironmentName}
+    ECSRole:
+        Type: AWS::IAM::Role
+        Properties:
+          RoleName: AmazonECSContainerServiceRoleNATS
+          AssumeRolePolicyDocument:
+            Statement:
+            - Effect: Allow
+              Principal:
+                Service: [ecs.amazonaws.com]
+              Action: ['sts:AssumeRole']
+          Path: /
+          Policies:
+          - PolicyName: ecs-service-nats
+            PolicyDocument:
+              Statement:
+              - Effect: Allow
+                Action:
+                  # Rules which allow ECS to attach network interfaces to instances
+                  # on your behalf in order for awsvpc networking mode to work right
+                  - 'ec2:AttachNetworkInterface'
+                  - 'ec2:CreateNetworkInterface'
+                  - 'ec2:CreateNetworkInterfacePermission'
+                  - 'ec2:DeleteNetworkInterface'
+                  - 'ec2:DeleteNetworkInterfacePermission'
+                  - 'ec2:Describe*'
+                  - 'ec2:DetachNetworkInterface'
+
+                  # Rules which allow ECS to update load balancers on your behalf
+                  # with the information sabout how to send traffic to your containers
+                  - 'elasticloadbalancing:DeregisterInstancesFromLoadBalancer'
+                  - 'elasticloadbalancing:DeregisterTargets'
+                  - 'elasticloadbalancing:Describe*'
+                  - 'elasticloadbalancing:RegisterInstancesWithLoadBalancer'
+                  - 'elasticloadbalancing:RegisterTargets'
+                Resource: '*'
+          Tags:
+            - Key: Name
+              Value: !Sub LINC-${EnvironmentName}
+    ECSServiceNATS:
+      Type: AWS::ECS::Service
+      DependsOn:
+        - PrivateLoadBalancer
+        - ECSCluster
+      Properties:
+        ServiceName: nats
+        Cluster:
+          Fn::GetAtt:
+            - ECSCluster
+            - Arn
+        LoadBalancers:
+          - TargetGroupArn:
+              Ref: TargetGroupNATS8222
+            ContainerName:
+              Fn::Join:
+                - '-'
+                -
+                  - Ref: EnvironmentName
+                  - nats
+            ContainerPort: 8222
+          - TargetGroupArn:
+              Ref: TargetGroupNATS4222
+            ContainerName:
+              Fn::Join:
+                - '-'
+                -
+                  - Ref: EnvironmentName
+                  - nats
+            ContainerPort: 4222
+          - TargetGroupArn:
+              Ref: TargetGroupNATS6222
+            ContainerName:
+              Fn::Join:
+                - '-'
+                -
+                  - Ref: EnvironmentName
+                  - nats
+            ContainerPort: 6222
+        DesiredCount:
+          Ref: ECSTaskDesiredCount
+        LaunchType: EC2
+        TaskDefinition:
+          Ref: MicroserviceTaskDefinition
+        DeploymentConfiguration:
+          MaximumPercent: 200
+          MinimumHealthyPercent: 100
+          DeploymentCircuitBreaker:
+            Enable: false
+            Rollback: false
+        PlacementStrategies:
+          - Type: spread
+            Field: attribute:ecs.availability-zone
+          - Type: spread
+            Field: instanceId
+        HealthCheckGracePeriodSeconds: 12
+        SchedulingStrategy: REPLICA
+        DeploymentController:
+          Type: ECS
+        Tags:
+          - Key: Owner
+            Value: !Sub ${EnvironmentName}
+    CPUAlarm:
+       Type: AWS::CloudWatch::Alarm
+       Properties:
+         AlarmName: HighCPUUsageECS-NATS
+         AlarmDescription: Alarm when ECS service CPU usage exceeds 80% on NATS
+         MetricName: CPUUtilization
+         Namespace: AWS/ECS
+         Statistic: Average
+         Period: 300
+         EvaluationPeriods: 1
+         Threshold: 80
+         ComparisonOperator: GreaterThanOrEqualToThreshold
+         Dimensions:
+           - Name: ClusterName
+             Value: !Ref ECSCluster
+         AlarmActions:
+           - !Ref SNSTopicARN
+    MemoryAlarm:
+       Type: AWS::CloudWatch::Alarm
+       Properties:
+         AlarmName: HighMemoryUsageECSTask-NATS
+         AlarmDescription: Alarm when ECS task memory usage exceeds 80% on NATS
+         MetricName: MemoryUtilization
+         Namespace: AWS/ECS
+         Statistic: Average
+         Period: 300
+         EvaluationPeriods: 1
+         Threshold: 80
+         ComparisonOperator: GreaterThanOrEqualToThreshold
+         Dimensions:
+           - Name: ClusterName
+             Value: !Ref ECSCluster
+         AlarmActions:
+           - !Ref SNSTopicARN
