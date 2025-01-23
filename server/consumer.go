@@ -3613,8 +3613,10 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 			}
 			// Message was scheduled for redelivery but was removed in the meantime.
 			if err == ErrStoreMsgNotFound || err == errDeletedMsg {
-				delete(o.pending, seq)
-				delete(o.rdc, seq)
+				// This is a race condition where the message is still in o.pending and
+				// scheduled for redelivery, but it has been removed from the stream.
+				// o.processTerm is called in a goroutine so could run after we get here.
+				// That will correct the pending state and delivery/ack floors, so just skip here.
 				continue
 			}
 			return pmsg, dc, err
