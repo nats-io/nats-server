@@ -178,6 +178,7 @@ type Server struct {
 	opts                *Options
 	running             atomic.Bool
 	shutdown            atomic.Bool
+	shutdownSignal      atomic.Int32
 	listener            net.Listener
 	listenerErr         error
 	gacc                *Account
@@ -1544,6 +1545,19 @@ func (s *Server) processTrustedKeys() bool {
 	return true
 }
 
+// PrintAndDie print error message and exit
+func (s *Server) PrintAndDie(msg string) {
+
+	sig := s.shutdownSignal.Load()
+	if sig == 0 {
+		fmt.Fprintln(os.Stderr, msg)
+		os.Exit(1)
+	} else {
+		fmt.Fprintln(os.Stderr, fmt.Sprintf("Shutting down due to signal: %d", sig))
+		os.Exit(int(sig + 128))
+	}
+}
+
 // checkTrustedKeyString will check that the string is a valid array
 // of public operator nkeys.
 func checkTrustedKeyString(keys string) []string {
@@ -1574,12 +1588,6 @@ func (s *Server) initStampedTrustedKeys() bool {
 	}
 	s.trustedKeys = tks
 	return true
-}
-
-// PrintAndDie is exported for access in other packages.
-func PrintAndDie(msg string) {
-	fmt.Fprintln(os.Stderr, msg)
-	os.Exit(1)
 }
 
 // PrintServerAndExit will print our version and exit.

@@ -108,7 +108,8 @@ func main() {
 		fs.Usage,
 		server.PrintTLSHelpAndDie)
 	if err != nil {
-		server.PrintAndDie(fmt.Sprintf("%s: %s", exe, err))
+		fmt.Fprintln(os.Stderr, fmt.Sprintf("%s: %s", exe, err))
+		os.Exit(1)
 	} else if opts.CheckConfig {
 		fmt.Fprintf(os.Stderr, "%s: configuration file %s is valid (%s)\n", exe, opts.ConfigFile, opts.ConfigDigest())
 		os.Exit(0)
@@ -117,7 +118,8 @@ func main() {
 	// Create the server with appropriate options.
 	s, err := server.NewServer(opts)
 	if err != nil {
-		server.PrintAndDie(fmt.Sprintf("%s: %s", exe, err))
+		fmt.Fprintln(os.Stderr, fmt.Sprintf("%s: %s", exe, err))
+		os.Exit(1)
 	}
 
 	// Configure the logger based on the flags.
@@ -125,7 +127,7 @@ func main() {
 
 	// Start things up. Block here until done.
 	if err := server.Run(s); err != nil {
-		server.PrintAndDie(err.Error())
+		s.PrintAndDie(err.Error())
 	}
 
 	// Adjust MAXPROCS if running under linux/cgroups quotas.

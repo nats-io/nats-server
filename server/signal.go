@@ -49,10 +49,12 @@ func (s *Server) handleSignals() {
 				s.Noticef("Trapped %q signal", sig)
 				switch sig {
 				case syscall.SIGINT:
+					s.shutdownSignal.CompareAndSwap(0, int32(syscall.SIGINT))
 					s.Shutdown()
 					s.WaitForShutdown()
-					os.Exit(0)
+					os.Exit(128 + int(syscall.SIGINT))
 				case syscall.SIGTERM:
+					s.shutdownSignal.CompareAndSwap(0, int32(syscall.SIGTERM))
 					// Shutdown unless graceful shutdown already in progress.
 					s.mu.Lock()
 					ldm := s.ldm
@@ -61,7 +63,7 @@ func (s *Server) handleSignals() {
 					if !ldm {
 						s.Shutdown()
 						s.WaitForShutdown()
-						os.Exit(0)
+						os.Exit(128 + int(syscall.SIGTERM))
 					}
 				case syscall.SIGUSR1:
 					// File log re-open for rotating file logs.

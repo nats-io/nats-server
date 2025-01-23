@@ -37,6 +37,7 @@ func (s *Server) handleSignals() {
 		for {
 			select {
 			case sig := <-c:
+				s.shutdownSignal.CompareAndSwap(0, int32(syscall.SIGTERM))
 				s.Debugf("Trapped %q signal", sig)
 				s.Shutdown()
 				os.Exit(0)
