@@ -675,11 +675,8 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		mqch: make(chan struct{}),
 		uch:  make(chan struct{}, 4),
 		sch:  make(chan struct{}, 1),
+		sigq: newIPQueue[*cMsg](s, qpfx+"obs"), // of *cMsg
 	}
-
-	// Start our signaling routine to process consumers.
-	mset.sigq = newIPQueue[*cMsg](s, qpfx+"obs") // of *cMsg
-	go mset.signalConsumersLoop()
 
 	// For no-ack consumers when we are interest retention.
 	if cfg.Retention != LimitsPolicy {
@@ -799,6 +796,9 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	jsa.mu.Lock()
 	jsa.streams[cfg.Name] = mset
 	jsa.mu.Unlock()
+
+	// Start processing consumers.
+	go mset.signalConsumersLoop()
 
 	return mset, nil
 }
