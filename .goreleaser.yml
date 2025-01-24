@@ -19,6 +19,7 @@ builds:
     ldflags:
       - -w -X 'github.com/nats-io/nats-server/v2/server.gitCommit={{.ShortCommit}}' -X 'github.com/nats-io/nats-server/v2/server.serverVersion={{.Tag}}'
     env:
+      - GOTOOLCHAIN={{ envOrDefault "GORELEASER_TOOLCHAIN" "go1.23.5" }}
       - GO111MODULE=on
       - CGO_ENABLED=0
     goos:
