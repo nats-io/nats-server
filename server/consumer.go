@@ -1583,6 +1583,12 @@ var (
 // deleteNotActive must only be called from time.AfterFunc or in its own
 // goroutine, as it can block on clean-up.
 func (o *consumer) deleteNotActive() {
+	// Take a copy of these when the goroutine starts, mostly it avoids a
+	// race condition with tests that modify these consts, such as
+	// TestJetStreamClusterGhostEphemeralsAfterRestart.
+	cnaMax := consumerNotActiveMaxInterval
+	cnaStart := consumerNotActiveStartInterval
+
 	o.mu.Lock()
 	if o.mset == nil {
 		o.mu.Unlock()
@@ -1663,8 +1669,8 @@ func (o *consumer) deleteNotActive() {
 		if ca != nil && cc != nil {
 			// Check to make sure we went away.
 			// Don't think this needs to be a monitored go routine.
-			jitter := time.Duration(rand.Int63n(int64(consumerNotActiveStartInterval)))
-			interval := consumerNotActiveStartInterval + jitter
+			jitter := time.Duration(rand.Int63n(int64(cnaStart)))
+			interval := cnaStart + jitter
 			ticker := time.NewTicker(interval)
 			defer ticker.Stop()
 			for {
@@ -1686,7 +1692,7 @@ func (o *consumer) deleteNotActive() {
 				if nca != nil && nca == ca {
 					s.Warnf("Consumer assignment for '%s > %s > %s' not cleaned up, retrying", acc, stream, name)
 					meta.ForwardProposal(removeEntry)
-					if interval < consumerNotActiveMaxInterval {
+					if interval < cnaMax {
 						interval *= 2
 						ticker.Reset(interval)
 					}
