@@ -8570,7 +8570,7 @@ func TestFileStoreSubjectDeleteMarkers(t *testing.T) {
 		StreamConfig{
 			Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage,
 			MaxAge: time.Second, AllowMsgTTL: true,
-			SubjectDeleteMarkers: true, SubjectDeleteMarkerTTL: "1s",
+			SubjectDeleteMarkers: true, SubjectDeleteMarkerTTL: time.Second,
 		},
 	)
 	require_NoError(t, err)
@@ -8614,7 +8614,7 @@ func TestFileStoreSubjectDeleteMarkersOnRestart(t *testing.T) {
 		StreamConfig{
 			Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage,
 			MaxAge: time.Second, AllowMsgTTL: true,
-			SubjectDeleteMarkers: true, SubjectDeleteMarkerTTL: "1s",
+			SubjectDeleteMarkers: true, SubjectDeleteMarkerTTL: time.Second,
 		},
 	)
 	require_NoError(t, err)
@@ -8637,7 +8637,7 @@ func TestFileStoreSubjectDeleteMarkersOnRestart(t *testing.T) {
 		StreamConfig{
 			Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage,
 			MaxAge: time.Second, AllowMsgTTL: true,
-			SubjectDeleteMarkers: true, SubjectDeleteMarkerTTL: "1s",
+			SubjectDeleteMarkers: true, SubjectDeleteMarkerTTL: time.Second,
 		},
 	)
 	require_NoError(t, err)

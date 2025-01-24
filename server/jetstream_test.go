@@ -24171,7 +24171,7 @@ func TestJetStreamStreamCreatePedanticMode(t *testing.T) {
 					Storage:                FileStorage,
 					AllowMsgTTL:            true,
 					SubjectDeleteMarkers:   true,
-					SubjectDeleteMarkerTTL: "10m",
+					SubjectDeleteMarkerTTL: 10 * time.Minute,
 				},
 				Pedantic: true,
 			},
@@ -24218,7 +24218,7 @@ func TestJetStreamStreamCreatePedanticMode(t *testing.T) {
 					Storage:                FileStorage,
 					AllowMsgTTL:            true,
 					SubjectDeleteMarkers:   true,
-					SubjectDeleteMarkerTTL: "11m",
+					SubjectDeleteMarkerTTL: 11 * time.Minute,
 				},
 				Pedantic: true,
 			},
@@ -25369,7 +25369,7 @@ func TestJetStreamSubjectDeleteMarkers(t *testing.T) {
 				MaxAge:                 time.Second,
 				AllowMsgTTL:            true,
 				SubjectDeleteMarkers:   true,
-				SubjectDeleteMarkerTTL: "1s",
+				SubjectDeleteMarkerTTL: time.Second,
 			})
 
 			sub, err := js.SubscribeSync("test")

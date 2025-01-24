@@ -990,7 +990,7 @@ func (ms *memStore) subjectDeleteMarkerIfNeeded(sm *StoreMsg, reason string) fun
 	// we'll default to 15 minutes — by that time every possible condition
 	// should have cleared (i.e. ordered consumer timeout, client timeouts,
 	// route/gateway interruptions, even device/client restarts etc).
-	ttl, _ := parseMessageTTL(ms.cfg.SubjectDeleteMarkerTTL)
+	ttl := int64(ms.cfg.SubjectDeleteMarkerTTL.Seconds())
 	if ttl <= 0 {
 		return nil
 	}
