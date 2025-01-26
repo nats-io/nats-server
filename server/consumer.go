@@ -1864,9 +1864,6 @@ func (acc *Account) checkNewConsumerConfig(cfg, ncfg *ConsumerConfig) error {
 	if cfg.FlowControl != ncfg.FlowControl {
 		return errors.New("flow control can not be updated")
 	}
-	if cfg.MaxWaiting != ncfg.MaxWaiting {
-		return errors.New("max waiting can not be updated")
-	}
 
 	// Deliver Subject is conditional on if its bound.
 	if cfg.DeliverSubject != ncfg.DeliverSubject {
@@ -1879,6 +1876,10 @@ func (acc *Account) checkNewConsumerConfig(cfg, ncfg *ConsumerConfig) error {
 		if acc.sl.HasInterest(cfg.DeliverSubject) {
 			return NewJSConsumerNameExistError()
 		}
+	}
+
+	if cfg.MaxWaiting != ncfg.MaxWaiting {
+		return errors.New("max waiting can not be updated")
 	}
 
 	// Check if BackOff is defined, MaxDeliver is within range.
