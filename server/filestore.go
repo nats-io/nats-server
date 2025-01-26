@@ -5356,7 +5356,7 @@ func (fs *fileStore) subjectDeleteMarkerIfNeeded(sm *StoreMsg, reason string) fu
 	// we'll default to 15 minutes — by that time every possible condition
 	// should have cleared (i.e. ordered consumer timeout, client timeouts,
 	// route/gateway interruptions, even device/client restarts etc).
-	ttl, _ := parseMessageTTL(fs.cfg.SubjectDeleteMarkerTTL)
+	ttl := int64(fs.cfg.SubjectDeleteMarkerTTL.Seconds())
 	if ttl <= 0 {
 		return nil
 	}

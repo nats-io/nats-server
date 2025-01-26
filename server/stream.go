@@ -110,7 +110,7 @@ type StreamConfig struct {
 
 	// SubjectDeleteMarkerTTL sets the TTL of delete marker messages left behind by
 	// SubjectDeleteMarkers.
-	SubjectDeleteMarkerTTL string `json:"subject_delete_marker_ttl,omitempty"`
+	SubjectDeleteMarkerTTL time.Duration `json:"subject_delete_marker_ttl,omitempty"`
 
 	// Metadata is additional metadata for the Stream.
 	Metadata map[string]string `json:"metadata,omitempty"`
@@ -1370,22 +1370,18 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 		if !cfg.AllowMsgTTL {
 			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject marker delete cannot be set if message TTLs are disabled"))
 		}
-		if pedantic && cfg.SubjectDeleteMarkerTTL == _EMPTY_ {
+		if pedantic && cfg.SubjectDeleteMarkerTTL == 0 {
 			return StreamConfig{}, NewJSPedanticError(fmt.Errorf("pedantic mode: subject marker delete TTL can not be empty"))
 		}
-		if cfg.SubjectDeleteMarkerTTL != _EMPTY_ {
-			ttl, err := parseMessageTTL(cfg.SubjectDeleteMarkerTTL)
-			if err != nil {
-				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("invalid subject marker delete TTL: %s", err.Error()))
-			}
-			if ttl < 1 {
+		if cfg.SubjectDeleteMarkerTTL != 0 {
+			if cfg.SubjectDeleteMarkerTTL < time.Second {
 				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject marker delete TTL must be at least 1 second"))
 			}
 		} else {
 			cfg.SubjectDeleteMarkerTTL = subjectDeleteMarkerDefaultTTL
 		}
 	} else {
-		if cfg.SubjectDeleteMarkerTTL != _EMPTY_ {
+		if cfg.SubjectDeleteMarkerTTL != 0 {
 			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject marker delete TTL requires subject delete markers to be enabled"))
 		}
 	}

@@ -71,7 +71,7 @@ var (
 )
 
 // Default value for SubjectDeleteMarkerTTL if not specified.
-const subjectDeleteMarkerDefaultTTL = "15m"
+const subjectDeleteMarkerDefaultTTL = 15 * time.Minute
 
 // StoreMsg is the stored message format for messages that are retained by the Store layer.
 type StoreMsg struct {
