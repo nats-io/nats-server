@@ -8009,6 +8009,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	}
 
 	// Some header checks can be checked pre proposal. Most can not.
+	var ts = time.Now().UnixNano()
 	var msgId string
 	if len(hdr) > 0 {
 		// Since we encode header len as u16 make sure we do not exceed.
@@ -8039,29 +8040,23 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		// Will help during restarts.
 		if msgId = getMsgId(hdr); msgId != _EMPTY_ {
 			mset.mu.Lock()
+			// Since purging is delayed for the clustered de-dupe map, deterministically try to purge based on timestamp.
+			mset.purgeMsgIdsAtLocked(ts)
 			if dde := mset.checkMsgId(msgId); dde != nil {
 				var buf [256]byte
 				pubAck := append(buf[:0], mset.pubAck...)
 				seq := dde.seq
 				mset.mu.Unlock()
-				// Should not return an invalid sequence, in that case timeout.
 				if canRespond {
-					if seq > 0 {
-						response := append(pubAck, strconv.FormatUint(seq, 10)...)
-						response = append(response, ",\"duplicate\": true}"...)
-						outq.sendMsg(reply, response)
-					} else {
-						var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
-						resp.Error = ApiErrors[JSStreamDuplicateMessageConflict]
-						b, _ := json.Marshal(resp)
-						outq.sendMsg(reply, b)
-					}
+					response := append(pubAck, strconv.FormatUint(seq, 10)...)
+					response = append(response, ",\"duplicate\": true}"...)
+					outq.sendMsg(reply, response)
 				}
 				return errMsgIdDuplicate
 			}
-			// FIXME(dlc) - locking conflict with accessing mset.clseq
-			// For now we stage with zero, and will update in processStreamMsg.
-			mset.storeMsgIdLocked(&ddentry{msgId, 0, time.Now().UnixNano()})
+			// We used to stage with zero, but it's hard to correctly remove it during leader elections
+			// while taking quorum/truncation into account. So instead let duplicates through and handle
+			// duplicates later. Only if we know the sequence we can start blocking above.
 			mset.mu.Unlock()
 		}
 
@@ -8206,7 +8201,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		}
 	}
 
-	esm := encodeStreamMsgAllowCompress(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano(), sourced, compressOK)
+	esm := encodeStreamMsgAllowCompress(subject, reply, hdr, msg, mset.clseq, ts, sourced, compressOK)
 	var mtKey uint64
 	if mt != nil {
 		mtKey = mset.clseq
