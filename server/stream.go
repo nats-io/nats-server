@@ -4159,24 +4159,17 @@ func (mset *stream) purgeMsgIds() {
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
 
-	now := time.Now().UnixNano()
-	tmrNext := mset.cfg.Duplicates
-	window := int64(tmrNext)
-
-	for i, dde := range mset.ddarr[mset.ddindex:] {
-		if now-dde.ts >= window {
-			delete(mset.ddmap, dde.id)
-		} else {
-			mset.ddindex += i
-			// Check if we should garbage collect here if we are 1/3 total size.
-			if cap(mset.ddarr) > 3*(len(mset.ddarr)-mset.ddindex) {
-				mset.ddarr = append([]*ddentry(nil), mset.ddarr[mset.ddindex:]...)
-				mset.ddindex = 0
-			}
-			tmrNext = time.Duration(window - (now - dde.ts))
-			break
-		}
+	now := time.Now()
+	// If clustered we must ensure all servers agree on which message is marked as a duplicate.
+	// But, since the de-dupe map is time-dependent we must take into account clock skew/ordering guarantees.
+	// For example a replica clearing the de-dupe map earlier than the leader would, could result in desync,
+	// so deliberately delay replicas from cleaning up before the leader is likely to.
+	// processJetStreamMsg/processClusteredInboundMsg are both aware of this timer, and they clean up inline if necessary.
+	if mset.isClustered() {
+		now = now.Add(-5 * time.Second)
 	}
+	tmrNext := mset.purgeMsgIdsAtLocked(now.UnixNano())
+
 	if len(mset.ddmap) > 0 {
 		// Make sure to not fire too quick
 		const minFire = 50 * time.Millisecond
@@ -4197,6 +4190,29 @@ func (mset *stream) purgeMsgIds() {
 		mset.ddarr = nil
 		mset.ddindex = 0
 	}
+}
+
+// Will purge the entries that are past the window given a specific ts.
+// Lock should be held.
+func (mset *stream) purgeMsgIdsAtLocked(ts int64) time.Duration {
+	tmrNext := mset.cfg.Duplicates
+	window := int64(tmrNext)
+
+	for i, dde := range mset.ddarr[mset.ddindex:] {
+		if ts-dde.ts >= window {
+			delete(mset.ddmap, dde.id)
+		} else {
+			mset.ddindex += i
+			// Check if we should garbage collect here if we are 1/3 total size.
+			if cap(mset.ddarr) > 3*(len(mset.ddarr)-mset.ddindex) {
+				mset.ddarr = append([]*ddentry(nil), mset.ddarr[mset.ddindex:]...)
+				mset.ddindex = 0
+			}
+			tmrNext = time.Duration(window - (ts - dde.ts))
+			break
+		}
+	}
+	return tmrNext
 }
 
 // storeMsgIdLocked will store the message id for duplicate detection.
@@ -4864,21 +4880,23 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			return errMsgTTLDisabled
 		}
 
-		// Dedupe detection. This is done at the cluster level for dedupe detectiom above the
-		// lower layers. But we still need to pull out the msgId.
+		// Dedupe detection. This is done at the cluster level for dedupe detection above the
+		// lower layers. But not while the message is not applied yet, so we need to still check if
+		// multiple messages with the same ID are proposed at the same time and block here.
 		if msgId = getMsgId(hdr); msgId != _EMPTY_ {
-			// Do real check only if not clustered or traceOnly flag is set.
-			if !isClustered || traceOnly {
-				if dde := mset.checkMsgId(msgId); dde != nil {
-					mset.mu.Unlock()
-					bumpCLFS()
-					if canRespond {
-						response := append(pubAck, strconv.FormatUint(dde.seq, 10)...)
-						response = append(response, ",\"duplicate\": true}"...)
-						outq.sendMsg(reply, response)
-					}
-					return errMsgIdDuplicate
+			// If clustered we know the timestamp, so deterministically try to purge.
+			if isClustered {
+				mset.purgeMsgIdsAtLocked(ts)
+			}
+			if dde := mset.checkMsgId(msgId); dde != nil {
+				mset.mu.Unlock()
+				bumpCLFS()
+				if canRespond {
+					response := append(pubAck, strconv.FormatUint(dde.seq, 10)...)
+					response = append(response, ",\"duplicate\": true}"...)
+					outq.sendMsg(reply, response)
 				}
+				return errMsgIdDuplicate
 			}
 		}
 
@@ -5180,18 +5198,8 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	}
 
 	// If we have a msgId make sure to save.
-	// This will replace our estimate from the cluster layer if we are clustered.
 	if msgId != _EMPTY_ {
-		if isClustered && isLeader && mset.ddmap != nil {
-			if dde := mset.ddmap[msgId]; dde != nil {
-				dde.seq, dde.ts = seq, ts
-			} else {
-				mset.storeMsgIdLocked(&ddentry{msgId, seq, ts})
-			}
-		} else {
-			// R1 or not leader..
-			mset.storeMsgIdLocked(&ddentry{msgId, seq, ts})
-		}
+		mset.storeMsgIdLocked(&ddentry{msgId, seq, ts})
 	}
 
 	// If here we succeeded in storing the message.
