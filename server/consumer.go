@@ -60,7 +60,6 @@ type ConsumerInfo struct {
 }
 
 type ConsumerConfig struct {
-	// Durable is deprecated. All consumers should have names, picked by clients.
 	Durable         string          `json:"durable_name,omitempty"`
 	Name            string          `json:"name,omitempty"`
 	Description     string          `json:"description,omitempty"`
