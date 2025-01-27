@@ -1648,5 +1648,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSStreamTooManyRequests",
+    "code": 429,
+    "error_code": 10167,
+    "description": "too many requests",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

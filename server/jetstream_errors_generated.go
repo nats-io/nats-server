@@ -476,6 +476,9 @@ const (
 	// JSStreamTemplateNotFoundErr template not found
 	JSStreamTemplateNotFoundErr ErrorIdentifier = 10068
 
+	// JSStreamTooManyRequests too many requests
+	JSStreamTooManyRequests ErrorIdentifier = 10167
+
 	// JSStreamTransformInvalidDestination stream transform: {err}
 	JSStreamTransformInvalidDestination ErrorIdentifier = 10156
 
@@ -660,6 +663,7 @@ var (
 		JSStreamTemplateCreateErrF:                 {Code: 500, ErrCode: 10066, Description: "{err}"},
 		JSStreamTemplateDeleteErrF:                 {Code: 500, ErrCode: 10067, Description: "{err}"},
 		JSStreamTemplateNotFoundErr:                {Code: 404, ErrCode: 10068, Description: "template not found"},
+		JSStreamTooManyRequests:                    {Code: 429, ErrCode: 10167, Description: "too many requests"},
 		JSStreamTransformInvalidDestination:        {Code: 400, ErrCode: 10156, Description: "stream transform: {err}"},
 		JSStreamTransformInvalidSource:             {Code: 400, ErrCode: 10155, Description: "stream transform source: {err}"},
 		JSStreamUpdateErrF:                         {Code: 500, ErrCode: 10069, Description: "{err}"},
@@ -2501,6 +2505,16 @@ func NewJSStreamTemplateNotFoundError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSStreamTemplateNotFoundErr]
+}
+
+// NewJSStreamTooManyRequestsError creates a new JSStreamTooManyRequests error: "too many requests"
+func NewJSStreamTooManyRequestsError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSStreamTooManyRequests]
 }
 
 // NewJSStreamTransformInvalidDestinationError creates a new JSStreamTransformInvalidDestination error: "stream transform: {err}"
