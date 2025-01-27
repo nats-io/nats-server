@@ -10,7 +10,7 @@
 - [ ] _SYS. server events?
 - [ ] No downtime restart
 - [ ] Signal based reload of configuration
-- [ ] brew, apt-get, rpm, chocolatey (windows)
+- [ ] brew, apt-get, rpm, chocolaty (windows)
 - [ ] IOVec pools and writev for high fanout?
 - [ ] Modify cluster support for single message across routes between pub/sub and d-queue
 - [ ] Memory limits/warnings?
@@ -34,7 +34,7 @@
 - [X] Add starttime and uptime to connz list.
 - [X] Gossip Protocol for discovery for clustering
 - [X] Add in HTTP requests to varz?
-- [X] Add favicon and help link for monitoring?
+- [X] Add favico and help link for monitoring?
 - [X] Better user/pass support using bcrypt etc.
 - [X] SSL/TLS support
 - [X] Add support for / to point to varz, connz, etc..
