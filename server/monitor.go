@@ -3676,27 +3676,27 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 
 		for stream, sa := range asa {
 			// Make sure we can look up
-			if !js.isStreamHealthy(acc, sa) {
+			if err := js.isStreamHealthy(acc, sa); err != nil {
 				if !details {
 					health.Status = na
-					health.Error = fmt.Sprintf("JetStream stream '%s > %s' is not current", accName, stream)
+					health.Error = fmt.Sprintf("JetStream stream '%s > %s' is not current: %s", accName, stream, err)
 					return health
 				}
 				health.Errors = append(health.Errors, HealthzError{
 					Type:    HealthzErrorStream,
 					Account: accName,
 					Stream:  stream,
-					Error:   fmt.Sprintf("JetStream stream '%s > %s' is not current", accName, stream),
+					Error:   fmt.Sprintf("JetStream stream '%s > %s' is not current: %s", accName, stream, err),
 				})
 				continue
 			}
 			mset, _ := acc.lookupStream(stream)
 			// Now check consumers.
 			for consumer, ca := range sa.consumers {
-				if !js.isConsumerHealthy(mset, consumer, ca) {
+				if err := js.isConsumerHealthy(mset, consumer, ca); err != nil {
 					if !details {
 						health.Status = na
-						health.Error = fmt.Sprintf("JetStream consumer '%s > %s > %s' is not current", acc, stream, consumer)
+						health.Error = fmt.Sprintf("JetStream consumer '%s > %s > %s' is not current: %s", acc, stream, consumer, err)
 						return health
 					}
 					health.Errors = append(health.Errors, HealthzError{
@@ -3704,7 +3704,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 						Account:  accName,
 						Stream:   stream,
 						Consumer: consumer,
-						Error:    fmt.Sprintf("JetStream consumer '%s > %s > %s' is not current", acc, stream, consumer),
+						Error:    fmt.Sprintf("JetStream consumer '%s > %s > %s' is not current: %s", acc, stream, consumer, err),
 					})
 				}
 			}
