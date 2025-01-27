@@ -445,108 +445,113 @@ func (cc *jetStreamCluster) isStreamCurrent(account, stream string) bool {
 
 // isStreamHealthy will determine if the stream is up to date or very close.
 // For R1 it will make sure the stream is present on this server.
-func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) bool {
+func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) error {
 	js.mu.RLock()
 	s, cc := js.srv, js.cluster
 	if cc == nil {
 		// Non-clustered mode
 		js.mu.RUnlock()
-		return true
+		return nil
 	}
-
-	// Pull the group out.
-	rg := sa.Group
-	if rg == nil {
+	if sa == nil || sa.Group == nil {
 		js.mu.RUnlock()
-		return false
+		return fmt.Errorf("stream assignment or group missing")
 	}
-
 	streamName := sa.Config.Name
-	node := rg.node
+	node := sa.Group.node
 	js.mu.RUnlock()
 
 	// First lookup stream and make sure its there.
 	mset, err := acc.lookupStream(streamName)
 	if err != nil {
-		return false
+		return fmt.Errorf("stream not found")
 	}
 
-	// If R1 we are good.
-	if node == nil {
-		return true
-	}
+	switch {
+	case mset.cfg.Replicas <= 1:
+		return nil // No further checks for R=1 streams
 
-	// Here we are a replicated stream.
-	// First make sure our monitor routine is running.
-	if !mset.isMonitorRunning() {
-		return false
-	}
+	case node == nil:
+		return fmt.Errorf("group node missing")
 
-	if node.Healthy() {
-		// Check if we are processing a snapshot and are catching up.
-		if !mset.isCatchingUp() {
-			return true
-		}
-	} else { // node != nil
-		if node != mset.raftNode() {
-			s.Warnf("Detected stream cluster node skew '%s > %s'", acc.GetName(), streamName)
-			node.Delete()
-			mset.resetClusteredState(nil)
-		}
+	case !mset.isMonitorRunning():
+		return fmt.Errorf("monitor goroutine not running")
+
+	case !node.Healthy():
+		return fmt.Errorf("group node unhealthy")
+
+	case mset.isCatchingUp():
+		return fmt.Errorf("stream catching up")
+
+	case node != mset.raftNode():
+		s.Warnf("Detected stream cluster node skew '%s > %s'", acc.GetName(), streamName)
+		node.Delete()
+		mset.resetClusteredState(nil)
+		return fmt.Errorf("cluster node skew detected")
+
+	default:
+		return nil
 	}
-	return false
 }
 
 // isConsumerHealthy will determine if the consumer is up to date.
 // For R1 it will make sure the consunmer is present on this server.
-func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consumerAssignment) bool {
+func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consumerAssignment) error {
 	if mset == nil {
-		return false
+		return fmt.Errorf("stream missing")
 	}
-
 	js.mu.RLock()
-	cc := js.cluster
+	s, cc := js.srv, js.cluster
 	if cc == nil {
 		// Non-clustered mode
 		js.mu.RUnlock()
-		return true
+		return nil
 	}
-	// These are required.
 	if ca == nil || ca.Group == nil {
 		js.mu.RUnlock()
-		return false
+		return fmt.Errorf("consumer assignment or group missing")
 	}
-	s := js.srv
-	// Capture RAFT node from assignment.
 	node := ca.Group.node
 	js.mu.RUnlock()
 
 	// Check if not running at all.
 	o := mset.lookupConsumer(consumer)
 	if o == nil {
-		return false
+		return fmt.Errorf("consumer not found")
 	}
 
-	// Check RAFT node state.
-	if node == nil || node.Healthy() {
-		return true
-	} else if node != nil {
-		if node != o.raftNode() {
-			mset.mu.RLock()
-			accName, streamName := mset.acc.GetName(), mset.cfg.Name
-			mset.mu.RUnlock()
-			s.Warnf("Detected consumer cluster node skew '%s > %s > %s'", accName, streamName, consumer)
-			node.Delete()
-			o.deleteWithoutAdvisory()
+	rc, _ := o.replica()
+	switch {
+	case rc <= 1:
+		return nil // No further checks for R=1 consumers
 
-			// When we try to restart we nil out the node and reprocess the consumer assignment.
-			js.mu.Lock()
-			ca.Group.node = nil
-			js.mu.Unlock()
-			js.processConsumerAssignment(ca)
-		}
+	case node == nil:
+		return fmt.Errorf("group node missing")
+
+	case !o.isMonitorRunning():
+		return fmt.Errorf("monitor goroutine not running")
+
+	case !node.Healthy():
+		return fmt.Errorf("group node unhealthy")
+
+	case node != mset.raftNode():
+		mset.mu.RLock()
+		accName, streamName := mset.acc.GetName(), mset.cfg.Name
+		mset.mu.RUnlock()
+		s.Warnf("Detected consumer cluster node skew '%s > %s > %s'", accName, streamName, consumer)
+		node.Delete()
+		o.deleteWithoutAdvisory()
+
+		// When we try to restart we nil out the node and reprocess the consumer assignment.
+		js.mu.Lock()
+		ca.Group.node = nil
+		js.mu.Unlock()
+		js.processConsumerAssignment(ca)
+		return fmt.Errorf("cluster node skew detected")
+
+	default:
+		return nil
 	}
-	return false
 }
 
 // subjectsOverlap checks all existing stream assignments for the account cross-cluster for subject overlap
