@@ -784,7 +784,6 @@ type RouteInfo struct {
 	Idle         string             `json:"idle"`
 	Import       *SubjectPermission `json:"import,omitempty"`
 	Export       *SubjectPermission `json:"export,omitempty"`
-	Pending      int                `json:"pending_size"`
 	InMsgs       int64              `json:"in_msgs"`
 	OutMsgs      int64              `json:"out_msgs"`
 	InBytes      int64              `json:"in_bytes"`
