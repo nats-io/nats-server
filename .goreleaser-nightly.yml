@@ -14,16 +14,19 @@ builds:
     goarch:
       - amd64
 
+release:
+  disable: true
+
 dockers:
   - goos: linux
     goarch: amd64
-    skip_push: true
     dockerfile: docker/Dockerfile.nightly
+    skip_push: false
     build_flag_templates:
-      - '--build-arg=VERSION={{ if index .Env "IMAGE_NAME"  }}{{ .Env.IMAGE_NAME }}{{ else if not (eq .Branch "main" "dev" "") }}{{ replace .Branch "/" "-" }}{{ else }}nightly{{ end }}-{{ time "20060102" }}'
+      - '--build-arg=VERSION={{ if ne .Branch "main" }}{{ replace .Branch "/" "-" }}{{ else }}nightly{{ end }}-{{ time "20060102" }}'
     image_templates:
-      - synadia/nats-server:{{.Version}}
-      - synadia/nats-server:{{ if index .Env "IMAGE_NAME"  }}{{ .Env.IMAGE_NAME }}{{ else if not (eq .Branch "main" "dev" "") }}{{ replace .Branch "/" "-" }}{{ else }}nightly{{ end }}
+      - synadia/nats-server:{{ if ne .Branch "main" }}{{ replace .Branch "/" "-" }}{{ else }}nightly{{ end }}
+      - synadia/nats-server:{{ if ne .Branch "main" }}{{ replace .Branch "/" "-" }}{{ else }}nightly{{ end }}-{{ time "20060102" }}
     extra_files:
       - docker/nats-server.conf
 
@@ -32,4 +35,4 @@ checksum:
   algorithm: sha256
 
 snapshot:
-  name_template: '{{ if index .Env "IMAGE_NAME"  }}{{ .Env.IMAGE_NAME }}{{ else if not (eq .Branch "main" "dev" "") }}{{ replace .Branch "/" "-" }}{{ else }}nightly{{ end }}-{{ time "20060102" }}'
+  version_template: '{{ if ne .Branch "main" }}{{ replace .Branch "/" "-" }}{{ else }}nightly{{ end }}-{{ time "20060102" }}'
