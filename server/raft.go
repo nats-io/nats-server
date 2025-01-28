@@ -1127,6 +1127,14 @@ func (n *raft) encodeSnapshot(snap *snapshot) []byte {
 // Should only be used when the upper layers know this is most recent.
 // Used when restoring streams, moving a stream from R1 to R>1, etc.
 func (n *raft) SendSnapshot(data []byte) error {
+	if n.State() == Closed {
+		return errNodeClosed
+	}
+
+	if len(data) == 0 {
+		return errSnapshotCorrupt
+	}
+
 	n.sendAppendEntry([]*Entry{{EntrySnapshot, data}})
 	return nil
 }
@@ -1137,6 +1145,10 @@ func (n *raft) SendSnapshot(data []byte) error {
 func (n *raft) InstallSnapshot(data []byte) error {
 	if n.State() == Closed {
 		return errNodeClosed
+	}
+
+	if len(data) == 0 {
+		return errSnapshotCorrupt
 	}
 
 	n.Lock()
