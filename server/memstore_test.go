@@ -1216,7 +1216,7 @@ func TestMemStoreSubjectDeleteMarkers(t *testing.T) {
 	// We should have replaced it with a tombstone.
 	sm, err = fs.LoadMsg(seq+1, nil)
 	require_NoError(t, err)
-	require_Equal(t, bytesToString(getHeader(JSAppliedLimit, sm.hdr)), JSAppliedLimitMaxAge)
+	require_Equal(t, bytesToString(getHeader(JSMarkerReason, sm.hdr)), JSMarkerReasonMaxAge)
 	require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), "1s")
 
 	time.Sleep(time.Second * 2)

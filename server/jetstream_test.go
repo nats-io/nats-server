@@ -25429,7 +25429,7 @@ func TestJetStreamSubjectDeleteMarkers(t *testing.T) {
 
 			msg, err := sub.NextMsg(time.Second * 10)
 			require_NoError(t, err)
-			require_Equal(t, msg.Header.Get(JSAppliedLimit), "MaxAge")
+			require_Equal(t, msg.Header.Get(JSMarkerReason), "MaxAge")
 			require_Equal(t, msg.Header.Get(JSMessageTTL), "1s")
 		})
 	}
