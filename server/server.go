@@ -387,6 +387,7 @@ type nodeInfo struct {
 	js              bool
 	binarySnapshots bool
 	accountNRG      bool
+	deferDedupe     bool
 }
 
 // Make sure all are 64bits for atomic use
@@ -787,7 +788,7 @@ func NewServer(opts *Options) (*Server, error) {
 			opts.Tags,
 			&JetStreamConfig{MaxMemory: opts.JetStreamMaxMemory, MaxStore: opts.JetStreamMaxStore, CompressOK: true},
 			nil,
-			false, true, true, true,
+			false, true, true, true, true,
 		})
 	}
 
