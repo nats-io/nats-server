@@ -295,6 +295,7 @@ type Options struct {
 	NoSublistCache             bool          `json:"-"`
 	NoHeaderSupport            bool          `json:"-"`
 	DisableShortFirstPing      bool          `json:"-"`
+	NoStallWait                bool          `json:"-"`
 	Logtime                    bool          `json:"-"`
 	LogtimeUTC                 bool          `json:"-"`
 	MaxConn                    int           `json:"max_connections"`
@@ -1017,6 +1018,8 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 		}
 	case "disable_sublist_cache", "no_sublist_cache":
 		o.NoSublistCache = v.(bool)
+	case "disable_stall_wait":
+		o.NoStallWait = v.(bool)
 	case "accounts":
 		err := parseAccounts(tk, o, errors, warnings)
 		if err != nil {

@@ -289,6 +289,8 @@ type client struct {
 	nameTag string
 
 	tlsTo *time.Timer
+
+	noStall bool // Disable fast producers stall wait.
 }
 
 type rrTracking struct {
@@ -674,7 +676,9 @@ func (c *client) initClient() {
 
 	c.subs = make(map[string]*subscription)
 	c.echo = true
-
+	if c.kind == CLIENT {
+		c.noStall = opts.NoStallWait
+	}
 	c.setTraceLevel()
 
 	// This is a scratch buffer used for processMsg()
@@ -2325,7 +2329,7 @@ func (c *client) queueOutbound(data []byte) {
 	// Check here if we should create a stall channel if we are falling behind.
 	// We do this here since if we wait for consumer's writeLoop it could be
 	// too late with large number of fan in producers.
-	if c.out.pb > c.out.mp/2 && c.out.stc == nil {
+	if !c.noStall && c.out.pb > c.out.mp/2 && c.out.stc == nil {
 		c.out.stc = make(chan struct{})
 	}
 }
