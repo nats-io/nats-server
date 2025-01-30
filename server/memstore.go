@@ -973,12 +973,12 @@ func (ms *memStore) cancelAgeChk() {
 // this function returns a callback func to call scb and sdmcb after
 // the lock has been released.
 func (ms *memStore) subjectDeleteMarkerIfNeeded(sm *StoreMsg, reason string) func() {
+	if ms.cfg.SubjectDeleteMarkerTTL <= 0 {
+		return nil
+	}
 	// If the deleted message was itself a delete marker then
 	// don't write out more of them or we'll churn endlessly.
 	if len(getHeader(JSMarkerReason, sm.hdr)) != 0 {
-		return nil
-	}
-	if !ms.cfg.SubjectDeleteMarkers {
 		return nil
 	}
 	if _, ok := ms.fss.Find(stringToBytes(sm.subj)); ok {
