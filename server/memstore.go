@@ -43,6 +43,7 @@ type memStore struct {
 	consumers   int
 	receivedAny bool
 	ttls        *thw.HashWheel
+	markers     []string
 }
 
 func newMemStore(cfg *StreamConfig) (*memStore, error) {
@@ -869,7 +870,7 @@ func (ms *memStore) enforcePerSubjectLimit(subj string, ss *SimpleState) {
 		if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
 			ms.recalculateForSubj(subj, ss)
 		}
-		if !ms.removeMsg(ss.First, false) {
+		if !ms.removeMsg(ss.First, false, _EMPTY_) {
 			break
 		}
 	}
@@ -972,16 +973,11 @@ func (ms *memStore) cancelAgeChk() {
 // delete marker. If the delete marker is written successfully then
 // this function returns a callback func to call scb and sdmcb after
 // the lock has been released.
-func (ms *memStore) subjectDeleteMarkerIfNeeded(sm *StoreMsg, reason string) func() {
+func (ms *memStore) subjectDeleteMarkerIfNeeded(subj string, reason string) func() {
 	if ms.cfg.SubjectDeleteMarkerTTL <= 0 {
 		return nil
 	}
-	// If the deleted message was itself a delete marker then
-	// don't write out more of them or we'll churn endlessly.
-	if len(getHeader(JSMarkerReason, sm.hdr)) != 0 {
-		return nil
-	}
-	if _, ok := ms.fss.Find(stringToBytes(sm.subj)); ok {
+	if _, ok := ms.fss.Find(stringToBytes(subj)); ok {
 		// There are still messages left with this subject,
 		// therefore it wasn't the last message deleted.
 		return nil
@@ -999,16 +995,36 @@ func (ms *memStore) subjectDeleteMarkerIfNeeded(sm *StoreMsg, reason string) fun
 	seq, ts := ms.state.LastSeq+1, time.Now().UnixNano()
 	// Store it in the stream and then prepare the callbacks
 	// to return to the caller.
-	if err := ms.storeRawMsg(sm.subj, hdr, nil, seq, ts, ttl); err != nil {
+	if err := ms.storeRawMsg(subj, hdr, nil, seq, ts, ttl); err != nil {
 		return nil
 	}
 	cb, tcb := ms.scb, ms.sdmcb
 	return func() {
 		if cb != nil {
-			cb(1, int64(fileStoreMsgSize(sm.subj, hdr, nil)), seq, sm.subj)
+			cb(1, int64(memStoreMsgSize(subj, hdr, nil)), seq, subj)
 		}
 		if tcb != nil {
-			tcb(seq, sm.subj)
+			tcb(seq, subj)
+		}
+	}
+}
+
+// Memstore lock must be held. The caller should call the callback, if non-nil,
+// after releasing the memstore lock.
+func (ms *memStore) subjectDeleteMarkersAfterOperation(reason string) func() {
+	if ms.cfg.SubjectDeleteMarkerTTL <= 0 || len(ms.markers) == 0 {
+		return nil
+	}
+	cbs := make([]func(), 0, len(ms.markers))
+	for _, subject := range ms.markers {
+		if cb := ms.subjectDeleteMarkerIfNeeded(subject, reason); cb != nil {
+			cbs = append(cbs, cb)
+		}
+	}
+	ms.markers = nil
+	return func() {
+		for _, cb := range cbs {
+			cb()
 		}
 	}
 }
@@ -1033,12 +1049,8 @@ func (ms *memStore) expireMsgs() {
 				}
 			}
 			ms.mu.Lock()
-			ms.removeMsg(seq, false)
-			cbs := ms.subjectDeleteMarkerIfNeeded(sm, JSMarkerReasonMaxAge)
+			ms.removeMsg(seq, false, JSMarkerReasonMaxAge)
 			ms.mu.Unlock()
-			if cbs != nil {
-				cbs()
-			}
 			// Recalculate in case we are expiring a bunch.
 			minAge = time.Now().UnixNano() - maxAge
 		}
@@ -1051,7 +1063,7 @@ func (ms *memStore) expireMsgs() {
 	nextTTL := int64(math.MaxInt64)
 	if ms.ttls != nil {
 		ms.ttls.ExpireTasks(func(seq uint64, ts int64) {
-			ms.removeMsg(seq, false)
+			ms.removeMsg(seq, false, JSMarkerReasonMaxAge)
 		})
 		if maxAge > 0 {
 			// Only check if we're expiring something in the next MaxAge interval, saves us a bit
@@ -1110,7 +1122,7 @@ func (ms *memStore) PurgeEx(subject string, sequence, keep uint64) (purged uint6
 		ms.mu.Lock()
 		for seq := ss.First; seq <= last; seq++ {
 			if sm, ok := ms.msgs[seq]; ok && eq(sm.subj, subject) {
-				if ok := ms.removeMsg(sm.seq, false); ok {
+				if ok := ms.removeMsg(sm.seq, false, JSMarkerReasonPurge); ok {
 					purged++
 					if purged >= ss.Msgs {
 						break
@@ -1147,11 +1159,22 @@ func (ms *memStore) purge(fseq uint64) (uint64, error) {
 	ms.state.Bytes = 0
 	ms.state.Msgs = 0
 	ms.msgs = make(map[uint64]*StoreMsg)
+	// Subject delete markers if needed.
+	if ms.cfg.SubjectDeleteMarkerTTL > 0 {
+		ms.fss.Iter(func(bsubj []byte, ss *SimpleState) bool {
+			ms.markers = append(ms.markers, string(bsubj))
+			return true
+		})
+	}
 	ms.fss = stree.NewSubjectTree[SimpleState]()
+	sdmcb := ms.subjectDeleteMarkersAfterOperation(JSMarkerReasonPurge)
 	ms.mu.Unlock()
 
 	if cb != nil {
 		cb(-int64(purged), -bytes, 0, _EMPTY_)
+	}
+	if sdmcb != nil {
+		sdmcb()
 	}
 
 	return purged, nil
@@ -1183,7 +1206,7 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 			if sm := ms.msgs[seq]; sm != nil {
 				bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.msg)
 				purged++
-				ms.removeSeqPerSubject(sm.subj, seq)
+				ms.removeSeqPerSubject(sm.subj, seq, ms.cfg.SubjectDeleteMarkerTTL > 0)
 				// Must delete message after updating per-subject info, to be consistent with file store.
 				delete(ms.msgs, seq)
 			}
@@ -1206,14 +1229,26 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 		ms.state.FirstSeq = seq
 		ms.state.FirstTime = time.Time{}
 		ms.state.LastSeq = seq - 1
+		// Subject delete markers if needed.
+		if ms.cfg.SubjectDeleteMarkerTTL > 0 {
+			ms.fss.Iter(func(bsubj []byte, ss *SimpleState) bool {
+				ms.markers = append(ms.markers, string(bsubj))
+				return true
+			})
+		}
 		// Reset msgs and fss.
 		ms.msgs = make(map[uint64]*StoreMsg)
 		ms.fss = stree.NewSubjectTree[SimpleState]()
 	}
+	// Subject delete markers if needed.
+	sdmcb := ms.subjectDeleteMarkersAfterOperation(JSMarkerReasonPurge)
 	ms.mu.Unlock()
 
 	if cb != nil {
 		cb(-int64(purged), -int64(bytes), 0, _EMPTY_)
+	}
+	if sdmcb != nil {
+		sdmcb()
 	}
 
 	return purged, nil
@@ -1273,7 +1308,7 @@ func (ms *memStore) Truncate(seq uint64) error {
 		if sm := ms.msgs[i]; sm != nil {
 			purged++
 			bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.msg)
-			ms.removeSeqPerSubject(sm.subj, i)
+			ms.removeSeqPerSubject(sm.subj, i, false)
 			// Must delete message after updating per-subject info, to be consistent with file store.
 			delete(ms.msgs, i)
 		}
@@ -1308,7 +1343,8 @@ func (ms *memStore) deleteFirstMsgOrPanic() {
 }
 
 func (ms *memStore) deleteFirstMsg() bool {
-	return ms.removeMsg(ms.state.FirstSeq, false)
+	// TODO: Currently no markers for these types of limits (max msgs or max bytes)
+	return ms.removeMsg(ms.state.FirstSeq, false, _EMPTY_)
 }
 
 // LoadMsg will lookup the message by sequence number and return it if found.
@@ -1477,7 +1513,7 @@ func (ms *memStore) LoadNextMsg(filter string, wc bool, start uint64, smp *Store
 // Will return the number of bytes removed.
 func (ms *memStore) RemoveMsg(seq uint64) (bool, error) {
 	ms.mu.Lock()
-	removed := ms.removeMsg(seq, false)
+	removed := ms.removeMsg(seq, false, JSMarkerReasonRemove)
 	ms.mu.Unlock()
 	return removed, nil
 }
@@ -1485,7 +1521,7 @@ func (ms *memStore) RemoveMsg(seq uint64) (bool, error) {
 // EraseMsg will remove the message and rewrite its contents.
 func (ms *memStore) EraseMsg(seq uint64) (bool, error) {
 	ms.mu.Lock()
-	removed := ms.removeMsg(seq, true)
+	removed := ms.removeMsg(seq, true, JSMarkerReasonRemove)
 	ms.mu.Unlock()
 	return removed, nil
 }
@@ -1525,20 +1561,24 @@ func (ms *memStore) updateFirstSeq(seq uint64) {
 
 // Remove a seq from the fss and select new first.
 // Lock should be held.
-func (ms *memStore) removeSeqPerSubject(subj string, seq uint64) {
+func (ms *memStore) removeSeqPerSubject(subj string, seq uint64, marker bool) bool {
 	ss, ok := ms.fss.Find(stringToBytes(subj))
 	if !ok {
-		return
+		return false
 	}
 	if ss.Msgs == 1 {
 		ms.fss.Delete(stringToBytes(subj))
-		return
+		if marker {
+			ms.markers = append(ms.markers, subj)
+		}
+		return true
 	}
 	ss.Msgs--
 
 	// We can lazily calculate the first/last sequence when needed.
 	ss.firstNeedsUpdate = seq == ss.First || ss.firstNeedsUpdate
 	ss.lastNeedsUpdate = seq == ss.Last || ss.lastNeedsUpdate
+	return false
 }
 
 // Will recalculate the first and/or last sequence for this subject.
@@ -1583,7 +1623,7 @@ func (ms *memStore) recalculateForSubj(subj string, ss *SimpleState) {
 
 // Removes the message referenced by seq.
 // Lock should be held.
-func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
+func (ms *memStore) removeMsg(seq uint64, secure bool, marker string) bool {
 	var ss uint64
 	sm, ok := ms.msgs[seq]
 	if !ok {
@@ -1615,15 +1655,29 @@ func (ms *memStore) removeMsg(seq uint64, secure bool) bool {
 	}
 
 	// Remove any per subject tracking.
-	ms.removeSeqPerSubject(sm.subj, seq)
+	needMarker := marker != _EMPTY_ && ms.cfg.SubjectDeleteMarkerTTL > 0 && len(getHeader(JSMarkerReason, sm.hdr)) == 0
+	wasLast := ms.removeSeqPerSubject(sm.subj, seq, needMarker)
+
 	// Must delete message after updating per-subject info, to be consistent with file store.
 	delete(ms.msgs, seq)
 
-	if ms.scb != nil {
+	// If the deleted message was itself a delete marker then
+	// don't write out more of them or we'll churn endlessly.
+	var sdmcb func()
+	if needMarker && wasLast {
+		sdmcb = ms.subjectDeleteMarkersAfterOperation(marker)
+	}
+
+	if ms.scb != nil || sdmcb != nil {
 		// We do not want to hold any locks here.
 		ms.mu.Unlock()
-		delta := int64(ss)
-		ms.scb(-1, -delta, seq, sm.subj)
+		if ms.scb != nil {
+			delta := int64(ss)
+			ms.scb(-1, -delta, seq, sm.subj)
+		}
+		if sdmcb != nil {
+			sdmcb()
+		}
 		ms.mu.Lock()
 	}
 
@@ -1817,7 +1871,7 @@ func (ms *memStore) SyncDeleted(dbs DeleteBlocks) {
 			continue
 		}
 		db.Range(func(seq uint64) bool {
-			ms.removeMsg(seq, false)
+			ms.removeMsg(seq, false, _EMPTY_)
 			return true
 		})
 	}
