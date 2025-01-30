@@ -1194,7 +1194,7 @@ func TestMemStoreSubjectDeleteMarkers(t *testing.T) {
 		&StreamConfig{
 			Name: "zzz", Subjects: []string{"test"}, Storage: MemoryStorage,
 			MaxAge: time.Second, AllowMsgTTL: true,
-			SubjectDeleteMarkers: true, SubjectDeleteMarkerTTL: time.Second,
+			SubjectDeleteMarkerTTL: time.Second,
 		},
 	)
 	require_NoError(t, err)

@@ -104,12 +104,8 @@ type StreamConfig struct {
 	// then the `NATS-TTL` header will be ignored.
 	AllowMsgTTL bool `json:"allow_msg_ttl"`
 
-	// SubjectDeleteMarkers enables leaving a delete marker when the last message
-	// for a subject was deleted.
-	SubjectDeleteMarkers bool `json:"subject_delete_markers,omitempty"`
-
 	// SubjectDeleteMarkerTTL sets the TTL of delete marker messages left behind by
-	// SubjectDeleteMarkers.
+	// subject delete markers.
 	SubjectDeleteMarkerTTL time.Duration `json:"subject_delete_marker_ttl,omitempty"`
 
 	// Metadata is additional metadata for the Stream.
@@ -1368,24 +1364,15 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 		}
 	}
 
-	if cfg.SubjectDeleteMarkers {
+	if cfg.SubjectDeleteMarkerTTL > 0 {
 		if !cfg.AllowMsgTTL {
 			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject marker delete cannot be set if message TTLs are disabled"))
 		}
-		if pedantic && cfg.SubjectDeleteMarkerTTL == 0 {
-			return StreamConfig{}, NewJSPedanticError(fmt.Errorf("pedantic mode: subject marker delete TTL can not be empty"))
+		if cfg.SubjectDeleteMarkerTTL < time.Second {
+			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject marker delete TTL must be at least 1 second"))
 		}
-		if cfg.SubjectDeleteMarkerTTL != 0 {
-			if cfg.SubjectDeleteMarkerTTL < time.Second {
-				return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject marker delete TTL must be at least 1 second"))
-			}
-		} else {
-			cfg.SubjectDeleteMarkerTTL = subjectDeleteMarkerDefaultTTL
-		}
-	} else {
-		if cfg.SubjectDeleteMarkerTTL != 0 {
-			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject marker delete TTL requires subject delete markers to be enabled"))
-		}
+	} else if cfg.SubjectDeleteMarkerTTL < 0 {
+		return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject marker delete TTL must not be negative"))
 	}
 
 	getStream := func(streamName string) (bool, StreamConfig) {
@@ -1430,8 +1417,8 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 		if cfg.Mirror.FilterSubject != _EMPTY_ && len(cfg.Mirror.SubjectTransforms) != 0 {
 			return StreamConfig{}, NewJSMirrorMultipleFiltersNotAllowedError()
 		}
-		if cfg.SubjectDeleteMarkers {
-			// SubjectDeleteMarkers cannot be configured on a mirror as it would result in new
+		if cfg.SubjectDeleteMarkerTTL > 0 {
+			// Delete markers cannot be configured on a mirror as it would result in new
 			// tombstones which would use up sequence numbers, diverging from the origin
 			// stream.
 			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("subject delete markers forbidden on mirrors"))

@@ -2144,7 +2144,7 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 		// if we're throwing away real messages or other tombstones without
 		// loading them, so in this case we'll fall through to the "slow path".
 		// There might be a better way of handling this though.
-		if !mb.fs.cfg.SubjectDeleteMarkers && mb.last.ts <= minAge {
+		if mb.fs.cfg.SubjectDeleteMarkerTTL <= 0 && mb.last.ts <= minAge {
 			purged += mb.msgs
 			bytes += mb.bytes
 			err := deleteEmptyBlock(mb)
@@ -2214,7 +2214,7 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 			// Update fss
 			// Make sure we have fss loaded.
 			mb.removeSeqPerSubject(sm.subj, seq)
-			fs.removePerSubject(sm.subj, fs.cfg.SubjectDeleteMarkers && len(getHeader(JSMarkerReason, sm.hdr)) == 0)
+			fs.removePerSubject(sm.subj, fs.cfg.SubjectDeleteMarkerTTL > 0 && len(getHeader(JSMarkerReason, sm.hdr)) == 0)
 		}
 		// Make sure we have a proper next first sequence.
 		if needNextFirst {
@@ -5352,7 +5352,7 @@ func (fs *fileStore) cancelAgeChk() {
 // this function returns a callback func to call scb and sdmcb after
 // the lock has been released.
 func (fs *fileStore) subjectDeleteMarkerIfNeeded(subj string, reason string) func() {
-	if !fs.cfg.SubjectDeleteMarkers {
+	if fs.cfg.SubjectDeleteMarkerTTL <= 0 {
 		return nil
 	}
 	if _, ok := fs.psim.Find(stringToBytes(subj)); ok {
@@ -5391,7 +5391,7 @@ func (fs *fileStore) subjectDeleteMarkerIfNeeded(subj string, reason string) fun
 // The caller should call the callback, if non-nil, after releasing
 // the filestore lock.
 func (fs *fileStore) subjectDeleteMarkersAfterOperation(reason string) func() {
-	if !fs.cfg.SubjectDeleteMarkers || len(fs.markers) == 0 {
+	if fs.cfg.SubjectDeleteMarkerTTL <= 0 || len(fs.markers) == 0 {
 		return nil
 	}
 	cbs := make([]func(), 0, len(fs.markers))
@@ -7567,7 +7567,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 				}
 				// PSIM and FSS updates.
 				mb.removeSeqPerSubject(sm.subj, seq)
-				fs.removePerSubject(sm.subj, fs.cfg.SubjectDeleteMarkers)
+				fs.removePerSubject(sm.subj, fs.cfg.SubjectDeleteMarkerTTL > 0)
 				// Track tombstones we need to write.
 				tombs = append(tombs, msgId{sm.seq, sm.ts})
 
@@ -7663,7 +7663,7 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 	fs.lmb = nil
 	fs.bim = make(map[uint32]*msgBlock)
 	// Subject delete markers if needed.
-	if fs.cfg.SubjectDeleteMarkers {
+	if fs.cfg.SubjectDeleteMarkerTTL > 0 {
 		fs.psim.Iter(func(subject []byte, _ *psi) bool {
 			fs.markers = append(fs.markers, string(subject))
 			return true
@@ -7780,7 +7780,7 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 		mb.fss.Iter(func(bsubj []byte, ss *SimpleState) bool {
 			subj := bytesToString(bsubj)
 			for i := uint64(0); i < ss.Msgs; i++ {
-				fs.removePerSubject(subj, fs.cfg.SubjectDeleteMarkers)
+				fs.removePerSubject(subj, fs.cfg.SubjectDeleteMarkerTTL > 0)
 			}
 			return true
 		})
@@ -7826,7 +7826,7 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 			}
 			// Update fss
 			smb.removeSeqPerSubject(sm.subj, mseq)
-			fs.removePerSubject(sm.subj, fs.cfg.SubjectDeleteMarkers)
+			fs.removePerSubject(sm.subj, fs.cfg.SubjectDeleteMarkerTTL > 0)
 		}
 	}
 
