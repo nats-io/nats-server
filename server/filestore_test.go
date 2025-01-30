@@ -8703,7 +8703,7 @@ func TestFileStoreSubjectDeleteMarkersOnPurgeEx(t *testing.T) {
 		require_NoError(t, err)
 	}
 
-	_, err = fs.PurgeEx(fwcs, 1, 0)
+	_, err = fs.PurgeEx("test.*", 1, 0)
 	require_NoError(t, err)
 
 	for i := uint64(0); i < 10; i++ {
