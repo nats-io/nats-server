@@ -1556,12 +1556,14 @@ func (a *Account) filteredStreams(filter string) []*stream {
 	var msets []*stream
 	for _, mset := range jsa.streams {
 		if filter != _EMPTY_ {
+			mset.cfgMu.RLock()
 			for _, subj := range mset.cfg.Subjects {
 				if SubjectsCollide(filter, subj) {
 					msets = append(msets, mset)
 					break
 				}
 			}
+			mset.cfgMu.RUnlock()
 		} else {
 			msets = append(msets, mset)
 		}
