@@ -4709,7 +4709,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 
 		// Since these could wait on the Raft group lock, don't do so under the JS lock.
 		ourID := meta.ID()
-		groupLeader := meta.GroupLeader()
+		groupLeaderless := meta.Leaderless()
 		groupCreated := meta.Created()
 
 		js.mu.RLock()
@@ -4727,7 +4727,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 		// Also capture if we think there is no meta leader.
 		var isLeaderLess bool
 		if !isLeader {
-			isLeaderLess = groupLeader == _EMPTY_ && time.Since(groupCreated) > lostQuorumIntervalDefault
+			isLeaderLess = groupLeaderless && time.Since(groupCreated) > lostQuorumIntervalDefault
 		}
 		js.mu.RUnlock()
 
@@ -4814,7 +4814,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 				return
 			}
 			// If we are a member and we have a group leader or we had a previous leader consider bailing out.
-			if node.GroupLeader() != _EMPTY_ || node.HadPreviousLeader() {
+			if !node.Leaderless() || node.HadPreviousLeader() {
 				if leaderNotPartOfGroup {
 					resp.Error = NewJSConsumerOfflineError()
 					s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil, errRespDelay)

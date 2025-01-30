@@ -3901,7 +3901,7 @@ func (s *Server) HandleRaftz(w http.ResponseWriter, r *http.Request) {
 			Applied:       n.applied,
 			CatchingUp:    n.catchup != nil,
 			Leader:        n.leader,
-			EverHadLeader: n.pleader,
+			EverHadLeader: n.pleader.Load(),
 			Term:          n.term,
 			Vote:          n.vote,
 			PTerm:         n.pterm,
