@@ -3313,7 +3313,6 @@ func TestJetStreamClusterPubAckSequenceDupeDeterministic(t *testing.T) {
 
 // Similar implementation to TestJetStreamClusterPubAckSequenceDupeAsync, but confirming
 // the old behavior is kept during upgrades.
-// TODO: 123
 func TestJetStreamClusterPubAckSequenceDupeUpgradePath(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
