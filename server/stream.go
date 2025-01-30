@@ -426,7 +426,7 @@ const (
 	JSMsgSize                 = "Nats-Msg-Size"
 	JSResponseType            = "Nats-Response-Type"
 	JSMessageTTL              = "Nats-TTL"
-	JSAppliedLimit            = "Nats-Applied-Limit"
+	JSMarkerReason            = "Nats-Marker-Reason"
 )
 
 // Headers for republished messages and direct gets.
@@ -448,7 +448,9 @@ const (
 
 // Applied limits in the Nats-Applied-Limit header.
 const (
-	JSAppliedLimitMaxAge = "MaxAge"
+	JSMarkerReasonMaxAge = "MaxAge"
+	JSMarkerReasonPurge  = "Purge"
+	JSMarkerReasonRemove = "Remove"
 )
 
 const (

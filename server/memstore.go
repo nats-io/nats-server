@@ -975,7 +975,7 @@ func (ms *memStore) cancelAgeChk() {
 func (ms *memStore) subjectDeleteMarkerIfNeeded(sm *StoreMsg, reason string) func() {
 	// If the deleted message was itself a delete marker then
 	// don't write out more of them or we'll churn endlessly.
-	if len(getHeader(JSAppliedLimit, sm.hdr)) != 0 {
+	if len(getHeader(JSMarkerReason, sm.hdr)) != 0 {
 		return nil
 	}
 	if !ms.cfg.SubjectDeleteMarkers {
@@ -995,7 +995,7 @@ func (ms *memStore) subjectDeleteMarkerIfNeeded(sm *StoreMsg, reason string) fun
 		return nil
 	}
 	var _hdr [128]byte
-	hdr := fmt.Appendf(_hdr[:0], "NATS/1.0\r\n%s: %s\r\n%s: %s\r\n\r\n", JSAppliedLimit, reason, JSMessageTTL, time.Duration(ttl)*time.Second)
+	hdr := fmt.Appendf(_hdr[:0], "NATS/1.0\r\n%s: %s\r\n%s: %s\r\n\r\n", JSMarkerReason, reason, JSMessageTTL, time.Duration(ttl)*time.Second)
 	seq, ts := ms.state.LastSeq+1, time.Now().UnixNano()
 	// Store it in the stream and then prepare the callbacks
 	// to return to the caller.
@@ -1034,7 +1034,7 @@ func (ms *memStore) expireMsgs() {
 			}
 			ms.mu.Lock()
 			ms.removeMsg(seq, false)
-			cbs := ms.subjectDeleteMarkerIfNeeded(sm, JSAppliedLimitMaxAge)
+			cbs := ms.subjectDeleteMarkerIfNeeded(sm, JSMarkerReasonMaxAge)
 			ms.mu.Unlock()
 			if cbs != nil {
 				cbs()

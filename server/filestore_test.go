@@ -8592,7 +8592,7 @@ func TestFileStoreSubjectDeleteMarkers(t *testing.T) {
 	// We should have replaced it with a tombstone.
 	sm, err = fs.LoadMsg(seq+1, nil)
 	require_NoError(t, err)
-	require_Equal(t, bytesToString(getHeader(JSAppliedLimit, sm.hdr)), JSAppliedLimitMaxAge)
+	require_Equal(t, bytesToString(getHeader(JSMarkerReason, sm.hdr)), JSMarkerReasonMaxAge)
 	require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), "1s")
 
 	time.Sleep(time.Second * 2)
@@ -8651,8 +8651,137 @@ func TestFileStoreSubjectDeleteMarkersOnRestart(t *testing.T) {
 	// We should have replaced it with a tombstone.
 	sm, err = fs.LoadMsg(seq+1, nil)
 	require_NoError(t, err)
-	require_Equal(t, bytesToString(getHeader(JSAppliedLimit, sm.hdr)), JSAppliedLimitMaxAge)
+	require_Equal(t, bytesToString(getHeader(JSMarkerReason, sm.hdr)), JSMarkerReasonMaxAge)
 	require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), "1s")
+}
+
+func TestFileStoreSubjectDeleteMarkersOnPurge(t *testing.T) {
+	storeDir := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{
+			Name: "zzz", Subjects: []string{"test.*"}, Storage: FileStorage,
+			MaxAge: time.Second, AllowMsgTTL: true,
+			SubjectDeleteMarkers: true, SubjectDeleteMarkerTTL: time.Second,
+		},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	for i := 0; i < 10; i++ {
+		_, _, err := fs.StoreMsg(fmt.Sprintf("test.%d", i), nil, nil, 0)
+		require_NoError(t, err)
+	}
+
+	_, err = fs.Purge()
+	require_NoError(t, err)
+
+	for i := uint64(0); i < 10; i++ {
+		sm, err := fs.LoadMsg(11+i, nil)
+		require_NoError(t, err)
+		require_Equal(t, sm.subj, fmt.Sprintf("test.%d", i))
+		require_Equal(t, bytesToString(getHeader(JSMarkerReason, sm.hdr)), JSMarkerReasonPurge)
+		require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), "1s")
+	}
+}
+
+func TestFileStoreSubjectDeleteMarkersOnPurgeEx(t *testing.T) {
+	storeDir := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{
+			Name: "zzz", Subjects: []string{"test.*"}, Storage: FileStorage,
+			MaxAge: time.Second, AllowMsgTTL: true,
+			SubjectDeleteMarkers: true, SubjectDeleteMarkerTTL: time.Second,
+		},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	for i := 0; i < 10; i++ {
+		_, _, err := fs.StoreMsg(fmt.Sprintf("test.%d", i), nil, nil, 0)
+		require_NoError(t, err)
+	}
+
+	_, err = fs.PurgeEx(fwcs, 1, 0)
+	require_NoError(t, err)
+
+	for i := uint64(0); i < 10; i++ {
+		sm, err := fs.LoadMsg(11+i, nil)
+		require_NoError(t, err)
+		require_Equal(t, sm.subj, fmt.Sprintf("test.%d", i))
+		require_Equal(t, bytesToString(getHeader(JSMarkerReason, sm.hdr)), JSMarkerReasonPurge)
+		require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), "1s")
+	}
+}
+
+func TestFileStoreSubjectDeleteMarkersOnCompact(t *testing.T) {
+	storeDir := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{
+			Name: "zzz", Subjects: []string{"test.*"}, Storage: FileStorage,
+			MaxAge: time.Second, AllowMsgTTL: true,
+			SubjectDeleteMarkers: true, SubjectDeleteMarkerTTL: time.Second,
+		},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	for i := 0; i < 10; i++ {
+		_, _, err := fs.StoreMsg(fmt.Sprintf("test.%d", i), nil, nil, 0)
+		require_NoError(t, err)
+	}
+
+	_, err = fs.Compact(6)
+	require_NoError(t, err)
+
+	for i := uint64(6); i <= 15; i++ {
+		sm, err := fs.LoadMsg(i, nil)
+		require_NoError(t, err)
+		if i <= 10 {
+			require_Equal(t, sm.subj, fmt.Sprintf("test.%d", i-1))
+			require_Equal(t, bytesToString(getHeader(JSMarkerReason, sm.hdr)), _EMPTY_)
+			require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), _EMPTY_)
+		} else {
+			require_Equal(t, sm.subj, fmt.Sprintf("test.%d", i-11))
+			require_Equal(t, bytesToString(getHeader(JSMarkerReason, sm.hdr)), JSMarkerReasonPurge)
+			require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), "1s")
+		}
+	}
+}
+
+func TestFileStoreSubjectDeleteMarkersOnRemoveMsg(t *testing.T) {
+	storeDir := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{
+			Name: "zzz", Subjects: []string{"test"}, Storage: FileStorage,
+			MaxAge: time.Second, AllowMsgTTL: true,
+			SubjectDeleteMarkers: true, SubjectDeleteMarkerTTL: time.Second,
+		},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	_, _, err = fs.StoreMsg("test", nil, nil, 0)
+	require_NoError(t, err)
+
+	_, err = fs.RemoveMsg(1)
+	require_NoError(t, err)
+
+	sm, err := fs.LoadMsg(2, nil)
+	require_NoError(t, err)
+	require_Equal(t, sm.subj, "test")
+	require_Equal(t, bytesToString(getHeader(JSMarkerReason, sm.hdr)), JSMarkerReasonRemove)
+	require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), "1s")
+
+	_, err = fs.RemoveMsg(2)
+	require_NoError(t, err)
+
+	// The deleted subject marker at seq 2 should not have been replaced.
+	_, err = fs.LoadMsg(3, nil)
+	require_Error(t, err)
 }
 
 func TestFileStoreStoreRawMessageThrowsPermissionErrorIfFSModeReadOnly(t *testing.T) {
