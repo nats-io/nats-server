@@ -7866,7 +7866,7 @@ func (mset *stream) supportsDeferredDeduplication() bool {
 	if s == nil || n == nil {
 		return false
 	}
-	// Grab our peers and walk them to make sure we can all support binary stream snapshots.
+	// Grab our peers and walk them to make sure we can all support deferred deduplication.
 	id, peers := n.ID(), n.Peers()
 	for _, p := range peers {
 		if p.ID == id {
