@@ -824,7 +824,7 @@ func (js *jetStream) isLeaderless() bool {
 
 	// If we don't have a leader.
 	// Make sure we have been running for enough time.
-	if meta.GroupLeader() == _EMPTY_ && time.Since(meta.Created()) > lostQuorumIntervalDefault {
+	if meta.Leaderless() && time.Since(meta.Created()) > lostQuorumIntervalDefault {
 		return true
 	}
 	return false
@@ -856,7 +856,7 @@ func (js *jetStream) isGroupLeaderless(rg *raftGroup) bool {
 	node := rg.node
 	js.mu.RUnlock()
 	// If we don't have a leader.
-	if node.GroupLeader() == _EMPTY_ {
+	if node.Leaderless() {
 		// Threshold for jetstream startup.
 		const startupThreshold = 10 * time.Second
 
@@ -1072,7 +1072,7 @@ func (js *jetStream) checkForOrphans() {
 
 	// We only want to cleanup any orphans if we know we are current with the meta-leader.
 	meta := cc.meta
-	if meta == nil || meta.GroupLeader() == _EMPTY_ {
+	if meta == nil || meta.Leaderless() {
 		js.mu.Unlock()
 		s.Debugf("JetStream cluster skipping check for orphans, no meta-leader")
 		return
@@ -1371,7 +1371,7 @@ func (js *jetStream) monitorCluster() {
 			// If we have a current leader or had one in the past we can cancel this here since the metaleader
 			// will be in charge of all peer state changes.
 			// For cold boot only.
-			if n.GroupLeader() != _EMPTY_ || n.HadPreviousLeader() {
+			if !n.Leaderless() || n.HadPreviousLeader() {
 				lt.Stop()
 				continue
 			}
@@ -2554,7 +2554,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				// Always cancel if this was running.
 				stopDirectMonitoring()
 
-			} else if n.GroupLeader() != noLeader {
+			} else if !n.Leaderless() {
 				js.setStreamAssignmentRecovering(sa)
 			}
 
@@ -4051,7 +4051,7 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 	js.mu.RLock()
 	s := js.srv
 	node := sa.Group.node
-	hadLeader := node == nil || node.GroupLeader() != noLeader
+	hadLeader := node == nil || !node.Leaderless()
 	offline := s.allPeersOffline(sa.Group)
 	var isMetaLeader bool
 	if cc := js.cluster; cc != nil {
@@ -8321,13 +8321,13 @@ RETRY:
 	// the semaphore.
 	releaseSyncOutSem()
 
-	if n.GroupLeader() == _EMPTY_ {
+	if n.Leaderless() {
 		// Prevent us from spinning if we've installed a snapshot from a leader but there's no leader online.
 		// We wait a bit to check if a leader has come online in the meantime, if so we can continue.
 		var canContinue bool
 		if numRetries == 0 {
 			time.Sleep(startInterval)
-			canContinue = n.GroupLeader() != _EMPTY_
+			canContinue = !n.Leaderless()
 		}
 		if !canContinue {
 			return fmt.Errorf("%w for stream '%s > %s'", errCatchupAbortedNoLeader, mset.account(), mset.name())
