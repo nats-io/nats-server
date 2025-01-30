@@ -391,6 +391,7 @@ type Options struct {
 	TrustedKeys              []string              `json:"-"`
 	TrustedOperators         []*jwt.OperatorClaims `json:"-"`
 	AccountResolver          AccountResolver       `json:"-"`
+	AccountResolverType      string                `json:"-"`
 	AccountResolverTLSConfig *tls.Config           `json:"-"`
 
 	// AlwaysEnableNonce will always present a nonce to new connections
@@ -1357,6 +1358,7 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 			memResolverRe := regexp.MustCompile(`(?i)(MEM|MEMORY)\s*`)
 			resolverRe := regexp.MustCompile(`(?i)(?:URL){1}(?:\({1}\s*"?([^\s"]*)"?\s*\){1})?\s*`)
 			if memResolverRe.MatchString(v) {
+				o.AccountResolverType = "MEMORY"
 				o.AccountResolver = &MemAccResolver{}
 			} else if items := resolverRe.FindStringSubmatch(v); len(items) == 2 {
 				url := items[1]
@@ -1437,7 +1439,8 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 			}
 
 			var res AccountResolver
-			switch strings.ToUpper(dirType) {
+			uDirType := strings.ToUpper(dirType)
+			switch uDirType {
 			case "CACHE":
 				checkDir()
 				if sync != 0 {
@@ -1469,11 +1472,29 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 				res, err = NewDirAccResolver(dir, limit, sync, delete, opts...)
 			case "MEM", "MEMORY":
 				res = &MemAccResolver{}
+			case "CUSTOM_LOOKUP":
+				checkDir()
+				if ttl != 0 {
+					*errors = append(*errors, &configErr{tk, "FULL does not accept ttl"})
+				}
+				if hdel_set && !del {
+					*errors = append(*errors, &configErr{tk, "hard_delete has no effect without delete"})
+				}
+				delete := NoDelete
+				if del {
+					if hdel {
+						delete = HardDelete
+					} else {
+						delete = RenameDeleted
+					}
+				}
+				res, err = NewCustomLookupAccResolver(dir, limit, sync, delete, opts...)
 			}
 			if err != nil {
 				*errors = append(*errors, &configErr{tk, err.Error()})
 				return
 			}
+			o.AccountResolverType = uDirType
 			o.AccountResolver = res
 		default:
 			err := &configErr{tk, fmt.Sprintf("error parsing operator resolver, wrong type %T", v)}
