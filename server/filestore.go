@@ -2329,10 +2329,8 @@ func (mb *msgBlock) firstMatchingMulti(sl *Sublist, start uint64, sm *StoreMsg) 
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
 
-	// Will just do linear walk for now.
-	// TODO(dlc) - Be better at skipping blocks that will not match us regardless.
-
 	var didLoad bool
+	var didFind bool
 	// Need messages loaded from here on out.
 	if mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
@@ -2347,25 +2345,36 @@ func (mb *msgBlock) firstMatchingMulti(sl *Sublist, start uint64, sm *StoreMsg) 
 	}
 	lseq := atomic.LoadUint64(&mb.last.seq)
 
-	if sm == nil {
-		sm = new(StoreMsg)
-	}
-
-	for seq := start; seq <= lseq; seq++ {
-		llseq := mb.llseq
+	// If this block contains no subjects that the sublist has interest for,
+	// then this will effectively do nothing.
+	IntersectStree(mb.fss, sl, func(subj []byte, ss *SimpleState) {
+		if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
+			mb.recalculateForSubj(bytesToString(subj), ss)
+		}
+		if start > ss.Last || lseq < ss.First {
+			// The start cutoff is after the last sequence for this subject,
+			// or we think we already know of a subject with an earlier msg
+			// than this one.
+			return
+		}
+		// Get the earliest sequence from the subject state and adjust it based
+		// on our requested start position if needed.
+		seq := ss.First
+		if start > seq {
+			seq = start
+		}
 		fsm, err := mb.cacheLookup(seq, sm)
 		if err != nil {
-			continue
+			return
 		}
-		expireOk := seq == lseq && mb.llseq == seq
+		didFind = true
+		sm, lseq = fsm, seq
+	})
 
-		if sl.HasInterest(fsm.subj) {
-			return fsm, expireOk, nil
-		}
-		// If we are here we did not match, so put the llseq back.
-		mb.llseq = llseq
+	if !didFind {
+		return nil, didLoad, ErrStoreMsgNotFound
 	}
-	return nil, didLoad, ErrStoreMsgNotFound
+	return sm, didLoad, nil
 }
 
 // Find the first matching message.
