@@ -1477,6 +1477,18 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 				res = &MemAccResolver{}
 			case "CUSTOM_LOOKUP":
 				res, err = NewCustomLookupAccResolver(customLookupOpts...)
+			case "CUSTOM_LOOKUP_CACHE":
+				checkDir()
+				if sync != 0 {
+					*errors = append(*errors, &configErr{tk, "CACHE does not accept sync"})
+				}
+				if del {
+					*errors = append(*errors, &configErr{tk, "CACHE does not accept allow_delete"})
+				}
+				if hdel_set {
+					*errors = append(*errors, &configErr{tk, "CACHE does not accept hard_delete"})
+				}
+				res, err = NewCustomLookupCacheDirAccResolver(dir, limit, ttl, opts...)
 			case "CUSTOM_LOOKUP_FULL":
 				checkDir()
 				if ttl != 0 {

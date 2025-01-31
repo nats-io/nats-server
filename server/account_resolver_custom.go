@@ -18,6 +18,44 @@ import (
 	"time"
 )
 
+// CustomLookupCacheDirAccResolver is based on the FULL CacheDirAccResolver and will lookup the account every time by sending a message to $SYS.REQ.ACCOUNT.*.CLAIMS.LOOKUP
+type CustomLookupCacheDirAccResolver struct {
+	*CacheDirAccResolver
+}
+
+var _ AccountResolver = (*CustomLookupCacheDirAccResolver)(nil)
+
+func NewCustomLookupCacheDirAccResolver(path string, limit int64, ttl time.Duration, opts ...DirResOption) (*CustomLookupCacheDirAccResolver, error) {
+	dirAccResolver, err := NewCacheDirAccResolver(path, limit, ttl, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &CustomLookupCacheDirAccResolver{
+		CacheDirAccResolver: dirAccResolver,
+	}, nil
+}
+func (ca *CustomLookupCacheDirAccResolver) Reload() error {
+	return ca.DirAccResolver.Reload()
+}
+func (ca *CustomLookupCacheDirAccResolver) Start(s *Server) error {
+	ca.Server = s
+	return nil
+}
+func (ca *CustomLookupCacheDirAccResolver) Fetch(name string) (string, error) {
+
+	res, err := ca.DirAccResolver.Fetch(name)
+	if err == nil {
+		return res, nil
+	}
+	// we have an error file not found
+
+	if err == ErrMissingAccount {
+		ss, err := ca.Server.fetch(ca, name, ca.fetchTimeout)
+		return ss, err
+	}
+	return _EMPTY_, ErrMissingAccount
+}
+
 // CustomLookupDirAccResolver is based on the FULL DirAccResolver and will lookup the account every time by sending a message to $SYS.REQ.ACCOUNT.*.CLAIMS.LOOKUP
 // this is primarily to not go through the operatorMode flow paths.
 type CustomLookupDirAccResolver struct {
@@ -25,15 +63,6 @@ type CustomLookupDirAccResolver struct {
 }
 
 var _ AccountResolver = (*CustomLookupDirAccResolver)(nil)
-
-// CustomLookupAccResolver is an account resolver that will lookup the account every time by sending a message to $SYS.REQ.ACCOUNT.*.CLAIMS.LOOKUP
-type CustomLookupAccResolver struct {
-	*Server
-	fetchTimeout time.Duration
-	resolverDefaultsOpsImpl
-}
-
-var _ AccountResolver = (*CustomLookupAccResolver)(nil)
 
 func NewCustomLookupDirAccResolver(path string, limit int64, syncInterval time.Duration, delete deleteType, opts ...DirResOption) (*CustomLookupDirAccResolver, error) {
 	dirAccResolver, err := NewDirAccResolver(path, limit, syncInterval, delete, opts...)
@@ -51,7 +80,6 @@ func (ca *CustomLookupDirAccResolver) Start(s *Server) error {
 	ca.Server = s
 	return nil
 }
-
 func (ca *CustomLookupDirAccResolver) Fetch(name string) (string, error) {
 
 	res, err := ca.DirAccResolver.Fetch(name)
@@ -66,6 +94,15 @@ func (ca *CustomLookupDirAccResolver) Fetch(name string) (string, error) {
 	}
 	return _EMPTY_, ErrMissingAccount
 }
+
+// CustomLookupAccResolver is an account resolver that will lookup the account every time by sending a message to $SYS.REQ.ACCOUNT.*.CLAIMS.LOOKUP
+type CustomLookupAccResolver struct {
+	*Server
+	fetchTimeout time.Duration
+	resolverDefaultsOpsImpl
+}
+
+var _ AccountResolver = (*CustomLookupAccResolver)(nil)
 
 type CustomLookupResOption func(s *CustomLookupAccResolver) error
 
