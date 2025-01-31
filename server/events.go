@@ -1256,6 +1256,14 @@ func (s *Server) initEventTracking() {
 			optz := &ExpvarzEventOptions{}
 			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) { return s.expvarz(optz), nil })
 		},
+		"IPQUEUESZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
+			optz := &IpqueueszEventOptions{}
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) { return s.Ipqueuesz(&optz.IpqueueszOptions), nil })
+		},
+		"RAFTZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
+			optz := &RaftzEventOptions{}
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) { return s.Raftz(&optz.RaftzOptions), nil })
+		},
 	}
 	profilez := func(_ *subscription, c *client, _ *Account, _, rply string, rmsg []byte) {
 		hdr, msg := c.msgParts(rmsg)
@@ -1993,6 +2001,18 @@ type ExpvarzEventOptions struct {
 	EventFilterOptions
 }
 
+// In the context of system events, IpqueueszEventOptions are options passed to Ipqueuesz
+type IpqueueszEventOptions struct {
+	EventFilterOptions
+	IpqueueszOptions
+}
+
+// In the context of system events, RaftzEventOptions are options passed to Raftz
+type RaftzEventOptions struct {
+	EventFilterOptions
+	RaftzOptions
+}
+
 // returns true if the request does NOT apply to this server and can be ignored.
 // DO NOT hold the server lock when
 func (s *Server) filterRequest(fOpts *EventFilterOptions) bool {
@@ -2113,6 +2133,20 @@ type ServerAPIExpvarzResponse struct {
 	Server *ServerInfo    `json:"server"`
 	Data   *ExpvarzStatus `json:"data,omitempty"`
 	Error  *ApiError      `json:"error,omitempty"`
+}
+
+// ServerAPIpqueueszResponse is the response type for ipqueuesz
+type ServerAPIpqueueszResponse struct {
+	Server *ServerInfo      `json:"server"`
+	Data   *IpqueueszStatus `json:"data,omitempty"`
+	Error  *ApiError        `json:"error,omitempty"`
+}
+
+// ServerAPIRaftzResponse is the response type for raftz
+type ServerAPIRaftzResponse struct {
+	Server *ServerInfo  `json:"server"`
+	Data   *RaftzStatus `json:"data,omitempty"`
+	Error  *ApiError    `json:"error,omitempty"`
 }
 
 // statszReq is a request for us to respond with current statsz.

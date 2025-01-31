@@ -5902,10 +5902,11 @@ func TestMonitorIpqzWithGenerics(t *testing.T) {
 	body := readBody(t, url)
 	require_True(t, len(body) > 0)
 
-	queues := map[string]*monitorIPQueue{}
+	queues := IpqueueszStatus{}
 	require_NoError(t, json.Unmarshal(body, &queues))
 	require_True(t, len(queues) >= 4)
-	require_True(t, queues["SendQ"] != nil)
+	_, ok := queues["SendQ"]
+	require_True(t, ok)
 }
 
 func TestMonitorVarzSyncInterval(t *testing.T) {
