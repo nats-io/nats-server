@@ -3941,42 +3941,6 @@ func (*resolverDefaultsOpsImpl) Store(_, _ string) error {
 	return fmt.Errorf("store operation not supported for URL Resolver")
 }
 
-type CustomLookupAccResolver struct {
-	*DirAccResolver
-}
-
-func NewCustomLookupAccResolver(path string, limit int64, syncInterval time.Duration, delete deleteType, opts ...DirResOption) (*CustomLookupAccResolver, error) {
-	dirAccResolver, err := NewDirAccResolver(path, limit, syncInterval, delete, opts...)
-	if err != nil {
-		return nil, err
-	}
-	return &CustomLookupAccResolver{
-		DirAccResolver: dirAccResolver,
-	}, nil
-}
-func (ca *CustomLookupAccResolver) Reload() error {
-	return ca.DirAccResolver.Reload()
-}
-func (ca *CustomLookupAccResolver) Start(s *Server) error {
-	ca.Server = s
-	return nil
-}
-
-func (ca *CustomLookupAccResolver) Fetch(name string) (string, error) {
-
-	res, err := ca.DirAccResolver.Fetch(name)
-	if err == nil {
-		return res, nil
-	}
-	// we have an error file not found
-
-	if err == ErrMissingAccount {
-		ss, err := ca.Server.fetch(ca, name, ca.fetchTimeout)
-		return ss, err
-	}
-	return _EMPTY_, ErrMissingAccount
-}
-
 // MemAccResolver is a memory only resolver.
 // Mostly for testing.
 type MemAccResolver struct {

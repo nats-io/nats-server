@@ -1385,6 +1385,8 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 			ttl := time.Duration(0)
 			sync := time.Duration(0)
 			opts := []DirResOption{}
+			customLookupOpts := []CustomLookupResOption{}
+
 			var err error
 			if v, ok := v["dir"]; ok {
 				_, v := unwrapValue(v, &lt)
@@ -1420,6 +1422,7 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 				var to time.Duration
 				if to, err = time.ParseDuration(v.(string)); err == nil {
 					opts = append(opts, FetchTimeout(to))
+					customLookupOpts = append(customLookupOpts, CustomLookupResFetchTimeout(to))
 				}
 			}
 			if err != nil {
@@ -1473,6 +1476,8 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 			case "MEM", "MEMORY":
 				res = &MemAccResolver{}
 			case "CUSTOM_LOOKUP":
+				res, err = NewCustomLookupAccResolver(customLookupOpts...)
+			case "CUSTOM_LOOKUP_FULL":
 				checkDir()
 				if ttl != 0 {
 					*errors = append(*errors, &configErr{tk, "FULL does not accept ttl"})
@@ -1488,7 +1493,7 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 						delete = RenameDeleted
 					}
 				}
-				res, err = NewCustomLookupAccResolver(dir, limit, sync, delete, opts...)
+				res, err = NewCustomLookupDirAccResolver(dir, limit, sync, delete, opts...)
 			}
 			if err != nil {
 				*errors = append(*errors, &configErr{tk, err.Error()})
