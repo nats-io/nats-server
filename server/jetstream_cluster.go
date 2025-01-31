@@ -4436,7 +4436,11 @@ func (js *jetStream) processClusterCreateConsumer(ca *consumerAssignment, state 
 		if isConfigUpdate = !reflect.DeepEqual(&cfg, ca.Config); isConfigUpdate {
 			// Call into update, ignore consumer exists error here since this means an old deliver subject is bound
 			// which can happen on restart etc.
-			if err := o.updateConfig(ca.Config); err != nil && err != NewJSConsumerNameExistError() {
+			// JS lock needed as this can mutate the consumer assignments and race with updateInactivityThreshold.
+			js.mu.Lock()
+			err := o.updateConfig(ca.Config)
+			js.mu.Unlock()
+			if err != nil && err != NewJSConsumerNameExistError() {
 				// This is essentially an update that has failed. Respond back to metaleader if we are not recovering.
 				js.mu.RLock()
 				if !js.metaRecovering {
