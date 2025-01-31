@@ -2209,9 +2209,6 @@ func (mb *msgBlock) firstMatchingMulti(sl *Sublist, start uint64, sm *StoreMsg) 
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
 
-	// Will just do linear walk for now.
-	// TODO(dlc) - Be better at skipping blocks that will not match us regardless.
-
 	var didLoad bool
 	// Need messages loaded from here on out.
 	if mb.cacheNotLoaded() {
@@ -2231,20 +2228,75 @@ func (mb *msgBlock) firstMatchingMulti(sl *Sublist, start uint64, sm *StoreMsg) 
 		sm = new(StoreMsg)
 	}
 
-	for seq := start; seq <= lseq; seq++ {
-		llseq := mb.llseq
-		fsm, err := mb.cacheLookup(seq, sm)
-		if err != nil {
-			continue
+	// If the FSS state has fewer entries than sequences in the linear scan,
+	// then use intersection instead as likely going to be cheaper. This will
+	// often be the case with high numbers of deletes, as well as a smaller
+	// number of subjects in the block.
+	if uint64(mb.fss.Size()) < lseq-start {
+		// If there are no subject matches then this is effectively no-op.
+		hseq := uint64(math.MaxUint64)
+		IntersectStree(mb.fss, sl, func(subj []byte, ss *SimpleState) {
+			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
+				// mb is already loaded into the cache so should be fast-ish.
+				mb.recalculateForSubj(bytesToString(subj), ss)
+			}
+			first := ss.First
+			if start > first {
+				first = start
+			}
+			if first > ss.Last || first >= hseq {
+				// The start cutoff is after the last sequence for this subject,
+				// or we think we already know of a subject with an earlier msg
+				// than our first seq for this subject.
+				return
+			}
+			if first == ss.First {
+				// If the start floor is below where this subject starts then we can
+				// short-circuit, avoiding needing to scan for the next message.
+				if fsm, err := mb.cacheLookup(ss.First, sm); err == nil {
+					sm = fsm
+					hseq = ss.First
+				}
+				return
+			}
+			for seq := first; seq <= ss.Last; seq++ {
+				// Otherwise we have a start floor that intersects where this subject
+				// has messages in the block, so we need to walk up until we find a
+				// message matching the subject.
+				llseq := mb.llseq
+				fsm, err := mb.cacheLookup(seq, sm)
+				if err != nil {
+					continue
+				}
+				if sl.HasInterest(fsm.subj) {
+					hseq = seq
+					sm = fsm
+					break
+				}
+				// If we are here we did not match, so put the llseq back.
+				mb.llseq = llseq
+			}
+		})
+		if hseq < uint64(math.MaxUint64) && sm != nil {
+			return sm, didLoad, nil
 		}
-		expireOk := seq == lseq && mb.llseq == seq
+	} else {
+		for seq := start; seq <= lseq; seq++ {
+			llseq := mb.llseq
+			fsm, err := mb.cacheLookup(seq, sm)
+			if err != nil {
+				continue
+			}
+			expireOk := seq == lseq && mb.llseq == seq
 
-		if sl.HasInterest(fsm.subj) {
-			return fsm, expireOk, nil
+			if sl.HasInterest(fsm.subj) {
+				return fsm, expireOk, nil
+			}
+			// If we are here we did not match, so put the llseq back.
+			mb.llseq = llseq
 		}
-		// If we are here we did not match, so put the llseq back.
-		mb.llseq = llseq
 	}
+
 	return nil, didLoad, ErrStoreMsgNotFound
 }
 
