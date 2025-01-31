@@ -4044,7 +4044,7 @@ func TestMonitorAccountz(t *testing.T) {
 	body = string(readBody(t, fmt.Sprintf("http://127.0.0.1:%d%s?acc=$SYS", s.MonitorAddr().Port, AccountzPath)))
 	require_Contains(t, body, `"account_detail": {`)
 	require_Contains(t, body, `"account_name": "$SYS",`)
-	require_Contains(t, body, `"subscriptions": 52,`)
+	require_Contains(t, body, `"subscriptions": 56,`)
 	require_Contains(t, body, `"is_system": true,`)
 	require_Contains(t, body, `"system_account": "$SYS"`)
 
@@ -5384,10 +5384,11 @@ func TestIpqzWithGenerics(t *testing.T) {
 	body := readBody(t, url)
 	require_True(t, len(body) > 0)
 
-	queues := map[string]*monitorIPQueue{}
+	queues := IpqueueszStatus{}
 	require_NoError(t, json.Unmarshal(body, &queues))
 	require_True(t, len(queues) >= 4)
-	require_True(t, queues["SendQ"] != nil)
+	_, ok := queues["SendQ"]
+	require_True(t, ok)
 }
 
 func TestVarzSyncInterval(t *testing.T) {
