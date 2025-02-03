@@ -344,20 +344,19 @@ type stream struct {
 
 	// TODO(dlc) - Hide everything below behind two pointers.
 	// Clustered mode.
-	sa         *streamAssignment // What the meta controller uses to assign streams to peers.
-	node       RaftNode          // Our RAFT node for the stream's group.
-	catchup    atomic.Bool       // Used to signal we are in catchup mode.
-	catchups   map[string]uint64 // The number of messages that need to be caught per peer.
-	syncSub    *subscription     // Internal subscription for sync messages (on "$JSC.SYNC").
-	infoSub    *subscription     // Internal subscription for stream info requests.
-	clMu       sync.Mutex        // The mutex for clseq and clfs.
-	clseq      uint64            // The current last seq being proposed to the NRG layer.
-	clfs       uint64            // The count (offset) of the number of failed NRG sequences used to compute clseq.
-	inflight   map[uint64]uint64 // Inflight message sizes per clseq.
-	lqsent     time.Time         // The time at which the last lost quorum advisory was sent. Used to rate limit.
-	uch        chan struct{}     // The channel to signal updates to the monitor routine.
-	compressOK bool              // True if we can do message compression in RAFT and catchup logic
-	inMonitor  bool              // True if the monitor routine has been started.
+	sa        *streamAssignment // What the meta controller uses to assign streams to peers.
+	node      RaftNode          // Our RAFT node for the stream's group.
+	catchup   atomic.Bool       // Used to signal we are in catchup mode.
+	catchups  map[string]uint64 // The number of messages that need to be caught per peer.
+	syncSub   *subscription     // Internal subscription for sync messages (on "$JSC.SYNC").
+	infoSub   *subscription     // Internal subscription for stream info requests.
+	clMu      sync.Mutex        // The mutex for clseq and clfs.
+	clseq     uint64            // The current last seq being proposed to the NRG layer.
+	clfs      uint64            // The count (offset) of the number of failed NRG sequences used to compute clseq.
+	inflight  map[uint64]uint64 // Inflight message sizes per clseq.
+	lqsent    time.Time         // The time at which the last lost quorum advisory was sent. Used to rate limit.
+	uch       chan struct{}     // The channel to signal updates to the monitor routine.
+	inMonitor bool              // True if the monitor routine has been started.
 
 	expectedPerSubjectReady     bool                // Initially blocks 'expected per subject' changes until leader is initially caught up with stored but not applied entries.
 	expectedPerSubjectSequence  map[uint64]string   // Inflight 'expected per subject' subjects per clseq.

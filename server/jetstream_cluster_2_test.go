@@ -7420,16 +7420,91 @@ func TestJetStreamClusterCompressedStreamMessages(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	// 32k (compress threshold ~4k)
-	toSend, msg := 10_000, []byte(strings.Repeat("ABCD", 8*1024))
-	for i := 0; i < toSend; i++ {
-		js.PublishAsync("foo", msg)
+	sl := c.streamLeader(globalAccountName, "TEST")
+	acc, err := sl.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+	rn := mset.raftNode().(*raft)
+
+	// Block snapshots by marking as-if we're doing catchup.
+	blockSnapshots := func() {
+		rn.Lock()
+		defer rn.Unlock()
+		rn.progress = make(map[string]*ipQueue[uint64])
+		rn.progress["blockSnapshots"] = newIPQueue[uint64](rn.s, "blockSnapshots")
 	}
-	select {
-	case <-js.PublishAsyncComplete():
-	case <-time.After(5 * time.Second):
-		t.Fatalf("Did not receive completion signal")
+	blockSnapshots()
+
+	// 32k (compress threshold ~8k)
+	publishMessages := func() {
+		t.Helper()
+		toSend, msg := 10_000, []byte(strings.Repeat("ABCD", 8*1024))
+		for i := 0; i < toSend; i++ {
+			js.PublishAsync("foo", msg)
+		}
+		select {
+		case <-js.PublishAsyncComplete():
+		case <-time.After(5 * time.Second):
+			t.Fatalf("Did not receive completion signal")
+		}
 	}
+	publishMessages()
+
+	checkMessagesAreCompressed := func() {
+		t.Helper()
+		rn.Lock()
+		defer rn.Unlock()
+		var ss StreamState
+		rn.wal.FastState(&ss)
+		require_NotEqual(t, ss.Msgs, 0)
+		var containsCompressed bool
+		for i := ss.FirstSeq; i <= ss.LastSeq; i++ {
+			ae, err := rn.loadEntry(i)
+			require_NoError(t, err)
+			for _, e := range ae.entries {
+				if e.Type == EntryNormal && len(e.Data) > 0 {
+					if entryOp(e.Data[0]) == streamMsgOp {
+						t.Fatalf("Received non-compressed stream msg")
+					} else if entryOp(e.Data[0]) == compressedStreamMsgOp {
+						containsCompressed = true
+					}
+				}
+			}
+			ae.returnToPool()
+		}
+		require_True(t, containsCompressed)
+	}
+	checkMessagesAreCompressed()
+
+	nc.Close()
+	c.stopAll()
+
+	// Only restart two servers, leaving one offline for the time being.
+	c.restartServer(c.servers[0])
+	c.restartServer(c.servers[1])
+
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	sl = c.streamLeader(globalAccountName, "TEST")
+	acc, err = sl.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err = acc.lookupStream("TEST")
+	require_NoError(t, err)
+	rn = mset.raftNode().(*raft)
+	blockSnapshots()
+
+	// Now that the stream leader is elected, bring up the last server.
+	// Must ensure compression is still used, even if the server came up a bit later.
+	ls := c.restartServer(c.servers[2])
+	c.waitOnServerHealthz(ls)
+
+	// Need to reconnect.
+	s = c.streamLeader(globalAccountName, "TEST")
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	publishMessages()
+	checkMessagesAreCompressed()
 }
 
 // https://github.com/nats-io/nats-server/issues/5612
