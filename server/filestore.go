@@ -7091,21 +7091,64 @@ func (fs *fileStore) LoadNextMsgMulti(sl *Sublist, start uint64, smp *StoreMsg) 
 		start = fs.state.FirstSeq
 	}
 
-	if bi, _ := fs.selectMsgBlockWithIndex(start); bi >= 0 {
-		for i := bi; i < len(fs.blks); i++ {
-			mb := fs.blks[i]
-			if sm, expireOk, err := mb.firstMatchingMulti(sl, start, smp); err == nil {
-				if expireOk {
-					mb.tryForceExpireCache()
-				}
-				return sm, sm.seq, nil
-			} else if err != ErrStoreMsgNotFound {
-				return nil, 0, err
-			} else if expireOk {
-				mb.tryForceExpireCache()
-			}
-		}
+	fbi, _ := fs.selectMsgBlockWithIndex(start)
+	if fbi < 0 {
+		return nil, fs.state.LastSeq, ErrStoreEOF
 	}
+	hbi := fs.lmb.index
+	IntersectStree(fs.psim, sl, func(subj []byte, psi *psi) {
+		if uint32(fbi) > psi.lblk {
+			return
+		}
+		fblk := psi.fblk
+		if fblk < uint32(fbi) {
+			fblk = uint32(fbi)
+		}
+		if fblk > psi.lblk {
+			return
+		}
+		if fblk < hbi {
+			hbi = fblk
+		}
+	})
+
+	i, ok := slices.BinarySearchFunc(fs.blks, hbi, func(e *msgBlock, t uint32) int {
+		return int(e.index - t)
+	})
+	if !ok {
+		return nil, fs.state.LastSeq, ErrStoreEOF
+	}
+
+	mb := fs.blks[i]
+	if mb == nil {
+		return nil, fs.state.LastSeq, ErrStoreEOF
+	}
+	if sm, expireOk, err := mb.firstMatchingMulti(sl, start, smp); err == nil {
+		if expireOk {
+			mb.tryForceExpireCache()
+		}
+		return sm, sm.seq, nil
+	} else if err != ErrStoreMsgNotFound {
+		return nil, 0, err
+	} else if expireOk {
+		mb.tryForceExpireCache()
+	}
+
+	// if bi, _ := fs.selectMsgBlockWithIndex(start); bi >= 0 {
+	// 	for i := bi; i < len(fs.blks); i++ {
+	// 		mb := fs.blks[i]
+	// 		if sm, expireOk, err := mb.firstMatchingMulti(sl, start, smp); err == nil {
+	// 			if expireOk {
+	// 				mb.tryForceExpireCache()
+	// 			}
+	// 			return sm, sm.seq, nil
+	// 		} else if err != ErrStoreMsgNotFound {
+	// 			return nil, 0, err
+	// 		} else if expireOk {
+	// 			mb.tryForceExpireCache()
+	// 		}
+	// 	}
+	// }
 
 	return nil, fs.state.LastSeq, ErrStoreEOF
 
