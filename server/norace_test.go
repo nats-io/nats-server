@@ -10256,7 +10256,7 @@ func TestNoRaceFileStoreMsgLoadNextMsgMultiPerf(t *testing.T) {
 		seq++
 	}
 	elapsed := time.Since(start)
-	require_True(t, elapsed < 2*baseline)
+	require_LessThan(t, elapsed, 2*baseline)
 	t.Logf("Single - WC filter %v", elapsed)
 
 	// Now do multi load next with 1 wc entry.
@@ -10271,7 +10271,7 @@ func TestNoRaceFileStoreMsgLoadNextMsgMultiPerf(t *testing.T) {
 		seq++
 	}
 	elapsed = time.Since(start)
-	require_True(t, elapsed < 2*baseline)
+	require_LessThan(t, elapsed, 2*baseline)
 	t.Logf("Multi - Single WC filter %v", elapsed)
 
 	// Now do multi load next with 1000 literal subjects.
@@ -10289,7 +10289,7 @@ func TestNoRaceFileStoreMsgLoadNextMsgMultiPerf(t *testing.T) {
 		seq++
 	}
 	elapsed = time.Since(start)
-	require_True(t, elapsed < 2*baseline)
+	require_LessThan(t, elapsed, 2*baseline)
 	t.Logf("Multi - 1000 filters %v", elapsed)
 }
 
