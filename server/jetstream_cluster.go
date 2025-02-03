@@ -3297,7 +3297,6 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 	client, subject, reply := sa.Client, sa.Subject, sa.Reply
 	hasResponded := sa.responded
 	sa.responded = true
-	peers := copyStrings(sa.Group.Peers)
 	js.mu.Unlock()
 
 	streamName := mset.name()
@@ -3305,7 +3304,6 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 	if isLeader {
 		s.Noticef("JetStream cluster new stream leader for '%s > %s'", account, streamName)
 		s.sendStreamLeaderElectAdvisory(mset)
-		mset.checkAllowMsgCompress(peers)
 	} else {
 		// We are stepping down.
 		// Make sure if we are doing so because we have lost quorum that we send the appropriate advisories.
@@ -7762,20 +7760,13 @@ func decodeStreamMsg(buf []byte) (subject, reply string, hdr, msg []byte, lseq u
 	return subject, reply, hdr, msg, lseq, ts, sourced, nil
 }
 
-// Helper to return if compression allowed.
-func (mset *stream) compressAllowed() bool {
-	mset.clMu.Lock()
-	defer mset.clMu.Unlock()
-	return mset.compressOK
-}
-
 // Flags for encodeStreamMsg/decodeStreamMsg.
 const (
 	msgFlagFromSourceOrMirror uint64 = 1 << iota
 )
 
 func encodeStreamMsg(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, sourced bool) []byte {
-	return encodeStreamMsgAllowCompress(subject, reply, hdr, msg, lseq, ts, sourced, false)
+	return encodeStreamMsgAllowCompress(subject, reply, hdr, msg, lseq, ts, sourced)
 }
 
 // Threshold for compression.
@@ -7783,7 +7774,7 @@ func encodeStreamMsg(subject, reply string, hdr, msg []byte, lseq uint64, ts int
 const compressThreshold = 8192 // 8k
 
 // If allowed and contents over the threshold we will compress.
-func encodeStreamMsgAllowCompress(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, sourced bool, compressOK bool) []byte {
+func encodeStreamMsgAllowCompress(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, sourced bool) []byte {
 	// Clip the subject, reply, header and msgs down. Operate on
 	// uint64 lengths to avoid overflowing.
 	slen := min(uint64(len(subject)), math.MaxUint16)
@@ -7792,7 +7783,7 @@ func encodeStreamMsgAllowCompress(subject, reply string, hdr, msg []byte, lseq u
 	mlen := min(uint64(len(msg)), math.MaxUint32)
 	total := slen + rlen + hlen + mlen
 
-	shouldCompress := compressOK && total > compressThreshold
+	shouldCompress := total > compressThreshold
 	elen := int(1 + 8 + 8 + total)
 	elen += (2 + 2 + 2 + 4 + 8) // Encoded lengths, 4bytes, flags are up to 8 bytes
 
@@ -7928,26 +7919,6 @@ func (mset *stream) stateSnapshotLocked() []byte {
 	return b
 }
 
-// Will check if we can do message compression in RAFT and catchup logic.
-func (mset *stream) checkAllowMsgCompress(peers []string) {
-	allowed := true
-	for _, id := range peers {
-		sir, ok := mset.srv.nodeToInfo.Load(id)
-		if !ok || sir == nil {
-			allowed = false
-			break
-		}
-		// Check for capability.
-		if si := sir.(nodeInfo); si.cfg == nil || !si.cfg.CompressOK {
-			allowed = false
-			break
-		}
-	}
-	mset.mu.Lock()
-	mset.compressOK = allowed
-	mset.mu.Unlock()
-}
-
 // To warn when we are getting too far behind from what has been proposed vs what has been committed.
 const streamLagWarnThreshold = 10_000
 
@@ -7962,7 +7933,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	s, js, jsa, st, r, tierName, outq, node := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.tier, mset.outq, mset.node
 	maxMsgSize, lseq := int(mset.cfg.MaxMsgSize), mset.lseq
 	interestPolicy, discard, maxMsgs, maxBytes := mset.cfg.Retention != LimitsPolicy, mset.cfg.Discard, mset.cfg.MaxMsgs, mset.cfg.MaxBytes
-	isLeader, isSealed, compressOK, allowTTL := mset.isLeader(), mset.cfg.Sealed, mset.compressOK, mset.cfg.AllowMsgTTL
+	isLeader, isSealed, allowTTL := mset.isLeader(), mset.cfg.Sealed, mset.cfg.AllowMsgTTL
 	mset.mu.RUnlock()
 
 	// This should not happen but possible now that we allow scale up, and scale down where this could trigger.
@@ -8237,7 +8208,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		}
 	}
 
-	esm := encodeStreamMsgAllowCompress(subject, reply, hdr, msg, mset.clseq, ts, sourced, compressOK)
+	esm := encodeStreamMsgAllowCompress(subject, reply, hdr, msg, mset.clseq, ts, sourced)
 	var mtKey uint64
 	if mt != nil {
 		mtKey = mset.clseq
@@ -9168,9 +9139,6 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 
 	mset.setCatchupPeer(sreq.Peer, last-seq)
 
-	// Check if we can compress during this.
-	compressOk := mset.compressAllowed()
-
 	var spb int
 	const minWait = 5 * time.Second
 
@@ -9313,7 +9281,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 					sendDR()
 				}
 				// Send the normal message now.
-				sendEM(encodeStreamMsgAllowCompress(sm.subj, _EMPTY_, sm.hdr, sm.msg, sm.seq, sm.ts, false, compressOk))
+				sendEM(encodeStreamMsgAllowCompress(sm.subj, _EMPTY_, sm.hdr, sm.msg, sm.seq, sm.ts, false))
 			} else {
 				if drOk {
 					if dr.First == 0 {
