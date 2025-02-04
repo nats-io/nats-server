@@ -1362,6 +1362,9 @@ func (c *client) wsCollapsePtoNB() (net.Buffers, int64) {
 		}
 		if usz <= wsCompressThreshold {
 			compress = false
+			if cp := c.ws.compressor; cp != nil {
+				cp.Reset(nil)
+			}
 		}
 	}
 	if compress && len(nb) > 0 {
@@ -1382,13 +1385,11 @@ func (c *client) wsCollapsePtoNB() (net.Buffers, int64) {
 			for len(b) > 0 {
 				n, err := cp.Write(b)
 				if err != nil {
-					if err == io.EOF {
-						break
-					}
-					c.Errorf("Error during compression: %v", err)
-					c.markConnAsClosed(WriteError)
-					nbPoolPut(b)
-					return nil, 0
+					// Whatever this error is, it'll be handled by the cp.Flush()
+					// call below, as the same error will be returned there.
+					// Let the outer loop return all the buffers back to the pool
+					// and fall through naturally.
+					break
 				}
 				b = b[n:]
 			}
@@ -1397,6 +1398,7 @@ func (c *client) wsCollapsePtoNB() (net.Buffers, int64) {
 		if err := cp.Flush(); err != nil {
 			c.Errorf("Error during compression: %v", err)
 			c.markConnAsClosed(WriteError)
+			cp.Reset(nil)
 			return nil, 0
 		}
 		b := buf.Bytes()
@@ -1512,6 +1514,7 @@ func (c *client) wsCollapsePtoNB() (net.Buffers, int64) {
 		bufs = append(bufs, c.ws.closeMsg)
 		c.ws.fs += int64(len(c.ws.closeMsg))
 		c.ws.closeMsg = nil
+		c.ws.compressor = nil
 	}
 	c.ws.frames = nil
 	return bufs, c.ws.fs
