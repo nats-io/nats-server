@@ -1748,7 +1748,13 @@ func IntersectStree[T any](st *stree.SubjectTree[T], sl *Sublist, cb func(subj [
 
 func intersectStree[T any](st *stree.SubjectTree[T], r *level, subj []byte, cb func(subj []byte, entry *T)) {
 	if r.numNodes() == 0 {
-		st.Match(subj, cb)
+		// For wildcards we can't avoid Match, but if it's a literal subject at
+		// this point, using Find is considerably cheaper.
+		if subjectHasWildcard(bytesToString(subj)) {
+			st.Match(subj, cb)
+		} else if e, ok := st.Find(subj); ok {
+			cb(subj, e)
+		}
 		return
 	}
 	nsubj := subj
