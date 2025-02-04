@@ -4248,9 +4248,20 @@ func (c *client) setHeader(key, value string, msg []byte) []byte {
 	return bb.Bytes()
 }
 
-// Will return the value for the header denoted by key or nil if it does not exists.
-// This function ignores errors and tries to achieve speed and no additional allocations.
+// Will return a copy of the value for the header denoted by key or nil if it does not exist.
+// If you know that it is safe to refer to the underlying hdr slice for the period that the
+// return value is used, then sliceHeader() will be faster.
 func getHeader(key string, hdr []byte) []byte {
+	v := sliceHeader(key, hdr)
+	if v == nil {
+		return nil
+	}
+	return append(make([]byte, 0, len(v)), v...)
+}
+
+// Will return the sliced value for the header denoted by key or nil if it does not exists.
+// This function ignores errors and tries to achieve speed and no additional allocations.
+func sliceHeader(key string, hdr []byte) []byte {
 	if len(hdr) == 0 {
 		return nil
 	}
@@ -4275,15 +4286,14 @@ func getHeader(key string, hdr []byte) []byte {
 		index++
 	}
 	// Collect together the rest of the value until we hit a CRLF.
-	var value []byte
+	start := index
 	for index < hdrLen {
 		if hdr[index] == '\r' && index < hdrLen-1 && hdr[index+1] == '\n' {
 			break
 		}
-		value = append(value, hdr[index])
 		index++
 	}
-	return value
+	return hdr[start:index:index]
 }
 
 // For bytes.HasPrefix below.
@@ -4400,7 +4410,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 		var ci *ClientInfo
 		if hadPrevSi && c.pa.hdr >= 0 {
 			var cis ClientInfo
-			if err := json.Unmarshal(getHeader(ClientInfoHdr, msg[:c.pa.hdr]), &cis); err == nil {
+			if err := json.Unmarshal(sliceHeader(ClientInfoHdr, msg[:c.pa.hdr]), &cis); err == nil {
 				ci = &cis
 				ci.Service = acc.Name
 				// Check if we are moving into a share details account from a non-shared
@@ -4409,7 +4419,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 					c.addServerAndClusterInfo(ci)
 				}
 			}
-		} else if c.kind != LEAF || c.pa.hdr < 0 || len(getHeader(ClientInfoHdr, msg[:c.pa.hdr])) == 0 {
+		} else if c.kind != LEAF || c.pa.hdr < 0 || len(sliceHeader(ClientInfoHdr, msg[:c.pa.hdr])) == 0 {
 			ci = c.getClientInfo(share)
 			// If we did not share but the imports destination is the system account add in the server and cluster info.
 			if !share && isSysImport {
@@ -5076,7 +5086,7 @@ func (c *client) checkLeafClientInfoHeader(msg []byte) (dmsg []byte, setHdr bool
 	if c.pa.hdr < 0 || len(msg) < c.pa.hdr {
 		return msg, false
 	}
-	cir := getHeader(ClientInfoHdr, msg[:c.pa.hdr])
+	cir := sliceHeader(ClientInfoHdr, msg[:c.pa.hdr])
 	if len(cir) == 0 {
 		return msg, false
 	}
