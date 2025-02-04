@@ -269,7 +269,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		a.mu.RLock()
 		clist = make(map[uint64]*client, a.numLocalConnections())
 		for c := range a.clients {
-			if c.kind == CLIENT || c.kind == LEAF {
+			if c.kind == CLIENT || c.kind == LEAF || c.kind == ROUTER || c.kind == GATEWAY {
 				clist[c.cid] = c
 			}
 		}
