@@ -2327,9 +2327,15 @@ func (fs *fileStore) GetSeqFromTime(t time.Time) uint64 {
 // Find the first matching message against a sublist.
 func (mb *msgBlock) firstMatchingMulti(sl *Sublist, start uint64, sm *StoreMsg) (*StoreMsg, bool, error) {
 	mb.mu.Lock()
-	defer mb.mu.Unlock()
-
 	var didLoad bool
+	var updateLLTS bool
+	defer func() {
+		if updateLLTS {
+			mb.llts = time.Now().UnixNano()
+		}
+		mb.mu.Unlock()
+	}()
+
 	// Need messages loaded from here on out.
 	if mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
@@ -2383,11 +2389,18 @@ func (mb *msgBlock) firstMatchingMulti(sl *Sublist, start uint64, sm *StoreMsg) 
 				// Otherwise we have a start floor that intersects where this subject
 				// has messages in the block, so we need to walk up until we find a
 				// message matching the subject.
+				if mb.dmap.Exists(seq) {
+					// Optimisation to avoid calling cacheLookup which hits time.Now().
+					// Instead we will update it only once in a defer.
+					updateLLTS = true
+					continue
+				}
 				llseq := mb.llseq
 				fsm, err := mb.cacheLookup(seq, sm)
 				if err != nil {
 					continue
 				}
+				updateLLTS = false // cacheLookup already updated it.
 				if sl.HasInterest(fsm.subj) {
 					hseq = seq
 					sm = fsm
@@ -2402,13 +2415,19 @@ func (mb *msgBlock) firstMatchingMulti(sl *Sublist, start uint64, sm *StoreMsg) 
 		}
 	} else {
 		for seq := start; seq <= lseq; seq++ {
+			if mb.dmap.Exists(seq) {
+				// Optimisation to avoid calling cacheLookup which hits time.Now().
+				// Instead we will update it only once in a defer.
+				updateLLTS = true
+				continue
+			}
 			llseq := mb.llseq
 			fsm, err := mb.cacheLookup(seq, sm)
 			if err != nil {
 				continue
 			}
 			expireOk := seq == lseq && mb.llseq == seq
-
+			updateLLTS = false // cacheLookup already updated it.
 			if sl.HasInterest(fsm.subj) {
 				return fsm, expireOk, nil
 			}
