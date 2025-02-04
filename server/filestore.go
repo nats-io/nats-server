@@ -2324,7 +2324,13 @@ func (mb *msgBlock) firstMatchingMulti(sl *Sublist, start uint64, sm *StoreMsg) 
 // fs lock should be held.
 func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *StoreMsg) (*StoreMsg, bool, error) {
 	mb.mu.Lock()
-	defer mb.mu.Unlock()
+	var updateLLTS bool
+	defer func() {
+		if updateLLTS {
+			mb.llts = time.Now().UnixNano()
+		}
+		mb.mu.Unlock()
+	}()
 
 	fseq, isAll, subs := start, filter == _EMPTY_ || filter == fwcs, []string{filter}
 
@@ -2436,6 +2442,12 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 	}
 
 	for seq := fseq; seq <= lseq; seq++ {
+		if mb.dmap.Exists(seq) {
+			// Optimisation to avoid calling cacheLookup which hits time.Now().
+			// Instead we will update it only once in a defer.
+			updateLLTS = true
+			continue
+		}
 		llseq := mb.llseq
 		fsm, err := mb.cacheLookup(seq, sm)
 		if err != nil {
@@ -2444,6 +2456,7 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 			}
 			continue
 		}
+		updateLLTS = false // cacheLookup already updated it.
 		expireOk := seq == lseq && mb.llseq == seq
 		if isAll {
 			return fsm, expireOk, nil
@@ -2948,6 +2961,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 		// Now check if we need to inspect the seqStart block.
 		// Grab write lock in case we need to load in msgs.
 		mb.mu.Lock()
+		var updateLLTS bool
 		var shouldExpire bool
 		// We need to walk this block to correct accounting from above.
 		if sseq > mb.first.seq {
@@ -2961,10 +2975,16 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 			}
 			var smv StoreMsg
 			for seq, lseq := atomic.LoadUint64(&mb.first.seq), atomic.LoadUint64(&mb.last.seq); seq <= lseq; seq++ {
+				if mb.dmap.Exists(seq) {
+					// Optimisation to avoid calling cacheLookup which hits time.Now().
+					updateLLTS = true
+					continue
+				}
 				sm, _ := mb.cacheLookup(seq, &smv)
 				if sm == nil || sm.subj == _EMPTY_ || !lbm[sm.subj] {
 					continue
 				}
+				updateLLTS = false // cacheLookup already updated it.
 				if isMatch(sm.subj) {
 					// If less than sseq adjust off of total as long as this subject matched the last block.
 					if seq < sseq {
@@ -2984,6 +3004,9 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 		// If we loaded the block try to force expire.
 		if shouldExpire {
 			mb.tryForceExpireCacheLocked()
+		}
+		if updateLLTS {
+			mb.llts = time.Now().UnixNano()
 		}
 		mb.mu.Unlock()
 		return total, validThrough
@@ -3095,6 +3118,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 		}
 		// We need to scan this block.
 		var shouldExpire bool
+		var updateLLTS bool
 		mb.mu.Lock()
 		// Check if we should include all of this block in adjusting. If so work with metadata.
 		if sseq > atomic.LoadUint64(&mb.last.seq) {
@@ -3127,10 +3151,16 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 			// We need to walk all messages in this block
 			var smv StoreMsg
 			for seq := atomic.LoadUint64(&mb.first.seq); seq < last; seq++ {
+				if mb.dmap.Exists(seq) {
+					// Optimisation to avoid calling cacheLookup which hits time.Now().
+					updateLLTS = true
+					continue
+				}
 				sm, _ := mb.cacheLookup(seq, &smv)
 				if sm == nil || sm.subj == _EMPTY_ {
 					continue
 				}
+				updateLLTS = false // cacheLookup already updated it.
 				// Check if it matches our filter.
 				if sm.seq < sseq && isMatch(sm.subj) {
 					adjust++
@@ -3140,6 +3170,9 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 		// If we loaded the block try to force expire.
 		if shouldExpire {
 			mb.tryForceExpireCacheLocked()
+		}
+		if updateLLTS {
+			mb.llts = time.Now().UnixNano()
 		}
 		mb.mu.Unlock()
 	}
@@ -3238,6 +3271,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bo
 		// Grab write lock in case we need to load in msgs.
 		mb.mu.Lock()
 		var shouldExpire bool
+		var updateLLTS bool
 		// We need to walk this block to correct accounting from above.
 		if sseq > mb.first.seq {
 			// Track the ones we add back in case more than one.
@@ -3250,10 +3284,16 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bo
 			}
 			var smv StoreMsg
 			for seq, lseq := atomic.LoadUint64(&mb.first.seq), atomic.LoadUint64(&mb.last.seq); seq <= lseq; seq++ {
+				if mb.dmap.Exists(seq) {
+					// Optimisation to avoid calling cacheLookup which hits time.Now().
+					updateLLTS = true
+					continue
+				}
 				sm, _ := mb.cacheLookup(seq, &smv)
 				if sm == nil || sm.subj == _EMPTY_ || !lbm[sm.subj] {
 					continue
 				}
+				updateLLTS = false // cacheLookup already updated it.
 				if isMatch(sm.subj) {
 					// If less than sseq adjust off of total as long as this subject matched the last block.
 					if seq < sseq {
@@ -3273,6 +3313,9 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bo
 		// If we loaded the block try to force expire.
 		if shouldExpire {
 			mb.tryForceExpireCacheLocked()
+		}
+		if updateLLTS {
+			mb.llts = time.Now().UnixNano()
 		}
 		mb.mu.Unlock()
 		return total, validThrough
@@ -3301,6 +3344,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bo
 
 			var t uint64
 			var havePartial bool
+			var updateLLTS bool
 			IntersectStree[SimpleState](mb.fss, sl, func(bsubj []byte, ss *SimpleState) {
 				subj := bytesToString(bsubj)
 				if havePartial {
@@ -3333,14 +3377,23 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bo
 				}
 				var smv StoreMsg
 				for seq, lseq := start, atomic.LoadUint64(&mb.last.seq); seq <= lseq; seq++ {
+					if mb.dmap.Exists(seq) {
+						// Optimisation to avoid calling cacheLookup which hits time.Now().
+						updateLLTS = true
+						continue
+					}
 					if sm, _ := mb.cacheLookup(seq, &smv); sm != nil && isMatch(sm.subj) {
 						t++
+						updateLLTS = false // cacheLookup already updated it.
 					}
 				}
 			}
 			// If we loaded this block for this operation go ahead and expire it here.
 			if shouldExpire {
 				mb.tryForceExpireCacheLocked()
+			}
+			if updateLLTS {
+				mb.llts = time.Now().UnixNano()
 			}
 			mb.mu.Unlock()
 			total += t
@@ -3386,6 +3439,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bo
 		}
 		// We need to scan this block.
 		var shouldExpire bool
+		var updateLLTS bool
 		mb.mu.Lock()
 		// Check if we should include all of this block in adjusting. If so work with metadata.
 		if sseq > atomic.LoadUint64(&mb.last.seq) {
@@ -3417,10 +3471,16 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bo
 			// We need to walk all messages in this block
 			var smv StoreMsg
 			for seq := atomic.LoadUint64(&mb.first.seq); seq < last; seq++ {
+				if mb.dmap.Exists(seq) {
+					// Optimisation to avoid calling cacheLookup which hits time.Now().
+					updateLLTS = true
+					continue
+				}
 				sm, _ := mb.cacheLookup(seq, &smv)
 				if sm == nil || sm.subj == _EMPTY_ {
 					continue
 				}
+				updateLLTS = false // cacheLookup already updated it.
 				// Check if it matches our filter.
 				if sm.seq < sseq && isMatch(sm.subj) {
 					adjust++
@@ -3430,6 +3490,9 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bo
 		// If we loaded the block try to force expire.
 		if shouldExpire {
 			mb.tryForceExpireCacheLocked()
+		}
+		if updateLLTS {
+			mb.llts = time.Now().UnixNano()
 		}
 		mb.mu.Unlock()
 	}
@@ -8079,6 +8142,11 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 	var smv StoreMsg
 	fseq, lseq := atomic.LoadUint64(&mb.first.seq), atomic.LoadUint64(&mb.last.seq)
 	for seq := fseq; seq <= lseq; seq++ {
+		if mb.dmap.Exists(seq) {
+			// Optimisation to avoid calling cacheLookup which hits time.Now().
+			// It gets set later on if the fss is non-empty anyway.
+			continue
+		}
 		sm, err := mb.cacheLookup(seq, &smv)
 		if err != nil {
 			// Since we are walking by sequence we can ignore some errors that are benign to rebuilding our state.
