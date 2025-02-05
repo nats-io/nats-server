@@ -2117,7 +2117,7 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 		}
 		// Make sure we do subject cleanup as well.
 		mb.ensurePerSubjectInfoLoaded()
-		mb.fss.Iter(func(bsubj []byte, ss *SimpleState) bool {
+		mb.fss.IterOrdered(func(bsubj []byte, ss *SimpleState) bool {
 			subj := bytesToString(bsubj)
 			for i := uint64(0); i < ss.Msgs; i++ {
 				fs.removePerSubject(subj, false)
@@ -3446,7 +3446,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bo
 
 	// See if filter was provided but its the only subject.
 	if !isAll && fs.psim.Size() == 1 {
-		fs.psim.Iter(func(subject []byte, _ *psi) bool {
+		fs.psim.IterFast(func(subject []byte, _ *psi) bool {
 			isAll = sl.HasInterest(bytesToString(subject))
 			return true
 		})
@@ -4381,7 +4381,7 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 
 	// collect all that are not correct.
 	needAttention := make(map[string]*psi)
-	fs.psim.Iter(func(subj []byte, psi *psi) bool {
+	fs.psim.IterFast(func(subj []byte, psi *psi) bool {
 		numMsgs += psi.total
 		if psi.total > maxMsgsPer {
 			needAttention[string(subj)] = psi
@@ -4406,7 +4406,7 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) {
 		fs.rebuildStateLocked(nil)
 		// Need to redo blocks that need attention.
 		needAttention = make(map[string]*psi)
-		fs.psim.Iter(func(subj []byte, psi *psi) bool {
+		fs.psim.IterFast(func(subj []byte, psi *psi) bool {
 			if psi.total > maxMsgsPer {
 				needAttention[string(subj)] = psi
 			}
@@ -7798,7 +7798,7 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 	fs.bim = make(map[uint32]*msgBlock)
 	// Subject delete markers if needed.
 	if fs.cfg.SubjectDeleteMarkerTTL > 0 {
-		fs.psim.Iter(func(subject []byte, _ *psi) bool {
+		fs.psim.IterOrdered(func(subject []byte, _ *psi) bool {
 			fs.markers = append(fs.markers, string(subject))
 			return true
 		})
@@ -7911,7 +7911,7 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 		bytes += mb.bytes
 		// Make sure we do subject cleanup as well.
 		mb.ensurePerSubjectInfoLoaded()
-		mb.fss.Iter(func(bsubj []byte, ss *SimpleState) bool {
+		mb.fss.IterOrdered(func(bsubj []byte, ss *SimpleState) bool {
 			subj := bytesToString(bsubj)
 			for i := uint64(0); i < ss.Msgs; i++ {
 				fs.removePerSubject(subj, fs.cfg.SubjectDeleteMarkerTTL > 0)
@@ -8633,7 +8633,7 @@ func (fs *fileStore) populateGlobalPerSubjectInfo(mb *msgBlock) {
 	}
 
 	// Now populate psim.
-	mb.fss.Iter(func(bsubj []byte, ss *SimpleState) bool {
+	mb.fss.IterFast(func(bsubj []byte, ss *SimpleState) bool {
 		if len(bsubj) > 0 {
 			if info, ok := fs.psim.Find(bsubj); ok {
 				info.total += ss.Msgs

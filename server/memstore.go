@@ -102,7 +102,7 @@ func (ms *memStore) UpdateConfig(cfg *StreamConfig) error {
 	// If the value is smaller, or was unset before, we need to enforce that.
 	if ms.maxp > 0 && (maxp == 0 || ms.maxp < maxp) {
 		lm := uint64(ms.maxp)
-		ms.fss.Iter(func(subj []byte, ss *SimpleState) bool {
+		ms.fss.IterFast(func(subj []byte, ss *SimpleState) bool {
 			if ss.Msgs > lm {
 				ms.enforcePerSubjectLimit(bytesToString(subj), ss)
 			}
@@ -1161,7 +1161,7 @@ func (ms *memStore) purge(fseq uint64) (uint64, error) {
 	ms.msgs = make(map[uint64]*StoreMsg)
 	// Subject delete markers if needed.
 	if ms.cfg.SubjectDeleteMarkerTTL > 0 {
-		ms.fss.Iter(func(bsubj []byte, ss *SimpleState) bool {
+		ms.fss.IterOrdered(func(bsubj []byte, ss *SimpleState) bool {
 			ms.markers = append(ms.markers, string(bsubj))
 			return true
 		})
@@ -1231,7 +1231,7 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 		ms.state.LastSeq = seq - 1
 		// Subject delete markers if needed.
 		if ms.cfg.SubjectDeleteMarkerTTL > 0 {
-			ms.fss.Iter(func(bsubj []byte, ss *SimpleState) bool {
+			ms.fss.IterOrdered(func(bsubj []byte, ss *SimpleState) bool {
 				ms.markers = append(ms.markers, string(bsubj))
 				return true
 			})
