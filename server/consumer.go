@@ -1631,10 +1631,10 @@ func (o *consumer) deleteNotActive() {
 	if o.srv != nil {
 		qch = o.srv.quitCh
 	}
-	if o.js != nil {
-		cqch = o.js.clusterQuitC()
-	}
 	o.mu.Unlock()
+	if js != nil {
+		cqch = js.clusterQuitC()
+	}
 
 	// Useful for pprof.
 	setGoRoutineLabels(pprofLabels{
