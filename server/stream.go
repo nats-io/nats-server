@@ -757,15 +757,25 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	}
 
 	// Set our stream assignment if in clustered mode.
+	reserveResources := true
 	if sa != nil {
 		mset.setStreamAssignment(sa)
+
+		// If the stream is resetting we must not double-account resources, they were already accounted for.
+		js.mu.Lock()
+		if sa.resetting {
+			reserveResources, sa.resetting = false, false
+		}
+		js.mu.Unlock()
 	}
 
 	// Setup our internal send go routine.
 	mset.setupSendCapabilities()
 
 	// Reserve resources if MaxBytes present.
-	mset.js.reserveStreamResources(&mset.cfg)
+	if reserveResources {
+		mset.js.reserveStreamResources(&mset.cfg)
+	}
 
 	// Call directly to set leader if not in clustered mode.
 	// This can be called though before we actually setup clustering, so check both.

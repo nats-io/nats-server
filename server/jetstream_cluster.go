@@ -143,6 +143,7 @@ type streamAssignment struct {
 	responded   bool
 	recovering  bool
 	reassigning bool // i.e. due to placement issues, lack of resources, etc.
+	resetting   bool // i.e. there was an error, and we're stopping and starting the stream
 	err         error
 }
 
@@ -2932,6 +2933,9 @@ func (mset *stream) resetClusteredState(err error) bool {
 			}
 
 			s.Warnf("Resetting stream cluster state for '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
+			// Mark stream assignment as resetting, so we don't double-account reserved resources.
+			// But only if we're not also releasing the resources as part of the delete.
+			sa.resetting = !shouldDelete
 			// Now wipe groups from assignments.
 			sa.Group.node = nil
 			var consumers []*consumerAssignment
