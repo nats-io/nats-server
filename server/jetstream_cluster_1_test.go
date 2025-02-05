@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	crand "crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -7234,6 +7235,96 @@ func TestJetStreamClusterConsumerHealthCheckMustNotRecreate(t *testing.T) {
 	checkNodeIsClosed(ca)
 	sjs.isConsumerHealthy(mset, "CONSUMER", ca)
 	checkNodeIsClosed(ca)
+}
+
+func TestJetStreamClusterPeerRemoveStreamConsumerDesync(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Must have at least one message in the stream.
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	acc, err := sl.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+
+	rs := c.randomNonStreamLeader(globalAccountName, "TEST")
+	peer := rs.Name()
+	rn := mset.raftNode()
+	mset.mu.Lock()
+	esm := encodeStreamMsgAllowCompress("foo", _EMPTY_, nil, nil, mset.clseq, time.Now().UnixNano(), false)
+	mset.clseq++
+	mset.mu.Unlock()
+	// Propose both remove peer and a normal entry within the same append entry.
+	err = rn.ProposeMulti([]*Entry{
+		newEntry(EntryRemovePeer, []byte(peer)),
+		newEntry(EntryNormal, esm),
+	})
+	require_NoError(t, err)
+
+	// If the previous normal entry was skipped, we'd get a seq mismatch error here.
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	// Now check the same but for a consumer.
+	_, err = js.PullSubscribe("foo", "CONSUMER")
+	require_NoError(t, err)
+
+	cl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+	acc, err = cl.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err = acc.lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+
+	updateDeliveredBuffer := func() []byte {
+		var b [4*binary.MaxVarintLen64 + 1]byte
+		b[0] = byte(updateDeliveredOp)
+		n := 1
+		n += binary.PutUvarint(b[n:], 100)
+		n += binary.PutUvarint(b[n:], 100)
+		n += binary.PutUvarint(b[n:], 1)
+		n += binary.PutVarint(b[n:], time.Now().UnixNano())
+		return b[:n]
+	}
+
+	rs = c.randomNonConsumerLeader(globalAccountName, "TEST", "CONSUMER")
+	peer = rs.Name()
+	rn = o.raftNode()
+	// Propose both remove peer and a normal entry within the same append entry.
+	err = rn.ProposeMulti([]*Entry{
+		newEntry(EntryRemovePeer, []byte(peer)),
+		newEntry(EntryNormal, updateDeliveredBuffer()),
+	})
+	require_NoError(t, err)
+
+	// Check the normal entry was applied.
+	checkFor(t, 2*time.Second, 500*time.Millisecond, func() error {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+		cs, err := o.store.State()
+		if err != nil {
+			return err
+		}
+		if cs.Delivered.Consumer != 100 || cs.Delivered.Stream != 100 {
+			return fmt.Errorf("expected sequence 100, got: %v", cs.Delivered)
+		}
+		return nil
+	})
 }
 
 //
