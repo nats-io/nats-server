@@ -1299,6 +1299,33 @@ func (ms *memStore) LoadNextMsg(filter string, wc bool, start uint64, smp *Store
 	return nil, ms.state.LastSeq, ErrStoreEOF
 }
 
+// Will load the next non-deleted msg starting at the start sequence and walking backwards.
+func (ms *memStore) LoadPrevMsg(start uint64, smp *StoreMsg) (sm *StoreMsg, err error) {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+
+	if ms.msgs == nil {
+		return nil, ErrStoreClosed
+	}
+	if ms.state.Msgs == 0 || start < ms.state.FirstSeq {
+		return nil, ErrStoreEOF
+	}
+	if start > ms.state.LastSeq {
+		start = ms.state.LastSeq
+	}
+
+	for seq := start; seq >= ms.state.FirstSeq; seq-- {
+		if sm, ok := ms.msgs[seq]; ok {
+			if smp == nil {
+				smp = new(StoreMsg)
+			}
+			sm.copy(smp)
+			return smp, nil
+		}
+	}
+	return nil, ErrStoreEOF
+}
+
 // RemoveMsg will remove the message from this store.
 // Will return the number of bytes removed.
 func (ms *memStore) RemoveMsg(seq uint64) (bool, error) {
