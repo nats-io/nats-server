@@ -7306,6 +7306,57 @@ func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64, sm *Store
 	return nil, fs.state.LastSeq, ErrStoreEOF
 }
 
+// Will load the next non-deleted msg starting at the start sequence and walking backwards.
+func (fs *fileStore) LoadPrevMsg(start uint64, smp *StoreMsg) (sm *StoreMsg, err error) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	if fs.closed {
+		return nil, ErrStoreClosed
+	}
+	if fs.state.Msgs == 0 || start < fs.state.FirstSeq {
+		return nil, ErrStoreEOF
+	}
+
+	if start > fs.state.LastSeq {
+		start = fs.state.LastSeq
+	}
+	if smp == nil {
+		smp = new(StoreMsg)
+	}
+
+	if bi, _ := fs.selectMsgBlockWithIndex(start); bi >= 0 {
+		for i := bi; i >= 0; i-- {
+			mb := fs.blks[i]
+			mb.mu.Lock()
+			// Need messages loaded from here on out.
+			if mb.cacheNotLoaded() {
+				if err := mb.loadMsgsWithLock(); err != nil {
+					mb.mu.Unlock()
+					return nil, err
+				}
+			}
+
+			lseq, fseq := atomic.LoadUint64(&mb.last.seq), atomic.LoadUint64(&mb.first.seq)
+			if start > lseq {
+				start = lseq
+			}
+			for seq := start; seq >= fseq; seq-- {
+				if mb.dmap.Exists(seq) {
+					continue
+				}
+				if sm, err := mb.cacheLookup(seq, smp); err == nil {
+					mb.mu.Unlock()
+					return sm, nil
+				}
+			}
+			mb.mu.Unlock()
+		}
+	}
+
+	return nil, ErrStoreEOF
+}
+
 // Type returns the type of the underlying store.
 func (fs *fileStore) Type() StorageType {
 	return FileStorage
