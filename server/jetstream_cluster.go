@@ -2509,7 +2509,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					ce.ReturnToPool()
 				} else {
 					// Our stream was closed out from underneath of us, simply return here.
-					if err == errStreamClosed {
+					if err == errStreamClosed || err == errCatchupStreamStopped || err == ErrServerNotRunning {
+						aq.recycle(&ces)
 						return
 					}
 					s.Warnf("Error applying entries to '%s > %s': %v", accName, sa.Config.Name, err)
