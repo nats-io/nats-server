@@ -465,7 +465,7 @@ func TestSubjectTreeMatchRandomDoublePWC(t *testing.T) {
 		seen++
 	})
 	// Now check via walk to make sure we are right.
-	st.Iter(func(subject []byte, v *int) bool {
+	st.IterOrdered(func(subject []byte, v *int) bool {
 		tokens := strings.Split(string(subject), ".")
 		require_Equal(t, len(tokens), 3)
 		if tokens[1] == "2" {
@@ -479,7 +479,7 @@ func TestSubjectTreeMatchRandomDoublePWC(t *testing.T) {
 	st.Match(b("*.*.222"), func(_ []byte, _ *int) {
 		seen++
 	})
-	st.Iter(func(subject []byte, v *int) bool {
+	st.IterOrdered(func(subject []byte, v *int) bool {
 		tokens := strings.Split(string(subject), ".")
 		require_Equal(t, len(tokens), 3)
 		if tokens[2] == "222" {
@@ -490,7 +490,7 @@ func TestSubjectTreeMatchRandomDoublePWC(t *testing.T) {
 	require_Equal(t, seen, verified)
 }
 
-func TestSubjectTreeIter(t *testing.T) {
+func TestSubjectTreeIterOrdered(t *testing.T) {
 	st := NewSubjectTree[int]()
 	st.Insert(b("foo.bar.A"), 1)
 	st.Insert(b("foo.bar.B"), 2)
@@ -531,12 +531,53 @@ func TestSubjectTreeIter(t *testing.T) {
 		return true
 	}
 	// Kick in the iter.
-	st.Iter(walk)
+	st.IterOrdered(walk)
 	require_Equal(t, received, len(checkOrder))
 
 	// Make sure we can terminate properly.
 	received = 0
-	st.Iter(func(subject []byte, v *int) bool {
+	st.IterOrdered(func(subject []byte, v *int) bool {
+		received++
+		return received != 4
+	})
+	require_Equal(t, received, 4)
+}
+
+func TestSubjectTreeIterFast(t *testing.T) {
+	st := NewSubjectTree[int]()
+	st.Insert(b("foo.bar.A"), 1)
+	st.Insert(b("foo.bar.B"), 2)
+	st.Insert(b("foo.bar.C"), 3)
+	st.Insert(b("foo.baz.A"), 11)
+	st.Insert(b("foo.baz.B"), 22)
+	st.Insert(b("foo.baz.C"), 33)
+	st.Insert(b("foo.bar"), 42)
+
+	checkValMap := map[string]int{
+		"foo.bar.A": 1,
+		"foo.bar.B": 2,
+		"foo.bar.C": 3,
+		"foo.baz.A": 11,
+		"foo.baz.B": 22,
+		"foo.baz.C": 33,
+		"foo.bar":   42,
+	}
+	var received int
+	walk := func(subject []byte, v *int) bool {
+		received++
+		require_True(t, v != nil)
+		if expected := checkValMap[string(subject)]; expected != *v {
+			t.Fatalf("Expected %q to have value of %d, but got %d", subject, expected, *v)
+		}
+		return true
+	}
+	// Kick in the iter.
+	st.IterFast(walk)
+	require_Equal(t, received, len(checkValMap))
+
+	// Make sure we can terminate properly.
+	received = 0
+	st.IterFast(func(subject []byte, v *int) bool {
 		received++
 		return received != 4
 	})
@@ -710,7 +751,7 @@ func TestSubjectTreeIterPerf(t *testing.T) {
 
 	start := time.Now()
 	count := 0
-	st.Iter(func(_ []byte, _ *int) bool {
+	st.IterOrdered(func(_ []byte, _ *int) bool {
 		count++
 		return true
 	})
