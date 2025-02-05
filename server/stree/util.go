@@ -55,11 +55,3 @@ func pivot[N position](subject []byte, pos N) byte {
 	}
 	return subject[pos]
 }
-
-// TODO(dlc) - Can be removed with Go 1.21 once server is on Go 1.22.
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
