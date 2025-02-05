@@ -3182,7 +3182,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 			}
 		} else if e.Type == EntrySnapshot {
 			if mset == nil {
-				return nil
+				continue
 			}
 
 			// Everything operates on new replicated state. Will convert legacy snapshots to this for processing.
@@ -3252,7 +3252,6 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					mset.stop(true, false)
 				}
 			}
-			return nil
 		}
 	}
 	return nil
@@ -5083,7 +5082,6 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 					o.stopWithFlags(true, false, false, false)
 				}
 			}
-			return nil
 		} else if e.Type == EntryAddPeer {
 			// Ignore for now.
 		} else {
