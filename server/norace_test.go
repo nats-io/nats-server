@@ -9014,6 +9014,7 @@ func TestNoRaceStoreStreamEncoderDecoder(t *testing.T) {
 	}
 	ms, err := newMemStore(cfg)
 	require_NoError(t, err)
+	defer ms.Stop()
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: t.TempDir()},
@@ -11297,4 +11298,71 @@ func TestNoRaceJetStreamClusterLargeMetaSnapshotTiming(t *testing.T) {
 	require_NoError(t, err)
 	require_NoError(t, n.InstallSnapshot(snap))
 	t.Logf("Took %v to snap meta with size of %v\n", time.Since(start), friendlyBytes(len(snap)))
+}
+
+func TestNoRaceStoreReverseWalkWithDeletesPerf(t *testing.T) {
+	cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage}
+
+	fs, err := newFileStore(FileStoreConfig{StoreDir: t.TempDir()}, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	cfg.Storage = MemoryStorage
+	ms, err := newMemStore(&cfg)
+	require_NoError(t, err)
+	defer ms.Stop()
+
+	msg := []byte("Hello")
+
+	for _, store := range []StreamStore{fs, ms} {
+		store.StoreMsg("foo.A", nil, msg, 0)
+		for i := 0; i < 1_000_000; i++ {
+			store.StoreMsg("foo.B", nil, msg, 0)
+		}
+		store.StoreMsg("foo.C", nil, msg, 0)
+
+		var ss StreamState
+		store.FastState(&ss)
+		require_Equal(t, ss.Msgs, 1_000_002)
+
+		// Create a bunch of interior deletes.
+		p, err := store.PurgeEx("foo.B", 1, 0)
+		require_NoError(t, err)
+		require_Equal(t, p, 1_000_000)
+
+		// Now simulate a walk backwards as we currently do when searching for starting sequence numbers in sourced streams.
+		start := time.Now()
+		var smv StoreMsg
+		for seq := ss.LastSeq; seq > 0; seq-- {
+			_, err := store.LoadMsg(seq, &smv)
+			if err == errDeletedMsg || err == ErrStoreMsgNotFound {
+				continue
+			}
+			require_NoError(t, err)
+		}
+		elapsed := time.Since(start)
+
+		// Now use the optimized load prev.
+		seq, seen := ss.LastSeq, 0
+		start = time.Now()
+		for {
+			sm, err := store.LoadPrevMsg(seq, &smv)
+			if err == ErrStoreEOF {
+				break
+			}
+			require_NoError(t, err)
+			seq = sm.seq - 1
+			seen++
+		}
+		elapsedNew := time.Since(start)
+		require_Equal(t, seen, 2)
+
+		switch store.(type) {
+		case *memStore:
+			require_True(t, elapsedNew < elapsed)
+		case *fileStore:
+			// Bigger gains for filestore, 10x
+			require_True(t, elapsedNew*10 < elapsed)
+		}
+	}
 }
