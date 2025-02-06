@@ -765,7 +765,7 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, sub
 	s, rr := js.srv, js.apiSubs.Match(subject)
 
 	hdr, msg := c.msgParts(rmsg)
-	if len(getHeader(ClientInfoHdr, hdr)) == 0 {
+	if len(sliceHeader(ClientInfoHdr, hdr)) == 0 {
 		// Check if this is the system account. We will let these through for the account info only.
 		sacc := s.SystemAccount()
 		if sacc != acc {
@@ -1008,7 +1008,7 @@ func (s *Server) getRequestInfo(c *client, raw []byte) (pci *ClientInfo, acc *Ac
 	var ci ClientInfo
 
 	if len(hdr) > 0 {
-		if err := json.Unmarshal(getHeader(ClientInfoHdr, hdr), &ci); err != nil {
+		if err := json.Unmarshal(sliceHeader(ClientInfoHdr, hdr), &ci); err != nil {
 			return nil, nil, nil, nil, err
 		}
 	}
@@ -4271,7 +4271,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 
 		// Since these could wait on the Raft group lock, don't do so under the JS lock.
 		ourID := meta.ID()
-		groupLeader := meta.GroupLeader()
+		groupLeaderless := meta.Leaderless()
 		groupCreated := meta.Created()
 
 		js.mu.RLock()
@@ -4289,7 +4289,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 		// Also capture if we think there is no meta leader.
 		var isLeaderLess bool
 		if !isLeader {
-			isLeaderLess = groupLeader == _EMPTY_ && time.Since(groupCreated) > lostQuorumIntervalDefault
+			isLeaderLess = groupLeaderless && time.Since(groupCreated) > lostQuorumIntervalDefault
 		}
 		js.mu.RUnlock()
 
@@ -4376,7 +4376,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 				return
 			}
 			// If we are a member and we have a group leader or we had a previous leader consider bailing out.
-			if node.GroupLeader() != _EMPTY_ || node.HadPreviousLeader() {
+			if !node.Leaderless() || node.HadPreviousLeader() {
 				if leaderNotPartOfGroup {
 					resp.Error = NewJSConsumerOfflineError()
 					s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil)

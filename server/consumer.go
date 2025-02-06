@@ -60,7 +60,6 @@ type ConsumerInfo struct {
 }
 
 type ConsumerConfig struct {
-	// Durable is deprecated. All consumers should have names, picked by clients.
 	Durable         string          `json:"durable_name,omitempty"`
 	Name            string          `json:"name,omitempty"`
 	Description     string          `json:"description,omitempty"`
@@ -1583,6 +1582,12 @@ var (
 // deleteNotActive must only be called from time.AfterFunc or in its own
 // goroutine, as it can block on clean-up.
 func (o *consumer) deleteNotActive() {
+	// Take a copy of these when the goroutine starts, mostly it avoids a
+	// race condition with tests that modify these consts, such as
+	// TestJetStreamClusterGhostEphemeralsAfterRestart.
+	cnaMax := consumerNotActiveMaxInterval
+	cnaStart := consumerNotActiveStartInterval
+
 	o.mu.Lock()
 	if o.mset == nil {
 		o.mu.Unlock()
@@ -1626,10 +1631,10 @@ func (o *consumer) deleteNotActive() {
 	if o.srv != nil {
 		qch = o.srv.quitCh
 	}
-	if o.js != nil {
-		cqch = o.js.clusterQuitC()
-	}
 	o.mu.Unlock()
+	if js != nil {
+		cqch = js.clusterQuitC()
+	}
 
 	// Useful for pprof.
 	setGoRoutineLabels(pprofLabels{
@@ -1663,8 +1668,8 @@ func (o *consumer) deleteNotActive() {
 		if ca != nil && cc != nil {
 			// Check to make sure we went away.
 			// Don't think this needs to be a monitored go routine.
-			jitter := time.Duration(rand.Int63n(int64(consumerNotActiveStartInterval)))
-			interval := consumerNotActiveStartInterval + jitter
+			jitter := time.Duration(rand.Int63n(int64(cnaStart)))
+			interval := cnaStart + jitter
 			ticker := time.NewTicker(interval)
 			defer ticker.Stop()
 			for {
@@ -1686,7 +1691,7 @@ func (o *consumer) deleteNotActive() {
 				if nca != nil && nca == ca {
 					s.Warnf("Consumer assignment for '%s > %s > %s' not cleaned up, retrying", acc, stream, name)
 					meta.ForwardProposal(removeEntry)
-					if interval < consumerNotActiveMaxInterval {
+					if interval < cnaMax {
 						interval *= 2
 						ticker.Reset(interval)
 					}
@@ -1859,9 +1864,6 @@ func (acc *Account) checkNewConsumerConfig(cfg, ncfg *ConsumerConfig) error {
 	if cfg.FlowControl != ncfg.FlowControl {
 		return errors.New("flow control can not be updated")
 	}
-	if cfg.MaxWaiting != ncfg.MaxWaiting {
-		return errors.New("max waiting can not be updated")
-	}
 
 	// Deliver Subject is conditional on if its bound.
 	if cfg.DeliverSubject != ncfg.DeliverSubject {
@@ -1874,6 +1876,10 @@ func (acc *Account) checkNewConsumerConfig(cfg, ncfg *ConsumerConfig) error {
 		if acc.sl.HasInterest(cfg.DeliverSubject) {
 			return NewJSConsumerNameExistError()
 		}
+	}
+
+	if cfg.MaxWaiting != ncfg.MaxWaiting {
+		return errors.New("max waiting can not be updated")
 	}
 
 	// Check if BackOff is defined, MaxDeliver is within range.

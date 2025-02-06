@@ -660,15 +660,25 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	}
 
 	// Set our stream assignment if in clustered mode.
+	reserveResources := true
 	if sa != nil {
 		mset.setStreamAssignment(sa)
+
+		// If the stream is resetting we must not double-account resources, they were already accounted for.
+		js.mu.Lock()
+		if sa.resetting {
+			reserveResources, sa.resetting = false, false
+		}
+		js.mu.Unlock()
 	}
 
 	// Setup our internal send go routine.
 	mset.setupSendCapabilities()
 
 	// Reserve resources if MaxBytes present.
-	mset.js.reserveStreamResources(&mset.cfg)
+	if reserveResources {
+		mset.js.reserveStreamResources(&mset.cfg)
+	}
 
 	// Call directly to set leader if not in clustered mode.
 	// This can be called though before we actually setup clustering, so check both.
@@ -3488,16 +3498,21 @@ func (mset *stream) setStartingSequenceForSources(iNames map[string]struct{}) {
 	}
 
 	var smv StoreMsg
-	for seq := state.LastSeq; seq >= state.FirstSeq; seq-- {
-		sm, err := mset.store.LoadMsg(seq, &smv)
-		if err != nil || len(sm.hdr) == 0 {
+	for seq := state.LastSeq; seq >= state.FirstSeq; {
+		sm, err := mset.store.LoadPrevMsg(seq, &smv)
+		if err == ErrStoreEOF || err != nil {
+			break
+		}
+		seq = sm.seq - 1
+		if len(sm.hdr) == 0 {
 			continue
 		}
+
 		ss := getHeader(JSStreamSource, sm.hdr)
 		if len(ss) == 0 {
 			continue
 		}
-		streamName, indexName, sseq := streamAndSeq(string(ss))
+		streamName, indexName, sseq := streamAndSeq(bytesToString(ss))
 
 		if _, ok := iNames[indexName]; ok {
 			si := mset.sources[indexName]
@@ -3603,9 +3618,13 @@ func (mset *stream) startingSequenceForSources() {
 	}
 
 	var smv StoreMsg
-	for seq := state.LastSeq; seq >= state.FirstSeq; seq-- {
-		sm, err := mset.store.LoadMsg(seq, &smv)
-		if err != nil || sm == nil || len(sm.hdr) == 0 {
+	for seq := state.LastSeq; ; {
+		sm, err := mset.store.LoadPrevMsg(seq, &smv)
+		if err == ErrStoreEOF || err != nil {
+			break
+		}
+		seq = sm.seq - 1
+		if len(sm.hdr) == 0 {
 			continue
 		}
 		ss := getHeader(JSStreamSource, sm.hdr)
@@ -3613,7 +3632,7 @@ func (mset *stream) startingSequenceForSources() {
 			continue
 		}
 
-		streamName, iName, sseq := streamAndSeq(string(ss))
+		streamName, iName, sseq := streamAndSeq(bytesToString(ss))
 		if iName == _EMPTY_ { // Pre-2.10 message header means it's a match for any source using that stream name
 			for _, ssi := range mset.cfg.Sources {
 				if streamName == ssi.Name || (ssi.External != nil && streamName == ssi.Name+":"+getHash(ssi.External.ApiPrefix)) {

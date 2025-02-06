@@ -142,6 +142,7 @@ type streamAssignment struct {
 	responded   bool
 	recovering  bool
 	reassigning bool // i.e. due to placement issues, lack of resources, etc.
+	resetting   bool // i.e. there was an error, and we're stopping and starting the stream
 	err         error
 }
 
@@ -444,108 +445,113 @@ func (cc *jetStreamCluster) isStreamCurrent(account, stream string) bool {
 
 // isStreamHealthy will determine if the stream is up to date or very close.
 // For R1 it will make sure the stream is present on this server.
-func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) bool {
+func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) error {
 	js.mu.RLock()
 	s, cc := js.srv, js.cluster
 	if cc == nil {
 		// Non-clustered mode
 		js.mu.RUnlock()
-		return true
+		return nil
 	}
-
-	// Pull the group out.
-	rg := sa.Group
-	if rg == nil {
+	if sa == nil || sa.Group == nil {
 		js.mu.RUnlock()
-		return false
+		return errors.New("stream assignment or group missing")
 	}
-
 	streamName := sa.Config.Name
-	node := rg.node
+	node := sa.Group.node
 	js.mu.RUnlock()
 
 	// First lookup stream and make sure its there.
 	mset, err := acc.lookupStream(streamName)
 	if err != nil {
-		return false
+		return errors.New("stream not found")
 	}
 
-	// If R1 we are good.
-	if node == nil {
-		return true
-	}
+	switch {
+	case mset.cfg.Replicas <= 1:
+		return nil // No further checks for R=1 streams
 
-	// Here we are a replicated stream.
-	// First make sure our monitor routine is running.
-	if !mset.isMonitorRunning() {
-		return false
-	}
+	case node == nil:
+		return errors.New("group node missing")
 
-	if node.Healthy() {
-		// Check if we are processing a snapshot and are catching up.
-		if !mset.isCatchingUp() {
-			return true
-		}
-	} else { // node != nil
-		if node != mset.raftNode() {
-			s.Warnf("Detected stream cluster node skew '%s > %s'", acc.GetName(), streamName)
-			node.Delete()
-			mset.resetClusteredState(nil)
-		}
+	case node != mset.raftNode():
+		s.Warnf("Detected stream cluster node skew '%s > %s'", acc.GetName(), streamName)
+		node.Delete()
+		mset.resetClusteredState(nil)
+		return errors.New("cluster node skew detected")
+
+	case !mset.isMonitorRunning():
+		return errors.New("monitor goroutine not running")
+
+	case !node.Healthy():
+		return errors.New("group node unhealthy")
+
+	case mset.isCatchingUp():
+		return errors.New("stream catching up")
+
+	default:
+		return nil
 	}
-	return false
 }
 
 // isConsumerHealthy will determine if the consumer is up to date.
 // For R1 it will make sure the consunmer is present on this server.
-func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consumerAssignment) bool {
+func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consumerAssignment) error {
 	if mset == nil {
-		return false
+		return errors.New("stream missing")
 	}
-
 	js.mu.RLock()
-	cc := js.cluster
+	s, cc := js.srv, js.cluster
 	if cc == nil {
 		// Non-clustered mode
 		js.mu.RUnlock()
-		return true
+		return nil
 	}
-	// These are required.
 	if ca == nil || ca.Group == nil {
 		js.mu.RUnlock()
-		return false
+		return errors.New("consumer assignment or group missing")
 	}
-	s := js.srv
-	// Capture RAFT node from assignment.
 	node := ca.Group.node
 	js.mu.RUnlock()
 
 	// Check if not running at all.
 	o := mset.lookupConsumer(consumer)
 	if o == nil {
-		return false
+		return errors.New("consumer not found")
 	}
 
-	// Check RAFT node state.
-	if node == nil || node.Healthy() {
-		return true
-	} else if node != nil {
-		if node != o.raftNode() {
-			mset.mu.RLock()
-			accName, streamName := mset.acc.GetName(), mset.cfg.Name
-			mset.mu.RUnlock()
-			s.Warnf("Detected consumer cluster node skew '%s > %s > %s'", accName, streamName, consumer)
-			node.Delete()
-			o.deleteWithoutAdvisory()
+	rc, _ := o.replica()
+	switch {
+	case rc <= 1:
+		return nil // No further checks for R=1 consumers
 
-			// When we try to restart we nil out the node and reprocess the consumer assignment.
-			js.mu.Lock()
-			ca.Group.node = nil
-			js.mu.Unlock()
-			js.processConsumerAssignment(ca)
-		}
+	case node == nil:
+		return errors.New("group node missing")
+
+	case node != o.raftNode():
+		mset.mu.RLock()
+		accName, streamName := mset.acc.GetName(), mset.cfg.Name
+		mset.mu.RUnlock()
+		s.Warnf("Detected consumer cluster node skew '%s > %s > %s'", accName, streamName, consumer)
+		node.Delete()
+		o.deleteWithoutAdvisory()
+
+		// When we try to restart we nil out the node and reprocess the consumer assignment.
+		js.mu.Lock()
+		ca.Group.node = nil
+		js.mu.Unlock()
+		js.processConsumerAssignment(ca)
+		return errors.New("cluster node skew detected")
+
+	case !o.isMonitorRunning():
+		return errors.New("monitor goroutine not running")
+
+	case !node.Healthy():
+		return errors.New("group node unhealthy")
+
+	default:
+		return nil
 	}
-	return false
 }
 
 // subjectsOverlap checks all existing stream assignments for the account cross-cluster for subject overlap
@@ -819,7 +825,7 @@ func (js *jetStream) isLeaderless() bool {
 
 	// If we don't have a leader.
 	// Make sure we have been running for enough time.
-	if meta.GroupLeader() == _EMPTY_ && time.Since(meta.Created()) > lostQuorumIntervalDefault {
+	if meta.Leaderless() && time.Since(meta.Created()) > lostQuorumIntervalDefault {
 		return true
 	}
 	return false
@@ -851,7 +857,7 @@ func (js *jetStream) isGroupLeaderless(rg *raftGroup) bool {
 	node := rg.node
 	js.mu.RUnlock()
 	// If we don't have a leader.
-	if node.GroupLeader() == _EMPTY_ {
+	if node.Leaderless() {
 		// Threshold for jetstream startup.
 		const startupThreshold = 10 * time.Second
 
@@ -1067,7 +1073,7 @@ func (js *jetStream) checkForOrphans() {
 
 	// We only want to cleanup any orphans if we know we are current with the meta-leader.
 	meta := cc.meta
-	if meta == nil || meta.GroupLeader() == _EMPTY_ {
+	if meta == nil || meta.Leaderless() {
 		js.mu.Unlock()
 		s.Debugf("JetStream cluster skipping check for orphans, no meta-leader")
 		return
@@ -1366,7 +1372,7 @@ func (js *jetStream) monitorCluster() {
 			// If we have a current leader or had one in the past we can cancel this here since the metaleader
 			// will be in charge of all peer state changes.
 			// For cold boot only.
-			if n.GroupLeader() != _EMPTY_ || n.HadPreviousLeader() {
+			if !n.Leaderless() || n.HadPreviousLeader() {
 				lt.Stop()
 				continue
 			}
@@ -2503,7 +2509,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					ce.ReturnToPool()
 				} else {
 					// Our stream was closed out from underneath of us, simply return here.
-					if err == errStreamClosed {
+					if err == errStreamClosed || err == errCatchupStreamStopped || err == ErrServerNotRunning {
+						aq.recycle(&ces)
 						return
 					}
 					s.Warnf("Error applying entries to '%s > %s': %v", accName, sa.Config.Name, err)
@@ -2549,7 +2556,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				// Always cancel if this was running.
 				stopDirectMonitoring()
 
-			} else if n.GroupLeader() != noLeader {
+			} else if !n.Leaderless() {
 				js.setStreamAssignmentRecovering(sa)
 			}
 
@@ -2913,6 +2920,9 @@ func (mset *stream) resetClusteredState(err error) bool {
 			}
 
 			s.Warnf("Resetting stream cluster state for '%s > %s'", sa.Client.serviceAccount(), sa.Config.Name)
+			// Mark stream assignment as resetting, so we don't double-account reserved resources.
+			// But only if we're not also releasing the resources as part of the delete.
+			sa.resetting = !shouldDelete
 			// Now wipe groups from assignments.
 			sa.Group.node = nil
 			var consumers []*consumerAssignment
@@ -3146,7 +3156,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 			}
 		} else if e.Type == EntrySnapshot {
 			if mset == nil {
-				return nil
+				continue
 			}
 
 			// Everything operates on new replicated state. Will convert legacy snapshots to this for processing.
@@ -3216,7 +3226,6 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					mset.stop(true, false)
 				}
 			}
-			return nil
 		}
 	}
 	return nil
@@ -4046,7 +4055,7 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 	js.mu.RLock()
 	s := js.srv
 	node := sa.Group.node
-	hadLeader := node == nil || node.GroupLeader() != noLeader
+	hadLeader := node == nil || !node.Leaderless()
 	offline := s.allPeersOffline(sa.Group)
 	var isMetaLeader bool
 	if cc := js.cluster; cc != nil {
@@ -5034,7 +5043,6 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 					o.stopWithFlags(true, false, false, false)
 				}
 			}
-			return nil
 		} else if e.Type == EntryAddPeer {
 			// Ignore for now.
 		} else {
@@ -8316,13 +8324,13 @@ RETRY:
 	// the semaphore.
 	releaseSyncOutSem()
 
-	if n.GroupLeader() == _EMPTY_ {
+	if n.Leaderless() {
 		// Prevent us from spinning if we've installed a snapshot from a leader but there's no leader online.
 		// We wait a bit to check if a leader has come online in the meantime, if so we can continue.
 		var canContinue bool
 		if numRetries == 0 {
 			time.Sleep(startInterval)
-			canContinue = n.GroupLeader() != _EMPTY_
+			canContinue = !n.Leaderless()
 		}
 		if !canContinue {
 			return fmt.Errorf("%w for stream '%s > %s'", errCatchupAbortedNoLeader, mset.account(), mset.name())

@@ -9275,6 +9275,47 @@ func TestJetStreamPullConsumerMaxWaiting(t *testing.T) {
 	}
 }
 
+func TestJetStreamChangeConsumerType(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"test.*"}})
+	require_NoError(t, err)
+
+	// create pull consumer
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Name:      "pull",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	// cannot update pull -> push
+	_, err = js.UpdateConsumer("TEST", &nats.ConsumerConfig{
+		Name:           "pull",
+		AckPolicy:      nats.AckExplicitPolicy,
+		DeliverSubject: "foo",
+	})
+	require_Contains(t, err.Error(), "can not update pull consumer to push based")
+
+	// create push consumer
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Name:           "push",
+		AckPolicy:      nats.AckExplicitPolicy,
+		DeliverSubject: "foo",
+	})
+	require_NoError(t, err)
+
+	// cannot change push -> pull
+	_, err = js.UpdateConsumer("TEST", &nats.ConsumerConfig{
+		Name:      "push",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_Contains(t, err.Error(), "can not update push consumer to pull based")
+}
+
 ////////////////////////////////////////
 // Benchmark placeholders
 // TODO(dlc) - move

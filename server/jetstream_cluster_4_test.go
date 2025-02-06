@@ -3583,6 +3583,94 @@ func TestJetStreamConsumerReplicasAfterScale(t *testing.T) {
 	require_Equal(t, len(ci.Cluster.Replicas), 2)
 }
 
+func TestJetStreamClusterDesyncAfterQuitDuringCatchup(t *testing.T) {
+	for title, test := range map[string]func(s *Server, rn RaftNode){
+		"RAFT": func(s *Server, rn RaftNode) {
+			rn.Stop()
+			rn.WaitForStop()
+		},
+		"server": func(s *Server, rn RaftNode) {
+			s.running.Store(false)
+		},
+	} {
+		t.Run(title, func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				Replicas: 3,
+			})
+			require_NoError(t, err)
+
+			// Wait for all servers to have applied everything up to this point.
+			checkFor(t, 5*time.Second, 500*time.Millisecond, func() error {
+				for _, s := range c.servers {
+					acc, err := s.lookupAccount(globalAccountName)
+					if err != nil {
+						return err
+					}
+					mset, err := acc.lookupStream("TEST")
+					if err != nil {
+						return err
+					}
+					_, _, applied := mset.raftNode().Progress()
+					if applied != 1 {
+						return fmt.Errorf("expected applied to be %d, got %d", 1, applied)
+					}
+				}
+				return nil
+			})
+
+			rs := c.randomNonStreamLeader(globalAccountName, "TEST")
+			acc, err := rs.lookupAccount(globalAccountName)
+			require_NoError(t, err)
+			mset, err := acc.lookupStream("TEST")
+			require_NoError(t, err)
+
+			rn := mset.raftNode()
+			snap, err := json.Marshal(streamSnapshot{Msgs: 1, Bytes: 1, FirstSeq: 100, LastSeq: 100, Failed: 0, Deleted: nil})
+			require_NoError(t, err)
+			esm := encodeStreamMsgAllowCompress("foo", _EMPTY_, nil, nil, 0, 0, false)
+
+			// Lock stream so that we can go into processSnapshot but must wait for this to unlock.
+			mset.mu.Lock()
+			var unlocked bool
+			defer func() {
+				if !unlocked {
+					mset.mu.Unlock()
+				}
+			}()
+
+			rn.ApplyQ().push(newCommittedEntry(100, []*Entry{newEntry(EntrySnapshot, snap)}))
+			rn.ApplyQ().push(newCommittedEntry(101, []*Entry{newEntry(EntryNormal, esm)}))
+
+			// Waiting for the apply queue entry to be captured in monitorStream first.
+			time.Sleep(time.Second)
+
+			// Set commit to a very high number, just so that we allow upping Applied()
+			n := rn.(*raft)
+			n.Lock()
+			n.commit = 1000
+			n.Unlock()
+
+			// Now stop the underlying RAFT node/server so processSnapshot must exit because of it.
+			test(rs, rn)
+			mset.mu.Unlock()
+			unlocked = true
+
+			// Allow some time for the applied number to be updated, in which case it's an error.
+			time.Sleep(time.Second)
+			_, _, applied := mset.raftNode().Progress()
+			require_Equal(t, applied, 1)
+		})
+	}
+}
+
 func TestJetStreamClusterDesyncAfterErrorDuringCatchup(t *testing.T) {
 	tests := []struct {
 		title            string
@@ -4189,6 +4277,64 @@ func TestJetStreamClusterPreserveWALDuringCatchupWithMatchingTerm(t *testing.T) 
 			require_NoError(t, err)
 			require_True(t, ae.leader != rn.ID())
 		}
+	}
+}
+
+func TestJetStreamClusterReservedResourcesAccountingAfterClusterReset(t *testing.T) {
+	for _, clusterResetErr := range []error{errLastSeqMismatch, errFirstSequenceMismatch} {
+		t.Run(clusterResetErr.Error(), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			maxBytes := int64(1024 * 1024 * 1024)
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				Replicas: 3,
+				MaxBytes: maxBytes,
+			})
+			require_NoError(t, err)
+
+			sl := c.streamLeader(globalAccountName, "TEST")
+
+			mem, store, err := sl.JetStreamReservedResources()
+			require_NoError(t, err)
+			require_Equal(t, mem, 0)
+			require_Equal(t, store, maxBytes)
+
+			acc, err := sl.lookupAccount(globalAccountName)
+			require_NoError(t, err)
+			mset, err := acc.lookupStream("TEST")
+			require_NoError(t, err)
+
+			sjs := sl.getJetStream()
+			rn := mset.raftNode()
+			sa := mset.streamAssignment()
+			sjs.mu.RLock()
+			saGroupNode := sa.Group.node
+			sjs.mu.RUnlock()
+			require_NotNil(t, sa)
+			require_Equal(t, rn, saGroupNode)
+
+			require_True(t, mset.resetClusteredState(clusterResetErr))
+
+			checkFor(t, 5*time.Second, 500*time.Millisecond, func() error {
+				sjs.mu.RLock()
+				defer sjs.mu.RUnlock()
+				if sa.Group.node == nil || sa.Group.node == saGroupNode {
+					return errors.New("waiting for reset to complete")
+				}
+				return nil
+			})
+
+			mem, store, err = sl.JetStreamReservedResources()
+			require_NoError(t, err)
+			require_Equal(t, mem, 0)
+			require_Equal(t, store, maxBytes)
+		})
 	}
 }
 

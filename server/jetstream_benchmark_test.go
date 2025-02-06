@@ -424,6 +424,8 @@ func BenchmarkJetStreamConsumeWithFilters(b *testing.B) {
 	}{
 		{1, 1, nats.MemoryStorage},
 		{3, 3, nats.MemoryStorage},
+		{1, 1, nats.FileStorage},
+		{3, 3, nats.FileStorage},
 	}
 
 	benchmarksCases := []struct {

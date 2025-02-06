@@ -1122,20 +1122,16 @@ func (s *Server) HandleStacksz(w http.ResponseWriter, r *http.Request) {
 	ResponseHandler(w, r, buf[:n])
 }
 
-type monitorIPQueue struct {
+type IpqueueszStatusIPQ struct {
 	Pending    int `json:"pending"`
 	InProgress int `json:"in_progress,omitempty"`
 }
 
-func (s *Server) HandleIPQueuesz(w http.ResponseWriter, r *http.Request) {
-	all, err := decodeBool(w, r, "all")
-	if err != nil {
-		return
-	}
-	qfilter := r.URL.Query().Get("queues")
+type IpqueueszStatus map[string]IpqueueszStatusIPQ
 
-	queues := map[string]monitorIPQueue{}
-
+func (s *Server) Ipqueuesz(opts *IpqueueszOptions) *IpqueueszStatus {
+	all, qfilter := opts.All, opts.Filter
+	queues := IpqueueszStatus{}
 	s.ipQueues.Range(func(k, v any) bool {
 		var pending, inProgress int
 		name := k.(string)
@@ -1152,8 +1148,22 @@ func (s *Server) HandleIPQueuesz(w http.ResponseWriter, r *http.Request) {
 		} else if qfilter != _EMPTY_ && !strings.Contains(name, qfilter) {
 			return true
 		}
-		queues[name] = monitorIPQueue{Pending: pending, InProgress: inProgress}
+		queues[name] = IpqueueszStatusIPQ{Pending: pending, InProgress: inProgress}
 		return true
+	})
+	return &queues
+}
+
+func (s *Server) HandleIPQueuesz(w http.ResponseWriter, r *http.Request) {
+	all, err := decodeBool(w, r, "all")
+	if err != nil {
+		return
+	}
+	qfilter := r.URL.Query().Get("queues")
+
+	queues := s.Ipqueuesz(&IpqueueszOptions{
+		All:    all,
+		Filter: qfilter,
 	})
 
 	b, _ := json.MarshalIndent(queues, "", "   ")
@@ -2760,6 +2770,18 @@ type ProfilezOptions struct {
 	Duration time.Duration `json:"duration,omitempty"`
 }
 
+// IpqueueszOptions are options passed to Ipqueuesz
+type IpqueueszOptions struct {
+	All    bool   `json:"all"`
+	Filter string `json:"filter"`
+}
+
+// RaftzOptions are options passed to Raftz
+type RaftzOptions struct {
+	AccountFilter string `json:"account"`
+	GroupFilter   string `json:"group"`
+}
+
 // StreamDetail shows information about the stream state and its consumers.
 type StreamDetail struct {
 	Name               string              `json:"name"`
@@ -3676,27 +3698,27 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 
 		for stream, sa := range asa {
 			// Make sure we can look up
-			if !js.isStreamHealthy(acc, sa) {
+			if err := js.isStreamHealthy(acc, sa); err != nil {
 				if !details {
 					health.Status = na
-					health.Error = fmt.Sprintf("JetStream stream '%s > %s' is not current", accName, stream)
+					health.Error = fmt.Sprintf("JetStream stream '%s > %s' is not current: %s", accName, stream, err)
 					return health
 				}
 				health.Errors = append(health.Errors, HealthzError{
 					Type:    HealthzErrorStream,
 					Account: accName,
 					Stream:  stream,
-					Error:   fmt.Sprintf("JetStream stream '%s > %s' is not current", accName, stream),
+					Error:   fmt.Sprintf("JetStream stream '%s > %s' is not current: %s", accName, stream, err),
 				})
 				continue
 			}
 			mset, _ := acc.lookupStream(stream)
 			// Now check consumers.
 			for consumer, ca := range sa.consumers {
-				if !js.isConsumerHealthy(mset, consumer, ca) {
+				if err := js.isConsumerHealthy(mset, consumer, ca); err != nil {
 					if !details {
 						health.Status = na
-						health.Error = fmt.Sprintf("JetStream consumer '%s > %s > %s' is not current", acc, stream, consumer)
+						health.Error = fmt.Sprintf("JetStream consumer '%s > %s > %s' is not current: %s", acc, stream, consumer, err)
 						return health
 					}
 					health.Errors = append(health.Errors, HealthzError{
@@ -3704,7 +3726,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 						Account:  accName,
 						Stream:   stream,
 						Consumer: consumer,
-						Error:    fmt.Sprintf("JetStream consumer '%s > %s > %s' is not current", acc, stream, consumer),
+						Error:    fmt.Sprintf("JetStream consumer '%s > %s > %s' is not current: %s", acc, stream, consumer, err),
 					})
 				}
 			}
@@ -3813,6 +3835,8 @@ type RaftzGroupPeer struct {
 	LastSeen            string `json:"last_seen,omitempty"`
 }
 
+type RaftzStatus map[string]map[string]RaftzGroup
+
 func (s *Server) HandleRaftz(w http.ResponseWriter, r *http.Request) {
 	if s.raftNodes == nil {
 		w.WriteHeader(404)
@@ -3820,20 +3844,34 @@ func (s *Server) HandleRaftz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	gfilter := r.URL.Query().Get("group")
-	afilter := r.URL.Query().Get("acc")
+	groups := s.Raftz(&RaftzOptions{
+		AccountFilter: r.URL.Query().Get("acc"),
+		GroupFilter:   r.URL.Query().Get("group"),
+	})
+
+	if groups == nil {
+		w.WriteHeader(404)
+		w.Write([]byte("No Raft nodes returned, check supplied filters"))
+		return
+	}
+
+	b, _ := json.MarshalIndent(groups, "", "   ")
+	ResponseHandler(w, r, b)
+}
+
+func (s *Server) Raftz(opts *RaftzOptions) *RaftzStatus {
+	afilter, gfilter := opts.AccountFilter, opts.GroupFilter
+
 	if afilter == _EMPTY_ {
 		if sys := s.SystemAccount(); sys != nil {
 			afilter = sys.Name
 		} else {
-			w.WriteHeader(404)
-			w.Write([]byte("System account not found, the server may be shutting down"))
-			return
+			return nil
 		}
 	}
 
 	groups := map[string]RaftNode{}
-	infos := map[string]map[string]RaftzGroup{} // account -> group ID
+	infos := RaftzStatus{} // account -> group ID
 
 	s.rnMu.RLock()
 	if gfilter != _EMPTY_ {
@@ -3859,12 +3897,6 @@ func (s *Server) HandleRaftz(w http.ResponseWriter, r *http.Request) {
 	}
 	s.rnMu.RUnlock()
 
-	if len(groups) == 0 {
-		w.WriteHeader(404)
-		w.Write([]byte("No Raft nodes found, does the specified account/group exist?"))
-		return
-	}
-
 	for name, rg := range groups {
 		n, ok := rg.(*raft)
 		if n == nil || !ok {
@@ -3887,7 +3919,7 @@ func (s *Server) HandleRaftz(w http.ResponseWriter, r *http.Request) {
 			Applied:       n.applied,
 			CatchingUp:    n.catchup != nil,
 			Leader:        n.leader,
-			EverHadLeader: n.pleader,
+			EverHadLeader: n.pleader.Load(),
 			Term:          n.term,
 			Vote:          n.vote,
 			PTerm:         n.pterm,
@@ -3918,6 +3950,5 @@ func (s *Server) HandleRaftz(w http.ResponseWriter, r *http.Request) {
 		infos[n.accName][name] = info
 	}
 
-	b, _ := json.MarshalIndent(infos, "", "   ")
-	ResponseHandler(w, r, b)
+	return &infos
 }

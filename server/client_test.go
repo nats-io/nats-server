@@ -2964,6 +2964,29 @@ func TestRemoveHeaderIfPrefixPresent(t *testing.T) {
 	}
 }
 
+func TestSliceHeader(t *testing.T) {
+	hdr := []byte("NATS/1.0\r\n\r\n")
+
+	hdr = genHeader(hdr, "a", "1")
+	hdr = genHeader(hdr, JSExpectedStream, "my-stream")
+	hdr = genHeader(hdr, JSExpectedLastSeq, "22")
+	hdr = genHeader(hdr, "b", "2")
+	hdr = genHeader(hdr, JSExpectedLastSubjSeq, "24")
+	hdr = genHeader(hdr, JSExpectedLastMsgId, "1")
+	hdr = genHeader(hdr, "c", "3")
+
+	sliced := sliceHeader(JSExpectedLastSubjSeq, hdr)
+	copied := getHeader(JSExpectedLastSubjSeq, hdr)
+
+	require_NotNil(t, sliced)
+	require_Equal(t, cap(sliced), 2)
+
+	require_NotNil(t, copied)
+	require_Equal(t, cap(copied), len(copied))
+
+	require_True(t, bytes.Equal(sliced, copied))
+}
+
 func TestClientFlushOutboundNoSlowConsumer(t *testing.T) {
 	opts := DefaultOptions()
 	opts.MaxPending = 1024 * 1024 * 140 // 140MB
