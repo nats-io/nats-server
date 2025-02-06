@@ -2026,7 +2026,7 @@ func createClientConnWithUserSubscribeAndPublish(t *testing.T, s *Server, user, 
 	} else {
 		natsURL = fmt.Sprintf("nats://%s:%s@127.0.0.1:%d", user, pwd, s.Addr().(*net.TCPAddr).Port)
 	}
-	client := nats.DefaultOptions
+	client := nats.GetDefaultOptions()
 	client.Servers = []string{natsURL}
 	nc, err := client.Connect()
 	if err != nil {
@@ -2055,7 +2055,7 @@ func createClientConnSubscribeAndPublish(t *testing.T, s *Server) *nats.Conn {
 func createClientConnWithName(t *testing.T, name string, s *Server) *nats.Conn {
 	natsURI := fmt.Sprintf("nats://127.0.0.1:%d", s.Addr().(*net.TCPAddr).Port)
 
-	client := nats.DefaultOptions
+	client := nats.GetDefaultOptions()
 	client.Servers = []string{natsURI}
 	client.Name = name
 	nc, err := client.Connect()
