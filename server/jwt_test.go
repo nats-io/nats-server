@@ -4281,7 +4281,7 @@ func TestJWTLimits(t *testing.T) {
 	t.Run("subs", func(t *testing.T) {
 		creds := createUserWithLimit(t, kp, doNotExpire, func(j *jwt.UserPermissionLimits) { j.Subs = 1 })
 		c := natsConnect(t, sA.ClientURL(), nats.UserCredentials(creds),
-			nats.DisconnectErrHandler(func(conn *nats.Conn, err error) {
+			nats.ErrorHandler(func(conn *nats.Conn, s *nats.Subscription, err error) {
 				if e := conn.LastError(); e != nil && strings.Contains(e.Error(), "maximum subscriptions exceeded") {
 					errChan <- struct{}{}
 				}
@@ -4466,7 +4466,7 @@ func TestJWTLimitsTemplate(t *testing.T) {
 	t.Run("fail", func(t *testing.T) {
 		c := natsConnect(t, sA.ClientURL(), nats.UserCredentials(creds),
 			nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
-				if strings.Contains(err.Error(), `nats: Permissions Violation for Publish to "foo.othername"`) {
+				if strings.Contains(err.Error(), `Permissions Violation for Publish to "foo.othername"`) {
 					errChan <- struct{}{}
 				}
 			}))

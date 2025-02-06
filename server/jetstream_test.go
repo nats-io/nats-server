@@ -18697,7 +18697,7 @@ func TestJetStreamDirectGetBySubject(t *testing.T) {
 
 	select {
 	case e := <-errCh:
-		if !strings.HasPrefix(e.Error(), "nats: Permissions Violation") {
+		if !strings.HasPrefix(e.Error(), "nats: permissions violation") {
 			t.Fatalf("Expected a permissions violation but got %v", e)
 		}
 	case <-time.After(time.Second):

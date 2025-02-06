@@ -66,7 +66,7 @@ func TestTLSConnection(t *testing.T) {
 
 	nc.Publish(subj, []byte("We are Secure!"))
 	nc.Flush()
-	nmsgs, _ := sub.QueuedMsgs()
+	nmsgs, _, _ := sub.Pending()
 	if nmsgs != 1 {
 		t.Fatalf("Expected to receive a message over the TLS connection")
 	}
@@ -1100,7 +1100,7 @@ func TestTLSConnectionCurvePref(t *testing.T) {
 
 	nc.Publish(subj, []byte("We are Secure!"))
 	nc.Flush()
-	nmsgs, _ := sub.QueuedMsgs()
+	nmsgs, _, _ := sub.Pending()
 	if nmsgs != 1 {
 		t.Fatalf("Expected to receive a message over the TLS connection")
 	}
