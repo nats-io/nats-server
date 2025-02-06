@@ -3192,6 +3192,6 @@ func TestClientRejectsNRGSubjects(t *testing.T) {
 		require_NoError(t, nc.Publish("$NRG.foo", nil))
 		err = require_ChanRead(t, ech, time.Second)
 		require_Error(t, err)
-		require_True(t, strings.HasPrefix(err.Error(), "nats: Permissions Violation"))
+		require_True(t, strings.HasPrefix(err.Error(), "nats: permissions violation"))
 	})
 }

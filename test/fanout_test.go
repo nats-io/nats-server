@@ -18,6 +18,7 @@ package test
 
 import (
 	"fmt"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -61,11 +62,10 @@ func TestNoRaceHighFanoutOrdering(t *testing.T) {
 			t.Fatalf("Got an error %v for %+v\n", s, err)
 		})
 
-		ec, _ := nats.NewEncodedConn(nc, nats.DEFAULT_ENCODER)
-
 		for y := 0; y < nsubs; y++ {
 			expected := 0
-			ec.Subscribe(subj, func(n int) {
+			nc.Subscribe(subj, func(msg *nats.Msg) {
+				n, _ := strconv.Atoi(string(msg.Data))
 				if n != expected {
 					t.Fatalf("Expected %d but received %d\n", expected, n)
 				}
@@ -75,17 +75,16 @@ func TestNoRaceHighFanoutOrdering(t *testing.T) {
 				}
 			})
 		}
-		ec.Flush()
-		defer ec.Close()
+		nc.Flush()
+		defer nc.Close()
 	}
 
 	nc, _ := nats.Connect(url)
-	ec, _ := nats.NewEncodedConn(nc, nats.DEFAULT_ENCODER)
 
 	for i := 0; i < npubs; i++ {
-		ec.Publish(subj, i)
+		nc.Publish(subj, []byte(strconv.Itoa(i)))
 	}
-	defer ec.Close()
+	defer nc.Close()
 
 	wg.Wait()
 }
