@@ -448,7 +448,7 @@ func TestMemStorePurgeExWithSubject(t *testing.T) {
 	}
 
 	// This should purge all.
-	ms.PurgeEx("foo", 1, 0)
+	ms.PurgeEx("foo", 1, 0, false)
 	require_True(t, ms.State().Msgs == 0)
 }
 
@@ -1042,7 +1042,7 @@ func TestMemStorePurgeExWithDeletedMsgs(t *testing.T) {
 	ms.RemoveMsg(2)
 	ms.RemoveMsg(9) // This was the bug
 
-	n, err := ms.PurgeEx(_EMPTY_, 9, 0)
+	n, err := ms.PurgeEx(_EMPTY_, 9, 0, true)
 	require_NoError(t, err)
 	require_Equal(t, n, 7)
 
@@ -1274,7 +1274,7 @@ func TestMemStoreSubjectDeleteMarkersOnPurgeEx(t *testing.T) {
 		require_NoError(t, err)
 	}
 
-	_, err = ms.PurgeEx("test.*", 1, 0)
+	_, err = ms.PurgeEx("test.*", 1, 0, false)
 	require_NoError(t, err)
 
 	for i := uint64(0); i < 10; i++ {
@@ -1283,6 +1283,31 @@ func TestMemStoreSubjectDeleteMarkersOnPurgeEx(t *testing.T) {
 		require_Equal(t, sm.subj, fmt.Sprintf("test.%d", i))
 		require_Equal(t, bytesToString(getHeader(JSMarkerReason, sm.hdr)), JSMarkerReasonPurge)
 		require_Equal(t, bytesToString(getHeader(JSMessageTTL, sm.hdr)), "1s")
+	}
+}
+
+func TestMemStoreSubjectDeleteMarkersOnPurgeExNoMarkers(t *testing.T) {
+	ms, err := newMemStore(
+		&StreamConfig{
+			Name: "zzz", Subjects: []string{"test.*"}, Storage: MemoryStorage,
+			MaxAge: time.Second, AllowMsgTTL: true,
+			SubjectDeleteMarkerTTL: time.Second,
+		},
+	)
+	require_NoError(t, err)
+	defer ms.Stop()
+
+	for i := 0; i < 10; i++ {
+		_, _, err := ms.StoreMsg(fmt.Sprintf("test.%d", i), nil, nil, 0)
+		require_NoError(t, err)
+	}
+
+	_, err = ms.PurgeEx("test.*", 1, 0, true)
+	require_NoError(t, err)
+
+	for i := uint64(0); i < 10; i++ {
+		_, err := ms.LoadMsg(11+i, nil)
+		require_Error(t, err)
 	}
 }
 

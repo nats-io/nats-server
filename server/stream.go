@@ -2212,7 +2212,7 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 	mset.mu.RUnlock()
 
 	if preq != nil {
-		purged, err = mset.store.PurgeEx(preq.Subject, preq.Sequence, preq.Keep)
+		purged, err = mset.store.PurgeEx(preq.Subject, preq.Sequence, preq.Keep, preq.NoMarkers)
 	} else {
 		purged, err = mset.store.Purge()
 	}
@@ -2944,7 +2944,7 @@ func (mset *stream) setupMirrorConsumer() error {
 					// Check to see if delivered is past our last and we have no msgs. This will help the
 					// case when mirroring a stream that has a very high starting sequence number.
 					if state.Msgs == 0 && ccr.ConsumerInfo.Delivered.Stream > state.LastSeq {
-						mset.store.PurgeEx(_EMPTY_, ccr.ConsumerInfo.Delivered.Stream+1, 0)
+						mset.store.PurgeEx(_EMPTY_, ccr.ConsumerInfo.Delivered.Stream+1, 0, true)
 						mset.lseq = ccr.ConsumerInfo.Delivered.Stream
 					} else {
 						mset.skipMsgs(state.LastSeq+1, ccr.ConsumerInfo.Delivered.Stream)

@@ -64,7 +64,7 @@ func newMemStore(cfg *StreamConfig) (*memStore, error) {
 		ms.ttls = thw.NewHashWheel()
 	}
 	if cfg.FirstSeq > 0 {
-		if _, err := ms.purge(cfg.FirstSeq); err != nil {
+		if _, err := ms.purge(cfg.FirstSeq, true); err != nil {
 			return nil, err
 		}
 	}
@@ -1088,13 +1088,13 @@ func (ms *memStore) expireMsgs() {
 
 // PurgeEx will remove messages based on subject filters, sequence and number of messages to keep.
 // Will return the number of purged messages.
-func (ms *memStore) PurgeEx(subject string, sequence, keep uint64) (purged uint64, err error) {
+func (ms *memStore) PurgeEx(subject string, sequence, keep uint64, noMarkers bool) (purged uint64, err error) {
 	if subject == _EMPTY_ || subject == fwcs {
 		if keep == 0 && sequence == 0 {
-			return ms.Purge()
+			return ms.purge(0, noMarkers)
 		}
 		if sequence > 1 {
-			return ms.Compact(sequence)
+			return ms.compact(sequence, noMarkers)
 		} else if keep > 0 {
 			ms.mu.RLock()
 			msgs, lseq := ms.state.Msgs, ms.state.LastSeq
@@ -1102,7 +1102,7 @@ func (ms *memStore) PurgeEx(subject string, sequence, keep uint64) (purged uint6
 			if keep >= msgs {
 				return 0, nil
 			}
-			return ms.Compact(lseq - keep + 1)
+			return ms.compact(lseq-keep+1, noMarkers)
 		}
 		return 0, nil
 
@@ -1120,9 +1120,13 @@ func (ms *memStore) PurgeEx(subject string, sequence, keep uint64) (purged uint6
 			last = sequence - 1
 		}
 		ms.mu.Lock()
+		var removeReason string
+		if !noMarkers {
+			removeReason = JSMarkerReasonPurge
+		}
 		for seq := ss.First; seq <= last; seq++ {
 			if sm, ok := ms.msgs[seq]; ok && eq(sm.subj, subject) {
-				if ok := ms.removeMsg(sm.seq, false, JSMarkerReasonPurge); ok {
+				if ok := ms.removeMsg(sm.seq, false, removeReason); ok {
 					purged++
 					if purged >= ss.Msgs {
 						break
@@ -1141,10 +1145,10 @@ func (ms *memStore) Purge() (uint64, error) {
 	ms.mu.RLock()
 	first := ms.state.LastSeq + 1
 	ms.mu.RUnlock()
-	return ms.purge(first)
+	return ms.purge(first, false)
 }
 
-func (ms *memStore) purge(fseq uint64) (uint64, error) {
+func (ms *memStore) purge(fseq uint64, noMarkers bool) (uint64, error) {
 	ms.mu.Lock()
 	purged := uint64(len(ms.msgs))
 	cb := ms.scb
@@ -1160,7 +1164,7 @@ func (ms *memStore) purge(fseq uint64) (uint64, error) {
 	ms.state.Msgs = 0
 	ms.msgs = make(map[uint64]*StoreMsg)
 	// Subject delete markers if needed.
-	if ms.cfg.SubjectDeleteMarkerTTL > 0 {
+	if !noMarkers && ms.cfg.SubjectDeleteMarkerTTL > 0 {
 		ms.fss.IterOrdered(func(bsubj []byte, ss *SimpleState) bool {
 			ms.markers = append(ms.markers, string(bsubj))
 			return true
@@ -1184,6 +1188,10 @@ func (ms *memStore) purge(fseq uint64) (uint64, error) {
 // but not including the seq parameter.
 // Will return the number of purged messages.
 func (ms *memStore) Compact(seq uint64) (uint64, error) {
+	return ms.compact(seq, false)
+}
+
+func (ms *memStore) compact(seq uint64, noMarkers bool) (uint64, error) {
 	if seq == 0 {
 		return ms.Purge()
 	}
@@ -1206,7 +1214,7 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 			if sm := ms.msgs[seq]; sm != nil {
 				bytes += memStoreMsgSize(sm.subj, sm.hdr, sm.msg)
 				purged++
-				ms.removeSeqPerSubject(sm.subj, seq, ms.cfg.SubjectDeleteMarkerTTL > 0)
+				ms.removeSeqPerSubject(sm.subj, seq, !noMarkers && ms.cfg.SubjectDeleteMarkerTTL > 0)
 				// Must delete message after updating per-subject info, to be consistent with file store.
 				delete(ms.msgs, seq)
 			}
@@ -1230,7 +1238,7 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 		ms.state.FirstTime = time.Time{}
 		ms.state.LastSeq = seq - 1
 		// Subject delete markers if needed.
-		if ms.cfg.SubjectDeleteMarkerTTL > 0 {
+		if !noMarkers && ms.cfg.SubjectDeleteMarkerTTL > 0 {
 			ms.fss.IterOrdered(func(bsubj []byte, ss *SimpleState) bool {
 				ms.markers = append(ms.markers, string(bsubj))
 				return true

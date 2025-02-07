@@ -503,6 +503,9 @@ type JSApiStreamPurgeRequest struct {
 	Subject string `json:"filter,omitempty"`
 	// Number of messages to keep.
 	Keep uint64 `json:"keep,omitempty"`
+	// NoMarkers ensures that subject delete markers will not be left. If subject delete markers
+	// are not enabled on the stream, then this flag is no-op.
+	NoMarkers bool `json:"no_markers,omitempty"`
 }
 
 type JSApiStreamPurgeResponse struct {
