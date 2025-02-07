@@ -2812,17 +2812,20 @@ func (o *consumer) processAckMsg(sseq, dseq, dc uint64, reply string, doSample b
 	if sseq >= o.sseq {
 		// Let's make sure this is valid.
 		// This is only received on the consumer leader, so should never be higher
-		// than the last stream sequence.
+		// than the last stream sequence. But could happen if we've just become
+		// consumer leader, and we are not up-to-date on the stream yet.
 		var ss StreamState
 		mset.store.FastState(&ss)
 		if sseq > ss.LastSeq {
 			o.srv.Warnf("JetStream consumer '%s > %s > %s' ACK sequence %d past last stream sequence of %d",
 				o.acc.Name, o.stream, o.name, sseq, ss.LastSeq)
 			// FIXME(dlc) - For 2.11 onwards should we return an error here to the caller?
-			o.mu.Unlock()
-			return false
 		}
-		o.sseq = sseq + 1
+		// Even though another leader must have delivered a message with this sequence, we must not adjust
+		// the current pointer. This could otherwise result in a stuck consumer, where messages below this
+		// sequence can't be redelivered, and we'll have incorrect pending state and ack floors.
+		o.mu.Unlock()
+		return false
 	}
 
 	// Let the owning stream know if we are interest or workqueue retention based.
