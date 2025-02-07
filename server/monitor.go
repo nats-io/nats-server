@@ -784,7 +784,7 @@ type RouteInfo struct {
 	Idle         string             `json:"idle"`
 	Import       *SubjectPermission `json:"import,omitempty"`
 	Export       *SubjectPermission `json:"export,omitempty"`
-	Pending      int                `json:"pending_size"`
+	Pending      int64              `json:"pending_size"`
 	InMsgs       int64              `json:"in_msgs"`
 	OutMsgs      int64              `json:"out_msgs"`
 	InBytes      int64              `json:"in_bytes"`
@@ -832,6 +832,7 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 			OutBytes:     r.outBytes,
 			NumSubs:      uint32(len(r.subs)),
 			Import:       r.opts.Import,
+			Pending:      r.out.pb,
 			Export:       r.opts.Export,
 			RTT:          r.getRTT().String(),
 			Start:        r.start,
