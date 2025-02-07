@@ -80,6 +80,7 @@ type RaftNode interface {
 	WaitForStop()
 	Delete()
 	RecreateInternalSubs() error
+	IsSystemAccount() bool
 }
 
 type WAL interface {
@@ -184,7 +185,9 @@ type raft struct {
 	dflag     bool        // Debug flag
 	hasleader atomic.Bool // Is there a group leader right now?
 	pleader   atomic.Bool // Has the group ever had a leader?
-	observer  bool        // The node is observing, i.e. not participating in voting
+	isSysAcc  atomic.Bool // Are we utilizing the system account?
+
+	observer bool // The node is observing, i.e. not participating in voting
 
 	extSt extensionState // Extension state
 
@@ -562,6 +565,11 @@ func (n *raft) checkAccountNRGStatus() bool {
 	return enabled
 }
 
+// Whether we are using the system account or not.
+func (n *raft) IsSystemAccount() bool {
+	return n.isSysAcc.Load()
+}
+
 func (n *raft) RecreateInternalSubs() error {
 	n.Lock()
 	defer n.Unlock()
@@ -583,6 +591,7 @@ func (n *raft) recreateInternalSubsLocked() error {
 
 	// Default is the system account.
 	nrgAcc := sys.account
+	n.isSysAcc.Store(true)
 
 	// Is account NRG enabled in this account and do all group
 	// peers claim to also support account NRG?
@@ -602,6 +611,9 @@ func (n *raft) recreateInternalSubsLocked() error {
 		if target != _EMPTY_ {
 			if a, _ := n.s.lookupAccount(target); a != nil {
 				nrgAcc = a
+				if a != sys.account {
+					n.isSysAcc.Store(false)
+				}
 			}
 		}
 	}

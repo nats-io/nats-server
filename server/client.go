@@ -3552,7 +3552,8 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 
 	// We do not update the outbound stats if we are doing trace only since
 	// this message will not be sent out.
-	if !traceOnly {
+	// Also do not update on internal callbacks.
+	if !traceOnly && sub.icb == nil {
 		// No atomic needed since accessed under client lock.
 		// Monitor is reading those also under client's lock.
 		client.outMsgs++
