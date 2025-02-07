@@ -1640,8 +1640,10 @@ func (c *client) flushOutbound() bool {
 		}
 		consumed := len(wnb)
 
-		// Actual write to the socket.
-		nc.SetWriteDeadline(start.Add(wdl))
+		// Actual write to the socket. The deadline applies to each batch
+		// rather than the total write, such that the configured deadline
+		// can be tuned to a known maximum quantity (64MB).
+		nc.SetWriteDeadline(time.Now().Add(wdl))
 		wn, err = wnb.WriteTo(nc)
 		nc.SetWriteDeadline(time.Time{})
 
