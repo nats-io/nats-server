@@ -2292,7 +2292,7 @@ type AccountStatz struct {
 	Accounts []*AccountStat `json:"account_statz"`
 }
 
-// LeafzOptions are options passed to Leafz
+// AccountStatzOptions are options passed to account stats requests.
 type AccountStatzOptions struct {
 	Accounts      []string `json:"accounts"`
 	IncludeUnused bool     `json:"include_unused"`

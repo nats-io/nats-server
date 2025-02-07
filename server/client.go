@@ -3453,10 +3453,15 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 		msgSize -= int64(LEN_CR_LF)
 	}
 
-	// No atomic needed since accessed under client lock.
-	// Monitor is reading those also under client's lock.
-	client.outMsgs++
-	client.outBytes += msgSize
+	// We do not update the outbound stats if we are doing trace only since
+	// this message will not be sent out.
+	// Also do not update on internal callbacks.
+	if sub.icb == nil {
+		// No atomic needed since accessed under client lock.
+		// Monitor is reading those also under client's lock.
+		client.outMsgs++
+		client.outBytes += msgSize
+	}
 
 	// Check for internal subscriptions.
 	if sub.icb != nil && !c.noIcb {
