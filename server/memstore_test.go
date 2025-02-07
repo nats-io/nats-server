@@ -1287,6 +1287,31 @@ func TestMemStoreSubjectDeleteMarkersOnPurgeEx(t *testing.T) {
 	}
 }
 
+func TestMemStoreSubjectDeleteMarkersOnPurgeExNoMarkers(t *testing.T) {
+	ms, err := newMemStore(
+		&StreamConfig{
+			Name: "zzz", Subjects: []string{"test.*"}, Storage: MemoryStorage,
+			MaxAge: time.Second, AllowMsgTTL: true,
+			SubjectDeleteMarkerTTL: time.Second,
+		},
+	)
+	require_NoError(t, err)
+	defer ms.Stop()
+
+	for i := 0; i < 10; i++ {
+		_, _, err := ms.StoreMsg(fmt.Sprintf("test.%d", i), nil, nil, 0)
+		require_NoError(t, err)
+	}
+
+	_, err = ms.PurgeEx("test.*", 1, 0, true)
+	require_NoError(t, err)
+
+	for i := uint64(0); i < 10; i++ {
+		_, err := ms.LoadMsg(11+i, nil)
+		require_Error(t, err)
+	}
+}
+
 func TestMemStoreSubjectDeleteMarkersOnCompact(t *testing.T) {
 	ms, err := newMemStore(
 		&StreamConfig{

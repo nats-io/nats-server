@@ -25396,3 +25396,113 @@ func TestJetStreamSubjectDeleteMarkersWithMirror(t *testing.T) {
 	})
 	require_Error(t, err)
 }
+
+func TestJetStreamSubjectDeleteMarkersAfterPurge(t *testing.T) {
+	for _, storage := range []StorageType{FileStorage, MemoryStorage} {
+		t.Run(storage.String(), func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			jsStreamCreate(t, nc, &StreamConfig{
+				Name:                   "TEST",
+				Storage:                storage,
+				Subjects:               []string{"test.>"},
+				MaxAge:                 time.Second,
+				AllowMsgTTL:            true,
+				SubjectDeleteMarkerTTL: time.Second,
+			})
+
+			sub, err := js.SubscribeSync("test.>")
+			require_NoError(t, err)
+
+			for i := 0; i < 5; i++ {
+				_, err = js.Publish(fmt.Sprintf("test.%d", i), nil)
+				require_NoError(t, err)
+			}
+
+			for i := 0; i < 5; i++ {
+				_, err := sub.NextMsg(time.Second)
+				require_NoError(t, err)
+			}
+
+			body, err := json.Marshal(JSApiStreamPurgeRequest{
+				Sequence:  6,
+				NoMarkers: false,
+			})
+			require_NoError(t, err)
+
+			resp, err := nc.Request(fmt.Sprintf(JSApiStreamPurgeT, "TEST"), body, time.Second)
+			require_NoError(t, err)
+
+			var apiresp JSApiStreamPurgeResponse
+			require_NoError(t, json.Unmarshal(resp.Data, &apiresp))
+			require_True(t, apiresp.Success)
+
+			si, err := js.StreamInfo("TEST")
+			require_NoError(t, err)
+			require_Equal(t, si.State.FirstSeq, 6)
+			require_Equal(t, si.State.Msgs, 5)
+
+			for i := 0; i < 5; i++ {
+				msg, err := sub.NextMsg(time.Second)
+				require_NoError(t, err)
+				require_Equal(t, msg.Header.Get(JSMarkerReason), JSMarkerReasonPurge)
+			}
+		})
+	}
+}
+
+func TestJetStreamSubjectDeleteMarkersAfterPurgeNoMarkers(t *testing.T) {
+	for _, storage := range []StorageType{FileStorage, MemoryStorage} {
+		t.Run(storage.String(), func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			jsStreamCreate(t, nc, &StreamConfig{
+				Name:                   "TEST",
+				Storage:                storage,
+				Subjects:               []string{"test.>"},
+				MaxAge:                 time.Second,
+				AllowMsgTTL:            true,
+				SubjectDeleteMarkerTTL: time.Second,
+			})
+
+			sub, err := js.SubscribeSync("test.>")
+			require_NoError(t, err)
+
+			for i := 0; i < 5; i++ {
+				_, err = js.Publish(fmt.Sprintf("test.%d", i), nil)
+				require_NoError(t, err)
+			}
+
+			for i := 0; i < 5; i++ {
+				_, err := sub.NextMsg(time.Second)
+				require_NoError(t, err)
+			}
+
+			body, err := json.Marshal(JSApiStreamPurgeRequest{
+				Sequence:  6,
+				NoMarkers: true,
+			})
+			require_NoError(t, err)
+
+			resp, err := nc.Request(fmt.Sprintf(JSApiStreamPurgeT, "TEST"), body, time.Second)
+			require_NoError(t, err)
+
+			var apiresp JSApiStreamPurgeResponse
+			require_NoError(t, json.Unmarshal(resp.Data, &apiresp))
+			require_True(t, apiresp.Success)
+
+			si, err := js.StreamInfo("TEST")
+			require_NoError(t, err)
+			require_Equal(t, si.State.FirstSeq, 6)
+			require_Equal(t, si.State.Msgs, 0)
+		})
+	}
+}

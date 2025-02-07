@@ -8715,6 +8715,33 @@ func TestFileStoreSubjectDeleteMarkersOnPurgeEx(t *testing.T) {
 	}
 }
 
+func TestFileStoreSubjectDeleteMarkersOnPurgeExNoMarkers(t *testing.T) {
+	storeDir := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{
+			Name: "zzz", Subjects: []string{"test.*"}, Storage: FileStorage,
+			MaxAge: time.Second, AllowMsgTTL: true,
+			SubjectDeleteMarkerTTL: time.Second,
+		},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	for i := 0; i < 10; i++ {
+		_, _, err := fs.StoreMsg(fmt.Sprintf("test.%d", i), nil, nil, 0)
+		require_NoError(t, err)
+	}
+
+	_, err = fs.PurgeEx("test.*", 1, 0, true)
+	require_NoError(t, err)
+
+	for i := uint64(0); i < 10; i++ {
+		_, err := fs.LoadMsg(11+i, nil)
+		require_Error(t, err)
+	}
+}
+
 func TestFileStoreSubjectDeleteMarkersOnCompact(t *testing.T) {
 	storeDir := t.TempDir()
 	fs, err := newFileStore(
