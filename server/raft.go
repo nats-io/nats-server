@@ -89,7 +89,7 @@ type WAL interface {
 	RemoveMsg(index uint64) (bool, error)
 	Compact(index uint64) (uint64, error)
 	Purge() (uint64, error)
-	PurgeEx(subject string, seq, keep uint64) (uint64, error)
+	PurgeEx(subject string, seq, keep uint64, noMarkers bool) (uint64, error)
 	Truncate(seq uint64) error
 	State() StreamState
 	FastState(*StreamState)
@@ -3253,7 +3253,7 @@ func (n *raft) truncateWAL(term, index uint64) {
 			n.wal.Truncate(0)
 			// If our index is non-zero use PurgeEx to set us to the correct next index.
 			if index > 0 {
-				n.wal.PurgeEx(fwcs, index+1, 0)
+				n.wal.PurgeEx(fwcs, index+1, 0, true)
 			}
 		} else {
 			n.warn("Error truncating WAL: %v", err)

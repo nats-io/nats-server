@@ -3302,7 +3302,7 @@ func TestFileStorePurgeExKeepOneBug(t *testing.T) {
 			t.Fatalf("Expected to find 2 `A` msgs, got %d", fss.Msgs)
 		}
 
-		n, err := fs.PurgeEx("A", 0, 1)
+		n, err := fs.PurgeEx("A", 0, 1, false)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -3671,7 +3671,7 @@ func TestFileStorePurgeExWithSubject(t *testing.T) {
 		require_NoError(t, err)
 
 		// This should purge all "foo.1"
-		p, err := fs.PurgeEx("foo.1", 1, 0)
+		p, err := fs.PurgeEx("foo.1", 1, 0, false)
 		require_NoError(t, err)
 		require_Equal(t, p, uint64(total))
 
@@ -5048,12 +5048,12 @@ func TestFileStoreKeepWithDeletedMsgsBug(t *testing.T) {
 		fs.StoreMsg("B", nil, msg, 0)
 	}
 
-	n, err := fs.PurgeEx("A", 0, 0)
+	n, err := fs.PurgeEx("A", 0, 0, false)
 	require_NoError(t, err)
 	require_True(t, n == 5)
 
 	// Purge with keep.
-	n, err = fs.PurgeEx(_EMPTY_, 0, 2)
+	n, err = fs.PurgeEx(_EMPTY_, 0, 2, false)
 	require_NoError(t, err)
 	require_True(t, n == 3)
 }
@@ -5445,7 +5445,7 @@ func TestFileStoreFullStatePurge(t *testing.T) {
 			fs.StoreMsg("C", nil, msg, 0)
 		}
 
-		n, err = fs.PurgeEx("B", 0, 0)
+		n, err = fs.PurgeEx("B", 0, 0, false)
 		require_NoError(t, err)
 		require_Equal(t, n, 5)
 
@@ -5462,7 +5462,7 @@ func TestFileStoreFullStatePurge(t *testing.T) {
 		}
 
 		// Purge with keep.
-		n, err = fs.PurgeEx(_EMPTY_, 0, 2)
+		n, err = fs.PurgeEx(_EMPTY_, 0, 2, false)
 		require_NoError(t, err)
 		require_Equal(t, n, 3)
 
@@ -6370,7 +6370,7 @@ func TestFileStorePurgeExBufPool(t *testing.T) {
 		fs.StoreMsg("foo.bar", nil, msg, 0)
 	}
 
-	p, err := fs.PurgeEx("foo.bar", 1, 0)
+	p, err := fs.PurgeEx("foo.bar", 1, 0, false)
 	require_NoError(t, err)
 	require_Equal(t, p, 1000)
 
@@ -6409,7 +6409,7 @@ func TestFileStoreFSSMeta(t *testing.T) {
 	// Let cache's expire before PurgeEx which will load them back in.
 	time.Sleep(250 * time.Millisecond)
 
-	p, err := fs.PurgeEx("A", 1, 0)
+	p, err := fs.PurgeEx("A", 1, 0, false)
 	require_NoError(t, err)
 	require_Equal(t, p, 2)
 
@@ -6827,7 +6827,7 @@ func TestFileStoreWriteFullStateAfterPurgeEx(t *testing.T) {
 	fs.RemoveMsg(9)
 	fs.RemoveMsg(10)
 
-	n, err := fs.PurgeEx(">", 8, 0)
+	n, err := fs.PurgeEx(">", 8, 0, false)
 	require_NoError(t, err)
 	require_Equal(t, n, 7)
 
@@ -7767,7 +7767,7 @@ func TestFileStoreRestoreDeleteTombstonesExceedingMaxBlkSize(t *testing.T) {
 		require_NoError(t, err)
 		defer fs.Stop()
 
-		n, err := fs.PurgeEx(_EMPTY_, 1_000_000_000, 0)
+		n, err := fs.PurgeEx(_EMPTY_, 1_000_000_000, 0, false)
 		require_NoError(t, err)
 		require_Equal(t, n, 0)
 
@@ -8703,7 +8703,7 @@ func TestFileStoreSubjectDeleteMarkersOnPurgeEx(t *testing.T) {
 		require_NoError(t, err)
 	}
 
-	_, err = fs.PurgeEx("test.*", 1, 0)
+	_, err = fs.PurgeEx("test.*", 1, 0, false)
 	require_NoError(t, err)
 
 	for i := uint64(0); i < 10; i++ {

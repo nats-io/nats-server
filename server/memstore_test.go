@@ -449,7 +449,7 @@ func TestMemStorePurgeExWithSubject(t *testing.T) {
 	}
 
 	// This should purge all.
-	ms.PurgeEx("foo", 1, 0)
+	ms.PurgeEx("foo", 1, 0, false)
 	require_True(t, ms.State().Msgs == 0)
 }
 
@@ -1043,7 +1043,7 @@ func TestMemStorePurgeExWithDeletedMsgs(t *testing.T) {
 	ms.RemoveMsg(2)
 	ms.RemoveMsg(9) // This was the bug
 
-	n, err := ms.PurgeEx(_EMPTY_, 9, 0)
+	n, err := ms.PurgeEx(_EMPTY_, 9, 0, true)
 	require_NoError(t, err)
 	require_Equal(t, n, 7)
 
@@ -1275,7 +1275,7 @@ func TestMemStoreSubjectDeleteMarkersOnPurgeEx(t *testing.T) {
 		require_NoError(t, err)
 	}
 
-	_, err = ms.PurgeEx("test.*", 1, 0)
+	_, err = ms.PurgeEx("test.*", 1, 0, false)
 	require_NoError(t, err)
 
 	for i := uint64(0); i < 10; i++ {

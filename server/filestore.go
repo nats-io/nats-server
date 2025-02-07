@@ -540,7 +540,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	// sequence. Need to do this locked as by now the age check timer
 	// has started.
 	if cfg.FirstSeq > 0 && firstSeq <= cfg.FirstSeq {
-		if _, err := fs.purge(cfg.FirstSeq); err != nil {
+		if _, err := fs.purge(cfg.FirstSeq, true); err != nil {
 			return nil, err
 		}
 	}
@@ -7671,13 +7671,13 @@ func compareFn(subject string) func(string, string) bool {
 
 // PurgeEx will remove messages based on subject filters, sequence and number of messages to keep.
 // Will return the number of purged messages.
-func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint64, err error) {
+func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64, noMarkers bool) (purged uint64, err error) {
 	if subject == _EMPTY_ || subject == fwcs {
 		if keep == 0 && sequence == 0 {
-			return fs.Purge()
+			return fs.purge(0, noMarkers)
 		}
 		if sequence > 1 {
-			return fs.Compact(sequence)
+			return fs.compact(sequence, noMarkers)
 		}
 	}
 
@@ -7752,7 +7752,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 				}
 				// PSIM and FSS updates.
 				mb.removeSeqPerSubject(sm.subj, seq)
-				fs.removePerSubject(sm.subj, fs.cfg.SubjectDeleteMarkerTTL > 0)
+				fs.removePerSubject(sm.subj, !noMarkers && fs.cfg.SubjectDeleteMarkerTTL > 0)
 				// Track tombstones we need to write.
 				tombs = append(tombs, msgId{sm.seq, sm.ts})
 
@@ -7821,10 +7821,10 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 // Purge will remove all messages from this store.
 // Will return the number of purged messages.
 func (fs *fileStore) Purge() (uint64, error) {
-	return fs.purge(0)
+	return fs.purge(0, false)
 }
 
-func (fs *fileStore) purge(fseq uint64) (uint64, error) {
+func (fs *fileStore) purge(fseq uint64, noMarkers bool) (uint64, error) {
 	fs.mu.Lock()
 	if fs.closed {
 		fs.mu.Unlock()
@@ -7848,7 +7848,7 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 	fs.lmb = nil
 	fs.bim = make(map[uint32]*msgBlock)
 	// Subject delete markers if needed.
-	if fs.cfg.SubjectDeleteMarkerTTL > 0 {
+	if !noMarkers && fs.cfg.SubjectDeleteMarkerTTL > 0 {
 		fs.psim.IterOrdered(func(subject []byte, _ *psi) bool {
 			fs.markers = append(fs.markers, string(subject))
 			return true
@@ -7930,10 +7930,16 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 
 // Compact will remove all messages from this store up to
 // but not including the seq parameter.
+// No subject delete markers will be left if they are enabled. If they are disabled,
+// then this is functionally equivalent to a normal Compact() call.
 // Will return the number of purged messages.
 func (fs *fileStore) Compact(seq uint64) (uint64, error) {
+	return fs.compact(seq, false)
+}
+
+func (fs *fileStore) compact(seq uint64, noMarkers bool) (uint64, error) {
 	if seq == 0 {
-		return fs.purge(seq)
+		return fs.purge(seq, noMarkers)
 	}
 
 	var purged, bytes uint64
@@ -7942,7 +7948,7 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 	// Same as purge all.
 	if lseq := fs.state.LastSeq; seq > lseq {
 		fs.mu.Unlock()
-		return fs.purge(seq)
+		return fs.purge(seq, noMarkers)
 	}
 	// We have to delete interior messages.
 	smb := fs.selectMsgBlock(seq)
@@ -7965,7 +7971,7 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 		mb.fss.IterOrdered(func(bsubj []byte, ss *SimpleState) bool {
 			subj := bytesToString(bsubj)
 			for i := uint64(0); i < ss.Msgs; i++ {
-				fs.removePerSubject(subj, fs.cfg.SubjectDeleteMarkerTTL > 0)
+				fs.removePerSubject(subj, !noMarkers && fs.cfg.SubjectDeleteMarkerTTL > 0)
 			}
 			return true
 		})
@@ -8011,7 +8017,7 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 			}
 			// Update fss
 			smb.removeSeqPerSubject(sm.subj, mseq)
-			fs.removePerSubject(sm.subj, fs.cfg.SubjectDeleteMarkerTTL > 0)
+			fs.removePerSubject(sm.subj, !noMarkers && fs.cfg.SubjectDeleteMarkerTTL > 0)
 		}
 	}
 
