@@ -1199,7 +1199,7 @@ func (s *Server) checkForNRGOrphans() {
 
 func (js *jetStream) monitorCluster() {
 	s, n := js.server(), js.getMetaGroup()
-	qch, rqch, lch, aq, afch := js.clusterQuitC(), n.QuitC(), n.LeadChangeC(), n.ApplyQ(), n.AppliedFloorC()
+	qch, rqch, lch, aq := js.clusterQuitC(), n.QuitC(), n.LeadChangeC(), n.ApplyQ()
 
 	defer s.grWG.Done()
 
@@ -1347,9 +1347,6 @@ func (js *jetStream) monitorCluster() {
 				}
 			}
 			aq.recycle(&ces)
-
-		case <-afch:
-			// ignore
 
 		case isLeader = <-lch:
 			// Process the change.
@@ -2323,7 +2320,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		}
 	}()
 
-	qch, mqch, lch, aq, uch, afch, ourPeerId := n.QuitC(), mset.monitorQuitC(), n.LeadChangeC(), n.ApplyQ(), mset.updateC(), n.AppliedFloorC(), meta.ID()
+	qch, mqch, lch, aq, uch, ourPeerId := n.QuitC(), mset.monitorQuitC(), n.LeadChangeC(), n.ApplyQ(), mset.updateC(), meta.ID()
 
 	s.Debugf("Starting stream monitor for '%s > %s' [%s]", sa.Client.serviceAccount(), sa.Config.Name, n.Group())
 	defer s.Debugf("Exiting stream monitor for '%s > %s' [%s]", sa.Client.serviceAccount(), sa.Config.Name, n.Group())
@@ -2539,16 +2536,6 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			// If we have at least min entries to compact, go ahead and try to snapshot/compact.
 			if ne >= compactNumMin || nb > compactSizeMin || mset.getCLFS() > pclfs {
 				doSnapshot()
-			}
-
-		case <-afch:
-			// Once leader is initially up-to-date, mark ready to process 'expected per subject' messages.
-			// This ensures consistency, since we could otherwise let multiple updates per subject through if one update
-			// was part of our log, and another got added shortly after leader change.
-			if mset != nil {
-				mset.clMu.Lock()
-				mset.expectedPerSubjectReady = true
-				mset.clMu.Unlock()
 			}
 
 		case isLeader = <-lch:
@@ -3290,7 +3277,6 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 	// Clear inflight if we have it.
 	mset.inflight = nil
 	// Clear expected per subject state.
-	mset.expectedPerSubjectReady = false
 	mset.expectedPerSubjectSequence = nil
 	mset.expectedPerSubjectInProcess = nil
 	mset.clMu.Unlock()
@@ -4806,7 +4792,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	// from underneath the one that is running since it will be the same raft node.
 	defer n.Stop()
 
-	qch, lch, aq, uch, afch, ourPeerId := n.QuitC(), n.LeadChangeC(), n.ApplyQ(), o.updateC(), n.AppliedFloorC(), cc.meta.ID()
+	qch, lch, aq, uch, ourPeerId := n.QuitC(), n.LeadChangeC(), n.ApplyQ(), o.updateC(), cc.meta.ID()
 
 	s.Debugf("Starting consumer monitor for '%s > %s > %s' [%s]", o.acc.Name, ca.Stream, ca.Name, n.Group())
 	defer s.Debugf("Exiting consumer monitor for '%s > %s > %s' [%s]", o.acc.Name, ca.Stream, ca.Name, n.Group())
@@ -4924,9 +4910,6 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 				}
 			}
 			aq.recycle(&ces)
-
-		case <-afch:
-			// ignore
 
 		case isLeader = <-lch:
 			if recovering && !isLeader {
@@ -8138,21 +8121,6 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	if len(hdr) > 0 {
 		// Expected last sequence per subject.
 		if seq, exists := getExpectedLastSeqPerSubject(hdr); exists && store != nil {
-			// Wait for initial stored but not applied messages to be applied, ensuring consistency before allowing updates.
-			if !mset.expectedPerSubjectReady {
-				// Could have set inflight above, cleanup here.
-				delete(mset.inflight, mset.clseq)
-				mset.clMu.Unlock()
-				if canRespond {
-					var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
-					resp.PubAck = &PubAck{Stream: name}
-					resp.Error = NewJSStreamExpectedLastSeqPerSubjectNotReadyError()
-					b, _ := json.Marshal(resp)
-					outq.sendMsg(reply, b)
-				}
-				return fmt.Errorf("expected last sequence per subject temporarily unavailable")
-			}
-
 			// Allow override of the subject used for the check.
 			seqSubj := subject
 			if optSubj := getExpectedLastSeqPerSubjectForSubject(hdr); optSubj != _EMPTY_ {

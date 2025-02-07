@@ -358,7 +358,6 @@ type stream struct {
 	uch       chan struct{}     // The channel to signal updates to the monitor routine.
 	inMonitor bool              // True if the monitor routine has been started.
 
-	expectedPerSubjectReady     bool                // Initially blocks 'expected per subject' changes until leader is initially caught up with stored but not applied entries.
 	expectedPerSubjectSequence  map[uint64]string   // Inflight 'expected per subject' subjects per clseq.
 	expectedPerSubjectInProcess map[string]struct{} // Current 'expected per subject' subjects in process.
 
