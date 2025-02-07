@@ -12,7 +12,6 @@
 // limitations under the License.
 
 //go:build !amd64
-// +build !amd64
 
 package pse
 

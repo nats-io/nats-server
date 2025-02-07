@@ -12,7 +12,6 @@
 // limitations under the License.
 
 //go:build gofuzz
-// +build gofuzz
 
 package conf
 

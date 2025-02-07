@@ -12,7 +12,6 @@
 // limitations under the License.
 
 //go:build zos
-// +build zos
 
 package pse
 

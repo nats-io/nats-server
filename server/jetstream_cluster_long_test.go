@@ -13,7 +13,6 @@
 
 // This test file is skipped by default to avoid accidentally running (e.g. `go test ./server`)
 //go:build !skip_js_tests && include_js_long_tests
-// +build !skip_js_tests,include_js_long_tests
 
 package server
 

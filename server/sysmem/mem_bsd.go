@@ -12,7 +12,6 @@
 // limitations under the License.
 
 //go:build freebsd || openbsd || dragonfly || netbsd
-// +build freebsd openbsd dragonfly netbsd
 
 package sysmem
 
