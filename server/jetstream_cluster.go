@@ -6002,15 +6002,16 @@ func groupName(prefix string, peers []string, storage StorageType) string {
 	return fmt.Sprintf("%s-R%d%s-%s", prefix, len(peers), storage.String()[:1], gns)
 }
 
-// returns stream count for this tier as well as applicable reservation size (not including reservations for cfg)
+// returns stream count for this tier as well as applicable reservation size (not including cfg)
 // jetStream read lock should be held
 func tieredStreamAndReservationCount(asa map[string]*streamAssignment, tier string, cfg *StreamConfig) (int, int64) {
 	var numStreams int
 	var reservation int64
 	for _, sa := range asa {
-		if tier == _EMPTY_ || isSameTier(sa.Config, cfg) {
+		// Don't count the stream toward the limit if it already exists.
+		if (tier == _EMPTY_ || isSameTier(sa.Config, cfg)) && sa.Config.Name != cfg.Name {
 			numStreams++
-			if sa.Config.MaxBytes > 0 && sa.Config.Storage == cfg.Storage && sa.Config.Name != cfg.Name {
+			if sa.Config.MaxBytes > 0 && sa.Config.Storage == cfg.Storage {
 				// If tier is empty, all storage is flat and we should adjust for replicas.
 				// Otherwise if tiered, storage replication already taken into consideration.
 				if tier == _EMPTY_ && cfg.Replicas > 1 {
@@ -7336,13 +7337,11 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 			// Don't count DIRECTS.
 			total := 0
 			for cn, ca := range sa.consumers {
-				if action == ActionCreateOrUpdate {
-					// If the consumer name is specified and we think it already exists, then
-					// we're likely updating an existing consumer, so don't count it. Otherwise
-					// we will incorrectly return NewJSMaximumConsumersLimitError for an update.
-					if oname != _EMPTY_ && cn == oname && sa.consumers[oname] != nil {
-						continue
-					}
+				// If the consumer name is specified and we think it already exists, then
+				// we're likely updating an existing consumer, so don't count it. Otherwise
+				// we will incorrectly return NewJSMaximumConsumersLimitError for an update.
+				if oname != _EMPTY_ && cn == oname && sa.consumers[oname] != nil {
+					continue
 				}
 				if ca.Config != nil && !ca.Config.Direct {
 					total++

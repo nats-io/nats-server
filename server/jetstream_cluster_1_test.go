@@ -3085,7 +3085,7 @@ func TestJetStreamClusterAccountInfoAndLimits(t *testing.T) {
 			MaxMemory:    1024,
 			MaxStore:     8000,
 			MaxStreams:   3,
-			MaxConsumers: 1,
+			MaxConsumers: 2,
 		},
 	})
 
@@ -3100,6 +3100,11 @@ func TestJetStreamClusterAccountInfoAndLimits(t *testing.T) {
 	if _, err := js.AddStream(&nats.StreamConfig{Name: "bar", Replicas: 2}); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "baz", Replicas: 3}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Create with same config is idempotent, and must not exceed max streams as it already exists.
 	if _, err := js.AddStream(&nats.StreamConfig{Name: "baz", Replicas: 3}); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -3160,6 +3165,31 @@ func TestJetStreamClusterAccountInfoAndLimits(t *testing.T) {
 	_, err := js.AddConsumer("foo", &nats.ConsumerConfig{Durable: "dlc", AckPolicy: nats.AckExplicitPolicy})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Create (with explicit create API) for the same consumer must be idempotent, and not trigger limit.
+	obsReq := CreateConsumerRequest{
+		Stream: "foo",
+		Config: ConsumerConfig{Durable: "bar"},
+		Action: ActionCreate,
+	}
+	req, err := json.Marshal(obsReq)
+	require_NoError(t, err)
+
+	msg, err := nc.Request(fmt.Sprintf(JSApiDurableCreateT, "foo", "bar"), req, time.Second)
+	require_NoError(t, err)
+	var resp JSApiConsumerInfoResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	if resp.Error != nil {
+		t.Fatalf("Unexpected error: %v", resp.Error)
+	}
+
+	msg, err = nc.Request(fmt.Sprintf(JSApiDurableCreateT, "foo", "bar"), req, time.Second)
+	require_NoError(t, err)
+	var resp2 JSApiConsumerInfoResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp2))
+	if resp2.Error != nil {
+		t.Fatalf("Unexpected error: %v", resp2.Error)
 	}
 
 	// This should fail.
