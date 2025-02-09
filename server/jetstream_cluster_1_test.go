@@ -7531,6 +7531,61 @@ func TestJetStreamClusterStuckConsumerAfterLeaderChangeWithUnknownDeliveries(t *
 	require_Equal(t, ci.AckFloor.Stream, 3)
 }
 
+// This is for when we are still using $SYS for NRG replication but we want to make sure
+// we track this in something visible to the end user.
+func TestJetStreamClusterAccountStatsForReplicatedStreams(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R5S", 5)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 5,
+	})
+	require_NoError(t, err)
+
+	// Let's connect to stream leader to make sent messages predictable, otherwise we get those to come up based on routing to stream leader.
+	s := c.streamLeader(globalAccountName, "TEST")
+	require_True(t, s != nil)
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	// NRG traffic can be compressed, so make this unique so we can check stats correctly.
+	msg := make([]byte, 1024*1024)
+	crand.Read(msg)
+
+	// Publish some messages into the stream.
+	for i := 0; i < 10; i++ {
+		_, err = js.Publish("foo", msg)
+		require_NoError(t, err)
+	}
+	time.Sleep(250 * time.Millisecond)
+
+	// Now grab the account stats for us and make sure we account for the replicated messages.
+
+	// Opts to grab our account.
+	opts := &AccountStatzOptions{
+		Accounts: []string{globalAccountName},
+	}
+	as, err := s.AccountStatz(opts)
+	require_NoError(t, err)
+	require_Equal(t, len(as.Accounts), 1)
+
+	accStats := as.Accounts[0]
+
+	// We need to account for possibility that the stream create was also on this server, hence the >= vs strict ==.
+	require_True(t, accStats.Received.Msgs >= 10)
+	require_True(t, accStats.Received.Bytes >= 1024*1204)
+	// For sent, we will have 10 pub acks, and then should have 40 extra messages that are sent and accounted for
+	// during the nrg propsal to the R5 peers.
+	require_True(t, accStats.Sent.Msgs >= 50)
+	require_True(t, accStats.Sent.Bytes >= accStats.Received.Bytes*4)
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
