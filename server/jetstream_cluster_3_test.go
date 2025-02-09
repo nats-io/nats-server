@@ -1319,6 +1319,40 @@ func TestJetStreamClusterNoPanicOnStreamInfoWhenNoLeaderYet(t *testing.T) {
 	wg.Wait()
 }
 
+func TestJetStreamClusterNoTimeoutOnStreamInfoOnPreferredLeader(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+
+	// Simulate the preferred stream leader to not have initialized the raft node yet.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	acc, err := sl.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+	sjs := sl.getJetStream()
+	rg := mset.raftGroup()
+	sjs.mu.Lock()
+	rg.node = nil
+	sjs.mu.Unlock()
+
+	// Should not time out on the stream info during this condition.
+	_, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+}
+
 // Issue https://github.com/nats-io/nats-server/issues/3630
 func TestJetStreamClusterPullConsumerAcksExtendInactivityThreshold(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
