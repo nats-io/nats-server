@@ -3286,6 +3286,28 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 		return
 	}
 
+	// Clear inflight dedupe IDs, where seq=0.
+	mset.mu.Lock()
+	var removed int
+	for i := len(mset.ddarr) - 1; i >= mset.ddindex; i-- {
+		dde := mset.ddarr[i]
+		if dde.seq != 0 {
+			break
+		}
+		removed++
+		delete(mset.ddmap, dde.id)
+	}
+	if removed > 0 {
+		if len(mset.ddmap) > 0 {
+			mset.ddarr = mset.ddarr[:len(mset.ddarr)-removed]
+		} else {
+			mset.ddmap = nil
+			mset.ddarr = nil
+			mset.ddindex = 0
+		}
+	}
+	mset.mu.Unlock()
+
 	mset.clMu.Lock()
 	// Clear inflight if we have it.
 	mset.inflight = nil
@@ -8025,7 +8047,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 				pubAck := append(buf[:0], mset.pubAck...)
 				seq := dde.seq
 				mset.mu.Unlock()
-				// Should not return an invalid sequence, in that case timeout.
+				// Should not return an invalid sequence, in that case error.
 				if canRespond {
 					if seq > 0 {
 						response := append(pubAck, strconv.FormatUint(seq, 10)...)

@@ -3259,6 +3259,68 @@ func TestJetStreamClusterPubAckSequenceDupeAsync(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterPubAckSequenceDupeResetAfterLeaderChange(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:       "TEST",
+		Subjects:   []string{"foo"},
+		Replicas:   3,
+		Duplicates: 2 * time.Second,
+	})
+	require_NoError(t, err)
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	acc, err := sl.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+
+	// Store one msg ID that needs to be preserved, and another that should be removed during leader change.
+	mset.mu.Lock()
+	mset.storeMsgIdLocked(&ddentry{"genuine", 1, time.Now().UnixNano()})
+	mset.storeMsgIdLocked(&ddentry{"msgId", 0, time.Now().UnixNano()})
+	mset.mu.Unlock()
+
+	// Simulates the msg ID being in process.
+	_, err = js.Publish("foo", nil, nats.MsgId("msgId"))
+	require_Error(t, err, NewJSStreamDuplicateMessageConflictError())
+
+	// Move stream leader to a different server.
+	rs := c.randomNonStreamLeader(globalAccountName, "TEST")
+	req := JSApiLeaderStepdownRequest{Placement: &Placement{Preferred: rs.Name()}}
+	data, err := json.Marshal(req)
+	require_NoError(t, err)
+	_, err = nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "TEST"), data, time.Second)
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	// Move stream leader back.
+	req.Placement.Preferred = sl.Name()
+	data, err = json.Marshal(req)
+	require_NoError(t, err)
+	_, err = nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "TEST"), data, time.Second)
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	nsl := c.streamLeader(globalAccountName, "TEST")
+	require_True(t, nsl == sl)
+
+	mset.mu.Lock()
+	lenDdmap, lenDdarr := len(mset.ddmap), len(mset.ddarr)
+	mset.mu.Unlock()
+	require_Len(t, lenDdmap, 1)
+	require_Len(t, lenDdarr, 1)
+
+	// Now the publish should pass.
+	_, err = js.Publish("foo", nil, nats.MsgId("msgId"))
+	require_NoError(t, err)
+}
+
 func TestJetStreamClusterConsumeWithStartSequence(t *testing.T) {
 
 	const (
