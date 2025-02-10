@@ -74,7 +74,6 @@ type RaftNode interface {
 	ResumeApply()
 	LeadChangeC() <-chan bool
 	QuitC() <-chan struct{}
-	AppliedFloorC() <-chan struct{}
 	Created() time.Time
 	Stop()
 	WaitForStop()
@@ -169,8 +168,7 @@ type raft struct {
 	commit  uint64 // Index of the most recent commit
 	applied uint64 // Index of the most recently applied commit
 
-	aflr  uint64        // Index when to signal initial messages have been applied after becoming leader. 0 means signaling is disabled.
-	aflrc chan struct{} // Channel used to signal leader has applied initial set of stored messages.
+	aflr uint64 // Index when to signal initial messages have been applied after becoming leader. 0 means signaling is disabled.
 
 	leader string // The ID of the leader
 	vote   string // Our current vote state
@@ -395,7 +393,6 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 		peers:    make(map[string]*lps),
 		acks:     make(map[uint64]map[string]struct{}),
 		pae:      make(map[uint64]*appendEntry),
-		aflrc:    make(chan struct{}, 32),
 		s:        s,
 		js:       s.getJetStream(),
 		quit:     make(chan struct{}),
@@ -1083,7 +1080,11 @@ func (n *raft) Applied(index uint64) (entries uint64, bytes uint64) {
 	// If it was set, and we reached the minimum applied index, reset and send signal to upper layer.
 	if n.aflr > 0 && index >= n.aflr {
 		n.aflr = 0
-		n.signalAppliedFloor()
+		// Quick sanity-check to confirm we're still leader.
+		// In which case we must signal, since switchToLeader would not have done so already.
+		if n.Leader() {
+			n.updateLeadChange(true)
+		}
 	}
 
 	// Calculate the number of entries and estimate the byte size that
@@ -1756,10 +1757,6 @@ func (n *raft) LeadChangeC() <-chan bool { return n.leadc }
 
 // QuitC returns the quit channel, notifying when the Raft group has shut down.
 func (n *raft) QuitC() <-chan struct{} { return n.quit }
-
-// AppliedFloorC returns a channel to notify that all messages that were not yet
-// applied when becoming leader, have been applied since.
-func (n *raft) AppliedFloorC() <-chan struct{} { return n.aflrc }
 
 func (n *raft) Created() time.Time {
 	// Lock not needed as n.created is never changed after creation.
@@ -4229,11 +4226,11 @@ func (n *raft) updateLeadChange(isLeader bool) {
 }
 
 // Lock should be held.
-func (n *raft) switchState(state RaftState) {
+func (n *raft) switchState(state RaftState) bool {
 retry:
 	pstate := n.State()
 	if pstate == Closed {
-		return
+		return false
 	}
 
 	// Set our state. If something else has changed our state
@@ -4245,19 +4242,23 @@ retry:
 	// Reset the election timer.
 	n.resetElectionTimeout()
 
+	var leadChange bool
 	if pstate == Leader && state != Leader {
+		leadChange = true
 		n.updateLeadChange(false)
 		// Drain the append entry response and proposal queues.
 		n.resp.drain()
 		n.prop.drain()
 	} else if state == Leader && pstate != Leader {
+		// Don't updateLeadChange here, it will be done in switchToLeader or after initial messages are applied.
+		leadChange = true
 		if len(n.pae) > 0 {
 			n.pae = make(map[uint64]*appendEntry)
 		}
-		n.updateLeadChange(true)
 	}
 
 	n.writeTermVote()
+	return leadChange
 }
 
 const (
@@ -4279,6 +4280,7 @@ func (n *raft) switchToFollowerLocked(leader string) {
 
 	n.debug("Switching to follower")
 
+	n.aflr = 0
 	n.lxfer = false
 	n.updateLeader(leader)
 	n.switchState(Follower)
@@ -4332,25 +4334,24 @@ func (n *raft) switchToLeader() {
 
 	n.lxfer = false
 	n.updateLeader(n.id)
-	n.switchState(Leader)
+	leadChange := n.switchState(Leader)
 
-	// Wait for messages to be applied if we've stored more, otherwise signal immediately.
-	if n.pindex > n.applied {
-		n.aflr = n.pindex
-	} else {
-		n.signalAppliedFloor()
+	if leadChange {
+		// Wait for messages to be applied if we've stored more, otherwise signal immediately.
+		// It's important to wait signaling we're leader if we're not up-to-date yet, as that
+		// would mean we're in a consistent state compared with the previous leader.
+		if n.pindex > n.applied {
+			n.aflr = n.pindex
+		} else {
+			// We know we have applied all entries in our log and can signal immediately.
+			// For sanity reset applied floor back down to 0, so we aren't able to signal twice.
+			n.aflr = 0
+			n.updateLeadChange(true)
+		}
 	}
 	n.Unlock()
 
 	if sendHB {
 		n.sendHeartbeat()
-	}
-}
-
-// Will signal that all messages that were not yet applied when becoming leader, have been applied since.
-func (n *raft) signalAppliedFloor() {
-	select {
-	case n.aflrc <- struct{}{}:
-	default:
 	}
 }

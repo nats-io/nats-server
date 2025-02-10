@@ -5408,16 +5408,8 @@ func TestJetStreamClusterExpectedPerSubjectConsistency(t *testing.T) {
 	mset, err := acc.lookupStream("TEST")
 	require_NoError(t, err)
 
-	// Block updates when not ready.
-	mset.clMu.Lock()
-	mset.expectedPerSubjectReady = false
-	mset.clMu.Unlock()
-	_, err = js.Publish("foo", nil, nats.ExpectLastSequencePerSubject(0))
-	require_Error(t, err, NewJSStreamExpectedLastSeqPerSubjectNotReadyError())
-
 	// Block updates when subject already in process.
 	mset.clMu.Lock()
-	mset.expectedPerSubjectReady = true
 	mset.expectedPerSubjectSequence = map[uint64]string{0: "foo"}
 	mset.expectedPerSubjectInProcess = map[string]struct{}{"foo": {}}
 	mset.clMu.Unlock()
@@ -5426,7 +5418,6 @@ func TestJetStreamClusterExpectedPerSubjectConsistency(t *testing.T) {
 
 	// Allow updates when ready and subject not already in process.
 	mset.clMu.Lock()
-	mset.expectedPerSubjectReady = true
 	mset.expectedPerSubjectSequence = nil
 	mset.expectedPerSubjectInProcess = nil
 	mset.clMu.Unlock()
@@ -5439,6 +5430,157 @@ func TestJetStreamClusterExpectedPerSubjectConsistency(t *testing.T) {
 	defer mset.clMu.Unlock()
 	require_Len(t, len(mset.expectedPerSubjectSequence), 0)
 	require_Len(t, len(mset.expectedPerSubjectInProcess), 0)
+}
+
+func TestJetStreamClusterConsistencyAfterLeaderChange(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.LimitsPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	acc, err := sl.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+	n := mset.raftNode().(*raft)
+	n.Lock()
+	// Block snapshots from being made, preserving the full log so we can validate it later.
+	n.progress = make(map[string]*ipQueue[uint64])
+	n.progress["blockSnapshots"] = newIPQueue[uint64](n.s, "blockSnapshots")
+	// Put into observer so the RAFT code doesn't switch to candidate on its own.
+	n.observer = true
+	n.Unlock()
+
+	nc.Close()
+	nc, js = jsClientConnect(t, sl)
+	defer nc.Close()
+
+	// Publish a message and confirm all servers are up-to-date.
+	// This ensures the first message entry has lseq=0.
+	pubAck, err := js.Publish("foo", nil)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 1)
+	checkFor(t, 2*time.Second, 500*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	// Shutdown all other servers so no changes get quorum.
+	for _, s := range c.servers {
+		if s != sl {
+			s.Shutdown()
+			s.WaitForShutdown()
+		}
+	}
+
+	// Publish an initial set of messages to be stored in the leader's WAL, but without quorum.
+	var ppindex uint64
+	for n.State() == Leader && ppindex <= 10 {
+		err = nc.Publish("foo", nil)
+		require_NoError(t, err)
+
+		n.RLock()
+		ppindex = n.pindex
+		n.RUnlock()
+	}
+	// Only continue if we were actually able to persist messages.
+	require_LessThan(t, 10, ppindex)
+
+	// Step down to follower, forcing a leader transition.
+	n.stepdown(noLeader)
+	n.RLock()
+	ppindex = n.pindex
+	n.RUnlock()
+
+	// We don't know when the RAFT run loop transitions, just wait for some time.
+	time.Sleep(time.Second)
+
+	// Publish a second set of messages to be stored in the leader's WAL, but without quorum.
+	var npindex uint64
+	n.switchToLeader()
+	for n.State() == Leader && npindex <= ppindex*2 {
+		err = nc.Publish("foo", nil)
+		require_NoError(t, err)
+
+		n.RLock()
+		npindex = n.pindex
+		n.RUnlock()
+	}
+
+	n.RLock()
+	var ss StreamState
+	n.wal.FastState(&ss)
+	n.RUnlock()
+
+	// Go through all messages and confirm the last seq that's
+	// proposed to the NRG layer is monotonically increasing.
+	var clseq uint64
+	for seq := ss.FirstSeq; seq <= ss.LastSeq; seq++ {
+		ae, err := n.loadEntry(seq)
+		require_NoError(t, err)
+		for _, e := range ae.entries {
+			_ = e
+			if e.Type == EntryNormal && len(e.Data) > 0 && entryOp(e.Data[0]) == streamMsgOp {
+				subject, _, _, _, lseq, _, _, err := decodeStreamMsg(e.Data[1:])
+				require_NoError(t, err)
+				require_Equal(t, subject, "foo")
+				// Sequence must monotonically increase. If it wouldn't that would mean the new leader accepted
+				// new messages before it was in the same state as the previous leader when it stepped down.
+				// Or there are gaps, which would mean the JetStream layer would run into errLastSeqMismatch.
+				require_Equal(t, lseq, clseq)
+				clseq++
+			} else if e.Type != EntryPeerState {
+				t.Fatalf("Received unhandled entry type: %s\n", e.Type)
+			}
+		}
+	}
+	require_NotEqual(t, clseq, 0)
+
+	// Remove observer flag so it can become leader on its own.
+	n.Lock()
+	n.observer = false
+	n.Unlock()
+
+	// Restart one other server, this should result in the previous leader
+	// to become leader again, as it has the most up-to-date log.
+	// If we'd bring all of them up it would be up to chance who'd become leader.
+	for _, s := range c.servers {
+		if s != sl {
+			c.restartServer(s)
+			break
+		}
+	}
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	// Confirm the sequence still monotonically increases.
+	pubAck, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, clseq+1)
+
+	for _, s := range c.servers {
+		if !s.isRunning() {
+			c.restartServer(s)
+		}
+	}
+	c.waitOnAllCurrent()
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	// Confirm the sequence still monotonically increases.
+	pubAck, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, clseq+2)
+	checkFor(t, 2*time.Second, 500*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
 }
 
 func TestJetStreamClusterMetaStepdownPreferred(t *testing.T) {
