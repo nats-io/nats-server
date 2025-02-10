@@ -3218,16 +3218,6 @@ func TestJetStreamClusterPubAckSequenceDupeAsync(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	sl := c.streamLeader(globalAccountName, "TEST_STREAM")
-	acc, err := sl.lookupAccount(globalAccountName)
-	require_NoError(t, err)
-	mset, err := acc.lookupStream("TEST_STREAM")
-	require_NoError(t, err)
-	mset.mu.RLock()
-	supportsDeferredDeduplication := mset.supportsDeferredDeduplication()
-	mset.mu.RUnlock()
-	require_True(t, supportsDeferredDeduplication)
-
 	msgData := []byte("...")
 
 	for seq := uint64(1); seq < 10; seq++ {
@@ -3308,82 +3298,6 @@ func TestJetStreamClusterPubAckSequenceDupeDeterministic(t *testing.T) {
 	// Also confirm the leader can allow a message to go through, even if the purging timer hasn't cleaned it up yet.
 	err = mset.processClusteredInboundMsg("foo", _EMPTY_, hdr, nil, nil, false)
 	require_NoError(t, err)
-}
-
-// Similar implementation to TestJetStreamClusterPubAckSequenceDupeAsync, but confirming
-// the old behavior is kept during upgrades.
-func TestJetStreamClusterPubAckSequenceDupeUpgradePath(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "R3S", 3)
-	defer c.shutdown()
-
-	nc, js := jsClientConnect(t, c.randomServer())
-	defer nc.Close()
-
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:       "TEST_STREAM",
-		Subjects:   []string{"TEST_SUBJECT"},
-		Replicas:   3,
-		Duplicates: 1 * time.Minute,
-	})
-	require_NoError(t, err)
-
-	sl := c.streamLeader(globalAccountName, "TEST_STREAM")
-	acc, err := sl.lookupAccount(globalAccountName)
-	require_NoError(t, err)
-	mset, err := acc.lookupStream("TEST_STREAM")
-	require_NoError(t, err)
-
-	rn := mset.raftNode().(*raft)
-	rn.Lock()
-	peers := rn.peerNames()
-	rn.Unlock()
-	rn.UpdateKnownPeers(append(peers, "test"))
-
-	sl.nodeToInfo.Store("test", nodeInfo{})
-
-	mset.mu.RLock()
-	supportsDeferredDeduplication := mset.supportsDeferredDeduplication()
-	mset.mu.RUnlock()
-	require_False(t, supportsDeferredDeduplication)
-
-	msgData := []byte("...")
-
-	for seq := uint64(1); seq < 10; seq++ {
-
-		msgSubject := "TEST_SUBJECT"
-		msgIdOpt := nats.MsgId(nuid.Next())
-
-		wg := sync.WaitGroup{}
-		wg.Add(2)
-
-		// Fire off 2 publish requests in parallel
-		// The first one "stages" a duplicate entry before even proposing the message
-		// The second one gets a pubAck with sequence zero by hitting the staged duplicated entry
-
-		pubAcks := [2]*nats.PubAck{}
-		for i := 0; i < 2; i++ {
-			go func(i int) {
-				defer wg.Done()
-				var err error
-				pubAcks[i], err = js.Publish(msgSubject, msgData, msgIdOpt)
-				require_NoError(t, err)
-			}(i)
-		}
-
-		wg.Wait()
-
-		// Exactly one of the pubAck should have the expected sequence, and the other a staged zero sequence.
-		require_True(t, (pubAcks[0].Sequence == 0 && pubAcks[1].Sequence == seq) || (pubAcks[0].Sequence == seq && pubAcks[1].Sequence == 0))
-
-		// Exactly one of the pubAck should be marked dupe
-		require_True(t, (pubAcks[0].Duplicate || pubAcks[1].Duplicate) && (pubAcks[0].Duplicate != pubAcks[1].Duplicate))
-	}
-
-	// Ensure there are no duplicate entries in the de-dupe map.
-	mset.mu.RLock()
-	defer mset.mu.RUnlock()
-	require_Len(t, len(mset.ddmap), 9)
-	require_Len(t, len(mset.ddarr), 9)
 }
 
 func TestJetStreamClusterConsumeWithStartSequence(t *testing.T) {

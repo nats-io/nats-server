@@ -265,7 +265,6 @@ const (
 	JetStreamEnabled     ServerCapability = 1 << iota // Server had JetStream enabled.
 	BinaryStreamSnapshot                              // New stream snapshot capability.
 	AccountNRG                                        // Move NRG traffic out of system account.
-	DeferClusteredDedupe                              // Defer de-duplication to replicas under certain conditions.
 )
 
 // Set JetStream capability.
@@ -300,17 +299,6 @@ func (si *ServerInfo) SetAccountNRG() {
 // system account and into the asset account.
 func (si *ServerInfo) AccountNRG() bool {
 	return si.Flags&AccountNRG != 0
-}
-
-// Set deferred clustered dedupe capability.
-func (si *ServerInfo) SetDeferClusteredDedupe() {
-	si.Flags |= DeferClusteredDedupe
-}
-
-// DeferClusteredDedupe indicates whether we support deferring de-duplication
-// of multiple inflight messages with the same ID to replicas.
-func (si *ServerInfo) DeferClusteredDedupe() bool {
-	return si.Flags&DeferClusteredDedupe != 0
 }
 
 // ClientInfo is detailed information about the client forming a connection.
@@ -539,7 +527,6 @@ RESET:
 						if s.accountNRGAllowed.Load() {
 							si.SetAccountNRG()
 						}
-						si.SetDeferClusteredDedupe()
 					}
 				}
 				var b []byte
@@ -1712,7 +1699,6 @@ func (s *Server) remoteServerUpdate(sub *subscription, c *client, _ *Account, su
 		si.JetStreamEnabled(),
 		si.BinaryStreamSnapshot(),
 		accountNRG,
-		si.DeferClusteredDedupe(),
 	})
 	if oldInfo == nil || accountNRG != oldInfo.(nodeInfo).accountNRG {
 		// One of the servers we received statsz from changed its mind about
@@ -1767,7 +1753,6 @@ func (s *Server) processNewServer(si *ServerInfo) {
 				si.JetStreamEnabled(),
 				si.BinaryStreamSnapshot(),
 				si.AccountNRG(),
-				si.DeferClusteredDedupe(),
 			})
 		}
 	}

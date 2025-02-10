@@ -7853,29 +7853,6 @@ func (mset *stream) supportsBinarySnapshotLocked() bool {
 	return true
 }
 
-// Determine if all peers in our set support having multiple inflight proposals for the same ID
-// while the deduplication is not yet finalized. During this condition multiple proposals for
-// the same ID would be sent, and it relies on all replicas to de-dupe on their own during this period.
-// Lock should be held.
-func (mset *stream) supportsDeferredDeduplication() bool {
-	s, n := mset.srv, mset.node
-	if s == nil || n == nil {
-		return false
-	}
-	// Grab our peers and walk them to make sure we can all support deferred deduplication.
-	id, peers := n.ID(), n.Peers()
-	for _, p := range peers {
-		if p.ID == id {
-			// We know we support ourselves.
-			continue
-		}
-		if sir, ok := s.nodeToInfo.Load(p.ID); ok && sir != nil && !sir.(nodeInfo).deferDedupe {
-			return false
-		}
-	}
-	return true
-}
-
 // StreamSnapshot is used for snapshotting and out of band catch up in clustered mode.
 // Legacy, replace with binary stream snapshots.
 type streamSnapshot struct {
@@ -8061,10 +8038,6 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 			// We used to stage with zero, but it's hard to correctly remove it during leader elections
 			// while taking quorum/truncation into account. So instead let duplicates through and handle
 			// duplicates later. Only if we know the sequence we can start blocking above.
-			// Unless, not all servers support this feature, in which case we still stage zero and block above.
-			if !mset.supportsDeferredDeduplication() {
-				mset.storeMsgIdLocked(&ddentry{msgId, 0, time.Now().UnixNano()})
-			}
 			mset.mu.Unlock()
 		}
 

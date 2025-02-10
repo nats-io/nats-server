@@ -4897,7 +4897,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			if isClustered {
 				mset.purgeMsgIdsAtLocked(ts)
 			}
-			if dde := mset.checkMsgId(msgId); dde != nil && dde.seq > 0 {
+			if dde := mset.checkMsgId(msgId); dde != nil {
 				mset.mu.Unlock()
 				bumpCLFS()
 				if canRespond {
@@ -5208,11 +5208,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	// If we have a msgId make sure to save.
 	if msgId != _EMPTY_ {
-		if dde := mset.ddmap[msgId]; dde != nil {
-			dde.seq, dde.ts = seq, ts
-		} else {
-			mset.storeMsgIdLocked(&ddentry{msgId, seq, ts})
-		}
+		mset.storeMsgIdLocked(&ddentry{msgId, seq, ts})
 	}
 
 	// If here we succeeded in storing the message.
