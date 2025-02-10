@@ -1,4 +1,4 @@
-// Copyright 2020-2024 The NATS Authors
+// Copyright 2020-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -78,6 +78,7 @@ type RaftNode interface {
 	Stop()
 	WaitForStop()
 	Delete()
+	IsSystemAccount() bool
 }
 
 type WAL interface {
@@ -542,6 +543,12 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 	s.startGoRoutine(n.run, labels)
 
 	return n, nil
+}
+
+// Whether we are using the system account or not.
+// In 2.10.x this is always true as there is no account NRG like in 2.11.x.
+func (n *raft) IsSystemAccount() bool {
+	return true
 }
 
 // outOfResources checks to see if we are out of resources.

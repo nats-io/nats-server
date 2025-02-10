@@ -1,4 +1,4 @@
-// Copyright 2019-2023 The NATS Authors
+// Copyright 2019-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -922,23 +922,54 @@ func TestJetStreamMaxConsumers(t *testing.T) {
 		Name:         "MAXC",
 		Storage:      nats.MemoryStorage,
 		Subjects:     []string{"in.maxc.>"},
-		MaxConsumers: 1,
+		MaxConsumers: 2,
 	}
 	if _, err := js.AddStream(cfg); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	si, err := js.StreamInfo("MAXC")
 	require_NoError(t, err)
-	if si.Config.MaxConsumers != 1 {
-		t.Fatalf("Expected max of 1, got %d", si.Config.MaxConsumers)
+	if si.Config.MaxConsumers != 2 {
+		t.Fatalf("Expected max of 2, got %d", si.Config.MaxConsumers)
 	}
 	// Make sure we get the right error.
 	// This should succeed.
-	if _, err := js.SubscribeSync("in.maxc.foo"); err != nil {
+	if _, err := js.PullSubscribe("in.maxc.foo", "maxc_foo"); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	// Create for the same consumer must be idempotent, and not trigger limit.
+	if _, err := js.PullSubscribe("in.maxc.foo", "maxc_foo"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Create (with explicit create API) for the same consumer must be idempotent, and not trigger limit.
+	obsReq := CreateConsumerRequest{
+		Stream: "MAXC",
+		Config: ConsumerConfig{Durable: "maxc_baz"},
+		Action: ActionCreate,
+	}
+	req, err := json.Marshal(obsReq)
+	require_NoError(t, err)
+
+	msg, err := nc.Request(fmt.Sprintf(JSApiDurableCreateT, "MAXC", "maxc_baz"), req, time.Second)
+	require_NoError(t, err)
+	var resp JSApiConsumerInfoResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	if resp.Error != nil {
+		t.Fatalf("Unexpected error: %v", resp.Error)
+	}
+
+	msg, err = nc.Request(fmt.Sprintf(JSApiDurableCreateT, "MAXC", "maxc_baz"), req, time.Second)
+	require_NoError(t, err)
+	var resp2 JSApiConsumerInfoResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp2))
+	if resp2.Error != nil {
+		t.Fatalf("Unexpected error: %v", resp2.Error)
+	}
+
+	// Exceeds limit.
 	if _, err := js.SubscribeSync("in.maxc.bar"); err == nil {
-		t.Fatalf("Eexpected error but got none")
+		t.Fatalf("Expected error but got none")
 	}
 }
 
@@ -6762,20 +6793,22 @@ func TestJetStreamStreamLimitUpdate(t *testing.T) {
 	defer nc.Close()
 
 	for _, storage := range []nats.StorageType{nats.MemoryStorage, nats.FileStorage} {
-		_, err = js.AddStream(&nats.StreamConfig{
+		cfg := &nats.StreamConfig{
 			Name:     "TEST",
 			Subjects: []string{"foo"},
 			Storage:  storage,
 			MaxBytes: 32,
-		})
+		}
+
+		_, err = js.AddStream(cfg)
 		require_NoError(t, err)
 
-		_, err = js.UpdateStream(&nats.StreamConfig{
-			Name:     "TEST",
-			Subjects: []string{"foo"},
-			Storage:  storage,
-			MaxBytes: 16,
-		})
+		// Create with same config is idempotent, and must not exceed max streams as it already exists.
+		_, err = js.AddStream(cfg)
+		require_NoError(t, err)
+
+		cfg.MaxBytes = 16
+		_, err = js.UpdateStream(cfg)
 		require_NoError(t, err)
 
 		require_NoError(t, js.DeleteStream("TEST"))
@@ -18554,7 +18587,7 @@ func TestJetStreamDirectGetBySubject(t *testing.T) {
 
 	select {
 	case e := <-errCh:
-		if !strings.HasPrefix(e.Error(), "nats: Permissions Violation") {
+		if !strings.HasPrefix(e.Error(), "nats: permissions violation") {
 			t.Fatalf("Expected a permissions violation but got %v", e)
 		}
 	case <-time.After(time.Second):

@@ -1,4 +1,4 @@
-// Copyright 2018-2020 The NATS Authors
+// Copyright 2018-2024 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -4281,7 +4281,7 @@ func TestJWTLimits(t *testing.T) {
 	t.Run("subs", func(t *testing.T) {
 		creds := createUserWithLimit(t, kp, doNotExpire, func(j *jwt.UserPermissionLimits) { j.Subs = 1 })
 		c := natsConnect(t, sA.ClientURL(), nats.UserCredentials(creds),
-			nats.DisconnectErrHandler(func(conn *nats.Conn, err error) {
+			nats.ErrorHandler(func(conn *nats.Conn, s *nats.Subscription, err error) {
 				if e := conn.LastError(); e != nil && strings.Contains(e.Error(), "maximum subscriptions exceeded") {
 					errChan <- struct{}{}
 				}
@@ -4436,7 +4436,7 @@ func TestJWTLimitsTemplate(t *testing.T) {
 	t.Run("fail", func(t *testing.T) {
 		c := natsConnect(t, sA.ClientURL(), nats.UserCredentials(creds),
 			nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
-				if strings.Contains(err.Error(), `nats: Permissions Violation for Publish to "foo.othername"`) {
+				if strings.Contains(err.Error(), `Permissions Violation for Publish to "foo.othername"`) {
 					errChan <- struct{}{}
 				}
 			}))

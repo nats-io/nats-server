@@ -1,4 +1,4 @@
-// Copyright 2019-2024 The NATS Authors
+// Copyright 2019-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -2149,14 +2149,11 @@ func (jsa *jsAccount) selectLimits(replicas int) (JetStreamAccountLimits, string
 }
 
 // Lock should be held.
-func (jsa *jsAccount) countStreams(tier string, cfg *StreamConfig) int {
-	streams := len(jsa.streams)
-	if tier != _EMPTY_ {
-		streams = 0
-		for _, sa := range jsa.streams {
-			if isSameTier(&sa.cfg, cfg) {
-				streams++
-			}
+func (jsa *jsAccount) countStreams(tier string, cfg *StreamConfig) (streams int) {
+	for _, sa := range jsa.streams {
+		// Don't count the stream toward the limit if it already exists.
+		if (tier == _EMPTY_ || isSameTier(&sa.cfg, cfg)) && sa.cfg.Name != cfg.Name {
+			streams++
 		}
 	}
 	return streams

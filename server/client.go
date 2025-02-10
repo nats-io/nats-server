@@ -1,4 +1,4 @@
-// Copyright 2012-2023 The NATS Authors
+// Copyright 2012-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -1640,8 +1640,10 @@ func (c *client) flushOutbound() bool {
 		}
 		consumed := len(wnb)
 
-		// Actual write to the socket.
-		nc.SetWriteDeadline(start.Add(wdl))
+		// Actual write to the socket. The deadline applies to each batch
+		// rather than the total write, such that the configured deadline
+		// can be tuned to a known maximum quantity (64MB).
+		nc.SetWriteDeadline(time.Now().Add(wdl))
 		wn, err = wnb.WriteTo(nc)
 		nc.SetWriteDeadline(time.Time{})
 
@@ -3451,10 +3453,15 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 		msgSize -= int64(LEN_CR_LF)
 	}
 
-	// No atomic needed since accessed under client lock.
-	// Monitor is reading those also under client's lock.
-	client.outMsgs++
-	client.outBytes += msgSize
+	// We do not update the outbound stats if we are doing trace only since
+	// this message will not be sent out.
+	// Also do not update on internal callbacks.
+	if sub.icb == nil {
+		// No atomic needed since accessed under client lock.
+		// Monitor is reading those also under client's lock.
+		client.outMsgs++
+		client.outBytes += msgSize
+	}
 
 	// Check for internal subscriptions.
 	if sub.icb != nil && !c.noIcb {

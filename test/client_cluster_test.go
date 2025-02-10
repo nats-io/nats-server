@@ -16,6 +16,7 @@ package test
 import (
 	"fmt"
 	"math/rand"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -129,8 +130,8 @@ func TestServerRestartAndQueueSubs(t *testing.T) {
 
 	// Client options
 	opts := nats.GetDefaultOptions()
-	opts.Timeout = (5 * time.Second)
-	opts.ReconnectWait = (20 * time.Millisecond)
+	opts.Timeout = 5 * time.Second
+	opts.ReconnectWait = 20 * time.Millisecond
 	opts.MaxReconnect = 1000
 	opts.NoRandomize = true
 
@@ -152,20 +153,17 @@ func TestServerRestartAndQueueSubs(t *testing.T) {
 
 	// Create two clients..
 	opts.Servers = []string{urlA, urlB}
-	nc1, err := opts.Connect()
+	c1, err := opts.Connect()
 	if err != nil {
-		t.Fatalf("Failed to create connection for nc1: %v\n", err)
+		t.Fatalf("Failed to create connection for c1: %v\n", err)
 	}
+	defer c1.Close()
 
 	opts.Servers = []string{urlB, urlA}
-	nc2, err := opts.Connect()
+	c2, err := opts.Connect()
 	if err != nil {
-		t.Fatalf("Failed to create connection for nc2: %v\n", err)
+		t.Fatalf("Failed to create connection for c2: %v\n", err)
 	}
-
-	c1, _ := nats.NewEncodedConn(nc1, "json")
-	defer c1.Close()
-	c2, _ := nats.NewEncodedConn(nc2, "json")
 	defer c2.Close()
 
 	// Flusher helper function.
@@ -202,9 +200,10 @@ func TestServerRestartAndQueueSubs(t *testing.T) {
 	subj := "foo.bar"
 	qgroup := "workers"
 
-	cb := func(seqno int) {
+	cb := func(msg *nats.Msg) {
 		mu.Lock()
 		defer mu.Unlock()
+		seqno, _ := strconv.Atoi(string(msg.Data))
 		results[seqno] = results[seqno] + 1
 	}
 
@@ -222,9 +221,9 @@ func TestServerRestartAndQueueSubs(t *testing.T) {
 	sendAndCheckMsgs := func(numToSend int) {
 		for i := 0; i < numToSend; i++ {
 			if i%2 == 0 {
-				c1.Publish(subj, i)
+				c1.Publish(subj, []byte(strconv.Itoa(i)))
 			} else {
-				c2.Publish(subj, i)
+				c2.Publish(subj, []byte(strconv.Itoa(i)))
 			}
 		}
 		// Wait for processing.
@@ -309,8 +308,6 @@ func TestRequestsAcrossRoutes(t *testing.T) {
 	}
 	defer nc2.Close()
 
-	ec2, _ := nats.NewEncodedConn(nc2, nats.JSON_ENCODER)
-
 	response := []byte("I will help you")
 
 	// Connect responder to srvA
@@ -320,14 +317,12 @@ func TestRequestsAcrossRoutes(t *testing.T) {
 	// Make sure the route and the subscription are propagated.
 	nc1.Flush()
 
-	if err := checkExpectedSubs(1, srvA, srvB); err != nil {
+	if err = checkExpectedSubs(1, srvA, srvB); err != nil {
 		t.Fatal(err.Error())
 	}
 
-	var resp string
-
 	for i := 0; i < 100; i++ {
-		if err := ec2.Request("foo-req", i, &resp, 250*time.Millisecond); err != nil {
+		if _, err = nc2.Request("foo-req", []byte(strconv.Itoa(i)), 250*time.Millisecond); err != nil {
 			t.Fatalf("Received an error on Request test [%d]: %s", i, err)
 		}
 	}
@@ -354,9 +349,6 @@ func TestRequestsAcrossRoutesToQueues(t *testing.T) {
 	}
 	defer nc2.Close()
 
-	ec1, _ := nats.NewEncodedConn(nc1, nats.JSON_ENCODER)
-	ec2, _ := nats.NewEncodedConn(nc2, nats.JSON_ENCODER)
-
 	response := []byte("I will help you")
 
 	// Connect one responder to srvA
@@ -371,20 +363,18 @@ func TestRequestsAcrossRoutesToQueues(t *testing.T) {
 		nc2.Publish(m.Reply, response)
 	})
 
-	if err := checkExpectedSubs(2, srvA, srvB); err != nil {
+	if err = checkExpectedSubs(2, srvA, srvB); err != nil {
 		t.Fatal(err.Error())
 	}
 
-	var resp string
-
 	for i := 0; i < 100; i++ {
-		if err := ec2.Request("foo-req", i, &resp, 500*time.Millisecond); err != nil {
+		if _, err = nc2.Request("foo-req", []byte(strconv.Itoa(i)), 500*time.Millisecond); err != nil {
 			t.Fatalf("Received an error on Request test [%d]: %s", i, err)
 		}
 	}
 
 	for i := 0; i < 100; i++ {
-		if err := ec1.Request("foo-req", i, &resp, 500*time.Millisecond); err != nil {
+		if _, err = nc1.Request("foo-req", []byte(strconv.Itoa(i)), 500*time.Millisecond); err != nil {
 			t.Fatalf("Received an error on Request test [%d]: %s", i, err)
 		}
 	}

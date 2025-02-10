@@ -1,4 +1,4 @@
-// Copyright 2020-2023 The NATS Authors
+// Copyright 2020-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -1873,13 +1873,14 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 			if cc.meta != nil {
 				ourID = cc.meta.ID()
 			}
-			// We have seen cases where rg or rg.node is nil at this point,
-			// so check explicitly on those conditions and bail if that is
-			// the case.
-			bail := rg == nil || rg.node == nil || !rg.isMember(ourID)
+			// We have seen cases where rg is nil at this point,
+			// so check explicitly and bail if that is the case.
+			bail := rg == nil || !rg.isMember(ourID)
 			if !bail {
 				// We know we are a member here, if this group is new and we are preferred allow us to answer.
-				bail = rg.Preferred != ourID || time.Since(rg.node.Created()) > lostQuorumIntervalDefault
+				// Also, we have seen cases where rg.node is nil at this point,
+				// so check explicitly and bail if that is the case.
+				bail = rg.Preferred != ourID || (rg.node != nil && time.Since(rg.node.Created()) > lostQuorumIntervalDefault)
 			}
 			js.mu.RUnlock()
 			if bail {

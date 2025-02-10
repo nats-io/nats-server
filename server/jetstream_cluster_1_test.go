@@ -1,4 +1,4 @@
-// Copyright 2020-2024 The NATS Authors
+// Copyright 2020-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -3085,7 +3085,7 @@ func TestJetStreamClusterAccountInfoAndLimits(t *testing.T) {
 			MaxMemory:    1024,
 			MaxStore:     8000,
 			MaxStreams:   3,
-			MaxConsumers: 1,
+			MaxConsumers: 2,
 		},
 	})
 
@@ -3100,6 +3100,11 @@ func TestJetStreamClusterAccountInfoAndLimits(t *testing.T) {
 	if _, err := js.AddStream(&nats.StreamConfig{Name: "bar", Replicas: 2}); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "baz", Replicas: 3}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Create with same config is idempotent, and must not exceed max streams as it already exists.
 	if _, err := js.AddStream(&nats.StreamConfig{Name: "baz", Replicas: 3}); err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -3160,6 +3165,31 @@ func TestJetStreamClusterAccountInfoAndLimits(t *testing.T) {
 	_, err := js.AddConsumer("foo", &nats.ConsumerConfig{Durable: "dlc", AckPolicy: nats.AckExplicitPolicy})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Create (with explicit create API) for the same consumer must be idempotent, and not trigger limit.
+	obsReq := CreateConsumerRequest{
+		Stream: "foo",
+		Config: ConsumerConfig{Durable: "bar"},
+		Action: ActionCreate,
+	}
+	req, err := json.Marshal(obsReq)
+	require_NoError(t, err)
+
+	msg, err := nc.Request(fmt.Sprintf(JSApiDurableCreateT, "foo", "bar"), req, time.Second)
+	require_NoError(t, err)
+	var resp JSApiConsumerInfoResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	if resp.Error != nil {
+		t.Fatalf("Unexpected error: %v", resp.Error)
+	}
+
+	msg, err = nc.Request(fmt.Sprintf(JSApiDurableCreateT, "foo", "bar"), req, time.Second)
+	require_NoError(t, err)
+	var resp2 JSApiConsumerInfoResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp2))
+	if resp2.Error != nil {
+		t.Fatalf("Unexpected error: %v", resp2.Error)
 	}
 
 	// This should fail.
@@ -7325,6 +7355,133 @@ func TestJetStreamClusterPeerRemoveStreamConsumerDesync(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestJetStreamClusterStuckConsumerAfterLeaderChangeWithUnknownDeliveries(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Publish some messages into the stream.
+	for i := 0; i < 3; i++ {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	// Ensure all servers are up-to-date.
+	checkFor(t, 2*time.Second, 500*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	sub, err := js.PullSubscribe("foo", "CONSUMER")
+	require_NoError(t, err)
+	defer sub.Unsubscribe()
+
+	// We only fetch 1 message here, since the condition is hard to trigger otherwise.
+	// But, we're simulating fetching 3 messages and the consumer leader changing while
+	// deliveries are happening. This will result in the new consumer leader not knowing
+	// that the last two messages were also delivered (since we don't wait for quorum before delivering).
+	msgs, err := sub.Fetch(1)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 1)
+
+	// The client could send an acknowledgement, while the new consumer leader doesn't know about it
+	// ever being delivered. It must NOT adjust any state and ignore the request to remain consistent.
+	_, err = nc.Request("$JS.ACK.TEST.CONSUMER.1.3.3.0.0", nil, time.Second)
+	require_Error(t, err, nats.ErrTimeout)
+
+	// Acknowledging a message that is known to be delivered is accepted still.
+	_, err = nc.Request("$JS.ACK.TEST.CONSUMER.1.1.1.0.0", nil, time.Second)
+	require_NoError(t, err)
+
+	// Check for consistent consumer info.
+	ci, err := js.ConsumerInfo("TEST", "CONSUMER")
+	require_NoError(t, err)
+	require_Equal(t, ci.Delivered.Consumer, 1)
+	require_Equal(t, ci.Delivered.Stream, 1)
+	require_Equal(t, ci.AckFloor.Consumer, 1)
+	require_Equal(t, ci.AckFloor.Stream, 1)
+
+	// Fetching for new messages MUST return the two messages the new consumer leader didn't
+	// know were delivered before. If we wouldn't deliver these we'd have a stuck consumer.
+	msgs, err = sub.Fetch(2)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 2)
+	for _, msg := range msgs {
+		require_NoError(t, msg.AckSync())
+	}
+
+	// Check for consistent consumer info.
+	ci, err = js.ConsumerInfo("TEST", "CONSUMER")
+	require_NoError(t, err)
+	require_Equal(t, ci.Delivered.Consumer, 3)
+	require_Equal(t, ci.Delivered.Stream, 3)
+	require_Equal(t, ci.AckFloor.Consumer, 3)
+	require_Equal(t, ci.AckFloor.Stream, 3)
+}
+
+// This is for when we are still using $SYS for NRG replication but we want to make sure
+// we track this in something visible to the end user.
+func TestJetStreamClusterAccountStatsForReplicatedStreams(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R5S", 5)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 5,
+	})
+	require_NoError(t, err)
+
+	// Let's connect to stream leader to make sent messages predictable, otherwise we get those to come up based on routing to stream leader.
+	s := c.streamLeader(globalAccountName, "TEST")
+	require_True(t, s != nil)
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	// NRG traffic can be compressed, so make this unique so we can check stats correctly.
+	msg := make([]byte, 1024*1024)
+	crand.Read(msg)
+
+	// Publish some messages into the stream.
+	for i := 0; i < 10; i++ {
+		_, err = js.Publish("foo", msg)
+		require_NoError(t, err)
+	}
+	time.Sleep(250 * time.Millisecond)
+
+	// Now grab the account stats for us and make sure we account for the replicated messages.
+
+	// Opts to grab our account.
+	opts := &AccountStatzOptions{
+		Accounts: []string{globalAccountName},
+	}
+	as, err := s.AccountStatz(opts)
+	require_NoError(t, err)
+	require_Equal(t, len(as.Accounts), 1)
+
+	accStats := as.Accounts[0]
+
+	// We need to account for possibility that the stream create was also on this server, hence the >= vs strict ==.
+	require_True(t, accStats.Received.Msgs >= 10)
+	require_True(t, accStats.Received.Bytes >= 1024*1024)
+	// For sent, we will have 10 pub acks, and then should have 40 extra messages that are sent and accounted for
+	// during the nrg propsal to the R5 peers.
+	require_True(t, accStats.Sent.Msgs >= 50)
+	require_True(t, accStats.Sent.Bytes >= accStats.Received.Bytes*4)
 }
 
 //
