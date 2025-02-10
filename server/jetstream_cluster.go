@@ -3273,6 +3273,28 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool) {
 		return
 	}
 
+	// Clear inflight dedupe IDs, where seq=0.
+	mset.mu.Lock()
+	var removed int
+	for i := len(mset.ddarr) - 1; i >= mset.ddindex; i-- {
+		dde := mset.ddarr[i]
+		if dde.seq != 0 {
+			break
+		}
+		removed++
+		delete(mset.ddmap, dde.id)
+	}
+	if removed > 0 {
+		if len(mset.ddmap) > 0 {
+			mset.ddarr = mset.ddarr[:len(mset.ddarr)-removed]
+		} else {
+			mset.ddmap = nil
+			mset.ddarr = nil
+			mset.ddindex = 0
+		}
+	}
+	mset.mu.Unlock()
+
 	mset.clMu.Lock()
 	// Clear inflight if we have it.
 	mset.inflight = nil
@@ -7836,29 +7858,6 @@ func (mset *stream) supportsBinarySnapshotLocked() bool {
 	return true
 }
 
-// Determine if all peers in our set support having multiple inflight proposals for the same ID
-// while the deduplication is not yet finalized. During this condition multiple proposals for
-// the same ID would be sent, and it relies on all replicas to de-dupe on their own during this period.
-// Lock should be held.
-func (mset *stream) supportsDeferredDeduplication() bool {
-	s, n := mset.srv, mset.node
-	if s == nil || n == nil {
-		return false
-	}
-	// Grab our peers and walk them to make sure we can all support deferred deduplication.
-	id, peers := n.ID(), n.Peers()
-	for _, p := range peers {
-		if p.ID == id {
-			// We know we support ourselves.
-			continue
-		}
-		if sir, ok := s.nodeToInfo.Load(p.ID); ok && sir != nil && !sir.(nodeInfo).deferDedupe {
-			return false
-		}
-	}
-	return true
-}
-
 // StreamSnapshot is used for snapshotting and out of band catch up in clustered mode.
 // Legacy, replace with binary stream snapshots.
 type streamSnapshot struct {
@@ -7996,7 +7995,6 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	}
 
 	// Some header checks can be checked pre proposal. Most can not.
-	var ts = time.Now().UnixNano()
 	var msgId string
 	if len(hdr) > 0 {
 		// Since we encode header len as u16 make sure we do not exceed.
@@ -8027,27 +8025,29 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		// Will help during restarts.
 		if msgId = getMsgId(hdr); msgId != _EMPTY_ {
 			mset.mu.Lock()
-			// Since purging is delayed for the clustered de-dupe map, deterministically try to purge based on timestamp.
-			mset.purgeMsgIdsAtLocked(ts)
 			if dde := mset.checkMsgId(msgId); dde != nil {
 				var buf [256]byte
 				pubAck := append(buf[:0], mset.pubAck...)
 				seq := dde.seq
 				mset.mu.Unlock()
+				// Should not return an invalid sequence, in that case error.
 				if canRespond {
-					response := append(pubAck, strconv.FormatUint(seq, 10)...)
-					response = append(response, ",\"duplicate\": true}"...)
-					outq.sendMsg(reply, response)
+					if seq > 0 {
+						response := append(pubAck, strconv.FormatUint(seq, 10)...)
+						response = append(response, ",\"duplicate\": true}"...)
+						outq.sendMsg(reply, response)
+					} else {
+						var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
+						resp.Error = ApiErrors[JSStreamDuplicateMessageConflict]
+						b, _ := json.Marshal(resp)
+						outq.sendMsg(reply, b)
+					}
 				}
 				return errMsgIdDuplicate
 			}
-			// We used to stage with zero, but it's hard to correctly remove it during leader elections
-			// while taking quorum/truncation into account. So instead let duplicates through and handle
-			// duplicates later. Only if we know the sequence we can start blocking above.
-			// Unless, not all servers support this feature, in which case we still stage zero and block above.
-			if !mset.supportsDeferredDeduplication() {
-				mset.storeMsgIdLocked(&ddentry{msgId, 0, time.Now().UnixNano()})
-			}
+			// FIXME(dlc) - locking conflict with accessing mset.clseq
+			// For now we stage with zero, and will update in processStreamMsg.
+			mset.storeMsgIdLocked(&ddentry{msgId, 0, time.Now().UnixNano()})
 			mset.mu.Unlock()
 		}
 
@@ -8177,7 +8177,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		}
 	}
 
-	esm := encodeStreamMsgAllowCompress(subject, reply, hdr, msg, mset.clseq, ts, sourced)
+	esm := encodeStreamMsgAllowCompress(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano(), sourced)
 	var mtKey uint64
 	if mt != nil {
 		mtKey = mset.clseq
