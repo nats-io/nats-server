@@ -7609,7 +7609,7 @@ func TestJetStreamClusterAccountStatsForReplicatedStreams(t *testing.T) {
 
 	// We need to account for possibility that the stream create was also on this server, hence the >= vs strict ==.
 	require_True(t, accStats.Received.Msgs >= 10)
-	require_True(t, accStats.Received.Bytes >= 1024*1204)
+	require_True(t, accStats.Received.Bytes >= 1024*1024)
 	// For sent, we will have 10 pub acks, and then should have 40 extra messages that are sent and accounted for
 	// during the nrg propsal to the R5 peers.
 	require_True(t, accStats.Sent.Msgs >= 50)
