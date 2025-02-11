@@ -3546,7 +3546,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 			// Can happen temporarily all the time during normal operations when the sourcing stream
 			// is working queue/interest with a limit and discard new.
 			// TODO - Improve sourcing to WQ with limit and new to use flow control rather than re-creating the consumer.
-			if errors.Is(err, ErrMaxMsgs) {
+			if errors.Is(err, ErrMaxMsgs) || errors.Is(err, ErrMaxBytes) {
 				// Do not need to do a full retry that includes finding the last sequence in the stream
 				// for that source. Just re-create starting with the seq we couldn't store instead.
 				mset.mu.Lock()

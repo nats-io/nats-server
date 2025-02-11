@@ -231,6 +231,12 @@ func TestJetStreamClusterStreamPlacementDistribution(t *testing.T) {
 }
 
 func TestJetStreamClusterSourceWorkingQueueWithLimit(t *testing.T) {
+	const (
+		totalMsgs        = 300
+		maxMsgs          = 100
+		maxBytes         = maxMsgs * 100
+		msgPayloadFormat = "%0100d" // %0100d is 100 bytes. Must match payload value above.
+	)
 	c := createJetStreamClusterExplicit(t, "WQ3", 3)
 	defer c.shutdown()
 
@@ -240,36 +246,23 @@ func TestJetStreamClusterSourceWorkingQueueWithLimit(t *testing.T) {
 	_, err := js.AddStream(&nats.StreamConfig{Name: "test", Subjects: []string{"test"}, Replicas: 3})
 	require_NoError(t, err)
 
-	_, err = js.AddStream(&nats.StreamConfig{Name: "wq", MaxMsgs: 100, Discard: nats.DiscardNew, Retention: nats.WorkQueuePolicy,
+	_, err = js.AddStream(&nats.StreamConfig{Name: "wq", MaxMsgs: maxMsgs, Discard: nats.DiscardNew, Retention: nats.WorkQueuePolicy,
+		Sources: []*nats.StreamSource{{Name: "test"}}, Replicas: 3})
+	require_NoError(t, err)
+
+	_, err = js.AddStream(&nats.StreamConfig{Name: "wq2", MaxBytes: maxBytes, Discard: nats.DiscardNew, Retention: nats.WorkQueuePolicy,
 		Sources: []*nats.StreamSource{{Name: "test"}}, Replicas: 3})
 	require_NoError(t, err)
 
 	sendBatch := func(subject string, n int) {
 		for i := 0; i < n; i++ {
-			_, err = js.Publish(subject, []byte(strconv.Itoa(i)))
+			_, err = js.Publish(subject, []byte(fmt.Sprintf(msgPayloadFormat, i)))
 			require_NoError(t, err)
 		}
 	}
-	// Populate each one.
-	sendBatch("test", 300)
 
-	checkFor(t, 3*time.Second, 250*time.Millisecond, func() error {
-		si, err := js.StreamInfo("wq")
-		require_NoError(t, err)
-		if si.State.Msgs != 100 {
-			return fmt.Errorf("Expected 100 msgs, got state: %+v", si.State)
-		}
-		return nil
-	})
-
-	_, err = js.AddConsumer("wq", &nats.ConsumerConfig{Durable: "wqc", FilterSubject: "test", AckPolicy: nats.AckExplicitPolicy})
-	require_NoError(t, err)
-
-	ss, err := js.PullSubscribe("test", "wqc", nats.Bind("wq", "wqc"))
-	require_NoError(t, err)
-	// we must have at least one message on the transformed subject name (ie no timeout)
-	f := func(done chan bool) {
-		for i := 0; i < 300; i++ {
+	f := func(ss *nats.Subscription, done chan bool) {
+		for i := 0; i < totalMsgs; i++ {
 			m, err := ss.Fetch(1, nats.MaxWait(3*time.Second))
 			require_NoError(t, err)
 			p, err := strconv.Atoi(string(m[0].Data))
@@ -282,24 +275,80 @@ func TestJetStreamClusterSourceWorkingQueueWithLimit(t *testing.T) {
 		done <- true
 	}
 
-	var doneChan = make(chan bool)
-	go f(doneChan)
+	// Populate the sourced stream.
+	sendBatch("test", totalMsgs)
 
-	checkFor(t, 6*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 3*time.Second, 250*time.Millisecond, func() error {
 		si, err := js.StreamInfo("wq")
 		require_NoError(t, err)
-		if si.State.Msgs > 0 && si.State.Msgs <= 100 {
-			return fmt.Errorf("Expected 0 msgs, got: %d", si.State.Msgs)
-		} else if si.State.Msgs > 100 {
-			t.Fatalf("Got more than our 100 message limit: %+v", si.State)
+		if si.State.Msgs != maxMsgs {
+			return fmt.Errorf("expected %d msgs on stream wq, got state: %+v", maxMsgs, si.State)
 		}
 		return nil
 	})
 
+	checkFor(t, 3*time.Second, 250*time.Millisecond, func() error {
+		si, err := js.StreamInfo("wq2")
+		require_NoError(t, err)
+		if si.State.Bytes > maxBytes {
+			return fmt.Errorf("expected no more than %d bytes on stream wq2, got state: %+v", maxBytes, si.State)
+		}
+		return nil
+	})
+
+	_, err = js.AddConsumer("wq", &nats.ConsumerConfig{Durable: "wqc", FilterSubject: "test", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	ss1, err := js.PullSubscribe("test", "wqc", nats.Bind("wq", "wqc"))
+	require_NoError(t, err)
+
+	var doneChan1 = make(chan bool)
+	go f(ss1, doneChan1)
+
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		si, err := js.StreamInfo("wq")
+		require_NoError(t, err)
+		if si.State.Msgs > 0 && si.State.Msgs <= maxMsgs {
+			return fmt.Errorf("expected 0 msgs on stream wq, got: %d", si.State.Msgs)
+		} else if si.State.Msgs > maxMsgs {
+			t.Fatalf("got more than our %d message limit on stream wq: %+v", maxMsgs, si.State)
+		}
+
+		return nil
+	})
+
 	select {
-	case <-doneChan:
-		ss.Drain()
-	case <-time.After(5 * time.Second):
+	case <-doneChan1:
+		ss1.Drain()
+	case <-time.After(10 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	_, err = js.AddConsumer("wq2", &nats.ConsumerConfig{Durable: "wqc", FilterSubject: "test", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	ss2, err := js.PullSubscribe("test", "wqc", nats.Bind("wq2", "wqc"))
+	require_NoError(t, err)
+
+	var doneChan2 = make(chan bool)
+	go f(ss2, doneChan2)
+
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		si, err := js.StreamInfo("wq2")
+		require_NoError(t, err)
+		if si.State.Bytes > 0 && si.State.Bytes <= maxBytes {
+			return fmt.Errorf("expected 0 bytes on stream wq2, got: %+v", si.State)
+		} else if si.State.Bytes > maxBytes {
+			t.Fatalf("got more than our %d bytes limit on stream wq2: %+v", maxMsgs, si.State)
+		}
+
+		return nil
+	})
+
+	select {
+	case <-doneChan2:
+		ss2.Drain()
+	case <-time.After(20 * time.Second):
 		t.Fatalf("Did not receive completion signal")
 	}
 }
