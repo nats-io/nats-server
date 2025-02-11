@@ -16,7 +16,6 @@ package server
 import (
 	"archive/tar"
 	"bytes"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,6 +32,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/s2"
+	"github.com/nats-io/nats-server/v2/server/gsl"
 	"github.com/nats-io/nuid"
 )
 
@@ -329,10 +329,10 @@ type stream struct {
 
 	// For processing consumers without main stream lock.
 	clsMu sync.RWMutex
-	cList []*consumer     // Consumer list.
-	sch   chan struct{}   // Channel to signal consumers.
-	sigq  *ipQueue[*cMsg] // Intra-process queue for the messages to signal to the consumers.
-	csl   *Sublist        // Consumer subscription list.
+	cList []*consumer                    // Consumer list.
+	sch   chan struct{}                  // Channel to signal consumers.
+	sigq  *ipQueue[*cMsg]                // Intra-process queue for the messages to signal to the consumers.
+	csl   *gsl.GenericSublist[*consumer] // Consumer subscription list.
 
 	// Leader will store seq/msgTrace in clustering mode. Used in applyStreamEntries
 	// to know if trace event should be sent after processing.
@@ -5320,24 +5320,13 @@ func (mset *stream) signalConsumersLoop() {
 // This will update and signal all consumers that match.
 func (mset *stream) signalConsumers(subj string, seq uint64) {
 	mset.clsMu.RLock()
+	defer mset.clsMu.RUnlock()
 	if mset.csl == nil {
-		mset.clsMu.RUnlock()
 		return
 	}
-	r := mset.csl.Match(subj)
-	mset.clsMu.RUnlock()
-
-	if len(r.psubs) == 0 {
-		return
-	}
-	// Encode the sequence here.
-	var eseq [8]byte
-	var le = binary.LittleEndian
-	le.PutUint64(eseq[:], seq)
-	msg := eseq[:]
-	for _, sub := range r.psubs {
-		sub.icb(sub, nil, nil, subj, _EMPTY_, msg)
-	}
+	mset.csl.Match(subj, func(o *consumer) {
+		o.processStreamSignal(seq)
+	})
 }
 
 // Internal message for use by jetstream subsystem.
@@ -5892,10 +5881,10 @@ func (mset *stream) setConsumer(o *consumer) {
 	mset.clsMu.Lock()
 	mset.cList = append(mset.cList, o)
 	if mset.csl == nil {
-		mset.csl = NewSublistWithCache()
+		mset.csl = gsl.NewSublist[*consumer]()
 	}
 	for _, sub := range o.signalSubs() {
-		mset.csl.Insert(sub)
+		mset.csl.Insert(sub, o)
 	}
 	mset.clsMu.Unlock()
 }
@@ -5951,19 +5940,17 @@ func (mset *stream) swapSigSubs(o *consumer, newFilters []string) {
 
 	if o.isLeader() {
 		if mset.csl == nil {
-			mset.csl = NewSublistWithCache()
+			mset.csl = gsl.NewSublist[*consumer]()
 		}
 		// If no filters are preset, add fwcs to sublist for that consumer.
 		if newFilters == nil {
-			sub := &subscription{subject: []byte(fwcs), icb: o.processStreamSignal}
-			mset.csl.Insert(sub)
-			o.sigSubs = append(o.sigSubs, sub)
+			mset.csl.Insert(fwcs, o)
+			o.sigSubs = append(o.sigSubs, fwcs)
 			// If there are filters, add their subjects to sublist.
 		} else {
 			for _, filter := range newFilters {
-				sub := &subscription{subject: []byte(filter), icb: o.processStreamSignal}
-				mset.csl.Insert(sub)
-				o.sigSubs = append(o.sigSubs, sub)
+				mset.csl.Insert(filter, o)
+				o.sigSubs = append(o.sigSubs, filter)
 			}
 		}
 	}
