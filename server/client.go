@@ -3489,6 +3489,10 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 	// sending to is in a stalled state, go ahead and wait here
 	// with a limit.
 	if c.kind == CLIENT && client.out.stc != nil {
+		if srv.getOpts().NoFastProducerStall {
+			client.mu.Unlock()
+			return false
+		}
 		client.stalledWait(c)
 	}
 
