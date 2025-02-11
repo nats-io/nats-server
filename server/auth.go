@@ -615,8 +615,8 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 		// Check config-mode. The global account is a condition since users that
 		// are not found in the config are implicitly bound to the global account.
 		// This means those users should be implicitly delegated to auth callout
-		// if configured.
-		if juc == nil && opts.AuthCallout != nil && c.acc.Name != globalAccountName {
+		// if configured. Exclude LEAF connections from this check.
+		if c.kind != LEAF && juc == nil && opts.AuthCallout != nil && c.acc.Name != globalAccountName {
 			// If no allowed accounts are defined, then all accounts are in scope.
 			// Otherwise see if the account is in the list.
 			delegated := len(opts.AuthCallout.AllowedAccounts) == 0

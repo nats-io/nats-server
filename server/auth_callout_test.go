@@ -572,16 +572,26 @@ func createAuthServiceUser(t *testing.T, accKp nkeys.KeyPair) (pub, creds string
 }
 
 func createBasicAccountUser(t *testing.T, accKp nkeys.KeyPair) (creds string) {
+	return createBasicAccount(t, "auth-client", accKp, true)
+}
+
+func createBasicAccountLeaf(t *testing.T, accKp nkeys.KeyPair) (creds string) {
+	return createBasicAccount(t, "auth-leaf", accKp, false)
+}
+
+func createBasicAccount(t *testing.T, name string, accKp nkeys.KeyPair, addDeny bool) (creds string) {
 	t.Helper()
 	ukp, _ := nkeys.CreateUser()
 	seed, _ := ukp.Seed()
 	upub, _ := ukp.PublicKey()
 	uclaim := newJWTTestUserClaims()
 	uclaim.Subject = upub
-	uclaim.Name = "auth-client"
-	// For these deny all permission
-	uclaim.Permissions.Pub.Deny.Add(">")
-	uclaim.Permissions.Sub.Deny.Add(">")
+	uclaim.Name = name
+	if addDeny {
+		// For these deny all permission
+		uclaim.Permissions.Pub.Deny.Add(">")
+		uclaim.Permissions.Sub.Deny.Add(">")
+	}
 	vr := jwt.ValidationResults{}
 	uclaim.Validate(&vr)
 	require_Len(t, len(vr.Errors()), 0)
@@ -2100,4 +2110,216 @@ func updateAccount(t *testing.T, sys *nats.Conn, jwtToken string) {
 	require_NoError(t, err)
 	require_NotNil(t, response.Data)
 	require_Equal(t, response.Data.Code, int(200))
+}
+
+func TestAuthCalloutLeafNodeAndOperatorMode(t *testing.T) {
+	_, spub := createKey(t)
+	sysClaim := jwt.NewAccountClaims(spub)
+	sysClaim.Name = "$SYS"
+	sysJwt, err := sysClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// A account.
+	akp, apk := createKey(t)
+	aClaim := jwt.NewAccountClaims(apk)
+	aClaim.Name = "A"
+	aJwt, err := aClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// AUTH callout service account.
+	ckp, err := nkeys.FromSeed([]byte(authCalloutIssuerSeed))
+	require_NoError(t, err)
+
+	cpk, err := ckp.PublicKey()
+	require_NoError(t, err)
+
+	// The authorized user for the service.
+	upub, creds := createAuthServiceUser(t, ckp)
+	defer removeFile(t, creds)
+
+	authClaim := jwt.NewAccountClaims(cpk)
+	authClaim.Name = "AUTH"
+	authClaim.EnableExternalAuthorization(upub)
+	authClaim.Authorization.AllowedAccounts.Add("*")
+	authJwt, err := authClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	conf := fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		operator: %s
+		system_account: %s
+		resolver: MEM
+		resolver_preload: {
+			%s: %s
+			%s: %s
+			%s: %s
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+		}
+    `, ojwt, spub, cpk, authJwt, apk, aJwt, spub, sysJwt)
+
+	handler := func(m *nats.Msg) {
+		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
+		if (opts.Username == "leaf" && opts.Password == "pwd") || (opts.Token == "token") {
+			ujwt := createAuthUser(t, user, "user_a", apk, "", akp, 0, nil)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+		} else {
+			m.Respond(nil)
+		}
+	}
+
+	at := NewAuthTest(t, conf, handler, nats.UserCredentials(creds))
+	defer at.Cleanup()
+
+	ucreds := createBasicAccountUser(t, ckp)
+	defer removeFile(t, ucreds)
+
+	// This should switch us to the A account.
+	nc := at.Connect(nats.UserCredentials(ucreds), nats.Token("token"))
+	defer nc.Close()
+
+	natsSub(t, nc, "foo", func(m *nats.Msg) {
+		m.Respond([]byte("here"))
+	})
+	natsFlush(t, nc)
+
+	// Create creds for the leaf account.
+	lcreds := createBasicAccountLeaf(t, ckp)
+	defer removeFile(t, lcreds)
+
+	hopts := at.srv.getOpts()
+
+	for _, test := range []struct {
+		name string
+		up   string
+		ok   bool
+	}{
+		{"bad token", "tokenx", false},
+		{"bad username and password", "leaf:pwdx", false},
+		{"token", "token", true},
+		{"username and password", "leaf:pwd", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			lconf := createConfFile(t, []byte(fmt.Sprintf(`
+				listen: "127.0.0.1:-1"
+				server_name: "LEAF"
+				leafnodes {
+					remotes [
+						{
+							url: "nats://%s@127.0.0.1:%d"
+							credentials: "%s"
+						}
+					]
+				}
+			`, test.up, hopts.LeafNode.Port, lcreds)))
+			leaf, _ := RunServerWithConfig(lconf)
+			defer leaf.Shutdown()
+
+			if !test.ok {
+				// Expect failure to connect. Wait a bit before checking.
+				time.Sleep(50 * time.Millisecond)
+				checkLeafNodeConnectedCount(t, leaf, 0)
+				return
+			}
+
+			checkLeafNodeConnected(t, leaf)
+
+			checkSubInterest(t, leaf, globalAccountName, "foo", time.Second)
+
+			ncl := natsConnect(t, leaf.ClientURL())
+			defer ncl.Close()
+
+			resp, err := ncl.Request("foo", []byte("hello"), time.Second)
+			require_NoError(t, err)
+			require_Equal(t, string(resp.Data), "here")
+		})
+	}
+}
+
+func TestAuthCalloutLeafNodeAndConfigMode(t *testing.T) {
+	conf := `
+		listen: "127.0.0.1:-1"
+		accounts {
+			AUTH { users [ {user: "auth", password: "pwd"} ] }
+			A {}
+		}
+		authorization {
+			timeout: 1s
+			auth_callout {
+				# Needs to be a public account nkey, will work for both server config and operator mode.
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				account: AUTH
+				auth_users: [ auth ]
+			}
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+		}
+	`
+	handler := func(m *nats.Msg) {
+		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
+		if (opts.Username == "leaf" && opts.Password == "pwd") || (opts.Token == "token") {
+			ujwt := createAuthUser(t, user, _EMPTY_, "A", "", nil, 0, nil)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+		} else {
+			m.Respond(nil)
+		}
+	}
+
+	at := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer at.Cleanup()
+
+	// This should switch us to the A account.
+	nc := at.Connect(nats.Token("token"))
+	defer nc.Close()
+
+	natsSub(t, nc, "foo", func(m *nats.Msg) {
+		m.Respond([]byte("here"))
+	})
+	natsFlush(t, nc)
+
+	hopts := at.srv.getOpts()
+
+	for _, test := range []struct {
+		name string
+		up   string
+		ok   bool
+	}{
+		{"bad token", "tokenx", false},
+		{"bad username and password", "leaf:pwdx", false},
+		{"token", "token", true},
+		{"username and password", "leaf:pwd", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			lconf := createConfFile(t, []byte(fmt.Sprintf(`
+				listen: "127.0.0.1:-1"
+				server_name: "LEAF"
+				leafnodes {
+					remotes [{url: "nats://%s@127.0.0.1:%d"}]
+				}
+			`, test.up, hopts.LeafNode.Port)))
+			leaf, _ := RunServerWithConfig(lconf)
+			defer leaf.Shutdown()
+
+			if !test.ok {
+				// Expect failure to connect. Wait a bit before checking.
+				time.Sleep(50 * time.Millisecond)
+				checkLeafNodeConnectedCount(t, leaf, 0)
+				return
+			}
+
+			checkLeafNodeConnected(t, leaf)
+
+			checkSubInterest(t, leaf, globalAccountName, "foo", time.Second)
+
+			ncl := natsConnect(t, leaf.ClientURL())
+			defer ncl.Close()
+
+			resp, err := ncl.Request("foo", []byte("hello"), time.Second)
+			require_NoError(t, err)
+			require_Equal(t, string(resp.Data), "here")
+		})
+	}
+
 }

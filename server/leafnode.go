@@ -878,9 +878,18 @@ func (c *client) sendLeafConnect(clusterName string, headers bool) error {
 		pkey, _ := kp.PublicKey()
 		cinfo.Nkey = pkey
 		cinfo.Sig = sig
-	} else if userInfo := c.leaf.remote.curURL.User; userInfo != nil {
+	}
+	// In addition, and this is to allow auth callout, set user/password or
+	// token if applicable.
+	if userInfo := c.leaf.remote.curURL.User; userInfo != nil {
+		// For backward compatibility, if only username is provided, set both
+		// Token and User, not just Token.
 		cinfo.User = userInfo.Username()
-		cinfo.Pass, _ = userInfo.Password()
+		var ok bool
+		cinfo.Pass, ok = userInfo.Password()
+		if !ok {
+			cinfo.Token = cinfo.User
+		}
 	} else if c.leaf.remote.username != _EMPTY_ {
 		cinfo.User = c.leaf.remote.username
 		cinfo.Pass = c.leaf.remote.password
@@ -1799,6 +1808,7 @@ type leafConnectInfo struct {
 	Sig       string   `json:"sig,omitempty"`
 	User      string   `json:"user,omitempty"`
 	Pass      string   `json:"pass,omitempty"`
+	Token     string   `json:"auth_token,omitempty"`
 	ID        string   `json:"server_id,omitempty"`
 	Domain    string   `json:"domain,omitempty"`
 	Name      string   `json:"name,omitempty"`
