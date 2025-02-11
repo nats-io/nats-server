@@ -4118,9 +4118,14 @@ func (mset *stream) storeUpdates(md, bd int64, seq uint64, subj string) {
 	if md == -1 && seq > 0 && subj != _EMPTY_ {
 		// We use our consumer list mutex here instead of the main stream lock since it may be held already.
 		mset.clsMu.RLock()
-		// TODO(dlc) - Do sublist like signaling so we do not have to match?
-		for _, o := range mset.cList {
-			o.decStreamPending(seq, subj)
+		if mset.csl != nil {
+			mset.csl.Match(subj, func(o *consumer) {
+				o.decStreamPending(seq, subj)
+			})
+		} else {
+			for _, o := range mset.cList {
+				o.decStreamPending(seq, subj)
+			}
 		}
 		mset.clsMu.RUnlock()
 	} else if md < 0 {
@@ -5321,10 +5326,11 @@ func (mset *stream) signalConsumersLoop() {
 func (mset *stream) signalConsumers(subj string, seq uint64) {
 	mset.clsMu.RLock()
 	defer mset.clsMu.RUnlock()
-	if mset.csl == nil {
+	csl := mset.csl
+	if csl == nil {
 		return
 	}
-	mset.csl.Match(subj, func(o *consumer) {
+	csl.Match(subj, func(o *consumer) {
 		o.processStreamSignal(seq)
 	})
 }
@@ -5910,7 +5916,7 @@ func (mset *stream) removeConsumer(o *consumer) {
 		// Always remove from the leader sublist.
 		if mset.csl != nil {
 			for _, sub := range o.signalSubs() {
-				mset.csl.Remove(sub)
+				mset.csl.Remove(sub, o)
 			}
 		}
 		mset.clsMu.Unlock()
@@ -5932,7 +5938,7 @@ func (mset *stream) swapSigSubs(o *consumer, newFilters []string) {
 	if o.sigSubs != nil {
 		if mset.csl != nil {
 			for _, sub := range o.sigSubs {
-				mset.csl.Remove(sub)
+				mset.csl.Remove(sub, o)
 			}
 		}
 		o.sigSubs = nil

@@ -54,7 +54,7 @@ type GenericSublist[T comparable] struct {
 // A node contains subscriptions and a pointer to the next level.
 type node[T comparable] struct {
 	next *level[T]
-	subs map[string]T
+	subs map[T]string // value -> subject
 }
 
 // A level represents a group of nodes and special pointers to
@@ -66,7 +66,7 @@ type level[T comparable] struct {
 
 // Create a new default node.
 func newNode[T comparable]() *node[T] {
-	return &node[T]{subs: make(map[string]T)}
+	return &node[T]{subs: make(map[T]string)}
 }
 
 // Create a new default level.
@@ -138,7 +138,7 @@ func (s *GenericSublist[T]) Insert(subject string, value T) error {
 		}
 		l = n.next
 	}
-	n.subs[subject] = value
+	n.subs[value] = subject
 
 	s.count++
 	s.Unlock()
@@ -191,11 +191,9 @@ func (s *GenericSublist[T]) match(subject string, cb func(T), doLock bool) {
 
 	if doLock {
 		s.RLock()
+		defer s.RUnlock()
 	}
 	matchLevel(s.root, tokens, cb)
-	if doLock {
-		s.RUnlock()
-	}
 }
 
 func (s *GenericSublist[T]) hasInterest(subject string, doLock bool, np *int) bool {
@@ -265,7 +263,7 @@ func matchLevelForAny[T comparable](l *level[T], toks []string, np *int) bool {
 // callbacksForResults will make the necessary callbacks for each
 // result in this node.
 func callbacksForResults[T comparable](n *node[T], cb func(T)) {
-	for _, sub := range n.subs {
+	for sub := range n.subs {
 		cb(sub)
 	}
 }
@@ -306,7 +304,7 @@ type lnt[T comparable] struct {
 }
 
 // Raw low level remove, can do batches with lock held outside.
-func (s *GenericSublist[T]) remove(subject string, shouldLock bool) error {
+func (s *GenericSublist[T]) remove(subject string, value T, shouldLock bool) error {
 	tsa := [32]string{}
 	tokens := tsa[:0]
 	start := 0
@@ -359,7 +357,7 @@ func (s *GenericSublist[T]) remove(subject string, shouldLock bool) error {
 			l = nil
 		}
 	}
-	removed, _ := s.removeFromNode(n, subject)
+	removed, _ := s.removeFromNode(n, value)
 	if !removed {
 		return ErrNotFound
 	}
@@ -377,8 +375,8 @@ func (s *GenericSublist[T]) remove(subject string, shouldLock bool) error {
 }
 
 // Remove will remove a subscription.
-func (s *GenericSublist[T]) Remove(subject string) error {
-	return s.remove(subject, true)
+func (s *GenericSublist[T]) Remove(subject string, value T) error {
+	return s.remove(subject, value, true)
 }
 
 // pruneNode is used to prune an empty node from the tree.
@@ -414,12 +412,12 @@ func (l *level[T]) numNodes() int {
 }
 
 // Remove the sub for the given node.
-func (s *GenericSublist[T]) removeFromNode(n *node[T], subject string) (found, last bool) {
+func (s *GenericSublist[T]) removeFromNode(n *node[T], value T) (found, last bool) {
 	if n == nil {
 		return false, true
 	}
-	_, found = n.subs[subject]
-	delete(n.subs, subject)
+	_, found = n.subs[value]
+	delete(n.subs, value)
 	return found, len(n.subs) == 0
 }
 

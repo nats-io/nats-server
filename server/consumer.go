@@ -5890,7 +5890,7 @@ func (o *consumer) signalSubs() []string {
 		return o.sigSubs
 	}
 
-	if o.subjf == nil {
+	if len(o.subjf) == 0 {
 		subs := []string{fwcs}
 		o.sigSubs = subs
 		return subs
