@@ -858,9 +858,14 @@ func (a *Account) Interest(subject string) int {
 func (a *Account) addClient(c *client) int {
 	a.mu.Lock()
 	n := len(a.clients)
-	if a.clients != nil {
-		a.clients[c] = struct{}{}
+
+	// Could come here earlier than the account is registered with the server.
+	// Make sure we can still track clients.
+	if a.clients == nil {
+		a.clients = make(map[*client]struct{})
 	}
+	a.clients[c] = struct{}{}
+
 	// If we did not add it, we are done
 	if n == len(a.clients) {
 		a.mu.Unlock()
