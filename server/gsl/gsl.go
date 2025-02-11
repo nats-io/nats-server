@@ -54,7 +54,7 @@ type GenericSublist[T comparable] struct {
 // A node contains subscriptions and a pointer to the next level.
 type node[T comparable] struct {
 	next *level[T]
-	subs map[T]string
+	subs map[T]string // value -> subject
 }
 
 // A level represents a group of nodes and special pointers to
