@@ -5782,13 +5782,21 @@ func (c *client) getAccAndResultFromCache() (*Account, *SublistResult) {
 		// Match against the account sublist.
 		r = sl.MatchBytes(c.pa.subject)
 
-		// Check if we need to prune.
+		// Check if we need to prune. If we do then we can reuse
+		// the pruned *perAccountCache.
+		var pac *perAccountCache
 		if len(c.in.pacache) >= maxPerAccountCacheSize {
-			c.prunePerAccountCache()
+			pac = c.prunePerAccountCache()
 		}
+		if pac == nil {
+			pac = &perAccountCache{}
+		}
+		pac.acc = acc
+		pac.genid = atomic.LoadUint64(&sl.genid)
+		pac.results = r
 
 		// Store in our cache,make sure to do so after we prune.
-		c.in.pacache[string(c.pa.pacache)] = &perAccountCache{acc, r, atomic.LoadUint64(&sl.genid)}
+		c.in.pacache[string(c.pa.pacache)] = pac
 	}
 	return acc, r
 }
@@ -5804,15 +5812,17 @@ func (c *client) Account() *Account {
 	return acc
 }
 
-// prunePerAccountCache will prune off a random number of cache entries.
-func (c *client) prunePerAccountCache() {
-	n := 0
-	for cacheKey := range c.in.pacache {
+// prunePerAccountCache will prune off a single cache entries,
+// returning it for reuse.
+func (c *client) prunePerAccountCache() (recycle *perAccountCache) {
+	for cacheKey, pac := range c.in.pacache {
 		delete(c.in.pacache, cacheKey)
-		if n++; n > prunePerAccountCacheSize {
+		if len(c.in.pacache) < maxPerAccountCacheSize {
+			recycle = pac
 			break
 		}
 	}
+	return
 }
 
 // pruneClosedSubFromPerAccountCache remove entries that contain subscriptions
