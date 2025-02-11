@@ -244,6 +244,7 @@ const (
 	errMsgTraceSubClosed       = "Not delivered because subscription is closed"
 	errMsgTraceClientClosed    = "Not delivered because client is closed"
 	errMsgTraceAutoSubExceeded = "Not delivered because auto-unsubscribe exceeded"
+	errMsgTraceFastProdNoStall = "Not delivered because fast producer not stalled and consumer is slow"
 )
 
 type msgTrace struct {
