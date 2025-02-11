@@ -1182,6 +1182,8 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 		o.MaxTracedMsgLen = int(v.(int64))
 	case "max_subscriptions", "max_subs":
 		o.MaxSubs = int(v.(int64))
+	case "max_closed_clients":
+		o.MaxClosedClients = int(v.(int64))
 	case "max_sub_tokens", "max_subscription_tokens":
 		if n := v.(int64); n > math.MaxUint8 {
 			err := &configErr{tk, fmt.Sprintf("%s value is too big", k)}

@@ -1360,6 +1360,17 @@ func TestPanic(t *testing.T) {
 	}
 }
 
+func TestMaxClosedClients(t *testing.T) {
+	conf := createConfFile(t, []byte(`max_closed_clients: 5`))
+	opts := &Options{}
+	if err := opts.ProcessConfigFile(conf); err != nil {
+		t.Fatalf("expected no error")
+	}
+	if opts.MaxClosedClients != 5 {
+		t.Fatalf("expected max closed clients to be 5")
+	}
+}
+
 func TestPingIntervalOld(t *testing.T) {
 	conf := createConfFile(t, []byte(`ping_interval: 5`))
 	opts := &Options{}
