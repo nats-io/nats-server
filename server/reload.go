@@ -917,6 +917,19 @@ func (l *leafNodeOption) Apply(s *Server) {
 	}
 }
 
+type noFastProdStallReload struct {
+	noopOption
+	noStall bool
+}
+
+func (l *noFastProdStallReload) Apply(s *Server) {
+	var not string
+	if l.noStall {
+		not = "not "
+	}
+	s.Noticef("Reloaded: fast producers will %sbe stalled", not)
+}
+
 // Compares options and disconnects clients that are no longer listed in pinned certs. Lock must not be held.
 func (s *Server) recheckPinnedCerts(curOpts *Options, newOpts *Options) {
 	s.mu.Lock()
@@ -1638,6 +1651,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			// skip changes in config digest, this is handled already while
 			// processing the config.
 			continue
+		case "nofastproducerstall":
+			diffOpts = append(diffOpts, &noFastProdStallReload{noStall: newValue.(bool)})
 		default:
 			// TODO(ik): Implement String() on those options to have a nice print.
 			// %v is difficult to figure what's what, %+v print private fields and

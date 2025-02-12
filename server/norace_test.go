@@ -11365,3 +11365,217 @@ func TestNoRaceStoreReverseWalkWithDeletesPerf(t *testing.T) {
 		}
 	}
 }
+
+type fastProdLogger struct {
+	DummyLogger
+	gotIt chan struct{}
+}
+
+func (l *fastProdLogger) Debugf(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	if strings.Contains(msg, "fast producer") {
+		select {
+		case l.gotIt <- struct{}{}:
+		default:
+		}
+	}
+}
+
+type slowWriteConn struct {
+	sync.RWMutex
+	net.Conn
+	delay bool
+}
+
+func (c *slowWriteConn) Write(b []byte) (int, error) {
+	c.RLock()
+	delay := c.delay
+	c.RUnlock()
+	if delay {
+		time.Sleep(100 * time.Millisecond)
+	}
+	return c.Conn.Write(b)
+}
+
+func TestNoRaceNoFastProducerStall(t *testing.T) {
+	tmpl := `
+		listen: "127.0.0.1:-1"
+		no_fast_producer_stall: %s
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, "true")))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	l := &fastProdLogger{gotIt: make(chan struct{}, 1)}
+	s.SetLogger(l, true, false)
+
+	ncSlow := natsConnect(t, s.ClientURL(), nats.ReconnectWait(10*time.Millisecond))
+	defer ncSlow.Close()
+	natsSub(t, ncSlow, "foo", func(_ *nats.Msg) {})
+	natsFlush(t, ncSlow)
+
+	cid, err := ncSlow.GetClientID()
+	require_NoError(t, err)
+	c := s.GetClient(cid)
+	require_True(t, c != nil)
+
+	c.mu.Lock()
+	swc := &slowWriteConn{Conn: c.nc, delay: true}
+	c.nc = swc
+	c.mu.Unlock()
+
+	defer func() {
+		swc.Lock()
+		swc.delay = false
+		swc.Unlock()
+	}()
+
+	// The producer could still overwhelm the "fast" consumer.
+	// So we will send more than what it will use as a target
+	// to consider the test done.
+	total := 2_000_000
+	target := total / 2
+	ch := make(chan struct{}, 1)
+	var count int
+
+	ncFast := natsConnect(t, s.ClientURL(), nats.ReconnectWait(10*time.Millisecond))
+	defer ncFast.Close()
+	fastSub := natsSub(t, ncFast, "foo", func(_ *nats.Msg) {
+		if count++; count == target {
+			ch <- struct{}{}
+		}
+	})
+	err = fastSub.SetPendingLimits(-1, -1)
+	require_NoError(t, err)
+	natsFlush(t, ncFast)
+
+	ncProd := natsConnect(t, s.ClientURL(), nats.ReconnectWait(10*time.Millisecond))
+	defer ncProd.Close()
+
+	cid, err = ncProd.GetClientID()
+	require_NoError(t, err)
+	pc := s.GetClient(cid)
+	pc.mu.Lock()
+	pcnc := pc.nc
+	pc.mu.Unlock()
+
+	payload := make([]byte, 256)
+
+	for i := 0; i < total; i++ {
+		natsPub(t, ncProd, "foo", payload)
+	}
+	select {
+	case <-ch:
+		// OK
+	case <-time.After(10 * time.Second):
+		t.Fatal("Test timed-out")
+	}
+	// Now wait a bit and make sure we did not get any fast producer debug statements.
+	select {
+	case <-l.gotIt:
+		t.Fatal("Got debug logs about fast producer")
+	case <-time.After(time.Second):
+		// OK
+	}
+
+	// We don't need that one anymore
+	ncFast.Close()
+	// Now we will conf reload to enable fast producer stalling.
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmpl, "false"))
+
+	// Since the producer can block, we will publish from a different routine,
+	// and check for the debug trace from the main.
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	doneCh := make(chan struct{})
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			ncProd.Publish("foo", payload)
+			select {
+			case <-doneCh:
+				return
+			default:
+			}
+			if i%1000 == 0 {
+				time.Sleep(time.Millisecond)
+			}
+		}
+	}()
+	select {
+	case <-l.gotIt:
+		pcnc.Close()
+		close(doneCh)
+	case <-time.After(20 * time.Second):
+		t.Fatal("Timed-out waiting for a warning")
+	}
+	wg.Wait()
+}
+
+func TestNoRaceNoFastProducerStallAndMsgTrace(t *testing.T) {
+	o := DefaultOptions()
+	o.NoFastProducerStall = true
+	o.WriteDeadline = 2 * time.Second
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	ncSlow := natsConnect(t, s.ClientURL(), nats.ReconnectWait(10*time.Millisecond))
+	defer ncSlow.Close()
+	natsSub(t, ncSlow, "foo", func(_ *nats.Msg) {})
+	natsFlush(t, ncSlow)
+
+	cid, err := ncSlow.GetClientID()
+	require_NoError(t, err)
+	c := s.GetClient(cid)
+	require_True(t, c != nil)
+
+	c.mu.Lock()
+	swc := &slowWriteConn{Conn: c.nc, delay: true}
+	c.nc = swc
+	c.mu.Unlock()
+
+	defer func() {
+		swc.Lock()
+		swc.delay = false
+		swc.Unlock()
+	}()
+
+	ncProd := natsConnect(t, s.ClientURL(), nats.ReconnectWait(10*time.Millisecond))
+	defer ncProd.Close()
+
+	payload := make([]byte, 256)
+
+	nc := natsConnect(t, s.ClientURL(), nats.ReconnectWait(10*time.Millisecond))
+	defer nc.Close()
+	doneCh := make(chan struct{})
+	traceSub := natsSub(t, nc, "my.trace.subj", func(traceMsg *nats.Msg) {
+		var e MsgTraceEvent
+		json.Unmarshal(traceMsg.Data, &e)
+		egresses := e.Egresses()
+		if len(egresses) == 1 {
+			if err := egresses[0].Error; err == errMsgTraceFastProdNoStall {
+				close(doneCh)
+				traceMsg.Sub.Unsubscribe()
+			}
+		}
+	})
+	err = traceSub.SetPendingLimits(-1, -1)
+	require_NoError(t, err)
+	natsFlush(t, nc)
+
+	msg := nats.NewMsg("foo")
+	msg.Header.Set(MsgTraceDest, traceSub.Subject)
+	msg.Data = payload
+	for i, done := 0, false; !done; i++ {
+		ncProd.PublishMsg(msg)
+		select {
+		case <-doneCh:
+			// OK
+			return
+		default:
+		}
+		if i%1000 == 0 {
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
