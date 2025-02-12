@@ -3198,6 +3198,77 @@ func TestJetStreamClusterAccountInfoAndLimits(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterMaxStreamsReached(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomNonLeader())
+	defer nc.Close()
+
+	// Adjust our limits.
+	c.updateLimits("$G", map[string]JetStreamAccountLimits{
+		_EMPTY_: {
+			MaxMemory:  1024,
+			MaxStore:   1024,
+			MaxStreams: 1,
+		},
+	})
+
+	// Many stream creations in parallel for the same stream should not result in
+	// maximum number of streams reached error. All should have a successful response.
+	var wg sync.WaitGroup
+	for i := 0; i < 15; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				Replicas: 1,
+			})
+			require_NoError(t, err)
+		}()
+	}
+	wg.Wait()
+	require_NoError(t, js.DeleteStream("TEST"))
+
+	// Adjust our limits.
+	c.updateLimits("$G", map[string]JetStreamAccountLimits{
+		_EMPTY_: {
+			MaxMemory:  1024,
+			MaxStore:   1024,
+			MaxStreams: 2,
+		},
+	})
+
+	// Setup streams beforehand.
+	for d := 0; d < 2; d++ {
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     fmt.Sprintf("TEST-%d", d),
+			Subjects: []string{fmt.Sprintf("foo.%d", d)},
+			Replicas: 1,
+		})
+		require_NoError(t, err)
+	}
+
+	// Many stream creations in parallel for streams that already exist should not result in
+	// maximum number of streams reached error. All should have a successful response.
+	for i := 0; i < 15; i++ {
+		wg.Add(1)
+		d := i % 2
+		go func() {
+			defer wg.Done()
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     fmt.Sprintf("TEST-%d", d),
+				Subjects: []string{fmt.Sprintf("foo.%d", d)},
+				Replicas: 1,
+			})
+			require_NoError(t, err)
+		}()
+	}
+	wg.Wait()
+}
+
 func TestJetStreamClusterStreamLimits(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
