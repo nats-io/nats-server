@@ -5755,23 +5755,21 @@ func TestJetStreamClusterDetectOrphanNRGs(t *testing.T) {
 	mset, err := s.GlobalAccount().lookupStream("TEST")
 	require_NoError(t, err)
 	sgn := mset.raftNode().Group()
-	mset.clearRaftNode()
 
 	o := mset.lookupConsumer("DC")
 	require_True(t, o != nil)
 	ogn := o.raftNode().Group()
-	o.clearRaftNode()
 
 	require_NoError(t, js.DeleteStream("TEST"))
 
-	// Check that we do in fact have orphans.
-	require_True(t, s.numRaftNodes() > 1)
-
-	// This function will detect orphans and clean them up.
-	s.checkForNRGOrphans()
-
 	// Should only be meta NRG left.
-	require_True(t, s.numRaftNodes() == 1)
+	checkFor(t, 2*time.Second, 500*time.Millisecond, func() error {
+		if rns := s.numRaftNodes(); rns != 1 {
+			return fmt.Errorf("expected only 1 (meta) RAFT node, got: %d", rns)
+		}
+		return nil
+	})
+
 	s.rnMu.RLock()
 	defer s.rnMu.RUnlock()
 	require_True(t, s.lookupRaftNode(sgn) == nil)
