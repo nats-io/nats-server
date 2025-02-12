@@ -834,6 +834,7 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 			Import:       r.opts.Import,
 			Export:       r.opts.Export,
 			RTT:          r.getRTT().String(),
+			Pending:      int(r.out.pb),
 			Start:        r.start,
 			LastActivity: r.last,
 			Uptime:       myUptime(rs.Now.Sub(r.start)),
