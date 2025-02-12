@@ -482,7 +482,7 @@ type consumer struct {
 	ackMsgs *ipQueue[*jsAckMsg]
 
 	// for stream signaling when multiple filters are set.
-	sigSubs []*subscription
+	sigSubs []string
 
 	// Priority groups
 	// Details described in ADR-42.
@@ -5882,7 +5882,7 @@ func (o *consumer) account() *Account {
 
 // Creates a sublist for consumer.
 // All subjects share the same callback.
-func (o *consumer) signalSubs() []*subscription {
+func (o *consumer) signalSubs() []string {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
@@ -5890,15 +5890,15 @@ func (o *consumer) signalSubs() []*subscription {
 		return o.sigSubs
 	}
 
-	subs := []*subscription{}
-	if o.subjf == nil {
-		subs = append(subs, &subscription{subject: []byte(fwcs), icb: o.processStreamSignal})
+	if len(o.subjf) == 0 {
+		subs := []string{fwcs}
 		o.sigSubs = subs
 		return subs
 	}
 
+	subs := make([]string, 0, len(o.subjf))
 	for _, filter := range o.subjf {
-		subs = append(subs, &subscription{subject: []byte(filter.subject), icb: o.processStreamSignal})
+		subs = append(subs, filter.subject)
 	}
 	o.sigSubs = subs
 	return subs
@@ -5908,7 +5908,7 @@ func (o *consumer) signalSubs() []*subscription {
 // We know that this subject matches us by how the parent handles registering us with the signaling sublist,
 // but we must check if we are leader.
 // We do need the sequence of the message however and we use the msg as the encoded seq.
-func (o *consumer) processStreamSignal(_ *subscription, _ *client, _ *Account, subject, _ string, seqb []byte) {
+func (o *consumer) processStreamSignal(seq uint64) {
 	// We can get called here now when not leader, so bail fast
 	// and without acquiring any locks.
 	if !o.leader.Load() {
@@ -5919,10 +5919,6 @@ func (o *consumer) processStreamSignal(_ *subscription, _ *client, _ *Account, s
 	if o.mset == nil {
 		return
 	}
-
-	var le = binary.LittleEndian
-	seq := le.Uint64(seqb)
-
 	if seq > o.npf {
 		o.npc++
 	}
