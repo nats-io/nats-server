@@ -6148,7 +6148,14 @@ func (js *jetStream) jsClusteredStreamLimitsCheck(acc *Account, cfg *StreamConfi
 	numStreams, reservations := tieredStreamAndReservationCount(asa, tier, cfg)
 	// Check for inflight proposals...
 	if cc := js.cluster; cc != nil && cc.inflight != nil {
-		numStreams += len(cc.inflight[acc.Name])
+		streams := cc.inflight[acc.Name]
+		numStreams += len(streams)
+		// If inflight contains the same stream, don't count toward exceeding maximum.
+		if cfg != nil {
+			if _, ok := streams[cfg.Name]; ok {
+				numStreams--
+			}
+		}
 	}
 	if selectedLimits.MaxStreams > 0 && numStreams >= selectedLimits.MaxStreams {
 		return NewJSMaximumStreamsLimitError()
@@ -6256,7 +6263,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 		// On success, add this as an inflight proposal so we can apply limits
 		// on concurrent create requests while this stream assignment has
 		// possibly not been processed yet.
-		if streams, ok := cc.inflight[acc.Name]; ok {
+		if streams, ok := cc.inflight[acc.Name]; ok && self == nil {
 			streams[cfg.Name] = &inflightInfo{rg, syncSubject}
 		}
 	}
