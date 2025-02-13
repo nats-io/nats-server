@@ -7,7 +7,7 @@ if [ "$1" = "compile" ]; then
     go build;
 
     # Now run the linters.
-    go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.62.0;
+    go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.4;
     golangci-lint run;
     if [ "$TRAVIS_TAG" != "" ]; then
         go test -race -v -run=TestVersionMatchesTag ./server -ldflags="-X=github.com/nats-io/nats-server/v2/server.serverVersion=$TRAVIS_TAG" -count=1 -vet=off

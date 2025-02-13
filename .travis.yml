@@ -8,8 +8,8 @@ language: go
 go:
   # This should be quoted or use .x, but should not be unquoted.
   # Remember that a YAML bare float drops trailing zeroes.
+  - "1.24.0"
   - "1.23.6"
-  - "1.22.12"
 
 go_import_path: github.com/nats-io/nats-server
 
@@ -47,7 +47,7 @@ jobs:
     - name: "Run all tests from all other packages"
       env: TEST_SUITE=non_srv_pkg_tests
     - name: "Compile with older Go release"
-      go: "1.22.x"
+      go: "1.23.x"
       env: TEST_SUITE=build_only
 
 script: ./scripts/runTestsOnTravis.sh $TEST_SUITE
@@ -64,4 +64,4 @@ deploy:
   script: curl -o /tmp/goreleaser.tar.gz -sLf https://github.com/goreleaser/goreleaser/releases/download/v2.6.1/goreleaser_Linux_x86_64.tar.gz && tar -xvf /tmp/goreleaser.tar.gz -C /tmp/ && /tmp/goreleaser
   on:
     tags: true
-    condition: ($TRAVIS_GO_VERSION =~ 1.23) && ($TEST_SUITE = "compile")
+    condition: ($TRAVIS_GO_VERSION =~ 1.24) && ($TEST_SUITE = "compile")
