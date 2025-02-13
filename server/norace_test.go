@@ -11365,3 +11365,114 @@ func TestNoRaceStoreReverseWalkWithDeletesPerf(t *testing.T) {
 		}
 	}
 }
+
+type fastProdLogger struct {
+	DummyLogger
+	gotIt chan struct{}
+}
+
+func (l *fastProdLogger) Debugf(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	if strings.Contains(msg, "fast producer") {
+		select {
+		case l.gotIt <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func TestNoRaceNoFastProducerStall(t *testing.T) {
+	tmpl := `
+		listen: "127.0.0.1:-1"
+		no_fast_producer_stall: %s
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, "true")))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	l := &fastProdLogger{gotIt: make(chan struct{}, 1)}
+	s.SetLogger(l, true, false)
+
+	ncSlow := natsConnect(t, s.ClientURL())
+	defer ncSlow.Close()
+	natsSub(t, ncSlow, "foo", func(_ *nats.Msg) {})
+	natsFlush(t, ncSlow)
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+	traceSub := natsSubSync(t, nc, "my.trace.subj")
+	natsFlush(t, nc)
+
+	ncProd := natsConnect(t, s.ClientURL())
+	defer ncProd.Close()
+
+	payload := make([]byte, 256)
+
+	cid, err := ncSlow.GetClientID()
+	require_NoError(t, err)
+	c := s.GetClient(cid)
+	require_True(t, c != nil)
+
+	wg := sync.WaitGroup{}
+	pub := func() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			msg := nats.NewMsg("foo")
+			msg.Header.Set(MsgTraceDest, traceSub.Subject)
+			msg.Data = payload
+			ncProd.PublishMsg(msg)
+		}()
+	}
+
+	checkTraceMsg := func(err string) {
+		t.Helper()
+		var e MsgTraceEvent
+		traceMsg := natsNexMsg(t, traceSub, time.Second)
+		json.Unmarshal(traceMsg.Data, &e)
+		egresses := e.Egresses()
+		require_Equal(t, len(egresses), 1)
+		eg := egresses[0]
+		require_Equal(t, eg.CID, cid)
+		if err != _EMPTY_ {
+			require_Contains(t, eg.Error, err)
+		} else {
+			require_Equal(t, eg.Error, _EMPTY_)
+		}
+	}
+
+	// Artificially set a stall channel.
+	c.mu.Lock()
+	c.out.stc = make(chan struct{})
+	c.mu.Unlock()
+
+	// Publish a message, it should not stall the producer.
+	pub()
+	// Now  make sure we did not get any fast producer debug statements.
+	select {
+	case <-l.gotIt:
+		t.Fatal("Got debug logs about fast producer")
+	case <-time.After(250 * time.Millisecond):
+		// OK!
+	}
+	wg.Wait()
+
+	checkTraceMsg(errMsgTraceFastProdNoStall)
+
+	// Now we will conf reload to enable fast producer stalling.
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmpl, "false"))
+
+	// Publish, this time the prod should be stalled.
+	pub()
+	select {
+	case <-l.gotIt:
+		// OK!
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Timed-out waiting for a warning")
+	}
+	wg.Wait()
+
+	// Should have been delivered to the trace subscription.
+	checkTraceMsg(_EMPTY_)
+}

@@ -1138,65 +1138,6 @@ func (js *jetStream) checkForOrphans() {
 	}
 }
 
-// Check and delete any orphans we may come across.
-func (s *Server) checkForNRGOrphans() {
-	js, cc := s.getJetStreamCluster()
-	if js == nil || cc == nil || js.isMetaRecovering() {
-		// No cluster means no NRGs. Also return if still recovering.
-		return
-	}
-
-	// Track which assets R>1 should be on this server.
-	nrgMap := make(map[string]struct{})
-	trackGroup := func(rg *raftGroup) {
-		// If R>1 track this as a legit NRG.
-		if rg.node != nil {
-			nrgMap[rg.Name] = struct{}{}
-		}
-	}
-	// Register our meta.
-	js.mu.RLock()
-	meta := cc.meta
-	if meta == nil {
-		js.mu.RUnlock()
-		// Bail with no meta node.
-		return
-	}
-
-	ourID := meta.ID()
-	nrgMap[meta.Group()] = struct{}{}
-
-	// Collect all valid groups from our assignments.
-	for _, asa := range cc.streams {
-		for _, sa := range asa {
-			if sa.Group.isMember(ourID) && sa.Restore == nil {
-				trackGroup(sa.Group)
-				for _, ca := range sa.consumers {
-					if ca.Group.isMember(ourID) {
-						trackGroup(ca.Group)
-					}
-				}
-			}
-		}
-	}
-	js.mu.RUnlock()
-
-	// Check NRGs that are running.
-	var needDelete []RaftNode
-	s.rnMu.RLock()
-	for name, n := range s.raftNodes {
-		if _, ok := nrgMap[name]; !ok {
-			needDelete = append(needDelete, n)
-		}
-	}
-	s.rnMu.RUnlock()
-
-	for _, n := range needDelete {
-		s.Warnf("Detected orphaned NRG %q, will cleanup", n.Group())
-		n.Delete()
-	}
-}
-
 func (js *jetStream) monitorCluster() {
 	s, n := js.server(), js.getMetaGroup()
 	qch, rqch, lch, aq := js.clusterQuitC(), n.QuitC(), n.LeadChangeC(), n.ApplyQ()
@@ -1229,8 +1170,6 @@ func (js *jetStream) monitorCluster() {
 		if hs := s.healthz(nil); hs.Error != _EMPTY_ {
 			s.Warnf("%v", hs.Error)
 		}
-		// Also check for orphaned NRGs.
-		s.checkForNRGOrphans()
 	}
 
 	var (
@@ -2202,15 +2141,6 @@ func (mset *stream) removeNode() {
 		n.Delete()
 		mset.node = nil
 	}
-}
-
-func (mset *stream) clearRaftNode() {
-	if mset == nil {
-		return
-	}
-	mset.mu.Lock()
-	defer mset.mu.Unlock()
-	mset.node = nil
 }
 
 // Helper function to generate peer info.
@@ -6148,7 +6078,14 @@ func (js *jetStream) jsClusteredStreamLimitsCheck(acc *Account, cfg *StreamConfi
 	numStreams, reservations := tieredStreamAndReservationCount(asa, tier, cfg)
 	// Check for inflight proposals...
 	if cc := js.cluster; cc != nil && cc.inflight != nil {
-		numStreams += len(cc.inflight[acc.Name])
+		streams := cc.inflight[acc.Name]
+		numStreams += len(streams)
+		// If inflight contains the same stream, don't count toward exceeding maximum.
+		if cfg != nil {
+			if _, ok := streams[cfg.Name]; ok {
+				numStreams--
+			}
+		}
 	}
 	if selectedLimits.MaxStreams > 0 && numStreams >= selectedLimits.MaxStreams {
 		return NewJSMaximumStreamsLimitError()
@@ -6256,7 +6193,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 		// On success, add this as an inflight proposal so we can apply limits
 		// on concurrent create requests while this stream assignment has
 		// possibly not been processed yet.
-		if streams, ok := cc.inflight[acc.Name]; ok {
+		if streams, ok := cc.inflight[acc.Name]; ok && self == nil {
 			streams[cfg.Name] = &inflightInfo{rg, syncSubject}
 		}
 	}

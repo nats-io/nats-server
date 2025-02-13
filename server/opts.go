@@ -320,6 +320,7 @@ type Options struct {
 	MaxControlLine             int32         `json:"max_control_line"`
 	MaxPayload                 int32         `json:"max_payload"`
 	MaxPending                 int64         `json:"max_pending"`
+	NoFastProducerStall        bool          `json:"-"`
 	Cluster                    ClusterOpts   `json:"cluster,omitempty"`
 	Gateway                    GatewayOpts   `json:"gateway,omitempty"`
 	LeafNode                   LeafNodeOpts  `json:"leaf,omitempty"`
@@ -1674,7 +1675,9 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 			*errors = append(*errors, err)
 			return
 		}
-	case "max_closed_clients":
+	case "no_fast_producer_stall":
+		o.NoFastProducerStall = v.(bool)
+  case "max_closed_clients":
 		o.MaxClosedClients = int(v.(int64))
 	default:
 		if au := atomic.LoadInt32(&allowUnknownTopLevelField); au == 0 && !tk.IsUsedVariable() {
