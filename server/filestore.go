@@ -7504,7 +7504,7 @@ func (mb *msgBlock) sinceLastWriteActivity() time.Duration {
 }
 
 func checkNewHeader(hdr []byte) error {
-	if hdr == nil || len(hdr) < 2 || hdr[0] != magic ||
+	if len(hdr) < 2 || hdr[0] != magic ||
 		(hdr[1] != version && hdr[1] != newVersion) {
 		return errCorruptState
 	}
@@ -10247,7 +10247,7 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 
 // Consumer version.
 func checkConsumerHeader(hdr []byte) (uint8, error) {
-	if hdr == nil || len(hdr) < 2 || hdr[0] != magic {
+	if len(hdr) < 2 || hdr[0] != magic {
 		return 0, errCorruptState
 	}
 	version := hdr[1]
