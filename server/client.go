@@ -104,7 +104,7 @@ const (
 	maxBufSize      = 65536 // 64k
 	shortsToShrink  = 2     // Trigger to shrink dynamic buffers
 	maxFlushPending = 10    // Max fsps to have in order to wait for writeLoop
-	readLoopReport  = 2 * time.Second
+	readLoopReport  = 200 * time.Millisecond
 
 	// Server should not send a PING (for RTT) before the first PONG has
 	// been sent to the client. However, in case some client libs don't
@@ -2051,7 +2051,7 @@ func (c *client) processConnect(arg []byte) error {
 			}
 		}
 		if ncs != _EMPTY_ {
-			c.ncs.CompareAndSwap(nil, fmt.Sprintf("%s - %q", c, ncs))
+			c.ncs.Store(fmt.Sprintf("%s - %q", c, ncs))
 		}
 	}
 
@@ -2293,6 +2293,7 @@ func (c *client) queueOutbound(data []byte) {
 	// We do this here since if we wait for consumer's writeLoop it could be
 	// too late with large number of fan in producers.
 	if c.out.pb > c.out.mp/2 && c.out.stc == nil {
+		c.Noticef("Prepared Stall: pb=%v, mp=%v, start=%v, rtt=%v", c.out.pb, c.out.mp/2, time.Since(c.start), c.rtt)
 		c.out.stc = make(chan struct{})
 	}
 }
@@ -3348,7 +3349,7 @@ func (c *client) stalledWait(producer *client) {
 	select {
 	case <-stall:
 	case <-delay.C:
-		producer.Debugf("Timed out of fast producer stall (%v)", ttl)
+		producer.rateLimitFormatWarnf("Timed out of fast producer stall (%v)", ttl)
 	}
 }
 

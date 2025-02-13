@@ -1512,7 +1512,7 @@ func (js *jetStream) metaSnapshot() ([]byte, error) {
 	snap := s2.Encode(nil, b)
 	cend := time.Since(cstart)
 
-	if took := time.Since(start); took > time.Second {
+	if took := time.Since(start); took > 200*time.Millisecond {
 		s.rateLimitFormatWarnf("Metalayer snapshot took %.3fs (streams: %d, consumers: %d, marshal: %.3fs, s2: %.3fs, uncompressed: %d, compressed: %d)",
 			took.Seconds(), nsa, nca, mend.Seconds(), cend.Seconds(), len(b), len(snap))
 	}

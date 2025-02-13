@@ -53,3 +53,5 @@ coverage.out
 
 # Cross compiled binaries
 pkg
+stores/*
+setup/*
