@@ -11381,22 +11381,6 @@ func (l *fastProdLogger) Debugf(format string, args ...any) {
 	}
 }
 
-type slowWriteConn struct {
-	sync.RWMutex
-	net.Conn
-	delay bool
-}
-
-func (c *slowWriteConn) Write(b []byte) (int, error) {
-	c.RLock()
-	delay := c.delay
-	c.RUnlock()
-	if delay {
-		time.Sleep(100 * time.Millisecond)
-	}
-	return c.Conn.Write(b)
-}
-
 func TestNoRaceNoFastProducerStall(t *testing.T) {
 	tmpl := `
 		listen: "127.0.0.1:-1"
@@ -11409,173 +11393,86 @@ func TestNoRaceNoFastProducerStall(t *testing.T) {
 	l := &fastProdLogger{gotIt: make(chan struct{}, 1)}
 	s.SetLogger(l, true, false)
 
-	ncSlow := natsConnect(t, s.ClientURL(), nats.ReconnectWait(10*time.Millisecond))
+	ncSlow := natsConnect(t, s.ClientURL())
 	defer ncSlow.Close()
 	natsSub(t, ncSlow, "foo", func(_ *nats.Msg) {})
 	natsFlush(t, ncSlow)
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+	traceSub := natsSubSync(t, nc, "my.trace.subj")
+	natsFlush(t, nc)
+
+	ncProd := natsConnect(t, s.ClientURL())
+	defer ncProd.Close()
+
+	payload := make([]byte, 256)
 
 	cid, err := ncSlow.GetClientID()
 	require_NoError(t, err)
 	c := s.GetClient(cid)
 	require_True(t, c != nil)
 
+	wg := sync.WaitGroup{}
+	pub := func() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			msg := nats.NewMsg("foo")
+			msg.Header.Set(MsgTraceDest, traceSub.Subject)
+			msg.Data = payload
+			ncProd.PublishMsg(msg)
+		}()
+	}
+
+	checkTraceMsg := func(err string) {
+		t.Helper()
+		var e MsgTraceEvent
+		traceMsg := natsNexMsg(t, traceSub, time.Second)
+		json.Unmarshal(traceMsg.Data, &e)
+		egresses := e.Egresses()
+		require_Equal(t, len(egresses), 1)
+		eg := egresses[0]
+		require_Equal(t, eg.CID, cid)
+		if err != _EMPTY_ {
+			require_Contains(t, eg.Error, err)
+		} else {
+			require_Equal(t, eg.Error, _EMPTY_)
+		}
+	}
+
+	// Artificially set a stall channel.
 	c.mu.Lock()
-	swc := &slowWriteConn{Conn: c.nc, delay: true}
-	c.nc = swc
+	c.out.stc = make(chan struct{})
 	c.mu.Unlock()
 
-	defer func() {
-		swc.Lock()
-		swc.delay = false
-		swc.Unlock()
-	}()
-
-	// The producer could still overwhelm the "fast" consumer.
-	// So we will send more than what it will use as a target
-	// to consider the test done.
-	total := 2_000_000
-	target := total / 2
-	ch := make(chan struct{}, 1)
-	var count int
-
-	ncFast := natsConnect(t, s.ClientURL(), nats.ReconnectWait(10*time.Millisecond))
-	defer ncFast.Close()
-	fastSub := natsSub(t, ncFast, "foo", func(_ *nats.Msg) {
-		if count++; count == target {
-			ch <- struct{}{}
-		}
-	})
-	err = fastSub.SetPendingLimits(-1, -1)
-	require_NoError(t, err)
-	natsFlush(t, ncFast)
-
-	ncProd := natsConnect(t, s.ClientURL(), nats.ReconnectWait(10*time.Millisecond))
-	defer ncProd.Close()
-
-	cid, err = ncProd.GetClientID()
-	require_NoError(t, err)
-	pc := s.GetClient(cid)
-	pc.mu.Lock()
-	pcnc := pc.nc
-	pc.mu.Unlock()
-
-	payload := make([]byte, 256)
-
-	for i := 0; i < total; i++ {
-		natsPub(t, ncProd, "foo", payload)
-	}
-	select {
-	case <-ch:
-		// OK
-	case <-time.After(10 * time.Second):
-		t.Fatal("Test timed-out")
-	}
-	// Now wait a bit and make sure we did not get any fast producer debug statements.
+	// Publish a message, it should not stall the producer.
+	pub()
+	// Now  make sure we did not get any fast producer debug statements.
 	select {
 	case <-l.gotIt:
 		t.Fatal("Got debug logs about fast producer")
-	case <-time.After(time.Second):
-		// OK
+	case <-time.After(250 * time.Millisecond):
+		// OK!
 	}
+	wg.Wait()
 
-	// We don't need that one anymore
-	ncFast.Close()
+	checkTraceMsg(errMsgTraceFastProdNoStall)
+
 	// Now we will conf reload to enable fast producer stalling.
 	reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmpl, "false"))
 
-	// Since the producer can block, we will publish from a different routine,
-	// and check for the debug trace from the main.
-	wg := sync.WaitGroup{}
-	wg.Add(1)
-	doneCh := make(chan struct{})
-	go func() {
-		defer wg.Done()
-		for i := 0; ; i++ {
-			ncProd.Publish("foo", payload)
-			select {
-			case <-doneCh:
-				return
-			default:
-			}
-			if i%1000 == 0 {
-				time.Sleep(time.Millisecond)
-			}
-		}
-	}()
+	// Publish, this time the prod should be stalled.
+	pub()
 	select {
 	case <-l.gotIt:
-		pcnc.Close()
-		close(doneCh)
-	case <-time.After(20 * time.Second):
+		// OK!
+	case <-time.After(500 * time.Millisecond):
 		t.Fatal("Timed-out waiting for a warning")
 	}
 	wg.Wait()
-}
 
-func TestNoRaceNoFastProducerStallAndMsgTrace(t *testing.T) {
-	o := DefaultOptions()
-	o.NoFastProducerStall = true
-	o.WriteDeadline = 2 * time.Second
-	s := RunServer(o)
-	defer s.Shutdown()
-
-	ncSlow := natsConnect(t, s.ClientURL(), nats.ReconnectWait(10*time.Millisecond))
-	defer ncSlow.Close()
-	natsSub(t, ncSlow, "foo", func(_ *nats.Msg) {})
-	natsFlush(t, ncSlow)
-
-	cid, err := ncSlow.GetClientID()
-	require_NoError(t, err)
-	c := s.GetClient(cid)
-	require_True(t, c != nil)
-
-	c.mu.Lock()
-	swc := &slowWriteConn{Conn: c.nc, delay: true}
-	c.nc = swc
-	c.mu.Unlock()
-
-	defer func() {
-		swc.Lock()
-		swc.delay = false
-		swc.Unlock()
-	}()
-
-	ncProd := natsConnect(t, s.ClientURL(), nats.ReconnectWait(10*time.Millisecond))
-	defer ncProd.Close()
-
-	payload := make([]byte, 256)
-
-	nc := natsConnect(t, s.ClientURL(), nats.ReconnectWait(10*time.Millisecond))
-	defer nc.Close()
-	doneCh := make(chan struct{})
-	traceSub := natsSub(t, nc, "my.trace.subj", func(traceMsg *nats.Msg) {
-		var e MsgTraceEvent
-		json.Unmarshal(traceMsg.Data, &e)
-		egresses := e.Egresses()
-		if len(egresses) == 1 {
-			if err := egresses[0].Error; err == errMsgTraceFastProdNoStall {
-				close(doneCh)
-				traceMsg.Sub.Unsubscribe()
-			}
-		}
-	})
-	err = traceSub.SetPendingLimits(-1, -1)
-	require_NoError(t, err)
-	natsFlush(t, nc)
-
-	msg := nats.NewMsg("foo")
-	msg.Header.Set(MsgTraceDest, traceSub.Subject)
-	msg.Data = payload
-	for i, done := 0, false; !done; i++ {
-		ncProd.PublishMsg(msg)
-		select {
-		case <-doneCh:
-			// OK
-			return
-		default:
-		}
-		if i%1000 == 0 {
-			time.Sleep(time.Millisecond)
-		}
-	}
+	// Should have been delivered to the trace subscription.
+	checkTraceMsg(_EMPTY_)
 }
