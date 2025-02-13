@@ -832,6 +832,7 @@ func (s *Server) Routez(routezOpts *RoutezOptions) (*Routez, error) {
 			OutBytes:     r.outBytes,
 			NumSubs:      uint32(len(r.subs)),
 			Import:       r.opts.Import,
+			Pending:      int(r.out.pb),
 			Export:       r.opts.Export,
 			RTT:          r.getRTT().String(),
 			Start:        r.start,
