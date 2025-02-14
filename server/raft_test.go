@@ -2016,6 +2016,58 @@ func TestNRGQuorumAccounting(t *testing.T) {
 	require_Equal(t, n.commit, 1)
 }
 
+func TestNRGRevalidateQuorumAfterLeaderChange(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats1 := "yrzKKRBu" // "nats-1"
+	nats2 := "cnrtt3eg" // "nats-2"
+
+	// Timeline
+	aeHeartbeat1Response := &appendEntryResponse{term: 1, index: 1, peer: nats1, success: true}
+	aeHeartbeat2Response := &appendEntryResponse{term: 1, index: 1, peer: nats2, success: true}
+
+	// Adjust cluster size, so we need at least 2 responses from other servers to establish quorum.
+	require_NoError(t, n.AdjustBootClusterSize(5))
+	require_Equal(t, n.csz, 5)
+	require_Equal(t, n.qn, 3)
+
+	// Switch this node to leader, and send an entry.
+	n.term++
+	n.switchToLeader()
+	require_Equal(t, n.term, 1)
+	require_Equal(t, n.pindex, 0)
+	n.sendAppendEntry(entries)
+	require_Equal(t, n.pindex, 1)
+
+	// We have one server that signals the message was stored. The leader will add 1 to the acks count.
+	n.processAppendEntryResponse(aeHeartbeat1Response)
+	require_Equal(t, n.commit, 0)
+	require_Len(t, len(n.acks), 1)
+
+	// We stepdown now and don't know if we will have quorum on the first entry.
+	n.stepdown(noLeader)
+
+	// Let's assume there are a bunch of leader elections now, data being added to the log, being truncated, etc.
+	// We don't know what happened, maybe we were partitioned, but we can't know for sure if the first entry has quorum.
+
+	// We now become leader again.
+	n.term = 6
+	n.switchToLeader()
+	require_Equal(t, n.term, 6)
+
+	// We now receive a successful response from another server saying they have stored it.
+	// Anything can have happened to the replica that said success before, we can't assume that's still valid.
+	// So our commit must stay the same and we restart counting for quorum.
+	n.processAppendEntryResponse(aeHeartbeat2Response)
+	require_Equal(t, n.commit, 0)
+	require_Len(t, len(n.acks), 1)
+}
+
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before
 // proposing the next one.
 // The test may fail if:

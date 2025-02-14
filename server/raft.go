@@ -4285,6 +4285,10 @@ func (n *raft) switchToFollowerLocked(leader string) {
 
 	n.aflr = 0
 	n.lxfer = false
+	// Reset acks, we can't assume acks from a previous term are still valid in another term.
+	if len(n.acks) > 0 {
+		n.acks = make(map[uint64]map[string]struct{})
+	}
 	n.updateLeader(leader)
 	n.switchState(Follower)
 }
