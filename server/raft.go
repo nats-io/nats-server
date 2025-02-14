@@ -3562,8 +3562,13 @@ CONTINUE:
 				if l > paeWarnThreshold && l%paeWarnModulo == 0 {
 					n.warn("%d append entries pending", len(n.pae))
 				}
-			} else if l%paeWarnModulo == 0 {
-				n.debug("Not saving to append entries pending")
+			} else {
+				// Invalidate cache entry at this index, we might have
+				// stored it previously with a different value.
+				delete(n.pae, n.pindex)
+				if l%paeWarnModulo == 0 {
+					n.debug("Not saving to append entries pending")
+				}
 			}
 		} else {
 			// This is a replay on startup so just take the appendEntry version.
