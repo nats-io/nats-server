@@ -1151,6 +1151,43 @@ func TestNRGTermNoDecreaseAfterWALReset(t *testing.T) {
 	}
 }
 
+func TestNRGPendingAppendEntryCacheInvalidation(t *testing.T) {
+	for _, test := range []struct {
+		title   string
+		entries int
+	}{
+		{title: "empty", entries: 1},
+		{title: "at limit", entries: paeDropThreshold},
+		{title: "full", entries: paeDropThreshold + 1},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+			rg.waitOnLeader()
+			l := rg.leader()
+
+			l.(*stateAdder).proposeDelta(1)
+			rg.waitOnTotal(t, 1)
+
+			// Fill up the cache with N entries.
+			// The contents don't matter as they should never be applied.
+			rg.lockAll()
+			for _, s := range rg {
+				n := s.node().(*raft)
+				for i := 0; i < test.entries; i++ {
+					n.pae[n.pindex+uint64(1+i)] = newAppendEntry("", 0, 0, 0, 0, nil)
+				}
+			}
+			rg.unlockAll()
+
+			l.(*stateAdder).proposeDelta(1)
+			rg.waitOnTotal(t, 2)
+		})
+	}
+}
+
 func TestNRGCatchupDoesNotTruncateUncommittedEntriesWithQuorum(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
