@@ -1346,6 +1346,8 @@ func BenchmarkJetStreamKV(b *testing.B) {
 							// Set size of each operation, for throughput calculation
 							b.SetBytes(int64(bc.valueSize))
 
+							time.Sleep(3 * time.Second)
+
 							// Discard time spent during setup
 							// May reset again further in
 							b.ResetTimer()
@@ -1365,6 +1367,8 @@ func BenchmarkJetStreamKV(b *testing.B) {
 
 							// Benchmark ends here, (may have stopped earlier)
 							b.StopTimer()
+
+							time.Sleep(5 * time.Second)
 
 							b.ReportMetric(float64(errors)*100/float64(b.N), "%error")
 						},
