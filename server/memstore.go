@@ -1217,6 +1217,8 @@ func (ms *memStore) compact(seq uint64, noMarkers bool) (uint64, error) {
 				ms.removeSeqPerSubject(sm.subj, seq, !noMarkers && ms.cfg.SubjectDeleteMarkerTTL > 0)
 				// Must delete message after updating per-subject info, to be consistent with file store.
 				delete(ms.msgs, seq)
+			} else if !ms.dmap.IsEmpty() {
+				ms.dmap.Delete(seq)
 			}
 		}
 		if purged > ms.state.Msgs {
@@ -1244,9 +1246,10 @@ func (ms *memStore) compact(seq uint64, noMarkers bool) (uint64, error) {
 				return true
 			})
 		}
-		// Reset msgs and fss.
+		// Reset msgs, fss and dmap.
 		ms.msgs = make(map[uint64]*StoreMsg)
 		ms.fss = stree.NewSubjectTree[SimpleState]()
+		ms.dmap.Empty()
 	}
 	// Subject delete markers if needed.
 	sdmcb := ms.subjectDeleteMarkersAfterOperation(JSMarkerReasonPurge)
@@ -1283,9 +1286,10 @@ func (ms *memStore) reset() error {
 	// Update msgs and bytes.
 	ms.state.Msgs = 0
 	ms.state.Bytes = 0
-	// Reset msgs and fss.
+	// Reset msgs, fss and dmap.
 	ms.msgs = make(map[uint64]*StoreMsg)
 	ms.fss = stree.NewSubjectTree[SimpleState]()
+	ms.dmap.Empty()
 
 	ms.mu.Unlock()
 
@@ -1319,6 +1323,8 @@ func (ms *memStore) Truncate(seq uint64) error {
 			ms.removeSeqPerSubject(sm.subj, i, false)
 			// Must delete message after updating per-subject info, to be consistent with file store.
 			delete(ms.msgs, i)
+		} else if !ms.dmap.IsEmpty() {
+			ms.dmap.Delete(i)
 		}
 	}
 	// Reset last.
