@@ -2737,12 +2737,13 @@ func (mset *stream) setupMirrorConsumer() error {
 	} else {
 		mset.cancelSourceInfo(mset.mirror)
 		mset.mirror.sseq = mset.lseq
-
-		// If we are no longer the leader stop trying.
-		if !mset.isLeader() {
-			return nil
-		}
 	}
+
+	// If we are no longer the leader stop trying.
+	if !mset.isLeader() {
+		return nil
+	}
+
 	mirror := mset.mirror
 
 	// We want to throttle here in terms of how fast we request new consumers,

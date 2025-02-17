@@ -1788,6 +1788,7 @@ func (n *raft) shutdown() {
 	// First call to Stop or Delete should close the quit chan
 	// to notify the runAs goroutines to stop what they're doing.
 	if n.state.Swap(int32(Closed)) != int32(Closed) {
+		n.leaderState.Store(false)
 		close(n.quit)
 	}
 }

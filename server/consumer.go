@@ -1922,8 +1922,8 @@ func (o *consumer) deleteNotActive() {
 				}
 				nca := js.consumerAssignment(acc, stream, name)
 				js.mu.RUnlock()
-				// Make sure this is not a new consumer with the same name.
-				if nca != nil && nca == ca {
+				// Make sure this is the same consumer assignment, and not a new consumer with the same name.
+				if nca != nil && reflect.DeepEqual(nca, ca) {
 					s.Warnf("Consumer assignment for '%s > %s > %s' not cleaned up, retrying", acc, stream, name)
 					meta.ForwardProposal(removeEntry)
 					if interval < cnaMax {
