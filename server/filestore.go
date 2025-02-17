@@ -7573,7 +7573,7 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 		if err == errDeletedMsg {
 			// Update dmap.
 			if !smb.dmap.IsEmpty() {
-				smb.dmap.Delete(seq)
+				smb.dmap.Delete(mseq)
 			}
 		} else if sm != nil {
 			sz := fileStoreMsgSize(sm.subj, sm.hdr, sm.msg)

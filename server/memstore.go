@@ -1012,6 +1012,8 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 				ms.removeSeqPerSubject(sm.subj, seq)
 				// Must delete message after updating per-subject info, to be consistent with file store.
 				delete(ms.msgs, seq)
+			} else if !ms.dmap.IsEmpty() {
+				ms.dmap.Delete(seq)
 			}
 		}
 		if purged > ms.state.Msgs {
@@ -1032,9 +1034,10 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 		ms.state.FirstSeq = seq
 		ms.state.FirstTime = time.Time{}
 		ms.state.LastSeq = seq - 1
-		// Reset msgs and fss.
+		// Reset msgs, fss and dmap.
 		ms.msgs = make(map[uint64]*StoreMsg)
 		ms.fss = stree.NewSubjectTree[SimpleState]()
+		ms.dmap.Empty()
 	}
 	ms.mu.Unlock()
 
@@ -1066,9 +1069,10 @@ func (ms *memStore) reset() error {
 	// Update msgs and bytes.
 	ms.state.Msgs = 0
 	ms.state.Bytes = 0
-	// Reset msgs and fss.
+	// Reset msgs, fss and dmap.
 	ms.msgs = make(map[uint64]*StoreMsg)
 	ms.fss = stree.NewSubjectTree[SimpleState]()
+	ms.dmap.Empty()
 
 	ms.mu.Unlock()
 
@@ -1102,6 +1106,8 @@ func (ms *memStore) Truncate(seq uint64) error {
 			ms.removeSeqPerSubject(sm.subj, i)
 			// Must delete message after updating per-subject info, to be consistent with file store.
 			delete(ms.msgs, i)
+		} else if !ms.dmap.IsEmpty() {
+			ms.dmap.Delete(i)
 		}
 	}
 	// Reset last.
