@@ -301,3 +301,105 @@ func TestStoreMaxMsgsPerUpdateBug(t *testing.T) {
 		},
 	)
 }
+
+func TestStoreCompactCleansUpDmap(t *testing.T) {
+	config := func() StreamConfig {
+		return StreamConfig{Name: "TEST", Subjects: []string{"foo"}, MaxMsgsPer: 0}
+	}
+	for cseq := uint64(2); cseq <= 4; cseq++ {
+		t.Run(fmt.Sprintf("Compact(%d)", cseq), func(t *testing.T) {
+			testAllStoreAllPermutations(
+				t, false, config(),
+				func(t *testing.T, fs StreamStore) {
+					dmapEntries := func() int {
+						if fss, ok := fs.(*fileStore); ok {
+							return fss.dmapEntries()
+						} else if mss, ok := fs.(*memStore); ok {
+							mss.mu.RLock()
+							defer mss.mu.RUnlock()
+							return mss.dmap.Size()
+						} else {
+							return 0
+						}
+					}
+
+					// Publish messages, should have no interior deletes.
+					for i := 0; i < 3; i++ {
+						_, _, err := fs.StoreMsg("foo", nil, nil, 0)
+						require_NoError(t, err)
+					}
+					require_Len(t, dmapEntries(), 0)
+
+					// Removing one message in the middle should be an interior delete.
+					_, err := fs.RemoveMsg(2)
+					require_NoError(t, err)
+					require_Len(t, dmapEntries(), 1)
+
+					// Compacting must always clean up the interior delete.
+					_, err = fs.Compact(cseq)
+					require_NoError(t, err)
+					require_Len(t, dmapEntries(), 0)
+
+					// Validate first/last sequence.
+					state := fs.State()
+					fseq := uint64(3)
+					if fseq < cseq {
+						fseq = cseq
+					}
+					require_Equal(t, state.FirstSeq, fseq)
+					require_Equal(t, state.LastSeq, 3)
+				})
+		})
+	}
+}
+
+func TestStoreTruncateCleansUpDmap(t *testing.T) {
+	config := func() StreamConfig {
+		return StreamConfig{Name: "TEST", Subjects: []string{"foo"}, MaxMsgsPer: 0}
+	}
+	for tseq := uint64(0); tseq <= 1; tseq++ {
+		t.Run(fmt.Sprintf("Truncate(%d)", tseq), func(t *testing.T) {
+			testAllStoreAllPermutations(
+				t, false, config(),
+				func(t *testing.T, fs StreamStore) {
+					dmapEntries := func() int {
+						if fss, ok := fs.(*fileStore); ok {
+							return fss.dmapEntries()
+						} else if mss, ok := fs.(*memStore); ok {
+							mss.mu.RLock()
+							defer mss.mu.RUnlock()
+							return mss.dmap.Size()
+						} else {
+							return 0
+						}
+					}
+
+					// Publish messages, should have no interior deletes.
+					for i := 0; i < 3; i++ {
+						_, _, err := fs.StoreMsg("foo", nil, nil, 0)
+						require_NoError(t, err)
+					}
+					require_Len(t, dmapEntries(), 0)
+
+					// Removing one message in the middle should be an interior delete.
+					_, err := fs.RemoveMsg(2)
+					require_NoError(t, err)
+					require_Len(t, dmapEntries(), 1)
+
+					// Truncating must always clean up the interior delete.
+					err = fs.Truncate(tseq)
+					require_NoError(t, err)
+					require_Len(t, dmapEntries(), 0)
+
+					// Validate first/last sequence.
+					state := fs.State()
+					fseq := uint64(1)
+					if fseq > tseq {
+						fseq = tseq
+					}
+					require_Equal(t, state.FirstSeq, fseq)
+					require_Equal(t, state.LastSeq, tseq)
+				})
+		})
+	}
+}
