@@ -659,17 +659,13 @@ func (s *Server) checkJetStreamMigrate(remote *leafNodeCfg) {
 		// Collect any consumers
 		for _, o := range mset.getConsumers() {
 			if n := o.raftNode(); n != nil {
-				if n.Leader() {
-					n.StepDown()
-				}
+				n.StepDown()
 				// Ensure we can not become a leader while in this state.
 				n.SetObserver(true)
 			}
 		}
 		// Stepdown if this stream was leader.
-		if node.Leader() {
-			node.StepDown()
-		}
+		node.StepDown()
 		// Ensure we can not become a leader while in this state.
 		node.SetObserver(true)
 	}

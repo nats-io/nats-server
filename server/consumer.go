@@ -5621,7 +5621,7 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	// Check if we are the leader and are being deleted (as a node).
 	if dflag && o.isLeader() {
 		// If we are clustered and node leader (probable from above), stepdown.
-		if node := o.node; node != nil && node.Leader() {
+		if node := o.node; node != nil {
 			node.StepDown()
 		}
 

@@ -2931,11 +2931,11 @@ func (s *Server) resourcesExceededError() {
 	}
 	s.rerrMu.Unlock()
 
-	// If we are meta leader we should relinguish that here.
+	// If we are meta leader we should relinquish that here.
 	if didAlert {
 		if js := s.getJetStream(); js != nil {
 			js.mu.RLock()
-			if cc := js.cluster; cc != nil && cc.isLeader() {
+			if cc := js.cluster; cc != nil && cc.meta != nil {
 				cc.meta.StepDown()
 			}
 			js.mu.RUnlock()
