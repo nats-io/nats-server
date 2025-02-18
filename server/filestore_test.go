@@ -8887,3 +8887,58 @@ func changeDirectoryPermission(directory string, mode fs.FileMode) error {
 	})
 	return err
 }
+
+func TestFileStoreLeftoverSkipMsgInDmap(t *testing.T) {
+	storeDir := t.TempDir()
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{Name: "zzz", Subjects: []string{"test.*"}, Storage: FileStorage, MaxMsgsPer: 1},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	getLmbState := func(fs *fileStore) (uint64, uint64, int) {
+		fs.mu.RLock()
+		lmb := fs.lmb
+		fs.mu.RUnlock()
+		lmb.mu.RLock()
+		fseq := atomic.LoadUint64(&lmb.first.seq)
+		lseq := atomic.LoadUint64(&lmb.last.seq)
+		dmaps := lmb.dmap.Size()
+		lmb.mu.RUnlock()
+		return fseq, lseq, dmaps
+	}
+
+	// Only skip a message.
+	fs.SkipMsg()
+
+	// Confirm state.
+	state := fs.State()
+	require_Equal(t, state.FirstSeq, 2)
+	require_Equal(t, state.LastSeq, 1)
+	require_Equal(t, state.NumDeleted, 0)
+	fseq, lseq, dmaps := getLmbState(fs)
+	require_Equal(t, fseq, 2)
+	require_Equal(t, lseq, 1)
+	require_Len(t, dmaps, 0)
+
+	// Stop without writing index.db so we recover based on just the blk file.
+	require_NoError(t, fs.stop(false, false))
+
+	fs, err = newFileStore(
+		FileStoreConfig{StoreDir: storeDir},
+		StreamConfig{Name: "zzz", Subjects: []string{"test.*"}, Storage: FileStorage, MaxMsgsPer: 1},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Confirm the skipped message is not included in the deletes.
+	state = fs.State()
+	require_Equal(t, state.FirstSeq, 2)
+	require_Equal(t, state.LastSeq, 1)
+	require_Equal(t, state.NumDeleted, 0)
+	fseq, lseq, dmaps = getLmbState(fs)
+	require_Equal(t, fseq, 2)
+	require_Equal(t, lseq, 1)
+	require_Len(t, dmaps, 0)
+}
