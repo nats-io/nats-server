@@ -526,6 +526,60 @@ func TestNRGUnsuccessfulVoteRequestDoesntResetElectionTimer(t *testing.T) {
 	require_True(t, followerEqual)
 }
 
+func TestNRGUnsuccessfulVoteRequestCampaignEarly(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	n.etlr = time.Time{}
+
+	// Simple case: we are follower and vote for a candidate.
+	require_NoError(t, n.processVoteRequest(&voteRequest{term: 1, lastTerm: 0, lastIndex: 0, candidate: nats0}))
+	require_Equal(t, n.term, 1)
+	require_Equal(t, n.vote, nats0)
+	require_NotEqual(t, n.etlr, time.Time{}) // Resets election timer as it voted.
+	n.etlr = time.Time{}
+
+	// We are follower and deny vote for outdated candidate.
+	n.pterm, n.pindex = 1, 100
+	require_NoError(t, n.processVoteRequest(&voteRequest{term: 2, lastTerm: 1, lastIndex: 2, candidate: nats0}))
+	require_Equal(t, n.term, 2)
+	require_Equal(t, n.vote, noVote)
+	require_NotEqual(t, n.etlr, time.Time{}) // Resets election timer as it starts campaigning.
+	n.etlr = time.Time{}
+
+	// Switch to candidate.
+	n.pterm, n.pindex = 2, 200
+	n.switchToCandidate()
+	require_Equal(t, n.term, 3)
+	require_Equal(t, n.State(), Candidate)
+	require_NotEqual(t, n.etlr, time.Time{}) // Resets election timer as part of switching state.
+	n.etlr = time.Time{}
+
+	// We are candidate and deny vote for outdated candidate. But they were on a more recent term, restart campaign.
+	require_NoError(t, n.processVoteRequest(&voteRequest{term: 4, lastTerm: 1, lastIndex: 2, candidate: nats0}))
+	require_Equal(t, n.term, 4)
+	require_Equal(t, n.vote, noVote)
+	require_NotEqual(t, n.etlr, time.Time{}) // Resets election timer as it restarts campaigning.
+	n.etlr = time.Time{}
+
+	// Switch to candidate.
+	n.pterm, n.pindex = 4, 400
+	n.switchToCandidate()
+	require_Equal(t, n.term, 5)
+	require_Equal(t, n.State(), Candidate)
+	require_NotEqual(t, n.etlr, time.Time{}) // Resets election timer as part of switching state.
+	n.etlr = time.Time{}
+
+	// We are candidate and deny vote for outdated candidate. Don't start campaigning early.
+	require_NoError(t, n.processVoteRequest(&voteRequest{term: 5, lastTerm: 1, lastIndex: 2, candidate: nats0}))
+	require_Equal(t, n.term, 5)
+	require_Equal(t, n.vote, noVote)
+	// Election timer must NOT be updated as that would mean another candidate that we don't vote
+	// for can short-circuit us by making us restart elections, denying us the ability to become leader.
+	require_Equal(t, n.etlr, time.Time{})
+}
+
 func TestNRGInvalidTAVDoesntPanic(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
@@ -1094,6 +1148,43 @@ func TestNRGTermNoDecreaseAfterWALReset(t *testing.T) {
 			fn.processAppendEntry(ae, fn.aesub)
 			require_Equal(t, fn.term, 20) // Follower should reject again, even after reset, term stays the same.
 		}
+	}
+}
+
+func TestNRGPendingAppendEntryCacheInvalidation(t *testing.T) {
+	for _, test := range []struct {
+		title   string
+		entries int
+	}{
+		{title: "empty", entries: 1},
+		{title: "at limit", entries: paeDropThreshold},
+		{title: "full", entries: paeDropThreshold + 1},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+			rg.waitOnLeader()
+			l := rg.leader()
+
+			l.(*stateAdder).proposeDelta(1)
+			rg.waitOnTotal(t, 1)
+
+			// Fill up the cache with N entries.
+			// The contents don't matter as they should never be applied.
+			rg.lockAll()
+			for _, s := range rg {
+				n := s.node().(*raft)
+				for i := 0; i < test.entries; i++ {
+					n.pae[n.pindex+uint64(1+i)] = newAppendEntry("", 0, 0, 0, 0, nil)
+				}
+			}
+			rg.unlockAll()
+
+			l.(*stateAdder).proposeDelta(1)
+			rg.waitOnTotal(t, 2)
+		})
 	}
 }
 

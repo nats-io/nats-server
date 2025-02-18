@@ -1432,15 +1432,14 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 		if seq == 0 || seq&ebit != 0 || seq < fseq {
 			seq = seq &^ ebit
 			if seq >= fseq {
-				// Only add to dmap if past recorded first seq and non-zero.
-				if seq != 0 {
-					addToDmap(seq)
-				}
 				atomic.StoreUint64(&mb.last.seq, seq)
 				mb.last.ts = ts
 				if mb.msgs == 0 {
 					atomic.StoreUint64(&mb.first.seq, seq+1)
 					mb.first.ts = 0
+				} else if seq != 0 {
+					// Only add to dmap if past recorded first seq and non-zero.
+					addToDmap(seq)
 				}
 			}
 			index += rl
@@ -7017,11 +7016,7 @@ func (fs *fileStore) State() StreamState {
 			}
 			// Add in deleted.
 			mb.dmap.Range(func(seq uint64) bool {
-				if seq < fseq {
-					mb.dmap.Delete(seq)
-				} else {
-					state.Deleted = append(state.Deleted, seq)
-				}
+				state.Deleted = append(state.Deleted, seq)
 				return true
 			})
 			mb.mu.Unlock()
@@ -7573,7 +7568,7 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 		if err == errDeletedMsg {
 			// Update dmap.
 			if !smb.dmap.IsEmpty() {
-				smb.dmap.Delete(seq)
+				smb.dmap.Delete(mseq)
 			}
 		} else if sm != nil {
 			sz := fileStoreMsgSize(sm.subj, sm.hdr, sm.msg)

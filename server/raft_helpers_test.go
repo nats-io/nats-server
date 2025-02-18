@@ -320,7 +320,7 @@ func (a *stateAdder) snapshot(t *testing.T) {
 // Helper to wait for a certain state.
 func (rg smGroup) waitOnTotal(t *testing.T, expected int64) {
 	t.Helper()
-	checkFor(t, 20*time.Second, 200*time.Millisecond, func() error {
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
 		for _, sm := range rg {
 			asm := sm.(*stateAdder)
 			if total := asm.total(); total != expected {

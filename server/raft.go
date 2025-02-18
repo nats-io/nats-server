@@ -3443,8 +3443,13 @@ CONTINUE:
 				if l > paeWarnThreshold && l%paeWarnModulo == 0 {
 					n.warn("%d append entries pending", len(n.pae))
 				}
-			} else if l%paeWarnModulo == 0 {
-				n.debug("Not saving to append entries pending")
+			} else {
+				// Invalidate cache entry at this index, we might have
+				// stored it previously with a different value.
+				delete(n.pae, n.pindex)
+				if l%paeWarnModulo == 0 {
+					n.debug("Not saving to append entries pending")
+				}
 			}
 		} else {
 			// This is a replay on startup so just take the appendEntry version.
@@ -4019,11 +4024,10 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 		n.vote = vr.candidate
 		n.writeTermVote()
 		n.resetElectionTimeout()
-	} else {
-		if vr.term >= n.term && n.vote == noVote {
-			n.term = vr.term
-			n.resetElect(randCampaignTimeout())
-		}
+	} else if n.vote == noVote && n.State() != Candidate {
+		// We have a more up-to-date log, and haven't voted yet.
+		// Start campaigning earlier, but only if not candidate already, as that would short-circuit us.
+		n.resetElect(randCampaignTimeout())
 	}
 
 	// Term might have changed, make sure response has the most current
