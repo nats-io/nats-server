@@ -1869,6 +1869,14 @@ type GatewayzOptions struct {
 
 	// AccountName will limit the list of accounts to that account name (makes Accounts implicit)
 	AccountName string `json:"account_name"`
+
+	// AccountSubscriptions indicates if subscriptions should be included in the results.
+	// Note: This is used only if `Accounts` or `AccountName` are specified.
+	AccountSubscriptions bool `json:"subscriptions"`
+
+	// AccountSubscriptionsDetail indicates if subscription details should be included in the results.
+	// Note: This is used only if `Accounts` or `AccountName` are specified.
+	AccountSubscriptionsDetail bool `json:"subscriptions_detail"`
 }
 
 // Gatewayz represents detailed information on Gateways
@@ -1891,12 +1899,14 @@ type RemoteGatewayz struct {
 
 // AccountGatewayz represents interest mode for this account
 type AccountGatewayz struct {
-	Name                  string `json:"name"`
-	InterestMode          string `json:"interest_mode"`
-	NoInterestCount       int    `json:"no_interest_count,omitempty"`
-	InterestOnlyThreshold int    `json:"interest_only_threshold,omitempty"`
-	TotalSubscriptions    int    `json:"num_subs,omitempty"`
-	NumQueueSubscriptions int    `json:"num_queue_subs,omitempty"`
+	Name                  string      `json:"name"`
+	InterestMode          string      `json:"interest_mode"`
+	NoInterestCount       int         `json:"no_interest_count,omitempty"`
+	InterestOnlyThreshold int         `json:"interest_only_threshold,omitempty"`
+	TotalSubscriptions    int         `json:"num_subs,omitempty"`
+	NumQueueSubscriptions int         `json:"num_queue_subs,omitempty"`
+	Subs                  []string    `json:"subscriptions_list,omitempty"`
+	SubsDetail            []SubDetail `json:"subscriptions_list_detail,omitempty"`
 }
 
 // Gatewayz returns a Gatewayz struct containing information about gateways.
@@ -2022,14 +2032,14 @@ func createOutboundAccountsGatewayz(opts *GatewayzOptions, gw *gateway) []*Accou
 		if !ok {
 			return nil
 		}
-		a := createAccountOutboundGatewayz(accName, ei)
+		a := createAccountOutboundGatewayz(opts, accName, ei)
 		return []*AccountGatewayz{a}
 	}
 
 	accs := make([]*AccountGatewayz, 0, 4)
 	gw.outsim.Range(func(k, v any) bool {
 		name := k.(string)
-		a := createAccountOutboundGatewayz(name, v)
+		a := createAccountOutboundGatewayz(opts, name, v)
 		accs = append(accs, a)
 		return true
 	})
@@ -2037,7 +2047,7 @@ func createOutboundAccountsGatewayz(opts *GatewayzOptions, gw *gateway) []*Accou
 }
 
 // Returns an AccountGatewayz for this gateway outbound connection
-func createAccountOutboundGatewayz(name string, ei any) *AccountGatewayz {
+func createAccountOutboundGatewayz(opts *GatewayzOptions, name string, ei any) *AccountGatewayz {
 	a := &AccountGatewayz{
 		Name:                  name,
 		InterestOnlyThreshold: gatewayMaxRUnsubBeforeSwitch,
@@ -2049,6 +2059,23 @@ func createAccountOutboundGatewayz(name string, ei any) *AccountGatewayz {
 		a.NoInterestCount = len(e.ni)
 		a.NumQueueSubscriptions = e.qsubs
 		a.TotalSubscriptions = int(e.sl.Count())
+		if opts.AccountSubscriptions || opts.AccountSubscriptionsDetail {
+			var subsa [4096]*subscription
+			subs := subsa[:0]
+			e.sl.All(&subs)
+			if opts.AccountSubscriptions {
+				a.Subs = make([]string, 0, len(subs))
+			} else {
+				a.SubsDetail = make([]SubDetail, 0, len(subs))
+			}
+			for _, sub := range subs {
+				if opts.AccountSubscriptions {
+					a.Subs = append(a.Subs, string(sub.subject))
+				} else {
+					a.SubsDetail = append(a.SubsDetail, newClientSubDetail(sub))
+				}
+			}
+		}
 		e.RUnlock()
 	} else {
 		a.InterestMode = Optimistic.String()
@@ -2140,6 +2167,10 @@ func (s *Server) HandleGatewayz(w http.ResponseWriter, r *http.Request) {
 	s.httpReqStats[GatewayzPath]++
 	s.mu.Unlock()
 
+	subs, subsDet, err := decodeSubs(w, r)
+	if err != nil {
+		return
+	}
 	accs, err := decodeBool(w, r, "accs")
 	if err != nil {
 		return
@@ -2151,9 +2182,11 @@ func (s *Server) HandleGatewayz(w http.ResponseWriter, r *http.Request) {
 	}
 
 	opts := &GatewayzOptions{
-		Name:        gwName,
-		Accounts:    accs,
-		AccountName: accName,
+		Name:                       gwName,
+		Accounts:                   accs,
+		AccountName:                accName,
+		AccountSubscriptions:       subs,
+		AccountSubscriptionsDetail: subsDet,
 	}
 	gw, err := s.Gatewayz(opts)
 	if err != nil {
