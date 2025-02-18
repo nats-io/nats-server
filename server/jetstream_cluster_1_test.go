@@ -7787,7 +7787,11 @@ func TestJetStreamClusterRecreateConsumerFromMetaSnapshot(t *testing.T) {
 				return err
 			} else if o := mset.lookupConsumer("CONSUMER"); o == nil {
 				return errors.New("consumer doesn't exist")
-			} else if ccrg := o.raftNode().Group(); consumerRg == _EMPTY_ {
+			} else if rn := o.raftNode(); rn == nil {
+				return errors.New("consumer raft node doesn't exist")
+			} else if ccrg := rn.Group(); ccrg == _EMPTY_ {
+				return errors.New("consumer raft group doesn't exist")
+			} else if consumerRg == _EMPTY_ {
 				consumerRg = ccrg
 			} else if consumerRg != ccrg {
 				return errors.New("consumer raft groups don't match")
