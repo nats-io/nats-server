@@ -2393,14 +2393,9 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 func (a *Account) statz() *AccountStat {
 	localConns := a.numLocalConnections()
 	leafConns := a.numLocalLeafNodes()
-	// Do not use getNameTag() to avoid a deadlock with `registerWithAccount`.
-	nameTag := a.nameTag
-	if nameTag == _EMPTY_ {
-		nameTag = a.Name
-	}
 	return &AccountStat{
 		Account:    a.Name,
-		Name:       nameTag,
+		Name:       a.getNameTagLocked(),
 		Conns:      localConns,
 		LeafNodes:  leafConns,
 		TotalConns: localConns + leafConns,

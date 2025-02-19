@@ -2772,7 +2772,7 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 		Imports:     imports,
 		Jwt:         a.claimJWT,
 		IssuerKey:   a.Issuer,
-		NameTag:     a.getNameTag(),
+		NameTag:     a.getNameTagLocked(),
 		Tags:        a.tags,
 		Claim:       claim,
 		Vr:          vrIssues,

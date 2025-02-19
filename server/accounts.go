@@ -466,11 +466,20 @@ func (a *Account) getNameTag() string {
 		return _EMPTY_
 	}
 	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.getNameTagLocked()
+}
+
+// getNameTagLocked will return the name tag or the account name if not set.
+// Lock should be held.
+func (a *Account) getNameTagLocked() string {
+	if a == nil {
+		return _EMPTY_
+	}
 	nameTag := a.nameTag
 	if nameTag == _EMPTY_ {
 		nameTag = a.Name
 	}
-	a.mu.RUnlock()
 	return nameTag
 }
 
