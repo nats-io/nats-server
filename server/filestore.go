@@ -4683,8 +4683,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	if wasLast && len(getHeader(JSMarkerReason, sm.hdr)) == 0 { // Not a marker.
 		if viaLimits {
 			sdmcb = fs.subjectDeleteMarkerIfNeeded(sm.subj, JSMarkerReasonMaxAge)
-		} else {
-			sdmcb = fs.subjectDeleteMarkerIfNeeded(sm.subj, JSMarkerReasonRemove)
 		}
 	}
 
@@ -7668,7 +7666,11 @@ func compareFn(subject string) func(string, string) bool {
 
 // PurgeEx will remove messages based on subject filters, sequence and number of messages to keep.
 // Will return the number of purged messages.
-func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64, noMarkers bool) (purged uint64, err error) {
+func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64, _ /* noMarkers */ bool) (purged uint64, err error) {
+	// TODO: Don't write markers on purge until we have solved performance
+	// issues with them.
+	noMarkers := true
+
 	if subject == _EMPTY_ || subject == fwcs {
 		if keep == 0 && sequence == 0 {
 			return fs.purge(0, noMarkers)
@@ -7821,7 +7823,11 @@ func (fs *fileStore) Purge() (uint64, error) {
 	return fs.purge(0, false)
 }
 
-func (fs *fileStore) purge(fseq uint64, noMarkers bool) (uint64, error) {
+func (fs *fileStore) purge(fseq uint64, _ /* noMarkers */ bool) (uint64, error) {
+	// TODO: Don't write markers on purge until we have solved performance
+	// issues with them.
+	noMarkers := true
+
 	fs.mu.Lock()
 	if fs.closed {
 		fs.mu.Unlock()
@@ -7934,7 +7940,11 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 	return fs.compact(seq, false)
 }
 
-func (fs *fileStore) compact(seq uint64, noMarkers bool) (uint64, error) {
+func (fs *fileStore) compact(seq uint64, _ /* noMarkers */ bool) (uint64, error) {
+	// TODO: Don't write markers on compact until we have solved performance
+	// issues with them.
+	noMarkers := true
+
 	if seq == 0 {
 		return fs.purge(seq, noMarkers)
 	}

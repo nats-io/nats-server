@@ -8655,6 +8655,8 @@ func TestFileStoreSubjectDeleteMarkersOnRestart(t *testing.T) {
 }
 
 func TestFileStoreSubjectDeleteMarkersOnPurge(t *testing.T) {
+	t.SkipNow()
+
 	storeDir := t.TempDir()
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir},
@@ -8685,6 +8687,8 @@ func TestFileStoreSubjectDeleteMarkersOnPurge(t *testing.T) {
 }
 
 func TestFileStoreSubjectDeleteMarkersOnPurgeEx(t *testing.T) {
+	t.SkipNow()
+
 	storeDir := t.TempDir()
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir},
@@ -8715,6 +8719,8 @@ func TestFileStoreSubjectDeleteMarkersOnPurgeEx(t *testing.T) {
 }
 
 func TestFileStoreSubjectDeleteMarkersOnPurgeExNoMarkers(t *testing.T) {
+	t.SkipNow()
+
 	storeDir := t.TempDir()
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir},
@@ -8742,6 +8748,8 @@ func TestFileStoreSubjectDeleteMarkersOnPurgeExNoMarkers(t *testing.T) {
 }
 
 func TestFileStoreSubjectDeleteMarkersOnCompact(t *testing.T) {
+	t.SkipNow()
+
 	storeDir := t.TempDir()
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir},
@@ -8778,6 +8786,8 @@ func TestFileStoreSubjectDeleteMarkersOnCompact(t *testing.T) {
 }
 
 func TestFileStoreSubjectDeleteMarkersOnRemoveMsg(t *testing.T) {
+	t.SkipNow()
+
 	storeDir := t.TempDir()
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: storeDir},
