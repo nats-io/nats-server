@@ -3756,6 +3756,149 @@ func TestMonitorGatewayzAccounts(t *testing.T) {
 	})
 }
 
+func TestMonitorGatewayzWithSubs(t *testing.T) {
+	resetPreviousHTTPConnections()
+
+	ob := testDefaultOptionsForGateway("B")
+	aA := NewAccount("A")
+	aB := NewAccount("B")
+	ob.Accounts = append(ob.Accounts, aA, aB)
+	ob.Users = append(ob.Users,
+		&User{Username: "a", Password: "a", Account: aA},
+		&User{Username: "b", Password: "b", Account: aB})
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	oa := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	oa.HTTPHost = "127.0.0.1"
+	oa.HTTPPort = MONITOR_PORT
+	aA = NewAccount("A")
+	aB = NewAccount("B")
+	oa.Accounts = append(oa.Accounts, aA, aB)
+	oa.Users = append(oa.Users,
+		&User{Username: "a", Password: "a", Account: aA},
+		&User{Username: "b", Password: "b", Account: aB})
+	sa := runGatewayServer(oa)
+	defer sa.Shutdown()
+
+	waitForOutboundGateways(t, sa, 1, 2*time.Second)
+	waitForInboundGateways(t, sa, 1, 2*time.Second)
+
+	waitForOutboundGateways(t, sb, 1, 2*time.Second)
+	waitForInboundGateways(t, sb, 1, 2*time.Second)
+
+	ncA := natsConnect(t, sb.ClientURL(), nats.UserInfo("a", "a"))
+	defer ncA.Close()
+	natsSubSync(t, ncA, "foo")
+	natsFlush(t, ncA)
+
+	ncB := natsConnect(t, sb.ClientURL(), nats.UserInfo("b", "b"))
+	defer ncB.Close()
+	natsSubSync(t, ncB, "foo")
+	natsQueueSubSync(t, ncB, "bar", "baz")
+	natsFlush(t, ncB)
+
+	checkGWInterestOnlyModeInterestOn(t, sa, "B", "A", "foo")
+	checkGWInterestOnlyModeInterestOn(t, sa, "B", "B", "foo")
+	checkForRegisteredQSubInterest(t, sa, "B", "B", "bar", 1, time.Second)
+
+	for _, test := range []struct {
+		url     string
+		allAccs bool
+		opts    *GatewayzOptions
+	}{
+		{"accs=1&subs=1", true, &GatewayzOptions{Accounts: true, AccountSubscriptions: true}},
+		{"accs=1&subs=detail", true, &GatewayzOptions{Accounts: true, AccountSubscriptionsDetail: true}},
+		{"acc_name=B&subs=1", false, &GatewayzOptions{AccountName: "B", AccountSubscriptions: true}},
+		{"acc_name=B&subs=detail", false, &GatewayzOptions{AccountName: "B", AccountSubscriptionsDetail: true}},
+	} {
+		t.Run(test.url, func(t *testing.T) {
+			gatewayzURL := fmt.Sprintf("http://127.0.0.1:%d/gatewayz?%s", sa.MonitorAddr().Port, test.url)
+			for pollMode := 0; pollMode < 2; pollMode++ {
+				gw := pollGatewayz(t, sa, pollMode, gatewayzURL, test.opts)
+				require_Equal(t, len(gw.OutboundGateways), 1)
+				ogw, ok := gw.OutboundGateways["B"]
+				require_True(t, ok)
+				require_NotNil(t, ogw)
+				var expected int
+				if test.allAccs {
+					expected = 3 // A + B + $G
+				} else {
+					expected = 1 // B
+				}
+				require_Len(t, len(ogw.Accounts), expected)
+				accs := map[string]*AccountGatewayz{}
+				for _, a := range ogw.Accounts {
+					// Do not include the global account there.
+					if a.Name == globalAccountName {
+						continue
+					}
+					accs[a.Name] = a
+				}
+				// Update the expected number of accounts if we asked for all accounts.
+				if test.allAccs {
+					expected--
+				}
+				// The account B should always be present.
+				_, ok = accs["B"]
+				require_True(t, ok)
+				if expected == 2 {
+					_, ok = accs["A"]
+					require_True(t, ok)
+				}
+				// Now that we know we have the proper account(s), check the content.
+				for n, a := range accs {
+					require_NotNil(t, a)
+					require_Equal(t, a.Name, n)
+					totalSubs := 1
+					var numQueueSubs int
+					if n == "B" {
+						totalSubs++
+						numQueueSubs = 1
+					}
+					require_Equal(t, a.TotalSubscriptions, totalSubs)
+					require_Equal(t, a.NumQueueSubscriptions, numQueueSubs)
+
+					m := map[string]*SubDetail{}
+					if test.opts.AccountSubscriptions {
+						require_Len(t, len(a.Subs), totalSubs)
+						require_Len(t, len(a.SubsDetail), 0)
+						for _, sub := range a.Subs {
+							m[sub] = nil
+						}
+					} else {
+						require_Len(t, len(a.Subs), 0)
+						require_Len(t, len(a.SubsDetail), totalSubs)
+						for _, sub := range a.SubsDetail {
+							m[sub.Subject] = &sub
+						}
+					}
+					sd, ok := m["foo"]
+					require_True(t, ok)
+					if test.opts.AccountSubscriptionsDetail {
+						require_NotNil(t, sd)
+						require_Equal(t, sd.Queue, _EMPTY_)
+					} else {
+						require_True(t, sd == nil)
+					}
+					sd, ok = m["bar"]
+					if numQueueSubs == 1 {
+						require_True(t, ok)
+						if test.opts.AccountSubscriptionsDetail {
+							require_NotNil(t, sd)
+							require_Equal(t, sd.Queue, "baz")
+						} else {
+							require_True(t, sd == nil)
+						}
+					} else {
+						require_False(t, ok)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestMonitorRoutezRTT(t *testing.T) {
 	// Do not change default PingInterval and expect RTT to still be reported
 
