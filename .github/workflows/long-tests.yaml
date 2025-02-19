@@ -24,10 +24,7 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v5
         with:
-          # Use go version from go.mod
-          go-version-file: "go.mod"
-          # Use latest stable go version
-          # go-version: stable
+          go-version: stable
 
       - name: Run tests
         run: go test -race -v -run='^TestLong.*' ./server -tags=include_js_long_tests -count=1 -vet=off -timeout=60m -shuffle on -p 1 -failfast

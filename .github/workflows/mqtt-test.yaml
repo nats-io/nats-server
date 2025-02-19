@@ -16,7 +16,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: src/github.com/nats-io/nats-server/go.mod
+          go-version: stable
           cache-dependency-path: src/github.com/nats-io/nats-server/go.sum
 
       - name: Set up testing tools and environment

@@ -22,9 +22,9 @@ runs:
       run: docker login -u "${{ inputs.hub_username }}" -p "${{ inputs.hub_password }}"
 
     - name: Set up Go
-      uses: actions/setup-go@v4
+      uses: actions/setup-go@v5
       with:
-        go-version: "stable"
+        go-version: stable
 
     - name: Build and push Docker images
       # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
