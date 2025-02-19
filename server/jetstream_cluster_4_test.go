@@ -816,7 +816,7 @@ func TestJetStreamClusterStreamOrphanMsgsAndReplicasDrifting(t *testing.T) {
 			return nil
 		})
 		if err != nil {
-			t.Logf("WRN: %v", err)
+			t.Errorf("WRN: %v", err)
 		}
 	}
 
