@@ -255,6 +255,24 @@ func TestStoreSubjectStateConsistency(t *testing.T) {
 			expectFirstSeq(6)
 			require_Equal(t, ss.Last, 6)
 			expectLastSeq(6)
+
+			// We store a new message for ss.Last and remove it after, which marks it to be recalculated.
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+			removed, err = fs.RemoveMsg(8)
+			require_NoError(t, err)
+			require_True(t, removed)
+			// This will be the new ss.Last message, so reset ss.lastNeedsUpdate
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+
+			// ss.First should remain the same, but ss.Last should equal the last message.
+			ss = getSubjectState()
+			require_Equal(t, ss.Msgs, 2)
+			require_Equal(t, ss.First, 6)
+			expectFirstSeq(6)
+			require_Equal(t, ss.Last, 9)
+			expectLastSeq(9)
 		},
 	)
 }
