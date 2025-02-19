@@ -5701,6 +5701,7 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 		if ss, ok := mb.fss.Find(stringToBytes(subj)); ok && ss != nil {
 			ss.Msgs++
 			ss.Last = seq
+			ss.lastNeedsUpdate = false
 		} else {
 			mb.fss.Insert(stringToBytes(subj), SimpleState{Msgs: 1, First: seq, Last: seq})
 		}
@@ -6426,6 +6427,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 				if ss, ok := mb.fss.Find(bsubj); ok && ss != nil {
 					ss.Msgs++
 					ss.Last = seq
+					ss.lastNeedsUpdate = false
 				} else {
 					mb.fss.Insert(bsubj, SimpleState{
 						Msgs:  1,
@@ -8490,8 +8492,11 @@ func (mb *msgBlock) recalculateForSubj(subj string, ss *SimpleState) {
 	}
 	if startSlot >= len(mb.cache.idx) {
 		ss.First = ss.Last
+		ss.firstNeedsUpdate = false
+		ss.lastNeedsUpdate = false
 		return
 	}
+
 	endSlot := int(ss.Last - mb.cache.fseq)
 	if endSlot < 0 {
 		endSlot = 0
@@ -8518,6 +8523,8 @@ func (mb *msgBlock) recalculateForSubj(subj string, ss *SimpleState) {
 			li := int(bi) - mb.cache.off
 			if li >= len(mb.cache.buf) {
 				ss.First = ss.Last
+				// Only need to reset ss.lastNeedsUpdate, ss.firstNeedsUpdate is already reset above.
+				ss.lastNeedsUpdate = false
 				return
 			}
 			buf := mb.cache.buf[li:]
@@ -8641,6 +8648,7 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 			if ss, ok := mb.fss.Find(stringToBytes(sm.subj)); ok && ss != nil {
 				ss.Msgs++
 				ss.Last = seq
+				ss.lastNeedsUpdate = false
 			} else {
 				mb.fss.Insert(stringToBytes(sm.subj), SimpleState{Msgs: 1, First: seq, Last: seq})
 			}
