@@ -2288,16 +2288,14 @@ func (s *Server) jsStreamLeaderStepDownRequest(sub *subscription, c *client, _ *
 		}
 	}
 
-	// Call actual stepdown. Do this in a Go routine.
-	go func() {
-		mset.setLeader(false)
-		// TODO (mh) eventually make sure all go routines exited and all channels are cleared
-		time.Sleep(250 * time.Millisecond)
-		node.StepDown(preferredLeader)
-
+	// Call actual stepdown.
+	err = node.StepDown(preferredLeader)
+	if err != nil {
+		resp.Error = NewJSRaftGeneralError(err, Unless(err))
+	} else {
 		resp.Success = true
-		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
-	}()
+	}
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
 // Request to have a consumer leader stepdown.
@@ -2408,16 +2406,14 @@ func (s *Server) jsConsumerLeaderStepDownRequest(sub *subscription, c *client, _
 		}
 	}
 
-	// Call actual stepdown. Do this in a Go routine.
-	go func() {
-		o.setLeader(false)
-		// TODO (mh) eventually make sure all go routines exited and all channels are cleared
-		time.Sleep(250 * time.Millisecond)
-		n.StepDown(preferredLeader)
-
+	// Call actual stepdown.
+	err = n.StepDown(preferredLeader)
+	if err != nil {
+		resp.Error = NewJSRaftGeneralError(err, Unless(err))
+	} else {
 		resp.Success = true
-		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
-	}()
+	}
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
 // Request to remove a peer from a clustered stream.

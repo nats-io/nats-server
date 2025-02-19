@@ -1922,8 +1922,8 @@ func (o *consumer) deleteNotActive() {
 				}
 				nca := js.consumerAssignment(acc, stream, name)
 				js.mu.RUnlock()
-				// Make sure this is not a new consumer with the same name.
-				if nca != nil && nca == ca {
+				// Make sure this is the same consumer assignment, and not a new consumer with the same name.
+				if nca != nil && reflect.DeepEqual(nca, ca) {
 					s.Warnf("Consumer assignment for '%s > %s > %s' not cleaned up, retrying", acc, stream, name)
 					meta.ForwardProposal(removeEntry)
 					if interval < cnaMax {
@@ -2431,7 +2431,7 @@ func (o *consumer) loopAndForwardProposals(qch chan struct{}) {
 
 	forwardProposals := func() error {
 		o.mu.Lock()
-		if o.node == nil || o.node.State() != Leader {
+		if o.node == nil || !o.node.Leader() {
 			o.mu.Unlock()
 			return errors.New("no longer leader")
 		}
@@ -5621,7 +5621,7 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	// Check if we are the leader and are being deleted (as a node).
 	if dflag && o.isLeader() {
 		// If we are clustered and node leader (probable from above), stepdown.
-		if node := o.node; node != nil && node.Leader() {
+		if node := o.node; node != nil {
 			node.StepDown()
 		}
 
