@@ -2431,7 +2431,7 @@ func (o *consumer) loopAndForwardProposals(qch chan struct{}) {
 
 	forwardProposals := func() error {
 		o.mu.Lock()
-		if o.node == nil || o.node.State() != Leader {
+		if o.node == nil || !o.node.Leader() {
 			o.mu.Unlock()
 			return errors.New("no longer leader")
 		}

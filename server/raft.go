@@ -1671,6 +1671,7 @@ func (n *raft) xferCampaign() error {
 }
 
 // State returns the current state for this node.
+// Upper layers should not check State to check if we're Leader, use n.Leader() instead.
 func (n *raft) State() RaftState {
 	return RaftState(n.state.Load())
 }
