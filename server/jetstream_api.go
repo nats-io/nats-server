@@ -1593,7 +1593,7 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, _ *Account,
 	}
 
 	// Initialize asset version metadata.
-	setStaticStreamMetadata(&cfg.StreamConfig, nil)
+	setStaticStreamMetadata(&cfg.StreamConfig)
 
 	streamName := streamNameFromSubject(subject)
 	if streamName != cfg.Name {
@@ -1732,7 +1732,7 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, _ *Account,
 	}
 
 	// Update asset version metadata.
-	setStaticStreamMetadata(&cfg, &mset.cfg)
+	setStaticStreamMetadata(&cfg)
 
 	if err := mset.updatePedantic(&cfg, ncfg.Pedantic); err != nil {
 		resp.Error = NewJSStreamUpdateError(err, Unless(err))
@@ -4427,16 +4427,14 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 		return
 	}
 
-	var oldCfg *ConsumerConfig
 	if o := stream.lookupConsumer(consumerName); o != nil {
-		oldCfg = &o.cfg
 		// If the consumer already exists then don't allow updating the PauseUntil, just set
 		// it back to whatever the current configured value is.
 		req.Config.PauseUntil = o.cfg.PauseUntil
 	}
 
 	// Initialize/update asset version metadata.
-	setStaticConsumerMetadata(&req.Config, oldCfg)
+	setStaticConsumerMetadata(&req.Config)
 
 	o, err := stream.addConsumerWithAction(&req.Config, req.Action, req.Pedantic)
 
@@ -5010,7 +5008,7 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 
 		// Update asset version metadata due to updating pause/resume.
 		// Only PauseUntil is updated above, so reuse config for both.
-		setStaticConsumerMetadata(nca.Config, nca.Config)
+		setStaticConsumerMetadata(nca.Config)
 
 		eca := encodeAddConsumerAssignment(&nca)
 		cc.meta.Propose(eca)
@@ -5046,8 +5044,7 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 	}
 
 	// Update asset version metadata due to updating pause/resume.
-	// Only PauseUntil is updated above, so reuse config for both.
-	setStaticConsumerMetadata(&ncfg, &ncfg)
+	setStaticConsumerMetadata(&ncfg)
 
 	if err := obs.updateConfig(&ncfg); err != nil {
 		// The only type of error that should be returned here is from o.store,
