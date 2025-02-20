@@ -2211,7 +2211,7 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 	mset.mu.RUnlock()
 
 	if preq != nil {
-		purged, err = mset.store.PurgeEx(preq.Subject, preq.Sequence, preq.Keep, preq.NoMarkers)
+		purged, err = mset.store.PurgeEx(preq.Subject, preq.Sequence, preq.Keep, false /*preq.NoMarkers*/)
 	} else {
 		purged, err = mset.store.Purge()
 	}

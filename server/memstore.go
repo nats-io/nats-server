@@ -1089,7 +1089,11 @@ func (ms *memStore) expireMsgs() {
 
 // PurgeEx will remove messages based on subject filters, sequence and number of messages to keep.
 // Will return the number of purged messages.
-func (ms *memStore) PurgeEx(subject string, sequence, keep uint64, noMarkers bool) (purged uint64, err error) {
+func (ms *memStore) PurgeEx(subject string, sequence, keep uint64, _ /* noMarkers */ bool) (purged uint64, err error) {
+	// TODO: Don't write markers on purge until we have solved performance
+	// issues with them.
+	noMarkers := true
+
 	if subject == _EMPTY_ || subject == fwcs {
 		if keep == 0 && sequence == 0 {
 			return ms.purge(0, noMarkers)
@@ -1149,7 +1153,11 @@ func (ms *memStore) Purge() (uint64, error) {
 	return ms.purge(first, false)
 }
 
-func (ms *memStore) purge(fseq uint64, noMarkers bool) (uint64, error) {
+func (ms *memStore) purge(fseq uint64, _ /* noMarkers */ bool) (uint64, error) {
+	// TODO: Don't write markers on purge until we have solved performance
+	// issues with them.
+	noMarkers := true
+
 	ms.mu.Lock()
 	purged := uint64(len(ms.msgs))
 	cb := ms.scb
@@ -1192,7 +1200,11 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 	return ms.compact(seq, false)
 }
 
-func (ms *memStore) compact(seq uint64, noMarkers bool) (uint64, error) {
+func (ms *memStore) compact(seq uint64, _ /* noMarkers */ bool) (uint64, error) {
+	// TODO: Don't write markers on compact until we have solved performance
+	// issues with them.
+	noMarkers := true
+
 	if seq == 0 {
 		return ms.Purge()
 	}
@@ -1555,7 +1567,8 @@ func (ms *memStore) LoadPrevMsg(start uint64, smp *StoreMsg) (sm *StoreMsg, err 
 // Will return the number of bytes removed.
 func (ms *memStore) RemoveMsg(seq uint64) (bool, error) {
 	ms.mu.Lock()
-	removed := ms.removeMsg(seq, false, JSMarkerReasonRemove)
+	// TODO: Don't write markers on removes via the API yet, only via limits.
+	removed := ms.removeMsg(seq, false, _EMPTY_)
 	ms.mu.Unlock()
 	return removed, nil
 }
@@ -1563,7 +1576,8 @@ func (ms *memStore) RemoveMsg(seq uint64) (bool, error) {
 // EraseMsg will remove the message and rewrite its contents.
 func (ms *memStore) EraseMsg(seq uint64) (bool, error) {
 	ms.mu.Lock()
-	removed := ms.removeMsg(seq, true, JSMarkerReasonRemove)
+	// TODO: Don't write markers on removes via the API yet, only via limits.
+	removed := ms.removeMsg(seq, true, _EMPTY_)
 	ms.mu.Unlock()
 	return removed, nil
 }
