@@ -7051,7 +7051,7 @@ func TestJetStreamClusterStreamDirectGetNotTooSoon(t *testing.T) {
 	defer nc.Close()
 
 	_, err = nc.Request(getSubj, nil, time.Second)
-	require_Error(t, err, nats.ErrTimeout)
+	require_Error(t, err, nats.ErrNoResponders)
 
 	// Now start all and make sure they all eventually have subs for direct access.
 	c.restartAll()
