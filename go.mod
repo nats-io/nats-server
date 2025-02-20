@@ -5,6 +5,7 @@ go 1.23.0
 toolchain go1.23.6
 
 require (
+	github.com/KimMachineGun/automemlimit v0.7.0
 	github.com/antithesishq/antithesis-sdk-go v0.4.3-default-no-op
 	github.com/google/go-tpm v0.9.3
 	github.com/klauspost/compress v1.17.11
@@ -18,3 +19,5 @@ require (
 	golang.org/x/sys v0.30.0
 	golang.org/x/time v0.10.0
 )
+
+require github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58 // indirect
