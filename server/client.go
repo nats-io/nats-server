@@ -3569,17 +3569,25 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 		}
 		client.mu.Unlock()
 
+		// For service imports, track if we delivered.
+		didDeliver := true
+
 		// Internal account clients are for service imports and need the '\r\n'.
 		start := time.Now()
 		if client.kind == ACCOUNT {
 			sub.icb(sub, c, acc, string(subject), string(reply), msg)
+			// If we are a service import check to make sure we delivered the message somewhere.
+			if sub.si {
+				didDeliver = c.pa.delivered
+			}
 		} else {
 			sub.icb(sub, c, acc, string(subject), string(reply), msg[:msgSize])
 		}
 		if dur := time.Since(start); dur >= readLoopReportThreshold {
 			srv.Warnf("Internal subscription on %q took too long: %v", subject, dur)
 		}
-		return true
+
+		return didDeliver
 	}
 
 	// If we are a client and we detect that the consumer we are
@@ -4312,17 +4320,17 @@ var (
 
 // processServiceImport is an internal callback when a subscription matches an imported service
 // from another account. This includes response mappings as well.
-func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byte) {
+func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byte) bool {
 	// If we are a GW and this is not a direct serviceImport ignore.
 	isResponse := si.isRespServiceImport()
 	if (c.kind == GATEWAY || c.kind == ROUTER) && !isResponse {
-		return
+		return false
 	}
 	// Detect cycles and ignore (return) when we detect one.
 	if len(c.pa.psi) > 0 {
 		for i := len(c.pa.psi) - 1; i >= 0; i-- {
 			if psi := c.pa.psi[i]; psi.se == si.se {
-				return
+				return false
 			}
 		}
 	}
@@ -4344,7 +4352,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	// response service imports and rrMap entries which all will need to simply expire.
 	// TODO(dlc) - Come up with something better.
 	if shouldReturn || (checkJS && si.se != nil && si.se.acc == c.srv.SystemAccount()) {
-		return
+		return false
 	}
 
 	mt, traceOnly := c.isMsgTraceEnabled()
@@ -4519,6 +4527,10 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	c.in.rts = orts
 	c.pa = pacopy
 
+	// Before we undo didDeliver based on tracing and last mile, mark in the c.pa which informs us of no responders status.
+	// If we override due to tracing and traceOnly we do not want to send back a no responders.
+	c.pa.delivered = didDeliver
+
 	// If this was a message trace but we skip last-mile delivery, we need to
 	// do the remove, so:
 	if mt != nil && traceOnly && didDeliver {
@@ -4554,6 +4566,8 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 			siAcc.removeRespServiceImport(rsi, reason)
 		}
 	}
+
+	return didDeliver
 }
 
 func (c *client) addSubToRouteTargets(sub *subscription) {

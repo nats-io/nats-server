@@ -1,4 +1,4 @@
-// Copyright 2018-2024 The NATS Authors
+// Copyright 2018-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -3687,4 +3687,32 @@ func TestAccountServiceAndStreamExportDoubleDelivery(t *testing.T) {
 	nc.Publish("DW.test.123", []byte("test"))
 	time.Sleep(200 * time.Millisecond)
 	require_Equal(t, msgs.Load(), 1)
+}
+
+func TestAccountServiceImportNoResponders(t *testing.T) {
+	// Setup NATS server.
+	cf := createConfFile(t, []byte(`
+				port: -1
+				accounts: {
+					accExp: {
+						users: [{user: accExp, password: accExp}]
+						exports: [{service: "foo"}]
+					}
+					accImp: {
+						users: [{user: accImp, password: accImp}]
+						imports: [{service: {account: accExp, subject: "foo"}}]
+					}
+				}
+			`))
+
+	s, _ := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	// Connect to the import account. We will not setup any responders, so a request should
+	// error out with ErrNoResponders.
+	nc := natsConnect(t, s.ClientURL(), nats.UserInfo("accImp", "accImp"))
+	defer nc.Close()
+
+	_, err := nc.Request("foo", []byte("request"), 250*time.Millisecond)
+	require_Error(t, err, nats.ErrNoResponders)
 }

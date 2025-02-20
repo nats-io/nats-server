@@ -2086,7 +2086,7 @@ func (a *Account) addServiceImportSub(si *serviceImport) error {
 	a.mu.Unlock()
 
 	cb := func(sub *subscription, c *client, acc *Account, subject, reply string, msg []byte) {
-		c.processServiceImport(si, acc, msg)
+		c.pa.delivered = c.processServiceImport(si, acc, msg)
 	}
 	sub, err := c.processSubEx([]byte(subject), nil, []byte(sid), cb, true, true, false)
 	if err != nil {
