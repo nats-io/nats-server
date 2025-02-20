@@ -7801,6 +7801,185 @@ func TestJetStreamClusterRecreateConsumerFromMetaSnapshot(t *testing.T) {
 	})
 }
 
+func TestJetStreamClusterUpgradeStreamVersioning(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	ml := c.leader()
+	sjs := ml.getJetStream()
+	rn := sjs.getMetaGroup()
+	acc, err := ml.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+
+	// Create stream config.
+	cfg, apiErr := ml.checkStreamCfg(&StreamConfig{Name: "TEST", Subjects: []string{"foo"}}, acc, false)
+	require_True(t, apiErr == nil)
+
+	// Create and propose stream assignment.
+	ci := &ClientInfo{Cluster: "R3S", Account: globalAccountName}
+	rg, perr := sjs.createGroupForStream(ci, &cfg)
+	require_True(t, perr == nil)
+	sa := &streamAssignment{Group: rg, Sync: syncSubjForStream(), Config: &cfg, Client: ci, Created: time.Now().UTC()}
+	require_NoError(t, rn.Propose(encodeAddStreamAssignment(sa)))
+
+	// Wait for the stream assignment to have gone through.
+	checkFor(t, 2*time.Second, 500*time.Millisecond, func() error {
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		if sjs.streamAssignment(globalAccountName, "TEST") == nil {
+			return errors.New("stream assignment does not exist yet")
+		}
+		return nil
+	})
+
+	for _, create := range []bool{true, false} {
+		title := "create"
+		if !create {
+			title = "update"
+		}
+		t.Run(title, func(t *testing.T) {
+			if create {
+				// Create on 2.11+ should be idempotent with previous create on 2.10-.
+				mcfg := &StreamConfig{}
+				setStaticStreamMetadata(mcfg)
+				si, err := js.AddStream(&nats.StreamConfig{
+					Name:     "TEST",
+					Subjects: []string{"foo"},
+					Metadata: setDynamicStreamMetadata(mcfg).Metadata,
+				})
+				require_NoError(t, err)
+				deleteDynamicMetadata(si.Config.Metadata)
+				require_Len(t, len(si.Config.Metadata), 0)
+			} else {
+				// Update populates the versioning metadata.
+				si, err := js.UpdateStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+				require_NoError(t, err)
+				require_Len(t, len(si.Config.Metadata), 3)
+			}
+		})
+	}
+}
+
+func TestJetStreamClusterUpgradeConsumerVersioning(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.LimitsPolicy,
+		Replicas:  1,
+	})
+	require_NoError(t, err)
+
+	ml := c.leader()
+	sjs := ml.getJetStream()
+
+	// Wait for the stream assignment to have gone through.
+	checkFor(t, 2*time.Second, 500*time.Millisecond, func() error {
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		if sjs.streamAssignment(globalAccountName, "TEST") == nil {
+			return errors.New("stream assignment does not exist yet")
+		}
+		return nil
+	})
+
+	rn := sjs.getMetaGroup()
+	sa := sjs.streamAssignment(globalAccountName, "TEST")
+	require_NotNil(t, sa)
+	acc, err := ml.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+
+	// Create consumer config.
+	cfg := &ConsumerConfig{Durable: "CONSUMER"}
+	streamCfg, ok := sjs.clusterStreamConfig(acc.Name, "TEST")
+	if !ok {
+		require_NoError(t, NewJSStreamNotFoundError())
+	}
+	selectedLimits, _, _, apiErr := acc.selectLimits(cfg.replicas(&streamCfg))
+	if apiErr != nil {
+		require_NoError(t, apiErr)
+	}
+	srvLim := &ml.getOpts().JetStreamLimits
+	apiErr = setConsumerConfigDefaults(cfg, &streamCfg, srvLim, selectedLimits, false)
+	if apiErr != nil {
+		require_NoError(t, apiErr)
+	}
+
+	// Create and propose consumer assignment.
+	ci := &ClientInfo{Cluster: "R3S", Account: globalAccountName}
+	rg := sjs.cluster.createGroupForConsumer(cfg, sa)
+	ca := &consumerAssignment{Group: rg, Stream: "TEST", Name: "CONSUMER", Config: cfg, Client: ci, Created: time.Now().UTC()}
+	require_NoError(t, rn.Propose(encodeAddConsumerAssignment(ca)))
+
+	// Wait for the consumer assignment to have gone through.
+	checkFor(t, 2*time.Second, 500*time.Millisecond, func() error {
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		if sjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER") == nil {
+			return errors.New("consumer assignment does not exist yet")
+		}
+		return nil
+	})
+
+	for _, create := range []bool{true, false} {
+		title := "create"
+		if !create {
+			title = "update"
+		}
+		t.Run(title, func(t *testing.T) {
+			createConsumerRequest := func(obsReq CreateConsumerRequest) (*JSApiConsumerInfoResponse, error) {
+				req, err := json.Marshal(obsReq)
+				if err != nil {
+					return nil, err
+				}
+				msg, err := nc.Request(fmt.Sprintf(JSApiDurableCreateT, "TEST", "CONSUMER"), req, time.Second)
+				if err != nil {
+					return nil, err
+				}
+				var resp JSApiConsumerInfoResponse
+				require_NoError(t, json.Unmarshal(msg.Data, &resp))
+				if resp.Error != nil {
+					return nil, resp.Error
+				}
+				return &resp, nil
+			}
+
+			if create {
+				// Create on 2.11+ should be idempotent with previous create on 2.10-.
+				ncfg := &ConsumerConfig{Durable: "CONSUMER"}
+				setStaticConsumerMetadata(ncfg)
+				obsReq := CreateConsumerRequest{
+					Stream: "TEST",
+					Config: *setDynamicConsumerMetadata(ncfg),
+					Action: ActionCreate,
+				}
+				resp, err := createConsumerRequest(obsReq)
+				require_NoError(t, err)
+				deleteDynamicMetadata(resp.Config.Metadata)
+				require_Len(t, len(resp.Config.Metadata), 0)
+			} else {
+				// Update populates the versioning metadata.
+				obsReq := CreateConsumerRequest{
+					Stream: "TEST",
+					Config: ConsumerConfig{Durable: "CONSUMER"},
+					Action: ActionUpdate,
+				}
+				resp, err := createConsumerRequest(obsReq)
+				require_NoError(t, err)
+				require_Len(t, len(resp.Config.Metadata), 3)
+			}
+		})
+	}
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.

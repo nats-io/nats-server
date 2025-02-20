@@ -6120,6 +6120,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 
 	// Capture if we have existing assignment first.
 	if osa := js.streamAssignment(acc.Name, cfg.Name); osa != nil {
+		copyStreamMetadata(cfg, osa.Config)
 		if !reflect.DeepEqual(osa.Config, cfg) {
 			resp.Error = NewJSStreamNameExistError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
@@ -6267,7 +6268,6 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	var resp = JSApiStreamUpdateResponse{ApiResponse: ApiResponse{Type: JSApiStreamUpdateResponseType}}
 
 	osa := js.streamAssignment(acc.Name, cfg.Name)
-
 	if osa == nil {
 		resp.Error = NewJSStreamNotFoundError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
@@ -6275,7 +6275,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	}
 
 	// Update asset version metadata.
-	setStaticStreamMetadata(cfg, osa.Config)
+	setStaticStreamMetadata(cfg)
 
 	var newCfg *StreamConfig
 	if jsa := js.accounts[acc.Name]; jsa != nil {
@@ -7398,15 +7398,19 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 				return
 			}
+		} else {
+			// Initialize/update asset version metadata.
+			// First time creating this consumer, or updating.
+			setStaticConsumerMetadata(cfg)
 		}
 	}
 
 	// Initialize/update asset version metadata.
-	var oldCfg *ConsumerConfig
-	if ca != nil {
-		oldCfg = ca.Config
+	// But only if we're not creating, should only update it the first time
+	// to be idempotent with versions where there's no versioning metadata.
+	if action != ActionCreate {
+		setStaticConsumerMetadata(cfg)
 	}
-	setStaticConsumerMetadata(cfg, oldCfg)
 
 	// If this is new consumer.
 	if ca == nil {
