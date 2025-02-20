@@ -550,7 +550,7 @@ func TestLongClusterWorkQueueMessagesNotSkipped(t *testing.T) {
 				if errors.Is(err, nats.ErrTimeout) {
 					continue
 				}
-				if errors.Is(err, nats.ErrConnectionClosed) {
+				if errors.Is(err, nats.ErrConnectionClosed) || errors.Is(err, nats.ErrSubscriptionClosed) {
 					return // ... for when the test finishes
 				}
 				require_NoError(t, err)
