@@ -526,6 +526,60 @@ func TestNRGUnsuccessfulVoteRequestDoesntResetElectionTimer(t *testing.T) {
 	require_True(t, followerEqual)
 }
 
+func TestNRGUnsuccessfulVoteRequestCampaignEarly(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	n.etlr = time.Time{}
+
+	// Simple case: we are follower and vote for a candidate.
+	require_NoError(t, n.processVoteRequest(&voteRequest{term: 1, lastTerm: 0, lastIndex: 0, candidate: nats0}))
+	require_Equal(t, n.term, 1)
+	require_Equal(t, n.vote, nats0)
+	require_NotEqual(t, n.etlr, time.Time{}) // Resets election timer as it voted.
+	n.etlr = time.Time{}
+
+	// We are follower and deny vote for outdated candidate.
+	n.pterm, n.pindex = 1, 100
+	require_NoError(t, n.processVoteRequest(&voteRequest{term: 2, lastTerm: 1, lastIndex: 2, candidate: nats0}))
+	require_Equal(t, n.term, 2)
+	require_Equal(t, n.vote, noVote)
+	require_NotEqual(t, n.etlr, time.Time{}) // Resets election timer as it starts campaigning.
+	n.etlr = time.Time{}
+
+	// Switch to candidate.
+	n.pterm, n.pindex = 2, 200
+	n.switchToCandidate()
+	require_Equal(t, n.term, 3)
+	require_Equal(t, n.State(), Candidate)
+	require_NotEqual(t, n.etlr, time.Time{}) // Resets election timer as part of switching state.
+	n.etlr = time.Time{}
+
+	// We are candidate and deny vote for outdated candidate. But they were on a more recent term, restart campaign.
+	require_NoError(t, n.processVoteRequest(&voteRequest{term: 4, lastTerm: 1, lastIndex: 2, candidate: nats0}))
+	require_Equal(t, n.term, 4)
+	require_Equal(t, n.vote, noVote)
+	require_NotEqual(t, n.etlr, time.Time{}) // Resets election timer as it restarts campaigning.
+	n.etlr = time.Time{}
+
+	// Switch to candidate.
+	n.pterm, n.pindex = 4, 400
+	n.switchToCandidate()
+	require_Equal(t, n.term, 5)
+	require_Equal(t, n.State(), Candidate)
+	require_NotEqual(t, n.etlr, time.Time{}) // Resets election timer as part of switching state.
+	n.etlr = time.Time{}
+
+	// We are candidate and deny vote for outdated candidate. Don't start campaigning early.
+	require_NoError(t, n.processVoteRequest(&voteRequest{term: 5, lastTerm: 1, lastIndex: 2, candidate: nats0}))
+	require_Equal(t, n.term, 5)
+	require_Equal(t, n.vote, noVote)
+	// Election timer must NOT be updated as that would mean another candidate that we don't vote
+	// for can short-circuit us by making us restart elections, denying us the ability to become leader.
+	require_Equal(t, n.etlr, time.Time{})
+}
+
 func TestNRGInvalidTAVDoesntPanic(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
@@ -1094,6 +1148,43 @@ func TestNRGTermNoDecreaseAfterWALReset(t *testing.T) {
 			fn.processAppendEntry(ae, fn.aesub)
 			require_Equal(t, fn.term, 20) // Follower should reject again, even after reset, term stays the same.
 		}
+	}
+}
+
+func TestNRGPendingAppendEntryCacheInvalidation(t *testing.T) {
+	for _, test := range []struct {
+		title   string
+		entries int
+	}{
+		{title: "empty", entries: 1},
+		{title: "at limit", entries: paeDropThreshold},
+		{title: "full", entries: paeDropThreshold + 1},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+			rg.waitOnLeader()
+			l := rg.leader()
+
+			l.(*stateAdder).proposeDelta(1)
+			rg.waitOnTotal(t, 1)
+
+			// Fill up the cache with N entries.
+			// The contents don't matter as they should never be applied.
+			rg.lockAll()
+			for _, s := range rg {
+				n := s.node().(*raft)
+				for i := 0; i < test.entries; i++ {
+					n.pae[n.pindex+uint64(1+i)] = newAppendEntry("", 0, 0, 0, 0, nil)
+				}
+			}
+			rg.unlockAll()
+
+			l.(*stateAdder).proposeDelta(1)
+			rg.waitOnTotal(t, 2)
+		})
 	}
 }
 
@@ -1944,6 +2035,128 @@ func TestNRGHealthCheckWaitForPendingCommitsWhenPaused(t *testing.T) {
 	// But still waiting for it to be applied before marking healthy.
 	n.Applied(2)
 	require_True(t, n.Healthy())
+}
+
+func TestNRGHeartbeatCanEstablishQuorumAfterLeaderChange(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Timeline
+	aeMsg := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeHeartbeatResponse := &appendEntryResponse{term: 1, index: 1, peer: nats0, success: true}
+
+	// Process first message.
+	n.processAppendEntry(aeMsg, n.aesub)
+	require_Equal(t, n.pindex, 1)
+	require_Equal(t, n.aflr, 0)
+
+	// Simulate becoming leader, and not knowing if the stored entry has quorum and can be committed.
+	// Switching to leader should send a heartbeat.
+	n.switchToLeader()
+	require_Equal(t, n.aflr, 1)
+	require_Equal(t, n.commit, 0)
+
+	// We simulate receiving the successful heartbeat response here. It should move the commit up.
+	n.processAppendEntryResponse(aeHeartbeatResponse)
+	require_Equal(t, n.commit, 1)
+	require_Equal(t, n.aflr, 1)
+
+	// Once the entry is applied, it should reset the applied floor.
+	n.Applied(1)
+	require_Equal(t, n.aflr, 0)
+}
+
+func TestNRGQuorumAccounting(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats1 := "yrzKKRBu" // "nats-1"
+	nats2 := "cnrtt3eg" // "nats-2"
+
+	// Timeline
+	aeHeartbeat1Response := &appendEntryResponse{term: 1, index: 1, peer: nats1, success: true}
+	aeHeartbeat2Response := &appendEntryResponse{term: 1, index: 1, peer: nats2, success: true}
+
+	// Adjust cluster size, so we need at least 2 responses from other servers to establish quorum.
+	require_NoError(t, n.AdjustBootClusterSize(5))
+	require_Equal(t, n.csz, 5)
+	require_Equal(t, n.qn, 3)
+
+	// Switch this node to leader, and send an entry.
+	n.switchToLeader()
+	require_Equal(t, n.pindex, 0)
+	n.sendAppendEntry(entries)
+	require_Equal(t, n.pindex, 1)
+
+	// The first response MUST NOT indicate quorum has been reached.
+	n.processAppendEntryResponse(aeHeartbeat1Response)
+	require_Equal(t, n.commit, 0)
+
+	// The second response means we have reached quorum and can move commit up.
+	n.processAppendEntryResponse(aeHeartbeat2Response)
+	require_Equal(t, n.commit, 1)
+}
+
+func TestNRGRevalidateQuorumAfterLeaderChange(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats1 := "yrzKKRBu" // "nats-1"
+	nats2 := "cnrtt3eg" // "nats-2"
+
+	// Timeline
+	aeHeartbeat1Response := &appendEntryResponse{term: 1, index: 1, peer: nats1, success: true}
+	aeHeartbeat2Response := &appendEntryResponse{term: 1, index: 1, peer: nats2, success: true}
+
+	// Adjust cluster size, so we need at least 2 responses from other servers to establish quorum.
+	require_NoError(t, n.AdjustBootClusterSize(5))
+	require_Equal(t, n.csz, 5)
+	require_Equal(t, n.qn, 3)
+
+	// Switch this node to leader, and send an entry.
+	n.term++
+	n.switchToLeader()
+	require_Equal(t, n.term, 1)
+	require_Equal(t, n.pindex, 0)
+	n.sendAppendEntry(entries)
+	require_Equal(t, n.pindex, 1)
+
+	// We have one server that signals the message was stored. The leader will add 1 to the acks count.
+	n.processAppendEntryResponse(aeHeartbeat1Response)
+	require_Equal(t, n.commit, 0)
+	require_Len(t, len(n.acks), 1)
+
+	// We stepdown now and don't know if we will have quorum on the first entry.
+	n.stepdown(noLeader)
+
+	// Let's assume there are a bunch of leader elections now, data being added to the log, being truncated, etc.
+	// We don't know what happened, maybe we were partitioned, but we can't know for sure if the first entry has quorum.
+
+	// We now become leader again.
+	n.term = 6
+	n.switchToLeader()
+	require_Equal(t, n.term, 6)
+
+	// We now receive a successful response from another server saying they have stored it.
+	// Anything can have happened to the replica that said success before, we can't assume that's still valid.
+	// So our commit must stay the same and we restart counting for quorum.
+	n.processAppendEntryResponse(aeHeartbeat2Response)
+	require_Equal(t, n.commit, 0)
+	require_Len(t, len(n.acks), 1)
 }
 
 // This is a RaftChainOfBlocks test where a block is proposed and then we wait for all replicas to apply it before

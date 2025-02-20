@@ -1231,6 +1231,8 @@ func TestMemStoreSubjectDeleteMarkers(t *testing.T) {
 }
 
 func TestMemStoreSubjectDeleteMarkersOnPurge(t *testing.T) {
+	t.SkipNow()
+
 	ms, err := newMemStore(
 		&StreamConfig{
 			Name: "zzz", Subjects: []string{"test.*"}, Storage: MemoryStorage,
@@ -1259,6 +1261,8 @@ func TestMemStoreSubjectDeleteMarkersOnPurge(t *testing.T) {
 }
 
 func TestMemStoreSubjectDeleteMarkersOnPurgeEx(t *testing.T) {
+	t.SkipNow()
+
 	ms, err := newMemStore(
 		&StreamConfig{
 			Name: "zzz", Subjects: []string{"test.*"}, Storage: MemoryStorage,
@@ -1287,6 +1291,8 @@ func TestMemStoreSubjectDeleteMarkersOnPurgeEx(t *testing.T) {
 }
 
 func TestMemStoreSubjectDeleteMarkersOnPurgeExNoMarkers(t *testing.T) {
+	t.SkipNow()
+
 	ms, err := newMemStore(
 		&StreamConfig{
 			Name: "zzz", Subjects: []string{"test.*"}, Storage: MemoryStorage,
@@ -1312,6 +1318,8 @@ func TestMemStoreSubjectDeleteMarkersOnPurgeExNoMarkers(t *testing.T) {
 }
 
 func TestMemStoreSubjectDeleteMarkersOnCompact(t *testing.T) {
+	t.SkipNow()
+
 	ms, err := newMemStore(
 		&StreamConfig{
 			Name: "zzz", Subjects: []string{"test.*"}, Storage: MemoryStorage,
@@ -1346,6 +1354,8 @@ func TestMemStoreSubjectDeleteMarkersOnCompact(t *testing.T) {
 }
 
 func TestMemStoreSubjectDeleteMarkersOnRemoveMsg(t *testing.T) {
+	t.SkipNow()
+
 	ms, err := newMemStore(
 		&StreamConfig{
 			Name: "zzz", Subjects: []string{"test"}, Storage: MemoryStorage,

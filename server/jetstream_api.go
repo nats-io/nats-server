@@ -503,9 +503,6 @@ type JSApiStreamPurgeRequest struct {
 	Subject string `json:"filter,omitempty"`
 	// Number of messages to keep.
 	Keep uint64 `json:"keep,omitempty"`
-	// NoMarkers ensures that subject delete markers will not be left. If subject delete markers
-	// are not enabled on the stream, then this flag is no-op.
-	NoMarkers bool `json:"no_markers,omitempty"`
 }
 
 type JSApiStreamPurgeResponse struct {
@@ -1593,7 +1590,7 @@ func (s *Server) jsStreamCreateRequest(sub *subscription, c *client, _ *Account,
 	}
 
 	// Initialize asset version metadata.
-	setStaticStreamMetadata(&cfg.StreamConfig, nil)
+	setStaticStreamMetadata(&cfg.StreamConfig)
 
 	streamName := streamNameFromSubject(subject)
 	if streamName != cfg.Name {
@@ -1732,7 +1729,7 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, _ *Account,
 	}
 
 	// Update asset version metadata.
-	setStaticStreamMetadata(&cfg, &mset.cfg)
+	setStaticStreamMetadata(&cfg)
 
 	if err := mset.updatePedantic(&cfg, ncfg.Pedantic); err != nil {
 		resp.Error = NewJSStreamUpdateError(err, Unless(err))
@@ -2288,16 +2285,14 @@ func (s *Server) jsStreamLeaderStepDownRequest(sub *subscription, c *client, _ *
 		}
 	}
 
-	// Call actual stepdown. Do this in a Go routine.
-	go func() {
-		mset.setLeader(false)
-		// TODO (mh) eventually make sure all go routines exited and all channels are cleared
-		time.Sleep(250 * time.Millisecond)
-		node.StepDown(preferredLeader)
-
+	// Call actual stepdown.
+	err = node.StepDown(preferredLeader)
+	if err != nil {
+		resp.Error = NewJSRaftGeneralError(err, Unless(err))
+	} else {
 		resp.Success = true
-		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
-	}()
+	}
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
 // Request to have a consumer leader stepdown.
@@ -2408,16 +2403,14 @@ func (s *Server) jsConsumerLeaderStepDownRequest(sub *subscription, c *client, _
 		}
 	}
 
-	// Call actual stepdown. Do this in a Go routine.
-	go func() {
-		o.setLeader(false)
-		// TODO (mh) eventually make sure all go routines exited and all channels are cleared
-		time.Sleep(250 * time.Millisecond)
-		n.StepDown(preferredLeader)
-
+	// Call actual stepdown.
+	err = n.StepDown(preferredLeader)
+	if err != nil {
+		resp.Error = NewJSRaftGeneralError(err, Unless(err))
+	} else {
 		resp.Success = true
-		s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
-	}()
+	}
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
 // Request to remove a peer from a clustered stream.
@@ -4431,16 +4424,14 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 		return
 	}
 
-	var oldCfg *ConsumerConfig
 	if o := stream.lookupConsumer(consumerName); o != nil {
-		oldCfg = &o.cfg
 		// If the consumer already exists then don't allow updating the PauseUntil, just set
 		// it back to whatever the current configured value is.
 		req.Config.PauseUntil = o.cfg.PauseUntil
 	}
 
 	// Initialize/update asset version metadata.
-	setStaticConsumerMetadata(&req.Config, oldCfg)
+	setStaticConsumerMetadata(&req.Config)
 
 	o, err := stream.addConsumerWithAction(&req.Config, req.Action, req.Pedantic)
 
@@ -5014,7 +5005,7 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 
 		// Update asset version metadata due to updating pause/resume.
 		// Only PauseUntil is updated above, so reuse config for both.
-		setStaticConsumerMetadata(nca.Config, nca.Config)
+		setStaticConsumerMetadata(nca.Config)
 
 		eca := encodeAddConsumerAssignment(&nca)
 		cc.meta.Propose(eca)
@@ -5050,8 +5041,7 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 	}
 
 	// Update asset version metadata due to updating pause/resume.
-	// Only PauseUntil is updated above, so reuse config for both.
-	setStaticConsumerMetadata(&ncfg, &ncfg)
+	setStaticConsumerMetadata(&ncfg)
 
 	if err := obs.updateConfig(&ncfg); err != nil {
 		// The only type of error that should be returned here is from o.store,

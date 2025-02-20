@@ -254,6 +254,24 @@ func TestStoreSubjectStateConsistency(t *testing.T) {
 			expectFirstSeq(6)
 			require_Equal(t, ss.Last, 6)
 			expectLastSeq(6)
+
+			// We store a new message for ss.Last and remove it after, which marks it to be recalculated.
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+			removed, err = fs.RemoveMsg(8)
+			require_NoError(t, err)
+			require_True(t, removed)
+			// This will be the new ss.Last message, so reset ss.lastNeedsUpdate
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+
+			// ss.First should remain the same, but ss.Last should equal the last message.
+			ss = getSubjectState()
+			require_Equal(t, ss.Msgs, 2)
+			require_Equal(t, ss.First, 6)
+			expectFirstSeq(6)
+			require_Equal(t, ss.Last, 9)
+			expectLastSeq(9)
 		},
 	)
 }
@@ -300,4 +318,106 @@ func TestStoreMaxMsgsPerUpdateBug(t *testing.T) {
 			require_Equal(t, cfg.MaxMsgsPer, -1)
 		},
 	)
+}
+
+func TestStoreCompactCleansUpDmap(t *testing.T) {
+	config := func() StreamConfig {
+		return StreamConfig{Name: "TEST", Subjects: []string{"foo"}, MaxMsgsPer: 0}
+	}
+	for cseq := uint64(2); cseq <= 4; cseq++ {
+		t.Run(fmt.Sprintf("Compact(%d)", cseq), func(t *testing.T) {
+			testAllStoreAllPermutations(
+				t, false, config(),
+				func(t *testing.T, fs StreamStore) {
+					dmapEntries := func() int {
+						if fss, ok := fs.(*fileStore); ok {
+							return fss.dmapEntries()
+						} else if mss, ok := fs.(*memStore); ok {
+							mss.mu.RLock()
+							defer mss.mu.RUnlock()
+							return mss.dmap.Size()
+						} else {
+							return 0
+						}
+					}
+
+					// Publish messages, should have no interior deletes.
+					for i := 0; i < 3; i++ {
+						_, _, err := fs.StoreMsg("foo", nil, nil, 0)
+						require_NoError(t, err)
+					}
+					require_Len(t, dmapEntries(), 0)
+
+					// Removing one message in the middle should be an interior delete.
+					_, err := fs.RemoveMsg(2)
+					require_NoError(t, err)
+					require_Len(t, dmapEntries(), 1)
+
+					// Compacting must always clean up the interior delete.
+					_, err = fs.Compact(cseq)
+					require_NoError(t, err)
+					require_Len(t, dmapEntries(), 0)
+
+					// Validate first/last sequence.
+					state := fs.State()
+					fseq := uint64(3)
+					if fseq < cseq {
+						fseq = cseq
+					}
+					require_Equal(t, state.FirstSeq, fseq)
+					require_Equal(t, state.LastSeq, 3)
+				})
+		})
+	}
+}
+
+func TestStoreTruncateCleansUpDmap(t *testing.T) {
+	config := func() StreamConfig {
+		return StreamConfig{Name: "TEST", Subjects: []string{"foo"}, MaxMsgsPer: 0}
+	}
+	for tseq := uint64(0); tseq <= 1; tseq++ {
+		t.Run(fmt.Sprintf("Truncate(%d)", tseq), func(t *testing.T) {
+			testAllStoreAllPermutations(
+				t, false, config(),
+				func(t *testing.T, fs StreamStore) {
+					dmapEntries := func() int {
+						if fss, ok := fs.(*fileStore); ok {
+							return fss.dmapEntries()
+						} else if mss, ok := fs.(*memStore); ok {
+							mss.mu.RLock()
+							defer mss.mu.RUnlock()
+							return mss.dmap.Size()
+						} else {
+							return 0
+						}
+					}
+
+					// Publish messages, should have no interior deletes.
+					for i := 0; i < 3; i++ {
+						_, _, err := fs.StoreMsg("foo", nil, nil, 0)
+						require_NoError(t, err)
+					}
+					require_Len(t, dmapEntries(), 0)
+
+					// Removing one message in the middle should be an interior delete.
+					_, err := fs.RemoveMsg(2)
+					require_NoError(t, err)
+					require_Len(t, dmapEntries(), 1)
+
+					// Truncating must always clean up the interior delete.
+					err = fs.Truncate(tseq)
+					require_NoError(t, err)
+					require_Len(t, dmapEntries(), 0)
+
+					// Validate first/last sequence.
+					state := fs.State()
+					fseq := uint64(1)
+					if fseq > tseq {
+						fseq = tseq
+					}
+					require_Equal(t, state.FirstSeq, fseq)
+					require_Equal(t, state.LastSeq, tseq)
+				})
+		})
+	}
 }

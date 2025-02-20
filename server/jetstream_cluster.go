@@ -296,7 +296,7 @@ func (s *Server) JetStreamStepdownStream(account, stream string) error {
 		return err
 	}
 
-	if node := mset.raftNode(); node != nil && node.Leader() {
+	if node := mset.raftNode(); node != nil {
 		node.StepDown()
 	}
 
@@ -327,7 +327,7 @@ func (s *Server) JetStreamStepdownConsumer(account, stream, consumer string) err
 		return NewJSConsumerNotFoundError()
 	}
 
-	if node := o.raftNode(); node != nil && node.Leader() {
+	if node := o.raftNode(); node != nil {
 		node.StepDown()
 	}
 
@@ -1527,10 +1527,11 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 		}
 		if osa := js.streamAssignment(sa.Client.serviceAccount(), sa.Config.Name); osa != nil {
 			for _, ca := range osa.consumers {
-				if sa.consumers[ca.Name] == nil {
+				// Consumer was either removed, or recreated with a different raft group.
+				if nca := sa.consumers[ca.Name]; nca == nil {
 					caDel = append(caDel, ca)
-				} else {
-					caAdd = append(caAdd, ca)
+				} else if nca.Group != nil && ca.Group != nil && nca.Group.Name != ca.Group.Name {
+					caDel = append(caDel, ca)
 				}
 			}
 		}
@@ -2260,9 +2261,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		if n.State() == Closed {
 			return
 		}
-		if n.Leader() {
-			n.StepDown()
-		}
+		n.StepDown()
 		// Drain the commit queue...
 		aq.drain()
 	}()
@@ -2796,11 +2795,11 @@ func (mset *stream) isMigrating() bool {
 func (mset *stream) resetClusteredState(err error) bool {
 	mset.mu.RLock()
 	s, js, jsa, sa, acc, node := mset.srv, mset.js, mset.jsa, mset.sa, mset.acc, mset.node
-	stype, isLeader, tierName, replicas := mset.cfg.Storage, mset.isLeader(), mset.tier, mset.cfg.Replicas
+	stype, tierName, replicas := mset.cfg.Storage, mset.tier, mset.cfg.Replicas
 	mset.mu.RUnlock()
 
 	// Stepdown regardless if we are the leader here.
-	if isLeader && node != nil {
+	if node != nil {
 		node.StepDown()
 	}
 
@@ -3561,9 +3560,7 @@ func (s *Server) removeStream(mset *stream, nsa *streamAssignment) {
 	// Make sure to use the new stream assignment, not our own.
 	s.Debugf("JetStream removing stream '%s > %s' from this server", nsa.Client.serviceAccount(), nsa.Config.Name)
 	if node := mset.raftNode(); node != nil {
-		if node.Leader() {
-			node.StepDown(nsa.Group.Preferred)
-		}
+		node.StepDown(nsa.Group.Preferred)
 		// shutdown monitor by shutting down raft.
 		node.Delete()
 	}
@@ -6123,6 +6120,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 
 	// Capture if we have existing assignment first.
 	if osa := js.streamAssignment(acc.Name, cfg.Name); osa != nil {
+		copyStreamMetadata(cfg, osa.Config)
 		if !reflect.DeepEqual(osa.Config, cfg) {
 			resp.Error = NewJSStreamNameExistError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
@@ -6270,7 +6268,6 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	var resp = JSApiStreamUpdateResponse{ApiResponse: ApiResponse{Type: JSApiStreamUpdateResponseType}}
 
 	osa := js.streamAssignment(acc.Name, cfg.Name)
-
 	if osa == nil {
 		resp.Error = NewJSStreamNotFoundError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
@@ -6278,7 +6275,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	}
 
 	// Update asset version metadata.
-	setStaticStreamMetadata(cfg, osa.Config)
+	setStaticStreamMetadata(cfg)
 
 	var newCfg *StreamConfig
 	if jsa := js.accounts[acc.Name]; jsa != nil {
@@ -7401,15 +7398,19 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 				return
 			}
+		} else {
+			// Initialize/update asset version metadata.
+			// First time creating this consumer, or updating.
+			setStaticConsumerMetadata(cfg)
 		}
 	}
 
 	// Initialize/update asset version metadata.
-	var oldCfg *ConsumerConfig
-	if ca != nil {
-		oldCfg = ca.Config
+	// But only if we're not creating, should only update it the first time
+	// to be idempotent with versions where there's no versioning metadata.
+	if action != ActionCreate {
+		setStaticConsumerMetadata(cfg)
 	}
-	setStaticConsumerMetadata(cfg, oldCfg)
 
 	// If this is new consumer.
 	if ca == nil {

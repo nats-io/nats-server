@@ -2211,7 +2211,7 @@ func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err err
 	mset.mu.RUnlock()
 
 	if preq != nil {
-		purged, err = mset.store.PurgeEx(preq.Subject, preq.Sequence, preq.Keep, preq.NoMarkers)
+		purged, err = mset.store.PurgeEx(preq.Subject, preq.Sequence, preq.Keep, false /*preq.NoMarkers*/)
 	} else {
 		purged, err = mset.store.Purge()
 	}
@@ -2737,12 +2737,13 @@ func (mset *stream) setupMirrorConsumer() error {
 	} else {
 		mset.cancelSourceInfo(mset.mirror)
 		mset.mirror.sseq = mset.lseq
-
-		// If we are no longer the leader stop trying.
-		if !mset.isLeader() {
-			return nil
-		}
 	}
+
+	// If we are no longer the leader stop trying.
+	if !mset.isLeader() {
+		return nil
+	}
+
 	mirror := mset.mirror
 
 	// We want to throttle here in terms of how fast we request new consumers,
@@ -5603,9 +5604,7 @@ func (mset *stream) resetAndWaitOnConsumers() {
 
 	for _, o := range consumers {
 		if node := o.raftNode(); node != nil {
-			if o.IsLeader() {
-				node.StepDown()
-			}
+			node.StepDown()
 			node.Delete()
 		}
 		if o.isMonitorRunning() {

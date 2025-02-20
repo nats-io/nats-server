@@ -2511,8 +2511,13 @@ var subPool = &sync.Pool{
 // that the message is not sent to a given gateway if for instance
 // it is known that this gateway has no interest in the account or
 // subject, etc..
+// When invoked from a LEAF connection, `checkLeafQF` should be passed as `true`
+// so that we skip any queue subscription interest that is not part of the
+// `c.pa.queues` filter (similar to what we do in `processMsgResults`). However,
+// when processing service imports, then this boolean should be passes as `false`,
+// regardless if it is a LEAF connection or not.
 // <Invoked from any client connection's readLoop>
-func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgroups [][]byte) bool {
+func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgroups [][]byte, checkLeafQF bool) bool {
 	// We had some times when we were sending across a GW with no subject, and the other side would break
 	// due to parser error. These need to be fixed upstream but also double check here.
 	if len(subject) == 0 {
@@ -2597,6 +2602,21 @@ func (c *client) sendMsgToGateways(acc *Account, msg, subject, reply []byte, qgr
 					qsubs := qr.qsubs[i]
 					if len(qsubs) > 0 {
 						queue := qsubs[0].queue
+						if checkLeafQF {
+							// Skip any queue that is not in the leaf's queue filter.
+							skip := true
+							for _, qn := range c.pa.queues {
+								if bytes.Equal(queue, qn) {
+									skip = false
+									break
+								}
+							}
+							if skip {
+								continue
+							}
+							// Now we still need to check that it was not delivered
+							// locally by checking the given `qgroups`.
+						}
 						add := true
 						for _, qn := range qgroups {
 							if bytes.Equal(queue, qn) {
@@ -2994,7 +3014,7 @@ func (c *client) handleGatewayReply(msg []byte) (processed bool) {
 		// we now need to send the message with the real subject to
 		// gateways in case they have interest on that reply subject.
 		if !isServiceReply {
-			c.sendMsgToGateways(acc, msg, c.pa.subject, c.pa.reply, queues)
+			c.sendMsgToGateways(acc, msg, c.pa.subject, c.pa.reply, queues, false)
 		}
 	} else if c.kind == GATEWAY {
 		// Only if we are a gateway connection should we try to route

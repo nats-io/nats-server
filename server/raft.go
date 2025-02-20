@@ -144,9 +144,10 @@ type raft struct {
 	track bool        //
 	werr  error       // Last write error
 
-	state    atomic.Int32 // RaftState
-	hh       hash.Hash64  // Highwayhash, used for snapshots
-	snapfile string       // Snapshot filename
+	state       atomic.Int32 // RaftState
+	leaderState atomic.Bool  // Is in (complete) leader state.
+	hh          hash.Hash64  // Highwayhash, used for snapshots
+	snapfile    string       // Snapshot filename
 
 	csz   int             // Cluster size
 	qn    int             // Number of nodes needed to establish quorum
@@ -757,9 +758,7 @@ func (s *Server) stepdownRaftNodes() {
 	s.rnMu.RUnlock()
 
 	for _, node := range nodes {
-		if node.Leader() {
-			node.StepDown()
-		}
+		node.StepDown()
 		node.SetObserver(true)
 	}
 }
@@ -808,8 +807,7 @@ func (s *Server) transferRaftLeaders() bool {
 
 	var didTransfer bool
 	for _, node := range nodes {
-		if node.Leader() {
-			node.StepDown()
+		if err := node.StepDown(); err == nil {
 			didTransfer = true
 		}
 		node.SetObserver(true)
@@ -860,7 +858,7 @@ func (n *raft) ProposeMulti(entries []*Entry) error {
 // ForwardProposal will forward the proposal to the leader if known.
 // If we are the leader this is the same as calling propose.
 func (n *raft) ForwardProposal(entry []byte) error {
-	if n.Leader() {
+	if n.State() == Leader {
 		return n.Propose(entry)
 	}
 
@@ -1082,7 +1080,8 @@ func (n *raft) Applied(index uint64) (entries uint64, bytes uint64) {
 		n.aflr = 0
 		// Quick sanity-check to confirm we're still leader.
 		// In which case we must signal, since switchToLeader would not have done so already.
-		if n.Leader() {
+		if n.State() == Leader {
+			n.leaderState.Store(true)
 			n.updateLeadChange(true)
 		}
 	}
@@ -1379,7 +1378,7 @@ func (n *raft) Leader() bool {
 	if n == nil {
 		return false
 	}
-	return n.State() == Leader
+	return n.leaderState.Load()
 }
 
 // stepdown immediately steps down the Raft node to the
@@ -1552,16 +1551,14 @@ func (n *raft) selectNextLeader() string {
 
 // StepDown will have a leader stepdown and optionally do a leader transfer.
 func (n *raft) StepDown(preferred ...string) error {
-	n.Lock()
+	if n.State() != Leader {
+		return errNotLeader
+	}
 
+	n.Lock()
 	if len(preferred) > 1 {
 		n.Unlock()
 		return errTooManyPrefs
-	}
-
-	if n.State() != Leader {
-		n.Unlock()
-		return errNotLeader
 	}
 
 	n.debug("Being asked to stepdown")
@@ -1674,6 +1671,7 @@ func (n *raft) xferCampaign() error {
 }
 
 // State returns the current state for this node.
+// Upper layers should not check State to check if we're Leader, use n.Leader() instead.
 func (n *raft) State() RaftState {
 	return RaftState(n.state.Load())
 }
@@ -1791,6 +1789,7 @@ func (n *raft) shutdown() {
 	// First call to Stop or Delete should close the quit chan
 	// to notify the runAs goroutines to stop what they're doing.
 	if n.state.Swap(int32(Closed)) != int32(Closed) {
+		n.leaderState.Store(false)
 		close(n.quit)
 	}
 }
@@ -2432,7 +2431,7 @@ func (n *raft) decodeAppendEntryResponse(msg []byte) *appendEntryResponse {
 func (n *raft) handleForwardedRemovePeerProposal(sub *subscription, c *client, _ *Account, _, reply string, msg []byte) {
 	n.debug("Received forwarded remove peer proposal: %q", msg)
 
-	if !n.Leader() {
+	if n.State() != Leader {
 		n.debug("Ignoring forwarded peer removal proposal, not leader")
 		return
 	}
@@ -2457,7 +2456,7 @@ func (n *raft) handleForwardedRemovePeerProposal(sub *subscription, c *client, _
 
 // Called when a peer has forwarded a proposal.
 func (n *raft) handleForwardedProposal(sub *subscription, c *client, _ *Account, _, reply string, msg []byte) {
-	if !n.Leader() {
+	if n.State() != Leader {
 		n.debug("Ignoring forwarded proposal, not leader")
 		return
 	}
@@ -2721,14 +2720,14 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue[uint64
 	defer stepCheck.Stop()
 
 	// Run as long as we are leader and still not caught up.
-	for n.Leader() {
+	for n.State() == Leader {
 		select {
 		case <-n.s.quitCh:
 			return
 		case <-n.quit:
 			return
 		case <-stepCheck.C:
-			if !n.Leader() {
+			if n.State() != Leader {
 				n.debug("Catching up canceled, no longer leader")
 				return
 			}
@@ -3020,18 +3019,23 @@ func (n *raft) trackResponse(ar *appendEntryResponse) {
 	// See if we have items to apply.
 	var sendHB bool
 
-	if results := n.acks[ar.index]; results != nil {
-		results[ar.peer] = struct{}{}
-		if nr := len(results); nr >= n.qn {
-			// We have a quorum.
-			for index := n.commit + 1; index <= ar.index; index++ {
-				if err := n.applyCommit(index); err != nil && err != errNodeClosed {
-					n.error("Got an error applying commit for %d: %v", index, err)
-					break
-				}
+	results := n.acks[ar.index]
+	if results == nil {
+		results = make(map[string]struct{})
+		n.acks[ar.index] = results
+	}
+	results[ar.peer] = struct{}{}
+
+	// We don't count ourselves to account for leader changes, so add 1.
+	if nr := len(results); nr+1 >= n.qn {
+		// We have a quorum.
+		for index := n.commit + 1; index <= ar.index; index++ {
+			if err := n.applyCommit(index); err != nil && err != errNodeClosed {
+				n.error("Got an error applying commit for %d: %v", index, err)
+				break
 			}
-			sendHB = n.prop.len() == 0
 		}
+		sendHB = n.prop.len() == 0
 	}
 	n.Unlock()
 
@@ -3562,8 +3566,13 @@ CONTINUE:
 				if l > paeWarnThreshold && l%paeWarnModulo == 0 {
 					n.warn("%d append entries pending", len(n.pae))
 				}
-			} else if l%paeWarnModulo == 0 {
-				n.debug("Not saving to append entries pending")
+			} else {
+				// Invalidate cache entry at this index, we might have
+				// stored it previously with a different value.
+				delete(n.pae, n.pindex)
+				if l%paeWarnModulo == 0 {
+					n.debug("Not saving to append entries pending")
+				}
 			}
 		} else {
 			// This is a replay on startup so just take the appendEntry version.
@@ -3765,8 +3774,6 @@ func (n *raft) sendAppendEntry(entries []*Entry) {
 		if err := n.storeToWAL(ae); err != nil {
 			return
 		}
-		// We count ourselves.
-		n.acks[n.pindex] = map[string]struct{}{n.id: {}}
 		n.active = time.Now()
 
 		// Save in memory for faster processing during applyCommit.
@@ -4138,11 +4145,10 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 		n.vote = vr.candidate
 		n.writeTermVote()
 		n.resetElectionTimeout()
-	} else {
-		if vr.term >= n.term && n.vote == noVote {
-			n.term = vr.term
-			n.resetElect(randCampaignTimeout())
-		}
+	} else if n.vote == noVote && n.State() != Candidate {
+		// We have a more up-to-date log, and haven't voted yet.
+		// Start campaigning earlier, but only if not candidate already, as that would short-circuit us.
+		n.resetElect(randCampaignTimeout())
 	}
 
 	// Term might have changed, make sure response has the most current
@@ -4281,7 +4287,12 @@ func (n *raft) switchToFollowerLocked(leader string) {
 	n.debug("Switching to follower")
 
 	n.aflr = 0
+	n.leaderState.Store(false)
 	n.lxfer = false
+	// Reset acks, we can't assume acks from a previous term are still valid in another term.
+	if len(n.acks) > 0 {
+		n.acks = make(map[uint64]map[string]struct{})
+	}
 	n.updateLeader(leader)
 	n.switchState(Follower)
 }
@@ -4346,6 +4357,7 @@ func (n *raft) switchToLeader() {
 			// We know we have applied all entries in our log and can signal immediately.
 			// For sanity reset applied floor back down to 0, so we aren't able to signal twice.
 			n.aflr = 0
+			n.leaderState.Store(true)
 			n.updateLeadChange(true)
 		}
 	}

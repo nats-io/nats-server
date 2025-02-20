@@ -206,6 +206,7 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, tt
 		if ss != nil {
 			ss.Msgs++
 			ss.Last = seq
+			ss.lastNeedsUpdate = false
 			// Check per subject limits.
 			if ms.maxp > 0 && ss.Msgs > uint64(ms.maxp) {
 				ms.enforcePerSubjectLimit(subj, ss)
@@ -1088,7 +1089,11 @@ func (ms *memStore) expireMsgs() {
 
 // PurgeEx will remove messages based on subject filters, sequence and number of messages to keep.
 // Will return the number of purged messages.
-func (ms *memStore) PurgeEx(subject string, sequence, keep uint64, noMarkers bool) (purged uint64, err error) {
+func (ms *memStore) PurgeEx(subject string, sequence, keep uint64, _ /* noMarkers */ bool) (purged uint64, err error) {
+	// TODO: Don't write markers on purge until we have solved performance
+	// issues with them.
+	noMarkers := true
+
 	if subject == _EMPTY_ || subject == fwcs {
 		if keep == 0 && sequence == 0 {
 			return ms.purge(0, noMarkers)
@@ -1148,7 +1153,11 @@ func (ms *memStore) Purge() (uint64, error) {
 	return ms.purge(first, false)
 }
 
-func (ms *memStore) purge(fseq uint64, noMarkers bool) (uint64, error) {
+func (ms *memStore) purge(fseq uint64, _ /* noMarkers */ bool) (uint64, error) {
+	// TODO: Don't write markers on purge until we have solved performance
+	// issues with them.
+	noMarkers := true
+
 	ms.mu.Lock()
 	purged := uint64(len(ms.msgs))
 	cb := ms.scb
@@ -1191,7 +1200,11 @@ func (ms *memStore) Compact(seq uint64) (uint64, error) {
 	return ms.compact(seq, false)
 }
 
-func (ms *memStore) compact(seq uint64, noMarkers bool) (uint64, error) {
+func (ms *memStore) compact(seq uint64, _ /* noMarkers */ bool) (uint64, error) {
+	// TODO: Don't write markers on compact until we have solved performance
+	// issues with them.
+	noMarkers := true
+
 	if seq == 0 {
 		return ms.Purge()
 	}
@@ -1217,6 +1230,8 @@ func (ms *memStore) compact(seq uint64, noMarkers bool) (uint64, error) {
 				ms.removeSeqPerSubject(sm.subj, seq, !noMarkers && ms.cfg.SubjectDeleteMarkerTTL > 0)
 				// Must delete message after updating per-subject info, to be consistent with file store.
 				delete(ms.msgs, seq)
+			} else if !ms.dmap.IsEmpty() {
+				ms.dmap.Delete(seq)
 			}
 		}
 		if purged > ms.state.Msgs {
@@ -1244,9 +1259,10 @@ func (ms *memStore) compact(seq uint64, noMarkers bool) (uint64, error) {
 				return true
 			})
 		}
-		// Reset msgs and fss.
+		// Reset msgs, fss and dmap.
 		ms.msgs = make(map[uint64]*StoreMsg)
 		ms.fss = stree.NewSubjectTree[SimpleState]()
+		ms.dmap.Empty()
 	}
 	// Subject delete markers if needed.
 	sdmcb := ms.subjectDeleteMarkersAfterOperation(JSMarkerReasonPurge)
@@ -1283,9 +1299,10 @@ func (ms *memStore) reset() error {
 	// Update msgs and bytes.
 	ms.state.Msgs = 0
 	ms.state.Bytes = 0
-	// Reset msgs and fss.
+	// Reset msgs, fss and dmap.
 	ms.msgs = make(map[uint64]*StoreMsg)
 	ms.fss = stree.NewSubjectTree[SimpleState]()
+	ms.dmap.Empty()
 
 	ms.mu.Unlock()
 
@@ -1319,6 +1336,8 @@ func (ms *memStore) Truncate(seq uint64) error {
 			ms.removeSeqPerSubject(sm.subj, i, false)
 			// Must delete message after updating per-subject info, to be consistent with file store.
 			delete(ms.msgs, i)
+		} else if !ms.dmap.IsEmpty() {
+			ms.dmap.Delete(i)
 		}
 	}
 	// Reset last.
@@ -1548,7 +1567,8 @@ func (ms *memStore) LoadPrevMsg(start uint64, smp *StoreMsg) (sm *StoreMsg, err 
 // Will return the number of bytes removed.
 func (ms *memStore) RemoveMsg(seq uint64) (bool, error) {
 	ms.mu.Lock()
-	removed := ms.removeMsg(seq, false, JSMarkerReasonRemove)
+	// TODO: Don't write markers on removes via the API yet, only via limits.
+	removed := ms.removeMsg(seq, false, _EMPTY_)
 	ms.mu.Unlock()
 	return removed, nil
 }
@@ -1556,7 +1576,8 @@ func (ms *memStore) RemoveMsg(seq uint64) (bool, error) {
 // EraseMsg will remove the message and rewrite its contents.
 func (ms *memStore) EraseMsg(seq uint64) (bool, error) {
 	ms.mu.Lock()
-	removed := ms.removeMsg(seq, true, JSMarkerReasonRemove)
+	// TODO: Don't write markers on removes via the API yet, only via limits.
+	removed := ms.removeMsg(seq, true, _EMPTY_)
 	ms.mu.Unlock()
 	return removed, nil
 }

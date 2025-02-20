@@ -1542,15 +1542,14 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 		if seq == 0 || seq&ebit != 0 || seq < fseq {
 			seq = seq &^ ebit
 			if seq >= fseq {
-				// Only add to dmap if past recorded first seq and non-zero.
-				if seq != 0 {
-					addToDmap(seq)
-				}
 				atomic.StoreUint64(&mb.last.seq, seq)
 				mb.last.ts = ts
 				if mb.msgs == 0 {
 					atomic.StoreUint64(&mb.first.seq, seq+1)
 					mb.first.ts = 0
+				} else if seq != 0 {
+					// Only add to dmap if past recorded first seq and non-zero.
+					addToDmap(seq)
 				}
 			}
 			index += rl
@@ -4922,8 +4921,6 @@ func (fs *fileStore) removeMsg(seq uint64, secure, viaLimits, needFSLock bool) (
 	if wasLast && len(getHeader(JSMarkerReason, sm.hdr)) == 0 { // Not a marker.
 		if viaLimits {
 			sdmcb = fs.subjectDeleteMarkerIfNeeded(sm.subj, JSMarkerReasonMaxAge)
-		} else {
-			sdmcb = fs.subjectDeleteMarkerIfNeeded(sm.subj, JSMarkerReasonRemove)
 		}
 	}
 
@@ -6085,6 +6082,7 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 		if ss, ok := mb.fss.Find(stringToBytes(subj)); ok && ss != nil {
 			ss.Msgs++
 			ss.Last = seq
+			ss.lastNeedsUpdate = false
 		} else {
 			mb.fss.Insert(stringToBytes(subj), SimpleState{Msgs: 1, First: seq, Last: seq})
 		}
@@ -6865,6 +6863,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 				if ss, ok := mb.fss.Find(bsubj); ok && ss != nil {
 					ss.Msgs++
 					ss.Last = seq
+					ss.lastNeedsUpdate = false
 				} else {
 					mb.fss.Insert(bsubj, SimpleState{
 						Msgs:  1,
@@ -7953,11 +7952,7 @@ func (fs *fileStore) State() StreamState {
 			}
 			// Add in deleted.
 			mb.dmap.Range(func(seq uint64) bool {
-				if seq < fseq {
-					mb.dmap.Delete(seq)
-				} else {
-					state.Deleted = append(state.Deleted, seq)
-				}
+				state.Deleted = append(state.Deleted, seq)
 				return true
 			})
 			mb.mu.Unlock()
@@ -8032,7 +8027,7 @@ func (mb *msgBlock) sinceLastWriteActivity() time.Duration {
 }
 
 func checkNewHeader(hdr []byte) error {
-	if hdr == nil || len(hdr) < 2 || hdr[0] != magic ||
+	if len(hdr) < 2 || hdr[0] != magic ||
 		(hdr[1] != version && hdr[1] != newVersion) {
 		return errCorruptState
 	}
@@ -8199,7 +8194,11 @@ func compareFn(subject string) func(string, string) bool {
 
 // PurgeEx will remove messages based on subject filters, sequence and number of messages to keep.
 // Will return the number of purged messages.
-func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64, noMarkers bool) (purged uint64, err error) {
+func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64, _ /* noMarkers */ bool) (purged uint64, err error) {
+	// TODO: Don't write markers on purge until we have solved performance
+	// issues with them.
+	noMarkers := true
+
 	if subject == _EMPTY_ || subject == fwcs {
 		if keep == 0 && sequence == 0 {
 			return fs.purge(0, noMarkers)
@@ -8352,7 +8351,11 @@ func (fs *fileStore) Purge() (uint64, error) {
 	return fs.purge(0, false)
 }
 
-func (fs *fileStore) purge(fseq uint64, noMarkers bool) (uint64, error) {
+func (fs *fileStore) purge(fseq uint64, _ /* noMarkers */ bool) (uint64, error) {
+	// TODO: Don't write markers on purge until we have solved performance
+	// issues with them.
+	noMarkers := true
+
 	fs.mu.Lock()
 	if fs.closed {
 		fs.mu.Unlock()
@@ -8465,7 +8468,11 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 	return fs.compact(seq, false)
 }
 
-func (fs *fileStore) compact(seq uint64, noMarkers bool) (uint64, error) {
+func (fs *fileStore) compact(seq uint64, _ /* noMarkers */ bool) (uint64, error) {
+	// TODO: Don't write markers on compact until we have solved performance
+	// issues with them.
+	noMarkers := true
+
 	if seq == 0 {
 		return fs.purge(seq, noMarkers)
 	}
@@ -8530,7 +8537,7 @@ func (fs *fileStore) compact(seq uint64, noMarkers bool) (uint64, error) {
 		if err == errDeletedMsg {
 			// Update dmap.
 			if !smb.dmap.IsEmpty() {
-				smb.dmap.Delete(seq)
+				smb.dmap.Delete(mseq)
 			}
 		} else if sm != nil {
 			sz := fileStoreMsgSize(sm.subj, sm.hdr, sm.msg)
@@ -9056,8 +9063,11 @@ func (mb *msgBlock) recalculateForSubj(subj string, ss *SimpleState) {
 	}
 	if startSlot >= len(mb.cache.idx) {
 		ss.First = ss.Last
+		ss.firstNeedsUpdate = false
+		ss.lastNeedsUpdate = false
 		return
 	}
+
 	endSlot := int(ss.Last - mb.cache.fseq)
 	if endSlot < 0 {
 		endSlot = 0
@@ -9084,6 +9094,8 @@ func (mb *msgBlock) recalculateForSubj(subj string, ss *SimpleState) {
 			li := int(bi) - mb.cache.off
 			if li >= len(mb.cache.buf) {
 				ss.First = ss.Last
+				// Only need to reset ss.lastNeedsUpdate, ss.firstNeedsUpdate is already reset above.
+				ss.lastNeedsUpdate = false
 				return
 			}
 			buf := mb.cache.buf[li:]
@@ -9230,6 +9242,7 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 			if ss, ok := mb.fss.Find(stringToBytes(sm.subj)); ok && ss != nil {
 				ss.Msgs++
 				ss.Last = seq
+				ss.lastNeedsUpdate = false
 			} else {
 				mb.fss.Insert(stringToBytes(sm.subj), SimpleState{Msgs: 1, First: seq, Last: seq})
 			}
@@ -10861,7 +10874,7 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 
 // Consumer version.
 func checkConsumerHeader(hdr []byte) (uint8, error) {
-	if hdr == nil || len(hdr) < 2 || hdr[0] != magic {
+	if len(hdr) < 2 || hdr[0] != magic {
 		return 0, errCorruptState
 	}
 	version := hdr[1]

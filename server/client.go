@@ -4086,7 +4086,7 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 			reply = append(reply, '@')
 			reply = append(reply, c.pa.deliver...)
 		}
-		didDeliver = c.sendMsgToGateways(acc, msg, c.pa.subject, reply, qnames) || didDeliver
+		didDeliver = c.sendMsgToGateways(acc, msg, c.pa.subject, reply, qnames, false) || didDeliver
 	}
 
 	// Check to see if we did not deliver to anyone and the client has a reply subject set
@@ -4133,7 +4133,7 @@ func (c *client) handleGWReplyMap(msg []byte) bool {
 			reply = append(reply, '@')
 			reply = append(reply, c.pa.deliver...)
 		}
-		c.sendMsgToGateways(c.acc, msg, c.pa.subject, reply, nil)
+		c.sendMsgToGateways(c.acc, msg, c.pa.subject, reply, nil, false)
 	}
 	return true
 }
@@ -4509,7 +4509,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 			flags |= pmrCollectQueueNames
 			var queues [][]byte
 			didDeliver, queues = c.processMsgResults(siAcc, rr, msg, c.pa.deliver, []byte(to), nrr, flags)
-			didDeliver = c.sendMsgToGateways(siAcc, msg, []byte(to), nrr, queues) || didDeliver
+			didDeliver = c.sendMsgToGateways(siAcc, msg, []byte(to), nrr, queues, false) || didDeliver
 		} else {
 			didDeliver, _ = c.processMsgResults(siAcc, rr, msg, c.pa.deliver, []byte(to), nrr, flags)
 		}
