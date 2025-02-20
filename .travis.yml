@@ -8,6 +8,8 @@ language: go
 go:
   # This should be quoted or use .x, but should not be unquoted.
   # Remember that a YAML bare float drops trailing zeroes.
+  # These toolchain versions define the test environment.
+  # When updating, also update the GOTOOLCHAIN value in .goreleaser.yml.
   - "1.24.0"
   - "1.23.6"
 
