@@ -6219,8 +6219,7 @@ func TestJWTAccountProtectedImport(t *testing.T) {
 
 		// ensure service fails
 		_, err = ncImp.Request(srvcSub, []byte("hello"), time.Second)
-		require_Error(t, err)
-		require_Contains(t, err.Error(), "timeout")
+		require_Error(t, err, nats.ErrNoResponders)
 		s.AccountResolver().Store(exportPub, exportJWTOn)
 		// ensure stream fails
 		err = ncExp.Publish(strmSub, []byte("hello"))
