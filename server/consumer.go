@@ -2811,10 +2811,7 @@ func (o *consumer) applyState(state *ConsumerState) {
 		return
 	}
 
-	// If o.sseq is greater don't update. Don't go backwards on o.sseq if leader.
-	if !o.isLeader() || o.sseq <= state.Delivered.Stream {
-		o.sseq = state.Delivered.Stream + 1
-	}
+	o.sseq = state.Delivered.Stream + 1
 	o.dseq = state.Delivered.Consumer + 1
 	o.adflr = state.AckFloor.Consumer
 	o.asflr = state.AckFloor.Stream
@@ -4821,15 +4818,15 @@ func (o *consumer) deliverMsg(dsubj, ackReply string, pmsg *jsPubMsg, dc uint64,
 	// Update delivered first.
 	o.updateDelivered(dseq, seq, dc, ts)
 
-	// Send message.
-	o.outq.send(pmsg)
-
 	if ap == AckExplicit || ap == AckAll {
 		o.trackPending(seq, dseq)
 	} else if ap == AckNone {
 		o.adflr = dseq
 		o.asflr = seq
 	}
+
+	// Send message.
+	o.outq.send(pmsg)
 
 	// Flow control.
 	if o.maxpb > 0 && o.needFlowControl(psz) {

@@ -2069,12 +2069,6 @@ func (o *consumerMemStore) UpdateAcks(dseq, sseq uint64) error {
 		return nil
 	}
 
-	// Match leader logic on checking if ack is ahead of delivered.
-	// This could happen on a cooperative takeover with high speed deliveries.
-	if sseq > o.state.Delivered.Stream {
-		o.state.Delivered.Stream = sseq + 1
-	}
-
 	if len(o.state.Pending) == 0 || o.state.Pending[sseq] == nil {
 		delete(o.state.Redelivered, sseq)
 		return ErrStoreMsgNotFound
