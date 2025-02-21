@@ -5293,13 +5293,13 @@ func (o *consumer) selectStartingSeqNo() {
 			} else if o.cfg.DeliverPolicy == DeliverLast {
 				if o.subjf == nil {
 					o.sseq = state.LastSeq
-					return
-				}
-				// If we are partitioned here this will be properly set when we become leader.
-				for _, filter := range o.subjf {
-					ss := o.mset.store.FilteredState(1, filter.subject)
-					if ss.Last > o.sseq {
-						o.sseq = ss.Last
+				} else {
+					// If we are partitioned here this will be properly set when we become leader.
+					for _, filter := range o.subjf {
+						ss := o.mset.store.FilteredState(1, filter.subject)
+						if ss.Last > o.sseq {
+							o.sseq = ss.Last
+						}
 					}
 				}
 			} else if o.cfg.DeliverPolicy == DeliverLastPerSubject {
