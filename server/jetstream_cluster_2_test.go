@@ -7667,6 +7667,176 @@ func TestJetStreamClusterMessageTTLCatchup(t *testing.T) {
 	require_NotEqual(t, fs.(*fileStore).ttls.GetNextExpiration(math.MaxInt64), math.MaxInt64)
 }
 
+func TestJetStreamClusterConsumerRedeliveryAfterUnexpectedReplicatedAck(t *testing.T) {
+	for _, storage := range []nats.StorageType{nats.FileStorage, nats.MemoryStorage} {
+		t.Run(storage.String(), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				Replicas: 3,
+				Storage:  storage,
+			})
+			require_NoError(t, err)
+
+			for i := 0; i < 3; i++ {
+				_, err = js.Publish("foo", nil)
+				require_NoError(t, err)
+			}
+
+			sub, err := js.PullSubscribe("foo", "CONSUMER")
+			require_NoError(t, err)
+			defer sub.Unsubscribe()
+
+			getConsumerRaftNode := func(s *Server) *raft {
+				acc, err := s.lookupAccount(globalAccountName)
+				require_NoError(t, err)
+				mset, err := acc.lookupStream("TEST")
+				require_NoError(t, err)
+				o := mset.lookupConsumer("CONSUMER")
+				require_NotNil(t, o)
+				return o.raftNode().(*raft)
+			}
+
+			cl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+			rn := getConsumerRaftNode(cl)
+			rn.RLock()
+			bindex := rn.pindex
+			rn.RUnlock()
+
+			// Simulate sending replicated ack.
+			dseq, sseq := uint64(100), uint64(100)
+			var b [2*binary.MaxVarintLen64 + 1]byte
+			b[0] = byte(updateAcksOp)
+			n := 1
+			n += binary.PutUvarint(b[n:], dseq)
+			n += binary.PutUvarint(b[n:], sseq)
+			require_NoError(t, rn.Propose(b[:n]))
+
+			// Wait for ack to be applied.
+			checkFor(t, 2*time.Second, 500*time.Millisecond, func() error {
+				rn.RLock()
+				defer rn.RUnlock()
+				if rn.applied <= bindex {
+					return errors.New("proposal not applied yet")
+				}
+				return nil
+			})
+
+			// Ensure other servers can't become leader.
+			for _, s := range c.servers {
+				if s != cl {
+					cn := getConsumerRaftNode(s)
+					cn.Lock()
+					cn.paused = true
+					cn.Unlock()
+				}
+			}
+			// Step down and campaign, should re-elect the same leader.
+			require_NoError(t, rn.StepDown())
+			require_NoError(t, rn.Campaign())
+			c.waitOnConsumerLeader(globalAccountName, "TEST", "CONSUMER")
+
+			// Replicated ack would move starting sequence ahead, which made it so we skipped messages.
+			// It should have been ignored, and we should get the messages redelivered.
+			msgs, err := sub.Fetch(3, nats.MaxWait(2*time.Second))
+			require_NoError(t, err)
+			require_Len(t, len(msgs), 3)
+		})
+	}
+}
+
+func TestJetStreamClusterConsumerResetStartingSequenceToAgreedState(t *testing.T) {
+	for _, storage := range []nats.StorageType{nats.FileStorage, nats.MemoryStorage} {
+		t.Run(storage.String(), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				Replicas: 3,
+				Storage:  storage,
+			})
+			require_NoError(t, err)
+
+			for i := 0; i < 3; i++ {
+				_, err = js.Publish("foo", nil)
+				require_NoError(t, err)
+			}
+
+			sub, err := js.PullSubscribe("foo", "CONSUMER")
+			require_NoError(t, err)
+			defer sub.Unsubscribe()
+
+			// Memory storage is less resilient in this case since we have no storage.
+			// File storage can differentiate between no/empty state and written empty state.
+			// Whereas memory only knows it's empty. We need one message to be delivered,
+			// so we can recognize and revert to non-empty state.
+			if storage == nats.MemoryStorage {
+				_, err = js.Publish("foo", nil)
+				require_NoError(t, err)
+
+				msgs, err := sub.Fetch(1, nats.MaxWait(2*time.Second))
+				require_NoError(t, err)
+				require_Len(t, len(msgs), 1)
+				for _, msg := range msgs {
+					require_NoError(t, msg.AckSync())
+				}
+			}
+
+			cl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+
+			// Ensure other servers can't become leader.
+			for _, s := range c.servers {
+				if s != cl {
+					acc, err := s.lookupAccount(globalAccountName)
+					require_NoError(t, err)
+					mset, err := acc.lookupStream("TEST")
+					require_NoError(t, err)
+					o := mset.lookupConsumer("CONSUMER")
+					require_NotNil(t, o)
+					cn := o.raftNode().(*raft)
+					cn.Lock()
+					cn.paused = true
+					cn.Unlock()
+				}
+			}
+
+			acc, err := cl.lookupAccount(globalAccountName)
+			require_NoError(t, err)
+			mset, err := acc.lookupStream("TEST")
+			require_NoError(t, err)
+			o := mset.lookupConsumer("CONSUMER")
+			require_NotNil(t, o)
+			rn := o.raftNode().(*raft)
+
+			// Move consumer leader's state ahead to an unreasonable value.
+			// Its WAL does not contain entries for this, so reset back to agreed state.
+			o.mu.Lock()
+			o.sseq = 100
+			o.mu.Unlock()
+			// Step down and campaign, should re-elect the same leader.
+			require_NoError(t, rn.StepDown())
+			require_NoError(t, rn.Campaign())
+			c.waitOnConsumerLeader(globalAccountName, "TEST", "CONSUMER")
+
+			// Messages would not be redelivered if starting sequence was not reset back to agreed state.
+			msgs, err := sub.Fetch(3, nats.MaxWait(2*time.Second))
+			require_NoError(t, err)
+			require_Len(t, len(msgs), 3)
+		})
+	}
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE  (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.

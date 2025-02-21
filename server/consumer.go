@@ -1373,8 +1373,14 @@ func (o *consumer) setLeader(isLeader bool) {
 		o.rdq = nil
 		o.rdqi.Empty()
 
-		// Restore our saved state. During non-leader status we just update our underlying store.
-		o.readStoredState(lseq)
+		// Restore our saved state.
+		// During non-leader status we just update our underlying store when not clustered.
+		// If clustered we need to propose our initial (possibly skipped ahead) o.sseq to the group.
+		if o.node == nil || o.dseq > 1 || (o.store != nil && o.store.HasState()) {
+			o.readStoredState(lseq)
+		} else if o.node != nil && o.sseq >= 1 {
+			o.updateSkipped(o.sseq)
+		}
 
 		// Setup initial num pending.
 		o.streamNumPending()
@@ -1382,11 +1388,6 @@ func (o *consumer) setLeader(isLeader bool) {
 		// Cleanup lss when we take over in clustered mode.
 		if o.hasSkipListPending() && o.sseq >= o.lss.resume {
 			o.lss = nil
-		}
-
-		// Update the group on the our starting sequence if we are starting but we skipped some in the stream.
-		if o.dseq == 1 && o.sseq > 1 {
-			o.updateSkipped(o.sseq)
 		}
 
 		// Do info sub.
@@ -2811,10 +2812,7 @@ func (o *consumer) applyState(state *ConsumerState) {
 		return
 	}
 
-	// If o.sseq is greater don't update. Don't go backwards on o.sseq if leader.
-	if !o.isLeader() || o.sseq <= state.Delivered.Stream {
-		o.sseq = state.Delivered.Stream + 1
-	}
+	o.sseq = state.Delivered.Stream + 1
 	o.dseq = state.Delivered.Consumer + 1
 	o.adflr = state.AckFloor.Consumer
 	o.asflr = state.AckFloor.Stream
@@ -2972,9 +2970,13 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		}
 		// If we are the leader we could have o.sseq that is skipped ahead.
 		// To maintain consistency in reporting (e.g. jsz) we always take the state for our delivered/ackfloor stream sequence.
-		info.Delivered.Consumer, info.Delivered.Stream = state.Delivered.Consumer, state.Delivered.Stream
+		// Only use skipped ahead o.sseq if we're a new consumer and have not yet replicated this state yet.
+		leader := o.isLeader()
+		if !leader || o.store.HasState() {
+			info.Delivered.Consumer, info.Delivered.Stream = state.Delivered.Consumer, state.Delivered.Stream
+		}
 		info.AckFloor.Consumer, info.AckFloor.Stream = state.AckFloor.Consumer, state.AckFloor.Stream
-		if !o.isLeader() {
+		if !leader {
 			info.NumAckPending = len(state.Pending)
 			info.NumRedelivered = len(state.Redelivered)
 		}
@@ -4821,15 +4823,15 @@ func (o *consumer) deliverMsg(dsubj, ackReply string, pmsg *jsPubMsg, dc uint64,
 	// Update delivered first.
 	o.updateDelivered(dseq, seq, dc, ts)
 
-	// Send message.
-	o.outq.send(pmsg)
-
 	if ap == AckExplicit || ap == AckAll {
 		o.trackPending(seq, dseq)
 	} else if ap == AckNone {
 		o.adflr = dseq
 		o.asflr = seq
 	}
+
+	// Send message.
+	o.outq.send(pmsg)
 
 	// Flow control.
 	if o.maxpb > 0 && o.needFlowControl(psz) {
@@ -5291,13 +5293,13 @@ func (o *consumer) selectStartingSeqNo() {
 			} else if o.cfg.DeliverPolicy == DeliverLast {
 				if o.subjf == nil {
 					o.sseq = state.LastSeq
-					return
-				}
-				// If we are partitioned here this will be properly set when we become leader.
-				for _, filter := range o.subjf {
-					ss := o.mset.store.FilteredState(1, filter.subject)
-					if ss.Last > o.sseq {
-						o.sseq = ss.Last
+				} else {
+					// If we are partitioned here this will be properly set when we become leader.
+					for _, filter := range o.subjf {
+						ss := o.mset.store.FilteredState(1, filter.subject)
+						if ss.Last > o.sseq {
+							o.sseq = ss.Last
+						}
 					}
 				}
 			} else if o.cfg.DeliverPolicy == DeliverLastPerSubject {
@@ -5397,7 +5399,8 @@ func (o *consumer) selectStartingSeqNo() {
 	// Set ack store floor to store-1
 	o.asflr = o.sseq - 1
 	// Set our starting sequence state.
-	if o.store != nil && o.sseq > 0 {
+	// But only if we're not clustered, if clustered we propose upon becoming leader.
+	if o.store != nil && o.sseq > 0 && o.cfg.replicas(&o.mset.cfg) == 1 {
 		o.store.SetStarting(o.sseq - 1)
 	}
 }

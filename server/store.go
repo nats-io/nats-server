@@ -350,6 +350,7 @@ func (dbs DeleteBlocks) NumDeleted() (total uint64) {
 // ConsumerStore stores state on consumers for streams.
 type ConsumerStore interface {
 	SetStarting(sseq uint64) error
+	UpdateStarting(sseq uint64)
 	HasState() bool
 	UpdateDelivered(dseq, sseq, dc uint64, ts int64) error
 	UpdateAcks(dseq, sseq uint64) error

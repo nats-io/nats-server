@@ -2219,74 +2219,87 @@ func TestJetStreamSuperClusterRemovedPeersAndStreamsListAndDelete(t *testing.T) 
 }
 
 func TestJetStreamSuperClusterConsumerDeliverNewBug(t *testing.T) {
-	sc := createJetStreamSuperCluster(t, 3, 3)
-	defer sc.shutdown()
+	for _, storage := range []nats.StorageType{nats.FileStorage, nats.MemoryStorage} {
+		t.Run(storage.String(), func(t *testing.T) {
+			sc := createJetStreamSuperCluster(t, 3, 3)
+			defer sc.shutdown()
 
-	pcn := "C2"
-	sc.waitOnLeader()
-	ml := sc.leader()
-	if ml.ClusterName() == pcn {
-		pcn = "C1"
-	}
+			pcn := "C2"
+			sc.waitOnLeader()
+			ml := sc.leader()
+			if ml.ClusterName() == pcn {
+				pcn = "C1"
+			}
 
-	// Client based API
-	nc, js := jsClientConnect(t, ml)
-	defer nc.Close()
+			// Client based API
+			nc, js := jsClientConnect(t, ml)
+			defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:      "T",
-		Replicas:  3,
-		Placement: &nats.Placement{Cluster: pcn},
-	})
-	require_NoError(t, err)
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:      "T",
+				Replicas:  3,
+				Placement: &nats.Placement{Cluster: pcn},
+				Storage:   storage,
+			})
+			require_NoError(t, err)
 
-	// Put messages in..
-	num := 100
-	for i := 0; i < num; i++ {
-		js.PublishAsync("T", []byte("OK"))
-	}
-	select {
-	case <-js.PublishAsyncComplete():
-	case <-time.After(5 * time.Second):
-		t.Fatalf("Did not receive completion signal")
-	}
+			// Put messages in..
+			num := 100
+			for i := 0; i < num; i++ {
+				js.PublishAsync("T", []byte("OK"))
+			}
+			select {
+			case <-js.PublishAsyncComplete():
+			case <-time.After(5 * time.Second):
+				t.Fatalf("Did not receive completion signal")
+			}
 
-	ci, err := js.AddConsumer("T", &nats.ConsumerConfig{
-		Durable:       "d",
-		AckPolicy:     nats.AckExplicitPolicy,
-		DeliverPolicy: nats.DeliverNewPolicy,
-	})
-	require_NoError(t, err)
+			ci, err := js.AddConsumer("T", &nats.ConsumerConfig{
+				Durable:       "d",
+				AckPolicy:     nats.AckExplicitPolicy,
+				DeliverPolicy: nats.DeliverNewPolicy,
+			})
+			require_NoError(t, err)
 
-	if ci.Delivered.Consumer != 0 || ci.Delivered.Stream != 100 {
-		t.Fatalf("Incorrect consumer delivered info: %+v", ci.Delivered)
-	}
+			if ci.Delivered.Consumer != 0 || ci.Delivered.Stream != 100 {
+				t.Fatalf("Incorrect consumer delivered info: %+v", ci.Delivered)
+			}
 
-	c := sc.clusterForName(pcn)
-	for _, s := range c.servers {
-		sd := s.JetStreamConfig().StoreDir
-		s.Shutdown()
-		removeDir(t, sd)
-		s = c.restartServer(s)
-		c.waitOnServerHealthz(s)
-		c.waitOnConsumerLeader("$G", "T", "d")
-	}
+			c := sc.clusterForName(pcn)
+			for _, s := range c.servers {
+				sd := s.JetStreamConfig().StoreDir
+				s.Shutdown()
+				removeDir(t, sd)
+				s = c.restartServer(s)
+				c.waitOnServerHealthz(s)
+				c.waitOnConsumerLeader("$G", "T", "d")
+			}
 
-	c.waitOnConsumerLeader("$G", "T", "d")
+			c.waitOnConsumerLeader("$G", "T", "d")
 
-	cl := c.consumerLeader(globalAccountName, "T", "d")
-	mset, err := cl.GlobalAccount().lookupStream("T")
-	require_NoError(t, err)
-	o := mset.lookupConsumer("d")
-	require_NotNil(t, o)
-	o.mu.RLock()
-	defer o.mu.RUnlock()
+			// Each server, after being caught up, needs to fully agree on stream/consumer sequences.
+			// For both the in-memory consumer state, as the stored state.
+			for _, s := range c.servers {
+				mset, err := s.GlobalAccount().lookupStream("T")
+				require_NoError(t, err)
+				o := mset.lookupConsumer("d")
+				require_NotNil(t, o)
+				o.mu.RLock()
+				defer o.mu.RUnlock()
 
-	if o.dseq-1 != 0 || o.sseq-1 != 100 {
-		t.Fatalf("Incorrect consumer delivered info: dseq=%d, sseq=%d", o.dseq-1, o.sseq-1)
-	}
-	if np := o.checkNumPending(); np != 0 {
-		t.Fatalf("Did not expect NumPending, got %d", np)
+				if o.dseq-1 != 0 || o.sseq-1 != 100 {
+					t.Fatalf("Incorrect consumer delivered info: dseq=%d, sseq=%d", o.dseq-1, o.sseq-1)
+				}
+				state, err := o.store.BorrowState()
+				require_NoError(t, err)
+				if state.Delivered.Consumer != 0 || state.Delivered.Stream != 100 {
+					t.Fatalf("Incorrect consumer state: consumer_seq=%d, stream_seq=%d", state.Delivered.Consumer, state.Delivered.Stream)
+				}
+				if np := o.checkNumPending(); np != 0 {
+					t.Fatalf("Did not expect NumPending, got %d", np)
+				}
+			}
+		})
 	}
 }
 
