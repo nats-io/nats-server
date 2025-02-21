@@ -997,6 +997,7 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 	c.Noticef("Leafnode connection created%s %s", remoteSuffix, c.opts.Name)
 
 	var tlsFirst bool
+	var infoTimeout time.Duration
 	if remote != nil {
 		solicited = true
 		remote.Lock()
@@ -1006,6 +1007,7 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 			c.leaf.isSpoke = true
 		}
 		tlsFirst = remote.TLSHandshakeFirst
+		infoTimeout = remote.FirstInfoTimeout
 		remote.Unlock()
 		c.acc = acc
 	} else {
@@ -1063,7 +1065,7 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 				}
 			}
 			// We need to wait for the info, but not for too long.
-			c.nc.SetReadDeadline(time.Now().Add(DEFAULT_LEAFNODE_INFO_WAIT))
+			c.nc.SetReadDeadline(time.Now().Add(infoTimeout))
 		}
 
 		// We will process the INFO from the readloop and finish by
@@ -2897,6 +2899,7 @@ func (c *client) leafNodeSolicitWSConnection(opts *Options, rURL *url.URL, remot
 	compress := remote.Websocket.Compression
 	// By default the server will mask outbound frames, but it can be disabled with this option.
 	noMasking := remote.Websocket.NoMasking
+	infoTimeout := remote.FirstInfoTimeout
 	remote.RUnlock()
 	// Will do the client-side TLS handshake if needed.
 	tlsRequired, err := c.leafClientHandshakeIfNeeded(remote, opts)
@@ -2949,6 +2952,7 @@ func (c *client) leafNodeSolicitWSConnection(opts *Options, rURL *url.URL, remot
 	if noMasking {
 		req.Header.Add(wsNoMaskingHeader, wsNoMaskingValue)
 	}
+	c.nc.SetDeadline(time.Now().Add(infoTimeout))
 	if err := req.Write(c.nc); err != nil {
 		return nil, WriteError, err
 	}
@@ -2956,7 +2960,6 @@ func (c *client) leafNodeSolicitWSConnection(opts *Options, rURL *url.URL, remot
 	var resp *http.Response
 
 	br := bufio.NewReaderSize(c.nc, MAX_CONTROL_LINE_SIZE)
-	c.nc.SetReadDeadline(time.Now().Add(DEFAULT_LEAFNODE_INFO_WAIT))
 	resp, err = http.ReadResponse(br, req)
 	if err == nil &&
 		(resp.StatusCode != 101 ||

@@ -1475,7 +1475,6 @@ func TestOCSPResponseCacheMonitor(t *testing.T) {
 			s, _ := RunServerWithConfig(conf)
 			defer s.Shutdown()
 			v := monitorGetVarzHelper(t, 8222)
-			fmt.Println("Expect:", test.expect)
 			var ct string
 			if v.OCSPResponseCache != nil {
 				ct = v.OCSPResponseCache.Type
