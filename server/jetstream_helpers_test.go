@@ -14,6 +14,8 @@
 // Do not exlude this file with the !skip_js_tests since those helpers
 // are also used by MQTT.
 
+//lint:file-ignore U1000 Avoid detecting as unused code
+
 package server
 
 import (
