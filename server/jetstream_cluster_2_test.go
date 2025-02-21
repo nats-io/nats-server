@@ -7777,6 +7777,22 @@ func TestJetStreamClusterConsumerResetStartingSequenceToAgreedState(t *testing.T
 			require_NoError(t, err)
 			defer sub.Unsubscribe()
 
+			// Memory storage is less resilient in this case since we have no storage.
+			// File storage can differentiate between no/empty state and written empty state.
+			// Whereas memory only knows it's empty. We need one message to be delivered,
+			// so we can recognize and revert to non-empty state.
+			if storage == nats.MemoryStorage {
+				_, err = js.Publish("foo", nil)
+				require_NoError(t, err)
+
+				msgs, err := sub.Fetch(1, nats.MaxWait(2*time.Second))
+				require_NoError(t, err)
+				require_Len(t, len(msgs), 1)
+				for _, msg := range msgs {
+					require_NoError(t, msg.AckSync())
+				}
+			}
+
 			cl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
 
 			// Ensure other servers can't become leader.

@@ -1986,9 +1986,26 @@ func (o *consumerMemStore) SetStarting(sseq uint64) error {
 	return nil
 }
 
+// UpdateStarting updates our starting stream sequence.
+func (o *consumerMemStore) UpdateStarting(sseq uint64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	if sseq > o.state.Delivered.Stream {
+		o.state.Delivered.Stream = sseq
+		// For AckNone just update delivered and ackfloor at the same time.
+		if o.cfg.AckPolicy == AckNone {
+			o.state.AckFloor.Stream = sseq
+		}
+	}
+}
+
 // HasState returns if this store has a recorded state.
 func (o *consumerMemStore) HasState() bool {
-	return false
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	// We have a running state.
+	return o.state.Delivered.Consumer != 0 || o.state.Delivered.Stream != 0
 }
 
 func (o *consumerMemStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) error {
@@ -1999,6 +2016,7 @@ func (o *consumerMemStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) erro
 		return ErrNoAckPolicy
 	}
 
+	// On restarts the old leader may get a replay from the raft logs that are old.
 	if dseq <= o.state.AckFloor.Consumer {
 		return nil
 	}

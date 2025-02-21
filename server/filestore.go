@@ -9884,9 +9884,30 @@ func (o *consumerFileStore) SetStarting(sseq uint64) error {
 	return o.writeState(buf)
 }
 
+// UpdateStarting updates our starting stream sequence.
+func (o *consumerFileStore) UpdateStarting(sseq uint64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	if sseq > o.state.Delivered.Stream {
+		o.state.Delivered.Stream = sseq
+		// For AckNone just update delivered and ackfloor at the same time.
+		if o.cfg.AckPolicy == AckNone {
+			o.state.AckFloor.Stream = sseq
+		}
+	}
+	// Make sure we flush to disk.
+	o.kickFlusher()
+}
+
 // HasState returns if this store has a recorded state.
 func (o *consumerFileStore) HasState() bool {
 	o.mu.Lock()
+	// We have a running state, or stored on disk but not yet initialized.
+	if o.state.Delivered.Consumer != 0 || o.state.Delivered.Stream != 0 {
+		o.mu.Unlock()
+		return true
+	}
 	_, err := os.Stat(o.ifn)
 	o.mu.Unlock()
 	return err == nil
@@ -9939,7 +9960,7 @@ func (o *consumerFileStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) err
 			if o.state.Redelivered == nil {
 				o.state.Redelivered = make(map[uint64]uint64)
 			}
-			// Only update if greater then what we already have.
+			// Only update if greater than what we already have.
 			if o.state.Redelivered[sseq] < dc-1 {
 				o.state.Redelivered[sseq] = dc - 1
 			}

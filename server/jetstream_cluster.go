@@ -5056,11 +5056,13 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 				}
 			case updateSkipOp:
 				o.mu.Lock()
-				if !o.isLeader() {
-					var le = binary.LittleEndian
-					if sseq := le.Uint64(buf[1:]); sseq > o.sseq {
-						o.sseq = sseq
-					}
+				var le = binary.LittleEndian
+				sseq := le.Uint64(buf[1:])
+				if !o.isLeader() && sseq > o.sseq {
+					o.sseq = sseq
+				}
+				if o.store != nil {
+					o.store.UpdateStarting(sseq - 1)
 				}
 				o.mu.Unlock()
 			case addPendingRequest:

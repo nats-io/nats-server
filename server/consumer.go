@@ -1373,8 +1373,14 @@ func (o *consumer) setLeader(isLeader bool) {
 		o.rdq = nil
 		o.rdqi.Empty()
 
-		// Restore our saved state. During non-leader status we just update our underlying store.
-		o.readStoredState(lseq)
+		// Restore our saved state.
+		// During non-leader status we just update our underlying store when not clustered.
+		// If clustered we need to propose our initial (possibly skipped ahead) o.sseq to the group.
+		if o.node == nil || o.dseq > 1 || (o.store != nil && o.store.HasState()) {
+			o.readStoredState(lseq)
+		} else if o.node != nil && o.sseq >= 1 {
+			o.updateSkipped(o.sseq)
+		}
 
 		// Setup initial num pending.
 		o.streamNumPending()
@@ -1382,11 +1388,6 @@ func (o *consumer) setLeader(isLeader bool) {
 		// Cleanup lss when we take over in clustered mode.
 		if o.hasSkipListPending() && o.sseq >= o.lss.resume {
 			o.lss = nil
-		}
-
-		// Update the group on the our starting sequence if we are starting but we skipped some in the stream.
-		if o.dseq == 1 && o.sseq > 1 {
-			o.updateSkipped(o.sseq)
 		}
 
 		// Do info sub.
@@ -2969,9 +2970,13 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		}
 		// If we are the leader we could have o.sseq that is skipped ahead.
 		// To maintain consistency in reporting (e.g. jsz) we always take the state for our delivered/ackfloor stream sequence.
-		info.Delivered.Consumer, info.Delivered.Stream = state.Delivered.Consumer, state.Delivered.Stream
+		// Only use skipped ahead o.sseq if we're a new consumer and have not yet replicated this state yet.
+		leader := o.isLeader()
+		if !leader || o.store.HasState() {
+			info.Delivered.Consumer, info.Delivered.Stream = state.Delivered.Consumer, state.Delivered.Stream
+		}
 		info.AckFloor.Consumer, info.AckFloor.Stream = state.AckFloor.Consumer, state.AckFloor.Stream
-		if !o.isLeader() {
+		if !leader {
 			info.NumAckPending = len(state.Pending)
 			info.NumRedelivered = len(state.Redelivered)
 		}
@@ -5394,7 +5399,8 @@ func (o *consumer) selectStartingSeqNo() {
 	// Set ack store floor to store-1
 	o.asflr = o.sseq - 1
 	// Set our starting sequence state.
-	if o.store != nil && o.sseq > 0 {
+	// But only if we're not clustered, if clustered we propose upon becoming leader.
+	if o.store != nil && o.sseq > 0 && o.cfg.replicas(&o.mset.cfg) == 1 {
 		o.store.SetStarting(o.sseq - 1)
 	}
 }
