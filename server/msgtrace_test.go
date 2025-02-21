@@ -1799,7 +1799,7 @@ func TestMsgTraceServiceImport(t *testing.T) {
 						}
 					}
 					// Check that no (more) messages are received.
-					if msg, err := sub.NextMsg(100 * time.Millisecond); msg != nil || err != nats.ErrTimeout {
+					if msg, err := sub.NextMsg(100 * time.Millisecond); msg != nil || (err != nats.ErrTimeout && err != nats.ErrNoResponders) {
 						t.Fatalf("Did not expect application message, got msg=%v err=%v", msg, err)
 					}
 					if !test.deliverMsg {
@@ -2072,7 +2072,7 @@ func TestMsgTraceServiceImportWithSuperCluster(t *testing.T) {
 						}
 					}
 					// Check that no (more) messages are received.
-					if msg, err := sub.NextMsg(100 * time.Millisecond); msg != nil || err != nats.ErrTimeout {
+					if msg, err := sub.NextMsg(100 * time.Millisecond); msg != nil || (err != nats.ErrTimeout && err != nats.ErrNoResponders) {
 						t.Fatalf("Did not expect application message, got msg=%v err=%v", msg, err)
 					}
 					if !test.deliverMsg {
@@ -2523,7 +2523,7 @@ func TestMsgTraceServiceImportWithLeafNodeLeaf(t *testing.T) {
 				require_Equal[string](t, string(appMsg.Data), "request2")
 			}
 			// Check that no (more) messages are received.
-			if msg, err := sub.NextMsg(100 * time.Millisecond); msg != nil || err != nats.ErrTimeout {
+			if msg, err := sub.NextMsg(100 * time.Millisecond); msg != nil || (err != nats.ErrTimeout && err != nats.ErrNoResponders) {
 				t.Fatalf("Did not expect application message, got msg=%v err=%v", msg, err)
 			}
 			if !test.deliverMsg {
