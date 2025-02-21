@@ -6093,24 +6093,48 @@ func TestJetStreamClusterConsumerDeliveredSyncReporting(t *testing.T) {
 		require_NoError(t, err)
 	}
 
+	opts := &JSzOptions{Accounts: true, Streams: true, Consumer: true}
+	for _, s := range c.servers {
+		jsz, err := s.Jsz(opts)
+		require_NoError(t, err)
+		ci := jsz.AccountDetails[0].Streams[0].Consumer[0]
+		require_Equal(t, ci.Delivered.Consumer, 0)
+		require_Equal(t, ci.Delivered.Stream, 0)
+	}
+
 	msgs, err := sub.Fetch(1)
 	require_NoError(t, err)
 	require_Equal(t, len(msgs), 1)
+	meta, err := msgs[0].Metadata()
+	require_NoError(t, err)
+	require_Equal(t, meta.Sequence.Consumer, 1)
+	require_Equal(t, meta.Sequence.Stream, 1)
 
-	// Now we want to make sure that jsz reporting will show the same
-	// state, including delivered, which will have skipped to the end.
-	// The skip can happen on several factors, but for here we just send
-	// another pull request which we will let fail.
-	_, err = sub.Fetch(1, nats.MaxWait(200*time.Millisecond))
-	require_Error(t, err)
+	// Allow some time for the state to propagate.
+	maxWait := 200 * time.Millisecond
+	time.Sleep(maxWait)
 
-	opts := &JSzOptions{Accounts: true, Streams: true, Consumer: true}
 	for _, s := range c.servers {
 		jsz, err := s.Jsz(opts)
 		require_NoError(t, err)
 		ci := jsz.AccountDetails[0].Streams[0].Consumer[0]
 		require_Equal(t, ci.Delivered.Consumer, 1)
 		require_Equal(t, ci.Delivered.Stream, 1)
+	}
+
+	// Now we want to make sure that jsz reporting will show the same
+	// state, including delivered, which will have skipped to the end.
+	// The skip can happen on several factors, but for here we just send
+	// another pull request which we will let fail.
+	_, err = sub.Fetch(1, nats.MaxWait(maxWait))
+	require_Error(t, err)
+
+	for _, s := range c.servers {
+		jsz, err := s.Jsz(opts)
+		require_NoError(t, err)
+		ci := jsz.AccountDetails[0].Streams[0].Consumer[0]
+		require_Equal(t, ci.Delivered.Consumer, 1)
+		require_Equal(t, ci.Delivered.Stream, 11)
 	}
 }
 
