@@ -1421,7 +1421,7 @@ func (c *client) readLoop(pre []byte) {
 				return
 			}
 			// Clear total stalled time here.
-			if c.in.tst > 0 {
+			if c.in.tst >= stallClientMaxDuration {
 				c.rateLimitFormatWarnf("Producer was stalled for a total of %v", c.in.tst.Round(time.Millisecond))
 				c.in.tst = 0
 			}
