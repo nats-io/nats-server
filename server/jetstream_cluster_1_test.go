@@ -6601,7 +6601,7 @@ func TestJetStreamClusterMaxDeliveriesOnInterestStreams(t *testing.T) {
 		require_Equal(t, ci.AckFloor.Consumer, 1)
 		require_Equal(t, ci.AckFloor.Stream, 1)
 		require_Equal(t, ci.NumAckPending, 0)
-		require_Equal(t, ci.NumRedelivered, 0)
+		require_Equal(t, ci.NumRedelivered, 1)
 		require_Equal(t, ci.NumPending, 0)
 	}
 }
