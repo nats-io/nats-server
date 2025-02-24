@@ -5323,9 +5323,7 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 	// With headers, high bit on total length will be set.
 	// total_len(4) sequence(8) timestamp(8) subj_len(2) subj hdr_len(4) hdr msg hash(8)
 
-	// First write header, etc.
 	var le = binary.LittleEndian
-	var hdr [msgHdrSize]byte
 
 	l := uint32(rl)
 	hasHeaders := len(mhdr) > 0
@@ -5333,13 +5331,15 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 		l |= hbit
 	}
 
+	// Reserve space for the header on the underlying buffer.
+	mb.cache.buf = append(mb.cache.buf, make([]byte, msgHdrSize)...)
+	hdr := mb.cache.buf[len(mb.cache.buf)-msgHdrSize : len(mb.cache.buf)]
 	le.PutUint32(hdr[0:], l)
 	le.PutUint64(hdr[4:], seq)
 	le.PutUint64(hdr[12:], uint64(ts))
 	le.PutUint16(hdr[20:], uint16(len(subj)))
 
 	// Now write to underlying buffer.
-	mb.cache.buf = append(mb.cache.buf, hdr[:]...)
 	mb.cache.buf = append(mb.cache.buf, subj...)
 
 	if hasHeaders {
@@ -5353,13 +5353,12 @@ func (mb *msgBlock) writeMsgRecord(rl, seq uint64, subj string, mhdr, msg []byte
 	// Calculate hash.
 	mb.hh.Reset()
 	mb.hh.Write(hdr[4:20])
-	mb.hh.Write([]byte(subj))
+	mb.hh.Write(stringToBytes(subj))
 	if hasHeaders {
 		mb.hh.Write(mhdr)
 	}
 	mb.hh.Write(msg)
-	checksum := mb.hh.Sum(nil)
-	// Grab last checksum
+	checksum := mb.hh.Sum(mb.lchk[:0:highwayhash.Size64])
 	copy(mb.lchk[0:], checksum)
 
 	// Update write through cache.
