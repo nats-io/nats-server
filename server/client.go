@@ -1423,8 +1423,8 @@ func (c *client) readLoop(pre []byte) {
 			// Clear total stalled time here.
 			if c.in.tst >= stallClientMaxDuration {
 				c.rateLimitFormatWarnf("Producer was stalled for a total of %v", c.in.tst.Round(time.Millisecond))
-				c.in.tst = 0
 			}
+			c.in.tst = 0
 		}
 
 		// If we are a ROUTER/LEAF and have processed an INFO, it is possible that
@@ -3421,8 +3421,7 @@ func (c *client) stalledWait(producer *client) {
 	case <-delay.C:
 		producer.Debugf("Timed out of fast producer stall (%v)", ttl)
 	}
-	elapsed := time.Since(start)
-	producer.in.tst += elapsed
+	producer.in.tst += time.Since(start)
 }
 
 // Used to treat maps as efficient set
