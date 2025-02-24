@@ -3917,7 +3917,10 @@ func (o *consumer) deliveryCount(seq uint64) uint64 {
 	if o.rdc == nil {
 		return 1
 	}
-	return o.rdc[seq]
+	if dc := o.rdc[seq]; dc >= 1 {
+		return dc
+	}
+	return 1
 }
 
 // Increase the delivery count for this message.
@@ -4231,10 +4234,7 @@ func (o *consumer) checkAckFloor() {
 			// Check if this message was pending.
 			o.mu.RLock()
 			p, isPending := o.pending[seq]
-			var rdc uint64 = 1
-			if o.rdc != nil {
-				rdc = o.rdc[seq]
-			}
+			rdc := o.deliveryCount(seq)
 			o.mu.RUnlock()
 			// If it was pending for us, get rid of it.
 			if isPending {
@@ -4252,10 +4252,7 @@ func (o *consumer) checkAckFloor() {
 				if p != nil {
 					dseq = p.Sequence
 				}
-				var rdc uint64 = 1
-				if o.rdc != nil {
-					rdc = o.rdc[seq]
-				}
+				rdc := o.deliveryCount(seq)
 				toTerm = append(toTerm, seq, dseq, rdc)
 			}
 		}
@@ -5861,10 +5858,7 @@ func (o *consumer) decStreamPending(sseq uint64, subj string) {
 
 	// Check if this message was pending.
 	p, wasPending := o.pending[sseq]
-	var rdc uint64 = 1
-	if o.rdc != nil {
-		rdc = o.rdc[sseq]
-	}
+	rdc := o.deliveryCount(sseq)
 
 	o.mu.Unlock()
 
