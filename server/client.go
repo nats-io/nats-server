@@ -3400,14 +3400,15 @@ func (c *client) stalledWait(producer *client) {
 	// Grab stall channel which the slow consumer will close when caught up.
 	stall := c.out.stc
 
-	c.mu.Unlock()
-	defer c.mu.Lock()
-
 	// Calculate stall time.
 	ttl := stallClientMinDuration
 	if c.out.pb >= c.out.mp {
 		ttl = stallClientMaxDuration
 	}
+
+	c.mu.Unlock()
+	defer c.mu.Lock()
+
 	// Now check if we are close to total allowed.
 	if producer.in.tst+ttl > stallTotalAllowed {
 		ttl = stallTotalAllowed - producer.in.tst
