@@ -315,7 +315,8 @@ func (sm *RCOBStateMachine) createSnapshot() {
 	// InstallSnapshot is actually "save the snapshot", which is an operation delegated to the node
 	err = sm.n.InstallSnapshot(snapshotData)
 	if err != nil {
-		panic(fmt.Sprintf("failed to snapshot: %s", err))
+		sm.logDebug("failed to snapshot: %s", err)
+		return
 	}
 
 	// Reset counter since last snapshot
