@@ -1256,6 +1256,11 @@ func TestLongClusterJetStreamBusyStreams(t *testing.T) {
 				for _, consumer := range stream.consumers {
 					_, err := js.AddConsumer(stream.config.Name, consumer)
 					require_NoError(t, err)
+					_, err = js.PullSubscribe(consumer.FilterSubject, "", nats.Bind(stream.config.Name, consumer.Name))
+					if err != nil {
+						t.Logf("WRN: Failed binding to pull subscriber: %v - %v - %v - %v",
+							consumer.FilterSubject, stream.config.Name, consumer.Name, err)
+					}
 				}
 			}()
 		}
