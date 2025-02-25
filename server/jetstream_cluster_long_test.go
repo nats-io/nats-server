@@ -1308,9 +1308,9 @@ func TestLongClusterJetStreamBusyStreams(t *testing.T) {
 
 						for attempts := 0; attempts < 60; attempts++ {
 							_, err := js.ConsumerInfo(stream.config.Name, consumer.Name)
-							if err != nil {
-								t.Logf("WRN: Failed calling consumer info: %v - %v - %v - %v - attempts:%v",
-									consumer.FilterSubject, stream.config.Name, consumer.Name, err, attempts)
+							if err != nil && err != context.DeadlineExceeded {
+								t.Logf("WRN: Failed calling consumer info: %v - %v - %v - %v - attempts:%v - %v",
+									consumer.FilterSubject, stream.config.Name, consumer.Name, err, attempts, nc.ConnectedServerName())
 							}
 						}
 						sub, err := js.PullSubscribe(consumer.FilterSubject, "", nats.Bind(stream.config.Name, consumer.Name))
