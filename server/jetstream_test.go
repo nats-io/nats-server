@@ -1055,9 +1055,9 @@ func TestJetStreamAddStreamSameConfigOK(t *testing.T) {
 
 func sendStreamMsg(t *testing.T, nc *nats.Conn, subject, msg string) *PubAck {
 	t.Helper()
-	resp, _ := nc.Request(subject, []byte(msg), 500*time.Millisecond)
+	resp, err := nc.Request(subject, []byte(msg), 500*time.Millisecond)
 	if resp == nil {
-		t.Fatalf("No response for %q, possible timeout?", msg)
+		t.Fatalf("No response for %q (error: %v)", msg, err)
 	}
 	pa := getPubAckResponse(resp.Data)
 	if pa == nil || pa.Error != nil {
@@ -10693,9 +10693,9 @@ func TestJetStreamAccountImportBasics(t *testing.T) {
 		t.Fatalf("Expected subject of %q, got %q", "ORDERS.bar", m.Subject)
 	}
 	// Now make sure we can ack messages and get back an ack as well.
-	resp, _ := nc.Request(m.Reply, nil, 100*time.Millisecond)
+	resp, err := nc.Request(m.Reply, nil, 100*time.Millisecond)
 	if resp == nil {
-		t.Fatalf("No response, possible timeout?")
+		t.Fatalf("No response (error: %v)", err)
 	}
 	if info := o.info(); info.AckFloor.Consumer != 2 {
 		t.Fatalf("Did not receive the ack properly")
