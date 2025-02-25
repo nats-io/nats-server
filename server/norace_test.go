@@ -11502,3 +11502,61 @@ func TestNoRaceNoFastProducerStall(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestNoRaceProducerStallLimits(t *testing.T) {
+	tmpl := `
+		listen: "127.0.0.1:-1"
+	`
+	conf := createConfFile(t, []byte(tmpl))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	ncSlow := natsConnect(t, s.ClientURL())
+	defer ncSlow.Close()
+	natsSub(t, ncSlow, "foo", func(m *nats.Msg) { m.Respond([]byte("42")) })
+	natsFlush(t, ncSlow)
+
+	ncProd := natsConnect(t, s.ClientURL())
+	defer ncProd.Close()
+
+	cid, err := ncSlow.GetClientID()
+	require_NoError(t, err)
+	c := s.GetClient(cid)
+	require_True(t, c != nil)
+
+	// Artificially set a stall channel on the subscriber.
+	c.mu.Lock()
+	c.out.stc = make(chan struct{})
+	c.mu.Unlock()
+
+	start := time.Now()
+	_, err = ncProd.Request("foo", []byte("HELLO"), time.Second)
+	elapsed := time.Since(start)
+	require_NoError(t, err)
+
+	// This should have not cleared on its own but should have bettwen min and max pause.
+	require_True(t, elapsed >= stallClientMinDuration)
+	require_True(t, elapsed < stallClientMaxDuration)
+
+	// Now test total maximum by loading up a bunch of requests and measuring the last one.
+	// Artificially set a stall channel again on the subscriber.
+	c.mu.Lock()
+	c.out.stc = make(chan struct{})
+	// This will prevent us from clearing the stc.
+	c.out.pb = c.out.mp/4*3 + 100
+	c.mu.Unlock()
+
+	for i := 0; i < 10; i++ {
+		err = ncProd.PublishRequest("foo", "bar", []byte("HELLO"))
+		require_NoError(t, err)
+	}
+	start = time.Now()
+	_, err = ncProd.Request("foo", []byte("HELLO"), time.Second)
+	elapsed = time.Since(start)
+	require_NoError(t, err)
+
+	require_True(t, elapsed >= stallTotalAllowed)
+	// Should always be close to totalAllowed (e.g. 10ms), but if you run alot of them in one go can bump up
+	// just past 12ms, hence the Max setting below to avoid a flapper.
+	require_True(t, elapsed < stallTotalAllowed+stallClientMaxDuration)
+}

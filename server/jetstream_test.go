@@ -23203,3 +23203,108 @@ func TestJetStreamConsumerPendingCountAfterMsgAckAboveFloor(t *testing.T) {
 	// We've fetched 2 message so should report 0 pending.
 	requireExpected(0)
 }
+
+// https://github.com/nats-io/nats-server/issues/6538
+func TestJetStreamInterestMaxDeliveryReached(t *testing.T) {
+	maxWait := 250 * time.Millisecond
+	for _, useNak := range []bool{true, false} {
+		for _, test := range []struct {
+			title  string
+			action func(s *Server, sub *nats.Subscription)
+		}{
+			{
+				title: "fetch",
+				action: func(s *Server, sub *nats.Subscription) {
+					time.Sleep(time.Second)
+
+					// max deliver 1 so this will fail
+					_, err := sub.Fetch(1, nats.MaxWait(maxWait))
+					require_Error(t, err)
+				},
+			},
+			{
+				title: "expire pending",
+				action: func(s *Server, sub *nats.Subscription) {
+					acc, err := s.lookupAccount(globalAccountName)
+					require_NoError(t, err)
+					mset, err := acc.lookupStream("TEST")
+					require_NoError(t, err)
+					o := mset.lookupConsumer("consumer")
+					require_NotNil(t, o)
+
+					o.mu.Lock()
+					o.forceExpirePending()
+					o.mu.Unlock()
+				},
+			},
+		} {
+			title := fmt.Sprintf("nak/%s", test.title)
+			if !useNak {
+				title = fmt.Sprintf("no-%s", title)
+			}
+			t.Run(title, func(t *testing.T) {
+				s := RunBasicJetStreamServer(t)
+				defer s.Shutdown()
+
+				nc, js := jsClientConnect(t, s)
+				defer nc.Close()
+
+				_, err := js.AddStream(&nats.StreamConfig{
+					Name:      "TEST",
+					Storage:   nats.FileStorage,
+					Subjects:  []string{"test"},
+					Replicas:  1,
+					Retention: nats.InterestPolicy,
+				})
+				require_NoError(t, err)
+
+				sub, err := js.PullSubscribe("test", "consumer", nats.AckWait(time.Second), nats.MaxDeliver(1))
+				require_NoError(t, err)
+
+				_, err = nc.Request("test", []byte("hello"), maxWait)
+				require_NoError(t, err)
+
+				nfo, err := js.StreamInfo("TEST")
+				require_NoError(t, err)
+				require_Equal(t, nfo.State.Msgs, uint64(1))
+
+				msg, err := sub.Fetch(1, nats.MaxWait(maxWait))
+				require_NoError(t, err)
+				require_Len(t, 1, len(msg))
+				if useNak {
+					require_NoError(t, msg[0].Nak())
+				}
+
+				cnfo, err := js.ConsumerInfo("TEST", "consumer")
+				require_NoError(t, err)
+				require_Equal(t, cnfo.NumAckPending, 1)
+
+				test.action(s, sub)
+
+				// max deliver 1 so this will fail
+				_, err = sub.Fetch(1, nats.MaxWait(maxWait))
+				require_Error(t, err)
+
+				cnfo, err = js.ConsumerInfo("TEST", "consumer")
+				require_NoError(t, err)
+				require_Equal(t, cnfo.NumAckPending, 0)
+
+				nfo, err = js.StreamInfo("TEST")
+				require_NoError(t, err)
+				require_Equal(t, nfo.State.Msgs, uint64(1))
+
+				sub2, err := js.PullSubscribe("test", "consumer2")
+				require_NoError(t, err)
+
+				msg, err = sub2.Fetch(1)
+				require_NoError(t, err)
+				require_Len(t, 1, len(msg))
+				require_NoError(t, msg[0].AckSync())
+
+				nfo, err = js.StreamInfo("TEST")
+				require_NoError(t, err)
+				require_Equal(t, nfo.State.Msgs, uint64(1))
+			})
+		}
+	}
+}

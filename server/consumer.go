@@ -1749,11 +1749,16 @@ func (o *consumer) hasMaxDeliveries(seq uint64) bool {
 		if o.maxp > 0 && len(o.pending) >= o.maxp {
 			o.signalNewMessages()
 		}
-		// Cleanup our tracking.
-		delete(o.pending, seq)
-		if o.rdc != nil {
-			delete(o.rdc, seq)
+		// Make sure to remove from pending.
+		if p, ok := o.pending[seq]; ok && p != nil {
+			delete(o.pending, seq)
+			o.updateDelivered(p.Sequence, seq, dc, p.Timestamp)
 		}
+		// Ensure redelivered state is set, if not already.
+		if o.rdc == nil {
+			o.rdc = make(map[uint64]uint64)
+		}
+		o.rdc[seq] = dc
 		return true
 	}
 	return false
@@ -2988,6 +2993,7 @@ func (o *consumer) needAck(sseq uint64, subj string) bool {
 	var needAck bool
 	var asflr, osseq uint64
 	var pending map[uint64]*Pending
+	var rdc map[uint64]uint64
 
 	o.mu.RLock()
 	defer o.mu.RUnlock()
@@ -3012,7 +3018,7 @@ func (o *consumer) needAck(sseq uint64, subj string) bool {
 	}
 	if o.isLeader() {
 		asflr, osseq = o.asflr, o.sseq
-		pending = o.pending
+		pending, rdc = o.pending, o.rdc
 	} else {
 		if o.store == nil {
 			return false
@@ -3023,7 +3029,7 @@ func (o *consumer) needAck(sseq uint64, subj string) bool {
 			return sseq > o.asflr && !o.isFiltered()
 		}
 		// If loading state as here, the osseq is +1.
-		asflr, osseq, pending = state.AckFloor.Stream, state.Delivered.Stream+1, state.Pending
+		asflr, osseq, pending, rdc = state.AckFloor.Stream, state.Delivered.Stream+1, state.Pending, state.Redelivered
 	}
 
 	switch o.cfg.AckPolicy {
@@ -3037,6 +3043,12 @@ func (o *consumer) needAck(sseq uint64, subj string) bool {
 				_, needAck = pending[sseq]
 			}
 		}
+	}
+
+	// Finally check if redelivery of this message is tracked.
+	// If the message is not pending, it should be preserved if it reached max delivery.
+	if !needAck {
+		_, needAck = rdc[sseq]
 	}
 
 	return needAck
@@ -3497,7 +3509,10 @@ func (o *consumer) deliveryCount(seq uint64) uint64 {
 	if o.rdc == nil {
 		return 1
 	}
-	return o.rdc[seq]
+	if dc := o.rdc[seq]; dc >= 1 {
+		return dc
+	}
+	return 1
 }
 
 // Increase the delivery count for this message.
@@ -3811,10 +3826,7 @@ func (o *consumer) checkAckFloor() {
 			// Check if this message was pending.
 			o.mu.RLock()
 			p, isPending := o.pending[seq]
-			var rdc uint64 = 1
-			if o.rdc != nil {
-				rdc = o.rdc[seq]
-			}
+			rdc := o.deliveryCount(seq)
 			o.mu.RUnlock()
 			// If it was pending for us, get rid of it.
 			if isPending {
@@ -3832,10 +3844,7 @@ func (o *consumer) checkAckFloor() {
 				if p != nil {
 					dseq = p.Sequence
 				}
-				var rdc uint64 = 1
-				if o.rdc != nil {
-					rdc = o.rdc[seq]
-				}
+				rdc := o.deliveryCount(seq)
 				toTerm = append(toTerm, seq, dseq, rdc)
 			}
 		}
@@ -5409,10 +5418,7 @@ func (o *consumer) decStreamPending(sseq uint64, subj string) {
 
 	// Check if this message was pending.
 	p, wasPending := o.pending[sseq]
-	var rdc uint64 = 1
-	if o.rdc != nil {
-		rdc = o.rdc[sseq]
-	}
+	rdc := o.deliveryCount(sseq)
 
 	o.mu.Unlock()
 

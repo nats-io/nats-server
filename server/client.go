@@ -113,8 +113,9 @@ const (
 	maxNoRTTPingBeforeFirstPong = 2 * time.Second
 
 	// For stalling fast producers
-	stallClientMinDuration = 100 * time.Millisecond
-	stallClientMaxDuration = time.Second
+	stallClientMinDuration = 2 * time.Millisecond
+	stallClientMaxDuration = 5 * time.Millisecond
+	stallTotalAllowed      = 10 * time.Millisecond
 )
 
 var readLoopReportThreshold = readLoopReport
@@ -462,6 +463,9 @@ type readCache struct {
 
 	// Capture the time we started processing our readLoop.
 	start time.Time
+
+	// Total time stalled so far for readLoop processing.
+	tst time.Duration
 }
 
 // set the flag (would be equivalent to set the boolean to true)
@@ -1414,6 +1418,11 @@ func (c *client) readLoop(pre []byte) {
 				}
 				return
 			}
+			// Clear total stalled time here.
+			if c.in.tst >= stallClientMaxDuration {
+				c.rateLimitFormatWarnf("Producer was stalled for a total of %v", c.in.tst.Round(time.Millisecond))
+			}
+			c.in.tst = 0
 		}
 
 		// If we are a ROUTER/LEAF and have processed an INFO, it is possible that
@@ -1730,7 +1739,7 @@ func (c *client) flushOutbound() bool {
 
 	// Check if we have a stalled gate and if so and we are recovering release
 	// any stalled producers. Only kind==CLIENT will stall.
-	if c.out.stc != nil && (n == attempted || c.out.pb < c.out.mp/2) {
+	if c.out.stc != nil && (n == attempted || c.out.pb < c.out.mp/4*3) {
 		close(c.out.stc)
 		c.out.stc = nil
 	}
@@ -2292,7 +2301,8 @@ func (c *client) queueOutbound(data []byte) {
 	// Check here if we should create a stall channel if we are falling behind.
 	// We do this here since if we wait for consumer's writeLoop it could be
 	// too late with large number of fan in producers.
-	if c.out.pb > c.out.mp/2 && c.out.stc == nil {
+	// If the outbound connection is > 75% of maximum pending allowed, create a stall gate.
+	if c.out.pb > c.out.mp/4*3 && c.out.stc == nil {
 		c.out.stc = make(chan struct{})
 	}
 }
@@ -3337,31 +3347,36 @@ func (c *client) msgHeader(subj, reply []byte, sub *subscription) []byte {
 }
 
 func (c *client) stalledWait(producer *client) {
+	// Check to see if we have exceeded our total wait time per readLoop invocation.
+	if producer.in.tst > stallTotalAllowed {
+		return
+	}
+
+	// Grab stall channel which the slow consumer will close when caught up.
 	stall := c.out.stc
-	ttl := stallDuration(c.out.pb, c.out.mp)
+
 	c.mu.Unlock()
 	defer c.mu.Lock()
 
+	// Calculate stall time.
+	ttl := stallClientMinDuration
+	if c.out.pb >= c.out.mp {
+		ttl = stallClientMaxDuration
+	}
+	// Now check if we are close to total allowed.
+	if producer.in.tst+ttl > stallTotalAllowed {
+		ttl = stallTotalAllowed - producer.in.tst
+	}
 	delay := time.NewTimer(ttl)
 	defer delay.Stop()
 
+	start := time.Now()
 	select {
 	case <-stall:
 	case <-delay.C:
 		producer.Debugf("Timed out of fast producer stall (%v)", ttl)
 	}
-}
-
-func stallDuration(pb, mp int64) time.Duration {
-	ttl := stallClientMinDuration
-	if pb >= mp {
-		ttl = stallClientMaxDuration
-	} else if hmp := mp / 2; pb > hmp {
-		bsz := hmp / 10
-		additional := int64(ttl) * ((pb - hmp) / bsz)
-		ttl += time.Duration(additional)
-	}
-	return ttl
+	producer.in.tst += time.Since(start)
 }
 
 // Used to treat maps as efficient set
