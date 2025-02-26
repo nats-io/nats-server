@@ -5119,15 +5119,17 @@ func TestNoRaceJetStreamClusterInterestPullConsumerStreamLimitBug(t *testing.T) 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for {
-			pt := time.NewTimer(time.Duration(rand.Intn(2)) * time.Millisecond)
+		for i := 0; ; i++ {
 			select {
-			case <-pt.C:
+			case <-qch:
+				return
+			default:
 				_, err := js.Publish("foo", []byte("BUG!"))
 				require_NoError(t, err)
-			case <-qch:
-				pt.Stop()
-				return
+				// Only sleep every so often.
+				if i % 100 == 0 {
+					time.Sleep(time.Millisecond)
+				}
 			}
 		}
 	}()
