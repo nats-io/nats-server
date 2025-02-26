@@ -3,7 +3,7 @@ version: 2
 
 release:
   github:
-    owner: nats-io
+    owner: '{{ envOrDefault "GITHUB_REPOSITORY_OWNER" "nats-io" }}'
     name: nats-server
   name_template: "Release {{.Tag}}"
   draft: true
@@ -71,10 +71,10 @@ archives:
   - name_template: "{{.ProjectName}}-{{.Tag}}-{{.Os}}-{{.Arch}}{{if .Arm}}{{.Arm}}{{end}}"
     id: targz-archives
     wrap_in_directory: true
-    format: tar.gz
+    formats: ["tar.gz"]
     format_overrides:
       - goos: windows
-        format: zip
+        formats: ["zip"]
     files:
       - README.md
       - LICENSE

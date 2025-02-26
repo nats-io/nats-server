@@ -5127,7 +5127,7 @@ func TestNoRaceJetStreamClusterInterestPullConsumerStreamLimitBug(t *testing.T) 
 				_, err := js.Publish("foo", []byte("BUG!"))
 				require_NoError(t, err)
 				// Only sleep every so often.
-				if i % 100 == 0 {
+				if i%100 == 0 {
 					time.Sleep(time.Millisecond)
 				}
 			}
