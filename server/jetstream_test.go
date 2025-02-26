@@ -3728,6 +3728,8 @@ func TestJetStreamConsumerMaxDeliveryAndServerRestart(t *testing.T) {
 	}
 
 	waitForClientReconnect := func() {
+		t.Helper()
+		require_NoError(t, nc.ForceReconnect())
 		checkFor(t, 2500*time.Millisecond, 5*time.Millisecond, func() error {
 			if !nc.IsConnected() {
 				return fmt.Errorf("Not connected")
