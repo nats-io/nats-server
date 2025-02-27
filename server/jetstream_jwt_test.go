@@ -1412,6 +1412,9 @@ func TestJetStreamJWTHAStorageLimitsOnScaleAndUpdate(t *testing.T) {
 	js, err := nc.JetStream()
 	require_NoError(t, err)
 
+	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
+	c.waitOnAccount(aExpPub)
+
 	// Test max bytes first.
 	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3, MaxBytes: maxFileStorage, Subjects: []string{"foo"}})
 	require_NoError(t, err)
@@ -1433,16 +1436,32 @@ func TestJetStreamJWTHAStorageLimitsOnScaleAndUpdate(t *testing.T) {
 	_, err = js.UpdateStream(&nats.StreamConfig{Name: "TEST2", Replicas: 3, MaxBytes: 512 * 1024})
 	require_NoError(t, err)
 	// Now make sure TEST6 succeeds.
-	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST6", Replicas: 3, MaxBytes: 1 * 1024 * 1024})
-	require_NoError(t, err)
+	checkFor(t, 1*time.Second, 500*time.Millisecond, func() error {
+		_, err = js.AddStream(&nats.StreamConfig{Name: "TEST6", Replicas: 3, MaxBytes: 1 * 1024 * 1024})
+		// Since the stream leader answers the stream update, and the meta leader determines resources,
+		// we could hit a race condition here. Simply retry if hit.
+		if err != nil && strings.Contains(err.Error(), "insufficient storage resources") {
+			return err
+		}
+		require_NoError(t, err)
+		return nil
+	})
 	// Now delete the R3 version.
 	require_NoError(t, js.DeleteStream("TEST6"))
 	// Now do R1 version and then we will scale up.
 	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST6", Replicas: 1, MaxBytes: 1 * 1024 * 1024})
 	require_NoError(t, err)
 	// Now make sure scale up works.
-	_, err = js.UpdateStream(&nats.StreamConfig{Name: "TEST6", Replicas: 3, MaxBytes: 1 * 1024 * 1024})
-	require_NoError(t, err)
+	checkFor(t, 1*time.Second, 500*time.Millisecond, func() error {
+		_, err = js.UpdateStream(&nats.StreamConfig{Name: "TEST6", Replicas: 3, MaxBytes: 1 * 1024 * 1024})
+		// Since the stream leader answers the stream add, and the meta leader determines stream not found,
+		// we could hit a race condition here. Simply retry if hit.
+		if err != nil && strings.Contains(err.Error(), "stream not found") {
+			return err
+		}
+		require_NoError(t, err)
+		return nil
+	})
 	// Add in a few more streams to check reserved reporting in account info.
 	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST7", Replicas: 1, MaxBytes: 2 * 1024 * 1024})
 	require_NoError(t, err)
