@@ -4291,7 +4291,7 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	mset.delete()
 
 	req, _ = json.Marshal(rreq)
-	rmsg, err = nc2.Request(strings.ReplaceAll(JSApiStreamRestoreT, JSApiPrefix, "$JS.domain.API"), req, time.Second)
+	rmsg, err = nc2.Request(fmt.Sprintf(strings.ReplaceAll(JSApiStreamRestoreT, JSApiPrefix, "$JS.domain.API"), mname), req, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error on snapshot request: %v", err)
 	}
@@ -4313,7 +4313,7 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	}
 
 	req, _ = json.Marshal(rreq)
-	rmsg, err = nc2.Request(strings.ReplaceAll(JSApiStreamRestoreT, JSApiPrefix, "$JS.domain.API"), req, time.Second)
+	rmsg, err = nc2.Request(fmt.Sprintf(strings.ReplaceAll(JSApiStreamRestoreT, JSApiPrefix, "$JS.domain.API"), mname), req, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error on snapshot request: %v", err)
 	}
@@ -4363,7 +4363,7 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	rreq.Config.Name = "NEW_STREAM"
 	req, _ = json.Marshal(rreq)
 
-	rmsg, err = nc.Request(fmt.Sprintf(JSApiStreamRestoreT, rreq.Config.Name), req, time.Second)
+	rmsg, err = nc2.Request(fmt.Sprintf(strings.ReplaceAll(JSApiStreamRestoreT, JSApiPrefix, "$JS.domain.API"), rreq.Config.Name), req, time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error on snapshot request: %v", err)
 	}
@@ -4379,7 +4379,7 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 		if err != nil {
 			break
 		}
-		nc.Request(rresp.DeliverSubject, chunk[:n], time.Second)
+		nc2.Request(rresp.DeliverSubject, chunk[:n], time.Second)
 	}
 
 	si, err = nc2.Request(rresp.DeliverSubject, nil, time.Second)
