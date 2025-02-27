@@ -865,6 +865,11 @@ func TestNRGTermDoesntRollBackToPtermOnCatchup(t *testing.T) {
 	_, err := nc.ChanSubscribe(arInbox, arCh)
 	require_NoError(t, err)
 
+	// Ensure the subscription is known by the server we're connected to,
+	// but also by the other servers in the cluster.
+	require_NoError(t, nc.Flush())
+	time.Sleep(100 * time.Millisecond)
+
 	// In order to trip this condition, we need to send an append entry that
 	// will trick the followers into running a catchup. In the process they
 	// were setting the term back to pterm which is incorrect.
