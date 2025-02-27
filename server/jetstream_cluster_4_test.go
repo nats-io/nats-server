@@ -1801,6 +1801,22 @@ func TestJetStreamClusterAckFloorBetweenLeaderAndFollowers(t *testing.T) {
 	sub, err := js.PullSubscribe("foo.*", "consumer")
 	require_NoError(t, err)
 
+	// Move consumer leader to be on the same server as the stream leader.
+	// Without this fetching messages right after getting a response to js.Publish could mean
+	// some messages are not available to the consumer yet.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	cl := c.consumerLeader(globalAccountName, "TEST", "consumer")
+	if cl.Name() != sl.Name() {
+		req := JSApiLeaderStepdownRequest{Placement: &Placement{Preferred: sl.Name()}}
+		data, err := json.Marshal(req)
+		require_NoError(t, err)
+		_, err = nc.Request(fmt.Sprintf(JSApiConsumerLeaderStepDownT, "TEST", "consumer"), data, time.Second)
+		require_NoError(t, err)
+		c.waitOnConsumerLeader(globalAccountName, "TEST", "consumer")
+		cl = c.consumerLeader(globalAccountName, "TEST", "consumer")
+		require_Equal(t, cl.Name(), sl.Name())
+	}
+
 	// Do 25 rounds.
 	for i := 1; i <= 25; i++ {
 		// Send 50 msgs.
@@ -1808,13 +1824,13 @@ func TestJetStreamClusterAckFloorBetweenLeaderAndFollowers(t *testing.T) {
 			_, err := js.Publish("foo.bar", nil)
 			require_NoError(t, err)
 		}
-		msgs, err := sub.Fetch(50, nats.MaxWait(10*time.Second))
+		msgs, err := sub.Fetch(50)
 		require_NoError(t, err)
 		require_Equal(t, len(msgs), 50)
 		// Randomize
 		rand.Shuffle(len(msgs), func(i, j int) { msgs[i], msgs[j] = msgs[j], msgs[i] })
 		for _, m := range msgs {
-			m.AckSync()
+			require_NoError(t, m.AckSync())
 		}
 
 		time.Sleep(100 * time.Millisecond)
