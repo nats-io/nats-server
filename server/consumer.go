@@ -5786,8 +5786,10 @@ func (o *consumer) cleanupNoInterestMessages(mset *stream, ignoreInterest bool) 
 	var rmseqs []uint64
 	mset.mu.RLock()
 
-	// If over this amount of messages to check, defer to checkInterestState() which
-	// will do the right thing since we are now removed.
+	// If over this amount of messages to check, optimistically call to checkInterestState().
+	// It will not always do the right thing in removing messages that lost interest, but ensures
+	// we don't degrade performance by doing a linear scan through the whole stream.
+	// Messages might need to expire based on limits to be cleaned up.
 	// TODO(dlc) - Better way?
 	const bailThresh = 100_000
 
