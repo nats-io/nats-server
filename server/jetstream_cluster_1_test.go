@@ -6428,7 +6428,7 @@ func TestJetStreamClusterConsumerDeleteInterestPolicyPerf(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	// Make trhe first sequence high. We already protect against it but for extra sanity.
+	// Make the first sequence high. We already protect against it but for extra sanity.
 	err = js.PurgeStream("TEST", &nats.StreamPurgeRequest{Sequence: 100_000_000})
 	require_NoError(t, err)
 
@@ -6460,6 +6460,21 @@ func TestJetStreamClusterConsumerDeleteInterestPolicyPerf(t *testing.T) {
 		t.Fatalf("Did not receive completion signal")
 	}
 
+	expectedStreamMsgs := func(msgs uint64) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			si, err := js.StreamInfo("TEST")
+			if err != nil {
+				return err
+			}
+			if si.State.Msgs != msgs {
+				return fmt.Errorf("require uint64 equal, but got: %d != %d", si.State.Msgs, msgs)
+			}
+			return nil
+		})
+	}
+	expectedStreamMsgs(500_000)
+
 	// For C1 grab 100 and ack evens.
 	sub, err := js.PullSubscribe("foo.bar", "C1")
 	require_NoError(t, err)
@@ -6469,17 +6484,17 @@ func TestJetStreamClusterConsumerDeleteInterestPolicyPerf(t *testing.T) {
 	for _, m := range msgs {
 		meta, _ := m.Metadata()
 		if meta.Sequence.Stream%2 == 0 {
-			m.AckSync()
+			require_NoError(t, m.AckSync())
 		}
 	}
 
 	// For C2 grab 500 and ack 100.
 	sub, err = js.PullSubscribe("foo.bar", "C2")
 	require_NoError(t, err)
-	msgs, err = sub.Fetch(500, nats.MaxWait(10*time.Second))
+	msgs, err = sub.Fetch(500)
 	require_NoError(t, err)
 	require_Equal(t, len(msgs), 500)
-	msgs[99].AckSync()
+	require_NoError(t, msgs[99].AckSync())
 
 	// Simulate stream viewer, get first 10 from C3
 	sub, err = js.PullSubscribe("foo.bar", "C3")
@@ -6488,13 +6503,20 @@ func TestJetStreamClusterConsumerDeleteInterestPolicyPerf(t *testing.T) {
 	require_NoError(t, err)
 	require_Equal(t, len(msgs), 10)
 
-	time.Sleep(500 * time.Millisecond)
-	si, err := js.StreamInfo("TEST")
-	require_NoError(t, err)
-	require_Equal(t, si.State.Msgs, 499_995)
+	expectedStreamMsgs(499_995)
+
+	// This test would flake depending on if mset.checkInterestState already ran or not.
+	// Manually call it here, because consumers don't retry removing messages below their ack floor.
+	for _, s := range c.servers {
+		acc, err := s.lookupAccount(globalAccountName)
+		require_NoError(t, err)
+		mset, err := acc.lookupStream("TEST")
+		require_NoError(t, err)
+		mset.checkInterestState()
+	}
 
 	// Before fix this was in the seconds. All the while the stream is locked.
-	// This should be short now.
+	// This should be short now, but messages might not be cleaned up.
 	start := time.Now()
 	err = js.DeleteConsumer("TEST", "C3")
 	require_NoError(t, err)
@@ -6502,10 +6524,7 @@ func TestJetStreamClusterConsumerDeleteInterestPolicyPerf(t *testing.T) {
 		t.Fatalf("Deleting AckNone consumer took too long: %v", elapsed)
 	}
 
-	time.Sleep(500 * time.Millisecond)
-	si, err = js.StreamInfo("TEST")
-	require_NoError(t, err)
-	require_Equal(t, si.State.Msgs, 499_950)
+	expectedStreamMsgs(499_995)
 
 	// Now do AckAll
 	start = time.Now()
@@ -6515,10 +6534,7 @@ func TestJetStreamClusterConsumerDeleteInterestPolicyPerf(t *testing.T) {
 		t.Fatalf("Deleting AckAll consumer took too long: %v", elapsed)
 	}
 
-	time.Sleep(500 * time.Millisecond)
-	si, err = js.StreamInfo("TEST")
-	require_NoError(t, err)
-	require_Equal(t, si.State.Msgs, 499_950)
+	expectedStreamMsgs(499_995)
 
 	// Now do AckExplicit
 	start = time.Now()
@@ -6528,10 +6544,93 @@ func TestJetStreamClusterConsumerDeleteInterestPolicyPerf(t *testing.T) {
 		t.Fatalf("Deleting AckExplicit consumer took too long: %v", elapsed)
 	}
 
-	time.Sleep(500 * time.Millisecond)
-	si, err = js.StreamInfo("TEST")
+	expectedStreamMsgs(0)
+}
+
+func TestJetStreamClusterConsumerDeleteInterestPolicyUniqueFiltersPerf(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Retention: nats.InterestPolicy,
+		Subjects:  []string{"foo.*"},
+		Replicas:  3,
+	})
 	require_NoError(t, err)
-	require_Equal(t, si.State.Msgs, 0)
+
+	// Create 2 consumers. 1 Ack explicit, 1 AckNone
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:        "C0",
+		AckPolicy:      nats.AckExplicitPolicy,
+		FilterSubjects: []string{"foo.0"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:        "C1",
+		AckPolicy:      nats.AckNonePolicy,
+		FilterSubjects: []string{"foo.1"},
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 500_000; i++ {
+		subject := fmt.Sprintf("foo.%d", i%2)
+		js.PublishAsync(subject, []byte("ok"))
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Did not receive completion signal")
+	}
+
+	expectedStreamMsgs := func(msgs uint64) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			si, err := js.StreamInfo("TEST")
+			if err != nil {
+				return err
+			}
+			if si.State.Msgs != msgs {
+				return fmt.Errorf("require uint64 equal, but got: %d != %d", si.State.Msgs, msgs)
+			}
+			return nil
+		})
+	}
+
+	expectedStreamMsgs(500_000)
+
+	// For C0 grab 100 and ack them.
+	sub, err := js.PullSubscribe("foo.0", "C0")
+	require_NoError(t, err)
+	msgs, err := sub.Fetch(100)
+	require_NoError(t, err)
+	require_Equal(t, len(msgs), 100)
+	for _, msg := range msgs {
+		require_NoError(t, msg.AckSync())
+	}
+
+	expectedStreamMsgs(499_900)
+
+	start := time.Now()
+	err = js.DeleteConsumer("TEST", "C1")
+	require_NoError(t, err)
+	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+		t.Fatalf("Deleting AckNone consumer took too long: %v", elapsed)
+	}
+
+	expectedStreamMsgs(499_900)
+
+	start = time.Now()
+	err = js.DeleteConsumer("TEST", "C0")
+	require_NoError(t, err)
+	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+		t.Fatalf("Deleting AckExplicit consumer took too long: %v", elapsed)
+	}
+	expectedStreamMsgs(0)
 }
 
 // Make sure to not allow non-system accounts to move meta leader.
