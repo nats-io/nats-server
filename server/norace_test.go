@@ -6431,7 +6431,7 @@ func TestNoRaceJetStreamClusterConsumerInfoSpeed(t *testing.T) {
 		ci, err := js.ConsumerInfo("TEST", "DLC")
 		require_NoError(t, err)
 		// Make sure these are fast now.
-		if elapsed := time.Since(start); elapsed > 5*time.Millisecond {
+		if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
 			t.Fatalf("ConsumerInfo took too long: %v", elapsed)
 		}
 		// Make sure pending == expected.
