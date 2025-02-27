@@ -5097,6 +5097,16 @@ func (o *consumer) processReplicatedAck(dseq, sseq uint64) error {
 	// Update activity.
 	o.lat = time.Now()
 
+	var sagap uint64
+	if o.cfg.AckPolicy == AckAll {
+		// Always use the store state, as o.asflr is skipped ahead already.
+		// Capture before updating store.
+		state, err := o.store.BorrowState()
+		if err == nil {
+			sagap = sseq - state.AckFloor.Stream
+		}
+	}
+
 	// Do actual ack update to store.
 	// Always do this to have it recorded.
 	o.store.UpdateAcks(dseq, sseq)
@@ -5120,21 +5130,6 @@ func (o *consumer) processReplicatedAck(dseq, sseq uint64) error {
 	if o.retention == LimitsPolicy {
 		o.mu.Unlock()
 		return nil
-	}
-
-	var sagap uint64
-	if o.cfg.AckPolicy == AckAll {
-		if o.isLeader() {
-			sagap = sseq - o.asflr
-		} else {
-			// We are a follower so only have the store state, so read that in.
-			state, err := o.store.State()
-			if err != nil {
-				o.mu.Unlock()
-				return err
-			}
-			sagap = sseq - state.AckFloor.Stream
-		}
 	}
 	o.mu.Unlock()
 
