@@ -597,6 +597,25 @@ func TestConfigReloadRotateTLSMultiCert(t *testing.T) {
 	}
 }
 
+func TestConfigReloadDefaultSentinel(t *testing.T) {
+	server, opts, config := runReloadServerWithConfig(t, "./configs/reload/defaultsentinel_1.conf")
+	defer server.Shutdown()
+
+	if opts.DefaultSentinel != "one" {
+		t.Fatalf("Expected default sentinel to be 'one', got %s", opts.DefaultSentinel)
+	}
+
+	changeCurrentConfigContent(t, config, "./configs/reload/defaultsentinel_2.conf")
+	if err := server.Reload(); err != nil {
+		t.Fatalf("Error reloading config: %v", err)
+	}
+
+	opts = server.getOpts()
+	if opts.DefaultSentinel != "two" {
+		t.Fatalf("Expected default sentinel to be 'two', got %s", opts.DefaultSentinel)
+	}
+}
+
 // Ensure Reload supports single user authentication config changes. Test this
 // by starting a server with authentication enabled, connect to it to verify,
 // reload config using a different username/password, ensure reconnect fails,
