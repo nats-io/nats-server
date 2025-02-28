@@ -1266,17 +1266,20 @@ func TestJetStreamClusterInterestStreamConsumer(t *testing.T) {
 	// Shuffle
 	rand.Shuffle(len(msgs), func(i, j int) { msgs[i], msgs[j] = msgs[j], msgs[i] })
 	for _, m := range msgs {
-		m.AckSync()
+		require_NoError(t, m.AckSync())
 	}
+
 	// Make sure replicated acks are processed.
-	time.Sleep(250 * time.Millisecond)
-
-	si, err := js.StreamInfo("TEST")
-	require_NoError(t, err)
-
-	if si.State.Msgs != 0 {
-		t.Fatalf("Should not have any messages left: %d of %d", si.State.Msgs, n)
-	}
+	checkFor(t, time.Second, 250*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != 0 {
+			return fmt.Errorf("Should not have any messages left: %d of %d", si.State.Msgs, n)
+		}
+		return nil
+	})
 }
 
 func TestJetStreamClusterNoPanicOnStreamInfoWhenNoLeaderYet(t *testing.T) {
