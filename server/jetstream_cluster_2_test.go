@@ -6976,13 +6976,18 @@ func TestJetStreamClusterLeaderAbortsCatchupOnFollowerError(t *testing.T) {
 
 	// The mock store is blocked loading the first message, so we need to consume
 	// the sequence before being able to receive the message in our sub.
-	if seq := <-ms.ch; seq != 1 {
-		t.Fatalf("Expected sequence to be 1, got %v", seq)
+	select {
+	case seq := <-ms.ch:
+		if seq != 1 {
+			t.Fatalf("Expected sequence to be 1, got %v", seq)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Did not get the expected error")
 	}
 
 	// Now consume and the leader should report the error and terminate runCatchup
 	msg := natsNexMsg(t, sub, time.Second)
-	msg.Respond([]byte("simulate error"))
+	require_NoError(t, msg.Respond([]byte("simulate error")))
 
 	select {
 	case <-l.ch:
@@ -6993,9 +6998,15 @@ func TestJetStreamClusterLeaderAbortsCatchupOnFollowerError(t *testing.T) {
 
 	// The mock store should be blocked in seq==2 now, but after consuming, it should
 	// abort the runCatchup.
-	if seq := <-ms.ch; seq != 2 {
-		t.Fatalf("Expected sequence to be 2, got %v", seq)
+	select {
+	case seq := <-ms.ch:
+		if seq != 2 {
+			t.Fatalf("Expected sequence to be 2, got %v", seq)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Did not get the expected error")
 	}
+
 	// We may have some more messages loaded as a race between when the sub will
 	// indicate that the catchup should stop and the part where we send messages
 	// in the batch, but we should likely not have sent all messages.
