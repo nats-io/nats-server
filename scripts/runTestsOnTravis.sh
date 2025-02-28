@@ -2,6 +2,8 @@
 
 set -e
 
+export GOMAXPROCS=6
+
 if [ "$1" = "compile" ]; then
     # First check that NATS builds.
     go build;
