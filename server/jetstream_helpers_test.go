@@ -2111,6 +2111,10 @@ func checkState(t *testing.T, c *cluster, accountName, streamName string) error 
 			// Skip self
 			continue
 		}
+		if srv.isShuttingDown() {
+			// Skip if shutdown.
+			continue
+		}
 		acc, err := srv.LookupAccount(accountName)
 		require_NoError(t, err)
 		stream, err := acc.lookupStream(streamName)

@@ -8647,9 +8647,6 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 	mset.mu.Lock()
 	st := mset.cfg.Storage
 	ddloaded := mset.ddloaded
-	tierName := mset.tier
-	replicas := mset.cfg.Replicas
-
 	if mset.hasAllPreAcks(seq, subj) {
 		mset.clearAllPreAcks(seq)
 		// Mark this to be skipped
@@ -8657,11 +8654,8 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 	}
 	mset.mu.Unlock()
 
+	// Since we're clustered we do not want to check limits based on tier here and possibly introduce skew.
 	if mset.js.limitsExceeded(st) {
-		return 0, NewJSInsufficientResourcesError()
-	} else if exceeded, apiErr := mset.jsa.limitsExceeded(st, tierName, replicas); apiErr != nil {
-		return 0, apiErr
-	} else if exceeded {
 		return 0, NewJSInsufficientResourcesError()
 	}
 
