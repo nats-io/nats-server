@@ -3232,12 +3232,6 @@ func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) err
 		for _, n := range v.([]any) {
 			tk, name := unwrapValue(n, &lt)
 			ns := name.(string)
-			// Check for reserved names.
-			if isReservedAccount(ns) {
-				err := &configErr{tk, fmt.Sprintf("%q is a Reserved Account", ns)}
-				*errors = append(*errors, err)
-				continue
-			}
 			if _, ok := m[ns]; ok {
 				err := &configErr{tk, fmt.Sprintf("Duplicate Account Entry: %s", ns)}
 				*errors = append(*errors, err)
@@ -3266,11 +3260,6 @@ func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) err
 			mv, ok := amv.(map[string]any)
 			if !ok {
 				err := &configErr{tk, "Expected map entries for accounts"}
-				*errors = append(*errors, err)
-				continue
-			}
-			if isReservedAccount(aname) {
-				err := &configErr{tk, fmt.Sprintf("%q is a Reserved Account", aname)}
 				*errors = append(*errors, err)
 				continue
 			}
