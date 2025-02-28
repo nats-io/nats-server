@@ -4992,6 +4992,60 @@ func TestNoRaceJetStreamAccountLimitsAndRestart(t *testing.T) {
 	c.waitOnLeader()
 	c.waitOnStreamLeader("$JS", "TEST")
 
+	checkFor(t, 2*time.Second, 500*time.Millisecond, func() error {
+		return checkState(t, c, "$JS", "TEST")
+	})
+	for _, cs := range c.servers {
+		c.waitOnStreamCurrent(cs, "$JS", "TEST")
+	}
+}
+
+func TestNoRaceJetStreamAccountLimitsAndRestartForceSnapshot(t *testing.T) {
+	c := createJetStreamClusterWithTemplate(t, jsClusterAccountLimitsTempl, "A3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3}); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	snl := c.randomNonStreamLeader("$JS", "TEST")
+	for i := 0; i < 20_000; i++ {
+		if _, err := js.Publish("TEST", []byte("A")); err != nil {
+			break
+		}
+		if i == 5_000 {
+			snl.Shutdown()
+		}
+	}
+
+	// Wait for the remaining servers to converge on the state.
+	checkFor(t, 2*time.Second, 500*time.Millisecond, func() error {
+		return checkState(t, c, "$JS", "TEST")
+	})
+	// Then install snapshots so the shutdown server needs to catchup based on a snapshot.
+	for _, s := range c.servers {
+		if s == snl {
+			continue
+		}
+		acc, err := s.lookupAccount("$JS")
+		require_NoError(t, err)
+		mset, err := acc.lookupStream("TEST")
+		require_NoError(t, err)
+		n := mset.raftNode().(*raft)
+		require_NoError(t, n.InstallSnapshot(mset.stateSnapshot()))
+	}
+
+	c.stopAll()
+	c.restartAll()
+	c.waitOnLeader()
+	c.waitOnStreamLeader("$JS", "TEST")
+
+	checkFor(t, 2*time.Second, 500*time.Millisecond, func() error {
+		return checkState(t, c, "$JS", "TEST")
+	})
 	for _, cs := range c.servers {
 		c.waitOnStreamCurrent(cs, "$JS", "TEST")
 	}
