@@ -3477,6 +3477,21 @@ func TestProcessConfigString(t *testing.T) {
 	}
 }
 
+func TestDefaultSentinel(t *testing.T) {
+	d := `
+		default_sentinel: "hello"
+	`
+	conf := createConfFile(t, []byte(d))
+	opts := LoadConfig(conf)
+	require_Equal(t, "hello", opts.DefaultSentinel)
+
+	// if we validate, it will fail, we need an operator
+	// tests verifying run of configured, elsewhere
+	err := validateOptions(opts)
+	require_Error(t, err)
+	require_Equal(t, "default sentinel requires operators and accounts", err.Error())
+}
+
 func TestAuthorizationTimeoutConfigParsing(t *testing.T) {
 	type testCase struct {
 		name                string
