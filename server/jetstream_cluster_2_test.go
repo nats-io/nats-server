@@ -7834,7 +7834,22 @@ func TestJetStreamClusterConsumerResetStartingSequenceToAgreedState(t *testing.T
 			// Its WAL does not contain entries for this, so reset back to agreed state.
 			o.mu.Lock()
 			o.sseq = 100
+			store := o.store
 			o.mu.Unlock()
+
+			// File storage is not fully resilient, as there is a race condition where it becomes
+			// leader again before the flusher got to write the store state.
+			// We need to wait here to confirm the state is written.
+			if storage == nats.FileStorage {
+				cfs := store.(*consumerFileStore)
+				checkFor(t, time.Second, 10*time.Millisecond, func() error {
+					if cfs.dirty {
+						return errors.New("store still marked dirty")
+					}
+					return nil
+				})
+			}
+
 			// Step down and campaign, should re-elect the same leader.
 			require_NoError(t, rn.StepDown())
 			require_NoError(t, rn.Campaign())
