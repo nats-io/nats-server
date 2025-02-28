@@ -251,7 +251,7 @@ func TestClientNoResponderSupport(t *testing.T) {
 	if len(am) == 0 {
 		t.Fatalf("Did not get a match for %q", l)
 	}
-	checkPayload(cr, []byte("NATS/1.0 503\r\n\r\n"), t)
+	checkPayload(cr, []byte("NATS/1.0 503\r\nNats-Subject: foo\r\n\r\n\r\n"), t)
 }
 
 func TestServerHeaderSupport(t *testing.T) {
