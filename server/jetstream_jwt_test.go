@@ -457,6 +457,9 @@ func TestJetStreamJWTClusteredTiers(t *testing.T) {
 	js, err := nc.JetStream()
 	require_NoError(t, err)
 
+	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
+	c.waitOnAccount(aExpPub)
+
 	// Test absent tiers
 	_, err = js.AddStream(&nats.StreamConfig{Name: "testR2", Replicas: 2, Subjects: []string{"testR2"}})
 	require_Error(t, err)
@@ -618,6 +621,9 @@ func TestJetStreamJWTClusteredTiersChange(t *testing.T) {
 	js, err := nc.JetStream()
 	require_NoError(t, err)
 
+	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
+	c.waitOnAccount(aExpPub)
+
 	// Test tiers up to stream limits
 	cfg := &nats.StreamConfig{Name: "testR1-1", Replicas: 1, Subjects: []string{"testR1-1"}, MaxBytes: 1000}
 	_, err = js.AddStream(cfg)
@@ -703,6 +709,9 @@ func TestJetStreamJWTClusteredDeleteTierWithStreamAndMove(t *testing.T) {
 
 	js, err := nc.JetStream()
 	require_NoError(t, err)
+
+	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
+	c.waitOnAccount(aExpPub)
 
 	// Test tiers up to stream limits
 	cfg := &nats.StreamConfig{Name: "testR1-1", Replicas: 1, Subjects: []string{"testR1-1"}, MaxBytes: 1000}
@@ -823,6 +832,9 @@ func TestJetStreamJWTSysAccUpdateMixedMode(t *testing.T) {
 
 	js, err := aNc.JetStream()
 	require_NoError(t, err)
+
+	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
+	sc.waitOnAccount(apub)
 
 	si, err := js.AddStream(&nats.StreamConfig{Name: "bar", Subjects: []string{"bar"}, Replicas: 3})
 	require_NoError(t, err)
@@ -1312,6 +1324,9 @@ func TestJetStreamJWTHAStorageLimitsAndAccounting(t *testing.T) {
 
 	js, err := nc.JetStream()
 	require_NoError(t, err)
+
+	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
+	c.waitOnAccount(aExpPub)
 
 	// Test max bytes first.
 	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3, MaxBytes: maxFileStorage, Subjects: []string{"foo"}})
