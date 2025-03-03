@@ -27,7 +27,7 @@ jobs:
           go test -race -v -run=TestVersionMatchesTag ./server -ldflags="-X=github.com/nats-io/nats-server/v2/server.serverVersion=$TRAVIS_TAG" -count=1 -vet=off
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v3.7.0
+        uses: sigstore/cosign-installer@v3.8.1
 
       - name: Install syft
         uses: anchore/sbom-action/download-syft@v0.18.0
