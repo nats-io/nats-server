@@ -717,6 +717,15 @@ func (jso jetStreamOption) IsStatszChange() bool {
 	return true
 }
 
+type defaultSentinelOption struct {
+	noopOption
+	newValue string
+}
+
+func (so *defaultSentinelOption) Apply(s *Server) {
+	s.Noticef("Reloaded: default_sentinel = %s", so.newValue)
+}
+
 type ocspOption struct {
 	tlsOption
 	newValue *OCSPConfig
@@ -1632,6 +1641,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 				return nil, fmt.Errorf("config reload not supported for %s: old=%v, new=%v",
 					field.Name, oldValue, newValue)
 			}
+		case "defaultsentinel":
+			diffOpts = append(diffOpts, &defaultSentinelOption{newValue: newValue.(string)})
 		case "systemaccount":
 			if oldValue != DEFAULT_SYSTEM_ACCOUNT || newValue != _EMPTY_ {
 				return nil, fmt.Errorf("config reload not supported for %s: old=%v, new=%v",
