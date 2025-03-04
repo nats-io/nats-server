@@ -18,8 +18,11 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
+	"runtime/debug"
 
+	"github.com/KimMachineGun/automemlimit/memlimit"
 	"github.com/nats-io/nats-server/v2/server"
 	"go.uber.org/automaxprocs/maxprocs"
 )
@@ -135,6 +138,11 @@ func main() {
 	} else {
 		defer undo()
 	}
+
+	// If GOMEMLIMIT is not set, adjust GOMEMLIMIT if running under linux/cgroups quotas.
+	memlimit.SetGoMemLimitWithOpts(memlimit.WithRatio(0.8), memlimit.WithLogger(slog.Default()))
+	currentMemLimit := debug.SetMemoryLimit(-1)
+	s.Noticef("Effective GOMEMLIMIT: %d bytes", currentMemLimit)
 
 	s.WaitForShutdown()
 }
