@@ -207,6 +207,43 @@ func (q *ipQueue[T]) popOne() (T, bool) {
 	return e, true
 }
 
+// Returns the last element from the queue, if any. See comment above
+// regarding calling after being notified that there is something and
+// the use of drain(). In short, the caller should always check the
+// boolean return value to ensure that the value is genuine and not a
+// default empty value.
+func (q *ipQueue[T]) popOneLast() (T, bool) {
+	q.Lock()
+	l := len(q.elts) - q.pos
+	if l == 0 {
+		q.Unlock()
+		var empty T
+		return empty, false
+	}
+	e := q.elts[len(q.elts)-1]
+	q.elts = q.elts[:len(q.elts)-1]
+	if l--; l > 0 {
+		if q.calc != nil {
+			q.sz -= q.calc(e)
+		}
+		// We need to re-signal
+		select {
+		case q.ch <- struct{}{}:
+		default:
+		}
+	} else {
+		// We have just emptied the queue, so we can reuse unless it is too big.
+		if cap(q.elts) <= q.mrs {
+			q.elts = q.elts[:0]
+		} else {
+			q.elts = nil
+		}
+		q.pos, q.sz = 0, 0
+	}
+	q.Unlock()
+	return e, true
+}
+
 // After a pop(), the slice can be recycled for the next push() when
 // a first element is added to the queue.
 // This will also decrement the "in progress" count with the length

@@ -250,6 +250,99 @@ func TestIPQueuePopOne(t *testing.T) {
 	q.recycle(&values)
 }
 
+func TestIPQueuePopOneLast(t *testing.T) {
+	s := &Server{}
+	q := newIPQueue[int](s, "test")
+	q.push(1)
+	<-q.ch
+	e, ok := q.popOneLast()
+	if !ok {
+		t.Fatal("Got nil")
+	}
+	if i := e; i != 1 {
+		t.Fatalf("Expected 1, got %v", i)
+	}
+	if l := q.len(); l != 0 {
+		t.Fatalf("Expected len to be 0, got %v", l)
+	}
+	// That does not affect the number of notProcessed
+	if n := q.inProgress(); n != 0 {
+		t.Fatalf("Expected count to be 0, got %v", n)
+	}
+	select {
+	case <-q.ch:
+		t.Fatalf("Should not have been notified of addition")
+	default:
+		// OK
+	}
+	q.push(2)
+	q.push(3)
+	e, ok = q.popOneLast()
+	if !ok {
+		t.Fatal("Got nil")
+	}
+	if i := e; i != 3 {
+		t.Fatalf("Expected 3, got %v", i)
+	}
+	if l := q.len(); l != 1 {
+		t.Fatalf("Expected len to be 1, got %v", l)
+	}
+	select {
+	case <-q.ch:
+		// OK
+	default:
+		t.Fatalf("Should have been notified that there is more")
+	}
+	e, ok = q.popOneLast()
+	if !ok {
+		t.Fatal("Got nil")
+	}
+	if i := e; i != 2 {
+		t.Fatalf("Expected 2, got %v", i)
+	}
+	if l := q.len(); l != 0 {
+		t.Fatalf("Expected len to be 0, got %v", l)
+	}
+	select {
+	case <-q.ch:
+		t.Fatalf("Should not have been notified that there is more")
+	default:
+		// OK
+	}
+	// Calling it again now that we know there is nothing, we
+	// should get nil.
+	if e, ok = q.popOneLast(); ok {
+		t.Fatalf("Expected nil, got %v", e)
+	}
+
+	q = newIPQueue[int](s, "test2")
+	q.push(1)
+	q.push(2)
+	// Capture current capacity
+	q.Lock()
+	c := cap(q.elts)
+	q.Unlock()
+	e, ok = q.popOneLast()
+	if !ok || e != 2 {
+		t.Fatalf("Invalid value: %v", e)
+	}
+	if l := q.len(); l != 1 {
+		t.Fatalf("Expected len to be 1, got %v", l)
+	}
+	values := q.pop()
+	if len(values) != 1 || values[0] != 1 {
+		t.Fatalf("Unexpected values: %v", values)
+	}
+	if cap(values) != c {
+		t.Fatalf("Unexpected capacity: %v vs %v", cap(values), c)
+	}
+	if l := q.len(); l != 0 {
+		t.Fatalf("Expected len to be 0, got %v", l)
+	}
+	// Just make sure that this is ok...
+	q.recycle(&values)
+}
+
 func TestIPQueueMultiProducers(t *testing.T) {
 	s := &Server{}
 	q := newIPQueue[int](s, "test")
@@ -382,7 +475,7 @@ func TestIPQueueDrain(t *testing.T) {
 	}
 }
 
-func TestIPQueueSizeCalculation(t *testing.T) {
+func TestIPQueueSizeCalculationPopOne(t *testing.T) {
 	type testType = [16]byte
 	var testValue testType
 
@@ -393,13 +486,44 @@ func TestIPQueueSizeCalculation(t *testing.T) {
 	q := newIPQueue[testType](s, "test", calc)
 
 	for i := 0; i < 10; i++ {
+		testValue[0] = byte(i)
 		q.push(testValue)
 		require_Equal(t, q.len(), i+1)
 		require_Equal(t, q.size(), uint64(i+1)*uint64(len(testValue)))
 	}
 
 	for i := 10; i > 5; i-- {
-		q.popOne()
+		v, _ := q.popOne()
+		require_Equal(t, 10-v[0], byte(i))
+		require_Equal(t, q.len(), i-1)
+		require_Equal(t, q.size(), uint64(i-1)*uint64(len(testValue)))
+	}
+
+	q.pop()
+	require_Equal(t, q.len(), 0)
+	require_Equal(t, q.size(), 0)
+}
+
+func TestIPQueueSizeCalculationPopOneLast(t *testing.T) {
+	type testType = [16]byte
+	var testValue testType
+
+	calc := ipqSizeCalculation[testType](func(e testType) uint64 {
+		return uint64(len(e))
+	})
+	s := &Server{}
+	q := newIPQueue[testType](s, "test", calc)
+
+	for i := 0; i < 10; i++ {
+		testValue[0] = byte(i)
+		q.push(testValue)
+		require_Equal(t, q.len(), i+1)
+		require_Equal(t, q.size(), uint64(i+1)*uint64(len(testValue)))
+	}
+
+	for i := 10; i > 5; i-- {
+		v, _ := q.popOneLast()
+		require_Equal(t, v[0]+1, byte(i))
 		require_Equal(t, q.len(), i-1)
 		require_Equal(t, q.size(), uint64(i-1)*uint64(len(testValue)))
 	}
