@@ -2412,7 +2412,7 @@ func (s *Server) gatewayUpdateSubInterest(accName string, sub *subscription, cha
 		if change < 0 {
 			return
 		}
-		entry = &sitally{n: 1, q: sub.queue != nil}
+		entry = &sitally{n: change, q: sub.queue != nil}
 		st[string(key)] = entry
 		first = true
 	} else {
