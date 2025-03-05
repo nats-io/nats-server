@@ -260,5 +260,5 @@ enum PriorityPolicy {
 
 message Pending {
   uint64 sequence = 1;
-  google.protobuf.Timestamp timestamp = 2;
+  int64 timestamp = 2;
 }

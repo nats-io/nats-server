@@ -1668,20 +1668,330 @@ func (js *jetStream) metaSnapshotPB() ([]byte, error) {
 }
 
 func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecovering bool) error {
-	var wsas []writeableStreamAssignment
+
+	pbStreams := &natsserverpb.StreamMetadata{}
+
 	if len(buf) > 0 {
 		jse, err := s2.Decode(nil, buf)
 		if err != nil {
 			return err
 		}
-		if err = json.Unmarshal(jse, &wsas); err != nil {
+
+		if err := pbStreams.UnmarshalVT(jse); err != nil {
 			return err
+		}
+
+		// if err = json.Unmarshal(jse, &wsas); err != nil {
+		// 	return err
+		// }
+	}
+
+	pbClientInfo := func(c *natsserverpb.ClientInfo) *ClientInfo {
+		if c == nil {
+			return nil
+		}
+
+		ci := &ClientInfo{
+			Host:       c.Host,
+			ID:         c.Id,
+			Account:    c.Account,
+			Service:    c.Service,
+			User:       c.User,
+			Name:       c.Name,
+			Lang:       c.Lang,
+			Version:    c.Version,
+			RTT:        c.Rtt.AsDuration(),
+			Server:     c.Server,
+			Cluster:    c.Cluster,
+			Alternates: c.Alternatiives,
+			Jwt:        c.Jwt,
+			IssuerKey:  c.IssuerKey,
+			NameTag:    c.NameTag,
+			Tags:       c.Tags,
+			Kind:       c.Kind,
+			ClientType: c.ClientType,
+			MQTTClient: c.MqttClient,
+			Nonce:      c.Nonce,
+		}
+
+		if c.Start != nil {
+			t := c.Start.AsTime()
+			ci.Start = &t
+		}
+
+		if c.Stop != nil {
+			t := c.Stop.AsTime()
+			ci.Stop = &t
+		}
+
+		return ci
+	}
+
+	pbSequencePair := func(sp *natsserverpb.SequencePair) SequencePair {
+		return SequencePair{
+			Consumer: sp.GetConsumer(),
+			Stream:   sp.GetStream(),
+		}
+	}
+
+	pbPending := func(pm map[uint64]*natsserverpb.Pending) map[uint64]*Pending {
+		if pm == nil {
+			return nil
+		}
+		pending := make(map[uint64]*Pending)
+		for k, v := range pm {
+			pending[k] = &Pending{
+				Sequence:  v.Sequence,
+				Timestamp: v.Timestamp,
+			}
+		}
+		return pending
+	}
+
+	pbConsumerState := func(cs *natsserverpb.ConsumerState) *ConsumerState {
+		if cs == nil {
+			return nil
+		}
+
+		return &ConsumerState{
+			Delivered:   pbSequencePair(cs.Delivered),
+			AckFloor:    pbSequencePair(cs.AckFloor),
+			Pending:     pbPending(cs.Pending),
+			Redelivered: cs.Redelivered,
+		}
+	}
+
+	pbRaftGroup := func(rg *natsserverpb.RaftGroup) *raftGroup {
+		if rg == nil {
+			return nil
+		}
+		return &raftGroup{
+			Name:      rg.Name,
+			Peers:     rg.Peers,
+			Storage:   StorageType(rg.Storage),
+			Cluster:   rg.Cluster,
+			Preferred: rg.Preferred,
+		}
+	}
+
+	pbDurations := func(arr ...*durationpb.Duration) []time.Duration {
+		res := make([]time.Duration, len(arr))
+		for i, d := range arr {
+			if d == nil {
+				continue
+			}
+			res[i] = d.AsDuration()
+		}
+		return res
+	}
+
+	pbConsumerConfig := func(cc *natsserverpb.ConsumerConfig) *ConsumerConfig {
+		if cc == nil {
+			return nil
+		}
+
+		x := &ConsumerConfig{
+			Durable:            cc.Durable,
+			Name:               cc.Name,
+			Description:        cc.Description,
+			DeliverPolicy:      DeliverPolicy(cc.DeliverPolicy),
+			OptStartSeq:        cc.OptStartSeq,
+			AckPolicy:          AckPolicy(cc.AckPolicy),
+			AckWait:            cc.AckWait.AsDuration(),
+			MaxDeliver:         int(cc.MaxDeliver),
+			BackOff:            pbDurations(cc.Backoff...),
+			FilterSubject:      cc.FilterSubject,
+			FilterSubjects:     cc.FilterSubjects,
+			ReplayPolicy:       ReplayPolicy(cc.ReplayPolicy),
+			RateLimit:          cc.RateLimit,
+			SampleFrequency:    cc.SampleFrequency,
+			MaxWaiting:         int(cc.MaxWaiting),
+			MaxAckPending:      int(cc.MaxAckPending),
+			FlowControl:        cc.FlowControl,
+			HeadersOnly:        cc.HeadersOnly,
+			MaxRequestBatch:    int(cc.MaxRequestBatch),
+			MaxRequestExpires:  cc.MaxRequestExpires.AsDuration(),
+			MaxRequestMaxBytes: int(cc.MaxRequestMaxBytes),
+			DeliverSubject:     cc.DeliverSubject,
+			DeliverGroup:       cc.DeliverGroup,
+			Heartbeat:          cc.Heartbeat.AsDuration(),
+			InactiveThreshold:  cc.InactiveThreshold.AsDuration(),
+			Replicas:           int(cc.Replicas),
+			MemoryStorage:      cc.MemoryStorage,
+			Direct:             cc.Direct,
+			Metadata:           cc.Metadata,
+			PriorityGroups:     cc.PriorityGroups,
+			PriorityPolicy:     PriorityPolicy(cc.PriorityPolicy),
+			PinnedTTL:          cc.PinnedTtl.AsDuration(),
+		}
+
+		if cc.OptStartTime != nil {
+			t := cc.OptStartTime.AsTime()
+			x.OptStartTime = &t
+		}
+
+		if cc.PauseUntil != nil {
+			t := cc.PauseUntil.AsTime()
+			x.PauseUntil = &t
+		}
+
+		return x
+	}
+
+	pbConsumerAssignment := func(ca *natsserverpb.ConsumerAssignment) *consumerAssignment {
+		if ca == nil {
+			return nil
+		}
+
+		return &consumerAssignment{
+			Client:  pbClientInfo(ca.ClientInfo),
+			Created: ca.Created.AsTime(),
+			Name:    ca.Name,
+			Stream:  ca.Stream,
+			Config:  pbConsumerConfig(ca.Config),
+			Group:   pbRaftGroup(ca.Group),
+			Subject: ca.Subject,
+			Reply:   ca.Reply,
+			State:   pbConsumerState(ca.State),
+		}
+	}
+
+	pbPlacement := func(p *natsserverpb.Placement) *Placement {
+		if p == nil {
+			return nil
+		}
+		return &Placement{
+			Cluster:   p.Cluster,
+			Tags:      p.Tags,
+			Preferred: p.Preferred,
+		}
+	}
+
+	pbSubjectTransforms := func(stArr ...*natsserverpb.SubjectTransformConfig) []SubjectTransformConfig {
+		res := make([]SubjectTransformConfig, len(stArr))
+		for i, st := range stArr {
+			if st == nil {
+				continue
+			}
+			res[i] = SubjectTransformConfig{
+				Source:      st.Source,
+				Destination: st.Destination,
+			}
+		}
+		return res
+	}
+
+	pbExternal := func(e *natsserverpb.ExternalStream) *ExternalStream {
+		if e == nil {
+			return nil
+		}
+
+		return &ExternalStream{
+			ApiPrefix:     e.ApiPrefix,
+			DeliverPrefix: e.DeliverPrefix,
+		}
+	}
+
+	pbStreamSources := func(ssArr ...*natsserverpb.StreamSource) []*StreamSource {
+		res := make([]*StreamSource, len(ssArr))
+		for i, ss := range ssArr {
+			if ss == nil {
+				continue
+			}
+			x := &StreamSource{
+				Name:              ss.Name,
+				OptStartSeq:       ss.OptStartSeq,
+				FilterSubject:     ss.FilterSubject,
+				SubjectTransforms: pbSubjectTransforms(ss.SubjectTransforms...),
+				External:          pbExternal(ss.External),
+			}
+			if ss.OptStartTime != nil {
+				t := ss.OptStartTime.AsTime()
+				x.OptStartTime = &t
+			}
+			res[i] = x
+		}
+		return res
+	}
+
+	pbRepublish := func(r *natsserverpb.RePublish) *RePublish {
+		if r == nil {
+			return nil
+		}
+		return &RePublish{
+			Source:      r.Source,
+			Destination: r.Destination,
+			HeadersOnly: r.HeadersOnly,
+		}
+	}
+
+	pbConsumerLimits := func(l *natsserverpb.StreamConsumerLimits) *StreamConsumerLimits {
+		if l == nil {
+			return nil
+		}
+		return &StreamConsumerLimits{
+			InactiveThreshold: l.InactiveThreshold.AsDuration(),
+			MaxAckPending:     int(l.MaxAckPending),
+		}
+	}
+
+	pbStreamConfig := func(sc *natsserverpb.StreamConfig) *StreamConfig {
+		if sc == nil {
+			return nil
+		}
+		return &StreamConfig{
+			Name:                   sc.Name,
+			Description:            sc.Description,
+			Subjects:               sc.Subjects,
+			Retention:              RetentionPolicy(sc.Retention),
+			MaxConsumers:           int(sc.MaxConsumers),
+			MaxMsgs:                sc.MaxMsgs,
+			MaxBytes:               sc.MaxBytes,
+			MaxAge:                 sc.MaxAge.AsDuration(),
+			MaxMsgsPer:             sc.MaxMsgsPer,
+			MaxMsgSize:             sc.MaxMsgSize,
+			Discard:                DiscardPolicy(sc.Discard),
+			Storage:                StorageType(sc.Storage),
+			Replicas:               int(sc.Replicas),
+			NoAck:                  sc.NoAck,
+			Template:               sc.Template,
+			Duplicates:             sc.Duplicates.AsDuration(),
+			Placement:              pbPlacement(sc.Placement),
+			Mirror:                 pbStreamSources(sc.Mirror)[0],
+			Sources:                pbStreamSources(sc.Sources...),
+			Compression:            StoreCompression(sc.Compression),
+			FirstSeq:               sc.FirstSeq,
+			SubjectTransform:       &pbSubjectTransforms(sc.SubjectTransform)[0],
+			RePublish:              pbRepublish(sc.RePublish),
+			AllowDirect:            sc.AllowDirect,
+			MirrorDirect:           sc.MirrorDirect,
+			DiscardNewPer:          sc.DiscardNewPer,
+			Sealed:                 sc.Sealed,
+			DenyDelete:             sc.DenyDelete,
+			DenyPurge:              sc.DenyPurge,
+			AllowRollup:            sc.AllowRollup,
+			ConsumerLimits:         *pbConsumerLimits(sc.ConsumerLimits),
+			AllowMsgTTL:            sc.AllowMsgTtl,
+			SubjectDeleteMarkerTTL: sc.SujectDeleteMarkerTtl.AsDuration(),
+			Metadata:               sc.Metadata,
 		}
 	}
 
 	// Build our new version here outside of js.
 	streams := make(map[string]map[string]*streamAssignment)
-	for _, wsa := range wsas {
+	for _, wsaPB := range pbStreams.StreamAssignments {
+		wsa := &writeableStreamAssignment{
+			Client:  pbClientInfo(wsaPB.Client),
+			Created: wsaPB.Created.AsTime(),
+			Config:  pbStreamConfig(wsaPB.Config),
+			Group:   pbRaftGroup(wsaPB.Group),
+			Sync:    wsaPB.Sync,
+		}
+		for _, caPB := range wsaPB.Consumers {
+			ca := pbConsumerAssignment(caPB)
+			wsa.Consumers = append(wsa.Consumers, ca)
+		}
+
 		fixCfgMirrorWithDedupWindow(wsa.Config)
 		as := streams[wsa.Client.serviceAccount()]
 		if as == nil {
