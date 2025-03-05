@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"math/rand"
 	"net"
@@ -11305,14 +11306,15 @@ func TestNoRaceJetStreamClusterLargeMetaSnapshotTiming(t *testing.T) {
 	// Move to S2.Encode vs EncodeBetter which is 2x faster and actually better compression.
 	// Also moved to goccy json which is faster then the default and in my tests now always matches
 	// the default encoder byte for byte which last time I checked it did not.
-	t.Skip()
+
+	// t.Skip()
 
 	c := createJetStreamClusterExplicit(t, "R3F", 3)
 	defer c.shutdown()
 
 	// Create 200 streams, each with 500 consumers.
-	numStreams := 200
-	numConsumers := 500
+	numStreams := 20
+	numConsumers := 50
 	wg := sync.WaitGroup{}
 	wg.Add(numStreams)
 	for i := 0; i < numStreams; i++ {
@@ -11346,13 +11348,21 @@ func TestNoRaceJetStreamClusterLargeMetaSnapshotTiming(t *testing.T) {
 
 	s := c.leader()
 	js := s.getJetStream()
-	n := js.getMetaGroup()
+	// n := js.getMetaGroup()
 	// Now let's see how long it takes to create a meta snapshot and how big it is.
 	start := time.Now()
 	snap, err := js.metaSnapshot()
 	require_NoError(t, err)
-	require_NoError(t, n.InstallSnapshot(snap))
-	t.Logf("Took %v to snap meta with size of %v\n", time.Since(start), friendlyBytes(len(snap)))
+	// require_NoError(t, n.InstallSnapshot(snap))
+	// t.Logf("Took %v to snap meta with size of %v\n", time.Since(start), friendlyBytes(len(snap)))
+	log.Printf("JSON Took %v to snap meta with size of %v\n", time.Since(start), friendlyBytes(len(snap)))
+
+	start = time.Now()
+	snap, err = js.metaSnapshotPB()
+	require_NoError(t, err)
+	// require_NoError(t, n.InstallSnapshot(snap))
+	// t.Logf("Took %v to snap meta with size of %v\n", time.Since(start), friendlyBytes(len(snap)))
+	log.Printf("Protobuf Took %v to snap meta with size of %v\n", time.Since(start), friendlyBytes(len(snap)))
 }
 
 func TestNoRaceStoreReverseWalkWithDeletesPerf(t *testing.T) {

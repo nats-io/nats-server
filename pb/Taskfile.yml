@@ -1,0 +1,25 @@
+# https://taskfile.dev
+
+version: '3'
+
+interval: 200ms
+
+tasks:
+  tools:
+    cmds:
+      - go install github.com/bufbuild/buf/cmd/buf@latest
+  pb:
+    sources:
+      - "**/*.proto"
+      - "**/*.yaml"
+    generates:
+      - "gen/**/*"
+    cmds:
+      - buf dep update
+      - rm -rf gen
+      - buf generate
+      - goimports -l -w .
+
+  default:
+    cmds:
+      - task: pb

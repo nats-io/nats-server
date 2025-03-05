@@ -1,0 +1,50 @@
+version: v1
+
+managed:
+  enabled: true
+
+plugins:
+  - plugin: buf.build/protocolbuffers/go
+    out: ./gen
+    opt:
+      - paths=source_relative
+
+  - plugin: buf.build/community/mitchellh-go-json
+    out: ./gen
+    opt:
+      - paths=source_relative
+      - emit_defaults=true
+
+  # - plugin: buf.build/community/chrusty-jsonschema:v1.4.1
+  #   out: ./gen
+  #   opt:
+  #     - paths=source_relative
+  #     - json_fieldnames
+  #     - disallow_additional_properties
+  #     - enforce_oneof
+  #     - file_extension=jsonschema
+
+  # - plugin: buf.build/bufbuild/connect-go:v1.10.0
+  #   out: ./gen
+  #   opt:
+  #     - paths=source_relative
+
+  - plugin: buf.build/community/planetscale-vtprotobuf:v0.5.0
+    out: ./gen
+    opt:
+      - paths=source_relative
+
+  - plugin: natsrpc
+    out: ./gen
+    opt:
+      - paths=source_relative
+
+  #- plugin: buf.build/connectrpc/es:v1.1.4
+  #  out: ../example/src/api
+  #  opt:
+  #    - target=ts
+  #
+  #- plugin: buf.build/bufbuild/es
+  #  out: ../example/src/api
+  #  opt:
+  #    - target=ts

@@ -1,0 +1,264 @@
+syntax = "proto3";
+
+package natsserver.v1;
+
+option go_package = "github.com/synadia-labs/natsql/pb/gen/natsql/v1;natsserverpb";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+
+message StreamMetadata { repeated WriteableStreamAssignment stream_assignments = 1; }
+
+message WriteableStreamAssignment {
+  ClientInfo client = 1;
+  google.protobuf.Timestamp created = 2;
+  StreamConfig config = 3;
+  RaftGroup group = 4;
+  string sync = 5;
+  repeated ConsumerAssignment consumers = 6;
+}
+
+message ConsumerAssignment {
+  ClientInfo client_info = 1;
+  google.protobuf.Timestamp created = 2;
+  string name = 3;
+  string stream = 4;
+  ConsumerConfig config = 5;
+  RaftGroup group = 6;
+  string subject = 7;
+  string reply = 8;
+  ConsumerState state = 9;
+}
+
+enum AckPolicy {
+  AckNone = 0;
+  AckAll = 1;
+  AckExplicit = 2;
+}
+
+enum ReplayPolicy {
+  ReplayInstant = 0;
+  ReplayOriginal = 1;
+}
+
+message ConsumerConfig {
+  string durable = 1;
+  string name = 2;
+  string description = 3;
+  DeliverPolicy deliver_policy = 4;
+  uint64 opt_start_seq = 5;
+  google.protobuf.Timestamp opt_start_time = 6;
+  AckPolicy ack_policy = 7;
+  google.protobuf.Duration ack_wait = 8;
+  uint32 max_deliver = 9;
+  repeated google.protobuf.Duration backoff = 10;
+  string filter_subject = 11;
+  repeated string filter_subjects = 12;
+  ReplayPolicy replay_policy = 13;
+  uint64 rate_limit = 14;
+  string sample_frequency = 15;
+  uint32 max_waiting = 16;
+  uint32 max_ack_pending = 17;
+  bool flow_control = 18;
+  bool headers_only = 19;
+
+  uint32 max_request_batch = 20;
+  google.protobuf.Duration max_request_expires = 21;
+  uint32 max_request_max_bytes = 22;
+
+  string deliver_subject = 23;
+  string deliver_group = 24;
+  google.protobuf.Duration heartbeat = 25;
+
+  google.protobuf.Duration inactive_threshold = 26;
+  uint32 replicas = 27;
+  bool memory_storage = 28;
+  bool direct = 29;
+  map<string, string> metadata = 30;
+  google.protobuf.Timestamp pause_until = 31;
+
+  repeated string priority_groups = 32;
+  PriorityPolicy priority_policy = 33;
+  google.protobuf.Duration pinned_ttl = 34;
+}
+
+enum DeliverPolicy {
+  DeliverAll = 0;
+  DeliverLast = 1;
+  DeliverNew = 2;
+  DeliverByStartSequence = 3;
+  DeliverByStartTime = 4;
+  DeliverLastPerSubject = 5;
+}
+
+message SequencePair {
+  uint64 consumer = 1;
+  uint64 stream = 2;
+}
+
+message ConsumerState {
+  SequencePair delivered = 1;
+  SequencePair ack_floor = 2;
+  map<uint64, Pending> pending = 3;
+  map<uint64, uint64> redelivered = 4;
+}
+
+message ClientInfo {
+  google.protobuf.Timestamp start = 1;
+  string host = 2;
+  uint64 id = 3;
+  string account = 4;
+  string service = 5;
+  string user = 6;
+  string name = 7;
+  string lang = 8;
+  string version = 9;
+  google.protobuf.Duration rtt = 10;
+  string server = 11;
+  string cluster = 12;
+  repeated string alternatiives = 13;
+  google.protobuf.Timestamp stop = 14;
+  string jwt = 15;
+  string issuer_key = 16;
+  string name_tag = 17;
+  repeated string tags = 18;
+  string kind = 19;
+  string client_type = 20;
+  string mqtt_client = 21;
+  string nonce = 22;
+}
+
+message StreamConfig {
+  string name = 1;
+  string description = 2;
+  repeated string subjects = 3;
+  RetentionPolicy retention = 4;
+  uint32 max_consumers = 5;
+  int64 max_msgs = 6;
+  int64 max_bytes = 7;
+  google.protobuf.Duration max_age = 8;
+  int64 max_msgs_per = 9;
+  int32 max_msg_size = 10;
+  DiscardPolicy discard = 11;
+  StorageType storage = 12;
+  uint32 replicas = 13;
+  bool no_ack = 14;
+  string template = 15;
+  google.protobuf.Duration duplicates = 16;
+  Placement placement = 17;
+  StreamSource mirror = 18;
+  repeated StreamSource sources = 19;
+  StoreCompression compression = 20;
+  uint64 first_seq = 21;
+  SubjectTransformConfig subject_transform = 22;
+  RePublish re_publish = 23;
+  bool allow_direct = 24;
+  bool mirror_direct = 25;
+  bool discard_new_per = 26;
+  bool sealed = 27;
+  bool deny_delete = 28;
+  bool deny_purge = 29;
+  bool allow_rollup = 30;
+  StreamConsumerLimits consumer_limits = 31;
+  bool allow_msg_ttl = 32;
+  google.protobuf.Duration suject_delete_marker_ttl = 33;
+  map<string, string> metadata = 34;
+}
+
+message RaftGroup {
+  string name = 1;
+  repeated string peers = 2;
+  StorageType storage = 3;
+  string cluster = 4;
+  string preferred = 5;
+}
+
+message StreamState {
+  uint64 msgs = 1;
+  uint64 bytes = 2;
+  uint64 first_seq = 3;
+  google.protobuf.Timestamp first_time = 4;
+  uint64 last_seq = 5;
+  google.protobuf.Timestamp last_time = 6;
+  uint32 num_subjects = 7;
+  map<string, uint64> subjects = 8;
+  uint64 num_deleted = 9;
+  repeated uint64 deleted = 10;
+  LostStreamData lost = 11;
+  uint32 consumers = 12;
+}
+
+message LostStreamData {
+  repeated uint64 msgs = 1;
+  uint64 bytes = 2;
+}
+
+enum RetentionPolicy {
+  RetentionPolicyLimits = 0;
+  RetentionPolicyInterest = 1;
+  RetentionPolicyWorkQueue = 2;
+}
+
+enum DiscardPolicy {
+  DiscardOld = 0;
+  DiscardNew = 1;
+}
+
+enum StorageType {
+  StorageTypeUnknown = 0;
+  StorageTypeFile = 22;
+  StorageTypeMemory = 33;
+  StorageTypeMemoryOnly = 44;
+}
+
+message Placement {
+  string cluster = 1;
+  repeated string tags = 2;
+  string preferred = 3;
+}
+
+message StreamSource {
+  string name = 1;
+  uint64 opt_start_seq = 2;
+  google.protobuf.Timestamp opt_start_time = 3;
+  string filter_subject = 4;
+  repeated SubjectTransformConfig subject_transforms = 5;
+  ExternalStream external = 6;
+}
+
+enum StoreCompression {
+  None = 0;
+  S2 = 1;
+}
+
+message SubjectTransformConfig {
+  string source = 1;
+  string destination = 2;
+}
+
+message RePublish {
+  string source = 1;
+  string destination = 2;
+  bool headers_only = 3;
+}
+
+message StreamConsumerLimits {
+  google.protobuf.Duration inactive_threshold = 1;
+  uint32 max_ack_pending = 2;
+}
+
+message ExternalStream {
+  string api_prefix = 1;
+  string deliver_prefix = 2;
+}
+
+enum PriorityPolicy {
+  PriorityNone = 0;
+  PriorityOvewflow = 1;
+  PriorityPinnedClient = 2;
+}
+
+message Pending {
+  uint64 sequence = 1;
+  google.protobuf.Timestamp timestamp = 2;
+}

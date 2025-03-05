@@ -34,7 +34,10 @@ import (
 
 	"github.com/klauspost/compress/s2"
 	"github.com/minio/highwayhash"
+	natsserverpb "github.com/nats-io/nats-server/v2/pb/gen/natsserver/v1"
 	"github.com/nats-io/nuid"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // jetStreamCluster holds information about the meta group and stream assignments.
@@ -1453,7 +1456,212 @@ func (js *jetStream) metaSnapshot() ([]byte, error) {
 	cend := time.Since(cstart)
 
 	if took := time.Since(start); took > time.Second {
-		s.rateLimitFormatWarnf("Metalayer snapshot took %.3fs (streams: %d, consumers: %d, marshal: %.3fs, s2: %.3fs, uncompressed: %d, compressed: %d)",
+		s.rateLimitFormatWarnf("JSON Metalayer snapshot took %.3fs (streams: %d, consumers: %d, marshal: %.3fs, s2: %.3fs, uncompressed: %d, compressed: %d)",
+			took.Seconds(), nsa, nca, mend.Seconds(), cend.Seconds(), len(b), len(snap))
+	}
+	return snap, nil
+}
+
+func (js *jetStream) metaSnapshotPB() ([]byte, error) {
+	start := time.Now()
+	js.mu.RLock()
+	s := js.srv
+	cc := js.cluster
+	nsa := 0
+	nca := 0
+	for _, asa := range cc.streams {
+		nsa += len(asa)
+	}
+
+	streams := &natsserverpb.StreamMetadata{
+		StreamAssignments: make([]*natsserverpb.WriteableStreamAssignment, 0, nsa),
+	}
+
+	streamCfgToPB := func(cfg *StreamConfig) *natsserverpb.StreamConfig {
+		if cfg == nil {
+			return nil
+		}
+
+		placementToPB := func(p *Placement) *natsserverpb.Placement {
+			if p == nil {
+				return nil
+			}
+			return &natsserverpb.Placement{
+				Cluster:   p.Cluster,
+				Tags:      p.Tags,
+				Preferred: p.Preferred,
+			}
+		}
+
+		subjectTransformToPB := func(stArr ...SubjectTransformConfig) []*natsserverpb.SubjectTransformConfig {
+			res := make([]*natsserverpb.SubjectTransformConfig, len(stArr))
+			for i, st := range stArr {
+				res[i] = &natsserverpb.SubjectTransformConfig{
+					Source:      st.Source,
+					Destination: st.Destination,
+				}
+			}
+
+			return res
+		}
+
+		externalToPB := func(e *ExternalStream) *natsserverpb.ExternalStream {
+			if e == nil {
+				return nil
+			}
+			return &natsserverpb.ExternalStream{
+				ApiPrefix:     e.ApiPrefix,
+				DeliverPrefix: e.DeliverPrefix,
+			}
+		}
+
+		streamSourcesToPB := func(ssArr ...*StreamSource) []*natsserverpb.StreamSource {
+			res := make([]*natsserverpb.StreamSource, len(ssArr))
+			for i, ss := range ssArr {
+				if ss == nil {
+					continue
+				}
+
+				res[i] = &natsserverpb.StreamSource{
+					Name:              ss.Name,
+					OptStartSeq:       ss.OptStartSeq,
+					OptStartTime:      timestamppb.New(*ss.OptStartTime),
+					FilterSubject:     ss.FilterSubject,
+					SubjectTransforms: subjectTransformToPB(ss.SubjectTransforms...),
+					External:          externalToPB(ss.External),
+				}
+			}
+			return res
+		}
+
+		republishToPB := func(r *RePublish) *natsserverpb.RePublish {
+			if r == nil {
+				return nil
+			}
+
+			return &natsserverpb.RePublish{
+				Source:      r.Source,
+				Destination: r.Destination,
+				HeadersOnly: r.HeadersOnly,
+			}
+		}
+
+		consumerLimitsToPB := func(l *StreamConsumerLimits) *natsserverpb.StreamConsumerLimits {
+			if l == nil {
+				return nil
+			}
+			return &natsserverpb.StreamConsumerLimits{
+				InactiveThreshold: durationpb.New(l.InactiveThreshold),
+				MaxAckPending:     uint32(l.MaxAckPending),
+			}
+		}
+
+		sc := &natsserverpb.StreamConfig{
+			Name:                  cfg.Name,
+			Description:           cfg.Description,
+			Subjects:              cfg.Subjects,
+			Retention:             natsserverpb.RetentionPolicy(cfg.Retention),
+			MaxConsumers:          uint32(cfg.MaxConsumers),
+			MaxMsgs:               cfg.MaxMsgs,
+			MaxBytes:              cfg.MaxBytes,
+			MaxAge:                durationpb.New(cfg.MaxAge),
+			MaxMsgsPer:            cfg.MaxMsgsPer,
+			MaxMsgSize:            cfg.MaxMsgSize,
+			Discard:               natsserverpb.DiscardPolicy(cfg.Discard),
+			Storage:               natsserverpb.StorageType(cfg.Storage),
+			Replicas:              uint32(cfg.Replicas),
+			NoAck:                 cfg.NoAck,
+			Template:              cfg.Template,
+			Duplicates:            durationpb.New(cfg.Duplicates),
+			Placement:             placementToPB(cfg.Placement),
+			Mirror:                streamSourcesToPB(cfg.Mirror)[0],
+			Sources:               streamSourcesToPB(cfg.Sources...),
+			Compression:           natsserverpb.StoreCompression(cfg.Compression),
+			FirstSeq:              cfg.FirstSeq,
+			RePublish:             republishToPB(cfg.RePublish),
+			AllowDirect:           cfg.AllowDirect,
+			MirrorDirect:          cfg.MirrorDirect,
+			DiscardNewPer:         cfg.DiscardNewPer,
+			Sealed:                cfg.Sealed,
+			DenyDelete:            cfg.DenyDelete,
+			DenyPurge:             cfg.DenyPurge,
+			AllowRollup:           cfg.AllowRollup,
+			ConsumerLimits:        consumerLimitsToPB(&cfg.ConsumerLimits),
+			AllowMsgTtl:           cfg.AllowMsgTTL,
+			SujectDeleteMarkerTtl: durationpb.New(cfg.SubjectDeleteMarkerTTL),
+			Metadata:              cfg.Metadata,
+		}
+
+		if cfg.SubjectTransform != nil {
+			sc.SubjectTransform = subjectTransformToPB(*cfg.SubjectTransform)[0]
+		}
+
+		return sc
+	}
+
+	raftGroupToPB := func(rg *raftGroup) *natsserverpb.RaftGroup {
+		if rg == nil {
+			return nil
+		}
+		return &natsserverpb.RaftGroup{
+			Name:      rg.Name,
+			Peers:     rg.Peers,
+			Storage:   natsserverpb.StorageType(rg.Storage),
+			Cluster:   rg.Cluster,
+			Preferred: rg.Preferred,
+		}
+	}
+
+	for _, asa := range cc.streams {
+		for _, sa := range asa {
+			wsa := &natsserverpb.WriteableStreamAssignment{
+				// Client:    sa.Client.forAssignmentSnapPB(),
+				Created:   timestamppb.New(sa.Created),
+				Config:    streamCfgToPB(sa.Config),
+				Group:     raftGroupToPB(sa.Group),
+				Sync:      sa.Sync,
+				Consumers: make([]*natsserverpb.ConsumerAssignment, 0, len(sa.consumers)),
+			}
+
+			for _, ca := range sa.consumers {
+				if ca.pending {
+					continue
+				}
+				cca := &natsserverpb.ConsumerAssignment{
+					Name:   ca.Name,
+					Stream: wsa.Config.Name,
+					// Client: ca.Client.forAssignmentSnapPB(),
+					// Subject: _EMPTY_,
+					// Reply:   _EMPTY_,
+				}
+				wsa.Consumers = append(wsa.Consumers, cca)
+				nca++
+			}
+			streams.StreamAssignments = append(streams.StreamAssignments, wsa)
+		}
+	}
+
+	// Track how long it took to marshal the JSON
+	mstart := time.Now()
+	// b, err := json.Marshal(streams)
+	b, err := streams.MarshalVT()
+	mend := time.Since(mstart)
+
+	js.mu.RUnlock()
+
+	// Must not be possible for a JSON marshaling error to result
+	// in an empty snapshot.
+	if err != nil {
+		return nil, err
+	}
+
+	// Track how long it took to compress the JSON
+	cstart := time.Now()
+	snap := s2.Encode(nil, b)
+	cend := time.Since(cstart)
+
+	if took := time.Since(start); took > time.Second {
+		s.rateLimitFormatWarnf("Protobuf Metalayer snapshot took %.3fs (streams: %d, consumers: %d, marshal: %.3fs, s2: %.3fs, uncompressed: %d, compressed: %d)",
 			took.Seconds(), nsa, nca, mend.Seconds(), cend.Seconds(), len(b), len(snap))
 	}
 	return snap, nil
