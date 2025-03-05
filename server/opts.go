@@ -453,6 +453,8 @@ type Options struct {
 
 	// configDigest represents the state of configuration.
 	configDigest string
+
+	// mutex debugging options
 }
 
 // WebsocketOpts are options for websocket

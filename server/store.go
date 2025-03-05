@@ -68,6 +68,8 @@ var (
 	ErrCorruptStreamState = errors.New("stream state snapshot is corrupt")
 	// ErrTooManyResults
 	ErrTooManyResults = errors.New("too many matching results for request")
+	// ErrNoLockHeld
+	ErrNoLockHeld = errors.New("expected lock was not held")
 )
 
 // StoreMsg is the stored message format for messages that are retained by the Store layer.
