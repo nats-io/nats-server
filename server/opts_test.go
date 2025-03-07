@@ -286,6 +286,8 @@ func TestMergeOverrides(t *testing.T) {
 		LameDuckDuration:      4 * time.Minute,
 		ConnectErrorReports:   86400,
 		ReconnectErrorReports: 5,
+		JetStream:             true,
+		StoreDir:              "/store/dir",
 		authBlockDefined:      true,
 	}
 	fopts, err := ProcessConfigFile("./configs/test.conf")
@@ -305,6 +307,8 @@ func TestMergeOverrides(t *testing.T) {
 			NoAdvertise:    true,
 			ConnectRetries: 2,
 		},
+		JetStream: true,
+		StoreDir:  "/store/dir",
 	}
 	merged := MergeOptions(fopts, opts)
 
