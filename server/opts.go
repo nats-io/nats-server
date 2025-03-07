@@ -5369,7 +5369,10 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 		mergeRoutes(&opts, flagOpts)
 	}
 	if flagOpts.JetStream {
-		fileOpts.JetStream = flagOpts.JetStream
+		opts.JetStream = flagOpts.JetStream
+	}
+	if flagOpts.StoreDir != _EMPTY_ {
+		opts.StoreDir = flagOpts.StoreDir
 	}
 	return &opts
 }
@@ -5834,6 +5837,8 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 			trackExplicitVal(&FlagSnapshot.inCmdLine, "Syslog", FlagSnapshot.Syslog)
 		case "no_advertise":
 			trackExplicitVal(&FlagSnapshot.inCmdLine, "Cluster.NoAdvertise", FlagSnapshot.Cluster.NoAdvertise)
+		case "js":
+			trackExplicitVal(&FlagSnapshot.inCmdLine, "JetStream", FlagSnapshot.JetStream)
 		}
 	})
 

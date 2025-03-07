@@ -3808,9 +3808,53 @@ func TestConfigReloadBoolFlags(t *testing.T) {
 			true,
 			func() bool { return opts.TraceVerbose },
 		},
+		// --js override
+		{
+			"jetstream_not_in_config_no_override",
+			"",
+			nil,
+			false,
+			func() bool { return opts.JetStream },
+		},
+		{
+			"jetstream_not_in_config_override_true",
+			"",
+			[]string{"--js"},
+			true,
+			func() bool { return opts.JetStream },
+		},
+		{
+			"jetstream_false_in_config_no_override",
+			"jetstream: false",
+			nil,
+			false,
+			func() bool { return opts.JetStream },
+		},
+		{
+			"jetstream_false_in_config_override_true",
+			"jetstream: false",
+			[]string{"--js"},
+			true,
+			func() bool { return opts.JetStream },
+		},
+		{
+			"jetstream_true_in_config_no_override",
+			"jetstream: true",
+			nil,
+			true,
+			func() bool { return opts.JetStream },
+		},
+		{
+			"jetstream_true_in_config_override_false",
+			"jetstream: true",
+			[]string{"--js=false"},
+			false,
+			func() bool { return opts.JetStream },
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			conf := createConfFile(t, []byte(fmt.Sprintf(template, logfile, test.content)))
+			content := fmt.Sprintf(template, logfile, test.content)
+			conf := createConfFile(t, []byte(content))
 
 			fs := flag.NewFlagSet("test", flag.ContinueOnError)
 			var args []string
@@ -3829,9 +3873,15 @@ func TestConfigReloadBoolFlags(t *testing.T) {
 			if test.val() != test.expected {
 				t.Fatalf("Expected to be set to %v, got %v", test.expected, test.val())
 			}
-			if err := s.Reload(); err != nil {
-				t.Fatalf("Error on reload: %v", err)
-			}
+			// Do a config reload with a modified config file so that s.Reload()
+			// actually does something (otherwise it would not because config
+			// digest would not have changed). We could alternatively change
+			// s.opts.configDigest to the empty string.
+			reloadUpdateConfig(t, s, conf, content+`
+				max_connections: 1000
+			`)
+			// Have `opts` now point to the new options after the Reload()
+			opts = s.getOpts()
 			if test.val() != test.expected {
 				t.Fatalf("Expected to be set to %v, got %v", test.expected, test.val())
 			}
