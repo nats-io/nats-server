@@ -221,3 +221,14 @@ func TestSubjectTransforms(t *testing.T) {
 	shouldMatch("*", "{{left(1,3)}}", "1234", "123")
 	shouldMatch("*", "{{left(1,6)}}", "1234", "1234")
 }
+
+func TestSubjectTransformDoesntPanicTransformingMissingToken(t *testing.T) {
+	defer func() {
+		p := recover()
+		require_True(t, p == nil)
+	}()
+
+	tr, err := NewSubjectTransform("foo.*", "one.two.{{wildcard(1)}}")
+	require_NoError(t, err)
+	require_Equal(t, tr.TransformTokenizedSubject([]string{"foo"}), "one.two.")
+}
