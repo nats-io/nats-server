@@ -2976,20 +2976,27 @@ func TestJetStreamClusterAPILimitAdvisory(t *testing.T) {
 	// pushing to and draining the queue, so make sure we've sent enough of them
 	// to reliably trigger a drain and advisory.
 	inbox := nc.NewRespInbox()
-	for i := 0; i < runtime.GOMAXPROCS(-1)*2; i++ {
+	total := 100
+	for range total {
 		require_NoError(t, nc.PublishMsg(&nats.Msg{
 			Subject: fmt.Sprintf(JSApiConsumerListT, "TEST"),
 			Reply:   inbox,
 		}))
 	}
 
-	// Wait for the advisory to come in.
-	msg, err := sub.NextMsg(time.Second * 5)
-	require_NoError(t, err)
-	var advisory JSAPILimitReachedAdvisory
-	require_NoError(t, json.Unmarshal(msg.Data, &advisory))
-	require_Equal(t, advisory.Domain, _EMPTY_) // No JetStream domain was set.
-	require_True(t, advisory.Dropped >= 1)     // We dropped at least something.
+	for range total {
+		// Wait for the advisory to come in.
+		msg, err := sub.NextMsg(time.Second * 5)
+		require_NoError(t, err)
+		var advisory JSAPILimitReachedAdvisory
+		require_NoError(t, json.Unmarshal(msg.Data, &advisory))
+		require_Equal(t, advisory.Domain, _EMPTY_) // No JetStream domain was set.
+		if advisory.Dropped >= 1 {
+			// We are done!
+			return
+		}
+	}
+	t.Fatal("Did not get any advisory with dropped > 0")
 }
 
 func TestJetStreamClusterPendingRequestsInJsz(t *testing.T) {
