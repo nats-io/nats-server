@@ -156,11 +156,14 @@ func testJetStreamClusterWorkQueueStreamDiscardNewDesync(t *testing.T, sc *nats.
 			case <-tick.C:
 				subject := fmt.Sprintf("messages.%d", i)
 				_, err := js.Publish(subject, payload, nats.RetryAttempts(0))
-				if err != nil {
-					errCh <- err
-				}
 				// Capture the messages that have failed.
 				if err != nil {
+					// Unless it was a timeout, we can't be sure if the message was received,
+					// and we just didn't get a response.
+					if errors.Is(err, nats.ErrTimeout) {
+						break
+					}
+					errCh <- err
 					shouldDrop[subject] = err
 				}
 			}
