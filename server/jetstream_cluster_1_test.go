@@ -6245,7 +6245,7 @@ func TestJetStreamClusterConsumerDeleteInterestPolicyMultipleConsumers(t *testin
 	})
 	require_NoError(t, err)
 
-	// Make trhe first sequence high. We already protect against it but for extra sanity.
+	// Make the first sequence high. We already protect against it but for extra sanity.
 	err = js.PurgeStream("TEST", &nats.StreamPurgeRequest{Sequence: 100_000_000})
 	require_NoError(t, err)
 
@@ -6271,9 +6271,20 @@ func TestJetStreamClusterConsumerDeleteInterestPolicyMultipleConsumers(t *testin
 		t.Fatalf("Did not receive completion signal")
 	}
 
-	si, err := js.StreamInfo("TEST")
-	require_NoError(t, err)
-	require_Equal(t, si.State.Msgs, 100)
+	expectedStreamMsgs := func(msgs uint64) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			si, err := js.StreamInfo("TEST")
+			if err != nil {
+				return err
+			}
+			if si.State.Msgs != msgs {
+				return fmt.Errorf("require uint64 equal, but got: %d != %d", si.State.Msgs, msgs)
+			}
+			return nil
+		})
+	}
+	expectedStreamMsgs(100)
 
 	sub, err := js.PullSubscribe("foo.bar", "C1")
 	require_NoError(t, err)
@@ -6281,17 +6292,14 @@ func TestJetStreamClusterConsumerDeleteInterestPolicyMultipleConsumers(t *testin
 	require_NoError(t, err)
 	require_Equal(t, len(msgs), 50)
 	for _, m := range msgs {
-		m.AckSync()
+		require_NoError(t, m.AckSync())
 	}
 
 	// Now delete second one and make sure accounting correct.
 	err = js.DeleteConsumer("TEST", "C2")
 	require_NoError(t, err)
-	time.Sleep(100 * time.Millisecond)
 
-	si, err = js.StreamInfo("TEST")
-	require_NoError(t, err)
-	require_Equal(t, si.State.Msgs, 50)
+	expectedStreamMsgs(50)
 }
 
 func TestJetStreamClusterConsumerAckNoneInterestPolicyShouldNotRetainAfterDelivery(t *testing.T) {
@@ -6365,7 +6373,7 @@ func TestJetStreamClusterConsumerDeleteAckNoneInterestPolicyWithOthers(t *testin
 	})
 	require_NoError(t, err)
 
-	// Make trhe first sequence high. We already protect against it but for extra sanity.
+	// Make the first sequence high. We already protect against it but for extra sanity.
 	err = js.PurgeStream("TEST", &nats.StreamPurgeRequest{Sequence: 100_000_000})
 	require_NoError(t, err)
 
@@ -6391,9 +6399,20 @@ func TestJetStreamClusterConsumerDeleteAckNoneInterestPolicyWithOthers(t *testin
 		t.Fatalf("Did not receive completion signal")
 	}
 
-	si, err := js.StreamInfo("TEST")
-	require_NoError(t, err)
-	require_Equal(t, si.State.Msgs, 100)
+	expectedStreamMsgs := func(msgs uint64) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			si, err := js.StreamInfo("TEST")
+			if err != nil {
+				return err
+			}
+			if si.State.Msgs != msgs {
+				return fmt.Errorf("require uint64 equal, but got: %d != %d", si.State.Msgs, msgs)
+			}
+			return nil
+		})
+	}
+	expectedStreamMsgs(100)
 
 	sub, err := js.PullSubscribe("foo.bar", "C1")
 	require_NoError(t, err)
@@ -6401,21 +6420,16 @@ func TestJetStreamClusterConsumerDeleteAckNoneInterestPolicyWithOthers(t *testin
 	require_NoError(t, err)
 	require_Equal(t, len(msgs), 100)
 	for _, m := range msgs {
-		m.AckSync()
+		require_NoError(t, m.AckSync())
 	}
 	// AckNone will hold.
-	si, err = js.StreamInfo("TEST")
-	require_NoError(t, err)
-	require_Equal(t, si.State.Msgs, 100)
+	expectedStreamMsgs(100)
 
 	// Now delete second one and make sure accounting correct.
 	err = js.DeleteConsumer("TEST", "C2")
 	require_NoError(t, err)
-	time.Sleep(100 * time.Millisecond)
 
-	si, err = js.StreamInfo("TEST")
-	require_NoError(t, err)
-	require_Equal(t, si.State.Msgs, 0)
+	expectedStreamMsgs(0)
 }
 
 func TestJetStreamClusterConsumerDeleteInterestPolicyPerf(t *testing.T) {
