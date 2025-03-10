@@ -5821,6 +5821,9 @@ func TestJetStreamClusterStreamLimitsOnScaleUpAndMove(t *testing.T) {
 	nc, js := jsClientConnect(t, c.randomServer(), nats.UserCredentials(accCreds))
 	defer nc.Close()
 
+	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
+	c.waitOnAccount(aExpPub)
+
 	_, err := js.AddStream(&nats.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo"},
