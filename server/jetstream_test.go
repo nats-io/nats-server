@@ -10760,12 +10760,15 @@ func TestJetStreamAccountImportJSAdvisoriesAsService(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	defer subJS.Unsubscribe()
+	require_NoError(t, ncJS.Flush())
 
 	// user from AGG account should receive events on mapped $JS.EVENT.ADVISORY.ACC.JS.> subject (with account name)
 	subAgg, err := ncAgg.SubscribeSync("$JS.EVENT.ADVISORY.ACC.JS.>")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	defer subAgg.Unsubscribe()
+	require_NoError(t, ncAgg.Flush())
 
 	// add stream using JS account
 	// this should trigger 2 events:
