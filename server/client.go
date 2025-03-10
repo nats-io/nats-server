@@ -2014,6 +2014,7 @@ func computeRTT(start time.Time) time.Duration {
 // processConnect will process a client connect op.
 func (c *client) processConnect(arg []byte) error {
 	supportsHeaders := c.srv.supportsHeaders()
+	showClientName := c.srv.getOpts().LogClientName
 	c.mu.Lock()
 	// If we can't stop the timer because the callback is in progress...
 	if !c.clearAuthTimer() {
@@ -2059,7 +2060,7 @@ func (c *client) processConnect(arg []byte) error {
 	account := c.opts.Account
 	accountNew := c.opts.AccountNew
 
-	if c.kind == CLIENT {
+	if c.kind == CLIENT && showClientName {
 		var ncs string
 		if c.opts.Version != _EMPTY_ {
 			ncs = fmt.Sprintf("v%s", c.opts.Version)
@@ -2079,7 +2080,7 @@ func (c *client) processConnect(arg []byte) error {
 			}
 		}
 		if ncs != _EMPTY_ {
-			c.ncs.CompareAndSwap(nil, fmt.Sprintf("%s - %q", c, ncs))
+			c.ncs.Store(fmt.Sprintf("%s - %q", c, ncs))
 		}
 	}
 

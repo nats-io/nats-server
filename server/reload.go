@@ -930,6 +930,15 @@ func (l *noFastProdStallReload) Apply(s *Server) {
 	s.Noticef("Reloaded: fast producers will %sbe stalled", not)
 }
 
+type logClientNameReload struct {
+	noopOption
+	newValue bool
+}
+
+func (l *logClientNameReload) Apply(s *Server) {
+	s.Noticef("Reloaded: log_client_name = %v", l.newValue)
+}
+
 // Compares options and disconnects clients that are no longer listed in pinned certs. Lock must not be held.
 func (s *Server) recheckPinnedCerts(curOpts *Options, newOpts *Options) {
 	s.mu.Lock()
@@ -1653,6 +1662,8 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			continue
 		case "nofastproducerstall":
 			diffOpts = append(diffOpts, &noFastProdStallReload{noStall: newValue.(bool)})
+		case "logclientname":
+			diffOpts = append(diffOpts, &logClientNameReload{newValue: newValue.(bool)})
 		default:
 			// TODO(ik): Implement String() on those options to have a nice print.
 			// %v is difficult to figure what's what, %+v print private fields and
