@@ -2793,9 +2793,11 @@ func TestJetStreamClusterInterestPolicyEphemeral(t *testing.T) {
 		subject  string
 		durable  string
 		name     string
+		policy   nats.RetentionPolicy
 	}{
-		{testName: "InterestWithDurable", durable: "eph", subject: "intdur", stream: "INT_DUR"},
-		{testName: "InterestWithName", name: "eph", subject: "inteph", stream: "INT_EPH"},
+		{testName: "LimitsWithName", name: "eph", subject: "limeph", stream: "LIMIT_EPH", policy: nats.LimitsPolicy},
+		{testName: "InterestWithDurable", durable: "eph", subject: "intdur", stream: "INT_DUR", policy: nats.InterestPolicy},
+		{testName: "InterestWithName", name: "eph", subject: "inteph", stream: "INT_EPH", policy: nats.InterestPolicy},
 	} {
 		t.Run(test.testName, func(t *testing.T) {
 			var err error
@@ -2806,7 +2808,7 @@ func TestJetStreamClusterInterestPolicyEphemeral(t *testing.T) {
 			_, err = js.AddStream(&nats.StreamConfig{
 				Name:      test.stream,
 				Subjects:  []string{test.subject},
-				Retention: nats.LimitsPolicy,
+				Retention: test.policy,
 				Replicas:  3,
 			})
 			require_NoError(t, err)
@@ -2828,17 +2830,8 @@ func TestJetStreamClusterInterestPolicyEphemeral(t *testing.T) {
 			}
 
 			const msgs = 5_000
-			done, count := make(chan bool, 1), 0
-
 			sub, err := js.Subscribe(_EMPTY_, func(msg *nats.Msg) {
 				require_NoError(t, msg.Ack())
-				count++
-				if count >= msgs {
-					select {
-					case done <- true:
-					default:
-					}
-				}
 			}, nats.Bind(test.stream, name), nats.ManualAck())
 			require_NoError(t, err)
 
@@ -2846,7 +2839,8 @@ func TestJetStreamClusterInterestPolicyEphemeral(t *testing.T) {
 			pubDone := make(chan struct{})
 			go func(subject string) {
 				for i := 0; i < msgs; i++ {
-					js.Publish(subject, []byte("DATA"))
+					_, err := js.Publish(subject, []byte("DATA"))
+					require_NoError(t, err)
 				}
 				close(pubDone)
 			}(test.subject)
@@ -2861,11 +2855,16 @@ func TestJetStreamClusterInterestPolicyEphemeral(t *testing.T) {
 				t.Fatalf("Did not receive completion signal")
 			}
 
-			info, err := js.ConsumerInfo(test.stream, name)
-			if err != nil {
-				t.Fatalf("Expected to be able to retrieve consumer: %v", err)
-			}
-			require_True(t, info.Delivered.Stream == msgs)
+			checkFor(t, time.Second, 100*time.Millisecond, func() error {
+				info, err := js.ConsumerInfo(test.stream, name)
+				if err != nil {
+					return fmt.Errorf("Expected to be able to retrieve consumer: %v", err)
+				}
+				if info.Delivered.Stream != msgs {
+					return fmt.Errorf("require uint64 equal, but got: %d != %d", info.Delivered.Stream, msgs)
+				}
+				return nil
+			})
 
 			// Stop the subscription and remove the interest.
 			err = sub.Unsubscribe()
