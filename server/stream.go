@@ -940,6 +940,18 @@ func (mset *stream) isLeader() bool {
 	return true
 }
 
+// isLeaderNodeState should NOT be used normally, use isLeader instead.
+// Returns whether the node thinks it is the leader, regardless of whether applies are up-to-date yet
+// (unlike isLeader, which requires applies to be caught up).
+// May be used to respond to clients after a leader change, when applying entries from a former leader.
+// Lock should be held.
+func (mset *stream) isLeaderNodeState() bool {
+	if mset.isClustered() {
+		return mset.node.State() == Leader
+	}
+	return true
+}
+
 // TODO(dlc) - Check to see if we can accept being the leader or we should step down.
 func (mset *stream) setLeader(isLeader bool) error {
 	mset.mu.Lock()
@@ -4775,7 +4787,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 	numConsumers := len(mset.consumers)
 	interestRetention := mset.cfg.Retention == InterestPolicy
 	// Snapshot if we are the leader and if we can respond.
-	isLeader, isSealed := mset.isLeader(), mset.cfg.Sealed
+	isLeader, isSealed := mset.isLeaderNodeState(), mset.cfg.Sealed
 	canRespond := doAck && len(reply) > 0 && isLeader
 
 	var resp = &JSPubAckResponse{}
