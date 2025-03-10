@@ -100,14 +100,12 @@ func (sm *RCOBStateMachine) node() RaftNode {
 }
 
 func (sm *RCOBStateMachine) propose(data []byte) {
-	// Don't hold state machine lock as we could deadlock if the node was locked as part of the test.
 	sm.Lock()
+	defer sm.Unlock()
 	if !sm.ready {
 		sm.logDebug("Refusing to propose during recovery")
 	}
-	n := sm.n
-	sm.Unlock()
-	err := n.ForwardProposal(data)
+	err := sm.n.ForwardProposal(data)
 	if err != nil {
 		sm.logDebug("block proposal error: %s", err)
 	}
@@ -115,11 +113,11 @@ func (sm *RCOBStateMachine) propose(data []byte) {
 
 func (sm *RCOBStateMachine) applyEntry(ce *CommittedEntry) {
 	sm.Lock()
+	defer sm.Unlock()
 	if ce == nil {
 		// A nil entry signals that the previous recovery backlog is over
 		sm.logDebug("Recovery complete")
 		sm.ready = true
-		sm.Unlock()
 		return
 	}
 	sm.logDebug("Apply entries #%d (%d entries)", ce.Index, len(ce.Entries))
@@ -133,13 +131,12 @@ func (sm *RCOBStateMachine) applyEntry(ce *CommittedEntry) {
 		}
 	}
 	// Signal to the node that entries were applied
-	// But don't hold state machine lock as we could deadlock if the node was locked as part of the test.
-	n := sm.n
-	sm.Unlock()
-	n.Applied(ce.Index)
+	sm.n.Applied(ce.Index)
 }
 
 func (sm *RCOBStateMachine) leaderChange(isLeader bool) {
+	sm.Lock()
+	defer sm.Unlock()
 	if sm.leader && !isLeader {
 		sm.logDebug("Leader change: no longer leader")
 	} else if sm.leader && isLeader {
@@ -150,7 +147,7 @@ func (sm *RCOBStateMachine) leaderChange(isLeader bool) {
 		sm.logDebug("Leader change")
 	}
 	sm.leader = isLeader
-	if isLeader != sm.node().Leader() {
+	if isLeader != sm.n.Leader() {
 		sm.logDebug("⚠️ Leader state out of sync with underlying node")
 	}
 }
@@ -318,11 +315,7 @@ func (sm *RCOBStateMachine) createSnapshot() {
 	}
 
 	// InstallSnapshot is actually "save the snapshot", which is an operation delegated to the node
-	// Don't hold state machine lock as we could deadlock if the node was locked as part of the test.
-	n := sm.n
-	sm.Unlock()
-	err = n.InstallSnapshot(snapshotData)
-	sm.Lock()
+	err = sm.n.InstallSnapshot(snapshotData)
 	if err != nil {
 		sm.logDebug("failed to snapshot: %s", err)
 		return
