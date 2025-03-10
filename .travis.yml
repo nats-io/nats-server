@@ -1,5 +1,6 @@
 os: linux
 dist: focal
+virt: vm
 
 vm:
   size: large

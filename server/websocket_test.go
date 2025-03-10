@@ -4390,7 +4390,7 @@ func testWSNoCorruptionWithFrameSizeLimit(t *testing.T, total int) {
 	nc2 := natsConnect(t, fmt.Sprintf("ws://127.0.0.1:%d", o2.Websocket.Port))
 	defer nc2.Close()
 
-	payload := make([]byte, 100000)
+	payload := make([]byte, 2*wsFrameSizeForBrowsers+123)
 	for i := 0; i < len(payload); i++ {
 		payload[i] = 'A' + byte(i%26)
 	}
