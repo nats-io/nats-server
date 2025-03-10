@@ -361,7 +361,9 @@ func createJetStreamTaggedSuperClusterWithGWProxy(t *testing.T, gwm gwProxyMap) 
 		reset(s)
 	}
 
+	sc.waitOnLeader()
 	ml := sc.leader()
+	require_True(t, ml != nil)
 	js := ml.getJetStream()
 	require_True(t, js != nil)
 	js.mu.RLock()
