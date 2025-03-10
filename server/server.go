@@ -1383,8 +1383,9 @@ func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) 
 
 	// Add any required exports from system account.
 	if s.sys != nil {
+		sysAcc := s.sys.account
 		s.mu.Unlock()
-		s.addSystemAccountExports(s.sys.account)
+		s.addSystemAccountExports(sysAcc)
 		s.mu.Lock()
 	}
 
