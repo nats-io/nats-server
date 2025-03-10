@@ -6309,7 +6309,7 @@ func TestJetStreamClusterConsumerAckNoneInterestPolicyShouldNotRetainAfterDelive
 	})
 	require_NoError(t, err)
 
-	// Make trhe first sequence high. We already protect against it but for extra sanity.
+	// Make the first sequence high. We already protect against it but for extra sanity.
 	err = js.PurgeStream("TEST", &nats.StreamPurgeRequest{Sequence: 100_000_000})
 	require_NoError(t, err)
 
@@ -6337,12 +6337,17 @@ func TestJetStreamClusterConsumerAckNoneInterestPolicyShouldNotRetainAfterDelive
 	msgs, err := sub.Fetch(100)
 	require_NoError(t, err)
 	require_Equal(t, len(msgs), 100)
-	for _, m := range msgs {
-		m.AckSync()
-	}
-	si, err = js.StreamInfo("TEST")
-	require_NoError(t, err)
-	require_Equal(t, si.State.Msgs, 0)
+
+	checkFor(t, time.Second, 100*time.Millisecond, func() error {
+		si, err = js.StreamInfo("TEST")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != 0 {
+			return fmt.Errorf("require uint64 equal, but got: %d != 0", si.State.Msgs)
+		}
+		return nil
+	})
 }
 
 func TestJetStreamClusterConsumerDeleteAckNoneInterestPolicyWithOthers(t *testing.T) {
