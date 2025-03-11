@@ -2064,6 +2064,15 @@ func TestServerEventsHealthZSingleServer(t *testing.T) {
 			expected: HealthStatus{Status: "ok", StatusCode: 200},
 		},
 		{
+			name: "with js meta only",
+			req: &HealthzEventOptions{
+				HealthzOptions: HealthzOptions{
+					JSMetaOnly: true,
+				},
+			},
+			expected: HealthStatus{Status: "ok", StatusCode: 200},
+		},
+		{
 			name: "with account name",
 			req: &HealthzEventOptions{
 				HealthzOptions: HealthzOptions{
@@ -3046,6 +3055,7 @@ func TestServerEventsPingMonitorz(t *testing.T) {
 		{"HEALTHZ", nil, &JSzOptions{}, []string{"status"}},
 		{"HEALTHZ", &HealthzOptions{JSEnabledOnly: true}, &JSzOptions{}, []string{"status"}},
 		{"HEALTHZ", &HealthzOptions{JSServerOnly: true}, &JSzOptions{}, []string{"status"}},
+		{"HEALTHZ", &HealthzOptions{JSMetaOnly: true}, &JSzOptions{}, []string{"status"}},
 		{"EXPVARZ", nil, &ExpvarzStatus{}, []string{"memstats", "cmdline"}},
 	}
 
