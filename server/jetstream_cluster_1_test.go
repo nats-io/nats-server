@@ -1180,10 +1180,17 @@ func TestJetStreamClusterStreamPublishWithActiveConsumers(t *testing.T) {
 		}
 	}
 
-	ci, err := sub.ConsumerInfo()
-	if err != nil {
-		t.Fatalf("Unexpected error getting consumer info: %v", err)
-	}
+	var ci *nats.ConsumerInfo
+	checkFor(t, time.Second, 100*time.Millisecond, func() error {
+		ci, err = sub.ConsumerInfo()
+		if err != nil {
+			return fmt.Errorf("Unexpected error getting consumer info: %v", err)
+		}
+		if ci.Delivered.Stream != 11 {
+			return fmt.Errorf("expected delivered stream sequence to be %d, got %d", 11, ci.Delivered.Stream)
+		}
+		return nil
+	})
 
 	c.consumerLeader("$G", "foo", "dlc").Shutdown()
 	c.waitOnConsumerLeader("$G", "foo", "dlc")
