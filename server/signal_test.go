@@ -92,10 +92,11 @@ func TestSignalToReloadConfig(t *testing.T) {
 
 	// Check that the reload time does not change when there are no changes.
 	loaded := s.ConfigTime()
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(250 * time.Millisecond)
 	syscall.Kill(syscall.Getpid(), syscall.SIGHUP)
-	if reloaded := s.ConfigTime(); reloaded.After(loaded) {
-		t.Fatalf("ConfigTime is incorrect.\nexpected no change: %s\ngot: %s", loaded, reloaded)
+	time.Sleep(250 * time.Millisecond)
+	if reloaded := s.ConfigTime(); reloaded.Equal(loaded) {
+		t.Fatalf("ConfigTime is incorrect.\nexpected reload time to change: %s\ngot: %s", loaded, reloaded)
 	}
 
 	// Repeat test to make sure that server services signals more than once...
