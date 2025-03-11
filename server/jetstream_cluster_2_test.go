@@ -1504,7 +1504,7 @@ func TestJetStreamClusterMirrorAndSourceExpiration(t *testing.T) {
 	sendBatch(100)
 	// Need to check both in parallel.
 	scheck, mcheck := uint64(0), uint64(0)
-	checkFor(t, 20*time.Second, 500*time.Millisecond, func() error {
+	checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
 		if scheck != 100 {
 			if si, _ := js.StreamInfo("S"); si != nil {
 				scheck = si.State.Msgs
