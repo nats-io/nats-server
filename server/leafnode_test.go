@@ -1459,19 +1459,27 @@ func TestLeafNodePubAllowedPruning(t *testing.T) {
 	for i := 0; i < gr; i++ {
 		go func() {
 			defer wg.Done()
-			for i := 0; i < 100; i++ {
+			for j := 0; j < 100; j++ {
 				c.pubAllowed(nats.NewInbox())
 			}
 		}()
 	}
 
 	wg.Wait()
-	if n := int(atomic.LoadInt32(&c.perms.pcsz)); n > maxPermCacheSize {
-		t.Fatalf("Expected size to be less than %v, got %v", maxPermCacheSize, n)
-	}
-	if n := atomic.LoadInt32(&c.perms.prun); n != 0 {
-		t.Fatalf("c.perms.prun should be 0, was %v", n)
-	}
+	checkFor(t, 2*time.Second, time.Millisecond, func() (rerr error) {
+		defer func() {
+			if rerr != nil {
+				c.pubAllowed(nats.NewInbox())
+			}
+		}()
+		if n := int(atomic.LoadInt32(&c.perms.pcsz)); n > maxPermCacheSize {
+			return fmt.Errorf("Expected size to be less than %v, got %v", maxPermCacheSize, n)
+		}
+		if n := atomic.LoadInt32(&c.perms.prun); n != 0 {
+			t.Fatalf("c.perms.prun should be 0, was %v", n)
+		}
+		return nil
+	})
 }
 
 func TestLeafNodeExportPermissionsNotForSpecialSubs(t *testing.T) {
