@@ -3922,6 +3922,9 @@ func TestJetStreamClusterAccountPurge(t *testing.T) {
 		nc, js := jsClientConnect(t, c.randomNonLeader(), nats.UserCredentials(accCreds))
 		defer nc.Close()
 
+		// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
+		c.waitOnAccount(accpub)
+
 		_, err := js.AddStream(&nats.StreamConfig{
 			Name:     "TEST1",
 			Subjects: []string{"foo"},
