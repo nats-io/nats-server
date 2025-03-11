@@ -7837,14 +7837,16 @@ func TestJetStreamClusterConsumerResetStartingSequenceToAgreedState(t *testing.T
 			store := o.store
 			o.mu.Unlock()
 
-			// File storage is not fully resilient, as there is a race condition where it becomes
+			// File storage is not fully resilient, as there is an initial race condition where it becomes
 			// leader again before the flusher got to write the store state.
 			// We need to wait here to confirm the state is written.
 			if storage == nats.FileStorage {
 				cfs := store.(*consumerFileStore)
 				checkFor(t, time.Second, 10*time.Millisecond, func() error {
-					if cfs.dirty {
-						return errors.New("store still marked dirty")
+					o.mu.Lock()
+					defer o.mu.Unlock()
+					if _, err := os.Stat(cfs.ifn); err != nil {
+						return errors.New("store not written yet")
 					}
 					return nil
 				})
