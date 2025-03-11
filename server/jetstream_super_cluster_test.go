@@ -4359,6 +4359,9 @@ func TestJetStreamSuperClusterMixedModeSwitchToInterestOnlyOperatorConfig(t *tes
 	nc, js := jsClientConnect(t, s, createUserCreds(t, nil, akp))
 	defer nc.Close()
 
+	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
+	c.waitOnAccount(apub)
+
 	// Just create a stream and then make sure that all gateways have switched
 	// to interest-only mode.
 	si, err := js.AddStream(&nats.StreamConfig{Name: "interest", Replicas: 3})
