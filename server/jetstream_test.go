@@ -25671,3 +25671,141 @@ func TestJetStreamInterestMaxDeliveryReached(t *testing.T) {
 		}
 	}
 }
+
+func TestJetStreamRecoversStreamFirstSeqWhenNotEmpty(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Storage:   nats.FileStorage,
+		Subjects:  []string{"test"},
+		Retention: nats.InterestPolicy,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Name:          "CONSUMER",
+		FilterSubject: "test",
+		AckPolicy:     nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	for i := 0; i < 1000; i++ {
+		_, err = js.Publish("test", nil)
+		require_NoError(t, err)
+	}
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 1000)
+	require_Equal(t, si.State.FirstSeq, 1)
+	require_Equal(t, si.State.LastSeq, 1000)
+
+	ps, err := js.PullSubscribe("test", "", nats.Bind("TEST", "CONSUMER"))
+	require_NoError(t, err)
+
+	for i := 0; i < 500; i++ {
+		msgs, err := ps.Fetch(1)
+		require_NoError(t, err)
+		require_Len(t, len(msgs), 1)
+		require_NoError(t, msgs[0].AckSync())
+	}
+
+	ci, err := js.ConsumerInfo("TEST", "CONSUMER")
+	require_NoError(t, err)
+	require_Equal(t, ci.AckFloor.Stream, 500)
+
+	s.shutdownJetStream()
+
+	path := filepath.Join(s.opts.StoreDir, "jetstream", globalAccountName, "streams", "TEST", msgDir)
+	dir, err := os.ReadDir(path)
+	require_NoError(t, err)
+
+	// Mangle the last message in the block so that it fails the checksum comparison
+	// with index.db, which causes us to throw the prior state error and rebuild.
+	// Once this is done we should still be able to figure out what the previous first
+	// and last sequence were, even without messages.
+	for _, f := range dir {
+		if !strings.HasSuffix(f.Name(), ".blk") {
+			continue
+		}
+		st, err := f.Info()
+		require_NoError(t, err)
+		require_NoError(t, os.Truncate(filepath.Join(path, f.Name()), st.Size()-1))
+	}
+
+	s.restartJetStream()
+
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 500)
+	require_Equal(t, si.State.FirstSeq, 501)
+	require_Equal(t, si.State.LastSeq, 1000)
+}
+
+func TestJetStreamRecoversStreamFirstSeqWhenEmpty(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Storage:   nats.FileStorage,
+		Subjects:  []string{"test"},
+		Retention: nats.InterestPolicy,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "CONSUMER"})
+	require_NoError(t, err)
+
+	for i := 0; i < 1000; i++ {
+		_, err = js.Publish("test", nil)
+		require_NoError(t, err)
+	}
+
+	require_NoError(t, js.PurgeStream("TEST"))
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 0)
+	require_Equal(t, si.State.FirstSeq, 1001)
+	require_Equal(t, si.State.LastSeq, 1000)
+
+	ci, err := js.ConsumerInfo("TEST", "CONSUMER")
+	require_NoError(t, err)
+	require_Equal(t, ci.AckFloor.Stream, 1000)
+
+	s.shutdownJetStream()
+
+	path := filepath.Join(s.opts.StoreDir, "jetstream", globalAccountName, "streams", "TEST", msgDir)
+	dir, err := os.ReadDir(path)
+	require_NoError(t, err)
+
+	// Mangle the last message in the block so that it fails the checksum comparison
+	// with index.db, which causes us to throw the prior state error and rebuild.
+	// Once this is done we should still be able to figure out what the previous first
+	// and last sequence were, even without messages.
+	for _, f := range dir {
+		if !strings.HasSuffix(f.Name(), ".blk") {
+			continue
+		}
+		st, err := f.Info()
+		require_NoError(t, err)
+		require_NoError(t, os.Truncate(filepath.Join(path, f.Name()), st.Size()-1))
+	}
+
+	s.restartJetStream()
+
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 0)
+	require_Equal(t, si.State.FirstSeq, 1001)
+	require_Equal(t, si.State.LastSeq, 1000)
+}

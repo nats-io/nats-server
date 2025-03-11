@@ -474,6 +474,10 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		// Check if our prior state remembers a last sequence past where we can see.
 		if fs.ld != nil && prior.LastSeq > fs.state.LastSeq {
 			fs.state.LastSeq, fs.state.LastTime = prior.LastSeq, prior.LastTime
+			if fs.state.Msgs == 0 {
+				fs.state.FirstSeq = fs.state.LastSeq + 1
+				fs.state.FirstTime = time.Time{}
+			}
 			if _, err := fs.newMsgBlockForWrite(); err == nil {
 				if err = fs.writeTombstone(prior.LastSeq, prior.LastTime.UnixNano()); err != nil {
 					return nil, err
