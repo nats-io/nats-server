@@ -618,9 +618,13 @@ func (sc *supercluster) waitOnPeerCount(n int) {
 	sc.waitOnLeader()
 	leader := sc.leader()
 	expires := time.Now().Add(30 * time.Second)
+	// Make sure we have all peers, and take into account the meta leader could still change.
 	for time.Now().Before(expires) {
-		peers := leader.JetStreamClusterPeers()
-		if len(peers) == n {
+		if leader = sc.leader(); leader == nil {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		if len(leader.JetStreamClusterPeers()) == n {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -1376,21 +1380,17 @@ func (c *cluster) waitOnPeerCount(n int) {
 	c.t.Helper()
 	c.waitOnLeader()
 	leader := c.leader()
-	for leader == nil {
-		c.waitOnLeader()
-		leader = c.leader()
-	}
 	expires := time.Now().Add(30 * time.Second)
+	// Make sure we have all peers, and take into account the meta leader could still change.
 	for time.Now().Before(expires) {
-		if peers := leader.JetStreamClusterPeers(); len(peers) == n {
+		if leader = c.leader(); leader == nil {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		if len(leader.JetStreamClusterPeers()) == n {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
-		leader = c.leader()
-		for leader == nil {
-			c.waitOnLeader()
-			leader = c.leader()
-		}
 	}
 	antithesis.AssertUnreachable(c.t, "Timeout in cluster.waitOnPeerCount", map[string]any{
 		"cluster": c.name,
