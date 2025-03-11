@@ -16865,11 +16865,17 @@ func TestJetStreamImportReload(t *testing.T) {
 	require_NoError(t, err)
 
 	require_NoError(t, ncA.Publish("news.article", nil))
-	require_NoError(t, ncA.Flush())
 
-	si, err := jsB.StreamInfo("news")
-	require_NoError(t, err)
-	require_True(t, si.State.Msgs == 1)
+	checkFor(t, time.Second, 100*time.Millisecond, func() error {
+		si, err := jsB.StreamInfo("news")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != 1 {
+			return fmt.Errorf("require uint64 equal, but got: %d != 1", si.State.Msgs)
+		}
+		return nil
+	})
 
 	// Remove exports/imports
 	reloadUpdateConfig(t, s, conf, fmt.Sprintf(`
@@ -16888,9 +16894,9 @@ func TestJetStreamImportReload(t *testing.T) {
 	require_NoError(t, ncA.Publish("news.article", nil))
 	require_NoError(t, ncA.Flush())
 
-	si, err = jsB.StreamInfo("news")
+	si, err := jsB.StreamInfo("news")
 	require_NoError(t, err)
-	require_True(t, si.State.Msgs == 1)
+	require_Equal(t, si.State.Msgs, 1)
 }
 
 func TestJetStreamRecoverSealedAfterServerRestart(t *testing.T) {
