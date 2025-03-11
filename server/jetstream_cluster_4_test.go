@@ -860,25 +860,37 @@ func TestJetStreamClusterConsumerNRGCleanup(t *testing.T) {
 	require_NoError(t, js.DeleteStream("TEST"))
 
 	// Now make sure we cleaned up the NRG directories for the stream and consumer.
-	var numConsumers, numStreams int
-	for _, s := range c.servers {
-		sd := s.JetStreamConfig().StoreDir
-		nd := filepath.Join(sd, "$SYS", "_js_")
-		f, err := os.Open(nd)
-		require_NoError(t, err)
-		dirs, err := f.ReadDir(-1)
-		require_NoError(t, err)
-		for _, fi := range dirs {
-			if strings.HasPrefix(fi.Name(), "C-") {
-				numConsumers++
-			} else if strings.HasPrefix(fi.Name(), "S-") {
-				numStreams++
+	checkFor(t, 2*time.Second, 500*time.Millisecond, func() error {
+		var numConsumers, numStreams int
+		for _, s := range c.servers {
+			sd := s.JetStreamConfig().StoreDir
+			nd := filepath.Join(sd, "$SYS", "_js_")
+			f, err := os.Open(nd)
+			if err != nil {
+				return err
 			}
+			dirs, err := f.ReadDir(-1)
+			if err != nil {
+				return err
+			}
+			for _, fi := range dirs {
+				if strings.HasPrefix(fi.Name(), "C-") {
+					numConsumers++
+				} else if strings.HasPrefix(fi.Name(), "S-") {
+					numStreams++
+				}
+			}
+			f.Close()
 		}
-		f.Close()
-	}
-	require_Equal(t, numConsumers, 0)
-	require_Equal(t, numStreams, 0)
+
+		if numConsumers != 0 {
+			return fmt.Errorf("expected 0 consumers, got %d", numConsumers)
+		}
+		if numStreams != 0 {
+			return fmt.Errorf("expected 0 streams, got %d", numStreams)
+		}
+		return nil
+	})
 }
 
 // https://github.com/nats-io/nats-server/issues/4878
