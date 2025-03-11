@@ -6174,6 +6174,11 @@ func TestJetStreamClusterConsumerAckSyncReporting(t *testing.T) {
 		require_NoError(t, err)
 	}
 
+	// Wait for all servers to converge on the same state. Stream and consumer leader could be different.
+	checkFor(t, time.Second, 100*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
 	msgs, err := sub.Fetch(10)
 	require_NoError(t, err)
 	require_Equal(t, len(msgs), 10)
