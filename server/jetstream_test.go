@@ -9819,6 +9819,8 @@ func TestJetStreamAckExplicitMsgRemoval(t *testing.T) {
 			newSub2, err := nc2.SubscribeSync(nats.NewInbox())
 			require_NoError(t, err)
 			defer newSub2.Unsubscribe()
+			err = nc2.Flush()
+			require_NoError(t, err)
 
 			// Update the second durable consumer with the new inbox subscription
 			dc2, err = mset.addConsumer(&ConsumerConfig{
