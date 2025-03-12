@@ -7043,9 +7043,12 @@ func TestLeafNodeCompressionOptions(t *testing.T) {
 			if !reflect.DeepEqual(test.rtts, o.LeafNode.Compression.RTTThresholds) {
 				t.Fatalf("Expected RTT tresholds to be %+v, got %+v", test.rtts, o.LeafNode.Compression.RTTThresholds)
 			}
+			port := s.getOpts().Port
+			leafNodePort := s.getOpts().LeafNode.Port
 			s.Shutdown()
 
-			o.LeafNode.Port = -1
+			o.Port = port
+			o.LeafNode.Port = leafNodePort
 			o.LeafNode.Compression.Mode = test.mode
 			if len(test.rttVals) > 0 {
 				o.LeafNode.Compression.Mode = CompressionS2Auto
@@ -7147,9 +7150,12 @@ func TestLeafNodeCompressionOptions(t *testing.T) {
 			if !reflect.DeepEqual(test.rtts, r.Compression.RTTThresholds) {
 				t.Fatalf("Expected RTT tresholds to be %+v, got %+v", test.rtts, r.Compression.RTTThresholds)
 			}
+			port := s.getOpts().Port
+			leafNodePort := s.getOpts().LeafNode.Port
 			s.Shutdown()
 
-			o.LeafNode.Port = -1
+			o.Port = port
+			o.LeafNode.Port = leafNodePort
 			o.LeafNode.Remotes[0].Compression.Mode = test.mode
 			if len(test.rttVals) > 0 {
 				o.LeafNode.Remotes[0].Compression.Mode = CompressionS2Auto
